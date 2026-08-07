@@ -7,9 +7,9 @@
 # Asserts the pulse-level GraphQL rate-limit circuit breaker:
 #   1. Trips when remaining <= threshold (e.g. 4/5000 at 5% threshold)
 #   2. Does NOT trip when remaining > threshold (e.g. 1000/5000)
-#   3. Fails open on API error (gh api rate_limit unreachable)
+#   3. GraphQL API errors fail open only after authoritative REST evidence allows
 #   4. Emergency bypass via AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1
-#   5. Disabled when threshold=0
+#   5. GraphQL floor disabled when threshold=0 while REST safety remains active
 #   6. Status output includes correct state
 #   7. Custom threshold works (e.g. 10% = 500/5000)
 #   8. Stats counter increments on trip
@@ -65,7 +65,8 @@ mkdir -p "${HOME}/.aidevops/logs"
 # Stub pulse-stats-helper.sh — track counter increments.
 STATS_COUNTER_FILE="${TMP}/stats-counter.log"
 GH_RATE_CALLS="${TMP}/rate-calls.log"
-export GH_RATE_CALLS
+GH_REST_CALLS="${TMP}/rest-calls.log"
+export GH_RATE_CALLS GH_REST_CALLS
 pulse_stats_increment() {
 	local counter_name="$1"
 	printf '%s\n' "$counter_name" >>"$STATS_COUNTER_FILE"
@@ -86,14 +87,36 @@ export -f pulse_stats_increment pulse_stats_get_24h
 #   STUB_GH_REMAINING — GraphQL remaining value (default 5000)
 #   STUB_GH_LIMIT     — GraphQL limit value (default 5000)
 #   STUB_GH_CORE_REMAINING — REST core remaining value (unset omits core budget)
+#   STUB_GH_CORE_RESET — REST core reset epoch (default: now+3600)
 #   STUB_GH_RESET     — GraphQL reset epoch (default: now+3600)
-#   STUB_GH_FAIL      — 1 to make gh api rate_limit fail entirely
+#   STUB_GH_FAIL      — 1 to make all gh API probes fail
+#   STUB_GH_RATE_FAIL — 1 to make only gh api rate_limit fail
+#   STUB_GH_RATE_JSON — raw gh api rate_limit response override
 gh() {
+	if [[ "$1" == "api" && "$2" == "-i" && "$3" == "user" ]]; then
+		printf 'rest-core\n' >>"$GH_REST_CALLS"
+		if [[ "${STUB_GH_FAIL:-0}" == "1" ]]; then
+			return 1
+		fi
+		# Omitted core state simulates an unavailable authoritative probe so the
+		# legacy GraphQL-only breaker cases remain independent of REST fallback.
+		[[ -n "${STUB_GH_CORE_REMAINING:-}" ]] || return 0
+		local core_remaining="$STUB_GH_CORE_REMAINING"
+		local core_limit="${STUB_GH_CORE_LIMIT:-5000}"
+		local core_reset="${STUB_GH_CORE_RESET:-$(($(date +%s) + 3600))}"
+		printf 'HTTP/2 200\nx-ratelimit-resource: core\nx-ratelimit-remaining: %s\nx-ratelimit-limit: %s\nx-ratelimit-reset: %s\n\n{}\n' \
+			"$core_remaining" "$core_limit" "$core_reset"
+		return 0
+	fi
 	if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 		printf 'rate-limit\n' >>"$GH_RATE_CALLS"
 		[[ "${STUB_GH_DELAY:-0}" == "0" ]] || sleep "$STUB_GH_DELAY"
-		if [[ "${STUB_GH_FAIL:-0}" == "1" ]]; then
+		if [[ "${STUB_GH_FAIL:-0}" == "1" || "${STUB_GH_RATE_FAIL:-0}" == "1" ]]; then
 			return 1
+		fi
+		if [[ -n "${STUB_GH_RATE_JSON:-}" ]]; then
+			printf '%s\n' "$STUB_GH_RATE_JSON"
+			return 0
 		fi
 		local remaining="${STUB_GH_REMAINING:-5000}"
 		local limit="${STUB_GH_LIMIT:-5000}"
@@ -152,8 +175,10 @@ reset_test_state() {
 	: >"$LOGFILE"
 	: >"$STATS_COUNTER_FILE"
 	: >"$GH_RATE_CALLS"
+	: >"$GH_REST_CALLS"
 	rm -f "${HOME}/.aidevops/logs/pulse-graphql-circuit-breaker.state"
 	rm -f "${HOME}/.aidevops/cache/pulse-graphql-rate-limit.json"
+	rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
 	unset AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER 2>/dev/null || true
 	unset AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL 2>/dev/null || true
 	unset AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK 2>/dev/null || true
@@ -161,11 +186,21 @@ reset_test_state() {
 	unset AIDEVOPS_GH_FORCE_REST_READS 2>/dev/null || true
 	unset STUB_GH_CORE_REMAINING 2>/dev/null || true
 	unset STUB_GH_CORE_LIMIT 2>/dev/null || true
+	unset STUB_GH_CORE_RESET 2>/dev/null || true
 	unset STUB_GH_FAIL 2>/dev/null || true
+	unset STUB_GH_RATE_FAIL 2>/dev/null || true
+	unset STUB_GH_RATE_JSON 2>/dev/null || true
 	unset STUB_GH_DELAY 2>/dev/null || true
 	STUB_GH_REMAINING=5000
 	STUB_GH_LIMIT=5000
+	export STUB_GH_CORE_REMAINING=5000
+	export STUB_GH_CORE_LIMIT=5000
+	export STUB_GH_CORE_RESET="$(($(date +%s) + 3600))"
 	export AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD="0.05"
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=0
+	export AIDEVOPS_PULSE_REST_CORE_RESERVE=500
+	export AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR=100
+	export AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS=3600
 	return 0
 }
 
@@ -231,16 +266,75 @@ test_breaker_passes_just_above_threshold() {
 	return 0
 }
 
-# --- Test 5: Fail-open on API error ---
-test_fail_open_on_api_error() {
+# --- Test 5: A total API outage leaves REST evidence unknown and fails closed ---
+test_api_error_with_unknown_rest_fails_closed() {
 	reset_test_state
 	STUB_GH_FAIL=1
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
-	if [[ "$rc" -eq 2 ]]; then
-		pass "fails open on API error (rc=2)"
+	if [[ "$rc" -eq 1 ]] && grep -qF 'authoritative REST-core quota evidence unavailable' "$LOGFILE"; then
+		pass "GraphQL API error fails closed when REST evidence is unavailable"
 	else
-		fail "should fail open on API error (rc=$rc, expected 2)"
+		fail "GraphQL API error should not bypass unknown REST evidence" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5b: GraphQL API failure keeps fail-open only with healthy REST ---
+test_graphql_api_error_with_healthy_rest_fails_open() {
+	reset_test_state
+	STUB_GH_RATE_FAIL=1
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 2 ]] && grep -qF 'authoritative REST-core evidence permits progress' "$LOGFILE"; then
+		pass "GraphQL API error fails open only after healthy REST authorization"
+	else
+		fail "healthy REST should authorize GraphQL fail-open" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5c: GraphQL API failure cannot bypass the REST hard floor ---
+test_graphql_api_error_respects_rest_hard_floor() {
+	reset_test_state
+	STUB_GH_RATE_FAIL=1
+	STUB_GH_CORE_REMAINING=10
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+		pass "GraphQL API error respects the REST hard floor"
+	else
+		fail "GraphQL API error should not bypass the REST hard floor" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5d: Malformed GraphQL projection cannot bypass the REST hard floor ---
+test_malformed_graphql_projection_respects_rest_hard_floor() {
+	reset_test_state
+	STUB_GH_RATE_JSON='{"resources":{"graphql":{"remaining":"bad","limit":5000}}}'
+	STUB_GH_CORE_REMAINING=10
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+		pass "malformed GraphQL projection respects the REST hard floor"
+	else
+		fail "malformed GraphQL projection should not bypass the REST hard floor" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5e: Zero GraphQL limit cannot bypass the REST hard floor ---
+test_zero_graphql_limit_respects_rest_hard_floor() {
+	reset_test_state
+	STUB_GH_LIMIT=0
+	STUB_GH_CORE_REMAINING=10
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'GraphQL limit is 0' "$LOGFILE"; then
+		pass "zero GraphQL limit respects the REST hard floor"
+	else
+		fail "zero GraphQL limit should not bypass the REST hard floor" "rc=$rc"
 	fi
 	return 0
 }
@@ -260,7 +354,7 @@ test_emergency_bypass() {
 	return 0
 }
 
-# --- Test 7: Disabled when threshold=0 ---
+# --- Test 7: GraphQL floor is disabled when threshold=0 and REST is healthy ---
 test_disabled_at_zero_threshold() {
 	reset_test_state
 	STUB_GH_REMAINING=0
@@ -268,9 +362,25 @@ test_disabled_at_zero_threshold() {
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
 	if [[ "$rc" -eq 0 ]]; then
-		pass "disabled when threshold=0 (remaining=0 still passes)"
+		pass "GraphQL floor disabled at threshold=0 while healthy REST still passes"
 	else
-		fail "should be disabled when threshold=0 (rc=$rc, expected 0)"
+		fail "GraphQL floor should be disabled at threshold=0 with healthy REST" "rc=$rc, expected 0"
+	fi
+	return 0
+}
+
+# --- Test 7b: GraphQL threshold=0 does not bypass unknown REST evidence ---
+test_zero_graphql_threshold_keeps_rest_safety() {
+	reset_test_state
+	export AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD=0
+	unset STUB_GH_CORE_REMAINING
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'authoritative REST-core quota evidence unavailable' "$LOGFILE"; then
+		pass "GraphQL threshold=0 retains fail-closed unknown REST safety"
+	else
+		fail "GraphQL threshold=0 should not bypass unknown REST evidence" "rc=${rc}"
 	fi
 	return 0
 }
@@ -409,6 +519,7 @@ test_log_message_on_trip() {
 # --- Test 15: GraphQL exhausted proceeds with REST fallback when core is healthy ---
 test_graphql_exhausted_rest_core_healthy_allows_dispatch() {
 	reset_test_state
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=1
 	STUB_GH_REMAINING=0
 	STUB_GH_CORE_REMAINING=4994
 	local rc=0
@@ -426,11 +537,13 @@ test_graphql_exhausted_rest_core_healthy_allows_dispatch() {
 # --- Test 16: GraphQL exhausted still blocks when REST core is low ---
 test_graphql_exhausted_rest_core_low_blocks_dispatch() {
 	reset_test_state
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=1
 	STUB_GH_REMAINING=0
 	STUB_GH_CORE_REMAINING=10
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
-	if [[ "$rc" -eq 1 && "${AIDEVOPS_GH_FORCE_REST_READS:-0}" != "1" ]]; then
+	if [[ "$rc" -eq 1 && "${AIDEVOPS_GH_FORCE_REST_READS:-0}" != "1" ]] &&
+		grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
 		pass "GraphQL exhausted with low REST core still blocks dispatch"
 	else
 		fail "low REST core should not allow fallback" "rc=$rc force_rest=${AIDEVOPS_GH_FORCE_REST_READS:-unset}"
@@ -450,6 +563,196 @@ test_graphql_exhausted_rest_fallback_disabled_blocks_dispatch() {
 		pass "GraphQL exhausted blocks dispatch when REST fallback is disabled"
 	else
 		fail "disabled REST fallback should not allow dispatch" "rc=$rc active=${AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_ACTIVE:-unset} force_rest=${AIDEVOPS_GH_FORCE_REST_READS:-unset}"
+	fi
+	return 0
+}
+
+# --- Test 18: Cached response-header probe avoids a second REST request ---
+test_rest_core_probe_cache_reuse() {
+	reset_test_state
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=1
+	STUB_GH_REMAINING=0
+	STUB_GH_CORE_REMAINING=900
+	is_graphql_budget_sufficient || true
+	STUB_GH_CORE_REMAINING=1
+	is_graphql_budget_sufficient || true
+	if [[ "${AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_ACTIVE:-0}" == "1" ]]; then
+		pass "REST core reserve reuses fresh response-header probe"
+	else
+		fail "REST core reserve should reuse fresh response-header probe"
+	fi
+	return 0
+}
+
+# --- Test 19: Expired response-header observation cannot authorize fallback ---
+test_rest_core_probe_reset_forces_recheck() {
+	reset_test_state
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=1
+	STUB_GH_REMAINING=0
+	STUB_GH_CORE_REMAINING=900
+	STUB_GH_CORE_RESET=$(($(date +%s) - 1))
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]]; then
+		pass "expired REST core header observation blocks fallback"
+	else
+		fail "expired REST core header observation should block fallback" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 20: Adaptive threshold decays monotonically toward the hard floor ---
+test_rest_core_adaptive_threshold_math() {
+	reset_test_state
+	local now early mid near
+	now=$(date +%s)
+	early=$(_cb_rest_core_thresholds "$((now + 3600))" "$now")
+	mid=$(_cb_rest_core_thresholds "$((now + 1800))" "$now")
+	near=$(_cb_rest_core_thresholds "$((now + 1))" "$now")
+	if [[ "$early" == "500 500 100" && "$mid" == "300 500 100" && "$near" == "101 500 100" ]]; then
+		pass "REST adaptive threshold decays from soft cap toward hard floor"
+	else
+		fail "REST adaptive threshold should be monotonic and clamped" "early=${early} mid=${mid} near=${near}"
+	fi
+	return 0
+}
+
+# --- Test 21: REST priority classes split at adaptive and hard boundaries ---
+test_rest_core_priority_boundaries() {
+	reset_test_state
+	local mode_normal mode_reserve mode_emergency
+	export STUB_GH_CORE_REMAINING=501
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	mode_normal=$(pulse_rest_core_priority_snapshot)
+	export STUB_GH_CORE_REMAINING=500
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	mode_reserve=$(pulse_rest_core_priority_snapshot)
+	export STUB_GH_CORE_REMAINING=100
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	mode_emergency=$(pulse_rest_core_priority_snapshot)
+	if [[ "$mode_normal" == normal\ 501\ 5000\ 500\ 500\ 100\ * &&
+		"$mode_reserve" == reserve\ 500\ 5000\ 500\ 500\ 100\ * &&
+		"$mode_emergency" == emergency\ 100\ 5000\ 500\ 500\ 100\ * ]]; then
+		pass "REST priority modes honor adaptive soft and hard-floor boundaries"
+	else
+		fail "REST priority boundary classification mismatch" "normal=${mode_normal}; reserve=${mode_reserve}; emergency=${mode_emergency}"
+	fi
+	return 0
+}
+
+# --- Test 22: Reserve mode allows progress but not deferrable work ---
+test_rest_core_priority_class_eligibility() {
+	reset_test_state
+	export STUB_GH_CORE_REMAINING=400
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local progress_rc=0 deferrable_rc=0
+	pulse_rest_core_priority_allows progress || progress_rc=$?
+	pulse_rest_core_priority_allows deferrable || deferrable_rc=$?
+	if [[ "$progress_rc" -eq 0 && "$deferrable_rc" -eq 1 ]]; then
+		pass "REST reserve mode preserves progress while deferring optional work"
+	else
+		fail "REST reserve class eligibility mismatch" "progress_rc=${progress_rc} deferrable_rc=${deferrable_rc}"
+	fi
+	return 0
+}
+
+# --- Test 23: Hard floor blocks progress while critical work remains eligible ---
+test_rest_core_hard_floor_eligibility() {
+	reset_test_state
+	export STUB_GH_CORE_REMAINING=100
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local critical_rc=0 progress_rc=0
+	pulse_rest_core_priority_allows critical || critical_rc=$?
+	pulse_rest_core_priority_allows progress || progress_rc=$?
+	if [[ "$critical_rc" -eq 0 && "$progress_rc" -eq 1 ]]; then
+		pass "REST hard floor blocks new progress without globally blocking critical work"
+	else
+		fail "REST hard-floor class eligibility mismatch" "critical_rc=${critical_rc} progress_rc=${progress_rc}"
+	fi
+	return 0
+}
+
+# --- Test 24: Unknown REST evidence conservatively blocks non-critical work ---
+test_rest_core_unknown_evidence() {
+	reset_test_state
+	unset STUB_GH_CORE_REMAINING
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local progress_rc=0 deferrable_rc=0 critical_rc=0
+	pulse_rest_core_priority_allows progress || progress_rc=$?
+	pulse_rest_core_priority_allows deferrable || deferrable_rc=$?
+	pulse_rest_core_priority_allows critical || critical_rc=$?
+	if [[ "$progress_rc" -eq 2 && "$deferrable_rc" -eq 2 && "$critical_rc" -eq 0 ]]; then
+		pass "unknown REST evidence defers progress and optional stages only"
+	else
+		fail "unknown REST evidence eligibility mismatch" "critical_rc=${critical_rc} progress_rc=${progress_rc} deferrable_rc=${deferrable_rc}"
+	fi
+	return 0
+}
+
+# --- Test 25: Legacy soft-cap override and zero-disable remain compatible ---
+test_rest_core_legacy_override_compatibility() {
+	reset_test_state
+	export AIDEVOPS_PULSE_REST_CORE_RESERVE=300
+	export STUB_GH_CORE_REMAINING=300
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local overridden disabled_rc=0
+	overridden=$(pulse_rest_core_priority_snapshot)
+	export AIDEVOPS_PULSE_REST_CORE_RESERVE=0
+	unset STUB_GH_CORE_REMAINING
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	pulse_rest_core_reserve_allows || disabled_rc=$?
+	if [[ "$overridden" == reserve\ 300\ 5000\ 300\ 300\ 100\ * && "$disabled_rc" -eq 0 ]]; then
+		pass "legacy REST reserve override remains the soft cap and zero disables gating"
+	else
+		fail "legacy REST reserve compatibility mismatch" "snapshot=${overridden} disabled_rc=${disabled_rc}"
+	fi
+	return 0
+}
+
+# --- Test 25b: Hard floor above the soft cap is clamped to the soft cap ---
+test_rest_core_hard_floor_clamped_to_soft_cap() {
+	reset_test_state
+	export AIDEVOPS_PULSE_REST_CORE_RESERVE=200
+	export AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR=1000
+	export STUB_GH_CORE_REMAINING=200
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local snapshot
+	snapshot=$(pulse_rest_core_priority_snapshot)
+	if [[ "$snapshot" == emergency\ 200\ 5000\ 200\ 200\ 200\ * ]]; then
+		pass "REST hard floor above the soft cap is clamped to the soft cap"
+	else
+		fail "REST hard-floor clamp mismatch" "snapshot=${snapshot}"
+	fi
+	return 0
+}
+
+# --- Test 26: Malformed cache metadata is ignored without set -u crashes ---
+test_rest_core_malformed_cache_recovers() {
+	reset_test_state
+	mkdir -p "$(dirname "$_CB_REST_CORE_CACHE_FILE")"
+	printf '{"observed":"malformed","remaining":"bad","limit":5000,"reset":0,"resource":"core"}\n' >"$_CB_REST_CORE_CACHE_FILE"
+	local snapshot
+	snapshot=$(pulse_rest_core_priority_snapshot)
+	if [[ "$snapshot" == normal\ 5000\ 5000\ 500\ 500\ 100\ * ]]; then
+		pass "malformed REST cache is ignored and refreshed from authoritative headers"
+	else
+		fail "malformed REST cache should recover without crashing" "snapshot=${snapshot}"
+	fi
+	return 0
+}
+
+# --- Test 27: Unknown REST evidence is classified and logged from one probe ---
+test_rest_core_unknown_dispatch_uses_single_probe() {
+	reset_test_state
+	unset STUB_GH_CORE_REMAINING
+	local rc=0 rest_calls=0
+	is_graphql_budget_sufficient || rc=$?
+	rest_calls=$(grep -c '^rest-core$' "$GH_REST_CALLS" 2>/dev/null) || rest_calls=0
+	if [[ "$rc" -eq 1 && "$rest_calls" -eq 1 ]] &&
+		grep -qF 'authoritative REST-core quota evidence unavailable' "$LOGFILE"; then
+		pass "unknown REST dispatch evidence uses one authoritative probe"
+	else
+		fail "unknown REST dispatch evidence should not trigger a duplicate probe" "rc=${rc} rest_calls=${rest_calls}"
 	fi
 	return 0
 }
@@ -780,9 +1083,14 @@ test_breaker_trips_below_threshold
 test_breaker_trips_at_threshold
 test_breaker_passes_above_threshold
 test_breaker_passes_just_above_threshold
-test_fail_open_on_api_error
+test_api_error_with_unknown_rest_fails_closed
+test_graphql_api_error_with_healthy_rest_fails_open
+test_graphql_api_error_respects_rest_hard_floor
+test_malformed_graphql_projection_respects_rest_hard_floor
+test_zero_graphql_limit_respects_rest_hard_floor
 test_emergency_bypass
 test_disabled_at_zero_threshold
+test_zero_graphql_threshold_keeps_rest_safety
 test_custom_threshold_10_percent
 test_stats_counter_increments
 test_stats_counter_no_increment_on_pass
@@ -794,6 +1102,17 @@ test_log_message_on_trip
 test_graphql_exhausted_rest_core_healthy_allows_dispatch
 test_graphql_exhausted_rest_core_low_blocks_dispatch
 test_graphql_exhausted_rest_fallback_disabled_blocks_dispatch
+test_rest_core_probe_cache_reuse
+test_rest_core_probe_reset_forces_recheck
+test_rest_core_adaptive_threshold_math
+test_rest_core_priority_boundaries
+test_rest_core_priority_class_eligibility
+test_rest_core_hard_floor_eligibility
+test_rest_core_unknown_evidence
+test_rest_core_legacy_override_compatibility
+test_rest_core_hard_floor_clamped_to_soft_cap
+test_rest_core_malformed_cache_recovers
+test_rest_core_unknown_dispatch_uses_single_probe
 test_shared_rate_probe_coalesces_consumers
 
 # =============================================================================

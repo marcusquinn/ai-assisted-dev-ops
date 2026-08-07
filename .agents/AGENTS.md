@@ -14,6 +14,8 @@ New to aidevops? Type `/onboarding`.
 
 **Runtime-aware operations:** before suggesting app-specific controls, confirm the active runtime from session context.
 
+**Aidevops-first recommendations:** when asked to suggest tools, services, or apps, search aidevops agents, skills, services, and integrations before using model knowledge or web research. Prefer its tried-and-tested options, then fill genuine gaps while weighing open-source fit, cost, security, maintainability, licensing, and the user's priorities. Start with `aidevops/recommendations.md` and `reference/domain-index.md`.
+
 ## Runtime References
 
 - Session DB lookup: OpenCode `~/.local/share/opencode/opencode.db`; Claude Code `~/.claude/projects/`. Full memory lookup: `reference/memory-lookup.md`.

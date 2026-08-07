@@ -1228,7 +1228,15 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18210 Verify protected issue-sync fallback and reconcile historical completion proof #bug #framework #interactive #no-auto-dispatch ref:GH#29679 pr:#29704 completed:2026-08-07
 
-- [ ] t18211 Harden npm and Bun dependency supply-chain controls #security ref:GH#29717
+- [x] t18211 Harden npm and Bun dependency supply-chain controls #security ref:GH#29717 pr:#29721 completed:2026-08-07
+
+- [x] t18212 Create reviewed release aggregation for PR #29721 #release ref:GH#29731 pr:#29745 completed:2026-08-07
+
+- [x] t18213 Allow full-loop merges to preserve explicit commit bodies #bug ref:GH#29733 pr:#29735 completed:2026-08-07
+
+- [ ] t18214 Make full-loop helpers use the sibling worktree gh shim #auto-dispatch #bug #priority:high #shell #workflow ref:GH#29750
+- [ ] t18215 Prefer aidevops options in recommendations ref:GH#29751
+- [>] t18216 Fix Dependabot review-gate deadlock and preserve deterministic Qlty installs #auto-dispatch #bug #priority:high tier:standard ref:GH#29755 assignee:marcusquinn started:2026-08-07T19:48:48Z -> [todo/tasks/t18216-brief.md]
 
 ## In Progress
 

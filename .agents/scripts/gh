@@ -835,7 +835,9 @@ fi
 # -----------------------------------------------------------------------------
 # Scan args for --body / --body-file and inject signature if missing.
 # Mirrors _gh_wrapper_auto_sig in shared-gh-wrappers.sh. Marker-based dedup
-# means idempotent: running the shim twice on the same args is a no-op.
+# means idempotent: running the shim twice on the same args is a no-op. A PR
+# merge body becomes a Git commit message, so it must remain byte-for-byte
+# caller supplied to preserve terminal Git trailers (GH#29724).
 # -----------------------------------------------------------------------------
 _i=0
 _body_idx=-1
@@ -900,7 +902,8 @@ done
 # exact aidevops shim and must not retry the consumed descriptor through REST.
 
 # --- --body case -------------------------------------------------------------
-if [[ $_body_idx -ge 0 && -n "$_body_val" ]]; then
+if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" != "pr:merge" &&
+	$_body_idx -ge 0 && -n "$_body_val" ]]; then
 	if ! grep -Fqx '<!-- aidevops:sig -->' <<<"$_body_val"; then
 		_sig_footer=$("$SIG_HELPER" footer --body "$_body_val" 2>/dev/null || echo "")
 		if [[ -n "$_sig_footer" ]]; then
@@ -938,7 +941,8 @@ fi
 # to the user's source. The user's brief on disk stays byte-identical after the
 # gh call. The temp file is cleaned up by a background reaper because the native
 # transport may outlive setup-time shell traps.
-if [[ $_body_file_idx -ge 0 && -n "$_body_file_val" && -f "$_body_file_val" ]]; then
+if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" != "pr:merge" &&
+	$_body_file_idx -ge 0 && -n "$_body_file_val" && -f "$_body_file_val" ]]; then
 	if ! grep -Fqx '<!-- aidevops:sig -->' "$_body_file_val" 2>/dev/null; then
 		_file_content=$(<"$_body_file_val") || _file_content=""
 		_sig_footer=$("$SIG_HELPER" footer --body "$_file_content" 2>/dev/null || echo "")

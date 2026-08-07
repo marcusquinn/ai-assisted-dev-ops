@@ -1427,18 +1427,18 @@ _run_preflight_stages() {
 	# provide the safety net. Timing is still logged for observability.
 	local _pflt_ed_start=$SECONDS
 	local _pflt_ed_rc=0
-	_preflight_early_dispatch || _pflt_ed_rc=$?
+	_pulse_run_budget_priority_stage "preflight_early_dispatch" _preflight_early_dispatch || _pflt_ed_rc=$?
 	_log_substage_timing "preflight_early_dispatch" "$_pflt_ed_start" "$_pflt_ed_rc"
 	# GH#28880: cross-repository label maintenance can take 3-5 minutes. Run it
 	# after the initial fill so already-eligible workers boot in parallel. Then
 	# normalize trusted-author NMR residue and refill once so every newly unblocked
 	# candidate remains dispatchable this cycle.
-	run_stage_with_timeout "preflight_label_maintenance" "$_pflt_timeout" \
+	_pulse_run_budget_priority_stage_with_timeout "preflight_label_maintenance" "$_pflt_timeout" \
 		_preflight_label_maintenance || true
-	_preflight_trusted_nmr_reconcile || true
+	_pulse_run_budget_priority_stage "preflight_trusted_nmr_reconcile" _preflight_trusted_nmr_reconcile || true
 	local _pflt_refill_start=$SECONDS
 	local _pflt_refill_rc=0
-	_preflight_post_label_refill || _pflt_refill_rc=$?
+	_pulse_run_budget_priority_stage "preflight_post_label_refill" _preflight_post_label_refill || _pflt_refill_rc=$?
 	_log_substage_timing "preflight_post_label_refill" "$_pflt_refill_start" "$_pflt_refill_rc"
 	# t3055: Post-dispatch housekeeping runs under a separate async lock by
 	# default. These stages do not protect the immediate worker claim/ledger
@@ -1447,31 +1447,21 @@ _run_preflight_stages() {
 	# AIDEVOPS_PULSE_ASYNC_POST_DISPATCH_HOUSEKEEPING=0 to restore the legacy
 	# synchronous path for debugging.
 	_pulse_start_post_dispatch_housekeeping "$_pflt_timeout"
-	# t3027 (GH#21584): GraphQL budget gate.
-	# prefetch_state is the largest single GraphQL consumer in the pulse
-	# cycle (~170s avg, 3 calls per repo × 13 repos). When budget is
-	# critically low (< AIDEVOPS_PULSE_PREFETCH_BUDGET_THRESHOLD points,
-	# default 1250 = 25% of the 5000/hr GraphQL floor), defer prefetch
-	# entirely and let the cycle proceed with stale STATE_FILE rather
-	# than burn the remaining budget on what may be an idle cycle anyway.
-	# Complementary to the t2690 dispatch breaker (5% floor): t2690 stops
-	# new dispatches; this gate stops the prefetch that PRECEDES dispatch.
-	# Bypass: AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE=1.
-	# Counter incremented: _PULSE_HEALTH_PREFETCH_THROTTLED.
+	# t3027/GH#29742: prefetch is a deferrable, high-fanout API stage. Reuse
+	# the shared stage policy so GraphQL reserve mode or REST reserve/emergency
+	# mode preserves quota for merge and dispatch. Existing STATE_FILE state is
+	# the retry mechanism; no delayed request queue is introduced. The GraphQL
+	# side retains AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE=1 compatibility,
+	# while REST safety still applies.
 	local _budget_gate_skip=0
-	if [[ "${AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE:-0}" != "1" ]]; then
-		local _bg_threshold="${AIDEVOPS_PULSE_PREFETCH_BUDGET_THRESHOLD:-1250}"
-		local _bg_remaining
-		_bg_remaining=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null || echo "5000")
-		[[ "$_bg_remaining" =~ ^[0-9]+$ ]] || _bg_remaining=5000
-		if [[ "$_bg_remaining" -lt "$_bg_threshold" ]]; then
-			echo "[pulse-wrapper] prefetch_budget_gate: GraphQL remaining=${_bg_remaining} < threshold=${_bg_threshold} — deferring prefetch_state, using stale STATE_FILE (t3027)" >>"$LOGFILE"
-			_PULSE_HEALTH_PREFETCH_THROTTLED=$((_PULSE_HEALTH_PREFETCH_THROTTLED + 1))
-			if declare -F pulse_stats_increment >/dev/null 2>&1; then
-				pulse_stats_increment "pulse_prefetch_budget_throttled" 2>/dev/null || true
-			fi
-			_budget_gate_skip=1
+	local _budget_prefetch_stage="${_PULSE_BUDGET_PREFETCH_STAGE:-preflight_prefetch_and_scope}"
+	if _pulse_should_defer_budget_priority_stage "$_budget_prefetch_stage"; then
+		_pulse_defer_budget_priority_stage "$_budget_prefetch_stage"
+		_PULSE_HEALTH_PREFETCH_THROTTLED=$((_PULSE_HEALTH_PREFETCH_THROTTLED + 1))
+		if declare -F pulse_stats_increment >/dev/null 2>&1; then
+			pulse_stats_increment "pulse_prefetch_budget_throttled" 2>/dev/null || true
 		fi
+		_budget_gate_skip=1
 	fi
 
 	# prefetch_and_scope is the only preflight stage whose failure aborts
@@ -1482,7 +1472,7 @@ _run_preflight_stages() {
 	# first cycle), downstream stages handle it gracefully (LLM session
 	# sees empty state, deterministic merges/cleanup degrade quietly).
 	if [[ "$_budget_gate_skip" -eq 0 ]]; then
-		if ! run_stage_with_timeout "preflight_prefetch_and_scope" "$_pflt_timeout" \
+		if ! run_stage_with_timeout "$_budget_prefetch_stage" "$_pflt_timeout" \
 			_preflight_prefetch_and_scope; then
 			return 1
 		fi

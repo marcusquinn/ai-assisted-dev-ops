@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.233] - 2026-08-07
+
+### Changed
+
+- Maintenance: sync GitHub issue state to TODO.md [skip ci]
+
+### Fixed
+
+- update Cloudron base image (#29741)
+- Preserve explicit full-loop merge bodies
+- reserve Pulse REST core quota (#29737)
+- Harden npm and Bun dependency supply-chain controls
+- Block direct Read access to root-managed snapshots
+- make update help side-effect-free (#29722)
+- Prevent stale debt issue recycling
+- sign issue-close comments (#29716)
+- keep unrelated tool updates explicit
+- skip cost breaker for completed issues (#29713)
+- distinguish unavailable contributor activity (#29664)
+- trim deterministic projection tails
+- dedupe stale deterministic task additions
+- scope Qlty duplicate regressions (#29702)
+- stabilize post-merge verification tests
+- retry protected PR creation with SYNC_PAT
+
 ## [3.32.232] - 2026-08-07
 
 ### Changed

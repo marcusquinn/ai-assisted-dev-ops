@@ -356,6 +356,40 @@ else
 fi
 
 # =============================================================================
+# Test 9a: pr merge bodies preserve terminal Git trailers byte-for-byte
+# =============================================================================
+echo ""
+echo "Test 9a: pr merge bodies preserve terminal trailers"
+merge_body='Preserve release provenance.
+
+Aidevops-Release-Aggregator-PR: #29629
+Aidevops-Release-Aggregates: #29629
+Aidevops-Release-Aggregates: #29630'
+for merge_body_form in separated equals; do
+	_reset_log
+	if [[ "$merge_body_form" == "separated" ]]; then
+		"$SHIM_RUN" pr merge 123 --repo owner/repo --squash --body "$merge_body" 2>/dev/null
+	else
+		"$SHIM_RUN" pr merge 123 --repo owner/repo --squash "--body=${merge_body}" 2>/dev/null
+	fi
+	argv=$(_read_argv)
+	merge_native_body=$(printf '%s\n' "$argv" | awk 'seen { print } $0 == "--body" { seen = 1 }')
+	if [[ "$merge_body_form" == "equals" ]]; then
+		merge_native_body="${argv##*--body=}"
+	fi
+	merge_trailers=$(printf '%s\n' "$merge_native_body" | git interpret-trailers --parse)
+	if [[ "$argv" != *"<!-- aidevops:sig -->"* &&
+		"$merge_native_body" == "$merge_body" &&
+		"$merge_trailers" == *"Aidevops-Release-Aggregator-PR: #29629"* &&
+		"$merge_trailers" == *"Aidevops-Release-Aggregates: #29629"* &&
+		"$merge_trailers" == *"Aidevops-Release-Aggregates: #29630"* ]]; then
+		_pass "${merge_body_form} pr merge body remains unsigned and trailer-parseable"
+	else
+		_fail "${merge_body_form} pr merge body preservation" "argv: $argv trailers: $merge_trailers"
+	fi
+done
+
+# =============================================================================
 # Test 10: gh api (arbitrary subcommand) passes through
 # =============================================================================
 echo ""
