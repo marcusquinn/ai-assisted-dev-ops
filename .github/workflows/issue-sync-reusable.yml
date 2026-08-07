@@ -53,7 +53,7 @@ on:
         description: 'Optional token with read access to a private configured helper repository'
       SYNC_PAT:
         required: false
-        description: 'Fine-grained PAT with Contents:read/write, bypasses branch protection on TODO.md push'
+        description: 'Optional fine-grained PAT with Contents:read/write for direct TODO.md publication; protected branches fall back to a PR'
 
 jobs:
   forge-event:
@@ -173,6 +173,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      pull-requests: write
 
     steps:
       - name: Check commit author
@@ -190,23 +191,19 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # t2166: emit a visible warning when SYNC_PAT is unset so operators
-      # see on every run — not just after GH006 — that TODO.md push will
-      # fall back to GITHUB_TOKEN and be rejected by branch protection.
+      # Keep the active credential path visible. GH#29679 routes a terminal
+      # GH006 through one deterministic PR, so no bypass setting is required.
       # GH#20976: SYNC_PAT can also appear empty if the caller uses
       # `secrets: inherit` against a cross-account reusable workflow.
       - name: Check SYNC_PAT visibility (t2166)
         if: steps.check-author.outputs.skip != 'true'
         env:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
-          REPO: ${{ github.repository }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::warning::SYNC_PAT not present in this run — TODO.md push will be rejected by branch protection (GH006)."
-            echo "::warning::Cause A (secret not set): gh secret set SYNC_PAT --repo ${REPO} --body '<FINE_GRAINED_PAT>' (Contents: Read and write)"
-            echo "::warning::Cause B (cross-account caller): your caller uses 'secrets: inherit' which fails cross-account — run: aidevops sync-workflows --apply (see GH#20976)"
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
           else
-            echo "::notice::SYNC_PAT present — TODO.md push will use PAT (bypasses branch protection via enforce_admins:false)"
+            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
           fi
 
       - name: Checkout
@@ -214,10 +211,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          # t2166: prefer SYNC_PAT so `git push` of TODO.md updates bypasses
-          # branch protection via enforce_admins:false. Falls back to
-          # GITHUB_TOKEN when unset — push will still hit GH006, but the
-          # t2166 warning step above flags the cause.
+          # Prefer SYNC_PAT for direct contents publication. Branch protection
+          # remains authoritative; GH006 is handled through a PR.
           token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Checkout aidevops framework scripts
@@ -306,15 +301,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
-      - name: Commit and push TODO.md updates
+      - name: Publish TODO.md updates
         if: steps.check-author.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if git diff --quiet TODO.md 2>/dev/null; then
-            echo "No TODO.md changes to commit"
+            echo "No TODO.md changes to publish"
           else
-            git add TODO.md
-            git commit -m "chore: sync GitHub issue refs to TODO.md [skip ci]"
-            bash __aidevops/.agents/scripts/issue-sync-git-push-helper.sh push-todo main 3
+            bash __aidevops/.agents/scripts/issue-sync-git-push-helper.sh publish-todo main 3 \
+              "chore: sync GitHub issue refs to TODO.md [skip ci]"
           fi
 
       - name: Show sync status
@@ -341,6 +337,7 @@ jobs:
     permissions:
       contents: write
       issues: read
+      pull-requests: write
 
     steps:
       - name: Check issue title format
@@ -361,23 +358,19 @@ jobs:
             echo "Issue #$ISSUE_NUMBER does not have t-number prefix, skipping"
           fi
 
-      # t2166: SYNC_PAT visibility — this job also pushes TODO.md updates
-      # on every issue-opened/closed event, so it hits the same GH006 when
-      # SYNC_PAT is unset. Warn explicitly before doing any work.
+      # This job also publishes TODO.md updates on issue events. GH#29679
+      # makes a protected-branch GH006 an idempotent PR publication.
       # GH#20976: SYNC_PAT can also appear empty if the caller uses
       # `secrets: inherit` against a cross-account reusable workflow.
       - name: Check SYNC_PAT visibility (t2166)
         if: steps.check-issue.outputs.sync == 'true'
         env:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
-          REPO: ${{ github.repository }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::warning::SYNC_PAT not present in this run — TODO.md push will be rejected by branch protection (GH006)."
-            echo "::warning::Cause A (secret not set): gh secret set SYNC_PAT --repo ${REPO} --body '<FINE_GRAINED_PAT>' (Contents: Read and write)"
-            echo "::warning::Cause B (cross-account caller): your caller uses 'secrets: inherit' which fails cross-account — run: aidevops sync-workflows --apply (see GH#20976)"
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
           else
-            echo "::notice::SYNC_PAT present — TODO.md push will use PAT"
+            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
           fi
 
       - name: Checkout
@@ -385,7 +378,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          # t2166: prefer SYNC_PAT to bypass branch protection on push.
+          # Prefer SYNC_PAT for direct contents publication; do not bypass
+          # protected-branch PR requirements.
           token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Checkout aidevops framework scripts
@@ -415,17 +409,17 @@ jobs:
           echo "=== New issue opened: ${TASK_ID} (#${ISSUE_NUMBER}) ==="
           bash __aidevops/.agents/scripts/issue-sync-helper.sh pull --verbose || true
 
-      - name: Commit and push TODO.md updates
+      - name: Publish TODO.md updates
         if: steps.check-issue.outputs.sync == 'true'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           if git diff --quiet TODO.md 2>/dev/null; then
-            echo "No TODO.md changes to commit"
+            echo "No TODO.md changes to publish"
           else
-            git add TODO.md
-            git commit -m "chore: sync ref:GH#${ISSUE_NUMBER} to TODO.md [skip ci]"
-            bash __aidevops/.agents/scripts/issue-sync-git-push-helper.sh push-todo main 3
+            bash __aidevops/.agents/scripts/issue-sync-git-push-helper.sh publish-todo main 3 \
+              "chore: sync ref:GH#${ISSUE_NUMBER} to TODO.md [skip ci]"
           fi
 
   # =========================================================================
@@ -647,6 +641,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      pull-requests: write
 
     steps:
       # t2166: SYNC_PAT visibility for manual dispatch runs too.
@@ -655,21 +650,19 @@ jobs:
       - name: Check SYNC_PAT visibility (t2166)
         env:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
-          REPO: ${{ github.repository }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::warning::SYNC_PAT not present in this run — any TODO.md push from this manual run will be rejected by branch protection (GH006)."
-            echo "::warning::Cause A (secret not set): gh secret set SYNC_PAT --repo ${REPO} --body '<FINE_GRAINED_PAT>' (Contents: Read and write)"
-            echo "::warning::Cause B (cross-account caller): your caller uses 'secrets: inherit' which fails cross-account — run: aidevops sync-workflows --apply (see GH#20976)"
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
           else
-            echo "::notice::SYNC_PAT present — TODO.md push will use PAT"
+            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
           fi
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          # t2166: prefer SYNC_PAT to bypass branch protection on push.
+          # Prefer SYNC_PAT for direct contents publication; protected branch
+          # requirements still route through the deterministic PR fallback.
           token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Checkout aidevops framework scripts
@@ -696,17 +689,17 @@ jobs:
           echo "=== Running: issue-sync-helper.sh $SYNC_COMMAND ==="
           bash __aidevops/.agents/scripts/issue-sync-helper.sh "$SYNC_COMMAND" --verbose
 
-      - name: Commit and push TODO.md updates
+      - name: Publish TODO.md updates
         if: inputs.command == 'pull' || inputs.command == 'push'
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SYNC_COMMAND: ${{ inputs.command }}
         run: |
           if git diff --quiet TODO.md 2>/dev/null; then
-            echo "No TODO.md changes to commit"
+            echo "No TODO.md changes to publish"
           else
-            git add TODO.md
-            git commit -m "chore: manual issue sync ($SYNC_COMMAND) [skip ci]"
-            bash __aidevops/.agents/scripts/issue-sync-git-push-helper.sh push-todo main 3
+            bash __aidevops/.agents/scripts/issue-sync-git-push-helper.sh publish-todo main 3 \
+              "chore: manual issue sync ($SYNC_COMMAND) [skip ci]"
           fi
 
   # =========================================================================
@@ -748,14 +741,11 @@ jobs:
       - name: Check SYNC_PAT visibility (t2166)
         env:
           SYNC_PAT_PRESENT: ${{ secrets.SYNC_PAT != '' && 'true' || '' }}
-          REPO: ${{ github.repository }}
         run: |
           if [[ -z "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::warning::SYNC_PAT not present in this run — TODO.md auto-sync push will be rejected by branch protection (GH006)."
-            echo "::warning::Cause A (secret not set): gh secret set SYNC_PAT --repo ${REPO} --body '<FINE_GRAINED_PAT>' (Contents: Read and write)"
-            echo "::warning::Cause B (cross-account caller): your caller uses 'secrets: inherit' which fails cross-account — run: aidevops sync-workflows --apply (see GH#20976)"
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
           else
-            echo "::notice::SYNC_PAT present — TODO.md push will use PAT"
+            echo "::notice::SYNC_PAT present — direct TODO.md publication will use PAT; GH006 still routes through a PR."
           fi
 
       # t3204: pull the framework scripts up front so the closing-hygiene and
@@ -1229,18 +1219,10 @@ jobs:
           # TODO auto-complete entirely, even if the body contains closing
           # keywords. See the guard at the top of the run block.
           RANGE_SYNTAX: ${{ steps.extract.outputs.range_syntax }}
-          # t2034: gh CLI needs GH_TOKEN explicitly — without it, the t2029
-          # `gh pr comment` fallback (posted when the TODO.md push is rejected
-          # by branch protection) silently fails because gh has no auth.
-          # Verified observation: t2029's own merge run hit the t2029 fallback
-          # branch correctly but the comment never landed because gh ran
-          # without GH_TOKEN and printed nothing visible (gh's silent failure
-          # mode on missing auth).
-          # t2048: prefer SYNC_PAT for the push so branch protection bypass
-          # works via enforce_admins:false. Still falls back to GITHUB_TOKEN
-          # for the gh CLI call even when SYNC_PAT is unset — the PR comment
-          # is always useful to post regardless of which token did the push.
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          # Git retains the checkout credential for direct contents pushes.
+          # GitHub API writes use the job-scoped pull-requests permission so a
+          # contents-only SYNC_PAT does not need broader scope.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # t2048: expose secret presence as a boolean-ish env var. GitHub
           # hides secret values from logs, but ${{ secrets.SYNC_PAT != '' }}
           # evaluates to 'true' or 'false' at workflow-compile time and is
@@ -1281,15 +1263,13 @@ jobs:
             exit 0
           fi
 
-          # t2048: log which credential path is active so operators can tell
-          # at a glance whether the PAT is wired up. t2166 promoted the
-          # unset-secret log from ::notice:: to ::warning:: so the missing
-          # secret surfaces in the GH Actions run summary, not just the
-          # step output.
+          # Keep the active Git credential path visible. GitHub API writes use
+          # the job-scoped GITHUB_TOKEN in both cases; direct Git publication
+          # may use SYNC_PAT, while GH006 always routes through a PR.
           if [[ -n "${SYNC_PAT_PRESENT:-}" ]]; then
-            echo "::notice::Using SYNC_PAT for push (t2048 path)"
+            echo "::notice::Using SYNC_PAT for direct TODO.md publication; GH006 will update one protected-branch PR."
           else
-            echo "::warning::SYNC_PAT not set — falling back to GITHUB_TOKEN, which will be rejected by branch protection (GH006). Fix: gh secret set SYNC_PAT --repo ${GITHUB_REPOSITORY:-REPO} --body \"<FINE_GRAINED_PAT>\" (Contents: Read and write)"
+            echo "::notice::SYNC_PAT not present — direct TODO.md publication uses GITHUB_TOKEN; GH006 will update one protected-branch PR."
           fi
 
           # GH#28464: use the same fail-closed completion predicate as direct
@@ -1345,77 +1325,10 @@ jobs:
             exit 0
           fi
 
-          # t2029: track success explicitly so a silent branch-protection
-          # rejection becomes a loud failure. Without this, GH006 rejections
-          # are hidden inside the retry loop and the workflow reports overall
-          # success even though TODO.md was never pushed — which is exactly
-          # how this workflow broke silently for ~3 weeks before t2029.
-          PUSH_SUCCEEDED=false
           SCRIPT_DIR="$GITHUB_WORKSPACE/__aidevops/.agents/scripts"
-          # shellcheck source=/dev/null
-          source "$SCRIPT_DIR/planning-publisher.sh"
-          if planning_publish \
-            "$GITHUB_WORKSPACE" \
-            "chore: mark $UPDATED_TASK_IDS complete ($PROOF) [skip ci]" \
-            origin main TODO.md; then
-            PUSH_SUCCEEDED=true
-          fi
-
-          if [[ "$PUSH_SUCCEEDED" != "true" ]]; then
-            # t2029: branch protection on personal-account repos cannot
-            # bypass required_pull_request_reviews for github-actions[bot]
-            # (HTTP 500 on the classic-protection PATCH bypass API,
-            # confirmed 2026-04-13). Make the failure loud and post a
-            # PR comment. See todo/tasks/t2029-brief.md + t2166-brief.md.
-            # t2166: the comment now leads with the root-cause fix
-            # (create SYNC_PAT) rather than the symptom workaround
-            # (task-complete-helper.sh), so maintainers can close the
-            # gap in 30s instead of papering over each merge.
-            echo "::error::Failed to push TODO.md update after 3 attempts — branch protection blocked token $([ -n "${SYNC_PAT_PRESENT:-}" ] && echo "SYNC_PAT" || echo "GITHUB_TOKEN fallback")"
-            echo "::error::Root cause fix: gh secret set SYNC_PAT --repo ${GITHUB_REPOSITORY} --body \"<PAT>\" (Contents: Read and write)"
-            echo "::error::Workaround: run task-complete-helper.sh for: $UPDATED_TASK_IDS (PR $PR_NUMBER)"
-
-            if [[ -n "${SYNC_PAT_PRESENT:-}" ]]; then
-              CAUSE_LINE="The \`SYNC_PAT\` secret is set, but the PAT lacks branch-protection bypass. Confirm the fine-grained PAT is scoped to \`${GITHUB_REPOSITORY}\` with \`Contents: Read and write\`, and that the repo admin has \`Do not allow bypassing the above settings\` disabled (classic protection) or added the PAT owner to the ruleset bypass list."
-              FIX_BLOCK="**Fix (maintainer):** verify the \`SYNC_PAT\` PAT scope and branch-protection bypass settings."
-            else
-              CAUSE_LINE="The \`SYNC_PAT\` repo secret is not set, so the workflow fell back to \`GITHUB_TOKEN\`. \`GITHUB_TOKEN\` cannot bypass \`required_approving_review_count\` on this repo's classic branch protection (\`bypass_pull_request_allowances\` is unsupported on personal-account plans — HTTP 500, confirmed 2026-04-13)."
-              FIX_BLOCK="**Root-cause fix (maintainer, ~30s):** create a fine-grained PAT with \`Contents: Read and write\` scoped to this repo, then run:
-
-          \`\`\`bash
-          gh secret set SYNC_PAT --repo ${GITHUB_REPOSITORY} --body \"<FINE_GRAINED_PAT>\"
-          \`\`\`
-
-          Next \`TODO.md\` push will use the PAT and complete the round-trip. Code path: \`sync-on-pr-merge\` + \`sync-on-push\` + \`sync-on-issue\` + \`manual-sync\` (t2048, t2166)."
-            fi
-
-            WORKAROUND_COMMANDS=""
-            for RESOLVED_TASK_ID in $UPDATED_TASK_IDS; do
-              WORKAROUND_COMMANDS="${WORKAROUND_COMMANDS}~/.aidevops/agents/scripts/task-complete-helper.sh ${RESOLVED_TASK_ID} --pr ${PR_NUMBER} --testing-level self-assessed
-          "
-            done
-
-            COMMENT_BODY="### TODO.md auto-completion blocked
-
-          The \`sync-on-pr-merge\` workflow tried to mark tasks \`$UPDATED_TASK_IDS\` complete in \`TODO.md\` with proof-log \`$PROOF\`, but the push was rejected by branch protection (GH006).
-
-          **Cause:** ${CAUSE_LINE}
-
-          ${FIX_BLOCK}
-
-          **Immediate workaround (until the secret is fixed):** run locally to complete the audit trail for this PR only:
-
-          \`\`\`bash
-          ${WORKAROUND_COMMANDS}
-          \`\`\`
-
-          Context: t2048 (PR #18677) landed the \`SYNC_PAT || GITHUB_TOKEN\` fallback code. t2166 extended it to \`sync-on-push\`/\`sync-on-issue\`/\`manual-sync\` and added visibility warnings. The operational secret still has to be created by the repo maintainer — this comment is that cue.
-
-          <!-- t2029:auto-complete-blocked -->"
-
-            gh pr comment "$PR_NUMBER" --body "$COMMENT_BODY" 2>/dev/null || \
-              echo "::warning::Also failed to post PR comment — run the workaround command above and set SYNC_PAT"
-
+          if ! bash "$SCRIPT_DIR/issue-sync-git-push-helper.sh" publish-todo main 3 \
+            "chore: mark $UPDATED_TASK_IDS complete ($PROOF) [skip ci]"; then
+            echo "::error::TODO.md publication failed through both direct and protected-branch PR paths"
             exit 1
           fi
 
