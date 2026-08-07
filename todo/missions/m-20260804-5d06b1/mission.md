@@ -175,7 +175,7 @@ Milestones are sequential. Features within a milestone may be parallelized only 
 | 2.1 | Implement provider registry, config loader, state store, status/doctor commands, and deterministic dry-run planner `[depends:F1.1] [depends:F1.4]` | t18202 | complete | 6h | marcusquinn | #29619 |
 | 2.2 | Generate the canonical 13 aidevops agents plus the framework guide from discovery metadata, including workload tiers and stable IDs `[depends:F1.3]` | t18203 | complete | 3.5h | marcusquinn | #29605 |
 | 2.3 | Implement the read-only Buzz adapter for installation/runtime detection, communities, agents, teams, and capability reporting `[depends:F2.1]` | t18205 | complete | 5h | marcusquinn | #29636 |
-| 2.4 | Refactor the existing Matrix integration behind the same provider/event/authority contract without behavior regression `[depends:F2.1]` | t18207 | claimed (#29646) | 6h | marcusquinn | |
+| 2.4 | Refactor the existing Matrix integration behind the same provider/event/authority contract without behavior regression `[depends:F2.1]` | t18207 | in progress (#29646) | 6h | marcusquinn | |
 | 2.5 | Generate restricted OpenCode launch overlays for canonical agent selection, workload variant, interface context, and read-only conversational permissions `[depends:F2.2]` | t18208 | claimed (#29647) | 5h | marcusquinn | |
 
 ### Milestone 3: aidevops.app Infrastructure > Integrations control plane
@@ -358,6 +358,7 @@ Feature budgets are intentionally deferred until briefs identify repositories, u
 | 2026-08-06T05:10:32Z | Milestone 2 Buzz adapter completed | Feature 2.3 merged through PR #29636 after exact-head review, required checks, read-only source-race hardening, secret-negative fixtures, and Qlty regression verification. The merge closed child #29631 without publishing or deploying a release. |
 | 2026-08-06T14:12:51Z | Milestone 2 tracker recovery and final leaves briefed | Diagnosed parent #29541's premature Pulse closure: canonical issue snapshots omitted `body`, so the active single-pass reconciler saw three terminal graph children but not the unchecked parent acceptance criteria or unfiled F2.4/F2.5 plan. Reserved t18206 for fail-closed snapshot/live-body repair, t18207 for Matrix normalization, and t18208 for restricted OpenCode overlays. The parent close contract remains explicitly open until both leaves merge and integrated validation passes. |
 | 2026-08-06T14:56:57Z | Milestone 2 tracker reopened and final leaves published | Created and claimed systemic repair #29645, Matrix child #29646, and OpenCode child #29647; linked both feature leaves beneath #29541. Synchronized the closed parent's authoritative keep-open body, verified the marker and all five implementation leaves, then reopened #29541. The local #29645 implementation passes all focused and broad gates and now awaits exact-head PR review. |
+| 2026-08-07T00:21:18Z | Milestone 2 Matrix implementation checkpoint | Implemented the static read-only Matrix adapter, deterministic core-v1 ingress, durable provider-event receipts, actor/conversation session isolation, generated-bot integration, secret-negative fixtures, and operator references. Focused suites, runtime/core regressions, ShellCheck, changed-file lint, and both Qlty gates pass; exact-head PR review remains before feature completion. |
 
 ## Recovery Log
 

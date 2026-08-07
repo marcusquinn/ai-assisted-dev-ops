@@ -168,9 +168,35 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
 
 ### Recoverability Checkpoint
 
-- [ ] Focused adapter/ingress/session/runtime tests pass.
-- [ ] WIP commit created before broad gates: `wip: normalize Matrix team-interface ingress`.
+- [x] Focused adapter/ingress/session/runtime tests pass.
+- [x] WIP commit created before broad gates: `148ff1bac` (`wip: normalize Matrix team-interface ingress`).
 - [ ] Existing Matrix CLI/entity/session behavior and exact-head review evidence recorded.
+
+### Implementation Evidence
+
+- Static local observation, closed inventory projection, core-v1 ingress,
+  generated bot integration, durable SQLite receipt claiming, actor/conversation
+  session migration, exact-context filtering, synthetic fixtures, and operator
+  references are implemented through checkpoint `649a510ce`.
+- Focused Matrix adapter, ingress, session-store, runtime, core-schema, Buzz
+  registry, runtime dependency, shell syntax, and ShellCheck suites pass.
+- Qlty reports zero smells in new source files and no regression from the current
+  merge base; changed-file lint, Markdown, secret, size-ratchet, and portability
+  gates pass.
+- `tests/test-conversation-helper.sh` passes 83/83. The unchanged historical
+  entity suites still contain unrelated baseline failures (the integration
+  suite passes 138 checks and fails four legacy memory-store checks); none of
+  `.agents/scripts/entity-helper.sh` or those three tests differs from
+  `origin/main`. The focused SQLite fixture independently proves the F2.4
+  restart-dedupe, room/actor/remap isolation, migration, compaction, and
+  immutable-interaction criteria.
+- Independent closeout bundle
+  `8e9f195a1a91baa64cbd54e66191823443588cef7435aa62aacaf35e85455d06`
+  accepted one P1 lifecycle defect. Checkpoint `e02b75f1b` now transactionally
+  creates and validates the deterministic conversation row, passes its ID to
+  idle detection, and preserves mutable upstream state unless summary storage
+  succeeds. The regression starts with no conversation row, exercises failed
+  persistence, and reopens the store to verify the compacted summary.
 
 ### Safety-Stop Recovery
 
@@ -178,11 +204,11 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
 - **Preserved user directions:** Continue autonomously through the no-release full loop; keep Matrix setup/behavior compatible and authority fail-closed.
 - **Trigger and evidence:** not triggered.
 - **Completed and verified:** current Matrix entry points, gaps, runtime patterns, dependencies, write surfaces, and verification families are mapped.
-- **Remaining acceptance criteria:** implementation, migration fixtures, focused/broad verification, PR review/merge, and parent bookkeeping.
+- **Remaining acceptance criteria:** final clean exact-head review, PR review/merge, and parent bookkeeping.
 - **Unsafe route not to repeat:** Do not duplicate tokens/mappings, infer identity from display names, call setup/admin APIs from the adapter, preserve cross-room leakage, or dispatch before durable event dedupe.
-- **Next safe route:** pure normalization plus bounded local observation and additive session migration under synthetic fixtures.
+- **Next safe route:** rebuild exact-head review evidence, then open the managed PR and complete remote gates.
 - **Resume condition:** runtime registry/core schemas and Matrix templates still match this brief; no overlapping PR exists.
-- **Owner and status:** interactive mission session; briefed.
+- **Owner and status:** interactive mission session; implemented and locally verified.
 
 ### Files Scope
 
@@ -211,7 +237,7 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
 
 ## Acceptance Criteria
 
-- [ ] Selecting `adapter.matrix` against a synthetic secure local config returns a schema-valid deterministic read-only observation and never exposes token/path/error canaries or invokes network/provider/package/setup operations.
+- [x] Selecting `adapter.matrix` against a synthetic secure local config returns a schema-valid deterministic read-only observation and never exposes token/path/error canaries or invokes network/provider/package/setup operations.
 
   ```yaml
   verify:
@@ -219,7 +245,7 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
     run: "node .agents/scripts/tests/test-team-interface-matrix-adapter.mjs && node .agents/scripts/tests/test-team-interface-runtime.mjs"
   ```
 
-- [ ] Accepted Matrix text events normalize into the closed core-v1 event with stable actor/lineage/target/authority/trust/correlation/idempotency evidence, while own, non-text, wrong-prefix, empty, unauthorized, and unmapped events produce no dispatch envelope.
+- [x] Accepted Matrix text events normalize into the closed core-v1 event with stable actor/lineage/target/authority/trust/correlation/idempotency evidence, while own, non-text, wrong-prefix, empty, unauthorized, and unmapped events produce no dispatch envelope.
 
   ```yaml
   verify:
@@ -227,7 +253,7 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
     run: "node .agents/scripts/tests/test-team-interface-matrix-ingress.mjs && node .agents/scripts/tests/test-team-interface-core-schema.mjs"
   ```
 
-- [ ] Duplicate provider event delivery, including after session-store restart, performs at most one runner dispatch; room and actor context cannot leak across rooms or senders, and immutable Layer 0 history survives compaction/migration.
+- [x] Duplicate provider event delivery, including after session-store restart, performs at most one runner dispatch; room and actor context cannot leak across rooms or senders, and immutable Layer 0 history survives compaction/migration.
 
   ```yaml
   verify:
@@ -235,7 +261,7 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
     run: "node .agents/scripts/tests/test-matrix-session-store.mjs && bash tests/test-entity-memory-integration.sh && bash tests/test-conversation-helper.sh"
   ```
 
-- [ ] Existing Matrix setup/start/stop/status/map/unmap/session, prefix, allowlist, runner fallback, typing/reaction/reply, invite, truncation, compaction, shutdown, and legacy-store contracts remain covered without adding provider writes to the adapter.
+- [x] Existing Matrix setup/start/stop/status/map/unmap/session, prefix, allowlist, runner fallback, typing/reaction/reply, invite, truncation, compaction, shutdown, and legacy-store contracts remain covered without adding provider writes to the adapter.
 
   ```yaml
   verify:

@@ -51,6 +51,7 @@ export function createRuntimeValidators(schemaDirectory = SCHEMA_DIRECTORY) {
   return Object.freeze({
     adapterObservation: ajv.compile({$ref: `${runtimeId}#/$defs/adapter_observation_document`}),
     appTeam: ajv.getSchema(appTeamSchema.$id),
+    event: ajv.compile({$ref: `${coreSchema.$id}#/$defs/event_document`}),
     ownershipPolicy: ajv.compile({$ref: `${reconciliationId}#/$defs/ownership_policy_document`}),
     plan: ajv.compile({$ref: `${reconciliationId}#/$defs/reconciliation_plan_document`}),
     planRequest: ajv.compile({$ref: `${runtimeId}#/$defs/plan_request_document`}),

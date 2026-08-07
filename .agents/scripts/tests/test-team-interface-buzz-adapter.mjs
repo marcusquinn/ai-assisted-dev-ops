@@ -301,7 +301,7 @@ try {
     "provider_id",
     "status",
   ]);
-  assert.deepEqual(builtInAdapterRegistry.ids(), ["adapter.buzz"]);
+  assert.deepEqual(builtInAdapterRegistry.ids(), ["adapter.buzz", "adapter.matrix"]);
   assert.equal(builtInAdapterRegistry.get("adapter.buzz").provider_id, "buzz");
 
   const detectedController = new AbortController();

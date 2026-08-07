@@ -1079,13 +1079,13 @@ OpenCode Server (opencode serve)
 
 **Example runner templates:** [code-reviewer](.agents/tools/ai-assistants/runners/code-reviewer.md), [seo-analyst](.agents/tools/ai-assistants/runners/seo-analyst.md) - copy and customize for your own runners.
 
-**Matrix bot dispatch** (optional): Bridge Matrix chat rooms to runners for chat-triggered AI. Each room maintains persistent conversation context via SQLite -- on idle timeout, the session is compacted (summarised) and stored, so the next message resumes with full context.
+**Matrix bot dispatch** (optional): Bridge Matrix chat rooms to runners for chat-triggered AI. Accepted text events normalize through the provider-neutral contract and are durably claimed before dispatch. SQLite context is isolated by room and actor; idle sessions compact to summaries without deleting immutable interaction history.
 
 ```bash
 # Setup Matrix bot (interactive wizard)
 matrix-dispatch-helper.sh setup
 
-# Map rooms to runners (each room = separate session)
+# Map rooms to runners (mutable context is isolated by room and actor)
 matrix-dispatch-helper.sh map '!dev-room:server' code-reviewer
 matrix-dispatch-helper.sh map '!seo-room:server' seo-analyst
 

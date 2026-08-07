@@ -8,8 +8,9 @@ adapters, policy brokers, and consumers. Version 1 is defined by
 `schemas/team-interface/core-v1.schema.json` and supports closed `registry` and
 `event` documents. The read-only executable surface is defined by
 `schemas/team-interface/runtime-v1.schema.json` and
-`reference/team-interface-runtime.md`. Existing Matrix, direct aidevops, and
-provider runtimes do not use an adapter from this registry yet.
+`reference/team-interface-runtime.md`. The existing Matrix bot now uses the
+core event contract and static `adapter.matrix`; direct aidevops and other
+provider runtimes remain separate until their own bounded adapter leaves.
 
 ## Ownership and configuration
 

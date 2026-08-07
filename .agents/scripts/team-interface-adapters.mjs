@@ -4,8 +4,9 @@
 import {deepFreezeDefinition, validateAdapterDefinition} from "./team-interface-adapter-validation.mjs";
 import {buzzAdapter} from "./team-interface-buzz-adapter.mjs";
 import {compareCanonicalText} from "./team-interface-common.mjs";
+import {matrixAdapter} from "./team-interface-matrix-adapter.mjs";
 
-const BUILTIN_ADAPTERS = Object.freeze([buzzAdapter]);
+const BUILTIN_ADAPTERS = Object.freeze([buzzAdapter, matrixAdapter]);
 
 export {validateAdapterDefinition} from "./team-interface-adapter-validation.mjs";
 

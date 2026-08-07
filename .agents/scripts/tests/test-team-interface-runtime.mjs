@@ -21,6 +21,7 @@ import {
   writeRuntimeState,
 } from "../team-interface-core.mjs";
 import {
+  builtInAdapterRegistry,
   createAdapterRegistry,
   selectConfiguredAdapters,
 } from "../team-interface-adapters.mjs";
@@ -135,6 +136,8 @@ const coreFixture = readJson(path.join(fixtureDirectory, "core-valid.json"));
 const providerRegistry = coreFixture.documents.find(({document_type: type}) => type === "registry");
 const runtimeSchema = readJson(runtimeSchemaPath);
 const validators = createRuntimeValidators();
+
+assert.deepEqual(builtInAdapterRegistry.ids(), ["adapter.buzz", "adapter.matrix"]);
 
 function plannerOptions(policy = validFixture.ownership_policy) {
   return {policy, registry: providerRegistry, validators};

@@ -8,10 +8,11 @@ in-tree read adapters, persists validated local observations, and generates
 deterministic reconciliation plans. It does not install providers or expose an
 apply, create, update, delete, send, invite, moderation, or publication route.
 
-The static registry includes the read-only `adapter.buzz` implementation. It is
-inactive until selected by the disabled-by-default runtime configuration. See
-`reference/team-interface-buzz.md` for its supported baseline and projection.
-The Matrix adapter remains a later feature leaf.
+The static registry includes the read-only `adapter.buzz` and `adapter.matrix`
+implementations. Both are inactive until selected by the disabled-by-default
+runtime configuration. See `reference/team-interface-buzz.md` and
+`reference/team-interface-matrix.md` for their source, projection, compatibility,
+and mutation boundaries.
 
 ## Commands
 
@@ -186,6 +187,9 @@ version 1 performs no inferred migration or provider cleanup.
 
 ```bash
 node .agents/scripts/tests/test-team-interface-buzz-adapter.mjs
+node .agents/scripts/tests/test-team-interface-matrix-adapter.mjs
+node .agents/scripts/tests/test-team-interface-matrix-ingress.mjs
+node .agents/scripts/tests/test-matrix-session-store.mjs
 node .agents/scripts/tests/test-team-interface-runtime.mjs
 node .agents/scripts/tests/test-team-interface-core-schema.mjs
 node .agents/scripts/tests/test-team-interface-reconciliation-schema.mjs
