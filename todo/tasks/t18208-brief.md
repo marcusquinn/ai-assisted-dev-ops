@@ -64,9 +64,9 @@ writes, implement provider approval, alter persistent user config, or release.
 
 - **Decision:** Skipped
 - **Rationale:** Schema, generator, launcher, final plugin guard, and effective-config/runtime tests must be reviewed as one security boundary.
-- **Status:** the original implementation boundary was published in PR #29673; the PR is closed unmerged while the accepted changes-requested findings are repaired for replay and reopen
+- **Status:** the accepted review repairs are replayed onto PR #29673's preserved head with current `origin/main` integrated; the PR remains closed only until the verified head is fast-forwarded and reopened
 - **Freshness evidence:** Roster generator/schema, OpenCode launcher/config generator, plugin config mutation order, research-only policy, installed OpenCode 1.18.9 behavior, and collision searches were refreshed on 2026-08-06.
-- **Verification run:** Focused, broad, installed-runtime, lint, and original-head Qlty checks pass; repaired-head repository and exact-head PR lifecycle gates remain.
+- **Verification run:** Focused, broad, installed-runtime, changed-file lint, and both Qlty gates pass at replayed code checkpoint `72990d372`; exact-head PR review and CI lifecycle gates remain.
 - **Stale-assumption warning:** Recheck installed OpenCode config/ACP behavior and plugin hook contracts if runtime or launcher source advances before merge.
 
 ## How (Approach)
@@ -183,9 +183,9 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 - **Completed and verified:** schema, generator, source binding, launcher, plugin mutation order, tool/permission isolation, workload variant, bounded context, automated regressions, documentation, and installed-runtime smoke.
 - **Remaining acceptance criteria:** exact-head PR review/merge, integrated Milestone 2 validation, and parent bookkeeping.
 - **Unsafe route not to repeat:** Do not rely on `OPENCODE_CONFIG_CONTENT` alone, select a persistent primary without final denial, permit task/network tools, store model IDs, concatenate raw prompts, or accept arbitrary launch args/env.
-- **Next safe route:** publish the rebased exact head, inspect PR #29673 once, and invoke the managed merge gate once.
+- **Next safe route:** fast-forward the original PR branch to the replayed exact head, reopen PR #29673, inspect its exact-head review/CI state once, and invoke the managed merge gate once.
 - **Resume condition:** local/remote PR head and current base are verified before the managed push or merge side effect.
-- **Owner and status:** maintainer-owned interactive repair; verified locally with PR #29673 pending replay, reopen, and exact-head lifecycle gates.
+- **Owner and status:** maintainer-owned interactive repair; verified locally with PR #29673 pending fast-forward, reopen, and exact-head lifecycle gates.
 
 ### Files Scope
 
@@ -251,7 +251,7 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 
 ## Completion Evidence
 
-- **Pull request:** [#29673](https://github.com/marcusquinn/aidevops/pull/29673) is closed unmerged with changes requested; repair commit `dd159b000` is verified locally for replay onto the preserved PR head.
+- **Pull request:** [#29673](https://github.com/marcusquinn/aidevops/pull/29673) remains closed unmerged with changes requested; replayed code checkpoint `72990d372` preserves original remote head `695f97fd4`, includes current `origin/main`, and is ready for a normal fast-forward update and reopen.
 - **Implementation:** the closed schema, canonical contract/generator, bounded
   plugin context, workload routing, final config isolation, effective-config
   verifier, and fixed-argv launcher are implemented in the scoped paths above.
@@ -263,15 +263,16 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
   project/worktree cwd validation, credential-safe local path enforcement, and
   a minimal conversation-only hook surface address all six accepted findings.
 - **Broad verification:** team-interface, provider, runtime, compatibility, and
-  full plugin suites pass locally; repaired-head repository gates remain before
-  replay.
+  full plugin suites pass locally at code checkpoint `72990d372`; the full
+  plugin suite reports 565 passing tests.
 - **Runtime verification:** isolated OpenCode 1.18.9 `debug config` excludes
   persistent home/project canaries and verifies the generated restriction
   profile; an actual ACP process remains healthy for the bounded startup window
   without provider traffic before test termination.
-- **Quality:** JavaScript/Bash/Python syntax checks and ShellCheck pass on the
-  repaired head. Original-head secretlint, Markdown, changed-file lint, and
-  Qlty gates passed; rerun repaired-head repository gates before replay.
+- **Quality:** JavaScript/Bash/Python syntax checks, ShellCheck, secretlint,
+  Markdown, and changed-file lint pass at code checkpoint `72990d372`. Qlty
+  reports base/head parity at 49 smells with delta zero, and 0 smells across 8
+  eligible new files.
 - **Environment note:** `bun` is unavailable on the host. The first push used
   the repository's narrow `AIDEVOPS_PREPUSH_REPO_VERIFY=0` bypass only after the
   relevant checks above passed.
