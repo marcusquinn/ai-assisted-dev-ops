@@ -99,9 +99,9 @@ test_self_reference_only_scan_succeeds() {
 	local output
 	local status=0
 	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
-	if [[ "$status" -eq 0 ]] \
-		&& [[ "$output" == *"known-safe scanner self-reference"* ]] \
-		&& [[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
+	if [[ "$status" -eq 0 ]] &&
+		[[ "$output" == *"known-safe scanner self-reference"* ]] &&
+		[[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
 		print_result "$test_name" 0
 	else
 		print_result "$test_name" 1 "status=${status} output=${output}"
@@ -128,9 +128,9 @@ test_relative_self_reference_only_scan_succeeds() {
 	local output
 	local status=0
 	output=$(cd "$tmpdir" && HOME="$tmpdir" bash "$HELPER_SCRIPT" scan .agents 2>&1) || status=$?
-	if [[ "$status" -eq 0 ]] \
-		&& [[ "$output" == *"known-safe scanner self-reference"* ]] \
-		&& [[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
+	if [[ "$status" -eq 0 ]] &&
+		[[ "$output" == *"known-safe scanner self-reference"* ]] &&
+		[[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
 		print_result "$test_name" 0
 	else
 		print_result "$test_name" 1 "status=${status} output=${output}"
@@ -155,9 +155,9 @@ test_single_file_self_reference_only_scan_succeeds() {
 	local output
 	local status=0
 	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "${tmpdir}/.agents/scripts/supply-chain-advisory-helper.sh" 2>&1) || status=$?
-	if [[ "$status" -eq 0 ]] \
-		&& [[ "$output" == *"known-safe scanner self-reference"* ]] \
-		&& [[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
+	if [[ "$status" -eq 0 ]] &&
+		[[ "$output" == *"known-safe scanner self-reference"* ]] &&
+		[[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
 		print_result "$test_name" 0
 	else
 		print_result "$test_name" 1 "status=${status} output=${output}"
@@ -180,9 +180,9 @@ test_non_self_ioc_scan_fails() {
 	local output
 	local status=0
 	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
-	if [[ "$status" -eq 1 ]] \
-		&& [[ "$output" == *"docs/evidence.md"* ]] \
-		&& [[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
+	if [[ "$status" -eq 1 ]] &&
+		[[ "$output" == *"docs/evidence.md"* ]] &&
+		[[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
 		print_result "$test_name" 0
 	else
 		print_result "$test_name" 1 "status=${status} output=${output}"
@@ -212,9 +212,127 @@ test_similar_agents_suffix_ioc_scan_fails() {
 	local output
 	local status=0
 	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
-	if [[ "$status" -eq 1 ]] \
-		&& [[ "$output" == *"not.agents/reference/npm-supply-chain-response.md"* ]] \
-		&& [[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
+	if [[ "$status" -eq 1 ]] &&
+		[[ "$output" == *"not.agents/reference/npm-supply-chain-response.md"* ]] &&
+		[[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
+		print_result "$test_name" 0
+	else
+		print_result "$test_name" 1 "status=${status} output=${output}"
+	fi
+	cleanup_test_tmpdir "$tmpdir"
+	return 0
+}
+
+test_keyv_preinstall_ioc_scan_fails() {
+	local test_name="Keyv preinstall IOC fails"
+	local tmpdir
+	tmpdir=$(make_tmpdir) || {
+		print_result "$test_name" 1 "mktemp failed"
+		return 0
+	}
+
+	printf '%s\n' '{"scripts":{"preinstall":"node setup.mjs"}}' >"${tmpdir}/package.json"
+	local output
+	local status=0
+	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
+	if [[ "$status" -eq 1 ]] && [[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
+		print_result "$test_name" 0
+	else
+		print_result "$test_name" 1 "status=${status} output=${output}"
+	fi
+	cleanup_test_tmpdir "$tmpdir"
+	return 0
+}
+
+test_known_malware_hash_scan_fails() {
+	local test_name="known malware hash fails"
+	local tmpdir
+	tmpdir=$(make_tmpdir) || {
+		print_result "$test_name" 1 "mktemp failed"
+		return 0
+	}
+
+	prepare_test_dirs "$test_name" "$tmpdir" "${tmpdir}/bin" || return 0
+	printf '%s\n' 'export const benign = true;' >"${tmpdir}/setup.mjs"
+	printf '%s\n' '#!/usr/bin/env bash' \
+		'printf '\''%s  fixture\n'\'' '\''54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668'\''' \
+		>"${tmpdir}/bin/shasum"
+	chmod +x "${tmpdir}/bin/shasum"
+
+	local output
+	local status=0
+	output=$(PATH="${tmpdir}/bin:${PATH}" HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
+	if [[ "$status" -eq 1 ]] &&
+		[[ "$output" == *"Known malware hash: ${tmpdir}/setup.mjs"* ]] &&
+		[[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
+		print_result "$test_name" 0
+	else
+		print_result "$test_name" 1 "status=${status} output=${output}"
+	fi
+	cleanup_test_tmpdir "$tmpdir"
+	return 0
+}
+
+test_keyv_bun_runtime_iocs_scan_fail() {
+	local test_name="Keyv Bun runtime IOCs fail"
+	local ioc
+	for ioc in '/tmp/bun-dl-a1b2/bun' 'User-Agent: Bun/1.3.13'; do
+		local tmpdir
+		tmpdir=$(make_tmpdir) || {
+			print_result "$test_name" 1 "mktemp failed"
+			return 0
+		}
+		printf '%s\n' "$ioc" >"${tmpdir}/runtime.log"
+
+		local output
+		local status=0
+		output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
+		if [[ "$status" -ne 1 ]] || [[ "$output" != *"Potential supply-chain compromise indicators found"* ]]; then
+			print_result "$test_name" 1 "ioc=${ioc} status=${status} output=${output}"
+			cleanup_test_tmpdir "$tmpdir"
+			return 0
+		fi
+		cleanup_test_tmpdir "$tmpdir"
+	done
+	print_result "$test_name" 0
+	return 0
+}
+
+test_nearby_bun_runtime_strings_scan_succeed() {
+	local test_name="nearby Bun runtime strings remain clean"
+	local tmpdir
+	tmpdir=$(make_tmpdir) || {
+		print_result "$test_name" 1 "mktemp failed"
+		return 0
+	}
+
+	printf '%s\n' '/tmp/bun-dl-/bun' 'User-Agent: Bun/1.3.130' >"${tmpdir}/runtime.log"
+	local output
+	local status=0
+	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
+	if [[ "$status" -eq 0 ]] && [[ "$output" == *"No known Shai-Hulud indicators"* ]]; then
+		print_result "$test_name" 0
+	else
+		print_result "$test_name" 1 "status=${status} output=${output}"
+	fi
+	cleanup_test_tmpdir "$tmpdir"
+	return 0
+}
+
+test_benign_matching_basenames_scan_succeeds() {
+	local test_name="benign matching basenames remain clean"
+	local tmpdir
+	tmpdir=$(make_tmpdir) || {
+		print_result "$test_name" 1 "mktemp failed"
+		return 0
+	}
+
+	printf '%s\n' 'export const benign = true;' >"${tmpdir}/setup.mjs"
+	printf '%s\n' 'module.exports = "unicode category";' >"${tmpdir}/Math_Symbol.js"
+	local output
+	local status=0
+	output=$(HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
+	if [[ "$status" -eq 0 ]] && [[ "$output" == *"No known Shai-Hulud indicators"* ]]; then
 		print_result "$test_name" 0
 	else
 		print_result "$test_name" 1 "status=${status} output=${output}"
@@ -230,6 +348,11 @@ main() {
 	test_single_file_self_reference_only_scan_succeeds
 	test_non_self_ioc_scan_fails
 	test_similar_agents_suffix_ioc_scan_fails
+	test_keyv_preinstall_ioc_scan_fails
+	test_known_malware_hash_scan_fails
+	test_keyv_bun_runtime_iocs_scan_fail
+	test_nearby_bun_runtime_strings_scan_succeed
+	test_benign_matching_basenames_scan_succeeds
 
 	printf '\nTests run: %s, failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -eq 0 ]]; then

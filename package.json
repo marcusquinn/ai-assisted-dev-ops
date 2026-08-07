@@ -3,6 +3,7 @@
   "version": "3.32.232",
   "description": "AI DevOps Framework - AI-assisted development workflows, code quality, and deployment automation",
   "type": "module",
+  "packageManager": "bun@1.3.11",
   "workspaces": [
     "packages/gui-shared",
     "packages/gui-api",
@@ -23,8 +24,8 @@
     "dspy:dev": "dspyground dev",
     "dspy:build": "dspyground build",
     "install:python": "python3 -m venv python-env/dspy-env && source python-env/dspy-env/bin/activate && pip install -r requirements.txt",
-    "setup": "bun install && npm run install:python",
-    "setup:bun": "bun install",
+    "setup": "npm run setup:bun && npm run install:python",
+    "setup:bun": "bun install --frozen-lockfile --ignore-scripts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "gui:api:dev": "bun run packages/gui-api/src/server.ts",
@@ -59,21 +60,28 @@
   "author": "Marcus Quinn <marcus@aidevops.sh>",
   "license": "MIT",
   "dependencies": {
-    "@vitejs/plugin-react": "^5.0.0",
-    "elysia": "^1.1.0",
-    "hono": "^4.6.0",
-    "vite": "^7.0.0"
+    "@vitejs/plugin-react": "5.2.0",
+    "elysia": "1.4.27",
+    "file-type": "21.3.2",
+    "hono": "4.12.34",
+    "vite": "7.3.5"
   },
   "devDependencies": {
-    "@secretlint/secretlint-rule-preset-recommend": "^11.2.5",
-    "@types/bun": "latest",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "ajv": "^8.18.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "secretlint": "^11.2.5",
-    "typescript": "^5.0.0"
+    "@secretlint/secretlint-rule-preset-recommend": "11.7.1",
+    "@types/bun": "1.3.3",
+    "@types/react": "19.2.6",
+    "@types/react-dom": "19.2.3",
+    "ajv": "8.20.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "secretlint": "11.7.1",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "fast-uri": "3.1.5",
+    "js-yaml": "4.3.1",
+    "postcss": "8.5.23"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"

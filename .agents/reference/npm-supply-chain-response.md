@@ -32,6 +32,30 @@ Use this playbook for npm compromises that execute during install or publish.
 - Monitor publishes for unexpected versions, size anomalies, new lifecycle hooks,
   git URL dependencies, and valid-provenance-but-unexpected workflow runs.
 
+## Dependency update protocol
+
+1. Require one committed lockfile and the matching exact package-manager version.
+   Application manifests use exact direct pins; peer dependency ranges are exempt.
+2. Before changing versions, scan the current lockfile with the ecosystem audit and
+   `aidevops security supply-chain scan`. Known-vulnerability scanners do not
+   reliably identify malware or newly compromised maintainer accounts.
+3. Inspect the proposed manifest and lockfile diff for new registries, git sources,
+   lifecycle scripts, binary downloads, unexpected transitive packages, integrity
+   changes, and release/publisher anomalies. Provenance is supporting evidence only:
+   a legitimate workflow can sign compromised source.
+4. Regenerate only the intended lockfile in an isolated worktree with dependency
+   lifecycle scripts disabled. Never run broad `update --latest` or force-fix
+   commands as a security response.
+5. Re-run the malware scan and vulnerability audit before running project code,
+   then run focused tests and normal required gates. Quarantine and review any
+   package that requires an install script before explicitly allowing it.
+6. Delay routine version updates for an observation window. Security fixes use a
+   separately reviewed emergency lane and must not wait for the routine cooldown.
+
+Dependabot complements these controls but does not replace them. GitHub supports
+Bun version updates for text `bun.lock`, but not Dependabot security updates for
+Bun. Keep scheduled local/CI audits enabled for Bun repositories.
+
 ## TanStack / Mini Shai-Hulud IOCs
 
 - `@tanstack/setup` optional dependency pointing at
@@ -43,5 +67,19 @@ Use this playbook for npm compromises that execute during install or publish.
 - `.claude/router_runtime.js`, `.claude/setup.mjs`, `.vscode/setup.mjs`
 - Unexpected `.github/workflows/codeql_analysis.yml`
 - Token description: `IfYouRevokeThisTokenItWillWipeTheComputerOfTheOwner`
+
+## Keyv / August 2026 Shai-Hulud IOCs
+
+- Malicious lifecycle hook: `"preinstall": "node setup.mjs"`
+- Payloads: `setup.mjs`, `Math_Symbol.js`, or `math_init.js` with a known hash
+- Downloaded runtime path matching `bun-dl-*` and Bun user-agent `Bun/1.3.13`
+- Host lock file `tmp.dpkg_14527.lock`
+- Exfiltration domains `npm-cache[.]com`, `pypi-get[.]com`, and `js-mirror[.]com`
+- Repository persistence in `.claude/settings.json` or `.vscode/tasks.json`
+- Commit message `chore: update config` combined with the persistence files
+- Token string `IfYouBlockThisAPIKeyItWillCrashTheLiveProductionServersOfAllThirdPartyClients`
+- Initial affected versions include `keyv@6.0.0`, `flat-cache@6.1.24`,
+  `file-entry-cache@11.1.6`, `cacheable-request@13.0.20`, `cacheable@2.5.1`,
+  and the exact cacheable-family versions detected by the scanner.
 
 Run: `aidevops security supply-chain scan [path]`.

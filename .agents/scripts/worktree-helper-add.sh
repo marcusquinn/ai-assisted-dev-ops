@@ -431,12 +431,12 @@ _bootstrap_aidevops_worktree_js_deps() {
 
 	if ! command -v bun >/dev/null 2>&1; then
 		print_warning "aidevops JavaScript dev dependencies are missing in ${wt_path}"
-		print_warning "Run: (cd \"${wt_path}\" && bun install)"
+		print_warning "Run: (cd \"${wt_path}\" && bun install --frozen-lockfile --ignore-scripts)"
 		return 0
 	fi
 
 	print_info "Installing aidevops JavaScript dev dependencies in ${wt_path}..."
-	if (cd "$wt_path" && bun install --frozen-lockfile); then
+	if (cd "$wt_path" && bun install --frozen-lockfile --ignore-scripts); then
 		if [[ -x "${wt_path}/node_modules/.bin/tsc" ]]; then
 			print_success "Bootstrapped aidevops JavaScript dev dependencies"
 			return 0
@@ -445,7 +445,7 @@ _bootstrap_aidevops_worktree_js_deps() {
 	else
 		print_warning "Automatic aidevops JavaScript dependency bootstrap failed"
 	fi
-	print_warning "Run: (cd \"${wt_path}\" && bun install)"
+	print_warning "Run: (cd \"${wt_path}\" && bun install --frozen-lockfile --ignore-scripts)"
 	return 0
 }
 

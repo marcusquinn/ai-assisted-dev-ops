@@ -45,11 +45,11 @@ _bootstrap_aidevops_worktree_js_deps "$WORKTREE"
 	printf 'FAIL aidevops worktree bootstrap did not install tsc\n'
 	exit 1
 }
-[[ "$(cat "$BUN_ARGS_LOG")" == "install --frozen-lockfile" ]] || {
+[[ "$(cat "$BUN_ARGS_LOG")" == "install --frozen-lockfile --ignore-scripts" ]] || {
 	printf 'FAIL aidevops worktree bootstrap used unexpected bun arguments\n'
 	exit 1
 }
-printf 'PASS aidevops worktree bootstraps locked JavaScript dev dependencies\n'
+printf 'PASS aidevops worktree bootstraps locked dependencies without lifecycle scripts\n'
 
 rm -f "$BUN_ARGS_LOG"
 printf '{ "name": "ordinary-project", "devDependencies": { "typescript": "^5.0.0" } }\n' >"${ORDINARY}/package.json"
