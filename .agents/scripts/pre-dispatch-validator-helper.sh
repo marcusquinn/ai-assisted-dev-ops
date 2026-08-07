@@ -977,6 +977,17 @@ _rf_extract_keywords() {
 	return 0
 }
 
+_rf_has_routed_review_evidence() {
+	local issue_body="$1"
+
+	if printf '%s\n' "$issue_body" | grep -Eq \
+		'^[[:space:]]*<!--[[:space:]]feedback-route:(start|complete):review:PR[0-9]+:SHA[^[:space:]>]+[[:space:]]*-->[[:space:]]*$|^##[[:space:]]+Review Feedback routed from PR[[:space:]]+#[0-9]+([[:space:]].*)?$'; then
+		return 0
+	fi
+
+	return 1
+}
+
 _rf_issue_in_supersession_scope() {
 	local issue_body="$1"
 	local labels="$2"
@@ -984,6 +995,9 @@ _rf_issue_in_supersession_scope() {
 	local title_lc=""
 
 	if _rf_is_review_followup_scope "$issue_body" "$labels" "$title"; then
+		return 0
+	fi
+	if _rf_has_routed_review_evidence "$issue_body"; then
 		return 0
 	fi
 	local labels_lc=""
@@ -1475,6 +1489,11 @@ _rf_resolve_supersession_context() {
 	local source_sha=""
 	local routed_review_at=""
 	local routed_payload=""
+	local has_routed_evidence=0
+
+	if _rf_has_routed_review_evidence "$issue_body"; then
+		has_routed_evidence=1
+	fi
 
 	_RF_CONTEXT_SOURCE_PR=""
 	_RF_CONTEXT_SEARCH_AFTER="$created_at"
@@ -1484,12 +1503,16 @@ _rf_resolve_supersession_context() {
 	_RF_CONTEXT_STRICT_MODE="false"
 	if ! _RF_CONTEXT_SOURCE_PR=$(_rf_extract_source_pr_number "$issue_body" "$issue_title"); then
 		_RF_CONTEXT_SOURCE_PR=""
+		if [[ "$has_routed_evidence" -eq 1 ]]; then
+			_log "WARN" "#${issue_number}: routed review evidence has no resolvable source PR — dispatch blocked for this cycle"
+			return 30
+		fi
 		return 0
 	fi
 
 	routed_payload=$(_rf_extract_routed_review_payload "$issue_body" "$_RF_CONTEXT_SOURCE_PR" 2>/dev/null || true)
 	if ! source_pr_meta=$(_rf_get_source_pr_metadata "$slug" "$_RF_CONTEXT_SOURCE_PR"); then
-		if [[ -n "$routed_payload" ]]; then
+		if [[ "$has_routed_evidence" -eq 1 ]]; then
 			_log "WARN" "#${issue_number}: routed source PR #${_RF_CONTEXT_SOURCE_PR} metadata lookup failed — dispatch blocked for this cycle"
 			return 30
 		fi
@@ -1505,6 +1528,10 @@ _rf_resolve_supersession_context() {
 		return 0
 	fi
 	if [[ -z "$routed_payload" ]]; then
+		if [[ "$has_routed_evidence" -eq 1 ]]; then
+			_log "WARN" "#${issue_number}: routed source PR #${_RF_CONTEXT_SOURCE_PR} has no bounded finding payload — dispatch blocked for this cycle"
+			return 30
+		fi
 		_log "WARN" "#${issue_number}: source PR #${_RF_CONTEXT_SOURCE_PR} is unmerged without a routed finding payload — using issue-created supersession window"
 		_RF_CONTEXT_SOURCE_PR=""
 		return 0
@@ -1543,7 +1570,8 @@ _detect_review_feedback_supersession() {
 	local issue_title=""
 	local labels=""
 	issue_meta=$(gh api "$issue_api_path" --jq '[.created_at // "", .title // "", ([.labels[]?.name] | join(","))] | @tsv' 2>/dev/null) || {
-		if printf '%s' "$issue_body" | grep -Eq 'aidevops:generator=review-followup|source:review-scanner|review-followup:PR|Unaddressed review bot suggestions'; then
+		if _rf_has_routed_review_evidence "$issue_body" ||
+			printf '%s' "$issue_body" | grep -Eq 'aidevops:generator=review-followup|source:review-scanner|review-followup:PR|Unaddressed review bot suggestions'; then
 			_log "WARN" "#${issue_number}: review-followup metadata lookup failed — dispatch blocked for this cycle"
 			return 30
 		fi
@@ -1564,6 +1592,10 @@ _detect_review_feedback_supersession() {
 	fi
 
 	if [[ -z "$created_at" || "$created_at" != *T* ]]; then
+		if _rf_has_routed_review_evidence "$issue_body"; then
+			_log "WARN" "#${issue_number}: routed review metadata omitted created_at — dispatch blocked for this cycle"
+			return 30
+		fi
 		_log "WARN" "#${issue_number}: missing created_at metadata — review-feedback supersession check fails open"
 		return 0
 	fi
