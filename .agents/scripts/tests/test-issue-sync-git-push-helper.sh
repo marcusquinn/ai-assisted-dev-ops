@@ -428,16 +428,21 @@ test_stale_pr_concurrent_task_addition_deduplicates() {
 	local output_file="$TMP/duplicate-output.log"
 	local sync_ref="refs/heads/aidevops/issue-sync-todo"
 	local remote_todo=""
-	local duplicate_count=0
+	local current_winner_count=0
+	local incoming_winner_count=0
 
 	create_origin "$origin_dir" "$seed_dir"
 	git -C "$seed_dir" checkout -b aidevops/issue-sync-todo >/dev/null
-	printf '\n- [ ] t9004 stale issue projection ref:GH#9004\n' >>"$seed_dir/TODO.md"
+	cat >>"$seed_dir/TODO.md" <<'EOF'
+
+- [ ] t9004 stale issue projection ref:GH#9004
+- [x] t9005 queued completion with proof ref:GH#9005 pr:#9005 completed:2026-08-07
+EOF
 	git -C "$seed_dir" add TODO.md
 	git -C "$seed_dir" commit -m "stale issue-sync task addition" >/dev/null
 	git -C "$seed_dir" push origin HEAD:"$sync_ref" >/dev/null
 	git -C "$seed_dir" checkout main >/dev/null
-	perl -0pi -e 's/## First queue\n/## First queue\n\n- [ ] t9004 canonical task with richer metadata #priority:high ref:GH#9004\n/' \
+	perl -0pi -e 's/## First queue\n/## First queue\n\n- [ ] t9004 canonical task with richer metadata #priority:high ref:GH#9004\n\n- [>] t9005 current in-progress task ref:GH#9005\n/' \
 		"$seed_dir/TODO.md"
 	git -C "$seed_dir" add TODO.md
 	git -C "$seed_dir" commit -m "reviewed canonical task addition" >/dev/null
@@ -456,15 +461,55 @@ test_stale_pr_concurrent_task_addition_deduplicates() {
 		return 0
 	fi
 	remote_todo=$(git --git-dir="$origin_dir" show "${sync_ref}:TODO.md")
-	duplicate_count=$(printf '%s\n' "$remote_todo" |
+	current_winner_count=$(printf '%s\n' "$remote_todo" |
 		grep -cE '^[[:space:]]*- \[[ x-]\][[:space:]]+t9004([[:space:]]|$)' || true)
-	if [[ "$duplicate_count" -ne 1 ||
+	incoming_winner_count=$(printf '%s\n' "$remote_todo" |
+		grep -cE '^[[:space:]]*- \[[ x>-]\][[:space:]]+t9005([[:space:]]|$)' || true)
+	if [[ "$current_winner_count" -ne 1 || "$incoming_winner_count" -ne 1 ||
 		"$remote_todo" != *"t9004 canonical task with richer metadata"* ||
 		"$remote_todo" == *"t9004 stale issue projection"* ||
+		"$remote_todo" != *"t9005 queued completion with proof"* ||
+		"$remote_todo" == *"t9005 current in-progress task"* ||
 		"$remote_todo" != *"t9002 current runner event"* ]]; then
 		fail "stale PR task additions defer to canonical task identity"
 	else
 		pass "stale PR task additions defer to canonical task identity"
+	fi
+	return 0
+}
+
+test_task_id_snapshot_uses_only_live_rows() {
+	local todo_file="$TMP/parser-todo.md"
+	local ids_file="$TMP/parser-task-ids"
+	cat >"$todo_file" <<'EOF'
+- [>] t9010 live in-progress task ref:GH#9010
+
+```text
+- [ ] t9011 fenced example ref:GH#9011
+```
+
+<!--
+- [ ] t9012 commented example ref:GH#9012
+-->
+EOF
+	if ! (
+		# shellcheck source=../issue-sync-git-push-helper.sh
+		source "$HELPER"
+		issue_sync_task_ids "$todo_file" >"$ids_file"
+	); then
+		fail "task ID snapshots parse live rows with controlled failures"
+		return 0
+	fi
+	if [[ "$(<"$ids_file")" != "t9010" ]]; then
+		fail "task ID snapshots parse live rows with controlled failures"
+	elif (
+		# shellcheck source=../issue-sync-git-push-helper.sh
+		source "$HELPER"
+		issue_sync_task_ids "$TMP/missing-todo.md" >/dev/null 2>&1
+	); then
+		fail "task ID snapshots parse live rows with controlled failures"
+	else
+		pass "task ID snapshots parse live rows with controlled failures"
 	fi
 	return 0
 }
@@ -796,6 +841,7 @@ test_successful_push
 test_rebase_conflict_neutralizes_cleanly
 test_protected_branch_uses_one_rebased_pr
 test_stale_pr_concurrent_task_addition_deduplicates
+test_task_id_snapshot_uses_only_live_rows
 test_shallow_checkout_recovers_stale_pr_history
 test_concurrent_pr_advance_rebuilds_snapshot
 test_pr_branch_deletion_during_fetch_rebuilds
