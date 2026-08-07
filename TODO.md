@@ -1230,6 +1230,8 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18211 Harden npm and Bun dependency supply-chain controls #security ref:GH#29717
 
+- [ ] t18212 Create reviewed release aggregation for PR #29721 #release ref:GH#29731
+
 - [ ] t18213 Allow full-loop merges to preserve explicit commit bodies #bug ref:GH#29733 pr:#29735
 
 ## In Progress

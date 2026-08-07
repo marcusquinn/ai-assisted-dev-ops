@@ -287,6 +287,12 @@ receipts are irreversible publication boundaries. The exact branch base is
   exact base `4365863f8b7e0cabe30a62c39b92fba92e667408`, whose signature footer followed
   the reviewed trailers and prevented parsing.
 
+The pending dependency supply-chain hardening aggregation reviews authorized
+PR #29721 at `d53b458a6ee82e3dccd922c3791b9f9f088efa8f`. Subsequent maintained merges
+advanced `main` before publication; the exact branch base is
+`f9e68c486bf9995902c92bb64b79cde57055fa3b`. Publication remains blocked until
+the draft's immutable PR identity is bound in a follow-up commit.
+
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
