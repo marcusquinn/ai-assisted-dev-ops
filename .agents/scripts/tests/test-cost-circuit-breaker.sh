@@ -406,6 +406,26 @@ else
 	print_result "signed approval resets cost aggregation window" 1 "(got: '$sum_output')"
 fi
 
+# =============================================================================
+# Assertion 12 — completed issues never trigger cost-breaker side effects
+# =============================================================================
+# Completion reconciliation can inspect an issue after its successful worker
+# footer has crossed the token budget.  The assignment guard must not relabel
+# terminal work or file a circuit-breaker meta-issue during that window.
+: >"$STUB_LOG"
+write_fixture_issue '[{"name":"tier:thinking"},{"name":"status:done"}]' '[]' 'CLOSED'
+write_fixture_comments "948278"
+terminal_output=$(ISSUE_META_JSON="$(<"$FIXTURE_ISSUE_JSON")" \
+	"$DEDUP_HELPER" is-assigned 18012 "owner/repo" 2>/dev/null)
+terminal_rc=$?
+if [[ "$terminal_rc" -eq 1 && -z "$terminal_output" ]] &&
+	! grep -qE '^issue (edit|comment) ' "$STUB_LOG"; then
+	print_result "completed issue skips over-budget breaker side effects" 0
+else
+	print_result "completed issue skips over-budget breaker side effects" 1 \
+		"(rc=$terminal_rc output='$terminal_output' stub_log=$(tr '\n' ' ' <"$STUB_LOG" 2>/dev/null))"
+fi
+
 export PATH="$OLD_PATH"
 
 # =============================================================================

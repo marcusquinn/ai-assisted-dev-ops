@@ -340,6 +340,19 @@ _check_cost_budget() {
 		return 1
 	fi
 
+	# GH#29691: assignment inspection can run while completion reconciliation is
+	# still removing a task from the dispatch projection.  A completed worker's
+	# footer may exceed the budget, but terminal work cannot consume another
+	# dispatch and must not be relabelled or spawn a root-cause meta-issue.  Check
+	# the metadata already fetched by is_assigned() before the side-effectful cost
+	# path.  The direct diagnostic command omits metadata and retains its existing
+	# aggregation behaviour.
+	if [[ -n "$issue_meta_json" ]] && printf '%s' "$issue_meta_json" |
+		jq -e '((.state // "" | ascii_downcase) == "closed") or any(.labels[]?.name; . == "status:done" or . == "status:resolved")' \
+			>/dev/null 2>&1; then
+		return 1
+	fi
+
 	local budget
 	budget=$(_get_cost_budget_for_tier "$tier")
 	if [[ -z "$budget" ]] || ! [[ "$budget" =~ ^[0-9]+$ ]]; then
