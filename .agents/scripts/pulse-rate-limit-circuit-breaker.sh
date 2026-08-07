@@ -71,11 +71,11 @@ if [[ -f "${SCRIPT_DIR}/pulse-stats-helper.sh" ]]; then
 fi
 
 # Source canonical circuit-breaker threshold from conf file (GH#20638, t2768).
-# Env var takes precedence; conf supplies the default; 0.05 is the hardcoded fallback
-# if the conf file is missing (graceful degradation). Sourced here so standalone
-# invocations (not via pulse-wrapper.sh) also use the canonical value.
+# Existing values take precedence; the conf fills every missing default; 0.05
+# is the hardcoded fallback if the conf file is missing (graceful degradation).
+# Sourced here so standalone invocations also receive partial-config defaults.
 _CB_RL_CONF="${SCRIPT_DIR}/../configs/pulse-rate-limit.conf"
-if [[ -z "${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD+x}" ]] && [[ -f "$_CB_RL_CONF" ]]; then
+if [[ -f "$_CB_RL_CONF" ]]; then
 	# shellcheck disable=SC1090
 	source "$_CB_RL_CONF"
 fi

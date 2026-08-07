@@ -161,10 +161,10 @@ PULSE_PREFETCH_ISSUE_LIMIT="${PULSE_PREFETCH_ISSUE_LIMIT:-200}"                 
 PULSE_PREFETCH_CACHE_FILE="${PULSE_PREFETCH_CACHE_FILE:-${HOME}/.aidevops/logs/pulse-prefetch-cache.json}" # Delta prefetch state cache (GH#15286)
 PULSE_RATE_LIMIT_FLAG="${PULSE_RATE_LIMIT_FLAG:-${HOME}/.aidevops/logs/pulse-graphql-rate-limited.flag}"   # GH#18979: set by prefetch on detected GraphQL rate-limit exhaustion; checked by _preflight_prefetch_and_scope to abort cycle cleanly
 # Source canonical circuit-breaker threshold from conf file (GH#20638, t2768).
-# Env var takes precedence; conf supplies the default; 0.30 is the hardcoded fallback
-# if the conf file is missing (graceful degradation).
+# Existing values take precedence; the conf fills every missing default; 0.30
+# is the hardcoded fallback if the conf file is missing (graceful degradation).
 _PULSE_RL_CONF="${SCRIPT_DIR}/../configs/pulse-rate-limit.conf"
-if [[ -z "${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD+x}" ]] && [[ -f "$_PULSE_RL_CONF" ]]; then
+if [[ -f "$_PULSE_RL_CONF" ]]; then
 	# shellcheck disable=SC1090
 	source "$_PULSE_RL_CONF"
 fi

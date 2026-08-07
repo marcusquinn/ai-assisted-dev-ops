@@ -179,14 +179,11 @@ fi
 # update loop (Ultimate-Multisite/gratis-ai-agent#1192).
 #
 # Precedence: env var > pulse-rate-limit.conf > hardcoded fallback (15/45).
-# Match the pattern at pulse-wrapper-config.sh:99-105 for AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD:
-# only source the conf file if the env var is unset, so an explicit env
-# override (e.g. for a slow-network runner) is never silently overwritten.
+# The config uses default-only assignments for every variable, so sourcing it
+# always fills partial configuration without replacing unrelated overrides.
 if [[ -n "$_SHARED_GH_WRAPPERS_DIR" && -f "$_SHARED_GH_WRAPPERS_DIR/../configs/pulse-rate-limit.conf" ]]; then
-	if [[ -z "${AIDEVOPS_GH_READ_TIMEOUT+x}" ]] && [[ -z "${AIDEVOPS_GH_WRITE_TIMEOUT+x}" ]]; then
-		# shellcheck disable=SC1091
-		source "$_SHARED_GH_WRAPPERS_DIR/../configs/pulse-rate-limit.conf"
-	fi
+	# shellcheck disable=SC1091
+	source "$_SHARED_GH_WRAPPERS_DIR/../configs/pulse-rate-limit.conf"
 fi
 : "${AIDEVOPS_GH_READ_TIMEOUT:=15}"
 : "${AIDEVOPS_GH_WRITE_TIMEOUT:=45}"
