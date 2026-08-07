@@ -442,8 +442,9 @@ EOF
 	git -C "$seed_dir" commit -m "stale issue-sync task addition" >/dev/null
 	git -C "$seed_dir" push origin HEAD:"$sync_ref" >/dev/null
 	git -C "$seed_dir" checkout main >/dev/null
-	perl -0pi -e 's/## First queue\n/## First queue\n\n- [ ] t9004 canonical task with richer metadata #priority:high ref:GH#9004\n\n- [>] t9005 current in-progress task ref:GH#9005\n/' \
+	perl -0pi -e 's/## First queue\n/## First queue\n\n- [ ] t9004 canonical task with richer metadata #priority:high ref:GH#9004\n/' \
 		"$seed_dir/TODO.md"
+	printf '\n- [>] t9005 current in-progress task ref:GH#9005\n' >>"$seed_dir/TODO.md"
 	git -C "$seed_dir" add TODO.md
 	git -C "$seed_dir" commit -m "reviewed canonical task addition" >/dev/null
 	git -C "$seed_dir" push origin main >/dev/null
@@ -510,6 +511,44 @@ EOF
 		fail "task ID snapshots parse live rows with controlled failures"
 	else
 		pass "task ID snapshots parse live rows with controlled failures"
+	fi
+	return 0
+}
+
+test_same_hunk_pseudo_task_preserves_live_branch_addition() {
+	local ancestor_file="$TMP/pseudo-ancestor.md"
+	local current_file="$TMP/pseudo-current.md"
+	local incoming_file="$TMP/pseudo-incoming.md"
+	local state_dir="$TMP/pseudo-state"
+	cat >"$ancestor_file" <<'EOF'
+## Queue
+
+- [ ] t9013 existing task ref:GH#9013
+EOF
+	cp "$ancestor_file" "$current_file"
+	cp "$ancestor_file" "$incoming_file"
+	cat >>"$current_file" <<'EOF'
+
+```text
+- [ ] t9014 fenced example ref:GH#9014
+```
+EOF
+	printf '\n- [ ] t9014 live stale-branch task ref:GH#9014\n' >>"$incoming_file"
+	mkdir -p "$state_dir"
+	if ! (
+		# shellcheck source=../issue-sync-git-push-helper.sh
+		source "$HELPER"
+		issue_sync_find_branch_task_additions "$ancestor_file" "$incoming_file" "$state_dir"
+		issue_sync_seed_branch_task_additions "$current_file" "$incoming_file" "$state_dir"
+		issue_sync_merge_todo_file "$current_file" "$ancestor_file" "$incoming_file"
+		issue_sync_dedupe_concurrent_task_additions "$current_file" "$state_dir"
+	); then
+		fail "same-hunk pseudo tasks do not replace live branch additions"
+	elif [[ "$(<"$current_file")" != *"t9014 fenced example"* ||
+	"$(<"$current_file")" != *"t9014 live stale-branch task"* ]]; then
+		fail "same-hunk pseudo tasks do not replace live branch additions"
+	else
+		pass "same-hunk pseudo tasks do not replace live branch additions"
 	fi
 	return 0
 }
@@ -842,6 +881,7 @@ test_rebase_conflict_neutralizes_cleanly
 test_protected_branch_uses_one_rebased_pr
 test_stale_pr_concurrent_task_addition_deduplicates
 test_task_id_snapshot_uses_only_live_rows
+test_same_hunk_pseudo_task_preserves_live_branch_addition
 test_shallow_checkout_recovers_stale_pr_history
 test_concurrent_pr_advance_rebuilds_snapshot
 test_pr_branch_deletion_during_fetch_rebuilds

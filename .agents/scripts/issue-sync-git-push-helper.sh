@@ -175,32 +175,59 @@ issue_sync_task_ids() {
 	return 0
 }
 
-# A stale deterministic branch and current main can independently add the same
-# logical task at different file locations. Track only IDs absent from their
-# common ancestor; historical duplicates must remain outside this repair scope.
-issue_sync_find_concurrent_task_additions() {
-	local current_file="$1"
-	local ancestor_file="$2"
-	local incoming_file="$3"
-	local state_dir="$4"
-	local current_ids="${state_dir}/current-task-ids"
+# Track task IDs added by the stale deterministic branch after its common
+# ancestor. Seeding their canonical rows into the current side prevents an
+# `--ours` same-hunk resolution from discarding queued branch additions.
+issue_sync_find_branch_task_additions() {
+	local ancestor_file="$1"
+	local incoming_file="$2"
+	local state_dir="$3"
 	local ancestor_ids="${state_dir}/ancestor-task-ids"
 	local incoming_ids="${state_dir}/incoming-task-ids"
-	local overlapping_ids="${state_dir}/overlapping-task-ids"
-	local concurrent_ids="${state_dir}/concurrent-task-additions"
+	local branch_additions="${state_dir}/branch-task-additions"
 
-	issue_sync_task_ids "$current_file" >"$current_ids" || return 1
 	issue_sync_task_ids "$ancestor_file" >"$ancestor_ids" || return 1
 	issue_sync_task_ids "$incoming_file" >"$incoming_ids" || return 1
-	comm -12 "$current_ids" "$incoming_ids" >"$overlapping_ids" || return 1
-	comm -23 "$overlapping_ids" "$ancestor_ids" >"$concurrent_ids" || return 1
+	comm -23 "$incoming_ids" "$ancestor_ids" >"$branch_additions" || return 1
+	return 0
+}
+
+issue_sync_seed_branch_task_additions() {
+	local current_file="$1"
+	local incoming_file="$2"
+	local state_dir="$3"
+	local branch_additions="${state_dir}/branch-task-additions"
+	local combined_todo="${state_dir}/combined-task-additions"
+	local canonical_lines="${state_dir}/canonical-branch-task-lines"
+	local winner_lines="${state_dir}/branch-task-winners"
+	local winner_ids="${state_dir}/branch-task-winner-ids"
+	local line=""
+	[[ -s "$branch_additions" ]] || return 0
+
+	awk '1' "$current_file" "$incoming_file" >"$combined_todo" || return 1
+	_unique_todo_task_snapshot "$combined_todo" >"$canonical_lines" || return 1
+	awk '
+		FNR == NR { wanted[$1] = 1; next }
+		match($0, /^[[:space:]]*-[[:space:]]+\[[ x>-]\][[:space:]]+/) {
+			remaining = substr($0, RLENGTH + 1)
+			split(remaining, fields, /[[:space:]]+/)
+			if (fields[1] in wanted) { print }
+		}
+	' "$branch_additions" "$canonical_lines" >"$winner_lines" || return 1
+	issue_sync_task_ids "$winner_lines" >"$winner_ids" || return 1
+	cmp -s "$branch_additions" "$winner_ids" || return 1
+
+	printf '\n' >>"$current_file" || return 1
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		printf '%s\n' "$line" >>"$current_file" || return 1
+	done <"$winner_lines"
 	return 0
 }
 
 issue_sync_dedupe_concurrent_task_additions() {
 	local todo_file="$1"
 	local state_dir="$2"
-	local concurrent_ids="${state_dir}/concurrent-task-additions"
+	local concurrent_ids="${state_dir}/branch-task-additions"
 	local canonical_lines="${state_dir}/canonical-task-lines"
 	local filtered_todo="${state_dir}/deduplicated-todo"
 	[[ -s "$concurrent_ids" ]] || return 0
@@ -367,8 +394,9 @@ issue_sync_prepare_pr_snapshot() {
 	sync_base=$(issue_sync_git -C "$repo_path" merge-base "$ISSUE_SYNC_BASE_SHA" "$sync_sha") || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_base" "$sync_ancestor" || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_sha" "$sync_todo" || return 1
-	issue_sync_find_concurrent_task_additions "${state_dir}/merged-todo" \
-		"$sync_ancestor" "$sync_todo" "$state_dir" || return 1
+	issue_sync_find_branch_task_additions "$sync_ancestor" "$sync_todo" "$state_dir" || return 1
+	issue_sync_seed_branch_task_additions "${state_dir}/merged-todo" \
+		"$sync_todo" "$state_dir" || return 1
 	issue_sync_merge_todo_file "${state_dir}/merged-todo" "$sync_ancestor" "$sync_todo" || return 1
 	issue_sync_dedupe_concurrent_task_additions "${state_dir}/merged-todo" "$state_dir" || return 1
 	return 0
