@@ -9,7 +9,7 @@ HELPER="${SCRIPT_DIR}/../cloudron-package-helper.sh"
 TEST_ROOT=""
 PASSED=0
 FAILED=0
-PINNED_BASE='cloudron/base:5.0.0@sha256:04fd70dbd8ad6149c19de39e35718e024417c3e01dc9c6637eaf4a41ec4e596c'
+PINNED_BASE='cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e'
 
 cleanup() {
 	[[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]] && rm -rf "$TEST_ROOT"
@@ -120,7 +120,7 @@ test_invalid_prepare_is_non_mutating() {
 test_release_gate_rejects_package_defects() {
 	local repo_dir="${TEST_ROOT}/defects"
 	make_fixture "$repo_dir"
-	printf 'FROM cloudron/base:5.0.0\n' >"${repo_dir}/Dockerfile"
+	printf 'FROM cloudron/base:5.1.0\n' >"${repo_dir}/Dockerfile"
 	if run_helper "$repo_dir" check-release v1.0.0 >/dev/null 2>&1; then
 		fail "unpinned final Cloudron base rejected"
 	else

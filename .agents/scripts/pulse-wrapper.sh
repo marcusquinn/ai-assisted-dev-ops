@@ -434,129 +434,9 @@ if ! type config_get >/dev/null 2>&1; then
 	}
 fi
 
-# ---------------------------------------------------------------------------
-# GraphQL budget priority scheduler (GH#22479)
-#
-# Defines lightweight helpers before the extracted pulse modules are sourced so
-# modules such as pulse-dispatch-engine.sh can call them at runtime. Low budget
-# reserves GraphQL for merge readiness, dispatch capacity checks, and worker
-# launch safety gates; optional enrichment/dashboard/routine/cache stages defer.
-# ---------------------------------------------------------------------------
-_pulse_gh_rate_limit_json() {
-	local _rate_json=""
-	local _rc=0
-	local _secs="${AIDEVOPS_GH_READ_TIMEOUT:-15}"
-	[[ "$_secs" =~ ^[0-9]+$ ]] || _secs=15
-
-	if declare -F _cb_rate_limit_json >/dev/null 2>&1; then
-		_rate_json=$(_cb_rate_limit_json normal 2>/dev/null) || _rc=$?
-	elif declare -F _gh_with_timeout >/dev/null 2>&1; then
-		_rate_json=$(_gh_with_timeout read gh api rate_limit 2>/dev/null) || _rc=$?
-	elif declare -F timeout_sec >/dev/null 2>&1; then
-		_rate_json=$(timeout_sec "$_secs" gh api rate_limit 2>/dev/null) || _rc=$?
-	elif command -v timeout >/dev/null 2>&1; then
-		_rate_json=$(timeout "$_secs" gh api rate_limit 2>/dev/null) || _rc=$?
-	elif command -v gtimeout >/dev/null 2>&1; then
-		_rate_json=$(gtimeout "$_secs" gh api rate_limit 2>/dev/null) || _rc=$?
-	else
-		return 1
-	fi
-
-	[[ "$_rc" -eq 0 ]] || return "$_rc"
-	[[ -n "$_rate_json" ]] || return 1
-	printf '%s\n' "$_rate_json"
-	return 0
-}
-
-_pulse_graphql_budget_priority_decision() {
-	local _threshold="${AIDEVOPS_PULSE_OPTIONAL_BUDGET_THRESHOLD:-${AIDEVOPS_PULSE_PREFETCH_BUDGET_THRESHOLD:-1250}}"
-	[[ "$_threshold" =~ ^[0-9]+$ ]] || _threshold=1250
-	local _rate_json=""
-	_rate_json=$(_pulse_gh_rate_limit_json) || _rate_json=""
-	if [[ -z "$_rate_json" ]]; then
-		printf 'unknown ? ? %s\n' "$_threshold"
-		return 0
-	fi
-	local _remaining="" _limit=""
-	_remaining=$(printf '%s' "$_rate_json" | jq -r '.resources.graphql.remaining // ""' 2>/dev/null) || _remaining=""
-	_limit=$(printf '%s' "$_rate_json" | jq -r '.resources.graphql.limit // ""' 2>/dev/null) || _limit=""
-	if [[ ! "$_remaining" =~ ^[0-9]+$ ]] || [[ ! "$_limit" =~ ^[0-9]+$ ]]; then
-		printf 'unknown ? ? %s\n' "$_threshold"
-		return 0
-	fi
-	if [[ "$_remaining" -lt "$_threshold" ]]; then
-		printf 'reserve %s %s %s\n' "$_remaining" "$_limit" "$_threshold"
-		return 0
-	fi
-	printf 'normal %s %s %s\n' "$_remaining" "$_limit" "$_threshold"
-	return 0
-}
-
-_pulse_set_graphql_budget_priority() {
-	local _decision="" _class="" _remaining="" _limit="" _threshold=""
-	_decision=$(_pulse_graphql_budget_priority_decision)
-	read -r _class _remaining _limit _threshold <<<"$_decision"
-	[[ -n "$_class" ]] || _class="unknown"
-	export AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS="$_class"
-	export AIDEVOPS_PULSE_GRAPHQL_BUDGET_REMAINING="$_remaining"
-	export AIDEVOPS_PULSE_GRAPHQL_BUDGET_LIMIT="$_limit"
-	export AIDEVOPS_PULSE_GRAPHQL_BUDGET_THRESHOLD="$_threshold"
-	if [[ "$_class" == "reserve" ]]; then
-		echo "[pulse-wrapper] GraphQL budget reserve mode: remaining=${_remaining}/${_limit} < optional_threshold=${_threshold}; deferring optional stages, preserving merge/dispatch budget (GH#22479)" >>"$LOGFILE"
-		if declare -F pulse_stats_increment >/dev/null 2>&1; then
-			pulse_stats_increment "pulse_graphql_budget_reserve_mode" 2>/dev/null || true
-		fi
-	elif [[ "$_class" == "unknown" ]]; then
-		echo "[pulse-wrapper] GraphQL budget priority unknown — proceeding fail-open for optional stages (GH#22479)" >>"$LOGFILE"
-	fi
-	return 0
-}
-
-_pulse_should_defer_budget_priority_stage() {
-	local _stage="$1"
-	[[ "${AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS:-normal}" == "reserve" ]] || return 1
-	case "$_stage" in
-	cache_prime | fix_the_fixer_detector | coderabbit_review | post_merge_scanner | pr_review_thread_response | auto_decomposer_scanner | dedup_cleanup | fast_fail_prune_expired | evaluate_routines | dependabot_alert_monitor | canonical_maintenance | dashboard_freshness_check | llm_supervisor)
-		return 0
-		;;
-	*)
-		return 1
-		;;
-	esac
-}
-
-_pulse_defer_budget_priority_stage() {
-	local _stage="$1"
-	echo "[pulse-wrapper] budget-priority: deferred optional stage '${_stage}' (class=${AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS:-unknown}, remaining=${AIDEVOPS_PULSE_GRAPHQL_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_GRAPHQL_BUDGET_LIMIT:-?}, threshold=${AIDEVOPS_PULSE_GRAPHQL_BUDGET_THRESHOLD:-?})" >>"$LOGFILE"
-	if declare -F pulse_stats_increment >/dev/null 2>&1; then
-		pulse_stats_increment "pulse_graphql_budget_stage_deferred" 2>/dev/null || true
-		pulse_stats_increment "pulse_graphql_budget_stage_deferred_${_stage}" 2>/dev/null || true
-	fi
-	return 0
-}
-
-_pulse_run_optional_stage() {
-	local _stage="$1"
-	shift
-	if _pulse_should_defer_budget_priority_stage "$_stage"; then
-		_pulse_defer_budget_priority_stage "$_stage"
-		return 0
-	fi
-	"$@"
-	return $?
-}
-
-_pulse_run_optional_stage_with_timeout() {
-	local _stage="$1"
-	local _timeout="$2"
-	shift 2
-	if _pulse_should_defer_budget_priority_stage "$_stage"; then
-		_pulse_defer_budget_priority_stage "$_stage"
-		return 0
-	fi
-	run_stage_with_timeout "$_stage" "$_timeout" "$@"
-	return $?
-}
+# Stage-boundary GraphQL/REST priority scheduler (GH#22479, GH#29742).
+# shellcheck source=./pulse-budget-priority.sh
+source "${SCRIPT_DIR}/pulse-budget-priority.sh"
 
 # Configuration defaults, validation, path constants, and per-cycle health
 # counters extracted to pulse-wrapper-config.sh (GH#20781).
@@ -957,6 +837,10 @@ _pulse_execute_self_check() {
 		_pulse_run_deterministic_pipeline
 		_pulse_maybe_run_llm_supervisor
 		_pulse_set_graphql_budget_priority
+		_pulse_set_rest_core_budget_priority
+		_pulse_stage_priority_class
+		_pulse_run_budget_priority_stage
+		_pulse_run_budget_priority_stage_with_timeout
 		_pulse_run_optional_stage
 		_pulse_run_optional_stage_with_timeout
 		_carry_forward_pr_diff
@@ -991,6 +875,7 @@ _pulse_execute_self_check() {
 	# GH#19836: pulse-merge.sh further split into three modules (conflict + feedback extracted).
 	# GH#20781: config block extracted to pulse-wrapper-config.sh.
 	local _sc_expected_guards=(
+		_PULSE_BUDGET_PRIORITY_LOADED
 		_PULSE_WRAPPER_CONFIG_LOADED
 		_PULSE_MODEL_ROUTING_LOADED
 		_PULSE_INSTANCE_LOCK_LOADED
@@ -1275,7 +1160,7 @@ _pulse_run_deterministic_pipeline() {
 		fi
 	fi
 	if [[ "$_pmr_skip" -eq 0 ]]; then
-		run_stage_with_timeout "deterministic_merge_pass" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "deterministic_merge_pass" "$PRE_RUN_STAGE_TIMEOUT" \
 			merge_ready_prs_all_repos || true
 	fi
 
@@ -1287,7 +1172,7 @@ _pulse_run_deterministic_pipeline() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag appeared — skipping dirty-pr-sweep" >>"$LOGFILE"
 	else
-		run_stage_with_timeout "dirty_pr_sweep" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "dirty_pr_sweep" "$PRE_RUN_STAGE_TIMEOUT" \
 			dirty_pr_sweep_all_repos || true
 	fi
 	# Accumulate health counters written by merge_ready_prs_all_repos (GH#18571, GH#15107).
@@ -1314,7 +1199,7 @@ _pulse_run_deterministic_pipeline() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag appeared — skipping GitHub issue-state sync" >>"$LOGFILE"
 	else
-		run_stage_with_timeout "sync_todo_refs_all_repos" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "sync_todo_refs_all_repos" "$PRE_RUN_STAGE_TIMEOUT" \
 			sync_todo_refs_all_repos || true
 	fi
 
@@ -1326,7 +1211,7 @@ _pulse_run_deterministic_pipeline() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag appeared — skipping dependency graph cache build" >>"$LOGFILE"
 	else
-		PULSE_DEP_GRAPH_FORCE_REBUILD=1 run_stage_with_timeout "build_dependency_graph_cache" "$PRE_RUN_STAGE_TIMEOUT" \
+		PULSE_DEP_GRAPH_FORCE_REBUILD=1 _pulse_run_budget_priority_stage_with_timeout "build_dependency_graph_cache" "$PRE_RUN_STAGE_TIMEOUT" \
 			build_dependency_graph_cache || true
 	fi
 
@@ -1336,7 +1221,7 @@ _pulse_run_deterministic_pipeline() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag appeared — skipping blocked-status refresh" >>"$LOGFILE"
 	else
-		run_stage_with_timeout "refresh_blocked_status_from_graph" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "refresh_blocked_status_from_graph" "$PRE_RUN_STAGE_TIMEOUT" \
 			refresh_blocked_status_from_graph || true
 	fi
 
@@ -1375,7 +1260,7 @@ _pulse_run_deterministic_pipeline() {
 				pulse_stats_increment "dispatch_candidate_failed_reason_runner_health_circuit_breaker" 2>/dev/null || true
 			fi
 		else
-			apply_dispatch_max
+			_pulse_run_budget_priority_stage "dispatch_max" apply_dispatch_max
 		fi
 	fi
 
@@ -1385,7 +1270,7 @@ _pulse_run_deterministic_pipeline() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag appeared — skipping routine evaluation" >>"$LOGFILE"
 	else
-		run_stage_with_timeout "evaluate_routines" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "evaluate_routines" "$PRE_RUN_STAGE_TIMEOUT" \
 			evaluate_routines || true
 	fi
 
@@ -1406,7 +1291,7 @@ _pulse_run_deterministic_pipeline() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag appeared — skipping canonical maintenance" >>"$LOGFILE"
 	else
-		run_stage_with_timeout "canonical_maintenance" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "canonical_maintenance" "$PRE_RUN_STAGE_TIMEOUT" \
 			run_canonical_maintenance || true
 	fi
 
@@ -1426,7 +1311,7 @@ _pulse_run_deterministic_pipeline() {
 		echo "[pulse-wrapper] Stop flag appeared — skipping dashboard freshness check" >>"$LOGFILE"
 	fi
 	if [[ ! -f "$STOP_FLAG" && -x "$_dfc_script" ]]; then
-		run_stage_with_timeout "dashboard_freshness_check" "$PRE_RUN_STAGE_TIMEOUT" \
+		_pulse_run_budget_priority_stage_with_timeout "dashboard_freshness_check" "$PRE_RUN_STAGE_TIMEOUT" \
 			bash "$_dfc_script" scan || true
 	fi
 
@@ -1770,6 +1655,7 @@ main() {
 	# defer in reserve mode. The t2690 dispatch breaker still fail-closes actual
 	# worker launch at the emergency floor.
 	_pulse_set_graphql_budget_priority
+	_pulse_set_rest_core_budget_priority
 	local _cycle_dispatch_before
 	_cycle_dispatch_before=$(_pulse_capture_dispatch_total)
 	if [[ "${PULSE_DRY_RUN:-0}" != "1" ]]; then
@@ -1812,7 +1698,7 @@ main() {
 
 	# Recover dependency close events missed by async merge/issue-close races.
 	# Sentinel-gated to bound API use; the reconciler itself fails closed.
-	_pulse_reconcile_stale_blocked_if_due || true
+	_pulse_run_budget_priority_stage "stale_blocked_reconcile" _pulse_reconcile_stale_blocked_if_due || true
 
 	# t3077: LLM-driven fix-the-fixer detector. Classifies new auto-dispatch
 	# issues — when the work itself touches the worker dispatch system,
@@ -1863,7 +1749,7 @@ main() {
 	# approval landed since the last merge-only tick, we pick it up here
 	# rather than waiting for the next 60s cycle. Best-effort — never aborts
 	# the cycle. See pulse-wrapper-bootstrap.sh::_drain_merge_trigger_file_if_present.
-	_drain_merge_trigger_file_if_present || true
+	_pulse_run_budget_priority_stage "approval_merge_trigger" _drain_merge_trigger_file_if_present || true
 
 	# Run pre-flight stages (cleanup, prefetch, normalization)
 	if ! _run_preflight_stages; then
