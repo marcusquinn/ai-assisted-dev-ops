@@ -192,6 +192,18 @@ issue_sync_find_branch_task_additions() {
 	return 0
 }
 
+issue_sync_ensure_terminal_newline() {
+	local todo_file="$1"
+	local terminal_newlines=0
+	[[ -s "$todo_file" ]] || return 0
+	terminal_newlines=$(LC_ALL=C tail -c 1 "$todo_file" | wc -l | tr -d '[:space:]') || return 1
+	[[ "$terminal_newlines" =~ ^[01]$ ]] || return 1
+	if [[ "$terminal_newlines" -eq 0 ]]; then
+		printf '\n' >>"$todo_file" || return 1
+	fi
+	return 0
+}
+
 issue_sync_seed_branch_task_additions() {
 	local current_file="$1"
 	local incoming_file="$2"
@@ -217,6 +229,7 @@ issue_sync_seed_branch_task_additions() {
 	issue_sync_task_ids "$winner_lines" >"$winner_ids" || return 1
 	cmp -s "$branch_additions" "$winner_ids" || return 1
 
+	issue_sync_ensure_terminal_newline "$current_file" || return 1
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		printf '%s\n' "$line" >>"$current_file" || return 1
 	done <"$winner_lines"

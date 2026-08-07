@@ -537,6 +537,7 @@ EOF
 - [ ] t9014 fenced example ref:GH#9014
 ```
 EOF
+	perl -0pi -e 's/\n\z//' "$current_file"
 	printf '\n- [ ] t9014 live stale-branch task ref:GH#9014\n\n' >>"$incoming_file"
 	mkdir -p "$state_dir"
 	if ! (
@@ -551,7 +552,8 @@ EOF
 		fail "same-hunk pseudo tasks do not replace live branch additions"
 	elif [[ "$(<"$current_file")" != *"t9014 fenced example"* ||
 	"$(<"$current_file")" != *"t9014 live stale-branch task"* ||
-	"$(awk 'NF { last_content = NR } END { print NR - last_content }' "$current_file")" -ne 0 ]]; then
+	"$(awk 'NF { last_content = NR } END { print NR - last_content }' "$current_file")" -ne 0 ]] ||
+		! grep -qE '^[[:space:]]*- \[ \] t9014 live stale-branch task ' "$current_file"; then
 		fail "same-hunk pseudo tasks do not replace live branch additions"
 	else
 		pass "same-hunk pseudo tasks do not replace live branch additions"
