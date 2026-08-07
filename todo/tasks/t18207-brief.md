@@ -169,8 +169,11 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
 ### Recoverability Checkpoint
 
 - [x] Focused adapter/ingress/session/runtime tests pass.
-- [x] WIP commit created before broad gates: `148ff1bac` (`wip: normalize Matrix team-interface ingress`).
-- [ ] Existing Matrix CLI/entity/session behavior and exact-head review evidence recorded.
+- [x] Intermediate WIP checkpoints were folded into final PR head
+  `3d465bfa691f11bc27f833791634b1d30283148e` before merge.
+- [x] Existing Matrix CLI/entity/session behavior and exact-head review evidence
+  are recorded in clean post-squash bundle
+  `c626aa9fce714ca13496791a7363336c978d4b93835a71e3471bb51d58a47cab`.
 
 ### Implementation Evidence
 
@@ -198,17 +201,33 @@ shellcheck .agents/scripts/matrix-dispatch-helper.sh .agents/scripts/matrix-disp
   succeeds. The regression starts with no conversation row, exercises failed
   persistence, and reopens the store to verify the compacted summary.
 
+### Completion Evidence
+
+- PR #29669 merged as `87e2149f7334192a08d2dc88f3eb64fc70e6e18b`
+  after maintainer, review-bot, complexity, and ShellCheck gates passed.
+- Exact-head runtime verification covered the focused Matrix/runtime/core/Buzz
+  suites, conversation helper 83/83, Bash syntax, ShellCheck, changed-file
+  lint, Qlty new-file smells 0, and Qlty regression `50 → 50`.
+- Issue #29646 closed `COMPLETED`; `release:not-requested` was recorded.
+- The post-merge workflow correctly prepared the `t18207` proof but its direct
+  push was rejected by protected-branch GH006. The guarded metadata-only
+  completion PR records that durable proof through normal review gates.
+
 ### Safety-Stop Recovery
 
 - **Original objective:** Put existing Matrix observation and conversational ingress behind the provider-neutral contracts without behavior regression or new provider writes.
 - **Preserved user directions:** Continue autonomously through the no-release full loop; keep Matrix setup/behavior compatible and authority fail-closed.
 - **Trigger and evidence:** not triggered.
 - **Completed and verified:** current Matrix entry points, gaps, runtime patterns, dependencies, write surfaces, and verification families are mapped.
-- **Remaining acceptance criteria:** final clean exact-head review, PR review/merge, and parent bookkeeping.
+- **Remaining acceptance criteria:** none for F2.4; F2.5 and integrated parent
+  validation remain separate Milestone 2 work.
 - **Unsafe route not to repeat:** Do not duplicate tokens/mappings, infer identity from display names, call setup/admin APIs from the adapter, preserve cross-room leakage, or dispatch before durable event dedupe.
-- **Next safe route:** rebuild exact-head review evidence, then open the managed PR and complete remote gates.
-- **Resume condition:** runtime registry/core schemas and Matrix templates still match this brief; no overlapping PR exists.
-- **Owner and status:** interactive mission session; implemented and locally verified.
+- **Next safe route:** publish the guarded completion metadata, then proceed to
+  the separate F2.5 OpenCode overlay leaf.
+- **Resume condition:** PR #29669 remains the immutable merged implementation
+  proof and the metadata-only diff stays limited to this brief plus `TODO.md`.
+- **Owner and status:** interactive mission session; merged without release,
+  with protected-branch proof bookkeeping under recovery.
 
 ### Files Scope
 
