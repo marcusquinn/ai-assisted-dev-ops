@@ -51,7 +51,7 @@ readonly MEMORY_HELPER="$HOME/.aidevops/agents/scripts/memory-helper.sh"
 readonly MAIL_HELPER="$HOME/.aidevops/agents/scripts/mail-helper.sh"
 readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 readonly OPENCODE_HOST="${OPENCODE_HOST:-127.0.0.1}"
-readonly DEFAULT_MODEL="anthropic/claude-sonnet-4-6"
+readonly DEFAULT_MODEL="standard"
 
 [[ -z "${BOLD+x}" ]] && BOLD='\033[1m'
 
@@ -341,6 +341,50 @@ _parse_create_args() {
 }
 
 #######################################
+# Resolve a stored model tier only when a runner is dispatched.
+# Sets RUNNER_ROUTE_MODEL, RUNNER_ROUTE_TIER, RUNNER_ROUTE_VARIANT, and
+# RUNNER_ROUTE_CANDIDATE_INDEX.
+#######################################
+resolve_runner_route() {
+	local model_spec="${1:-standard}"
+	local provider="${2:-}"
+	local dispatch_backend="${AIDEVOPS_DISPATCH_BACKEND:-}"
+	if [[ -z "$provider" && "${dispatch_backend##*/}" == "claude" ]]; then
+		provider="anthropic"
+	fi
+	RUNNER_ROUTE_MODEL="$model_spec"
+	RUNNER_ROUTE_TIER=""
+	RUNNER_ROUTE_VARIANT=""
+	RUNNER_ROUTE_CANDIDATE_INDEX=-1
+	case "$model_spec" in
+	simple | standard | thinking) RUNNER_ROUTE_TIER="$model_spec" ;;
+	esac
+	if [[ -n "$RUNNER_ROUTE_TIER" ]]; then
+		if [[ -n "$provider" ]]; then
+			RUNNER_ROUTE_MODEL=$(model_tier_candidate_for_provider "$RUNNER_ROUTE_TIER" "$provider" 2>/dev/null) || {
+				log_error "No ${provider} candidate is configured for tier ${RUNNER_ROUTE_TIER}"
+				return 1
+			}
+		else
+			RUNNER_ROUTE_MODEL=$(resolve_model_tier "$RUNNER_ROUTE_TIER")
+		fi
+		if [[ "$RUNNER_ROUTE_MODEL" != *"/"* ]]; then
+			log_error "No runnable candidate is configured for tier ${RUNNER_ROUTE_TIER}"
+			return 1
+		fi
+	elif [[ -n "$provider" && "$RUNNER_ROUTE_MODEL" == *"/"* ]]; then
+		RUNNER_ROUTE_MODEL="${provider}/${RUNNER_ROUTE_MODEL#*/}"
+	else
+		RUNNER_ROUTE_TIER=$(model_tier_for_model "$RUNNER_ROUTE_MODEL" 2>/dev/null || true)
+	fi
+	if [[ -n "$RUNNER_ROUTE_TIER" ]]; then
+		RUNNER_ROUTE_VARIANT=$(model_tier_variant "$RUNNER_ROUTE_TIER" "$RUNNER_ROUTE_MODEL" 2>/dev/null || true)
+		RUNNER_ROUTE_CANDIDATE_INDEX=$(model_tier_candidate_index "$RUNNER_ROUTE_TIER" "$RUNNER_ROUTE_MODEL" 2>/dev/null) || RUNNER_ROUTE_CANDIDATE_INDEX=-1
+	fi
+	return 0
+}
+
+#######################################
 # Write runner config.json and AGENTS.md to disk
 #######################################
 _write_runner_files() {
@@ -348,6 +392,7 @@ _write_runner_files() {
 	local description="$2"
 	local model="$3"
 	local workdir="$4"
+	local provider="${5:-}"
 
 	local dir
 	dir=$(runner_dir "$name")
@@ -359,12 +404,15 @@ _write_runner_files() {
 		--arg name "$name" \
 		--arg description "$description" \
 		--arg model "$model" \
+		--arg provider "$provider" \
 		--arg workdir "${workdir:-}" \
 		--arg created "$timestamp" \
 		'{
             name: $name,
             description: $description,
             model: $model,
+            model_tier:(if ($model == "simple" or $model == "standard" or $model == "thinking") then $model else null end),
+            provider:(if $provider == "" then null else $provider end),
             workdir: $workdir,
             created: $created,
             lastRun: null,
@@ -421,22 +469,13 @@ cmd_create() {
 	local description="" model="$DEFAULT_MODEL" workdir="" provider=""
 	_parse_create_args description model workdir provider "$@" || return 1
 
-	# Resolve tier names to full model strings (t132.7)
-	model=$(resolve_model_tier "$model")
-
-	# Apply provider override if specified (t132.7)
-	if [[ -n "$provider" && "$model" == *"/"* ]]; then
-		local model_id="${model#*/}"
-		model="${provider}/${model_id}"
-	fi
-
 	if [[ -z "$description" ]]; then
 		description="Runner: $name"
 	fi
 
 	local dir
 	dir=$(runner_dir "$name")
-	_write_runner_files "$name" "$description" "$model" "$workdir" || return 1
+	_write_runner_files "$name" "$description" "$model" "$workdir" "$provider" || return 1
 
 	log_success "Created runner: $name"
 	echo ""
@@ -518,7 +557,7 @@ _parse_run_args() {
 #######################################
 # Build the CLI dispatch command array for opencode or claude backend
 # Populates the caller's cmd_args array (passed by name)
-# Args: cmd_args_var name model attach format continue_session dir
+# Args: cmd_args_var name model attach format continue_session dir workdir variant
 #######################################
 _build_dispatch_cmd() {
 	local _arr_var="$1"
@@ -529,11 +568,13 @@ _build_dispatch_cmd() {
 	local continue_session="$6"
 	local dir="$7"
 	local workdir="$8"
+	local variant="${9:-}"
 
 	if [[ "$AIDEVOPS_DISPATCH_BACKEND" == "opencode" ]]; then
 		eval "${_arr_var}=(\"opencode\" \"run\")"
 		[[ -n "$attach" ]] && eval "${_arr_var}+=( \"--attach\" \"\$attach\" )"
 		eval "${_arr_var}+=( \"-m\" \"\$model\" \"--title\" \"runner/\$name\" \"--dir\" \"\$workdir\" )"
+		[[ -z "$variant" ]] || eval "${_arr_var}+=( \"--variant\" \"\$variant\" )"
 
 		if [[ "$continue_session" == "true" ]]; then
 			local session_id=""
@@ -746,29 +787,35 @@ cmd_run() {
 	local dir
 	dir=$(runner_dir "$name")
 
-	# Resolve model (flag > config > default), with tier name support (t132.7)
+	# Preserve tier intent in config and resolve it only at execution time.
 	if [[ -z "$model" ]]; then
 		model=$(runner_config "$name" "model")
 		[[ -z "$model" ]] && model="$DEFAULT_MODEL"
 	fi
-	model=$(resolve_model_tier "$model")
-
-	# Apply provider override if specified (t132.7)
-	if [[ -n "$provider" && "$model" == *"/"* ]]; then
-		local model_id="${model#*/}"
-		model="${provider}/${model_id}"
+	if [[ -z "$provider" ]]; then
+		provider=$(runner_config "$name" "provider")
 	fi
+	resolve_runner_route "$model" "$provider" || return 1
+	model="$RUNNER_ROUTE_MODEL"
+	export AIDEVOPS_DISPATCH_TIER="$RUNNER_ROUTE_TIER"
+	export AIDEVOPS_ROUTING_CANDIDATE_INDEX="$RUNNER_ROUTE_CANDIDATE_INDEX"
+	export AIDEVOPS_ROUTING_ATTEMPT="1"
+	export AIDEVOPS_ROUTING_REASON="runner_dispatch"
+	export AIDEVOPS_ROUTING_ESCALATED="0"
+	export AIDEVOPS_ROUTING_VARIANT="$RUNNER_ROUTE_VARIANT"
 
 	# Resolve workdir
 	local workdir
 	workdir=$(runner_config "$name" "workdir")
 	[[ -z "$workdir" ]] && workdir="$(pwd)"
 
-	log_info "Model: $model"
+	local model_label="Model:"
+	log_info "$model_label $model"
+	[[ -z "$RUNNER_ROUTE_TIER" ]] || log_info "Tier: $RUNNER_ROUTE_TIER"
 
 	# Build dispatch command array
 	local -a cmd_args=()
-	_build_dispatch_cmd cmd_args "$name" "$model" "$attach" "$format" "$continue_session" "$dir" "$workdir" || return 1
+	_build_dispatch_cmd cmd_args "$name" "$model" "$attach" "$format" "$continue_session" "$dir" "$workdir" "$RUNNER_ROUTE_VARIANT" || return 1
 
 	# Build full prompt with memory/mailbox context
 	local full_prompt
@@ -1264,6 +1311,10 @@ main() {
 		return 1
 		;;
 	esac
+	local command_status=$?
+	return "$command_status"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

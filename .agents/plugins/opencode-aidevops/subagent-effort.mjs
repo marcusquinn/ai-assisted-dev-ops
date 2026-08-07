@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { existsSync, readFileSync } from "fs";
+import { createSubagentEffortHandlers } from "./subagent-effort-handlers.mjs";
 
 const VARIANT_RANK = {
   none: 0,
@@ -47,8 +48,23 @@ export function normalizeEffortTier(value) {
 
 function normalizeVariant(value) {
   const variant = String(value || "").trim().toLowerCase();
-  if (variant === "default" || !(variant in VARIANT_RANK)) return "medium";
-  return variant;
+  return variant === "default" ? "" : variant;
+}
+
+function withUnambiguousProviderFallbacks(policy) {
+  const variantsByProvider = new Map();
+  for (const [model, variant] of Object.entries(policy)) {
+    const separator = model.indexOf("/");
+    if (separator <= 0) continue;
+    const provider = model.slice(0, separator);
+    const variants = variantsByProvider.get(provider) || new Set();
+    variants.add(variant);
+    variantsByProvider.set(provider, variants);
+  }
+  const fallbacks = [...variantsByProvider]
+    .filter(([provider, variants]) => !Object.hasOwn(policy, provider) && variants.size === 1)
+    .map(([provider, variants]) => [provider, [...variants][0]]);
+  return {...policy, ...Object.fromEntries(fallbacks)};
 }
 
 export function loadTierReasoningPolicies(paths) {
@@ -58,7 +74,7 @@ export function loadTierReasoningPolicies(paths) {
       const routing = JSON.parse(readFileSync(path, "utf8"));
       const policies = {};
       for (const tier of ["simple", "standard", "thinking"]) {
-        policies[tier] = routing?.tiers?.[tier]?.reasoning || {};
+        policies[tier] = withUnambiguousProviderFallbacks(routing?.tiers?.[tier]?.reasoning || {});
       }
       return policies;
     } catch {
@@ -73,12 +89,13 @@ export function resolveTierReasoning(tier, providerID, modelID, policies) {
   const fullModelID = modelID?.includes("/")
     ? modelID
     : `${providerID || ""}/${modelID || ""}`;
-  return policy[fullModelID] ?? policy[providerID] ?? "";
+  return policy[fullModelID] ?? policy[providerID] ?? policy.default ?? "";
 }
 
 export function clampReasoningVariant(requested, parentCap) {
   const child = normalizeVariant(requested);
   const parent = normalizeVariant(parentCap);
+  if (!(child in VARIANT_RANK) || !(parent in VARIANT_RANK)) return child || requested;
   return VARIANT_RANK[child] <= VARIANT_RANK[parent] ? child : parent;
 }
 
@@ -116,22 +133,40 @@ async function getSession(client, sessionID) {
   return unwrapResponse(response) || {};
 }
 
-async function getParentVariant(client, childSession) {
+function modelIdentity(value) {
+  const rawProviderID = value?.providerID
+    ?? value?.model?.providerID
+    ?? value?.provider?.id
+    ?? "";
+  const providerID = typeof rawProviderID === "string" ? rawProviderID : "";
+  const rawModelID = value?.modelID
+    ?? value?.model?.modelID
+    ?? value?.model?.id
+    ?? (typeof value?.model === "string" ? value.model : "");
+  const modelID = typeof rawModelID === "string" ? rawModelID : "";
+  return modelID.includes("/") ? modelID : `${providerID || ""}/${modelID}`;
+}
+
+async function getParentRoute(client, childSession) {
   const parentID = childSession?.parentID;
-  if (!parentID) return "";
+  if (!parentID) return { model: "", variant: "" };
 
   const parentSession = await getSession(client, parentID);
   const sessionVariant = extractVariant(parentSession);
-  if (sessionVariant) return sessionVariant;
+  const sessionModel = modelIdentity(parentSession);
+  if (sessionVariant && sessionModel !== "/") {
+    return { model: sessionModel, variant: sessionVariant };
+  }
 
   const response = await client.session.messages({ path: { id: parentID } });
   const messages = unwrapResponse(response) || [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const info = messages[index]?.info ?? messages[index];
     const variant = extractVariant(info);
-    if (variant) return variant;
+    const model = modelIdentity(info);
+    if (variant) return { model: model === "/" ? sessionModel : model, variant };
   }
-  return "";
+  return { model: sessionModel === "/" ? "" : sessionModel, variant: "" };
 }
 
 function prunePolicies(policies, now) {
@@ -140,60 +175,65 @@ function prunePolicies(policies, now) {
   }
 }
 
+function createProviderStateResolver(client, ttlMs) {
+  let snapshot = null;
+  let refreshedAt = 0;
+  return async () => {
+    if (snapshot && Date.now() - refreshedAt < ttlMs) return snapshot;
+    if (typeof client?.provider?.list !== "function") return null;
+    try {
+      const response = await client.provider.list();
+      const data = unwrapResponse(response);
+      if (!Array.isArray(data?.all) || !Array.isArray(data?.connected)) return null;
+      snapshot = { all: data.all, connected: data.connected };
+      refreshedAt = Date.now();
+      return snapshot;
+    } catch {
+      return null;
+    }
+  };
+}
+
+function routedPolicy(agentRoutingState, agentName, text) {
+  const explicit = /\[effort:(simple|standard|thinking)\]/i.test(text);
+  const configuredTier = agentRoutingState?.tiers?.get(agentName);
+  return {
+    effort: explicit
+      ? inferSubagentEffort(agentName, text)
+      : normalizeEffortTier(configuredTier || inferSubagentEffort(agentName, text)),
+    reason: explicit ? "explicit_effort_marker" : "agent_default",
+    pinned: agentRoutingState?.pinned?.has(agentName) || false,
+  };
+}
+
 export function createSubagentEffortHooks(client, options = {}) {
   const policies = new Map();
   const tierReasoning = options.tierReasoning || {};
+  const modelRouting = options.modelRouting;
+  const agentRoutingState = options.agentRoutingState;
+  const onRoutingDecision = options.onRoutingDecision;
+  const resolveProviderState = createProviderStateResolver(
+    client,
+    options.providerStateTtlMs ?? 30000,
+  );
 
-  return {
-    chatMessage: async (_input, output) => {
-      const message = output?.message || {};
-      const sessionID = message.sessionID;
-      if (!sessionID) return;
-
-      const now = Date.now();
-      prunePolicies(policies, now);
-      policies.set(sessionID, {
-        effort: inferSubagentEffort(message.agent ?? message.mode, messageText(output.parts)),
-        createdAt: now,
-      });
-    },
-
-    chatParams: async (input, output) => {
-      const sessionID = input?.message?.sessionID;
-      if (!sessionID) return;
-
-      try {
-        const childSession = await getSession(client, sessionID);
-        if (!childSession.parentID) return;
-
-        const policy = policies.get(sessionID);
-        const desiredEffort = policy?.effort
-          ?? inferSubagentEffort(input.message.agent ?? childSession.agent);
-        const requestedVariant = resolveTierReasoning(
-          desiredEffort,
-          input?.provider?.id,
-          input?.model?.id,
-          tierReasoning,
-        );
-        if (!requestedVariant) return;
-        const currentVariant = extractVariant(input.message)
-          || output?.options?.reasoningEffort
-          || output?.options?.reasoning_effort
-          || extractVariant(input.model);
-        const parentVariant = await getParentVariant(client, childSession)
-          || currentVariant;
-        if (!parentVariant) return;
-
-        output.options.reasoningEffort = clampReasoningVariant(
-          requestedVariant,
-          parentVariant,
-        );
-        if (Object.hasOwn(output.options, "reasoning_effort")) {
-          output.options.reasoning_effort = output.options.reasoningEffort;
-        }
-      } catch {
-        // Fail open: provider requests must continue if session metadata is unavailable.
-      }
-    },
-  };
+  return createSubagentEffortHandlers({
+    client,
+    policies,
+    tierReasoning,
+    modelRouting,
+    agentRoutingState,
+    onRoutingDecision,
+    resolveProviderState,
+    clampReasoningVariant,
+    extractVariant,
+    getParentRoute,
+    getSession,
+    inferSubagentEffort,
+    messageText,
+    modelIdentity,
+    prunePolicies,
+    resolveTierReasoning,
+    routedPolicy,
+  });
 }

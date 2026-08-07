@@ -104,32 +104,70 @@ test_blocked_completion_records_blocked_label() {
 	printf '%s\n' '{"type":"text","sessionID":"ses_blocked","text":"BLOCKED: missing dependency credentials"}' >"$output_file"
 	local rc=0
 	_handle_run_result 0 "$output_file" "worker" "openai" "issue-456" "openai/gpt-5.5" || rc=$?
-	[[ "$rc" -eq 83 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" ]] && {
-		print_result "BLOCKED signal requests terminal escalation evaluation" 0
+	[[ "$rc" -eq 83 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" && "${_run_classification_pattern:-}" == "terminal_blocked" ]] && {
+		print_result "generic BLOCKED signal remains terminal without capability escalation" 0
 		return 0
 	}
-	print_result "BLOCKED signal requests terminal escalation evaluation" 1 \
-		"rc=$rc label=${_run_result_label:-<unset>} reason=${_run_failure_reason:-<unset>} source=${_run_classification_source:-<unset>}"
+	print_result "generic BLOCKED signal remains terminal without capability escalation" 1 \
+		"rc=$rc label=${_run_result_label:-<unset>} reason=${_run_failure_reason:-<unset>} source=${_run_classification_source:-<unset>} pattern=${_run_classification_pattern:-<unset>}"
 	return 0
 }
 
 test_capability_escalation_ladder_is_bounded_and_exact() {
 	local result=0
+	local route_output=""
+	local route_output_file="${TEST_ROOT}/capability-escalation-route-output.txt"
+	local _capability_escalation_tier=""
 	local _capability_escalation_model=""
 	local _capability_escalation_variant=""
 	local _capability_escalation_label=""
-	_resolve_capability_escalation "worker" "openai/gpt-5.6-luna" "max" 0 || result=1
-	[[ "$_capability_escalation_model" == "openai/gpt-5.6-sol" && "$_capability_escalation_variant" == "high" ]] || result=1
-	_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 1 || result=1
-	[[ "$_capability_escalation_model" == "openai/gpt-5.6-sol" && "$_capability_escalation_variant" == "max" ]] || result=1
-	_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 0 || result=1
-	if _resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "max" 0 ||
-		_resolve_capability_escalation "worker" "openai/gpt-5.6-sol" "high" 2 ||
-		_resolve_capability_escalation "worker" "openai/gpt-5.6-luna" "high" 0 ||
-		_resolve_capability_escalation "pulse" "openai/gpt-5.6-luna" "max" 0; then
-		result=1
-	fi
-	print_result "Capability escalation is bounded to Luna max -> Sol high -> Sol max" "$result"
+	(
+		model_tier_next() {
+			local current_tier="$1"
+			case "$current_tier" in
+			simple) printf '%s\n' "standard" ;;
+			standard) printf '%s\n' "thinking" ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		choose_model() {
+			local role_name="$1"
+			local explicit_model="$2"
+			local tier_name="$3"
+			: "$role_name" "$explicit_model"
+			case "$tier_name" in
+			standard) printf '%s\n' "openai/gpt-5.6-terra" ;;
+			thinking) printf '%s\n' "openai/gpt-5.6-sol" ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		resolve_headless_variant() {
+			local role_name="$1"
+			local tier_name="$2"
+			local model_name="$3"
+			: "$role_name" "$model_name"
+			case "$tier_name" in
+			standard) printf '%s\n' "high" ;;
+			thinking) printf '%s\n' "medium" ;;
+			*) return 1 ;;
+			esac
+			return 0
+		}
+		_resolve_capability_escalation "worker" "simple" || exit 1
+		printf '%s|%s|%s\n' "$_capability_escalation_tier" "$_capability_escalation_model" "$_capability_escalation_variant"
+		_resolve_capability_escalation "worker" "standard" || exit 1
+		printf '%s|%s|%s\n' "$_capability_escalation_tier" "$_capability_escalation_model" "$_capability_escalation_variant"
+		if _resolve_capability_escalation "worker" "thinking" ||
+			_resolve_capability_escalation "pulse" "simple"; then
+			exit 1
+		fi
+	) >"$route_output_file" || result=1
+	[[ -f "$route_output_file" ]] && route_output=$(<"$route_output_file")
+	local expected_output=$'standard|openai/gpt-5.6-terra|high\nthinking|openai/gpt-5.6-sol|medium'
+	[[ "$route_output" == "$expected_output" ]] || result=1
+	print_result "Capability escalation follows the bounded configured tier order" "$result"
 	return 0
 }
 

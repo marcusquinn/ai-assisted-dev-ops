@@ -14,7 +14,11 @@ import { getGoogleProxyPort, registerGoogleProvider } from "./google-proxy.mjs";
 import { getClaudeProxyPort, registerClaudeProvider } from "./claude-proxy.mjs";
 import { checkOpenCodeVersionDriftAsync } from "./version-tracking.mjs";
 import { registerApprovedWorkerPermissions } from "./config-worker-permissions.mjs";
-import { registerAgents, registerResearchOnlyAgent } from "./config-agent-profiles.mjs";
+import {
+  registerAgentRoutingIntent,
+  registerAgents,
+  registerResearchOnlyAgent,
+} from "./config-agent-profiles.mjs";
 import {
   enforcePublicTriageIsolation,
   enforceTeamInterfaceConversationIsolation,
@@ -296,7 +300,15 @@ function logVersionDriftAsync(pluginDir) {
  * @returns {Function} Config hook
  */
 export function createConfigHook(deps) {
-  const { agentsDir, workspaceDir, pluginDir, repositoryDir, conversation } = deps;
+  const {
+    agentsDir,
+    workspaceDir,
+    pluginDir,
+    repositoryDir,
+    conversation,
+    modelRouting,
+    agentRoutingState = { tiers: new Map(), pinned: new Set() },
+  } = deps;
 
   /**
    * Modify OpenCode config to register aidevops subagents, MCP servers,
@@ -323,8 +335,10 @@ export function createConfigHook(deps) {
       return;
     }
     if (!config.agent) config.agent = {};
+    agentRoutingState.tiers.clear();
+    agentRoutingState.pinned.clear();
 
-    let agents = registerAgents(config, agentsDir);
+    let agents = registerAgents(config, agentsDir, modelRouting, agentRoutingState);
     ensureAgentGuard(config, workspaceDir);
 
     const mcps = registerMcpServers(config);
@@ -332,6 +346,13 @@ export function createConfigHook(deps) {
     const directories = registerManagedDirectoryPermissions(config);
     const permissionGrants = registerApprovedWorkerPermissions(config, { repositoryDir });
     agents += registerResearchOnlyAgent(config, agentsDir);
+    registerAgentRoutingIntent(
+      agentRoutingState,
+      "research-only",
+      config.agent["research-only"],
+      "standard",
+      modelRouting,
+    );
     const poolCleaned = registerPoolProvider(config);
     const anthropic = registerAnthropicModels(config);
     const openai = registerGpt56ContextLimits(config);

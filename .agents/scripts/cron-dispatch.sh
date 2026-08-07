@@ -178,6 +178,7 @@ send_prompt() {
 	local task="$2"
 	local model="$3"
 	local cmd_timeout="$4"
+	local variant="${5:-}"
 	local protocol
 	protocol=$(get_protocol "$OPENCODE_HOST")
 	local url="${protocol}://${OPENCODE_HOST}:${OPENCODE_PORT}/session/${session_id}/message"
@@ -192,6 +193,7 @@ send_prompt() {
 	body=$(jq -n \
 		--arg provider "$provider_id" \
 		--arg model "$model_id" \
+		--arg variant "$variant" \
 		--arg task "$task" \
 		'{
             model: {
@@ -199,7 +201,7 @@ send_prompt() {
                 modelID: $model
             },
             parts: [{type: "text", text: $task}]
-        }')
+        } | if $variant == "" then . else . + {variant: $variant} end')
 
 	build_curl_args "$protocol"
 
@@ -263,6 +265,7 @@ $response"
 #   $1 - job JSON string
 #   $2 - workdir (from job JSON)
 # Sets globals: JOB_NAME JOB_TASK JOB_WORKDIR JOB_TIMEOUT JOB_MODEL JOB_NOTIFY
+#               JOB_TIER JOB_PROVIDER JOB_VARIANT
 #######################################
 resolve_job_config() {
 	local job="$1"
@@ -272,6 +275,8 @@ resolve_job_config() {
 	JOB_WORKDIR=$(echo "$job" | jq -r '.workdir')
 	JOB_TIMEOUT=$(echo "$job" | jq -r '.timeout // ""')
 	JOB_MODEL=$(echo "$job" | jq -r '.model // ""')
+	JOB_TIER=$(echo "$job" | jq -r '.model_tier // empty')
+	JOB_PROVIDER=$(echo "$job" | jq -r '.provider // empty')
 	JOB_NOTIFY=$(echo "$job" | jq -r '.notify // "none"')
 
 	# Apply bundle defaults if job config doesn't specify model/timeout (t1364.6)
@@ -301,11 +306,34 @@ resolve_job_config() {
 	fi
 
 	# Apply framework defaults for anything still unset
-	JOB_MODEL="${JOB_MODEL:-anthropic/claude-sonnet-4-6}"
+	JOB_MODEL="${JOB_MODEL:-standard}"
 	JOB_TIMEOUT="${JOB_TIMEOUT:-600}"
 
-	# Resolve tier names to full model strings (t132.7)
-	JOB_MODEL=$(resolve_model_tier "$JOB_MODEL")
+	case "$JOB_MODEL" in
+	simple | standard | thinking) JOB_TIER="$JOB_MODEL" ;;
+	esac
+	if [[ -n "$JOB_TIER" ]]; then
+		if [[ -n "$JOB_PROVIDER" ]]; then
+			JOB_MODEL=$(model_tier_candidate_for_provider "$JOB_TIER" "$JOB_PROVIDER" 2>/dev/null) || {
+				log_error "No ${JOB_PROVIDER} candidate is configured for tier ${JOB_TIER}"
+				return 1
+			}
+		else
+			JOB_MODEL=$(resolve_model_tier "$JOB_TIER")
+		fi
+		if [[ "$JOB_MODEL" != *"/"* ]]; then
+			log_error "No runnable candidate is configured for tier ${JOB_TIER}"
+			return 1
+		fi
+	elif [[ -n "$JOB_PROVIDER" && "$JOB_MODEL" == *"/"* ]]; then
+		JOB_MODEL="${JOB_PROVIDER}/${JOB_MODEL#*/}"
+	else
+		JOB_TIER=$(model_tier_for_model "$JOB_MODEL" 2>/dev/null || true)
+	fi
+	JOB_VARIANT=""
+	if [[ -n "$JOB_TIER" ]]; then
+		JOB_VARIANT=$(model_tier_variant "$JOB_TIER" "$JOB_MODEL" 2>/dev/null || true)
+	fi
 	return 0
 }
 
@@ -477,7 +505,7 @@ main() {
 
 	# Resolve fields, bundle defaults, framework defaults, model tier
 	# Sets globals: JOB_NAME JOB_TASK JOB_WORKDIR JOB_TIMEOUT JOB_MODEL JOB_NOTIFY
-	resolve_job_config "$job"
+	resolve_job_config "$job" || return 1
 
 	# Pre-dispatch runtime content scanning (t1412.4)
 	JOB_TASK=$(scan_task_content "$JOB_TASK")
@@ -487,6 +515,7 @@ main() {
 	log_info "Workdir: $JOB_WORKDIR"
 	log_info "Timeout: ${JOB_TIMEOUT}s"
 	log_info "Model: $JOB_MODEL"
+	[[ -z "$JOB_TIER" ]] || log_info "Tier: $JOB_TIER"
 
 	# Check server
 	if ! check_server; then
@@ -521,7 +550,7 @@ main() {
 
 	# Send prompt and capture response
 	local response exit_code=0
-	response=$(send_prompt "$session_id" "$JOB_TASK" "$JOB_MODEL" "$JOB_TIMEOUT") || exit_code=$?
+	response=$(send_prompt "$session_id" "$JOB_TASK" "$JOB_MODEL" "$JOB_TIMEOUT" "$JOB_VARIANT") || exit_code=$?
 
 	local end_time duration
 	end_time=$(date +%s)
@@ -542,4 +571,6 @@ main() {
 	return $?
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

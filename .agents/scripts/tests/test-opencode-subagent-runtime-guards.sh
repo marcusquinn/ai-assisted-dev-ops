@@ -108,6 +108,15 @@ if grep -q '^model: thinking$' "$sandboxed_generated"; then
 	printf '%s\n' 'FAIL: workload tier leaked into OpenCode model field' >&2
 	exit 1
 fi
+grep -q '^aidevops_model_tier: thinking$' "$sandboxed_generated"
+if grep -q '^model:' "$sandboxed_generated"; then
+	printf '%s\n' 'FAIL: generated tier intent pinned a concrete provider model' >&2
+	exit 1
+fi
+if grep -q '^variant:' "$sandboxed_generated"; then
+	printf '%s\n' 'FAIL: generated tier intent pinned a provider-specific variant' >&2
+	exit 1
+fi
 
 if ! _write_subagent_stub "$AGENTS_DIR/tools/code-review/research-only.md" >/dev/null; then
 	printf '%s\n' 'FAIL: could not generate research-only OpenCode subagent' >&2
@@ -124,5 +133,33 @@ grep -q '^  bash: false$' "$research_generated"
 grep -q '^  task: false$' "$research_generated"
 grep -q '^  external_directory: deny$' "$research_generated"
 
-printf '%s\n' 'PASS: generated OpenCode subagents preserve guards without treating workload tiers as model IDs'
+print_info() {
+	return 0
+}
+
+print_success() {
+	return 0
+}
+
+# Exercise the production xargs child-shell boundary. Direct helper calls above
+# cannot detect a missing export for a helper used only by restrictive sources.
+if ! _generate_subagents_opencode "$agent_dir" >/dev/null; then
+	printf '%s\n' 'FAIL: parallel OpenCode subagent generation failed' >&2
+	exit 1
+fi
+
+[[ -f "$sandboxed_generated" ]]
+grep -q '^  bash: false$' "$sandboxed_generated"
+grep -q '^aidevops_model_tier: thinking$' "$sandboxed_generated"
+if grep -q '^model:' "$sandboxed_generated"; then
+	printf '%s\n' 'FAIL: parallel generation pinned tier intent to a model' >&2
+	exit 1
+fi
+
+[[ -f "$research_generated" ]]
+grep -q '^  "\*": false$' "$research_generated"
+grep -q '^  bash: false$' "$research_generated"
+grep -q '^  external_directory: deny$' "$research_generated"
+
+printf '%s\n' 'PASS: generated OpenCode subagents preserve guards and request-time routing intent'
 exit 0

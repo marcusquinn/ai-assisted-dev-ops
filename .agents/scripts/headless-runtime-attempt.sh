@@ -302,6 +302,9 @@ _finish_run_attempt_rate_limit_fast() {
 		metric_output_file=$(_metric_failure_excerpt_path "$output_file" "$session_key")
 	fi
 	_run_result_label="rate_limit_fast"
+	local suppress_backoff_details=0
+	_headless_run_is_ephemeral "$role" && suppress_backoff_details=1
+	record_provider_backoff "$provider" "rate_limit" "$output_file" "$selected_model" "$suppress_backoff_details" || true
 	_hrw_reconcile_session_permission_blockers "$session_key" "$_run_result_label"
 	rm -f "$_rl_fast_sentinel" "$output_file" "$permission_request_file" 2>/dev/null || true
 	_run_permission_request_file=""
@@ -386,8 +389,6 @@ _finish_run_attempt_result() {
 		_metric_output_file=""
 		_metric_session_id=""
 	fi
-	_run_metric_output_file="$_metric_output_file"
-	_run_metric_session_id="$_metric_session_id"
 	print_info "[lifecycle] handle_run_result_returned session=$session_key handle_exit=$handle_exit result_label=${_run_result_label:-unknown}"
 	end_ms=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || printf '%s' "0")
 	if [[ "$end_ms" =~ ^[0-9]+$ && "$start_ms" =~ ^[0-9]+$ && "$end_ms" -ge "$start_ms" ]]; then
@@ -401,6 +402,8 @@ _finish_run_attempt_result() {
 		_metric_output_file=$(_metric_failure_excerpt_for_result "$metric_result_label" "$_metric_excerpt_candidate" "$session_key")
 	fi
 	[[ -z "$_metric_excerpt_candidate" ]] || rm -f "$_metric_excerpt_candidate"
+	_run_metric_output_file="$_metric_output_file"
+	_run_metric_session_id="$_metric_session_id"
 	local launch_failure_cause="" next_action="" evidence_fields=""
 	evidence_fields=$(_derive_worker_failure_evidence "$metric_result_label" "$exit_code" \
 		"${_run_activity_detected:-0}" "${_metric_kill_reason:-}" "${_run_failure_reason:-}")

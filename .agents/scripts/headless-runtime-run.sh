@@ -29,6 +29,25 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _run_lib_path
 fi
 
+# Bound provider/model retries to the configured same-tier candidate count.
+# One extra attempt per candidate allows an OAuth pool account rotation without
+# consuming the opportunity to try every configured provider candidate.
+_headless_route_attempt_budget() {
+	local tier="${1:-standard}"
+	local candidate=""
+	local candidate_count=0
+	while IFS= read -r candidate; do
+		[[ -n "$candidate" ]] || continue
+		candidate_count=$((candidate_count + 1))
+	done < <(get_configured_models "$tier" 2>/dev/null || true)
+
+	local budget=$((candidate_count * 2))
+	[[ "$budget" -ge 3 ]] || budget=3
+	[[ "$budget" -le 12 ]] || budget=12
+	printf '%s\n' "$budget"
+	return 0
+}
+
 # Establish the role/private boundary and initialize process-local workspace.
 _prepare_cmd_run_environment() {
 	if [[ "$role" != "$_CMD_RUN_ROLE_WORKER" ]]; then
@@ -83,6 +102,7 @@ _prepare_cmd_run_worker_identity() {
 
 # Select a model and enforce the protected-data policy.
 _select_cmd_run_model() {
+	tier_override=$(_normalize_headless_tier "${tier_override:-standard}")
 	print_info "[lifecycle] pre_model_select session=$session_key role=$role tier=${tier_override:-auto} pid=$$"
 	local choose_exit=0
 	selected_model=$(choose_model "$role" "${model_override:-$initial_model}" "$tier_override") || {
@@ -90,6 +110,14 @@ _select_cmd_run_model() {
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
 		return "$choose_exit"
 	}
+	if [[ -z "${model_override:-$initial_model}" ]]; then
+		local selected_tier=""
+		selected_tier=$(model_tier_for_model "$selected_model" 2>/dev/null || true)
+		if [[ -n "$selected_tier" && "$selected_tier" != "$tier_override" ]]; then
+			print_info "[routing] adaptive tier selection ${tier_override}->${selected_tier} model=$selected_model"
+			tier_override="$selected_tier"
+		fi
+	fi
 	print_info "[lifecycle] post_model_select session=$session_key model=$selected_model pid=$$"
 	if ! vault_data_policy_check "$selected_model" "$title" "$prompt"; then
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
@@ -144,6 +172,21 @@ _prepare_cmd_run_dispatch() {
 	return 0
 }
 
+_resolve_capability_escalation() {
+	local role="$1"
+	local current_tier="$2"
+	_capability_escalation_model=""
+	_capability_escalation_variant=""
+	_capability_escalation_label=""
+	_capability_escalation_tier=""
+	[[ "$role" == "worker" ]] || return 1
+	_capability_escalation_tier=$(model_tier_next "$current_tier" 2>/dev/null) || return 1
+	_capability_escalation_model=$(choose_model "$role" "" "$_capability_escalation_tier" "exact-tier") || return 1
+	_capability_escalation_variant=$(resolve_headless_variant "$role" "$_capability_escalation_tier" "$_capability_escalation_model")
+	_capability_escalation_label="${current_tier} tier reported BLOCKED — escalating to ${_capability_escalation_tier} (${_capability_escalation_model}${_capability_escalation_variant:+ ${_capability_escalation_variant}})"
+	return 0
+}
+
 # Handle attempt results that always terminate or immediately escalate.
 _handle_cmd_run_terminal_attempt() {
 	local finish_status=0
@@ -163,7 +206,20 @@ _handle_cmd_run_terminal_attempt() {
 		_cmd_run_return_status=1
 		;;
 	80)
-		print_warning "$selected_model rate_limit_fast — API 429/overload within first ${HEADLESS_RATE_LIMIT_DETECT_SECONDS:-30}s (transient, no NMR backoff)"
+		print_warning "$selected_model rate_limit_fast — API 429/overload within first ${HEADLESS_RATE_LIMIT_DETECT_SECONDS:-30}s"
+		if [[ "$role" == "$_CMD_RUN_ROLE_WORKER" && -z "$model_override" && "$attempt" -lt "$max_attempts" ]]; then
+			local alternate_model=""
+			alternate_model=$(choose_model "$role" "" "$tier_override" "exact-tier" 2>/dev/null) || alternate_model=""
+			if [[ -n "$alternate_model" && "$alternate_model" != "$selected_model" ]]; then
+				selected_model="$alternate_model"
+				variant_override=$(resolve_headless_variant "$role" "$tier_override" "$selected_model")
+				routing_reason="same_tier_fallback"
+				attempt=$((attempt + 1))
+				print_warning "Retrying with same-tier candidate $selected_model"
+				_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
+				return 0
+			fi
+		fi
 		_cmd_run_finish "$session_key" "$_run_result_label"
 		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_RETURN"
 		_cmd_run_return_status=0
@@ -174,17 +230,36 @@ _handle_cmd_run_terminal_attempt() {
 		_cmd_run_return_status="$finish_status"
 		;;
 	83)
-		if _resolve_capability_escalation "$role" "$selected_model" "$variant_override" "$max_reasoning_retry_count"; then
-			max_reasoning_retry_count=$((max_reasoning_retry_count + 1))
+		local capability_blocked=0
+		if [[ "${_run_result_label:-}" == "blocked" &&
+			"${_run_classification_source:-}" == "model_blocked_signal" &&
+			"${_run_classification_pattern:-}" == "capability_limit" ]]; then
+			capability_blocked=1
+		fi
+		if [[ "$capability_blocked" -eq 1 && -z "$model_override" ]] &&
+			_resolve_capability_escalation "$role" "$tier_override"; then
+			tier_override="$_capability_escalation_tier"
 			selected_model="$_capability_escalation_model"
 			variant_override="$_capability_escalation_variant"
-			prompt="The previous attempt reported BLOCKED after working on the task. Resume the existing session and worktree at the next authorized reasoning tier (${selected_model} ${variant_override}), challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Do not request broader permissions or bypass policy, authentication, trust, or secret-handling boundaries. Stop only at FULL_LOOP_COMPLETE or BLOCKED with concrete evidence that persists at the terminal Sol max tier."
+			routing_reason="capability_escalation"
+			routing_escalated=1
+			attempt=1
+			max_attempts=$(_headless_route_attempt_budget "$tier_override")
+			prompt="The previous attempt reported a model capability limit after working on the task. Resume the existing session and worktree at the next authorized capability tier (${tier_override}: ${selected_model}${variant_override:+ ${variant_override}}), challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Do not request broader permissions or bypass policy, authentication, trust, or secret-handling boundaries. If model capability remains the only blocker, emit the exact marker BLOCKED: capability limit - <evidence> so runtime routing can evaluate the next configured tier. Use generic BLOCKED only for concrete terminal non-capability blockers. Stop at FULL_LOOP_COMPLETE or a supported BLOCKED outcome."
 			print_warning "$_capability_escalation_label"
 			_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
 		else
-			_cmd_run_finish "$session_key" "$completion_state" "$work_dir" || finish_status=$?
+			local terminal_status="$completion_state"
+			if [[ "${_run_result_label:-}" == "local_kill" ]]; then
+				terminal_status="$_HRW_STATUS_FAIL"
+			fi
+			_cmd_run_finish "$session_key" "$terminal_status" "$work_dir" || finish_status=$?
 			_cmd_run_disposition="$_CMD_RUN_DISPOSITION_RETURN"
-			_cmd_run_return_status="$finish_status"
+			if [[ "$terminal_status" == "$_HRW_STATUS_FAIL" ]]; then
+				_cmd_run_return_status=1
+			else
+				_cmd_run_return_status="$finish_status"
+			fi
 		fi
 		;;
 	esac
@@ -196,6 +271,7 @@ _handle_cmd_run_continuation_attempt() {
 	if [[ "$attempt_exit" -eq 81 ]]; then
 		if [[ "$service_interruption_continue_count" -lt "$max_service_interruption_continue_retries" ]]; then
 			service_interruption_continue_count=$((service_interruption_continue_count + 1))
+			routing_reason="service_interruption_retry"
 			print_warning "service_interruption_continue attempt=${service_interruption_continue_count}/${max_service_interruption_continue_retries} — resuming existing session/worktree"
 			prompt="A transient provider/service interruption stopped the previous run after work had begun. Resume the existing session and worktree; do not restart exploration. Check git status, existing todos, and prior changes, then continue through implementation, verification, commit, PR, merge summary, review, merge, release, closing comments, deploy, and cleanup. Do not stop until FULL_LOOP_COMPLETE or BLOCKED with evidence."
 			_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
@@ -205,10 +281,18 @@ _handle_cmd_run_continuation_attempt() {
 		_run_result_label="$exhausted_label"
 		_append_service_interruption_exhausted_metric "$role" "$session_key" "$selected_model" "$work_dir" \
 			"${_run_failure_reason:-provider_error}" "${_run_metric_output_file:-}" "${_run_metric_session_id:-}"
+		local interrupted_provider="" interruption_details="${_run_metric_output_file:-/dev/null}"
+		interrupted_provider=$(extract_provider "$selected_model" 2>/dev/null || true)
+		[[ -f "$interruption_details" ]] || interruption_details="/dev/null"
+		if [[ -n "$interrupted_provider" ]]; then
+			record_provider_backoff "$interrupted_provider" "${_run_failure_reason:-provider_error}" \
+				"$interruption_details" "$selected_model" || true
+		fi
 		print_warning "Exhausted ${max_service_interruption_continue_retries} service-interruption continuations — falling through to normal failure handling"
 	fi
 	if [[ "$attempt_exit" -eq 77 && "$continuation_count" -lt "$max_continuation_retries" ]]; then
 		continuation_count=$((continuation_count + 1))
+		routing_reason="continuation_retry"
 		print_warning "Premature exit detected — sending continuation prompt (attempt ${continuation_count}/${max_continuation_retries})"
 		prompt="Continue through to completion. This is a headless session — no user is present and no user input is available to assist. You have set up the environment but have not yet completed the task. Check your todo list, implement the required code changes, commit, push, and create a PR. After PR creation, you MUST post the MERGE_SUMMARY comment (full-loop step 4.2.1) — the merge pass needs it for closing comments. Then continue through review, merge, and closing comments. Do not stop until the outcome is FULL_LOOP_COMPLETE or BLOCKED with evidence."
 		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
@@ -225,6 +309,7 @@ _handle_cmd_run_continuation_attempt() {
 	fi
 	if [[ "$attempt_exit" -eq 82 && "$brief_recovery_count" -lt "$max_brief_recovery_retries" ]]; then
 		brief_recovery_count=$((brief_recovery_count + 1))
+		routing_reason="brief_recovery_retry"
 		print_warning "Missing implementation context detected — sending brief-recovery continuation (attempt ${brief_recovery_count}/${max_brief_recovery_retries})"
 		prompt="The previous run ended with BLOCKED: missing implementation context. Before giving up, perform the GH#23225 brief-recovery routine once. Verify the linked issue number is \${WORKER_ISSUE_NUMBER}; read that issue body; keep discovery narrow using its title/body keywords, exact file search, and 2-3 likely target files/tests; then update only that linked issue body using --body-file with a Worker Guidance or How section containing Goal, files to inspect first, implementation steps, verification commands, runtime testing risk/expectation, existing reproduction context, and the aidevops signature footer. Mark in the issue body that brief recovery was attempted to avoid loops. After repairing the brief, re-run the full-loop implementation from the improved context and continue through implementation, verification, commit, PR, MERGE_SUMMARY, review, merge, closing comments, deploy, and cleanup. If narrow discovery still cannot produce concrete files and steps, emit BLOCKED: missing implementation context with evidence."
 		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
@@ -283,6 +368,7 @@ _handle_cmd_run_watchdog_attempt() {
 	fi
 	if [[ "$watchdog_continue_count" -lt "$max_watchdog_continue_retries" ]]; then
 		watchdog_continue_count=$((watchdog_continue_count + 1))
+		routing_reason="watchdog_retry"
 		print_warning "Watchdog stall with activity — resuming session (attempt ${watchdog_continue_count}/${max_watchdog_continue_retries}, session stalls=${_session_stall_count}/${_stall_continue_max})"
 		prompt="Your previous connection dropped mid-session and the process was restarted. All your prior work (worktree, file changes, commits) is still on disk. Resume where you left off — check git status, your todo list, and continue through to completion. Do not restart from scratch. Do not stop until the outcome is FULL_LOOP_COMPLETE or BLOCKED with evidence."
 		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
@@ -297,7 +383,7 @@ _cmd_run_attempt_loop() {
 	local max_continuation_retries="${HEADLESS_CONTINUATION_MAX_RETRIES:-10}" continuation_count=0
 	local max_watchdog_continue_retries="${HEADLESS_WATCHDOG_CONTINUE_MAX_RETRIES:-2}" watchdog_continue_count=0
 	local max_service_interruption_continue_retries="${HEADLESS_SERVICE_INTERRUPTION_CONTINUE_MAX_RETRIES:-2}" service_interruption_continue_count=0
-	local max_brief_recovery_retries="${HEADLESS_BRIEF_RECOVERY_MAX_RETRIES:-1}" brief_recovery_count=0 max_reasoning_retry_count=0
+	local max_brief_recovery_retries="${HEADLESS_BRIEF_RECOVERY_MAX_RETRIES:-1}" brief_recovery_count=0
 	if _headless_run_is_ephemeral "$role"; then
 		max_continuation_retries=0 max_watchdog_continue_retries=0
 		max_service_interruption_continue_retries=0 max_brief_recovery_retries=0
@@ -312,12 +398,23 @@ _cmd_run_attempt_loop() {
 	local attempt=1 max_attempts=3
 	if _headless_run_is_ephemeral "$role"; then
 		max_attempts=1
+	else
+		max_attempts=$(_headless_route_attempt_budget "$tier_override")
 	fi
 	local cmd_run_action="retry" cmd_run_next_model="$selected_model"
 	local _run_failure_reason="" _run_should_retry=0 _run_result_label="failed" _run_activity_detected="0"
 	local _run_metric_output_file="" _run_metric_session_id="" completion_state="complete"
 	local _cmd_run_disposition="" _cmd_run_return_status=1
+	local routing_attempt=0 routing_reason="headless_dispatch" routing_escalated=0 routing_candidate_index=-1
 	while [[ "$attempt" -le "$max_attempts" ]]; do
+		routing_attempt=$((routing_attempt + 1))
+		routing_candidate_index=$(model_tier_candidate_index "$tier_override" "$selected_model" 2>/dev/null) || routing_candidate_index=-1
+		export AIDEVOPS_DISPATCH_TIER="$tier_override"
+		export AIDEVOPS_ROUTING_CANDIDATE_INDEX="$routing_candidate_index"
+		export AIDEVOPS_ROUTING_ATTEMPT="$routing_attempt"
+		export AIDEVOPS_ROUTING_REASON="$routing_reason"
+		export AIDEVOPS_ROUTING_ESCALATED="$routing_escalated"
+		export AIDEVOPS_ROUTING_VARIANT="$variant_override"
 		_run_failure_reason="" _run_should_retry=0 _run_result_label="failed" _run_activity_detected="0"
 		local attempt_exit=0
 		if _execute_run_attempt "$role" "$session_key" "$work_dir" "$title" "$prompt" \
@@ -335,7 +432,13 @@ _cmd_run_attempt_loop() {
 		case "$_cmd_run_disposition" in "$_CMD_RUN_DISPOSITION_RETURN") return "$_cmd_run_return_status" ;; "$_CMD_RUN_DISPOSITION_CONTINUE") continue ;; esac
 		_cmd_run_prepare_retry "$role" "$session_key" "$model_override" "$attempt" \
 			"$max_attempts" "$selected_model" "$attempt_exit" "$tier_override" || return $?
-		[[ "$cmd_run_action" != "switch" ]] || selected_model="$cmd_run_next_model"
+		if [[ "$cmd_run_action" == "switch" ]]; then
+			selected_model="$cmd_run_next_model"
+			variant_override=$(resolve_headless_variant "$role" "$tier_override" "$selected_model")
+			routing_reason="same_tier_fallback"
+		else
+			routing_reason="retry"
+		fi
 		attempt=$((attempt + 1))
 	done
 	_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
