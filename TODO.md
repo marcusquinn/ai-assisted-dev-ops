@@ -1228,11 +1228,11 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18210 Verify protected issue-sync fallback and reconcile historical completion proof #bug #framework #interactive #no-auto-dispatch ref:GH#29679 pr:#29704 completed:2026-08-07
 
-- [ ] t18211 Harden npm and Bun dependency supply-chain controls #security ref:GH#29717
+- [x] t18211 Harden npm and Bun dependency supply-chain controls #security ref:GH#29717 pr:#29721 completed:2026-08-07
 
-- [ ] t18212 Create reviewed release aggregation for PR #29721 #release ref:GH#29731
+- [x] t18212 Create reviewed release aggregation for PR #29721 #release ref:GH#29731 pr:#29745 completed:2026-08-07
 
-- [ ] t18213 Allow full-loop merges to preserve explicit commit bodies #bug ref:GH#29733 pr:#29735
+- [x] t18213 Allow full-loop merges to preserve explicit commit bodies #bug ref:GH#29733 pr:#29735 completed:2026-08-07
 
 - [ ] t18214 Make full-loop helpers use the sibling worktree gh shim #auto-dispatch #bug #priority:high #shell #workflow ref:GH#29750
 
