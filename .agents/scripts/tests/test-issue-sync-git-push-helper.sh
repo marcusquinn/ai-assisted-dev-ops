@@ -385,6 +385,54 @@ test_protected_branch_uses_one_rebased_pr() {
 	return 0
 }
 
+test_shallow_checkout_recovers_stale_pr_history() {
+	local origin_dir="$TMP/shallow-origin.git"
+	local seed_dir="$TMP/shallow-seed"
+	local work_dir="$TMP/shallow-work"
+	local fake_bin="$TMP/shallow-bin"
+	local gh_log="$TMP/shallow-gh.log"
+	local pr_marker="$TMP/shallow-pr.marker"
+	local output_file="$TMP/shallow-output.log"
+	local sync_ref="refs/heads/aidevops/issue-sync-todo"
+	local remote_todo=""
+	local is_shallow=""
+	create_origin "$origin_dir" "$seed_dir"
+	git -C "$seed_dir" checkout -b aidevops/issue-sync-todo >/dev/null
+	perl -0pi -e 's/t9001 original task/t9001 stale PR event/' "$seed_dir/TODO.md"
+	git -C "$seed_dir" add TODO.md
+	git -C "$seed_dir" commit -m "stale issue-sync PR event" >/dev/null
+	git -C "$seed_dir" push origin HEAD:"$sync_ref" >/dev/null
+	git -C "$seed_dir" checkout main >/dev/null
+	perl -0pi -e 's/t9003 third task/t9003 reviewed main advance/' "$seed_dir/TODO.md"
+	git -C "$seed_dir" add TODO.md
+	git -C "$seed_dir" commit -m "reviewed main advance" >/dev/null
+	git -C "$seed_dir" push origin main >/dev/null
+	git clone --depth 1 --branch main "file://${origin_dir}" "$work_dir" >/dev/null 2>&1
+	git_init_repo "$work_dir"
+	write_fake_gh "$fake_bin"
+	install_main_rejection_hook "$origin_dir" gh006
+	: >"$gh_log"
+	: >"$pr_marker"
+	perl -0pi -e 's/t9002 second task/t9002 shallow runner event/' "$work_dir/TODO.md"
+	if ! run_issue_sync_helper "$work_dir" "$fake_bin" "$gh_log" "$pr_marker" \
+		"$TMP/shallow-head" "$TMP/shallow-title" "$output_file" 3; then
+		printf 'Shallow publication output:\n%s\n' "$(<"$output_file")" >&2
+		fail "shallow checkout recovers stale issue-sync PR history"
+		return 0
+	fi
+	remote_todo=$(git --git-dir="$origin_dir" show "${sync_ref}:TODO.md")
+	is_shallow=$(git -C "$work_dir" rev-parse --is-shallow-repository)
+	if [[ "$is_shallow" != "false" ||
+		"$remote_todo" != *"t9001 stale PR event"* ||
+		"$remote_todo" != *"t9002 shallow runner event"* ||
+		"$remote_todo" != *"t9003 reviewed main advance"* ]]; then
+		fail "shallow checkout recovers stale issue-sync PR history"
+	else
+		pass "shallow checkout recovers stale issue-sync PR history"
+	fi
+	return 0
+}
+
 test_non_gh006_failure_does_not_open_pr() {
 	local origin_dir="$TMP/terminal-origin.git"
 	local seed_dir="$TMP/terminal-seed"
@@ -555,6 +603,7 @@ test_noop_publishes_nothing() {
 test_successful_push
 test_rebase_conflict_neutralizes_cleanly
 test_protected_branch_uses_one_rebased_pr
+test_shallow_checkout_recovers_stale_pr_history
 test_non_gh006_failure_does_not_open_pr
 test_deleted_pr_branch_retries_before_opening_pr
 test_actions_pr_creation_uses_pat_fallback

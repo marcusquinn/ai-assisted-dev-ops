@@ -205,6 +205,29 @@ issue_sync_remote_branch_sha() {
 	return 0
 }
 
+issue_sync_fetch_pr_history() {
+	local repo_path="$1"
+	local default_branch="$2"
+	local branch_name="$3"
+	local is_shallow=""
+	is_shallow=$(issue_sync_git -C "$repo_path" rev-parse --is-shallow-repository) || {
+		echo "::error::Unable to inspect issue-sync checkout history"
+		return 1
+	}
+	if [[ "$is_shallow" == "true" ]]; then
+		issue_sync_git -C "$repo_path" fetch -q --unshallow origin \
+			"$default_branch" "$branch_name" || {
+			echo "::error::Unable to recover history for the stale issue-sync PR branch"
+			return 1
+		}
+	fi
+	issue_sync_git -C "$repo_path" fetch -q origin "$branch_name" || {
+		echo "::error::Unable to fetch the issue-sync PR branch"
+		return 1
+	}
+	return 0
+}
+
 issue_sync_prepare_pr_snapshot() {
 	local repo_path="$1"
 	local default_branch="$2"
@@ -222,7 +245,7 @@ issue_sync_prepare_pr_snapshot() {
 		return 0
 	fi
 	[[ "$branch_rc" -eq 0 ]] || return 1
-	issue_sync_git -C "$repo_path" fetch -q origin "$ISSUE_SYNC_PR_BRANCH" || return 1
+	issue_sync_fetch_pr_history "$repo_path" "$default_branch" "$ISSUE_SYNC_PR_BRANCH" || return 1
 	sync_sha=$(issue_sync_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
 	sync_base=$(issue_sync_git -C "$repo_path" merge-base "$ISSUE_SYNC_BASE_SHA" "$sync_sha") || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_base" "$sync_ancestor" || return 1
