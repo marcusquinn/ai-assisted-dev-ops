@@ -1226,7 +1226,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18209 Implement provider-neutral routing, observability, and completion feedback #feat #models #observability #interactive #priority:high ~4h tier:thinking ref:GH#29674 assignee:marcusquinn started:2026-08-07T02:34:27Z -> [todo/tasks/t18209-brief.md]
 
-- [ ] t18210 Verify protected issue-sync fallback and reconcile historical completion proof #bug #framework #interactive #no-auto-dispatch ref:GH#29679
+- [x] t18210 Verify protected issue-sync fallback and reconcile historical completion proof #bug #framework #interactive #no-auto-dispatch ref:GH#29679 pr:#29704 completed:2026-08-07
 
 ## In Progress
 
