@@ -55,7 +55,8 @@ _pulse_graphql_budget_priority_decision() {
 		printf 'unknown ? ? %s\n' "$threshold"
 		return 0
 	fi
-	local remaining limit
+	local remaining
+	local limit
 	remaining=$(printf '%s' "$rate_json" | jq -r '.resources.graphql.remaining // ""' 2>/dev/null) || remaining=""
 	limit=$(printf '%s' "$rate_json" | jq -r '.resources.graphql.limit // ""' 2>/dev/null) || limit=""
 	if [[ ! "$remaining" =~ ^[0-9]+$ ]] || [[ ! "$limit" =~ ^[0-9]+$ ]]; then
@@ -75,7 +76,11 @@ _pulse_graphql_budget_priority_decision() {
 #######################################
 _pulse_set_graphql_budget_priority() {
 	local log_mode="${1:-log}"
-	local decision budget_class remaining limit threshold
+	local decision
+	local budget_class
+	local remaining
+	local limit
+	local threshold
 	decision=$(_pulse_graphql_budget_priority_decision)
 	read -r budget_class remaining limit threshold <<<"$decision"
 	[[ -n "$budget_class" ]] || budget_class="$_PULSE_BUDGET_MODE_UNKNOWN"
@@ -116,7 +121,14 @@ _pulse_rest_core_budget_priority_decision() {
 #######################################
 _pulse_set_rest_core_budget_priority() {
 	local log_mode="${1:-log}"
-	local decision budget_class remaining limit adaptive soft_cap hard_floor reset_epoch
+	local decision
+	local budget_class
+	local remaining
+	local limit
+	local adaptive
+	local soft_cap
+	local hard_floor
+	local reset_epoch
 	decision=$(_pulse_rest_core_budget_priority_decision)
 	read -r budget_class remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	[[ -n "$budget_class" ]] || budget_class="$_PULSE_BUDGET_MODE_UNKNOWN"

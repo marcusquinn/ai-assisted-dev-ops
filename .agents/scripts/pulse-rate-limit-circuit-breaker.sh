@@ -230,7 +230,9 @@ _cb_rest_core_bounds() {
 _cb_rest_core_thresholds() {
 	local reset_epoch="$1"
 	local now_epoch="$2"
-	local soft_cap hard_floor window_seconds
+	local soft_cap
+	local hard_floor
+	local window_seconds
 	read -r soft_cap hard_floor window_seconds < <(_cb_rest_core_bounds)
 	[[ "$reset_epoch" =~ ^[0-9]+$ ]] || return 1
 	[[ "$now_epoch" =~ ^[0-9]+$ ]] || return 1
@@ -288,7 +290,8 @@ _cb_rest_core_observation() {
 	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$limit" =~ ^[0-9]+$ || ! "$reset" =~ ^[0-9]+$ || "$resource" != "$_CB_REST_CORE_RESOURCE" || "$reset" -le "$now" ]]; then
 		return 2
 	fi
-	local cache_dir cache_tmp
+	local cache_dir
+	local cache_tmp
 	cache_dir=$(dirname "$_CB_REST_CORE_CACHE_FILE")
 	cache_tmp="${_CB_REST_CORE_CACHE_FILE}.tmp.$$"
 	mkdir -p "$cache_dir" 2>/dev/null || true
@@ -312,14 +315,19 @@ _cb_rest_core_observation() {
 # Modes: normal, reserve, emergency, disabled, unknown.
 #######################################
 pulse_rest_core_priority_snapshot() {
-	local soft_cap hard_floor window_seconds
+	local soft_cap
+	local hard_floor
+	local window_seconds
 	read -r soft_cap hard_floor window_seconds < <(_cb_rest_core_bounds)
 	if [[ "${AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER:-0}" == "1" || "$soft_cap" -eq 0 ]]; then
 		printf 'disabled ? ? 0 %s %s ?\n' "$soft_cap" "$hard_floor"
 		return 0
 	fi
 
-	local observation remaining limit reset_epoch
+	local observation
+	local remaining
+	local limit
+	local reset_epoch
 	observation=$(_cb_rest_core_observation) || observation=""
 	if [[ -z "$observation" ]]; then
 		printf 'unknown ? ? ? %s %s ?\n' "$soft_cap" "$hard_floor"
@@ -369,7 +377,13 @@ _cb_rest_core_priority_decision_allows() {
 	*) return 2 ;;
 	esac
 
-	local mode remaining limit adaptive soft_cap hard_floor reset_epoch
+	local mode
+	local remaining
+	local limit
+	local adaptive
+	local soft_cap
+	local hard_floor
+	local reset_epoch
 	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	case "$mode" in
 	disabled | normal)
@@ -422,7 +436,14 @@ pulse_rest_core_reserve_allows() {
 # Gate new dispatch work at the hard floor and on unknown REST evidence.
 #######################################
 _cb_rest_core_progress_allows_dispatch() {
-	local decision mode remaining limit adaptive soft_cap hard_floor reset_epoch
+	local decision
+	local mode
+	local remaining
+	local limit
+	local adaptive
+	local soft_cap
+	local hard_floor
+	local reset_epoch
 	decision=$(pulse_rest_core_priority_snapshot)
 	local progress_rc=0
 	_cb_rest_core_priority_decision_allows progress "$decision" || progress_rc=$?
