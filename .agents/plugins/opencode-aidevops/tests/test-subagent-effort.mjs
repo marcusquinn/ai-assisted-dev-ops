@@ -317,6 +317,8 @@ test("provider-specific variants are not clamped across different models", async
 });
 
 test("root requests matching routed profiles record telemetry without changing params", async () => {
+  const previousDispatchTier = process.env.AIDEVOPS_DISPATCH_TIER;
+  delete process.env.AIDEVOPS_DISPATCH_TIER;
   const decisions = [];
   const client = {
     session: {
@@ -339,23 +341,31 @@ test("root requests matching routed profiles record telemetry without changing p
     modelRouting,
     onRoutingDecision: async (sessionID, decision) => decisions.push({ sessionID, ...decision }),
   });
-  const output = { options: {} };
-  await hooks.chatParams({
-    provider: { id: "openai" },
-    model: { id: "gpt-5.6-terra" },
-    message: { sessionID: "root" },
-  }, output);
+  try {
+    const output = { options: {} };
+    await hooks.chatParams({
+      provider: { id: "openai" },
+      model: { id: "gpt-5.6-terra" },
+      message: { sessionID: "root" },
+    }, output);
 
-  assert.deepEqual(output.options, {});
-  assert.deepEqual(decisions, [{
-    sessionID: "root",
-    tier: "standard",
-    model: "openai/gpt-5.6-terra",
-    variant: "high",
-    candidateIndex: 0,
-    attempt: 1,
-    reason: "model_profile",
-  }]);
+    assert.deepEqual(output.options, {});
+    assert.deepEqual(decisions, [{
+      sessionID: "root",
+      tier: "standard",
+      model: "openai/gpt-5.6-terra",
+      variant: "high",
+      candidateIndex: 0,
+      attempt: 1,
+      reason: "model_profile",
+    }]);
+  } finally {
+    if (previousDispatchTier === undefined) {
+      delete process.env.AIDEVOPS_DISPATCH_TIER;
+    } else {
+      process.env.AIDEVOPS_DISPATCH_TIER = previousDispatchTier;
+    }
+  }
 });
 
 test("headless dispatch metadata takes precedence over inferred root profiles", async () => {

@@ -222,8 +222,10 @@ test("broker matching requires exact deployed helper and core bytes", () => {
   const brokerDir = join(root, "broker");
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   try {
-    mkdirSync(scriptsDir);
-    mkdirSync(brokerDir);
+    mkdirSync(scriptsDir, { mode: 0o700 });
+    // The broker matcher correctly rejects group-writable directories. Keep
+    // this fixture trusted regardless of the host's collaborative umask.
+    mkdirSync(brokerDir, { mode: 0o700 });
     const expectedHelper = join(scriptsDir, "source-access-helper.py");
     const expectedCore = join(scriptsDir, "source_access_core.py");
     const brokerHelper = join(brokerDir, "source-access-helper.py");
