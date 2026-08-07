@@ -20,6 +20,13 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import {
+  ROOT_BROKER,
+  applyApprovedRead,
+  brokerMatchesCurrentRelease,
+  checkGateWithApprovalInstructions,
+  requestApprovalId,
+} from "./source-access-request.mjs";
 
 export const SOURCE_ACCESS_REASON = "secret-bearing basename";
 const RECEIPT_SCHEMA = "aidevops-source-access-receipt/v1";
@@ -30,22 +37,10 @@ const MAX_TTL_SECONDS = 12 * 60 * 60;
 const MAX_SOURCE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_STATE_DIR = "/var/run/aidevops/source-access";
 const DEFAULT_PUBLIC_KEY = "/etc/aidevops/source-access/source-access.pub";
-const ROOT_BROKER = "/etc/aidevops/source-access/source-access-helper.py";
 const ROOT_BROKER_CORE = "/etc/aidevops/source-access/source_access_core.py";
-const REQUEST_ID_PATTERN = /^[a-f0-9]{32,64}$/;
 
 function readPath(args) {
   return args?.filePath || args?.file_path || "";
-}
-
-function runSourceAccessHelper(helperArgs, run = execFileSync) {
-  return String(
-    run("/usr/bin/python3", ["-I", "-B", ROOT_BROKER, ...helperArgs], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 15000,
-    }),
-  ).trim();
 }
 
 function stableValue(value) {
@@ -96,6 +91,11 @@ function fileSha256(filePath) {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
+function isRegularNonSymlink(filePath) {
+  const metadata = lstatSync(filePath);
+  return metadata.isFile() && !metadata.isSymbolicLink();
+}
+
 export function sourceAccessBrokerMatches({
   scriptsDir,
   trustUid = 0,
@@ -105,22 +105,26 @@ export function sourceAccessBrokerMatches({
   if (!scriptsDir) return false;
   const expectedHelper = join(scriptsDir, "source-access-helper.py");
   const expectedCore = join(scriptsDir, "source_access_core.py");
+  let matches = false;
   try {
-    return (
-      trustedDirectory(dirname(brokerHelperPath), trustUid) &&
-      dirname(brokerHelperPath) === dirname(brokerCorePath) &&
-      trustedRegularFile(brokerHelperPath, trustUid) &&
-      trustedRegularFile(brokerCorePath, trustUid) &&
-      lstatSync(expectedHelper).isFile() &&
-      !lstatSync(expectedHelper).isSymbolicLink() &&
-      lstatSync(expectedCore).isFile() &&
-      !lstatSync(expectedCore).isSymbolicLink() &&
+    const brokerDirectory = dirname(brokerHelperPath);
+    if (!trustedDirectory(brokerDirectory, trustUid) || brokerDirectory !== dirname(brokerCorePath)) {
+      return false;
+    }
+    if (
+      !trustedRegularFile(brokerHelperPath, trustUid) ||
+      !trustedRegularFile(brokerCorePath, trustUid)
+    ) {
+      return false;
+    }
+    if (!isRegularNonSymlink(expectedHelper) || !isRegularNonSymlink(expectedCore)) return false;
+    matches =
       fileSha256(brokerHelperPath) === fileSha256(expectedHelper) &&
-      fileSha256(brokerCorePath) === fileSha256(expectedCore)
-    );
+      fileSha256(brokerCorePath) === fileSha256(expectedCore);
   } catch {
-    return false;
+    // Any trust or filesystem failure falls through to the fail-closed result.
   }
+  return matches;
 }
 
 function hasSymlinkComponent(filePath) {
@@ -355,47 +359,18 @@ export function checkSecretReadWithApproval({
     return;
   }
 
-  let brokerCurrent = false;
-  try {
-    brokerCurrent = brokerMatches({ scriptsDir });
-  } catch {
-    brokerCurrent = false;
-  }
+  const brokerCurrent = brokerMatchesCurrentRelease(brokerMatches, scriptsDir);
   const approval = brokerCurrent ? verify({ sessionId, filePath, reason }) : false;
-  if (approval?.approvedPath) {
-    if (Object.hasOwn(args, "filePath")) args.filePath = approval.approvedPath;
-    if (Object.hasOwn(args, "file_path")) args.file_path = approval.approvedPath;
-    log("INFO", `[source-access] verified session-bound read approval for ${filePath}`);
-    return;
-  }
+  if (applyApprovedRead(args, approval, filePath, log)) return;
 
-  let requestId = "";
-  if (brokerCurrent) {
-    try {
-      requestId = runSourceAccessHelper(
-        ["request", "--session", sessionId, "--path", filePath, "--reason", reason],
-        requestRun,
-      );
-      if (!REQUEST_ID_PATTERN.test(requestId)) requestId = "";
-    } catch {
-      // Request generation is advisory; the original guard remains authoritative.
-    }
-  }
-
-  try {
-    checkSecretReadGate(tool, args, log);
-  } catch (error) {
-    const originalMessage = error instanceof Error ? error.message : String(error);
-    if (!brokerCurrent) {
-      throw new Error(
-        `${originalMessage}\n\nThe root-owned source-access broker does not match this release. ` +
-          "Run aidevops update from an interactive terminal to reconcile it.",
-      );
-    }
-    if (!requestId) throw error;
-    throw new Error(
-      `${originalMessage}\n\nTo approve only this tracked source path for this session, run:\n` +
-        `sudo -k /usr/bin/python3 -I -B ${ROOT_BROKER} approve ${requestId} --ttl 12h`,
-    );
-  }
+  const requestId = requestApprovalId({ brokerCurrent, filePath, reason, requestRun, sessionId });
+  checkGateWithApprovalInstructions({
+    args,
+    brokerCurrent,
+    checkSecretReadGate,
+    filePath,
+    log,
+    requestId,
+    tool,
+  });
 }
