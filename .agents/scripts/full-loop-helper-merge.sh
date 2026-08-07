@@ -927,6 +927,30 @@ _merge_describe_flags() {
 	return 0
 }
 
+_merge_snapshot_body_file() {
+	local source_file="$1"
+	local temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local snapshot_file=""
+	[[ -f "$source_file" && -r "$source_file" ]] || {
+		print_error "Merge body file changed or became unreadable before transport"
+		return 1
+	}
+	(umask 077 && mkdir -p "$temp_dir") || return 1
+	snapshot_file=$(umask 077 && mktemp "${temp_dir%/}/full-loop-merge-body.XXXXXX") || return 1
+	if ! cp -- "$source_file" "$snapshot_file"; then
+		rm -f "$snapshot_file"
+		return 1
+	fi
+	printf '%s\n' "$snapshot_file"
+	return 0
+}
+
+_merge_remove_body_snapshot() {
+	local snapshot_file="$1"
+	[[ -z "$snapshot_file" ]] || rm -f "$snapshot_file"
+	return 0
+}
+
 _merge_execute() {
 	local pr_number="$1" repo="$2" merge_method="$3"
 	local has_admin="$4" has_auto="$5" squash_subject=""
@@ -1635,8 +1659,9 @@ _merge_parse_command_args() {
 			FULL_LOOP_MERGE_PARSED_AUTO=1
 			;;
 		"$FULL_LOOP_MERGE_BODY_FILE_FLAG")
-			if [[ $# -eq 0 || -n "$FULL_LOOP_MERGE_PARSED_BODY_FILE" ]]; then
+			if [[ $# -eq 0 || "$1" == -* || -n "$FULL_LOOP_MERGE_PARSED_BODY_FILE" ]]; then
 				print_error "--body-file requires exactly one path"
+				[[ $# -gt 0 && "$1" == -* ]] && print_error "Use --body-file=PATH for filenames beginning with a hyphen"
 				return 1
 			fi
 			FULL_LOOP_MERGE_PARSED_BODY_FILE="$1"
@@ -1717,13 +1742,21 @@ cmd_merge() {
 			_canonical_dir=$(_merge_current_canonical_dir_for_cleanup "$_cleanup_worktree" 2>/dev/null || true)
 		fi
 	fi
+	local _merge_body_snapshot=""
+	if [[ -n "$merge_body_file" ]]; then
+		_merge_body_snapshot=$(_merge_snapshot_body_file "$merge_body_file") || return 1
+		merge_body_file="$_merge_body_snapshot"
+	fi
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base
 	# branch disappears; retargeting to the default branch prevents this.
 	# (t2412 / GH#20005)
 	_retarget_stacked_children_interactive "$pr_number" "$repo"
 
-	_merge_execute "$pr_number" "$repo" "$merge_method" "$has_admin" "$has_auto" "$merge_body_file" || return 1
+	local _merge_execute_rc=0
+	_merge_execute "$pr_number" "$repo" "$merge_method" "$has_admin" "$has_auto" "$merge_body_file" || _merge_execute_rc=$?
+	_merge_remove_body_snapshot "$_merge_body_snapshot"
+	[[ "$_merge_execute_rc" -eq 0 ]] || return 1
 	if ! _merge_verify_completed_state "$pr_number" "$repo"; then
 		if [[ "$has_auto" -eq 1 ]]; then
 			print_info "LIFECYCLE_STATE=REMOTE_VERIFIED"
