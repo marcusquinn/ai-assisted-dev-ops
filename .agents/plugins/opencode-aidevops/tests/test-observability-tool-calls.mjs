@@ -137,7 +137,7 @@ describe("buildToolCallInsertSql — column/value alignment", () => {
       metadata: { filePath: "/tmp/x" },
     });
     const cols = extractColumns(sql);
-    // Order must match the CREATE TABLE in observability.mjs:initDatabase.
+    // Order must match the CREATE TABLE in observability-init.mjs.
     // Any drift breaks SQLite positional binding in the live path.
     assert.deepEqual(cols, [
       "session_id",
