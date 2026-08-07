@@ -163,6 +163,51 @@ issue_sync_merge_todo_file() {
 	return 0
 }
 
+issue_sync_task_ids() {
+	local todo_file="$1"
+	sed -nE 's/^[[:space:]]*- \[[ x-]\][[:space:]]+([tr][0-9]+(\.[0-9]+)*)([[:space:]].*|$)/\1/p' \
+		"$todo_file" | LC_ALL=C sort -u
+	return 0
+}
+
+# A stale deterministic branch and current main can independently add the same
+# logical task at different file locations. Keep the current canonical entry;
+# unique branch additions still flow through the subsequent three-way merge.
+issue_sync_prune_concurrent_task_additions() {
+	local current_file="$1"
+	local ancestor_file="$2"
+	local incoming_file="$3"
+	local state_dir="$4"
+	local current_ids="${state_dir}/current-task-ids"
+	local ancestor_ids="${state_dir}/ancestor-task-ids"
+	local incoming_ids="${state_dir}/incoming-task-ids"
+	local overlapping_ids="${state_dir}/overlapping-task-ids"
+	local concurrent_ids="${state_dir}/concurrent-task-additions"
+	local filtered_incoming="${state_dir}/filtered-sync-todo"
+	local line=""
+	local task_id=""
+
+	issue_sync_task_ids "$current_file" >"$current_ids" || return 1
+	issue_sync_task_ids "$ancestor_file" >"$ancestor_ids" || return 1
+	issue_sync_task_ids "$incoming_file" >"$incoming_ids" || return 1
+	comm -12 "$current_ids" "$incoming_ids" >"$overlapping_ids" || return 1
+	comm -23 "$overlapping_ids" "$ancestor_ids" >"$concurrent_ids" || return 1
+	[[ -s "$concurrent_ids" ]] || return 0
+
+	: >"$filtered_incoming" || return 1
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		task_id=$(printf '%s\n' "$line" |
+			sed -nE 's/^[[:space:]]*- \[[ x-]\][[:space:]]+([tr][0-9]+(\.[0-9]+)*)([[:space:]].*|$)/\1/p')
+		if [[ -n "$task_id" ]] && grep -Fxq -- "$task_id" "$concurrent_ids"; then
+			continue
+		fi
+		printf '%s\n' "$line" >>"$filtered_incoming" || return 1
+	done <"$incoming_file"
+	mv "$filtered_incoming" "$incoming_file" || return 1
+	echo "::notice::Current TODO.md entries supersede stale issue-sync additions for matching task IDs"
+	return 0
+}
+
 issue_sync_read_todo_blob() {
 	local repo_path="$1"
 	local commit_sha="$2"
@@ -265,6 +310,8 @@ issue_sync_prepare_pr_snapshot() {
 	sync_base=$(issue_sync_git -C "$repo_path" merge-base "$ISSUE_SYNC_BASE_SHA" "$sync_sha") || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_base" "$sync_ancestor" || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_sha" "$sync_todo" || return 1
+	issue_sync_prune_concurrent_task_additions "${state_dir}/merged-todo" \
+		"$sync_ancestor" "$sync_todo" "$state_dir" || return 1
 	issue_sync_merge_todo_file "${state_dir}/merged-todo" "$sync_ancestor" "$sync_todo" || return 1
 	return 0
 }

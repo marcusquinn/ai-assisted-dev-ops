@@ -418,6 +418,57 @@ test_protected_branch_uses_one_rebased_pr() {
 	return 0
 }
 
+test_stale_pr_concurrent_task_addition_deduplicates() {
+	local origin_dir="$TMP/duplicate-origin.git"
+	local seed_dir="$TMP/duplicate-seed"
+	local work_dir="$TMP/duplicate-work"
+	local fake_bin="$TMP/duplicate-bin"
+	local gh_log="$TMP/duplicate-gh.log"
+	local pr_marker="$TMP/duplicate-pr.marker"
+	local output_file="$TMP/duplicate-output.log"
+	local sync_ref="refs/heads/aidevops/issue-sync-todo"
+	local remote_todo=""
+	local duplicate_count=0
+
+	create_origin "$origin_dir" "$seed_dir"
+	git -C "$seed_dir" checkout -b aidevops/issue-sync-todo >/dev/null
+	printf '\n- [ ] t9004 stale issue projection ref:GH#9004\n' >>"$seed_dir/TODO.md"
+	git -C "$seed_dir" add TODO.md
+	git -C "$seed_dir" commit -m "stale issue-sync task addition" >/dev/null
+	git -C "$seed_dir" push origin HEAD:"$sync_ref" >/dev/null
+	git -C "$seed_dir" checkout main >/dev/null
+	perl -0pi -e 's/## First queue\n/## First queue\n\n- [ ] t9004 canonical task with richer metadata #priority:high ref:GH#9004\n/' \
+		"$seed_dir/TODO.md"
+	git -C "$seed_dir" add TODO.md
+	git -C "$seed_dir" commit -m "reviewed canonical task addition" >/dev/null
+	git -C "$seed_dir" push origin main >/dev/null
+	git clone "$origin_dir" "$work_dir" >/dev/null 2>&1
+	git_init_repo "$work_dir"
+	write_fake_gh "$fake_bin"
+	install_main_rejection_hook "$origin_dir" gh006
+	: >"$gh_log"
+	: >"$pr_marker"
+	perl -0pi -e 's/t9002 second task/t9002 current runner event/' "$work_dir/TODO.md"
+	if ! run_issue_sync_helper "$work_dir" "$fake_bin" "$gh_log" "$pr_marker" \
+		"$TMP/duplicate-head" "$TMP/duplicate-title" "$output_file" 3; then
+		printf 'Concurrent task-addition output:\n%s\n' "$(<"$output_file")" >&2
+		fail "stale PR task additions defer to canonical task identity"
+		return 0
+	fi
+	remote_todo=$(git --git-dir="$origin_dir" show "${sync_ref}:TODO.md")
+	duplicate_count=$(printf '%s\n' "$remote_todo" |
+		grep -cE '^[[:space:]]*- \[[ x-]\][[:space:]]+t9004([[:space:]]|$)' || true)
+	if [[ "$duplicate_count" -ne 1 ||
+		"$remote_todo" != *"t9004 canonical task with richer metadata"* ||
+		"$remote_todo" == *"t9004 stale issue projection"* ||
+		"$remote_todo" != *"t9002 current runner event"* ]]; then
+		fail "stale PR task additions defer to canonical task identity"
+	else
+		pass "stale PR task additions defer to canonical task identity"
+	fi
+	return 0
+}
+
 test_shallow_checkout_recovers_stale_pr_history() {
 	local origin_dir="$TMP/shallow-origin.git"
 	local seed_dir="$TMP/shallow-seed"
@@ -744,6 +795,7 @@ test_noop_publishes_nothing() {
 test_successful_push
 test_rebase_conflict_neutralizes_cleanly
 test_protected_branch_uses_one_rebased_pr
+test_stale_pr_concurrent_task_addition_deduplicates
 test_shallow_checkout_recovers_stale_pr_history
 test_concurrent_pr_advance_rebuilds_snapshot
 test_pr_branch_deletion_during_fetch_rebuilds
