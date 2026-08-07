@@ -180,8 +180,8 @@ _close_zero_progress_meta_if_recovered() {
 	# #aidevops:trust-boundary — recovered-meta handling writes comments and
 	# closes issues. Public issue comments can succeed for non-collaborators, so
 	# never write unless the runner is admin/maintain/write on this repo.
-	if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 \
-		|| ! repo_allows_pulse_write_actions "$slug"; then
+	if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 ||
+		! repo_allows_pulse_write_actions "$slug"; then
 		_log "WARN" "#${issue_number}: recovered zero-progress meta issue left untouched — runner lacks repo write permission"
 		return 0
 	fi
@@ -473,7 +473,7 @@ _validator_file_line_threshold_gate() {
 	fi
 
 	local line_count
-	line_count=$(wc -l < "$target_file" 2>/dev/null | tr -d ' ') || line_count=0
+	line_count=$(wc -l <"$target_file" 2>/dev/null | tr -d ' ') || line_count=0
 
 	if [[ "$line_count" -lt "$CITED_THRESHOLD" ]]; then
 		_log "INFO" "${generator_name} validator: ${CITED_FILE} is now ${line_count} lines (threshold ${CITED_THRESHOLD}) — premise falsified"
@@ -691,9 +691,9 @@ _sht_extract_scan_target() {
 	local issue_body="$1"
 	local files_section how_section scan_target
 
-	files_section=$(printf '%s' "$issue_body" | \
+	files_section=$(printf '%s' "$issue_body" |
 		awk '/^## Files to modify/{found=1; next} found && /^## /{found=0} found{print}')
-	how_section=$(printf '%s' "$issue_body" | \
+	how_section=$(printf '%s' "$issue_body" |
 		awk '/^## How/{found=1; next} found && /^## /{found=0} found{print}')
 	scan_target="${files_section}${how_section}"
 
@@ -728,8 +728,8 @@ _sht_labels_include() {
 	local labels="$1"
 	local target="$2"
 	case ",${labels}," in
-		*",${target},"*) return 0 ;;
-		*) return 1 ;;
+	*",${target},"*) return 0 ;;
+	*) return 1 ;;
 	esac
 }
 
@@ -1044,9 +1044,82 @@ _rf_extract_source_pr_number() {
 	local issue_title="$2"
 	local source_pr=""
 
-	source_pr=$(printf '%s\n%s\n' "$issue_body" "$issue_title" | sed -En 's/.*source_pr=([0-9]+).*/\1/p; s/.*fingerprint=source-pr-([0-9]+).*/\1/p; s/.*\*\*Source PR\*\*:[[:space:]]*#?([0-9]+).*/\1/p; s/.*Review followup:[[:space:]]*PR[[:space:]]*#?([0-9]+).*/\1/p' | head -1)
+	source_pr=$(printf '%s\n%s\n' "$issue_body" "$issue_title" | sed -En 's/.*source_pr=([0-9]+).*/\1/p; s/.*fingerprint=source-pr-([0-9]+).*/\1/p; s/.*\*\*Source PR\*\*:[[:space:]]*#?([0-9]+).*/\1/p; s/.*Review followup:[[:space:]]*PR[[:space:]]*#?([0-9]+).*/\1/p; s/.*feedback-route:(start|complete):review:PR([0-9]+):.*/\2/p; s/.*Review Feedback routed from PR[[:space:]]*#?([0-9]+).*/\1/p' | head -1)
 	if [[ "$source_pr" =~ ^[0-9]+$ ]]; then
 		printf '%s\n' "$source_pr"
+		return 0
+	fi
+
+	return 1
+}
+
+_rf_extract_routed_review_sha() {
+	local issue_body="$1"
+	local source_pr="$2"
+	local source_sha=""
+
+	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	source_sha=$(printf '%s' "$issue_body" | sed -En "s/.*feedback-route:start:review:PR${source_pr}:SHA([0-9a-fA-F]{40}):.*/\\1/p" | head -1)
+	if [[ "$source_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+		printf '%s\n' "$source_sha"
+		return 0
+	fi
+
+	return 1
+}
+
+_rf_extract_routed_review_payload() {
+	local issue_body="$1"
+	local source_pr="$2"
+	local payload=""
+
+	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	payload=$(printf '%s\n' "$issue_body" | awk -v source_pr="$source_pr" '
+		index($0, "feedback-route:start:review:PR" source_pr ":") { capture = 1; next }
+		capture && index($0, "feedback-route:complete:review:PR" source_pr ":") { exit }
+		!capture && index($0, "Review Feedback routed from PR #" source_pr) { capture = 1 }
+		capture { print }
+	')
+	if [[ -n "$payload" ]]; then
+		printf '%s\n' "$payload"
+		return 0
+	fi
+
+	return 1
+}
+
+_rf_get_source_pr_metadata() {
+	local slug="$1"
+	local source_pr="$2"
+
+	gh api "repos/${slug}/pulls/${source_pr}" \
+		--jq '[.state // "", .merged_at // "", .closed_at // ""] | join("|")' 2>/dev/null
+	return $?
+}
+
+_rf_get_routed_review_at() {
+	local slug="$1"
+	local source_pr="$2"
+	local source_sha="$3"
+	local review_rows=""
+	local review_state=""
+	local submitted_at=""
+	local commit_id=""
+	local latest=""
+
+	review_rows=$(gh api --paginate "repos/${slug}/pulls/${source_pr}/reviews" \
+		--jq '.[] | [.state // "", .submitted_at // "", .commit_id // ""] | @tsv' 2>/dev/null) || return 1
+	while IFS=$'\t' read -r review_state submitted_at commit_id; do
+		[[ "$review_state" == "CHANGES_REQUESTED" ]] || continue
+		[[ -z "$source_sha" || "$commit_id" == "$source_sha" ]] || continue
+		[[ "$submitted_at" == *T* ]] || continue
+		if [[ -z "$latest" || "$submitted_at" > "$latest" ]]; then
+			latest="$submitted_at"
+		fi
+	done <<<"$review_rows"
+
+	if [[ -n "$latest" ]]; then
+		printf '%s\n' "$latest"
 		return 0
 	fi
 
@@ -1123,6 +1196,12 @@ _RF_SUPERSESSION_MERGED_AT=""
 _RF_SUPERSESSION_OVERLAPS=""
 _RF_SUPERSESSION_MATCHED_KEYWORDS=""
 _RF_SUPERSESSION_AMBIGUOUS=""
+_RF_CONTEXT_SOURCE_PR=""
+_RF_CONTEXT_SEARCH_AFTER=""
+_RF_CONTEXT_SEARCH_CONTEXT=""
+_RF_CONTEXT_ISSUE_TEXT=""
+_RF_CONTEXT_EVALUATION_ISSUE_NUMBER=""
+_RF_CONTEXT_STRICT_MODE="false"
 
 _rf_score_keywords() {
 	local keywords="$1"
@@ -1206,7 +1285,8 @@ _rf_post_ambiguous_comment() {
 	compact_keywords=$(_rf_join_lines "$keywords")
 	[[ -n "$compact_keywords" ]] || compact_keywords="<none extracted>"
 
-	comment_body=$(cat <<EOF
+	comment_body=$(
+		cat <<EOF
 ${marker}
 ## Possible review-feedback supersession
 
@@ -1251,7 +1331,8 @@ _rf_close_with_supersession() {
 		source_pr_line="- **Source PR:** #${source_pr}"
 	fi
 
-	comment_body=$(cat <<EOF
+	comment_body=$(
+		cat <<EOF
 ${marker}
 > Superseded. Pre-dispatch review-feedback validator found merged PR #${pr_number} in the ${search_context}. The PR touches the cited file path(s) and matches the finding signal, so worker dispatch is skipped.
 
@@ -1381,6 +1462,71 @@ cmd_check_review_supersession() {
 	return "$match_rc"
 }
 
+_rf_resolve_supersession_context() {
+	local issue_number="$1"
+	local slug="$2"
+	local issue_body="$3"
+	local issue_title="$4"
+	local created_at="$5"
+	local source_pr_meta=""
+	local source_state=""
+	local source_merged_at=""
+	local source_closed_at=""
+	local source_sha=""
+	local routed_review_at=""
+	local routed_payload=""
+
+	_RF_CONTEXT_SOURCE_PR=""
+	_RF_CONTEXT_SEARCH_AFTER="$created_at"
+	_RF_CONTEXT_SEARCH_CONTEXT="issue-created window after ${created_at}"
+	_RF_CONTEXT_ISSUE_TEXT="$issue_body"
+	_RF_CONTEXT_EVALUATION_ISSUE_NUMBER="$issue_number"
+	_RF_CONTEXT_STRICT_MODE="false"
+	if ! _RF_CONTEXT_SOURCE_PR=$(_rf_extract_source_pr_number "$issue_body" "$issue_title"); then
+		_RF_CONTEXT_SOURCE_PR=""
+		return 0
+	fi
+
+	routed_payload=$(_rf_extract_routed_review_payload "$issue_body" "$_RF_CONTEXT_SOURCE_PR" 2>/dev/null || true)
+	if ! source_pr_meta=$(_rf_get_source_pr_metadata "$slug" "$_RF_CONTEXT_SOURCE_PR"); then
+		if [[ -n "$routed_payload" ]]; then
+			_log "WARN" "#${issue_number}: routed source PR #${_RF_CONTEXT_SOURCE_PR} metadata lookup failed — dispatch blocked for this cycle"
+			return 30
+		fi
+		_log "WARN" "#${issue_number}: failed to fetch source PR #${_RF_CONTEXT_SOURCE_PR} metadata — using issue-created supersession window"
+		_RF_CONTEXT_SOURCE_PR=""
+		return 0
+	fi
+	IFS='|' read -r source_state source_merged_at source_closed_at <<<"$source_pr_meta"
+
+	if [[ -n "$source_merged_at" && "$source_merged_at" == *T* ]]; then
+		_RF_CONTEXT_SEARCH_AFTER="$source_merged_at"
+		_RF_CONTEXT_SEARCH_CONTEXT="source PR #${_RF_CONTEXT_SOURCE_PR} merge window after ${source_merged_at}"
+		return 0
+	fi
+	if [[ -z "$routed_payload" ]]; then
+		_log "WARN" "#${issue_number}: source PR #${_RF_CONTEXT_SOURCE_PR} is unmerged without a routed finding payload — using issue-created supersession window"
+		_RF_CONTEXT_SOURCE_PR=""
+		return 0
+	fi
+	if [[ "$source_state" != "closed" || -z "$source_closed_at" || "$source_closed_at" != *T* ]]; then
+		_log "WARN" "#${issue_number}: routed source PR #${_RF_CONTEXT_SOURCE_PR} is not verifiably closed and unmerged — dispatch blocked for this cycle"
+		return 30
+	fi
+
+	source_sha=$(_rf_extract_routed_review_sha "$issue_body" "$_RF_CONTEXT_SOURCE_PR" 2>/dev/null || true)
+	if ! routed_review_at=$(_rf_get_routed_review_at "$slug" "$_RF_CONTEXT_SOURCE_PR" "$source_sha"); then
+		_log "WARN" "#${issue_number}: requested-change timestamp for routed source PR #${_RF_CONTEXT_SOURCE_PR} could not be verified — dispatch blocked for this cycle"
+		return 30
+	fi
+	_RF_CONTEXT_SEARCH_AFTER="$routed_review_at"
+	_RF_CONTEXT_SEARCH_CONTEXT="routed review window for closed unmerged source PR #${_RF_CONTEXT_SOURCE_PR} after ${routed_review_at}"
+	_RF_CONTEXT_ISSUE_TEXT="$routed_payload"
+	_RF_CONTEXT_EVALUATION_ISSUE_NUMBER="0"
+	_RF_CONTEXT_STRICT_MODE="true"
+	return 0
+}
+
 _detect_review_feedback_supersession() {
 	local issue_number="$1"
 	local slug="$2"
@@ -1422,40 +1568,36 @@ _detect_review_feedback_supersession() {
 		return 0
 	fi
 
+	local context_rc=0
+	_rf_resolve_supersession_context "$issue_number" "$slug" "$issue_body" "$issue_title" "$created_at" || context_rc=$?
+	[[ "$context_rc" -eq 0 ]] || return "$context_rc"
+	_log "INFO" "#${issue_number}: review-feedback supersession source=${_RF_CONTEXT_SOURCE_PR:-none} window=${_RF_CONTEXT_SEARCH_CONTEXT}"
+
 	local issue_paths=""
-	issue_paths=$(_rf_extract_file_paths_from_text "$issue_body")
+	issue_paths=$(_rf_extract_file_paths_from_text "$_RF_CONTEXT_ISSUE_TEXT")
 	if [[ -z "$issue_paths" ]]; then
-		_log "INFO" "#${issue_number}: no cited file paths — review-feedback supersession detector skips"
+		_log "INFO" "#${issue_number}: no cited file paths in bounded finding payload — review-feedback supersession detector skips"
 		return 0
 	fi
 
-	local source_pr=""
-	local source_merged_at=""
-	local search_after="$created_at"
-	local search_context="issue-created window after ${created_at}"
-	if source_pr=$(_rf_extract_source_pr_number "$issue_body" "$issue_title"); then
-		if source_merged_at=$(_rf_get_source_pr_merged_at "$slug" "$source_pr"); then
-			search_after="$source_merged_at"
-			search_context="source PR #${source_pr} merge window after ${source_merged_at}"
-		else
-			_log "WARN" "#${issue_number}: failed to fetch source PR #${source_pr} merged_at — using issue-created supersession window"
-			source_pr=""
-		fi
-	fi
-
 	local match_rc=0
-	_rf_evaluate_supersession "$slug" "$search_after" "$issue_body" "$issue_number" "false" || match_rc=$?
+	_rf_evaluate_supersession "$slug" "$_RF_CONTEXT_SEARCH_AFTER" "$_RF_CONTEXT_ISSUE_TEXT" \
+		"$_RF_CONTEXT_EVALUATION_ISSUE_NUMBER" "$_RF_CONTEXT_STRICT_MODE" || match_rc=$?
 	if [[ "$match_rc" -eq 10 ]]; then
 		_rf_close_with_supersession "$issue_number" "$slug" "$_RF_SUPERSESSION_PR" \
 			"$_RF_SUPERSESSION_MERGED_AT" "$_RF_SUPERSESSION_OVERLAPS" \
-			"$_RF_SUPERSESSION_MATCHED_KEYWORDS" "$search_context" "$source_pr"
+			"$_RF_SUPERSESSION_MATCHED_KEYWORDS" "$_RF_CONTEXT_SEARCH_CONTEXT" "$_RF_CONTEXT_SOURCE_PR"
 		return 10
+	fi
+	if [[ "$match_rc" -eq 20 ]]; then
+		_log "WARN" "#${issue_number}: supersession evidence lookup failed in ${_RF_CONTEXT_SEARCH_CONTEXT} — dispatch blocked for this cycle"
+		return 30
 	fi
 	if [[ -n "$_RF_SUPERSESSION_AMBIGUOUS" ]]; then
 		local keywords=""
-		keywords=$(_rf_extract_keywords "$issue_body")
+		keywords=$(_rf_extract_keywords "$_RF_CONTEXT_ISSUE_TEXT")
 		_rf_post_ambiguous_comment "$issue_number" "$slug" "$issue_paths" "$keywords" \
-			"$_RF_SUPERSESSION_AMBIGUOUS" "$search_context"
+			"$_RF_SUPERSESSION_AMBIGUOUS" "$_RF_CONTEXT_SEARCH_CONTEXT"
 	fi
 
 	return 0
@@ -1510,8 +1652,8 @@ _rf_canonicalize_review_followup_duplicates() {
 		return 0
 	fi
 	if ! source_pr=$(_rf_extract_source_pr_number "$issue_body" "$issue_title"); then
-		if [[ "$issue_title" == "Review followup: PR #"* \
-			|| "$issue_body" == *"aidevops:generator=review-followup"* ]]; then
+		if [[ "$issue_title" == "Review followup: PR #"* ||
+			"$issue_body" == *"aidevops:generator=review-followup"* ]]; then
 			_log "WARN" "#${issue_number}: scanner review-followup fingerprint missing — dispatch blocked"
 			return 30
 		fi

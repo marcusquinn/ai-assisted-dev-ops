@@ -404,6 +404,78 @@ GHEOF
 	return 0
 }
 
+create_gh_stub_routed_review_feedback() {
+	local candidate_merged_at="$1"
+	local candidate_file="$2"
+	local actions_file="${TEST_ROOT}/review-actions.log"
+	: >"$actions_file"
+
+	cat >"${TEST_ROOT}/bin/gh" <<GHEOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+args="\$*"
+actions_file="${actions_file}"
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/47\$'; then
+	if printf '%s' "\$args" | grep -qF '.body // ""'; then
+		cat <<'BODYEOF'
+Original implementation task mentions broad overlay config work in TODO.md and todo/missions/example/mission.md.
+<!-- feedback-route:start:review:PR73:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEfixture -->
+## Review Feedback routed from PR #73 (t2093)
+
+### Finding
+
+The permission boundary escape remains in src/runtime-guard.sh:42; enforce the restricted capability guard.
+<!-- feedback-route:complete:review:PR73:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEfixture -->
+BODYEOF
+	else
+		printf '2026-05-07T00:00:00Z\tOriginal implementation task\tsource:review-feedback\n'
+	fi
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/pulls/73\$'; then
+	printf 'closed||2026-05-09T00:00:00Z\n'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$args" | grep -qE 'pulls/73/reviews'; then
+	printf 'CHANGES_REQUESTED\t2026-05-08T12:00:00Z\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$args" | grep -qF 'search/issues'; then
+	printf '99\n'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\$args" | grep -qE 'pulls/99/files'; then
+	if printf '%s' "\$args" | grep -qF '.[].filename'; then
+		printf '%s\n' '${candidate_file}'
+	else
+		printf '%s\npermission boundary escape restricted capability guard\n' '${candidate_file}'
+	fi
+	exit 0
+fi
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/pulls/99\$'; then
+	printf '%s\tfix permission boundary escape\tenforce restricted capability guard\n' '${candidate_merged_at}'
+	exit 0
+fi
+
+if [[ "\${1:-}" == "issue" ]]; then
+	printf '%s\n' "\$args" >>"\$actions_file"
+	exit 0
+fi
+
+printf 'unsupported gh invocation: %s\n' "\$*" >&2
+exit 1
+GHEOF
+	chmod +x "${TEST_ROOT}/bin/gh"
+	return 0
+}
+
 create_gh_stub_function_complexity_duplicate() {
 	local body_file="${TEST_ROOT}/issue_body.txt"
 	local actions_file="${TEST_ROOT}/gh-actions.log"
@@ -704,6 +776,57 @@ test_source_review_scanner_label_enters_supersession_scope() {
 	return 0
 }
 
+test_routed_review_ignores_merge_before_requested_changes() {
+	setup_test_env
+	create_gh_stub_routed_review_feedback "2026-05-08T11:00:00Z" "TODO.md"
+
+	local output=""
+	local rc=0
+	output=$("$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" 2>&1) || rc=$?
+
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "routed_review ignores merge before requested changes" 0
+	else
+		print_result "routed_review ignores merge before requested changes" 1 "Expected exit 0, got ${rc}"
+	fi
+	if [[ "$output" == *"source=73 window=routed review window for closed unmerged source PR #73 after 2026-05-08T12:00:00Z"* ]]; then
+		print_result "routed_review reports exact source and bounded window" 0
+	else
+		print_result "routed_review reports exact source and bounded window" 1 "Expected source PR and requested-change timestamp in rationale"
+	fi
+	if [[ ! -s "${TEST_ROOT}/review-actions.log" ]]; then
+		print_result "routed_review leaves valid repair issue open" 0
+	else
+		print_result "routed_review leaves valid repair issue open" 1 "Unexpected issue mutation"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_routed_review_closes_for_matching_post_review_merge() {
+	setup_test_env
+	create_gh_stub_routed_review_feedback "2026-05-08T13:00:00Z" "src/runtime-guard.sh"
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 10 ]]; then
+		print_result "routed_review closes for matching post-review merge" 0
+	else
+		print_result "routed_review closes for matching post-review merge" 1 "Expected exit 10, got ${rc}"
+	fi
+	if grep -qF 'Source PR:** #73' "${TEST_ROOT}/review-actions.log" &&
+		grep -qF 'routed review window for closed unmerged source PR #73 after 2026-05-08T12:00:00Z' "${TEST_ROOT}/review-actions.log"; then
+		print_result "routed_review close rationale identifies bounded source window" 0
+	else
+		print_result "routed_review close rationale identifies bounded source window" 1 "Expected exact source PR and bounded window in close rationale"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
 test_function_complexity_sweep_duplicate_closes_later_issue() {
 	setup_test_env
 	create_gh_stub_function_complexity_duplicate
@@ -823,6 +946,8 @@ main() {
 	test_review_feedback_preserves_version_directory_paths
 	test_review_followup_label_enters_supersession_scope
 	test_source_review_scanner_label_enters_supersession_scope
+	test_routed_review_ignores_merge_before_requested_changes
+	test_routed_review_closes_for_matching_post_review_merge
 	test_function_complexity_sweep_duplicate_closes_later_issue
 	test_function_complexity_sweep_missing_cited_file_allows_dispatch
 
