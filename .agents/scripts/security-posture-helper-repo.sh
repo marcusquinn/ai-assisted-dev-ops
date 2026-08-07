@@ -42,6 +42,7 @@ NO_GITHUB_REMOTE_MSG="No GitHub remote"
 NO_REQUIRED_STATUS_CHECKS_MSG="No required status checks"
 SECURITY_POSTURE_UNKNOWN="unknown"
 SYNC_PAT_NEED_NOT_NEEDED="not_needed"
+SYNC_PAT_PROTECTION_CLASSIC="classic"
 
 # _repo_is_public_admin <slug>
 # Returns 0 only when GitHub confirms this operator has admin rights on a
@@ -1109,7 +1110,7 @@ _check_sync_pat_need() {
 	local protection_desc=""
 
 	if [[ -n "$protection_json" && "$protection_json" != *"Not Found"* && "$protection_json" != *"Branch not protected"* ]]; then
-		protected_kind="classic"
+		protected_kind="$SYNC_PAT_PROTECTION_CLASSIC"
 	elif { [[ "$#" -ge 4 ]] && _branch_is_rulesets_protected "$slug" "$default_branch" "$ruleset_details"; } || { [[ "$#" -lt 4 ]] && _branch_is_rulesets_protected "$slug" "$default_branch"; }; then
 		# Step 2b: Rulesets-based protection (t2806). Modern repos
 		# return 404 on the classic endpoint but carry rulesets via
@@ -1122,6 +1123,15 @@ _check_sync_pat_need() {
 	if [[ "$protected_kind" == "none" ]]; then
 		print_pass "No branch protection — SYNC_PAT not needed for $slug"
 		add_finding "$SEVERITY_PASS" "$CAT_SYNC_PAT" "No branch protection in $slug"
+		[[ -f "$advisory_file" ]] && rm -f "$advisory_file"
+		SYNC_PAT_NEED_RESULT="$SYNC_PAT_NEED_NOT_NEEDED"
+		return 0
+	fi
+	if [[ "$protected_kind" == "$SYNC_PAT_PROTECTION_CLASSIC" ]] &&
+		! jq -e '.required_pull_request_reviews != null or .required_status_checks != null' \
+			<<<"$protection_json" >/dev/null 2>&1; then
+		print_pass "Branch protection does not block direct issue-sync publication — SYNC_PAT not needed for $slug"
+		add_finding "$SEVERITY_PASS" "$CAT_SYNC_PAT" "No publication-blocking protection in $slug"
 		[[ -f "$advisory_file" ]] && rm -f "$advisory_file"
 		SYNC_PAT_NEED_RESULT="$SYNC_PAT_NEED_NOT_NEEDED"
 		return 0
@@ -1140,7 +1150,7 @@ _check_sync_pat_need() {
 	# When Actions PR creation is disabled, every meaningful default-branch
 	# protection path needs the PAT fallback. Zero required approvals does not
 	# remove the repository's pull-request or status-check requirement.
-	if [[ "$protected_kind" == "classic" ]]; then
+	if [[ "$protected_kind" == "$SYNC_PAT_PROTECTION_CLASSIC" ]]; then
 		local required_reviews
 		required_reviews=$(echo "$protection_json" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null) || required_reviews="0"
 

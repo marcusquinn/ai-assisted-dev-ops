@@ -23,6 +23,7 @@
 #  11. ruleset targeting another branch → no advisory
 #  12. protected branch + Actions PR creation enabled → no advisory
 #  13. classic protection with zero approvals + Actions PR creation disabled → emits advisory
+#  14. classic protection without PR/check requirements → no advisory
 #
 # Stub strategy: a single configurable gh() stub dispatches based on
 # STUB_* variables set per test. This avoids redefining gh() 6 times
@@ -82,6 +83,7 @@ mkdir -p "$FAKE_REPO/.git"
 readonly ISSUE_SYNC_RESPONSE='{"name":"issue-sync.yml"}'
 readonly PROTECTION_WITH_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":1}}'
 readonly PROTECTION_WITHOUT_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":0}}'
+readonly PROTECTION_WITHOUT_PUBLICATION_GATE='{"enforce_admins":{"enabled":true},"allow_force_pushes":{"enabled":false}}'
 readonly GH_API_SYNC_PATTERN="contents/.github/workflows/issue-sync.yml"
 readonly GH_API_PROT_PATTERN="/protection"
 readonly GH_API_RULESETS_LIST_PATTERN="/rulesets"
@@ -273,6 +275,7 @@ SEVERITY_INFO="info"
 SEVERITY_PASS="pass"
 CAT_SYNC_PAT="sync_pat"
 SYNC_PAT_NEED_NOT_NEEDED="not_needed"
+SYNC_PAT_PROTECTION_CLASSIC="classic"
 RULESET_ENFORCEMENT_ACTIVE="active"
 RULESET_DEFAULT_BRANCH_TOKEN="~DEFAULT_BRANCH"
 RULESET_ALL_BRANCHES_TOKEN="~ALL"
@@ -580,6 +583,27 @@ if [[ -f "$ADVISORY_PATH" ]]; then
 	pass "Protected PR path advises despite zero required approvals"
 else
 	fail "No advisory for protected PR path with disabled Actions PR creation"
+fi
+
+# =============================================================================
+# Test 14: Classic protection without PR/check requirements — no PAT needed
+# =============================================================================
+printf '\n%sTest 14: Non-publication classic protection — should skip%s\n' "$TEST_BLUE" "$TEST_NC"
+reset_state
+STUB_PROTECTION_RESPONSE="$PROTECTION_WITHOUT_PUBLICATION_GATE"
+
+check_sync_pat "$FAKE_REPO"
+
+if [[ ! -f "$ADVISORY_PATH" ]]; then
+	pass "Non-publication branch protection does not trigger a SYNC_PAT advisory"
+else
+	fail "Advisory fired for protection that does not block direct publication"
+fi
+
+if grep -q '\[PASS\].*does not block direct issue-sync publication' "$OUTPUT_LOG" 2>/dev/null; then
+	pass "Pass message identifies non-publication branch protection"
+else
+	fail "No pass message for non-publication branch protection" "Log: $(cat "$OUTPUT_LOG")"
 fi
 
 # =============================================================================
