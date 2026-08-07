@@ -64,7 +64,7 @@ cloudron update                  # re-uploads, rebuilds, updates running app
 Use `Dockerfile`, `Dockerfile.cloudron`, or `cloudron/Dockerfile`. See `cloudron-app-packaging.md` "Dockerfile Patterns" for stack-specific variants.
 
 ```dockerfile
-FROM cloudron/base:5.0.0@sha256:04fd70dbd8ad6149c19de39e35718e024417c3e01dc9c6637eaf4a41ec4e596c
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 RUN mkdir -p /app/code
 WORKDIR /app/code
 COPY . /app/code/
@@ -73,7 +73,7 @@ RUN chmod +x /app/code/start.sh
 CMD [ "/app/code/start.sh" ]
 ```
 
-**Base image requirement:** the final stage MUST use the SHA-pinned `cloudron/base:5.0.0` tag above. Platform tooling (file manager, web terminal, log viewer) depends on utilities provided by this base image. Multi-stage builds are fine for compilation, but the final stage always lands on pinned `cloudron/base`. Current SHA tracked at [hub.docker.com/r/cloudron/base/tags](https://hub.docker.com/r/cloudron/base/tags).
+**Base image requirement:** the final stage MUST use the SHA-pinned `cloudron/base:5.1.0` tag above. Platform tooling (file manager, web terminal, log viewer) depends on utilities provided by this base image. Multi-stage builds are fine for compilation, but the final stage always lands on pinned `cloudron/base`. Current SHA tracked at [hub.docker.com/r/cloudron/base/tags](https://hub.docker.com/r/cloudron/base/tags).
 
 Multi-stage builds are acceptable for compilation, asset bundling, or other build-time work. Only the final stage must use the pinned Cloudron base image.
 
@@ -83,7 +83,7 @@ WORKDIR /build
 COPY . .
 RUN npm ci && npm run build
 
-FROM cloudron/base:5.0.0@sha256:04fd70dbd8ad6149c19de39e35718e024417c3e01dc9c6637eaf4a41ec4e596c
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 RUN mkdir -p /app/code
 WORKDIR /app/code
 COPY --from=build /build/dist /app/code/dist

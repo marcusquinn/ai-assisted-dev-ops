@@ -11,7 +11,7 @@ GH_COOLDOWN="${SCRIPT_DIR}/../shared-gh-secondary-cooldown.sh"
 TEST_ROOT=""
 PASSED=0
 FAILED=0
-PINNED_BASE='cloudron/base:5.0.0@sha256:04fd70dbd8ad6149c19de39e35718e024417c3e01dc9c6637eaf4a41ec4e596c'
+PINNED_BASE='cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e'
 
 cleanup() {
 	[[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]] && rm -rf "$TEST_ROOT"
@@ -205,7 +205,7 @@ test_monitor_deduplicates_and_preserves_source() {
 
 	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" compatibility --apply >/dev/null
 	assert_equal 1 "$(grep -c '^CALL ' "$log_file")" "clean compatibility check creates no issue"
-	printf 'FROM cloudron/base:5.0.0\n' >"${repo_dir}/Dockerfile"
+	printf 'FROM cloudron/base:5.1.0\n' >"${repo_dir}/Dockerfile"
 	local docker_before=""
 	docker_before=$(cksum "${repo_dir}/Dockerfile")
 	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" compatibility --apply >/dev/null

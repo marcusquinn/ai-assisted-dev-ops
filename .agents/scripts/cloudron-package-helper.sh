@@ -107,7 +107,7 @@ STARTSH
 # Write Dockerfile template for a generic Cloudron app
 _init_create_dockerfile() {
 	cat >Dockerfile <<'DOCKERFILE'
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 # Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -450,7 +450,7 @@ scaffold_php() {
 	fi
 
 	cat >Dockerfile <<'EOF'
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
@@ -543,7 +543,7 @@ scaffold_node() {
 	fi
 
 	cat >Dockerfile <<'EOF'
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
@@ -612,7 +612,7 @@ scaffold_python() {
 	fi
 
 	cat >Dockerfile <<'EOF'
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -695,7 +695,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o app .
 
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 WORKDIR /app/code
 COPY --from=builder /build/app /app/code/app
@@ -753,7 +753,7 @@ scaffold_static() {
 	fi
 
 	cat >Dockerfile <<'EOF'
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
@@ -818,7 +818,7 @@ EOF
 # Write Dockerfile for a multi-process (supervisord) Cloudron app
 _scaffold_multi_process_dockerfile() {
 	cat >Dockerfile <<'EOF'
-FROM cloudron/base:5.0.0
+FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
