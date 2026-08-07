@@ -420,7 +420,14 @@ actions_file="${actions_file}"
 
 if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/47\$'; then
 	if printf '%s' "\$args" | grep -qF '.body // ""'; then
-		cat <<'BODYEOF'
+		if [[ '${issue_metadata_mode}' == "empty-payload" ]]; then
+			cat <<'BODYEOF'
+Original implementation task.
+<!-- feedback-route:start:review:PR73:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEfixture -->
+<!-- feedback-route:complete:review:PR73:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEfixture -->
+BODYEOF
+		else
+			cat <<'BODYEOF'
 Original implementation task mentions broad overlay config work in TODO.md and todo/missions/example/mission.md.
 <!-- feedback-route:start:review:PR73:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEfixture -->
 ## Review Feedback routed from PR #73 (t2093)
@@ -430,6 +437,7 @@ Original implementation task mentions broad overlay config work in TODO.md and t
 The permission boundary escape remains in src/runtime-guard.sh:42; enforce the restricted capability guard.
 <!-- feedback-route:complete:review:PR73:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEfixture -->
 BODYEOF
+		fi
 	else
 		case '${issue_metadata_mode}' in
 		metadata-failure)
@@ -447,6 +455,9 @@ BODYEOF
 fi
 
 if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/pulls/73\$'; then
+	if [[ '${issue_metadata_mode}' == "source-metadata-failure" ]]; then
+		exit 1
+	fi
 	printf 'closed||2026-05-09T00:00:00Z\n'
 	exit 0
 fi
@@ -872,6 +883,40 @@ test_routed_review_missing_created_at_blocks_dispatch() {
 	return 0
 }
 
+test_routed_review_source_metadata_failure_blocks_dispatch() {
+	setup_test_env
+	create_gh_stub_routed_review_feedback "2026-05-08T13:00:00Z" "src/runtime-guard.sh" "source-metadata-failure"
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 30 && ! -s "${TEST_ROOT}/review-actions.log" ]]; then
+		print_result "routed_review source metadata failure blocks dispatch without mutation" 0
+	else
+		print_result "routed_review source metadata failure blocks dispatch without mutation" 1 "Expected exit 30 without issue mutation, got ${rc}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_routed_review_empty_payload_blocks_dispatch() {
+	setup_test_env
+	create_gh_stub_routed_review_feedback "2026-05-08T13:00:00Z" "src/runtime-guard.sh" "empty-payload"
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 30 && ! -s "${TEST_ROOT}/review-actions.log" ]]; then
+		print_result "routed_review empty payload blocks dispatch without mutation" 0
+	else
+		print_result "routed_review empty payload blocks dispatch without mutation" 1 "Expected exit 30 without issue mutation, got ${rc}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
 test_function_complexity_sweep_duplicate_closes_later_issue() {
 	setup_test_env
 	create_gh_stub_function_complexity_duplicate
@@ -995,6 +1040,8 @@ main() {
 	test_routed_review_closes_for_matching_post_review_merge
 	test_routed_review_metadata_failure_blocks_dispatch
 	test_routed_review_missing_created_at_blocks_dispatch
+	test_routed_review_source_metadata_failure_blocks_dispatch
+	test_routed_review_empty_payload_blocks_dispatch
 	test_function_complexity_sweep_duplicate_closes_later_issue
 	test_function_complexity_sweep_missing_cited_file_allows_dispatch
 
