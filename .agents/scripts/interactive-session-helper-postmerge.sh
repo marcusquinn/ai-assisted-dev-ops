@@ -34,6 +34,9 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+# shellcheck source=./issue-hold-marker-lib.sh
+source "${SCRIPT_DIR}/issue-hold-marker-lib.sh"
+
 # -----------------------------------------------------------------------------
 # Subcommand: post-merge (t2225)
 # -----------------------------------------------------------------------------
@@ -80,21 +83,27 @@ _isc_post_merge_heal_status_done() {
 		[[ -n "$issue_num" ]] || continue
 		[[ "$issue_num" =~ ^[0-9]+$ ]] || continue
 
-		local issue_json issue_state has_done
-		issue_json=$(gh issue view "$issue_num" --repo "$slug" --json state,labels 2>/dev/null) || continue
+		local issue_json issue_state issue_body has_done restore_status
+		issue_json=$(gh issue view "$issue_num" --repo "$slug" --json state,labels,body 2>/dev/null) || continue
 		issue_state=$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null) || continue
 		[[ "$issue_state" == "OPEN" ]] || continue
 
 		has_done=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | map(select(. == "status:done")) | length' 2>/dev/null) || continue
 		[[ "${has_done:-0}" -gt 0 ]] || continue
 
-		_isc_info "post-merge: healing false status:done on #$issue_num (t2219, For/Ref in PR #$pr_number)"
+		issue_body=$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null) || continue
+		restore_status="status:available"
+		if [[ "$(issue_body_has_defer_marker "$issue_body")" == "true" ]]; then
+			restore_status="status:blocked"
+		fi
+
+		_isc_info "post-merge: healing false status:done on #$issue_num to $restore_status (t2219, For/Ref in PR #$pr_number)"
 		gh issue edit "$issue_num" --repo "$slug" \
 			--remove-label "status:done" \
-			--add-label "status:available" >/dev/null 2>&1 || continue
+			--add-label "$restore_status" >/dev/null 2>&1 || continue
 
 		gh_issue_comment "$issue_num" --repo "$slug" --body \
-			"Reset \`status:done\` → \`status:available\` — PR #${pr_number} referenced this via \`For\`/\`Ref\` (planning convention), not \`Closes\`/\`Resolves\`. Workaround for [t2219](../issues/19719) (\`issue-sync.yml\` title-fallback false-positive)." \
+			"Reset \`status:done\` → \`${restore_status}\` — PR #${pr_number} referenced this via \`For\`/\`Ref\` (planning convention), not \`Closes\`/\`Resolves\`. Workaround for [t2219](../issues/19719) (\`issue-sync.yml\` title-fallback false-positive)." \
 			>/dev/null 2>&1 || true
 
 		healed=$((healed + 1))

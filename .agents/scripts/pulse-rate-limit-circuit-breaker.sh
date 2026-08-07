@@ -219,6 +219,45 @@ _cb_rest_core_bounds() {
 }
 
 #######################################
+# Return normalized headroom reserved for already-admitted REST work.
+#######################################
+_cb_rest_core_in_flight_allowance() {
+	local allowance="${AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE:-250}"
+	[[ "$allowance" =~ ^[0-9]+$ ]] || allowance=250
+	printf '%s\n' "$allowance"
+	return 0
+}
+
+#######################################
+# Return the minimum remaining budget required to launch progress work.
+# Args: $1=hard floor, $2=soft cap
+#######################################
+_cb_rest_core_progress_start_floor() {
+	local hard_floor="$1"
+	local soft_cap="$2"
+	[[ "$hard_floor" =~ ^[0-9]+$ ]] || return 1
+	[[ "$soft_cap" =~ ^[0-9]+$ ]] || return 1
+	if [[ "$soft_cap" -eq 0 ]]; then
+		printf '0\n'
+		return 0
+	fi
+	local allowance
+	allowance=$(_cb_rest_core_in_flight_allowance)
+	printf '%s\n' "$((hard_floor + allowance))"
+	return 0
+}
+
+#######################################
+# Return normalized cache TTL for launch-gate observations.
+#######################################
+_cb_rest_core_gate_probe_ttl() {
+	local ttl="${AIDEVOPS_PULSE_REST_CORE_GATE_PROBE_TTL:-2}"
+	[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=2
+	printf '%s\n' "$ttl"
+	return 0
+}
+
+#######################################
 # Compute the adaptive REST-core soft threshold for a reset epoch.
 #
 # Args:
@@ -263,7 +302,7 @@ _cb_rest_core_thresholds() {
 # Cached observations are never used past their TTL or GitHub reset epoch.
 #######################################
 _cb_rest_core_observation() {
-	local ttl="$_CB_REST_CORE_PROBE_TTL"
+	local ttl="${1:-$_CB_REST_CORE_PROBE_TTL}"
 	local now observed=0 remaining limit reset resource
 	[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=20
 	now=$(date +%s 2>/dev/null) || now=0
@@ -309,12 +348,14 @@ _cb_rest_core_observation() {
 
 #######################################
 # Classify authoritative REST-core headroom for stage-boundary scheduling.
+# Args: $1=optional cache TTL override.
 #
 # Stdout:
 #   "<mode> <remaining> <limit> <adaptive> <soft-cap> <hard-floor> <reset>"
 # Modes: normal, reserve, emergency, disabled, unknown.
 #######################################
 pulse_rest_core_priority_snapshot() {
+	local observation_ttl="${1:-}"
 	local soft_cap
 	local hard_floor
 	local window_seconds
@@ -328,7 +369,7 @@ pulse_rest_core_priority_snapshot() {
 	local remaining
 	local limit
 	local reset_epoch
-	observation=$(_cb_rest_core_observation) || observation=""
+	observation=$(_cb_rest_core_observation "$observation_ttl") || observation=""
 	if [[ -z "$observation" ]]; then
 		printf 'unknown ? ? ? %s %s ?\n' "$soft_cap" "$hard_floor"
 		return 0
@@ -386,20 +427,31 @@ _cb_rest_core_priority_decision_allows() {
 	local reset_epoch
 	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	case "$mode" in
-	disabled | normal)
+	disabled)
 		return 0
 		;;
-	reserve)
-		[[ "$priority" == "progress" ]] && return 0
-		return 1
-		;;
-	emergency)
-		return 1
-		;;
+	normal | reserve | emergency) ;;
 	*)
 		return 2
 		;;
 	esac
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$adaptive" =~ ^[0-9]+$ || ! "$soft_cap" =~ ^[0-9]+$ || ! "$hard_floor" =~ ^[0-9]+$ ]]; then
+		return 2
+	fi
+
+	local progress_start_floor
+	progress_start_floor=$(_cb_rest_core_progress_start_floor "$hard_floor" "$soft_cap") || return 2
+	if [[ "$priority" == "progress" ]]; then
+		[[ "$remaining" -gt "$progress_start_floor" ]] && return 0
+		return 1
+	fi
+
+	local deferrable_start_floor="$adaptive"
+	if [[ "$progress_start_floor" -gt "$deferrable_start_floor" ]]; then
+		deferrable_start_floor="$progress_start_floor"
+	fi
+	[[ "$remaining" -gt "$deferrable_start_floor" ]] && return 0
+	return 1
 }
 
 #######################################
@@ -425,6 +477,44 @@ pulse_rest_core_priority_allows() {
 }
 
 #######################################
+# Return whether one new API-heavy work unit may start using a fresh-enough
+# authoritative observation. Repeated checks share the short gate cache.
+# Args: $1=priority, $2=static log context (optional).
+# Returns: 0 allowed; 1 threshold block; 2 unknown/invalid evidence.
+#######################################
+pulse_rest_core_priority_allows_next() {
+	local priority="$1"
+	local context="${2:-unspecified}"
+	case "$priority" in
+	critical)
+		return 0
+		;;
+	progress | deferrable) ;;
+	*) return 2 ;;
+	esac
+
+	local decision
+	local gate_ttl
+	local decision_rc=0
+	gate_ttl=$(_cb_rest_core_gate_probe_ttl)
+	decision=$(pulse_rest_core_priority_snapshot "$gate_ttl")
+	_cb_rest_core_priority_decision_allows "$priority" "$decision" || decision_rc=$?
+	[[ "$decision_rc" -eq 0 ]] && return 0
+
+	local mode remaining limit adaptive soft_cap hard_floor reset_epoch progress_start_floor="?"
+	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
+	if [[ "$hard_floor" =~ ^[0-9]+$ && "$soft_cap" =~ ^[0-9]+$ ]]; then
+		progress_start_floor=$(_cb_rest_core_progress_start_floor "$hard_floor" "$soft_cap") || progress_start_floor="?"
+	fi
+	echo "${_CB_RL_LOG_PREFIX} REST-core ${priority} unit blocked: context=${context} mode=${mode} remaining=${remaining}/${limit} adaptive=${adaptive} progress_start_floor=${progress_start_floor} reset=${reset_epoch} rc=${decision_rc} (GH#29742)" >>"$LOGFILE"
+	if declare -F pulse_stats_increment >/dev/null 2>&1; then
+		pulse_stats_increment "pulse_rest_core_unit_blocked" 2>/dev/null || true
+		pulse_stats_increment "pulse_rest_core_unit_blocked_${priority}" 2>/dev/null || true
+	fi
+	return "$decision_rc"
+}
+
+#######################################
 # Backward-compatible optional-work reserve entrypoint.
 #######################################
 pulse_rest_core_reserve_allows() {
@@ -438,7 +528,7 @@ pulse_rest_core_reserve_allows() {
 _cb_rest_core_progress_block_reason() {
 	local progress_rc="$1"
 	case "$progress_rc" in
-	1) printf 'known REST-core progress floor reached\n' ;;
+	1) printf 'known REST-core progress launch floor reached\n' ;;
 	2) printf 'authoritative REST-core quota evidence unavailable\n' ;;
 	*) printf 'unexpected REST-core progress decision (rc=%s)\n' "$progress_rc" ;;
 	esac
@@ -461,7 +551,7 @@ _cb_rest_core_progress_allows_dispatch() {
 	local soft_cap
 	local hard_floor
 	local reset_epoch
-	decision=$(pulse_rest_core_priority_snapshot)
+	decision=$(pulse_rest_core_priority_snapshot "$(_cb_rest_core_gate_probe_ttl)")
 	local progress_rc=0
 	_cb_rest_core_priority_decision_allows progress "$decision" || progress_rc=$?
 	[[ "$progress_rc" -eq 0 ]] && return 0
@@ -469,7 +559,11 @@ _cb_rest_core_progress_allows_dispatch() {
 	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	local block_reason
 	block_reason=$(_cb_rest_core_progress_block_reason "$progress_rc")
-	echo "${_CB_RL_LOG_PREFIX} REST-core progress gate blocked: ${block_reason}; deferring until a later authoritative probe allows progress; mode=${mode} remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} reset=${reset_epoch} rc=${progress_rc} (GH#29742)" >>"$LOGFILE"
+	local progress_start_floor="?"
+	if [[ "$hard_floor" =~ ^[0-9]+$ && "$soft_cap" =~ ^[0-9]+$ ]]; then
+		progress_start_floor=$(_cb_rest_core_progress_start_floor "$hard_floor" "$soft_cap") || progress_start_floor="?"
+	fi
+	echo "${_CB_RL_LOG_PREFIX} REST-core progress gate blocked: ${block_reason}; deferring until a later authoritative probe allows progress; mode=${mode} remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} progress_start_floor=${progress_start_floor} reset=${reset_epoch} rc=${progress_rc} (GH#29742)" >>"$LOGFILE"
 	if declare -F pulse_stats_increment >/dev/null 2>&1; then
 		pulse_stats_increment "pulse_rest_core_progress_blocked" 2>/dev/null || true
 		pulse_stats_increment "pulse_rest_core_progress_blocked_${mode}" 2>/dev/null || true
@@ -501,7 +595,11 @@ _cb_allow_dispatch_with_rest_fallback() {
 	fi
 
 	local core_rc=0
-	pulse_rest_core_priority_allows progress || core_rc=$?
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next progress "graphql_rest_fallback" || core_rc=$?
+	else
+		pulse_rest_core_priority_allows progress || core_rc=$?
+	fi
 	if [[ "$core_rc" -ne 0 ]]; then
 		local block_reason
 		block_reason=$(_cb_rest_core_progress_block_reason "$core_rc")

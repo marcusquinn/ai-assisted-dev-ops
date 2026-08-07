@@ -59,7 +59,9 @@ _cb_rate_limit_json() {
 export AIDEVOPS_PULSE_OPTIONAL_BUDGET_THRESHOLD=1250
 export AIDEVOPS_PULSE_REST_CORE_RESERVE=500
 export AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR=100
+export AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE=250
 export AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS=3600
+export AIDEVOPS_PULSE_REST_CORE_GATE_PROBE_TTL=2
 export GH_GRAPHQL_REMAINING=100
 export GH_REST_CORE_REMAINING=5000
 export GH_REST_CORE_RESET="$(($(date +%s) + 3600))"
@@ -124,11 +126,11 @@ export AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE=1
 _pulse_should_defer_budget_priority_stage "preflight_prefetch_and_scope"
 unset AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE
 if _pulse_should_defer_budget_priority_stage "deterministic_merge_pass"; then
-	printf 'FAIL: progress stage deferred above REST hard floor\n' >&2
+	printf 'FAIL: progress stage deferred above REST launch floor\n' >&2
 	exit 1
 fi
 if _pulse_should_defer_budget_priority_stage "approval_merge_trigger"; then
-	printf 'FAIL: approval-trigger merge deferred above REST hard floor\n' >&2
+	printf 'FAIL: approval-trigger merge deferred above REST launch floor\n' >&2
 	exit 1
 fi
 if _pulse_should_defer_budget_priority_stage "reap_orphan_workers"; then
@@ -140,6 +142,30 @@ grep -q '_pulse_run_budget_priority_stage "approval_merge_trigger" _drain_merge_
 _pulse_defer_budget_priority_stage "dashboard_freshness_check"
 grep -q 'pulse_rest_core_budget_reserve_mode' "${TMP_DIR}/counters.log"
 grep -q 'pulse_rest_core_budget_stage_deferred_dashboard_freshness_check' "${TMP_DIR}/counters.log"
+
+export GH_REST_CORE_RESET="$(($(date +%s) + 60))"
+export GH_REST_CORE_REMAINING=350
+rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
+_pulse_set_rest_core_budget_priority
+[[ "${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS}" == "normal" ]]
+if ! _pulse_should_defer_budget_priority_stage "deterministic_merge_pass"; then
+	printf 'FAIL: progress stage was admitted at REST launch floor\n' >&2
+	exit 1
+fi
+_pulse_defer_budget_priority_stage "deterministic_merge_pass"
+grep -q 'progress_start_floor=350' "$LOGFILE"
+if _pulse_should_defer_budget_priority_stage "reap_orphan_workers"; then
+	printf 'FAIL: critical stage deferred at REST launch floor\n' >&2
+	exit 1
+fi
+
+export GH_REST_CORE_REMAINING=351
+rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
+if _pulse_should_defer_budget_priority_stage "deterministic_merge_pass"; then
+	printf 'FAIL: progress stage deferred above REST launch floor\n' >&2
+	exit 1
+fi
+export GH_REST_CORE_RESET="$(($(date +%s) + 3600))"
 
 export GH_REST_CORE_REMAINING=100
 rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"

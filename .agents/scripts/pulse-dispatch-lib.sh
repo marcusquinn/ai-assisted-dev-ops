@@ -1021,6 +1021,10 @@ _dispatch_compute_capacity() {
 		echo "[pulse-wrapper] Dispatch_max skipped: stop flag present" >>"$LOGFILE"
 		return 1
 	fi
+	if ! _dispatch_rest_core_progress_allows_next "dispatch_capacity"; then
+		echo "[pulse-wrapper] Dispatch_max skipped: REST-core launch headroom is unavailable" >>"$LOGFILE"
+		return 1
+	fi
 
 	# t2690/t3424: Proactive rate-limit circuit breaker — pause dispatch when
 	# GraphQL budget is nearly exhausted unless REST-backed dispatch fallback is
@@ -1134,6 +1138,10 @@ _dispatch_run_prepasses() {
 	fi
 
 	if [[ "$run_triage" -eq 1 ]]; then
+		if ! _dispatch_rest_core_progress_allows_next "dispatch_triage_prepass"; then
+			printf '%s %s %s\n' "$available_slots" "$triage_attempted" "$triage_infrastructure_failed"
+			return 0
+		fi
 		if [[ "$refresh_state" -eq 1 ]] && \
 			{ ! command -v refresh_triage_review_state >/dev/null 2>&1 || ! refresh_triage_review_state; }; then
 			echo "[pulse-wrapper] Dispatch_max: triage state refresh failed — preserving prior snapshot and recording one infrastructure failure" >>"$LOGFILE"
@@ -1162,6 +1170,10 @@ _dispatch_run_prepasses() {
 	fi
 
 	local enrichment_remaining
+	if ! _dispatch_rest_core_progress_allows_next "dispatch_enrichment_prepass"; then
+		printf '%s %s %s\n' "$available_slots" "$triage_attempted" "$triage_infrastructure_failed"
+		return 0
+	fi
 	enrichment_remaining=$(dispatch_enrichment_workers "$available_slots" 2>>"$LOGFILE") || enrichment_remaining="$available_slots"
 	[[ "$enrichment_remaining" =~ ^[0-9]+$ ]] || enrichment_remaining="$available_slots"
 	local enrichment_dispatched=$((available_slots - enrichment_remaining))
@@ -1629,6 +1641,55 @@ _dispatch_with_timeout() {
 }
 
 #######################################
+# Stop dispatch loops when REST-core launch headroom is unavailable.
+#######################################
+_dispatch_rest_core_progress_allows_next() {
+	local context="$1"
+	local budget_rc=0
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next progress "$context" || budget_rc=$?
+	elif declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows progress || budget_rc=$?
+	else
+		return 0
+	fi
+	[[ "$budget_rc" -eq 0 ]] && return 0
+	_dispatch_stats_increment "dispatch_rest_core_circuit_blocked"
+	_dispatch_stats_increment_candidate_failed "rest_core_circuit_breaker"
+	return 1
+}
+
+#######################################
+# Return 0 when dispatch ceremony should be serialized near the REST reserve.
+# The serial zone includes the soft cap plus the in-flight allowance so a large
+# parallel batch cannot arrive at the progress launch floor simultaneously.
+#######################################
+_dispatch_rest_core_requires_serial() {
+	declare -F pulse_rest_core_priority_snapshot >/dev/null 2>&1 || return 1
+	local gate_ttl=""
+	if declare -F _cb_rest_core_gate_probe_ttl >/dev/null 2>&1; then
+		gate_ttl=$(_cb_rest_core_gate_probe_ttl)
+	fi
+	local decision="" mode="" remaining="" limit="" adaptive="" soft_cap="" hard_floor="" reset_epoch=""
+	decision=$(pulse_rest_core_priority_snapshot "$gate_ttl") || decision="unknown ? ? ? ? ? ?"
+	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
+	case "$mode" in
+	disabled) return 1 ;;
+	unknown | reserve | emergency) return 0 ;;
+	esac
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$soft_cap" =~ ^[0-9]+$ ]]; then
+		return 0
+	fi
+	local allowance=250
+	if declare -F _cb_rest_core_in_flight_allowance >/dev/null 2>&1; then
+		allowance=$(_cb_rest_core_in_flight_allowance)
+	fi
+	[[ "$allowance" =~ ^[0-9]+$ ]] || allowance=250
+	[[ "$remaining" -le $((soft_cap + allowance)) ]] && return 0
+	return 1
+}
+
+#######################################
 # Stop dispatch loops when the GraphQL reserve is already below the circuit
 # breaker threshold. The rate_limit endpoint is free, so this protects the
 # high-fanout loop without spending additional GraphQL points.
@@ -1980,6 +2041,10 @@ _dispatch_max_compute_parallel() {
 	if [[ -f "$_DISPATCH_THROTTLE_FILE" && "${_DISPATCH_MIN_WORKER_FLOOR_ACTIVE:-0}" != "1" ]]; then
 		max_parallel=1
 	fi
+	if _dispatch_rest_core_requires_serial; then
+		max_parallel=1
+		echo "[pulse-wrapper] Dispatch_max: REST-core reserve-adjacent mode forces serial launch ceremony (GH#29742)" >>"$LOGFILE"
+	fi
 	((max_parallel < 1)) && max_parallel=1
 	printf '%d\n' "$max_parallel"
 	return 0
@@ -2021,6 +2086,10 @@ _dispatch_floor_loop() {
 		fi
 		if ! _dispatch_graphql_budget_allows_next; then
 			echo "[pulse-wrapper] Dispatch_max stopping early: GraphQL circuit breaker tripped during serial loop" >>"$LOGFILE"
+			break
+		fi
+		if ! _dispatch_rest_core_progress_allows_next "dispatch_serial_candidate"; then
+			echo "[pulse-wrapper] Dispatch_max stopping early: REST-core launch headroom unavailable during serial loop" >>"$LOGFILE"
 			break
 		fi
 		local _dispatch_proc_rc=0
@@ -2184,6 +2253,10 @@ _dispatch_max_should_stop() {
 	fi
 	if ! _dispatch_graphql_budget_allows_next; then
 		echo "[pulse-wrapper] Dispatch_max stopping early: GraphQL circuit breaker tripped during parallel loop" >>"$LOGFILE"
+		return 0
+	fi
+	if ! _dispatch_rest_core_progress_allows_next "dispatch_parallel_candidate"; then
+		echo "[pulse-wrapper] Dispatch_max stopping early: REST-core launch headroom unavailable during parallel loop" >>"$LOGFILE"
 		return 0
 	fi
 	return 1

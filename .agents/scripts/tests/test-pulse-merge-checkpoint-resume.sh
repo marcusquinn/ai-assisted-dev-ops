@@ -77,6 +77,15 @@ PROCESSED_REPOS=""
 ZERO_PROGRESS_CALLS=""
 STOP_AFTER_REPO=""
 MERGE_ON_REPO=""
+REST_BLOCK_CONTEXT=""
+
+pulse_rest_core_priority_allows_next() {
+	local priority="$1"
+	local context="$2"
+	[[ -n "$priority" ]] || return 1
+	[[ -z "$REST_BLOCK_CONTEXT" || "$context" != "$REST_BLOCK_CONTEXT" ]] || return 1
+	return 0
+}
 
 repo_allows_pulse_write_actions() {
 	local repo_slug="$1"
@@ -174,6 +183,27 @@ ZERO_PROGRESS_CALLS=""
 merge_ready_prs_all_repos
 assert_equals "interrupted pass records conclusive merge progress without a partial denominator" "0:1:0 " "$ZERO_PROGRESS_CALLS"
 rm -f "$STOP_FLAG"
+
+rm -f "$PULSE_MERGE_CHECKPOINT_FILE"
+STOP_AFTER_REPO=""
+MERGE_ON_REPO=""
+PROCESSED_REPOS=""
+ZERO_PROGRESS_CALLS=""
+REST_BLOCK_CONTEXT="merge_repo:org/two"
+merge_ready_prs_all_repos
+assert_equals "REST launch gate stops before the blocked repository" "org/one " "$PROCESSED_REPOS"
+assert_equals "REST launch gate preserves the last completed repository checkpoint" "org/one" "$(tr -d '\n' <"$PULSE_MERGE_CHECKPOINT_FILE")"
+assert_equals "REST-paused partial pass does not record zero-progress aggregate" "" "$ZERO_PROGRESS_CALLS"
+
+REST_BLOCK_CONTEXT=""
+PROCESSED_REPOS=""
+merge_ready_prs_all_repos
+assert_equals "REST-paused pass resumes after the completed repository" "org/two org/three " "$PROCESSED_REPOS"
+if [[ ! -f "$PULSE_MERGE_CHECKPOINT_FILE" ]]; then
+	pass "REST-paused checkpoint clears after resumed tail completes"
+else
+	fail "REST-paused checkpoint clears after resumed tail completes" "checkpoint still exists"
+fi
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
 	printf '\n%sAll %s tests passed%s\n' "$TEST_GREEN" "$TESTS_RUN" "$TEST_NC"

@@ -550,6 +550,14 @@ _setup_dispatch_stub() {
 		return 0
 	}
 
+	# Keep prepass tests isolated from live REST-core evidence. Dedicated coverage
+	# below overrides this helper to verify the blocked launch path.
+	_dispatch_rest_core_progress_allows_next() {
+		local context="$1"
+		[[ -n "$context" ]] || return 1
+		return 0
+	}
+
 	return 0
 }
 
@@ -887,6 +895,53 @@ test_triage_prepass_has_independent_once_per_cycle_budget() {
 	return 0
 }
 
+test_triage_prepass_rest_gate_blocks_before_review_api() {
+	local repos_json="" state_file="" outcome="" dispatch_count="" gate_calls=""
+	local enrichment_definition="" gate_definition="" marker=""
+	_set_valid_triage_test_metadata
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #812: REST blocked [status: **needs-review**] [created: 2026-01-03T00:00:00Z]
+")
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-prepass-rest-block.log"
+	local gate_log="${TEST_ROOT}/dispatch-prepass-rest-gate.log"
+	: >"$DISPATCH_LOG_FILE"
+	: >"$gate_log"
+	_PULSE_CYCLE_ID="triage-prepass-rest-block"
+	PULSE_TRIAGE_BUDGET_PER_CYCLE=2
+	enrichment_definition=$(declare -f dispatch_enrichment_workers)
+	gate_definition=$(declare -f _dispatch_rest_core_progress_allows_next)
+	dispatch_enrichment_workers() {
+		local available_slots="$1"
+		printf 'enrichment:%s\n' "$available_slots" >>"$DISPATCH_LOG_FILE"
+		printf '%s\n' "$available_slots"
+		return 0
+	}
+	_dispatch_rest_core_progress_allows_next() {
+		local context="$1"
+		printf '%s\n' "$context" >>"$gate_log"
+		[[ "$context" != "dispatch_triage_prepass" ]]
+		return $?
+	}
+	outcome=$(_dispatch_run_prepasses 5)
+	eval "$enrichment_definition"
+	eval "$gate_definition"
+	dispatch_count=$(wc -l <"$DISPATCH_LOG_FILE" | tr -d ' ')
+	gate_calls=$(tr '\n' ' ' <"$gate_log")
+	marker=$(_dispatch_cycle_cache_path "pulse-triage-prepass" ".done")
+	if [[ "$outcome" == "5 0 0" && "$dispatch_count" == "0" && \
+		"$gate_calls" == "dispatch_triage_prepass " && ! -e "$marker" ]]; then
+		print_result "REST launch gate blocks triage and enrichment prepasses before API work" 0
+		return 0
+	fi
+	print_result "REST launch gate blocks triage and enrichment prepasses before API work" 1 \
+		"outcome=${outcome} dispatch_count=${dispatch_count} gate_calls=${gate_calls} marker=${marker}"
+	return 0
+}
+
 test_triage_fallback_outcome_is_valid() {
 	local outcome=""
 	outcome=$(_dispatch_triage_fallback_outcome 1)
@@ -1069,6 +1124,7 @@ main() {
 	test_dispatch_triage_reviews_rejects_malformed_metadata
 	test_dispatch_triage_reviews_types_infrastructure_failures
 	test_triage_prepass_has_independent_once_per_cycle_budget
+	test_triage_prepass_rest_gate_blocks_before_review_api
 	test_triage_fallback_outcome_is_valid
 	test_triage_candidates_prioritize_known_contributors
 	test_triage_prepass_refreshes_zero_attempt_snapshot

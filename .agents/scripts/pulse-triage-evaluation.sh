@@ -48,6 +48,24 @@ fi
 
 # --- Functions ---
 
+#######################################
+# Return whether another deferrable label-maintenance unit may start.
+#######################################
+_pte_rest_core_deferrable_allows_next() {
+	local context="$1"
+	local budget_rc=0
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next deferrable "$context" || budget_rc=$?
+	elif declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows deferrable || budget_rc=$?
+	else
+		return 0
+	fi
+	[[ "$budget_rc" -eq 0 ]] && return 0
+	echo "[pulse-wrapper] Label maintenance: REST-core reserve reached at ${context}; remaining work deferred (GH#29742)" >>"${LOGFILE:-/dev/null}"
+	return 1
+}
+
 # t2161: Idempotently remove the `needs-consolidation` label from an issue
 # and log the reason. Used by `_issue_needs_consolidation`'s two auto-clear
 # branches (in-flight resolving PR + post-filter substantive_count drop).
@@ -77,9 +95,13 @@ _reevaluate_consolidation_labels() {
 	local repos_json="$REPOS_JSON"
 	[[ -f "$repos_json" ]] || return 0
 
-	local total_cleared=0
+	local total_cleared=0 rest_deferred=0
 	while IFS= read -r slug; do
 		[[ -n "$slug" ]] || continue
+		if ! _pte_rest_core_deferrable_allows_next "consolidation_repo:${slug}"; then
+			rest_deferred=1
+			break
+		fi
 		local issues_json
 		issues_json=$(gh_issue_list --repo "$slug" --state open \
 			--label "needs-consolidation" \
@@ -87,12 +109,17 @@ _reevaluate_consolidation_labels() {
 
 		while IFS= read -r num; do
 			[[ "$num" =~ ^[0-9]+$ ]] || continue
+			if ! _pte_rest_core_deferrable_allows_next "consolidation_issue:${slug}#${num}"; then
+				rest_deferred=1
+				break
+			fi
 			# _issue_needs_consolidation returns 1 (no consolidation needed)
 			# AND auto-clears the label when was_already_labeled=true
 			if ! _issue_needs_consolidation "$num" "$slug"; then
 				total_cleared=$((total_cleared + 1))
 			fi
 		done < <(printf '%s' "$issues_json" | jq -r '.[]?.number // ""')
+		[[ "$rest_deferred" -eq 0 ]] || break
 	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
 
 	if [[ "$total_cleared" -gt 0 ]]; then
@@ -205,6 +232,10 @@ _reevaluate_stale_continuations() {
 	local cont_num
 	while IFS= read -r cont_num; do
 		[[ "$cont_num" =~ ^[0-9]+$ ]] || continue
+		if ! _pte_rest_core_deferrable_allows_next "simplification_continuation:${repo_slug}#${issue_number}:${cont_num}"; then
+			all_stale="false"
+			break
+		fi
 
 		local cont_info cont_state cont_labels
 		cont_info=$(gh issue view "$cont_num" --repo "$repo_slug" \
@@ -284,6 +315,10 @@ _backfill_simplification_auto_dispatch_labels() {
 		printf '0\n'
 		return 0
 	}
+	if ! _pte_rest_core_deferrable_allows_next "simplification_backfill_repo:${slug}"; then
+		printf '0\n'
+		return 0
+	fi
 
 	issues_json=$(gh_issue_list --repo "$slug" --state open \
 		--label "function-complexity-debt" --label "status:available" \
@@ -292,6 +327,7 @@ _backfill_simplification_auto_dispatch_labels() {
 	local num="" labels_to_add=""
 	while IFS=$'\t' read -r num labels_to_add; do
 		[[ "$num" =~ ^[0-9]+$ ]] || continue
+		_pte_rest_core_deferrable_allows_next "simplification_backfill_issue:${slug}#${num}" || break
 		[[ -n "$labels_to_add" ]] || labels_to_add="auto-dispatch"
 		if gh issue edit "$num" --repo "$slug" \
 			--add-label "$labels_to_add" >/dev/null 2>&1; then
@@ -335,8 +371,13 @@ _reevaluate_simplification_labels() {
 
 	local total_cleared=0
 	local total_backfilled=0
+	local rest_deferred=0
 	while IFS='|' read -r slug rpath; do
 		[[ -n "$slug" && -n "$rpath" ]] || continue
+		if ! _pte_rest_core_deferrable_allows_next "simplification_repo:${slug}"; then
+			rest_deferred=1
+			break
+		fi
 
 		# t2433/GH#20071: Pull repo to latest remote state before measuring
 		# file sizes. Without this, a stale local copy causes
@@ -350,6 +391,10 @@ _reevaluate_simplification_labels() {
 		backfilled_count=$(_backfill_simplification_auto_dispatch_labels "$slug") || backfilled_count=0
 		[[ "$backfilled_count" =~ ^[0-9]+$ ]] || backfilled_count=0
 		total_backfilled=$((total_backfilled + backfilled_count))
+		if ! _pte_rest_core_deferrable_allows_next "simplification_repo_after_backfill:${slug}"; then
+			rest_deferred=1
+			break
+		fi
 
 		local issues_json
 		issues_json=$(gh_issue_list --repo "$slug" --state open \
@@ -358,6 +403,10 @@ _reevaluate_simplification_labels() {
 
 		while IFS= read -r num; do
 			[[ "$num" =~ ^[0-9]+$ ]] || continue
+			if ! _pte_rest_core_deferrable_allows_next "simplification_issue:${slug}#${num}"; then
+				rest_deferred=1
+				break
+			fi
 			local body
 			body=$(gh issue view "$num" --repo "$slug" \
 				--json body --jq '.body // ""' 2>/dev/null) || body=""
@@ -384,6 +433,7 @@ _reevaluate_simplification_labels() {
 				fi
 			fi
 		done < <(printf '%s' "$issues_json" | jq -r '.[]?.number // ""')
+		[[ "$rest_deferred" -eq 0 ]] || break
 	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "" and .path != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null)
 
 	if [[ "$total_cleared" -gt 0 ]]; then

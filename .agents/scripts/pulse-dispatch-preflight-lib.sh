@@ -287,6 +287,24 @@ _preflight_capacity() {
 }
 
 #######################################
+# Return whether another deferrable preflight work unit may start.
+#######################################
+_preflight_rest_core_allows_next() {
+	local context="$1"
+	local budget_rc=0
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next deferrable "$context" || budget_rc=$?
+	elif declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows deferrable || budget_rc=$?
+	else
+		return 0
+	fi
+	[[ "$budget_rc" -eq 0 ]] && return 0
+	echo "[pulse-wrapper] preflight: REST-core reserve reached at ${context}; remaining deferrable work deferred (GH#29742)" >>"$LOGFILE"
+	return 1
+}
+
+#######################################
 # Cross-repository needs-* label maintenance. Runs after the first dispatch so
 # already-eligible work can boot while these idempotent sweeps expose additional
 # candidates for the post-maintenance refill.
@@ -300,6 +318,7 @@ _preflight_label_maintenance() {
 	# current filter. Auto-clearing here makes them dispatchable in this cycle
 	# instead of stuck forever behind a label that list_dispatchable_issue_candidates_json
 	# filters out (needs-* exclusion at line 6703).
+	_preflight_rest_core_allows_next "label_maintenance_consolidation_reevaluate" || return 0
 	local _ss0=$SECONDS
 	_reevaluate_consolidation_labels
 	_log_substage_timing "substage:label_maintenance/reevaluate_consolidation_labels" "$_ss0" 0
@@ -308,10 +327,12 @@ _preflight_label_maintenance() {
 	# got a consolidation-task child created (pre-t1982 dispatches just
 	# labelled and returned). Dispatches a child retroactively so the
 	# parent can actually be consolidated instead of sitting forever.
+	_preflight_rest_core_allows_next "label_maintenance_consolidation_backfill" || return 0
 	local _ss1=$SECONDS
 	_backfill_stale_consolidation_labels
 	_log_substage_timing "substage:label_maintenance/backfill_consolidation_labels" "$_ss1" 0
 
+	_preflight_rest_core_allows_next "label_maintenance_simplification_reevaluate" || return 0
 	local _ss2=$SECONDS
 	_reevaluate_simplification_labels
 	_log_substage_timing "substage:label_maintenance/reevaluate_simplification_labels" "$_ss2" 0
@@ -359,7 +380,9 @@ _preflight_early_dispatch() {
 	# Routine comment responses: scan routine-tracking issues for unanswered
 	# user comments and dispatch lightweight Haiku workers to respond.
 	# Runs before heavy housekeeping so responses are fast.
-	dispatch_routine_comment_responses || true
+	if _preflight_rest_core_allows_next "routine_comment_responses"; then
+		dispatch_routine_comment_responses || true
+	fi
 	return 0
 }
 
