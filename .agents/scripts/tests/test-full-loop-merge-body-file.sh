@@ -198,7 +198,12 @@ assert_transport_preserves_body() {
 	cp "$body_file" "$expected_file"
 	local merge_args=(42 testorg/testrepo --squash --body-file "$body_file")
 	[[ "$has_auto" -eq 1 ]] && merge_args+=(--auto)
-	cmd_merge ${merge_args[@]+"${merge_args[@]}"} >/dev/null 2>&1 || rc=$?
+	if [[ "$has_auto" -eq 1 ]]; then
+		FULL_LOOP_HEADLESS=false AIDEVOPS_HEADLESS=false Claude_HEADLESS=false GITHUB_ACTIONS=false \
+			cmd_merge ${merge_args[@]+"${merge_args[@]}"} >/dev/null 2>&1 || rc=$?
+	else
+		cmd_merge ${merge_args[@]+"${merge_args[@]}"} >/dev/null 2>&1 || rc=$?
+	fi
 	local capture_count=0
 	[[ -f "${TEST_ROOT}/capture-count" ]] && capture_count=$(<"${TEST_ROOT}/capture-count")
 	local exact=1
