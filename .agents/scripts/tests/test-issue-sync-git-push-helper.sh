@@ -206,6 +206,22 @@ GH
 	return 0
 }
 
+write_rejecting_git_shim() {
+	local fake_bin="$1"
+	local guard_log="$2"
+	mkdir -p "$fake_bin"
+	cat >"${fake_bin}/git" <<'GIT'
+#!/usr/bin/env bash
+printf 'blocked git invocation:' >>"${GIT_GUARD_LOG:?}"
+printf ' %q' "$@" >>"${GIT_GUARD_LOG:?}"
+printf '\n' >>"${GIT_GUARD_LOG:?}"
+exit 97
+GIT
+	chmod +x "${fake_bin}/git"
+	: >"$guard_log"
+	return 0
+}
+
 install_main_rejection_hook() {
 	local origin_dir="$1"
 	local mode="$2"
@@ -258,6 +274,7 @@ run_issue_sync_helper() {
 	local primary_token="${9:-fixture-token}"
 	local fallback_token="${10:-}"
 	local reject_pr_token="${11:-}"
+	local trusted_git="${12:-}"
 	(
 		cd "$work_dir" || exit 1
 		PATH="${fake_bin}:$PATH" \
@@ -271,6 +288,8 @@ run_issue_sync_helper() {
 			GH_STUB_TITLE="$title_file" \
 			GH_STUB_BODY="${title_file}.body" \
 			GH_STUB_REJECT_PR_TOKEN="$reject_pr_token" \
+			GIT_GUARD_LOG="${output_file}.git-guard" \
+			AIDEVOPS_PLANNING_GIT_BIN="$trusted_git" \
 			bash "$HELPER" publish-todo main "$attempts" \
 			"chore: sync fixture issue refs to TODO.md [skip ci]" >"$output_file" 2>&1
 	)
@@ -461,6 +480,49 @@ test_actions_pr_creation_uses_pat_fallback() {
 	return 0
 }
 
+test_runner_git_guard_uses_trusted_git_binary() {
+	local origin_dir="$TMP/git-guard-origin.git"
+	local seed_dir="$TMP/git-guard-seed"
+	local work_dir="$TMP/git-guard-work"
+	local fake_bin="$TMP/git-guard-bin"
+	local gh_log="$TMP/git-guard-gh.log"
+	local pr_marker="$TMP/git-guard-pr.marker"
+	local output_file="$TMP/git-guard-output.log"
+	local guard_log="${output_file}.git-guard"
+	local trusted_git=""
+	trusted_git=$(command -v git) || {
+		fail "runner Git guard uses the trusted Git binary"
+		return 0
+	}
+	create_origin "$origin_dir" "$seed_dir"
+	git clone "$origin_dir" "$work_dir" >/dev/null 2>&1
+	git_init_repo "$work_dir"
+	write_fake_gh "$fake_bin"
+	write_rejecting_git_shim "$fake_bin" "$guard_log"
+	if PATH="${fake_bin}:$PATH" GIT_GUARD_LOG="$guard_log" git --version >/dev/null 2>&1; then
+		fail "runner Git guard fixture rejects PATH Git"
+		return 0
+	elif [[ ! -s "$guard_log" ]]; then
+		fail "runner Git guard fixture rejects PATH Git"
+		return 0
+	fi
+	: >"$guard_log"
+	install_main_rejection_hook "$origin_dir" gh006
+	: >"$gh_log"
+	perl -0pi -e 's/t9001 original task/t9001 guarded runner event/' "$work_dir/TODO.md"
+	if ! run_issue_sync_helper "$work_dir" "$fake_bin" "$gh_log" "$pr_marker" \
+		"$TMP/git-guard-head" "$TMP/git-guard-title" "$output_file" 3 \
+		"fixture-token" "" "" "$trusted_git"; then
+		printf 'Guarded publication output:\n%s\n' "$(<"$output_file")" >&2
+		fail "runner Git guard uses the trusted Git binary"
+	elif ! git --git-dir="$origin_dir" show-ref --verify --quiet refs/heads/aidevops/issue-sync-todo; then
+		fail "runner Git guard uses the trusted Git binary"
+	else
+		pass "runner Git guard uses the trusted Git binary"
+	fi
+	return 0
+}
+
 test_noop_publishes_nothing() {
 	local origin_dir="$TMP/noop-origin.git"
 	local seed_dir="$TMP/noop-seed"
@@ -496,6 +558,7 @@ test_protected_branch_uses_one_rebased_pr
 test_non_gh006_failure_does_not_open_pr
 test_deleted_pr_branch_retries_before_opening_pr
 test_actions_pr_creation_uses_pat_fallback
+test_runner_git_guard_uses_trusted_git_binary
 test_noop_publishes_nothing
 
 printf 'Tests run: %s, failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

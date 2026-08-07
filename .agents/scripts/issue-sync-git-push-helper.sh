@@ -20,6 +20,11 @@ ISSUE_SYNC_LAST_PUBLISH_OUTPUT=""
 ISSUE_SYNC_BASE_SHA=""
 ISSUE_SYNC_SOURCE_BASE_SHA=""
 
+issue_sync_git() {
+	_planning_git "$@"
+	return $?
+}
+
 issue_sync_repo_slug() {
 	local repo_path="$1"
 	local remote_url=""
@@ -28,7 +33,7 @@ issue_sync_repo_slug() {
 		printf '%s\n' "$slug"
 		return 0
 	fi
-	remote_url=$(git -C "$repo_path" remote get-url origin 2>/dev/null) || return 1
+	remote_url=$(issue_sync_git -C "$repo_path" remote get-url origin 2>/dev/null) || return 1
 	case "$remote_url" in
 	git@github.com:*) slug="${remote_url#git@github.com:}" ;;
 	ssh://git@github.com/*) slug="${remote_url#ssh://git@github.com/}" ;;
@@ -63,7 +68,7 @@ issue_sync_changed_reference_numbers() {
 	local commit_msg="$3"
 	local diff_output=""
 	local diff_rc=0
-	diff_output=$(git diff --no-index --unified=0 -- "$base_file" "$candidate_file" 2>/dev/null) || diff_rc=$?
+	diff_output=$(issue_sync_git diff --no-index --unified=0 -- "$base_file" "$candidate_file" 2>/dev/null) || diff_rc=$?
 	if [[ "$diff_rc" -ne 0 && "$diff_rc" -ne 1 ]]; then
 		return 1
 	fi
@@ -149,7 +154,7 @@ issue_sync_merge_todo_file() {
 	local ancestor_file="$2"
 	local incoming_file="$3"
 	local rc=0
-	git merge-file --ours "$current_file" "$ancestor_file" "$incoming_file" >/dev/null 2>&1 || rc=$?
+	issue_sync_git merge-file --ours "$current_file" "$ancestor_file" "$incoming_file" >/dev/null 2>&1 || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
 		echo "::error::Unable to merge concurrent TODO.md projections safely"
 		return 1
@@ -161,7 +166,7 @@ issue_sync_read_todo_blob() {
 	local repo_path="$1"
 	local commit_sha="$2"
 	local destination="$3"
-	git -C "$repo_path" show "${commit_sha}:TODO.md" >"$destination" 2>/dev/null
+	issue_sync_git -C "$repo_path" show "${commit_sha}:TODO.md" >"$destination" 2>/dev/null
 	return $?
 }
 
@@ -175,10 +180,10 @@ issue_sync_prepare_base_snapshot() {
 	local latest_todo="${state_dir}/latest-base-todo"
 	local source_head=""
 
-	git -C "$repo_path" fetch -q origin "$default_branch" || return 1
-	ISSUE_SYNC_BASE_SHA=$(git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
-	source_head=$(git -C "$repo_path" rev-parse "HEAD^{commit}") || return 1
-	ISSUE_SYNC_SOURCE_BASE_SHA=$(git -C "$repo_path" merge-base "$source_head" "$ISSUE_SYNC_BASE_SHA") || return 1
+	issue_sync_git -C "$repo_path" fetch -q origin "$default_branch" || return 1
+	ISSUE_SYNC_BASE_SHA=$(issue_sync_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
+	source_head=$(issue_sync_git -C "$repo_path" rev-parse "HEAD^{commit}") || return 1
+	ISSUE_SYNC_SOURCE_BASE_SHA=$(issue_sync_git -C "$repo_path" merge-base "$source_head" "$ISSUE_SYNC_BASE_SHA") || return 1
 	cp -p "$source_file" "$merged_file" || return 1
 	issue_sync_read_todo_blob "$repo_path" "$ISSUE_SYNC_SOURCE_BASE_SHA" "$source_ancestor" || return 1
 	issue_sync_read_todo_blob "$repo_path" "$ISSUE_SYNC_BASE_SHA" "$latest_todo" || return 1
@@ -192,7 +197,7 @@ issue_sync_remote_branch_sha() {
 	local remote_line=""
 	local remote_sha=""
 	local remote_ref=""
-	remote_line=$(git -C "$repo_path" ls-remote --heads origin "refs/heads/${branch_name}") || return 1
+	remote_line=$(issue_sync_git -C "$repo_path" ls-remote --heads origin "refs/heads/${branch_name}") || return 1
 	[[ -n "$remote_line" && "$remote_line" != *$'\n'* ]] || return 2
 	IFS=$'\t' read -r remote_sha remote_ref <<<"$remote_line"
 	[[ "$remote_sha" =~ ^[0-9a-fA-F]{40,64}$ && "$remote_ref" == "refs/heads/${branch_name}" ]] || return 1
@@ -217,9 +222,9 @@ issue_sync_prepare_pr_snapshot() {
 		return 0
 	fi
 	[[ "$branch_rc" -eq 0 ]] || return 1
-	git -C "$repo_path" fetch -q origin "$ISSUE_SYNC_PR_BRANCH" || return 1
-	sync_sha=$(git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
-	sync_base=$(git -C "$repo_path" merge-base "$ISSUE_SYNC_BASE_SHA" "$sync_sha") || return 1
+	issue_sync_git -C "$repo_path" fetch -q origin "$ISSUE_SYNC_PR_BRANCH" || return 1
+	sync_sha=$(issue_sync_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
+	sync_base=$(issue_sync_git -C "$repo_path" merge-base "$ISSUE_SYNC_BASE_SHA" "$sync_sha") || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_base" "$sync_ancestor" || return 1
 	issue_sync_read_todo_blob "$repo_path" "$sync_sha" "$sync_todo" || return 1
 	issue_sync_merge_todo_file "${state_dir}/merged-todo" "$sync_ancestor" "$sync_todo" || return 1
@@ -370,7 +375,7 @@ issue_sync_publish_todo() {
 		echo "::error::Publication attempts must be a positive integer"
 		return 2
 	}
-	repo_path=$(git rev-parse --show-toplevel) || return 1
+	repo_path=$(issue_sync_git rev-parse --show-toplevel) || return 1
 	[[ -f "${repo_path}/TODO.md" && ! -L "${repo_path}/TODO.md" ]] || {
 		echo "::error::TODO.md must be a regular file"
 		return 1
@@ -451,7 +456,7 @@ main() {
 		return $?
 		;;
 	push-todo)
-		commit_msg=$(git log -1 --pretty=%s 2>/dev/null) || commit_msg="$ISSUE_SYNC_DEFAULT_COMMIT_MESSAGE"
+		commit_msg=$(issue_sync_git log -1 --pretty=%s 2>/dev/null) || commit_msg="$ISSUE_SYNC_DEFAULT_COMMIT_MESSAGE"
 		issue_sync_publish_todo "$branch" "$attempts" "$commit_msg"
 		return $?
 		;;
