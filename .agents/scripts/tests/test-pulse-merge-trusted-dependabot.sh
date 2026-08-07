@@ -9,6 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 GATES_SCRIPT="${SCRIPT_DIR}/../pulse-merge-gates.sh"
 AUTHOR_CHECKS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-author-checks.sh"
+TRUSTED_DEPENDABOT_LIB="${SCRIPT_DIR}/../trusted-dependabot-lib.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -47,6 +48,7 @@ write_pr_fixture() {
 	cat >"${TEST_ROOT}/pr.json" <<EOF
 {
   "author": {"login": "${author_login}"},
+  "headRefOid": "head-current",
   "headRepositoryOwner": {"login": "owner"},
   "headRepository": {"nameWithOwner": "owner/repo"},
   "body": "Bumps the pip group with 1 update in the / directory: [pyarrow](https://github.com/apache/arrow).\n\n---\nupdated-dependencies:\n- dependency-name: pyarrow\n  dependency-version: 23.0.1\n  dependency-type: direct:production\n  dependency-group: pip\n...",
@@ -67,6 +69,7 @@ EOF
 		repository:{pullRequest:{
 			author:.author,
 			body:.body,
+			headRefOid:.headRefOid,
 			headRepository:.headRepository,
 			headRepositoryOwner:.headRepositoryOwner,
 			commits:{
@@ -171,29 +174,21 @@ teardown_test_env() {
 }
 
 define_helpers_under_test() {
-	local dependabot_src=""
 	local approve_src=""
 	local runner_src=""
 	local trusted_approval_src=""
-	dependabot_src=$(awk '
-		/^_trusted_dependabot_updates_conf\(\) \{/,/^}$/ { print }
-		/^_trusted_dependabot_dependency_allowed\(\) \{/,/^}$/ { print }
-		/^_trusted_dependabot_pr_json_graphql\(\) \{/,/^}$/ { print }
-		/^_is_trusted_dependabot_update_pr\(\) \{/,/^}$/ { print }
-		/^_trusted_dependabot_non_review_checks_green\(\) \{/,/^}$/ { print }
-	' "$GATES_SCRIPT")
 	approve_src=$(awk '/^approve_collaborator_pr\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
 	runner_src=$(awk '/^_approve_collaborator_runner_has_write\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
 	trusted_approval_src=$(awk '/^_trusted_existing_approver\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
-	[[ -n "$dependabot_src" && -n "$approve_src" && -n "$runner_src" && -n "$trusted_approval_src" ]] || return 1
+	[[ -n "$approve_src" && -n "$runner_src" && -n "$trusted_approval_src" ]] || return 1
 
 	_has_maintainer_crypto_approval() { return 1; }
 	# shellcheck source=../pulse-merge-author-checks.sh
 	source "$AUTHOR_CHECKS_SCRIPT"
+	# shellcheck source=../trusted-dependabot-lib.sh
+	source "$TRUSTED_DEPENDABOT_LIB"
 	# shellcheck disable=SC1090
 	eval "$runner_src"
-	# shellcheck disable=SC1090
-	eval "$dependabot_src"
 	# shellcheck disable=SC1090
 	eval "$trusted_approval_src"
 	# shellcheck disable=SC1090
@@ -204,8 +199,8 @@ define_helpers_under_test() {
 test_trusted_dependabot_uses_response_metered_graphql() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	: >"$GH_LOG"
-	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" \
-		&& grep -qF '1|pulse-trusted-dependabot-exact-cost|gh api graphql' "$GH_LOG" \
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
+		&& grep -qF '1|trusted-dependabot-exact-cost|gh api graphql' "$GH_LOG" \
 		&& ! grep -qF '|gh pr view 24473' "$GH_LOG"; then
 		print_result "trusted Dependabot snapshot reports operation-owned GraphQL cost" 0
 		return 0
@@ -214,12 +209,34 @@ test_trusted_dependabot_uses_response_metered_graphql() {
 	return 0
 }
 
+test_trusted_dependabot_binds_expected_head() {
+	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
+		&& ! _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-stale"; then
+		print_result "trusted Dependabot snapshot binds the expected head" 0
+		return 0
+	fi
+	print_result "trusted Dependabot snapshot binds the expected head" 1
+	return 0
+}
+
+test_standard_dependabot_body_parser() {
+	local dependencies=""
+	dependencies=$(_trusted_dependabot_dependencies_from_body 'Bumps [vite](source) from 7 to 8') || dependencies=""
+	if [[ "$dependencies" == "vite" ]]; then
+		print_result "standard Dependabot first line yields the dependency name" 0
+		return 0
+	fi
+	print_result "standard Dependabot first line yields the dependency name" 1 "parsed: ${dependencies:-empty}"
+	return 0
+}
+
 test_trusted_dependabot_rejects_paginated_snapshot() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	jq '.data.repository.pullRequest.files.pageInfo.hasNextPage = true' \
 		"${TEST_ROOT}/graphql.json" >"${TEST_ROOT}/graphql-paginated.json"
 	mv "${TEST_ROOT}/graphql-paginated.json" "${TEST_ROOT}/graphql.json"
-	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]"; then
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "paginated trusted Dependabot snapshot fails closed" 1
 		return 0
 	fi
@@ -227,9 +244,22 @@ test_trusted_dependabot_rejects_paginated_snapshot() {
 	return 0
 }
 
+test_trusted_dependabot_rejects_incomplete_snapshot() {
+	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	jq '.data.repository.pullRequest.commits.nodes = []' \
+		"${TEST_ROOT}/graphql.json" >"${TEST_ROOT}/graphql-incomplete.json"
+	mv "${TEST_ROOT}/graphql-incomplete.json" "${TEST_ROOT}/graphql.json"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
+		print_result "incomplete trusted Dependabot snapshot fails closed" 1
+		return 0
+	fi
+	print_result "incomplete trusted Dependabot snapshot fails closed" 0
+	return 0
+}
+
 test_trusted_dependabot_passes() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
-	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]"; then
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "trusted Dependabot update passes narrow gate" 0
 		return 0
 	fi
@@ -239,7 +269,7 @@ test_trusted_dependabot_passes() {
 
 test_spoofed_author_fails() {
 	write_pr_fixture "attacker" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
-	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]"; then
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "spoofed Dependabot author fails" 1 "Unexpected trusted result"
 		return 0
 	fi
@@ -249,7 +279,7 @@ test_spoofed_author_fails() {
 
 test_security_failure_fails() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "FAILURE"
-	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]"; then
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "security-scan failure blocks Dependabot trust" 1 "Unexpected trusted result"
 		return 0
 	fi
@@ -259,7 +289,7 @@ test_security_failure_fails() {
 
 test_non_dependency_file_fails() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" ".github/workflows/pwn.yml" "SUCCESS"
-	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]"; then
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "non-dependency file blocks Dependabot trust" 1 "Unexpected trusted result"
 		return 0
 	fi
@@ -267,9 +297,22 @@ test_non_dependency_file_fails() {
 	return 0
 }
 
+test_unallowlisted_dependency_fails() {
+	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	printf 'other-package\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
+		printf 'pip:pyarrow\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+		print_result "unallowlisted dependency blocks Dependabot trust" 1 "Unexpected trusted result"
+		return 0
+	fi
+	printf 'pip:pyarrow\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+	print_result "unallowlisted dependency blocks Dependabot trust" 0
+	return 0
+}
+
 test_trusted_dependabot_can_be_approved() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
-	approve_collaborator_pr "24473" "owner/repo" "dependabot[bot]" >/dev/null || true
+	approve_collaborator_pr "24473" "owner/repo" "dependabot[bot]" "head-current" >/dev/null || true
 	if grep -qF 'pr review 24473' "$GH_LOG" \
 		&& grep -qF 'trusted Dependabot dependency update verified' "$GH_LOG"; then
 		print_result "trusted Dependabot PR receives accurate auto-approval" 0
@@ -320,10 +363,14 @@ main() {
 	define_helpers_under_test
 	test_trusted_dependabot_passes
 	test_trusted_dependabot_uses_response_metered_graphql
+	test_trusted_dependabot_binds_expected_head
+	test_standard_dependabot_body_parser
 	test_trusted_dependabot_rejects_paginated_snapshot
+	test_trusted_dependabot_rejects_incomplete_snapshot
 	test_spoofed_author_fails
 	test_security_failure_fails
 	test_non_dependency_file_fails
+	test_unallowlisted_dependency_fails
 	test_trusted_dependabot_can_be_approved
 	test_review_bot_failure_is_ignored_when_other_checks_green
 	test_precomputed_status_rollup_skips_graphql

@@ -133,6 +133,27 @@ stub_gates() {
 		printf '%s\n' "fixture-head-sha"
 		return 0
 	}
+	_merge_resolve_subject_for_method() {
+		local pr_number="$1"
+		local repo="$2"
+		local merge_method="$3"
+		[[ -n "$pr_number" && -n "$repo" && -n "$merge_method" ]] || return 1
+		printf '%s\n' "GH#19310: test merge flag conflict"
+		return 0
+	}
+	_merge_review_state_still_clear() {
+		local pr_number="$1"
+		local repo="$2"
+		local expected_head="$3"
+		[[ -n "$pr_number" && -n "$repo" && -n "$expected_head" ]]
+		return $?
+	}
+	_merge_guard_prospective_todo() {
+		local pr_number="$1"
+		local repo="$2"
+		[[ -n "$pr_number" && -n "$repo" ]]
+		return $?
+	}
 	_merge_verify_completed_state() {
 		FULL_LOOP_MERGE_SHA="fixture-merge-sha"
 		return 0

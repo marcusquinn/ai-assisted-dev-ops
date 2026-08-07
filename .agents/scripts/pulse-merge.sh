@@ -444,7 +444,7 @@ _check_pr_merge_gates() {
 		return 1
 	fi
 	if [[ "$_author_collab_rc" -ne 0 ]]; then
-		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author"; then
+		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted Dependabot with allowlisted dependency update, proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator but has maintainer crypto-approval, proceeding (t3063)" >>"$LOGFILE"
@@ -544,7 +544,7 @@ _check_pr_merge_gates() {
 	local rbg_helper="${AGENTS_DIR:-$HOME/.aidevops/agents}/scripts/review-bot-gate-helper.sh"
 	local rbg_observed_at=""
 	if [[ -f "$rbg_helper" ]]; then
-		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author"; then
+		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"; then
 			rbg_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 			_PULSE_REVIEW_GATE_EVIDENCE=$(jq -nc --arg schema "$PULSE_REVIEW_EVIDENCE_SCHEMA" --arg repo "$repo_slug" --arg pr "$pr_number" --arg head "$expected_head_sha" --arg author "$pr_author" --arg observed_at "$rbg_observed_at" \
 				'{schema:$schema,repo:$repo,pr:$pr,head_sha:$head,status:"SKIP_TRUSTED_DEPENDABOT",author:{login:$author,association:"BOT",class:"trusted-bot"},permitted:true,reason:"trusted_dependabot_policy",state:"pass",merge_gate:"clear",exit_code:0,observed_at:$observed_at}')
@@ -598,7 +598,7 @@ _pulse_merge_refresh_review_gate_evidence() {
 		and .status == "SKIP_TRUSTED_DEPENDABOT" and .permitted == true
 	' <<<"$current_evidence" >/dev/null 2>&1; then
 		dependabot_author=$(jq -r '.author.login // ""' <<<"$current_evidence" 2>/dev/null) || dependabot_author=""
-		if [[ -n "$dependabot_author" ]] && _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$dependabot_author"; then
+		if [[ -n "$dependabot_author" ]] && _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$dependabot_author" "$expected_head_sha"; then
 			evidence_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 			_PULSE_REVIEW_GATE_EVIDENCE=$(jq -cS --arg observed_at "$evidence_observed_at" '.observed_at = $observed_at' <<<"$current_evidence") || return 1
 			return 0
@@ -1601,7 +1601,7 @@ _process_single_ready_pr() {
 		# CI-failure routing path, preserving the contributor security gate.
 		local _rcl_labels
 		_rcl_labels="$pr_labels"
-		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" \
+		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$pr_head_ref_oid" \
 			&& _trusted_dependabot_non_review_checks_green "$pr_number" "$repo_slug" "$pr_obj"; then
 			echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: _pr_required_checks_pass bypassed for trusted Dependabot — all non-review-bot checks are green (GH#24477)" >>"$LOGFILE"
 		elif [[ -n "${_OW_LABEL_PAT:-}" && ",${_rcl_labels}," == *"${_OW_LABEL_PAT:-}"* ]] \

@@ -41,6 +41,12 @@ _PULSE_MERGE_GATES_LOADED=1
 # Defensive defaults for standalone sourcing (test harnesses, pulse-merge-routine.sh)
 : "${LOGFILE:=${HOME}/.aidevops/logs/pulse.log}"
 
+# Shared exact-head dependency-bot trust boundary. Full-loop and Pulse must use
+# one predicate so interactive and automated merge paths cannot drift.
+# shellcheck source=./trusted-dependabot-lib.sh
+# shellcheck disable=SC1091
+source "${_PULSE_MERGE_DIR:-${BASH_SOURCE[0]%/*}}/trusted-dependabot-lib.sh"
+
 # --- Functions ---
 
 #######################################
@@ -105,141 +111,6 @@ _pulse_repo_allows_pr_gate_writes() {
 }
 
 #######################################
-# Resolve the trusted Dependabot update allowlist path.
-# Output: config path
-# Returns: 0 always
-#######################################
-_trusted_dependabot_updates_conf() {
-	local default_conf="${_PULSE_MERGE_DIR:+${_PULSE_MERGE_DIR}/../configs/trusted-dependabot-updates.conf}"
-	printf '%s' "${AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF:-$default_conf}"
-	return 0
-}
-
-#######################################
-# Check whether a Dependabot dependency is on the maintainer allowlist.
-#
-# Config entries are exact, one per line: `package` or `manager:package`.
-# Empty/missing config is fail-closed. `*` is accepted only when explicitly
-# configured by the maintainer.
-# Args: $1=package_manager, $2=dependency_name
-# Returns: 0 allowed, 1 not allowed
-#######################################
-_trusted_dependabot_dependency_allowed() {
-	local package_manager="$1"
-	local dependency_name="$2"
-	local conf_path
-	conf_path=$(_trusted_dependabot_updates_conf)
-
-	[[ -n "$dependency_name" && -f "$conf_path" ]] || return 1
-	local entries
-	entries=$(sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//' "$conf_path" 2>/dev/null | sed '/^$/d') || entries=""
-	[[ -n "$entries" ]] || return 1
-	if printf '%s\n' "$entries" | grep -Fxq '*'; then
-		return 0
-	fi
-	if [[ -n "$package_manager" ]] \
-		&& printf '%s\n' "$entries" | grep -Fxq "${package_manager}:${dependency_name}"; then
-		return 0
-	fi
-	printf '%s\n' "$entries" | grep -Fxq "$dependency_name"
-	return $?
-}
-
-#######################################
-# Fetch the fixed trusted-Dependabot trust snapshot with operation-owned cost.
-# Native `gh pr view` hides its GraphQL cost. This query includes rateLimit in
-# the same response, rejects partial connections, and projects the established
-# gh JSON contract consumed by the trust-boundary checks below.
-# Args: $1=pr_number, $2=repo_slug
-# Output: projected PR JSON
-# Returns: 0=complete exact-cost snapshot, 1=API/parse/pagination failure
-#######################################
-_trusted_dependabot_pr_json_graphql() {
-	local pr_number="$1"
-	local repo_slug="$2"
-	local owner="${repo_slug%%/*}"
-	local name="${repo_slug##*/}"
-	local response="" reported_cost="" pr_json=""
-
-	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" ]] || return 1
-	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
-	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
-		AIDEVOPS_GH_ROUTE_DECISION="pulse-trusted-dependabot-exact-cost" \
-		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
-		query($owner: String!, $name: String!, $pr: Int!) {
-			repository(owner: $owner, name: $name) {
-				pullRequest(number: $pr) {
-					author { login }
-					body
-					headRepository { nameWithOwner }
-					headRepositoryOwner { login }
-					commits(first: 100) {
-						pageInfo { hasNextPage }
-						nodes {
-							commit {
-								authors(first: 100) {
-									pageInfo { hasNextPage }
-									nodes { user { login } }
-								}
-							}
-						}
-					}
-					files(first: 100) { pageInfo { hasNextPage } nodes { path } }
-					statusCheckRollup {
-						contexts(first: 100) {
-							pageInfo { hasNextPage }
-							nodes {
-								__typename
-								... on CheckRun {
-									name
-									conclusion
-									status
-									checkSuite { workflowRun { workflow { name } } }
-								}
-								... on StatusContext { context state }
-							}
-						}
-					}
-				}
-			}
-			rateLimit { cost }
-		}' 2>/dev/null) || return 1
-	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
-	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
-	pr_json=$(printf '%s' "$response" | jq -c '
-		.data.repository.pullRequest as $pr
-		| if $pr == null then error("pull request unavailable")
-		  elif (($pr.commits.pageInfo.hasNextPage // false)
-			or ($pr.files.pageInfo.hasNextPage // false)
-			or ($pr.statusCheckRollup.contexts.pageInfo.hasNextPage // false)
-			or ([$pr.commits.nodes[]?.commit.authors.pageInfo.hasNextPage // false] | any))
-		  then error("trusted Dependabot snapshot is paginated")
-		  else {
-			author: $pr.author,
-			body: ($pr.body // ""),
-			headRepository: $pr.headRepository,
-			headRepositoryOwner: $pr.headRepositoryOwner,
-			commits: [$pr.commits.nodes[]? | {
-				authors: [.commit.authors.nodes[]? | {login: (.user.login // "")}]
-			}],
-			files: [$pr.files.nodes[]? | {path}],
-			statusCheckRollup: [$pr.statusCheckRollup.contexts.nodes[]?
-				| if .__typename == "CheckRun" then {
-					name,
-					conclusion,
-					status,
-					workflowName: .checkSuite.workflowRun.workflow.name
-				  }
-				  elif .__typename == "StatusContext" then {context, state}
-				  else empty end]
-		  } end
-	' 2>/dev/null) || return 1
-	[[ -n "$pr_json" ]] || return 1
-	printf '%s\n' "$pr_json"
-	return 0
-}
-
-#######################################
 # Fetch final merge-authority metadata with response-owned GraphQL cost.
 # Native `gh pr view` hides the operation cost and can become ambiguous under
 # concurrent Pulse traffic. Keep this trust-boundary read self-metering and
@@ -296,123 +167,6 @@ _pulse_merge_admin_pr_json_graphql() {
 	' 2>/dev/null) || return 1
 	printf '%s\n' "$pr_json"
 	return 0
-}
-
-#######################################
-# Verify a Dependabot PR is an authentic, maintainer-allowed version update.
-#
-# This is intentionally narrow: it only grants the collaborator/review-bot
-# allowance for GitHub's Dependabot bot, same-repository branches, commits by
-# dependabot[bot], dependency-file-only diffs, allowlisted dependency names,
-# and no terminal security-scan failures. Required CI still gates the merge in
-# the caller; this helper only answers whether the bot-origin trust boundary is
-# strong enough to avoid treating the PR like an untrusted external author.
-#
-# #aidevops:trust-boundary — Dependabot bypass is not author-name trust. It
-# validates API author identity, repository ownership, commit authorship, diff
-# shape, explicit dependency allowlist, and security-scan status before granting
-# any merge/approval allowance.
-# Args: $1=pr_number, $2=repo_slug, $3=pr_author
-# Returns: 0 trusted Dependabot update, 1 not trusted
-#######################################
-_is_trusted_dependabot_update_pr() {
-	local pr_number="$1"
-	local repo_slug="$2"
-	local pr_author="${3:-}"
-
-	[[ "${AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES:-1}" != "0" ]] || return 1
-	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
-	case "$pr_author" in
-	dependabot\[bot\] | app/dependabot | "") ;;
-	*) return 1 ;;
-	esac
-
-	local pr_json
-	pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
-	[[ -n "$pr_json" && "$pr_json" != "null" ]] || return 1
-
-	local repo_owner="${repo_slug%%/*}"
-	local api_author="" head_owner="" head_repo=""
-	api_author=$(printf '%s' "$pr_json" | jq -r '.author.login // ""' 2>/dev/null) || return 1
-	head_owner=$(printf '%s' "$pr_json" | jq -r '.headRepositoryOwner.login // .headRepositoryOwner.name // ""' 2>/dev/null) || return 1
-	head_repo=$(printf '%s' "$pr_json" | jq -r '.headRepository.nameWithOwner // ""' 2>/dev/null) || return 1
-	case "$api_author" in
-	dependabot\[bot\] | app/dependabot) ;;
-	*) return 1 ;;
-	esac
-	[[ "$head_owner" == "$repo_owner" && "$head_repo" == "$repo_slug" ]] || return 1
-
-	local bad_commits
-	bad_commits=$(printf '%s' "$pr_json" | jq '[.commits[]? | select([.authors[]?.login] | index("dependabot[bot]") | not)] | length' 2>/dev/null) || return 1
-	[[ "$bad_commits" == "0" ]] || return 1
-
-	local bad_files
-	bad_files=$(printf '%s' "$pr_json" | jq -r '[.files[]?.path | select(test("(^|/)(requirements(-lock)?\\.txt|requirements.*\\.txt|pyproject\\.toml|poetry\\.lock|uv\\.lock|Pipfile\\.lock|package(-lock)?\\.json|pnpm-lock\\.yaml|yarn\\.lock|composer\\.(json|lock)|Gemfile\\.lock|go\\.(mod|sum)|Cargo\\.(toml|lock))$|^\\.github/dependabot\\.yml$"; "i") | not)] | length' 2>/dev/null) || return 1
-	[[ "$bad_files" == "0" ]] || return 1
-
-	local security_failures
-	security_failures=$(printf '%s' "$pr_json" | jq 'def up(v): (v // "" | ascii_upcase); [.statusCheckRollup[]? | select(((.name // .context // "") | test("security|socket|codeql|dependabot"; "i")) and (up(.conclusion) == "FAILURE" or up(.conclusion) == "ERROR" or up(.state) == "FAILURE" or up(.state) == "ERROR"))] | length' 2>/dev/null) || return 1
-	[[ "$security_failures" == "0" ]] || return 1
-
-	local body package_manager dependencies dependency_name allowed_count=0
-	body=$(printf '%s' "$pr_json" | jq -r '.body // ""' 2>/dev/null) || body=""
-	package_manager=$(printf '%s' "$body" | sed -nE 's/^Bumps the ([A-Za-z0-9_.-]+) group.*$/\1/p' | head -1)
-	dependencies=$(printf '%s\n' "$body" | sed -nE 's/^[[:space:]]*-[[:space:]]*dependency-name:[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p')
-	[[ -n "$dependencies" ]] || return 1
-	while IFS= read -r dependency_name; do
-		[[ -n "$dependency_name" ]] || continue
-		if ! _trusted_dependabot_dependency_allowed "$package_manager" "$dependency_name"; then
-			echo "[pulse-wrapper] trusted Dependabot gate: PR #${pr_number} in ${repo_slug} dependency ${package_manager:+${package_manager}:}${dependency_name} is not allowlisted" >>"$LOGFILE"
-			return 1
-		fi
-		allowed_count=$((allowed_count + 1))
-	done <<<"$dependencies"
-	[[ "$allowed_count" -gt 0 ]] || return 1
-
-	echo "[pulse-wrapper] trusted Dependabot gate: PR #${pr_number} in ${repo_slug} passed bot identity, same-repo, commit, file, allowlist, and security-scan checks" >>"$LOGFILE"
-	return 0
-}
-
-#######################################
-# Verify all non-review-bot checks are green for trusted Dependabot updates.
-#
-# GitHub's review-bot-gate workflow can remain red on Dependabot PRs because
-# AI review bots often skip dependency-only updates. This helper is the narrow
-# escape hatch: it ignores only review-bot-gate contexts and requires every
-# other check/status in the rollup to be terminal-success/neutral/skipped.
-# Args: $1=pr_number, $2=repo_slug, $3=optional precomputed PR JSON
-# Returns: 0 non-review checks green, 1 otherwise
-#######################################
-_trusted_dependabot_non_review_checks_green() {
-	local pr_number="$1"
-	local repo_slug="$2"
-	local pr_json="${3:-}"
-	local result=""
-	local non_review_count="0" blocker_count="0"
-
-	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
-	if [[ -z "$pr_json" ]]; then
-		pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
-	fi
-	[[ -n "$pr_json" && "$pr_json" != "null" ]] || return 1
-
-	result=$(printf '%s' "$pr_json" | jq -r '
-		def up(v): (v // "" | ascii_upcase);
-		def check_label: (.name // .context // "");
-		def is_review_gate: ((check_label | test("(^|/ )review-bot-gate$|^review-bot-gate$"; "i")) or ((.workflowName // "") == "Review Bot Gate"));
-		def passish: (up(.conclusion) == "SUCCESS" or up(.conclusion) == "NEUTRAL" or up(.conclusion) == "SKIPPED" or up(.state) == "SUCCESS");
-		def pendingish: (up(.status) == "QUEUED" or up(.status) == "IN_PROGRESS" or up(.state) == "PENDING" or up(.state) == "EXPECTED" or ((up(.conclusion) == "") and (up(.state) != "SUCCESS") and (up(.status) != "COMPLETED")));
-		[([.statusCheckRollup[]? | select(is_review_gate | not)] | length),
-		 ([.statusCheckRollup[]? | select((is_review_gate | not) and (pendingish or (passish | not)))] | length)] | @tsv
-	' 2>/dev/null) || return 1
-	read -r non_review_count blocker_count <<<"$result"
-	[[ "$non_review_count" =~ ^[0-9]+$ && "$blocker_count" =~ ^[0-9]+$ ]] || return 1
-	if [[ "$non_review_count" -gt 0 && "$blocker_count" -eq 0 ]]; then
-		echo "[pulse-wrapper] trusted Dependabot checks: PR #${pr_number} in ${repo_slug} has all non-review-bot checks green" >>"$LOGFILE"
-		return 0
-	fi
-	echo "[pulse-wrapper] trusted Dependabot checks: PR #${pr_number} in ${repo_slug} blocked (non_review=${non_review_count}, blockers=${blocker_count})" >>"$LOGFILE"
-	return 1
 }
 
 #######################################
@@ -972,7 +726,7 @@ approve_collaborator_pr() {
 		return 0
 	fi
 	if [[ "$_author_collab_rc" -ne 0 ]]; then
-		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author"; then
+		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$pr_head_sha"; then
 			approval_body="Auto-approved by pulse runner @${current_user:-unknown} — trusted Dependabot dependency update verified: GitHub bot identity, same-repo branch, dependabot-authored commits, dependency-file-only diff, maintainer allowlist, no security-scan failures, and pre-merge gates passed."
 			echo "[pulse-wrapper] approve_collaborator_pr: PR #$pr_number author (@$pr_author) is trusted Dependabot with allowlisted dependency update — proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$pr_head_sha"; then

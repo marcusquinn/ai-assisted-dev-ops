@@ -14,6 +14,7 @@ EXTRACTED="${TEST_ROOT}/functions.sh"
 CRYPTO_CALLS="${TEST_ROOT}/crypto-calls.log"
 MERGE_CALLS="${TEST_ROOT}/merge-calls.log"
 GUARD_CALLS="${TEST_ROOT}/guard-calls.log"
+TRUSTED_CALLS="${TEST_ROOT}/trusted-calls.log"
 TESTS_RUN=0
 TESTS_FAILED=0
 
@@ -54,9 +55,12 @@ load_functions() {
 	extract_function _merge_linked_issue_numbers
 	extract_function _merge_issue_requires_maintainer_review
 	extract_function _merge_author_has_write_authority
+	extract_function _merge_linked_issue_authority_clear
 	extract_function _merge_guard_admin_merge_maintainer_review
+	extract_function _merge_resolve_conventional_type_from_commits
 	extract_function _merge_resolve_squash_subject
 	extract_function _merge_resolve_subject_for_method
+	extract_function _merge_describe_flags
 	extract_function _merge_execute
 	# shellcheck source=/dev/null
 	source "$EXTRACTED"
@@ -72,6 +76,7 @@ FIXTURE_ISSUE_LOOKUP_FAIL=0
 FIXTURE_ISSUE_APPROVED=0
 FIXTURE_PR_APPROVED=0
 FIXTURE_GH_MODE="guard"
+FIXTURE_TRUSTED_DEPENDABOT=0
 AUTHORITY_GUARD_PASS=1
 FULL_LOOP_MERGE_SUBJECT_FLAG="--subject"
 
@@ -104,7 +109,7 @@ gh() {
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
 		[[ "$FIXTURE_PR_LOOKUP_FAIL" -eq 0 ]] || return 1
 		if [[ "$*" == *"--json title"* ]]; then
-			printf 'GH#28622: preserve exact-head merge authority\n'
+			printf '%s\n' '{"title":"GH#28622: preserve exact-head merge authority","commits":[{"messageHeadline":"fix: preserve exact-head merge authority"}]}'
 			return 0
 		fi
 		printf '%s\n' "$FIXTURE_PR_JSON"
@@ -153,6 +158,16 @@ _merge_target_crypto_approved() {
 	return $?
 }
 
+_is_trusted_dependabot_update_pr() {
+	local pr_number="$1"
+	local repo="$2"
+	local author="${3:-}"
+	local expected_head_sha="${4:-}"
+	printf '%s %s %s %s\n' "$pr_number" "$repo" "$author" "$expected_head_sha" >>"$TRUSTED_CALLS"
+	[[ "$FIXTURE_TRUSTED_DEPENDABOT" -eq 1 && "$author" == "dependabot[bot]" && -n "$expected_head_sha" ]]
+	return $?
+}
+
 set_pr_fixture() {
 	local author="$1"
 	local labels_json="$2"
@@ -180,10 +195,12 @@ reset_fixture() {
 	FIXTURE_ISSUE_APPROVED=0
 	FIXTURE_PR_APPROVED=0
 	FIXTURE_GH_MODE="guard"
+	FIXTURE_TRUSTED_DEPENDABOT=0
 	AUTHORITY_GUARD_PASS=1
 	: >"$CRYPTO_CALLS"
 	: >"$MERGE_CALLS"
 	: >"$GUARD_CALLS"
+	: >"$TRUSTED_CALLS"
 	set_pr_fixture maintainer '[]' false '[]' ''
 	return 0
 }
@@ -198,6 +215,48 @@ expect_guard_result() {
 		print_result "$name" 0
 	else
 		print_result "$name" 1 "expected rc=$expected_rc, got rc=$actual_rc"
+	fi
+	return 0
+}
+
+test_trusted_dependabot_authority() {
+	reset_fixture
+	set_pr_fixture 'dependabot[bot]' '[]' false '[]' 'Dependabot dependency update'
+	FIXTURE_PERMISSION="none"
+	FIXTURE_TRUSTED_DEPENDABOT=1
+	expect_guard_result "exact-head trusted Dependabot passes without linked issue or crypto" 0
+	if grep -q '^900 owner/repo dependabot\[bot\] head-current$' "$TRUSTED_CALLS" && [[ ! -s "$CRYPTO_CALLS" ]]; then
+		print_result "trusted Dependabot authority is bound to the exact PR head" 0
+	else
+		print_result "trusted Dependabot authority is bound to the exact PR head" 1 "trusted=$(<"$TRUSTED_CALLS") crypto=$(<"$CRYPTO_CALLS")"
+	fi
+
+	reset_fixture
+	set_pr_fixture 'dependabot[bot]' '[{"name":"needs-maintainer-review"}]' false '[]' ''
+	FIXTURE_PERMISSION="none"
+	FIXTURE_TRUSTED_DEPENDABOT=1
+	expect_guard_result "live PR NMR still blocks trusted Dependabot" 1
+	if [[ ! -s "$TRUSTED_CALLS" ]]; then
+		print_result "NMR hold is evaluated before the Dependabot exception" 0
+	else
+		print_result "NMR hold is evaluated before the Dependabot exception" 1 "unexpected trust call"
+	fi
+
+	reset_fixture
+	set_pr_fixture 'dependabot[bot]' '[]' false '[]' ''
+	FIXTURE_PERMISSION="none"
+	expect_guard_result "unverified Dependabot remains on fail-closed external path" 1
+
+	reset_fixture
+	set_pr_fixture 'dependabot[bot]' '[]' false '[{"number":42}]' 'Resolves #42'
+	FIXTURE_PERMISSION="none"
+	FIXTURE_TRUSTED_DEPENDABOT=1
+	FIXTURE_ISSUE_LABELS="needs-maintainer-review"
+	expect_guard_result "linked issue NMR still blocks trusted Dependabot" 1
+	if [[ ! -s "$CRYPTO_CALLS" ]]; then
+		print_result "trusted Dependabot linked-issue NMR blocks before crypto" 0
+	else
+		print_result "trusted Dependabot linked-issue NMR blocks before crypto" 1 "unexpected crypto verification"
 	fi
 	return 0
 }
@@ -354,6 +413,7 @@ test_all_merge_modes_use_guard() {
 
 main() {
 	load_functions
+	test_trusted_dependabot_authority
 	test_authority_guard
 	test_all_merge_modes_use_guard
 	printf '\nTests run: %d\nTests failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"

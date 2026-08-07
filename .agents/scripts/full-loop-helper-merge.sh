@@ -63,6 +63,12 @@ source "${SCRIPT_DIR}/full-loop-helper-evidence.sh"
 # shellcheck disable=SC1091  # sub-library resolved at runtime via SCRIPT_DIR
 source "${SCRIPT_DIR}/issue-sync-pr-task-resolver.sh"
 
+# Shared exact-head dependency-bot trust boundary. Keep interactive full-loop
+# authority decisions identical to Pulse instead of recreating bot policy here.
+# shellcheck source=./trusted-dependabot-lib.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via SCRIPT_DIR
+source "${SCRIPT_DIR}/trusted-dependabot-lib.sh"
+
 # --- Repo Resolution ---
 
 # _merge_resolve_repo — resolve repo slug from argument or auto-detect from git remote.
@@ -378,6 +384,33 @@ _merge_author_has_write_authority() {
 	esac
 }
 
+_merge_linked_issue_authority_clear() {
+	local issue_numbers="$1"
+	local repo="$2"
+	local require_crypto="$3"
+	local issue_number=""
+	local verify_rc=0
+
+	while IFS= read -r issue_number; do
+		[[ -n "$issue_number" ]] || continue
+		verify_rc=0
+		_merge_issue_requires_maintainer_review "$issue_number" "$repo" || verify_rc=$?
+		if [[ "$verify_rc" -eq 0 ]]; then
+			print_error "Merge blocked: linked issue #${issue_number} still requires maintainer review"
+			return 1
+		elif [[ "$verify_rc" -ne 1 ]]; then
+			print_error "Merge blocked: unable to verify maintainer-review labels on issue #${issue_number}"
+			return 1
+		fi
+		if [[ "$require_crypto" -eq 1 ]] &&
+			! _merge_target_crypto_approved issue "$issue_number" "$repo"; then
+			print_error "Merge blocked: external/fork PR linked issue #${issue_number} lacks current cryptographic development authority"
+			return 1
+		fi
+	done <<<"$issue_numbers"
+	return 0
+}
+
 # Legacy name retained for sourced callers and tests. This is now the common
 # final authority guard for every full-loop merge mode, not only --admin.
 _merge_guard_admin_merge_maintainer_review() {
@@ -386,8 +419,7 @@ _merge_guard_admin_merge_maintainer_review() {
 	local expected_head_sha="${3:-}"
 	local pr_json="" pr_author="" current_head_sha="" labels_csv="" labels_padded="" is_fork="false"
 	local issue_numbers=""
-	local issue_number=""
-	local verify_rc=0 author_rc=0 treat_as_external=0
+	local author_rc=0 treat_as_external=0 trusted_dependabot=0
 
 	if ! pr_json=$(gh pr view "$pr_number" --repo "$repo" \
 		--json author,labels,isCrossRepository,headRefOid,closingIssuesReferences,body 2>/dev/null); then
@@ -425,14 +457,25 @@ _merge_guard_admin_merge_maintainer_review() {
 		return 1
 	fi
 
-	_merge_author_has_write_authority "$pr_author" "$repo" || author_rc=$?
-	if [[ "$author_rc" -eq 2 ]]; then
-		print_error "Merge blocked: unable to verify live repository permission for PR author ${pr_author}"
-		return 1
-	fi
-	if [[ "$labels_padded" == *",external-contributor,"* ]] ||
-		[[ "$is_fork" == "true" ]] || [[ "$author_rc" -ne 0 ]]; then
-		treat_as_external=1
+	#aidevops:trust-boundary -- GitHub Dependabot may lack collaborator
+	# permission even for same-repository branches. The shared predicate verifies
+	# immutable bot identity, exact head, repository ownership, commit authors,
+	# dependency-only files, explicit allowlisting, and security status. A live
+	# NMR labels remain unconditional holds and all normal pre-merge gates still
+	# run before this authority-only exception. Linked-issue holds are validated
+	# below before the trusted-bot result can return success.
+	if _is_trusted_dependabot_update_pr "$pr_number" "$repo" "$pr_author" "$current_head_sha"; then
+		trusted_dependabot=1
+	else
+		_merge_author_has_write_authority "$pr_author" "$repo" || author_rc=$?
+		if [[ "$author_rc" -eq 2 ]]; then
+			print_error "Merge blocked: unable to verify live repository permission for PR author ${pr_author}"
+			return 1
+		fi
+		if [[ "$labels_padded" == *",external-contributor,"* ]] ||
+			[[ "$is_fork" == "true" ]] || [[ "$author_rc" -ne 0 ]]; then
+			treat_as_external=1
+		fi
 	fi
 
 	issue_numbers=$(_merge_linked_issue_numbers "$pr_number" "$repo" "$pr_json") || {
@@ -440,23 +483,11 @@ _merge_guard_admin_merge_maintainer_review() {
 		return 1
 	}
 
-	while IFS= read -r issue_number; do
-		[[ -n "$issue_number" ]] || continue
-		verify_rc=0
-		_merge_issue_requires_maintainer_review "$issue_number" "$repo" || verify_rc=$?
-		if [[ "$verify_rc" -eq 0 ]]; then
-			print_error "Merge blocked: linked issue #${issue_number} still requires maintainer review"
-			return 1
-		elif [[ "$verify_rc" -ne 1 ]]; then
-			print_error "Merge blocked: unable to verify maintainer-review labels on issue #${issue_number}"
-			return 1
-		fi
-		if [[ "$treat_as_external" -eq 1 ]] &&
-			! _merge_target_crypto_approved issue "$issue_number" "$repo"; then
-			print_error "Merge blocked: external/fork PR linked issue #${issue_number} lacks current cryptographic development authority"
-			return 1
-		fi
-	done <<<"$issue_numbers"
+	_merge_linked_issue_authority_clear "$issue_numbers" "$repo" "$treat_as_external" || return 1
+	if [[ "$trusted_dependabot" -eq 1 ]]; then
+		print_info "Trusted Dependabot authority verified for PR #${pr_number} at ${current_head_sha}"
+		return 0
+	fi
 
 	if [[ "$treat_as_external" -eq 0 ]]; then
 		return 0
