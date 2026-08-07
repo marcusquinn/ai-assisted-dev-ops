@@ -70,6 +70,8 @@ _DSI_DISPATCH_BASE_BRANCH=""
 _DSI_STATE_RECOVERING="recovering"
 _DSI_UNKNOWN_VALUE="<unknown>"
 _DSI_JSON_TRUE="true"
+_DSI_DEFAULT_CANARY_TIMEOUT_SECONDS=180
+_DSI_READY_PREPARATION_ALLOWANCE_SECONDS=60
 _DSI_CLAIM_WON=0
 _DSI_CLAIM_COMMENT_ID=""
 _DSI_TARGET_JSON=""
@@ -925,6 +927,26 @@ _dsi_detached_runtime_log() {
 }
 
 #######################################
+# Resolve the bounded manual-dispatch readiness budget.
+# The detached worker may spend the full canary allowance before preparation
+# emits worker_started, so the default must cover canary plus setup overhead.
+# Stdout: timeout seconds
+#######################################
+_dsi_ready_timeout_seconds() {
+	local canary_timeout_s="${CANARY_TIMEOUT_SECONDS:-$_DSI_DEFAULT_CANARY_TIMEOUT_SECONDS}"
+	local configured_timeout_s="${AIDEVOPS_DSI_READY_TIMEOUT_SECONDS:-}"
+	if ! [[ "$canary_timeout_s" =~ ^[0-9]+$ ]]; then
+		canary_timeout_s="$_DSI_DEFAULT_CANARY_TIMEOUT_SECONDS"
+	fi
+	local default_timeout_s=$((canary_timeout_s + _DSI_READY_PREPARATION_ALLOWANCE_SECONDS))
+	if [[ -z "$configured_timeout_s" ]] || ! [[ "$configured_timeout_s" =~ ^[0-9]+$ ]]; then
+		configured_timeout_s="$default_timeout_s"
+	fi
+	printf '%s\n' "$configured_timeout_s"
+	return 0
+}
+
+#######################################
 # Wait until a detached worker reaches an observable readiness signal.
 #
 # The outer nohup wrapper can exit successfully before model selection,
@@ -949,14 +971,10 @@ _dsi_wait_for_worker_readiness() {
 	local launcher_log="$5"
 	local runtime_log
 	runtime_log=$(_dsi_detached_runtime_log "$session_key")
-	local timeout_s="${AIDEVOPS_DSI_READY_TIMEOUT_SECONDS:-20}"
+	local timeout_s
+	timeout_s=$(_dsi_ready_timeout_seconds)
 	local attempts=0
-	local max_attempts=200
-
-	if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
-		timeout_s=20
-	fi
-	max_attempts=$((timeout_s * 10))
+	local max_attempts=$((timeout_s * 10))
 
 	while [[ "$attempts" -le "$max_attempts" ]]; do
 		if [[ -s "$runtime_log" ]] &&
