@@ -110,7 +110,11 @@ _pulse_rest_core_budget_priority_decision() {
 		return 0
 	fi
 	local decision
-	decision=$(pulse_rest_core_priority_snapshot 2>/dev/null) || decision=""
+	local gate_ttl=""
+	if declare -F _cb_rest_core_gate_probe_ttl >/dev/null 2>&1; then
+		gate_ttl=$(_cb_rest_core_gate_probe_ttl)
+	fi
+	decision=$(pulse_rest_core_priority_snapshot "$gate_ttl" 2>/dev/null) || decision=""
 	[[ -n "$decision" ]] || decision="${_PULSE_BUDGET_MODE_UNKNOWN} ? ? ? ? ? ?"
 	printf '%s\n' "$decision"
 	return 0
@@ -129,6 +133,8 @@ _pulse_set_rest_core_budget_priority() {
 	local soft_cap
 	local hard_floor
 	local reset_epoch
+	local in_flight_allowance="?"
+	local progress_start_floor="?"
 	decision=$(_pulse_rest_core_budget_priority_decision)
 	read -r budget_class remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	[[ -n "$budget_class" ]] || budget_class="$_PULSE_BUDGET_MODE_UNKNOWN"
@@ -139,10 +145,18 @@ _pulse_set_rest_core_budget_priority() {
 	export AIDEVOPS_PULSE_REST_CORE_BUDGET_SOFT_CAP="$soft_cap"
 	export AIDEVOPS_PULSE_REST_CORE_BUDGET_HARD_FLOOR="$hard_floor"
 	export AIDEVOPS_PULSE_REST_CORE_BUDGET_RESET="$reset_epoch"
+	if declare -F _cb_rest_core_in_flight_allowance >/dev/null 2>&1; then
+		in_flight_allowance=$(_cb_rest_core_in_flight_allowance)
+	fi
+	if declare -F _cb_rest_core_progress_start_floor >/dev/null 2>&1 && [[ "$hard_floor" =~ ^[0-9]+$ && "$soft_cap" =~ ^[0-9]+$ ]]; then
+		progress_start_floor=$(_cb_rest_core_progress_start_floor "$hard_floor" "$soft_cap") || progress_start_floor="?"
+	fi
+	export AIDEVOPS_PULSE_REST_CORE_BUDGET_IN_FLIGHT_ALLOWANCE="$in_flight_allowance"
+	export AIDEVOPS_PULSE_REST_CORE_BUDGET_PROGRESS_START_FLOOR="$progress_start_floor"
 	[[ "$log_mode" == "quiet" ]] && return 0
 	case "$budget_class" in
 	reserve | emergency)
-		echo "[pulse-wrapper] REST-core budget ${budget_class} mode: remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} reset=${reset_epoch} (GH#29742)" >>"$LOGFILE"
+		echo "[pulse-wrapper] REST-core budget ${budget_class} mode: remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} in_flight_allowance=${in_flight_allowance} progress_start_floor=${progress_start_floor} reset=${reset_epoch} (GH#29742)" >>"$LOGFILE"
 		if declare -F pulse_stats_increment >/dev/null 2>&1; then
 			pulse_stats_increment "pulse_rest_core_budget_${budget_class}_mode" 2>/dev/null || true
 		fi
@@ -191,6 +205,32 @@ _pulse_graphql_budget_defers_stage() {
 }
 
 #######################################
+# Return 0 when REST-core policy defers this non-critical priority class.
+#######################################
+_pulse_rest_core_budget_defers_priority() {
+	local priority="$1"
+	[[ "$priority" != "critical" ]] || return 1
+
+	local rest_mode="${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
+	if declare -F _cb_rest_core_priority_decision_allows >/dev/null 2>&1; then
+		local decision="${rest_mode} ${AIDEVOPS_PULSE_REST_CORE_BUDGET_REMAINING:-?} ${AIDEVOPS_PULSE_REST_CORE_BUDGET_LIMIT:-?} ${AIDEVOPS_PULSE_REST_CORE_BUDGET_ADAPTIVE_THRESHOLD:-?} ${AIDEVOPS_PULSE_REST_CORE_BUDGET_SOFT_CAP:-?} ${AIDEVOPS_PULSE_REST_CORE_BUDGET_HARD_FLOOR:-?} ${AIDEVOPS_PULSE_REST_CORE_BUDGET_RESET:-?}"
+		local rest_rc=0
+		_cb_rest_core_priority_decision_allows "$priority" "$decision" || rest_rc=$?
+		[[ "$rest_rc" -ne 0 ]] && return 0
+		return 1
+	fi
+
+	case "${rest_mode}:${priority}" in
+	reserve:deferrable | emergency:deferrable | unknown:deferrable | emergency:progress | unknown:progress)
+		return 0
+		;;
+	*)
+		return 1
+		;;
+	esac
+}
+
+#######################################
 # Return 0 when a mapped stage should defer at its current budget class.
 #######################################
 _pulse_should_defer_budget_priority_stage() {
@@ -208,15 +248,10 @@ _pulse_should_defer_budget_priority_stage() {
 	# Unknown REST evidence intentionally keeps non-critical work fail-closed.
 	# Later cycles repeat the bounded authoritative probe; elapsed time alone must
 	# never turn missing quota evidence into permission to spend maintainer quota.
-	local rest_mode="${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
-	case "${rest_mode}:${priority}" in
-	reserve:deferrable | emergency:deferrable | unknown:deferrable | emergency:progress | unknown:progress)
+	if _pulse_rest_core_budget_defers_priority "$priority"; then
 		return 0
-		;;
-	*)
-		return 1
-		;;
-	esac
+	fi
+	return 1
 }
 
 #######################################
@@ -228,7 +263,7 @@ _pulse_defer_budget_priority_stage() {
 	priority=$(_pulse_stage_priority_class "$stage")
 	local graphql_mode="${AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
 	local rest_mode="${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
-	echo "[pulse-wrapper] budget-priority: deferred ${priority} stage '${stage}' (graphql=${graphql_mode}:${AIDEVOPS_PULSE_GRAPHQL_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_GRAPHQL_BUDGET_LIMIT:-?}@${AIDEVOPS_PULSE_GRAPHQL_BUDGET_THRESHOLD:-?}, rest=${rest_mode}:${AIDEVOPS_PULSE_REST_CORE_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_REST_CORE_BUDGET_LIMIT:-?}@${AIDEVOPS_PULSE_REST_CORE_BUDGET_ADAPTIVE_THRESHOLD:-?}, hard_floor=${AIDEVOPS_PULSE_REST_CORE_BUDGET_HARD_FLOOR:-?})" >>"$LOGFILE"
+	echo "[pulse-wrapper] budget-priority: deferred ${priority} stage '${stage}' (graphql=${graphql_mode}:${AIDEVOPS_PULSE_GRAPHQL_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_GRAPHQL_BUDGET_LIMIT:-?}@${AIDEVOPS_PULSE_GRAPHQL_BUDGET_THRESHOLD:-?}, rest=${rest_mode}:${AIDEVOPS_PULSE_REST_CORE_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_REST_CORE_BUDGET_LIMIT:-?}@${AIDEVOPS_PULSE_REST_CORE_BUDGET_ADAPTIVE_THRESHOLD:-?}, hard_floor=${AIDEVOPS_PULSE_REST_CORE_BUDGET_HARD_FLOOR:-?}, progress_start_floor=${AIDEVOPS_PULSE_REST_CORE_BUDGET_PROGRESS_START_FLOOR:-?})" >>"$LOGFILE"
 	if ! declare -F pulse_stats_increment >/dev/null 2>&1; then
 		return 0
 	fi
@@ -238,12 +273,10 @@ _pulse_defer_budget_priority_stage() {
 		pulse_stats_increment "pulse_graphql_budget_stage_deferred" 2>/dev/null || true
 		pulse_stats_increment "pulse_graphql_budget_stage_deferred_${stage}" 2>/dev/null || true
 	fi
-	case "$rest_mode" in
-	reserve | emergency | unknown)
+	if _pulse_rest_core_budget_defers_priority "$priority"; then
 		pulse_stats_increment "pulse_rest_core_budget_stage_deferred" 2>/dev/null || true
 		pulse_stats_increment "pulse_rest_core_budget_stage_deferred_${stage}" 2>/dev/null || true
-		;;
-	esac
+	fi
 	return 0
 }
 

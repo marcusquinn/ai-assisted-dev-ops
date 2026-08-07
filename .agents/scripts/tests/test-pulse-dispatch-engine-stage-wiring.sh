@@ -161,12 +161,114 @@ assert_refill_runtime_contract() {
 	return 0
 }
 
+assert_routine_comment_rest_block_contract() {
+	local label="$1"
+	local actual_events="" expected_events="dispatch:skip;gate:deferrable:routine_comment_responses;"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	actual_events=$(
+		(
+			unset _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED
+			# shellcheck source=../pulse-dispatch-preflight-lib.sh
+			source "$PREFLIGHT_LIB"
+			REST_EVENTS=""
+			STOP_FLAG=""
+			LOGFILE="/dev/null"
+
+			apply_dispatch_max() {
+				local dependency_normalization_mode="${1:-normalize}"
+				REST_EVENTS="${REST_EVENTS}dispatch:${dependency_normalization_mode};"
+				return 0
+			}
+
+			pulse_rest_core_priority_allows_next() {
+				local priority="$1"
+				local context="$2"
+				REST_EVENTS="${REST_EVENTS}gate:${priority}:${context};"
+				return 1
+			}
+
+			dispatch_routine_comment_responses() {
+				REST_EVENTS="${REST_EVENTS}routine;"
+				return 0
+			}
+
+			_preflight_early_dispatch
+			printf '%s\n' "$REST_EVENTS"
+		)
+	)
+	if [[ "$actual_events" == "$expected_events" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected events: $expected_events"
+		echo "  actual events:   ${actual_events:-none}"
+	fi
+	return 0
+}
+
+assert_label_maintenance_rest_block_contract() {
+	local label="$1"
+	local expected_events="gate:deferrable:label_maintenance_consolidation_reevaluate;reevaluate;gate:deferrable:label_maintenance_consolidation_backfill;"
+	local actual_events=""
+	TESTS_RUN=$((TESTS_RUN + 1))
+	actual_events=$(
+		(
+			unset _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED
+			# shellcheck source=../pulse-dispatch-preflight-lib.sh
+			source "$PREFLIGHT_LIB"
+			REST_EVENTS=""
+			LOGFILE="/dev/null"
+
+			pulse_rest_core_priority_allows_next() {
+				local priority="$1"
+				local context="$2"
+				REST_EVENTS="${REST_EVENTS}gate:${priority}:${context};"
+				[[ "$context" != "label_maintenance_consolidation_backfill" ]]
+				return $?
+			}
+
+			_reevaluate_consolidation_labels() {
+				REST_EVENTS="${REST_EVENTS}reevaluate;"
+				return 0
+			}
+
+			_backfill_stale_consolidation_labels() {
+				REST_EVENTS="${REST_EVENTS}backfill;"
+				return 0
+			}
+
+			_reevaluate_simplification_labels() {
+				REST_EVENTS="${REST_EVENTS}simplification;"
+				return 0
+			}
+
+			_log_substage_timing() { return 0; }
+
+			_preflight_label_maintenance
+			printf '%s\n' "$REST_EVENTS"
+		)
+	)
+	if [[ "$actual_events" == "$expected_events" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected events: $expected_events"
+		echo "  actual events:   ${actual_events:-none}"
+	fi
+	return 0
+}
+
 # Resolve paths relative to this test file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$SCRIPT_DIR/pulse-dispatch-engine.sh"
 CORE="$SCRIPT_DIR/pulse-dispatch-core.sh"
 DISPATCH_LIB="$SCRIPT_DIR/pulse-dispatch-lib.sh"
 PREFLIGHT_LIB="$SCRIPT_DIR/pulse-dispatch-preflight-lib.sh"
+ROUTINES="$SCRIPT_DIR/pulse-routines.sh"
+TRIAGE_EVALUATION="$SCRIPT_DIR/pulse-triage-evaluation.sh"
+TRIAGE_DISPATCH="$SCRIPT_DIR/pulse-triage-dispatch.sh"
 
 echo "=== t2443 + t2903: pulse-dispatch-engine stage wiring regression tests ==="
 echo "Engine: $ENGINE"
@@ -279,6 +381,11 @@ assert_grep \
 	"9c: capacity and label maintenance use separate helper functions" \
 	'^_preflight_label_maintenance\(\)' \
 	"$PREFLIGHT_LIB"
+assert_match_count \
+	"9c2: every label-maintenance substage has a fresh REST launch gate" \
+	'^[[:space:]]*_preflight_rest_core_allows_next "label_maintenance_' \
+	3 \
+	"$PREFLIGHT_LIB"
 assert_grep \
 	"9d: post-label refill has a dedicated helper" \
 	'^_preflight_post_label_refill\(\)' \
@@ -332,6 +439,47 @@ assert_match_count \
 	"$PREFLIGHT_LIB"
 assert_refill_runtime_contract \
 	"9l: trusted NMR reconciliation completes before the normalized refill"
+assert_routine_comment_rest_block_contract \
+	"9l2: blocked REST evidence suppresses the routine-comment API scan"
+assert_label_maintenance_rest_block_contract \
+	"9l3: blocked REST evidence stops label maintenance before the next API substage"
+assert_order \
+	"9m: routine-comment REST gate precedes its API scan" \
+	'_preflight_rest_core_allows_next "routine_comment_responses"' \
+	'^[[:space:]]*dispatch_routine_comment_responses[[:space:]]*\|\|' \
+	"$PREFLIGHT_LIB"
+assert_grep \
+	"9n: dispatch rechecks REST launch headroom after candidate ranking" \
+	'_dispatch_rest_core_progress_allows_next "dispatch_post_ranking"' \
+	"$ENGINE"
+assert_grep \
+	"9o: dispatch rechecks REST launch headroom after prepasses" \
+	'_dispatch_rest_core_progress_allows_next "dispatch_post_prepasses"' \
+	"$ENGINE"
+assert_grep \
+	"9p: routine execution has a per-unit REST gate" \
+	'_routine_rest_core_allows_next "routine_execute:\$\{_RPL_ID\}"' \
+	"$ROUTINES"
+assert_grep \
+	"9q: publication work has a per-unit REST gate" \
+	'_routine_rest_core_allows_next "routine_publication_worker"' \
+	"$ROUTINES"
+assert_grep \
+	"9r: consolidation re-evaluation gates each repository" \
+	'_pte_rest_core_deferrable_allows_next "consolidation_repo:\$\{slug\}"' \
+	"$TRIAGE_EVALUATION"
+assert_grep \
+	"9s: consolidation re-evaluation gates each issue" \
+	'_pte_rest_core_deferrable_allows_next "consolidation_issue:\$\{slug\}#\$\{num\}"' \
+	"$TRIAGE_EVALUATION"
+assert_grep \
+	"9t: simplification re-evaluation gates each issue" \
+	'_pte_rest_core_deferrable_allows_next "simplification_issue:\$\{slug\}#\$\{num\}"' \
+	"$TRIAGE_EVALUATION"
+assert_grep \
+	"9u: consolidation backfill gates each issue" \
+	'_pte_rest_core_deferrable_allows_next "consolidation_backfill_issue:\$\{slug\}#\$\{num\}"' \
+	"$TRIAGE_DISPATCH"
 
 # --- Benign expected dispatch blocks must not be surfaced as generic stage failures ---
 

@@ -61,6 +61,7 @@ set +o pipefail 2>/dev/null || true
 FAKE_NOW=100
 PROCESSED_PRS=""
 ENRICH_TRIGGER_PHASE=""
+REST_BLOCK_AFTER_PHASE=""
 ENRICH_PHASE_LOG="${TMPDIR_TEST}/enrichment-phases.log"
 ENRICH_PHASE_STATE="${TMPDIR_TEST}/enrichment-phase.state"
 
@@ -91,6 +92,20 @@ record_enrichment_phase() {
 	local phase="$1"
 	printf '%s ' "$phase" >>"$ENRICH_PHASE_LOG"
 	printf '%s' "$phase" >"$ENRICH_PHASE_STATE"
+	return 0
+}
+
+pulse_rest_core_priority_allows_next() {
+	local priority="$1"
+	local context="$2"
+	local current_phase=""
+	[[ "$priority" == "progress" || "$priority" == "deferrable" ]] || return 0
+	if [[ -f "$ENRICH_PHASE_STATE" ]]; then
+		current_phase=$(<"$ENRICH_PHASE_STATE")
+	fi
+	if [[ -n "$REST_BLOCK_AFTER_PHASE" && "$current_phase" == "$REST_BLOCK_AFTER_PHASE" && "$context" == merge_enrichment_* ]]; then
+		return 1
+	fi
 	return 0
 }
 
@@ -208,6 +223,29 @@ assert_budget_pause_after_phase() {
 assert_budget_pause_after_phase mergeability "mergeability "
 assert_budget_pause_after_phase checks "mergeability checks "
 assert_budget_pause_after_phase reviews "mergeability checks reviews "
+
+assert_rest_pause_after_phase() {
+	local phase="$1"
+	local expected_phases="$2"
+	local pass_rc=0
+	PROCESSED_PRS=""
+	ENRICH_TRIGGER_PHASE=""
+	REST_BLOCK_AFTER_PHASE="$phase"
+	FAKE_NOW=100
+	rm -f "$ENRICH_PHASE_LOG" "$ENRICH_PHASE_STATE" "$PULSE_MERGE_PR_CURSOR_FILE" "$PULSE_MERGE_ENRICHMENT_CACHE_FILE" "$PULSE_MERGE_ENRICHMENT_CURSOR_FILE"
+	_PMP_MERGE_PASS_DEADLINE_EPOCH=0
+	_merge_ready_prs_for_repo "org/repo" merged closed failed pr_count "" || pass_rc=$?
+	assert_eq "REST pause after ${phase} enrichment returns resumable status" "5" "$pass_rc"
+	assert_eq "REST pause after ${phase} enrichment processes no incomplete PR" "" "$PROCESSED_PRS"
+	assert_eq "REST pause after ${phase} enrichment persists the current PR" "org/repo|0||101" "$(tr -d '\n' <"$PULSE_MERGE_ENRICHMENT_CURSOR_FILE")"
+	assert_eq "REST pause stops after ${phase} enrichment" "$expected_phases" "$(<"$ENRICH_PHASE_LOG")"
+	return 0
+}
+
+assert_rest_pause_after_phase mergeability "mergeability "
+assert_rest_pause_after_phase checks "mergeability checks "
+assert_rest_pause_after_phase reviews "mergeability checks reviews "
+REST_BLOCK_AFTER_PHASE=""
 
 # The next cycle starts from the durable current-PR cursor and re-enriches from
 # the fresh list response. No partial enrichment cache is required for progress.

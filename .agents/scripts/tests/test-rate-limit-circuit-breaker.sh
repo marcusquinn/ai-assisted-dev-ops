@@ -200,7 +200,9 @@ reset_test_state() {
 	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=0
 	export AIDEVOPS_PULSE_REST_CORE_RESERVE=500
 	export AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR=100
+	export AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE=250
 	export AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS=3600
+	export AIDEVOPS_PULSE_REST_CORE_GATE_PROBE_TTL=2
 	return 0
 }
 
@@ -301,7 +303,7 @@ test_graphql_api_error_respects_rest_hard_floor() {
 	STUB_GH_CORE_REMAINING=10
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
-	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress launch floor reached' "$LOGFILE"; then
 		pass "GraphQL API error respects the REST hard floor"
 	else
 		fail "GraphQL API error should not bypass the REST hard floor" "rc=$rc"
@@ -316,7 +318,7 @@ test_malformed_graphql_projection_respects_rest_hard_floor() {
 	STUB_GH_CORE_REMAINING=10
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
-	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress launch floor reached' "$LOGFILE"; then
 		pass "malformed GraphQL projection respects the REST hard floor"
 	else
 		fail "malformed GraphQL projection should not bypass the REST hard floor" "rc=$rc"
@@ -543,7 +545,7 @@ test_graphql_exhausted_rest_core_low_blocks_dispatch() {
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
 	if [[ "$rc" -eq 1 && "${AIDEVOPS_GH_FORCE_REST_READS:-0}" != "1" ]] &&
-		grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+		grep -qF 'known REST-core progress launch floor reached' "$LOGFILE"; then
 		pass "GraphQL exhausted with low REST core still blocks dispatch"
 	else
 		fail "low REST core should not allow fallback" "rc=$rc force_rest=${AIDEVOPS_GH_FORCE_REST_READS:-unset}"
@@ -652,6 +654,49 @@ test_rest_core_priority_class_eligibility() {
 		pass "REST reserve mode preserves progress while deferring optional work"
 	else
 		fail "REST reserve class eligibility mismatch" "progress_rc=${progress_rc} deferrable_rc=${deferrable_rc}"
+	fi
+	return 0
+}
+
+# --- Test 22b: In-flight allowance raises the progress launch boundary ---
+test_rest_core_in_flight_allowance_boundary() {
+	reset_test_state
+	export STUB_GH_CORE_RESET="$(($(date +%s) + 60))"
+	export STUB_GH_CORE_REMAINING=350
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local blocked_snapshot blocked_rc=0 allowed_rc=0 critical_rc=0 start_floor=""
+	blocked_snapshot=$(pulse_rest_core_priority_snapshot)
+	pulse_rest_core_priority_allows progress || blocked_rc=$?
+	pulse_rest_core_priority_allows critical || critical_rc=$?
+	start_floor=$(_cb_rest_core_progress_start_floor 100 500)
+
+	export STUB_GH_CORE_REMAINING=351
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	pulse_rest_core_priority_allows progress || allowed_rc=$?
+	if [[ "$blocked_snapshot" == normal\ 350\ 5000\ * && "$start_floor" == "350" && "$blocked_rc" -eq 1 && "$allowed_rc" -eq 0 && "$critical_rc" -eq 0 ]]; then
+		pass "REST in-flight allowance blocks progress at 350 and permits it at 351"
+	else
+		fail "REST in-flight allowance launch boundary mismatch" "snapshot=${blocked_snapshot} start_floor=${start_floor} blocked_rc=${blocked_rc} allowed_rc=${allowed_rc} critical_rc=${critical_rc}"
+	fi
+	return 0
+}
+
+# --- Test 22c: Unit gates reject a stale high cache after a fresh low probe ---
+test_rest_core_unit_gate_refreshes_stale_observation() {
+	reset_test_state
+	local now rc=0 rest_calls=0
+	now=$(date +%s)
+	mkdir -p "$(dirname "$_CB_REST_CORE_CACHE_FILE")"
+	jq -cn --argjson observed "$((now - 3))" --argjson remaining 500 --argjson limit 5000 \
+		--argjson reset "$((now + 3600))" \
+		'{observed:$observed,remaining:$remaining,limit:$limit,reset:$reset,resource:"core"}' >"$_CB_REST_CORE_CACHE_FILE"
+	export STUB_GH_CORE_REMAINING=350
+	pulse_rest_core_priority_allows_next progress "test_stale_unit_gate" || rc=$?
+	rest_calls=$(grep -c '^rest-core$' "$GH_REST_CALLS" 2>/dev/null) || rest_calls=0
+	if [[ "$rc" -eq 1 && "$rest_calls" -eq 1 ]] && grep -qF 'context=test_stale_unit_gate' "$LOGFILE"; then
+		pass "REST unit gate refreshes stale observations before launching work"
+	else
+		fail "REST unit gate should refresh stale launch evidence" "rc=${rc} rest_calls=${rest_calls}"
 	fi
 	return 0
 }
@@ -1107,6 +1152,8 @@ test_rest_core_probe_reset_forces_recheck
 test_rest_core_adaptive_threshold_math
 test_rest_core_priority_boundaries
 test_rest_core_priority_class_eligibility
+test_rest_core_in_flight_allowance_boundary
+test_rest_core_unit_gate_refreshes_stale_observation
 test_rest_core_hard_floor_eligibility
 test_rest_core_unknown_evidence
 test_rest_core_legacy_override_compatibility

@@ -609,15 +609,17 @@ _backfill_stale_consolidation_labels() {
 	local repos_json="$REPOS_JSON"
 	[[ -f "$repos_json" ]] || return 0
 
-	local total_backfilled=0
-	local total_cleared_stale=0
-	local total_locks_expired=0
-	local maintenance_flag="" pulse_flag=""
+	local total_backfilled=0 total_cleared_stale=0 total_locks_expired=0
+	local maintenance_flag="" pulse_flag="" rest_deferred=0
 	while IFS='|' read -r slug rpath maintenance_flag pulse_flag; do
 		[[ -n "$slug" ]] || continue
 		if ! declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 \
 			|| ! repo_allows_pulse_write_actions "$slug"; then
 			continue
+		fi
+		if ! _pte_rest_core_deferrable_allows_next "consolidation_backfill_repo:${slug}"; then
+			rest_deferred=1
+			break
 		fi
 
 		# t2151: TTL sweep for stuck `consolidation-in-progress` labels.
@@ -632,11 +634,20 @@ _backfill_stale_consolidation_labels() {
 		local locked_num
 		while IFS= read -r locked_num; do
 			[[ "$locked_num" =~ ^[0-9]+$ ]] || continue
+			if ! _pte_rest_core_deferrable_allows_next "consolidation_lock_issue:${slug}#${locked_num}"; then
+				rest_deferred=1
+				break
+			fi
 			if _consolidation_ttl_sweep_one "$slug" "$locked_num"; then
 				total_locks_expired=$((total_locks_expired + 1))
 			fi
 		done < <(printf '%s' "$locked_issues_json" | jq -r '.[]?.number // ""' 2>/dev/null)
+		[[ "$rest_deferred" -eq 0 ]] || break
 		[[ "$maintenance_flag" == "false" || "$pulse_flag" != "true" ]] && continue
+		if ! _pte_rest_core_deferrable_allows_next "consolidation_backfill_scan:${slug}"; then
+			rest_deferred=1
+			break
+		fi
 
 		local issues_json
 		issues_json=$(gh_issue_list --repo "$slug" --state open \
@@ -645,6 +656,10 @@ _backfill_stale_consolidation_labels() {
 
 		while IFS='|' read -r num labels_csv; do
 			[[ "$num" =~ ^[0-9]+$ ]] || continue
+			if ! _pte_rest_core_deferrable_allows_next "consolidation_backfill_issue:${slug}#${num}"; then
+				rest_deferred=1
+				break
+			fi
 
 			# t2144 (A3): Defense in depth — skip and auto-clear if the
 			# parent already carries `consolidated`. _issue_needs_consolidation
@@ -677,6 +692,7 @@ _backfill_stale_consolidation_labels() {
 				total_backfilled=$((total_backfilled + 1))
 			fi
 		done < <(printf '%s' "$issues_json" | jq -r '.[] | "\(.number)|\([.labels[].name] | join(","))"' 2>/dev/null)
+		[[ "$rest_deferred" -eq 0 ]] || break
 	done < <(jq -r '.initialized_repos[] | select((.local_only // false) == false and .slug != "") | "\(.slug)|\(.path // "")|\(if .maintenance == false then false else true end)|\(.pulse // false)"' "$repos_json" 2>/dev/null)
 
 	if [[ "$total_backfilled" -gt 0 ]]; then

@@ -279,7 +279,9 @@ _pmr_graphql_budget_allows_run() {
 # succeeds; unlike a known floor, it is logged as an availability/evidence fault.
 _pmr_rest_core_progress_allows_run() {
 	local progress_rc=0
-	if declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next progress "merge_routine_start" || progress_rc=$?
+	elif declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
 		pulse_rest_core_priority_allows progress || progress_rc=$?
 	elif declare -F pulse_rest_core_reserve_allows >/dev/null 2>&1; then
 		pulse_rest_core_reserve_allows || progress_rc=$?
@@ -291,7 +293,7 @@ _pmr_rest_core_progress_allows_run() {
 		return 0
 		;;
 	1)
-		_pmr_log WARN "Known REST-core progress floor reached (rc=1); deferring merge pass until a later authoritative probe allows progress while preserving critical maintainer quota (GH#29742)"
+		_pmr_log WARN "Known REST-core progress launch floor reached (rc=1); deferring merge pass until a later authoritative probe allows progress while preserving critical maintainer quota (GH#29742)"
 		;;
 	2)
 		_pmr_log WARN "REST-core quota evidence unavailable (rc=2); deferring merge pass fail-closed until a later authoritative probe succeeds while preserving critical maintainer quota (GH#29742)"

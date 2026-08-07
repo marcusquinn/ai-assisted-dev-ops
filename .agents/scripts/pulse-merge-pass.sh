@@ -232,6 +232,26 @@ _pmp_merge_diagnostics_budget_exhausted() {
 	return 0
 }
 
+#######################################
+# Return whether one merge-pass REST work unit may start.
+# Args: $1=priority, $2=static context.
+#######################################
+_pmp_rest_core_priority_allows_next() {
+	local priority="$1"
+	local context="$2"
+	local budget_rc=0
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next "$priority" "$context" || budget_rc=$?
+	elif declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows "$priority" || budget_rc=$?
+	else
+		return 0
+	fi
+	[[ "$budget_rc" -eq 0 ]] && return 0
+	echo "[pulse-wrapper] Merge pass: REST-core ${priority} unit deferred context=${context} rc=${budget_rc} (GH#29742)" >>"${LOGFILE:-/dev/null}"
+	return 1
+}
+
 _pmp_pause_merge_pr_cursor() {
 	local repo_slug="$1"
 	local pr_json="$2"
@@ -258,6 +278,9 @@ _pmp_pause_merge_pr_cursor() {
 		;;
 	cooldown)
 		echo "[pulse-wrapper] Merge pass: GitHub cooldown active for ${repo_slug}; pausing remaining PR processing" >>"$logfile"
+		;;
+	rest-core)
+		echo "[pulse-wrapper] Merge pass: REST-core launch headroom unavailable for ${repo_slug}; pausing at PR cursor index=${cursor_index} next_pr=${next_pr:-none}" >>"$logfile"
 		;;
 	stop) ;;
 	esac
@@ -307,11 +330,16 @@ _pmp_pause_merge_enrichment_cursor() {
 	local pr_json="$2"
 	local cursor_index="$3"
 	local cursor_file="$4"
+	local pause_reason="${5:-budget}"
 	local next_pr="" last_pr=""
 	next_pr=$(_pmp_pr_number_at_index "$pr_json" "$cursor_index") || next_pr=""
 	_pmp_read_merge_pr_cursor_last "$cursor_file" "$repo_slug" last_pr || last_pr=""
 	_pmp_write_merge_pr_cursor "$cursor_file" "$repo_slug" "$cursor_index" "$last_pr" "$next_pr"
-	echo "[pulse-wrapper] Merge pass: graceful time budget exhausted during enrichment for ${repo_slug}; pausing at enrichment cursor index=${cursor_index} next_pr=${next_pr:-none}" >>"${LOGFILE:-/dev/null}"
+	if [[ "$pause_reason" == "rest-core" ]]; then
+		echo "[pulse-wrapper] Merge pass: REST-core launch headroom unavailable during enrichment for ${repo_slug}; pausing at enrichment cursor index=${cursor_index} next_pr=${next_pr:-none}" >>"${LOGFILE:-/dev/null}"
+	else
+		echo "[pulse-wrapper] Merge pass: graceful time budget exhausted during enrichment for ${repo_slug}; pausing at enrichment cursor index=${cursor_index} next_pr=${next_pr:-none}" >>"${LOGFILE:-/dev/null}"
+	fi
 	return 5
 }
 
@@ -360,10 +388,16 @@ _pmp_prepare_enriched_pr_backlog() {
 		pr_obj=$(_pmp_pr_object_at_index "$fresh_json" "$cursor_index")
 		cached_obj=$(jq -cn --argjson cache "$filtered_cache" --argjson pr "$pr_obj" '$cache | map(select(.number == $pr.number and ((.headRefOid // "") == ($pr.headRefOid // "")))) | last // empty') || cached_obj=""
 		if [[ -z "$cached_obj" ]]; then
+			if ! _pmp_rest_core_priority_allows_next progress "merge_backlog_enrichment:${repo_slug}"; then
+				_pmp_pause_merge_enrichment_cursor "$repo_slug" "$fresh_json" "$cursor_index" "$cursor_file" rest-core
+				return $?
+			fi
 			enrichment_rc=0
 			enriched_obj=$(_pmp_enrich_single_pr_for_processing "$repo_slug" "$pr_obj") || enrichment_rc=$?
-			if [[ "$enrichment_rc" -eq 5 ]]; then
-				_pmp_pause_merge_enrichment_cursor "$repo_slug" "$fresh_json" "$cursor_index" "$cursor_file"
+			if [[ "$enrichment_rc" -eq 5 || "$enrichment_rc" -eq 6 ]]; then
+				local pause_reason="budget"
+				[[ "$enrichment_rc" -eq 6 ]] && pause_reason="rest-core"
+				_pmp_pause_merge_enrichment_cursor "$repo_slug" "$fresh_json" "$cursor_index" "$cursor_file" "$pause_reason"
 				return $?
 			fi
 			[[ "$enrichment_rc" -eq 0 && -n "$enriched_obj" ]] || enriched_obj=$(printf '%s' "$pr_obj" | jq -c '. + {mergeable:"UNKNOWN", reviewDecision:"UNKNOWN", statusCheckRollup:[]}') || return 1
@@ -683,6 +717,11 @@ _pmp_run_stuck_diagnostics_for_repos() {
 			echo "[pulse-wrapper] Merge diagnostics: separate graceful budget exhausted before ${repo_slug}; remaining diagnostics deferred" >>"$logfile"
 			break
 		fi
+		if ! _pmp_rest_core_priority_allows_next deferrable "merge_diagnostics:${repo_slug}"; then
+			complete=0
+			echo "[pulse-wrapper] Merge diagnostics: REST-core reserve reached before ${repo_slug}; remaining diagnostics deferred" >>"$logfile"
+			break
+		fi
 		stuck_start=$(_pmp_now_epoch)
 		repo_complete=1
 		if declare -F pulse_merge_stuck_run_pass >/dev/null 2>&1; then
@@ -777,6 +816,11 @@ _pmp_process_merge_repo_for_pass() {
 		|| ! repo_allows_pulse_write_actions "$repo_slug"; then
 		echo "[pulse-wrapper] Deterministic merge pass skipped ${repo_slug}: repo role is contributor/read-only" >>"$logfile"
 		_pmp_write_merge_checkpoint "$checkpoint_file" "$repo_slug"
+		return 0
+	fi
+	if ! _pmp_rest_core_priority_allows_next progress "merge_repo:${repo_slug}"; then
+		echo "[pulse-wrapper] Deterministic merge pass paused before ${repo_slug}: REST-core launch headroom unavailable; checkpoint retained" >>"$logfile"
+		printf -v "$completed_all_var" '%s' '0'
 		return 0
 	fi
 

@@ -57,6 +57,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../pulse-dispatch-engine.sh
 source "${SCRIPT_DIR}/pulse-dispatch-engine.sh"
 
+# Keep REST launch checks isolated from live GitHub evidence. Dedicated cases
+# below override these stubs to exercise reserve serialization and loop stops.
+pulse_rest_core_priority_snapshot() {
+	printf 'disabled ? ? 0 0 0 ?\n'
+	return 0
+}
+_dispatch_rest_core_progress_allows_next() {
+	return 0
+}
+
 # Keep loop tests isolated from live API budget evidence. The dedicated budget
 # gate case below overrides this helper to verify the stop path explicitly.
 _dispatch_graphql_budget_allows_next() {
@@ -148,6 +158,32 @@ test_compute_max_parallel_invalid_var() {
 		print_result "compute_max_parallel: invalid env falls back to 6" 1 "got=${result}"
 	fi
 	unset DISPATCH_MAX_PARALLEL || true
+	return 0
+}
+
+test_compute_max_parallel_rest_reserve_forces_serial() {
+	export DISPATCH_MAX_PARALLEL=6
+	rm -f "$_DISPATCH_THROTTLE_FILE"
+	pulse_rest_core_priority_snapshot() {
+		printf 'normal 700 5000 200 500 100 9999999999\n'
+		return 0
+	}
+	local reserve_result healthy_result
+	reserve_result=$(_dispatch_max_compute_parallel 24)
+	pulse_rest_core_priority_snapshot() {
+		printf 'normal 751 5000 200 500 100 9999999999\n'
+		return 0
+	}
+	healthy_result=$(_dispatch_max_compute_parallel 24)
+	pulse_rest_core_priority_snapshot() {
+		printf 'disabled ? ? 0 0 0 ?\n'
+		return 0
+	}
+	if [[ "$reserve_result" == "1" && "$healthy_result" == "6" ]]; then
+		print_result "compute_max_parallel: REST reserve-adjacent zone forces serial" 0
+	else
+		print_result "compute_max_parallel: REST reserve-adjacent zone forces serial" 1 "reserve=${reserve_result} healthy=${healthy_result}"
+	fi
 	return 0
 }
 
@@ -468,6 +504,34 @@ test_parallel_loop_graphql_budget_aborts() {
 	return 0
 }
 
+test_parallel_loop_rest_budget_aborts() {
+	_dispatch_process_candidate() {
+		return 0
+	}
+	_dispatch_rest_core_progress_allows_next() {
+		return 1
+	}
+
+	local candidate_file outcomes_file result
+	candidate_file=$(mktemp)
+	outcomes_file=$(mktemp)
+	printf '%s\n' '{"number":325,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}' >"$candidate_file"
+	: >"$outcomes_file"
+	rm -f "$STOP_FLAG"
+	result=$(_dispatch_max_loop "$candidate_file" 10 10 "test_user" 4 "$outcomes_file")
+	rm -f "$candidate_file" "$outcomes_file"
+	_dispatch_rest_core_progress_allows_next() {
+		return 0
+	}
+
+	if [[ "$result" == "0 1" ]]; then
+		print_result "parallel_loop: REST launch gate aborts before launch" 0
+	else
+		print_result "parallel_loop: REST launch gate aborts before launch" 1 "got=${result}"
+	fi
+	return 0
+}
+
 test_dispatch_with_timeout_noop_outcome() {
 	local capture_dir old_path rc capture
 	capture_dir=$(mktemp -d)
@@ -647,6 +711,7 @@ test_compute_max_parallel_override
 test_compute_max_parallel_caps_at_slots
 test_compute_max_parallel_throttle_forces_serial
 test_compute_max_parallel_invalid_var
+test_compute_max_parallel_rest_reserve_forces_serial
 test_count_outcomes_success_and_fail
 test_count_outcomes_empty_file
 test_wait_tracked_pids_suppresses_stale_child
@@ -657,6 +722,7 @@ test_parallel_loop_end_to_end
 test_parallel_loop_respects_budget
 test_parallel_loop_stop_flag_aborts
 test_parallel_loop_graphql_budget_aborts
+test_parallel_loop_rest_budget_aborts
 test_dispatch_with_timeout_noop_outcome
 test_serial_loop_basic
 test_serial_loop_isolates_candidate_stdout
