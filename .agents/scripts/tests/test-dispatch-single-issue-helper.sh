@@ -1267,7 +1267,6 @@ test_readiness_timeout_tracks_canary_budget() {
 	return 0
 }
 
-
 test_readiness_accepts_worker_started_marker() {
 	MOCK_LEDGER_RECORD=""
 	local session_key="manual-cli-ready-$$"
