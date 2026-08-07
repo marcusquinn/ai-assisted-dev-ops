@@ -16,6 +16,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
+# Keep nested gh calls on the same helper generation as this orchestrator.
+# In a linked worktree, an inherited runtime-bundle shim can otherwise win
+# before the worktree's sibling shim and mutate merge metadata differently.
+if [[ -x "${SCRIPT_DIR}/gh" ]]; then
+	case ":${PATH:-}:" in
+	*":${SCRIPT_DIR}:"*) ;;
+	*) PATH="${SCRIPT_DIR}${PATH:+:${PATH}}" ;;
+	esac
+	export PATH
+else
+	printf '[aidevops] full-loop helper: sibling gh shim missing; retaining inherited PATH\n' >&2
+fi
 source "${SCRIPT_DIR}/shared-constants.sh"
 source "${SCRIPT_DIR}/shared-claim-lifecycle.sh"
 # shellcheck source=./dependency-event-reconciler.sh
