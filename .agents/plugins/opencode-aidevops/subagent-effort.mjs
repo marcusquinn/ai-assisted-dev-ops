@@ -2,6 +2,13 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { existsSync, readFileSync } from "fs";
+import {
+  routingCandidateIndex,
+  routingCandidates,
+  routingModelIdentity,
+  routingTierForModel,
+  selectConnectedRoutingCandidate,
+} from "./model-routing.mjs";
 
 const VARIANT_RANK = {
   none: 0,
@@ -47,8 +54,7 @@ export function normalizeEffortTier(value) {
 
 function normalizeVariant(value) {
   const variant = String(value || "").trim().toLowerCase();
-  if (variant === "default" || !(variant in VARIANT_RANK)) return "medium";
-  return variant;
+  return variant === "default" ? "" : variant;
 }
 
 export function loadTierReasoningPolicies(paths) {
@@ -73,12 +79,13 @@ export function resolveTierReasoning(tier, providerID, modelID, policies) {
   const fullModelID = modelID?.includes("/")
     ? modelID
     : `${providerID || ""}/${modelID || ""}`;
-  return policy[fullModelID] ?? policy[providerID] ?? "";
+  return policy[fullModelID] ?? policy[providerID] ?? policy.default ?? "";
 }
 
 export function clampReasoningVariant(requested, parentCap) {
   const child = normalizeVariant(requested);
   const parent = normalizeVariant(parentCap);
+  if (!(child in VARIANT_RANK) || !(parent in VARIANT_RANK)) return child || requested;
   return VARIANT_RANK[child] <= VARIANT_RANK[parent] ? child : parent;
 }
 
@@ -116,22 +123,40 @@ async function getSession(client, sessionID) {
   return unwrapResponse(response) || {};
 }
 
-async function getParentVariant(client, childSession) {
+function modelIdentity(value) {
+  const rawProviderID = value?.providerID
+    ?? value?.model?.providerID
+    ?? value?.provider?.id
+    ?? "";
+  const providerID = typeof rawProviderID === "string" ? rawProviderID : "";
+  const rawModelID = value?.modelID
+    ?? value?.model?.modelID
+    ?? value?.model?.id
+    ?? (typeof value?.model === "string" ? value.model : "");
+  const modelID = typeof rawModelID === "string" ? rawModelID : "";
+  return modelID.includes("/") ? modelID : `${providerID || ""}/${modelID}`;
+}
+
+async function getParentRoute(client, childSession) {
   const parentID = childSession?.parentID;
-  if (!parentID) return "";
+  if (!parentID) return { model: "", variant: "" };
 
   const parentSession = await getSession(client, parentID);
   const sessionVariant = extractVariant(parentSession);
-  if (sessionVariant) return sessionVariant;
+  const sessionModel = modelIdentity(parentSession);
+  if (sessionVariant && sessionModel !== "/") {
+    return { model: sessionModel, variant: sessionVariant };
+  }
 
   const response = await client.session.messages({ path: { id: parentID } });
   const messages = unwrapResponse(response) || [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const info = messages[index]?.info ?? messages[index];
     const variant = extractVariant(info);
-    if (variant) return variant;
+    const model = modelIdentity(info);
+    if (variant) return { model: model === "/" ? sessionModel : model, variant };
   }
-  return "";
+  return { model: sessionModel === "/" ? "" : sessionModel, variant: "" };
 }
 
 function prunePolicies(policies, now) {
@@ -140,9 +165,47 @@ function prunePolicies(policies, now) {
   }
 }
 
+function createProviderStateResolver(client, ttlMs) {
+  let snapshot = null;
+  let refreshedAt = 0;
+  return async () => {
+    if (snapshot && Date.now() - refreshedAt < ttlMs) return snapshot;
+    if (typeof client?.provider?.list !== "function") return null;
+    try {
+      const response = await client.provider.list();
+      const data = unwrapResponse(response);
+      if (!Array.isArray(data?.all) || !Array.isArray(data?.connected)) return null;
+      snapshot = { all: data.all, connected: data.connected };
+      refreshedAt = Date.now();
+      return snapshot;
+    } catch {
+      return null;
+    }
+  };
+}
+
+function routedPolicy(agentRoutingState, agentName, text) {
+  const explicit = /\[effort:(simple|standard|thinking)\]/i.test(text);
+  const configuredTier = agentRoutingState?.tiers?.get(agentName);
+  return {
+    effort: explicit
+      ? inferSubagentEffort(agentName, text)
+      : normalizeEffortTier(configuredTier || inferSubagentEffort(agentName, text)),
+    reason: explicit ? "explicit_effort_marker" : "agent_default",
+    pinned: agentRoutingState?.pinned?.has(agentName) || false,
+  };
+}
+
 export function createSubagentEffortHooks(client, options = {}) {
   const policies = new Map();
   const tierReasoning = options.tierReasoning || {};
+  const modelRouting = options.modelRouting;
+  const agentRoutingState = options.agentRoutingState;
+  const onRoutingDecision = options.onRoutingDecision;
+  const resolveProviderState = createProviderStateResolver(
+    client,
+    options.providerStateTtlMs ?? 30000,
+  );
 
   return {
     chatMessage: async (_input, output) => {
@@ -152,10 +215,47 @@ export function createSubagentEffortHooks(client, options = {}) {
 
       const now = Date.now();
       prunePolicies(policies, now);
-      policies.set(sessionID, {
-        effort: inferSubagentEffort(message.agent ?? message.mode, messageText(output.parts)),
+      const text = messageText(output.parts);
+      const agentName = String(message.agent ?? message.mode ?? "");
+      const route = routedPolicy(agentRoutingState, agentName, text);
+      const policy = {
+        effort: route.effort,
+        reason: route.pinned ? "explicit_model" : route.reason,
+        attempt: 0,
         createdAt: now,
-      });
+      };
+      policies.set(sessionID, policy);
+
+      if (!modelRouting || route.pinned) return;
+      const candidates = routingCandidates(modelRouting, route.effort);
+      if (candidates.length === 0) {
+        throw new Error(`[aidevops] Model routing tier '${route.effort}' is disabled`);
+      }
+      let childSession;
+      try {
+        childSession = await getSession(client, sessionID);
+      } catch {
+        return;
+      }
+      if (!childSession.parentID) return;
+
+      const providerState = await resolveProviderState();
+      if (!providerState) {
+        policy.reason = "provider_state_unavailable_inherit";
+        return;
+      }
+      const routedModel = selectConnectedRoutingCandidate(
+        modelRouting,
+        route.effort,
+        providerState,
+      );
+      if (!routedModel) {
+        throw new Error(`[aidevops] No connected model is available for '${route.effort}' routing`);
+      }
+      message.model = routingModelIdentity(routedModel);
+      policy.routedModel = routedModel;
+      policy.candidateIndex = routingCandidateIndex(modelRouting, route.effort, routedModel);
+      policy.parentSessionID = childSession.parentID;
     },
 
     chatParams: async (input, output) => {
@@ -164,7 +264,35 @@ export function createSubagentEffortHooks(client, options = {}) {
 
       try {
         const childSession = await getSession(client, sessionID);
-        if (!childSession.parentID) return;
+        const childModel = modelIdentity({
+          providerID: input?.provider?.id ?? input?.model?.providerID,
+          modelID: input?.model?.id ?? input?.model?.modelID,
+        });
+        const currentVariant = extractVariant(input.message)
+          || output?.options?.reasoningEffort
+          || output?.options?.reasoning_effort
+          || extractVariant(input.model);
+        if (!childSession.parentID) {
+          const rootTier = routingTierForModel(modelRouting, childModel);
+          const dispatchTier = process.env.AIDEVOPS_DISPATCH_TIER || "";
+          if (rootTier && !dispatchTier && typeof onRoutingDecision === "function") {
+            const routedVariant = resolveTierReasoning(
+              rootTier,
+              input?.provider?.id,
+              input?.model?.id,
+              tierReasoning,
+            );
+            await onRoutingDecision(sessionID, {
+              tier: rootTier,
+              model: childModel === "/" ? "" : childModel,
+              variant: currentVariant || routedVariant,
+              candidateIndex: routingCandidateIndex(modelRouting, rootTier, childModel),
+              attempt: 1,
+              reason: "model_profile",
+            });
+          }
+          return;
+        }
 
         const policy = policies.get(sessionID);
         const desiredEffort = policy?.effort
@@ -175,21 +303,36 @@ export function createSubagentEffortHooks(client, options = {}) {
           input?.model?.id,
           tierReasoning,
         );
-        if (!requestedVariant) return;
-        const currentVariant = extractVariant(input.message)
-          || output?.options?.reasoningEffort
-          || output?.options?.reasoning_effort
-          || extractVariant(input.model);
-        const parentVariant = await getParentVariant(client, childSession)
-          || currentVariant;
-        if (!parentVariant) return;
+        const parentRoute = await getParentRoute(client, childSession);
+        let effectiveVariant = requestedVariant || currentVariant;
+        if (
+          requestedVariant
+          && parentRoute.variant
+          && parentRoute.model
+          && parentRoute.model === childModel
+        ) {
+          effectiveVariant = clampReasoningVariant(requestedVariant, parentRoute.variant);
+        }
 
-        output.options.reasoningEffort = clampReasoningVariant(
-          requestedVariant,
-          parentVariant,
-        );
-        if (Object.hasOwn(output.options, "reasoning_effort")) {
-          output.options.reasoning_effort = output.options.reasoningEffort;
+        if (requestedVariant) {
+          output.options.reasoningEffort = effectiveVariant;
+          if (Object.hasOwn(output.options, "reasoning_effort")) {
+            output.options.reasoning_effort = effectiveVariant;
+          }
+        }
+
+        if (typeof onRoutingDecision === "function") {
+          if (policy) policy.attempt += 1;
+          await onRoutingDecision(sessionID, {
+            parentSessionID: policy?.parentSessionID || childSession.parentID,
+            tier: desiredEffort,
+            model: policy?.routedModel || (childModel === "/" ? "" : childModel),
+            variant: effectiveVariant,
+            candidateIndex: policy?.candidateIndex
+              ?? routingCandidateIndex(modelRouting, desiredEffort, childModel),
+            attempt: policy?.attempt || 1,
+            reason: policy?.reason || "agent_default",
+          });
         }
       } catch {
         // Fail open: provider requests must continue if session metadata is unavailable.

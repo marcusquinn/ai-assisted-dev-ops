@@ -21,6 +21,7 @@
 # Include guard
 [[ -n "${_GENERATE_RUNTIME_CONFIG_AGENTS_LIB_LOADED:-}" ]] && return 0
 _GENERATE_RUNTIME_CONFIG_AGENTS_LIB_LOADED=1
+_GENERATE_RUNTIME_CONFIG_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -268,7 +269,8 @@ _yaml_quote_scalar() {
 # Read the runtime guard fields that a generated wrapper must preserve from
 # source frontmatter. The wrapper prompt reads the source body at runtime, but
 # OpenCode resolves variant, steps, and tool availability before that happens.
-# Outputs one tab-separated row: variant, steps, task.
+# Outputs one pipe-separated row: variant, steps, task, model. Pipes preserve
+# empty leading fields under Bash 3.2, unlike whitespace IFS delimiters.
 _read_subagent_runtime_guards() {
 	local f="$1"
 	awk '
@@ -289,9 +291,26 @@ _read_subagent_runtime_guards() {
 		/^[^[:space:]]/ { in_tools = 0 }
 		/^variant:[[:space:]]*/ { variant = value_after_colon($0); next }
 		/^steps:[[:space:]]*/ { steps = value_after_colon($0); next }
+		/^model:[[:space:]]*/ { model = value_after_colon($0); next }
 		in_tools && /^[[:space:]]+task:[[:space:]]*/ { task = value_after_colon($0); next }
-		END { printf "%s\t%s\t%s\n", variant, steps, task }
+		END { printf "%s|%s|%s|%s\n", variant, steps, task, model }
 	' "$f" 2>/dev/null
+	return 0
+}
+
+_write_restrictive_subagent_source() {
+	local source_file="$1"
+	local output_file="$2"
+	local routing_tier="$3"
+	if ! awk -v routing_tier="$routing_tier" '
+		/^model: (simple|standard|thinking)$/ {
+			if (routing_tier != "") print "aidevops_model_tier: " routing_tier
+			next
+		}
+		{ print }
+	' "$source_file" >"$output_file"; then
+		return 1
+	fi
 	return 0
 }
 
@@ -306,10 +325,23 @@ _write_subagent_stub() {
 	[[ "$name" == "AGENTS" || "$name" == "README" ]] && return 0
 
 	local rel_path="${f#"$AGENTS_DIR"/}"
+	local runtime_guards src_variant src_steps src_task src_model
+	runtime_guards=$(_read_subagent_runtime_guards "$f")
+	IFS='|' read -r src_variant src_steps src_task src_model <<<"$runtime_guards"
+	local routed_model="$src_model" routing_tier=""
+	case "$src_model" in
+	simple | standard | thinking)
+		routing_tier="$src_model"
+		routed_model=""
+		;;
+	"") routed_model="" ;;
+	*/*) ;;
+	*) routed_model="" ;;
+	esac
 
 	# GH#18509: If source frontmatter explicitly sets bash: false, the agent is
 	# security-sandboxed or has its own tool restrictions. Copy source verbatim
-	# (without workload-tier metadata) instead of writing a permissive stub that
+	# (with workload-tier metadata resolved) instead of writing a permissive stub that
 	# grants bash:true and external_directory:allow -- those would override the
 	# source's intent and become an attack surface for prompt-injected content.
 	local src_bash_false
@@ -319,14 +351,10 @@ _write_subagent_stub() {
 		fm_delim == 2 { exit }
 	' "$f" 2>/dev/null)
 	if [[ -n "$src_bash_false" ]]; then
-		# Canonical workload tiers are routing intent, not OpenCode model IDs.
-		# Remove those lines so OpenCode inherits the parent model; runtime hooks
-		# map the tier to current provider reasoning. Preserve explicit full IDs.
-		sed \
-			-e '/^model: simple$/d' \
-			-e '/^model: standard$/d' \
-			-e '/^model: thinking$/d' \
-			"$f" >"$agent_dir/$name.md"
+		# Preserve the restrictive source verbatim while moving workload intent to
+		# plugin metadata. The request hook selects a connected candidate later.
+		_write_restrictive_subagent_source \
+			"$f" "$agent_dir/$name.md" "$routing_tier" || return 1
 		echo 1
 		return 0
 	fi
@@ -341,9 +369,6 @@ _write_subagent_stub() {
 	local extra_tools
 	extra_tools=$(_get_subagent_extra_tools "$name")
 
-	local runtime_guards src_variant src_steps src_task
-	runtime_guards=$(_read_subagent_runtime_guards "$f")
-	IFS=$'\t' read -r src_variant src_steps src_task <<<"$runtime_guards"
 	case "$src_variant" in
 	none | minimal | low | medium | high | xhigh | max) ;;
 	*) src_variant="" ;;
@@ -362,6 +387,8 @@ _write_subagent_stub() {
 			"---" \
 			"description: ${quoted_desc}" \
 			"mode: subagent"
+		[[ -n "$routing_tier" ]] && printf 'aidevops_model_tier: %s\n' "$routing_tier"
+		[[ -n "$routed_model" ]] && printf 'model: %s\n' "$routed_model"
 		[[ -n "$src_variant" ]] && printf 'variant: %s\n' "$src_variant"
 		[[ -n "$src_steps" ]] && printf 'steps: %s\n' "$src_steps"
 		printf '%s\n' \
@@ -486,9 +513,11 @@ _generate_subagents_opencode() {
 	export -f _get_subagent_extra_tools 2>/dev/null || true
 	export -f _yaml_quote_scalar 2>/dev/null || true
 	export -f _read_subagent_runtime_guards 2>/dev/null || true
+	export -f _write_restrictive_subagent_source 2>/dev/null || true
 	export -f _write_subagent_stub 2>/dev/null || true
 	export AGENTS_DIR
 	export agent_dir
+	export _GENERATE_RUNTIME_CONFIG_SCRIPT_DIR
 
 	local _ncpu
 	_ncpu=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)

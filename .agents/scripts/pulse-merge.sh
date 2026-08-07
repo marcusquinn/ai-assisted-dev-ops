@@ -653,11 +653,24 @@ _pulse_merge_final_trust_gate() {
 }
 
 #######################################
-# Perform all post-merge actions for a successfully merged PR:
-# build and post closing comment, close linked issue, unlock.
-# Best-effort — failures are logged but do not propagate.
-# Args: $1=pr_number, $2=repo_slug, $3=linked_issue, $4=merge_summary, $5=pr_labels, $6=pr_base_ref_name (optional)
+# Build provider-neutral routing feedback for a merged issue.
+# Args: $1=repo slug, $2=linked issue
+# Stdout: markdown section or empty
+# Returns: 0 always
 #######################################
+_pm_routing_feedback() {
+	local repo_slug="$1"
+	local linked_issue="$2"
+	[[ -n "$linked_issue" ]] || return 0
+	command -v node >/dev/null 2>&1 || return 0
+	local module_dir="${BASH_SOURCE[0]%/*}"
+	local feedback_helper="${AIDEVOPS_ROUTING_FEEDBACK_HELPER:-${module_dir}/routing-feedback.mjs}"
+	[[ -r "$feedback_helper" ]] || return 0
+	node "$feedback_helper" --repo "$repo_slug" --issue "$linked_issue" \
+		--format markdown --heading-level 3 2>/dev/null || true
+	return 0
+}
+
 #######################################
 # Build the closing comment body for a merged PR (with signature footer).
 # Args: $1=pr_number, $2=repo_slug, $3=linked_issue, $4=merge_summary, $5=pr_base_ref_name (optional)
@@ -678,6 +691,13 @@ _Merged by deterministic merge pass (pulse-wrapper.sh)._"
 		body="Completed via PR #${pr_number}, merged to ${pr_base_ref_name}.
 
 _Merged by deterministic merge pass (pulse-wrapper.sh). Neither MERGE_SUMMARY comment nor PR body text was available._"
+	fi
+	local routing_feedback=""
+	routing_feedback=$(_pm_routing_feedback "$repo_slug" "$linked_issue")
+	if [[ -n "$routing_feedback" ]]; then
+		body="${body}
+
+${routing_feedback}"
 	fi
 
 	local elapsed issue_ref="" footer

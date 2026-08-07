@@ -32,7 +32,7 @@ model: simple
 | Tier | Current ordered mapping | Use When |
 |------|-------|----------|
 | `simple` | openai/gpt-5.6-luna → anthropic/claude-haiku-4-5 | Complete low-consequence execution contracts |
-| `standard` | openai/gpt-5.6-sol → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Established-pattern implementation with normal judgment and recovery |
+| `standard` | openai/gpt-5.6-terra → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Established-pattern implementation with normal judgment and recovery |
 | `thinking` | openai/gpt-5.6-sol → anthropic/claude-opus-4-6 | Consequential unresolved decisions, novel design, and synthesis-heavy work |
 
 **Model IDs**: Always fully-qualified (`claude-sonnet-4-6`, not `claude-sonnet-4`). Short-form → `ProviderModelNotFoundError`. CLI prefix: `anthropic/`, `google/`, `openai/`.
@@ -62,7 +62,8 @@ normally standard; deciding that boundary is thinking.
 | `standard` | next configured standard-tier provider | Primary unavailable or provider-disallowed |
 | `thinking` | next configured thinking-tier provider | Primary unavailable or provider-disallowed |
 
-Supervisor resolves automatically. Interactive: `compare-models-helper.sh discover`.
+Supervisor and OpenCode subagents resolve the first connected same-tier candidate
+at request time. Interactive diagnostics: `compare-models-helper.sh discover`.
 
 ## Headless Dispatch
 
@@ -71,7 +72,7 @@ Supervisor resolves automatically. Interactive: `compare-models-helper.sh discov
 1. **Routing table** (`configs/model-routing-table.json`, or local override at `custom/configs/model-routing-table.json`) → ordered models per tier
 2. **Provider filter** (`AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST`) → optional local pinning such as `openai`
 3. **Auth + availability checks** (`headless-runtime-helper.sh`, `model-availability-helper.sh`) → providers/models that can actually run now
-4. **Result**: pulse resolves a standard-tier model; workers round-robin across the filtered standard-tier list
+4. **Result**: dispatch selects the first healthy allowed candidate; availability failures move right within the same tier
 
 Before the selected worker launches, `vault-data-policy-helper.sh` evaluates the
 task title/prompt metadata. Remote providers are denied for `local-only` and
@@ -82,17 +83,16 @@ is always denied because secrets must flow through secret tooling, not prompts.
 
 - **Shared default**: The framework routing table lists smoke-tested OpenAI models first so workers can continue during Anthropic cooldowns. Anthropic remains the fallback, and local custom routing can still reorder or replace these defaults.
 - **Pulse**: Resolves `standard` through `model-availability-helper.sh resolve standard`, so it follows routing-table order, health checks, local routing-table overrides, and `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST`.
-- **Workers**: Round-robin across canonical `simple`, `standard`, or `thinking` routes after allowlist filtering and auth checks.
+- **Workers**: Follow configured candidate order within canonical `simple`, `standard`, or `thinking` routes after allowlist filtering and auth checks.
 - **Local switch**: Set `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST=openai` to force both pulse and workers onto the default OpenAI fallbacks. If you want OpenAI primary but Anthropic fallback, reorder `custom/configs/model-routing-table.json` and omit the allowlist.
-- **Current default mapping**: The active routing table currently maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Sol then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
-- **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `max`, Sol `high`, and Sol `max`. Other providers use their provider/runtime defaults unless configured explicitly.
-- **Capability escalation**: A Luna `max` worker that reports a capability-related `BLOCKED` outcome resumes once at Sol `high`; a Sol `high` blocker resumes once at Sol `max`. Sol `max` is terminal. Permission, authentication, provider, rate-limit, policy, and trust-boundary failures retain dedicated fail-closed handling and never escalate reasoning to bypass controls.
-- **OpenAI tier rationale**: The automatic ladder prioritizes quality and security over minimum token cost: Luna `max` handles bounded work, Sol `high` handles general implementation, and Sol `max` handles deep reasoning. Terra remains available for explicit use or future evidence-based routing, but is not in the automatic default chain.
+- **Current default mapping**: The active routing table maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Terra then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
+- **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `max`, Terra `high`, and Sol `medium`. Other providers use their provider/runtime defaults unless configured explicitly.
+- **Capability escalation**: The exact structured marker `BLOCKED: capability limit - <evidence>` advances through `escalation_order` and resolves that tier's current first healthy candidate without pattern-driven downgrade. Generic `BLOCKED` outcomes and the terminal configured tier remain terminal. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, and locality failures retain dedicated fail-closed handling and never escalate capability to bypass controls.
+- **OpenAI tier rationale**: The automatic ladder prioritizes verified completion and measured cost: Luna handles bounded work, Terra handles general implementation, and Sol handles synthesis-heavy work. Routing telemetry supports evidence-based reordering without hardcoding provider assumptions.
 - **OpenAI pro caveat**: `openai/gpt-5.6-sol-pro` passed a live OpenCode ChatGPT OAuth smoke test on 2026-07-10, but OpenAI publishes neither an API price nor comparative Sol Pro benchmarks. It remains excluded from automatic workers pending repository-specific completion-rate evidence. Historical `gpt-5.5-pro` and older `*-pro`/`o3-pro` IDs remain excluded.
-- **GPT-5.5 standard workers**: aidevops omits env-derived standard-tier variants so OpenCode sends no explicit thinking override. Explicit CLI `--variant` still wins.
 - **GLM-5.2 option**: Standard routing may use `zai-coding-plan/glm-5.2` when that OpenCode provider is authenticated. Direct `zai/glm-5.2` is intentionally excluded.
 - **Tier-aware effort**: `AIDEVOPS_HEADLESS_VARIANT_SIMPLE`, `AIDEVOPS_HEADLESS_VARIANT_STANDARD`, and `AIDEVOPS_HEADLESS_VARIANT_THINKING` can temporarily override routing-table reasoning.
-- **Fallback**: If routed resolution fails entirely, pulse falls back to `anthropic/claude-sonnet-4-6`; workers fall back to `DEFAULT_HEADLESS_MODELS` when no allowlist is forcing a subset.
+- **Fallback**: If routed resolution fails entirely, the framework uses the active table's ordered candidates and then its shipped deterministic table. An explicit provider allowlist fails closed when no listed candidate is usable.
 - **Deprecated**: `PULSE_MODEL` and `AIDEVOPS_HEADLESS_MODELS` env vars are respected as overrides for one release cycle with deprecation warnings. Remove from `credentials.sh`.
 
 ### Per-user override that survives auto-update
@@ -108,7 +108,7 @@ Example custom override for OpenAI-capable headless routing:
 ```json
 {
   "tiers": {
-    "standard": { "models": ["openai/gpt-5.6-sol", "anthropic/claude-sonnet-4-6"] },
+    "standard": { "models": ["openai/gpt-5.6-terra", "anthropic/claude-sonnet-4-6"] },
     "thinking": { "models": ["openai/gpt-5.6-sol", "anthropic/claude-opus-4-6"] }
   }
 }
@@ -135,6 +135,19 @@ export AIDEVOPS_HEADLESS_PULSE_VARIANT="high"
 export AIDEVOPS_HEADLESS_WORKER_VARIANT="max"
 ```
 
+### Scheduled jobs and completion feedback
+
+`cron-helper.sh` and `runner-helper.sh` store canonical tier intent and resolve
+the active candidate and variant when execution starts. This keeps scheduled
+work aligned with routing-table updates instead of freezing an obsolete model.
+
+Routing decisions are recorded with tier, candidate index, attempt, reason,
+escalation, model, variant, outcome, token, and cost evidence where available.
+Interactive sessions receive a duplicate-suppressed completion toast; routine
+tracking bodies and deterministic PR/issue closeouts receive the same bounded
+analysis. Recommendations are advisory and require repeated evidence before a
+lower-tier trial is suggested.
+
 ## CLI Tools
 
 ```bash
@@ -157,9 +170,15 @@ Interactive: `/compare-models`, `/compare-models-free`, `/route <task>`
 
 ## Failure-Based Escalation (t1416 + GH#14964)
 
-After 2 failed attempts, escalate from `standard` to `thinking`. Dispatch/kill comments must include the canonical tier for escalation auditing.
+Availability, authentication, rate-limit, and runtime failures retry configured
+same-tier candidates. Only `BLOCKED: capability limit - <evidence>` advances to
+the next entry in `escalation_order`. Dispatch metrics include the canonical tier,
+candidate index, attempt, reason, and escalation flag for auditing. Pattern-backed
+lower-tier optimization is limited to initial automatic selection; when used, the
+active tier, variant, retry budget, candidate index, and telemetry follow the model
+actually selected. Retry and escalation selectors never cross tier boundaries.
 
-**Worker BLOCKED policy (GH#14964 — MANDATORY):** Attempt model escalation before exiting `BLOCKED`. Review-policy metadata, nominal GitHub states, and lower-tier model limits are NOT valid blockers on their own — a genuine blocker must persist after escalation. See `prompts/worker-efficiency-protocol.md` "Model escalation before BLOCKED".
+**Worker BLOCKED policy (GH#14964 — MANDATORY):** Emit `BLOCKED: capability limit - <evidence>` only when model capability is the sole remaining blocker; runtime routing then attempts the next configured tier. Use generic `BLOCKED` for evidenced terminal non-capability blockers. Review-policy metadata and nominal GitHub states are not blockers. See `prompts/worker-efficiency-protocol.md` "Model escalation before BLOCKED".
 
 ## Tier Drift Detection (t1191)
 

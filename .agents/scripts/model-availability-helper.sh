@@ -136,88 +136,33 @@ get_tier_models() {
 		IFS=',' read -r -a allowlist <<<"$allowlist_raw"
 	fi
 
-	# User-local override checked first — survives aidevops update.
-	# Copy configs/model-routing-table.json to custom/configs/ and edit.
-	# Framework defaults are ordered, availability-checked provider fallbacks.
-	local routing_table="${SCRIPT_DIR}/../custom/configs/model-routing-table.json"
-	if [[ ! -f "$routing_table" ]]; then
-		routing_table="${SCRIPT_DIR}/../configs/model-routing-table.json"
-	fi
-	if [[ -f "$routing_table" ]]; then
-		while IFS= read -r current_model; do
-			[[ -z "$current_model" ]] && continue
-			current_provider="${current_model%%/*}"
-			if [[ ${#allowlist[@]} -gt 0 ]]; then
-				local allowed=false
-				local allowed_provider
-				for allowed_provider in "${allowlist[@]}"; do
-					allowed_provider=$(printf '%s' "$allowed_provider" | sed 's/^ *//;s/ *$//')
-					if [[ "$allowed_provider" == "$current_provider" ]]; then
-						allowed=true
-						break
-					fi
-				done
-				[[ "$allowed" == "true" ]] || continue
-			fi
-			filtered_models+=("$current_model")
-		done < <(jq -r --arg canonical "$tier" --arg requested "$requested_tier" \
-			'(.tiers[$canonical].models // .tiers[$requested].models // [])[]' "$routing_table" 2>/dev/null)
-		if [[ ${#filtered_models[@]} -gt 0 ]]; then
-			local models_json=""
-			models_json=$(
-				IFS='|'
-				printf '%s' "${filtered_models[*]}"
-			)
-			echo "$models_json"
-			return 0
-		fi
-		if [[ ${#allowlist[@]} -gt 0 ]]; then
-			echo ""
-			return 0
-		fi
-	fi
-
-	# Hardcoded fallback — kept in sync with model-routing-table.json.
-	# If you're editing these, update the JSON file instead.
-	# Current smoke-tested models are the headless defaults. An empty local value
-	# deliberately fails closed rather than sending local-only work to cloud.
-	case "$tier" in
-	simple) current_model=$'openai/gpt-5.6-luna\nanthropic/claude-haiku-4-5' ;;
-	standard) current_model=$'openai/gpt-5.6-sol\nzai-coding-plan/glm-5.2\nanthropic/claude-sonnet-4-6' ;;
-	thinking) current_model=$'openai/gpt-5.6-sol\nanthropic/claude-opus-4-6' ;;
-	*) return 1 ;;
-	esac
-	[[ -n "$current_model" ]] || return 1
-
-	if [[ ${#allowlist[@]} -eq 0 ]]; then
-		printf '%s\n' "$current_model" | paste -sd'|' -
-		return 0
-	fi
-
-	filtered_models=()
-	while IFS= read -r current_provider; do
-		[[ -z "$current_provider" ]] && continue
-		local provider_name="${current_provider%%/*}"
+	# shared-model-tier.sh owns table precedence and fallback defaults. Keeping
+	# candidate filtering here ensures an allowlist can never escape that table.
+	while IFS= read -r current_model; do
+		[[ -z "$current_model" ]] && continue
+		current_provider="${current_model%%/*}"
 		local allowed=false
 		local allowed_provider
-		for allowed_provider in "${allowlist[@]}"; do
-			allowed_provider=$(printf '%s' "$allowed_provider" | sed 's/^ *//;s/ *$//')
-			if [[ "$allowed_provider" == "$provider_name" ]]; then
-				allowed=true
-				break
-			fi
-		done
-		if [[ "$allowed" == "true" ]]; then
-			filtered_models+=("$current_provider")
+		if [[ ${#allowlist[@]} -eq 0 ]]; then
+			allowed=true
+		else
+			for allowed_provider in "${allowlist[@]}"; do
+				allowed_provider=$(printf '%s' "$allowed_provider" | sed 's/^ *//;s/ *$//')
+				if [[ "$allowed_provider" == "$current_provider" ]]; then
+					allowed=true
+					break
+				fi
+			done
 		fi
-	done <<<"$current_model"
+		[[ "$allowed" == "true" ]] && filtered_models+=("$current_model")
+	done < <(model_tier_candidates "$tier" 2>/dev/null || true)
 
 	if [[ ${#filtered_models[@]} -eq 0 ]]; then
-		echo ""
+		printf '\n'
 		return 0
 	fi
 
-	echo "$(
+	printf '%s\n' "$(
 		IFS='|'
 		printf '%s' "${filtered_models[*]}"
 	)"

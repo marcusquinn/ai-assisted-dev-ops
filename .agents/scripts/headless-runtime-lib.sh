@@ -487,6 +487,9 @@ append_runtime_metric() {
 		WORKER_ID="${AIDEVOPS_WORKER_ID:-}" PARENT_WORKER_ID="${AIDEVOPS_PARENT_WORKER_ID:-}" \
 		ROOT_WORKER_ID="${AIDEVOPS_ROOT_WORKER_ID:-}" CORRELATION_ID="${AIDEVOPS_CORRELATION_ID:-}" \
 		ATTEMPT_ID="${AIDEVOPS_ATTEMPT_ID:-}" RUN_ID="${AIDEVOPS_RUN_ID:-}" \
+		ROUTING_TIER="${AIDEVOPS_DISPATCH_TIER:-}" ROUTING_CANDIDATE_INDEX="${AIDEVOPS_ROUTING_CANDIDATE_INDEX:-}" \
+		ROUTING_ATTEMPT="${AIDEVOPS_ROUTING_ATTEMPT:-}" ROUTING_REASON="${AIDEVOPS_ROUTING_REASON:-}" \
+		ROUTING_ESCALATED="${AIDEVOPS_ROUTING_ESCALATED:-}" ROUTING_VARIANT="${AIDEVOPS_ROUTING_VARIANT:-}" \
 		METRICS_PATH="$METRICS_FILE" python3 - <<'PY' >/dev/null 2>&1 || true
 import json
 import os
@@ -524,14 +527,22 @@ optional_fields = {
     "correlation_id": os.environ.get("CORRELATION_ID", ""),
     "attempt_id": os.environ.get("ATTEMPT_ID", ""),
     "run_id": os.environ.get("RUN_ID", ""),
+    "routing_tier": os.environ.get("ROUTING_TIER", ""),
+    "routing_candidate_index": os.environ.get("ROUTING_CANDIDATE_INDEX", ""),
+    "routing_attempt": os.environ.get("ROUTING_ATTEMPT", ""),
+    "routing_reason": os.environ.get("ROUTING_REASON", ""),
+    "routing_escalated": os.environ.get("ROUTING_ESCALATED", ""),
+    "variant": os.environ.get("ROUTING_VARIANT", ""),
 }
 for key, value in optional_fields.items():
-    if value:
-        if key == "issue_number":
+    if value != "":
+        if key in {"issue_number", "routing_candidate_index", "routing_attempt"}:
             try:
                 record[key] = int(value)
             except ValueError:
                 record[key] = value
+        elif key == "routing_escalated":
+            record[key] = value == "1"
         else:
             record[key] = value
 try:
@@ -855,7 +866,7 @@ Mandatory behavior:
 6. Reading the issue and reading docs are SETUP -- not completion. You MUST continue through implementation, commit, push, and PR creation after setup.
 7. A draft PR is only a durable checkpoint, never completion. Continue until the implementation and required local verification are complete, every intended commit is pushed, the PR is non-draft, the PR head matches local HEAD, and the required MERGE_SUMMARY exists.
 8. Attempt the merge path once. If it merges, finish the required closing comments. If the exact-head non-draft PR has no terminal check failure and only asynchronous CI, review-bot, human approval, or native auto-merge remains, emit POST_PR_HANDOFF on its own line and exit normally. Pulse/webhook automation owns subsequent monitoring. Do not sleep, wait, or poll for those gates, and never bypass, disable, or weaken branch protection, approval, review-bot, CI, or security gates.
-9. Model escalation before BLOCKED (GH#14964): BLOCKED is only valid after exhausting all autonomous solution paths. Before exiting BLOCKED, retry at the thinking tier and let runtime routing choose the available model and reasoning level. Review-policy metadata, nominal GitHub states, and lower-tier model limits are NOT valid blockers on their own. Genuine blockers require evidence: a failing check that cannot be repaired, missing permission, unresolved conflict, or explicit policy gate.
+9. Model escalation before BLOCKED (GH#14964): BLOCKED is only valid after exhausting all autonomous solution paths. If the only remaining blocker is the current model's inability to reason through the task safely, emit `BLOCKED: capability limit - <evidence>`; runtime routing will retry at the next configured capability tier. Never use that marker for permission, authentication, provider, rate-limit, secret, policy, trust-boundary, or locality failures. Review-policy metadata and nominal GitHub states are NOT valid blockers. Genuine blockers require evidence: a failing check that cannot be repaired, missing permission, unresolved conflict, or explicit policy gate.
 
 Activity watchdog constraint -- CRITICAL:
 A continuous watchdog monitors your output. If you produce no tool calls or text

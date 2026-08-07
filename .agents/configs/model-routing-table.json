@@ -2,22 +2,24 @@
   "_comment": "Model routing table — SINGLE SOURCE OF TRUTH for tier-to-model mappings. All scripts, docs, and configs should reference this file rather than hardcoding model IDs. When a new model generation releases (e.g., gpt-5.6), update this file and its documented static fallbacks.",
   "_docs": "See .agents/tools/context/model-routing.md for routing rules, .agents/tools/ai-assistants/fallback-chains.md for integration.",
   "_agentic_note": "codex/code-completion models (gpt-5.3-codex, gpt-5.4-codex) are NOT agentic — zero tool calls observed (GH#17669). Never use them for headless worker dispatch. Only general-purpose models support agentic workflows.",
-  "_defaults": "The first model in each tier's array is primary; subsequent entries are availability-checked fallbacks. GLM-5.2 is offered only through the Z.AI coding-plan provider. Use custom/configs/model-routing-table.json or AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST for local overrides.",
+  "_defaults": "The first model in each tier's array is primary; subsequent entries are same-tier availability fallbacks. Capability failure advances through escalation_order. GLM-5.2 is offered only through the Z.AI coding-plan provider. Use custom/configs/model-routing-table.json or AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST for local overrides.",
   "_tier_names": "Canonical workload tiers are simple, standard, and thinking. Provider names, model families, and reasoning variants must not be used as tier names.",
   "tiers": {
     "simple": {
       "models": ["openai/gpt-5.6-luna", "anthropic/claude-haiku-4-5"],
-      "reasoning": { "openai": "max" }
+      "reasoning": { "openai/gpt-5.6-luna": "max" }
     },
     "standard": {
-      "models": ["openai/gpt-5.6-sol", "zai-coding-plan/glm-5.2", "anthropic/claude-sonnet-4-6"],
-      "reasoning": { "openai": "high" }
+      "models": ["openai/gpt-5.6-terra", "zai-coding-plan/glm-5.2", "anthropic/claude-sonnet-4-6"],
+      "reasoning": { "openai/gpt-5.6-terra": "high" }
     },
     "thinking": {
       "models": ["openai/gpt-5.6-sol", "anthropic/claude-opus-4-6"],
-      "reasoning": { "openai": "max" }
+      "reasoning": { "openai/gpt-5.6-sol": "medium" }
     }
   },
+
+  "escalation_order": ["simple", "standard", "thinking"],
 
   "providers": {
     "local": {

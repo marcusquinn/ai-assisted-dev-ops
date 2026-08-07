@@ -47,6 +47,7 @@ import {
   summarizeToolMetadata,
 } from "./observability-retention.mjs";
 import { toolOutcomeFailed } from "./session-continuation-guard.mjs";
+import { summarizeRoutingFeedback } from "../../scripts/routing-feedback.mjs";
 
 const HOME = homedir();
 const DEFAULT_OBS_DIR = join(HOME, ".aidevops", ".agent-workspace", "observability");
@@ -91,7 +92,7 @@ function initDatabase() {
   // 100% of worker startups. Read-only check first — no lock contention,
   // skips the slow path entirely once the DB is ready.
   if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
-    return _runDataMigrations({ intentColumnReady: true });
+    return _runDataMigrations({ intentColumnReady: true, routingColumnsReady: true });
   }
 
   // SLOW PATH (t2900): serialise schema creation across concurrent workers
@@ -102,7 +103,7 @@ function initDatabase() {
     // DOUBLE-CHECKED LOCKING: another worker may have completed init while
     // we waited. If schema is now ready, skip the writer-lock-heavy path.
     if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
-      return _runDataMigrations({ intentColumnReady: true });
+      return _runDataMigrations({ intentColumnReady: true, routingColumnsReady: true });
     }
     if (!_createSchema()) return false;
     return _runDataMigrations();
@@ -116,7 +117,7 @@ function initDatabase() {
  * Historical data backfills are scheduled after startup so large observability
  * databases do not block the OpenCode TUI on table scans or writer locks.
  *
- * @param {{ intentColumnReady?: boolean }} [options]
+ * @param {{ intentColumnReady?: boolean, routingColumnsReady?: boolean }} [options]
  * @returns {boolean} true on success (best-effort — never returns false)
  */
 function _runDataMigrations(options = {}) {
@@ -132,6 +133,31 @@ function _runDataMigrations(options = {}) {
   if (hasIntentCol === "0") {
     sqliteExecSync("ALTER TABLE tool_calls ADD COLUMN intent TEXT;", 5000);
   }
+
+  if (!options.routingColumnsReady) {
+    const routingColumns = [
+      ["parent_session_id", "TEXT"],
+      ["routing_tier", "TEXT"],
+      ["routing_candidate_index", "INTEGER"],
+      ["routing_attempt", "INTEGER"],
+      ["routing_reason", "TEXT"],
+      ["routing_escalated", "INTEGER DEFAULT 0"],
+    ];
+    for (const [column, definition] of routingColumns) {
+      const exists = sqliteExecSync(
+        `SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name=${sqlEscape(column)};`,
+        5000,
+      );
+      if (exists === "0") {
+        sqliteExecSync(`ALTER TABLE llm_requests ADD COLUMN ${column} ${definition};`, 5000);
+      }
+    }
+  }
+  // These indexes must be created after the migration above. On an existing
+  // pre-routing database, createSchema() sees the old llm_requests table and
+  // cannot reference columns that ALTER TABLE has not added yet.
+  sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_parent_session ON llm_requests(parent_session_id);", 5000);
+  sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_routing_tier ON llm_requests(routing_tier);", 5000);
 
   // runtime-events.mjs is the sole runtime-event schema/migration authority.
   if (!initialiseRuntimeEventStore(DB_PATH)) return false;
@@ -163,6 +189,8 @@ const sessionToolCounts = new Map();
  */
 const recordedMessages = new Set();
 const partStreamSummaries = new PartStreamSummaryTracker();
+const routingDecisions = new Map();
+const sessionRoutingRecords = new Map();
 
 /**
  * Whether the database was successfully initialised.
@@ -187,6 +215,80 @@ export function initObservability() {
     process.on("exit", _shutdownSqlite);
   }
   return dbReady;
+}
+
+/** Queue the routing choice that will be joined to the next completed response. */
+export function recordRoutingDecision(sessionID, decision = {}) {
+  if (!sessionID) return;
+  const queue = routingDecisions.get(sessionID) || [];
+  queue.push({
+    parentSessionID: decision.parentSessionID || "",
+    tier: decision.tier || "",
+    model: decision.model || "",
+    variant: decision.variant || "",
+    candidateIndex: Number.isInteger(decision.candidateIndex) ? decision.candidateIndex : -1,
+    attempt: Number.isInteger(decision.attempt) ? decision.attempt : 1,
+    reason: decision.reason || "",
+    escalated: decision.escalated ? 1 : 0,
+  });
+  if (queue.length > 32) queue.splice(0, queue.length - 32);
+  routingDecisions.set(sessionID, queue);
+  if (routingDecisions.size > 1000) {
+    for (const key of [...routingDecisions.keys()].slice(0, 500)) routingDecisions.delete(key);
+  }
+}
+
+/** Return current-process routed request feedback for a root or child session. */
+export function getRoutingFeedback(sessionID) {
+  if (!sessionID) return summarizeRoutingFeedback();
+  return summarizeRoutingFeedback({ requests: sessionRoutingRecords.get(sessionID) || [] });
+}
+
+function rememberRoutingFeedback(msg, routing, cost, errorType) {
+  if (!routing.tier) return;
+  const record = {
+    session_id: msg.sessionID,
+    parent_session_id: routing.parentSessionID || "",
+    provider_id: msg.providerID || "",
+    model_id: msg.modelID || routing.model || "",
+    tokens_total: msg.tokens?.total || 0,
+    cost,
+    error_type: errorType || "",
+    finish_reason: msg.finish || "",
+    routing_tier: routing.tier,
+    routing_candidate_index: routing.candidateIndex,
+    routing_attempt: routing.attempt,
+    routing_reason: routing.reason,
+    routing_escalated: routing.escalated,
+  };
+  const keys = new Set([msg.sessionID, routing.parentSessionID].filter(Boolean));
+  for (const key of keys) {
+    const records = sessionRoutingRecords.get(key) || [];
+    records.push(record);
+    if (records.length > 200) records.splice(0, records.length - 200);
+    sessionRoutingRecords.set(key, records);
+  }
+  if (sessionRoutingRecords.size > 1000) {
+    for (const key of [...sessionRoutingRecords.keys()].slice(0, 500)) sessionRoutingRecords.delete(key);
+  }
+}
+
+function consumeRoutingDecision(msg) {
+  const queue = routingDecisions.get(msg.sessionID) || [];
+  const decision = queue.shift();
+  if (queue.length === 0) routingDecisions.delete(msg.sessionID);
+  const envTier = process.env.AIDEVOPS_DISPATCH_TIER || "";
+  if (decision) return decision;
+  return {
+    parentSessionID: "",
+    tier: envTier,
+    model: `${msg.providerID || ""}/${msg.modelID || ""}`,
+    variant: msg.variant || "",
+    candidateIndex: Number.parseInt(process.env.AIDEVOPS_ROUTING_CANDIDATE_INDEX || "-1", 10),
+    attempt: Number.parseInt(process.env.AIDEVOPS_ROUTING_ATTEMPT || "1", 10),
+    reason: process.env.AIDEVOPS_ROUTING_REASON || (envTier ? "headless_dispatch" : ""),
+    escalated: process.env.AIDEVOPS_ROUTING_ESCALATED === "1" ? 1 : 0,
+  };
 }
 
 /**
@@ -276,7 +378,15 @@ function handleMessageUpdated(event) {
   if (recordedMessages.has(msg.id)) return;
   recordedMessages.add(msg.id);
 
-  recordOpenCodeRuntimeEvent(event, "message.completed", partStreamSummaries.consume(msg));
+  const routing = consumeRoutingDecision(msg);
+  recordOpenCodeRuntimeEvent(event, "message.completed", {
+    ...partStreamSummaries.consume(msg),
+    routing_tier: routing.tier || null,
+    routing_candidate_index: routing.candidateIndex,
+    routing_attempt: routing.attempt,
+    routing_reason: routing.reason || null,
+    routing_escalated: routing.escalated === 1,
+  });
 
   // Prevent unbounded memory growth — prune old entries periodically
   if (recordedMessages.size > 10000) {
@@ -302,13 +412,16 @@ function handleMessageUpdated(event) {
 
   // Calculate cost from tokens — OpenCode does not provide msg.cost
   const cost = calculateCost(msg.tokens, msg.modelID);
+  rememberRoutingFeedback(msg, routing, cost, errorType);
 
   const sql = `INSERT INTO llm_requests (
     session_id, message_id, provider_id, model_id, agent,
     tokens_input, tokens_output, tokens_reasoning,
     tokens_cache_read, tokens_cache_write, tokens_total,
     cost, duration_ms, finish_reason, error_type, error_message,
-    tool_call_count, project_path, variant
+    tool_call_count, project_path, variant, parent_session_id,
+    routing_tier, routing_candidate_index, routing_attempt, routing_reason,
+    routing_escalated
   ) VALUES (
     ${sqlEscape(msg.sessionID)},
     ${sqlEscape(msg.id)},
@@ -328,7 +441,13 @@ function handleMessageUpdated(event) {
     ${sqlEscape(errorMessage)},
     ${toolCallCount},
     ${sqlEscape(projectPath)},
-    ${sqlEscape(msg.variant || null)}
+    ${sqlEscape(msg.variant || routing.variant || null)},
+    ${sqlEscape(routing.parentSessionID || null)},
+    ${sqlEscape(routing.tier || null)},
+    ${Number.isInteger(routing.candidateIndex) ? routing.candidateIndex : -1},
+    ${Number.isInteger(routing.attempt) ? routing.attempt : 1},
+    ${sqlEscape(routing.reason || null)},
+    ${routing.escalated === 1 ? 1 : 0}
   );`;
 
   sqliteExec(sql);

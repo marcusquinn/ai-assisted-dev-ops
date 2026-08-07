@@ -10,6 +10,14 @@
 #
 # Public API (backward-compatible — all callers source shared-constants.sh,
 # which re-sources this sub-library automatically):
+#   - model_routing_table_path        — active user or framework routing table.
+#   - model_tier_candidates <tier>    — ordered same-tier candidates, one/line.
+#   - model_tier_candidate_index <tier> <model> — zero-based candidate index.
+#   - model_tier_candidate_for_provider <tier> <provider> — first provider match.
+#   - model_tier_variant <tier> <model> — model-specific/provider variant.
+#   - model_tier_escalation_order       — normalized configured tiers, one/line.
+#   - model_tier_next <tier>          — next capability tier, when configured.
+#   - model_tier_for_model <model>     — configured tier containing a model.
 #   - resolve_model_tier <tier>       — tier name → full provider/model string.
 #                                       Tries fallback-chain-helper.sh first
 #                                       (availability-aware), falls back to a
@@ -66,6 +74,248 @@ _SHARED_MODEL_TIER_LOADED=1
 # =============================================================================
 
 #######################################
+# Print the active model-routing table path.
+# Precedence: explicit override, update-safe custom table, framework default.
+#######################################
+model_routing_table_path() {
+	local explicit_table="${AIDEVOPS_MODEL_ROUTING_TABLE:-}"
+	if [[ -n "$explicit_table" && -r "$explicit_table" ]]; then
+		printf '%s\n' "$explicit_table"
+		return 0
+	fi
+
+	local self_path="${BASH_SOURCE[0]:-${0:-}}"
+	local script_dir="${self_path%/*}"
+	local candidate=""
+	for candidate in \
+		"${script_dir}/../custom/configs/model-routing-table.json" \
+		"${script_dir}/../configs/model-routing-table.json"; do
+		if [[ -r "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+model_routing_framework_table_path() {
+	local self_path="${BASH_SOURCE[0]:-${0:-}}"
+	local framework_table="${self_path%/*}/../configs/model-routing-table.json"
+	[[ -r "$framework_table" ]] || return 1
+	printf '%s\n' "$framework_table"
+	return 0
+}
+
+#######################################
+# Print the ordered, same-tier model candidates, one per line.
+# A readable routing table is authoritative: a missing tier fails closed.
+#######################################
+model_tier_candidates() {
+	local requested_tier="${1:-standard}"
+	if [[ "$requested_tier" == *"/"* ]]; then
+		printf '%s\n' "$requested_tier"
+		return 0
+	fi
+
+	local tier=""
+	tier=$(normalize_model_tier_name "$requested_tier")
+	local routing_table=""
+	local framework_table=""
+	local candidates=""
+	routing_table=$(model_routing_table_path 2>/dev/null) || routing_table=""
+	framework_table=$(model_routing_framework_table_path 2>/dev/null) || framework_table=""
+	if command -v jq >/dev/null 2>&1; then
+		local table=""
+		local previous_table=""
+		for table in "$routing_table" "$framework_table"; do
+			[[ -n "$table" && -r "$table" ]] || continue
+			[[ "$table" != "$previous_table" ]] || continue
+			previous_table="$table"
+			if jq -e --arg canonical "$tier" --arg requested "$requested_tier" \
+				'((.tiers[$canonical].models // .tiers[$requested].models) | type) == "array"' \
+				"$table" >/dev/null 2>&1; then
+				candidates=$(jq -r --arg canonical "$tier" --arg requested "$requested_tier" \
+					'(.tiers[$canonical].models // .tiers[$requested].models // [])[] | select(type == "string" and length > 0)' \
+					"$table" 2>/dev/null) || candidates=""
+				if [[ -n "$candidates" ]]; then
+					printf '%s\n' "$candidates"
+					return 0
+				fi
+				return 1
+			fi
+		done
+	fi
+
+	case "$tier" in
+	simple) printf '%s\n' "openai/gpt-5.6-luna" "anthropic/claude-haiku-4-5" ;;
+	standard) printf '%s\n' "openai/gpt-5.6-terra" "zai-coding-plan/glm-5.2" "anthropic/claude-sonnet-4-6" ;;
+	thinking) printf '%s\n' "openai/gpt-5.6-sol" "anthropic/claude-opus-4-6" ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
+#######################################
+# Print the zero-based same-tier candidate index for a concrete model.
+#######################################
+model_tier_candidate_index() {
+	local requested_tier="${1:-standard}"
+	local requested_model="${2:-}"
+	local index=0
+	local candidate=""
+	while IFS= read -r candidate; do
+		if [[ "$candidate" == "$requested_model" ]]; then
+			printf '%s\n' "$index"
+			return 0
+		fi
+		index=$((index + 1))
+	done < <(model_tier_candidates "$requested_tier" 2>/dev/null || true)
+	printf '%s\n' "-1"
+	return 1
+}
+
+#######################################
+# Print the first same-tier candidate belonging to an explicit provider.
+#######################################
+model_tier_candidate_for_provider() {
+	local requested_tier="${1:-standard}"
+	local requested_provider="${2:-}"
+	local candidate=""
+	[[ -n "$requested_provider" ]] || return 1
+	while IFS= read -r candidate; do
+		if [[ "${candidate%%/*}" == "$requested_provider" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done < <(model_tier_candidates "$requested_tier" 2>/dev/null || true)
+	return 1
+}
+
+#######################################
+# Print the configured reasoning variant for a concrete tier/model pair.
+# Full model IDs take precedence over provider keys and a default key.
+#######################################
+model_tier_variant() {
+	local requested_tier="${1:-standard}"
+	local model="${2:-}"
+	local tier=""
+	tier=$(normalize_model_tier_name "$requested_tier")
+	local provider="${model%%/*}"
+	local routing_table=""
+	local framework_table=""
+	routing_table=$(model_routing_table_path 2>/dev/null) || routing_table=""
+	framework_table=$(model_routing_framework_table_path 2>/dev/null) || framework_table=""
+	command -v jq >/dev/null 2>&1 || return 1
+
+	local variant=""
+	local variant_result=""
+	local table=""
+	local previous_table=""
+	for table in "$routing_table" "$framework_table"; do
+		[[ -n "$table" && -r "$table" && "$table" != "$previous_table" ]] || continue
+		previous_table="$table"
+		variant_result=$(jq -r --arg tier "$tier" --arg model "$model" --arg provider "$provider" --arg string_type string '
+			"found" as $status
+			| "default" as $default_key
+			| .tiers[$tier].reasoning as $reasoning
+			| if ($reasoning | type) == "object" then
+				if ($reasoning | has($model)) and (($reasoning[$model] | type) == $string_type) then
+					[$status, $reasoning[$model]] | @tsv
+				elif ($reasoning | has($provider)) and (($reasoning[$provider] | type) == $string_type) then
+					[$status, $reasoning[$provider]] | @tsv
+				elif ($reasoning | has($default_key)) and (($reasoning[$default_key] | type) == $string_type) then
+					[$status, $reasoning[$default_key]] | @tsv
+				else empty end
+			  else empty end
+		' "$table" 2>/dev/null) || variant_result=""
+		if [[ "$variant_result" == "found"$'\t'* ]]; then
+			variant="${variant_result#*$'\t'}"
+			[[ -z "$variant" ]] || printf '%s\n' "$variant"
+			return 0
+		fi
+	done
+	return 1
+}
+
+#######################################
+# Print the configured capability order, preserving valid override order and
+# appending omitted canonical tiers. This mirrors the OpenCode routing reader.
+#######################################
+model_tier_escalation_order() {
+	local routing_table=""
+	local framework_table=""
+	local configured_order=""
+	routing_table=$(model_routing_table_path 2>/dev/null) || routing_table=""
+	framework_table=$(model_routing_framework_table_path 2>/dev/null) || framework_table=""
+	if command -v jq >/dev/null 2>&1; then
+		local table=""
+		local previous_table=""
+		for table in "$routing_table" "$framework_table"; do
+			[[ -n "$table" && -r "$table" && "$table" != "$previous_table" ]] || continue
+			previous_table="$table"
+			if jq -e '.escalation_order | type == "array"' "$table" >/dev/null 2>&1; then
+				configured_order=$(jq -r '.escalation_order[]? | select(type == "string")' "$table" 2>/dev/null) || configured_order=""
+				break
+			fi
+		done
+	fi
+
+	local seen="," candidate=""
+	while IFS= read -r candidate; do
+		case "$candidate" in simple | standard | thinking) ;; *) continue ;; esac
+		[[ "$seen" != *",${candidate},"* ]] || continue
+		printf '%s\n' "$candidate"
+		seen="${seen}${candidate},"
+	done <<<"$configured_order"
+	for candidate in simple standard thinking; do
+		[[ "$seen" != *",${candidate},"* ]] || continue
+		printf '%s\n' "$candidate"
+		seen="${seen}${candidate},"
+	done
+	return 0
+}
+
+#######################################
+# Print the next configured capability tier. Returns 1 at the final tier.
+# Explicitly disabled tiers are skipped rather than becoming dead ends.
+#######################################
+model_tier_next() {
+	local requested_tier="${1:-standard}"
+	local tier=""
+	tier=$(normalize_model_tier_name "$requested_tier")
+	local candidate="" current_seen=false
+	while IFS= read -r candidate; do
+		if [[ "$current_seen" == "true" ]]; then
+			if model_tier_candidates "$candidate" >/dev/null 2>&1; then
+				printf '%s\n' "$candidate"
+				return 0
+			fi
+		elif [[ "$candidate" == "$tier" ]]; then
+			current_seen=true
+		fi
+	done < <(model_tier_escalation_order)
+	return 1
+}
+
+#######################################
+# Print the first configured tier containing a concrete model.
+#######################################
+model_tier_for_model() {
+	local model="$1"
+	local tier="" candidate=""
+	while IFS= read -r tier; do
+		while IFS= read -r candidate; do
+			if [[ "$candidate" == "$model" ]]; then
+				printf '%s\n' "$tier"
+				return 0
+			fi
+		done < <(model_tier_candidates "$tier" 2>/dev/null || true)
+	done < <(model_tier_escalation_order)
+	return 1
+}
+
+#######################################
 # Validate provider-neutral workload tier names.
 # Canonical tiers describe workload complexity, not a model vendor.
 #######################################
@@ -110,25 +360,16 @@ resolve_model_tier() {
 		fi
 	fi
 
-	# Static fallback: map tier names to concrete models
-	case "$tier" in
-	standard)
-		echo "openai/gpt-5.6-sol"
-		;;
-	thinking)
-		echo "openai/gpt-5.6-sol"
-		;;
-	simple)
-		echo "openai/gpt-5.6-luna"
-		;;
-	grok)
-		echo "xai/grok-3"
-		;;
-	*)
-		# Unknown tier — return as-is (may be a model name without provider)
-		echo "$tier"
-		;;
-	esac
+	# Deterministic fallback: use the first candidate from the same active table.
+	local candidate=""
+	candidate=$(model_tier_candidates "$tier" 2>/dev/null | sed -n '1p') || candidate=""
+	if [[ -n "$candidate" ]]; then
+		printf '%s\n' "$candidate"
+		return 0
+	fi
+
+	# Unknown tier — return as-is (may be a model name without provider).
+	printf '%s\n' "$tier"
 
 	return 0
 }

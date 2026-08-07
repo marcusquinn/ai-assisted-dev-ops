@@ -317,6 +317,16 @@ _compute_next_run() {
 # Issue body template
 # =============================================================================
 
+_routing_feedback_for_session() {
+	local session_key="$1"
+	[[ -n "$session_key" ]] || return 0
+	command -v node >/dev/null 2>&1 || return 0
+	local helper="${AIDEVOPS_ROUTING_FEEDBACK_HELPER:-${SCRIPT_DIR}/routing-feedback.mjs}"
+	[[ -r "$helper" ]] || return 0
+	node "$helper" --session-key "$session_key" --format markdown --heading-level 3 2>/dev/null || true
+	return 0
+}
+
 _build_issue_body() {
 	local routine_id="$1"
 	local title="$2"
@@ -331,6 +341,7 @@ _build_issue_body() {
 	local streak_type="${11}"
 	local total_cost="${12}"
 	local period_summary="${13}"
+	local routing_feedback="${14:-}"
 
 	local formatted_duration
 	formatted_duration=$(_format_duration "$last_duration")
@@ -398,6 +409,10 @@ ${p_successes}/${p_total} runs succeeded. Total cost: \$${p_cost}. Avg duration:
 
 **Detailed logs**: \`~/.aidevops/.agent-workspace/cron/${routine_id}/\`
 EOF
+
+	if [[ -n "$routing_feedback" ]]; then
+		printf '\n%s\n' "$routing_feedback"
+	fi
 
 	# Append description if present
 	if [[ -n "$description" ]]; then
@@ -570,7 +585,7 @@ _load_routine_state() {
 }
 
 # Update state JSON with latest run metrics and persist to disk.
-# Args: routine_id, state_json, status, duration, cost, schedule
+# Args: routine_id, state_json, status, duration, cost, schedule, session_key
 # Outputs the new total_cost to stdout.
 _update_state_after_run() {
 	local routine_id="$1"
@@ -579,6 +594,7 @@ _update_state_after_run() {
 	local duration="$4"
 	local cost="$5"
 	local schedule="$6"
+	local session_key="${7:-}"
 
 	local now_ts
 	now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -600,7 +616,9 @@ _update_state_after_run() {
 		--argjson ld "$duration" \
 		--arg nr "$next_run" \
 		--arg tc "$new_total_cost" \
-		'.last_run = $lr | .last_status = $ls | .last_duration = $ld | .next_run = $nr | .total_cost = $tc')
+		--arg sk "$session_key" \
+		'.last_run = $lr | .last_status = $ls | .last_duration = $ld | .next_run = $nr | .total_cost = $tc
+		 | .last_session_key = (if $sk == "" then (.last_session_key // null) else $sk end)')
 	_write_state "$routine_id" "$state"
 
 	echo "$new_total_cost"
@@ -610,7 +628,7 @@ _update_state_after_run() {
 # Build the updated issue body and push it to GitHub.
 # Args: routine_id, issue_number, repo_slug, title, schedule, routine_type,
 #       status_label, now_ts, status, duration, next_run, streak_count,
-#       streak_type, total_cost
+#       streak_type, total_cost, session_key
 _update_tracking_issue() {
 	local routine_id="$1"
 	local issue_number="$2"
@@ -626,10 +644,13 @@ _update_tracking_issue() {
 	local streak_count="${12}"
 	local streak_type="${13}"
 	local total_cost="${14}"
+	local session_key="${15:-}"
 
 	# Compute period summary
 	local period_summary
 	period_summary=$(_compute_period_summary "$routine_id")
+	local routing_feedback=""
+	routing_feedback=$(_routing_feedback_for_session "$session_key")
 
 	# Build new issue body
 	local new_body
@@ -646,7 +667,8 @@ _update_tracking_issue() {
 		"$streak_count" \
 		"$streak_type" \
 		"$total_cost" \
-		"$period_summary")
+		"$period_summary" \
+		"$routing_feedback")
 
 	# Update issue description
 	if gh_issue_edit_safe "$issue_number" --repo "$repo_slug" --body "$new_body" &>/dev/null; then
@@ -732,7 +754,7 @@ cmd_update() {
 	local now_ts
 	now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	local new_total_cost
-	new_total_cost=$(_update_state_after_run "$routine_id" "$state" "$status" "$duration" "$cost" "$schedule")
+	new_total_cost=$(_update_state_after_run "$routine_id" "$state" "$status" "$duration" "$cost" "$schedule" "$session_key")
 
 	local next_run
 	next_run=$(_compute_next_run "$schedule")
@@ -741,7 +763,7 @@ cmd_update() {
 	_update_tracking_issue \
 		"$routine_id" "$issue_number" "$repo_slug" "$title" "$schedule" \
 		"$routine_type" "$status_label" "$now_ts" "$status" "$duration" \
-		"$next_run" "$streak_count" "$streak_type" "$new_total_cost" || return 1
+		"$next_run" "$streak_count" "$streak_type" "$new_total_cost" "$session_key" || return 1
 
 	# Post notable event if streak broke
 	if [[ "$streak_broke" == "true" ]]; then
@@ -1253,6 +1275,10 @@ main() {
 		return 1
 		;;
 	esac
+	local command_status=$?
+	return "$command_status"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

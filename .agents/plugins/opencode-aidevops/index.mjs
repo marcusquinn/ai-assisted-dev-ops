@@ -45,16 +45,20 @@ import { createSessionTitleFallbackHandler } from "./session-title-fallback.mjs"
 import { createSessionTitleStatusHandler } from "./session-title-status.mjs";
 import { createSessionTitleSuffixHandler } from "./session-title-suffix.mjs";
 import { installPluginConsoleRouter } from "./plugin-console.mjs";
-import { createSubagentEffortHooks, loadTierReasoningPolicies } from "./subagent-effort.mjs";
+import { createSubagentEffortHooks } from "./subagent-effort.mjs";
+import { loadModelRouting } from "./model-routing.mjs";
 import { createSessionContinuationGuard } from "./session-continuation-guard.mjs";
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
+import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
 
 // Existing modules
 import { createTools } from "./tools.mjs";
 import {
   initObservability,
+  getRoutingFeedback,
   handleEvent,
+  recordRoutingDecision,
   recordSubagentCancellationReceipt,
 } from "./observability.mjs";
 import { createSessionStartGreetingGate, createTtsrHooks } from "./ttsr.mjs";
@@ -237,11 +241,19 @@ export async function AidevopsPlugin({ directory, client }) {
   });
 
   // Create hooks from extracted modules
+  const modelRouting = loadModelRouting([
+    process.env.AIDEVOPS_MODEL_ROUTING_TABLE,
+    join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
+    join(AGENTS_DIR, "configs", "model-routing-table.json"),
+  ]);
+  const agentRoutingState = { tiers: new Map(), pinned: new Set() };
   const configHook = createConfigHook({
     agentsDir: AGENTS_DIR,
     workspaceDir: WORKSPACE_DIR,
     pluginDir: PLUGIN_DIR,
     repositoryDir: directory,
+    modelRouting,
+    agentRoutingState,
   });
 
   const continuationGuard = createSessionContinuationGuard({
@@ -264,11 +276,15 @@ export async function AidevopsPlugin({ directory, client }) {
     workspaceDir: WORKSPACE_DIR,
     onSessionIdentity: (sessionId, modelId) => sessionModels.remember(sessionId, modelId),
   });
-  const tierReasoning = loadTierReasoningPolicies([
-    join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
-    join(AGENTS_DIR, "configs", "model-routing-table.json"),
-  ]);
-  const subagentEffortHooks = createSubagentEffortHooks(client, { tierReasoning });
+  const tierReasoning = Object.fromEntries(
+    Object.entries(modelRouting.tiers).map(([tier, route]) => [tier, route.reasoning]),
+  );
+  const subagentEffortHooks = createSubagentEffortHooks(client, {
+    tierReasoning,
+    modelRouting,
+    agentRoutingState,
+    onRoutingDecision: recordRoutingDecision,
+  });
   const shouldInjectGreeting = createSessionStartGreetingGate(client, isHeadless);
   const permissionBroker = createPermissionBroker({ client, isHeadless });
   const compactionContinuation = createCompactionAutoContinueGuard(client, { qualityLog });
@@ -364,6 +380,7 @@ export async function AidevopsPlugin({ directory, client }) {
     client,
   });
   const sessionTitleStatusHandler = createSessionTitleStatusHandler({ isHeadless });
+  const routingFeedbackHandler = createRoutingFeedbackHandler({ client, isHeadless, getFeedback: getRoutingFeedback });
   const sessionTitleFallbackHandler = createSessionTitleFallbackHandler({
     agentsDir: ACTIVE_AGENTS_DIR,
     client,
@@ -388,7 +405,7 @@ export async function AidevopsPlugin({ directory, client }) {
     // Custom tools + pool management
     tool: baseTools,
 
-    // Select the lowest suitable child effort, capped by the parent session.
+    // Record routed request identity and select parent-safe child effort.
     "chat.message": subagentEffortHooks.chatMessage,
     "chat.params": async (input, output) => {
       const { sessionId, modelId } = sessionModelIdentity(input);
@@ -425,6 +442,7 @@ export async function AidevopsPlugin({ directory, client }) {
         Promise.resolve(cancellationReceipt.handleEvent(input)),
         permissionBroker.handleEvent(input).catch((err) => debugEventError("permission broker", err)),
         sessionTitleStatusHandler(input).catch((err) => debugEventError("title status handler", err)),
+        routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),
         sessionTitleSuffixHandler(input).catch((err) => debugEventError("title suffix handler", err)),
         sessionTitleFallbackHandler(input).catch((err) => debugEventError("title fallback handler", err)),
         greetingHandler(input).catch((err) => debugEventError("greeting handler", err)),
