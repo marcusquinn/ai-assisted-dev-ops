@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import assert from "node:assert/strict";
-import {spawnSync} from "node:child_process";
+import {spawn, spawnSync} from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +26,60 @@ const pluginPath = fs.realpathSync(path.join(
   "index.mjs",
 ));
 const pluginUrl = pathToFileURL(pluginPath).href;
+const MAX_ACP_OUTPUT_BYTES = 64 * 1024;
+
+async function assertHealthyAcpStartup({cwd, environment}) {
+  const child = spawn("opencode", ["acp", "--cwd", cwd], {
+    cwd,
+    env: environment,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let outputBytes = 0;
+  let stderr = "";
+  let startupWindowElapsed = false;
+  let failure;
+  let forceKillTimer;
+  let startupTimer;
+
+  const recordOutput = (chunk, captureStderr = false) => {
+    outputBytes += chunk.length;
+    if (captureStderr) stderr += chunk.toString("utf8");
+    if (outputBytes > MAX_ACP_OUTPUT_BYTES && !failure) {
+      failure = new Error("installed OpenCode ACP startup exceeded its output limit");
+      child.kill("SIGKILL");
+    }
+  };
+  child.stdout.on("data", (chunk) => recordOutput(chunk));
+  child.stderr.on("data", (chunk) => recordOutput(chunk, true));
+
+  const result = await new Promise((resolveResult, rejectResult) => {
+    child.once("error", rejectResult);
+    child.once("exit", (code, signal) => {
+      clearTimeout(startupTimer);
+      clearTimeout(forceKillTimer);
+      if (failure) {
+        rejectResult(failure);
+        return;
+      }
+      if (!startupWindowElapsed) {
+        rejectResult(new Error(
+          `installed OpenCode ACP exited before healthy startup (code=${code}, signal=${signal}): ${stderr.trim()}`,
+        ));
+        return;
+      }
+      resolveResult({code, signal});
+    });
+    startupTimer = setTimeout(() => {
+      startupWindowElapsed = true;
+      child.kill("SIGTERM");
+      forceKillTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    }, 2000);
+  });
+  assert.ok(
+    result.signal === "SIGTERM" || result.signal === "SIGKILL" || result.code === 0,
+    `installed OpenCode ACP did not stop cleanly: ${JSON.stringify(result)}`,
+  );
+}
 
 const versionResult = spawnSync("opencode", ["--version"], {
   encoding: "utf8",
@@ -149,8 +203,9 @@ try {
   verifyConversationEffectiveConfig(effectiveConfig, overlay, {pluginUrl});
   assert.equal(JSON.stringify(effectiveConfig).includes("persistent-canary"), false);
   assert.equal(JSON.stringify(effectiveConfig).includes("must-not-load"), false);
+  await assertHealthyAcpStartup({cwd: projectRoot, environment});
   process.stdout.write(
-    `team-interface installed OpenCode ${versionResult.stdout.trim()} boundary canary passed\n`,
+    `team-interface installed OpenCode ${versionResult.stdout.trim()} effective-config and ACP startup canary passed\n`,
   );
 } finally {
   fs.rmSync(root, {recursive: true, force: true});

@@ -1158,80 +1158,16 @@ cmd_tui_launch() {
     return 1
 }
 
-cmd_conversation() {
-    local dry_run=0
-    local launch_dir=""
-    local overlay_path=""
-    local canonical_dir=""
-    local canonical_overlay=""
-    local overlay_digest=""
+run_conversation_session() {
+    local canonical_overlay="$1"
+    local canonical_dir="$2"
+    local opencode_binary="$3"
     local data_dir=""
     local runtime_root=""
     local config_directory=""
     local config_file=""
-    local opencode_binary=""
     local conversation_status=0
-    local -a acp_args=()
     local -a runtime_environment=()
-
-    while (($# > 0)); do
-        local option="$1"
-        case "${option}" in
-        --dir)
-            [[ $# -ge 2 ]] || { print_error "${ERR_DIR_REQUIRES_PATH}"; return 1; }
-            local dir_value="$2"
-            launch_dir="${dir_value}"
-            shift 2
-            ;;
-        --overlay)
-            [[ $# -ge 2 ]] || { print_error "--overlay requires a path"; return 1; }
-            local overlay_value="$2"
-            overlay_path="${overlay_value}"
-            shift 2
-            ;;
-        --dry-run)
-            dry_run=1
-            shift
-            ;;
-        --auto)
-            print_error "Restricted conversation mode rejects --auto"
-            return 1
-            ;;
-        --)
-            print_error "Restricted conversation mode rejects argument passthrough"
-            return 1
-            ;;
-        -h | --help | help)
-            usage
-            return 0
-            ;;
-        *)
-            print_error "Unknown restricted conversation option: ${option}"
-            return 1
-            ;;
-        esac
-    done
-
-    [[ -n "${launch_dir}" ]] || { print_error "Restricted conversation mode requires --dir PATH"; return 1; }
-    [[ -n "${overlay_path}" ]] || { print_error "Restricted conversation mode requires --overlay FILE"; return 1; }
-    reject_conversation_environment || return 1
-    require_opencode_cli || return 1
-    command -v node >/dev/null 2>&1 || { print_error "node not found in PATH"; return 1; }
-    opencode_binary=$(command -v opencode) || return 1
-    canonical_dir=$(canonical_conversation_directory "${launch_dir}") || return 1
-    canonical_overlay=$(canonical_conversation_overlay "${overlay_path}") || return 1
-    overlay_digest=$(validate_conversation_overlay "${canonical_overlay}") || return 1
-    acp_args=(acp --cwd "${canonical_dir}")
-
-    if ((dry_run == 1)); then
-        printf 'cd %q && env -i HOME=%q XDG_CONFIG_HOME=%q XDG_CACHE_HOME=%q XDG_STATE_HOME=%q XDG_DATA_HOME=%q OPENCODE_CONFIG=%q OPENCODE_CONFIG_DIR=%q OPENCODE_DISABLE_AUTOCOMPACT=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_SHARE=1 AIDEVOPS_OPENCODE_ISOLATED_DB=1 AIDEVOPS_SESSION_ORIGIN=conversation AIDEVOPS_TEAM_INTERFACE_OVERLAY=%q %q' \
-            "${canonical_dir}" "<private-home>" "<private-config>" "<private-cache>" \
-            "<private-state>" "<private-data>" "<private-config>/opencode.json" \
-            "<private-config>" "<validated-overlay:${overlay_digest}>" "${opencode_binary}"
-        printf ' %q' "${acp_args[@]}"
-        printf '\n'
-        return 0
-    fi
 
     create_conversation_runtime "${canonical_overlay}" runtime_root || {
         print_error "Could not create the private conversation runtime"
@@ -1294,12 +1230,85 @@ cmd_conversation() {
         trap - EXIT
         return 1
     fi
-    env -i "${runtime_environment[@]}" "${opencode_binary}" "${acp_args[@]}" || conversation_status=$?
+    env -i "${runtime_environment[@]}" "${opencode_binary}" acp --cwd "${canonical_dir}" || conversation_status=$?
     cleanup_conversation_runtime "${runtime_root}" || {
         ((conversation_status != 0)) || conversation_status=1
     }
     trap - EXIT
     return "${conversation_status}"
+}
+
+cmd_conversation() {
+    local dry_run=0
+    local launch_dir=""
+    local overlay_path=""
+    local canonical_dir=""
+    local canonical_overlay=""
+    local overlay_digest=""
+    local opencode_binary=""
+    local -a acp_args=()
+
+    while (($# > 0)); do
+        local option="$1"
+        case "${option}" in
+        --dir)
+            [[ $# -ge 2 ]] || { print_error "${ERR_DIR_REQUIRES_PATH}"; return 1; }
+            local dir_value="$2"
+            launch_dir="${dir_value}"
+            shift 2
+            ;;
+        --overlay)
+            [[ $# -ge 2 ]] || { print_error "--overlay requires a path"; return 1; }
+            local overlay_value="$2"
+            overlay_path="${overlay_value}"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        --auto)
+            print_error "Restricted conversation mode rejects --auto"
+            return 1
+            ;;
+        --)
+            print_error "Restricted conversation mode rejects argument passthrough"
+            return 1
+            ;;
+        -h | --help | help)
+            usage
+            return 0
+            ;;
+        *)
+            print_error "Unknown restricted conversation option: ${option}"
+            return 1
+            ;;
+        esac
+    done
+
+    [[ -n "${launch_dir}" ]] || { print_error "Restricted conversation mode requires --dir PATH"; return 1; }
+    [[ -n "${overlay_path}" ]] || { print_error "Restricted conversation mode requires --overlay FILE"; return 1; }
+    reject_conversation_environment || return 1
+    require_opencode_cli || return 1
+    command -v node >/dev/null 2>&1 || { print_error "node not found in PATH"; return 1; }
+    opencode_binary=$(command -v opencode) || return 1
+    canonical_dir=$(canonical_conversation_directory "${launch_dir}") || return 1
+    canonical_overlay=$(canonical_conversation_overlay "${overlay_path}") || return 1
+    overlay_digest=$(validate_conversation_overlay "${canonical_overlay}") || return 1
+    acp_args=(acp --cwd "${canonical_dir}")
+
+    if ((dry_run == 1)); then
+        printf 'cd %q && env -i HOME=%q XDG_CONFIG_HOME=%q XDG_CACHE_HOME=%q XDG_STATE_HOME=%q XDG_DATA_HOME=%q OPENCODE_CONFIG=%q OPENCODE_CONFIG_DIR=%q OPENCODE_DISABLE_AUTOCOMPACT=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_SHARE=1 AIDEVOPS_OPENCODE_ISOLATED_DB=1 AIDEVOPS_SESSION_ORIGIN=conversation AIDEVOPS_TEAM_INTERFACE_OVERLAY=%q %q' \
+            "${canonical_dir}" "<private-home>" "<private-config>" "<private-cache>" \
+            "<private-state>" "<private-data>" "<private-config>/opencode.json" \
+            "<private-config>" "<validated-overlay:${overlay_digest}>" "${opencode_binary}"
+        printf ' %q' "${acp_args[@]}"
+        printf '\n'
+        return 0
+    fi
+
+    run_conversation_session "${canonical_overlay}" "${canonical_dir}" "${opencode_binary}"
+    return $?
 }
 
 main() {
