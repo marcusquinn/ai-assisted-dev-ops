@@ -33,6 +33,7 @@ SERVER_LOCK_DIR=""
 usage() {
     cat <<'EOF'
 Usage: aidevops opencode [options] [--] [opencode args...]
+       aidevops opencode conversation --overlay FILE --dir PATH [--dry-run]
        aidevops opencode server --dir PATH --port PORT [options]
        aidevops opencode attach URL --dir PATH [options]
        aidevops opencode-desktop [launch options]
@@ -60,10 +61,17 @@ Attach options:
   --session ID         Resume a specific server-owned session
   --dry-run            Print without checking health or starting the TUI
 
+Restricted conversation options:
+  --overlay FILE       Canonical generated team-interface overlay
+  --dir PATH           Verified OpenCode ACP working directory (required)
+  --dry-run            Validate inputs and print a redacted fixed command
+  Arbitrary passthrough, --auto, model overrides, and config/plugin bypasses are rejected.
+
 Examples:
   aidevops opencode
   aidevops opencode --dir ~/Git/aidevops
   aidevops opencode -- --version
+  aidevops opencode conversation --overlay overlay.json --dir ~/Git/aidevops
   aidevops opencode server --dir ~/Git/aidevops --port 49036
   aidevops opencode attach http://127.0.0.1:49036 --dir ~/Git/aidevops
   aidevops opencode-desktop
@@ -205,6 +213,113 @@ require_opencode_cli() {
 reject_server_auth_environment() {
     if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" || -n "${OPENCODE_SERVER_USERNAME:-}" ]]; then
         print_error "Authenticated server mode is not supported by this loopback prototype. Unset OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME."
+        return 1
+    fi
+    return 0
+}
+
+reject_conversation_environment() {
+    local variable=""
+    local value=""
+
+    for variable in \
+        AIDEVOPS_TEAM_INTERFACE_OVERLAY \
+        AIDEVOPS_SIG_MODEL \
+        BUZZ_ACP_MODEL \
+        OPENCODE_CONFIG \
+        OPENCODE_CONFIG_CONTENT \
+        OPENCODE_CONFIG_DIR \
+        OPENCODE_DISABLE_DEFAULT_PLUGINS \
+        OPENCODE_MODEL \
+        OPENCODE_PURE; do
+        value="${!variable:-}"
+        if [[ -n "${value}" ]]; then
+            print_error "Restricted conversation mode rejects inherited ${variable}"
+            return 1
+        fi
+    done
+    reject_server_auth_environment || return 1
+    return 0
+}
+
+canonical_conversation_directory() {
+    local launch_dir="$1"
+    local resolved_dir=""
+
+    if [[ -z "${launch_dir}" || "${launch_dir}" == -* || "${launch_dir}" =~ [[:cntrl:]] ]]; then
+        print_error "Restricted conversation cwd is invalid"
+        return 1
+    fi
+    validate_launch_directory "${launch_dir}" || return 1
+    resolved_dir=$(cd "${launch_dir}" && pwd -P) || return 1
+    if [[ "${resolved_dir}" == "/" || "${resolved_dir}" == "${HOME}" ]]; then
+        print_error "Restricted conversation cwd must be a bounded project directory"
+        return 1
+    fi
+    printf '%s' "${resolved_dir}"
+    return 0
+}
+
+canonical_conversation_overlay() {
+    local overlay_path="$1"
+    local overlay_dir=""
+    local overlay_name=""
+    local resolved_dir=""
+
+    if [[ -z "${overlay_path}" || "${overlay_path}" != /* || "${overlay_path}" =~ [[:cntrl:]] ]]; then
+        print_error "Restricted conversation overlay path must be absolute"
+        return 1
+    fi
+    if [[ ! -f "${overlay_path}" || -L "${overlay_path}" ]]; then
+        print_error "Restricted conversation overlay must be a regular non-symlink file"
+        return 1
+    fi
+    overlay_dir=${overlay_path%/*}
+    overlay_name=${overlay_path##*/}
+    [[ -n "${overlay_dir}" ]] || overlay_dir="/"
+    resolved_dir=$(cd "${overlay_dir}" && pwd -P) || return 1
+    printf '%s/%s' "${resolved_dir%/}" "${overlay_name}"
+    return 0
+}
+
+validate_conversation_overlay() {
+    local overlay_path="$1"
+    local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
+    local overlay_digest=""
+
+    if [[ ! -f "${overlay_script}" ]]; then
+        print_error "Restricted conversation overlay validator is unavailable"
+        return 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        print_error "node not found in PATH"
+        return 1
+    fi
+    if ! overlay_digest=$(node "${overlay_script}" validate --overlay "${overlay_path}" 2>/dev/null); then
+        print_error "Restricted conversation overlay validation failed"
+        return 1
+    fi
+    if [[ ! "${overlay_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+        print_error "Restricted conversation overlay validator returned an invalid digest"
+        return 1
+    fi
+    printf '%s' "${overlay_digest}"
+    return 0
+}
+
+verify_conversation_effective_config() {
+    local overlay_path="$1"
+    local data_dir="$2"
+    local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
+
+    if ! AIDEVOPS_TEAM_INTERFACE_OVERLAY="${overlay_path}" \
+        AIDEVOPS_SESSION_ORIGIN="conversation" \
+        OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
+        OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
+        XDG_DATA_HOME="${data_dir}" \
+        opencode debug config --log-level ERROR 2>/dev/null \
+        | node "${overlay_script}" verify-effective --overlay "${overlay_path}" >/dev/null; then
+        print_error "Effective OpenCode config did not preserve the restricted conversation boundary"
         return 1
     fi
     return 0
@@ -986,9 +1101,99 @@ cmd_tui_launch() {
     return 1
 }
 
+cmd_conversation() {
+    local dry_run=0
+    local launch_dir=""
+    local overlay_path=""
+    local canonical_dir=""
+    local canonical_overlay=""
+    local overlay_digest=""
+    local data_dir=""
+    local -a acp_args=()
+
+    while (($# > 0)); do
+        local option="$1"
+        case "${option}" in
+        --dir)
+            [[ $# -ge 2 ]] || { print_error "${ERR_DIR_REQUIRES_PATH}"; return 1; }
+            local dir_value="$2"
+            launch_dir="${dir_value}"
+            shift 2
+            ;;
+        --overlay)
+            [[ $# -ge 2 ]] || { print_error "--overlay requires a path"; return 1; }
+            local overlay_value="$2"
+            overlay_path="${overlay_value}"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        --auto)
+            print_error "Restricted conversation mode rejects --auto"
+            return 1
+            ;;
+        --)
+            print_error "Restricted conversation mode rejects argument passthrough"
+            return 1
+            ;;
+        -h | --help | help)
+            usage
+            return 0
+            ;;
+        *)
+            print_error "Unknown restricted conversation option: ${option}"
+            return 1
+            ;;
+        esac
+    done
+
+    [[ -n "${launch_dir}" ]] || { print_error "Restricted conversation mode requires --dir PATH"; return 1; }
+    [[ -n "${overlay_path}" ]] || { print_error "Restricted conversation mode requires --overlay FILE"; return 1; }
+    reject_conversation_environment || return 1
+    require_opencode_cli || return 1
+    canonical_dir=$(canonical_conversation_directory "${launch_dir}") || return 1
+    canonical_overlay=$(canonical_conversation_overlay "${overlay_path}") || return 1
+    overlay_digest=$(validate_conversation_overlay "${canonical_overlay}") || return 1
+    data_dir=$(build_session_data_dir "conversation-${overlay_digest#sha256:}")
+    acp_args=(acp --cwd "${canonical_dir}")
+
+    if ((dry_run == 1)); then
+        printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1 AIDEVOPS_SESSION_ORIGIN=conversation AIDEVOPS_TEAM_INTERFACE_OVERLAY=%q OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 opencode' \
+            "${canonical_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}" "<validated-overlay:${overlay_digest}>"
+        printf ' %q' "${acp_args[@]}"
+        printf '\n'
+        return 0
+    fi
+
+    mkdir -p "${data_dir}/opencode" || return 1
+    copy_auth_json "${data_dir}" || return 1
+    prewarm_opencode_data_dir "${data_dir}"
+    verify_conversation_effective_config "${canonical_overlay}" "${data_dir}" || return 1
+
+    cd "${canonical_dir}" || return 1
+    export XDG_DATA_HOME="${data_dir}"
+    export AIDEVOPS_OPENCODE_ISOLATED_DB=1
+    export AIDEVOPS_SESSION_ORIGIN="conversation"
+    export AIDEVOPS_TEAM_INTERFACE_OVERLAY="${canonical_overlay}"
+    export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
+    export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+    exec opencode "${acp_args[@]}"
+    return 1
+}
+
 main() {
     aidevops_init_temp_workspace || { print_error "Could not initialize aidevops temporary workspace"; return 1; }
+    TMP="${TMP:-${TMPDIR}}"
+    TEMP="${TEMP:-${TMPDIR}}"
+    export TMP TEMP
     case "${1:-}" in
+    conversation)
+        shift || true
+        cmd_conversation "$@"
+        return $?
+        ;;
     desktop)
         shift || true
         cmd_desktop "$@"

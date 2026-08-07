@@ -106,6 +106,7 @@ the required notices and preferred credit text.
 - `aidevops gpt56-context [enable|disable|status]` - Keep GPT-5.6 at a 300K advertised context window in OpenCode (enabled by default), so 80% auto-compaction runs near 240K before long-context pricing; disable to use native provider limits
 - `aidevops buzz [status|apply|rollback]` - Inspect or manage Buzz Desktop OpenCode ACP compatibility
 - `~/.aidevops/agents/scripts/team-interface-helper.sh [providers|detect|status|doctor|plan]` - Inspect registered collaboration providers, persist read-only observations, or emit deterministic dry-run plans; no provider-write command is exposed
+- `aidevops opencode conversation --overlay FILE --dir PATH` - Launch fixed-argv OpenCode ACP with a schema-validated ephemeral team-interface overlay and a final read-only capability guard; see `.agents/reference/team-interface-opencode-overlays.md`
 - `aidevops secret` - Manage secrets (gopass encrypted, AI-safe)
 - `aidevops source-access` - Manage exact-path, session-bound source-read approvals signed via sudo
 - `aidevops security` - Full security assessment (posture, secrets, supply chain)

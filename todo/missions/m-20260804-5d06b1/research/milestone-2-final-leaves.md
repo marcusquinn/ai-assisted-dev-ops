@@ -3,8 +3,8 @@
 
 # Milestone 2 final-leaf source review
 
-This focused review preserves the implementation-ready evidence for Feature
-2.4 Matrix normalization and Feature 2.5 restricted OpenCode overlays. The
+This focused review preserves the implementation evidence for Feature 2.4
+Matrix normalization and Feature 2.5 restricted OpenCode overlays. The
 mission-wide architecture remains in [source-review.md](source-review.md).
 
 ## Feature 2.4 refreshed Matrix evidence
@@ -62,3 +62,30 @@ overlays therefore consume roster evidence without mutating persistent config.
   rejects arbitrary passthrough and `--auto`, and supplies only the validated
   overlay context. Persistent `opencode.json` and canonical agent generation
   remain unchanged.
+
+### Feature 2.5 implementation and verification
+
+- `.agents/schemas/team-interface/opencode-launch-overlay-v1.schema.json`,
+  `.agents/plugins/opencode-aidevops/team-interface-overlay-contract.mjs`, and
+  `.agents/scripts/team-interface-opencode-overlay.mjs` implement the closed
+  contract, canonical digests, source binding, deterministic generation, and
+  atomic output.
+- `.agents/plugins/opencode-aidevops/team-interface-context.mjs`,
+  `.agents/plugins/opencode-aidevops/config-safety-guards.mjs`, and
+  `.agents/plugins/opencode-aidevops/config-hook.mjs` inject bounded context,
+  route workload tiers, and apply conversation isolation after every managed
+  configuration mutation.
+- `.agents/scripts/team-interface-opencode-effective-config.mjs` verifies the
+  merged runtime configuration, while
+  `.agents/scripts/opencode-launcher-helper.sh conversation` enforces canonical
+  overlay/cwd inputs and launches fixed `opencode acp --cwd` arguments.
+- Focused overlay, context, source-verification, effective-config, workload,
+  plugin, and launcher tests pass. Broad team-interface, trust, runtime,
+  compatibility, and subagent regressions pass; the plugin suite reports 556
+  passing tests under `umask 0022`, and the launcher suite reports 16 passing
+  cases.
+- Isolated installed-runtime smoke preserves the exact generated descriptor
+  digest in `opencode debug config` and reaches healthy ACP startup until the
+  bounded timeout. No persistent OpenCode configuration is changed.
+- `.agents/reference/team-interface-opencode-overlays.md` documents selection,
+  context propagation, guarantees, launch, verification, and rollback.

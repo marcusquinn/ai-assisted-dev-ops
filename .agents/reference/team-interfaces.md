@@ -8,9 +8,11 @@ adapters, policy brokers, and consumers. Version 1 is defined by
 `schemas/team-interface/core-v1.schema.json` and supports closed `registry` and
 `event` documents. The read-only executable surface is defined by
 `schemas/team-interface/runtime-v1.schema.json` and
-`reference/team-interface-runtime.md`. The existing Matrix bot now uses the
-core event contract and static `adapter.matrix`; direct aidevops and other
-provider runtimes remain separate until their own bounded adapter leaves.
+`reference/team-interface-runtime.md`. Restricted OpenCode conversations use the
+ephemeral descriptor and final plugin boundary in
+`reference/team-interface-opencode-overlays.md`. The existing Matrix bot now
+uses the core event contract and static `adapter.matrix`; direct aidevops and
+other provider runtimes remain separate until their own bounded adapter leaves.
 
 ## Ownership and configuration
 
@@ -21,6 +23,11 @@ selection lives in `~/.config/aidevops/team-interface.json`, using
 only enablement, document paths, registered adapter IDs, settings references,
 and bounded runtime options. Rich provider or team state does not belong in the
 runtime config or `config.jsonc`.
+
+OpenCode conversation overlays are caller-owned, content-addressed, ephemeral
+documents rather than runtime configuration. Their dedicated launcher validates
+the complete effective merged profile before ACP starts and never edits
+persistent OpenCode or team-interface configuration.
 
 The core owns normalized identifiers, capability declarations, resource
 relationships, verified actor context, requested authority, and event

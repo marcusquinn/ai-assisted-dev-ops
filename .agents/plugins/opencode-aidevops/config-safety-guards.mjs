@@ -7,6 +7,11 @@ import { appendFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
+import {
+  conversationPermissions,
+  conversationTools,
+  restrictedConversationAgentMap,
+} from "./team-interface-context.mjs";
 
 const tempDirectories = new Set();
 
@@ -119,6 +124,22 @@ export function enforcePublicTriageIsolation(
   for (const agentName of disabledAgentNames) {
     config.agent[agentName] = { disable: true };
   }
+  return 1;
+}
+
+export function enforceTeamInterfaceConversationIsolation(config, conversation) {
+  if (!conversation) return 0;
+
+  config.tools = conversationTools();
+  config.permission = conversationPermissions();
+  config.mcp = {};
+  config.formatter = false;
+  config.lsp = false;
+  config.share = "disabled";
+  config.snapshot = false;
+  config.subagent_depth = 0;
+  config.default_agent = conversation.overlay.agent.display_name;
+  config.agent = restrictedConversationAgentMap(conversation);
   return 1;
 }
 

@@ -471,7 +471,7 @@ team-interface-helper.sh doctor --provider buzz
 ## Features 2.4 and 2.5 refreshed evidence
 
 See [Milestone 2 final-leaf source review](milestone-2-final-leaves.md) for the
-implemented Matrix boundary and implementation-ready restricted OpenCode evidence.
+implemented Matrix boundary and restricted OpenCode implementation/runtime evidence.
 
 ## Required verification families
 

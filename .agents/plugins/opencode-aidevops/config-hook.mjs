@@ -17,6 +17,7 @@ import { registerApprovedWorkerPermissions } from "./config-worker-permissions.m
 import { registerAgents, registerResearchOnlyAgent } from "./config-agent-profiles.mjs";
 import {
   enforcePublicTriageIsolation,
+  enforceTeamInterfaceConversationIsolation,
   ensureAgentGuard,
   registerManagedDirectoryPermissions,
 } from "./config-safety-guards.mjs";
@@ -29,7 +30,12 @@ import {
 } from "./model-limits.mjs";
 
 export { registerApprovedWorkerPermissions };
-export { registerResearchOnlyAgent, enforcePublicTriageIsolation, registerManagedDirectoryPermissions };
+export {
+  enforcePublicTriageIsolation,
+  enforceTeamInterfaceConversationIsolation,
+  registerManagedDirectoryPermissions,
+  registerResearchOnlyAgent,
+};
 
 /**
  * Shared model definition template for Claude models managed by aidevops.
@@ -263,6 +269,7 @@ function logConfigSummary(counts) {
     [counts.cursor, "Cursor models"],
     [counts.google, "Google models"],
     [counts.claude, "Claude CLI models"],
+    [counts.conversationIsolation, "restricted conversation profile"],
   ];
   const parts = labels
     .filter(([n]) => n > 0)
@@ -289,7 +296,7 @@ function logVersionDriftAsync(pluginDir) {
  * @returns {Function} Config hook
  */
 export function createConfigHook(deps) {
-  const { agentsDir, workspaceDir, pluginDir, repositoryDir } = deps;
+  const { agentsDir, workspaceDir, pluginDir, repositoryDir, conversation } = deps;
 
   /**
    * Modify OpenCode config to register aidevops subagents, MCP servers,
@@ -343,9 +350,23 @@ export function createConfigHook(deps) {
 
     const claude = registerClaudeCliModels(config);
     enforcePublicTriageIsolation(config);
+    const conversationIsolation = enforceTeamInterfaceConversationIsolation(config, conversation);
 
     logConfigSummary(
-      { agents, mcps, agentTools, directories, permissionGrants, poolCleaned, anthropic, openai, cursor, google, claude },
+      {
+        agents,
+        mcps,
+        agentTools,
+        directories,
+        permissionGrants,
+        poolCleaned,
+        anthropic,
+        openai,
+        cursor,
+        google,
+        claude,
+        conversationIsolation,
+      },
     );
     logVersionDriftAsync(pluginDir);
   };

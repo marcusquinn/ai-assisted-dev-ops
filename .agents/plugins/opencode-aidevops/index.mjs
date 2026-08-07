@@ -45,10 +45,19 @@ import { createSessionTitleFallbackHandler } from "./session-title-fallback.mjs"
 import { createSessionTitleStatusHandler } from "./session-title-status.mjs";
 import { createSessionTitleSuffixHandler } from "./session-title-suffix.mjs";
 import { installPluginConsoleRouter } from "./plugin-console.mjs";
-import { createSubagentEffortHooks, loadTierReasoningPolicies } from "./subagent-effort.mjs";
+import {
+  createSubagentEffortHooks,
+  loadTierReasoningPolicies,
+  resolveTierReasoning,
+} from "./subagent-effort.mjs";
 import { createSessionContinuationGuard } from "./session-continuation-guard.mjs";
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
+import {
+  appendConversationSystemContext,
+  applyConversationRootVariant,
+  loadTeamInterfaceConversation,
+} from "./team-interface-context.mjs";
 
 // Existing modules
 import { createTools } from "./tools.mjs";
@@ -181,6 +190,7 @@ installPluginConsoleRouter({
  */
 export async function AidevopsPlugin({ directory, client }) {
   const initializedAtMs = Date.now();
+  const conversation = loadTeamInterfaceConversation(process.env, AGENTS_DIR);
 
   // Initialise LLM observability
   initObservability();
@@ -242,6 +252,7 @@ export async function AidevopsPlugin({ directory, client }) {
     workspaceDir: WORKSPACE_DIR,
     pluginDir: PLUGIN_DIR,
     repositoryDir: directory,
+    conversation,
   });
 
   const continuationGuard = createSessionContinuationGuard({
@@ -327,6 +338,7 @@ export async function AidevopsPlugin({ directory, client }) {
       }
     }
     await ttsrSystemTransformHook(input, output);
+    appendConversationSystemContext(output, conversation);
   };
 
   // Composed messages transform: TTSR enforcement + image size guard (GH#21793).
@@ -393,7 +405,12 @@ export async function AidevopsPlugin({ directory, client }) {
     "chat.params": async (input, output) => {
       const { sessionId, modelId } = sessionModelIdentity(input);
       sessionModels.remember(sessionId, modelId);
-      return subagentEffortHooks.chatParams(input, output);
+      await subagentEffortHooks.chatParams(input, output);
+      return applyConversationRootVariant(input, output, conversation, {
+        client,
+        resolveVariant: resolveTierReasoning,
+        tierReasoning,
+      });
     },
 
     // Quality hooks

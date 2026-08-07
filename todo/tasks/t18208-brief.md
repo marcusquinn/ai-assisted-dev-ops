@@ -64,10 +64,10 @@ writes, implement provider approval, alter persistent user config, or release.
 
 - **Decision:** Skipped
 - **Rationale:** Schema, generator, launcher, final plugin guard, and effective-config/runtime tests must be reviewed as one security boundary.
-- **Status:** `not-created`
+- **Status:** first coherent implementation boundary published as draft PR #29673
 - **Freshness evidence:** Roster generator/schema, OpenCode launcher/config generator, plugin config mutation order, research-only policy, installed OpenCode 1.18.9 behavior, and collision searches were refreshed on 2026-08-06.
-- **Verification run:** Current source was inspected; new overlay and conversation-profile tests are unrun.
-- **Stale-assumption warning:** Recheck installed OpenCode config/ACP behavior and plugin hook contracts if runtime or launcher source advances before coding.
+- **Verification run:** Focused, broad, installed-runtime, lint, and Qlty checks pass; final exact-head PR lifecycle gates remain.
+- **Stale-assumption warning:** Recheck installed OpenCode config/ACP behavior and plugin hook contracts if runtime or launcher source advances before merge.
 
 ## How (Approach)
 
@@ -166,26 +166,28 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 
 ### Recoverability Checkpoint
 
-- [ ] Schema/generator/plugin/launcher focused tests pass.
-- [ ] WIP commit created before real runtime/broad gates: `wip: add restricted OpenCode conversation overlays`.
-- [ ] Effective OpenCode 1.18.9 runtime evidence and independent exact-head review recorded.
+- [x] Schema/generator/plugin/launcher focused tests pass.
+- [x] WIP commit created before real runtime/broad gates: `wip: add restricted OpenCode conversation overlays`.
+- [ ] Effective OpenCode 1.18.9 runtime evidence is recorded; exact-head PR review remains a lifecycle gate.
 
 ### Safety-Stop Recovery
 
 - **Original objective:** Launch canonical agents for provider conversations with bounded context and enforce read-only execution despite persistent write-capable profiles.
 - **Preserved user directions:** Continue through the no-release full loop; never widen authority, persist provider secrets, or modify canonical user config.
 - **Trigger and evidence:** not triggered.
-- **Completed and verified:** roster, launcher, plugin mutation order, tool/permission, variant, context, runtime, and verification surfaces are mapped.
-- **Remaining acceptance criteria:** implementation, effective runtime proof, review/merge, integrated Milestone 2 validation, and parent bookkeeping.
+- **Completed and verified:** schema, generator, source binding, launcher, plugin mutation order, tool/permission isolation, workload variant, bounded context, automated regressions, documentation, and installed-runtime smoke.
+- **Remaining acceptance criteria:** exact-head PR review/merge, integrated Milestone 2 validation, and parent bookkeeping.
 - **Unsafe route not to repeat:** Do not rely on `OPENCODE_CONFIG_CONTENT` alone, select a persistent primary without final denial, permit task/network tools, store model IDs, concatenate raw prompts, or accept arbitrary launch args/env.
-- **Next safe route:** schema-backed immutable descriptor, fixed launcher, and final plugin-enforced deny-by-default profile.
-- **Resume condition:** installed OpenCode/plugin contracts and roster schema still match this brief; no overlapping PR exists.
-- **Owner and status:** interactive mission session; briefed.
+- **Next safe route:** publish the rebased exact head, inspect PR #29673 once, and invoke the managed merge gate once.
+- **Resume condition:** local/remote PR head and current base are verified before the managed push or merge side effect.
+- **Owner and status:** managed headless implementation; verified locally with PR #29673 pending exact-head lifecycle gates.
 
 ### Files Scope
 
 - `.agents/schemas/team-interface/opencode-launch-overlay-v1.schema.json`
+- `.agents/plugins/opencode-aidevops/team-interface-overlay-contract.mjs`
 - `.agents/scripts/team-interface-opencode-overlay.mjs`
+- `.agents/scripts/team-interface-opencode-effective-config.mjs`
 - `.agents/reference/team-interface-opencode-overlays.md`
 - `.agents/scripts/opencode-launcher-helper.sh`
 - `.agents/plugins/opencode-aidevops/team-interface-context.mjs`
@@ -201,10 +203,11 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
 - `todo/tasks/t18208-brief.md`
 - `todo/missions/m-20260804-5d06b1/mission.md`
 - `todo/missions/m-20260804-5d06b1/research/source-review.md`
+- `todo/missions/m-20260804-5d06b1/research/milestone-2-final-leaves.md`
 
 ## Acceptance Criteria
 
-- [ ] A valid canonical roster, selected stable agent, workload tier, and bounded synthetic interface context produce deterministic schema-valid overlay/config digests with no raw message, instruction, credential, path, model/provider ID, shell fragment, arbitrary environment, or authority grant.
+- [x] A valid canonical roster, selected stable agent, workload tier, and bounded synthetic interface context produce deterministic schema-valid overlay/config digests with no raw message, instruction, credential, path, model/provider ID, shell fragment, arbitrary environment, or authority grant.
 
   ```yaml
   verify:
@@ -212,7 +215,7 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
     run: "node .agents/scripts/tests/test-team-interface-opencode-overlay.mjs && node .agents/scripts/tests/test-team-interface-agent-roster.mjs"
   ```
 
-- [ ] The fully merged plugin config for conversation mode leaves exactly credential-filtered local read/grep/glob access and denies Bash, task/subagents, writes, patches, skills, network/web, MCP/custom/unknown tools, managed-directory widening, sharing, snapshots, LSP, and formatter behavior.
+- [x] The fully merged plugin config for conversation mode leaves exactly credential-filtered local read/grep/glob access and denies Bash, task/subagents, writes, patches, skills, network/web, MCP/custom/unknown tools, managed-directory widening, sharing, snapshots, LSP, and formatter behavior.
 
   ```yaml
   verify:
@@ -220,7 +223,7 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
     run: "node --test .agents/plugins/opencode-aidevops/tests/test-team-interface-conversation-profile.mjs && npm test --prefix .agents/plugins/opencode-aidevops"
   ```
 
-- [ ] The dedicated launcher uses fixed OpenCode ACP/conversation argv with verified cwd and validated overlay context, rejects `--auto`, passthrough/env/cwd abuse, and leaves persistent `opencode.json` unchanged.
+- [x] The dedicated launcher uses fixed OpenCode ACP/conversation argv with verified cwd and validated overlay context, rejects `--auto`, passthrough/env/cwd abuse, and leaves persistent `opencode.json` unchanged.
 
   ```yaml
   verify:
@@ -228,13 +231,35 @@ python3 -m py_compile .agents/scripts/team-interface-agent-roster.py
     run: "bash .agents/scripts/tests/test-opencode-launcher-helper.sh && bash .agents/scripts/tests/test-opencode-server-launcher.sh"
   ```
 
-- [ ] All three workload tiers resolve at root-session runtime without persisting model IDs; unknown/digest-mismatched/duplicate agents and plugin/runtime incompatibility fail closed, including an installed OpenCode effective-config/ACP smoke.
+- [x] All three workload tiers resolve at root-session runtime without persisting model IDs; unknown/digest-mismatched/duplicate agents and plugin/runtime incompatibility fail closed, including an installed OpenCode effective-config/ACP smoke.
 
   ```yaml
   verify:
     method: bash
     run: "bash .agents/scripts/tests/test-canonical-model-tiers.sh && bash .agents/scripts/tests/test-opencode-subagent-runtime-guards.sh"
   ```
+
+## Completion Evidence
+
+- **Pull request:** [#29673](https://github.com/marcusquinn/aidevops/pull/29673)
+- **Implementation:** the closed schema, canonical contract/generator, bounded
+  plugin context, workload routing, final config isolation, effective-config
+  verifier, and fixed-argv launcher are implemented in the scoped paths above.
+- **Focused verification:** overlay, source-binding, plugin conversation-profile,
+  launcher, model-tier, discovery, subagent-runtime, and server-launcher suites
+  pass; the launcher suite reports 16 passing cases.
+- **Broad verification:** team-interface, app-team, Buzz, Matrix,
+  compatibility, core, reconciliation, runtime, and trust suites pass. The full
+  plugin suite reports 556 passing tests under `umask 0022`.
+- **Runtime verification:** isolated OpenCode 1.18.9 `debug config` preserved
+  the exact generated descriptor digest, and ACP reached healthy startup until
+  the bounded timeout without changing persistent user configuration.
+- **Quality:** JavaScript/Bash/Python syntax checks, ShellCheck, secretlint,
+  Markdown lint, and changed-file lint pass. Qlty reports zero smells in new
+  modules and a regression delta of -1.
+- **Environment note:** `bun` is unavailable on the host. The first push used
+  the repository's narrow `AIDEVOPS_PREPUSH_REPO_VERIFY=0` bypass only after the
+  relevant checks above passed.
 
 ## Context & Decisions
 
