@@ -57,6 +57,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../pulse-dispatch-engine.sh
 source "${SCRIPT_DIR}/pulse-dispatch-engine.sh"
 
+# Keep loop tests isolated from live API budget evidence. The dedicated budget
+# gate case below overrides this helper to verify the stop path explicitly.
+_dispatch_graphql_budget_allows_next() {
+	return 0
+}
+
 # =============================================================================
 # Test 1: _dispatch_max_compute_parallel honours DISPATCH_MAX_PARALLEL
 # =============================================================================
@@ -433,7 +439,7 @@ test_parallel_loop_graphql_budget_aborts() {
 		return 0
 	}
 	# shellcheck disable=SC2317  # called via name resolution from loop
-	is_graphql_budget_sufficient() {
+	_dispatch_graphql_budget_allows_next() {
 		return 1
 	}
 
@@ -449,7 +455,10 @@ test_parallel_loop_graphql_budget_aborts() {
 	local result
 	result=$(_dispatch_max_loop "$candidate_file" 10 10 "test_user" 4 "$outcomes_file")
 	rm -f "$candidate_file" "$outcomes_file"
-	unset -f is_graphql_budget_sufficient
+	# Restore the default test isolation stub for later loop cases.
+	_dispatch_graphql_budget_allows_next() {
+		return 0
+	}
 
 	if [[ "$result" == "0 1" ]]; then
 		print_result "parallel_loop: GraphQL budget gate aborts before launch" 0

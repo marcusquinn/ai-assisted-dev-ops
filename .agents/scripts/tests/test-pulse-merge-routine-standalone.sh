@@ -515,6 +515,19 @@ else
 		"harness rc=${budget_rc}, output=${budget_output}"
 fi
 
+if grep -q 'pulse_rest_core_priority_allows progress' "$ROUTINE_FILE"; then
+	pass "17b: merge routine uses REST progress priority instead of the optional-work reserve"
+else
+	fail "17b: merge routine uses REST progress priority instead of the optional-work reserve"
+fi
+
+if grep -qF 'Known REST-core progress floor reached' "$ROUTINE_FILE" &&
+	grep -qF 'REST-core quota evidence unavailable' "$ROUTINE_FILE"; then
+	pass "17c: merge routine distinguishes known REST floor from unavailable evidence"
+else
+	fail "17c: merge routine distinguishes known REST floor from unavailable evidence"
+fi
+
 printf '\n=== Standalone post-merge provider regression guards ===\n'
 
 SOURCE_CHAIN_TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/pmr-source-chain-home-XXXXXX")

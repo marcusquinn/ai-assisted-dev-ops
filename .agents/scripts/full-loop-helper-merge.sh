@@ -28,6 +28,7 @@
 [[ -n "${_FULL_LOOP_MERGE_LIB_LOADED:-}" ]] && return 0
 _FULL_LOOP_MERGE_LIB_LOADED=1
 FULL_LOOP_MERGE_SUBJECT_FLAG="--subject"
+FULL_LOOP_MERGE_BODY_FILE_FLAG="--body-file"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -196,6 +197,7 @@ _merge_try_interactive_admin_auto_fallback() {
 	local merge_output="$4"
 	local expected_head_sha="$5"
 	local squash_subject="${6:-}"
+	local merge_body_file="${7:-}"
 
 	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo" ]] || return 1
 	! _merge_is_headless_session || return 1
@@ -208,6 +210,7 @@ _merge_try_interactive_admin_auto_fallback() {
 	print_info "Auto-merge is blocked only by review-required branch policy/self-approval; interactive maintainer session is using --admin merge after gates passed."
 	local subject_flags=()
 	[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
+	[[ -n "$merge_body_file" ]] && subject_flags+=("$FULL_LOOP_MERGE_BODY_FILE_FLAG" "$merge_body_file")
 	if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$expected_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
 		print_success "PR #${pr_number} merged with interactive --admin fallback"
 		_signal_admin_merge_fallback "$pr_number" "$repo" "$merge_method" "$merge_output"
@@ -730,7 +733,7 @@ _merge_guard_prospective_todo() (
 # limited. The REST endpoint still enforces branch protection and mergeability;
 # failures remain failures.
 #
-# Args: pr_number repo merge_method expected_head_sha [squash_subject]
+# Args: pr_number repo merge_method expected_head_sha [squash_subject] [merge_body_file]
 # Returns: 0 = merged, 1 = REST merge failed
 _merge_rest_fallback() {
 	local pr_number="$1"
@@ -738,6 +741,7 @@ _merge_rest_fallback() {
 	local merge_method="$3"
 	local expected_head_sha="$4"
 	local squash_subject="${5:-}"
+	local merge_body_file="${6:-}"
 	local rest_method="${merge_method#--}"
 	local rest_out="" rest_rc=0
 
@@ -757,6 +761,7 @@ _merge_rest_fallback() {
 	print_info "GraphQL rate limit blocked gh pr merge; retrying via REST pull merge endpoint with verified head SHA ${expected_head_sha}..."
 	local rest_args=(-f "sha=${expected_head_sha}" -f "merge_method=${rest_method}")
 	[[ -n "$squash_subject" ]] && rest_args+=(-f "commit_title=${squash_subject}")
+	[[ -n "$merge_body_file" ]] && rest_args+=(-F "commit_message=@${merge_body_file}")
 	if rest_out=$(gh api -X PUT "repos/${repo}/pulls/${pr_number}/merge" \
 		${rest_args[@]+"${rest_args[@]}"} 2>&1); then
 		rest_rc=0
@@ -787,7 +792,7 @@ _merge_rest_fallback() {
 # Bash 3.2 note: `"${arr[@]}"` raises "unbound variable" under set -u when the
 # array is empty. The `${arr[@]+"${arr[@]}"}` form expands to zero words safely.
 #
-# Args: pr_number repo merge_method has_admin has_auto
+# Args: pr_number repo merge_method has_admin has_auto [merge_body_file]
 # Returns: 0 = merged or queued, 1 = failed
 _merge_resolve_match_head() {
 	local pr_number="$1"
@@ -907,19 +912,58 @@ _merge_resolve_subject_for_method() {
 	return $?
 }
 
+_merge_describe_flags() {
+	local merge_method="$1"
+	local has_admin="$2"
+	local has_auto="$3"
+	local squash_subject="$4"
+	local merge_body_file="$5"
+	local merge_desc="$merge_method"
+	[[ "$has_admin" -eq 1 ]] && merge_desc+=" --admin"
+	[[ "$has_auto" -eq 1 ]] && merge_desc+=" --auto"
+	[[ -n "$squash_subject" ]] && merge_desc+=" ${FULL_LOOP_MERGE_SUBJECT_FLAG} <validated>"
+	[[ -n "$merge_body_file" ]] && merge_desc+=" ${FULL_LOOP_MERGE_BODY_FILE_FLAG} <validated>"
+	printf '%s\n' "$merge_desc"
+	return 0
+}
+
+_merge_snapshot_body_file() {
+	local source_file="$1"
+	local temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local snapshot_file=""
+	[[ -f "$source_file" && -r "$source_file" ]] || {
+		print_error "Merge body file changed or became unreadable before transport"
+		return 1
+	}
+	(umask 077 && mkdir -p "$temp_dir") || return 1
+	snapshot_file=$(umask 077 && mktemp "${temp_dir%/}/full-loop-merge-body.XXXXXX") || return 1
+	if ! cp -- "$source_file" "$snapshot_file"; then
+		rm -f "$snapshot_file"
+		return 1
+	fi
+	printf '%s\n' "$snapshot_file"
+	return 0
+}
+
+_merge_remove_body_snapshot() {
+	local snapshot_file="$1"
+	[[ -z "$snapshot_file" ]] || rm -f "$snapshot_file"
+	return 0
+}
+
 _merge_execute() {
 	local pr_number="$1" repo="$2" merge_method="$3"
 	local has_admin="$4" has_auto="$5" squash_subject=""
+	local merge_body_file="${6:-}"
 	squash_subject=$(_merge_resolve_subject_for_method "$pr_number" "$repo" "$merge_method") || return 1
-
-	# Reconstruct flags array from boolean sentinels (avoids passing arrays across function calls).
 	local merge_flags=()
 	[[ "$has_admin" -eq 1 ]] && merge_flags+=("--admin")
 	[[ "$has_auto" -eq 1 ]] && merge_flags+=("--auto")
 	[[ -n "$squash_subject" ]] && merge_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
+	[[ -n "$merge_body_file" ]] && merge_flags+=("$FULL_LOOP_MERGE_BODY_FILE_FLAG" "$merge_body_file")
 
-	local merge_desc="$merge_method"
-	[[ ${#merge_flags[@]} -gt 0 ]] && merge_desc+=" ${merge_flags[*]}"
+	local merge_desc=""
+	merge_desc=$(_merge_describe_flags "$merge_method" "$has_admin" "$has_auto" "$squash_subject" "$merge_body_file") || return 1
 	print_info "Merging PR #${pr_number} in ${repo} (${merge_desc})..."
 
 	local match_head_sha=""
@@ -965,11 +1009,11 @@ ${_merge_retry_out}"
 		# caller reached the merge execution stage (cmd_merge runs review-bot-gate
 		# first). Do not turn --auto into an immediate REST merge.
 		if [[ $has_auto -eq 0 ]] && _merge_output_is_graphql_rate_limit "$_merge_out"; then
-			_merge_rest_fallback "$pr_number" "$repo" "$merge_method" "$match_head_sha" "$squash_subject" && return 0
+			_merge_rest_fallback "$pr_number" "$repo" "$merge_method" "$match_head_sha" "$squash_subject" "$merge_body_file" && return 0
 			return 1
 		elif [[ $has_admin -eq 0 && $has_auto -eq 1 ]]; then
 			local auto_admin_rc=0
-			_merge_try_interactive_admin_auto_fallback "$pr_number" "$repo" "$merge_method" "$_merge_out" "$match_head_sha" "$squash_subject" || auto_admin_rc=$?
+			_merge_try_interactive_admin_auto_fallback "$pr_number" "$repo" "$merge_method" "$_merge_out" "$match_head_sha" "$squash_subject" "$merge_body_file" || auto_admin_rc=$?
 			[[ "$auto_admin_rc" -eq 0 ]] && return 0
 			[[ "$auto_admin_rc" -eq 2 ]] && return 1
 			print_error "Merge failed for PR #${pr_number}"
@@ -981,6 +1025,7 @@ ${_merge_retry_out}"
 			print_info "Branch protection blocked plain merge; retrying with --admin (workers share the maintainer's gh auth per GH#18538)..."
 			local subject_flags=()
 			[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
+			[[ -n "$merge_body_file" ]] && subject_flags+=("$FULL_LOOP_MERGE_BODY_FILE_FLAG" "$merge_body_file")
 			if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$match_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
 				print_success "PR #${pr_number} merged with --admin fallback"
 				# t2247: Signal that admin-merge fallback was used — three artifacts:
@@ -1580,46 +1625,58 @@ _merge_finalize_post_merge() {
 # Single command that replaces the multi-step protocol (wait + merge).
 # Workers call this instead of bare `gh pr merge`.
 #
-# Usage: full-loop-helper.sh merge <PR_NUMBER> [REPO] [--squash|--merge|--rebase] [--admin] [--auto]
+# Usage: full-loop-helper.sh merge <PR_NUMBER> [REPO] [--squash|--merge|--rebase] [--admin] [--auto] [--body-file PATH]
 #   --admin  pass --admin to gh pr merge (GH#18731 — owner-only bypass of
 #            branch protection for self-authored PRs on personal-account
 #            repos; skips the error-retry path since intent is explicit)
 #   --auto   pass --auto to gh pr merge (GH#18731 — queues auto-merge to
 #            run when required checks pass, rather than merging now)
+#   --body-file pass an exact caller-supplied merge commit body through every
+#               merge transport; the path must name a readable regular file
 # Note: --admin and --auto are mutually exclusive at the gh CLI level
 # (GH#19310 / t2141). When both are passed, --admin wins (it already implies
 # "merge now", so --auto adds no value); --auto is dropped silently with an
 # informational message rather than failing the merge.
 # Exit codes: 0 = merged (or queued, with --auto), 1 = gate failed or merge failed
-cmd_merge() {
-	local pr_number="${1:-}"
-	local repo=""
-	local merge_method="--squash"
-	local has_admin=0
-	local has_auto=0
-
-	if [[ -z "$pr_number" ]]; then
-		print_error "Usage: full-loop-helper.sh merge <PR_NUMBER> [REPO] [--squash|--merge|--rebase] [--admin] [--auto]"
-		return 1
-	fi
-	shift
-
-	# Parse optional repo, merge method, and gh pass-through flags.
-	# --admin / --auto (GH#18731) pass straight through to `gh pr merge`.
-	for arg in "$@"; do
+_merge_parse_command_args() {
+	FULL_LOOP_MERGE_PARSED_REPO=""
+	FULL_LOOP_MERGE_PARSED_METHOD="--squash"
+	FULL_LOOP_MERGE_PARSED_ADMIN=0
+	FULL_LOOP_MERGE_PARSED_AUTO=0
+	FULL_LOOP_MERGE_PARSED_BODY_FILE=""
+	local arg=""
+	while [[ $# -gt 0 ]]; do
+		arg="$1"
+		shift
 		case "$arg" in
 		--squash | --merge | --rebase)
-			merge_method="$arg"
+			FULL_LOOP_MERGE_PARSED_METHOD="$arg"
 			;;
 		--admin)
-			has_admin=1
+			FULL_LOOP_MERGE_PARSED_ADMIN=1
 			;;
 		--auto)
-			has_auto=1
+			FULL_LOOP_MERGE_PARSED_AUTO=1
+			;;
+		"$FULL_LOOP_MERGE_BODY_FILE_FLAG")
+			if [[ $# -eq 0 || "$1" == -* || -n "$FULL_LOOP_MERGE_PARSED_BODY_FILE" ]]; then
+				print_error "--body-file requires exactly one path"
+				[[ $# -gt 0 && "$1" == -* ]] && print_error "Use --body-file=PATH for filenames beginning with a hyphen"
+				return 1
+			fi
+			FULL_LOOP_MERGE_PARSED_BODY_FILE="$1"
+			shift
+			;;
+		--body-file=*)
+			if [[ -n "$FULL_LOOP_MERGE_PARSED_BODY_FILE" || -z "${arg#--body-file=}" ]]; then
+				print_error "--body-file requires exactly one path"
+				return 1
+			fi
+			FULL_LOOP_MERGE_PARSED_BODY_FILE="${arg#--body-file=}"
 			;;
 		*)
-			if [[ -z "$repo" ]]; then
-				repo="$arg"
+			if [[ -z "$FULL_LOOP_MERGE_PARSED_REPO" ]]; then
+				FULL_LOOP_MERGE_PARSED_REPO="$arg"
 			else
 				print_error "Unknown argument: $arg"
 				return 1
@@ -1627,6 +1684,31 @@ cmd_merge() {
 			;;
 		esac
 	done
+
+	if [[ -n "$FULL_LOOP_MERGE_PARSED_BODY_FILE" &&
+		(! -f "$FULL_LOOP_MERGE_PARSED_BODY_FILE" || ! -r "$FULL_LOOP_MERGE_PARSED_BODY_FILE") ]]; then
+		print_error "Merge body file must be a readable regular file: ${FULL_LOOP_MERGE_PARSED_BODY_FILE}"
+		return 1
+	fi
+	return 0
+}
+
+cmd_merge() {
+	local pr_number="${1:-}"
+	if [[ -z "$pr_number" ]]; then
+		print_error "Usage: full-loop-helper.sh merge <PR_NUMBER> [REPO] [--squash|--merge|--rebase] [--admin] [--auto] [--body-file PATH]"
+		return 1
+	fi
+	shift
+
+	# Parse optional repo, merge method, and gh pass-through flags.
+	# --admin / --auto (GH#18731) pass straight through to `gh pr merge`.
+	_merge_parse_command_args "$@" || return 1
+	local repo="$FULL_LOOP_MERGE_PARSED_REPO"
+	local merge_method="$FULL_LOOP_MERGE_PARSED_METHOD"
+	local has_admin="$FULL_LOOP_MERGE_PARSED_ADMIN"
+	local has_auto="$FULL_LOOP_MERGE_PARSED_AUTO"
+	local merge_body_file="$FULL_LOOP_MERGE_PARSED_BODY_FILE"
 
 	# GH#19310 (t2141): `gh pr merge` rejects --admin and --auto together with:
 	#   "specify only one of `--auto`, `--disable-auto`, or `--admin`"
@@ -1660,13 +1742,21 @@ cmd_merge() {
 			_canonical_dir=$(_merge_current_canonical_dir_for_cleanup "$_cleanup_worktree" 2>/dev/null || true)
 		fi
 	fi
+	local _merge_body_snapshot=""
+	if [[ -n "$merge_body_file" ]]; then
+		_merge_body_snapshot=$(_merge_snapshot_body_file "$merge_body_file") || return 1
+		merge_body_file="$_merge_body_snapshot"
+	fi
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base
 	# branch disappears; retargeting to the default branch prevents this.
 	# (t2412 / GH#20005)
 	_retarget_stacked_children_interactive "$pr_number" "$repo"
 
-	_merge_execute "$pr_number" "$repo" "$merge_method" "$has_admin" "$has_auto" || return 1
+	local _merge_execute_rc=0
+	_merge_execute "$pr_number" "$repo" "$merge_method" "$has_admin" "$has_auto" "$merge_body_file" || _merge_execute_rc=$?
+	_merge_remove_body_snapshot "$_merge_body_snapshot"
+	[[ "$_merge_execute_rc" -eq 0 ]] || return 1
 	if ! _merge_verify_completed_state "$pr_number" "$repo"; then
 		if [[ "$has_auto" -eq 1 ]]; then
 			print_info "LIFECYCLE_STATE=REMOTE_VERIFIED"

@@ -385,6 +385,18 @@ else
 fi
 
 _reset_log
+if AIDEVOPS_HEADLESS=1 "$SHIM_RUN" pr merge 789 --repo external/repo --squash --body "uninstigated" 2>"$TMP/guard-merge.err"; then
+	_fail "headless pr merge guard" "write unexpectedly passed"
+else
+	argv=$(_read_argv)
+	if [[ -z "$argv" ]] && grep -q "external-write-guard" "$TMP/guard-merge.err"; then
+		_pass "headless pr merge to contributor repo is blocked before gh exec"
+	else
+		_fail "headless pr merge guard" "argv: $argv err: $(cat "$TMP/guard-merge.err" 2>/dev/null || true)"
+	fi
+fi
+
+_reset_log
 if AIDEVOPS_SESSION_ORIGIN=pulse "$SHIM_RUN" pr comment 456 --repo external/repo --body "uninstigated" 2>"$TMP/guard-pr.err"; then
 	_fail "headless pr comment guard" "write unexpectedly passed"
 else
@@ -434,6 +446,17 @@ if [[ "$argv" == *"<!-- aidevops:sig -->"* ]]; then
 	_pass "explicit per-repo headless allowance permits normal signature handling"
 else
 	_fail "explicit headless external allowance" "argv: $argv"
+fi
+
+_reset_log
+AIDEVOPS_HEADLESS=1 AIDEVOPS_USER_INSTIGATED_EXTERNAL_GH_WRITE=external/repo "$SHIM_RUN" \
+	pr merge 456 --repo external/repo --squash --body "allowed merge" 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == *$'pr\nmerge\n456'* && "$argv" == *"allowed merge"* &&
+	"$argv" != *"<!-- aidevops:sig -->"* ]]; then
+	_pass "explicit headless allowance permits unsigned pr merge transport"
+else
+	_fail "explicit headless pr merge allowance" "argv: $argv"
 fi
 
 # =============================================================================

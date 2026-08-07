@@ -228,6 +228,8 @@ Verify it posted: `gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --jq '[.[
 full-loop-helper.sh merge "$PR_NUMBER" "$REPO"
 ```
 
+When the exact squash commit body is itself audited evidence, such as a release-aggregation signature and terminal trailer block, write that complete body to a regular file and pass `--body-file "$MERGE_BODY_FILE"`. The wrapper validates the file before remote mutation and preserves it across normal, admin-fallback, and REST-fallback merge transports; do not recreate the body inline or call `gh pr merge` directly.
+
 If the merge command reports that required checks are pending, do not run raw `gh pr checks --watch` or replay unchanged snapshots. Wait through the delta-aware exact-head path, then rerun `merge` only after terminal success:
 
 ```bash

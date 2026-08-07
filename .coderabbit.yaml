@@ -30,8 +30,9 @@ reviews:
   # - auto_incremental_review: keep enabled so pushes get reviewed, but the
   #   pause threshold above limits how many times per PR
   # - ignore_title_keywords: skip WIP/draft-like PRs that aren't ready
-  # - ignore_usernames: skip bot-authored PRs (dependabot, renovate) that
-  #   have their own security review pipelines
+  # Dependency-update bots intentionally remain reviewable. GitHub reports
+  # their PR author association as CONTRIBUTOR, so the GH#17671 trust boundary
+  # requires settled review evidence and cannot honor an author-ignore rule.
   auto_review:
     enabled: true
     drafts: false
@@ -41,9 +42,6 @@ reviews:
       - "WIP"
       - "DO NOT REVIEW"
       - "[skip review]"
-    ignore_usernames:
-      - "dependabot[bot]"
-      - "renovate[bot]"
     # GH#17671 post-mortem: external-contributor PRs must always be reviewed,
     # even when rate-limited. GH#17904: removed "external-contributor" positive
     # label that was inadvertently disabling internal PR reviews (positive-only

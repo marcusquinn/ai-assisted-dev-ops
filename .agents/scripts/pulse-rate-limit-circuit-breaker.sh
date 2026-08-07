@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# pulse-rate-limit-circuit-breaker.sh — Pulse-level circuit breaker for GraphQL rate-limit budget (t2690, GH#20310)
+# pulse-rate-limit-circuit-breaker.sh — Pulse GraphQL breaker and REST priority budget (t2690, GH#20310, GH#29742)
 #
 # Proactive defence: pauses worker dispatch when the GitHub GraphQL rate-limit
 # budget is exhausted or nearly exhausted. Without this, the pulse keeps spawning
@@ -15,15 +15,16 @@
 #
 # Subcommands:
 #   check   — exit 0 if budget is sufficient (dispatch may proceed),
-#             exit 1 if tripped (dispatch should be deferred),
-#             exit 2 on API error (fail-open: dispatch proceeds with warning)
+#             exit 1 if tripped or REST evidence blocks dispatch,
+#             exit 2 when GraphQL is unavailable after REST authorizes fail-open
 #   status  — print human-readable status to stdout (for `aidevops status`)
 #   help    — usage information
 #
 # Environment overrides:
 #   AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD — fraction of total budget below
 #     which the breaker trips (default 0.05 = 5% = 250/5000). Set to 0 to
-#     disable entirely. Tuned as an emergency floor (t2896): the previous
+#     disable the GraphQL check; REST priority gating remains active. Tuned as
+#     an emergency floor (t2896): the previous
 #     0.30 raise (t2744) was justified to "preserve headroom for in-flight
 #     reads", but t2689 shipped read-side REST fallback after t2744 — reads
 #     now route through the 5000/hr REST core pool when GraphQL is low.
@@ -49,7 +50,8 @@
 # Multi-runner: concurrent local runners share a short-lived, auth-scoped rate
 # snapshot and single-flight probe. Remote runners retain independent local state.
 #
-# Cost: `gh api rate_limit` is a free endpoint (not counted against quotas).
+# Cost: `gh api rate_limit` is free. The authoritative REST `user` probe costs
+# at most one core request per cache TTL across local concurrent runners.
 
 set -euo pipefail
 
@@ -90,6 +92,14 @@ _CIRCUIT_BREAKER_STATE_FILE="${HOME}/.aidevops/logs/pulse-graphql-circuit-breake
 _CB_RL_CACHE_FILE="${AIDEVOPS_PULSE_RATE_LIMIT_CACHE:-${HOME}/.aidevops/cache/pulse-graphql-rate-limit.json}"
 _CB_RL_CACHE_TTL="${AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL:-20}"
 _CB_RL_MODE_CACHED_ONLY="cached-only"
+
+# REST-core observations deliberately use a separate cache: the /rate_limit
+# projection can describe a different principal from the one serving a routed
+# REST request. A response header is authoritative for the request principal.
+_CB_REST_CORE_CACHE_FILE="${AIDEVOPS_PULSE_REST_CORE_CACHE:-${HOME}/.aidevops/cache/pulse-rest-core.json}"
+_CB_REST_CORE_PROBE_TTL="${AIDEVOPS_PULSE_REST_CORE_PROBE_TTL:-20}"
+_CB_REST_CORE_RESOURCE="core"
+_CB_REST_CORE_UNKNOWN="unknown"
 
 # Log prefix for all messages from this module.
 _CB_RL_LOG_PREFIX="[circuit-breaker-rl]"
@@ -155,6 +165,319 @@ _cb_rate_limit_json() {
 }
 
 #######################################
+# Probe REST core using response headers from the active gh principal.
+#
+# Stdout: the final HTTP response block, including headers. `-i` is essential:
+# rate_limit JSON is a projection and can identify a different principal.
+#######################################
+_cb_rest_core_probe() {
+	_cb_gh_read gh api -i user
+	return $?
+}
+
+#######################################
+# Extract one response-header value from the final HTTP response block.
+#######################################
+_cb_rest_core_header() {
+	local response="$1"
+	local name="$2"
+	printf '%s\n' "$response" | awk -v wanted="$name" '
+		BEGIN { IGNORECASE=1 }
+		/^HTTP\// { value=""; next }
+		{
+			line=$0
+			sub(/\r$/, "", line)
+			if (tolower(line) ~ "^" tolower(wanted) ":[[:space:]]*") {
+				sub(/^[^:]*:[[:space:]]*/, "", line)
+				value=line
+			}
+		}
+		END { print value }
+	'
+	return 0
+}
+
+#######################################
+# Return normalized REST-core priority bounds.
+#
+# Stdout: "<soft-cap> <hard-floor> <window-seconds>".
+#######################################
+_cb_rest_core_bounds() {
+	local soft_cap="${AIDEVOPS_PULSE_REST_CORE_RESERVE:-${AIDEVOPS_PULSE_REST_DISPATCH_MIN_CORE_REMAINING:-500}}"
+	local hard_floor="${AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR:-100}"
+	local window_seconds="${AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS:-3600}"
+	[[ "$soft_cap" =~ ^[0-9]+$ ]] || soft_cap=500
+	[[ "$hard_floor" =~ ^[0-9]+$ ]] || hard_floor=100
+	[[ "$window_seconds" =~ ^[1-9][0-9]*$ ]] || window_seconds=3600
+	if [[ "$soft_cap" -eq 0 ]]; then
+		hard_floor=0
+	elif [[ "$hard_floor" -gt "$soft_cap" ]]; then
+		hard_floor="$soft_cap"
+	fi
+	printf '%s %s %s\n' "$soft_cap" "$hard_floor" "$window_seconds"
+	return 0
+}
+
+#######################################
+# Compute the adaptive REST-core soft threshold for a reset epoch.
+#
+# Args:
+#   $1 - reset epoch
+#   $2 - current epoch
+#
+# Stdout: "<adaptive-threshold> <soft-cap> <hard-floor>".
+#######################################
+_cb_rest_core_thresholds() {
+	local reset_epoch="$1"
+	local now_epoch="$2"
+	local soft_cap
+	local hard_floor
+	local window_seconds
+	read -r soft_cap hard_floor window_seconds < <(_cb_rest_core_bounds)
+	[[ "$reset_epoch" =~ ^[0-9]+$ ]] || return 1
+	[[ "$now_epoch" =~ ^[0-9]+$ ]] || return 1
+	if [[ "$soft_cap" -eq 0 ]]; then
+		printf '0 0 0\n'
+		return 0
+	fi
+
+	local seconds_until_reset=0
+	if [[ "$reset_epoch" -gt "$now_epoch" ]]; then
+		seconds_until_reset=$((reset_epoch - now_epoch))
+	fi
+	[[ "$seconds_until_reset" -le "$window_seconds" ]] || seconds_until_reset="$window_seconds"
+
+	local reserve_span=$((soft_cap - hard_floor))
+	local adaptive_threshold=$((hard_floor + (reserve_span * seconds_until_reset + window_seconds - 1) / window_seconds))
+	[[ "$adaptive_threshold" -ge "$hard_floor" ]] || adaptive_threshold="$hard_floor"
+	[[ "$adaptive_threshold" -le "$soft_cap" ]] || adaptive_threshold="$soft_cap"
+	printf '%s %s %s\n' "$adaptive_threshold" "$soft_cap" "$hard_floor"
+	return 0
+}
+
+#######################################
+# Read an authoritative REST-core observation from cache or response headers.
+#
+# Stdout: "<remaining> <limit> <reset-epoch>".
+# Returns: 0 on valid evidence; 2 on unavailable or malformed evidence.
+# Cached observations are never used past their TTL or GitHub reset epoch.
+#######################################
+_cb_rest_core_observation() {
+	local ttl="$_CB_REST_CORE_PROBE_TTL"
+	local now observed=0 remaining limit reset resource
+	[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=20
+	now=$(date +%s 2>/dev/null) || now=0
+	[[ "$now" =~ ^[0-9]+$ ]] || now=0
+
+	if [[ -f "$_CB_REST_CORE_CACHE_FILE" ]]; then
+		read -r observed remaining limit reset resource < <(jq -r --arg unknown "$_CB_REST_CORE_UNKNOWN" '[.observed // 0, .remaining // $unknown, .limit // $unknown, .reset // 0, .resource // $unknown] | @tsv' "$_CB_REST_CORE_CACHE_FILE" 2>/dev/null) || true
+		if [[ "$observed" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ && "$limit" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ &&
+			"$resource" == "$_CB_REST_CORE_RESOURCE" && "$now" -ge "$observed" && "$now" -lt "$reset" ]]; then
+			local cache_age=$((now - observed))
+			if [[ "$cache_age" -le "$ttl" ]]; then
+				printf '%s %s %s\n' "$remaining" "$limit" "$reset"
+				return 0
+			fi
+		fi
+	fi
+
+	local response
+	response=$(_cb_rest_core_probe) || return 2
+	remaining=$(_cb_rest_core_header "$response" "X-RateLimit-Remaining")
+	limit=$(_cb_rest_core_header "$response" "X-RateLimit-Limit")
+	reset=$(_cb_rest_core_header "$response" "X-RateLimit-Reset")
+	resource=$(_cb_rest_core_header "$response" "X-RateLimit-Resource")
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$limit" =~ ^[0-9]+$ || ! "$reset" =~ ^[0-9]+$ || "$resource" != "$_CB_REST_CORE_RESOURCE" || "$reset" -le "$now" ]]; then
+		return 2
+	fi
+	local cache_dir
+	local cache_tmp
+	cache_dir=$(dirname "$_CB_REST_CORE_CACHE_FILE")
+	cache_tmp="${_CB_REST_CORE_CACHE_FILE}.tmp.$$"
+	mkdir -p "$cache_dir" 2>/dev/null || true
+	if jq -cn --arg resource "$_CB_REST_CORE_RESOURCE" --argjson observed "$now" --argjson remaining "$remaining" \
+		--argjson limit "$limit" --argjson reset "$reset" \
+		'{observed: $observed, remaining: $remaining, limit: $limit, reset: $reset, resource: $resource}' \
+		>"$cache_tmp" 2>/dev/null; then
+		mv "$cache_tmp" "$_CB_REST_CORE_CACHE_FILE" 2>/dev/null || rm -f "$cache_tmp" 2>/dev/null || true
+	else
+		rm -f "$cache_tmp" 2>/dev/null || true
+	fi
+	printf '%s %s %s\n' "$remaining" "$limit" "$reset"
+	return 0
+}
+
+#######################################
+# Classify authoritative REST-core headroom for stage-boundary scheduling.
+#
+# Stdout:
+#   "<mode> <remaining> <limit> <adaptive> <soft-cap> <hard-floor> <reset>"
+# Modes: normal, reserve, emergency, disabled, unknown.
+#######################################
+pulse_rest_core_priority_snapshot() {
+	local soft_cap
+	local hard_floor
+	local window_seconds
+	read -r soft_cap hard_floor window_seconds < <(_cb_rest_core_bounds)
+	if [[ "${AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER:-0}" == "1" || "$soft_cap" -eq 0 ]]; then
+		printf 'disabled ? ? 0 %s %s ?\n' "$soft_cap" "$hard_floor"
+		return 0
+	fi
+
+	local observation
+	local remaining
+	local limit
+	local reset_epoch
+	observation=$(_cb_rest_core_observation) || observation=""
+	if [[ -z "$observation" ]]; then
+		printf 'unknown ? ? ? %s %s ?\n' "$soft_cap" "$hard_floor"
+		return 0
+	fi
+	read -r remaining limit reset_epoch <<<"$observation"
+
+	local adaptive_threshold=""
+	local now_epoch
+	now_epoch=$(date +%s 2>/dev/null) || now_epoch=0
+	if [[ ! "$reset_epoch" =~ ^[0-9]+$ || "$reset_epoch" -le "$now_epoch" ]]; then
+		printf 'unknown ? ? ? %s %s ?\n' "$soft_cap" "$hard_floor"
+		return 0
+	fi
+	read -r adaptive_threshold soft_cap hard_floor < <(_cb_rest_core_thresholds "$reset_epoch" "$now_epoch") || adaptive_threshold=""
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$limit" =~ ^[0-9]+$ || ! "$adaptive_threshold" =~ ^[0-9]+$ ]]; then
+		printf 'unknown ? ? ? %s %s ?\n' "$soft_cap" "$hard_floor"
+		return 0
+	fi
+
+	local mode="normal"
+	if [[ "$remaining" -le "$hard_floor" ]]; then
+		mode="emergency"
+	elif [[ "$remaining" -le "$adaptive_threshold" ]]; then
+		mode="reserve"
+	fi
+	printf '%s %s %s %s %s %s %s\n' "$mode" "$remaining" "$limit" "$adaptive_threshold" "$soft_cap" "$hard_floor" "$reset_epoch"
+	return 0
+}
+
+#######################################
+# Apply a REST priority class to one already-observed budget snapshot.
+#
+# Args:
+#   $1 - critical, progress, or deferrable.
+#   $2 - output from pulse_rest_core_priority_snapshot.
+# Returns: 0 allowed; 1 deferred by threshold; 2 unknown/invalid evidence.
+#######################################
+_cb_rest_core_priority_decision_allows() {
+	local priority="$1"
+	local decision="$2"
+	case "$priority" in
+	critical)
+		return 0
+		;;
+	progress | deferrable) ;;
+	*) return 2 ;;
+	esac
+
+	local mode
+	local remaining
+	local limit
+	local adaptive
+	local soft_cap
+	local hard_floor
+	local reset_epoch
+	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
+	case "$mode" in
+	disabled | normal)
+		return 0
+		;;
+	reserve)
+		[[ "$priority" == "progress" ]] && return 0
+		return 1
+		;;
+	emergency)
+		return 1
+		;;
+	*)
+		return 2
+		;;
+	esac
+}
+
+#######################################
+# Return whether a REST priority class may start new API-heavy work.
+#
+# Args: $1 - critical, progress, or deferrable.
+# Returns: 0 allowed; 1 deferred by threshold; 2 unknown/invalid evidence.
+#######################################
+pulse_rest_core_priority_allows() {
+	local priority="$1"
+	case "$priority" in
+	critical)
+		return 0
+		;;
+	progress | deferrable) ;;
+	*) return 2 ;;
+	esac
+
+	local decision
+	decision=$(pulse_rest_core_priority_snapshot)
+	_cb_rest_core_priority_decision_allows "$priority" "$decision"
+	return $?
+}
+
+#######################################
+# Backward-compatible optional-work reserve entrypoint.
+#######################################
+pulse_rest_core_reserve_allows() {
+	pulse_rest_core_priority_allows deferrable
+	return $?
+}
+
+#######################################
+# Describe why the REST-core progress policy rejected a stage.
+#######################################
+_cb_rest_core_progress_block_reason() {
+	local progress_rc="$1"
+	case "$progress_rc" in
+	1) printf 'known REST-core progress floor reached\n' ;;
+	2) printf 'authoritative REST-core quota evidence unavailable\n' ;;
+	*) printf 'unexpected REST-core progress decision (rc=%s)\n' "$progress_rc" ;;
+	esac
+	return 0
+}
+
+#######################################
+# Gate new dispatch work at the hard floor and on unknown REST evidence.
+# Unknown evidence deliberately remains fail-closed without a time-based
+# downgrade: every later call retries the bounded authoritative probe, and
+# progress resumes only after valid evidence returns or an operator selects the
+# explicit emergency bypass.
+#######################################
+_cb_rest_core_progress_allows_dispatch() {
+	local decision
+	local mode
+	local remaining
+	local limit
+	local adaptive
+	local soft_cap
+	local hard_floor
+	local reset_epoch
+	decision=$(pulse_rest_core_priority_snapshot)
+	local progress_rc=0
+	_cb_rest_core_priority_decision_allows progress "$decision" || progress_rc=$?
+	[[ "$progress_rc" -eq 0 ]] && return 0
+
+	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
+	local block_reason
+	block_reason=$(_cb_rest_core_progress_block_reason "$progress_rc")
+	echo "${_CB_RL_LOG_PREFIX} REST-core progress gate blocked: ${block_reason}; deferring until a later authoritative probe allows progress; mode=${mode} remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} reset=${reset_epoch} rc=${progress_rc} (GH#29742)" >>"$LOGFILE"
+	if declare -F pulse_stats_increment >/dev/null 2>&1; then
+		pulse_stats_increment "pulse_rest_core_progress_blocked" 2>/dev/null || true
+		pulse_stats_increment "pulse_rest_core_progress_blocked_${mode}" 2>/dev/null || true
+	fi
+	return 1
+}
+
+#######################################
 # Allow degraded dispatch when only GraphQL is exhausted.
 #
 # Args:
@@ -177,24 +500,19 @@ _cb_allow_dispatch_with_rest_fallback() {
 		return 1
 	fi
 
-	local core_remaining="" core_limit="" min_core=""
-	core_remaining=$(printf '%s' "$rate_json" | jq -r '.resources.core.remaining // ""') || core_remaining=""
-	core_limit=$(printf '%s' "$rate_json" | jq -r '.resources.core.limit // ""') || core_limit=""
-	min_core="${AIDEVOPS_PULSE_REST_DISPATCH_MIN_CORE_REMAINING:-250}"
-
-	if [[ ! "$core_remaining" =~ ^[0-9]+$ ]] || [[ ! "$core_limit" =~ ^[0-9]+$ ]] || [[ ! "$min_core" =~ ^[0-9]+$ ]]; then
-		return 1
-	fi
-
-	if [[ "$core_remaining" -lt "$min_core" ]]; then
-		echo "${_CB_RL_LOG_PREFIX} GraphQL budget exhausted and REST fallback unavailable: core remaining=${core_remaining}/${core_limit} < min_core=${min_core}" >>"$LOGFILE"
+	local core_rc=0
+	pulse_rest_core_priority_allows progress || core_rc=$?
+	if [[ "$core_rc" -ne 0 ]]; then
+		local block_reason
+		block_reason=$(_cb_rest_core_progress_block_reason "$core_rc")
+		echo "${_CB_RL_LOG_PREFIX} GraphQL budget exhausted and REST fallback unavailable: ${block_reason}; deferring until a later authoritative probe allows progress (rc=${core_rc})" >>"$LOGFILE"
 		return 1
 	fi
 
 	export AIDEVOPS_GH_FORCE_REST_READS=1
 	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_ACTIVE=1
-	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_CORE_REMAINING="$core_remaining"
-	echo "${_CB_RL_LOG_PREFIX} GraphQL budget EXHAUSTED: remaining=${graphql_remaining}/${graphql_limit} (threshold=${graphql_threshold_count}, configured=${threshold}) — dispatch_rest_fallback=true; proceeding with REST-backed dispatch reads (core=${core_remaining}/${core_limit}, min_core=${min_core})" >>"$LOGFILE"
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_CORE_REMAINING="header-authorized"
+	echo "${_CB_RL_LOG_PREFIX} GraphQL budget EXHAUSTED: remaining=${graphql_remaining}/${graphql_limit} (threshold=${graphql_threshold_count}, configured=${threshold}) — dispatch_rest_fallback=true; proceeding with header-authorized REST-backed dispatch reads" >>"$LOGFILE"
 	if declare -F pulse_stats_increment >/dev/null 2>&1; then
 		pulse_stats_increment "pulse_dispatch_rest_fallback" 2>/dev/null || true
 	fi
@@ -202,11 +520,32 @@ _cb_allow_dispatch_with_rest_fallback() {
 }
 
 #######################################
+# Gate GraphQL projection failures through independent REST-core evidence.
+#
+# Args:
+#   $1 - diagnostic reason the GraphQL projection is unusable.
+#
+# Returns: 1 when REST blocks dispatch; 2 when REST authorizes GraphQL fail-open.
+#######################################
+_cb_graphql_projection_unavailable() {
+	local reason="$1"
+	echo "${_CB_RL_LOG_PREFIX} WARNING: ${reason}; checking the independent REST-core progress gate before GraphQL fail-open" >>"$LOGFILE"
+	if ! _cb_rest_core_progress_allows_dispatch; then
+		return 1
+	fi
+
+	echo "${_CB_RL_LOG_PREFIX} WARNING: GraphQL projection unavailable but authoritative REST-core evidence permits progress — proceeding with dispatch (fail-open)" >>"$LOGFILE"
+	return 2
+}
+
+#######################################
 # Check whether the GitHub GraphQL rate-limit budget is sufficient for dispatch.
 # Falls back to REST-backed dispatch when GraphQL is exhausted but REST core has
 # enough headroom for issue/comment/label operations.
 #
-# Returns: 0 when dispatch may proceed, 1 when dispatch should defer, 2 on API error.
+# Returns: 0 when dispatch may proceed, 1 when a known floor or unknown REST
+# observation should defer, 2 when GraphQL is unavailable after REST authorizes
+# fail-open dispatch.
 #######################################
 is_graphql_budget_sufficient() {
 	# Emergency bypass.
@@ -217,9 +556,12 @@ is_graphql_budget_sufficient() {
 
 	local threshold="${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD:-0.05}"
 
-	# Disabled if threshold is explicitly 0 (any zero representation).
+	# A zero threshold disables only the GraphQL floor. The independent REST-core
+	# gate still protects its hard floor and remains fail-closed on unknown quota
+	# evidence; AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1 bypasses both explicitly.
 	if awk -v t="$threshold" 'BEGIN { exit (t + 0 == 0) ? 0 : 1 }' 2>/dev/null; then
-		return 0
+		_cb_rest_core_progress_allows_dispatch
+		return $?
 	fi
 
 	# Query rate limit (free endpoint, short-TTL cached).
@@ -227,8 +569,8 @@ is_graphql_budget_sufficient() {
 	rate_json=$(_cb_rate_limit_json normal) || rate_json=""
 
 	if [[ -z "$rate_json" ]]; then
-		echo "${_CB_RL_LOG_PREFIX} WARNING: gh api rate_limit failed — proceeding with dispatch (fail-open)" >>"$LOGFILE"
-		return 2
+		_cb_graphql_projection_unavailable "gh api rate_limit failed"
+		return $?
 	fi
 
 	local remaining="" limit=""
@@ -236,14 +578,14 @@ is_graphql_budget_sufficient() {
 	limit=$(printf '%s' "$rate_json" | jq -r '.resources.graphql.limit // ""') || limit=""
 
 	if [[ ! "$remaining" =~ ^[0-9]+$ ]] || [[ ! "$limit" =~ ^[0-9]+$ ]]; then
-		echo "${_CB_RL_LOG_PREFIX} WARNING: could not parse GraphQL rate-limit response (remaining='${remaining}', limit='${limit}') — proceeding (fail-open)" >>"$LOGFILE"
-		return 2
+		_cb_graphql_projection_unavailable "could not parse GraphQL rate-limit response (remaining='${remaining}', limit='${limit}')"
+		return $?
 	fi
 
 	# Avoid division by zero.
 	if [[ "$limit" -eq 0 ]]; then
-		echo "${_CB_RL_LOG_PREFIX} WARNING: GraphQL limit is 0 — proceeding (fail-open)" >>"$LOGFILE"
-		return 2
+		_cb_graphql_projection_unavailable "GraphQL limit is 0"
+		return $?
 	fi
 
 	# Compute threshold as integer: threshold_count = ceil(threshold * limit).
@@ -275,7 +617,8 @@ is_graphql_budget_sufficient() {
 		rm -f "$_CIRCUIT_BREAKER_STATE_FILE" 2>/dev/null || true
 	fi
 
-	return 0
+	_cb_rest_core_progress_allows_dispatch
+	return $?
 }
 
 #######################################
@@ -527,10 +870,10 @@ _main() {
 		return 0
 		;;
 	help | --help | -h)
-		echo "pulse-rate-limit-circuit-breaker.sh — Pulse-level GraphQL rate-limit circuit breaker (t2690) + Actions queue saturation (t3211)"
+		echo "pulse-rate-limit-circuit-breaker.sh — Pulse GraphQL breaker + REST priority budget + Actions queue saturation"
 		echo ""
 		echo "Usage:"
-		echo "  pulse-rate-limit-circuit-breaker.sh check                          # exit 0=OK, 1=tripped, 2=API error"
+		echo "  pulse-rate-limit-circuit-breaker.sh check                          # exit 0=OK, 1=blocked, 2=GraphQL unavailable after REST allows"
 		echo "  pulse-rate-limit-circuit-breaker.sh check-actions-queue OWNER/REPO # KEY=VALUE: queued/in_progress/ratio/saturated"
 		echo "  pulse-rate-limit-circuit-breaker.sh status [--cached]              # human-readable status line"
 		echo ""
@@ -538,6 +881,9 @@ _main() {
 		echo "  AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD  fraction threshold (default 0.05 = 5%)"
 		echo "  AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1     emergency bypass"
 		echo "  AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL       rate_limit cache TTL seconds (default 20)"
+		echo "  AIDEVOPS_PULSE_REST_CORE_RESERVE          REST soft-cap maximum (default 500; 0 disables)"
+		echo "  AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR       REST emergency floor (default 100)"
+		echo "  AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS  soft-cap decay window (default 3600)"
 		echo ""
 		echo "Environment (Actions queue, t3211):"
 		echo "  AIDEVOPS_ACTIONS_QUEUE_SATURATION_QUEUED_MIN  min queued runs (default 50; 0 disables)"

@@ -598,6 +598,21 @@ test_keeps_changes_requested_review() {
 	return 0
 }
 
+test_skips_superseded_changes_requested_after_explicit_closure() {
+	local reviews result
+	# Regression for GH#29746 / PR #29673: GitHub retained the old
+	# CHANGES_REQUESTED state after a later same-reviewer closeout review.
+	# shellcheck disable=SC2016  # literal review JSON includes Markdown code spans
+	reviews='[{"id":4879484196,"user":{"login":"marcusquinn"},"state":"CHANGES_REQUESTED","body":"Exact-head security review for `695f97fd` found five boundary defects that require repair before merge.","submitted_at":"2026-08-07T02:40:30Z","html_url":"https://example.invalid/review/4879484196"},{"id":4880093743,"user":{"login":"marcusquinn"},"state":"DISMISSED","body":"## Review: Approve\n\nReviewed exact head `53aa196d`.\n\n### Prior requested changes\n\n- The consumed overlay is bound to a fresh canonical roster.\n- Conversation origin and private runtime roots fail closed.\n\nNo blocking code, security, compatibility, or bookkeeping finding remains. Required remote checks must still complete successfully before merge.","submitted_at":"2026-08-07T05:04:23Z","html_url":"https://example.invalid/review/4880093743"}]'
+	result=$(_build_review_findings "$reviews" "29673" "medium" '{}' "false" | jq 'length')
+	if [[ "$result" == "0" ]]; then
+		print_result "skip superseded changes-requested review after explicit closure" 0
+	else
+		print_result "skip superseded changes-requested review after explicit closure" 1 "expected 0 findings, got ${result}"
+	fi
+	return 0
+}
+
 test_keeps_review_with_bug_report() {
 	# Review mentioning a bug — must be kept even if it starts positively
 	local result
