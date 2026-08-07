@@ -329,6 +329,7 @@ export async function AidevopsPlugin({ directory, client }) {
     activeScriptsDir: join(ACTIVE_AGENTS_DIR, "scripts"),
     scriptsDir: SCRIPTS_DIR,
     logsDir: LOGS_DIR,
+    repositoryDir: directory,
     continuationGuard,
     resolveSessionModel: (sessionId) => sessionModels.resolve(sessionId),
   });

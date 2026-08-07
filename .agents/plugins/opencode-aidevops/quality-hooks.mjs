@@ -243,7 +243,7 @@ function recordChildSubagent(taskId, scriptsDir, log) {
 
 /**
  * Create the quality hook functions (toolExecuteBefore, toolExecuteAfter).
- * @param {object} deps - { scriptsDir, logsDir }
+ * @param {object} deps - { scriptsDir, logsDir, repositoryDir }
  * @returns {{ toolExecuteBefore: Function, toolExecuteAfter: Function, qualityLog: Function }}
  */
 /**
@@ -255,7 +255,7 @@ function recordChildSubagent(taskId, scriptsDir, log) {
  */
 function enforceDirectFileMutationSafety(ctx, input, output) {
   if (!isDirectFileMutationTool(input.tool)) return;
-  const writeCwd = output.args?.workdir || output.args?.cwd || process.cwd();
+  const writeCwd = output.args?.workdir || output.args?.cwd || ctx.repositoryDir || process.cwd();
   const filePath = output.args?.filePath || output.args?.file_path || output.args?.path || "";
   const rawPatchText = output.args?.patchText || output.args?.patch_text || "";
   const patchText = isApplyPatchMutationTool(input.tool)
@@ -410,6 +410,7 @@ export function createQualityHooks(deps) {
     qualityLogPath,
     detailLogPath,
     detailMaxBytes,
+    repositoryDir: deps.repositoryDir,
     continuationGuard,
     resolveSessionModel: typeof deps.resolveSessionModel === "function"
       ? deps.resolveSessionModel

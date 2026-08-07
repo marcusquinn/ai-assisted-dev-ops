@@ -23,6 +23,7 @@ import {
   checkCommandSafetyGate,
   isDirectFileMutationTool,
 } from "../quality-hooks-git-safety.mjs";
+import { createQualityHooks } from "../quality-hooks.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scriptsDir = join(here, "..", "..", "..", "scripts");
@@ -102,6 +103,33 @@ test("classifies every apply-patch target instead of trusting linked cwd", () =>
     assert.throws(
       () => checkCanonicalWriteSafetyGate("", scriptsDir, repo, mixedPatch),
       /canonical write policy.*read-only session mirrors/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("uses the plugin repository directory when mutation tools omit workdir", async () => {
+  const { root, repo, linked } = setupRepo();
+  try {
+    const hooks = createQualityHooks({ scriptsDir, logsDir: root, repositoryDir: repo });
+    const linkedPatch = `*** Begin Patch\n*** Add File: ${join(linked, "plugin-context.md")}\n+safe\n*** End Patch\n`;
+    await assert.doesNotReject(
+      () => hooks.toolExecuteBefore(
+        { tool: "functions.apply_patch" },
+        { args: { patchText: linkedPatch } },
+      ),
+      "the plugin project directory must establish same-repository linked-worktree identity",
+    );
+
+    const canonicalPatch = "*** Begin Patch\n*** Update File: README.md\n@@\n-seed\n+unsafe\n*** End Patch\n";
+    await assert.rejects(
+      () => hooks.toolExecuteBefore(
+        { tool: "functions.apply_patch" },
+        { args: { patchText: canonicalPatch } },
+      ),
+      /canonical write policy.*read-only session mirrors/,
+      "relative mutation targets must resolve from the plugin project directory",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
