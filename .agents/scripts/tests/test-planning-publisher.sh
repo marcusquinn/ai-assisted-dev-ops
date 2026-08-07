@@ -67,6 +67,21 @@ run_publish() {
 	return $?
 }
 
+run_publish_with_parent() {
+	local repo="$1"
+	local branch="$2"
+	local parent_branch="$3"
+	(
+		SCRIPT_DIR="$(dirname "$PUBLISHER")"
+		# shellcheck source=../planning-publisher.sh
+		source "$PUBLISHER"
+		AIDEVOPS_PLANNING_PARENT_BRANCH="$parent_branch" \
+			AIDEVOPS_PLANNING_VALIDATOR=/usr/bin/true \
+			planning_publish "$repo" "plan: parented publication" origin "$branch" TODO.md
+	)
+	return $?
+}
+
 run_publish_with_receipt() {
 	local repo="$1"
 	local receipt_dir="$2"
@@ -762,6 +777,61 @@ HOOK
 	return 0
 }
 
+test_parent_branch_replay_is_idempotent() {
+	local name="keeps a current parented publication stable and rebases it after parent advancement"
+	local root="" repo="" branch="plan/parented" before="" after=""
+	local first_sha="" replay_sha="" rebased_sha="" main_sha="" parent_sha="" count=""
+	local rival=""
+	root=$(mktemp -d) || return 0
+	setup_repo "$root" || {
+		fail "$name" setup
+		return 0
+	}
+	repo="${root}/work"
+	printf '%s\n' '- [ ] t010 parented publication ref:GH#10' >>"${repo}/TODO.md"
+	before=$(state_digest "$repo")
+	run_publish_with_parent "$repo" "$branch" main || {
+		fail "$name" publish
+		rm -rf "$root"
+		return 0
+	}
+	first_sha=$(git --git-dir="${root}/remote.git" rev-parse "$branch")
+	sleep 1
+	run_publish_with_parent "$repo" "$branch" main || {
+		fail "$name" replay
+		rm -rf "$root"
+		return 0
+	}
+	replay_sha=$(git --git-dir="${root}/remote.git" rev-parse "$branch")
+	rival="${root}/rival"
+	git clone -q "${root}/remote.git" "$rival" || return 0
+	printf 'advanced parent\n' >>"${rival}/README.md"
+	git -C "$rival" add README.md
+	GIT_AUTHOR_NAME=Rival GIT_AUTHOR_EMAIL=rival@example.invalid GIT_COMMITTER_NAME=Rival GIT_COMMITTER_EMAIL=rival@example.invalid \
+		git -C "$rival" -c commit.gpgsign=false commit -qm 'advance parent'
+	git -C "$rival" push -q origin main
+	run_publish_with_parent "$repo" "$branch" main || {
+		fail "$name" rebase
+		rm -rf "$root"
+		return 0
+	}
+	after=$(state_digest "$repo")
+	rebased_sha=$(git --git-dir="${root}/remote.git" rev-parse "$branch")
+	main_sha=$(git --git-dir="${root}/remote.git" rev-parse main)
+	parent_sha=$(git --git-dir="${root}/remote.git" rev-parse "${branch}^")
+	count=$(git --git-dir="${root}/remote.git" log --format=%B "$branch" | grep -c 'Planning-Publication-ID:' || true)
+	if [[ "$before" == "$after" && "$first_sha" == "$replay_sha" && "$rebased_sha" != "$replay_sha" && \
+		"$parent_sha" == "$main_sha" && "$count" -eq 1 ]] &&
+		git --git-dir="${root}/remote.git" show "${branch}:TODO.md" | grep -q t010 &&
+		git --git-dir="${root}/remote.git" show "${branch}:README.md" | grep -q 'advanced parent'; then
+		pass "$name"
+	else
+		fail "$name" "parented publication invariant failed"
+	fi
+	rm -rf "$root"
+	return 0
+}
+
 test_explicit_git_capability_preserves_guarded_checkout() {
 	local name="explicit Git capability publishes planning paths while canonical guard remains active"
 	local root="" repo="" shim_dir="" before="" after="" guard_rc=0 guard_output="" count="" real_git="" real_true=""
@@ -845,6 +915,7 @@ main() {
 	test_stale_base_same_path_is_retryable
 	test_absent_remote_branch_uses_safe_parent
 	test_absent_remote_branch_creation_contention
+	test_parent_branch_replay_is_idempotent
 	test_explicit_git_capability_preserves_guarded_checkout
 	printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 	[[ $FAIL -eq 0 ]] || return 1

@@ -222,8 +222,8 @@ else
 fi
 
 # ============================================================
-# Test 6: task-backed proof publication uses the path-allowlisted planning
-# publisher rather than direct canonical index/commit mutation.
+# Test 6: task-backed proof publication uses the protected-branch-safe issue
+# sync publisher, while PLANS.md keeps the capability-scoped planner.
 # ============================================================
 PROOF_BODY=$(printf '%s\n' "${JOB_BODY}" | awk '
 	/name:[[:space:]]+Update TODO\.md proof-log/ { capture=1 }
@@ -237,15 +237,40 @@ PLANS_BODY=$(printf '%s\n' "${JOB_BODY}" | awk '
 ')
 # shellcheck disable=SC2016 # Assert the literal workflow variable reference.
 if printf '%s\n' "${JOB_BODY}" | grep -qE 'AIDEVOPS_PLANNING_GIT_BIN=.*RUNNER_GIT' &&
-	printf '%s\n' "${PROOF_BODY}" | grep -qE 'source[[:space:]]+"?\$SCRIPT_DIR/planning-publisher\.sh"?' &&
-	printf '%s\n' "${PROOF_BODY}" | grep -qE 'planning_publish[[:space:]]' &&
+	printf '%s\n' "${PROOF_BODY}" | grep -qE 'issue-sync-git-push-helper\.sh"?[[:space:]]+publish-todo[[:space:]]+main' &&
+	! printf '%s\n' "${PROOF_BODY}" | grep -qE 'planning_publish[[:space:]]' &&
 	! printf '%s\n' "${PROOF_BODY}" | grep -qE '^[[:space:]]+git[[:space:]]+(config|add|commit|pull|push)' &&
 	printf '%s\n' "${PLANS_BODY}" | grep -qE 'planning_publish[[:space:]]' &&
 	! printf '%s\n' "${PLANS_BODY}" | grep -qE '^[[:space:]]+git[[:space:]]+(config|add|commit|pull|push)'; then
-	check 1 "task proof and plan status use capability-scoped planning publication" ""
+	check 1 "task proof uses PR-safe publication and plan status uses capability-scoped publication" ""
 else
-	check 0 "task proof and plan status use capability-scoped planning publication" \
-		"both projections must use the captured runner Git capability through planning-publisher.sh"
+	check 0 "task proof uses PR-safe publication and plan status uses capability-scoped publication" \
+		"TODO proof must use issue-sync-git-push-helper.sh; PLANS must use planning-publisher.sh"
+fi
+
+# ============================================================
+# Test 7: every legacy issue-sync TODO writer routes through the same helper.
+# The deterministic helper owns GH006 detection and PR deduplication.
+# ============================================================
+PUBLISH_CALL_COUNT=$(grep -cE 'issue-sync-git-push-helper\.sh"?[[:space:]]+publish-todo[[:space:]]+main' "$WORKFLOW_FILE" || true)
+LEGACY_PUSH_COUNT=$(grep -cE 'issue-sync-git-push-helper\.sh[[:space:]]+push-todo[[:space:]]+main' "$WORKFLOW_FILE" || true)
+if [[ "$PUBLISH_CALL_COUNT" -eq 4 && "$LEGACY_PUSH_COUNT" -eq 0 ]]; then
+	check 1 "all four TODO publication paths share the idempotent PR-safe helper" ""
+else
+	check 0 "all four TODO publication paths share the idempotent PR-safe helper" \
+		"publish calls=${PUBLISH_CALL_COUNT}, legacy pushes=${LEGACY_PUSH_COUNT}"
+fi
+
+# ============================================================
+# Test 8: missing SYNC_PAT is informational because GH006 has a durable PR
+# fallback. The workflow must not advise weakening protection or PAT bypass.
+# ============================================================
+if grep -q 'GH006 will update one protected-branch PR' "$WORKFLOW_FILE" &&
+	! grep -qE 'gh secret set SYNC_PAT|will be rejected by branch protection|bypass(es)? branch protection' "$WORKFLOW_FILE"; then
+	check 1 "credential notices describe PR fallback without bypass guidance" ""
+else
+	check 0 "credential notices describe PR fallback without bypass guidance" \
+		"stale protected-branch bypass guidance remains"
 fi
 
 # ============================================================

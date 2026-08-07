@@ -7,7 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVER="${SCRIPT_DIR}/../issue-sync-pr-task-resolver.sh"
 WORKFLOW="${SCRIPT_DIR}/../../../.github/workflows/issue-sync-reusable.yml"
-MULTI_TASK_LOOP="for RESOLVED_TASK_ID in \$UPDATED_TASK_IDS"
+PROTECTED_PUBLISH_CALL='issue-sync-git-push-helper\.sh" publish-todo main 3'
+MULTI_TASK_PUBLICATION="chore: mark \\\$UPDATED_TASK_IDS complete (\\\$PROOF) \[skip ci\]"
 PAIR_MATCH="if [[ \"\${ISSUE_TASK_PAIR%%:*}\" == \"\$ISSUE_NUM\" ]]"
 MAPPED_TASK_REF="TASK_REF=\" Task \$MAPPED_TASK_ID\""
 TMP_DIR=$(mktemp -d)
@@ -95,12 +96,13 @@ else
 	FAIL=$((FAIL + 1))
 fi
 
-if grep -Fq "$MULTI_TASK_LOOP" "$WORKFLOW" &&
-	grep -q 'WORKAROUND_COMMANDS' "$WORKFLOW"; then
-	printf 'PASS: push failure emits workaround for every updated task\n'
+if grep -q "$PROTECTED_PUBLISH_CALL" "$WORKFLOW" &&
+	grep -q "$MULTI_TASK_PUBLICATION" "$WORKFLOW" &&
+	! grep -q 'WORKAROUND_COMMANDS' "$WORKFLOW"; then
+	printf 'PASS: multi-task proof publication uses the cumulative PR-safe helper\n'
 	PASS=$((PASS + 1))
 else
-	printf 'FAIL: multi-task push failure workaround is incomplete\n'
+	printf 'FAIL: multi-task proof publication bypasses the cumulative PR-safe helper\n'
 	FAIL=$((FAIL + 1))
 fi
 

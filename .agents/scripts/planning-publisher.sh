@@ -565,11 +565,29 @@ _planning_publish_resolve_parent() {
 	local target_check_rc=0
 	local default_branch=""
 	local parent_sha=""
+	local target_sha=""
+	local parent_branch="${AIDEVOPS_PLANNING_PARENT_BRANCH:-}"
 	local branch_ref="${PLANNING_BRANCH_REF_PREFIX}${branch_name}"
+
+	if [[ -n "$parent_branch" && "$parent_branch" != "$branch_name" ]]; then
+		if _planning_git -C "$repo_path" fetch -q "$remote_name" "$branch_name" 2>/dev/null; then
+			target_sha=$(_planning_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
+		elif _planning_git -C "$repo_path" ls-remote --exit-code --heads "$remote_name" "$branch_ref" >/dev/null 2>&1; then
+			_planning_git -C "$repo_path" fetch -q "$remote_name" "$branch_name" || return 1
+			target_sha=$(_planning_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
+		else
+			target_check_rc=$?
+			[[ "$target_check_rc" -eq 2 ]] || return 1
+		fi
+		_planning_git -C "$repo_path" fetch -q "$remote_name" "$parent_branch" || return 1
+		parent_sha=$(_planning_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
+		printf '%s|%s|%s\n' "$parent_sha" "$target_sha" "$target_sha"
+		return 0
+	fi
 
 	if _planning_git -C "$repo_path" fetch -q "$remote_name" "$branch_name" 2>/dev/null; then
 		parent_sha=$(_planning_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
-		printf '%s|%s\n' "$parent_sha" "$parent_sha"
+		printf '%s|%s|%s\n' "$parent_sha" "$parent_sha" "$parent_sha"
 		return 0
 	fi
 
@@ -578,7 +596,7 @@ _planning_publish_resolve_parent() {
 		# normal update lease rather than misclassifying it as absent.
 		_planning_git -C "$repo_path" fetch -q "$remote_name" "$branch_name" || return 1
 		parent_sha=$(_planning_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
-		printf '%s|%s\n' "$parent_sha" "$parent_sha"
+		printf '%s|%s|%s\n' "$parent_sha" "$parent_sha" "$parent_sha"
 		return 0
 	else
 		target_check_rc=$?
@@ -593,7 +611,7 @@ _planning_publish_resolve_parent() {
 	parent_sha=$(_planning_git -C "$repo_path" rev-parse FETCH_HEAD) || return 1
 	# An empty expected value is Git's creation-safe lease: the push succeeds
 	# only while the target ref remains absent.
-	printf '%s|\n' "$parent_sha"
+	printf '%s||\n' "$parent_sha"
 	return 0
 }
 
@@ -739,6 +757,67 @@ _planning_publish_build_candidate() {
 	return 0
 }
 
+_planning_publish_resolve_attempt() {
+	local repo_path="$1"
+	local remote_name="$2"
+	local branch_name="$3"
+	local previous_target_sha="$4"
+	local snapshot_file="$5"
+	local publication_id="$6"
+	local attempt="$7"
+	local parent_resolution=""
+	local resolution_tail=""
+	local latest_sha=""
+	local expected_sha=""
+	local target_sha=""
+	parent_resolution=$(_planning_publish_resolve_parent "$repo_path" "$remote_name" "$branch_name") || return 1
+	latest_sha="${parent_resolution%%|*}"
+	resolution_tail="${parent_resolution#*|}"
+	expected_sha="${resolution_tail%%|*}"
+	target_sha="${resolution_tail#*|}"
+	if [[ -n "${AIDEVOPS_PLANNING_PARENT_BRANCH:-}" && "$attempt" -gt 1 && \
+		"$target_sha" != "$previous_target_sha" ]]; then
+		if [[ -z "$previous_target_sha" || -z "$target_sha" ]] || \
+			_planning_publish_parent_conflicts "$repo_path" "$previous_target_sha" "$target_sha" "$snapshot_file"; then
+			_planning_publish_log_retryable_conflict "$publication_id"
+			return 2
+		fi
+	fi
+	printf '%s|%s|%s\n' "$latest_sha" "$expected_sha" "$target_sha"
+	return 0
+}
+
+_planning_publish_finish_noop_if_current() {
+	local repo_path="$1"
+	local remote_name="$2"
+	local branch_name="$3"
+	local source_head="$4"
+	local latest_sha="$5"
+	local target_sha="$6"
+	local tree_sha="$7"
+	local publication_id="$8"
+	local snapshot_file="$9"
+	local current_sha="$latest_sha"
+	local target_parent=""
+	if [[ -n "${AIDEVOPS_PLANNING_PARENT_BRANCH:-}" ]]; then
+		[[ -n "$target_sha" ]] || return 1
+		[[ "$tree_sha" == "$(_planning_git -C "$repo_path" rev-parse "${target_sha}^{tree}")" ]] || return 1
+		if [[ "$target_sha" != "$latest_sha" ]]; then
+			target_parent=$(_planning_git -C "$repo_path" rev-parse "${target_sha}^") || return 1
+			[[ "$target_parent" == "$latest_sha" ]] || return 1
+		fi
+		current_sha="$target_sha"
+	elif [[ "$tree_sha" != "$(_planning_git -C "$repo_path" rev-parse "${latest_sha}^{tree}")" ]]; then
+		return 1
+	fi
+	_planning_publish_record_noop_receipt "$repo_path" "$remote_name" "$branch_name" "$source_head" \
+		"$current_sha" "$publication_id" "$snapshot_file" || {
+		_planning_publish_log error "Remote planning state is current, but its publication handoff receipt could not be reconstructed"
+		return 3
+	}
+	return 0
+}
+
 planning_publish() {
 	local repo_path="$1"
 	local commit_msg="$2"
@@ -747,9 +826,8 @@ planning_publish() {
 	local paths="${5:-}"
 	local external_source="${6:-}"
 	local temp_dir="" snapshot_file="" index_file="" parent_sha="" tree_sha="" candidate_sha=""
-	local publication_id="" handoff_id="" attempt=0 push_rc=0 latest_sha="" expected_sha="" parent_resolution="" base_sha="${AIDEVOPS_PLANNING_BASE_SHA:-}"
-	local guard_rc=0 source_head=""
-
+	local publication_id="" handoff_id="" attempt=0 push_rc=0 latest_sha="" expected_sha="" target_sha="" previous_target_sha=""
+	local parent_resolution="" resolution_tail="" base_sha="${AIDEVOPS_PLANNING_BASE_SHA:-}" guard_rc=0 resolve_rc=0 noop_rc=1 source_head=""
 	[[ -n "$branch_name" ]] || branch_name=$(_planning_git -C "$repo_path" symbolic-ref --short HEAD 2>/dev/null) || return 1
 	_planning_publish_reset_result
 	source_head=$(_planning_git -C "$repo_path" rev-parse --verify "HEAD^{commit}" 2>/dev/null) || return 1
@@ -764,15 +842,20 @@ planning_publish() {
 	snapshot_file="$_PLANNING_PUBLISH_SNAPSHOT_FILE"
 	index_file="$_PLANNING_PUBLISH_INDEX_FILE"
 	publication_id="$PLANNING_PUBLICATION_ID"
-
 	while [[ $attempt -lt $PLANNING_PUBLISH_MAX_RETRIES ]]; do
 		attempt=$((attempt + 1))
-		parent_resolution=$(_planning_publish_resolve_parent "$repo_path" "$remote_name" "$branch_name") || {
+		resolve_rc=0
+		parent_resolution=$(_planning_publish_resolve_attempt "$repo_path" "$remote_name" "$branch_name" \
+			"$previous_target_sha" "$snapshot_file" "$publication_id" "$attempt") || resolve_rc=$?
+		if [[ "$resolve_rc" -ne 0 ]]; then
 			rm -rf "$temp_dir"
-			return 1
-		}
+			return "$resolve_rc"
+		fi
 		latest_sha="${parent_resolution%%|*}"
-		expected_sha="${parent_resolution#*|}"
+		resolution_tail="${parent_resolution#*|}"
+		expected_sha="${resolution_tail%%|*}"
+		target_sha="${resolution_tail#*|}"
+		previous_target_sha="$target_sha"
 		_planning_publish_build_index "$repo_path" "$latest_sha" "$snapshot_file" "$index_file" || {
 			rm -rf "$temp_dir"
 			return 1
@@ -785,15 +868,12 @@ planning_publish() {
 			rm -rf "$temp_dir"
 			return 1
 		}
-		if [[ "$tree_sha" == "$(_planning_git -C "$repo_path" rev-parse "${latest_sha}^{tree}")" ]]; then
-			_planning_publish_record_noop_receipt "$repo_path" "$remote_name" "$branch_name" "$source_head" \
-				"$latest_sha" "$publication_id" "$snapshot_file" || {
-				_planning_publish_log error "Remote planning state is current, but its publication handoff receipt could not be reconstructed"
-				rm -rf "$temp_dir"
-				return 3
-			}
+		noop_rc=0
+		_planning_publish_finish_noop_if_current "$repo_path" "$remote_name" "$branch_name" "$source_head" \
+			"$latest_sha" "$target_sha" "$tree_sha" "$publication_id" "$snapshot_file" || noop_rc=$?
+		if [[ "$noop_rc" -ne 1 ]]; then
 			rm -rf "$temp_dir"
-			return 0
+			return "$noop_rc"
 		fi
 		if [[ -z "$parent_sha" && -n "$base_sha" && "$base_sha" != "$latest_sha" ]] && \
 			_planning_publish_parent_conflicts "$repo_path" "$base_sha" "$latest_sha" "$snapshot_file"; then
