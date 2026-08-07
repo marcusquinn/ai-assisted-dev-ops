@@ -33,13 +33,21 @@
 #   1. Closed exists, file UNDER threshold, repo_path provided
 #      → returns "(recently-closed — continuation)"
 #   2. Closed exists, file OVER threshold, repo_path provided
-#      → does NOT create a successor; reopens the canonical issue
-#   3. Closed exists, no repo_path
+#      → verifies remote content; reopens only when remote is also over
+#   3. Local file OVER threshold but remote file UNDER threshold
+#      → keeps the solved canonical issue closed
+#   4. Local file OVER threshold but remote verification unavailable
+#      → defers reopening
+#   5. Closed exists, no repo_path
 #      → returns "(recently-closed — continuation)" (backward-compat fallback)
-#   4. Closed exists, repo_path set but file not on disk
+#   6. Closed exists, repo_path set but file not on disk
 #      → returns "(recently-closed — continuation)" (measurement unavailable)
-#   5. No open, no closed match
+#   7. No open, no closed match
 #      → returns "(new)"
+#   8. Open match exists
+#      → returns "(existing)"
+#   9. Pulse orchestration sees a stale local default branch
+#      → blocks for the cycle without measuring or mutating issue state
 #
 # Cross-references: GH#19415 / t2152 (the blocked investigation that
 # surfaced this bug), GH#18960 (the dedup the bug exists inside),
@@ -84,6 +92,8 @@ GH_OPEN_RESPONSE=""   # what the open-issue search returns
 GH_CLOSED_RESPONSE="" # what the closed-issue search returns
 GH_CALLS_LOG="${TMP}/gh_calls.log"
 GH_CREATE_RESPONSE_URL=""
+GH_REMOTE_CONTENT_RESPONSE=""
+GH_REMOTE_CONTENT_FAIL=""
 : >"$GH_CALLS_LOG"
 
 # =============================================================================
@@ -128,6 +138,15 @@ gh() {
 		closed) saw_closed="true" ;;
 		esac
 	done
+	if [[ "$1" == "api" && "$2" == "repos/owner/repo" ]]; then
+		printf 'main\n'
+		return 0
+	fi
+	if [[ "$1" == "api" && "$2" == "--method" && "$3" == "GET" && "$4" == repos/owner/repo/contents/* ]]; then
+		[[ -z "$GH_REMOTE_CONTENT_FAIL" ]] || return 1
+		printf '%s\n' "$GH_REMOTE_CONTENT_RESPONSE"
+		return 0
+	fi
 	if [[ "$1" == "issue" && "$2" == "list" && "$saw_open" == "false" && "$saw_closed" == "false" ]]; then
 		if [[ -n "$GH_OPEN_RESPONSE" ]]; then
 			printf '[{"number":%s,"state":"OPEN","body":"generator=large-file-simplification-gate cited_file=under.sh threshold=2000 generator=large-file-simplification-gate cited_file=over.sh threshold=2000 generator=large-file-simplification-gate cited_file=missing.sh threshold=2000"}]\n' "$GH_OPEN_RESPONSE"
@@ -170,6 +189,14 @@ gh() {
 	fi
 
 	# Anything else — silent no-op
+	return 0
+}
+
+_remote_content_json() {
+	local file_path="$1"
+	local encoded=""
+	encoded=$(base64 <"$file_path" | tr -d '\n') || return 1
+	jq -cn --arg content "$encoded" '{type:"file",encoding:"base64",content:$content}'
 	return 0
 }
 
@@ -238,6 +265,8 @@ assert_eq \
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_CREATE_RESPONSE_URL=""
+GH_REMOTE_CONTENT_RESPONSE=$(_remote_content_json "$OVER_FILE")
+GH_REMOTE_CONTENT_FAIL=""
 out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo" "$TMP")
 assert_eq \
 	"closed + file over threshold → reopen canonical issue" \
@@ -245,24 +274,55 @@ assert_eq \
 	"$out"
 assert_contains \
 	"file-over-threshold path logs canonical reopen" \
-	"prior file-size-debt #18706 closed but over.sh still 2050 lines" \
+	"prior file-size-debt #18706 closed but remote over.sh still 2050 lines" \
 	"$(cat "$LOGFILE")"
 assert_contains \
 	"file-over-threshold path calls gh issue reopen" \
 	"gh issue reopen 18706 --repo owner/repo" \
 	"$(cat "$GH_CALLS_LOG")"
 
-# ---- Test 3 — closed exists, no repo_path → backward-compat continuation ----
+# ---- Test 3 — stale local OVER, remote UNDER → keep solved issue closed ----
+GH_OPEN_RESPONSE=""
+GH_CLOSED_RESPONSE="18706"
+GH_REMOTE_CONTENT_RESPONSE=$(_remote_content_json "$UNDER_FILE")
+GH_REMOTE_CONTENT_FAIL=""
+out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo" "$TMP")
+assert_eq \
+	"stale local over + remote under → continuation" \
+	"#18706 (recently-closed — continuation)" \
+	"$out"
+assert_contains \
+	"stale local measurement is diagnosed" \
+	"stale local checkout reports over.sh at 2050 lines; remote default branch is 100 lines" \
+	"$(cat "$LOGFILE")"
+
+# ---- Test 4 — local OVER, remote unavailable → fail closed without reopen ----
+GH_OPEN_RESPONSE=""
+GH_CLOSED_RESPONSE="18706"
+GH_REMOTE_CONTENT_RESPONSE=""
+GH_REMOTE_CONTENT_FAIL="1"
+out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo" "$TMP")
+assert_eq \
+	"local over + remote unavailable → defer reopen" \
+	"#18706 (recently-closed — continuation)" \
+	"$out"
+assert_contains \
+	"remote verification failure is diagnosed" \
+	"current remote content could not be verified; deferring canonical debt reopen" \
+	"$(cat "$LOGFILE")"
+
+# ---- Test 5 — closed exists, no repo_path → backward-compat continuation ----
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_CREATE_RESPONSE_URL=""
+GH_REMOTE_CONTENT_FAIL=""
 out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo")
 assert_eq \
 	"closed + no repo_path → continuation (backward-compat fallback)" \
 	"#18706 (recently-closed — continuation)" \
 	"$out"
 
-# ---- Test 4 — closed exists, repo_path set but file missing → continuation ----
+# ---- Test 6 — closed exists, repo_path set but file missing → continuation ----
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_CREATE_RESPONSE_URL=""
@@ -272,7 +332,7 @@ assert_eq \
 	"#18706 (recently-closed — continuation)" \
 	"$out"
 
-# ---- Test 5 — no open, no closed → creates new ----
+# ---- Test 7 — no open, no closed → creates new ----
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE=""
 GH_CREATE_RESPONSE_URL="https://github.com/owner/repo/issues/88888"
@@ -282,7 +342,7 @@ assert_eq \
 	"#88888 (new)" \
 	"$out"
 
-# ---- Test 6 — open exists → existing (short-circuit before continuation logic) ----
+# ---- Test 8 — open exists → existing (short-circuit before continuation logic) ----
 GH_OPEN_RESPONSE="55555"
 GH_CLOSED_RESPONSE=""
 GH_CREATE_RESPONSE_URL=""
@@ -291,6 +351,31 @@ assert_eq \
 	"open exists → existing (short-circuit)" \
 	"#55555 (existing)" \
 	"$out"
+
+# ---- Test 9 — stale pulse checkout → defer before local measurement ----
+_pulse_refresh_repo() { return 0; }
+_large_file_gate_repo_matches_remote_default() { return 1; }
+GH_OPEN_RESPONSE=""
+GH_CLOSED_RESPONSE="18706"
+GH_REMOTE_CONTENT_RESPONSE=$(_remote_content_json "$UNDER_FILE")
+GH_REMOTE_CONTENT_FAIL=""
+before_calls=$(wc -l <"$GH_CALLS_LOG" | tr -d ' ')
+rc=0
+_issue_targets_large_files "9993" "owner/repo" \
+	"## How"$'\n'"- EDIT: \`over.sh\`" "$TMP" "false" || rc=$?
+after_calls=$(wc -l <"$GH_CALLS_LOG" | tr -d ' ')
+assert_eq \
+	"stale pulse checkout → dispatch remains blocked for retry" \
+	"0" \
+	"$rc"
+assert_eq \
+	"stale pulse checkout → no debt mutation calls" \
+	"$before_calls" \
+	"$after_calls"
+assert_contains \
+	"stale pulse checkout → explicit defer diagnostic" \
+	"is not at the verified remote default-branch commit" \
+	"$(cat "$LOGFILE")"
 
 printf '\n%d run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 

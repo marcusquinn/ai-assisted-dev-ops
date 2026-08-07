@@ -770,10 +770,12 @@ _consolidation_count_merged_children() {
 # parent issue's work is already resolved, BEFORE any cross-runner lock is
 # acquired or child created.
 #
-# Three abort conditions (cheapest-first):
+# Five abort conditions (cheapest-first):
 #   1. Parent has `dispatch-blocked:committed-to-main` label (t2955 cache).
-#   2. Parent is CLOSED with stateReason=NOT_PLANNED.
-#   3. ≥80% of #NNN refs in the parent body are merged PRs.
+#   2. Parent carries terminal completion labels.
+#   3. Parent has a structurally linked merged closing PR.
+#   4. Parent is CLOSED with stateReason=NOT_PLANNED.
+#   5. ≥80% of #NNN refs in the parent body are merged PRs.
 #
 # Each abort path posts an idempotent <!-- consolidation-skipped --> marker
 # via _consolidation_emit_skip. Fail-open: API errors return 1 (proceed).
@@ -791,9 +793,10 @@ _consolidation_skip_if_resolved() {
 	local repo_slug="$2"
 	# t2863: init all multi-var locals at declaration time so set -u is safe.
 	local parent_json="" state="" reason="" labels="" body=""
+	local closing_pr="" closing_pr_merged_at=""
 	local counts="" merged="" total="" list="" pct=""
 	parent_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
-		--json state,stateReason,labels,body 2>/dev/null) || parent_json=""
+		--json state,stateReason,labels,body,closedByPullRequestsReferences 2>/dev/null) || parent_json=""
 	if [[ -z "$parent_json" ]]; then
 		echo "[pulse-wrapper] _consolidation_skip_if_resolved: API error #${issue_number} ${repo_slug} — failing open (t3050)" >>"$LOGFILE"
 		return 1
@@ -809,14 +812,35 @@ _consolidation_skip_if_resolved() {
 			"dispatch-blocked:committed-to-main"
 		return 0
 	fi
-	# Gate 2: CLOSED with stateReason=NOT_PLANNED.
+	# Gate 2: completion labels survive accidental reopen/normalization paths and
+	# are sufficient to prevent a solved issue becoming a consolidation task.
+	if printf ',%s,' "$labels" | grep -Eq ',(status:done|solved:[^,]+),'; then
+		_consolidation_emit_skip "$issue_number" "$repo_slug" \
+			"parent carries terminal completion evidence." \
+			"terminal completion label"
+		return 0
+	fi
+	# Gate 3: GitHub retains the structural closing relationship after an
+	# accidental reopen. Verify the linked PR actually merged before skipping.
+	while IFS= read -r closing_pr; do
+		[[ "$closing_pr" =~ ^[0-9]+$ ]] || continue
+		closing_pr_merged_at=$(gh api "repos/${repo_slug}/pulls/${closing_pr}" \
+			--jq '.merged_at // empty' 2>/dev/null) || closing_pr_merged_at=""
+		if [[ -n "$closing_pr_merged_at" ]]; then
+			_consolidation_emit_skip "$issue_number" "$repo_slug" \
+				"parent already resolved by structurally linked merged PR #${closing_pr}." \
+				"merged closing PR #${closing_pr}"
+			return 0
+		fi
+	done < <(printf '%s' "$parent_json" | jq -r '.closedByPullRequestsReferences[]?.number' 2>/dev/null)
+	# Gate 4: CLOSED with stateReason=NOT_PLANNED.
 	if [[ "$state" == "CLOSED" && "$reason" == "NOT_PLANNED" ]]; then
 		_consolidation_emit_skip "$issue_number" "$repo_slug" \
 			"parent closed as not_planned. If consolidation is genuinely needed, reopen the parent or file a fresh issue." \
 			"CLOSED/NOT_PLANNED"
 		return 0
 	fi
-	# Gate 3: ≥80% of #NNN refs in body are merged PRs.
+	# Gate 5: ≥80% of #NNN refs in body are merged PRs.
 	counts=$(_consolidation_count_merged_children "$issue_number" "$repo_slug" "$body")
 	merged=$(printf '%s' "$counts" | awk '{print $1}')
 	total=$(printf '%s' "$counts" | awk '{print $2}')

@@ -312,12 +312,73 @@ _large_file_gate_resolve_full_path() {
 }
 
 #######################################
+# Read the cited file's line count from the repository's current default
+# branch. This is the authoritative fallback when a runner's local checkout
+# may still predate a merged simplification PR.
+# Arguments: repo_slug, lf_path
+# Stdout: non-negative line count
+# Returns: 0 when verified, 1 when remote content is unavailable
+#######################################
+_large_file_gate_remote_default_line_count() {
+	local repo_slug="$1"
+	local lf_path="$2"
+	local default_branch=""
+	local content_json=""
+	local line_count=""
+
+	[[ "$repo_slug" == */* && -n "$lf_path" ]] || return 1
+	default_branch=$(gh api "repos/${repo_slug}" --jq '.default_branch // empty' 2>/dev/null) || return 1
+	[[ -n "$default_branch" ]] || return 1
+	content_json=$(gh api --method GET "repos/${repo_slug}/contents/${lf_path}" \
+		-f "ref=${default_branch}" 2>/dev/null) || return 1
+	line_count=$(printf '%s' "$content_json" | jq -er '
+		select(.type == "file" and .encoding == "base64" and (.content | type) == "string")
+		| (.content | gsub("\\s"; "") | @base64d) as $text
+		| if ($text | length) == 0 then 0
+		  else (($text | split("\n") | length) - (if ($text | endswith("\n")) then 1 else 0 end))
+		  end
+	' 2>/dev/null) || return 1
+	[[ "$line_count" =~ ^[0-9]+$ ]] || return 1
+	printf '%s' "$line_count"
+	return 0
+}
+
+#######################################
+# Verify that a local repository is currently at the remote default-branch
+# commit. Large-file measurements are unsafe when this check fails because a
+# just-merged split may not exist in the runner's canonical checkout yet.
+# Arguments: repo_path
+# Returns: 0 when exact, 1 when stale or unverifiable
+#######################################
+_large_file_gate_repo_matches_remote_default() {
+	local repo_path="$1"
+	local default_branch=""
+	local current_branch=""
+	local local_sha=""
+	local remote_line=""
+	local remote_sha=""
+
+	[[ -n "$repo_path" ]] || return 1
+	default_branch=$(git -C "$repo_path" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || return 1
+	default_branch="${default_branch#origin/}"
+	[[ -n "$default_branch" ]] || return 1
+	current_branch=$(git -C "$repo_path" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
+	[[ "$current_branch" == "$default_branch" ]] || return 1
+	local_sha=$(git -C "$repo_path" rev-parse HEAD 2>/dev/null) || return 1
+	remote_line=$(git -C "$repo_path" ls-remote --heads origin "refs/heads/${default_branch}" 2>/dev/null) || return 1
+	[[ -n "$remote_line" && "$remote_line" != *$'\n'* ]] || return 1
+	remote_sha="${remote_line%%[[:space:]]*}"
+	[[ "$remote_sha" =~ ^[0-9a-fA-F]{40}$ && "$local_sha" == "$remote_sha" ]]
+	return $?
+}
+
+#######################################
 # t2164 — verify whether a closed file-size-debt issue's PR actually
 # reduced the file below threshold. Returns:
-#   0 — "continuation is valid" (file now under threshold OR measurement
-#       unavailable; caller should emit the continuation reference)
-#   1 — file still over threshold; caller should reopen the canonical debt
-#       issue, and this helper has already logged the decision to $LOGFILE
+#   0 — "continuation is valid" (current default branch is under threshold OR
+#       authoritative measurement is unavailable; caller should not reopen)
+#   1 — current default branch is still over threshold; caller should reopen
+#       the canonical debt issue, and this helper logged the decision
 #
 # t2169: When the issue carries the `simplification-incomplete` label
 # (applied by the Simplification Outcome Check workflow when a merged PR
@@ -365,8 +426,22 @@ _large_file_gate_verify_prior_reduced_size() {
 		return 0
 	fi
 	if [[ "$_verify_lines" -ge "$LARGE_FILE_LINE_THRESHOLD" ]]; then
-		# File still over threshold — preserve one durable issue per path.
-		echo "[pulse-wrapper] Large-file gate: prior file-size-debt #${existing_issue} closed but ${lf_path} still ${_verify_lines} lines (threshold ${LARGE_FILE_LINE_THRESHOLD}); reopening canonical debt issue" >>"$LOGFILE"
+		# A local checkout can lag a just-merged simplification PR even after the
+		# best-effort canonical refresh. Never reopen a solved debt issue from
+		# stale disk state: verify the current remote default-branch blob first.
+		local _remote_lines=""
+		_remote_lines=$(_large_file_gate_remote_default_line_count "$repo_slug" "$lf_path") || _remote_lines=""
+		if [[ -z "$_remote_lines" ]]; then
+			echo "[pulse-wrapper] Large-file gate: local ${lf_path} is ${_verify_lines} lines but current remote content could not be verified; deferring canonical debt reopen for #${existing_issue}" >>"$LOGFILE"
+			return 0
+		fi
+		if [[ "$_remote_lines" -lt "$LARGE_FILE_LINE_THRESHOLD" ]]; then
+			echo "[pulse-wrapper] Large-file gate: stale local checkout reports ${lf_path} at ${_verify_lines} lines; remote default branch is ${_remote_lines} lines, so solved debt #${existing_issue} stays closed" >>"$LOGFILE"
+			return 0
+		fi
+		# Current remote content is still over threshold — preserve one durable
+		# issue per path and reopen only from this authoritative evidence.
+		echo "[pulse-wrapper] Large-file gate: prior file-size-debt #${existing_issue} closed but remote ${lf_path} still ${_remote_lines} lines (threshold ${LARGE_FILE_LINE_THRESHOLD}); reopening canonical debt issue" >>"$LOGFILE"
 		return 1
 	fi
 	# wc -l returned 0 (empty file / read error) — treat same as unavailable.
@@ -983,7 +1058,7 @@ _large_file_gate_issue_labels() {
 #   $5 - force_recheck (optional, default "false"; t1998 re-eval bypass)
 #
 # Exit codes:
-#   0 - gate applied (dispatch blocked)
+#   0 - gate applied or safely deferred (dispatch blocked)
 #   1 - gate not applied (dispatch may proceed)
 #######################################
 _issue_targets_large_files() {
@@ -1051,6 +1126,17 @@ _issue_targets_large_files() {
 			_large_file_gate_clear_stale_label "$issue_number" "$repo_slug" || return 0
 		fi
 		return 1
+	fi
+
+	# `_pulse_refresh_repo` is best-effort and canonical recovery may be delayed
+	# or unavailable on a contributor runner. When the pulse orchestration is
+	# loaded, require exact remote-default freshness before any local wc -l.
+	# A stale/unverifiable checkout blocks this candidate for one cycle without
+	# mutating issue labels or reopening debt issues.
+	if declare -F _pulse_refresh_repo >/dev/null 2>&1 \
+		&& ! _large_file_gate_repo_matches_remote_default "$repo_path"; then
+		echo "[pulse-wrapper] Large-file gate: deferring #${issue_number} (${repo_slug}); ${repo_path} is not at the verified remote default-branch commit" >>"$LOGFILE"
+		return 0
 	fi
 
 	_large_file_gate_collect_large_files "$all_paths" "$repo_path" "$issue_number"

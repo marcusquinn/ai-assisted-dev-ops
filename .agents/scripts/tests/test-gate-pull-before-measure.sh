@@ -4,17 +4,17 @@
 #
 # test-gate-pull-before-measure.sh — t2433/GH#20071 regression guard.
 #
-# Verifies that _pulse_refresh_repo pulls from remote BEFORE the large-file
-# gate measures wc -l on local files. Without the fix, the gate fires on
-# stale pre-split line counts after a split PR merges on GitHub but the
-# local repo hasn't pulled yet.
+# Verifies that the large-file gate never measures a stale canonical checkout.
+# `_pulse_refresh_repo` uses guarded canonical recovery and may legitimately
+# leave a runner stale; the gate must detect that state and defer without issue
+# mutations instead of trusting pre-split line counts.
 #
 # Tests:
 #   test_refresh_pulls_before_gate_measures
 #       Sandboxed git repo with a 2500-line file committed. A "remote" bare
 #       clone has the file shrunk to 500 lines. The local repo has NOT pulled.
-#       Calling _pulse_refresh_repo then measuring wc -l should see 500 lines
-#       (post-pull size), not 2500 (stale local size).
+#       Calling _pulse_refresh_repo may leave 2500 lines locally, but the
+#       remote-default freshness check must reject that checkout.
 #
 #   test_sentinel_prevents_double_pull
 #       After _pulse_refresh_repo is called once for a path, calling it again
@@ -27,9 +27,8 @@
 #       Path that is not a git work-tree returns 0 without errors.
 #
 #   test_triage_refresh_before_issue_targets_large_files
-#       Simulates _reevaluate_simplification_labels calling _pulse_refresh_repo
-#       in the outer repo loop, verifying the line count seen by
-#       _issue_targets_large_files reflects the post-pull state.
+#       Simulates triage after a guarded refresh cannot converge and verifies
+#       _issue_targets_large_files blocks for retry before measuring or mutating.
 #
 # Cross-references: GH#20071 (root cause), t2433 (this fix),
 #   GH#19964-#20023 (6 false-positive debt issues triggered by stale local copy)
@@ -178,8 +177,8 @@ test_refresh_pulls_before_gate_measures() {
 		return 0
 	fi
 
-	# Load _pulse_refresh_repo from pulse-wrapper.sh in a clean subshell to
-	# avoid contaminating the sentinel for other tests.
+	# Load the pulse and gate helpers in a clean subshell. Guarded canonical
+	# recovery may refuse this unregistered sandbox, which is expected.
 	# shellcheck disable=SC1090
 	local result
 	result=$(
@@ -187,14 +186,18 @@ test_refresh_pulls_before_gate_measures() {
 		source "${WRAPPER_SCRIPT}" --self-check >/dev/null 2>&1 || true
 		declare -A _PULSE_REFRESHED_THIS_CYCLE=()
 		_pulse_refresh_repo "$sandbox" 2>>"$LOGFILE"
-		wc -l <"${sandbox}/large-target.sh" | tr -d ' '
+		if _large_file_gate_repo_matches_remote_default "$sandbox"; then
+			printf 'fresh\n'
+		else
+			printf 'stale\n'
+		fi
 	)
 
-	if [[ "${result:-0}" -lt 2000 ]]; then
+	if [[ "$result" == "stale" ]]; then
 		print_result "test_refresh_pulls_before_gate_measures" 0
 	else
 		print_result "test_refresh_pulls_before_gate_measures" 1 \
-			"expected <2000 lines post-pull, got ${result:-?} (gate would false-positive)"
+			"expected stale checkout rejection, got ${result:-?}"
 	fi
 	return 0
 }
@@ -294,9 +297,10 @@ test_triage_refresh_before_issue_targets_large_files() {
 		return 0
 	}
 
-	# Simulate the scenario: before refresh, wc -l is >2000 (stale).
-	# After _pulse_refresh_repo, wc -l should be <500 (post-split).
-	local pre_pull_count post_pull_count
+	# Simulate triage with a stale pre-split checkout. Metadata reads are stubbed
+	# so this remains a local regression test with no GitHub writes.
+	local pre_pull_count post_pull_count gate_rc=0
+	local measure_marker="${TMP}/stale-measure-called"
 	pre_pull_count=$(wc -l <"${sandbox}/large-target.sh" | tr -d ' ')
 
 	# Run refresh in a subshell
@@ -305,17 +309,27 @@ test_triage_refresh_before_issue_targets_large_files() {
 		source "${WRAPPER_SCRIPT}" --self-check >/dev/null 2>&1 || true
 		declare -A _PULSE_REFRESHED_THIS_CYCLE=()
 		_pulse_refresh_repo "$sandbox" 2>>"$LOGFILE"
+		_large_file_gate_issue_labels() { printf ''; return 0; }
+		_large_file_gate_issue_title() { printf 'Issue 9999'; return 0; }
+		_large_file_gate_collect_large_files() {
+			printf 'called\n' >"$measure_marker"
+			return 0
+		}
+		_issue_targets_large_files "9999" "owner/repo" \
+			"## How"$'\n'"- EDIT: \`large-target.sh\`" "$sandbox" "true"
 	)
+	gate_rc=$?
 
 	post_pull_count=$(wc -l <"${sandbox}/large-target.sh" | tr -d ' ')
 
-	# The gate uses wc -l on the local file after refresh.
-	# post_pull_count should now be below threshold (500 < 2000).
-	if [[ "${pre_pull_count:-0}" -ge 2000 && "${post_pull_count:-9999}" -lt 2000 ]]; then
+	# Exit 0 blocks/defer-retries the candidate. The stale file remains untouched,
+	# and the collection marker proves no local line-count decision was made.
+	if [[ "${pre_pull_count:-0}" -ge 2000 && "${post_pull_count:-0}" -ge 2000 \
+		&& "$gate_rc" -eq 0 && ! -e "$measure_marker" ]]; then
 		print_result "test_triage_refresh_before_issue_targets_large_files" 0
 	else
 		print_result "test_triage_refresh_before_issue_targets_large_files" 1 \
-			"pre=${pre_pull_count} post=${post_pull_count} — expected pre>=2000 and post<2000"
+			"pre=${pre_pull_count} post=${post_pull_count} gate_rc=${gate_rc} — expected stale defer"
 	fi
 	return 0
 }

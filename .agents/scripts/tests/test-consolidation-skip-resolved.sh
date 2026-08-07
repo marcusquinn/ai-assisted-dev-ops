@@ -7,13 +7,15 @@
 # Covers the pre-flight resolved-parent gate added to
 # _dispatch_issue_consolidation:
 #   1. Gate 1: dispatch-blocked:committed-to-main label triggers skip
-#   2. Gate 2: state=CLOSED + stateReason=NOT_PLANNED triggers skip
-#   3. Gate 3a: ≥80% of #NNN refs in body are merged PRs triggers skip
-#   4. Gate 3b: <80% of #NNN refs are merged PRs proceeds (returns 1)
-#   5. Default proceed: no gate fires when parent is OPEN with no merged children
-#   6. Fail-open: gh API error proceeds rather than skipping
-#   7. Self-reference exclusion: parent's own #N not counted in Gate 3
-#   8. Skip marker comment is posted via _gh_idempotent_comment
+#   2. Gate 2: terminal completion labels trigger skip after accidental reopen
+#   3. Gate 3: a structurally linked merged closing PR triggers skip
+#   4. Gate 4: state=CLOSED + stateReason=NOT_PLANNED triggers skip
+#   5. Gate 5a: ≥80% of #NNN refs in body are merged PRs triggers skip
+#   6. Gate 5b: <80% of #NNN refs are merged PRs proceeds (returns 1)
+#   7. Default proceed: no gate fires when parent is OPEN with no merged children
+#   8. Fail-open: gh API error proceeds rather than skipping
+#   9. Self-reference exclusion: parent's own #N not counted in Gate 5
+#   10. Skip marker comment is posted via _gh_idempotent_comment
 #
 # Strategy: source pulse-triage.sh with a stubbed `gh` binary on PATH that
 # records every invocation and returns canned responses driven by env vars.
@@ -184,12 +186,52 @@ _make_issue_json() {
 	local state_reason="$2"
 	local labels_csv="$3"
 	local body="$4"
+	local closing_pr="${5:-}"
 	# Build labels array from CSV.
 	local labels_json
 	labels_json=$(printf '%s' "$labels_csv" | jq -Rc 'split(",") | map(select(length > 0) | {name: .})')
-	jq -n --arg state "$state" --arg sr "$state_reason" \
+	jq -n --arg state "$state" --arg sr "$state_reason" --arg closing_pr "$closing_pr" \
 		--argjson labels "$labels_json" --arg body "$body" \
-		'{state: $state, stateReason: $sr, labels: $labels, body: $body}'
+		'{state: $state, stateReason: $sr, labels: $labels, body: $body,
+		  closedByPullRequestsReferences: (if $closing_pr == "" then [] else [{number: ($closing_pr | tonumber)}] end)}'
+	return 0
+}
+
+test_gate2_terminal_completion_label() {
+	setup_stub
+	GH_ISSUE_JSON=$(_make_issue_json "OPEN" "" \
+		"auto-dispatch,solved:worker,file-size-debt" "Solved issue accidentally reopened.")
+	export GH_ISSUE_JSON
+
+	local rc=0
+	_consolidation_skip_if_resolved 150 "owner/repo" || rc=$?
+
+	if [[ "$rc" -eq 0 ]] && grep -q 'terminal completion label' "$LOGFILE" 2>/dev/null; then
+		print_result "Gate 2: solved label on reopened issue → skip" 0
+	else
+		print_result "Gate 2: solved label on reopened issue → skip" 1 \
+			"rc=$rc; pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_stub
+	return 0
+}
+
+test_gate3_merged_closing_pr() {
+	setup_stub
+	GH_ISSUE_JSON=$(_make_issue_json "OPEN" "" "auto-dispatch,file-size-debt" \
+		"No narrative PR references." "29702")
+	export GH_ISSUE_JSON GH_PR_29702_MERGED_AT="2026-08-07T08:21:59Z"
+
+	local rc=0
+	_consolidation_skip_if_resolved 151 "owner/repo" || rc=$?
+
+	if [[ "$rc" -eq 0 ]] && grep -q 'merged closing PR #29702' "$LOGFILE" 2>/dev/null; then
+		print_result "Gate 3: structurally linked merged closing PR → skip" 0
+	else
+		print_result "Gate 3: structurally linked merged closing PR → skip" 1 \
+			"rc=$rc; pulse log: $(cat "$LOGFILE")"
+	fi
+	teardown_stub
 	return 0
 }
 
@@ -424,6 +466,8 @@ test_count_merged_children_direct() {
 main() {
 	printf 'Running t3050 consolidator pre-flight gate tests\n\n'
 	test_gate1_committed_to_main_label
+	test_gate2_terminal_completion_label
+	test_gate3_merged_closing_pr
 	test_gate2_closed_not_planned
 	test_gate2_closed_completed_proceeds
 	test_gate3_high_merge_rate_skips
