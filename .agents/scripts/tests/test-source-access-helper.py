@@ -257,12 +257,14 @@ class SourceAccessHelperTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(dedicated_config.private_key.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(dedicated_config.public_key.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(dedicated_config.trust_marker.stat().st_mode), 0o644)
-        derived_public = subprocess.run(
+        derived_public_fields = subprocess.run(
             [HELPER.SSH_KEYGEN, "-y", "-f", str(dedicated_config.private_key)],
             check=True,
             capture_output=True,
             text=True,
-        ).stdout.strip()
+        ).stdout.split()
+        self.assertGreaterEqual(len(derived_public_fields), 2)
+        derived_public = " ".join(derived_public_fields[:2])
         self.assertEqual(dedicated_config.public_key.read_text(encoding="utf-8").strip(), derived_public)
         self.assertEqual(
             dedicated_config.trust_marker.read_text(encoding="utf-8"),
@@ -297,6 +299,26 @@ class SourceAccessHelperTests(unittest.TestCase):
         dedicated_config.private_key.chmod(0o600)
         with self.assertRaisesRegex(HELPER.SourceAccessError, "key binding"):
             HELPER.validate_key_material(dedicated_config)
+
+    def test_setup_canonicalizes_derived_public_key_comment(self) -> None:
+        canonical_public = self.config.public_key.read_bytes().strip()
+        commented_public = canonical_public + b" aidevops-source-access-signing\n"
+        derived_result = subprocess.CompletedProcess(
+            args=[HELPER.SSH_KEYGEN, "-y", "-f", str(self.config.private_key)],
+            returncode=0,
+            stdout=commented_public,
+            stderr=b"",
+        )
+
+        with mock.patch.object(HELPER._SOURCE_CORE, "_run", return_value=derived_result):
+            HELPER.setup_key_material(self.config)
+
+        self.assertEqual(self.config.public_key.read_bytes(), canonical_public + b"\n")
+        self.assertEqual(
+            self.config.trust_marker.read_bytes(),
+            HELPER._SOURCE_CORE._trust_marker_content(canonical_public),
+        )
+        HELPER.validate_key_material(self.config)
 
     def test_setup_records_existing_dedicated_key_binding(self) -> None:
         derived_public = self.config.public_key.read_text(encoding="utf-8").strip()

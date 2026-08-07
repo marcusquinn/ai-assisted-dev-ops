@@ -386,12 +386,17 @@ def _derive_public_key(config: Config) -> bytes:
         ]
     )
     _require_source(result.returncode == 0, "failed to derive the source-access verification key")
-    public_key = result.stdout.strip()
+    public_key_output = result.stdout.strip()
+    public_key_parts = public_key_output.split()
     _require_source(
-        public_key.startswith(b"ssh-ed25519 ") and b"\n" not in public_key,
+        len(public_key_parts) >= 2
+        and public_key_parts[0] == b"ssh-ed25519"
+        and bool(public_key_parts[1])
+        and b"\n" not in public_key_output
+        and b"\r" not in public_key_output,
         "failed to derive a valid source-access verification key",
     )
-    return public_key
+    return b" ".join(public_key_parts[:2])
 
 
 def _trust_marker_content(public_key: bytes) -> bytes:
