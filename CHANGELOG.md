@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.232] - 2026-08-07
+
+### Changed
+
+- Maintenance: Record merged completion proof
+
+### Fixed
+
+- route TODO publication through protected PRs (#29681)
+- bound routed review supersession windows (#29678)
+
 ## [3.32.231] - 2026-08-07
 
 ### Added
