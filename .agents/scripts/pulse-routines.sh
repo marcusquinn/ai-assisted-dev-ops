@@ -614,6 +614,24 @@ _routine_schedule_is_due() {
 }
 
 #######################################
+# Return whether another deferrable routine work unit may start.
+#######################################
+_routine_rest_core_allows_next() {
+	local context="$1"
+	local budget_rc=0
+	if declare -F pulse_rest_core_priority_allows_next >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows_next deferrable "$context" || budget_rc=$?
+	elif declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
+		pulse_rest_core_priority_allows deferrable || budget_rc=$?
+	else
+		return 0
+	fi
+	[[ "$budget_rc" -eq 0 ]] && return 0
+	echo "[pulse-wrapper] evaluate_routines: REST-core reserve reached at ${context}; remaining routine work deferred (GH#29742)" >>"$LOGFILE"
+	return 1
+}
+
+#######################################
 # Evaluate routines across all pulse-enabled repos
 #
 # Reads TODO.md from each pulse-enabled repo, extracts enabled routines
@@ -622,6 +640,9 @@ _routine_schedule_is_due() {
 evaluate_routines() {
 	local publication_worker="${SCRIPT_DIR}/task-publication-worker-helper.sh"
 	if [[ -x "$publication_worker" ]]; then
+		if ! _routine_rest_core_allows_next "routine_publication_worker"; then
+			return 0
+		fi
 		"$publication_worker" run >>"$LOGFILE" 2>&1 || echo "[pulse-wrapper] publication worker pass failed" >>"$LOGFILE"
 	fi
 	if [[ ! -x "$ROUTINE_SCHEDULE_HELPER" ]]; then
@@ -679,6 +700,9 @@ evaluate_routines() {
 			timezone_context="${_RPL_TIMEZONE:-inherited}"
 
 			if _routine_schedule_is_due "$_RPL_REPEAT" "$last_epoch" "$_RPL_TIMEZONE"; then
+				if ! _routine_rest_core_allows_next "routine_execute:${_RPL_ID}"; then
+					return 0
+				fi
 				echo "[pulse-wrapper] routine ${_RPL_ID} is due (expr=${_RPL_REPEAT}, timezone=${timezone_context}, last_run_epoch=${last_epoch})" >>"$LOGFILE"
 				_routine_execute "$_RPL_ID" "$_RPL_DESC" "$_RPL_RUN" "$_RPL_AGENT" "$repo_path"
 				routines_dispatched=$((routines_dispatched + 1))

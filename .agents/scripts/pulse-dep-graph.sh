@@ -36,29 +36,9 @@ _pulse_dep_graph_dir="${BASH_SOURCE[0]%/*}"
 [[ "$_pulse_dep_graph_dir" == "${BASH_SOURCE[0]}" ]] && _pulse_dep_graph_dir="."
 # shellcheck source=./task-identity-lib.sh
 source "${_pulse_dep_graph_dir}/task-identity-lib.sh"
+# shellcheck source=./issue-hold-marker-lib.sh
+source "${_pulse_dep_graph_dir}/issue-hold-marker-lib.sh"
 unset _pulse_dep_graph_dir
-
-#######################################
-# Body defer/hold marker detection (t2031)
-#
-# A `status:blocked` label may have been applied for reasons other than
-# the blocked-by chain — most commonly a human-imposed hold phrased in
-# the issue body like "Defer until X" or "On hold". The refresh routine
-# must not auto-unblock those. This helper runs at cache build time and
-# at assertion time in the regression test; keep the regex in sync
-# across both copies.
-#
-# Arguments: $1 - issue body text
-# Outputs:   boolean text on stdout
-#######################################
-_body_has_defer_marker() {
-	local body="$1"
-	if printf '%s' "$body" | grep -qiE 'defer until|do[-[:space:]]not[-[:space:]]dispatch|on[-[:space:]]hold|HUMAN_UNBLOCK_REQUIRED|hold for |paused[[:space:]:]'; then
-		echo "true"
-	else
-		echo "${DEP_FALSE}"
-	fi
-}
 
 #######################################
 # Parse a single issue for the dep-graph cache (t2031 refactor)
@@ -134,7 +114,7 @@ _dep_graph_process_issue_json() {
 
 	# Body defer/hold marker detection (t2031).
 	local has_defer_marker
-	has_defer_marker=$(_body_has_defer_marker "$body")
+	has_defer_marker=$(issue_body_has_defer_marker "$body")
 
 	# Single jq call merges every accumulator update in one pass.
 	# Keeps the shell shorter and guarantees compact single-line output.

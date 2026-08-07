@@ -528,6 +528,11 @@ dispatch_max() {
 		echo 0
 		return 0
 	fi
+	if ! _dispatch_rest_core_progress_allows_next "dispatch_post_ranking"; then
+		echo "[pulse-wrapper] Dispatch_max stopped after candidate ranking: REST-core launch headroom is unavailable" >>"$LOGFILE"
+		echo 0
+		return 0
+	fi
 
 	local self_login
 	self_login=$(gh api user --jq '.login' 2>/dev/null || echo "")
@@ -550,6 +555,11 @@ dispatch_max() {
 	[[ "$triage_attempted" =~ ^[0-9]+$ ]] || triage_attempted=0
 	[[ "$triage_infrastructure_failed" =~ ^[0-9]+$ ]] || triage_infrastructure_failed=0
 	pulse_dispatch_debug_log "post-prepasses available_slots=${available_slots} triage_attempted=${triage_attempted} triage_infrastructure_failed=${triage_infrastructure_failed}"
+	if ! _dispatch_rest_core_progress_allows_next "dispatch_post_prepasses"; then
+		echo "[pulse-wrapper] Dispatch_max stopped after prepasses: REST-core launch headroom is unavailable" >>"$LOGFILE"
+		echo 0
+		return 0
+	fi
 	candidates_json=$(_dispatch_order_idle_borrowing_candidates "$candidates_json" "$available_slots")
 
 	# Reset module-level round state before the dispatch loop (t1959).

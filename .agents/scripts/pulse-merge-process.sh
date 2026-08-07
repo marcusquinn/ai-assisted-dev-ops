@@ -312,9 +312,9 @@ _PULSE_MERGE_PROCESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_PULSE_MERGE_PROCESS_DIR}/pulse-merge-duplicate-consolidation.sh"
 
 #######################################
-# Enrich one PR inside the durable PR-cursor boundary. A budget edge after any
-# potentially blocking enrichment phase returns 5 so the caller persists the
-# current PR as the next item rather than starting another network phase.
+# Enrich one PR inside the durable PR-cursor boundary. A time-budget edge returns
+# 5 and a REST-core launch-floor edge returns 6 after any potentially blocking
+# phase so the caller persists the current PR before another network phase.
 # Args: $1=repo slug, $2=PR object
 # Stdout: enriched PR object
 #######################################
@@ -327,10 +327,13 @@ _pmp_enrich_single_pr_for_processing() {
 	enriched_json=$(jq -cn --argjson pr "$pr_obj" '[$pr]' 2>/dev/null) || return 1
 	enriched_json=$(_pmp_enrich_prs_with_mergeability "$repo_slug" "$enriched_json") || return 1
 	_pmp_merge_pass_budget_exhausted && return 5
+	_pmp_rest_core_priority_allows_next progress "merge_enrichment_mergeability:${repo_slug}" || return 6
 	enriched_json=$(_pmp_enrich_prs_with_rest_check_status "$repo_slug" "$enriched_json") || return 1
 	_pmp_merge_pass_budget_exhausted && return 5
+	_pmp_rest_core_priority_allows_next progress "merge_enrichment_checks:${repo_slug}" || return 6
 	enriched_json=$(_pmp_enrich_prs_with_review_decisions "$repo_slug" "$enriched_json") || return 1
 	_pmp_merge_pass_budget_exhausted && return 5
+	_pmp_rest_core_priority_allows_next progress "merge_enrichment_reviews:${repo_slug}" || return 6
 
 	printf '%s' "$enriched_json" | jq -c '.[0] // empty' 2>/dev/null || return 1
 	return 0
@@ -370,6 +373,10 @@ _pmp_prepare_pr_at_cursor() {
 		_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" cooldown "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
 		return $?
 	fi
+	if ! _pmp_rest_core_priority_allows_next progress "merge_pr:${repo_slug}"; then
+		_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" rest-core "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
+		return $?
+	fi
 
 	prepared_pr_obj=$(_pmp_pr_object_at_index "$pr_json" "$cursor_index")
 	if [[ -n "$prepared_pr_obj" ]]; then
@@ -378,8 +385,10 @@ _pmp_prepare_pr_at_cursor() {
 		# eligibility state from bounded REST endpoints.
 		prepared_pr_obj=$(printf '%s' "$prepared_pr_obj" | jq -c 'del(.mergeable, .reviewDecision, .statusCheckRollup)') || return 1
 		enriched_pr_obj=$(_pmp_enrich_single_pr_for_processing "$repo_slug" "$prepared_pr_obj") || enrichment_rc=$?
-		if [[ "$enrichment_rc" -eq 5 ]]; then
-			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" budget "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
+		if [[ "$enrichment_rc" -eq 5 || "$enrichment_rc" -eq 6 ]]; then
+			local pause_reason="budget"
+			[[ "$enrichment_rc" -eq 6 ]] && pause_reason="rest-core"
+			_pmp_pause_merge_pr_cursor "$repo_slug" "$pr_json" "$cursor_index" "$pause_reason" "$merged_var" "$closed_var" "$failed_var" "$merged_count" "$closed_count" "$failed_count" "$required_contexts_cache_dir" "$author_permission_cache_dir"
 			return $?
 		fi
 		if [[ "$enrichment_rc" -ne 0 || -z "$enriched_pr_obj" ]]; then
