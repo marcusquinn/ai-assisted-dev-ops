@@ -122,6 +122,43 @@ _build_inline_findings() {
 	return 0
 }
 
+# _reconcile_review_history: remove explicit closeout reviews and the earlier
+# top-level findings they supersede for the same reviewer. GitHub can retain an
+# old CHANGES_REQUESTED state after merge even when that reviewer later records
+# an explicit clean closeout (GH#29746). --include-positive preserves raw review
+# history for debugging.
+# Arguments: $1=reviews_json $2=include_positive (true|false)
+_reconcile_review_history() {
+	local reviews="$1"
+	local include_positive="$2"
+
+	printf '%s' "$reviews" | jq \
+		--argjson include_positive "$([[ "$include_positive" == "true" ]] && echo 'true' || echo 'false')" '
+		def explicit_closure:
+			(.body // "") | test(
+				"(?s)^##[[:space:]]+Review:[[:space:]]+Approve\\b.*" +
+				"\\bno blocking\\b[^.\\n]{0,200}\\b(findings?|concerns?|issues?)\\b[^.\\n]{0,40}\\bremains?\\b";
+				"i"
+			);
+		if $include_positive then .
+		else
+			([.[] |
+				select(explicit_closure) |
+				{login: .user.login, submitted_at: (.submitted_at // "")}
+			]) as $closure_reviews |
+			[.[] |
+				(.user.login) as $login |
+				(.submitted_at // "") as $submitted_at |
+				select((explicit_closure | not) and ([
+					$closure_reviews[] |
+					select(.login == $login and .submitted_at > $submitted_at)
+				] | length == 0))
+			]
+		end
+	' || echo "[]"
+	return 0
+}
+
 # _prefilter_reviews: first-pass filter on review bodies.
 # Adds reviewer, severity fields; removes summary-only bot reviews and
 # reviews below min_severity. Outputs an intermediate JSON array.
@@ -344,6 +381,7 @@ _build_review_findings() {
 	local min_severity="$3"
 	local inline_counts_json="$4"
 	local include_positive="$5"
+	reviews=$(_reconcile_review_history "$reviews" "$include_positive") || reviews="[]"
 
 	# Pass 1: severity + summary-only filtering
 	local prefiltered
