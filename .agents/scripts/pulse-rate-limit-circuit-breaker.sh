@@ -15,8 +15,8 @@
 #
 # Subcommands:
 #   check   — exit 0 if budget is sufficient (dispatch may proceed),
-#             exit 1 if tripped (dispatch should be deferred),
-#             exit 2 on API error (fail-open: dispatch proceeds with warning)
+#             exit 1 if tripped or REST evidence blocks dispatch,
+#             exit 2 when GraphQL is unavailable after REST authorizes fail-open
 #   status  — print human-readable status to stdout (for `aidevops status`)
 #   help    — usage information
 #
@@ -520,12 +520,32 @@ _cb_allow_dispatch_with_rest_fallback() {
 }
 
 #######################################
+# Gate GraphQL projection failures through independent REST-core evidence.
+#
+# Args:
+#   $1 - diagnostic reason the GraphQL projection is unusable.
+#
+# Returns: 1 when REST blocks dispatch; 2 when REST authorizes GraphQL fail-open.
+#######################################
+_cb_graphql_projection_unavailable() {
+	local reason="$1"
+	echo "${_CB_RL_LOG_PREFIX} WARNING: ${reason}; checking the independent REST-core progress gate before GraphQL fail-open" >>"$LOGFILE"
+	if ! _cb_rest_core_progress_allows_dispatch; then
+		return 1
+	fi
+
+	echo "${_CB_RL_LOG_PREFIX} WARNING: GraphQL projection unavailable but authoritative REST-core evidence permits progress — proceeding with dispatch (fail-open)" >>"$LOGFILE"
+	return 2
+}
+
+#######################################
 # Check whether the GitHub GraphQL rate-limit budget is sufficient for dispatch.
 # Falls back to REST-backed dispatch when GraphQL is exhausted but REST core has
 # enough headroom for issue/comment/label operations.
 #
 # Returns: 0 when dispatch may proceed, 1 when a known floor or unknown REST
-# observation should defer, 2 when the GraphQL projection itself is unavailable.
+# observation should defer, 2 when GraphQL is unavailable after REST authorizes
+# fail-open dispatch.
 #######################################
 is_graphql_budget_sufficient() {
 	# Emergency bypass.
@@ -549,8 +569,8 @@ is_graphql_budget_sufficient() {
 	rate_json=$(_cb_rate_limit_json normal) || rate_json=""
 
 	if [[ -z "$rate_json" ]]; then
-		echo "${_CB_RL_LOG_PREFIX} WARNING: gh api rate_limit failed — proceeding with dispatch (fail-open)" >>"$LOGFILE"
-		return 2
+		_cb_graphql_projection_unavailable "gh api rate_limit failed"
+		return $?
 	fi
 
 	local remaining="" limit=""
@@ -558,14 +578,14 @@ is_graphql_budget_sufficient() {
 	limit=$(printf '%s' "$rate_json" | jq -r '.resources.graphql.limit // ""') || limit=""
 
 	if [[ ! "$remaining" =~ ^[0-9]+$ ]] || [[ ! "$limit" =~ ^[0-9]+$ ]]; then
-		echo "${_CB_RL_LOG_PREFIX} WARNING: could not parse GraphQL rate-limit response (remaining='${remaining}', limit='${limit}') — proceeding (fail-open)" >>"$LOGFILE"
-		return 2
+		_cb_graphql_projection_unavailable "could not parse GraphQL rate-limit response (remaining='${remaining}', limit='${limit}')"
+		return $?
 	fi
 
 	# Avoid division by zero.
 	if [[ "$limit" -eq 0 ]]; then
-		echo "${_CB_RL_LOG_PREFIX} WARNING: GraphQL limit is 0 — proceeding (fail-open)" >>"$LOGFILE"
-		return 2
+		_cb_graphql_projection_unavailable "GraphQL limit is 0"
+		return $?
 	fi
 
 	# Compute threshold as integer: threshold_count = ceil(threshold * limit).
@@ -853,7 +873,7 @@ _main() {
 		echo "pulse-rate-limit-circuit-breaker.sh — Pulse GraphQL breaker + REST priority budget + Actions queue saturation"
 		echo ""
 		echo "Usage:"
-		echo "  pulse-rate-limit-circuit-breaker.sh check                          # exit 0=OK, 1=tripped, 2=API error"
+		echo "  pulse-rate-limit-circuit-breaker.sh check                          # exit 0=OK, 1=blocked, 2=GraphQL unavailable after REST allows"
 		echo "  pulse-rate-limit-circuit-breaker.sh check-actions-queue OWNER/REPO # KEY=VALUE: queued/in_progress/ratio/saturated"
 		echo "  pulse-rate-limit-circuit-breaker.sh status [--cached]              # human-readable status line"
 		echo ""

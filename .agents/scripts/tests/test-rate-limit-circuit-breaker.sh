@@ -7,7 +7,7 @@
 # Asserts the pulse-level GraphQL rate-limit circuit breaker:
 #   1. Trips when remaining <= threshold (e.g. 4/5000 at 5% threshold)
 #   2. Does NOT trip when remaining > threshold (e.g. 1000/5000)
-#   3. Fails open on API error (gh api rate_limit unreachable)
+#   3. GraphQL API errors fail open only after authoritative REST evidence allows
 #   4. Emergency bypass via AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1
 #   5. GraphQL floor disabled when threshold=0 while REST safety remains active
 #   6. Status output includes correct state
@@ -89,7 +89,9 @@ export -f pulse_stats_increment pulse_stats_get_24h
 #   STUB_GH_CORE_REMAINING — REST core remaining value (unset omits core budget)
 #   STUB_GH_CORE_RESET — REST core reset epoch (default: now+3600)
 #   STUB_GH_RESET     — GraphQL reset epoch (default: now+3600)
-#   STUB_GH_FAIL      — 1 to make gh api rate_limit fail entirely
+#   STUB_GH_FAIL      — 1 to make all gh API probes fail
+#   STUB_GH_RATE_FAIL — 1 to make only gh api rate_limit fail
+#   STUB_GH_RATE_JSON — raw gh api rate_limit response override
 gh() {
 	if [[ "$1" == "api" && "$2" == "-i" && "$3" == "user" ]]; then
 		printf 'rest-core\n' >>"$GH_REST_CALLS"
@@ -109,8 +111,12 @@ gh() {
 	if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 		printf 'rate-limit\n' >>"$GH_RATE_CALLS"
 		[[ "${STUB_GH_DELAY:-0}" == "0" ]] || sleep "$STUB_GH_DELAY"
-		if [[ "${STUB_GH_FAIL:-0}" == "1" ]]; then
+		if [[ "${STUB_GH_FAIL:-0}" == "1" || "${STUB_GH_RATE_FAIL:-0}" == "1" ]]; then
 			return 1
+		fi
+		if [[ -n "${STUB_GH_RATE_JSON:-}" ]]; then
+			printf '%s\n' "$STUB_GH_RATE_JSON"
+			return 0
 		fi
 		local remaining="${STUB_GH_REMAINING:-5000}"
 		local limit="${STUB_GH_LIMIT:-5000}"
@@ -182,6 +188,8 @@ reset_test_state() {
 	unset STUB_GH_CORE_LIMIT 2>/dev/null || true
 	unset STUB_GH_CORE_RESET 2>/dev/null || true
 	unset STUB_GH_FAIL 2>/dev/null || true
+	unset STUB_GH_RATE_FAIL 2>/dev/null || true
+	unset STUB_GH_RATE_JSON 2>/dev/null || true
 	unset STUB_GH_DELAY 2>/dev/null || true
 	STUB_GH_REMAINING=5000
 	STUB_GH_LIMIT=5000
@@ -258,16 +266,75 @@ test_breaker_passes_just_above_threshold() {
 	return 0
 }
 
-# --- Test 5: Fail-open on API error ---
-test_fail_open_on_api_error() {
+# --- Test 5: A total API outage leaves REST evidence unknown and fails closed ---
+test_api_error_with_unknown_rest_fails_closed() {
 	reset_test_state
 	STUB_GH_FAIL=1
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
-	if [[ "$rc" -eq 2 ]]; then
-		pass "fails open on API error (rc=2)"
+	if [[ "$rc" -eq 1 ]] && grep -qF 'authoritative REST-core quota evidence unavailable' "$LOGFILE"; then
+		pass "GraphQL API error fails closed when REST evidence is unavailable"
 	else
-		fail "should fail open on API error (rc=$rc, expected 2)"
+		fail "GraphQL API error should not bypass unknown REST evidence" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5b: GraphQL API failure keeps fail-open only with healthy REST ---
+test_graphql_api_error_with_healthy_rest_fails_open() {
+	reset_test_state
+	STUB_GH_RATE_FAIL=1
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 2 ]] && grep -qF 'authoritative REST-core evidence permits progress' "$LOGFILE"; then
+		pass "GraphQL API error fails open only after healthy REST authorization"
+	else
+		fail "healthy REST should authorize GraphQL fail-open" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5c: GraphQL API failure cannot bypass the REST hard floor ---
+test_graphql_api_error_respects_rest_hard_floor() {
+	reset_test_state
+	STUB_GH_RATE_FAIL=1
+	STUB_GH_CORE_REMAINING=10
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+		pass "GraphQL API error respects the REST hard floor"
+	else
+		fail "GraphQL API error should not bypass the REST hard floor" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5d: Malformed GraphQL projection cannot bypass the REST hard floor ---
+test_malformed_graphql_projection_respects_rest_hard_floor() {
+	reset_test_state
+	STUB_GH_RATE_JSON='{"resources":{"graphql":{"remaining":"bad","limit":5000}}}'
+	STUB_GH_CORE_REMAINING=10
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
+		pass "malformed GraphQL projection respects the REST hard floor"
+	else
+		fail "malformed GraphQL projection should not bypass the REST hard floor" "rc=$rc"
+	fi
+	return 0
+}
+
+# --- Test 5e: Zero GraphQL limit cannot bypass the REST hard floor ---
+test_zero_graphql_limit_respects_rest_hard_floor() {
+	reset_test_state
+	STUB_GH_LIMIT=0
+	STUB_GH_CORE_REMAINING=10
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'GraphQL limit is 0' "$LOGFILE"; then
+		pass "zero GraphQL limit respects the REST hard floor"
+	else
+		fail "zero GraphQL limit should not bypass the REST hard floor" "rc=$rc"
 	fi
 	return 0
 }
@@ -1016,7 +1083,11 @@ test_breaker_trips_below_threshold
 test_breaker_trips_at_threshold
 test_breaker_passes_above_threshold
 test_breaker_passes_just_above_threshold
-test_fail_open_on_api_error
+test_api_error_with_unknown_rest_fails_closed
+test_graphql_api_error_with_healthy_rest_fails_open
+test_graphql_api_error_respects_rest_hard_floor
+test_malformed_graphql_projection_respects_rest_hard_floor
+test_zero_graphql_limit_respects_rest_hard_floor
 test_emergency_bypass
 test_disabled_at_zero_threshold
 test_zero_graphql_threshold_keeps_rest_safety
