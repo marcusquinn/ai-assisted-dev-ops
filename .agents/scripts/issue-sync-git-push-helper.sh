@@ -217,7 +217,6 @@ issue_sync_seed_branch_task_additions() {
 	issue_sync_task_ids "$winner_lines" >"$winner_ids" || return 1
 	cmp -s "$branch_additions" "$winner_ids" || return 1
 
-	printf '\n' >>"$current_file" || return 1
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		printf '%s\n' "$line" >>"$current_file" || return 1
 	done <"$winner_lines"
@@ -289,6 +288,26 @@ issue_sync_dedupe_concurrent_task_additions() {
 	fi
 	mv "$filtered_todo" "$todo_file" || return 1
 	echo "::notice::Selected the richest live TODO.md entry for concurrent stale-branch task additions"
+	return 0
+}
+
+issue_sync_trim_projection_tail() {
+	local todo_file="$1"
+	local state_dir="$2"
+	local trimmed_todo="${state_dir}/trimmed-todo"
+	if ! awk '
+		{ lines[NR] = $0 }
+		$0 !~ /^[[:space:]]*$/ { last_content = NR }
+		END {
+			if (last_content == 0) { exit 1 }
+			for (line_num = 1; line_num <= last_content; line_num += 1) {
+				print lines[line_num]
+			}
+		}
+	' "$todo_file" >"$trimmed_todo"; then
+		return 1
+	fi
+	mv "$trimmed_todo" "$todo_file" || return 1
 	return 0
 }
 
@@ -399,6 +418,7 @@ issue_sync_prepare_pr_snapshot() {
 		"$sync_todo" "$state_dir" || return 1
 	issue_sync_merge_todo_file "${state_dir}/merged-todo" "$sync_ancestor" "$sync_todo" || return 1
 	issue_sync_dedupe_concurrent_task_additions "${state_dir}/merged-todo" "$state_dir" || return 1
+	issue_sync_trim_projection_tail "${state_dir}/merged-todo" "$state_dir" || return 1
 	return 0
 }
 

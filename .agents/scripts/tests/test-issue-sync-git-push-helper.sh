@@ -430,6 +430,7 @@ test_stale_pr_concurrent_task_addition_deduplicates() {
 	local remote_todo=""
 	local current_winner_count=0
 	local incoming_winner_count=0
+	local trailing_blank_count=0
 
 	create_origin "$origin_dir" "$seed_dir"
 	git -C "$seed_dir" checkout -b aidevops/issue-sync-todo >/dev/null
@@ -466,7 +467,10 @@ EOF
 		grep -cE '^[[:space:]]*- \[[ x-]\][[:space:]]+t9004([[:space:]]|$)' || true)
 	incoming_winner_count=$(printf '%s\n' "$remote_todo" |
 		grep -cE '^[[:space:]]*- \[[ x>-]\][[:space:]]+t9005([[:space:]]|$)' || true)
+	trailing_blank_count=$(git --git-dir="$origin_dir" show "${sync_ref}:TODO.md" |
+		awk 'NF { last_content = NR } END { print NR - last_content }') || return 1
 	if [[ "$current_winner_count" -ne 1 || "$incoming_winner_count" -ne 1 ||
+		"$trailing_blank_count" -ne 0 ||
 		"$remote_todo" != *"t9004 canonical task with richer metadata"* ||
 		"$remote_todo" == *"t9004 stale issue projection"* ||
 		"$remote_todo" != *"t9005 queued completion with proof"* ||
@@ -533,7 +537,7 @@ EOF
 - [ ] t9014 fenced example ref:GH#9014
 ```
 EOF
-	printf '\n- [ ] t9014 live stale-branch task ref:GH#9014\n' >>"$incoming_file"
+	printf '\n- [ ] t9014 live stale-branch task ref:GH#9014\n\n' >>"$incoming_file"
 	mkdir -p "$state_dir"
 	if ! (
 		# shellcheck source=../issue-sync-git-push-helper.sh
@@ -542,10 +546,12 @@ EOF
 		issue_sync_seed_branch_task_additions "$current_file" "$incoming_file" "$state_dir"
 		issue_sync_merge_todo_file "$current_file" "$ancestor_file" "$incoming_file"
 		issue_sync_dedupe_concurrent_task_additions "$current_file" "$state_dir"
+		issue_sync_trim_projection_tail "$current_file" "$state_dir"
 	); then
 		fail "same-hunk pseudo tasks do not replace live branch additions"
 	elif [[ "$(<"$current_file")" != *"t9014 fenced example"* ||
-	"$(<"$current_file")" != *"t9014 live stale-branch task"* ]]; then
+	"$(<"$current_file")" != *"t9014 live stale-branch task"* ||
+	"$(awk 'NF { last_content = NR } END { print NR - last_content }' "$current_file")" -ne 0 ]]; then
 		fail "same-hunk pseudo tasks do not replace live branch additions"
 	else
 		pass "same-hunk pseudo tasks do not replace live branch additions"
