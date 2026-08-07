@@ -65,7 +65,7 @@ issue `#29674` and records runtime verification plus the authorized release path
 - **Rationale:** The current linked worktree already contains the complete implementation and focused regression evidence; a partial seed would not reduce discovery.
 - **Status:** `not-created`
 - **Freshness evidence:** Exact target review, duplicate discovery, focused tests, and the changed-file local quality gate ran against the current worktree.
-- **Verification run:** 31 focused Node tests, the full 567-test OpenCode plugin suite, 12 focused shell suites (including production parallel/xargs generated-agent and OAuth-pool selector paths), ShellCheck/Bash syntax, and `.agents/scripts/linters-local.sh` pass.
+- **Verification run:** 31 focused Node tests, the full 573-test OpenCode plugin suite, 12 focused shell suites (including production parallel/xargs generated-agent and OAuth-pool selector paths), ShellCheck/Bash syntax, and `.agents/scripts/linters-local.sh` pass.
 - **Stale-assumption warning:** Rebuild evidence if `origin/main` changes any routing, observability, release, or worker-dispatch target during rebase.
 
 ## How (Approach)

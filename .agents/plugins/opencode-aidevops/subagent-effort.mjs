@@ -2,13 +2,7 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { existsSync, readFileSync } from "fs";
-import {
-  routingCandidateIndex,
-  routingCandidates,
-  routingModelIdentity,
-  routingTierForModel,
-  selectConnectedRoutingCandidate,
-} from "./model-routing.mjs";
+import { createSubagentEffortHandlers } from "./subagent-effort-handlers.mjs";
 
 const VARIANT_RANK = {
   none: 0,
@@ -207,136 +201,23 @@ export function createSubagentEffortHooks(client, options = {}) {
     options.providerStateTtlMs ?? 30000,
   );
 
-  return {
-    chatMessage: async (_input, output) => {
-      const message = output?.message || {};
-      const sessionID = message.sessionID;
-      if (!sessionID) return;
-
-      const now = Date.now();
-      prunePolicies(policies, now);
-      const text = messageText(output.parts);
-      const agentName = String(message.agent ?? message.mode ?? "");
-      const route = routedPolicy(agentRoutingState, agentName, text);
-      const policy = {
-        effort: route.effort,
-        reason: route.pinned ? "explicit_model" : route.reason,
-        attempt: 0,
-        createdAt: now,
-      };
-      policies.set(sessionID, policy);
-
-      if (!modelRouting || route.pinned) return;
-      const candidates = routingCandidates(modelRouting, route.effort);
-      if (candidates.length === 0) {
-        throw new Error(`[aidevops] Model routing tier '${route.effort}' is disabled`);
-      }
-      let childSession;
-      try {
-        childSession = await getSession(client, sessionID);
-      } catch {
-        return;
-      }
-      if (!childSession.parentID) return;
-
-      const providerState = await resolveProviderState();
-      if (!providerState) {
-        policy.reason = "provider_state_unavailable_inherit";
-        return;
-      }
-      const routedModel = selectConnectedRoutingCandidate(
-        modelRouting,
-        route.effort,
-        providerState,
-      );
-      if (!routedModel) {
-        throw new Error(`[aidevops] No connected model is available for '${route.effort}' routing`);
-      }
-      message.model = routingModelIdentity(routedModel);
-      policy.routedModel = routedModel;
-      policy.candidateIndex = routingCandidateIndex(modelRouting, route.effort, routedModel);
-      policy.parentSessionID = childSession.parentID;
-    },
-
-    chatParams: async (input, output) => {
-      const sessionID = input?.message?.sessionID;
-      if (!sessionID) return;
-
-      try {
-        const childSession = await getSession(client, sessionID);
-        const childModel = modelIdentity({
-          providerID: input?.provider?.id ?? input?.model?.providerID,
-          modelID: input?.model?.id ?? input?.model?.modelID,
-        });
-        const currentVariant = extractVariant(input.message)
-          || output?.options?.reasoningEffort
-          || output?.options?.reasoning_effort
-          || extractVariant(input.model);
-        if (!childSession.parentID) {
-          const rootTier = routingTierForModel(modelRouting, childModel);
-          const dispatchTier = process.env.AIDEVOPS_DISPATCH_TIER || "";
-          if (rootTier && !dispatchTier && typeof onRoutingDecision === "function") {
-            const routedVariant = resolveTierReasoning(
-              rootTier,
-              input?.provider?.id,
-              input?.model?.id,
-              tierReasoning,
-            );
-            await onRoutingDecision(sessionID, {
-              tier: rootTier,
-              model: childModel === "/" ? "" : childModel,
-              variant: currentVariant || routedVariant,
-              candidateIndex: routingCandidateIndex(modelRouting, rootTier, childModel),
-              attempt: 1,
-              reason: "model_profile",
-            });
-          }
-          return;
-        }
-
-        const policy = policies.get(sessionID);
-        const desiredEffort = policy?.effort
-          ?? inferSubagentEffort(input.message.agent ?? childSession.agent);
-        const requestedVariant = resolveTierReasoning(
-          desiredEffort,
-          input?.provider?.id,
-          input?.model?.id,
-          tierReasoning,
-        );
-        const parentRoute = await getParentRoute(client, childSession);
-        let effectiveVariant = requestedVariant || currentVariant;
-        if (
-          requestedVariant
-          && parentRoute.variant
-          && parentRoute.model
-          && parentRoute.model === childModel
-        ) {
-          effectiveVariant = clampReasoningVariant(requestedVariant, parentRoute.variant);
-        }
-
-        if (requestedVariant) {
-          output.options.reasoningEffort = effectiveVariant;
-          if (Object.hasOwn(output.options, "reasoning_effort")) {
-            output.options.reasoning_effort = effectiveVariant;
-          }
-        }
-
-        if (typeof onRoutingDecision === "function") {
-          if (policy) policy.attempt += 1;
-          await onRoutingDecision(sessionID, {
-            parentSessionID: policy?.parentSessionID || childSession.parentID,
-            tier: desiredEffort,
-            model: policy?.routedModel || (childModel === "/" ? "" : childModel),
-            variant: effectiveVariant,
-            candidateIndex: policy?.candidateIndex
-              ?? routingCandidateIndex(modelRouting, desiredEffort, childModel),
-            attempt: policy?.attempt || 1,
-            reason: policy?.reason || "agent_default",
-          });
-        }
-      } catch {
-        // Fail open: provider requests must continue if session metadata is unavailable.
-      }
-    },
-  };
+  return createSubagentEffortHandlers({
+    client,
+    policies,
+    tierReasoning,
+    modelRouting,
+    agentRoutingState,
+    onRoutingDecision,
+    resolveProviderState,
+    clampReasoningVariant,
+    extractVariant,
+    getParentRoute,
+    getSession,
+    inferSubagentEffort,
+    messageText,
+    modelIdentity,
+    prunePolicies,
+    resolveTierReasoning,
+    routedPolicy,
+  });
 }

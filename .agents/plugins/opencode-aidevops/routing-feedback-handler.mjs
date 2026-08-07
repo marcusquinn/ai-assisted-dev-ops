@@ -25,7 +25,6 @@ export function createRoutingFeedbackHandler({ client, isHeadless, getFeedback }
     if (!sessionID) return;
     if (event.type === "session.deleted") {
       emitted.delete(sessionID);
-      return;
     }
     if (event.type !== "session.idle") return;
 
