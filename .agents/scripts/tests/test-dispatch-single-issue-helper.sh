@@ -1247,6 +1247,25 @@ test_create_worktree_registration_warns_on_failure() {
 	return 0
 }
 
+test_readiness_timeout_tracks_canary_budget() {
+	local default_timeout="" custom_canary_timeout="" explicit_timeout="" invalid_timeout=""
+	default_timeout=$(
+		unset AIDEVOPS_DSI_READY_TIMEOUT_SECONDS CANARY_TIMEOUT_SECONDS
+		_dsi_ready_timeout_seconds
+	)
+	custom_canary_timeout=$(CANARY_TIMEOUT_SECONDS=42 _dsi_ready_timeout_seconds)
+	explicit_timeout=$(CANARY_TIMEOUT_SECONDS=180 AIDEVOPS_DSI_READY_TIMEOUT_SECONDS=0 _dsi_ready_timeout_seconds)
+	invalid_timeout=$(CANARY_TIMEOUT_SECONDS=invalid AIDEVOPS_DSI_READY_TIMEOUT_SECONDS=invalid _dsi_ready_timeout_seconds)
+
+	local passed=1
+	if [[ "$default_timeout" == "240" && "$custom_canary_timeout" == "102" &&
+		"$explicit_timeout" == "0" && "$invalid_timeout" == "240" ]]; then
+		passed=0
+	fi
+	print_result "readiness timeout covers canary budget and preserves overrides" "$passed" \
+		"default=$default_timeout custom=$custom_canary_timeout explicit=$explicit_timeout invalid=$invalid_timeout"
+	return 0
+}
 
 test_readiness_accepts_worker_started_marker() {
 	MOCK_LEDGER_RECORD=""
@@ -1463,6 +1482,7 @@ _run_tests() {
 	test_dispatch_base_ref_prefers_repo_configured_pr_base
 	test_dispatch_base_ref_prefers_explicit_env_ref
 	test_create_worktree_registration_warns_on_failure
+	test_readiness_timeout_tracks_canary_budget
 	test_readiness_accepts_worker_started_marker
 	test_readiness_rejects_live_child_without_ready_signal
 	test_readiness_rejects_ledger_without_worker_started
