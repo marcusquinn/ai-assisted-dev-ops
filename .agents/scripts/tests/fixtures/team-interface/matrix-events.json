@@ -1,0 +1,46 @@
+{
+  "bot_user_id": "@bot:fixture.invalid",
+  "room_id": "!room-alpha:fixture.invalid",
+  "accepted": {
+    "event_id": "$event-alpha:fixture.invalid",
+    "origin_server_ts": 1786057200000,
+    "sender": "@owner:fixture.invalid",
+    "content": {
+      "msgtype": "m.text",
+      "body": "!ai Review the fixture safely",
+      "displayname": "SPOOFED_DISPLAY_NAME_CANARY"
+    }
+  },
+  "ignored": {
+    "own_message": {
+      "event_id": "$event-own:fixture.invalid",
+      "origin_server_ts": 1786057200001,
+      "sender": "@bot:fixture.invalid",
+      "content": {"msgtype": "m.text", "body": "!ai Ignore me"}
+    },
+    "non_text": {
+      "event_id": "$event-file:fixture.invalid",
+      "origin_server_ts": 1786057200002,
+      "sender": "@owner:fixture.invalid",
+      "content": {"msgtype": "m.file", "body": "!ai not text"}
+    },
+    "wrong_prefix": {
+      "event_id": "$event-prefix:fixture.invalid",
+      "origin_server_ts": 1786057200003,
+      "sender": "@owner:fixture.invalid",
+      "content": {"msgtype": "m.text", "body": "hello"}
+    },
+    "empty_prompt": {
+      "event_id": "$event-empty:fixture.invalid",
+      "origin_server_ts": 1786057200004,
+      "sender": "@owner:fixture.invalid",
+      "content": {"msgtype": "m.text", "body": "!ai   "}
+    },
+    "unauthorized": {
+      "event_id": "$event-unauthorized:fixture.invalid",
+      "origin_server_ts": 1786057200005,
+      "sender": "@other:fixture.invalid",
+      "content": {"msgtype": "m.text", "body": "!ai Ignore me"}
+    }
+  }
+}

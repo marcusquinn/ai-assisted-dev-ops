@@ -22,6 +22,8 @@ _HEADLESS_RUNTIME_RESULT_LOADED=1
 _RUN_RESULT_ROLE_WORKER="worker"
 _RUN_RESULT_ROLE_PULSE="pulse"
 _RUN_RESULT_RATE_LIMIT="rate_limit"
+_RUN_RESULT_BLOCKED="blocked"
+_RUN_RESULT_MODEL_BLOCKED_SIGNAL="model_blocked_signal"
 
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_result_lib_path="${BASH_SOURCE[0]%/*}"
@@ -117,18 +119,28 @@ _handle_run_result_success_output() {
 		if output_has_missing_context_blocked_signal "$output_file"; then
 			_run_result_label="brief_recovery"
 			_run_failure_reason="missing_implementation_context"
-			_run_classification_source="model_blocked_signal"
+			_run_classification_source="$_RUN_RESULT_MODEL_BLOCKED_SIGNAL"
 			_run_classification_pattern="missing_implementation_context"
 			rm -f "$output_file"
 			print_warning "$selected_model worker reported missing implementation context — attempting one brief-recovery continuation"
 			return 82
 		fi
-		if output_has_blocked_signal "$output_file"; then
-			_run_result_label="blocked"
-			_run_failure_reason="blocked"
-			_run_classification_source="model_blocked_signal"
+		if output_has_capability_blocked_signal "$output_file"; then
+			_run_result_label="$_RUN_RESULT_BLOCKED"
+			_run_failure_reason="capability_limit"
+			_run_classification_source="$_RUN_RESULT_MODEL_BLOCKED_SIGNAL"
+			_run_classification_pattern="capability_limit"
 			rm -f "$output_file"
-			print_warning "$selected_model worker reported BLOCKED terminal state — evaluating bounded capability escalation"
+			print_warning "$selected_model worker reported a structured capability limit — evaluating bounded capability escalation"
+			return 83
+		fi
+		if output_has_blocked_signal "$output_file"; then
+			_run_result_label="$_RUN_RESULT_BLOCKED"
+			_run_failure_reason="$_RUN_RESULT_BLOCKED"
+			_run_classification_source="$_RUN_RESULT_MODEL_BLOCKED_SIGNAL"
+			_run_classification_pattern="terminal_blocked"
+			rm -f "$output_file"
+			print_warning "$selected_model worker reported a terminal BLOCKED state"
 			return 83
 		fi
 	fi

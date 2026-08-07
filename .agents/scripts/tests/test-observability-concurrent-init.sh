@@ -30,12 +30,14 @@
 #      lets fast-path winners short-circuit the slow path.
 #
 # This test spawns 8 concurrent Node processes that all call
-# `initObservability()` against a fresh temp DB and asserts:
+# `initObservability()` against a fresh temp DB and also upgrades a legacy DB.
+# It asserts:
 #   1. Zero `database is locked` errors in any child's stderr.
 #   2. The DB ends up in WAL mode with all expected tables and append guards.
 #   3. Exactly one schema CREATE wins (the others see fast path or
 #      double-checked-lock fast path).
 #   4. Total runtime < 10s (under contention used to be 30s+).
+#   5. A pre-routing schema upgrades before routing indexes are created.
 
 set -uo pipefail
 
@@ -199,6 +201,16 @@ else
 		"column count: $intent_col_count (expected 1)"
 fi
 
+routing_col_count=$(sqlite3 "$DB_PATH" \
+	"SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN ('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated');" \
+	2>/dev/null || echo "0")
+if [[ "$routing_col_count" == "6" ]]; then
+	pass "routing decision columns present on llm_requests"
+else
+	fail "routing decision columns present on llm_requests" \
+		"column count: $routing_col_count (expected 6)"
+fi
+
 runtime_guard_count=$(sqlite3 "$DB_PATH" \
 	"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('runtime_events_reject_update','runtime_events_reject_delete');" \
 	2>/dev/null || echo "0")
@@ -243,6 +255,95 @@ if [[ ! -d "$lock_dir" ]]; then
 else
 	fail "init lockdir cleaned up after run" \
 		"lockdir still exists at $lock_dir"
+fi
+
+# =============================================================================
+# Assertion 7: a pre-routing observability DB upgrades successfully.
+#
+# CREATE TABLE IF NOT EXISTS leaves an existing llm_requests table unchanged.
+# Routing indexes therefore must not be created until the migration has added
+# their columns. This fixture mirrors the prior table shape and keeps a row to
+# verify that the in-place migration preserves existing data.
+# =============================================================================
+
+LEGACY_DB_PATH="${TMP_ROOT}/legacy-llm-requests.db"
+LEGACY_LOG="${TMP_ROOT}/legacy-init.log"
+sqlite3 "$LEGACY_DB_PATH" <<'SQL'
+CREATE TABLE llm_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  session_id TEXT NOT NULL,
+  message_id TEXT,
+  provider_id TEXT,
+  model_id TEXT,
+  agent TEXT,
+  tokens_input INTEGER DEFAULT 0,
+  tokens_output INTEGER DEFAULT 0,
+  tokens_reasoning INTEGER DEFAULT 0,
+  tokens_cache_read INTEGER DEFAULT 0,
+  tokens_cache_write INTEGER DEFAULT 0,
+  tokens_total INTEGER DEFAULT 0,
+  cost REAL DEFAULT 0.0,
+  duration_ms INTEGER,
+  finish_reason TEXT,
+  error_type TEXT,
+  error_message TEXT,
+  tool_call_count INTEGER DEFAULT 0,
+  project_path TEXT,
+  variant TEXT
+);
+CREATE TABLE tool_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  session_id TEXT NOT NULL,
+  message_id TEXT,
+  call_id TEXT,
+  tool_name TEXT NOT NULL,
+  success INTEGER DEFAULT 1,
+  duration_ms INTEGER,
+  metadata TEXT
+);
+INSERT INTO llm_requests (session_id, model_id) VALUES ('legacy-session', 'legacy-model');
+SQL
+
+legacy_exit=0
+AIDEVOPS_OBS_DB_OVERRIDE="$LEGACY_DB_PATH" \
+	node "$DRIVER" >"$LEGACY_LOG" 2>&1 || legacy_exit=$?
+if [[ "$legacy_exit" -eq 0 ]]; then
+	pass "legacy observability schema initialises successfully"
+else
+	fail "legacy observability schema initialises successfully" \
+		"exit $legacy_exit — see $LEGACY_LOG"
+fi
+
+legacy_routing_col_count=$(sqlite3 "$LEGACY_DB_PATH" \
+	"SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN ('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated');" \
+	2>/dev/null || true)
+if [[ "$legacy_routing_col_count" == "6" ]]; then
+	pass "legacy schema gains all routing decision columns"
+else
+	fail "legacy schema gains all routing decision columns" \
+		"column count: ${legacy_routing_col_count:-0} (expected 6)"
+fi
+
+legacy_routing_index_count=$(sqlite3 "$LEGACY_DB_PATH" \
+	"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_llm_requests_parent_session','idx_llm_requests_routing_tier');" \
+	2>/dev/null || true)
+if [[ "$legacy_routing_index_count" == "2" ]]; then
+	pass "legacy schema gains routing indexes after column migration"
+else
+	fail "legacy schema gains routing indexes after column migration" \
+		"index count: ${legacy_routing_index_count:-0} (expected 2)"
+fi
+
+legacy_row_count=$(sqlite3 "$LEGACY_DB_PATH" \
+	"SELECT COUNT(*) FROM llm_requests WHERE session_id='legacy-session' AND model_id='legacy-model';" \
+	2>/dev/null || true)
+if [[ "$legacy_row_count" == "1" ]]; then
+	pass "legacy migration preserves existing request rows"
+else
+	fail "legacy migration preserves existing request rows" \
+		"matching row count: ${legacy_row_count:-0} (expected 1)"
 fi
 
 # =============================================================================

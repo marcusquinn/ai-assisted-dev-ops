@@ -242,10 +242,12 @@ jobs:
           # Dedent the heredoc content
           BODY=$(echo "$BODY" | sed 's/^          //')
 
-          gh issue create --repo "$REPO" \
-            --title "$TITLE" \
-            --body "$BODY" \
-            --label "quality-debt"
+          ISSUE_BODY_FILE="$RUNNER_TEMP/post-merge-verify-follow-up.md"
+          printf '%s\n' "$BODY" > "$ISSUE_BODY_FILE"
+
+          chmod +x .agents/scripts/post-merge-verify-report-helper.sh
+          .agents/scripts/post-merge-verify-report-helper.sh \
+            create-follow-up "$REPO" "$TITLE" "$ISSUE_BODY_FILE"
 
       # Comment publication is deliberately fail-soft. This final step exposes
       # the original typed verification outcome as the workflow conclusion.

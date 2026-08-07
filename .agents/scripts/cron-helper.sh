@@ -36,7 +36,7 @@ readonly SCRIPTS_DIR="$HOME/.aidevops/agents/scripts"
 readonly OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 readonly OPENCODE_HOST="${OPENCODE_HOST:-127.0.0.1}"
 readonly OPENCODE_INSECURE="${OPENCODE_INSECURE:-}"
-readonly DEFAULT_MODEL="anthropic/claude-sonnet-4-6"
+readonly DEFAULT_MODEL="standard"
 
 # shellcheck disable=SC2034  # CYAN reserved for future use
 [[ -z "${BOLD+x}" ]] && BOLD='\033[1m'
@@ -319,7 +319,8 @@ _parse_add_args() {
 #   $7 - notify
 #   $8 - model
 #   $9 - status
-#   $10 - timestamp (ISO 8601)
+#   $10 - provider override
+#   $11 - timestamp (ISO 8601)
 # Returns: 0 on success, 1 on failure
 #######################################
 _write_job_to_config() {
@@ -332,7 +333,8 @@ _write_job_to_config() {
 	local notify="$7"
 	local model="$8"
 	local status="$9"
-	local timestamp="${10}"
+	local provider="${10}"
+	local timestamp="${11}"
 
 	local temp_file
 	temp_file=$(mktemp)
@@ -348,6 +350,7 @@ _write_job_to_config() {
 		--arg notify "$notify" \
 		--arg model "$model" \
 		--arg status "$status" \
+		--arg provider "$provider" \
 		--arg created "$timestamp" \
 		'.jobs += [{
          id: $id,
@@ -358,6 +361,8 @@ _write_job_to_config() {
          timeout: $timeout,
          notify: $notify,
          model: $model,
+         model_tier:(if ($model == "simple" or $model == "standard" or $model == "thinking") then $model else null end),
+         provider:(if $provider == "" then null else $provider end),
          status: $status,
          created: $created,
          lastRun: null,
@@ -406,15 +411,6 @@ cmd_add() {
 
 	_parse_add_args "$@" || return 1
 
-	# Resolve tier names to full model strings (t132.7)
-	_add_model=$(resolve_model_tier "$_add_model")
-
-	# Apply provider override if specified (t132.7)
-	if [[ -n "$_add_provider" && "$_add_model" == *"/"* ]]; then
-		local model_id="${_add_model#*/}"
-		_add_model="${_add_provider}/${model_id}"
-	fi
-
 	# Validate required fields
 	if [[ -z "$_add_schedule" ]]; then
 		log_error "--schedule is required (e.g., \"0 9 * * *\")"
@@ -443,7 +439,7 @@ cmd_add() {
 
 	_write_job_to_config "$job_id" "$_add_name" "$_add_schedule" "$_add_task" \
 		"$_add_workdir" "$_add_timeout" "$_add_notify" "$_add_model" \
-		"$status" "$timestamp" || return 1
+		"$status" "$_add_provider" "$timestamp" || return 1
 
 	sync_crontab
 
@@ -864,7 +860,6 @@ ADD OPTIONS:
     --timeout SECONDS       Max execution time (default: 600)
     --workdir PATH          Working directory (default: current)
     --model TIER_OR_MODEL   Workload tier (simple/standard/thinking) or full provider/model
-                            or full provider/model string
     --provider PROVIDER     Override provider (e.g., openrouter, google)
     --paused                Create in paused state
 
@@ -925,6 +920,10 @@ main() {
 		return 1
 		;;
 	esac
+	local command_status=$?
+	return "$command_status"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

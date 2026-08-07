@@ -36,7 +36,7 @@ export function collectLeafAgents(keyFiles, purpose, agents, seen) {
  * Parse a TOON subagents block into agent entries.
  * Each line: folder,purpose,keyfile1|keyfile2|...
  * @param {string} blockText - Raw text from the TOON block
- * @returns {Array<{name: string, description: string}>}
+ * @returns {Array<{name: string, description: string, modelTier?: string}>}
  */
 export function parseToonSubagentBlock(blockText) {
   const agents = [];
@@ -158,7 +158,8 @@ function parseTopLevelAgents(blockText, agents) {
     const purpose = parts[2].trim();
     if (name && !seen.has(name)) {
       seen.add(name);
-      agents.push({ name, description: purpose });
+      const modelTier = parts[3]?.trim() || "standard";
+      agents.push({ name, description: purpose, modelTier });
     }
   }
 }
@@ -193,5 +194,4 @@ export function loadAgentIndex(agentsDir, readIfExists) {
 
   return agents;
 }
-
 

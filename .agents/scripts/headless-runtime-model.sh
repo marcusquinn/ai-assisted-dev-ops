@@ -8,7 +8,7 @@
 # extracted from headless-runtime-lib.sh to reduce file size.
 #
 # Covers two functional areas:
-#   1. Model Choice  — configured model list derivation, round-robin rotation,
+#   1. Model Choice  — configured model list derivation, ordered failover,
 #                       tier downgrade, explicit model validation, session ID mgmt
 #   2. Cmd Builders  — headless variant resolution, OpenCode server detection,
 #                       opencode/claude CLI command assembly, completion signal
@@ -83,13 +83,7 @@ get_configured_models() {
 		IFS=',' read -r -a allowlist <<<"$allowlist_raw"
 	fi
 
-	local routing_table="${SCRIPT_DIR}/../custom/configs/model-routing-table.json"
-	if [[ ! -f "$routing_table" ]]; then
-		routing_table="${SCRIPT_DIR}/../configs/model-routing-table.json"
-	fi
-
-	if [[ -f "$routing_table" ]] && command -v jq >/dev/null 2>&1; then
-		while IFS= read -r model; do
+	while IFS= read -r model; do
 			[[ -z "$model" ]] && continue
 			provider=$(extract_provider "$model" 2>/dev/null || printf '%s' "")
 			[[ -z "$provider" ]] && continue
@@ -112,23 +106,12 @@ get_configured_models() {
 			fi
 
 			models+=("$model")
-		done < <(jq -r --arg canonical "$tier_name" --arg requested "$requested_tier" \
-			'(.tiers[$canonical].models // .tiers[$requested].models // [])[]' "$routing_table" 2>/dev/null)
-	fi
+	done < <(model_tier_candidates "$tier_name" 2>/dev/null || true)
 
 	# Local is a privacy boundary: an empty local tier means unavailable, never
 	# permission to use the historical cloud fallback.
 	if [[ "$tier_name" == "local" ]]; then
 		return 0
-	fi
-
-	# Fallback: if routing derivation yielded nothing and no allowlist is forcing a
-	# provider subset, use the historical default when auth is available.
-	if [[ ${#models[@]} -eq 0 ]] && [[ -z "$allowlist_raw" ]]; then
-		provider=$(extract_provider "$DEFAULT_HEADLESS_MODELS" 2>/dev/null || printf '%s' "")
-		if [[ -n "$provider" ]] && provider_auth_available "$provider"; then
-			models+=("$DEFAULT_HEADLESS_MODELS")
-		fi
 	fi
 
 	printf '%s\n' "${models[@]}"
@@ -242,6 +225,29 @@ _choose_model_explicit() {
 	return 0
 }
 
+_first_healthy_configured_model() {
+	local tier_name="${1:-standard}"
+	local selection_mode="${2:-adaptive}"
+	local current_model="" current_provider="" configured_count=0
+	while IFS= read -r current_model; do
+		[[ -n "$current_model" ]] || continue
+		if [[ "$selection_mode" == "exact-tier" ]] &&
+			! model_tier_candidate_index "$tier_name" "$current_model" >/dev/null 2>&1; then
+			continue
+		fi
+		configured_count=$((configured_count + 1))
+		current_provider=$(extract_provider "$current_model" 2>/dev/null || true)
+		[[ -n "$current_provider" ]] || continue
+		provider_auth_available "$current_provider" || continue
+		provider_oauth_pool_available "$current_provider" || continue
+		model_backoff_active "$current_model" && continue
+		printf '%s' "$current_model"
+		return 0
+	done < <(get_configured_models "$tier_name")
+	[[ "$configured_count" -gt 0 ]] && return 75
+	return 1
+}
+
 # _choose_model_tier_downgrade: check pattern history for a cheaper tier.
 # Prints the downgraded model name if one is recommended; prints nothing otherwise.
 # Non-blocking -- any failure falls through silently.
@@ -251,11 +257,7 @@ _choose_model_tier_downgrade() {
 	[[ -n "$downgrade_task_type" ]] || return 0
 
 	local current_tier=""
-	case "$current_model" in
-	*opus* | *pro*) current_tier="thinking" ;;
-	*haiku* | *terra* | *flash*) current_tier="simple" ;;
-	*) current_tier="standard" ;;
-	esac
+	current_tier=$(model_tier_for_model "$current_model" 2>/dev/null || true)
 	[[ -n "$current_tier" ]] || return 0
 
 	local pattern_helper="${SCRIPT_DIR}/archived/pattern-tracker-helper.sh"
@@ -273,7 +275,7 @@ _choose_model_tier_downgrade() {
 	[[ -n "$lower_tier" ]] || return 0
 
 	local lower_model
-	lower_model=$(resolve_model_tier "$lower_tier" 2>/dev/null || true)
+	lower_model=$(_first_healthy_configured_model "$lower_tier" 2>/dev/null || true)
 	if [[ -n "$lower_model" && "$lower_model" != "$current_model" ]]; then
 		print_info "Model for dispatch: pattern data recommends ${lower_tier} over ${current_tier} (TIER_DOWNGRADE_OK, task_type=${downgrade_task_type})"
 		printf '%s' "$lower_model"
@@ -281,82 +283,56 @@ _choose_model_tier_downgrade() {
 	return 0
 }
 
-# _choose_model_auto: select the next available model via round-robin rotation.
+# _choose_model_auto: select the first available model in configured order.
 # Skips models that are backed off or have no auth. Returns 75 if all are backed off.
 _choose_model_auto() {
 	local role="$1"
 	local tier_name="${2:-standard}"
-	local -a models=()
-	local current_model
-	while IFS= read -r current_model; do
-		models+=("$current_model")
-	done < <(get_configured_models "$tier_name")
-	if [[ ${#models[@]} -eq 0 ]]; then
+	local selection_mode="${3:-adaptive}"
+	local current_model="" select_status=0
+	current_model=$(_first_healthy_configured_model "$tier_name" "$selection_mode") || select_status=$?
+	if [[ "$select_status" -eq 1 ]]; then
 		print_error "No direct provider models configured for headless runtime"
 		return 1
 	fi
-
-	local last_provider start_index i idx current_provider
-	last_provider=$(get_last_provider "$role")
-	start_index=0
-	if [[ -n "$last_provider" ]]; then
-		for i in "${!models[@]}"; do
-			current_provider=$(extract_provider "${models[$i]}")
-			if [[ "$current_provider" == "$last_provider" ]]; then
-				start_index=$(((i + 1) % ${#models[@]}))
-				break
-			fi
-		done
+	if [[ "$select_status" -eq 75 || -z "$current_model" ]]; then
+		print_warning "All configured models are currently backed off"
+		return 75
 	fi
 
-	for ((i = 0; i < ${#models[@]}; i++)); do
-		idx=$(((start_index + i) % ${#models[@]}))
-		current_model="${models[$idx]}"
-		current_provider=$(extract_provider "$current_model")
-		# Skip providers with no auth configured -- silent skip, no backoff recorded.
-		# This keeps Codex in the default list for users with OpenAI OAuth while
-		# being invisible to users who have no OpenAI auth at all.
-		if ! provider_auth_available "$current_provider"; then
-			continue
-		fi
-		# Skip OAuth-backed providers when every pool account is cooling down.
-		# Static API keys bypass this provider-level OAuth pool gate.
-		if ! provider_oauth_pool_available "$current_provider"; then
-			continue
-		fi
-		# Check model-level backoff (rate limits) and provider-level (auth errors)
-		if model_backoff_active "$current_model"; then
-			continue
-		fi
-		set_last_provider "$role" "$current_provider"
-
-		# Pattern-driven tier downgrade (t5148): non-blocking check.
-		local downgraded
+	case "$selection_mode" in
+	adaptive)
+		# Pattern-driven tier downgrade (t5148): non-blocking initial-dispatch
+		# optimization. Retry and capability-escalation callers use exact-tier mode.
+		local downgraded=""
 		downgraded=$(_choose_model_tier_downgrade "$current_model")
-		if [[ -n "$downgraded" ]]; then
-			printf '%s' "$downgraded"
-			return 0
-		fi
-
-		printf '%s' "$current_model"
-		return 0
-	done
-
-	print_warning "All configured models are currently backed off"
-	return 75
+		[[ -z "$downgraded" ]] || current_model="$downgraded"
+		;;
+	exact-tier) ;;
+	*)
+		print_error "Unknown model selection mode: $selection_mode"
+		return 1
+		;;
+	esac
+	local current_provider=""
+	current_provider=$(extract_provider "$current_model")
+	set_last_provider "$role" "$current_provider"
+	printf '%s' "$current_model"
+	return 0
 }
 
 choose_model() {
 	local role="$1"
 	local explicit_model="${2:-}"
 	local tier_name="${3:-standard}"
+	local selection_mode="${4:-adaptive}"
 
 	if [[ -n "$explicit_model" ]]; then
 		_choose_model_explicit "$explicit_model"
 		return $?
 	fi
 
-	_choose_model_auto "$role" "$tier_name"
+	_choose_model_auto "$role" "$tier_name" "$selection_mode"
 	return $?
 }
 
@@ -402,18 +378,7 @@ _headless_tier_variant() {
 _headless_routed_variant() {
 	local tier="$1"
 	local selected_model="$2"
-	local provider="${selected_model%%/*}"
-	local model_script_dir="${BASH_SOURCE[0]%/*}"
-	local routing_table="${model_script_dir}/../custom/configs/model-routing-table.json"
-	if [[ ! -f "$routing_table" ]]; then
-		routing_table="${model_script_dir}/../configs/model-routing-table.json"
-	fi
-	if [[ ! -f "$routing_table" ]] || ! command -v jq >/dev/null 2>&1; then
-		return 0
-	fi
-	jq -r --arg tier "$tier" --arg model "$selected_model" --arg provider "$provider" \
-		'.tiers[$tier].reasoning[$model] // .tiers[$tier].reasoning[$provider] // empty' \
-		"$routing_table" 2>/dev/null || true
+	model_tier_variant "$tier" "$selected_model" 2>/dev/null || true
 	return 0
 }
 
@@ -639,7 +604,7 @@ from pathlib import Path
 # Strategy: parse JSON lines for "type":"text" events (model output) and
 # check only those. Fall back to raw grep for non-JSON output (claude CLI).
 
-raw = Path(sys.argv[1]).read_text(errors="ignore")
+raw = Path(sys.argv[1]).read_text(errors='ignore')
 blocked_marker = chr(66) + chr(76) + chr(79) + chr(67) + chr(75) + chr(69) + chr(68)
 
 # Extract model text from JSON stream (OpenCode format)
@@ -672,7 +637,7 @@ for line in raw.splitlines():
         state = part.get("state", {})
         # GH#17596 (MEDIUM): check multiple common input paths
         inp = (
-            obj.get("input")
+            obj.get('input')
             or part.get("input")
             or state.get("input")
             or {}
@@ -791,6 +756,57 @@ model_text = "\n".join(model_text_parts)
 if model_text.strip():
     sys.exit(0 if blocked_marker in model_text else 1)
 sys.exit(0 if blocked_marker in raw else 1)
+PY
+	return $?
+}
+
+# output_has_capability_blocked_signal: check for the exact structured marker
+# that authorizes a capability-tier escalation. Generic BLOCKED outcomes remain
+# terminal so permission, authentication, policy, trust, and secret boundaries
+# cannot be bypassed by selecting a more capable model.
+#
+# Args: $1 = output file path
+# Returns: 0 if the model emitted "BLOCKED: capability limit - <evidence>", 1 otherwise
+output_has_capability_blocked_signal() {
+	local file_path="$1"
+	[[ -f "$file_path" ]] || return 1
+	python3 - "$file_path" <<'PY'
+import sys, json, re
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text(errors="ignore")
+model_text_parts = []
+saw_json_event = False
+for line in raw.splitlines():
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        continue
+    if not isinstance(obj, dict):
+        continue
+    saw_json_event = True
+    if obj.get("type", "") != "text":
+        continue
+    part = obj.get("part", {})
+    text = obj.get("text") or part.get("text") or ""
+    if text:
+        model_text_parts.append(text)
+
+model_text = "\n".join(model_text_parts)
+if model_text.strip():
+    candidate = model_text
+elif not saw_json_event:
+    candidate = raw
+else:
+    sys.exit(1)
+marker = re.compile(
+    r"^\s*BLOCKED:\s*capability limit\s*-\s*\S(?:.*\S)?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+sys.exit(0 if marker.search(candidate) else 1)
 PY
 	return $?
 }

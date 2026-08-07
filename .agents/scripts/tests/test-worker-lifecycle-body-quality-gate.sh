@@ -13,6 +13,7 @@ LIFECYCLE_SCRIPT="${REPO_ROOT}/.agents/scripts/worker-lifecycle-common.sh"
 TESTS_RUN=0
 TESTS_FAILED=0
 GH_COMMENT_COUNT=0
+GH_LAST_COMMENT=""
 
 print_result() {
 	local test_name="$1"
@@ -37,6 +38,14 @@ gh_issue_comment() {
 	local issue_number="$1"
 	shift || true
 	[[ -n "$issue_number" ]] || return 1
+	while [[ $# -gt 0 ]]; do
+		if [[ "$1" == "--body" ]]; then
+			shift
+			GH_LAST_COMMENT="${1:-}"
+			break
+		fi
+		shift
+	done
 	GH_COMMENT_COUNT=$((GH_COMMENT_COUNT + 1))
 	return 0
 }
@@ -47,6 +56,7 @@ define_helpers_under_test() {
 
 	context_src=$(awk '
 		/^_escalate_body_has_review_feedback_context\(\) \{/,/^}$/ { print }
+		/^_escalate_body_has_investigation_context\(\) \{/,/^}$/ { print }
 	' "$LIFECYCLE_SCRIPT")
 	gate_src=$(awk '
 		/^_escalate_body_quality_gate\(\) \{/,/^}$/ { print }
@@ -111,9 +121,72 @@ Files to Modify:
 	return 0
 }
 
+test_investigation_ready_body_allows_escalation() {
+	local body="## Evidence
+- Closed issues retained an active lifecycle label.
+
+## Files to inspect
+- .agents/scripts/pulse-merge.sh
+- .agents/scripts/tests/test-pulse-merge-post-merge-label-fetch.sh
+
+## Approach
+1. Trace the post-merge state transition and identify the missing convergence step.
+
+## Acceptance criteria
+- Closed issues use status:done instead of status:in-review.
+
+## Verification
+- bash .agents/scripts/tests/test-pulse-merge-post-merge-label-fetch.sh"
+	GH_COMMENT_COUNT=0
+	GH_LAST_COMMENT=""
+
+	if ! _escalate_body_quality_gate 101 marcusquinn/aidevops 2 2 "$body"; then
+		print_result "investigation-ready context allows escalation" 1 \
+			"expected bounded investigation body to pass gate"
+		return 0
+	fi
+	if [[ "$GH_COMMENT_COUNT" -ne 0 ]]; then
+		print_result "investigation-ready context allows escalation" 1 \
+			"expected no diagnostic comment, got ${GH_COMMENT_COUNT}"
+		return 0
+	fi
+	print_result "investigation-ready context allows escalation" 0
+	return 0
+}
+
+test_incomplete_investigation_body_blocks_escalation() {
+	local body="## Evidence
+- A lifecycle label appears stale.
+
+## Files to inspect
+- .agents/scripts/pulse-merge.sh
+
+## Approach
+1. Inspect the merge path.
+
+## Acceptance criteria
+- The stale state is explained."
+	GH_COMMENT_COUNT=0
+	GH_LAST_COMMENT=""
+
+	if _escalate_body_quality_gate 102 marcusquinn/aidevops 2 2 "$body"; then
+		print_result "incomplete investigation context blocks escalation" 1 \
+			"expected missing verification section to fail gate"
+		return 0
+	fi
+	if [[ "$GH_COMMENT_COUNT" -ne 1 || "$GH_LAST_COMMENT" != *"Investigation work:"* ]]; then
+		print_result "incomplete investigation context blocks escalation" 1 \
+			"expected investigation-specific diagnostic guidance"
+		return 0
+	fi
+	print_result "incomplete investigation context blocks escalation" 0
+	return 0
+}
+
 test_generic_vague_body_blocks_escalation() {
 	local body="Please fix the quality issue."
 	GH_COMMENT_COUNT=0
+	GH_LAST_COMMENT=""
 
 	if _escalate_body_quality_gate 100 marcusquinn/aidevops 2 2 "$body"; then
 		print_result "generic vague body blocks escalation" 1 \
@@ -136,6 +209,8 @@ main() {
 
 	test_review_feedback_body_bypasses_missing_context_gate
 	test_file_path_body_allows_escalation
+	test_investigation_ready_body_allows_escalation
+	test_incomplete_investigation_body_blocks_escalation
 	test_generic_vague_body_blocks_escalation
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

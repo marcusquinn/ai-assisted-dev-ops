@@ -1,0 +1,16 @@
+{
+  "homeserverUrl": "https://matrix-fixture.example.invalid",
+  "accessToken": "MATRIX_ACCESS_TOKEN_CANARY",
+  "allowedUsers": "@owner:fixture.invalid",
+  "defaultRunner": "runner-alpha-canary",
+  "roomMappings": {
+    "!room-alpha:fixture.invalid": "runner-beta-canary"
+  },
+  "botPrefix": "!ai",
+  "ignoreOwnMessages": true,
+  "maxPromptLength": 3000,
+  "responseTimeout": 600,
+  "sessionIdleTimeout": 300,
+  "privatePathCanary": "/private/MATRIX_PATH_CANARY",
+  "diagnosticCanary": "MATRIX_ERROR_CANARY"
+}

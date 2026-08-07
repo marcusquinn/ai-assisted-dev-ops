@@ -83,18 +83,15 @@ ai_research(prompt: "Find all functions that dispatch workers in pulse-wrapper.s
 
 ## 4. Model escalation before BLOCKED (GH#14964 — MANDATORY)
 
-`BLOCKED` is only valid after exhausting all autonomous solution paths. Before exiting `BLOCKED`, attempt model escalation — one opus attempt (~3x cost) is cheaper than a failed worker cycle plus human triage. Review-policy metadata, nominal GitHub states, and lower-tier model limits are **not** valid blockers. A genuine blocker requires evidence that persists after escalation: failing check, missing permission, unresolved conflict, or explicit policy gate.
+`BLOCKED` is only valid after exhausting all autonomous solution paths. If the only remaining blocker is the current model's inability to reason through the task safely, emit the exact structured marker `BLOCKED: capability limit - <evidence>`; runtime routing advances to the next configured capability tier. Review-policy metadata, nominal GitHub states, and lower-tier model limits are **not** valid blockers. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, and locality failures never use the capability marker. A genuine terminal blocker requires evidence: failing check, missing permission, unresolved conflict, or explicit policy gate.
 
-```bash
-# Escalation pattern — use when current model stalls or cannot finish safely
-ESCALATED_MODEL="anthropic/claude-opus-4-6"
-headless-runtime-helper.sh run --role worker --session-key "$SESSION_KEY" \
-  --dir "$WORK_DIR" --title "$TITLE" --prompt "$PROMPT" --model "$ESCALATED_MODEL"
+```text
+BLOCKED: capability limit - bounded attempts could not establish a safe implementation
 ```
 
 | Situation | Action |
 |-----------|--------|
-| Model stalls after 2+ attempts | Escalate to next tier |
+| Model cannot finish safely after bounded attempts | Emit the capability marker for runtime escalation |
 | Review-policy state (e.g. "changes requested") | Continue — address findings, do not stop |
 | Rate limit / auth error | Rotate provider (handled by headless-runtime-helper.sh) |
 | Missing credentials | EXIT BLOCKED (genuine blocker) |

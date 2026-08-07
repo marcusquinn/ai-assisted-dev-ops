@@ -22,7 +22,7 @@ mode: subagent
 - **Session:** OpenCode interactive social-knowledge architecture session
 - **Created by:** ai-interactive
 - **Parent task:** none
-- **Blocked by:** Cryptographic maintainer approval for parent closeout; no implementation blocker remains.
+- **Blocked by:** none; cryptographic maintainer approval for parent closeout is recorded on issue #28587.
 - **Conversation context:** The user requested a local knowledge base for personal and shared X accounts, initial backfill plus periodic collection, future multi-platform support, and evidence-backed questions about gathered knowledge, ideas, products, and opinions.
 
 ## What
@@ -167,11 +167,11 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
 - **Preserved user directions:** Initial backfill, periodic routines, shared collection once, personal plus shared queries, future provider support, and evidence-backed opinion semantics.
 - **Trigger and evidence:** not triggered.
 - **Completed and verified:** The architecture plan, all seven sequential phases, Phase 6 security hardening, and the final end-to-end fixture matrix are merged.
-- **Remaining acceptance criteria:** None in the implementation; parent closure remains subject to the recorded maintainer-approval gate.
+- **Remaining acceptance criteria:** None; implementation, parent reconciliation, and the maintainer-approval gate are complete.
 - **Unsafe route not to repeat:** No unbounded API/browser retry, plaintext team sync, central collection of personal corpora, or weak-signal opinion inference.
-- **Next safe route:** Reconcile the checked parent criteria after cryptographic maintainer approval, without adding another implementation phase.
-- **Resume condition:** Issue #28587 has a current valid approval and still shows all seven child issues closed.
-- **Owner and status:** Parent coordinator; implementation complete, authority gate pending.
+- **Next safe route:** Preserve the accepted architecture and open a new bounded issue for any future scope change.
+- **Resume condition:** None; issue #28587 is approved, closed, and locked after all seven child issues closed.
+- **Owner and status:** Parent coordinator; implementation and authority closeout complete.
 
 ### Files Scope
 
@@ -234,7 +234,9 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
 ## Closeout Evidence
 
 - Planning PR #28588 and phase PRs #28592, #28600, #28603, #28606, #28612, #28616, and #28619 are merged; Phase 6 hardening PR #28620 is also merged.
+- Evidence-only closeout PR #28621 is merged, and parent reconciliation closed issue #28587 after verifying all seven declared child issues.
 - Child issues #28591, #28597, #28602, #28605, #28607, #28613, and #28617 are closed.
+- Cryptographic maintainer approval is recorded in [issue comment 5078791263](https://github.com/marcusquinn/aidevops/issues/28587#issuecomment-5078791263); the approved parent is locked against scope changes.
 - Final verification covers corpus compatibility, provider-neutral storage, X pagination and terminal failures, federated authorization, fenced routines, encrypted sharing/revocation, and bounded browser-gap capture.
 - Live X account validation remains optional and credential-gated; default-on multi-human sharing remains gated on external crypto/security review.
 - No release was requested for the implementation or this closeout.
@@ -265,7 +267,7 @@ opt-out from both initial phase bootstrap and post-merge sequential auto-filing.
 
 ## Dependencies
 
-- **Blocked by:** Cryptographic maintainer approval before closing issue #28587; implementation and verification are complete.
+- **Blocked by:** none; implementation, verification, parent reconciliation, and cryptographic maintainer approval are complete.
 - **Blocks:** none; all seven declared child phases are closed.
 - **External:** X developer-app/account authorization is required only for live Phase 3 testing; credentials never enter issue bodies, briefs, arguments, logs, or model context.
 

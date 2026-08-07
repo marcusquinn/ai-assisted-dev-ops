@@ -25,6 +25,70 @@ const LEGACY_DB_PATH = process.env.MATRIX_SESSION_DB ||
 
 let _db = null;
 
+function requireBoundedString(value, label, maxLength = 1024) {
+    if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
+        throw new TypeError(`Invalid Matrix ${label}`);
+    }
+    return value;
+}
+
+function sessionColumns(db) {
+    return new Set(
+        db.prepare("PRAGMA table_info(matrix_room_sessions)").all().map((column) => column.name)
+    );
+}
+
+function ensureSessionColumn(db, columnName, statement) {
+    if (sessionColumns(db).has(columnName)) return;
+    try {
+        db.exec(statement);
+    } catch (error) {
+        // A concurrently starting bot may have completed the same additive
+        // migration while this connection waited for SQLite's schema lock.
+        if (!sessionColumns(db).has(columnName)) throw error;
+    }
+}
+
+function ensureSessionSchema(db) {
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS matrix_room_sessions (
+            room_id          TEXT PRIMARY KEY,
+            session_id       TEXT DEFAULT '',
+            entity_id        TEXT DEFAULT '',
+            actor_id         TEXT DEFAULT '',
+            conversation_id  TEXT DEFAULT '',
+            runner_name      TEXT DEFAULT '',
+            message_count    INTEGER DEFAULT 0,
+            created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            last_active      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS matrix_event_receipts (
+            event_key        TEXT PRIMARY KEY,
+            actor_id         TEXT NOT NULL,
+            conversation_id  TEXT NOT NULL,
+            claimed_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+    `);
+
+    ensureSessionColumn(
+        db,
+        "actor_id",
+        "ALTER TABLE matrix_room_sessions ADD COLUMN actor_id TEXT DEFAULT ''",
+    );
+    ensureSessionColumn(
+        db,
+        "conversation_id",
+        "ALTER TABLE matrix_room_sessions ADD COLUMN conversation_id TEXT DEFAULT ''",
+    );
+    db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_matrix_room_sessions_active
+            ON matrix_room_sessions(last_active);
+        CREATE INDEX IF NOT EXISTS idx_matrix_event_receipts_conversation
+            ON matrix_event_receipts(conversation_id, claimed_at);
+    `);
+}
+
 /**
  * Get or create the database connection.
  * Uses the shared memory.db with entity tables (created by entity-helper.sh).
@@ -51,23 +115,9 @@ function getDb() {
     _db.pragma("journal_mode = WAL");
     _db.pragma("busy_timeout = 5000");
 
-    // Matrix-specific session tracking (room state, not message storage)
-    // Messages go to the shared interactions table via entity-helper.sh
-    _db.exec(`
-        CREATE TABLE IF NOT EXISTS matrix_room_sessions (
-            room_id          TEXT PRIMARY KEY,
-            session_id       TEXT DEFAULT '',
-            entity_id        TEXT DEFAULT '',
-            conversation_id  TEXT DEFAULT '',
-            runner_name      TEXT DEFAULT '',
-            message_count    INTEGER DEFAULT 0,
-            created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            last_active      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_matrix_room_sessions_active
-            ON matrix_room_sessions(last_active);
-    `);
+    // Matrix-specific room state and provider-event receipts. Message content
+    // remains in the shared immutable interactions table.
+    ensureSessionSchema(_db);
 
     return _db;
 }
@@ -77,7 +127,7 @@ function getDb() {
  * Uses entity-helper.sh suggest/create for identity resolution.
  * Returns { entityId, isNew, entityName }.
  */
-export function resolveEntity(matrixUserId, displayName = "") {
+export function resolveEntity(matrixUserId) {
     // Try entity-helper.sh suggest first (exact match on channel)
     try {
         const result = execFileSync(ENTITY_HELPER, [
@@ -101,7 +151,7 @@ export function resolveEntity(matrixUserId, displayName = "") {
     }
 
     // No existing entity — create one
-    const name = displayName || matrixUserId.replace(/^@/, "").split(":")[0];
+    const name = matrixUserId.replace(/^@/, "").split(":")[0];
     try {
         const entityId = execFileSync(ENTITY_HELPER, [
             "create",
@@ -116,8 +166,8 @@ export function resolveEntity(matrixUserId, displayName = "") {
         const id = lines[lines.length - 1].trim();
 
         return { entityId: id, isNew: true, entityName: name };
-    } catch (err) {
-        console.error(`[MATRIX-BOT] Failed to create entity for ${matrixUserId}: ${err.message}`);
+    } catch {
+        console.error("[MATRIX-BOT] Entity resolution failed");
         return { entityId: "", isNew: false, entityName: name };
     }
 }
@@ -150,8 +200,8 @@ export function logInteraction(entityId, content, direction = "inbound", channel
         // Returns interaction ID on last line
         const lines = result.split("\n");
         return lines[lines.length - 1].trim();
-    } catch (err) {
-        console.error(`[MATRIX-BOT] Failed to log interaction: ${err.message}`);
+    } catch {
+        console.error("[MATRIX-BOT] Interaction logging failed");
         return "";
     }
 }
@@ -172,8 +222,8 @@ export function loadEntityContext(entityId, channelFilter = "matrix", limit = 20
             "--privacy-filter",
         ], { timeout: 10000, stdio: "pipe" }).toString().trim();
         return result;
-    } catch (err) {
-        console.error(`[MATRIX-BOT] Failed to load entity context: ${err.message}`);
+    } catch {
+        console.error("[MATRIX-BOT] Entity context loading failed");
         return "";
     }
 }
@@ -198,7 +248,8 @@ export function loadEntityProfile(entityId) {
 /**
  * Get or create a room session. Returns session record with entity info.
  */
-export function getSession(roomId, runnerName) {
+export function getSession(roomId, runnerName, actorId = "", conversationId = "") {
+    requireBoundedString(roomId, "room ID");
     const db = getDb();
 
     let session = db.prepare(
@@ -207,10 +258,43 @@ export function getSession(roomId, runnerName) {
 
     if (!session) {
         db.prepare(`
-            INSERT INTO matrix_room_sessions (room_id, runner_name)
-            VALUES (?, ?)
-        `).run(roomId, runnerName);
+            INSERT INTO matrix_room_sessions (room_id, runner_name, actor_id, conversation_id)
+            VALUES (?, ?, ?, ?)
+        `).run(roomId, runnerName, actorId, conversationId);
 
+        session = db.prepare(
+            "SELECT * FROM matrix_room_sessions WHERE room_id = ?"
+        ).get(roomId);
+    } else {
+        const identityChanged = Boolean(actorId) && (
+            session.actor_id !== actorId
+            || (conversationId && session.conversation_id !== conversationId)
+        );
+        const runnerChanged = Boolean(runnerName && session.runner_name && session.runner_name !== runnerName);
+        if (identityChanged) {
+            db.prepare(`
+                UPDATE matrix_room_sessions
+                SET session_id = '', entity_id = '', actor_id = ?, conversation_id = ?,
+                    runner_name = CASE WHEN ? != '' THEN ? ELSE runner_name END,
+                    message_count = 0,
+                    last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE room_id = ?
+            `).run(actorId, conversationId, runnerName, runnerName, roomId);
+        } else if (runnerChanged) {
+            db.prepare(`
+                UPDATE matrix_room_sessions
+                SET session_id = '', runner_name = ?, message_count = 0,
+                    last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE room_id = ?
+            `).run(runnerName, roomId);
+        } else if (runnerName || conversationId) {
+            db.prepare(`
+                UPDATE matrix_room_sessions
+                SET runner_name = CASE WHEN ? != '' THEN ? ELSE runner_name END,
+                    conversation_id = CASE WHEN ? != '' THEN ? ELSE conversation_id END
+                WHERE room_id = ?
+            `).run(runnerName, runnerName, conversationId, conversationId, roomId);
+        }
         session = db.prepare(
             "SELECT * FROM matrix_room_sessions WHERE room_id = ?"
         ).get(roomId);
@@ -222,35 +306,90 @@ export function getSession(roomId, runnerName) {
 /**
  * Update session with entity and conversation IDs after resolution.
  */
-export function updateSessionEntity(roomId, entityId, conversationId = "") {
+export function updateSessionEntity(roomId, actorId, entityId, conversationId = "") {
+    requireBoundedString(roomId, "room ID");
+    requireBoundedString(actorId, "actor ID", 255);
+    requireBoundedString(entityId, "entity ID", 255);
     const db = getDb();
-    db.prepare(`
-        UPDATE matrix_room_sessions
-        SET entity_id = ?,
-            conversation_id = CASE WHEN ? != '' THEN ? ELSE conversation_id END,
-            last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-        WHERE room_id = ?
-    `).run(entityId, conversationId, conversationId, roomId);
+    const bindIdentity = db.transaction(() => {
+        if (conversationId) {
+            requireBoundedString(conversationId, "conversation ID", 255);
+            db.prepare(`
+                INSERT OR IGNORE INTO conversations (id, entity_id, channel, channel_id, status)
+                VALUES (?, ?, 'matrix', ?, 'active')
+            `).run(conversationId, entityId, roomId);
+            const conversation = db.prepare(`
+                SELECT entity_id, channel, channel_id
+                FROM conversations
+                WHERE id = ?
+            `).get(conversationId);
+            if (
+                conversation?.entity_id !== entityId
+                || conversation?.channel !== "matrix"
+                || conversation?.channel_id !== roomId
+            ) {
+                throw new Error("Matrix conversation identity mismatch");
+            }
+            db.prepare(`
+                UPDATE conversations
+                SET status = 'active',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ? AND entity_id = ? AND channel = 'matrix' AND channel_id = ?
+            `).run(conversationId, entityId, roomId);
+        }
+
+        const result = db.prepare(`
+            UPDATE matrix_room_sessions
+            SET entity_id = ?,
+                conversation_id = CASE WHEN ? != '' THEN ? ELSE conversation_id END,
+                last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE room_id = ? AND actor_id = ?
+        `).run(entityId, conversationId, conversationId, roomId, actorId);
+        if (result.changes !== 1) throw new Error("Matrix session identity mismatch");
+    });
+    bindIdentity();
 }
 
 /**
  * Update session_id (the upstream AI session ID) for a room.
  */
-export function setSessionId(roomId, sessionId) {
+export function setSessionId(roomId, actorId, sessionId) {
+    requireBoundedString(roomId, "room ID");
+    requireBoundedString(actorId, "actor ID", 255);
+    requireBoundedString(sessionId, "session ID");
     const db = getDb();
-    db.prepare(`
+    const result = db.prepare(`
         UPDATE matrix_room_sessions
         SET session_id = ?, last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-        WHERE room_id = ?
-    `).run(sessionId, roomId);
+        WHERE room_id = ? AND actor_id = ?
+    `).run(sessionId, roomId, actorId);
+    if (result.changes !== 1) throw new Error("Matrix session identity mismatch");
+}
+
+/**
+ * Atomically claim a normalized provider event before any outbound effect or
+ * runner dispatch. The unique event key survives process restart/redelivery.
+ */
+export function claimEvent(eventKey, actorId, conversationId) {
+    requireBoundedString(eventKey, "event key", 255);
+    requireBoundedString(actorId, "actor ID", 255);
+    requireBoundedString(conversationId, "conversation ID", 255);
+    const result = getDb().prepare(`
+        INSERT OR IGNORE INTO matrix_event_receipts (event_key, actor_id, conversation_id)
+        VALUES (?, ?, ?)
+    `).run(eventKey, actorId, conversationId);
+    return result.changes === 1;
 }
 
 /**
  * Record a message: logs to Layer 0 via entity-helper.sh and bumps session.
  */
-export function addMessage(roomId, role, content, sender = "") {
+export function addMessage(roomId, actorId, role, content) {
+    requireBoundedString(roomId, "room ID");
+    requireBoundedString(actorId, "actor ID", 255);
     const db = getDb();
-    const session = getSession(roomId, "");
+    const session = getSession(roomId, "", actorId);
+    if (session.actor_id !== actorId) throw new Error("Matrix session identity mismatch");
 
     // Log to Layer 0 (immutable interaction log) if entity is resolved
     if (session.entity_id) {
@@ -259,7 +398,7 @@ export function addMessage(roomId, role, content, sender = "") {
             session.entity_id,
             content,
             direction,
-            sender || roomId,
+            roomId,
             session.conversation_id,
         );
     }
@@ -269,19 +408,24 @@ export function addMessage(roomId, role, content, sender = "") {
         UPDATE matrix_room_sessions
         SET message_count = message_count + 1,
             last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-        WHERE room_id = ?
-    `).run(roomId);
+        WHERE room_id = ? AND actor_id = ?
+    `).run(roomId, actorId);
 }
 
 /**
  * Get recent interactions for a room's entity from Layer 0.
  * Falls back to direct DB query for performance.
  */
-export function getRecentMessages(roomId, limit = 50) {
+export function getRecentMessages(roomId, actorId, limit = 50) {
+    requireBoundedString(roomId, "room ID");
+    requireBoundedString(actorId, "actor ID", 255);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        throw new TypeError("Invalid Matrix message limit");
+    }
     const db = getDb();
     const session = db.prepare(
-        "SELECT entity_id, conversation_id FROM matrix_room_sessions WHERE room_id = ?"
-    ).get(roomId);
+        "SELECT entity_id, conversation_id FROM matrix_room_sessions WHERE room_id = ? AND actor_id = ?"
+    ).get(roomId, actorId);
 
     if (!session?.entity_id) return [];
 
@@ -293,15 +437,17 @@ export function getRecentMessages(roomId, limit = 50) {
             FROM interactions
             WHERE entity_id = ?
               AND channel = 'matrix'
+              AND channel_id = ?
+              AND conversation_id = ?
             ORDER BY created_at DESC
             LIMIT ?
-        `).all(session.entity_id, limit);
+        `).all(session.entity_id, roomId, session.conversation_id, limit);
 
         // Map direction to role for backward compatibility
         return rows.map(r => ({
             role: r.role === "inbound" ? "user" : "assistant",
             content: r.content,
-            sender: r.sender,
+            sender: "",
             created_at: r.created_at,
         })).reverse();
     } catch {
@@ -314,52 +460,63 @@ export function getRecentMessages(roomId, limit = 50) {
  * Layer 0 interactions are NEVER deleted (immutable).
  * Only the session tracking state is reset.
  */
-export function compactSession(roomId, compactedContext) {
+export function compactSession(roomId, actorId, compactedContext) {
+    requireBoundedString(roomId, "room ID");
+    requireBoundedString(actorId, "actor ID", 255);
     const db = getDb();
     const session = db.prepare(
-        "SELECT entity_id, conversation_id FROM matrix_room_sessions WHERE room_id = ?"
-    ).get(roomId);
+        "SELECT entity_id, conversation_id FROM matrix_room_sessions WHERE room_id = ? AND actor_id = ?"
+    ).get(roomId, actorId);
 
-    // Update conversation summary in the conversations table if we have one
-    if (session?.entity_id && session?.conversation_id) {
-        try {
-            db.prepare(`
-                UPDATE conversations
-                SET summary = ?,
-                    status = 'idle',
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-            `).run(compactedContext, session.conversation_id);
-        } catch {
-            // conversations table may not exist yet — non-fatal
-        }
+    if (!session?.entity_id || !session?.conversation_id) {
+        throw new Error("Matrix conversation identity unavailable");
     }
 
-    // Reset session state (Layer 0 interactions are preserved)
-    db.prepare(`
-        UPDATE matrix_room_sessions
-        SET session_id = '',
-            message_count = 0,
-            last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-        WHERE room_id = ?
-    `).run(roomId);
+    const persistCompaction = db.transaction(() => {
+        const summaryResult = db.prepare(`
+            UPDATE conversations
+            SET summary = ?,
+                status = 'idle',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE id = ? AND entity_id = ? AND channel = 'matrix' AND channel_id = ?
+        `).run(compactedContext, session.conversation_id, session.entity_id, roomId);
+        if (summaryResult.changes !== 1) {
+            throw new Error("Matrix conversation compaction was not persisted");
+        }
+
+        // Reset mutable session state only after summary persistence succeeds.
+        // Layer 0 interactions remain immutable and are never deleted.
+        const sessionResult = db.prepare(`
+            UPDATE matrix_room_sessions
+            SET session_id = '',
+                message_count = 0,
+                last_active = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE room_id = ? AND actor_id = ?
+        `).run(roomId, actorId);
+        if (sessionResult.changes !== 1) {
+            throw new Error("Matrix session identity mismatch");
+        }
+    });
+    persistCompaction();
 }
 
 /**
  * Get the compacted context for a room.
  * Loads from conversation summary (Layer 1) if available.
  */
-export function getCompactedContext(roomId) {
+export function getCompactedContext(roomId, actorId) {
+    requireBoundedString(roomId, "room ID");
+    requireBoundedString(actorId, "actor ID", 255);
     const db = getDb();
     const session = db.prepare(
-        "SELECT conversation_id FROM matrix_room_sessions WHERE room_id = ?"
-    ).get(roomId);
+        "SELECT entity_id, conversation_id FROM matrix_room_sessions WHERE room_id = ? AND actor_id = ?"
+    ).get(roomId, actorId);
 
     if (session?.conversation_id) {
         try {
             const conv = db.prepare(
-                "SELECT summary FROM conversations WHERE id = ?"
-            ).get(session.conversation_id);
+                "SELECT summary FROM conversations WHERE id = ? AND entity_id = ? AND channel = 'matrix' AND channel_id = ?"
+            ).get(session.conversation_id, session.entity_id, roomId);
             if (conv?.summary) return conv.summary;
         } catch {
             // conversations table may not exist — fall through
@@ -375,7 +532,7 @@ export function getCompactedContext(roomId) {
 export function getIdleSessions(idleSeconds) {
     const db = getDb();
     return db.prepare(`
-        SELECT room_id, session_id, runner_name, entity_id,
+        SELECT room_id, session_id, runner_name, entity_id, actor_id,
                conversation_id, message_count, last_active
         FROM matrix_room_sessions
         WHERE session_id != ''
@@ -389,6 +546,7 @@ export function getIdleSessions(idleSeconds) {
  * Note: Layer 0 interactions are NEVER deleted.
  */
 export function clearSession(roomId) {
+    requireBoundedString(roomId, "room ID");
     const db = getDb();
     db.prepare("DELETE FROM matrix_room_sessions WHERE room_id = ?").run(roomId);
 }
@@ -400,12 +558,12 @@ export function listSessions() {
     const db = getDb();
     return db.prepare(`
         SELECT s.room_id, s.session_id, s.runner_name, s.entity_id,
-               s.message_count, s.created_at, s.last_active,
+               s.actor_id, s.conversation_id, s.message_count, s.created_at, s.last_active,
                COALESCE(e.name, '') AS entity_name,
                COALESCE(c.summary, '') AS conversation_summary
         FROM matrix_room_sessions s
         LEFT JOIN entities e ON s.entity_id = e.id
-        LEFT JOIN conversations c ON s.conversation_id = c.id
+        LEFT JOIN conversations c ON s.conversation_id = c.id AND s.entity_id = c.entity_id
         ORDER BY s.last_active DESC
     `).all();
 }

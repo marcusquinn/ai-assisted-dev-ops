@@ -27,6 +27,8 @@ test_appends_escalation_contract() {
 		[[ "$output" == *'Load only referenced workflow/reference docs'* ]] &&
 		[[ "$output" == *'Stop reading once target files, reference pattern, constraints, and verification are clear.'* ]] &&
 		[[ "$output" == *'Never ask for user confirmation, approval, or next steps. No user will respond.'* ]] &&
+		[[ "$output" == *'BLOCKED: capability limit - <evidence>'* ]] &&
+		[[ "$output" == *'Never use that marker for permission, authentication, provider, rate-limit, secret, policy, trust-boundary, or locality failures.'* ]] &&
 		[[ "$output" == *'emit POST_PR_HANDOFF on its own line'* ]] &&
 		[[ "$output" == *'Valid exit states are FULL_LOOP_COMPLETE, POST_PR_HANDOFF'* ]]; then
 		print_result "appends escalation-before-blocked contract to full-loop prompts" 0

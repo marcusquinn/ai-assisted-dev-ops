@@ -67,7 +67,7 @@ Before composing any framework-bug report, run these 6 checks. They are shared w
 
 5. **Self-assignment awareness**: If filing via `gh_create_issue` with the `auto-dispatch` label, plan to `gh issue edit N --remove-assignee <user>` immediately after — the wrapper currently self-assigns (t2406/#19991). Alternatively, omit `auto-dispatch` until ready to hand off.
 
-6. **Security/setup advisory suppression proof**: Before filing a false-positive issue for any setup or security advisory, require proof that the fully configured positive path cannot work. For `SYNC_PAT`, do not equate `bypass_pull_request_allowances` with the `SYNC_PAT` principal: the former is the classic `github-actions[bot]`/app bypass list, while the latter authenticates as the maintainer/admin PAT owner. A missing or empty bypass list alone is insufficient; require evidence that a correctly scoped admin/maintainer PAT cannot bypass the repo's actual protection settings.
+6. **Security/setup advisory suppression proof**: Before filing a false-positive issue for any setup or security advisory, require proof that the fully configured positive path cannot work. For `SYNC_PAT`, inspect both default-branch protection and `actions/permissions/workflow`: protected publication does not need the PAT when Actions can create the deterministic PR, but it does need the bounded PR API fallback when that repository setting is disabled. Never recommend weakening or bypassing protection.
 
 ## Workflow
 

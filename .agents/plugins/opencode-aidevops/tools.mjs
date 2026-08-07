@@ -123,10 +123,11 @@ function createMemoryTool(scriptsDir, run) {
       'Args: action ("recall"|"store"), query (non-empty string, for recall), ' +
       'limit (string, default "5", for recall), ' +
       'content (non-empty string, for store), confidence ("low"|"medium"|"high", default "medium", for store). ' +
+      'A recall query matching a complete mem_... or obs_... ID uses exact lookup; an unknown ID returns no result without semantic fallback. ' +
       'Do not call with an empty payload; use {action:"recall",query:"...",limit:"5"} or {action:"store",content:"...",confidence:"medium"}.',
     args: {
       action: z.enum(["recall", "store"]).optional().describe('Memory operation to perform; defaults to "recall"'),
-      query: z.string().optional().describe("Search query for memory recall"),
+      query: z.string().optional().describe("Search query or exact mem_.../obs_... ID for memory recall"),
       limit: z.union([z.string(), z.number()]).optional().describe('Maximum recall results; defaults to "5"'),
       content: z.string().optional().describe("Memory content to store"),
       confidence: z.enum(["low", "medium", "high"]).optional().describe('Stored memory confidence; defaults to "medium"'),
@@ -148,7 +149,7 @@ function createMemoryTool(scriptsDir, run) {
       if (action === "recall") {
         const query = args.query.trim();
         const limit = String(args.limit ?? "").trim() || "5";
-        const cmd = `bash "${memoryHelper}" recall ${shellEscape(query)} --limit ${shellEscape(limit)}`;
+        const cmd = `bash "${memoryHelper}" recall --query ${shellEscape(query)} --limit ${shellEscape(limit)}`;
         const result = run(cmd, 10000);
         return result || "No memories found for this query.";
       }

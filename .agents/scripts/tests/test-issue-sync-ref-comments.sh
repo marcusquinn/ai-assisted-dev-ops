@@ -23,33 +23,33 @@ cat >"$todo_file" <<'EOF'
 # TODO
 
 <!-- Format example:
-- [ ] t003 Completed task example logged:2025-01-10
+- [ ] t3 Completed task example logged:2025-01-10
 -->
 
-- [ ] t003 Real task logged:2026-06-28
-- [ ] t004 Child task blocked-by:t003 logged:2026-06-28
+- [ ] t3 Real task logged:2026-06-28
+- [ ] t4 Child task blocked-by:t3 logged:2026-06-28
 EOF
 
-add_gh_ref_to_todo "t003" "3" "$todo_file"
+add_gh_ref_to_todo "t3" "3" "$todo_file"
 
 if grep -q 'Completed task example.*ref:GH#3' "$todo_file"; then
 	printf 'FAIL ref was added inside HTML comment example\n' >&2
 	exit 1
 fi
 
-if ! grep -q '^- \[ \] t003 Real task ref:GH#3 logged:2026-06-28' "$todo_file"; then
+if ! grep -q '^- \[ \] t3 Real task ref:GH#3 logged:2026-06-28' "$todo_file"; then
 	printf 'FAIL ref was not added to the real task line\n' >&2
 	exit 1
 fi
 
-fix_gh_ref_in_todo "t003" "3" "30" "$todo_file"
+fix_gh_ref_in_todo "t3" "3" "30" "$todo_file"
 
 if grep -q 'Completed task example.*ref:GH#30' "$todo_file"; then
 	printf 'FAIL ref fix touched HTML comment example\n' >&2
 	exit 1
 fi
 
-if ! grep -q '^- \[ \] t003 Real task ref:GH#30 logged:2026-06-28' "$todo_file"; then
+if ! grep -q '^- \[ \] t3 Real task ref:GH#30 logged:2026-06-28' "$todo_file"; then
 	printf 'FAIL ref fix did not update the real task line\n' >&2
 	exit 1
 fi

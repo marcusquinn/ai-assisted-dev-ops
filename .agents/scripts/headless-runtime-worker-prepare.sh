@@ -401,6 +401,7 @@ _cmd_run_prepare_retry() {
 	local max_attempts="$5"
 	local selected_model="$6"
 	local attempt_exit="$7"
+	local tier_override="${8:-standard}"
 	local provider=""
 	local next_model=""
 
@@ -417,13 +418,14 @@ _cmd_run_prepare_retry() {
 		return 0
 	fi
 
-	if [[ "$_run_failure_reason" != "auth_error" && "$_run_failure_reason" != "rate_limit" && "$_run_failure_reason" != "startup_no_model_activity" ]]; then
+	if [[ "$_run_failure_reason" != "auth_error" && "$_run_failure_reason" != "rate_limit" && \
+		"$_run_failure_reason" != "provider_error" && "$_run_failure_reason" != "startup_no_model_activity" ]]; then
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
 		return "$attempt_exit"
 	fi
 
 	provider=$(extract_provider "$selected_model")
-	next_model=$(choose_model "$role" "") || {
+	next_model=$(choose_model "$role" "" "$tier_override" "exact-tier") || {
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
 		return "$attempt_exit"
 	}

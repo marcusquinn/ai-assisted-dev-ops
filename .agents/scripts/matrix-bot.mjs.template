@@ -12,6 +12,7 @@ import { MatrixClient, SimpleFsStorageProvider } from "matrix-bot-sdk";
 import { readFileSync } from "fs";
 import { spawn } from "child_process";
 import * as store from "./session-store.mjs";
+import { normalizeMatrixIngress } from "../../agents/scripts/team-interface-matrix-ingress.mjs";
 
 const CONFIG_PATH = process.env.MATRIX_BOT_CONFIG || `${process.env.HOME}/.config/aidevops/matrix-bot.json`;
 const RUNNER_HELPER = `${process.env.HOME}/.aidevops/agents/scripts/runner-helper.sh`;
@@ -29,25 +30,12 @@ function loadConfig() {
     return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 }
 
-// Check if user is allowed
-function isAllowed(config, userId) {
-    if (!config.allowedUsers || config.allowedUsers === "") return true;
-    const allowed = config.allowedUsers.split(",").map(u => u.trim());
-    return allowed.includes(userId);
-}
-
-// Get runner for room
-function getRunner(config, roomId) {
-    const mappings = config.roomMappings || {};
-    return mappings[roomId] || config.defaultRunner || null;
-}
-
 // Resolve Matrix sender to entity (cached)
-function resolveEntityCached(matrixUserId, displayName = "") {
+function resolveEntityCached(matrixUserId) {
     if (entityCache.has(matrixUserId)) {
         return entityCache.get(matrixUserId);
     }
-    const entity = store.resolveEntity(matrixUserId, displayName);
+    const entity = store.resolveEntity(matrixUserId);
     if (entity.entityId) {
         entityCache.set(matrixUserId, entity);
     }
@@ -55,7 +43,7 @@ function resolveEntityCached(matrixUserId, displayName = "") {
 }
 
 // Build the full prompt with entity-aware conversation context
-function buildContextualPrompt(roomId, newPrompt, entityId = "") {
+function buildContextualPrompt(roomId, actorId, newPrompt, entityId = "") {
     const parts = [];
 
     // 1. Entity profile context (preferences, communication style, etc.)
@@ -69,7 +57,7 @@ function buildContextualPrompt(roomId, newPrompt, entityId = "") {
     }
 
     // 2. Conversation summary from Layer 1
-    const compacted = store.getCompactedContext(roomId);
+    const compacted = store.getCompactedContext(roomId, actorId);
     if (compacted) {
         parts.push("[Previous conversation summary]");
         parts.push(compacted);
@@ -77,7 +65,7 @@ function buildContextualPrompt(roomId, newPrompt, entityId = "") {
     }
 
     // 3. Recent interactions from Layer 0
-    const recent = store.getRecentMessages(roomId, 20);
+    const recent = store.getRecentMessages(roomId, actorId, 20);
     if (recent.length > 0) {
         parts.push("[Recent messages]");
         for (const msg of recent) {
@@ -93,9 +81,9 @@ function buildContextualPrompt(roomId, newPrompt, entityId = "") {
 }
 
 // Build a compaction prompt from the conversation history
-function buildCompactionPrompt(roomId, entityId = "") {
-    const compacted = store.getCompactedContext(roomId);
-    const messages = store.getRecentMessages(roomId, 50);
+function buildCompactionPrompt(roomId, actorId, entityId = "") {
+    const compacted = store.getCompactedContext(roomId, actorId);
+    const messages = store.getRecentMessages(roomId, actorId, 50);
 
     if (messages.length === 0 && !compacted) return null;
 
@@ -158,16 +146,15 @@ async function dispatchToRunner(runnerName, prompt) {
         });
 
         let stdout = "";
-        let stderr = "";
 
         proc.stdout.on("data", (data) => { stdout += data.toString(); });
-        proc.stderr.on("data", (data) => { stderr += data.toString(); });
+        proc.stderr.on("data", () => {});
 
         proc.on("close", (code) => {
             if (code === 0) {
                 resolve(parseJsonlText(stdout));
             } else {
-                reject(new Error(`Runner exited with code ${code}: ${stderr}`));
+                reject(new Error("Runner dispatch failed"));
             }
         });
 
@@ -216,30 +203,14 @@ function truncateResponse(text, maxLen = 4000) {
 // Entity-preference-aware prompt length (t1363.6)
 // Looks up the entity's preferred detail level from their profile.
 // Falls back to config.maxPromptLength or 4000 if no entity preference exists.
-async function getEntityAwareMaxLength(config, roomId) {
+async function getEntityAwareMaxLength(config, entityId) {
     const fallback = config.maxPromptLength || 4000;
+    if (!entityId) return fallback;
 
     try {
-        // Resolve entity for this room via entity-helper.sh
-        const result = await new Promise((resolve, reject) => {
-            const proc = spawn(ENTITY_HELPER, ["resolve", "--channel", "matrix", "--channel-id", roomId, "--json"], {
-                env: process.env,
-                timeout: 5000,
-            });
-            let stdout = "";
-            proc.stdout.on("data", (d) => { stdout += d.toString(); });
-            proc.on("close", (code) => { resolve(code === 0 ? stdout.trim() : ""); });
-            proc.on("error", () => { resolve(""); });
-        });
-
-        if (!result) return fallback;
-
-        const entity = JSON.parse(result);
-        if (!entity || !entity.id) return fallback;
-
         // Look up detail_level preference from entity profiles
-        const profileResult = await new Promise((resolve, reject) => {
-            const proc = spawn(ENTITY_HELPER, ["get-profile", entity.id, "--key", "detail_level", "--json"], {
+        const profileResult = await new Promise((resolve) => {
+            const proc = spawn(ENTITY_HELPER, ["get-profile", entityId, "--key", "detail_level", "--json"], {
                 env: process.env,
                 timeout: 5000,
             });
@@ -267,11 +238,12 @@ async function getEntityAwareMaxLength(config, roomId) {
 // Uses conversation-helper.sh idle-check for AI-judged idle detection
 // instead of a fixed sessionIdleTimeout. Falls back to the fixed timeout
 // if conversation-helper.sh is unavailable.
-async function checkConversationIdle(roomId, fallbackIdleSeconds) {
+async function checkConversationIdle(conversationId, fallbackIdleSeconds) {
+    if (!conversationId) return null;
     try {
         // Try conversation-helper.sh idle-check for AI-judged detection
         const result = await new Promise((resolve) => {
-            const proc = spawn(CONVERSATION_HELPER, ["idle-check", roomId], {
+            const proc = spawn(CONVERSATION_HELPER, ["idle-check", conversationId], {
                 env: process.env,
                 timeout: 10000,
             });
@@ -309,7 +281,7 @@ async function compactIdleSessions(config) {
     for (const session of idleCandidates) {
         // AI-judged idle check: ask conversation-helper.sh if this conversation
         // has naturally paused, rather than relying solely on elapsed time (t1363.6).
-        const aiIdleResult = await checkConversationIdle(session.room_id, idleTimeout);
+        const aiIdleResult = await checkConversationIdle(session.conversation_id, idleTimeout);
         if (aiIdleResult === false) {
             // AI says conversation is still active — skip compaction
             console.log(`[MATRIX-BOT] AI judges room ${session.room_id} still active — skipping compaction`);
@@ -320,10 +292,18 @@ async function compactIdleSessions(config) {
         console.log(`[MATRIX-BOT] Compacting idle session for room ${session.room_id} (${session.message_count} messages, idle since ${session.last_active})`);
 
         try {
-            const compactionPrompt = buildCompactionPrompt(session.room_id, session.entity_id || "");
+            const compactionPrompt = buildCompactionPrompt(
+                session.room_id,
+                session.actor_id,
+                session.entity_id || "",
+            );
             if (!compactionPrompt) {
                 // Nothing to compact — just clear the session ID
-                store.compactSession(session.room_id, store.getCompactedContext(session.room_id));
+                store.compactSession(
+                    session.room_id,
+                    session.actor_id,
+                    store.getCompactedContext(session.room_id, session.actor_id),
+                );
                 continue;
             }
 
@@ -343,7 +323,7 @@ async function compactIdleSessions(config) {
             }
 
             // Store the compacted summary (Layer 0 interactions are preserved — immutable)
-            store.compactSession(session.room_id, summary);
+            store.compactSession(session.room_id, session.actor_id, summary);
             console.log(`[MATRIX-BOT] Compacted room ${session.room_id}: ${summary.length} chars`);
 
             // Destroy the upstream AI session if we have one
@@ -401,44 +381,21 @@ async function main() {
     }, 60000);
 
     client.on("room.message", async (roomId, event) => {
-        // Skip own messages
-        if (config.ignoreOwnMessages && event.sender === botUserId) return;
-
-        // Skip non-text messages
-        if (!event.content || event.content.msgtype !== "m.text") return;
-
-        const body = event.content.body || "";
-        const prefix = config.botPrefix || "!ai";
-
-        // Check for bot prefix
-        if (!body.startsWith(prefix)) return;
-
-        // Extract prompt (remove prefix)
-        const prompt = body.substring(prefix.length).trim();
-        if (!prompt) {
-            await client.sendText(roomId, `Usage: ${prefix} <your prompt here>`);
+        let normalized;
+        try {
+            normalized = normalizeMatrixIngress({botUserId, config, event, roomId});
+        } catch {
             return;
         }
-
-        // Check user permissions
-        if (!isAllowed(config, event.sender)) {
-            console.log(`[MATRIX-BOT] Unauthorized user: ${event.sender}`);
-            return;
-        }
-
-        // Get runner for this room
-        const runnerName = getRunner(config, roomId);
-        if (!runnerName) {
-            await client.sendText(roomId, "This room is not mapped to a runner. Ask an admin to run:\nmatrix-dispatch-helper.sh map '" + roomId + "' <runner-name>");
-            return;
-        }
+        if (normalized.status !== "accepted") return;
+        const {actorId, conversationId, eventKey, prompt, runnerName} = normalized;
 
         // Prevent concurrent dispatches to same room
-        const dispatchKey = `${roomId}:${runnerName}`;
-        if (activeDispatches.has(dispatchKey)) {
-            await client.sendText(roomId, `Runner '${runnerName}' is already processing a request. Please wait.`);
-            return;
-        }
+        const dispatchKey = roomId;
+        if (activeDispatches.has(dispatchKey)) return;
+
+        // Durable insert-first claim: duplicate delivery performs no effect.
+        if (!store.claimEvent(eventKey, actorId, conversationId)) return;
 
         activeDispatches.add(dispatchKey);
         console.log(`[MATRIX-BOT] Dispatching to runner '${runnerName}' from ${event.sender} in ${roomId}`);
@@ -457,45 +414,44 @@ async function main() {
 
         try {
             // Ensure session exists in store
-            const session = store.getSession(roomId, runnerName);
+            store.getSession(roomId, runnerName, actorId, conversationId);
 
             // Entity resolution: resolve Matrix user ID to entity
-            const displayName = event.content?.displayname || "";
-            const entity = resolveEntityCached(event.sender, displayName);
+            const entity = resolveEntityCached(event.sender);
             if (entity.entityId) {
-                store.updateSessionEntity(roomId, entity.entityId);
+                store.updateSessionEntity(roomId, actorId, entity.entityId, conversationId);
                 if (entity.isNew) {
                     console.log(`[MATRIX-BOT] Created new entity for ${event.sender}: ${entity.entityId} (${entity.entityName})`);
                 }
             }
 
             // Record the user message (logs to Layer 0 via entity-helper.sh)
-            store.addMessage(roomId, "user", prompt, event.sender);
+            store.addMessage(roomId, actorId, "user", prompt);
 
             // Build entity-aware contextual prompt
-            const contextualPrompt = buildContextualPrompt(roomId, prompt, entity.entityId);
+            const contextualPrompt = buildContextualPrompt(roomId, actorId, prompt, entity.entityId);
 
             let response;
             try {
                 // Try runner-helper.sh first
                 response = await dispatchToRunner(runnerName, contextualPrompt);
-            } catch (runnerErr) {
-                console.log(`[MATRIX-BOT] Runner dispatch failed, trying API: ${runnerErr.message}`);
+            } catch {
+                console.log("[MATRIX-BOT] Runner dispatch failed, trying API fallback");
                 // Fallback to direct API
                 const result = await dispatchViaAPI(contextualPrompt, runnerName);
                 response = result.text;
 
                 // Track the upstream session ID
-                store.setSessionId(roomId, result.sessionId);
+                store.setSessionId(roomId, actorId, result.sessionId);
             }
 
             // Record the assistant response (logs to Layer 0)
-            store.addMessage(roomId, "assistant", response);
+            store.addMessage(roomId, actorId, "assistant", response);
 
             // Entity-preference-aware truncation (t1363.6):
             // Look up the entity's preferred detail level to determine max response length.
             // Falls back to config.maxPromptLength or 4000 if no entity preference exists.
-            const maxLen = await getEntityAwareMaxLength(config, roomId);
+            const maxLen = await getEntityAwareMaxLength(config, entity.entityId);
             const truncated = truncateResponse(response, maxLen);
             await client.sendText(roomId, truncated);
 
@@ -508,9 +464,9 @@ async function main() {
                 },
             }).catch(() => {});
 
-        } catch (err) {
-            console.error(`[MATRIX-BOT] Dispatch error: ${err.message}`);
-            await client.sendText(roomId, `Error dispatching to runner '${runnerName}': ${err.message}`);
+        } catch {
+            console.error("[MATRIX-BOT] Dispatch failed");
+            await client.sendText(roomId, "Unable to dispatch this request. Check the local bot logs.");
 
             // React with X
             await client.sendEvent(roomId, "m.reaction", {

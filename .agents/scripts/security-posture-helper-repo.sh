@@ -42,6 +42,7 @@ NO_GITHUB_REMOTE_MSG="No GitHub remote"
 NO_REQUIRED_STATUS_CHECKS_MSG="No required status checks"
 SECURITY_POSTURE_UNKNOWN="unknown"
 SYNC_PAT_NEED_NOT_NEEDED="not_needed"
+SYNC_PAT_PROTECTION_CLASSIC="classic"
 
 # _repo_is_public_admin <slug>
 # Returns 0 only when GitHub confirms this operator has admin rights on a
@@ -985,8 +986,10 @@ _emit_sync_pat_advisory() {
 
 This repo uses issue-sync.yml and has protection on the default branch
 (${protection_desc}).
-Without SYNC_PAT, TODO.md auto-completion silently fails on PR merge
-(github-actions[bot] cannot push to a protected default branch).
+Direct publication therefore routes through one deterministic pull request.
+This repository does not allow GitHub Actions to create pull requests, so the
+job-scoped token cannot open that fallback PR. Without SYNC_PAT, TODO.md
+auto-completion fails after publishing its protected-branch candidate.
 
 For a guided fix across all affected repos, run \`/setup-git\` in
 your AI assistant (OpenCode or Claude Code). It walks you through
@@ -994,7 +997,8 @@ each repo with the correct pre-filled token-creation URL.
 
 To fix this single repo manually (run in a separate terminal, NOT in AI chat):
 
-1. Create a fine-grained PAT (pre-filled URL):
+1. Create a fine-grained PAT for this repository with Contents: Read and write
+   and Pull requests: Read and write (the URL pre-fills the Contents scope):
    https://github.com/settings/personal-access-tokens/new?name=aidevops-sync-pat&description=SYNC_PAT+for+aidevops+TODO+auto-completion&expires_in=none&target_name=${slug}&permissions=contents:write,metadata:read
 
 2. Set the secret:
@@ -1052,6 +1056,19 @@ _branch_is_rulesets_protected() {
 	return 1
 }
 
+# Return 0 when the repository permits GITHUB_TOKEN to create pull requests.
+# GitHub exposes the combined "create and approve" repository setting through
+# can_approve_pull_request_reviews on the Actions workflow-permissions endpoint.
+_actions_can_create_pull_requests() {
+	local slug="$1"
+	local permissions_json
+	permissions_json=$(gh api "repos/${slug}/actions/permissions/workflow" 2>/dev/null) || return 1
+	if jq -e '.can_approve_pull_request_reviews == true' <<<"$permissions_json" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
 # Check whether a repo requires SYNC_PAT based on workflow + branch protection.
 # Writes result to global SYNC_PAT_NEED_RESULT: "needed:<desc>" | "not_needed".
 # Side effect: prints findings and cleans stale advisories.
@@ -1093,7 +1110,7 @@ _check_sync_pat_need() {
 	local protection_desc=""
 
 	if [[ -n "$protection_json" && "$protection_json" != *"Not Found"* && "$protection_json" != *"Branch not protected"* ]]; then
-		protected_kind="classic"
+		protected_kind="$SYNC_PAT_PROTECTION_CLASSIC"
 	elif { [[ "$#" -ge 4 ]] && _branch_is_rulesets_protected "$slug" "$default_branch" "$ruleset_details"; } || { [[ "$#" -lt 4 ]] && _branch_is_rulesets_protected "$slug" "$default_branch"; }; then
 		# Step 2b: Rulesets-based protection (t2806). Modern repos
 		# return 404 on the classic endpoint but carry rulesets via
@@ -1110,23 +1127,40 @@ _check_sync_pat_need() {
 		SYNC_PAT_NEED_RESULT="$SYNC_PAT_NEED_NOT_NEEDED"
 		return 0
 	fi
+	if [[ "$protected_kind" == "$SYNC_PAT_PROTECTION_CLASSIC" ]] &&
+		! jq -e '.required_pull_request_reviews != null or .required_status_checks != null' \
+			<<<"$protection_json" >/dev/null 2>&1; then
+		print_pass "Branch protection does not block direct issue-sync publication — SYNC_PAT not needed for $slug"
+		add_finding "$SEVERITY_PASS" "$CAT_SYNC_PAT" "No publication-blocking protection in $slug"
+		[[ -f "$advisory_file" ]] && rm -f "$advisory_file"
+		SYNC_PAT_NEED_RESULT="$SYNC_PAT_NEED_NOT_NEEDED"
+		return 0
+	fi
 
-	# For classic protection, keep the required_reviews -eq 0 optimisation.
-	# For rulesets, we assume reviews are effectively required — the
-	# rulesets API shape doesn't expose a simple "0 approvals" state, and
-	# a false positive here only produces an advisory the user can dismiss.
-	if [[ "$protected_kind" == "classic" ]]; then
+	# The job-scoped token is sufficient when Actions may create pull requests,
+	# even though direct publication is blocked by default-branch protection.
+	if _actions_can_create_pull_requests "$slug"; then
+		print_pass "Actions can create the issue-sync PR — SYNC_PAT not needed for $slug"
+		add_finding "$SEVERITY_PASS" "$CAT_SYNC_PAT" "Actions PR creation enabled in $slug"
+		[[ -f "$advisory_file" ]] && rm -f "$advisory_file"
+		SYNC_PAT_NEED_RESULT="$SYNC_PAT_NEED_NOT_NEEDED"
+		return 0
+	fi
+
+	# When Actions PR creation is disabled, every meaningful default-branch
+	# protection path needs the PAT fallback. Zero required approvals does not
+	# remove the repository's pull-request or status-check requirement.
+	if [[ "$protected_kind" == "$SYNC_PAT_PROTECTION_CLASSIC" ]]; then
 		local required_reviews
 		required_reviews=$(echo "$protection_json" | jq -r '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null) || required_reviews="0"
 
-		if [[ "$required_reviews" -eq 0 ]]; then
-			print_pass "PR reviews not required — SYNC_PAT not needed for $slug"
-			add_finding "$SEVERITY_PASS" "$CAT_SYNC_PAT" "No review requirement in $slug"
-			[[ -f "$advisory_file" ]] && rm -f "$advisory_file"
-			SYNC_PAT_NEED_RESULT="$SYNC_PAT_NEED_NOT_NEEDED"
-			return 0
+		if [[ "$required_reviews" -gt 0 ]]; then
+			protection_desc="requiring ${required_reviews} approving review(s) with Actions PR creation disabled"
+		else
+			protection_desc="classic branch protection with Actions PR creation disabled"
 		fi
-		protection_desc="requiring ${required_reviews} approving review(s)"
+	else
+		protection_desc="${protection_desc} with Actions PR creation disabled"
 	fi
 
 	# Step 3: Is SYNC_PAT set?
@@ -1209,7 +1243,7 @@ check_sync_pat() {
 	local protection_desc
 	protection_desc="${SYNC_PAT_NEED_RESULT#needed:}"
 
-	print_warn "SYNC_PAT not set for $slug — TODO.md auto-completion will silently fail on PR merge"
+	print_warn "SYNC_PAT not set for $slug — protected issue-sync cannot create its fallback PR"
 	add_finding "$SEVERITY_WARNING" "$CAT_SYNC_PAT" "SYNC_PAT not set for $slug"
 
 	_emit_sync_pat_advisory "$slug" "$slug_sanitised" "$advisory_file" "$protection_desc"

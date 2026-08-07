@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aidevops:team-interface:opencode-launch-overlay:v1",
+  "title": "aidevops restricted OpenCode conversation launch overlay v1",
+  "$ref": "#/$defs/opencode_launch_overlay",
+  "$defs": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "interface_reference": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 300,
+      "pattern": "^[a-z][a-z-]*:[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "not": {
+        "anyOf": [
+          {"pattern": "://"},
+          {"pattern": "(^|/)\\.\\.(/|$)"},
+          {"pattern": "[\\\\~@=]"}
+        ]
+      }
+    },
+    "interface_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_ref",
+        "community_ref",
+        "conversation_ref",
+        "app_team_ref",
+        "actor_ref",
+        "trust_ref",
+        "correlation_ref"
+      ],
+      "properties": {
+        "provider_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^provider:"}
+          ]
+        },
+        "community_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^community:"}
+          ]
+        },
+        "conversation_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^conversation:"}
+          ]
+        },
+        "app_team_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^app-team:"}
+          ]
+        },
+        "actor_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^actor:"}
+          ]
+        },
+        "trust_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^trust:"}
+          ]
+        },
+        "correlation_ref": {
+          "allOf": [
+            {"$ref": "#/$defs/interface_reference"},
+            {"pattern": "^correlation:"}
+          ]
+        }
+      }
+    },
+    "selected_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "kind",
+        "display_name",
+        "source_ref",
+        "source_digest"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "pattern": "^agent\\.[a-z0-9][a-z0-9._-]*$"
+        },
+        "kind": {"enum": ["primary", "framework_guide"]},
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^/\\\\~\\u0000-\\u001f\\u007f]+$"
+        },
+        "source_ref": {
+          "type": "string",
+          "pattern": "^agents:[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        },
+        "source_digest": {"$ref": "#/$defs/sha256_digest"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "framework_guide"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "agent_id": {"const": "agent.aidevops-guide"},
+              "source_ref": {"const": "agents:aidevops.md"}
+            }
+          }
+        }
+      ]
+    },
+    "opencode_launch_overlay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "overlay_id",
+        "overlay_digest",
+        "roster_id",
+        "roster_digest",
+        "agent",
+        "workload_tier",
+        "permission_profile",
+        "context",
+        "context_digest",
+        "config_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "document_type": {"const": "opencode_launch_overlay"},
+        "overlay_id": {"const": "opencode-launch-overlay.aidevops"},
+        "overlay_digest": {"$ref": "#/$defs/sha256_digest"},
+        "roster_id": {"const": "agent-roster.aidevops"},
+        "roster_digest": {"$ref": "#/$defs/sha256_digest"},
+        "agent": {"$ref": "#/$defs/selected_agent"},
+        "workload_tier": {"enum": ["simple", "standard", "thinking"]},
+        "permission_profile": {"const": "conversation_read_only_v1"},
+        "context": {"$ref": "#/$defs/interface_context"},
+        "context_digest": {"$ref": "#/$defs/sha256_digest"},
+        "config_digest": {"$ref": "#/$defs/sha256_digest"}
+      }
+    }
+  }
+}

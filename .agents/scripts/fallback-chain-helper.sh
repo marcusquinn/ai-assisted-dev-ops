@@ -15,7 +15,9 @@ set -euo pipefail
 
 init_log_file
 
-readonly DEFAULT_ROUTING_TABLE="${SCRIPT_DIR}/../configs/model-routing-table.json"
+_fallback_default_routing_table=$(model_routing_table_path 2>/dev/null || printf '%s' "${SCRIPT_DIR}/../configs/model-routing-table.json")
+readonly DEFAULT_ROUTING_TABLE="$_fallback_default_routing_table"
+unset _fallback_default_routing_table
 readonly AVAILABILITY_HELPER="${SCRIPT_DIR}/model-availability-helper.sh"
 
 # Load and validate the routing table JSON.
@@ -57,17 +59,8 @@ get_tier_models_from_table() {
 	fi
 
 	if [[ -z "$models" || "$models" == "null" ]]; then
-		# Hardcoded minimal fallback for missing tier definitions.
-		case "$tier" in
-		simple) echo '["openai/gpt-5.6-luna","anthropic/claude-haiku-4-5"]' ;;
-		standard) echo '["openai/gpt-5.6-sol","zai-coding-plan/glm-5.2","anthropic/claude-sonnet-4-6"]' ;;
-		thinking) echo '["openai/gpt-5.6-sol","anthropic/claude-opus-4-6"]' ;;
-		*)
-			print_error "Unknown tier: $tier"
-			return 1
-			;;
-		esac
-		return 0
+		print_error "Unknown or empty tier in routing table: $tier"
+		return 1
 	fi
 
 	echo "$models"
@@ -82,10 +75,25 @@ is_model_available() {
 	local quiet="${2:-false}"
 
 	local provider="${model_spec%%/*}"
+	local allowlist_raw="${AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST:-}"
+	if [[ -n "$allowlist_raw" ]]; then
+		local allowed=false
+		local allowed_provider=""
+		local -a allowlist=()
+		IFS=',' read -r -a allowlist <<<"$allowlist_raw"
+		for allowed_provider in "${allowlist[@]}"; do
+			allowed_provider=$(printf '%s' "$allowed_provider" | tr -d '[:space:]')
+			if [[ "$allowed_provider" == "$provider" ]]; then
+				allowed=true
+				break
+			fi
+		done
+		[[ "$allowed" == "true" ]] || return 1
+	fi
 
 	# Delegate to model-availability-helper.sh if available
 	if [[ -x "$AVAILABILITY_HELPER" ]]; then
-		"$AVAILABILITY_HELPER" check "$provider" --quiet 2>/dev/null
+		"$AVAILABILITY_HELPER" check "$model_spec" --quiet 2>/dev/null
 		return $?
 	fi
 
@@ -164,6 +172,33 @@ resolve_chain() {
 	return 1
 }
 
+# Resolve candidates through the active layered routing policy. The shared
+# model-tier library overlays a partial user table on the framework defaults;
+# direct CLI resolution must follow the same policy as other callers.
+resolve_active_chain() {
+	local tier="$1"
+	local quiet="${2:-false}"
+	local candidates=""
+	candidates=$(model_tier_candidates "$tier" 2>/dev/null) || {
+		print_error "Unknown or empty tier in active routing policy: $tier"
+		return 1
+	}
+
+	local model=""
+	while IFS= read -r model; do
+		[[ -n "$model" ]] || continue
+		if is_model_available "$model" "$quiet"; then
+			[[ "$quiet" != "true" ]] && print_success "Resolved $tier -> $model" >&2
+			printf '%s\n' "$model"
+			return 0
+		fi
+		[[ "$quiet" != "true" ]] && print_warning "  $model: unavailable, trying next" >&2
+	done <<<"$candidates"
+
+	[[ "$quiet" != "true" ]] && print_error "All models exhausted for tier: $tier" >&2
+	return 1
+}
+
 cmd_resolve() {
 	local tier="${1:-}"
 	shift || true
@@ -193,17 +228,21 @@ cmd_resolve() {
 		return 1
 	fi
 
-	local table_path
-	table_path=$(load_routing_table "${config_override:-$DEFAULT_ROUTING_TABLE}") || return $?
-
-	local resolved
-	resolved=$(resolve_chain "$tier" "$table_path" "$quiet") || {
-		local exit_code=$?
+	local resolved="" resolve_status=0
+	if [[ -n "$config_override" ]]; then
+		local table_path
+		table_path=$(load_routing_table "$config_override") || return $?
+		resolved=$(resolve_chain "$tier" "$table_path" "$quiet") || resolve_status=$?
+	else
+		resolved=$(resolve_active_chain "$tier" "$quiet") || resolve_status=$?
+	fi
+	if [[ "$resolve_status" -ne 0 || -z "$resolved" ]]; then
 		if [[ "$json_flag" == "true" ]]; then
 			echo "{\"tier\":\"$tier\",\"status\":\"exhausted\",\"model\":null}"
 		fi
-		return "$exit_code"
-	}
+		[[ "$resolve_status" -ne 0 ]] || resolve_status=1
+		return "$resolve_status"
+	fi
 
 	if [[ "$json_flag" == "true" ]]; then
 		local provider="${resolved%%/*}"
@@ -267,4 +306,6 @@ main() {
 	return $?
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	main "$@"
+fi

@@ -19,7 +19,10 @@
 
 set -uo pipefail
 
-TEST_SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEST_SCRIPTS_DIR="${TEST_DIR}/.."
+# shellcheck source=lib/test-helpers.sh
+source "${TEST_DIR}/lib/test-helpers.sh"
 TEST_RED=$'\033[0;31m'
 TEST_GREEN=$'\033[0;32m'
 TEST_RESET=$'\033[0m'
@@ -278,7 +281,11 @@ test_npm_lockfile_root_validation() {
 
 	mkdir -p "$hook_dir"
 	cp "$TEST_SCRIPTS_DIR/pre-commit-hook.sh" "$hook_dir/pre-commit-hook.sh"
-	cp "$TEST_SCRIPTS_DIR/shared-constants.sh" "$hook_dir/shared-constants.sh"
+	if ! _test_copy_shared_deps "$TEST_SCRIPTS_DIR" "$hook_dir"; then
+		print_result "root validation fixture copies shared dependencies" 1
+		rm -rf "$fixture_dir"
+		return 0
+	fi
 	git -C "$fixture_dir" init --quiet
 	printf '%s\n' '{"name":"root-allowlist-fixture"}' >"${fixture_dir}/package.json"
 	printf '%s\n' '{"name":"root-allowlist-fixture","lockfileVersion":3,"packages":{}}' >"${fixture_dir}/package-lock.json"

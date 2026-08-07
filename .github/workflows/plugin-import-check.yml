@@ -14,6 +14,16 @@ on:
       - '.agents/plugins/**/*.mjs'
       - '.agents/plugins/**/package.json'
       - '.agents/plugins/**/package-lock.json'
+      - '.agents/scripts/signing-setup.sh'
+      - '.agents/scripts/source-access-helper.sh'
+      - '.agents/scripts/source-access-helper.py'
+      - '.agents/scripts/source_access_core.py'
+      - '.agents/scripts/setup/modules/source-access.sh'
+      - '.agents/scripts/tests/test-setup-source-access-broker.sh'
+      - '.agents/scripts/tests/test-source-access-helper.py'
+      - '.agents/scripts/tests/test-source-access-helper.sh'
+      - 'aidevops.sh'
+      - 'setup.sh'
       - '.github/workflows/plugin-import-check.yml'
 
 permissions:
@@ -102,3 +112,9 @@ jobs:
             echo "::error::$FAILED plugin(s) have failing tests"
             exit 1
           fi
+
+      - name: Run source-access security tests
+        run: |
+          set -euo pipefail
+          bash .agents/scripts/tests/test-source-access-helper.sh
+          bash .agents/scripts/tests/test-setup-source-access-broker.sh

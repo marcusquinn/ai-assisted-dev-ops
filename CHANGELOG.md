@@ -10,9 +10,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.232] - 2026-08-07
+
+### Changed
+
+- Maintenance: Record merged completion proof
+
+### Fixed
+
+- route TODO publication through protected PRs (#29681)
+- bound routed review supersession windows (#29678)
+
+## [3.32.231] - 2026-08-07
+
 ### Added
 
-- suppress GitHub Actions retry amplification during provider incidents
+- Add read-only Matrix team-interface adapter
+
+### Fixed
+
+- canonicalize source-access public keys
+
+## [3.32.230] - 2026-08-07
+
+### Added
+
+- suppress Actions retries during provider incidents (#29662)
+- add read-only Buzz team-interface adapter
+
+### Fixed
+
+- harden source-access privilege boundary
+- route post-merge follow-ups through managed wrapper (#29666)
+- expose exact memory ID recall (#29665)
+- prevent bodyless parent closure (#29650)
+- harden secret redaction and root lockfiles (#29659)
+- distinguish audit visibility gaps (#29652)
+- avoid tool-bin discovery reads (#29654)
+- prevent pulse external-directory permission stalls (#29658)
+- bootstrap Qlty in post-merge verification
+- pin post-merge verification base ref (#29638)
 
 ## [3.32.229] - 2026-08-06
 

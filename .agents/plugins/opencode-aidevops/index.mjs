@@ -24,8 +24,9 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
+import { fileURLToPath } from "url";
 import { execSync } from "child_process";
 
 // Extracted modules
@@ -45,16 +46,32 @@ import { createSessionTitleFallbackHandler } from "./session-title-fallback.mjs"
 import { createSessionTitleStatusHandler } from "./session-title-status.mjs";
 import { createSessionTitleSuffixHandler } from "./session-title-suffix.mjs";
 import { installPluginConsoleRouter } from "./plugin-console.mjs";
-import { createSubagentEffortHooks, loadTierReasoningPolicies } from "./subagent-effort.mjs";
+import {
+  createSubagentEffortHooks,
+  loadTierReasoningPolicies,
+  resolveTierReasoning,
+} from "./subagent-effort.mjs";
+import { loadModelRouting } from "./model-routing.mjs";
 import { createSessionContinuationGuard } from "./session-continuation-guard.mjs";
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
+import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
+import {
+  appendConversationSystemContext,
+  applyConversationRootVariant,
+  CONVERSATION_ORIGIN,
+  CONVERSATION_OVERLAY_ENV,
+  loadTeamInterfaceConversation,
+} from "./team-interface-context.mjs";
+import { enforceConversationPathAccess } from "./team-interface-path-guard.mjs";
 
 // Existing modules
 import { createTools } from "./tools.mjs";
 import {
   initObservability,
+  getRoutingFeedback,
   handleEvent,
+  recordRoutingDecision,
   recordSubagentCancellationReceipt,
 } from "./observability.mjs";
 import { createSessionStartGreetingGate, createTtsrHooks } from "./ttsr.mjs";
@@ -71,10 +88,16 @@ import { isHeadless } from "./proxy-lifecycle.mjs";
 // ---------------------------------------------------------------------------
 
 const HOME = homedir();
-const ACTIVE_AGENTS_DIR = join(HOME, ".aidevops", "agents");
+const PLUGIN_ENTRY_PATH = realpathSync(fileURLToPath(import.meta.url));
+const MODULE_AGENTS_DIR = realpathSync(resolve(dirname(PLUGIN_ENTRY_PATH), "../.."));
+const CONVERSATION_ENVIRONMENT = process.env.AIDEVOPS_SESSION_ORIGIN === CONVERSATION_ORIGIN
+  || Boolean(process.env[CONVERSATION_OVERLAY_ENV]);
+const ACTIVE_AGENTS_DIR = CONVERSATION_ENVIRONMENT
+  ? MODULE_AGENTS_DIR
+  : join(HOME, ".aidevops", "agents");
 // Resolve the activation link exactly once at plugin load. Every hook and shell
 // spawned by this OpenCode process remains pinned to this immutable bundle.
-const AGENTS_DIR = (() => {
+const AGENTS_DIR = CONVERSATION_ENVIRONMENT ? MODULE_AGENTS_DIR : (() => {
   try {
     return realpathSync(ACTIVE_AGENTS_DIR);
   } catch {
@@ -89,6 +112,7 @@ const LOGS_DIR = join(HOME, ".aidevops", "logs");
 // Keep the immutable bundle backing this process until OpenCode exits. Setup
 // also applies an age floor for sessions started before lease support existed.
 const RUNTIME_BUNDLE_LEASE = (() => {
+  if (CONVERSATION_ENVIRONMENT) return "";
   const bundleDir = dirname(AGENTS_DIR);
   if (basename(dirname(bundleDir)) !== "runtime-bundles") return "";
   const lease = join(dirname(bundleDir), ".leases", basename(bundleDir), String(process.pid));
@@ -159,6 +183,69 @@ installPluginConsoleRouter({
   debug: process.env.AIDEVOPS_PLUGIN_DEBUG === "1",
 });
 
+function createConversationHooks({client, conversation, directory}) {
+  const configHook = createConfigHook({
+    agentsDir: AGENTS_DIR,
+    workspaceDir: WORKSPACE_DIR,
+    pluginDir: PLUGIN_DIR,
+    repositoryDir: directory,
+    conversation,
+  });
+  const tierReasoning = loadTierReasoningPolicies([
+    join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
+    join(AGENTS_DIR, "configs", "model-routing-table.json"),
+  ]);
+  return {
+    config: configHook,
+    "chat.message": async () => 0,
+    "chat.params": async (input, output) => applyConversationRootVariant(
+      input,
+      output,
+      conversation,
+      {client, resolveVariant: resolveTierReasoning, tierReasoning},
+    ),
+    "tool.execute.before": async (input, output) => enforceConversationPathAccess(
+      input.tool,
+      output.args || {},
+      conversation,
+    ),
+    "experimental.chat.system.transform": async (_input, output) =>
+      appendConversationSystemContext(output, conversation),
+  };
+}
+
+const prepareOptionalProxy = (label, prepare) => {
+  prepare()
+    .catch((err) => {
+      console.error(`[aidevops] ${label} proxy failed to register: ${err.message}`);
+    });
+};
+
+function prepareLocalProviderProxies(client) {
+  const cursorAccounts = getAccounts("cursor");
+  if (cursorAccounts.length > 0) {
+    prepareOptionalProxy("Cursor gRPC", async () => {
+      const result = await startCursorProxy(client);
+      if (result) {
+        console.error(`[aidevops] Cursor gRPC proxy registered on port ${result.port} with ${result.models.length} models (listener lazy)`);
+      }
+    });
+  }
+
+  const googleAccounts = getAccounts("google");
+  if (googleAccounts.length > 0) {
+    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-pool-proxy";
+    }
+    prepareOptionalProxy("Google", async () => {
+      const result = await startGoogleProxy(client);
+      if (result) {
+        console.error(`[aidevops] Google proxy registered on port ${result.port} with ${result.models.length} models (listener lazy)`);
+      }
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main Plugin Export
 // ---------------------------------------------------------------------------
@@ -181,46 +268,26 @@ installPluginConsoleRouter({
  */
 export async function AidevopsPlugin({ directory, client }) {
   const initializedAtMs = Date.now();
+  const conversation = loadTeamInterfaceConversation(process.env, AGENTS_DIR, {
+    pluginEntryPath: PLUGIN_ENTRY_PATH,
+    repositoryDir: directory,
+  });
+
+  if (conversation) {
+    return createConversationHooks({client, conversation, directory});
+  }
 
   // Initialise LLM observability
   initObservability();
-
-  const prepareOptionalProxy = (label, prepare) => {
-    prepare()
-      .catch((err) => {
-        console.error(`[aidevops] ${label} proxy failed to register: ${err.message}`);
-      });
-  };
 
   // Cursor gRPC proxy — prepare models/provider in the background so OpenCode
   // startup never waits on network-bound model discovery or OAuth refresh.
   // Listener bind remains LAZY (see systemTransformHook below) — deferred until
   // the first cursor/* request. See GH#21948 and GH#22157.
-  const cursorAccounts = getAccounts("cursor");
-  if (cursorAccounts.length > 0) {
-    prepareOptionalProxy("Cursor gRPC", async () => {
-      const cursorProxyResult = await startCursorProxy(client);
-      if (cursorProxyResult) {
-        console.error(`[aidevops] Cursor gRPC proxy registered on port ${cursorProxyResult.port} with ${cursorProxyResult.models.length} models (listener lazy)`);
-      }
-    });
-  }
-
   // Google auth-translating proxy — same non-blocking preparation / lazy
   // listener split as Cursor. The picker uses the last persisted provider entry
   // immediately, then refreshes when the background preparation completes.
-  const googleAccounts = getAccounts("google");
-  if (googleAccounts.length > 0) {
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-pool-proxy";
-    }
-    prepareOptionalProxy("Google", async () => {
-      const googleProxyResult = await startGoogleProxy(client);
-      if (googleProxyResult) {
-        console.error(`[aidevops] Google proxy registered on port ${googleProxyResult.port} with ${googleProxyResult.models.length} models (listener lazy)`);
-      }
-    });
-  }
+  prepareLocalProviderProxies(client);
 
   // Claude CLI transport proxy — lazy-started on first claudecli/* request
   // (see systemTransformHook composition below). Eagerly starting on every
@@ -237,11 +304,20 @@ export async function AidevopsPlugin({ directory, client }) {
   });
 
   // Create hooks from extracted modules
+  const modelRouting = loadModelRouting([
+    process.env.AIDEVOPS_MODEL_ROUTING_TABLE,
+    join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
+    join(AGENTS_DIR, "configs", "model-routing-table.json"),
+  ]);
+  const agentRoutingState = { tiers: new Map(), pinned: new Set() };
   const configHook = createConfigHook({
     agentsDir: AGENTS_DIR,
     workspaceDir: WORKSPACE_DIR,
     pluginDir: PLUGIN_DIR,
     repositoryDir: directory,
+    conversation,
+    modelRouting,
+    agentRoutingState,
   });
 
   const continuationGuard = createSessionContinuationGuard({
@@ -264,11 +340,15 @@ export async function AidevopsPlugin({ directory, client }) {
     workspaceDir: WORKSPACE_DIR,
     onSessionIdentity: (sessionId, modelId) => sessionModels.remember(sessionId, modelId),
   });
-  const tierReasoning = loadTierReasoningPolicies([
-    join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
-    join(AGENTS_DIR, "configs", "model-routing-table.json"),
-  ]);
-  const subagentEffortHooks = createSubagentEffortHooks(client, { tierReasoning });
+  const tierReasoning = Object.fromEntries(
+    Object.entries(modelRouting.tiers).map(([tier, route]) => [tier, route.reasoning]),
+  );
+  const subagentEffortHooks = createSubagentEffortHooks(client, {
+    tierReasoning,
+    modelRouting,
+    agentRoutingState,
+    onRoutingDecision: recordRoutingDecision,
+  });
   const shouldInjectGreeting = createSessionStartGreetingGate(client, isHeadless);
   const permissionBroker = createPermissionBroker({ client, isHeadless });
   const compactionContinuation = createCompactionAutoContinueGuard(client, { qualityLog });
@@ -364,6 +444,7 @@ export async function AidevopsPlugin({ directory, client }) {
     client,
   });
   const sessionTitleStatusHandler = createSessionTitleStatusHandler({ isHeadless });
+  const routingFeedbackHandler = createRoutingFeedbackHandler({ client, isHeadless, getFeedback: getRoutingFeedback });
   const sessionTitleFallbackHandler = createSessionTitleFallbackHandler({
     agentsDir: ACTIVE_AGENTS_DIR,
     client,
@@ -388,12 +469,17 @@ export async function AidevopsPlugin({ directory, client }) {
     // Custom tools + pool management
     tool: baseTools,
 
-    // Select the lowest suitable child effort, capped by the parent session.
+    // Record routed request identity and select parent-safe child effort.
     "chat.message": subagentEffortHooks.chatMessage,
     "chat.params": async (input, output) => {
       const { sessionId, modelId } = sessionModelIdentity(input);
       sessionModels.remember(sessionId, modelId);
-      return subagentEffortHooks.chatParams(input, output);
+      await subagentEffortHooks.chatParams(input, output);
+      return applyConversationRootVariant(input, output, conversation, {
+        client,
+        resolveVariant: resolveTierReasoning,
+        tierReasoning,
+      });
     },
 
     // Quality hooks
@@ -425,6 +511,7 @@ export async function AidevopsPlugin({ directory, client }) {
         Promise.resolve(cancellationReceipt.handleEvent(input)),
         permissionBroker.handleEvent(input).catch((err) => debugEventError("permission broker", err)),
         sessionTitleStatusHandler(input).catch((err) => debugEventError("title status handler", err)),
+        routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),
         sessionTitleSuffixHandler(input).catch((err) => debugEventError("title suffix handler", err)),
         sessionTitleFallbackHandler(input).catch((err) => debugEventError("title fallback handler", err)),
         greetingHandler(input).catch((err) => debugEventError("greeting handler", err)),

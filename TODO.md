@@ -117,13 +117,10 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 - [x] t18198 Define actionable upstream compatibility drift contracts #mission:m-20260804-5d06b1 #enhancement #security #reliability #framework #auto-dispatch ~4h tier:standard blocked-by:t18193 ref:GH#29506 logged:2026-08-04 -> [todo/tasks/t18198-brief.md] pr:#29526 completed:2026-08-04
 - [x] t18199 Make issue sync recover from split REST and GraphQL availability #bug #framework #reliability #github-api #auto-dispatch ~4h tier:standard ref:GH#29517 logged:2026-08-04 -> [todo/tasks/t18199-brief.md] pr:#29525 completed:2026-08-04
 - [x] t18200 Avoid false dependency holds from descriptive issue prose #bug #framework #reliability #pulse #auto-dispatch ~2h tier:standard ref:GH#29520 logged:2026-08-04 -> [todo/tasks/t18200-brief.md] pr:#29533 completed:2026-08-05
-- [ ] t18201 Coordinate Milestone 2 read-only team-interface delivery #mission:m-20260804-5d06b1 #enhancement #framework #parent-task #no-auto-dispatch ~25.5h tier:thinking ref:GH#29541 logged:2026-08-05 -> [todo/tasks/t18201-brief.md]
+- [x] t18201 Coordinate Milestone 2 read-only team-interface delivery #mission:m-20260804-5d06b1 #enhancement #framework #parent-task #no-auto-dispatch ~25.5h tier:thinking ref:GH#29541 logged:2026-08-05 -> [todo/tasks/t18201-brief.md] pr:#29694 testing:runtime-verified completed:2026-08-07
 - [x] t18202 Implement the read-only team-interface core and deterministic planner #mission:m-20260804-5d06b1 #enhancement #framework #reliability #auto-dispatch ~6h tier:standard parent:t18201 ref:GH#29542 logged:2026-08-05 -> [todo/tasks/t18202-brief.md] pr:#29619 completed:2026-08-06
 - [x] t18203 Generate the canonical aidevops agent roster from discovery metadata #mission:m-20260804-5d06b1 #enhancement #framework #agents #auto-dispatch ~3.5h tier:standard parent:t18201 ref:GH#29543 logged:2026-08-05 -> [todo/tasks/t18203-brief.md] pr:#29605 completed:2026-08-05
 - [x] t18205 Implement the read-only Buzz team-interface adapter #mission:m-20260804-5d06b1 #enhancement #framework #reliability #interactive #auto-dispatch ~5h tier:standard parent:t18201 ref:GH#29631 logged:2026-08-06 -> [todo/tasks/t18205-brief.md] pr:#29636 completed:2026-08-06
-- [ ] t18206 Prevent bodyless parent snapshots from closing incomplete trackers #bug #framework #pulse #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#29645 logged:2026-08-06 -> [todo/tasks/t18206-brief.md]
-- [ ] t18207 Refactor Matrix behind the team-interface contracts #mission:m-20260804-5d06b1 #enhancement #security #reliability #framework #interactive #auto-dispatch ~6h tier:thinking parent:t18201 ref:GH#29646 logged:2026-08-06 -> [todo/tasks/t18207-brief.md]
-- [ ] t18208 Generate restricted OpenCode conversation launch overlays #mission:m-20260804-5d06b1 #enhancement #security #framework #agents #interactive #auto-dispatch ~5h tier:thinking parent:t18201 ref:GH#29647 logged:2026-08-06 -> [todo/tasks/t18208-brief.md]
 - [ ] t18132 Prevent cross-install upstream-watch duplicate issues #bug #framework #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#27821 logged:2026-07-15 -> [todo/tasks/t18132-brief.md]
 - [ ] t18133 Normalize raw PR creation origin provenance — make managed headless `gh pr create` calls preserve one session-origin label so worker drafts enter stale-checkpoint recovery without weakening protected drafts or external-write gates. #bug #framework #pulse #auto-dispatch ~2h tier:standard ref:GH#27802 logged:2026-07-15 -> [todo/tasks/t18133-brief.md]
 - [x] t18134 Eliminate jq E2BIG in objective reconciliation — move known-large issue and PR arrays off argv, preserve the objective payload exactly, and extend the existing large-JSON regression guard. #bug #framework #pulse #reliability #auto-dispatch ~1.5h tier:standard ref:GH#27803 logged:2026-07-15 -> [todo/tasks/t18134-brief.md] pr:#27875 completed:2026-07-15
@@ -1211,7 +1208,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18175 Clarify self-improvement auto-dispatch authority boundary #documentation ref:GH#28582
 
-- [ ] t18176 Plan secure personal and shared social knowledge corpora #parent-task #enhancement #framework #knowledge #security ~23h tier:thinking ref:GH#28587 logged:2026-07-25 -> [todo/tasks/t18176-brief.md]
+- [x] t18176 Plan secure personal and shared social knowledge corpora #parent-task #enhancement #framework #knowledge #security ~23h tier:thinking ref:GH#28587 logged:2026-07-25 -> [todo/tasks/t18176-brief.md] pr:#28621 completed:2026-07-25
 
 - [x] t18177 Add approval-bound shared X scheduling and notification operations #feat #framework #knowledge #security ~8h tier:thinking ref:GH#28627 -> [todo/tasks/t18177-brief.md] pr:#28630 completed:2026-07-25
 
@@ -1226,6 +1223,10 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [ ] t18190 Restrict needs-maintainer-review to external trust gates #auto-dispatch #bug ref:GH#29394
 
 
+
+- [ ] t18209 Implement provider-neutral routing, observability, and completion feedback #feat #models #observability #interactive #priority:high ~4h tier:thinking ref:GH#29674 assignee:marcusquinn started:2026-08-07T02:34:27Z -> [todo/tasks/t18209-brief.md]
+
+- [x] t18210 Verify protected issue-sync fallback and reconcile historical completion proof #bug #framework #interactive #no-auto-dispatch ref:GH#29679 pr:#29704 completed:2026-08-07
 
 ## In Progress
 
@@ -1283,6 +1284,9 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 -->
 
 ## Done
+- [x] t18208 Generate restricted OpenCode conversation launch overlays #mission:m-20260804-5d06b1 #enhancement #security #framework #agents #interactive #auto-dispatch ~5h tier:thinking parent:t18201 ref:GH#29647 logged:2026-08-06 -> [todo/tasks/t18208-brief.md] pr:#29673 testing:runtime-verified completed:2026-08-07
+- [x] t18207 Refactor Matrix behind the team-interface contracts #mission:m-20260804-5d06b1 #enhancement #security #reliability #framework #interactive #auto-dispatch ~6h tier:thinking parent:t18201 ref:GH#29646 logged:2026-08-06 -> [todo/tasks/t18207-brief.md] pr:#29669 testing:runtime-verified completed:2026-08-07
+- [x] t18206 Prevent bodyless parent snapshots from closing incomplete trackers #bug #framework #pulse #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#29645 logged:2026-08-06 -> [todo/tasks/t18206-brief.md] pr:#29650 testing:self-assessed completed:2026-08-07
 - [x] t18204 Add private Reach egress and search-observation contracts #auto-dispatch #feat ref:GH#29551 pr:#29555 testing:runtime-verified completed:2026-08-05
 - [x] t18124 Maximise GitHub API efficiency without freshness regressions — coordinate exact transport telemetry, canonical snapshots, immutable-head check caching, cross-process request coalescing, verified webhook invalidation, and comparative rollout evidence through seven sequential leaves. #parent-task #no-auto-dispatch #enhancement #framework #pulse #github-api #efficiency ~13h tier:thinking ref:GH#27768 logged:2026-07-15 -> [todo/tasks/t18124-brief.md] pr:#29500 testing:self-assessed completed:2026-08-04
 - [x] t18130 Invalidate canonical GitHub state from verified webhooks — deduplicate authenticated deliveries, map events to narrow snapshot/head-SHA invalidations before PR processing, and retain secure loopback plus polling fallback. #enhancement #security #framework #pulse #github-api #efficiency #auto-dispatch ~2h tier:thinking parent:t18124 blocked-by:t18129 blocks:t18131 ref:GH#27776 logged:2026-07-15 -> [todo/tasks/t18130-brief.md] pr:#28231 completed:2026-08-04
@@ -4733,7 +4737,7 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 - [ ] t18175 Clarify self-improvement auto-dispatch authority boundary #documentation ref:GH#28582
 
-- [ ] t18176 Plan secure personal and shared social knowledge corpora #enhancement #framework #knowledge #parent #security ref:GH#28587
+- [x] t18176 Plan secure personal and shared social knowledge corpora #enhancement #framework #knowledge #parent #security ref:GH#28587 pr:#28621 completed:2026-07-25
 
 - [x] t18178 Unify review evidence and policy adapters #bug ref:GH#28632 pr:#28634 completed:2026-07-25
 

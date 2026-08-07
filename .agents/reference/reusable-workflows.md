@@ -149,7 +149,7 @@ reclassifies that refreshed snapshot before rendering or writing. If refresh
 makes the workflow current, or rendering produces no diff, the operation exits
 successfully without pushing a sync branch or opening a PR.
 
-See also [`auto-dispatch.md`](auto-dispatch.md) for the `SYNC_PAT` requirement (unchanged under the reusable pattern — still per-repo secret).
+See also [`auto-dispatch.md`](auto-dispatch.md) for the conditional `SYNC_PAT` requirement. When needed for a repository that disables Actions PR creation, it remains a per-repo secret under the reusable pattern.
 
 ## Runner override (GH#21877)
 

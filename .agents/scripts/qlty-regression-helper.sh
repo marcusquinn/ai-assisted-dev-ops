@@ -169,6 +169,42 @@ normalized_identities() {
 	return 0
 }
 
+# Keep duplicate-code findings only when at least one location belongs to the
+# compared diff. Qlty 0.636.0 can deterministically reshuffle an existing
+# repository-wide duplicate cluster after an unrelated tree change, reporting
+# new findings exclusively in byte-identical files. Such findings are not PR
+# regressions; clusters that include a changed primary or related location stay
+# enforced.
+scope_similar_code_to_changed_files() {
+	local _base_sha="$1"
+	local _head_sha="$2"
+	local _sarif="$3"
+	local _changed_json=""
+	local _scoped=""
+	local _before=0
+	local _after=0
+
+	_changed_json=$(
+		"$GIT_BIN" diff --name-only "$_base_sha" "$_head_sha" |
+			jq -Rsc 'split("\n") | map(select(length > 0))'
+	) || return 1
+	_scoped="${_sarif}.scoped"
+	_before=$(count_smells "$_sarif")
+	jq --argjson changed "$_changed_json" '
+		.runs[].results |= map(select(
+			(.ruleId // "") != "qlty:similar-code" or
+			([.locations[]?.physicalLocation?.artifactLocation?.uri?,
+			  .relatedLocations[]?.physicalLocation?.artifactLocation?.uri?]
+			 | map(. as $uri | $changed | index($uri) != null)
+			 | any)
+		))
+	' "$_sarif" >"$_scoped" || return 1
+	mv "$_scoped" "$_sarif"
+	_after=$(count_smells "$_sarif")
+	log "diff-scoped similar-code findings for $(basename "$_sarif"): before=$_before after=$_after"
+	return 0
+}
+
 emit_scan_metadata() {
 	local _label="$1"
 	local _dir="$2"
@@ -482,6 +518,13 @@ fi
 IDENTITY_MISMATCH=0
 if [ "$BASE_SCAN_FAILED" -eq 0 ] && ! verify_same_tree_results "$BASE_TREE" "$HEAD_TREE" "$_base_sarif" "$_head_sarif"; then
 	IDENTITY_MISMATCH=1
+fi
+
+if [ "$BASE_TREE" != "$HEAD_TREE" ]; then
+	scope_similar_code_to_changed_files "$BASE_SHA" "$HEAD_SHA" "$_base_sarif" ||
+		die "failed to diff-scope base similar-code findings"
+	scope_similar_code_to_changed_files "$BASE_SHA" "$HEAD_SHA" "$_head_sarif" ||
+		die "failed to diff-scope head similar-code findings"
 fi
 
 BASE_COUNT=$(count_smells "$_base_sarif")

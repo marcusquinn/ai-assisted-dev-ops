@@ -60,7 +60,7 @@ The result: an AI operations platform that manages projects across every busines
 [![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025--2026-blue.svg)](https://github.com/marcusquinn)
 
 <!-- Release & Version Info -->
-[![Version](https://img.shields.io/badge/Version-3.32.229-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
+[![Version](https://img.shields.io/badge/Version-3.32.232-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
 [![npm version](https://img.shields.io/npm/v/aidevops)](https://www.npmjs.com/package/aidevops)
 [![Homebrew](https://img.shields.io/badge/homebrew-marcusquinn%2Ftap-orange)](https://github.com/marcusquinn/homebrew-tap)
 [![GitHub repository](https://img.shields.io/badge/github-repository-181717.svg?logo=github)](https://github.com/marcusquinn/aidevops)
@@ -106,6 +106,7 @@ the required notices and preferred credit text.
 - `aidevops gpt56-context [enable|disable|status]` - Keep GPT-5.6 at a 300K advertised context window in OpenCode (enabled by default), so 80% auto-compaction runs near 240K before long-context pricing; disable to use native provider limits
 - `aidevops buzz [status|apply|rollback]` - Inspect or manage Buzz Desktop OpenCode ACP compatibility
 - `~/.aidevops/agents/scripts/team-interface-helper.sh [providers|detect|status|doctor|plan]` - Inspect registered collaboration providers, persist read-only observations, or emit deterministic dry-run plans; no provider-write command is exposed
+- `aidevops opencode conversation --overlay FILE --dir PATH` - Launch fixed-argv OpenCode ACP with a schema-validated ephemeral team-interface overlay and a final read-only capability guard; see `.agents/reference/team-interface-opencode-overlays.md`
 - `aidevops secret` - Manage secrets (gopass encrypted, AI-safe)
 - `aidevops source-access` - Manage exact-path, session-bound source-read approvals signed via sudo
 - `aidevops security` - Full security assessment (posture, secrets, supply chain)
@@ -213,23 +214,14 @@ aidevops security scan-deps    # Unpinned dependency check
 aidevops security check        # Per-repo security posture assessment
 aidevops security dismiss <id> # Dismiss a security advisory after taking action
 aidevops source-access status  # List temporary source-read approvals
-sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup
-sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>
+sudo -k /usr/bin/python3 -I -B /etc/aidevops/source-access/source-access-helper.py revoke <approval-id>
 ```
 
 Running `aidevops security` with no arguments is the single command that covers everything — user security posture, plaintext secret detection, supply chain IoC scanning, and active advisories.
 
 When a read guard identifies only a low-confidence source-code basename match, it emits a scoped request. A maintainer can run the displayed root-broker approval command. Approvals are bound to the exact runtime session, user, Git-tracked regular source path, approved content digest, and guard reason; they expire within 12 hours and never override private-key, environment-file, credential-store, hard-link, symlink, changed-content, or untracked-file denials. The plugin redirects the approved read to a root-controlled immutable snapshot of those bytes so the live path cannot be rebound after verification; revocation removes both receipt and snapshot.
 
-Privileged operations never execute the user-managed aidevops deployment as root. Resolve the immutable commit from the published, signed aidevops release metadata, substitute it for `<verified-release-commit>`, and let root fetch the reviewed broker files directly over TLS. Never install the broker from the user-writable deployed tree.
-
-```bash
-sudo -k /usr/bin/install -d -o 0 -g 0 -m 0755 /etc/aidevops/source-access
-sudo -k -H /usr/bin/curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/marcusquinn/aidevops/<verified-release-commit>/.agents/scripts/source_access_core.py" --output /etc/aidevops/source-access/source_access_core.py
-sudo -k -H /usr/bin/curl --disable --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/marcusquinn/aidevops/<verified-release-commit>/.agents/scripts/source-access-helper.py" --output /etc/aidevops/source-access/source-access-helper.py
-sudo /bin/chmod 0644 /etc/aidevops/source-access/source_access_core.py /etc/aidevops/source-access/source-access-helper.py
-sudo -k /usr/bin/python3 /etc/aidevops/source-access/source-access-helper.py setup
-```
+`setup.sh` and interactive `aidevops update` provision this capability automatically. Setup verifies the published signed tag, asks for one sudo confirmation, has root fetch the exact reviewed broker bytes directly over TLS, compares those downloads byte-for-byte with the signed Git objects, and then creates a dedicated root-only signing key under `/etc/aidevops/source-access`. It never executes or copies the user-writable aidevops deployment as root. The plugin also rejects approvals whenever the installed broker bytes differ from the active release. Headless updates cannot request sudo, so they leave the capability fail-closed; the next terminal `aidevops update` completes provisioning without a separate bootstrap procedure.
 
 **Security advisories** are delivered via `aidevops update` and shown in the session greeting until dismissed. The scanner never exposes secret values — only file locations and key names. All remediation commands should be run in a separate terminal, not inside AI chat sessions.
 
@@ -1088,13 +1080,13 @@ OpenCode Server (opencode serve)
 
 **Example runner templates:** [code-reviewer](.agents/tools/ai-assistants/runners/code-reviewer.md), [seo-analyst](.agents/tools/ai-assistants/runners/seo-analyst.md) - copy and customize for your own runners.
 
-**Matrix bot dispatch** (optional): Bridge Matrix chat rooms to runners for chat-triggered AI. Each room maintains persistent conversation context via SQLite -- on idle timeout, the session is compacted (summarised) and stored, so the next message resumes with full context.
+**Matrix bot dispatch** (optional): Bridge Matrix chat rooms to runners for chat-triggered AI. Accepted text events normalize through the provider-neutral contract and are durably claimed before dispatch. SQLite context is isolated by room and actor; idle sessions compact to summaries without deleting immutable interaction history.
 
 ```bash
 # Setup Matrix bot (interactive wizard)
 matrix-dispatch-helper.sh setup
 
-# Map rooms to runners (each room = separate session)
+# Map rooms to runners (mutable context is isolated by room and actor)
 matrix-dispatch-helper.sh map '!dev-room:server' code-reviewer
 matrix-dispatch-helper.sh map '!seo-room:server' seo-analyst
 

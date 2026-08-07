@@ -40,9 +40,9 @@ Matrix Room --> Matrix Bot --> OpenCode / runner-helper.sh --> AI session
               +-- matrix_room_sessions
 ```
 
-**Message flow**: `!ai <prompt>` → permission check → room-to-runner lookup → entity resolution → L0 log → load context (L2 profile + L1 summary + L0 recent) → privacy filter → dispatch → post response + reaction.
+**Message flow**: `!ai <prompt>` → pure core-v1 normalization → permission/room-to-runner evidence → durable event claim → entity resolution → L0 log → load exact room+actor context (L2 profile + L1 summary + L0 recent) → dispatch → post response + reaction.
 
-**Session lifecycle**: First message creates session (L0 immutable log) → idle for `sessionIdleTimeout` → AI summarises to L1 (L0 never deleted) → next message primed with profile + summary → SIGINT/SIGTERM compacts all sessions before exit.
+**Session lifecycle**: First accepted room+actor event creates a session and durable receipt (L0 immutable log) → idle for `sessionIdleTimeout` → AI summarises to L1 (L0 never deleted) → next message from the same room+actor is primed with profile + summary → actor/runner changes clear mutable upstream state → SIGINT/SIGTERM compacts active sessions before exit.
 
 ## Setup
 
@@ -121,13 +121,13 @@ matrix-dispatch-helper.sh sessions clear '!room:server'
 matrix-dispatch-helper.sh sessions clear-all
 ```
 
-Trigger: `!ai <prompt>` in any mapped room. One dispatch per room (prevents flooding); typing indicator, status reactions, auto-join on invite, per-room context persisted.
+Trigger: `!ai <prompt>` in any mapped room. One dispatch per room prevents flooding; durable provider-event receipts prevent restart/redelivery duplicates; typing indicators, status reactions, auto-join, and isolated room+actor context remain supported.
 
 ## Entity Integration
 
-**Resolution**: `@user:server` → lookup `entity_channels` → create if new → cache per session. Context per prompt: L2 profile → L1 summary → L0 recent interactions (this channel only) → privacy filter (emails, IPs, API keys redacted).
+**Resolution**: the provider sender ID—not its display name—selects `entity_channels`, creates an entity if needed, and is cached per process. Context per prompt: L2 profile → matching L1 room/conversation summary → L0 interactions matching entity + Matrix + room + conversation. Immutable historical interactions are preserved but broader legacy rows are not reused across rooms or actors.
 
-**Storage** (`memory.db`, SQLite WAL): `matrix_room_sessions`, `interactions` (L0 immutable), `conversations` (L1 summaries), `entities`/`entity_channels`/`entity_profiles` (L2 identity). Legacy `sessions.db` auto-detected.
+**Storage** (`memory.db`, SQLite WAL): `matrix_room_sessions`, `matrix_event_receipts`, `interactions` (L0 immutable), `conversations` (L1 summaries), `entities`/`entity_channels`/`entity_profiles` (L2 identity). Session schema changes are additive; legacy rows remain readable and are rebound before reuse.
 
 ## Security
 
@@ -136,6 +136,8 @@ Trigger: `!ai <prompt>` in any mapped room. One dispatch per room (prevents floo
 3. Bot account must NOT have Synapse admin privileges
 4. OpenCode server should be localhost-only unless secured; set `OPENCODE_SERVER_PASSWORD` on shared systems
 5. Bot cannot read encrypted messages — rooms must have encryption disabled; use Element (not FluffyChat) when creating rooms
+6. Accepted events are normalized to stable hashed identities before dispatch; display names never establish identity or authority
+7. Event receipts are claimed before typing/reactions/runner effects, and Matrix-facing failures never include raw runner/provider diagnostics
 
 ## Troubleshooting
 

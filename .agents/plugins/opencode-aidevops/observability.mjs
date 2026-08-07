@@ -44,9 +44,17 @@ import {
 } from "./otel-enrichment.mjs";
 import {
   PartStreamSummaryTracker,
-  summarizeToolMetadata,
 } from "./observability-retention.mjs";
-import { toolOutcomeFailed } from "./session-continuation-guard.mjs";
+import {
+  buildToolCallInsertSql,
+  toolCallSucceeded,
+} from "./observability-tool-calls.mjs";
+import {
+  consumeRoutingDecision,
+  getRoutingFeedback,
+  recordRoutingDecision,
+  rememberRoutingFeedback,
+} from "./observability-routing.mjs";
 
 const HOME = homedir();
 const DEFAULT_OBS_DIR = join(HOME, ".aidevops", ".agent-workspace", "observability");
@@ -60,6 +68,8 @@ const OBS_DIR = dirname(DB_PATH);
 const COST_BACKFILL_MARKER = `${DB_PATH}.cost-backfill-v1.done`;
 
 export { getPricing };
+export { getRoutingFeedback, recordRoutingDecision };
+export { buildToolCallInsertSql, toolCallSucceeded };
 
 /**
  * Initialise the observability database with WAL mode and schema.
@@ -91,7 +101,7 @@ function initDatabase() {
   // 100% of worker startups. Read-only check first — no lock contention,
   // skips the slow path entirely once the DB is ready.
   if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
-    return _runDataMigrations({ intentColumnReady: true });
+    return _runDataMigrations({ intentColumnReady: true, routingColumnsReady: true });
   }
 
   // SLOW PATH (t2900): serialise schema creation across concurrent workers
@@ -102,7 +112,7 @@ function initDatabase() {
     // DOUBLE-CHECKED LOCKING: another worker may have completed init while
     // we waited. If schema is now ready, skip the writer-lock-heavy path.
     if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
-      return _runDataMigrations({ intentColumnReady: true });
+      return _runDataMigrations({ intentColumnReady: true, routingColumnsReady: true });
     }
     if (!_createSchema()) return false;
     return _runDataMigrations();
@@ -116,7 +126,7 @@ function initDatabase() {
  * Historical data backfills are scheduled after startup so large observability
  * databases do not block the OpenCode TUI on table scans or writer locks.
  *
- * @param {{ intentColumnReady?: boolean }} [options]
+ * @param {{ intentColumnReady?: boolean, routingColumnsReady?: boolean }} [options]
  * @returns {boolean} true on success (best-effort — never returns false)
  */
 function _runDataMigrations(options = {}) {
@@ -132,6 +142,31 @@ function _runDataMigrations(options = {}) {
   if (hasIntentCol === "0") {
     sqliteExecSync("ALTER TABLE tool_calls ADD COLUMN intent TEXT;", 5000);
   }
+
+  if (!options.routingColumnsReady) {
+    const routingColumns = [
+      ["parent_session_id", "TEXT"],
+      ["routing_tier", "TEXT"],
+      ["routing_candidate_index", "INTEGER"],
+      ["routing_attempt", "INTEGER"],
+      ["routing_reason", "TEXT"],
+      ["routing_escalated", "INTEGER DEFAULT 0"],
+    ];
+    for (const [column, definition] of routingColumns) {
+      const exists = sqliteExecSync(
+        `SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name=${sqlEscape(column)};`,
+        5000,
+      );
+      if (exists === "0") {
+        sqliteExecSync(`ALTER TABLE llm_requests ADD COLUMN ${column} ${definition};`, 5000);
+      }
+    }
+  }
+  // These indexes must be created after the migration above. On an existing
+  // pre-routing database, createSchema() sees the old llm_requests table and
+  // cannot reference columns that ALTER TABLE has not added yet.
+  sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_parent_session ON llm_requests(parent_session_id);", 5000);
+  sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_routing_tier ON llm_requests(routing_tier);", 5000);
 
   // runtime-events.mjs is the sole runtime-event schema/migration authority.
   if (!initialiseRuntimeEventStore(DB_PATH)) return false;
@@ -276,7 +311,15 @@ function handleMessageUpdated(event) {
   if (recordedMessages.has(msg.id)) return;
   recordedMessages.add(msg.id);
 
-  recordOpenCodeRuntimeEvent(event, "message.completed", partStreamSummaries.consume(msg));
+  const routing = consumeRoutingDecision(msg);
+  recordOpenCodeRuntimeEvent(event, "message.completed", {
+    ...partStreamSummaries.consume(msg),
+    routing_tier: routing.tier || null,
+    routing_candidate_index: routing.candidateIndex,
+    routing_attempt: routing.attempt,
+    routing_reason: routing.reason || null,
+    routing_escalated: routing.escalated === 1,
+  });
 
   // Prevent unbounded memory growth — prune old entries periodically
   if (recordedMessages.size > 10000) {
@@ -302,13 +345,16 @@ function handleMessageUpdated(event) {
 
   // Calculate cost from tokens — OpenCode does not provide msg.cost
   const cost = calculateCost(msg.tokens, msg.modelID);
+  rememberRoutingFeedback(msg, routing, cost, errorType);
 
   const sql = `INSERT INTO llm_requests (
     session_id, message_id, provider_id, model_id, agent,
     tokens_input, tokens_output, tokens_reasoning,
     tokens_cache_read, tokens_cache_write, tokens_total,
     cost, duration_ms, finish_reason, error_type, error_message,
-    tool_call_count, project_path, variant
+    tool_call_count, project_path, variant, parent_session_id,
+    routing_tier, routing_candidate_index, routing_attempt, routing_reason,
+    routing_escalated
   ) VALUES (
     ${sqlEscape(msg.sessionID)},
     ${sqlEscape(msg.id)},
@@ -328,7 +374,13 @@ function handleMessageUpdated(event) {
     ${sqlEscape(errorMessage)},
     ${toolCallCount},
     ${sqlEscape(projectPath)},
-    ${sqlEscape(msg.variant || null)}
+    ${sqlEscape(msg.variant || routing.variant || null)},
+    ${sqlEscape(routing.parentSessionID || null)},
+    ${sqlEscape(routing.tier || null)},
+    ${Number.isInteger(routing.candidateIndex) ? routing.candidateIndex : -1},
+    ${Number.isInteger(routing.attempt) ? routing.attempt : 1},
+    ${sqlEscape(routing.reason || null)},
+    ${routing.escalated === 1 ? 1 : 0}
   );`;
 
   sqliteExec(sql);
@@ -387,47 +439,6 @@ ON CONFLICT(session_id) DO UPDATE SET
 }
 
 /**
- * Build the INSERT SQL for a tool_calls row. Pure function — no DB access,
- * no global state — so it is exhaustively testable without sqlite3.
- *
- * Column order must stay aligned with the `tool_calls` CREATE TABLE in
- * initDatabase(). If you add or reorder columns there, update this
- * builder and its test suite (test-observability-tool-calls.mjs) in the
- * same commit.
- *
- * @param {object} args
- * @param {string} args.sessionID
- * @param {string} args.callID
- * @param {string} args.toolName
- * @param {string | null | undefined} args.intent
- * @param {0 | 1} args.isSuccess
- * @param {number | null | undefined} args.durationMs - Elapsed ms, or null/undefined to store SQL NULL
- * @param {object | null | undefined} args.metadata - Raw metadata object; summarized before persistence
- * @returns {string} INSERT statement ready for sqliteExec
- */
-export function buildToolCallInsertSql({ sessionID, callID, toolName, intent, isSuccess, durationMs, metadata }) {
-  const durationSql = (durationMs !== null && durationMs !== undefined)
-    ? String(durationMs)
-    : "NULL";
-  // sqlEscape(null) returns the literal string "NULL" — we exploit that
-  // so the metadata column renders as SQL NULL when metadata is absent.
-  const metadataSummary = summarizeToolMetadata(metadata);
-  const metadataValue = metadataSummary === null ? null : JSON.stringify(metadataSummary);
-
-  return `INSERT INTO tool_calls (
-    session_id, call_id, tool_name, intent, success, duration_ms, metadata
-  ) VALUES (
-    ${sqlEscape(sessionID)},
-    ${sqlEscape(callID)},
-    ${sqlEscape(toolName)},
-    ${sqlEscape(intent || null)},
-    ${isSuccess},
-    ${durationSql},
-    ${sqlEscape(metadataValue)}
-  );`;
-}
-
-/**
  * Record a tool call from the tool.execute.after hook.
  * Increments the in-memory counter and writes to the tool_calls table.
  *
@@ -436,10 +447,6 @@ export function buildToolCallInsertSql({ sessionID, callID, toolName, intent, is
  * @param {string | undefined} intent - LLM-provided intent string (from agent__intent field)
  * @param {number | null | undefined} [durationMs] - Elapsed milliseconds from tool.execute.before (t2184)
  */
-export function toolCallSucceeded(output) {
-  return !toolOutcomeFailed(output);
-}
-
 export function recordToolCall(input, output, intent, durationMs) {
   if (!dbReady) return;
 

@@ -318,30 +318,6 @@ _private_workload_exit_trap() {
 	return "$cleanup_status"
 }
 
-_resolve_capability_escalation() {
-	local role="$1"
-	local selected_model="$2"
-	local variant="$3"
-	local retry_count="$4"
-	_capability_escalation_model=""
-	_capability_escalation_variant=""
-	_capability_escalation_label=""
-	[[ "$role" == "worker" ]] || return 1
-	if [[ "$selected_model" == "openai/gpt-5.6-luna" && "$variant" == "max" && "$retry_count" -eq 0 ]]; then
-		_capability_escalation_model="openai/gpt-5.6-sol"
-		_capability_escalation_variant="high"
-		_capability_escalation_label="Luna max reported BLOCKED — escalating once to Sol high"
-		return 0
-	fi
-	if [[ "$selected_model" == "openai/gpt-5.6-sol" && "$variant" == "high" && "$retry_count" -le 1 ]]; then
-		_capability_escalation_model="$selected_model"
-		_capability_escalation_variant="max"
-		_capability_escalation_label="Sol high reported BLOCKED — escalating once to Sol max"
-		return 0
-	fi
-	return 1
-}
-
 _handle_run_result() {
 	local exit_code="$1"
 	local output_file="$2"

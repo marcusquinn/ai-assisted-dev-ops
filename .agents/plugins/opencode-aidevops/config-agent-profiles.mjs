@@ -7,6 +7,9 @@ import { existsSync, readFileSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { loadAgentIndex } from "./agent-loader.mjs";
+import { DEFAULT_ESCALATION_ORDER, normalizeRoutingTier } from "./model-routing.mjs";
+
+const ROUTING_TIER_METADATA = "aidevops_model_tier";
 
 function readIfExists(filepath) {
   try {
@@ -19,19 +22,84 @@ function readIfExists(filepath) {
   return "";
 }
 
-export function registerAgents(config, agentsDir) {
+export function applyAgentRoutingProfile(profile, tier, routing) {
+  if (!profile || !routing) return false;
+  const explicitModel = String(profile.model || "");
+  if (explicitModel.includes("/")) return false;
+
+  const authoredTier = [profile[ROUTING_TIER_METADATA], explicitModel, tier]
+    .find((value) => DEFAULT_ESCALATION_ORDER.includes(String(value || "").trim().toLowerCase()));
+  const routeTier = normalizeRoutingTier(authoredTier);
+  if (!routing.tiers?.[routeTier]) return false;
+  if (explicitModel) delete profile.model;
+  delete profile[ROUTING_TIER_METADATA];
+  return true;
+}
+
+export function registerAgentRoutingIntent(state, name, profile, tier, routing) {
+  if (!state || !name || !profile) return false;
+  const explicitModel = String(profile.model || "");
+  if (explicitModel.includes("/")) {
+    state.tiers.delete(name);
+    state.pinned.add(name);
+    delete profile[ROUTING_TIER_METADATA];
+    return false;
+  }
+
+  const existingTier = state.tiers.get(name);
+  const authoredTier = [profile[ROUTING_TIER_METADATA], explicitModel, existingTier, tier]
+    .find((value) => DEFAULT_ESCALATION_ORDER.includes(String(value || "").trim().toLowerCase()));
+  state.pinned.delete(name);
+  state.tiers.set(name, normalizeRoutingTier(authoredTier));
+  return applyAgentRoutingProfile(profile, authoredTier, routing);
+}
+
+function registerConfiguredRoutingIntents(config, routing, state) {
+  for (const [name, profile] of Object.entries(config.agent || {})) {
+    const model = String(profile?.model || "");
+    const metadata = String(profile?.[ROUTING_TIER_METADATA] || "");
+    if (
+      model.includes("/")
+      || DEFAULT_ESCALATION_ORDER.includes(model.toLowerCase())
+      || DEFAULT_ESCALATION_ORDER.includes(metadata.toLowerCase())
+    ) {
+      registerAgentRoutingIntent(state, name, profile, metadata || model, routing);
+    }
+  }
+}
+
+function registerBuiltInRoutedAgents(config, routing, state) {
+  const builtIns = [
+    ["explore", "simple", "Fast repository exploration"],
+    ["general", "standard", "General-purpose delegated work"],
+  ];
+  let injected = 0;
+  for (const [name, tier, description] of builtIns) {
+    if (!config.agent[name]) {
+      config.agent[name] = { description, mode: "subagent" };
+      injected++;
+    }
+    registerAgentRoutingIntent(state, name, config.agent[name], tier, routing);
+  }
+  return injected;
+}
+
+export function registerAgents(config, agentsDir, routing, state) {
+  registerConfiguredRoutingIntents(config, routing, state);
   const indexAgents = loadAgentIndex(agentsDir, readIfExists);
   let injected = 0;
 
   for (const agent of indexAgents) {
-    if (config.agent[agent.name]) continue;
-    config.agent[agent.name] = {
-      description: agent.description,
-      mode: "subagent",
-    };
-    injected++;
+    if (!config.agent[agent.name]) {
+      config.agent[agent.name] = {
+        description: agent.description,
+        mode: "subagent",
+      };
+      injected++;
+    }
+    registerAgentRoutingIntent(state, agent.name, config.agent[agent.name], agent.modelTier, routing);
   }
-  return injected;
+  return injected + registerBuiltInRoutedAgents(config, routing, state);
 }
 
 const RESEARCH_ONLY_AGENT_NAME = "research-only";

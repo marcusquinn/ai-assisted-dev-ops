@@ -1203,7 +1203,7 @@ _extract_provider() {
 # =============================================================================
 
 # Resolve the best available model for a given tier.
-# Checks primary model first, falls back to secondary if primary is unavailable.
+# Checks every configured same-tier candidate in order.
 # Rate limit awareness (t1330): if primary provider is at throttle risk (>=warn_pct),
 # prefer the fallback provider even if primary is technically available.
 # If both fail, delegates to fallback-chain-helper.sh for extended chain resolution
@@ -1227,9 +1227,7 @@ resolve_tier() {
 		return 1
 	fi
 
-	local primary fallback
-	primary="${tier_spec%%|*}"
-	fallback="${tier_spec#*|}"
+	local primary="${tier_spec%%|*}"
 
 	# Rate-limit routing disabled (t1927). The observability helper's rate-limit
 	# data is unreliable — it reports cumulative session tokens as per-minute API
@@ -1260,19 +1258,25 @@ resolve_tier() {
 	#     fi
 	# fi
 
-	# Try primary
-	if [[ -n "$primary" ]] && check_model_available "$primary" "$force" "true"; then
-		echo "$primary"
-		[[ "$quiet" != "true" ]] && print_success "Resolved $tier -> $primary (primary)"
-		return 0
-	fi
-
-	# Try fallback
-	if [[ -n "$fallback" && "$fallback" != "$primary" ]] && check_model_available "$fallback" "$force" "true"; then
-		echo "$fallback"
-		[[ "$quiet" != "true" ]] && print_warning "Resolved $tier -> $fallback (fallback, primary $primary unavailable)"
-		return 0
-	fi
+	local -a candidates=()
+	local candidate=""
+	IFS='|' read -r -a candidates <<<"$tier_spec"
+	local candidate_index=0
+	for candidate in "${candidates[@]}"; do
+		[[ -n "$candidate" ]] || continue
+		if check_model_available "$candidate" "$force" "true"; then
+			printf '%s\n' "$candidate"
+			if [[ "$quiet" != "true" ]]; then
+				if [[ "$candidate_index" -eq 0 ]]; then
+					print_success "Resolved $tier -> $candidate (primary)"
+				else
+					print_warning "Resolved $tier -> $candidate (candidate $((candidate_index + 1)), primary $primary unavailable)"
+				fi
+			fi
+			return 0
+		fi
+		candidate_index=$((candidate_index + 1))
+	done
 
 	# Extended fallback: delegate to fallback-chain-helper.sh (t132.4)
 	# This walks the full configured chain including gateway providers
@@ -1288,7 +1292,7 @@ resolve_tier() {
 		fi
 	fi
 
-	[[ "$quiet" != "true" ]] && print_error "No available model for tier: $tier (tried $primary, $fallback, and extended chain)"
+	[[ "$quiet" != "true" ]] && print_error "No available model for tier: $tier (configured candidates and extended chain exhausted)"
 	return 1
 }
 

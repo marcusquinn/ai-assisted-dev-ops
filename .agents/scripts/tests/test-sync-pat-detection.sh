@@ -20,6 +20,10 @@
 #   8. issue-sync.yml + rulesets-only (required_status_checks) + NO SYNC_PAT → emits advisory (t2806)
 #   9. issue-sync.yml + rulesets-only (no relevant rules) → no advisory
 #  10. issue-sync.yml + both classic + rulesets + NO SYNC_PAT → classic wins, emits advisory
+#  11. ruleset targeting another branch → no advisory
+#  12. protected branch + Actions PR creation enabled → no advisory
+#  13. classic protection with zero approvals + Actions PR creation disabled → emits advisory
+#  14. classic protection without PR/check requirements → no advisory
 #
 # Stub strategy: a single configurable gh() stub dispatches based on
 # STUB_* variables set per test. This avoids redefining gh() 6 times
@@ -78,9 +82,12 @@ mkdir -p "$FAKE_REPO/.git"
 # Constants for stub responses
 readonly ISSUE_SYNC_RESPONSE='{"name":"issue-sync.yml"}'
 readonly PROTECTION_WITH_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":1}}'
+readonly PROTECTION_WITHOUT_REVIEWS='{"required_pull_request_reviews":{"required_approving_review_count":0}}'
+readonly PROTECTION_WITHOUT_PUBLICATION_GATE='{"enforce_admins":{"enabled":true},"allow_force_pushes":{"enabled":false}}'
 readonly GH_API_SYNC_PATTERN="contents/.github/workflows/issue-sync.yml"
 readonly GH_API_PROT_PATTERN="/protection"
 readonly GH_API_RULESETS_LIST_PATTERN="/rulesets"
+readonly GH_API_ACTIONS_PERMISSIONS_PATTERN="actions/permissions/workflow"
 
 # Rulesets fixtures (t2806)
 readonly RULESETS_LIST_WITH_ACTIVE='[{"id":1000,"enforcement":"active"}]'
@@ -98,11 +105,12 @@ readonly RULESET_DETAIL_OTHER_BRANCH='{"conditions":{"ref_name":{"include":["ref
 # =============================================================================
 # Configurable stub variables (set per test case)
 # =============================================================================
-STUB_HAS_ISSUE_SYNC="true"     # "true" = API returns 200, "false" = API returns 1
-STUB_PROTECTION_RESPONSE=""     # JSON response from /protection, empty = no protection
-STUB_SECRET_RESPONSE=""         # Output from gh secret list, empty = no SYNC_PAT
-STUB_RULESETS_LIST=""           # JSON response for /rulesets list endpoint
-STUB_RULESET_DETAIL=""          # JSON response for /rulesets/{id} detail endpoint
+STUB_HAS_ISSUE_SYNC="true"       # "true" = API returns 200, "false" = API returns 1
+STUB_PROTECTION_RESPONSE=""      # JSON response from /protection, empty = no protection
+STUB_SECRET_RESPONSE=""          # Output from gh secret list, empty = no SYNC_PAT
+STUB_RULESETS_LIST=""            # JSON response for /rulesets list endpoint
+STUB_RULESET_DETAIL=""           # JSON response for /rulesets/{id} detail endpoint
+STUB_ACTIONS_PR_CREATION="false" # "true" when GITHUB_TOKEN may create PRs
 
 # Single shared gh stub — dispatches based on STUB_* variables
 gh() {
@@ -119,6 +127,10 @@ gh() {
 				return 0
 			fi
 			return 1
+		elif [[ "$url" == *"$GH_API_ACTIONS_PERMISSIONS_PATTERN"* ]]; then
+			printf '{"default_workflow_permissions":"read","can_approve_pull_request_reviews":%s}\n' \
+				"$STUB_ACTIONS_PR_CREATION"
+			return 0
 		elif [[ "$url" == *"$GH_API_PROT_PATTERN"* ]]; then
 			if [[ -n "$STUB_PROTECTION_RESPONSE" ]]; then
 				echo "$STUB_PROTECTION_RESPONSE"
@@ -197,8 +209,16 @@ FINDINGS_JSON="[]"
 # Stubs for print functions — capture output for assertions
 OUTPUT_LOG="$TMP/output.log"
 
-print_header() { local msg="$1"; echo "[HEADER] $msg" >>"$OUTPUT_LOG"; return 0; }
-print_info() { local msg="$1"; echo "[INFO] $msg" >>"$OUTPUT_LOG"; return 0; }
+print_header() {
+	local msg="$1"
+	echo "[HEADER] $msg" >>"$OUTPUT_LOG"
+	return 0
+}
+print_info() {
+	local msg="$1"
+	echo "[INFO] $msg" >>"$OUTPUT_LOG"
+	return 0
+}
 print_pass() {
 	local msg="$1"
 	echo "[PASS] $msg" >>"$OUTPUT_LOG"
@@ -242,6 +262,7 @@ eval "$(sed -n '/^_emit_sync_pat_advisory()/,/^}/p' "${SCRIPTS_DIR}/security-pos
 eval "$(sed -n '/^_ruleset_targets_default_branch()/,/^}/p' "${SCRIPTS_DIR}/security-posture-helper-repo.sh")"
 eval "$(sed -n '/^_default_branch_ruleset_details()/,/^}/p' "${SCRIPTS_DIR}/security-posture-helper-repo.sh")"
 eval "$(sed -n '/^_branch_is_rulesets_protected()/,/^}/p' "${SCRIPTS_DIR}/security-posture-helper-repo.sh")"
+eval "$(sed -n '/^_actions_can_create_pull_requests()/,/^}/p' "${SCRIPTS_DIR}/security-posture-helper-repo.sh")"
 eval "$(sed -n '/^_check_sync_pat_need()/,/^}/p' "${SCRIPTS_DIR}/security-posture-helper-repo.sh")"
 eval "$(sed -n '/^check_sync_pat()/,/^}/p' "${SCRIPTS_DIR}/security-posture-helper-repo.sh")"
 
@@ -254,6 +275,7 @@ SEVERITY_INFO="info"
 SEVERITY_PASS="pass"
 CAT_SYNC_PAT="sync_pat"
 SYNC_PAT_NEED_NOT_NEEDED="not_needed"
+SYNC_PAT_PROTECTION_CLASSIC="classic"
 RULESET_ENFORCEMENT_ACTIVE="active"
 RULESET_DEFAULT_BRANCH_TOKEN="~DEFAULT_BRANCH"
 RULESET_ALL_BRANCHES_TOKEN="~ALL"
@@ -283,6 +305,7 @@ reset_state() {
 	# exercise the rulesets path set STUB_RULESETS_LIST and STUB_RULESET_DETAIL.
 	STUB_RULESETS_LIST=""
 	STUB_RULESET_DETAIL=""
+	STUB_ACTIONS_PR_CREATION="false"
 	return 0
 }
 
@@ -422,7 +445,7 @@ fi
 # =============================================================================
 printf '\n%sTest 7 (t2806): Rulesets-only protection (pull_request) — should advise%s\n' "$TEST_BLUE" "$TEST_NC"
 reset_state
-STUB_PROTECTION_RESPONSE=""  # Classic API returns 404
+STUB_PROTECTION_RESPONSE="" # Classic API returns 404
 STUB_RULESETS_LIST="$RULESETS_LIST_WITH_ACTIVE"
 STUB_RULESET_DETAIL="$RULESET_DETAIL_PULL_REQUEST"
 STUB_SECRET_RESPONSE=""
@@ -523,6 +546,64 @@ if [[ ! -f "$ADVISORY_PATH" ]]; then
 	pass "No advisory when rulesets target non-default branch"
 else
 	fail "Advisory fired despite rulesets not matching default branch"
+fi
+
+# =============================================================================
+# Test 12: Protected branch with Actions PR creation enabled — no PAT needed
+# =============================================================================
+printf '\n%sTest 12: Actions PR creation enabled — should skip%s\n' "$TEST_BLUE" "$TEST_NC"
+reset_state
+echo "stale" >"$ADVISORY_PATH"
+STUB_ACTIONS_PR_CREATION="true"
+
+check_sync_pat "$FAKE_REPO"
+
+if [[ ! -f "$ADVISORY_PATH" ]]; then
+	pass "Actions PR creation removes the SYNC_PAT requirement and stale advisory"
+else
+	fail "Advisory retained despite Actions PR creation being enabled"
+fi
+
+if grep -q '\[PASS\].*Actions can create the issue-sync PR' "$OUTPUT_LOG" 2>/dev/null; then
+	pass "Pass message identifies the sufficient job-token PR path"
+else
+	fail "No pass message for enabled Actions PR creation" "Log: $(cat "$OUTPUT_LOG")"
+fi
+
+# =============================================================================
+# Test 13: Zero approvals still needs PAT when Actions cannot create the PR
+# =============================================================================
+printf '\n%sTest 13: Zero approvals with Actions PR creation disabled — should advise%s\n' "$TEST_BLUE" "$TEST_NC"
+reset_state
+STUB_PROTECTION_RESPONSE="$PROTECTION_WITHOUT_REVIEWS"
+
+check_sync_pat "$FAKE_REPO"
+
+if [[ -f "$ADVISORY_PATH" ]]; then
+	pass "Protected PR path advises despite zero required approvals"
+else
+	fail "No advisory for protected PR path with disabled Actions PR creation"
+fi
+
+# =============================================================================
+# Test 14: Classic protection without PR/check requirements — no PAT needed
+# =============================================================================
+printf '\n%sTest 14: Non-publication classic protection — should skip%s\n' "$TEST_BLUE" "$TEST_NC"
+reset_state
+STUB_PROTECTION_RESPONSE="$PROTECTION_WITHOUT_PUBLICATION_GATE"
+
+check_sync_pat "$FAKE_REPO"
+
+if [[ ! -f "$ADVISORY_PATH" ]]; then
+	pass "Non-publication branch protection does not trigger a SYNC_PAT advisory"
+else
+	fail "Advisory fired for protection that does not block direct publication"
+fi
+
+if grep -q '\[PASS\].*does not block direct issue-sync publication' "$OUTPUT_LOG" 2>/dev/null; then
+	pass "Pass message identifies non-publication branch protection"
+else
+	fail "No pass message for non-publication branch protection" "Log: $(cat "$OUTPUT_LOG")"
 fi
 
 # =============================================================================
