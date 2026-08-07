@@ -1670,7 +1670,7 @@ _dispatch_rest_core_requires_serial() {
 	if declare -F _cb_rest_core_gate_probe_ttl >/dev/null 2>&1; then
 		gate_ttl=$(_cb_rest_core_gate_probe_ttl)
 	fi
-	local decision mode remaining limit adaptive soft_cap hard_floor reset_epoch
+	local decision="" mode="" remaining="" limit="" adaptive="" soft_cap="" hard_floor="" reset_epoch=""
 	decision=$(pulse_rest_core_priority_snapshot "$gate_ttl") || decision="unknown ? ? ? ? ? ?"
 	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	case "$mode" in
