@@ -91,6 +91,14 @@ _CB_RL_CACHE_FILE="${AIDEVOPS_PULSE_RATE_LIMIT_CACHE:-${HOME}/.aidevops/cache/pu
 _CB_RL_CACHE_TTL="${AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL:-20}"
 _CB_RL_MODE_CACHED_ONLY="cached-only"
 
+# REST-core observations deliberately use a separate cache: the /rate_limit
+# projection can describe a different principal from the one serving a routed
+# REST request. A response header is authoritative for the request principal.
+_CB_REST_CORE_CACHE_FILE="${AIDEVOPS_PULSE_REST_CORE_CACHE:-${HOME}/.aidevops/cache/pulse-rest-core.json}"
+_CB_REST_CORE_PROBE_TTL="${AIDEVOPS_PULSE_REST_CORE_PROBE_TTL:-20}"
+_CB_REST_CORE_RESOURCE="core"
+_CB_REST_CORE_UNKNOWN="unknown"
+
 # Log prefix for all messages from this module.
 _CB_RL_LOG_PREFIX="[circuit-breaker-rl]"
 
@@ -155,6 +163,82 @@ _cb_rate_limit_json() {
 }
 
 #######################################
+# Probe REST core using response headers from the active gh principal.
+#
+# Stdout: the final HTTP response block, including headers. `-i` is essential:
+# rate_limit JSON is a projection and can identify a different principal.
+#######################################
+_cb_rest_core_probe() {
+	_cb_gh_read gh api -i user
+	return $?
+}
+
+#######################################
+# Extract one response-header value from the final HTTP response block.
+#######################################
+_cb_rest_core_header() {
+	local response="$1"
+	local name="$2"
+	printf '%s\n' "$response" | awk -v wanted="$name" '
+		BEGIN { IGNORECASE=1 }
+		/^HTTP\// { value=""; next }
+		{
+			line=$0
+			sub(/\r$/, "", line)
+			if (tolower(line) ~ "^" tolower(wanted) ":[[:space:]]*") {
+				sub(/^[^:]*:[[:space:]]*/, "", line)
+				value=line
+			}
+		}
+		END { print value }
+	'
+	return 0
+}
+
+#######################################
+# Return whether the active REST principal retains the configured reserve.
+#
+# Returns: 0 sufficient; 1 at/below reserve; 2 unavailable/malformed evidence.
+# Cached observations are never used past their TTL or GitHub reset epoch.
+#######################################
+pulse_rest_core_reserve_allows() {
+	local reserve="${AIDEVOPS_PULSE_REST_CORE_RESERVE:-${AIDEVOPS_PULSE_REST_DISPATCH_MIN_CORE_REMAINING:-500}}"
+	local ttl="$_CB_REST_CORE_PROBE_TTL"
+	local now observed=0 remaining limit reset resource
+	[[ "$reserve" =~ ^[0-9]+$ ]] || reserve=500
+	[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=20
+	[[ "$reserve" -eq 0 ]] && return 0
+	now=$(date +%s 2>/dev/null) || now=0
+	[[ "$now" =~ ^[0-9]+$ ]] || now=0
+
+	if [[ -f "$_CB_REST_CORE_CACHE_FILE" ]]; then
+		read -r observed remaining limit reset resource < <(jq -r --arg unknown "$_CB_REST_CORE_UNKNOWN" '[.observed // 0, .remaining // $unknown, .limit // $unknown, .reset // 0, .resource // $unknown] | @tsv' "$_CB_REST_CORE_CACHE_FILE" 2>/dev/null) || true
+		if [[ "$observed" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ && "$limit" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ &&
+			"$resource" == "$_CB_REST_CORE_RESOURCE" && "$now" -lt "$reset" && $((now - observed)) -le "$ttl" ]]; then
+			[[ "$remaining" -gt "$reserve" ]] && return 0
+			return 1
+		fi
+	fi
+
+	local response
+	response=$(_cb_rest_core_probe) || return 2
+	remaining=$(_cb_rest_core_header "$response" "X-RateLimit-Remaining")
+	limit=$(_cb_rest_core_header "$response" "X-RateLimit-Limit")
+	reset=$(_cb_rest_core_header "$response" "X-RateLimit-Reset")
+	resource=$(_cb_rest_core_header "$response" "X-RateLimit-Resource")
+	if [[ ! "$remaining" =~ ^[0-9]+$ || ! "$limit" =~ ^[0-9]+$ || ! "$reset" =~ ^[0-9]+$ || "$resource" != "$_CB_REST_CORE_RESOURCE" || "$reset" -le "$now" ]]; then
+		return 2
+	fi
+	mkdir -p "$(dirname "$_CB_REST_CORE_CACHE_FILE")" 2>/dev/null || true
+	jq -cn --arg resource "$_CB_REST_CORE_RESOURCE" --argjson observed "$now" --argjson remaining "$remaining" \
+		--argjson limit "$limit" --argjson reset "$reset" \
+		'{observed: $observed, remaining: $remaining, limit: $limit, reset: $reset, resource: $resource}' \
+		>"$_CB_REST_CORE_CACHE_FILE" 2>/dev/null || true
+	[[ "$remaining" -gt "$reserve" ]] && return 0
+	return 1
+}
+
+#######################################
 # Allow degraded dispatch when only GraphQL is exhausted.
 #
 # Args:
@@ -177,24 +261,17 @@ _cb_allow_dispatch_with_rest_fallback() {
 		return 1
 	fi
 
-	local core_remaining="" core_limit="" min_core=""
-	core_remaining=$(printf '%s' "$rate_json" | jq -r '.resources.core.remaining // ""') || core_remaining=""
-	core_limit=$(printf '%s' "$rate_json" | jq -r '.resources.core.limit // ""') || core_limit=""
-	min_core="${AIDEVOPS_PULSE_REST_DISPATCH_MIN_CORE_REMAINING:-250}"
-
-	if [[ ! "$core_remaining" =~ ^[0-9]+$ ]] || [[ ! "$core_limit" =~ ^[0-9]+$ ]] || [[ ! "$min_core" =~ ^[0-9]+$ ]]; then
-		return 1
-	fi
-
-	if [[ "$core_remaining" -lt "$min_core" ]]; then
-		echo "${_CB_RL_LOG_PREFIX} GraphQL budget exhausted and REST fallback unavailable: core remaining=${core_remaining}/${core_limit} < min_core=${min_core}" >>"$LOGFILE"
+	local core_rc=0
+	pulse_rest_core_reserve_allows || core_rc=$?
+	if [[ "$core_rc" -ne 0 ]]; then
+		echo "${_CB_RL_LOG_PREFIX} GraphQL budget exhausted and REST fallback unavailable: authoritative REST-core reserve is unavailable or exhausted (rc=${core_rc})" >>"$LOGFILE"
 		return 1
 	fi
 
 	export AIDEVOPS_GH_FORCE_REST_READS=1
 	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_ACTIVE=1
-	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_CORE_REMAINING="$core_remaining"
-	echo "${_CB_RL_LOG_PREFIX} GraphQL budget EXHAUSTED: remaining=${graphql_remaining}/${graphql_limit} (threshold=${graphql_threshold_count}, configured=${threshold}) — dispatch_rest_fallback=true; proceeding with REST-backed dispatch reads (core=${core_remaining}/${core_limit}, min_core=${min_core})" >>"$LOGFILE"
+	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_CORE_REMAINING="header-authorized"
+	echo "${_CB_RL_LOG_PREFIX} GraphQL budget EXHAUSTED: remaining=${graphql_remaining}/${graphql_limit} (threshold=${graphql_threshold_count}, configured=${threshold}) — dispatch_rest_fallback=true; proceeding with header-authorized REST-backed dispatch reads" >>"$LOGFILE"
 	if declare -F pulse_stats_increment >/dev/null 2>&1; then
 		pulse_stats_increment "pulse_dispatch_rest_fallback" 2>/dev/null || true
 	fi

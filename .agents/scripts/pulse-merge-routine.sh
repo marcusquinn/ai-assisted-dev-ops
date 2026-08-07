@@ -116,6 +116,8 @@ fi
 
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-wrapper-config.sh"
+# shellcheck source=./pulse-rate-limit-circuit-breaker.sh
+source "${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/pulse-repo-meta.sh"
 # GH#28207: pulse-merge.sh reconciles dependants after verified issue closure,
@@ -268,6 +270,19 @@ _pmr_graphql_budget_allows_run() {
 	[[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
 	if [[ "$remaining" -lt "$threshold" ]]; then
 		_pmr_log WARN "GraphQL budget depleted (${remaining} remaining < ${threshold}); deferring merge pass to next cycle (GH#24904)"
+		return 1
+	fi
+	return 0
+}
+
+_pmr_rest_core_reserve_allows_run() {
+	if ! declare -F pulse_rest_core_reserve_allows >/dev/null 2>&1; then
+		return 0
+	fi
+	local reserve_rc=0
+	pulse_rest_core_reserve_allows || reserve_rc=$?
+	if [[ "$reserve_rc" -ne 0 ]]; then
+		_pmr_log WARN "REST-core reserve unavailable or exhausted (rc=${reserve_rc}); deferring merge pass to preserve interactive maintainer quota (GH#29736)"
 		return 1
 	fi
 	return 0
@@ -454,6 +469,10 @@ cmd_run() {
 		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
 		return 0
 	fi
+	if ! _pmr_rest_core_reserve_allows_run; then
+		date +%s >"$PULSE_MERGE_ROUTINE_LAST_RUN" 2>/dev/null || true
+		return 0
+	fi
 
 	# Wrap merge_ready_prs_all_repos with a hard timeout ceiling (t3041, GH#21708).
 	# Whatever the underlying hang site (gh API call, flock deadlock, infinite
@@ -524,6 +543,9 @@ cmd_dry_run() {
 		return 1
 	fi
 	if ! _pmr_graphql_budget_allows_run; then
+		return 0
+	fi
+	if ! _pmr_rest_core_reserve_allows_run; then
 		return 0
 	fi
 

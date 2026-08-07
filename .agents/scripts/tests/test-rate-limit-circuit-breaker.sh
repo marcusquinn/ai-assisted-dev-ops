@@ -86,9 +86,24 @@ export -f pulse_stats_increment pulse_stats_get_24h
 #   STUB_GH_REMAINING — GraphQL remaining value (default 5000)
 #   STUB_GH_LIMIT     — GraphQL limit value (default 5000)
 #   STUB_GH_CORE_REMAINING — REST core remaining value (unset omits core budget)
+#   STUB_GH_CORE_RESET — REST core reset epoch (default: now+3600)
 #   STUB_GH_RESET     — GraphQL reset epoch (default: now+3600)
 #   STUB_GH_FAIL      — 1 to make gh api rate_limit fail entirely
 gh() {
+	if [[ "$1" == "api" && "$2" == "-i" && "$3" == "user" ]]; then
+		if [[ "${STUB_GH_FAIL:-0}" == "1" ]]; then
+			return 1
+		fi
+		# Omitted core state simulates an unavailable authoritative probe so the
+		# legacy GraphQL-only breaker cases remain independent of REST fallback.
+		[[ -n "${STUB_GH_CORE_REMAINING:-}" ]] || return 0
+		local core_remaining="$STUB_GH_CORE_REMAINING"
+		local core_limit="${STUB_GH_CORE_LIMIT:-5000}"
+		local core_reset="${STUB_GH_CORE_RESET:-$(($(date +%s) + 3600))}"
+		printf 'HTTP/2 200\nx-ratelimit-resource: core\nx-ratelimit-remaining: %s\nx-ratelimit-limit: %s\nx-ratelimit-reset: %s\n\n{}\n' \
+			"$core_remaining" "$core_limit" "$core_reset"
+		return 0
+	fi
 	if [[ "$1" == "api" && "$2" == "rate_limit" ]]; then
 		printf 'rate-limit\n' >>"$GH_RATE_CALLS"
 		[[ "${STUB_GH_DELAY:-0}" == "0" ]] || sleep "$STUB_GH_DELAY"
@@ -154,6 +169,7 @@ reset_test_state() {
 	: >"$GH_RATE_CALLS"
 	rm -f "${HOME}/.aidevops/logs/pulse-graphql-circuit-breaker.state"
 	rm -f "${HOME}/.aidevops/cache/pulse-graphql-rate-limit.json"
+	rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
 	unset AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER 2>/dev/null || true
 	unset AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL 2>/dev/null || true
 	unset AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK 2>/dev/null || true
@@ -161,11 +177,13 @@ reset_test_state() {
 	unset AIDEVOPS_GH_FORCE_REST_READS 2>/dev/null || true
 	unset STUB_GH_CORE_REMAINING 2>/dev/null || true
 	unset STUB_GH_CORE_LIMIT 2>/dev/null || true
+	unset STUB_GH_CORE_RESET 2>/dev/null || true
 	unset STUB_GH_FAIL 2>/dev/null || true
 	unset STUB_GH_DELAY 2>/dev/null || true
 	STUB_GH_REMAINING=5000
 	STUB_GH_LIMIT=5000
 	export AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD="0.05"
+	export AIDEVOPS_PULSE_REST_CORE_RESERVE=500
 	return 0
 }
 
@@ -450,6 +468,38 @@ test_graphql_exhausted_rest_fallback_disabled_blocks_dispatch() {
 		pass "GraphQL exhausted blocks dispatch when REST fallback is disabled"
 	else
 		fail "disabled REST fallback should not allow dispatch" "rc=$rc active=${AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_ACTIVE:-unset} force_rest=${AIDEVOPS_GH_FORCE_REST_READS:-unset}"
+	fi
+	return 0
+}
+
+# --- Test 18: Cached response-header probe avoids a second REST request ---
+test_rest_core_probe_cache_reuse() {
+	reset_test_state
+	STUB_GH_REMAINING=0
+	STUB_GH_CORE_REMAINING=900
+	is_graphql_budget_sufficient || true
+	STUB_GH_CORE_REMAINING=1
+	is_graphql_budget_sufficient || true
+	if [[ "${AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK_ACTIVE:-0}" == "1" ]]; then
+		pass "REST core reserve reuses fresh response-header probe"
+	else
+		fail "REST core reserve should reuse fresh response-header probe"
+	fi
+	return 0
+}
+
+# --- Test 19: Expired response-header observation cannot authorize fallback ---
+test_rest_core_probe_reset_forces_recheck() {
+	reset_test_state
+	STUB_GH_REMAINING=0
+	STUB_GH_CORE_REMAINING=900
+	STUB_GH_CORE_RESET=$(($(date +%s) - 1))
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]]; then
+		pass "expired REST core header observation blocks fallback"
+	else
+		fail "expired REST core header observation should block fallback" "rc=$rc"
 	fi
 	return 0
 }
@@ -794,6 +844,8 @@ test_log_message_on_trip
 test_graphql_exhausted_rest_core_healthy_allows_dispatch
 test_graphql_exhausted_rest_core_low_blocks_dispatch
 test_graphql_exhausted_rest_fallback_disabled_blocks_dispatch
+test_rest_core_probe_cache_reuse
+test_rest_core_probe_reset_forces_recheck
 test_shared_rate_probe_coalesces_consumers
 
 # =============================================================================
