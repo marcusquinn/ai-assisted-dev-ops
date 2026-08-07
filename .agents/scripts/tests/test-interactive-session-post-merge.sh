@@ -5,12 +5,13 @@
 #
 # Covers:
 #   1. Positive t2219: For #X + OPEN + status:done → removes status:done, adds status:available
-#   2. Negative t2219: Closes #X + OPEN + status:done → NOT touched (legitimate close)
-#   3. Positive t2218: For #X + OPEN + origin:interactive + auto-dispatch + assignee=author → unassigns
-#   4. Negative t2218: For #X + OPEN + origin:interactive + auto-dispatch + status:in-review → NOT unassigned
-#   5. Idempotency: second run on already-healthy PR makes no edits
-#   6. Fail-open: unmerged PR → returns 0 without editing
-#   7. Both heals fire in same run when applicable
+#   2. Temporal hold: For #X + OPEN + status:done + hold body → restores status:blocked
+#   3. Negative t2219: Closes #X + OPEN + status:done → NOT touched (legitimate close)
+#   4. Positive t2218: For #X + OPEN + origin:interactive + auto-dispatch + assignee=author → unassigns
+#   5. Negative t2218: For #X + OPEN + origin:interactive + auto-dispatch + status:in-review → NOT unassigned
+#   6. Idempotency: second run on already-healthy PR makes no edits
+#   7. Fail-open: unmerged PR → returns 0 without editing
+#   8. Both heals fire in same run when applicable
 
 set -euo pipefail
 
@@ -116,6 +117,7 @@ _build_obj_json_array() {
 #   issue_state  — OPEN or CLOSED (default OPEN)
 #   issue_labels — comma-separated label names (default "status:available")
 #   issue_assignees — comma-separated assignee logins (default "")
+#   issue_body    — issue body text (default "")
 create_gh_stub() {
 	local pr_body="${1:-}"
 	local pr_state="${2:-MERGED}"
@@ -124,14 +126,16 @@ create_gh_stub() {
 	local issue_state="${5:-OPEN}"
 	local issue_labels_csv="${6:-status:available}"
 	local issue_assignees_csv="${7:-}"
+	local issue_body="${8:-}"
 
 	local labels_json assignees_json
 	labels_json=$(_build_obj_json_array "name" "$issue_labels_csv")
 	assignees_json=$(_build_obj_json_array "login" "$issue_assignees_csv")
 
 	# Escape the PR body for embedding in the shell heredoc
-	local escaped_body
+	local escaped_body escaped_issue_body
 	escaped_body=$(printf '%s' "$pr_body" | sed "s/'/'\\''/g")
+	escaped_issue_body=$(printf '%s' "$issue_body" | sed "s/'/'\\''/g")
 
 	local merged_at=""
 	if [[ "$pr_state" == "MERGED" ]]; then
@@ -167,7 +171,7 @@ fi
 
 # issue view — return issue metadata for any issue number
 if [[ "\${1:-}" == "issue" && "\${2:-}" == "view" ]]; then
-	printf '%s\n' '{"state":"${issue_state}","labels":${labels_json},"assignees":${assignees_json}}'
+	printf '%s\n' '{"state":"${issue_state}","labels":${labels_json},"assignees":${assignees_json},"body":"${escaped_issue_body}"}'
 	exit 0
 fi
 
@@ -200,16 +204,35 @@ test_t2219_for_ref_open_statusdone_healed() {
 
 	bash "$HELPER_SCRIPT" post-merge 100 testorg/testrepo >/dev/null 2>&1 || true
 
-	if grep -q "\-\-remove-label" "$GH_EDIT_LOG" && grep -q "status:done" "$GH_EDIT_LOG"; then
-		print_result "t2219: For #42 + OPEN + status:done → status:done removed" 0
+	if grep -q "\-\-remove-label status:done" "$GH_EDIT_LOG" && grep -q "\-\-add-label status:available" "$GH_EDIT_LOG"; then
+		print_result "t2219: ordinary For #42 false-positive → status:available" 0
 	else
-		print_result "t2219: For #42 + OPEN + status:done → status:done removed" 1 \
-			"Expected gh issue edit --remove-label status:done; got: $(cat "$GH_EDIT_LOG")"
+		print_result "t2219: ordinary For #42 false-positive → status:available" 1 \
+			"Expected status:done → status:available edit; got: $(cat "$GH_EDIT_LOG")"
 	fi
 	return 0
 }
 
-# ─── Test 2: Negative t2219 — Closes #X + OPEN + status:done → NOT touched ──
+# ─── Test 2: Temporal hold restores status:blocked ───────────────────────────
+test_t2219_temporal_hold_restores_blocked() {
+	local pr_body="For #42"
+	create_gh_stub "$pr_body" "MERGED" "testauthor" "42" "OPEN" \
+		"status:done,auto-dispatch" "" "Do not dispatch until 2026-09-01."
+
+	bash "$HELPER_SCRIPT" post-merge 100 testorg/testrepo >/dev/null 2>&1 || true
+
+	if grep -q "\-\-remove-label status:done" "$GH_EDIT_LOG" &&
+		grep -q "\-\-add-label status:blocked" "$GH_EDIT_LOG" &&
+		grep -q 'status:blocked' "$GH_COMMENT_LOG"; then
+		print_result "t2219: explicit temporal hold → status:blocked" 0
+	else
+		print_result "t2219: explicit temporal hold → status:blocked" 1 \
+			"Expected blocked restoration and audit comment; edit=$(cat "$GH_EDIT_LOG") comment=$(cat "$GH_COMMENT_LOG")"
+	fi
+	return 0
+}
+
+# ─── Test 3: Negative t2219 — Closes #X + OPEN + status:done → NOT touched ──
 test_t2219_closes_open_statusdone_not_touched() {
 	local pr_body="Closes #42"
 	create_gh_stub "$pr_body" "MERGED" "testauthor" "42" "OPEN" "status:done,auto-dispatch"
@@ -226,7 +249,7 @@ test_t2219_closes_open_statusdone_not_touched() {
 	return 0
 }
 
-# ─── Test 3: Positive t2218 — For #42 + origin:interactive + auto-dispatch + assignee → unassigned ─
+# ─── Test 4: Positive t2218 — For #42 + origin:interactive + auto-dispatch + assignee → unassigned ─
 test_t2218_for_ref_interactive_autodispatch_healed() {
 	local pr_body="For #42"
 	create_gh_stub "$pr_body" "MERGED" "testauthor" "42" "OPEN" \
@@ -243,7 +266,7 @@ test_t2218_for_ref_interactive_autodispatch_healed() {
 	return 0
 }
 
-# ─── Test 4: Negative t2218 — status:in-review present → NOT unassigned ─────
+# ─── Test 5: Negative t2218 — status:in-review present → NOT unassigned ─────
 test_t2218_in_review_not_unassigned() {
 	local pr_body="For #42"
 	create_gh_stub "$pr_body" "MERGED" "testauthor" "42" "OPEN" \
@@ -260,7 +283,7 @@ test_t2218_in_review_not_unassigned() {
 	return 0
 }
 
-# ─── Test 5: Idempotency — no status:done, no stale assign → no edits ────────
+# ─── Test 6: Idempotency — no status:done, no stale assign → no edits ────────
 test_idempotency_no_edits_needed() {
 	local pr_body="For #42"
 	# Clean issue: no status:done, no stale self-assign (not assigned at all)
@@ -286,7 +309,7 @@ test_idempotency_no_edits_needed() {
 	return 0
 }
 
-# ─── Test 6: Fail-open — unmerged PR → exit 0, no edits ─────────────────────
+# ─── Test 7: Fail-open — unmerged PR → exit 0, no edits ─────────────────────
 test_failopen_unmerged_pr() {
 	local pr_body="For #42"
 	create_gh_stub "$pr_body" "OPEN" "testauthor" "42" "OPEN" "status:done"
@@ -307,7 +330,7 @@ test_failopen_unmerged_pr() {
 	return 0
 }
 
-# ─── Test 7: Both heals fire in same run ─────────────────────────────────────
+# ─── Test 8: Both heals fire in same run ─────────────────────────────────────
 test_both_heals_fire_together() {
 	# PR references same issue via For #42; issue has BOTH status:done AND is
 	# self-assigned with auto-dispatch + origin:interactive (no active status)
@@ -340,6 +363,7 @@ main() {
 	printf 'Running post-merge regression tests (t2225)...\n\n'
 
 	test_t2219_for_ref_open_statusdone_healed
+	test_t2219_temporal_hold_restores_blocked
 	test_t2219_closes_open_statusdone_not_touched
 	test_t2218_for_ref_interactive_autodispatch_healed
 	test_t2218_in_review_not_unassigned

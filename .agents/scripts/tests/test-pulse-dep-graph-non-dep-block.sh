@@ -26,6 +26,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEP_GRAPH="$REPO_ROOT/.agents/scripts/pulse-dep-graph.sh"
+HOLD_MARKER_LIB="$REPO_ROOT/.agents/scripts/issue-hold-marker-lib.sh"
 
 if [[ ! -f "$DEP_GRAPH" ]]; then
 	echo "FAIL: cannot locate pulse-dep-graph.sh at $DEP_GRAPH" >&2
@@ -44,44 +45,37 @@ assert_eq() {
 		printf 'FAIL: %s\n  want=%q\n  got=%q\n' "$label" "$want" "$got" >&2
 		fail_count=$((fail_count + 1))
 	fi
+	return 0
 }
 
 ###############################################################################
 # Part 1: body defer marker detection (pure function, no network)
 #
-# Mirror of the block in pulse-dep-graph.sh:143-155 — keep this regex
-# byte-identical. If the helper regex changes, update the mirror and this
-# test together.
+# Exercise the shared predicate used by Pulse and post-merge healing.
 ###############################################################################
 
-body_has_defer_marker() {
-	local body="$1"
-	if printf '%s' "$body" | grep -qiE 'defer until|do[-[:space:]]not[-[:space:]]dispatch|on[-[:space:]]hold|HUMAN_UNBLOCK_REQUIRED|hold for |paused[[:space:]:]'; then
-		echo "true"
-	else
-		echo "false"
-	fi
-}
+# shellcheck disable=SC1090
+source "$HOLD_MARKER_LIB"
 
 printf '\n== Body defer marker detection ==\n'
 
-assert_eq 'defer until phrase' 'true' "$(body_has_defer_marker 'Defer until Phase 1-6 are working end-to-end @alexey')"
-assert_eq 'do not dispatch' 'true' "$(body_has_defer_marker 'Please do not dispatch this yet.')"
-assert_eq 'do-not-dispatch' 'true' "$(body_has_defer_marker 'Tagged do-not-dispatch until owner reviews.')"
-assert_eq 'on-hold hyphenated' 'true' "$(body_has_defer_marker 'This task is on-hold.')"
-assert_eq 'on hold spaced' 'true' "$(body_has_defer_marker 'This task is on hold.')"
-assert_eq 'ON HOLD uppercase' 'true' "$(body_has_defer_marker 'ON HOLD: waiting for legal.')"
-assert_eq 'HUMAN_UNBLOCK_REQD' 'true' "$(body_has_defer_marker 'HUMAN_UNBLOCK_REQUIRED — see comment thread.')"
-assert_eq 'hold for trailing' 'true' "$(body_has_defer_marker 'hold for Q2 release cycle')"
-assert_eq 'paused colon' 'true' "$(body_has_defer_marker 'paused: waiting on vendor')"
-assert_eq 'paused space' 'true' "$(body_has_defer_marker 'paused pending review')"
+assert_eq 'defer until phrase' 'true' "$(issue_body_has_defer_marker 'Defer until Phase 1-6 are working end-to-end @alexey')"
+assert_eq 'do not dispatch' 'true' "$(issue_body_has_defer_marker 'Please do not dispatch this yet.')"
+assert_eq 'do-not-dispatch' 'true' "$(issue_body_has_defer_marker 'Tagged do-not-dispatch until owner reviews.')"
+assert_eq 'on-hold hyphenated' 'true' "$(issue_body_has_defer_marker 'This task is on-hold.')"
+assert_eq 'on hold spaced' 'true' "$(issue_body_has_defer_marker 'This task is on hold.')"
+assert_eq 'ON HOLD uppercase' 'true' "$(issue_body_has_defer_marker 'ON HOLD: waiting for legal.')"
+assert_eq 'HUMAN_UNBLOCK_REQD' 'true' "$(issue_body_has_defer_marker 'HUMAN_UNBLOCK_REQUIRED — see comment thread.')"
+assert_eq 'hold for trailing' 'true' "$(issue_body_has_defer_marker 'hold for Q2 release cycle')"
+assert_eq 'paused colon' 'true' "$(issue_body_has_defer_marker 'paused: waiting on vendor')"
+assert_eq 'paused space' 'true' "$(issue_body_has_defer_marker 'paused pending review')"
 
 # No-match baselines — must NOT match anything.
-assert_eq 'clean body' 'false' "$(body_has_defer_marker 'Normal task body with no markers.')"
-assert_eq 'blocked-by only' 'false' "$(body_has_defer_marker 'blocked-by:t143,t200 should not trip the defer check')"
-assert_eq 'word defer in prose' 'false' "$(body_has_defer_marker 'We should not defer this; ship it now.')"
-assert_eq 'dispatch without prefix' 'false' "$(body_has_defer_marker 'Dispatch the worker once ready.')"
-assert_eq 'hold without for' 'false' "$(body_has_defer_marker 'please hold this comment until later')"
+assert_eq 'clean body' 'false' "$(issue_body_has_defer_marker 'Normal task body with no markers.')"
+assert_eq 'blocked-by only' 'false' "$(issue_body_has_defer_marker 'blocked-by:t143,t200 should not trip the defer check')"
+assert_eq 'word defer in prose' 'false' "$(issue_body_has_defer_marker 'We should not defer this; ship it now.')"
+assert_eq 'dispatch without prefix' 'false' "$(issue_body_has_defer_marker 'Dispatch the worker once ready.')"
+assert_eq 'hold without for' 'false' "$(issue_body_has_defer_marker 'please hold this comment until later')"
 
 ###############################################################################
 # Part 2: non-dep BLOCKED comment marker detection (pure regex)
@@ -99,6 +93,7 @@ comment_has_marker() {
 	else
 		echo "false"
 	fi
+	return 0
 }
 
 printf '\n== Comment BLOCKED marker detection ==\n'
