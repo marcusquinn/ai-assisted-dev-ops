@@ -179,6 +179,69 @@ installPluginConsoleRouter({
   debug: process.env.AIDEVOPS_PLUGIN_DEBUG === "1",
 });
 
+function createConversationHooks({client, conversation, directory}) {
+  const configHook = createConfigHook({
+    agentsDir: AGENTS_DIR,
+    workspaceDir: WORKSPACE_DIR,
+    pluginDir: PLUGIN_DIR,
+    repositoryDir: directory,
+    conversation,
+  });
+  const tierReasoning = loadTierReasoningPolicies([
+    join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
+    join(AGENTS_DIR, "configs", "model-routing-table.json"),
+  ]);
+  return {
+    config: configHook,
+    "chat.message": async () => 0,
+    "chat.params": async (input, output) => applyConversationRootVariant(
+      input,
+      output,
+      conversation,
+      {client, resolveVariant: resolveTierReasoning, tierReasoning},
+    ),
+    "tool.execute.before": async (input, output) => enforceConversationPathAccess(
+      input.tool,
+      output.args || {},
+      conversation,
+    ),
+    "experimental.chat.system.transform": async (_input, output) =>
+      appendConversationSystemContext(output, conversation),
+  };
+}
+
+const prepareOptionalProxy = (label, prepare) => {
+  prepare()
+    .catch((err) => {
+      console.error(`[aidevops] ${label} proxy failed to register: ${err.message}`);
+    });
+};
+
+function prepareLocalProviderProxies(client) {
+  const cursorAccounts = getAccounts("cursor");
+  if (cursorAccounts.length > 0) {
+    prepareOptionalProxy("Cursor gRPC", async () => {
+      const result = await startCursorProxy(client);
+      if (result) {
+        console.error(`[aidevops] Cursor gRPC proxy registered on port ${result.port} with ${result.models.length} models (listener lazy)`);
+      }
+    });
+  }
+
+  const googleAccounts = getAccounts("google");
+  if (googleAccounts.length > 0) {
+    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-pool-proxy";
+    }
+    prepareOptionalProxy("Google", async () => {
+      const result = await startGoogleProxy(client);
+      if (result) {
+        console.error(`[aidevops] Google proxy registered on port ${result.port} with ${result.models.length} models (listener lazy)`);
+      }
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main Plugin Export
 // ---------------------------------------------------------------------------
@@ -207,75 +270,20 @@ export async function AidevopsPlugin({ directory, client }) {
   });
 
   if (conversation) {
-    const configHook = createConfigHook({
-      agentsDir: AGENTS_DIR,
-      workspaceDir: WORKSPACE_DIR,
-      pluginDir: PLUGIN_DIR,
-      repositoryDir: directory,
-      conversation,
-    });
-    const tierReasoning = loadTierReasoningPolicies([
-      join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
-      join(AGENTS_DIR, "configs", "model-routing-table.json"),
-    ]);
-    return {
-      config: configHook,
-      "chat.message": async () => 0,
-      "chat.params": async (input, output) => applyConversationRootVariant(
-        input,
-        output,
-        conversation,
-        {client, resolveVariant: resolveTierReasoning, tierReasoning},
-      ),
-      "tool.execute.before": async (input, output) => enforceConversationPathAccess(
-        input.tool,
-        output.args || {},
-        conversation,
-      ),
-      "experimental.chat.system.transform": async (_input, output) =>
-        appendConversationSystemContext(output, conversation),
-    };
+    return createConversationHooks({client, conversation, directory});
   }
 
   // Initialise LLM observability
   initObservability();
 
-  const prepareOptionalProxy = (label, prepare) => {
-    prepare()
-      .catch((err) => {
-        console.error(`[aidevops] ${label} proxy failed to register: ${err.message}`);
-      });
-  };
-
   // Cursor gRPC proxy — prepare models/provider in the background so OpenCode
   // startup never waits on network-bound model discovery or OAuth refresh.
   // Listener bind remains LAZY (see systemTransformHook below) — deferred until
   // the first cursor/* request. See GH#21948 and GH#22157.
-  const cursorAccounts = getAccounts("cursor");
-  if (!conversation && cursorAccounts.length > 0) {
-    prepareOptionalProxy("Cursor gRPC", async () => {
-      const cursorProxyResult = await startCursorProxy(client);
-      if (cursorProxyResult) {
-        console.error(`[aidevops] Cursor gRPC proxy registered on port ${cursorProxyResult.port} with ${cursorProxyResult.models.length} models (listener lazy)`);
-      }
-    });
-  }
-
   // Google auth-translating proxy — same non-blocking preparation / lazy
   // listener split as Cursor. The picker uses the last persisted provider entry
   // immediately, then refreshes when the background preparation completes.
-  const googleAccounts = getAccounts("google");
-  if (!conversation && googleAccounts.length > 0) {
-    if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-pool-proxy";
-    }
-    prepareOptionalProxy("Google", async () => {
-      const googleProxyResult = await startGoogleProxy(client);
-      if (googleProxyResult) {
-        console.error(`[aidevops] Google proxy registered on port ${googleProxyResult.port} with ${googleProxyResult.models.length} models (listener lazy)`);
-      }
-    });
-  }
+  prepareLocalProviderProxies(client);
 
   // Claude CLI transport proxy — lazy-started on first claudecli/* request
   // (see systemTransformHook composition below). Eagerly starting on every
@@ -372,10 +380,6 @@ export async function AidevopsPlugin({ directory, client }) {
   // request — the underlying provider call will surface a clearer error
   // if the proxy is genuinely unreachable.
   const systemTransformHook = async (input, output) => {
-    if (conversation) {
-      appendConversationSystemContext(output, conversation);
-      return;
-    }
     const providerID = input?.model?.providerID;
     if (providerID && !isHeadless()) {
       const starter = proxyStarters[providerID];
@@ -394,7 +398,7 @@ export async function AidevopsPlugin({ directory, client }) {
   // The image guard runs after TTSR so corrections are applied to the final
   // message list. Fail-open — errors in the guard must not block the message.
   const messagesTransformHook = async (input, output) => {
-    if (!conversation) await ttsrMessagesTransformHook(input, output);
+    await ttsrMessagesTransformHook(input, output);
     try {
       applyImageSizeGuard(output, qualityLog);
     } catch (err) {
@@ -405,10 +409,8 @@ export async function AidevopsPlugin({ directory, client }) {
   // Compose recovery completion validation after TTSR annotations. The guard
   // only changes explicit terminal claims; ordinary progress remains intact.
   const completionTextHook = async (input, output) => {
-    if (!conversation) {
-      await textCompleteHook(input, output);
-      continuationGuard.completeText(input, output);
-    }
+    await textCompleteHook(input, output);
+    continuationGuard.completeText(input, output);
   };
 
   // Greeting handler (t2724) — emits session-start framework status as
@@ -444,7 +446,7 @@ export async function AidevopsPlugin({ directory, client }) {
       // HOTFIX: run initPoolAuth non-blocking — OpenCode 1.4.8 blocks
       // on client.auth.set() inside the config hook. Fire-and-forget so
       // the config hook can complete and the session becomes responsive.
-      if (!conversation) initPoolAuth(client).catch(() => {});
+      initPoolAuth(client).catch(() => {});
       return configHook(config);
     },
 
@@ -452,11 +454,11 @@ export async function AidevopsPlugin({ directory, client }) {
     tool: baseTools,
 
     // Select the lowest suitable child effort, capped by the parent session.
-    "chat.message": conversation ? async () => 0 : subagentEffortHooks.chatMessage,
+    "chat.message": subagentEffortHooks.chatMessage,
     "chat.params": async (input, output) => {
       const { sessionId, modelId } = sessionModelIdentity(input);
       sessionModels.remember(sessionId, modelId);
-      if (!conversation) await subagentEffortHooks.chatParams(input, output);
+      await subagentEffortHooks.chatParams(input, output);
       return applyConversationRootVariant(input, output, conversation, {
         client,
         resolveVariant: resolveTierReasoning,
