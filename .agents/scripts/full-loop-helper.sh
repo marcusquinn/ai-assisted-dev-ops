@@ -264,10 +264,12 @@ Commands:
                 [--no-rebase]              Explicit recovery mode after a failed/aborted rebase
   pre-merge-gate <PR> [REPO]    Check review bot gate before merge (GH#17541)
   wait-checks <PR> [options]     Wait with transition-only required-check output
-  merge <PR> [REPO] [--squash|--merge|--rebase] [--admin] [--auto]
+  merge <PR> [REPO] [--squash|--merge|--rebase] [--admin] [--auto] [--body-file PATH]
                                  Gate-enforced merge (runs pre-merge-gate first).
                                  --admin / --auto pass through to gh pr merge
                                  for branch-protected personal-account repos (GH#18731).
+                                 --body-file passes an exact merge commit body through all
+                                 merge transports after validating a readable regular file.
                                  --admin and --auto are mutually exclusive at the
                                  gh CLI level; if both are given, --admin wins and
                                   --auto is dropped (GH#19310).
