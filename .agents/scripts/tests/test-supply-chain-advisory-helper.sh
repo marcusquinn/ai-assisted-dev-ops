@@ -273,6 +273,46 @@ test_known_malware_hash_scan_fails() {
 	return 0
 }
 
+test_malware_hash_count_does_not_wrap() {
+	local test_name="malware hash count does not wrap at 256"
+	local tmpdir
+	tmpdir=$(make_tmpdir) || {
+		print_result "$test_name" 1 "mktemp failed"
+		return 0
+	}
+
+	prepare_test_dirs "$test_name" "$tmpdir" "${tmpdir}/bin" || return 0
+	printf '%s\n' '#!/usr/bin/env bash' \
+		'printf '\''%s  fixture\n'\'' '\''54dc7ea54a1317cca0e890a2770630cf7fa6c97813e0cb9d2caa93012b350668'\''' \
+		>"${tmpdir}/bin/shasum"
+	chmod +x "${tmpdir}/bin/shasum"
+	local index=1
+	while [[ "$index" -le 256 ]]; do
+		mkdir -p "${tmpdir}/candidate-${index}"
+		printf '%s\n' 'export const benign = true;' >"${tmpdir}/candidate-${index}/setup.mjs"
+		index=$((index + 1))
+	done
+
+	local output
+	local status=0
+	output=$(PATH="${tmpdir}/bin:${PATH}" HOME="$tmpdir" bash "$HELPER_SCRIPT" scan "$tmpdir" 2>&1) || status=$?
+	local hash_matches=0
+	local output_line
+	while IFS= read -r output_line; do
+		if [[ "$output_line" == *"Known malware hash:"* ]]; then
+			hash_matches=$((hash_matches + 1))
+		fi
+	done <<<"$output"
+	if [[ "$status" -eq 1 ]] && [[ "$hash_matches" -eq 256 ]] &&
+		[[ "$output" == *"Potential supply-chain compromise indicators found"* ]]; then
+		print_result "$test_name" 0
+	else
+		print_result "$test_name" 1 "status=${status} hash_matches=${hash_matches}"
+	fi
+	cleanup_test_tmpdir "$tmpdir"
+	return 0
+}
+
 test_keyv_bun_runtime_iocs_scan_fail() {
 	local test_name="Keyv Bun runtime IOCs fail"
 	local ioc
@@ -350,6 +390,7 @@ main() {
 	test_similar_agents_suffix_ioc_scan_fails
 	test_keyv_preinstall_ioc_scan_fails
 	test_known_malware_hash_scan_fails
+	test_malware_hash_count_does_not_wrap
 	test_keyv_bun_runtime_iocs_scan_fail
 	test_nearby_bun_runtime_strings_scan_succeed
 	test_benign_matching_basenames_scan_succeeds
