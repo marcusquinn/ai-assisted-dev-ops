@@ -312,7 +312,9 @@ const COMMAND_HANDLERS = Object.freeze({
 
 export function main(argv = process.argv.slice(2)) {
   const [command = "help", ...argumentsList] = argv;
-  const handler = COMMAND_HANDLERS[command];
+  const handler = Object.hasOwn(COMMAND_HANDLERS, command)
+    ? COMMAND_HANDLERS[command]
+    : undefined;
   if (!handler) throw new OverlayGeneratorError("invalid_arguments", `unsupported command: ${command}`);
   return handler(argumentsList);
 }

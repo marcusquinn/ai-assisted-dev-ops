@@ -299,6 +299,13 @@ try {
     /must not replace an input/i,
     "input/output alias",
   );
+  for (const inheritedCommand of ["constructor", "toString", "valueOf"]) {
+    requireFailure(
+      runOverlay([inheritedCommand]),
+      /unsupported command/i,
+      `inherited command ${inheritedCommand}`,
+    );
+  }
 
   const effectiveEvidence = conversationConfigEvidence(overlay.agent.display_name);
   const sourceFilename = overlay.agent.source_ref.slice("agents:".length);
