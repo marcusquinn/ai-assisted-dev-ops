@@ -142,6 +142,10 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
 fi
 
 if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+	if [[ -n "${GH_STUB_REJECT_PR_TOKEN:-}" && "${GH_TOKEN:-}" == "$GH_STUB_REJECT_PR_TOKEN" ]]; then
+		printf 'GraphQL: GitHub Actions is not permitted to create pull requests.\n' >&2
+		exit 1
+	fi
 	shift 2
 	head_branch=""
 	title_text=""
@@ -251,17 +255,22 @@ run_issue_sync_helper() {
 	local title_file="$6"
 	local output_file="$7"
 	local attempts="${8:-3}"
+	local primary_token="${9:-fixture-token}"
+	local fallback_token="${10:-}"
+	local reject_pr_token="${11:-}"
 	(
 		cd "$work_dir" || exit 1
 		PATH="${fake_bin}:$PATH" \
 			GITHUB_ACTIONS=true \
 			GITHUB_REPOSITORY="example/repo" \
-			GH_TOKEN="fixture-token" \
+			GH_TOKEN="$primary_token" \
+			AIDEVOPS_ISSUE_SYNC_PR_TOKEN="$fallback_token" \
 			GH_STUB_LOG="$gh_log" \
 			GH_STUB_PR_MARKER="$pr_marker" \
 			GH_STUB_HEAD="$head_file" \
 			GH_STUB_TITLE="$title_file" \
 			GH_STUB_BODY="${title_file}.body" \
+			GH_STUB_REJECT_PR_TOKEN="$reject_pr_token" \
 			bash "$HELPER" publish-todo main "$attempts" \
 			"chore: sync fixture issue refs to TODO.md [skip ci]" >"$output_file" 2>&1
 	)
@@ -328,8 +337,8 @@ test_protected_branch_uses_one_rebased_pr() {
 	branch_message=$(git --git-dir="$origin_dir" log -1 --pretty=%s "$sync_ref")
 	create_count=$(grep -c $'gh\tpr\tcreate' "$gh_log" || true)
 
-	if [[ "$remote_todo" != *"t9001 first event"* || \
-		"$remote_todo" != *"t9002 second event"* || \
+	if [[ "$remote_todo" != *"t9001 first event"* ||
+		"$remote_todo" != *"t9002 second event"* ||
 		"$remote_todo" != *"t9003 reviewed main edit"* ]]; then
 		fail "protected PR preserves concurrent and unrelated TODO edits"
 	elif [[ "$main_todo" == *"first event"* || "$main_todo" == *"second event"* ]]; then
@@ -337,6 +346,8 @@ test_protected_branch_uses_one_rebased_pr() {
 	elif [[ "$sync_parent" != "$main_sha" ]]; then
 		fail "stale deterministic PR branch rebases onto current main"
 	elif [[ "$create_count" -ne 1 ]]; then
+		printf 'Expected one PR create call, observed %s:\n%s\nFirst run:\n%s\nSecond run:\n%s\n' \
+			"$create_count" "$(<"$gh_log")" "$(<"$output_a")" "$(<"$output_b")" >&2
 		fail "GH006 retries create exactly one PR"
 	elif [[ "$(<"$head_file")" != "aidevops/issue-sync-todo" ]]; then
 		fail "issue-sync PR uses deterministic branch identity"
@@ -346,8 +357,8 @@ test_protected_branch_uses_one_rebased_pr() {
 		fail "issue-sync PR body preserves changed-task linkage"
 	elif [[ "$branch_message" == *"[skip ci]"* ]]; then
 		fail "issue-sync PR branch still runs required checks"
-	elif [[ "$(git -C "$work_a" status --short)" != *"TODO.md"* || \
-		"$(git -C "$work_b" status --short)" != *"TODO.md"* ]]; then
+	elif [[ "$(git -C "$work_a" status --short)" != *"TODO.md"* ||
+	"$(git -C "$work_b" status --short)" != *"TODO.md"* ]]; then
 		fail "PR fallback preserves each caller's local TODO projection"
 	else
 		pass "GH006 converges through one rebased deterministic PR"
@@ -415,6 +426,41 @@ test_deleted_pr_branch_retries_before_opening_pr() {
 	return 0
 }
 
+test_actions_pr_creation_uses_pat_fallback() {
+	local origin_dir="$TMP/token-origin.git"
+	local seed_dir="$TMP/token-seed"
+	local work_dir="$TMP/token-work"
+	local fake_bin="$TMP/token-bin"
+	local gh_log="$TMP/token-gh.log"
+	local pr_marker="$TMP/token-pr.marker"
+	local output_file="$TMP/token-output.log"
+	local create_count=0
+	create_origin "$origin_dir" "$seed_dir"
+	git clone "$origin_dir" "$work_dir" >/dev/null 2>&1
+	git_init_repo "$work_dir"
+	write_fake_gh "$fake_bin"
+	install_main_rejection_hook "$origin_dir" gh006
+	: >"$gh_log"
+	perl -0pi -e 's/t9001 original task/t9001 token-fallback event/' "$work_dir/TODO.md"
+	if ! run_issue_sync_helper "$work_dir" "$fake_bin" "$gh_log" "$pr_marker" \
+		"$TMP/token-head" "$TMP/token-title" "$output_file" 3 \
+		"actions-token" "sync-pat-token" "actions-token"; then
+		fail "disabled Actions PR creation retries with SYNC_PAT"
+		return 0
+	fi
+	create_count=$(grep -c $'gh\tpr\tcreate' "$gh_log" || true)
+	if [[ "$create_count" -ne 2 || ! -f "$pr_marker" ]]; then
+		fail "disabled Actions PR creation retries with SYNC_PAT"
+	elif ! grep -q 'retrying with the configured SYNC_PAT API fallback' "$output_file"; then
+		fail "SYNC_PAT PR retry remains observable without exposing the token"
+	elif grep -qE 'actions-token|sync-pat-token' "$output_file" "$gh_log"; then
+		fail "PR token fallback does not log credential values"
+	else
+		pass "disabled Actions PR creation retries once with SYNC_PAT"
+	fi
+	return 0
+}
+
 test_noop_publishes_nothing() {
 	local origin_dir="$TMP/noop-origin.git"
 	local seed_dir="$TMP/noop-seed"
@@ -449,6 +495,7 @@ test_rebase_conflict_neutralizes_cleanly
 test_protected_branch_uses_one_rebased_pr
 test_non_gh006_failure_does_not_open_pr
 test_deleted_pr_branch_retries_before_opening_pr
+test_actions_pr_creation_uses_pat_fallback
 test_noop_publishes_nothing
 
 printf 'Tests run: %s, failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

@@ -70,9 +70,9 @@ issue_sync_changed_reference_numbers() {
 	{
 		printf '%s\n' "$commit_msg"
 		printf '%s\n' "$diff_output"
-	} | grep -oE '(ref:GH#|pr:#|GH#|PR[[:space:]]+#[0-9]+)[0-9]*' \
-		| grep -oE '[0-9]+' \
-		| sort -nu || true
+	} | grep -oE '(ref:GH#|pr:#|GH#|PR[[:space:]]+#[0-9]+)[0-9]*' |
+		grep -oE '[0-9]+' |
+		sort -nu || true
 	return 0
 }
 
@@ -230,7 +230,8 @@ issue_sync_existing_pr_url() {
 	local repo_slug="$1"
 	local default_branch="$2"
 	local existing=""
-	existing=$(gh_pr_list --repo "$repo_slug" --head "$ISSUE_SYNC_PR_BRANCH" --base "$default_branch" \
+	existing=$(AIDEVOPS_GH_PR_LIST_CACHE_DISABLE=1 gh_pr_list \
+		--repo "$repo_slug" --head "$ISSUE_SYNC_PR_BRANCH" --base "$default_branch" \
 		--state open --json number,url --jq 'if length == 0 then "" elif length == 1 then .[0].url else "MULTIPLE" end' 2>/dev/null) || return 1
 	if [[ "$existing" == "MULTIPLE" ]]; then
 		echo "::error::Multiple open issue-sync PRs exist for ${ISSUE_SYNC_PR_BRANCH}"
@@ -238,6 +239,32 @@ issue_sync_existing_pr_url() {
 	fi
 	printf '%s\n' "$existing"
 	return 0
+}
+
+issue_sync_create_planning_pr() {
+	local repo_slug="$1"
+	local default_branch="$2"
+	local pr_title="$3"
+	local pr_body_file="$4"
+	local api_token="${5:-}"
+	if [[ -n "$api_token" ]]; then
+		GH_TOKEN="$api_token" AIDEVOPS_PR_CREATE_READY=1 gh_create_pr \
+			--repo "$repo_slug" \
+			--base "$default_branch" \
+			--head "$ISSUE_SYNC_PR_BRANCH" \
+			--title "$pr_title" \
+			--label "origin:worker" \
+			--body-file "$pr_body_file"
+		return $?
+	fi
+	AIDEVOPS_PR_CREATE_READY=1 gh_create_pr \
+		--repo "$repo_slug" \
+		--base "$default_branch" \
+		--head "$ISSUE_SYNC_PR_BRANCH" \
+		--title "$pr_title" \
+		--label "origin:worker" \
+		--body-file "$pr_body_file"
+	return $?
 }
 
 issue_sync_ensure_planning_pr() {
@@ -250,6 +277,7 @@ issue_sync_ensure_planning_pr() {
 	local pr_url=""
 	local pr_body_file="${state_dir}/issue-sync-pr-body.md"
 	local pr_title="$ISSUE_SYNC_DEFAULT_COMMIT_MESSAGE"
+	local fallback_token="${AIDEVOPS_ISSUE_SYNC_PR_TOKEN:-}"
 
 	repo_slug=$(issue_sync_repo_slug "$repo_path") || {
 		echo "::error::Cannot resolve GitHub repository for issue-sync PR publication"
@@ -262,18 +290,21 @@ issue_sync_ensure_planning_pr() {
 	fi
 	issue_sync_planning_pr_body "$default_branch" "$commit_msg" \
 		"${state_dir}/latest-base-todo" "${state_dir}/merged-todo" >"$pr_body_file" || return 1
-	pr_url=$(AIDEVOPS_PR_CREATE_READY=1 gh_create_pr \
-		--repo "$repo_slug" \
-		--base "$default_branch" \
-		--head "$ISSUE_SYNC_PR_BRANCH" \
-		--title "$pr_title" \
-		--label "origin:worker" \
-		--body-file "$pr_body_file" 2>/dev/null) || {
-		pr_url=$(_gh_recover_pr_if_exists "$ISSUE_SYNC_PR_BRANCH" "$repo_slug")
-		[[ -n "$pr_url" ]] || {
+	pr_url=$(issue_sync_create_planning_pr "$repo_slug" "$default_branch" \
+		"$pr_title" "$pr_body_file") || {
+		pr_url=$(AIDEVOPS_GH_PR_LIST_CACHE_DISABLE=1 \
+			_gh_recover_pr_if_exists "$ISSUE_SYNC_PR_BRANCH" "$repo_slug")
+		if [[ -z "$pr_url" && -n "$fallback_token" && "$fallback_token" != "${GH_TOKEN:-}" ]]; then
+			echo "::warning::Job-scoped token could not create the issue-sync PR; retrying with the configured SYNC_PAT API fallback"
+			pr_url=$(issue_sync_create_planning_pr "$repo_slug" "$default_branch" \
+				"$pr_title" "$pr_body_file" "$fallback_token") ||
+				pr_url=$(AIDEVOPS_GH_PR_LIST_CACHE_DISABLE=1 \
+					_gh_recover_pr_if_exists "$ISSUE_SYNC_PR_BRANCH" "$repo_slug")
+		fi
+		if [[ -z "$pr_url" ]]; then
 			echo "::error::Failed to create or recover deterministic issue-sync PR"
 			return 1
-		}
+		fi
 	}
 	echo "::notice::Created deterministic issue-sync PR ${pr_url}"
 	return 0
@@ -424,7 +455,7 @@ main() {
 		issue_sync_publish_todo "$branch" "$attempts" "$commit_msg"
 		return $?
 		;;
-	-h|--help|help|"")
+	-h | --help | help | "")
 		issue_sync_git_push_usage
 		return 0
 		;;

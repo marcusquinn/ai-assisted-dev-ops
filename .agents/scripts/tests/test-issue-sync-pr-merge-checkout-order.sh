@@ -274,6 +274,18 @@ else
 fi
 
 # ============================================================
+# Test 9: every PR-safe publication step prefers the job token while exposing
+# SYNC_PAT only as the bounded API fallback for disabled Actions PR creation.
+# ============================================================
+PR_TOKEN_FALLBACK_COUNT=$(grep -cE 'AIDEVOPS_ISSUE_SYNC_PR_TOKEN:[[:space:]]+\$\{\{ secrets\.SYNC_PAT \}\}' "$WORKFLOW_FILE" || true)
+if [[ "$PR_TOKEN_FALLBACK_COUNT" -eq 4 ]]; then
+	check 1 "all four TODO publication paths expose the bounded PR token fallback" ""
+else
+	check 0 "all four TODO publication paths expose the bounded PR token fallback" \
+		"fallback exports=${PR_TOKEN_FALLBACK_COUNT}"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
