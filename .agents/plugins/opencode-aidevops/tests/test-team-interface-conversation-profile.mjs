@@ -4,10 +4,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import {spawnSync} from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {fileURLToPath} from "node:url";
+import {fileURLToPath, pathToFileURL} from "node:url";
 
 import {createConfigHook, enforceTeamInterfaceConversationIsolation} from "../config-hook.mjs";
 import {loadTierReasoningPolicies, resolveTierReasoning} from "../subagent-effort.mjs";
@@ -16,14 +17,18 @@ import {
   applyConversationRootVariant,
   canonicalDigest,
   canonicalJson,
+  conversationBootstrapConfig,
   conversationConfigEvidence,
   conversationSystemBlock,
   createOverlayDocument,
+  loadCanonicalAgentRoster,
   loadTeamInterfaceConversation,
 } from "../team-interface-context.mjs";
+import {enforceConversationPathAccess} from "../team-interface-path-guard.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(testDirectory, "../../../..");
+const pluginEntryPath = path.join(repositoryRoot, ".agents/plugins/opencode-aidevops/index.mjs");
 const routingTable = path.join(repositoryRoot, ".agents/configs/model-routing-table.json");
 const tierReasoning = loadTierReasoningPolicies([routingTable]);
 
@@ -50,9 +55,14 @@ function createFixture({
   kind = "primary",
   workloadTier = "standard",
 } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-conversation-profile-"));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-conversation-profile-")));
   const agentsDir = path.join(root, "agents");
+  const projectRoot = path.join(root, "project");
   fs.mkdirSync(agentsDir);
+  fs.mkdirSync(projectRoot);
+  const fixturePluginDirectory = path.join(agentsDir, "plugins", "opencode-aidevops");
+  fs.mkdirSync(fixturePluginDirectory, {recursive: true});
+  fs.symlinkSync(pluginEntryPath, path.join(fixturePluginDirectory, "index.mjs"));
   const source = `---\nname: synthetic\ndescription: Synthetic canonical agent\nmode: subagent\n---\n\n# Synthetic agent\n\nUse only the enforced tools.\n`;
   fs.writeFileSync(path.join(agentsDir, filename), source, {mode: 0o600});
   const agent = {
@@ -64,10 +74,17 @@ function createFixture({
     source_ref: `agents:${filename}`,
     workload_tier: workloadTier,
   };
-  const unsignedRoster = {
-    agents: [
-      agent,
-      ...(kind === "framework_guide" ? [] : [{
+  const companion = kind === "framework_guide"
+    ? {
+        agent_id: "agent.synthetic-primary",
+        description: "Synthetic primary",
+        display_name: "Synthetic Primary",
+        kind: "primary",
+        source_digest: "sha256:" + "1".repeat(64),
+        source_ref: "agents:synthetic-primary.md",
+        workload_tier: "standard",
+      }
+    : {
         agent_id: "agent.aidevops-guide",
         description: "Synthetic guide",
         display_name: "AI DevOps",
@@ -75,8 +92,9 @@ function createFixture({
         source_digest: "sha256:" + "0".repeat(64),
         source_ref: "agents:aidevops.md",
         workload_tier: "standard",
-      }]),
-    ],
+      };
+  const unsignedRoster = {
+    agents: [agent, companion],
     document_type: "agent_roster",
     roster_id: "agent-roster.aidevops",
     schema_version: 1,
@@ -85,11 +103,68 @@ function createFixture({
   const overlay = createOverlayDocument({roster, agent, workloadTier, context: contextFixture()});
   const overlayPath = path.join(root, "overlay.json");
   fs.writeFileSync(overlayPath, `${canonicalJson(overlay)}\n`, {mode: 0o600});
-  const conversation = loadTeamInterfaceConversation({
+  const runtimeRoot = path.join(root, "runtime");
+  const runtimeDirectories = [
+    runtimeRoot,
+    path.join(runtimeRoot, "cache"),
+    path.join(runtimeRoot, "config"),
+    path.join(runtimeRoot, "config", "opencode"),
+    path.join(runtimeRoot, "data"),
+    path.join(runtimeRoot, "home"),
+    path.join(runtimeRoot, "state"),
+    path.join(runtimeRoot, "tmp"),
+  ];
+  for (const directory of runtimeDirectories) {
+    fs.mkdirSync(directory, {recursive: true, mode: 0o700});
+    fs.chmodSync(directory, 0o700);
+  }
+  const pluginUrl = pathToFileURL(fs.realpathSync(pluginEntryPath)).href;
+  const configFile = path.join(runtimeRoot, "config", "opencode", "opencode.json");
+  fs.writeFileSync(
+    configFile,
+    `${canonicalJson(conversationBootstrapConfig(pluginUrl))}\n`,
+    {mode: 0o600},
+  );
+  const env = {
+    AIDEVOPS_CONVERSATION_PROJECT_ROOT: projectRoot,
+    AIDEVOPS_CONVERSATION_RUNTIME_ROOT: runtimeRoot,
+    AIDEVOPS_OPENCODE_ISOLATED_DB: "1",
     AIDEVOPS_SESSION_ORIGIN: "conversation",
     AIDEVOPS_TEAM_INTERFACE_OVERLAY: overlayPath,
-  }, agentsDir);
-  return {agentsDir, conversation, overlay, overlayPath, root, source};
+    AIDEVOPS_TEMP_DIR: path.join(runtimeRoot, "tmp"),
+    HOME: path.join(runtimeRoot, "home"),
+    OPENCODE_CONFIG: configFile,
+    OPENCODE_CONFIG_DIR: path.join(runtimeRoot, "config", "opencode"),
+    OPENCODE_DISABLE_AUTOCOMPACT: "1",
+    OPENCODE_DISABLE_AUTOUPDATE: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
+    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
+    OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
+    OPENCODE_DISABLE_MODELS_FETCH: "1",
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    OPENCODE_DISABLE_SHARE: "1",
+    XDG_CACHE_HOME: path.join(runtimeRoot, "cache"),
+    XDG_CONFIG_HOME: path.join(runtimeRoot, "config"),
+    XDG_DATA_HOME: path.join(runtimeRoot, "data"),
+    XDG_STATE_HOME: path.join(runtimeRoot, "state"),
+  };
+  const loadOptions = {canonicalRoster: roster, pluginEntryPath, repositoryDir: projectRoot};
+  const conversation = loadTeamInterfaceConversation(env, agentsDir, loadOptions);
+  return {
+    agentsDir,
+    configFile,
+    conversation,
+    env,
+    loadOptions,
+    overlay,
+    overlayPath,
+    projectRoot,
+    root,
+    source,
+  };
 }
 
 function widenedConfig() {
@@ -122,6 +197,9 @@ function assertRestrictedConfig(config, conversation) {
   assert.equal(config.share, "disabled");
   assert.equal(config.snapshot, false);
   assert.equal(config.subagent_depth, 0);
+  assert.deepEqual(config.plugin, [conversation.pluginUrl]);
+  assert.deepEqual(config.instructions, []);
+  assert.deepEqual(config.command, {});
   assert.equal(config.tools.read, true);
   assert.equal(config.tools.grep, true);
   assert.equal(config.tools.glob, true);
@@ -305,16 +383,16 @@ test("source drift, noncanonical overlays, wrong origins, and symlink overlays f
     fs.appendFileSync(path.join(fixture.agentsDir, "synthetic.md"), "drift\n");
     assert.throws(
       () => loadTeamInterfaceConversation({
-        AIDEVOPS_SESSION_ORIGIN: "conversation",
+        ...fixture.env,
         AIDEVOPS_TEAM_INTERFACE_OVERLAY: fixture.overlayPath,
-      }, fixture.agentsDir),
+      }, fixture.agentsDir, fixture.loadOptions),
       /source digest no longer matches/,
     );
     assert.throws(
       () => loadTeamInterfaceConversation({
+        ...fixture.env,
         AIDEVOPS_SESSION_ORIGIN: "interactive",
-        AIDEVOPS_TEAM_INTERFACE_OVERLAY: fixture.overlayPath,
-      }, fixture.agentsDir),
+      }, fixture.agentsDir, fixture.loadOptions),
       /dedicated session origin/,
     );
 
@@ -322,18 +400,18 @@ test("source drift, noncanonical overlays, wrong origins, and symlink overlays f
     fs.writeFileSync(prettyPath, `${JSON.stringify(fixture.overlay, null, 2)}\n`, {mode: 0o600});
     assert.throws(
       () => loadTeamInterfaceConversation({
-        AIDEVOPS_SESSION_ORIGIN: "conversation",
+        ...fixture.env,
         AIDEVOPS_TEAM_INTERFACE_OVERLAY: prettyPath,
-      }, fixture.agentsDir),
+      }, fixture.agentsDir, fixture.loadOptions),
       /not canonical JSON/,
     );
     const symlinkPath = path.join(fixture.root, "overlay-link.json");
     fs.symlinkSync(fixture.overlayPath, symlinkPath);
     assert.throws(
       () => loadTeamInterfaceConversation({
-        AIDEVOPS_SESSION_ORIGIN: "conversation",
+        ...fixture.env,
         AIDEVOPS_TEAM_INTERFACE_OVERLAY: symlinkPath,
-      }, fixture.agentsDir),
+      }, fixture.agentsDir, fixture.loadOptions),
       /non-symlink file/,
     );
   } finally {
@@ -356,5 +434,276 @@ test("framework guide remains an explicit restricted profile instead of Build+",
     assert.equal(config.agent["AI DevOps"].mode, "primary");
   } finally {
     fs.rmSync(fixture.root, {recursive: true, force: true});
+  }
+});
+
+test("conversation origin without an overlay fails closed before config registration", () => {
+  const fixture = createFixture();
+  try {
+    const env = {...fixture.env};
+    delete env.AIDEVOPS_TEAM_INTERFACE_OVERLAY;
+    assert.throws(
+      () => loadTeamInterfaceConversation(env, fixture.agentsDir, fixture.loadOptions),
+      /requires a canonical launch overlay/,
+    );
+    assert.equal(loadTeamInterfaceConversation({}, fixture.agentsDir), null);
+  } finally {
+    fs.rmSync(fixture.root, {recursive: true, force: true});
+  }
+});
+
+test("canonical roster digest and selected identity are revalidated at consumption", () => {
+  const fixture = createFixture();
+  const writeOverlay = (name, mutate) => {
+    const document = structuredClone(fixture.overlay);
+    mutate(document);
+    const unsigned = structuredClone(document);
+    delete unsigned.overlay_digest;
+    document.overlay_digest = canonicalDigest(unsigned);
+    const overlayPath = path.join(fixture.root, `${name}.json`);
+    fs.writeFileSync(overlayPath, `${canonicalJson(document)}\n`, {mode: 0o600});
+    return overlayPath;
+  };
+  try {
+    const unknownPath = writeOverlay("unknown-agent", (document) => {
+      document.agent.agent_id = "agent.forged";
+    });
+    assert.throws(
+      () => loadTeamInterfaceConversation(
+        {...fixture.env, AIDEVOPS_TEAM_INTERFACE_OVERLAY: unknownPath},
+        fixture.agentsDir,
+        fixture.loadOptions,
+      ),
+      /not uniquely present/,
+    );
+
+    const stalePath = writeOverlay("stale-roster", (document) => {
+      document.roster_digest = `sha256:${"0".repeat(64)}`;
+    });
+    assert.throws(
+      () => loadTeamInterfaceConversation(
+        {...fixture.env, AIDEVOPS_TEAM_INTERFACE_OVERLAY: stalePath},
+        fixture.agentsDir,
+        fixture.loadOptions,
+      ),
+      /current canonical roster/,
+    );
+
+    const mismatchPath = writeOverlay("identity-mismatch", (document) => {
+      document.agent.display_name = "Forged Synthetic";
+      document.config_digest = canonicalDigest(conversationConfigEvidence("Forged Synthetic"));
+    });
+    assert.throws(
+      () => loadTeamInterfaceConversation(
+        {...fixture.env, AIDEVOPS_TEAM_INTERFACE_OVERLAY: mismatchPath},
+        fixture.agentsDir,
+        fixture.loadOptions,
+      ),
+      /does not match its canonical roster entry/,
+    );
+  } finally {
+    fs.rmSync(fixture.root, {recursive: true, force: true});
+  }
+});
+
+test("runtime boundary rejects missing isolation, path drift, and persistent config canaries", () => {
+  const fixture = createFixture();
+  try {
+    const missingIsolation = {...fixture.env};
+    delete missingIsolation.OPENCODE_DISABLE_PROJECT_CONFIG;
+    assert.throws(
+      () => loadTeamInterfaceConversation(missingIsolation, fixture.agentsDir, fixture.loadOptions),
+      /OPENCODE_DISABLE_PROJECT_CONFIG does not match/,
+    );
+    assert.throws(
+      () => loadTeamInterfaceConversation(
+        {...fixture.env, HOME: fixture.root},
+        fixture.agentsDir,
+        fixture.loadOptions,
+      ),
+      /HOME escapes the private conversation runtime/,
+    );
+    assert.throws(
+      () => loadTeamInterfaceConversation(
+        fixture.env,
+        fixture.agentsDir,
+        {...fixture.loadOptions, repositoryDir: fixture.root},
+      ),
+      /runtime cwd does not match the validated project root/,
+    );
+
+    const unsafeConfig = conversationBootstrapConfig(fixture.conversation.pluginUrl);
+    unsafeConfig.instructions = ["persistent-canary.md"];
+    fs.writeFileSync(fixture.configFile, `${canonicalJson(unsafeConfig)}\n`, {mode: 0o600});
+    assert.throws(
+      () => loadTeamInterfaceConversation(fixture.env, fixture.agentsDir, fixture.loadOptions),
+      /untrusted plugins, instructions, or commands/,
+    );
+
+    fs.writeFileSync(
+      fixture.configFile,
+      `${canonicalJson(conversationBootstrapConfig(fixture.conversation.pluginUrl))}\n`,
+      {mode: 0o600},
+    );
+    fs.mkdirSync(path.join(path.dirname(fixture.configFile), "command"));
+    assert.throws(
+      () => loadTeamInterfaceConversation(fixture.env, fixture.agentsDir, fixture.loadOptions),
+      /unsupported entries/,
+    );
+  } finally {
+    fs.rmSync(fixture.root, {recursive: true, force: true});
+  }
+});
+
+test("conversation read, grep, and glob stay within root and reject credential paths", () => {
+  const fixture = createFixture();
+  const normalFile = path.join(fixture.projectRoot, "notes.txt");
+  const credentialFile = path.join(fixture.projectRoot, ".env");
+  const outsideRoot = path.join(fixture.root, "outside");
+  const escapeLink = path.join(fixture.projectRoot, "escape");
+  fs.writeFileSync(normalFile, "safe fixture\n");
+  fs.mkdirSync(outsideRoot);
+  fs.writeFileSync(path.join(outsideRoot, "outside.txt"), "outside fixture\n");
+  try {
+    assert.equal(
+      enforceConversationPathAccess("read", {filePath: normalFile}, fixture.conversation),
+      1,
+    );
+    assert.equal(
+      enforceConversationPathAccess("grep", {path: normalFile, pattern: "fixture"}, fixture.conversation),
+      1,
+    );
+    assert.equal(
+      enforceConversationPathAccess("glob", {path: fixture.projectRoot, pattern: "*.txt"}, fixture.conversation),
+      1,
+    );
+
+    fs.writeFileSync(credentialFile, "fixture-only\n");
+    for (const tool of ["read", "grep", "glob"]) {
+      const args = tool === "read"
+        ? {filePath: credentialFile}
+        : {path: fixture.projectRoot, pattern: "*"};
+      assert.throws(
+        () => enforceConversationPathAccess(tool, args, fixture.conversation),
+        /credential-like paths/,
+      );
+    }
+    fs.rmSync(credentialFile);
+
+    fs.symlinkSync(outsideRoot, escapeLink, "dir");
+    for (const tool of ["read", "grep", "glob"]) {
+      const args = tool === "read"
+        ? {filePath: path.join(escapeLink, "outside.txt")}
+        : {path: escapeLink, pattern: "*"};
+      assert.throws(
+        () => enforceConversationPathAccess(tool, args, fixture.conversation),
+        /symbolic-link traversal/,
+      );
+    }
+  } finally {
+    fs.rmSync(fixture.root, {recursive: true, force: true});
+  }
+});
+
+test("conversation plugin exposes only the minimal restricted hook surface", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-conversation-plugin-")));
+  const agentsDir = path.join(repositoryRoot, ".agents");
+  const projectRoot = path.join(root, "project");
+  fs.mkdirSync(projectRoot);
+  fs.writeFileSync(path.join(projectRoot, ".env"), "fixture-only\n", {mode: 0o600});
+  const roster = loadCanonicalAgentRoster(agentsDir);
+  const agent = roster.agents.find(({agent_id: agentID}) => agentID === "agent.build-plus");
+  assert.ok(agent, "canonical Build+ agent is unavailable");
+  const overlay = createOverlayDocument({
+    roster,
+    agent,
+    workloadTier: "standard",
+    context: contextFixture(),
+  });
+  const overlayPath = path.join(root, "overlay.json");
+  const runtimeRoot = path.join(root, "runtime");
+  const runtimeDirectories = [
+    runtimeRoot,
+    path.join(runtimeRoot, "cache"),
+    path.join(runtimeRoot, "config"),
+    path.join(runtimeRoot, "config", "opencode"),
+    path.join(runtimeRoot, "data"),
+    path.join(runtimeRoot, "home"),
+    path.join(runtimeRoot, "state"),
+    path.join(runtimeRoot, "tmp"),
+  ];
+  for (const directory of runtimeDirectories) {
+    fs.mkdirSync(directory, {recursive: true, mode: 0o700});
+    fs.chmodSync(directory, 0o700);
+  }
+  fs.writeFileSync(overlayPath, `${canonicalJson(overlay)}\n`, {mode: 0o600});
+  const pluginUrl = pathToFileURL(fs.realpathSync(pluginEntryPath)).href;
+  const configFile = path.join(runtimeRoot, "config", "opencode", "opencode.json");
+  fs.writeFileSync(
+    configFile,
+    `${canonicalJson(conversationBootstrapConfig(pluginUrl))}\n`,
+    {mode: 0o600},
+  );
+  const environment = {
+    AIDEVOPS_CONVERSATION_PROJECT_ROOT: projectRoot,
+    AIDEVOPS_CONVERSATION_RUNTIME_ROOT: runtimeRoot,
+    AIDEVOPS_OPENCODE_ISOLATED_DB: "1",
+    AIDEVOPS_SESSION_ORIGIN: "conversation",
+    AIDEVOPS_TEAM_INTERFACE_OVERLAY: overlayPath,
+    AIDEVOPS_TEMP_DIR: path.join(runtimeRoot, "tmp"),
+    HOME: path.join(runtimeRoot, "home"),
+    OPENCODE_CONFIG: configFile,
+    OPENCODE_CONFIG_DIR: path.join(runtimeRoot, "config", "opencode"),
+    OPENCODE_DISABLE_AUTOCOMPACT: "1",
+    OPENCODE_DISABLE_AUTOUPDATE: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: "1",
+    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
+    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
+    OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
+    OPENCODE_DISABLE_MODELS_FETCH: "1",
+    OPENCODE_DISABLE_PROJECT_CONFIG: "1",
+    OPENCODE_DISABLE_SHARE: "1",
+    PATH: process.env.PATH || "/usr/bin:/bin",
+    XDG_CACHE_HOME: path.join(runtimeRoot, "cache"),
+    XDG_CONFIG_HOME: path.join(runtimeRoot, "config"),
+    XDG_DATA_HOME: path.join(runtimeRoot, "data"),
+    XDG_STATE_HOME: path.join(runtimeRoot, "state"),
+  };
+  const childScript = [
+    "const pluginModule = await import(process.argv[2]);",
+    "const hooks = await pluginModule.AidevopsPlugin({directory: process.argv[1], client: {}});",
+    "const config = {};",
+    "await hooks.config(config);",
+    "let denial = '';",
+    "try {",
+    "  await hooks['tool.execute.before']({tool: 'read'}, {args: {filePath: process.argv[1] + '/.env'}});",
+    "} catch (error) {",
+    "  denial = String(error.message || error);",
+    "}",
+    "process.stdout.write(JSON.stringify({config, denial, keys: Object.keys(hooks).sort()}));",
+  ].join("\n");
+  try {
+    const result = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", childScript, projectRoot, pluginUrl],
+      {cwd: projectRoot, encoding: "utf8", env: environment, timeout: 30000},
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const evidence = JSON.parse(result.stdout);
+    assert.deepEqual(evidence.keys, [
+      "chat.message",
+      "chat.params",
+      "config",
+      "experimental.chat.system.transform",
+      "tool.execute.before",
+    ]);
+    assert.deepEqual(evidence.config.plugin, [pluginUrl]);
+    assert.deepEqual(evidence.config.instructions, []);
+    assert.deepEqual(evidence.config.command, {});
+    assert.match(evidence.denial, /credential-like paths are denied/);
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
   }
 });

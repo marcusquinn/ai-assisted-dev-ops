@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {spawnSync} from "node:child_process";
-import {fileURLToPath} from "node:url";
+import {fileURLToPath, pathToFileURL} from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import {
@@ -66,7 +66,7 @@ const ajv = new Ajv2020({allErrors: true, strict: false, validateFormats: false}
 ajv.addSchema(coreSchema);
 const validateOverlaySchema = ajv.compile(overlaySchema);
 
-const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-opencode-overlay-"));
+const fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-opencode-overlay-")));
 try {
   const rosterPath = path.join(fixtureRoot, "roster.json");
   const contextPath = path.join(fixtureRoot, "context.json");
@@ -125,6 +125,45 @@ try {
   assert.equal(validateResult.status, 0, validateResult.stderr);
   assert.equal(validateResult.stdout.trim(), overlay.overlay_digest);
 
+  const runtimeConfigPath = path.join(fixtureRoot, "runtime-config.json");
+  const prepareConfigResult = runOverlay([
+    "prepare-config", "--overlay", overlayPath, "--output", runtimeConfigPath,
+  ]);
+  assert.equal(prepareConfigResult.status, 0, prepareConfigResult.stderr);
+  const runtimeConfig = readJson(runtimeConfigPath);
+  const pluginUrl = pathToFileURL(fs.realpathSync(path.join(
+    repositoryRoot,
+    ".agents/plugins/opencode-aidevops/index.mjs",
+  ))).href;
+  assert.deepEqual(runtimeConfig.plugin, [pluginUrl]);
+  assert.deepEqual(runtimeConfig.instructions, []);
+  assert.deepEqual(runtimeConfig.command, {});
+  assert.equal(fs.statSync(runtimeConfigPath).mode & 0o077, 0);
+
+  const registeredProject = path.join(fixtureRoot, "registered-project");
+  const unregisteredProject = path.join(fixtureRoot, "unregistered-project");
+  const linkedProjectPath = path.join(fixtureRoot, "project-link");
+  const reposPath = path.join(fixtureRoot, "repos.json");
+  fs.mkdirSync(registeredProject);
+  fs.mkdirSync(unregisteredProject);
+  fs.symlinkSync(registeredProject, linkedProjectPath, "dir");
+  writeJson(reposPath, {initialized_repos: [{path: registeredProject}]});
+  const registeredProjectResult = runOverlay([
+    "validate-project-root", "--dir", registeredProject, "--repos", reposPath,
+  ]);
+  assert.equal(registeredProjectResult.status, 0, registeredProjectResult.stderr);
+  assert.equal(registeredProjectResult.stdout.trim(), fs.realpathSync(registeredProject));
+  requireFailure(
+    runOverlay(["validate-project-root", "--dir", unregisteredProject, "--repos", reposPath]),
+    /not a registered canonical project or linked worktree root/i,
+    "unregistered project root",
+  );
+  requireFailure(
+    runOverlay(["validate-project-root", "--dir", linkedProjectPath, "--repos", reposPath]),
+    /non-symlink project root/i,
+    "symlink project root",
+  );
+
   const noncanonicalPath = path.join(fixtureRoot, "noncanonical.json");
   writeJson(noncanonicalPath, overlay);
   requireFailure(
@@ -168,6 +207,32 @@ try {
     /roster digest/i,
     "mismatched roster digest",
   );
+
+  for (const [label, mutate, pattern] of [
+    ["unknown-consumer-agent", (document) => {
+      document.agent.agent_id = "agent.forged";
+    }, /not uniquely present/i],
+    ["stale-consumer-roster", (document) => {
+      document.roster_digest = `sha256:${"0".repeat(64)}`;
+    }, /current canonical roster/i],
+    ["consumer-entry-mismatch", (document) => {
+      document.agent.display_name = "Forged Build";
+      document.config_digest = taggedDigest(conversationConfigEvidence("Forged Build"));
+    }, /canonical roster entry/i],
+  ]) {
+    const forged = structuredClone(overlay);
+    mutate(forged);
+    const unsignedForged = structuredClone(forged);
+    delete unsignedForged.overlay_digest;
+    forged.overlay_digest = taggedDigest(unsignedForged);
+    const forgedPath = path.join(fixtureRoot, `${label}.json`);
+    fs.writeFileSync(forgedPath, `${canonicalJson(forged)}\n`, {mode: 0o600});
+    requireFailure(
+      runOverlay(["validate", "--overlay", forgedPath]),
+      pattern,
+      label,
+    );
+  }
 
   const duplicateRoster = structuredClone(roster);
   const duplicateAgent = {...duplicateRoster.agents.find(({agent_id: agentID}) => agentID === "agent.build-plus")};
@@ -236,12 +301,17 @@ try {
   );
 
   const effectiveEvidence = conversationConfigEvidence(overlay.agent.display_name);
+  const sourceFilename = overlay.agent.source_ref.slice("agents:".length);
+  const canonicalPrompt = fs.readFileSync(path.join(repositoryRoot, ".agents", sourceFilename), "utf8");
   const effectiveConfig = {
     ...effectiveEvidence,
+    command: {},
+    instructions: [],
+    plugin: [pluginUrl],
     agent: {
       [overlay.agent.display_name]: {
         ...effectiveEvidence.agent[overlay.agent.display_name],
-        prompt: "Synthetic canonical agent prompt",
+        prompt: canonicalPrompt,
       },
       build: {disable: true},
       plan: {disable: true},
@@ -263,6 +333,28 @@ try {
     /effective config tools/i,
     "widened effective tools",
   );
+  const promptDriftConfig = structuredClone(effectiveConfig);
+  promptDriftConfig.agent[overlay.agent.display_name].prompt += "persistent prompt drift\n";
+  requireFailure(
+    runOverlay(["verify-effective", "--overlay", overlayPath], {input: JSON.stringify(promptDriftConfig)}),
+    /prompt does not match canonical source bytes/i,
+    "effective prompt drift",
+  );
+  for (const [label, mutate, pattern] of [
+    ["plugin", (config) => config.plugin.push("file:///untrusted/plugin.mjs"), /plugin allowlist/i],
+    ["instruction", (config) => config.instructions.push("persistent-canary.md"), /instruction allowlist/i],
+    ["command", (config) => {
+      config.command.canary = {template: "persistent"};
+    }, /command allowlist/i],
+  ]) {
+    const canaryConfig = structuredClone(effectiveConfig);
+    mutate(canaryConfig);
+    requireFailure(
+      runOverlay(["verify-effective", "--overlay", overlayPath], {input: JSON.stringify(canaryConfig)}),
+      pattern,
+      `effective ${label} canary`,
+    );
+  }
   const enabledAgentConfig = structuredClone(effectiveConfig);
   enabledAgentConfig.agent.unexpected = {mode: "primary"};
   requireFailure(

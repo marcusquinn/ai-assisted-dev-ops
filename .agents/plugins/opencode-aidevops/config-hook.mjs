@@ -304,6 +304,24 @@ export function createConfigHook(deps) {
    * @param {object} config - OpenCode Config object (mutable)
    */
   return async function configHook(config) {
+    if (conversation) {
+      const conversationIsolation = enforceTeamInterfaceConversationIsolation(config, conversation);
+      logConfigSummary({
+        agents: 0,
+        mcps: 0,
+        agentTools: 0,
+        directories: 0,
+        permissionGrants: 0,
+        poolCleaned: 0,
+        anthropic: 0,
+        openai: 0,
+        cursor: 0,
+        google: 0,
+        claude: 0,
+        conversationIsolation,
+      });
+      return;
+    }
     if (!config.agent) config.agent = {};
 
     let agents = registerAgents(config, agentsDir);

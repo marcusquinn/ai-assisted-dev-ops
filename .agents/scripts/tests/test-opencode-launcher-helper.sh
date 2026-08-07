@@ -35,24 +35,37 @@ make_fake_opencode() {
     mkdir -p "${bin_dir}"
 cat >"${bin_dir}/opencode" <<'SH'
 #!/usr/bin/env bash
-if [[ -n "${FAKE_OPENCODE_LOG:-}" ]]; then
-    printf '%s|%s\n' "${XDG_DATA_HOME:-}" "$*" >>"${FAKE_OPENCODE_LOG}"
+fake_log="${FAKE_OPENCODE_LOG:-$(cd "$(dirname "$0")/.." && pwd -P)/fake-opencode.log}"
+if [[ -n "${fake_log}" ]]; then
+    printf '%s|%s\n' "${XDG_DATA_HOME:-}" "$*" >>"${fake_log}"
 fi
 if [[ "$*" == "debug config --log-level ERROR" ]]; then
-    node --input-type=module - "${AIDEVOPS_TEST_CONTEXT_MODULE}" "${AIDEVOPS_TEAM_INTERFACE_OVERLAY}" <<'NODE'
+    node --input-type=module - "${AIDEVOPS_TEAM_INTERFACE_OVERLAY}" "${OPENCODE_CONFIG}" <<'NODE'
 import fs from "node:fs";
-import {pathToFileURL} from "node:url";
+import path from "node:path";
+import {fileURLToPath, pathToFileURL} from "node:url";
 
-const contract = await import(pathToFileURL(process.argv[2]));
-const overlay = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const overlay = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const bootstrap = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const pluginUrl = bootstrap.plugin[0];
+const pluginEntry = fileURLToPath(pluginUrl);
+const contract = await import(pathToFileURL(path.join(
+  path.dirname(pluginEntry),
+  "team-interface-context.mjs",
+)).href);
 const name = overlay.agent.display_name;
 const evidence = contract.conversationConfigEvidence(name);
+const sourceFilename = overlay.agent.source_ref.slice("agents:".length);
+const prompt = fs.readFileSync(path.resolve(path.dirname(pluginEntry), "../..", sourceFilename), "utf8");
 const config = {
   ...evidence,
+  command: {},
+  instructions: [],
+  plugin: [pluginUrl],
   agent: {
     [name]: {
       ...evidence.agent[name],
-      prompt: "Synthetic canonical agent prompt",
+      prompt,
     },
     build: {disable: true},
     plan: {disable: true},
@@ -68,8 +81,18 @@ printf 'XDG_DATA_HOME=%s\n' "${XDG_DATA_HOME:-}"
 printf 'AIDEVOPS_OPENCODE_ISOLATED_DB=%s\n' "${AIDEVOPS_OPENCODE_ISOLATED_DB:-}"
 printf 'AIDEVOPS_SESSION_ORIGIN=%s\n' "${AIDEVOPS_SESSION_ORIGIN:-}"
 printf 'AIDEVOPS_TEAM_INTERFACE_OVERLAY=%s\n' "${AIDEVOPS_TEAM_INTERFACE_OVERLAY:-}"
+printf 'HOME=%s\n' "${HOME:-}"
+printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
+printf 'OPENCODE_DISABLE_AUTOCOMPACT=%s\n' "${OPENCODE_DISABLE_AUTOCOMPACT:-}"
+printf 'OPENCODE_DISABLE_AUTOUPDATE=%s\n' "${OPENCODE_DISABLE_AUTOUPDATE:-}"
+printf 'OPENCODE_DISABLE_DEFAULT_PLUGINS=%s\n' "${OPENCODE_DISABLE_DEFAULT_PLUGINS:-}"
+printf 'OPENCODE_DISABLE_LSP_DOWNLOAD=%s\n' "${OPENCODE_DISABLE_LSP_DOWNLOAD:-}"
+printf 'OPENCODE_DISABLE_MODELS_FETCH=%s\n' "${OPENCODE_DISABLE_MODELS_FETCH:-}"
+printf 'OPENCODE_DISABLE_PROJECT_CONFIG=%s\n' "${OPENCODE_DISABLE_PROJECT_CONFIG:-}"
+printf 'OPENCODE_DISABLE_SHARE=%s\n' "${OPENCODE_DISABLE_SHARE:-}"
 printf 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=%s\n' "${OPENCODE_DISABLE_CLAUDE_CODE_SKILLS:-}"
 printf 'OPENCODE_DISABLE_EXTERNAL_SKILLS=%s\n' "${OPENCODE_DISABLE_EXTERNAL_SKILLS:-}"
+printf 'HOST_CONFIG_CANARY=%s\n' "${HOST_CONFIG_CANARY:-}"
 printf 'AIDEVOPS_TEMP_DIR=%s\n' "${AIDEVOPS_TEMP_DIR:-}"
 printf 'TMPDIR=%s\n' "${TMPDIR:-}"
 printf 'TMP=%s\n' "${TMP:-}"
@@ -100,6 +123,7 @@ directory_is_empty() {
 }
 
 tmp_root="$(mktemp -d)"
+tmp_root="$(cd "${tmp_root}" && pwd -P)"
 trap 'rm -rf "${tmp_root}"' EXIT
 fake_bin="${tmp_root}/bin"
 work_dir="${tmp_root}/work"
@@ -112,11 +136,12 @@ conversation_work_dir="${tmp_root}/conversation-work"
 conversation_dry_run_work_dir="${tmp_root}/conversation-dry-run-work"
 mkdir -p "${work_dir}" "${tui_dry_run_work_dir}" "${desktop_dry_run_work_dir}" \
     "${conversation_work_dir}" "${conversation_dry_run_work_dir}" \
-    "${launch_dir}" "${home_dir}/.local/share/opencode" "${home_dir}/.config/opencode"
+    "${launch_dir}" "${home_dir}/.local/share/opencode" \
+    "${home_dir}/.config/aidevops" "${home_dir}/.config/opencode"
 make_fake_opencode "${fake_bin}"
 printf '{"anthropic":{}}\n' >"${home_dir}/.local/share/opencode/auth.json"
-printf '{"persistent":"unchanged"}\n' >"${home_dir}/.config/opencode/opencode.json"
-conversation_context_module="${REPO_ROOT}/.agents/plugins/opencode-aidevops/team-interface-context.mjs"
+printf '{"command":{"persistent-canary":{"template":"unsafe"}},"instructions":["persistent-canary.md"],"plugin":["file:///persistent-canary.mjs"]}\n' >"${home_dir}/.config/opencode/opencode.json"
+printf '{"initialized_repos":[{"path":"%s"}]}\n' "${launch_dir}" >"${home_dir}/.config/aidevops/repos.json"
 conversation_roster="${tmp_root}/conversation-roster.json"
 conversation_context="${tmp_root}/conversation-context.json"
 conversation_overlay="${tmp_root}/conversation-overlay.json"
@@ -303,13 +328,21 @@ fi
 rm -f "${fake_log}"
 persistent_config_before=$(<"${home_dir}/.config/opencode/opencode.json")
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${conversation_work_dir}" \
-    AIDEVOPS_TEST_CONTEXT_MODULE="${conversation_context_module}" FAKE_OPENCODE_LOG="${fake_log}" \
+    FAKE_OPENCODE_LOG="${fake_log}" HOST_CONFIG_CANARY="must-not-cross-boundary" \
     "${HELPER}" conversation --overlay "${conversation_overlay}" --dir "${launch_dir}" 2>&1)
 persistent_config_after=$(<"${home_dir}/.config/opencode/opencode.json")
 conversation_line_count=0
+conversation_home=""
+conversation_config=""
 while IFS= read -r line; do
     conversation_line_count=$((conversation_line_count + 1))
 done <"${fake_log}"
+while IFS= read -r line; do
+    case "${line}" in
+    HOME=*) conversation_home=${line#HOME=} ;;
+    OPENCODE_CONFIG=*) conversation_config=${line#OPENCODE_CONFIG=} ;;
+    esac
+done <<<"${output}"
 conversation_auth_count=0
 for auth_file in "${conversation_work_dir}"/opencode-interactive/conversation-*/opencode/auth.json; do
     [[ -f "${auth_file}" ]] || continue
@@ -321,9 +354,20 @@ if [[ "${output}" == *"ARGS=acp --cwd ${launch_dir}"* ]] \
     && [[ "${output}" == *"AIDEVOPS_TEAM_INTERFACE_OVERLAY=${conversation_overlay}"* ]] \
     && [[ "${output}" == *"OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1"* ]] \
     && [[ "${output}" == *"OPENCODE_DISABLE_EXTERNAL_SKILLS=1"* ]] \
-    && [[ "${output}" == *"XDG_DATA_HOME=${conversation_work_dir}/opencode-interactive/conversation-"* ]] \
-    && [[ "${conversation_line_count}" == "3" ]] \
-    && [[ "${conversation_auth_count}" == "1" ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_DEFAULT_PLUGINS=1"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_AUTOCOMPACT=1"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_AUTOUPDATE=1"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_LSP_DOWNLOAD=1"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_MODELS_FETCH=1"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_PROJECT_CONFIG=1"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_SHARE=1"* ]] \
+    && [[ "${output}" == *"HOST_CONFIG_CANARY="* ]] \
+    && [[ "${output}" != *"must-not-cross-boundary"* ]] \
+    && [[ "${conversation_home}" == */opencode-conversation.*/home ]] \
+    && [[ "${conversation_config}" == */opencode-conversation.*/config/opencode/opencode.json ]] \
+    && [[ "${conversation_line_count}" == "2" ]] \
+    && [[ "${conversation_auth_count}" == "0" ]] \
+    && [[ ! -e "${conversation_home%/home}" ]] \
     && [[ "${persistent_config_after}" == "${persistent_config_before}" ]]; then
     _pass "restricted conversation validates effective config and launches fixed ACP argv"
 else
@@ -332,7 +376,7 @@ fi
 
 conversation_dry_run_log="${tmp_root}/conversation-dry-run-opencode.log"
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${conversation_dry_run_work_dir}" \
-    AIDEVOPS_TEST_CONTEXT_MODULE="${conversation_context_module}" FAKE_OPENCODE_LOG="${conversation_dry_run_log}" \
+    FAKE_OPENCODE_LOG="${conversation_dry_run_log}" \
     "${HELPER}" conversation --overlay "${conversation_overlay}" --dir "${launch_dir}" --dry-run 2>&1)
 if [[ "${output}" == *"opencode acp --cwd ${launch_dir}"* ]] \
     && [[ "${output}" == *"validated-overlay:sha256:"* ]] \
@@ -367,7 +411,7 @@ if output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${con
     "${HELPER}" conversation --overlay "${conversation_overlay}" --dir / --dry-run 2>&1); then
     _fail "restricted conversation accepted an unsafe cwd: ${output}"
 else
-    [[ "${output}" == *"bounded project directory"* ]] \
+    [[ "${output}" == *"registered canonical project or linked worktree root"* ]] \
         && _pass "restricted conversation rejects unsafe cwd" \
         || _fail "restricted conversation cwd rejection unexpected: ${output}"
 fi

@@ -164,6 +164,37 @@ export function conversationPermissions() {
   };
 }
 
+export function conversationBootstrapConfig(pluginUrl) {
+  let parsedPluginUrl;
+  try {
+    parsedPluginUrl = new URL(pluginUrl);
+  } catch {
+    throw new ConversationOverlayError("invalid_environment", "conversation plugin URL is invalid");
+  }
+  if (
+    parsedPluginUrl.protocol !== "file:"
+    || parsedPluginUrl.username
+    || parsedPluginUrl.password
+    || parsedPluginUrl.search
+    || parsedPluginUrl.hash
+  ) {
+    throw new ConversationOverlayError("invalid_environment", "conversation plugin URL must identify one local file");
+  }
+  return {
+    "$schema": "https://opencode.ai/config.json",
+    command: {},
+    formatter: false,
+    instructions: [],
+    lsp: false,
+    mcp: {},
+    permission: conversationPermissions(),
+    plugin: [parsedPluginUrl.href],
+    share: "disabled",
+    snapshot: false,
+    tools: conversationTools(),
+  };
+}
+
 export function conversationConfigEvidence(agentName) {
   const profile = {
     mode: "primary",

@@ -130,8 +130,11 @@ export function enforcePublicTriageIsolation(
 export function enforceTeamInterfaceConversationIsolation(config, conversation) {
   if (!conversation) return 0;
 
+  config.command = {};
   config.tools = conversationTools();
   config.permission = conversationPermissions();
+  config.plugin = [conversation.pluginUrl];
+  config.instructions = [];
   config.mcp = {};
   config.formatter = false;
   config.lsp = false;

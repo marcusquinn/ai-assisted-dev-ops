@@ -10,20 +10,26 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import {dirname, join, resolve} from "node:path";
-import {fileURLToPath} from "node:url";
+import {homedir} from "node:os";
+import {dirname, isAbsolute, join, parse, relative, resolve, sep} from "node:path";
+import {fileURLToPath, pathToFileURL} from "node:url";
 import {randomBytes} from "node:crypto";
+import {execFileSync} from "node:child_process";
 import Ajv2020 from "ajv/dist/2020.js";
 
 import {
   canonicalDigest,
   canonicalJson,
+  bindOverlayToCanonicalRoster,
+  conversationBootstrapConfig,
   createOverlayDocument,
+  loadCanonicalAgentRoster,
   parseCanonicalOverlayText,
 } from "../plugins/opencode-aidevops/team-interface-context.mjs";
 import {readBoundedJson, TeamInterfaceError} from "./team-interface-common.mjs";
@@ -31,6 +37,8 @@ import {verifyConversationEffectiveConfig} from "./team-interface-opencode-effec
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_DIRECTORY = resolve(SCRIPT_DIRECTORY, "../schemas/team-interface");
+const CANONICAL_AGENTS_DIRECTORY = resolve(SCRIPT_DIRECTORY, "..");
+const GIT_BINARY = "/usr/bin/git";
 const MAX_ROSTER_BYTES = 1024 * 1024;
 const MAX_CONTEXT_BYTES = 16 * 1024;
 const MAX_OVERLAY_BYTES = 64 * 1024;
@@ -138,6 +146,13 @@ function readOverlayText(filePath) {
   return readFileSync(resolvedPath, "utf8");
 }
 
+function readBoundOverlay(overlayPath, agentsDirectory) {
+  const document = parseCanonicalOverlayText(readOverlayText(overlayPath));
+  requireValid(validators().overlay, document, "OpenCode launch overlay");
+  bindOverlayToCanonicalRoster(document, loadCanonicalAgentRoster(agentsDirectory));
+  return document;
+}
+
 function validateOutputPath(outputPath, inputPaths) {
   const resolvedOutput = resolve(outputPath);
   if (inputPaths.map((inputPath) => resolve(inputPath)).includes(resolvedOutput)) {
@@ -205,18 +220,150 @@ function generate(argumentsList) {
 }
 
 function validate(argumentsList) {
-  const options = parseOptions(argumentsList, new Set(["--overlay"]));
+  const options = parseOptions(argumentsList, new Set(["--agents-dir", "--overlay"]));
   const overlayPath = requireOption(options, "--overlay");
-  const document = parseCanonicalOverlayText(readOverlayText(overlayPath));
-  requireValid(validators().overlay, document, "OpenCode launch overlay");
+  const agentsDirectory = resolve(options["--agents-dir"] || CANONICAL_AGENTS_DIRECTORY);
+  const document = readBoundOverlay(overlayPath, agentsDirectory);
   process.stdout.write(`${document.overlay_digest}\n`);
   return 0;
+}
+
+function prepareConfig(argumentsList) {
+  const options = parseOptions(argumentsList, new Set(["--agents-dir", "--output", "--overlay"]));
+  const overlayPath = requireOption(options, "--overlay");
+  const outputPath = requireOption(options, "--output");
+  const agentsDirectory = resolve(options["--agents-dir"] || CANONICAL_AGENTS_DIRECTORY);
+  readBoundOverlay(overlayPath, agentsDirectory);
+  const pluginEntry = realpathSync(join(
+    agentsDirectory,
+    "plugins",
+    "opencode-aidevops",
+    "index.mjs",
+  ));
+  const pluginMetadata = lstatSync(pluginEntry);
+  if (!pluginMetadata.isFile() || pluginMetadata.isSymbolicLink()) {
+    throw new OverlayGeneratorError("unsafe_path", "canonical conversation plugin entry is unavailable");
+  }
+  const config = conversationBootstrapConfig(pathToFileURL(pluginEntry).href);
+  const resolvedOutput = validateOutputPath(outputPath, [overlayPath]);
+  atomicWrite(resolvedOutput, `${canonicalJson(config)}\n`);
+  return 0;
+}
+
+function hasSymlinkComponent(filePath) {
+  const absolutePath = resolve(filePath);
+  const root = parse(absolutePath).root;
+  let current = root;
+  for (const part of absolutePath.slice(root.length).split(sep).filter(Boolean)) {
+    current = join(current, part);
+    if (lstatSync(current).isSymbolicLink()) return true;
+  }
+  return false;
+}
+
+function isPathWithin(base, candidate) {
+  const remainder = relative(base, candidate);
+  return remainder === ""
+    || (!isAbsolute(remainder) && remainder !== ".." && !remainder.startsWith(`..${sep}`));
+}
+
+function gitProjectMetadata(projectRoot) {
+  try {
+    const topLevel = realpathSync(execFileSync(
+      GIT_BINARY,
+      ["-C", projectRoot, "rev-parse", "--show-toplevel"],
+      {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10000},
+    ).trim());
+    if (topLevel !== projectRoot) return null;
+    const commonDirectory = realpathSync(execFileSync(
+      GIT_BINARY,
+      ["-C", projectRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10000},
+    ).trim());
+    return {commonDirectory, topLevel};
+  } catch {
+    return null;
+  }
+}
+
+function expandedRegisteredPath(value, homeDirectory) {
+  if (typeof value !== "string" || !value) return "";
+  const expanded = value === "~"
+    ? homeDirectory
+    : value.startsWith("~/") ? join(homeDirectory, value.slice(2)) : value;
+  if (!isAbsolute(expanded) || !existsSync(expanded)) return "";
+  try {
+    return realpathSync(expanded);
+  } catch {
+    return "";
+  }
+}
+
+function rejectSensitiveProjectRoot(candidate, homeDirectory) {
+  const sensitiveRoots = [
+    join(homeDirectory, ".aws"),
+    join(homeDirectory, ".azure"),
+    join(homeDirectory, ".config"),
+    join(homeDirectory, ".docker"),
+    join(homeDirectory, ".gnupg"),
+    join(homeDirectory, ".kube"),
+    join(homeDirectory, ".local", "share", "opencode"),
+    join(homeDirectory, ".ssh"),
+  ].map((sensitiveRoot) => resolve(sensitiveRoot));
+  if (
+    candidate === parse(candidate).root
+    || candidate === homeDirectory
+    || isPathWithin(candidate, homeDirectory)
+    || sensitiveRoots.some((sensitiveRoot) => isPathWithin(sensitiveRoot, candidate))
+  ) {
+    throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd is not a bounded project root");
+  }
+}
+
+function validateProjectRoot(argumentsList) {
+  const options = parseOptions(argumentsList, new Set(["--dir", "--repos"]));
+  const requestedDirectory = requireOption(options, "--dir");
+  const reposPath = requireOption(options, "--repos");
+  if (!isAbsolute(requestedDirectory) || hasSymlinkComponent(requestedDirectory)) {
+    throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd must be an absolute non-symlink project root");
+  }
+  const candidate = realpathSync(requestedDirectory);
+  if (!statSync(candidate).isDirectory()) {
+    throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd is not a directory");
+  }
+  const homeDirectory = realpathSync(homedir());
+  rejectSensitiveProjectRoot(candidate, homeDirectory);
+
+  const repos = readBoundedJson(resolve(reposPath), MAX_ROSTER_BYTES, "registered repositories");
+  if (!Array.isArray(repos?.initialized_repos)) {
+    throw new OverlayGeneratorError("invalid_document", "registered repository metadata is invalid");
+  }
+  const registeredRoots = repos.initialized_repos
+    .map((entry) => expandedRegisteredPath(entry?.path, homeDirectory))
+    .filter(Boolean);
+  if (registeredRoots.includes(candidate)) {
+    process.stdout.write(`${candidate}\n`);
+    return 0;
+  }
+
+  const candidateGit = gitProjectMetadata(candidate);
+  if (candidateGit) {
+    const linkedToRegisteredRoot = registeredRoots.some((registeredRoot) => {
+      const registeredGit = gitProjectMetadata(registeredRoot);
+      return registeredGit?.commonDirectory === candidateGit.commonDirectory;
+    });
+    if (linkedToRegisteredRoot) {
+      process.stdout.write(`${candidate}\n`);
+      return 0;
+    }
+  }
+  throw new OverlayGeneratorError("unsafe_path", "restricted conversation cwd is not a registered canonical project or linked worktree root");
 }
 
 function verifyEffectiveConfig(argumentsList) {
   const options = parseOptions(argumentsList, new Set(["--overlay"]));
   const overlayPath = requireOption(options, "--overlay");
-  const document = parseCanonicalOverlayText(readOverlayText(overlayPath));
+  const document = readBoundOverlay(overlayPath, CANONICAL_AGENTS_DIRECTORY);
   const input = readFileSync(0, "utf8");
   if (Buffer.byteLength(input, "utf8") > MAX_EFFECTIVE_CONFIG_BYTES) {
     throw new OverlayGeneratorError("document_too_large", "effective OpenCode config exceeds its size limit");
@@ -228,7 +375,13 @@ function verifyEffectiveConfig(argumentsList) {
     throw new OverlayGeneratorError("runtime_incompatible", "effective OpenCode config is not complete JSON");
   }
 
-  verifyConversationEffectiveConfig(config, document);
+  const pluginUrl = pathToFileURL(realpathSync(join(
+    CANONICAL_AGENTS_DIRECTORY,
+    "plugins",
+    "opencode-aidevops",
+    "index.mjs",
+  ))).href;
+  verifyConversationEffectiveConfig(config, document, {pluginUrl});
   process.stdout.write(`${document.overlay_digest}\n`);
   return 0;
 }
@@ -237,7 +390,9 @@ function usage() {
   process.stdout.write([
     "Usage:",
     "  team-interface-opencode-overlay.mjs generate --roster FILE --agent-id ID --context FILE [--workload-tier TIER] [--output FILE]",
-    "  team-interface-opencode-overlay.mjs validate --overlay FILE",
+    "  team-interface-opencode-overlay.mjs validate --overlay FILE [--agents-dir DIR]",
+    "  team-interface-opencode-overlay.mjs prepare-config --overlay FILE --output FILE [--agents-dir DIR]",
+    "  team-interface-opencode-overlay.mjs validate-project-root --dir PATH --repos FILE",
     "  opencode debug config | team-interface-opencode-overlay.mjs verify-effective --overlay FILE",
     "",
   ].join("\n"));
@@ -249,6 +404,8 @@ export function main(argv = process.argv.slice(2)) {
   if (["help", "--help", "-h"].includes(command)) return usage();
   if (command === "generate") return generate(argumentsList);
   if (command === "validate") return validate(argumentsList);
+  if (command === "prepare-config") return prepareConfig(argumentsList);
+  if (command === "validate-project-root") return validateProjectRoot(argumentsList);
   if (command === "verify-effective") return verifyEffectiveConfig(argumentsList);
   throw new OverlayGeneratorError("invalid_arguments", `unsupported command: ${command}`);
 }

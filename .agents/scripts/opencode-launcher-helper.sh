@@ -224,6 +224,8 @@ reject_conversation_environment() {
 
     for variable in \
         AIDEVOPS_TEAM_INTERFACE_OVERLAY \
+        AIDEVOPS_CONVERSATION_PROJECT_ROOT \
+        AIDEVOPS_CONVERSATION_RUNTIME_ROOT \
         AIDEVOPS_SIG_MODEL \
         BUZZ_ACP_MODEL \
         OPENCODE_CONFIG \
@@ -244,16 +246,21 @@ reject_conversation_environment() {
 
 canonical_conversation_directory() {
     local launch_dir="$1"
+    local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
+    local repos_file="${HOME}/.config/aidevops/repos.json"
     local resolved_dir=""
 
     if [[ -z "${launch_dir}" || "${launch_dir}" == -* || "${launch_dir}" =~ [[:cntrl:]] ]]; then
         print_error "Restricted conversation cwd is invalid"
         return 1
     fi
-    validate_launch_directory "${launch_dir}" || return 1
-    resolved_dir=$(cd "${launch_dir}" && pwd -P) || return 1
-    if [[ "${resolved_dir}" == "/" || "${resolved_dir}" == "${HOME}" ]]; then
-        print_error "Restricted conversation cwd must be a bounded project directory"
+    if [[ ! -f "${repos_file}" || -L "${repos_file}" ]]; then
+        print_error "Registered repository metadata is unavailable"
+        return 1
+    fi
+    if ! resolved_dir=$(node "${overlay_script}" validate-project-root \
+        --dir "${launch_dir}" --repos "${repos_file}" 2>/dev/null); then
+        print_error "Restricted conversation cwd must be a registered canonical project or linked worktree root"
         return 1
     fi
     printf '%s' "${resolved_dir}"
@@ -295,7 +302,8 @@ validate_conversation_overlay() {
         print_error "node not found in PATH"
         return 1
     fi
-    if ! overlay_digest=$(node "${overlay_script}" validate --overlay "${overlay_path}" 2>/dev/null); then
+    if ! overlay_digest=$(node "${overlay_script}" validate \
+        --overlay "${overlay_path}" --agents-dir "${SCRIPT_DIR}/.." 2>/dev/null); then
         print_error "Restricted conversation overlay validation failed"
         return 1
     fi
@@ -309,19 +317,68 @@ validate_conversation_overlay() {
 
 verify_conversation_effective_config() {
     local overlay_path="$1"
-    local data_dir="$2"
+    local opencode_binary="$2"
+    shift 2
     local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
+    local -a runtime_environment=("$@")
 
-    if ! AIDEVOPS_TEAM_INTERFACE_OVERLAY="${overlay_path}" \
-        AIDEVOPS_SESSION_ORIGIN="conversation" \
-        OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 \
-        OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
-        XDG_DATA_HOME="${data_dir}" \
-        opencode debug config --log-level ERROR 2>/dev/null \
+    if ! env -i "${runtime_environment[@]}" \
+        "${opencode_binary}" debug config --log-level ERROR 2>/dev/null \
         | node "${overlay_script}" verify-effective --overlay "${overlay_path}" >/dev/null; then
         print_error "Effective OpenCode config did not preserve the restricted conversation boundary"
         return 1
     fi
+    return 0
+}
+
+create_conversation_runtime() {
+    local overlay_path="$1"
+    local result_var="$2"
+    local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
+    local created_runtime_root=""
+    local unresolved_runtime_root=""
+    local config_directory=""
+
+    [[ "${result_var}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    unresolved_runtime_root=$(mktemp -d "${AIDEVOPS_TEMP_DIR}/opencode-conversation.XXXXXX") || return 1
+    if ! created_runtime_root=$(cd "${unresolved_runtime_root}" && pwd -P); then
+        rm -rf "${unresolved_runtime_root}" 2>/dev/null || true
+        return 1
+    fi
+    if ! chmod 700 "${created_runtime_root}" || ! mkdir -p \
+        "${created_runtime_root}/cache" \
+        "${created_runtime_root}/config/opencode" \
+        "${created_runtime_root}/data/opencode" \
+        "${created_runtime_root}/home" \
+        "${created_runtime_root}/state" \
+        "${created_runtime_root}/tmp" || ! chmod 700 \
+        "${created_runtime_root}/cache" \
+        "${created_runtime_root}/config" \
+        "${created_runtime_root}/config/opencode" \
+        "${created_runtime_root}/data" \
+        "${created_runtime_root}/data/opencode" \
+        "${created_runtime_root}/home" \
+        "${created_runtime_root}/state" \
+        "${created_runtime_root}/tmp"; then
+        rm -rf "${created_runtime_root}" 2>/dev/null || true
+        return 1
+    fi
+    config_directory="${created_runtime_root}/config/opencode"
+    if ! node "${overlay_script}" prepare-config \
+        --overlay "${overlay_path}" \
+        --agents-dir "${SCRIPT_DIR}/.." \
+        --output "${config_directory}/opencode.json" >/dev/null; then
+        rm -rf "${created_runtime_root}" 2>/dev/null || true
+        return 1
+    fi
+    printf -v "${result_var}" '%s' "${created_runtime_root}"
+    return 0
+}
+
+cleanup_conversation_runtime() {
+    local runtime_root="$1"
+    [[ -n "${runtime_root}" && -d "${runtime_root}" ]] || return 0
+    rm -rf "${runtime_root}" 2>/dev/null || return 1
     return 0
 }
 
@@ -1109,7 +1166,13 @@ cmd_conversation() {
     local canonical_overlay=""
     local overlay_digest=""
     local data_dir=""
+    local runtime_root=""
+    local config_directory=""
+    local config_file=""
+    local opencode_binary=""
+    local conversation_status=0
     local -a acp_args=()
+    local -a runtime_environment=()
 
     while (($# > 0)); do
         local option="$1"
@@ -1153,34 +1216,90 @@ cmd_conversation() {
     [[ -n "${overlay_path}" ]] || { print_error "Restricted conversation mode requires --overlay FILE"; return 1; }
     reject_conversation_environment || return 1
     require_opencode_cli || return 1
+    command -v node >/dev/null 2>&1 || { print_error "node not found in PATH"; return 1; }
+    opencode_binary=$(command -v opencode) || return 1
     canonical_dir=$(canonical_conversation_directory "${launch_dir}") || return 1
     canonical_overlay=$(canonical_conversation_overlay "${overlay_path}") || return 1
     overlay_digest=$(validate_conversation_overlay "${canonical_overlay}") || return 1
-    data_dir=$(build_session_data_dir "conversation-${overlay_digest#sha256:}")
     acp_args=(acp --cwd "${canonical_dir}")
 
     if ((dry_run == 1)); then
-        printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1 AIDEVOPS_SESSION_ORIGIN=conversation AIDEVOPS_TEAM_INTERFACE_OVERLAY=%q OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 opencode' \
-            "${canonical_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}" "<validated-overlay:${overlay_digest}>"
+        printf 'cd %q && env -i HOME=%q XDG_CONFIG_HOME=%q XDG_CACHE_HOME=%q XDG_STATE_HOME=%q XDG_DATA_HOME=%q OPENCODE_CONFIG=%q OPENCODE_CONFIG_DIR=%q OPENCODE_DISABLE_AUTOCOMPACT=1 OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_SHARE=1 AIDEVOPS_OPENCODE_ISOLATED_DB=1 AIDEVOPS_SESSION_ORIGIN=conversation AIDEVOPS_TEAM_INTERFACE_OVERLAY=%q %q' \
+            "${canonical_dir}" "<private-home>" "<private-config>" "<private-cache>" \
+            "<private-state>" "<private-data>" "<private-config>/opencode.json" \
+            "<private-config>" "<validated-overlay:${overlay_digest}>" "${opencode_binary}"
         printf ' %q' "${acp_args[@]}"
         printf '\n'
         return 0
     fi
 
-    mkdir -p "${data_dir}/opencode" || return 1
-    copy_auth_json "${data_dir}" || return 1
-    prewarm_opencode_data_dir "${data_dir}"
-    verify_conversation_effective_config "${canonical_overlay}" "${data_dir}" || return 1
+    create_conversation_runtime "${canonical_overlay}" runtime_root || {
+        print_error "Could not create the private conversation runtime"
+        return 1
+    }
+    trap 'cleanup_conversation_runtime "${runtime_root}" >/dev/null 2>&1 || true' EXIT
+    data_dir="${runtime_root}/data"
+    config_directory="${runtime_root}/config/opencode"
+    config_file="${config_directory}/opencode.json"
+    if ! copy_auth_json "${data_dir}"; then
+        cleanup_conversation_runtime "${runtime_root}" || true
+        trap - EXIT
+        return 1
+    fi
+    runtime_environment=(
+        "PATH=${PATH}"
+        "HOME=${runtime_root}/home"
+        "TMPDIR=${runtime_root}/tmp"
+        "TMP=${runtime_root}/tmp"
+        "TEMP=${runtime_root}/tmp"
+        "XDG_CACHE_HOME=${runtime_root}/cache"
+        "XDG_CONFIG_HOME=${runtime_root}/config"
+        "XDG_DATA_HOME=${data_dir}"
+        "XDG_STATE_HOME=${runtime_root}/state"
+        "AIDEVOPS_TEMP_DIR=${runtime_root}/tmp"
+        "AIDEVOPS_CONVERSATION_PROJECT_ROOT=${canonical_dir}"
+        "AIDEVOPS_CONVERSATION_RUNTIME_ROOT=${runtime_root}"
+        "AIDEVOPS_OPENCODE_ISOLATED_DB=1"
+        "AIDEVOPS_SESSION_ORIGIN=conversation"
+        "AIDEVOPS_TEAM_INTERFACE_OVERLAY=${canonical_overlay}"
+        "OPENCODE_CONFIG=${config_file}"
+        "OPENCODE_CONFIG_DIR=${config_directory}"
+        "OPENCODE_DISABLE_AUTOCOMPACT=1"
+        "OPENCODE_DISABLE_AUTOUPDATE=1"
+        "OPENCODE_DISABLE_CLAUDE_CODE=1"
+        "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1"
+        "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1"
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS=1"
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS=1"
+        "OPENCODE_DISABLE_LSP_DOWNLOAD=1"
+        "OPENCODE_DISABLE_MODELS_FETCH=1"
+        "OPENCODE_DISABLE_PROJECT_CONFIG=1"
+        "OPENCODE_DISABLE_SHARE=1"
+    )
+    [[ -n "${USER:-}" ]] && runtime_environment+=("USER=${USER}")
+    [[ -n "${LOGNAME:-}" ]] && runtime_environment+=("LOGNAME=${LOGNAME}")
+    [[ -n "${SHELL:-}" ]] && runtime_environment+=("SHELL=${SHELL}")
+    [[ -n "${TERM:-}" ]] && runtime_environment+=("TERM=${TERM}")
+    [[ -n "${LANG:-}" ]] && runtime_environment+=("LANG=${LANG}")
+    [[ -n "${LC_ALL:-}" ]] && runtime_environment+=("LC_ALL=${LC_ALL}")
+    if ! verify_conversation_effective_config \
+        "${canonical_overlay}" "${opencode_binary}" "${runtime_environment[@]}"; then
+        cleanup_conversation_runtime "${runtime_root}" || true
+        trap - EXIT
+        return 1
+    fi
 
-    cd "${canonical_dir}" || return 1
-    export XDG_DATA_HOME="${data_dir}"
-    export AIDEVOPS_OPENCODE_ISOLATED_DB=1
-    export AIDEVOPS_SESSION_ORIGIN="conversation"
-    export AIDEVOPS_TEAM_INTERFACE_OVERLAY="${canonical_overlay}"
-    export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
-    export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
-    exec opencode "${acp_args[@]}"
-    return 1
+    if ! cd "${canonical_dir}"; then
+        cleanup_conversation_runtime "${runtime_root}" || true
+        trap - EXIT
+        return 1
+    fi
+    env -i "${runtime_environment[@]}" "${opencode_binary}" "${acp_args[@]}" || conversation_status=$?
+    cleanup_conversation_runtime "${runtime_root}" || {
+        ((conversation_status != 0)) || conversation_status=1
+    }
+    trap - EXIT
+    return "${conversation_status}"
 }
 
 main() {

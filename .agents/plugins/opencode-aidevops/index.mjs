@@ -24,8 +24,9 @@
 // ---------------------------------------------------------------------------
 
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { homedir } from "os";
+import { fileURLToPath } from "url";
 import { execSync } from "child_process";
 
 // Extracted modules
@@ -56,8 +57,11 @@ import { createSubagentCancellationReceipt } from "./subagent-cancellation-recei
 import {
   appendConversationSystemContext,
   applyConversationRootVariant,
+  CONVERSATION_ORIGIN,
+  CONVERSATION_OVERLAY_ENV,
   loadTeamInterfaceConversation,
 } from "./team-interface-context.mjs";
+import { enforceConversationPathAccess } from "./team-interface-path-guard.mjs";
 
 // Existing modules
 import { createTools } from "./tools.mjs";
@@ -80,10 +84,16 @@ import { isHeadless } from "./proxy-lifecycle.mjs";
 // ---------------------------------------------------------------------------
 
 const HOME = homedir();
-const ACTIVE_AGENTS_DIR = join(HOME, ".aidevops", "agents");
+const PLUGIN_ENTRY_PATH = realpathSync(fileURLToPath(import.meta.url));
+const MODULE_AGENTS_DIR = realpathSync(resolve(dirname(PLUGIN_ENTRY_PATH), "../.."));
+const CONVERSATION_ENVIRONMENT = process.env.AIDEVOPS_SESSION_ORIGIN === CONVERSATION_ORIGIN
+  || Boolean(process.env[CONVERSATION_OVERLAY_ENV]);
+const ACTIVE_AGENTS_DIR = CONVERSATION_ENVIRONMENT
+  ? MODULE_AGENTS_DIR
+  : join(HOME, ".aidevops", "agents");
 // Resolve the activation link exactly once at plugin load. Every hook and shell
 // spawned by this OpenCode process remains pinned to this immutable bundle.
-const AGENTS_DIR = (() => {
+const AGENTS_DIR = CONVERSATION_ENVIRONMENT ? MODULE_AGENTS_DIR : (() => {
   try {
     return realpathSync(ACTIVE_AGENTS_DIR);
   } catch {
@@ -98,6 +108,7 @@ const LOGS_DIR = join(HOME, ".aidevops", "logs");
 // Keep the immutable bundle backing this process until OpenCode exits. Setup
 // also applies an age floor for sessions started before lease support existed.
 const RUNTIME_BUNDLE_LEASE = (() => {
+  if (CONVERSATION_ENVIRONMENT) return "";
   const bundleDir = dirname(AGENTS_DIR);
   if (basename(dirname(bundleDir)) !== "runtime-bundles") return "";
   const lease = join(dirname(bundleDir), ".leases", basename(bundleDir), String(process.pid));
@@ -190,7 +201,41 @@ installPluginConsoleRouter({
  */
 export async function AidevopsPlugin({ directory, client }) {
   const initializedAtMs = Date.now();
-  const conversation = loadTeamInterfaceConversation(process.env, AGENTS_DIR);
+  const conversation = loadTeamInterfaceConversation(process.env, AGENTS_DIR, {
+    pluginEntryPath: PLUGIN_ENTRY_PATH,
+    repositoryDir: directory,
+  });
+
+  if (conversation) {
+    const configHook = createConfigHook({
+      agentsDir: AGENTS_DIR,
+      workspaceDir: WORKSPACE_DIR,
+      pluginDir: PLUGIN_DIR,
+      repositoryDir: directory,
+      conversation,
+    });
+    const tierReasoning = loadTierReasoningPolicies([
+      join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
+      join(AGENTS_DIR, "configs", "model-routing-table.json"),
+    ]);
+    return {
+      config: configHook,
+      "chat.message": async () => 0,
+      "chat.params": async (input, output) => applyConversationRootVariant(
+        input,
+        output,
+        conversation,
+        {client, resolveVariant: resolveTierReasoning, tierReasoning},
+      ),
+      "tool.execute.before": async (input, output) => enforceConversationPathAccess(
+        input.tool,
+        output.args || {},
+        conversation,
+      ),
+      "experimental.chat.system.transform": async (_input, output) =>
+        appendConversationSystemContext(output, conversation),
+    };
+  }
 
   // Initialise LLM observability
   initObservability();
@@ -207,7 +252,7 @@ export async function AidevopsPlugin({ directory, client }) {
   // Listener bind remains LAZY (see systemTransformHook below) — deferred until
   // the first cursor/* request. See GH#21948 and GH#22157.
   const cursorAccounts = getAccounts("cursor");
-  if (cursorAccounts.length > 0) {
+  if (!conversation && cursorAccounts.length > 0) {
     prepareOptionalProxy("Cursor gRPC", async () => {
       const cursorProxyResult = await startCursorProxy(client);
       if (cursorProxyResult) {
@@ -220,7 +265,7 @@ export async function AidevopsPlugin({ directory, client }) {
   // listener split as Cursor. The picker uses the last persisted provider entry
   // immediately, then refreshes when the background preparation completes.
   const googleAccounts = getAccounts("google");
-  if (googleAccounts.length > 0) {
+  if (!conversation && googleAccounts.length > 0) {
     if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
       process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-pool-proxy";
     }
@@ -265,6 +310,7 @@ export async function AidevopsPlugin({ directory, client }) {
     scriptsDir: SCRIPTS_DIR,
     logsDir: LOGS_DIR,
     continuationGuard,
+    conversation,
     resolveSessionModel: (sessionId) => sessionModels.resolve(sessionId),
   });
 
@@ -326,6 +372,10 @@ export async function AidevopsPlugin({ directory, client }) {
   // request — the underlying provider call will surface a clearer error
   // if the proxy is genuinely unreachable.
   const systemTransformHook = async (input, output) => {
+    if (conversation) {
+      appendConversationSystemContext(output, conversation);
+      return;
+    }
     const providerID = input?.model?.providerID;
     if (providerID && !isHeadless()) {
       const starter = proxyStarters[providerID];
@@ -338,14 +388,13 @@ export async function AidevopsPlugin({ directory, client }) {
       }
     }
     await ttsrSystemTransformHook(input, output);
-    appendConversationSystemContext(output, conversation);
   };
 
   // Composed messages transform: TTSR enforcement + image size guard (GH#21793).
   // The image guard runs after TTSR so corrections are applied to the final
   // message list. Fail-open — errors in the guard must not block the message.
   const messagesTransformHook = async (input, output) => {
-    await ttsrMessagesTransformHook(input, output);
+    if (!conversation) await ttsrMessagesTransformHook(input, output);
     try {
       applyImageSizeGuard(output, qualityLog);
     } catch (err) {
@@ -356,8 +405,10 @@ export async function AidevopsPlugin({ directory, client }) {
   // Compose recovery completion validation after TTSR annotations. The guard
   // only changes explicit terminal claims; ordinary progress remains intact.
   const completionTextHook = async (input, output) => {
-    await textCompleteHook(input, output);
-    continuationGuard.completeText(input, output);
+    if (!conversation) {
+      await textCompleteHook(input, output);
+      continuationGuard.completeText(input, output);
+    }
   };
 
   // Greeting handler (t2724) — emits session-start framework status as
@@ -393,7 +444,7 @@ export async function AidevopsPlugin({ directory, client }) {
       // HOTFIX: run initPoolAuth non-blocking — OpenCode 1.4.8 blocks
       // on client.auth.set() inside the config hook. Fire-and-forget so
       // the config hook can complete and the session becomes responsive.
-      initPoolAuth(client).catch(() => {});
+      if (!conversation) initPoolAuth(client).catch(() => {});
       return configHook(config);
     },
 
@@ -401,11 +452,11 @@ export async function AidevopsPlugin({ directory, client }) {
     tool: baseTools,
 
     // Select the lowest suitable child effort, capped by the parent session.
-    "chat.message": subagentEffortHooks.chatMessage,
+    "chat.message": conversation ? async () => 0 : subagentEffortHooks.chatMessage,
     "chat.params": async (input, output) => {
       const { sessionId, modelId } = sessionModelIdentity(input);
       sessionModels.remember(sessionId, modelId);
-      await subagentEffortHooks.chatParams(input, output);
+      if (!conversation) await subagentEffortHooks.chatParams(input, output);
       return applyConversationRootVariant(input, output, conversation, {
         client,
         resolveVariant: resolveTierReasoning,
