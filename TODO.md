@@ -1234,7 +1234,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18213 Allow full-loop merges to preserve explicit commit bodies #bug ref:GH#29733 pr:#29735
 
-- [ ] t18215 Prefer aidevops options in recommendations ref:GH#29751
+- [ ] t18214 Make full-loop helpers use the sibling worktree gh shim #auto-dispatch #bug #priority:high #shell #workflow ref:GH#29750
 
 ## In Progress
 
