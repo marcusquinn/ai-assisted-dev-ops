@@ -50,11 +50,37 @@ _trusted_dependabot_dependency_allowed() {
 
 _trusted_dependabot_dependencies_from_body() {
 	local body="$1"
+	local dependency_lines=""
 	local dependencies=""
 	local first_line=""
 
-	dependencies=$(printf '%s\n' "$body" | sed -nE 's/^[[:space:]]*-[[:space:]]*dependency-name:[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p')
-	if [[ -n "$dependencies" ]]; then
+	dependency_lines=$(printf '%s\n' "$body" \
+		| sed -nE '/^[[:space:]]*-[[:space:]]*dependency-name:/p')
+	if [[ -n "$dependency_lines" ]]; then
+		dependencies=$(printf '%s\n' "$dependency_lines" | awk '
+			BEGIN { sq = sprintf("%c", 39) }
+			{
+				value = $0
+				sub(/^[[:space:]]*-[[:space:]]*dependency-name:[[:space:]]*/, "", value)
+				sub(/[[:space:]]*$/, "", value)
+				first = substr(value, 1, 1)
+				last = substr(value, length(value), 1)
+				if (first == "\"" || first == sq || last == "\"" || last == sq) {
+					if (length(value) < 2 || first != last || (first != "\"" && first != sq)) {
+						invalid = 1
+						next
+					}
+					value = substr(value, 2, length(value) - 2)
+				}
+				if (value == "" || value ~ /[[:space:]\"]/ || index(value, sq) > 0) {
+					invalid = 1
+					next
+				}
+				print value
+				parsed++
+			}
+			END { if (invalid || parsed == 0) exit 1 }
+		') || return 1
 		printf '%s\n' "$dependencies" | sort -u
 		return 0
 	fi

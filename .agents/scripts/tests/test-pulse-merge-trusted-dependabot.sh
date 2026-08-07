@@ -231,6 +231,42 @@ test_standard_dependabot_body_parser() {
 	return 0
 }
 
+test_quoted_dependabot_dependency_names() {
+	local body=""
+	local dependencies=""
+
+	body=$(printf '%s\n' \
+		'Bumps [react](source) and [@types/react](source).' \
+		'---' \
+		'updated-dependencies:' \
+		'- dependency-name: "@types/react"' \
+		"- dependency-name: 'react'")
+	dependencies=$(_trusted_dependabot_dependencies_from_body "$body") || dependencies=""
+	if [[ "$dependencies" == $'@types/react\nreact' ]]; then
+		print_result "quoted Dependabot YAML dependency names are normalized" 0
+		return 0
+	fi
+	print_result "quoted Dependabot YAML dependency names are normalized" 1 "parsed: ${dependencies:-empty}"
+	return 0
+}
+
+test_malformed_quoted_dependency_name_fails_closed() {
+	local body=""
+
+	body=$(printf '%s\n' \
+		'Bumps [@types/react](source) from 19.2.6 to 19.2.18.' \
+		'---' \
+		'updated-dependencies:' \
+		'- dependency-name: "@types/react' \
+		'- dependency-name: react')
+	if _trusted_dependabot_dependencies_from_body "$body" >/dev/null; then
+		print_result "malformed quoted Dependabot dependency name fails closed" 1
+		return 0
+	fi
+	print_result "malformed quoted Dependabot dependency name fails closed" 0
+	return 0
+}
+
 test_trusted_dependabot_rejects_paginated_snapshot() {
 	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	jq '.data.repository.pullRequest.files.pageInfo.hasNextPage = true' \
@@ -365,6 +401,8 @@ main() {
 	test_trusted_dependabot_uses_response_metered_graphql
 	test_trusted_dependabot_binds_expected_head
 	test_standard_dependabot_body_parser
+	test_quoted_dependabot_dependency_names
+	test_malformed_quoted_dependency_name_fails_closed
 	test_trusted_dependabot_rejects_paginated_snapshot
 	test_trusted_dependabot_rejects_incomplete_snapshot
 	test_spoofed_author_fails
