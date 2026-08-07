@@ -114,7 +114,14 @@ function applyRequestedVariant(output, requestedVariant, effectiveVariant) {
   }
 }
 
-async function recordChildRouting(context, sessionID, childSession, childModel, desiredEffort, effectiveVariant, policy) {
+async function recordChildRouting(context, {
+  sessionID,
+  childSession,
+  childModel,
+  desiredEffort,
+  effectiveVariant,
+  policy,
+}) {
   if (typeof context.onRoutingDecision !== "function") return;
   if (policy) policy.attempt += 1;
   await context.onRoutingDecision(sessionID, {
@@ -159,15 +166,14 @@ async function routeChatParams(context, input, output) {
       currentVariant,
     );
     applyRequestedVariant(output, requestedVariant, effectiveVariant);
-    await recordChildRouting(
-      context,
+    await recordChildRouting(context, {
       sessionID,
       childSession,
       childModel,
       desiredEffort,
       effectiveVariant,
       policy,
-    );
+    });
   } catch {
     // Fail open: provider requests must continue if session metadata is unavailable.
   }
