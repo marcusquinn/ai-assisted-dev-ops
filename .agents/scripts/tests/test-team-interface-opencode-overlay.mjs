@@ -17,12 +17,13 @@ import {
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(testDirectory, "../../..");
-const overlayScript = path.join(repositoryRoot, ".agents/scripts/team-interface-opencode-overlay.mjs");
+// The nosemgrep sites below use only this canonical source root or a process-owned mkdtemp tree.
+const overlayScript = path.join(repositoryRoot, ".agents/scripts/team-interface-opencode-overlay.mjs"); // nosemgrep
 const rosterScript = path.join(repositoryRoot, ".agents/scripts/team-interface-agent-roster.py");
 const schemaDirectory = path.join(repositoryRoot, ".agents/schemas/team-interface");
 
 function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  return JSON.parse(fs.readFileSync(filePath, "utf8")); // nosemgrep
 }
 
 function taggedDigest(value) {
@@ -30,7 +31,7 @@ function taggedDigest(value) {
 }
 
 function writeJson(filePath, value, mode = 0o600) {
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, {mode});
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, {mode}); // nosemgrep
 }
 
 function runOverlay(argumentsList, options = {}) {
@@ -66,7 +67,7 @@ const ajv = new Ajv2020({allErrors: true, strict: false, validateFormats: false}
 ajv.addSchema(coreSchema);
 const validateOverlaySchema = ajv.compile(overlaySchema);
 
-const fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-opencode-overlay-")));
+const fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-opencode-overlay-"))); // nosemgrep
 try {
   const rosterPath = path.join(fixtureRoot, "roster.json");
   const contextPath = path.join(fixtureRoot, "context.json");
@@ -115,12 +116,12 @@ try {
     ],
   );
   assert.doesNotMatch(firstText, /(?:gpt-|claude-|openai\/|anthropic\/)/i);
-  assert.doesNotMatch(firstText, new RegExp(repositoryRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(firstText.includes(repositoryRoot), false, "output leaks the canonical repository root");
 
   const outputResult = runOverlay(generateArguments(rosterPath, contextPath, ["--output", overlayPath]));
   assert.equal(outputResult.status, 0, outputResult.stderr);
-  assert.equal(fs.readFileSync(overlayPath, "utf8"), firstText);
-  assert.equal(fs.statSync(overlayPath).mode & 0o077, 0, "overlay output is group/world accessible");
+  assert.equal(fs.readFileSync(overlayPath, "utf8"), firstText); // nosemgrep
+  assert.equal(fs.statSync(overlayPath).mode & 0o077, 0, "overlay output is group/world accessible"); // nosemgrep
   const validateResult = runOverlay(["validate", "--overlay", overlayPath]);
   assert.equal(validateResult.status, 0, validateResult.stderr);
   assert.equal(validateResult.stdout.trim(), overlay.overlay_digest);
@@ -131,28 +132,28 @@ try {
   ]);
   assert.equal(prepareConfigResult.status, 0, prepareConfigResult.stderr);
   const runtimeConfig = readJson(runtimeConfigPath);
-  const pluginUrl = pathToFileURL(fs.realpathSync(path.join(
+  const pluginUrl = pathToFileURL(fs.realpathSync(path.join( // nosemgrep
     repositoryRoot,
     ".agents/plugins/opencode-aidevops/index.mjs",
   ))).href;
   assert.deepEqual(runtimeConfig.plugin, [pluginUrl]);
   assert.deepEqual(runtimeConfig.instructions, []);
   assert.deepEqual(runtimeConfig.command, {});
-  assert.equal(fs.statSync(runtimeConfigPath).mode & 0o077, 0);
+  assert.equal(fs.statSync(runtimeConfigPath).mode & 0o077, 0); // nosemgrep
 
   const registeredProject = path.join(fixtureRoot, "registered-project");
   const unregisteredProject = path.join(fixtureRoot, "unregistered-project");
   const linkedProjectPath = path.join(fixtureRoot, "project-link");
   const reposPath = path.join(fixtureRoot, "repos.json");
-  fs.mkdirSync(registeredProject);
-  fs.mkdirSync(unregisteredProject);
-  fs.symlinkSync(registeredProject, linkedProjectPath, "dir");
+  fs.mkdirSync(registeredProject); // nosemgrep
+  fs.mkdirSync(unregisteredProject); // nosemgrep
+  fs.symlinkSync(registeredProject, linkedProjectPath, "dir"); // nosemgrep
   writeJson(reposPath, {initialized_repos: [{path: registeredProject}]});
   const registeredProjectResult = runOverlay([
     "validate-project-root", "--dir", registeredProject, "--repos", reposPath,
   ]);
   assert.equal(registeredProjectResult.status, 0, registeredProjectResult.stderr);
-  assert.equal(registeredProjectResult.stdout.trim(), fs.realpathSync(registeredProject));
+  assert.equal(registeredProjectResult.stdout.trim(), fs.realpathSync(registeredProject)); // nosemgrep
   requireFailure(
     runOverlay(["validate-project-root", "--dir", unregisteredProject, "--repos", reposPath]),
     /not a registered canonical project or linked worktree root/i,
@@ -226,7 +227,7 @@ try {
     delete unsignedForged.overlay_digest;
     forged.overlay_digest = taggedDigest(unsignedForged);
     const forgedPath = path.join(fixtureRoot, `${label}.json`);
-    fs.writeFileSync(forgedPath, `${canonicalJson(forged)}\n`, {mode: 0o600});
+    fs.writeFileSync(forgedPath, `${canonicalJson(forged)}\n`, {mode: 0o600}); // nosemgrep
     requireFailure(
       runOverlay(["validate", "--overlay", forgedPath]),
       pattern,
@@ -285,7 +286,7 @@ try {
   assert.equal(guide.agent.source_ref, "agents:aidevops.md");
   assert.notEqual(guide.agent.agent_id, "agent.build-plus");
 
-  const previousOverlay = fs.readFileSync(overlayPath, "utf8");
+  const previousOverlay = fs.readFileSync(overlayPath, "utf8"); // nosemgrep
   const invalidOutputContext = path.join(fixtureRoot, "context-invalid-output.json");
   writeJson(invalidOutputContext, {...context, raw_message: "synthetic text"});
   requireFailure(
@@ -293,7 +294,7 @@ try {
     /closed-schema validation/i,
     "failed atomic replacement",
   );
-  assert.equal(fs.readFileSync(overlayPath, "utf8"), previousOverlay, "failed generation replaced prior output");
+  assert.equal(fs.readFileSync(overlayPath, "utf8"), previousOverlay, "failed generation replaced prior output"); // nosemgrep
   requireFailure(
     runOverlay(generateArguments(rosterPath, contextPath, ["--output", rosterPath])),
     /must not replace an input/i,
@@ -309,7 +310,7 @@ try {
 
   const effectiveEvidence = conversationConfigEvidence(overlay.agent.display_name);
   const sourceFilename = overlay.agent.source_ref.slice("agents:".length);
-  const canonicalPrompt = fs.readFileSync(path.join(repositoryRoot, ".agents", sourceFilename), "utf8");
+  const canonicalPrompt = fs.readFileSync(path.join(repositoryRoot, ".agents", sourceFilename), "utf8"); // nosemgrep
   const effectiveConfig = {
     ...effectiveEvidence,
     command: {},
@@ -376,7 +377,7 @@ try {
   delete unsignedTampered.overlay_digest;
   tamperedOverlay.overlay_digest = taggedDigest(unsignedTampered);
   const tamperedPath = path.join(fixtureRoot, "overlay-tampered.json");
-  fs.writeFileSync(tamperedPath, `${canonicalJson(tamperedOverlay)}\n`, {mode: 0o600});
+  fs.writeFileSync(tamperedPath, `${canonicalJson(tamperedOverlay)}\n`, {mode: 0o600}); // nosemgrep
   requireFailure(
     runOverlay(["validate", "--overlay", tamperedPath]),
     /context digest/i,

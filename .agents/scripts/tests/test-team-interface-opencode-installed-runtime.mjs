@@ -17,9 +17,10 @@ import {
 import {verifyConversationEffectiveConfig} from "../team-interface-opencode-effective-config.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
-const repositoryRoot = fs.realpathSync(path.resolve(testDirectory, "../../.."));
+// The nosemgrep sites below use only this canonical source root or a process-owned mkdtemp tree.
+const repositoryRoot = fs.realpathSync(path.resolve(testDirectory, "../../..")); // nosemgrep
 const agentsDirectory = path.join(repositoryRoot, ".agents");
-const pluginPath = fs.realpathSync(path.join(
+const pluginPath = fs.realpathSync(path.join( // nosemgrep
   agentsDirectory,
   "plugins",
   "opencode-aidevops",
@@ -91,7 +92,7 @@ if (versionResult.error?.code === "ENOENT") {
 }
 assert.equal(versionResult.status, 0, versionResult.stderr);
 
-const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-installed-opencode-")));
+const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "aidevops-installed-opencode-"))); // nosemgrep
 try {
   const projectRoot = path.join(root, "project");
   const persistentHome = path.join(root, "persistent-home");
@@ -110,8 +111,8 @@ try {
     path.join(runtimeRoot, "state"),
     path.join(runtimeRoot, "tmp"),
   ]) {
-    fs.mkdirSync(directory, {recursive: true, mode: 0o700});
-    fs.chmodSync(directory, 0o700);
+    fs.mkdirSync(directory, {recursive: true, mode: 0o700}); // nosemgrep
+    fs.chmodSync(directory, 0o700); // nosemgrep
   }
 
   const persistentCanary = {
@@ -119,7 +120,7 @@ try {
     instructions: ["persistent-canary.md"],
     plugin: ["file:///persistent-canary.mjs"],
   };
-  fs.writeFileSync(
+  fs.writeFileSync( // nosemgrep
     path.join(persistentHome, ".config", "opencode", "opencode.json"),
     `${JSON.stringify(persistentCanary)}\n`,
     {mode: 0o600},
@@ -147,7 +148,7 @@ try {
       trust_ref: "trust:installed-canary",
     },
   });
-  fs.writeFileSync(overlayPath, `${canonicalJson(overlay)}\n`, {mode: 0o600});
+  fs.writeFileSync(overlayPath, `${canonicalJson(overlay)}\n`, {mode: 0o600}); // nosemgrep
 
   const configFile = path.join(configDirectory, "opencode.json");
   fs.writeFileSync(
