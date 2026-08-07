@@ -279,11 +279,6 @@ _update_check_planning() {
 _update_check_tools() {
 	echo ""
 	print_header "Checking Key Tools"
-	local tool_check_script="$AGENTS_DIR/scripts/tool-version-check.sh"
-	if [[ ! -f "$tool_check_script" ]]; then
-		print_info "Tool version check not available (run setup first)"
-		return 0
-	fi
 	local stale_count=0 stale_tools=""
 	local key_tool_cmds="opencode gh"
 	local key_tool_pkgs="opencode-ai brew:gh"
@@ -306,7 +301,7 @@ _update_check_tools() {
 		local pkg_ref
 		pkg_ref=$(echo "$key_tool_pkgs" | cut -d' ' -f$((idx + 1)))
 		idx=$((idx + 1))
-		local installed="" latest=""
+		local installed="" latest="" approved=""
 		command -v "$cmd_name" &>/dev/null || continue
 		installed=$("$cmd_name" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 		[[ -z "$installed" ]] && continue
@@ -319,8 +314,12 @@ _update_check_tools() {
 			elif [[ "$brew_pkg" == "gh" ]] && command -v gh &>/dev/null; then latest=$(get_public_release_tag "cli/cli"); fi
 		else latest=$(_timeout_cmd 30 npm view "$pkg_ref" version || true); fi
 		[[ -z "$latest" ]] && continue
-		[[ "$installed" != "$latest" ]] && {
-			stale_tools="${stale_tools:+$stale_tools, }$cmd_name ($installed -> $latest)"
+		approved="$latest"
+		if [[ "$cmd_name" == "opencode" && "${OPENCODE_PINNED_VERSION:-latest}" != "latest" ]]; then
+			approved="$OPENCODE_PINNED_VERSION"
+		fi
+		[[ "$installed" != "$approved" ]] && {
+			stale_tools="${stale_tools:+$stale_tools, }$cmd_name ($installed -> $approved)"
 			((++stale_count))
 		}
 	done
@@ -329,8 +328,7 @@ _update_check_tools() {
 	else
 		print_warning "$stale_count tool(s) have updates: $stale_tools"
 		echo ""
-		read -r -p "Run full tool update check? [y/N] " response
-		[[ "$response" =~ ^[Yy]$ ]] && bash "$tool_check_script" --update || print_info "Run 'aidevops update-tools --update' to update later"
+		print_info "No global tools were changed; run 'aidevops update-tools --update' to update explicitly"
 	fi
 	return 0
 }
