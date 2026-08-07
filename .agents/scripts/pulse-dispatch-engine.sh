@@ -1454,7 +1454,7 @@ _run_preflight_stages() {
 	# side retains AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE=1 compatibility,
 	# while REST safety still applies.
 	local _budget_gate_skip=0
-	local _budget_prefetch_stage="preflight_prefetch_and_scope"
+	local _budget_prefetch_stage="${_PULSE_BUDGET_PREFETCH_STAGE:-preflight_prefetch_and_scope}"
 	if _pulse_should_defer_budget_priority_stage "$_budget_prefetch_stage"; then
 		_pulse_defer_budget_priority_stage "$_budget_prefetch_stage"
 		_PULSE_HEALTH_PREFETCH_THROTTLED=$((_PULSE_HEALTH_PREFETCH_THROTTLED + 1))

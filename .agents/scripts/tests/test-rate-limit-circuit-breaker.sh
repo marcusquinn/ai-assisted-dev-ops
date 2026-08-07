@@ -9,7 +9,7 @@
 #   2. Does NOT trip when remaining > threshold (e.g. 1000/5000)
 #   3. Fails open on API error (gh api rate_limit unreachable)
 #   4. Emergency bypass via AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1
-#   5. Disabled when threshold=0
+#   5. GraphQL floor disabled when threshold=0 while REST safety remains active
 #   6. Status output includes correct state
 #   7. Custom threshold works (e.g. 10% = 500/5000)
 #   8. Stats counter increments on trip
@@ -287,7 +287,7 @@ test_emergency_bypass() {
 	return 0
 }
 
-# --- Test 7: Disabled when threshold=0 ---
+# --- Test 7: GraphQL floor is disabled when threshold=0 and REST is healthy ---
 test_disabled_at_zero_threshold() {
 	reset_test_state
 	STUB_GH_REMAINING=0
@@ -295,9 +295,25 @@ test_disabled_at_zero_threshold() {
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
 	if [[ "$rc" -eq 0 ]]; then
-		pass "disabled when threshold=0 (remaining=0 still passes)"
+		pass "GraphQL floor disabled at threshold=0 while healthy REST still passes"
 	else
-		fail "should be disabled when threshold=0 (rc=$rc, expected 0)"
+		fail "GraphQL floor should be disabled at threshold=0 with healthy REST" "rc=$rc, expected 0"
+	fi
+	return 0
+}
+
+# --- Test 7b: GraphQL threshold=0 does not bypass unknown REST evidence ---
+test_zero_graphql_threshold_keeps_rest_safety() {
+	reset_test_state
+	export AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD=0
+	unset STUB_GH_CORE_REMAINING
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local rc=0
+	is_graphql_budget_sufficient || rc=$?
+	if [[ "$rc" -eq 1 ]] && grep -qF 'authoritative REST-core quota evidence unavailable' "$LOGFILE"; then
+		pass "GraphQL threshold=0 retains fail-closed unknown REST safety"
+	else
+		fail "GraphQL threshold=0 should not bypass unknown REST evidence" "rc=${rc}"
 	fi
 	return 0
 }
@@ -459,7 +475,8 @@ test_graphql_exhausted_rest_core_low_blocks_dispatch() {
 	STUB_GH_CORE_REMAINING=10
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
-	if [[ "$rc" -eq 1 && "${AIDEVOPS_GH_FORCE_REST_READS:-0}" != "1" ]]; then
+	if [[ "$rc" -eq 1 && "${AIDEVOPS_GH_FORCE_REST_READS:-0}" != "1" ]] &&
+		grep -qF 'known REST-core progress floor reached' "$LOGFILE"; then
 		pass "GraphQL exhausted with low REST core still blocks dispatch"
 	else
 		fail "low REST core should not allow fallback" "rc=$rc force_rest=${AIDEVOPS_GH_FORCE_REST_READS:-unset}"
@@ -625,6 +642,23 @@ test_rest_core_legacy_override_compatibility() {
 	return 0
 }
 
+# --- Test 25b: Hard floor above the soft cap is clamped to the soft cap ---
+test_rest_core_hard_floor_clamped_to_soft_cap() {
+	reset_test_state
+	export AIDEVOPS_PULSE_REST_CORE_RESERVE=200
+	export AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR=1000
+	export STUB_GH_CORE_REMAINING=200
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local snapshot
+	snapshot=$(pulse_rest_core_priority_snapshot)
+	if [[ "$snapshot" == emergency\ 200\ 5000\ 200\ 200\ 200\ * ]]; then
+		pass "REST hard floor above the soft cap is clamped to the soft cap"
+	else
+		fail "REST hard-floor clamp mismatch" "snapshot=${snapshot}"
+	fi
+	return 0
+}
+
 # --- Test 26: Malformed cache metadata is ignored without set -u crashes ---
 test_rest_core_malformed_cache_recovers() {
 	reset_test_state
@@ -647,7 +681,8 @@ test_rest_core_unknown_dispatch_uses_single_probe() {
 	local rc=0 rest_calls=0
 	is_graphql_budget_sufficient || rc=$?
 	rest_calls=$(grep -c '^rest-core$' "$GH_REST_CALLS" 2>/dev/null) || rest_calls=0
-	if [[ "$rc" -eq 1 && "$rest_calls" -eq 1 ]]; then
+	if [[ "$rc" -eq 1 && "$rest_calls" -eq 1 ]] &&
+		grep -qF 'authoritative REST-core quota evidence unavailable' "$LOGFILE"; then
 		pass "unknown REST dispatch evidence uses one authoritative probe"
 	else
 		fail "unknown REST dispatch evidence should not trigger a duplicate probe" "rc=${rc} rest_calls=${rest_calls}"
@@ -984,6 +1019,7 @@ test_breaker_passes_just_above_threshold
 test_fail_open_on_api_error
 test_emergency_bypass
 test_disabled_at_zero_threshold
+test_zero_graphql_threshold_keeps_rest_safety
 test_custom_threshold_10_percent
 test_stats_counter_increments
 test_stats_counter_no_increment_on_pass
@@ -1003,6 +1039,7 @@ test_rest_core_priority_class_eligibility
 test_rest_core_hard_floor_eligibility
 test_rest_core_unknown_evidence
 test_rest_core_legacy_override_compatibility
+test_rest_core_hard_floor_clamped_to_soft_cap
 test_rest_core_malformed_cache_recovers
 test_rest_core_unknown_dispatch_uses_single_probe
 test_shared_rate_probe_coalesces_consumers

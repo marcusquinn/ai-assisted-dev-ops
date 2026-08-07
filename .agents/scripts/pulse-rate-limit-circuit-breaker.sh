@@ -433,7 +433,24 @@ pulse_rest_core_reserve_allows() {
 }
 
 #######################################
+# Describe why the REST-core progress policy rejected a stage.
+#######################################
+_cb_rest_core_progress_block_reason() {
+	local progress_rc="$1"
+	case "$progress_rc" in
+	1) printf 'known REST-core progress floor reached\n' ;;
+	2) printf 'authoritative REST-core quota evidence unavailable\n' ;;
+	*) printf 'unexpected REST-core progress decision (rc=%s)\n' "$progress_rc" ;;
+	esac
+	return 0
+}
+
+#######################################
 # Gate new dispatch work at the hard floor and on unknown REST evidence.
+# Unknown evidence deliberately remains fail-closed without a time-based
+# downgrade: every later call retries the bounded authoritative probe, and
+# progress resumes only after valid evidence returns or an operator selects the
+# explicit emergency bypass.
 #######################################
 _cb_rest_core_progress_allows_dispatch() {
 	local decision
@@ -450,7 +467,9 @@ _cb_rest_core_progress_allows_dispatch() {
 	[[ "$progress_rc" -eq 0 ]] && return 0
 
 	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
-	echo "${_CB_RL_LOG_PREFIX} REST-core progress gate blocked: mode=${mode} remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} reset=${reset_epoch} rc=${progress_rc} (GH#29742)" >>"$LOGFILE"
+	local block_reason
+	block_reason=$(_cb_rest_core_progress_block_reason "$progress_rc")
+	echo "${_CB_RL_LOG_PREFIX} REST-core progress gate blocked: ${block_reason}; deferring until a later authoritative probe allows progress; mode=${mode} remaining=${remaining}/${limit} adaptive=${adaptive} soft_cap=${soft_cap} hard_floor=${hard_floor} reset=${reset_epoch} rc=${progress_rc} (GH#29742)" >>"$LOGFILE"
 	if declare -F pulse_stats_increment >/dev/null 2>&1; then
 		pulse_stats_increment "pulse_rest_core_progress_blocked" 2>/dev/null || true
 		pulse_stats_increment "pulse_rest_core_progress_blocked_${mode}" 2>/dev/null || true
@@ -484,7 +503,9 @@ _cb_allow_dispatch_with_rest_fallback() {
 	local core_rc=0
 	pulse_rest_core_priority_allows progress || core_rc=$?
 	if [[ "$core_rc" -ne 0 ]]; then
-		echo "${_CB_RL_LOG_PREFIX} GraphQL budget exhausted and REST fallback unavailable: REST-core progress floor is unavailable or exhausted (rc=${core_rc})" >>"$LOGFILE"
+		local block_reason
+		block_reason=$(_cb_rest_core_progress_block_reason "$core_rc")
+		echo "${_CB_RL_LOG_PREFIX} GraphQL budget exhausted and REST fallback unavailable: ${block_reason}; deferring until a later authoritative probe allows progress (rc=${core_rc})" >>"$LOGFILE"
 		return 1
 	fi
 
@@ -515,7 +536,9 @@ is_graphql_budget_sufficient() {
 
 	local threshold="${AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD:-0.05}"
 
-	# Disabled if threshold is explicitly 0 (any zero representation).
+	# A zero threshold disables only the GraphQL floor. The independent REST-core
+	# gate still protects its hard floor and remains fail-closed on unknown quota
+	# evidence; AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER=1 bypasses both explicitly.
 	if awk -v t="$threshold" 'BEGIN { exit (t + 0 == 0) ? 0 : 1 }' 2>/dev/null; then
 		_cb_rest_core_progress_allows_dispatch
 		return $?

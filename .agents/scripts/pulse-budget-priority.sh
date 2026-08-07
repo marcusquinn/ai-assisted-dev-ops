@@ -177,6 +177,20 @@ _pulse_stage_priority_class() {
 }
 
 #######################################
+# Return 0 when GraphQL reserve mode defers this deferrable stage.
+#######################################
+_pulse_graphql_budget_defers_stage() {
+	local stage="$1"
+	local priority="$2"
+	[[ "$priority" == "$_PULSE_BUDGET_PRIORITY_DEFERRABLE" ]] || return 1
+	[[ "${AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS:-normal}" == "$_PULSE_BUDGET_MODE_RESERVE" ]] || return 1
+	if [[ "$stage" == "$_PULSE_BUDGET_PREFETCH_STAGE" && "${AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE:-0}" == "1" ]]; then
+		return 1
+	fi
+	return 0
+}
+
+#######################################
 # Return 0 when a mapped stage should defer at its current budget class.
 #######################################
 _pulse_should_defer_budget_priority_stage() {
@@ -187,12 +201,13 @@ _pulse_should_defer_budget_priority_stage() {
 
 	_pulse_set_graphql_budget_priority quiet
 	_pulse_set_rest_core_budget_priority quiet
-	if [[ "$priority" == "$_PULSE_BUDGET_PRIORITY_DEFERRABLE" && "${AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS:-normal}" == "$_PULSE_BUDGET_MODE_RESERVE" ]]; then
-		if [[ "$stage" != "$_PULSE_BUDGET_PREFETCH_STAGE" || "${AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE:-0}" != "1" ]]; then
-			return 0
-		fi
+	if _pulse_graphql_budget_defers_stage "$stage" "$priority"; then
+		return 0
 	fi
 
+	# Unknown REST evidence intentionally keeps non-critical work fail-closed.
+	# Later cycles repeat the bounded authoritative probe; elapsed time alone must
+	# never turn missing quota evidence into permission to spend maintainer quota.
 	local rest_mode="${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
 	case "${rest_mode}:${priority}" in
 	reserve:deferrable | emergency:deferrable | unknown:deferrable | emergency:progress | unknown:progress)
@@ -219,11 +234,9 @@ _pulse_defer_budget_priority_stage() {
 	fi
 	pulse_stats_increment "pulse_budget_priority_stage_deferred" 2>/dev/null || true
 	pulse_stats_increment "pulse_budget_priority_stage_deferred_${stage}" 2>/dev/null || true
-	if [[ "$priority" == "$_PULSE_BUDGET_PRIORITY_DEFERRABLE" && "$graphql_mode" == "$_PULSE_BUDGET_MODE_RESERVE" ]]; then
-		if [[ "$stage" != "$_PULSE_BUDGET_PREFETCH_STAGE" || "${AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE:-0}" != "1" ]]; then
-			pulse_stats_increment "pulse_graphql_budget_stage_deferred" 2>/dev/null || true
-			pulse_stats_increment "pulse_graphql_budget_stage_deferred_${stage}" 2>/dev/null || true
-		fi
+	if _pulse_graphql_budget_defers_stage "$stage" "$priority"; then
+		pulse_stats_increment "pulse_graphql_budget_stage_deferred" 2>/dev/null || true
+		pulse_stats_increment "pulse_graphql_budget_stage_deferred_${stage}" 2>/dev/null || true
 	fi
 	case "$rest_mode" in
 	reserve | emergency | unknown)

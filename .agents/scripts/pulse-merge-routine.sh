@@ -275,6 +275,8 @@ _pmr_graphql_budget_allows_run() {
 	return 0
 }
 
+# Unknown quota evidence remains fail-closed until a later authoritative probe
+# succeeds; unlike a known floor, it is logged as an availability/evidence fault.
 _pmr_rest_core_progress_allows_run() {
 	local progress_rc=0
 	if declare -F pulse_rest_core_priority_allows >/dev/null 2>&1; then
@@ -284,11 +286,21 @@ _pmr_rest_core_progress_allows_run() {
 	else
 		return 0
 	fi
-	if [[ "$progress_rc" -ne 0 ]]; then
-		_pmr_log WARN "REST-core progress floor unavailable or exhausted (rc=${progress_rc}); deferring merge pass while preserving critical maintainer quota (GH#29742)"
-		return 1
-	fi
-	return 0
+	case "$progress_rc" in
+	0)
+		return 0
+		;;
+	1)
+		_pmr_log WARN "Known REST-core progress floor reached (rc=1); deferring merge pass until a later authoritative probe allows progress while preserving critical maintainer quota (GH#29742)"
+		;;
+	2)
+		_pmr_log WARN "REST-core quota evidence unavailable (rc=2); deferring merge pass fail-closed until a later authoritative probe succeeds while preserving critical maintainer quota (GH#29742)"
+		;;
+	*)
+		_pmr_log WARN "Unexpected REST-core progress decision (rc=${progress_rc}); deferring merge pass fail-closed while preserving critical maintainer quota (GH#29742)"
+		;;
+	esac
+	return 1
 }
 
 _pmr_require_gh_auth() {
