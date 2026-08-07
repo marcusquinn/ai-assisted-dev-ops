@@ -59,7 +59,7 @@
         "@fontsource/tilt-neon": "5.2.10",
         "@fontsource/ubuntu": "5.2.8",
         "@fontsource/ubuntu-mono": "5.2.8",
-        "@fontsource/zilla-slab": "5.2.8",
+        "@fontsource/zilla-slab": "5.3.0",
         "react": "19.1.0",
         "react-dom": "19.1.0",
         "react-icons": "5.6.0",
@@ -209,7 +209,7 @@
 
     "@fontsource/ubuntu-mono": ["@fontsource/ubuntu-mono@5.2.8", "", {}, "sha512-N4nT8+GYWWcDODVSBLU4f3PycZQH9YIF6SypDI0rti3HrLqcXFS9u6wMvAd9vx1FmjAQkYv7Ld9CZ8XYTEOD0A=="],
 
-    "@fontsource/zilla-slab": ["@fontsource/zilla-slab@5.2.8", "", {}, "sha512-S4wZ1IpJNMFd+FEcS6lwci3Ine/JivSRaMb0SzhE43b/gOmDKnylNfXjIxc7GmAiqAJlz0jOauxiuy085DQdNw=="],
+    "@fontsource/zilla-slab": ["@fontsource/zilla-slab@5.3.0", "", {}, "sha512-xbdDx5OESJDQqp3GIp4pjBgI+qpcg4AxnHLN15ekfJbG+ZYaOXg3uBjDpYlkuPQpey91afxHBNaqZgzluJ2FWA=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
