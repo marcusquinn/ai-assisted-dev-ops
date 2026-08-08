@@ -65,6 +65,7 @@ The command deletes only branches with safety evidence: merged to the default br
 
 ## See Also
 
+- `commands/worktree-archive.md` — compact archive, verification, restore, and retention workflow; pulse/worker wiring remains a follow-up.
 - `workflows/git-workflow.md` — full worktree lifecycle
 - `reference/session.md` — session and worktree conventions
 - `full-loop.md` Step 4.9 — worker self-cleanup specification
