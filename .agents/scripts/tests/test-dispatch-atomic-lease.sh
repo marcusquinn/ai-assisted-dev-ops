@@ -419,9 +419,50 @@ test_prelaunch_renewal_covers_slow_startup() {
 		fail "renewed prelaunch lease did not survive slow startup"
 	# shellcheck disable=SC2016 # Match the literal runtime variable in the helper source.
 	renewal_call='_hrw_renew_dispatch_prelaunch_lease "$session_key"'
-	grep -Fq "$renewal_call" "${SCRIPTS_DIR}/headless-runtime-helper.sh" ||
+	grep -Fq "$renewal_call" "${SCRIPTS_DIR}/headless-runtime-run.sh" ||
 		fail "worker does not renew its prelaunch lease before canary"
 	pass "worker prelaunch renewal covers slow startup before ready transition"
+	return 0
+}
+
+test_prelaunch_renewal_is_monotonic_and_coalesced() {
+	local root="${TMP_DIR}/renewal-coalescing" token="" initial_expiry="" extended_expiry=""
+	local comment_count=""
+	create_mock_gh "$root"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		DISPATCH_CLAIM_WINDOW=0 DISPATCH_CLAIM_ORPHAN_GRACE=30 \
+		"$CLAIM" claim 51 owner/repo shared-login >"$root/claim.out" 2>&1
+	token=$(claim_token "$root/claim.out")
+	[[ -n "$token" ]] || fail "coalescing claim token missing"
+	initial_expiry=$(jq -sr 'last.body | capture("expires_at=(?<value>[0-9]+)").value | tonumber' \
+		"$root/state/comments.jsonl")
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		"$CLAIM" transition prelaunch 51 owner/repo "$token" issue-51 10 ||
+		fail "covered prelaunch renewal did not succeed"
+	comment_count=$(wc -l <"$root/state/comments.jsonl" | tr -d ' ')
+	[[ "$comment_count" == "1" ]] || fail "covered prelaunch renewal posted a redundant comment"
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		"$CLAIM" transition prelaunch 51 owner/repo "$token" issue-51 60 ||
+		fail "extending prelaunch renewal failed"
+	comment_count=$(wc -l <"$root/state/comments.jsonl" | tr -d ' ')
+	[[ "$comment_count" == "2" ]] || fail "extending prelaunch renewal did not post exactly once"
+	extended_expiry=$(jq -sr '[.[] | select(.body | contains("DISPATCH_LEASE phase=prelaunch"))] | last.body | capture("expires_at=(?<value>[0-9]+)").value | tonumber' \
+		"$root/state/comments.jsonl")
+	[[ "$extended_expiry" -gt "$initial_expiry" ]] || fail "prelaunch renewal did not extend expiry"
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		"$CLAIM" transition prelaunch 51 owner/repo "$token" issue-51 5 ||
+		fail "regressive prelaunch renewal did not succeed as a no-op"
+	comment_count=$(wc -l <"$root/state/comments.jsonl" | tr -d ' ')
+	[[ "$comment_count" == "2" ]] || fail "regressive prelaunch renewal posted a comment"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		"$CLAIM" transition ready 51 owner/repo "$token" issue-51 90 ||
+		fail "ready transition failed after coalesced renewal"
+	comment_count=$(wc -l <"$root/state/comments.jsonl" | tr -d ' ')
+	[[ "$comment_count" == "3" ]] || fail "ready transition was incorrectly coalesced"
+	pass "prelaunch renewals are monotonic and redundant comments are coalesced"
 	return 0
 }
 
@@ -458,6 +499,7 @@ test_untrusted_dispatch_identity_cannot_replace_active_lock
 test_correlated_terminal_before_dispatch_releases_exact_attempt
 test_large_comment_history_avoids_argv_limits
 test_prelaunch_renewal_covers_slow_startup
+test_prelaunch_renewal_is_monotonic_and_coalesced
 test_invalid_device_not_public
 test_takeover_recheck_precedes_mutation
 printf '\nAtomic lease concurrency tests passed\n'

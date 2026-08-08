@@ -1479,11 +1479,13 @@ cmd_transition() {
 			ttl="$DISPATCH_READY_LEASE_TTL"
 		fi
 	fi
-	local active_claims="" current_phase="" claim_record="" claim_author="" claim_device="" claim_session="" current_login="" current_device=""
+	local active_claims="" current_phase="" current_expires_at="" claim_record="" claim_author="" claim_device="" claim_session="" current_login="" current_device=""
 	active_claims=$(_fetch_claims "$issue_number" "$repo_slug") || return 1
 	claim_record=$(printf '%s' "$active_claims" | jq -c --arg token "$lease_token" '[.[] | select(.lease_token == $token)] | last // empty' 2>/dev/null) || claim_record=""
 	current_phase=$(printf '%s' "$claim_record" | jq -r '.lease_phase // ""' 2>/dev/null) || current_phase=""
 	[[ -n "$current_phase" ]] || return 1
+	current_expires_at=$(printf '%s' "$claim_record" | jq -r '.lease_expires_at // 0' 2>/dev/null) || return 1
+	[[ "$current_expires_at" =~ ^[0-9]+$ ]] || return 1
 	claim_author=$(printf '%s' "$claim_record" | jq -r '.claim_author // ""') || return 1
 	claim_device=$(printf '%s' "$claim_record" | jq -r '.device // ""') || return 1
 	claim_session=$(printf '%s' "$claim_record" | jq -r '.session // ""') || return 1
@@ -1498,6 +1500,12 @@ cmd_transition() {
 	[[ "$attempt_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$ ]] || attempt_id="unknown"
 	now_epoch=$(_now_epoch)
 	[[ "$phase" == "terminal" ]] || expires_at="$((now_epoch + ttl))"
+	# A dispatcher and its worker both protect the prelaunch handoff. Avoid a
+	# redundant public transition when the existing lease already covers the
+	# requested window, and never let a later renewal shorten effective expiry.
+	if [[ "$phase" == "$LEASE_PHASE_PRELAUNCH" && "$expires_at" -le "$current_expires_at" ]]; then
+		return 0
+	fi
 	body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
 DISPATCH_LEASE phase=${phase} lease_token=${lease_token} device=$(_resolve_device_id) session=${session_key:-issue-${issue_number}} expires_at=${expires_at} ts=$(_now_utc) attempt_id=${attempt_id}
 <!-- ops:end -->"
