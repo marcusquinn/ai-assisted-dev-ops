@@ -26,7 +26,7 @@ Cloudron apps are Docker images plus `CloudronManifest.json`. The platform provi
 - **Upstream**: [git.cloudron.io/docs/skills](https://git.cloudron.io/docs/skills) (`cloudron-app-packaging`) | [docs.cloudron.io/packaging](https://docs.cloudron.io/packaging/)
 - **Reference files**: `cloudron-app-packaging-skill/manifest-ref.md`, `cloudron-app-packaging-skill/addons-ref.md`
 - **Also see**: `cloudron-app-packaging.md` (native aidevops guide: helpers, local dev, Dockerfile/start.sh patterns, pre-packaging checks) and `cloudron-app-publishing-skill.md` (required version catalog, public metadata, keyless image/catalog provenance, visual assets, and publication lifecycle)
-- **Last upstream review**: `fcea39616e6e` ("Update the skill for cloudron sync"); no local import changes required beyond keeping the native guide and skill pointers aligned.
+- **Last upstream review**: `f35dab45cc31` ("backupCommand, restoreCommand skill"); adopted current base-image, Node PATH, PHP, builder, and backup/restore lifecycle guidance.
 
 ```bash
 npm install -g cloudron
@@ -63,8 +63,25 @@ cloudron update                  # re-uploads, rebuilds, updates running app
 
 Use `Dockerfile`, `Dockerfile.cloudron`, or `cloudron/Dockerfile`. See `cloudron-app-packaging.md` "Dockerfile Patterns" for stack-specific variants.
 
+### Base images
+
+| App type | Image | Notes |
+|----------|-------|-------|
+| Non-PHP | `cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e` | No PHP. Node is at `/usr/local/node-24.19.0` and is not on `PATH`. |
+| PHP 8.5 | `cloudron/php-base:8.5@sha256:6212759b8992bb2c09083c6ef12fa7a2bb75c13c9aa77a3dd94f593a5b63e1dd` | Prefer when the app supports PHP 8.5. |
+| PHP 8.4 | `cloudron/php-base:8.4@sha256:365607342e6b50f4f53d9b524313df4bfe654596baf762ee2e5af58c3498aa4b` | Use when the app is not ready for PHP 8.5. |
+
+For Node apps using `cloudron/base`, set:
+
+```dockerfile
+ENV PATH=/usr/local/node-24.19.0/bin:$PATH
+```
+
+### Non-PHP structure
+
 ```dockerfile
 FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
+ENV PATH=/usr/local/node-24.19.0/bin:$PATH
 RUN mkdir -p /app/code
 WORKDIR /app/code
 COPY . /app/code/
@@ -73,9 +90,19 @@ RUN chmod +x /app/code/start.sh
 CMD [ "/app/code/start.sh" ]
 ```
 
-**Base image requirement:** the final stage MUST use the SHA-pinned `cloudron/base:5.1.0` tag above. Platform tooling (file manager, web terminal, log viewer) depends on utilities provided by this base image. Multi-stage builds are fine for compilation, but the final stage always lands on pinned `cloudron/base`. Current SHA tracked at [hub.docker.com/r/cloudron/base/tags](https://hub.docker.com/r/cloudron/base/tags).
+### PHP structure
 
-Multi-stage builds are acceptable for compilation, asset bundling, or other build-time work. Only the final stage must use the pinned Cloudron base image.
+```dockerfile
+FROM cloudron/php-base:8.5@sha256:6212759b8992bb2c09083c6ef12fa7a2bb75c13c9aa77a3dd94f593a5b63e1dd
+RUN mkdir -p /app/code
+WORKDIR /app/code
+RUN a2enmod rewrite php8.5
+CMD [ "/app/code/start.sh" ]
+```
+
+**Base image requirement:** the final stage MUST use a SHA-pinned `cloudron/base` image, or `cloudron/php-base` for PHP apps. Platform tooling (file manager, web terminal, log viewer) depends on utilities provided by these images. Current non-PHP SHA is tracked at [hub.docker.com/r/cloudron/base/tags](https://hub.docker.com/r/cloudron/base/tags).
+
+Multi-stage builds are acceptable for compilation, asset bundling, or other build-time work. Only the final stage must use the applicable pinned Cloudron base image.
 
 ```dockerfile
 FROM node:20 AS build
@@ -84,6 +111,7 @@ COPY . .
 RUN npm ci && npm run build
 
 FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
+ENV PATH=/usr/local/node-24.19.0/bin:$PATH
 RUN mkdir -p /app/code
 WORKDIR /app/code
 COPY --from=build /build/dist /app/code/dist
@@ -200,7 +228,7 @@ cloudron debug --disable # exit debug mode
 
 - **On-server (default)**: `cloudron install` and `cloudron update` upload source and build on the server. No local Docker required; simplest workflow, but it uses server CPU/RAM.
 - **Local Docker**: `cloudron build` builds/tags/pushes locally, then `cloudron install` / `cloudron update` detects the built image. Requires Docker and registry auth.
-- **Build service**: `cloudron build login` sends source to a remote Docker Builder app; use `cloudron build logs --id <id>`, `cloudron build status --id <id>`, and `cloudron build push --id <id>` for remote builds.
+- **Build service**: `cloudron build login` sends source to a remote builder, normally a [Container registry](https://docs.cloudron.io/packages/container-registry/) app; legacy Docker Builder installations remain supported. Use `cloudron build logs --id <id>`, `cloudron build status --id <id>`, and `cloudron build push --id <id>` for remote builds.
 
 Use `cloudron build reset` to clear saved repository/image info.
 

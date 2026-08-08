@@ -73,7 +73,7 @@ Use package-controlled, stable asset URLs where possible. If an upstream asset i
 Build behavior depends on whether a build service is configured:
 
 - **No build service configured** — `cloudron build` uses the local Docker daemon. Requires Docker and registry auth.
-- **Build service configured** — `cloudron build` sends source to the remote Docker Builder app, which builds and pushes the image.
+- **Build service configured** — `cloudron build` sends source to a remote builder, normally the [Container registry](https://docs.cloudron.io/packages/container-registry/) app; a legacy [Docker Builder](https://docs.cloudron.io/packages/docker-builder/) installation also works.
 
 ## Versions Commands
 
