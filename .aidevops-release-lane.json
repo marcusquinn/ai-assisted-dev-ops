@@ -1,1 +1,1 @@
-{"schema_version":1,"repository":"marcusquinn/aidevops","active":true,"source_pr":29816,"expected_sources":"29816","phase":"preparing","tag":null,"owner":"process-32221","operation_token":"lane-1786227399-32221-31006","updated_at":"2026-08-08T22:17:02Z","terminal_receipt":null}
+{"schema_version":1,"repository":"marcusquinn/aidevops","active":true,"source_pr":29816,"expected_sources":"29816","phase":"remote-publication","tag":"v3.32.239","owner":"process-32221","operation_token":"lane-1786227399-32221-31006","updated_at":"2026-08-08T22:17:58Z","terminal_receipt":null}
