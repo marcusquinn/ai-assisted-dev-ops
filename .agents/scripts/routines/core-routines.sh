@@ -31,7 +31,7 @@ r912| |Dashboard server|repeat:persistent|~0s|server/index.ts|service
 r913|x|Weekly opencode DB maintenance|repeat:weekly(sun@04:00)|~2m|scripts/opencode-db-maintenance-helper.sh auto|script
 r914|x|Repo aidevops health — bump stale .aidevops.json, detect drift|repeat:daily(@03:30)|~2m|scripts/repo-aidevops-health-helper.sh run|script
 r915|x|Pulse check — worker utilisation and self-improvement recommendations|repeat:daily(@06:20)|~5m|scripts/pulse-check-helper.sh apply|script
-r916|x|Cloudron packages — check upstream releases|repeat:daily(@00:30)|~2m|scripts/cloudron-package-monitor-helper.sh upstream --apply|script|UTC
+r916|x|Cloudron packages — check upstream releases|repeat:daily(@01:30)|~2m|scripts/cloudron-package-monitor-helper.sh upstream --apply|script|UTC
 r917|x|Cloudron packages — audit compatibility|repeat:weekly(sun@07:40)|~5m|scripts/cloudron-package-monitor-helper.sh compatibility --apply|script
 ENTRIES
 	return 0
@@ -924,21 +924,21 @@ describe_r916() {
 
 ## Overview
 
-Daily read-only comparison of registered Cloudron package upstream versions at 00:30 UTC.
+Daily read-only comparison of registered Cloudron package upstream versions at 01:30 UTC.
 New releases become deduplicated, worker-ready issues in the package repository.
 
 ## Schedule
 
 | Field | Value |
 |-------|-------|
-| Frequency | Daily at 00:30 UTC |
+| Frequency | Daily at 01:30 UTC |
 | Type | script |
 | Expected duration | ~2 minutes |
 | Script | \`scripts/cloudron-package-monitor-helper.sh upstream --apply\` |
-$(_scheduler_row_pulse "repeat:daily(@00:30) timezone:UTC")
+$(_scheduler_row_pulse "repeat:daily(@01:30) timezone:UTC")
 
 Pulse reads the enabled routine from registered \`TODO.md\` files and evaluates
-the version-controlled \`repeat:daily(@00:30) timezone:UTC\` contract; r916 has no
+the version-controlled \`repeat:daily(@01:30) timezone:UTC\` contract; r916 has no
 dedicated platform unit.
 
 ## Safety rails

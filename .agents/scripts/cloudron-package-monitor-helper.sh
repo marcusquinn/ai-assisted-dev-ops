@@ -48,7 +48,7 @@ _cloudron_monitor_fetch_releases() {
 	local endpoint="/repos/${upstream_slug}/releases?per_page=100"
 	local response=""
 	local api_rc=0
-	response=$(_gh_with_timeout read gh api -i "$endpoint" --paginate 2>/dev/null) || api_rc=$?
+	response=$(_gh_with_timeout read gh api -i "$endpoint" --paginate --jq '.' 2>/dev/null) || api_rc=$?
 	if [[ "$api_rc" -eq 75 ]] || _gh_secondary_cooldown_active; then
 		_cloudron_monitor_deferred
 		return $?
@@ -57,7 +57,16 @@ _cloudron_monitor_fetch_releases() {
 		_cloudron_monitor_error "Could not fetch paginated GitHub releases for $upstream_slug."
 		return 1
 	fi
-	_cloudron_monitor_response_bodies "$response"
+	if ! _cloudron_monitor_response_bodies "$response" | jq -sc '
+		if all(.[]; type == "array") then
+			add // []
+		else
+			error("expected release page arrays")
+		end
+	'; then
+		_cloudron_monitor_error "Could not normalize paginated GitHub releases for $upstream_slug."
+		return 1
+	fi
 	return 0
 }
 

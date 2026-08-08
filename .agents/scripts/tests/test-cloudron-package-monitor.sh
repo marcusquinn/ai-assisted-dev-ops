@@ -44,6 +44,7 @@ if [[ "${1:-}" == "api" && "$*" == *releases\?per_page=100* ]]; then
         [[ "$arg" == /repos/*/releases\?per_page=100 ]] && endpoint="$arg"
     done
     printf 'API %s\n' "$endpoint" >>"${MONITOR_API_LOG:-/dev/null}"
+    printf 'ARGS %s\n' "$*" >>"${MONITOR_API_LOG:-/dev/null}"
     case "${MONITOR_RATE_FIXTURE:-}" in
         primary-403-reset)
             printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"API rate limit exceeded"}\n'
@@ -191,16 +192,18 @@ test_monitor_deduplicates_and_preserves_source() {
 	local repo_dir="${TEST_ROOT}/package"
 	local bin_dir="${TEST_ROOT}/bin"
 	local log_file="${TEST_ROOT}/issues.log"
+	local api_log="${TEST_ROOT}/api.log"
 	write_fake_commands "$bin_dir"
 	write_fixture "$home_dir" "$repo_dir"
 	local manifest_before=""
 	manifest_before=$(cksum "${repo_dir}/CloudronManifest.json")
 
-	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply >/dev/null
-	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply >/dev/null
+	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" MONITOR_API_LOG="$api_log" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply >/dev/null
+	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" MONITOR_API_LOG="$api_log" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" upstream --apply >/dev/null
 	assert_equal 1 "$(grep -c '^CALL exampleorg/example-package$' "$log_file")" "new upstream release creates one target-local issue"
 	assert_equal 1 "$(grep -c '^TITLE Example Package upstream v2.0.0 is available$' "$log_file")" "upstream issue title uses package manifest title"
 	grep -Fq 'upstream-v2.0.0' "$log_file" && assert_equal true true "upstream issue carries stable fingerprint" || assert_equal true false "upstream issue carries stable fingerprint"
+	grep -Fq -- '--paginate --jq .' "$api_log" && assert_equal true true "paginated release reads request page-delimited JSON" || assert_equal true false "paginated release reads request page-delimited JSON"
 	assert_equal "$manifest_before" "$(cksum "${repo_dir}/CloudronManifest.json")" "upstream monitor does not mutate manifest"
 
 	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" compatibility --apply >/dev/null

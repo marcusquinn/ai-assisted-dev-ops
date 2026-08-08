@@ -318,7 +318,7 @@ changelog entry, and the exact pinned final Cloudron base image.
 Core routines provide ongoing reporting:
 
 - `r916` runs `cloudron-package-monitor-helper.sh upstream --apply` daily at
-  `00:30 UTC` using its version-controlled per-routine timezone override.
+  `01:30 UTC` using its version-controlled per-routine timezone override.
 - `r917` runs `cloudron-package-monitor-helper.sh compatibility --apply` weekly.
 
 Both routines deduplicate package-local issues, require maintainer-equivalent
