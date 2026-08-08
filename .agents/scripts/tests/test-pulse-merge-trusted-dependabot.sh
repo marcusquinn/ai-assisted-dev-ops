@@ -47,7 +47,7 @@ write_pr_fixture() {
 	local framework_conclusion="${5:-SUCCESS}"
 	cat >"${TEST_ROOT}/pr.json" <<EOF
 {
-  "author": {"login": "${author_login}"},
+  "author": {"__typename": "Bot", "login": "${author_login}"},
   "headRefOid": "head-current",
   "headRepositoryOwner": {"login": "owner"},
   "headRepository": {"nameWithOwner": "owner/repo"},
@@ -107,7 +107,7 @@ setup_test_env() {
 	GH_LOG="${TEST_ROOT}/gh-calls.log"
 	: >"$GH_LOG"
 	export TEST_ROOT GH_LOG
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	printf 'pulse-runner\n' >"${TEST_ROOT}/collaborators.txt"
 
 	cat >"${TEST_ROOT}/bin/gh" <<'GHEOF'
@@ -197,7 +197,7 @@ define_helpers_under_test() {
 }
 
 test_trusted_dependabot_uses_response_metered_graphql() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	: >"$GH_LOG"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
 		&& grep -qF '1|trusted-dependabot-exact-cost|gh api graphql' "$GH_LOG" \
@@ -210,7 +210,7 @@ test_trusted_dependabot_uses_response_metered_graphql() {
 }
 
 test_trusted_dependabot_binds_expected_head() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
 		&& ! _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-stale"; then
 		print_result "trusted Dependabot snapshot binds the expected head" 0
@@ -268,7 +268,7 @@ test_malformed_quoted_dependency_name_fails_closed() {
 }
 
 test_trusted_dependabot_rejects_paginated_snapshot() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	jq '.data.repository.pullRequest.files.pageInfo.hasNextPage = true' \
 		"${TEST_ROOT}/graphql.json" >"${TEST_ROOT}/graphql-paginated.json"
 	mv "${TEST_ROOT}/graphql-paginated.json" "${TEST_ROOT}/graphql.json"
@@ -281,7 +281,7 @@ test_trusted_dependabot_rejects_paginated_snapshot() {
 }
 
 test_trusted_dependabot_rejects_incomplete_snapshot() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	jq '.data.repository.pullRequest.commits.nodes = []' \
 		"${TEST_ROOT}/graphql.json" >"${TEST_ROOT}/graphql-incomplete.json"
 	mv "${TEST_ROOT}/graphql-incomplete.json" "${TEST_ROOT}/graphql.json"
@@ -294,7 +294,7 @@ test_trusted_dependabot_rejects_incomplete_snapshot() {
 }
 
 test_trusted_dependabot_passes() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "trusted Dependabot update passes narrow gate" 0
 		return 0
@@ -313,8 +313,21 @@ test_spoofed_author_fails() {
 	return 0
 }
 
+test_dependabot_login_with_user_type_fails() {
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	jq '.data.repository.pullRequest.author.__typename = "User"' \
+		"${TEST_ROOT}/graphql.json" >"${TEST_ROOT}/graphql-user.json"
+	mv "${TEST_ROOT}/graphql-user.json" "${TEST_ROOT}/graphql.json"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "app/dependabot" "head-current"; then
+		print_result "ordinary User with Dependabot login text fails" 1 "Unexpected trusted result"
+		return 0
+	fi
+	print_result "ordinary User with Dependabot login text fails" 0
+	return 0
+}
+
 test_security_failure_fails() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "FAILURE"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "FAILURE"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "security-scan failure blocks Dependabot trust" 1 "Unexpected trusted result"
 		return 0
@@ -324,7 +337,7 @@ test_security_failure_fails() {
 }
 
 test_non_dependency_file_fails() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" ".github/workflows/pwn.yml" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" ".github/workflows/pwn.yml" "SUCCESS"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		print_result "non-dependency file blocks Dependabot trust" 1 "Unexpected trusted result"
 		return 0
@@ -334,7 +347,7 @@ test_non_dependency_file_fails() {
 }
 
 test_unallowlisted_dependency_fails() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	printf 'other-package\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
 		printf 'pip:pyarrow\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
@@ -347,7 +360,7 @@ test_unallowlisted_dependency_fails() {
 }
 
 test_trusted_dependabot_can_be_approved() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	approve_collaborator_pr "24473" "owner/repo" "dependabot[bot]" "head-current" >/dev/null || true
 	if grep -qF 'pr review 24473' "$GH_LOG" \
 		&& grep -qF 'trusted Dependabot dependency update verified' "$GH_LOG"; then
@@ -359,7 +372,7 @@ test_trusted_dependabot_can_be_approved() {
 }
 
 test_review_bot_failure_is_ignored_when_other_checks_green() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "SUCCESS"
 	if _trusted_dependabot_non_review_checks_green "24473" "owner/repo"; then
 		print_result "review-bot failure ignored when non-review checks green" 0
 		return 0
@@ -371,7 +384,7 @@ test_review_bot_failure_is_ignored_when_other_checks_green() {
 test_precomputed_status_rollup_skips_graphql() {
 	local pr_json=""
 
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "SUCCESS"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "SUCCESS"
 	pr_json=$(<"${TEST_ROOT}/pr.json")
 	: >"$GH_LOG"
 	if _trusted_dependabot_non_review_checks_green "24473" "owner/repo" "$pr_json" \
@@ -384,7 +397,7 @@ test_precomputed_status_rollup_skips_graphql() {
 }
 
 test_non_review_failure_blocks_required_check_bypass() {
-	write_pr_fixture "dependabot[bot]" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "FAILURE"
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS" "FAILURE"
 	if _trusted_dependabot_non_review_checks_green "24473" "owner/repo"; then
 		print_result "non-review failure blocks Dependabot required-check bypass" 1 "Unexpected bypass"
 		return 0
@@ -406,6 +419,7 @@ main() {
 	test_trusted_dependabot_rejects_paginated_snapshot
 	test_trusted_dependabot_rejects_incomplete_snapshot
 	test_spoofed_author_fails
+	test_dependabot_login_with_user_type_fails
 	test_security_failure_fails
 	test_non_dependency_file_fails
 	test_unallowlisted_dependency_fails

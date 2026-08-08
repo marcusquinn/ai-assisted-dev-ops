@@ -105,7 +105,8 @@ _trusted_dependabot_project_pr_json() {
 		 then error("GraphQL returned errors")
 		 else .data.repository.pullRequest end) as $pr
 		| if $pr == null then error("pull request unavailable")
-		  elif (($pr.author.login | type) != string_type or ($pr.author.login | length) == 0
+		  elif (($pr.author.__typename | type) != string_type or ($pr.author.__typename | length) == 0
+			or ($pr.author.login | type) != string_type or ($pr.author.login | length) == 0
 			or ($pr.body | type) != string_type or ($pr.body | length) == 0
 			or ($pr.headRefOid | type) != string_type or ($pr.headRefOid | length) == 0
 			or ($pr.headRepository.nameWithOwner | type) != string_type or ($pr.headRepository.nameWithOwner | length) == 0
@@ -164,7 +165,7 @@ _trusted_dependabot_pr_json_graphql() {
 		query($owner: String!, $name: String!, $pr: Int!) {
 			repository(owner: $owner, name: $name) {
 				pullRequest(number: $pr) {
-					author { login }
+					author { __typename login }
 					body
 					headRefOid
 					headRepository { nameWithOwner }
@@ -216,6 +217,7 @@ _is_trusted_dependabot_update_pr() {
 	local pr_json=""
 	local repo_owner="${repo_slug%%/*}"
 	local api_author=""
+	local api_author_type=""
 	local head_owner=""
 	local head_repo=""
 	local snapshot_head=""
@@ -238,13 +240,11 @@ _is_trusted_dependabot_update_pr() {
 	pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
 	[[ -n "$pr_json" && "$pr_json" != "null" ]] || return 1
 	api_author=$(printf '%s' "$pr_json" | jq -r '.author.login // ""' 2>/dev/null) || return 1
+	api_author_type=$(printf '%s' "$pr_json" | jq -r '.author.__typename // ""' 2>/dev/null) || return 1
 	head_owner=$(printf '%s' "$pr_json" | jq -r '.headRepositoryOwner.login // .headRepositoryOwner.name // ""' 2>/dev/null) || return 1
 	head_repo=$(printf '%s' "$pr_json" | jq -r '.headRepository.nameWithOwner // ""' 2>/dev/null) || return 1
 	snapshot_head=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""' 2>/dev/null) || return 1
-	case "$api_author" in
-	dependabot\[bot\] | app/dependabot) ;;
-	*) return 1 ;;
-	esac
+	[[ "$api_author_type" == "Bot" && "$api_author" == "dependabot" ]] || return 1
 	[[ "$head_owner" == "$repo_owner" && "$head_repo" == "$repo_slug" ]] || return 1
 	[[ "$snapshot_head" == "$expected_head_sha" ]] || return 1
 
