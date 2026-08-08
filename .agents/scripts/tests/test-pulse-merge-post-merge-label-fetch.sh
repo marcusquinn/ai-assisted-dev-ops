@@ -240,6 +240,15 @@ install_helper_stubs() {
 		printf '%s %s %s\n' "$issue" "$repo" "$actor" >>"$SOLVED_LABEL_LOG"
 		return 0
 	}
+	solved_actor_from_pr_labels() {
+		local labels_csv="$1"
+		case ",${labels_csv}," in
+		*,origin:worker,* | *,origin:worker-takeover,*) printf 'worker\n' ;;
+		*,origin:interactive,*) printf 'interactive\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
 	clear_terminal_issue_dispatch_labels() {
 		local issue="$1"
 		local repo="$2"
@@ -261,6 +270,7 @@ install_helper_stubs() {
 	auto_file_next_phase() { return 0; }
 	_unblock_circuit_breaker_meta_pr() { return 0; }
 	_pm_handle_partial_parent_closeout() { return 0; }
+	_pm_routing_feedback() { return 1; }
 	sleep() { return 0; }
 	return 0
 }
@@ -298,8 +308,8 @@ test_provided_empty_pr_labels_skip_refetch() {
 
 	assert_log_not_contains "$GH_CALL_LOG" "pr view" \
 		"provided empty pr_labels skips fallback fetch"
-	assert_log_contains "$SOLVED_LABEL_LOG" "22219 marcusquinn/aidevops interactive" \
-		"provided empty pr_labels keeps interactive solved attribution"
+	assert_log_not_contains "$SOLVED_LABEL_LOG" "22219 marcusquinn/aidevops" \
+		"provided empty pr_labels remains unattributed instead of guessing"
 	assert_log_contains "$GH_CALL_LOG" "cleanup 22219 marcusquinn/aidevops post-merge-pr-22585" \
 		"post-merge close strips terminal dispatch labels"
 	assert_log_contains "$GH_CALL_LOG" "status 22219 marcusquinn/aidevops done" \

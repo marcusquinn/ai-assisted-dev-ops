@@ -1142,11 +1142,9 @@ _handle_post_merge_actions() {
 				pr_labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
 					--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || pr_labels=""
 			fi
-			local _solved_actor="interactive"
-			case ",${pr_labels}," in
-			*,origin:worker,* | *,origin:worker-takeover,*) _solved_actor="worker" ;;
-			esac
-			set_solved_label "$linked_issue" "$repo_slug" "$_solved_actor" || true
+			local _solved_actor=""
+			_solved_actor=$(solved_actor_from_pr_labels "$pr_labels") || _solved_actor=""
+			[[ -n "$_solved_actor" ]] && set_solved_label "$linked_issue" "$repo_slug" "$_solved_actor" || true
 			clear_terminal_issue_dispatch_labels "$linked_issue" "$repo_slug" "post-merge-pr-${pr_number}" || true
 			if _gh_with_timeout write gh issue close "$linked_issue" --repo "$repo_slug" 2>/dev/null; then
 				# Closing is not a status transition in GitHub's label model. Converge
@@ -1188,11 +1186,9 @@ _handle_post_merge_actions() {
 			fi
 
 			if [[ "$_sup_parent_guard" -eq 0 ]]; then
-				local _sup_solved_actor="interactive"
-				case ",${pr_labels}," in
-				*,origin:worker,* | *,origin:worker-takeover,*) _sup_solved_actor="worker" ;;
-				esac
-				set_solved_label "$_superseded_original_issue" "$repo_slug" "$_sup_solved_actor" || true
+				local _sup_solved_actor=""
+				_sup_solved_actor=$(solved_actor_from_pr_labels "$pr_labels") || _sup_solved_actor=""
+				[[ -n "$_sup_solved_actor" ]] && set_solved_label "$_superseded_original_issue" "$repo_slug" "$_sup_solved_actor" || true
 				clear_terminal_issue_dispatch_labels "$_superseded_original_issue" "$repo_slug" "post-merge-superseded-pr-${pr_number}" || true
 				if _gh_with_timeout write gh issue close "$_superseded_original_issue" --repo "$repo_slug" 2>/dev/null; then
 					set_issue_status "$_superseded_original_issue" "$repo_slug" "done" || true

@@ -991,6 +991,7 @@ either live output growth or completed work attributed to workers:
 pulse-current-state-helper.sh --window 15m
 worker-activity-helper.sh summary --since 1h --repo <owner/repo> --no-pr-check
 worker-activity-helper.sh providers --since 1h
+solved-attribution-helper.sh report --since 2026-08-01 --repo <owner/repo>
 ```
 
 The current-state helper is the cheapest live signal: local logs + cached
@@ -1001,6 +1002,18 @@ budget available. Use the `providers` subcommand for recent provider/model
 usage and redacted OAuth account-pool availability. Treat `origin:worker` PR
 counts as branch-creation telemetry only; they are not sufficient evidence of
 worker productivity.
+
+Before comparing worker and interactive throughput, check solved-attribution
+coverage for the same window. A low percentage means `solved:*` counts are
+conservative lower bounds, not a complete comparison. Historical repair is
+dry-run by default and only accepts one unambiguous merged closing PR with an
+explicit `origin:*` label:
+
+```bash
+solved-attribution-helper.sh backfill --since 2026-08-01 --repo <owner/repo>
+# Review the output, then apply the same bounded selection explicitly:
+solved-attribution-helper.sh backfill --since 2026-08-01 --repo <owner/repo> --apply
+```
 
 Routine operational questions should not start with broad recursive searches
 over `~/.aidevops/logs` or `~/.local/share/opencode`. Reach for the bounded

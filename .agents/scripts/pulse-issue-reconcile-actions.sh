@@ -1180,6 +1180,7 @@ _action_ciw_single() {
 	gh issue close "$issue_num" --repo "$slug" \
 		--comment "Closing: work completed via merged PR ${pr_ref:-"(detected by dedup helper)"} (merged at ${merged_at:-unknown}). Issue was open but dedup guard was blocking re-dispatch." \
 		>/dev/null 2>&1 || return 1
+	[[ "$pr_num" =~ ^[0-9]+$ ]] && set_solved_label_from_merged_pr "$issue_num" "$slug" "$pr_num" || true
 
 	fast_fail_reset "$issue_num" "$slug" || true
 	unlock_issue_after_worker "$issue_num" "$slug"
@@ -1226,6 +1227,7 @@ _action_rsd_single() {
 		gh issue close "$issue_num" --repo "$slug" \
 			--comment "Closing: work completed via merged PR ${pr_ref:-"(detected by dedup)"} (merged at ${merged_at:-unknown})." \
 			>/dev/null 2>&1 || return 1
+		[[ "$pr_num" =~ ^[0-9]+$ ]] && set_solved_label_from_merged_pr "$issue_num" "$slug" "$pr_num" || true
 
 		fast_fail_reset "$issue_num" "$slug" || true
 		unlock_issue_after_worker "$issue_num" "$slug"
@@ -1355,6 +1357,7 @@ _action_oimp_single() {
 	gh issue close "$issue_num" --repo "$slug" \
 		--comment "$close_comment" \
 		>/dev/null 2>&1 || return 1
+	set_solved_label_from_merged_pr "$issue_num" "$slug" "$merged_pr_num" || true
 
 	if declare -F fast_fail_reset >/dev/null 2>&1; then
 		fast_fail_reset "$issue_num" "$slug" || true

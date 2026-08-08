@@ -329,11 +329,11 @@ annotate_solved_label_for_pr() {
 
 	[[ -z "$pr_number" ]] && return 0
 
-	local -a gh_view_args=("pr" "view" "$pr_number" "--json" "title,body,labels" "--jq" '
+	local -a gh_view_args=("pr" "view" "$pr_number" "--json" "title,body" "--jq" '
 		def linked:
 			((.body // "") | match("(?i)(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]*#([0-9]+)") | .captures[-1].string) //
 			((.title // "") | match("GH#([0-9]+)") | .captures[0].string) // "";
-		[linked, ([.labels[].name] | join(","))] | @tsv
+		linked
 	')
 	if [[ -n "$gh_repo" ]]; then
 		gh_view_args+=("--repo" "$gh_repo")
@@ -347,14 +347,8 @@ annotate_solved_label_for_pr() {
 	fi
 	[[ -z "$pr_output" ]] && return 0
 
-	local linked_issue="${pr_output%%$'\t'*}"
-	local pr_labels="${pr_output#*$'\t'}"
+	local linked_issue="$pr_output"
 	[[ "$linked_issue" =~ ^[0-9]+$ ]] || return 0
-
-	local solved_actor="interactive"
-	case ",${pr_labels}," in
-	*,origin:worker,* | *,origin:worker-takeover,*) solved_actor="worker" ;;
-	esac
 
 	local repo_slug="$gh_repo"
 	if [[ -z "$repo_slug" && -n "$repo_path" ]]; then
@@ -368,7 +362,7 @@ annotate_solved_label_for_pr() {
 	fi
 	[[ -z "$repo_slug" ]] && return 0
 
-	set_solved_label "$linked_issue" "$repo_slug" "$solved_actor" || true
+	set_solved_label_from_merged_pr "$linked_issue" "$repo_slug" "$pr_number" || true
 	return 0
 }
 

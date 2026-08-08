@@ -418,6 +418,8 @@ _do_close() {
 	if gh "${close_args[@]}" 2>/dev/null; then
 		if _is_cancelled_or_deferred "$task_line"; then
 			_gh_edit_labels "add" "$repo" "$issue_number" "not-planned"
+		elif [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+			set_solved_label_from_merged_pr "$issue_number" "$repo" "$pr_num" || true
 		fi
 		_mark_issue_done "$repo" "$issue_number"
 		_mark_todo_done "$task_id" "$todo_file"

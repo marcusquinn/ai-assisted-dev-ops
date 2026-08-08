@@ -5,8 +5,7 @@
 # test-solved-label-attribution.sh — regression guard for GH#22117 / t3376.
 #
 # Verifies the solved:* attribution dimension stays separate from origin:* and
-# that pulse-merge applies solved:worker for worker evidence and
-# solved:interactive for interactive PRs.
+# that actor derivation fails closed when PR provenance is absent.
 
 set -u
 
@@ -57,6 +56,9 @@ export GH_LOG
 
 gh() {
 	printf '%s\n' "$*" >>"$GH_LOG"
+	if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+		printf '%s\n' "${TEST_PR_EVIDENCE:-}"
+	fi
 	return 0
 }
 export -f gh
@@ -74,13 +76,56 @@ interactive_call="$(<"$GH_LOG")"
 assert_contains "interactive attribution adds solved:interactive" "--add-label solved:interactive" "$interactive_call"
 assert_contains "interactive attribution removes solved:worker" "--remove-label solved:worker" "$interactive_call"
 
+assert_contains "worker PR provenance resolves to worker" "worker" \
+	"$(solved_actor_from_pr_labels "bug,origin:worker")"
+assert_contains "worker takeover provenance resolves to worker" "worker" \
+	"$(solved_actor_from_pr_labels "origin:worker-takeover")"
+assert_contains "interactive PR provenance resolves to interactive" "interactive" \
+	"$(solved_actor_from_pr_labels "origin:interactive,tier:standard")"
+if solved_actor_from_pr_labels "bug,tier:standard" >/dev/null; then
+	fail "missing PR provenance remains unattributed" "unexpected actor"
+else
+	pass "missing PR provenance remains unattributed"
+fi
+
+: >"$GH_LOG"
+TEST_PR_EVIDENCE=$'2026-08-08T00:00:00Z\torigin:worker'
+set_solved_label_from_merged_pr 125 owner/repo 225
+assert_contains "merged PR evidence attributes its linked issue" \
+	"issue edit 125 --repo owner/repo" "$(<"$GH_LOG")"
+
+: >"$GH_LOG"
+TEST_PR_EVIDENCE=$'\torigin:interactive'
+if set_solved_label_from_merged_pr 126 owner/repo 226; then
+	fail "unmerged PR is never treated as solved" "unexpected attribution"
+else
+	pass "unmerged PR is never treated as solved"
+fi
+
 pulse_source="$(<"$SCRIPT_DIR/pulse-merge.sh")"
 # shellcheck disable=SC2016  # Static source assertion; variables are intentionally literal.
 literal_solved_call='set_solved_label "$linked_issue" "$repo_slug" "$_solved_actor"'
 assert_contains "pulse merge applies solved label on linked issue" \
 	"$literal_solved_call" "$pulse_source"
-assert_contains "pulse merge treats origin:worker-takeover as worker-solved" \
-	"*,origin:worker,* | *,origin:worker-takeover,*) _solved_actor=\"worker\"" "$pulse_source"
+
+# shellcheck disable=SC2016 # Static source assertion; variables are intentionally literal.
+assert_contains "pulse merge uses canonical actor derivation" \
+	'solved_actor_from_pr_labels "$pr_labels"' "$pulse_source"
+
+issue_sync_source="$(<"$SCRIPT_DIR/issue-sync-helper-close.sh")"
+# shellcheck disable=SC2016 # Static source assertion; variables are intentionally literal.
+assert_contains "issue-sync completion attributes from merged PR evidence" \
+	'set_solved_label_from_merged_pr "$issue_number" "$repo" "$pr_num"' "$issue_sync_source"
+
+reconcile_source="$(<"$SCRIPT_DIR/pulse-issue-reconcile-actions.sh")"
+# shellcheck disable=SC2016 # Static source assertion; variables are intentionally literal.
+assert_contains "reconcile completion attributes from merged PR evidence" \
+	'set_solved_label_from_merged_pr "$issue_num" "$slug" "$merged_pr_num"' "$reconcile_source"
+
+workflow_source="$(<"$SCRIPT_DIR/../../.github/workflows/issue-sync-reusable.yml")"
+# shellcheck disable=SC2016 # Static source assertion; variables are intentionally literal.
+assert_contains "native merge hygiene applies solved attribution" \
+	'set_solved_label "$ISSUE_NUM" "$REPO" "$SOLVED_ACTOR"' "$workflow_source"
 
 if [[ $TESTS_FAILED -eq 0 ]]; then
 	printf '%sPASS%s: test-solved-label-attribution — %d assertions\n' \

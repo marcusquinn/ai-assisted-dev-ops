@@ -951,7 +951,13 @@ jobs:
 
           # GH#28464: completion blockers use the shared semantic resolver.
           # shellcheck source=/dev/null
+          source __aidevops/.agents/scripts/shared-constants.sh
+          # shellcheck source=/dev/null
           source __aidevops/.agents/scripts/dependency-event-reconciler.sh
+
+          PR_LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels \
+            --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+          SOLVED_ACTOR=$(solved_actor_from_pr_labels "$PR_LABELS" 2>/dev/null || true)
 
           echo "Processing issues: $ALL_ISSUES"
 
@@ -1032,6 +1038,13 @@ jobs:
             if [[ "$IS_REJECTED" == "true" ]]; then
               echo "Skipping status:done on #$ISSUE_NUM — has rejection label: $REJECTION_MATCH"
               continue
+            fi
+
+            if [[ -n "$SOLVED_ACTOR" ]]; then
+              set_solved_label "$ISSUE_NUM" "$REPO" "$SOLVED_ACTOR" || \
+                echo "Warning: failed to apply solved:${SOLVED_ACTOR} to #$ISSUE_NUM"
+            else
+              echo "Warning: PR #$PR_NUMBER has no unambiguous origin label; leaving #$ISSUE_NUM unattributed"
             fi
 
             # Apply status:done label atomically (create if needed).
