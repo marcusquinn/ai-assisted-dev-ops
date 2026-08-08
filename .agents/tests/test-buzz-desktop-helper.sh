@@ -8,6 +8,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${TEST_DIR}/../.." && pwd)"
 HELPER="${REPO_ROOT}/.agents/scripts/buzz-desktop-helper.sh"
+WRAPPER="${REPO_ROOT}/.agents/bin/opencode-acp"
 SETUP_FILE="${REPO_ROOT}/setup.sh"
 CLI_FILE="${REPO_ROOT}/aidevops.sh"
 TEST_ROOT=$(mktemp -d)
@@ -158,6 +159,7 @@ run_helper() {
 		AIDEVOPS_BUZZ_STATE_FILE="$TEST_STATE_FILE" \
 		AIDEVOPS_BUZZ_BACKUP_DIR="$TEST_BACKUP_DIR" \
 		AIDEVOPS_BUZZ_LOCK_DIR="$TEST_LOCK_DIR" \
+		AIDEVOPS_BUZZ_WRAPPER_PATH="$WRAPPER" \
 		bash "$HELPER" "$@"
 	return $?
 }
@@ -176,6 +178,10 @@ test_apply_is_bounded_and_private() {
 	run_helper apply >/dev/null
 	assert_eq "apply updates only eligible OpenCode records" \
 		"$(jq '[.[] | select(.agent_args == ["acp"])] | length' "$TEST_STORE")" "2"
+	assert_eq "apply routes eligible records through the stable wrapper" \
+		"$(jq --arg wrapper "$WRAPPER" '[.[] | select(.agent_command_override == $wrapper)] | length' "$TEST_STORE")" "2"
+	assert_eq "apply records structural state schema" \
+		"$(jq -r '.schema' "$TEST_STATE_FILE")" "aidevops-buzz-opencode-acp-fix/v2"
 	assert_eq "apply preserves custom arguments" \
 		"$(jq -c '.[] | select(.pubkey == "pub-custom") | .agent_args' "$TEST_STORE")" \
 		'["acp","--cwd","/project"]'
@@ -260,8 +266,11 @@ test_rollback_restores_owned_fields() {
 	run_helper rollback --quiet
 	assert_eq "rollback restores originally empty arguments" \
 		"$(jq -c '.[] | select(.pubkey == "pub-empty-path") | .agent_args' "$TEST_STORE")" '[]'
-	assert_eq "rollback restores an originally absent argument field as empty" \
-		"$(jq -c '.[] | select(.pubkey == "pub-missing-args") | .agent_args' "$TEST_STORE")" '[]'
+	assert_eq "rollback restores the original command override" \
+		"$(jq -r '.[] | select(.pubkey == "pub-empty-path") | .agent_command_override' "$TEST_STORE")" \
+		'/opt/homebrew/bin/opencode'
+	assert_eq "rollback removes an originally absent argument field" \
+		"$(jq -c '.[] | select(.pubkey == "pub-missing-args") | .agent_args' "$TEST_STORE")" 'null'
 	assert_eq "rollback leaves custom arguments unchanged" \
 		"$(jq -c '.[] | select(.pubkey == "pub-custom") | .agent_args' "$TEST_STORE")" \
 		'["acp","--cwd","/project"]'
@@ -296,18 +305,64 @@ test_running_app_refuses_mutation() {
 	return 0
 }
 
-test_verified_and_unknown_versions_are_bounded() {
+test_future_versions_use_structural_detection() {
 	reset_fixture
-	TEST_VERSION=0.5.5 run_helper reconcile --quiet
-	assert_eq "verified Buzz 0.5.5 release is remediated" \
-		"$(jq '[.[] | select(.agent_args == ["acp"])] | length' "$TEST_STORE")" "2"
+	TEST_VERSION=0.5.7 run_helper reconcile --quiet
+	assert_eq "Buzz 0.5.7 is remediated structurally" \
+		"$(jq --arg wrapper "$WRAPPER" '[.[] | select(.agent_command_override == $wrapper)] | length' "$TEST_STORE")" "2"
+	reset_fixture
+	TEST_VERSION=9.9.9 run_helper reconcile --quiet
+	assert_eq "future Buzz versions use the same validated structure" \
+		"$(jq --arg wrapper "$WRAPPER" '[.[] | select(.agent_command_override == $wrapper)] | length' "$TEST_STORE")" "2"
 	reset_fixture
 	local before=""
 	before=$(file_hash "$TEST_STORE")
-	TEST_VERSION=0.5.6 run_helper reconcile --quiet
-	assert_eq "unknown future Buzz version is not guessed affected" "$(file_hash "$TEST_STORE")" "$before"
 	TEST_PLATFORM=Linux run_helper reconcile --quiet
 	assert_eq "non-macOS platform is unchanged" "$(file_hash "$TEST_STORE")" "$before"
+	return 0
+}
+
+test_legacy_state_migrates_before_reconciliation() {
+	reset_fixture
+	mkdir -p "$TEST_STATE_DIR"
+	jq 'map(if ((.agent_command // "") | endswith("opencode")) then .agent_args = ["acp"] else . end)' \
+		"$TEST_STORE" >"${TEST_STORE}.edited"
+	mv "${TEST_STORE}.edited" "$TEST_STORE"
+	chmod 600 "$TEST_STORE"
+	cat >"$TEST_STATE_FILE" <<JSON
+{
+  "schema": "aidevops-buzz-opencode-acp-fix/v1",
+  "app_version": "0.5.5",
+  "store_path": "${TEST_STORE}",
+  "backup_path": "${TEST_BACKUP_DIR}/legacy.json",
+  "applied_at": "2026-08-01T00:00:00Z",
+  "records": [
+    {"pubkey": "pub-empty-path", "original_args": []},
+    {"pubkey": "pub-missing-args", "original_args": []}
+  ]
+}
+JSON
+	chmod 600 "$TEST_STATE_FILE"
+	TEST_VERSION=0.5.7 run_helper reconcile --quiet
+	assert_eq "legacy state migrates to structural schema" \
+		"$(jq -r '.schema' "$TEST_STATE_FILE")" 'aidevops-buzz-opencode-acp-fix/v2'
+	assert_eq "migrated records route through the wrapper" \
+		"$(jq --arg wrapper "$WRAPPER" '[.[] | select(.agent_command_override == $wrapper)] | length' "$TEST_STORE")" "2"
+	return 0
+}
+
+test_wrapper_injects_acp_once() {
+	reset_fixture
+	local fake_opencode="${TEST_ROOT}/fake-opencode"
+	cat >"$fake_opencode" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*"
+SH
+	chmod +x "$fake_opencode"
+	assert_eq "wrapper injects ACP for a bare invocation" \
+		"$(AIDEVOPS_OPENCODE_REAL="$fake_opencode" "$WRAPPER" --model test)" 'acp --model test'
+	assert_eq "wrapper preserves an existing ACP prefix" \
+		"$(AIDEVOPS_OPENCODE_REAL="$fake_opencode" "$WRAPPER" acp --model test)" 'acp --model test'
 	return 0
 }
 
@@ -379,7 +434,9 @@ main() {
 	test_rollback_restores_owned_fields
 	test_rollback_preserves_later_user_edit
 	test_running_app_refuses_mutation
-	test_verified_and_unknown_versions_are_bounded
+	test_future_versions_use_structural_detection
+	test_legacy_state_migrates_before_reconciliation
+	test_wrapper_injects_acp_once
 	test_symlink_store_fails_closed
 	test_malformed_record_fails_closed
 	test_cli_and_setup_wiring

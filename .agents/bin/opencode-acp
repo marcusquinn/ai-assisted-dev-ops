@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+# Stable Buzz Desktop launcher for OpenCode's ACP server mode.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+self_path="${BASH_SOURCE[0]}"
+opencode_real=""
+path_candidate=""
+
+if [[ -n "${AIDEVOPS_OPENCODE_REAL:-}" ]]; then
+	opencode_real="$AIDEVOPS_OPENCODE_REAL"
+else
+	path_candidate="$(command -v opencode 2>/dev/null || true)"
+	for candidate in "$path_candidate" /opt/homebrew/bin/opencode /usr/local/bin/opencode "${HOME}/.local/bin/opencode"; do
+		[[ -n "$candidate" && -x "$candidate" ]] || continue
+		[[ "$candidate" -ef "$self_path" ]] && continue
+		opencode_real="$candidate"
+		break
+	done
+fi
+
+if [[ -z "$opencode_real" || ! -x "$opencode_real" || "$opencode_real" -ef "$self_path" ]]; then
+	printf 'opencode-acp: unable to resolve a non-self OpenCode executable\n' >&2
+	exit 127
+fi
+
+if [[ "${1:-}" == "acp" ]]; then
+	exec "$opencode_real" "$@"
+fi
+exec "$opencode_real" acp "$@"
