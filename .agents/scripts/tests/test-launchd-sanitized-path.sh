@@ -72,13 +72,14 @@ assert_not_contains() {
 
 test_sanitized_path_filters_unsafe_entries() {
 	local test_home="$TEST_DIR/home"
+	local stable_bun_bin="$test_home/.bun/bin"
 	local stable_local_bin="$test_home/.local/bin"
 	local stable_scripts="$test_home/.aidevops/agents/scripts"
 	local stable_bin="$test_home/.aidevops/bin"
 	local stale_bundle="$test_home/.aidevops/runtime-bundles/old/agents/scripts"
 	local existing_dir="$TEST_DIR/existing-bin"
 	local missing_dir="$TEST_DIR/missing-bin"
-	mkdir -p "$stable_local_bin" "$stable_scripts" "$stable_bin" \
+	mkdir -p "$stable_bun_bin" "$stable_local_bin" "$stable_scripts" "$stable_bin" \
 		"$stale_bundle" "$existing_dir"
 
 	local polluted_path result
@@ -86,7 +87,7 @@ test_sanitized_path_filters_unsafe_entries() {
 	result=$(HOME="$test_home" aidevops_launchd_sanitized_path "$polluted_path")
 
 	local ok=0 stable_scripts_count=0
-	[[ "$result" == "${stable_local_bin}:${stable_scripts}:${stable_bin}:"* ]] || ok=1
+	[[ "$result" == "${stable_bun_bin}:${stable_local_bin}:${stable_scripts}:${stable_bin}:"* ]] || ok=1
 	[[ "$result" == *"$existing_dir"* ]] || ok=1
 	[[ "$result" == *"/usr/bin"* ]] || ok=1
 	stable_scripts_count=$(printf '%s' "$result" | tr ':' '\n' | grep -Fxc "$stable_scripts" || true)

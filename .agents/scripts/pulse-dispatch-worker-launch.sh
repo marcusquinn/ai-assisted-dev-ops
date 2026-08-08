@@ -1514,11 +1514,39 @@ _dlw_validate_worktree_for_launch() {
 _dlw_append_node_tool_env() {
 	local repo_path="$1"
 	local node_tool_bin="${repo_path}/node_modules/.bin"
-	[[ -d "$node_tool_bin" && ! -L "$node_tool_bin" ]] || return 0
-	[[ "$node_tool_bin" != *:* && "$node_tool_bin" != *$'\n'* ]] || return 0
-	# Expose only executable package entrypoints through PATH. Do not place a
-	# canonical-checkout symlink inside the worktree or grant broad file access.
-	worker_cmd+=(PATH="${node_tool_bin}:${PATH:-/usr/bin:/bin}")
+	local inherited_path="${PATH:-/usr/bin:/bin}"
+	local worker_path=""
+	local seen=""
+	local candidate=""
+	local IFS=':'
+
+	# Keep canonical package entrypoints first, followed by stable existing user
+	# tool installs needed by non-interactive workers. Never place symlinks inside
+	# the worktree or grant broad file access to the canonical checkout.
+	for candidate in \
+		"$node_tool_bin" \
+		"${HOME:+${HOME}/.bun/bin}" \
+		"${HOME:+${HOME}/.local/bin}" \
+		"${HOME:+${HOME}/.aidevops/bin}" \
+		"${HOME:+${HOME}/.aidevops/agents/scripts}"; do
+		[[ -d "$candidate" ]] || continue
+		[[ "$candidate" != *:* && "$candidate" != *$'\n'* ]] || continue
+		[[ "$candidate" != "$node_tool_bin" || ! -L "$candidate" ]] || continue
+		case ":$seen:" in
+		*":${candidate}:"*) continue ;;
+		esac
+		seen="${seen:+${seen}:}${candidate}"
+		worker_path="${worker_path:+${worker_path}:}${candidate}"
+	done
+	for candidate in $inherited_path; do
+		[[ -n "$candidate" && "$candidate" != *$'\n'* ]] || continue
+		case ":$seen:" in
+		*":${candidate}:"*) continue ;;
+		esac
+		seen="${seen:+${seen}:}${candidate}"
+		worker_path="${worker_path:+${worker_path}:}${candidate}"
+	done
+	worker_cmd+=(PATH="${worker_path:-/usr/bin:/bin}")
 	return 0
 }
 

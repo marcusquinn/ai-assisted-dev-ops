@@ -445,7 +445,7 @@ aidevops_launchd_sanitized_path() {
 	local input_path="${1:-${PATH:-}}"
 	local stable_path=""
 	if [[ -n "${HOME:-}" ]]; then
-		stable_path="${HOME}/.local/bin:${HOME}/.aidevops/agents/scripts:${HOME}/.aidevops/bin"
+		stable_path="${HOME}/.bun/bin:${HOME}/.local/bin:${HOME}/.aidevops/agents/scripts:${HOME}/.aidevops/bin"
 	fi
 	local default_path="${stable_path:+${stable_path}:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 	local _aidevops_launchd_path_result=""

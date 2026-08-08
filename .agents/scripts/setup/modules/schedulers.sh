@@ -39,7 +39,7 @@ if ! declare -F aidevops_launchd_sanitized_path >/dev/null 2>&1; then
 		local input_path="${1:-${PATH:-}}"
 		local stable_path=""
 		if [[ -n "${HOME:-}" ]]; then
-			stable_path="${HOME}/.local/bin:${HOME}/.aidevops/agents/scripts:${HOME}/.aidevops/bin"
+			stable_path="${HOME}/.bun/bin:${HOME}/.local/bin:${HOME}/.aidevops/agents/scripts:${HOME}/.aidevops/bin"
 		fi
 		local default_path="${stable_path:+${stable_path}:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 		local result=""

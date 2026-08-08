@@ -80,10 +80,17 @@ if ! declare -F _dlw_append_node_tool_env >/dev/null 2>&1; then
 	fail "worker launch does not provide a local command path for canonical Node tools"
 fi
 worker_cmd=(env)
-_dlw_append_node_tool_env "$repo_dir"
-expected_tool_path="PATH=${repo_dir}/node_modules/.bin:${PATH}"
-if [[ "${worker_cmd[1]:-}" != "$expected_tool_path" ]]; then
-	fail "worker launch did not prepend only the canonical node_modules .bin directory"
+worker_home="${TEST_TMP}/home"
+mkdir -p "${worker_home}/.bun/bin" "${worker_home}/.local/bin" \
+	"${worker_home}/.aidevops/bin" "${worker_home}/.aidevops/agents/scripts"
+HOME="$worker_home" PATH="${worker_home}/.bun/bin:${PATH}" _dlw_append_node_tool_env "$repo_dir"
+expected_tool_prefix="PATH=${repo_dir}/node_modules/.bin:${worker_home}/.bun/bin:${worker_home}/.local/bin:${worker_home}/.aidevops/bin:${worker_home}/.aidevops/agents/scripts:"
+if [[ "${worker_cmd[1]:-}" != "$expected_tool_prefix"* ]]; then
+	fail "worker launch did not prepend canonical Node and stable user tool directories"
+fi
+bun_path_count=$(printf '%s' "${worker_cmd[1]}" | tr ':' '\n' | grep -Fxc "${worker_home}/.bun/bin" || true)
+if [[ "$bun_path_count" -ne 1 ]]; then
+	fail "worker launch did not deduplicate the stable Bun directory"
 fi
 tool_output=$("${worker_cmd[@]}" prettier) || fail "dispatcher-provided Node tool did not execute"
 if [[ "$tool_output" != "fixture-tool" ]]; then

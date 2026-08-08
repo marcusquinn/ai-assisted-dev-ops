@@ -23,8 +23,11 @@ source "$ADD_HELPER"
 
 FAKE_BIN="${ROOT}/bin"
 WORKTREE="${ROOT}/aidevops-worktree"
+HOME_WORKTREE="${ROOT}/aidevops-home-bun-worktree"
 ORDINARY="${ROOT}/ordinary-worktree"
-mkdir -p "$FAKE_BIN" "$WORKTREE/.agents/scripts" "$ORDINARY/.agents/scripts"
+FAKE_HOME="${ROOT}/home"
+mkdir -p "$FAKE_BIN" "$WORKTREE/.agents/scripts" "$HOME_WORKTREE/.agents/scripts" \
+	"$ORDINARY/.agents/scripts" "$FAKE_HOME/.bun/bin"
 cat >"${FAKE_BIN}/bun" <<'BUN'
 #!/usr/bin/env bash
 mkdir -p node_modules/.bin
@@ -50,6 +53,22 @@ _bootstrap_aidevops_worktree_js_deps "$WORKTREE"
 	exit 1
 }
 printf 'PASS aidevops worktree bootstraps locked dependencies without lifecycle scripts\n'
+
+cp "${FAKE_BIN}/bun" "$FAKE_HOME/.bun/bin/bun"
+printf '{ "name": "aidevops", "devDependencies": { "typescript": "^5.0.0" } }\n' >"${HOME_WORKTREE}/package.json"
+printf '{}\n' >"${HOME_WORKTREE}/bun.lock"
+printf '#!/usr/bin/env bash\n' >"${HOME_WORKTREE}/aidevops.sh"
+rm -f "$BUN_ARGS_LOG"
+HOME="$FAKE_HOME" PATH="/usr/bin:/bin" _bootstrap_aidevops_worktree_js_deps "$HOME_WORKTREE"
+[[ -x "${HOME_WORKTREE}/node_modules/.bin/tsc" ]] || {
+	printf 'FAIL fixed HOME Bun path did not bootstrap tsc when bun was absent from PATH\n'
+	exit 1
+}
+[[ "$(cat "$BUN_ARGS_LOG")" == "install --frozen-lockfile --ignore-scripts" ]] || {
+	printf 'FAIL fixed HOME Bun path used unexpected arguments\n'
+	exit 1
+}
+printf 'PASS executable HOME Bun bootstraps dependencies when absent from PATH\n'
 
 rm -f "$BUN_ARGS_LOG"
 printf '{ "name": "ordinary-project", "devDependencies": { "typescript": "^5.0.0" } }\n' >"${ORDINARY}/package.json"

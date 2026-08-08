@@ -422,6 +422,7 @@ _restore_worktree_node_modules() {
 _bootstrap_aidevops_worktree_js_deps() {
 	local wt_path="$1"
 	local package_file="${wt_path}/package.json"
+	local bun_bin=""
 
 	[[ "$AIDEVOPS_WORKTREE_JS_BOOTSTRAP_ENABLED" == "1" ]] || return 0
 	[[ -f "$package_file" && -f "${wt_path}/bun.lock" ]] || return 0
@@ -429,14 +430,18 @@ _bootstrap_aidevops_worktree_js_deps() {
 	grep -Eq '"name"[[:space:]]*:[[:space:]]*"aidevops"' "$package_file" 2>/dev/null || return 0
 	[[ ! -x "${wt_path}/node_modules/.bin/tsc" ]] || return 0
 
-	if ! command -v bun >/dev/null 2>&1; then
+	bun_bin=$(command -v bun 2>/dev/null || true)
+	if [[ -z "$bun_bin" && -n "${HOME:-}" && -x "${HOME}/.bun/bin/bun" ]]; then
+		bun_bin="${HOME}/.bun/bin/bun"
+	fi
+	if [[ -z "$bun_bin" ]]; then
 		print_warning "aidevops JavaScript dev dependencies are missing in ${wt_path}"
 		print_warning "Run: (cd \"${wt_path}\" && bun install --frozen-lockfile --ignore-scripts)"
 		return 0
 	fi
 
 	print_info "Installing aidevops JavaScript dev dependencies in ${wt_path}..."
-	if (cd "$wt_path" && bun install --frozen-lockfile --ignore-scripts); then
+	if (cd "$wt_path" && "$bun_bin" install --frozen-lockfile --ignore-scripts); then
 		if [[ -x "${wt_path}/node_modules/.bin/tsc" ]]; then
 			print_success "Bootstrapped aidevops JavaScript dev dependencies"
 			return 0
