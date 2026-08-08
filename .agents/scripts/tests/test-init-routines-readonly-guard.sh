@@ -21,6 +21,7 @@ SHARED_CONSTANTS="${REPO_SCRIPTS}/shared-constants.sh"
 INIT_ROUTINES="${REPO_SCRIPTS}/init-routines-helper.sh"
 COMMON_HELPER="${REPO_SCRIPTS}/setup/_common.sh"
 ROUTINES_MODULE="${REPO_SCRIPTS}/setup/_routines.sh"
+ROUTINE_LOG="${REPO_SCRIPTS}/routine-log-helper.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -432,6 +433,45 @@ test_first_clone_initialization_remains_functional() {
 	return 0
 }
 
+test_existing_routine_refreshes_metadata_without_metrics_mutation() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local old_home="${HOME}"
+	HOME="$tmp_dir"
+	export HOME
+
+	# shellcheck disable=SC1090
+	source "$INIT_ROUTINES"
+	# shellcheck disable=SC1090
+	source "$ROUTINE_LOG"
+	describe_r999() {
+		printf '%s\n' '## What it does' 'Keeps the test routine healthy.' '## How it works'
+		return 0
+	}
+
+	local state_dir="${HOME}/.aidevops/.agent-workspace/cron/r999"
+	mkdir -p "$state_dir"
+	cat >"${state_dir}/routine-state.json" <<'JSON'
+{"issue_number":"123","repo_slug":"example/routines","title":"r999: Old title","schedule":"Daily at 07:10 (Europe/Jersey)","routine_type":"old type","streak_count":7,"streak_type":"success","last_duration":42,"total_cost":"1.23","last_status":"success","last_run":"2026-08-07T07:10:00Z"}
+JSON
+
+	_store_routine_description "r999" "r999: New title" "Daily at 01:30 (UTC)" "scripts/test.sh" "script (scripts/test.sh)"
+	local state=""
+	state=$(jq -c . "${state_dir}/routine-state.json")
+	local body=""
+	body=$(_build_issue_body "r999" "r999: New title" "Daily at 01:30 (UTC)" "script (scripts/test.sh)" "active" "2026-08-07T07:10:00Z" "success" "42" "pending" "7" "success" "1.23" '{"total":1,"successes":1,"failures":0,"total_cost":"1.23","avg_duration":42,"period_start":"2026-08-01","period_end":"2026-08-08"}')
+	HOME="$old_home"
+	export HOME
+	rm -rf "$tmp_dir"
+
+	if [[ "$(jq -r '.title,.schedule,.routine_type,.streak_count,.last_duration,.total_cost' <<<"$state")" == $'r999: New title\nDaily at 01:30 (UTC)\nscript (scripts/test.sh)\n7\n42\n1.23' && "$body" == *'| Schedule | Daily at 01:30 (UTC) |'* && "$body" == *'| Streak | 7 consecutive successes |'* ]]; then
+		print_result "existing routine refresh updates metadata while preserving execution metrics" 0
+		return 0
+	fi
+	print_result "existing routine refresh updates metadata while preserving execution metrics" 1 "state=${state} body=${body}"
+	return 0
+}
+
 main() {
 	test_init_routines_sources_after_shared_constants
 	test_common_tolerates_readonly_colors
@@ -443,6 +483,7 @@ main() {
 	test_isolated_publication_retries_nonconflicting_race
 	test_isolated_publication_refuses_push_conflict
 	test_first_clone_initialization_remains_functional
+	test_existing_routine_refreshes_metadata_without_metrics_mutation
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then

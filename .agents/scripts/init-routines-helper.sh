@@ -836,12 +836,16 @@ _store_routine_description() {
 
 > **Note:** This is a tracking issue. Its body is auto-updated with execution metrics by \`routine-log-helper.sh\`. Use the comments below for change requests or feature ideas."
 
-	# Write to state file
+	# Write authoritative routine metadata to state without touching execution
+	# metrics. Existing state is retained so refreshes cannot synthesize runs or
+	# reset streaks, duration, cost, or history.
 	if [[ -f "$state_file" ]]; then
 		local tmp
 		tmp=$(mktemp)
-		jq --arg d "$description_body" --arg m "$management" \
-			'.description = $d | .management = $m' "$state_file" >"$tmp" && mv "$tmp" "$state_file"
+		jq --arg t "$title" --arg s "$schedule" --arg rt "$rtype" \
+			--arg d "$description_body" --arg m "$management" \
+			'.title = $t | .schedule = $s | .routine_type = $rt | .description = $d | .management = $m' \
+			"$state_file" >"$tmp" && mv "$tmp" "$state_file"
 	fi
 
 	return 0
