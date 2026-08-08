@@ -821,6 +821,11 @@ _setup_guard_active_release_lane() {
 	local repo_slug=""
 	local remote_url=""
 	local lane_helper="${BASH_SOURCE[0]%/*}/.agents/scripts/release-lane-helper.sh"
+	# Isolated CI smoke homes cannot replace a user's active runtime. Keep this
+	# test-only bypass coupled to CI so normal setup cannot disable the lane.
+	if [[ "${CI:-false}" == "true" && "${AIDEVOPS_RELEASE_LANE_ISOLATED_CI:-0}" == "1" ]]; then
+		return 0
+	fi
 	[[ -f "$lane_helper" ]] || return 0
 	remote_url=$(git -C "${BASH_SOURCE[0]%/*}" remote get-url origin 2>/dev/null || true)
 	repo_slug=$(printf '%s' "$remote_url" | sed 's|.*github\.com[:/]||;s|\.git$||')

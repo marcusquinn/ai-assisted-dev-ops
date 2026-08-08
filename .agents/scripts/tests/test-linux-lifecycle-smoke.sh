@@ -97,6 +97,7 @@ run_step "setup.sh agents scope in isolated HOME" "$SETUP_LOG" \
 	XDG_DATA_HOME="${SANDBOX_HOME}/.local/share" \
 	PATH="$TEST_PATH" \
 	AIDEVOPS_SETUP_LOCK_DIR="${SANDBOX_HOME}/.aidevops/locks/linux-lifecycle-smoke.lock.d" \
+	AIDEVOPS_RELEASE_LANE_ISOLATED_CI=1 \
 	AIDEVOPS_SKIP_PULSE_RESTART=1 \
 	bash "$SETUP_SCRIPT" --non-interactive --stage agents
 
