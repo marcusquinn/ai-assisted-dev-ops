@@ -82,6 +82,13 @@ assert_contains "worker takeover provenance resolves to worker" "worker" \
 	"$(solved_actor_from_pr_labels "origin:worker-takeover")"
 assert_contains "interactive PR provenance resolves to interactive" "interactive" \
 	"$(solved_actor_from_pr_labels "origin:interactive,tier:standard")"
+assert_contains "takeover provenance overrides retained interactive origin" "worker" \
+	"$(solved_actor_from_pr_labels "origin:interactive,origin:worker-takeover")"
+if solved_actor_from_pr_labels "origin:worker,origin:interactive" >/dev/null; then
+	fail "contradictory PR provenance remains unattributed" "unexpected actor"
+else
+	pass "contradictory PR provenance remains unattributed"
+fi
 if solved_actor_from_pr_labels "bug,tier:standard" >/dev/null; then
 	fail "missing PR provenance remains unattributed" "unexpected actor"
 else

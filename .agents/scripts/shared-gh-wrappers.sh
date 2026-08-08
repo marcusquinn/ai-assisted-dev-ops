@@ -1002,16 +1002,35 @@ ensure_solved_labels_exist() {
 #######################################
 solved_actor_from_pr_labels() {
 	local labels_csv="$1"
+	local has_worker=0 has_takeover=0 has_interactive=0
 	case ",${labels_csv}," in
-	*,origin:worker,* | *,origin:worker-takeover,*)
+	*,origin:worker,*) has_worker=1 ;;
+	esac
+	case ",${labels_csv}," in
+	*,origin:worker-takeover,*) has_takeover=1 ;;
+	esac
+	case ",${labels_csv}," in
+	*,origin:interactive,*) has_interactive=1 ;;
+	esac
+
+	# Takeover is explicit evidence that a worker ultimately solved work that may
+	# retain interactive provenance for audit history. Other dual-origin states
+	# are contradictory and remain unattributed.
+	if [[ "$has_takeover" -eq 1 ]]; then
 		printf 'worker\n'
 		return 0
-		;;
-	*,origin:interactive,*)
+	fi
+	if [[ "$has_worker" -eq 1 && "$has_interactive" -eq 1 ]]; then
+		return 1
+	fi
+	if [[ "$has_worker" -eq 1 ]]; then
+		printf 'worker\n'
+		return 0
+	fi
+	if [[ "$has_interactive" -eq 1 ]]; then
 		printf 'interactive\n'
 		return 0
-		;;
-	esac
+	fi
 	return 1
 }
 
