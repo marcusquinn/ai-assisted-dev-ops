@@ -85,6 +85,13 @@ repo_allows_pulse_write_actions() {
 	return 0
 }
 
+_pmp_rest_core_priority_allows_next() {
+	local priority="$1"
+	local context="$2"
+	[[ -n "$priority" && -n "$context" ]] || return 1
+	return 0
+}
+
 _merge_ready_prs_for_repo() {
 	local repo_slug="$1"
 	local merged_var="$2"

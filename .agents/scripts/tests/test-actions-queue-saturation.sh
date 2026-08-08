@@ -246,6 +246,7 @@ _reset_env() {
 	unset GH_SHIM_FAIL
 	unset GH_SHIM_PR_VIEW_JSON
 	unset GH_SHIM_CHECK_RUNS_JSON
+	unset GH_SHIM_SAME_PASS_CHECK_RUNS_JSON
 	return 0
 }
 
@@ -447,14 +448,26 @@ _pmrc_snapshot_checks_json() {
 	return 0
 }
 
-# 5a: is_saturated=1 + current-head REST checks include QUEUED → saturation.
+_pmp_same_pass_check_evidence_get() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	[[ -n "$repo_slug" && -n "$head_sha" ]] || return 1
+	[[ -n "${GH_SHIM_SAME_PASS_CHECK_RUNS_JSON+x}" ]] || return 1
+	printf '%s\n' "$GH_SHIM_SAME_PASS_CHECK_RUNS_JSON"
+	return 0
+}
+
+# 5a: is_saturated=1 + first-priority same-pass checks include QUEUED →
+# saturation. The conflicting fallback fixture proves same-pass precedence.
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
-	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]'
+	'GH_SHIM_SAME_PASS_CHECK_RUNS_JSON=[{"name":"Maintainer Gate","status":"queued","conclusion":null,"app":{"slug":"github-actions"}}]' \
+	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Lint","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}]'
 classification=$(_classify_stuck_pr "12345" "marcusquinn/aidevops" "1")
-assert_eq "saturated+queued check: classification" "STUCK_RUNNER_QUEUE_SATURATION" "$classification"
+assert_eq "saturated+same-pass queued check: classification" "STUCK_RUNNER_QUEUE_SATURATION" "$classification"
 
-# 5b: an external app queued during an Actions incident is not runner saturation.
+# 5b: reset removes same-pass evidence, so an external app queued in the
+# fallback fixture during an Actions incident is not runner saturation.
 _reset_env
 set_shim 'GH_SHIM_PR_VIEW_JSON={"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha123"}' \
 	'GH_SHIM_CHECK_RUNS_JSON=[{"name":"Codacy","status":"queued","conclusion":null,"app":{"slug":"codacy-production"}}]'
