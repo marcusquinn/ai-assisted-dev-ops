@@ -43,9 +43,7 @@ if [[ "${1:-}" == "api" && "$*" == *releases\?per_page=100* ]]; then
     for arg in "$@"; do
         [[ "$arg" == /repos/*/releases\?per_page=100 ]] && endpoint="$arg"
     done
-    printf 'API %s\n' "$endpoint" >>"${MONITOR_API_LOG:-/dev/null}"
-    printf 'ARGS %s\n' "$*" >>"${MONITOR_API_LOG:-/dev/null}"
-    printf 'TIMEOUT %s\n' "${AIDEVOPS_GH_READ_TIMEOUT:-unset}" >>"${MONITOR_API_LOG:-/dev/null}"
+    printf 'API %s\nARGS %s\nTIMEOUT %s\n' "$endpoint" "$*" "${AIDEVOPS_GH_READ_TIMEOUT:-unset}" >>"${MONITOR_API_LOG:-/dev/null}"
     case "${MONITOR_RATE_FIXTURE:-}" in
         primary-403-reset)
             printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"API rate limit exceeded"}\n'
