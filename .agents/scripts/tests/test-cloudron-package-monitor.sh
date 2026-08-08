@@ -45,6 +45,7 @@ if [[ "${1:-}" == "api" && "$*" == *releases\?per_page=100* ]]; then
     done
     printf 'API %s\n' "$endpoint" >>"${MONITOR_API_LOG:-/dev/null}"
     printf 'ARGS %s\n' "$*" >>"${MONITOR_API_LOG:-/dev/null}"
+    printf 'TIMEOUT %s\n' "${AIDEVOPS_GH_READ_TIMEOUT:-unset}" >>"${MONITOR_API_LOG:-/dev/null}"
     case "${MONITOR_RATE_FIXTURE:-}" in
         primary-403-reset)
             printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Reset: 9999999999\r\n\r\n{"message":"API rate limit exceeded"}\n'
@@ -204,6 +205,7 @@ test_monitor_deduplicates_and_preserves_source() {
 	assert_equal 1 "$(grep -c '^TITLE Example Package upstream v2.0.0 is available$' "$log_file")" "upstream issue title uses package manifest title"
 	grep -Fq 'upstream-v2.0.0' "$log_file" && assert_equal true true "upstream issue carries stable fingerprint" || assert_equal true false "upstream issue carries stable fingerprint"
 	grep -Fq -- '--paginate --jq .' "$api_log" && assert_equal true true "paginated release reads request page-delimited JSON" || assert_equal true false "paginated release reads request page-delimited JSON"
+	assert_equal 2 "$(grep -c '^TIMEOUT 90$' "$api_log")" "paginated release reads use the monitor-specific timeout"
 	assert_equal "$manifest_before" "$(cksum "${repo_dir}/CloudronManifest.json")" "upstream monitor does not mutate manifest"
 
 	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" compatibility --apply >/dev/null
@@ -215,6 +217,27 @@ test_monitor_deduplicates_and_preserves_source() {
 	HOME="$home_dir" PATH="${bin_dir}:$PATH" MONITOR_TEST_LOG="$log_file" CLOUDRON_PACKAGE_ISSUE_WRAPPER="${bin_dir}/gh_create_issue" bash "$HELPER" compatibility --apply >/dev/null
 	assert_equal 2 "$(grep -c '^CALL ' "$log_file")" "compatibility finding is deduplicated"
 	assert_equal "$docker_before" "$(cksum "${repo_dir}/Dockerfile")" "compatibility monitor does not mutate package source"
+	return 0
+}
+
+test_monitor_rejects_invalid_release_timeout() {
+	local home_dir="${TEST_ROOT}/timeout-home"
+	local repo_dir="${TEST_ROOT}/timeout-package"
+	local bin_dir="${TEST_ROOT}/timeout-bin"
+	local output=""
+	local rc=0
+	write_fake_commands "$bin_dir"
+	write_fixture "$home_dir" "$repo_dir"
+	if output=$(HOME="$home_dir" PATH="${bin_dir}:$PATH" AIDEVOPS_CLOUDRON_MONITOR_GH_TIMEOUT=invalid \
+		bash "$HELPER" upstream 2>&1); then
+		rc=0
+	else
+		rc=$?
+	fi
+	assert_equal 1 "$rc" "invalid monitor-specific timeout fails closed"
+	[[ "$output" == *"AIDEVOPS_CLOUDRON_MONITOR_GH_TIMEOUT must be a positive integer"* ]] &&
+		assert_equal true true "invalid monitor-specific timeout reports actionable error" ||
+		assert_equal true false "invalid monitor-specific timeout reports actionable error"
 	return 0
 }
 
@@ -474,6 +497,7 @@ main() {
 	TEST_ROOT=$(mktemp -d)
 	trap cleanup EXIT
 	test_monitor_deduplicates_and_preserves_source
+	test_monitor_rejects_invalid_release_timeout
 	test_monitor_selects_configured_stream
 	test_monitor_rejects_malformed_prefixes
 	test_monitor_rejects_control_characters_in_prefixes

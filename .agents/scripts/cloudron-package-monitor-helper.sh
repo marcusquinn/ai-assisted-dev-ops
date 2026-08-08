@@ -14,6 +14,7 @@ source "${SCRIPT_DIR}/cloudron-package-release-lib.sh"
 REPOS_FILE="${AIDEVOPS_REPOS_FILE:-${HOME}/.config/aidevops/repos.json}"
 _CLOUDRON_MONITOR_JSON_TYPE_ARRAY=array
 _CLOUDRON_MONITOR_JSON_TYPE_STRING=string
+_CLOUDRON_MONITOR_GH_TIMEOUT_DEFAULT=90
 
 _cloudron_monitor_error() {
 	local message="$1"
@@ -46,9 +47,14 @@ _cloudron_monitor_response_bodies() {
 _cloudron_monitor_fetch_releases() {
 	local upstream_slug="$1"
 	local endpoint="/repos/${upstream_slug}/releases?per_page=100"
+	local read_timeout="${AIDEVOPS_CLOUDRON_MONITOR_GH_TIMEOUT:-$_CLOUDRON_MONITOR_GH_TIMEOUT_DEFAULT}"
 	local response=""
 	local api_rc=0
-	response=$(_gh_with_timeout read gh api -i "$endpoint" --paginate --jq '.' 2>/dev/null) || api_rc=$?
+	[[ "$read_timeout" =~ ^[1-9][0-9]*$ ]] || {
+		_cloudron_monitor_error "AIDEVOPS_CLOUDRON_MONITOR_GH_TIMEOUT must be a positive integer."
+		return 1
+	}
+	response=$(AIDEVOPS_GH_READ_TIMEOUT="$read_timeout" _gh_with_timeout read gh api -i "$endpoint" --paginate --jq '.' 2>/dev/null) || api_rc=$?
 	if [[ "$api_rc" -eq 75 ]] || _gh_secondary_cooldown_active; then
 		_cloudron_monitor_deferred
 		return $?
