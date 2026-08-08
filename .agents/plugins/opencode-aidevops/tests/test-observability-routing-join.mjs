@@ -47,6 +47,8 @@ test("completed child responses join queued routing decisions to parent feedback
     const summary = observability.getRoutingFeedback("root-session");
     assert.equal(summary.requestCount, 1);
     assert.deepEqual(summary.tierPath, ["simple"]);
+    assert.equal(summary.delegationCount, 1);
+    assert.deepEqual(summary.delegationTiers, { simple: 1, standard: 0, thinking: 0 });
     assert.equal(summary.tokensTotal, 17);
     assert.equal(summary.models[0], "openai/gpt-5.6-luna");
   } finally {

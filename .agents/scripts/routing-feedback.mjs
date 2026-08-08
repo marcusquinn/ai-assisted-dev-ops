@@ -98,12 +98,25 @@ function routeLabel(summary) {
     .join(" → ");
 }
 
+function delegationLabel(summary) {
+  const count = Number(summary.delegationCount) || 0;
+  if (count <= 0) return "";
+  const tiers = TIER_ORDER
+    .map((tier) => [tier, Number(summary.delegationTiers?.[tier]) || 0])
+    .filter(([, tierCount]) => tierCount > 0)
+    .map(([tier, tierCount]) => `${tierCount} ${tier}`);
+  const detail = tiers.length > 0 ? ` (${tiers.join(", ")})` : "";
+  return `${plural(count, "delegated child", "delegated children")}${detail}`;
+}
+
 /** Format a bounded GitHub/routine body section. */
 export function formatRoutingFeedbackMarkdown(summary, { headingLevel = 3 } = {}) {
   if (!summary?.hasData) return "";
   const counts = [];
   if (summary.attemptCount > 0) counts.push(plural(summary.attemptCount, "attempt"));
   if (summary.requestCount > 0) counts.push(plural(summary.requestCount, "LLM request"));
+  const delegations = delegationLabel(summary);
+  if (delegations) counts.push(delegations);
   counts.push(plural(summary.escalationCount, "capability escalation"));
   counts.push(plural(summary.candidateFallbackCount, "same-tier fallback"));
 
@@ -127,8 +140,10 @@ export function formatRoutingFeedbackToast(summary) {
   const sampleCount = summary.attemptCount || summary.requestCount;
   const sampleLabel = summary.attemptCount > 0 ? "attempts" : "requests";
   const usage = summary.costTotal > 0 ? `, $${summary.costTotal.toFixed(4)}` : "";
+  const delegations = delegationLabel(summary);
+  const delegationText = delegations ? `, ${delegations}` : "";
   return [
-    `Route ${routeLabel(summary).replaceAll("`", "")}: ${sampleCount} ${sampleLabel}${usage}, ${summary.escalationCount} escalations.`,
+    `Route ${routeLabel(summary).replaceAll("`", "")}: ${sampleCount} ${sampleLabel}${usage}${delegationText}, ${summary.escalationCount} escalations.`,
     summary.recommendations[0],
   ].join(" ");
 }
@@ -142,6 +157,8 @@ export function routingFeedbackFingerprint(summary) {
     summary.tierPath,
     summary.candidateFallbackCount,
     summary.escalationCount,
+    summary.delegationCount || 0,
+    ...TIER_ORDER.map((tier) => summary.delegationTiers?.[tier] || 0),
     summary.requestErrorCount,
     summary.failedAttemptCount,
     summary.tokensTotal,

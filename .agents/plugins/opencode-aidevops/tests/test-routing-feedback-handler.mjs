@@ -13,7 +13,7 @@ function event(type, sessionID = "root") {
 
 test("routing feedback handler emits changed idle summaries once", async () => {
   const toasts = [];
-  let requests = [{ session_id: "child", routing_tier: "simple", tokens_total: 10 }];
+  let requests = [{ session_id: "child-a", parent_session_id: "root", routing_tier: "simple", tokens_total: 10 }];
   const handler = createRoutingFeedbackHandler({
     client: { tui: { showToast: async (toast) => toasts.push(toast) } },
     isHeadless: () => false,
@@ -23,12 +23,13 @@ test("routing feedback handler emits changed idle summaries once", async () => {
   await handler(event("message.updated"));
   await handler(event("session.idle"));
   await handler(event("session.idle"));
-  requests = [...requests, { session_id: "child", routing_tier: "standard", routing_escalated: 1 }];
+  requests = [...requests, { session_id: "child-b", parent_session_id: "root", routing_tier: "standard", tokens_total: 10 }];
   await handler(event("session.idle"));
 
   assert.equal(toasts.length, 2);
   assert.equal(toasts[0].body.title, "Routing feedback");
-  assert.match(toasts[1].body.message, /simple → standard/);
+  assert.match(toasts[0].body.message, /1 delegated child \(1 simple\)/);
+  assert.match(toasts[1].body.message, /2 delegated children \(1 simple, 1 standard\)/);
 });
 
 test("routing feedback handler stays silent headlessly and without routed data", async () => {

@@ -84,6 +84,27 @@ describe("routing feedback analysis", () => {
     assert.match(summary.recommendations[0], /No routing change/);
   });
 
+  test("counts distinct delegated children by their first valid tier", () => {
+    const summary = summarizeRoutingFeedback({
+      requests: [
+        { session_id: "child-a", parent_session_id: "root", routing_tier: "simple" },
+        { session_id: "child-a", parent_session_id: "root", routing_tier: "standard", routing_escalated: 1 },
+        { session_id: "child-b", parent_session_id: "root", routing_tier: "standard" },
+        { session_id: "parentless", routing_tier: "thinking" },
+        { parent_session_id: "root", routing_tier: "thinking" },
+      ],
+    });
+    const firstChildOnly = summarizeRoutingFeedback({
+      requests: [{ session_id: "child-a", parent_session_id: "root", routing_tier: "simple" }],
+    });
+
+    assert.equal(summary.delegationCount, 2);
+    assert.deepEqual(summary.delegationTiers, { simple: 1, standard: 1, thinking: 0 });
+    assert.match(formatRoutingFeedbackMarkdown(summary), /2 delegated children \(1 simple, 1 standard\)/);
+    assert.match(formatRoutingFeedbackToast(summary), /2 delegated children \(1 simple, 1 standard\)/);
+    assert.notEqual(routingFeedbackFingerprint(summary), routingFeedbackFingerprint(firstChildOnly));
+  });
+
   test("joins persisted requests and headless attempts under one session key", () => {
     const summary = summarizeRoutingFeedback({
       requests: [{ session_id: "ses-a", routing_tier: "standard" }],

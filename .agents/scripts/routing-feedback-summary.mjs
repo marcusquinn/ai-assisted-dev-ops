@@ -73,6 +73,32 @@ function tierCounts(records) {
   return counts;
 }
 
+function delegationCounts(records) {
+  const children = new Map();
+  for (const record of records) {
+    const parentSessionID = firstValue(record, "parent_session_id", "parentSessionID");
+    const childSessionID = firstValue(record, "session_id", "sessionID");
+    const tier = normalizedTier(record);
+    if (!parentSessionID || !childSessionID || !tier) continue;
+
+    const parentChildren = children.get(String(parentSessionID)) || new Map();
+    if (!parentChildren.has(String(childSessionID))) {
+      parentChildren.set(String(childSessionID), tier);
+    }
+    children.set(String(parentSessionID), parentChildren);
+  }
+
+  const delegationTiers = Object.fromEntries(TIER_ORDER.map((tier) => [tier, 0]));
+  let delegationCount = 0;
+  for (const parentChildren of children.values()) {
+    for (const tier of parentChildren.values()) {
+      delegationCount += 1;
+      delegationTiers[tier] += 1;
+    }
+  }
+  return { delegationCount, delegationTiers };
+}
+
 function requestFailed(record) {
   return Boolean(firstValue(record, "error_type", "errorType", "error_message", "errorMessage"));
 }
@@ -119,6 +145,7 @@ export function summarizeRoutingMetrics({ requests = [], attempts = [] } = {}) {
   const routedAttempts = attempts.filter((record) => normalizedTier(record));
   const routeRecords = routedAttempts.length > 0 ? routedAttempts : routedRequests;
   const counts = tierCounts(routeRecords);
+  const delegations = delegationCounts(routedRequests);
   const tiersUsed = TIER_ORDER.filter((tier) => counts[tier] > 0);
   const dominantTier = tiersUsed.reduce(
     (best, tier) => (!best || counts[tier] > counts[best] ? tier : best),
@@ -137,6 +164,7 @@ export function summarizeRoutingMetrics({ requests = [], attempts = [] } = {}) {
     routeEventCount: routeRecords.length,
     distinctSessionCount: sessions.size,
     tiers: counts,
+    ...delegations,
     tiersUsed,
     tierPath: routePath(routeRecords),
     dominantTier,
