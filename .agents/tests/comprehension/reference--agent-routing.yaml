@@ -48,3 +48,26 @@ scenarios:
       docs on demand.
     fast_fail_triggers:
       - refusal
+
+  - name: "offloads output-heavy work from a thinking parent"
+    prompt: "A thinking-tier interactive parent needs three independent, verbose repository and CI investigations, but only their conclusions matter. How should it route the work?"
+    expected:
+      contains:
+        - "simple"
+        - "standard"
+        - "parallel"
+        - "evidence"
+        - "critical path"
+      min_length: 60
+      max_length: 700
+    reference_answer: |
+      The parent's thinking tier does not force thinking-tier children. Keep
+      synthesis and the active critical path in the parent. Send up to two
+      independent investigations in one parallel batch at the lowest reliable
+      simple or standard tier, then run the remaining child only after that
+      batch returns. Each child should return a final-only decision, path/line
+      or command evidence, uncertainty, and next action so verbose raw output
+      stays out of the parent context. Keep a small low-output call direct when
+      delegation overhead would cost more than it saves.
+    fast_fail_triggers:
+      - refusal
