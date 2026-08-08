@@ -597,6 +597,38 @@ test_release_sync_rejects_stale_sentinel() {
 	return 0
 }
 
+test_release_sync_deploys_validated_active_ancestor() {
+	local repo_path
+	local active_sha=""
+	local release_sha=""
+	local deployed_sha=""
+	local output=""
+	repo_path=$(create_fake_repo "release-active-ancestor" "https://github.com/marcusquinn/aidevops.git")
+	active_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD)
+	if ! invoke_release_sync "$repo_path" >/dev/null 2>&1; then
+		print_result "release sync deploys over a validated active ancestor" 1 "Could not prepare active ancestor $active_sha"
+		return 0
+	fi
+
+	printf '9.9.10\n' >"$repo_path/VERSION"
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add VERSION
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit -qm "bump release version"
+	release_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD)
+	: >"$TEST_DIR/sync.log"
+
+	if output=$(invoke_release_sync "$repo_path" 2>&1); then
+		IFS= read -r deployed_sha <"$TEST_HOME/.aidevops/.deployed-sha" || deployed_sha=""
+	fi
+	if [[ "$deployed_sha" == "$release_sha" ]] &&
+		grep -q -- "--repo $repo_path --quiet --expected-sha $release_sha" "$TEST_DIR/sync.log" &&
+		[[ "$output" == *"deployment and CLI convergence completed"* ]]; then
+		print_result "release sync deploys over a validated active ancestor" 0
+	else
+		print_result "release sync deploys over a validated active ancestor" 1 "Expected deployment from active $active_sha to release $release_sha: $output"
+	fi
+	return 0
+}
+
 test_release_sync_accepts_validated_same_tree_descendant() {
 	local repo_path
 	local release_sha=""
@@ -744,6 +776,7 @@ main() {
 	test_release_sync_rejects_stale_active_bundle
 	test_release_sync_rejects_stale_deployed_sha
 	test_release_sync_rejects_stale_sentinel
+	test_release_sync_deploys_validated_active_ancestor
 	test_release_sync_accepts_validated_same_tree_descendant
 	test_release_sync_rejects_changed_tree_descendant
 	test_release_sync_rejects_unrelated_active_commit

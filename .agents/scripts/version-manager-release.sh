@@ -577,6 +577,9 @@ _verify_active_release_preservation_merge() {
 		return 1
 	fi
 	[[ "$active_sha" != "$release_sha" ]] || return 0
+	if git -C "$sync_repo_root" merge-base --is-ancestor "$active_sha" "$release_sha" 2>/dev/null; then
+		return 0
+	fi
 
 	if ! git -C "$sync_repo_root" merge-base --is-ancestor "$release_sha" "$active_sha" 2>/dev/null; then
 		print_error "Post-release deployment gate rejected active source ${active_sha:0:12}: it is not a descendant of release ${release_sha:0:12}"
