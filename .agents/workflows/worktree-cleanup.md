@@ -34,6 +34,12 @@ git branch -D "$BRANCH_NAME" 2>/dev/null || true
 
 Cleanup failures are non-fatal — the PR is already merged.
 
+## Compact Recovery Archives
+
+Use [`../scripts/worktree-archive-helper.md`](../scripts/worktree-archive-helper.md) for the standalone archive, restore, list, verify, and retention commands. The helper preserves local commits, tracked/staged changes, bounded untracked files, and exact base metadata under `~/.aidevops/recovery/archives/`.
+
+Pulse and worker cleanup do **not** invoke the helper yet. Integrating archive-before-delete for terminal failures, disposable clean pushed-PR worktrees, and archive/full-worktree retention is a follow-up after the helper has been verified. Full worktrees remain required for manual owners, security/forensics cases, repeated unexplained failures, and archive safety failures.
+
 ## Manual Cleanup (interactive sessions)
 
 ```bash
