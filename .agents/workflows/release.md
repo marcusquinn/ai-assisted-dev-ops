@@ -29,6 +29,8 @@ aidevops release patch <one-authorized-pr> --expected-sources <pr>,<pr>,<pr>
 
 The helper creates the fresh detached `origin/main` worktree, invokes `version-manager.sh release --source-pr`, and persists terminal receipts only after every publication and deployment gate succeeds. A tag push durably queues the unified GitHub/npm/Homebrew workflow; the local process observes the exact run but does not wait for terminal completion. Exit `8` means remotely queued work and creates no false terminal receipt. Repeating a completed command, or running `aidevops release reconcile <source-pr>`, reconciles success without another version bump or duplicate publication. A failed or skipped release cannot create or replace success evidence.
 
+Before version mutation, the helper reserves the repository's remote release lane. The lane records the active source PR, reviewed source set, phase, tag when known, and terminal receipt without command arguments or secrets. A different source receives the active lane plus exact status/reconcile commands and cannot bump a competing version. The same source resumes through `status` or `reconcile`; process exit does not release queued publication. A same-source lane that remained in the side-effect-free `reserved` phase beyond the bounded stale interval can be recovered through compare-and-swap and a rotated fencing token. Once preparation begins, recovery is reconcile-only because the original process may still publish. Verified terminal receipt evidence advances the lane to inactive so the next source can reserve it atomically. API/authentication uncertainty fails closed; only a verified missing lane ref uses legacy compatibility.
+
 The underlying version manager verifies the source PR is merged and its merge SHA is reachable, then atomically checks the tree → bumps and validates version files → commits → signs and pushes the tag. The tag workflow verifies immutable provenance before reconciling GitHub, npm OIDC, and Homebrew. A later trusted reconciliation verifies all three channels, runs local deploy sync from a detached tag worktree, and persists receipts. Direct `version-manager.sh release` execution is not a full-loop release because it cannot persist terminal per-PR lifecycle evidence.
 
 Release authorization is an explicit trust-boundary input, not an inference from
@@ -67,6 +69,8 @@ mode. The helper accepts only an exact aggregate `main` tip, marks the aggregate
 PR published, and marks included source receipts superseded with immutable
 release links. Arbitrary descendants and unreviewed direct commits remain
 blocked.
+
+Protected-main reconciliation rechecks the exact tree immediately before pushing the preserved tag. A descendant with a different tree is `aggregation-required` and stops before tag or package mutation, even when it contains the signed release commit. During exact-tag deployment, generic `setup.sh --non-interactive` is blocked by the release lane; only setup carrying the matching source PR and tag may enter the existing setup mutex. The acquisition order is release lane, then setup lock.
 
 For an already-published immutable tag with an authorization gap, do not retag,
 republish, infer missing authority from ancestry, or mark omitted PRs
@@ -165,6 +169,7 @@ git commit -m "fix: resolve critical issue"
 |-------|----------|
 | Signed tag already exists | Do not delete or retag it. Run `aidevops release status <source-pr>` and then `aidevops release reconcile <source-pr>`. |
 | Publication queued/interrupted | Exit `8` is durable pending state. Reconcile the same source PR; never bump again for the same tag. |
+| Another source owns the release lane | Run the printed `aidevops release status <active-pr>` command. Reconcile that source when its remote work is ready; aggregate later sources only through a reviewed exact-tip PR. |
 | Expected/observed source mismatch | Stop before mutation. Correct the reviewed aggregation manifest or explicit trusted set; never infer authorization from ancestry. |
 | Historical immutable tag omitted authorized PRs | Preserve pending receipts and write detached `authorization-gap` evidence. Do not retag or create terminal cleanup evidence. |
 | Published tag is older than the latest release | Never republish or deploy the older tag. Reconcile it only through verified post-publication supersession; uncertain evidence remains `release:failed`. |

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+# Release-lane ownership and setup coordination regression tests.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
+TEST_ROOT=$(mktemp -d)
+trap 'rm -rf "$TEST_ROOT"' EXIT
+export HOME="$TEST_ROOT/home"
+mkdir -p "$HOME"
+
+# shellcheck source=../release-lane-helper.sh
+source "${SCRIPT_DIR}/release-lane-helper.sh"
+
+TESTS_RUN=0
+TESTS_FAILED=0
+
+assert_result() {
+	local name="$1"
+	local passed="$2"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if [[ "$passed" == "true" ]]; then
+		printf 'PASS %s\n' "$name"
+	else
+		printf 'FAIL %s\n' "$name"
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+	fi
+	return 0
+}
+
+run_competing_source_test() {
+	local output=""
+	local rc=0
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"remote-publication","tag":"v1.2.3","operation_token":"token-old"}'
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	output=$(release_lane_acquire test/repo 202 202 2>&1) || rc=$?
+	[[ "$rc" -eq 75 && "$output" == *"source_pr=101"* && "$output" == *"aidevops release reconcile 101"* ]]
+	return $?
+}
+
+run_same_source_adoption_test() {
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"remote-publication","tag":"v1.2.3","operation_token":"token-old"}'
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	release_lane_acquire test/repo 101 101 >/dev/null
+	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "adopted" ]]
+	return $?
+}
+
+run_terminal_lane_reacquire_test() {
+	local written=""
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":false,"source_pr":101,"phase":"terminal","tag":"v1.2.3","operation_token":"token-old"}'
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		written="$state_json"
+		[[ "$(jq -r '.active' <<<"$written")" == "true" && "$(jq -r '.source_pr' <<<"$written")" == "202" ]]
+		return $?
+	}
+	release_lane_acquire test/repo 202 '202@2222222222222222222222222222222222222222' >/dev/null
+	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" ]]
+	return $?
+}
+
+run_setup_guard_test() {
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"exact-tag-deployment","tag":"v1.2.3","operation_token":"token-old"}'
+		return 0
+	}
+	if release_lane_setup_guard test/repo >/dev/null 2>&1; then
+		return 1
+	fi
+	AIDEVOPS_RELEASE_LANE_SOURCE_PR=101 AIDEVOPS_RELEASE_LANE_TAG=v1.2.3 \
+		release_lane_setup_guard test/repo
+	return $?
+}
+
+run_http_classification_test() (
+	local mode="missing"
+	local rc=0
+	gh() {
+		if [[ " $* " != *" --include "* ]]; then
+			return 1
+		fi
+		if [[ "$mode" == "missing" ]]; then
+			printf 'HTTP/2.0 404 Not Found\n\n'
+		else
+			printf 'HTTP/2.0 401 Unauthorized\n\n'
+		fi
+		return 1
+	}
+	_release_lane_remote_head test/repo >/dev/null 2>&1 || rc=$?
+	[[ "$rc" -eq 2 ]] || return 1
+	mode="unauthorized"
+	rc=0
+	_release_lane_remote_head test/repo >/dev/null 2>&1 || rc=$?
+	[[ "$rc" -eq 1 ]]
+	return $?
+)
+
+run_legacy_and_api_failure_test() (
+	local mode="absent"
+	local rc=0
+	release_lane_read() {
+		[[ "$mode" == "absent" ]] && return 2
+		return 1
+	}
+	release_lane_update_if_owned test/repo 101 exact-tag-deployment v1.2.3 || return 1
+	mode="failure"
+	release_lane_setup_guard test/repo >/dev/null 2>&1 || rc=$?
+	[[ "$rc" -eq 75 ]]
+	return $?
+)
+
+run_stale_same_source_recovery_test() (
+	local written=""
+	local recovered_state=""
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"reserved","tag":null,"updated_at":"2020-01-01T00:00:00Z","operation_token":"token-old"}'
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		written="$state_json"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]]
+		return $?
+	}
+	AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 release_lane_acquire test/repo 101 101 >/dev/null || return 1
+	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" && "$(jq -r '.phase' <<<"$written")" == "reserved" &&
+	"$(jq -r '.operation_token' <<<"$written")" != "token-old" ]] || return 1
+	recovered_state="$written"
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$recovered_state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="2222222222222222222222222222222222222222"
+		return 0
+	}
+	_AIDEVOPS_RELEASE_LANE_TOKEN="token-old"
+	if release_lane_update test/repo 101 preparing; then
+		return 1
+	fi
+	return 0
+)
+
+if run_competing_source_test; then assert_result 'competing source receives active lane and reconcile action' true; else assert_result 'competing source receives active lane and reconcile action' false; fi
+if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
+if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
+if run_setup_guard_test; then assert_result 'exact-tag deployment blocks generic setup and permits matching owner' true; else assert_result 'exact-tag deployment blocks generic setup and permits matching owner' false; fi
+if run_http_classification_test; then assert_result 'only verified HTTP 404 is classified as an absent lane' true; else assert_result 'only verified HTTP 404 is classified as an absent lane' false; fi
+if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' true; else assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' false; fi
+if run_stale_same_source_recovery_test; then assert_result 'stale recovery rotates its token and fences the prior owner' true; else assert_result 'stale recovery rotates its token and fences the prior owner' false; fi
+
+printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
+[[ "$TESTS_FAILED" -eq 0 ]]

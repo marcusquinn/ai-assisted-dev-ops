@@ -778,6 +778,9 @@ _full_loop_release_finalize_reconciliation() {
 	[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || return 1
 	_full_loop_validate_release_candidates "$repo" "$source_json" || return 1
 	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
+	if declare -F release_lane_update_if_owned >/dev/null 2>&1; then
+		release_lane_update_if_owned "$repo" "$requested_pr" "exact-tag-deployment" "$tag_name" || return 1
+	fi
 	version_manager="${SCRIPT_DIR}/version-manager.sh"
 	deploy_helper="${SCRIPT_DIR}/deploy-agents-on-merge.sh"
 	[[ -f "$version_manager" ]] || return 1
@@ -786,6 +789,8 @@ _full_loop_release_finalize_reconciliation() {
 		cd "$_FULL_LOOP_RELEASE_PATH" || exit 1
 		AIDEVOPS_RELEASE_INTENT_TRUSTED=1 \
 			AIDEVOPS_TRUSTED_ISSUE_PRIORITY="${AIDEVOPS_TRUSTED_ISSUE_PRIORITY:-}" \
+			AIDEVOPS_RELEASE_LANE_SOURCE_PR="$requested_pr" \
+			AIDEVOPS_RELEASE_LANE_TAG="$tag_name" \
 			AIDEVOPS_SYNC_REPO_ROOT="$_FULL_LOOP_RELEASE_PATH" \
 			AIDEVOPS_SYNC_DEPLOY_SCRIPT="$deploy_helper" \
 			bash "$version_manager" post-release

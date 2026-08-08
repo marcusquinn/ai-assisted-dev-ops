@@ -13,6 +13,20 @@ mkdir -p "$HOME" "${TEST_ROOT}/bin" "${TEST_ROOT}/repo"
 
 TESTS_RUN=0
 TESTS_FAILED=0
+INTERCEPT_PROTECTED_GIT=false
+PUSH_ATTEMPTED=false
+
+git() {
+	if [[ "$INTERCEPT_PROTECTED_GIT" == "true" && " $* " == *" fetch origin main "* ]]; then
+		return 0
+	fi
+	if [[ "$INTERCEPT_PROTECTED_GIT" == "true" && " $* " == *" push origin "* ]]; then
+		PUSH_ATTEMPTED=true
+		return 0
+	fi
+	command git "$@"
+	return $?
+}
 
 print_result() {
 	local name="$1"
@@ -201,6 +215,25 @@ if [[ "$rc" -eq 0 && "$(tr '\n' ',' <"$route_log")" == 'deploy,' ]]; then
 	print_result 'remote publication is not redundantly awaited before local deployment' true
 else
 	print_result 'remote publication is not redundantly awaited before local deployment' false "rc=${rc} events=$(tr '\n' ' ' <"$route_log")"
+fi
+
+printf 'descendant\n' >>fixture.txt
+git add fixture.txt
+git commit -q -m 'intervening main change'
+git update-ref refs/remotes/origin/main HEAD
+PUSH_ATTEMPTED=false
+INTERCEPT_PROTECTED_GIT=true
+_version_manager_classify_remote_tag() {
+	_VERSION_MANAGER_REMOTE_TAG_STATE="absent"
+	return 0
+}
+_VERSION_MANAGER_LOCAL_TAG_COMMIT="$TAG_COMMIT"
+rc=0
+_version_manager_publish_reachable_tag v1.2.4 >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -ne 0 && "$PUSH_ATTEMPTED" == "false" && "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" == "aggregation-required" ]]; then
+	print_result 'changed protected-main tree stops before immutable tag publication' true
+else
+	print_result 'changed protected-main tree stops before immutable tag publication' false "rc=${rc} pushed=${PUSH_ATTEMPTED} result=${_VERSION_MANAGER_PROTECTED_RELEASE_RESULT}"
 fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

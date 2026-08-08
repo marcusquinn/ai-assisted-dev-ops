@@ -482,6 +482,8 @@ _version_manager_create_or_reuse_protected_pr() {
 _version_manager_publish_reachable_tag() {
 	local tag_name="$1"
 	local push_output=""
+	local release_tree=""
+	local main_tree=""
 
 	_VERSION_MANAGER_PROTECTED_RELEASE_RESULT=""
 	_version_manager_classify_remote_tag "$tag_name" || return 1
@@ -498,6 +500,14 @@ _version_manager_publish_reachable_tag() {
 		"$_VERSION_MANAGER_LOCAL_TAG_COMMIT" origin/main; then
 		_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="not-reachable"
 		return 0
+	fi
+	release_tree=$(git -C "$REPO_ROOT" rev-parse "${_VERSION_MANAGER_LOCAL_TAG_COMMIT}^{tree}" 2>/dev/null) || return 1
+	main_tree=$(git -C "$REPO_ROOT" rev-parse "origin/main^{tree}" 2>/dev/null) || return 1
+	if [[ "$release_tree" != "$main_tree" ]]; then
+		_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="aggregation-required"
+		print_error "Refusing to publish ${tag_name}: protected main has a different tree from the signed release commit"
+		print_info "Create a newly reviewed exact-tip aggregation release; no tag or package channel was mutated"
+		return 1
 	fi
 	if ! push_output=$(git -C "$REPO_ROOT" push origin \
 		"refs/tags/${tag_name}:refs/tags/${tag_name}" 2>&1); then

@@ -817,6 +817,20 @@ SETUP_NONINTERACTIVE_LOCK_DIR=""
 SETUP_NONINTERACTIVE_CHILD_PIDS=""
 SETUP_NONINTERACTIVE_TERMINATING=false
 
+_setup_guard_active_release_lane() {
+	local repo_slug=""
+	local remote_url=""
+	local lane_helper="${BASH_SOURCE[0]%/*}/.agents/scripts/release-lane-helper.sh"
+	[[ -f "$lane_helper" ]] || return 0
+	remote_url=$(git -C "${BASH_SOURCE[0]%/*}" remote get-url origin 2>/dev/null || true)
+	repo_slug=$(printf '%s' "$remote_url" | sed 's|.*github\.com[:/]||;s|\.git$||')
+	[[ "$repo_slug" == "marcusquinn/aidevops" ]] || return 0
+	# shellcheck source=.agents/scripts/release-lane-helper.sh
+	source "$lane_helper"
+	release_lane_setup_guard "$repo_slug"
+	return $?
+}
+
 _setup_lock_pid_alive() {
 	local pid="$1"
 	[[ "$pid" =~ ^[0-9]+$ ]] || return 1
@@ -1106,8 +1120,10 @@ _setup_acquire_noninteractive_setup_lock() {
 	local stale_ceiling="${AIDEVOPS_SETUP_STALE_TIMEOUT_S:-1800}"
 	local owner_pid="" owner_cmd="" owner_age=0
 	local reclaim_attempts=0 waited=0
+	local lane_rc=0
 	local _diag_stl="$HOME/.aidevops/logs/setup-stage-timings.log"
 	local _diag_interval_s="${AIDEVOPS_SETUP_LOCK_DIAG_INTERVAL_S:-60}"
+	_setup_guard_active_release_lane || return $?
 	[[ "$_diag_interval_s" =~ ^[0-9]+$ && "$_diag_interval_s" -gt 0 ]] || _diag_interval_s=60
 	mkdir -p "$(dirname "$lock_dir")" 2>/dev/null || true
 	while true; do
@@ -1118,6 +1134,11 @@ _setup_acquire_noninteractive_setup_lock() {
 			printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$lock_dir/started_at" 2>/dev/null || true
 			printf '%s\n' "$(date +%s 2>/dev/null || printf '0')" >"$lock_dir/started_at_epoch" 2>/dev/null || true
 			printf '%s\n' "$0 $*" >"$lock_dir/command" 2>/dev/null || true
+			_setup_guard_active_release_lane || lane_rc=$?
+			if [[ "$lane_rc" -ne 0 ]]; then
+				_setup_release_noninteractive_setup_lock
+				return "$lane_rc"
+			fi
 			trap '_setup_cleanup_noninteractive_children; _setup_release_noninteractive_setup_lock' EXIT
 			trap '_setup_noninteractive_signal_exit TERM' TERM
 			trap '_setup_noninteractive_signal_exit INT' INT

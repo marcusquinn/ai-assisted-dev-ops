@@ -90,6 +90,8 @@ _full_loop_release_bind_repo_context() {
 }
 
 source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+# shellcheck source=./release-lane-helper.sh
+source "${SCRIPT_DIR}/release-lane-helper.sh"
 # shellcheck source=./full-loop-release-reconcile.sh
 source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
 
@@ -310,6 +312,7 @@ _full_loop_release_run_new() {
 	_full_loop_capture_release_authorization "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources" || return 1
 	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || return 1
 	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
+	release_lane_update "$repo" "$source_pr" "preparing" || return 1
 
 	version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
 	[[ "$version_manager" = /* ]] || version_manager="$PWD/$version_manager"
@@ -324,11 +327,15 @@ _full_loop_release_run_new() {
 			--expected-sources "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
 	) || release_rc=$?
 	if [[ "$release_rc" -eq 8 ]]; then
+		local queued_tag=""
+		[[ -r "$release_path/VERSION" ]] && queued_tag="v$(tr -d '[:space:]' <"$release_path/VERSION")"
+		release_lane_update "$repo" "$source_pr" "remote-publication" "$queued_tag" || return 1
 		printf 'release:queued for PR #%s; publication continues remotely\n' "$source_pr"
 		printf 'Resume with: aidevops release reconcile %s\n' "$source_pr"
 		return 8
 	fi
 	if [[ "$release_rc" -ne 0 ]]; then
+		release_lane_update "$repo" "$source_pr" "reconcile-required" || true
 		_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" \
 			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$_FULL_LOOP_RESOLVED_SOURCE_PR" || true
 		printf 'Publication may still be durable or queued. Reconcile without another version bump:\n' >&2
@@ -337,8 +344,72 @@ _full_loop_release_run_new() {
 		return 1
 	fi
 	_full_loop_persist_release_success "$repo" "$release_path" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" \
-		"$_FULL_LOOP_RESOLVED_SOURCE_PR" "$_FULL_LOOP_RESOLVED_SOURCE_MERGE"
+		"$_FULL_LOOP_RESOLVED_SOURCE_PR" "$_FULL_LOOP_RESOLVED_SOURCE_MERGE" || return 1
+	release_lane_finalize "$repo" "$source_pr" "published"
 	return $?
+}
+
+_full_loop_release_existing_with_lane() {
+	local release_type="$1"
+	local source_pr="$2"
+	local existing_repo=""
+	local existing_rc=0
+	local lane_read_rc=0
+	local lane_owned=false
+	existing_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+	release_lane_read "$existing_repo" || lane_read_rc=$?
+	case "$lane_read_rc" in
+	0)
+		printf 'RELEASE_LANE=%s\n' "$(jq -c '{active,source_pr,phase,tag,updated_at,terminal_receipt}' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
+		if jq -e --argjson source_pr "$source_pr" '.active == true and .source_pr == $source_pr' \
+			<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+			lane_owned=true
+			_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -r '.operation_token' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		fi
+		if [[ "$release_type" == "reconcile" ]] &&
+			! jq -e --argjson source_pr "$source_pr" '.active != true or .source_pr == $source_pr' \
+				<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+			printf 'A different source owns the active release lane\n' >&2
+			return 75
+		fi
+		;;
+	2) ;;
+	*)
+		printf 'Cannot verify repository release lane\n' >&2
+		return 1
+		;;
+	esac
+	_full_loop_release_existing_command "$release_type" "$source_pr" || existing_rc=$?
+	if [[ "$release_type" == "reconcile" && "$lane_owned" == "true" ]]; then
+		if [[ "$existing_rc" -eq 0 ]]; then
+			release_lane_finalize "$existing_repo" "$source_pr" "published" || return 1
+		elif [[ "$existing_rc" -eq 8 ]]; then
+			release_lane_update "$existing_repo" "$source_pr" "remote-publication" || return 1
+		fi
+	fi
+	return "$existing_rc"
+}
+
+_full_loop_release_guard_competing_lane() {
+	local repo="$1"
+	local source_pr="$2"
+	local lane_read_rc=0
+	release_lane_read "$repo" || lane_read_rc=$?
+	case "$lane_read_rc" in
+	2) return 0 ;;
+	0) ;;
+	*) return 1 ;;
+	esac
+	if jq -e --argjson source_pr "$source_pr" '.active == true and .source_pr != $source_pr' \
+		<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		printf 'ACTIVE_RELEASE_LANE source_pr=%s phase=%s tag=%s\n' \
+			"$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" \
+			"$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" \
+			"$(jq -r '.tag // "pending"' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
+		printf 'Resume with: aidevops release reconcile %s\n' "$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")"
+		return 75
+	fi
+	return 0
 }
 
 main() {
@@ -388,7 +459,7 @@ main() {
 			return 1
 		}
 		_full_loop_release_bind_repo_context || return 1
-		_full_loop_release_existing_command "$release_type" "$source_pr"
+		_full_loop_release_existing_with_lane "$release_type" "$source_pr"
 		return $?
 		;;
 	authorization-gap)
@@ -412,6 +483,7 @@ main() {
 	local existing_state_rc=0
 	local persisted_expected=""
 	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+	_full_loop_release_guard_competing_lane "$repo" "$source_pr" || return $?
 	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
 		[[ -n "$expected_sources" ]] || expected_sources="$persisted_expected"
 	fi
@@ -421,6 +493,11 @@ main() {
 	2) ;;
 	*) return "$existing_state_rc" ;;
 	esac
+	release_lane_acquire "$repo" "$source_pr" "${expected_sources:-$source_pr}" || return $?
+	if [[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "adopted" ]]; then
+		printf 'Release lane already belongs to PR #%s; reconcile instead of creating another version bump\n' "$source_pr"
+		return 8
+	fi
 	_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" \
 		"${expected_sources:-$source_pr}"
 	return $?
