@@ -517,6 +517,8 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 
 ## Backlog
 
+- [ ] t18221 Show delegated child counts in routing feedback toasts #enhancement #framework #observability #opencode #interactive #auto-dispatch ~1h tier:standard ref:GH#29815 logged:2026-08-08 -> [todo/tasks/t18221-brief.md]
+
 - [x] t18071 Establish privacy-safe linter forensics and bounded resource baselines across mission targets #mission:m-20260710-11431d #investigate #performance #security #interactive ~30m tier:thinking ref:GH#26914 assignee:marcusquinn started:2026-07-10T03:55:55Z logged:2026-07-10 -> [todo/tasks/t18071-brief.md] pr:#26918 completed:2026-07-10
 - [x] t18072 Fix framework changed-file coverage, deduplicate discovery, and fail closed on timeouts #mission:m-20260710-11431d #performance #quality #security #shell #interactive ~45m tier:standard blocked-by:t18071 ref:GH#26919 assignee:marcusquinn started:2026-07-10T05:17:21Z logged:2026-07-10 -> [todo/tasks/t18072-brief.md] pr:#26925 completed:2026-07-10
 - [x] t18073 Bound Target B monorepo lint concurrency while preserving affected coverage #mission:m-20260710-11431d #performance #private-target #interactive ~55m tier:thinking blocked-by:t18071 ref:GH#26922 assignee:marcusquinn started:2026-07-10T05:31:51Z logged:2026-07-10 -> [todo/tasks/t18073-brief.md] pr:#26947 completed:2026-07-10
