@@ -1,32 +1,60 @@
 {
-  "version": 1,
-  "updated": "2026-04-04T00:00:00Z",
-  "description": "Ratchet baselines for code quality regression prevention. Counts can only stay the same or decrease — never increase. Run linters-local.sh --update-baseline to lock in improvements.",
+  "version": 2,
+  "counter_version": 2,
+  "updated": "2026-08-08T00:13:09Z",
+  "description": "Compatibility snapshot with verified provenance; active checks compare the working tree with its default-branch merge-base.",
+  "comparison": {
+    "mode": "merge-base",
+    "fail_closed_without_base": true
+  },
+  "provenance": {
+    "source_commit": "9fa629d359df6059f370908864378b1ff183b60c",
+    "scripts_tree": "3b9fff748b128a289f8ddfba5cb1c775d752e6c5",
+    "comparison_base_commit": "9fa629d359df6059f370908864378b1ff183b60c",
+    "migration": {
+      "reason": "Migrate the 2026-04-04 schema-v1 compatibility snapshot after PR #29407 introduced counter-v2 merge-base comparisons; preserve the historical counts while binding current compatibility counts to the verified default-branch scripts tree.",
+      "previous_source_commit": "441813092cdcfa97b172953d890c1a063eb0e421",
+      "previous_schema_version": 1,
+      "previous_counter_version": 1
+    },
+    "previous_snapshot": {
+      "schema_version": 1,
+      "counter_version": 1,
+      "source_commit": "441813092cdcfa97b172953d890c1a063eb0e421",
+      "updated": "2026-04-04T00:00:00Z",
+      "counts": {
+        "bare_positional_params": 4687,
+        "hardcoded_aidevops_path": 309,
+        "broad_catch_or_true": 2233,
+        "silent_errors": 5589,
+        "missing_return_files": 2
+      }
+    }
+  },
   "ratchets": {
     "bare_positional_params": {
-      "count": 4687,
-      "description": "$1/$2 etc. used directly in function bodies (should use local var=\"$1\")",
-      "pattern": "\\$[1-9]",
-      "exclude": "local.*=.*\\$[1-9]"
+      "count": 4776,
+      "description": "Direct positional parameters in function bodies",
+      "pattern": "positional_parameter"
     },
     "hardcoded_aidevops_path": {
-      "count": 309,
-      "description": "Literal ~/.aidevops or /Users/ instead of ${HOME}/.aidevops or variable",
-      "pattern": "~/.aidevops|/Users/"
+      "count": 452,
+      "description": "Literal user-specific framework paths",
+      "pattern": "hardcoded_user_path"
     },
     "broad_catch_or_true": {
-      "count": 2233,
-      "description": "|| true used to suppress errors without specific handling",
-      "pattern": "\\|\\| true"
+      "count": 8171,
+      "description": "Broad success fallback",
+      "pattern": "broad_success_fallback"
     },
     "silent_errors": {
-      "count": 5589,
-      "description": "2>/dev/null used to silently discard errors without handling",
-      "pattern": "2>/dev/null"
+      "count": 16455,
+      "description": "Discarded standard error",
+      "pattern": "discarded_standard_error"
     },
     "missing_return_files": {
-      "count": 2,
-      "description": "Files containing functions without explicit return 0 or return 1",
+      "count": 427,
+      "description": "Files containing a function without an explicit return",
       "pattern": "functions_without_return"
     }
   }

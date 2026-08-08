@@ -154,8 +154,8 @@ test_each_ratchet_blocks_regression_and_allows_improvement() {
 		regressed_count=$(ratchet_fixture_count "$pattern_name" "${tmp_dir}/${pattern_name}/regressed")
 		regression_rc=0
 		improvement_rc=0
-		_ratchet_check_pattern "$pattern_name" "$regressed_count" "$clean_count" 0 true > /dev/null 2>&1 || regression_rc=$?
-		_ratchet_check_pattern "$pattern_name" "$clean_count" "$regressed_count" 0 true > /dev/null 2>&1 || improvement_rc=$?
+		_ratchet_check_pattern "$pattern_name" "$regressed_count" "$clean_count" 0 true >/dev/null 2>&1 || regression_rc=$?
+		_ratchet_check_pattern "$pattern_name" "$clean_count" "$regressed_count" 0 true >/dev/null 2>&1 || improvement_rc=$?
 		if [[ "$clean_count" -eq 0 && "$regressed_count" -eq 1 && "$regression_rc" -eq 1 && "$improvement_rc" -eq 0 ]]; then
 			print_result "ratchet delta: ${pattern_name} blocks +1 and permits -1" 0
 		else
@@ -167,11 +167,47 @@ test_each_ratchet_blocks_regression_and_allows_improvement() {
 	return 0
 }
 
+test_schema_one_snapshot_migrates_with_provenance() {
+	source_ratchet_helpers
+	local tmp_dir old_file migrated_file migration_json migrated_json old_rc=0 migrated_rc=0
+	tmp_dir=$(mktemp -d)
+	old_file="${tmp_dir}/schema-v1.json"
+	migrated_file="${tmp_dir}/schema-v2.json"
+	printf '%s\n' '{"version":1,"ratchets":{"bare_positional_params":{"count":4}}}' >"$old_file"
+	_ratchet_validate_baseline_config "$old_file" >/dev/null 2>&1 || old_rc=$?
+	migration_json='{"reason":"verified fixture migration","previous_source_commit":"old-source","previous_schema_version":1,"previous_counter_version":1}'
+	migrated_json=$(_ratchet_build_baseline_json \
+		"2026-08-08T00:00:00Z" "new-source" "scripts-tree" "base-source" \
+		"5 4 3 2 1" "1" "1" "old-source" "2026-04-04T00:00:00Z" \
+		"4 3 2 1 0" "$migration_json") || migrated_rc=$?
+	if [[ "$migrated_rc" -eq 0 ]]; then
+		_ratchet_write_json_atomically "$migrated_file" "$migrated_json" || migrated_rc=$?
+	fi
+	if [[ "$migrated_rc" -eq 0 ]]; then
+		_ratchet_validate_baseline_config "$migrated_file" >/dev/null 2>&1 || migrated_rc=$?
+	fi
+	if [[ "$old_rc" -eq 1 && "$migrated_rc" -eq 0 ]] && jq -e '
+		.version == 2 and .counter_version == 2 and
+		.provenance.source_commit == "new-source" and
+		.provenance.previous_snapshot.schema_version == 1 and
+		.provenance.previous_snapshot.counts.bare_positional_params == 4 and
+		.provenance.migration.reason == "verified fixture migration"
+	' "$migrated_file" >/dev/null; then
+		print_result "ratchet migration: schema-v1 snapshot becomes validated schema-v2 provenance" 0
+	else
+		print_result "ratchet migration: schema-v1 snapshot becomes validated schema-v2 provenance" 1 \
+			"old_rc=$old_rc migrated_rc=$migrated_rc"
+	fi
+	rm -rf "$tmp_dir"
+	return 0
+}
+
 main() {
 	test_ratchet_counter_times_out_with_diagnostic
 	test_ratchet_counter_reports_progress_and_value
 	test_missing_return_counter_scans_inventory_once
 	test_each_ratchet_blocks_regression_and_allows_improvement
+	test_schema_one_snapshot_migrates_with_provenance
 
 	echo ""
 	if [ "$TESTS_FAILED" -eq 0 ]; then
