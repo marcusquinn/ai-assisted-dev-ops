@@ -1,0 +1,10 @@
+# Exact GitHub App identities whose review findings may create auto-dispatch work.
+# This is an authority allowlist, not a bot-noise list. Keep matching exact and
+# fail closed when the file or an identity is unknown.
+coderabbitai[bot]
+gemini-code-assist[bot]
+augmentcode[bot]
+codacy-production[bot]
+sonarqubecloud[bot]
+codefactor-io[bot]
+qltybot[bot]

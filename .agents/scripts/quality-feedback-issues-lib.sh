@@ -591,7 +591,7 @@ _create_or_append_file_issue() {
 		# PR numbers are monotonically increasing within a repository. Never append
 		# older review feedback to debt opened from a newer PR: the newer change may
 		# already supersede the older finding (GH#27703).
-		if [[ "$pr_num" =~ ^[0-9]+$ && "$existing_file_issue_pr" =~ ^[0-9]+$ && \
+		if [[ "$pr_num" =~ ^[0-9]+$ && "$existing_file_issue_pr" =~ ^[0-9]+$ &&
 			"$pr_num" -lt "$existing_file_issue_pr" ]]; then
 			echo "  Skipping superseded PR #${pr_num} feedback; #${existing_file_issue} already tracks newer PR #${existing_file_issue_pr} for ${file}" >&2
 			echo "0"
@@ -608,6 +608,43 @@ _create_or_append_file_issue() {
 		"$repo_slug" "$pr_num" "$file" "$issue_title" "$max_severity" \
 		"$reviewers" "$file_finding_count" "$finding_details" "$is_maintainer_pr"
 	return $?
+}
+
+# _quality_findings_are_trusted_automation: GH#29795
+#
+# Quality-debt issues are maintainer-controlled scanner output. Findings from
+# explicitly trusted code-quality apps are therefore authorized for worker
+# triage regardless of who authored the merged source PR. This keeps source
+# provenance separate from task authority: an external or dependency-bot PR
+# does not turn a trusted audit finding into an external contribution.
+#
+# Every reviewer identity must match the exact allowlist. Missing configuration,
+# malformed findings, mixed human/bot findings, and lookalike bot names fail
+# closed so the existing source-author trust check remains the fallback.
+#
+# Args:
+#   $1 - findings JSON array
+#
+# Returns:
+#   0 if every finding came from trusted quality automation
+#   1 otherwise
+_quality_findings_are_trusted_automation() {
+	local findings="$1"
+	local trust_file="${AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE:-${BASH_SOURCE[0]%/*}/../configs/trusted-code-quality-bots.txt}"
+	local reviewer_logins=""
+	local reviewer_login=""
+
+	[[ -f "$trust_file" ]] || return 1
+	reviewer_logins=$(printf '%s' "$findings" | jq -r \
+		'[.[].reviewer_login // ""] | unique | .[]' 2>/dev/null) || return 1
+	[[ -n "$reviewer_logins" ]] || return 1
+
+	while IFS= read -r reviewer_login; do
+		[[ -n "$reviewer_login" ]] || return 1
+		grep -Fqx -- "$reviewer_login" "$trust_file" || return 1
+	done <<<"$reviewer_logins"
+
+	return 0
 }
 
 # _is_maintainer_equivalent_author: GH#17916 (t2686)
@@ -680,6 +717,25 @@ _is_maintainer_equivalent_author() {
 	return 1
 }
 
+# _quality_feedback_dispatch_authorized: resolve generated-task authority.
+# Arguments: $1=findings JSON $2=repo slug $3=source PR number
+# Returns: 0 when trusted audit identity or source-author authority is verified.
+_quality_feedback_dispatch_authorized() {
+	local findings="$1"
+	local repo_slug="$2"
+	local pr_num="$3"
+	local pr_author=""
+
+	if _quality_findings_are_trusted_automation "$findings"; then
+		echo "[quality-feedback] trusted quality-app findings on PR #${pr_num} — authorizing worker triage" >&2
+		return 0
+	fi
+
+	pr_author=$(gh pr view "$pr_num" --repo "$repo_slug" --json author --jq '.author.login' 2>/dev/null || echo "")
+	_is_maintainer_equivalent_author "$pr_author" "$repo_slug"
+	return $?
+}
+
 _create_quality_debt_issues() {
 	local repo_slug="$1"
 	local pr_num="$2"
@@ -696,14 +752,12 @@ _create_quality_debt_issues() {
 		return 0
 	fi
 
-	# GH#17916 (t2686): Determine if the source PR was authored by someone
-	# trusted enough to skip the NMR approval gate. Delegated to
-	# _is_maintainer_equivalent_author — see that helper's docstring for the
-	# full trust-bar rationale and two-stage check.
+	# GH#29795: The scanner's trusted quality-app identity authorizes worker
+	# triage independently of the merged source PR author. For findings from
+	# humans or unknown automation, retain the source-author trust fallback and
+	# fail closed to the external approval gate.
 	local is_maintainer_pr="false"
-	local pr_author=""
-	pr_author=$(gh pr view "$pr_num" --repo "$repo_slug" --json author --jq '.author.login' 2>/dev/null || echo "")
-	if _is_maintainer_equivalent_author "$pr_author" "$repo_slug"; then
+	if _quality_feedback_dispatch_authorized "$findings" "$repo_slug" "$pr_num"; then
 		is_maintainer_pr="true"
 	fi
 

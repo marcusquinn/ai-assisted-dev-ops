@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Tests for `_is_maintainer_equivalent_author` in quality-feedback-issues-lib.sh
-# (GH#17916 / t2686).
+# Tests for quality-feedback dispatch authority in quality-feedback-issues-lib.sh
+# (GH#17916 / t2686 / GH#29795).
 #
 # t2686 background: the pre-fix trust check used strict equality against
 # repos.json .maintainer, which missed admin collaborators entirely. On
@@ -13,6 +13,9 @@
 # (t2411 criterion 2, t2449 criterion 2).
 #
 # Post-fix semantics:
+#   - Trusted code-quality app findings authorize worker triage independently
+#     of the merged source PR author
+#   - Reviewer identities use an exact, fail-closed allowlist
 #   - Stage 1: maintainer fast-path (repos.json .maintainer or slug owner)
 #   - Stage 2: collaborator permission probe (admin/maintain/write → trusted)
 #   - Fail-closed on API errors, read-only permission, unknown user
@@ -65,6 +68,8 @@ setup_test_env() {
 	# the gh stub exit non-zero (simulating 404/403/network error).
 	export PERMISSION_FIXTURE="${TEST_ROOT}/permission.json"
 	printf '{"permission":"none"}\n' >"$PERMISSION_FIXTURE"
+	export AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE="${TEST_ROOT}/trusted-code-quality-bots.txt"
+	printf '%s\n' 'coderabbitai[bot]' 'codacy-production[bot]' >"$AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE"
 
 	# gh stub — only collaborators/{user}/permission is needed.
 	cat >"${TEST_ROOT}/bin/gh" <<'STUB'
@@ -117,6 +122,7 @@ teardown_test_env() {
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
 	fi
+	unset AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE
 	return 0
 }
 
@@ -131,7 +137,9 @@ set_permission_fixture() {
 define_helpers_under_test() {
 	local trust_src
 	trust_src=$(awk '
+		/^_quality_findings_are_trusted_automation\(\) \{/,/^}$/ { print }
 		/^_is_maintainer_equivalent_author\(\) \{/,/^}$/ { print }
+		/^_quality_feedback_dispatch_authorized\(\) \{/,/^}$/ { print }
 	' "$QF_SCRIPT")
 	if [[ -z "$trust_src" ]]; then
 		printf 'ERROR: could not extract _is_maintainer_equivalent_author from %s\n' "$QF_SCRIPT" >&2
@@ -151,6 +159,55 @@ define_helpers_under_test() {
 # ---------------------------------------------------------------------------
 # Test cases
 # ---------------------------------------------------------------------------
+
+test_trusted_quality_apps_authorize_findings() {
+	local findings='[{"reviewer_login":"coderabbitai[bot]"},{"reviewer_login":"codacy-production[bot]"}]'
+	if _quality_findings_are_trusted_automation "$findings"; then
+		print_result "trusted quality apps authorize generated worker triage (GH#29795)" 0
+		return 0
+	fi
+	print_result "trusted quality apps authorize generated worker triage (GH#29795)" 1
+	return 0
+}
+
+test_trusted_quality_app_on_dependency_pr_is_source_independent() {
+	local findings='[{"reviewer_login":"coderabbitai[bot]"}]'
+	set_permission_fixture '{"permission":"none"}'
+	# The gh stub deliberately rejects `gh pr view`, so success proves the
+	# trusted audit path never consults the dependency-bot source author.
+	if _quality_feedback_dispatch_authorized "$findings" "exampleorg/examplerepo" "42"; then
+		print_result "trusted audit authority does not depend on source PR author (GH#29795)" 0
+		return 0
+	fi
+	print_result "trusted audit authority does not depend on source PR author (GH#29795)" 1
+	return 0
+}
+
+test_mixed_or_lookalike_reviewers_fail_closed() {
+	local mixed='[{"reviewer_login":"coderabbitai[bot]"},{"reviewer_login":"external-user"}]'
+	local lookalike='[{"reviewer_login":"not-coderabbitai[bot]"}]'
+	if ! _quality_findings_are_trusted_automation "$mixed" &&
+		! _quality_findings_are_trusted_automation "$lookalike"; then
+		print_result "mixed and lookalike reviewer identities fail closed (GH#29795)" 0
+		return 0
+	fi
+	print_result "mixed and lookalike reviewer identities fail closed (GH#29795)" 1
+	return 0
+}
+
+test_missing_quality_app_allowlist_fails_closed() {
+	local findings='[{"reviewer_login":"coderabbitai[bot]"}]'
+	local saved_trust_file="$AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE"
+	AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE="${TEST_ROOT}/missing-trust-file"
+	if ! _quality_findings_are_trusted_automation "$findings"; then
+		AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE="$saved_trust_file"
+		print_result "missing quality-app allowlist fails closed (GH#29795)" 0
+		return 0
+	fi
+	AIDEVOPS_TRUSTED_CODE_QUALITY_BOTS_FILE="$saved_trust_file"
+	print_result "missing quality-app allowlist fails closed (GH#29795)" 1
+	return 0
+}
 
 test_maintainer_fast_path_matches() {
 	# Stage 1: PR author matches repos.json .maintainer → trusted, no API call.
@@ -272,6 +329,10 @@ main() {
 		return 1
 	fi
 
+	test_trusted_quality_apps_authorize_findings
+	test_trusted_quality_app_on_dependency_pr_is_source_independent
+	test_mixed_or_lookalike_reviewers_fail_closed
+	test_missing_quality_app_allowlist_fails_closed
 	test_maintainer_fast_path_matches
 	test_admin_collaborator_is_trusted
 	test_maintain_collaborator_is_trusted
