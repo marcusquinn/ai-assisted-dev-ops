@@ -317,10 +317,13 @@ _log_substage_timing() {
 	local substage_name="$1"
 	local start_secs="${2:-0}"
 	local exit_code="${3:-0}"
-	local duration=$(( SECONDS - start_secs ))
+	local outcome="${4:-}"
+	local display_code="$exit_code"
+	local duration=$((SECONDS - start_secs))
 	local executor_pid=""
+	[[ "$outcome" == "skipped" ]] && display_code="skipped"
 	[[ "$duration" =~ ^[0-9]+$ ]] || duration=0
-	echo "[pulse-wrapper] Substage: ${substage_name} (${exit_code}, ${duration}s)" >>"${LOGFILE:-/dev/null}"
+	echo "[pulse-wrapper] Substage: ${substage_name} (${display_code}, ${duration}s)" >>"${LOGFILE:-/dev/null}"
 	if [[ -n "${PULSE_STAGE_TIMINGS_LOG:-}" ]]; then
 		if _pulse_resolve_executor_pid "${BASHPID:-}"; then
 			executor_pid="$_PULSE_EXECUTOR_PID"

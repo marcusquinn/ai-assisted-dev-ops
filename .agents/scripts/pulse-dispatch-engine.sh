@@ -1437,8 +1437,10 @@ _run_preflight_stages() {
 	# provide the safety net. Timing is still logged for observability.
 	local _pflt_ed_start=$SECONDS
 	local _pflt_ed_rc=0
+	local _pflt_ed_outcome=""
 	_pulse_run_budget_priority_stage "preflight_early_dispatch" _preflight_early_dispatch || _pflt_ed_rc=$?
-	_log_substage_timing "preflight_early_dispatch" "$_pflt_ed_start" "$_pflt_ed_rc"
+	[[ "${_PULSE_BUDGET_STAGE_DEFERRED:-0}" == "1" ]] && _pflt_ed_outcome="skipped"
+	_log_substage_timing "preflight_early_dispatch" "$_pflt_ed_start" "$_pflt_ed_rc" "$_pflt_ed_outcome"
 	# GH#28880: cross-repository label maintenance can take 3-5 minutes. Run it
 	# after the initial fill so already-eligible workers boot in parallel. Then
 	# normalize trusted-author NMR residue and refill once so every newly unblocked
@@ -1448,8 +1450,10 @@ _run_preflight_stages() {
 	_pulse_run_budget_priority_stage "preflight_trusted_nmr_reconcile" _preflight_trusted_nmr_reconcile || true
 	local _pflt_refill_start=$SECONDS
 	local _pflt_refill_rc=0
+	local _pflt_refill_outcome=""
 	_pulse_run_budget_priority_stage "preflight_post_label_refill" _preflight_post_label_refill || _pflt_refill_rc=$?
-	_log_substage_timing "preflight_post_label_refill" "$_pflt_refill_start" "$_pflt_refill_rc"
+	[[ "${_PULSE_BUDGET_STAGE_DEFERRED:-0}" == "1" ]] && _pflt_refill_outcome="skipped"
+	_log_substage_timing "preflight_post_label_refill" "$_pflt_refill_start" "$_pflt_refill_rc" "$_pflt_refill_outcome"
 	# t3055: Post-dispatch housekeeping runs under a separate async lock by
 	# default. These stages do not protect the immediate worker claim/ledger
 	# safety boundary, so blocking the dispatch lock on them lets a 24-worker

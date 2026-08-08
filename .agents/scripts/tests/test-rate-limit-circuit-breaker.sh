@@ -179,6 +179,7 @@ reset_test_state() {
 	rm -f "${HOME}/.aidevops/logs/pulse-graphql-circuit-breaker.state"
 	rm -f "${HOME}/.aidevops/cache/pulse-graphql-rate-limit.json"
 	rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
+	rm -f "${HOME}/.aidevops/cache/pulse-rest-core-unknown.state"
 	unset AIDEVOPS_SKIP_PULSE_CIRCUIT_BREAKER 2>/dev/null || true
 	unset AIDEVOPS_PULSE_RATE_LIMIT_CACHE_TTL 2>/dev/null || true
 	unset AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK 2>/dev/null || true
@@ -203,6 +204,7 @@ reset_test_state() {
 	export AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE=250
 	export AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS=3600
 	export AIDEVOPS_PULSE_REST_CORE_GATE_PROBE_TTL=2
+	export AIDEVOPS_PULSE_REST_CORE_UNKNOWN_PROGRESS_LIMIT=3
 	return 0
 }
 
@@ -734,6 +736,23 @@ test_rest_core_unknown_evidence() {
 	return 0
 }
 
+# --- Test 24b: Bounded unknown evidence resumes progress but not deferrable work ---
+test_rest_core_unknown_progress_bound() {
+	reset_test_state
+	export AIDEVOPS_PULSE_REST_CORE_UNKNOWN_PROGRESS_LIMIT=1
+	unset STUB_GH_CORE_REMAINING
+	rm -f "$_CB_REST_CORE_CACHE_FILE"
+	local progress_rc=0 deferrable_rc=0
+	pulse_rest_core_priority_allows progress || progress_rc=$?
+	pulse_rest_core_priority_allows deferrable || deferrable_rc=$?
+	if [[ "$progress_rc" -eq 0 && "$deferrable_rc" -eq 2 ]]; then
+		pass "bounded unknown REST evidence resumes progress only"
+	else
+		fail "unknown REST progress bound eligibility mismatch" "progress_rc=${progress_rc} deferrable_rc=${deferrable_rc}"
+	fi
+	return 0
+}
+
 # --- Test 25: Legacy soft-cap override and zero-disable remain compatible ---
 test_rest_core_legacy_override_compatibility() {
 	reset_test_state
@@ -1156,6 +1175,7 @@ test_rest_core_in_flight_allowance_boundary
 test_rest_core_unit_gate_refreshes_stale_observation
 test_rest_core_hard_floor_eligibility
 test_rest_core_unknown_evidence
+test_rest_core_unknown_progress_bound
 test_rest_core_legacy_override_compatibility
 test_rest_core_hard_floor_clamped_to_soft_cap
 test_rest_core_malformed_cache_recovers

@@ -100,6 +100,7 @@ _CB_REST_CORE_CACHE_FILE="${AIDEVOPS_PULSE_REST_CORE_CACHE:-${HOME}/.aidevops/ca
 _CB_REST_CORE_PROBE_TTL="${AIDEVOPS_PULSE_REST_CORE_PROBE_TTL:-20}"
 _CB_REST_CORE_RESOURCE="core"
 _CB_REST_CORE_UNKNOWN="unknown"
+_CB_REST_CORE_UNKNOWN_STATE_FILE="${AIDEVOPS_PULSE_REST_CORE_UNKNOWN_STATE:-${HOME}/.aidevops/cache/pulse-rest-core-unknown.state}"
 
 # Log prefix for all messages from this module.
 _CB_RL_LOG_PREFIX="[circuit-breaker-rl]"
@@ -400,6 +401,52 @@ pulse_rest_core_priority_snapshot() {
 }
 
 #######################################
+# Reset the bounded unknown-evidence streak after an authoritative observation.
+#######################################
+_cb_rest_core_reset_unknown_progress_streak() {
+	rm -f "$_CB_REST_CORE_UNKNOWN_STATE_FILE" 2>/dev/null || true
+	return 0
+}
+
+#######################################
+# Permit progress after a bounded streak of distinct unknown gate-probe slots.
+# Deferrable work never calls this helper and remains fail-closed.
+#######################################
+_cb_rest_core_unknown_progress_allows() {
+	local limit="${AIDEVOPS_PULSE_REST_CORE_UNKNOWN_PROGRESS_LIMIT:-3}"
+	local gate_ttl
+	local now
+	local slot
+	local state_dir
+	local state_slot=""
+	local state_count=0
+	local lock_dir
+	[[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+	[[ "$limit" -gt 0 ]] || return 2
+	gate_ttl=$(_cb_rest_core_gate_probe_ttl)
+	[[ "$gate_ttl" =~ ^[1-9][0-9]*$ ]] || gate_ttl=1
+	now=$(date +%s 2>/dev/null) || now=0
+	[[ "$now" =~ ^[0-9]+$ ]] || return 2
+	slot=$((now / gate_ttl))
+	state_dir=$(dirname "$_CB_REST_CORE_UNKNOWN_STATE_FILE")
+	lock_dir="${_CB_REST_CORE_UNKNOWN_STATE_FILE}.lock"
+	mkdir -p "$state_dir" 2>/dev/null || return 2
+	mkdir "$lock_dir" 2>/dev/null || return 2
+	if [[ -f "$_CB_REST_CORE_UNKNOWN_STATE_FILE" ]]; then
+		read -r state_slot state_count <"$_CB_REST_CORE_UNKNOWN_STATE_FILE" || true
+	fi
+	[[ "$state_count" =~ ^[0-9]+$ ]] || state_count=0
+	if [[ "$state_slot" != "$slot" ]]; then
+		state_count=$((state_count + 1))
+		printf '%s %s\n' "$slot" "$state_count" >"${_CB_REST_CORE_UNKNOWN_STATE_FILE}.tmp.$$" &&
+			mv "${_CB_REST_CORE_UNKNOWN_STATE_FILE}.tmp.$$" "$_CB_REST_CORE_UNKNOWN_STATE_FILE" 2>/dev/null || true
+	fi
+	rmdir "$lock_dir" 2>/dev/null || true
+	[[ "$state_count" -ge "$limit" ]] && return 0
+	return 2
+}
+
+#######################################
 # Apply a REST priority class to one already-observed budget snapshot.
 #
 # Args:
@@ -428,9 +475,17 @@ _cb_rest_core_priority_decision_allows() {
 	read -r mode remaining limit adaptive soft_cap hard_floor reset_epoch <<<"$decision"
 	case "$mode" in
 	disabled)
+		_cb_rest_core_reset_unknown_progress_streak
 		return 0
 		;;
-	normal | reserve | emergency) ;;
+	normal | reserve | emergency)
+		_cb_rest_core_reset_unknown_progress_streak
+		;;
+	unknown)
+		[[ "$priority" == "progress" ]] || return 2
+		_cb_rest_core_unknown_progress_allows
+		return $?
+		;;
 	*)
 		return 2
 		;;
@@ -536,11 +591,11 @@ _cb_rest_core_progress_block_reason() {
 }
 
 #######################################
-# Gate new dispatch work at the hard floor and on unknown REST evidence.
-# Unknown evidence deliberately remains fail-closed without a time-based
-# downgrade: every later call retries the bounded authoritative probe, and
-# progress resumes only after valid evidence returns or an operator selects the
-# explicit emergency bypass.
+# Gate new dispatch work at the hard floor and on unknown REST evidence. Unknown
+# evidence fails closed until AIDEVOPS_PULSE_REST_CORE_UNKNOWN_PROGRESS_LIMIT
+# distinct gate-probe slots are unknown; then only progress work resumes.
+# A limit of 0 preserves permanent fail-closed behavior, and a valid observation
+# resets the streak. Deferrable work remains deferred throughout.
 #######################################
 _cb_rest_core_progress_allows_dispatch() {
 	local decision

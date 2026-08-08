@@ -286,8 +286,10 @@ _pulse_defer_budget_priority_stage() {
 _pulse_run_budget_priority_stage() {
 	local stage="$1"
 	shift
+	_PULSE_BUDGET_STAGE_DEFERRED=0
 	if _pulse_should_defer_budget_priority_stage "$stage"; then
 		_pulse_defer_budget_priority_stage "$stage"
+		_PULSE_BUDGET_STAGE_DEFERRED=1
 		return 0
 	fi
 	"$@"
@@ -301,8 +303,10 @@ _pulse_run_budget_priority_stage_with_timeout() {
 	local stage="$1"
 	local timeout_seconds="$2"
 	shift 2
+	_PULSE_BUDGET_STAGE_DEFERRED=0
 	if _pulse_should_defer_budget_priority_stage "$stage"; then
 		_pulse_defer_budget_priority_stage "$stage"
+		_PULSE_BUDGET_STAGE_DEFERRED=1
 		return 0
 	fi
 	run_stage_with_timeout "$stage" "$timeout_seconds" "$@"
