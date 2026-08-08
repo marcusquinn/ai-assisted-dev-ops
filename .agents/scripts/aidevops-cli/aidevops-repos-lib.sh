@@ -447,6 +447,32 @@ _repo_registration_maintainer() {
 	return 0
 }
 
+# Resolve an explicit Pulse role from authoritative GitHub repository permission.
+# Empty output means permission evidence was unavailable or unrecognized; callers
+# must preserve any existing role and avoid persisting a fail-closed downgrade.
+_repo_registration_role() {
+	local slug="$1"
+	local is_local_only="$2"
+	local permission=""
+	if [[ "$is_local_only" == "true" || -z "$slug" ]] || ! command -v gh &>/dev/null; then
+		printf '\n'
+		return 0
+	fi
+	permission=$(gh repo view "$slug" --json viewerPermission --jq '.viewerPermission // empty' 2>/dev/null) || permission=""
+	case "$permission" in
+	ADMIN | MAINTAIN | WRITE)
+		printf 'maintainer\n'
+		;;
+	READ | TRIAGE | NONE)
+		printf 'contributor\n'
+		;;
+	*)
+		printf '\n'
+		;;
+	esac
+	return 0
+}
+
 _repo_registration_update_existing() {
 	local repo_path="$1"
 	local version="$2"
@@ -461,9 +487,11 @@ _repo_registration_update_existing() {
 	local app_type_default="${11}"
 	local cloudron_defaults="${12}"
 	local cloudron_app_type="${13}"
+	local detected_role="${14}"
 	local temp_file="${REPOS_FILE}.tmp"
 	jq --arg path "$repo_path" --arg version "$version" --arg features "$features" \
 		--arg slug "$slug" --argjson local_only "$is_local_only" --arg maintainer "$maintainer" \
+		--arg detected_role "$detected_role" \
 		--argjson pulse_default "$default_pulse" --arg priority_default "$default_priority" \
 		--arg init_scope_default "$default_init_scope" --arg has_interface "$has_interface" \
 		--arg app_type_default "$app_type_default" --argjson cloudron_defaults "$cloudron_defaults" \
@@ -475,6 +503,7 @@ _repo_registration_update_existing() {
 			| if .pulse == null then .pulse = (if $local_only then false else $pulse_default end) else . end
 			| if (.priority == null or .priority == "") and $priority_default != "" then .priority = $priority_default else . end
 			| if (.maintainer == null or .maintainer == "") and $maintainer != "" then .maintainer = $maintainer else . end
+			| if (.role == null or .role == "") and $detected_role != "" then .role = $detected_role else . end
 			| if (.init_scope == null or .init_scope == "") then .init_scope = $init_scope_default else . end
 			| if $has_interface == "true" then .has_interface = true elif $has_interface == "false" then .has_interface = false else . end
 			| if (.app_type == null or .app_type == "") and $app_type_default != "" then .app_type = $app_type_default else . end
@@ -532,8 +561,9 @@ register_repo() {
 		fi
 	fi
 
-	local maintainer=""
+	local maintainer="" detected_role=""
 	maintainer=$(_repo_registration_maintainer)
+	detected_role=$(_repo_registration_role "$slug" "$is_local_only")
 
 	local DEFAULT_PULSE="false"
 	local DEFAULT_PRIORITY=""
@@ -555,11 +585,12 @@ register_repo() {
 	if jq -e --arg path "$repo_path" '.initialized_repos[] | select(.path == $path)' "$REPOS_FILE" &>/dev/null; then
 		_repo_registration_update_existing "$repo_path" "$version" "$features" "$slug" \
 			"$is_local_only" "$maintainer" "$DEFAULT_PULSE" "$DEFAULT_PRIORITY" \
-			"$default_init_scope" "$has_interface" "$app_type_default" "$cloudron_defaults" "$cloudron_app_type" || return 1
+			"$default_init_scope" "$has_interface" "$app_type_default" "$cloudron_defaults" "$cloudron_app_type" "$detected_role" || return 1
 	else
 		local temp_file="${REPOS_FILE}.tmp"
 		jq --arg path "$repo_path" --arg version "$version" --arg features "$features" \
 			--arg slug "$slug" --arg maintainer "$maintainer" \
+			--arg detected_role "$detected_role" \
 			--argjson local_only "$is_local_only" --argjson pulse_default "$DEFAULT_PULSE" \
 			--arg priority_default "$DEFAULT_PRIORITY" --arg init_scope "$default_init_scope" --arg has_interface "$has_interface" \
 			--arg app_type_default "$app_type_default" --argjson cloudron_defaults "$cloudron_defaults" \
@@ -575,6 +606,7 @@ register_repo() {
 					initialized: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
 				}
 				| if $slug != "" then . + {slug: $slug} else . end
+				| if $detected_role != "" then . + {role: $detected_role} else . end
 				| if $local_only then . + {local_only: true, pulse: false} else . end
 				| if $priority_default != "" then . + {priority: $priority_default} else . end
 				| if $has_interface == "true" then . + {has_interface: true} elif $has_interface == "false" then . + {has_interface: false} else . end

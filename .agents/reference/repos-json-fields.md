@@ -25,7 +25,12 @@ Config file: `~/.config/aidevops/repos.json`. Structure: `{"initialized_repos": 
 - **`maintainer`** (default for repos you own): all scanners run
 - **`contributor`** (default for repos owned by others): session-miner insights only — files sanitized `contributor-insight` issues upstream from instruction candidates and error patterns in the contributor's own sessions. Privacy: strips private repo slugs, local file paths, credentials, email addresses.
 
-Auto-detected from slug owner vs `gh api user` when omitted.
+Registration persists `maintainer` when GitHub reports `ADMIN`, `MAINTAIN`, or
+`WRITE`, including organization-owned repositories, and persists `contributor`
+for confirmed lower permissions. If permission evidence is unavailable, it does
+not persist a downgrade; runtime resolution remains fail-closed until a later
+registration can record authoritative permission. Existing explicit roles are
+always preserved.
 
 ### `init_scope` detail
 

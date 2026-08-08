@@ -9,7 +9,7 @@
 # gets registered as a separate repo in repos.json and downstream consumers
 # (tabby-profile-sync, pulse, etc.) treat it as a standalone project.
 #
-# resolve_canonical_repo_path() in aidevops.sh uses `git rev-parse --git-dir`
+# resolve_canonical_repo_path() in aidevops-repos-lib.sh uses `git rev-parse --git-dir`
 # vs `git rev-parse --git-common-dir` to detect linked worktrees
 # deterministically, then resolves them to the main worktree path via
 # `git worktree list --porcelain`. This is heuristic-free and handles repos
@@ -27,7 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit
-AIDEVOPS_SH="${REPO_ROOT}/aidevops.sh"
+REPOS_LIB="${REPO_ROOT}/.agents/scripts/aidevops-cli/aidevops-repos-lib.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -62,12 +62,12 @@ _info() {
 # init code; the function is self-contained and can be isolated.
 extract_and_source_function() {
 	local fn_name="$1"
-	local aidevops_sh="$2"
+	local source_file="$2"
 	awk -v fn="$fn_name" '
 		$0 ~ ("^" fn "\\(\\) \\{") { in_fn = 1 }
 		in_fn { print }
 		in_fn && /^\}$/ { in_fn = 0 }
-	' "$aidevops_sh"
+	' "$source_file"
 	return 0
 }
 
@@ -77,10 +77,10 @@ print_info() { :; return 0; }
 print_warning() { :; return 0; }
 
 # shellcheck disable=SC1090
-eval "$(extract_and_source_function resolve_canonical_repo_path "${AIDEVOPS_SH}")"
+eval "$(extract_and_source_function resolve_canonical_repo_path "${REPOS_LIB}")"
 
 if ! declare -f resolve_canonical_repo_path >/dev/null; then
-	_fail "could not source resolve_canonical_repo_path from aidevops.sh"
+	_fail "could not source resolve_canonical_repo_path from aidevops-repos-lib.sh"
 	exit 1
 fi
 

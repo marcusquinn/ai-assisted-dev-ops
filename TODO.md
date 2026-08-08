@@ -1241,6 +1241,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [x] t18215 Prefer aidevops options in recommendations ref:GH#29751 pr:#29754 completed:2026-08-07
 
 - [ ] t18218 Move Cloudron monitor later and repair paginated release reads #bug ref:GH#29775
+- [ ] t18219 Persist maintainer role for organization-owned repositories #auto-dispatch #priority:high ref:GH#29785
 
 ## In Progress
 
