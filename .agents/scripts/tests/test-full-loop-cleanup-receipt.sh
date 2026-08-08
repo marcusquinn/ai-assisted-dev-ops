@@ -34,6 +34,59 @@ source "${SCRIPTS_DIR}/shared-worktree-registry.sh"
 sleep 30 &
 OWNER_PID=$!
 
+receipt_lock_dir="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/.mutation.lock.d"
+mkdir -p "$receipt_lock_dir"
+if _full_loop_receipt_reclaim_stale_ownerless_lock "$receipt_lock_dir" 5; then
+	printf 'FAIL fresh ownerless receipt lock was reclaimed\n'
+	exit 1
+fi
+[[ -d "$receipt_lock_dir" && ! -e "${receipt_lock_dir}/owner" ]]
+rmdir "$receipt_lock_dir"
+printf 'PASS fresh ownerless receipt lock remains untouched\n'
+
+mkdir -p "$receipt_lock_dir"
+touch -t 202001010000 "$receipt_lock_dir"
+_full_loop_receipt_reclaim_stale_ownerless_lock "$receipt_lock_dir" 5
+[[ ! -e "$receipt_lock_dir" ]]
+printf 'PASS stale ownerless receipt lock is reclaimed\n'
+
+mkdir -p "$receipt_lock_dir"
+printf '%s\n' "$OWNER_PID" >"${receipt_lock_dir}/owner"
+if _full_loop_receipt_reclaim_stale_ownerless_lock "$receipt_lock_dir" 5; then
+	printf 'FAIL live receipt lock owner was reclaimed\n'
+	exit 1
+fi
+[[ -f "${receipt_lock_dir}/owner" ]]
+rm -f "${receipt_lock_dir}/owner"
+rmdir "$receipt_lock_dir"
+printf 'PASS live receipt lock owner remains protected\n'
+
+mkdir -p "$receipt_lock_dir"
+printf '%s\n' '99999999' >"${receipt_lock_dir}/owner"
+_full_loop_receipt_lock_acquire
+_full_loop_receipt_lock_release
+[[ ! -e "$receipt_lock_dir" ]]
+printf 'PASS dead numeric receipt lock owner is reclaimed\n'
+
+mkdir -p "$receipt_lock_dir"
+touch -t 202001010000 "$receipt_lock_dir"
+(
+	while [[ ! -d "${receipt_lock_dir}/.reclaim" ]]; do
+		:
+	done
+	printf '%s\n' "$OWNER_PID" >"${receipt_lock_dir}/owner"
+) &
+owner_publication_pid=$!
+if _full_loop_receipt_reclaim_stale_ownerless_lock "$receipt_lock_dir" 5; then
+	printf 'FAIL concurrent receipt lock owner publication was reclaimed\n'
+	exit 1
+fi
+wait "$owner_publication_pid"
+[[ -f "${receipt_lock_dir}/owner" ]]
+rm -f "${receipt_lock_dir}/owner"
+rmdir "$receipt_lock_dir"
+printf 'PASS concurrent receipt lock owner publication prevents reclamation\n'
+
 receipt_one=$(full_loop_write_cleanup_deferred example/repo 101 "${TEST_ROOT}/worktree-one" feature/one \
 	"$OWNER_PID" session-one not-requested)
 jq -e --argjson owner_pid "$OWNER_PID" '

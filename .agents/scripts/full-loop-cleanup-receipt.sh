@@ -11,6 +11,13 @@
 [[ -n "${_FULL_LOOP_CLEANUP_RECEIPT_LOADED:-}" ]] && return 0
 _FULL_LOOP_CLEANUP_RECEIPT_LOADED=1
 
+_FULL_LOOP_RECEIPT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -F _file_mtime_epoch >/dev/null 2>&1; then
+	# shellcheck source=./portable-stat.sh
+	source "${_FULL_LOOP_RECEIPT_SCRIPT_DIR}/portable-stat.sh" || return 1
+fi
+unset _FULL_LOOP_RECEIPT_SCRIPT_DIR
+
 _FULL_LOOP_CLEANUP_DEFERRED="CLEANUP_DEFERRED"
 _FULL_LOOP_CLEANUP_LEASED="CLEANUP_LEASED"
 _FULL_LOOP_CLEANUP_CLEANED="CLEANED"
@@ -413,11 +420,44 @@ _full_loop_recover_recreated_receipt_transactions() {
 	return 0
 }
 
+_full_loop_receipt_reclaim_stale_ownerless_lock() {
+	local lock_dir="$1"
+	local minimum_age="$2"
+	local owner_path="${lock_dir}/owner"
+	local reclaim_dir="${lock_dir}/.reclaim"
+	local lock_mtime=""
+	local now=""
+	local lock_age=0
+
+	[[ "$minimum_age" =~ ^[1-9][0-9]*$ ]] || return 1
+	[[ -d "$lock_dir" && ! -L "$lock_dir" && ! -e "$owner_path" ]] || return 1
+	lock_mtime=$(_file_mtime_epoch "$lock_dir") || return 1
+	[[ "$lock_mtime" =~ ^[0-9]+$ && "$lock_mtime" -gt 0 ]] || return 1
+	now=$(date '+%s') || return 1
+	[[ "$now" =~ ^[0-9]+$ ]] || return 1
+	lock_age=$((now - lock_mtime))
+	[[ "$lock_age" -lt 0 ]] && lock_age=0
+	[[ "$lock_age" -ge "$minimum_age" ]] || return 1
+
+	# Elect one reclaimer, then revalidate ownership before removing the exact
+	# empty lock directory. rmdir fails safely if an owner publishes meanwhile.
+	mkdir "$reclaim_dir" 2>/dev/null || return 1
+	if [[ ! -d "$lock_dir" || -e "$owner_path" ]]; then
+		rmdir "$reclaim_dir" 2>/dev/null || true
+		return 1
+	fi
+	rmdir "$reclaim_dir" 2>/dev/null || return 1
+	rmdir "$lock_dir" 2>/dev/null || return 1
+	return 0
+}
+
 _full_loop_receipt_lock_acquire() {
 	local receipt_dir=""
 	local lock_dir=""
 	local owner_pid=""
+	local ownerless_lock_minimum_age="${AIDEVOPS_FULL_LOOP_RECEIPT_LOCK_OWNERLESS_GRACE_SECONDS:-5}"
 	local attempt=0
+	[[ "$ownerless_lock_minimum_age" =~ ^[1-9][0-9]*$ ]] || return 1
 	receipt_dir=$(_full_loop_cleanup_receipt_dir) || return 1
 	mkdir -p "$receipt_dir" || return 1
 	lock_dir="${receipt_dir}/.mutation.lock.d"
@@ -440,6 +480,9 @@ _full_loop_receipt_lock_acquire() {
 		if [[ "$owner_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
 			rm -f "${lock_dir}/owner" 2>/dev/null || true
 			rmdir "$lock_dir" 2>/dev/null || true
+			continue
+		fi
+		if _full_loop_receipt_reclaim_stale_ownerless_lock "$lock_dir" "$ownerless_lock_minimum_age"; then
 			continue
 		fi
 		sleep 0.05
