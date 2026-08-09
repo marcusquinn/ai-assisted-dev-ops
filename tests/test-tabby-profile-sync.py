@@ -316,7 +316,7 @@ class TestGetProfileTargets(unittest.TestCase):
         profile = profiles[0][1]
         self.assertIn("  - name: Buzz", profile)
         self.assertIn(f"      cwd: {buzz_path}", profile)
-        self.assertIn("        - 'aidevops opencode; exec zsh'", profile)
+        self.assertIn("        - 'exec aidevops opencode --tabby-shell'", profile)
 
     def test_registered_buzz_path_is_not_duplicated(self):
         buzz_path = self.root / ".buzz"
@@ -350,8 +350,8 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
             group_id="group-1",
         )
 
-        self.assertIn("        - 'aidevops opencode; exec zsh'", profile)
-        self.assertNotIn("        - aidevops opencode; exec zsh", profile)
+        self.assertIn("        - 'exec aidevops opencode --tabby-shell'", profile)
+        self.assertNotIn("        - exec aidevops opencode --tabby-shell", profile)
         self.assertIn("    disableDynamicTitle: false", profile)
 
     def test_existing_opencode_profile_enables_dynamic_title(self):
@@ -370,6 +370,7 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
         )
 
         self.assertEqual(repairs, 1)
+        self.assertIn("        - 'exec aidevops opencode --tabby-shell'", repaired)
         self.assertIn("    disableDynamicTitle: false", repaired)
         self.assertNotIn("    disableDynamicTitle: true", repaired)
 
@@ -413,7 +414,7 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
 
         self.assertEqual(repairs, 1)
         self.assertIn("      command: /bin/zsh", repaired)
-        self.assertIn("        - 'aidevops opencode; exec zsh'", repaired)
+        self.assertIn("        - 'exec aidevops opencode --tabby-shell'", repaired)
 
     def test_inline_args_blank_line_before_env_does_not_duplicate_env(self):
         repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
@@ -429,7 +430,7 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
 
         self.assertEqual(repairs, 1)
         self.assertEqual(repaired.count("      env:"), 1)
-        self.assertIn("        - 'aidevops opencode; exec zsh'", repaired)
+        self.assertIn("        - 'exec aidevops opencode --tabby-shell'", repaired)
 
     def test_block_args_comment_before_env_does_not_duplicate_env(self):
         repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(

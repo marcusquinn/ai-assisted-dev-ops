@@ -37,9 +37,23 @@ command: /bin/zsh
 args:
   - '-l'
   - '-c'
-  - 'opencode; exec zsh'
+  - 'exec aidevops opencode --tabby-shell'
 env: {}
 ```
+
+`--tabby-shell` enables exact crash restoration for managed profiles. The
+OpenCode plugin creates a private marker for the root session and reports that
+marker as Tabby's current directory with `OSC 1337`. When Tabby restores the
+tab, the launcher validates marker ownership and permissions, isolated-storage
+containment, the session ID, original directory, and the matching SQLite row
+before running `opencode --session <id>`. Invalid markers fail closed. A normal
+OpenCode exit returns to a login zsh in the original project directory.
+
+Recovery markers live under
+`~/.aidevops/.agent-workspace/work/opencode-tabby-recovery/`. They contain only
+the OpenCode session ID and local directory references, use owner-only
+permissions, and are inert unless Tabby starts the launcher from that exact
+marker directory.
 
 For manual one-off profiles that should run OpenCode and then leave a shell open,
 use the same non-interactive login command instead of mixing `-i` and `-c`:
@@ -49,5 +63,5 @@ command: /bin/zsh
 args:
   - '-l'
   - '-c'
-  - 'opencode; exec zsh'
+  - 'exec aidevops opencode --tabby-shell'
 ```

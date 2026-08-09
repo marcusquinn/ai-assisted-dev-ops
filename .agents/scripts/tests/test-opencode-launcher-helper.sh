@@ -245,6 +245,53 @@ else
     _fail "TUI dry-run mutated state or output an unexpected command: ${output}"
 fi
 
+tabby_output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --tabby-shell --dir "${launch_dir}" --session-id tabby-first-launch --dry-run 2>&1)
+if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1 opencode"* ]] \
+    && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]] \
+    && [[ "${tabby_output}" != *"--session ses_"* ]]; then
+    _pass "Tabby first launch enables recovery and leaves a shell open"
+else
+    _fail "Tabby first-launch command unexpected: ${tabby_output}"
+fi
+
+tabby_session_id="ses_0123456789TabbyRestore"
+tabby_data_dir="${work_dir}/opencode-interactive/tabby-restore"
+tabby_marker_dir="${work_dir}/opencode-tabby-recovery/${tabby_session_id}"
+mkdir -p "${tabby_data_dir}/opencode" "${tabby_marker_dir}"
+chmod 700 "${work_dir}/opencode-tabby-recovery" "${tabby_marker_dir}"
+sqlite3 "${tabby_data_dir}/opencode/opencode.db" \
+    "CREATE TABLE session (id text PRIMARY KEY, parent_id text, directory text NOT NULL); INSERT INTO session VALUES ('${tabby_session_id}', NULL, '${launch_dir}');"
+python3 - "${tabby_marker_dir}/recovery.json" "${tabby_session_id}" "${launch_dir}" "${tabby_data_dir}" <<'PY'
+import json
+import os
+import sys
+
+marker_path, session_id, directory, data_dir = sys.argv[1:]
+with open(marker_path, "w") as handle:
+    json.dump(
+        {
+            "schema_version": 1,
+            "session_id": session_id,
+            "directory": directory,
+            "data_dir": data_dir,
+        },
+        handle,
+    )
+os.chmod(marker_path, 0o600)
+PY
+tabby_output=$(cd "${tabby_marker_dir}" && \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --tabby-shell --dry-run 2>&1)
+if [[ "${tabby_output}" == *"cd ${launch_dir}"* ]] \
+    && [[ "${tabby_output}" == *"XDG_DATA_HOME=${tabby_data_dir}"* ]] \
+    && [[ "${tabby_output}" == *"opencode --session ${tabby_session_id}"* ]] \
+    && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]]; then
+    _pass "Tabby recovery resumes the exact validated OpenCode session"
+else
+    _fail "Tabby recovered command unexpected: ${tabby_output}"
+fi
+
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
     "${HELPER}" --shared-db --dir "${launch_dir}" -- --version 2>&1)
 if [[ "${output}" == *"AIDEVOPS_OPENCODE_ISOLATED_DB="* ]] \

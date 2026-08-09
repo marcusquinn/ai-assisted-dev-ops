@@ -47,6 +47,7 @@ Options:
   --shared-db          Use OpenCode's normal shared data directory
   --dir PATH           Working directory for OpenCode (default: current dir)
   --session-id ID      Explicit isolated DB name (default: stable per-project shard)
+  --tabby-shell        Restore Tabby's exact saved session, then leave zsh open
   --dry-run            Print the environment/command without executing
   -h, --help           Show this help
 
@@ -208,6 +209,87 @@ validate_launch_directory() {
         return 1
     fi
     return 0
+}
+
+resolve_tabby_recovery() {
+    local recovered_cwd="$1"
+    local work_dir="$2"
+    local resolver="${SCRIPT_DIR}/../plugins/opencode-aidevops/session-recovery-marker.mjs"
+    local resolution=""
+    local resolver_status=0
+
+    require_node_cli || return 1
+    if resolution=$(node "${resolver}" resolve --cwd "${recovered_cwd}" --work-dir "${work_dir}"); then
+        IFS=$'\t' read -r TABBY_RECOVERY_LAUNCH_DIR TABBY_RECOVERY_DATA_DIR TABBY_RECOVERY_SESSION_ID <<<"${resolution}"
+        if [[ -z "${TABBY_RECOVERY_LAUNCH_DIR}" || -z "${TABBY_RECOVERY_DATA_DIR}" || -z "${TABBY_RECOVERY_SESSION_ID}" ]]; then
+            print_error "Tabby session recovery returned incomplete data"
+            return 1
+        fi
+        return 0
+    else
+        resolver_status=$?
+    fi
+    ((resolver_status == 2)) && return 2
+    print_error "Tabby session recovery marker validation failed"
+    return 1
+}
+
+emit_tabby_current_directory() {
+    local directory="$1"
+
+    [[ "${directory}" != *$'\n'* && "${directory}" != *$'\r'* ]] || return 1
+    printf '\033]1337;CurrentDir=%s\007' "${directory}" >/dev/tty 2>/dev/null || true
+    return 0
+}
+
+opencode_args_contain_session() {
+    local argument=""
+
+    for argument in "$@"; do
+        case "${argument}" in
+        --session | --session=*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+run_isolated_tui() {
+    local launch_dir="$1"
+    local data_dir="$2"
+    local tabby_shell="$3"
+    local dry_run="$4"
+    shift 4
+    local -a opencode_args=("$@")
+
+    if ((dry_run == 1)); then
+        printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}"
+        ((tabby_shell == 1)) && printf ' AIDEVOPS_TABBY_SESSION_RECOVERY=1'
+        printf ' opencode'
+        printf ' %q' "${opencode_args[@]}"
+        ((tabby_shell == 1)) && printf '; cd %q && exec /bin/zsh -l' "${launch_dir}"
+        printf '\n'
+        return 0
+    fi
+
+    mkdir -p "${data_dir}/opencode" || return 1
+    # Keep stdout/stderr clean before exec: OpenCode's TUI is sensitive to any
+    # pre-launch terminal output and can leave visible redraw artifacts.
+    copy_auth_json "${data_dir}" || true
+    prewarm_opencode_data_dir "${data_dir}"
+
+    cd "${launch_dir}" || return 1
+    export XDG_DATA_HOME="${data_dir}"
+    export AIDEVOPS_OPENCODE_ISOLATED_DB=1
+    if ((tabby_shell == 1)); then
+        export AIDEVOPS_TABBY_SESSION_RECOVERY=1
+        opencode "${opencode_args[@]}" || true
+        cd "${launch_dir}" || return 1
+        emit_tabby_current_directory "${launch_dir}" || true
+        exec /bin/zsh -l
+        return 1
+    fi
+    exec opencode "${opencode_args[@]}"
+    return 1
 }
 
 require_opencode_cli() {
@@ -1153,9 +1235,13 @@ cmd_attach() {
 
 cmd_tui_launch() {
     local use_shared_db=0
+    local tabby_shell=0
     local dry_run=0
     local launch_dir="$PWD"
+    local invocation_dir="$PWD"
     local session_id=""
+    local data_dir=""
+    local recovery_status=0
     local -a opencode_args=()
 
     while (($# > 0)); do
@@ -1173,6 +1259,10 @@ cmd_tui_launch() {
             [[ $# -ge 2 ]] || { print_error "${ERR_SESSION_ID_REQUIRES_VALUE}"; return 1; }
             session_id="$2"
             shift 2
+            ;;
+        --tabby-shell)
+            tabby_shell=1
+            shift
             ;;
         --dry-run)
             dry_run=1
@@ -1196,6 +1286,27 @@ cmd_tui_launch() {
 
     validate_launch_directory "${launch_dir}" || return 1
     require_opencode_cli || return 1
+    if ((tabby_shell == 1 && use_shared_db == 1)); then
+        print_error "--tabby-shell requires aidevops isolated OpenCode storage"
+        return 1
+    fi
+    if ((tabby_shell == 1)); then
+        if resolve_tabby_recovery \
+            "${invocation_dir}" \
+            "${AIDEVOPS_WORK_DIR:-${HOME}/.aidevops/.agent-workspace/work}"; then
+            if opencode_args_contain_session "${opencode_args[@]}"; then
+                print_error "Tabby recovery rejects an additional OpenCode --session argument"
+                return 1
+            fi
+            launch_dir="${TABBY_RECOVERY_LAUNCH_DIR}"
+            data_dir="${TABBY_RECOVERY_DATA_DIR}"
+            opencode_args=(--session "${TABBY_RECOVERY_SESSION_ID}" "${opencode_args[@]}")
+        else
+            recovery_status=$?
+            ((recovery_status == 2)) || return 1
+        fi
+    fi
+    validate_launch_directory "${launch_dir}" || return 1
     if [[ -z "${session_id}" ]]; then
         session_id=$(build_project_session_id "${launch_dir}")
     fi
@@ -1216,27 +1327,12 @@ cmd_tui_launch() {
         return 1
     fi
 
-    local data_dir
-    data_dir=$(build_session_data_dir "${session_id}")
-
-    if ((dry_run == 1)); then
-        printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1 opencode' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}"
-        printf ' %q' "${opencode_args[@]}"
-        printf '\n'
-        return 0
+    if [[ -z "${data_dir}" ]]; then
+        data_dir=$(build_session_data_dir "${session_id}")
     fi
 
-    mkdir -p "${data_dir}/opencode" || return 1
-    # Keep stdout/stderr clean before exec: OpenCode's TUI is sensitive to any
-    # pre-launch terminal output and can leave visible redraw artifacts.
-    copy_auth_json "${data_dir}" || true
-    prewarm_opencode_data_dir "${data_dir}"
-
-    cd "${launch_dir}" || return 1
-    export XDG_DATA_HOME="${data_dir}"
-    export AIDEVOPS_OPENCODE_ISOLATED_DB=1
-    exec opencode "${opencode_args[@]}"
-    return 1
+    run_isolated_tui "${launch_dir}" "${data_dir}" "${tabby_shell}" "${dry_run}" "${opencode_args[@]}"
+    return $?
 }
 
 run_conversation_session() {

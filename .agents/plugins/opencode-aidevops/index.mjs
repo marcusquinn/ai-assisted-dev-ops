@@ -53,6 +53,7 @@ import {
 } from "./subagent-effort.mjs";
 import { loadModelRouting } from "./model-routing.mjs";
 import { createSessionContinuationGuard } from "./session-continuation-guard.mjs";
+import { createSessionRecoveryMarkerHandler } from "./session-recovery-marker.mjs";
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
 import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
@@ -468,6 +469,11 @@ export async function AidevopsPlugin({ directory, client }) {
     agentsDir: ACTIVE_AGENTS_DIR,
     client,
   });
+  const sessionRecoveryMarkerHandler = createSessionRecoveryMarkerHandler({
+    directory,
+    dataDir: process.env.XDG_DATA_HOME || "",
+    workDir: process.env.AIDEVOPS_WORK_DIR || join(WORKSPACE_DIR, "work"),
+  });
 
   const debugEventError = (label, err) => {
     if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
@@ -541,6 +547,7 @@ export async function AidevopsPlugin({ directory, client }) {
         routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),
         sessionTitleSuffixHandler(input).catch((err) => debugEventError("title suffix handler", err)),
         sessionTitleFallbackHandler(input).catch((err) => debugEventError("title fallback handler", err)),
+        sessionRecoveryMarkerHandler(input).catch((err) => debugEventError("session recovery marker", err)),
         greetingHandler(input).catch((err) => debugEventError("greeting handler", err)),
       ]);
     },
