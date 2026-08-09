@@ -149,8 +149,8 @@ class InteractiveSubagentEscalator {
     ].filter(Boolean).join("\n\n");
   }
 
-  async escalateTask(output, childID) {
-    let evidence = capabilityEscalationEvidence(output?.output);
+  initialEscalationState(output, childID) {
+    const evidence = capabilityEscalationEvidence(output?.output);
     const policy = this.context.policies.get(childID);
     if (!evidence || !policy || policy.pinned || toolFailed(output)) return null;
     if (this.sideEffects.get(childID)) {
@@ -158,59 +158,93 @@ class InteractiveSubagentEscalator {
       return null;
     }
 
-    let childSession;
+    return {
+      evidence,
+      finalText: String(output.output || "").trim(),
+      policy,
+      route: [policy.effort],
+    };
+  }
+
+  async loadChildSession(childID) {
     try {
-      childSession = await this.context.getSession(this.context.client, childID);
+      const session = await this.context.getSession(this.context.client, childID);
+      return { available: true, session };
     } catch {
-      return null;
+      return { available: false, session: null };
     }
+  }
 
-    const route = [policy.effort];
-    let finalText = String(output.output || "").trim();
-    while (evidence) {
-      const nextTier = nextRoutingTier(this.context.modelRouting, policy.effort);
-      if (!nextTier) break;
-      const providerState = await this.context.resolveProviderState();
-      if (!providerState) break;
-      const model = selectConnectedRoutingCandidate(
-        this.context.modelRouting,
-        nextTier,
-        providerState,
-      );
-      if (!model) break;
+  async nextEscalationCandidate(policy) {
+    const tier = nextRoutingTier(this.context.modelRouting, policy.effort);
+    if (!tier) return null;
+    const providerState = await this.context.resolveProviderState();
+    if (!providerState) return null;
+    const model = selectConnectedRoutingCandidate(
+      this.context.modelRouting,
+      tier,
+      providerState,
+    );
+    return model ? { model, tier } : null;
+  }
 
-      this.prepareRoute(policy, nextTier, model);
-      let response;
-      try {
-        response = await this.promptNextTier(childID, childSession, model);
-      } catch (error) {
-        policy.awaitingEscalationPrompt = false;
-        this.safeLog("WARN", `[subagent-routing] capability escalation request failed: ${error?.name || "Error"}`);
-        break;
-      }
+  async requestEscalation(childID, childSession, policy, candidate) {
+    this.prepareRoute(policy, candidate.tier, candidate.model);
+    try {
+      const response = await this.promptNextTier(childID, childSession, candidate.model);
+      if (responseError(response)) return "";
+      return responseText(response);
+    } catch (error) {
+      this.safeLog("WARN", `[subagent-routing] capability escalation request failed: ${error?.name || "Error"}`);
+      return "";
+    } finally {
       policy.awaitingEscalationPrompt = false;
-      if (responseError(response)) break;
-      const text = responseText(response);
-      if (!text) break;
-      route.push(nextTier);
-      finalText = text;
-      evidence = capabilityEscalationEvidence(text);
-      if (evidence && this.sideEffects.get(childID)) {
-        finalText = [finalText, SIDE_EFFECT_SKIP].join("\n\n");
-        evidence = "";
-      }
     }
+  }
 
-    if (route.length === 1) return null;
-    output.output = `[AIDEvOps capability escalation: ${route.join(" → ")}]\n\n${finalText}`;
+  recordEscalationResponse(state, candidate, text, childID) {
+    state.route.push(candidate.tier);
+    state.finalText = text;
+    state.evidence = capabilityEscalationEvidence(text);
+    if (state.evidence && this.sideEffects.get(childID)) {
+      state.finalText = [state.finalText, SIDE_EFFECT_SKIP].join("\n\n");
+      state.evidence = "";
+    }
+  }
+
+  completeEscalation(output, state) {
+    if (state.route.length === 1) return null;
+    output.output = `[AIDEvOps capability escalation: ${state.route.join(" → ")}]\n\n${state.finalText}`;
     output.metadata = {
       ...output.metadata,
       aidevopsRoutingEscalation: {
-        attempts: route.length,
-        route,
+        attempts: state.route.length,
+        route: state.route,
       },
     };
     return output.metadata.aidevopsRoutingEscalation;
+  }
+
+  async escalateTask(output, childID) {
+    const state = this.initialEscalationState(output, childID);
+    if (!state) return null;
+    const child = await this.loadChildSession(childID);
+    if (!child.available) return null;
+
+    while (state.evidence) {
+      const candidate = await this.nextEscalationCandidate(state.policy);
+      if (!candidate) break;
+      const text = await this.requestEscalation(
+        childID,
+        child.session,
+        state.policy,
+        candidate,
+      );
+      if (!text) break;
+      this.recordEscalationResponse(state, candidate, text, childID);
+    }
+
+    return this.completeEscalation(output, state);
   }
 
   async afterTool(input, output) {
