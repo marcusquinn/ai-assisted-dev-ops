@@ -1607,6 +1607,7 @@ test_cmd_run_preserves_worker_origin_overrides_before_canary() {
 test_cmd_run_aborts_before_canary_when_opencode_pin_repair_fails() {
 	local worktree_dir="${TEST_ROOT}/pin-repair-failure-worktree"
 	local canary_marker="${TEST_ROOT}/pin-repair-failure-canary"
+	local outcome_file="${TEST_ROOT}/pin-repair-failure.outcome"
 	local AIDEVOPS_DISPATCH_LEASE_TOKEN=""
 	local output=""
 	local status=0
@@ -1615,6 +1616,8 @@ test_cmd_run_aborts_before_canary_when_opencode_pin_repair_fails() {
 	export WORKER_ISSUE_NUMBER=28847
 	export WORKER_REPO_SLUG="owner/repo"
 	export WORKER_WORKTREE_PATH="$worktree_dir"
+	export AIDEVOPS_HEADLESS_OUTCOME_FILE="$outcome_file"
+	export AIDEVOPS_HEADLESS_OUTCOME_ID="dispatch-pin-repair-failure"
 
 	choose_model() { printf '%s' 'openai/gpt-5.5'; return 0; }
 	_enforce_opencode_version_pin() {
@@ -1634,9 +1637,14 @@ test_cmd_run_aborts_before_canary_when_opencode_pin_repair_fails() {
 		--prompt "/full-loop Implement issue #28847" 2>&1) || status=$?
 
 	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH 2>/dev/null || true
+	unset AIDEVOPS_HEADLESS_OUTCOME_FILE AIDEVOPS_HEADLESS_OUTCOME_ID 2>/dev/null || true
+	unset _WORKER_EXTERNAL_OUTCOME_FILE _WORKER_EXTERNAL_OUTCOME_ID _WORKER_EXTERNAL_OUTCOME_WRITTEN 2>/dev/null || true
 	unset -f choose_model _enforce_opencode_version_pin _run_canary_test 2>/dev/null || true
 	if [[ "$status" -eq 1 && "$output" == *"pin_repair_failed"* && \
-		"$output" == *"version pin enforcement failed"* && ! -e "$canary_marker" ]]; then
+		"$output" == *"version pin enforcement failed"* && ! -e "$canary_marker" ]] &&
+		grep -q '^outcome_id=dispatch-pin-repair-failure$' "$outcome_file" 2>/dev/null &&
+		grep -q '^reason=opencode_version_pin_failed$' "$outcome_file" 2>/dev/null &&
+		grep -q '^retry_class=retryable_infrastructure$' "$outcome_file" 2>/dev/null; then
 		print_result "cmd_run fails closed before canary when OpenCode pin repair fails" 0
 		return 0
 	fi

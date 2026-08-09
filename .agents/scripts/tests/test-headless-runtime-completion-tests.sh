@@ -608,12 +608,16 @@ test_null_issue_permission_failure_reconciles_terminal_blockers() {
 }
 
 test_issue_permission_handoff_skips_post_persistence_reconciliation() {
+	local outcome_file="${TEST_ROOT}/permission-handoff.outcome"
 	local result=""
 	result=$(
 		(
 			WORKER_ISSUE_NUMBER="99999"
 			export WORKER_ISSUE_NUMBER
 			_run_result_label="permission_required"
+			_WORKER_EXTERNAL_OUTCOME_FILE="$outcome_file"
+			_WORKER_EXTERNAL_OUTCOME_ID="permission-handoff-outcome"
+			_WORKER_EXTERNAL_OUTCOME_WRITTEN=0
 			local reconciled=0
 			_hrw_finish_permission_required_run() { return 0; }
 			_hrw_reconcile_session_permission_blockers() { reconciled=$((reconciled + 1)); return 0; }
@@ -624,10 +628,12 @@ test_issue_permission_handoff_skips_post_persistence_reconciliation() {
 
 			local status=0
 			_cmd_run_finish "issue-99999" "$_HRW_STATUS_PERMISSION_REQUIRED" "${TEST_ROOT}" || status=$?
-			printf 'status=%s|reconciled=%s\n' "$status" "$reconciled"
+			printf 'status=%s|reconciled=%s|reason=%s|retry=%s\n' "$status" "$reconciled" \
+				"$(awk -F= '$1 == "reason" { print $2 }' "$outcome_file")" \
+				"$(awk -F= '$1 == "retry_class" { print $2 }' "$outcome_file")"
 		)
 	)
-	if [[ "$result" == "status=0|reconciled=0" ]]; then
+	if [[ "$result" == "status=0|reconciled=0|reason=permission_required|retry=maintainer_gate" ]]; then
 		print_result "issue permission handoff stays active after persistence" 0
 	else
 		print_result "issue permission handoff stays active after persistence" 1 "$result"

@@ -50,6 +50,7 @@ _headless_route_attempt_budget() {
 
 # Establish the role/private boundary and initialize process-local workspace.
 _prepare_cmd_run_environment() {
+	_hrff_capture_external_outcome_contract
 	if [[ "$role" != "$_CMD_RUN_ROLE_WORKER" ]]; then
 		_hrw_prepare_role_context "$role" "$work_dir" || return 1
 		if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]]; then
@@ -94,6 +95,7 @@ _prepare_cmd_run_worker_identity() {
 	if ! _hrw_renew_dispatch_prelaunch_lease "$session_key"; then
 		print_warning "Dispatch prelaunch lease expired before worker startup — deferring session $session_key"
 		_hrw_record_terminal_outcome "$session_key" "$_HRW_TELEMETRY_DEFERRED" "prelaunch_lease_renewal_failed"
+		_hrff_write_external_outcome "$session_key" "prelaunch_lease_renewal_failed" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		return 1
 	fi
 	print_info "[lifecycle] prelaunch_lease_renew_done session=$session_key pid=$$"
@@ -107,6 +109,7 @@ _select_cmd_run_model() {
 	local choose_exit=0
 	selected_model=$(choose_model "$role" "${model_override:-$initial_model}" "$tier_override") || {
 		choose_exit=$?
+		_hrff_write_external_outcome "$session_key" "model_selection_failed" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
 		return "$choose_exit"
 	}
@@ -120,6 +123,7 @@ _select_cmd_run_model() {
 	fi
 	print_info "[lifecycle] post_model_select session=$session_key model=$selected_model pid=$$"
 	if ! vault_data_policy_check "$selected_model" "$title" "$prompt"; then
+		_hrff_write_external_outcome "$session_key" "protected_data_policy_blocked" "0" "$_HRFF_RETRY_CLASS_MAINTAINER_GATE" || true
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
 		return 64
 	fi
@@ -131,12 +135,14 @@ _prepare_cmd_run_dispatch() {
 	if ! _enforce_opencode_version_pin; then
 		print_error "OpenCode version pin enforcement failed — aborting dispatch for session $session_key"
 		_hrw_record_terminal_outcome "$session_key" "$_HRW_TELEMETRY_DEFERRED" "opencode_version_pin_failed"
+		_hrff_write_external_outcome "$session_key" "opencode_version_pin_failed" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		return 1
 	fi
 	print_info "[lifecycle] pre_canary session=$session_key model=$selected_model pid=$$"
 	if ! _run_role_safe_canary "$role" "$selected_model"; then
 		print_warning "Canary failed — aborting dispatch for session $session_key (no claim posted)"
 		_hrw_record_terminal_outcome "$session_key" "deferred" "canary_failed"
+		_hrff_write_external_outcome "$session_key" "canary_failed" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		return 1
 	fi
 	print_info "[lifecycle] post_canary session=$session_key model=$selected_model pid=$$"
@@ -157,12 +163,14 @@ _prepare_cmd_run_dispatch() {
 	_cmd_run_prepare "$session_key" "$work_dir" "$role" || prepare_exit=$?
 	if [[ "$prepare_exit" -eq 2 ]]; then
 		_hrw_record_terminal_outcome "$session_key" "deferred" "duplicate_session"
+		_hrff_write_external_outcome "$session_key" "duplicate_session" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		_cmd_run_stop=1
 		_cmd_run_return_status=0
 		return 0
 	fi
 	if [[ "$prepare_exit" -ne 0 ]]; then
 		_hrw_record_terminal_outcome "$session_key" "failed" "worker_prepare_failed"
+		_hrff_write_external_outcome "$session_key" "worker_prepare_failed" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		return "$prepare_exit"
 	fi
 	print_info "[lifecycle] post_worker_prepare session=$session_key work_dir=$lifecycle_work_dir pid=$$"

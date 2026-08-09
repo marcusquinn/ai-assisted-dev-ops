@@ -55,6 +55,11 @@ readonly _HRFF_FALLBACK_EXIT="process_exit"
 readonly _HRFF_PRELAUNCH_NOT_INVOKED="worker_runtime_not_invoked"
 readonly _HRFF_DEFERRED_CLEANUP_MARKER=".agents/.full-loop-cleanup-deferred"
 readonly _HRFF_DEFERRED_CLEANUP_EXCLUDE_PATHSPEC=":(exclude)${_HRFF_DEFERRED_CLEANUP_MARKER}"
+readonly _HRFF_RETRY_CLASS_INFRASTRUCTURE="retryable_infrastructure"
+readonly _HRFF_RETRY_CLASS_MAINTAINER_GATE="maintainer_gate"
+readonly _HRFF_RETRY_CLASS_REMEDIATION="meaningful_remediation"
+readonly _HRFF_RETRY_CLASS_UNKNOWN="unknown"
+readonly _HRFF_SESSION_COUNT_QUERY_PREFIX="SELECT count(*) FROM session WHERE time_created >= "
 
 # Per-issue transient rate-limit release circuit breaker (t3570 / GH#23102).
 # These defaults intentionally keep the first transient failures visible while
@@ -637,7 +642,7 @@ classify_worker_exit() {
 			&& "$start_epoch_ms" =~ ^[0-9]+$ && "$start_epoch_ms" -gt 0 ]]; then
 			local _cnt_zo=""
 			_cnt_zo=$(sqlite3 "$_db_zo" \
-				"SELECT count(*) FROM session WHERE time_created >= ${start_epoch_ms}" \
+				"${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}" \
 				2>/dev/null) || _cnt_zo=""
 			if [[ "$_cnt_zo" =~ ^[0-9]+$ && "$_cnt_zo" -eq 0 ]]; then
 				printf '%s' "worker_noop_zero_output"
@@ -672,7 +677,7 @@ classify_worker_exit() {
 	local query=""
 	if [[ "$start_epoch_ms" =~ ^[0-9]+$ ]] && (( start_epoch_ms > 0 )); then
 		# Count sessions created at or after worker start time (ms epoch)
-		query="SELECT count(*) FROM session WHERE time_created >= ${start_epoch_ms}"
+		query="${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}"
 	else
 		# No start time: count all sessions (crude fallback — may over-count)
 		query="SELECT count(*) FROM session"
@@ -907,14 +912,85 @@ _push_wip_commits_on_exit() {
 }
 
 #######################################
+# Capture the caller-provided terminal-outcome destination before any runtime
+# preflight can fail. Public environment names are removed after capture so
+# child model processes cannot redirect the trusted outcome writer.
+#######################################
+_hrff_capture_external_outcome_contract() {
+	if [[ -n "${AIDEVOPS_HEADLESS_OUTCOME_FILE+x}" ]]; then
+		unset _WORKER_EXTERNAL_OUTCOME_FILE 2>/dev/null || true
+		_WORKER_EXTERNAL_OUTCOME_FILE="${AIDEVOPS_HEADLESS_OUTCOME_FILE:-}"
+	fi
+	if [[ -n "${AIDEVOPS_HEADLESS_OUTCOME_ID+x}" ]]; then
+		unset _WORKER_EXTERNAL_OUTCOME_ID 2>/dev/null || true
+		_WORKER_EXTERNAL_OUTCOME_ID="${AIDEVOPS_HEADLESS_OUTCOME_ID:-}"
+	fi
+	_WORKER_EXTERNAL_OUTCOME_WRITTEN=0
+	unset AIDEVOPS_HEADLESS_OUTCOME_FILE AIDEVOPS_HEADLESS_OUTCOME_ID 2>/dev/null || true
+	return 0
+}
+
+#######################################
+# Resolve a conservative retry class for EXIT-trap outcomes. Unknown reasons
+# remain fail-closed and therefore still consume the remediation budget.
+# Args: $1=reason, $2=session count
+#######################################
+_hrff_retry_class_for_reason() {
+	local reason="$1"
+	local session_count="$2"
+	case "$reason" in
+	opencode_version_pin_failed | canary_failed | worker_prepare_failed | duplicate_session | \
+		worker_noop_zero_output | crash_during_startup | rate_limit* | provider_error | \
+		startup_no_model_activity | service_interruption_exhausted | worker_runtime_not_invoked | \
+		worker_sensitive_temp_preflight_failed | worker_ownership_lost | worker_ledger_ready_failed | \
+		worker_claim_ready_transition_failed)
+		printf '%s\n' "$_HRFF_RETRY_CLASS_INFRASTRUCTURE"
+		;;
+	permission_required | awaiting_maintainer_permission)
+		printf '%s\n' "$_HRFF_RETRY_CLASS_MAINTAINER_GATE"
+		;;
+	worker_complete | worker_draft_checkpoint)
+		printf '%s\n' "$_HRFF_RETRY_CLASS_REMEDIATION"
+		;;
+	*)
+		if [[ "$session_count" =~ ^[1-9][0-9]*$ ]]; then
+			printf '%s\n' "$_HRFF_RETRY_CLASS_REMEDIATION"
+		else
+			printf '%s\n' "$_HRFF_RETRY_CLASS_UNKNOWN"
+		fi
+		;;
+	esac
+	return 0
+}
+
+#######################################
+# Count model sessions created during this worker process.
+# Outputs a non-negative integer; unavailable evidence conservatively emits 0.
+#######################################
+_hrff_worker_session_count() {
+	local start_epoch_ms="${_WORKER_START_EPOCH_MS:-0}"
+	local active_db="${_WORKER_ISOLATED_DB_PATH:-}"
+	local shared_db="${HOME}/.local/share/opencode/opencode.db"
+	local count="0"
+	[[ -n "$active_db" && -f "$active_db" ]] || active_db="$shared_db"
+	if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$active_db" && "$start_epoch_ms" =~ ^[0-9]+$ && "$start_epoch_ms" -gt 0 ]]; then
+		count=$(sqlite3 "$active_db" "${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}" 2>/dev/null) || count="0"
+	fi
+	[[ "$count" =~ ^[0-9]+$ ]] || count="0"
+	printf '%s\n' "$count"
+	return 0
+}
+
+#######################################
 # Persist a caller-requested terminal outcome for local recovery loops.
 # The path must be absolute and its parent must already exist.
-# Args: $1=session, $2=reason, $3=session count
+# Args: $1=session, $2=reason, $3=session count, $4=retry class (optional)
 #######################################
 _hrff_write_external_outcome() {
 	local session_key="$1"
 	local reason="$2"
 	local session_count="$3"
+	local retry_class="${4:-}"
 	local outcome_file="${_WORKER_EXTERNAL_OUTCOME_FILE:-}"
 	local outcome_id="${_WORKER_EXTERNAL_OUTCOME_ID:-}"
 	local outcome_dir="" tmp_file="" finished_at=""
@@ -933,6 +1009,14 @@ _hrff_write_external_outcome() {
 	session_key="${session_key//$'\n'/_}"
 	session_key="${session_key//=/_}"
 	[[ "$session_count" =~ ^[0-9]+$ ]] || session_count=0
+	if [[ -z "$retry_class" ]]; then
+		retry_class=$(_hrff_retry_class_for_reason "$reason" "$session_count")
+	fi
+	case "$retry_class" in
+	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" | "$_HRFF_RETRY_CLASS_MAINTAINER_GATE" | \
+		"$_HRFF_RETRY_CLASS_REMEDIATION" | "$_HRFF_RETRY_CLASS_UNKNOWN") ;;
+	*) retry_class="$_HRFF_RETRY_CLASS_UNKNOWN" ;;
+	esac
 	finished_at="$(date +%s)"
 	tmp_file=$(mktemp "${outcome_file}.tmp.XXXXXX") || return 1
 	[[ -f "$tmp_file" && ! -L "$tmp_file" && -O "$tmp_file" ]] || {
@@ -944,6 +1028,7 @@ _hrff_write_external_outcome() {
 		printf 'outcome_id=%s\n' "$outcome_id"
 		printf 'reason=%s\n' "$reason"
 		printf 'session_count=%s\n' "$session_count"
+		printf 'retry_class=%s\n' "$retry_class"
 		printf 'finished_at=%s\n' "$finished_at"
 	} >"$tmp_file"; then
 		rm -f "$tmp_file" 2>/dev/null || true
@@ -953,6 +1038,7 @@ _hrff_write_external_outcome() {
 		rm -f "$tmp_file" 2>/dev/null || true
 		return 1
 	fi
+	_WORKER_EXTERNAL_OUTCOME_WRITTEN=1
 	return 0
 }
 
@@ -1126,7 +1212,7 @@ _exit_trap_handler() {
 			if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$_db" && "$_start_ms" =~ ^[0-9]+$ ]] && (( _start_ms > 0 )); then
 				local _cnt=""
 				_cnt=$(sqlite3 "$_db" \
-					"SELECT count(*) FROM session WHERE time_created >= ${_start_ms}" \
+					"${_HRFF_SESSION_COUNT_QUERY_PREFIX}${_start_ms}" \
 					2>/dev/null) || _cnt=""
 				[[ "$_cnt" =~ ^[0-9]+$ ]] && session_count="$_cnt"
 			fi

@@ -43,6 +43,7 @@ PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL="${PR_REVIEW_THREAD_RESPONSE_GLOBAL_L
 PR_REVIEW_THREAD_RESPONSE_COOLDOWN="${PR_REVIEW_THREAD_RESPONSE_COOLDOWN:-3600}"
 PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL="${PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL:-300}"
 PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN="${PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN:-90}"
+PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_MAX="${PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_MAX:-5}"
 PR_REVIEW_THREAD_RESPONSE_LOCK_STALE="${PR_REVIEW_THREAD_RESPONSE_LOCK_STALE:-600}"
 PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER="${PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER:-3}"
 PR_REVIEW_THREAD_RESPONSE_MODEL="${PR_REVIEW_THREAD_RESPONSE_MODEL:-}"
@@ -56,7 +57,7 @@ PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="3"
+PRRTS_WORKER_CONTRACT_VERSION="4"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
@@ -66,6 +67,9 @@ PRRTS_RC_RETRYABLE_FAILURE=13
 PRRTS_RC_GRAPHQL_EXHAUSTED=75
 PRRTS_BLOCKED_BY_CODE="code"
 PRRTS_BLOCKED_BY_INFRASTRUCTURE="infrastructure"
+PRRTS_RETRY_CLASS_INFRASTRUCTURE="retryable_infrastructure"
+PRRTS_RETRY_CLASS_MAINTAINER_GATE="maintainer_gate"
+PRRTS_RETRY_CLASS_REMEDIATION="meaningful_remediation"
 PRRTS_REASON_HEAD_FETCH_FAILED="pr_head_fetch_failed"
 PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED="pr_head_repository_unverified"
 PRRTS_REASON_WORKTREE_OWNERSHIP_UNVERIFIED="review_worktree_ownership_unverified"
@@ -773,9 +777,14 @@ _prrts_write_lock_metadata() {
 	local lock_dir="$1"
 	local now_epoch="$2"
 	local metadata_tmp="${lock_dir}/metadata.$$"
+	local owner_argv_hash="" owner_process_start=""
+	owner_argv_hash=$(_compute_argv_hash "$$" 2>/dev/null || true)
+	owner_process_start=$(_process_start_token "$$" 2>/dev/null || true)
 	{
 		printf 'pid=%s\n' "$$"
 		printf 'created_at=%s\n' "$now_epoch"
+		[[ -n "$owner_argv_hash" ]] && printf 'owner_argv_hash=%s\n' "$owner_argv_hash"
+		[[ -n "$owner_process_start" ]] && printf 'owner_process_start=%s\n' "$owner_process_start"
 	} >"$metadata_tmp"
 	mv "$metadata_tmp" "${lock_dir}/metadata"
 	return 0
@@ -785,14 +794,44 @@ _prrts_lock_is_stale() {
 	local lock_dir="$1"
 	local now_epoch="$2"
 	local stale_after="" metadata_file="" created_at="0" key="" value="" age_seconds="0"
+	local owner_pid="" owner_argv_hash="" owner_process_start=""
+	local current_argv_hash="" current_process_start=""
 	stale_after="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_LOCK_STALE" "600" "60")"
 	metadata_file="${lock_dir}/metadata"
 	[[ -f "$metadata_file" ]] || return 1
 	while IFS='=' read -r key value; do
 		case "$key" in
+		pid) owner_pid="$value" ;;
 		created_at) created_at="$value" ;;
+		owner_argv_hash) owner_argv_hash="$value" ;;
+		owner_process_start) owner_process_start="$value" ;;
 		esac
 	done <"$metadata_file"
+	if [[ "$owner_pid" =~ ^[1-9][0-9]*$ ]]; then
+		if ! kill -0 "$owner_pid" 2>/dev/null; then
+			return 0
+		fi
+		if [[ -n "$owner_process_start" ]]; then
+			current_process_start=$(_process_start_token "$owner_pid" 2>/dev/null || true)
+			if [[ -n "$current_process_start" ]]; then
+				[[ "$current_process_start" == "$owner_process_start" ]] || return 0
+				if [[ -n "$owner_argv_hash" ]]; then
+					current_argv_hash=$(_compute_argv_hash "$owner_pid" 2>/dev/null || true)
+					if [[ -n "$current_argv_hash" ]]; then
+						[[ "$current_argv_hash" == "$owner_argv_hash" ]] || return 0
+					fi
+				fi
+				return 1
+			fi
+		fi
+		if [[ -n "$owner_argv_hash" ]]; then
+			current_argv_hash=$(_compute_argv_hash "$owner_pid" 2>/dev/null || true)
+			if [[ -n "$current_argv_hash" ]]; then
+				[[ "$current_argv_hash" == "$owner_argv_hash" ]] && return 1
+				return 0
+			fi
+		fi
+	fi
 	[[ "$created_at" =~ ^[0-9]+$ ]] || return 1
 	age_seconds=$((now_epoch - created_at))
 	[[ "$age_seconds" -ge "$stale_after" ]]
@@ -1058,12 +1097,14 @@ _prrts_read_state() {
 	local blocker_reason_var="${9:-}"
 	local worker_contract_version_var="${10:-}"
 	local outcome_id_var="${11:-}"
+	local infrastructure_failure_count_var="${12:-}"
 	local key="" value=""
 	local state_fingerprint="" state_dispatched_at="0"
 	local state_attempt_count="0"
 	local state_last_head_sha=""
 	local state_analysis_complete="$PRRTS_BOOL_FALSE" state_blocked_by="" state_maintainer_attention="$PRRTS_BOOL_FALSE"
 	local state_blocker_reason="" state_worker_contract_version="" state_outcome_id=""
+	local state_infrastructure_failure_count="0"
 	if [[ -f "$state_file" ]]; then
 		while IFS='=' read -r key value; do
 			case "$key" in
@@ -1078,11 +1119,13 @@ _prrts_read_state() {
 			blocker_reason) state_blocker_reason="$value" ;;
 			worker_contract_version) state_worker_contract_version="$value" ;;
 			outcome_id) state_outcome_id="$value" ;;
+			infrastructure_failure_count) state_infrastructure_failure_count="$value" ;;
 			esac
 		done <"$state_file"
 	fi
 	[[ "$state_dispatched_at" =~ ^[0-9]+$ ]] || state_dispatched_at=0
 	[[ "$state_attempt_count" =~ ^[0-9]+$ ]] || state_attempt_count=0
+	[[ "$state_infrastructure_failure_count" =~ ^[0-9]+$ ]] || state_infrastructure_failure_count=0
 	[[ "$state_analysis_complete" == "$PRRTS_BOOL_TRUE" ]] || state_analysis_complete="$PRRTS_BOOL_FALSE"
 	[[ "$state_maintainer_attention" == "$PRRTS_BOOL_TRUE" ]] || state_maintainer_attention="$PRRTS_BOOL_FALSE"
 	printf -v "$fingerprint_var" '%s' "$state_fingerprint"
@@ -1111,6 +1154,9 @@ _prrts_read_state() {
 	if [[ -n "$outcome_id_var" ]]; then
 		printf -v "$outcome_id_var" '%s' "$state_outcome_id"
 	fi
+	if [[ -n "$infrastructure_failure_count_var" ]]; then
+		printf -v "$infrastructure_failure_count_var" '%s' "$state_infrastructure_failure_count"
+	fi
 	return 0
 }
 
@@ -1120,8 +1166,9 @@ _prrts_read_outcome() {
 	local session_count_var="$3"
 	local finished_at_var="$4"
 	local outcome_id_var="$5"
+	local retry_class_var="${6:-}"
 	local key value
-	local parsed_reason="" parsed_session_count="" parsed_finished_at="0" parsed_outcome_id=""
+	local parsed_reason="" parsed_session_count="" parsed_finished_at="0" parsed_outcome_id="" parsed_retry_class=""
 	if [[ -f "$outcome_file" ]]; then
 		while IFS='=' read -r key value; do
 			case "$key" in
@@ -1129,6 +1176,7 @@ _prrts_read_outcome() {
 			session_count) parsed_session_count="$value" ;;
 			finished_at) parsed_finished_at="$value" ;;
 			outcome_id) parsed_outcome_id="$value" ;;
+			retry_class) parsed_retry_class="$value" ;;
 			esac
 		done <"$outcome_file"
 	fi
@@ -1138,10 +1186,13 @@ _prrts_read_outcome() {
 	printf -v "$session_count_var" '%s' "$parsed_session_count"
 	printf -v "$finished_at_var" '%s' "$parsed_finished_at"
 	printf -v "$outcome_id_var" '%s' "$parsed_outcome_id"
+	if [[ -n "$retry_class_var" ]]; then
+		printf -v "$retry_class_var" '%s' "$parsed_retry_class"
+	fi
 	return 0
 }
 
-_prrts_is_zero_session_infrastructure_outcome() {
+_prrts_outcome_matches_dispatch() {
 	local expected_outcome_id="$1"
 	local observed_outcome_id="$2"
 	local outcome_reason="$3"
@@ -1152,25 +1203,54 @@ _prrts_is_zero_session_infrastructure_outcome() {
 	local latest_allowed=""
 
 	[[ -n "$expected_outcome_id" && "$observed_outcome_id" == "$expected_outcome_id" ]] || return 1
-	[[ "$outcome_reason" == "worker_noop_zero_output" && "$outcome_session_count" == "0" ]] || return 1
+	[[ -n "$outcome_reason" && "$outcome_session_count" =~ ^[0-9]+$ ]] || return 1
 	[[ "$outcome_finished_at" =~ ^[0-9]{1,12}$ && "$dispatched_at" =~ ^[0-9]{1,12}$ && "$now_epoch" =~ ^[0-9]{1,12}$ ]] || return 1
 	latest_allowed=$((now_epoch + 5))
 	[[ "$outcome_finished_at" -ge "$dispatched_at" && "$outcome_finished_at" -le "$latest_allowed" ]]
 	return $?
 }
 
-_prrts_zero_session_retry_status() {
+_prrts_is_zero_session_infrastructure_outcome() {
+	local expected_outcome_id="$1"
+	local observed_outcome_id="$2"
+	local outcome_reason="$3"
+	local outcome_session_count="$4"
+	local outcome_finished_at="$5"
+	local dispatched_at="$6"
+	local now_epoch="$7"
+	_prrts_outcome_matches_dispatch "$expected_outcome_id" "$observed_outcome_id" \
+		"$outcome_reason" "$outcome_session_count" "$outcome_finished_at" "$dispatched_at" "$now_epoch" || return 1
+	[[ "$outcome_reason" == "worker_noop_zero_output" && "$outcome_session_count" == "0" ]] || return 1
+	return 0
+}
+
+_prrts_infrastructure_retry_status() {
 	local repo_slug="$1"
 	local pr_number="$2"
 	local now_epoch="$3"
 	local outcome_finished_at="$4"
-	local cooldown="$5"
+	local short_cooldown="$5"
+	local full_cooldown="$6"
+	local failure_count="$7"
+	local failure_max="$8"
+	local outcome_reason="$9"
 	local age_seconds=$((now_epoch - outcome_finished_at))
 
 	[[ "$age_seconds" -ge 0 ]] || age_seconds=0
-	_prrts_log "dispatch: ${repo_slug}#${pr_number} worker_noop_zero_output session_count=0 — classifying as infrastructure failure"
-	if [[ "$age_seconds" -lt "$cooldown" ]]; then
-		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — infrastructure-failure short cooldown active ${age_seconds}s after zero-session exit"
+	if [[ "$outcome_reason" == "worker_noop_zero_output" ]]; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} worker_noop_zero_output session_count=0 — classifying as infrastructure failure"
+	fi
+	_prrts_log "dispatch: ${repo_slug}#${pr_number} outcome=${outcome_reason} retry_class=${PRRTS_RETRY_CLASS_INFRASTRUCTURE} — excluding it from remediation escalation"
+	if [[ "$failure_count" -ge "$failure_max" ]]; then
+		if [[ "$age_seconds" -lt "$full_cooldown" ]]; then
+			_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — infrastructure circuit-breaker cooldown active after ${failure_count} consecutive failure(s)"
+			return "$PRRTS_RC_DISPATCH_DEFERRED"
+		fi
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} retrying after bounded infrastructure circuit-breaker cooldown"
+		return 0
+	fi
+	if [[ "$age_seconds" -lt "$short_cooldown" ]]; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — infrastructure-failure short cooldown active ${age_seconds}s after terminal outcome"
 		return "$PRRTS_RC_DISPATCH_DEFERRED"
 	fi
 	_prrts_log "dispatch: ${repo_slug}#${pr_number} retrying after infrastructure-failure short cooldown (${age_seconds}s)"
@@ -1195,6 +1275,73 @@ _prrts_prelaunch_failure_needs_maintainer_attention() {
 	return $?
 }
 
+_prrts_classify_previous_dispatch() {
+	local fingerprint="$1" last_fingerprint="$2" current_head_sha="$3" last_head_sha="$4"
+	local last_attempt_count="$5" expected_outcome_id="$6" observed_outcome_id="$7" outcome_reason="$8"
+	local outcome_session_count="$9" outcome_finished_at="${10}" dispatched_at="${11}" now_epoch="${12}"
+	local outcome_retry_class="${13}" last_infrastructure_failure_count="${14}"
+	local repeated_var="${15}" same_head_var="${16}" attempt_var="${17}"
+	local infrastructure_var="${18}" maintainer_var="${19}" infrastructure_count_var="${20}"
+	local repeated="$PRRTS_BOOL_FALSE" same_head="$PRRTS_BOOL_FALSE" attempt_count="1"
+	local infrastructure="$PRRTS_BOOL_FALSE" maintainer="$PRRTS_BOOL_FALSE" infrastructure_count="0"
+	if [[ -n "$last_fingerprint" && "$fingerprint" == "$last_fingerprint" ]]; then
+		same_head="$PRRTS_BOOL_TRUE"
+		if [[ -n "$last_head_sha" && -n "$current_head_sha" && "$current_head_sha" != "$last_head_sha" ]]; then
+			same_head="$PRRTS_BOOL_FALSE"
+		else
+			repeated="$PRRTS_BOOL_TRUE"
+			attempt_count=$((last_attempt_count + 1))
+		fi
+	fi
+	if [[ "$repeated" == "$PRRTS_BOOL_TRUE" && "$same_head" == "$PRRTS_BOOL_TRUE" ]] &&
+		_prrts_outcome_matches_dispatch "$expected_outcome_id" "$observed_outcome_id" \
+			"$outcome_reason" "$outcome_session_count" "$outcome_finished_at" "$dispatched_at" "$now_epoch"; then
+		if [[ "$outcome_retry_class" == "$PRRTS_RETRY_CLASS_INFRASTRUCTURE" ]]; then
+			infrastructure="$PRRTS_BOOL_TRUE"
+		elif [[ "$outcome_retry_class" == "$PRRTS_RETRY_CLASS_MAINTAINER_GATE" ]]; then
+			maintainer="$PRRTS_BOOL_TRUE"
+		fi
+	fi
+	if [[ "$infrastructure" == "$PRRTS_BOOL_FALSE" && "$maintainer" == "$PRRTS_BOOL_FALSE" &&
+		"$repeated" == "$PRRTS_BOOL_TRUE" && "$same_head" == "$PRRTS_BOOL_TRUE" ]] &&
+		_prrts_is_zero_session_infrastructure_outcome "$expected_outcome_id" "$observed_outcome_id" \
+			"$outcome_reason" "$outcome_session_count" "$outcome_finished_at" "$dispatched_at" "$now_epoch"; then
+		infrastructure="$PRRTS_BOOL_TRUE"
+	fi
+	if [[ "$infrastructure" == "$PRRTS_BOOL_TRUE" || "$maintainer" == "$PRRTS_BOOL_TRUE" ]]; then
+		attempt_count="$last_attempt_count"
+		[[ "$attempt_count" -gt 0 ]] || attempt_count=1
+	fi
+	if [[ "$infrastructure" == "$PRRTS_BOOL_TRUE" ]]; then
+		infrastructure_count=$((last_infrastructure_failure_count + 1))
+	fi
+	printf -v "$repeated_var" '%s' "$repeated"
+	printf -v "$same_head_var" '%s' "$same_head"
+	printf -v "$attempt_var" '%s' "$attempt_count"
+	printf -v "$infrastructure_var" '%s' "$infrastructure"
+	printf -v "$maintainer_var" '%s' "$maintainer"
+	printf -v "$infrastructure_count_var" '%s' "$infrastructure_count"
+	return 0
+}
+
+_prrts_set_dispatch_outputs() {
+	local attempt_output_var="$1" attempt_value="$2" repeated_output_var="$3" repeated_value="$4"
+	local same_head_output_var="$5" same_head_value="$6" infrastructure_output_var="$7" infrastructure_value="$8"
+	if [[ -n "$attempt_output_var" ]]; then
+		printf -v "$attempt_output_var" '%s' "$attempt_value"
+	fi
+	if [[ -n "$repeated_output_var" ]]; then
+		printf -v "$repeated_output_var" '%s' "$repeated_value"
+	fi
+	if [[ -n "$same_head_output_var" ]]; then
+		printf -v "$same_head_output_var" '%s' "$same_head_value"
+	fi
+	if [[ -n "$infrastructure_output_var" ]]; then
+		printf -v "$infrastructure_output_var" '%s' "$infrastructure_value"
+	fi
+	return 0
+}
+
 _prrts_should_dispatch() {
 	local repo_slug="$1"
 	local pr_number="$2"
@@ -1204,21 +1351,24 @@ _prrts_should_dispatch() {
 	local attempt_var="${6:-}"
 	local repeated_var="${7:-}"
 	local same_head_var="${8:-}"
+	local infrastructure_count_var="${9:-}"
 	local state_file="" outcome_file="" last_fingerprint="" dispatched_at="0" cooldown="" inflight_ttl="" age_seconds="0"
 	local last_attempt_count="0" next_attempt_count="1" state_repeated_same_fingerprint="$PRRTS_BOOL_FALSE"
+	local last_infrastructure_failure_count="0" next_infrastructure_failure_count="0" infrastructure_failure_max=""
 	local last_head_sha="" state_same_head_sha="$PRRTS_BOOL_FALSE"
 	local analysis_complete="$PRRTS_BOOL_FALSE" blocked_by="" maintainer_attention="$PRRTS_BOOL_FALSE"
 	local blocker_reason="" retry_stale_head_validation="$PRRTS_BOOL_FALSE" worker_contract_version=""
-	local stored_contract_label="" outcome_reason="" outcome_session_count="" outcome_finished_at="0"
+	local stored_contract_label="" outcome_reason="" outcome_session_count="" outcome_finished_at="0" outcome_retry_class=""
 	local expected_outcome_id="" observed_outcome_id="" infrastructure_failure_cooldown=""
-	local zero_session_infrastructure_failure="$PRRTS_BOOL_FALSE"
+	local retryable_infrastructure_failure="$PRRTS_BOOL_FALSE" maintainer_gate_outcome="$PRRTS_BOOL_FALSE"
 	state_file="$(_prrts_state_file "$repo_slug" "$pr_number")"
 	outcome_file="$(_prrts_outcome_file "$repo_slug" "$pr_number")"
 	cooldown="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_COOLDOWN" "3600" "60")"
 	inflight_ttl="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_INFLIGHT_TTL" "300" "1")"
 	infrastructure_failure_cooldown="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN" "90" "1")"
-	_prrts_read_state "$state_file" last_fingerprint dispatched_at last_attempt_count analysis_complete blocked_by maintainer_attention last_head_sha blocker_reason worker_contract_version expected_outcome_id
-	_prrts_read_outcome "$outcome_file" outcome_reason outcome_session_count outcome_finished_at observed_outcome_id
+	infrastructure_failure_max="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_MAX" "5" "2")"
+	_prrts_read_state "$state_file" last_fingerprint dispatched_at last_attempt_count analysis_complete blocked_by maintainer_attention last_head_sha blocker_reason worker_contract_version expected_outcome_id last_infrastructure_failure_count
+	_prrts_read_outcome "$outcome_file" outcome_reason outcome_session_count outcome_finished_at observed_outcome_id outcome_retry_class
 	if [[ "$worker_contract_version" != "$PRRTS_WORKER_CONTRACT_VERSION" &&
 		"$fingerprint" == "$last_fingerprint" &&
 		"$maintainer_attention" == "$PRRTS_BOOL_TRUE" &&
@@ -1234,34 +1384,15 @@ _prrts_should_dispatch() {
 		blocked_by=""
 		maintainer_attention="$PRRTS_BOOL_FALSE"
 		blocker_reason=""
+		last_infrastructure_failure_count="0"
 	fi
-	if [[ -n "$last_fingerprint" && "$fingerprint" == "$last_fingerprint" ]]; then
-		state_same_head_sha="$PRRTS_BOOL_TRUE"
-		if [[ -n "$last_head_sha" && -n "$current_head_sha" && "$current_head_sha" != "$last_head_sha" ]]; then
-			state_same_head_sha="$PRRTS_BOOL_FALSE"
-		else
-			state_repeated_same_fingerprint="$PRRTS_BOOL_TRUE"
-			next_attempt_count=$((last_attempt_count + 1))
-		fi
-	fi
-	if [[ "$state_repeated_same_fingerprint" == "$PRRTS_BOOL_TRUE" && "$state_same_head_sha" == "$PRRTS_BOOL_TRUE" ]] &&
-		_prrts_is_zero_session_infrastructure_outcome "$expected_outcome_id" "$observed_outcome_id" \
-			"$outcome_reason" "$outcome_session_count" "$outcome_finished_at" "$dispatched_at" "$now_epoch"; then
-		zero_session_infrastructure_failure="$PRRTS_BOOL_TRUE"
-		# A zero-session launch never invoked a model, so it does not consume a
-		# meaningful same-fingerprint remediation attempt.
-		next_attempt_count="$last_attempt_count"
-		[[ "$next_attempt_count" -gt 0 ]] || next_attempt_count=1
-	fi
-	if [[ -n "$attempt_var" ]]; then
-		printf -v "$attempt_var" '%s' "$next_attempt_count"
-	fi
-	if [[ -n "$repeated_var" ]]; then
-		printf -v "$repeated_var" '%s' "$state_repeated_same_fingerprint"
-	fi
-	if [[ -n "$same_head_var" ]]; then
-		printf -v "$same_head_var" '%s' "$state_same_head_sha"
-	fi
+	_prrts_classify_previous_dispatch "$fingerprint" "$last_fingerprint" "$current_head_sha" "$last_head_sha" \
+		"$last_attempt_count" "$expected_outcome_id" "$observed_outcome_id" "$outcome_reason" \
+		"$outcome_session_count" "$outcome_finished_at" "$dispatched_at" "$now_epoch" "$outcome_retry_class" \
+		"$last_infrastructure_failure_count" state_repeated_same_fingerprint state_same_head_sha next_attempt_count \
+		retryable_infrastructure_failure maintainer_gate_outcome next_infrastructure_failure_count
+	_prrts_set_dispatch_outputs "$attempt_var" "$next_attempt_count" "$repeated_var" "$state_repeated_same_fingerprint" \
+		"$same_head_var" "$state_same_head_sha" "$infrastructure_count_var" "$next_infrastructure_failure_count"
 
 	if _prrts_worker_active "$repo_slug" "$pr_number"; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — response worker already active"
@@ -1276,9 +1407,23 @@ _prrts_should_dispatch() {
 		fi
 	fi
 	age_seconds=$((now_epoch - dispatched_at))
-	if [[ "$zero_session_infrastructure_failure" == "$PRRTS_BOOL_TRUE" ]]; then
-		_prrts_zero_session_retry_status "$repo_slug" "$pr_number" "$now_epoch" "$outcome_finished_at" "$infrastructure_failure_cooldown"
-		return $?
+	if [[ "$maintainer_gate_outcome" == "$PRRTS_BOOL_TRUE" ]]; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — typed maintainer gate outcome=${outcome_reason} requires human action"
+		return "$PRRTS_RC_MAINTAINER_ATTENTION"
+	fi
+	if [[ "$retryable_infrastructure_failure" == "$PRRTS_BOOL_TRUE" ]]; then
+		local infrastructure_retry_status=0
+		_prrts_infrastructure_retry_status "$repo_slug" "$pr_number" "$now_epoch" "$outcome_finished_at" \
+			"$infrastructure_failure_cooldown" "$cooldown" "$next_infrastructure_failure_count" \
+			"$infrastructure_failure_max" "$outcome_reason" || infrastructure_retry_status=$?
+		if [[ "$infrastructure_retry_status" -ne 0 ]]; then
+			return "$infrastructure_retry_status"
+		fi
+		if [[ "$next_infrastructure_failure_count" -ge "$infrastructure_failure_max" ]]; then
+			next_infrastructure_failure_count=0
+			[[ -n "$infrastructure_count_var" ]] && printf -v "$infrastructure_count_var" '%s' "$next_infrastructure_failure_count"
+		fi
+		return 0
 	fi
 	if [[ "$dispatched_at" -gt 0 && "$age_seconds" -lt "$inflight_ttl" ]]; then
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dispatch state active ${age_seconds}s ago"
@@ -1304,9 +1449,11 @@ _prrts_write_state() {
 	local maintainer_attention="${7:-false}"
 	local head_sha="${8:-}"
 	local outcome_id="${9:-}"
+	local infrastructure_failure_count="${10:-0}"
 	local state_file=""
 	_prrts_ensure_dirs
 	[[ "$attempt_count" =~ ^[0-9]+$ ]] || attempt_count=1
+	[[ "$infrastructure_failure_count" =~ ^[0-9]+$ ]] || infrastructure_failure_count=0
 	state_file="$(_prrts_state_file "$repo_slug" "$pr_number")"
 	{
 		printf 'fingerprint=%s\n' "$fingerprint"
@@ -1315,6 +1462,9 @@ _prrts_write_state() {
 		printf 'attempt_count=%s\n' "$attempt_count"
 		printf 'last_head_sha=%s\n' "$head_sha"
 		printf 'worker_contract_version=%s\n' "$PRRTS_WORKER_CONTRACT_VERSION"
+		if [[ "$infrastructure_failure_count" -gt 0 ]]; then
+			printf 'infrastructure_failure_count=%s\n' "$infrastructure_failure_count"
+		fi
 		if [[ -n "$outcome_id" ]]; then
 			printf 'outcome_id=%s\n' "$outcome_id"
 		fi
@@ -1341,6 +1491,7 @@ _prrts_write_analysis_state() {
 	local now_epoch=""
 	local details=""
 	local fingerprint="" dispatched_at="0" thread_count="0" attempt_count="0" last_head_sha="" worker_contract_version="" outcome_id=""
+	local infrastructure_failure_count="0"
 	_prrts_ensure_dirs
 	state_file="$(_prrts_state_file "$repo_slug" "$pr_number")"
 	if [[ -f "$state_file" ]]; then
@@ -1353,12 +1504,14 @@ _prrts_write_analysis_state() {
 			last_head_sha) last_head_sha="$value" ;;
 			worker_contract_version) worker_contract_version="$value" ;;
 			outcome_id) outcome_id="$value" ;;
+			infrastructure_failure_count) infrastructure_failure_count="$value" ;;
 			esac
 		done <"$state_file"
 	fi
 	[[ "$dispatched_at" =~ ^[0-9]+$ ]] || dispatched_at=0
 	[[ "$thread_count" =~ ^[0-9]+$ ]] || thread_count=0
 	[[ "$attempt_count" =~ ^[0-9]+$ ]] || attempt_count=0
+	[[ "$infrastructure_failure_count" =~ ^[0-9]+$ ]] || infrastructure_failure_count=0
 	blocked_by="$(_prrts_normalise_blocked_by "$blocked_by")"
 	reason="$(_prrts_state_value_line "$reason" 240)"
 	if [[ -n "$details_file" && -f "$details_file" ]]; then
@@ -1376,6 +1529,9 @@ _prrts_write_analysis_state() {
 		printf 'last_head_sha=%s\n' "$last_head_sha"
 		if [[ -n "$worker_contract_version" ]]; then
 			printf 'worker_contract_version=%s\n' "$worker_contract_version"
+		fi
+		if [[ "$infrastructure_failure_count" -gt 0 ]]; then
+			printf 'infrastructure_failure_count=%s\n' "$infrastructure_failure_count"
 		fi
 		if [[ -n "$outcome_id" ]]; then
 			printf 'outcome_id=%s\n' "$outcome_id"
@@ -2077,7 +2233,8 @@ _prrts_dispatch_worker() {
 	local now_epoch="${11}"
 	local attempt_count="${12}"
 	local maintainer_attention="${13}"
-	local reservation_file="${14}"
+	local infrastructure_failure_count="${14}"
+	local reservation_file="${15}"
 	local prompt_file="" session_key="" model="" worker_worktree_path="" worker_pid="" detach_mode="" outcome_file=""
 	local worker_task="" repair_linked_issue="" worker_login=""
 	local -a cmd worker_cmd
@@ -2139,7 +2296,7 @@ _prrts_dispatch_worker() {
 		"${cmd[@]}")
 	# Persist the generation immediately before the detached worker becomes
 	# runnable, so immediate terminal callbacks cannot be overwritten.
-	_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid" "$outcome_id"
+	_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid" "$outcome_id" "$infrastructure_failure_count"
 	if command -v setsid >/dev/null 2>&1; then
 		detach_mode="setsid+nohup"
 		setsid nohup "${worker_cmd[@]}" </dev/null >>"$LOGFILE" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
@@ -2177,6 +2334,7 @@ _prrts_dispatch_guarded() {
 	local author="${13:-}"
 	local lock_dir="" reservation_file="" session_key=""
 	local attempt_count="1" repeated_same_fingerprint="$PRRTS_BOOL_FALSE" same_head_sha="$PRRTS_BOOL_FALSE" maintainer_attention="$PRRTS_BOOL_FALSE"
+	local infrastructure_failure_count="0"
 	local failure_maintainer_attention="$PRRTS_BOOL_FALSE"
 	local dispatch_guard_rc=0
 	_prrts_acquire_dispatch_lock "$repo_slug" "$pr_number" lock_dir || dispatch_guard_rc=$?
@@ -2184,7 +2342,7 @@ _prrts_dispatch_guarded() {
 		return "$dispatch_guard_rc"
 	fi
 	dispatch_guard_rc=0
-	_prrts_should_dispatch "$repo_slug" "$pr_number" "$fingerprint" "$now_epoch" "$head_oid" attempt_count repeated_same_fingerprint same_head_sha || dispatch_guard_rc=$?
+	_prrts_should_dispatch "$repo_slug" "$pr_number" "$fingerprint" "$now_epoch" "$head_oid" attempt_count repeated_same_fingerprint same_head_sha infrastructure_failure_count || dispatch_guard_rc=$?
 	if [[ "$dispatch_guard_rc" -ne 0 ]]; then
 		_prrts_remove_lock_dir "$lock_dir"
 		return "$dispatch_guard_rc"
@@ -2194,7 +2352,7 @@ _prrts_dispatch_guarded() {
 		if [[ "$dry_run" == "$PRRTS_BOOL_TRUE" ]]; then
 			printf 'DRY-RUN would escalate %s#%s after %s repeated unresolved thread attempt(s)\n' "$repo_slug" "$pr_number" "$attempt_count"
 		else
-			_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid"
+			_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid" "" "$infrastructure_failure_count"
 			_prrts_write_analysis_state "$repo_slug" "$pr_number" "$PRRTS_BOOL_TRUE" \
 				"maintainer" "$PRRTS_BOOL_TRUE" "same_unresolved_thread_fingerprint"
 			_prrts_log "dispatch: ${repo_slug}#${pr_number} not launching response worker — same unresolved thread fingerprint reached attempt ${attempt_count}; maintainer attention recommended (local state/log only, no GitHub write)"
@@ -2221,12 +2379,12 @@ _prrts_dispatch_guarded() {
 	fi
 	PRRTS_WORKER_OUTCOME_ID="$(date +%s)-$$-${RANDOM}"
 	if ! _prrts_dispatch_worker "$repo_slug" "$repo_path" "$pr_number" "$title" "$thread_count" "$fingerprint" "$preview" \
-		"$head_ref" "$head_oid" "$PRRTS_WORKER_OUTCOME_ID" "$now_epoch" "$attempt_count" "$maintainer_attention" "$reservation_file"; then
+		"$head_ref" "$head_oid" "$PRRTS_WORKER_OUTCOME_ID" "$now_epoch" "$attempt_count" "$maintainer_attention" "$infrastructure_failure_count" "$reservation_file"; then
 		_prrts_release_global_capacity "$reservation_file" "$$" || true
 		if _prrts_prelaunch_failure_needs_maintainer_attention "$PRRTS_WORKTREE_FAILURE_BLOCKED_BY"; then
 			failure_maintainer_attention="$PRRTS_BOOL_TRUE"
 		fi
-		_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$PRRTS_BOOL_FALSE" "$head_oid"
+		_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$PRRTS_BOOL_FALSE" "$head_oid" "" "$infrastructure_failure_count"
 		_prrts_write_analysis_state "$repo_slug" "$pr_number" "$PRRTS_BOOL_TRUE" \
 			"$PRRTS_WORKTREE_FAILURE_BLOCKED_BY" "$failure_maintainer_attention" "$PRRTS_WORKTREE_FAILURE_REASON"
 		_prrts_remove_lock_dir "$lock_dir"

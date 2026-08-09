@@ -304,6 +304,19 @@ NOHUP_STUB
 write_fake_ps_stub() {
 	cat >"${TEST_ROOT}/bin/ps" <<'PS_STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "-p" ]]; then
+	if [[ "$*" == *"-o lstart="* && -n "${STUB_PS_LSTART_UNAVAILABLE:-}" ]]; then
+		exit 1
+	fi
+	if [[ "$*" == *"-o command="* && -n "${STUB_ACTIVE_RESPONSE_WORKER:-}" ]]; then
+		printf 'headless-runtime-helper run --session-key %s\n' "$STUB_ACTIVE_RESPONSE_WORKER"
+		exit 0
+	fi
+	if [[ -x /bin/ps ]]; then
+		exec /bin/ps "$@"
+	fi
+	exec /usr/bin/ps "$@"
+fi
 if [[ -n "${STUB_ACTIVE_RESPONSE_WORKER:-}" ]]; then
 	printf 'headless-runtime-helper run --session-key %s\n' "$STUB_ACTIVE_RESPONSE_WORKER"
 fi
@@ -861,13 +874,29 @@ write_worker_outcome() {
 	local session_count="$3"
 	local finished_at="$4"
 	local outcome_id="$5"
+	local retry_class="${6:-}"
 	{
 		printf 'session_key=pr-review-thread-response-owner-repo-1\n'
 		printf 'outcome_id=%s\n' "$outcome_id"
 		printf 'reason=%s\n' "$reason"
 		printf 'session_count=%s\n' "$session_count"
+		[[ -n "$retry_class" ]] && printf 'retry_class=%s\n' "$retry_class"
 		printf 'finished_at=%s\n' "$finished_at"
 	} >"$outcome_file"
+	return 0
+}
+
+process_start_for_pid() {
+	local pid="$1"
+	local process_start=""
+	if [[ -x /bin/ps ]]; then
+		process_start=$(LC_ALL=C /bin/ps -p "$pid" -o lstart= 2>/dev/null | tr -s ' ') || process_start=""
+	else
+		process_start=$(LC_ALL=C /usr/bin/ps -p "$pid" -o lstart= 2>/dev/null | tr -s ' ') || process_start=""
+	fi
+	process_start="${process_start#"${process_start%%[![:space:]]*}"}"
+	process_start="${process_start%"${process_start##*[![:space:]]}"}"
+	printf '%s\n' "$process_start"
 	return 0
 }
 
@@ -1164,7 +1193,7 @@ test_dispatch_prompt_requires_contract_v3_praise_only_resolution() {
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	if grep -q '^worker_contract_version=3$' "$state_file" 2>/dev/null &&
+	if grep -q '^worker_contract_version=4$' "$state_file" 2>/dev/null &&
 		grep -Fq 'classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
@@ -1381,6 +1410,91 @@ test_dispatch_defers_zero_session_infrastructure_failure_during_short_cooldown()
 	return 0
 }
 
+test_dispatch_retries_session_bearing_typed_infrastructure_outcome() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 120))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "provider_error" "1" "$((old_epoch + 1))" "$outcome_id" "retryable_infrastructure"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" ]] &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		grep -q '^infrastructure_failure_count=1$' "$state_file" 2>/dev/null &&
+		grep -q 'outcome=provider_error retry_class=retryable_infrastructure' "$LOGFILE" 2>/dev/null; then
+		print_result "typed session-bearing infrastructure outcome does not consume remediation attempt" 0
+	else
+		print_result "typed session-bearing infrastructure outcome does not consume remediation attempt" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_stops_on_typed_maintainer_gate_outcome() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id="" dispatch_rc=0
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 4000))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "permission_required" "1" "$((old_epoch + 1))" "$outcome_id" "maintainer_gate"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || dispatch_rc=$?
+	if [[ "$dispatch_rc" -eq 12 && ! -s "$HEADLESS_LOG" ]] &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		grep -q 'typed maintainer gate outcome=permission_required requires human action' "$LOGFILE" 2>/dev/null; then
+		print_result "typed permission outcome stops automatic retry without consuming remediation budget" 0
+	else
+		print_result "typed permission outcome stops automatic retry without consuming remediation budget" 1 \
+			"rc=${dispatch_rc}, state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_applies_bounded_infrastructure_circuit_breaker() {
+	setup_test_env
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_MAX=2 $SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 120))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "canary_failed" "0" "$((old_epoch + 1))" "$outcome_id" "retryable_infrastructure"
+	: >"$HEADLESS_LOG"
+	PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_MAX=2 $SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 120))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "canary_failed" "0" "$((old_epoch + 1))" "$outcome_id" "retryable_infrastructure"
+	: >"$HEADLESS_LOG"
+	PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_MAX=2 $SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	if [[ ! -s "$HEADLESS_LOG" ]] &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
+		grep -q 'infrastructure circuit-breaker cooldown active after 2 consecutive failure(s)' "$LOGFILE" 2>/dev/null; then
+		print_result "repeated infrastructure outcomes use a separate bounded circuit breaker" 0
+	else
+		print_result "repeated infrastructure outcomes use a separate bounded circuit breaker" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_preserves_full_cooldown_after_model_session() {
 	setup_test_env
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
@@ -1502,9 +1616,9 @@ test_dispatch_retries_escalated_previous_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=3$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=4$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 3 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 4 (stored=2)' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
 		print_result "dispatch retries escalation created under previous worker contract" 1 \
@@ -1793,10 +1907,13 @@ test_dispatch_pr_skips_when_pr_lock_held() {
 	setup_test_env
 	local lock_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.lock"
 	local dispatch_rc=0
+	local owner_process_start=""
+	owner_process_start=$(process_start_for_pid "$$")
 	mkdir -p "$lock_dir"
 	{
 		printf 'pid=%s\n' "$$"
 		printf 'created_at=%s\n' "$(date +%s)"
+		printf 'owner_process_start=%s\n' "$owner_process_start"
 	} >"${lock_dir}/metadata"
 	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || dispatch_rc=$?
 	if [[ "$dispatch_rc" -eq 10 && ! -s "$HEADLESS_LOG" ]]; then
@@ -1849,7 +1966,7 @@ test_dispatch_pr_reclaims_stale_lock() {
 	old_epoch="$(($(date +%s) - 120))"
 	mkdir -p "$lock_dir"
 	{
-		printf 'pid=%s\n' "999999"
+		printf 'pid=%s\n' "legacy-owner"
 		printf 'created_at=%s\n' "$old_epoch"
 	} >"${lock_dir}/metadata"
 	PR_REVIEW_THREAD_RESPONSE_LOCK_STALE=60 $SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
@@ -1859,6 +1976,85 @@ test_dispatch_pr_reclaims_stale_lock() {
 		print_result "dispatch-pr reclaims stale repo PR lock" 0
 	else
 		print_result "dispatch-pr reclaims stale repo PR lock" 1 "headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=${state_file}, lock_dir=${lock_dir}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_pr_reclaims_dead_young_lock() {
+	setup_test_env
+	local lock_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.lock"
+	mkdir -p "$lock_dir"
+	{
+		printf 'pid=%s\n' "999999"
+		printf 'created_at=%s\n' "$(date +%s)"
+		printf 'owner_process_start=%s\n' "dead-owner"
+	} >"${lock_dir}/metadata"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" && ! -d "$lock_dir" ]]; then
+		print_result "dispatch-pr immediately reclaims a dead young lock owner" 0
+	else
+		print_result "dispatch-pr immediately reclaims a dead young lock owner" 1 "lock_dir=${lock_dir}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_pr_reclaims_pid_reused_young_lock() {
+	setup_test_env
+	local lock_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.lock"
+	mkdir -p "$lock_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'created_at=%s\n' "$(date +%s)"
+		printf 'owner_process_start=%s\n' "definitely-not-the-current-process-start"
+	} >"${lock_dir}/metadata"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" && ! -d "$lock_dir" ]]; then
+		print_result "dispatch-pr reclaims a young lock after PID identity reuse" 0
+	else
+		print_result "dispatch-pr reclaims a young lock after PID identity reuse" 1 "lock_dir=${lock_dir}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_pr_preserves_malformed_young_lock_until_age_fallback() {
+	setup_test_env
+	local lock_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.lock"
+	local dispatch_rc=0
+	mkdir -p "$lock_dir"
+	{
+		printf 'pid=%s\n' "not-a-pid"
+		printf 'created_at=%s\n' "$(date +%s)"
+	} >"${lock_dir}/metadata"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || dispatch_rc=$?
+	if [[ "$dispatch_rc" -eq 10 && ! -s "$HEADLESS_LOG" && -d "$lock_dir" ]]; then
+		print_result "dispatch-pr preserves malformed young legacy lock for age fallback" 0
+	else
+		print_result "dispatch-pr preserves malformed young legacy lock for age fallback" 1 "rc=${dispatch_rc}, lock_dir=${lock_dir}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_pr_preserves_indeterminate_young_lock_until_age_fallback() {
+	setup_test_env
+	local lock_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.lock"
+	local dispatch_rc=0
+	mkdir -p "$lock_dir"
+	{
+		printf 'pid=%s\n' "$$"
+		printf 'created_at=%s\n' "$(date +%s)"
+		printf 'owner_process_start=%s\n' "known-owner-start"
+	} >"${lock_dir}/metadata"
+	STUB_PS_LSTART_UNAVAILABLE=1 $SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || dispatch_rc=$?
+	if [[ "$dispatch_rc" -eq 10 && ! -s "$HEADLESS_LOG" && -d "$lock_dir" ]]; then
+		print_result "dispatch-pr preserves indeterminate young lock for age fallback" 0
+	else
+		print_result "dispatch-pr preserves indeterminate young lock for age fallback" 1 "rc=${dispatch_rc}, lock_dir=${lock_dir}"
 	fi
 	teardown_test_env
 	return 0
@@ -2157,6 +2353,9 @@ main() {
 	test_dispatch_preserves_immediate_worker_terminal_state
 	test_dispatch_retries_zero_session_infrastructure_failure_after_short_cooldown
 	test_dispatch_defers_zero_session_infrastructure_failure_during_short_cooldown
+	test_dispatch_retries_session_bearing_typed_infrastructure_outcome
+	test_dispatch_stops_on_typed_maintainer_gate_outcome
+	test_dispatch_applies_bounded_infrastructure_circuit_breaker
 	test_dispatch_preserves_full_cooldown_after_model_session
 	test_dispatch_rejects_mismatched_or_future_outcomes
 	test_dispatch_skips_mixed_fingerprint_during_inflight_window
@@ -2176,6 +2375,10 @@ main() {
 	test_dispatch_pr_reports_deduplicated_dispatch
 	test_dispatch_pr_reports_active_worker_as_deferred
 	test_dispatch_pr_reclaims_stale_lock
+	test_dispatch_pr_reclaims_dead_young_lock
+	test_dispatch_pr_reclaims_pid_reused_young_lock
+	test_dispatch_pr_preserves_malformed_young_lock_until_age_fallback
+	test_dispatch_pr_preserves_indeterminate_young_lock_until_age_fallback
 	test_dispatch_reports_graphql_budget_exhaustion_when_scan_blind
 	test_dispatch_reports_fetch_errors_when_scan_blind
 	test_dispatch_rotates_candidates_with_repo_cursor

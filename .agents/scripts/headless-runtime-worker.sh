@@ -1936,6 +1936,31 @@ _hrw_finish_cleanup() {
 	return 0
 }
 
+_hrw_write_external_final_outcome() {
+	local session_key="$1"
+	local ledger_status="$2"
+	local external_session_count="0" external_reason="" external_retry_class=""
+	[[ "${_WORKER_EXTERNAL_OUTCOME_WRITTEN:-0}" != "1" ]] || return 0
+	external_session_count=$(_hrff_worker_session_count)
+	external_reason="${_HRW_FINAL_RUNTIME_CLASSIFICATION:-worker_complete}"
+	external_retry_class=$(_hrff_retry_class_for_reason "$external_reason" "$external_session_count")
+	if [[ "$ledger_status" == "$_HRW_STATUS_PERMISSION_REQUIRED" ]]; then
+		external_reason="$_HRW_STATUS_PERMISSION_REQUIRED"
+		external_retry_class="$_HRFF_RETRY_CLASS_MAINTAINER_GATE"
+	elif [[ "$external_reason" == "$_HRW_CRASH_NO_WORK" && "$external_session_count" == "0" ]]; then
+		external_reason="worker_noop_zero_output"
+		external_retry_class="$_HRFF_RETRY_CLASS_INFRASTRUCTURE"
+	elif [[ "$_HRW_TERMINAL_OUTCOME" == "$_HRW_TELEMETRY_SUCCESS" ]]; then
+		external_reason="${external_reason:-$_HRW_REASON_WORKER_COMPLETE}"
+		external_retry_class="$_HRFF_RETRY_CLASS_REMEDIATION"
+	elif [[ "$_HRW_FINAL_RUNTIME_STATUS" == "$_HRW_STATUS_CHECKPOINTED" ]]; then
+		external_retry_class="$_HRFF_RETRY_CLASS_REMEDIATION"
+	fi
+	_hrff_write_external_outcome "$session_key" "$external_reason" "$external_session_count" "$external_retry_class" || \
+		print_warning "[lifecycle] failed to persist external terminal outcome for session=${session_key}"
+	return 0
+}
+
 _cmd_run_finish() {
 	local session_key="$1"
 	local ledger_status="$2"
@@ -2019,6 +2044,7 @@ _cmd_run_finish() {
 		"$_HRW_FINAL_RUNTIME_STATUS" "$_HRW_FINAL_RUNTIME_CLASSIFICATION"
 	_hrw_record_reconciled_outcome "$session_key" "${_run_result_label:-$ledger_status}" \
 		"$_HRW_TERMINAL_OUTCOME" "$_HRW_FINAL_RUNTIME_STATUS" "$_HRW_FINAL_RUNTIME_CLASSIFICATION"
+	_hrw_write_external_final_outcome "$session_key" "$ledger_status"
 
 	_hrw_finish_cleanup "$session_key" "$ledger_status" "$work_dir"
 	return "$finish_status"

@@ -304,10 +304,7 @@ _cmd_run_prepare() {
 	local session_key="$1"
 	local work_dir="$2"
 	local role="${3:-$_HRW_ROLE_WORKER}"
-	unset _WORKER_EXTERNAL_OUTCOME_FILE _WORKER_EXTERNAL_OUTCOME_ID 2>/dev/null || true
-	_WORKER_EXTERNAL_OUTCOME_FILE="${AIDEVOPS_HEADLESS_OUTCOME_FILE:-}"
-	_WORKER_EXTERNAL_OUTCOME_ID="${AIDEVOPS_HEADLESS_OUTCOME_ID:-}"
-	unset AIDEVOPS_HEADLESS_OUTCOME_FILE AIDEVOPS_HEADLESS_OUTCOME_ID 2>/dev/null || true
+	_hrff_capture_external_outcome_contract
 	_WORKER_RUNTIME_LAUNCH_STARTED=0
 	unset _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 	if _headless_private_workload_enabled; then

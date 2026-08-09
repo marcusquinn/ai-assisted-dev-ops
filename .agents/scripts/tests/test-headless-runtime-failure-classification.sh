@@ -191,6 +191,8 @@ assert_eq "external outcome reason persisted" "worker_noop_zero_output" \
 	"$(awk -F= '$1 == "reason" { print $2 }' "$OUTCOME_FILE")"
 assert_eq "external outcome session count persisted" "0" \
 	"$(awk -F= '$1 == "session_count" { print $2 }' "$OUTCOME_FILE")"
+assert_eq "external outcome retry class persisted" "retryable_infrastructure" \
+	"$(awk -F= '$1 == "retry_class" { print $2 }' "$OUTCOME_FILE")"
 assert_eq "external outcome has numeric completion time" "true" \
 	"$(awk -F= '$1 == "finished_at" && $2 ~ /^[0-9]+$/ { print "true" }' "$OUTCOME_FILE")"
 OUTCOME_TARGET="$FIXTURE_DIR/outcome-target"
