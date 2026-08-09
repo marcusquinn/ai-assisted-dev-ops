@@ -73,6 +73,9 @@ class SessionReport:
     request_count: int
     tool_call_count: int
     source_session_ids: list[str] = field(default_factory=list)
+    cost_provenance: str = "unavailable"
+    lineage_provenance: str = "unavailable"
+    compaction_provenance: str = "unavailable"
 
 
 @dataclass
@@ -97,6 +100,7 @@ class OpencodeReportContext:
     conn: sqlite3.Connection
     obs_db: Path
     configured_mcps: list[str]
+    observed_parents: dict[str, str]
 
 
 def _make_session_report(**values: Any) -> SessionReport:
@@ -121,6 +125,12 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)
     ).fetchone()
     return row is not None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -203,23 +213,30 @@ def _read_sessions(conn: sqlite3.Connection) -> list[SessionRow]:
     return sessions
 
 
-def _root_for(session_id: str, by_id: dict[str, SessionRow]) -> str:
+def _root_for(
+    session_id: str,
+    by_id: dict[str, SessionRow],
+    observed_parents: dict[str, str] | None = None,
+) -> str:
     seen: set[str] = set()
     current = session_id
-    while current in by_id and by_id[current].parent_id and current not in seen:
+    while current not in seen:
         seen.add(current)
-        parent = by_id[current].parent_id
-        if not parent or parent not in by_id:
+        parent = by_id.get(current).parent_id if current in by_id else None
+        parent = parent or (observed_parents or {}).get(current)
+        if not parent:
             break
         current = parent
     return current
 
 
-def _children_by_root(sessions: list[SessionRow]) -> dict[str, list[SessionRow]]:
+def _children_by_root(
+    sessions: list[SessionRow], observed_parents: dict[str, str] | None = None
+) -> dict[str, list[SessionRow]]:
     by_id = {row.session_id: row for row in sessions}
     grouped: dict[str, list[SessionRow]] = {}
     for row in sessions:
-        root = _root_for(row.session_id, by_id)
+        root = _root_for(row.session_id, by_id, observed_parents)
         grouped.setdefault(root, []).append(row)
     return grouped
 
@@ -328,21 +345,87 @@ def _mcp_name_from_tool(tool: str, configured_mcps: list[str]) -> str:
     return ""
 
 
+def _observed_parents(obs_db: Path) -> dict[str, str]:
+    conn = _connect(obs_db)
+    if conn is None:
+        return {}
+    try:
+        columns = _table_columns(conn, "llm_requests")
+        if not {"session_id", "parent_session_id"}.issubset(columns):
+            return {}
+        rows = conn.execute(
+            "SELECT session_id, parent_session_id FROM llm_requests "
+            "WHERE session_id IS NOT NULL AND parent_session_id IS NOT NULL "
+            "AND session_id != '' AND parent_session_id != ''"
+        ).fetchall()
+        return {
+            str(row["session_id"]): str(row["parent_session_id"])
+            for row in rows
+            if row["session_id"] != row["parent_session_id"]
+        }
+    finally:
+        conn.close()
+
+
+def _observability_session_ids_by_root(
+    observed_parents: dict[str, str], by_id: dict[str, SessionRow], roots: set[str]
+) -> dict[str, set[str]]:
+    grouped: dict[str, set[str]] = defaultdict(set)
+    for session_id in observed_parents:
+        root = _root_for(session_id, by_id, observed_parents)
+        if root in roots:
+            grouped[root].add(session_id)
+    return grouped
+
+
+def _observability_request_rows(
+    conn: sqlite3.Connection, columns: set[str], session_ids: list[str]
+) -> list[sqlite3.Row]:
+    if not session_ids or not {"session_id", "model_id"}.issubset(columns):
+        return []
+    selected = ["session_id", "model_id"]
+    for column in ("cost", "parent_session_id", "agent"):
+        if column in columns:
+            selected.append(column)
+    placeholders = ",".join("?" for _ in session_ids)
+    query = "SELECT " + ", ".join(selected) + " FROM llm_requests WHERE session_id IN (" + placeholders + ")"
+    return conn.execute(query, session_ids).fetchall()
+
+
+def _add_observability_request(result: dict[str, Any], row: sqlite3.Row, columns: set[str]) -> float:
+    if row["model_id"]:
+        result["models"].add(str(row["model_id"]))
+    result["requests"] += 1
+    if "parent_session_id" in columns and row["parent_session_id"]:
+        result["has_lineage"] = True
+    if "agent" in columns:
+        result["has_compaction_evidence"] = True
+        if "compact" in str(row["agent"] or "").lower():
+            result["compaction_session_ids"].add(str(row["session_id"]))
+    return float(row["cost"] or 0) if "cost" in columns else 0.0
+
+
 def _observability_for(obs_db: Path, session_ids: list[str], configured_mcps: list[str]) -> dict[str, Any]:
-    result: dict[str, Any] = {"models": set(), "requests": 0, "tool_calls": 0, "observed_mcps": set()}
+    result: dict[str, Any] = {
+        "models": set(),
+        "requests": 0,
+        "tool_calls": 0,
+        "observed_mcps": set(),
+        "cost_usd": None,
+        "compaction_session_ids": set(),
+        "has_lineage": False,
+        "has_compaction_evidence": False,
+    }
     conn = _connect(obs_db)
     if conn is None:
         return result
     try:
         placeholders = ",".join("?" for _ in session_ids)
-        if placeholders and _table_exists(conn, "llm_requests"):
-            for row in conn.execute(
-                f"SELECT model_id, COUNT(*) AS n FROM llm_requests WHERE session_id IN ({placeholders}) GROUP BY model_id",
-                session_ids,
-            ):
-                if row["model_id"]:
-                    result["models"].add(str(row["model_id"]))
-                result["requests"] += int(row["n"] or 0)
+        columns = _table_columns(conn, "llm_requests")
+        request_rows = _observability_request_rows(conn, columns, session_ids)
+        costs = [_add_observability_request(result, row, columns) for row in request_rows]
+        if "cost" in columns and request_rows:
+            result["cost_usd"] = round(sum(costs), 6)
         if placeholders and _table_exists(conn, "tool_calls"):
             for row in conn.execute(
                 f"SELECT tool_name, COUNT(*) AS n FROM tool_calls WHERE session_id IN ({placeholders}) GROUP BY tool_name",
@@ -414,9 +497,29 @@ def _opencode_report_from_group(
     root: SessionRow,
     group: list[SessionRow],
 ) -> SessionReport:
-    session_ids = [row.session_id for row in group]
+    group_session_ids = {row.session_id for row in group}
+    source_session_ids = group_session_ids | _observability_session_ids_by_root(
+        context.observed_parents, {row.session_id: row for row in group}, {root_id}
+    ).get(root_id, set())
+    session_ids = sorted(source_session_ids)
     obs = _observability_for(context.obs_db, session_ids, context.configured_mcps)
     tokens = _tokens_for_group(group)
+    compacted_session_ids = {
+        row.session_id for row in group if row.parent_id or row.time_compacting
+    } | obs["compaction_session_ids"]
+    session_cost = round(sum(row.cost for row in group), 6)
+    cost_from_observability = obs["cost_usd"] is not None
+    has_opencode_lineage = any(row.parent_id for row in group)
+    lineage_provenance = "opencode_session.parent_id"
+    if context.observed_parents:
+        lineage_provenance = (
+            "combined: session.parent_id + llm_requests.parent_session_id"
+            if has_opencode_lineage
+            else "observability: llm_requests.parent_session_id"
+        )
+    compaction_provenance = "opencode_session.parent_id,time_compacting"
+    if obs["has_compaction_evidence"]:
+        compaction_provenance = "combined: opencode_session + llm_requests.agent"
     return _make_session_report(
         session_id=root_id,
         session_name=_safe_title(root.title),
@@ -430,16 +533,21 @@ def _opencode_report_from_group(
         tokens_cache_write=tokens["cache_write"],
         raw_tokens_total=tokens["raw_total"],
         net_tokens_total=tokens["net_total"],
-        child_session_count=max(len(group) - 1, 0),
-        compaction_count=sum(1 for row in group if row.parent_id or row.time_compacting),
+        child_session_count=max(len(source_session_ids) - 1, 0),
+        compaction_count=len(compacted_session_ids),
         mcps_active=context.configured_mcps,
         mcps_observed=sorted(obs["observed_mcps"]),
         started_at=_ms_to_iso(min(row.time_created for row in group)),
         finished_at=_ms_to_iso(max(row.time_updated for row in group)),
-        cost_usd=round(sum(row.cost for row in group), 6),
+        cost_usd=obs["cost_usd"] if cost_from_observability else session_cost,
         request_count=int(obs["requests"]),
         tool_call_count=int(obs["tool_calls"]),
-        source_session_ids=sorted(session_ids),
+        source_session_ids=session_ids,
+        cost_provenance=(
+            "observability: llm_requests.cost" if cost_from_observability else "opencode_session.cost"
+        ),
+        lineage_provenance=lineage_provenance,
+        compaction_provenance=compaction_provenance,
     )
 
 
@@ -451,11 +559,17 @@ def _opencode_reports(args: argparse.Namespace) -> list[SessionReport]:
         return []
     try:
         sessions = _read_sessions(conn)
-        grouped = _children_by_root(sessions)
         by_id = {row.session_id: row for row in sessions}
+        observed_parents = _observed_parents(obs_db)
+        grouped = _children_by_root(sessions, observed_parents)
         since_dt = _parse_since(args.since)
         since_ms = int(since_dt.timestamp() * 1000) if since_dt else None
-        context = OpencodeReportContext(conn=conn, obs_db=obs_db, configured_mcps=_configured_mcps())
+        context = OpencodeReportContext(
+            conn=conn,
+            obs_db=obs_db,
+            configured_mcps=_configured_mcps(),
+            observed_parents=observed_parents,
+        )
         reports: list[SessionReport] = []
         for root_id, group in grouped.items():
             if not _session_in_scope(group, args.session, since_ms):
@@ -556,6 +670,9 @@ def _claude_report_from_group(session_id: str, data: dict[str, Any]) -> SessionR
         request_count=data["requests"],
         tool_call_count=0,
         source_session_ids=[session_id],
+        cost_provenance="claude_metrics.cost_total",
+        lineage_provenance="unavailable",
+        compaction_provenance="unavailable",
     )
 
 

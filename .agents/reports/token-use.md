@@ -43,8 +43,8 @@ only after the helper has written the local evidence bundle.
 
 | Runtime | Primary source | Notes |
 |---|---|---|
-| OpenCode | `~/.local/share/opencode/opencode.db` | Uses `session.parent_id` to aggregate compacted child sessions with their root session. |
-| OpenCode tools | `~/.aidevops/.agent-workspace/observability/llm-requests.db` | Adds model request counts, tool-call counts, and observed MCP tool names when available. |
+| OpenCode | `~/.local/share/opencode/opencode.db` | Uses `session.parent_id` to aggregate compacted child sessions with their root session and supplies legacy cost fallback. |
+| OpenCode tools | `~/.aidevops/.agent-workspace/observability/llm-requests.db` | Adds model request counts, tool-call counts, observed MCP names, request costs, routed-child lineage, and compaction-agent evidence when available. |
 | Claude fallback | `~/.aidevops/.agent-workspace/observability/metrics.jsonl` | Best-effort token totals; compaction and MCP fields may be empty. |
 
 ## Report Fields
@@ -55,6 +55,8 @@ only after the helper has written the local evidence bundle.
 - Compaction count and child session count.
 - Configured MCP servers and observed MCP tools.
 - Date-time started and date-time finished.
+- JSON provenance fields for cost, lineage, and compactions. `unavailable` means
+  coverage is unavailable; it is never reported as a measured zero.
 
 Net token total is input + output + reasoning + cache-write tokens. Cache reads
 are excluded from net totals and retained in raw totals for context-volume review.

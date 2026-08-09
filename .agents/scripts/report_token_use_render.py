@@ -52,6 +52,9 @@ def as_dict(report: Any) -> dict[str, Any]:
         "request_count": report.request_count,
         "tool_call_count": report.tool_call_count,
         "source_session_ids": report.source_session_ids,
+        "cost_provenance": report.cost_provenance,
+        "lineage_provenance": report.lineage_provenance,
+        "compaction_provenance": report.compaction_provenance,
     }
 
 
@@ -126,7 +129,8 @@ def write_markdown(reports: list[Any], daily_usage: list[Any], output_dir: Path,
             "- Net tokens are input + output + reasoning + cache-write tokens, excluding cache reads so the main total tracks paid/metered work more closely.",
             "- Raw tokens include cache reads for context volume analysis. Provider-specific cached-read billing discounts are best represented by the Cost column when available.",
             "- Session type is inferred from runtime metadata. OpenCode sessions under the runtime temporary work directory are reported as headless worker sessions; other local sessions are reported as interactive.",
-            "- OpenCode rows recursively include child sessions via `session.parent_id` so compacted sessions are counted with their root session.",
+            "- OpenCode rows recursively include child sessions via `session.parent_id` and, when available, `llm_requests.parent_session_id` so compacted sessions are counted with their root session.",
+            "- JSON session fields `cost_provenance`, `lineage_provenance`, and `compaction_provenance` identify the source used for each derived value; `unavailable` is not a measured zero.",
             "- MCPs configured lists configured OpenCode MCP server names at report time. MCPs observed are inferred from session tool-call names when available and are the better proxy for actual use.",
         ]
     )
