@@ -221,6 +221,51 @@ fs.writeFileSync(process.env.SAFE_CAPTURE, JSON.stringify(process.env));
   };
   assert.equal(finishStructuredTurn(structuredSessionPrompt)?.replyTo, triggeringEvent);
 
+  const liveStructuredPrompt = structuredClone(structuredSessionPrompt);
+  liveStructuredPrompt.params.sessionId = "session-live-structured-event";
+  liveStructuredPrompt.params.prompt = [
+    {type: "text", text: "[Base]\nBuzz platform instructions"},
+    {type: "text", text: "[System]\nPortable agent definition"},
+    {type: "text", text: "[Team Instructions]\nTeam policy"},
+    {type: "text", text: "[Agent Memory — core]\nNo core memory found."},
+    structuredClone(structuredSessionPrompt.params.prompt[0]),
+    {type: "text", text: "[Conversation Context (1 of 1 messages)]\n[1] Owner: status"},
+    structuredClone(structuredSessionPrompt.params.prompt[1]),
+  ];
+  assert.equal(
+    finishStructuredTurn(liveStructuredPrompt)?.replyTo,
+    triggeringEvent,
+    "trusted setup and conversation blocks may precede and follow the Context block",
+  );
+
+  const duplicateContextPrompt = structuredClone(liveStructuredPrompt);
+  duplicateContextPrompt.params.sessionId = "session-duplicate-context";
+  duplicateContextPrompt.params.prompt.splice(
+    5,
+    0,
+    structuredClone(structuredSessionPrompt.params.prompt[0]),
+  );
+  assert.equal(
+    finishStructuredTurn(duplicateContextPrompt),
+    null,
+    "multiple Context blocks must fail closed",
+  );
+
+  const eventBeforeContextPrompt = structuredClone(liveStructuredPrompt);
+  eventBeforeContextPrompt.params.sessionId = "session-event-before-context";
+  [
+    eventBeforeContextPrompt.params.prompt[4],
+    eventBeforeContextPrompt.params.prompt[6],
+  ] = [
+    eventBeforeContextPrompt.params.prompt[6],
+    eventBeforeContextPrompt.params.prompt[4],
+  ];
+  assert.equal(
+    finishStructuredTurn(eventBeforeContextPrompt),
+    null,
+    "a structured event block before Context must fail closed",
+  );
+
   const duplicateEventIdPrompt = structuredClone(structuredSessionPrompt);
   duplicateEventIdPrompt.params.sessionId = "session-duplicate-event-id";
   duplicateEventIdPrompt.params.prompt[1].text = duplicateEventIdPrompt.params.prompt[1].text.replace(

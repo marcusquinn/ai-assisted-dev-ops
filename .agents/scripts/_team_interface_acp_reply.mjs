@@ -70,10 +70,17 @@ function trustedReplyInstructions(eventLines, contentIndex, tagsIndex) {
 
 function trustedReplyDestination(message) {
   const blocks = promptBlocks(message);
-  if (!blocks || blocks.length === 0 || !blocks[0].startsWith("[Context]")) {
+  if (!blocks || blocks.length === 0) {
     return null;
   }
-  const contextLines = blocks[0].split(/\r?\n/u);
+  const contextIndexes = blocks
+    .map((block, index) => block.startsWith("[Context]") ? index : -1)
+    .filter((index) => index >= 0);
+  if (contextIndexes.length !== 1) {
+    return null;
+  }
+  const contextIndex = contextIndexes[0];
+  const contextLines = blocks[contextIndex].split(/\r?\n/u);
   const eventMarker = contextLines.indexOf("[Event]");
   const contextHeader = eventMarker < 0 ? contextLines : contextLines.slice(0, eventMarker);
   const channelLines = contextHeader.filter((line) => line.startsWith("Channel: "));
@@ -84,8 +91,11 @@ function trustedReplyDestination(message) {
   if (eventMarker >= 0) {
     eventBlocks.push({lines: contextLines.slice(eventMarker + 1), structured: false});
   }
-  for (const block of blocks.slice(1)) {
+  for (const [index, block] of blocks.entries()) {
     if (block.startsWith("[Buzz event:")) {
+      if (index <= contextIndex) {
+        return null;
+      }
       eventBlocks.push({lines: block.split(/\r?\n/u), structured: true});
     }
   }
