@@ -91,6 +91,10 @@ policy. The completion marker is written only after archive integrity and source
 identity validation; successful native removal then atomically advances the
 source outcome from `pending` to `removed`.
 
+The bucket-level `manual-review` value is retained for v2 producer-format
+compatibility and grants no deletion authority. Manual confirmation or a
+separate policy-bound automatic plan must still revalidate the exact bucket.
+
 Readers remain compatible with complete v1 buckets from the platform-storage
 transition and markerless legacy v1 buckets whose original Git recovery
 structure still validates. Partial v2 evidence is never reinterpreted as v1.
