@@ -17,7 +17,8 @@ import { sqliteExecSync } from "./observability-sqlite.mjs";
 
 /**
  * Read-only check: are all expected tables present and is the t1309 `intent`
- * column on `tool_calls`, and are routing columns present on `llm_requests`?
+ * column on `tool_calls`, and are routing/version columns present on
+ * `llm_requests`?
  * Uses `sqlite3 -readonly` so it never contends on
  * the writer lock — safe to call from N concurrent workers without race.
  *
@@ -37,7 +38,7 @@ export function isSchemaInitialized(dbPath) {
        "AND name IN ('llm_requests','tool_calls','session_summaries','runtime_events','runtime_event_archives')) AS tbls, " +
        "(SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='intent') AS intent_col, " +
        "(SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN " +
-       "('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated')) AS routing_cols, " +
+        "('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated','aidevops_version')) AS routing_cols, " +
        "(SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' " +
        "AND name IN ('runtime_events_reject_update','runtime_events_reject_delete'," +
        "'runtime_event_archives_reject_update','runtime_event_archives_reject_delete')) AS guards;"],
@@ -49,7 +50,7 @@ export function isSchemaInitialized(dbPath) {
     ).trim();
     if (!result) return false;
     const [tbls, intentCol, routingCols, guards] = result.split("|");
-    return tbls === "5" && intentCol === "1" && routingCols === "6" && guards === "4";
+    return tbls === "5" && intentCol === "1" && routingCols === "7" && guards === "4";
   } catch {
     return false;
   }
@@ -93,7 +94,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
   routing_candidate_index INTEGER,
   routing_attempt INTEGER,
   routing_reason TEXT,
-  routing_escalated INTEGER DEFAULT 0
+  routing_escalated INTEGER DEFAULT 0,
+  aidevops_version TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_llm_requests_session

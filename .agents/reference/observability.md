@@ -14,7 +14,8 @@ The opencode-aidevops plugin captures every LLM request and tool call to
 
 Tables:
 
-- `llm_requests` — per-message tokens, cost, model, duration, finish reason
+- `llm_requests` — per-message tokens, cost, model, duration, finish reason,
+  routing decision, route attempt, and `aidevops_version`
 - `tool_calls` — per-tool call session_id, tool_name, intent (from the
   `agent__intent` field), duration_ms, success, metadata JSON
 - `session_summaries` — aggregate totals keyed by session_id
@@ -24,6 +25,11 @@ Tables:
 Query with `.agents/scripts/observability-helper.sh` (cost dashboards,
 rate-limit telemetry, cache health). No configuration required — the
 plugin auto-creates the DB on first tool call.
+
+Routing feedback reads the same request rows. `routing_attempt` is stable across
+ordinary turns in one child route and increments only for an actual retry or
+capability escalation. Use `aidevops_version` to segment request, token, cost,
+error, and escalation outcomes before and after routing-policy releases.
 
 ### Runtime-event contract
 

@@ -255,6 +255,25 @@ _publish_github_release() {
 	return $?
 }
 
+_release_contains_efficiency_change() {
+	local previous_tag=""
+	local range="HEAD"
+	local subject=""
+	local performance_pattern='^(GH#[0-9]+:[[:space:]]+)?perf(\([^)]*\))?!?:[[:space:]]'
+
+	previous_tag=$(git -C "$REPO_ROOT" describe --tags --abbrev=0 \
+		--match 'v[0-9]*.[0-9]*.[0-9]*' HEAD^ 2>/dev/null || true)
+	if [[ -n "$previous_tag" ]]; then
+		range="${previous_tag}..HEAD"
+	fi
+	while IFS= read -r subject; do
+		if [[ "$subject" =~ $performance_pattern ]]; then
+			return 0
+		fi
+	done < <(git -C "$REPO_ROOT" log --format='%s' "$range" 2>/dev/null)
+	return 1
+}
+
 _release_tag_message() {
 	local version="$1"
 	local source_pr="${VERSION_MANAGER_SOURCE_PR:-}"
@@ -275,6 +294,9 @@ _release_tag_message() {
 
 	printf 'Release v%s - AI DevOps Framework\n\n' "$version"
 	printf 'Aidevops-Version: %s\n' "$version"
+	if _release_contains_efficiency_change; then
+		printf 'Aidevops-Efficiency-Change: true\n'
+	fi
 	if [[ -n "$source_pr" && -n "$source_merge" ]]; then
 		printf 'Aidevops-Source-PR: %s\n' "$source_pr"
 		printf 'Aidevops-Source-Merge: %s\n' "$source_merge"
@@ -763,6 +785,18 @@ bash <(curl -fsSL https://aidevops.sh/install)
 ### What's New
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed changes.
+
+EOF
+	if _release_contains_efficiency_change; then
+		cat <<'EOF'
+### Efficiency Release
+
+This release contains a conventional `perf:` change. Compare routing, token,
+cost, and verification outcomes by `aidevops_version` before changing defaults.
+
+EOF
+	fi
+	cat <<EOF
 
 ### Quick Start
 

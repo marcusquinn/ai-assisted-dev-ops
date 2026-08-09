@@ -72,6 +72,27 @@ for expected_trailer in \
 	fi
 done
 printf 'PASS release tag message records immutable source provenance\n'
+if [[ "$tag_message" == *"Aidevops-Efficiency-Change:"* ]]; then
+	printf 'FAIL ordinary release tag message claims an efficiency change\n'
+	exit 1
+fi
+printf 'PASS ordinary release tag message omits efficiency provenance\n'
+
+git -C "$LINKED" commit -q --allow-empty -m 'GH#42: perf(routing): reduce model cost'
+efficiency_tag_message=$(_release_tag_message 1.2.3)
+if [[ "$efficiency_tag_message" != *"Aidevops-Efficiency-Change: true"* ]]; then
+	printf 'FAIL perf release tag message lacks efficiency provenance\n'
+	exit 1
+fi
+efficiency_notes=$(generate_release_notes 1.2.3)
+efficiency_version_guidance="by \`aidevops_version\`"
+if [[ "$efficiency_notes" != *"### Efficiency Release"* ||
+	"$efficiency_notes" != *"$efficiency_version_guidance"* ]]; then
+	printf 'FAIL perf release notes lack efficiency analysis guidance\n'
+	exit 1
+fi
+git -C "$LINKED" reset -q --hard "$MERGE_SHA"
+printf 'PASS perf releases record signed tag and release-note efficiency provenance\n'
 
 VERSION_MANAGER_SOURCE_PR=""
 if _release_tag_message 1.2.3 >/dev/null 2>&1; then

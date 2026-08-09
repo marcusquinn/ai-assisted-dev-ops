@@ -23,6 +23,7 @@ describe("routing feedback analysis", () => {
           session_id: "child-1",
           routing_tier: "simple",
           routing_attempt: 1,
+          aidevops_version: "3.32.239",
           tokens_total: 120,
           cost: 0.01,
         },
@@ -32,6 +33,7 @@ describe("routing feedback analysis", () => {
           routing_attempt: 2,
           routing_reason: "capability_escalation",
           routing_escalated: 1,
+          aidevops_version: "3.32.240",
           tokens_total: 80,
           cost: 0.02,
         },
@@ -43,9 +45,31 @@ describe("routing feedback analysis", () => {
     assert.equal(summary.escalationCount, 1);
     assert.equal(summary.tokensTotal, 200);
     assert.equal(summary.costTotal, 0.03);
+    assert.deepEqual(summary.aidevopsVersions, ["3.32.239", "3.32.240"]);
     assert.match(summary.recommendations[0], /starting at `standard`/);
     assert.match(formatRoutingFeedbackMarkdown(summary), /### Routing feedback/);
     assert.match(formatRoutingFeedbackToast(summary), /simple → standard/);
+  });
+
+  test("counts repeated conversation turns as one route attempt", () => {
+    const requests = Array.from({ length: 18 }, () => ({
+      session_id: "child-1",
+      routing_tier: "simple",
+      routing_attempt: 1,
+    }));
+    requests.push({
+      session_id: "child-1",
+      routing_tier: "standard",
+      routing_attempt: 2,
+      routing_reason: "capability_escalation",
+      routing_escalated: 1,
+    });
+
+    const summary = summarizeRoutingFeedback({ requests });
+
+    assert.equal(summary.routeEventCount, 19);
+    assert.equal(summary.retryCount, 1);
+    assert.equal(summary.escalationCount, 1);
   });
 
   test("recommends candidate review only after repeated fallback evidence", () => {

@@ -151,6 +151,7 @@ function _runDataMigrations(options = {}) {
       ["routing_attempt", "INTEGER"],
       ["routing_reason", "TEXT"],
       ["routing_escalated", "INTEGER DEFAULT 0"],
+      ["aidevops_version", "TEXT"],
     ];
     for (const [column, definition] of routingColumns) {
       const exists = sqliteExecSync(
@@ -167,6 +168,7 @@ function _runDataMigrations(options = {}) {
   // cannot reference columns that ALTER TABLE has not added yet.
   sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_parent_session ON llm_requests(parent_session_id);", 5000);
   sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_routing_tier ON llm_requests(routing_tier);", 5000);
+  sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_aidevops_version ON llm_requests(aidevops_version);", 5000);
 
   // runtime-events.mjs is the sole runtime-event schema/migration authority.
   if (!initialiseRuntimeEventStore(DB_PATH)) return false;
@@ -204,6 +206,12 @@ const partStreamSummaries = new PartStreamSummaryTracker();
  * @type {boolean}
  */
 let dbReady = false;
+let aidevopsVersion = "";
+
+function normalizedAidevopsVersion(value) {
+  const version = String(value || "").trim().replace(/^v/, "");
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version) ? version : "";
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -212,9 +220,13 @@ let dbReady = false;
 /**
  * Initialise the observability system.
  * Call once at plugin startup.
+ * @param {{ aidevopsVersion?: string }} [options]
  * @returns {boolean} Whether initialisation succeeded
  */
-export function initObservability() {
+export function initObservability(options = {}) {
+  aidevopsVersion = normalizedAidevopsVersion(
+    options.aidevopsVersion || process.env.AIDEVOPS_VERSION,
+  );
   dbReady = initDatabase();
   if (dbReady) {
     console.error("[aidevops] Observability: SQLite DB ready at " + DB_PATH);
@@ -319,6 +331,7 @@ function handleMessageUpdated(event) {
     routing_attempt: routing.attempt,
     routing_reason: routing.reason || null,
     routing_escalated: routing.escalated === 1,
+    aidevops_version: aidevopsVersion || null,
   });
 
   // Prevent unbounded memory growth — prune old entries periodically
@@ -345,7 +358,7 @@ function handleMessageUpdated(event) {
 
   // Calculate cost from tokens — OpenCode does not provide msg.cost
   const cost = calculateCost(msg.tokens, msg.modelID);
-  rememberRoutingFeedback(msg, routing, cost, errorType);
+  rememberRoutingFeedback(msg, routing, cost, errorType, aidevopsVersion);
 
   const sql = `INSERT INTO llm_requests (
     session_id, message_id, provider_id, model_id, agent,
@@ -354,7 +367,7 @@ function handleMessageUpdated(event) {
     cost, duration_ms, finish_reason, error_type, error_message,
     tool_call_count, project_path, variant, parent_session_id,
     routing_tier, routing_candidate_index, routing_attempt, routing_reason,
-    routing_escalated
+    routing_escalated, aidevops_version
   ) VALUES (
     ${sqlEscape(msg.sessionID)},
     ${sqlEscape(msg.id)},
@@ -380,7 +393,8 @@ function handleMessageUpdated(event) {
     ${Number.isInteger(routing.candidateIndex) ? routing.candidateIndex : -1},
     ${Number.isInteger(routing.attempt) ? routing.attempt : 1},
     ${sqlEscape(routing.reason || null)},
-    ${routing.escalated === 1 ? 1 : 0}
+    ${routing.escalated === 1 ? 1 : 0},
+    ${sqlEscape(aidevopsVersion || null)}
   );`;
 
   sqliteExec(sql);

@@ -202,13 +202,13 @@ else
 fi
 
 routing_col_count=$(sqlite3 "$DB_PATH" \
-	"SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN ('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated');" \
+	"SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN ('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated','aidevops_version');" \
 	2>/dev/null || echo "0")
-if [[ "$routing_col_count" == "6" ]]; then
-	pass "routing decision columns present on llm_requests"
+if [[ "$routing_col_count" == "7" ]]; then
+	pass "routing and aidevops version columns present on llm_requests"
 else
-	fail "routing decision columns present on llm_requests" \
-		"column count: $routing_col_count (expected 6)"
+	fail "routing and aidevops version columns present on llm_requests" \
+		"column count: $routing_col_count (expected 7)"
 fi
 
 runtime_guard_count=$(sqlite3 "$DB_PATH" \
@@ -317,23 +317,23 @@ else
 fi
 
 legacy_routing_col_count=$(sqlite3 "$LEGACY_DB_PATH" \
-	"SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN ('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated');" \
+	"SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN ('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated','aidevops_version');" \
 	2>/dev/null || true)
-if [[ "$legacy_routing_col_count" == "6" ]]; then
-	pass "legacy schema gains all routing decision columns"
+if [[ "$legacy_routing_col_count" == "7" ]]; then
+	pass "legacy schema gains routing and aidevops version columns"
 else
-	fail "legacy schema gains all routing decision columns" \
-		"column count: ${legacy_routing_col_count:-0} (expected 6)"
+	fail "legacy schema gains routing and aidevops version columns" \
+		"column count: ${legacy_routing_col_count:-0} (expected 7)"
 fi
 
 legacy_routing_index_count=$(sqlite3 "$LEGACY_DB_PATH" \
-	"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_llm_requests_parent_session','idx_llm_requests_routing_tier');" \
+	"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_llm_requests_parent_session','idx_llm_requests_routing_tier','idx_llm_requests_aidevops_version');" \
 	2>/dev/null || true)
-if [[ "$legacy_routing_index_count" == "2" ]]; then
-	pass "legacy schema gains routing indexes after column migration"
+if [[ "$legacy_routing_index_count" == "3" ]]; then
+	pass "legacy schema gains routing and version indexes after column migration"
 else
-	fail "legacy schema gains routing indexes after column migration" \
-		"index count: ${legacy_routing_index_count:-0} (expected 2)"
+	fail "legacy schema gains routing and version indexes after column migration" \
+		"index count: ${legacy_routing_index_count:-0} (expected 3)"
 fi
 
 legacy_row_count=$(sqlite3 "$LEGACY_DB_PATH" \

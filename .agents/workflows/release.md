@@ -33,6 +33,12 @@ Before version mutation, the helper reserves the repository's remote release lan
 
 The underlying version manager verifies the source PR is merged and its merge SHA is reachable, then atomically checks the tree → bumps and validates version files → commits → signs and pushes the tag. The tag workflow verifies immutable provenance before reconciling GitHub, npm OIDC, and Homebrew. A later trusted reconciliation verifies all three channels, runs local deploy sync from a detached tag worktree, and persists receipts. Direct `version-manager.sh release` execution is not a full-loop release because it cannot persist terminal per-PR lifecycle evidence.
 
+When the release range contains a conventional `perf:` commit (optionally
+scoped or prefixed with `GH#NNN:`), the signed tag includes
+`Aidevops-Efficiency-Change: true` and generated release notes include an
+efficiency-analysis section. Compare routing, token, cost, and verification
+outcomes by the persisted `aidevops_version` before changing routing defaults.
+
 Release authorization is an explicit trust-boundary input, not an inference from
 Git ancestry. `--expected-sources` accepts a comma-separated set of PR numbers;
 the runner resolves each to its merged `main` SHA, sorts the resulting `PR@SHA`

@@ -11,6 +11,7 @@ import {
   normalizeEffortTier,
   resolveTierReasoning,
 } from "../subagent-effort.mjs";
+import { capabilityEscalationEvidence } from "../subagent-effort-escalation.mjs";
 
 const TIER_REASONING = {
   simple: { openai: "low" },
@@ -405,4 +406,227 @@ test("headless dispatch metadata takes precedence over inferred root profiles", 
     if (previousTier === undefined) delete process.env.AIDEVOPS_DISPATCH_TIER;
     else process.env.AIDEVOPS_DISPATCH_TIER = previousTier;
   }
+});
+
+test("conversation turns keep one route attempt and capability escalation reuses the child", async () => {
+  const decisions = [];
+  const prompts = [];
+  let hooks;
+  const client = {
+    provider: {
+      list: async () => ({ data: {
+        connected: ["openai"],
+        all: [{
+          id: "openai",
+          models: {
+            "gpt-5.6-luna": { id: "gpt-5.6-luna" },
+            "gpt-5.6-terra": { id: "gpt-5.6-terra" },
+            "gpt-5.6-sol": { id: "gpt-5.6-sol" },
+          },
+        }],
+      } }),
+    },
+    session: {
+      get: async ({ path }) => ({ data: path.id === "child"
+        ? { id: "child", parentID: "parent", agent: "explore" }
+        : {
+          id: "parent",
+          model: { providerID: "openai", modelID: "gpt-5.6-sol" },
+          variant: "high",
+        } }),
+      messages: async () => ({ data: [] }),
+      prompt: async (request) => {
+        prompts.push(request);
+        const promptOutput = {
+          message: { sessionID: "child", agent: "explore" },
+          parts: request.body.parts,
+        };
+        await hooks.chatMessage({}, promptOutput);
+        assert.deepEqual(promptOutput.message.model, {
+          providerID: "openai",
+          modelID: "gpt-5.6-terra",
+        });
+        await hooks.chatParams({
+          provider: { id: "openai" },
+          model: { id: "gpt-5.6-terra" },
+          message: { sessionID: "child", agent: "explore" },
+        }, { options: {} });
+        return { data: { parts: [{ type: "text", text: "verified standard-tier result" }] } };
+      },
+    },
+  };
+  const modelRouting = {
+    tiers: {
+      simple: { models: ["openai/gpt-5.6-luna"], reasoning: {} },
+      standard: { models: ["openai/gpt-5.6-terra"], reasoning: {} },
+      thinking: { models: ["openai/gpt-5.6-sol"], reasoning: {} },
+    },
+    escalationOrder: ["simple", "standard", "thinking"],
+  };
+  hooks = createSubagentEffortHooks(client, {
+    modelRouting,
+    agentRoutingState: { tiers: new Map([["explore", "simple"]]), pinned: new Set() },
+    onRoutingDecision: async (sessionID, decision) => decisions.push({ sessionID, ...decision }),
+    isHeadless: () => false,
+  });
+
+  const initialOutput = {
+    message: { sessionID: "child", agent: "explore" },
+    parts: [{ type: "text", text: "Inspect this bounded implementation detail." }],
+  };
+  await hooks.chatMessage({}, initialOutput);
+  assert.match(initialOutput.parts.at(-1).text, /capability escalation contract/);
+  for (let turn = 0; turn < 18; turn += 1) {
+    await hooks.chatParams({
+      provider: { id: "openai" },
+      model: { id: "gpt-5.6-luna" },
+      message: { sessionID: "child", agent: "explore" },
+    }, { options: {} });
+  }
+
+  hooks.beforeTool(
+    { tool: "task", callID: "call-1", sessionID: "parent" },
+    { args: { description: "bounded inspection" } },
+  );
+  const taskOutput = {
+    output: "BLOCKED: capability limit - the bounded cross-file inference remains unresolved",
+    metadata: { sessionId: "child", status: "completed" },
+  };
+  await hooks.afterTool(
+    { tool: "task", callID: "call-1", sessionID: "parent" },
+    taskOutput,
+  );
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].path.id, "child");
+  assert.deepEqual(prompts[0].body.model, {
+    providerID: "openai",
+    modelID: "gpt-5.6-terra",
+  });
+  assert.equal(decisions.length, 19);
+  assert.ok(decisions.slice(0, 18).every((decision) => decision.attempt === 1));
+  assert.deepEqual(decisions.at(-1), {
+    sessionID: "child",
+    parentSessionID: "parent",
+    tier: "standard",
+    model: "openai/gpt-5.6-terra",
+    variant: "",
+    candidateIndex: 0,
+    attempt: 2,
+    reason: "capability_escalation",
+    escalated: true,
+  });
+  assert.match(taskOutput.output, /simple → standard/);
+  assert.match(taskOutput.output, /verified standard-tier result/);
+});
+
+test("automatic escalation stops when the retried child attempts side effects", async () => {
+  let hooks;
+  let promptCalls = 0;
+  const client = {
+    provider: {
+      list: async () => ({ data: {
+        connected: ["openai"],
+        all: [{
+          id: "openai",
+          models: {
+            luna: { id: "luna" },
+            terra: { id: "terra" },
+            sol: { id: "sol" },
+          },
+        }],
+      } }),
+    },
+    session: {
+      get: async () => ({ data: { id: "child", parentID: "parent", agent: "explore" } }),
+      prompt: async () => {
+        promptCalls += 1;
+        hooks.beforeTool(
+          { tool: "apply_patch", callID: "write-1", sessionID: "child" },
+          { args: {} },
+        );
+        return { data: { parts: [{
+          type: "text",
+          text: "BLOCKED: capability limit - deeper reasoning is still required",
+        }] } };
+      },
+    },
+  };
+  hooks = createSubagentEffortHooks(client, {
+    modelRouting: {
+      tiers: {
+        simple: { models: ["openai/luna"], reasoning: {} },
+        standard: { models: ["openai/terra"], reasoning: {} },
+        thinking: { models: ["openai/sol"], reasoning: {} },
+      },
+      escalationOrder: ["simple", "standard", "thinking"],
+    },
+    agentRoutingState: { tiers: new Map([["explore", "simple"]]), pinned: new Set() },
+    isHeadless: () => false,
+  });
+  hooks.beforeTool(
+    { tool: "task", callID: "call-side-effect", sessionID: "parent" },
+    { args: {} },
+  );
+  await hooks.chatMessage({}, {
+    message: { sessionID: "child", agent: "explore" },
+    parts: [{ type: "text", text: "Inspect only." }],
+  });
+  const taskOutput = {
+    output: "BLOCKED: capability limit - initial analysis is insufficient",
+    metadata: { sessionId: "child", status: "completed" },
+  };
+
+  await hooks.afterTool(
+    { tool: "task", callID: "call-side-effect", sessionID: "parent" },
+    taskOutput,
+  );
+
+  assert.equal(promptCalls, 1);
+  assert.match(taskOutput.output, /simple → standard/);
+  assert.match(taskOutput.output, /attempted side effects/);
+});
+
+test("non-capability blockers and headless tasks never auto-escalate", async () => {
+  assert.equal(
+    capabilityEscalationEvidence("BLOCKED: capability limit - provider authentication is unavailable"),
+    "",
+  );
+  assert.equal(
+    capabilityEscalationEvidence("BLOCKED: capability limit - bounded inference exceeded this model"),
+    "bounded inference exceeded this model",
+  );
+
+  let promptCalls = 0;
+  const client = {
+    provider: { list: async () => ({ data: { connected: ["openai"], all: [] } }) },
+    session: {
+      get: async () => ({ data: { id: "child", parentID: "parent", agent: "explore" } }),
+      prompt: async () => { promptCalls += 1; },
+    },
+  };
+  const hooks = createSubagentEffortHooks(client, {
+    modelRouting: {
+      tiers: {
+        simple: { models: ["openai/luna"], reasoning: {} },
+        standard: { models: ["openai/terra"], reasoning: {} },
+        thinking: { models: [], reasoning: {} },
+      },
+      escalationOrder: ["simple", "standard", "thinking"],
+    },
+    agentRoutingState: { tiers: new Map([["explore", "simple"]]), pinned: new Set() },
+    isHeadless: () => true,
+  });
+  hooks.beforeTool({ tool: "task", callID: "headless-call", sessionID: "parent" }, { args: {} });
+  const taskOutput = {
+    output: "BLOCKED: capability limit - bounded inference exceeded this model",
+    metadata: { sessionId: "child", status: "completed" },
+  };
+  await hooks.afterTool(
+    { tool: "task", callID: "headless-call", sessionID: "parent" },
+    taskOutput,
+  );
+
+  assert.equal(promptCalls, 0);
+  assert.equal(taskOutput.metadata.aidevopsRoutingEscalation, undefined);
 });

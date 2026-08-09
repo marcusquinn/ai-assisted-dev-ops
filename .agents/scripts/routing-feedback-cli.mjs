@@ -94,7 +94,7 @@ function loadRequests(options, attempts) {
   }
   if (sessionIDs.size === 0) return [];
   const values = [...sessionIDs].map(sqlString).join(",");
-  const sql = `SELECT session_id, parent_session_id, provider_id, model_id, tokens_total, cost, error_type, finish_reason, variant, routing_tier, routing_candidate_index, routing_attempt, routing_reason, routing_escalated FROM llm_requests WHERE session_id IN (${values}) OR parent_session_id IN (${values}) ORDER BY id;`;
+  const sql = `SELECT session_id, parent_session_id, provider_id, model_id, tokens_total, cost, error_type, finish_reason, variant, routing_tier, routing_candidate_index, routing_attempt, routing_reason, routing_escalated, aidevops_version FROM llm_requests WHERE session_id IN (${values}) OR parent_session_id IN (${values}) ORDER BY id;`;
   try {
     const output = execFileSync("sqlite3", ["-readonly", "-json", options.db, sql], {
       encoding: "utf8",

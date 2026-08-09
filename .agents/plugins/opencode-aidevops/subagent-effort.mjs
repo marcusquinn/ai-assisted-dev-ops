@@ -4,6 +4,10 @@
 import { existsSync, readFileSync } from "fs";
 import { withUnambiguousProviderFallbacks } from "./model-routing-reasoning.mjs";
 import { createSubagentEffortHandlers } from "./subagent-effort-handlers.mjs";
+import {
+  appendCapabilityEscalationContract,
+  createInteractiveSubagentEscalator,
+} from "./subagent-effort-escalation.mjs";
 
 const VARIANT_RANK = {
   none: 0,
@@ -202,7 +206,7 @@ export function createSubagentEffortHooks(client, options = {}) {
     options.providerStateTtlMs ?? 30000,
   );
 
-  return createSubagentEffortHandlers({
+  const context = {
     client,
     policies,
     tierReasoning,
@@ -220,5 +224,12 @@ export function createSubagentEffortHooks(client, options = {}) {
     prunePolicies,
     resolveTierReasoning,
     routedPolicy,
+    appendCapabilityEscalationContract,
+  };
+  const handlers = createSubagentEffortHandlers(context);
+  const escalator = createInteractiveSubagentEscalator(context, {
+    isHeadless: options.isHeadless,
+    qualityLog: options.qualityLog,
   });
+  return { ...handlers, ...escalator };
 }

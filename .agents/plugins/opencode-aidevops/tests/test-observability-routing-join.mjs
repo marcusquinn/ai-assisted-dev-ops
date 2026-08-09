@@ -14,7 +14,7 @@ test("completed child responses join queued routing decisions to parent feedback
   const sqlite = await import("../../../scripts/sqlite-process.mjs");
 
   try {
-    assert.equal(observability.initObservability(), true);
+    assert.equal(observability.initObservability({ aidevopsVersion: "3.32.240" }), true);
     observability.recordRoutingDecision("child-session", {
       parentSessionID: "root-session",
       tier: "simple",
@@ -51,6 +51,7 @@ test("completed child responses join queued routing decisions to parent feedback
     assert.deepEqual(summary.delegationTiers, { simple: 1, standard: 0, thinking: 0 });
     assert.equal(summary.tokensTotal, 17);
     assert.equal(summary.models[0], "openai/gpt-5.6-luna");
+    assert.deepEqual(summary.aidevopsVersions, ["3.32.240"]);
   } finally {
     sqlite.shutdownSqlite();
     delete process.env.AIDEVOPS_OBS_DB_OVERRIDE;

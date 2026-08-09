@@ -55,6 +55,24 @@ function normalizedModel(record) {
   return provider && model ? `${provider}/${model}` : String(model || "");
 }
 
+function normalizedAidevopsVersion(record) {
+  return String(firstValue(record, "aidevops_version", "aidevopsVersion"));
+}
+
+function routeAttemptKey(record, index) {
+  const session = firstValue(record, "session_key", "sessionKey", "session_id", "sessionID");
+  const attempt = normalizedAttempt(record);
+  return session ? `${session}:${attempt}` : `anonymous:${index}`;
+}
+
+function distinctRouteAttemptCount(records, predicate) {
+  const attempts = new Set();
+  records.forEach((record, index) => {
+    if (predicate(record)) attempts.add(routeAttemptKey(record, index));
+  });
+  return attempts.size;
+}
+
 function routePath(records) {
   const path = [];
   for (const record of records) {
@@ -151,11 +169,16 @@ export function summarizeRoutingMetrics({ requests = [], attempts = [] } = {}) {
     (best, tier) => (!best || counts[tier] > counts[best] ? tier : best),
     "",
   );
-  const reasons = routeRecords.map(normalizedReason);
-  const explicitEscalations = reasons.filter((reason) => reason === "capability_escalation").length;
-  const escalationCount = explicitEscalations || (routeRecords.some(normalizedEscalated) ? 1 : 0);
+  const escalationCount = distinctRouteAttemptCount(
+    routeRecords,
+    (record) => normalizedReason(record) === "capability_escalation"
+      || normalizedEscalated(record),
+  );
   const sessions = collectSessions(routedRequests, routedAttempts);
   const models = [...new Set([...routedRequests, ...routedAttempts].map(normalizedModel).filter(Boolean))];
+  const aidevopsVersions = [...new Set(
+    [...routedRequests, ...routedAttempts].map(normalizedAidevopsVersion).filter(Boolean),
+  )];
 
   return {
     hasData: routeRecords.length > 0,
@@ -169,8 +192,12 @@ export function summarizeRoutingMetrics({ requests = [], attempts = [] } = {}) {
     tierPath: routePath(routeRecords),
     dominantTier,
     models,
+    aidevopsVersions,
     candidateFallbackCount: routeRecords.filter((record) => normalizedCandidateIndex(record) > 0).length,
-    retryCount: routeRecords.filter((record) => normalizedAttempt(record) > 1).length,
+    retryCount: distinctRouteAttemptCount(
+      routeRecords,
+      (record) => normalizedAttempt(record) > 1,
+    ),
     escalationCount,
     requestErrorCount: routedRequests.filter(requestFailed).length,
     failedAttemptCount: routedAttempts.filter(attemptFailed).length,

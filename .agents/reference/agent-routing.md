@@ -24,10 +24,12 @@ The selected agent changes the system prompt and domain knowledge loaded for the
 - Use subagents only for independent advisory work; never delegate the active critical path.
 - Dispatch at most two children in one batch and do not launch another batch until they return.
 - Prefix every delegated prompt with `[effort:simple]`, `[effort:standard]`, or `[effort:thinking]`; use the lowest tier that can reliably complete the task.
+- Use `simple` only for bounded, low-consequence advisory work with objective parent-verifiable evidence. The parent must validate the result; fluent output alone is not successful completion.
 - A thinking-tier parent does not require thinking-tier children. When reliable, offload bounded, independent, output-heavy discovery, analysis, and tool work to simple or standard children; keep small low-output calls direct when delegation overhead outweighs context savings.
 - Batch independent children in one parallel call. Require final-only summaries with the decision, evidence (paths/lines or commands), uncertainty, and next action; raw logs stay in child context and the parent owns synthesis.
 - Keep the parent progressing on non-overlapping work. Do not finalize with children pending; use their returned evidence or complete the work locally and disregard late results.
 - Subagents must not dispatch further subagents. OpenCode maps the requested effort to the provider and clamps it so child reasoning never exceeds the parent session.
+- In interactive OpenCode sessions, an eligible child can end with the exact marker `BLOCKED: capability limit - <evidence>`. The plugin re-prompts that same child session at the next configured tier so prior evidence is retained. Generic blockers, headless dispatch, terminal tiers, and children that attempted side effects never take this automatic path.
 - For full-loop work, persist stable unit IDs, dependencies, explicit file/question ownership, effort tier, and a reuse key before dispatch. Parallel-ready units must have disjoint file ownership; overlap is serialized even when capacity is available.
 - Effective concurrency is the minimum of the plan cap, mode cap, and available global slots. Interactive batches remain capped at two; headless uses its configured per-task cap.
 - Persist completed-unit evidence and reuse it after retries or runtime interruption. The primary repeats delegated exploration only when its evidence is absent, stale, or contradictory.

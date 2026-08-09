@@ -33,7 +33,7 @@ export function getRoutingFeedback(sessionID) {
   return summarizeRoutingFeedback({ requests: sessionRoutingRecords.get(sessionID) || [] });
 }
 
-export function rememberRoutingFeedback(msg, routing, cost, errorType) {
+export function rememberRoutingFeedback(msg, routing, cost, errorType, aidevopsVersion = "") {
   if (!routing.tier) return;
   const record = {
     session_id: msg.sessionID,
@@ -49,6 +49,7 @@ export function rememberRoutingFeedback(msg, routing, cost, errorType) {
     routing_attempt: routing.attempt,
     routing_reason: routing.reason,
     routing_escalated: routing.escalated,
+    aidevops_version: aidevopsVersion,
   };
   const keys = new Set([msg.sessionID, routing.parentSessionID].filter(Boolean));
   for (const key of keys) {

@@ -6,6 +6,7 @@ import {
   routingCandidates,
   routingModelIdentity,
   routingTierForModel,
+  nextRoutingTier,
   selectConnectedRoutingCandidate,
 } from "./model-routing.mjs";
 
@@ -16,13 +17,25 @@ async function routeChatMessage(context, output) {
 
   const now = Date.now();
   context.prunePolicies(context.policies, now);
+  const existingPolicy = context.policies.get(sessionID);
+  if (existingPolicy?.awaitingEscalationPrompt) {
+    existingPolicy.awaitingEscalationPrompt = false;
+    existingPolicy.createdAt = now;
+    if (existingPolicy.routedModel) {
+      message.model = routingModelIdentity(existingPolicy.routedModel);
+    }
+    return;
+  }
+
   const text = context.messageText(output.parts);
   const agentName = String(message.agent ?? message.mode ?? "");
   const route = context.routedPolicy(context.agentRoutingState, agentName, text);
   const policy = {
     effort: route.effort,
     reason: route.pinned ? "explicit_model" : route.reason,
-    attempt: 0,
+    attempt: 1,
+    escalated: false,
+    pinned: route.pinned,
     createdAt: now,
   };
   context.policies.set(sessionID, policy);
@@ -40,6 +53,10 @@ async function routeChatMessage(context, output) {
     return;
   }
   if (!childSession.parentID) return;
+  policy.parentSessionID = childSession.parentID;
+  if (nextRoutingTier(context.modelRouting, route.effort)) {
+    context.appendCapabilityEscalationContract(output);
+  }
 
   const providerState = await context.resolveProviderState();
   if (!providerState) {
@@ -57,7 +74,6 @@ async function routeChatMessage(context, output) {
   message.model = routingModelIdentity(routedModel);
   policy.routedModel = routedModel;
   policy.candidateIndex = routingCandidateIndex(context.modelRouting, route.effort, routedModel);
-  policy.parentSessionID = childSession.parentID;
 }
 
 function childModelFrom(context, input) {
@@ -123,7 +139,6 @@ async function recordChildRouting(context, {
   policy,
 }) {
   if (typeof context.onRoutingDecision !== "function") return;
-  if (policy) policy.attempt += 1;
   await context.onRoutingDecision(sessionID, {
     parentSessionID: policy?.parentSessionID || childSession.parentID,
     tier: desiredEffort,
@@ -133,6 +148,7 @@ async function recordChildRouting(context, {
       ?? routingCandidateIndex(context.modelRouting, desiredEffort, childModel),
     attempt: policy?.attempt || 1,
     reason: policy?.reason || "agent_default",
+    escalated: Boolean(policy?.escalated),
   });
 }
 

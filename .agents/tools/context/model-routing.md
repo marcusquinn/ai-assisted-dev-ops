@@ -87,7 +87,7 @@ is always denied because secrets must flow through secret tooling, not prompts.
 - **Local switch**: Set `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST=openai` to force both pulse and workers onto the default OpenAI fallbacks. If you want OpenAI primary but Anthropic fallback, reorder `custom/configs/model-routing-table.json` and omit the allowlist.
 - **Current default mapping**: The active routing table maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Terra then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
 - **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `max`, Terra `high`, and Sol `medium`. Other providers use their provider/runtime defaults unless configured explicitly.
-- **Capability escalation**: The exact structured marker `BLOCKED: capability limit - <evidence>` advances through `escalation_order` and resolves that tier's current first healthy candidate without pattern-driven downgrade. Generic `BLOCKED` outcomes and the terminal configured tier remain terminal. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, and locality failures retain dedicated fail-closed handling and never escalate capability to bypass controls.
+- **Capability escalation**: The exact structured marker `BLOCKED: capability limit - <evidence>` advances through `escalation_order` and resolves that tier's current first healthy candidate without pattern-driven downgrade. Headless dispatch starts another bounded route attempt. Interactive OpenCode re-prompts the same child session only when the child identity is known and it has attempted no side effects. Generic `BLOCKED` outcomes and the terminal configured tier remain terminal. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, locality, and billing failures retain dedicated fail-closed handling and never escalate capability to bypass controls.
 - **OpenAI tier rationale**: The automatic ladder prioritizes verified completion and measured cost: Luna handles bounded work, Terra handles general implementation, and Sol handles synthesis-heavy work. Routing telemetry supports evidence-based reordering without hardcoding provider assumptions.
 - **OpenAI pro caveat**: `openai/gpt-5.6-sol-pro` passed a live OpenCode ChatGPT OAuth smoke test on 2026-07-10, but OpenAI publishes neither an API price nor comparative Sol Pro benchmarks. It remains excluded from automatic workers pending repository-specific completion-rate evidence. Historical `gpt-5.5-pro` and older `*-pro`/`o3-pro` IDs remain excluded.
 - **GLM-5.2 option**: Standard routing may use `zai-coding-plan/glm-5.2` when that OpenCode provider is authenticated. Direct `zai/glm-5.2` is intentionally excluded.
@@ -141,8 +141,12 @@ export AIDEVOPS_HEADLESS_WORKER_VARIANT="max"
 the active candidate and variant when execution starts. This keeps scheduled
 work aligned with routing-table updates instead of freezing an obsolete model.
 
-Routing decisions are recorded with tier, candidate index, attempt, reason,
-escalation, model, variant, outcome, token, and cost evidence where available.
+Routing decisions are recorded with tier, candidate index, route attempt, reason,
+escalation, model, variant, aidevops version, outcome, token, and cost evidence
+where available. Ordinary child conversation turns retain one route-attempt
+number; only a real retry or capability transition increments it. This keeps
+version-segmented routing comparisons from counting conversation length as
+retries.
 Interactive sessions receive a duplicate-suppressed completion toast; routine
 tracking bodies and deterministic PR/issue closeouts receive the same bounded
 analysis. Recommendations are advisory and require repeated evidence before a
@@ -172,8 +176,10 @@ Interactive: `/compare-models`, `/compare-models-free`, `/route <task>`
 
 Availability, authentication, rate-limit, and runtime failures retry configured
 same-tier candidates. Only `BLOCKED: capability limit - <evidence>` advances to
-the next entry in `escalation_order`. Dispatch metrics include the canonical tier,
-candidate index, attempt, reason, and escalation flag for auditing. Pattern-backed
+the next entry in `escalation_order`. Interactive retries reuse the child session
+and stop before another tier when any side effect was attempted; headless workers
+retain their existing bounded redispatch path. Dispatch metrics include the canonical tier,
+candidate index, route attempt, reason, and escalation flag for auditing. Pattern-backed
 lower-tier optimization is limited to initial automatic selection; when used, the
 active tier, variant, retry budget, candidate index, and telemetry follow the model
 actually selected. Retry and escalation selectors never cross tier boundaries.
