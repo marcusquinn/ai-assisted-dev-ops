@@ -10,6 +10,34 @@ import {
   selectConnectedRoutingCandidate,
 } from "./model-routing.mjs";
 
+async function loadChildSessionWithParent(context, sessionID) {
+  try {
+    const childSession = await context.getSession(context.client, sessionID);
+    return childSession?.parentID ? childSession : null;
+  } catch {
+    return null;
+  }
+}
+
+async function applyConnectedRoutingModel(context, route, message, policy) {
+  const providerState = await context.resolveProviderState();
+  if (!providerState) {
+    policy.reason = "provider_state_unavailable_inherit";
+    return;
+  }
+  const routedModel = selectConnectedRoutingCandidate(
+    context.modelRouting,
+    route.effort,
+    providerState,
+  );
+  if (!routedModel) {
+    throw new Error(`[aidevops] No connected model is available for '${route.effort}' routing`);
+  }
+  message.model = routingModelIdentity(routedModel);
+  policy.routedModel = routedModel;
+  policy.candidateIndex = routingCandidateIndex(context.modelRouting, route.effort, routedModel);
+}
+
 async function routeChatMessage(context, output) {
   const message = output?.message || {};
   const sessionID = message.sessionID;
@@ -46,34 +74,14 @@ async function routeChatMessage(context, output) {
     throw new Error(`[aidevops] Model routing tier '${route.effort}' is disabled`);
   }
 
-  let childSession;
-  try {
-    childSession = await context.getSession(context.client, sessionID);
-  } catch {
-    return;
-  }
-  if (!childSession.parentID) return;
+  const childSession = await loadChildSessionWithParent(context, sessionID);
+  if (!childSession) return;
   policy.parentSessionID = childSession.parentID;
   if (nextRoutingTier(context.modelRouting, route.effort)) {
     context.appendCapabilityEscalationContract(output);
   }
 
-  const providerState = await context.resolveProviderState();
-  if (!providerState) {
-    policy.reason = "provider_state_unavailable_inherit";
-    return;
-  }
-  const routedModel = selectConnectedRoutingCandidate(
-    context.modelRouting,
-    route.effort,
-    providerState,
-  );
-  if (!routedModel) {
-    throw new Error(`[aidevops] No connected model is available for '${route.effort}' routing`);
-  }
-  message.model = routingModelIdentity(routedModel);
-  policy.routedModel = routedModel;
-  policy.candidateIndex = routingCandidateIndex(context.modelRouting, route.effort, routedModel);
+  await applyConnectedRoutingModel(context, route, message, policy);
 }
 
 function childModelFrom(context, input) {

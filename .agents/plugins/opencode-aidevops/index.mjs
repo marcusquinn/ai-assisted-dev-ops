@@ -174,11 +174,13 @@ function readIfExists(filepath) {
 }
 
 function currentAidevopsVersion() {
-  const value = readIfExists(join(ACTIVE_AGENTS_DIR, "VERSION"))
-    || readIfExists(join(AGENTS_DIR, "VERSION"))
-    || readIfExists(join(AGENTS_DIR, "..", "VERSION"))
-    || process.env.AIDEVOPS_VERSION
-    || "";
+  const values = [
+    readIfExists(join(ACTIVE_AGENTS_DIR, "VERSION")),
+    readIfExists(join(AGENTS_DIR, "VERSION")),
+    readIfExists(join(AGENTS_DIR, "..", "VERSION")),
+    process.env.AIDEVOPS_VERSION,
+  ];
+  const value = values.find(Boolean) || "";
   return value.split(/\r?\n/, 1)[0].trim();
 }
 
