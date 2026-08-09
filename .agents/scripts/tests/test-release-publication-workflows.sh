@@ -86,6 +86,18 @@ assert_contains "checked-out commit is bound to the immutable tag" \
 	'[[ "$CHECKOUT_COMMIT" == "$TAG_COMMIT" ]]' "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow shell variable.
 assert_contains "release notes cross steps through a file" '--notes-file "$RUNNER_TEMP/release-notes.md"' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow shell variables.
+assert_contains "release notes read immutable signed efficiency provenance" \
+	'--format='"'"'%(trailers:key=Aidevops-Efficiency-Change,valueonly)'"'"'' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match literal workflow shell variables.
+assert_contains "efficiency notes require exact true provenance" \
+	'[[ "$EFFICIENCY_CHANGE" == "true" ]]' "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal verifier and trailer commands.
+assert_order "efficiency provenance is consumed only after tag verification" \
+	'bash "$VERIFIER" verify' 'EFFICIENCY_CHANGE=$(git for-each-ref' "$PACKAGE_WORKFLOW"
+assert_order "efficiency notes are assembled before release-file transport" \
+	'### Efficiency Release' "printf '%s\\n' \"\$BODY\" > \"\$RUNNER_TEMP/release-notes.md\"" \
+	"$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal workflow shell variable.
 assert_contains "rate-limited GitHub release create records a deferred checkpoint" \
 	'echo "deferred=true" >> "$GITHUB_OUTPUT"' "$PACKAGE_WORKFLOW"
@@ -204,6 +216,95 @@ TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 TEST_BIN="${TEST_ROOT}/bin"
 mkdir -p "$TEST_BIN"
+
+NOTES_SCRIPT="${TEST_ROOT}/extract-release-notes.sh"
+awk '
+	$0 == "      - name: Extract CHANGELOG section" { inside_step = 1; next }
+	inside_step && $0 == "      - name: Create or reconcile GitHub release" { exit }
+	inside_step && $0 == "        run: |" { inside_script = 1; next }
+	inside_script { sub(/^          /, ""); print }
+' "$PACKAGE_WORKFLOW" >"$NOTES_SCRIPT"
+if [[ ! -s "$NOTES_SCRIPT" ]]; then
+	printf 'FAIL release-note workflow script could not be extracted\n'
+	exit 1
+fi
+
+NOTES_REPO="${TEST_ROOT}/release-notes-repo"
+mkdir -p "$NOTES_REPO"
+git -C "$NOTES_REPO" init -q
+git -C "$NOTES_REPO" config user.name Test
+git -C "$NOTES_REPO" config user.email test@example.invalid
+git -C "$NOTES_REPO" config commit.gpgsign false
+git -C "$NOTES_REPO" config core.hooksPath /dev/null
+cat >"${NOTES_REPO}/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+## [1.0.0] - 2026-08-09
+
+- Baseline release.
+CHANGELOG
+git -C "$NOTES_REPO" add CHANGELOG.md
+git -C "$NOTES_REPO" commit -q -m 'chore: baseline release'
+git -C "$NOTES_REPO" tag -a v1.0.0 -m 'Release v1.0.0'
+
+cat >"${NOTES_REPO}/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+## [1.0.1] - 2026-08-09
+
+- Signed efficiency release.
+
+## [1.0.0] - 2026-08-09
+
+- Baseline release.
+CHANGELOG
+git -C "$NOTES_REPO" add CHANGELOG.md
+git -C "$NOTES_REPO" commit -q -m 'fix: consume signed efficiency provenance'
+git -C "$NOTES_REPO" tag -a v1.0.1 -m 'Release v1.0.1' \
+	-m 'Aidevops-Efficiency-Change: true'
+
+EFFICIENCY_NOTES_DIR="${TEST_ROOT}/efficiency-notes"
+mkdir -p "$EFFICIENCY_NOTES_DIR"
+if ! (cd "$NOTES_REPO" && RELEASE_TAG=v1.0.1 RUNNER_TEMP="$EFFICIENCY_NOTES_DIR" \
+	bash "$NOTES_SCRIPT"); then
+	printf 'FAIL signed efficiency release-note assembly failed\n'
+	exit 1
+fi
+assert_contains "signed tag efficiency provenance renders release guidance" \
+	"### Efficiency Release" "${EFFICIENCY_NOTES_DIR}/release-notes.md"
+assert_contains "efficiency guidance preserves version-segmented analysis" \
+	"by \`aidevops_version\`" "${EFFICIENCY_NOTES_DIR}/release-notes.md"
+
+cat >"${NOTES_REPO}/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+## [1.0.2] - 2026-08-09
+
+- Ordinary release despite mutable performance history.
+
+## [1.0.1] - 2026-08-09
+
+- Signed efficiency release.
+
+## [1.0.0] - 2026-08-09
+
+- Baseline release.
+CHANGELOG
+git -C "$NOTES_REPO" add CHANGELOG.md
+git -C "$NOTES_REPO" commit -q -m 'perf: mutable history is not release provenance'
+git -C "$NOTES_REPO" tag -a v1.0.2 -m 'Release v1.0.2'
+
+ORDINARY_NOTES_DIR="${TEST_ROOT}/ordinary-notes"
+mkdir -p "$ORDINARY_NOTES_DIR"
+if ! (cd "$NOTES_REPO" && RELEASE_TAG=v1.0.2 RUNNER_TEMP="$ORDINARY_NOTES_DIR" \
+	bash "$NOTES_SCRIPT"); then
+	printf 'FAIL ordinary release-note assembly failed\n'
+	exit 1
+fi
+assert_absent "mutable performance history cannot add efficiency guidance" \
+	"### Efficiency Release" "${ORDINARY_NOTES_DIR}/release-notes.md"
+assert_contains "ordinary release notes retain the existing commit summary" \
+	"### Commits since CHANGELOG generation" "${ORDINARY_NOTES_DIR}/release-notes.md"
 
 cat >"${TEST_BIN}/gh" <<'STUB'
 #!/usr/bin/env bash

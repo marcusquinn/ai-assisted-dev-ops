@@ -117,6 +117,14 @@ jobs:
               --grep='^chore: claim t' "$PREV_TAG..$RELEASE_TAG" --)
             BODY="$BODY"$'\n\n### Commits since CHANGELOG generation\n'"$EXTRA"
           fi
+          EFFICIENCY_CHANGE=$(git for-each-ref \
+            --format='%(trailers:key=Aidevops-Efficiency-Change,valueonly)' \
+            "refs/tags/${RELEASE_TAG}")
+          if [[ "$EFFICIENCY_CHANGE" == "true" ]]; then
+            BODY="$BODY"$'\n\n### Efficiency Release\n\n'
+            BODY="$BODY"$'This release contains a conventional `perf:` change. Compare routing, token,\n'
+            BODY="$BODY"$'cost, and verification outcomes by `aidevops_version` before changing defaults.'
+          fi
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Create or reconcile GitHub release
