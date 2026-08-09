@@ -166,6 +166,96 @@ try {
     );
   }
 
+  const deployedPluginDirectory = path.join(
+    deployedAgentsDirectory,
+    "plugins/opencode-aidevops",
+  );
+  const deployedInteractiveCommand = path.join(
+    deployedAgentsDirectory,
+    "bin/aidevops-buzz-acp-interactive",
+  );
+  fs.mkdirSync(deployedPluginDirectory, {recursive: true, mode: 0o700});
+  fs.mkdirSync(path.dirname(deployedInteractiveCommand), {recursive: true, mode: 0o700});
+  fs.writeFileSync(path.join(deployedPluginDirectory, "index.mjs"), "export default {};\n");
+  fs.writeFileSync(deployedInteractiveCommand, "#!/usr/bin/env bash\nexit 0\n", {mode: 0o700});
+  fs.symlinkSync(
+    deployedOpenCodeModules,
+    path.join(deployedPluginDirectory, "node_modules"),
+  );
+  const deployedMaterialization = requireSuccess(spawnSync("python3", [
+    "-c",
+    [
+      "import sys",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.join(agentsDirectory, "scripts"))})`,
+      "import _team_interface_buzz_runtime_anchor as anchor",
+      "anchor.AGENTS_DIR = Path(sys.argv[1])",
+      "profile = {'command': 'aidevops-buzz-acp-interactive', 'id': 'aidevops-interactive-v1'}",
+      "print(anchor.materialize_pinned_runtime(profile))",
+    ].join("; "),
+    deployedAgentsDirectory,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      AIDEVOPS_BUZZ_OPENCODE_NODE_MODULES_DIR: deployedOpenCodeModules,
+      HOME: fixtureHome,
+    },
+  }), "deployed runtime materialization with generated dependency symlink");
+  const deployedRuntimeAnchor = deployedMaterialization.stdout.trim();
+  assert.equal(
+    fs.existsSync(path.join(
+      deployedRuntimeAnchor,
+      "agents/plugins/opencode-aidevops/node_modules",
+    )),
+    false,
+    "generated deployed dependency symlink was copied into the immutable anchor",
+  );
+  requireSuccess(
+    runHelper(["verify-anchor", "--root", deployedRuntimeAnchor, "--runtime", "interactive"], {
+      env: {...process.env, HOME: fixtureHome},
+    }),
+    "deployed runtime standalone anchor verification",
+  );
+  const injectedAnchorDependencyLink = path.join(
+    deployedRuntimeAnchor,
+    "agents/plugins/opencode-aidevops/node_modules",
+  );
+  fs.symlinkSync(deployedOpenCodeModules, injectedAnchorDependencyLink);
+  const injectedAnchorVerification = runHelper([
+    "verify-anchor", "--root", deployedRuntimeAnchor, "--runtime", "interactive",
+  ], {env: {...process.env, HOME: fixtureHome}});
+  assert.notEqual(injectedAnchorVerification.status, 0);
+  assert.match(injectedAnchorVerification.stderr, /absolute symbolic link/);
+  fs.rmSync(injectedAnchorDependencyLink);
+  const unrelatedAbsoluteTarget = path.join(fixtureRoot, "unrelated-absolute-target");
+  const unrelatedAbsoluteLink = path.join(deployedAgentsDirectory, "unrelated-absolute-link");
+  fs.mkdirSync(unrelatedAbsoluteTarget, {mode: 0o700});
+  fs.symlinkSync(unrelatedAbsoluteTarget, unrelatedAbsoluteLink);
+  const unsafeDeployedMaterialization = spawnSync("python3", [
+    "-c",
+    [
+      "import sys",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.join(agentsDirectory, "scripts"))})`,
+      "import _team_interface_buzz_runtime_anchor as anchor",
+      "anchor.AGENTS_DIR = Path(sys.argv[1])",
+      "profile = {'command': 'aidevops-buzz-acp-interactive', 'id': 'aidevops-interactive-v1'}",
+      "anchor.materialize_pinned_runtime(profile)",
+    ].join("; "),
+    deployedAgentsDirectory,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      AIDEVOPS_BUZZ_OPENCODE_NODE_MODULES_DIR: deployedOpenCodeModules,
+      HOME: fixtureHome,
+    },
+  });
+  assert.notEqual(unsafeDeployedMaterialization.status, 0);
+  assert.match(unsafeDeployedMaterialization.stderr, /absolute symbolic link/);
+  fs.rmSync(unrelatedAbsoluteLink);
+
   const sourceManifest = JSON.parse(fs.readFileSync(canonicalManifest, "utf8"));
   assert.deepEqual(Object.keys(sourceManifest).sort(), [
     "args", "command", "env", "id", "installHint", "installInstructionsUrl", "label",

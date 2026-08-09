@@ -87,12 +87,17 @@ def hash_file_into(digest, path):
             digest.update(chunk)
 
 
-def hash_runtime_tree(root):
-    """Hash one trusted runtime tree without transient Python artifacts."""
+def hash_runtime_tree(root, ignored_relative_paths=()):
+    """Hash one trusted runtime tree without transient or caller-excluded paths."""
     digest = hashlib.sha256()
     canonical_root = root.resolve(strict=True)
+    ignored_paths = {Path(value) for value in ignored_relative_paths}
+    if any(path.is_absolute() or ".." in path.parts for path in ignored_paths):
+        raise RuntimeError("runtime tree exclusions must be safe relative paths")
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
         relative = path.relative_to(root)
+        if any(relative == ignored or ignored in relative.parents for ignored in ignored_paths):
+            continue
         if any(part in IGNORED_RUNTIME_NAMES for part in relative.parts) or path.suffix == ".pyc":
             continue
         metadata = path.lstat()

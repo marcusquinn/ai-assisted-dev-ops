@@ -48,6 +48,7 @@ PINNED_NODE_PACKAGES = (
     "zod",
 )
 OPENCODE_PLUGIN_PACKAGES = {"@opencode-ai/plugin", "@opencode-ai/sdk", "zod"}
+PINNED_AGENT_EXCLUDED_PATHS = (Path("plugins/opencode-aidevops/node_modules"),)
 
 
 def git_common_node_modules():
@@ -127,16 +128,31 @@ def pinned_node_package_sources(config_source):
     return sources
 
 
-def hash_pinned_agents(source_agents, node_packages):
+def hash_pinned_agents(source_agents, node_packages, ignored_agent_paths=()):
     """Hash agent files and their closed runtime dependency set."""
     digest = hashlib.sha256()
-    digest.update(hash_runtime_tree(source_agents).encode("ascii"))
+    digest.update(hash_runtime_tree(source_agents, ignored_agent_paths).encode("ascii"))
     for package, source in sorted(node_packages.items()):
         digest.update(b"\0")
         digest.update(package.encode("utf-8"))
         digest.update(b"\0")
         digest.update(hash_runtime_tree(source).encode("ascii"))
     return digest.hexdigest()
+
+
+def pinned_agents_copy_ignore(source_agents):
+    """Return a copytree filter for transient and separately pinned dependency paths."""
+    transient_ignore = shutil.ignore_patterns(".DS_Store", "__pycache__", "*.pyc")
+
+    def ignore(directory, names):
+        ignored = set(transient_ignore(directory, names))
+        relative_directory = Path(directory).relative_to(source_agents)
+        for name in names:
+            if relative_directory / name in PINNED_AGENT_EXCLUDED_PATHS:
+                ignored.add(name)
+        return ignored
+
+    return ignore
 
 
 def opencode_config_source():
@@ -265,7 +281,11 @@ def materialize_pinned_runtime(profile):
     source_agents = AGENTS_DIR.resolve(strict=True)
     source_config = opencode_config_source()
     node_packages = pinned_node_package_sources(source_config)
-    agents_digest = hash_pinned_agents(source_agents, node_packages)
+    agents_digest = hash_pinned_agents(
+        source_agents,
+        node_packages,
+        PINNED_AGENT_EXCLUDED_PATHS,
+    )
     config_digest = hash_opencode_config(source_config)
     parent = require_safe_directory_chain(
         Path.home() / ".aidevops" / "buzz-runtimes" / profile["id"]
@@ -298,7 +318,7 @@ def materialize_pinned_runtime(profile):
             source_agents,
             staging / "agents",
             symlinks=True,
-            ignore=shutil.ignore_patterns(".DS_Store", "__pycache__", "*.pyc"),
+            ignore=pinned_agents_copy_ignore(source_agents),
         )
         for package, source in node_packages.items():
             shutil.copytree(
