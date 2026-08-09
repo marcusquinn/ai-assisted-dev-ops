@@ -74,6 +74,8 @@ and malformed/inconsistent copies degrade closed.
 The adapter never calls Buzz/Tauri runtime discovery, Buzz Desktop, `buzz-acp`,
 package managers, installers, authentication probes, provider APIs, shell
 commands, credential stores, or the write-capable `buzz-desktop-helper.sh`.
+Owner-reviewed team onboarding uses the separate, explicitly invoked boundary in
+`team-interface-buzz-provisioning.md`; `adapter.buzz` never imports or calls it.
 
 ## Inventory projection
 

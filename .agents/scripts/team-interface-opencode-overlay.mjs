@@ -186,7 +186,14 @@ function atomicWrite(outputPath, contents) {
 }
 
 function generate(argumentsList) {
-  const allowed = new Set(["--agent-id", "--context", "--output", "--roster", "--workload-tier"]);
+  const allowed = new Set([
+    "--agent-id",
+    "--context",
+    "--output",
+    "--permission-profile",
+    "--roster",
+    "--workload-tier",
+  ]);
   const options = parseOptions(argumentsList, allowed);
   const rosterPath = requireOption(options, "--roster");
   const contextPath = requireOption(options, "--context");
@@ -208,7 +215,13 @@ function generate(argumentsList) {
   if (!["simple", "standard", "thinking"].includes(workloadTier)) {
     throw new OverlayGeneratorError("invalid_arguments", "workload tier must be simple, standard, or thinking");
   }
-  const document = createOverlayDocument({roster, agent, workloadTier, context});
+  const document = createOverlayDocument({
+    roster,
+    agent,
+    workloadTier,
+    context,
+    permissionProfile: options["--permission-profile"],
+  });
   requireValid(runtimeValidators.overlay, document, "OpenCode launch overlay");
   const contents = `${canonicalJson(document)}\n`;
   if (options["--output"]) {
@@ -221,10 +234,17 @@ function generate(argumentsList) {
 }
 
 function validate(argumentsList) {
-  const options = parseOptions(argumentsList, new Set(["--agents-dir", "--overlay"]));
+  const options = parseOptions(
+    argumentsList,
+    new Set(["--agents-dir", "--overlay", "--permission-profile"]),
+  );
   const overlayPath = requireOption(options, "--overlay");
   const agentsDirectory = resolve(options["--agents-dir"] || CANONICAL_AGENTS_DIRECTORY);
   const document = readBoundOverlay(overlayPath, agentsDirectory);
+  if (options["--permission-profile"]
+    && document.permission_profile !== options["--permission-profile"]) {
+    throw new OverlayGeneratorError("invalid_document", "OpenCode launch overlay uses the wrong permission profile");
+  }
   process.stdout.write(`${document.overlay_digest}\n`);
   return 0;
 }
@@ -289,7 +309,7 @@ function verifyEffectiveConfig(argumentsList) {
 function usage() {
   process.stdout.write([
     "Usage:",
-    "  team-interface-opencode-overlay.mjs generate --roster FILE --agent-id ID --context FILE [--workload-tier TIER] [--output FILE]",
+    "  team-interface-opencode-overlay.mjs generate --roster FILE --agent-id ID --context FILE [--workload-tier TIER] [--permission-profile PROFILE] [--output FILE]",
     "  team-interface-opencode-overlay.mjs validate --overlay FILE [--agents-dir DIR]",
     "  team-interface-opencode-overlay.mjs prepare-config --overlay FILE --output FILE [--agents-dir DIR]",
     "  team-interface-opencode-overlay.mjs validate-project-root --dir PATH --repos FILE",
@@ -319,7 +339,8 @@ export function main(argv = process.argv.slice(2)) {
   return handler(argumentsList);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1]
+  && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     process.exitCode = main();
   } catch (error) {

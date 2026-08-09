@@ -8,8 +8,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
 import {
+  applyRemoteInteractiveAgentSelection,
   conversationPermissions,
   conversationTools,
+  isRestrictedConversation,
   restrictedConversationAgentMap,
 } from "./team-interface-context.mjs";
 
@@ -128,7 +130,7 @@ export function enforcePublicTriageIsolation(
 }
 
 export function enforceTeamInterfaceConversationIsolation(config, conversation) {
-  if (!conversation) return 0;
+  if (!isRestrictedConversation(conversation)) return 0;
 
   config.command = {};
   config.tools = conversationTools();
@@ -144,6 +146,10 @@ export function enforceTeamInterfaceConversationIsolation(config, conversation) 
   config.default_agent = conversation.overlay.agent.display_name;
   config.agent = restrictedConversationAgentMap(conversation);
   return 1;
+}
+
+export function enforceTeamInterfaceRemoteInteractiveSelection(config, conversation) {
+  return applyRemoteInteractiveAgentSelection(config, conversation);
 }
 
 export function ensureAgentGuard(config, workspaceDir) {

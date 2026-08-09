@@ -89,12 +89,16 @@ mkdir -p "${tmp_target}/bin" "${tmp_target}/scripts" "${tmp_home}/.aidevops/bin"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/gh_create_pr"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/gh_create_issue"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/opencode-acp"
+printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/aidevops-buzz-acp"
+printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/aidevops-buzz-acp-interactive"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/aidevops-auto-update"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/bin/aidevops-repo-sync"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/scripts/auto-update-helper.sh"
 printf '#!/usr/bin/env bash\n' >"${tmp_target}/scripts/repo-sync-helper.sh"
 chmod +x "${tmp_target}/bin/gh_create_pr" "${tmp_target}/bin/gh_create_issue" \
 	"${tmp_target}/bin/opencode-acp" \
+	"${tmp_target}/bin/aidevops-buzz-acp" \
+	"${tmp_target}/bin/aidevops-buzz-acp-interactive" \
 	"${tmp_target}/bin/aidevops-auto-update" "${tmp_target}/bin/aidevops-repo-sync" \
 	"${tmp_target}/scripts/auto-update-helper.sh" "${tmp_target}/scripts/repo-sync-helper.sh"
 
@@ -119,6 +123,10 @@ assert_symlink_target "gh_create_issue shim is linked into user PATH bin" \
 	"${tmp_home}/.aidevops/bin/gh_create_issue" "${tmp_target}/bin/gh_create_issue"
 assert_symlink_target "OpenCode ACP shim is linked into user PATH bin" \
 	"${tmp_home}/.aidevops/bin/opencode-acp" "${tmp_target}/bin/opencode-acp"
+assert_symlink_target "restricted Buzz ACP shim is linked into user PATH bin" \
+	"${tmp_home}/.aidevops/bin/aidevops-buzz-acp" "${tmp_target}/bin/aidevops-buzz-acp"
+assert_symlink_target "interactive Buzz ACP shim is linked into user PATH bin" \
+	"${tmp_home}/.aidevops/bin/aidevops-buzz-acp-interactive" "${tmp_target}/bin/aidevops-buzz-acp-interactive"
 assert_symlink_target "auto-update launchd display link is preserved" \
 	"${tmp_home}/.aidevops/bin/aidevops-auto-update" "${tmp_target}/scripts/auto-update-helper.sh"
 assert_symlink_target "repo-sync launchd display link is preserved" \

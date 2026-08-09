@@ -6,7 +6,12 @@ import { createPreEditCheckTool } from "./pre-edit-check-tool.mjs";
 export let tool;
 try {
   ({ tool } = await import("@opencode-ai/plugin"));
-} catch {
+} catch (error) {
+  if (process.env.AIDEVOPS_REMOTE_REQUIRE_PINNED_RUNTIME === "1") {
+    throw new Error("Pinned remote runtime cannot resolve @opencode-ai/plugin schemas", {
+      cause: error,
+    });
+  }
   const schemaNode = {
     _zod: {},
     optional() {

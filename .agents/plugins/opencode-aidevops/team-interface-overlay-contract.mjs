@@ -6,6 +6,7 @@ import {createHash} from "node:crypto";
 export const CONVERSATION_OVERLAY_ENV = "AIDEVOPS_TEAM_INTERFACE_OVERLAY";
 export const CONVERSATION_ORIGIN = "conversation";
 export const CONVERSATION_PERMISSION_PROFILE = "conversation_read_only_v1";
+export const REMOTE_INTERACTIVE_PERMISSION_PROFILE = "remote_interactive_v1";
 
 const DOCUMENT_KEYS = [
   "agent",
@@ -36,6 +37,10 @@ const AGENT_ID_PATTERN = /^agent\.[a-z0-9][a-z0-9._-]*$/;
 const SOURCE_REF_PATTERN = /^agents:([A-Za-z0-9][A-Za-z0-9._-]*\.md)$/;
 const REFERENCE_PAYLOAD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 const WORKLOAD_TIERS = new Set(["simple", "standard", "thinking"]);
+const PERMISSION_PROFILES = new Set([
+  CONVERSATION_PERMISSION_PROFILE,
+  REMOTE_INTERACTIVE_PERMISSION_PROFILE,
+]);
 
 export class ConversationOverlayError extends Error {
   constructor(code, message) {
@@ -216,6 +221,23 @@ export function conversationConfigEvidence(agentName) {
   };
 }
 
+export function remoteInteractiveConfigEvidence(agentName) {
+  return {
+    default_agent: agentName,
+    permission_profile: REMOTE_INTERACTIVE_PERMISSION_PROFILE,
+  };
+}
+
+export function configEvidenceForPermissionProfile(agentName, permissionProfile) {
+  if (permissionProfile === CONVERSATION_PERMISSION_PROFILE) {
+    return conversationConfigEvidence(agentName);
+  }
+  if (permissionProfile === REMOTE_INTERACTIVE_PERMISSION_PROFILE) {
+    return remoteInteractiveConfigEvidence(agentName);
+  }
+  throw new ConversationOverlayError("invalid_document", "team-interface permission profile is not supported");
+}
+
 export function sourceFilenameFromReference(sourceRef) {
   const match = SOURCE_REF_PATTERN.exec(sourceRef || "");
   if (!match) {
@@ -261,8 +283,8 @@ export function validateOverlayDocument(document) {
   if (document.roster_id !== "agent-roster.aidevops") {
     throw new ConversationOverlayError("invalid_document", "agent roster ID is not canonical");
   }
-  if (document.permission_profile !== CONVERSATION_PERMISSION_PROFILE) {
-    throw new ConversationOverlayError("invalid_document", "conversation permission profile is not supported");
+  if (!PERMISSION_PROFILES.has(document.permission_profile)) {
+    throw new ConversationOverlayError("invalid_document", "team-interface permission profile is not supported");
   }
   if (!WORKLOAD_TIERS.has(document.workload_tier)) {
     throw new ConversationOverlayError("invalid_document", "workload tier is not canonical");
@@ -277,8 +299,12 @@ export function validateOverlayDocument(document) {
   if (document.context_digest !== canonicalDigest(document.context)) {
     throw new ConversationOverlayError("digest_mismatch", "interface context digest does not match its canonical content");
   }
-  if (document.config_digest !== canonicalDigest(conversationConfigEvidence(document.agent.display_name))) {
-    throw new ConversationOverlayError("digest_mismatch", "conversation config digest does not match the enforced profile");
+  const configEvidence = configEvidenceForPermissionProfile(
+    document.agent.display_name,
+    document.permission_profile,
+  );
+  if (document.config_digest !== canonicalDigest(configEvidence)) {
+    throw new ConversationOverlayError("digest_mismatch", "team-interface config digest does not match the enforced profile");
   }
   const unsigned = clone(document);
   delete unsigned.overlay_digest;
@@ -288,7 +314,13 @@ export function validateOverlayDocument(document) {
   return document;
 }
 
-export function createOverlayDocument({roster, agent, workloadTier, context}) {
+export function createOverlayDocument({
+  roster,
+  agent,
+  workloadTier,
+  context,
+  permissionProfile = CONVERSATION_PERMISSION_PROFILE,
+}) {
   const selectedAgent = {
     agent_id: agent.agent_id,
     display_name: agent.display_name,
@@ -298,12 +330,15 @@ export function createOverlayDocument({roster, agent, workloadTier, context}) {
   };
   const unsigned = {
     agent: selectedAgent,
-    config_digest: canonicalDigest(conversationConfigEvidence(selectedAgent.display_name)),
+    config_digest: canonicalDigest(configEvidenceForPermissionProfile(
+      selectedAgent.display_name,
+      permissionProfile,
+    )),
     context: clone(validateInterfaceContext(context)),
     context_digest: canonicalDigest(context),
     document_type: "opencode_launch_overlay",
     overlay_id: "opencode-launch-overlay.aidevops",
-    permission_profile: CONVERSATION_PERMISSION_PROFILE,
+    permission_profile: permissionProfile,
     roster_digest: roster.roster_digest,
     roster_id: roster.roster_id,
     schema_version: 1,

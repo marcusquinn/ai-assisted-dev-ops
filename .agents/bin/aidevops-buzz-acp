@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+# Restricted OpenCode ACP launcher for aidevops-managed Buzz agents.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+if (($# > 0)); then
+	printf 'aidevops-buzz-acp: arguments are not supported\n' >&2
+	exit 64
+fi
+if [[ -z "${HOME:-}" ]]; then
+	printf 'aidevops-buzz-acp: HOME is required\n' >&2
+	exit 78
+fi
+
+agents_dir="${AIDEVOPS_BUZZ_AGENTS_DIR:-${HOME}/.aidevops/agents}"
+runtime_helper="${AIDEVOPS_BUZZ_RUNTIME_HELPER:-${agents_dir}/scripts/team-interface-buzz-runtime.py}"
+overlay_helper="${AIDEVOPS_BUZZ_OVERLAY_HELPER:-${agents_dir}/scripts/team-interface-opencode-overlay.mjs}"
+launcher="${AIDEVOPS_BUZZ_LAUNCHER:-${agents_dir}/scripts/opencode-launcher-helper.sh}"
+cwd_proxy="${AIDEVOPS_BUZZ_CWD_PROXY:-${agents_dir}/scripts/team-interface-acp-cwd-proxy.mjs}"
+buzz_cli="${AIDEVOPS_BUZZ_CLI:-/Applications/Buzz.app/Contents/MacOS/buzz}"
+project_root="${AIDEVOPS_BUZZ_PROJECT_ROOT:-}"
+session_cwd="${BUZZ_ACP_CWD:-}"
+temp_root="${AIDEVOPS_BUZZ_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+
+for required_file in "$runtime_helper" "$overlay_helper" "$launcher" "$cwd_proxy"; do
+	if [[ ! -f "$required_file" || -L "$required_file" ]]; then
+		printf 'aidevops-buzz-acp: canonical runtime component is unavailable\n' >&2
+		exit 78
+	fi
+done
+if [[ ! -f "$buzz_cli" || -L "$buzz_cli" || ! -x "$buzz_cli" ]]; then
+	printf 'aidevops-buzz-acp: canonical Buzz CLI is unavailable\n' >&2
+	exit 78
+fi
+
+if [[ -z "$project_root" || "$project_root" != /* ]]; then
+	printf 'aidevops-buzz-acp: AIDEVOPS_BUZZ_PROJECT_ROOT must be an absolute registered project root\n' >&2
+	exit 78
+fi
+if [[ -n "$session_cwd" && "$session_cwd" != "$project_root" ]]; then
+	printf 'aidevops-buzz-acp: Buzz ACP working directory does not match the validated project root\n' >&2
+	exit 78
+fi
+
+if [[ "${BUZZ_ACP_RESPOND_TO:-}" != "owner-only" ]]; then
+	printf 'aidevops-buzz-acp: Buzz agent is not restricted to owner-only messages\n' >&2
+	exit 77
+fi
+if [[ -n "${BUZZ_ACP_ALLOWED_RESPOND_TO:-}" && "${BUZZ_ACP_ALLOWED_RESPOND_TO}" != "owner-only" ]]; then
+	printf 'aidevops-buzz-acp: Buzz build policy permits a wider response scope\n' >&2
+	exit 77
+fi
+
+if [[ -L "$temp_root" ]]; then
+	printf 'aidevops-buzz-acp: private temporary root is unsafe\n' >&2
+	exit 78
+fi
+mkdir -p "$temp_root"
+if [[ ! -d "$temp_root" ]]; then
+	printf 'aidevops-buzz-acp: private temporary root is unsafe\n' >&2
+	exit 78
+fi
+chmod 700 "$temp_root"
+
+runtime_dir=$(mktemp -d "${temp_root}/buzz-conversation.XXXXXX")
+chmod 700 "$runtime_dir"
+cleanup() {
+	rm -rf "$runtime_dir"
+	return 0
+}
+trap cleanup EXIT
+
+python3 "$runtime_helper" prepare \
+	--agents-dir "$agents_dir" \
+	--output-dir "$runtime_dir"
+
+agent_id=""
+IFS= read -r agent_id <"${runtime_dir}/agent-id.txt"
+if [[ -z "$agent_id" ]]; then
+	printf 'aidevops-buzz-acp: canonical Buzz agent selection failed\n' >&2
+	exit 78
+fi
+
+node "$overlay_helper" generate \
+	--roster "${runtime_dir}/roster.json" \
+	--agent-id "$agent_id" \
+	--context "${runtime_dir}/context.json" \
+	--output "${runtime_dir}/overlay.json"
+
+#aidevops:trust-boundary
+# Buzz resolves its global default model even when a portable definition omits
+# one. The verified aidevops overlay owns provider-neutral model routing, and the
+# isolated launcher rebuilds its environment from scratch, so discard this
+# presentation-runtime default before entering the generic conversation gate.
+# When supplied by Buzz, the session cwd has already been checked against the
+# project root. It should not become ambient input to OpenCode; the compatibility
+# proxy and isolated launcher set the binding explicitly.
+unset BUZZ_ACP_CWD BUZZ_ACP_MODEL
+
+node "$cwd_proxy" --cwd "$project_root" --buzz-cli "$buzz_cli" -- "$launcher" conversation \
+	--overlay "${runtime_dir}/overlay.json" \
+	--dir "$project_root"

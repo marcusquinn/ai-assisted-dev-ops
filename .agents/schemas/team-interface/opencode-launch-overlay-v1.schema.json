@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:aidevops:team-interface:opencode-launch-overlay:v1",
-  "title": "aidevops restricted OpenCode conversation launch overlay v1",
+  "title": "aidevops OpenCode team-interface launch overlay v1",
   "$ref": "#/$defs/opencode_launch_overlay",
   "$defs": {
     "sha256_digest": {
@@ -147,7 +147,12 @@
         "roster_digest": {"$ref": "#/$defs/sha256_digest"},
         "agent": {"$ref": "#/$defs/selected_agent"},
         "workload_tier": {"enum": ["simple", "standard", "thinking"]},
-        "permission_profile": {"const": "conversation_read_only_v1"},
+        "permission_profile": {
+          "enum": [
+            "conversation_read_only_v1",
+            "remote_interactive_v1"
+          ]
+        },
         "context": {"$ref": "#/$defs/interface_context"},
         "context_digest": {"$ref": "#/$defs/sha256_digest"},
         "config_digest": {"$ref": "#/$defs/sha256_digest"}

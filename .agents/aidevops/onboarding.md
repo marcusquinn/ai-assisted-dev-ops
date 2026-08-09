@@ -33,6 +33,7 @@ Hand-fix: `"tools": {}` (not `[]`), `"type": "local"|"remote"`, `"tool_name": tr
 4. **Show status**: `onboarding-helper.sh status`
 5. **Guide service-by-service setup**: purpose → credential source → setup command → verification
 6. **Per-repo platform setup**: after `gh auth login` succeeds, mention `/setup-git` for per-repo secrets (SYNC_PAT for issue-sync, etc.) — see "Scope" note below.
+7. **Optional Buzz team**: after a supported Buzz Desktop build is installed, generate and import the canonical **AI DevOps** team through the owner-review flow below.
 
 ## Outcome Examples
 
@@ -93,10 +94,45 @@ The two workflows compose: `/onboarding` first (you need `gh` to be authenticate
 | Domains | Spaceship | `configs/spaceship-config.json` | — |
 | Domains | 101domains | `configs/101domains-config.json` | — |
 | Secrets | Vaultwarden | `configs/vaultwarden-config.json` | — |
+| Collaboration | Buzz Desktop | Desktop-owned identities, native team import, and optional local review broker | `reference/team-interface-buzz-provisioning.md` |
 
 CodeRabbit key setup (single command): `read -rsp "CodeRabbit API key: " CODERABBIT_API_KEY && echo && mkdir -p ~/.config/coderabbit && chmod 700 ~/.config/coderabbit && printf '%s\n' "$CODERABBIT_API_KEY" > ~/.config/coderabbit/api_key && chmod 600 ~/.config/coderabbit/api_key && unset CODERABBIT_API_KEY`
 
 SEO: `/keyword-research`, `/autocomplete-research`, `/keyword-research-extended`, `/webmaster-keywords`
+
+### Buzz Desktop team onboarding
+
+Buzz team provisioning is optional and owner-reviewed. Ordinary `wss://` relay
+traffic is encrypted in transit, but a relay operator can read ordinary channel
+content; use an owner-controlled relay when data sovereignty requires it.
+
+```bash
+# Local-only deterministic preview; no Buzz mutation
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh generate \
+  --output "$HOME/aidevops.team.json"
+
+# Optional broker path: readiness, then queue the complete draft for review
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh status
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh submit
+
+# With Buzz stopped, register the full interactive runtime against a registered repo
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh runtime-install \
+  --runtime interactive \
+  --project-root "$HOME/Git/aidevops"
+```
+
+The draft contains the canonical 15-member **AI DevOps** roster but no keys,
+credentials, relay URLs, commands, instruction bodies, or memory. Fourteen members
+use the immutable `aidevops-interactive-v1` runtime; Private AI alone records the
+reviewed `buzz-agent` / `relay-mesh` / `auto` shared-compute route, which does not
+prove local or on-device execution. Confirmation creates fresh identities with
+owner-only response policy and no start-on-launch. Import the generated file with
+Buzz's native **Agents** → **Teams** import action, or use the optional local broker
+commands above. After runtime installation, restart Buzz and verify **Aidevops Full
+Interactive V1** is ready before starting a standard member. Inspect existing Buzz
+teams first: snapshot v1 is create-only and does not reconcile an existing **AI
+DevOps** team. Full contract and rollback guidance:
+`reference/team-interface-buzz-provisioning.md`.
 
 ### OpenClaw (Personal AI Assistant)
 
@@ -132,7 +168,7 @@ chmod 600 ~/.config/aidevops/credentials.sh && chmod 700 ~/.config/aidevops
 ## Agents & Commands
 
 - **Layers**: Main agents (Tab) → subagents (`@name`) → commands (`/name`)
-- **Main**: `Build+`, `Automate`, `Aidevops`, `Business`, `Content`, `Health`, `Legal`, `Marketing-Sales`, `Product`, `Research`, `SEO` | **Init**: `cd ~/your-project && aidevops init`
+- **Main**: generated from the canonical roster; currently `Aidevops`, `Automate`, `Build+`, `Business`, `Content`, `Health`, `Legal`, `Marketing-Sales`, `PR`, `Product`, `Reports`, `Research`, `SEO`, `Vault` | **Init**: `cd ~/your-project && aidevops init`
 - **Subagents**: `@hetzner`, `@cloudflare`, `@cloudron`, `@coolify`, `@vercel`, `@github-cli`, `@dataforseo`, `@code-standards`, `@wp-dev`, `@calendar`
 - **Commands**: `/create-prd`, `/generate-tasks`, `/feature`, `/bugfix`, `/hotfix`, `/pr`, `/preflight`, `/release`, `/linters-local`, `/keyword-research`
 

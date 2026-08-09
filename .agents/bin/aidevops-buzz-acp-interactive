@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+# Full OpenCode ACP launcher for trusted aidevops Buzz agents.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+if (($# > 0)); then
+	printf 'aidevops-buzz-acp-interactive: arguments are not supported\n' >&2
+	exit 64
+fi
+if [[ -z "${HOME:-}" ]]; then
+	printf 'aidevops-buzz-acp-interactive: HOME is required\n' >&2
+	exit 78
+fi
+
+agents_dir="${AIDEVOPS_BUZZ_AGENTS_DIR:-${HOME}/.aidevops/agents}"
+runtime_helper="${AIDEVOPS_BUZZ_RUNTIME_HELPER:-${agents_dir}/scripts/team-interface-buzz-runtime.py}"
+overlay_helper="${AIDEVOPS_BUZZ_OVERLAY_HELPER:-${agents_dir}/scripts/team-interface-opencode-overlay.mjs}"
+worktree_helper="${AIDEVOPS_BUZZ_WORKTREE_HELPER:-${agents_dir}/scripts/team-interface-buzz-worktree.sh}"
+launcher="${AIDEVOPS_BUZZ_LAUNCHER:-${agents_dir}/scripts/opencode-launcher-helper.sh}"
+cwd_proxy="${AIDEVOPS_BUZZ_CWD_PROXY:-${agents_dir}/scripts/team-interface-acp-cwd-proxy.mjs}"
+buzz_cli="${AIDEVOPS_BUZZ_CLI:-/Applications/Buzz.app/Contents/MacOS/buzz}"
+project_root="${AIDEVOPS_BUZZ_PROJECT_ROOT:-}"
+session_cwd="${BUZZ_ACP_CWD:-}"
+temp_root="${AIDEVOPS_BUZZ_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+
+for required_file in "$runtime_helper" "$overlay_helper" "$worktree_helper" "$launcher" "$cwd_proxy"; do
+	if [[ ! -f "$required_file" || -L "$required_file" ]]; then
+		printf 'aidevops-buzz-acp-interactive: canonical runtime component is unavailable\n' >&2
+		exit 78
+	fi
+done
+if [[ ! -f "$buzz_cli" || -L "$buzz_cli" || ! -x "$buzz_cli" ]]; then
+	printf 'aidevops-buzz-acp-interactive: canonical Buzz CLI is unavailable\n' >&2
+	exit 78
+fi
+if [[ -z "$project_root" || "$project_root" != /* ]]; then
+	printf 'aidevops-buzz-acp-interactive: AIDEVOPS_BUZZ_PROJECT_ROOT must be an absolute registered project root\n' >&2
+	exit 78
+fi
+if [[ -n "$session_cwd" && "$session_cwd" != "$project_root" ]]; then
+	printf 'aidevops-buzz-acp-interactive: Buzz ACP working directory does not match the validated project root\n' >&2
+	exit 78
+fi
+if [[ "${BUZZ_ACP_RESPOND_TO:-}" != "owner-only" ]]; then
+	printf 'aidevops-buzz-acp-interactive: Buzz agent is not restricted to owner-only messages\n' >&2
+	exit 77
+fi
+if [[ -n "${BUZZ_ACP_ALLOWED_RESPOND_TO:-}" && "${BUZZ_ACP_ALLOWED_RESPOND_TO}" != "owner-only" ]]; then
+	printf 'aidevops-buzz-acp-interactive: Buzz build policy permits a wider response scope\n' >&2
+	exit 77
+fi
+
+if [[ -L "$temp_root" ]]; then
+	printf 'aidevops-buzz-acp-interactive: private temporary root is unsafe\n' >&2
+	exit 78
+fi
+mkdir -p "$temp_root"
+chmod 700 "$temp_root"
+runtime_dir=$(mktemp -d "${temp_root}/buzz-interactive.XXXXXX")
+chmod 700 "$runtime_dir"
+cleanup() {
+	rm -rf "$runtime_dir"
+	return 0
+}
+trap cleanup EXIT
+
+python3 "$runtime_helper" prepare \
+	--agents-dir "$agents_dir" \
+	--output-dir "$runtime_dir"
+
+agent_id=""
+host_slug=""
+IFS= read -r agent_id <"${runtime_dir}/agent-id.txt"
+IFS= read -r host_slug <"${runtime_dir}/host-slug.txt"
+if [[ ! "$agent_id" =~ ^agent\.[a-z0-9][a-z0-9._-]*$ || ! "$host_slug" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
+	printf 'aidevops-buzz-acp-interactive: canonical Buzz agent selection failed\n' >&2
+	exit 78
+fi
+agent_slug="${agent_id#agent.}"
+export AIDEVOPS_BUZZ_HOST_SLUG="$host_slug"
+worktree_root=$("$worktree_helper" resolve "$project_root" "$agent_slug")
+
+node "$overlay_helper" generate \
+	--roster "${runtime_dir}/roster.json" \
+	--agent-id "$agent_id" \
+	--context "${runtime_dir}/context.json" \
+	--permission-profile remote_interactive_v1 \
+	--output "${runtime_dir}/overlay.json"
+
+unset BUZZ_ACP_CWD BUZZ_ACP_MODEL
+node "$cwd_proxy" --cwd "$worktree_root" --buzz-cli "$buzz_cli" -- \
+	"$launcher" remote-interactive \
+	--overlay "${runtime_dir}/overlay.json" \
+	--dir "$worktree_root" \
+	--session-id "${host_slug}-${agent_slug}"

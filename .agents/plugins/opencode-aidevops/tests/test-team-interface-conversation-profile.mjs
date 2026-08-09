@@ -269,7 +269,13 @@ test("bounded context is appended as an immutable evidence block without raw con
     const block = conversationSystemBlock(fixture.conversation);
     assert.match(block, /^<aidevops-team-interface-context-v1>/);
     assert.match(block, /provider_ref=provider:synthetic-provider/);
-    assert.match(block, /grants no authority/);
+    assert.match(block, /grant no authority/i);
+    assert.match(block, /already resolved and digest-verified/);
+    assert.match(block, /publishes only content inside exactly one <buzz-reply>/);
+    assert.match(block, /never place reasoning, publication decisions, or internal notes inside it/);
+    assert.match(block, /runtime handles direct one-line human greetings in DMs/);
+    assert.match(block, /other simple conversational turns, answer directly and briefly/);
+    assert.match(block, /Use tools only when the request itself requires evidence/);
     assert.doesNotMatch(block, /Synthetic canonical agent|Use only the enforced tools/);
     const output = {system: ["base system"]};
     assert.equal(appendConversationSystemContext(output, fixture.conversation), 1);

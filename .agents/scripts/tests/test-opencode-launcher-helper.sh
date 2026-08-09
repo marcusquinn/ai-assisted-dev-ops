@@ -37,7 +37,7 @@ cat >"${bin_dir}/opencode" <<'SH'
 #!/usr/bin/env bash
 fake_log="${FAKE_OPENCODE_LOG:-$(cd "$(dirname "$0")/.." && pwd -P)/fake-opencode.log}"
 if [[ -n "${fake_log}" ]]; then
-    printf '%s|%s\n' "${XDG_DATA_HOME:-}" "$*" >>"${fake_log}"
+    printf '%s|%s|%s\n' "${XDG_DATA_HOME:-}" "$PWD" "$*" >>"${fake_log}"
 fi
 if [[ "$*" == "debug config --log-level ERROR" ]]; then
     node --input-type=module - "${AIDEVOPS_TEAM_INTERFACE_OVERLAY}" "${OPENCODE_CONFIG}" <<'NODE'
@@ -81,6 +81,8 @@ printf 'XDG_DATA_HOME=%s\n' "${XDG_DATA_HOME:-}"
 printf 'AIDEVOPS_OPENCODE_ISOLATED_DB=%s\n' "${AIDEVOPS_OPENCODE_ISOLATED_DB:-}"
 printf 'AIDEVOPS_SESSION_ORIGIN=%s\n' "${AIDEVOPS_SESSION_ORIGIN:-}"
 printf 'AIDEVOPS_TEAM_INTERFACE_OVERLAY=%s\n' "${AIDEVOPS_TEAM_INTERFACE_OVERLAY:-}"
+printf 'AIDEVOPS_REMOTE_INTERFACE=%s\n' "${AIDEVOPS_REMOTE_INTERFACE:-}"
+printf 'AIDEVOPS_REMOTE_PROJECT_ROOT=%s\n' "${AIDEVOPS_REMOTE_PROJECT_ROOT:-}"
 printf 'HOME=%s\n' "${HOME:-}"
 printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG:-}"
 printf 'OPENCODE_DISABLE_AUTOCOMPACT=%s\n' "${OPENCODE_DISABLE_AUTOCOMPACT:-}"
@@ -145,6 +147,7 @@ printf '{"initialized_repos":[{"path":"%s"}]}\n' "${launch_dir}" >"${home_dir}/.
 conversation_roster="${tmp_root}/conversation-roster.json"
 conversation_context="${tmp_root}/conversation-context.json"
 conversation_overlay="${tmp_root}/conversation-overlay.json"
+remote_interactive_overlay="${tmp_root}/remote-interactive-overlay.json"
 python3 "${REPO_ROOT}/.agents/scripts/team-interface-agent-roster.py" \
     --agents-dir "${REPO_ROOT}/.agents" --output "${conversation_roster}"
 cat >"${conversation_context}" <<'JSON'
@@ -161,6 +164,10 @@ JSON
 node "${REPO_ROOT}/.agents/scripts/team-interface-opencode-overlay.mjs" generate \
     --roster "${conversation_roster}" --agent-id agent.build-plus \
     --context "${conversation_context}" --output "${conversation_overlay}"
+node "${REPO_ROOT}/.agents/scripts/team-interface-opencode-overlay.mjs" generate \
+    --roster "${conversation_roster}" --agent-id agent.build-plus \
+    --context "${conversation_context}" --permission-profile remote_interactive_v1 \
+    --output "${remote_interactive_overlay}"
 desktop_source="${tmp_root}/OpenCode.app/Contents/MacOS/OpenCode"
 mkdir -p "$(dirname "${desktop_source}")"
 cat >"${desktop_source}" <<'SH'
@@ -332,10 +339,14 @@ output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${conver
     "${HELPER}" conversation --overlay "${conversation_overlay}" --dir "${launch_dir}" 2>&1)
 persistent_config_after=$(<"${home_dir}/.config/opencode/opencode.json")
 conversation_line_count=0
+conversation_debug_pwd=""
 conversation_home=""
 conversation_config=""
-while IFS= read -r line; do
+while IFS='|' read -r _ logged_pwd logged_args; do
     conversation_line_count=$((conversation_line_count + 1))
+    if [[ "${logged_args}" == "debug config --log-level ERROR" ]]; then
+        conversation_debug_pwd="${logged_pwd}"
+    fi
 done <"${fake_log}"
 while IFS= read -r line; do
     case "${line}" in
@@ -365,6 +376,7 @@ if [[ "${output}" == *"ARGS=acp --cwd ${launch_dir}"* ]] \
     && [[ "${output}" != *"must-not-cross-boundary"* ]] \
     && [[ "${conversation_home}" == */opencode-conversation.*/home ]] \
     && [[ "${conversation_config}" == */opencode-conversation.*/config/opencode/opencode.json ]] \
+    && [[ "${conversation_debug_pwd}" == "${launch_dir}" ]] \
     && [[ "${conversation_line_count}" == "2" ]] \
     && [[ "${conversation_auth_count}" == "0" ]] \
     && [[ ! -e "${conversation_home%/home}" ]] \
@@ -435,6 +447,81 @@ else
     [[ "${output}" == *"rejects inherited OPENCODE_CONFIG_CONTENT"* ]] \
         && _pass "restricted conversation rejects config environment widening" \
         || _fail "restricted conversation environment rejection unexpected: ${output}"
+fi
+
+remote_work_dir="${tmp_root}/remote-work"
+mkdir -p "${remote_work_dir}"
+rm -f "${fake_log}"
+output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${remote_work_dir}" \
+    FAKE_OPENCODE_LOG="${fake_log}" \
+    "${HELPER}" remote-interactive --overlay "${remote_interactive_overlay}" \
+    --dir "${launch_dir}" --session-id test-host-build-plus 2>&1)
+remote_line_count=0
+while IFS= read -r _; do
+    remote_line_count=$((remote_line_count + 1))
+done <"${fake_log}"
+remote_auth_count=0
+remote_auth_file="${remote_work_dir}/opencode-interactive/buzz-test-host-build-plus/opencode/auth.json"
+[[ -f "${remote_auth_file}" ]] && remote_auth_count=1
+if [[ "${output}" == *"ARGS=acp --cwd ${launch_dir}"* ]] \
+    && [[ "${output}" == *"PWD=${launch_dir}"* ]] \
+    && [[ "${output}" == *"AIDEVOPS_SESSION_ORIGIN=interactive"* ]] \
+    && [[ "${output}" == *"AIDEVOPS_REMOTE_INTERFACE=1"* ]] \
+    && [[ "${output}" == *"AIDEVOPS_REMOTE_PROJECT_ROOT=${launch_dir}"* ]] \
+    && [[ "${output}" == *"AIDEVOPS_TEAM_INTERFACE_OVERLAY=${remote_interactive_overlay}"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_AUTOCOMPACT="* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_AUTOUPDATE=1"* ]] \
+    && [[ "${remote_line_count}" == "2" ]] \
+    && [[ "${remote_auth_count}" == "1" ]]; then
+    _pass "remote interactive launcher preserves full profile and native compaction"
+else
+    _fail "remote interactive launch output unexpected: ${output}"
+fi
+
+if output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${remote_work_dir}" \
+    AIDEVOPS_REMOTE_REQUIRE_PINNED_RUNTIME=1 \
+    "${HELPER}" remote-interactive --overlay "${remote_interactive_overlay}" \
+    --dir "${launch_dir}" --session-id test-host-build-plus --dry-run 2>&1); then
+    _fail "remote interactive launcher accepted a required but missing runtime anchor: ${output}"
+else
+    [[ "${output}" == *"requires an installed immutable anchor"* ]] \
+        && _pass "remote interactive launcher enforces required immutable anchor" \
+        || _fail "remote interactive runtime anchor rejection unexpected: ${output}"
+fi
+
+remote_dry_run_work_dir="${tmp_root}/remote-dry-run-work"
+mkdir -p "${remote_dry_run_work_dir}"
+output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${remote_dry_run_work_dir}" \
+    "${HELPER}" remote-interactive --overlay "${remote_interactive_overlay}" \
+    --dir "${launch_dir}" --session-id test-host-build-plus --dry-run 2>&1)
+if [[ "${output}" == *"AIDEVOPS_REMOTE_INTERFACE=1"* ]] \
+    && [[ "${output}" == *"validated-overlay:sha256:"* ]] \
+    && [[ "${output}" != *"${remote_interactive_overlay}"* ]] \
+    && directory_is_empty "${remote_dry_run_work_dir}"; then
+    _pass "remote interactive dry-run is redacted and non-mutating"
+else
+    _fail "remote interactive dry-run output unexpected: ${output}"
+fi
+
+if output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${remote_work_dir}" \
+    OPENCODE_DISABLE_AUTOCOMPACT=1 \
+    "${HELPER}" remote-interactive --overlay "${remote_interactive_overlay}" \
+    --dir "${launch_dir}" --session-id test-host-build-plus --dry-run 2>&1); then
+    _fail "remote interactive launcher accepted disabled compaction: ${output}"
+else
+    [[ "${output}" == *"rejects inherited OPENCODE_DISABLE_AUTOCOMPACT"* ]] \
+        && _pass "remote interactive launcher rejects disabled compaction" \
+        || _fail "remote interactive compaction rejection unexpected: ${output}"
+fi
+
+if output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${remote_work_dir}" \
+    "${HELPER}" remote-interactive --overlay "${conversation_overlay}" \
+    --dir "${launch_dir}" --session-id test-host-build-plus --dry-run 2>&1); then
+    _fail "remote interactive launcher accepted the read-only overlay: ${output}"
+else
+    [[ "${output}" == *"overlay validation failed"* ]] \
+        && _pass "remote interactive launcher rejects read-only overlays" \
+        || _fail "remote interactive profile rejection unexpected: ${output}"
 fi
 
 if ((fail_count > 0)); then

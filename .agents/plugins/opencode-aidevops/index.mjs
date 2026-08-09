@@ -62,6 +62,8 @@ import {
   CONVERSATION_ORIGIN,
   CONVERSATION_OVERLAY_ENV,
   loadTeamInterfaceConversation,
+  isRestrictedConversation,
+  isRemoteInteractiveConversation,
 } from "./team-interface-context.mjs";
 import { enforceConversationPathAccess } from "./team-interface-path-guard.mjs";
 
@@ -284,7 +286,7 @@ export async function AidevopsPlugin({ directory, client }) {
     repositoryDir: directory,
   });
 
-  if (conversation) {
+  if (isRestrictedConversation(conversation)) {
     return createConversationHooks({client, conversation, directory});
   }
 
@@ -421,6 +423,9 @@ export async function AidevopsPlugin({ directory, client }) {
       }
     }
     await ttsrSystemTransformHook(input, output);
+    if (isRemoteInteractiveConversation(conversation)) {
+      appendConversationSystemContext(output, conversation);
+    }
   };
 
   // Composed messages transform: TTSR enforcement + image size guard (GH#21793).
@@ -489,11 +494,16 @@ export async function AidevopsPlugin({ directory, client }) {
       const { sessionId, modelId } = sessionModelIdentity(input);
       sessionModels.remember(sessionId, modelId);
       await subagentEffortHooks.chatParams(input, output);
-      return applyConversationRootVariant(input, output, conversation, {
+      return applyConversationRootVariant(
+        input,
+        output,
+        isRestrictedConversation(conversation) ? conversation : null,
+        {
         client,
         resolveVariant: resolveTierReasoning,
         tierReasoning,
-      });
+        },
+      );
     },
 
     // Quality hooks

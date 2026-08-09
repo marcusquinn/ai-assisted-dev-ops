@@ -40,6 +40,12 @@ function selectedProfileIsAvailable(selected, sourceDigest) {
 export function verifyConversationEffectiveConfig(config, document, {pluginUrl} = {}) {
   const selectedName = document.agent.display_name;
   const evidence = conversationConfigEvidence(selectedName);
+  if (config.default_agent !== evidence.default_agent) {
+    throw new ConversationOverlayError(
+      "unsafe_effective_config",
+      `effective config default_agent does not match the restricted conversation profile (expected ${JSON.stringify(evidence.default_agent)}, received ${JSON.stringify(config.default_agent)})`,
+    );
+  }
   for (const key of EFFECTIVE_CONFIG_KEYS) {
     requireCanonicalMatch(config[key], evidence[key], `effective config ${key}`);
   }

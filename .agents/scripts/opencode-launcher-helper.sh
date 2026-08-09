@@ -34,6 +34,7 @@ usage() {
     cat <<'EOF'
 Usage: aidevops opencode [options] [--] [opencode args...]
        aidevops opencode conversation --overlay FILE --dir PATH [--dry-run]
+       aidevops opencode remote-interactive --overlay FILE --dir PATH --session-id ID [--dry-run]
        aidevops opencode server --dir PATH --port PORT [options]
        aidevops opencode attach URL --dir PATH [options]
        aidevops opencode-desktop [launch options]
@@ -66,6 +67,13 @@ Restricted conversation options:
   --dir PATH           Verified OpenCode ACP working directory (required)
   --dry-run            Validate inputs and print a redacted fixed command
   Arbitrary passthrough, --auto, model overrides, and config/plugin bypasses are rejected.
+
+Remote interactive options:
+  --overlay FILE       Canonical generated remote-interactive team overlay
+  --dir PATH           Registered linked worktree used for the full session
+  --session-id ID      Stable per-agent isolated OpenCode data shard
+  --dry-run            Validate inputs and print a redacted fixed command
+  Uses normal aidevops tools, MCPs, subagents, model routing, and compaction.
 
 Examples:
   aidevops opencode
@@ -210,6 +218,14 @@ require_opencode_cli() {
     return 0
 }
 
+require_node_cli() {
+    if ! command -v node >/dev/null 2>&1; then
+        print_error "node not found in PATH"
+        return 1
+    fi
+    return 0
+}
+
 reject_server_auth_environment() {
     if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" || -n "${OPENCODE_SERVER_USERNAME:-}" ]]; then
         print_error "Authenticated server mode is not supported by this loopback prototype. Unset OPENCODE_SERVER_PASSWORD and OPENCODE_SERVER_USERNAME."
@@ -291,6 +307,7 @@ canonical_conversation_overlay() {
 
 validate_conversation_overlay() {
     local overlay_path="$1"
+    local permission_profile="${2:-conversation_read_only_v1}"
     local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
     local overlay_digest=""
 
@@ -298,12 +315,10 @@ validate_conversation_overlay() {
         print_error "Restricted conversation overlay validator is unavailable"
         return 1
     fi
-    if ! command -v node >/dev/null 2>&1; then
-        print_error "node not found in PATH"
-        return 1
-    fi
+    require_node_cli || return 1
     if ! overlay_digest=$(node "${overlay_script}" validate \
-        --overlay "${overlay_path}" --agents-dir "${SCRIPT_DIR}/.." 2>/dev/null); then
+        --overlay "${overlay_path}" --agents-dir "${SCRIPT_DIR}/.." \
+        --permission-profile "${permission_profile}" 2>/dev/null); then
         print_error "Restricted conversation overlay validation failed"
         return 1
     fi
@@ -315,15 +330,81 @@ validate_conversation_overlay() {
     return 0
 }
 
+reject_remote_interactive_environment() {
+    local variable=""
+    local value=""
+
+	for variable in \
+		AIDEVOPS_REMOTE_RUNTIME_ANCHOR \
+		AIDEVOPS_REMOTE_PROJECT_ROOT \
+        AIDEVOPS_TEAM_INTERFACE_OVERLAY \
+        OPENCODE_CONFIG \
+        OPENCODE_CONFIG_CONTENT \
+        OPENCODE_CONFIG_DIR \
+        OPENCODE_DISABLE_AUTOCOMPACT \
+        OPENCODE_DISABLE_DEFAULT_PLUGINS \
+        OPENCODE_DISABLE_PROJECT_CONFIG \
+        OPENCODE_MODEL \
+        OPENCODE_PURE; do
+        value="${!variable:-}"
+        if [[ -n "${value}" ]]; then
+            print_error "Remote interactive mode rejects inherited ${variable}"
+            return 1
+        fi
+    done
+	return 0
+}
+
+resolve_remote_runtime_anchor() {
+	local runtime_root=""
+	local marker=""
+	local config_home=""
+	local anchored_scripts=""
+	runtime_root=$(cd "${SCRIPT_DIR}/../.." && pwd -P) || return 1
+	marker="${runtime_root}/buzz-runtime-anchor-v1.json"
+	config_home="${runtime_root}/opencode-config"
+	if [[ ! -e "$marker" ]]; then
+		return 2
+	fi
+	if [[ ! -f "$marker" || -L "$marker" || ! -f "${config_home}/opencode/opencode.json" || -L "${config_home}/opencode/opencode.json" ]]; then
+		print_error "Remote interactive runtime anchor is incomplete or unsafe"
+		return 1
+	fi
+	anchored_scripts=$(cd "${runtime_root}/agents/scripts" && pwd -P) || return 1
+	if [[ "$anchored_scripts" != "$SCRIPT_DIR" ]]; then
+		print_error "Remote interactive launcher is outside its runtime anchor"
+		return 1
+	fi
+	if ! jq -e '
+		def valid_digest: test("^[a-f0-9]{64}$");
+		.schema_version == 2
+		and .runtime_id == "aidevops-interactive-v1"
+		and (.agents_digest | valid_digest)
+		and (.config_digest | valid_digest)
+		and (.content_digest | valid_digest)
+	' "$marker" >/dev/null; then
+		print_error "Remote interactive runtime anchor marker is invalid"
+		return 1
+	fi
+	if ! python3 "${SCRIPT_DIR}/team-interface-buzz-runtime.py" verify-anchor \
+		--root "$runtime_root" --runtime interactive >/dev/null; then
+		print_error "Remote interactive runtime anchor content verification failed"
+		return 1
+	fi
+	printf '%s' "$runtime_root"
+	return 0
+}
+
 verify_conversation_effective_config() {
     local overlay_path="$1"
     local opencode_binary="$2"
-    shift 2
+    local canonical_dir="$3"
+    shift 3
     local overlay_script="${SCRIPT_DIR}/team-interface-opencode-overlay.mjs"
     local -a runtime_environment=("$@")
 
-    if ! env -i "${runtime_environment[@]}" \
-        "${opencode_binary}" debug config --log-level ERROR 2>/dev/null \
+    if ! (cd "${canonical_dir}" && env -i "${runtime_environment[@]}" \
+        "${opencode_binary}" debug config --log-level ERROR 2>/dev/null) \
         | node "${overlay_script}" verify-effective --overlay "${overlay_path}" >/dev/null; then
         print_error "Effective OpenCode config did not preserve the restricted conversation boundary"
         return 1
@@ -1219,7 +1300,8 @@ run_conversation_session() {
     [[ -n "${LANG:-}" ]] && runtime_environment+=("LANG=${LANG}")
     [[ -n "${LC_ALL:-}" ]] && runtime_environment+=("LC_ALL=${LC_ALL}")
     if ! verify_conversation_effective_config \
-        "${canonical_overlay}" "${opencode_binary}" "${runtime_environment[@]}"; then
+        "${canonical_overlay}" "${opencode_binary}" "${canonical_dir}" \
+        "${runtime_environment[@]}"; then
         cleanup_conversation_runtime "${runtime_root}" || true
         trap - EXIT
         return 1
@@ -1290,11 +1372,11 @@ cmd_conversation() {
     [[ -n "${overlay_path}" ]] || { print_error "Restricted conversation mode requires --overlay FILE"; return 1; }
     reject_conversation_environment || return 1
     require_opencode_cli || return 1
-    command -v node >/dev/null 2>&1 || { print_error "node not found in PATH"; return 1; }
+    require_node_cli || return 1
     opencode_binary=$(command -v opencode) || return 1
     canonical_dir=$(canonical_conversation_directory "${launch_dir}") || return 1
     canonical_overlay=$(canonical_conversation_overlay "${overlay_path}") || return 1
-    overlay_digest=$(validate_conversation_overlay "${canonical_overlay}") || return 1
+    overlay_digest=$(validate_conversation_overlay "${canonical_overlay}" "conversation_read_only_v1") || return 1
     acp_args=(acp --cwd "${canonical_dir}")
 
     if ((dry_run == 1)); then
@@ -1311,6 +1393,116 @@ cmd_conversation() {
     return $?
 }
 
+run_remote_interactive_session() {
+    local canonical_overlay="$1"
+    local canonical_dir="$2"
+	local session_id="$3"
+	local opencode_binary="$4"
+	local runtime_anchor="$5"
+	local data_dir=""
+
+    data_dir=$(build_session_data_dir "buzz-${session_id}") || return 1
+    mkdir -p "${data_dir}/opencode" || return 1
+    copy_auth_json "${data_dir}" || return 1
+    prewarm_opencode_data_dir "${data_dir}"
+    cd "${canonical_dir}" || return 1
+	export XDG_DATA_HOME="${data_dir}"
+	if [[ -n "$runtime_anchor" ]]; then
+		export XDG_CONFIG_HOME="${runtime_anchor}/opencode-config"
+		export AIDEVOPS_REMOTE_RUNTIME_ANCHOR="$runtime_anchor"
+	fi
+    export AIDEVOPS_OPENCODE_ISOLATED_DB=1
+    export AIDEVOPS_SESSION_ORIGIN=interactive
+    export AIDEVOPS_REMOTE_INTERFACE=1
+    export AIDEVOPS_REMOTE_PROJECT_ROOT="${canonical_dir}"
+    export AIDEVOPS_TEAM_INTERFACE_OVERLAY="${canonical_overlay}"
+    export OPENCODE_DISABLE_AUTOUPDATE=1
+    export OPENCODE_DISABLE_SHARE=1
+    exec "${opencode_binary}" acp --cwd "${canonical_dir}"
+    return 1
+}
+
+cmd_remote_interactive() {
+    local dry_run=0
+    local launch_dir=""
+    local overlay_path=""
+    local session_id=""
+    local canonical_dir=""
+    local canonical_overlay=""
+	local overlay_digest=""
+	local opencode_binary=""
+	local runtime_anchor=""
+	local anchor_status=0
+
+    while (($# > 0)); do
+        local option="$1"
+        case "${option}" in
+        --dir)
+            [[ $# -ge 2 ]] || { print_error "${ERR_DIR_REQUIRES_PATH}"; return 1; }
+            launch_dir="$2"
+            shift 2
+            ;;
+        --overlay)
+            [[ $# -ge 2 ]] || { print_error "--overlay requires a path"; return 1; }
+            overlay_path="$2"
+            shift 2
+            ;;
+        --session-id)
+            [[ $# -ge 2 ]] || { print_error "${ERR_SESSION_ID_REQUIRES_VALUE}"; return 1; }
+            session_id="$2"
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        -h | --help | help)
+            usage
+            return 0
+            ;;
+        *)
+            print_error "Unknown remote interactive option: ${option}"
+            return 1
+            ;;
+        esac
+    done
+
+    [[ -n "${launch_dir}" ]] || { print_error "Remote interactive mode requires --dir PATH"; return 1; }
+    [[ -n "${overlay_path}" ]] || { print_error "Remote interactive mode requires --overlay FILE"; return 1; }
+    [[ -n "${session_id}" ]] || { print_error "Remote interactive mode requires --session-id ID"; return 1; }
+    reject_remote_interactive_environment || return 1
+    require_opencode_cli || return 1
+    require_node_cli || return 1
+    opencode_binary=$(command -v opencode) || return 1
+    canonical_dir=$(canonical_conversation_directory "${launch_dir}") || return 1
+    canonical_overlay=$(canonical_conversation_overlay "${overlay_path}") || return 1
+	overlay_digest=$(validate_conversation_overlay \
+		"${canonical_overlay}" "remote_interactive_v1") || return 1
+	runtime_anchor=$(resolve_remote_runtime_anchor) || anchor_status=$?
+	case "$anchor_status" in
+	0) ;;
+	2)
+		if [[ "${AIDEVOPS_REMOTE_REQUIRE_PINNED_RUNTIME:-}" == "1" ]]; then
+			print_error "Remote interactive runtime requires an installed immutable anchor"
+			return 1
+		fi
+		;;
+	*) return 1 ;;
+	esac
+
+	if ((dry_run == 1)); then
+		printf 'cd %q && XDG_DATA_HOME=%q XDG_CONFIG_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1 AIDEVOPS_SESSION_ORIGIN=interactive AIDEVOPS_REMOTE_INTERFACE=1 AIDEVOPS_REMOTE_RUNTIME_ANCHOR=%q AIDEVOPS_REMOTE_PROJECT_ROOT=%q AIDEVOPS_TEAM_INTERFACE_OVERLAY=%q OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_SHARE=1 %q acp --cwd %q\n' \
+			"${canonical_dir}" "<persistent-buzz-agent-shard>" "${runtime_anchor:+<pinned-runtime-config>}" \
+			"${runtime_anchor:+<pinned-runtime-anchor>}" "${canonical_dir}" \
+			"<validated-overlay:${overlay_digest}>" "${opencode_binary}" "${canonical_dir}"
+		return 0
+	fi
+
+	run_remote_interactive_session \
+		"${canonical_overlay}" "${canonical_dir}" "${session_id}" "${opencode_binary}" "$runtime_anchor"
+    return $?
+}
+
 main() {
     aidevops_init_temp_workspace || { print_error "Could not initialize aidevops temporary workspace"; return 1; }
     TMP="${TMP:-${TMPDIR}}"
@@ -1320,6 +1512,11 @@ main() {
     conversation)
         shift || true
         cmd_conversation "$@"
+        return $?
+        ;;
+    remote-interactive)
+        shift || true
+        cmd_remote_interactive "$@"
         return $?
         ;;
     desktop)

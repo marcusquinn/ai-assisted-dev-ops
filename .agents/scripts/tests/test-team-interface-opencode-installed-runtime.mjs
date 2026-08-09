@@ -19,7 +19,9 @@ import {verifyConversationEffectiveConfig} from "../team-interface-opencode-effe
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 // The nosemgrep sites below use only this canonical source root or a process-owned mkdtemp tree.
 const repositoryRoot = fs.realpathSync(path.resolve(testDirectory, "../../..")); // nosemgrep
-const agentsDirectory = path.join(repositoryRoot, ".agents");
+const agentsDirectory = fs.realpathSync( // nosemgrep
+  process.env.AIDEVOPS_TEST_AGENTS_DIR || path.join(repositoryRoot, ".agents"),
+);
 const pluginPath = fs.realpathSync(path.join( // nosemgrep
   agentsDirectory,
   "plugins",
@@ -132,8 +134,8 @@ try {
   );
 
   const roster = loadCanonicalAgentRoster(agentsDirectory);
-  const agent = roster.agents.find(({agent_id: agentID}) => agentID === "agent.build-plus");
-  assert.ok(agent, "canonical Build+ agent is unavailable");
+  const agent = roster.agents.find(({agent_id: agentID}) => agentID === "agent.aidevops-guide");
+  assert.ok(agent, "canonical AI DevOps framework guide is unavailable");
   const overlay = createOverlayDocument({
     roster,
     agent,
@@ -201,6 +203,15 @@ try {
   );
   assert.equal(debugResult.status, 0, debugResult.stderr);
   const effectiveConfig = JSON.parse(debugResult.stdout);
+  assert.equal(
+    effectiveConfig.default_agent,
+    overlay.agent.display_name,
+    JSON.stringify({
+      actual: effectiveConfig.default_agent,
+      agentKeys: Object.keys(effectiveConfig.agent || {}),
+      expected: overlay.agent.display_name,
+    }),
+  );
   verifyConversationEffectiveConfig(effectiveConfig, overlay, {pluginUrl});
   assert.equal(JSON.stringify(effectiveConfig).includes("persistent-canary"), false);
   assert.equal(JSON.stringify(effectiveConfig).includes("must-not-load"), false);

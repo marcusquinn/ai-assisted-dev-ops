@@ -122,6 +122,21 @@ try {
   assert.equal(outputResult.status, 0, outputResult.stderr);
   assert.equal(fs.readFileSync(overlayPath, "utf8"), firstText); // nosemgrep
   assert.equal(fs.statSync(overlayPath).mode & 0o077, 0, "overlay output is group/world accessible"); // nosemgrep
+
+  const stableAgentsPath = path.join(fixtureRoot, "stable-agents");
+  const symlinkInvokedOverlayPath = path.join(fixtureRoot, "symlink-invoked-overlay.json");
+  fs.symlinkSync(path.join(repositoryRoot, ".agents"), stableAgentsPath, "dir"); // nosemgrep
+  const symlinkInvokedResult = spawnSync("node", [
+    path.join(stableAgentsPath, "scripts/team-interface-opencode-overlay.mjs"),
+    ...generateArguments(rosterPath, contextPath, ["--output", symlinkInvokedOverlayPath]),
+  ], {encoding: "utf8"});
+  assert.equal(symlinkInvokedResult.status, 0, symlinkInvokedResult.stderr);
+  assert.equal(
+    fs.readFileSync(symlinkInvokedOverlayPath, "utf8"), // nosemgrep
+    firstText,
+    "stable symlink-parent invocation did not execute the overlay command",
+  );
+
   const validateResult = runOverlay(["validate", "--overlay", overlayPath]);
   assert.equal(validateResult.status, 0, validateResult.stderr);
   assert.equal(validateResult.stdout.trim(), overlay.overlay_digest);

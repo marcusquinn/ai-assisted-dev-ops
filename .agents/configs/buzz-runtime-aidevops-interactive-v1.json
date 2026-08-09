@@ -1,0 +1,9 @@
+{
+  "args": [],
+  "command": "aidevops-buzz-acp-interactive",
+  "env": {},
+  "id": "aidevops-interactive-v1",
+  "installHint": "Installed and updated by aidevops.",
+  "installInstructionsUrl": "https://aidevops.sh/docs",
+  "label": "Aidevops Full Interactive V1"
+}

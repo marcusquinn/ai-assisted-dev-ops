@@ -22,6 +22,7 @@ import {
 import {
   enforcePublicTriageIsolation,
   enforceTeamInterfaceConversationIsolation,
+  enforceTeamInterfaceRemoteInteractiveSelection,
   ensureAgentGuard,
   registerManagedDirectoryPermissions,
 } from "./config-safety-guards.mjs";
@@ -37,6 +38,7 @@ export { registerApprovedWorkerPermissions };
 export {
   enforcePublicTriageIsolation,
   enforceTeamInterfaceConversationIsolation,
+  enforceTeamInterfaceRemoteInteractiveSelection,
   registerManagedDirectoryPermissions,
   registerResearchOnlyAgent,
 };
@@ -316,7 +318,7 @@ export function createConfigHook(deps) {
    * @param {object} config - OpenCode Config object (mutable)
    */
   return async function configHook(config) {
-    if (conversation) {
+    if (conversation?.overlay?.permission_profile === "conversation_read_only_v1") {
       const conversationIsolation = enforceTeamInterfaceConversationIsolation(config, conversation);
       logConfigSummary({
         agents: 0,
@@ -390,6 +392,7 @@ export function createConfigHook(deps) {
     const claude = registerClaudeCliModels(config);
     enforcePublicTriageIsolation(config);
     const conversationIsolation = enforceTeamInterfaceConversationIsolation(config, conversation);
+    const remoteInteractiveSelection = enforceTeamInterfaceRemoteInteractiveSelection(config, conversation);
 
     logConfigSummary(
       {
@@ -405,6 +408,7 @@ export function createConfigHook(deps) {
         google,
         claude,
         conversationIsolation,
+        remoteInteractiveSelection,
       },
     );
     logVersionDriftAsync(pluginDir);
