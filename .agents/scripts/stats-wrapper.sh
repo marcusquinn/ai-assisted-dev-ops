@@ -164,11 +164,27 @@ check_stats_dedup() {
 #######################################
 _stats_wrapper_on_exit() {
 	local ec=$?
-	rm -f "$STATS_PIDFILE" 2>/dev/null || true
+	_stats_wrapper_remove_own_pidfile
 	if [[ "$ec" -ne 0 ]]; then
 		echo "[stats-wrapper] HEALTH-DASHBOARD-FAIL exit=${ec} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$STATS_LOGFILE"
 	fi
 	return "$ec"
+}
+
+# A timed-out predecessor can finish its EXIT trap after a later scheduler
+# invocation has replaced the PID file. Only remove the file when it still
+# records this wrapper's PID, so that cleanup cannot disable deduplication for
+# the healthy successor.
+_stats_wrapper_remove_own_pidfile() {
+	local pidfile_pid="" pidfile_epoch=""
+	if [[ ! -f "$STATS_PIDFILE" ]]; then
+		return 0
+	fi
+	read -r pidfile_pid pidfile_epoch <"$STATS_PIDFILE" 2>/dev/null || return 0
+	if [[ "$pidfile_pid" == "$$" ]]; then
+		rm -f "$STATS_PIDFILE" 2>/dev/null || true
+	fi
+	return 0
 }
 
 _stats_wrapper_run_health_update() {
@@ -190,6 +206,54 @@ _stats_wrapper_run_health_update() {
 		return "$update_ec"
 		;;
 	esac
+}
+
+# Execute the potentially slow work in a child so the wrapper can enforce its
+# own wall-clock ceiling rather than relying on the next scheduler tick to
+# detect a stale PID file.
+_stats_wrapper_run_work() {
+	# Source stats-functions.sh for health dashboard and quality sweep functions.
+	# After t1431, these functions live in their own file instead of pulse-wrapper.sh.
+	# LOGFILE is set to STATS_LOGFILE so all function logging goes to stats.log.
+	LOGFILE="$STATS_LOGFILE"
+	# shellcheck source=stats-functions.sh
+	source "${SCRIPT_DIR}/stats-functions.sh" || {
+		echo "[stats-wrapper] Failed to source stats-functions.sh" >>"$STATS_LOGFILE"
+		return 1
+	}
+
+	run_daily_quality_sweep || {
+		local sweep_ec=$?
+		echo "[stats-wrapper] QUALITY-SWEEP-FAIL exit=${sweep_ec} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$STATS_LOGFILE"
+	}
+	_stats_wrapper_run_health_update
+	return $?
+}
+
+_stats_wrapper_run_with_timeout() {
+	local start_epoch="" now="" elapsed="" child_pid=""
+	start_epoch=$(date +%s)
+	_stats_wrapper_run_work &
+	child_pid=$!
+
+	while kill -0 "$child_pid" 2>/dev/null; do
+		now=$(date +%s)
+		elapsed=$((now - start_epoch))
+		if [[ "$elapsed" -ge "$STATS_TIMEOUT" ]]; then
+			echo "[stats-wrapper] STATS-TIMEOUT elapsed=${elapsed}s ceiling=${STATS_TIMEOUT}s pid=${child_pid}; killing process tree" >>"$STATS_LOGFILE"
+			_kill_tree "$child_pid" || true
+			sleep 2
+			if kill -0 "$child_pid" 2>/dev/null; then
+				_force_kill_tree "$child_pid" || true
+			fi
+			wait "$child_pid" 2>/dev/null || true
+			return 124
+		fi
+		sleep 2
+	done
+
+	wait "$child_pid"
+	return $?
 }
 
 #######################################
@@ -273,21 +337,7 @@ main() {
 
 	echo "[stats-wrapper] Starting at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$STATS_LOGFILE"
 
-	# Source stats-functions.sh for health dashboard and quality sweep functions.
-	# After t1431, these functions live in their own file instead of pulse-wrapper.sh.
-	# LOGFILE is set to STATS_LOGFILE so all function logging goes to stats.log.
-	LOGFILE="$STATS_LOGFILE"
-	# shellcheck source=stats-functions.sh
-	source "${SCRIPT_DIR}/stats-functions.sh" || {
-		echo "[stats-wrapper] Failed to source stats-functions.sh" >>"$STATS_LOGFILE"
-		return 1
-	}
-
-	run_daily_quality_sweep || {
-		local sweep_ec=$?
-		echo "[stats-wrapper] QUALITY-SWEEP-FAIL exit=${sweep_ec} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$STATS_LOGFILE"
-	}
-	_stats_wrapper_run_health_update
+	_stats_wrapper_run_with_timeout
 
 	echo "[stats-wrapper] Finished at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$STATS_LOGFILE"
 	return 0

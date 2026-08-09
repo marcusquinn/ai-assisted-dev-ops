@@ -159,9 +159,12 @@ test_export_before_self_check() {
 test_dashboard_update_failure_not_swallowed() {
 	local production_snippet
 	production_snippet=$(awk '
+		# The scheduler now invokes the work via _stats_wrapper_run_with_timeout,
+		# so inspect the actual work body rather than relying on its former
+		# placement inline in main().
 		/^[[:space:]]*run_daily_quality_sweep \|\| \{/ { in_production=1 }
 		in_production { print }
-		in_production && /^[[:space:]]*echo "\[stats-wrapper\] Finished/ { exit }
+		in_production && /^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*$/ { exit }
 	' "$WRAPPER_SCRIPT")
 	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*update_health_issues[[:space:]]*\|\|[[:space:]]*true'; then
 		print_result "dashboard update failures propagate to stats-wrapper trap" 1 \
@@ -184,8 +187,8 @@ test_transient_dashboard_tempfail_is_deferred() {
 		in_helper { print }
 		in_helper && /^[[:space:]]*}$/ { exit }
 	' "$WRAPPER_SCRIPT")
-	if printf '%s' "$helper_snippet" | grep -qE '^[[:space:]]*75\)' && \
-		printf '%s' "$helper_snippet" | grep -qF 'HEALTH-DASHBOARD-DEFERRED' && \
+	if printf '%s' "$helper_snippet" | grep -qE '^[[:space:]]*75\)' &&
+		printf '%s' "$helper_snippet" | grep -qF 'HEALTH-DASHBOARD-DEFERRED' &&
 		printf '%s' "$helper_snippet" | grep -qE "^[[:space:]]*return \"\\\$update_ec\""; then
 		print_result "stats-wrapper defers EX_TEMPFAIL but propagates other dashboard failures" 0
 		return 0
