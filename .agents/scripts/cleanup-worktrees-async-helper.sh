@@ -25,6 +25,7 @@
 # Environment:
 #   CLEANUP_WORKTREES_ASYNC_CADENCE_MIN — min minutes between runs (default 10)
 #   DIRTY_WORKTREE_BACKUP_RETENTION_DAYS — stale dirty-backup retention (default 30)
+#   AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_ENABLED — automatic terminal-archive maintenance (default 1)
 #   AIDEVOPS_LOG_DIR — explicit log directory override (required if HOME unset)
 #
 # Observability (for pulse-diagnose-helper.sh):
@@ -215,6 +216,22 @@ _prune_dirty_worktree_backups() {
 	return 0
 }
 
+_maintain_worktree_recovery() {
+	local helper_path="${SCRIPT_DIR}/worktree-recovery-maintenance-helper.sh"
+	local result=""
+
+	if [[ ! -x "$helper_path" ]]; then
+		echo "[cleanup-worktrees-async] recovery maintenance helper unavailable; skipping" >>"$LOGFILE"
+		return 0
+	fi
+	if result=$("$helper_path" 2>>"$LOGFILE"); then
+		printf '%s\t%s\n' "[cleanup-worktrees-async] recovery-maintenance" "$result" >>"$LOGFILE"
+	else
+		echo "[cleanup-worktrees-async] recovery maintenance failed closed; continuing" >>"$LOGFILE"
+	fi
+	return 0
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -240,6 +257,7 @@ main() {
 	if [[ "${CLEANUP_WORKTREES_SKIPPED:-0}" == "1" ]]; then
 		echo "[cleanup-worktrees-async] cleanup_worktrees skipped by safety gate — last-run NOT updated" >>"$LOGFILE"
 	elif [[ "$rc" -eq 0 ]]; then
+		_maintain_worktree_recovery
 		_update_last_run
 		echo "[cleanup-worktrees-async] Completed successfully at $(date -u '+%Y-%m-%dT%H:%M:%SZ'). last-run updated." >>"$LOGFILE"
 	else

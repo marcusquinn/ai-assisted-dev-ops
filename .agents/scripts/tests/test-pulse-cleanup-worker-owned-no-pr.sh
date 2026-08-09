@@ -16,6 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PULSE_CLEANUP="${SCRIPT_DIR}/../pulse-cleanup.sh"
 
 GIT_BIN="${AIDEVOPS_TEST_GIT_BIN:-/usr/bin/git}"
+export GIT_BIN
 git() {
 	"$GIT_BIN" "$@"
 	return $?
@@ -299,7 +300,7 @@ test_merged_branch_pr_removes_before_age_threshold() {
 	return 0
 }
 
-test_closed_issue_dirty_worktree_stashes_and_preserves_branch() {
+test_closed_issue_dirty_worktree_compacts_and_preserves_branch() {
 	local repo_dir="${TEST_ROOT}/repo-closed-issue-dirty"
 	local wt_path="${TEST_ROOT}/worker-wt-closed-issue-dirty"
 	local branch_name="feature/auto-20260507-190807-gh23081"
@@ -322,19 +323,64 @@ test_closed_issue_dirty_worktree_stashes_and_preserves_branch() {
 	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
 	local cleanup_rc=$?
 
-	local branch_exists=1 stash_count=0
+	local branch_exists=1 archive_manifest=""
 	git -C "$repo_dir" rev-parse --verify "refs/heads/${branch_name}" >/dev/null 2>&1 && branch_exists=0
-	stash_count=$(git -C "$repo_dir" stash list 2>/dev/null | wc -l | tr -d ' ') || stash_count=0
+	for archive_manifest in "$HOME"/.aidevops/recovery/archives/testowner__testrepo/23081/*/manifest.json; do
+		[[ -f "$archive_manifest" ]] || archive_manifest=""
+	done
 
 	local rc=0
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	[[ "$stash_count" -gt 0 ]] || rc=1
+	[[ -n "$archive_manifest" ]] || rc=1
+	[[ -z "$archive_manifest" ]] || jq -e '.reason == "failed-worker" and .dirty_state == "dirty"' "$archive_manifest" >/dev/null || rc=1
 	grep -q 'dirty=1' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'recovery_path=branch-preserved-closed-issue' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
-	print_result "closed issue dirty worktree stashes and preserves branch" "$rc" \
-		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists stash_count=$stash_count log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	print_result "closed issue dirty worktree compacts and preserves branch" "$rc" \
+		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists archive=$archive_manifest pulse=$(cat "$LOGFILE" 2>/dev/null) log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_failed_compact_archive_preserves_dirty_worktree() {
+	local repo_dir="${TEST_ROOT}/repo-compact-failure"
+	local wt_path="${TEST_ROOT}/worker-wt-compact-failure"
+	local branch_name="feature/auto-20260507-190809-gh23085"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" || return 1
+	printf 'dirty edit\n' >>"${wt_path}/worker.txt"
+	source_pulse_cleanup_with_stubs || return 1
+	gh() {
+		local command_name="${1:-}"
+		local subcommand_name="${2:-}"
+		local target_number="${3:-}"
+		if [[ "$command_name" == "issue" && "$subcommand_name" == "view" && "$target_number" == "23085" ]]; then
+			printf '%s\n' "CLOSED"
+			return 0
+		fi
+		return 1
+	}
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-compact-failure-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+	AIDEVOPS_WORKTREE_ARCHIVE_HELPER="/usr/bin/false"
+	export AIDEVOPS_WORKTREE_ARCHIVE_HELPER
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	unset AIDEVOPS_WORKTREE_ARCHIVE_HELPER
+
+	local branch_exists=1 rc=0
+	git -C "$repo_dir" rev-parse --verify "refs/heads/${branch_name}" >/dev/null 2>&1 && branch_exists=0
+	[[ "$cleanup_rc" -ne 0 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	[[ "$branch_exists" -eq 0 ]] || rc=1
+	grep -q 'dirty edit' "${wt_path}/worker.txt" 2>/dev/null || rc=1
+	grep -q 'compact recovery archive creation or verification failed' "$LOGFILE" 2>/dev/null || rc=1
+	grep -q 'worktree-skipped.*compact-archive-failed' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "failed compact archive preserves dirty worktree" "$rc" \
+		"cleanup_rc=$cleanup_rc worktree_exists=$([[ -d "$wt_path" ]] && printf yes || printf no) branch_exists=$branch_exists pulse=$(cat "$LOGFILE" 2>/dev/null) log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
 }
 
@@ -623,7 +669,7 @@ test_dirty_auto_under_seven_days_is_preserved() {
 	return 0
 }
 
-test_dirty_auto_over_seven_days_stashes_and_preserves_branch() {
+test_dirty_auto_over_seven_days_compacts_and_preserves_branch() {
 	local repo_dir="${TEST_ROOT}/repo-dirty-auto-stale"
 	local wt_path="${TEST_ROOT}/aidevops-feature-auto-20260507-190808-gh23082"
 	local branch_name="feature/auto-20260507-190808-gh23082"
@@ -641,17 +687,20 @@ test_dirty_auto_over_seven_days_stashes_and_preserves_branch() {
 
 	local branch_exists=1
 	git -C "$repo_dir" rev-parse --verify "refs/heads/${branch_name}" >/dev/null 2>&1 && branch_exists=0
-	local stash_count=0
-	stash_count=$(git -C "$repo_dir" stash list 2>/dev/null | grep -c 'aidevops worktree cleanup archive' || true)
+	local archive_manifest=""
+	for archive_manifest in "$HOME"/.aidevops/recovery/archives/testowner__testrepo/23082/*/manifest.json; do
+		[[ -f "$archive_manifest" ]] || archive_manifest=""
+	done
 
 	local rc=0
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	[[ "$stash_count" -gt 0 ]] || rc=1
+	[[ -n "$archive_manifest" ]] || rc=1
+	[[ -z "$archive_manifest" ]] || jq -e '.reason == "failed-worker" and .dirty_state == "dirty"' "$archive_manifest" >/dev/null || rc=1
 	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
-	print_result "dirty generated auto worktree over 7 days is stashed and removed" "$rc" \
-		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists stash_count=$stash_count log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	print_result "dirty generated auto worktree over 7 days is compacted and removed" "$rc" \
+		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists archive=$archive_manifest pulse=$(cat "$LOGFILE" 2>/dev/null) log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
 }
 
@@ -745,14 +794,15 @@ test_closed_pr_reference_local_commit_no_pr_removes_before_age_threshold
 test_open_ci_repair_dirty_worktree_is_preserved
 test_open_head_pr_outranks_embedded_terminal_reference
 test_merged_branch_pr_removes_before_age_threshold
-test_closed_issue_dirty_worktree_stashes_and_preserves_branch
+test_closed_issue_dirty_worktree_compacts_and_preserves_branch
+test_failed_compact_archive_preserves_dirty_worktree
 test_terminal_worktree_respects_live_owner_signal
 test_fix_numeric_closed_issue_worktree_archives
 test_stale_local_commit_no_pr_removes_worktree_preserves_branch
 test_stale_detached_review_cruft_removes_without_branch
 test_stale_clean_auto_worktree_removes_folder_preserves_branch
 test_dirty_auto_under_seven_days_is_preserved
-test_dirty_auto_over_seven_days_stashes_and_preserves_branch
+test_dirty_auto_over_seven_days_compacts_and_preserves_branch
 test_no_newline_pr_output_blocks_local_commit_cleanup
 test_no_newline_open_pr_output_blocks_clean_fastpath
 test_branch_pr_lookup_uses_null_safe_jq_filter

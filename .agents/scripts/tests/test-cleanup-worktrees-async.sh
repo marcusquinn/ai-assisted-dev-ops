@@ -88,6 +88,7 @@ STUB
 	# Use literal return 0 / return 1 (not a variable) so the pre-commit
 	# return-statement ratchet doesn't flag the heredoc-embedded function.
 	local mock_ran_file="${TEST_DIR}/mock-ran"
+	local maintenance_ran_file="${TEST_DIR}/maintenance-ran"
 	if [[ "${MOCK_CLEANUP_SKIPPED:-0}" -eq 1 ]]; then
 		cat >"${stub_dir}/pulse-cleanup.sh" <<STUB
 # stub pulse-cleanup.sh
@@ -124,6 +125,12 @@ STUB
 	# so injecting SCRIPT_DIR via env does not work).
 	cp "$HELPER" "${stub_dir}/cleanup-worktrees-async-helper.sh"
 	chmod +x "${stub_dir}/cleanup-worktrees-async-helper.sh"
+	cat >"${stub_dir}/worktree-recovery-maintenance-helper.sh" <<STUB
+#!/usr/bin/env bash
+printf 'MAINTENANCE_RAN\\n' >>"${maintenance_ran_file}"
+printf '{"schema":"test","outcome":"no-candidates"}\\n'
+STUB
+	chmod +x "${stub_dir}/worktree-recovery-maintenance-helper.sh"
 
 	if [[ "${RUN_HELPER_UNSET_HOME:-0}" -eq 1 ]]; then
 		env -u HOME \
@@ -268,16 +275,17 @@ test_stale_pid_reclaim() {
 test_failed_cleanup_no_last_run_update() {
 	local logs_dir="${TEST_DIR}/.aidevops/logs"
 	local last_run_file="${logs_dir}/cleanup_worktrees.last-run"
+	local maintenance_ran="${TEST_DIR}/maintenance-ran"
 	rm -f "$last_run_file"
 
 	# Mock cleanup_worktrees exits non-zero
 	MOCK_CLEANUP_EXIT=1 run_helper_in_isolation || true
 
-	if [[ ! -f "$last_run_file" ]]; then
-		print_result "failed-cleanup: last-run not updated on non-zero exit" 0
+	if [[ ! -f "$last_run_file" && ! -f "$maintenance_ran" ]]; then
+		print_result "failed-cleanup: last-run and maintenance skipped on non-zero exit" 0
 	else
-		print_result "failed-cleanup: last-run not updated on non-zero exit" 1 \
-			"last-run was updated despite cleanup failure"
+		print_result "failed-cleanup: last-run and maintenance skipped on non-zero exit" 1 \
+			"last_run=$([[ -f "$last_run_file" ]] && printf yes || printf no) maintenance=$([[ -f "$maintenance_ran" ]] && printf yes || printf no)"
 	fi
 	return 0
 }
@@ -288,15 +296,16 @@ test_failed_cleanup_no_last_run_update() {
 test_skipped_cleanup_no_last_run_update() {
 	local logs_dir="${TEST_DIR}/.aidevops/logs"
 	local last_run_file="${logs_dir}/cleanup_worktrees.last-run"
+	local maintenance_ran="${TEST_DIR}/maintenance-ran"
 	rm -f "$last_run_file"
 
 	MOCK_CLEANUP_SKIPPED=1 run_helper_in_isolation || true
 
-	if [[ ! -f "$last_run_file" ]]; then
-		print_result "skipped-cleanup: last-run not updated on safety skip" 0
+	if [[ ! -f "$last_run_file" && ! -f "$maintenance_ran" ]]; then
+		print_result "skipped-cleanup: last-run and maintenance skipped on safety skip" 0
 	else
-		print_result "skipped-cleanup: last-run not updated on safety skip" 1 \
-			"last-run was updated despite cleanup safety skip"
+		print_result "skipped-cleanup: last-run and maintenance skipped on safety skip" 1 \
+			"last_run=$([[ -f "$last_run_file" ]] && printf yes || printf no) maintenance=$([[ -f "$maintenance_ran" ]] && printf yes || printf no)"
 	fi
 	return 0
 }
@@ -436,6 +445,22 @@ test_home_unset_uses_explicit_log_dir() {
 	return 0
 }
 
+test_recovery_maintenance_runs_once_per_cleanup() {
+	local maintenance_ran="${TEST_DIR}/maintenance-ran"
+	local run_count=""
+	rm -f "$maintenance_ran"
+
+	MOCK_CLEANUP_EXIT=0 run_helper_in_isolation || true
+	run_count=$(wc -l <"$maintenance_ran" | tr -d ' ') || run_count=0
+	if [[ "$run_count" == "1" ]]; then
+		print_result "recovery-maintenance: runs once per async cleanup, not per candidate" 0
+	else
+		print_result "recovery-maintenance: runs once per async cleanup, not per candidate" 1 \
+			"maintenance helper invocation count was ${run_count:-0}"
+	fi
+	return 0
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -490,6 +515,10 @@ main() {
 	teardown
 	setup
 	test_home_unset_uses_explicit_log_dir
+
+	teardown
+	setup
+	test_recovery_maintenance_runs_once_per_cleanup
 
 	echo ""
 	echo "Results: ${TESTS_PASSED}/${TESTS_RUN} passed, ${TESTS_FAILED} failed"

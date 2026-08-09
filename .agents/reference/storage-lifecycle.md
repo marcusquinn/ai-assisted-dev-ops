@@ -64,7 +64,7 @@ Reference, lease, recovery, and audit checks remain hard vetoes.
 | `~/.aidevops/.agent-workspace/observability` | framework | audit, archive, cache | Part streams and tool metadata are bounded at ingestion; runtime events use a 30-day active candidate window, verified immutable archive partitions, compacted low-value summaries, pinned recovery state, and append-only manifests | Measure defaults across routine/high-activity installations before changing the active window or adding any archive deletion policy |
 | `~/.aidevops/agents-backups` | framework | rollback, archive | Setup computes a dry-run plan under 10-snapshot, 180-day, and 4 GiB soft limits; the newest snapshot is always protected | Tune defaults from broader measurements without weakening rollback or attribution checks |
 | `~/.aidevops/logs/worker-failure-excerpts` | framework | recovery, archive | Excerpts are capped at 64 KiB; each session retains its newest evidence while older duplicates converge under 3-excerpt, 30-day, and 192 KiB soft limits | Add terminal issue/PR awareness before reclaiming the newest evidence for any session |
-| `~/.aidevops/recovery/worktrees` (Linux and non-macOS) | framework | recovery, unknown | Archive-first removal copies worktree and Git administrative state into an attributable bucket; `worktree-helper.sh recovery` and shared storage status report current/legacy count and bytes without deleting them | Keep all buckets protected with zero reclaimable bytes until an exact producer-specific plan proves them reclaimable |
+| `~/.aidevops/recovery/worktrees` (Linux and non-macOS) | framework | recovery, unknown | Archive-first removal copies worktree and Git administrative state into an attributable bucket; exact terminal evidence supports manual plans and bounded producer-owned automatic maintenance | Preserve exact-evidence deletion, bounded scans, resumable receipts, and fail-closed handling for every protected or unknown bucket |
 | Pulse active logs and `~/.aidevops/logs/pulse-archive` | framework | active, archive | Pulse preserves active descriptors while gzip-rotating 50 MiB hot/wrapper logs and 1 MiB timing logs; cold archives converge under 1 GiB | Keep rotation producer-owned and never replace it with generic unlink-by-age cleanup |
 | OpenCode data under its application-data root | joint | active, recovery, archive, unknown | OpenCode owns session and DB formats; aidevops archive/maintenance helpers coordinate selected operations | Separate logical retention from WAL/fragmentation maintenance; report only classifications proven through OpenCode-aware queries |
 | npm and other package-manager caches | external | cache | Package manager owns lifecycle | Context-only reporting; no aidevops aggregate deletion |
@@ -99,7 +99,7 @@ Older readers reject v2 and therefore fail closed without damaging an archive.
 Run `worktree-helper.sh recovery` for a read-only count/byte report with
 protected/unknown reasons. The same producer summary appears as one
 `worktree-recovery` record in shared storage status; `reclaimable_bytes` remains
-zero in this phase. On non-macOS systems, inventory also includes attributable
+zero because that aggregate report grants no deletion authority. On non-macOS systems, inventory also includes attributable
 legacy `$HOME/.Trash/aidevops-worktree-cleanup-*` buckets. Framework-owned
 default roots remain distinct from joint OS Trash or operator-selected roots.
 Incomplete, symlinked, unrecognised, or unsized buckets are `unknown`; inventory
@@ -178,7 +178,40 @@ transaction identities, confirmation binding, times, exact paths and archive
 identities, expected/observed bytes, and terminal outcomes. Replaying the same
 complete receipt is a no-op; a conflicting receipt or reservation fails closed. Protected,
 unknown, unrelated Trash, and newly created content remain untouched. This
-explicit command does not add age-based or automatic recovery deletion.
+explicit command remains the operator-reviewed apply path.
+
+Bounded automatic maintenance runs once after each successful asynchronous
+worktree cleanup cycle. It applies only to the default framework-owned recovery
+root on Linux and other non-macOS systems. macOS Trash, configured roots, and
+attributable legacy Trash buckets remain outside automatic mutation. The
+maintenance pass uses the same exact candidate classifier and apply transaction
+as the manual path; age or disk pressure only selects among candidates that have
+already satisfied every terminal, clean-state, identity, reference, and sizing
+requirement above.
+
+The default policy selects exact candidates after seven days, or earlier while
+the store exceeds 5 GiB, filesystem free space is below 10 GiB, or filesystem
+free space is below 10 percent. One pass scans at most 50 rotating inventory
+entries and applies at most 20 candidates or 5 GiB. A persistent cursor prevents
+large inventories from starving later entries. Operators may tune these soft
+limits with:
+
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_CANDIDATES`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_BYTES`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_STORE_BYTES`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT`
+
+Set `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_ENABLED=0` to disable the automatic
+pass. Invalid limits fall back to defaults. Maintenance uses a separate
+owner-validated lock and records a policy-bound `automatic-sha256:` authority in
+its plan, journal, and receipt; it never synthesizes the manual confirmation
+token. Pending transactions under the maintenance state directory resume before
+new inventory is scanned, while completed plans and receipts remain available
+for audit. A maintenance failure leaves the affected archive intact and does not
+turn a successful broader cleanup cycle into a failure.
 
 An originating OpenCode or Claude session identifier is recovery guidance, not
 deletion proof. Session history can reconstruct text edits and intent but may be

@@ -863,10 +863,111 @@ test_apply_handles_attributable_legacy_root_transaction() {
 	return 0
 }
 
+test_automatic_maintenance_is_bounded_and_policy_bound() {
+	local home_path="${TEST_DIR}/automatic-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local archive_a="" archive_b="" archive_protected=""
+	local bucket_a="" bucket_b="" protected_bucket=""
+	local output="" receipt_path="" removed_count=0
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	archive_a=$(create_archived_fixture "${TEST_DIR}/automatic-repo-a" \
+		"${TEST_DIR}/automatic-worktree-a" "$recovery_root" \
+		"bugfix/gh29832-automatic-a") || rc=1
+	archive_b=$(create_archived_fixture "${TEST_DIR}/automatic-repo-b" \
+		"${TEST_DIR}/automatic-worktree-b" "$recovery_root" \
+		"bugfix/gh29832-automatic-b") || rc=1
+	archive_protected=$(create_archived_fixture "${TEST_DIR}/automatic-repo-protected" \
+		"${TEST_DIR}/automatic-worktree-protected" "$recovery_root" \
+		"bugfix/gh29832-automatic-protected") || rc=1
+	bucket_a="${archive_a%/*}"
+	bucket_b="${archive_b%/*}"
+	protected_bucket="${archive_protected%/*}"
+	printf 'pending\n' >"${protected_bucket}/${_WT_RECOVERY_DIR_NAME}/source-removal-outcome" || rc=1
+	install_clear_evidence_stubs
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_STORE_BYTES=1 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_CANDIDATES=1 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "removed" ]] || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.removed')" == "1" ]] || rc=1
+	[[ -d "$protected_bucket" ]] || rc=1
+	[[ -d "$bucket_a" ]] && removed_count=$((removed_count + 0)) || removed_count=$((removed_count + 1))
+	[[ -d "$bucket_b" ]] && removed_count=$((removed_count + 0)) || removed_count=$((removed_count + 1))
+	[[ "$removed_count" -eq 1 ]] || rc=1
+	receipt_path=$(printf '%s\n' "$output" | jq -r '.receipt') || rc=1
+	jq -e --arg policy_id "$WORKTREE_RECOVERY_AUTOMATION_POLICY_ID" '
+		.complete == true and .candidate_count == 1 and
+		(.confirmation | startswith("automatic-sha256:")) and
+		.automatic_policy.policy_id == $policy_id and
+		.entries[0].maintenance.selected_reason == "pressure"
+	' "$receipt_path" >/dev/null || rc=1
+	print_result "automatic_maintenance_is_bounded_and_policy_bound" "$rc" \
+		"Expected pressure cleanup to remove one exact candidate and preserve protected evidence"
+	return 0
+}
+
+test_automatic_maintenance_resumes_interrupted_apply() {
+	local home_path="${TEST_DIR}/automatic-resume-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local archive_path="" bucket_path="" output=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	archive_path=$(create_archived_fixture "${TEST_DIR}/automatic-resume-repo" \
+		"${TEST_DIR}/automatic-resume-worktree" "$recovery_root" \
+		"bugfix/gh29832-automatic-resume") || rc=1
+	bucket_path="${archive_path%/*}"
+	install_clear_evidence_stubs
+	if (
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_MOVE=1 \
+			HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_STORE_BYTES=1 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			worktree_recovery_maintenance_run >/dev/null 2>&1
+	); then rc=1; fi
+	[[ -d "$state_dir/pending" && ! -e "$bucket_path" ]] || rc=1
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_STORE_BYTES=1 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "resumed-and-removed" ]] || rc=1
+	[[ ! -e "$bucket_path" && ! -d "$state_dir/pending" ]] || rc=1
+	print_result "automatic_maintenance_resumes_interrupted_apply" "$rc" \
+		"Expected the exact pending plan and journal to resume after interruption"
+	return 0
+}
+
 # shellcheck source=../audit-worktree-removal-helper.sh
 source "${SCRIPTS_DIR}/audit-worktree-removal-helper.sh"
 # shellcheck source=../worktree-recovery-lifecycle-helper.sh
 source "${SCRIPTS_DIR}/worktree-recovery-lifecycle-helper.sh"
+# shellcheck source=../worktree-recovery-maintenance-helper.sh
+source "${SCRIPTS_DIR}/worktree-recovery-maintenance-helper.sh"
 # shellcheck source=../worktree-helper-cmds.sh
 source "${SCRIPTS_DIR}/worktree-helper-cmds.sh"
 
@@ -888,5 +989,7 @@ test_receipt_reservation_blocks_conflicting_plan
 test_receipt_publication_owns_only_reserved_temp
 test_shared_producer_lock_fails_closed_and_reclaims_stale
 test_apply_handles_attributable_legacy_root_transaction
+test_automatic_maintenance_is_bounded_and_policy_bound
+test_automatic_maintenance_resumes_interrupted_apply
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

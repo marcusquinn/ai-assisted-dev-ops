@@ -71,14 +71,23 @@ Restore never overwrites an existing path. If restoration stops after creating a
 
 The recommended policy is `--older-than 14d --max-total-size 20G`. `prune` selects every archive older than the age limit, then oldest remaining archives until retained size is at or below the cap. It ignores malformed directories rather than deleting unverified data. Always inspect `--dry-run` output before using `--apply` in a manual operation.
 
-## Future pulse and worker integration
+## Pulse cleanup integration
 
-Pulse/worker integration is explicitly a follow-up after this standalone helper is verified. No cleanup path calls it yet.
+Pulse uses compact archives before removing dirty terminal worker worktrees and
+dirty generated auto/review worktrees that have reached their cleanup age. It
+passes the parsed repository and issue identity, archives with the
+`failed-worker` reason, and runs `verify` before guarded worktree removal. The
+branch remains as an additional recovery path.
 
-That follow-up may:
+Clean terminal and generated worktrees do not need a compact dirty-state
+archive; their existing branch-preservation path remains authoritative. When a
+dirty worktree lacks the repository or issue metadata required by this archive
+schema, Pulse retains the existing Git-stash recovery fallback rather than
+inventing metadata.
 
-- archive before deleting terminal failed worker worktrees that have no PR;
-- delete clean, pushed PR worktrees as disposable runtime cache;
-- prune compact archives and legacy full recovery worktrees by age and total-size caps.
-
-Continue preserving full worktrees for interactive/manual owners, security incidents, a `preserve-forensics` marker or label, repeated unexplained failures, and any archive or verification failure. Archive failure must stop only deletion of that worktree, not broader safe cleanup.
+Any compact archive creation or verification failure records a skipped cleanup
+event and preserves the dirty worktree and branch. The failure stops only that
+worktree's deletion and must not fall through to a less protective cleanup path
+or stop broader safe cleanup. Interactive/manual owners, security incidents, a
+`preserve-forensics` marker or label, repeated unexplained failures, and other
+protected evidence continue to retain full worktrees.

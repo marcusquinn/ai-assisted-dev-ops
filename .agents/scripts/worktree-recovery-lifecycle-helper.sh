@@ -18,6 +18,8 @@ WORKTREE_RECOVERY_PLAN_STATE_CLEAR="clear"
 WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT="exact"
 WORKTREE_RECOVERY_PLAN_JSON_NULL="null"
 WORKTREE_RECOVERY_PRODUCER="worktree-helper"
+WORKTREE_RECOVERY_AUTOMATION_POLICY_SCHEMA="aidevops.worktree-recovery-automation-policy/v1"
+WORKTREE_RECOVERY_AUTOMATION_POLICY_ID="bounded-terminal-evidence-v1"
 
 WORKTREE_RECOVERY_LIFECYCLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
 if [[ -f "$WORKTREE_RECOVERY_LIFECYCLE_DIR/shared-constants.sh" ]]; then
@@ -345,6 +347,38 @@ _worktree_recovery_plan_confirmation_token() {
 		"action=permanently-delete-exact-candidates") || return 1
 	confirmation_digest=$(_worktree_recovery_plan_sha256_text "$confirmation_material") || return 1
 	printf 'apply-sha256:%s\n' "$confirmation_digest"
+	return 0
+}
+
+_worktree_recovery_plan_automatic_token() {
+	local plan_id="$1"
+	local policy_json="$2"
+	local candidate_count="$3"
+	local candidate_bytes="$4"
+	local policy_digest=""
+	local authorization_material=""
+	local authorization_digest=""
+
+	[[ "$plan_id" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+	case "$candidate_count:$candidate_bytes" in
+	*[!0-9:]*) return 1 ;;
+	esac
+	printf '%s\n' "$policy_json" | jq -e --arg schema "$WORKTREE_RECOVERY_AUTOMATION_POLICY_SCHEMA" \
+		--arg policy_id "$WORKTREE_RECOVERY_AUTOMATION_POLICY_ID" \
+		'type == "object" and .schema == $schema and .policy_id == $policy_id' \
+		>/dev/null 2>&1 || return 1
+	policy_json=$(printf '%s\n' "$policy_json" | jq -cS '.') || return 1
+	policy_digest=$(_worktree_recovery_plan_sha256_text "$policy_json") || return 1
+	authorization_material=$(printf '%s\n' \
+		"schema=$WORKTREE_RECOVERY_PLAN_SCHEMA" \
+		"plan-id=$plan_id" \
+		"policy-id=$WORKTREE_RECOVERY_AUTOMATION_POLICY_ID" \
+		"policy-digest=sha256:$policy_digest" \
+		"candidate-count=$candidate_count" \
+		"candidate-bytes=$candidate_bytes" \
+		"action=automatically-delete-exact-terminal-candidates") || return 1
+	authorization_digest=$(_worktree_recovery_plan_sha256_text "$authorization_material") || return 1
+	printf 'automatic-sha256:%s\n' "$authorization_digest"
 	return 0
 }
 
