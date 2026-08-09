@@ -772,13 +772,69 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--daily-days", type=int, default=90, help="days to include in the daily usage summary; 0 disables")
 
 
-def cmd_data(args: argparse.Namespace) -> int:
-    reports = _collect_reports(args)
-    payload = {
-        "daily_usage": [as_dict(row) for row in _collect_daily_usage(args)],
-        "usage_by_session_kind": session_kind_summary(reports),
-        "sessions": [as_dict(row) for row in reports],
+def _compact_session(report: SessionReport) -> dict[str, Any]:
+    return {
+        "session_id": report.session_id,
+        "runtime": report.runtime,
+        "session_kind": report.session_kind,
+        "models_used": report.models_used,
+        "raw_tokens_total": report.raw_tokens_total,
+        "net_tokens_total": report.net_tokens_total,
+        "cost_usd": report.cost_usd,
+        "request_count": report.request_count,
+        "tool_call_count": report.tool_call_count,
+        "child_session_count": report.child_session_count,
+        "compaction_count": report.compaction_count,
+        "mcps_observed": report.mcps_observed,
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
     }
+
+
+def _evidence_coverage(reports: list[SessionReport]) -> dict[str, dict[str, int]]:
+    provenance_fields = {
+        "cost": "cost_provenance",
+        "lineage": "lineage_provenance",
+        "compaction": "compaction_provenance",
+    }
+    return {
+        name: {
+            "available_session_count": sum(getattr(report, field) != "unavailable" for report in reports),
+            "unavailable_session_count": sum(getattr(report, field) == "unavailable" for report in reports),
+        }
+        for name, field in provenance_fields.items()
+    }
+
+
+def _compact_data_payload(reports: list[SessionReport], daily_usage: list[DailyUsage]) -> dict[str, Any]:
+    return {
+        "summary": {
+            "session_count": len(reports),
+            "raw_tokens_total": sum(report.raw_tokens_total for report in reports),
+            "net_tokens_total": sum(report.net_tokens_total for report in reports),
+            "cost_usd": round(sum(report.cost_usd for report in reports), 6),
+            "evidence_coverage": _evidence_coverage(reports),
+        },
+        "configured_mcps": sorted({mcp for report in reports for mcp in report.mcps_active}),
+        "usage_by_session_kind": session_kind_summary(reports),
+        "sessions": [_compact_session(report) for report in reports],
+        "daily_usage": [as_dict(row) for row in daily_usage],
+    }
+
+
+def cmd_data(args: argparse.Namespace) -> int:
+    if args.daily_days is None:
+        args.daily_days = 0 if args.compact else 90
+    reports = _collect_reports(args)
+    daily_usage = _collect_daily_usage(args)
+    if args.compact:
+        payload = _compact_data_payload(reports, daily_usage)
+    else:
+        payload = {
+            "daily_usage": [as_dict(row) for row in daily_usage],
+            "usage_by_session_kind": session_kind_summary(reports),
+            "sessions": [as_dict(row) for row in reports],
+        }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
 
@@ -823,10 +879,13 @@ def main(argv: list[str] | None = None) -> int:
     report_parser.add_argument("--json", action="store_true", help="print artifact paths as JSON")
     report_parser.add_argument("--open", action="store_true", help="open the generated HTML report")
     report_parser.set_defaults(func=cmd_report)
-    data_parser = subparsers.add_parser("data", help="print raw session report data as JSON")
+    data_parser = subparsers.add_parser("data", help="print compact session report data as JSON")
     _add_common_args(data_parser)
     data_parser.add_argument("--json", action="store_true", help="accepted for command symmetry")
-    data_parser.set_defaults(func=cmd_data)
+    data_mode = data_parser.add_mutually_exclusive_group()
+    data_mode.add_argument("--compact", dest="compact", action="store_true", help="print the compact model-consumption schema (default)")
+    data_mode.add_argument("--full", dest="compact", action="store_false", help="print the complete legacy-compatible session schema")
+    data_parser.set_defaults(func=cmd_data, compact=True, daily_days=None)
     args = parser.parse_args(argv)
     if args.limit < 1:
         _die("--limit must be positive")

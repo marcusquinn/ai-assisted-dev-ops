@@ -205,7 +205,7 @@ SQL
 	AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_DB="${TEST_ROOT}/opencode.db" \
 		AIDEVOPS_REPORT_TOKEN_USE_OBS_DB="${TEST_ROOT}/llm-requests.db" \
 		AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_CONFIG="${TEST_ROOT}/opencode.json" \
-		"$HELPER_SH" data --limit 10 --daily-days 2000 --json >"$_json_path"
+		"$HELPER_SH" data --full --limit 10 --daily-days 2000 --json >"$_json_path"
 	assert_json_field "$_json_path" "usage_by_session_kind[1].session_kind" "headless_worker" "Report summarizes headless worker usage"
 	assert_json_field "$_json_path" "usage_by_session_kind[1].net_tokens_total" "45" "Report sums headless worker net tokens"
 	assert_json_field "$_json_path" "daily_usage[0].headless_worker_net_tokens_total" "45" "Report sums daily headless worker net tokens"
@@ -236,7 +236,7 @@ SQL
 	AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_DB="${TEST_ROOT}/opencode.db" \
 		AIDEVOPS_REPORT_TOKEN_USE_OBS_DB="${TEST_ROOT}/llm-requests.db" \
 		AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_CONFIG="${TEST_ROOT}/opencode.json" \
-		"$HELPER_SH" data --limit 10 --daily-days 2000 --json >"$_json_path"
+		"$HELPER_SH" data --full --limit 10 --daily-days 2000 --json >"$_json_path"
 	assert_session_field "$_json_path" "ses_obs_root" "child_session_count" "1" "Report uses observability child lineage"
 	assert_session_field "$_json_path" "ses_obs_root" "compaction_count" "1" "Report counts observability compaction agent"
 	assert_session_field "$_json_path" "ses_obs_root" "cost_usd" "0.6" "Report uses observability request costs"
@@ -295,6 +295,51 @@ PY
 	return 0
 }
 
+test_data_defaults_to_compact_schema() {
+	create_fixture_dbs
+	sqlite3 "${TEST_ROOT}/opencode.db" <<'SQL'
+INSERT INTO session VALUES ('ses_peer', NULL, 'Peer Session', '{"id":"gpt-5.5","providerID":"openai"}', 20, 5, 0, 5, 1, 0.05, 1700000200000, 1700000300000, NULL, '/repo', '/repo', 'Build+');
+SQL
+	local _compact_path="${TEST_ROOT}/compact.json"
+	local _full_path="${TEST_ROOT}/full.json"
+	AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_DB="${TEST_ROOT}/opencode.db" \
+		AIDEVOPS_REPORT_TOKEN_USE_OBS_DB="${TEST_ROOT}/llm-requests.db" \
+		AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_CONFIG="${TEST_ROOT}/opencode.json" \
+		"$HELPER_SH" data --limit 10 --daily-days 0 --json >"$_compact_path"
+	AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_DB="${TEST_ROOT}/opencode.db" \
+		AIDEVOPS_REPORT_TOKEN_USE_OBS_DB="${TEST_ROOT}/llm-requests.db" \
+		AIDEVOPS_REPORT_TOKEN_USE_OPENCODE_CONFIG="${TEST_ROOT}/opencode.json" \
+		"$HELPER_SH" data --full --limit 10 --daily-days 0 --json >"$_full_path"
+	assert_json_field "$_compact_path" "summary.session_count" "2" "Compact data includes aggregate session count"
+	assert_json_field "$_compact_path" "summary.net_tokens_total" "218" "Compact data includes aggregate tokens"
+	assert_json_field "$_compact_path" "summary.cost_usd" "0.4" "Compact data includes aggregate cost"
+	assert_json_field "$_compact_path" "summary.evidence_coverage.cost.available_session_count" "2" "Compact data includes evidence coverage"
+	assert_json_field "$_compact_path" "usage_by_session_kind[0].session_kind" "interactive" "Compact data retains routing fields"
+	assert_json_field "$_compact_path" "configured_mcps[0]" "context7" "Compact data emits configured MCPs once"
+	if python3 - "$_compact_path" "$_full_path" <<'PY'; then
+import json
+import sys
+from pathlib import Path
+
+compact_path, full_path = map(Path, sys.argv[1:])
+compact = json.loads(compact_path.read_text(encoding="utf-8"))
+full = json.loads(full_path.read_text(encoding="utf-8"))
+if "mcps_active" in compact["sessions"][0]:
+    raise SystemExit("compact session repeats configured MCPs")
+if "source_session_ids" in compact["sessions"][0]:
+    raise SystemExit("compact session includes full source session IDs")
+if set(full) != {"daily_usage", "usage_by_session_kind", "sessions"}:
+    raise SystemExit(f"full output schema changed: {sorted(full)}")
+if compact_path.stat().st_size >= full_path.stat().st_size:
+    raise SystemExit("compact output is not smaller than full output")
+PY
+		print_result "Compact data omits repeated invariant arrays and is smaller" 0
+	else
+		print_result "Compact data omits repeated invariant arrays and is smaller" 1
+	fi
+	return 0
+}
+
 main() {
 	setup_test_env
 	trap teardown_test_env EXIT
@@ -302,6 +347,7 @@ main() {
 	test_report_summarizes_headless_workers
 	test_report_uses_observability_cost_and_lineage
 	test_session_report_defaults_source_ids
+	test_data_defaults_to_compact_schema
 	printf '\nTests run: %d, failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then
 		return 1
