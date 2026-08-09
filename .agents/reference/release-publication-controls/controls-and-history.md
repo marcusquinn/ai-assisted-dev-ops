@@ -285,8 +285,8 @@ receipts are irreversible publication boundaries. The exact branch base is
   `4365863f8b7e0cabe30a62c39b92fba92e667408`; its signature footer prevented trailer parsing.
 - Aggregation PR #29745 re-reviews authorized dependency hardening PR #29721 at
   `d53b458a6ee82e3dccd922c3791b9f9f088efa8f`; its exact base is `ab6e6c01e4a957301359a9a7f05a268bb39ff118`.
-- The pending aggregation reviews authorized Buzz deployed dependency repair
-  PR #29839 at `81dd8d4639849695028987c3265ccd328b5842e1`; its exact base is
+- Aggregation PR #29841 reviews authorized Buzz deployed dependency repair PR
+  #29839 at `81dd8d4639849695028987c3265ccd328b5842e1`; its exact base is
   `d72e6f4054aa62ebe76e7bac38b7b169d055974c` after PR #29840 advanced `main`
   before publication.
 
