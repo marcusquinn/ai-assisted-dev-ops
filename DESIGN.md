@@ -263,6 +263,7 @@ Core component rules:
 - **Metadata:** use `#8b949e` at 12px; use `#6e7681` only for lowest-emphasis timestamps.
 - **Focus:** keyboard focus should use blue `#58a6ff` outline or border with at least 2px visible affordance.
 - **Provider and integration cards:** group by auth or service family, show provider/account counts, render recommendations with an explicit thumbs-up badge plus text, and keep connection controls metadata-only until audited write routes exist.
+- **Owner-reviewed team imports:** present immutable member snapshots as compact evidence cards with source and runtime digests; make the owner-review and no-delete boundary explicit, and never imply that relay-routed private AI executes on-device.
 
 ### Secrets and Vault access
 

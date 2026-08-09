@@ -203,7 +203,7 @@ Milestones are sequential. Features within a milestone may be parallelized only 
 | 4.2 | Replace unconditional ACP `allow_once` behavior with explicit fail-closed policy and owner/user approval mediation | pending | pending | brief first | | |
 | 4.3 | Add first-verified-initiator context to Buzz-created ACP session titles while preserving channel and aidevops suffix behavior | pending | pending | brief first | | |
 | 4.4 | Add stable external IDs, `managed_by`, managed fields, source version/hash, revision/CAS, dry-run diff, and supported apply semantics for agents and teams | pending | pending | brief first | | |
-| 4.5 | Deliver owner-reviewed aidevops team onboarding as the fallback until unattended apply satisfies all safety gates `[depends:F2.3] [depends:F2.5]` | pending | pending | brief first | | |
+| 4.5 | Deliver owner-reviewed aidevops team onboarding as the fallback until unattended apply satisfies all safety gates `[depends:F2.3] [depends:F2.5]` | t18222 | in progress | owner-reviewed create-only snapshot; unattended apply remains blocked | | |
 
 ### Milestone 5: App-specific teams, projects, and multi-machine execution
 
@@ -218,7 +218,7 @@ Milestones are sequential. Features within a milestone may be parallelized only 
 | 5.3 | Separate Project, Repository, Forge Adapter, Conversation Binding, and Execution Root; add provider capability negotiation `[depends:F1.1]` | pending | pending | brief first | | |
 | 5.4 | Add Buzz-native Git/NIP-34, GitLab, Gitea, and Forgejo adapters after the current GitHub implementation `[depends:F5.3]` | pending | pending | brief first | | |
 | 5.5 | Add runner-node registration, trust/capability profiles, active-passive leases, monotonic fencing, and stale-writer rejection | pending | pending | brief first | | |
-| 5.6 | Add optional Private PI to aidevops-managed Buzz configuration for private app-scoped onboarding guidance, reusable checklists, contextual ideas, and owner-reviewed onboarding-standard improvements, with restricted local-model capabilities and transparent AI identity `[depends:F4.5] [depends:F5.1] [depends:F5.5]` | pending | pending | brief first | | |
+| 5.6 | Add optional Private PI to aidevops-managed Buzz configuration for private app-scoped onboarding guidance, reusable checklists, contextual ideas, and owner-reviewed onboarding-standard improvements, with restricted local-model capabilities and transparent AI identity `[depends:F4.5] [depends:F5.1] [depends:F5.5]` | t18222 | in progress | bounded private profile in owner-reviewed snapshot | | |
 
 ### Milestone 6: Channels, forums, connectors, and delegated work
 

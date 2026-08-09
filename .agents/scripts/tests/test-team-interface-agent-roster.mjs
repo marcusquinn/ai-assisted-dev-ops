@@ -76,7 +76,7 @@ assert.equal(validate(liveRoster), true, JSON.stringify(validate.errors, null, 2
 
 const primaryAgents = liveRoster.agents.filter(({kind}) => kind === "primary");
 const frameworkGuides = liveRoster.agents.filter(({kind}) => kind === "framework_guide");
-assert.equal(primaryAgents.length, 13, "current source must expose 13 canonical primaries");
+assert.equal(primaryAgents.length, 14, "current source must expose 14 canonical primaries");
 assert.equal(frameworkGuides.length, 1);
 assert.equal(frameworkGuides[0].agent_id, "agent.aidevops-guide");
 assert.equal(frameworkGuides[0].workload_tier, "standard");
@@ -84,7 +84,7 @@ assert.deepEqual(
   primaryAgents.filter(({workload_tier}) => workload_tier === "thinking").map(({agent_id}) => agent_id).sort(),
   ["agent.content", "agent.pr", "agent.vault"],
 );
-assert.equal(primaryAgents.filter(({workload_tier}) => workload_tier === "standard").length, 10);
+assert.equal(primaryAgents.filter(({workload_tier}) => workload_tier === "standard").length, 11);
 assert.equal(new Set(liveRoster.agents.map(({agent_id}) => agent_id)).size, liveRoster.agents.length);
 assert.ok(liveRoster.agents.every(({source_ref: sourceRef}) => sourceRef.startsWith("agents:")));
 assert.ok(liveRoster.agents.every(({source_ref: sourceRef}) => !path.isAbsolute(sourceRef)));
