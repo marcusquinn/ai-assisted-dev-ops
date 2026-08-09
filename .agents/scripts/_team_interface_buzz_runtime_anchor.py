@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 
+from _team_interface_buzz_runtime_agents import copy_pinned_agents
 from _team_interface_buzz_runtime_config import (
     config_contains_private_fields,
     expected_command_payloads,
@@ -48,7 +49,6 @@ PINNED_NODE_PACKAGES = (
     "zod",
 )
 OPENCODE_PLUGIN_PACKAGES = {"@opencode-ai/plugin", "@opencode-ai/sdk", "zod"}
-PINNED_AGENT_EXCLUDED_PATHS = (Path("plugins/opencode-aidevops/node_modules"),)
 
 
 def git_common_node_modules():
@@ -128,31 +128,16 @@ def pinned_node_package_sources(config_source):
     return sources
 
 
-def hash_pinned_agents(source_agents, node_packages, ignored_agent_paths=()):
+def hash_pinned_agents(source_agents, node_packages):
     """Hash agent files and their closed runtime dependency set."""
     digest = hashlib.sha256()
-    digest.update(hash_runtime_tree(source_agents, ignored_agent_paths).encode("ascii"))
+    digest.update(hash_runtime_tree(source_agents).encode("ascii"))
     for package, source in sorted(node_packages.items()):
         digest.update(b"\0")
         digest.update(package.encode("utf-8"))
         digest.update(b"\0")
         digest.update(hash_runtime_tree(source).encode("ascii"))
     return digest.hexdigest()
-
-
-def pinned_agents_copy_ignore(source_agents):
-    """Return a copytree filter for transient and separately pinned dependency paths."""
-    transient_ignore = shutil.ignore_patterns(".DS_Store", "__pycache__", "*.pyc")
-
-    def ignore(directory, names):
-        ignored = set(transient_ignore(directory, names))
-        relative_directory = Path(directory).relative_to(source_agents)
-        for name in names:
-            if relative_directory / name in PINNED_AGENT_EXCLUDED_PATHS:
-                ignored.add(name)
-        return ignored
-
-    return ignore
 
 
 def opencode_config_source():
@@ -281,11 +266,6 @@ def materialize_pinned_runtime(profile):
     source_agents = AGENTS_DIR.resolve(strict=True)
     source_config = opencode_config_source()
     node_packages = pinned_node_package_sources(source_config)
-    agents_digest = hash_pinned_agents(
-        source_agents,
-        node_packages,
-        PINNED_AGENT_EXCLUDED_PATHS,
-    )
     config_digest = hash_opencode_config(source_config)
     parent = require_safe_directory_chain(
         Path.home() / ".aidevops" / "buzz-runtimes" / profile["id"]
@@ -293,33 +273,31 @@ def materialize_pinned_runtime(profile):
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     require_safe_directory_chain(parent)
     os.chmod(parent, 0o700)
-    root = parent / f"v{PINNED_RUNTIME_SCHEMA_VERSION}-{agents_digest[:16]}-{config_digest[:16]}"
-    pinned_agents = root / "agents"
-    expected_config = pinned_opencode_config(source_config, source_agents, pinned_agents)
-    expected_commands = expected_command_payloads(source_config, source_agents, pinned_agents)
-    expectation = {
-        "commands": expected_commands,
-        "config": expected_config,
-        "marker": {
-            "agents_digest": agents_digest,
-            "config_digest": config_digest,
-            "content_digest": pinned_content_digest(
-                agents_digest, expected_config, expected_commands
-            ),
-            "runtime_id": profile["id"],
-            "schema_version": PINNED_RUNTIME_SCHEMA_VERSION,
-        },
-    }
-    if root.exists() or root.is_symlink():
-        return validate_pinned_runtime(root, profile, expectation)
     staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=parent))
     try:
-        shutil.copytree(
-            source_agents,
-            staging / "agents",
-            symlinks=True,
-            ignore=pinned_agents_copy_ignore(source_agents),
+        copy_pinned_agents(source_agents, staging / "agents")
+        agents_digest = hash_pinned_agents(staging / "agents", node_packages)
+        root = parent / (
+            f"v{PINNED_RUNTIME_SCHEMA_VERSION}-{agents_digest[:16]}-{config_digest[:16]}"
         )
+        pinned_agents = root / "agents"
+        expected_config = pinned_opencode_config(source_config, source_agents, pinned_agents)
+        expected_commands = expected_command_payloads(source_config, source_agents, pinned_agents)
+        expectation = {
+            "commands": expected_commands,
+            "config": expected_config,
+            "marker": {
+                "agents_digest": agents_digest,
+                "config_digest": config_digest,
+                "content_digest": pinned_content_digest(
+                    agents_digest, expected_config, expected_commands
+                ),
+                "runtime_id": profile["id"],
+                "schema_version": PINNED_RUNTIME_SCHEMA_VERSION,
+            },
+        }
+        if root.exists() or root.is_symlink():
+            return validate_pinned_runtime(root, profile, expectation)
         for package, source in node_packages.items():
             shutil.copytree(
                 source,
