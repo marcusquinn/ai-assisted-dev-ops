@@ -131,20 +131,38 @@ shellcheck .agents/bin/aidevops-buzz-acp \
 
 ## Acceptance Criteria
 
-- [ ] A generated snapshot has fifteen unique members: exactly one
+- [x] A generated snapshot has fifteen unique members: exactly one
   `buzz-agent`/`relay-mesh`/`auto` Private AI member and fourteen unchanged
   `aidevops-interactive-v1` members without provider/model fields.
-- [ ] Every member is owner-only, parallelism one, has no portable memory, and
+- [x] Every member is owner-only, parallelism one, has no portable memory, and
   uses a deterministic distinct reviewed avatar.
-- [ ] A newly materialized runtime contains real OpenCode plugin/Zod schemas and
+- [x] A newly materialized runtime contains real OpenCode plugin/Zod schemas and
   completes ACP `initialize`, `session/new`, and `session/prompt` without
   ToolRegistry/schema errors.
-- [ ] Pinned config and manifests contain no persisted credential fields or
+- [x] Pinned config and manifests contain no persisted credential fields or
   fixture secret values; missing/mismatched dependencies fail before publish.
-- [ ] Existing Buzz identities, DMs, and threads are preserved during routine
+- [x] Existing Buzz identities, DMs, and threads are preserved during routine
   deployment; delete/recreate is not used as reconciliation.
-- [ ] Focused tests, ShellCheck, changed-file lint, required CI, exact-head
+- [x] Focused tests, ShellCheck, changed-file lint, required CI, exact-head
   review, merge, explicitly authorized patch release, and deployment complete.
+
+## Completion Evidence
+
+- PR #29834 merged as `7154023e58d74d28953088d5b073d512e792645c`
+  after required CI, CodeFactor, focused runtime suites, ShellCheck, changed-file
+  lint, and exact-head review passed.
+- Signed tag `v3.32.242` (`d49b1547d8767ed5506a79764567b35049d367ed`)
+  published through release run `31324617418`; GitHub, npm, and Homebrew
+  converged before the terminal `release:published` receipt was recorded.
+- Exact-tag OpenCode 1.18.9 ACP `initialize`, `session/new`, and
+  `session/prompt` passed from a non-Git cwd against immutable schema-v2 anchor
+  `v2-96d48a0453921853-00bb29b2b0f650ad`.
+- Buzz was quit cleanly, only the custom-harness manifest was replaced, the
+  previous manifest was backed up, and Buzz restarted without deleting or
+  recreating any agent or team identity.
+- Live deployment exposed that installed bundles keep framework dependencies at
+  `agents/node_modules` while source checkouts use repository `node_modules`.
+  The focused deployed-layout regression now covers both safe locations.
 
 ## Recovery
 
