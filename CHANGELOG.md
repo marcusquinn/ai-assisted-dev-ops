@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.246] - 2026-08-09
+
+### Fixed
+
+- omit empty launcher dry-run arguments (#29863)
+
 ## [3.32.245] - 2026-08-09
 
 ### Changed
