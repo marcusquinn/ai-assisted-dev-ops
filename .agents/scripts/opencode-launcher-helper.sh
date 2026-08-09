@@ -238,7 +238,7 @@ emit_tabby_current_directory() {
     local directory="$1"
 
     [[ "${directory}" != *$'\n'* && "${directory}" != *$'\r'* ]] || return 1
-    printf '\033]1337;CurrentDir=%s\007' "${directory}" >/dev/tty 2>/dev/null || true
+    printf '\033]1337;CurrentDir=%s\007' "${directory}" >/dev/tty || return 1
     return 0
 }
 
@@ -282,9 +282,13 @@ run_isolated_tui() {
     export AIDEVOPS_OPENCODE_ISOLATED_DB=1
     if ((tabby_shell == 1)); then
         export AIDEVOPS_TABBY_SESSION_RECOVERY=1
-        opencode "${opencode_args[@]}" || true
+        if ! opencode "${opencode_args[@]}"; then
+            : # Preserve the existing profile behavior: leave a shell open after any TUI exit.
+        fi
         cd "${launch_dir}" || return 1
-        emit_tabby_current_directory "${launch_dir}" || true
+        if ! emit_tabby_current_directory "${launch_dir}"; then
+            : # Shell startup will report the real project directory to Tabby.
+        fi
         exec /bin/zsh -l
         return 1
     fi
