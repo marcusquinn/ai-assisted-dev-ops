@@ -27,6 +27,7 @@ only after the helper has written the local evidence bundle.
 ~/.aidevops/agents/scripts/report-token-use-helper.sh report --session ses_abc123 --open
 ~/.aidevops/agents/scripts/report-token-use-helper.sh report --daily-days 90
 ~/.aidevops/agents/scripts/report-token-use-helper.sh data --json --since 7d
+~/.aidevops/agents/scripts/report-token-use-helper.sh data --full --json --since 7d
 ```
 
 ## Output Contract
@@ -38,6 +39,12 @@ only after the helper has written the local evidence bundle.
   `--open` is supplied.
 - Daily usage covers the last 90 days by default; use `--daily-days N` to change
   the window or `--daily-days 0` to disable it.
+- `data` defaults to a compact JSON schema for model consumption: aggregate token
+  and cost totals, session-kind routing, evidence coverage, one configured-MCP
+  list, and compact per-session rows. It omits daily history unless
+  `--daily-days N` is supplied.
+- Use `data --full` for the complete legacy-compatible JSON payload, including
+  per-session configured MCP arrays and the default 90-day daily series.
 
 ## Data Sources
 
