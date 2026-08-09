@@ -1243,7 +1243,6 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [ ] t18218 Move Cloudron monitor later and repair paginated release reads #bug ref:GH#29775
 - [ ] t18219 Persist maintainer role for organization-owned repositories #auto-dispatch #priority:high ref:GH#29785
 
-- [ ] t18222 Ship owner-reviewed Buzz interactive team runtime #agents #auto-dispatch #feat #framework #reliability #security ~8h tier:thinking ref:GH#29831 assignee:marcusquinn started:2026-08-08 logged:2026-08-09 -> [todo/tasks/t18222-brief.md]
 
 ## In Progress
 
@@ -1301,6 +1300,7 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 -->
 
 ## Done
+- [x] t18222 Ship owner-reviewed Buzz interactive team runtime #agents #auto-dispatch #feat #framework #reliability #security ~8h tier:thinking ref:GH#29831 assignee:marcusquinn started:2026-08-08 logged:2026-08-09 -> [todo/tasks/t18222-brief.md] pr:#29834 testing:runtime-verified completed:2026-08-09
 - [x] t18208 Generate restricted OpenCode conversation launch overlays #mission:m-20260804-5d06b1 #enhancement #security #framework #agents #interactive #auto-dispatch ~5h tier:thinking parent:t18201 ref:GH#29647 logged:2026-08-06 -> [todo/tasks/t18208-brief.md] pr:#29673 testing:runtime-verified completed:2026-08-07
 - [x] t18207 Refactor Matrix behind the team-interface contracts #mission:m-20260804-5d06b1 #enhancement #security #reliability #framework #interactive #auto-dispatch ~6h tier:thinking parent:t18201 ref:GH#29646 logged:2026-08-06 -> [todo/tasks/t18207-brief.md] pr:#29669 testing:runtime-verified completed:2026-08-07
 - [x] t18206 Prevent bodyless parent snapshots from closing incomplete trackers #bug #framework #pulse #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#29645 logged:2026-08-06 -> [todo/tasks/t18206-brief.md] pr:#29650 testing:self-assessed completed:2026-08-07

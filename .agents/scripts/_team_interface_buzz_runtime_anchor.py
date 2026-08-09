@@ -90,7 +90,10 @@ def pinned_node_package_sources(config_source):
             raise RuntimeError("AIDEVOPS_BUZZ_OPENCODE_NODE_MODULES_DIR must be absolute")
         opencode_candidates.append(configured_path)
     opencode_candidates.append(config_source / "node_modules")
-    framework_candidates = [AGENTS_DIR.parent / "node_modules"]
+    framework_candidates = [
+        AGENTS_DIR / "node_modules",
+        AGENTS_DIR.parent / "node_modules",
+    ]
     common_node_modules = git_common_node_modules()
     if common_node_modules is not None:
         framework_candidates.append(common_node_modules)

@@ -110,6 +110,62 @@ try {
     initialized_repos: [{path: projectRoot, slug: "example/project"}],
   })}\n`);
 
+  const deployedAgentsDirectory = path.join(fixtureRoot, "deployed-bundle/agents");
+  const deployedFrameworkModules = path.join(deployedAgentsDirectory, "node_modules");
+  const deployedOpenCodeConfig = path.join(fixtureRoot, "deployed-opencode-config");
+  const deployedOpenCodeModules = path.join(deployedOpenCodeConfig, "node_modules");
+  const frameworkPackages = [
+    "ajv", "fast-deep-equal", "fast-uri", "json-schema-traverse", "require-from-string",
+  ];
+  for (const packageName of frameworkPackages) {
+    const packageRoot = path.join(deployedFrameworkModules, packageName);
+    fs.mkdirSync(packageRoot, {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify({
+      name: packageName,
+      version: "1.0.0",
+    })}\n`);
+  }
+  for (const [packageName, manifest] of Object.entries({
+    "@opencode-ai/plugin": {
+      dependencies: {"@opencode-ai/sdk": "1.2.21", zod: "4.1.8"},
+      name: "@opencode-ai/plugin",
+      version: "1.2.21",
+    },
+    "@opencode-ai/sdk": {name: "@opencode-ai/sdk", version: "1.2.21"},
+    zod: {name: "zod", version: "4.1.8"},
+  })) {
+    const packageRoot = path.join(deployedOpenCodeModules, packageName);
+    fs.mkdirSync(packageRoot, {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(packageRoot, "package.json"), `${JSON.stringify(manifest)}\n`);
+  }
+  const deployedResolution = requireSuccess(spawnSync("python3", [
+    "-c",
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.join(agentsDirectory, "scripts"))})`,
+      "import _team_interface_buzz_runtime_anchor as anchor",
+      "anchor.AGENTS_DIR = Path(sys.argv[1])",
+      "sources = anchor.pinned_node_package_sources(Path(sys.argv[2]))",
+      "print(json.dumps({name: str(source) for name, source in sources.items()}, sort_keys=True))",
+    ].join("; "),
+    deployedAgentsDirectory,
+    deployedOpenCodeConfig,
+  ], {
+    encoding: "utf8",
+    env: Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => name !== "AIDEVOPS_BUZZ_OPENCODE_NODE_MODULES_DIR"),
+    ),
+  }), "deployed runtime dependency resolution");
+  const deployedSources = JSON.parse(deployedResolution.stdout);
+  for (const packageName of frameworkPackages) {
+    assert.equal(
+      deployedSources[packageName],
+      path.join(deployedFrameworkModules, packageName),
+      `deployed runtime did not resolve ${packageName} from agents/node_modules`,
+    );
+  }
+
   const sourceManifest = JSON.parse(fs.readFileSync(canonicalManifest, "utf8"));
   assert.deepEqual(Object.keys(sourceManifest).sort(), [
     "args", "command", "env", "id", "installHint", "installInstructionsUrl", "label",
