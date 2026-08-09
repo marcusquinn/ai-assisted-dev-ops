@@ -984,13 +984,16 @@ _handle_worker_dirty_worktree() {
 				--changed-paths "$status_summary" \
 				--recoverability "$_HRW_STATUS_CHECKPOINTED" 2>/dev/null || true
 		fi
-		_hrw_release_dispatch_claim "$session_key" "$_HRW_REASON_DRAFT_CHECKPOINT"
-		_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_DRAFT_CHECKPOINT"
-		_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
-		_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
-		_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
-		_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_REASON_DRAFT_CHECKPOINT"
-		print_info "[lifecycle] worker_dirty_worktree_checkpointed session=${session_key} branch=${branch_name:-<none>}"
+		_escalate_worker_pr_checkpoint "$session_key" "$repo_slug" "draft_checkpoint"
+		if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_DRAFT_CHECKPOINT" ]]; then
+			_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
+			_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
+			_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
+			_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_REASON_DRAFT_CHECKPOINT"
+			print_info "[lifecycle] worker_dirty_worktree_checkpointed session=${session_key} branch=${branch_name:-<none>}"
+		else
+			_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_RECOVERY_CLASSIFICATION"
+		fi
 		return 0
 	fi
 

@@ -171,6 +171,35 @@ test_sensitive_temp_preflight_skips_fast_fail_state() {
 	return 0
 }
 
+test_signing_preflight_skips_fast_fail_state() {
+	reset_observations
+	: >"$LOGFILE"
+	printf '{"exampleorg/examplerepo/4005":{"count":2,"ts":1,"reason":"prior","retry_after":1,"backoff_secs":600}}\n' >"$FAST_FAIL_STATE_FILE"
+
+	_fast_fail_record_locked "4005" "exampleorg/examplerepo" \
+		"worker_signing_unavailable" "anthropic" "no_work"
+	_log_no_work_skip_escalation "4005" "exampleorg/examplerepo" "3" \
+		"worker_signing_unavailable" >/dev/null 2>&1
+
+	local count=""
+	count=$(jq -r '."exampleorg/examplerepo/4005".count' "$FAST_FAIL_STATE_FILE" 2>/dev/null) || count=""
+	if [[ "$count" != "2" ]]; then
+		fail "signing preflight skip preserves counter" "count: ${count:-unset}"
+		return 0
+	fi
+	if [[ "$BREAKER_CALLS" -ne 0 ]]; then
+		fail "signing preflight skip avoids tier escalation" \
+			"breaker payload: ${LAST_BREAKER_PAYLOAD}"
+		return 0
+	fi
+	if ! grep -q 'skipped launch/preflight reason=worker_signing_unavailable' "$LOGFILE" 2>/dev/null; then
+		fail "signing preflight skip logs reason" "log: $(tr '\n' ' ' <"$LOGFILE")"
+		return 0
+	fi
+	pass "signing preflight failures do not accrue fast-fail state"
+	return 0
+}
+
 test_postlaunch_noop_still_applies_structural_breaker() {
 	reset_observations
 	_log_no_work_skip_escalation \
@@ -193,6 +222,7 @@ test_prelaunch_reason_skips_breaker
 test_worker_launch_rc_2_skips_breaker
 test_launch_preflight_reason_skips_fast_fail_state
 test_sensitive_temp_preflight_skips_fast_fail_state
+test_signing_preflight_skips_fast_fail_state
 test_postlaunch_noop_still_applies_structural_breaker
 
 printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"

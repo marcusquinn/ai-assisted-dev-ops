@@ -550,6 +550,10 @@ ${machine_readable_part}
 		print_info "Preserving live issue ownership for #${issue_number} after worker ownership loss"
 		return 0
 	fi
+	if [[ "$reason" == "${_HRW_REASON_DRAFT_CHECKPOINT:-worker_draft_checkpoint}" ]]; then
+		print_info "Preserving issue ownership and review state for draft checkpoint #${issue_number}"
+		return 0
+	fi
 
 	# t2420: clear active-lifecycle status labels + worker assignment so the
 	# pulse's combined-signal dedup guard (t1996) doesn't treat the issue
@@ -946,7 +950,7 @@ _hrff_retry_class_for_reason() {
 		worker_claim_ready_transition_failed)
 		printf '%s\n' "$_HRFF_RETRY_CLASS_INFRASTRUCTURE"
 		;;
-	permission_required | awaiting_maintainer_permission)
+	permission_required | awaiting_maintainer_permission | worker_signing_unavailable)
 		printf '%s\n' "$_HRFF_RETRY_CLASS_MAINTAINER_GATE"
 		;;
 	worker_complete | worker_draft_checkpoint)
@@ -1094,12 +1098,20 @@ _hrff_finalize_exit_trap() {
 	local session_count="$4"
 	local force_nonzero_exit="$5"
 	local checkpoint_reason="${_HRW_REASON_DRAFT_CHECKPOINT:-worker_draft_checkpoint}"
+	local claim_release_handled=0
 
 	print_info "[exit-trap] session=$session_key exit=$exit_status reason=$reason session_count=$session_count"
 	_push_wip_commits_on_exit
 	if [[ "${_WORKER_DIRTY_WORK_PRESERVED:-0}" == "1" ]]; then
 		if _recover_dirty_worker_pr "$session_key"; then
-			reason="$checkpoint_reason"
+			if declare -F _escalate_worker_pr_checkpoint >/dev/null 2>&1; then
+				_escalate_worker_pr_checkpoint "$session_key" "${DISPATCH_REPO_SLUG:-}" "draft_checkpoint"
+				reason="${_HRW_RECOVERY_CLASSIFICATION:-worker_draft_checkpoint_escalation_failed}"
+			else
+				reason="worker_draft_checkpoint_escalation_failed"
+				print_warning "[exit-trap] checkpoint escalation helper unavailable; retaining claim for session=${session_key}"
+			fi
+			claim_release_handled=1
 		else
 			reason="worker_dirty_work_preserved"
 		fi
@@ -1126,7 +1138,8 @@ _hrff_finalize_exit_trap() {
 	if declare -F _cleanup_headless_runtime_temp_paths >/dev/null 2>&1; then
 		_cleanup_headless_runtime_temp_paths
 	fi
-	if ! _release_dispatch_claim "$session_key" "$reason" "$exit_status" "$session_count"; then
+	if [[ "$claim_release_handled" -eq 0 ]] && \
+		! _release_dispatch_claim "$session_key" "$reason" "$exit_status" "$session_count"; then
 		print_warning "[exit-trap] claim release persistence remains retryable for session=${session_key} reason=${reason}"
 	fi
 	_release_session_lock "$session_key"

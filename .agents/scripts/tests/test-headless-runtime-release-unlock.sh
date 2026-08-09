@@ -222,6 +222,19 @@ else
 fi
 
 : >"$CALL_LOG"
+rm -f "${TMP_HOME}/comment-attempts"
+_release_dispatch_claim "issue-12345" "worker_draft_checkpoint" "1" "0"
+if grep -q 'CLAIM_RELEASED reason=worker_draft_checkpoint' "$CALL_LOG" && \
+	grep -q 'Preserving issue ownership and review state for draft checkpoint #12345' "$CALL_LOG" && \
+	! grep -q '^CLEAR ' "$CALL_LOG" && ! grep -q '^UNLOCK ' "$CALL_LOG"; then
+	printf 'PASS draft-checkpoint release preserves assignment and review state\n'
+else
+	printf 'FAIL draft-checkpoint release cleared continuation ownership\n'
+	sed 's/^/  /' "$CALL_LOG"
+	exit 1
+fi
+
+: >"$CALL_LOG"
 GH_UNLOCK_MODE=already_unlocked _unlock_issue_after_dispatch_release "12345" "owner/repo"
 if grep -q 'INFO Release unlock skipped for GitHub issue #12345 in owner/repo: already unlocked' "$CALL_LOG" &&
 	! grep -q 'WARN Failed to unlock released' "$CALL_LOG"; then

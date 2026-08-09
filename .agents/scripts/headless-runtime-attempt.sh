@@ -17,6 +17,7 @@
 
 [[ -n "${_HEADLESS_RUNTIME_ATTEMPT_LOADED:-}" ]] && return 0
 _HEADLESS_RUNTIME_ATTEMPT_LOADED=1
+_HEADLESS_SIGNING_TRUE="true"
 
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_attempt_lib_path="${BASH_SOURCE[0]%/*}"
@@ -35,6 +36,82 @@ _report_run_attempt_prelaunch_failure() {
 	_run_failure_reason="$failure_reason"
 	print_error "[lifecycle] ${failure_site} failed rc=${failure_status} session=${session_key}"
 	return 0
+}
+
+# Verify that a worker can create a signed commit without prompting before any
+# model tokens are spent. commit-tree exercises Git's effective signing config
+# without moving refs or changing the worktree.
+_headless_worker_signing_commit_probe() {
+	local work_dir="$1"
+	local tree_id=""
+	tree_id=$(git -C "$work_dir" rev-parse 'HEAD^{tree}' 2>/dev/null) || return 1
+	GIT_TERMINAL_PROMPT=0 \
+		SSH_ASKPASS=/usr/bin/false \
+		SSH_ASKPASS_REQUIRE=force \
+		DISPLAY=aidevops-headless \
+		git -C "$work_dir" commit-tree "$tree_id" \
+			-m "aidevops headless signing preflight" </dev/null >/dev/null 2>&1 || return 1
+	return 0
+}
+
+_append_headless_worker_git_config_env() {
+	local config_key="$1"
+	local config_value="$2"
+	local config_count="${GIT_CONFIG_COUNT:-0}"
+	[[ "$config_count" =~ ^[0-9]+$ ]] || return 1
+	export "GIT_CONFIG_KEY_${config_count}=${config_key}"
+	export "GIT_CONFIG_VALUE_${config_count}=${config_value}"
+	export GIT_CONFIG_COUNT=$((config_count + 1))
+	return 0
+}
+
+# Keep the user's passphrase-protected interactive key as the global Git
+# default. Worker processes receive the dedicated signing-only key through
+# process-scoped Git config inherited by the runtime and exit-trap Git commands.
+_configure_headless_worker_signing_env() {
+	local work_dir="$1"
+	[[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" == "1" ]] && return 0
+	local signing_required=""
+	signing_required=$(git -C "$work_dir" config --bool commit.gpgsign 2>/dev/null || true)
+	[[ "$signing_required" == "$_HEADLESS_SIGNING_TRUE" ]] || return 0
+	local signing_public_key="${AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY:-${HOME}/.ssh/id_ed25519_signing.pub}"
+	[[ -r "$signing_public_key" ]] || return 1
+	_append_headless_worker_git_config_env "gpg.format" "ssh" || return 1
+	_append_headless_worker_git_config_env "user.signingkey" "$signing_public_key" || return 1
+	_append_headless_worker_git_config_env "commit.gpgsign" "$_HEADLESS_SIGNING_TRUE" || return 1
+	export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
+	return 0
+}
+
+# Self-heal a stopped headless ssh-agent when its dedicated key already exists,
+# then fail closed with an operator-actionable reason if signing still cannot
+# run noninteractively. Signing setup/key generation remains terminal-only.
+_prepare_headless_worker_signing() {
+	local work_dir="$1"
+	local signing_required=""
+	local signing_helper="${AIDEVOPS_SIGNING_SETUP_HELPER:-${SCRIPT_DIR}/signing-setup.sh}"
+	local signing_key="${AIDEVOPS_HEADLESS_SIGNING_KEY:-${HOME}/.ssh/id_ed25519_signing}"
+	local agent_env="${AIDEVOPS_SSH_AGENT_ENV:-${HOME}/.ssh/agent.env}"
+
+	signing_required=$(git -C "$work_dir" config --bool commit.gpgsign 2>/dev/null || true)
+	[[ "$signing_required" == "$_HEADLESS_SIGNING_TRUE" ]] || return 0
+	if [[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" != "1" ]]; then
+		print_error "[lifecycle] dedicated headless signing configuration is unavailable; run 'aidevops signing headless-setup' directly in a terminal"
+		return 1
+	fi
+	_headless_worker_signing_commit_probe "$work_dir" && return 0
+
+	if [[ -f "$signing_key" && -x "$signing_helper" ]]; then
+		"$signing_helper" agent-start >/dev/null 2>&1 || true
+		if [[ -r "$agent_env" ]]; then
+			# shellcheck source=/dev/null
+			. "$agent_env" >/dev/null 2>&1 || true
+		fi
+		_headless_worker_signing_commit_probe "$work_dir" && return 0
+	fi
+
+	print_error "[lifecycle] headless commit signing is unavailable; run 'aidevops signing headless-setup' directly in a terminal, then 'aidevops signing agent-start'"
+	return 1
 }
 
 # Resolve prompt transport, provider/session state, and the runtime command.
@@ -185,6 +262,24 @@ _configure_run_attempt_context() {
 		printf '11' >"$exit_code_file" 2>/dev/null || true
 		exit_code=11
 		return 11
+	fi
+	if [[ "$role" == "worker" ]]; then
+		if ! _configure_headless_worker_signing_env "$work_dir"; then
+			_report_run_attempt_prelaunch_failure \
+				"_configure_run_attempt_context.configure_headless_signing" 87 \
+				"worker_signing_unavailable"
+			printf '87' >"$exit_code_file" 2>/dev/null || true
+			exit_code=87
+			return 87
+		fi
+		if ! _prepare_headless_worker_signing "$work_dir"; then
+			_report_run_attempt_prelaunch_failure \
+				"_configure_run_attempt_context.prepare_headless_signing" 87 \
+				"worker_signing_unavailable"
+			printf '87' >"$exit_code_file" 2>/dev/null || true
+			exit_code=87
+			return 87
+		fi
 	fi
 	return 0
 }

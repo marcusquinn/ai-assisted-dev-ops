@@ -1294,6 +1294,7 @@ _worker_failure_reason_is_launch_preflight() {
 	worker_worktree_continuation_* | \
 	worker_worktree_owner_concurrent_mutation | \
 	worker_runtime_not_invoked | \
+	worker_signing_unavailable | \
 	worker_sensitive_temp_preflight_failed | \
 	worker_ledger_ready_failed | \
 	worker_claim_ready_transition_failed | \

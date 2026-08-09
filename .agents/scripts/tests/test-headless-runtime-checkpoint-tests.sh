@@ -226,7 +226,11 @@ test_dirty_worktree_checkpoint_is_deferred_not_complete() {
 			runner_identity_key() { printf 'runner-fixture'; return 0; }
 			_push_wip_commits_on_exit() { return 0; }
 			_recover_dirty_worker_pr() { return 0; }
-			_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
+			_escalate_worker_pr_checkpoint() {
+				_HRW_RECOVERY_CLASSIFICATION="worker_draft_checkpoint"
+				printf 'escalate=%s\n' "$3"
+				return 0
+			}
 
 			_handle_worker_dirty_worktree "manual-cli-28313-1784593858" "$TEST_ROOT"
 			printf 'terminal=%s|event=%s|status=%s|classification=%s|recovery=%s\n' \
@@ -236,7 +240,7 @@ test_dirty_worktree_checkpoint_is_deferred_not_complete() {
 		)
 	)
 
-	if [[ "$result" == *"release=worker_draft_checkpoint"* && \
+	if [[ "$result" == *"escalate=draft_checkpoint"* && \
 		"$result" == *"terminal=deferred|event=worker.deferred|status=checkpointed|classification=worker_draft_checkpoint|recovery=worker_draft_checkpoint"* && \
 		"$result" != *"release=worker_complete"* ]]; then
 		print_result "dirty-worktree checkpoint is deferred preserved progress, never completion" 0
@@ -253,6 +257,11 @@ test_exit_trap_dirty_checkpoint_is_deferred_not_complete() {
 			_WORKER_DIRTY_WORK_PRESERVED=1
 			_push_wip_commits_on_exit() { return 0; }
 			_recover_dirty_worker_pr() { return 0; }
+			_escalate_worker_pr_checkpoint() {
+				_HRW_RECOVERY_CLASSIFICATION="worker_draft_checkpoint"
+				printf 'escalate=%s\n' "$3"
+				return 0
+			}
 			_emit_worker_runtime_event() {
 				printf 'event=%s|status=%s|classification=%s\n' "$1" "$2" "$3"
 				return 0
@@ -262,7 +271,7 @@ test_exit_trap_dirty_checkpoint_is_deferred_not_complete() {
 				return 0
 			}
 			_cleanup_headless_runtime_temp_paths() { return 0; }
-			_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
+			_release_dispatch_claim() { printf 'unexpected-release=%s\n' "$2"; return 0; }
 			_release_session_lock() { return 0; }
 			_update_dispatch_ledger() { return 0; }
 			aidevops_runtime_bundle_lease_release() { return 0; }
@@ -274,7 +283,8 @@ test_exit_trap_dirty_checkpoint_is_deferred_not_complete() {
 
 	if [[ "$result" == *"event=worker.deferred|status=checkpointed|classification=worker_draft_checkpoint"* && \
 		"$result" == *"terminal=deferred|reason=worker_draft_checkpoint"* && \
-		"$result" == *"release=worker_draft_checkpoint"* && \
+		"$result" == *"escalate=draft_checkpoint"* && \
+		"$result" != *"unexpected-release="* && \
 		"$result" != *"worker_complete"* ]]; then
 		print_result "exit-trap dirty checkpoint emits deferred preserved progress, never completion" 0
 	else

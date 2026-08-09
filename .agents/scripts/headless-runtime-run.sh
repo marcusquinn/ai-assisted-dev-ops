@@ -198,6 +198,7 @@ _resolve_capability_escalation() {
 # Handle attempt results that always terminate or immediately escalate.
 _handle_cmd_run_terminal_attempt() {
 	local finish_status=0
+	local signing_unavailable_result="worker_signing_unavailable"
 	case "$attempt_exit" in
 	0)
 		clear_startup_no_model_feedback "$selected_model"
@@ -210,6 +211,13 @@ _handle_cmd_run_terminal_attempt() {
 		_run_result_label="$_HRW_REASON_OWNERSHIP_LOST"
 		_hrw_record_terminal_outcome "$session_key" "$_HRW_TELEMETRY_FAILED" "$_HRW_REASON_OWNERSHIP_LOST"
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL" "$work_dir"
+		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_RETURN"
+		_cmd_run_return_status=1
+		;;
+	87)
+		_run_failure_reason="$signing_unavailable_result"
+		_run_result_label="$signing_unavailable_result"
+		_hrw_record_terminal_outcome "$session_key" "$_HRW_TELEMETRY_FAILED" "$signing_unavailable_result"
 		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_RETURN"
 		_cmd_run_return_status=1
 		;;

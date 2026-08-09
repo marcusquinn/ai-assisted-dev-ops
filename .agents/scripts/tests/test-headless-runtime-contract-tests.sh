@@ -245,6 +245,145 @@ test_run_attempt_command_reports_cwd_recovery_failure() {
 	return 0
 }
 
+test_worker_signing_preflight_skips_unsigned_repositories() {
+	local probe_called=0
+	(
+		git() {
+			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'false\n'
+			return 0
+		}
+		_headless_worker_signing_commit_probe() { probe_called=1; return 1; }
+		_prepare_headless_worker_signing "$TEST_ROOT"
+		printf '%s\n' "$probe_called"
+	) >"${TEST_ROOT}/signing-preflight-skip"
+	if [[ "$(<"${TEST_ROOT}/signing-preflight-skip")" == "0" ]]; then
+		print_result "worker signing preflight skips repositories without required signing" 0
+	else
+		print_result "worker signing preflight skips repositories without required signing" 1
+	fi
+	return 0
+}
+
+test_worker_signing_config_is_process_scoped_and_idempotent() {
+	local signing_public_key="${TEST_ROOT}/worker-signing-key.pub"
+	printf '%s\n' 'ssh-ed25519 AAAAC3NzaWorkerFixture aidevops-headless-signing' >"$signing_public_key"
+	local result=""
+	result=$(
+		git() {
+			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'true\n'
+			return 0
+		}
+		unset _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED 2>/dev/null || true
+		export GIT_CONFIG_COUNT=1
+		export GIT_CONFIG_KEY_0="http.sslVerify"
+		export GIT_CONFIG_VALUE_0="true"
+		AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY="$signing_public_key" \
+			_configure_headless_worker_signing_env "$TEST_ROOT"
+		AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY="$signing_public_key" \
+			_configure_headless_worker_signing_env "$TEST_ROOT"
+		printf '%s|%s=%s|%s=%s|%s=%s|%s=%s\n' \
+			"$GIT_CONFIG_COUNT" \
+			"$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0" \
+			"$GIT_CONFIG_KEY_1" "$GIT_CONFIG_VALUE_1" \
+			"$GIT_CONFIG_KEY_2" "$GIT_CONFIG_VALUE_2" \
+			"$GIT_CONFIG_KEY_3" "$GIT_CONFIG_VALUE_3"
+	)
+	if [[ "$result" == "4|http.sslVerify=true|gpg.format=ssh|user.signingkey=${signing_public_key}|commit.gpgsign=true" ]]; then
+		print_result "worker signing key uses idempotent process-scoped Git configuration" 0
+	else
+		print_result "worker signing key uses idempotent process-scoped Git configuration" 1 "$result"
+	fi
+	return 0
+}
+
+test_worker_signing_config_requires_dedicated_key_for_signed_repositories() {
+	local status=0
+	(
+		git() {
+			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'true\n'
+			return 0
+		}
+		unset _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED 2>/dev/null || true
+		AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY="${TEST_ROOT}/missing-worker-signing-key.pub" \
+			_configure_headless_worker_signing_env "$TEST_ROOT"
+	) || status=$?
+	if [[ "$status" -eq 1 ]]; then
+		print_result "signed repositories require the dedicated headless public key" 0
+	else
+		print_result "signed repositories require the dedicated headless public key" 1 "status=$status"
+	fi
+	return 0
+}
+
+test_worker_signing_preflight_self_heals_agent_once() {
+	local signing_root="${TEST_ROOT}/signing-self-heal"
+	local signing_helper="${signing_root}/signing-helper.sh"
+	local signing_key="${signing_root}/headless-key"
+	local setup_marker="${signing_root}/setup-called"
+	mkdir -p "$signing_root"
+	: >"$signing_key"
+	# shellcheck disable=SC2016 # generated fixture expands the marker at execution time
+	printf '%s\n' '#!/usr/bin/env bash' ': >"${AIDEVOPS_SIGNING_TEST_MARKER:?}"' >"$signing_helper"
+	chmod 700 "$signing_helper"
+	local result="" status=0
+	result=$(
+		local probe_count=0
+		export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
+		git() {
+			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'true\n'
+			return 0
+		}
+		_headless_worker_signing_commit_probe() {
+			probe_count=$((probe_count + 1))
+			[[ "$probe_count" -eq 2 ]]
+			return $?
+		}
+		AIDEVOPS_SIGNING_SETUP_HELPER="$signing_helper" \
+			AIDEVOPS_HEADLESS_SIGNING_KEY="$signing_key" \
+			AIDEVOPS_SIGNING_TEST_MARKER="$setup_marker" \
+			_prepare_headless_worker_signing "$TEST_ROOT"
+		printf 'probes=%s setup=%s\n' "$probe_count" "$([[ -f "$setup_marker" ]] && printf yes || printf no)"
+	) || status=$?
+	if [[ "$status" -eq 0 && "$result" == "probes=2 setup=yes" ]]; then
+		print_result "worker signing preflight restarts an existing headless signing key once" 0
+	else
+		print_result "worker signing preflight restarts an existing headless signing key once" 1 \
+			"status=$status result=${result:-<empty>}"
+	fi
+	return 0
+}
+
+test_worker_signing_preflight_fails_before_runtime_attempt() {
+	local detail="" status=0
+	detail=$(
+		exec 2>&1
+		export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
+		git() {
+			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'true\n'
+			return 0
+		}
+		_headless_worker_signing_commit_probe() { return 1; }
+		AIDEVOPS_HEADLESS_SIGNING_KEY="${TEST_ROOT}/missing-signing-key" \
+			_prepare_headless_worker_signing "$TEST_ROOT"
+	) || status=$?
+	if [[ "$status" -eq 1 && "$detail" == *"aidevops signing headless-setup"* ]]; then
+		print_result "worker signing preflight fails before model launch with terminal-only setup guidance" 0
+	else
+		print_result "worker signing preflight fails before model launch with terminal-only setup guidance" 1 \
+			"status=$status detail=${detail:-<empty>}"
+	fi
+	return 0
+}
+
+run_worker_signing_contract_tests() {
+	test_worker_signing_preflight_skips_unsigned_repositories
+	test_worker_signing_config_is_process_scoped_and_idempotent
+	test_worker_signing_config_requires_dedicated_key_for_signed_repositories
+	test_worker_signing_preflight_self_heals_agent_once
+	test_worker_signing_preflight_fails_before_runtime_attempt
+	return 0
+}
+
 test_sensitive_temp_preflight_aborts_before_worker_ownership() {
 	local unsafe_parent="${TEST_ROOT}/unsafe-sensitive-parent"
 	local ownership_marker="${TEST_ROOT}/ownership-called"

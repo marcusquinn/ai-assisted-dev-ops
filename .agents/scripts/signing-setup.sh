@@ -47,6 +47,22 @@ _print_error() {
 	return 0
 }
 
+_source_signing_agent_env() {
+	[[ -r "$SSH_AGENT_ENV" ]] || return 0
+	# shellcheck source=/dev/null
+	. "$SSH_AGENT_ENV" >/dev/null 2>&1 || true
+	return 0
+}
+
+_headless_signing_key_loaded() {
+	[[ -r "$SSH_KEY_HEADLESS_PUB" ]] || return 1
+	local expected_key=""
+	expected_key=$(<"$SSH_KEY_HEADLESS_PUB") || return 1
+	[[ -n "$expected_key" ]] || return 1
+	ssh-add -L 2>/dev/null | grep -qxF "$expected_key"
+	return $?
+}
+
 # Check current signing setup
 cmd_check() {
 	echo "Checking git commit signing configuration..."
@@ -66,6 +82,12 @@ cmd_check() {
 
 	if [[ "$gpg_format" == "ssh" && "$signing_key" != "not set" && "$commit_sign" == "true" ]]; then
 		_print_ok "SSH commit signing is configured"
+		if [[ "$signing_key" == "$SSH_KEY_HEADLESS_PUB" ]]; then
+			_print_warn "Default Git signing uses the passphrase-less headless key"
+			echo "Run 'aidevops signing setup' to restore the passphrase-protected interactive key; workers use the headless key through process-scoped config."
+		else
+			_print_ok "Default Git signing key is separate from the headless worker key"
+		fi
 
 		if [[ -f "$ALLOWED_SIGNERS_FILE" ]]; then
 			_print_ok "Allowed signers file exists: $ALLOWED_SIGNERS_FILE"
@@ -82,8 +104,9 @@ cmd_check() {
 	echo "Headless worker signing key:"
 	if [[ -f "$SSH_KEY_HEADLESS" ]]; then
 		_print_ok "Passphrase-less signing key exists: $SSH_KEY_HEADLESS"
+		_source_signing_agent_env
 		# Check if key is loaded in ssh-agent
-		if ssh-add -l 2>/dev/null | grep -qF "$SSH_KEY_HEADLESS"; then
+		if _headless_signing_key_loaded; then
 			_print_ok "Key is loaded in ssh-agent"
 		else
 			_print_warn "Key not loaded in ssh-agent — run: aidevops signing agent-start"
@@ -189,12 +212,17 @@ cmd_headless_setup() {
 		_print_ok "Generated: $SSH_KEY_HEADLESS"
 	fi
 
-	# Configure git to use the headless signing key
-	git config --global gpg.format ssh
-	git config --global user.signingkey "$SSH_KEY_HEADLESS_PUB"
-	git config --global commit.gpgsign true
-	git config --global tag.gpgsign true
-	_print_ok "Git configured to use headless signing key"
+	# Do not replace the user's interactive signing key. Headless runtimes inject
+	# this dedicated key through process-scoped Git configuration.
+	local default_signing_key=""
+	default_signing_key=$(git config --global user.signingkey 2>/dev/null || true)
+	if [[ "$default_signing_key" == "$SSH_KEY_HEADLESS_PUB" ]]; then
+		_print_warn "Default Git signing still points to the headless key"
+		echo "After updating aidevops, run 'aidevops signing setup' to restore the passphrase-protected interactive key."
+	else
+		_print_ok "Preserved default interactive Git signing key"
+	fi
+	_print_ok "Headless runtimes will apply the dedicated key with process-scoped Git config"
 
 	# Add to allowed_signers
 	local key_content
@@ -238,7 +266,8 @@ cmd_headless_setup() {
 	echo "     Key: $(cat "$SSH_KEY_HEADLESS_PUB")"
 	echo "  2. Add agent-start to your shell profile or cron environment:"
 	echo "     aidevops signing agent-start"
-	echo "  3. Verify: git log --show-signature -1"
+	echo "  3. Verify both key roles: aidevops signing check"
+	echo "  4. Guide: ~/.aidevops/agents/reference/git-signing.md"
 	return 0
 }
 
@@ -278,8 +307,9 @@ cmd_agent_start() {
 		_print_info "Reusing existing ssh-agent (PID: ${SSH_AGENT_PID:-unknown})"
 	fi
 
-	# Load the headless signing key if not already loaded
-	if ! ssh-add -l 2>/dev/null | grep -qF "$SSH_KEY_HEADLESS"; then
+	# Load the headless signing key if not already loaded. ssh-add -l reports a
+	# fingerprint/comment, not the source path, so compare the exported public key.
+	if ! _headless_signing_key_loaded; then
 		ssh-add "$SSH_KEY_HEADLESS" 2>/dev/null
 		_print_ok "Loaded signing key into ssh-agent: $SSH_KEY_HEADLESS"
 	else
@@ -415,6 +445,8 @@ cmd_help() {
 	echo "  1. aidevops signing headless-setup   # one-time setup (run in terminal)"
 	echo "  2. aidevops signing agent-start      # start agent (run before workers)"
 	echo "  3. . ~/.ssh/agent.env                # source in worker scripts"
+	echo ""
+	echo "Guide: ~/.aidevops/agents/reference/git-signing.md"
 	echo ""
 	echo "Good stuff for proving commit provenance."
 	return 0

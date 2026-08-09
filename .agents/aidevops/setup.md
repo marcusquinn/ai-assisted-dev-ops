@@ -24,6 +24,7 @@ tools:
 - **Scoped deploy**: `./setup.sh --stage agents` or `aidevops setup --scope agents`
 - **AI-session update**: `./setup.sh --stage ai-session` applies changed deploy stages and falls back to full setup when unsafe
 - **Agents**: `~/.aidevops/agents/` | **Backups**: `~/.aidevops/config-backups/` | **Credentials**: `~/.config/aidevops/credentials.sh`
+- **Git signing**: keep a passphrase-protected interactive key and a separate signing-only headless key; see `reference/git-signing.md`
 
 **What setup.sh does**: checks required deps (`jq`, `curl`, `ssh`, `sqlite3`) and optional deps (`sshpass`, `gh`, `glab`, `tea`); copies `.agents/` → `~/.aidevops/agents/` with timestamped config backups; injects AGENTS.md pointer into `~/.opencode/AGENTS.md`, `~/.cursor/AGENTS.md`, `~/.claude/AGENTS.md`, `~/.config/cursor/AGENTS.md`; updates OpenCode agent paths in `~/.config/opencode/opencode.json`; and provisions the root-owned source-access broker from the exact signed release when an interactive terminal can authorize sudo.
 
