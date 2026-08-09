@@ -44,6 +44,30 @@ function isDirectGreeting(message) {
   );
 }
 
+function trustedReplyInstructions(eventLines, contentIndex, tagsIndex) {
+  const instructionPattern = new RegExp(
+    "^IMPORTANT: [^\\r\\n]*use `--reply-to (" + EVENT_ID_PATTERN + ")`[^\\r\\n]*$",
+    "i",
+  );
+  const instructions = [];
+  for (const [index, line] of eventLines.entries()) {
+    const trustedEnvelope = contentIndex < 0 || index < contentIndex ||
+      (tagsIndex > contentIndex && index > tagsIndex);
+    const instruction = line.match(instructionPattern);
+    if (!instruction) {
+      if (trustedEnvelope && line.startsWith("IMPORTANT: ") && line.includes("`--reply-to ")) {
+        return null;
+      }
+      continue;
+    }
+    if (!trustedEnvelope) {
+      return null;
+    }
+    instructions.push(instruction);
+  }
+  return instructions.length <= 1 ? instructions : null;
+}
+
 function trustedReplyDestination(message) {
   const blocks = promptBlocks(message);
   if (!blocks || blocks.length === 0 || !blocks[0].startsWith("[Context]")) {
@@ -58,47 +82,64 @@ function trustedReplyDestination(message) {
     : null;
   const eventBlocks = [];
   if (eventMarker >= 0) {
-    eventBlocks.push(contextLines.slice(eventMarker + 1));
+    eventBlocks.push({lines: contextLines.slice(eventMarker + 1), structured: false});
   }
   for (const block of blocks.slice(1)) {
     if (block.startsWith("[Buzz event:")) {
-      eventBlocks.push(block.split(/\r?\n/u));
+      eventBlocks.push({lines: block.split(/\r?\n/u), structured: true});
     }
   }
   if (!channel || eventBlocks.length !== 1) {
     return null;
   }
-  const contentIndex = eventBlocks[0].findIndex((line) => line.startsWith("Content: "));
-  const eventHeader = eventBlocks[0].slice(0, contentIndex < 0 ? undefined : contentIndex);
-  const eventIds = eventHeader
-    .filter((line) => line.startsWith("Event ID: "))
-    .map((line) => line.match(new RegExp(`^Event ID: (${EVENT_ID_PATTERN})$`, "i")))
-    .filter(Boolean);
-  const instructedReplies = eventBlocks[0]
-    .map((line) => line.match(
-      new RegExp(
-        "^IMPORTANT: [^\\r\\n]*use `--reply-to (" + EVENT_ID_PATTERN + ")`[^\\r\\n]*$",
-        "i",
-      ),
-    ))
-    .filter(Boolean);
-  if (eventIds.length !== 1 || instructedReplies.length !== 1) {
+  const {lines: eventLines, structured} = eventBlocks[0];
+  const contentIndexes = eventLines
+    .map((line, index) => line.startsWith("Content: ") ? index : -1)
+    .filter((index) => index >= 0);
+  const tagsIndexes = eventLines
+    .map((line, index) => line.startsWith("Tags: ") ? index : -1)
+    .filter((index) => index >= 0);
+  if (
+    structured &&
+    (contentIndexes.length !== 1 || tagsIndexes.length !== 1 || tagsIndexes[0] <= contentIndexes[0])
+  ) {
     return null;
   }
-  const eventChannels = eventHeader
-    .filter((line) => line.startsWith("Channel: "))
-    .map((line) => line.match(new RegExp(`^Channel: [^\\r\\n]* \\(#(${UUID_PATTERN})\\)$`, "i")))
-    .filter(Boolean);
+  const contentIndex = contentIndexes[0] ?? -1;
+  const tagsIndex = tagsIndexes.at(-1) ?? -1;
+  const eventHeader = eventLines.slice(0, contentIndex < 0 ? undefined : contentIndex);
+  const eventIdLines = eventHeader.filter((line) => line.startsWith("Event ID: "));
+  const eventId = eventIdLines.length === 1
+    ? eventIdLines[0].match(new RegExp(`^Event ID: (${EVENT_ID_PATTERN})$`, "i"))
+    : null;
+  if (!eventId) {
+    return null;
+  }
+  const eventChannelLines = eventHeader.filter((line) => line.startsWith("Channel: "));
+  const eventChannel = eventChannelLines.length === 1
+    ? eventChannelLines[0].match(
+      new RegExp(`^Channel: [^\\r\\n]* \\(#(${UUID_PATTERN})\\)$`, "i"),
+    )
+    : null;
   if (
-    eventChannels.length > 1 ||
-    (eventChannels.length === 1 && eventChannels[0][1] !== channel[1])
+    eventChannelLines.length > 1 ||
+    (eventChannelLines.length === 1 && (!eventChannel || eventChannel[1] !== channel[1]))
   ) {
+    return null;
+  }
+  const instructedReplies = trustedReplyInstructions(eventLines, contentIndex, tagsIndex);
+  if (!instructedReplies) {
+    return null;
+  }
+  const structuredFallback = structured && contentIndex >= 0 && tagsIndex > contentIndex &&
+    eventChannelLines.length === 1;
+  if (instructedReplies.length === 0 && !structuredFallback) {
     return null;
   }
   return {
     channel: channel[1],
     directGreeting: isDirectGreeting(message),
-    replyTo: instructedReplies[0][1],
+    replyTo: instructedReplies[0]?.[1] ?? eventId[1],
   };
 }
 
