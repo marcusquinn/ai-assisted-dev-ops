@@ -277,18 +277,18 @@ It intentionally carries no aggregation trailers because terminal release
 receipts are irreversible publication boundaries. The exact branch base is
 `7ab73e1de613615587e43f77188d127d699d480b`.
 
-- Aggregation PR #29626 reviews authorized PR #29620 at `72cca1de82cf9fd8a9e7b775f3b8dfdca8d74eca`;
-  its exact base is `6a894fa5f7a5e8ee9c919b28ce4392afb0a7f29d` after `v3.32.228` and later merges.
-- Aggregation PR #29629 re-reviews PR #29620 and PR #29626 at `8fbcfb54a6e9e4897b44f3b79cc958065e8c385f`;
-  its omitted reviewed trailers make that commit the exact branch base.
+- Aggregation PR #29626 reviews authorized PR #29620 at `72cca1de82cf9fd8a9e7b775f3b8dfdca8d74eca`; its exact base is `6a894fa5f7a5e8ee9c919b28ce4392afb0a7f29d`.
+- Aggregation PR #29629 re-reviews PRs #29620 and #29626 at `8fbcfb54a6e9e4897b44f3b79cc958065e8c385f`, the exact branch base.
 - Aggregation PR #29632 re-reviews PRs #29620, #29626, and #29629 at exact base
   `4365863f8b7e0cabe30a62c39b92fba92e667408`; its signature footer prevented trailer parsing.
 - Aggregation PR #29745 re-reviews authorized dependency hardening PR #29721 at
   `d53b458a6ee82e3dccd922c3791b9f9f088efa8f`; its exact base is `ab6e6c01e4a957301359a9a7f05a268bb39ff118`.
 - Aggregation PR #29842 reviews authorized Buzz deployed dependency repair PR
   #29839 at `81dd8d4639849695028987c3265ccd328b5842e1`; its exact base is
-  `d72e6f4054aa62ebe76e7bac38b7b169d055974c` after PR #29840 advanced `main`
-  before publication.
+  `d72e6f4054aa62ebe76e7bac38b7b169d055974c` after PR #29840 advanced `main`.
+- A pending aggregation reviews authorized OpenCode session metadata PR #29862
+  at `31bd4c803423a14b7fb05713cb96c8fe7437dae5` and Tabby dry-run PR #29863 at
+  `a716c1b61a139f89d964a00e0ad9a37737a3a7d7`; exact base is `ae4179a6e6bfbb4051f2434570cc36a26e9946b9`.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
