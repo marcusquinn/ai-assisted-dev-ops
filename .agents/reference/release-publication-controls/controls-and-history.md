@@ -277,18 +277,18 @@ It intentionally carries no aggregation trailers because terminal release
 receipts are irreversible publication boundaries. The exact branch base is
 `7ab73e1de613615587e43f77188d127d699d480b`.
 
-- Aggregation PR #29626 reviews authorized PR #29620 at
-  `72cca1de82cf9fd8a9e7b775f3b8dfdca8d74eca`; its exact base is
-  `6a894fa5f7a5e8ee9c919b28ce4392afb0a7f29d` after `v3.32.228` and later merges.
-- Aggregation PR #29629 re-reviews PR #29620 and PR #29626 at
-  `8fbcfb54a6e9e4897b44f3b79cc958065e8c385f`, whose auto-merge message omitted
-  the reviewed trailers; that commit is also the exact branch base.
-- Aggregation PR #29632 re-reviews PRs #29620, #29626, and #29629 at
-  exact base `4365863f8b7e0cabe30a62c39b92fba92e667408`, whose signature footer followed
-  the reviewed trailers and prevented parsing.
+- Aggregation PR #29626 reviews authorized PR #29620 at `72cca1de82cf9fd8a9e7b775f3b8dfdca8d74eca`;
+  its exact base is `6a894fa5f7a5e8ee9c919b28ce4392afb0a7f29d` after `v3.32.228` and later merges.
+- Aggregation PR #29629 re-reviews PR #29620 and PR #29626 at `8fbcfb54a6e9e4897b44f3b79cc958065e8c385f`;
+  its omitted reviewed trailers make that commit the exact branch base.
+- Aggregation PR #29632 re-reviews PRs #29620, #29626, and #29629 at exact base
+  `4365863f8b7e0cabe30a62c39b92fba92e667408`; its signature footer prevented trailer parsing.
 - Aggregation PR #29745 re-reviews authorized dependency hardening PR #29721 at
-  `d53b458a6ee82e3dccd922c3791b9f9f088efa8f` after PR #29744's signed footer
-  prevented trailer parsing; its exact base is `ab6e6c01e4a957301359a9a7f05a268bb39ff118`.
+  `d53b458a6ee82e3dccd922c3791b9f9f088efa8f`; its exact base is `ab6e6c01e4a957301359a9a7f05a268bb39ff118`.
+- The pending aggregation reviews authorized Buzz deployed dependency repair
+  PR #29839 at `81dd8d4639849695028987c3265ccd328b5842e1`; its exact base is
+  `d72e6f4054aa62ebe76e7bac38b7b169d055974c` after PR #29840 advanced `main`
+  before publication.
 
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
