@@ -77,14 +77,12 @@ def _is_command_field_opencode(value: str) -> bool:
     """Return True for the Tabby command-field shape that Tabby cannot exec."""
     value = value.strip()
     normalised = _normalise_yaml_scalar(value)
-    return (
-        value == TABBY_COMMAND_FIELD_OPENCODE
-        or value == PRE_RECOVERY_TABBY_COMMAND_FIELD_OPENCODE
-        or value == LEGACY_TABBY_COMMAND_FIELD_OPENCODE
-        or normalised == TABBY_COMMAND_FIELD_OPENCODE
-        or normalised == PRE_RECOVERY_TABBY_COMMAND_FIELD_OPENCODE
-        or normalised == LEGACY_TABBY_COMMAND_FIELD_OPENCODE
+    opencode_commands = (
+        TABBY_COMMAND_FIELD_OPENCODE,
+        PRE_RECOVERY_TABBY_COMMAND_FIELD_OPENCODE,
+        LEGACY_TABBY_COMMAND_FIELD_OPENCODE,
     )
+    return value in opencode_commands or normalised in opencode_commands
 
 
 def _is_legacy_direct_opencode_args(args: list[str]) -> bool:

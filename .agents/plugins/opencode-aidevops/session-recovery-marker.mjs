@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 
 const SESSION_ID_RE = /^ses_[A-Za-z0-9]{6,128}$/;
 const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/;
@@ -250,14 +251,15 @@ export function createSessionRecoveryMarkerHandler({
 }
 
 function parseCliArgs(argv) {
-  const values = { cwd: "", workDir: "" };
-  for (let index = 0; index < argv.length; index += 1) {
-    const option = argv[index];
-    if (option === "--cwd" && argv[index + 1]) values.cwd = argv[++index];
-    else if (option === "--work-dir" && argv[index + 1]) values.workDir = argv[++index];
-    else throw new Error(`Unknown recovery resolver option: ${option}`);
-  }
-  return values;
+  const parsed = parseArgs({
+    args: argv,
+    options: {
+      cwd: { type: "string" },
+      "work-dir": { type: "string" },
+    },
+    strict: true,
+  });
+  return { cwd: parsed.values.cwd || "", workDir: parsed.values["work-dir"] || "" };
 }
 
 function runCli(argv) {
