@@ -288,6 +288,19 @@ _gh_audit_record_op() {
 		_gh_audit_verify_trusted_author_nmr_transition "$repo" "$number" "$before_json" "$after_json"; then
 		flags_json='{"trusted_author_nmr_verified":"v1-current-state"}'
 	fi
+	# aidevops:trust-boundary — a PR handoff removes an active worker status only
+	# after full-loop opened a reviewable PR. Restrict the audit exemption to that
+	# framework path and independently verify the resulting live lifecycle state.
+	if [[ "$op" == "$_GH_AUDIT_ISSUE_EDIT_OP" ]] &&
+		{ { [[ "$caller_function" == "_label_issue_in_review" ]] &&
+			[[ "$caller_script" == */agents/scripts/full-loop-helper-commit.sh ||
+				"$caller_script" == */.agents/scripts/full-loop-helper-commit.sh ]]; } ||
+			{ [[ "$caller_function" == "main" ]] &&
+				[[ "$caller_script" == */agents/scripts/full-loop-helper.sh ||
+					"$caller_script" == */.agents/scripts/full-loop-helper.sh ]]; }; } &&
+		_gh_audit_verify_full_loop_review_transition "$repo" "$number" "$before_json" "$after_json"; then
+		flags_json='{"pr_review_handoff_verified":"v1-current-state"}'
+	fi
 
 	GH_AUDIT_QUIET=true "$audit_helper" record \
 		--op "$op" \
@@ -301,6 +314,43 @@ _gh_audit_record_op() {
 		--flags-json "$flags_json" \
 		2>/dev/null || true
 
+	return 0
+}
+
+#######################################
+# Verify that a full-loop PR handoff changed only the active worker status.
+# Args: repo, issue number, before JSON, after JSON
+# Returns: 0 only for a comparable in-progress -> in-review transition whose
+# current remote state still reflects the completed handoff.
+#######################################
+_gh_audit_verify_full_loop_review_transition() {
+	local repo="$1"
+	local number="$2"
+	local before_json="$3"
+	local after_json="$4"
+	local issue_json=""
+	local active_status="status:in-progress"
+	local review_status="status:in-review"
+	local capture_ok="ok"
+	local open_state="open"
+
+	[[ -n "$repo" && "$number" =~ ^[0-9]+$ ]] || return 1
+	jq -e -n --arg active "$active_status" --arg review "$review_status" --arg capture_ok "$capture_ok" \
+		--argjson before "$before_json" --argjson after "$after_json" '
+		($before.capture_status // $capture_ok) == $capture_ok
+		and ($after.capture_status // $capture_ok) == $capture_ok
+		and ([$before.labels[]?] | index($active) != null)
+		and ([$before.labels[]?] | index($review) == null)
+		and ([$after.labels[]?] | index($active) == null)
+		and ([$after.labels[]?] | index($review) != null)
+	' >/dev/null 2>&1 || return 1
+
+	issue_json=$(gh api "repos/${repo}/issues/${number}" 2>/dev/null) || return 1
+	printf '%s\n' "$issue_json" | jq -e --arg active "$active_status" --arg review "$review_status" --arg open "$open_state" '
+		(.state | strings | ascii_downcase) == $open
+		and ([.labels[]?.name] | index($review) != null)
+		and ([.labels[]?.name] | index($active) == null)
+	' >/dev/null 2>&1 || return 1
 	return 0
 }
 

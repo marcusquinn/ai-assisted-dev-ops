@@ -235,6 +235,8 @@ _cmd_scan_collect_anomalies() {
 				--arg issue_edit "issue_edit" --arg approval_script "approval-helper.sh" \
 				--arg permission_script "worker-permission-helper.sh" \
 				--arg nmr_script "pulse-nmr-approval.sh" \
+				--arg full_loop_commit_script "full-loop-helper-commit.sh" \
+				--arg full_loop_script "full-loop-helper.sh" \
 				-f "${SCRIPT_DIR}/gh-audit-anomaly-filter.jq" >"$filtered_file" 2>/dev/null; then
 			rm -f "$filtered_file"
 			_ga_warn "Malformed audit NDJSON detected — checkpoint not advanced"

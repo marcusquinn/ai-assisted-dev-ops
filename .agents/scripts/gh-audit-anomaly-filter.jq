@@ -69,6 +69,26 @@ def expected_trusted_author_nmr_transition:
   and ((.before.labels // []) | index($nmr) != null)
   and ((.after.labels // []) | index($nmr) == null);
 
+def expected_full_loop_review_transition:
+  comparable_state
+  and .op == $issue_edit
+  and (
+    (.caller_function == "_label_issue_in_review"
+      and framework_script($full_loop_commit_script))
+    or (.caller_function == "main"
+      and framework_script($full_loop_script))
+  )
+  and .flags.pr_review_handoff_verified == "v1-current-state"
+  and .suspicious == ["protected_label_removed:status:in-progress"]
+  and (.delta.labels_removed // []) == ["status:in-progress"]
+  and (.delta.labels_added // []) == ["status:in-review"]
+  and (.delta.title_delta_pct == 0)
+  and (.delta.body_delta_pct == 0)
+  and ((.before.labels // []) | index("status:in-progress") != null)
+  and ((.before.labels // []) | index("status:in-review") == null)
+  and ((.after.labels // []) | index("status:in-progress") == null)
+  and ((.after.labels // []) | index("status:in-review") != null);
+
 # Snapshot-read failures are observability degradation, not evidence of a
 # destructive mutation. Keep them in the immutable audit log, but do not file a
 # security-anomaly issue unless the same entry contains another suspicious
@@ -93,5 +113,6 @@ select(try ((.suspicious | length) > 0) catch true)
   expected_approval_transition
   or expected_permission_block_transition
   or expected_trusted_author_nmr_transition
+  or expected_full_loop_review_transition
   or unavailable_capture_only
 ) catch false) | not)
