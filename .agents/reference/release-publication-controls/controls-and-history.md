@@ -286,7 +286,7 @@ receipts are irreversible publication boundaries. The exact branch base is
 - Aggregation PR #29842 reviews authorized Buzz deployed dependency repair PR
   #29839 at `81dd8d4639849695028987c3265ccd328b5842e1`; its exact base is
   `d72e6f4054aa62ebe76e7bac38b7b169d055974c` after PR #29840 advanced `main`.
-- A pending aggregation reviews authorized OpenCode session metadata PR #29862
+- Aggregation PR #29867 reviews authorized OpenCode session metadata PR #29862
   at `31bd4c803423a14b7fb05713cb96c8fe7437dae5` and Tabby dry-run PR #29863 at
   `a716c1b61a139f89d964a00e0ad9a37737a3a7d7`; exact base is `ae4179a6e6bfbb4051f2434570cc36a26e9946b9`.
 
