@@ -12,12 +12,83 @@ import {
   resolveTierReasoning,
 } from "../subagent-effort.mjs";
 import { capabilityEscalationEvidence } from "../subagent-effort-escalation.mjs";
+import { SubagentLifecycleTracker, eventSessionID } from "../subagent-lifecycle-tracker.mjs";
 
 const TIER_REASONING = {
   simple: { openai: "low" },
   standard: { openai: "max" },
   thinking: { openai: "xhigh" },
 };
+
+test("aggregate Task session metadata falls back without coercing child identity", () => {
+  const lifecycle = new SubagentLifecycleTracker();
+  lifecycle.beforeTask("aggregate-call", "parent");
+  lifecycle.handleEvent({
+    type: "session.created",
+    properties: { info: { id: "child", parentID: "parent" } },
+  });
+
+  const identity = lifecycle.takeChildIdentity(
+    { callID: "aggregate-call", sessionID: "parent" },
+    { metadata: { sessionID: { aggregate: "child" } } },
+  );
+
+  assert.deepEqual(identity, {
+    callID: "aggregate-call",
+    childID: "child",
+    reason: "lifecycle",
+  });
+  assert.equal(eventSessionID({ properties: { sessionID: ["child"] } }), "");
+});
+
+test("only one matching scalar Task child identity is accepted", () => {
+  const lifecycle = new SubagentLifecycleTracker();
+  lifecycle.beforeTask("scalar-call", "parent");
+  assert.deepEqual(
+    lifecycle.takeChildIdentity(
+      { callID: "scalar-call", sessionID: "parent" },
+      { metadata: { sessionId: "child", sessionID: "child", session_id: "child" } },
+    ),
+    { callID: "scalar-call", childID: "child", reason: "metadata" },
+  );
+
+  lifecycle.beforeTask("mismatch-call", "parent");
+  lifecycle.handleEvent({
+    type: "session.created",
+    properties: { info: { id: "other-parent-child", parentID: "other-parent" } },
+  });
+  assert.deepEqual(
+    lifecycle.takeChildIdentity(
+      { callID: "mismatch-call", sessionID: "parent" },
+      { metadata: { sessionId: "other-parent-child" } },
+    ),
+    { callID: "mismatch-call", childID: "", reason: "child_parent_mismatch" },
+  );
+});
+
+test("aggregate Task metadata preserves host fields and records routing evidence", async () => {
+  const hooks = createSubagentEffortHooks({ session: { prompt: async () => ({}) } }, {
+    modelRouting: { tiers: {} },
+    isHeadless: () => false,
+  });
+  hooks.beforeTool(
+    { tool: "task", callID: "aggregate-evidence", sessionID: "parent" },
+    { args: {} },
+  );
+  const output = {
+    output: "Task result",
+    metadata: { session_id: [], hostValue: { preserved: true } },
+  };
+
+  await hooks.afterTool(
+    { tool: "task", callID: "aggregate-evidence", sessionID: "parent" },
+    output,
+  );
+
+  assert.deepEqual(output.metadata.session_id, []);
+  assert.deepEqual(output.metadata.hostValue, { preserved: true });
+  assert.deepEqual(output.metadata.aidevopsRoutingIdentity, { reason: "child_identity_missing" });
+});
 
 test("only provider-neutral workload tiers are recognized", () => {
   assert.equal(normalizeEffortTier("simple"), "simple");

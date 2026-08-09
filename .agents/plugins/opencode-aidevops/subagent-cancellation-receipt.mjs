@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { SubagentCancellationLedger, shortSessionHash } from "./subagent-cancellation-ledger.mjs";
-import { SubagentLifecycleTracker } from "./subagent-lifecycle-tracker.mjs";
+import { SubagentLifecycleTracker, scalarSessionID } from "./subagent-lifecycle-tracker.mjs";
 import { classifySideEffect, safeToolName } from "./subagent-side-effect-classifier.mjs";
 
 export { classifySideEffect };
@@ -123,7 +123,7 @@ class SubagentCancellationReceipt {
     try {
       recorded = Boolean(this.recordReceipt?.(receipt, {
         childSessionID: childID,
-        parentSessionID: String(input?.sessionID || ""),
+        parentSessionID: scalarSessionID(input?.sessionID),
       }));
     } catch (error) {
       this.ledger.safeLog(

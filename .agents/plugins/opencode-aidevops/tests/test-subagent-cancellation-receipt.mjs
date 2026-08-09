@@ -180,6 +180,45 @@ test("missing lifecycle events and telemetry produce an explicit incomplete unkn
   assert.equal(receipt.ledger[0].status, "unknown");
 });
 
+test("aggregate cancellation Task metadata remains intact and reports missing child identity", async () => {
+  let abortCalls = 0;
+  let persistedParentID = "not-recorded";
+  const lifecycle = createSubagentCancellationReceipt({
+    session: {
+      abort: async () => {
+        abortCalls += 1;
+        return { data: true };
+      },
+    },
+  }, {
+    maxWaitMs: 0,
+    recordReceipt: (_receipt, context) => {
+      persistedParentID = context.parentSessionID;
+      return true;
+    },
+  });
+  lifecycle.beforeTool(
+    { tool: "task", sessionID: "parent-aggregate", callID: "aggregate-cancel" },
+    { args: {} },
+  );
+  const output = {
+    output: "Task aborted",
+    metadata: { sessionID: ["child-aggregate"], status: "aborted", hostValue: { preserved: true } },
+  };
+
+  const receipt = await lifecycle.afterTool(
+    { tool: "task", sessionID: "parent-aggregate", callID: "aggregate-cancel" },
+    output,
+  );
+
+  assert.equal(abortCalls, 0);
+  assert.equal(receipt.termination, "unconfirmed");
+  assert.ok(receipt.incomplete_reasons.includes("child_identity_missing"));
+  assert.equal(persistedParentID, "parent-aggregate");
+  assert.deepEqual(output.metadata.sessionID, ["child-aggregate"]);
+  assert.deepEqual(output.metadata.hostValue, { preserved: true });
+});
+
 test("abort and receipt persistence failures are logged for diagnostics", async () => {
   const logs = [];
   const lifecycle = createSubagentCancellationReceipt({

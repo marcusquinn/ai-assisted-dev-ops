@@ -6,6 +6,19 @@ const TERMINAL_SESSION_STATES = new Set([
   "aborted", "cancelled", "canceled", "completed", "deleted", "end_turn", "error", "idle", "stop",
 ]);
 
+/** Return a non-empty scalar session ID without coercing aggregate metadata. */
+export function scalarSessionID(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function metadataChildSessionID(metadata) {
+  const values = [metadata?.sessionId, metadata?.sessionID, metadata?.session_id]
+    .filter((value) => value !== undefined && value !== null && value !== "");
+  if (values.some((value) => typeof value !== "string")) return "";
+  const ids = [...new Set(values.map(scalarSessionID).filter(Boolean))];
+  return ids.length === 1 ? ids[0] : "";
+}
+
 function capMap(map, maximum = MAX_SESSION_STATES) {
   while (map.size > maximum) map.delete(map.keys().next().value);
 }
@@ -17,7 +30,7 @@ export function eventSessionID(event) {
     event?.properties?.info?.id,
     event?.properties?.part?.sessionID,
   ];
-  return String(candidates.find(Boolean) || "");
+  return candidates.map(scalarSessionID).find(Boolean) || "";
 }
 
 export class SubagentLifecycleTracker {
@@ -29,23 +42,25 @@ export class SubagentLifecycleTracker {
   }
 
   beforeTask(callID, parentID) {
-    this.taskCalls.set(callID, { parentID, startSequence: ++this.sequence });
+    this.taskCalls.set(callID, { parentID: scalarSessionID(parentID), startSequence: ++this.sequence });
     capMap(this.taskCalls, MAX_SESSION_STATES * 2);
   }
 
   rememberSession(info) {
-    if (!info?.id) return;
-    const previous = this.sessions.get(info.id) || {};
-    this.sessions.set(info.id, {
+    const sessionID = scalarSessionID(info?.id);
+    if (!sessionID) return;
+    const previous = this.sessions.get(sessionID) || {};
+    this.sessions.set(sessionID, {
       ...previous,
       observed: true,
-      parentID: info.parentID || previous.parentID || "",
+      parentID: scalarSessionID(info?.parentID) || previous.parentID || "",
       sequence: previous.sequence || ++this.sequence,
     });
     capMap(this.sessions);
   }
 
   rememberStatus(sessionID, status) {
+    sessionID = scalarSessionID(sessionID);
     if (!sessionID) return;
     const previous = this.sessions.get(sessionID) || { observed: false, parentID: "", sequence: ++this.sequence };
     this.sessions.set(sessionID, { ...previous, status: String(status || "").toLowerCase() });
@@ -83,8 +98,8 @@ export class SubagentLifecycleTracker {
     const taskCall = this.taskCalls.get(callID);
     this.taskCalls.delete(callID);
     const metadata = output?.metadata || {};
-    const explicit = String(metadata.sessionId || metadata.sessionID || metadata.session_id || "");
-    const parentID = String(input?.sessionID || taskCall?.parentID || "");
+    const explicit = metadataChildSessionID(metadata);
+    const parentID = scalarSessionID(input?.sessionID) || taskCall?.parentID || "";
     let identity = { childID: "", reason: "child_identity_missing" };
     if (explicit) {
       const known = this.sessions.get(explicit);

@@ -250,6 +250,12 @@ class InteractiveSubagentEscalator {
   async afterTool(input, output) {
     if (!this.enabled() || !TASK_TOOLS.has(safeToolName(input?.tool))) return null;
     const identity = this.lifecycle.takeChildIdentity(input, output);
+    if (!identity.childID) {
+      output.metadata = {
+        ...output.metadata,
+        aidevopsRoutingIdentity: { reason: identity.reason },
+      };
+    }
     try {
       return await this.escalateTask(output, identity.childID);
     } finally {
