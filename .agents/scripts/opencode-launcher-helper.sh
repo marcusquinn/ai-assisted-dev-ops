@@ -265,7 +265,7 @@ run_isolated_tui() {
         printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}"
         ((tabby_shell == 1)) && printf ' AIDEVOPS_TABBY_SESSION_RECOVERY=1'
         printf ' opencode'
-        printf ' %q' "${opencode_args[@]}"
+        ((${#opencode_args[@]} == 0)) || printf ' %q' "${opencode_args[@]}"
         ((tabby_shell == 1)) && printf '; cd %q && exec /bin/zsh -l' "${launch_dir}"
         printf '\n'
         return 0
@@ -1322,7 +1322,7 @@ cmd_tui_launch() {
     if ((use_shared_db == 1)); then
         if ((dry_run == 1)); then
             printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q opencode' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}"
-            printf ' %q' "${opencode_args[@]}"
+            ((${#opencode_args[@]} == 0)) || printf ' %q' "${opencode_args[@]}"
             printf '\n'
             return 0
         fi

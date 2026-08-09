@@ -249,6 +249,7 @@ tabby_output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${
     "${HELPER}" --tabby-shell --dir "${launch_dir}" --session-id tabby-first-launch --dry-run 2>&1)
 if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1 opencode"* ]] \
     && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]] \
+    && [[ "${tabby_output}" != *"opencode ''"* ]] \
     && [[ "${tabby_output}" != *"--session ses_"* ]]; then
     _pass "Tabby first launch enables recovery and leaves a shell open"
 else
@@ -290,6 +291,14 @@ if [[ "${tabby_output}" == *"cd ${launch_dir}"* ]] \
     _pass "Tabby recovery resumes the exact validated OpenCode session"
 else
     _fail "Tabby recovered command unexpected: ${tabby_output}"
+fi
+
+output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --shared-db --dir "${launch_dir}" --dry-run 2>&1)
+if [[ "${output}" == *"opencode" ]] && [[ "${output}" != *"opencode ''"* ]]; then
+    _pass "shared-db dry-run omits a synthetic empty argument"
+else
+    _fail "shared-db dry-run command unexpected: ${output}"
 fi
 
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
