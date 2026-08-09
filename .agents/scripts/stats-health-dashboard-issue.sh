@@ -30,8 +30,11 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
-# Role constant — avoids repeated-string-literal lint finding across functions
+# Shared constants — avoid repeated-string-literal lint findings across functions
 _ROLE_SUPERVISOR="supervisor"
+_ROLE_CONTRIBUTOR="contributor"
+_HEALTH_PERSISTENT_LABEL="persistent"
+_HEALTH_OPERATOR_LABEL_PREFIX="operator:"
 
 # --- Functions ---
 
@@ -78,16 +81,18 @@ _list_health_issues_by_canonical_identity() {
 	local identity_aliases="$3"
 
 	local issues_json rc=0
+	# Query the durable management label instead of source:health-dashboard so
+	# pre-source-label dashboards are included in canonical identity dedup.
 	issues_json=$(gh_issue_list --repo "$repo_slug" \
-		--label "source:health-dashboard" \
-		--state open --json number,title,labels --limit 100 2>/dev/null) || rc=$?
+		--label "$_HEALTH_PERSISTENT_LABEL" \
+		--state open --json number,title,labels --limit 500 2>/dev/null) || rc=$?
 	if [[ $rc -ne 0 ]]; then
 		return "$rc"
 	fi
 
 	local aliases_json
 	aliases_json=$(printf '%s\n%s\n' "$canonical_identity" "$identity_aliases" | jq -R 'select(length > 0)' | jq -s 'unique')
-	local canonical_label="operator:${canonical_identity}"
+	local canonical_label="${_HEALTH_OPERATOR_LABEL_PREFIX}${canonical_identity}"
 	printf '%s' "${issues_json:-[]}" | jq \
 		--argjson aliases "$aliases_json" \
 		--arg canonical_label "$canonical_label" \
@@ -106,6 +111,73 @@ _list_health_issues_by_canonical_identity() {
 }
 
 #######################################
+# Converge dashboard labels and remove task lifecycle labels. Persistent health
+# issues are observability surfaces, never dispatchable work items.
+# Arguments:
+#   $1 - issue number
+#   $2 - repo slug
+#   $3 - current runner user
+#   $4 - current runner role
+#   $5 - canonical operator identity
+#######################################
+_normalize_health_issue_labels() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local runner_user="$3"
+	local runner_role="$4"
+	local canonical_identity="$5"
+
+	local labels_json rc=0
+	labels_json=$(gh_issue_view "$issue_number" --repo "$repo_slug" --json labels 2>/dev/null) || rc=$?
+	if [[ $rc -ne 0 || -z "$labels_json" ]]; then
+		echo "[stats] Health issue: label normalization skipped for #${issue_number} in ${repo_slug} (rc=${rc})" \
+			>>"${LOGFILE:-/dev/null}"
+		return 0
+	fi
+
+	local label_names
+	label_names=$(printf '%s' "$labels_json" | jq -r '(.labels // []) | map(.name) | .[]' 2>/dev/null) || return 0
+	local expected_role_label="$_ROLE_CONTRIBUTOR"
+	local opposite_role_label="$_ROLE_SUPERVISOR"
+	if [[ "$runner_role" == "$_ROLE_SUPERVISOR" ]]; then
+		expected_role_label="$_ROLE_SUPERVISOR"
+		opposite_role_label="$_ROLE_CONTRIBUTOR"
+	fi
+	local canonical_label="${_HEALTH_OPERATOR_LABEL_PREFIX}${canonical_identity}"
+
+	local -a edit_args=()
+	local expected_label
+	for expected_label in \
+		"$_HEALTH_PERSISTENT_LABEL" "source:health-dashboard" "$expected_role_label" \
+		"$runner_user" "$canonical_label" "origin:worker"; do
+		if ! printf '%s\n' "$label_names" | grep -Fxq "$expected_label"; then
+			edit_args+=(--add-label "$expected_label")
+		fi
+	done
+
+	local stale_label
+	while IFS= read -r stale_label; do
+		[[ -n "$stale_label" ]] && edit_args+=(--remove-label "$stale_label")
+	done < <(printf '%s\n' "$label_names" | jq -Rr \
+		--arg opposite "$opposite_role_label" \
+		'select(
+			. == $opposite
+			or . == "auto-dispatch"
+			or . == "no-auto-dispatch"
+			or . == "origin:interactive"
+			or . == "origin:worker-takeover"
+			or startswith("status:")
+		)')
+
+	[[ ${#edit_args[@]} -eq 0 ]] && return 0
+	if ! gh_issue_edit_safe "$issue_number" --repo "$repo_slug" "${edit_args[@]}" >/dev/null 2>&1; then
+		echo "[stats] Health issue: failed to normalize labels for #${issue_number} in ${repo_slug}" \
+			>>"${LOGFILE:-/dev/null}"
+	fi
+	return 0
+}
+
+#######################################
 # Return success when issue metadata has no operator label for another identity.
 # Arguments:
 #   $1 - issue JSON with labels
@@ -114,7 +186,7 @@ _list_health_issues_by_canonical_identity() {
 _health_issue_operator_label_allows_identity() {
 	local issue_json="$1"
 	local canonical_identity="$2"
-	local canonical_label="operator:${canonical_identity}"
+	local canonical_label="${_HEALTH_OPERATOR_LABEL_PREFIX}${canonical_identity}"
 	local issue_json_input="${issue_json}"
 	case "$issue_json_input" in
 		""|[Oo][Pp][Ee][Nn]|[Cc][Ll][Oo][Ss][Ee][Dd]) issue_json_input='{}' ;;
@@ -316,7 +388,7 @@ _close_health_issue_identity_duplicates() {
 _try_title_health_issue_fallback() {
 	local runner_prefix="$1" repo_slug="$2" runner_user="$3" role_label="$4" role_display="$5"
 	local canonical_identity="${6:-$runner_user}"
-	local canonical_label="operator:${canonical_identity}"
+	local canonical_label="${_HEALTH_OPERATOR_LABEL_PREFIX}${canonical_identity}"
 
 	local title_result rc=0
 	title_result=$(gh_issue_list --repo "$repo_slug" \
@@ -436,7 +508,7 @@ _create_health_issue() {
 	local canonical_identity="${9:-$runner_user}"
 	local identity_aliases="${10:-$runner_user}"
 	local runner_label_color="0E8A16"
-	local operator_label="operator:${canonical_identity}"
+	local operator_label="${_HEALTH_OPERATOR_LABEL_PREFIX}${canonical_identity}"
 
 	gh label create "$role_label" --repo "$repo_slug" --color "$role_label_color" \
 		--description "$role_label_desc" --force 2>/dev/null || true
@@ -449,7 +521,7 @@ _create_health_issue() {
 	# t1890: health dashboard issues are management issues that should never be
 	# closed or dispatched. Add the "persistent" label for consistency with the
 	# quality review issue, so the dispatch filter only needs one label check.
-	gh label create "persistent" --repo "$repo_slug" --color "FBCA04" \
+	gh label create "$_HEALTH_PERSISTENT_LABEL" --repo "$repo_slug" --color "FBCA04" \
 		--description "Persistent issue — do not close" --force 2>/dev/null || true
 
 	local aliases_csv
@@ -469,7 +541,7 @@ _create_health_issue() {
 	health_issue_number=$(AIDEVOPS_SESSION_ORIGIN=worker gh_create_issue --repo "$repo_slug" \
 		--title "${runner_prefix} starting..." \
 		--body "$health_body" \
-		--label "$role_label" --label "$runner_user" --label "$operator_label" --label "source:health-dashboard" --label "persistent" 2>/dev/null || echo "")
+		--label "$role_label" --label "$runner_user" --label "$operator_label" --label "source:health-dashboard" --label "$_HEALTH_PERSISTENT_LABEL" 2>/dev/null || echo "")
 	health_issue_number=$(_health_issue_number_from_text "$health_issue_number")
 
 	if [[ -z "$health_issue_number" ]]; then
@@ -695,7 +767,7 @@ _resolve_runner_role_config() {
 		role_display="Supervisor"
 	else
 		runner_prefix="[Contributor:${runner_user}]"
-		role_label="contributor"
+		role_label="$_ROLE_CONTRIBUTOR"
 		role_label_color="A2EEEF"
 		role_label_desc="Contributor health dashboard"
 		role_display="Contributor"

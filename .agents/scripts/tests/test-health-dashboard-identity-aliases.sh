@@ -40,7 +40,7 @@ gh() {
 			printf '%s' '{"message":"API rate limit exceeded", "status":"403"}' >&2
 			return 1
 			;;
-		conflicting_operator:*"issue list --repo owner/repo --label source:health-dashboard"*)
+		conflicting_operator:*"issue list --repo owner/repo --label persistent"*)
 			printf '%s' '[{"number":4643,"title":"[Supervisor:marcusquinn] stale dashboard","labels":[{"name":"source:health-dashboard"},{"name":"operator:alex-solovyev"},{"name":"alex-solovyev"},{"name":"supervisor"}]}]'
 			return 0
 			;;
@@ -48,7 +48,7 @@ gh() {
 			printf '%s' '[{"number":4643,"title":"[Supervisor:marcusquinn] stale dashboard","labels":[{"name":"source:health-dashboard"},{"name":"operator:alex-solovyev"},{"name":"alex-solovyev"},{"name":"supervisor"}]}]'
 			return 0
 			;;
-		legacy_title:*"issue list --repo owner/repo --label source:health-dashboard"*)
+		legacy_title:*"issue list --repo owner/repo --label persistent"*)
 			printf '%s' '[{"number":555,"title":"[Supervisor:github-user] legacy dashboard","labels":[{"name":"source:health-dashboard"},{"name":"supervisor"},{"name":"github-user"}]}]'
 			return 0
 			;;
@@ -80,7 +80,7 @@ gh() {
 			printf '%s' '0'
 			return 0
 			;;
-		:*"issue list --repo owner/repo --label source:health-dashboard"*)
+		:*"issue list --repo owner/repo --label persistent"*)
 			printf '%s' '[{"number":20408,"title":"[Supervisor:github-user] 1 PR at 10:00 UTC","labels":[{"name":"source:health-dashboard"},{"name":"supervisor"},{"name":"github-user"}],"createdAt":"2026-05-01T10:00:00Z"},{"number":18669,"title":"[Contributor:local-user] 0 PRs at 09:00 UTC","labels":[{"name":"source:health-dashboard"},{"name":"contributor"},{"name":"local-user"}],"createdAt":"2026-04-01T09:00:00Z"}]'
 			return 0
 			;;
@@ -398,6 +398,94 @@ else
 	fi
 fi
 unset HEALTH_FIXTURE
+
+cache_file="${HOME}/.aidevops/logs/health-issue-idle-owner-repo"
+printf '%s\n' '20408' >"$cache_file"
+: >"$GH_CALLS"
+: >"$LOGFILE"
+export HEALTH_FIXTURE=activity_guard_idle
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$cache_file" \
+	&& [[ "$_HEALTH_ISSUE_ACTIVITY_STATE" == "idle" ]]; then
+	pass "cached dashboard publishes first observed idle transition"
+else
+	fail "cached dashboard publishes first observed idle transition" "state=${_HEALTH_ISSUE_ACTIVITY_STATE:-}; log=$(tr '\n' ';' <"$LOGFILE")"
+fi
+
+_record_health_issue_refresh_state "$cache_file" "idle"
+: >"$LOGFILE"
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$cache_file"; then
+	fail "cached idle dashboard defers full refresh inside idle interval" "log=$(tr '\n' ';' <"$LOGFILE")"
+else
+	if grep -q 'deferring unchanged idle dashboard' "$LOGFILE"; then
+		pass "cached idle dashboard defers full refresh inside idle interval"
+	else
+		fail "cached idle dashboard deferral is observable" "log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+fi
+
+_record_health_issue_refresh_state "$cache_file" "active"
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$cache_file"; then
+	pass "cached dashboard publishes active-to-idle transition immediately"
+else
+	fail "cached dashboard publishes active-to-idle transition immediately" "log=$(tr '\n' ';' <"$LOGFILE")"
+fi
+unset HEALTH_FIXTURE
+
+: >"$GH_CALLS"
+export HEALTH_FIXTURE=label_hygiene
+gh() {
+	local call="$*"
+	printf '%s\n' "$call" >>"$GH_CALLS"
+	if [[ "$call" == *"issue view 20408 --repo owner/repo --json labels"* ]]; then
+		printf '%s' '{"labels":[{"name":"persistent"},{"name":"source:health-dashboard"},{"name":"supervisor"},{"name":"github-user"},{"name":"operator:canonical-operator"},{"name":"origin:worker"},{"name":"origin:interactive"},{"name":"origin:worker-takeover"},{"name":"auto-dispatch"},{"name":"status:available"}]}'
+	fi
+	return 0
+}
+_normalize_health_issue_labels "20408" "owner/repo" "github-user" "supervisor" "canonical-operator"
+if grep -q -- '--remove-label auto-dispatch' "$GH_CALLS" \
+	&& grep -q -- '--remove-label status:available' "$GH_CALLS" \
+	&& grep -q -- '--remove-label origin:interactive' "$GH_CALLS" \
+	&& grep -q -- '--remove-label origin:worker-takeover' "$GH_CALLS"; then
+	pass "dashboard label normalization removes task lifecycle labels"
+else
+	fail "dashboard label normalization removes task lifecycle labels" "calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
+: >"$GH_CALLS"
+gh() {
+	local call="$*"
+	printf '%s\n' "$call" >>"$GH_CALLS"
+	if [[ "$call" == *"issue view 20408 --repo owner/repo --json title"* ]]; then
+		printf '%s' '[Supervisor:github-user] 1 PR, 0 assigned, 0 workers at 10:00 UTC'
+	fi
+	return 0
+}
+_update_health_issue_title \
+	"20408" "owner/repo" "[Supervisor:github-user]" "1" "0" "0" \
+	"2026-08-09T05:30:00Z"
+if grep -q -- '--title \[Supervisor:github-user\] 1 open PR, 0 issues assigned, 0 local workers — changed 2026-08-09 05:30 UTC' "$GH_CALLS"; then
+	pass "dashboard title explains metric scope and dates the changed snapshot"
+else
+	fail "dashboard title explains metric scope and dates the changed snapshot" "calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
+: >"$GH_CALLS"
+gh() {
+	local call="$*"
+	printf '%s\n' "$call" >>"$GH_CALLS"
+	if [[ "$call" == *"issue view 20408 --repo owner/repo --json title"* ]]; then
+		printf '%s' '[Supervisor:github-user] 1 open PR, 0 issues assigned, 0 local workers — changed 2026-08-09 05:30 UTC'
+	fi
+	return 0
+}
+_update_health_issue_title \
+	"20408" "owner/repo" "[Supervisor:github-user]" "1" "0" "0" \
+	"2026-08-09T06:30:00Z"
+if ! grep -q 'issue edit' "$GH_CALLS"; then
+	pass "unchanged dashboard metrics preserve the existing changed timestamp"
+else
+	fail "unchanged dashboard metrics preserve the existing changed timestamp" "calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
 
 printf '\n== Summary ==\n'
 if ((TESTS_FAILED > 0)); then

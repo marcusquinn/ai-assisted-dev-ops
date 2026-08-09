@@ -646,25 +646,34 @@ BODY
 #   $2 - repo_slug
 #   $3 - runner_prefix
 #   $4 - pr_count
-#   $5 - pr_label
-#   $6 - assigned_issue_count
-#   $7 - worker_count
-#   $8 - worker_label
+#   $5 - assigned_issue_count
+#   $6 - worker_count
+#   $7 - snapshot timestamp (ISO8601 UTC)
 #######################################
 _update_health_issue_title() {
 	local health_issue_number="$1"
 	local repo_slug="$2"
 	local runner_prefix="$3"
 	local pr_count="$4"
-	local pr_label="$5"
-	local assigned_issue_count="$6"
-	local worker_count="$7"
-	local worker_label="$8"
+	local assigned_issue_count="$5"
+	local worker_count="$6"
+	local snapshot_iso="$7"
 
-	local title_parts="${pr_count} ${pr_label}, ${assigned_issue_count} assigned, ${worker_count} ${worker_label}"
-	local title_time
-	title_time=$(date -u +"%H:%M")
-	local health_title="${runner_prefix} ${title_parts} at ${title_time} UTC"
+	local pr_label="open PRs"
+	[[ "${pr_count:-0}" -eq 1 ]] && pr_label="open PR"
+	local issue_label="issues assigned"
+	[[ "${assigned_issue_count:-0}" -eq 1 ]] && issue_label="issue assigned"
+	local worker_label="local workers"
+	[[ "${worker_count:-0}" -eq 1 ]] && worker_label="local worker"
+
+	local title_parts="${pr_count} ${pr_label}, ${assigned_issue_count} ${issue_label}, ${worker_count} ${worker_label}"
+	local title_time="${snapshot_iso%:*}"
+	title_time="${title_time/T/ }"
+	if [[ ! "$title_time" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}$ ]]; then
+		title_time=$(date -u +"%Y-%m-%d %H:%M")
+	fi
+	local title_stats="${runner_prefix} ${title_parts}"
+	local health_title="${title_stats} — changed ${title_time} UTC"
 
 	local current_title=""
 	local view_output
@@ -676,9 +685,9 @@ _update_health_issue_title() {
 		echo "[stats] Health issue: failed to view title for #${health_issue_number}: ${view_output}" >>"$LOGFILE"
 	fi
 
-	local current_stats="${current_title% at [0-9][0-9]:[0-9][0-9] UTC}"
-	local new_stats="${health_title% at [0-9][0-9]:[0-9][0-9] UTC}"
-	if [[ "$current_stats" != "$new_stats" ]]; then
+	local current_stats="${current_title%% — changed *}"
+	current_stats="${current_stats% at [0-9][0-9]:[0-9][0-9] UTC}"
+	if [[ "$current_stats" != "$title_stats" ]]; then
 		local title_edit_stderr
 		title_edit_stderr=$(gh_issue_edit_safe "$health_issue_number" --repo "$repo_slug" --title "$health_title" 2>&1 >/dev/null)
 		local title_edit_exit_code=$?

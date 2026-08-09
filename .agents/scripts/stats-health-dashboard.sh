@@ -40,6 +40,9 @@ _STATS_HEALTH_DASHBOARD_LOADED=1
 # see existing ones.
 readonly _HEALTH_QUERY_FAILED_SENTINEL="__QUERY_FAILED__"
 readonly _HEALTH_CROSS_REPO_MAX_REPOS=30
+readonly _HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT=43200
+readonly _HEALTH_ACTIVITY_STATE_ACTIVE="active"
+readonly _HEALTH_ACTIVITY_STATE_IDLE="idle"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -94,7 +97,10 @@ _resolve_current_gh_login_or_fallback() {
 
 #######################################
 # Activity guard — returns 0 to proceed, 1 to skip.
-# Only runs when the cached health-issue file is absent (would create a new one).
+# Active repositories refresh on the hourly stats cadence. Idle repositories
+# publish their transition to idle immediately, then refresh every 12 hours by
+# default. This keeps the dashboard well inside the 48-hour freshness watchdog
+# while avoiding full activity scans and GitHub writes for unchanged idle repos.
 #######################################
 _check_health_issue_activity_guard() {
 	local repo_slug="$1"
@@ -102,36 +108,87 @@ _check_health_issue_activity_guard() {
 	local runner_user="$3"
 	local health_issue_file="$4"
 
-	[[ -f "$health_issue_file" ]] && return 0
-
 	local guard_pr_count guard_assigned_count guard_auto_dispatch_count guard_worker_count
 	local _guard_fields=()
+	_HEALTH_ISSUE_ACTIVITY_STATE="$_HEALTH_ACTIVITY_STATE_ACTIVE"
 	while IFS= read -r -d '' _gf; do
 		_guard_fields+=("$_gf")
 	done < <(_scan_active_workers "${repo_path:-}")
 	guard_worker_count="${_guard_fields[1]:-0}"
 	[[ "${guard_worker_count:-0}" -gt 0 ]] && return 0
 
+	local guard_rc=0
 	guard_pr_count=$(gh_pr_list --repo "$repo_slug" --state open \
-		--json number --jq 'length' 2>/dev/null || echo "0")
+		--json number --jq 'length' 2>/dev/null) || guard_rc=$?
+	[[ $guard_rc -ne 0 ]] && return 0
 	[[ "$guard_pr_count" =~ ^[0-9]+$ ]] || guard_pr_count="0"
 	[[ "${guard_pr_count:-0}" -gt 0 ]] && return 0
 
+	guard_rc=0
 	guard_assigned_count=$(gh_issue_list --repo "$repo_slug" \
 		--assignee "$runner_user" --state open \
-		--json number --jq 'length' 2>/dev/null || echo "0")
+		--json number --jq 'length' 2>/dev/null) || guard_rc=$?
+	[[ $guard_rc -ne 0 ]] && return 0
 	[[ "$guard_assigned_count" =~ ^[0-9]+$ ]] || guard_assigned_count="0"
 	[[ "${guard_assigned_count:-0}" -gt 0 ]] && return 0
 
+	guard_rc=0
 	guard_auto_dispatch_count=$(gh_issue_list --repo "$repo_slug" \
 		--label "auto-dispatch" --state open \
-		--json number --jq 'length' 2>/dev/null || echo "0")
+		--json number --jq 'length' 2>/dev/null) || guard_rc=$?
+	[[ $guard_rc -ne 0 ]] && return 0
 	[[ "$guard_auto_dispatch_count" =~ ^[0-9]+$ ]] || guard_auto_dispatch_count="0"
 	[[ "${guard_auto_dispatch_count:-0}" -gt 0 ]] && return 0
 
-	echo "[stats] Health issue: skipping creation for ${repo_slug} — no active PRs, assigned issues, auto-dispatch work, or workers" \
+	_HEALTH_ISSUE_ACTIVITY_STATE="$_HEALTH_ACTIVITY_STATE_IDLE"
+	if [[ ! -f "$health_issue_file" ]]; then
+		echo "[stats] Health issue: skipping creation for ${repo_slug} — no active PRs, assigned issues, auto-dispatch work, or workers" \
+			>>"${LOGFILE:-/dev/null}"
+		return 1
+	fi
+
+	local refresh_state_file="${health_issue_file}.refresh-state"
+	local previous_state="" previous_epoch="0"
+	if [[ -f "$refresh_state_file" ]]; then
+		IFS='|' read -r previous_state previous_epoch <"$refresh_state_file" 2>/dev/null || {
+			previous_state=""
+			previous_epoch="0"
+		}
+	fi
+	[[ "$previous_epoch" =~ ^[0-9]+$ ]] || previous_epoch="0"
+
+	# Missing/active state means this is the first observed idle cycle. Publish
+	# the transition now so titles never advertise workers or queue activity for
+	# the entire idle backoff window.
+	[[ "$previous_state" != "$_HEALTH_ACTIVITY_STATE_IDLE" ]] && return 0
+
+	local idle_interval="${HEALTH_IDLE_REFRESH_INTERVAL:-$_HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT}"
+	[[ "$idle_interval" =~ ^[0-9]+$ ]] || idle_interval="$_HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT"
+	local now_epoch
+	now_epoch=$(date +%s)
+	if [[ $((now_epoch - previous_epoch)) -ge $idle_interval ]]; then
+		return 0
+	fi
+
+	echo "[stats] Health issue: deferring unchanged idle dashboard for ${repo_slug} (interval=${idle_interval}s)" \
 		>>"${LOGFILE:-/dev/null}"
 	return 1
+}
+
+#######################################
+# Record the activity state only after a dashboard body update succeeds.
+# Arguments:
+#   $1 - health issue cache file
+#   $2 - activity state (active|idle)
+#######################################
+_record_health_issue_refresh_state() {
+	local health_issue_file="$1"
+	local activity_state="$2"
+	[[ "$activity_state" == "$_HEALTH_ACTIVITY_STATE_ACTIVE" \
+		|| "$activity_state" == "$_HEALTH_ACTIVITY_STATE_IDLE" ]] \
+		|| activity_state="$_HEALTH_ACTIVITY_STATE_ACTIVE"
+	printf '%s|%s\n' "$activity_state" "$(date +%s)" >"${health_issue_file}.refresh-state"
+	return 0
 }
 
 #######################################
@@ -185,12 +242,14 @@ _update_health_issue_body_or_fail() {
 #   $2 - repo slug
 #   $3 - runner title prefix
 #   $4 - rendered issue body
+#   $5 - snapshot timestamp (ISO8601 UTC)
 #######################################
 _refresh_health_issue_title_from_body() {
 	local health_issue_number="$1"
 	local repo_slug="$2"
 	local runner_prefix="$3"
 	local body="$4"
+	local snapshot_iso="$5"
 	local counts_raw pr_count assigned_issue_count worker_count
 
 	# Re-extract headline counts from the rendered body to build the title.
@@ -198,15 +257,9 @@ _refresh_health_issue_title_from_body() {
 	counts_raw=$(_extract_body_counts "$body")
 	IFS='|' read -r pr_count assigned_issue_count worker_count <<<"$counts_raw"
 
-	local pr_label="PRs"
-	[[ "${pr_count:-0}" -eq 1 ]] && pr_label="PR"
-	local worker_label="workers"
-	[[ "${worker_count:-0}" -eq 1 ]] && worker_label="worker"
-
 	_update_health_issue_title \
 		"$health_issue_number" "$repo_slug" "$runner_prefix" \
-		"$pr_count" "$pr_label" "$assigned_issue_count" \
-		"$worker_count" "$worker_label"
+		"$pr_count" "$assigned_issue_count" "$worker_count" "$snapshot_iso"
 	return 0
 }
 
@@ -270,8 +323,10 @@ _update_health_issue_for_repo() {
 	local health_issue_file="${cache_dir}/health-issue-${canonical_identity_cache_safe}-${slug_safe}"
 	mkdir -p "$cache_dir"
 
+	_HEALTH_ISSUE_ACTIVITY_STATE="$_HEALTH_ACTIVITY_STATE_ACTIVE"
 	_check_health_issue_activity_guard \
 		"$repo_slug" "$repo_path" "$runner_user" "$health_issue_file" || return 0
+	local activity_state="${_HEALTH_ISSUE_ACTIVITY_STATE:-$_HEALTH_ACTIVITY_STATE_ACTIVE}"
 
 	local health_issue_number
 	health_issue_number=$(_resolve_health_issue_number \
@@ -290,6 +345,9 @@ _update_health_issue_for_repo() {
 		"$repo_slug" "$runner_user" "$runner_role" \
 		"$role_label" "$role_display" "$health_issue_number" \
 		"$canonical_identity" "$identity_aliases"
+	_normalize_health_issue_labels \
+		"$health_issue_number" "$repo_slug" "$runner_user" \
+		"$runner_role" "$canonical_identity"
 
 	if [[ "$runner_role" == "supervisor" ]]; then
 		_ensure_health_issue_pinned "$health_issue_number" "$repo_slug" "$runner_user"
@@ -308,7 +366,9 @@ _update_health_issue_for_repo() {
 		"$canonical_identity" "$identity_aliases")
 
 	_update_health_issue_body_or_fail "$health_issue_number" "$repo_slug" "$body" || return 1
-	_refresh_health_issue_title_from_body "$health_issue_number" "$repo_slug" "$runner_prefix" "$body"
+	_refresh_health_issue_title_from_body \
+		"$health_issue_number" "$repo_slug" "$runner_prefix" "$body" "$now_iso"
+	_record_health_issue_refresh_state "$health_issue_file" "$activity_state"
 
 	return 0
 }
