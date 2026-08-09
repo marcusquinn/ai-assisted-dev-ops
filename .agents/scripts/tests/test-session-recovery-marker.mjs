@@ -85,6 +85,14 @@ assert.throws(
   /Invalid recovery marker location|session mismatch/,
 );
 
+const linkedWorkDir = join(root, "linked-work");
+mkdirSync(linkedWorkDir);
+symlinkSync(join(workDir, "opencode-tabby-recovery"), join(linkedWorkDir, "opencode-tabby-recovery"));
+assert.throws(
+  () => resolveSessionRecoveryMarker({ cwd: markerDirectory, workDir: linkedWorkDir }),
+  /Invalid recovery marker root/,
+);
+
 writeFileSync(
   join(markerDirectory, "recovery.json"),
   `${JSON.stringify({

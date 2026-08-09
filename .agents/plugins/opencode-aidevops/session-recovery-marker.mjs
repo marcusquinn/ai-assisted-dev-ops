@@ -140,23 +140,22 @@ function querySessionDirectory(databasePath, sessionID) {
   return rows[0];
 }
 
-export function resolveSessionRecoveryMarker({ cwd, workDir }) {
-  assertSafeText(cwd, "recovered working directory");
-  assertSafeText(workDir, "aidevops work directory");
-  if (!isAbsolute(cwd) || !isAbsolute(workDir)) throw new Error("Recovery paths must be absolute");
-
+function canonicalMarkerDirectory(cwd, workDir, uid) {
   const root = recoveryRoot(resolve(workDir));
   if (!existsSync(root)) return null;
+  if (lstatSync(root).isSymbolicLink()) throw new Error("Invalid recovery marker root");
   const canonicalRoot = realpathSync(root);
   const canonicalCwd = realpathSync(cwd);
   if (!pathIsInside(canonicalRoot, canonicalCwd)) return null;
 
-  const uid = process.getuid();
   if (lstatSync(cwd).isSymbolicLink()) throw new Error("Invalid recovery marker location");
   assertPrivateDirectory(canonicalRoot, uid);
   assertPrivateDirectory(canonicalCwd, uid);
   if (dirname(canonicalCwd) !== canonicalRoot) throw new Error("Invalid recovery marker location");
+  return canonicalCwd;
+}
 
+function readRecoveryMarker(canonicalCwd, uid) {
   const markerPath = join(canonicalCwd, MARKER_BASENAME);
   assertPrivateFile(markerPath, uid);
   const marker = JSON.parse(readFileSync(markerPath, "utf8"));
@@ -164,11 +163,10 @@ export function resolveSessionRecoveryMarker({ cwd, workDir }) {
     throw new Error("Invalid recovery marker schema");
   }
   if (basename(canonicalCwd) !== marker.session_id) throw new Error("Recovery marker session mismatch");
+  return marker;
+}
 
-  const directory = assertSafeText(marker.directory, "marker session directory");
-  const dataDir = assertSafeText(marker.data_dir, "marker OpenCode data directory");
-  if (!isAbsolute(directory) || !isAbsolute(dataDir)) throw new Error("Recovery marker paths must be absolute");
-  const canonicalDirectory = realpathSync(directory);
+function canonicalRecoveryDataDir(dataDir, workDir, uid) {
   const dataDirStat = lstatSync(dataDir);
   if (!dataDirStat.isDirectory() || dataDirStat.isSymbolicLink() || dataDirStat.uid !== uid) {
     throw new Error("Unsafe OpenCode recovery data directory");
@@ -183,16 +181,36 @@ export function resolveSessionRecoveryMarker({ cwd, workDir }) {
   if (!pathIsInside(isolatedRoot, canonicalDataDir) || canonicalDataDir === isolatedRoot) {
     throw new Error("Recovery marker data directory is outside isolated storage");
   }
+  return canonicalDataDir;
+}
 
+function validateRecoveryDatabase(canonicalDataDir, sessionID, canonicalDirectory, uid) {
   const databasePath = join(canonicalDataDir, "opencode", "opencode.db");
   const databaseStat = lstatSync(databasePath);
   if (!databaseStat.isFile() || databaseStat.isSymbolicLink() || databaseStat.uid !== uid) {
     throw new Error("Unsafe OpenCode recovery database");
   }
-  const databaseDirectory = querySessionDirectory(databasePath, marker.session_id);
+  const databaseDirectory = querySessionDirectory(databasePath, sessionID);
   if (realpathSync(databaseDirectory) !== canonicalDirectory) {
     throw new Error("Recovery marker directory does not match the OpenCode session");
   }
+}
+
+export function resolveSessionRecoveryMarker({ cwd, workDir }) {
+  assertSafeText(cwd, "recovered working directory");
+  assertSafeText(workDir, "aidevops work directory");
+  if (!isAbsolute(cwd) || !isAbsolute(workDir)) throw new Error("Recovery paths must be absolute");
+
+  const uid = process.getuid();
+  const canonicalCwd = canonicalMarkerDirectory(cwd, workDir, uid);
+  if (!canonicalCwd) return null;
+  const marker = readRecoveryMarker(canonicalCwd, uid);
+  const directory = assertSafeText(marker.directory, "marker session directory");
+  const dataDir = assertSafeText(marker.data_dir, "marker OpenCode data directory");
+  if (!isAbsolute(directory) || !isAbsolute(dataDir)) throw new Error("Recovery marker paths must be absolute");
+  const canonicalDirectory = realpathSync(directory);
+  const canonicalDataDir = canonicalRecoveryDataDir(dataDir, workDir, uid);
+  validateRecoveryDatabase(canonicalDataDir, marker.session_id, canonicalDirectory, uid);
 
   return {
     sessionID: marker.session_id,
