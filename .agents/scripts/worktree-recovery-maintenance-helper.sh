@@ -355,7 +355,7 @@ _worktree_recovery_maintenance_limits_json() {
 
 _worktree_recovery_maintenance_prepare_selection() {
 	local state_dir="$1"
-	local recovery_root="$2"
+	local platform="$2"
 	local limits_json="$3"
 	local inventory_path=""
 	local ordered_path=""
@@ -370,8 +370,6 @@ _worktree_recovery_maintenance_prepare_selection() {
 	local retention_seconds=""
 	local pressure_active=""
 	local policy_json=""
-	: "$recovery_root"
-
 	WORKTREE_RECOVERY_MAINTENANCE_POLICY_JSON=""
 	WORKTREE_RECOVERY_MAINTENANCE_PLAN_JSON=""
 	max_scan=$(printf '%s\n' "$limits_json" | jq -r '.max_scan') || return 1
@@ -389,7 +387,7 @@ _worktree_recovery_maintenance_prepare_selection() {
 		rm -f "$inventory_path" "$ordered_path"
 		return 1
 	}
-	if ! _worktree_recovery_maintenance_inventory_file "$inventory_path" "$(uname -s 2>/dev/null)"; then
+	if ! _worktree_recovery_maintenance_inventory_file "$inventory_path" "$platform"; then
 		rm -f "$inventory_path" "$ordered_path" "$selected_path"
 		return 1
 	fi
@@ -398,7 +396,11 @@ _worktree_recovery_maintenance_prepare_selection() {
 		rm -f "$inventory_path" "$ordered_path" "$selected_path"
 		return 1
 	fi
-	if [[ -f "$cursor_path" && ! -L "$cursor_path" ]]; then
+	if [[ -e "$cursor_path" || -L "$cursor_path" ]]; then
+		if [[ ! -f "$cursor_path" || -L "$cursor_path" ]]; then
+			rm -f "$inventory_path" "$ordered_path" "$selected_path"
+			return 1
+		fi
 		IFS= read -r offset <"$cursor_path" || offset=0
 		[[ "$offset" =~ ^[0-9]+$ ]] || offset=0
 	fi
@@ -557,7 +559,7 @@ worktree_recovery_maintenance_run() {
 	[[ "$run_status" -eq 0 && -d "$recovery_root" && ! -L "$recovery_root" ]] || run_status=1
 	[[ "$run_status" -ne 0 ]] || limits_json=$(_worktree_recovery_maintenance_limits_json "$recovery_root") || run_status=1
 	[[ "$run_status" -ne 0 ]] || _worktree_recovery_maintenance_prepare_selection \
-		"$state_dir" "$recovery_root" "$limits_json" || run_status=1
+		"$state_dir" "$platform" "$limits_json" || run_status=1
 	if [[ "$run_status" -ne 0 ]]; then
 		_worktree_recovery_maintenance_release_lock || true
 		return 1

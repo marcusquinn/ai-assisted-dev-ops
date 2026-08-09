@@ -962,6 +962,32 @@ test_automatic_maintenance_resumes_interrupted_apply() {
 	return 0
 }
 
+test_automatic_maintenance_rejects_symlink_cursor() {
+	local home_path="${TEST_DIR}/automatic-cursor-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local cursor_target="${home_path}/cursor-target"
+	local rc=0
+
+	mkdir -p "$recovery_root" "$state_dir" || rc=1
+	printf 'preserve\n' >"$cursor_target" || rc=1
+	ln -s "$cursor_target" "${state_dir}/cursor" || rc=1
+	if (
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			worktree_recovery_maintenance_run >/dev/null 2>&1
+	); then rc=1; fi
+	[[ "$(<"$cursor_target")" == "preserve" && -L "${state_dir}/cursor" ]] || rc=1
+	print_result "automatic_maintenance_rejects_symlink_cursor" "$rc" \
+		"Expected maintenance to fail closed without following a cursor symlink"
+	return 0
+}
+
 # shellcheck source=../audit-worktree-removal-helper.sh
 source "${SCRIPTS_DIR}/audit-worktree-removal-helper.sh"
 # shellcheck source=../worktree-recovery-lifecycle-helper.sh
@@ -991,5 +1017,6 @@ test_shared_producer_lock_fails_closed_and_reclaims_stale
 test_apply_handles_attributable_legacy_root_transaction
 test_automatic_maintenance_is_bounded_and_policy_bound
 test_automatic_maintenance_resumes_interrupted_apply
+test_automatic_maintenance_rejects_symlink_cursor
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]
