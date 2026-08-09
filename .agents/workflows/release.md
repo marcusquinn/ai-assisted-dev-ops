@@ -76,6 +76,24 @@ PR published, and marks included source receipts superseded with immutable
 release links. Arbitrary descendants and unreviewed direct commits remain
 blocked.
 
+If an unpublished signed tag and active remote-publication lane already exist,
+use the explicit transactional recovery command instead of the ordinary retry:
+
+```bash
+aidevops release recover-aggregate <original-source-pr> --tag <vX.Y.Z> \
+  --expected-sources <pr[,pr...]>
+```
+
+The command requires the reviewed aggregate at the exact `origin/main` tip,
+confirms the tag is absent from the remote, GitHub Releases, npm, and Homebrew,
+and verifies the existing authorization is an exact subset of the aggregate.
+It then rotates the lane token, expands authorization, creates a same-version
+empty bump commit over the aggregate, and replaces only the local unpublished
+tag. A failure before durable publication restores the exact previous tag
+object, authorization manifest, and lane state. Remote tags are never rewritten.
+See `reference/release-aggregation-recovery.md` for the state and rollback
+contract.
+
 Protected-main reconciliation rechecks the exact tree immediately before pushing the preserved tag. A descendant with a different tree is `aggregation-required` and stops before tag or package mutation, even when it contains the signed release commit. During exact-tag deployment, generic `setup.sh --non-interactive` is blocked by the release lane; only setup carrying the matching source PR and tag may enter the existing setup mutex. The acquisition order is release lane, then setup lock.
 
 For an already-published immutable tag with an authorization gap, do not retag,

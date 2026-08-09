@@ -13,6 +13,7 @@ maintainer operation approval.
 | Chapter | Use it for |
 |---|---|
 | [Controls and history](release-publication-controls/controls-and-history.md) | Signed-tag provenance, aggregation and supersession recovery, Actions permissions, approved live state, and the audited rollout sequence. |
+| [Unpublished aggregation recovery](release-aggregation-recovery.md) | Transactionally rebinding a local-only provisional tag after a reviewed exact-tip aggregation. |
 
 ## Non-negotiable boundary
 

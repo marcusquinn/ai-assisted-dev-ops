@@ -12,8 +12,11 @@ _AIDEVOPS_RELEASE_LANE_HEAD=""
 _AIDEVOPS_RELEASE_LANE_JSON=""
 _AIDEVOPS_RELEASE_LANE_RESULT=""
 _AIDEVOPS_RELEASE_LANE_TOKEN=""
+_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT=""
 _AIDEVOPS_RELEASE_LANE_PHASE_RESERVED="reserved"
 _AIDEVOPS_RELEASE_LANE_JSON_STRING_TYPE="string"
+_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX="lane-"
+_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX="process-"
 
 _release_lane_cache_path() {
 	local repo="$1"
@@ -158,8 +161,8 @@ _release_lane_reclaim_same_source() {
 	local state_json=""
 	local operation_token=""
 	_release_lane_stale_prepublication "$_AIDEVOPS_RELEASE_LANE_JSON" || return 3
-	operation_token="lane-$(date +%s)-$$-${RANDOM:-0}"
-	state_json=$(jq -c --arg owner "process-$$" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
+	state_json=$(jq -c --arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
 		--arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" --arg token "$operation_token" \
 		'.owner=$owner | .operation_token=$token | .updated_at=$now | .phase=$reserved' \
 		<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
@@ -207,9 +210,9 @@ release_lane_acquire() {
 	*) return 1 ;;
 	esac
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
-	operation_token="lane-$(date +%s)-$$-${RANDOM:-0}"
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
 	state_json=$(jq -cn --arg repo "$repo" --argjson source_pr "$source_pr" --arg expected_sources "$expected_sources" \
-		--arg now "$now" --arg owner "process-$$" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
+		--arg now "$now" --arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
 		--arg token "$operation_token" \
 		'{schema_version:1,repository:$repo,active:true,
 		source_pr:$source_pr,expected_sources:$expected_sources,phase:$reserved,tag:null,owner:$owner,operation_token:$token,
@@ -217,6 +220,60 @@ release_lane_acquire() {
 	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
 	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
 	_AIDEVOPS_RELEASE_LANE_RESULT="acquired"
+	return 0
+}
+
+release_lane_begin_aggregate_recovery() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local previous_sources="$4"
+	local expected_sources="$5"
+	local provisional_tag_object="${6:-}"
+	local operation_token=""
+	local state_json=""
+	local snapshot_json=""
+	[[ "$provisional_tag_object" =~ ^[0-9a-f]{40}$ ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" --arg previous "$previous_sources" '
+		.active == true and .source_pr == $source_pr and .tag == $tag
+		and .expected_sources == $previous
+		and (.phase == "remote-publication" or .phase == "reconcile-required")
+		and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT="$_AIDEVOPS_RELEASE_LANE_JSON"
+	snapshot_json="$_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT"
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
+	state_json=$(jq -c --arg expected "$expected_sources" --arg token "$operation_token" \
+		--arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+		--arg provisional "$provisional_tag_object" --argjson previous "$snapshot_json" '
+		.expected_sources=$expected | .operation_token=$token | .owner=$owner
+		| .phase="aggregation-recovery" | .updated_at=$now
+		| .aggregate_recovery={previous_state:$previous,provisional_tag_object:$provisional}
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
+	return 0
+}
+
+release_lane_restore_aggregate_recovery() {
+	local repo="$1"
+	local source_pr="$2"
+	local snapshot_json="$3"
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" '
+		.active == true and .source_pr == $source_pr and .phase == "aggregation-recovery"
+		and .operation_token == $token
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	if [[ -z "$snapshot_json" ]]; then
+		snapshot_json=$(jq -ce '.aggregate_recovery.previous_state' \
+			<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	fi
+	jq -e --argjson source_pr "$source_pr" '
+		.schema_version == 1 and .active == true and .source_pr == $source_pr
+	' <<<"$snapshot_json" >/dev/null || return 1
+	_release_lane_write "$repo" "$snapshot_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -r '.operation_token' <<<"$snapshot_json") || return 1
 	return 0
 }
 

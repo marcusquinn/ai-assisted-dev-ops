@@ -398,6 +398,19 @@ if _full_loop_persist_release_authorization example/repo 29040 "$observed_source
 fi
 [[ "$(_full_loop_read_release_authorization example/repo 29040)" == "$expected_sources" ]]
 printf 'PASS retries reuse persisted release authorization and reject conflicting intent\n'
+authorization_path=$(_full_loop_release_authorization_path example/repo 29040)
+cp "$authorization_path" "${TEST_ROOT}/authorization-original.json"
+expanded_sources="${expected_sources},29014@1111111111111111111111111111111111111111"
+_full_loop_expand_release_authorization_for_aggregate example/repo 29040 "$expected_sources" "$expanded_sources"
+[[ "$(_full_loop_read_release_authorization example/repo 29040)" == "$expanded_sources" ]]
+_full_loop_restore_release_authorization_after_aggregate example/repo 29040 "$expanded_sources" "$expected_sources"
+[[ "$(_full_loop_read_release_authorization example/repo 29040)" == "$expected_sources" ]]
+cmp -s "$authorization_path" "${TEST_ROOT}/authorization-original.json"
+if _full_loop_expand_release_authorization_for_aggregate example/repo 29040 "$expected_sources" "$observed_sources"; then
+	printf 'FAIL aggregate recovery narrowed trusted release authorization\n'
+	exit 1
+fi
+printf 'PASS reviewed aggregate recovery expands and transactionally restores authorization\n'
 _full_loop_write_release_authorization_gap_evidence example/repo 29010 "$expected_sources" "$observed_sources" \
 	1901024bf5b675e4c6b680a801ea402b75f1f355 0050022840d6ab7df25608a8a16e50b54e12efec \
 	'published tag omitted explicitly authorized sources'

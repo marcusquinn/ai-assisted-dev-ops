@@ -497,6 +497,26 @@ _verify_bump_commit_at_ref() {
 	return 0
 }
 
+_create_aggregate_recovery_bump_commit() {
+	local version="$1"
+	local expected_parent="$2"
+	local current_head=""
+	local remote_head=""
+	local actual_parent=""
+	local commit_subject=""
+	[[ "$expected_parent" =~ ^[0-9a-f]{40}$ ]] || return 1
+	current_head=$(git rev-parse HEAD 2>/dev/null) || return 1
+	remote_head=$(git rev-parse origin/main 2>/dev/null) || return 1
+	[[ "$current_head" == "$expected_parent" && "$remote_head" == "$expected_parent" ]] || return 1
+	git diff --quiet && git diff --cached --quiet || return 1
+	commit_subject=$(_bump_commit_subject "$version") || return 1
+	git commit --allow-empty --no-verify -m "$commit_subject" >/dev/null || return 1
+	_verify_bump_commit_at_ref HEAD "$version" || return 1
+	actual_parent=$(git rev-parse HEAD^ 2>/dev/null) || return 1
+	[[ "$actual_parent" == "$expected_parent" ]]
+	return $?
+}
+
 # Run commit_version_changes with strict return-code semantics and verify
 # that HEAD ended up as the expected bump commit afterward.
 #

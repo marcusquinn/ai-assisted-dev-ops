@@ -328,6 +328,33 @@ _full_loop_read_release_authorization() {
 	return $?
 }
 
+_full_loop_read_release_authorization_record() {
+	local repo="$1"
+	local pr_number="$2"
+	local authorization_path=""
+	authorization_path=$(_full_loop_release_authorization_path "$repo" "$pr_number") || return 1
+	[[ -f "$authorization_path" ]] || return 2
+	jq -ce --arg repo "$repo" --argjson pr "$pr_number" '
+		select(.schema_version == 1 and .repository == $repo and .requested_pr == $pr)
+	' "$authorization_path"
+	return $?
+}
+
+_full_loop_write_release_authorization_snapshot() {
+	local repo="$1"
+	local pr_number="$2"
+	local snapshot_json="$3"
+	local authorization_path=""
+	jq -e --arg repo "$repo" --argjson pr "$pr_number" '
+		.schema_version == 1 and .repository == $repo and .requested_pr == $pr
+	' <<<"$snapshot_json" >/dev/null || return 1
+	authorization_path=$(_full_loop_release_authorization_path "$repo" "$pr_number") || return 1
+	mkdir -p "${authorization_path%/*}" || return 1
+	printf '%s\n' "$snapshot_json" >"${authorization_path}.tmp.$$" || return 1
+	mv "${authorization_path}.tmp.$$" "$authorization_path" || return 1
+	return 0
+}
+
 _full_loop_persist_release_authorization() {
 	local repo="$1"
 	local pr_number="$2"
@@ -355,6 +382,79 @@ _full_loop_persist_release_authorization() {
 		>"${authorization_path}.tmp.$$" || return 1
 	mv "${authorization_path}.tmp.$$" "$authorization_path" || return 1
 	return 0
+}
+
+_full_loop_write_release_authorization_record() {
+	local repo="$1"
+	local pr_number="$2"
+	local expected_sources="$3"
+	local previous_record="${4:-null}"
+	local authorization_path=""
+	local expected_json=""
+	expected_json=$(release_authorization_manifest_json "$expected_sources") || return 1
+	if [[ "$previous_record" != "null" ]]; then
+		jq -e --arg repo "$repo" --argjson pr "$pr_number" '
+			.schema_version == 1 and .repository == $repo and .requested_pr == $pr
+		' <<<"$previous_record" >/dev/null || return 1
+	fi
+	authorization_path=$(_full_loop_release_authorization_path "$repo" "$pr_number") || return 1
+	mkdir -p "${authorization_path%/*}" || return 1
+	jq -cn --arg repo "$repo" --argjson requested_pr "$pr_number" --argjson expected "$expected_json" \
+		--argjson previous "$previous_record" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+		{schema_version:1,repository:$repo,requested_pr:$requested_pr,expected_sources:$expected,recorded_at:$now}
+		+ (if $previous == null then {} else {aggregate_recovery:{previous_authorization:$previous}} end)
+	' >"${authorization_path}.tmp.$$" || return 1
+	mv "${authorization_path}.tmp.$$" "$authorization_path" || return 1
+	return 0
+}
+
+_full_loop_read_release_authorization_recovery_snapshot() {
+	local repo="$1"
+	local pr_number="$2"
+	local record=""
+	record=$(_full_loop_read_release_authorization_record "$repo" "$pr_number") || return 1
+	jq -ce --arg repo "$repo" --argjson pr "$pr_number" '
+		.aggregate_recovery.previous_authorization
+		| select(.schema_version == 1 and .repository == $repo and .requested_pr == $pr)
+	' <<<"$record"
+	return $?
+}
+
+_full_loop_expand_release_authorization_for_aggregate() {
+	local repo="$1"
+	local pr_number="$2"
+	local previous_sources="$3"
+	local expected_sources="$4"
+	local existing=""
+	local previous_record=""
+	previous_sources=$(release_authorization_manifest_string "$previous_sources") || return 1
+	expected_sources=$(release_authorization_manifest_string "$expected_sources") || return 1
+	existing=$(_full_loop_read_release_authorization "$repo" "$pr_number") || return 1
+	[[ "$existing" == "$previous_sources" ]] || return 1
+	release_authorization_subset "$previous_sources" "$expected_sources" || return 1
+	previous_record=$(_full_loop_read_release_authorization_record "$repo" "$pr_number") || return 1
+	_full_loop_write_release_authorization_record "$repo" "$pr_number" "$expected_sources" "$previous_record"
+	return $?
+}
+
+_full_loop_restore_release_authorization_after_aggregate() {
+	local repo="$1"
+	local pr_number="$2"
+	local recovery_sources="$3"
+	local previous_sources="$4"
+	local existing=""
+	local snapshot=""
+	local snapshot_sources=""
+	recovery_sources=$(release_authorization_manifest_string "$recovery_sources") || return 1
+	previous_sources=$(release_authorization_manifest_string "$previous_sources") || return 1
+	existing=$(_full_loop_read_release_authorization "$repo" "$pr_number") || return 1
+	[[ "$existing" == "$recovery_sources" ]] || return 1
+	snapshot=$(_full_loop_read_release_authorization_recovery_snapshot "$repo" "$pr_number") || return 1
+	snapshot_sources=$(jq -r '.expected_sources | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")' \
+		<<<"$snapshot") || return 1
+	[[ "$snapshot_sources" == "$previous_sources" ]] || return 1
+	_full_loop_write_release_authorization_snapshot "$repo" "$pr_number" "$snapshot"
+	return $?
 }
 
 _full_loop_write_release_authorization_gap_evidence() {

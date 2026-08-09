@@ -72,6 +72,19 @@ release_authorization_compare() {
 	return $?
 }
 
+release_authorization_subset() {
+	local subset="$1"
+	local complete="$2"
+	local subset_json=""
+	local complete_json=""
+	subset_json=$(release_authorization_manifest_json "$subset") || return 1
+	complete_json=$(release_authorization_manifest_json "$complete") || return 1
+	jq -e --argjson subset "$subset_json" --argjson complete "$complete_json" '
+		all($subset[]; . as $entry | any($complete[]; . == $entry))
+	' <<<"$complete_json" >/dev/null
+	return $?
+}
+
 _release_authorization_usage() {
 	printf '%s\n' 'Usage: release-authorization-manifest-helper.sh normalize MANIFEST'
 	return 0

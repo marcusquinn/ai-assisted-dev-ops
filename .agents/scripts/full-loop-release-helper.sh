@@ -94,6 +94,8 @@ source "${SCRIPT_DIR}/full-loop-helper-state.sh"
 source "${SCRIPT_DIR}/release-lane-helper.sh"
 # shellcheck source=./full-loop-release-reconcile.sh
 source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
+# shellcheck source=./full-loop-release-aggregate-recovery.sh
+source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
 
 _FULL_LOOP_RESOLVED_SOURCE_JSON=""
 _FULL_LOOP_RESOLVED_SOURCE_PR=""
@@ -280,6 +282,7 @@ Usage:
   aidevops release [patch|minor|major] SOURCE_PR [incremental|full] [--expected-sources PR[,PR...]]
   aidevops release status SOURCE_PR
   aidevops release reconcile SOURCE_PR
+  aidevops release recover-aggregate SOURCE_PR --tag TAG --expected-sources PR[,PR...]
   aidevops release authorization-gap SOURCE_PR --tag TAG --expected-sources PR@SHA[,PR@SHA...] --reason TEXT
 
 Release publication is provenance-bound and normally unattended. `status` is
@@ -460,6 +463,17 @@ main() {
 		}
 		_full_loop_release_bind_repo_context || return 1
 		_full_loop_release_existing_with_lane "$release_type" "$source_pr"
+		return $?
+		;;
+	recover-aggregate)
+		[[ "$source_pr" =~ ^[0-9]+$ && "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && -n "$expected_sources" ]] || {
+			_full_loop_release_usage >&2
+			return 1
+		}
+		_full_loop_release_bind_repo_context || return 1
+		local recovery_repo=""
+		recovery_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+		_full_loop_release_recover_aggregate "$recovery_repo" "$source_pr" "$tag_name" "$expected_sources"
 		return $?
 		;;
 	authorization-gap)

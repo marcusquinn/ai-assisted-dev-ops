@@ -34,6 +34,7 @@ else
 fi
 VERSION_FILE="$REPO_ROOT/VERSION"
 _VERSION_MANAGER_ACTION_RELEASE="release"
+_VERSION_MANAGER_ACTION_RECOVER_AGGREGATE="recover-aggregate"
 
 _version_manager_marker_is_truthy() {
 	local marker=""
@@ -109,7 +110,8 @@ _version_manager_guard_headless_release_scope() {
 	shift || true
 
 	_version_manager_action_is_read_only "$action" "$@" && return 0
-	[[ "$action" == "$_VERSION_MANAGER_ACTION_RELEASE" || "$action" == "post-release" ]] || {
+	[[ "$action" == "$_VERSION_MANAGER_ACTION_RELEASE" || "$action" == "post-release" ||
+		"$action" == "$_VERSION_MANAGER_ACTION_RECOVER_AGGREGATE" ]] || {
 		_version_manager_is_headless_task_worker || return 0
 	}
 
@@ -618,6 +620,98 @@ _main_release() {
 	return 0
 }
 
+_parse_aggregate_recovery_args() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--tag)
+			tag_name="${2:-}"
+			shift 2
+			;;
+		--source-pr)
+			source_pr="${2:-}"
+			shift 2
+			;;
+		--expected-sources)
+			expected_sources="${2:-}"
+			shift 2
+			;;
+		--old-tag-object)
+			old_tag_object="${2:-}"
+			shift 2
+			;;
+		*)
+			print_error "Unknown aggregate recovery option: $1"
+			return 1
+			;;
+		esac
+	done
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ -n "$expected_sources" && "$old_tag_object" =~ ^[0-9a-f]{40}$ ]] || return 1
+	return 0
+}
+
+_validate_aggregate_recovery_context() {
+	local tag_name="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local old_tag_object="$4"
+	local version=""
+	local current_object=""
+	assert_release_linked_worktree || return 1
+	verify_remote_sync main || return 1
+	check_working_tree_clean || return 1
+	version=$(get_current_version) || return 1
+	[[ "$tag_name" == "v${version}" ]] || return 1
+	current_object=$(git rev-parse "refs/tags/${tag_name}" 2>/dev/null) || return 1
+	[[ "$current_object" == "$old_tag_object" ]] || return 1
+	verify_release_source_pr "$source_pr" main "" "$expected_sources" || return 1
+	[[ -n "${VERSION_MANAGER_AGGREGATED_SOURCES:-}" ]] || return 1
+	[[ "${VERSION_MANAGER_SOURCE_MERGE_SHA:-}" == "$(git rev-parse HEAD 2>/dev/null)" ]] || return 1
+	validate_version_consistency "$version" || return 1
+	return 0
+}
+
+_verify_recovered_aggregate_tag() {
+	local tag_name="$1"
+	local repo_slug="${2:-}"
+	local resolver="${AIDEVOPS_RELEASE_SOURCE_RESOLVER:-${SCRIPT_DIR}/release-provenance-helper.sh}"
+	[[ -n "$repo_slug" ]] || repo_slug=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null) || return 1
+	[[ -x "$resolver" ]] || return 1
+	(cd "$REPO_ROOT" && bash "$resolver" verify-local-source --tag "$tag_name" --repo "$repo_slug" >/dev/null)
+	return $?
+}
+
+_execute_aggregate_recovery() {
+	local tag_name="$1"
+	local old_tag_object="$2"
+	local version="${tag_name#v}"
+	local source_merge="${VERSION_MANAGER_SOURCE_MERGE_SHA:-}"
+	local push_rc=0
+	_create_aggregate_recovery_bump_commit "$version" "$source_merge" || return 1
+	replace_unpublished_aggregate_tag "$version" "$old_tag_object" || return 1
+	if ! _verify_recovered_aggregate_tag "$tag_name"; then
+		restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
+		return 1
+	fi
+	push_changes "$version" || push_rc=$?
+	case "$push_rc" in
+	0 | 8) return "$push_rc" ;;
+	esac
+	restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
+	return 1
+}
+
+_main_recover_aggregate() {
+	local tag_name=""
+	local source_pr=""
+	local expected_sources=""
+	local old_tag_object=""
+	_parse_aggregate_recovery_args "$@" || return 1
+	_validate_aggregate_recovery_context "$tag_name" "$source_pr" "$expected_sources" "$old_tag_object" || return 1
+	_execute_aggregate_recovery "$tag_name" "$old_tag_object"
+	return $?
+}
+
 # Print usage/help text.
 _main_usage() {
 	echo "AI DevOps Framework Version Manager"
@@ -632,6 +726,8 @@ _main_usage() {
 	echo "  post-release [--hotfix]       Retry post-publication propagation and deployment gates"
 	echo "  release [major|minor|patch] --source-pr N [--expected-sources PR[,PR...]]"
 	echo "                                 Bump version (default: patch), tag, publish, and deploy from a verified merged PR"
+	echo "  recover-aggregate --tag TAG --source-pr N --expected-sources PR@SHA[,PR@SHA...] --old-tag-object SHA"
+	echo "                                 Replace an unpublished provisional tag after exact-tip reviewed aggregation"
 	echo "  release patch --hotfix       Patch release with hotfix signal for immediate runner propagation"
 	echo "  preflight [major|minor|patch] Run release preflight checks only"
 	echo "  validate                      Validate version consistency across all files"
@@ -690,6 +786,9 @@ main() {
 		else
 			_main_release "${bump_type:-patch}" "${@:3}"
 		fi
+		;;
+	"$_VERSION_MANAGER_ACTION_RECOVER_AGGREGATE")
+		_main_recover_aggregate "${@:2}"
 		;;
 	"github-release")
 		local version

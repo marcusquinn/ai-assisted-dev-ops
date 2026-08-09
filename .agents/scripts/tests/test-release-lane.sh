@@ -157,6 +157,60 @@ run_stale_same_source_recovery_test() (
 	return 0
 )
 
+run_aggregate_recovery_rotation_test() (
+	local state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101","phase":"remote-publication","tag":"v1.2.3","updated_at":"2026-08-09T00:00:00Z","operation_token":"token-old"}'
+	local old_state="$state"
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		state="$state_json"
+		return 0
+	}
+	release_lane_begin_aggregate_recovery test/repo 101 v1.2.3 101 \
+		'101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222' \
+		3333333333333333333333333333333333333333 || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-recovery" &&
+	"$(jq -r '.expected_sources' <<<"$state")" == 101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222 &&
+	"$(jq -r '.operation_token' <<<"$state")" != "token-old" &&
+	"$(jq -r '.aggregate_recovery.provisional_tag_object' <<<"$state")" == 3333333333333333333333333333333333333333 &&
+	"$(jq -c '.aggregate_recovery.previous_state' <<<"$state")" == "$old_state" ]] || return 1
+	release_lane_restore_aggregate_recovery test/repo 101 "$old_state" || return 1
+	[[ "$state" == "$old_state" ]]
+	return $?
+)
+
+run_aggregate_recovery_rejection_test() (
+	local state_mode="competing"
+	release_lane_read() {
+		if [[ "$state_mode" == "terminal" ]]; then
+			_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101","phase":"remote-publication","tag":"v1.2.3","updated_at":"2026-08-09T00:00:00Z","operation_token":"token-old","terminal_receipt":{"status":"published"}}'
+		else
+			_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":202,"expected_sources":"202","phase":"remote-publication","tag":"v1.2.3","updated_at":"2026-08-09T00:00:00Z","operation_token":"token-old"}'
+		fi
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	if release_lane_begin_aggregate_recovery test/repo 101 v1.2.3 101 \
+		'101@1111111111111111111111111111111111111111' \
+		3333333333333333333333333333333333333333; then
+		return 1
+	fi
+	state_mode="terminal"
+	if release_lane_begin_aggregate_recovery test/repo 101 v1.2.3 101 \
+		'101@1111111111111111111111111111111111111111' \
+		3333333333333333333333333333333333333333; then
+		return 1
+	fi
+	return 0
+)
+
 if run_competing_source_test; then assert_result 'competing source receives active lane and reconcile action' true; else assert_result 'competing source receives active lane and reconcile action' false; fi
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
@@ -164,6 +218,8 @@ if run_setup_guard_test; then assert_result 'exact-tag deployment blocks generic
 if run_http_classification_test; then assert_result 'only verified HTTP 404 is classified as an absent lane' true; else assert_result 'only verified HTTP 404 is classified as an absent lane' false; fi
 if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' true; else assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' false; fi
 if run_stale_same_source_recovery_test; then assert_result 'stale recovery rotates its token and fences the prior owner' true; else assert_result 'stale recovery rotates its token and fences the prior owner' false; fi
+if run_aggregate_recovery_rotation_test; then assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' true; else assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' false; fi
+if run_aggregate_recovery_rejection_test; then assert_result 'aggregate recovery rejects competing owners and terminal lanes' true; else assert_result 'aggregate recovery rejects competing owners and terminal lanes' false; fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

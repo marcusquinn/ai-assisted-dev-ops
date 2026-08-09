@@ -32,6 +32,34 @@
 [[ -n "${_VERSION_MANAGER_RELEASE_LOADED:-}" ]] && return 0
 _VERSION_MANAGER_RELEASE_LOADED=1
 
+_version_manager_tag_name() {
+	local version="$1"
+	printf 'v%s\n' "$version"
+	return 0
+}
+
+_version_manager_tag_ref() {
+	local tag_name="$1"
+	printf 'refs/tags/%s\n' "$tag_name"
+	return 0
+}
+
+_version_manager_tag_absent_from_all_remotes() {
+	local tag_ref="$1"
+	local remotes=""
+	local remote=""
+	local remote_rc=0
+	remotes=$(git remote) || return 1
+	[[ -n "$remotes" ]] || return 1
+	while IFS= read -r remote; do
+		[[ -n "$remote" ]] || continue
+		remote_rc=0
+		git ls-remote -q --exit-code --tags "$remote" "$tag_ref" >/dev/null 2>&1 || remote_rc=$?
+		[[ "$remote_rc" -eq 2 ]] || return 1
+	done <<<"$remotes"
+	return 0
+}
+
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_lib_path="${BASH_SOURCE[0]%/*}"
 	[[ "$_lib_path" == "${BASH_SOURCE[0]}" ]] && _lib_path="."
@@ -375,6 +403,63 @@ create_git_tag() {
 		print_error "Failed to create git tag"
 		return 1
 	fi
+	return 0
+}
+
+_restore_unpublished_release_tag() {
+	local tag_name="$1"
+	local original_object="$2"
+	local tag_ref=""
+	tag_ref=$(_version_manager_tag_ref "$tag_name") || return 1
+	git update-ref "$tag_ref" "$original_object" || return 1
+	return 0
+}
+
+replace_unpublished_aggregate_tag() {
+	local version="$1"
+	local original_object="$2"
+	local tag_name=""
+	local tag_ref=""
+	local observed_object=""
+	local replacement_object=""
+	tag_name=$(_version_manager_tag_name "$version") || return 1
+	tag_ref=$(_version_manager_tag_ref "$tag_name") || return 1
+	[[ "$original_object" =~ ^[0-9a-f]{40}$ ]] || return 1
+	observed_object=$(git rev-parse "$tag_ref" 2>/dev/null) || return 1
+	[[ "$observed_object" == "$original_object" ]] || return 1
+	git verify-tag "$tag_name" >/dev/null 2>&1 || return 1
+	_version_manager_tag_absent_from_all_remotes "$tag_ref" || return 1
+	git update-ref -d "$tag_ref" "$original_object" || return 1
+	if ! create_git_tag "$version"; then
+		_restore_unpublished_release_tag "$tag_name" "$original_object" || true
+		return 1
+	fi
+	if ! replacement_object=$(git rev-parse "$tag_ref" 2>/dev/null); then
+		restore_unpublished_aggregate_tag "$version" "$original_object" || true
+		return 1
+	fi
+	if [[ "$replacement_object" == "$original_object" ]] || ! git verify-tag "$tag_name" >/dev/null 2>&1; then
+		git update-ref -d "$tag_ref" "$replacement_object" || true
+		_restore_unpublished_release_tag "$tag_name" "$original_object" || true
+		return 1
+	fi
+	return 0
+}
+
+restore_unpublished_aggregate_tag() {
+	local version="$1"
+	local original_object="$2"
+	local tag_name=""
+	local tag_ref=""
+	local current_object=""
+	tag_name=$(_version_manager_tag_name "$version") || return 1
+	tag_ref=$(_version_manager_tag_ref "$tag_name") || return 1
+	_version_manager_tag_absent_from_all_remotes "$tag_ref" || return 1
+	current_object=$(git rev-parse "$tag_ref" 2>/dev/null || true)
+	if [[ -n "$current_object" ]]; then
+		git update-ref -d "$tag_ref" "$current_object" || return 1
+	fi
+	_restore_unpublished_release_tag "$tag_name" "$original_object" || return 1
 	return 0
 }
 
