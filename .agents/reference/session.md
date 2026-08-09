@@ -44,7 +44,7 @@ Context compaction is a handoff to another model, not a reduced transcript. Its 
 ## Git Workflow Detail
 
 - Before edits: run the pre-edit check from `AGENTS.md`.
-- After branch creation: check `TODO.md` for matching tasks, record `started:`, and set a long, descriptive session title. With issue/PR context, use `Issue #123: <complete issue title> — <action context>` or `PR #456: <complete PR title> — <action context>`; never use a bare number or impose an arbitrary character limit. Otherwise use a full task summary, then read `workflows/git-workflow.md`. Use `session-rename_sync_branch` only when no meaningful task context exists.
+- After branch creation: check `TODO.md` for matching tasks and record `started:`. Keep the first meaningful session title as its stable overall purpose; do not replace it with a branch, implementation phase, review, release, or other transient state. If no meaningful title exists, issue/PR work uses `Issue #123: <complete issue title>` or `PR #456: <complete PR title>` and other work uses the full task summary. Append evolving detail only as `— Current: <context>` and replace the stable purpose only after an explicit user redirect. Use `session-rename_sync_branch` only when no meaningful task context exists.
 - Canonical checkout with unexpected state: keep implementation in a linked worktree; never stash/reset/clean it directly. Explicit mirror synchronization uses the verified preserve-clean-sync route in `reference/dirty-worktree-preservation.md`.
 
 Worktrees are preferred for parallel work:

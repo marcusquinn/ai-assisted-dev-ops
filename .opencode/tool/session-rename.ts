@@ -1,7 +1,11 @@
 import { Database } from "bun:sqlite"
 import { tool } from "@opencode-ai/plugin"
 import { getDbPath } from "../lib/opencode-db-path"
-import { isDefaultBranchTitle, isTitleOverwritable } from "../lib/session-rename-guards"
+import {
+  isDefaultBranchTitle,
+  isTitleOverwritable,
+  purposePreservingTitle,
+} from "../lib/session-rename-guards"
 import { withAidevopsTitleSuffix } from "../lib/session-title-suffix"
 import { emitTerminalTitle } from "../lib/terminal-title"
 
@@ -12,13 +16,21 @@ import { emitTerminalTitle } from "../lib/terminal-title"
  * Drizzle ORM call that writes to the local SQLite DB. The TUI reads from the
  * same DB and picks up changes immediately (verified empirically).
  */
-function renameSession(sessionID: string, title: string): { success: boolean; message: string } {
+function renameSession(
+  sessionID: string,
+  title: string,
+  replacePurpose = false,
+): { success: boolean; message: string } {
   const dbPath = getDbPath()
-  const displayTitle = withAidevopsTitleSuffix(title)
 
   try {
     const db = new Database(dbPath)
     try {
+      const current = db
+        .query("SELECT COALESCE(title, '') AS title FROM session WHERE id = ?")
+        .get(sessionID) as { title: string } | null
+      const preservedTitle = purposePreservingTitle(current?.title || "", title, replacePurpose)
+      const displayTitle = withAidevopsTitleSuffix(preservedTitle)
       const nowMs = Date.now()
       const result = db.run(
         "UPDATE session SET title = ?, time_updated = ? WHERE id = ?",
@@ -96,20 +108,21 @@ function syncSessionWithBranch(
 
 export default tool({
   description:
-    "Rename the current session to a long, descriptive title. For issue/PR work, start with the issue or PR marker and include the complete issue/PR title plus useful action context (for example, 'Issue #123: Fix dispatch title prefix — implementation and release' or 'PR #456: Refresh auth workflow tests — review thread'). Never use only an issue/PR number and do not impose an arbitrary character limit; OpenCode can display long titles. The AIDevOps version suffix is appended automatically and should remain present.",
+    "Set or extend the current session title without losing its original overall purpose. The first meaningful purpose remains the stable prefix; later phases become a trailing '— Current: ...' context. Do not rename for branches, implementation phases, reviews, releases, or other transient state when the existing title already identifies the session. Set replace_purpose only when the user explicitly repurposes the whole session. For issue/PR work, keep the complete issue/PR identity at the beginning. Long titles are supported and the AIDevOps version suffix is automatic.",
   args: {
     title: tool.schema
       .string()
-      .describe("Long, descriptive session title (for issue/PR work, use 'Issue #123: <complete issue title> — <action context>' or 'PR #456: <complete PR title> — <action context>'; never use a bare issue/PR number or an arbitrary character limit; otherwise summarize the task fully; keep the automatically appended AIDevOps version suffix)"),
+      .describe("Long title or current-context description; the tool preserves the existing stable purpose unless replace_purpose is explicitly authorised"),
+    replace_purpose: tool.schema
+      .boolean()
+      .optional()
+      .describe("Replace the stable original purpose only when the user explicitly redirects or repurposes the whole session"),
   },
   async execute(args, context) {
     const { sessionID } = context
-    const { title } = args
+    const { title, replace_purpose: replacePurpose = false } = args
 
-    // Explicit rename is a manual override — no guards. Matches the
-    // session-rename-helper.sh contract where `rename` is unguarded but
-    // `sync-branch` enforces the meaningful-title invariants (t2039/t2252).
-    const result = renameSession(sessionID, title)
+    const result = renameSession(sessionID, title, replacePurpose)
 
     if (result.success) {
       emitTerminalTitle(result.message)

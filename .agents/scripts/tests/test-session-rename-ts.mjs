@@ -20,7 +20,7 @@ import { join } from "node:path";
 // dependencies so it loads cleanly under `bun run` without the OpenCode
 // plugin runtime. session-rename.ts re-exports these symbols for callers
 // that already import from it.
-const { isDefaultBranchTitle, isTitleOverwritable } = await import(
+const { isDefaultBranchTitle, isTitleOverwritable, purposePreservingTitle } = await import(
   "../../../.opencode/lib/session-rename-guards.ts"
 );
 const { getDbPath } = await import("../../../.opencode/lib/opencode-db-path.ts");
@@ -164,8 +164,39 @@ assertEq(
 );
 assertEq("terminal title emit defaults to enabled", true, isTerminalTitleEnabled({}));
 
+// --- stable session purpose -------------------------------------------------
+console.log("\nGroup 4: stable session purpose");
+assertEq(
+  "default title accepts the requested purpose",
+  "Investigate crash restoration",
+  purposePreservingTitle("New Session", "Investigate crash restoration"),
+);
+assertEq(
+  "later phase preserves the original purpose",
+  "Investigate crash restoration — Current: implement the Tabby marker",
+  purposePreservingTitle("Investigate crash restoration · AIDevOps 3.32.243", "implement the Tabby marker"),
+);
+assertEq(
+  "later phase replaces only the prior Current context",
+  "Investigate crash restoration — Current: release for testing",
+  purposePreservingTitle(
+    "Investigate crash restoration — Current: implement the Tabby marker · AIDevOps 3.32.243",
+    "release for testing",
+  ),
+);
+assertEq(
+  "a requested title already containing the purpose is not duplicated",
+  "Investigate crash restoration — verification",
+  purposePreservingTitle("Investigate crash restoration", "Investigate crash restoration — verification"),
+);
+assertEq(
+  "explicit repurpose replaces the stable purpose",
+  "Review an unrelated deployment",
+  purposePreservingTitle("Investigate crash restoration", "Review an unrelated deployment", true),
+);
+
 // --- AIDevOps session title suffix helpers ----------------------------------
-console.log("\nGroup 4: AIDevOps session title suffix helpers");
+console.log("\nGroup 5: AIDevOps session title suffix helpers");
 assertEq(
   "suffix is appended",
   "Issue #123: concise title · AIDevOps 9.8.7",
@@ -223,7 +254,7 @@ try {
 }
 
 // --- OpenCode DB path helpers ------------------------------------------------
-console.log("\nGroup 5: OpenCode DB path helpers");
+console.log("\nGroup 6: OpenCode DB path helpers");
 assertEq(
   "XDG_DATA_HOME selects isolated OpenCode DB",
   "/tmp/aidevops-opencode/opencode/opencode.db",

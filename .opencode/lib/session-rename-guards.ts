@@ -13,6 +13,9 @@
 
 import type { Database } from "bun:sqlite"
 
+const AIDEVOPS_TITLE_SUFFIX_RE = /\s+· AIDevOps \d+\.\d+\.\d+$/
+const CURRENT_CONTEXT_SEPARATOR = " — Current: "
+
 /**
  * Check whether a branch name is a default (non-feature) branch.
  *
@@ -70,4 +73,27 @@ export function isTitleOverwritable(db: Database, sessionID: string): boolean {
     default:
       return false
   }
+}
+
+/**
+ * Preserve the first meaningful session purpose while allowing the current
+ * phase to evolve. Explicit replacement is reserved for a user-directed
+ * repurpose of the whole session.
+ */
+export function purposePreservingTitle(
+  currentTitle: string,
+  requestedTitle: string,
+  replacePurpose = false,
+): string {
+  const currentBase = currentTitle.replace(AIDEVOPS_TITLE_SUFFIX_RE, "").trim()
+  const requestedBase = requestedTitle.replace(AIDEVOPS_TITLE_SUFFIX_RE, "").trim()
+
+  if (!currentBase || isDefaultBranchTitle(currentBase) || currentBase === "New Session") {
+    return requestedBase
+  }
+  if (replacePurpose) return requestedBase
+
+  const purpose = currentBase.split(CURRENT_CONTEXT_SEPARATOR, 1)[0].trim()
+  if (!purpose || requestedBase.includes(purpose)) return requestedBase
+  return `${purpose}${CURRENT_CONTEXT_SEPARATOR}${requestedBase}`
 }
