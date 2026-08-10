@@ -373,19 +373,17 @@ def sample_json() -> str:
 
 
 def handle_static_mode() -> bool:
-    if MODE == "print-css":
-        print(load_css(TEMPLATE, PDF_PROFILE))
-        return True
-    if MODE == "list-templates":
-        print("\n".join(BUILTIN_TEMPLATES))
-        return True
-    if MODE == "list-dark-templates":
-        print("\n".join(dark_style_names()))
-        return True
-    if MODE == "sample-json":
-        print(sample_json())
-        return True
-    return False
+    handlers = {
+        "print-css": lambda: load_css(TEMPLATE, PDF_PROFILE),
+        "list-templates": lambda: "\n".join(BUILTIN_TEMPLATES),
+        "list-dark-templates": lambda: "\n".join(dark_style_names()),
+        "sample-json": sample_json,
+    }
+    handler = handlers.get(MODE)
+    if handler is None:
+        return False
+    print(handler())
+    return True
 
 
 def handle_text_mode(text: str) -> None:
