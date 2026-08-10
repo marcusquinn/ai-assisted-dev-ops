@@ -49,8 +49,10 @@ mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/.agent-workspace/supervisor
 source "${TEST_SCRIPTS_DIR}/issue-sync-helper.sh" >/dev/null 2>&1
 set +e
 
-# Labels that MUST be protected (coordination signals from GH#19856)
-for lbl in "no-auto-dispatch" "no-takeover" "consolidation-in-progress" \
+# Labels that MUST be protected (coordination signals from GH#19856).
+# publication:pending must survive enrich until default-branch reconciliation
+# validates its canonical TODO/brief mapping and removes the hold last.
+for lbl in "no-auto-dispatch" "publication:pending" "no-takeover" "consolidation-in-progress" \
 	"coderabbit-nits-ok" "ratchet-bump" "new-file-smell-ok"; do
 	if _is_protected_label "$lbl"; then
 		print_result "_is_protected_label protects '$lbl'" 0
@@ -118,6 +120,10 @@ _main() {
 	fi
 	if [[ "\$cmd" == "api" ]]; then
 		[[ "${fail_reads}" == "true" ]] && return 1
+		if [[ "\${2:-}" == /repos/*/issues/* || "\${2:-}" == repos/*/issues/* ]]; then
+			echo '${payload}'
+			return 0
+		fi
 		echo '{"login": "testbot"}'
 		return 0
 	fi
