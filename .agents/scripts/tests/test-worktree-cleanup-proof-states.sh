@@ -29,6 +29,79 @@ print_result() {
 	return 0
 }
 
+fixture_git_mock() {
+	if [[ "${1:-}" == "remote" && "${2:-}" == "get-url" && "${3:-}" == "origin" ]]; then
+		printf '%s\n' 'git@github.com:marcusquinn/aidevops.git'
+		return 0
+	fi
+	if [[ "${1:-}" == "branch" && "${2:-}" == "--merged" ]]; then
+		return 0
+	fi
+	if [[ "${1:-}" == "rev-list" && "${2:-}" == "--left-right" && "${3:-}" == "--count" ]]; then
+		case "${4:-}" in
+		origin/main...refs/heads/fix/remote-contained | origin/main...refs/heads/fix/remote-dirty)
+			printf '%s\n' '3 0'
+			return 0
+			;;
+		origin/main...refs/heads/fix/remote-ahead)
+			printf '%s\n' '3 1'
+			return 0
+			;;
+		esac
+	fi
+	if [[ "${1:-}" == "rev-parse" ]]; then
+		printf '%s\n' '0123456789abcdef0123456789abcdef01234567'
+		return 0
+	fi
+	if [[ "${1:-}" == "merge-base" && "${2:-}" == "--is-ancestor" ]]; then
+		return 1
+	fi
+	command git "$@"
+	return $?
+}
+
+fixture_gh_pr_list_mock() {
+	local repo="" state="" head="" jq=""
+	while [[ $# -gt 0 ]]; do
+		case "${1:-}" in
+		--repo)
+			repo="${2:-}"
+			shift 2
+			;;
+		--state)
+			state="${2:-}"
+			shift 2
+			;;
+		--head)
+			head="${2:-}"
+			shift 2
+			;;
+		--jq)
+			jq="${2:-}"
+			shift 2
+			;;
+		*) shift ;;
+		esac
+	done
+	if [[ -z "$repo" ]]; then
+		printf '%s\n' '_rest_pr_list: --repo is required' >&2
+		return 2
+	fi
+	if [[ "$mode" == "fail-pr-list" ]]; then
+		return 1
+	fi
+	if [[ "$head" == "fix/exact-merged" && "$state" == "merged" && "$jq" == "length" ]]; then
+		printf '%s\n' '1'
+		return 0
+	fi
+	case "$state" in
+	merged) printf '%s\n' 'fix/list-merged' ;;
+	open) printf '%s\n' 'fix/open-pr' ;;
+	closed) printf '%s\n' 'fix/closed-pr' ;;
+	esac
+	return 0
+}
+
 run_fixture() {
 	local mode="$1"
 	local fixture_code="$2"
@@ -43,51 +116,13 @@ run_fixture() {
 		export RED GREEN YELLOW BLUE BOLD NC _WTAR_REMOVED _WTAR_SKIPPED _WTAR_WH_CALLER
 
 		git() {
-			if [[ "${1:-}" == "remote" && "${2:-}" == "get-url" && "${3:-}" == "origin" ]]; then
-				printf '%s\n' 'git@github.com:marcusquinn/aidevops.git'
-				return 0
-			fi
-			if [[ "${1:-}" == "branch" && "${2:-}" == "--merged" ]]; then
-				return 0
-			fi
-			if [[ "${1:-}" == "rev-parse" ]]; then
-				printf '%s\n' '0123456789abcdef0123456789abcdef01234567'
-				return 0
-			fi
-			if [[ "${1:-}" == "merge-base" && "${2:-}" == "--is-ancestor" ]]; then
-				return 1
-			fi
-			command git "$@"
+			fixture_git_mock "$@"
+			return $?
 		}
 
 		gh_pr_list() {
-			local repo="" state="" head="" jq=""
-			while [[ $# -gt 0 ]]; do
-				case "${1:-}" in
-				--repo) repo="${2:-}"; shift 2 ;;
-				--state) state="${2:-}"; shift 2 ;;
-				--head) head="${2:-}"; shift 2 ;;
-				--jq) jq="${2:-}"; shift 2 ;;
-				*) shift ;;
-				esac
-			done
-			if [[ -z "$repo" ]]; then
-				printf '%s\n' '_rest_pr_list: --repo is required' >&2
-				return 2
-			fi
-			if [[ "$mode" == "fail-pr-list" ]]; then
-				return 1
-			fi
-			if [[ "$head" == "fix/exact-merged" && "$state" == "merged" && "$jq" == "length" ]]; then
-				printf '%s\n' '1'
-				return 0
-			fi
-			case "$state" in
-			merged) printf '%s\n' 'fix/list-merged' ;;
-			open) printf '%s\n' 'fix/open-pr' ;;
-			closed) printf '%s\n' 'fix/closed-pr' ;;
-			esac
-			return 0
+			fixture_gh_pr_list_mock "$@"
+			return $?
 		}
 
 		command() {
@@ -105,7 +140,10 @@ run_fixture() {
 
 		_branch_has_active_interactive_claim() { return 1; }
 		is_worktree_owned_by_others() { return 1; }
-		check_worktree_owner() { printf '\n'; return 0; }
+		check_worktree_owner() {
+			printf '\n'
+			return 0
+		}
 		worktree_is_in_grace_period() { return 1; }
 		branch_has_zero_commits_ahead() { return 1; }
 		worktree_has_changes() { return 1; }
@@ -116,7 +154,10 @@ run_fixture() {
 		unregister_worktree() { return 0; }
 		worktree_removal_guard() { return 0; }
 		remove_worktree_path_permanently() { return 1; }
-		log_worktree_removal_event() { printf '%s|%s|%s\n' "${4:-}" "${5:-}" "${6:-}" >>"$TEST_ROOT/audit.log"; return 0; }
+		log_worktree_removal_event() {
+			printf '%s|%s|%s\n' "${4:-}" "${5:-}" "${6:-}" >>"$TEST_ROOT/audit.log"
+			return 0
+		}
 
 		eval "$fixture_code"
 	)
@@ -184,11 +225,63 @@ test_unknown_pr_proof_skips_remote_deleted() {
 	return 0
 }
 
+test_remote_tracking_default_classifies_clean_branch() {
+	local output
+	# shellcheck disable=SC2016 # evaluated inside run_fixture after sourcing the cleanup lib
+	output=$(run_fixture ok '_WT_CLEAN_REMOTE_DEFAULT_REF="origin/main"; _clean_classify_worktree "/tmp/wt-remote" "fix/remote-contained" "main" "false" "" "" "true" "" >/dev/null; printf "%s|%s\n" "$_WT_CLEAN_LAST_MERGE_TYPE" "$_WT_CLEAN_LAST_AUDIT_CONTEXT"')
+	if [[ "$output" == *"merged remote-tracking default"* && "$output" == *"merge_proof=remote-tracking-default-is-ancestor"* && "$output" == *"merge_proof_result=merged-remote-tracking-default"* ]]; then
+		print_result "remote-tracking default proof classifies clean contained branch" 0
+	else
+		print_result "remote-tracking default proof classifies clean contained branch" 1 "($output)"
+	fi
+	return 0
+}
+
+test_remote_tracking_default_preserves_dirty_branch() {
+	local output
+	# shellcheck disable=SC2016 # evaluated inside run_fixture after sourcing the cleanup lib
+	output=$(run_fixture ok '_WT_CLEAN_REMOTE_DEFAULT_REF="origin/main"; worktree_has_changes() { return 0; }; _clean_classify_worktree "/tmp/wt-remote-dirty" "fix/remote-dirty" "main" "true" "" "" "true" "" >/dev/null; printf "%s\n" "$_WT_CLEAN_LAST_MERGE_TYPE"')
+	if [[ -z "$output" ]]; then
+		print_result "remote-tracking default proof preserves dirty branch" 0
+	else
+		print_result "remote-tracking default proof preserves dirty branch" 1 "($output)"
+	fi
+	return 0
+}
+
+test_remote_tracking_default_allows_degraded_recovery() {
+	local output
+	# shellcheck disable=SC2016 # evaluated inside run_fixture after sourcing the cleanup lib
+	output=$(run_fixture ok '_WT_CLEAN_REMOTE_DEFAULT_REF="origin/main"; WORKTREE_REMOVAL_GUARD_REASON="cwd-visibility-degraded"; _clean_has_exact_removal_lease() { return 0; }; if _clean_degraded_visibility_fallback_allowed "/tmp/wt-remote" "fix/remote-contained" "$_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED" "" "" "" "branch=fix/remote-contained" "main"; then printf "%s\n" allowed; else printf "%s\n" blocked; fi')
+	if [[ "$output" == "allowed" ]]; then
+		print_result "remote-tracking default proof allows degraded recovery" 0
+	else
+		print_result "remote-tracking default proof allows degraded recovery" 1 "($output)"
+	fi
+	return 0
+}
+
+test_remote_tracking_default_blocks_dirty_degraded_recovery() {
+	local output
+	# shellcheck disable=SC2016 # evaluated inside run_fixture after sourcing the cleanup lib
+	output=$(run_fixture ok '_WT_CLEAN_REMOTE_DEFAULT_REF="origin/main"; WORKTREE_REMOVAL_GUARD_REASON="cwd-visibility-degraded"; _clean_has_exact_removal_lease() { return 0; }; worktree_has_changes() { return 0; }; if _clean_degraded_visibility_fallback_allowed "/tmp/wt-remote-dirty" "fix/remote-dirty" "$_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED" "" "" "" "branch=fix/remote-dirty" "main"; then printf "%s\n" allowed; else printf "%s\n" blocked; fi')
+	if [[ "$output" == "blocked" ]]; then
+		print_result "remote-tracking degraded recovery preserves dirty branch" 0
+	else
+		print_result "remote-tracking degraded recovery preserves dirty branch" 1 "($output)"
+	fi
+	return 0
+}
+
 test_builders_pass_repo
 test_exact_merged_pr_fallback
 test_open_pr_protects_worktree
 test_closed_pr_positive_proof
 test_unknown_pr_proof_skips_remote_deleted
+test_remote_tracking_default_classifies_clean_branch
+test_remote_tracking_default_preserves_dirty_branch
+test_remote_tracking_default_allows_degraded_recovery
+test_remote_tracking_default_blocks_dirty_degraded_recovery
 
 printf '\nTests run: %s, failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1

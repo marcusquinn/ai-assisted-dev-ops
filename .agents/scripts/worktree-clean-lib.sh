@@ -673,11 +673,13 @@ _clean_prepare_git_branch_caches() {
 	_WT_CLEAN_PUSHED_BRANCHES=""
 	_WT_CLEAN_REMOTE_BRANCHES=""
 	_WT_CLEAN_REMOTE_BRANCH_CACHE_READY=false
+	_WT_CLEAN_REMOTE_DEFAULT_REF=""
 
 	if merged_branches=$(git branch --format='%(refname:short)' --merged "$default_br" 2>/dev/null); then
 		_WT_CLEAN_LOCAL_MERGED_BRANCHES="$merged_branches"
 		_WT_CLEAN_LOCAL_MERGED_CACHE_READY=true
 	fi
+	_WT_CLEAN_REMOTE_DEFAULT_REF=$(_clean_remote_default_ref "$default_br" 2>/dev/null || true)
 
 	upstream_lines=$(git for-each-ref --format='%(refname:short)%09%(upstream:remotename)' refs/heads/ 2>/dev/null) || upstream_status=$?
 	remote_branches=$(git for-each-ref --format='%(refname:lstrip=3)' refs/remotes/ 2>/dev/null) || remote_status=$?
@@ -696,6 +698,26 @@ _clean_prepare_git_branch_caches() {
 	return 0
 }
 
+_clean_remote_default_ref() {
+	local default_br="$1"
+	local remote_ref=""
+
+	[[ -n "$default_br" ]] || return 1
+	if git show-ref --verify --quiet "refs/remotes/origin/${default_br}" 2>/dev/null; then
+		printf 'origin/%s\n' "$default_br"
+		return 0
+	fi
+	while IFS= read -r remote_ref; do
+		[[ -n "$remote_ref" ]] || continue
+		case "$remote_ref" in
+		*/HEAD) continue ;;
+		esac
+		printf '%s\n' "$remote_ref"
+		return 0
+	done < <(git for-each-ref --format='%(refname:short)' "refs/remotes/*/${default_br}" 2>/dev/null)
+	return 1
+}
+
 _clean_branch_is_locally_merged() {
 	local wt_branch="$1"
 	local default_br="$2"
@@ -708,6 +730,26 @@ _clean_branch_is_locally_merged() {
 	merged_branches=$(git branch --format='%(refname:short)' --merged "$default_br" 2>/dev/null) || return 1
 	_clean_branch_list_contains_exact "$wt_branch" "$merged_branches"
 	return $?
+}
+
+_clean_branch_is_remote_default_contained() {
+	local wt_branch="$1"
+	local default_br="$2"
+	local remote_default_ref="${_WT_CLEAN_REMOTE_DEFAULT_REF:-}"
+	local counts=""
+	local _left_count=""
+	local right_count=""
+
+	[[ -n "$wt_branch" && -n "$default_br" ]] || return 1
+	if [[ -z "$remote_default_ref" ]]; then
+		remote_default_ref=$(_clean_remote_default_ref "$default_br" 2>/dev/null || true)
+	fi
+	[[ -n "$remote_default_ref" ]] || return 1
+	counts=$(git rev-list --left-right --count "${remote_default_ref}...refs/heads/${wt_branch}" 2>/dev/null) || return 1
+	IFS=$'\t ' read -r _left_count right_count <<<"$counts"
+	[[ "$right_count" =~ ^[0-9]+$ ]] || return 1
+	[[ "$right_count" -eq 0 ]] || return 1
+	return 0
 }
 
 _clean_branch_was_pushed_cached() {
@@ -886,11 +928,16 @@ _WT_CLEAN_LOCAL_MERGED_CACHE_READY="${_WT_CLEAN_LOCAL_MERGED_CACHE_READY:-false}
 _WT_CLEAN_PUSHED_BRANCHES="${_WT_CLEAN_PUSHED_BRANCHES:-}"
 _WT_CLEAN_REMOTE_BRANCHES="${_WT_CLEAN_REMOTE_BRANCHES:-}"
 _WT_CLEAN_REMOTE_BRANCH_CACHE_READY="${_WT_CLEAN_REMOTE_BRANCH_CACHE_READY:-false}"
+_WT_CLEAN_REMOTE_DEFAULT_REF="${_WT_CLEAN_REMOTE_DEFAULT_REF:-}"
 _WT_CLEAN_EXACT_PR_PREFETCH_COMPLETE="${_WT_CLEAN_EXACT_PR_PREFETCH_COMPLETE:-false}"
 _WT_CLEAN_TYPE_SQUASH_MERGED_PR="squash-merged PR"
 _WT_CLEAN_TYPE_CLOSED_PR="closed PR"
+_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED="merged remote-tracking default"
 _WT_CLEAN_PROOF_GH_MERGED_PR="github-merged-pr"
 _WT_CLEAN_PROOF_GH_MERGED_PR_STATE="github-merged-pr-state"
+_WT_CLEAN_PROOF_REMOTE_TRACKING_DEFAULT="remote-tracking-default-is-ancestor"
+_WT_CLEAN_PROOF_REMOTE_TRACKING_RESULT="merged-remote-tracking-default"
+_WT_CLEAN_PROOF_NOT_ANCESTOR="not-ancestor"
 _WT_CLEAN_REASON_BRANCH_MERGED="branch-merged"
 _WT_CLEAN_REASON_PR_PROOF_UNKNOWN="unknown:pr-proof-unavailable"
 _WT_CLEAN_REASON_PROTECTED_PASS="protected-pass-skip"
@@ -1093,6 +1140,10 @@ _clean_resolve_merge_proof() {
 		printf '%s\t%s\n' "$merge_type" "$_WT_CLEAN_PROOF_GH_MERGED_PR"
 		return 0
 	fi
+	if [[ "$merge_type" == "$_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED" ]]; then
+		_clean_resolve_remote_tracking_proof "$wt_branch" "$default_br" "$merge_type"
+		return $?
+	fi
 	if _clean_branch_head_is_ancestor "$wt_branch" "$default_br"; then
 		printf '%s\t%s\n' "$merge_type" "ancestor"
 		return 0
@@ -1102,20 +1153,43 @@ _clean_resolve_merge_proof() {
 		return 0
 	fi
 
-	printf '%s\t%s\n' "$merge_type" "not-ancestor"
+	printf '%s\t%s\n' "$merge_type" "$_WT_CLEAN_PROOF_NOT_ANCESTOR"
+	return 1
+}
+
+_clean_resolve_remote_tracking_proof() {
+	local wt_branch="$1"
+	local default_br="$2"
+	local merge_type="$3"
+
+	if _clean_branch_is_remote_default_contained "$wt_branch" "$default_br"; then
+		printf '%s\t%s\n' "$merge_type" "$_WT_CLEAN_PROOF_REMOTE_TRACKING_RESULT"
+		return 0
+	fi
+	printf '%s\t%s\n' "$merge_type" "$_WT_CLEAN_PROOF_NOT_ANCESTOR"
 	return 1
 }
 
 _clean_select_merge_type() {
-	local wt_branch="$1"
-	local default_br="$2"
-	local remote_unknown="$3"
-	local merged_prs="$4"
-	local closed_prs="$5"
+	local wt_path="$1"
+	local wt_branch="$2"
+	local default_br="$3"
+	local remote_unknown="$4"
+	local merged_prs="$5"
+	local closed_prs="$6"
 
 	if _clean_branch_is_locally_merged "$wt_branch" "$default_br" &&
 		! branch_has_zero_commits_ahead "$wt_branch" "$default_br"; then
 		printf '%s\n' "merged"
+		return 0
+	fi
+	# Remote-tracking default proof is used specifically when the local default
+	# branch is stale. Keep it stricter than legacy --force-merged cleanup: dirty
+	# worktrees are preserved because remote containment alone says nothing about
+	# uncommitted local WIP.
+	if _clean_branch_is_remote_default_contained "$wt_branch" "$default_br" &&
+		! worktree_has_changes "$wt_path"; then
+		printf '%s\n' "$_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED"
 		return 0
 	fi
 	if _clean_branch_has_exact_merged_pr "$wt_branch" "$merged_prs"; then
@@ -1163,7 +1237,7 @@ _clean_classify_worktree() {
 		return 0
 	fi
 
-	if ! merge_type=$(_clean_select_merge_type "$wt_branch" "$default_br" "$remote_unknown" "$merged_prs" "$closed_prs"); then
+	if ! merge_type=$(_clean_select_merge_type "$wt_path" "$wt_branch" "$default_br" "$remote_unknown" "$merged_prs" "$closed_prs"); then
 		return 0
 	fi
 
@@ -1173,7 +1247,7 @@ _clean_classify_worktree() {
 		IFS=$'\t' read -r merge_type proof_result <<<"$proof_pair"
 	else
 		IFS=$'\t' read -r merge_type proof_result <<<"$proof_pair"
-		proof_result="not-ancestor"
+		proof_result="$_WT_CLEAN_PROOF_NOT_ANCESTOR"
 		if _clean_skip_unknown_pr_proof "$wt_path" "$wt_branch" "$default_br" "$head_sha"; then
 			return 0
 		fi
@@ -1208,7 +1282,9 @@ _clean_classify_worktree() {
 		fi
 	fi
 
-	if _clean_branch_requires_ancestor_proof "$merge_type"; then
+	if [[ "$merge_type" == "$_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED" ]]; then
+		audit_context=$(_clean_branch_merge_proof_context "$wt_branch" "$default_br" "$head_sha" "$proof_result" "$_WT_CLEAN_PROOF_REMOTE_TRACKING_DEFAULT")
+	elif _clean_branch_requires_ancestor_proof "$merge_type"; then
 		audit_context=$(_clean_branch_merge_proof_context "$wt_branch" "$default_br" "$head_sha" "$proof_result")
 	else
 		audit_context=$(_clean_branch_merge_proof_context "$wt_branch" "$default_br" "$head_sha" "$proof_result" "$_WT_CLEAN_PROOF_GH_MERGED_PR_STATE")
@@ -1318,6 +1394,7 @@ _clean_degraded_visibility_fallback_allowed() {
 	local closed_prs="$5"
 	local open_prs="$6"
 	local audit_context="$7"
+	local default_br="$8"
 
 	[[ "${WORKTREE_REMOVAL_GUARD_REASON:-}" == "${_WT_CWD_REASON_DEGRADED:-cwd-visibility-degraded}" ]] || return 1
 	if worktree_has_changes "$worktree_path"; then
@@ -1342,6 +1419,10 @@ _clean_degraded_visibility_fallback_allowed() {
 	fi
 	if _clean_merge_type_has_terminal_pr_state "$merge_type" ||
 		_clean_branch_has_terminal_pr_proof "$worktree_branch" "$merged_prs" "$closed_prs"; then
+		return 0
+	fi
+	if [[ "$merge_type" == "$_WT_CLEAN_TYPE_REMOTE_TRACKING_MERGED" ]] &&
+		_clean_branch_is_remote_default_contained "$worktree_branch" "$default_br"; then
 		return 0
 	fi
 	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "degraded-cwd-pr-proof-required" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
@@ -1475,6 +1556,7 @@ _clean_remove_candidate_after_lease() {
 	local merged_prs="$8"
 	local closed_prs="$9"
 	local open_prs="${10}"
+	local default_br="${11}"
 	local guard_status=0
 	local removal_status=0
 	local removal_mode="$_WT_CLEAN_MODE_PERMANENT"
@@ -1487,7 +1569,7 @@ _clean_remove_candidate_after_lease() {
 		guard_status=$?
 	fi
 	if [[ "$guard_status" -eq "${_WT_CWD_CAPTURE_DEGRADED_RC:-2}" ]] &&
-		_clean_degraded_visibility_fallback_allowed "$worktree_path" "$worktree_branch" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs" "$audit_context"; then
+		_clean_degraded_visibility_fallback_allowed "$worktree_path" "$worktree_branch" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs" "$audit_context" "$default_br"; then
 		removal_mode="$_WT_CLEAN_MODE_RECOVERABLE"
 		recovery_authorized="$_WT_CLEAN_BOOL_TRUE"
 	elif [[ "$guard_status" -ne 0 ]]; then
@@ -1502,7 +1584,7 @@ _clean_remove_candidate_after_lease() {
 		removal_status=$?
 	fi
 	if [[ "$removal_status" -eq "${_WT_CWD_CAPTURE_DEGRADED_RC:-2}" ]] &&
-		_clean_degraded_visibility_fallback_allowed "$worktree_path" "$worktree_branch" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs" "$audit_context" &&
+		_clean_degraded_visibility_fallback_allowed "$worktree_path" "$worktree_branch" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs" "$audit_context" "$default_br" &&
 		_clean_remove_classified_worktree "$worktree_path" "$worktree_branch" "$force_merged" "$preserve_branch" "$audit_context" "$main_wt_path" "$_WT_CLEAN_MODE_RECOVERABLE" "$_WT_CLEAN_BOOL_TRUE"; then
 		return 0
 	fi
@@ -1574,7 +1656,7 @@ _clean_remove_merged() {
 						continue
 					fi
 					if ! _clean_remove_candidate_after_lease "$worktree_path" "$worktree_branch" "$force_merged" "$preserve_branch" \
-						"$audit_context" "$main_wt_path" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs"; then
+						"$audit_context" "$main_wt_path" "$merge_type" "$merged_prs" "$closed_prs" "$open_prs" "$default_br"; then
 						if [[ "$_WT_CLEAN_LAST_REMOVAL_OUTCOME" == "$_WT_CLEAN_OUTCOME_FAILED" ]]; then
 							removal_failures=$((removal_failures + 1))
 						fi
