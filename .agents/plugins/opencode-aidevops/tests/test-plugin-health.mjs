@@ -8,7 +8,11 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-import { PLUGIN_HEALTH_SCHEMA, recordPluginHealthStage } from "../plugin-health.mjs";
+import {
+  PLUGIN_HEALTH_SCHEMA,
+  pluginHealthProbeRequested,
+  recordPluginHealthStage,
+} from "../plugin-health.mjs";
 
 test("plugin health stages are nonce-bound and atomically accumulated", () => {
   const root = mkdtempSync(join(tmpdir(), "aidevops-plugin-health-"));
@@ -21,6 +25,8 @@ test("plugin health stages are nonce-bound and atomically accumulated", () => {
     AIDEVOPS_PLUGIN_HEALTH_PROBE_NONCE: nonce,
   };
 
+  assert.equal(pluginHealthProbeRequested({ ...env, AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY: "1" }), true);
+  assert.equal(pluginHealthProbeRequested({ AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY: "1" }), false);
   assert.equal(recordPluginHealthStage("imported", {}, env), true);
   assert.equal(recordPluginHealthStage("config_applied", { gpt56_limits: { context: 300000 } }, env), true);
   const result = JSON.parse(readFileSync(receipt, "utf8"));

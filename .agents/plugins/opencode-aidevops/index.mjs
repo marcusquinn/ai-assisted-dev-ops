@@ -85,7 +85,7 @@ import { startCursorProxy, ensureCursorProxyServer } from "./cursor-proxy.mjs";
 import { startGoogleProxy, ensureGoogleProxyServer } from "./google-proxy.mjs";
 import { startClaudeProxy } from "./claude-proxy.mjs";
 import { isHeadless } from "./proxy-lifecycle.mjs";
-import { recordPluginHealthStage } from "./plugin-health.mjs";
+import { pluginHealthProbeRequested, recordPluginHealthStage } from "./plugin-health.mjs";
 
 // ---------------------------------------------------------------------------
 // Directory constants
@@ -294,7 +294,7 @@ export async function AidevopsPlugin({ directory, client }) {
     return createConversationHooks({client, conversation, directory});
   }
 
-  if (process.env.AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY === "1") {
+  if (pluginHealthProbeRequested()) {
     const modelRouting = loadModelRouting([
       process.env.AIDEVOPS_MODEL_ROUTING_TABLE,
       join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),

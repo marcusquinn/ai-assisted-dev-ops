@@ -39,6 +39,10 @@ function probeTarget(env) {
   }
 }
 
+export function pluginHealthProbeRequested(env = process.env) {
+  return env.AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY === "1" && Boolean(probeTarget(env));
+}
+
 export function recordPluginHealthStage(stage, details = {}, env = process.env) {
   const target = probeTarget(env);
   if (!target || !/^[a-z_]{3,32}$/.test(stage)) return false;
