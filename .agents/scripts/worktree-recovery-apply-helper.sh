@@ -661,14 +661,14 @@ _worktree_recovery_apply_expected_journal() {
 	local entries_json="$3"
 	local started_at="$4"
 
-	jq -cn --arg schema "$WORKTREE_RECOVERY_APPLY_TRANSACTION_SCHEMA" \
+	printf '%s\n' "$entries_json" | jq -c --arg schema "$WORKTREE_RECOVERY_APPLY_TRANSACTION_SCHEMA" \
 		--arg transaction_id "$transaction_id" \
 		--arg plan_id "$(printf '%s\n' "$apply_metadata" | jq -r '.plan_id')" \
 		--arg plan_digest "$(printf '%s\n' "$apply_metadata" | jq -r '.plan_digest')" \
 		--arg confirmation "$(printf '%s\n' "$apply_metadata" | jq -r '.confirmation')" \
-		--arg started_at "$started_at" --argjson entries "$entries_json" \
+		--arg started_at "$started_at" \
 		--argjson automatic_policy "$(printf '%s\n' "$apply_metadata" | jq -c '.automatic_policy // null')" \
-		'({schema:$schema,transaction_id:$transaction_id,plan_id:$plan_id,
+		'. as $entries | ({schema:$schema,transaction_id:$transaction_id,plan_id:$plan_id,
 		plan_digest:$plan_digest,confirmation:$confirmation,started_at:$started_at,entries:$entries} +
 		(if $automatic_policy == null then {} else {automatic_policy:$automatic_policy} end))'
 	return $?
@@ -679,11 +679,12 @@ _worktree_recovery_apply_validate_existing_journal() {
 	local expected_journal="$2"
 
 	[[ -f "$journal_path" && ! -L "$journal_path" ]] || return 1
-	jq -e --argjson expected "$expected_journal" \
+	printf '%s\n' "$expected_journal" | jq -e --slurpfile actual "$journal_path" \
 		--arg planned "$WORKTREE_RECOVERY_APPLY_STATE_PLANNED" \
 		--arg staged "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" \
 		--arg removed "$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" \
 		--arg string_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING" '
+		. as $expected | $actual[0] |
 		.schema == $expected.schema and .transaction_id == $expected.transaction_id and
 		.plan_id == $expected.plan_id and .plan_digest == $expected.plan_digest and
 		.confirmation == $expected.confirmation and (.started_at | type == $string_type) and
@@ -693,7 +694,7 @@ _worktree_recovery_apply_validate_existing_journal() {
 			expected_allocated_bytes,identity,evidence,reasons,maintenance}] ==
 			 [$expected.entries[] | {index,role,original_path,staged_path,archive_name,
 			expected_allocated_bytes,identity,evidence,reasons,maintenance}])
-	' "$journal_path" >/dev/null 2>&1
+	' >/dev/null 2>&1
 	return $?
 }
 

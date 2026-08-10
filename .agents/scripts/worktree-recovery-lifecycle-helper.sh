@@ -832,8 +832,8 @@ _worktree_recovery_plan_entries_json() {
 		entries_json=$(jq -sc 'sort_by(.path)' "$entries_file") || result_status=1
 	fi
 	if [[ "$result_status" -eq 0 ]]; then
-		jq -cn --arg error "$inventory_error" --argjson entries "$entries_json" \
-			'{inventory_complete:($error == ""),inventory_error:(if $error == "" then null else $error end),entries:$entries}' || result_status=1
+		printf '%s\n' "$entries_json" | jq -c --arg error "$inventory_error" \
+			'. as $entries | {inventory_complete:($error == ""),inventory_error:(if $error == "" then null else $error end),entries:$entries}' || result_status=1
 	fi
 	rm -f "$entries_file" "$rows_file"
 	return "$result_status"
@@ -853,21 +853,20 @@ worktree_recovery_plan_json() {
 	entries_json=$(printf '%s\n' "$entries_bundle" | jq -c '.entries') || return 1
 	inventory_complete=$(printf '%s\n' "$entries_bundle" | jq -c '.inventory_complete') || return 1
 	inventory_error=$(printf '%s\n' "$entries_bundle" | jq -r '.inventory_error // empty') || return 1
-	plan_material=$(jq -cn --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
+	plan_material=$(printf '%s\n' "$entries_json" | jq -c --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
 		--arg error "$inventory_error" --argjson complete "$inventory_complete" \
-		--argjson entries "$entries_json" \
-		'{schema:$schema,inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),entries:$entries}') || return 1
+		'. as $entries | {schema:$schema,inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),entries:$entries}') || return 1
 	plan_digest=$(_worktree_recovery_plan_sha256_text "$plan_material") || return 1
 	generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
-	plan_json=$(jq -cn --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
+	plan_json=$(printf '%s\n' "$entries_json" | jq -c --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
 		--arg plan_id "sha256:$plan_digest" --arg generated_at "$generated_at" \
 		--arg producer "$WORKTREE_RECOVERY_PRODUCER" \
 		--arg candidate "$WORKTREE_RECOVERY_PLAN_DISPOSITION_CANDIDATE" \
 		--arg protected "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" \
 		--arg unknown "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" \
-		--arg error "$inventory_error" --argjson complete "$inventory_complete" \
-		--argjson entries "$entries_json" '
+		--arg error "$inventory_error" --argjson complete "$inventory_complete" '
 		def parent_path: .[0:rindex("/")];
+		. as $entries |
 		{schema:$schema,producer:$producer,plan_id:$plan_id,generated_at:$generated_at,read_only:true,
 		inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),
 		source_roots:([$entries[].path | parent_path] | unique),

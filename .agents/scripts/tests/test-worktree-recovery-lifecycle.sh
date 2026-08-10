@@ -988,6 +988,89 @@ test_automatic_maintenance_rejects_symlink_cursor() {
 	return 0
 }
 
+test_large_plan_avoids_json_argv_limits() {
+	local output_path="${TEST_DIR}/large-plan.json"
+	local second_output_path="${TEST_DIR}/large-plan-second.json"
+	local padding=""
+	local detail=""
+	local output_size=0
+	local apply_entries=""
+	local apply_metadata=""
+	local expected_journal=""
+	local journal_path="${TEST_DIR}/large-apply-journal.json"
+	local rc=0
+
+	padding=$(printf '%060000d' 0) || rc=1
+	worktree_recovery_lifecycle_json() {
+		printf '%s\n' '{"error":"synthetic-incomplete","buckets":['
+		printf '%s\n' \
+			'{"role":"current","state":"unknown","path":"/recovery/bucket-1","bytes":null,"sizing_confidence":"unavailable"},' \
+			'{"role":"current","state":"unknown","path":"/recovery/bucket-2","bytes":null,"sizing_confidence":"unavailable"},' \
+			'{"role":"current","state":"unknown","path":"/recovery/bucket-3","bytes":null,"sizing_confidence":"unavailable"},' \
+			'{"role":"legacy","state":"unknown","path":"/recovery/bucket-4","bytes":null,"sizing_confidence":"unavailable"},' \
+			'{"role":"legacy","state":"unknown","path":"/recovery/bucket-5","bytes":null,"sizing_confidence":"unavailable"},' \
+			'{"role":"legacy","state":"unknown","path":"/recovery/bucket-6","bytes":null,"sizing_confidence":"unavailable"}'
+		printf '%s\n' ']}'
+		return 0
+	}
+	_worktree_recovery_plan_unknown_entry_json() {
+		local role="$1"
+		local bucket_path="$2"
+		local ignored_bytes="$3"
+		local reason="$4"
+		: "$ignored_bytes"
+		jq -cn --arg role "$role" --arg path "$bucket_path" --arg reason "$reason" \
+			--arg padding "$padding" \
+			'{role:$role,path:$path,archive_path:$path,expected_allocated_bytes:null,
+			disposition:"unknown",reasons:[$reason],evidence:{padding:$padding}}'
+		return $?
+	}
+	cmd_recovery plan --output "$output_path" >/dev/null || {
+		detail="first oversized plan write failed"
+		rc=1
+	}
+	cmd_recovery plan --output "$second_output_path" >/dev/null || {
+		detail="second oversized plan write failed"
+		rc=1
+	}
+	if [[ -f "$output_path" ]]; then
+		output_size=$(wc -c <"$output_path") || rc=1
+	fi
+	if [[ "$output_size" -le 300000 ]]; then
+		detail="oversized plan was only ${output_size} bytes"
+		rc=1
+	fi
+	jq -e '.entry_count == 6 and .candidate_count == 0 and .unknown_count == 6' \
+		"$output_path" >/dev/null || {
+		detail="oversized plan counts were invalid"
+		rc=1
+	}
+	if [[ "$(jq -r '.plan_id' "$output_path")" != "$(jq -r '.plan_id' "$second_output_path")" ]]; then
+		detail="oversized plan digest was not deterministic"
+		rc=1
+	fi
+	apply_entries=$(jq -c '[.entries | to_entries[] | {
+		index:.key,role:.value.role,original_path:.value.path,
+		staged_path:("/recovery/.trash/transaction/" + (.key | tostring)),
+		archive_name:("bucket-" + (.key | tostring)),
+		expected_allocated_bytes:.value.expected_allocated_bytes,
+		identity:.value.identity,evidence:.value.evidence,reasons:.value.reasons,
+		maintenance:null,state:"planned"}]' "$output_path") || rc=1
+	apply_metadata=$(jq -c '{plan_id,plan_digest:(.plan_id | sub("^sha256:"; "")),
+		confirmation:.confirmation_token,automatic_policy:null}' "$output_path") || rc=1
+	expected_journal=$(_worktree_recovery_apply_expected_journal \
+		"large-transaction" "$apply_metadata" "$apply_entries" "2026-08-10T00:00:00Z") || rc=1
+	printf '%s\n' "$expected_journal" >"$journal_path" || rc=1
+	_worktree_recovery_apply_validate_existing_journal \
+		"$journal_path" "$expected_journal" || {
+		detail="oversized apply journal validation failed"
+		rc=1
+	}
+	print_result "large_plan_avoids_json_argv_limits" "$rc" \
+		"${detail:-Expected a deterministic oversized plan without jq argv transport}"
+	return 0
+}
+
 # shellcheck source=../audit-worktree-removal-helper.sh
 source "${SCRIPTS_DIR}/audit-worktree-removal-helper.sh"
 # shellcheck source=../worktree-recovery-lifecycle-helper.sh
@@ -1018,5 +1101,6 @@ test_apply_handles_attributable_legacy_root_transaction
 test_automatic_maintenance_is_bounded_and_policy_bound
 test_automatic_maintenance_resumes_interrupted_apply
 test_automatic_maintenance_rejects_symlink_cursor
+test_large_plan_avoids_json_argv_limits
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]
