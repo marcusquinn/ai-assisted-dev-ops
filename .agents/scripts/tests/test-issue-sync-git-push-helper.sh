@@ -134,6 +134,15 @@ if [[ "${1:-}" == "label" ]]; then
 	exit 0
 fi
 
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/example/repo" ]]; then
+	printf 'false\n'
+	exit 0
+fi
+
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
 	if [[ -f "${GH_STUB_PR_MARKER:?}" ]]; then
 		printf 'https://github.com/example/repo/pull/1\n'
@@ -308,9 +317,14 @@ run_issue_sync_helper() {
 	local fallback_token="${10:-}"
 	local reject_pr_token="${11:-}"
 	local trusted_git="${12:-}"
+	local ci_home="${output_file}.home"
+	local runner_temp="${output_file}.runner"
+	mkdir -p "$ci_home" "$runner_temp"
 	(
 		cd "$work_dir" || exit 1
 		PATH="${fake_bin}:$PATH" \
+			HOME="$ci_home" \
+			RUNNER_TEMP="$runner_temp" \
 			GITHUB_ACTIONS=true \
 			GITHUB_REPOSITORY="example/repo" \
 			GH_TOKEN="$primary_token" \
@@ -407,6 +421,8 @@ test_protected_branch_uses_one_rebased_pr() {
 		fail "issue-sync PR title preserves merge-loop prevention"
 	elif [[ "$(<"${title_file}.body")" != *"Ref #9001"* ]]; then
 		fail "issue-sync PR body preserves changed-task linkage"
+	elif [[ "$(<"$output_a")" != *"empty ephemeral private-entity registry"* ]]; then
+		fail "GitHub Actions publication declares its isolated privacy inventory"
 	elif [[ "$branch_message" == *"[skip ci]"* ]]; then
 		fail "issue-sync PR branch still runs required checks"
 	elif [[ "$(git -C "$work_a" status --short)" != *"TODO.md"* ||
