@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import {
   createSessionRecoveryMarkerHandler,
@@ -46,6 +47,29 @@ assert.deepEqual(resolveSessionRecoveryMarker({ cwd: markerDirectory, workDir })
   markerDirectory: realpathSync(markerDirectory),
 });
 assert.equal(resolveSessionRecoveryMarker({ cwd: directory, workDir }), null);
+
+const resolverPath = fileURLToPath(
+  new URL("../../plugins/opencode-aidevops/session-recovery-marker.mjs", import.meta.url),
+);
+const linkedResolverPath = join(root, "session-recovery-marker.mjs");
+symlinkSync(resolverPath, linkedResolverPath);
+const resolvedCli = spawnSync(
+  process.execPath,
+  [linkedResolverPath, "resolve", "--cwd", markerDirectory, "--work-dir", workDir],
+  { encoding: "utf8" },
+);
+assert.equal(resolvedCli.status, 0, resolvedCli.stderr);
+assert.equal(
+  resolvedCli.stdout,
+  `${realpathSync(directory)}\t${realpathSync(dataDir)}\t${sessionID}\n`,
+  "resolver CLI should execute when invoked through the deployed agents symlink",
+);
+const missingCli = spawnSync(
+  process.execPath,
+  [linkedResolverPath, "resolve", "--cwd", directory, "--work-dir", workDir],
+  { encoding: "utf8" },
+);
+assert.equal(missingCli.status, 2, "resolver CLI should preserve the no-marker status through a symlink");
 
 const emitted = [];
 const handler = createSessionRecoveryMarkerHandler({
