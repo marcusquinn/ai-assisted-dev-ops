@@ -193,11 +193,34 @@ _full_loop_recovery_prepare_aggregate() {
 	return 0
 }
 
+_full_loop_recovery_resolve_lane_authorization() {
+	local lane_sources="$1"
+	local reviewed_sources="$2"
+	local lane_intent_json=""
+	local reviewed_json=""
+	lane_intent_json=$(release_authorization_intent_json "$lane_sources") || return 1
+	reviewed_json=$(release_authorization_manifest_json "$reviewed_sources") || return 1
+	jq -cern --argjson intent "$lane_intent_json" --argjson reviewed "$reviewed_json" '
+		$intent | map(. as $candidate
+			| ($reviewed | map(select(.pr == $candidate.pr))) as $matches
+			| if (($matches | length) == 1
+				and ($candidate.merge == null or $candidate.merge == $matches[0].merge))
+				then $matches[0]
+				else error("reserved lane intent does not match reviewed aggregate")
+			  end)
+		| map("\(.pr)@\(.merge)") | join(",")
+	' 2>/dev/null
+	return $?
+}
+
 _full_loop_recovery_expand_reserved_authorization() {
 	local repo="$1"
 	local source_pr="$2"
 	local expected_sources="$3"
 	local previous_auth=""
+	local lane_sources=""
+	local normalized_lane_sources=""
+	local authorization_expanded=false
 	local existing_tag_rc=0
 	_full_loop_recovery_validate_receipt "$repo" "$source_pr" || return 1
 	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
@@ -208,25 +231,45 @@ _full_loop_recovery_expand_reserved_authorization() {
 	previous_auth=$(_full_loop_read_release_authorization "$repo" "$source_pr") || return 1
 	release_authorization_subset "$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
 	release_lane_read "$repo" || return 1
-	jq -e --argjson source_pr "$source_pr" --arg previous "$previous_auth" '
+	jq -e --argjson source_pr "$source_pr" '
 		.active == true and .source_pr == $source_pr and .phase == "reserved"
-		and .tag == null and .expected_sources == $previous
+		and .tag == null and (.expected_sources | type) == "string"
 		and ((.terminal_receipt // null) == null)
-	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
-	release_lane_acquire "$repo" "$source_pr" "$previous_auth" || return $?
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || {
+		printf 'Reserved release lane is not eligible for legacy authorization normalization for PR #%s\n' "$source_pr" >&2
+		return 1
+	}
+	lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	normalized_lane_sources=$(_full_loop_recovery_resolve_lane_authorization \
+		"$lane_sources" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED") || {
+		printf 'Reserved release lane authorization cannot be normalized against reviewed aggregate PR #%s\n' "$source_pr" >&2
+		return 1
+	}
+	if ! release_authorization_compare "$normalized_lane_sources" "$previous_auth"; then
+		printf 'Reserved release lane and persisted authorization identify different sources for PR #%s\n' "$source_pr" >&2
+		return 1
+	fi
+	release_lane_acquire "$repo" "$source_pr" "$lane_sources" || return $?
 	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" ]] || return 1
-	if [[ "$previous_auth" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
+	if [[ "$previous_auth" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" &&
+		"$lane_sources" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
 		printf 'Reserved release authorization already matches the reviewed aggregate for PR #%s\n' "$source_pr"
 		return 0
 	fi
-	_full_loop_expand_release_authorization_for_aggregate "$repo" "$source_pr" \
-		"$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
-	if ! release_lane_expand_reserved_authorization "$repo" "$source_pr" "$previous_auth" \
+	if [[ "$previous_auth" != "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
+		_full_loop_expand_release_authorization_for_aggregate "$repo" "$source_pr" \
+			"$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+		authorization_expanded=true
+	fi
+	if ! release_lane_expand_reserved_authorization "$repo" "$source_pr" "$lane_sources" \
 		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"; then
 		release_lane_restore_reserved_authorization "$repo" "$source_pr" \
 			"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT" || true
-		_full_loop_restore_release_authorization_after_aggregate "$repo" "$source_pr" \
-			"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$previous_auth" || return 1
+		if [[ "$authorization_expanded" == "true" ]]; then
+			_full_loop_restore_release_authorization_after_aggregate "$repo" "$source_pr" \
+				"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$previous_auth" || return 1
+		fi
+		printf 'Reserved release lane authorization migration failed for PR #%s; prior state was restored\n' "$source_pr" >&2
 		return 1
 	fi
 	printf 'Expanded side-effect-free reserved release authorization for reviewed aggregate PR #%s\n' "$source_pr"

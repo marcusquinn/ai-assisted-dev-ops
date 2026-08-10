@@ -212,9 +212,10 @@ run_aggregate_recovery_rejection_test() (
 )
 
 run_reserved_aggregate_authorization_test() (
-	local old_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"reserved","tag":null,"updated_at":"2026-08-09T00:00:00Z","operation_token":"token-owned","terminal_receipt":null}'
+	local old_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101","phase":"reserved","tag":null,"updated_at":"2026-08-09T00:00:00Z","operation_token":"token-owned","terminal_receipt":null}'
 	local state="$old_state"
 	local expanded='101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222'
+	local write_conflict=false
 	release_lane_read() {
 		_AIDEVOPS_RELEASE_LANE_JSON="$state"
 		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
@@ -225,23 +226,30 @@ run_reserved_aggregate_authorization_test() (
 		local state_json="$2"
 		local expected_head="$3"
 		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		[[ "$write_conflict" == "false" ]] || return 2
 		state="$state_json"
 		return 0
 	}
 	_AIDEVOPS_RELEASE_LANE_TOKEN="token-owned"
 	release_lane_expand_reserved_authorization test/repo 101 \
-		'101@1111111111111111111111111111111111111111' "$expanded" || return 1
+		'101' "$expanded" || return 1
 	[[ "$(jq -r '.expected_sources' <<<"$state")" == "$expanded" ]] || return 1
 	release_lane_restore_reserved_authorization test/repo 101 "$expanded" "$old_state" || return 1
 	[[ "$state" == "$old_state" ]] || return 1
+	write_conflict=true
+	if release_lane_expand_reserved_authorization test/repo 101 '101' "$expanded"; then
+		return 1
+	fi
+	[[ "$state" == "$old_state" ]] || return 1
+	write_conflict=false
 	state=$(jq -c '.tag="v1.2.3"' <<<"$old_state") || return 1
 	if release_lane_expand_reserved_authorization test/repo 101 \
-		'101@1111111111111111111111111111111111111111' "$expanded"; then
+		'101' "$expanded"; then
 		return 1
 	fi
 	state=$(jq -c '.tag=null | .terminal_receipt={status:"published"}' <<<"$old_state") || return 1
 	if release_lane_expand_reserved_authorization test/repo 101 \
-		'101@1111111111111111111111111111111111111111' "$expanded"; then
+		'101' "$expanded"; then
 		return 1
 	fi
 	return 0

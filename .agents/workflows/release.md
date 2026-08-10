@@ -53,8 +53,10 @@ reviewed aggregate at the current `origin/main` tip may transactionally expand a
 persisted subset authorization. The helper validates every candidate and terminal
 receipt first, rotates the fencing token, updates the authorization and lane with
 compare-and-swap semantics, restores prior snapshots after a partial failure, and
-then continues the ordinary release command. Other conflicting intent remains
-immutable.
+then continues the ordinary release command. Reserved lanes written by supported
+older versions may contain PR-only intent; recovery resolves those identities
+against the reviewed aggregate and migrates them to the canonical `PR@SHA`
+manifest inside the same transaction. Other conflicting intent remains immutable.
 
 ```bash
 aidevops release status <merged-pr-number>     # read-only remote/channel state

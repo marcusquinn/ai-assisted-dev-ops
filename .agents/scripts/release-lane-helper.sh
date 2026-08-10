@@ -259,6 +259,8 @@ release_lane_begin_aggregate_recovery() {
 release_lane_expand_reserved_authorization() {
 	local repo="$1"
 	local source_pr="$2"
+	# Keep this value byte-exact: supported older lanes may contain PR-only intent,
+	# and rollback must restore that representation rather than a resolved manifest.
 	local previous_sources="$3"
 	local expected_sources="$4"
 	local state_json=""

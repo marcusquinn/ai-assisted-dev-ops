@@ -246,10 +246,12 @@ printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 
 (
 	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
 	RESERVED_LOG="${TEST_ROOT}/reserved.log"
 	: >"$RESERVED_LOG"
 	old_manifest='42@2222222222222222222222222222222222222222'
+	legacy_lane_intent='42'
 	expanded_manifest="${old_manifest},43@3333333333333333333333333333333333333333"
 	_full_loop_recovery_validate_receipt() { return 0; }
 	_full_loop_release_find_tag_for_pr() { return 2; }
@@ -269,7 +271,7 @@ printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 	}
 	release_authorization_subset() { return 0; }
 	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$old_manifest" \
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$legacy_lane_intent" \
 			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$previous,terminal_receipt:null}')
 		return 0
 	}
@@ -283,13 +285,14 @@ printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 		return 0
 	}
 	release_lane_expand_reserved_authorization() {
+		[[ "$3" == "$legacy_lane_intent" ]] || return 1
 		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
 		printf 'expand-lane\n' >>"$RESERVED_LOG"
 		return 0
 	}
 	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43
 	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate expand-auth expand-lane " ]]
-	printf 'PASS reserved recovery validates the reviewed aggregate before transactional expansion\n'
+	printf 'PASS reserved recovery normalizes legacy lane intent before transactional expansion\n'
 
 	: >"$RESERVED_LOG"
 	_full_loop_read_release_authorization() {
@@ -306,12 +309,25 @@ printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 	printf 'PASS reserved recovery recognizes an already-converged authorization and lane\n'
 
 	: >"$RESERVED_LOG"
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn \
+			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:"44",terminal_receipt:null}')
+		return 0
+	}
+	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >"${TEST_ROOT}/legacy-mismatch.out" 2>&1; then
+		exit 1
+	fi
+	grep -q 'cannot be normalized against reviewed aggregate' "${TEST_ROOT}/legacy-mismatch.out"
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate " ]]
+	printf 'PASS reserved recovery rejects non-equivalent legacy PR identities without mutation\n'
+
+	: >"$RESERVED_LOG"
 	_full_loop_read_release_authorization() {
 		printf '%s\n' "$old_manifest"
 		return 0
 	}
 	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$old_manifest" \
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$legacy_lane_intent" \
 			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$previous,terminal_receipt:null}')
 		return 0
 	}
