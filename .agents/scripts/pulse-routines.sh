@@ -167,13 +167,13 @@ _routine_retry_blocked() {
 	attempt_epoch=$(date -d "$attempt_iso" +%s 2>/dev/null) || attempt_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$attempt_iso" +%s 2>/dev/null) || return 1
 	now_epoch=$(_routine_now_epoch)
 	case "$status" in
-		running) [[ $((now_epoch - attempt_epoch)) -lt "$running_seconds" ]] ;;
-		failure) [[ $((now_epoch - attempt_epoch)) -lt "$retry_seconds" ]] ;;
-		deferred)
-			deferred_until=$(jq -r --arg id "$routine_id" '.[$id].deferred_until // 0' "$ROUTINE_STATE_FILE" 2>/dev/null || true)
-			[[ "$deferred_until" =~ ^[0-9]+$ && "$now_epoch" -lt "$deferred_until" ]]
-			;;
-		*) return 1 ;;
+	running) [[ $((now_epoch - attempt_epoch)) -lt "$running_seconds" ]] ;;
+	failure) [[ $((now_epoch - attempt_epoch)) -lt "$retry_seconds" ]] ;;
+	deferred)
+		deferred_until=$(jq -r --arg id "$routine_id" '.[$id].deferred_until // 0' "$ROUTINE_STATE_FILE" 2>/dev/null || true)
+		[[ "$deferred_until" =~ ^[0-9]+$ && "$now_epoch" -lt "$deferred_until" ]]
+		;;
+	*) return 1 ;;
 	esac
 	return $?
 }
@@ -398,10 +398,10 @@ _routine_dedicated_heading_transition() {
 	local current_phase="$1"
 	local heading="$2"
 	case "${current_phase}:${heading}" in
-		"0:## Core Routines (framework-managed)") printf '1:1' ;;
-		"1:## User Routines") printf '2:1' ;;
-		"2:## Tasks") printf '3:0' ;;
-		*) return 1 ;;
+	"0:## Core Routines (framework-managed)") printf '1:1' ;;
+	"1:## User Routines") printf '2:1' ;;
+	"2:## Tasks") printf '3:0' ;;
+	*) return 1 ;;
 	esac
 	return 0
 }

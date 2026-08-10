@@ -240,30 +240,30 @@ main() {
 	while [[ $# -gt 0 ]]; do
 		local option="$1"
 		case "$option" in
-			--signals)
-				[[ $# -ge 2 ]] || return 2
-				signals_file="$2"
-				shift 2
-				;;
-			--repos)
-				[[ $# -ge 2 ]] || return 2
-				repos_file="$2"
-				shift 2
-				;;
-			--slug)
-				[[ $# -ge 2 ]] || return 2
-				slug="$2"
-				shift 2
-				;;
-			--known-fingerprints)
-				[[ $# -ge 2 ]] || return 2
-				known_fingerprints="$2"
-				shift 2
-				;;
-			*)
-				_sma_log ERROR "Unknown argument: ${option}"
-				return 2
-				;;
+		--signals)
+			[[ $# -ge 2 ]] || return 2
+			signals_file="$2"
+			shift 2
+			;;
+		--repos)
+			[[ $# -ge 2 ]] || return 2
+			repos_file="$2"
+			shift 2
+			;;
+		--slug)
+			[[ $# -ge 2 ]] || return 2
+			slug="$2"
+			shift 2
+			;;
+		--known-fingerprints)
+			[[ $# -ge 2 ]] || return 2
+			known_fingerprints="$2"
+			shift 2
+			;;
+		*)
+			_sma_log ERROR "Unknown argument: ${option}"
+			return 2
+			;;
 		esac
 	done
 
@@ -273,15 +273,15 @@ main() {
 	}
 	printf '%s' "$known_fingerprints" | jq -e 'type == "array"' >/dev/null 2>&1 || return 2
 	case "$mode" in
-		maintainer) cmd_maintainer "$signals_file" "$repos_file" "$known_fingerprints" ;;
-		contributor)
-			[[ -n "$slug" ]] || return 2
-			cmd_contributor "$signals_file" "$repos_file" "$slug"
-			;;
-		*)
-			_sma_log ERROR "Usage: session-miner-actuation-helper.sh {maintainer|contributor} --signals FILE --repos FILE [--slug OWNER/REPO]"
-			return 2
-			;;
+	maintainer) cmd_maintainer "$signals_file" "$repos_file" "$known_fingerprints" ;;
+	contributor)
+		[[ -n "$slug" ]] || return 2
+		cmd_contributor "$signals_file" "$repos_file" "$slug"
+		;;
+	*)
+		_sma_log ERROR "Usage: session-miner-actuation-helper.sh {maintainer|contributor} --signals FILE --repos FILE [--slug OWNER/REPO]"
+		return 2
+		;;
 	esac
 }
 

@@ -371,8 +371,8 @@ cmd_file() {
 	local json_output=false
 	while [[ "${1:-}" == "--dry-run" || "${1:-}" == "--json" ]]; do
 		case "$1" in
-			--dry-run) dry_run=true ;;
-			--json) json_output=true ;;
+		--dry-run) dry_run=true ;;
+		--json) json_output=true ;;
 		esac
 		shift
 	done
@@ -448,22 +448,22 @@ main() {
 	shift || true
 
 	case "$cmd" in
-		file)
-			cmd_file "$@"
-			;;
-		sanitize)
-			cmd_sanitize "$@"
-			;;
-		help | --help | -h)
-			printf 'Usage: contributor-insight-helper.sh {file|sanitize|help}\n'
-			printf '  file [--dry-run] [--json] <compressed_signals.json> <target_slug>\n'
-			printf '  sanitize <text>\n'
-			return 0
-			;;
-		*)
-			_ci_log ERROR "Unknown command: ${cmd}"
-			return 1
-			;;
+	file)
+		cmd_file "$@"
+		;;
+	sanitize)
+		cmd_sanitize "$@"
+		;;
+	help | --help | -h)
+		printf 'Usage: contributor-insight-helper.sh {file|sanitize|help}\n'
+		printf '  file [--dry-run] [--json] <compressed_signals.json> <target_slug>\n'
+		printf '  sanitize <text>\n'
+		return 0
+		;;
+	*)
+		_ci_log ERROR "Unknown command: ${cmd}"
+		return 1
+		;;
 	esac
 }
 

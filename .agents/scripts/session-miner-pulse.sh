@@ -794,10 +794,10 @@ parse_since_ms() {
 		local unit="${BASH_REMATCH[2]}"
 		local multiplier=1
 		case "$unit" in
-			s) multiplier=1 ;;
-			m) multiplier=60 ;;
-			h) multiplier=3600 ;;
-			d) multiplier=86400 ;;
+		s) multiplier=1 ;;
+		m) multiplier=60 ;;
+		h) multiplier=3600 ;;
+		d) multiplier=86400 ;;
 		esac
 		local now=0 since_epoch=0
 		now=$(now_epoch)
@@ -822,40 +822,40 @@ parse_args() {
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-			--db)
-				[[ $# -ge 2 ]] || return 1
-				_db_override="$2"
-				shift 2
-				;;
-			--dry-run)
-				_dry_run=true
-				shift
-				;;
-			--force)
-				_force=true
-				shift
-				;;
-			--create-issues)
-				_create_issues=true
-				shift
-				;;
-			--since)
-				[[ $# -ge 2 ]] || return 1
-				_since_override_ms=$(parse_since_ms "$2") || return 1
-				shift 2
-				;;
-			--status)
-				_status_only=true
-				shift
-				;;
-			--json)
-				_json_output=true
-				shift
-				;;
-			*)
-				log_error "Unknown argument: $1"
-				return 1
-				;;
+		--db)
+			[[ $# -ge 2 ]] || return 1
+			_db_override="$2"
+			shift 2
+			;;
+		--dry-run)
+			_dry_run=true
+			shift
+			;;
+		--force)
+			_force=true
+			shift
+			;;
+		--create-issues)
+			_create_issues=true
+			shift
+			;;
+		--since)
+			[[ $# -ge 2 ]] || return 1
+			_since_override_ms=$(parse_since_ms "$2") || return 1
+			shift 2
+			;;
+		--status)
+			_status_only=true
+			shift
+			;;
+		--json)
+			_json_output=true
+			shift
+			;;
+		*)
+			log_error "Unknown argument: $1"
+			return 1
+			;;
 		esac
 	done
 	if [[ "$_json_output" == true && "$_status_only" != true ]]; then
