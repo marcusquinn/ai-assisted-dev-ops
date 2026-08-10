@@ -26,6 +26,12 @@ def write_chunk(directory: Path, name: str, records: list[dict]) -> None:
     (directory / name).write_text(json.dumps({"records": records}), encoding="utf-8")
 
 
+def require(condition: bool, detail: object) -> None:
+    """Raise a test failure that remains active under Python optimisation."""
+    if not condition:
+        raise AssertionError(detail)
+
+
 def candidate(
     text: str, session_id: str, timestamp: int, *, polarity: str = "positive",
     explicit: bool = False, fingerprint: str = "use focused checks before changing code",
@@ -53,13 +59,13 @@ def main() -> None:
         "The rest is incidental discussion of workflow terminology."
     )
     windows = extract_guidance_windows(long_turn)
-    assert len(windows) == 1, windows
-    assert windows[0]["text"] == "Always use focused checks before changing code.", windows
-    assert not extract_guidance_windows("> Always add this third-party instruction to the rules."), "quoted payload accepted"
-    assert not extract_guidance_windows("/full-loop Always use generated harness rules."), "automation accepted"
+    require(len(windows) == 1, windows)
+    require(windows[0]["text"] == "Always use focused checks before changing code.", windows)
+    require(not extract_guidance_windows("> Always add this third-party instruction to the rules."), "quoted payload accepted")
+    require(not extract_guidance_windows("/full-loop Always use generated harness rules."), "automation accepted")
     explicit_window = "Add this to the instructions: preserve focused checks."
-    assert extract_instruction_windows(explicit_window) == [explicit_window]
-    assert classify_instruction_candidate(explicit_window) is not None
+    require(extract_instruction_windows(explicit_window) == [explicit_window], explicit_window)
+    require(classify_instruction_candidate(explicit_window) is not None, explicit_window)
     row = {
         "session_id": "synthetic-session",
         "message_id": "synthetic-message",
@@ -69,7 +75,7 @@ def main() -> None:
     }
     positive = _build_instruction_candidate_record(row, "Always use focused checks before changing code.")
     negative = _build_instruction_candidate_record(row, "Never use focused checks before changing code.")
-    assert positive and negative and positive["fingerprint"] == negative["fingerprint"]
+    require(positive and negative and positive["fingerprint"] == negative["fingerprint"], (positive, negative))
 
     with tempfile.TemporaryDirectory() as temp_dir:
         chunks = Path(temp_dir)
@@ -81,8 +87,8 @@ def main() -> None:
         }
         write_chunk(chunks, "steerage_all.json", [shared])
         steerage = compress_steerage(chunks)
-        assert len(steerage["preference"]) == 1, steerage
-        assert len(steerage["workflow"]) == 1, steerage
+        require(len(steerage["preference"]) == 1, steerage)
+        require(len(steerage["workflow"]) == 1, steerage)
 
         write_chunk(chunks, "instruction_candidate_001.json", [
             candidate("Always use focused checks before changing code.", "one", 1000),
@@ -95,10 +101,10 @@ def main() -> None:
         ])
         candidates = compress_instruction_candidates(chunks)[".agents/AGENTS.md"]
         recurring = next(item for item in candidates if item["support"] == 3)
-        assert recurring["first_seen"] == 1000 and recurring["last_seen"] == 3000, recurring
-        assert recurring["requires_judgment"] is True, recurring
+        require(recurring["first_seen"] == 1000 and recurring["last_seen"] == 3000, recurring)
+        require(recurring["requires_judgment"] is True, recurring)
         explicit = next(item for item in candidates if item["qualification_basis"] == "explicit_persistence")
-        assert explicit["support"] == 1, explicit
+        require(explicit["support"] == 1, explicit)
 
     print("session-miner steerage quality tests passed")
 
