@@ -99,6 +99,9 @@ source_clean_lib_with_stubs() {
 	_branch_has_active_interactive_claim() { return 1; }
 	worktree_is_in_grace_period() { return 1; }
 	branch_has_zero_commits_ahead() { return 1; }
+	# Fixture process-CWD evidence is complete and does not name any worktree.
+	# Do not let unrelated host processes turn removal tests into degraded-mode tests.
+	capture_worktree_process_cwds() { printf '/\n'; return 0; }
 	return 0
 }
 

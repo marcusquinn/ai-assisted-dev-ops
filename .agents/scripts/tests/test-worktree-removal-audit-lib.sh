@@ -67,6 +67,7 @@ print_result() {
 setup() {
 	TEST_DIR=$(mktemp -d)
 	trap teardown EXIT
+	export AIDEVOPS_WORKTREE_TRASH_ROOT="${TEST_DIR}/recovery"
 	return 0
 }
 
@@ -111,6 +112,14 @@ create_git_worktree_fixture() {
 	"$GIT_BIN" -C "$repo_path" worktree add -q -b "$branch_name" "$wt_path" main || return 1
 	return 0
 }
+
+# Removal cases exercise their native Git/archive invariants. Give them a
+# deterministic complete snapshot so unrelated host processes cannot turn the
+# fixture into a degraded-visibility cleanup path.
+with_complete_cwd_snapshot() (
+	capture_worktree_process_cwds() { printf '/\n'; return 0; }
+	"$@"
+)
 
 # shellcheck source=./test-worktree-removal-audit-events.sh
 # shellcheck disable=SC1091  # test module resolved at runtime via $SCRIPT_DIR
@@ -210,7 +219,8 @@ test_permanent_helper_removes_and_logs() {
 			printf '/\n'
 			return 0
 		}
-		remove_worktree_path_permanently "$wt_path" "test.sh" "age-eligible"
+		with_complete_cwd_snapshot remove_worktree_path_permanently \
+			"$wt_path" "test.sh" "age-eligible"
 	) || rc=$?
 	[[ ! -e "$wt_path" ]] || rc=1
 	assert_file_contains "$log_file" "worktree-removed.*age-eligible.*mode=permanent" || rc=1
@@ -378,7 +388,8 @@ RACE_GIT
 		unset _AUDIT_WORKTREE_REMOVAL_HELPER_LOADED 2>/dev/null || true
 		# shellcheck source=../audit-worktree-removal-helper.sh
 		source "$AUDIT_HELPER"
-		remove_worktree_path_permanently "$wt_path" "test.sh" "age-eligible"
+		with_complete_cwd_snapshot remove_worktree_path_permanently \
+			"$wt_path" "test.sh" "age-eligible"
 	); then
 		rc=1
 	fi
@@ -541,7 +552,7 @@ test_recoverable_archive_then_native_remove() {
 	[[ "$(<"${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}")" == "$_WT_RECOVERY_FORMAT" ]] || rc=1
 	metadata=$("$GIT_BIN" -C "$repo_path" worktree list --porcelain) || rc=1
 	printf '%s\n' "$metadata" | grep -Fqx "worktree $wt_root" || rc=1
-	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
+	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" with_complete_cwd_snapshot remove_archived_worktree_path \
 		"$wt_path" "$archive_path" "test.sh" "recoverable-test" \
 		"recovery_path=archive-first" "false" "false" || rc=1
 	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" prune_missing_worktree_metadata "$repo_path" "$wt_path" || rc=1
@@ -588,8 +599,8 @@ RACE_GIT
 	wt_root=$("$GIT_BIN" -C "$wt_path" rev-parse --show-toplevel 2>/dev/null) || rc=1
 	if REAL_GIT="$GIT_BIN" RACE_MARKER="$marker_path" RACE_REPO="$repo_path" \
 		RACE_WORKTREE="$wt_path" AIDEVOPS_REAL_GIT_BIN="$wrapper_path" \
-		remove_archived_worktree_path "$wt_path" "$archive_path" "test.sh" \
-		"recoverable-test" "recovery_path=archive-first" "false" "false"; then
+		with_complete_cwd_snapshot remove_archived_worktree_path "$wt_path" "$archive_path" "test.sh" \
+			"recoverable-test" "recovery_path=archive-first" "false" "false"; then
 		rc=1
 	fi
 	metadata=$("$GIT_BIN" -C "$repo_path" worktree list --porcelain) || rc=1
@@ -630,7 +641,7 @@ test_recovery_archive_preserves_index_and_dirty_files() {
 		"$wt_path" "test.sh" "dirty-archive" || rc=1
 	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	recovery_dir=$(_worktree_recovery_dir_for_archive "$archive_path") || rc=1
-	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
+	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" with_complete_cwd_snapshot remove_archived_worktree_path \
 		"$wt_path" "$archive_path" "test.sh" "dirty-archive" \
 		"recovery_path=archive-first" "false" "true" || rc=1
 	actual_status=$("$GIT_BIN" -C "$archive_path" status --porcelain=v1 --untracked-files=all) || rc=1
@@ -666,7 +677,7 @@ test_recovery_archive_preserves_detached_head_identity() {
 		"$wt_path" "test.sh" "detached-archive" || rc=1
 	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	recovery_dir=$(_worktree_recovery_dir_for_archive "$archive_path") || rc=1
-	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" remove_archived_worktree_path \
+	AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" with_complete_cwd_snapshot remove_archived_worktree_path \
 		"$wt_path" "$archive_path" "test.sh" "detached-archive" \
 		"recovery_path=archive-first" "false" "false" || rc=1
 	actual_head=$("$GIT_BIN" -C "$archive_path" rev-parse --verify HEAD) || rc=1
@@ -742,8 +753,8 @@ LATE_WRITE_GIT
 	chmod +x "$wrapper_path" || rc=1
 	if REAL_GIT="$GIT_BIN" LATE_WRITE_MARKER="$marker_path" \
 		LATE_WRITE_WORKTREE="$wt_path" AIDEVOPS_REAL_GIT_BIN="$wrapper_path" \
-		remove_archived_worktree_path "$wt_path" "$archive_path" "test.sh" \
-		"late-write-test" "recovery_path=archive-first" "false" "false"; then
+		with_complete_cwd_snapshot remove_archived_worktree_path "$wt_path" "$archive_path" "test.sh" \
+			"late-write-test" "recovery_path=archive-first" "false" "false"; then
 		rc=1
 	fi
 	[[ -f "$wt_path/late-write.txt" && ! -e "$archive_path/late-write.txt" ]] || rc=1
