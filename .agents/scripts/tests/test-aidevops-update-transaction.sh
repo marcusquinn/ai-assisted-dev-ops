@@ -362,6 +362,9 @@ REMOTE_SHA=$(/usr/bin/git -C "$INTEGRATION_PEER" rev-parse HEAD)
 
 /usr/bin/git clone -q "$INTEGRATION_REMOTE" "$REAL_HELPER_REPO"
 /usr/bin/git -C "$REAL_HELPER_REPO" reset -q --hard "$BASE_SHA"
+/usr/bin/git -C "$INTEGRATION_PEER" tag -a v1.0.0 -m "release 1.0.0"
+/usr/bin/git -C "$INTEGRATION_PEER" push -q origin refs/tags/v1.0.0
+RELEASE_TAG_OBJECT=$(/usr/bin/git -C "$INTEGRATION_REMOTE" rev-parse refs/tags/v1.0.0)
 FRAMEWORK_URL="https://github.com/marcusquinn/aidevops.git"
 FRAMEWORK_SSH_URL="ssh://git@github.com/marcusquinn/aidevops.git"
 /usr/bin/git -C "$REAL_HELPER_REPO" config "url.${INTEGRATION_REMOTE}.insteadOf" "$FRAMEWORK_URL"
@@ -375,6 +378,7 @@ if AIDEVOPS_REPOS_CONFIG="$TEST_ROOT/missing-repos.json" AIDEVOPS_REAL_GIT_BIN=/
 	_update_fetch_main main &&
 	[[ "$(/usr/bin/git -C "$REAL_HELPER_REPO" rev-parse HEAD)" == "$REMOTE_SHA" ]] &&
 	[[ "$(/usr/bin/git -C "$REAL_HELPER_REPO" rev-parse refs/remotes/origin/main)" == "$REMOTE_SHA" ]] &&
+	[[ "$(/usr/bin/git -C "$REAL_HELPER_REPO" rev-parse refs/tags/v1.0.0)" == "$RELEASE_TAG_OBJECT" ]] &&
 	! /usr/bin/git -C "$REAL_HELPER_REPO" show-ref --verify --quiet refs/remotes/official-ssh/main &&
 	grep -q '"reason":"aidevops-update"' \
 		"$HOME/.aidevops/logs/canonical-recovery-audit.jsonl" &&
@@ -436,7 +440,10 @@ if [[ "$command_name" == "sync-mirror" ]]; then
 	rm "$repo/$untracked_path"
 	done < <(/usr/bin/git -C "$repo" ls-files --others --exclude-standard)
 fi
-/usr/bin/git -C "$repo" fetch origin "$branch" --tags --quiet
+/usr/bin/git -C "$repo" fetch --no-tags origin "$branch" --quiet
+IFS= read -r version <"$repo/VERSION"
+/usr/bin/git -C "$repo" fetch --no-tags origin \
+	"refs/tags/v${version}:refs/tags/v${version}" --quiet
 /usr/bin/git -C "$repo" merge --ff-only "origin/$branch" --quiet
 EOF
 chmod +x "$UPDATE_HELPER_DIR/canonical-recovery-helper.sh"

@@ -526,6 +526,30 @@ restore_quarantined_rebase_state() {
 	return 0
 }
 
+# Fetch only the release tag required by the post-update source-access stage.
+# The caller has already pinned and validated the canonical remote. Existing
+# refs are never rewritten; source-access owns signature and ancestry checks.
+fetch_aidevops_release_tag() {
+	local repo="$1"
+	local remote="$2"
+	local version=""
+	local tag_ref=""
+
+	[[ -r "$repo/VERSION" ]] || return 1
+	IFS= read -r version <"$repo/VERSION" || return 1
+	[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	tag_ref="refs/tags/v${version}"
+	if "$REAL_GIT" -C "$repo" show-ref --verify --quiet "$tag_ref"; then
+		return 0
+	fi
+	if ! "$REAL_GIT" -C "$repo" fetch --no-tags "$remote" \
+		"${tag_ref}:${tag_ref}" >/dev/null 2>&1; then
+		return 1
+	fi
+	"$REAL_GIT" -C "$repo" show-ref --verify --quiet "$tag_ref"
+	return $?
+}
+
 usage() {
 	printf '%s\n' \
 		'Usage:' \
@@ -1325,6 +1349,11 @@ if [[ "$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 	[[ "$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${local_ref}^{commit}")" == "$target_sha" ]] || exit 1
 	[[ "$("$REAL_GIT" -C "$repo_path" rev-parse --verify "${remote_ref}^{commit}")" == "$target_sha" ]] || exit 1
 	[[ -z "$("$REAL_GIT" -C "$repo_path" status --porcelain)" ]] || exit 1
+	if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]] &&
+		! fetch_aidevops_release_tag "$repo_path" "$canonical_remote"; then
+		printf 'WARNING: exact release tag for the updated VERSION is not available from %s\n' \
+			"$canonical_remote" >&2
+	fi
 	if [[ "$cmd" == "$SYNC_MIRROR_CMD" ]]; then
 		if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" && -n "$sync_backup_id" ]]; then
 			retention_days="${AIDEVOPS_DIRTY_BACKUP_RETENTION_DAYS:-30}"

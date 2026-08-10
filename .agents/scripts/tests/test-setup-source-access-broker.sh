@@ -54,6 +54,41 @@ if ! grep -qF "readonly TRUSTED_EMAIL=\"${production_release_signer_identity}\""
 fi
 
 expected_commit=$(git -C "$fixture_repo" rev-parse 'v1.2.3^{commit}')
+release_tag_object=$(git -C "$fixture_repo" rev-parse refs/tags/v1.2.3)
+tag_fetch_calls="$TEST_DIR/tag-fetch-calls"
+cat >"$fixture_repo/.agents/scripts/canonical-recovery-helper.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+repo=""
+printf '%s\n' "$*" >>"$TEST_SOURCE_ACCESS_TAG_FETCH_CALLS"
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+	--repo) repo="$2"; shift 2 ;;
+	*) shift ;;
+	esac
+done
+/usr/bin/git -C "$repo" update-ref refs/tags/v1.2.3 "$TEST_SOURCE_ACCESS_TAG_OBJECT"
+SH
+chmod +x "$fixture_repo/.agents/scripts/canonical-recovery-helper.sh"
+export TEST_SOURCE_ACCESS_TAG_FETCH_CALLS="$tag_fetch_calls"
+export TEST_SOURCE_ACCESS_TAG_OBJECT="$release_tag_object"
+git -C "$fixture_repo" update-ref -d refs/tags/v1.2.3
+if ! _source_access_ensure_release_tag "$fixture_repo" ||
+	[[ "$(git -C "$fixture_repo" rev-parse refs/tags/v1.2.3)" != "$release_tag_object" ]] ||
+	! grep -qF -- '--reason aidevops-update' "$tag_fetch_calls"; then
+	printf 'FAIL: missing release tag was not recovered through the audited update helper\n' >&2
+	exit 1
+fi
+
+# An existing conflicting/lightweight ref must never be replaced by recovery.
+git -C "$fixture_repo" update-ref refs/tags/v1.2.3 "$expected_commit"
+: >"$tag_fetch_calls"
+if ! _source_access_ensure_release_tag "$fixture_repo" || [[ -s "$tag_fetch_calls" ]] ||
+	_source_access_release_commit "$fixture_repo" >/dev/null 2>&1; then
+	printf 'FAIL: existing conflicting release tag was fetched over or accepted\n' >&2
+	exit 1
+fi
+git -C "$fixture_repo" update-ref refs/tags/v1.2.3 "$release_tag_object"
 resolved_commit=$(_source_access_release_commit "$fixture_repo")
 if [[ "$resolved_commit" != "$expected_commit" ]]; then
 	printf 'FAIL: source-access setup did not resolve the annotated release tag\n' >&2

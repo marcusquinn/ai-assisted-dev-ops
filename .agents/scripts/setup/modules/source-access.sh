@@ -49,6 +49,30 @@ _source_access_verify_release_tag() {
 	return 0
 }
 
+_source_access_ensure_release_tag() {
+	local repo_root="$1"
+	local version=""
+	local tag_ref=""
+	local current_branch=""
+	local recovery_helper="${repo_root}/.agents/scripts/canonical-recovery-helper.sh"
+
+	[[ -r "$repo_root/VERSION" ]] || return 1
+	IFS= read -r version <"$repo_root/VERSION" || return 1
+	[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	tag_ref="refs/tags/v${version}"
+	if _source_access_git -C "$repo_root" show-ref --verify --quiet "$tag_ref"; then
+		return 0
+	fi
+	[[ -f "$recovery_helper" ]] || return 1
+	current_branch=$(_source_access_git -C "$repo_root" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
+	[[ -n "$current_branch" ]] || return 1
+	AIDEVOPS_REAL_GIT_BIN=/usr/bin/git bash "$recovery_helper" fast-forward-current \
+		--repo "$repo_root" --branch "$current_branch" --reason aidevops-update \
+		--confirm FAST_FORWARD_CANONICAL_BRANCH >/dev/null || return 1
+	_source_access_git -C "$repo_root" show-ref --verify --quiet "$tag_ref"
+	return $?
+}
+
 _source_access_release_commit() {
 	local repo_root="$1"
 	local version=""
@@ -339,6 +363,10 @@ setup_source_access_broker() {
 	local privilege_rc=0
 	local trust_rc=0
 
+	_source_access_ensure_release_tag "$repo_root" || {
+		print_warning "Source-access broker deferred: the installed release tag is unavailable from the official remote"
+		return 1
+	}
 	tag_commit=$(_source_access_release_commit "$repo_root") || {
 		print_warning "Source-access broker deferred: the installed release tag could not be verified"
 		return 1
