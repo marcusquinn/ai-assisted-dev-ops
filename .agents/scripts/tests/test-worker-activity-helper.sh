@@ -448,6 +448,10 @@ assert_eq "2z5: scoped summary reports all excluded events" "15" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.excluded_event_total')"
 assert_eq "2z6: scoped Pulse counters remain global" "global" \
 	"$(printf '%s' "$JSON" | jq -r '.pulse_stats.scope')"
+assert_eq "2z6a: scoped blockers declare repository scope" "repository" \
+	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.scope')"
+assert_eq "2z6b: scoped delivery stages declare repository scope" "repository" \
+	"$(printf '%s' "$JSON" | jq -r '.delivery_stages.scope')"
 
 OUT=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 24h --repo example/repo-a --no-pr-check 2>&1)
 assert_contains "2z7: human scoped output distinguishes repository metrics" "repository-scoped metrics" "$OUT"

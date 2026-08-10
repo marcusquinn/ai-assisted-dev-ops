@@ -122,6 +122,64 @@ if [[ -f "$WAH_FAILURE_FAMILY_FILTER" ]]; then
 	WAH_FAILURE_FAMILY_JQ=$(<"$WAH_FAILURE_FAMILY_FILTER")
 fi
 
+# Keep the rich details projection outside the shell function body so adding
+# output fields does not turn jq data-shaping into shell function complexity.
+# shellcheck disable=SC2016 # jq variables are evaluated by jq, not the shell
+WAH_METRIC_DETAILS_JQ=$WAH_SESSION_OUTCOME_JQ$WAH_FAILURE_FAMILY_JQ'
+	[inputs | select(
+		.role == $worker_role
+		and (.ts // 0) >= $cutoff
+		and (.ts // 0) <= $now
+	)] as $window_events
+	| ($window_events | map(select(
+		$repo_slug == "" or (((.repo_slug // "") | ascii_downcase) == ($repo_slug | ascii_downcase))
+	))) as $events
+	| ($events | _wah_session_outcomes) as $w
+	| ($w | map(.duration_ms // 0)) as $durations
+	| ($w | map(select(_wah_effective_failure))) as $failures
+	| {
+		event_total: ($events | length),
+		unscoped_event_total: (if $repo_slug == "" then 0 else ([$window_events[] | select((.repo_slug // "") == "")] | length) end),
+		excluded_event_total: (($window_events | length) - ($events | length)),
+		continuation_events: ($events | map(select(_wah_nonterminal)) | length),
+		result_counts: (reduce $w[] as $row ({}; .[$row.result // "unknown"] += 1)),
+		event_result_counts: (reduce $events[] as $row ({}; .[$row.result // "unknown"] += 1)),
+		diagnostic_focus: {
+			premature_exit: ($failures | map(select(.result == "premature_exit" or .launch_failure_cause == "model_stopped_before_completion")) | length),
+			local_runtime_error: ($failures | map(select(.result != $local_kill_result and .launch_failure_cause != $local_kill_result and (.failure_reason == "local_error" or .launch_failure_cause == "local_runtime_error" or (.runtime_error_type // "") != ""))) | length),
+			local_kill: ($failures | map(select(.result == $local_kill_result or .launch_failure_cause == $local_kill_result or (.kill_reason != null and .kill_reason != "unknown" and .kill_reason != "natural"))) | length),
+			stall_hard_killed: ($failures | map(select(.result == $watchdog_killed_result or .launch_failure_cause == "stall_hard_killed" or .kill_reason == "hard_kill_stall")) | length)
+		},
+		timing_ms: {
+			samples: ($durations | length),
+			avg: (if ($durations | length) > 0 then (($durations | add) / ($durations | length) | floor) else 0 end),
+			max: (if ($durations | length) > 0 then ($durations | max) else 0 end)
+		},
+		recent_examples: ($w | sort_by(.ts // 0) | reverse | .[0:5] | map({
+			ts, session_key, session_id, issue_number, repo_slug, model, provider,
+			result, exit_code, failure_reason, provider_error_type, provider_status,
+			runtime_error_type, classification_source, classification_pattern,
+			launch_failure_cause, kill_reason, next_action, attempt_id, run_id,
+			raw_result, effective_outcome, outcome_source, duration_ms, work_dir,
+			output_file, load_1min, load_per_cpu
+		})),
+		failure_groups: (
+			$failures
+			| group_by([.result // "unknown", .failure_reason // "", .provider_error_type // "", .provider_status // "", (.runtime_error_type | _wah_empty_if_null), .classification_source // "", .classification_pattern // "", .launch_failure_cause // "", .kill_reason // "", .next_action // "", .provider // "", .model // "", .session_key // "", (.issue_number // "" | tostring), .repo_slug // ""])
+			| map({
+				result: (.[0].result // "unknown"), failure_reason: (.[0].failure_reason // ""),
+				provider_error_type: (.[0].provider_error_type // ""), provider_status: (.[0].provider_status // ""),
+				runtime_error_type: (.[0].runtime_error_type | _wah_empty_if_null), classification_source: (.[0].classification_source // ""),
+				classification_pattern: (.[0].classification_pattern // ""), launch_failure_cause: (.[0].launch_failure_cause // ""),
+				kill_reason: (.[0].kill_reason // ""), next_action: (.[0].next_action // ""), provider: (.[0].provider // ""),
+				model: (.[0].model // ""), session_key: (.[0].session_key // ""), issue_number: (.[0].issue_number // null),
+				repo_slug: (.[0].repo_slug // ""), count: length,
+				examples: (sort_by(.ts // 0) | reverse | .[0:3] | map({ts, session_id, work_dir, output_file, exit_code, duration_ms, provider_error_type, provider_status, runtime_error_type, classification_source, classification_pattern, launch_failure_cause, kill_reason, next_action}))
+			})
+			| sort_by(.count) | reverse | .[0:10]),
+		failure_families: ($failures | _wah_failure_family_summary)
+	}'
+
 #######################################
 # Convert short window spec to seconds. Caller owns the cutoff math.
 # $1 — one of 1h | 6h | 24h | 48h | 7d
@@ -201,7 +259,7 @@ _wah_aggregate_metrics() {
 			.role == $worker_role
 			and (.ts // 0) >= $cutoff
 			and (.ts // 0) <= $now
-			and ($repo_slug == "" or ((.repo_slug // "") == $repo_slug))
+			and ($repo_slug == "" or (((.repo_slug // "") | ascii_downcase) == ($repo_slug | ascii_downcase)))
 		)] as $events
 		| ($events | _wah_session_outcomes) as $w | {
 			total:  ($events | length),
@@ -247,95 +305,9 @@ _wah_metric_details_json() {
 	fi
 	now_epoch="${2:-$(date +%s)}"
 
-	local jq_program objective_outcomes
+	local objective_outcomes
 	objective_outcomes=$(_wah_objective_outcomes_json)
-	# shellcheck disable=SC2016 # jq variables are evaluated by jq, not the shell
-	jq_program=$WAH_SESSION_OUTCOME_JQ$WAH_FAILURE_FAMILY_JQ'
-		[inputs | select(
-			.role == $worker_role
-			and (.ts // 0) >= $cutoff
-			and (.ts // 0) <= $now
-		)] as $window_events
-		| ($window_events | map(select(
-			$repo_slug == "" or ((.repo_slug // "") == $repo_slug)
-		))) as $events
-		| ($events | _wah_session_outcomes) as $w
-		| ($w | map(.duration_ms // 0)) as $durations
-		| ($w | map(select(_wah_effective_failure))) as $failures
-		| {
-			event_total: ($events | length),
-			unscoped_event_total: (if $repo_slug == "" then 0 else ([$window_events[] | select((.repo_slug // "") == "")] | length) end),
-			excluded_event_total: (($window_events | length) - ($events | length)),
-			continuation_events: ($events | map(select(_wah_nonterminal)) | length),
-			result_counts: (reduce $w[] as $row ({}; .[$row.result // "unknown"] += 1)),
-			event_result_counts: (reduce $events[] as $row ({}; .[$row.result // "unknown"] += 1)),
-			diagnostic_focus: {
-				premature_exit: ($failures | map(select(.result == "premature_exit" or .launch_failure_cause == "model_stopped_before_completion")) | length),
-				local_runtime_error: ($failures | map(select(.result != $local_kill_result and .launch_failure_cause != $local_kill_result and (.failure_reason == "local_error" or .launch_failure_cause == "local_runtime_error" or (.runtime_error_type // "") != ""))) | length),
-				local_kill: ($failures | map(select(.result == $local_kill_result or .launch_failure_cause == $local_kill_result or (.kill_reason != null and .kill_reason != "unknown" and .kill_reason != "natural"))) | length),
-				stall_hard_killed: ($failures | map(select(.result == $watchdog_killed_result or .launch_failure_cause == "stall_hard_killed" or .kill_reason == "hard_kill_stall")) | length)
-			},
-			timing_ms: {
-				samples: ($durations | length),
-				avg: (if ($durations | length) > 0 then (($durations | add) / ($durations | length) | floor) else 0 end),
-				max: (if ($durations | length) > 0 then ($durations | max) else 0 end)
-			},
-				recent_examples: ($w | sort_by(.ts // 0) | reverse | .[0:5] | map({
-				ts,
-				session_key,
-				session_id,
-				issue_number,
-				repo_slug,
-				model,
-				provider,
-				result,
-				exit_code,
-				failure_reason,
-				provider_error_type,
-				provider_status,
-				runtime_error_type,
-				classification_source,
-				classification_pattern,
-				launch_failure_cause,
-				kill_reason,
-				next_action,
-				attempt_id,
-				run_id,
-				raw_result,
-				effective_outcome,
-				outcome_source,
-				duration_ms,
-				work_dir,
-				output_file,
-				load_1min,
-				load_per_cpu
-			})),
-			failure_groups: (
-				$failures
-				| group_by([.result // "unknown", .failure_reason // "", .provider_error_type // "", .provider_status // "", (.runtime_error_type | _wah_empty_if_null), .classification_source // "", .classification_pattern // "", .launch_failure_cause // "", .kill_reason // "", .next_action // "", .provider // "", .model // "", .session_key // "", (.issue_number // "" | tostring), .repo_slug // ""])
-				| map({
-					result: (.[0].result // "unknown"),
-					failure_reason: (.[0].failure_reason // ""),
-					provider_error_type: (.[0].provider_error_type // ""),
-					provider_status: (.[0].provider_status // ""),
-					runtime_error_type: (.[0].runtime_error_type | _wah_empty_if_null),
-					classification_source: (.[0].classification_source // ""),
-					classification_pattern: (.[0].classification_pattern // ""),
-					launch_failure_cause: (.[0].launch_failure_cause // ""),
-					kill_reason: (.[0].kill_reason // ""),
-					next_action: (.[0].next_action // ""),
-					provider: (.[0].provider // ""),
-					model: (.[0].model // ""),
-					session_key: (.[0].session_key // ""),
-					issue_number: (.[0].issue_number // null),
-					repo_slug: (.[0].repo_slug // ""),
-					count: length,
-					examples: (sort_by(.ts // 0) | reverse | .[0:3] | map({ts, session_id, work_dir, output_file, exit_code, duration_ms, provider_error_type, provider_status, runtime_error_type, classification_source, classification_pattern, launch_failure_cause, kill_reason, next_action}))
-				})
-				| sort_by(.count) | reverse | .[0:10]),
-			failure_families: ($failures | _wah_failure_family_summary)
-		}'
-	jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg worker_role "$WAH_RUNTIME_ROLE" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg watchdog_killed_result "$WAH_RESULT_WATCHDOG_STALL_KILLED" --arg local_kill_result "$WAH_RESULT_LOCAL_KILL" --arg repo_slug "$repo_slug" "$jq_program" <"$metrics" 2>/dev/null ||
+	jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$objective_outcomes" --arg worker_role "$WAH_RUNTIME_ROLE" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg watchdog_killed_result "$WAH_RESULT_WATCHDOG_STALL_KILLED" --arg local_kill_result "$WAH_RESULT_LOCAL_KILL" --arg repo_slug "$repo_slug" "$WAH_METRIC_DETAILS_JQ" <"$metrics" 2>/dev/null ||
 		printf '{"event_total":0,"unscoped_event_total":0,"excluded_event_total":0,"result_counts":{},"diagnostic_focus":{},"timing_ms":{"avg":0,"max":0,"samples":0},"recent_examples":[],"failure_groups":[],"failure_families":[]}'
 	return 0
 }
@@ -841,8 +813,8 @@ _wah_emit_json() {
 				dispatch_backoff_skipped: $db_skip,
 				pulse_dispatch_no_work_breaker_tripped: $nwbreaker
 			},
-			progress_blockers: $blockers,
-			delivery_stages: $delivery,
+			progress_blockers: ($blockers + {scope: (if $repo == "" then "global" else "repository" end)}),
+			delivery_stages: ($delivery + {scope: (if $repo == "" then "global" else "repository" end)}),
 			worker_solved_issues: { count: $delivery.issue_solved, check_state: $delivery.check_state, deprecated: true },
 			worker_prs: { count: $delivery.pr_opened, merged_count: $delivery.pr_merged, check_state: $delivery.check_state, deprecated: true }
 		}'
