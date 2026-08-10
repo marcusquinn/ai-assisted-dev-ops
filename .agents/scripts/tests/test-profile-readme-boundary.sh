@@ -80,6 +80,9 @@ install_helper_with_libs() {
 	cp "${SOURCE_DATA_LIB}" "${helper_dir}/profile-readme-data-lib.sh"
 	cp "${SOURCE_RENDER_LIB}" "${helper_dir}/profile-readme-render-lib.sh"
 	cp "${SOURCE_HELPER%/*}/audit-worktree-removal-helper.sh" \
+		"${SOURCE_HELPER%/*}/shared-constants.sh" \
+		"${SOURCE_HELPER%/*}/shared-sqlite-backup.sh" \
+		"${SOURCE_HELPER%/*}/shared-worktree-registry.sh" \
 		"${SOURCE_HELPER%/*}/portable-stat.sh" \
 		"${SOURCE_HELPER%/*}/screen-time-interval-engine.py" \
 		"${SOURCE_HELPER%/*}/screen_time_interval_common.py" \
@@ -284,6 +287,55 @@ test_update_preserves_manual_sections() {
 	fi
 
 	print_result "${test_name}" 0
+	return 0
+}
+
+test_update_recovers_dirty_profile_publication_worktree() {
+	local test_name="profile update recoverably removes its dirty scratch worktree after guarded cleanup refusal"
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	local helper_dir="${TEST_DIR}/helper"
+	local helper_path="${helper_dir}/profile-readme-helper.sh"
+	local refusing_helper="${helper_dir}/refusing-worktree-helper.sh"
+	local recovery_root="${TEST_DIR}/recovery"
+	local output_file="${TEST_DIR}/update-output"
+
+	mkdir -p "$helper_dir" "$fixture_home"
+	install_helper_with_libs "$helper_dir"
+	write_stub_dependencies "$helper_dir"
+	create_profile_repo_fixture "$fixture_home" "$fixture_repo" "$fixture_remote"
+	cat >"$refusing_helper" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${2:-}"
+[[ -n "$target" ]] || exit 1
+printf '%s\n' "recoverable fixture state" >"${target}/.profile-publication-fixture"
+exit 1
+EOF
+	chmod +x "$refusing_helper"
+
+	if ! HOME="$fixture_home" \
+		PATH="${SOURCE_HELPER%/*}:${PATH}" \
+		AIDEVOPS_REPOS_FILE="${fixture_home}/.config/aidevops/repos.json" \
+		AIDEVOPS_WORKTREE_BASE_DIR="${TEST_DIR}/worktrees" \
+		AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" \
+		AIDEVOPS_PROFILE_WORKTREE_HELPER="$refusing_helper" \
+		bash "$helper_path" update >"$output_file" 2>&1; then
+		print_helper_failure "$test_name" "helper update command failed" "$output_file"
+		return 0
+	fi
+
+	if [[ "$(git -C "$fixture_repo" worktree list --porcelain | grep -c '^worktree ' || true)" != "1" ]] ||
+		[[ ! -d "$recovery_root" ]] ||
+		[[ -n "$(git -C "$fixture_repo" status --porcelain --untracked-files=all)" ]]; then
+		print_helper_failure "$test_name" "scratch worktree leaked, recovery archive missing, or canonical checkout changed" "$output_file"
+		return 0
+	fi
+
+	print_result "$test_name" 0
 	return 0
 }
 
@@ -1309,6 +1361,8 @@ main() {
 
 	if [[ "$mode" != "--unit-only" ]]; then
 		test_update_preserves_manual_sections
+		teardown
+		test_update_recovers_dirty_profile_publication_worktree
 		teardown
 		test_update_dry_run_is_canonical_safe
 		teardown
