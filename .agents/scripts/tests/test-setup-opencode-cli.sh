@@ -223,6 +223,13 @@ if grep -q 'PATH:+:' "$resolved5" && ! grep -q 'PATH:-}' "$resolved5"; then
 else
 	assert_eq "stable shim avoids trailing empty PATH component" "safe" "unsafe"
 fi
+if grep -Fq '# aidevops:terminal-title-owner' "$resolved5" && \
+	grep -Fq 'AIDEVOPS_TERMINAL_TITLE_OWNER' "$resolved5" && \
+	grep -Fq 'OPENCODE_DISABLE_TERMINAL_TITLE' "$resolved5"; then
+	assert_eq "bootstrap stable shim claims terminal-title ownership" "present" "present"
+else
+	assert_eq "bootstrap stable shim claims terminal-title ownership" "present" "absent"
+fi
 
 # --- Test 5b: setup_opencode_cli clears stale canary negative cache ----------
 echo "Test 5b: setup_opencode_cli clears canary negative cache after repair"

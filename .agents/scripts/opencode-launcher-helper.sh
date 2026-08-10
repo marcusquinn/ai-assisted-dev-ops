@@ -268,6 +268,22 @@ tabby_shell_mode() {
     return 0
 }
 
+claim_terminal_title_ownership() {
+    export AIDEVOPS_TERMINAL_TITLE_OWNER="${AIDEVOPS_TERMINAL_TITLE_OWNER:-aidevops}"
+    if [[ "${AIDEVOPS_TERMINAL_TITLE_OWNER}" == "aidevops" ]]; then
+        export OPENCODE_DISABLE_TERMINAL_TITLE="${OPENCODE_DISABLE_TERMINAL_TITLE:-1}"
+    fi
+    return 0
+}
+
+print_terminal_title_environment() {
+    printf ' AIDEVOPS_TERMINAL_TITLE_OWNER=%q' "${AIDEVOPS_TERMINAL_TITLE_OWNER}"
+    if [[ -n "${OPENCODE_DISABLE_TERMINAL_TITLE+x}" ]]; then
+        printf ' OPENCODE_DISABLE_TERMINAL_TITLE=%q' "${OPENCODE_DISABLE_TERMINAL_TITLE}"
+    fi
+    return 0
+}
+
 run_isolated_tui() {
     local launch_dir="$1"
     local data_dir="$2"
@@ -279,6 +295,7 @@ run_isolated_tui() {
     if ((dry_run == 1)); then
         printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}"
         ((tabby_shell == 1)) && printf ' AIDEVOPS_TABBY_SESSION_RECOVERY=1'
+        print_terminal_title_environment
         printf ' opencode'
         ((${#opencode_args[@]} == 0)) || printf ' %q' "${opencode_args[@]}"
         ((tabby_shell == 1)) && printf '; cd %q && exec /bin/zsh -l' "${launch_dir}"
@@ -1305,6 +1322,7 @@ cmd_tui_launch() {
 
     validate_launch_directory "${launch_dir}" || return 1
     require_opencode_cli || return 1
+    claim_terminal_title_ownership
     tabby_shell=$(tabby_shell_mode "${tabby_shell}" "${use_shared_db}")
     if ((tabby_shell == 1 && use_shared_db == 1)); then
         print_error "--tabby-shell requires aidevops isolated OpenCode storage"
@@ -1333,7 +1351,9 @@ cmd_tui_launch() {
 
     if ((use_shared_db == 1)); then
         if ((dry_run == 1)); then
-            printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q opencode' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}"
+            printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}"
+            print_terminal_title_environment
+            printf ' opencode'
             ((${#opencode_args[@]} == 0)) || printf ' %q' "${opencode_args[@]}"
             printf '\n'
             return 0

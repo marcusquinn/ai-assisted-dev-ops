@@ -79,6 +79,8 @@ NODE
 fi
 printf 'XDG_DATA_HOME=%s\n' "${XDG_DATA_HOME:-}"
 printf 'AIDEVOPS_OPENCODE_ISOLATED_DB=%s\n' "${AIDEVOPS_OPENCODE_ISOLATED_DB:-}"
+printf 'AIDEVOPS_TERMINAL_TITLE_OWNER=%s\n' "${AIDEVOPS_TERMINAL_TITLE_OWNER:-}"
+printf 'OPENCODE_DISABLE_TERMINAL_TITLE=%s\n' "${OPENCODE_DISABLE_TERMINAL_TITLE:-}"
 printf 'AIDEVOPS_SESSION_ORIGIN=%s\n' "${AIDEVOPS_SESSION_ORIGIN:-}"
 printf 'AIDEVOPS_TEAM_INTERFACE_OVERLAY=%s\n' "${AIDEVOPS_TEAM_INTERFACE_OVERLAY:-}"
 printf 'AIDEVOPS_REMOTE_INTERFACE=%s\n' "${AIDEVOPS_REMOTE_INTERFACE:-}"
@@ -199,6 +201,8 @@ for auth_file in "${work_dir}"/opencode-interactive/project-repo-*/opencode/auth
 done
 if [[ "${output}" == *"AIDEVOPS_OPENCODE_ISOLATED_DB=1"* ]] \
     && [[ "${output}" == *"XDG_DATA_HOME=${work_dir}/opencode-interactive/project-repo-"* ]] \
+    && [[ "${output}" == *"AIDEVOPS_TERMINAL_TITLE_OWNER=aidevops"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_TERMINAL_TITLE=1"* ]] \
     && [[ "${output}" == *"AIDEVOPS_TEMP_DIR=${expected_temp}"* ]] \
     && [[ "${output}" == *"TMPDIR=/host/tmpdir"* ]] \
     && [[ "${output}" == *"TMP=/host/tmp"* ]] \
@@ -238,6 +242,8 @@ output=$(TERM_PROGRAM='' TABBY_CONFIG_DIRECTORY='' PATH="${fake_bin}:$PATH" HOME
     FAKE_OPENCODE_LOG="${tui_dry_run_log}" \
     "${HELPER}" --dir "${launch_dir}" --session-id dry-run-only --dry-run 2>&1)
 if [[ "${output}" == *"XDG_DATA_HOME=${tui_dry_run_work_dir}/opencode-interactive/dry-run-only"* ]] \
+    && [[ "${output}" == *"AIDEVOPS_TERMINAL_TITLE_OWNER=aidevops"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_TERMINAL_TITLE=1"* ]] \
     && directory_is_empty "${tui_dry_run_work_dir}" \
     && [[ ! -e "${tui_dry_run_log}" ]]; then
     _pass "TUI dry-run prints the command without writing launcher state"
@@ -245,9 +251,33 @@ else
     _fail "TUI dry-run mutated state or output an unexpected command: ${output}"
 fi
 
+output=$(TERM_PROGRAM='' TABBY_CONFIG_DIRECTORY='' OPENCODE_DISABLE_TERMINAL_TITLE=false \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${tui_dry_run_work_dir}" \
+    "${HELPER}" --dir "${launch_dir}" --session-id dry-run-override --dry-run 2>&1)
+if [[ "${output}" == *"AIDEVOPS_TERMINAL_TITLE_OWNER=aidevops"* ]] \
+    && [[ "${output}" == *"OPENCODE_DISABLE_TERMINAL_TITLE=false"* ]]; then
+    _pass "TUI launcher preserves an explicit OpenCode title flag"
+else
+    _fail "TUI launcher OpenCode title flag was not preserved: ${output}"
+fi
+
+output=$(env -u OPENCODE_DISABLE_TERMINAL_TITLE TERM_PROGRAM='' TABBY_CONFIG_DIRECTORY='' \
+    AIDEVOPS_TERMINAL_TITLE_OWNER=native PATH="${fake_bin}:$PATH" HOME="${home_dir}" \
+    AIDEVOPS_WORK_DIR="${tui_dry_run_work_dir}" \
+    "${HELPER}" --dir "${launch_dir}" --session-id dry-run-native-owner --dry-run 2>&1)
+if [[ "${output}" == *"AIDEVOPS_TERMINAL_TITLE_OWNER=native"* ]] \
+    && [[ "${output}" != *"OPENCODE_DISABLE_TERMINAL_TITLE="* ]]; then
+    _pass "TUI launcher honours explicit native terminal-title ownership"
+else
+    _fail "TUI launcher native ownership output unexpected: ${output}"
+fi
+
 tabby_output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
     "${HELPER}" --tabby-shell --dir "${launch_dir}" --session-id tabby-first-launch --dry-run 2>&1)
-if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1 opencode"* ]] \
+if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1"* ]] \
+    && [[ "${tabby_output}" == *"AIDEVOPS_TERMINAL_TITLE_OWNER=aidevops"* ]] \
+    && [[ "${tabby_output}" == *"OPENCODE_DISABLE_TERMINAL_TITLE=1"* ]] \
+    && [[ "${tabby_output}" == *" opencode"* ]] \
     && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]] \
     && [[ "${tabby_output}" != *"opencode ''"* ]] \
     && [[ "${tabby_output}" != *"--session ses_"* ]]; then
@@ -259,7 +289,9 @@ fi
 tabby_output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
     PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
     "${HELPER}" --dir "${launch_dir}" --session-id tabby-stale-token --dry-run 2>&1)
-if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1 opencode"* ]] \
+if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1"* ]] \
+    && [[ "${tabby_output}" == *"OPENCODE_DISABLE_TERMINAL_TITLE=1"* ]] \
+    && [[ "${tabby_output}" == *" opencode"* ]] \
     && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]] \
     && [[ "${tabby_output}" != *"--session ses_"* ]]; then
     _pass "stale Tabby profile command implicitly enables exact-session recovery"

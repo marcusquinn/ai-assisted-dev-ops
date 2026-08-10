@@ -448,10 +448,12 @@ fixture14=$(mktemp -d 2>/dev/null || mktemp -d -t t2954n)
 explicit14=$(build_fixture_node_install "$fixture14" "opencode" "nvm" "v24.13.1")
 shim14=$(_pulse_write_direct_opencode_shim "$explicit14")
 before14=$(cat "$shim14")
-if grep -Fq "\${HOME:+:\$HOME/.local/bin}" "$shim14"; then
-	print_result "stable shim — HOME-dependent paths are evaluated at runtime" 0
+if grep -Fq "\${HOME:+:\$HOME/.local/bin}" "$shim14" && \
+	grep -Fq '# aidevops:terminal-title-owner' "$shim14" && \
+	grep -Fq "OPENCODE_DISABLE_TERMINAL_TITLE=\"\${OPENCODE_DISABLE_TERMINAL_TITLE:-1}\"" "$shim14"; then
+	print_result "stable shim — runtime paths and terminal-title ownership are preserved" 0
 else
-	print_result "stable shim — HOME-dependent paths are evaluated at runtime" 1
+	print_result "stable shim — runtime paths and terminal-title ownership are preserved" 1
 fi
 cat() {
 	return 1

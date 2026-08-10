@@ -51,6 +51,8 @@ terminal-title-helper.sh detect            # Check terminal compatibility
 | `TERMINAL_TITLE_FORMAT` | `repo/branch` | Title format |
 | `TERMINAL_TITLE_ENABLED` | `true` | Set `false` to disable |
 | `AIDEVOPS_TAB_STATUS_ENABLED` | `true` | Set `false` to retain dynamic titles without OpenCode status glyphs |
+| `AIDEVOPS_TERMINAL_TITLE_OWNER` | `aidevops` | Managed OpenCode launches use one aidevops OSC writer; set `native` to delegate in-TUI OSC exclusively to OpenCode |
+| `OPENCODE_DISABLE_TERMINAL_TITLE` | `1` when aidevops owns titles | Prevent OpenCode from racing the status-decorated title; an explicit value is preserved |
 
 <!-- AI-CONTEXT-END -->
 
@@ -58,7 +60,7 @@ terminal-title-helper.sh detect            # Check terminal compatibility
 
 Uses OSC escape sequences (`printf '\033]0;%s\007' "title"`). **Full support**: Tabby, iTerm2, Windows Terminal, Kitty, Alacritty, WezTerm, Hyper, GNOME Terminal, Konsole, VS Code Terminal, xterm. **Partial**: Apple Terminal (basic), tmux/screen (requires config).
 
-The OpenCode plugin consumes the first root-user `message.updated` event plus `session.status`, `permission.asked`, and `permission.replied` events only for the active interactive root session. Subagent and headless-worker events are ignored, and status remains applied when OpenCode later renames the session.
+The OpenCode plugin consumes the first root-user `message.updated` event plus `session.status`, `permission.asked`, and `permission.replied` events only for the active interactive root session. Subagent and headless-worker events are ignored. Managed launchers disable OpenCode's competing native terminal-title writer, shell helpers yield while OpenCode is active, and native session-rename tools share the plugin controller so status remains applied across title changes.
 
 ## Shell Integration
 
