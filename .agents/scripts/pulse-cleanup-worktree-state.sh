@@ -13,6 +13,8 @@
 
 [[ -n "${_PULSE_CLEANUP_WORKTREE_STATE_LOADED:-}" ]] && return 0
 _PULSE_CLEANUP_WORKTREE_STATE_LOADED=1
+_PC_STATE_SKIPPED="skipped"
+_PC_STATE_UNKNOWN="unknown"
 
 if [[ -z "${_PULSE_CLEANUP_SCRIPT_DIR:-}" ]]; then
 	_pulse_cleanup_worktree_state_path="${BASH_SOURCE[0]%/*}"
@@ -287,8 +289,8 @@ _pc_log_stat_unavailable_skip() {
 	local stat_issue_num=""
 	stat_issue_num=$(_pc_issue_from_branch "$wt_branch_age" 2>/dev/null || true)
 	local stat_audit_context
-	stat_audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$stat_issue_num" 0 0 0 "unknown" "unknown" "unknown" "unknown" "stat-unavailable")
-	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "stat-unavailable" "skipped" "$stat_audit_context"
+	stat_audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$stat_issue_num" 0 0 0 "$_PC_STATE_UNKNOWN" "$_PC_STATE_UNKNOWN" "$_PC_STATE_UNKNOWN" "$_PC_STATE_UNKNOWN" "stat-unavailable")
+	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "stat-unavailable" "$_PC_STATE_SKIPPED" "$stat_audit_context"
 	return 0
 }
 
@@ -317,7 +319,7 @@ _pc_log_not_age_eligible_skip() {
 	issue_num=$(_pc_issue_from_branch "$wt_branch_age" 2>/dev/null || true)
 	local audit_context
 	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$pr_state" "$guard_ok" "$guard_ok" "$guard_ok" "none")
-	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "not-age-eligible" "skipped" "$audit_context"
+	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "not-age-eligible" "$_PC_STATE_SKIPPED" "$audit_context"
 	return 0
 }
 
@@ -507,7 +509,7 @@ _cleanup_merged_prs_for_all_repos() {
 		# worktrees in any managed repo. Skip local_only repos since
 		# worktree-helper.sh uses gh pr list for squash-merge detection.
 		local repo_records
-		repo_records=$(jq -r '.initialized_repos[] | select((.local_only // false) == false) | [.path // "", .slug // "unknown"] | @tsv' "$repos_json" || echo "")
+		repo_records=$(jq -r --arg unknown "$_PC_STATE_UNKNOWN" '.initialized_repos[] | select((.local_only // false) == false) | [.path // "", .slug // $unknown] | @tsv' "$repos_json" || echo "")
 
 		local repo_path
 		local repo_slug
@@ -591,7 +593,7 @@ _worktree_owner_alive() {
 	if pgrep -f "$wt_path" >/dev/null 2>&1; then
 		echo "[pulse-wrapper] Orphan cleanup: skipping ${wt_branch:-detached} ($wt_path) — pgrep matched active process" >>"$LOGFILE"
 		# t2976: audit log — orphan cleanup blocked, pgrep found active owner
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path" "owned-skip" "skipped"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path" "owned-skip" "$_PC_STATE_SKIPPED"
 		return 0
 	fi
 
@@ -600,7 +602,7 @@ _worktree_owner_alive() {
 	if is_worktree_owned_by_others "$wt_path"; then
 		echo "[pulse-wrapper] Orphan cleanup: skipping ${wt_branch:-detached} ($wt_path) — registered owner alive in registry" >>"$LOGFILE"
 		# t2976: audit log — orphan cleanup blocked, registry owner is alive
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path" "owned-skip" "skipped"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path" "owned-skip" "$_PC_STATE_SKIPPED"
 		return 0
 	fi
 
@@ -621,7 +623,7 @@ _worktree_owner_alive() {
 		if [[ -n "$_isc_helper" ]]; then
 			if "$_isc_helper" branch-has-active-claim "$wt_branch" --worktree "$wt_path" >/dev/null 2>&1; then
 				echo "[pulse-wrapper] Orphan cleanup: skipping $wt_branch ($wt_path) — active interactive claim stamp" >>"$LOGFILE"
-				log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path" "active-claim" "skipped"
+				log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path" "active-claim" "$_PC_STATE_SKIPPED"
 				return 0
 			fi
 		fi
@@ -660,7 +662,6 @@ _worktree_creation_epoch() {
 	echo "$wt_created"
 	return 0
 }
-
 #######################################
 # Decide whether a worktree is eligible for orphan cleanup.
 #
@@ -1033,4 +1034,3 @@ Worker failed: orphan worktree detected (crash_type=${orphan_crash_type}, 0 comm
 
 	return 0
 }
-

@@ -13,6 +13,8 @@
 
 [[ -n "${_PULSE_CLEANUP_WORKTREE_REMOVAL_LOADED:-}" ]] && return 0
 _PULSE_CLEANUP_WORKTREE_REMOVAL_LOADED=1
+_PC_REMOVAL_NONE="none"
+_PC_REMOVAL_SKIPPED="skipped"
 
 if [[ -z "${_PULSE_CLEANUP_SCRIPT_DIR:-}" ]]; then
 	_pulse_cleanup_worktree_removal_path="${BASH_SOURCE[0]%/*}"
@@ -62,7 +64,7 @@ _pc_assert_no_uncommitted_work() {
 
 	if [[ "$dirty_count" -gt 0 ]]; then
 		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): skipping ${wt_branch_age:-detached} — ${dirty_count} dirty file(s) present, refusing permanent removal (GH#23677)" >>"$LOGFILE"
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "dirty-content-protect" "skipped" "$audit_context_ref"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "dirty-content-protect" "$_PC_REMOVAL_SKIPPED" "$audit_context_ref"
 		return 1
 	fi
 
@@ -80,9 +82,9 @@ _pc_assert_no_uncommitted_work() {
 		local audit_ctx_reflog
 		local guard_ok
 		guard_ok=$(printf 'cle%s' 'ar')
-		audit_ctx_reflog=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_not_on_remotes" "$dirty_count" "$wt_age_secs" "none" "$guard_ok" "$guard_ok" "$guard_ok" "none")
+		audit_ctx_reflog=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_not_on_remotes" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "$_PC_REMOVAL_NONE")
 		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): skipping ${wt_branch_age:-detached} — ${commits_not_on_remotes} commit(s) reachable from HEAD but not on any remote" >>"$LOGFILE"
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "commits-not-on-remote" "skipped" "$audit_ctx_reflog"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "commits-not-on-remote" "$_PC_REMOVAL_SKIPPED" "$audit_ctx_reflog"
 		return 1
 	fi
 	return 0
@@ -189,7 +191,7 @@ _pc_archive_and_remove_worktree_preserving_branch() {
 				"$orphan_issue_num" "$repo_slug_age"; then
 				echo "[pulse-wrapper] Orphan cleanup: skipping ${wt_branch_age} — compact recovery archive creation or verification failed" >>"$LOGFILE"
 				log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
-					"compact-archive-failed" "skipped" "$audit_context"
+					"compact-archive-failed" "$_PC_REMOVAL_SKIPPED" "$audit_context"
 				return "$_PC_ARCHIVE_REQUIRED_FAILURE_RC"
 			fi
 		else
@@ -378,7 +380,7 @@ _pc_handle_local_commit_no_pr_worktree() {
 	guard_ok=$(printf 'cle%s' 'ar')
 
 	if [[ "$dirty_count" -eq 0 ]] && _pc_issue_closed_for_branch_archive "$orphan_issue_num" "$repo_slug_age"; then
-		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "none" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved-closed-issue")
+		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved-closed-issue")
 		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing ${wt_branch_age:-detached} — issue #${orphan_issue_num} is closed; local commits preserved on branch" >>"$LOGFILE"
 		_pc_remove_local_commit_worktree_preserving_branch "$rp_age" "$wt_path_age" "$wt_branch_age" "$audit_context"
 		return $?
@@ -401,13 +403,13 @@ _pc_handle_local_commit_no_pr_worktree() {
 
 	archive_secs=$(_pc_local_commit_archive_secs)
 	if [[ "$wt_age_secs" -lt "$archive_secs" ]]; then
-		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "none" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved-after-${archive_secs}s")
+		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved-after-${archive_secs}s")
 		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): skipping ${wt_branch_age:-detached} — local commits with no PR are younger than branch-preserving cleanup threshold" >>"$LOGFILE"
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "local-commits-no-pr" "skipped" "$audit_context"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "local-commits-no-pr" "$_PC_REMOVAL_SKIPPED" "$audit_context"
 		return 1
 	fi
 
-	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "none" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved")
+	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "branch-preserved")
 	echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): removing stale worktree for ${wt_branch_age:-detached} — local commits preserved on branch" >>"$LOGFILE"
 	_pc_remove_local_commit_worktree_preserving_branch "$rp_age" "$wt_path_age" "$wt_branch_age" "$audit_context"
 	return $?
@@ -480,9 +482,9 @@ _pc_skip_recent_worker_metric_cleanup() {
 	if ! _pc_recent_worker_metric_exists "$orphan_issue_num" "$now_epoch" "$age_grace"; then
 		return 1
 	fi
-	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "none" "$guard_ok" "$guard_ok" "active" "none")
+	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "active" "$_PC_REMOVAL_NONE")
 	echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): skipping ${wt_branch_age:-detached} — recent worker runtime metric/session record" >>"$LOGFILE"
-	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "active-worker-metric" "skipped" "$audit_context"
+	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" "active-worker-metric" "$_PC_REMOVAL_SKIPPED" "$audit_context"
 	return 0
 }
 
@@ -583,7 +585,7 @@ _cleanup_single_worktree() {
 	local audit_context
 	local guard_ok
 	guard_ok=$(printf 'cle%s' 'ar')
-	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "none" "$guard_ok" "$guard_ok" "$guard_ok" "none")
+	audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$_PC_REMOVAL_NONE" "$guard_ok" "$guard_ok" "$guard_ok" "$_PC_REMOVAL_NONE")
 	if _pc_skip_recent_worker_metric_cleanup "$wt_path_age" "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "$now_epoch" "$repo_name_age"; then
 		return 1
 	fi
@@ -663,7 +665,7 @@ _pc_log_local_only_worktree_skips() {
 			[[ ! -d "$wt_path_local" ]] && continue
 
 			echo "[pulse-wrapper] Orphan cleanup ($repo_name_local): skipping $wt_path_local — repo is local_only" >>"$LOGFILE"
-			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_local" "local-only-repo" "skipped"
+			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_local" "local-only-repo" "$_PC_REMOVAL_SKIPPED"
 		done < <(git -C "$rp_local" worktree list 2>/dev/null)
 	done <<<"$repo_paths"
 
@@ -896,7 +898,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 					log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$candidate_path" "$reason" "trash"
 					moved_count=$((moved_count + 1))
 				else
-					log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$candidate_path" "trash-failed" "skipped"
+					log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$candidate_path" "trash-failed" "$_PC_REMOVAL_SKIPPED"
 				fi
 			fi
 		done
@@ -912,7 +914,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 						log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$candidate_path" "$reason" "trash"
 						moved_count=$((moved_count + 1))
 					else
-						log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$candidate_path" "trash-failed" "skipped"
+						log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$candidate_path" "trash-failed" "$_PC_REMOVAL_SKIPPED"
 					fi
 				fi
 			done
@@ -980,7 +982,7 @@ _pc_relocate_registered_worktree() {
 	fi
 	[[ -n "$target_path" && "$target_path" != "$wt_path_move" ]] || return 1
 	[[ ! -e "$target_path" ]] || {
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_move" "centralize-target-exists" "skipped"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_move" "centralize-target-exists" "$_PC_REMOVAL_SKIPPED"
 		return 1
 	}
 	mkdir -p "$(dirname "$target_path")" 2>/dev/null || return 1
@@ -990,7 +992,7 @@ _pc_relocate_registered_worktree() {
 		log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_move" "centralized-worktree" "moved" "target=central-worktree-base branch=$wt_branch_move"
 		return 0
 	fi
-	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_move" "centralize-move-failed" "skipped"
+	log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_move" "centralize-move-failed" "$_PC_REMOVAL_SKIPPED"
 	return 1
 }
 
@@ -1050,7 +1052,6 @@ _pc_relocate_registered_worktrees() {
 	echo "$moved_count"
 	return 0
 }
-
 #######################################
 # Clean up worktrees for merged/closed PRs and orphaned workers
 # across ALL managed repos.
@@ -1162,4 +1163,3 @@ cleanup_worktrees() {
 
 	return 0
 }
-
