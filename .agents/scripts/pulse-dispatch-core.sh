@@ -25,6 +25,7 @@
 #   - _check_nmr_approval_gate
 #   - _check_commit_subject_dedup_gate
 #   - _has_force_dispatch_label
+#   - _has_publication_pending_label
 #   - _is_bot_generated_cleanup_issue
 #   - _is_task_committed_to_main
 #   - _dispatch_target_is_pull_request
@@ -926,6 +927,29 @@ _has_force_dispatch_label() {
 }
 
 #######################################
+# Detect the publication hold label before any claim or worker launch.
+#
+# `publication:pending` represents an issue that was intentionally created
+# before its TODO.md entry and worker brief/stub reached the default branch.
+# This dedicated pre-launch check remains effective if candidate filtering or
+# the dispatch-dedup helper is bypassed. Malformed metadata fails closed.
+#
+# Args:
+#   $1 - issue metadata JSON with a .labels array
+# Exit codes:
+#   0 - publication is pending or metadata cannot be safely read
+#   1 - publication is not pending
+#######################################
+_has_publication_pending_label() {
+	local issue_meta_json="$1"
+	local label_state=""
+	[[ -n "$issue_meta_json" ]] || return 0
+	label_state=$(printf '%s' "$issue_meta_json" |
+		jq -r 'if ((.labels // []) | map(.name) | index("publication:pending")) != null then "pending" else "published" end' 2>/dev/null) || return 0
+	[[ "$label_state" == "pending" ]]
+}
+
+#######################################
 # t2955: Detect the `dispatch-blocked:committed-to-main` cache label.
 #
 # Purpose: cache fast-path for `_check_commit_subject_dedup_gate`. When
@@ -1314,6 +1338,15 @@ _dispatch_dedup_check_layers() {
 	if [[ "$target_state" != "OPEN" ]]; then
 		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: issue state is ${target_state:-unknown}" >>"$LOGFILE"
 		_ds_record "$issue_number" "$repo_slug" "dedup.state_check" "$_dss_t0"
+		return 1
+	fi
+
+	# publication:pending is an unconditional hold while canonical planning is
+	# absent from the default branch. It is checked here as defence-in-depth
+	# before direct-dispatch paths can claim or launch a worker.
+	if _has_publication_pending_label "$issue_meta_json"; then
+		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: publication:pending label present" >>"$LOGFILE"
+		_ds_record "$issue_number" "$repo_slug" "dedup.publication_pending" "$_dss_t0"
 		return 1
 	fi
 

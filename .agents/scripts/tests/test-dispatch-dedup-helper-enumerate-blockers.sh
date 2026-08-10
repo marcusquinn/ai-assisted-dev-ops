@@ -182,6 +182,29 @@ test_parent_task_only() {
 }
 
 # -------------------------------------------------------------------
+# Test: publication:pending is an unconditional blocker even when positive
+# dispatch labels are already present through a partial API mutation.
+# -------------------------------------------------------------------
+test_publication_pending_only() {
+	create_gh_stub "publication:pending,auto-dispatch,status:available,tier:standard"
+
+	local output exit_code=0
+	output=$("$HELPER_SCRIPT" enumerate-blockers 100 marcusquinn/aidevops 2>/dev/null) || exit_code=$?
+
+	if [[ "$exit_code" -ne 0 ]]; then
+		print_result "publication:pending blocks positive dispatch labels" 1 "Expected exit 0 but got exit ${exit_code}"
+		return 0
+	fi
+
+	if printf '%s\n' "$output" | grep -q 'PUBLICATION_PENDING_BLOCKED'; then
+		print_result "publication:pending emits PUBLICATION_PENDING_BLOCKED" 0
+	else
+		print_result "publication:pending emits PUBLICATION_PENDING_BLOCKED" 1 "Signal not in output: '${output}'"
+	fi
+	return 0
+}
+
+# -------------------------------------------------------------------
 # Test: only no-auto-dispatch → exit 0, NO_AUTO_DISPATCH_BLOCKED emitted
 # -------------------------------------------------------------------
 test_no_auto_dispatch_only() {
@@ -252,7 +275,7 @@ test_infrastructure_only() {
 # This is the core multi-blocker regression guard (t2894).
 # -------------------------------------------------------------------
 test_multi_blocker_both_signals_emitted() {
-	create_gh_stub "parent-task,no-auto-dispatch,infrastructure,hold-for-review,tier:standard"
+	create_gh_stub "parent-task,publication:pending,no-auto-dispatch,infrastructure,hold-for-review,tier:standard"
 
 	local output exit_code=0
 	output=$("$HELPER_SCRIPT" enumerate-blockers 100 marcusquinn/aidevops 2>/dev/null) || exit_code=$?
@@ -263,9 +286,12 @@ test_multi_blocker_both_signals_emitted() {
 		return 0
 	fi
 
-	local parent_found=false nad_found=false infra_found=false hfr_found=false
+	local parent_found=false publication_found=false nad_found=false infra_found=false hfr_found=false
 	if printf '%s\n' "$output" | grep -q 'PARENT_TASK_BLOCKED'; then
 		parent_found=true
+	fi
+	if printf '%s\n' "$output" | grep -q 'PUBLICATION_PENDING_BLOCKED'; then
+		publication_found=true
 	fi
 	if printf '%s\n' "$output" | grep -q 'NO_AUTO_DISPATCH_BLOCKED'; then
 		nad_found=true
@@ -277,21 +303,21 @@ test_multi_blocker_both_signals_emitted() {
 		hfr_found=true
 	fi
 
-	if [[ "$parent_found" == "true" && "$nad_found" == "true" && "$infra_found" == "true" && "$hfr_found" == "true" ]]; then
-		print_result "multi-blocker: parent/no-auto/infrastructure/hold signals emitted" 0
+	if [[ "$parent_found" == "true" && "$publication_found" == "true" && "$nad_found" == "true" && "$infra_found" == "true" && "$hfr_found" == "true" ]]; then
+		print_result "multi-blocker: parent/publication/no-auto/infrastructure/hold signals emitted" 0
 	else
-		print_result "multi-blocker: parent/no-auto/infrastructure/hold signals emitted" 1 \
-			"Missing signals — parent_found=${parent_found} nad_found=${nad_found} infra_found=${infra_found} hfr_found=${hfr_found}; output: '${output}'"
+		print_result "multi-blocker: parent/publication/no-auto/infrastructure/hold signals emitted" 1 \
+			"Missing signals — parent_found=${parent_found} publication_found=${publication_found} nad_found=${nad_found} infra_found=${infra_found} hfr_found=${hfr_found}; output: '${output}'"
 	fi
 
-	# Count lines — must be exactly 4
+	# Count lines — must be exactly 5
 	local line_count
 	line_count=$(printf '%s\n' "$output" | grep -c '.' 2>/dev/null || true)
-	if [[ "$line_count" -eq 4 ]]; then
-		print_result "multi-blocker: exactly 4 lines emitted (one per signal)" 0
+	if [[ "$line_count" -eq 5 ]]; then
+		print_result "multi-blocker: exactly 5 lines emitted (one per signal)" 0
 	else
-		print_result "multi-blocker: exactly 4 lines emitted (one per signal)" 1 \
-			"Expected 4 lines, got ${line_count}; output: '${output}'"
+		print_result "multi-blocker: exactly 5 lines emitted (one per signal)" 1 \
+			"Expected 5 lines, got ${line_count}; output: '${output}'"
 	fi
 	return 0
 }
@@ -380,6 +406,7 @@ main() {
 
 	test_no_blockers_returns_safe
 	test_parent_task_only
+	test_publication_pending_only
 	test_no_auto_dispatch_only
 	test_hold_for_review_only
 	test_infrastructure_only

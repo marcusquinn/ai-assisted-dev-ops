@@ -37,6 +37,7 @@ assert_reason 'pre-dispatch validator failed: missing worker context; needs-brie
 assert_reason 'dedup.worktree_cap blocked by max worktree count' 'local_capacity_gate'
 assert_reason 'dedup guard blocked #303 in some-org/infrastructure' 'dedup_active_claim'
 assert_reason 'PARENT_TASK_BLOCKED (label=parent-task)' 'parent_task'
+assert_reason 'PUBLICATION_PENDING_BLOCKED (label=publication:pending)' 'publication_pending'
 assert_reason 'NO_AUTO_DISPATCH_BLOCKED (label=no-auto-dispatch)' 'no_auto_dispatch'
 assert_reason 'FOOTPRINT_OVERLAP path=.agents/scripts/pulse-dispatch-engine.sh issue=#25229' 'footprint_overlap'
 assert_reason '[dispatch_with_dedup] Hard-stop before worker bootstrap for #25233 in marcusquinn/aidevops: unresolved blocked-by dependency (GH#23932)' 'blocked_by_unresolved'

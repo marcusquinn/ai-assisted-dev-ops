@@ -118,6 +118,12 @@ else
 	fail "idle-work query excludes infrastructure advisory issues" "query=$(<"$GH_QUERY_FILE")"
 fi
 
+if grep -q -- '-label:publication:pending' "$GH_QUERY_FILE"; then
+	pass "idle-work query excludes unpublished planning issues"
+else
+	fail "idle-work query excludes unpublished planning issues" "query=$(<"$GH_QUERY_FILE")"
+fi
+
 timeout_value=$(<"$TIMEOUT_CALL_FILE")
 if grep -q 'AIDEVOPS_PULSE_IDLE_AVAILABLE_WORK_TIMEOUT:-30' "$SOURCE_SCRIPT" &&
 	[[ "$timeout_value" =~ ^[0-9]+$ ]] &&

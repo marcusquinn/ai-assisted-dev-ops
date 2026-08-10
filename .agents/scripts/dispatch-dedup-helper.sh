@@ -806,6 +806,7 @@ _has_active_claim() {
 #   exit 1 if unassigned or assigned only to self (safe to dispatch)
 # Outputs: one of the following signals on stdout when blocking:
 #   PARENT_TASK_BLOCKED (label=<name>)      — unconditional parent-task / meta block
+#   PUBLICATION_PENDING_BLOCKED (label=...) — canonical planning publication has not landed
 #   NO_AUTO_DISPATCH_BLOCKED (label=...)    — unconditional no-auto-dispatch block (t2832)
 #   INFRASTRUCTURE_BLOCKED (label=...)      — infrastructure / billing / runner advisory block
 #   COST_BUDGET_EXCEEDED (...)              — token spend circuit breaker
@@ -869,6 +870,26 @@ _is_assigned_check_parent_task() {
 		return 0
 	fi
 	return 1
+}
+
+#######################################
+# is_assigned helper: block issues whose canonical planning publication has not
+# landed on the default branch. The label is applied before an issue can exist
+# ahead of its TODO.md row/brief and is removed only by exact-SHA reconciliation.
+#
+# Args:
+#   $1 = issue metadata JSON (from `gh issue view --json ...,labels`)
+#   $2 = (optional) issue number — included in GUARD_UNCERTAIN output
+#   $3 = (optional) repo slug — included in GUARD_UNCERTAIN output
+# Returns: exit 0 if publication:pending is present or jq fails (prints signal),
+#          exit 1 if the label is absent and jq succeeds
+#######################################
+_is_assigned_check_publication_pending() {
+	local meta_json="$1"
+	local issue_number="${2:-unknown}"
+	local repo_slug="${3:-unknown}"
+	_is_assigned_check_label_block "$meta_json" "$issue_number" "$repo_slug" \
+		"publication:pending" "PUBLICATION_PENDING_BLOCKED" "publication-pending-check"
 }
 
 #######################################
@@ -1808,8 +1829,11 @@ _is_assigned_pre_assignee_guard_blocks() {
 	local issue_number="$2"
 	local repo_slug="$3"
 
-	# t1986/t2832: parent-task and no-auto-dispatch are unconditional blocks.
+	# Parent-task, pending publication, and no-auto-dispatch are unconditional blocks.
 	if _is_assigned_check_parent_task "$issue_meta_json" "$issue_number" "$repo_slug"; then
+		return 0
+	fi
+	if _is_assigned_check_publication_pending "$issue_meta_json" "$issue_number" "$repo_slug"; then
 		return 0
 	fi
 	if _is_assigned_check_no_auto_dispatch "$issue_meta_json" "$issue_number" "$repo_slug"; then
@@ -1971,8 +1995,8 @@ is_assigned_read_only() {
 # enumerate_blockers — report ALL structural dispatch blockers for an issue.
 #
 # Unlike is_assigned() which short-circuits on the first match, this function
-# runs every unconditional structural check (parent-task, no-auto-dispatch,
-# infrastructure, hold-for-review)
+# runs every unconditional structural check (parent-task, pending publication,
+# no-auto-dispatch, infrastructure, hold-for-review)
 # and emits ALL matching signals as newline-separated tokens on stdout.
 #
 # Intentionally excludes cost-budget, hydration window, and assignee checks —
@@ -2032,35 +2056,42 @@ enumerate_blockers() {
 		_found=true
 	fi
 
-	# Check 2: no-auto-dispatch unconditional block (t2832).
+	# Check 2: canonical planning publication has not landed.
+	_blocker_out=$(_is_assigned_check_publication_pending "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
+	if [[ -n "$_blocker_out" ]]; then
+		printf '%s\n' "$_blocker_out"
+		_found=true
+	fi
+
+	# Check 3: no-auto-dispatch unconditional block (t2832).
 	_blocker_out=$(_is_assigned_check_no_auto_dispatch "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
 	if [[ -n "$_blocker_out" ]]; then
 		printf '%s\n' "$_blocker_out"
 		_found=true
 	fi
 
-	# Check 3: request-specific signed worker permission hold.
+	# Check 4: request-specific signed worker permission hold.
 	_blocker_out=$(_is_assigned_check_maintainer_permissions "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
 	if [[ -n "$_blocker_out" ]]; then
 		printf '%s\n' "$_blocker_out"
 		_found=true
 	fi
 
-	# Check 4: infrastructure advisory/operator block.
+	# Check 5: infrastructure advisory/operator block.
 	_blocker_out=$(_is_assigned_check_infrastructure "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
 	if [[ -n "$_blocker_out" ]]; then
 		printf '%s\n' "$_blocker_out"
 		_found=true
 	fi
 
-	# Check 5: hold-for-review unconditional maintainer hold.
+	# Check 6: hold-for-review unconditional maintainer hold.
 	_blocker_out=$(_is_assigned_check_hold_for_review "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
 	if [[ -n "$_blocker_out" ]]; then
 		printf '%s\n' "$_blocker_out"
 		_found=true
 	fi
 
-	# Check 6: t3197 dispatch cooldown after no_worker_process launch failure.
+	# Check 7: t3197 dispatch cooldown after no_worker_process launch failure.
 	_blocker_out=$(_is_assigned_check_dispatch_cooldown "$issue_number" "$repo_slug" 2>/dev/null) || true
 	if [[ -n "$_blocker_out" ]]; then
 		printf '%s\n' "$_blocker_out"
@@ -2547,6 +2578,10 @@ _classify_structural_dispatch_blocker_reason() {
 			printf 'parent_task\n'
 			return 0
 			;;
+		*publication_pending_blocked* | *publication:pending*)
+			printf 'publication_pending\n'
+			return 0
+			;;
 		*infrastructure_blocked* | *label=infrastructure* | *hold_for_review_blocked* | *hold-for-review* | *external*author*gate* | *nmr*gate* | *approval*required*)
 			printf 'policy_gate\n'
 			return 0
@@ -2665,7 +2700,8 @@ Usage:
   dispatch-dedup-helper.sh is-assigned-read-only <issue> <slug> [self-login]  Inspect without recovery writes
   dispatch-dedup-helper.sh enumerate-blockers <issue> <slug> [runner]
                                                        Report ALL structural label blockers (exit 0=blocked, 1=none)
-                                                       Emits newline-separated tokens: PARENT_TASK_BLOCKED,
+                                                        Emits newline-separated tokens: PARENT_TASK_BLOCKED,
+                                                        PUBLICATION_PENDING_BLOCKED,
                                                        NO_AUTO_DISPATCH_BLOCKED, GUARD_UNCERTAIN. Unlike is-assigned,
                                                        does not short-circuit on first match. t2894.
   dispatch-dedup-helper.sh classify-blocker <signal>

@@ -16,6 +16,7 @@ Applied to GitHub issues. The pulse checks these before spawning a worker.
 |-------|-------------|-----------|
 | `parent-task` | `dispatch-dedup-helper.sh` `_is_assigned_check_parent_task` | Epics/trackers — children implement, not this issue. Permanent until explicitly removed; review-label normalization cannot override it (t2211). |
 | `meta` | Same as `parent-task` — treated as an alias | Alternative spelling of `parent-task`. |
+| `publication:pending` | `pulse-wrapper-cycle-gates.sh`, `dispatch-dedup-helper.sh` `_is_assigned_check_publication_pending`, and `pulse-dispatch-core.sh` `_has_publication_pending_label` | Canonical TODO/brief publication is still pending. It blocks candidate discovery, dedup, and direct dispatch until exact default-branch reconciliation validates the task/issue mapping and removes it last. |
 | `no-auto-dispatch` | `dispatch-dedup-helper.sh` `_is_assigned_check_no_auto_dispatch` (t2832), `issue-sync-lib.sh`, `interactive-session-helper.sh` lockdown | Durable explicit manual hold for issues. Blocks dispatch (`NO_AUTO_DISPATCH_BLOCKED`), ordinary/bulk/pulse enrich, and decomposition. Routine interactive ownership uses `status:in-review` + assignment instead. The explicit maintainer-only `issue-sync-helper.sh sync-body tNNN` exception can update only the authoritative body while continuously verifying the hold and all metadata; it cannot dispatch, change labels, or bypass a genuine claim. Applied by `interactive-session-helper.sh lockdown`. |
 | `hold-for-review` | `dispatch-dedup-helper.sh` `_is_assigned_check_hold_for_review`, `issue-sync-lib.sh`; PR merge checks below | Confirmed unresolved internal, manual, policy, or security review hold backed by explicit durable decision evidence. On issues, same dispatch-block intent as `no-auto-dispatch` (`HOLD_FOR_REVIEW_BLOCKED` signal). On PRs, blocks auto-merge until a maintainer removes the label. It does not represent missing author authority and needs no cryptographic self-approval. Label actor, timing, or missing automation provenance alone is insufficient. Scanner availability, temporary-file, input, and execution failures are infrastructure retries and must not apply this label. |
 | `needs-maintainer-review` | `pulse-nmr-approval.sh` `auto_approve_maintainer_issues`, external-author workflows | External-author authority gate. Authors without verified write authority require maintainer cryptographic approval (`sudo aidevops approve issue <N>`) before dispatch. Write-authorized authors never self-approve: explicit durable human-decision evidence normalizes to `hold-for-review`, machine-breaker evidence becomes `status:blocked`, and unreasoned residue is removed without replacing active `status:*`. Unknown authority or incomplete required evidence fails closed by retaining NMR unchanged. |
@@ -63,6 +64,7 @@ These are not labels — they are runtime state signals checked by `dispatch-ded
 | Signal | Exit code | Meaning |
 |--------|-----------|---------|
 | `PARENT_TASK_BLOCKED` | 0 (blocked) | `parent-task` / `meta` label — unconditional block |
+| `PUBLICATION_PENDING_BLOCKED` | 0 (blocked) | `publication:pending` label — canonical planning publication is incomplete |
 | `NO_AUTO_DISPATCH_BLOCKED` | 0 (blocked) | `no-auto-dispatch` label — unconditional block (t2832) |
 | `HOLD_FOR_REVIEW_BLOCKED` | 0 (blocked) | `hold-for-review` label — unconditional issue dispatch block and PR auto-merge hold |
 | `ASSIGNED: issue #N in repo` | 0 (blocked) | Active assignee with blocking claim state |
@@ -95,7 +97,7 @@ To add a new label-level dispatch blocker:
 
 1. **Register in `label-sync-helper.sh`** — add to `SYSTEM_LABELS` array with a description starting "Opt-out:" or "Block:". The `cmd_sync` command will create it on all admin repos.
 2. **Protect in `issue-sync-helper.sh`** — add to `_is_protected_label()` exact-match list so the enrich path cannot strip it.
-3. **Enforce in `dispatch-dedup-helper.sh`** (if unconditional) — add label check to the pre-assignee block, before `_is_assigned_compute_blocking`. Or for conditional blockers, update `_has_active_claim`.
+3. **Enforce in `dispatch-dedup-helper.sh`** (if unconditional) — add label check to the pre-assignee block, before `_is_assigned_compute_blocking`, plus candidate and direct-dispatch guards when the label prevents launch. Or for conditional blockers, update `_has_active_claim`.
 4. **Document here** — add a row to the relevant table above with the enforcement point.
 
 ---

@@ -486,6 +486,23 @@ test_owner_assigned_with_origin_interactive_auto_dispatch_allows() {
 	return 0
 }
 
+test_publication_pending_blocks_unassigned_issue() {
+	create_gh_stub "" "publication:pending,auto-dispatch,status:available"
+
+	local output=""
+	if output=$("$HELPER_SCRIPT" is-assigned 100 marcusquinn/aidevops runner1 2>/dev/null); then
+		if [[ "$output" == *"PUBLICATION_PENDING_BLOCKED"* ]]; then
+			print_result "publication:pending blocks an otherwise dispatchable unassigned issue" 0
+			return 0
+		fi
+		print_result "publication:pending blocks an otherwise dispatchable unassigned issue" 1 "Unexpected output: ${output}"
+		return 0
+	fi
+
+	print_result "publication:pending blocks an otherwise dispatchable unassigned issue" 1 "Expected exit 0 (blocked) but got exit 1 (safe)"
+	return 0
+}
+
 test_maintainer_assigned_with_origin_interactive_auto_dispatch_allows() {
 	create_gh_stub "marcusquinn-bot" "origin:interactive,auto-dispatch,bug"
 
@@ -649,6 +666,7 @@ main() {
 	test_maintainer_assigned_with_origin_interactive_blocks
 	test_owner_assigned_with_origin_interactive_auto_dispatch_allows
 	test_maintainer_assigned_with_origin_interactive_auto_dispatch_allows
+	test_publication_pending_blocks_unassigned_issue
 	test_owner_assigned_no_status_no_origin_allows_dispatch
 	test_override_ignore_preserves_self_assignee
 	test_peer_quarantine_preserves_self_assignee

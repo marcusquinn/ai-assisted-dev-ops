@@ -219,7 +219,7 @@ _is_protected_label() {
 	case "$lbl" in
 	persistent | needs-maintainer-review | needs-maintainer-permissions | not-planned | duplicate | wontfix | \
 		already-fixed | "good first issue" | "help wanted" | \
-		parent-task | meta | auto-dispatch | no-auto-dispatch | no-takeover | \
+	parent-task | meta | auto-dispatch | publication:pending | no-auto-dispatch | no-takeover | \
 		hold-for-review | needs-credentials | \
 		consolidation-in-progress | coderabbit-nits-ok | ratchet-bump | \
 		new-file-smell-ok)

@@ -218,7 +218,7 @@ _pulse_available_auto_dispatch_work_exists() {
 		_count=""
 		_query_rc=0
 		_count=$(timeout_sec "$_remaining" gh api -X GET search/issues \
-			-f "q=repo:${_slug} is:issue is:open label:auto-dispatch label:status:available -label:needs-maintainer-review -label:needs-maintainer-permissions -label:infrastructure no:assignee" \
+			-f "q=repo:${_slug} is:issue is:open label:auto-dispatch label:status:available -label:publication:pending -label:needs-maintainer-review -label:needs-maintainer-permissions -label:infrastructure no:assignee" \
 			-f per_page=1 \
 			--jq '.total_count // 0' 2>/dev/null) || _query_rc=$?
 		if [[ "$_query_rc" -eq 124 ]]; then
