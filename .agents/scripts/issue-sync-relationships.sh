@@ -34,6 +34,15 @@
 [[ -n "${_ISSUE_SYNC_RELATIONSHIPS_LOADED:-}" ]] && return 0
 _ISSUE_SYNC_RELATIONSHIPS_LOADED=1
 
+_relationships_library_dir="${BASH_SOURCE[0]%/*}"
+[[ "$_relationships_library_dir" == "${BASH_SOURCE[0]}" ]] && _relationships_library_dir="."
+_relationships_library_dir="$(cd "$_relationships_library_dir" && pwd)"
+[[ -n "${SCRIPT_DIR:-}" ]] || SCRIPT_DIR="$_relationships_library_dir"
+# shellcheck source=./issue-sync-relationship-batch.sh
+# shellcheck disable=SC1091  # sub-library resolved relative to this source file
+source "${_relationships_library_dir}/issue-sync-relationship-batch.sh"
+unset _relationships_library_dir
+
 # =============================================================================
 # Relationships — GitHub Issue Dependencies & Hierarchy (t1889)
 # =============================================================================
@@ -77,6 +86,7 @@ _REL_OUTCOME_DEFERRED_DEADLINE="deferred:deadline"
 
 _init_relationship_sync_state() {
 	_init_node_id_cache
+	_init_relationship_batch_state || return 1
 	if [[ -z "$_RELATIONSHIP_EDGE_SEEN_FILE" ]]; then
 		_RELATIONSHIP_EDGE_SEEN_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-relationship-edges.XXXXXX") || return 1
 	fi
@@ -106,6 +116,7 @@ _cleanup_relationship_sync_state() {
 		rm -f "$_RELATIONSHIP_BACKEND_CALL_FILE"
 		_RELATIONSHIP_BACKEND_CALL_FILE=""
 	fi
+	_cleanup_relationship_batch_state
 	_AIDEVOPS_GH_CALL_COUNT_FILE=""
 	return 0
 }
@@ -136,6 +147,7 @@ _register_relationship_sync_cleanup() {
 	push_cleanup "rm -f '${_RELATIONSHIP_EDGE_SEEN_FILE}'"
 	push_cleanup "rm -f '${_RELATIONSHIP_RESULT_FILE}'"
 	push_cleanup "rm -f '${_RELATIONSHIP_BACKEND_CALL_FILE}'"
+	_register_relationship_batch_cleanup
 	return 0
 }
 
@@ -282,11 +294,24 @@ _relationship_print_summary() {
 	local candidate_total="${6:-$total}" remaining="${7:-0}" resume_status="${8:-fresh}"
 	local parse_seconds="${9:-0}" mutation_seconds="${10:-0}" backend_calls="${11:-0}"
 	local created already_present failed deferred first_incomplete
+	local mapping_calls snapshot_calls mutation_calls verify_calls status_calls other_calls
+	local mapping_seconds snapshot_seconds mutation_class_seconds verify_seconds status_seconds
 	created=$(_relationship_outcome_count "$_REL_OUTCOME_CREATED")
 	already_present=$(_relationship_outcome_count "$_REL_OUTCOME_ALREADY_PRESENT")
 	failed=$(_relationship_outcome_count "failed")
 	deferred=$(_relationship_outcome_count "deferred")
 	first_incomplete=$(_relationship_first_incomplete_outcome)
+	mapping_calls=$(_relationship_backend_call_count_for mapping)
+	snapshot_calls=$(_relationship_backend_call_count_for snapshot)
+	mutation_calls=$(_relationship_backend_call_count_for mutation)
+	verify_calls=$(_relationship_backend_call_count_for verify)
+	status_calls=$(_relationship_backend_call_count_for status)
+	other_calls=$(_relationship_backend_call_count_for other)
+	mapping_seconds=$(_relationship_operation_seconds mapping)
+	snapshot_seconds=$(_relationship_operation_seconds snapshot)
+	mutation_class_seconds=$(_relationship_operation_seconds mutation)
+	verify_seconds=$(_relationship_operation_seconds verify)
+	status_seconds=$(_relationship_operation_seconds status)
 	printf '\n=== Relationships Sync ===\nEdges: created=%d already-present=%d failed=%d deferred=%d\n' \
 		"$created" "$already_present" "$failed" "$deferred"
 	printf 'Tasks: attempted=%d complete=%d/%d | Retryable: %d | Deadline exhausted: %s\n' \
@@ -295,6 +320,10 @@ _relationship_print_summary() {
 		"$candidate_total" "$resume_status" "$total" "$remaining"
 	printf 'Timing: parse=%ss mutation=%ss | Backend calls: %d\n' \
 		"$parse_seconds" "$mutation_seconds" "$backend_calls"
+	printf 'Backend classes: mapping=%d snapshot=%d mutation=%d verify=%d status=%d other=%d\n' \
+		"$mapping_calls" "$snapshot_calls" "$mutation_calls" "$verify_calls" "$status_calls" "$other_calls"
+	printf 'Operation timing: mapping=%ss snapshot=%ss mutation=%ss verify=%ss status=%ss\n' \
+		"$mapping_seconds" "$snapshot_seconds" "$mutation_class_seconds" "$verify_seconds" "$status_seconds"
 	printf 'Failure: %s\n' "$first_incomplete"
 	[[ "$retryable_total" -eq 0 ]] || printf 'Recovery: rerun .agents/scripts/issue-sync-helper.sh relationships\n'
 	return 0
@@ -426,7 +455,8 @@ _cached_node_id() {
 _gh_add_blocked_by() {
 	local blocked_id="$1" blocking_id="$2"
 	local result="" contains_rc=0 mutation_rc=0
-	_gh_native_blocked_by_contains "$blocked_id" "$blocking_id" || contains_rc=$?
+	_relationship_run_timed snapshot _gh_native_blocked_by_contains \
+		"$blocked_id" "$blocking_id" || contains_rc=$?
 	case "$contains_rc" in
 		0)
 			log_verbose "  blocked-by relationship already exists"
@@ -443,12 +473,13 @@ _gh_add_blocked_by() {
 	# no connections and consumes one GraphQL point, accounted at transport.
 	result=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-add-blocked-by-exact-cost" \
-		_gh_with_timeout write gh api graphql -f query='
+		_relationship_run_timed mutation _gh_with_timeout write gh api graphql -f query='
 mutation($blocked:ID!,$blocking:ID!) {
   addBlockedBy(input: {issueId:$blocked, blockingIssueId:$blocking}) {
     issue { number }
   }
 }' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1) || mutation_rc=$?
+	_relationship_native_cache_invalidate "$blocked_id" || true
 	if [[ "$mutation_rc" -eq 0 ]] && \
 		printf '%s' "$result" | jq -e \
 		'((.errors // []) | length) == 0 and (.data.addBlockedBy.issue.number | type == "number")' \
@@ -485,6 +516,7 @@ mutation($blocked:ID!,$blocking:ID!) {
     issue { number }
   }
 }' -f blocked="$blocked_id" -f blocking="$blocking_id" 2>&1) || mutation_rc=$?
+	_relationship_native_cache_invalidate "$blocked_id" || true
 	if [[ "$mutation_rc" -eq 0 ]] && \
 		printf '%s' "$result" | jq -e \
 		'((.errors // []) | length) == 0 and (.data.removeBlockedBy.issue.number | type == "number")' \
@@ -524,26 +556,32 @@ _ensure_dependency_status_blocked() {
 	local current_labels=""
 
 	[[ "$issue_num" =~ ^[0-9]+$ && "$repo" == */* ]] || return 1
-	current_labels=$(_gh_with_timeout read gh issue view "$issue_num" --repo "$repo" \
+	_relationship_status_was_synced "$issue_num" && return 0
+	current_labels=$(_relationship_run_timed status _gh_with_timeout read gh issue view "$issue_num" --repo "$repo" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || {
 		log_verbose "$issue_num: dependency_status_sync_failed reason=${reason}_status_read_failed"
 		return 1
 	}
-	[[ ",${current_labels}," == *",status:available,"* ]] || return 0
-	_dependency_sync_has_active_status "$current_labels" && return 0
-	if ! _gh_with_timeout write gh issue edit "$issue_num" --repo "$repo" \
+	if [[ ",${current_labels}," != *",status:available,"* ]] || \
+		_dependency_sync_has_active_status "$current_labels"; then
+		_relationship_mark_status_synced "$issue_num"
+		return 0
+	fi
+	if ! _relationship_run_timed status _gh_with_timeout write gh issue edit "$issue_num" --repo "$repo" \
 		--remove-label "status:available" --add-label "status:blocked" >/dev/null 2>&1; then
 		log_verbose "$issue_num: dependency_status_sync_failed reason=${reason}_status_write_failed"
 		return 1
 	fi
 	# A dispatcher may have advanced state between the read and edit. Repair any
 	# resulting sibling conflict immediately; active lifecycle state wins.
-	current_labels=$(_gh_with_timeout read gh issue view "$issue_num" --repo "$repo" \
+	current_labels=$(_relationship_run_timed status _gh_with_timeout read gh issue view "$issue_num" --repo "$repo" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || current_labels=""
 	if _dependency_sync_has_active_status "$current_labels" && \
 		[[ ",${current_labels}," == *",status:blocked,"* ]]; then
-		_gh_with_timeout write gh issue edit "$issue_num" --repo "$repo" --remove-label "status:blocked" >/dev/null 2>&1 || true
+		_relationship_run_timed status _gh_with_timeout write gh issue edit "$issue_num" --repo "$repo" \
+			--remove-label "status:blocked" >/dev/null 2>&1 || true
 	fi
+	_relationship_mark_status_synced "$issue_num"
 	log_verbose "$issue_num: dependency_status_blocked reason=${reason}"
 	return 0
 }
@@ -712,6 +750,8 @@ mutation($parent:ID!,$child:ID!) {
 _sync_declared_blocked_by_edges() {
 	local task_id="$1" todo_file="$2" repo="$3" this_gh_num="$4" this_node_id="$5" blocked_by="$6"
 	local dep_task_id="" dep_gh_num="" dep_node_id="" rels_set=0 retryable_errors=0
+	local batch_result="" batch_rels=0 batch_errors=0
+	local pending_pairs=()
 	local saved_ifs="$IFS"
 	IFS=','
 	for dep_task_id in $blocked_by; do
@@ -727,7 +767,8 @@ _sync_declared_blocked_by_edges() {
 				continue
 			fi
 			local dep_gh_num
-			dep_gh_num=$(resolve_task_gh_number "$dep_task_id" "$todo_file" "$repo" || true)
+			dep_gh_num=$(_relationship_run_timed mapping resolve_task_gh_number \
+				"$dep_task_id" "$todo_file" "$repo" || true)
 			[[ -z "$dep_gh_num" ]] && {
 				log_verbose "$task_id: blocked-by $dep_task_id has no ref:GH#"
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
@@ -747,7 +788,7 @@ _sync_declared_blocked_by_edges() {
 				continue
 			fi
 			local dep_node_id
-			dep_node_id=$(_cached_node_id "$dep_gh_num" "$repo")
+			dep_node_id=$(_relationship_run_timed mapping _cached_node_id "$dep_gh_num" "$repo")
 			if [[ -z "$dep_node_id" ]]; then
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
 				retryable_errors=$((retryable_errors + 1))
@@ -768,19 +809,17 @@ _sync_declared_blocked_by_edges() {
 			elif [[ "$DRY_RUN" == "true" ]]; then
 				print_info "[DRY-RUN] Would set #$this_gh_num blocked-by #$dep_gh_num ($task_id <- $dep_task_id)"
 				rels_set=$((rels_set + 1))
-			elif _gh_add_blocked_by "$this_node_id" "$dep_node_id"; then
-				log_verbose "$task_id (#$this_gh_num) blocked-by $dep_task_id (#$dep_gh_num) ✓"
-				rels_set=$((rels_set + 1))
-				if ! _ensure_dependency_status_blocked \
-					"$this_gh_num" "$repo" "native_relationship_linked"; then
-					retryable_errors=$((retryable_errors + 1))
-				fi
 			else
-				retryable_errors=$((retryable_errors + 1))
-				_hold_dependency_sync_retry "$this_gh_num" "$repo" "native_relationship_write_failed"
+				pending_pairs+=("${this_node_id}|${dep_node_id}|${this_gh_num}")
 			fi
 	done
 	IFS="$saved_ifs"
+	if [[ ${#pending_pairs[@]} -gt 0 ]]; then
+		batch_result=$(_relationship_apply_planned_batches "$repo" "${pending_pairs[@]}")
+		IFS=':' read -r batch_rels batch_errors <<<"$batch_result"
+		rels_set=$((rels_set + batch_rels))
+		retryable_errors=$((retryable_errors + batch_errors))
+	fi
 	printf '%s:%s\n' "$rels_set" "$retryable_errors"
 	return 0
 }
@@ -788,6 +827,8 @@ _sync_declared_blocked_by_edges() {
 _sync_declared_blocks_edges() {
 	local task_id="$1" todo_file="$2" repo="$3" this_gh_num="$4" this_node_id="$5" blocks="$6"
 	local dep_task_id="" dep_gh_num="" dep_node_id="" rels_set=0 retryable_errors=0
+	local batch_result="" batch_rels=0 batch_errors=0
+	local pending_pairs=()
 	local saved_ifs="$IFS"
 	IFS=','
 	for dep_task_id in $blocks; do
@@ -803,7 +844,8 @@ _sync_declared_blocks_edges() {
 				continue
 			fi
 			local dep_gh_num
-			dep_gh_num=$(resolve_task_gh_number "$dep_task_id" "$todo_file" "$repo" || true)
+			dep_gh_num=$(_relationship_run_timed mapping resolve_task_gh_number \
+				"$dep_task_id" "$todo_file" "$repo" || true)
 			[[ -z "$dep_gh_num" ]] && {
 				log_verbose "$task_id: blocks $dep_task_id has no ref:GH#"
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
@@ -820,7 +862,7 @@ _sync_declared_blocks_edges() {
 				continue
 			fi
 			local dep_node_id
-			dep_node_id=$(_cached_node_id "$dep_gh_num" "$repo")
+			dep_node_id=$(_relationship_run_timed mapping _cached_node_id "$dep_gh_num" "$repo")
 			if [[ -z "$dep_node_id" ]]; then
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
 				retryable_errors=$((retryable_errors + 1))
@@ -842,19 +884,17 @@ _sync_declared_blocks_edges() {
 			elif [[ "$DRY_RUN" == "true" ]]; then
 				print_info "[DRY-RUN] Would set #$dep_gh_num blocked-by #$this_gh_num ($dep_task_id <- $task_id)"
 				rels_set=$((rels_set + 1))
-			elif _gh_add_blocked_by "$dep_node_id" "$this_node_id"; then
-				log_verbose "$dep_task_id (#$dep_gh_num) blocked-by $task_id (#$this_gh_num) ✓"
-				rels_set=$((rels_set + 1))
-				if ! _ensure_dependency_status_blocked \
-					"$dep_gh_num" "$repo" "native_relationship_linked"; then
-					retryable_errors=$((retryable_errors + 1))
-				fi
 			else
-				retryable_errors=$((retryable_errors + 1))
-				_hold_dependency_sync_retry "$dep_gh_num" "$repo" "native_relationship_write_failed"
+				pending_pairs+=("${dep_node_id}|${this_node_id}|${dep_gh_num}")
 			fi
 	done
 	IFS="$saved_ifs"
+	if [[ ${#pending_pairs[@]} -gt 0 ]]; then
+		batch_result=$(_relationship_apply_planned_batches "$repo" "${pending_pairs[@]}")
+		IFS=':' read -r batch_rels batch_errors <<<"$batch_result"
+		rels_set=$((rels_set + batch_rels))
+		retryable_errors=$((retryable_errors + batch_errors))
+	fi
 	printf '%s:%s\n' "$rels_set" "$retryable_errors"
 	return 0
 }
@@ -878,14 +918,15 @@ _sync_blocked_by_for_task() {
 		echo "$_RELATIONSHIP_SUCCESS_RESULT"
 		return 0
 	fi
-	this_gh_num=$(resolve_task_gh_number "$task_id" "$todo_file" "$repo" || true)
+	this_gh_num=$(_relationship_run_timed mapping resolve_task_gh_number \
+		"$task_id" "$todo_file" "$repo" || true)
 	if [[ -z "$this_gh_num" ]]; then
 		log_verbose "$task_id: declared relationship mapping unresolved; retaining for retry"
 		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
 		echo "$_RELATIONSHIP_RETRY_RESULT"
 		return 0
 	fi
-	this_node_id=$(_cached_node_id "$this_gh_num" "$repo")
+	this_node_id=$(_relationship_run_timed mapping _cached_node_id "$this_gh_num" "$repo")
 	if [[ -z "$this_node_id" ]]; then
 		log_verbose "$task_id: could not resolve node ID for #$this_gh_num"
 		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"

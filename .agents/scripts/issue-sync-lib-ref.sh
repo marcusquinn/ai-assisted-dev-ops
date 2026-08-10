@@ -35,7 +35,9 @@
 [[ -n "${_ISSUE_SYNC_LIB_REF_LOADED:-}" ]] && return 0
 _ISSUE_SYNC_LIB_REF_LOADED=1
 _ISLR_GRAPHQL_COST_FILTER='.data.rateLimit.cost // empty'
+_ISLR_JSON_FALSE="false"
 _ISLR_JSON_TRUE="true"
+_ISSUE_SYNC_REPOSITORY_ID_CACHE_FILE=""
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -233,12 +235,54 @@ _github_repository_slug_matches() {
 	return 1
 }
 
+_init_issue_sync_repository_id_cache() {
+	if [[ -z "$_ISSUE_SYNC_REPOSITORY_ID_CACHE_FILE" ]]; then
+		_ISSUE_SYNC_REPOSITORY_ID_CACHE_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-repository-id-cache.XXXXXX") || return 1
+	fi
+	return 0
+}
+
+_issue_sync_cached_repository_id() {
+	local repo="$1" cache_file="${_ISSUE_SYNC_REPOSITORY_ID_CACHE_FILE:-}"
+	local cached_repo="" cached_id=""
+	[[ -f "$cache_file" ]] || return 1
+	while IFS='=' read -r cached_repo cached_id; do
+		if [[ "$cached_repo" == "$repo" && -n "$cached_id" ]]; then
+			printf '%s\n' "$cached_id"
+			return 0
+		fi
+	done <"$cache_file"
+	return 1
+}
+
+_cache_issue_sync_repository_id() {
+	local repo="$1" repository_id="$2"
+	local cache_file="${_ISSUE_SYNC_REPOSITORY_ID_CACHE_FILE:-}"
+	[[ -n "$repo" && -n "$repository_id" && -f "$cache_file" ]] || return 0
+	_issue_sync_cached_repository_id "$repo" >/dev/null 2>&1 || \
+		printf '%s=%s\n' "$repo" "$repository_id" >>"$cache_file"
+	return 0
+}
+
+_cache_issue_sync_node_id() {
+	local issue_number="$1" node_id="$2"
+	local cache_file="${_NODE_ID_CACHE_FILE:-}"
+	[[ "$issue_number" =~ ^[1-9][0-9]*$ && -n "$node_id" && -f "$cache_file" ]] || return 0
+	grep -q "^${issue_number}=" "$cache_file" 2>/dev/null || \
+		printf '%s=%s\n' "$issue_number" "$node_id" >>"$cache_file"
+	return 0
+}
+
 resolve_repository_node_id() {
 	local repo="$1"
 	[[ "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || return 1
 	local owner="${repo%%/*}"
 	local name="${repo##*/}"
-	local response="" reported_cost="" repository_id="" response_slug=""
+	local response="" reported_cost="" repository_id="" response_slug="" cached_id=""
+	if cached_id=$(_issue_sync_cached_repository_id "$repo"); then
+		printf '%s\n' "$cached_id"
+		return 0
+	fi
 
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
@@ -254,6 +298,7 @@ resolve_repository_node_id() {
 			printf '%s' "$response" | jq -r \
 				'[.data.repository.id, .data.repository.nameWithOwner] | map(. // empty) | join("\u001c")' 2>/dev/null
 		) && [[ -n "$repository_id" ]] && _github_repository_slug_matches "$repo" "$response_slug"; then
+		_cache_issue_sync_repository_id "$repo" "$repository_id"
 		printf '%s\n' "$repository_id"
 		return 0
 	fi
@@ -263,6 +308,7 @@ resolve_repository_node_id() {
 		printf '%s' "$response" | jq -r \
 			'[.node_id, .full_name] | map(. // empty) | join("\u001c")' 2>/dev/null
 	) && [[ -n "$repository_id" ]] && _github_repository_slug_matches "$repo" "$response_slug"; then
+		_cache_issue_sync_repository_id "$repo" "$repository_id"
 		printf '%s\n' "$repository_id"
 		return 0
 	fi
@@ -305,6 +351,7 @@ resolve_task_gh_number() {
 					--issue-id "$mapped_issue_id" --display-number "$mapped_number" \
 					"${refresh_args[@]}" --sync-metadata "$mapped_metadata" >/dev/null 2>&1 || return 1
 			fi
+			_cache_issue_sync_node_id "$mapped_number" "$mapped_issue_id"
 			printf '%s\n' "$mapped_number"
 			return 0
 		fi
@@ -334,6 +381,7 @@ resolve_task_gh_number() {
 			"${bind_args[@]}" \
 			--sync-metadata "$(jq -cn --arg state "$issue_state" --arg source ref-gh-backfill '{state:$state,source:$source}')" >/dev/null 2>&1 || return 1
 	fi
+	_cache_issue_sync_node_id "$issue_number" "$issue_id"
 	printf '%s\n' "$issue_number"
 	return 0
 }
@@ -390,6 +438,15 @@ _gh_native_blocked_by_contains() {
 	local reported_cost=""
 	local has_next=""
 	local contains=""
+	local cache_file="${_RELATIONSHIP_NATIVE_CACHE_FILE:-}" cache_line="" node_id=""
+	if [[ -f "$cache_file" ]]; then
+		cache_line=$(grep -F -m1 -- "${blocked_id}|" "$cache_file" 2>/dev/null || true)
+		if [[ -n "$cache_line" ]]; then
+			[[ "$cache_line" == "${blocked_id}|complete|"* ]] || return 2
+			grep -Fqx -- "${blocked_id}|complete|${blocking_id}" "$cache_file" && return 0
+			return 1
+		fi
+	fi
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub, not shell.
 	payload=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-blocked-by-read-exact-cost" \
@@ -402,11 +459,21 @@ query($blocked:ID!) {
 	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 2
 	contains=$(printf '%s' "$payload" | jq -r --arg id "$blocking_id" \
 		'any(.data.node.blockedBy.nodes[]?; .id == $id)' 2>/dev/null) || return 2
-	[[ "$contains" == "$_ISLR_JSON_TRUE" ]] && return 0
 	has_next=$(printf '%s' "$payload" | jq -r \
 		'.data.node.blockedBy.pageInfo.hasNextPage | if type == "boolean" then tostring else "unknown" end' \
 		2>/dev/null) || return 2
-	[[ "$has_next" == "false" ]] && return 1
+	if [[ -f "$cache_file" ]]; then
+		if [[ "$has_next" == "$_ISLR_JSON_FALSE" ]]; then
+			printf '%s|complete|\n' "$blocked_id" >>"$cache_file"
+			while IFS= read -r node_id; do
+				[[ -n "$node_id" ]] && printf '%s|complete|%s\n' "$blocked_id" "$node_id" >>"$cache_file"
+			done < <(printf '%s' "$payload" | jq -r '.data.node.blockedBy.nodes[]?.id // empty' 2>/dev/null)
+		else
+			printf '%s|incomplete|\n' "$blocked_id" >>"$cache_file"
+		fi
+	fi
+	[[ "$contains" == "$_ISLR_JSON_TRUE" ]] && return 0
+	[[ "$has_next" == "$_ISLR_JSON_FALSE" ]] && return 1
 	return 2
 }
 
@@ -434,7 +501,7 @@ query($parent:ID!) {
 	has_next=$(printf '%s' "$payload" | jq -r \
 		'.data.node.subIssues.pageInfo.hasNextPage | if type == "boolean" then tostring else "unknown" end' \
 		2>/dev/null) || return 2
-	[[ "$has_next" == "false" ]] && return 1
+	[[ "$has_next" == "$_ISLR_JSON_FALSE" ]] && return 1
 	return 2
 }
 

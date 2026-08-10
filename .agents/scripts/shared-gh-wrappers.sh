@@ -434,9 +434,10 @@ _gh_with_timeout() {
 		[[ "$remaining_secs" -ge "$secs" ]] || secs="$remaining_secs"
 	fi
 	# Invocation-scoped diagnostics may provide a pre-created counter file.
-	# File-backed counting survives the command substitutions used by callers.
+	# File-backed counting survives command substitutions. Callers may attach a
+	# sanitized operation class; payloads and endpoint arguments are never stored.
 	if [[ -n "${_AIDEVOPS_GH_CALL_COUNT_FILE:-}" && -f "$_AIDEVOPS_GH_CALL_COUNT_FILE" ]]; then
-		printf '.\n' >>"$_AIDEVOPS_GH_CALL_COUNT_FILE" 2>/dev/null || true
+		printf '%s\n' "${AIDEVOPS_GH_OPERATION_CLASS:-other}" >>"$_AIDEVOPS_GH_CALL_COUNT_FILE" 2>/dev/null || true
 	fi
 	local cmd="${1:-}"
 	local err_file=""

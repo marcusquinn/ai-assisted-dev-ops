@@ -72,6 +72,13 @@ _init_relationship_sync_state || fail "relationship invocation state did not ini
 AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 30 ))
 DRY_RUN=true
 
+_cache_issue_sync_repository_id example/repo REPO_NODE
+cached_repository_id=$(resolve_repository_node_id example/repo)
+[[ "$cached_repository_id" == "REPO_NODE" ]] || fail "repository identity was not reused within the invocation"
+_cache_issue_sync_node_id 999 ISSUE_NODE_999
+grep -q '^999=ISSUE_NODE_999$' "$_NODE_ID_CACHE_FILE" || fail "coordinator issue node ID was not shared with relationship resolution"
+pass "invocation mapping caches share repository and issue node identities"
+
 resolve_task_gh_number() {
 	local task_id="$1"
 	local todo_file="$2"
@@ -80,6 +87,8 @@ resolve_task_gh_number() {
 	case "$task_id" in
 	t1) printf '101\n' ;;
 	t2) printf '102\n' ;;
+	t3) printf '103\n' ;;
+	t4) printf '104\n' ;;
 	*) return 1 ;;
 	esac
 	return 0
@@ -119,6 +128,38 @@ pass "edge loop stops with retryable state after aggregate exhaustion"
 MUTATION_FIXTURE=""
 _gh_with_timeout() {
 	local operation="$1"
+	if [[ "$MUTATION_FIXTURE" == batched* ]]; then
+		printf '%s\n' "${AIDEVOPS_GH_OPERATION_CLASS:-other}" >>"$_RELATIONSHIP_BACKEND_CALL_FILE"
+		sleep 1
+		case "${AIDEVOPS_GH_OPERATION_CLASS:-other}" in
+		snapshot)
+			printf '%s\n' '{"data":{"q0":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"q1":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"q2":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+			;;
+		mutation)
+			if [[ "$MUTATION_FIXTURE" == "batched-uncertain" ]]; then
+				[[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "2" ]] || return 1
+				printf '%s\n' '{"errors":[{"message":"UNCERTAIN_BATCH"}]}'
+				return 124
+			fi
+			if [[ "$MUTATION_FIXTURE" == "batched-mixed" ]]; then
+				printf '%s\n' '{"data":{"e0":{"issue":{"number":101}}},"errors":[{"path":["e1"],"message":"secondary rate limit"},{"path":["e2"],"message":"validation failed"}]}'
+				return 0
+			fi
+			[[ "${AIDEVOPS_GH_QUOTA_COST:-}" == "3" ]] || return 1
+			printf '%s\n' '{"data":{"e0":{"issue":{"number":101}},"e1":{"issue":{"number":101}},"e2":{"issue":{"number":101}}}}'
+			;;
+		verify)
+			if [[ "$MUTATION_FIXTURE" == "batched-mixed" ]]; then
+				printf '%s\n' '{"data":{"q0":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+			else
+				printf '%s\n' '{"data":{"q0":{"blockedBy":{"nodes":[{"id":"NODE_102"},{"id":"NODE_103"},{"id":"NODE_104"}],"pageInfo":{"hasNextPage":false}}},"q1":{"blockedBy":{"nodes":[{"id":"NODE_102"},{"id":"NODE_103"},{"id":"NODE_104"}],"pageInfo":{"hasNextPage":false}}},"q2":{"blockedBy":{"nodes":[{"id":"NODE_102"},{"id":"NODE_103"},{"id":"NODE_104"}],"pageInfo":{"hasNextPage":false}}},"rateLimit":{"cost":1}}}'
+			fi
+			;;
+		status) printf '\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	fi
 	if [[ "$operation" == "read" ]]; then
 		[[ "${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" == "1" && "$*" == *"rateLimit"* ]] || return 1
 	else
@@ -178,6 +219,87 @@ mixed_summary=$(_relationship_print_summary 1 0 1 2 true)
 [[ "$mixed_summary" != *"UNCERTAIN_WRITE"* ]] || fail "partial GraphQL error leaked into summary"
 [[ "$mixed_summary" == *"Recovery: rerun"* ]] || fail "partial summary omitted recovery command"
 pass "mixed relationship outcomes remain actionable and sanitized"
+
+# A small mapped workset shares one native snapshot, one bounded mutation, one
+# verification snapshot, and one status read. At one second per backend call,
+# the optimized path remains comfortably inside the aggregate budget.
+: >"$_RELATIONSHIP_RESULT_FILE"
+: >"$_RELATIONSHIP_BACKEND_CALL_FILE"
+: >"$_RELATIONSHIP_EDGE_SEEN_FILE"
+: >"$_RELATIONSHIP_NATIVE_CACHE_FILE"
+: >"$_RELATIONSHIP_STATUS_SYNCED_FILE"
+: >"$_RELATIONSHIP_OPERATION_TIMING_FILE"
+MUTATION_FIXTURE="batched"
+AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 8 ))
+batch_started=$(date +%s)
+batch_result=$(_sync_declared_blocked_by_edges t1 "${TMP_DIR}/TODO.md" example/repo 101 NODE_101 t2,t3,t4)
+batch_elapsed=$(( $(date +%s) - batch_started ))
+[[ "$batch_result" == "3:0" ]] || fail "small workset batch did not converge: $batch_result"
+[[ "$batch_elapsed" -le 6 ]] || fail "small workset batch exceeded bounded latency (${batch_elapsed}s)"
+[[ "$(_relationship_backend_call_count)" -eq 4 ]] || fail "small workset did not use four shared backend calls"
+for expected_class in snapshot mutation verify status; do
+	[[ "$(_relationship_backend_call_count_for "$expected_class")" -eq 1 ]] || \
+		fail "small workset backend class ${expected_class} was not called once"
+done
+batch_summary=$(_relationship_print_summary 1 1 1 0 false 1 0 fresh 0 "$batch_elapsed" 4)
+[[ "$batch_summary" == *"Backend classes: mapping=0 snapshot=1 mutation=1 verify=1 status=1 other=0"* ]] || \
+	fail "small workset summary omitted backend classes: $batch_summary"
+[[ "$batch_summary" == *"Operation timing: mapping=0s snapshot=1s mutation=1s verify=1s status=1s"* ]] || \
+	fail "small workset summary omitted operation timing: $batch_summary"
+pass "small relationship worksets batch calls within the aggregate deadline"
+
+snapshot_query=$(_relationship_snapshot_query \
+	'NODE_101|NODE_102|101' 'NODE_101|NODE_103|101' 'NODE_101|NODE_104|101')
+[[ "$snapshot_query" == *'q0:node'* && "$snapshot_query" != *'q1:node'* && "$snapshot_query" != *'q2:node'* ]] || \
+	fail "snapshot query repeated a blocked node connection: $snapshot_query"
+pass "snapshot batches reuse one blocked-node connection across sibling edges"
+
+# If the initial snapshot consumes the remaining aggregate budget, no mutation
+# starts and the untouched edges remain deferred rather than uncertain writes.
+: >"$_RELATIONSHIP_RESULT_FILE"
+: >"$_RELATIONSHIP_BACKEND_CALL_FILE"
+MUTATION_FIXTURE="batched-deadline"
+AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 1 ))
+deadline_batch_result=$(_relationship_apply_planned_batches example/repo \
+	'NODE_101|NODE_102|101' 'NODE_101|NODE_103|101')
+[[ "$deadline_batch_result" == "0:2" ]] || fail "post-snapshot deadline did not defer untouched edges: $deadline_batch_result"
+[[ "$(_relationship_backend_call_count_for snapshot)" -eq 1 ]] || fail "deadline fixture did not run exactly one snapshot"
+[[ "$(_relationship_backend_call_count_for mutation)" -eq 0 ]] || fail "mutation started after snapshot exhausted the deadline"
+[[ "$(_relationship_outcome_count "$_REL_OUTCOME_DEFERRED_DEADLINE")" -eq 2 ]] || \
+	fail "post-snapshot deadline did not record two deferred edges"
+pass "snapshot deadline exhaustion defers edges before mutation"
+
+# A timed-out grouped mutation is idempotently recoverable when the bounded
+# verification snapshot proves that GitHub applied the uncertain writes.
+: >"$_RELATIONSHIP_RESULT_FILE"
+: >"$_RELATIONSHIP_BACKEND_CALL_FILE"
+: >"$_RELATIONSHIP_EDGE_SEEN_FILE"
+: >"$_RELATIONSHIP_NATIVE_CACHE_FILE"
+: >"$_RELATIONSHIP_STATUS_SYNCED_FILE"
+: >"$_RELATIONSHIP_OPERATION_TIMING_FILE"
+MUTATION_FIXTURE="batched-uncertain"
+AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 8 ))
+uncertain_result=$(_sync_declared_blocked_by_edges t1 "${TMP_DIR}/TODO.md" example/repo 101 NODE_101 t2,t3)
+[[ "$uncertain_result" == "2:0" ]] || fail "uncertain grouped mutation did not recover from native verification: $uncertain_result"
+[[ "$(_relationship_outcome_count "$_REL_OUTCOME_ALREADY_PRESENT")" -eq 2 ]] || \
+	fail "uncertain grouped mutation did not classify verified edges as present"
+[[ "$(_relationship_outcome_count failed)" -eq 0 ]] || fail "verified uncertain grouped mutation retained a false failure"
+pass "uncertain grouped mutations converge through bounded verification"
+
+# Alias-scoped GraphQL errors must not leak cooldown classification from one
+# failed edge into another edge in the same grouped mutation.
+: >"$_RELATIONSHIP_RESULT_FILE"
+: >"$_RELATIONSHIP_BACKEND_CALL_FILE"
+: >"$_RELATIONSHIP_STATUS_SYNCED_FILE"
+MUTATION_FIXTURE="batched-mixed"
+AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 8 ))
+mixed_batch_result=$(_relationship_apply_planned_batches example/repo \
+	'NODE_101|NODE_102|101' 'NODE_101|NODE_103|101' 'NODE_101|NODE_104|101')
+[[ "$mixed_batch_result" == "1:2" ]] || fail "mixed alias batch returned unexpected counts: $mixed_batch_result"
+[[ "$(_relationship_outcome_count "$_REL_OUTCOME_CREATED")" -eq 1 ]] || fail "mixed alias success was not retained"
+[[ "$(_relationship_outcome_count 'deferred:cooldown')" -eq 1 ]] || fail "alias cooldown was not isolated"
+[[ "$(_relationship_outcome_count 'failed:graphql')" -eq 1 ]] || fail "alias GraphQL failure was not isolated"
+pass "mixed mutation aliases retain independent failure classes"
 
 # Declared relationships with no immutable self-mapping are unfinished work,
 # while a task with no relationship metadata remains a successful no-op.

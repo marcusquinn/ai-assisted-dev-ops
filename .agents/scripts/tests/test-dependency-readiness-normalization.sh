@@ -218,6 +218,8 @@ _run_relationship_status_sync_cases() (
 	local dependency_status="status:available,auto-dispatch"
 	local dependency_status_writes=""
 	local cross_phase_rc=0
+	local batch_status_log="${TMP_ROOT}/relationship-batch-status.log"
+	: >"$batch_status_log"
 
 	_relationship_deadline_expired() {
 		return 1
@@ -245,6 +247,18 @@ _run_relationship_status_sync_cases() (
 	_gh_add_blocked_by() {
 		return 0
 	}
+	_relationship_apply_planned_batches() {
+		local repo="$1" triple="" blocked_id="" blocking_id="" blocked_num=""
+		shift
+		for triple in "$@"; do
+			IFS='|' read -r blocked_id blocking_id blocked_num <<<"$triple"
+			_ensure_dependency_status_blocked "$blocked_num" "$repo" "native_relationship_linked" || return 1
+			printf 'issue edit %s --repo %s --remove-label status:available --add-label status:blocked\n' \
+				"$blocked_num" "$repo" >>"$batch_status_log"
+		done
+		printf '%s:0\n' "$#"
+		return 0
+	}
 	_relationship_record_outcome() {
 		return 0
 	}
@@ -263,13 +277,14 @@ _run_relationship_status_sync_cases() (
 
 	_sync_declared_blocked_by_edges "t20" "/dev/null" "owner/repo" "20" "I_20" "t10" \
 		>"${TMP_ROOT}/direct-blocked-by.out"
-	printf '%s' "$dependency_status_writes" >"${TMP_ROOT}/direct-blocked-by-writes.out"
+	cp "$batch_status_log" "${TMP_ROOT}/direct-blocked-by-writes.out"
 
 	dependency_status="status:available,auto-dispatch"
 	dependency_status_writes=""
+	: >"$batch_status_log"
 	_sync_declared_blocks_edges "t10" "/dev/null" "owner/repo" "10" "I_10" "t20" \
 		>"${TMP_ROOT}/inverse-blocks.out"
-	printf '%s' "$dependency_status_writes" >"${TMP_ROOT}/inverse-blocks-writes.out"
+	cp "$batch_status_log" "${TMP_ROOT}/inverse-blocks-writes.out"
 
 	dependency_status="status:available,auto-dispatch"
 	dependency_status_writes=""
@@ -301,7 +316,14 @@ gh() {
 	return 0
 }
 export -f gh
+_RELATIONSHIP_NATIVE_CACHE_FILE="${TMP_ROOT}/remove-native-cache"
+printf '%s\n' 'I_blocked|complete|' 'I_blocked|complete|I_blocker' >"$_RELATIONSHIP_NATIVE_CACHE_FILE"
 assert_true "existing circular native edge is removed" _gh_remove_blocked_by "I_blocked" "I_blocker"
+if grep -Fq -- 'I_blocked|' "$_RELATIONSHIP_NATIVE_CACHE_FILE"; then
+	assert_eq "native cache is invalidated after relationship removal" "absent" "present"
+else
+	assert_eq "native cache is invalidated after relationship removal" "absent" "absent"
+fi
 
 cycle_todo="${TMP_ROOT}/cycle-todo.md"
 printf '%s\n' '- [ ] t10 first blocked-by:t20 ref:GH#10' '- [ ] t20 second blocked-by:t10 ref:GH#20' >"$cycle_todo"
