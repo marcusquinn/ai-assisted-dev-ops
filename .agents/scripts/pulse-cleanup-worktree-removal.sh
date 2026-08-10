@@ -801,7 +801,7 @@ _pc_classify_orphan_sibling_dir() {
 	local now_epoch="$3"
 	[[ -d "$candidate_path" ]] || return 1
 
-	local repo_parent central_base
+	local repo_parent="" central_base=""
 	repo_parent=$(dirname "$rp_orphan")
 	central_base=""
 	if declare -F aidevops_worktree_base_dir_configured >/dev/null 2>&1; then
@@ -827,7 +827,7 @@ _pc_classify_orphan_sibling_dir() {
 	_pc_is_registered_worktree_path "$rp_orphan" "$candidate_path" && return 1
 
 	local age_grace="${ORPHAN_WORKTREE_GRACE_SECS:-1800}"
-	local dir_mtime
+	local dir_mtime=""
 	dir_mtime=$(_file_mtime_epoch "$candidate_path")
 	[[ "$dir_mtime" -gt 0 ]] || return 1
 	[[ $((now_epoch - dir_mtime)) -ge "$age_grace" ]] || return 1
@@ -879,7 +879,7 @@ _pc_cleanup_orphan_sibling_dirs() {
 	while IFS=$'\t' read -r rp_orphan repo_slug_orphan; do
 		[[ -z "$rp_orphan" ]] && continue
 		[[ -d "$rp_orphan/.git" || -f "$rp_orphan/.git" ]] || continue
-		local repo_parent repo_name candidate_path candidate_name reason central_base
+		local repo_parent="" repo_name="" candidate_path="" candidate_name="" reason="" central_base=""
 		repo_parent=$(dirname "$rp_orphan")
 		repo_name=$(basename "$rp_orphan")
 		central_base=""
