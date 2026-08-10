@@ -533,6 +533,40 @@ else
 	fail "G1 transport token boundaries" "expected rc=0, got rc=$rc; output: $output"
 fi
 
+cat >"$TMP/brief-ordinary-arrow.md" <<'BRIEF'
+## Reproducer
+**Symptom command**: `aidevops review`
+**Actual output**: `reviewDecision=CHANGES_REQUESTED`
+**Causal status**: confirmed
+**Production entry point**: review.sh:42 reads the review decision
+**Call chain**: read_decision → classify_review
+**Integrated verification**: test-review.sh exercises the confirmed path
+BRIEF
+
+output=$(bash "$HELPER" validate-brief "$TMP/brief-ordinary-arrow.md" 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]]; then
+	pass "G2 ordinary call-chain arrows do not require transport evidence"
+else
+	fail "G2 ordinary call-chain arrow" "expected rc=0, got rc=$rc; output: $output"
+fi
+
+cat >"$TMP/brief-arrow-transport-claim.md" <<'BRIEF'
+## Reproducer
+**Symptom command**: `aidevops pulse`
+**Actual output**: the operation stopped
+**Causal status**: confirmed
+**Call chain**: scheduler → timeout
+BRIEF
+
+output=$(bash "$HELPER" validate-brief "$TMP/brief-arrow-transport-claim.md" 2>&1)
+rc=$?
+if [[ $rc -ne 0 && "$output" == *"require **Blocked command** and **Backend state**"* ]]; then
+	pass "G3 arrow-based transport claims are rejected without evidence"
+else
+	fail "G3 arrow-based transport claim" "expected transport-evidence rejection, got rc=$rc; output: $output"
+fi
+
 for transport_claim in \
 	"The root cause is a hang." \
 	"The worker HUNG because the scheduler stopped." \
@@ -551,9 +585,9 @@ BRIEF
 	output=$(bash "$HELPER" validate-brief "$TMP/brief-real-transport-claim.md" 2>&1)
 	rc=$?
 	if [[ $rc -ne 0 && "$output" == *"require **Blocked command** and **Backend state**"* ]]; then
-		pass "G2 genuine transport claim is rejected without evidence: $transport_claim"
+		pass "G4 genuine transport claim is rejected without evidence: $transport_claim"
 	else
-		fail "G2 genuine transport claim detection: $transport_claim" "expected transport-evidence rejection, got rc=$rc; output: $output"
+		fail "G4 genuine transport claim detection: $transport_claim" "expected transport-evidence rejection, got rc=$rc; output: $output"
 	fi
 done
 
