@@ -118,6 +118,11 @@ The review add-on check runs after the `origin:interactive` (t2411) and
   project CI and independent trust gates pass; bot response time is irrelevant.
 - **Strict repositories**: `completion_behavior: strict` requires settled review
   evidence. `min_edit_lag_seconds` still protects CodeRabbit's two-phase pattern.
+- **Repository-generated Issue Sync PRs**: GitHub reports the official Actions bot
+  as `CONTRIBUTOR`. The reusable gate normalizes it as internal only when the
+  immutable bot ID/type, same-repository head and base, deterministic
+  `aidevops/issue-sync-todo` branch, and generated body marker all match. Any
+  missing or mismatched field remains external and fail-closed.
 - **External contributors**: advisory, rate-limit, and skip outcomes remain
   fail-closed; completed review evidence is required in addition to independent
   maintainer/cryptographic authority.

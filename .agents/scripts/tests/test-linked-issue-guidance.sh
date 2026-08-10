@@ -62,7 +62,9 @@ assert_contains ".github/workflows/linked-issue-check-reusable.yml" 'body\.match
 assert_contains ".github/workflows/linked-issue-check-reusable.yml" '#aidevops:trust-boundary GH#17671/GH#28567' "linked issue trust check carries boundary marker"
 assert_not_contains ".github/workflows/linked-issue-check-reusable.yml" 'if \(/\^\(t\\d' "untrusted linked issue path has no title-only exemption"
 
-assert_contains ".github/workflows/pr-triage-gate.yml" "const trustedRoles = \\['OWNER', 'MEMBER', 'COLLABORATOR'\\]" "PR triage preserves trusted author controls"
+assert_contains ".github/workflows/pr-triage-gate.yml" "const trustedRoles = \\['OWNER', 'MEMBER'\\]" "PR triage preserves owner and member trust controls"
+assert_contains ".github/workflows/pr-triage-gate.yml" "association === 'COLLABORATOR'" "PR triage verifies collaborator authority"
+assert_contains ".github/workflows/pr-triage-gate.yml" "\\['admin', 'maintain', 'write'\\]\\.includes" "PR triage requires collaborator write authority"
 assert_contains ".github/workflows/pr-triage-gate.yml" "pr.user.type === 'Bot'" "PR triage preserves bot control"
 assert_contains ".github/workflows/pr-triage-gate.yml" '#aidevops:trust-boundary GH#17671/GH#28567' "PR triage trust check carries boundary marker"
 assert_not_contains ".github/workflows/pr-triage-gate.yml" 'const title = pr\.title|/\^t\\d|/\^GH#\\d' "PR triage gives tNNN and GH#NNN titles no trust"

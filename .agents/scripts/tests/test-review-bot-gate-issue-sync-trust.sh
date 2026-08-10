@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+#
+# Verify the reusable review gate's exact repository-generated Issue Sync trust
+# classifier without duplicating its security-sensitive shell logic.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit 1
+WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/review-bot-gate-reusable.yml"
+STATE_DIR="$(mktemp -d)"
+trap 'rm -rf "${STATE_DIR}"' EXIT
+
+START_COUNT=$(grep -Fc '# aidevops:review-gate-trust-start' "${WORKFLOW_FILE}")
+END_COUNT=$(grep -Fc '# aidevops:review-gate-trust-end' "${WORKFLOW_FILE}")
+if [[ "${START_COUNT}" -ne 1 || "${END_COUNT}" -ne 1 ]]; then
+	printf 'FAIL: expected one review-gate trust classifier block\n' >&2
+	exit 1
+fi
+
+CLASSIFIER=$(awk '
+	/# aidevops:review-gate-trust-start/ { capture = 1; next }
+	/# aidevops:review-gate-trust-end/ { capture = 0 }
+	capture { sub(/^          /, ""); print }
+' "${WORKFLOW_FILE}")
+if [[ -z "${CLASSIFIER}" ]]; then
+	printf 'FAIL: review-gate trust classifier extraction was empty\n' >&2
+	exit 1
+fi
+
+assert_output() {
+	local output_file="$1"
+	local key="$2"
+	local expected="$3"
+	local case_name="$4"
+	if ! grep -Fxq "${key}=${expected}" "${output_file}"; then
+		printf 'FAIL: %s expected %s=%s\n' "${case_name}" "${key}" "${expected}" >&2
+		return 1
+	fi
+	return 0
+}
+
+CASE_INDEX=0
+run_case() {
+	local case_name="$1"
+	local expected_external="$2"
+	local expected_trusted="$3"
+	local expected_association="$4"
+	local expected_rate_limit="$5"
+	local expected_completion="$6"
+	local author_association="$7"
+	local author_login="$8"
+	local author_id="$9"
+	local author_type="${10}"
+	local head_repository="${11}"
+	local base_repository="${12}"
+	local head_ref="${13}"
+	local pr_body="${14}"
+	local output_file=""
+
+	CASE_INDEX=$((CASE_INDEX + 1))
+	output_file="${STATE_DIR}/case-${CASE_INDEX}.out"
+	if ! GITHUB_OUTPUT="${output_file}" \
+		REPO="marcusquinn/aidevops" \
+		REVIEW_GATE_AUTHOR_ASSOCIATION="${author_association}" \
+		REVIEW_GATE_PR_AUTHOR_LOGIN="${author_login}" \
+		REVIEW_GATE_PR_AUTHOR_ID="${author_id}" \
+		REVIEW_GATE_PR_AUTHOR_TYPE="${author_type}" \
+		REVIEW_GATE_PR_HEAD_REPOSITORY="${head_repository}" \
+		REVIEW_GATE_PR_BASE_REPOSITORY="${base_repository}" \
+		REVIEW_GATE_PR_HEAD_REF="${head_ref}" \
+		REVIEW_GATE_PR_BODY="${pr_body}" \
+		REVIEW_GATE_RATE_LIMIT_BEHAVIOR=pass \
+		REVIEW_GATE_COMPLETION_BEHAVIOR=fast \
+		bash -c "${CLASSIFIER}" >/dev/null; then
+		printf 'FAIL: %s classifier execution failed\n' "${case_name}" >&2
+		return 1
+	fi
+
+	assert_output "${output_file}" is_external_pr "${expected_external}" "${case_name}"
+	assert_output "${output_file}" trusted_issue_sync_pr "${expected_trusted}" "${case_name}"
+	assert_output "${output_file}" effective_author_association "${expected_association}" "${case_name}"
+	assert_output "${output_file}" effective_rate_limit_behavior "${expected_rate_limit}" "${case_name}"
+	assert_output "${output_file}" effective_completion_behavior "${expected_completion}" "${case_name}"
+	printf 'PASS: %s\n' "${case_name}"
+	return 0
+}
+
+MARKER='<!-- aidevops:issue-sync-todo-pr -->'
+
+run_case \
+	'official same-repository Issue Sync bot is trusted' \
+	false true COLLABORATOR pass fast \
+	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'aidevops/issue-sync-todo' "${MARKER}"
+
+run_case \
+	'owner association remains trusted without automation normalization' \
+	false false OWNER pass fast \
+	OWNER maintainer 123 User \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'feature/example' 'ordinary pull request'
+
+run_case \
+	'external user cannot spoof marker and deterministic branch' \
+	true false CONTRIBUTOR wait strict \
+	CONTRIBUTOR attacker 999 User \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'aidevops/issue-sync-todo' "${MARKER}"
+
+run_case \
+	'lookalike bot ID remains external' \
+	true false CONTRIBUTOR wait strict \
+	CONTRIBUTOR 'github-actions[bot]' 999 Bot \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'aidevops/issue-sync-todo' "${MARKER}"
+
+run_case \
+	'forked Issue Sync branch remains external' \
+	true false CONTRIBUTOR wait strict \
+	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
+	'attacker/aidevops' 'marcusquinn/aidevops' \
+	'aidevops/issue-sync-todo' "${MARKER}"
+
+run_case \
+	'wrong same-repository branch remains external' \
+	true false CONTRIBUTOR wait strict \
+	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'feature/not-issue-sync' "${MARKER}"
+
+run_case \
+	'missing generated marker remains external' \
+	true false CONTRIBUTOR wait strict \
+	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'aidevops/issue-sync-todo' 'ordinary pull request'
+
+printf 'All review-bot Issue Sync trust tests passed.\n'

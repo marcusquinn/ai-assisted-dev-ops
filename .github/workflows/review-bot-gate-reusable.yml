@@ -131,13 +131,40 @@ jobs:
           REVIEW_GATE_EVIDENCE_HEAD_SHA: ${{ github.event.review.commit_id || github.event.comment.commit_id || '' }}
           REVIEW_GATE_EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
           REVIEW_GATE_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association || github.event.issue.author_association || '' }}
+          REVIEW_GATE_PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login || github.event.issue.user.login || '' }}
+          REVIEW_GATE_PR_AUTHOR_ID: ${{ github.event.pull_request.user.id || github.event.issue.user.id || '' }}
+          REVIEW_GATE_PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || github.event.issue.user.type || '' }}
+          REVIEW_GATE_PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          REVIEW_GATE_PR_BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name || '' }}
+          REVIEW_GATE_PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          REVIEW_GATE_PR_BODY: ${{ github.event.pull_request.body || github.event.issue.body || '' }}
           REVIEW_GATE_RATE_LIMIT_BEHAVIOR: ${{ inputs.rate_limit_behavior }}
           REVIEW_GATE_COMPLETION_BEHAVIOR: ${{ inputs.completion_behavior }}
         run: |
           echo "Checking PR #${PR_NUMBER} for AI review bot activity..."
 
+          # GitHub reports its official Actions bot as CONTRIBUTOR even when a
+          # repository workflow creates a same-repository PR. Normalize only the
+          # deterministic Issue Sync identity: official immutable bot ID/type,
+          # same repository on both sides, fixed branch, and generated body marker.
+          # Any missing or mismatched field remains external and fail-closed.
+          # aidevops:review-gate-trust-start
+          TRUSTED_ISSUE_SYNC_PR=false
+          #aidevops:trust-boundary
+          if [[ "${REVIEW_GATE_PR_AUTHOR_LOGIN}" == "github-actions[bot]" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_ID}" == "41898282" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_TYPE}" == "Bot" ]] &&
+            [[ "${REVIEW_GATE_PR_HEAD_REPOSITORY}" == "${REPO}" ]] &&
+            [[ "${REVIEW_GATE_PR_BASE_REPOSITORY}" == "${REPO}" ]] &&
+            [[ "${REVIEW_GATE_PR_HEAD_REF}" == "aidevops/issue-sync-todo" ]] &&
+            [[ "${REVIEW_GATE_PR_BODY}" == *"<!-- aidevops:issue-sync-todo-pr -->"* ]]; then
+            TRUSTED_ISSUE_SYNC_PR=true
+          fi
+
           # Check if this is an external contributor PR using immutable event
-          # evidence, so API exhaustion cannot accidentally grant trust.
+          # evidence, so API exhaustion cannot accidentally grant trust. The
+          # normalized association is exported because the fetched helper
+          # independently enforces the same external-author boundary.
           # GH#17671: external-contributor PRs retain defence-in-depth review;
           # advisory completion and rate-limit grace are both disabled.
           #aidevops:trust-boundary
@@ -146,14 +173,25 @@ jobs:
             IS_EXTERNAL_PR=false
             ;;
           *)
-            IS_EXTERNAL_PR=true
-            echo "External contributor PR detected — advisory review bypass DISABLED"
-            #aidevops:trust-boundary
-            export REVIEW_GATE_RATE_LIMIT_BEHAVIOR=wait
-            export REVIEW_GATE_COMPLETION_BEHAVIOR=strict
+            if [[ "${TRUSTED_ISSUE_SYNC_PR}" == "true" ]]; then
+              export REVIEW_GATE_AUTHOR_ASSOCIATION=COLLABORATOR
+              IS_EXTERNAL_PR=false
+              echo "Trusted repository-generated Issue Sync PR detected — applying internal advisory policy"
+            else
+              IS_EXTERNAL_PR=true
+              echo "External contributor PR detected — advisory review bypass DISABLED"
+              #aidevops:trust-boundary
+              export REVIEW_GATE_RATE_LIMIT_BEHAVIOR=wait
+              export REVIEW_GATE_COMPLETION_BEHAVIOR=strict
+            fi
             ;;
           esac
           echo "is_external_pr=${IS_EXTERNAL_PR}" >> "${GITHUB_OUTPUT}"
+          echo "trusted_issue_sync_pr=${TRUSTED_ISSUE_SYNC_PR}" >> "${GITHUB_OUTPUT}"
+          echo "effective_author_association=${REVIEW_GATE_AUTHOR_ASSOCIATION}" >> "${GITHUB_OUTPUT}"
+          echo "effective_rate_limit_behavior=${REVIEW_GATE_RATE_LIMIT_BEHAVIOR}" >> "${GITHUB_OUTPUT}"
+          echo "effective_completion_behavior=${REVIEW_GATE_COMPLETION_BEHAVIOR}" >> "${GITHUB_OUTPUT}"
+          # aidevops:review-gate-trust-end
 
           # Invoke the framework helper (runtime-fetched via __aidevops/).
           # All gate logic lives in the helper:
