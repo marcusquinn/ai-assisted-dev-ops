@@ -24,11 +24,27 @@ write_stub_python() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ "${2:-}" == "refresh" && "$1" == *"oauth-pool-lib/pool_ops.py" ]]; then
-  case "${AIDEVOPS_TEST_POOL_REFRESH_MODE:-none}" in
-    failed)
-      printf 'FAILED:test@example.invalid(http_401)\n'
-      exit 0
-      ;;
+	case "${AIDEVOPS_TEST_POOL_REFRESH_MODE:-none}" in
+	  failed)
+	    printf 'FAILED:test@example.invalid(http_401)\n'
+	    exit 0
+	    ;;
+	  network)
+	    printf 'FAILED:test@example.invalid(network)\n'
+	    exit 0
+	    ;;
+	  http_500)
+	    printf 'FAILED:test@example.invalid(http_500)\n'
+	    exit 0
+	    ;;
+	  refreshed)
+	    printf 'REFRESHED:test@example.invalid\n'
+	    exit 0
+	    ;;
+	  mixed)
+	    printf 'REFRESHED:other@example.invalid\nFAILED:test@example.invalid(network)\n'
+	    exit 0
+	    ;;
     none)
       printf 'NONE\n'
       exit 0
@@ -73,7 +89,40 @@ main() {
 	[[ "$output" == *"Failed to refresh: test@example.invalid(http_401)"* ]] || fail "failed refresh did not preserve safe label: ${output}"
 	[[ "$output" != *"secret"* ]] || fail "failed refresh output leaked a token-like value: ${output}"
 
-	printf 'PASS oauth refresh failure exits non-zero and no-op stays successful\n'
+	set +e
+	output="$(HOME="$tmp_dir" REAL_PYTHON="$REAL_PYTHON" write_stub_python "${tmp_dir}/bin-network" network)"
+	rc=$?
+	set -e
+	[[ "$rc" -ne 0 ]] || fail "first network failure should exit non-zero"
+	[[ "$output" == *"Failed to refresh: test@example.invalid(network)"* ]] || fail "first network failure was not visible: ${output}"
+
+	set +e
+	output="$(HOME="$tmp_dir" REAL_PYTHON="$REAL_PYTHON" write_stub_python "${tmp_dir}/bin-network" network)"
+	rc=$?
+	set -e
+	[[ "$rc" -ne 0 ]] || fail "suppressed network failure should remain non-zero"
+	[[ "$output" != *"Failed to refresh: test@example.invalid(network)"* ]] || fail "repeated network failure was not suppressed: ${output}"
+	[[ "$output" != *"Some accounts failed to refresh"* ]] || fail "repeated re-auth hint was not suppressed: ${output}"
+
+	set +e
+	output="$(HOME="$tmp_dir" REAL_PYTHON="$REAL_PYTHON" write_stub_python "${tmp_dir}/bin-network" mixed)"
+	rc=$?
+	set -e
+	[[ "$rc" -ne 0 ]] || fail "suppressed failure alongside a refresh should remain non-zero"
+	[[ "$output" == *"Refreshed openai token for other@example.invalid"* ]] || fail "successful account was not reported: ${output}"
+
+	set +e
+	output="$(HOME="$tmp_dir" REAL_PYTHON="$REAL_PYTHON" write_stub_python "${tmp_dir}/bin-http-500" http_500)"
+	rc=$?
+	set -e
+	[[ "$rc" -ne 0 ]] || fail "transient HTTP 500 should exit non-zero"
+	[[ "$output" == *"Failed to refresh: test@example.invalid(http_500)"* ]] || fail "transient HTTP 500 was not visible: ${output}"
+
+	output="$(HOME="$tmp_dir" REAL_PYTHON="$REAL_PYTHON" write_stub_python "${tmp_dir}/bin-network" refreshed)"
+	[[ "$output" == *"Refreshed openai token for test@example.invalid"* ]] || fail "recovery was not visible: ${output}"
+	[[ "$output" == *"after 2 suppressed repeated failure"* ]] || fail "recovery did not summarize suppressed failures: ${output}"
+
+	printf 'PASS oauth refresh failures are suppressed and recovery stays visible\n'
 	return 0
 }
 

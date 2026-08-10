@@ -365,6 +365,89 @@ cmd_rotate() {
 # Refresh — exchange refresh tokens for new access tokens
 # ---------------------------------------------------------------------------
 
+OAUTH_REFRESH_FAILURE_SUPPRESSION_WINDOW_SECONDS="${OAUTH_REFRESH_FAILURE_SUPPRESSION_WINDOW_SECONDS:-900}"
+
+_refresh_failure_state_dir() {
+	printf '%s/oauth-refresh-failures\n' "${AIDEVOPS_CACHE_DIR:-${HOME}/.aidevops/cache}"
+	return 0
+}
+
+_refresh_failure_state_name() {
+	local provider="$1"
+	local detail="$2"
+	local safe_detail
+	safe_detail=$(printf '%s' "$detail" | tr -c '[:alnum:].@_-' '_')
+	printf '%s-%s.state\n' "$provider" "$safe_detail"
+	return 0
+}
+
+# Print "new" for the first occurrence in the window and "repeat" after it.
+# State contains only an epoch and repeat count; refresh tokens never enter it.
+_refresh_failure_state_record() {
+	local provider="$1"
+	local detail="$2"
+	local state_dir state_file now_epoch previous_epoch repeat_count state_line temp_file
+	state_dir=$(_refresh_failure_state_dir)
+	state_file="${state_dir}/$(_refresh_failure_state_name "$provider" "$detail")"
+	now_epoch=$(date +%s)
+	previous_epoch=0
+	repeat_count=0
+
+	if ! mkdir -p "$state_dir" || ! chmod 700 "$state_dir"; then
+		printf 'new\n'
+		return 0
+	fi
+	if [[ -f "$state_file" ]]; then
+		state_line=$(<"$state_file")
+		IFS='|' read -r previous_epoch repeat_count <<<"$state_line"
+		[[ "$previous_epoch" =~ ^[0-9]+$ ]] || previous_epoch=0
+		[[ "$repeat_count" =~ ^[0-9]+$ ]] || repeat_count=0
+	fi
+
+	if ((now_epoch - previous_epoch < OAUTH_REFRESH_FAILURE_SUPPRESSION_WINDOW_SECONDS)); then
+		repeat_count=$((repeat_count + 1))
+		temp_file=$(mktemp "${state_dir}/.refresh-failure.XXXXXX") || {
+			printf 'new\n'
+			return 0
+		}
+		printf '%s|%s\n' "$previous_epoch" "$repeat_count" >"$temp_file" && mv -f "$temp_file" "$state_file" || rm -f "$temp_file"
+		printf 'repeat\n'
+		return 0
+	fi
+
+	temp_file=$(mktemp "${state_dir}/.refresh-failure.XXXXXX") || {
+		printf 'new\n'
+		return 0
+	}
+	printf '%s|0\n' "$now_epoch" >"$temp_file" && mv -f "$temp_file" "$state_file" || rm -f "$temp_file"
+	printf 'new\n'
+	return 0
+}
+
+# Clear every failure class for a recovered account and print its suppressed count.
+_refresh_failure_state_clear() {
+	local provider="$1"
+	local email="$2"
+	local state_dir state_file state_line repeat_count total=0 safe_email
+	state_dir=$(_refresh_failure_state_dir)
+	safe_email=$(printf '%s' "$email" | tr -c '[:alnum:].@_-' '_')
+	[[ -d "$state_dir" ]] || {
+		printf '0\n'
+		return 0
+	}
+
+	for state_file in "${state_dir}/${provider}-${safe_email}"*.state; do
+		[[ -f "$state_file" ]] || continue
+		state_line=$(<"$state_file")
+		IFS='|' read -r _ repeat_count <<<"$state_line"
+		[[ "$repeat_count" =~ ^[0-9]+$ ]] || repeat_count=0
+		total=$((total + repeat_count))
+		rm -f "$state_file"
+	done
+	printf '%s\n' "$total"
+	return 0
+}
+
 cmd_refresh() {
 	local provider="${1:-anthropic}"
 	local target_email="${2:-all}"
@@ -396,17 +479,28 @@ cmd_refresh() {
 	# Parse results
 	local had_refresh=false
 	local had_failure=false
+	local had_any_failure=false
 	while IFS= read -r line; do
 		case "$line" in
 		REFRESHED:*)
 			had_refresh=true
-			local email="${line#REFRESHED:}"
+			local email suppressed_count
+			email="${line#REFRESHED:}"
+			suppressed_count=$(_refresh_failure_state_clear "$provider" "$email")
 			print_success "Refreshed ${provider} token for ${email}"
+			if ((suppressed_count > 0)); then
+				print_info "Refresh recovered for ${email} after ${suppressed_count} suppressed repeated failure(s)"
+			fi
 			;;
 		FAILED:*)
-			had_failure=true
-			local detail="${line#FAILED:}"
-			print_error "Failed to refresh: ${detail}"
+			local detail failure_state
+			had_any_failure=true
+			detail="${line#FAILED:}"
+			failure_state=$(_refresh_failure_state_record "$provider" "$detail")
+			if [[ "$failure_state" == "new" ]]; then
+				had_failure=true
+				print_error "Failed to refresh: ${detail}"
+			fi
 			;;
 		NONE)
 			print_info "No ${provider} accounts need refreshing"
@@ -423,6 +517,9 @@ cmd_refresh() {
 	fi
 	if [[ "$had_failure" == "true" ]]; then
 		print_warning "Some accounts failed to refresh — may need re-auth via: oauth-pool-helper.sh add ${provider}"
+		return 2
+	fi
+	if [[ "$had_any_failure" == "true" ]]; then
 		return 2
 	fi
 
