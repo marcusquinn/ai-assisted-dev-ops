@@ -119,13 +119,18 @@ _pc_remove_local_commit_worktree_preserving_branch() {
 	local audit_context="$4"
 	local removal_reason="${5:-local-commits-branch-preserved}"
 	local removal_mode="${6:-branch-preserved}"
+	local guard_status=0
 
 	[[ -n "$rp_age" && -n "$wt_path_age" ]] || return 1
-	if ! worktree_removal_guard "$wt_path_age" "$_WTAR_PC_CALLER" "local-commits-branch-preserved"; then
-		return 1
+	if worktree_removal_guard "$wt_path_age" "$_WTAR_PC_CALLER" "local-commits-branch-preserved"; then
+		guard_status=0
+	else
+		guard_status=$?
 	fi
+	[[ "$guard_status" -eq 0 || "$guard_status" -eq "$_WT_CWD_CAPTURE_DEGRADED_RC" ]] || return 1
 
-	if git -C "$rp_age" worktree remove --force "$wt_path_age" 2>/dev/null; then
+	if _worktree_remove_with_native_git "$wt_path_age" "$_WTAR_PC_CALLER" \
+		"$audit_context" "$_WTAR_BOOL_TRUE"; then
 		git -C "$rp_age" worktree prune 2>/dev/null || true
 		unregister_worktree "$wt_path_age" 2>/dev/null || true
 		log_worktree_removal_event "$_WTAR_REMOVED" "$_WTAR_PC_CALLER" "$wt_path_age" "$removal_reason" "$removal_mode" "$audit_context"
