@@ -10,6 +10,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="${SCRIPT_DIR}/.."
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 HELPER="${PARENT_DIR}/contributor-insight-helper.sh"
 
 # --- Test harness ---
@@ -68,7 +69,7 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
 # Create test repos.json with a private repo
 TEST_REPOS_JSON="${TMPDIR_TEST}/repos.json"
-cat >"$TEST_REPOS_JSON" <<'JSON'
+cat >"$TEST_REPOS_JSON" <<JSON
 {
   "initialized_repos": [
     {
@@ -80,6 +81,13 @@ cat >"$TEST_REPOS_JSON" <<'JSON'
       "slug": "client/secret-project",
       "mirror_upstream": true,
       "pulse": false
+    },
+    {
+      "slug": "marcusquinn/aidevops",
+      "path": "${REPO_ROOT}",
+      "role": "contributor",
+      "local_only": false,
+      "pulse": true
     }
   ],
   "git_parent_dirs": []
@@ -94,15 +102,25 @@ cat >"$TEST_SIGNALS" <<'JSON'
     ".agents/prompts/build.txt": [
       {
         "text": "we should always use worktrees, never branches directly at /Users/testuser/Git/secret-corp/private-api",
+        "display_text": "use worktrees",
         "confidence": 0.80,
         "category": "git_workflow",
-        "session_title": "Working on secret-corp/private-api feature"
+        "session_title": "Working on secret-corp/private-api feature",
+        "fingerprint": "worktree-guidance",
+        "qualification_basis": "recurring",
+        "requires_judgment": false,
+        "support": 3
       },
       {
         "text": "prefer printf over echo -e for bash 3.2 compat",
+        "display_text": "prefer printf",
         "confidence": 0.75,
         "category": "code_style",
-        "session_title": "Shell hardening session"
+        "session_title": "Shell hardening session",
+        "fingerprint": "printf-guidance",
+        "qualification_basis": "explicit_persistence",
+        "requires_judgment": false,
+        "support": 1
       },
       {
         "text": "low confidence throwaway",
@@ -170,6 +188,20 @@ cat >"$TEST_SIGNALS" <<'JSON'
 }
 JSON
 
+FAKE_BIN="${TMPDIR_TEST}/bin"
+mkdir -p "$FAKE_BIN"
+cat >"${FAKE_BIN}/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+"repo view") printf 'public\n' ;;
+"issue list") printf '0\n' ;;
+*) exit 1 ;;
+esac
+exit 0
+SH
+chmod +x "${FAKE_BIN}/gh"
+export PATH="${FAKE_BIN}:${PATH}"
+
 echo "=== Sanitization Tests ==="
 
 # Override REPOS_JSON for the helper
@@ -218,7 +250,7 @@ echo "=== Dry-Run Filing Tests ==="
 
 # Test 7: dry-run with instruction candidates
 output=$(bash "$HELPER" file --dry-run "$TEST_SIGNALS" "marcusquinn/aidevops" 2>&1) || true
-assert_contains "dry-run mentions instruction candidates" "instruction candidate" "$output"
+assert_contains "dry-run mentions instruction candidates" "Instruction Candidates" "$output"
 assert_contains "dry-run creates issue" "DRY RUN" "$output"
 
 # Test 8: dry-run sanitizes content in issue body
@@ -228,9 +260,13 @@ assert_not_contains "issue body has no home paths" "/Users/testuser" "$output"
 # Test 9: low-confidence candidates filtered out
 assert_not_contains "low confidence filtered" "low confidence throwaway" "$output"
 
-# Test 10: high-confidence candidates included
-assert_contains "high confidence included" "worktrees" "$output"
-assert_contains "bash compat included" "printf" "$output"
+# Test 10: qualified candidates are summarized without raw excerpts or identity
+assert_contains "target included" ".agents/prompts/build.txt" "$output"
+assert_contains "category included" "git_workflow" "$output"
+assert_contains "support included" "Distinct-session support: 3" "$output"
+assert_not_contains "raw worktree excerpt omitted" "we should always use worktrees" "$output"
+assert_not_contains "raw printf excerpt omitted" "prefer printf over echo" "$output"
+assert_not_contains "session title omitted" "Shell hardening session" "$output"
 
 echo ""
 echo "=== Error Pattern Tests ==="
@@ -238,9 +274,9 @@ echo "=== Error Pattern Tests ==="
 # Test 11: high-frequency error patterns are included
 assert_contains "edit:not_read_first in output" "not_read_first" "$output"
 assert_contains "bash:workdir_not_found in output" "workdir_not_found" "$output"
-assert_contains "sanitized example error included" "sanitized error" "$output"
-assert_contains "summarized command included" "summarized command" "$output"
-assert_contains "expected recovery included" "expected recovery" "$output"
+assert_not_contains "raw example error omitted" "sanitized error" "$output"
+assert_not_contains "raw command omitted" "summarized command" "$output"
+assert_not_contains "raw recovery omitted" "expected recovery" "$output"
 assert_not_contains "error example has no private path" "/Users/testuser" "$output"
 assert_not_contains "error example has no private slug" "secret-corp/private-api" "$output"
 assert_contains "null user recovery pattern included" "bash:timeout" "$output"

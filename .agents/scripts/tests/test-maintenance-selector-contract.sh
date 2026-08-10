@@ -72,7 +72,7 @@ required_functions = {
         "_pulse_reconcile_stale_blocked_if_due",
         "sync_todo_refs_all_repos",
     ],
-    ".agents/scripts/session-miner-pulse.sh": ["file_contributor_insights"],
+    ".agents/scripts/session-miner-pulse.sh": ["run_actuation"],
     ".agents/scripts/setup/modules/migrations.sh": ["backfill_issue_relationships"],
     ".agents/scripts/stats-health-dashboard-data.sh": [
         "_compute_worker_success_rates",

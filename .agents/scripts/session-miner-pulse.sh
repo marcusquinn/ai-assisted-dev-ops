@@ -28,17 +28,20 @@ SCRIPT_DIR="$(cd "$_smp_dir" && pwd)"
 # Source shared-constants.sh for portable stat functions
 # shellcheck source=shared-constants.sh
 [[ -f "${SCRIPT_DIR}/shared-constants.sh" ]] && source "${SCRIPT_DIR}/shared-constants.sh"
-MINER_DIR="${HOME}/.aidevops/.agent-workspace/work/session-miner"
+MINER_DIR="${SESSION_MINER_MINER_DIR:-${HOME}/.aidevops/.agent-workspace/session-miner}"
 # Shipped with aidevops; copied to workspace on first run
-EXTRACTOR_SRC="${SCRIPT_DIR}/session-miner/extract.py"
-COMPRESSOR_SRC="${SCRIPT_DIR}/session-miner/compress.py"
+EXTRACTOR_SRC="${SESSION_MINER_EXTRACTOR_SRC:-${SCRIPT_DIR}/session-miner/extract.py}"
+COMPRESSOR_SRC="${SESSION_MINER_COMPRESSOR_SRC:-${SCRIPT_DIR}/session-miner/compress.py}"
 EXTRACTOR="${MINER_DIR}/extract.py"
 COMPRESSOR="${MINER_DIR}/compress.py"
-STATE_FILE="${MINER_DIR}/.last-pulse"
-LOCK_FILE="${MINER_DIR}/.pulse.lock"
+STATE_FILE="${MINER_DIR}/state.json"
+LEGACY_STATE_FILE="${SESSION_MINER_LEGACY_STATE_FILE:-${HOME}/.aidevops/.agent-workspace/work/session-miner/.last-pulse}"
+LOCK_DIR="${MINER_DIR}/.pulse.lock"
+ACTUATION_HELPER="${SESSION_MINER_ACTUATION_HELPER:-${SCRIPT_DIR}/session-miner-actuation-helper.sh}"
+REPOS_JSON="${REPOS_JSON:-${HOME}/.config/aidevops/repos.json}"
 
 # Default: OpenCode DB
-DEFAULT_DB="${HOME}/.local/share/opencode/opencode.db"
+DEFAULT_DB="${SESSION_MINER_DEFAULT_DB:-${HOME}/.local/share/opencode/opencode.db}"
 
 # Minimum interval between pulses (seconds) — default 20 hours
 MIN_INTERVAL="${SESSION_MINER_INTERVAL:-72000}"
@@ -57,36 +60,184 @@ log_error() {
 	return 0
 }
 
+now_epoch() {
+	local configured="${SESSION_MINER_NOW_EPOCH:-}"
+	if [[ "$configured" =~ ^[0-9]+$ ]]; then
+		printf '%s' "$configured"
+		return 0
+	fi
+	date +%s
+	return 0
+}
+
+state_existing_json() {
+	if [[ -f "$STATE_FILE" ]] && jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+		jq -c . "$STATE_FILE"
+		return $?
+	fi
+	local legacy_epoch=0
+	if [[ -f "$LEGACY_STATE_FILE" ]]; then
+		legacy_epoch=$(<"$LEGACY_STATE_FILE")
+		[[ "$legacy_epoch" =~ ^[0-9]+$ ]] || legacy_epoch=0
+	fi
+	jq -cn --argjson legacy_epoch "$legacy_epoch" '
+		if $legacy_epoch > 0 then {
+			schema_version: 1,
+			status: "legacy_migrated",
+			last_attempt_epoch: $legacy_epoch,
+			last_success_epoch: $legacy_epoch,
+			source_watermark_ms: null,
+			duration_seconds: 0,
+			counts: {},
+			error_class: null,
+			fingerprints: []
+		} else {} end
+	'
+	return 0
+}
+
+state_write() {
+	local status="$1"
+	local error_class="$2"
+	local duration_seconds="$3"
+	local counts_json="$4"
+	local watermark="$5"
+	local fingerprints_json="$6"
+	local mark_success="$7"
+	local now=0 existing='{}' tmp_file=""
+	now=$(now_epoch)
+	existing=$(state_existing_json) || existing='{}'
+	mkdir -p "$MINER_DIR"
+	tmp_file=$(mktemp "${MINER_DIR}/.state.XXXXXX") || return 1
+	if ! printf '%s' "$existing" | jq \
+		--arg status "$status" \
+		--arg error_class "$error_class" \
+		--arg watermark "$watermark" \
+		--argjson now "$now" \
+		--argjson interval "$MIN_INTERVAL" \
+		--argjson duration "$duration_seconds" \
+		--argjson counts "$counts_json" \
+		--argjson fingerprints "$fingerprints_json" \
+		--argjson mark_success "$mark_success" '
+		.schema_version = 1
+		| .status = $status
+		| .last_attempt_epoch = $now
+		| .duration_seconds = $duration
+		| .counts = $counts
+		| .error_class = (if $error_class == "" then null else $error_class end)
+		| .fingerprints = (((.fingerprints // []) + $fingerprints) | unique)
+		| if $mark_success then
+			.last_success_epoch = $now
+			| if ($watermark | test("^[0-9]+$")) then .source_watermark_ms = ($watermark | tonumber) else . end
+		  else . end
+		| .schedule = {
+			interval_seconds: $interval,
+			next_due_epoch: ((.last_success_epoch // 0) + $interval)
+		}
+	' >"$tmp_file"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
+	mv "$tmp_file" "$STATE_FILE"
+	return 0
+}
+
+state_status_json() {
+	local now=0 existing='{}'
+	now=$(now_epoch)
+	existing=$(state_existing_json) || existing='{}'
+	printf '%s' "$existing" | jq \
+		--argjson now "$now" \
+		--argjson interval "$MIN_INTERVAL" '
+		.schema_version = 1
+		| .status = (.status // "never_run")
+		| .schedule = ((.schedule // {}) + {
+			interval_seconds: $interval,
+			next_due_epoch: ((.last_success_epoch // 0) + $interval),
+			due: ($now >= ((.last_success_epoch // 0) + $interval))
+		})
+		| .freshness = {
+			last_attempt_epoch: (.last_attempt_epoch // null),
+			last_success_epoch: (.last_success_epoch // null),
+			stale: (($now - (.last_success_epoch // 0)) > ($interval * 2))
+		}
+		| .source_watermark_ms = (.source_watermark_ms // null)
+		| .duration_seconds = (.duration_seconds // 0)
+		| .counts = (.counts // {})
+		| .error_class = (.error_class // null)
+		| .fingerprints = (.fingerprints // [])
+	'
+	return $?
+}
+
+print_status() {
+	local json_output="$1"
+	local health='{}'
+	health=$(state_status_json) || return 1
+	if [[ "$json_output" == true ]]; then
+		printf '%s\n' "$health"
+	else
+		printf 'session-miner: %s; due=%s; last_success=%s; watermark_ms=%s; error=%s\n' \
+			"$(printf '%s' "$health" | jq -r '.status')" \
+			"$(printf '%s' "$health" | jq -r '.schedule.due')" \
+			"$(printf '%s' "$health" | jq -r '.freshness.last_success_epoch // "never"')" \
+			"$(printf '%s' "$health" | jq -r '.source_watermark_ms // "none"')" \
+			"$(printf '%s' "$health" | jq -r '.error_class // "none"')"
+	fi
+	return 0
+}
+
 check_lock() {
-	if [[ -f "${LOCK_FILE}" ]]; then
-		local lock_age
-		local lock_mtime
-		lock_mtime=$(_file_mtime_epoch "${LOCK_FILE}")
-		lock_age=$(($(date +%s) - lock_mtime))
+	mkdir -p "$MINER_DIR"
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" >"${LOCK_DIR}/pid"
+		return 0
+	fi
+	if [[ -d "$LOCK_DIR" ]]; then
+		local lock_age lock_mtime lock_pid=""
+		lock_mtime=$(_file_mtime_epoch "$LOCK_DIR")
+		lock_age=$(($(now_epoch) - lock_mtime))
+		[[ "$lock_age" -ge 0 ]] || lock_age=0
+		if [[ -f "${LOCK_DIR}/pid" ]]; then
+			lock_pid=$(<"${LOCK_DIR}/pid")
+		fi
+		if [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+			log_info "Another pulse is running (pid: ${lock_pid}, lock age: ${lock_age}s). Exiting."
+			return 1
+		fi
 		# Stale lock (>1 hour)
 		if [[ "${lock_age}" -gt 3600 ]]; then
 			log_info "Removing stale lock (${lock_age}s old)"
-			rm -f "${LOCK_FILE}"
+			rm -rf "$LOCK_DIR"
+			if mkdir "$LOCK_DIR" 2>/dev/null; then
+				printf '%s\n' "$$" >"${LOCK_DIR}/pid"
+				return 0
+			fi
 		else
 			log_info "Another pulse is running (lock age: ${lock_age}s). Exiting."
 			return 1
 		fi
 	fi
-	echo "$$" >"${LOCK_FILE}"
-	return 0
+	return 1
 }
 
 release_lock() {
-	rm -f "${LOCK_FILE}"
+	local lock_pid=""
+	if [[ -f "${LOCK_DIR}/pid" ]]; then
+		lock_pid=$(<"${LOCK_DIR}/pid")
+	fi
+	if [[ "$lock_pid" == "$$" ]]; then
+		rm -rf "$LOCK_DIR"
+	fi
 	return 0
 }
 
 check_interval() {
-	if [[ -f "${STATE_FILE}" ]]; then
-		local last_run
-		last_run=$(cat "${STATE_FILE}" 2>/dev/null || echo 0)
-		local now
-		now=$(date +%s)
+	local existing='{}' last_run=0 now=0
+	existing=$(state_existing_json) || existing='{}'
+	last_run=$(printf '%s' "$existing" | jq -r '.last_success_epoch // 0') || last_run=0
+	now=$(now_epoch)
+	if [[ "$last_run" =~ ^[0-9]+$ && "$last_run" -gt 0 ]]; then
 		local elapsed=$((now - last_run))
 		if [[ "${elapsed}" -lt "${MIN_INTERVAL}" ]]; then
 			local remaining=$((MIN_INTERVAL - elapsed))
@@ -94,12 +245,6 @@ check_interval() {
 			return 1
 		fi
 	fi
-	return 0
-}
-
-record_pulse() {
-	mkdir -p "${MINER_DIR}"
-	date +%s >"${STATE_FILE}"
 	return 0
 }
 
@@ -141,6 +286,7 @@ count_new_sessions() {
 run_extraction() {
 	local db_path="$1"
 	local output_dir="$2"
+	local since_ms="$3"
 
 	if [[ ! -f "${EXTRACTOR}" ]]; then
 		log_error "Extractor not found at ${EXTRACTOR}"
@@ -148,7 +294,9 @@ run_extraction() {
 	fi
 
 	log_info "Running extraction from ${db_path}..."
-	python3 "${EXTRACTOR}" --db "${db_path}" --format chunks --output "${output_dir}" 2>&1
+	local -a args=(--db "$db_path" --format chunks --output "$output_dir")
+	[[ -z "$since_ms" ]] || args+=(--since-ms "$since_ms")
+	python3 "$EXTRACTOR" "${args[@]}" 2>&1
 	return $?
 }
 
@@ -169,6 +317,7 @@ run_repo_scoped_extraction() {
 	local db_path="$1"
 	local output_dir="$2"
 	local repo_dir="$3"
+	local since_ms="$4"
 
 	if [[ ! -f "${EXTRACTOR}" ]]; then
 		log_error "Extractor not found at ${EXTRACTOR}"
@@ -176,14 +325,29 @@ run_repo_scoped_extraction() {
 	fi
 
 	log_info "Running repo-scoped extraction from ${db_path} for ${repo_dir}..."
-	python3 "${EXTRACTOR}" --db "${db_path}" --format chunks --output "${output_dir}" --repo-dir "${repo_dir}" 2>&1
+	local -a args=(--db "$db_path" --format chunks --output "$output_dir" --repo-dir "$repo_dir")
+	[[ -z "$since_ms" ]] || args+=(--since-ms "$since_ms")
+	python3 "$EXTRACTOR" "${args[@]}" 2>&1
 	return $?
+}
+
+first_chunks_dir() {
+	local output_dir="$1"
+	local candidate=""
+	for candidate in "$output_dir"/chunks_*; do
+		if [[ -d "$candidate" ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	return 1
 }
 
 run_repo_scoped_pipeline() {
 	local db_path="$1"
 	local repo_dir="$2"
 	local slug="$3"
+	local since_ms="$4"
 
 	local slug_safe
 	slug_safe="${slug//\//_}"
@@ -191,13 +355,13 @@ run_repo_scoped_pipeline() {
 	mkdir -p "${scoped_output_dir}"
 
 	local extract_output
-	extract_output=$(run_repo_scoped_extraction "${db_path}" "${scoped_output_dir}" "${repo_dir}" 2>&1) || {
+	extract_output=$(run_repo_scoped_extraction "$db_path" "$scoped_output_dir" "$repo_dir" "$since_ms" 2>&1) || {
 		log_error "Repo-scoped extraction failed for ${slug}: ${extract_output}"
 		return 1
 	}
 
 	local chunks_dir
-	chunks_dir=$(find "${scoped_output_dir}" -maxdepth 1 -type d -name "chunks_*" | head -1)
+	chunks_dir=$(first_chunks_dir "$scoped_output_dir") || chunks_dir=""
 	if [[ -z "${chunks_dir}" ]]; then
 		log_error "No repo-scoped chunks directory found for ${slug} in ${scoped_output_dir}"
 		return 1
@@ -616,137 +780,88 @@ PY
 	return $?
 }
 
-create_feedback_issues() {
-	local actions_file="$1"
-	local dry_run="$2"
-	local auto_issue="${SESSION_MINER_AUTO_ISSUES:-0}"
-
-	if [[ "${auto_issue}" != "1" ]]; then
-		log_info "Auto-issue creation disabled (set SESSION_MINER_AUTO_ISSUES=1 to enable)"
-		return 0
-	fi
-
-	if [[ ! -f "${actions_file}" ]]; then
-		log_error "Actions file not found: ${actions_file}"
-		return 1
-	fi
-
-	if ! command -v gh >/dev/null 2>&1; then
-		log_info "gh CLI not found, skipping auto-issue creation"
-		return 0
-	fi
-
-	local max_issues="${SESSION_MINER_MAX_ISSUES:-3}"
-	python3 - "${actions_file}" "${max_issues}" "${dry_run}" <<'PY'
-import json
-import subprocess
-import sys
-
-actions_file = sys.argv[1]
-max_issues = int(sys.argv[2])
-dry_run = sys.argv[3].lower() == "true"
-
-payload = json.load(open(actions_file, encoding="utf-8"))
-actions = payload.get("actions", [])
-
-if not actions:
-    print("No action candidates to file")
-    sys.exit(0)
-
-repo_cmd = ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]
-repo = subprocess.run(repo_cmd, capture_output=True, text=True)
-if repo.returncode != 0:
-    print("Unable to resolve repository slug; skipping issue creation")
-    sys.exit(0)
-
-slug = repo.stdout.strip()
-created = 0
-
-for action in actions:
-    if created >= max_issues:
-        break
-
-    tag = action["tag"]
-    title = action["title"]
-    body = action["body"]
-
-    dedup_cmd = [
-        "gh", "issue", "list",
-        "--repo", slug,
-        "--state", "open",
-        "--search", f'"{tag}" in:body',
-        "--limit", "1",
-        "--json", "number",
-    ]
-    dedup = subprocess.run(dedup_cmd, capture_output=True, text=True)
-    if dedup.returncode == 0:
-        try:
-            existing = json.loads(dedup.stdout)
-        except json.JSONDecodeError:
-            existing = []
-        if existing:
-            continue
-
-    if dry_run:
-        print(f"DRY RUN: would create issue: {title}")
-        created += 1
-        continue
-
-    create_cmd = [
-        "gh", "issue", "create",
-        "--repo", slug,
-        "--title", title,
-        "--body", body,
-        "--label", "self-improvement",
-    ]
-    created_proc = subprocess.run(create_cmd, capture_output=True, text=True)
-    if created_proc.returncode == 0:
-        print(f"Created issue: {title}")
-        created += 1
-
-print(f"Issue creation complete: {created} created (cap={max_issues})")
-PY
-
-	return $?
-}
-
 # --- Main helpers ---
 
-# parse_args sets script-level variables: _db_override, _dry_run, _force, _create_issues
+parse_since_ms() {
+	local value="$1"
+	if [[ "$value" =~ ^[0-9]{13}$ ]]; then
+		printf '%s' "$value"
+		return 0
+	fi
+	local pattern='^([0-9]+)(s|m|h|d)$'
+	if [[ "$value" =~ $pattern ]]; then
+		local amount="${BASH_REMATCH[1]}"
+		local unit="${BASH_REMATCH[2]}"
+		local multiplier=1
+		case "$unit" in
+			s) multiplier=1 ;;
+			m) multiplier=60 ;;
+			h) multiplier=3600 ;;
+			d) multiplier=86400 ;;
+		esac
+		local now=0 since_epoch=0
+		now=$(now_epoch)
+		since_epoch=$((now - (amount * multiplier)))
+		[[ "$since_epoch" -ge 0 ]] || since_epoch=0
+		printf '%s' $((since_epoch * 1000))
+		return 0
+	fi
+	log_error "Invalid --since value: ${value}; use epoch milliseconds or <number>[s|m|h|d]"
+	return 1
+}
+
+# parse_args sets script-level command and pipeline options.
 parse_args() {
 	_db_override=""
 	_dry_run=false
 	_force=false
 	_create_issues=false
+	_status_only=false
+	_json_output=false
+	_since_override_ms=""
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		--db)
-			_db_override="$2"
-			shift 2
-			;;
-		--dry-run)
-			_dry_run=true
-			shift
-			;;
-		--force)
-			_force=true
-			shift
-			;;
-		--create-issues)
-			_create_issues=true
-			shift
-			;;
-		--since)
-			# Ignored for now — full extraction each time, incremental later
-			shift 2
-			;;
-		*)
-			log_error "Unknown argument: $1"
-			return 1
-			;;
+			--db)
+				[[ $# -ge 2 ]] || return 1
+				_db_override="$2"
+				shift 2
+				;;
+			--dry-run)
+				_dry_run=true
+				shift
+				;;
+			--force)
+				_force=true
+				shift
+				;;
+			--create-issues)
+				_create_issues=true
+				shift
+				;;
+			--since)
+				[[ $# -ge 2 ]] || return 1
+				_since_override_ms=$(parse_since_ms "$2") || return 1
+				shift 2
+				;;
+			--status)
+				_status_only=true
+				shift
+				;;
+			--json)
+				_json_output=true
+				shift
+				;;
+			*)
+				log_error "Unknown argument: $1"
+				return 1
+				;;
 		esac
 	done
+	if [[ "$_json_output" == true && "$_status_only" != true ]]; then
+		log_error "--json currently requires --status"
+		return 1
+	fi
 	return 0
 }
 
@@ -757,7 +872,7 @@ sync_scripts() {
 	# automatically deployed. Fixes regression from t1944 which added 5 helper modules
 	# (extract_chunking.py, extract_errors.py, extract_git.py, extract_shared.py,
 	# extract_steerage.py) without updating this copy logic. Ref: GH#18383.
-	local _miner_src_dir="${SCRIPT_DIR}/session-miner"
+	local _miner_src_dir="${EXTRACTOR_SRC%/*}"
 	local _py_src
 	local _py_dst
 	for _py_src in "${_miner_src_dir}"/*.py; do
@@ -767,6 +882,12 @@ sync_scripts() {
 			cp "${_py_src}" "${_py_dst}"
 		fi
 	done
+	if [[ -f "$COMPRESSOR_SRC" ]]; then
+		_py_dst="${MINER_DIR}/compress.py"
+		if [[ ! -f "$_py_dst" || "$COMPRESSOR_SRC" -nt "$_py_dst" ]]; then
+			cp "$COMPRESSOR_SRC" "$_py_dst"
+		fi
+	fi
 	return 0
 }
 
@@ -786,29 +907,55 @@ validate_db_size() {
 # run_pipeline runs extraction + compression and verifies output.
 # Sets _output_dir, _compressed_file, _feedback_actions_file,
 # _feedback_report_file, _feedback_metrics_file on success.
+validate_compressed_metadata() {
+	local compressed_file="$1"
+	local since_ms="$2"
+	jq -e --arg since "$since_ms" '
+		.stats.extraction_metadata as $metadata
+		| ($metadata | type) == "object"
+		and ($metadata | has("window_start_ms"))
+		and ($metadata | has("source_high_water_ms"))
+		and (if $since == "" then $metadata.window_start_ms == null else $metadata.window_start_ms == ($since | tonumber) end)
+		and (($metadata.source_high_water_ms == null) or (($metadata.source_high_water_ms | type) == "number"))
+	' "$compressed_file" >/dev/null 2>&1
+	return $?
+}
+
 run_pipeline() {
 	local db_path="$1"
+	local since_ms="$2"
+	_pipeline_error_class=""
+	if ! python3 "$EXTRACTOR" --help 2>&1 | grep -q -- '--since-ms'; then
+		log_error "Extractor does not expose the required --since-ms capability"
+		_pipeline_error_class="extractor_capability_missing"
+		return 1
+	fi
 
 	local run_ts
 	run_ts=$(date +%Y%m%d_%H%M%S)
-	_output_dir="${MINER_DIR}/pulse_${run_ts}"
-	mkdir -p "${_output_dir}"
+	_output_dir=$(mktemp -d "${MINER_DIR}/pulse_${run_ts}.XXXXXX") || {
+		_pipeline_error_class="output_directory_failed"
+		return 1
+	}
 
 	local extract_output
-	extract_output=$(run_extraction "${db_path}" "${_output_dir}" 2>&1) || {
+	extract_output=$(run_extraction "$db_path" "$_output_dir" "$since_ms" 2>&1) || {
 		log_error "Extraction failed: ${extract_output}"
+		_pipeline_error_class="extraction_failed"
 		return 1
 	}
 
 	local chunks_dir
-	chunks_dir=$(find "${_output_dir}" -maxdepth 1 -type d -name "chunks_*" | head -1)
+	chunks_dir=$(first_chunks_dir "$_output_dir") || chunks_dir=""
 	if [[ -z "${chunks_dir}" ]]; then
 		log_error "No chunks directory found in ${_output_dir}"
+		_pipeline_error_class="extraction_output_missing"
 		return 1
 	fi
 
 	run_compression "${chunks_dir}" 2>&1 || {
 		log_error "Compression failed"
+		_pipeline_error_class="compression_failed"
 		return 1
 	}
 
@@ -819,8 +966,24 @@ run_pipeline() {
 
 	if [[ ! -f "${_compressed_file}" ]]; then
 		log_error "Compressed signals file not produced at ${_compressed_file}"
+		_pipeline_error_class="compression_output_missing"
 		return 1
 	fi
+	if ! validate_compressed_metadata "$_compressed_file" "$since_ms"; then
+		log_error "Compressed output lacks compatible extraction watermark metadata"
+		_pipeline_error_class="watermark_validation_failed"
+		return 1
+	fi
+	_new_watermark_ms=$(jq -r '.stats.extraction_metadata.source_high_water_ms // empty' "$_compressed_file") || _new_watermark_ms=""
+	_counts_json=$(jq -c '{
+		steerage: ([.steerage // {} | .[] | length] | add // 0),
+		errors: ((.errors.patterns // []) | length),
+		instruction_candidates: ([.instruction_candidates // {} | .[] | length] | add // 0),
+		actuated: 0
+	}' "$_compressed_file") || {
+		_pipeline_error_class="count_validation_failed"
+		return 1
+	}
 	return 0
 }
 
@@ -828,7 +991,6 @@ run_pipeline() {
 # and records the pulse timestamp when not in dry-run mode.
 output_results() {
 	local dry_run="$1"
-	local create_issues="$2"
 
 	local summary
 	summary=$(generate_summary "${_compressed_file}" 2>&1)
@@ -843,21 +1005,10 @@ output_results() {
 		echo "--- DRY RUN ---"
 		echo "${summary}"
 		echo "${feedback_output}"
-		if [[ "${create_issues}" == true ]]; then
-			create_feedback_issues "${_feedback_actions_file}" "${dry_run}" || true
-		fi
-		# t2147: file contributor insights for contributor-role repos
-		file_contributor_insights "${dry_run}" || true
-		echo "--- Would log TODO suggestions to relevant repos ---"
+		echo "--- Would evaluate qualified role-routed actuation candidates ---"
 	else
 		echo "${summary}"
 		echo "${feedback_output}"
-		if [[ "${create_issues}" == true ]]; then
-			create_feedback_issues "${_feedback_actions_file}" "${dry_run}" || true
-		fi
-		# t2147: file contributor insights for contributor-role repos
-		file_contributor_insights "${dry_run}" || true
-		record_pulse
 		log_info "Pulse complete. Output: ${_output_dir}"
 		log_info "Compressed signals: ${_compressed_file}"
 		log_info "Feedback actions: ${_feedback_actions_file}"
@@ -867,70 +1018,43 @@ output_results() {
 	return 0
 }
 
-# file_contributor_insights files sanitized upstream issues for repos where
-# the user is a contributor (role != maintainer). It re-extracts a repo-scoped
-# compressed signal file for each target so unrelated project sessions cannot
-# leak into contributor insight issues. Skips if no contributor-role repos found.
-# Arguments: $1 — dry_run (true/false)
-file_contributor_insights() {
-	local dry_run="$1"
+run_actuation() {
+	local since_ms="$1"
+	_actuation_fingerprints='[]'
+	[[ "$_create_issues" == true ]] || return 0
+	[[ "$_dry_run" != true ]] || return 0
+	[[ -x "$ACTUATION_HELPER" && -f "$REPOS_JSON" ]] || return 1
 
-	local insight_helper="${SCRIPT_DIR}/contributor-insight-helper.sh"
-	if [[ ! -x "$insight_helper" ]]; then
-		return 0
-	fi
+	local known_fingerprints='[]'
+	known_fingerprints=$(state_existing_json | jq -c '.fingerprints // []') || known_fingerprints='[]'
+	local framework_path="" framework_signals="" result="" receipts='[]'
+	framework_path=$(jq -r '
+		[.initialized_repos[]? | select(.slug == "marcusquinn/aidevops" and .role == "maintainer")]
+		| if length == 1 then .[0].path // "" else "" end
+	' "$REPOS_JSON" 2>/dev/null) || framework_path=""
+	[[ -n "$framework_path" && -d "$framework_path" ]] || return 1
+	framework_signals=$(run_repo_scoped_pipeline "$_db_path" "$framework_path" "marcusquinn/aidevops" "$since_ms") || return 1
+	validate_compressed_metadata "$framework_signals" "$since_ms" || return 1
+	result=$("$ACTUATION_HELPER" maintainer --signals "$framework_signals" --repos "$REPOS_JSON" \
+		--known-fingerprints "$known_fingerprints") || return 1
+	receipts=$(printf '%s' "$result" | jq -c '.fingerprints // []') || return 1
+	_actuation_fingerprints=$(printf '%s' "$_actuation_fingerprints" | jq -c --argjson receipts "$receipts" '. + $receipts | unique') || return 1
 
-	local repos_json="${HOME}/.config/aidevops/repos.json"
-	if [[ ! -f "$repos_json" ]]; then
-		return 0
-	fi
+	local contributor_entry=""
+	while IFS= read -r contributor_entry; do
+		[[ -n "$contributor_entry" ]] || continue
+		local slug="" repo_dir="" scoped_signals=""
+		slug=$(printf '%s' "$contributor_entry" | jq -r '.slug') || return 1
+		repo_dir=$(printf '%s' "$contributor_entry" | jq -r '.path // ""') || return 1
+		[[ -n "$repo_dir" && -d "$repo_dir" ]] || return 1
+		scoped_signals=$(run_repo_scoped_pipeline "$_db_path" "$repo_dir" "$slug" "$since_ms") || return 1
+		validate_compressed_metadata "$scoped_signals" "$since_ms" || return 1
+		result=$("$ACTUATION_HELPER" contributor --signals "$scoped_signals" --repos "$REPOS_JSON" --slug "$slug") || return 1
+		receipts=$(printf '%s' "$result" | jq -c '.fingerprints // []') || return 1
+		_actuation_fingerprints=$(printf '%s' "$_actuation_fingerprints" | jq -c --argjson receipts "$receipts" '. + $receipts | unique') || return 1
+	done < <(jq -c '.initialized_repos[]? | select(.maintenance != false and .pulse == true and .role == "contributor")' "$REPOS_JSON" 2>/dev/null)
 
-	if ! command -v jq >/dev/null 2>&1; then
-		return 0
-	fi
-
-	# Get current gh user for auto-detect
-	local gh_user
-	gh_user=$(gh api user --jq '.login' 2>/dev/null) || gh_user=""
-
-	# Find contributor-role repos (explicit or auto-detected)
-	local slug
-	while IFS= read -r slug; do
-		[[ -n "$slug" ]] || continue
-
-		local repo_dir
-		repo_dir=$(jq -r --arg s "$slug" '.initialized_repos[] | select(.slug == $s) | .path // empty' "$repos_json" 2>/dev/null) || repo_dir=""
-		if [[ -z "$repo_dir" || ! -d "$repo_dir" ]]; then
-			log_info "Skipping contributor insights for ${slug}: local repo path missing"
-			continue
-		fi
-
-		# Check explicit role first
-		local explicit_role
-		explicit_role=$(jq -r --arg s "$slug" '.initialized_repos[] | select(.slug == $s) | .role // ""' "$repos_json" 2>/dev/null) || explicit_role=""
-
-		local is_contributor=false
-		if [[ "$explicit_role" == "contributor" ]]; then
-			is_contributor=true
-		elif [[ -z "$explicit_role" && -n "$gh_user" ]]; then
-			# Auto-detect: different owner = contributor
-			local owner="${slug%%/*}"
-			if [[ "$owner" != "$gh_user" ]]; then
-				is_contributor=true
-			fi
-		fi
-
-		if [[ "$is_contributor" == true ]]; then
-			log_info "Filing contributor insights for ${slug} scoped to ${repo_dir}..."
-			local scoped_compressed_file
-			scoped_compressed_file=$(run_repo_scoped_pipeline "${_db_path}" "${repo_dir}" "${slug}") || continue
-			local dr_flag=""
-			[[ "$dry_run" == true ]] && dr_flag="--dry-run"
-			# shellcheck disable=SC2086
-			"$insight_helper" file $dr_flag "${scoped_compressed_file}" "$slug" 2>&1 || true
-		fi
-	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | .slug' "$repos_json" 2>/dev/null)
-
+	_counts_json=$(printf '%s' "$_counts_json" | jq -c --argjson count "$(printf '%s' "$_actuation_fingerprints" | jq 'length')" '.actuated = $count') || return 1
 	return 0
 }
 
@@ -947,44 +1071,110 @@ cleanup_old_pulses() {
 	return 0
 }
 
+record_failed_run() {
+	local error_class="$1"
+	local started_epoch="$2"
+	local status="${3:-failed}"
+	local ended_epoch=0 duration=0 counts='{}'
+	ended_epoch=$(now_epoch)
+	duration=$((ended_epoch - started_epoch))
+	[[ "$duration" -ge 0 ]] || duration=0
+	if [[ -n "${_counts_json:-}" ]]; then
+		counts="$_counts_json"
+	else
+		counts=$(state_existing_json | jq -c '.counts // {}') || counts='{}'
+	fi
+	if [[ "${_dry_run:-false}" != true ]]; then
+		state_write "$status" "$error_class" "$duration" "$counts" keep '[]' false || true
+	fi
+	return 0
+}
+
 # --- Main ---
 
 main() {
 	parse_args "$@" || return 1
+	if ! [[ "$MIN_INTERVAL" =~ ^[0-9]+$ && "$MIN_INTERVAL" -gt 0 ]]; then
+		log_error "SESSION_MINER_INTERVAL must be a positive integer"
+		return 1
+	fi
+	if [[ "$_status_only" == true ]]; then
+		print_status "$_json_output"
+		return $?
+	fi
 
 	sync_scripts
 
 	# Check interval (skip if too recent, unless forced)
 	if [[ "${_force}" != true ]]; then
-		check_interval || return 0
+		if ! check_interval; then
+			local existing_counts='{}'
+			existing_counts=$(state_existing_json | jq -c '.counts // {}') || existing_counts='{}'
+			[[ "$_dry_run" == true ]] || state_write not_due "" 0 "$existing_counts" keep '[]' false
+			return 0
+		fi
 	fi
 
 	# Acquire lock
 	check_lock || return 0
 	trap release_lock EXIT
+	local started_epoch=0
+	started_epoch=$(now_epoch)
+	local existing_counts='{}'
+	existing_counts=$(state_existing_json | jq -c '.counts // {}') || existing_counts='{}'
+	[[ "$_dry_run" == true ]] || state_write running "" 0 "$existing_counts" keep '[]' false || return 1
 
 	# Find and validate database
 	local db_path
-	db_path=$(detect_db "${_db_override}") || return 1
+	db_path=$(detect_db "${_db_override}") || {
+		record_failed_run database_unavailable "$started_epoch"
+		return 1
+	}
 	_db_path="${db_path}"
 	log_info "Using database: ${db_path}"
 
 	validate_db_size "${db_path}" || {
-		release_lock
+		[[ "$_dry_run" == true ]] || state_write healthy "" 0 '{"steerage":0,"errors":0,"instruction_candidates":0,"actuated":0}' keep '[]' true
 		return 0
 	}
 
-	# Run extraction + compression pipeline
-	run_pipeline "${db_path}" || {
-		release_lock
-		return 1
-	}
+	local since_ms="$_since_override_ms"
+	if [[ -z "$since_ms" ]]; then
+		since_ms=$(state_existing_json | jq -r '.source_watermark_ms // empty') || since_ms=""
+	fi
+	_counts_json=""
+	_new_watermark_ms=""
+	_actuation_fingerprints='[]'
 
-	# Output results (summary, feedback, optional issue creation)
-	output_results "${_dry_run}" "${_create_issues}" || {
-		release_lock
+	# Run extraction + compression pipeline
+	run_pipeline "$db_path" "$since_ms" || {
+		record_failed_run "${_pipeline_error_class:-pipeline_failed}" "$started_epoch"
 		return 1
 	}
+	local replayed_interval=false
+	if [[ -n "$since_ms" && "$_new_watermark_ms" == "$since_ms" ]]; then
+		replayed_interval=true
+		_counts_json=$(state_existing_json | jq -c '.counts // {}') || _counts_json='{}'
+	fi
+
+	# Generate local reports before any network write.
+	output_results "${_dry_run}" || {
+		record_failed_run report_generation_failed "$started_epoch"
+		return 1
+	}
+	if [[ "$replayed_interval" != true ]] && ! run_actuation "$since_ms"; then
+		record_failed_run actuation_deferred "$started_epoch" deferred
+		return 1
+	fi
+
+	if [[ "$_dry_run" != true ]]; then
+		local ended_epoch=0 duration=0 watermark="$_new_watermark_ms"
+		ended_epoch=$(now_epoch)
+		duration=$((ended_epoch - started_epoch))
+		[[ "$duration" -ge 0 ]] || duration=0
+		[[ -n "$watermark" ]] || watermark="$since_ms"
+		state_write healthy "" "$duration" "$_counts_json" "$watermark" "$_actuation_fingerprints" true || return 1
+	fi
 
 	cleanup_old_pulses
 

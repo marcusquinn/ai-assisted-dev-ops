@@ -127,6 +127,21 @@ Routine evaluation runs deterministically in `pulse-wrapper.sh` before the LLM s
 - **`agent:` routines** → dispatch via `headless-runtime-helper.sh`
 - **No `run:` or `agent:`** → check `custom/scripts/{routine-id}.sh`, else dispatch Build+
 
+The framework-managed `r-session-miner` routine uses the same deterministic
+calendar and lifecycle state. It runs `session-miner-pulse.sh --create-issues`
+daily, while the miner's own atomic state enforces incremental source
+watermarks, single-run locking, privacy-safe role routing, and retry after a
+failed or deferred actuation. Inspect it without running the pipeline:
+
+```bash
+~/.aidevops/agents/scripts/session-miner-pulse.sh --status --json
+```
+
+Miner health state:
+`~/.aidevops/.agent-workspace/session-miner/state.json`. It contains only
+schedule, freshness, duration, aggregate counts, a source watermark, generic
+failure class, and hashed actuation fingerprints—never raw session text.
+
 State: `~/.aidevops/.agent-workspace/routine-state.json`. Schedules: `daily(@HH:MM)`, `weekly(day@HH:MM)`, `monthly(N@HH:MM)`, `cron(5-field-expr)`. The LLM does NOT evaluate routines.
 
 ### 5. Record initial dispatch success
@@ -181,7 +196,6 @@ On exit, run best-effort cleanup:
 
 ```bash
 ~/.aidevops/agents/scripts/circuit-breaker-helper.sh record-success
-~/.aidevops/agents/scripts/session-miner-pulse.sh 2>&1 || true
 ~/.aidevops/agents/scripts/backfill-status-available.sh --apply 2>&1 || true
 ```
 
