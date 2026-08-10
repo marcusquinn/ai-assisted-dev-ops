@@ -64,7 +64,16 @@ WORKFLOW="$ROOT_DIR/.github/workflows/issue-sync-reusable.yml"
 grep -q 'id: relationship-sync' "$WORKFLOW" || fail "workflow omitted explicit relationship recovery"
 grep -q 'issue-sync-helper.sh relationships --verbose' "$WORKFLOW" || fail "workflow did not retry durable relationship work"
 grep -q "steps.relationship-sync.outputs.pending == 'true'" "$WORKFLOW" || fail "workflow did not report unresolved relationships after persisting refs"
-pass "workflow persists refs before reporting unresolved relationship recovery"
+if awk '/name: Report deferred relationship sync/{capture=1} capture && /exit 1/{found=1} capture && /^      - name:/{if (++steps > 1) exit} END{exit found ? 0 : 1}' "$WORKFLOW"; then
+	fail "workflow treated expected deferred relationship work as a terminal CI failure"
+fi
+pass "workflow persists refs and reports expected relationship deferral without failing CI"
+
+# shellcheck disable=SC2016 # Assert the literal reusable-workflow expression.
+if grep -Fq 'GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}' "$WORKFLOW"; then
+	fail "workflow used the contents-only SYNC_PAT for issue API operations"
+fi
+pass "workflow reserves SYNC_PAT for contents publication and PR fallback"
 
 cat >"$TMPDIR_TEST/gh" <<'GH_EOF'
 #!/usr/bin/env bash

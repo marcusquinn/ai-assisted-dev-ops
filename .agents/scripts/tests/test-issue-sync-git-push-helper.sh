@@ -421,8 +421,11 @@ test_protected_branch_uses_one_rebased_pr() {
 		fail "issue-sync PR title preserves merge-loop prevention"
 	elif [[ "$(<"${title_file}.body")" != *"Ref #9001"* ]]; then
 		fail "issue-sync PR body preserves changed-task linkage"
-	elif [[ "$(<"$output_a")" != *"empty ephemeral private-entity registry"* ]]; then
-		fail "GitHub Actions publication declares its isolated privacy inventory"
+	elif [[ "$(<"$output_a")" != *"repository-scoped CI privacy and write-policy inventory"* ]]; then
+		fail "GitHub Actions publication declares its scoped CI inventory"
+	elif ! jq -e '.initialized_repos == [{"slug":"example/repo","role":"maintainer"}]' \
+		"$output_a.runner"/aidevops-issue-sync-ci-context.* >/dev/null 2>&1; then
+		fail "GitHub Actions publication scopes write policy to the current repository"
 	elif [[ "$branch_message" == *"[skip ci]"* ]]; then
 		fail "issue-sync PR branch still runs required checks"
 	elif [[ "$(git -C "$work_a" status --short)" != *"TODO.md"* ||

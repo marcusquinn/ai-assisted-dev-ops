@@ -61,6 +61,12 @@ unset _issue_sync_path_input _issue_sync_path_tail _issue_sync_path_component
 # Keep SCRIPT_DIR for the public source contract, but use the private directory
 # for sibling loading so later modules cannot affect this helper's source chain.
 SCRIPT_DIR="$_issue_sync_script_dir"
+# Hosted runners do not have the user's repos.json. Establish a narrowly
+# scoped current-repository inventory before shared-constants loads the GitHub
+# write and privacy wrappers.
+# shellcheck source=./issue-sync-ci-context.sh
+source "${_issue_sync_script_dir}/issue-sync-ci-context.sh"
+issue_sync_prepare_ci_context
 source "${_issue_sync_script_dir}/shared-constants.sh"
 # shellcheck source=issue-sync-lib.sh
 source "${_issue_sync_script_dir}/issue-sync-lib.sh"

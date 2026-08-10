@@ -238,9 +238,9 @@ jobs:
           echo "=== Closing issues for completed tasks ==="
           bash __aidevops/.agents/scripts/issue-sync-helper.sh close --verbose || true
         env:
-          # t2166: SYNC_PAT || GITHUB_TOKEN so any downstream push inside the
-          # helper also gets PAT auth when available.
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          # Issue API work uses the job-scoped token. SYNC_PAT is intentionally
+          # limited to contents publication and the bounded PR fallback.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push new tasks as issues
         if: steps.check-author.outputs.skip != 'true'
@@ -254,7 +254,7 @@ jobs:
             exit "$push_rc"
           fi
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # t1984: override origin detection and assignee target so issues
           # created from human-triggered TODO.md pushes get origin:interactive
           # and are assigned to the human pusher, not github-actions[bot].
@@ -278,7 +278,7 @@ jobs:
             echo "pending=true" >> "$GITHUB_OUTPUT"
           fi
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enrich plan-linked issues
         if: steps.check-author.outputs.skip != 'true'
@@ -286,7 +286,7 @@ jobs:
           echo "=== Enriching plan-linked issues ==="
           bash __aidevops/.agents/scripts/issue-sync-helper.sh enrich --verbose || true
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Push/release runs share a 20-minute budget with close/push/pull and
           # TODO.md push. Keep routine enrichment bounded; manual dispatch still
           # runs full `enrich` because these env vars are not set there.
@@ -299,7 +299,7 @@ jobs:
           echo "=== Pulling issue refs to TODO.md ==="
           bash __aidevops/.agents/scripts/issue-sync-helper.sh pull --verbose || true
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish TODO.md updates
         if: steps.check-author.outputs.skip != 'true'
@@ -319,13 +319,12 @@ jobs:
         run: |
           bash __aidevops/.agents/scripts/issue-sync-helper.sh status || true
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Report pending relationship sync
+      - name: Report deferred relationship sync
         if: steps.relationship-sync.outputs.pending == 'true'
         run: |
-          echo "Relationship sync remains pending after durable TODO.md ref persistence"
-          exit 1
+          echo "::warning::Relationship sync remains pending after durable TODO.md ref persistence; a later bounded reconciliation will retry it."
 
   sync-on-issue:
     name: Sync GitHub Issue → TODO.md
@@ -401,7 +400,7 @@ jobs:
       - name: Sync issue ref to TODO.md
         if: steps.check-issue.outputs.sync == 'true'
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TASK_ID: ${{ steps.check-issue.outputs.task_id }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
@@ -683,7 +682,7 @@ jobs:
 
       - name: Run sync command
         env:
-          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SYNC_COMMAND: ${{ inputs.command }}
         run: |
           chmod +x __aidevops/.agents/scripts/issue-sync-helper.sh
@@ -788,6 +787,11 @@ jobs:
                    "${SHIM_DIR}/gh-signature-helper.sh" \
                    "${SHIM_DIR}/aidevops-git-guard" \
                    2>/dev/null || true
+          # The shim is active before later inline issue writes, so persist the
+          # same current-repository privacy and write-policy context used by the
+          # standalone Issue Sync helpers.
+          source "${SHIM_DIR}/issue-sync-ci-context.sh"
+          issue_sync_write_ci_context_env "$GITHUB_ENV"
           echo "${SHIM_DIR}" >> "$GITHUB_PATH"
 
       - name: Extract task ID and collect linked issues
