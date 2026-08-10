@@ -16,8 +16,10 @@
 #   9. Advisory regenerates on resume→trip cycle (state change).
 #  10. Status --json emits valid JSON.
 #  11. RUNNER_HEALTH_DISABLED=1 short-circuits all subcommands.
-#  12. Recognised zero-attempt signals (4 listed in the helper).
+#  12. Recognised zero-attempt signals (5 listed in the helper).
 #  13. Unrecognised signal acts as real-attempt (resets counter).
+#  14. Deterministic signing failure trips immediately without changing the
+#      ordinary zero-attempt threshold.
 #
 # All tests run inside an isolated sandbox HOME; no system state is touched.
 
@@ -262,18 +264,18 @@ else
 fi
 _teardown_sandbox
 
-# --- Test 11: all 4 documented zero-attempt signals are recognised ---
+# --- Test 11: all 5 documented zero-attempt signals are recognised ---
 _setup_sandbox
 local_total=0
-for sig in no_worker_process no_branch_created low_token_usage watchdog_killed_no_commit; do
+for sig in no_worker_process no_branch_created low_token_usage watchdog_killed_no_commit worker_signing_unavailable; do
 	_h record-outcome "$sig" "owner/repo#$local_total" >/dev/null 2>&1
 	local_total=$((local_total + 1))
 done
 counter=$(jq -r '.consecutive_zero_attempts' "$RUNNER_HEALTH_STATE_FILE" 2>/dev/null || echo "x")
-if [[ "$counter" == "4" ]]; then
-	print_result "all 4 zero-attempt signals increment counter" "PASS"
+if [[ "$counter" == "5" ]]; then
+	print_result "all 5 zero-attempt signals increment counter" "PASS"
 else
-	print_result "all 4 zero-attempt signals increment counter" "FAIL" "got: $counter"
+	print_result "all 5 zero-attempt signals increment counter" "FAIL" "got: $counter"
 fi
 _teardown_sandbox
 
@@ -287,6 +289,26 @@ if [[ "$counter" == "0" ]]; then
 	print_result "unrecognised signal resets counter (real-attempt path)" "PASS"
 else
 	print_result "unrecognised signal resets counter (real-attempt path)" "FAIL" "got: $counter"
+fi
+_teardown_sandbox
+
+# --- Test 13: signing failure trips immediately; ordinary signals do not ---
+_setup_sandbox
+_h record-outcome no_worker_process owner/repo#1 >/dev/null 2>&1
+ordinary_rc=0
+_h is-paused || ordinary_rc=$?
+_teardown_sandbox
+
+_setup_sandbox
+_h record-outcome worker_signing_unavailable owner/repo#2 >/dev/null 2>&1
+signing_rc=0
+_h is-paused || signing_rc=$?
+reason=$(jq -r '.circuit_breaker.reason' "$RUNNER_HEALTH_STATE_FILE" 2>/dev/null || echo "x")
+if [[ "$ordinary_rc" -eq 1 && "$signing_rc" -eq 0 && "$reason" == *"signal=worker_signing_unavailable"* ]]; then
+	print_result "signing failure trips immediately while ordinary signal retains threshold" "PASS"
+else
+	print_result "signing failure trips immediately while ordinary signal retains threshold" "FAIL" \
+		"ordinary_rc=$ordinary_rc signing_rc=$signing_rc reason=$reason"
 fi
 _teardown_sandbox
 
