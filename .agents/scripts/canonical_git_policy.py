@@ -210,17 +210,29 @@ def _is_linked_worktree_remove_for_canonical(
         target_common_dir, target_git_dir, target_top = _git_repo_identity(
             real_git_path, target_real, []
         )
-        allowed = bool(
+        required_paths = [
+            canonical_common_dir,
+            canonical_top,
+            target_common_dir,
+            target_git_dir,
+            target_top,
+        ]
+        same_common_dir = os.path.realpath(target_common_dir) == os.path.realpath(
             canonical_common_dir
-            and canonical_top
-            and target_common_dir
-            and target_git_dir
-            and target_top
-            and os.path.realpath(target_common_dir)
-            == os.path.realpath(canonical_common_dir)
-            and os.path.realpath(target_git_dir) != os.path.realpath(target_common_dir)
-            and os.path.realpath(target_top) == target_real
-            and target_real != os.path.realpath(canonical_top)
+        )
+        separate_git_dir = os.path.realpath(target_git_dir) != os.path.realpath(
+            target_common_dir
+        )
+        target_is_toplevel = os.path.realpath(target_top) == target_real
+        target_is_not_canonical = target_real != os.path.realpath(canonical_top)
+        allowed = all(
+            [
+                all(required_paths),
+                same_common_dir,
+                separate_git_dir,
+                target_is_toplevel,
+                target_is_not_canonical,
+            ]
         )
     return allowed
 
