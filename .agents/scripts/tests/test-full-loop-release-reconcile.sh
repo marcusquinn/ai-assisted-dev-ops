@@ -12,6 +12,7 @@ _FULL_LOOP_PHASE_FAILED="failed"
 _FULL_LOOP_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RELEASE_SUPERSEDED="superseded"
 _FULL_LOOP_RELEASE_NOT_REQUESTED="not-requested"
+_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED="published-reconcile"
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/receipts"
@@ -216,6 +217,87 @@ printf 'PASS signed tag trailers reconstruct release provenance\n'
 	[[ ! -f "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-29010.status" ]]
 )
 printf 'PASS historical authorization gaps use idempotent detached production evidence\n'
+
+(
+	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/receipt-conflict-receipts"
+	# shellcheck source=../full-loop-helper-state.sh
+	source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+	conflict_release_path="${TEST_ROOT}/receipt-conflict-release"
+	mkdir -p "$conflict_release_path"
+	printf '1.2.5\n' >"${conflict_release_path}/VERSION"
+	conflict_tag_commit="4444444444444444444444444444444444444444"
+	conflict_source_json=$(jq -cn '
+		{source_pr:90,source_merge:"1111111111111111111111111111111111111111",
+		 aggregated_sources:[
+		  {pr:89,merge:"2222222222222222222222222222222222222222"},
+		  {pr:88,merge:"3333333333333333333333333333333333333333"}
+		 ]}
+	')
+	conflict_receipt=$(_full_loop_release_receipt_path test/repo 89)
+	mkdir -p "${conflict_receipt%/*}"
+	git() {
+		local args="$*"
+		case "$args" in
+		*"rev-parse refs/tags/v1.2.5^{commit}"*) printf '%s\n' "$conflict_tag_commit" ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_update_superseded_cleanup_receipt() {
+		return 0
+	}
+	: >"$conflict_receipt"
+	if _full_loop_validate_release_candidates test/repo "$conflict_source_json" \
+		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" v1.2.5 "$conflict_tag_commit" >/dev/null 2>&1; then
+		printf 'FAIL published reconciliation accepted an empty receipt\n'
+		exit 1
+	fi
+	if _full_loop_persist_release_success test/repo "$conflict_release_path" "$conflict_source_json" \
+		90 1111111111111111111111111111111111111111 "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" \
+		>/dev/null 2>&1; then
+		printf 'FAIL published reconciliation replaced an empty receipt\n'
+		exit 1
+	fi
+	[[ ! -s "$conflict_receipt" ]]
+	printf '%s\n' "$_FULL_LOOP_RELEASE_NOT_REQUESTED" >"$conflict_receipt"
+	cp "$conflict_receipt" "${TEST_ROOT}/receipt-conflict-original.status"
+	if _full_loop_validate_release_candidates test/repo "$conflict_source_json" >/dev/null 2>&1; then
+		printf 'FAIL release preparation accepted terminal no-release evidence\n'
+		exit 1
+	fi
+	_full_loop_validate_release_candidates test/repo "$conflict_source_json" \
+		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" v1.2.5 "$conflict_tag_commit"
+	_full_loop_persist_release_success test/repo "$conflict_release_path" "$conflict_source_json" \
+		90 1111111111111111111111111111111111111111 "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED"
+	cmp -s "$conflict_receipt" "${TEST_ROOT}/receipt-conflict-original.status"
+	grep -qx "$_FULL_LOOP_RELEASE_NOT_REQUESTED" "$conflict_receipt"
+	grep -qx "$_FULL_LOOP_RELEASE_SUPERSEDED" \
+		"${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-88.status"
+	grep -qx "$_FULL_LOOP_RELEASE_PUBLISHED" \
+		"${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-90.status"
+	conflict_evidence=$(_full_loop_release_evidence_path test/repo 89 receipt-conflict)
+	jq -e --arg tag_commit "$conflict_tag_commit" '
+		.evidence_type == "published-aggregate-terminal-receipt-conflict"
+		and .status == "receipt-conflict" and .pr_number == 89 and .aggregate_pr == 90
+		and .preserved_receipt_status == "not-requested" and .release_commit == $tag_commit
+		and (.terminal_cleanup_evidence | not)
+	' "$conflict_evidence" >/dev/null
+	cp "$conflict_evidence" "${TEST_ROOT}/receipt-conflict-original.json"
+	_full_loop_validate_release_candidates test/repo "$conflict_source_json" \
+		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" v1.2.5 "$conflict_tag_commit"
+	_full_loop_persist_release_success test/repo "$conflict_release_path" "$conflict_source_json" \
+		90 1111111111111111111111111111111111111111 "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED"
+	cmp -s "$conflict_receipt" "${TEST_ROOT}/receipt-conflict-original.status"
+	cmp -s "$conflict_evidence" "${TEST_ROOT}/receipt-conflict-original.json"
+	conflicting_source_json=$(jq '.aggregated_sources[0].merge = "5555555555555555555555555555555555555555"' \
+		<<<"$conflict_source_json")
+	if _full_loop_validate_release_candidates test/repo "$conflicting_source_json" \
+		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" v1.2.5 "$conflict_tag_commit" >/dev/null 2>&1; then
+		printf 'FAIL conflicting receipt-conflict replay replaced immutable evidence\n'
+		exit 1
+	fi
+)
+printf 'PASS published aggregate reconciliation preserves terminal no-release receipts\n'
 
 legacy_source_json_file="${TEST_ROOT}/legacy-source.json"
 (
@@ -464,8 +546,18 @@ printf 'PASS remote and protected-source provenance verification run from the de
 _full_loop_validate_release_candidates() {
 	local repo="$1"
 	local source_json="$2"
-	[[ -n "$repo" && -n "$source_json" ]]
+	local mode="$3"
+	local tag_name="$4"
+	local tag_commit="$5"
+	[[ -n "$repo" && -n "$source_json" && "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
+	[[ "$tag_name" == "v1.2.3" && "$tag_commit" == "3333333333333333333333333333333333333333" ]]
 	return $?
+}
+_full_loop_release_resolve_tag_commit() {
+	local tag_name="$1"
+	[[ "$tag_name" == "v1.2.3" ]] || return 1
+	printf '%s\n' '3333333333333333333333333333333333333333'
+	return 0
 }
 _full_loop_persist_release_success() {
 	local repo="$1"
@@ -473,8 +565,10 @@ _full_loop_persist_release_success() {
 	local source_json="$3"
 	local source_pr="$4"
 	local source_merge="$5"
-	printf '%s|%s|%s|%s|%s\n' \
-		"$repo" "$release_path" "$source_json" "$source_pr" "$source_merge" \
+	local mode="$6"
+	[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
+	printf '%s|%s|%s|%s|%s|%s\n' \
+		"$repo" "$release_path" "$source_json" "$source_pr" "$source_merge" "$mode" \
 		>"$FAKE_PERSIST_LOG"
 	return 0
 }

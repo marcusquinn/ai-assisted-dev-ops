@@ -782,6 +782,7 @@ _full_loop_release_finalize_reconciliation() {
 	local source_pr=""
 	local source_merge=""
 	local requested_present=""
+	local tag_commit=""
 	local version_manager=""
 	local deploy_helper=""
 
@@ -791,7 +792,9 @@ _full_loop_release_finalize_reconciliation() {
 	requested_present=$(jq -r --argjson requested "$requested_pr" \
 		'([.source_pr] + [.aggregated_sources[].pr]) | any(. == $requested)' <<<"$source_json") || return 1
 	[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || return 1
-	_full_loop_validate_release_candidates "$repo" "$source_json" || return 1
+	tag_commit=$(_full_loop_release_resolve_tag_commit "$tag_name") || return 1
+	_full_loop_validate_release_candidates "$repo" "$source_json" \
+		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" "$tag_name" "$tag_commit" || return 1
 	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
 	if declare -F release_lane_update_if_owned >/dev/null 2>&1; then
 		release_lane_update_if_owned "$repo" "$requested_pr" "exact-tag-deployment" "$tag_name" || return 1
@@ -811,7 +814,7 @@ _full_loop_release_finalize_reconciliation() {
 			bash "$version_manager" post-release
 	) || return 1
 	_full_loop_persist_release_success "$repo" "$_FULL_LOOP_RELEASE_PATH" "$source_json" \
-		"$source_pr" "$source_merge"
+		"$source_pr" "$source_merge" "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED"
 	return $?
 }
 
