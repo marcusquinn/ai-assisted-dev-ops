@@ -8,33 +8,43 @@ read-only `adapter.buzz` described in `team-interface-buzz.md`. It generates one
 portable `buzz-team-snapshot` from the canonical aidevops roster. Fourteen
 imported members use the full `aidevops-interactive-v1` OpenCode runtime while
 Private AI uses the reviewed `buzz-agent`/`relay-mesh`/`auto` shared-compute
-route. Buzz remains the ingress and identity authority. Import the snapshot with Buzz Desktop's native
+route. When the official LM Studio CLI reports a running local server and exactly
+one loaded LLM, generation adds a separate `private-lm-studio-<host>` member using
+the fail-closed `aidevops-lm-studio-v1` runtime. Buzz remains the ingress and
+identity authority. Import the snapshot with Buzz Desktop's native
 preview-and-confirm flow, or queue the same preview through the optional local
 owner-review broker. The helper never confirms an import, reads Buzz credentials,
-edits Buzz identity/team stores, selects a model/provider, or calls a relay.
+edits Buzz identity/team stores, downloads or loads a model, or calls a relay.
 
 The earlier `aidevops-conversation-v1` runtime remains available as a read-only
 diagnostic profile. Team snapshots do not select it.
 
 ## Generate and inspect
 
-Generate a mode-0600 snapshot for inspection:
+Generate a mode-0600 snapshot in the user-facing Downloads folder:
 
 ```bash
-~/.aidevops/agents/scripts/buzz-team-provision-helper.sh generate \
-  --output "$HOME/aidevops.team.json"
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh generate
 ```
+
+The default path is `~/Downloads/aidevops.team.json`. Use `--output FILE` for a
+different reviewed destination or `--stdout` for an explicit pipeline. Internal
+`.agent-workspace` storage remains reserved for `submit`'s ephemeral broker file
+and other headless/pipeline artifacts.
 
 Generation resolves `.agents/scripts/team-interface-agent-roster.py`; the roster
 remains the only discovery and stable-identity source. Current output contains
 14 primary specialists and the framework guide, sorted by display name in the
 **AI DevOps** team. Additions, removals, workload tiers, source references, and
 source digests flow from canonical discovery rather than a duplicated provider
-list.
+list. The optional LM Studio member is derived from the canonical Private AI
+source without becoming a second roster entry.
 
 Member names use lowercase dashed `role-host` identifiers so mentions reveal the
 provisioning host. The host suffix is not proof of local or on-device execution;
-Private AI uses shared compute. On macOS, generation normalizes the
+Private AI uses shared compute. The separately named LM Studio member represents
+local inference only when its runtime revalidates the loopback server and loaded
+model. On macOS, generation normalizes the
 system `LocalHostName`; for example, `Marcus-MacBook-Pro-01` produces
 `aidevops-marcus-macbook-pro-01`, `build-plus-marcus-macbook-pro-01`, and
 `seo-marcus-macbook-pro-01`. Use `--host-slug NAME` only for an explicit stable
@@ -46,9 +56,13 @@ a reviewed logical runtime requirement, and a pointer containing
 the deployment-relative `agents:<filename>` source, exact source digest, and
 portable workload tier. Canonical instruction bodies, absolute paths, models,
 providers, commands, environment values, relay URLs, identities, auth tags,
-private keys, and memory are excluded. Private AI alone includes reviewed
+private keys, and memory are excluded. Private AI includes reviewed
 `provider: relay-mesh` and `model: auto` fields with `runtime: buzz-agent`; the
-other fourteen members omit provider/model and use `aidevops-interactive-v1`.
+other fourteen baseline members omit provider/model and use
+`aidevops-interactive-v1`. When ready, Private LM Studio includes the exact
+loaded identifier with `provider: openai` and `runtime: aidevops-lm-studio-v1`.
+No endpoint, placeholder API key, command, environment value, or LM Studio
+credential enters the portable snapshot.
 
 The avatar geometry matches the canonical circular terminal-prompt avatar from
 the aidevops website. A reviewed hue is assigned by stable `agent_id` across the
@@ -68,6 +82,37 @@ Native import does not require the local control broker:
 The preview states that Buzz creates a new team with fresh keypairs. Cancel if
 the roster, owner-only response policy, or `aidevops-interactive-v1` runtime is
 not exactly as expected.
+
+## Enable the optional LM Studio member
+
+LM Studio's supported `lms` interface must report both a running local server and
+a loaded LLM. Application presence alone is insufficient, and embedding models
+do not qualify:
+
+```bash
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh lm-studio-status
+```
+
+If multiple LLMs are loaded, set `AIDEVOPS_LM_STUDIO_MODEL` to one exact loaded
+identifier before generation. Use `--lm-studio required` to fail generation
+instead of producing the 15-member baseline when local inference is not ready;
+use `--lm-studio off` for deterministic pipeline output.
+
+Before importing a snapshot that includes Private LM Studio, quit Buzz and
+install its local runtime beside the interactive runtime:
+
+```bash
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh runtime-install \
+  --project-root "$HOME/Git/aidevops" \
+  --runtime lm-studio
+```
+
+At every launch, `aidevops-buzz-lm-studio-acp` re-runs the bounded CLI checks,
+connects Buzz Agent only to the CLI-reported port on `127.0.0.1`, selects the
+OpenAI-compatible chat route, and uses the reviewed loaded identifier. It fails
+closed if the server stopped, no LLM is loaded, multiple models are ambiguous,
+or the selected model changed. The runtime does not start the server, load a
+model, enable LAN access, or persist an endpoint.
 
 ## Queue Desktop review through the optional broker
 
@@ -169,7 +214,9 @@ is **Aidevops Restricted Conversation V1**.
   `aidevops-interactive-v1` logical runtime, which fails closed until the full
   harness is explicitly registered. Private AI alone uses the reviewed
   `buzz-agent`/`relay-mesh`/`auto` route; shared compute must never be represented
-  as proof of local, private, or on-device execution.
+  as proof of local, private, or on-device execution. The optional Private LM
+  Studio member is the only member that may claim local inference, and only while
+  its runtime revalidates the loopback server and exact loaded LLM.
 - The full runtime preserves the normal aidevops permission profile and native
   compaction; it does not turn a Buzz message into destructive, billing,
   publication, release, credential, or administrator authority. Those actions
@@ -195,6 +242,7 @@ is **Aidevops Restricted Conversation V1**.
 
 ```bash
 node --test .agents/scripts/tests/test-team-interface-buzz-team-snapshot.mjs
+node --test .agents/scripts/tests/test-team-interface-buzz-lm-studio.mjs
 node --test .agents/scripts/tests/test-team-interface-buzz-runtime.mjs
 node --test .agents/scripts/tests/test-team-interface-acp-cwd-proxy.mjs
 node --test .agents/scripts/tests/test-team-interface-buzz-worktree.mjs
@@ -204,6 +252,7 @@ node --test .agents/scripts/tests/test-team-interface-agent-roster.mjs
 node --test .agents/scripts/tests/test-team-interface-buzz-adapter.mjs
 shellcheck .agents/bin/aidevops-buzz-acp \
   .agents/bin/aidevops-buzz-acp-interactive \
+  .agents/bin/aidevops-buzz-lm-studio-acp \
   .agents/scripts/buzz-team-provision-helper.sh \
   .agents/scripts/team-interface-buzz-worktree.sh
 .agents/scripts/linters-local.sh --changed

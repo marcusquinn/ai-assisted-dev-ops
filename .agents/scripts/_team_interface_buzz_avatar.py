@@ -28,6 +28,7 @@ AVATAR_HUE_BY_AGENT_ID = {
     "agent.legal": 242,
     "agent.marketing-sales": 10,
     "agent.pr": 139,
+    "agent.private-lm-studio": 205,
     "agent.private-local-ai": 190,
     "agent.product": 268,
     "agent.reports": 36,

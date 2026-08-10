@@ -1,0 +1,9 @@
+{
+  "args": [],
+  "command": "aidevops-buzz-lm-studio-acp",
+  "env": {},
+  "id": "aidevops-lm-studio-v1",
+  "installHint": "Installed by aidevops when LM Studio has a running local server and loaded LLM.",
+  "installInstructionsUrl": "https://aidevops.sh/docs",
+  "label": "Aidevops Local LM Studio V1"
+}

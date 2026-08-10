@@ -6,7 +6,6 @@
 
 import argparse
 import importlib.util
-import json
 import os
 from pathlib import Path
 import re
@@ -18,6 +17,18 @@ import sys
 import tempfile
 
 from _team_interface_buzz_avatar import member_avatar_data_url
+from _team_interface_buzz_lm_studio_member import (
+    LMStudioMemberError,
+    build_lm_studio_member,
+    resolve_lm_studio_status,
+)
+from _team_interface_buzz_snapshot_io import (
+    SnapshotIOError,
+    atomic_write,
+    downloads_output_path as resolve_downloads_output_path,
+    serialized_snapshot,
+    validate_output_path as validate_snapshot_output_path,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -29,7 +40,6 @@ BUZZ_TEAM_FORMAT = "buzz-team-snapshot"
 BUZZ_AGENT_FORMAT = "buzz-agent-snapshot"
 FORMAT_VERSION = 1
 CLI_TIMEOUT_SECONDS = 30
-MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
 AIDEVOPS_RUNTIME_ID = "aidevops-interactive-v1"
 PRIVATE_AGENT_ID = "agent.private-local-ai"
 PRIVATE_RUNTIME_ID = "buzz-agent"
@@ -166,8 +176,8 @@ def build_member(record, host_slug):
     }
 
 
-def build_team_snapshot(agents_dir, host_slug=None):
-    """Resolve the canonical roster and build one deterministic team snapshot."""
+def build_team_snapshot_with_status(agents_dir, host_slug=None, lm_studio_mode="auto"):
+    """Build one snapshot plus its bounded optional LM Studio detection result."""
     resolved_host_slug = resolve_host_slug(host_slug)
     roster_module = load_roster_module()
     roster = roster_module.build_roster(agents_dir)
@@ -186,9 +196,25 @@ def build_team_snapshot(agents_dir, host_slug=None):
         roster["agents"],
         key=lambda record: (buzz_display_name(record, resolved_host_slug), record["agent_id"]),
     )
-    return {
+    members = [build_member(record, resolved_host_slug) for record in records]
+    lm_studio_status = resolve_lm_studio_status(lm_studio_mode)
+    if lm_studio_status["ready"]:
+        private_record = next(record for record in records if record["agent_id"] == PRIVATE_AGENT_ID)
+        members.append(
+            build_lm_studio_member(
+                private_record,
+                resolved_host_slug,
+                lm_studio_status["model"],
+                BUZZ_AGENT_FORMAT,
+                FORMAT_VERSION,
+            )
+        )
+    members.sort(key=lambda member: member["profile"]["displayName"])
+    if len(members) != len({member["profile"]["displayName"] for member in members}):
+        raise ProvisioningError("generated snapshot contains duplicate Buzz display names")
+    snapshot = {
         "format": BUZZ_TEAM_FORMAT,
-        "members": [build_member(record, resolved_host_slug) for record in records],
+        "members": members,
         "team": {
             "description": "Canonical aidevops specialists generated from the installed roster.",
             "instructions": (
@@ -197,52 +223,34 @@ def build_team_snapshot(agents_dir, host_slug=None):
                 "verification, isolated persistent worktree and session storage, and Buzz "
                 "credential separation. Private AI uses reviewed Buzz shared-compute routing, "
                 "which does not prove local or on-device execution. Buzz access policy controls "
-                "ingress; aidevops security, approval, destructive-operation, publication, and "
+                "ingress. When present, Private LM Studio uses only the runtime-revalidated "
+                "loopback server and loaded model. "
+                "Aidevops security, approval, destructive-operation, publication, and "
                 "release rules remain authoritative."
             ),
             "name": TEAM_NAME,
         },
         "version": FORMAT_VERSION,
     }
+    return snapshot, lm_studio_status
 
 
-def serialized_snapshot(snapshot):
-    """Return stable pretty-printed UTF-8 JSON bytes."""
-    payload = (json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    if len(payload) > MAX_SNAPSHOT_BYTES:
-        raise ProvisioningError("generated Buzz team snapshot exceeds the 5 MiB decoded limit")
-    return payload
+def build_team_snapshot(agents_dir, host_slug=None, lm_studio_mode="auto"):
+    """Resolve the canonical roster and build one deterministic team snapshot."""
+    snapshot, _status = build_team_snapshot_with_status(agents_dir, host_slug, lm_studio_mode)
+    return snapshot
 
 
 def validate_output_path(output_path, agents_dir):
     """Validate an explicit caller-owned output without following a target symlink."""
-    expanded = Path(os.path.expanduser(output_path))
-    if expanded.is_symlink():
-        raise ProvisioningError("output must not replace a symbolic link")
-    parent = expanded.parent.resolve()
-    if not parent.is_dir():
-        raise ProvisioningError("output parent directory is unavailable")
-    resolved = parent / expanded.name
-    load_roster_module().ensure_output_is_not_source(resolved, agents_dir)
-    return resolved
+    source_guard = load_roster_module().ensure_output_is_not_source
+    return validate_snapshot_output_path(output_path, agents_dir, source_guard)
 
 
-def atomic_write(output_path, payload):
-    """Atomically replace one explicit output with an owner-only regular file."""
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{output_path.name}.", dir=output_path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        descriptor = -1
-        os.replace(temporary_path, output_path)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        temporary_path.unlink(missing_ok=True)
+def downloads_output_path(agents_dir):
+    """Resolve the user-facing native-import destination under Downloads."""
+    source_guard = load_roster_module().ensure_output_is_not_source
+    return resolve_downloads_output_path(agents_dir, source_guard)
 
 
 def resolve_buzz_cli():
@@ -294,9 +302,13 @@ def require_private_temp_root():
     return root
 
 
-def submit_snapshot(agents_dir, host_slug=None):
+def submit_snapshot(agents_dir, host_slug=None, lm_studio_mode="auto"):
     """Queue one generated snapshot for explicit owner review in Buzz Desktop."""
-    payload = serialized_snapshot(build_team_snapshot(agents_dir, host_slug))
+    snapshot, lm_studio_status = build_team_snapshot_with_status(
+        agents_dir, host_slug, lm_studio_mode
+    )
+    report_lm_studio_status(lm_studio_status)
+    payload = serialized_snapshot(snapshot)
     cli = resolve_buzz_cli()
     run_buzz_cli(cli, ["desktop", "status"])
     temp_root = require_private_temp_root()
@@ -316,14 +328,35 @@ def parse_args(argv=None):
     generate = commands.add_parser("generate", help="generate a deterministic team snapshot")
     generate.add_argument("--agents-dir", default=DEFAULT_AGENTS_DIR)
     generate.add_argument("--host-slug")
-    generate.add_argument("--output", help="optional atomic mode-600 output path")
+    generate.add_argument(
+        "--lm-studio",
+        choices=("auto", "off", "required"),
+        default=os.environ.get("AIDEVOPS_BUZZ_LM_STUDIO", "auto"),
+    )
+    destination = generate.add_mutually_exclusive_group()
+    destination.add_argument("--output", help="atomic mode-600 output path")
+    destination.add_argument("--downloads", action="store_true", help="write to ~/Downloads")
+    destination.add_argument("--stdout", action="store_true", help="write JSON to stdout")
 
     commands.add_parser("status", help="check the local Buzz Desktop broker")
 
     submit = commands.add_parser("submit", help="queue a generated snapshot for Desktop review")
     submit.add_argument("--agents-dir", default=DEFAULT_AGENTS_DIR)
     submit.add_argument("--host-slug")
+    submit.add_argument(
+        "--lm-studio",
+        choices=("auto", "off", "required"),
+        default=os.environ.get("AIDEVOPS_BUZZ_LM_STUDIO", "auto"),
+    )
     return parser.parse_args(argv)
+
+
+def report_lm_studio_status(status_value):
+    """Report why the optional local member was included or skipped."""
+    if status_value["ready"]:
+        print(f"LM Studio member included with loaded model: {status_value['model']}", file=sys.stderr)
+    else:
+        print(f"LM Studio member skipped: {status_value['reason']}", file=sys.stderr)
 
 
 def main(argv=None):
@@ -338,13 +371,23 @@ def main(argv=None):
         raise ProvisioningError(f"agents directory does not exist: {args.agents_dir}")
 
     if args.command == "submit":
-        submit_snapshot(agents_dir, args.host_slug)
+        submit_snapshot(agents_dir, args.host_slug, args.lm_studio)
         return 0
 
-    payload = serialized_snapshot(build_team_snapshot(agents_dir, args.host_slug))
+    snapshot, lm_studio_status = build_team_snapshot_with_status(
+        agents_dir, args.host_slug, args.lm_studio
+    )
+    report_lm_studio_status(lm_studio_status)
+    payload = serialized_snapshot(snapshot)
     if args.output:
         output_path = validate_output_path(args.output, agents_dir)
         atomic_write(output_path, payload)
+        print(f"Generated Buzz team snapshot: {output_path}", file=sys.stderr)
+        return 0
+    if args.downloads:
+        output_path = downloads_output_path(agents_dir)
+        atomic_write(output_path, payload)
+        print(f"Generated Buzz team snapshot: {output_path}", file=sys.stderr)
         return 0
     sys.stdout.buffer.write(payload)
     return 0
@@ -353,6 +396,6 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, ProvisioningError, ValueError) as error:
+    except (LMStudioMemberError, OSError, ProvisioningError, SnapshotIOError, ValueError) as error:
         print(f"team-interface-buzz-team-snapshot: {error}", file=sys.stderr)
         raise SystemExit(1) from error

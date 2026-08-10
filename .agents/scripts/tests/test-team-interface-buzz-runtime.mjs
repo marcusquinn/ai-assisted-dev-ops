@@ -17,6 +17,10 @@ const interactiveRuntimeWrapper = path.join(
   agentsDirectory,
   "bin/aidevops-buzz-acp-interactive",
 );
+const lmStudioRuntimeWrapper = path.join(
+  agentsDirectory,
+  "bin/aidevops-buzz-lm-studio-acp",
+);
 const snapshotGenerator = path.join(
   agentsDirectory,
   "scripts/team-interface-buzz-team-snapshot.py",
@@ -28,6 +32,10 @@ const canonicalManifest = path.join(
 const interactiveCanonicalManifest = path.join(
   agentsDirectory,
   "configs/buzz-runtime-aidevops-interactive-v1.json",
+);
+const lmStudioCanonicalManifest = path.join(
+  agentsDirectory,
+  "configs/buzz-runtime-aidevops-lm-studio-v1.json",
 );
 const opencodeNodeModules = path.join(os.homedir(), ".config/opencode/node_modules");
 
@@ -97,9 +105,14 @@ try {
     stableBinDirectory,
     "aidevops-buzz-acp-interactive",
   );
+  const stableLmStudioRuntimeCommand = path.join(
+    stableBinDirectory,
+    "aidevops-buzz-lm-studio-acp",
+  );
   fs.mkdirSync(stableBinDirectory, {recursive: true, mode: 0o700});
   fs.symlinkSync(runtimeWrapper, stableRuntimeCommand);
   fs.symlinkSync(interactiveRuntimeWrapper, stableInteractiveRuntimeCommand);
+  fs.symlinkSync(lmStudioRuntimeWrapper, stableLmStudioRuntimeCommand);
   fs.mkdirSync(projectRoot, {mode: 0o700});
   requireSuccess(
     spawnSync("/usr/bin/git", ["-C", projectRoot, "init", "--quiet"], {encoding: "utf8"}),
@@ -274,6 +287,14 @@ try {
   assert.equal(interactiveSourceManifest.label, "Aidevops Full Interactive V1");
   assert.deepEqual(interactiveSourceManifest.env, {});
 
+  const lmStudioSourceManifest = JSON.parse(
+    fs.readFileSync(lmStudioCanonicalManifest, "utf8"),
+  );
+  assert.equal(lmStudioSourceManifest.command, "aidevops-buzz-lm-studio-acp");
+  assert.equal(lmStudioSourceManifest.id, "aidevops-lm-studio-v1");
+  assert.equal(lmStudioSourceManifest.label, "Aidevops Local LM Studio V1");
+  assert.deepEqual(lmStudioSourceManifest.env, {});
+
   const materialized = requireSuccess(
     runHelper(["manifest", "--project-root", projectRoot, "--repos", reposPath], {
       env: {...process.env, HOME: fixtureHome},
@@ -305,6 +326,26 @@ try {
   assert.equal(interactiveMaterializedManifest.command, stableInteractiveRuntimeCommand);
   assert.equal(interactiveMaterializedManifest.id, "aidevops-interactive-v1");
   assert.deepEqual(interactiveMaterializedManifest.env, {
+    AIDEVOPS_BUZZ_PROJECT_ROOT: projectRoot,
+    BUZZ_ACP_CWD: projectRoot,
+  });
+
+  const lmStudioMaterialized = requireSuccess(
+    runHelper([
+      "manifest",
+      "--runtime",
+      "lm-studio",
+      "--project-root",
+      projectRoot,
+      "--repos",
+      reposPath,
+    ], {env: {...process.env, HOME: fixtureHome}}),
+    "LM Studio runtime manifest materialization",
+  );
+  const lmStudioMaterializedManifest = JSON.parse(lmStudioMaterialized.stdout);
+  assert.equal(lmStudioMaterializedManifest.command, stableLmStudioRuntimeCommand);
+  assert.equal(lmStudioMaterializedManifest.id, "aidevops-lm-studio-v1");
+  assert.deepEqual(lmStudioMaterializedManifest.env, {
     AIDEVOPS_BUZZ_PROJECT_ROOT: projectRoot,
     BUZZ_ACP_CWD: projectRoot,
   });
@@ -370,6 +411,30 @@ try {
     AIDEVOPS_REMOTE_REQUIRE_PINNED_RUNTIME: "1",
     BUZZ_ACP_CWD: projectRoot,
   });
+
+  requireSuccess(
+    runHelper([
+      "install",
+      "--runtime",
+      "lm-studio",
+      "--project-root",
+      projectRoot,
+      "--repos",
+      reposPath,
+      "--app-data-dir",
+      appDataDirectory,
+    ], {env: installEnvironment}),
+    "LM Studio runtime installation",
+  );
+  const installedLmStudioPath = path.join(
+    appDataDirectory,
+    "custom_harnesses/aidevops-lm-studio-v1.json",
+  );
+  assert.equal(fs.statSync(installedLmStudioPath).mode & 0o777, 0o600);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(installedLmStudioPath, "utf8")),
+    lmStudioMaterializedManifest,
+  );
   const anchorMarker = JSON.parse(fs.readFileSync(
     path.join(runtimeAnchor, "buzz-runtime-anchor-v1.json"),
     "utf8",

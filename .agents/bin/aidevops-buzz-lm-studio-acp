@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="${AIDEVOPS_PYTHON_BIN:-python3}"
+
+exec "$PYTHON_BIN" "${SCRIPT_DIR}/../scripts/team-interface-buzz-lm-studio.py" exec -- "$@"

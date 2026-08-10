@@ -16,7 +16,11 @@ const helper = path.join(repositoryRoot, ".agents/scripts/buzz-team-provision-he
 function runGenerator(argumentsList, options = {}) {
   return spawnSync("python3", [generator, ...argumentsList], {
     encoding: "utf8",
-    env: {...process.env, AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01"},
+    env: {
+      ...process.env,
+      AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01",
+      AIDEVOPS_BUZZ_LM_STUDIO: "off",
+    },
     ...options,
   });
 }
@@ -188,6 +192,44 @@ try {
     new Set(fixtureFirst.members.map(({profile}) => profile.avatarDataUrl)).size,
     fixtureFirst.members.length,
   );
+
+  const mockLms = path.join(fixtureRoot, "lms-mock.sh");
+  fs.writeFileSync(mockLms, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2 \${3:-} \${4:-}" == "server status --json --quiet" ]]; then
+  printf '%s\n' '{"running":true,"port":1234}'
+  exit 0
+fi
+if [[ "$1 $2" == "ps --json" ]]; then
+  printf '%s\n' '[{"type":"llm","identifier":"local/tool-model"}]'
+  exit 0
+fi
+exit 9
+`);
+  fs.chmodSync(mockLms, 0o700);
+  const localSnapshot = requireSuccess(
+    runGenerator(
+      ["generate", "--agents-dir", agentsDirectory, "--lm-studio", "required"],
+      {
+        env: {
+          ...process.env,
+          AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01",
+          AIDEVOPS_LM_STUDIO_CLI: mockLms,
+        },
+      },
+    ),
+    "LM Studio snapshot generation",
+  );
+  const localMember = localSnapshot.members.find(
+    ({profile}) => profile.displayName === "private-lm-studio-test-host-01",
+  );
+  assert.ok(localMember, "ready LM Studio did not add its separate local member");
+  assert.equal(localMember.definition.runtime, "aidevops-lm-studio-v1");
+  assert.equal(localMember.definition.provider, "openai");
+  assert.equal(localMember.definition.model, "local/tool-model");
+  assert.match(localMember.definition.systemPrompt, /loopback-only LM Studio server/);
+  assert.doesNotMatch(JSON.stringify(localMember), /127\.0\.0\.1|localhost|OPENAI_COMPAT/);
+  assert.equal(localSnapshot.members.length, fixtureFirst.members.length + 1);
   assert.match(
     fixtureFirst.members.find(
       ({profile}) => profile.displayName === "automate-test-host-01",
@@ -221,6 +263,31 @@ try {
   assert.equal(outputResult.status, 0, outputResult.stderr);
   assert.equal(fs.statSync(outputPath).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, "utf8")), changed);
+
+  const downloadsDirectory = path.join(fixtureRoot, "Downloads");
+  fs.mkdirSync(downloadsDirectory, {mode: 0o700});
+  const defaultDownload = spawnSync(
+    helper,
+    ["generate", "--agents-dir", agentsDirectory, "--host-slug", "test-host-01", "--lm-studio", "off"],
+    {
+      encoding: "utf8",
+      env: {...process.env, AIDEVOPS_DOWNLOADS_DIR: downloadsDirectory},
+    },
+  );
+  assert.equal(defaultDownload.status, 0, defaultDownload.stderr);
+  assert.equal(defaultDownload.stdout, "", "interactive helper default must not dump JSON to stdout");
+  const downloadedSnapshotPath = path.join(downloadsDirectory, "aidevops.team.json");
+  assert.equal(fs.statSync(downloadedSnapshotPath).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(downloadedSnapshotPath, "utf8")), changed);
+  assert.match(defaultDownload.stderr, /Generated Buzz team snapshot:/);
+
+  const explicitStdout = spawnSync(
+    helper,
+    ["generate", "--agents-dir", agentsDirectory, "--host-slug", "test-host-01", "--lm-studio", "off", "--stdout"],
+    {encoding: "utf8", env: process.env},
+  );
+  assert.equal(explicitStdout.status, 0, explicitStdout.stderr);
+  assert.deepEqual(JSON.parse(explicitStdout.stdout), changed);
 
   const symlinkPath = path.join(fixtureRoot, "snapshot-link.json");
   fs.symlinkSync(outputPath, symlinkPath);
@@ -259,6 +326,7 @@ printf '{"queued":true}\\n'
         ...process.env,
         AIDEVOPS_BUZZ_CLI: mockBuzz,
         AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01",
+        AIDEVOPS_BUZZ_LM_STUDIO: "off",
         AIDEVOPS_TEMP_DIR: managedTemp,
         MOCK_BUZZ_LOG: brokerLog,
         MOCK_BUZZ_SNAPSHOT: brokerSnapshot,
@@ -283,6 +351,7 @@ printf '{"queued":true}\\n'
         ...process.env,
         AIDEVOPS_BUZZ_CLI: mockBuzz,
         AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01",
+        AIDEVOPS_BUZZ_LM_STUDIO: "off",
         AIDEVOPS_TEMP_DIR: managedTemp,
         MOCK_BUZZ_FAIL_STATUS: "1",
         MOCK_BUZZ_LOG: brokerLog,

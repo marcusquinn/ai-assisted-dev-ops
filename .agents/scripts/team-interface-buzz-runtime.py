@@ -40,6 +40,11 @@ RUNTIME_PROFILES = {
         "id": "aidevops-interactive-v1",
         "manifest": AGENTS_DIR / "configs" / "buzz-runtime-aidevops-interactive-v1.json",
     },
+    "lm-studio": {
+        "command": "aidevops-buzz-lm-studio-acp",
+        "id": "aidevops-lm-studio-v1",
+        "manifest": AGENTS_DIR / "configs" / "buzz-runtime-aidevops-lm-studio-v1.json",
+    },
 }
 EXPECTED_MANIFEST_KEYS = {
     "args",
