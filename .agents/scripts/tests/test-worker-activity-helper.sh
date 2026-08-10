@@ -165,12 +165,12 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 #                      missing, but historical != null and != "" semantics
 #                      counted false as a non-empty runtime error marker.
 {
-	printf '{"ts":%d,"role":"worker","session_key":"issue-1","result":"success","exit_code":0,"duration_ms":1000,"load_1min":2.0,"load_per_cpu":0.25}\n' "$T_5MIN_AGO"
+	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-a","session_key":"issue-1","result":"success","exit_code":0,"duration_ms":1000,"load_1min":2.0,"load_per_cpu":0.25}\n' "$T_5MIN_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-2","result":"success","exit_code":0}\n' "$T_2H_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-3","session_id":"ses_3","issue_number":22349,"repo_slug":"marcusquinn/aidevops","work_dir":"/tmp/wt-3","output_file":"/tmp/excerpt-3.log","result":"watchdog_stall_killed","failure_reason":"watchdog_stall_killed","launch_failure_cause":"stall_hard_killed","kill_reason":"hard_kill_stall","next_action":"redispatch_worker","exit_code":79}\n' "$T_2H_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-4","result":"watchdog_stall_continue","exit_code":0}\n' "$T_5MIN_AGO"
-	printf '{"ts":%d,"role":"worker","session_key":"issue-5","model":"openai/gpt-5.5","provider":"openai","result":"rate_limit","failure_reason":"rate_limit","provider_error_type":"rate_limit","provider_status":"429","classification_source":"output_pattern","classification_pattern":"rate_limit|rate_limit|429|too_many_requests|quota_exceeded","exit_code":1}\n' "$T_2H_AGO"
-	printf '{"ts":%d,"role":"worker","session_key":"issue-6","model":"openai/gpt-5.5","provider":"openai","result":"provider_error","failure_reason":"provider_error","provider_error_type":"server_error","provider_status":"500","classification_source":"output_pattern","classification_pattern":"server_error|5xx|connection_failure|overloaded","launch_failure_cause":"provider_error","next_action":"inspect_failure_excerpt","exit_code":2}\n' "$T_2H_AGO"
+	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-b","session_key":"issue-5","model":"openai/gpt-5.5","provider":"openai","result":"rate_limit","failure_reason":"rate_limit","provider_error_type":"rate_limit","provider_status":"429","classification_source":"output_pattern","classification_pattern":"rate_limit|rate_limit|429|too_many_requests|quota_exceeded","exit_code":1}\n' "$T_2H_AGO"
+	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-a","session_key":"issue-6","model":"openai/gpt-5.5","provider":"openai","result":"provider_error","failure_reason":"provider_error","provider_error_type":"server_error","provider_status":"500","classification_source":"output_pattern","classification_pattern":"server_error|5xx|connection_failure|overloaded","launch_failure_cause":"provider_error","next_action":"inspect_failure_excerpt","exit_code":2}\n' "$T_2H_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-7","result":"success","exit_code":0}\n' "$T_25H_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-8","result":"watchdog_stall_continue","exit_code":124}\n' "$T_2H_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-9","result":"success","exit_code":0}\n' "$T_FUTURE_SENTINEL"
@@ -394,6 +394,10 @@ assert_eq "2k: missing key returns 0" "0" \
 	"$(printf '%s' "$JSON" | jq -r '.pulse_stats.dispatch_backoff_skipped')"
 assert_eq "2l: nwbreaker = 1" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.pulse_stats.pulse_dispatch_no_work_breaker_tripped')"
+assert_eq "2l2: unfiltered metrics declare global scope" "global" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.scope')"
+assert_eq "2l3: unfiltered Pulse counters declare global scope" "global" \
+	"$(printf '%s' "$JSON" | jq -r '.pulse_stats.scope')"
 
 # PR check skipped → null + state=skipped.
 assert_eq "2m: pr count is null when skipped" "null" \
@@ -424,6 +428,34 @@ assert_eq "2w: mismatched PID identity is not treated as a live owner" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-pid-reuse")] | length')"
 assert_eq "2x: legacy PID-only ownership remains unverified" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-legacy")] | length')"
+
+# --repo must scope every repo-attributable runtime surface while keeping
+# unscoped legacy data visible as excluded evidence and Pulse counters global.
+JSON=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 24h --repo example/repo-a --no-pr-check --json 2>&1)
+assert_eq "2y: scoped metrics declare repository scope" "repository" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.scope')"
+assert_eq "2z: scoped raw total contains only repo-a events" "3" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.total')"
+assert_eq "2z1: scoped terminal total contains only repo-a outcomes" "3" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
+assert_eq "2z2: scoped examples contain only repo-a" "0" \
+	"$(printf '%s' "$JSON" | jq -r '[.metrics.recent_examples[] | select(.repo_slug != "example/repo-a")] | length')"
+assert_eq "2z3: scoped failure groups contain only repo-a" "0" \
+	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.repo_slug != "example/repo-a")] | length')"
+assert_eq "2z4: scoped summary discloses unscoped legacy events" "11" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.unscoped_event_total')"
+assert_eq "2z5: scoped summary reports all excluded events" "15" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.excluded_event_total')"
+assert_eq "2z6: scoped Pulse counters remain global" "global" \
+	"$(printf '%s' "$JSON" | jq -r '.pulse_stats.scope')"
+assert_eq "2z6a: scoped blockers declare repository scope" "repository" \
+	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.scope')"
+assert_eq "2z6b: scoped delivery stages declare repository scope" "repository" \
+	"$(printf '%s' "$JSON" | jq -r '.delivery_stages.scope')"
+
+OUT=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 24h --repo example/repo-a --no-pr-check 2>&1)
+assert_contains "2z7: human scoped output distinguishes repository metrics" "repository-scoped metrics" "$OUT"
+assert_contains "2z8: human scoped output labels global Pulse counters" "scope: global" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Section 3: 1h window narrows correctly.
@@ -601,7 +633,7 @@ assert_eq "7e: delivered success uses solved closed issues" "2" \
 	"$(printf '%s' "$JSON" | jq -r '.delivery_stages.delivered_successes')"
 assert_eq "7f: metrics succeeded means delivered success" "2" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.succeeded')"
-assert_eq "7g: runtime handoffs remain distinct from delivery" "5" \
+assert_eq "7g: scoped runtime handoffs remain distinct from delivery" "0" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.runtime_handoffs')"
 assert_contains "7h: issue query uses solved:worker label" "label:solved:worker" \
 	"$(<"$GH_CALL_LOG")"

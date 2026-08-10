@@ -50,6 +50,27 @@ source "$TMP/scripts/privacy-guard-helper.sh"
 
 printf '=== gh public privacy guard tests ===\n\n'
 
+printf '%s\n' '{"initialized_repos":[{"slug":"private/repo","local_only":true}]}' >"$TMP/repos.json"
+printf '%s\n' 'person: Synthetic Private Person' 'client: Synthetic Private Client' >"$TMP/entities.txt"
+PRIVACY_REPOS_CONFIG="$TMP/repos.json"
+PRIVACY_ENTITY_CONFIG="$TMP/entities.txt"
+entities_file="$TMP/private-entities.tsv"
+if privacy_enumerate_private_entities "$entities_file" &&
+	redacted=$(privacy_redact_public_text 'Synthetic Private Person and Synthetic Private Client' "$entities_file") &&
+	[[ "$redacted" == '[private-person] and [private-client]' ]]; then
+	pass "private entity inventory redacts generic placeholders"
+else
+	fail "private entity inventory redacts generic placeholders"
+fi
+
+out=$(privacy_scan_public_text 'Synthetic Private Person' "$entities_file")
+rc=$?
+if [[ "$rc" -eq 1 && "$out" == '[private-person]' ]]; then
+	pass "private person hit does not expose matched value"
+else
+	fail "private person hit is generic" "rc=$rc out=$out"
+fi
+
 out=$(privacy_scan_secret_material_text "Worker guidance: edit .agents/scripts/$ALLOWED_BASENAME" 2>"$TMP/allow-path.err")
 rc=$?
 err=$(<"$TMP/allow-path.err")

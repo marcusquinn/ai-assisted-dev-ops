@@ -144,6 +144,10 @@ export GH_STUB_BODY_FILE="${TMPDIR_TEST}/gh-body.txt"
 
 _test_source_shared_deps "$TMPDIR_TEST" || exit 1
 
+# This unit test isolates signature marker preservation. Public transport
+# de-identification is covered by test-gh-wrapper-public-deidentification.sh.
+privacy_guard_public_write() { return 0; }
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario 1: marker at the top of --body, wrapper appends sig, grep still finds
 # ─────────────────────────────────────────────────────────────────────────────

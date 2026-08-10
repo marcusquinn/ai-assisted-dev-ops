@@ -122,14 +122,14 @@ test_worker_produced_output_branch_no_pr_returns_branch_orphan() {
 	local work_dir="${TEST_ROOT}/repo-orphan"
 	_setup_test_git_repo "$work_dir" 1
 	git -C "$work_dir" push -q origin "feature/auto-test-issue-99999"
-	# Set DISPATCH_REPO_SLUG and stub gh to return 0 PRs
+	# Set DISPATCH_REPO_SLUG and stub the PR-list wrapper to return no PRs.
 	DISPATCH_REPO_SLUG="test-owner/test-repo"
-	gh() { printf '0'; return 0; }
+	gh_pr_list() { printf '[]'; return 0; }
 
 	local classification
 	classification=$(_worker_produced_output "issue-99999" "$work_dir")
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
-	unset -f gh 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 
 	if [[ "$classification" == "branch_orphan" ]]; then
 		print_result "_worker_produced_output returns 'branch_orphan' (commits + branch, no PR)" 0
@@ -145,12 +145,12 @@ test_worker_produced_output_local_branch_no_remote_returns_local_branch_unpushed
 	_setup_test_git_repo "$work_dir" 1
 	# Do not push the feature branch: local commits exist, remote branch absent.
 	DISPATCH_REPO_SLUG="test-owner/test-repo"
-	gh() { printf '0'; return 0; }
+	gh_pr_list() { printf '[]'; return 0; }
 
 	local classification
 	classification=$(_worker_produced_output "issue-99999" "$work_dir")
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
-	unset -f gh 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 
 	if [[ "$classification" == "local_branch_unpushed" ]]; then
 		print_result "_worker_produced_output returns 'local_branch_unpushed' for local-only committed branch" 0
@@ -169,13 +169,15 @@ test_worker_produced_output_branch_with_pr_returns_pr_exists() {
 	DISPATCH_REPO_SLUG="test-owner/test-repo"
 	local expected_head
 	expected_head=$(git -C "$work_dir" rev-parse HEAD)
+	gh_pr_list() {
+		printf '[{"number":123,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]\n' "$expected_head"
+		return 0
+	}
 	gh() {
 		if [[ "${*}" == *"api --paginate"* && "${*}" == *"/issues/123/comments"* ]]; then
 			printf '%s\n' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
-		elif [[ "${*}" == *"--head"* && "${*}" == *"statusCheckRollup"* ]]; then
-			printf '[{"number":123,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]\n' "$expected_head"
 		else
-			printf '%s\n' '[]'
+			return 1
 		fi
 		return 0
 	}
@@ -183,6 +185,7 @@ test_worker_produced_output_branch_with_pr_returns_pr_exists() {
 	local classification
 	classification=$(_worker_produced_output "issue-99999" "$work_dir")
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
 
 	if [[ "$classification" == "pr_exists" ]]; then

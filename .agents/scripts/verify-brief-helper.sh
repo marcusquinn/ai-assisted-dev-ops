@@ -84,14 +84,14 @@ _parse_verify_blocks() {
 
 	while IFS= read -r line; do
 		# Detect start of a yaml fenced block
-		if [[ $in_yaml_block -eq 0 ]] && echo "$line" | grep -qE '^\s*```ya?ml\s*$'; then
+		if [[ $in_yaml_block -eq 0 ]] && echo "$line" | grep -qE '^[[:space:]]*```ya?ml[[:space:]]*$'; then
 			in_yaml_block=1
 			block_content=""
 			continue
 		fi
 
 		# Detect end of fenced block
-		if [[ $in_yaml_block -eq 1 ]] && echo "$line" | grep -qE '^\s*```\s*$'; then
+		if [[ $in_yaml_block -eq 1 ]] && echo "$line" | grep -qE '^[[:space:]]*```[[:space:]]*$'; then
 			in_yaml_block=0
 
 			# Check if block contains verify:
@@ -100,16 +100,16 @@ _parse_verify_blocks() {
 
 				# Extract method (|| true guards against set -e in process substitution)
 				local method=""
-				method=$(echo "$block_content" | grep -oE 'method:\s*\S+' | head -1 | sed 's/method:\s*//' || true)
+				method=$(echo "$block_content" | grep -oE 'method:[[:space:]]*[^[:space:]]+' | head -1 | sed 's/method:[[:space:]]*//' || true)
 
 				# Extract run: value (everything after run: with surrounding quotes stripped)
 				# Handles inline strings and YAML block scalars (| or >)
 				local run_value=""
 				local run_line=""
-				run_line=$(echo "$block_content" | { grep '^\s*run:' || true; } | head -1)
+				run_line=$(echo "$block_content" | { grep '^[[:space:]]*run:' || true; } | head -1)
 				if [[ -n "$run_line" ]]; then
 					local raw_value=""
-					raw_value=$(echo "$run_line" | sed 's/^\s*run:\s*//')
+					raw_value=$(echo "$run_line" | sed 's/^[[:space:]]*run:[[:space:]]*//')
 					# Detect YAML block scalar indicators (| or >)
 					if [[ "$raw_value" == "|" || "$raw_value" == ">" || "$raw_value" == "|-" || "$raw_value" == ">-" ]]; then
 						# Collect indented continuation lines after run:
@@ -118,10 +118,10 @@ _parse_verify_blocks() {
 						local multiline=""
 						while IFS= read -r bline; do
 							if [[ $collecting -eq 1 ]]; then
-								if echo "$bline" | grep -qE '^\s+'; then
+								if echo "$bline" | grep -qE '^[[:space:]]+'; then
 									# Strip common leading whitespace (up to 6 spaces)
 									local stripped=""
-									stripped=$(echo "$bline" | sed 's/^\s\{1,6\}//')
+									stripped=$(echo "$bline" | sed 's/^[[:space:]]\{1,6\}//')
 									if [[ -n "$stripped" ]]; then
 										if [[ -n "$multiline" ]]; then
 											multiline="${multiline}; ${stripped}"
@@ -133,7 +133,7 @@ _parse_verify_blocks() {
 									break
 								fi
 							fi
-							if echo "$bline" | grep -qE '^\s*run:'; then
+							if echo "$bline" | grep -qE '^[[:space:]]*run:'; then
 								collecting=1
 							fi
 						done <<<"$block_content"
@@ -146,7 +146,7 @@ _parse_verify_blocks() {
 
 				# Extract prompt: value (for manual blocks)
 				local prompt_value=""
-				prompt_value=$(echo "$block_content" | { grep '^\s*prompt:' || true; } | head -1 | sed 's/^\s*prompt:\s*//' | sed 's/^"\(.*\)"$/\1/' | sed "s/^'\(.*\)'$/\1/")
+				prompt_value=$(echo "$block_content" | { grep '^[[:space:]]*prompt:' || true; } | head -1 | sed 's/^[[:space:]]*prompt:[[:space:]]*//' | sed 's/^"\(.*\)"$/\1/' | sed "s/^'\(.*\)'$/\1/")
 
 				local value="$run_value"
 				if [[ -z "$value" ]]; then
