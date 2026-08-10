@@ -80,8 +80,20 @@ def _clean_is_read_only(args: list[str]) -> bool:
     )
 
 
+def _bundle_is_read_only(args: list[str]) -> bool:
+    if not args or args[0] != "verify":
+        return False
+    bundle_args = args[1:]
+    if not bundle_args:
+        return False
+    allowed_flags = {"-q", "--quiet"}
+    paths = [arg for arg in bundle_args if arg not in allowed_flags]
+    return len(paths) == 1 and not paths[0].startswith("-")
+
+
 CANONICAL_CHECKS: dict[str, Callable[[list[str]], bool]] = {
     "branch": _branch_is_read_only,
+    "bundle": _bundle_is_read_only,
     "config": _config_is_read_only,
     "clean": _clean_is_read_only,
     **REF_QUERY_CHECKS,

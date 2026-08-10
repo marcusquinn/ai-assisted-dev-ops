@@ -132,6 +132,8 @@ assert_blocked "blocks wrapped canonical switch" "env TEST=1 command git switch 
 assert_blocked "blocks nested absolute Git bypass" "bash -c '/usr/bin/git switch --detach main'"
 assert_blocked "blocks chained canonical mutation" "git status && git branch -M renamed"
 assert_blocked "blocks canonical update-ref plumbing" "/usr/bin/git update-ref refs/heads/main HEAD"
+assert_blocked "blocks canonical bundle creation" "git bundle create '$TEST_ROOT/commits.bundle' HEAD"
+assert_blocked "blocks canonical bundle unbundle" "git bundle unbundle '$TEST_ROOT/commits.bundle'"
 assert_blocked "blocks merge-tree writes in a canonical checkout" \
 	"git merge-tree --write-tree '$INITIAL_HEAD' '$INITIAL_HEAD'"
 assert_blocked "blocks destructive clean with exclude containing n" "git clean --force --exclude=nope"
@@ -197,6 +199,8 @@ assert_allowed "allows canonical symbolic-ref query" "$REPO" "git symbolic-ref r
 assert_allowed "allows canonical short symbolic-ref query" "$REPO" "git symbolic-ref --short refs/remotes/origin/HEAD"
 assert_allowed "allows reordered canonical symbolic-ref query flags" "$REPO" "git symbolic-ref refs/remotes/origin/HEAD --quiet --short"
 assert_allowed "allows canonical non-recursive symbolic-ref query" "$REPO" "git symbolic-ref --no-recurse refs/remotes/origin/HEAD"
+assert_allowed "allows canonical bundle verification" "$REPO" "git bundle verify '$TEST_ROOT/commits.bundle'"
+assert_allowed "allows quiet canonical bundle verification" "$REPO" "git bundle verify --quiet '$TEST_ROOT/commits.bundle'"
 assert_allowed "allows canonical worktree creation" "$REPO" "git worktree add '$LINKED' -b feature/example"
 
 PROSPECTIVE_CONTEXT=$(mktemp -d "${TEST_ROOT}/aidevops-prospective-todo.XXXXXX")
