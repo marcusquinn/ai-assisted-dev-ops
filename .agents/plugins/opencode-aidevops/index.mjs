@@ -85,6 +85,7 @@ import { startCursorProxy, ensureCursorProxyServer } from "./cursor-proxy.mjs";
 import { startGoogleProxy, ensureGoogleProxyServer } from "./google-proxy.mjs";
 import { startClaudeProxy } from "./claude-proxy.mjs";
 import { isHeadless } from "./proxy-lifecycle.mjs";
+import { recordPluginHealthStage } from "./plugin-health.mjs";
 
 // ---------------------------------------------------------------------------
 // Directory constants
@@ -111,6 +112,8 @@ const SCRIPTS_DIR = join(AGENTS_DIR, "scripts");
 const PLUGIN_DIR = join(AGENTS_DIR, "plugins", "opencode-aidevops");
 const WORKSPACE_DIR = join(HOME, ".aidevops", ".agent-workspace");
 const LOGS_DIR = join(HOME, ".aidevops", "logs");
+
+recordPluginHealthStage("imported");
 
 // Keep the immutable bundle backing this process until OpenCode exits. Setup
 // also applies an age floor for sessions started before lease support existed.
@@ -481,6 +484,11 @@ export async function AidevopsPlugin({ directory, client }) {
     }
   };
 
+  recordPluginHealthStage("factory_initialized", {
+    config_hook: true,
+    terminal_title_status: true,
+  });
+
   return {
     // Config: agent index, MCP registration, OAuth pool injection
     config: async (config) => {
@@ -488,7 +496,12 @@ export async function AidevopsPlugin({ directory, client }) {
       // on client.auth.set() inside the config hook. Fire-and-forget so
       // the config hook can complete and the session becomes responsive.
       initPoolAuth(client).catch(() => {});
-      return configHook(config);
+      const result = await configHook(config);
+      recordPluginHealthStage("config_applied", {
+        gpt56_limits: config.provider?.openai?.models?.["gpt-5.6-sol"]?.limit || null,
+        terminal_title_status: true,
+      });
+      return result;
     },
 
     // Custom tools + pool management
