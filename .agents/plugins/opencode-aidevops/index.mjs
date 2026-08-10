@@ -294,6 +294,39 @@ export async function AidevopsPlugin({ directory, client }) {
     return createConversationHooks({client, conversation, directory});
   }
 
+  if (process.env.AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY === "1") {
+    const modelRouting = loadModelRouting([
+      process.env.AIDEVOPS_MODEL_ROUTING_TABLE,
+      join(AGENTS_DIR, "custom", "configs", "model-routing-table.json"),
+      join(AGENTS_DIR, "configs", "model-routing-table.json"),
+    ]);
+    const configHook = createConfigHook({
+      agentsDir: AGENTS_DIR,
+      workspaceDir: WORKSPACE_DIR,
+      pluginDir: PLUGIN_DIR,
+      repositoryDir: directory,
+      conversation,
+      modelRouting,
+      agentRoutingState: { tiers: new Map(), pinned: new Set() },
+    });
+    const sessionTitleStatusHandler = createSessionTitleStatusHandler({ isHeadless });
+    recordPluginHealthStage("factory_initialized", {
+      config_hook: true,
+      terminal_title_status: true,
+    });
+    return {
+      config: async (config) => {
+        const result = await configHook(config);
+        recordPluginHealthStage("config_applied", {
+          gpt56_limits: config.provider?.openai?.models?.["gpt-5.6-sol"]?.limit || null,
+          terminal_title_status: true,
+        });
+        return result;
+      },
+      event: sessionTitleStatusHandler,
+    };
+  }
+
   // Initialise LLM observability
   initObservability({ aidevopsVersion: currentAidevopsVersion() });
 

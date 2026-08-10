@@ -76,6 +76,7 @@ show_status() {
 	if [[ "$configured" == true && -f "$PLUGIN_ENTRY" && ! -L "$PLUGIN_ENTRY" ]]; then
 		if AIDEVOPS_PLUGIN_HEALTH_PROBE_FILE="$probe_file" \
 			AIDEVOPS_PLUGIN_HEALTH_PROBE_NONCE="$probe_nonce" \
+			AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY=1 \
 			"$NODE_BIN" --input-type=module --eval '
 				const plugin = await import(process.argv[1]);
 				const hooks = await plugin.AidevopsPlugin({directory: process.argv[2], client: {}});
