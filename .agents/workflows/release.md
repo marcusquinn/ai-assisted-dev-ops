@@ -124,6 +124,14 @@ tag and channels, and the latest source's terminal published receipt. It never
 dispatches or deploys the stale tag and does not fabricate aggregate provenance.
 See `reference/release-publication-controls.md` "Post-publication supersession".
 
+If a provenance-valid aggregate was already published before reconciliation
+discovers an included PR's terminal `release:not-requested` receipt, preserve
+that receipt unchanged. Reconciliation may finish only after re-verifying the
+signed tag, exact aggregate membership, publication channels, and release
+ancestry; it records detached `receipt-conflict` evidence for that member rather
+than fabricating `release:superseded`. Preparation of any new release continues
+to reject terminal receipts before publication.
+
 **DO NOT** run separate bump/tag/push commands. **Prerequisites**: terminal-success PR checks/reviews, observed merged state/SHA, authenticated `gh`, an accessible aidevops repository, and unreleased changelog content (or changelog-only `--force`). The helper fetches `origin/main` and creates its own detached release worktree; it does not require or mutate a clean canonical checkout.
 
 **Related**: `workflows/version-bump.md` · `workflows/changelog.md` · `workflows/postflight.md` · `reference/release-artifact-provenance.md` · `.agents/scripts/validate-version-consistency.sh`
