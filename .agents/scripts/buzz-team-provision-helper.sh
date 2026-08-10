@@ -20,19 +20,24 @@ usage() {
 		'Usage:' \
 		'  buzz-team-provision-helper.sh status' \
 		'  buzz-team-provision-helper.sh generate [--agents-dir DIR] [--host-slug NAME] [--output FILE|--stdout]' \
+		'  buzz-team-provision-helper.sh generate-lm-studio-agent [--agents-dir DIR] [--host-slug NAME] [--output FILE|--stdout]' \
 		'  buzz-team-provision-helper.sh submit [--agents-dir DIR] [--host-slug NAME]' \
 		'  buzz-team-provision-helper.sh lm-studio-status [--require]' \
 		'  buzz-team-provision-helper.sh runtime-manifest --project-root DIR [--output FILE]' \
 		'  buzz-team-provision-helper.sh runtime-install --project-root DIR [--app-data-dir DIR] [--replace]' \
 		'  Add --runtime interactive or --runtime lm-studio for snapshot runtimes.' \
 		'' \
-		'generate defaults to ~/Downloads/aidevops.team.json; use --stdout for pipelines.' \
+		'generate defaults to ~/Downloads/aidevops.team.json.' \
+		'generate-lm-studio-agent defaults to a host-qualified .agent.json in Downloads.' \
+		'Use --stdout for explicit pipelines.' \
 		'runtime-manifest is local-only. submit queues one deterministic' \
 		'draft for explicit review. runtime-install requires Buzz to be stopped.'
 	return 0
 }
 
 generate_snapshot() {
+	local generator_command="$1"
+	shift
 	local has_destination="false"
 	local argument=""
 	for argument in "$@"; do
@@ -43,10 +48,10 @@ generate_snapshot() {
 		esac
 	done
 	if [[ "$has_destination" == "true" ]]; then
-		"$PYTHON_BIN" "$GENERATOR" generate "$@"
+		"$PYTHON_BIN" "$GENERATOR" "$generator_command" "$@"
 		return $?
 	fi
-	"$PYTHON_BIN" "$GENERATOR" generate "$@" --downloads
+	"$PYTHON_BIN" "$GENERATOR" "$generator_command" "$@" --downloads
 	return $?
 }
 
@@ -63,7 +68,11 @@ main() {
 		return $?
 		;;
 	generate)
-		generate_snapshot "$@"
+		generate_snapshot generate "$@"
+		return $?
+		;;
+	generate-lm-studio-agent)
+		generate_snapshot generate-lm-studio-agent "$@"
 		return $?
 		;;
 	lm-studio-status)

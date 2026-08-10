@@ -98,6 +98,23 @@ identifier before generation. Use `--lm-studio required` to fail generation
 instead of producing the 15-member baseline when local inference is not ready;
 use `--lm-studio off` for deterministic pipeline output.
 
+To add LM Studio after importing the baseline team, generate only its standalone
+agent snapshot:
+
+```bash
+~/.aidevops/agents/scripts/buzz-team-provision-helper.sh generate-lm-studio-agent
+```
+
+This command always requires a running server and one unambiguous loaded LLM. It
+fails without writing an artifact when readiness cannot be proven. The default
+mode-0600 output is
+`~/Downloads/private-lm-studio-<host>.agent.json`; `--output FILE` and
+`--stdout` remain available for reviewed destinations and explicit pipelines.
+In Buzz Desktop, use **Agents** → **Import snapshot** and select the generated
+`.agent.json`. Buzz imports a brand-new agent with a fresh identity; existing
+teams and identities are not modified, and team membership remains a separate
+owner-reviewed Buzz action.
+
 Before importing a snapshot that includes Private LM Studio, quit Buzz and
 install its local runtime beside the interactive runtime:
 

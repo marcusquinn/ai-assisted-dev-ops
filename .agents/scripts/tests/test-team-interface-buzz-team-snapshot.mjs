@@ -230,6 +230,33 @@ exit 9
   assert.match(localMember.definition.systemPrompt, /loopback-only LM Studio server/);
   assert.doesNotMatch(JSON.stringify(localMember), /127\.0\.0\.1|localhost|OPENAI_COMPAT/);
   assert.equal(localSnapshot.members.length, fixtureFirst.members.length + 1);
+  const standaloneLocalMember = requireSuccess(
+    runGenerator(
+      ["generate-lm-studio-agent", "--agents-dir", agentsDirectory],
+      {
+        env: {
+          ...process.env,
+          AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01",
+          AIDEVOPS_LM_STUDIO_CLI: mockLms,
+        },
+      },
+    ),
+    "standalone LM Studio agent snapshot generation",
+  );
+  assert.equal(standaloneLocalMember.format, "buzz-agent-snapshot");
+  assert.equal(standaloneLocalMember.version, 1);
+  assert.equal(standaloneLocalMember.profile.displayName, "private-lm-studio-test-host-01");
+  assert.equal(standaloneLocalMember.definition.runtime, "aidevops-lm-studio-v1");
+  assert.equal(standaloneLocalMember.definition.provider, "openai");
+  assert.equal(standaloneLocalMember.definition.model, "local/tool-model");
+  assert.equal(standaloneLocalMember.definition.respondTo, "owner-only");
+  assert.equal("members" in standaloneLocalMember, false);
+  assert.equal("team" in standaloneLocalMember, false);
+  assert.deepEqual(standaloneLocalMember, localMember);
+  assert.doesNotMatch(
+    JSON.stringify(standaloneLocalMember),
+    /127\.0\.0\.1|localhost|OPENAI_COMPAT|private_key|auth_tag|relay_url/i,
+  );
   assert.match(
     fixtureFirst.members.find(
       ({profile}) => profile.displayName === "automate-test-host-01",
@@ -280,6 +307,57 @@ exit 9
   assert.equal(fs.statSync(downloadedSnapshotPath).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(fs.readFileSync(downloadedSnapshotPath, "utf8")), changed);
   assert.match(defaultDownload.stderr, /Generated Buzz team snapshot:/);
+
+  const standaloneDownload = spawnSync(
+    helper,
+    ["generate-lm-studio-agent", "--agents-dir", agentsDirectory, "--host-slug", "test-host-01"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        AIDEVOPS_DOWNLOADS_DIR: downloadsDirectory,
+        AIDEVOPS_LM_STUDIO_CLI: mockLms,
+      },
+    },
+  );
+  assert.equal(standaloneDownload.status, 0, standaloneDownload.stderr);
+  assert.equal(standaloneDownload.stdout, "", "interactive standalone helper must not dump JSON");
+  const downloadedAgentPath = path.join(
+    downloadsDirectory,
+    "private-lm-studio-test-host-01.agent.json",
+  );
+  assert.equal(fs.statSync(downloadedAgentPath).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(fs.readFileSync(downloadedAgentPath, "utf8")), standaloneLocalMember);
+  assert.match(standaloneDownload.stderr, /Generated Buzz LM Studio agent snapshot:/);
+
+  const unreadyLms = path.join(fixtureRoot, "lms-unready-mock.sh");
+  fs.writeFileSync(unreadyLms, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1 $2 \${3:-} \${4:-}" == "server status --json --quiet" ]]; then
+  printf '%s\n' '{"running":false}'
+  exit 0
+fi
+exit 9
+`);
+  fs.chmodSync(unreadyLms, 0o700);
+  const unavailableOutput = path.join(fixtureRoot, "unavailable.agent.json");
+  const unavailableStandalone = runGenerator(
+    [
+      "generate-lm-studio-agent",
+      "--agents-dir", agentsDirectory,
+      "--output", unavailableOutput,
+    ],
+    {
+      env: {
+        ...process.env,
+        AIDEVOPS_BUZZ_HOST_SLUG: "test-host-01",
+        AIDEVOPS_LM_STUDIO_CLI: unreadyLms,
+      },
+    },
+  );
+  assert.notEqual(unavailableStandalone.status, 0);
+  assert.match(unavailableStandalone.stderr, /LM Studio is required but unavailable/);
+  assert.equal(fs.existsSync(unavailableOutput), false, "unready LM Studio must write no artifact");
 
   const explicitStdout = spawnSync(
     helper,

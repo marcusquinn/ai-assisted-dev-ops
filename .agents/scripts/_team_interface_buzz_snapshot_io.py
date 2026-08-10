@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serialize and atomically write aidevops Buzz team snapshots."""
+"""Serialize and atomically write aidevops Buzz snapshots."""
 
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
@@ -21,7 +21,7 @@ def serialized_snapshot(snapshot):
     """Return stable pretty-printed UTF-8 JSON bytes."""
     payload = (json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if len(payload) > MAX_SNAPSHOT_BYTES:
-        raise SnapshotIOError("generated Buzz team snapshot exceeds the 5 MiB decoded limit")
+        raise SnapshotIOError("generated Buzz snapshot exceeds the 5 MiB decoded limit")
     return payload
 
 
@@ -38,16 +38,16 @@ def validate_output_path(output_path, agents_dir, ensure_output_is_not_source):
     return resolved
 
 
-def downloads_output_path(agents_dir, ensure_output_is_not_source):
+def downloads_output_path(agents_dir, ensure_output_is_not_source, filename="aidevops.team.json"):
     """Resolve the user-facing native-import destination under Downloads."""
+    if not filename or Path(filename).name != filename:
+        raise SnapshotIOError("Downloads snapshot filename must be one plain filename")
     configured = os.environ.get("AIDEVOPS_DOWNLOADS_DIR")
     downloads = Path(os.path.expanduser(configured)) if configured else Path.home() / "Downloads"
     if not downloads.is_absolute():
         raise SnapshotIOError("AIDEVOPS_DOWNLOADS_DIR must be absolute")
     downloads.mkdir(mode=0o700, parents=False, exist_ok=True)
-    return validate_output_path(
-        downloads / "aidevops.team.json", agents_dir, ensure_output_is_not_source
-    )
+    return validate_output_path(downloads / filename, agents_dir, ensure_output_is_not_source)
 
 
 def atomic_write(output_path, payload):

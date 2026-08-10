@@ -241,16 +241,36 @@ def build_team_snapshot(agents_dir, host_slug=None, lm_studio_mode="auto"):
     return snapshot
 
 
+def build_lm_studio_agent_snapshot(agents_dir, host_slug=None):
+    """Build one standalone LM Studio agent snapshot from canonical Private AI."""
+    resolved_host_slug = resolve_host_slug(host_slug)
+    roster = load_roster_module().build_roster(agents_dir)
+    private_records = [
+        record for record in roster["agents"] if record["agent_id"] == PRIVATE_AGENT_ID
+    ]
+    if len(private_records) != 1:
+        raise ProvisioningError("canonical roster must contain exactly one Private AI member")
+    lm_studio_status = resolve_lm_studio_status("required")
+    snapshot = build_lm_studio_member(
+        private_records[0],
+        resolved_host_slug,
+        lm_studio_status["model"],
+        BUZZ_AGENT_FORMAT,
+        FORMAT_VERSION,
+    )
+    return snapshot, lm_studio_status
+
+
 def validate_output_path(output_path, agents_dir):
     """Validate an explicit caller-owned output without following a target symlink."""
     source_guard = load_roster_module().ensure_output_is_not_source
     return validate_snapshot_output_path(output_path, agents_dir, source_guard)
 
 
-def downloads_output_path(agents_dir):
+def downloads_output_path(agents_dir, filename="aidevops.team.json"):
     """Resolve the user-facing native-import destination under Downloads."""
     source_guard = load_roster_module().ensure_output_is_not_source
-    return resolve_downloads_output_path(agents_dir, source_guard)
+    return resolve_downloads_output_path(agents_dir, source_guard, filename)
 
 
 def resolve_buzz_cli():
@@ -338,6 +358,17 @@ def parse_args(argv=None):
     destination.add_argument("--downloads", action="store_true", help="write to ~/Downloads")
     destination.add_argument("--stdout", action="store_true", help="write JSON to stdout")
 
+    generate_lm_studio_agent = commands.add_parser(
+        "generate-lm-studio-agent",
+        help="generate one ready LM Studio agent snapshot",
+    )
+    generate_lm_studio_agent.add_argument("--agents-dir", default=DEFAULT_AGENTS_DIR)
+    generate_lm_studio_agent.add_argument("--host-slug")
+    agent_destination = generate_lm_studio_agent.add_mutually_exclusive_group()
+    agent_destination.add_argument("--output", help="atomic mode-600 output path")
+    agent_destination.add_argument("--downloads", action="store_true", help="write to ~/Downloads")
+    agent_destination.add_argument("--stdout", action="store_true", help="write JSON to stdout")
+
     commands.add_parser("status", help="check the local Buzz Desktop broker")
 
     submit = commands.add_parser("submit", help="queue a generated snapshot for Desktop review")
@@ -374,20 +405,30 @@ def main(argv=None):
         submit_snapshot(agents_dir, args.host_slug, args.lm_studio)
         return 0
 
-    snapshot, lm_studio_status = build_team_snapshot_with_status(
-        agents_dir, args.host_slug, args.lm_studio
-    )
+    standalone_agent = args.command == "generate-lm-studio-agent"
+    if standalone_agent:
+        snapshot, lm_studio_status = build_lm_studio_agent_snapshot(agents_dir, args.host_slug)
+    else:
+        snapshot, lm_studio_status = build_team_snapshot_with_status(
+            agents_dir, args.host_slug, args.lm_studio
+        )
     report_lm_studio_status(lm_studio_status)
     payload = serialized_snapshot(snapshot)
+    snapshot_kind = "Buzz LM Studio agent" if standalone_agent else "Buzz team"
     if args.output:
         output_path = validate_output_path(args.output, agents_dir)
         atomic_write(output_path, payload)
-        print(f"Generated Buzz team snapshot: {output_path}", file=sys.stderr)
+        print(f"Generated {snapshot_kind} snapshot: {output_path}", file=sys.stderr)
         return 0
     if args.downloads:
-        output_path = downloads_output_path(agents_dir)
+        filename = (
+            f"{snapshot['profile']['displayName']}.agent.json"
+            if standalone_agent
+            else "aidevops.team.json"
+        )
+        output_path = downloads_output_path(agents_dir, filename)
         atomic_write(output_path, payload)
-        print(f"Generated Buzz team snapshot: {output_path}", file=sys.stderr)
+        print(f"Generated {snapshot_kind} snapshot: {output_path}", file=sys.stderr)
         return 0
     sys.stdout.buffer.write(payload)
     return 0
