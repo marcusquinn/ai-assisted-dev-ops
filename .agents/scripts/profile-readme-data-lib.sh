@@ -192,8 +192,12 @@ _compute_model_row_savings() {
 # --- Gather screen time data ---
 _get_screen_time() {
 	local screen_json
-	screen_json=$("${SCRIPT_DIR}/screen-time-helper.sh" profile-stats) || screen_json="{}"
-	echo "$screen_json"
+	screen_json=$("${SCRIPT_DIR}/screen-time-helper.sh" profile-stats 2>/dev/null) || screen_json=""
+	if ! printf '%s' "$screen_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+		printf '%s\n' '{"collection_status":"unavailable"}'
+		return 0
+	fi
+	printf '%s\n' "$screen_json"
 	return 0
 }
 

@@ -496,6 +496,38 @@ test_screen_engine_sibling_modules_deploy_together() {
 	return 0
 }
 
+test_leading_zero_dates_and_malformed_profile_payload_are_safe() {
+	local tmpdir="$1"
+	local fixture_home="${tmpdir}/leading-zero-home"
+	local history="${fixture_home}/.aidevops/.agent-workspace/observability/screen-time.jsonl"
+	mkdir -p "${history%/*}"
+	printf '%s\n' \
+		'{"date":"2026-08-08","screen_hours":1}' \
+		'{"date":"2026-08-09","screen_hours":2}' >"$history"
+
+	local now profile_json history_output
+	now=$(python3 -c 'import datetime as d; print(int(d.datetime(2026, 8, 10, 12).astimezone().timestamp()))')
+	profile_json=$(HOME="$fixture_home" AIDEVOPS_SCREEN_TIME_NOW_EPOCH="$now" \
+		AIDEVOPS_SCREEN_TIME_OS_TYPE=Unsupported "$HELPER" profile-stats)
+	history_output=$(HOME="$fixture_home" AIDEVOPS_SCREEN_TIME_OS_TYPE=Unsupported "$HELPER" history)
+	if ! printf '%s' "$profile_json" | jq -e 'type == "object"' >/dev/null ||
+		[[ "$(printf '%s' "$profile_json" | jq -r '.today_hours')" != "2" && "$(printf '%s' "$profile_json" | jq -r '.today_hours')" != "2.0" ]] ||
+		[[ "$history_output" != *"Range: 2026-08-08 to 2026-08-09"* ]]; then
+		fail "leading-zero history dates did not remain valid through profile-stats/history paths: ${profile_json} ${history_output}"
+	fi
+
+	local invalid_dir invalid_json
+	invalid_dir="${tmpdir}/invalid-screen-time-helper"
+	mkdir -p "$invalid_dir"
+	printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" not-json' >"${invalid_dir}/screen-time-helper.sh"
+	chmod +x "${invalid_dir}/screen-time-helper.sh"
+	invalid_json=$(SCRIPT_DIR="$invalid_dir" bash -c 'source "$1"; _get_screen_time' _ "${SCRIPTS_DIR}/profile-readme-data-lib.sh")
+	[[ "$(printf '%s' "$invalid_json" | jq -r '.collection_status')" == "unavailable" ]] ||
+		fail "malformed screen-time output was not converted to unavailable JSON: ${invalid_json}"
+	pass "leading-zero dates and malformed screen-time output stay JSON-safe"
+	return 0
+}
+
 main() {
 	local tmpdir
 	tmpdir=$(mktemp -d)
@@ -550,6 +582,7 @@ main() {
 	test_history_calendar_coverage_and_staleness "$tmpdir"
 	test_corrupt_core_data_and_history_paths_are_safe "$tmpdir" "$now"
 	test_screen_engine_sibling_modules_deploy_together "$tmpdir"
+	test_leading_zero_dates_and_malformed_profile_payload_are_safe "$tmpdir"
 	return 0
 }
 
