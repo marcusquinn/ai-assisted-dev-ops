@@ -115,6 +115,13 @@ export PULSE_TODO_SYNC_PARALLELISM=2
 export PULSE_TODO_SYNC_REPO_TIMEOUT=7
 export PRE_RUN_STAGE_TIMEOUT=30
 
+unset PULSE_TODO_SYNC_REPO_TIMEOUT
+[[ "$(_pulse_todo_sync_repo_timeout)" -eq 30 ]] || {
+	printf 'FAIL default per-repo timeout did not inherit the enclosing stage ceiling\n' >&2
+	exit 1
+}
+export PULSE_TODO_SYNC_REPO_TIMEOUT=7
+
 sync_rc=0
 sync_todo_refs_all_repos || sync_rc=$?
 call_count=$(wc -l <"$CALL_LOG" | tr -d ' ')

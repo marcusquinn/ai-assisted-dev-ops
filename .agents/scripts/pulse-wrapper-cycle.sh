@@ -674,9 +674,9 @@ _pulse_todo_sync_parallelism() {
 
 _pulse_todo_sync_repo_timeout() {
 	local stage_timeout="${PRE_RUN_STAGE_TIMEOUT:-600}"
-	local repo_timeout="${PULSE_TODO_SYNC_REPO_TIMEOUT:-180}"
+	local repo_timeout="${PULSE_TODO_SYNC_REPO_TIMEOUT:-600}"
 	[[ "$stage_timeout" =~ ^[1-9][0-9]*$ ]] || stage_timeout=600
-	[[ "$repo_timeout" =~ ^[1-9][0-9]*$ ]] || repo_timeout=180
+	[[ "$repo_timeout" =~ ^[1-9][0-9]*$ ]] || repo_timeout=600
 	if [[ "$repo_timeout" -gt "$stage_timeout" ]]; then
 		repo_timeout="$stage_timeout"
 	fi
