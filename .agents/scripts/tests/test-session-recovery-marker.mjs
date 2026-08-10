@@ -71,6 +71,22 @@ const missingCli = spawnSync(
 );
 assert.equal(missingCli.status, 2, "resolver CLI should preserve the no-marker status through a symlink");
 
+const pluginIndexUrl = new URL("../../plugins/opencode-aidevops/index.mjs", import.meta.url).href;
+const subcommandImport = spawnSync(
+  process.execPath,
+  [
+    "--input-type=module",
+    "--eval",
+    `process.argv[1] = "run"; await import(${JSON.stringify(pluginIndexUrl)});`,
+  ],
+  { encoding: "utf8" },
+);
+assert.equal(
+  subcommandImport.status,
+  0,
+  `plugin import should ignore non-path CLI subcommands: ${subcommandImport.stderr}`,
+);
+
 const emitted = [];
 const handler = createSessionRecoveryMarkerHandler({
   directory,

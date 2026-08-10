@@ -275,7 +275,7 @@ function runCli(argv) {
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 const modulePath = fileURLToPath(import.meta.url);
-if (invokedPath && realpathSync(invokedPath) === realpathSync(modulePath)) {
+if (invokedPath && existsSync(invokedPath) && realpathSync(invokedPath) === realpathSync(modulePath)) {
   try {
     process.exitCode = runCli(process.argv.slice(2));
   } catch (error) {
