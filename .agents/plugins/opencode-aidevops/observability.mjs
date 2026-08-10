@@ -55,6 +55,7 @@ import {
   recordRoutingDecision,
   rememberRoutingFeedback,
 } from "./observability-routing.mjs";
+import { normalizeProviderError } from "./provider-error-diagnostics.mjs";
 
 const HOME = homedir();
 const DEFAULT_OBS_DIR = join(HOME, ".aidevops", ".agent-workspace", "observability");
@@ -241,15 +242,16 @@ export function initObservability(options = {}) {
  * Filters for assistant message completions and records metadata.
  *
  * @param {{ event: import("@opencode-ai/sdk").Event }} input
+ * @param {{ resolveSessionModel?: (sessionId: string) => string }} [context]
  */
-export function handleEvent(input) {
+export function handleEvent(input, context = {}) {
   if (!dbReady) return;
 
   const event = input.event;
   if (!event || !event.type) return;
 
   if (event.type === "message.updated") {
-    handleMessageUpdated(event);
+    handleMessageUpdated(event, context);
     return;
   }
 
@@ -258,7 +260,7 @@ export function handleEvent(input) {
   // into the eventual message.completed envelope.
   if (partStreamSummaries.observe(event)) return;
 
-  recordOpenCodeRuntimeEvent(event);
+  recordOpenCodeRuntimeEvent(event, event.type, {}, context);
 }
 
 function projectRuntimeEvent(envelope) {
@@ -270,7 +272,7 @@ function firstTruthy(values, fallback = null) {
   return values.find(Boolean) || fallback;
 }
 
-function recordOpenCodeRuntimeEvent(event, eventType = event.type, additionalPayload = {}) {
+function recordOpenCodeRuntimeEvent(event, eventType = event.type, additionalPayload = {}, context = {}) {
   const properties = event.properties || {};
   const info = properties.info || {};
   const part = properties.part || {};
@@ -280,6 +282,29 @@ function recordOpenCodeRuntimeEvent(event, eventType = event.type, additionalPay
   const subjectId = firstTruthy([
     info.id, part.id, part.messageID, part.messageId, properties.id, sessionId,
   ], "runtime:opencode");
+  const error = info.error || properties.error || part.error || part.state?.error;
+  const providerError = normalizeProviderError(error);
+  const route = String(context.resolveSessionModel?.(sessionId) || "");
+  const routeSeparator = route.indexOf("/");
+  const routeProvider = routeSeparator > 0 ? route.slice(0, routeSeparator) : null;
+  const routeModel = routeSeparator > 0 ? route.slice(routeSeparator + 1) : route || null;
+  const payload = {
+    error_type: firstTruthy([
+      info.error?.name, properties.error?.name, part.error?.name, part.state?.error?.name,
+    ]),
+    finish_reason: info.finish || part.finish || part.state?.status || null,
+    model_id: info.modelID || routeModel,
+    provider_id: info.providerID || routeProvider,
+    role: info.role || null,
+    source: "opencode",
+    ...additionalPayload,
+  };
+  if (providerError) {
+    payload.observation = {
+      ...(additionalPayload.observation || {}),
+      provider_error: providerError,
+    };
+  }
   const envelope = appendRuntimeEvent({
     eventType,
     subjectId,
@@ -288,17 +313,7 @@ function recordOpenCodeRuntimeEvent(event, eventType = event.type, additionalPay
     causationId: properties.causationID,
     rootEventId: properties.rootEventID,
     parentEventId: properties.parentEventID,
-    payload: {
-      error_type: firstTruthy([
-        info.error?.name, properties.error?.name, part.error?.name, part.state?.error?.name,
-      ]),
-      finish_reason: info.finish || part.finish || part.state?.status || null,
-      model_id: info.modelID || null,
-      provider_id: info.providerID || null,
-      role: info.role || null,
-      source: "opencode",
-      ...additionalPayload,
-    },
+    payload,
   });
   projectRuntimeEvent(envelope);
 }
@@ -309,7 +324,7 @@ function recordOpenCodeRuntimeEvent(event, eventType = event.type, additionalPay
  *
  * @param {{ type: string, properties: { info: object } }} event
  */
-function handleMessageUpdated(event) {
+function handleMessageUpdated(event, context = {}) {
   const msg = event.properties?.info;
   if (!msg) return;
 
@@ -332,7 +347,7 @@ function handleMessageUpdated(event) {
     routing_reason: routing.reason || null,
     routing_escalated: routing.escalated === 1,
     aidevops_version: aidevopsVersion || null,
-  });
+  }, context);
 
   // Prevent unbounded memory growth — prune old entries periodically
   if (recordedMessages.size > 10000) {

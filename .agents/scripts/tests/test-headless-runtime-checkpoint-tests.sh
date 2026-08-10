@@ -599,6 +599,21 @@ test_completion_infrastructure_resumes_without_implementation_penalty() {
 	return 0
 }
 
+test_access_denied_has_provider_failure_evidence() {
+	local evidence_fields="" launch_failure_cause="" next_action=""
+	evidence_fields=$(_derive_worker_failure_evidence "access_denied" "1" "1" "natural" "access_denied")
+	launch_failure_cause="${evidence_fields%%$'\t'*}"
+	next_action="${evidence_fields#*$'\t'}"
+	if [[ "$launch_failure_cause" == "provider_access_denied" && \
+		"$next_action" == "switch_provider_or_check_access" ]]; then
+		print_result "access denied emits provider failure evidence" 0
+	else
+		print_result "access denied emits provider failure evidence" 1 \
+			"cause='${launch_failure_cause}' next='${next_action}'"
+	fi
+	return 0
+}
+
 test_pr_checkpoint_lifecycle_cases() {
 	test_post_pr_handoff_detects_open_pending_pr
 	test_post_pr_handoff_propagates_classifier_failure
@@ -616,5 +631,6 @@ test_pr_checkpoint_lifecycle_cases() {
 	test_failed_ci_ready_pr_is_durable_handoff
 	test_closed_unmerged_pr_is_failed_not_completed
 	test_failed_worker_ready_pr_remains_completed_handoff
+	test_access_denied_has_provider_failure_evidence
 	return 0
 }

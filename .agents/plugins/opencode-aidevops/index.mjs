@@ -57,6 +57,7 @@ import { createSessionRecoveryMarkerHandler } from "./session-recovery-marker.mj
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
 import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
+import { createProviderErrorHandler } from "./provider-error-diagnostics.mjs";
 import {
   appendConversationSystemContext,
   applyConversationRootVariant,
@@ -465,6 +466,11 @@ export async function AidevopsPlugin({ directory, client }) {
   });
   const sessionTitleStatusHandler = createSessionTitleStatusHandler({ isHeadless });
   const routingFeedbackHandler = createRoutingFeedbackHandler({ client, isHeadless, getFeedback: getRoutingFeedback });
+  const providerErrorHandler = createProviderErrorHandler({
+    client,
+    isHeadless,
+    resolveSessionModel: (sessionId) => sessionModels.resolve(sessionId),
+  });
   const sessionTitleFallbackHandler = createSessionTitleFallbackHandler({
     agentsDir: ACTIVE_AGENTS_DIR,
     client,
@@ -538,13 +544,14 @@ export async function AidevopsPlugin({ directory, client }) {
     event: async (input) => {
       // Fire both in parallel — neither depends on the other's result.
       await Promise.all([
-        handleEvent(input),
+        handleEvent(input, { resolveSessionModel: (sessionId) => sessionModels.resolve(sessionId) }),
         Promise.resolve(subagentEffortHooks.handleEvent(input)),
         compactionContinuation.handleEvent(input),
         Promise.resolve(cancellationReceipt.handleEvent(input)),
         permissionBroker.handleEvent(input).catch((err) => debugEventError("permission broker", err)),
         sessionTitleStatusHandler(input).catch((err) => debugEventError("title status handler", err)),
         routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),
+        providerErrorHandler(input).catch((err) => debugEventError("provider error handler", err)),
         sessionTitleSuffixHandler(input).catch((err) => debugEventError("title suffix handler", err)),
         sessionTitleFallbackHandler(input).catch((err) => debugEventError("title fallback handler", err)),
         sessionRecoveryMarkerHandler(input).catch((err) => debugEventError("session recovery marker", err)),

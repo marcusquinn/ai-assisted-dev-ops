@@ -103,6 +103,47 @@ check_classification \
 	"auth_error" "auth_error" "401" "" "trusted_provider"
 
 check_classification \
+	"gateway_forbidden" \
+	'OpenAI provider error: Forbidden: request was blocked by a gateway or proxy' \
+	"provider_error" "gateway_denied" "403" "" "trusted_provider"
+
+check_classification \
+	"opencode_html_gateway_denied" \
+	'{"type":"error","error":{"name":"APIError","data":{"message":"Forbidden","statusCode":403,"isRetryable":false,"responseBody":"<!doctype html><title>Forbidden</title>"}}}' \
+	"provider_error" "gateway_denied" "403" "" "trusted_provider"
+
+check_classification \
+	"opencode_json_access_denied" \
+	'{"type":"error","error":{"name":"APIError","data":{"message":"Forbidden","statusCode":403,"isRetryable":false,"responseBody":"denied"}}}' \
+	"access_denied" "access_denied" "403" "" "trusted_provider"
+
+check_classification \
+	"opencode_html_401_is_auth" \
+	'{"type":"error","error":{"name":"APIError","data":{"message":"Unauthorized","statusCode":401,"isRetryable":false,"responseBody":"<!doctype html><title>Unauthorized</title>"}}}' \
+	"auth_error" "auth_error" "401" "" "trusted_provider"
+
+check_classification \
+	"opencode_html_502_is_server_error" \
+	'{"type":"error","error":{"name":"APIError","data":{"message":"Bad Gateway","statusCode":502,"isRetryable":true,"responseBody":"<!doctype html><title>Bad Gateway</title>"}}}' \
+	"provider_error" "server_error" "502" "" "trusted_provider"
+
+check_classification \
+	"opencode_403_rate_text_remains_access_denied" \
+	'{"type":"error","error":{"name":"APIError","data":{"message":"Rate limit policy forbids this model","statusCode":403,"isRetryable":false,"responseBody":"denied"}}}' \
+	"access_denied" "access_denied" "403" "" "trusted_provider"
+
+check_classification \
+	"opencode_last_structured_error_is_authoritative" \
+	'{"type":"error","error":{"name":"APIError","data":{"message":"Forbidden","statusCode":403,"isRetryable":false,"responseBody":"denied"}}}
+{"type":"error","error":{"name":"APIError","data":{"message":"Bad Gateway","statusCode":502,"isRetryable":true,"responseBody":"upstream unavailable"}}}' \
+	"provider_error" "server_error" "502" "" "trusted_provider"
+
+check_classification \
+	"untrusted_provider_note_mentions_403" \
+	'Provider documentation note: clients can receive 403 Forbidden responses.' \
+	"local_error" "" "" "" "default_local"
+
+check_classification \
 	"opencode_sqlite_crash" \
 	'failed to list snapshot files in /tmp/opencode/snapshot
 fatal: not a git repository
@@ -141,6 +182,10 @@ assert_eq "metric provider_status persisted" "500" \
 	"$(jq -r '.provider_status' "$METRICS_FILE")"
 assert_eq "metric classification_source persisted" "output_pattern" \
 	"$(jq -r '.classification_source' "$METRICS_FILE")"
+assert_eq "access denied is retryable infrastructure without provider rotation" \
+	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" "$(_hrff_retry_class_for_reason "access_denied" "0")"
+assert_eq "access denied remains infrastructure after session creation" \
+	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" "$(_hrff_retry_class_for_reason "access_denied" "1")"
 
 write_retry_fixture() {
 	local name="$1"

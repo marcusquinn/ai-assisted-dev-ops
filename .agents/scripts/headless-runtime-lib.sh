@@ -130,60 +130,8 @@ source "${SCRIPT_DIR}/headless-runtime-provider.sh"
 
 _classify_trusted_provider_failure() {
 	local file_path="$1"
-	if python3 - "$file_path" <<'PY'; then
-import json
-import re
-import sys
-from pathlib import Path
-
-trusted_chunks = []
-provider_line = re.compile(r"\b(openai|anthropic|claude|provider|api)\b", re.I)
-runtime_line = re.compile(r"\[(worker_exit_diagnostics|provider_error|runtime_error)\]", re.I)
-auth_runtime_line = re.compile(r"\b(token refresh failed|invalid_grant|invalid refresh token)\b", re.I)
-
-for raw_line in Path(sys.argv[1]).read_text(errors='ignore').splitlines():
-    line = raw_line.strip()
-    if not line:
-        continue
-    trusted = False
-    if line.startswith("{"):
-        try:
-            obj = json.loads(line)
-        except Exception:
-            obj = None
-        if isinstance(obj, dict):
-            has_provider = bool(obj.get('provider') or obj.get('provider_error_type') or obj.get('provider_status'))
-            has_error_record = any(key in obj for key in ('error', 'status', 'provider_error_type', 'provider_status'))
-            if has_provider and has_error_record:
-                trusted = True
-    elif provider_line.search(line) or runtime_line.search(line) or auth_runtime_line.search(line):
-        trusted = True
-    if trusted:
-        trusted_chunks.append(line)
-
-text = '\n'.join(trusted_chunks).lower()
-if not text:
-    sys.exit(0)
-
-def emit(reason, provider_type, status, pattern):
-    print('\t'.join([reason, provider_type, status, 'trusted_provider', pattern]))
-
-if any(token in text for token in ('insufficient_quota', 'insufficient quota', 'quota_exceeded', 'quota exceeded', 'exceeded your current quota', 'credit_exhausted', 'credit exhausted', 'exhausted your credit')):
-    emit('quota_exceeded', 'quota_exceeded', '429', 'trusted_quota|insufficient_quota|quota_exceeded|credit_exhausted')
-elif any(token in text for token in ('rate limit', 'rate_limit', 'too many requests')) or re.search(r'\b429\b', text):
-    emit('rate_limit', 'rate_limit', '429', 'trusted_rate_limit|429|too_many_requests')
-elif re.search(r'\b(500|502|503|504)\b', text) or any(token in text for token in ('server_error', 'internal server error', 'service unavailable', 'bad gateway', 'gateway timeout', 'connection refused', 'connection reset', 'overloaded')):
-    status = '500'
-    if '504' in text or 'gateway timeout' in text:
-        status = '504'
-    elif '503' in text or 'service unavailable' in text:
-        status = '503'
-    elif '502' in text or 'bad gateway' in text:
-        status = '502'
-    emit('provider_error', 'server_error', status, 'trusted_server_error|5xx|connection_failure|overloaded')
-elif re.search(r'\b(401)\b', text) or any(token in text for token in ('unauthorized', 'invalid api key', 'authentication failed', 'token refresh failed', 'invalid_grant', 'invalid refresh token')) or ('auth' in text and 'failed' in text):
-    emit('auth_error', 'auth_error', '401', 'trusted_auth_error|401|token_refresh|invalid_grant')
-PY
+	local classifier="${SCRIPT_DIR}/headless-runtime-provider-classifier.py"
+	if [[ -f "$classifier" ]] && python3 "$classifier" "$file_path"; then
 		return 0
 	fi
 	return 1
@@ -1627,7 +1575,7 @@ _classify_canary_failure_reason() {
 	local reason
 	reason=$(classify_failure_reason "$output_file")
 	case "$reason" in
-		auth_error | quota_exceeded | rate_limit | provider_error)
+		access_denied | auth_error | quota_exceeded | rate_limit | provider_error)
 			printf '%s' "$reason"
 			return 0
 			;;
@@ -1651,7 +1599,7 @@ _record_canary_provider_backoff() {
 	local canary_reason="$2"
 	local canary_output="$3"
 	case "$canary_reason" in
-	auth_error | quota_exceeded | rate_limit | provider_error)
+	access_denied | auth_error | quota_exceeded | rate_limit | provider_error)
 		local canary_provider
 		canary_provider=$(extract_provider "$canary_model" 2>/dev/null || printf '%s' "")
 		if [[ -n "$canary_provider" ]]; then

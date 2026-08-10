@@ -488,6 +488,20 @@ test("OpenCode observability emits runtime evidence without changing legacy tabl
         tokens: { input: 2, output: 3, total: 5, cache: { read: 0, write: 0 } },
       } },
     } });
+    observability.handleEvent({ event: {
+      type: "session.error",
+      properties: {
+        sessionID: "session:1",
+        error: {
+          name: "APIError",
+          data: {
+            message: "Forbidden", statusCode: 403, isRetryable: false,
+            responseBody: "<!doctype html><title>Forbidden</title>",
+            responseHeaders: { authorization: "Bearer private", "x-request-id": "req-safe" },
+          },
+        },
+      },
+    } }, { resolveSessionModel: () => "openai/test-model" });
     observability.recordToolCall(
       { tool: "Read", sessionID: "session:1", callID: "call:1" },
       { output: "ok", metadata: { bytes: 1 } },
@@ -523,11 +537,17 @@ test("OpenCode observability emits runtime evidence without changing legacy tabl
         (SELECT json_extract(payload_json, '$.suppressed_part_events')
           FROM runtime_events WHERE event_type = 'message.completed'),
         (SELECT json_extract(payload_json, '$.error_type')
-          FROM runtime_events WHERE event_type = 'message.part.updated');
+          FROM runtime_events WHERE event_type = 'message.part.updated'),
+        (SELECT json_extract(payload_json, '$.observation.provider_error.classification')
+          FROM runtime_events WHERE event_type = 'session.error'),
+        (SELECT json_extract(payload_json, '$.observation.provider_error.request_id')
+          FROM runtime_events WHERE event_type = 'session.error'),
+        (SELECT payload_json NOT LIKE '%private%' AND payload_json NOT LIKE '%doctype%'
+          FROM runtime_events WHERE event_type = 'session.error');
     `], { encoding: "utf8" }).trim();
     assert.equal(
       counts,
-      "1|1|5|session.created,message.part.updated,message.completed,tool.completed,subagent.cancellation.receipt|100|PartFailure",
+      "1|1|6|session.created,message.part.updated,message.completed,session.error,tool.completed,subagent.cancellation.receipt|100|PartFailure|gateway_denied|req-safe|1",
     );
   } finally {
     rmSync(tempDir, { force: true, recursive: true });

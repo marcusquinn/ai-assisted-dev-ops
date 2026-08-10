@@ -525,6 +525,10 @@ _derive_worker_failure_evidence() {
 		launch_failure_cause="provider_rate_limited"
 		next_action="rotate_provider_or_wait_for_reset"
 		;;
+	access_denied)
+		launch_failure_cause="provider_access_denied"
+		next_action="switch_provider_or_check_access"
+		;;
 	blocked | brief_recovery)
 		launch_failure_cause="model_reported_blocker"
 		next_action="recover_brief_or_escalate_with_evidence"

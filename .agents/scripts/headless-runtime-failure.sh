@@ -944,7 +944,7 @@ _hrff_retry_class_for_reason() {
 	local session_count="$2"
 	case "$reason" in
 	opencode_version_pin_failed | canary_failed | worker_prepare_failed | duplicate_session | \
-		worker_noop_zero_output | crash_during_startup | rate_limit* | provider_error | \
+		worker_noop_zero_output | crash_during_startup | access_denied | rate_limit* | provider_error | \
 		startup_no_model_activity | service_interruption_exhausted | worker_runtime_not_invoked | \
 		worker_sensitive_temp_preflight_failed | worker_ownership_lost | worker_ledger_ready_failed | \
 		worker_claim_ready_transition_failed)

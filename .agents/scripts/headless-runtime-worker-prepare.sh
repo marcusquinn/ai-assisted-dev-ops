@@ -415,7 +415,7 @@ _cmd_run_prepare_retry() {
 		return 0
 	fi
 
-	if [[ "$_run_failure_reason" != "auth_error" && "$_run_failure_reason" != "rate_limit" && \
+	if [[ "$_run_failure_reason" != "access_denied" && "$_run_failure_reason" != "auth_error" && "$_run_failure_reason" != "rate_limit" && \
 		"$_run_failure_reason" != "provider_error" && "$_run_failure_reason" != "startup_no_model_activity" ]]; then
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
 		return "$attempt_exit"
