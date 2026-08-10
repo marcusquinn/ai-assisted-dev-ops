@@ -1,27 +1,29 @@
 {
-  "_comment": "QuickFile MCP server configuration snippets for various AI tools",
+  "_comment": "QuickFile MCP beta REST configuration using the aidevops least-privilege launcher",
   "_documentation": "https://github.com/marcusquinn/quickfile-mcp",
-  "_install": "mkdir -p ~/Git/mcp && git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp && cd ~/Git/mcp/quickfile-mcp && npm install && npm run build",
-  "_credentials": "~/.config/.quickfile-mcp/credentials.json",
+  "_api_documentation": "https://api-beta.quickfile.co.uk/api-docs/",
+  "_install": "mkdir -p ~/Git/mcp && git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp && npm install --prefix ~/Git/mcp/quickfile-mcp && npm run build --prefix ~/Git/mcp/quickfile-mcp",
+  "_credentials": "Store each personal token with: aidevops secret set QUICKFILE_<ACCOUNT>_API_KEY",
+  "_launcher": "~/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
 
   "opencode": {
     "_file": "~/.config/opencode/opencode.json",
     "_section": "mcp",
     "quickfile": {
       "type": "local",
-      "command": ["node", "/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"],
-      "enabled": true
+      "command": ["/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh"],
+      "enabled": false
     }
   },
 
-  "claude_code_command": "claude mcp add quickfile node /Users/YOU/Git/mcp/quickfile-mcp/dist/index.js",
+  "claude_code_command": "claude mcp add quickfile /Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
 
   "claude_desktop": {
     "_file": "~/Library/Application Support/Claude/claude_desktop_config.json",
     "mcpServers": {
       "quickfile": {
-        "command": "node",
-        "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"]
+        "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+        "args": []
       }
     }
   },
@@ -30,8 +32,8 @@
     "_file": "~/.cursor/mcp.json",
     "mcpServers": {
       "quickfile": {
-        "command": "node",
-        "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"]
+        "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+        "args": []
       }
     }
   },
@@ -39,8 +41,8 @@
   "zed_macos": {
     "_method": "Custom Server UI",
     "quickfile": {
-      "command": "node",
-      "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"],
+      "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+      "args": [],
       "env": {}
     }
   },
@@ -50,8 +52,8 @@
     "servers": {
       "quickfile": {
         "type": "stdio",
-        "command": "node",
-        "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"]
+        "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+        "args": []
       }
     },
     "inputs": []
@@ -61,9 +63,9 @@
     "_method": "Global MCP Config",
     "mcpServers": {
       "quickfile": {
-        "command": "node",
+        "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
         "type": "stdio",
-        "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"],
+        "args": [],
         "disabled": false,
         "alwaysAllow": ["quickfile_system_get_account", "quickfile_client_search", "quickfile_invoice_search"]
       }
@@ -74,8 +76,8 @@
     "_method": "Command Palette: Kiro: Open user MCP config (JSON)",
     "mcpServers": {
       "quickfile": {
-        "command": "node",
-        "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"],
+        "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+        "args": [],
         "disabled": false,
         "autoApprove": ["quickfile_system_get_account"]
       }
@@ -86,11 +88,11 @@
     "_file": "~/.gemini/settings.json",
     "mcpServers": {
       "quickfile": {
-        "command": "node",
-        "args": ["/Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"]
+        "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+        "args": []
       }
     }
   },
 
-  "droid_command": "droid mcp add quickfile node /Users/YOU/Git/mcp/quickfile-mcp/dist/index.js"
+  "droid_command": "droid mcp add quickfile /Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh"
 }

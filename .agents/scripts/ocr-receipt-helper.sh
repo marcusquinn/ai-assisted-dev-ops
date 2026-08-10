@@ -25,7 +25,8 @@ set -euo pipefail
 #   --supplier <name>          Override supplier name for QuickFile
 #   --nominal <code>           QuickFile nominal code (default: 7901 - General Purchases)
 #   --currency <code>          Currency code (default: GBP)
-#   --vat-rate <rate>          VAT rate percentage (default: 20)
+#   --vat-rate <rate>          Explicit VAT rate percentage (no default)
+#   --account <alias>          Required QuickFile account alias
 #
 # Author: AI DevOps Framework
 # Version: 2.0.0
@@ -40,11 +41,20 @@ readonly VENV_DIR="${HOME}/.aidevops/.agent-workspace/python-env/document-extrac
 readonly PIPELINE_PY="${SCRIPT_DIR}/extraction_pipeline.py"
 readonly DEFAULT_NOMINAL_CODE="7901"
 readonly DEFAULT_CURRENCY="GBP"
-readonly DEFAULT_VAT_RATE="20"
+readonly DEFAULT_VAT_RATE=""
 
 # Ensure workspace exists
 ensure_workspace() {
 	mkdir -p "$WORKSPACE_DIR" 2>/dev/null || true
+	return 0
+}
+
+validate_quickfile_account() {
+	local account="$1"
+	if [[ -z "$account" || ! "$account" =~ ^[A-Za-z0-9_-]+$ ]]; then
+		print_error "--account is required and must contain only letters, numbers, underscores, or hyphens"
+		return 1
+	fi
 	return 0
 }
 
@@ -622,13 +632,14 @@ cmd_batch() {
 }
 
 # Render a human-readable QuickFile purchase invoice preview from an extracted JSON file.
-# Args: extracted_file supplier_override nominal_code currency vat_rate
+# Args: extracted_file supplier_override nominal_code currency vat_rate account
 _render_quickfile_preview() {
 	local extracted_file="$1"
 	local supplier_override="$2"
 	local nominal_code="$3"
 	local currency="$4"
 	local vat_rate="$5"
+	local account="$6"
 
 	python3 -c "
 import json
@@ -641,7 +652,8 @@ doc_type = data.get('document_type', 'invoice')
 supplier_override = '${supplier_override}'
 nominal_code = '${nominal_code}'
 currency = '${currency}'
-vat_rate = float('${vat_rate}')
+vat_rate_raw = '${vat_rate}'
+vat_rate = float(vat_rate_raw) if vat_rate_raw else None
 
 if supplier_override:
     supplier = supplier_override
@@ -673,10 +685,11 @@ if doc_currency:
     currency = doc_currency
 
 print('  Supplier:       ' + str(supplier))
+print('  Account:        ' + str('${account}'))
 print('  Date:           ' + str(inv_date))
 print('  Currency:       ' + str(currency))
 print('  Nominal Code:   ' + str(nominal_code))
-print('  VAT Rate:       ' + str(vat_rate) + '%')
+print('  VAT Rate:       ' + (str(vat_rate) + '%' if vat_rate is not None else 'not supplied; verify account VAT posture or provide --vat-rate'))
 print()
 print('  Line Items:')
 if items:
@@ -708,7 +721,9 @@ cmd_preview() {
 	local nominal_code="${5:-${DEFAULT_NOMINAL_CODE}}"
 	local currency="${6:-${DEFAULT_CURRENCY}}"
 	local vat_rate="${7:-${DEFAULT_VAT_RATE}}"
+	local account="$8"
 
+	validate_quickfile_account "$account" || return 1
 	validate_file_exists "$input_file" "Input file" || return 1
 	ensure_workspace
 
@@ -727,13 +742,13 @@ cmd_preview() {
 	print_info "QuickFile Purchase Invoice Preview:"
 	echo ""
 
-	_render_quickfile_preview "$extracted_file" "$supplier_override" "$nominal_code" "$currency" "$vat_rate" || {
+	_render_quickfile_preview "$extracted_file" "$supplier_override" "$nominal_code" "$currency" "$vat_rate" "$account" || {
 		print_error "Preview generation failed"
 		return 1
 	}
 
 	print_info "To create this purchase invoice, run:"
-	echo "  ocr-receipt-helper.sh quickfile ${input_file}"
+	echo "  ocr-receipt-helper.sh quickfile ${input_file} --account ${account}"
 	return 0
 }
 
@@ -762,7 +777,8 @@ doc_type = data.get('document_type', 'invoice')
 supplier_override = '${supplier_override}'
 nominal_code = '${nominal_code}'
 currency = '${currency}'
-vat_rate = float('${vat_rate}')
+vat_rate_raw = '${vat_rate}'
+vat_rate = float(vat_rate_raw) if vat_rate_raw else None
 
 if supplier_override:
     supplier = supplier_override
@@ -794,23 +810,27 @@ if raw_items:
         qty = float(item.get('quantity', 1) or 1)
         price = float(item.get('unit_price', item.get('price', 0)) or 0)
         amt = float(item.get('amount', price * qty) or 0)
-        line_items.append({
+        line = {
             'description': desc,
             'quantity': qty,
             'unit_price': price,
             'amount': amt,
-            'nominal_code': nominal_code,
-            'vat_rate': vat_rate
-        })
+            'nominal_code': nominal_code
+        }
+        if vat_rate is not None:
+            line['vat_rate'] = vat_rate
+        line_items.append(line)
 else:
-    line_items.append({
+    line = {
         'description': f'{doc_type.title()} from {supplier}',
         'quantity': 1,
         'unit_price': subtotal,
         'amount': subtotal,
-        'nominal_code': nominal_code,
-        'vat_rate': vat_rate
-    })
+        'nominal_code': nominal_code
+    }
+    if vat_rate is not None:
+        line['vat_rate'] = vat_rate
+    line_items.append(line)
 
 inv_number = extracted.get('invoice_number', '')
 if not inv_number:
@@ -843,6 +863,7 @@ _emit_quickfile_instructions() {
 	local qf_file="$1"
 	local doc_type="$2"
 	local nominal_code="$3"
+	local account="$4"
 
 	local qf_helper="${SCRIPT_DIR}/quickfile-helper.sh"
 	if [[ -x "$qf_helper" ]]; then
@@ -851,13 +872,13 @@ _emit_quickfile_instructions() {
 			record_cmd="record-expense"
 		fi
 		print_info "Step 3/3: Generating QuickFile MCP recording instructions..."
-		"$qf_helper" "$record_cmd" "$qf_file" --nominal "$nominal_code" --auto-supplier || {
+		"$qf_helper" "$record_cmd" "$qf_file" --account "$account" --nominal "$nominal_code" --auto-supplier || {
 			print_warning "quickfile-helper.sh failed, showing manual instructions"
 			echo ""
 			echo "  Prompt the AI with:"
 			echo "    \"Read ${qf_file} and use quickfile_supplier_search to find or"
 			echo "     quickfile_supplier_create to create the supplier, then use"
-			echo "     quickfile_purchase_create to record this purchase invoice.\""
+			echo "     quickfile_purchase_create with account '${account}' to record this purchase invoice.\""
 		}
 	else
 		print_info "Step 3/3: To create the purchase invoice in QuickFile, use the AI assistant:"
@@ -865,7 +886,7 @@ _emit_quickfile_instructions() {
 		echo "  Prompt the AI with:"
 		echo "    \"Read ${qf_file} and use quickfile_supplier_search to find or"
 		echo "     quickfile_supplier_create to create the supplier, then use"
-		echo "     quickfile_purchase_create to record this purchase invoice.\""
+		echo "     quickfile_purchase_create with account '${account}' to record this purchase invoice.\""
 		echo ""
 		print_info "Or install quickfile-helper.sh for automated MCP instructions."
 	fi
@@ -881,7 +902,9 @@ cmd_quickfile() {
 	local nominal_code="${5:-${DEFAULT_NOMINAL_CODE}}"
 	local currency="${6:-${DEFAULT_CURRENCY}}"
 	local vat_rate="${7:-${DEFAULT_VAT_RATE}}"
+	local account="$8"
 
+	validate_quickfile_account "$account" || return 1
 	validate_file_exists "$input_file" "Input file" || return 1
 	ensure_workspace
 
@@ -909,7 +932,36 @@ cmd_quickfile() {
 	print_success "QuickFile-ready data saved to: ${qf_file}"
 	echo ""
 
-	_emit_quickfile_instructions "$qf_file" "$doc_type" "$nominal_code"
+	_emit_quickfile_instructions "$qf_file" "$doc_type" "$nominal_code" "$account"
+	return 0
+}
+
+# Print QuickFile MCP installation and bearer-token inventory status.
+_print_quickfile_status() {
+	echo ""
+	echo "QuickFile Integration:"
+	if [[ -f "${HOME}/Git/mcp/quickfile-mcp/dist/index.js" ]]; then
+		echo "  quickfile-mcp:  installed"
+	else
+		echo "  quickfile-mcp:  not found (optional - for purchase invoice creation)"
+	fi
+	local quickfile_inventory=""
+	local quickfile_token_count=0
+	if command -v aidevops >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+		quickfile_inventory=$(aidevops secret inventory 2>/dev/null) || quickfile_inventory=""
+	fi
+	if [[ -n "$quickfile_inventory" ]]; then
+		quickfile_token_count=$(printf '%s' "$quickfile_inventory" | jq '[.secrets[]
+			| select(.status == "configured")
+			| .name
+			| select(test("^QUICKFILE_([A-Z0-9_]+_)?(API_KEY|API_TOKEN|BEARER_TOKEN)$"))]
+			| unique | length')
+	fi
+	if [[ "$quickfile_token_count" -gt 0 ]]; then
+		echo "  bearer tokens:  ${quickfile_token_count} account(s) configured"
+	else
+		echo "  bearer tokens:  not configured"
+	fi
 	return 0
 }
 
@@ -983,18 +1035,7 @@ cmd_status() {
 	fi
 
 	# QuickFile MCP
-	echo ""
-	echo "QuickFile Integration:"
-	if [[ -f "${HOME}/Git/mcp/quickfile-mcp/dist/index.js" ]]; then
-		echo "  quickfile-mcp:  installed"
-	else
-		echo "  quickfile-mcp:  not found (optional - for purchase invoice creation)"
-	fi
-	if [[ -f "${HOME}/.config/.quickfile-mcp/credentials.json" ]]; then
-		echo "  credentials:    configured"
-	else
-		echo "  credentials:    not configured"
-	fi
+	_print_quickfile_status
 
 	# Workspace
 	echo ""
@@ -1100,7 +1141,8 @@ cmd_help() {
 	echo "  --supplier <name>          Override supplier name for QuickFile"
 	echo "  --nominal <code>           QuickFile nominal code (default: 7901)"
 	echo "  --currency <code>          Currency code (default: GBP)"
-	echo "  --vat-rate <rate>          VAT rate percentage (default: 20)"
+	echo "  --vat-rate <rate>          Explicit VAT rate percentage (no default)"
+	echo "  --account <alias>          Required QuickFile account alias"
 	echo ""
 	echo "Pipeline:"
 	echo "  1. scan      - Raw OCR text extraction (GLM-OCR via Ollama, local)"
@@ -1115,8 +1157,8 @@ cmd_help() {
 	echo "  ocr-receipt-helper.sh scan receipt.jpg"
 	echo "  ocr-receipt-helper.sh extract invoice.pdf --type invoice --privacy local"
 	echo "  ocr-receipt-helper.sh batch ~/Documents/receipts/"
-	echo "  ocr-receipt-helper.sh preview receipt.png --supplier 'Amazon UK'"
-	echo "  ocr-receipt-helper.sh quickfile invoice.pdf --nominal 7502 --currency GBP"
+	echo "  ocr-receipt-helper.sh preview receipt.png --account business --supplier 'Amazon UK'"
+	echo "  ocr-receipt-helper.sh quickfile invoice.pdf --account business --nominal 7502 --currency GBP"
 	echo "  ocr-receipt-helper.sh status"
 	echo "  ocr-receipt-helper.sh install"
 	echo ""
@@ -1131,7 +1173,7 @@ cmd_help() {
 # Parse --flag value pairs from "$@" and write results to named variables via eval.
 # Consumes all recognised flags; warns on unknown flags.
 # Caller must declare the variables before calling this function.
-# Usage: _parse_named_options doc_type privacy output_format supplier nominal_code currency vat_rate "$@"
+# Usage: _parse_named_options doc_type privacy output_format supplier nominal_code currency vat_rate account "$@"
 # Returns the number of positional args consumed via stdout (for shift in caller).
 _parse_named_options() {
 	# Receive variable names for each option
@@ -1142,7 +1184,8 @@ _parse_named_options() {
 	local _var_nominal="$5"
 	local _var_currency="$6"
 	local _var_vat="$7"
-	shift 7
+	local _var_account="$8"
+	shift 8
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
@@ -1195,6 +1238,13 @@ _parse_named_options() {
 				return 1
 			}
 			;;
+		--account)
+			eval "${_var_account}=\"${2:-}\""
+			shift 2 || {
+				print_error "Missing value for --account"
+				return 1
+			}
+			;;
 		*)
 			print_warning "Unknown option: $1"
 			shift
@@ -1215,6 +1265,7 @@ _dispatch_command() {
 	local nominal_code="$7"
 	local currency="$8"
 	local vat_rate="$9"
+	local account="${10}"
 
 	case "$command" in
 	scan)
@@ -1261,14 +1312,14 @@ _dispatch_command() {
 			print_error "${ERROR_INPUT_FILE_REQUIRED}"
 			return 1
 		fi
-		cmd_quickfile "$file" "$doc_type" "$privacy" "$supplier" "$nominal_code" "$currency" "$vat_rate"
+		cmd_quickfile "$file" "$doc_type" "$privacy" "$supplier" "$nominal_code" "$currency" "$vat_rate" "$account"
 		;;
 	preview)
 		if [[ -z "$file" ]]; then
 			print_error "${ERROR_INPUT_FILE_REQUIRED}"
 			return 1
 		fi
-		cmd_preview "$file" "$doc_type" "$privacy" "$supplier" "$nominal_code" "$currency" "$vat_rate"
+		cmd_preview "$file" "$doc_type" "$privacy" "$supplier" "$nominal_code" "$currency" "$vat_rate" "$account"
 		;;
 	status)
 		cmd_status
@@ -1301,6 +1352,7 @@ parse_args() {
 	local nominal_code="${DEFAULT_NOMINAL_CODE}"
 	local currency="${DEFAULT_CURRENCY}"
 	local vat_rate="${DEFAULT_VAT_RATE}"
+	local account=""
 
 	# First positional arg after command is the file/dir
 	if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
@@ -1309,11 +1361,11 @@ parse_args() {
 	fi
 
 	_parse_named_options \
-		doc_type privacy output_format supplier nominal_code currency vat_rate \
+		doc_type privacy output_format supplier nominal_code currency vat_rate account \
 		"$@" || return 1
 
 	_dispatch_command "$command" "$file" "$doc_type" "$privacy" \
-		"$output_format" "$supplier" "$nominal_code" "$currency" "$vat_rate"
+		"$output_format" "$supplier" "$nominal_code" "$currency" "$vat_rate" "$account"
 	return $?
 }
 

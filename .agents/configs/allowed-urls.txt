@@ -79,6 +79,7 @@ api.namecheap.com
 api.openai.com
 api.partner.com
 api.perplexity.ai
+api-beta.quickfile.co.uk
 api.quickfile.co.uk
 api.replicate.com
 api.sandbox.namecheap.com

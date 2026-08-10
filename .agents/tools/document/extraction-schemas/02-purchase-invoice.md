@@ -39,8 +39,9 @@ class PurchaseLineItem(BaseModel):
     amount: float = Field(
         ..., description="Line total excluding VAT (quantity * unit_price)"
     )
-    vat_rate: str = Field(
-        default="20", description="VAT rate percentage or special code"
+    vat_rate: Optional[str] = Field(
+        default=None,
+        description="Explicitly extracted VAT rate percentage or special code"
     )
     vat_amount: Optional[float] = Field(
         default=None, description="VAT amount for this line (calculated if omitted)"

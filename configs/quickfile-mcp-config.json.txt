@@ -1,31 +1,22 @@
 {
   "provider": "quickfile",
-  "description": "QuickFile MCP - UK accounting software API (invoices, clients, purchases, banking, reports)",
+  "description": "QuickFile beta REST MCP with explicit multi-account routing",
   "documentation": "https://github.com/marcusquinn/quickfile-mcp",
-  "api_documentation": "https://api.quickfile.co.uk/",
+  "api_documentation": "https://api-beta.quickfile.co.uk/api-docs/",
   "prerequisites": {
     "node_version": "18+",
     "install_commands": [
       "mkdir -p ~/Git/mcp && git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp",
-      "cd ~/Git/mcp/quickfile-mcp && npm install && npm run build"
+      "npm install --prefix ~/Git/mcp/quickfile-mcp && npm run build --prefix ~/Git/mcp/quickfile-mcp"
     ],
-    "credentials_setup": "mkdir -p ~/.config/.quickfile-mcp && chmod 700 ~/.config/.quickfile-mcp",
-    "credentials_location": "~/.config/.quickfile-mcp/credentials.json",
-    "credentials_format": {
-      "accountNumber": "YOUR_ACCOUNT_NUMBER",
-      "apiKey": "YOUR_API_KEY",
-      "applicationId": "YOUR_APPLICATION_ID"
-    },
-    "credentials_sources": {
-      "accountNumber": "Top-right corner of QuickFile dashboard",
-      "apiKey": "Account Settings > 3rd Party Integrations > API Key",
-      "applicationId": "Account Settings > Create a QuickFile App > Application ID"
-    }
+    "credentials_backend": "aidevops secret",
+    "credentials_pattern": "QUICKFILE_<ACCOUNT>_API_KEY",
+    "credentials_setup": "aidevops secret set QUICKFILE_BUSINESS_API_KEY",
+    "launcher": "~/.aidevops/agents/scripts/quickfile-mcp-launcher.sh"
   },
   "mcp_tools": [
     "quickfile_system_get_account",
     "quickfile_system_search_events",
-    "quickfile_system_create_note",
     "quickfile_client_search",
     "quickfile_client_get",
     "quickfile_client_create",
@@ -39,8 +30,6 @@
     "quickfile_invoice_delete",
     "quickfile_invoice_send",
     "quickfile_invoice_get_pdf",
-    "quickfile_estimate_accept_decline",
-    "quickfile_estimate_convert_to_invoice",
     "quickfile_purchase_search",
     "quickfile_purchase_get",
     "quickfile_purchase_create",
@@ -48,6 +37,7 @@
     "quickfile_supplier_search",
     "quickfile_supplier_get",
     "quickfile_supplier_create",
+    "quickfile_supplier_update",
     "quickfile_supplier_delete",
     "quickfile_bank_get_accounts",
     "quickfile_bank_get_balances",
@@ -59,162 +49,42 @@
     "quickfile_report_vat_obligations",
     "quickfile_report_ageing",
     "quickfile_report_chart_of_accounts",
-    "quickfile_report_subscriptions"
+    "quickfile_report_subscriptions",
+    "quickfile_document_upload_receipt",
+    "quickfile_document_upload_sales_attachment"
   ],
-  "verification_prompt": "Show me my QuickFile account details",
-  "configurations": {
+  "verification_prompt": "Show account details for the business QuickFile account",
+  "configuration": {
     "opencode": {
-      "config_location": "~/.config/opencode/opencode.json",
-      "mcp_config": {
-        "quickfile": {
-          "type": "local",
-          "command": ["node", "/path/to/mcp/quickfile-mcp/dist/index.js"],
-          "enabled": true
-        }
-      },
-      "tools_config": {
-        "quickfile_*": false
-      },
-      "agent_tools": {
-        "quickfile_*": true
-      },
-      "notes": "Replace /path/to with actual path (e.g., ~/Git/mcp/quickfile-mcp)"
-    },
-    "claude_code": {
-      "method": "cli",
-      "command": "claude mcp add quickfile node /path/to/mcp/quickfile-mcp/dist/index.js"
-    },
-    "claude_desktop": {
-      "config_location": "~/Library/Application Support/Claude/claude_desktop_config.json",
-      "config": {
-        "mcpServers": {
-          "quickfile": {
-            "command": "node",
-            "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"]
-          }
-        }
+      "type": "local",
+      "command": ["/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh"],
+      "enabled": false,
+      "tool_permissions": {
+        "global": false,
+        "quickfile_agent": true
       }
     },
-    "cursor": {
-      "config_location": "~/.cursor/mcp.json",
-      "config": {
-        "mcpServers": {
-          "quickfile": {
-            "command": "node",
-            "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"]
-          }
-        }
-      }
-    },
-    "zed": {
-      "method": "custom_server_ui",
-      "config": {
-        "quickfile": {
-          "command": "node",
-          "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"],
-          "env": {}
-        }
-      }
-    },
-    "github_copilot": {
-      "config_location": ".vscode/mcp.json",
-      "scope": "project",
-      "config": {
-        "servers": {
-          "quickfile": {
-            "type": "stdio",
-            "command": "node",
-            "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"]
-          }
-        },
-        "inputs": []
-      }
-    },
-    "kilo_code": {
-      "method": "global_mcp_config",
-      "config": {
-        "mcpServers": {
-          "quickfile": {
-            "command": "node",
-            "type": "stdio",
-            "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"],
-            "disabled": false,
-            "alwaysAllow": ["quickfile_system_get_account", "quickfile_client_search", "quickfile_invoice_search"]
-          }
-        }
-      }
-    },
-    "kiro": {
-      "method": "command_palette",
-      "commands": [
-        "Kiro: Open workspace MCP config (JSON)",
-        "Kiro: Open user MCP config (JSON)"
-      ],
-      "config": {
-        "mcpServers": {
-          "quickfile": {
-            "command": "node",
-            "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"],
-            "disabled": false,
-            "autoApprove": ["quickfile_system_get_account"]
-          }
-        }
-      }
-    },
-    "gemini_cli": {
-      "config_locations": {
-        "user": "~/.gemini/settings.json",
-        "project": ".gemini/settings.json"
-      },
-      "config": {
-        "mcpServers": {
-          "quickfile": {
-            "command": "node",
-            "args": ["/path/to/mcp/quickfile-mcp/dist/index.js"]
-          }
-        }
-      }
-    },
-    "droid": {
-      "method": "cli",
-      "command": "droid mcp add quickfile node /path/to/mcp/quickfile-mcp/dist/index.js"
+    "generic_stdio": {
+      "command": "/Users/YOU/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+      "args": []
     }
   },
   "rate_limits": {
-    "default": "1000 API calls per day per account",
-    "reset": "Daily at approximately midnight",
-    "increase": "Contact QuickFile support"
+    "default": "5000 API calls per rolling 24 hours per personal token",
+    "response": "Treat HTTP 429 as a wait state; do not retry aggressively"
   },
   "troubleshooting": {
-    "credentials_not_found": {
-      "issue": "Credentials file not found",
-      "solution": "Create ~/.config/.quickfile-mcp/credentials.json with accountNumber, apiKey, and applicationId"
-    },
-    "auth_failed": {
-      "issue": "Authentication failed (MD5 hash mismatch)",
-      "solution": "Verify accountNumber, apiKey, and applicationId are correct in credentials.json"
-    },
-    "rate_limited": {
-      "issue": "API rate limit exceeded (1000 calls/day)",
-      "solution": "Wait until midnight for reset, or contact QuickFile to increase limit"
-    },
-    "build_failed": {
-      "issue": "npm run build fails",
-      "solution": "Ensure Node.js 18+ is installed: node --version"
-    },
-    "mcp_not_responding": {
-      "issue": "MCP server not responding",
-      "solution": "Rebuild: cd ~/Git/mcp/quickfile-mcp && npm run build. Restart AI tool."
-    }
-  },
-  "debug": {
-    "enable": "QUICKFILE_DEBUG=1 node dist/index.js",
-    "description": "Shows raw API requests/responses with credentials redacted"
+    "credentials_not_found": "Store at least one QUICKFILE_<ACCOUNT>_API_KEY secret and restart the MCP runtime",
+    "auth_failed": "Verify the selected alias, personal token validity, and granted endpoint groups",
+    "unknown_account": "Use an alias derived from a configured token secret name",
+    "build_failed": "Ensure Node.js 18+ is installed, then run npm run build --prefix ~/Git/mcp/quickfile-mcp",
+    "mcp_not_responding": "Run QUICKFILE_MCP_LAUNCHER_DRY_RUN=1 quickfile-mcp-launcher.sh, rebuild, and restart the runtime"
   },
   "notes": {
-    "api_version": "QuickFile API v1.2",
-    "auth_method": "MD5 hash of AccountNumber + APIKey + SubmissionNumber",
-    "uk_only": "QuickFile is UK-focused accounting software",
-    "vat_support": "VAT obligations require MTD-registered account"
+    "api_version": "QuickFile beta REST API",
+    "auth_method": "Personal bearer token",
+    "account_selection": "Every MCP tool requires account",
+    "vat_support": "Mutations require explicit per-line VAT unless account VAT posture is configured",
+    "uk_only": "QuickFile is UK-focused accounting software"
   }
 }

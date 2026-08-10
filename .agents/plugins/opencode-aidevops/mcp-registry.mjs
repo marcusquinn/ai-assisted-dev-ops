@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 
 import { accessSync, constants } from "fs";
-import { platform } from "os";
+import { homedir, platform } from "os";
 import { delimiter, join } from "path";
 
 const IS_MACOS = platform() === "darwin";
@@ -239,6 +239,25 @@ function getMcpRegistry() {
       globallyEnabled: false,
       requiresBinary: "analytics-mcp",
       description: "Google Analytics data",
+    },
+    {
+      name: "quickfile",
+      type: "local",
+      command: [
+        join(
+          homedir(),
+          ".aidevops",
+          "agents",
+          "scripts",
+          "quickfile-mcp-launcher.sh",
+        ),
+      ],
+      eager: false,
+      toolPattern: "quickfile_*",
+      globallyEnabled: false,
+      requiresBinary: "aidevops",
+      alwaysOverwrite: true,
+      description: "Multi-account QuickFile UK accounting",
     },
     {
       name: "amazon-order-history",

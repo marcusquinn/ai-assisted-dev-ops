@@ -13,9 +13,9 @@ The extraction pipeline should detect VAT from these common patterns:
 | `VAT @ 5%` | Reduced rate | 5 |
 | `VAT: 0.00` or `Zero rated` | Zero-rated | 0 |
 | `*` or `A` next to item | Standard rate (supermarket convention) | 20 |
-| `B` or no marker | Zero-rated (supermarket convention) | 0 |
+| `B` next to an item | Zero-rated (supermarket convention) | 0 |
 | `VAT Exempt` | Exempt | exempt |
-| `No VAT` or no VAT line | Out of scope or not VAT registered | oos |
+| `No VAT` | Out of scope or not VAT registered | oos |
 | `Reverse Charge` | Reverse charge (B2B services) | servrc |
 
 ## VAT Validation Rules
@@ -32,4 +32,7 @@ The extraction pipeline should detect VAT from these common patterns:
 
 4. If vat_rate not in [0, 5, 20, exempt, oos, servrc, cisrc, postgoods]:
    -> Flag as unusual rate for review
+
+5. If no VAT marker or rate is present:
+   -> Leave vat_rate unset; do not assume 20% or zero-rated treatment
 ```

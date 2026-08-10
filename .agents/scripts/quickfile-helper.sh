@@ -24,6 +24,7 @@ set -euo pipefail
 #   --supplier-id <id>       Skip supplier lookup, use this ID directly
 #   --auto-supplier          Auto-create supplier if not found (default: prompt)
 #   --currency <code>        Override currency (default: GBP)
+#   --account <alias>         Required QuickFile account alias
 #
 # Integration:
 #   This script generates MCP tool call instructions for the AI assistant.
@@ -31,7 +32,7 @@ set -euo pipefail
 #   the MCP tool calls (quickfile_supplier_search, quickfile_purchase_create, etc.)
 #
 # Author: AI DevOps Framework
-# Version: 1.0.0
+# Version: 2.0.0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 source "${SCRIPT_DIR}/shared-constants.sh"
@@ -40,7 +41,6 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 readonly QF_WORKSPACE="${HOME}/.aidevops/.agent-workspace/work/quickfile"
 readonly OCR_WORKSPACE="${HOME}/.aidevops/.agent-workspace/work/ocr-receipts"
 readonly QF_MCP_DIR="${HOME}/Git/mcp/quickfile-mcp"
-readonly QF_CREDENTIALS="${HOME}/.config/.quickfile-mcp/credentials.json"
 readonly DEFAULT_NOMINAL="5000"
 readonly DEFAULT_CURRENCY="GBP"
 
@@ -48,6 +48,15 @@ readonly DEFAULT_CURRENCY="GBP"
 ensure_workspace() {
 	if ! mkdir -p "$QF_WORKSPACE"; then
 		print_error "Failed to create workspace: ${QF_WORKSPACE}"
+		return 1
+	fi
+	return 0
+}
+
+validate_account_alias() {
+	local account="$1"
+	if [[ -z "$account" || ! "$account" =~ ^[A-Za-z0-9_-]+$ ]]; then
+		print_error "--account is required and must contain only letters, numbers, underscores, or hyphens"
 		return 1
 	fi
 	return 0
@@ -111,6 +120,12 @@ generate_supplier_instructions() {
 	local supplier_name="$1"
 	local supplier_id="${2:-}"
 	local auto_create="${3:-false}"
+	local account="$4"
+	local account_json=""
+	account_json="$(ACCOUNT_ALIAS="$account" python3 -c 'import json, os; print(json.dumps(os.environ["ACCOUNT_ALIAS"]))')" || {
+		print_error "Failed to serialize account alias to JSON"
+		return 1
+	}
 
 	if [[ -n "$supplier_id" ]]; then
 		echo "  Supplier ID: ${supplier_id} (provided directly, skip lookup)"
@@ -125,12 +140,13 @@ generate_supplier_instructions() {
 	}
 
 	echo "  1. Search for supplier:"
-	echo "     quickfile_supplier_search({ \"searchTerm\": ${supplier_name_json} })"
+	echo "     quickfile_supplier_search({ \"account\": ${account_json}, \"companyName\": ${supplier_name_json} })"
 	echo ""
 	echo "  2. If found: use the returned SupplierId"
 	echo "     If NOT found:"
 	if [[ "$auto_create" == "true" ]]; then
 		echo "     quickfile_supplier_create({"
+		echo "       \"account\": ${account_json},"
 		echo "       \"companyName\": ${supplier_name_json}"
 		echo "     })"
 	else
@@ -145,11 +161,13 @@ generate_purchase_instructions() {
 	local nominal_override="${2:-}"
 	local currency_override="${3:-}"
 	local supplier_id="${4:-}"
+	local account="$5"
 
 	JSON_FILE="$json_file" \
 		NOMINAL_OVERRIDE="$nominal_override" \
 		CURRENCY_OVERRIDE="$currency_override" \
 		SUPPLIER_ID="$supplier_id" \
+		ACCOUNT_ALIAS="$account" \
 		DEFAULT_NOMINAL_CODE="$DEFAULT_NOMINAL" \
 		DEFAULT_CURRENCY_CODE="$DEFAULT_CURRENCY" \
 		python3 -c "
@@ -162,6 +180,7 @@ payload = data.get('data', data)
 nominal_override = os.environ.get('NOMINAL_OVERRIDE') or None
 currency_override = os.environ.get('CURRENCY_OVERRIDE') or None
 supplier_id = os.environ.get('SUPPLIER_ID') or None
+account = os.environ['ACCOUNT_ALIAS']
 default_nominal = os.environ.get('DEFAULT_NOMINAL_CODE', '5000')
 default_currency = os.environ.get('DEFAULT_CURRENCY_CODE', 'GBP')
 
@@ -176,8 +195,6 @@ supplier = (payload.get('supplier_name')
 inv_date = (payload.get('invoice_date')
             or payload.get('date')
             or 'YYYY-MM-DD')
-due_date = payload.get('due_date', '')
-
 # Resolve amounts
 total = float(payload.get('total', 0) or 0)
 vat = float(payload.get('vat_amount', 0) or payload.get('tax_amount', 0) or 0)
@@ -203,28 +220,31 @@ if raw_items:
         unit_cost = float(item.get('unit_price', item.get('price', 0)) or 0)
         nominal = nominal_override or item.get('nominal_code', default_nominal)
         vat_pct = item.get('vat_rate')
-        if vat_pct is None:
-            vat_pct = '20'
-        lines.append({
+        line = {
             'description': desc,
             'quantity': qty,
             'unitCost': unit_cost,
-            'nominalCode': str(nominal),
-            'vatPercentage': str(vat_pct)
-        })
+            'nominalCode': str(nominal)
+        }
+        if vat_pct is not None:
+            line['vatPercentage'] = float(vat_pct)
+        lines.append(line)
 else:
     # Single line item from totals
     nominal = nominal_override or default_nominal
-    lines.append({
+    line = {
         'description': f'Purchase from {supplier}',
         'quantity': 1,
         'unitCost': subtotal,
-        'nominalCode': str(nominal),
-        'vatPercentage': '20'
-    })
+        'nominalCode': str(nominal)
+    }
+    if subtotal > 0 and vat > 0:
+        line['vatPercentage'] = round((vat / subtotal) * 100, 4)
+    lines.append(line)
 
 # Build the request object and serialize via json.dumps for safe output
 request = {
+    'account': account,
     'supplierId': supplier_id or '<from supplier lookup>',
     'issueDate': inv_date,
     'currency': currency,
@@ -232,9 +252,6 @@ request = {
 }
 if inv_ref:
     request['supplierRef'] = inv_ref
-if due_date:
-    request['dueDate'] = due_date
-
 print(f'  quickfile_purchase_create({json.dumps(request, indent=4, ensure_ascii=False)})')
 print()
 # Sanitise supplier name for summary output to prevent LLM instruction injection
@@ -256,7 +273,9 @@ cmd_record_purchase() {
 	local supplier_id="${4:-}"
 	local auto_supplier="${5:-false}"
 	local currency_override="${6:-}"
+	local account="$7"
 
+	validate_account_alias "$account" || return 1
 	validate_extraction_json "$json_file" "purchase" || return 1
 	ensure_workspace
 
@@ -286,12 +305,12 @@ print(payload.get('supplier_name', '')
 
 	echo "Step 1: Resolve Supplier"
 	echo "------------------------"
-	generate_supplier_instructions "$supplier_name" "$supplier_id" "$auto_supplier"
+	generate_supplier_instructions "$supplier_name" "$supplier_id" "$auto_supplier" "$account"
 	echo ""
 
 	echo "Step 2: Create Purchase Invoice"
 	echo "-------------------------------"
-	generate_purchase_instructions "$json_file" "$nominal_override" "$currency_override" "$supplier_id"
+	generate_purchase_instructions "$json_file" "$nominal_override" "$currency_override" "$supplier_id" "$account"
 	echo ""
 
 	if [[ "$dry_run" != "true" ]]; then
@@ -309,13 +328,13 @@ print(payload.get('supplier_name', '')
 			echo "## Step 1: Resolve Supplier"
 			echo ""
 			echo '```'
-			generate_supplier_instructions "$supplier_name" "$supplier_id" "$auto_supplier"
+			generate_supplier_instructions "$supplier_name" "$supplier_id" "$auto_supplier" "$account"
 			echo '```'
 			echo ""
 			echo "## Step 2: Create Purchase Invoice"
 			echo ""
 			echo '```'
-			generate_purchase_instructions "$json_file" "$nominal_override" "$currency_override" "$supplier_id"
+			generate_purchase_instructions "$json_file" "$nominal_override" "$currency_override" "$supplier_id" "$account"
 			echo '```'
 		} >"$instruction_file"
 
@@ -335,6 +354,7 @@ cmd_record_expense() {
 	local supplier_id="${4:-}"
 	local auto_supplier="${5:-true}"
 	local currency_override="${6:-}"
+	local account="$7"
 
 	validate_extraction_json "$json_file" "expense" || return 1
 	ensure_workspace
@@ -391,7 +411,7 @@ print(nominal)
 	fi
 
 	# Delegate to purchase recording (expenses are purchase invoices in QuickFile)
-	cmd_record_purchase "$json_file" "$dry_run" "$nominal_override" "$supplier_id" "$auto_supplier" "$currency_override"
+	cmd_record_purchase "$json_file" "$dry_run" "$nominal_override" "$supplier_id" "$auto_supplier" "$currency_override" "$account"
 	return $?
 }
 
@@ -399,12 +419,14 @@ print(nominal)
 cmd_supplier_resolve() {
 	local supplier_name="$1"
 	local auto_create="${2:-false}"
+	local account="$3"
+	validate_account_alias "$account" || return 1
 
 	echo ""
 	echo "Supplier Resolution"
 	echo "==================="
 	echo ""
-	generate_supplier_instructions "$supplier_name" "" "$auto_create"
+	generate_supplier_instructions "$supplier_name" "" "$auto_create" "$account"
 	echo ""
 	print_info "Execute the quickfile_supplier_search MCP tool call in your AI session."
 	return 0
@@ -417,6 +439,8 @@ cmd_batch_record() {
 	local nominal_override="${3:-}"
 	local auto_supplier="${4:-true}"
 	local currency_override="${5:-}"
+	local account="$6"
+	validate_account_alias "$account" || return 1
 
 	if [[ ! -d "$input_dir" ]]; then
 		print_error "Directory not found: ${input_dir}"
@@ -435,7 +459,7 @@ cmd_batch_record() {
 		[[ -f "$json_file" ]] || continue
 
 		echo "=== $(basename "$json_file") ==="
-		if cmd_record_purchase "$json_file" "$dry_run" "$nominal_override" "" "$auto_supplier" "$currency_override"; then
+		if cmd_record_purchase "$json_file" "$dry_run" "$nominal_override" "" "$auto_supplier" "$currency_override" "$account"; then
 			count=$((count + 1))
 		else
 			failed=$((failed + 1))
@@ -464,8 +488,9 @@ cmd_preview() {
 	local json_file="$1"
 	local nominal_override="${2:-}"
 	local currency_override="${3:-}"
+	local account="$4"
 
-	cmd_record_purchase "$json_file" "true" "$nominal_override" "" "false" "$currency_override"
+	cmd_record_purchase "$json_file" "true" "$nominal_override" "" "false" "$currency_override" "$account"
 	return $?
 }
 
@@ -485,24 +510,26 @@ cmd_status() {
 		echo "           cd ~/Git/mcp/quickfile-mcp && npm install && npm run build"
 	fi
 
-	# Credentials
+	# Bearer-token inventory (names and count only)
 	echo ""
-	echo "Credentials:"
-	if [[ -f "$QF_CREDENTIALS" ]]; then
-		echo "  credentials:    configured (${QF_CREDENTIALS})"
-		# Check file permissions
-		local perms
-		perms="$(_file_perms "$QF_CREDENTIALS")"
-		if [[ "$perms" == "600" ]]; then
-			echo "  permissions:    600 (correct)"
-		else
-			echo "  permissions:    ${perms} (should be 600)"
-		fi
+	echo "Bearer tokens:"
+	local inventory=""
+	local token_count=0
+	if command -v aidevops >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+		inventory=$(aidevops secret inventory 2>/dev/null) || inventory=""
+	fi
+	if [[ -n "$inventory" ]]; then
+		token_count=$(printf '%s' "$inventory" | jq '[.secrets[]
+			| select(.status == "configured")
+			| .name
+			| select(test("^QUICKFILE_([A-Z0-9_]+_)?(API_KEY|API_TOKEN|BEARER_TOKEN)$"))]
+			| unique | length')
+	fi
+	if [[ "$token_count" -gt 0 ]]; then
+		echo "  configured accounts: ${token_count} (values and aliases hidden)"
 	else
-		echo "  credentials:    not configured"
-		echo "  Setup: mkdir -p ~/.config/.quickfile-mcp && chmod 700 ~/.config/.quickfile-mcp"
-		echo "         Create ~/.config/.quickfile-mcp/credentials.json with:"
-		echo "         { \"accountNumber\": \"...\", \"apiKey\": \"...\", \"applicationId\": \"...\" }"
+		echo "  configured accounts: 0"
+		echo "  Setup: aidevops secret set QUICKFILE_BUSINESS_API_KEY"
 	fi
 
 	# OCR pipeline
@@ -555,20 +582,21 @@ cmd_help() {
 	echo "  --supplier-id <id>       Skip supplier lookup, use this ID"
 	echo "  --auto-supplier          Auto-create supplier if not found"
 	echo "  --currency <code>        Override currency (default: GBP)"
+	echo "  --account <alias>        Required QuickFile account alias"
 	echo ""
 	echo "Workflow:"
 	echo "  1. Extract:  ocr-receipt-helper.sh extract invoice.pdf"
-	echo "  2. Prepare:  ocr-receipt-helper.sh quickfile invoice.pdf"
-	echo "  3. Preview:  quickfile-helper.sh preview invoice-quickfile.json"
-	echo "  4. Record:   quickfile-helper.sh record-purchase invoice-quickfile.json"
+	echo "  2. Prepare:  ocr-receipt-helper.sh quickfile invoice.pdf --account business"
+	echo "  3. Preview:  quickfile-helper.sh preview invoice-quickfile.json --account business"
+	echo "  4. Record:   quickfile-helper.sh record-purchase invoice-quickfile.json --account business"
 	echo "  5. Execute:  Run the MCP tool calls in your AI assistant session"
 	echo ""
 	echo "${HELP_LABEL_EXAMPLES}"
-	echo "  quickfile-helper.sh record-purchase ~/receipts/invoice-quickfile.json"
-	echo "  quickfile-helper.sh record-expense ~/receipts/receipt-quickfile.json --auto-supplier"
-	echo "  quickfile-helper.sh supplier-resolve 'Amazon UK'"
-	echo "  quickfile-helper.sh batch-record ~/.aidevops/.agent-workspace/work/ocr-receipts/"
-	echo "  quickfile-helper.sh preview invoice-quickfile.json --nominal 7502"
+	echo "  quickfile-helper.sh record-purchase ~/receipts/invoice-quickfile.json --account business"
+	echo "  quickfile-helper.sh record-expense ~/receipts/receipt-quickfile.json --account business --auto-supplier"
+	echo "  quickfile-helper.sh supplier-resolve 'Amazon UK' --account business"
+	echo "  quickfile-helper.sh batch-record ~/.aidevops/.agent-workspace/work/ocr-receipts/ --account business"
+	echo "  quickfile-helper.sh preview invoice-quickfile.json --account business --nominal 7502"
 	echo "  quickfile-helper.sh status"
 	echo ""
 	echo "Related:"
@@ -581,7 +609,7 @@ cmd_help() {
 # Parse named options from argument list; sets variables in caller scope via echo
 # Usage: eval "$(_parse_options "$@")"
 # Outputs: shell assignments for file, dry_run, nominal_override, supplier_id,
-#          auto_supplier, currency_override; remaining args are consumed.
+#          auto_supplier, currency_override, account; remaining args are consumed.
 _parse_options() {
 	local file=""
 	local dry_run="false"
@@ -589,6 +617,7 @@ _parse_options() {
 	local supplier_id=""
 	local auto_supplier="false"
 	local currency_override=""
+	local account=""
 
 	# First positional arg (if not a flag) is the file/dir/name
 	if [[ $# -gt 0 ]] && [[ ! "$1" =~ ^-- ]]; then
@@ -633,6 +662,15 @@ _parse_options() {
 			currency_override="$currency_val"
 			shift 2
 			;;
+		--account)
+			local account_val="${2:-}"
+			if [[ -z "$account_val" ]] || [[ "$account_val" == -* ]]; then
+				print_error "--account requires a non-empty alias"
+				return 1
+			fi
+			account="$account_val"
+			shift 2
+			;;
 		*)
 			print_error "Unknown option: $1"
 			return 1
@@ -646,7 +684,8 @@ _parse_options() {
 		"nominal_override=$(printf '%q' "$nominal_override")" \
 		"supplier_id=$(printf '%q' "$supplier_id")" \
 		"auto_supplier=$(printf '%q' "$auto_supplier")" \
-		"currency_override=$(printf '%q' "$currency_override")"
+		"currency_override=$(printf '%q' "$currency_override")" \
+		"account=$(printf '%q' "$account")"
 	return 0
 }
 
@@ -659,6 +698,7 @@ _dispatch_command() {
 	local supplier_id="$5"
 	local auto_supplier="$6"
 	local currency_override="$7"
+	local account="$8"
 
 	case "$command" in
 	record-purchase | rp)
@@ -666,35 +706,35 @@ _dispatch_command() {
 			print_error "${ERROR_INPUT_FILE_REQUIRED}"
 			return 1
 		fi
-		cmd_record_purchase "$file" "$dry_run" "$nominal_override" "$supplier_id" "$auto_supplier" "$currency_override"
+		cmd_record_purchase "$file" "$dry_run" "$nominal_override" "$supplier_id" "$auto_supplier" "$currency_override" "$account"
 		;;
 	record-expense | re)
 		if [[ -z "$file" ]]; then
 			print_error "${ERROR_INPUT_FILE_REQUIRED}"
 			return 1
 		fi
-		cmd_record_expense "$file" "$dry_run" "$nominal_override" "$supplier_id" "$auto_supplier" "$currency_override"
+		cmd_record_expense "$file" "$dry_run" "$nominal_override" "$supplier_id" "$auto_supplier" "$currency_override" "$account"
 		;;
 	supplier-resolve | sr)
 		if [[ -z "$file" ]]; then
 			print_error "Supplier name is required"
 			return 1
 		fi
-		cmd_supplier_resolve "$file" "$auto_supplier"
+		cmd_supplier_resolve "$file" "$auto_supplier" "$account"
 		;;
 	batch-record | br)
 		if [[ -z "$file" ]]; then
 			print_error "Input directory is required"
 			return 1
 		fi
-		cmd_batch_record "$file" "$dry_run" "$nominal_override" "$auto_supplier" "$currency_override"
+		cmd_batch_record "$file" "$dry_run" "$nominal_override" "$auto_supplier" "$currency_override" "$account"
 		;;
 	preview)
 		if [[ -z "$file" ]]; then
 			print_error "${ERROR_INPUT_FILE_REQUIRED}"
 			return 1
 		fi
-		cmd_preview "$file" "$nominal_override" "$currency_override"
+		cmd_preview "$file" "$nominal_override" "$currency_override" "$account"
 		;;
 	status)
 		cmd_status
@@ -722,13 +762,14 @@ parse_args() {
 	local supplier_id=""
 	local auto_supplier="false"
 	local currency_override=""
+	local account=""
 
 	local opts
 	opts="$(_parse_options "$@")" || return 1
 	eval "$opts"
 
 	_dispatch_command "$command" "$file" "$dry_run" "$nominal_override" \
-		"$supplier_id" "$auto_supplier" "$currency_override"
+		"$supplier_id" "$auto_supplier" "$currency_override" "$account"
 	return $?
 }
 

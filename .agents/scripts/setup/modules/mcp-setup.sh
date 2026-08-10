@@ -876,57 +876,52 @@ _setup_quickfile_mcp_clone_and_build() {
 	return 0
 }
 
-_setup_quickfile_mcp_check_credentials() {
-	# Check and display QuickFile credential status.
-	local credentials_dir="$1"
-	local credentials_file="$2"
+_setup_quickfile_mcp_check_tokens() {
+	# Check QuickFile bearer-token names without exposing their values or aliases.
+	local inventory=""
+	local token_count=0
+	if command -v aidevops >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+		inventory=$(aidevops secret inventory 2>/dev/null) || inventory=""
+		if [[ -n "$inventory" ]]; then
+			token_count=$(printf '%s' "$inventory" | jq '[.secrets[]
+				| select(.status == "configured")
+				| .name
+				| select(test("^QUICKFILE_([A-Z0-9_]+_)?(API_KEY|API_TOKEN|BEARER_TOKEN)$"))]
+				| unique | length')
+		fi
+	fi
 
-	if [[ -f "$credentials_file" ]]; then
-		print_success "QuickFile credentials configured at $credentials_file"
+	if [[ "$token_count" -gt 0 ]]; then
+		print_success "QuickFile bearer tokens configured for ${token_count} account(s)"
 	else
-		print_info "QuickFile credentials not found"
-		print_info "Create credentials:"
-		print_info "  mkdir -p $credentials_dir && chmod 700 $credentials_dir"
-		print_info "  Create $credentials_file with:"
-		print_info "    accountNumber: from QuickFile dashboard (top-right)"
-		print_info "    apiKey: Account Settings > 3rd Party Integrations > API Key"
-		print_info "    applicationId: Account Settings > Create a QuickFile App"
+		print_info "No QuickFile REST bearer tokens found"
+		print_info "Create a personal token: Account Settings > Third Party Integration > API"
+		print_info "Store one alias at a time: aidevops secret set QUICKFILE_BUSINESS_API_KEY"
 	fi
 	return 0
 }
 
 _setup_quickfile_mcp_update_opencode() {
-	# Add QuickFile MCP entry to OpenCode config if not already present.
-	local quickfile_dir="$1"
+	# Migrate QuickFile MCP to the least-privilege secret launcher.
 
 	local opencode_config
 	if ! opencode_config=$(find_opencode_config); then
 		return 0
 	fi
 
-	local quickfile_entry
-	quickfile_entry=$(jq -r '.mcp.quickfile // empty' "$opencode_config" 2>/dev/null)
-
-	if [[ -n "$quickfile_entry" ]]; then
-		print_success "QuickFile MCP already in OpenCode config"
-		return 0
-	fi
-
-	print_info "Adding QuickFile MCP to OpenCode config..."
-	local node_path
-	node_path=$(resolve_mcp_binary_path "node")
-	[[ -z "$node_path" ]] && node_path="node"
+	print_info "Configuring QuickFile MCP with account-specific secret injection..."
+	local launcher_path="$HOME/.aidevops/agents/scripts/quickfile-mcp-launcher.sh"
 
 	local tmp_config
 	tmp_config=$(mktemp)
 	trap 'rm -f "${tmp_config:-}"' RETURN
 
-	if jq --arg np "$node_path" --arg dp "$quickfile_dir/dist/index.js" \
-		'.mcp.quickfile = {"type": "local", "command": [$np, $dp], "enabled": true}' \
+	if jq --arg lp "$launcher_path" \
+		'.mcp.quickfile = {"type": "local", "command": [$lp], "enabled": false}' \
 		"$opencode_config" >"$tmp_config" 2>/dev/null; then
 		create_backup_with_rotation "$opencode_config" "opencode"
 		mv "$tmp_config" "$opencode_config"
-		print_success "QuickFile MCP added to OpenCode config"
+		print_success "QuickFile MCP configured with least-privilege bearer-token injection"
 	else
 		rm -f "$tmp_config"
 		print_warning "Failed to update OpenCode config - add manually"
@@ -936,8 +931,6 @@ _setup_quickfile_mcp_update_opencode() {
 
 setup_quickfile_mcp() {
 	local quickfile_dir="$HOME/Git/mcp/quickfile-mcp"
-	local credentials_dir="$HOME/.config/.quickfile-mcp"
-	local credentials_file="$credentials_dir/credentials.json"
 
 	# Check prerequisites before announcing setup (GH#5240)
 	if ! command -v node &>/dev/null; then
@@ -954,8 +947,8 @@ setup_quickfile_mcp() {
 		return 0
 	fi
 
-	_setup_quickfile_mcp_check_credentials "$credentials_dir" "$credentials_file"
-	_setup_quickfile_mcp_update_opencode "$quickfile_dir"
+	_setup_quickfile_mcp_check_tokens
+	_setup_quickfile_mcp_update_opencode
 
 	print_info "Documentation: ~/.aidevops/agents/services/accounting/quickfile.md"
 	return 0

@@ -662,7 +662,7 @@ class PurchaseLineItem(BaseModel):
     quantity: float = 1.0
     unit_price: float = 0.0
     amount: float = 0.0
-    vat_rate: str = '20'
+    vat_rate: Optional[str] = None
     vat_amount: Optional[float] = None
     nominal_code: Optional[str] = None
 
@@ -730,7 +730,7 @@ class CreditLineItem(BaseModel):
     quantity: float = 1.0
     unit_price: float = 0.0
     amount: float = 0.0
-    vat_rate: str = '20'
+    vat_rate: Optional[str] = None
     vat_amount: Optional[float] = None
 
 class CreditNote(BaseModel):
