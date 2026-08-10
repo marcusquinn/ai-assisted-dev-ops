@@ -212,6 +212,10 @@ assert_allowed "allows unrelated writes in an unmanaged isolated bare temp repo"
 	"$REPO" "git -C '$PROSPECTIVE_REPO' update-ref refs/heads/main '$INITIAL_HEAD'"
 
 git -C "$REPO" worktree add -q -b feature/example "$LINKED"
+assert_allowed "allows canonical linked worktree removal" "$REPO" "git worktree remove --force '$LINKED'"
+assert_allowed "allows canonical linked worktree removal with option terminator" "$REPO" "git worktree remove -f -- '$LINKED'"
+assert_blocked "blocks canonical worktree removal of canonical root" "git worktree remove --force '$REPO'"
+assert_blocked "blocks canonical worktree removal with unsupported options" "git worktree remove --force --expire now '$LINKED'"
 assert_allowed "allows normal Git mutation in linked worktree" "$LINKED" "git switch -c feature/linked-child"
 assert_allowed "allows rev-list query in linked worktree" "$LINKED" "git rev-list --count HEAD"
 LINKED_GIT_DIR=$(git -C "$LINKED" rev-parse --path-format=absolute --git-dir)

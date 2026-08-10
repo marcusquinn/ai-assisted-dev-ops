@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from pathlib import Path
 
 from canonical_git_invocation import repository_values, split_invocation
 from canonical_git_readonly import CANONICAL_CHECKS
@@ -133,6 +134,90 @@ def _is_isolated_routines_publisher(
     )
 
 
+def _is_linked_worktree_remove_for_canonical(
+    real_git_path: str,
+    effective_cwd: str,
+    prefix: list[str],
+    args: list[str],
+) -> bool:
+    """Allow removing only linked worktrees that belong to this canonical repo."""
+    if not args or args[0] != "remove":
+        return False
+
+    target = ""
+    option_terminator = False
+    for arg in args[1:]:
+        if option_terminator:
+            if target:
+                return False
+            target = arg
+        elif arg == "--":
+            option_terminator = True
+        elif arg in {"-f", "--force"}:
+            continue
+        elif arg.startswith("-"):
+            return False
+        elif target:
+            return False
+        else:
+            target = arg
+    if not target:
+        return False
+
+    canonical_common_dir = _git_output(
+        real_git_path,
+        effective_cwd,
+        *prefix,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    )
+    canonical_top = _git_output(
+        real_git_path,
+        effective_cwd,
+        *prefix,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+    )
+    if not canonical_common_dir or not canonical_top:
+        return False
+
+    target_path = Path(target).expanduser()
+    if not target_path.is_absolute():
+        target_path = Path(effective_cwd) / target_path
+    target_real = os.path.realpath(target_path)
+    target_common_dir = _git_output(
+        real_git_path,
+        target_real,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+    )
+    target_git_dir = _git_output(
+        real_git_path,
+        target_real,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+    )
+    target_top = _git_output(
+        real_git_path,
+        target_real,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+    )
+    if not target_common_dir or not target_git_dir or not target_top:
+        return False
+    return bool(
+        os.path.realpath(target_common_dir) == os.path.realpath(canonical_common_dir)
+        and os.path.realpath(target_git_dir) != os.path.realpath(target_common_dir)
+        and os.path.realpath(target_top) == target_real
+        and target_real != os.path.realpath(canonical_top)
+    )
+
+
 def classify_git_argv(
     argv: list[str], cwd: str, real_git_path: str, check_unresolved: bool = False
 ) -> tuple[bool, str]:
@@ -161,6 +246,10 @@ def classify_git_argv(
             real_git_path, effective_cwd, prefix, subcommand
         ):
             result = True, "isolated routines publisher mutation"
+        elif subcommand == "worktree" and _is_linked_worktree_remove_for_canonical(
+            real_git_path, effective_cwd, prefix, args
+        ):
+            result = True, "linked-worktree removal for canonical repository"
         elif _is_allowed_canonical(subcommand, args):
             result = True, "read-only canonical operation or linked-worktree creation"
         else:
