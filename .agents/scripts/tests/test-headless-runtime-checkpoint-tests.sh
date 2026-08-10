@@ -301,6 +301,86 @@ test_exit_trap_dirty_checkpoint_is_deferred_not_complete() {
 	return 0
 }
 
+test_exit_trap_records_signing_failure_before_claim_release() {
+	local result=""
+	result=$(
+		(
+			_push_wip_commits_on_exit() { return 0; }
+			_hrff_write_external_outcome() { return 0; }
+			_hrff_record_runner_health_failure() { printf 'runner-health=%s\n' "$2"; return 0; }
+			_release_dispatch_claim() { printf 'claim-release=%s\n' "$2"; return 0; }
+			_release_session_lock() { return 0; }
+			_update_dispatch_ledger() { return 0; }
+			aidevops_runtime_bundle_lease_release() { return 0; }
+
+			_hrff_finalize_exit_trap "issue-29920" \
+				"worker_signing_unavailable" "1" "0" "0"
+		)
+	)
+
+	if [[ "$result" == *$'runner-health=worker_signing_unavailable\nclaim-release=worker_signing_unavailable'* ]]; then
+		print_result "exit trap records signing failure before claim release" 0
+	else
+		print_result "exit trap records signing failure before claim release" 1 "$result"
+	fi
+	return 0
+}
+
+test_exit_trap_releases_claim_when_runner_health_helper_is_missing() {
+	local result=""
+	result=$(
+		(
+			_HRFF_RUNNER_HEALTH_HELPER_OVERRIDE="${TEST_ROOT}/missing-runner-health-helper.sh"
+			_push_wip_commits_on_exit() { return 0; }
+			_hrff_write_external_outcome() { return 0; }
+			_release_dispatch_claim() { printf 'claim-release=%s\n' "$2"; return 0; }
+			_release_session_lock() { return 0; }
+			_update_dispatch_ledger() { return 0; }
+			aidevops_runtime_bundle_lease_release() { return 0; }
+
+			_hrff_finalize_exit_trap "issue-29920" \
+				"worker_signing_unavailable" "1" "0" "0"
+		) 2>&1
+	)
+
+	if [[ "$result" == *"runner-health helper unavailable"* && \
+		"$result" == *"claim-release=worker_signing_unavailable"* ]]; then
+		print_result "missing runner-health helper cannot strand claim release" 0
+	else
+		print_result "missing runner-health helper cannot strand claim release" 1 "$result"
+	fi
+	return 0
+}
+
+test_exit_trap_releases_claim_when_runner_health_helper_fails() {
+	local failing_helper="${TEST_ROOT}/failing-runner-health-helper.sh"
+	local result=""
+	printf '#!/usr/bin/env bash\nexit 1\n' >"$failing_helper"
+	chmod +x "$failing_helper"
+	result=$(
+		(
+			_HRFF_RUNNER_HEALTH_HELPER_OVERRIDE="$failing_helper"
+			_push_wip_commits_on_exit() { return 0; }
+			_hrff_write_external_outcome() { return 0; }
+			_release_dispatch_claim() { printf 'claim-release=%s\n' "$2"; return 0; }
+			_release_session_lock() { return 0; }
+			_update_dispatch_ledger() { return 0; }
+			aidevops_runtime_bundle_lease_release() { return 0; }
+
+			_hrff_finalize_exit_trap "issue-29920" \
+				"worker_signing_unavailable" "1" "0" "0"
+		) 2>&1
+	)
+
+	if [[ "$result" == *"runner-health recording failed"* && \
+		"$result" == *"claim-release=worker_signing_unavailable"* ]]; then
+		print_result "failing runner-health helper cannot strand claim release" 0
+	else
+		print_result "failing runner-health helper cannot strand claim release" 1 "$result"
+	fi
+	return 0
+}
+
 test_failed_worker_draft_retains_claim_when_block_not_visible() {
 	local result=""
 	result=$(
@@ -527,6 +607,9 @@ test_pr_checkpoint_lifecycle_cases() {
 	test_failed_worker_draft_checkpoint_preserves_continuation_without_completion
 	test_dirty_worktree_checkpoint_is_deferred_not_complete
 	test_exit_trap_dirty_checkpoint_is_deferred_not_complete
+	test_exit_trap_records_signing_failure_before_claim_release
+	test_exit_trap_releases_claim_when_runner_health_helper_is_missing
+	test_exit_trap_releases_claim_when_runner_health_helper_fails
 	test_failed_worker_draft_retains_claim_when_block_not_visible
 	test_protected_draft_is_not_mutated_or_completed
 	test_checkpoint_terminal_telemetry_is_deferred

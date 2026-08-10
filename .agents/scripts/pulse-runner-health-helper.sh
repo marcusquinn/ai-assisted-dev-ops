@@ -13,7 +13,7 @@
 # single advisory.
 #
 # A "zero-attempt" outcome means a dispatched worker never produced real
-# work — the four signals are listed in the brief and recorded by callers.
+# work — the five signals are listed in the help text and recorded by callers.
 # Workers that produce a commit, open a PR, or burn >5K tokens are real
 # attempts and reset the counter — even if the work failed, the failure is
 # brief/tier/codebase, not version skew.
@@ -287,13 +287,33 @@ _rh_state_apply() {
 _rh_is_zero_attempt_signal() {
 	local signal="$1"
 	case "$signal" in
-	no_worker_process | no_branch_created | low_token_usage | watchdog_killed_no_commit)
+	no_worker_process | no_branch_created | low_token_usage | watchdog_killed_no_commit | worker_signing_unavailable)
 		return 0
 		;;
 	*)
 		return 1
 		;;
 	esac
+}
+
+#######################################
+# Resolve the trip threshold for a zero-attempt signal. Deterministic signing
+# preflight failure proves this runner cannot launch any worker, so one outcome
+# must pause it immediately while healthy peers remain eligible.
+# Args: $1 = outcome signal
+# Outputs: positive integer threshold
+#######################################
+_rh_failure_threshold_for_signal() {
+	local signal="$1"
+	case "$signal" in
+	worker_signing_unavailable)
+		printf '1\n'
+		;;
+	*)
+		printf '%s\n' "$RUNNER_HEALTH_FAILURE_THRESHOLD"
+		;;
+	esac
+	return 0
 }
 
 #######################################
@@ -348,7 +368,7 @@ cmd_record_outcome() {
 	fi
 
 	# Append outcome to ledger and update counter.
-	local new_counter
+	local new_counter="" signal_threshold=""
 	if [[ "$is_zero" -eq 1 ]]; then
 		# Counter increments; the window may need to be re-anchored if it
 		# was idle through expiry above (already done) — otherwise keep it.
@@ -375,14 +395,15 @@ cmd_record_outcome() {
 	# (real-attempt outcomes already reset the counter above).
 	new_counter=$(_rh_get_field '.consecutive_zero_attempts')
 	[[ -z "$new_counter" ]] && new_counter=0
+	signal_threshold=$(_rh_failure_threshold_for_signal "$signal")
 	local current_state
 	current_state=$(_rh_get_field '.circuit_breaker.state')
 	[[ -z "$current_state" ]] && current_state="closed"
 
 	if [[ "$is_zero" -eq 1 ]] \
 		&& [[ "$current_state" == "closed" ]] \
-		&& [[ "$new_counter" -ge "$RUNNER_HEALTH_FAILURE_THRESHOLD" ]]; then
-		_rh_trip_breaker "$issue" "consecutive_zero_attempts=${new_counter}"
+		&& [[ "$new_counter" -ge "$signal_threshold" ]]; then
+		_rh_trip_breaker "$issue" "signal=${signal} consecutive_zero_attempts=${new_counter}"
 	fi
 	return 0
 }

@@ -1086,6 +1086,35 @@ _worker_archive_dirty_worktree_patch() {
 }
 
 #######################################
+# Record deterministic launch capability failures in the local runner-health
+# breaker before releasing the shared issue claim. This path is fail-open:
+# missing or broken health tooling must never strand the issue claim.
+# Args: $1=session key, $2=terminal reason
+#######################################
+_hrff_record_runner_health_failure() {
+	local session_key="$1"
+	local reason="$2"
+	[[ "$reason" == "worker_signing_unavailable" ]] || return 0
+
+	local helper="${_HRFF_RUNNER_HEALTH_HELPER_OVERRIDE:-${BASH_SOURCE[0]%/*}/pulse-runner-health-helper.sh}"
+	local issue_number=""
+	local issue_id="$session_key"
+	issue_number=$(_hrff_release_issue_number "$session_key")
+	if [[ -n "${DISPATCH_REPO_SLUG:-}" && -n "$issue_number" ]]; then
+		issue_id="${DISPATCH_REPO_SLUG}#${issue_number}"
+	fi
+
+	if [[ ! -x "$helper" ]]; then
+		print_warning "[exit-trap] runner-health helper unavailable; continuing claim release for session=${session_key}"
+		return 0
+	fi
+	if ! "$helper" record-outcome "$reason" "$issue_id"; then
+		print_warning "[exit-trap] runner-health recording failed; continuing claim release for session=${session_key}"
+	fi
+	return 0
+}
+
+#######################################
 # Finalize an EXIT-trap classification: preserve work, emit terminal evidence,
 # release the claim/lock, and force a non-zero process exit when preparation
 # ended cleanly before runtime invocation.
@@ -1138,6 +1167,7 @@ _hrff_finalize_exit_trap() {
 	if declare -F _cleanup_headless_runtime_temp_paths >/dev/null 2>&1; then
 		_cleanup_headless_runtime_temp_paths
 	fi
+	_hrff_record_runner_health_failure "$session_key" "$reason"
 	if [[ "$claim_release_handled" -eq 0 ]] && \
 		! _release_dispatch_claim "$session_key" "$reason" "$exit_status" "$session_count"; then
 		print_warning "[exit-trap] claim release persistence remains retryable for session=${session_key} reason=${reason}"
