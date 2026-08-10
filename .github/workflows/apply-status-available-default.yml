@@ -59,6 +59,7 @@ jobs:
               'persistent',
               'consolidation-task',
               'routine-tracking',
+              'publication:pending',
               'no-auto-dispatch'
             ];
             if (labels.some(l => excluded.includes(l))) {

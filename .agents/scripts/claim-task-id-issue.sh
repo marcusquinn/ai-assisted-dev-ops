@@ -304,6 +304,29 @@ _interactive_session_auto_claim_new_task() {
 # Issue Creation Helpers
 # =============================================================================
 
+# Project intended planning labels into the safe pre-publication issue state.
+# TODO.md retains the original labels so exact default-branch reconciliation can
+# apply them later; only positive dispatch labels are withheld from the issue.
+_publication_pending_labels() {
+	local labels="$1"
+	local projected="" label=""
+	while IFS= read -r label; do
+		[[ -z "$label" || "$label" == "auto-dispatch" || "$label" == "status:available" || "$label" == "publication:pending" ]] && continue
+		projected="${projected:+${projected},}${label}"
+	done < <(printf '%s\n' "$labels" | tr ',' '\n')
+	printf '%s\n' "${projected:+${projected},}publication:pending"
+	return 0
+}
+
+_verify_publication_pending_label() {
+	local issue_num="$1"
+	local repo="$2"
+	[[ -n "$issue_num" && -n "$repo" ]] || return 1
+	gh issue view "$issue_num" --repo "$repo" --json labels \
+		--jq 'any(.labels[]?; .name == "publication:pending")' 2>/dev/null |
+		grep -qx true
+}
+
 # Try delegating issue creation to issue-sync-helper.sh for rich bodies,
 # proper labels (including auto-dispatch), and duplicate detection (t1324).
 # Echoes the issue number on success, returns 1 if delegation unavailable/failed.

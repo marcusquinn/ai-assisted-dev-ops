@@ -12,6 +12,9 @@
 #   --description "Details"    Task description (required for issue creation unless
 #                              a brief file exists at todo/tasks/{task_id}-brief.md)
 #   --labels "label1,label2"   Comma-separated labels (optional)
+#   --publication-state STATE  Issue/planning state: pending (default) withholds
+#                              dispatch labels; canonical is for verified
+#                              default-branch creation only
 #   --count N                  Allocate N consecutive IDs (default: 1)
 #                              Creates one GitHub/GitLab issue per ID using
 #                              the same --title. Output includes ref_tNNN=GH#NNN
@@ -139,6 +142,8 @@ NO_BLOCKED_BY=false
 TASK_TITLE=""
 TASK_DESCRIPTION=""
 TASK_LABELS=""
+TASK_PUBLICATION_STATE="pending"
+TASK_COUNTER_STATUS_FALLBACK="fallback"
 # t2838: populated by --parent-issue N; read by _compose_issue_body for body
 # injection and create_github_issue / _try_issue_sync_delegation for explicit
 # addSubIssue mutation after issue creation.
@@ -268,6 +273,14 @@ parse_args() {
 			;;
 		--labels)
 			TASK_LABELS="$2"
+			shift 2
+			;;
+		--publication-state)
+			TASK_PUBLICATION_STATE="${2:-}"
+			if [[ "$TASK_PUBLICATION_STATE" != "pending" && "$TASK_PUBLICATION_STATE" != "canonical" ]]; then
+				log_error "--publication-state must be pending or canonical"
+				exit 1
+			fi
 			shift 2
 			;;
 		--count)
@@ -539,7 +552,8 @@ create_github_issue() {
 
 	# Try rich delegation first (t1324)
 	local issue_num
-	if issue_num=$(_try_issue_sync_delegation "$title" "$repo_path"); then
+	if issue_num=$(AIDEVOPS_PLANNING_PUBLICATION_STATE="$TASK_PUBLICATION_STATE" \
+		_try_issue_sync_delegation "$title" "$repo_path"); then
 		_auto_assign_issue "$issue_num" "$repo_path"
 		_interactive_session_auto_claim_new_task "$issue_num" "$repo_path"
 		_lock_maintainer_issue_at_creation "$issue_num" "$repo_path"
@@ -573,6 +587,11 @@ create_github_issue() {
 		# parseable number. The duplicate lookup then recovers the issue number;
 		# stamp/verify TODO.md before reporting success so dispatchability sees
 		# the same state as the returned issue number.
+		if [[ "$TASK_PUBLICATION_STATE" == "pending" ]] &&
+			! _verify_publication_pending_label "$issue_num" "$_slug_for_warn"; then
+			log_warn "Recovered issue #${issue_num}, but publication:pending could not be verified"
+			return 1
+		fi
 		if ! _converge_created_issue_ref \
 			"$_task_id_for_todo" "$issue_num" "$title" "$labels" "$repo_path"; then
 			log_warn "Recovered issue #${issue_num}, but failed to persist task mapping for ${_task_id_for_todo}"
@@ -604,14 +623,21 @@ create_github_issue() {
 	fi
 	create_args+=(--body "$body")
 
-	# t2789: Ensure new issues are immediately dispatchable by applying
+	# Published tasks retain the historical status default. Tasks created before
+	# their planning reaches the default branch withhold positive dispatch labels
+	# and carry an independently enforced publication blocker instead.
+	if [[ "$TASK_PUBLICATION_STATE" == "pending" ]]; then
+		labels=$(_publication_pending_labels "$labels")
+	fi
+
+	# t2789: Ensure canonical new issues are immediately dispatchable by applying
 	# status:available when the caller did not specify any status:* label.
 	# Without this default, new issues have no status label, and the pulse
 	# dispatcher's candidate filter (which requires status:available) skips
 	# them entirely until a human or downstream process labels them.
 	# Callers that pass an explicit status:* (e.g. status:queued, status:blocked,
 	# status:in-review) are respected verbatim — this only fills the gap.
-	if [[ ",${labels}," != *",status:"* ]]; then
+	if [[ "$TASK_PUBLICATION_STATE" == "canonical" && ",${labels}," != *",status:"* ]]; then
 		if [[ -n "$labels" ]]; then
 			labels="${labels},status:available"
 		else
@@ -641,6 +667,11 @@ create_github_issue() {
 
 	if [[ -z "$issue_num" ]]; then
 		log_warn "Failed to extract issue number from: $issue_url"
+		return 1
+	fi
+	if [[ "$TASK_PUBLICATION_STATE" == "pending" ]] &&
+		! _verify_publication_pending_label "$issue_num" "$_slug_for_warn"; then
+		log_warn "Created issue #${issue_num}, but publication:pending could not be verified"
 		return 1
 	fi
 
@@ -989,13 +1020,13 @@ _main_resolve_allocation() {
 				return 1
 			fi
 			log_warn "Online allocation failed; using automatic auditable offline fallback (CAS_EXHAUSTION_FATAL=0)"
-			_task_counter_status "fallback" "offline_offset"
-			allocation_status="fallback"
+			_task_counter_status "$TASK_COUNTER_STATUS_FALLBACK" "offline_offset"
+			allocation_status="$TASK_COUNTER_STATUS_FALLBACK"
 			is_offline_out="true"
 		fi
 	else
 		is_offline_out="true"
-		allocation_status="fallback"
+		allocation_status="$TASK_COUNTER_STATUS_FALLBACK"
 	fi
 
 	if [[ "$is_offline_out" == "true" ]]; then

@@ -31,6 +31,11 @@
 [[ -n "${_ISSUE_SYNC_HELPER_PUSH_LOADED:-}" ]] && return 0
 _ISSUE_SYNC_HELPER_PUSH_LOADED=1
 
+_PUSH_PUBLICATION_PENDING="pending"
+_PUSH_PUBLICATION_CANONICAL="canonical"
+_PUSH_STATUS_AVAILABLE="status:available"
+_PUSH_BOOLEAN_TRUE="true"
+
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_lib_path="${BASH_SOURCE[0]%/*}"
@@ -123,17 +128,10 @@ _push_create_issue() {
 	local task_id="$1" repo="$2" todo_file="$3" title="$4" body="$5" labels="$6" assignee="$7"
 	_PUSH_CREATED_NUM=""
 
-	[[ -n "$labels" ]] && ensure_labels_exist "$labels" "$repo"
-	local status_label="status:available"
-	[[ -n "$assignee" ]] && {
-		status_label="status:claimed"
-		gh_create_label "$repo" "status:claimed" "D93F0B" "Task is claimed"
-	}
-	# Add session origin label (origin:worker or origin:interactive)
-	local origin_label
-	origin_label=$(session_origin_label)
-	gh_create_label "$repo" "$origin_label" "C5DEF5" "Created from ${origin_label#origin:} session"
-	local all_labels="${labels:+${labels},}${status_label},${origin_label}"
+	_push_prepare_creation_labels "$labels" "$assignee" "$repo" || return 2
+	local publication_state="$_PUSH_CREATION_STATE"
+	local origin_label="$_PUSH_CREATION_ORIGIN"
+	local all_labels="$_PUSH_CREATION_ALL_LABELS"
 
 	# cool — belt-and-suspenders race guard right before creation
 	local recheck
@@ -168,7 +166,7 @@ _push_create_issue() {
 			gh_exit=$?
 		} || true
 	fi
-	if [[ $gh_exit -ne 0 && "$combined" == *"repository.labels"* ]]; then
+	if [[ $gh_exit -ne 0 && "$combined" == *"repository.labels"* && "$publication_state" == "$_PUSH_PUBLICATION_CANONICAL" ]]; then
 		print_warning "Label lookup failed for $task_id; retrying issue creation without labels"
 		{
 			combined=$(_push_create_issue_without_labels "$repo" "$title" "$body" "$assignee")
@@ -188,11 +186,8 @@ _push_create_issue() {
 			print_warning "gh create exited $gh_exit but issue found via recovery: #$recovery"
 			log_verbose "gh output: ${combined:0:200}"
 			_PUSH_CREATED_NUM="$recovery"
-			add_gh_ref_to_todo "$task_id" "$recovery" "$todo_file"
-			if ! require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$recovery"; then
-				print_error "Recovered #${recovery}, but immutable mapping validation failed"
-				return 2
-			fi
+			_push_verify_created_mapping "$task_id" "$repo" "$todo_file" \
+				"$recovery" "$publication_state" "Recovered" || return 2
 			return 0
 		fi
 		print_error "Failed to create issue for $task_id (exit $gh_exit): ${combined:0:200}"
@@ -203,11 +198,8 @@ _push_create_issue() {
 	num=$(echo "$url" | grep -oE '[0-9]+$' || echo "")
 	[[ -n "$num" ]] && _PUSH_CREATED_NUM="$num"
 	if [[ -n "$num" ]]; then
-		add_gh_ref_to_todo "$task_id" "$num" "$todo_file"
-		if ! require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$num"; then
-			print_error "Created #${num}, but immutable mapping validation failed"
-			return 2
-		fi
+		_push_verify_created_mapping "$task_id" "$repo" "$todo_file" \
+			"$num" "$publication_state" "Created" || return 2
 	fi
 
 	# t1970/t1984/t2157: auto-assign interactive origin issues (not auto-dispatch).
@@ -218,6 +210,68 @@ _push_create_issue() {
 	# Mapping validation above must precede this lock mutation.
 	[[ -n "$num" ]] && _push_lock_created_issue "$num" "$repo" "$origin_label"
 	return 0
+}
+
+_push_prepare_creation_labels() {
+	local labels="$1" assignee="$2" repo="$3"
+	_PUSH_CREATION_STATE="${AIDEVOPS_PLANNING_PUBLICATION_STATE:-$_PUSH_PUBLICATION_CANONICAL}"
+	if [[ "$_PUSH_CREATION_STATE" != "$_PUSH_PUBLICATION_PENDING" &&
+		"$_PUSH_CREATION_STATE" != "$_PUSH_PUBLICATION_CANONICAL" ]]; then
+		print_error "Invalid planning publication state: $_PUSH_CREATION_STATE"
+		return 1
+	fi
+	if [[ "$_PUSH_CREATION_STATE" == "$_PUSH_PUBLICATION_PENDING" ]]; then
+		labels=$(_push_pending_publication_labels "$labels")
+	fi
+	[[ -n "$labels" ]] && ensure_labels_exist "$labels" "$repo"
+	local status_label="$_PUSH_STATUS_AVAILABLE"
+	if [[ -n "$assignee" ]]; then
+		status_label="status:claimed"
+		gh_create_label "$repo" "$status_label" "D93F0B" "Task is claimed"
+	fi
+	_PUSH_CREATION_ORIGIN=$(session_origin_label)
+	gh_create_label "$repo" "$_PUSH_CREATION_ORIGIN" "C5DEF5" \
+		"Created from ${_PUSH_CREATION_ORIGIN#origin:} session"
+	_PUSH_CREATION_ALL_LABELS="${labels:+${labels},}${_PUSH_CREATION_ORIGIN}"
+	if [[ "$_PUSH_CREATION_STATE" == "$_PUSH_PUBLICATION_CANONICAL" ||
+		"$status_label" != "$_PUSH_STATUS_AVAILABLE" ]]; then
+		_PUSH_CREATION_ALL_LABELS="${_PUSH_CREATION_ALL_LABELS},${status_label}"
+	fi
+	return 0
+}
+
+_push_verify_created_mapping() {
+	local task_id="$1" repo="$2" todo_file="$3" issue_num="$4" publication_state="$5" verb="$6"
+	if [[ "$publication_state" == "$_PUSH_PUBLICATION_PENDING" ]] &&
+		! _push_verify_publication_pending "$issue_num" "$repo"; then
+		print_error "${verb} #${issue_num}, but publication:pending could not be verified"
+		return 1
+	fi
+	add_gh_ref_to_todo "$task_id" "$issue_num" "$todo_file"
+	if ! require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$issue_num"; then
+		print_error "${verb} #${issue_num}, but immutable mapping validation failed"
+		return 1
+	fi
+	return 0
+}
+
+_push_pending_publication_labels() {
+	local labels="$1"
+	local projected="" label=""
+	while IFS= read -r label; do
+		[[ -z "$label" || "$label" == "auto-dispatch" || "$label" == "$_PUSH_STATUS_AVAILABLE" || "$label" == "publication:pending" ]] && continue
+		projected="${projected:+${projected},}${label}"
+	done < <(printf '%s\n' "$labels" | tr ',' '\n')
+	printf '%s\n' "${projected:+${projected},}publication:pending"
+	return 0
+}
+
+_push_verify_publication_pending() {
+	local issue_num="$1"
+	local repo="$2"
+	gh issue view "$issue_num" --repo "$repo" --json labels \
+		--jq 'any(.labels[]?; .name == "publication:pending")' 2>/dev/null |
+		grep -qx true
 }
 
 # GH#18041 (t1957): Collision detection — warn if a merged PR already uses
@@ -243,6 +297,13 @@ _push_warn_if_task_id_collides() {
 
 cmd_push() {
 	local target_task="${1:-}"
+	if [[ -z "${AIDEVOPS_PLANNING_PUBLICATION_STATE:-}" ]]; then
+		if [[ "${GITHUB_ACTIONS:-}" == "$_PUSH_BOOLEAN_TRUE" && -z "$target_task" ]]; then
+			AIDEVOPS_PLANNING_PUBLICATION_STATE="$_PUSH_PUBLICATION_CANONICAL"
+		else
+			AIDEVOPS_PLANNING_PUBLICATION_STATE="$_PUSH_PUBLICATION_PENDING"
+		fi
+	fi
 	_init_cmd || return 1
 	local repo="$_CMD_REPO" todo_file="$_CMD_TODO" project_root="$_CMD_ROOT"
 
@@ -258,12 +319,12 @@ cmd_push() {
 	#
 	# Fix: bulk push (no target_task) is CI-only unless --force-push is passed.
 	# Single-task push (claim-task-id.sh path) is always allowed.
-	if [[ -z "$target_task" && "${GITHUB_ACTIONS:-}" != "true" && "$FORCE_PUSH" != "true" ]]; then
+	if [[ -z "$target_task" && "${GITHUB_ACTIONS:-}" != "$_PUSH_BOOLEAN_TRUE" && "$FORCE_PUSH" != "$_PUSH_BOOLEAN_TRUE" ]]; then
 		print_info "Bulk push skipped — CI is the single authority for issue creation from TODO.md"
 		print_info "Use 'issue-sync-helper.sh push <task_id>' for single tasks, or --force-push to override"
 		return 0
 	fi
-	if [[ "$FORCE_PUSH" == "true" && -z "$target_task" ]]; then
+	if [[ "$FORCE_PUSH" == "$_PUSH_BOOLEAN_TRUE" && -z "$target_task" ]]; then
 		print_info "FORCE_PUSH active — bypassing CI-only gate for bulk push (GH#20146 audit)"
 	fi
 
@@ -278,7 +339,7 @@ cmd_push() {
 	}
 
 	print_info "Processing ${#tasks[@]} task(s) for push to $repo"
-	gh_create_label "$repo" "status:available" "0E8A16" "Task is available for claiming"
+	gh_create_label "$repo" "$_PUSH_STATUS_AVAILABLE" "0E8A16" "Task is available for claiming"
 
 	local created=0 skipped=0 failed=0 relationships_pending=0
 	for task_id in "${tasks[@]}"; do

@@ -217,7 +217,8 @@ _resolve_pending_task_ref() {
 		log_error "Cannot resolve $task_id ref:none — issue-sync-helper.sh is missing"
 		return 1
 	fi
-	if ! (cd "$repo_path" && "$sync_helper" push "$task_id" >/dev/null); then
+	if ! (cd "$repo_path" && AIDEVOPS_PLANNING_PUBLICATION_STATE=pending \
+		"$sync_helper" push "$task_id" >/dev/null); then
 		log_error "Tracker issue creation failed for $task_id"
 		return 1
 	fi
@@ -380,7 +381,7 @@ _allocate_one_task() {
 	local repo_path="$5"
 	local claim_script="$6"
 
-	local -a claim_args=(--title "$title" --repo-path "$repo_path")
+	local -a claim_args=(--title "$title" --repo-path "$repo_path" --publication-state pending)
 	[[ -n "$labels" ]] && claim_args+=(--labels "$labels")
 	[[ "$no_issue" == "true" ]] && claim_args+=(--no-issue)
 	[[ "$offline" == "true" ]] && claim_args+=(--offline)

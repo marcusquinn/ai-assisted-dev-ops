@@ -4,9 +4,8 @@
 #
 # test-claim-task-id-status-default.sh — GH#20714/t2789 regression guard.
 #
-# Verifies that claim-task-id.sh's bare GitHub issue creation path applies
-# status:available when callers provide no lifecycle status label, while
-# preserving explicit status:* labels unchanged.
+# Verifies pending creation withholds positive dispatch labels and canonical
+# creation retains the historical status:available default.
 
 set -uo pipefail
 
@@ -109,6 +108,10 @@ _setup() {
 		return 0
 	}
 
+	_verify_publication_pending_label() {
+		return 0
+	}
+
 	_auto_assign_issue() {
 		return 0
 	}
@@ -138,6 +141,8 @@ _setup() {
 
 run_create() {
 	local labels="$1"
+	local state="${2:-pending}"
+	TASK_PUBLICATION_STATE="$state"
 	: >"$CREATE_ARGS_FILE"
 	create_github_issue "t2789: test default status label" "body" "$labels" "${STUB_DIR}/repo" >/dev/null
 	local create_args=""
@@ -149,18 +154,20 @@ run_create() {
 _setup
 
 args_default=$(run_create 'auto-dispatch,tier:standard,bug')
-assert_contains "default_status_available_added" "$args_default" '--label auto-dispatch,tier:standard,bug,status:available'
+assert_contains "pending_blocker_added" "$args_default" '--label tier:standard,bug,publication:pending'
+assert_not_contains "pending_auto_dispatch_withheld" "$args_default" 'auto-dispatch'
+assert_not_contains "pending_status_available_withheld" "$args_default" 'status:available'
 
 args_empty=$(run_create '')
-assert_contains "empty_labels_status_available_added" "$args_empty" '--label status:available'
+assert_contains "empty_labels_pending_blocker_added" "$args_empty" '--label publication:pending'
 
 args_explicit=$(run_create 'auto-dispatch,status:blocked,tier:standard')
-assert_contains "explicit_status_preserved" "$args_explicit" '--label auto-dispatch,status:blocked,tier:standard'
+assert_contains "explicit_blocked_status_preserved" "$args_explicit" '--label status:blocked,tier:standard,publication:pending'
 assert_not_contains "explicit_status_no_default" "$args_explicit" 'status:available'
 
-args_duplicate=$(run_create 'auto-dispatch,tier:standard,auto-dispatch,status:available,tier:standard')
-assert_contains "duplicate_labels_collapsed" "$args_duplicate" '--label auto-dispatch,tier:standard,status:available'
-assert_not_contains "duplicate_labels_no_repeat" "$args_duplicate" 'auto-dispatch,tier:standard,auto-dispatch'
+args_canonical=$(run_create 'auto-dispatch,tier:standard,bug' canonical)
+assert_contains "canonical_status_available_added" "$args_canonical" '--label auto-dispatch,tier:standard,bug,status:available'
+assert_not_contains "canonical_has_no_pending_blocker" "$args_canonical" 'publication:pending'
 
 if [[ $FAIL -eq 0 ]]; then
 	printf '%sAll claim-task-id status default tests passed%s (%d assertions)\n' "$GREEN" "$NC" "$PASS"

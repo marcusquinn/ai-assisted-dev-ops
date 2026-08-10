@@ -81,6 +81,11 @@ if ! declare -F _ensure_todo_entry_written >/dev/null 2>&1; then
 	exit 1
 fi
 
+# Issue creation now requires a verified publication blocker before local
+# planning lands. These persistence tests isolate TODO/ref convergence; the
+# blocker failure path is covered by test-issue-sync-publication-pending.sh.
+_verify_publication_pending_label() { return 0; }
+
 printf '%sRunning _ensure_todo_entry_written tests (t2548)%s\n' "$BLUE" "$NC"
 
 # ---------------------------------------------------------------------------
