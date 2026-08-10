@@ -2700,9 +2700,8 @@ Usage:
   dispatch-dedup-helper.sh is-assigned-read-only <issue> <slug> [self-login]  Inspect without recovery writes
   dispatch-dedup-helper.sh enumerate-blockers <issue> <slug> [runner]
                                                        Report ALL structural label blockers (exit 0=blocked, 1=none)
-                                                        Emits newline-separated tokens: PARENT_TASK_BLOCKED,
-                                                        PUBLICATION_PENDING_BLOCKED,
-                                                       NO_AUTO_DISPATCH_BLOCKED, GUARD_UNCERTAIN. Unlike is-assigned,
+                                                        Emits newline-separated tokens: PARENT_TASK_BLOCKED, NO_AUTO_DISPATCH_BLOCKED,
+                                                        GUARD_UNCERTAIN. Unlike is-assigned,
                                                        does not short-circuit on first match. t2894.
   dispatch-dedup-helper.sh classify-blocker <signal>
                                                        Classify a blocker signal into a stable metric reason.
