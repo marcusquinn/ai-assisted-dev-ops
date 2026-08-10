@@ -38,6 +38,9 @@ set -u
 PRIVACY_REPOS_CONFIG="${PRIVACY_REPOS_CONFIG:-$HOME/.config/aidevops/repos.json}"
 PRIVACY_CACHE_FILE="${PRIVACY_CACHE_FILE:-$HOME/.aidevops/cache/repo-privacy.json}"
 PRIVACY_CACHE_TTL="${PRIVACY_CACHE_TTL:-600}" # 10 minutes
+# Optional local-only inventory. One `person: value`, `client: value`, or
+# `repo: owner/repo` entry per line; tabs are also accepted after the class.
+PRIVACY_ENTITY_CONFIG="${PRIVACY_ENTITY_CONFIG:-$HOME/.aidevops/configs/privacy-guard-private-entities.txt}"
 # Paths whose diffs we scan. Default to the full repository because aidevops is
 # public and private names/paths must not land in code, docs, tests, or plans.
 # Override with PRIVACY_SCAN_GLOBS_TEXT as a newline/colon/comma-separated list.
@@ -229,6 +232,151 @@ privacy_enumerate_private_slugs() {
 		printf '%s\n' "$slugs" >"$out_file"
 	else
 		printf '%s\n' "$slugs"
+	fi
+	return 0
+}
+
+#######################################
+# Enumerate private publication entities as `class<TAB>value` records.
+# Repository values are derived from the existing slug inventory; person and
+# client aliases are optional local-only configuration and are never logged.
+# Arguments:
+#   $1 - output file path
+#######################################
+privacy_enumerate_private_entities() {
+	local out_file="$1"
+	local slugs_file entity class value
+
+	[[ -z "$out_file" ]] && return 1
+	slugs_file=$(mktemp) || return 1
+	if ! privacy_enumerate_private_slugs "$slugs_file"; then
+		rm -f "$slugs_file"
+		return 1
+	fi
+	: >"$out_file" || {
+		rm -f "$slugs_file"
+		return 1
+	}
+	while IFS= read -r entity || [[ -n "$entity" ]]; do
+		[[ -z "$entity" ]] && continue
+		printf 'repo\t%s\n' "$entity" >>"$out_file"
+	done <"$slugs_file"
+	rm -f "$slugs_file"
+
+	if [[ -f "$PRIVACY_ENTITY_CONFIG" ]]; then
+		while IFS= read -r entity || [[ -n "$entity" ]]; do
+			[[ -z "$entity" || "$entity" == \#* ]] && continue
+			if [[ "$entity" == *$'\t'* ]]; then
+				class="${entity%%$'\t'*}"
+				value="${entity#*$'\t'}"
+			else
+				class="${entity%%:*}"
+				value="${entity#*:}"
+			fi
+			class="${class//[[:space:]]/}"
+			value="${value#"${value%%[![:space:]]*}"}"
+			value="${value%"${value##*[![:space:]]}"}"
+			case "$class" in
+			person | client | repo) [[ -n "$value" ]] && printf '%s\t%s\n' "$class" "$value" >>"$out_file" ;;
+			esac
+		done <"$PRIVACY_ENTITY_CONFIG"
+	fi
+	return 0
+}
+
+#######################################
+# Scan text with a tagged entity inventory without emitting matched values.
+# Arguments:
+#   $1 - text content
+#   $2 - entity file from privacy_enumerate_private_entities
+# Output: generic hit classes only
+#######################################
+privacy_scan_public_text() {
+	local text="$1"
+	local entities_file="$2"
+	local hits=0 class value secret_hits path_hits
+
+	[[ -f "$entities_file" ]] || return 2
+	[[ -z "$text" ]] && return 0
+	path_hits=$(privacy_scan_local_paths "$text")
+	case $? in
+	1) printf '%s\n' '[local-path]'; hits=$((hits + 1)) ;;
+	2) return 2 ;;
+	esac
+	secret_hits=$(privacy_scan_secret_material_text "$text")
+	if [[ $? -eq 1 ]]; then
+		printf '%s\n' "$secret_hits"
+		hits=$((hits + 1))
+	fi
+	while IFS=$'\t' read -r class value || [[ -n "$class" ]]; do
+		[[ -z "$class" || -z "$value" ]] && continue
+		if [[ "$text" == *"$value"* ]]; then
+			printf '[private-%s]\n' "$class"
+			hits=$((hits + 1))
+		fi
+	done <"$entities_file"
+	[[ "$hits" -gt 0 ]] && return 1
+	return 0
+}
+
+#######################################
+# Redact tagged private entities in locally previewed text.
+# Arguments: $1=text $2=entity inventory
+#######################################
+privacy_redact_public_text() {
+	local text="$1"
+	local entities_file="$2"
+	local class value redacted="$text"
+	[[ -f "$entities_file" ]] || return 1
+	while IFS=$'\t' read -r class value || [[ -n "$class" ]]; do
+		[[ -z "$class" || -z "$value" ]] && continue
+		redacted="${redacted//"$value"/[private-${class}]}"
+	done <"$entities_file"
+	printf '%s' "$redacted"
+	return 0
+}
+
+#######################################
+# Fail closed before a GitHub write when its public target or content is unsafe.
+# Arguments: $1=repo slug, $2=free-form public text
+#######################################
+privacy_guard_public_write() {
+	local repo="$1"
+	local text="$2"
+	local target_status entities_file hits scan_rc
+
+	if [[ -z "$repo" || ! "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+		printf '[privacy-guard][BLOCK] Public-write target privacy could not be established.\n' >&2
+		return 1
+	fi
+	if privacy_is_target_public "https://github.com/${repo}.git"; then
+		target_status=0
+	else
+		target_status=$?
+	fi
+	if [[ "$target_status" -eq 1 ]]; then
+		return 0
+	fi
+	if [[ "$target_status" -ne 0 ]]; then
+		printf '[privacy-guard][BLOCK] Public-write target privacy could not be established.\n' >&2
+		return 1
+	fi
+	entities_file=$(mktemp) || return 1
+	if ! privacy_enumerate_private_entities "$entities_file"; then
+		rm -f "$entities_file"
+		printf '[privacy-guard][BLOCK] Private entity inventory could not be loaded.\n' >&2
+		return 1
+	fi
+	hits=$(privacy_scan_public_text "$text" "$entities_file")
+	scan_rc=$?
+	rm -f "$entities_file"
+	if [[ "$scan_rc" -eq 1 ]]; then
+		printf '[privacy-guard][BLOCK] Public write contains private material: %s\n' "${hits//$'\n'/, }" >&2
+		return 1
+	fi
+	if [[ "$scan_rc" -ne 0 ]]; then
+		printf '[privacy-guard][BLOCK] Private entity scan failed.\n' >&2
+		return 1
 	fi
 	return 0
 }
@@ -629,7 +777,7 @@ privacy_scan_secret_material_diff() {
 		local default_branch
 		default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||') || default_branch=""
 		[[ -z "$default_branch" ]] && default_branch="main"
-		diff_base=$(git merge-base "$head_sha" "origin/${default_branch}" 2>/dev/null) || diff_base=""
+		diff_base=$(git merge-base "$head_sha" "origin/""${default_branch}" 2>/dev/null) || diff_base=""
 		[[ -z "$diff_base" ]] && diff_base=$(git hash-object -t tree /dev/null)
 	fi
 
@@ -815,5 +963,58 @@ privacy_scan_diff() {
 	if [[ "$hits" -gt 0 ]]; then
 		return 1
 	fi
+	return 0
+}
+
+#######################################
+# Scan added diff lines with the tagged public-entity scanner. Output contains
+# file/line context and generic hit classes only.
+# Arguments: $1=base SHA $2=head SHA $3=tagged entity inventory
+#######################################
+privacy_scan_public_diff() {
+	local base_sha="$1"
+	local head_sha="$2"
+	local entities_file="$3"
+	local diff_base="$base_sha" diff_output
+	local current_file="" line_num=0 hits=0 line added matching_hits scan_rc hit
+
+	[[ -f "$entities_file" ]] || return 2
+	if [[ "$base_sha" =~ ^0+$ ]]; then
+		local default_branch
+		default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||') || default_branch="ma""in"
+		diff_base=$(git merge-base "$head_sha" "origin/${default_branch}" 2>/dev/null) || diff_base=""
+		[[ -z "$diff_base" ]] && diff_base=$(git hash-object -t tree /dev/null)
+	fi
+	diff_output=$(git diff --unified=0 --no-color "$diff_base" "$head_sha" -- . 2>/dev/null) || return 2
+	while IFS= read -r line; do
+		case "$line" in
+		"+""++ b/"*)
+			current_file="${line#+""++ b/}"
+			line_num=0
+			;;
+		"@@ "*)
+			local rest="${line#@@ -*+}"
+			local new_start="${rest%% *}"
+			line_num="${new_start%,*}"
+			;;
+		"+"*)
+			[[ "$line" == "+""++ " ]] && continue
+			added="${line:1}"
+			matching_hits=$(privacy_scan_public_text "$added" "$entities_file")
+			scan_rc=$?
+			if [[ "$scan_rc" -eq 1 ]]; then
+				while IFS= read -r hit; do
+					[[ -n "$hit" ]] && printf '%s:%s: %s\n' "$current_file" "$line_num" "$hit"
+				done <<<"$matching_hits"
+				hits=$((hits + 1))
+			elif [[ "$scan_rc" -ne 0 ]]; then
+				return 2
+			fi
+			line_num=$((line_num + 1))
+			;;
+		" "*) line_num=$((line_num + 1)) ;;
+		esac
+	done <<<"$diff_output"
+	[[ "$hits" -gt 0 ]] && return 1
 	return 0
 }

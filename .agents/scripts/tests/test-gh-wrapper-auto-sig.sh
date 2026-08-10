@@ -104,6 +104,11 @@ chmod +x "${TMPDIR_TEST}/gh-signature-helper.sh"
 _test_copy_shared_deps "$PARENT_DIR" "$TMPDIR_TEST" || exit 1
 _test_source_shared_deps "$TMPDIR_TEST" || exit 1
 
+# This unit test isolates signature/body normalization. The copied shared
+# wrapper module now invokes the de-identification gate at transport time;
+# transport coverage belongs to test-gh-wrapper-public-deidentification.sh.
+privacy_guard_public_write() { return 0; }
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 1: --body without signature gets footer appended
 # ─────────────────────────────────────────────────────────────────────────────

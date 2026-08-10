@@ -55,6 +55,11 @@ if ! command -v _rest_should_fallback >/dev/null 2>&1 ||
 		source "${SCRIPT_DIR}/shared-gh-wrappers-rest-fallback.sh"
 	fi
 fi
+if ! command -v _gh_guard_public_write_args >/dev/null 2>&1 && [[ -f "${SCRIPT_DIR}/shared-gh-wrappers-create.sh" ]]; then
+	# shellcheck source=shared-gh-wrappers-create.sh
+	# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
+	source "${SCRIPT_DIR}/shared-gh-wrappers-create.sh"
+fi
 
 #######################################
 # Internal: audit-log a safety rejection.
@@ -423,6 +428,9 @@ gh_issue_edit_safe() {
 		_gh_edit_audit_rejection "gh issue edit" "$_GH_EDIT_REJECTION_REASON" "$@"
 		return 1
 	fi
+	if ! _gh_guard_public_write_args "$@"; then
+		return 1
+	fi
 	local _num _repo _before _after
 	_num="$(_gh_extract_number_from_args "$@")"
 	_repo="$(_gh_extract_repo_from_args "$@")"
@@ -457,6 +465,9 @@ gh_pr_edit_safe() {
 	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
 	if ! _gh_validate_edit_args "$@"; then
 		_gh_edit_audit_rejection "gh pr edit" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	if ! _gh_guard_public_write_args "$@"; then
 		return 1
 	fi
 	local _num _repo _before _after

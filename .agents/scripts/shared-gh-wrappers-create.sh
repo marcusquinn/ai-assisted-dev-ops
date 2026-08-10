@@ -39,6 +39,49 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+if ! command -v privacy_guard_public_write >/dev/null 2>&1 && [[ -f "${SCRIPT_DIR}/privacy-guard-helper.sh" ]]; then
+	# shellcheck source=privacy-guard-helper.sh
+	# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
+	source "${SCRIPT_DIR}/privacy-guard-helper.sh"
+fi
+
+#######################################
+# Scan normalized GitHub write arguments before public transport.
+# Private targets remain untouched; unknown targets fail closed.
+#######################################
+_gh_guard_public_write_args() {
+	local repo="" text="" expect="" arg body_file
+	for arg in "$@"; do
+		if [[ -n "$expect" ]]; then
+			case "$expect" in
+			repo) repo="$arg" ;;
+			text) text+=$'\n'"$arg" ;;
+			body-file)
+				body_file="$arg"
+				[[ -r "$body_file" ]] || return 1
+				text+=$'\n'"$(<"$body_file")"
+				;;
+			esac
+			expect=""
+			continue
+		fi
+		case "$arg" in
+		--repo) expect="repo" ;;
+		--repo=*) repo="${arg#--repo=}" ;;
+		--title | --body | --comment | -c) expect="text" ;;
+		--title=* | --body=* | --comment=* | -c=*) text+=$'\n'"${arg#*=}" ;;
+		--body-file) expect="body-file" ;;
+		--body-file=*)
+			body_file="${arg#--body-file=}"
+			[[ -r "$body_file" ]] || return 1
+			text+=$'\n'"$(<"$body_file")"
+			;;
+		esac
+	done
+	privacy_guard_public_write "$repo" "$text"
+	return $?
+}
+
 # t2436: Extract the tNNN task ID from a --title "tNNN: ..." argument.
 # Also accepts an explicit --todo-task-id tNNN flag (callers that know the ID).
 # Returns the task ID (e.g., "t2436") or empty string on stdout. Non-blocking.
@@ -461,6 +504,9 @@ gh_create_issue() {
 	set -- "${_GH_CI_TRUST_NORMALIZED_ARGS[@]}"
 	_todo_label_args=()
 	_gh_ci_prepare_status_label "$@"
+	if ! _gh_guard_public_write_args "$@"; then
+		return 1
+	fi
 
 	# Build command arrays safely; avoid empty-arg injection (GH#22056).
 	local -a _issue_cmd=(gh issue create "$@")
@@ -765,6 +811,9 @@ gh_create_pr() {
 	# t2115: auto-append signature footer when body lacks one
 	_gh_wrapper_auto_sig "$@"
 	set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
+	if ! _gh_guard_public_write_args "$@"; then
+		return 1
+	fi
 
 	local -a pr_cmd=(gh pr create "$@")
 	if [[ ${#_draft_args[@]} -gt 0 ]]; then
@@ -844,6 +893,9 @@ gh_issue_comment() {
 	gh_record_call graphql gh_issue_comment 2>/dev/null || true
 	_gh_wrapper_auto_sig "$@"
 	set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
+	if ! _gh_guard_public_write_args "$@"; then
+		return 1
+	fi
 	_gh_with_timeout write "$gh_command" issue comment "$@"
 	local rc=$?
 	if [[ $rc -ne 0 && -z "$ephemeral_body_file" ]] && _rest_should_fallback; then
@@ -859,6 +911,9 @@ gh_pr_comment() {
 	gh_record_call graphql gh_pr_comment 2>/dev/null || true
 	_gh_wrapper_auto_sig "$@"
 	set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
+	if ! _gh_guard_public_write_args "$@"; then
+		return 1
+	fi
 	_gh_with_timeout write gh pr comment "$@"
 	local rc=$?
 	if [[ $rc -ne 0 ]] && _rest_should_fallback; then
