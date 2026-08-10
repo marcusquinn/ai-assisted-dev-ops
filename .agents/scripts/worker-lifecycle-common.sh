@@ -1578,6 +1578,116 @@ _maybe_reclassify_worker_failed_as_no_work() {
 	return 0
 }
 
+_resolve_escalation_threshold() {
+	local crash_type="$1"
+	local threshold="$ESCALATION_FAILURE_THRESHOLD"
+	if [[ "$crash_type" == "overwhelmed" ]]; then
+		threshold="$ESCALATION_OVERWHELMED_THRESHOLD"
+	fi
+	[[ "$threshold" =~ ^[0-9]+$ ]] || threshold=2
+	[[ "$threshold" -ge 1 ]] || threshold=2
+	printf '%s\n' "$threshold"
+	return 0
+}
+
+_resolve_next_escalation_tier() {
+	local current_labels="$1"
+	case ",$current_labels," in
+	*,tier:thinking,*) return 1 ;;
+	*,tier:standard,*)
+		printf '%s\n' 'standard|thinking|tier:thinking|tier:standard'
+		;;
+	*,tier:simple,*)
+		printf '%s\n' 'simple|standard|tier:standard|tier:simple'
+		;;
+	*)
+		printf '%s\n' 'standard|thinking|tier:thinking|'
+		;;
+	esac
+	return 0
+}
+
+_apply_tier_escalation_label() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local next_label="$3"
+	local remove_label="$4"
+	local label_desc=""
+	local label_color=""
+
+	case "$next_label" in
+	tier:thinking)
+		label_desc="Route at the thinking workload tier"
+		label_color="7057FF"
+		;;
+	tier:standard)
+		label_desc="Route at the standard workload tier"
+		label_color="0E8A16"
+		;;
+	esac
+
+	gh label create "$next_label" --repo "$repo_slug" \
+		--description "$label_desc" --color "$label_color" \
+		--force 2>/dev/null || true
+
+	local edit_args="--add-label $next_label"
+	if [[ -n "$remove_label" ]]; then
+		edit_args="$edit_args --remove-label $remove_label"
+	fi
+	# shellcheck disable=SC2086
+	gh issue edit "$issue_number" --repo "$repo_slug" \
+		$edit_args 2>/dev/null || return 1
+	return 0
+}
+
+_post_tier_escalation() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local failure_count="$3"
+	local threshold="$4"
+	local current_tier="$5"
+	local next_tier="$6"
+	local next_label="$7"
+	local safe_reason="$8"
+	local crash_type="$9"
+	local crash_type_label=""
+
+	case "$crash_type" in
+	overwhelmed)
+		crash_type_label="**Crash type:** \`overwhelmed\` — model read target files and attempted implementation but could not produce commits. Immediate escalation triggered (threshold=1)."
+		;;
+	partial)
+		crash_type_label="**Crash type:** \`partial\` — worker produced commits but could not complete the PR lifecycle."
+		;;
+	esac
+
+	local comment_body="## Cascade Tier Escalation: tier:${current_tier} → tier:${next_tier}
+
+**Trigger:** ${failure_count} consecutive worker failures at \`tier:${current_tier}\` (threshold: ${threshold})
+**Action:** Added \`${next_label}\` label — next dispatch will use ${next_tier}-tier model.
+**Reason:** ${safe_reason}
+${crash_type_label:+${crash_type_label}
+}
+Previous attempts at \`tier:${current_tier}\` failed to produce a PR. Escalating to a more capable model with accumulated context from prior attempts.
+
+The next worker should review prior attempt comments on this issue for context on what was tried and where it got stuck.
+
+_Automated by \`escalate_issue_tier()\` cascade dispatch in worker-lifecycle-common.sh_"
+
+	gh_issue_comment "$issue_number" --repo "$repo_slug" \
+		--body "$comment_body" 2>/dev/null || true
+
+	local ledger_helper="${HOME}/.aidevops/agents/scripts/dispatch-ledger-helper.sh"
+	if [[ -x "$ledger_helper" ]]; then
+		"$ledger_helper" record-outcome \
+			--issue "$issue_number" --repo "$repo_slug" \
+			--session-key "issue-${issue_number}" \
+			--outcome "escalated" --tier "$current_tier" \
+			--reason "$safe_reason" 2>/dev/null || true
+	fi
+	return 0
+}
+
 escalate_issue_tier() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -1587,23 +1697,8 @@ escalate_issue_tier() {
 
 	[[ "$issue_number" =~ ^[0-9]+$ ]] || return 0
 	[[ -n "$repo_slug" ]] || return 0
-
-	# Validate failure_count is numeric (CodeRabbit review)
 	[[ "$failure_count" =~ ^[0-9]+$ ]] || return 0
 
-	# t2820 (Phase 5): when crash_type is empty AND reason looks like a
-	# generic worker-failure bucket, try to reclassify as no_work using the
-	# Phase 3 log-tail signal. The reclassification rule fires only when the
-	# log tail provides positive evidence of an infra-class failure (canary
-	# diagnostics, t2814:early_exit marker) OR no implementation evidence
-	# combined with short runtime. Otherwise the reason is treated as a real
-	# coding failure and falls through to the normal cascade.
-	#
-	# This must run BEFORE the existing no_work short-circuit so that the
-	# reclassification path can call the skip-escalation helper with a
-	# descriptive subtype-aware reason instead of the original generic
-	# bucket name. (See _maybe_reclassify_worker_failed_as_no_work above
-	# for the full rule list and reference-pattern fixture coverage.)
 	if [[ -z "$crash_type" ]]; then
 		if _maybe_reclassify_worker_failed_as_no_work \
 			"$issue_number" "$repo_slug" "$failure_count" "$reason"; then
@@ -1611,17 +1706,8 @@ escalate_issue_tier() {
 		fi
 	fi
 
-	# Select threshold based on crash type:
-	# - "overwhelmed" = model attempted real work but couldn't complete.
-	#   Immediate escalation (threshold=1) because retrying at the same
-	#   tier reproduces the same failure mode.
-	# - "no_work" / other = transient/infra failures. Use default (2).
-	local threshold="$ESCALATION_FAILURE_THRESHOLD"
-	if [[ "$crash_type" == "overwhelmed" ]]; then
-		threshold="$ESCALATION_OVERWHELMED_THRESHOLD"
-	fi
-	[[ "$threshold" =~ ^[0-9]+$ ]] || threshold=2
-	[[ "$threshold" -ge 1 ]] || threshold=2
+	local threshold
+	threshold=$(_resolve_escalation_threshold "$crash_type")
 
 	# t2387: no_work crashes are infrastructure failures (FD exhaustion,
 	# plugin init crash, branch naming race, auth refresh race — see t2116
@@ -1643,47 +1729,18 @@ escalate_issue_tier() {
 		return 0
 	fi
 
-	# Only escalate at the threshold boundary (not on every subsequent failure)
-	if [[ "$failure_count" -ne "$threshold" ]]; then
-		return 0
-	fi
+	[[ "$failure_count" -eq "$threshold" ]] || return 0
 
-	# Determine current tier and next tier in cascade
 	local current_labels
 	current_labels=$(gh issue view "$issue_number" --repo "$repo_slug" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || current_labels=""
-
-	local current_tier="standard"
+	local tier_route
+	tier_route=$(_resolve_next_escalation_tier "$current_labels") || return 0
+	local current_tier=""
 	local next_tier=""
 	local next_label=""
 	local remove_label=""
-
-	# Thinking is the terminal workload tier. Runtime routing selects the best
-	# currently available model and provider reasoning level for that tier.
-	case ",$current_labels," in
-	*,tier:thinking,*)
-		return 0
-		;;
-	*,tier:standard,*)
-		current_tier="standard"
-		next_tier="thinking"
-		next_label="tier:thinking"
-		remove_label="tier:standard"
-		;;
-	*,tier:simple,*)
-		current_tier="simple"
-		next_tier="standard"
-		next_label="tier:standard"
-		remove_label="tier:simple"
-		;;
-	*)
-		# No tier label — treat as standard, escalate to thinking
-		current_tier="standard"
-		next_tier="thinking"
-		next_label="tier:thinking"
-		remove_label=""
-		;;
-	esac
+	IFS='|' read -r current_tier next_tier next_label remove_label <<<"$tier_route"
 
 	# Body quality gate (t1900): check if the issue body has implementation
 	# context before escalating. If the body lacks file paths, the root cause
@@ -1703,78 +1760,14 @@ escalate_issue_tier() {
 	_escalate_body_quality_gate "$issue_number" "$repo_slug" \
 		"$failure_count" "$threshold" "$issue_body" || return 0
 
-	# Create next tier label (creates label if needed)
-	local label_desc=""
-	local label_color=""
-	case "$next_label" in
-	tier:thinking)
-		label_desc="Route at the thinking workload tier"
-		label_color="7057FF"
-		;;
-	tier:standard)
-		label_desc="Route at the standard workload tier"
-		label_color="0E8A16"
-		;;
-	esac
+	_apply_tier_escalation_label "$issue_number" "$repo_slug" \
+		"$next_label" "$remove_label" || return 0
 
-	gh label create "$next_label" \
-		--repo "$repo_slug" \
-		--description "$label_desc" \
-		--color "$label_color" \
-		--force 2>/dev/null || true
-
-	# Swap tier labels
-	local edit_args="--add-label $next_label"
-	if [[ -n "$remove_label" ]]; then
-		edit_args="$edit_args --remove-label $remove_label"
-	fi
-	# shellcheck disable=SC2086
-	gh issue edit "$issue_number" --repo "$repo_slug" \
-		$edit_args 2>/dev/null || {
-		return 0
-	}
-
-	# Post escalation comment (sanitize reason to prevent markdown injection)
 	local safe_reason
 	safe_reason=$(_sanitize_markdown "$reason")
-	local crash_type_label=""
-	case "$crash_type" in
-	overwhelmed)
-		crash_type_label="**Crash type:** \`overwhelmed\` — model read target files and attempted implementation but could not produce commits. Immediate escalation triggered (threshold=1)."
-		;;
-	partial)
-		crash_type_label="**Crash type:** \`partial\` — worker produced commits but could not complete the PR lifecycle."
-		;;
-	esac
-	# Note: t2387 removed the `no_work` case here because that crash_type
-	# short-circuits at the top of escalate_issue_tier and never reaches
-	# the comment-posting path. Infrastructure failures get their own
-	# diagnostic comment via _log_no_work_skip_escalation instead.
-	local comment_body="## Cascade Tier Escalation: tier:${current_tier} → tier:${next_tier}
-
-**Trigger:** ${failure_count} consecutive worker failures at \`tier:${current_tier}\` (threshold: ${threshold})
-**Action:** Added \`${next_label}\` label — next dispatch will use ${next_tier}-tier model.
-**Reason:** ${safe_reason}
-${crash_type_label:+${crash_type_label}
-}
-Previous attempts at \`tier:${current_tier}\` failed to produce a PR. Escalating to a more capable model with accumulated context from prior attempts.
-
-The next worker should review prior attempt comments on this issue for context on what was tried and where it got stuck.
-
-_Automated by \`escalate_issue_tier()\` cascade dispatch in worker-lifecycle-common.sh_"
-
-	gh_issue_comment "$issue_number" --repo "$repo_slug" \
-		--body "$comment_body" 2>/dev/null || true
-
-	# Record escalation in tier telemetry
-	local ledger_helper="${HOME}/.aidevops/agents/scripts/dispatch-ledger-helper.sh"
-	if [[ -x "$ledger_helper" ]]; then
-		"$ledger_helper" record-outcome \
-			--issue "$issue_number" --repo "$repo_slug" \
-			--session-key "issue-${issue_number}" \
-			--outcome "escalated" --tier "$current_tier" \
-			--reason "$safe_reason" 2>/dev/null || true
-	fi
+	_post_tier_escalation "$issue_number" "$repo_slug" "$failure_count" \
+		"$threshold" "$current_tier" "$next_tier" "$next_label" \
+		"$safe_reason" "$crash_type"
 
 	return 0
 }

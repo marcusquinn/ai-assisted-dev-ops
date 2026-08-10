@@ -332,15 +332,15 @@ test_escalate_skips_tier_cascade_on_no_work() {
 		return 0
 	fi
 
-	# Assertion 2: the early return must precede the tier-mutation line.
-	# The canonical tier-mutation signal is the `gh issue edit ... --add-label`
-	# call that swaps tier labels.
+	# Assertion 2: the early return must precede the tier-mutation helper call.
+	# Label mutation is intentionally encapsulated so the escalation orchestrator
+	# remains below the function-complexity threshold.
 	local tier_mutation_pos
-	tier_mutation_pos=$(printf '%s\n' "$fn_src" | grep -n 'gh issue edit' | head -1 | cut -d: -f1)
+	tier_mutation_pos=$(printf '%s\n' "$fn_src" | grep -n '_apply_tier_escalation_label' | head -1 | cut -d: -f1)
 
 	if [[ -z "$tier_mutation_pos" ]]; then
 		print_result "escalate: no_work tier-cascade skip (t2387)" 1 \
-			"tier mutation line ('gh issue edit') not found — cannot verify ordering"
+			"tier mutation helper call not found — cannot verify ordering"
 		return 0
 	fi
 
