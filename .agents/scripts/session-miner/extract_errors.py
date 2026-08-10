@@ -10,7 +10,13 @@ import sys
 from collections import defaultdict
 from typing import Any, Optional
 
-from extract_shared import repo_scope_clause, repo_scope_params, sanitize_path, summarize_tool_input
+from extract_shared import (
+    extraction_scope_params,
+    repo_scope_clause,
+    sanitize_path,
+    summarize_tool_input,
+    time_scope_clause,
+)
 
 
 ERROR_CATEGORIES = {
@@ -102,6 +108,7 @@ def _find_user_response_after(
 
 def extract_errors(
     conn: sqlite3.Connection, limit: Optional[int] = None, repo_dir: Optional[str] = None,
+    since_ms: Optional[int] = None,
 ) -> list[dict]:
     """Extract tool error sequences with surrounding context."""
     print("Extracting error sequences...", file=sys.stderr)
@@ -125,12 +132,13 @@ def extract_errors(
       AND json_extract(p.data, '$.state.status') = 'error'
     """
     query += repo_scope_clause(repo_dir)
+    query += time_scope_clause(since_ms, "p.time_created")
     query += "\n    ORDER BY p.time_created DESC\n    "
     if limit:
         query += f" LIMIT {int(limit)}"
 
     records = []
-    for row in conn.execute(query, repo_scope_params(repo_dir)):
+    for row in conn.execute(query, extraction_scope_params(repo_dir, since_ms)):
         error_text = row["error_text"] or ""
         tool_name = row["tool_name"] or "unknown"
         tool_input = _parse_json_safe(row["tool_input_json"])
@@ -152,11 +160,13 @@ def extract_errors(
     return records
 
 
-def extract_error_stats(conn: sqlite3.Connection, repo_dir: Optional[str] = None) -> dict:
+def extract_error_stats(
+    conn: sqlite3.Connection, repo_dir: Optional[str] = None, since_ms: Optional[int] = None,
+) -> dict:
     """Extract aggregate error statistics for the summary."""
     stats = {}
 
-    params = repo_scope_params(repo_dir)
+    params = extraction_scope_params(repo_dir, since_ms)
     tool_rows = conn.execute("""
         SELECT
             json_extract(p.data, '$.tool') as tool,
@@ -165,7 +175,7 @@ def extract_error_stats(conn: sqlite3.Connection, repo_dir: Optional[str] = None
         FROM part p
         JOIN session s ON p.session_id = s.id
         WHERE json_extract(p.data, '$.type') = 'tool'
-    """ + repo_scope_clause(repo_dir) + """
+    """ + repo_scope_clause(repo_dir) + time_scope_clause(since_ms, "p.time_created") + """
         GROUP BY tool
         ORDER BY total DESC
     """, params).fetchall()
@@ -185,7 +195,7 @@ def extract_error_stats(conn: sqlite3.Connection, repo_dir: Optional[str] = None
         JOIN session s ON p.session_id = s.id
         WHERE json_extract(p.data, '$.type') = 'tool'
           AND json_extract(p.data, '$.state.status') = 'error'
-    """ + repo_scope_clause(repo_dir), params).fetchall()
+    """ + repo_scope_clause(repo_dir) + time_scope_clause(since_ms, "p.time_created"), params).fetchall()
     category_counts = defaultdict(int)
     for row in error_rows:
         category_counts[classify_error(row["err"] or "")] += 1
@@ -196,7 +206,7 @@ def extract_error_stats(conn: sqlite3.Connection, repo_dir: Optional[str] = None
         FROM message m
         JOIN session s ON m.session_id = s.id
         WHERE json_extract(m.data, '$.role') = 'assistant'
-    """ + repo_scope_clause(repo_dir) + """
+    """ + repo_scope_clause(repo_dir) + time_scope_clause(since_ms, "m.time_created") + """
         GROUP BY model
         ORDER BY cnt DESC
         LIMIT 10
@@ -209,7 +219,7 @@ def extract_error_stats(conn: sqlite3.Connection, repo_dir: Optional[str] = None
                MAX(time_created) as latest
         FROM session s
         WHERE 1 = 1
-    """ + repo_scope_clause(repo_dir), params).fetchone()
+    """ + repo_scope_clause(repo_dir) + time_scope_clause(since_ms, "s.time_updated"), params).fetchone()
     stats["sessions"] = {
         "total": session_row["cnt"],
         "earliest": session_row["earliest"],

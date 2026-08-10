@@ -81,15 +81,6 @@ def _build_git_summary_chunk(git_correlations: list[dict]) -> dict:
     }
 
 
-def _group_steerage_records(steerage: list[dict]) -> dict[str, list[dict]]:
-    """Group steerage records by classification category."""
-    grouped: dict[str, list[dict]] = defaultdict(list)
-    for record in steerage:
-        for classification in record["classifications"]:
-            grouped[classification["category"]].append(record)
-    return grouped
-
-
 def _group_error_records(errors: list[dict]) -> dict[str, list[dict]]:
     """Group error records by error category."""
     grouped: dict[str, list[dict]] = defaultdict(list)
@@ -114,8 +105,9 @@ def build_chunks(steerage: list[dict], errors: list[dict], config: ChunkConfig) 
         "data": config.stats,
     }]
 
-    for category, records in _group_steerage_records(steerage).items():
-        _chunk_records(records, "steerage", category, chunks, config.max_chunk_bytes)
+    # One steerage record can have several classifications. Store it once and
+    # retain all memberships on the record so no category loses a valid signal.
+    _chunk_records(steerage, "steerage", "all", chunks, config.max_chunk_bytes)
 
     for category, records in _group_error_records(errors).items():
         _chunk_records(records, "error", category, chunks, config.max_chunk_bytes)

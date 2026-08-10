@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from extract_shared import repo_scope_clause, repo_scope_params, sanitize_path
+from extract_shared import extraction_scope_params, repo_scope_clause, sanitize_path, time_scope_clause
 
 
 def _find_git_root(directory: str) -> Optional[str]:
@@ -147,6 +147,7 @@ def _build_correlation_record(row: sqlite3.Row, commits: list[dict]) -> dict:
 
 def extract_git_correlation(
     conn: sqlite3.Connection, limit: Optional[int] = None, repo_dir: Optional[str] = None,
+    since_ms: Optional[int] = None,
 ) -> list[dict]:
     """Extract git-commit correlation data for sessions."""
     print("Extracting git correlation data...", file=sys.stderr)
@@ -165,6 +166,7 @@ def extract_git_correlation(
     WHERE s.directory IS NOT NULL AND s.directory != ''
     """
     query += repo_scope_clause(repo_dir)
+    query += time_scope_clause(since_ms, "s.time_updated")
     query += """
     GROUP BY s.id
     ORDER BY s.time_created DESC
@@ -176,7 +178,7 @@ def extract_git_correlation(
     correlations = []
     skipped = 0
 
-    for row in conn.execute(query, repo_scope_params(repo_dir)):
+    for row in conn.execute(query, extraction_scope_params(repo_dir, since_ms)):
         session_dir = row["session_dir"]
         if not session_dir or not os.path.isdir(session_dir):
             skipped += 1

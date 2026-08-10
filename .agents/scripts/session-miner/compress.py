@@ -142,7 +142,7 @@ def normalize_for_dedup(text: str) -> str:
     return t[:200]  # First 200 chars for comparison
 
 
-def _extract_steerage_signal(record: dict, seen: set):
+def _extract_steerage_signal(record: dict):
     """Extract a cleaned, deduplicated signal from a steerage record.
 
     Returns a signal dict or None if the record should be skipped.
@@ -158,28 +158,32 @@ def _extract_steerage_signal(record: dict, seen: set):
     if len(clean_text) < 20:
         return None
 
-    norm = normalize_for_dedup(clean_text)
-    if norm in seen:
-        return None
-    seen.add(norm)
-
     return {
         "text": clean_text[:1000],
         "context": record.get("preceding_context", "")[:200],
+        "source_hash": record.get("source_hash", ""),
     }
 
 
 def compress_steerage(chunks_dir: Path) -> dict:
     """Compress all steerage chunks into category-grouped unique signals."""
     categories = defaultdict(list)
-    seen = set()
+    seen_by_category: dict[str, set[str]] = defaultdict(set)
 
     for chunk in _iter_chunks(chunks_dir, "steerage_*.json"):
-        category = chunk.get("category", "unknown")
-
         for record in chunk.get("records", []):
-            signal = _extract_steerage_signal(record, seen)
-            if signal is not None:
+            signal = _extract_steerage_signal(record)
+            if signal is None:
+                continue
+            record_categories = {
+                classification.get("category", "unknown")
+                for classification in record.get("classifications", [])
+            } or {chunk.get("category", "unknown")}
+            norm = normalize_for_dedup(signal["text"])
+            for category in record_categories:
+                if norm in seen_by_category[category]:
+                    continue
+                seen_by_category[category].add(norm)
                 categories[category].append(signal)
 
     return dict(categories)
@@ -337,16 +341,11 @@ def compress_git_correlation(chunks_dir: Path) -> dict:
     }
 
 
-def _extract_instruction_candidate(record: dict, seen: set[str]):
+def _extract_instruction_candidate(record: dict):
     """Extract a deduplicated instruction-candidate payload."""
     raw_text = record.get("text", "")
     if not raw_text or len(raw_text) < 20:
         return None
-
-    norm = normalize_for_dedup(raw_text)
-    if norm in seen:
-        return None
-    seen.add(norm)
 
     target_file = record.get("target_file", ".agents/AGENTS.md")
     raw_display_text = record.get("display_text") or raw_text
@@ -357,6 +356,15 @@ def _extract_instruction_candidate(record: dict, seen: set[str]):
         "confidence": record.get("confidence", 0.5),
         "category": record.get("category", "general"),
         "session_title": record.get("session_title", "")[:80],
+        "session_id": record.get("session_id", ""),
+        "timestamp": record.get("timestamp"),
+        "source_hash": record.get("source_hash", ""),
+        "fingerprint": record.get("fingerprint") or normalize_for_dedup(raw_text),
+        "polarity": record.get("polarity", "positive"),
+        # Historical chunk files predate qualification metadata. Preserve their
+        # prior readability while new extractors enforce evidence thresholds.
+        "explicit_persistence": bool(record.get("explicit_persistence"))
+        if "explicit_persistence" in record else True,
     }
 
 
@@ -366,21 +374,39 @@ def compress_instruction_candidates(chunks_dir: Path) -> dict:
     Groups by target file, deduplicates near-identical texts, and ranks by
     confidence score. Returns a dict keyed by target file with candidate lists.
     """
-    by_target: dict[str, list[dict]] = defaultdict(list)
-    seen: set[str] = set()
+    clusters: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
     for record in _iter_chunk_records(chunks_dir, "instruction_candidate_*.json"):
-        extracted = _extract_instruction_candidate(record, seen)
+        extracted = _extract_instruction_candidate(record)
         if extracted is None:
             continue
         target_file, candidate = extracted
-        by_target[target_file].append(candidate)
+        clusters[(target_file, candidate["fingerprint"])].append(candidate)
 
     # Sort each target's candidates by confidence descending
     result: dict[str, list[dict]] = {}
-    for target_file, candidates in sorted(by_target.items()):
-        candidates.sort(key=lambda x: -x["confidence"])
-        result[target_file] = candidates
+    for (target_file, _fingerprint), observations in sorted(clusters.items()):
+        distinct_sessions = sorted({item["session_id"] for item in observations if item["session_id"]})
+        explicit = any(item["explicit_persistence"] for item in observations)
+        polarities = {item["polarity"] for item in observations}
+        timestamps = [item["timestamp"] for item in observations if item["timestamp"] is not None]
+        representative = max(observations, key=lambda item: item["confidence"])
+        support = len(distinct_sessions)
+        candidate = {
+            **representative,
+            "support": support,
+            "first_seen": min(timestamps) if timestamps else None,
+            "last_seen": max(timestamps) if timestamps else None,
+            "qualification_basis": "explicit_persistence" if explicit else "recurring" if support >= 2 else "insufficient_support",
+            "requires_judgment": len(polarities) > 1,
+            "contradictions": sorted(polarities) if len(polarities) > 1 else [],
+        }
+        if candidate["qualification_basis"] == "insufficient_support":
+            continue
+        result.setdefault(target_file, []).append(candidate)
+
+    for target_file, candidates in result.items():
+        candidates.sort(key=lambda item: (-item["support"], -item["confidence"]))
 
     return result
 

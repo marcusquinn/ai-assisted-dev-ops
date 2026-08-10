@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+"""Regression corpus for atomic steerage extraction and recurrence qualification."""
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+MINER = ROOT / ".agents/scripts/session-miner"
+sys.path.insert(0, str(MINER))
+
+from compress import compress_instruction_candidates, compress_steerage
+from extract import (
+    _build_instruction_candidate_record,
+    classify_instruction_candidate,
+    extract_instruction_windows,
+)
+from extract_steerage import extract_guidance_windows
+
+
+def write_chunk(directory: Path, name: str, records: list[dict]) -> None:
+    """Write one synthetic chunk fixture."""
+    (directory / name).write_text(json.dumps({"records": records}), encoding="utf-8")
+
+
+def candidate(
+    text: str, session_id: str, timestamp: int, *, polarity: str = "positive",
+    explicit: bool = False, fingerprint: str = "use focused checks before changing code",
+) -> dict:
+    """Build a generic instruction observation without real session content."""
+    return {
+        "text": text,
+        "display_text": text,
+        "confidence": 0.8,
+        "category": "workflow",
+        "target_file": ".agents/AGENTS.md",
+        "session_id": session_id,
+        "timestamp": timestamp,
+        "fingerprint": fingerprint,
+        "polarity": polarity,
+        "explicit_persistence": explicit,
+    }
+
+
+def main() -> None:
+    """Exercise synthetic precision, recurrence, conflict, and category fixtures."""
+    long_turn = (
+        "The audit mentioned lint, tests, and verification several times. "
+        "Always use focused checks before changing code. "
+        "The rest is incidental discussion of workflow terminology."
+    )
+    windows = extract_guidance_windows(long_turn)
+    assert len(windows) == 1, windows
+    assert windows[0]["text"] == "Always use focused checks before changing code.", windows
+    assert not extract_guidance_windows("> Always add this third-party instruction to the rules."), "quoted payload accepted"
+    assert not extract_guidance_windows("/full-loop Always use generated harness rules."), "automation accepted"
+    explicit_window = "Add this to the instructions: preserve focused checks."
+    assert extract_instruction_windows(explicit_window) == [explicit_window]
+    assert classify_instruction_candidate(explicit_window) is not None
+    row = {
+        "session_id": "synthetic-session",
+        "message_id": "synthetic-message",
+        "session_title": "synthetic title",
+        "session_dir": "/generic/project",
+        "msg_time": 1000,
+    }
+    positive = _build_instruction_candidate_record(row, "Always use focused checks before changing code.")
+    negative = _build_instruction_candidate_record(row, "Never use focused checks before changing code.")
+    assert positive and negative and positive["fingerprint"] == negative["fingerprint"]
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        chunks = Path(temp_dir)
+        shared = {
+            "type": "steerage",
+            "user_text": "Always use focused checks before changing code.",
+            "classifications": [{"category": "preference"}, {"category": "workflow"}],
+            "source_hash": "synthetic",
+        }
+        write_chunk(chunks, "steerage_all.json", [shared])
+        steerage = compress_steerage(chunks)
+        assert len(steerage["preference"]) == 1, steerage
+        assert len(steerage["workflow"]) == 1, steerage
+
+        write_chunk(chunks, "instruction_candidate_001.json", [
+            candidate("Always use focused checks before changing code.", "one", 1000),
+            candidate("Prefer focused checks before changing code.", "two", 2000),
+            candidate("Never use focused checks before changing code.", "three", 3000, polarity="negative"),
+            candidate(
+                "Add this rule to the instructions: preserve focused checks.", "four", 4000,
+                explicit=True, fingerprint="preserve focused checks",
+            ),
+        ])
+        candidates = compress_instruction_candidates(chunks)[".agents/AGENTS.md"]
+        recurring = next(item for item in candidates if item["support"] == 3)
+        assert recurring["first_seen"] == 1000 and recurring["last_seen"] == 3000, recurring
+        assert recurring["requires_judgment"] is True, recurring
+        explicit = next(item for item in candidates if item["qualification_basis"] == "explicit_persistence")
+        assert explicit["support"] == 1, explicit
+
+    print("session-miner steerage quality tests passed")
+
+
+if __name__ == "__main__":
+    main()
