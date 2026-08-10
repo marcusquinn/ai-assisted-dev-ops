@@ -31,6 +31,21 @@ def repo_scope_params(repo_dir: Optional[str]) -> dict[str, str]:
     return {"repo_dir": normalized, "repo_dir_prefix": f"{normalized}/%"}
 
 
+def time_scope_clause(since_ms: Optional[int], column: str) -> str:
+    """Return a SQL fragment selecting rows strictly newer than *since_ms*."""
+    if since_ms is None:
+        return ""
+    return f" AND {column} > :since_ms"
+
+
+def extraction_scope_params(repo_dir: Optional[str], since_ms: Optional[int]) -> dict[str, Any]:
+    """Return the combined repository and high-water query parameters."""
+    params: dict[str, Any] = repo_scope_params(repo_dir)
+    if since_ms is not None:
+        params["since_ms"] = since_ms
+    return params
+
+
 def sanitize_path(path: str) -> str:
     """Strip user-specific path components, keeping project-relevant parts."""
     if not path:

@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sqlite3
@@ -39,7 +40,12 @@ from typing import Any, Optional
 from extract_chunking import ChunkConfig, build_chunks
 from extract_errors import extract_error_stats, extract_errors
 from extract_git import extract_git_correlation
-from extract_shared import repo_scope_clause, repo_scope_params, sanitize_path as _sanitize_path
+from extract_shared import (
+    extraction_scope_params,
+    repo_scope_clause,
+    sanitize_path as _sanitize_path,
+    time_scope_clause,
+)
 from extract_steerage import (
     STEERAGE_PATTERNS,
     extract_steerage,
@@ -193,7 +199,9 @@ def classify_instruction_candidate(text: str) -> Optional[dict[str, Any]]:
     }
 
 
-def _build_instruction_candidate_query(limit: Optional[int], repo_dir: Optional[str] = None) -> str:
+def _build_instruction_candidate_query(
+    limit: Optional[int], repo_dir: Optional[str] = None, since_ms: Optional[int] = None,
+) -> str:
     """Return the SQL query used to scan user messages for instructions."""
     query = """
     SELECT
@@ -208,6 +216,7 @@ def _build_instruction_candidate_query(limit: Optional[int], repo_dir: Optional[
     WHERE json_extract(m.data, '$.role') = 'user'
     """
     query += repo_scope_clause(repo_dir)
+    query += time_scope_clause(since_ms, "m.time_created")
     query += "\n    ORDER BY m.time_created ASC\n    "
     if limit:
         query += f" LIMIT {int(limit) * 10}"
@@ -231,18 +240,41 @@ def _build_instruction_candidate_record(
     if classification is None:
         return None
 
+    explicit_persistence = any(pattern.search(text) for pattern in _INSTRUCTION_COMPILED[:2])
+    fingerprint = re.sub(
+        r"\b(always|never|prefer|please|should|must|do not|don't|use)\b", "", text.lower(),
+    )
+    fingerprint = re.sub(r"[^\w\s]", "", fingerprint)
+    fingerprint = re.sub(r"\s+", " ", fingerprint).strip()[:200]
+    polarity = "negative" if re.search(r"\b(never|avoid|do not|don't|skip)\b", text, re.IGNORECASE) else "positive"
     return {
         "type": "instruction_candidate",
         "session_id": row["session_id"],
+        "message_id": row["message_id"],
         "session_title": row["session_title"] or "",
         "session_dir": _sanitize_path(row["session_dir"] or ""),
         "timestamp": row["msg_time"],
         "text": text[:2000],
         "display_text": redact_instruction_candidate_text(text[:2000]),
+        "source_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "fingerprint": fingerprint,
+        "polarity": polarity,
+        "explicit_persistence": explicit_persistence,
         "confidence": classification["confidence"],
         "target_file": classification["target_file"],
         "category": classification["category"],
     }
+
+
+def extract_instruction_windows(text: str) -> list[str]:
+    """Return atomic local windows eligible for instruction-candidate scoring."""
+    windows = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z])", paragraph):
+            window = sentence.strip()
+            if window and not window.startswith((">", "```", "BEGIN PROMPT", "BEGIN INSTRUCTIONS")):
+                windows.append(window[:1000])
+    return windows
 
 
 def _extract_message_instruction_candidates(
@@ -256,15 +288,17 @@ def _extract_message_instruction_candidates(
         if not _mark_instruction_text_seen(text, seen_texts):
             continue
 
-        record = _build_instruction_candidate_record(row, text)
-        if record is not None:
-            records.append(record)
+        for window in extract_instruction_windows(text):
+            record = _build_instruction_candidate_record(row, window)
+            if record is not None:
+                records.append(record)
 
     return records
 
 
 def extract_instruction_candidates(
     conn: sqlite3.Connection, limit: Optional[int] = None, repo_dir: Optional[str] = None,
+    since_ms: Optional[int] = None,
 ) -> list[dict]:
     """Extract instruction candidate signals from user messages.
 
@@ -283,7 +317,8 @@ def extract_instruction_candidates(
     candidates: list[dict] = []
     seen_texts: set[int] = set()
 
-    for row in conn.execute(_build_instruction_candidate_query(limit, repo_dir), repo_scope_params(repo_dir)):
+    query = _build_instruction_candidate_query(limit, repo_dir, since_ms)
+    for row in conn.execute(query, extraction_scope_params(repo_dir, since_ms)):
         candidates.extend(
             _extract_message_instruction_candidates(conn, row, seen_texts),
         )
@@ -329,7 +364,10 @@ def resolve_managed_history_db(db_path: Path) -> Path:
     return Path(result.stdout.strip())
 
 
-def write_output(data: list[dict], output_dir: Path, fmt: str = "jsonl") -> Path:
+def write_output(
+    data: list[dict], output_dir: Path, fmt: str = "jsonl",
+    extraction_metadata: Optional[dict[str, Optional[int]]] = None,
+) -> Path:
     """Write extracted data to output files."""
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -361,11 +399,42 @@ def write_output(data: list[dict], output_dir: Path, fmt: str = "jsonl") -> Path
                 for c in data
             ],
             "created": timestamp,
+            "extraction_metadata": extraction_metadata or {},
         }
         with open(out_path / "manifest.json", "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
 
     return out_path
+
+
+def _nonnegative_epoch_ms(value: str) -> int:
+    """Parse a nonnegative epoch timestamp, rejecting unsafe silent fallbacks."""
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("--since-ms must be an integer epoch in milliseconds") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("--since-ms must be a nonnegative epoch in milliseconds")
+    return parsed
+
+
+def _extraction_metadata(
+    since_ms: Optional[int], steerage: list[dict], errors: list[dict],
+    instruction_candidates: list[dict], git_correlations: Optional[list[dict]],
+) -> dict[str, Optional[int]]:
+    """Return an additive run watermark without mutating any scheduler state."""
+    timestamps = [
+        record["timestamp"] for record in steerage + errors + instruction_candidates
+        if record.get("timestamp") is not None
+    ]
+    if git_correlations:
+        timestamps.extend(record["session_end"] for record in git_correlations if record.get("session_end") is not None)
+    high_water = max(timestamps) if timestamps else None
+    return {
+        "window_start_ms": since_ms,
+        "window_end_ms": high_water,
+        "source_high_water_ms": high_water,
+    }
 
 
 def main():
@@ -382,6 +451,8 @@ def main():
                         help="Skip git correlation extraction")
     parser.add_argument("--repo-dir", type=str, default=None,
                         help="Only extract sessions whose directory is this repo or a subdirectory")
+    parser.add_argument("--since-ms", type=_nonnegative_epoch_ms, default=None,
+                        help="Only process records newer than this epoch timestamp in milliseconds")
     args = parser.parse_args()
     args.db = resolve_managed_history_db(args.db)
 
@@ -392,26 +463,36 @@ def main():
     print(f"  DB size: {args.db.stat().st_size / 1024 / 1024:.1f} MB", file=sys.stderr)
     if args.repo_dir:
         print(f"  Repo scope: {args.repo_dir}", file=sys.stderr)
+    if args.since_ms is not None:
+        print(f"  High-water start: {args.since_ms}", file=sys.stderr)
 
     conn = connect_db(args.db)
 
     try:
         # Phase 1a: Extract steerage
-        steerage = extract_steerage(conn, limit=args.limit, repo_dir=args.repo_dir)
+        steerage = extract_steerage(conn, limit=args.limit, repo_dir=args.repo_dir, since_ms=args.since_ms)
 
         # Phase 1b: Extract errors
-        errors = extract_errors(conn, limit=args.limit, repo_dir=args.repo_dir)
+        errors = extract_errors(conn, limit=args.limit, repo_dir=args.repo_dir, since_ms=args.since_ms)
 
         # Phase 1c: Aggregate stats
-        stats = extract_error_stats(conn, repo_dir=args.repo_dir)
+        stats = extract_error_stats(conn, repo_dir=args.repo_dir, since_ms=args.since_ms)
 
         # Phase 1d: Extract git correlation (unless disabled)
         git_correlations = None
         if not args.no_git:
-            git_correlations = extract_git_correlation(conn, limit=args.limit, repo_dir=args.repo_dir)
+            git_correlations = extract_git_correlation(
+                conn, limit=args.limit, repo_dir=args.repo_dir, since_ms=args.since_ms,
+            )
 
         # Phase 1e: Extract instruction candidates
-        instruction_candidates = extract_instruction_candidates(conn, limit=args.limit, repo_dir=args.repo_dir)
+        instruction_candidates = extract_instruction_candidates(
+            conn, limit=args.limit, repo_dir=args.repo_dir, since_ms=args.since_ms,
+        )
+        extraction_metadata = _extraction_metadata(
+            args.since_ms, steerage, errors, instruction_candidates, git_correlations,
+        )
+        stats["extraction_metadata"] = extraction_metadata
 
         # Phase 2: Build chunks for model analysis
         if args.format == "chunks":
@@ -421,7 +502,9 @@ def main():
                 instruction_candidates=instruction_candidates,
             )
             chunks = build_chunks(steerage, errors, chunk_config)
-            out_path = write_output(chunks, args.output, fmt="chunks")
+            out_path = write_output(
+                chunks, args.output, fmt="chunks", extraction_metadata=extraction_metadata,
+            )
             print(f"\nOutput: {out_path}/", file=sys.stderr)
             print(f"  {len(chunks)} chunks written", file=sys.stderr)
             print(f"  {len(steerage)} steerage signals", file=sys.stderr)
@@ -435,7 +518,9 @@ def main():
             if git_correlations:
                 all_records.extend(git_correlations)
             all_records.extend(instruction_candidates)
-            out_path = write_output(all_records, args.output, fmt="jsonl")
+            out_path = write_output(
+                all_records, args.output, fmt="jsonl", extraction_metadata=extraction_metadata,
+            )
             print(f"\nOutput: {out_path}", file=sys.stderr)
             print(f"  {len(steerage)} steerage + {len(errors)} errors + {len(instruction_candidates)} instruction candidates", file=sys.stderr)
 
@@ -455,6 +540,7 @@ def main():
             ),
             "error_categories": stats.get("error_categories", {}),
             "output": str(out_path),
+            "extraction_metadata": extraction_metadata,
         }
         if git_correlations is not None:
             productive = [c for c in git_correlations if c["commits_count"] > 0]
