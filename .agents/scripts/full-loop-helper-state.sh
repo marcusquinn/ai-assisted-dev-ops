@@ -38,6 +38,7 @@ _FULL_LOOP_EXECUTOR_IN_PROGRESS="in-progress"
 _FULL_LOOP_PHASE_FAILED="failed"
 _FULL_LOOP_PHASE_RUNNING="running"
 _FULL_LOOP_PHASE_WAITING="waiting"
+_FULL_LOOP_PHASE_COMPLETED="completed"
 _FULL_LOOP_PHASE_TASK="task"
 _FULL_LOOP_RESOURCE_NONE="none"
 FULL_LOOP_TRANSITION_LOCK_TOKEN=""
@@ -1652,10 +1653,10 @@ cmd_resume() {
 	}
 	print_info "Resuming from phase: $CURRENT_PHASE"
 	MANUAL_RESUME_COUNT=$((MANUAL_RESUME_COUNT + 1))
-	PHASE_STATUS="completed"
+	PHASE_STATUS="$_FULL_LOOP_PHASE_COMPLETED"
 	PHASE_ENDED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	TERMINAL_EVIDENCE="manual-resume"
-	_full_loop_append_event "phase.completed" "completed"
+	_full_loop_append_event "phase.completed" "$_FULL_LOOP_PHASE_COMPLETED"
 	local transition
 	transition=$(_next_phase "$CURRENT_PHASE") || {
 		print_error "Unknown phase: $CURRENT_PHASE"
@@ -1972,6 +1973,52 @@ _full_loop_verify_merged_pr() {
 	return $?
 }
 
+_full_loop_resolve_remote_release_tag_commit() {
+	local repo="$1"
+	local tag_name="$2"
+	local ref_json=""
+	local object_type=""
+	local object_sha=""
+	local tag_json=""
+
+	[[ "$repo" == */* && "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX ]] || return 1
+	ref_json=$(gh api "repos/${repo}/git/ref/tags/${tag_name}" 2>/dev/null) || return 1
+	object_type=$(jq -er 'select(.ref == ("refs/tags/" + $tag_name) and (.object.type == "commit" or .object.type == "tag")) | .object.type' \
+		--arg tag_name "$tag_name" <<<"$ref_json") || return 1
+	object_sha=$(jq -er '.object.sha' <<<"$ref_json") || return 1
+	[[ "$object_sha" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	if [[ "$object_type" == "tag" ]]; then
+		tag_json=$(gh api "repos/${repo}/git/tags/${object_sha}" 2>/dev/null) || return 1
+		object_sha=$(jq -er '.object.type == "commit" | .object.sha' <<<"$tag_json") || return 1
+	fi
+	[[ "$object_sha" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	printf '%s\n' "$object_sha"
+	return 0
+}
+
+_full_loop_verify_published_release() {
+	local repo="$1"
+	local tag_name="$2"
+	local merge_commit="$3"
+	local tag_commit=""
+	local release_json=""
+	local workflow_runs_json=""
+
+	[[ "$repo" == */* && "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$merge_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	tag_commit=$(_full_loop_resolve_remote_release_tag_commit "$repo" "$tag_name") || return 1
+	[[ "$tag_commit" == "$merge_commit" ]] || return 1
+	release_json=$(gh api "repos/${repo}/releases/tags/${tag_name}" 2>/dev/null) || return 1
+	jq -e --arg tag_name "$tag_name" '.tag_name == $tag_name and .draft == false' <<<"$release_json" >/dev/null || return 1
+	workflow_runs_json=$(gh api "repos/${repo}/actions/runs?event=release&status=success&per_page=100" 2>/dev/null) || return 1
+	jq -e --arg tag_name "$tag_name" --arg merge_commit "$merge_commit" --arg completed "$_FULL_LOOP_PHASE_COMPLETED" '
+		[.workflow_runs[]? | select(
+			.event == "release" and .status == $completed and .conclusion == "success"
+			and .head_branch == $tag_name and .head_sha == $merge_commit
+		)] | length > 0
+	' <<<"$workflow_runs_json" >/dev/null || return 1
+	return 0
+}
+
 cmd_record_no_release() {
 	local pr_number="${1:-}"
 	local repo_arg="${2:-}"
@@ -2017,6 +2064,63 @@ cmd_record_no_release() {
 		full_loop_update_cleanup_release_status "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_NOT_REQUESTED" || return 1
 	fi
 	print_success "release:not-requested recorded for merged PR #${pr_number}"
+	return 0
+}
+
+cmd_record_published_release() {
+	local pr_number="${1:-}"
+	local tag_name="${2:-}"
+	local repo_arg="${3:-}"
+	local repo=""
+	local pr_json=""
+	local merge_commit=""
+	local receipt_path=""
+	local release_status=""
+	local status=0
+	if [[ $# -lt 2 || $# -gt 3 ]] || [[ ! "$pr_number" =~ ^[0-9]+$ ]] || [[ ! "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX ]]; then
+		print_error "Usage: full-loop-helper.sh record-published-release <PR> <TAG> [REPO]"
+		return 1
+	fi
+	repo=$(_full_loop_resolve_repo "$repo_arg") || {
+		print_error "Cannot resolve repository for release evidence"
+		return 1
+	}
+	pr_json=$(_full_loop_read_fresh_merged_pr_json "$pr_number" "$repo") || {
+		print_error "Cannot record release:published: PR #${pr_number} lacks merged evidence"
+		return 1
+	}
+	merge_commit=$(jq -er '.mergeCommit.oid' <<<"$pr_json") || return 1
+	[[ "$merge_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || {
+		print_error "Cannot record release:published: PR #${pr_number} merge commit is invalid"
+		return 1
+	}
+	_full_loop_verify_published_release "$repo" "$tag_name" "$merge_commit" || {
+		print_error "Cannot record release:published: release, tag, and successful release workflow evidence do not match PR #${pr_number}"
+		return 1
+	}
+	_full_loop_acquire_transition_lock || return 1
+	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || status=1
+	if [[ "$status" -eq 0 && -f "$receipt_path" ]]; then
+		IFS= read -r release_status <"$receipt_path" || status=1
+	fi
+	if [[ "$status" -eq 0 ]]; then
+		case "$release_status" in
+		"" | "$_FULL_LOOP_PHASE_FAILED" | "$_FULL_LOOP_RELEASE_PUBLISHED") ;;
+		*)
+			print_error "Cannot replace terminal release:${release_status} evidence for PR #${pr_number}"
+			status=1
+			;;
+		esac
+	fi
+	if [[ "$status" -eq 0 ]]; then
+		_full_loop_write_release_receipt "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_PUBLISHED" || status=1
+	fi
+	if [[ "$status" -eq 0 ]] && declare -F full_loop_update_cleanup_release_status >/dev/null 2>&1; then
+		full_loop_update_cleanup_release_status "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_PUBLISHED" || status=1
+	fi
+	_full_loop_release_transition_lock
+	[[ "$status" -eq 0 ]] || return 1
+	print_success "release:published recorded for merged PR #${pr_number} (tag=${tag_name})"
 	return 0
 }
 

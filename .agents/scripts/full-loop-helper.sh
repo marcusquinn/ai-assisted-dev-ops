@@ -286,6 +286,8 @@ Commands:
                                  gh CLI level; if both are given, --admin wins and
                                   --auto is dropped (GH#19310).
   record-no-release <PR> [REPO]  Verify merged evidence and record release:not-requested.
+  record-published-release <PR> <TAG> [REPO]
+                                  Verify a GitHub release and record release:published.
   adopt-merged-receipt <PR> [REPO]
                                  Adopt an externally merged exact-head worktree into cleanup.
   finalize-receipt <PR> [REPO]   Finalize a direct-merge cleanup receipt without local state.
@@ -325,6 +327,7 @@ main() {
 	wait-checks) cmd_wait_checks "$@" ;;
 	merge) cmd_merge "$@" ;;
 	record-no-release) cmd_record_no_release "$@" ;;
+	record-published-release) cmd_record_published_release "$@" ;;
 	adopt-merged-receipt) cmd_adopt_merged_receipt "$@" ;;
 	finalize-receipt) cmd_finalize_receipt "$@" ;;
 	migrate-repository-receipt) cmd_migrate_repository_receipt "$@" ;;

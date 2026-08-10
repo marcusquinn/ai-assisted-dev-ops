@@ -14,12 +14,45 @@ cleanup_receipt_dir="${ROOT}/cleanup-receipts"
 
 cat >"${ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+merge_sha="${COMPLETION_PR_MERGE_SHA:-1111111111111111111111111111111111111111}"
+release_mode="${COMPLETION_RELEASE_MODE:-valid}"
+if [[ "$*" == *"repos/marcusquinn/aidevops/git/ref/tags/v3.0.0"* ]]; then
+	if [[ "$release_mode" == "wrong-tag-commit" ]]; then
+		printf '%s\n' '{"ref":"refs/tags/v3.0.0","object":{"type":"commit","sha":"2222222222222222222222222222222222222222"}}'
+	else
+		jq -cn --arg sha "$merge_sha" '{ref:"refs/tags/v3.0.0",object:{type:"commit",sha:$sha}}'
+	fi
+	exit 0
+fi
+if [[ "$*" == *"repos/marcusquinn/aidevops/releases/tags/v3.0.0"* ]]; then
+	if [[ "$release_mode" == "draft-release" ]]; then
+		printf '%s\n' '{"tag_name":"v3.0.0","draft":true}'
+	else
+		printf '%s\n' '{"tag_name":"v3.0.0","draft":false}'
+	fi
+	exit 0
+fi
+if [[ "$*" == *"repos/marcusquinn/aidevops/actions/runs?event=release"* ]]; then
+	case "$release_mode" in
+	failed-workflow)
+		jq -cn --arg sha "$merge_sha" '{workflow_runs:[{event:"release",status:"completed",conclusion:"failure",head_branch:"v3.0.0",head_sha:$sha}]}'
+		;;
+	wrong-workflow-tag)
+		jq -cn --arg sha "$merge_sha" '{workflow_runs:[{event:"release",status:"completed",conclusion:"success",head_branch:"v3.0.1",head_sha:$sha}]}'
+		;;
+	*)
+		jq -cn --arg sha "$merge_sha" '{workflow_runs:[{event:"release",status:"completed",conclusion:"success",head_branch:"v3.0.0",head_sha:$sha}]}'
+		;;
+	esac
+	exit 0
+fi
 if [[ "$*" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
 	jq -cn \
 		--arg head_ref "${COMPLETION_PR_HEAD_REF:-}" \
 		--arg head_oid "${COMPLETION_PR_HEAD_OID:-}" \
 		--arg head_repo "${COMPLETION_PR_HEAD_REPO:-}" \
-		'{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:"merge123"},
+		--arg merge_sha "$merge_sha" \
+		'{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:$merge_sha},
 		  headRefName:$head_ref,headRefOid:$head_oid,headRepository:{nameWithOwner:$head_repo},isCrossRepository:false}'
 	exit 0
 fi
@@ -43,7 +76,7 @@ if [[ "${COMPLETION_PR_STATE:-MERGED}" == "API_FAILURE" ]]; then
 	exit 70
 elif [[ "${COMPLETION_PR_STATE:-MERGED}" == "MERGED" ]] ||
 	[[ "${COMPLETION_PR_STATE:-MERGED}" == "STALE_THEN_MERGED" && "$call_count" -gt 1 ]]; then
-	printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-11T00:00:00Z","mergeCommit":{"oid":"merge123"}}'
+	jq -cn --arg merge_sha "$merge_sha" '{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:$merge_sha}}'
 else
 	printf '%s\n' '{"state":"OPEN","mergedAt":null,"mergeCommit":null}'
 fi
@@ -119,6 +152,23 @@ cmd_record_no_release "\$@"
 RUNNER
 chmod +x "$record_runner"
 
+published_record_runner="${ROOT}/published-record-runner.sh"
+cat >"$published_record_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${SCRIPTS_DIR}'
+STATE_DIR='${ROOT}/state'
+STATE_FILE='${ROOT}/state/full-loop.state'
+DEFAULT_MAX_TASK_ITERATIONS=50
+DEFAULT_MAX_PREFLIGHT_ITERATIONS=5
+DEFAULT_MAX_PR_ITERATIONS=20
+HEADLESS=false
+source '${SCRIPTS_DIR}/shared-constants.sh'
+source '${SCRIPTS_DIR}/full-loop-helper-state.sh'
+cmd_record_published_release "\$@"
+RUNNER
+chmod +x "$published_record_runner"
+
 finalize_runner="${ROOT}/finalize-runner.sh"
 cat >"$finalize_runner" <<RUNNER
 #!/usr/bin/env bash
@@ -158,6 +208,51 @@ AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bi
 grep -qx 'not-requested' "${receipt_dir}/marcusquinn_aidevops-42.status"
 AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$record_runner" 42 marcusquinn/aidevops >/dev/null
 printf 'PASS direct merge-only lifecycle records idempotent no-release evidence\n'
+
+published_worktree="${ROOT}/published-release-worktree"
+mkdir -p "$published_worktree"
+published_cleanup_receipt=$(full_loop_write_cleanup_deferred marcusquinn/aidevops 58 "$published_worktree" \
+	feature/published-release "$$" published-release-session pending FINALIZATION_PENDING)
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$published_record_runner" 58 v3.0.0 marcusquinn/aidevops >/dev/null
+grep -qx 'published' "${receipt_dir}/marcusquinn_aidevops-58.status"
+jq -e '.release_status == "published"' "$published_cleanup_receipt" >/dev/null
+cp "$published_cleanup_receipt" "${ROOT}/published-release-receipt-before.json"
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$published_record_runner" 58 v3.0.0 marcusquinn/aidevops >/dev/null
+cmp -s "$published_cleanup_receipt" "${ROOT}/published-release-receipt-before.json"
+printf 'PASS verified manual release records published evidence and reconciles cleanup idempotently\n'
+
+for invalid_release_mode in wrong-tag-commit draft-release failed-workflow wrong-workflow-tag; do
+	invalid_published_worktree="${ROOT}/invalid-published-${invalid_release_mode}"
+	invalid_published_pr=59
+	mkdir -p "$invalid_published_worktree"
+	invalid_published_cleanup_receipt=$(full_loop_write_cleanup_deferred marcusquinn/aidevops "$invalid_published_pr" \
+		"$invalid_published_worktree" feature/invalid-published "$$" invalid-published-session pending FINALIZATION_PENDING)
+	cp "$invalid_published_cleanup_receipt" "${ROOT}/invalid-published-${invalid_release_mode}-before.json"
+	if COMPLETION_RELEASE_MODE="$invalid_release_mode" AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+		AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$published_record_runner" "$invalid_published_pr" v3.0.0 marcusquinn/aidevops >/dev/null 2>&1; then
+		printf 'FAIL %s evidence recorded a published release\n' "$invalid_release_mode"
+		exit 1
+	fi
+	[[ ! -e "${receipt_dir}/marcusquinn_aidevops-${invalid_published_pr}.status" ]]
+	cmp -s "$invalid_published_cleanup_receipt" "${ROOT}/invalid-published-${invalid_release_mode}-before.json"
+	rm -f "$invalid_published_cleanup_receipt" "${ROOT}/invalid-published-${invalid_release_mode}-before.json"
+done
+printf 'PASS forged tags, draft releases, and non-successful release workflows leave receipts unchanged\n'
+
+printf '%s\n' not-requested >"${receipt_dir}/marcusquinn_aidevops-60.status"
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$published_record_runner" 60 v3.0.0 marcusquinn/aidevops >/dev/null 2>&1; then
+	printf 'FAIL conflicting terminal release receipt was replaced by published evidence\n'
+	exit 1
+fi
+grep -qx 'not-requested' "${receipt_dir}/marcusquinn_aidevops-60.status"
+printf 'PASS conflicting terminal receipts cannot be replaced by manual publication evidence\n'
 
 direct_worktree="${ROOT}/direct-merge-worktree"
 mkdir -p "$direct_worktree"
