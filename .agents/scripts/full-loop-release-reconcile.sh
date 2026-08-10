@@ -351,6 +351,8 @@ _full_loop_release_find_workflow_run() {
 	local push_runs=""
 	local recovery_runs=""
 	local display_title="Publish ${tag_name}"
+	local selection_mode="${4:-latest}"
+	[[ "$selection_mode" == "latest" || "$selection_mode" == "successful" ]] || return 1
 
 	_FULL_LOOP_RELEASE_RUN_JSON=""
 	push_runs=$(gh api --method GET "repos/${repo}/actions/workflows/publish-packages.yml/runs" \
@@ -362,6 +364,8 @@ _full_loop_release_find_workflow_run() {
 	_FULL_LOOP_RELEASE_RUN_JSON=$(jq -cn --arg sha "$tag_commit" --arg tag "$tag_name" --arg title "$display_title" \
 		--arg push_event "$_FULL_LOOP_RELEASE_EVENT_PUSH" \
 		--arg recovery_event "$_FULL_LOOP_RELEASE_EVENT_RECOVERY" \
+		--arg selection_mode "$selection_mode" --arg completed "$_FULL_LOOP_RELEASE_STATUS_COMPLETED" \
+		--arg success "$_FULL_LOOP_RELEASE_CONCLUSION_SUCCESS" \
 		--arg string_type "$_FULL_LOOP_RELEASE_JSON_STRING_TYPE" \
 		--argjson push "$push_runs" --argjson recovery "$recovery_runs" '
 		([($push.workflow_runs[]? | select(.event == $push_event and .head_branch == $tag and .head_sha == $sha))]
@@ -370,6 +374,9 @@ _full_loop_release_find_workflow_run() {
 				and ((.head_sha | type) == $string_type)
 				and (.head_sha | test("^[0-9a-f]{40}$"))
 				and .display_title == ($title + " [" + $sha + "." + .head_sha + "]")))])
+		| if $selection_mode == "successful" then
+			map(select(.status == $completed and .conclusion == $success))
+		  else . end
 		| sort_by(.created_at // "") | last // empty
 	') || return 1
 	[[ -n "$_FULL_LOOP_RELEASE_RUN_JSON" && "$_FULL_LOOP_RELEASE_RUN_JSON" != "null" ]] || return 3
@@ -687,6 +694,14 @@ _full_loop_release_inspect_remote() {
 		return 8
 	fi
 	if [[ "$run_conclusion" != "success" ]]; then
+		if _full_loop_release_find_workflow_run "$repo" "$tag_name" "$tag_commit" successful; then
+			run_url=$(jq -r '.html_url // ""' <<<"$_FULL_LOOP_RELEASE_RUN_JSON") || return 1
+			[[ -z "$run_url" ]] || printf 'RECOVERED_WORKFLOW_URL=%s\n' "$run_url"
+			if _full_loop_release_verify_channels "$repo" "$tag_name"; then
+				printf 'RELEASE_REMOTE_STATE=published\n'
+				return 0
+			fi
+		fi
 		printf 'WORKFLOW_CONCLUSION=%s\n' "${run_conclusion:-unknown}"
 		return 4
 	fi

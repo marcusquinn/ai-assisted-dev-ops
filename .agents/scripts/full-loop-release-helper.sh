@@ -171,6 +171,15 @@ _full_loop_validate_release_candidates() {
 		[[ -f "$candidate_receipt" ]] && IFS= read -r candidate_status <"$candidate_receipt" || true
 		case "$candidate_status" in
 		"" | "$_FULL_LOOP_PHASE_FAILED") ;;
+		"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
+			jq -e --argjson candidate_pr "$candidate_pr" '
+				.mode == "aggregate"
+				and any(.aggregated_sources[]?; .pr == $candidate_pr)
+			' <<<"$source_json" >/dev/null || {
+				printf 'Cannot aggregate terminal release:%s evidence for PR #%s\n' "$candidate_status" "$candidate_pr" >&2
+				return 1
+			}
+			;;
 		*)
 			printf 'Cannot aggregate terminal release:%s evidence for PR #%s\n' "$candidate_status" "$candidate_pr" >&2
 			return 1
@@ -191,13 +200,23 @@ _full_loop_persist_release_success() {
 	local tag_commit=""
 	local aggregated_pr=""
 	local aggregated_merge=""
+	local aggregated_receipt=""
+	local aggregated_status=""
 	IFS= read -r version <"$release_path/VERSION" || return 1
 	tag_name="v${version}"
 	tag_commit=$(git -C "$release_path" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
 	while IFS=$'\t' read -r aggregated_pr aggregated_merge; do
 		[[ -n "$aggregated_pr" ]] || continue
-		_full_loop_write_superseded_release_receipt "$repo" "$aggregated_pr" "$aggregated_merge" \
-			"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+		aggregated_receipt=$(_full_loop_release_receipt_path "$repo" "$aggregated_pr") || return 1
+		aggregated_status=""
+		[[ -f "$aggregated_receipt" ]] && IFS= read -r aggregated_status <"$aggregated_receipt" || true
+		if [[ "$aggregated_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]]; then
+			_full_loop_write_authorized_aggregate_inclusion "$repo" "$aggregated_pr" "$aggregated_merge" \
+				"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+		else
+			_full_loop_write_superseded_release_receipt "$repo" "$aggregated_pr" "$aggregated_merge" \
+				"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+		fi
 	done < <(jq -r '.aggregated_sources[] | [.pr,.merge] | @tsv' <<<"$source_json")
 	_full_loop_write_release_receipt "$repo" "$release_source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED"
 	return $?

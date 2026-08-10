@@ -527,11 +527,17 @@ if [[ "$args" == *" -f event=push "* ]]; then
 fi
 if [[ "$args" == *" -f event=workflow_dispatch "* ]]; then
 	correlated_title='Publish v1.2.3 [3333333333333333333333333333333333333333.4444444444444444444444444444444444444444]'
+	recovery_status='queued'
+	recovery_conclusion='null'
 	if [[ "${FAKE_RECOVERY_CORRELATION_MODE:-valid}" == "mismatch" ]]; then
 		correlated_title='Publish v1.2.3 [3333333333333333333333333333333333333333.5555555555555555555555555555555555555555]'
 	fi
-	printf '{"workflow_runs":[{"id":11,"event":"workflow_dispatch","head_branch":"main","head_sha":"4444444444444444444444444444444444444444","status":"queued","conclusion":null,"created_at":"2026-07-27T00:01:00Z","display_title":"%s","html_url":"recovery-url"}]}\n' \
-		"$correlated_title"
+	if [[ "${FAKE_RECOVERY_RUN_MODE:-pending}" == "failed" ]]; then
+		recovery_status='completed'
+		recovery_conclusion='"failure"'
+	fi
+	printf '{"workflow_runs":[{"id":11,"event":"workflow_dispatch","head_branch":"main","head_sha":"4444444444444444444444444444444444444444","status":"%s","conclusion":%s,"created_at":"2026-07-27T00:01:00Z","display_title":"%s","html_url":"recovery-url"}]}\n' \
+		"$recovery_status" "$recovery_conclusion" "$correlated_title"
 	exit 0
 fi
 if [[ "$args" == *"releases/tags/v1.2.3"* ]]; then
@@ -598,6 +604,7 @@ chmod +x "${TEST_ROOT}/bin/git" "${TEST_ROOT}/bin/npm" "${TEST_ROOT}/bin/curl"
 PATH="${TEST_ROOT}/bin:${PATH}"
 export FAKE_RUN_SCHEMA_MODE=valid
 export FAKE_RECOVERY_CORRELATION_MODE=valid
+export FAKE_RECOVERY_RUN_MODE=pending
 export FAKE_PUSH_BRANCH_MODE=valid
 export FAKE_RELEASE_DRAFT=0
 export FAKE_NPM_VERSION=1.2.3
@@ -648,6 +655,21 @@ if [[ "$(jq -r '.id' <<<"$_FULL_LOOP_RELEASE_RUN_JSON")" != "11" ]]; then
 	exit 1
 fi
 printf 'PASS exact push and recovery workflow runs are correlated durably\n'
+
+export FAKE_RECOVERY_RUN_MODE=failed
+recovered_run_output="${TEST_ROOT}/recovered-run-output.txt"
+_full_loop_release_inspect_remote test/repo v1.2.3 >"$recovered_run_output" || {
+	printf 'FAIL successful exact-tag publication was downgraded by a later transient recovery failure\n'
+	exit 1
+}
+if [[ "$(jq -r '.id' <<<"$_FULL_LOOP_RELEASE_RUN_JSON")" != "10" ]] ||
+	! grep -qx 'RECOVERED_WORKFLOW_URL=push-url' "$recovered_run_output" ||
+	! grep -qx 'RELEASE_REMOTE_STATE=published' "$recovered_run_output"; then
+	printf 'FAIL exact-tag reconciliation did not preserve the prior successful workflow evidence\n'
+	exit 1
+fi
+export FAKE_RECOVERY_RUN_MODE=pending
+printf 'PASS later transient recovery failures cannot downgrade verified publication\n'
 
 export FAKE_RECOVERY_CORRELATION_MODE=mismatch
 _full_loop_release_find_workflow_run test/repo v1.2.3 3333333333333333333333333333333333333333

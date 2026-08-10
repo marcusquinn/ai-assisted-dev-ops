@@ -297,7 +297,7 @@ _full_loop_release_evidence_path() {
 	local pr_number="$2"
 	local evidence_type="$3"
 	local receipt_path=""
-	case "$evidence_type" in aggregate | authorization-gap | failure | successor) ;; *) return 1 ;; esac
+	case "$evidence_type" in aggregate | authorization-gap | failure | inclusion | successor) ;; *) return 1 ;; esac
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
 	printf '%s.%s.json\n' "${receipt_path%.status}" "$evidence_type"
 	return 0
@@ -577,6 +577,49 @@ _full_loop_write_superseded_release_receipt() {
 	_full_loop_write_release_receipt "$repo" "$pr_number" "$_FULL_LOOP_RELEASE_SUPERSEDED" || return 1
 	_full_loop_update_superseded_cleanup_receipt "$repo" "$pr_number"
 	return $?
+}
+
+_full_loop_write_authorized_aggregate_inclusion() {
+	local repo="$1"
+	local pr_number="$2"
+	local source_merge="$3"
+	local aggregate_pr="$4"
+	local aggregate_merge="$5"
+	local tag_name="$6"
+	local tag_commit="$7"
+	local evidence_path=""
+	local now=""
+	[[ "$pr_number" =~ ^[0-9]+$ && "$aggregate_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$source_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$aggregate_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	[[ "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX ]] || return 1
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$pr_number" inclusion) || return 1
+	if [[ -f "$evidence_path" ]]; then
+		jq -e --arg repo "$repo" --argjson pr_number "$pr_number" \
+			--arg source_merge "$source_merge" --argjson aggregate_pr "$aggregate_pr" \
+			--arg aggregate_merge "$aggregate_merge" --arg tag "$tag_name" \
+			--arg tag_commit "$tag_commit" --arg prior_status "$_FULL_LOOP_RELEASE_NOT_REQUESTED" '
+			.schema_version == 1 and .evidence_type == "authorized-aggregate-inclusion"
+			and .status == "included" and .prior_release_status == $prior_status
+			and .repository == $repo and .pr_number == $pr_number
+			and .source_merge == $source_merge and .aggregate_pr == $aggregate_pr
+			and .aggregate_merge == $aggregate_merge and .release_tag == $tag
+			and .release_commit == $tag_commit
+		' "$evidence_path" >/dev/null 2>&1
+		return $?
+	fi
+	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+	mkdir -p "${evidence_path%/*}" || return 1
+	jq -cn --arg repo "$repo" --argjson pr_number "$pr_number" \
+		--arg source_merge "$source_merge" --argjson aggregate_pr "$aggregate_pr" \
+		--arg aggregate_merge "$aggregate_merge" --arg tag "$tag_name" \
+		--arg tag_commit "$tag_commit" --arg prior_status "$_FULL_LOOP_RELEASE_NOT_REQUESTED" --arg now "$now" '
+		{schema_version:1,evidence_type:"authorized-aggregate-inclusion",status:"included",
+		 prior_release_status:$prior_status,repository:$repo,pr_number:$pr_number,
+		 source_merge:$source_merge,aggregate_pr:$aggregate_pr,aggregate_merge:$aggregate_merge,
+		 release_tag:$tag,release_commit:$tag_commit,recorded_at:$now}
+	' >"${evidence_path}.tmp.$$" || return 1
+	mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
+	return 0
 }
 
 _full_loop_update_superseded_cleanup_receipt() {
