@@ -325,12 +325,16 @@ else
     _fail "Tabby recovered command unexpected: ${tabby_output}"
 fi
 
-output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
     "${HELPER}" --shared-db --dir "${launch_dir}" --dry-run 2>&1)
-if [[ "${output}" == *"opencode" ]] && [[ "${output}" != *"opencode ''"* ]]; then
-    _pass "shared-db dry-run omits a synthetic empty argument"
+if [[ "${output}" == *"opencode" ]] \
+    && [[ "${output}" != *"AIDEVOPS_TABBY_SESSION_RECOVERY=1"* ]] \
+    && [[ "${output}" != *"exec /bin/zsh -l"* ]] \
+    && [[ "${output}" != *"opencode ''"* ]]; then
+    _pass "implicit Tabby detection preserves shared-db mode"
 else
-    _fail "shared-db dry-run command unexpected: ${output}"
+    _fail "implicit Tabby shared-db command unexpected: ${output}"
 fi
 
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
