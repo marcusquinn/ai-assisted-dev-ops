@@ -13,8 +13,8 @@
 #   3. Adds status:available when no linked PR owns the issue
 #   4. Removes the worker_login as assignee when provided
 #   5. Skips assignee mutation when worker_login is empty
-#   6. Defensively skips entirely when origin:interactive is present,
-#      preserving interactive-session ownership (t2056)
+#   6. Cleans valid worker claims on interactive-origin auto-dispatch issues
+#      because origin labels are provenance, not workflow permission
 #   7. Returns 0 on empty issue_num or repo_slug (idempotent no-op)
 #
 # Failure history motivating this test: production observation 2026-04-20
@@ -158,17 +158,14 @@ assert_not_grep "remove-assignee" "no assignee mutation when empty"
 assert_grep "remove-label status:queued" "labels still cleared when worker_login empty"
 
 # -------------------------------------------------------------------
-# Case 4: defensively skips entirely when origin:interactive present
+# Case 4: cleans a worker claim on an interactive-origin auto-dispatch issue
 # -------------------------------------------------------------------
 reset_stub
-printf 'bug,origin:interactive,tier:standard' >"$GH_VIEW_LABELS"
+printf 'auto-dispatch,bug,origin:interactive,status:in-progress,tier:standard' >"$GH_VIEW_LABELS"
 clear_active_status_on_release 20026 owner/repo alice
-# No `gh issue edit` call should have been recorded (view is skipped by stub)
-if ! grep -q "issue edit" "$GH_CALLS_FILE" 2>/dev/null; then
-	print_result "skips edit on origin:interactive" 0
-else
-	print_result "skips edit on origin:interactive" 1 "gh issue edit was called"
-fi
+assert_grep "remove-label status:in-progress" "clears worker status on interactive-origin auto-dispatch issue"
+assert_grep "add-label status:available" "requeues interactive-origin auto-dispatch issue"
+assert_grep "remove-assignee alice" "removes worker from interactive-origin auto-dispatch issue"
 
 # -------------------------------------------------------------------
 # Case 5: empty issue_num returns 0 without gh call
@@ -195,8 +192,7 @@ else
 fi
 
 # -------------------------------------------------------------------
-# Case 7: labels not matching interactive substring don't trigger defensive skip
-# (e.g., a label named "interactive-candidate" or "origin:worker-takeover")
+# Case 7: worker-takeover provenance follows the same release cleanup path
 # -------------------------------------------------------------------
 reset_stub
 printf 'bug,origin:worker-takeover,tier:standard' >"$GH_VIEW_LABELS"

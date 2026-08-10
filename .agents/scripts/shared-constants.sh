@@ -1284,10 +1284,11 @@ _source_shared_module_with_retry "${_SC_SELF%/*}/shared-gh-wrappers.sh"
 # worker completion, with dead PIDs (one case was PID 11742 reused by
 # Brave Browser — see t2421).
 #
-# Defensive: skips entirely if origin:interactive is present. Workers
-# should never hold the claim on interactive issues (dispatch-dedup
-# blocks that), but if we find one, we never touch interactive-session
-# ownership state (t2056).
+# Origin labels are provenance only. An interactive session may create an
+# auto-dispatch issue that a headless worker validly claims, so release must
+# not skip cleanup solely because origin:interactive is present (GH#29897).
+# The exact worker_login removal and linked-PR safeguards below preserve live
+# interactive ownership and completed-work audit state.
 #
 # Args:
 #   $1 — issue number
@@ -1295,7 +1296,7 @@ _source_shared_module_with_retry "${_SC_SELF%/*}/shared-gh-wrappers.sh"
 #   $3 — worker login to remove as assignee (optional; empty = no assignee change)
 #
 # Returns:
-#   0 on success, including idempotent no-ops and defensive skips
+#   0 on success, including idempotent no-ops
 #   1 on gh failure (logged by gh to stderr; suppressed here)
 #
 # Example:
@@ -1310,16 +1311,9 @@ clear_active_status_on_release() {
 		return 0
 	fi
 
-	# Defensive: don't touch interactive-session-owned issues.
-	# A single fetch is cheap — only fires on claim release, not hot path.
 	local labels_json=""
 	labels_json=$(gh issue view "$issue_num" --repo "$repo_slug" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || labels_json=""
-	case ",${labels_json}," in
-	*,origin:interactive,*)
-		return 0
-		;;
-	esac
 
 	# Defensive: if a linked PR exists for this issue (OPEN or MERGED),
 	# preserve the worker's assignee and status:in-review.
