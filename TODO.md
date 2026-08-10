@@ -1244,7 +1244,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [ ] t18219 Persist maintainer role for organization-owned repositories #auto-dispatch #priority:high ref:GH#29785
 
 
-- [ ] t18223 Self-heal stale Tabby recovery tokens #bug ref:GH#29922
+- [ ] t18223 Self-heal stale Tabby recovery tokens #bug ref:GH#29922 pr:#29925
 
 ## In Progress
 
