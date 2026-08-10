@@ -17,18 +17,23 @@ test_post_pr_handoff_detects_open_pending_pr() {
 	local expected_head
 	expected_head=$(git -C "$work_dir" rev-parse HEAD)
 
-	gh() {
+	gh_pr_list() {
 		local args="$*"
-		if [[ "$args" == *"pr list"* && "$args" == *"--state all"* && "$args" == *"--head feature/auto-test-issue-99999"* ]]; then
+		if [[ "$args" == *"--state all"* && "$args" == *"--head feature/auto-test-issue-99999"* ]]; then
 			printf '[{"number":123,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]' "$expected_head"
-			return 0
-		fi
-		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/123/comments"* ]]; then
-			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 			return 0
 		fi
 		printf '[]'
 		return 0
+	}
+
+	gh() {
+		local args="$*"
+		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/123/comments"* ]]; then
+			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
+			return 0
+		fi
+		return 1
 	}
 
 	if _worker_post_pr_handoff_confirmed "issue-99999" "$work_dir"; then
@@ -39,6 +44,7 @@ test_post_pr_handoff_detects_open_pending_pr() {
 	fi
 
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
 	return 0
 }
@@ -74,18 +80,18 @@ test_post_pr_handoff_treats_ci_as_monitoring_state() {
 	local rollup_json=""
 	local fixture_label=""
 
+	gh_pr_list() {
+		printf '[{"number":126,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":%s}]' "$expected_head" "$rollup_json"
+		return 0
+	}
+
 	gh() {
 		local args="$*"
-		if [[ "$args" == *"pr list"* ]]; then
-			printf '[{"number":126,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":%s}]' "$expected_head" "$rollup_json"
-			return 0
-		fi
 		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/126/comments"* ]]; then
 			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 			return 0
 		fi
-		printf '[]'
-		return 0
+		return 1
 	}
 
 	while IFS=$'\t' read -r fixture_label rollup_json; do
@@ -103,6 +109,7 @@ pending only	[{"name":"tests","status":"IN_PROGRESS","conclusion":null}]
 EOF
 
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
 	return 0
 }
@@ -119,12 +126,13 @@ test_post_pr_handoff_rejects_mismatched_head_or_missing_summary() {
 	local summary_count=1
 	local remote_is_draft="false"
 
+	gh_pr_list() {
+		printf '[{"number":125,"state":"OPEN","isDraft":%s,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]' "$remote_is_draft" "$remote_head"
+		return 0
+	}
+
 	gh() {
 		local args="$*"
-		if [[ "$args" == *"pr list"* ]]; then
-			printf '[{"number":125,"state":"OPEN","isDraft":%s,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]' "$remote_is_draft" "$remote_head"
-			return 0
-		fi
 		if [[ "$args" == *"api --paginate"* ]]; then
 			if [[ "$summary_count" -gt 0 ]]; then
 				printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
@@ -133,8 +141,7 @@ test_post_pr_handoff_rejects_mismatched_head_or_missing_summary() {
 			fi
 			return 0
 		fi
-		printf '[]'
-		return 0
+		return 1
 	}
 
 	if _worker_post_pr_handoff_confirmed "issue-99999" "$work_dir"; then
@@ -158,6 +165,7 @@ test_post_pr_handoff_rejects_mismatched_head_or_missing_summary() {
 	fi
 
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
 	return 0
 }
@@ -429,7 +437,7 @@ test_post_pr_handoff_rejects_pre_pr_stall() {
 	git -C "$work_dir" checkout -q -b "feature/auto-test-issue-99999"
 	DISPATCH_REPO_SLUG="test-owner/test-repo"
 
-	gh() {
+	gh_pr_list() {
 		printf '[]'
 		return 0
 	}
@@ -442,7 +450,7 @@ test_post_pr_handoff_rejects_pre_pr_stall() {
 	fi
 
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
-	unset -f gh 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 	return 0
 }
 
@@ -455,18 +463,18 @@ test_post_pr_handoff_overrides_watchdog_next_action() {
 	local expected_head
 	expected_head=$(git -C "$work_dir" rev-parse HEAD)
 
+	gh_pr_list() {
+		printf '[{"number":124,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]' "$expected_head"
+		return 0
+	}
+
 	gh() {
 		local args="$*"
-		if [[ "$args" == *"pr list"* && "$args" == *"--state all"* ]]; then
-			printf '[{"number":124,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"%s","labels":[{"name":"origin:worker"}],"statusCheckRollup":[]}]' "$expected_head"
-			return 0
-		fi
 		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/124/comments"* ]]; then
 			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 			return 0
 		fi
-		printf '[]'
-		return 0
+		return 1
 	}
 
 	local evidence_fields="" launch_failure_cause="" next_action=""
@@ -479,6 +487,7 @@ test_post_pr_handoff_overrides_watchdog_next_action() {
 	fi
 
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
 
 	if [[ "$launch_failure_cause" == "post_pr_pending_ci_handoff" && "$next_action" == "monitor_open_pr" ]]; then
