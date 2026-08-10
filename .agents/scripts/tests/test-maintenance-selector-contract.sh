@@ -137,11 +137,10 @@ safety_functions = {
         "_isc_scan_stampless_phase",
     ],
     ".agents/scripts/pulse-canonical-maintenance.sh": ["_stale_worktree_sweep"],
-    ".agents/scripts/pulse-cleanup.sh": [
-        "_cleanup_merged_prs_for_all_repos",
-        "cleanup_stalled_workers",
-        "cleanup_stashes",
-        "cleanup_worktrees",
+    ".agents/scripts/pulse-cleanup.sh": ["cleanup_stalled_workers", "cleanup_stashes"],
+    ".agents/scripts/pulse-cleanup-worktree-removal.sh": ["cleanup_worktrees"],
+    ".agents/scripts/pulse-cleanup-worktree-state.sh": [
+        "_cleanup_merged_prs_for_all_repos"
     ],
     ".agents/scripts/pulse-dirty-pr-sweep.sh": ["dirty_pr_sweep_all_repos"],
     ".agents/scripts/pulse-issue-reconcile.sh": [

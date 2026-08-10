@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# Regression test for t2860: _cleanup_single_worktree must call
+# Regression test for t2860: the permanent-removal helper must call
 # unregister_worktree after destroying a worktree to prevent SQLite
 # registry bloat and PID-collision false positives.
 #
-# Background: pulse-cleanup.sh destroyed worktrees via _trash_or_remove
+# Background: pulse-cleanup-worktree-removal.sh destroys worktrees via _trash_or_remove
 # but never deregistered them from the worktree_owners SQLite table.
 # This left stale rows accumulating forever (815 April entries observed
 # for ~7 live worktrees). Stale rows with recycled PIDs could cause
 # is_worktree_owned_by_others to return false-positives.
 #
 # This test:
-#   1. Verifies _cleanup_single_worktree body contains the
+#   1. Verifies _pc_permanently_remove_eligible_orphan contains the
 #      unregister_worktree call (code-level guard).
 #   2. Verifies register_worktree + unregister_worktree round-trips
 #      correctly against a temp SQLite DB.
@@ -40,20 +40,20 @@ pass() {
 }
 
 # ============================================================================
-# Test 1: Code-level guard — _cleanup_single_worktree calls unregister_worktree.
+# Test 1: Code-level guard — permanent removal calls unregister_worktree.
 #
 # This is the canonical regression catch: if a future refactor removes the
 # unregister_worktree call, this test fails immediately without needing a
 # full integration run.
 # ============================================================================
 echo ""
-echo "=== Test 1: _cleanup_single_worktree body contains unregister_worktree ==="
+echo "=== Test 1: permanent removal contains unregister_worktree ==="
 (
 	# Extract the function body using awk, then check for the call.
 	# Strategy: extract lines between the function header and its closing '}'
 	# at the top indentation level, then grep for unregister_worktree.
 	fn_body=$(awk '
-		/^_cleanup_single_worktree\(\)/ { in_fn=1; brace_depth=0 }
+		/^_pc_permanently_remove_eligible_orphan\(\)/ { in_fn=1; brace_depth=0 }
 		in_fn {
 			print
 			# Count braces to find function end
@@ -66,15 +66,15 @@ echo "=== Test 1: _cleanup_single_worktree body contains unregister_worktree ===
 				}
 			}
 		}
-	' "$SCRIPT_DIR/pulse-cleanup.sh")
+	' "$SCRIPT_DIR/pulse-cleanup-worktree-removal.sh")
 
 	if echo "$fn_body" | grep -q 'unregister_worktree'; then
-		echo "PASS: unregister_worktree found in _cleanup_single_worktree"
+		echo "PASS: unregister_worktree found in permanent-removal helper"
 	else
-		echo "FAIL: unregister_worktree NOT found in _cleanup_single_worktree"
+		echo "FAIL: unregister_worktree NOT found in permanent-removal helper"
 		exit 1
 	fi
-) || fail "_cleanup_single_worktree does not call unregister_worktree"
+) || fail "permanent-removal helper does not call unregister_worktree"
 
 # ============================================================================
 # Test 2: Registry round-trip — register then unregister a path.
@@ -115,7 +115,7 @@ echo "=== Test 2: register + unregister round-trip removes registry row ==="
 	fi
 	echo "  Pre-unregister row count: $row_count (expected 1)"
 
-	# Unregister (the new call in _cleanup_single_worktree)
+	# Unregister (the call guarded above in the permanent-removal helper)
 	unregister_worktree "$TEST_PATH" 2>/dev/null || true
 
 	# Verify row is gone
