@@ -138,17 +138,76 @@ _profile_publication_worktree_helper() {
 	return 0
 }
 
+_profile_publication_worktree_has_no_active_owner() {
+	local worktree_path="$1"
+	local owner_state=""
+
+	# Source the registry in a subprocess so its shared command helpers cannot
+	# alter this long-running publication helper's globals.
+	owner_state=$( (
+		# shellcheck source=shared-constants.sh
+		source "${SCRIPT_DIR}/shared-constants.sh" || exit 1
+		if is_worktree_owned_by_others "$worktree_path"; then
+			printf '%s\n' "owned"
+		else
+			printf '%s\n' "clear"
+		fi
+	) ) || return 1
+	[[ "$owner_state" == "clear" ]] || return 1
+	return 0
+}
+
+_profile_publication_worktree_recovery_is_safe() {
+	local worktree_path="$1"
+	local canonical_head=""
+	local canonical_status=""
+	local canonical_common_dir=""
+	local worktree_common_dir=""
+	local worktree_parent=""
+	local worktree_basename=""
+
+	[[ -n "$worktree_path" && "$worktree_path" == "${PROFILE_PUBLICATION_WORKTREE:-}" ]] || return 1
+	[[ -n "${PROFILE_PUBLICATION_CANONICAL_REPO:-}" && -n "${PROFILE_PUBLICATION_WORKTREE_BASE:-}" &&
+		-n "${PROFILE_PUBLICATION_CANONICAL_HEAD:-}" && -d "$worktree_path" ]] || return 1
+	worktree_parent=$(cd "${worktree_path%/*}" 2>/dev/null && pwd -P) || return 1
+	[[ "$worktree_parent" == "$PROFILE_PUBLICATION_WORKTREE_BASE" ]] || return 1
+	worktree_basename="${worktree_path##*/}"
+	[[ "$worktree_basename" == "$(basename "$PROFILE_PUBLICATION_CANONICAL_REPO")-profile-readme-"* ]] || return 1
+	git -C "$worktree_path" symbolic-ref -q HEAD >/dev/null 2>&1 && return 1
+	canonical_common_dir=$(git -C "$PROFILE_PUBLICATION_CANONICAL_REPO" rev-parse --git-common-dir 2>/dev/null) || return 1
+	worktree_common_dir=$(git -C "$worktree_path" rev-parse --git-common-dir 2>/dev/null) || return 1
+	case "$canonical_common_dir" in
+	/*) ;;
+	*) canonical_common_dir=$(cd "$PROFILE_PUBLICATION_CANONICAL_REPO/$canonical_common_dir" 2>/dev/null && pwd -P) || return 1 ;;
+	esac
+	case "$worktree_common_dir" in
+	/*) ;;
+	*) worktree_common_dir=$(cd "$worktree_path/$worktree_common_dir" 2>/dev/null && pwd -P) || return 1 ;;
+	esac
+	[[ "$canonical_common_dir" == "$worktree_common_dir" ]] || return 1
+	canonical_head=$(git -C "$PROFILE_PUBLICATION_CANONICAL_REPO" rev-parse HEAD 2>/dev/null) || return 1
+	[[ "$canonical_head" == "$PROFILE_PUBLICATION_CANONICAL_HEAD" ]] || return 1
+	canonical_status=$(git -C "$PROFILE_PUBLICATION_CANONICAL_REPO" status --porcelain --untracked-files=all) || return 1
+	[[ -z "$canonical_status" ]] || return 1
+	_profile_publication_worktree_has_no_active_owner "$worktree_path" || return 1
+	return 0
+}
+
 _archive_and_remove_profile_publication_worktree() {
 	local worktree_path="$1"
 	local archive_path=""
 	local caller="profile-readme-helper.sh"
-	local context="recovery_path=profile-publication-archive"
+	local context="recovery_path=profile-publication-archive profile_scratch=true"
 
+	_profile_publication_worktree_recovery_is_safe "$worktree_path" || return 1
 	archive_worktree_path_recoverably "$worktree_path" "$caller" "$context" || return 1
 	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	[[ -n "$archive_path" ]] || return 1
+	# Recheck after copying so a changed canonical checkout or newly claimed
+	# worktree remains recoverable instead of being removed.
+	_profile_publication_worktree_recovery_is_safe "$worktree_path" || return 1
 	remove_archived_worktree_path "$worktree_path" "$archive_path" "$caller" \
-		"profile-publication" "$context" "true" "false" || return 1
+		"profile-publication" "$context" "true" "true" || return 1
 	log_worktree_removal_event "$_WTAR_REMOVED" "$caller" "$worktree_path" \
 		"profile-publication" "recoverable" "$context"
 	return 0
@@ -1767,6 +1826,8 @@ _profile_run_in_worktree() {
 	fi
 	PROFILE_PUBLICATION_WORKTREE="$worktree_path"
 	PROFILE_PUBLICATION_CANONICAL_REPO="$canonical_repo"
+	PROFILE_PUBLICATION_WORKTREE_BASE=$(cd "$worktree_base" 2>/dev/null && pwd -P) || return 1
+	PROFILE_PUBLICATION_CANONICAL_HEAD="$canonical_head_before"
 
 	local default_branch=""
 	default_branch=$(_profile_default_branch "$canonical_repo")
