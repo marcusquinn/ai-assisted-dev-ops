@@ -9,6 +9,27 @@ set -euo pipefail
 ISSUE_SYNC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=./planning-publisher.sh
 source "${ISSUE_SYNC_SCRIPT_DIR}/planning-publisher.sh"
+
+# Public-write wrappers require a valid local private-entity registry. Hosted
+# GitHub Actions jobs intentionally have no user repos.json, so give this
+# narrowly generated issue-sync publication an explicit empty registry while
+# retaining the wrapper's target-privacy, local-path, and secret scans.
+issue_sync_prepare_ci_privacy_inventory() {
+	local default_config="${HOME}/.config/aidevops/repos.json"
+	local temp_root=""
+	local inventory=""
+	[[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
+	[[ -n "${PRIVACY_REPOS_CONFIG:-}" || -f "$default_config" ]] && return 0
+	temp_root="${RUNNER_TEMP:-${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}}"
+	mkdir -p "$temp_root" || return 1
+	inventory=$(mktemp "${temp_root%/}/aidevops-issue-sync-public-repos.XXXXXX") || return 1
+	printf '%s\n' '{"initialized_repos":[]}' >"$inventory" || return 1
+	export PRIVACY_REPOS_CONFIG="$inventory"
+	printf '%s\n' '::notice::Issue Sync is using an empty ephemeral private-entity registry for this isolated CI job.'
+	return 0
+}
+
+issue_sync_prepare_ci_privacy_inventory
 # shellcheck source=./shared-gh-wrappers.sh
 source "${ISSUE_SYNC_SCRIPT_DIR}/shared-gh-wrappers.sh"
 # shellcheck source=./issue-sync-lib-parse.sh

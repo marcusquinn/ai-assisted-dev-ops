@@ -26,6 +26,7 @@
 #  19. Allow: cached branch-subject range claim is read even when it is the final line (GH#22558)
 #  22. Allow: push squash commit uses its associated PR body as linked-issue proof (GH#29591)
 #  23. Reject: push commit above the counter without associated issue proof (GH#29591)
+#  24. Allow: check-pr sees claims stored on the dedicated task-id-counter branch
 
 set -u
 
@@ -39,6 +40,7 @@ ERRORS=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="${SCRIPT_DIR}/../../hooks/task-id-collision-guard.sh"
+WORKFLOW="${SCRIPT_DIR}/../../../.github/workflows/task-id-collision-check.yml"
 DEPLOYED_GUARD="$HOME/.aidevops/agents/hooks/task-id-collision-guard.sh"
 
 # Prefer deployed if repo copy not found
@@ -1119,6 +1121,73 @@ GHEOF
 }
 
 # ---------------------------------------------------------------------------
+# Case 24: Allow — the dedicated CAS counter branch is authoritative in CI.
+# The default branch can lag while claim-task-id.sh has already committed both
+# the higher counter and claim proof to origin/task-id-counter.
+# ---------------------------------------------------------------------------
+test_check_pr_uses_dedicated_counter_branch() {
+	local name="case-24: check-pr accepts a claim from origin/task-id-counter"
+	local tmpdir
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	local base_repo="${tmpdir}/base"
+	mkdir -p "$base_repo"
+	git -C "$base_repo" init -q -b main
+	git -C "$base_repo" config user.email "test@test.local"
+	git -C "$base_repo" config user.name "Test"
+	git -C "$base_repo" config commit.gpgsign false
+	git -C "$base_repo" config tag.gpgsign false
+	printf '100' >"${base_repo}/.task-counter"
+	git -C "$base_repo" add .task-counter
+	git -C "$base_repo" commit -q -m "init: main counter=100"
+
+	git -C "$base_repo" checkout -q -b task-id-counter
+	printf '102' >"${base_repo}/.task-counter"
+	git -C "$base_repo" add .task-counter
+	git -C "$base_repo" commit -q -m "chore: claim t101 [test-nonce]"
+	git -C "$base_repo" checkout -q main
+
+	local work_repo="${tmpdir}/work"
+	git clone -q --single-branch --branch main "$base_repo" "$work_repo" 2>/dev/null
+	git -C "$work_repo" config user.email "test@test.local"
+	git -C "$work_repo" config user.name "Test"
+	git -C "$work_repo" config commit.gpgsign false
+	git -C "$work_repo" config tag.gpgsign false
+	git -C "$work_repo" fetch -q origin \
+		'+refs/heads/task-id-counter:refs/remotes/origin/task-id-counter'
+	git -C "$work_repo" checkout -q -b feature/test-counter-claim
+	printf 'feature' >"${work_repo}/feature.txt"
+	git -C "$work_repo" add feature.txt
+	git -C "$work_repo" commit -q -m "t101: implement claimed task"
+
+	local fake_bin="${tmpdir}/bin"
+	mkdir -p "$fake_bin"
+	printf '#!/usr/bin/env bash\nexit 1\n' >"${fake_bin}/gh"
+	chmod +x "${fake_bin}/gh"
+
+	local rc=0
+	(
+		cd "$work_repo" || exit 1
+		PATH="${fake_bin}:$PATH" bash "$GUARD" check-pr 9999 2>/dev/null
+	) || rc=$?
+	if [[ "$rc" -eq 0 ]]; then
+		pass "$name"
+	else
+		fail "$name" "expected exit 0 (dedicated counter claim is authoritative), got $rc"
+	fi
+
+	name="case-24: CI fetches the dedicated counter branch"
+	if grep -Fq '+refs/heads/task-id-counter:refs/remotes/origin/task-id-counter' "$WORKFLOW"; then
+		pass "$name"
+	else
+		fail "$name" "task-id collision workflow does not fetch task-id-counter"
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 main() {
@@ -1146,6 +1215,7 @@ main() {
 	test_check_pr_allows_canonical_task_brief_path
 	test_check_pr_rejects_malformed_task_brief_path
 	test_check_push_associated_pr_issue_proof
+	test_check_pr_uses_dedicated_counter_branch
 
 	printf '\n'
 	printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

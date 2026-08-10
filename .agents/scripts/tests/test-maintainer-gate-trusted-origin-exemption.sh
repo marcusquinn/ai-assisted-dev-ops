@@ -171,6 +171,8 @@ else
 fi
 assert_contains "rerun_maintainer_gate_with_retry" \
 	"Job 3 defines bounded rerun scheduling"
+assert_contains "confirm_maintainer_gate_rerun_started" \
+	"Job 3 reconciles asynchronously accepted reruns"
 assert_contains "per_page=100" \
 	"Job 3 queries multiple exact-head workflow runs"
 assert_contains 'select\(\.status == "completed" and \(\.conclusion != null\)\)' \
@@ -240,8 +242,8 @@ gh() {
 		failure) return 1 ;;
 		missing) printf '{"completed":null,"active":null}\n' ;;
 		active) printf '{"completed":null,"active":{"id":502,"status":"in_progress"}}\n' ;;
-		active-and-completed) printf '{"completed":{"id":501,"status":"completed","conclusion":"success"},"active":{"id":502,"status":"in_progress"}}\n' ;;
-		*) printf '{"completed":{"id":501,"status":"completed","conclusion":"success"},"active":null}\n' ;;
+		active-and-completed) printf '{"completed":{"id":501,"status":"completed","conclusion":"success","run_attempt":1},"active":{"id":502,"status":"in_progress"}}\n' ;;
+		*) printf '{"completed":{"id":501,"status":"completed","conclusion":"success","run_attempt":1},"active":null}\n' ;;
 		esac
 		return 0
 	fi
@@ -254,6 +256,14 @@ gh() {
 			return 0
 		fi
 		return 1
+	fi
+	if [[ "$command" == "api" && "$subcommand" == "repos/owner/repo/actions/runs/501" ]]; then
+		if [[ "$FIXTURE_LOOKUP_MODE" == "delayed-rerun" ]]; then
+			printf '%s\n' '{"status":"queued","run_attempt":2}'
+		else
+			printf '%s\n' '{"status":"completed","run_attempt":1}'
+		fi
+		return 0
 	fi
 	return 1
 }
@@ -316,6 +326,7 @@ else
 	run_job3_fixture "accepted rerun" "NONE" '[]' "" 0 "found" 0 "pending" 1
 	run_job3_fixture "completed run selected behind active run" "NONE" '[]' "" 0 "active-and-completed" 0 "pending" 1
 	run_job3_fixture "transient rerun rejection retries" "NONE" '[]' "" 2 "found" 0 "pending" 3
+	run_job3_fixture "delayed rerun acceptance is reconciled" "NONE" '[]' "" 3 "delayed-rerun" 0 "pending" 3
 	run_job3_fixture "exhausted rerun becomes terminal" "NONE" '[]' "" 3 "found" 1 "error,pending" 3
 	run_job3_fixture "active run remains status owner" "NONE" '[]' "" 0 "active" 0 "" 0
 	run_job3_fixture "missing run becomes terminal without pending" "NONE" '[]' "" 0 "missing" 1 "error" 0

@@ -3,11 +3,30 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { registerMcpServers } from "../mcp-registry.mjs";
 
-test("QuickFile MCP uses the least-privilege secret launcher", () => {
+test("QuickFile MCP uses the least-privilege secret launcher", (t) => {
+  const binDir = mkdtempSync(join(tmpdir(), "aidevops-quickfile-registry-"));
+  const originalPath = process.env.PATH;
+  const executable = join(
+    binDir,
+    process.platform === "win32" ? "aidevops.CMD" : "aidevops",
+  );
+  writeFileSync(
+    executable,
+    process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${binDir}${delimiter}${originalPath || ""}`;
+  t.after(() => {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
   const config = { mcp: {}, tools: {} };
   registerMcpServers(config);
 
