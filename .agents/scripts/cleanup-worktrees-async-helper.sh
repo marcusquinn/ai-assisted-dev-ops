@@ -251,18 +251,31 @@ main() {
 	echo "[cleanup-worktrees-async] Starting cleanup_worktrees (cadence OK)" >>"$LOGFILE"
 
 	local rc=0
+	local outcome="success"
+	local removed_count="0"
+	local archived_count="0"
+	local archive_failed_count="0"
 	cleanup_worktrees || rc=$?
 	_prune_dirty_worktree_backups
 
 	if [[ "${CLEANUP_WORKTREES_SKIPPED:-0}" == "1" ]]; then
+		outcome="safety-skip"
 		echo "[cleanup-worktrees-async] cleanup_worktrees skipped by safety gate — last-run NOT updated" >>"$LOGFILE"
 	elif [[ "$rc" -eq 0 ]]; then
 		_maintain_worktree_recovery
 		_update_last_run
 		echo "[cleanup-worktrees-async] Completed successfully at $(date -u '+%Y-%m-%dT%H:%M:%SZ'). last-run updated." >>"$LOGFILE"
 	else
+		outcome="failed"
 		echo "[cleanup-worktrees-async] cleanup_worktrees exited with rc=${rc} — last-run NOT updated" >>"$LOGFILE"
 	fi
+	removed_count="${CLEANUP_WORKTREES_REMOVED_COUNT:-0}"
+	archived_count="${CLEANUP_WORKTREES_ARCHIVED_COUNT:-0}"
+	archive_failed_count="${CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT:-0}"
+	[[ "$removed_count" =~ ^[0-9]+$ ]] || removed_count=0
+	[[ "$archived_count" =~ ^[0-9]+$ ]] || archived_count=0
+	[[ "$archive_failed_count" =~ ^[0-9]+$ ]] || archive_failed_count=0
+	printf '%s\n' "[cleanup-worktrees-async] outcome=${outcome} removed=${removed_count} archived=${archived_count} archive_failed=${archive_failed_count}" >>"$LOGFILE"
 
 	return 0
 }

@@ -117,6 +117,11 @@ cleanup_worktrees() {
 }
 STUB
 	fi
+	cat >>"${stub_dir}/pulse-cleanup.sh" <<STUB
+CLEANUP_WORKTREES_REMOVED_COUNT="${MOCK_REMOVED_COUNT:-0}"
+CLEANUP_WORKTREES_ARCHIVED_COUNT="${MOCK_ARCHIVED_COUNT:-0}"
+CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT="${MOCK_ARCHIVE_FAILED_COUNT:-0}"
+STUB
 
 	# Copy the helper into stub_dir so that when it runs, BASH_SOURCE[0] points
 	# to stub_dir and dirname "${BASH_SOURCE[0]}" resolves to stub_dir. This
@@ -461,6 +466,21 @@ test_recovery_maintenance_runs_once_per_cleanup() {
 	return 0
 }
 
+test_archive_outcome_summary_is_logged() {
+	local cleanup_log="${TEST_DIR}/.aidevops/logs/cleanup_worktrees.log"
+	rm -f "$cleanup_log"
+
+	MOCK_CLEANUP_EXIT=0 MOCK_REMOVED_COUNT=3 MOCK_ARCHIVED_COUNT=2 \
+		MOCK_ARCHIVE_FAILED_COUNT=1 run_helper_in_isolation || true
+	if grep -q 'outcome=success removed=3 archived=2 archive_failed=1' "$cleanup_log" 2>/dev/null; then
+		print_result "archive-summary: async cleanup reports archive/delete outcomes" 0
+	else
+		print_result "archive-summary: async cleanup reports archive/delete outcomes" 1 \
+			"structured archive outcome summary missing"
+	fi
+	return 0
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -519,6 +539,10 @@ main() {
 	teardown
 	setup
 	test_recovery_maintenance_runs_once_per_cleanup
+
+	teardown
+	setup
+	test_archive_outcome_summary_is_logged
 
 	echo ""
 	echo "Results: ${TESTS_PASSED}/${TESTS_RUN} passed, ${TESTS_FAILED} failed"

@@ -15,6 +15,7 @@
 _PULSE_CLEANUP_WORKTREE_STATE_LOADED=1
 _PC_STATE_SKIPPED="skipped"
 _PC_STATE_UNKNOWN="unknown"
+_PC_ARCHIVE_ATTRIBUTION_UNCLEAR="archive-attribution-unclear"
 
 if [[ -z "${_PULSE_CLEANUP_SCRIPT_DIR:-}" ]]; then
 	_pulse_cleanup_worktree_state_path="${BASH_SOURCE[0]%/*}"
@@ -138,6 +139,48 @@ _pc_branch_has_pr() {
 }
 
 #######################################
+# Verify that branch PR evidence is readable and has no open handoff.
+#
+# An empty successful query proves no head PR. A terminal head/reference PR is
+# safe for archive-backed cleanup; OPEN, malformed, or unavailable evidence is
+# a hard veto.
+#
+# Args:
+#   $1 - repository slug
+#   $2 - branch name
+# Returns: 0 when PR state is clear for archival, 1 otherwise
+#######################################
+_pc_branch_archive_pr_state_clear() {
+	local repo_slug="$1"
+	local branch_name="$2"
+	local states=""
+	local state=""
+	local referenced_number=""
+
+	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
+	states=$(gh_pr_list --repo "$repo_slug" --head "$branch_name" --state all \
+		--limit 10 --json state --jq '.[].state // empty' 2>/dev/null) || return 1
+	while IFS= read -r state; do
+		[[ -n "$state" ]] || continue
+		case "$state" in
+		CLOSED | MERGED) ;;
+		*) return 1 ;;
+		esac
+	done <<<"$states"
+	if [[ -n "$states" ]]; then
+		return 0
+	fi
+
+	referenced_number=$(_pc_pr_from_branch "$branch_name" 2>/dev/null || true)
+	[[ -n "$referenced_number" ]] || return 0
+	state=$(_pc_pr_state_for_branch_reference "$repo_slug" "$branch_name" 2>/dev/null) || return 1
+	case "$state" in
+	CLOSED | MERGED) return 0 ;;
+	esac
+	return 1
+}
+
+#######################################
 # Return terminal PR state for a branch head, if GitHub verifies one.
 #
 # Args:
@@ -223,6 +266,28 @@ _pc_pr_terminal_for_branch_archive() {
 		printf '%s\n' "$pr_state"
 		return 0
 		;;
+	esac
+	return 1
+}
+
+#######################################
+# Verify terminal remote evidence for a PR-attributed detached worktree.
+#
+# Args:
+#   $1 - PR number
+#   $2 - repository slug
+# Returns: 0 for CLOSED/MERGED, 1 for OPEN/unknown/unavailable
+#######################################
+_pc_pr_archive_state_clear() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local pr_state=""
+
+	[[ "$pr_number" =~ ^[1-9][0-9]*$ && -n "$repo_slug" ]] || return 1
+	pr_state=$(gh pr view "$pr_number" --repo "$repo_slug" --json state \
+		--jq '.state // empty' 2>/dev/null) || return 1
+	case "$pr_state" in
+	CLOSED | MERGED) return 0 ;;
 	esac
 	return 1
 }
@@ -351,6 +416,77 @@ _pc_recent_worker_metric_exists() {
 		)
 	' "$metrics_file" >/dev/null 2>&1
 	return $?
+}
+
+#######################################
+# Verify that compact archival is allowed for a failed/completed worker.
+#
+# Local marker files and remote task labels are hard vetoes. A failed label
+# lookup is also a veto because cleanup cannot prove that forensics/security
+# retention is unnecessary.
+#
+# Args:
+#   $1 - worktree path
+#   $2 - issue or PR number
+#   $3 - repository slug
+#   $4 - target type: issue or pr
+# Outputs: a short skip reason when blocked
+# Returns: 0 when archival may proceed, 1 otherwise
+#######################################
+_pc_compact_archive_policy_clear() {
+	local wt_path="$1"
+	local target_number="$2"
+	local repo_slug="$3"
+	local target_type="$4"
+	local labels=""
+	local label=""
+	local normalized_label=""
+
+	[[ -n "$wt_path" && "$target_number" =~ ^[1-9][0-9]*$ ]] || {
+		printf '%s\n' "$_PC_ARCHIVE_ATTRIBUTION_UNCLEAR"
+		return 1
+	}
+	[[ "$repo_slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+		printf '%s\n' "$_PC_ARCHIVE_ATTRIBUTION_UNCLEAR"
+		return 1
+	}
+	case "$target_type" in
+	issue | pr) ;;
+	*)
+		printf '%s\n' "$_PC_ARCHIVE_ATTRIBUTION_UNCLEAR"
+		return 1
+		;;
+	esac
+
+	if [[ -e "$wt_path/.aidevops-preserve-forensics" ||
+		-e "$wt_path/.preserve-forensics" ||
+		-e "$wt_path/.aidevops-security-incident" ]]; then
+		printf '%s\n' "preserve-forensics"
+		return 1
+	fi
+
+	labels=$(gh "$target_type" view "$target_number" --repo "$repo_slug" \
+		--json labels --jq '.labels[].name' 2>/dev/null) || {
+		printf '%s\n' "archive-policy-unverified"
+		return 1
+	}
+	while IFS= read -r label; do
+		[[ -n "$label" ]] || continue
+		normalized_label=$(printf '%s' "$label" | tr '[:upper:]' '[:lower:]')
+		case "$normalized_label" in
+		preserve-forensics | security | security-incident | incident:security | status:blocked)
+			printf '%s\n' "protected-${normalized_label//:/-}"
+			return 1
+			;;
+		esac
+	done <<<"$labels"
+	if [[ "$target_type" == "issue" ]] &&
+		_consecutive_zero_session_failures "$target_number" "$repo_slug" 2; then
+		printf '%s\n' "protected-repeated-failures"
+		return 1
+	fi
+
+	return 0
 }
 
 # t2859: Config defaults (ORPHAN_WORKTREE_GRACE_SECS, ORPHAN_MAX_AGE,

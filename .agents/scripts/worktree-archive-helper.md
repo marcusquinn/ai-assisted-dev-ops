@@ -73,21 +73,25 @@ The recommended policy is `--older-than 14d --max-total-size 20G`. `prune` selec
 
 ## Pulse cleanup integration
 
-Pulse uses compact archives before removing dirty terminal worker worktrees and
-dirty generated auto/review worktrees that have reached their cleanup age. It
-passes the parsed repository and issue identity, archives with the
-`failed-worker` reason, and runs `verify` before guarded worktree removal. The
-branch remains as an additional recovery path.
+Pulse uses compact archives before removing stale failed workers, terminal
+issue/PR worktrees, and generated auto/review worktrees that have reached their
+cleanup age. Clean local-only commits are bundled as well as dirty tracked,
+staged, and bounded untracked state. The latest retained worker-failure excerpt
+is included when available. Pulse runs `verify` before guarded removal and keeps
+an attached branch as an additional recovery path.
 
-Clean terminal and generated worktrees do not need a compact dirty-state
-archive; their existing branch-preservation path remains authoritative. When a
-dirty worktree lacks the repository or issue metadata required by this archive
-schema, Pulse retains the existing Git-stash recovery fallback rather than
-inventing metadata.
+Cleanup requires exact repository and issue/PR attribution. It fails closed
+rather than falling back to an in-repository stash when attribution or remote
+policy labels cannot be verified. Archived removals use the
+`archived-failed-worker` or `archived-post-pr-cleanup` audit reason with
+`mode=compact-archive`, archive location, verification outcome, and delete
+outcome. The asynchronous cleanup summary reports removed, archived, and failed
+archive counts.
 
 Any compact archive creation or verification failure records a skipped cleanup
-event and preserves the dirty worktree and branch. The failure stops only that
+event and preserves the worktree and branch. The failure stops only that
 worktree's deletion and must not fall through to a less protective cleanup path
-or stop broader safe cleanup. Interactive/manual owners, security incidents, a
-`preserve-forensics` marker or label, repeated unexplained failures, and other
-protected evidence continue to retain full worktrees.
+or stop broader safe cleanup. Interactive/manual owners, security incidents,
+`.aidevops-preserve-forensics`, `.preserve-forensics`, or
+`.aidevops-security-incident` markers, protected task labels, repeated
+zero-session failures, and other protected evidence retain full worktrees.

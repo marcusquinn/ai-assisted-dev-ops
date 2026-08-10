@@ -119,7 +119,16 @@ source_pulse_cleanup_with_stubs() {
 
 	is_worktree_owned_by_others() { return 1; }
 	unregister_worktree() { local wt_path="$1"; : "$wt_path"; return 0; }
-	gh() { return 1; }
+	gh() {
+		local target_type="${1:-}"
+		local action="${2:-}"
+		local args="$*"
+		if [[ "$target_type" == "issue" || "$target_type" == "pr" ]] &&
+			[[ "$action" == "view" && "$args" == *"--json labels"* ]]; then
+			return 0
+		fi
+		return 1
+	}
 	gh_pr_list() { return 0; }
 	recover_failed_launch_state() { return 0; }
 	gh_issue_comment() { return 0; }
@@ -162,8 +171,9 @@ test_closed_issue_local_commit_no_pr_removes_before_age_threshold() {
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'recovery_path=branch-preserved-closed-issue' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'archive_outcome=verified delete_outcome=removed' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "closed issue local commits/no PR archives before age threshold" "$rc" \
 		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
@@ -200,7 +210,7 @@ test_closed_pr_reference_local_commit_no_pr_removes_before_age_threshold() {
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-post-pr-cleanup.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'pr_state=pr-CLOSED' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'recovery_path=branch-preserved-terminal-pr-23078' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "closed PR reference local commits/no PR archives before age threshold" "$rc" \
@@ -292,7 +302,7 @@ test_merged_branch_pr_removes_before_age_threshold() {
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-post-pr-cleanup.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'pr_state=pr-MERGED' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'recovery_path=branch-preserved-terminal-pr' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "merged branch PR archives before age threshold" "$rc" \
@@ -319,6 +329,8 @@ test_closed_issue_dirty_worktree_compacts_and_preserves_branch() {
 	now_epoch=$(date +%s)
 	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-closed-issue-dirty-metrics.jsonl"
 	export AIDEVOPS_HEADLESS_METRICS_FILE
+	mkdir -p "$HOME/.aidevops/logs/worker-failure-excerpts"
+	printf 'bounded failure context for issue 23081\n' >"$HOME/.aidevops/logs/worker-failure-excerpts/issue-23081-20260810T000000Z-1.log"
 
 	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
 	local cleanup_rc=$?
@@ -335,7 +347,9 @@ test_closed_issue_dirty_worktree_compacts_and_preserves_branch() {
 	[[ "$branch_exists" -eq 0 ]] || rc=1
 	[[ -n "$archive_manifest" ]] || rc=1
 	[[ -z "$archive_manifest" ]] || jq -e '.reason == "failed-worker" and .dirty_state == "dirty"' "$archive_manifest" >/dev/null || rc=1
+	[[ -z "$archive_manifest" ]] || grep -q 'bounded failure context for issue 23081' "${archive_manifest%/manifest.json}/failure.log" 2>/dev/null || rc=1
 	grep -q 'dirty=1' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'recovery_path=branch-preserved-closed-issue' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "closed issue dirty worktree compacts and preserves branch" "$rc" \
 		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists archive=$archive_manifest pulse=$(cat "$LOGFILE" 2>/dev/null) log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
@@ -416,6 +430,38 @@ test_terminal_worktree_respects_live_owner_signal() {
 	[[ -d "$wt_path" ]] || rc=1
 	grep -q "worktree-skipped: ${wt_path} — owned-skip" "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "terminal worktree respects live owner signal" "$rc" \
+		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_terminal_worktree_respects_recent_worker_metric() {
+	local repo_dir="${TEST_ROOT}/repo-terminal-recent-metric"
+	local wt_path="${TEST_ROOT}/worker-wt-terminal-recent-metric"
+	local branch_name="feature/auto-20260507-190812-gh23088"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" || return 1
+	source_pulse_cleanup_with_stubs || return 1
+	gh() {
+		if [[ "${1:-}" == "issue" && "${2:-}" == "view" && "${3:-}" == "23088" ]]; then
+			printf '%s\n' "CLOSED"
+			return 0
+		fi
+		return 1
+	}
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	local metrics_file="${TEST_ROOT}/terminal-recent-metrics.jsonl"
+	printf '{"ts":%s,"issue_number":23088,"session_key":"issue-23088","result":"running"}\n' "$now_epoch" >"$metrics_file"
+	AIDEVOPS_HEADLESS_METRICS_FILE="$metrics_file"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	local rc=0
+	[[ "$cleanup_rc" -ne 0 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	grep -q 'worktree-skipped.*active-worker-metric.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "terminal worktree respects recent worker metric" "$rc" \
 		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
 }
@@ -532,7 +578,7 @@ test_young_local_commit_logs_not_age_eligible() {
 	[[ "$cleanup_rc" -eq 1 ]] || rc=1
 	[[ -d "$wt_path" ]] || rc=1
 	grep -q 'worktree-skipped.*not-age-eligible.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
-	grep -q 'pr_state=not-eligible' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'pr_state=generated-retention' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'commits=1' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "young local commit logs not-age-eligible skip" "$rc" \
 		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
@@ -585,7 +631,13 @@ test_stale_local_commit_no_pr_removes_worktree_preserves_branch() {
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	local archive_manifest=""
+	for archive_manifest in "$HOME"/.aidevops/recovery/archives/testowner__testrepo/23076/*/manifest.json; do
+		[[ -f "$archive_manifest" ]] || archive_manifest=""
+	done
+	[[ -n "$archive_manifest" ]] || rc=1
+	[[ -z "$archive_manifest" ]] || [[ -s "${archive_manifest%/manifest.json}/commits.bundle" ]] || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'recovery_path=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "stale local commits/no PR removes folder while preserving branch" "$rc" \
 		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
@@ -597,6 +649,20 @@ test_stale_detached_review_cruft_removes_without_branch() {
 	local wt_path="${TEST_ROOT}/aidevops-pr1234-review-response"
 	setup_repo_with_detached_review_worktree "$repo_dir" "$wt_path" || return 1
 	source_pulse_cleanup_with_stubs || return 1
+	gh() {
+		local target_type="${1:-}"
+		local action="${2:-}"
+		local target_number="${3:-}"
+		local args="$*"
+		if [[ "$target_type" == "pr" && "$action" == "view" &&
+			"$target_number" == "1234" ]]; then
+			if [[ "$args" == *"--json state"* ]]; then
+				printf '%s\n' "MERGED"
+			fi
+			return 0
+		fi
+		return 1
+	}
 
 	local now_epoch
 	now_epoch=$(date +%s)
@@ -609,7 +675,7 @@ test_stale_detached_review_cruft_removes_without_branch() {
 	local rc=0
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
-	grep -q 'worktree-removed.*detached-review-cruft.*mode=permanent' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "stale clean detached review worktree is removed as cruft" "$rc" \
 		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
@@ -637,10 +703,38 @@ test_stale_clean_auto_worktree_removes_folder_preserves_branch() {
 	[[ "$cleanup_rc" -eq 0 ]] || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
 	[[ "$branch_exists" -eq 0 ]] || rc=1
-	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	grep -q 'pr_state=generated-clean-cruft' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "stale clean auto worktree removes folder while preserving branch" "$rc" \
 		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_clean_generated_worktree_waits_for_archive_threshold() {
+	local repo_dir="${TEST_ROOT}/repo-clean-auto-young"
+	local wt_path="${TEST_ROOT}/aidevops-feature-auto-20260507-190813-gh23089"
+	local branch_name="feature/auto-20260507-190813-gh23089"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" || return 1
+	local old_ts=""
+	old_ts=$(date -u -v-4H +%Y%m%d%H%M 2>/dev/null ||
+		date -u -d "4 hours ago" +%Y%m%d%H%M 2>/dev/null ||
+		printf '202601010000\n')
+	touch -t "$old_ts" "$wt_path/.git"
+	source_pulse_cleanup_with_stubs || return 1
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-clean-auto-young-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	local rc=0
+	[[ "$cleanup_rc" -ne 0 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	grep -q 'worktree-skipped.*not-age-eligible.*pr_state=generated-retention' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "clean generated worker waits for compact archive threshold" "$rc" \
+		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
 }
 
@@ -698,9 +792,122 @@ test_dirty_auto_over_seven_days_compacts_and_preserves_branch() {
 	[[ "$branch_exists" -eq 0 ]] || rc=1
 	[[ -n "$archive_manifest" ]] || rc=1
 	[[ -z "$archive_manifest" ]] || jq -e '.reason == "failed-worker" and .dirty_state == "dirty"' "$archive_manifest" >/dev/null || rc=1
-	grep -q 'worktree-removed.*local-commits-branch-preserved.*mode=branch-preserved' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
 	print_result "dirty generated auto worktree over 7 days is compacted and removed" "$rc" \
 		"cleanup_rc=$cleanup_rc branch_exists=$branch_exists archive=$archive_manifest pulse=$(cat "$LOGFILE" 2>/dev/null) log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_preserve_forensics_marker_blocks_compact_cleanup() {
+	local repo_dir="${TEST_ROOT}/repo-preserve-forensics"
+	local wt_path="${TEST_ROOT}/aidevops-feature-auto-20260507-190810-gh23086"
+	local branch_name="feature/auto-20260507-190810-gh23086"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" "8 days ago" || return 1
+	printf 'retain full worker evidence\n' >"$wt_path/.aidevops-preserve-forensics"
+	source_pulse_cleanup_with_stubs || return 1
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-forensics-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	local rc=0
+	[[ "$cleanup_rc" -ne 0 ]] || rc=1
+	[[ -d "$wt_path" && -f "$wt_path/.aidevops-preserve-forensics" ]] || rc=1
+	grep -q 'worktree-skipped.*preserve-forensics.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "preserve-forensics marker retains full worker worktree" "$rc" \
+		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_unclear_archive_attribution_preserves_worktree() {
+	local repo_dir="${TEST_ROOT}/repo-unclear-attribution"
+	local wt_path="${TEST_ROOT}/aidevops-feature-auto-unattributed"
+	local branch_name="feature/auto-unattributed"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" "8 days ago" || return 1
+	source_pulse_cleanup_with_stubs || return 1
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-unattributed-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	local rc=0
+	[[ "$cleanup_rc" -ne 0 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	grep -q 'worktree-skipped.*archive-attribution-unclear.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "unclear archive attribution preserves full worktree" "$rc" \
+		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_security_label_blocks_compact_cleanup() {
+	local repo_dir="${TEST_ROOT}/repo-security-label"
+	local wt_path="${TEST_ROOT}/aidevops-feature-auto-20260507-190811-gh23087"
+	local branch_name="feature/auto-20260507-190811-gh23087"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" "8 days ago" || return 1
+	source_pulse_cleanup_with_stubs || return 1
+	gh() {
+		local target_type="${1:-}"
+		local action="${2:-}"
+		local args="$*"
+		if [[ "$target_type" == "issue" && "$action" == "view" &&
+			"$args" == *"--json labels"* ]]; then
+			printf '%s\n' "security"
+			return 0
+		fi
+		return 1
+	}
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-security-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	local rc=0
+	[[ "$cleanup_rc" -ne 0 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	grep -q 'worktree-skipped.*protected-security.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "security label retains full worker worktree" "$rc" \
+		"cleanup_rc=$cleanup_rc log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
+	return 0
+}
+
+test_stale_dirty_attributed_worker_archives_before_removal() {
+	local repo_dir="${TEST_ROOT}/repo-stale-dirty-attributed"
+	local wt_path="${TEST_ROOT}/worker-wt-stale-dirty-attributed"
+	local branch_name="fix/23090-stale-dirty-worker"
+	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" "8 days ago" || return 1
+	git -C "$wt_path" reset -q --hard main || return 1
+	printf 'unfinished dirty worker state\n' >"$wt_path/unfinished.txt"
+	source_pulse_cleanup_with_stubs || return 1
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-stale-dirty-attributed-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+	local archive_manifest=""
+	for archive_manifest in "$HOME"/.aidevops/recovery/archives/testowner__testrepo/23090/*/manifest.json; do
+		[[ -f "$archive_manifest" ]] || archive_manifest=""
+	done
+	local rc=0
+	[[ "$cleanup_rc" -eq 0 ]] || rc=1
+	[[ ! -d "$wt_path" ]] || rc=1
+	[[ -n "$archive_manifest" ]] || rc=1
+	[[ -z "$archive_manifest" ]] || jq -e '.reason == "failed-worker" and .dirty_state == "dirty"' "$archive_manifest" >/dev/null || rc=1
+	[[ -z "$archive_manifest" ]] || [[ -s "${archive_manifest%/manifest.json}/untracked.tar.gz" ]] || rc=1
+	grep -q 'worktree-removed.*archived-failed-worker.*mode=compact-archive' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "stale dirty attributable worker archives before removal" "$rc" \
+		"cleanup_rc=$cleanup_rc archive=$archive_manifest log=$(cat "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null)"
 	return 0
 }
 
@@ -797,12 +1004,18 @@ test_merged_branch_pr_removes_before_age_threshold
 test_closed_issue_dirty_worktree_compacts_and_preserves_branch
 test_failed_compact_archive_preserves_dirty_worktree
 test_terminal_worktree_respects_live_owner_signal
+test_terminal_worktree_respects_recent_worker_metric
 test_fix_numeric_closed_issue_worktree_archives
 test_stale_local_commit_no_pr_removes_worktree_preserves_branch
 test_stale_detached_review_cruft_removes_without_branch
 test_stale_clean_auto_worktree_removes_folder_preserves_branch
+test_clean_generated_worktree_waits_for_archive_threshold
 test_dirty_auto_under_seven_days_is_preserved
 test_dirty_auto_over_seven_days_compacts_and_preserves_branch
+test_preserve_forensics_marker_blocks_compact_cleanup
+test_unclear_archive_attribution_preserves_worktree
+test_security_label_blocks_compact_cleanup
+test_stale_dirty_attributed_worker_archives_before_removal
 test_no_newline_pr_output_blocks_local_commit_cleanup
 test_no_newline_open_pr_output_blocks_clean_fastpath
 test_branch_pr_lookup_uses_null_safe_jq_filter
