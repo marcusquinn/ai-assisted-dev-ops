@@ -42,12 +42,11 @@ class PreparedProvider(Protocol):
 
 
 def _profile_args(claimed: ClaimedOperation) -> list[str]:
-    arguments: list[str] = []
-    if claimed.app_profile:
-        arguments.extend(("--app", claimed.app_profile))
-    if claimed.username:
-        arguments.extend(("--username", claimed.username))
-    return arguments
+    options = (
+        ("--app", claimed.app_profile),
+        ("--username", claimed.username),
+    )
+    return [part for option, value in options if value for part in (option, value)]
 
 
 def _write_args(claimed: ClaimedOperation) -> list[str]:

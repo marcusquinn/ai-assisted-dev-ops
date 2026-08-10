@@ -174,16 +174,24 @@ def _validate_reason(reason: str) -> str:
     return reason
 
 
-def _has_symlink_component(path: Path) -> bool:
+def _path_components(path: Path) -> list[Path]:
     current = Path(path.anchor)
+    components = []
     for part in path.parts[1:]:
         current /= part
-        try:
-            if stat.S_ISLNK(os.lstat(current).st_mode):
-                return True
-        except FileNotFoundError:
-            return False
-    return False
+        components.append(current)
+    return components
+
+
+def _is_symlink(path: Path) -> bool:
+    try:
+        return stat.S_ISLNK(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _has_symlink_component(path: Path) -> bool:
+    return any(_is_symlink(component) for component in _path_components(path))
 
 
 def canonical_tracked_source(raw_path: str) -> str:
@@ -388,14 +396,12 @@ def _derive_public_key(config: Config) -> bytes:
     _require_source(result.returncode == 0, "failed to derive the source-access verification key")
     public_key_output = result.stdout.strip()
     public_key_parts = public_key_output.split()
-    _require_source(
-        len(public_key_parts) >= 2
-        and public_key_parts[0] == b"ssh-ed25519"
-        and bool(public_key_parts[1])
-        and b"\n" not in public_key_output
-        and b"\r" not in public_key_output,
-        "failed to derive a valid source-access verification key",
-    )
+    key_error = "failed to derive a valid source-access verification key"
+    _require_source(len(public_key_parts) >= 2, key_error)
+    _require_source(public_key_parts[0] == b"ssh-ed25519", key_error)
+    _require_source(bool(public_key_parts[1]), key_error)
+    _require_source(b"\n" not in public_key_output, key_error)
+    _require_source(b"\r" not in public_key_output, key_error)
     return b" ".join(public_key_parts[:2])
 
 
@@ -444,24 +450,22 @@ def _load_request(
     return request
 
 
+def _create_trusted_directory(path: Path, mode: int, owner_uid: int) -> None:
+    try:
+        path.mkdir(mode=mode)
+    except OSError as exc:
+        raise SourceAccessError("failed to create the source-access signing key directory") from exc
+    if os.geteuid() == 0:
+        os.chown(path, owner_uid, 0)
+
+
 def _prepare_trusted_directory(path: Path, mode: int, owner_uid: int) -> None:
-    if os.path.lexists(path):
-        _require_source(
-            _trusted_directory(path, owner_uid),
-            "source-access signing key directory ownership or permissions are unsafe",
-        )
-    else:
-        try:
-            path.mkdir(mode=mode)
-        except OSError as exc:
-            raise SourceAccessError("failed to create the source-access signing key directory") from exc
-        if os.geteuid() == 0:
-            os.chown(path, owner_uid, 0)
+    trust_error = "source-access signing key directory ownership or permissions are unsafe"
+    if not os.path.lexists(path):
+        _create_trusted_directory(path, mode, owner_uid)
+    _require_source(_trusted_directory(path, owner_uid), trust_error)
     os.chmod(path, mode)
-    _require_source(
-        _trusted_directory(path, owner_uid),
-        "source-access signing key directory ownership or permissions are unsafe",
-    )
+    _require_source(_trusted_directory(path, owner_uid), trust_error)
 
 
 def _generate_dedicated_signing_key(config: Config) -> None:

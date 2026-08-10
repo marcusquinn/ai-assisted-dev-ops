@@ -26,6 +26,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
 
+from compress_candidates import compress_instruction_candidates as _compress_instruction_candidates
+
 
 DEFAULT_CHUNKS_DIR = Path.home() / ".aidevops/.agent-workspace/work/session-miner"
 DEFAULT_OUTPUT_NAME = "compressed_signals.json"
@@ -142,7 +144,7 @@ def normalize_for_dedup(text: str) -> str:
     return t[:200]  # First 200 chars for comparison
 
 
-def _extract_steerage_signal(record: dict, seen: set):
+def _extract_steerage_signal(record: dict):
     """Extract a cleaned, deduplicated signal from a steerage record.
 
     Returns a signal dict or None if the record should be skipped.
@@ -158,28 +160,32 @@ def _extract_steerage_signal(record: dict, seen: set):
     if len(clean_text) < 20:
         return None
 
-    norm = normalize_for_dedup(clean_text)
-    if norm in seen:
-        return None
-    seen.add(norm)
-
     return {
         "text": clean_text[:1000],
         "context": record.get("preceding_context", "")[:200],
+        "source_hash": record.get("source_hash", ""),
     }
 
 
 def compress_steerage(chunks_dir: Path) -> dict:
     """Compress all steerage chunks into category-grouped unique signals."""
     categories = defaultdict(list)
-    seen = set()
+    seen_by_category: dict[str, set[str]] = defaultdict(set)
 
     for chunk in _iter_chunks(chunks_dir, "steerage_*.json"):
-        category = chunk.get("category", "unknown")
-
         for record in chunk.get("records", []):
-            signal = _extract_steerage_signal(record, seen)
-            if signal is not None:
+            signal = _extract_steerage_signal(record)
+            if signal is None:
+                continue
+            record_categories = {
+                classification.get("category", "unknown")
+                for classification in record.get("classifications", [])
+            } or {chunk.get("category", "unknown")}
+            norm = normalize_for_dedup(signal["text"])
+            for category in record_categories:
+                if norm in seen_by_category[category]:
+                    continue
+                seen_by_category[category].add(norm)
                 categories[category].append(signal)
 
     return dict(categories)
@@ -337,52 +343,17 @@ def compress_git_correlation(chunks_dir: Path) -> dict:
     }
 
 
-def _extract_instruction_candidate(record: dict, seen: set[str]):
-    """Extract a deduplicated instruction-candidate payload."""
-    raw_text = record.get("text", "")
-    if not raw_text or len(raw_text) < 20:
-        return None
-
-    norm = normalize_for_dedup(raw_text)
-    if norm in seen:
-        return None
-    seen.add(norm)
-
-    target_file = record.get("target_file", ".agents/AGENTS.md")
-    raw_display_text = record.get("display_text") or raw_text
-    display_text = redact_instruction_candidate_text(raw_display_text[:800])
-    return target_file, {
-        "text": raw_text[:800],
-        "display_text": display_text,
-        "confidence": record.get("confidence", 0.5),
-        "category": record.get("category", "general"),
-        "session_title": record.get("session_title", "")[:80],
-    }
-
-
 def compress_instruction_candidates(chunks_dir: Path) -> dict:
     """Compress instruction candidate chunks into deduplicated, ranked summaries.
 
     Groups by target file, deduplicates near-identical texts, and ranks by
     confidence score. Returns a dict keyed by target file with candidate lists.
     """
-    by_target: dict[str, list[dict]] = defaultdict(list)
-    seen: set[str] = set()
-
-    for record in _iter_chunk_records(chunks_dir, "instruction_candidate_*.json"):
-        extracted = _extract_instruction_candidate(record, seen)
-        if extracted is None:
-            continue
-        target_file, candidate = extracted
-        by_target[target_file].append(candidate)
-
-    # Sort each target's candidates by confidence descending
-    result: dict[str, list[dict]] = {}
-    for target_file, candidates in sorted(by_target.items()):
-        candidates.sort(key=lambda x: -x["confidence"])
-        result[target_file] = candidates
-
-    return result
+    return _compress_instruction_candidates(
+        _iter_chunk_records(chunks_dir, "instruction_candidate_*.json"),
+        redact_instruction_candidate_text,
+        normalize_for_dedup,
+    )
 
 
 def _load_stats(chunks_dir: Path) -> dict:

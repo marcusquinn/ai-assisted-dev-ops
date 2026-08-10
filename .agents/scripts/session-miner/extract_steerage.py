@@ -3,12 +3,18 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 """Steerage extraction helpers for session-miner."""
 
+import hashlib
 import re
 import sqlite3
 import sys
 from typing import Any, Optional
 
-from extract_shared import repo_scope_clause, repo_scope_params, sanitize_path
+from extract_shared import (
+    extraction_scope_params,
+    repo_scope_clause,
+    sanitize_path,
+    time_scope_clause,
+)
 
 
 STEERAGE_PATTERNS = {
@@ -58,14 +64,57 @@ COMPILED_PATTERNS = {
     for category, patterns in STEERAGE_PATTERNS.items()
 }
 
-_AUTOMATED_PREFIXES = ("/full-loop", '"You are the supervisor')
+_AUTOMATED_PREFIXES = (
+    "/full-loop",
+    '"You are the supervisor',
+    "Continue if you have next steps",
+    "Review the following potential duplicate",
+    "Analyze the changes made since",
+    "<file>",
+    "diff --git",
+)
+_QUOTED_PAYLOAD_PREFIXES = (">", "```", "BEGIN PROMPT", "BEGIN INSTRUCTIONS")
+_DIRECTIVE_CONTEXT = re.compile(
+    r"\b(always|never|please|must|should|remember|make sure|before|after|first|do not|don't)\b"
+    r"|^(run|use|avoid|skip|lint|test|verify)\b",
+    re.IGNORECASE,
+)
 
 
 def is_automated_or_short(text: Optional[str]) -> bool:
     """Return True if *text* should be skipped (None, too short, or templated)."""
     if not text or len(text) < 20:
         return True
-    return any(text.startswith(prefix) for prefix in _AUTOMATED_PREFIXES)
+    stripped = text.lstrip()
+    return any(stripped.startswith(prefix) for prefix in _AUTOMATED_PREFIXES + _QUOTED_PAYLOAD_PREFIXES)
+
+
+def _sentence_windows(text: str) -> list[str]:
+    """Return bounded, human-authored sentence or paragraph windows from *text*."""
+    windows: list[str] = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph or paragraph.startswith(_QUOTED_PAYLOAD_PREFIXES):
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", paragraph)
+        windows.extend(sentence.strip() for sentence in sentences if sentence.strip())
+    return windows
+
+
+def extract_guidance_windows(text: str) -> list[dict[str, Any]]:
+    """Return classified atomic guidance windows rather than a whole user turn."""
+    if is_automated_or_short(text):
+        return []
+
+    windows: list[dict[str, Any]] = []
+    for window in _sentence_windows(text):
+        classifications = classify_steerage(window)
+        # Broad quality keywords such as "lint" are useful only in a directive,
+        # otherwise long explanatory turns would become false steerage signals.
+        is_correction = any(item["category"] == "correction" for item in classifications)
+        if classifications and (is_correction or _DIRECTIVE_CONTEXT.search(window)):
+            windows.append({"text": window[:1000], "classifications": classifications})
+    return windows
 
 
 def fetch_text_parts(conn: sqlite3.Connection, message_id: str) -> list[str]:
@@ -120,21 +169,21 @@ def classify_steerage(text: str) -> list[dict[str, Any]]:
     return matches
 
 
-def _classify_and_build_steerage(
-    conn: sqlite3.Connection, row: sqlite3.Row, text: str,
-) -> Optional[dict]:
-    """Classify *text* and build a steerage record, or ``None`` if not steerage."""
-    classifications = classify_steerage(text)
-    if not classifications:
-        return None
-
+def _build_steerage_record(
+    conn: sqlite3.Connection, row: sqlite3.Row, window: dict[str, Any], source_text: str,
+) -> dict:
+    """Build a provenance-aware steerage record for one atomic guidance window."""
+    window_text = window["text"]
     return {
         "type": "steerage",
+        "session_id": row["session_id"],
+        "message_id": row["message_id"],
         "session_title": row["session_title"] or "",
         "session_dir": sanitize_path(row["session_dir"] or ""),
         "timestamp": row["msg_time"],
-        "user_text": text[:2000],
-        "classifications": classifications,
+        "user_text": window_text,
+        "source_hash": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+        "classifications": window["classifications"],
         "preceding_context": _fetch_preceding_assistant_text(conn, row["session_id"], row["msg_time"]),
     }
 
@@ -153,14 +202,14 @@ def _collect_steerage_from_message(
             continue
         seen_texts.add(text_hash)
 
-        record = _classify_and_build_steerage(conn, row, text)
-        if record is not None:
-            records.append(record)
+        for window in extract_guidance_windows(text):
+            records.append(_build_steerage_record(conn, row, window, text))
     return records
 
 
 def extract_steerage(
     conn: sqlite3.Connection, limit: Optional[int] = None, repo_dir: Optional[str] = None,
+    since_ms: Optional[int] = None,
 ) -> list[dict]:
     """Extract user steerage signals from sessions."""
     print("Extracting user steerage signals...", file=sys.stderr)
@@ -179,13 +228,14 @@ def extract_steerage(
     WHERE json_extract(m.data, '$.role') = 'user'
     """
     query += repo_scope_clause(repo_dir)
+    query += time_scope_clause(since_ms, "m.time_created")
     query += "\n    ORDER BY m.time_created ASC\n    "
     if limit:
         query += f" LIMIT {int(limit) * 10}"
 
     records: list[dict] = []
     seen_texts: set[int] = set()
-    for row in conn.execute(query, repo_scope_params(repo_dir)):
+    for row in conn.execute(query, extraction_scope_params(repo_dir, since_ms)):
         records.extend(_collect_steerage_from_message(conn, row, seen_texts))
         if limit and len(records) >= limit:
             records = records[:limit]
