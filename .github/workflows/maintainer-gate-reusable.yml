@@ -773,6 +773,32 @@ jobs:
             return 1
           }
 
+          confirm_maintainer_gate_rerun_started() {
+            local run_id="$1"
+            local prior_attempt="$2"
+            local pr_number="$3"
+            local run_state=""
+            local current_attempt=""
+            local current_status=""
+
+            # GitHub can accept a rerun asynchronously after the POST client
+            # has already reported a transient rejection. Reconcile once after
+            # the bounded retries before publishing a false terminal failure.
+            sleep 5
+            run_state=$(gh api "repos/${REPO}/actions/runs/${run_id}" \
+              --jq '{status: .status, run_attempt: .run_attempt}' \
+              2>/dev/null) || return 1
+            current_attempt=$(printf '%s' "$run_state" | jq -r '.run_attempt // empty' 2>/dev/null || true)
+            current_status=$(printf '%s' "$run_state" | jq -r '.status // empty' 2>/dev/null || true)
+            if [[ "$current_attempt" =~ ^[0-9]+$ ]] &&
+               [[ "$prior_attempt" =~ ^[0-9]+$ ]] &&
+               [[ "$current_attempt" -gt "$prior_attempt" ]]; then
+              echo "Job 1 rerun observed asynchronously for PR #$pr_number (attempt $current_attempt, status ${current_status:-unknown})"
+              return 0
+            fi
+            return 1
+          }
+
           mark_rerun_scheduling_failure() {
             local pr_number="$1"
             local description="$2"
@@ -987,7 +1013,7 @@ jobs:
             if ! RUN_LOOKUP=$(gh api \
               "repos/${REPO}/actions/workflows/maintainer-gate.yml/runs?head_sha=${HEAD_SHA}&event=pull_request_target&per_page=100" \
               --jq '{
-                completed: ([.workflow_runs[] | select(.status == "completed" and (.conclusion != null)) | {id, status, conclusion}][0] // null),
+                completed: ([.workflow_runs[] | select(.status == "completed" and (.conclusion != null)) | {id, status, conclusion, run_attempt}][0] // null),
                 active: ([.workflow_runs[] | select(.status != "completed") | {id, status}][0] // null)
               }' \
               2>/dev/null); then
@@ -1026,9 +1052,12 @@ jobs:
             fi
 
             RUN_CONCLUSION=$(printf '%s' "$RUN_LOOKUP" | jq -r '.completed.conclusion // empty')
-            echo "Triggering Job 1 rerun (run_id=$RUN_ID, prior=$RUN_CONCLUSION) for PR #$PR_NUM"
+            RUN_ATTEMPT=$(printf '%s' "$RUN_LOOKUP" | jq -r '.completed.run_attempt // 0')
+            echo "Triggering Job 1 rerun (run_id=$RUN_ID, prior=$RUN_CONCLUSION, attempt=$RUN_ATTEMPT) for PR #$PR_NUM"
             if ! rerun_maintainer_gate_with_retry "$RUN_ID" "$PR_NUM"; then
-              mark_rerun_scheduling_failure "$PR_NUM" "Maintainer-gate refresh scheduling failed after bounded retries"
+              if ! confirm_maintainer_gate_rerun_started "$RUN_ID" "$RUN_ATTEMPT" "$PR_NUM"; then
+                mark_rerun_scheduling_failure "$PR_NUM" "Maintainer-gate refresh scheduling failed after bounded retries"
+              fi
             fi
           done
 

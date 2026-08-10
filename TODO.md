@@ -1248,7 +1248,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18224 Fix symlinked OpenCode session recovery resolver #bug #framework ref:GH#29946
 
-- [ ] t18225 Stop environment-dependent GitHub Actions failures #bug #ci #priority:high ref:GH#29956
+- [ ] t18225 Stop recurring GitHub Actions failure notifications #bug #ci #priority:high ref:GH#29956
 
 ## In Progress
 
