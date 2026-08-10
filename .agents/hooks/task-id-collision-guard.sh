@@ -97,10 +97,10 @@ _read_counter_at_ref() {
 # Resolve the current task counter by taking the MAX across multiple known-good
 # sources. .task-counter is monotonically increasing so max == most current.
 #
-# This prevents stale-worktree false positives: when a worktree is created
-# before a subsequent claim-task-id.sh run bumps the counter on origin/main,
-# the merge-base holds a stale value. Reading from origin/main tip directly
-# returns the authoritative counter, regardless of merge-base age.
+# This prevents stale-worktree false positives: claims may advance either the
+# dedicated task-id-counter CAS branch or the default branch after a worktree
+# was created. Reading both remote tips returns the authoritative counter,
+# regardless of merge-base age or counter-branch rollout state.
 #
 # Returns the integer counter string (no newline), or empty string on failure.
 # ---------------------------------------------------------------------------
@@ -109,7 +109,8 @@ _resolve_current_counter() {
 	local val ref
 	# Priority sources, highest-freshness first. We take the MAX across all,
 	# not the first — .task-counter is monotonic so max == most current.
-	for ref in "origin/main" "origin/master" "main" "master" "HEAD"; do
+	for ref in "origin/task-id-counter" "task-id-counter" \
+		"origin/main" "origin/master" "main" "master" "HEAD"; do
 		if git rev-parse --verify "$ref" >/dev/null 2>&1; then
 			val=$(git show "${ref}:.task-counter" 2>/dev/null | tr -d '[:space:]')
 			if [[ "$val" =~ ^[0-9]+$ ]]; then

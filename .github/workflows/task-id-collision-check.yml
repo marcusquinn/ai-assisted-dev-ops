@@ -48,10 +48,11 @@ jobs:
         with:
           fetch-depth: 0  # Full history needed for merge-base detection
 
-      - name: Fetch main branch for merge-base comparison
+      - name: Fetch comparison and task counter branches
         run: |
           git fetch origin main --depth=100 2>/dev/null || true
           git fetch origin develop --depth=100 2>/dev/null || true
+          git fetch origin '+refs/heads/task-id-counter:refs/remotes/origin/task-id-counter' --depth=100 2>/dev/null || true
 
       - name: Run task-id collision check
         env:
