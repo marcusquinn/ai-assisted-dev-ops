@@ -80,20 +80,20 @@ fi
 
 [[ "${PRIVACY_GUARD_DEBUG:-0}" == "1" ]] && privacy_log INFO "target public ($remote_url) — scanning diff"
 
-# Enumerate private slugs once for the whole push
-slugs_file=$(mktemp 2>/dev/null) || {
+# Enumerate private entity inventory once for the whole push.
+entities_file=$(mktemp 2>/dev/null) || {
 	privacy_log WARN "mktemp failed — fail-open"
 	exit 0
 }
-trap 'rm -f "$slugs_file"' EXIT
+trap 'rm -f "$entities_file"' EXIT
 
-if ! privacy_enumerate_private_slugs "$slugs_file"; then
-	privacy_log WARN "could not enumerate private slugs — fail-open"
-	exit 0
+if ! privacy_enumerate_private_entities "$entities_file"; then
+	privacy_log ERROR "could not enumerate private entity inventory — failing closed"
+	exit 1
 fi
 
-if [[ ! -s "$slugs_file" ]]; then
-	[[ "${PRIVACY_GUARD_DEBUG:-0}" == "1" ]] && privacy_log INFO "no private slugs to guard against; secret-material scan still active"
+if [[ ! -s "$entities_file" ]]; then
+	[[ "${PRIVACY_GUARD_DEBUG:-0}" == "1" ]] && privacy_log INFO "no private entities to guard against; secret-material scan still active"
 fi
 
 # ---------------------------------------------------------------------------
@@ -127,28 +127,6 @@ if [[ -n "$remote_name" ]]; then
 	fi
 fi
 
-_watchlist_present=0
-for _ref_entry in "${_all_refs[@]}"; do
-	read -r _lr _ls _rr _rs <<<"$_ref_entry"
-	[[ -z "$_ls" ]] && continue
-	[[ "$_ls" =~ ^0+$ ]] && continue
-	# Determine base for diff: use remote sha when known, merge-base otherwise.
-	# Use the ref's own local SHA ($_ls) instead of HEAD so multi-ref pushes
-	# compute the correct base for each ref being pushed (GH#20177).
-	_base=""
-	if [[ -n "$_rs" ]] && ! [[ "$_rs" =~ ^0+$ ]]; then
-		_base="$_rs"
-	else
-		_base=$(git merge-base "$_ls" "$_default_remote_head" 2>/dev/null || echo "")
-	fi
-	[[ -z "$_base" ]] && _watchlist_present=1 && break
-	if git diff --name-only "$_base" "$_ls" 2>/dev/null \
-		| grep -qE '^(TODO\.md|README\.md|todo/|\.github/ISSUE_TEMPLATE/)'; then
-		_watchlist_present=1
-		break
-	fi
-done
-
 # Secret-material scan is global for public pushes. Unlike private-repo slug
 # scanning, it is not limited to planning/docs paths because private-key blocks
 # are unsafe in any public commit.
@@ -176,12 +154,7 @@ if [[ "$secret_exit_code" -ne 0 ]]; then
 	exit "$secret_exit_code"
 fi
 
-if [[ "$_watchlist_present" -eq 0 ]]; then
-	[[ "${PRIVACY_GUARD_DEBUG:-0}" == "1" ]] && privacy_log INFO "no watchlist files (TODO.md, todo/**, README.md, .github/ISSUE_TEMPLATE/**) in push diff — private-reference scan skipped"
-	exit 0
-fi
-
-[[ "${PRIVACY_GUARD_DEBUG:-0}" == "1" ]] && privacy_log INFO "watchlist files present — scanning push diff for private references"
+[[ "${PRIVACY_GUARD_DEBUG:-0}" == "1" ]] && privacy_log INFO "scanning all changed public-repo content for private entities"
 
 # Walk each ref in the push (re-iterate over collected refs)
 exit_code=0
@@ -198,14 +171,14 @@ for _ref_entry in "${_all_refs[@]}"; do
 		_scan_base=$(git merge-base "$local_sha" "$_default_remote_head" 2>/dev/null || echo "")
 		[[ -z "$_scan_base" ]] && _scan_base="$remote_sha"
 	fi
-	hits_output=$(privacy_scan_diff "$_scan_base" "$local_sha" "$slugs_file")
+	hits_output=$(privacy_scan_public_diff "$_scan_base" "$local_sha" "$entities_file")
 	scan_rc=$?
 	if [[ "$scan_rc" -ne 0 ]]; then
 		printf '\n[privacy-guard][BLOCK] Push to %s contains private references in public-repo content:\n\n' "$remote_name" >&2
 		printf '%s\n\n' "$hits_output" >&2
-		printf '  Remove the private slug from the committed content and amend/rewrite the commit before pushing.\n' >&2
+		printf '  Remove the private material from the committed content and amend/rewrite the commit before pushing.\n' >&2
 		printf '  To bypass (audit trail preserves the override): PRIVACY_GUARD_DISABLE=1 git push ... or git push --no-verify\n' >&2
-		printf '  Sources scanned: private slugs from repos.json/extra-slugs plus built-in and configured local/private path patterns.\n\n' >&2
+		printf '  Sources scanned: local private entities plus built-in and configured local/private path patterns.\n\n' >&2
 		exit_code=1
 	fi
 done

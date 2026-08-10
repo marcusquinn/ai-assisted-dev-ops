@@ -87,6 +87,9 @@ fi
 # shellcheck source=/dev/null
 source "$SHARED_GH" >/dev/null 2>&1 || true
 
+# This unit test exercises signing/body-file behavior only. Privacy transport
+# behavior is covered by test-gh-wrapper-public-deidentification.sh.
+privacy_guard_public_write() { return 0; }
 _ensure_origin_labels_for_args() { return 0; }
 _gh_should_fallback_to_rest() { return 1; }
 _rest_should_fallback() { return 1; }
