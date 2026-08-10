@@ -23,6 +23,10 @@ require_literal() {
 }
 
 main() {
+	require_literal 'state aim and solved outcome' \
+		"$AGENTS_DOC" 'always-loaded completion guidance omits the session aim and solved outcome' || return 1
+	require_literal 'reconnects the delivered work to the session aim or problem' \
+		"$SESSION_DOC" 'session completion detail omits reader reorientation context' || return 1
 	require_literal 'omit routine-owned cleanup unless user action is required or work is at risk' \
 		"$AGENTS_DOC" 'always-loaded completion guidance does not suppress routine cleanup noise' || return 1
 	require_literal 'Do not attempt or report normal deferred cleanup' \

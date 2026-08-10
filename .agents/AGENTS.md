@@ -63,7 +63,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Stuck: replan, inspect current state, and use `session-introspect-helper.sh patterns` when loops appear.
 - Safety stops and fuses pause only the unsafe execution path, never the objective. Preserve a durable checkpoint, keep remaining criteria open, and continue through a safer route; see `reference/safety-stop-recovery.md`.
 - Before declaring completion, scan conversation for unfulfilled commitments, unnotified external parties, and displaced requests.
-- Completed-session messages: concise bullets of delivered changes; omit routine-owned cleanup unless user action is required or work is at risk. Details: `reference/session.md`.
+- Completion messages: state aim and solved outcome, then delivery bullets; omit routine-owned cleanup unless user action is required or work is at risk. See `reference/session.md`.
 - Memory recall is mandatory before non-trivial edits, debugging, PR review, git side effects, or design decisions: CLI `memory-helper.sh recall --query "<task keywords>" --limit 5`; OpenCode tool `aidevops_memory` with `{action:"recall", query:"<task keywords>", limit:"5"}`. Store only concrete reusable lessons: `{action:"store", content:"<lesson with evidence>", confidence:"medium"}`. Empty `aidevops_memory` calls are invalid; never use them as placeholders.
 - Before non-trivial code changes, run one duplicate/collision check: `prework-discovery-helper.sh --keywords "<task>" --files "<targets>" [--repo owner/repo]`.
 - Before changing third-party API/error-code mappings, verify the installed dependency version and local exported symbols first; brief authors include this checklist via `templates/brief-template.md`.
