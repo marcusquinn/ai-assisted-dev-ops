@@ -49,6 +49,13 @@ containment, the session ID, original directory, and the matching SQLite row
 before running `opencode --session <id>`. Invalid markers fail closed. A normal
 OpenCode exit returns to a login zsh in the original project directory.
 
+Tabby stores a snapshot of each recovered tab's profile command. Tabs saved
+before the managed profile migration may therefore keep launching plain
+`aidevops opencode` even after `config.yaml` contains `--tabby-shell`. The
+launcher detects Tabby's `TERM_PROGRAM` and config-directory environment in
+isolated mode and implicitly enables the same recovery path, allowing those
+stale recovery tokens to self-heal after one launch.
+
 Recovery markers live under
 `~/.aidevops/.agent-workspace/work/opencode-tabby-recovery/`. They contain only
 the OpenCode session ID and local directory references, use owner-only

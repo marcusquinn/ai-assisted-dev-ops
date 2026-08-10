@@ -234,7 +234,7 @@ else
 fi
 
 tui_dry_run_log="${tmp_root}/tui-dry-run-opencode.log"
-output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${tui_dry_run_work_dir}" \
+output=$(TERM_PROGRAM='' TABBY_CONFIG_DIRECTORY='' PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${tui_dry_run_work_dir}" \
     FAKE_OPENCODE_LOG="${tui_dry_run_log}" \
     "${HELPER}" --dir "${launch_dir}" --session-id dry-run-only --dry-run 2>&1)
 if [[ "${output}" == *"XDG_DATA_HOME=${tui_dry_run_work_dir}/opencode-interactive/dry-run-only"* ]] \
@@ -254,6 +254,37 @@ if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1 opencode"* ]] \
     _pass "Tabby first launch enables recovery and leaves a shell open"
 else
     _fail "Tabby first-launch command unexpected: ${tabby_output}"
+fi
+
+tabby_output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --dir "${launch_dir}" --session-id tabby-stale-token --dry-run 2>&1)
+if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1 opencode"* ]] \
+    && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]] \
+    && [[ "${tabby_output}" != *"--session ses_"* ]]; then
+    _pass "stale Tabby profile command implicitly enables exact-session recovery"
+else
+    _fail "stale Tabby profile recovery command unexpected: ${tabby_output}"
+fi
+
+tabby_output=$(TERM_PROGRAM=Other TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --dir "${launch_dir}" --session-id non-tabby-terminal --dry-run 2>&1)
+if [[ "${tabby_output}" != *"AIDEVOPS_TABBY_SESSION_RECOVERY=1"* ]] \
+    && [[ "${tabby_output}" != *"exec /bin/zsh -l"* ]]; then
+    _pass "non-Tabby terminal does not implicitly enable recovery"
+else
+    _fail "non-Tabby terminal unexpectedly enabled recovery: ${tabby_output}"
+fi
+
+if output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --tabby-shell --shared-db --dir "${launch_dir}" --dry-run 2>&1); then
+    _fail "explicit Tabby shared-db mode unexpectedly succeeded: ${output}"
+elif [[ "${output}" == *"--tabby-shell requires aidevops isolated OpenCode storage"* ]]; then
+    _pass "explicit Tabby shared-db mode fails closed"
+else
+    _fail "explicit Tabby shared-db rejection was unexpected: ${output}"
 fi
 
 tabby_session_id="ses_0123456789TabbyRestore"
@@ -282,23 +313,28 @@ with open(marker_path, "w") as handle:
 os.chmod(marker_path, 0o600)
 PY
 tabby_output=$(cd "${tabby_marker_dir}" && \
+    TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
     PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
-    "${HELPER}" --tabby-shell --dry-run 2>&1)
+    "${HELPER}" --dry-run 2>&1)
 if [[ "${tabby_output}" == *"cd ${launch_dir}"* ]] \
     && [[ "${tabby_output}" == *"XDG_DATA_HOME=${tabby_data_dir}"* ]] \
     && [[ "${tabby_output}" == *"opencode --session ${tabby_session_id}"* ]] \
     && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]]; then
-    _pass "Tabby recovery resumes the exact validated OpenCode session"
+    _pass "stale Tabby profile recovery resumes the exact validated OpenCode session"
 else
     _fail "Tabby recovered command unexpected: ${tabby_output}"
 fi
 
-output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
     "${HELPER}" --shared-db --dir "${launch_dir}" --dry-run 2>&1)
-if [[ "${output}" == *"opencode" ]] && [[ "${output}" != *"opencode ''"* ]]; then
-    _pass "shared-db dry-run omits a synthetic empty argument"
+if [[ "${output}" == *"opencode" ]] \
+    && [[ "${output}" != *"AIDEVOPS_TABBY_SESSION_RECOVERY=1"* ]] \
+    && [[ "${output}" != *"exec /bin/zsh -l"* ]] \
+    && [[ "${output}" != *"opencode ''"* ]]; then
+    _pass "implicit Tabby detection preserves shared-db mode"
 else
-    _fail "shared-db dry-run command unexpected: ${output}"
+    _fail "implicit Tabby shared-db command unexpected: ${output}"
 fi
 
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \

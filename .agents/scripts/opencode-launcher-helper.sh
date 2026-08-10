@@ -253,6 +253,21 @@ opencode_args_contain_session() {
     return 1
 }
 
+tabby_shell_mode() {
+    local requested_mode="$1"
+    local use_shared_db="$2"
+
+    # Tabby recovery tokens contain a snapshot of the profile command. Tokens
+    # saved before --tabby-shell was deployed keep launching plain
+    # `aidevops opencode`; detect Tabby's environment so they self-heal.
+    if ((requested_mode == 0 && use_shared_db == 0)) \
+        && [[ "${TERM_PROGRAM:-}" == "Tabby" && -n "${TABBY_CONFIG_DIRECTORY:-}" ]]; then
+        requested_mode=1
+    fi
+    printf '%s' "${requested_mode}"
+    return 0
+}
+
 run_isolated_tui() {
     local launch_dir="$1"
     local data_dir="$2"
@@ -1290,6 +1305,7 @@ cmd_tui_launch() {
 
     validate_launch_directory "${launch_dir}" || return 1
     require_opencode_cli || return 1
+    tabby_shell=$(tabby_shell_mode "${tabby_shell}" "${use_shared_db}")
     if ((tabby_shell == 1 && use_shared_db == 1)); then
         print_error "--tabby-shell requires aidevops isolated OpenCode storage"
         return 1
@@ -1313,10 +1329,6 @@ cmd_tui_launch() {
     validate_launch_directory "${launch_dir}" || return 1
     if [[ -z "${session_id}" ]]; then
         session_id=$(build_project_session_id "${launch_dir}")
-    fi
-
-    if ((${#opencode_args[@]} == 0)); then
-        opencode_args=()
     fi
 
     if ((use_shared_db == 1)); then
