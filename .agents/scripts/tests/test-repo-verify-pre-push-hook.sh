@@ -20,8 +20,11 @@
 #  11. defaults conf: Cargo.toml triggers RUST_CARGO toolchain (cargo fmt --check)
 #  12. typecheck failure NEVER auto-fixes — exit 1 even with AUTOFIX=1
 #  13. Missing bun-installed tsc is diagnosed as missing dev dependencies
-#  14. Working tree dirty: warn + skip (exit 0)
-#  15. shellcheck on the hook itself
+#  14. Proven task-id counter-only CAS push skips a missing TypeScript install
+#  15. Mixed-file task-id-counter push falls back to repository verification
+#  16. Normal-branch counter-only push falls back to repository verification
+#  17. Working tree dirty: warn + skip (exit 0)
+#  18. shellcheck on the hook itself
 #
 # Tests are hermetic: each scenario builds a temporary git repo and invokes
 # the hook as a subprocess. No network, no live GitHub API, no aidevops state.
@@ -111,6 +114,7 @@ _mk_repo() {
 _run_hook() {
 	local _repo="$1"
 	shift
+	local _stdin_data="${HOOK_STDIN:-}"
 	local _err
 	_err=$(mktemp -t aidevops-prepush-test-stderr.XXXXXX)
 	local _ec=0
@@ -121,7 +125,7 @@ _run_hook() {
 		env -u FULL_LOOP_HEADLESS -u AIDEVOPS_HEADLESS -u OPENCODE_HEADLESS \
 			-u AIDEVOPS_PREPUSH_AUTOFIX -u AIDEVOPS_PREPUSH_REPO_VERIFY \
 			-u AIDEVOPS_PREPUSH_REPO_VERIFY_DEBUG -u GITHUB_ACTIONS \
-			PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" $@ bash "$HOOK" </dev/null
+			PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" $@ bash "$HOOK" <<<"$_stdin_data"
 	) 2>"$_err"
 	_ec=$?
 	printf '%s\n' "$_ec"
@@ -349,7 +353,87 @@ JSON
 	rm -rf "$repo"
 }
 
-# Test 14: dirty working tree → warn + skip
+# Test 14: a proven task-id-counter CAS update must not need node_modules/tsc
+# (regression for GH#29411/GH#29413).
+{
+	repo=$(_mk_repo)
+	cat >"$repo/.aidevops.json" <<'JSON'
+{ "verify": { "typecheck": "echo 'tsc: command not found' >&2; false" } }
+JSON
+	cat >"$repo/package.json" <<'JSON'
+{ "name": "fixture", "devDependencies": { "typescript": "^5.0.0" } }
+JSON
+	printf '{}\n' >"$repo/bun.lock"
+	printf '1000\n' >"$repo/.task-counter"
+	(cd "$repo" && /usr/bin/git add . && /usr/bin/git commit -q -m 'seed counter')
+	old_sha=$(git -C "$repo" rev-parse HEAD)
+	printf '1001\n' >"$repo/.task-counter"
+	(cd "$repo" && /usr/bin/git add .task-counter && /usr/bin/git commit -q -m 'claim task ID')
+	new_sha=$(git -C "$repo" rev-parse HEAD)
+	HOOK_STDIN="refs/heads/task-id-counter ${new_sha} refs/heads/task-id-counter ${old_sha}"
+	out=$(_run_hook "$repo" AIDEVOPS_PREPUSH_AUTOFIX=0)
+	unset HOOK_STDIN
+	ec=$(printf '%s' "$out" | head -n 1)
+	stderr=$(printf '%s' "$out" | tail -n +2)
+	assert_eq '14. counter-only CAS skips missing tsc → exit 0' '0' "$ec"
+	assert_contains '14b. counter-only CAS validates invariants' 'counter-only invariants passed' "$stderr"
+	if printf '%s' "$stderr" | grep -qF 'running typecheck' 2>/dev/null; then
+		TESTS_RUN=$((TESTS_RUN + 1))
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		printf '%sFAIL%s: 14c. counter-only CAS must skip full typecheck\n' "$TEST_RED" "$TEST_NC"
+	else
+		TESTS_RUN=$((TESTS_RUN + 1))
+		printf '%sPASS%s: 14c. counter-only CAS skipped full typecheck\n' "$TEST_GREEN" "$TEST_NC"
+	fi
+	rm -rf "$repo"
+}
+
+# Test 15: mixed content on the counter branch cannot receive the exemption.
+{
+	repo=$(_mk_repo)
+	cat >"$repo/.aidevops.json" <<'JSON'
+{ "verify": { "typecheck": "false" } }
+JSON
+	printf '1000\n' >"$repo/.task-counter"
+	(cd "$repo" && /usr/bin/git add . && /usr/bin/git commit -q -m 'seed counter')
+	old_sha=$(git -C "$repo" rev-parse HEAD)
+	printf '1001\n' >"$repo/.task-counter"
+	printf 'not a counter update\n' >"$repo/code.txt"
+	(cd "$repo" && /usr/bin/git add . && /usr/bin/git commit -q -m 'mixed counter update')
+	new_sha=$(git -C "$repo" rev-parse HEAD)
+	HOOK_STDIN="refs/heads/task-id-counter ${new_sha} refs/heads/task-id-counter ${old_sha}"
+	out=$(_run_hook "$repo" AIDEVOPS_PREPUSH_AUTOFIX=0)
+	unset HOOK_STDIN
+	ec=$(printf '%s' "$out" | head -n 1)
+	stderr=$(printf '%s' "$out" | tail -n +2)
+	assert_eq '15. mixed counter push → full verification blocks' '1' "$ec"
+	assert_contains '15b. mixed counter push → typecheck runs' 'running typecheck' "$stderr"
+	rm -rf "$repo"
+}
+
+# Test 16: only the dedicated task-id-counter branch receives the exemption.
+{
+	repo=$(_mk_repo)
+	cat >"$repo/.aidevops.json" <<'JSON'
+{ "verify": { "typecheck": "false" } }
+JSON
+	printf '1000\n' >"$repo/.task-counter"
+	(cd "$repo" && /usr/bin/git add . && /usr/bin/git commit -q -m 'seed counter')
+	old_sha=$(git -C "$repo" rev-parse HEAD)
+	printf '1001\n' >"$repo/.task-counter"
+	(cd "$repo" && /usr/bin/git add .task-counter && /usr/bin/git commit -q -m 'normal branch counter update')
+	new_sha=$(git -C "$repo" rev-parse HEAD)
+	HOOK_STDIN="refs/heads/feature-test ${new_sha} refs/heads/feature-test ${old_sha}"
+	out=$(_run_hook "$repo" AIDEVOPS_PREPUSH_AUTOFIX=0)
+	unset HOOK_STDIN
+	ec=$(printf '%s' "$out" | head -n 1)
+	stderr=$(printf '%s' "$out" | tail -n +2)
+	assert_eq '16. normal branch counter push → full verification blocks' '1' "$ec"
+	assert_contains '16b. normal branch counter push → typecheck runs' 'running typecheck' "$stderr"
+	rm -rf "$repo"
+}
+
+# Test 17: dirty working tree → warn + skip
 {
 	repo=$(_mk_repo)
 	cat >"$repo/.aidevops.json" <<'JSON'
@@ -361,24 +445,24 @@ JSON
 	out=$(_run_hook "$repo")
 	ec=$(printf '%s' "$out" | head -n 1)
 	stderr=$(printf '%s' "$out" | tail -n +2)
-	assert_eq '14. dirty WT → exit 0 (warn + skip)' '0' "$ec"
-	assert_contains '14b. dirty WT → warn message present' 'working tree has uncommitted changes' "$stderr"
+	assert_eq '17. dirty WT → exit 0 (warn + skip)' '0' "$ec"
+	assert_contains '17b. dirty WT → warn message present' 'working tree has uncommitted changes' "$stderr"
 	rm -rf "$repo"
 }
 
-# Test 15: shellcheck on the hook itself (regression — quality gate)
+# Test 18: shellcheck on the hook itself (regression — quality gate)
 {
 	if command -v shellcheck >/dev/null 2>&1; then
 		TESTS_RUN=$((TESTS_RUN + 1))
 		if shellcheck "$HOOK" >/dev/null 2>&1; then
-			printf '%sPASS%s: 15. hook passes shellcheck\n' "$TEST_GREEN" "$TEST_NC"
+			printf '%sPASS%s: 18. hook passes shellcheck\n' "$TEST_GREEN" "$TEST_NC"
 		else
 			TESTS_FAILED=$((TESTS_FAILED + 1))
-			printf '%sFAIL%s: 15. hook fails shellcheck\n' "$TEST_RED" "$TEST_NC"
+			printf '%sFAIL%s: 18. hook fails shellcheck\n' "$TEST_RED" "$TEST_NC"
 			shellcheck "$HOOK" || true
 		fi
 	else
-		printf '%sSKIP%s: 15. shellcheck not installed\n' "$TEST_BLUE" "$TEST_NC"
+		printf '%sSKIP%s: 18. shellcheck not installed\n' "$TEST_BLUE" "$TEST_NC"
 	fi
 }
 

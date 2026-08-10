@@ -29,6 +29,9 @@
 # Skip conditions (exit 0 fast):
 #   - AIDEVOPS_PREPUSH_REPO_VERIFY=0
 #   - GITHUB_ACTIONS=true (CI already runs these)
+#   - Proven task-ID CAS update: exactly one fast-forward update to
+#     refs/heads/task-id-counter that changes only .task-counter to a valid,
+#     increasing integer
 #   - Working tree dirty (warn — uncommitted changes would corrupt the result)
 #   - No verify commands resolved
 #   - Required tools missing (jq for config parsing)
@@ -261,9 +264,70 @@ _emit_missing_bun_dev_dependencies() {
 	return 0
 }
 
+# ----- task-ID counter-only push validation --------------------------------
+
+# A task-ID CAS allocation creates one plumbing commit directly atop the pinned
+# task-id-counter tip. It must remain independently safe in a fresh worktree
+# before JavaScript dependencies have been bootstrapped (GH#29411, GH#29413).
+#
+# Read Git's pre-push input and return 0 only when every invariant below is
+# proven. Any malformed, multi-ref, non-fast-forward, mixed-file, missing, or
+# non-increasing update falls through to normal repository verification.
+_is_safe_counter_only_push() {
+	local local_ref=''
+	local local_sha=''
+	local remote_ref=''
+	local remote_sha=''
+	local extra=''
+	local input_local_ref=''
+	local input_local_sha=''
+	local input_remote_ref=''
+	local input_remote_sha=''
+	local input_extra=''
+	local line_count=0
+	local parent_sha=''
+	local old_counter=''
+	local new_counter=''
+	local changed_paths=''
+
+	while IFS=' ' read -r input_local_ref input_local_sha input_remote_ref input_remote_sha input_extra; do
+		line_count=$((line_count + 1))
+		[[ $line_count -eq 1 ]] || return 1
+		[[ -z "$input_extra" ]] || return 1
+		local_ref="$input_local_ref"
+		local_sha="$input_local_sha"
+		remote_ref="$input_remote_ref"
+		remote_sha="$input_remote_sha"
+	done
+
+	[[ $line_count -eq 1 ]] || return 1
+	[[ "$remote_ref" == 'refs/heads/task-id-counter' ]] || return 1
+	[[ "$local_sha" =~ ^[0-9a-fA-F]{40,64}$ && "$remote_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] || return 1
+
+	git -C "$REPO_ROOT" cat-file -e "${local_sha}^{commit}" 2>/dev/null || return 1
+	git -C "$REPO_ROOT" cat-file -e "${remote_sha}^{commit}" 2>/dev/null || return 1
+	parent_sha=$(git -C "$REPO_ROOT" rev-parse "${local_sha}^" 2>/dev/null) || return 1
+	[[ "$parent_sha" == "$remote_sha" ]] || return 1
+
+	changed_paths=$(git -C "$REPO_ROOT" diff-tree --no-commit-id --no-renames --name-only -r "$remote_sha" "$local_sha" 2>/dev/null) || return 1
+	[[ "$changed_paths" == '.task-counter' ]] || return 1
+
+	old_counter=$(git -C "$REPO_ROOT" show "${remote_sha}:.task-counter" 2>/dev/null | tr -d '[:space:]') || return 1
+	new_counter=$(git -C "$REPO_ROOT" show "${local_sha}:.task-counter" 2>/dev/null | tr -d '[:space:]') || return 1
+	[[ "$old_counter" =~ ^[0-9]+$ && "$new_counter" =~ ^[0-9]+$ ]] || return 1
+	((10#$new_counter > 10#$old_counter)) || return 1
+
+	return 0
+}
+
 # ----- main orchestration -------------------------------------------------
 
 main() {
+	if _is_safe_counter_only_push; then
+		_log OK 'task-id counter-only invariants passed — skipping full repository verification'
+		exit 0
+	fi
+
 	if _load_verify_config; then
 		if [[ "$VERIFY_SOURCE" == "aidevops-json-disabled" ]]; then
 			_log INFO "repo opts out via .aidevops.json .verify.enabled=false"
@@ -329,9 +393,5 @@ main() {
 	fi
 	exit "$overall"
 }
-
-# Consume stdin so the dispatcher doesn't see SIGPIPE if we exit early.
-# We don't actually use the ref list (we verify the WT, not a diff).
-cat >/dev/null 2>&1 || true
 
 main
