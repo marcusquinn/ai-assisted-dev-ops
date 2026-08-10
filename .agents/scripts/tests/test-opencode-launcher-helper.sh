@@ -277,6 +277,16 @@ else
     _fail "non-Tabby terminal unexpectedly enabled recovery: ${tabby_output}"
 fi
 
+if output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --tabby-shell --shared-db --dir "${launch_dir}" --dry-run 2>&1); then
+    _fail "explicit Tabby shared-db mode unexpectedly succeeded: ${output}"
+elif [[ "${output}" == *"--tabby-shell requires aidevops isolated OpenCode storage"* ]]; then
+    _pass "explicit Tabby shared-db mode fails closed"
+else
+    _fail "explicit Tabby shared-db rejection was unexpected: ${output}"
+fi
+
 tabby_session_id="ses_0123456789TabbyRestore"
 tabby_data_dir="${work_dir}/opencode-interactive/tabby-restore"
 tabby_marker_dir="${work_dir}/opencode-tabby-recovery/${tabby_session_id}"
@@ -303,13 +313,14 @@ with open(marker_path, "w") as handle:
 os.chmod(marker_path, 0o600)
 PY
 tabby_output=$(cd "${tabby_marker_dir}" && \
+    TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \
     PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
-    "${HELPER}" --tabby-shell --dry-run 2>&1)
+    "${HELPER}" --dry-run 2>&1)
 if [[ "${tabby_output}" == *"cd ${launch_dir}"* ]] \
     && [[ "${tabby_output}" == *"XDG_DATA_HOME=${tabby_data_dir}"* ]] \
     && [[ "${tabby_output}" == *"opencode --session ${tabby_session_id}"* ]] \
     && [[ "${tabby_output}" == *"exec /bin/zsh -l"* ]]; then
-    _pass "Tabby recovery resumes the exact validated OpenCode session"
+    _pass "stale Tabby profile recovery resumes the exact validated OpenCode session"
 else
     _fail "Tabby recovered command unexpected: ${tabby_output}"
 fi
