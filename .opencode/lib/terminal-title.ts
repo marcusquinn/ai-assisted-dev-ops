@@ -60,6 +60,24 @@ function sharedTerminalTitleController(): SharedTerminalTitleController | undefi
   return controller as SharedTerminalTitleController
 }
 
+function writeTerminalTitleSequence(sequence: string): boolean {
+  try {
+    const fd = openSync("/dev/tty", "w")
+    try {
+      writeSync(fd, sequence)
+      return true
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    try {
+      return process.stderr.write(sequence)
+    } catch {
+      return false
+    }
+  }
+}
+
 /**
  * Best-effort terminal title update. Prefer /dev/tty so the sequence reaches
  * the controlling terminal even if a tool framework captures stdout; fall back
@@ -81,19 +99,5 @@ export function emitTerminalTitle(title: string): boolean {
     return false
   }
 
-  try {
-    const fd = openSync("/dev/tty", "w")
-    try {
-      writeSync(fd, sequence)
-      return true
-    } finally {
-      closeSync(fd)
-    }
-  } catch {
-    try {
-      return process.stderr.write(sequence)
-    } catch {
-      return false
-    }
-  }
+  return writeTerminalTitleSequence(sequence)
 }
