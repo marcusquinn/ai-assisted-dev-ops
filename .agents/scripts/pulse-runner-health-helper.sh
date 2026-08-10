@@ -368,7 +368,7 @@ cmd_record_outcome() {
 	fi
 
 	# Append outcome to ledger and update counter.
-	local new_counter signal_threshold
+	local new_counter="" signal_threshold=""
 	if [[ "$is_zero" -eq 1 ]]; then
 		# Counter increments; the window may need to be re-anchored if it
 		# was idle through expiry above (already done) — otherwise keep it.
