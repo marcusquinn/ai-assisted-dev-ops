@@ -66,8 +66,10 @@ _append_headless_worker_git_config_env() {
 }
 
 # Keep the user's passphrase-protected interactive key as the global Git
-# default. Worker processes receive the dedicated signing-only key through
+# default. Worker processes prefer the dedicated signing-only key through
 # process-scoped Git config inherited by the runtime and exit-trap Git commands.
+# During migration, an existing effective signing configuration remains valid
+# only when the same noninteractive signed-commit probe succeeds (GH#29902).
 _configure_headless_worker_signing_env() {
 	local work_dir="$1"
 	[[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" == "1" ]] && return 0
@@ -75,7 +77,11 @@ _configure_headless_worker_signing_env() {
 	signing_required=$(git -C "$work_dir" config --bool commit.gpgsign 2>/dev/null || true)
 	[[ "$signing_required" == "$_HEADLESS_SIGNING_TRUE" ]] || return 0
 	local signing_public_key="${AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY:-${HOME}/.ssh/id_ed25519_signing.pub}"
-	[[ -r "$signing_public_key" ]] || return 1
+	if [[ ! -r "$signing_public_key" ]]; then
+		_headless_worker_signing_commit_probe "$work_dir" || return 1
+		export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
+		return 0
+	fi
 	_append_headless_worker_git_config_env "gpg.format" "ssh" || return 1
 	_append_headless_worker_git_config_env "user.signingkey" "$signing_public_key" || return 1
 	_append_headless_worker_git_config_env "commit.gpgsign" "$_HEADLESS_SIGNING_TRUE" || return 1

@@ -296,21 +296,53 @@ test_worker_signing_config_is_process_scoped_and_idempotent() {
 	return 0
 }
 
-test_worker_signing_config_requires_dedicated_key_for_signed_repositories() {
+test_worker_signing_preflight_accepts_proven_existing_signing() {
+	local result="" status=0
+	result=$(
+		local probe_count=0
+		git() {
+			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'true\n'
+			return 0
+		}
+		_headless_worker_signing_commit_probe() {
+			probe_count=$((probe_count + 1))
+			return 0
+		}
+		unset _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED 2>/dev/null || true
+		unset GIT_CONFIG_COUNT 2>/dev/null || true
+		AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY="${TEST_ROOT}/missing-worker-signing-key.pub" \
+			_configure_headless_worker_signing_env "$TEST_ROOT"
+		AIDEVOPS_HEADLESS_SIGNING_KEY="${TEST_ROOT}/missing-worker-signing-key" \
+			_prepare_headless_worker_signing "$TEST_ROOT"
+		printf 'configured=%s probes=%s config_count=%s\n' \
+			"${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" "$probe_count" "${GIT_CONFIG_COUNT:-0}"
+	) || status=$?
+	if [[ "$status" -eq 0 && "$result" == "configured=1 probes=2 config_count=0" ]]; then
+		print_result "worker signing migration accepts a proven existing signing configuration" 0
+	else
+		print_result "worker signing migration accepts a proven existing signing configuration" 1 \
+			"status=$status result=${result:-<empty>}"
+	fi
+	return 0
+}
+
+test_worker_signing_config_rejects_unusable_existing_signing() {
 	local status=0
 	(
 		git() {
 			[[ "$*" == *"config --bool commit.gpgsign"* ]] && printf 'true\n'
 			return 0
 		}
+		_headless_worker_signing_commit_probe() { return 1; }
 		unset _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED 2>/dev/null || true
 		AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY="${TEST_ROOT}/missing-worker-signing-key.pub" \
 			_configure_headless_worker_signing_env "$TEST_ROOT"
 	) || status=$?
 	if [[ "$status" -eq 1 ]]; then
-		print_result "signed repositories require the dedicated headless public key" 0
+		print_result "worker signing migration rejects an unusable existing signing configuration" 0
 	else
-		print_result "signed repositories require the dedicated headless public key" 1 "status=$status"
+		print_result "worker signing migration rejects an unusable existing signing configuration" 1 \
+			"status=$status"
 	fi
 	return 0
 }
@@ -378,7 +410,8 @@ test_worker_signing_preflight_fails_before_runtime_attempt() {
 run_worker_signing_contract_tests() {
 	test_worker_signing_preflight_skips_unsigned_repositories
 	test_worker_signing_config_is_process_scoped_and_idempotent
-	test_worker_signing_config_requires_dedicated_key_for_signed_repositories
+	test_worker_signing_preflight_accepts_proven_existing_signing
+	test_worker_signing_config_rejects_unusable_existing_signing
 	test_worker_signing_preflight_self_heals_agent_once
 	test_worker_signing_preflight_fails_before_runtime_attempt
 	return 0

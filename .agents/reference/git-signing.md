@@ -35,6 +35,11 @@ Headless runtime wrappers inject the worker key through `GIT_CONFIG_COUNT` proce
 configuration, inherited by model Git commands and exit-time recovery. They first
 probe an unattached signed commit and stop before model launch if signing is unusable.
 
+During migration, a runner without the dedicated key path may continue using its
+existing effective signing configuration only when that same noninteractive signed-
+commit probe succeeds. This compatibility path never permits unsigned commits or
+generates keys automatically; configure the dedicated signing-only key when practical.
+
 Upload each public key to the matching GitHub key category. Reusing one public key
 for authentication and signing is supported by GitHub, but role separation makes
 revocation, agent availability, and incident response clearer.
