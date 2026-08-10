@@ -211,6 +211,42 @@ run_aggregate_recovery_rejection_test() (
 	return 0
 )
 
+run_reserved_aggregate_authorization_test() (
+	local old_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"reserved","tag":null,"updated_at":"2026-08-09T00:00:00Z","operation_token":"token-owned","terminal_receipt":null}'
+	local state="$old_state"
+	local expanded='101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222'
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		state="$state_json"
+		return 0
+	}
+	_AIDEVOPS_RELEASE_LANE_TOKEN="token-owned"
+	release_lane_expand_reserved_authorization test/repo 101 \
+		'101@1111111111111111111111111111111111111111' "$expanded" || return 1
+	[[ "$(jq -r '.expected_sources' <<<"$state")" == "$expanded" ]] || return 1
+	release_lane_restore_reserved_authorization test/repo 101 "$expanded" "$old_state" || return 1
+	[[ "$state" == "$old_state" ]] || return 1
+	state=$(jq -c '.tag="v1.2.3"' <<<"$old_state") || return 1
+	if release_lane_expand_reserved_authorization test/repo 101 \
+		'101@1111111111111111111111111111111111111111' "$expanded"; then
+		return 1
+	fi
+	state=$(jq -c '.tag=null | .terminal_receipt={status:"published"}' <<<"$old_state") || return 1
+	if release_lane_expand_reserved_authorization test/repo 101 \
+		'101@1111111111111111111111111111111111111111' "$expanded"; then
+		return 1
+	fi
+	return 0
+)
+
 if run_competing_source_test; then assert_result 'competing source receives active lane and reconcile action' true; else assert_result 'competing source receives active lane and reconcile action' false; fi
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
@@ -220,6 +256,7 @@ if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remai
 if run_stale_same_source_recovery_test; then assert_result 'stale recovery rotates its token and fences the prior owner' true; else assert_result 'stale recovery rotates its token and fences the prior owner' false; fi
 if run_aggregate_recovery_rotation_test; then assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' true; else assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' false; fi
 if run_aggregate_recovery_rejection_test; then assert_result 'aggregate recovery rejects competing owners and terminal lanes' true; else assert_result 'aggregate recovery rejects competing owners and terminal lanes' false; fi
+if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggregate authorization uses owned CAS expansion and exact rollback' true; else assert_result 'reserved aggregate authorization uses owned CAS expansion and exact rollback' false; fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

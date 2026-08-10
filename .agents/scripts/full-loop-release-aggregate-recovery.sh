@@ -193,6 +193,46 @@ _full_loop_recovery_prepare_aggregate() {
 	return 0
 }
 
+_full_loop_recovery_expand_reserved_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local previous_auth=""
+	local existing_tag_rc=0
+	_full_loop_recovery_validate_receipt "$repo" "$source_pr" || return 1
+	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
+	[[ "$existing_tag_rc" -eq 2 ]] || return 1
+	_full_loop_recovery_prepare_aggregate "$repo" "$source_pr" "$expected_sources" || return 1
+	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
+	_full_loop_release_reset_tag_worktree || return 1
+	previous_auth=$(_full_loop_read_release_authorization "$repo" "$source_pr") || return 1
+	release_authorization_subset "$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg previous "$previous_auth" '
+		.active == true and .source_pr == $source_pr and .phase == "reserved"
+		and .tag == null and .expected_sources == $previous
+		and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	release_lane_acquire "$repo" "$source_pr" "$previous_auth" || return $?
+	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" ]] || return 1
+	if [[ "$previous_auth" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
+		printf 'Reserved release authorization already matches the reviewed aggregate for PR #%s\n' "$source_pr"
+		return 0
+	fi
+	_full_loop_expand_release_authorization_for_aggregate "$repo" "$source_pr" \
+		"$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+	if ! release_lane_expand_reserved_authorization "$repo" "$source_pr" "$previous_auth" \
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"; then
+		release_lane_restore_reserved_authorization "$repo" "$source_pr" \
+			"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT" || true
+		_full_loop_restore_release_authorization_after_aggregate "$repo" "$source_pr" \
+			"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$previous_auth" || return 1
+		return 1
+	fi
+	printf 'Expanded side-effect-free reserved release authorization for reviewed aggregate PR #%s\n' "$source_pr"
+	return 0
+}
+
 _full_loop_recovery_begin_state_transaction() {
 	local repo="$1"
 	local source_pr="$2"

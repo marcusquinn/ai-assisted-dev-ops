@@ -256,6 +256,48 @@ release_lane_begin_aggregate_recovery() {
 	return 0
 }
 
+release_lane_expand_reserved_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local previous_sources="$3"
+	local expected_sources="$4"
+	local state_json=""
+	[[ -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
+		--arg previous "$previous_sources" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
+		.active == true and .source_pr == $source_pr and .operation_token == $token
+		and .phase == $reserved and .tag == null and .expected_sources == $previous
+		and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT="$_AIDEVOPS_RELEASE_LANE_JSON"
+	state_json=$(jq -c --arg expected "$expected_sources" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+		'.expected_sources=$expected | .updated_at=$now' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD"
+	return $?
+}
+
+release_lane_restore_reserved_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local snapshot_json="$4"
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
+		--arg expected "$expected_sources" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
+		.active == true and .source_pr == $source_pr and .operation_token == $token
+		and .phase == $reserved and .tag == null and .expected_sources == $expected
+		and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	jq -e --argjson source_pr "$source_pr" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
+		.schema_version == 1 and .active == true and .source_pr == $source_pr
+		and .phase == $reserved and .tag == null
+	' <<<"$snapshot_json" >/dev/null || return 1
+	_release_lane_write "$repo" "$snapshot_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -r '.operation_token' <<<"$snapshot_json") || return 1
+	return 0
+}
+
 release_lane_restore_aggregate_recovery() {
 	local repo="$1"
 	local source_pr="$2"

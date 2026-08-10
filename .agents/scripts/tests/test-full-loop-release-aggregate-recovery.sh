@@ -244,4 +244,95 @@ fi
 [[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager " ]]
 printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	RESERVED_LOG="${TEST_ROOT}/reserved.log"
+	: >"$RESERVED_LOG"
+	old_manifest='42@2222222222222222222222222222222222222222'
+	expanded_manifest="${old_manifest},43@3333333333333333333333333333333333333333"
+	_full_loop_recovery_validate_receipt() { return 0; }
+	_full_loop_release_find_tag_for_pr() { return 2; }
+	_full_loop_recovery_prepare_aggregate() {
+		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expanded_manifest"
+		_FULL_LOOP_RESOLVED_SOURCE_JSON='{"mode":"aggregate"}'
+		return 0
+	}
+	_full_loop_validate_release_candidates() {
+		printf 'validate\n' >>"$RESERVED_LOG"
+		return 0
+	}
+	_full_loop_release_reset_tag_worktree() { return 0; }
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$old_manifest"
+		return 0
+	}
+	release_authorization_subset() { return 0; }
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$old_manifest" \
+			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$previous,terminal_receipt:null}')
+		return 0
+	}
+	release_lane_acquire() {
+		_AIDEVOPS_RELEASE_LANE_RESULT=acquired
+		_AIDEVOPS_RELEASE_LANE_TOKEN=owned
+		return 0
+	}
+	_full_loop_expand_release_authorization_for_aggregate() {
+		printf 'expand-auth\n' >>"$RESERVED_LOG"
+		return 0
+	}
+	release_lane_expand_reserved_authorization() {
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
+		printf 'expand-lane\n' >>"$RESERVED_LOG"
+		return 0
+	}
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate expand-auth expand-lane " ]]
+	printf 'PASS reserved recovery validates the reviewed aggregate before transactional expansion\n'
+
+	: >"$RESERVED_LOG"
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$expanded_manifest"
+		return 0
+	}
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$expanded_manifest" \
+			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$expected,terminal_receipt:null}')
+		return 0
+	}
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate " ]]
+	printf 'PASS reserved recovery recognizes an already-converged authorization and lane\n'
+
+	: >"$RESERVED_LOG"
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$old_manifest"
+		return 0
+	}
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$old_manifest" \
+			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$previous,terminal_receipt:null}')
+		return 0
+	}
+	release_lane_expand_reserved_authorization() {
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
+		printf 'expand-lane\n' >>"$RESERVED_LOG"
+		return 1
+	}
+	release_lane_restore_reserved_authorization() {
+		printf 'restore-lane\n' >>"$RESERVED_LOG"
+		return 0
+	}
+	_full_loop_restore_release_authorization_after_aggregate() {
+		printf 'restore-auth\n' >>"$RESERVED_LOG"
+		return 0
+	}
+	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null 2>&1; then
+		exit 1
+	fi
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate expand-auth expand-lane restore-lane restore-auth " ]]
+	printf 'PASS reserved recovery restores lane and authorization after a partial write\n'
+)
+
 exit 0

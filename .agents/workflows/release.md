@@ -47,7 +47,14 @@ version manager independently require exact equality with the direct or reviewed
 aggregation manifest. Missing, extra, duplicate, malformed, and SHA-mismatched
 sources fail before a bump, tag, package, or terminal receipt. Omitting the option
 retains singleton compatibility by treating the requested source PR as the
-expected set. A retry reuses the persisted manifest and rejects conflicting intent.
+expected set. A retry reuses the persisted manifest. When the same source owns a
+stale, side-effect-free `reserved` lane with no tag or terminal receipt, an exact
+reviewed aggregate at the current `origin/main` tip may transactionally expand a
+persisted subset authorization. The helper validates every candidate and terminal
+receipt first, rotates the fencing token, updates the authorization and lane with
+compare-and-swap semantics, restores prior snapshots after a partial failure, and
+then continues the ordinary release command. Other conflicting intent remains
+immutable.
 
 ```bash
 aidevops release status <merged-pr-number>     # read-only remote/channel state

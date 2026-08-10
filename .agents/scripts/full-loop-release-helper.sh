@@ -370,6 +370,65 @@ _full_loop_release_guard_competing_lane() {
 	return 0
 }
 
+_FULL_LOOP_RESERVED_RECOVERY_EXPECTED=""
+_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
+
+_full_loop_release_resolve_persisted_intent() {
+	local repo="$1"
+	local source_pr="$2"
+	local requested_sources="$3"
+	local persisted_sources="$4"
+	local persisted_prs=""
+	local requested_prs=""
+	_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$requested_sources"
+	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
+	if [[ -z "$requested_sources" ]]; then
+		_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$persisted_sources"
+		return 0
+	fi
+	requested_prs=$(release_authorization_intent_json "$requested_sources" | jq -c 'map(.pr)') || return 1
+	persisted_prs=$(release_authorization_intent_json "$persisted_sources" | jq -c 'map(.pr)') || return 1
+	[[ "$requested_prs" != "$persisted_prs" ]] || return 0
+	_full_loop_recovery_expand_reserved_authorization "$repo" "$source_pr" "$requested_sources" || return $?
+	_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"
+	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=true
+	return 0
+}
+
+_full_loop_release_start_new() {
+	local repo="$1"
+	local source_pr="$2"
+	local release_type="$3"
+	local deployment_scope="$4"
+	local expected_sources="$5"
+	local existing_state_rc=0
+	local persisted_expected=""
+	_full_loop_release_guard_competing_lane "$repo" "$source_pr" || return $?
+	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
+		_full_loop_release_resolve_persisted_intent "$repo" "$source_pr" "$expected_sources" \
+			"$persisted_expected" || return $?
+		expected_sources="$_FULL_LOOP_RESERVED_RECOVERY_EXPECTED"
+	fi
+	_full_loop_release_guard_existing "$repo" "$source_pr" "${expected_sources:-$source_pr}" || existing_state_rc=$?
+	case "$existing_state_rc" in
+	0) return 0 ;;
+	2) ;;
+	*) return "$existing_state_rc" ;;
+	esac
+	if [[ "$_FULL_LOOP_RESERVED_RECOVERY_COMPLETED" == "true" ]]; then
+		_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" "$expected_sources"
+		return $?
+	fi
+	release_lane_acquire "$repo" "$source_pr" "${expected_sources:-$source_pr}" || return $?
+	if [[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "adopted" ]]; then
+		printf 'Release lane already belongs to PR #%s; reconcile instead of creating another version bump\n' "$source_pr"
+		return 8
+	fi
+	_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" \
+		"${expected_sources:-$source_pr}"
+	return $?
+}
+
 main() {
 	local release_type="${1:-patch}"
 	local source_pr="${2:-}"
@@ -449,26 +508,8 @@ main() {
 	[[ "$source_pr" =~ ^[0-9]+$ ]] || return 1
 	_full_loop_release_bind_repo_context || return 1
 	local repo=""
-	local existing_state_rc=0
-	local persisted_expected=""
 	repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
-	_full_loop_release_guard_competing_lane "$repo" "$source_pr" || return $?
-	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
-		[[ -n "$expected_sources" ]] || expected_sources="$persisted_expected"
-	fi
-	_full_loop_release_guard_existing "$repo" "$source_pr" "${expected_sources:-$source_pr}" || existing_state_rc=$?
-	case "$existing_state_rc" in
-	0) return 0 ;;
-	2) ;;
-	*) return "$existing_state_rc" ;;
-	esac
-	release_lane_acquire "$repo" "$source_pr" "${expected_sources:-$source_pr}" || return $?
-	if [[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "adopted" ]]; then
-		printf 'Release lane already belongs to PR #%s; reconcile instead of creating another version bump\n' "$source_pr"
-		return 8
-	fi
-	_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" \
-		"${expected_sources:-$source_pr}"
+	_full_loop_release_start_new "$repo" "$source_pr" "$release_type" "$deployment_scope" "$expected_sources"
 	return $?
 }
 
