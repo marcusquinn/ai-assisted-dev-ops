@@ -194,7 +194,48 @@ MOCK_STATS_FUNCTIONS
 	return 0
 }
 
-# Test 6: dashboard refresh failures must not be blindly swallowed by the wrapper.
+# Test 6: a slow sweep must still begin only after the health refresh has
+# completed. This exercises the production timeout wrapper, rather than only
+# inspecting the synchronous call order above.
+test_health_update_survives_slow_quality_sweep() {
+	local temp_dir="" trace="" rc=0
+	temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/stats-wrapper-slow-sweep-XXXXXX") || {
+		print_result "dashboard refresh completes before a timed-out quality sweep" 1 "Could not create temporary directory"
+		return 0
+	}
+
+	cat >"$temp_dir/stats-functions.sh" <<'MOCK_STATS_FUNCTIONS'
+update_health_issues() {
+	printf 'health\n' >>"$STATS_WRAPPER_TRACE"
+}
+run_daily_quality_sweep() {
+	printf 'sweep\n' >>"$STATS_WRAPPER_TRACE"
+	sleep 30
+}
+MOCK_STATS_FUNCTIONS
+
+	(
+		# shellcheck source=/dev/null
+		source "$WRAPPER_SCRIPT"
+		STATS_LOGFILE="$temp_dir/stats.log"
+		STATS_WRAPPER_TRACE="$temp_dir/trace"
+		SCRIPT_DIR="$temp_dir"
+		STATS_TIMEOUT=1
+		_stats_wrapper_run_with_timeout
+	) || rc=$?
+
+	[[ -f "$temp_dir/trace" ]] && trace=$(<"$temp_dir/trace")
+	rm -rf "$temp_dir"
+	if [[ "$rc" -eq 124 && "$trace" == $'health\nsweep' ]]; then
+		print_result "dashboard refresh completes before a timed-out quality sweep" 0
+		return 0
+	fi
+	print_result "dashboard refresh completes before a timed-out quality sweep" 1 \
+		"Expected timeout after health then sweep, got rc=$rc trace=${trace:-<empty>}"
+	return 0
+}
+
+# Test 7: dashboard refresh failures must not be blindly swallowed by the wrapper.
 # The wrapper may intentionally defer EX_TEMPFAIL/rate-limit exits, but ordinary
 # dashboard failures must still flow through _stats_wrapper_run_health_update so
 # the EXIT trap can emit HEALTH-DASHBOARD-FAIL.
@@ -237,7 +278,7 @@ test_transient_dashboard_tempfail_is_deferred() {
 	return 0
 }
 
-# Test 7: the dashboard updater itself must return non-zero when the body edit
+# Test 8: the dashboard updater itself must return non-zero when the body edit
 # fails, otherwise the wrapper's direct update_health_issues call still exits 0
 # and the HEALTH-DASHBOARD-FAIL trap never fires.
 test_dashboard_body_edit_failure_returns_nonzero() {
@@ -262,6 +303,7 @@ main_test() {
 	test_export_is_inside_main_not_top_level
 	test_export_before_self_check
 	test_health_update_precedes_quality_sweep
+	test_health_update_survives_slow_quality_sweep
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred
 	test_dashboard_body_edit_failure_returns_nonzero
