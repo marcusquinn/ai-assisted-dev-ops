@@ -257,6 +257,13 @@ write_gh_stub_api() {
 
 if [[ "\$_gh_cmd" == "api" ]]; then
 	echo "gh api \$*" >> "${TEST_ROOT}/logs/gh-api-calls.txt"
+	# The comment wrapper's public-write guard must know target visibility. Keep
+	# this synthetic repository private so the signaling test exercises comment
+	# transport without depending on the host's privacy cache or entity inventory.
+	if [[ "\${2:-}" == "repos/testorg/testrepo" && "\$*" == *".private"* ]]; then
+		echo 'true'
+		exit 0
+	fi
 	if [[ "\$*" == "user" ]]; then
 		echo '{"login":"tester"}'
 		exit 0

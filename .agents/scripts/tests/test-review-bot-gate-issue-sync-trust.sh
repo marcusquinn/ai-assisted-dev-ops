@@ -20,7 +20,10 @@ cat >"${STATE_DIR}/bin/gh" <<'EOF'
 [[ "${2:-}" == "repos/marcusquinn/aidevops/pulls/123" ]] || exit 2
 case "${REVIEW_GATE_LIVE_TRUSTED:-false}" in
 true)
-	printf '%s\n' '{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","repo":{"full_name":"marcusquinn/aidevops"}},"base":{"repo":{"full_name":"marcusquinn/aidevops"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+	printf '%s\n' '{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","sha":"head-123","repo":{"full_name":"marcusquinn/aidevops"}},"base":{"repo":{"full_name":"marcusquinn/aidevops"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+	;;
+json)
+	printf '%s\n' "${REVIEW_GATE_LIVE_JSON:-}"
 	;;
 error) exit 42 ;;
 *)
@@ -179,6 +182,51 @@ if [[ "${LIVE_ERROR_STATUS}" -ne 2 ]]; then
 	exit 1
 fi
 printf 'PASS: live helper API failures remain distinct and fail-closed\n'
+
+LIVE_BASE_JSON='{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","sha":"head-123","repo":{"full_name":"marcusquinn/aidevops"}},"base":{"repo":{"full_name":"marcusquinn/aidevops"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+
+assert_live_rejected() {
+	local case_name="$1"
+	local payload="$2"
+	if REVIEW_GATE_LIVE_TRUSTED=json REVIEW_GATE_LIVE_JSON="$payload" \
+		PATH="${STATE_DIR}/bin:${PATH}" \
+		bash "${HELPER_FILE}" is-trusted-issue-sync-pr \
+			123 marcusquinn/aidevops head-123 >/dev/null 2>&1; then
+		printf 'FAIL: live helper accepted %s\n' "$case_name" >&2
+		return 1
+	fi
+	printf 'PASS: live helper rejects %s\n' "$case_name"
+	return 0
+}
+
+assert_live_rejected 'wrong bot login' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.user.login = "github-actions"')"
+assert_live_rejected 'wrong bot ID' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.user.id = 999')"
+assert_live_rejected 'wrong actor type' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.user.type = "User"')"
+assert_live_rejected 'different head repository' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.head.repo.full_name = "attacker/aidevops"')"
+assert_live_rejected 'different base repository' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.base.repo.full_name = "other/aidevops"')"
+assert_live_rejected 'different generated branch' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.head.ref = "feature/not-issue-sync"')"
+assert_live_rejected 'missing generated body marker' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.body = "ordinary pull request"')"
+assert_live_rejected 'different live head SHA' \
+	"$(printf '%s' "$LIVE_BASE_JSON" | jq -c '.head.sha = "other-head"')"
+
+if ! REVIEW_GATE_LIVE_TRUSTED=true PATH="${STATE_DIR}/bin:${PATH}" \
+	bash "${HELPER_FILE}" is-trusted-issue-sync-pr 123 marcusquinn/aidevops head-123 >/dev/null; then
+	printf 'FAIL: live helper rejected the exact expected PR head\n' >&2
+	exit 1
+fi
+if REVIEW_GATE_LIVE_TRUSTED=true PATH="${STATE_DIR}/bin:${PATH}" \
+	bash "${HELPER_FILE}" is-trusted-issue-sync-pr 123 marcusquinn/aidevops stale-head >/dev/null; then
+	printf 'FAIL: live helper accepted a stale expected PR head\n' >&2
+	exit 1
+fi
+printf 'PASS: live helper trust is optionally bound to the exact PR head\n'
 
 HELP_OUTPUT=$(bash "${HELPER_FILE}" help 2>/dev/null || true)
 if [[ "${HELP_OUTPUT}" != *"is-trusted-issue-sync-pr"* ]]; then

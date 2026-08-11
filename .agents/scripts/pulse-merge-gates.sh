@@ -49,6 +49,48 @@ source "${_PULSE_MERGE_DIR:-${BASH_SOURCE[0]%/*}}/trusted-dependabot-lib.sh"
 
 # --- Functions ---
 
+_pulse_is_trusted_issue_sync_pr() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head_sha="$3"
+	local rbg_helper="${AGENTS_DIR:-$HOME/.aidevops/agents}/scripts/review-bot-gate-helper.sh"
+
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" && -n "$expected_head_sha" ]] || return 1
+	[[ -f "$rbg_helper" ]] || return 1
+	#aidevops:trust-boundary -- use the shared exact generated-PR predicate and
+	# bind it to the current merge head. Missing helpers/API evidence fail closed.
+	bash "$rbg_helper" is-trusted-issue-sync-pr \
+		"$pr_number" "$repo_slug" "$expected_head_sha" >/dev/null 2>&1
+	return $?
+}
+
+_pulse_merge_classify_final_authority() {
+	local pr_number="$1" repo_slug="$2" pr_author="$3" current_head_sha="$4"
+	local labels_str="$5" is_fork="$6" author_collab_rc=0
+	_PULSE_FINAL_TRUSTED_ISSUE_SYNC=0
+
+	if [[ "$pr_author" == "github-actions" || "$pr_author" == "app/github-actions" || "$pr_author" == "github-actions[bot]" ]] &&
+		_pulse_is_trusted_issue_sync_pr "$pr_number" "$repo_slug" "$current_head_sha"; then
+		_PULSE_FINAL_TRUSTED_ISSUE_SYNC=1
+		return 0
+	fi
+	_is_collaborator_author "$pr_author" "$repo_slug" || author_collab_rc=$?
+	if [[ "$author_collab_rc" -eq 2 ]]; then
+		echo "[pulse-merge] DEFENSE-IN-DEPTH: REFUSING merge of PR #${pr_number} in ${repo_slug} — final collaborator permission lookup failed for ${pr_author}" >>"$LOGFILE"
+		return 2
+	fi
+	if [[ ",${labels_str}," == *",external-contributor,"* ]]; then
+		return 1
+	elif [[ "$is_fork" == "true" ]]; then
+		echo "[pulse-merge] DEFENSE-IN-DEPTH: PR #${pr_number} in ${repo_slug} — fork PR missing external-contributor label (label-system race or failure), treating as external (t2934)" >>"$LOGFILE"
+		return 1
+	elif [[ "$author_collab_rc" -ne 0 ]]; then
+		echo "[pulse-merge] DEFENSE-IN-DEPTH: PR #${pr_number} in ${repo_slug} — non-collaborator PR missing external-contributor label, treating as external (GH#17671)" >>"$LOGFILE"
+		return 1
+	fi
+	return 0
+}
+
 #######################################
 # Read PR conversation comments through the issue-comments REST endpoint.
 # Native `gh pr view --json comments` is GraphQL-only and cannot return its
@@ -468,23 +510,14 @@ _pulse_merge_admin_safety_check() {
 		return 1
 	fi
 
-	local treat_as_external=0 author_collab_rc=0
-	# #aidevops:trust-boundary — labels and fork metadata are not authority.
-	# Re-check the author's live permission at the final merge boundary.
-	_is_collaborator_author "$pr_author" "$repo_slug" || author_collab_rc=$?
-	if [[ "$author_collab_rc" -eq 2 ]]; then
-		echo "[pulse-merge] DEFENSE-IN-DEPTH: REFUSING merge of PR #${pr_number} in ${repo_slug} — final collaborator permission lookup failed for ${pr_author}" >>"$LOGFILE"
-		return 1
-	fi
-	if [[ ",${labels_str}," == *",external-contributor,"* ]]; then
-		treat_as_external=1
-	elif [[ "$is_fork" == "true" ]]; then
-		treat_as_external=1
-		echo "[pulse-merge] DEFENSE-IN-DEPTH: PR #${pr_number} in ${repo_slug} — fork PR missing external-contributor label (label-system race or failure), treating as external (t2934)" >>"$LOGFILE"
-	elif [[ "$author_collab_rc" -ne 0 ]]; then
-		treat_as_external=1
-		echo "[pulse-merge] DEFENSE-IN-DEPTH: PR #${pr_number} in ${repo_slug} — non-collaborator PR missing external-contributor label, treating as external (GH#17671)" >>"$LOGFILE"
-	fi
+	local treat_as_external=0 trusted_issue_sync=0 authority_rc=0
+	#aidevops:trust-boundary -- classify live collaborator, external, or exact
+	# generated-automation authority before linked-issue checks.
+	_pulse_merge_classify_final_authority "$pr_number" "$repo_slug" "$pr_author" \
+		"$current_head_sha" "$labels_str" "$is_fork" || authority_rc=$?
+	[[ "$authority_rc" -eq 2 ]] && return 1
+	[[ "$authority_rc" -eq 1 ]] && treat_as_external=1
+	trusted_issue_sync="${_PULSE_FINAL_TRUSTED_ISSUE_SYNC:-0}"
 
 	# A linked issue's live NMR state is a final-call hold for every PR, not only
 	# external PRs. Fail closed if a linked issue was found but cannot be read.
@@ -502,6 +535,9 @@ _pulse_merge_admin_safety_check() {
 	fi
 
 	if [[ "$treat_as_external" -eq 0 ]]; then
+		if [[ "$trusted_issue_sync" -eq 1 ]]; then
+			echo "[pulse-merge] Trusted repository-generated Issue Sync authority verified for PR #${pr_number} at ${current_head_sha}" >>"$LOGFILE"
+		fi
 		_PULSE_FINAL_REQUIRES_SYNCHRONOUS_MERGE=0
 		return 0
 	fi
@@ -632,6 +668,39 @@ _trusted_existing_approver() {
 }
 
 #######################################
+# Submit an approval bound to the reviewed PR head when one is available.
+#
+# #aidevops:trust-boundary -- `gh pr review --approve` always targets the
+# current head and cannot reject a head change between authority validation and
+# review creation. The REST review mutation accepts commit_id, so production
+# callers bind the approval to the exact head already used by the merge gates.
+# Args: $1=repo_slug, $2=pr_number, $3=approval body, $4=expected head SHA
+# Returns: 0=approved at the expected head, 1=mutation failed/mismatched
+#######################################
+_pulse_approve_pr_at_head() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local approval_body="$3"
+	local expected_head_sha="${4:-}"
+	local approval_response=""
+	local approval_state=""
+	local approval_head_sha=""
+
+	if [[ -z "$expected_head_sha" ]]; then
+		gh pr review "$pr_number" --repo "$repo_slug" --approve --body "$approval_body"
+		return $?
+	fi
+
+	approval_response=$(gh api -X POST "repos/${repo_slug}/pulls/${pr_number}/reviews" \
+		-f 'event=APPROVE' -f "body=${approval_body}" \
+		-f "commit_id=${expected_head_sha}" 2>&1) || return 1
+	approval_state=$(printf '%s' "$approval_response" | jq -r '.state // ""' 2>/dev/null) || return 1
+	approval_head_sha=$(printf '%s' "$approval_response" | jq -r '.commit_id // ""' 2>/dev/null) || return 1
+	[[ "$approval_state" == "APPROVED" && "$approval_head_sha" == "$expected_head_sha" ]]
+	return $?
+}
+
+#######################################
 # Auto-approve a collaborator's PR before merging (GH#10522, t1691)
 #
 # Branch protection requires required_approving_review_count=1.
@@ -644,6 +713,12 @@ _trusted_existing_approver() {
 #
 # Idempotent — if the current head already has a trusted approving review,
 # this is a no-op across all pulse identities.
+#
+# Defense-in-depth: author authority is rechecked at this function boundary so
+# a future caller cannot bypass GH#17671 protections. The t3063 path accepts
+# exact-head maintainer crypto authority as a stronger trust signal without
+# weakening the external-author default. Case P in the focused guard suite pins
+# CONTRIBUTOR + no crypto = refuse.
 #
 # Arguments:
 #   $1 - PR number
@@ -694,24 +769,6 @@ approve_collaborator_pr() {
 		fi
 	fi
 
-	# Defense-in-depth: refuse to approve when the PR author is not a
-	# collaborator on this repo. The merge cycle's _check_pr_merge_gates
-	# already short-circuits on this condition, but a future
-	# refactor could remove that gate. Self-protecting at the function
-	# boundary closes the regression window. (GH#17671 post-mortem,
-	# t2933.) The misleading "collaborator PR" approval body shipped for
-	# years until the surrounding gates landed; a lone caller would
-	# re-introduce the supply-chain hole.
-	#
-	# #aidevops:trust-boundary — t3063 crypto-approval bypass:
-	# A verified maintainer signature on the PR or its linked issue is a
-	# stronger trust signal than author-association: it requires a
-	# root-owned SSH private key that workers cannot forge. This bypass is
-	# symmetric with t3052 (PR #21767) which extended the worker-briefed
-	# gate the same way. The GH#17671 four-layer defence is preserved —
-	# crypto-approval is an additional path through the author gate, not a
-	# removal of the gate. Case B (CONTRIBUTOR + no crypto = refuse) is
-	# pinned by test-pulse-merge-approve-collaborator-guard.sh Case P.
 	local approval_body
 	approval_body="Auto-approved by pulse runner @${current_user:-unknown} — author @${pr_author} confirmed collaborator, pre-merge gates passed."
 	local _author_collab_rc=0
@@ -721,12 +778,15 @@ approve_collaborator_pr() {
 	else
 		_author_collab_rc=0
 	fi
-	if [[ "$_author_collab_rc" -eq 2 ]]; then
-		echo "[pulse-wrapper] approve_collaborator_pr: permission check failed for PR #$pr_number author (@$pr_author) on $repo_slug (HTTP ${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown}) — refusing to auto-approve" >>"$LOGFILE"
-		return 0
-	fi
 	if [[ "$_author_collab_rc" -ne 0 ]]; then
-		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$pr_head_sha"; then
+		if [[ "$pr_author" == "app/github-actions" || "$pr_author" == "github-actions[bot]" ]] &&
+			_pulse_is_trusted_issue_sync_pr "$pr_number" "$repo_slug" "$pr_head_sha"; then
+			approval_body="Auto-approved by pulse runner @${current_user:-unknown} — trusted repository-generated Issue Sync PR verified from immutable bot identity, same-repository deterministic branch, generated body marker, exact current head, and pre-merge gates."
+			echo "[pulse-wrapper] approve_collaborator_pr: PR #$pr_number author (@$pr_author) is trusted repository-generated Issue Sync automation — proceeding" >>"$LOGFILE"
+		elif [[ "$_author_collab_rc" -eq 2 ]]; then
+			echo "[pulse-wrapper] approve_collaborator_pr: permission check failed for PR #$pr_number author (@$pr_author) on $repo_slug (HTTP ${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown}) — refusing to auto-approve" >>"$LOGFILE"
+			return 0
+		elif _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$pr_head_sha"; then
 			approval_body="Auto-approved by pulse runner @${current_user:-unknown} — trusted Dependabot dependency update verified: GitHub bot identity, same-repo branch, dependabot-authored commits, dependency-file-only diff, maintainer allowlist, no security-scan failures, and pre-merge gates passed."
 			echo "[pulse-wrapper] approve_collaborator_pr: PR #$pr_number author (@$pr_author) is trusted Dependabot with allowlisted dependency update — proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$pr_head_sha"; then
@@ -741,9 +801,14 @@ approve_collaborator_pr() {
 	# Approve the PR — body now states the actual checks performed
 	# (author confirmed collaborator + pulse runner has write access),
 	# not just the misleading "collaborator PR" claim.
-	local approve_output
-	approve_output=$(gh pr review "$pr_number" --repo "$repo_slug" --approve --body "$approval_body" 2>&1)
-	local approve_exit=$?
+	local approve_output=""
+	local approve_exit=0
+	if approve_output=$(_pulse_approve_pr_at_head "$repo_slug" "$pr_number" \
+		"$approval_body" "$pr_head_sha" 2>&1); then
+		approve_exit=0
+	else
+		approve_exit=$?
+	fi
 
 	if [[ $approve_exit -eq 0 ]]; then
 		echo "[pulse-wrapper] approve_collaborator_pr: approved PR #$pr_number in $repo_slug (author: $pr_author, runner: ${current_user:-unknown})" >>"$LOGFILE"

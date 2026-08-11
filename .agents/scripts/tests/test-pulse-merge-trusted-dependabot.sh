@@ -151,6 +151,18 @@ if [[ "${1:-}" == "api" && "$*" == *"/collaborators/"*"/permission"* && "$*" == 
 	exit 0
 fi
 
+if [[ "${1:-}" == "api" && "${2:-}" == "-X" && "${3:-}" == "POST" &&
+	"${4:-}" == repos/*/pulls/*/reviews ]]; then
+	_commit_id=""
+	for _arg in "$@"; do
+		case "$_arg" in
+		commit_id=*) _commit_id="${_arg#commit_id=}" ;;
+		esac
+	done
+	printf '{"state":"APPROVED","commit_id":"%s"}\n' "$_commit_id"
+	exit 0
+fi
+
 if [[ "${1:-}" == "api" && "$*" == *"/pulls/"*"/reviews"* ]]; then
 	printf '[]\n'
 	exit 0
@@ -177,10 +189,13 @@ define_helpers_under_test() {
 	local approve_src=""
 	local runner_src=""
 	local trusted_approval_src=""
+	local exact_head_approval_src=""
 	approve_src=$(awk '/^approve_collaborator_pr\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
 	runner_src=$(awk '/^_approve_collaborator_runner_has_write\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
 	trusted_approval_src=$(awk '/^_trusted_existing_approver\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
-	[[ -n "$approve_src" && -n "$runner_src" && -n "$trusted_approval_src" ]] || return 1
+	exact_head_approval_src=$(awk '/^_pulse_approve_pr_at_head\(\) \{/,/^}$/ { print }' "$GATES_SCRIPT")
+	[[ -n "$approve_src" && -n "$runner_src" && -n "$trusted_approval_src" &&
+		-n "$exact_head_approval_src" ]] || return 1
 
 	_has_maintainer_crypto_approval() { return 1; }
 	# shellcheck source=../pulse-merge-author-checks.sh
@@ -191,6 +206,8 @@ define_helpers_under_test() {
 	eval "$runner_src"
 	# shellcheck disable=SC1090
 	eval "$trusted_approval_src"
+	# shellcheck disable=SC1090
+	eval "$exact_head_approval_src"
 	# shellcheck disable=SC1090
 	eval "$approve_src"
 	return 0
@@ -361,10 +378,13 @@ test_unallowlisted_dependency_fails() {
 
 test_trusted_dependabot_can_be_approved() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	: >"$GH_LOG"
 	approve_collaborator_pr "24473" "owner/repo" "dependabot[bot]" "head-current" >/dev/null || true
-	if grep -qF 'pr review 24473' "$GH_LOG" \
-		&& grep -qF 'trusted Dependabot dependency update verified' "$GH_LOG"; then
-		print_result "trusted Dependabot PR receives accurate auto-approval" 0
+	if grep -qF 'api -X POST repos/owner/repo/pulls/24473/reviews' "$GH_LOG" &&
+		grep -qF 'event=APPROVE' "$GH_LOG" &&
+		grep -qF 'commit_id=head-current' "$GH_LOG" &&
+		grep -qF 'trusted Dependabot dependency update verified' "$GH_LOG"; then
+		print_result "trusted Dependabot PR receives accurate head-bound auto-approval" 0
 		return 0
 	fi
 	print_result "trusted Dependabot PR receives accurate auto-approval" 1 "Expected approval call. gh log: $(<"$GH_LOG")"

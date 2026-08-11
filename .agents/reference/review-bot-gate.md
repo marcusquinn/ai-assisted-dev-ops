@@ -124,7 +124,11 @@ The review add-on check runs after the `origin:interactive` (t2411) and
   deterministic `aidevops/issue-sync-todo` branch, and generated body marker all
   match. For `issue_comment` events that omit head/base metadata, CI asks the
   shared helper to classify one live REST pull payload. This keeps CI,
-  interactive merge, and Pulse decisions aligned. Any missing or mismatched
+  interactive merge, and Pulse decisions aligned. Full-loop and Pulse bind the
+  same classifier to the already verified merge head before granting generated
+  PR authority or approval. Pulse creates approvals with REST `commit_id` bound
+  to that head and verifies the response; full-loop refreshes mutable authority
+  before every retry or fallback merge transport. Any missing or mismatched
   field remains external and fail-closed.
 - **External contributors**: advisory, rate-limit, and skip outcomes remain
   fail-closed; completed review evidence is required in addition to independent

@@ -214,9 +214,9 @@ _merge_try_interactive_admin_auto_fallback() {
 	_merge_output_is_review_policy_block "$merge_output" || return 1
 	_merge_pr_ready_for_interactive_admin_bypass "$pr_number" "$repo" || return 1
 
-	#aidevops:trust-boundary -- interactive admin fallback re-checks exact-head
-	# authority immediately before bypassing review-count protection.
-	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$expected_head_sha" || return 2
+	#aidevops:trust-boundary -- interactive admin fallback refreshes every mutable
+	# authority input immediately before bypassing review-count protection.
+	_merge_revalidate_transport_authority "$pr_number" "$repo" "$expected_head_sha" || return 2
 	print_info "Auto-merge is blocked only by review-required branch policy/self-approval; interactive maintainer session is using --admin merge after gates passed."
 	local subject_flags=()
 	[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
@@ -365,6 +365,21 @@ _merge_target_crypto_approved() {
 	return $?
 }
 
+_merge_is_trusted_issue_sync_pr() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head_sha="$3"
+	local rbg_helper=""
+
+	[[ -n "$expected_head_sha" ]] || return 1
+	rbg_helper=$(_full_loop_review_bot_gate_helper_path) || return 1
+	#aidevops:trust-boundary -- bind the exact generated Issue Sync identity to
+	# the already verified merge head; helper/API failures remain external.
+	bash "$rbg_helper" is-trusted-issue-sync-pr \
+		"$pr_number" "$repo" "$expected_head_sha" >/dev/null 2>&1
+	return $?
+}
+
 # Returns 0 for live admin/maintain/write authority, 1 for a confirmed external
 # author, and 2 when GitHub cannot provide a trustworthy verdict.
 _merge_author_has_write_authority() {
@@ -423,7 +438,7 @@ _merge_guard_admin_merge_maintainer_review() {
 	local expected_head_sha="${3:-}"
 	local pr_json="" pr_author="" current_head_sha="" labels_csv="" labels_padded="" is_fork="false"
 	local issue_numbers=""
-	local author_rc=0 treat_as_external=0 trusted_dependabot=0
+	local author_rc=0 treat_as_external=0 trusted_dependabot=0 trusted_issue_sync=0
 
 	if ! pr_json=$(gh pr view "$pr_number" --repo "$repo" \
 		--json author,labels,isCrossRepository,headRefOid,closingIssuesReferences,body 2>/dev/null); then
@@ -461,14 +476,14 @@ _merge_guard_admin_merge_maintainer_review() {
 		return 1
 	fi
 
-	#aidevops:trust-boundary -- GitHub Dependabot may lack collaborator
-	# permission even for same-repository branches. The shared predicate verifies
-	# immutable bot identity, exact head, repository ownership, commit authors,
-	# dependency-only files, explicit allowlisting, and security status. A live
-	# NMR labels remain unconditional holds and all normal pre-merge gates still
-	# run before this authority-only exception. Linked-issue holds are validated
-	# below before the trusted-bot result can return success.
-	if _is_trusted_dependabot_update_pr "$pr_number" "$repo" "$pr_author" "$current_head_sha"; then
+	#aidevops:trust-boundary -- repository-generated Issue Sync and Dependabot
+	# PRs may lack collaborator permission. Both narrow predicates bind immutable
+	# bot identity and repository ownership to the exact current head. Live PR and
+	# linked-issue NMR labels remain unconditional holds.
+	if [[ "$pr_author" == "app/github-actions" || "$pr_author" == "github-actions[bot]" ]] &&
+		_merge_is_trusted_issue_sync_pr "$pr_number" "$repo" "$current_head_sha"; then
+		trusted_issue_sync=1
+	elif _is_trusted_dependabot_update_pr "$pr_number" "$repo" "$pr_author" "$current_head_sha"; then
 		trusted_dependabot=1
 	else
 		_merge_author_has_write_authority "$pr_author" "$repo" || author_rc=$?
@@ -490,6 +505,10 @@ _merge_guard_admin_merge_maintainer_review() {
 	_merge_linked_issue_authority_clear "$issue_numbers" "$repo" "$treat_as_external" || return 1
 	if [[ "$trusted_dependabot" -eq 1 ]]; then
 		print_info "Trusted Dependabot authority verified for PR #${pr_number} at ${current_head_sha}"
+		return 0
+	fi
+	if [[ "$trusted_issue_sync" -eq 1 ]]; then
+		print_info "Trusted repository-generated Issue Sync authority verified for PR #${pr_number} at ${current_head_sha}"
 		return 0
 	fi
 
@@ -793,6 +812,10 @@ _merge_rest_fallback() {
 		;;
 	esac
 
+	#aidevops:trust-boundary -- GraphQL transport failure does not preserve a
+	# mutable authority snapshot for the later REST mutation.
+	_merge_revalidate_transport_authority "$pr_number" "$repo" "$expected_head_sha" || return 1
+
 	print_info "GraphQL rate limit blocked gh pr merge; retrying via REST pull merge endpoint with verified head SHA ${expected_head_sha}..."
 	local rest_args=(-f "sha=${expected_head_sha}" -f "merge_method=${rest_method}")
 	[[ -n "$squash_subject" ]] && rest_args+=(-f "commit_title=${squash_subject}")
@@ -871,6 +894,17 @@ _merge_review_state_still_clear() {
 		print_error "PR #${pr_number} review or head state changed after readiness verification; refusing merge"
 		return 1
 	fi
+	return 0
+}
+
+_merge_revalidate_transport_authority() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head_sha="$3"
+
+	_merge_review_state_still_clear "$pr_number" "$repo" "$expected_head_sha" || return 1
+	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$expected_head_sha" || return 1
+	_merge_guard_prospective_todo "$pr_number" "$repo" || return 1
 	return 0
 }
 
@@ -1033,12 +1067,10 @@ _merge_execute() {
 		print_error "Cannot bind merge to a remotely verified PR head SHA"
 		return 1
 	}
-	_merge_review_state_still_clear "$pr_number" "$repo" "$match_head_sha" || return 1
 	#aidevops:trust-boundary GH#17671/GH#28622 -- every merge mode, including
 	# --auto and the non-admin REST transport fallback, must pass the same live
 	# external/fork and exact-head cryptographic authority check.
-	_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$match_head_sha" || return 1
-	_merge_guard_prospective_todo "$pr_number" "$repo" || return 1
+	_merge_revalidate_transport_authority "$pr_number" "$repo" "$match_head_sha" || return 1
 	merge_flags+=("--match-head-commit" "$match_head_sha")
 
 	# Capture output AND exit code under set -e. A bare assignment `out=$(cmd)`
@@ -1053,6 +1085,7 @@ _merge_execute() {
 	if [[ $_merge_rc -ne 0 ]] && gh_merge_remediate_stale_auth_cache "$_merge_out" "full-loop PR #${pr_number} in ${repo}" ""; then
 		local _merge_retry_out="" _merge_original_out="$_merge_out"
 		print_info "gh pr merge returned 401 while live gh auth succeeds; quarantined stale gh cache entries and retrying once..."
+		_merge_revalidate_transport_authority "$pr_number" "$repo" "$match_head_sha" || return 1
 		if _merge_retry_out=$(gh pr merge "$pr_number" --repo "$repo" "$merge_method" ${merge_flags[@]+"${merge_flags[@]}"} 2>&1); then
 			_merge_out="$_merge_retry_out"
 			_merge_rc=0
@@ -1083,7 +1116,7 @@ ${_merge_retry_out}"
 		# Only fall back to --admin when caller passed neither --admin nor --auto.
 		elif [[ $has_admin -eq 0 && $has_auto -eq 0 ]] &&
 			printf '%s' "$_merge_out" | grep -qE 'base branch policy prohibits|Required status checks? (is|are) expected|At least [0-9]+ approving review'; then
-			_merge_guard_admin_merge_maintainer_review "$pr_number" "$repo" "$match_head_sha" || return 1
+			_merge_revalidate_transport_authority "$pr_number" "$repo" "$match_head_sha" || return 1
 			print_info "Branch protection blocked plain merge; retrying with --admin (workers share the maintainer's gh auth per GH#18538)..."
 			local subject_flags=()
 			[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
