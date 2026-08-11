@@ -336,6 +336,26 @@ assert_eq "json reports process-scan active workers" "2" "$ACTIVE_COUNT"
 assert_eq "json recomputes available slots from process count" "4" "$ACTIVE_AVAILABLE"
 assert_eq "process-scan active workers suppress underfill finding" "auto-dispatch-missing-tier-labels" "$ACTIVE_IDS"
 
+cat >"${TEST_ROOT}/current-state-active-no-gauge.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "dispatch_alive": true,
+  "dispatch_stage_events": 12,
+  "active_worker_processes": 2,
+  "current_state_guardrails": {},
+  "pulse_gauges": {},
+  "worker_outcomes": {"spawned": 0},
+  "worker_terminal_events": 0,
+  "graphql_budget_status": "OK fixture"
+}
+JSON
+SH
+chmod +x "${TEST_ROOT}/current-state-active-no-gauge.sh"
+JSON_ACTIVE_NO_GAUGE_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-active-no-gauge.sh" "$HELPER" json 2>&1)
+assert_eq "json falls back to process count when capacity gauge is absent" "2" "$(printf '%s' "$JSON_ACTIVE_NO_GAUGE_OUT" | jq -r '.summary.max_workers')"
+assert_eq "json absent capacity gauge avoids impossible active over max report" "Active workers: 2 / 2" "$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-active-no-gauge.sh" "$HELPER" report 2>&1 | grep -o 'Active workers: [0-9] / [0-9]')"
+
 cat >"${TEST_ROOT}/current-state-shortfall.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<'JSON'

@@ -9,10 +9,16 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
   autofile: $autofile
 };
 
-($current.pulse_gauges.dispatch_capacity_final_max_workers // 0 | number_or_zero) as $max_workers |
-($current.current_state_guardrails.available_slots_last // $current.pulse_gauges.pulse_dispatch_guardrail_available_slots // 0 | number_or_zero) as $available_slots |
-([$max_workers - $available_slots, 0] | max) as $inferred_active_workers |
 (if ($current.active_worker_processes // null) == null then null else ($current.active_worker_processes | number_or_zero) end) as $active_worker_processes |
+($current.pulse_gauges.dispatch_capacity_final_max_workers // null) as $raw_max_workers |
+($current.current_state_guardrails.available_slots_last // $current.pulse_gauges.pulse_dispatch_guardrail_available_slots // null) as $raw_available_slots |
+($raw_available_slots // 0 | number_or_zero) as $available_slots |
+(if $raw_max_workers == null then
+  (if $active_worker_processes == null then $available_slots else ($active_worker_processes + $available_slots) end)
+else
+  ($raw_max_workers | number_or_zero)
+end) as $max_workers |
+([$max_workers - $available_slots, 0] | max) as $inferred_active_workers |
 (if $active_worker_processes == null then $inferred_active_workers else $active_worker_processes end) as $active_workers |
 (if $active_worker_processes == null then $available_slots else ([$max_workers - $active_worker_processes, 0] | max) end) as $effective_available_slots |
 ($queue.aggregate.available_unassigned // 0 | number_or_zero) as $available_issues |
