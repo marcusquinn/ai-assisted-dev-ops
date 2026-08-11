@@ -180,9 +180,25 @@ aidevops_ensure_symlink_target() {
 # find all consumers that need updating when unpinning.
 
 # GH#28766: OpenCode 1.18.7 stalled Linux headless workers while bootstrapping
-# location services with an isolated XDG_DATA_HOME. GH#28892 advances the pin
-# after 1.18.9 passed the current isolated headless canary.
+# location services with an isolated XDG_DATA_HOME. GH#28892 advanced the pin
+# after 1.18.9 passed the isolated Linux-headless canary. Keep the complete
+# compatibility decision visible and machine-readable; general installs track
+# latest because the observed failure scope is Linux headless dispatch only.
 readonly OPENCODE_PINNED_VERSION="1.18.9"
+readonly OPENCODE_PIN_REASON="GH#28766 Linux headless bootstrap stalled with isolated XDG_DATA_HOME"
+readonly OPENCODE_PIN_PLATFORM="Linux"
+readonly OPENCODE_PIN_RUNTIME_MODE="headless"
+readonly OPENCODE_PIN_INTRODUCED_DATE="2026-07-30"
+readonly OPENCODE_PIN_LAST_CANARY_DATE="2026-07-30"
+readonly OPENCODE_PIN_LAST_CANARY_RESULT="pass:1.18.9"
+readonly OPENCODE_PIN_REVIEW_DEADLINE="2026-08-06"
+readonly OPENCODE_PLUGIN_TESTED_VERSION="1.18.9"
+
+aidevops_opencode_pin_applies() {
+	local platform="${1:-$(uname -s 2>/dev/null || printf 'unknown')}"
+	local runtime_mode="${2:-interactive}"
+	[[ "$platform" == "$OPENCODE_PIN_PLATFORM" && "$runtime_mode" == "$OPENCODE_PIN_RUNTIME_MODE" ]]
+}
 
 # Build the package-manager-aware OpenCode repair command used by both routine
 # tool updates and the fail-closed headless version guard. The optional

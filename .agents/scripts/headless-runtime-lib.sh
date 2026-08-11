@@ -1497,7 +1497,7 @@ _find_alternative_opencode_binary() {
 }
 
 #######################################
-# Version guard -- enforce OPENCODE_PINNED_VERSION before worker launch.
+# Version guard -- enforce OPENCODE_PINNED_VERSION for affected worker launches.
 #
 # Something outside our control (unknown process, worker side-effect)
 # periodically upgrades opencode to @latest. This guard runs on every
@@ -1511,6 +1511,15 @@ _enforce_opencode_version_pin() {
 	local pin="${OPENCODE_PINNED_VERSION:-}"
 	# No pin or pin is "latest" -> nothing to enforce
 	if [[ -z "$pin" || "$pin" == "latest" ]]; then
+		return 0
+	fi
+	# The scheduled compatibility evaluator must exercise its isolated candidate,
+	# not repair it back to the current pin before the canary starts.
+	if [[ "${AIDEVOPS_OPENCODE_PIN_CANDIDATE_EVALUATION:-0}" == "1" ]]; then
+		return 0
+	fi
+	local pin_platform="${AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE:-$(uname -s 2>/dev/null || printf 'unknown')}"
+	if ! aidevops_opencode_pin_applies "$pin_platform" "headless"; then
 		return 0
 	fi
 

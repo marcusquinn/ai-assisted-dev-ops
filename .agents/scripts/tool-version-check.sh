@@ -66,8 +66,8 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# OPENCODE_PINNED_VERSION is set in shared-constants.sh (sourced above).
-# To unpin: change to "latest" in shared-constants.sh when the upstream fix ships.
+# The OpenCode compatibility pin is enforced only by Linux headless dispatch.
+# Routine interactive/global tool updates continue to track the registry.
 
 # Detect how OpenCode was installed — build the right upgrade command.
 # update_cmd is executed via `bash -c` so it must be a self-contained string.
@@ -84,7 +84,7 @@ _opencode_upgrade_cmd() {
 	return 0
 }
 
-_oc_upgrade_cmd=$(_opencode_upgrade_cmd "$OPENCODE_PINNED_VERSION")
+_oc_upgrade_cmd=$(_opencode_upgrade_cmd "latest")
 
 # Platform-aware brew package upgrade command.
 # On macOS (or any system with brew), use brew upgrade.
@@ -464,15 +464,6 @@ _classify_tool_status() {
 	local effective_latest="$latest_val"
 	local approved_version="$latest_val"
 	local enforce_exact_version=false
-
-	# OpenCode may be deliberately pinned below the registry release. Keep the
-	# registry value for awareness, but classify and repair against the approved
-	# pin so an already-correct install is not repeatedly reinstalled. Unlike a
-	# normal upgrade check, any drift from the safety pin is actionable.
-	if [[ "$cmd" == "opencode" && "$OPENCODE_PINNED_VERSION" != "latest" ]]; then
-		approved_version="$OPENCODE_PINNED_VERSION"
-		enforce_exact_version=true
-	fi
 
 	if [[ "$cmd" == "gh" && "$installed" != "not installed" ]] && ! aidevops_gh_slurp_supported; then
 		class_status="minimum_required"

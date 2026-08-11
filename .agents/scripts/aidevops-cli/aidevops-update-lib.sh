@@ -297,6 +297,7 @@ _update_check_tools() {
 		fi
 	fi
 	local idx=0
+	local opencode_installed="not installed" opencode_registry="unknown"
 	for cmd_name in $key_tool_cmds; do
 		local pkg_ref
 		pkg_ref=$(echo "$key_tool_pkgs" | cut -d' ' -f$((idx + 1)))
@@ -314,10 +315,11 @@ _update_check_tools() {
 			elif [[ "$brew_pkg" == "gh" ]] && command -v gh &>/dev/null; then latest=$(get_public_release_tag "cli/cli"); fi
 		else latest=$(_timeout_cmd 30 npm view "$pkg_ref" version || true); fi
 		[[ -z "$latest" ]] && continue
-		approved="$latest"
-		if [[ "$cmd_name" == "opencode" && "${OPENCODE_PINNED_VERSION:-latest}" != "latest" ]]; then
-			approved="$OPENCODE_PINNED_VERSION"
+		if [[ "$cmd_name" == "opencode" ]]; then
+			opencode_installed="$installed"
+			opencode_registry="$latest"
 		fi
+		approved="$latest"
 		[[ "$installed" != "$approved" ]] && {
 			stale_tools="${stale_tools:+$stale_tools, }$cmd_name ($installed -> $approved)"
 			((++stale_count))
@@ -329,6 +331,20 @@ _update_check_tools() {
 		print_warning "$stale_count tool(s) have updates: $stale_tools"
 		echo ""
 		print_info "No global tools were changed; run 'aidevops update-tools --update' to update explicitly"
+	fi
+	if [[ "${OPENCODE_PINNED_VERSION:-latest}" != "latest" ]]; then
+		local pin_age_days="unknown"
+		pin_age_days=$(python3 - "$OPENCODE_PIN_INTRODUCED_DATE" <<'PY' 2>/dev/null || printf 'unknown\n'
+from datetime import date
+import sys
+print((date.today() - date.fromisoformat(sys.argv[1])).days)
+PY
+		)
+		print_info "OpenCode compatibility pin: installed=${opencode_installed}, pinned=${OPENCODE_PINNED_VERSION}, registry=${opencode_registry}"
+		print_info "Pin scope=${OPENCODE_PIN_PLATFORM}/${OPENCODE_PIN_RUNTIME_MODE}, age=${pin_age_days}d, plugin-tested=${OPENCODE_PLUGIN_TESTED_VERSION}, last-canary=${OPENCODE_PIN_LAST_CANARY_DATE} (${OPENCODE_PIN_LAST_CANARY_RESULT}), review-deadline=${OPENCODE_PIN_REVIEW_DEADLINE}"
+		if [[ "$(date -u +%Y-%m-%d)" > "$OPENCODE_PIN_REVIEW_DEADLINE" ]]; then
+			print_warning "OpenCode compatibility pin review is overdue; scheduled Linux-headless canary must retain or advance it"
+		fi
 	fi
 	return 0
 }

@@ -406,9 +406,8 @@ cleanup_stale_bun_opencode() {
 	if [[ "$npm_opencode" -eq 0 ]]; then
 		# npm version not installed — install it first, then clean up bun
 		if command -v npm >/dev/null 2>&1; then
-			local pin_ver="${OPENCODE_PINNED_VERSION:-latest}"
 			print_info "Installing opencode via npm (replacing bun install)..."
-			npm_global_install "opencode-ai@${pin_ver}" >/dev/null 2>&1 || true
+			npm_global_install "opencode-ai@latest" >/dev/null 2>&1 || true
 		else
 			# Can't install npm version — leave bun version in place
 			return 0

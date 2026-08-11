@@ -2372,10 +2372,9 @@ _setup_opencode_force_heal() {
 setup_opencode_cli() {
 	print_info "Setting up OpenCode CLI..."
 
-	# Respect OPENCODE_PINNED_VERSION from shared-constants.sh if sourced,
-	# otherwise fall back to latest.
-	local pin_ver="${OPENCODE_PINNED_VERSION:-latest}"
-	local install_pkg="opencode-ai@${pin_ver}"
+	# The compatibility pin is scoped to Linux headless dispatch. General setup
+	# tracks upstream; the headless launch guard restores its approved version.
+	local install_pkg="opencode-ai@latest"
 
 	# t2891: validate the resolved binary is anomalyco/opencode, not a
 	# wrong package (claude CLI etc) that took the 'opencode' bin name.

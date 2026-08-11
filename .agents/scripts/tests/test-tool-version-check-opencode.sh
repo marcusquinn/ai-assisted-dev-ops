@@ -45,12 +45,16 @@ assert_eq() {
 
 extract_function() {
 	awk '
+		/^aidevops_opencode_pin_applies\(\)/, /^}/ { print; next }
+	' "$SHARED_CONSTANTS" >"$SANDBOX/extract.sh"
+	awk '
 		/^_opencode_upgrade_cmd\(\)/, /^}$/ { print; next }
-	' "$TOOL_VERSION_CHECK" >"$SANDBOX/extract.sh"
+	' "$TOOL_VERSION_CHECK" >>"$SANDBOX/extract.sh"
 	awk '
 		/^_enforce_opencode_version_pin\(\)/, /^}$/ { print; next }
 	' "$HEADLESS_RUNTIME_LIB" >>"$SANDBOX/extract.sh"
-	if ! grep -q '^_opencode_upgrade_cmd()' "$SANDBOX/extract.sh" ||
+	if ! grep -q '^aidevops_opencode_pin_applies()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_opencode_upgrade_cmd()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_enforce_opencode_version_pin()' "$SANDBOX/extract.sh"; then
 		printf 'FAIL: extraction did not capture OpenCode version functions\n' >&2
 		exit 1
@@ -81,7 +85,7 @@ printf 'Test 0: OpenCode remains pinned to the last verified headless release\n'
 source "$SHARED_CONSTANTS"
 assert_eq "OpenCode headless regression pin" "1.18.9" "$OPENCODE_PINNED_VERSION"
 
-printf 'Test 0a: routine freshness treats the approved OpenCode pin as current\n'
+printf 'Test 0a: routine freshness tracks registry outside Linux headless dispatch\n'
 mkdir -p "$SANDBOX/routine-freshness/bin"
 printf '1.18.9\n' >"$SANDBOX/routine-freshness/opencode-version"
 # shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
@@ -100,23 +104,22 @@ install) printf "%s\n" "$*" >>"'"$SANDBOX"'/routine-freshness/calls" ;;
 *) exit 1 ;;
 esac'
 routine_output=$(PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --update --quiet)
-assert_eq "matching pin performs no routine update" "" "$routine_output"
-assert_eq "matching pin executes no install command" "0" "$([[ -f "$SANDBOX/routine-freshness/calls" ]] && wc -l <"$SANDBOX/routine-freshness/calls" || printf '0\n')"
+assert_eq "general tool update installs registry latest" "install -g opencode-ai@latest" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
 
 routine_json=$(PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --json)
 opencode_json=$(printf '%s\n' "$routine_json" | grep '"name": "OpenCode"')
-assert_eq "registry release remains visible for pinned OpenCode" "1" "$([[ "$opencode_json" == *'"latest": "9.99.9", "status": "up_to_date"'* ]] && printf '1\n' || printf '0\n')"
+assert_eq "registry release is actionable outside pin scope" "1" "$([[ "$opencode_json" == *'"latest": "9.99.9", "status": "outdated"'* ]] && printf '1\n' || printf '0\n')"
 
 printf 'Test 0b: routine freshness repairs genuine drift from the OpenCode pin\n'
 printf '1.18.8\n' >"$SANDBOX/routine-freshness/opencode-version"
 PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --update --quiet >/dev/null
-assert_eq "drift repair installs the approved pin" "install -g opencode-ai@1.18.9" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
+assert_eq "general drift repair installs registry latest" "install -g opencode-ai@latest;install -g opencode-ai@latest" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
 
 printf 'Test 0c: routine freshness restores versions newer than the safety pin\n'
 : >"$SANDBOX/routine-freshness/calls"
 printf '1.19.0\n' >"$SANDBOX/routine-freshness/opencode-version"
 PATH="$SANDBOX/routine-freshness/bin:$SYSTEM_PATH" "$TOOL_VERSION_CHECK" --category npm --update --quiet >/dev/null
-assert_eq "newer drift is restored to the approved pin" "install -g opencode-ai@1.18.9" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
+assert_eq "general newer release still tracks registry, not headless pin" "install -g opencode-ai@latest" "$(tr '\n' ';' <"$SANDBOX/routine-freshness/calls" | sed 's/;$//')"
 
 printf 'Test 1: Homebrew OpenCode chooses brew instead of npm\n'
 mkdir -p "$SANDBOX/opt/homebrew/bin" "$SANDBOX/opt/homebrew/Cellar/opencode/1.15.10/bin" "$SANDBOX/opt/homebrew/opt" "$SANDBOX/homebrew-case"
@@ -213,6 +216,7 @@ guard_rc=0
 (
 	source_extracted
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/runtime/opencode"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }
@@ -232,6 +236,7 @@ guard_rc=0
 (
 	source_extracted
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-install-failure/opencode"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }
@@ -249,6 +254,7 @@ guard_rc=0
 (
 	source_extracted
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-mismatch/opencode"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }
@@ -267,6 +273,7 @@ guard_rc=0
 (
 	source_extracted
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-probe-failure/opencode"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }

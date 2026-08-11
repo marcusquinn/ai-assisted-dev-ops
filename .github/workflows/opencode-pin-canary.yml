@@ -1,0 +1,58 @@
+name: OpenCode Pin Canary
+
+on:
+  schedule:
+    - cron: "17 6 * * 2"
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: OpenCode candidate version (or latest)
+        default: latest
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  linux-headless-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Evaluate candidate
+        id: canary
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ inputs.candidate || 'latest' }}
+        run: |
+          set -o pipefail
+          .agents/scripts/opencode-pin-canary.sh status | tee pin-status.txt
+          .agents/scripts/opencode-pin-canary.sh canary "$CANDIDATE" 2>&1 | tee canary-result.txt
+
+      - name: Record actionable compatibility review
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if grep -q '^PASS:' canary-result.txt 2>/dev/null; then
+            title="Promote passing OpenCode compatibility candidate"
+            summary="The scheduled isolated Linux-headless OpenCode candidate canary passed."
+          else
+            title="OpenCode compatibility pin review is due"
+            summary="The scheduled isolated Linux-headless OpenCode candidate canary did not pass."
+          fi
+          existing=$(gh api "repos/${REPO}/issues?state=open&per_page=100" \
+            --jq ".[] | select(.title == \"${title}\") | .number" | command head -n 1)
+          [[ -n "$existing" ]] && exit 0
+          status=$(<pin-status.txt)
+          result=$(<canary-result.txt)
+          body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
+            "$summary" \
+            "Status: ${status}" "Result: ${result}" \
+            'Files: `.agents/scripts/shared-constants.sh`, `.opencode/package.json`, and `.opencode/package-lock.json`. Retain the current fail-closed pin after failed or inconclusive results; after a passing rerun, advance the tested version, dates, result, and plugin lock together. Verify with `.agents/scripts/tests/test-opencode-pin-policy.sh` and the workflow canary.')
+          gh api --method POST "repos/${REPO}/issues" -f title="$title" -f body="$body" \
+            -f 'labels[]=origin:worker' -f 'labels[]=status:in-review' >/dev/null
