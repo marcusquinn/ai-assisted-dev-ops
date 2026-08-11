@@ -83,7 +83,7 @@ extract_function
 printf 'Test 0: OpenCode remains pinned to the last verified headless release\n'
 # shellcheck source=../shared-constants.sh
 source "$SHARED_CONSTANTS"
-assert_eq "OpenCode headless regression pin" "1.18.9" "$OPENCODE_PINNED_VERSION"
+assert_eq "OpenCode headless regression pin" "1.18.16" "$OPENCODE_PINNED_VERSION"
 
 printf 'Test 0a: routine freshness tracks registry outside Linux headless dispatch\n'
 mkdir -p "$SANDBOX/routine-freshness/bin"
@@ -210,7 +210,7 @@ printf "%s\n" "$version"'
 # shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
 write_executable "$SANDBOX/version-guard/bin/npm" '#!/usr/bin/env bash
 printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard/calls"
-printf "1.18.9\n" >"'"$SANDBOX"'/version-guard/version"'
+printf "1.18.16\n" >"'"$SANDBOX"'/version-guard/version"'
 printf '1.18.7\n' >"$SANDBOX/version-guard/version"
 guard_rc=0
 (
@@ -223,8 +223,8 @@ guard_rc=0
 	PATH="$SANDBOX/version-guard/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
 ) || guard_rc=$?
 assert_eq "headless pin repair status" "0" "$guard_rc"
-assert_eq "headless repair uses resolved binary outside PATH" "1.18.9" "$("$SANDBOX/version-guard/runtime/opencode")"
-assert_eq "headless pin reinstall command" "install -g opencode-ai@1.18.9" "$(tr '\n' ';' <"$SANDBOX/version-guard/calls" | sed 's/;$//')"
+assert_eq "headless repair uses resolved binary outside PATH" "1.18.16" "$("$SANDBOX/version-guard/runtime/opencode")"
+assert_eq "headless pin reinstall command" "install -g opencode-ai@1.18.16" "$(tr '\n' ';' <"$SANDBOX/version-guard/calls" | sed 's/;$//')"
 
 printf 'Test 5: headless version guard fails closed when reinstall fails\n'
 mkdir -p "$SANDBOX/version-install-failure"

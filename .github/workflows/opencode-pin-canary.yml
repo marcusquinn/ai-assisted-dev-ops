@@ -12,7 +12,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   linux-headless-canary:
@@ -21,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Evaluate candidate
         id: canary
@@ -29,16 +30,40 @@ jobs:
           CANDIDATE: ${{ inputs.candidate || 'latest' }}
         run: |
           set -o pipefail
+          : > canary-result.txt
           .agents/scripts/opencode-pin-canary.sh status | tee pin-status.txt
           .agents/scripts/opencode-pin-canary.sh canary "$CANDIDATE" 2>&1 | tee canary-result.txt
 
-      - name: Record actionable compatibility review
+      - name: Preserve canary evidence
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: opencode-pin-canary-evidence
+          path: |
+            pin-status.txt
+            canary-result.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  record-review:
+    needs: linux-headless-canary
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Download canary evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: opencode-pin-canary-evidence
+
+      - name: Record actionable compatibility review
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          if grep -q '^PASS:' canary-result.txt 2>/dev/null; then
+          if grep -q '^RESULT=pass$' canary-result.txt 2>/dev/null; then
             title="Promote passing OpenCode compatibility candidate"
             summary="The scheduled isolated Linux-headless OpenCode candidate canary passed."
           else
