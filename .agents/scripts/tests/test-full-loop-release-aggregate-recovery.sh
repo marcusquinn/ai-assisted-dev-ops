@@ -266,6 +266,136 @@ printf 'PASS durable protected-main queue remains pending after version-manager 
 	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
 	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	_FULL_LOOP_RELEASE_NOT_REQUESTED=not-requested
+	narrow_receipt_dir="${TEST_ROOT}/narrow-receipts"
+	mkdir -p "$narrow_receipt_dir"
+	previous_manifest='42@2222222222222222222222222222222222222222,43@3333333333333333333333333333333333333333'
+	reviewed_manifest='42@2222222222222222222222222222222222222222,44@4444444444444444444444444444444444444444'
+	_full_loop_release_receipt_path() {
+		printf '%s/%s.status\n' "$narrow_receipt_dir" "$2"
+		return 0
+	}
+	printf 'not-requested\n' >"${narrow_receipt_dir}/43.status"
+	_full_loop_recovery_validate_reserved_authorization_narrowing \
+		test/repo "$previous_manifest" "$reviewed_manifest"
+	printf 'PASS reserved narrowing accepts only removed terminal no-release sources\n'
+
+	rm -f "${narrow_receipt_dir}/43.status"
+	if _full_loop_recovery_validate_reserved_authorization_narrowing \
+		test/repo "$previous_manifest" "$reviewed_manifest" >/dev/null 2>&1; then
+		printf 'FAIL reserved narrowing accepted a missing release receipt\n'
+		exit 1
+	fi
+	for rejected_status in failed published superseded unexpected; do
+		printf '%s\n' "$rejected_status" >"${narrow_receipt_dir}/43.status"
+		if _full_loop_recovery_validate_reserved_authorization_narrowing \
+			test/repo "$previous_manifest" "$reviewed_manifest" >/dev/null 2>&1; then
+			printf 'FAIL reserved narrowing accepted release:%s\n' "$rejected_status"
+			exit 1
+		fi
+	done
+	printf 'PASS reserved narrowing rejects missing and non-no-release receipts\n'
+
+	printf 'not-requested\n' >"${narrow_receipt_dir}/43.status"
+	changed_merge_manifest='42@2222222222222222222222222222222222222222,43@4444444444444444444444444444444444444444'
+	if _full_loop_recovery_validate_reserved_authorization_narrowing \
+		test/repo "$previous_manifest" "$changed_merge_manifest" >/dev/null 2>&1; then
+		printf 'FAIL reserved narrowing accepted a changed source merge identity\n'
+		exit 1
+	fi
+	printf 'PASS reserved narrowing rejects changed source merge identities\n'
+
+	NARROW_LOG="${TEST_ROOT}/narrow.log"
+	: >"$NARROW_LOG"
+	_FULL_LOOP_PHASE_FAILED=failed
+	_full_loop_recovery_validate_receipt() { return 0; }
+	_full_loop_release_find_tag_for_pr() { return 2; }
+	_full_loop_recovery_prepare_aggregate() {
+		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$reviewed_manifest"
+		_FULL_LOOP_RESOLVED_SOURCE_JSON='{"mode":"aggregate"}'
+		return 0
+	}
+	_full_loop_validate_release_candidates() {
+		printf 'validate\n' >>"$NARROW_LOG"
+		return 0
+	}
+	_full_loop_release_reset_tag_worktree() { return 0; }
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$previous_manifest"
+		return 0
+	}
+	LANE_PHASE=reserved
+	LANE_TAG=null
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg phase "$LANE_PHASE" --argjson tag "$LANE_TAG" \
+			'{active:true,source_pr:42,phase:$phase,tag:$tag,expected_sources:"42,43",terminal_receipt:null}')
+		return 0
+	}
+	release_lane_acquire() {
+		_AIDEVOPS_RELEASE_LANE_RESULT=acquired
+		_AIDEVOPS_RELEASE_LANE_TOKEN=owned
+		return 0
+	}
+	_full_loop_expand_release_authorization_for_aggregate() {
+		printf 'unexpected-expand\n' >>"$NARROW_LOG"
+		return 1
+	}
+	_full_loop_recovery_write_reserved_authorization() {
+		printf 'reconcile-auth\n' >>"$NARROW_LOG"
+		return 0
+	}
+	release_lane_expand_reserved_authorization() {
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
+		printf 'reconcile-lane\n' >>"$NARROW_LOG"
+		return 0
+	}
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,44 >/dev/null
+	[[ "$(tr '\n' ' ' <"$NARROW_LOG")" == "validate reconcile-auth reconcile-lane " ]]
+	printf 'PASS reserved recovery transaction narrows reviewed no-release sources\n'
+
+	: >"$NARROW_LOG"
+	release_lane_expand_reserved_authorization() {
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
+		printf 'reconcile-lane\n' >>"$NARROW_LOG"
+		return 1
+	}
+	release_lane_restore_reserved_authorization() {
+		printf 'restore-lane\n' >>"$NARROW_LOG"
+		return 0
+	}
+	_full_loop_restore_release_authorization_after_aggregate() {
+		printf 'restore-auth\n' >>"$NARROW_LOG"
+		return 0
+	}
+	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,44 >/dev/null 2>&1; then
+		printf 'FAIL failed narrowing transaction returned success\n'
+		exit 1
+	fi
+	[[ "$(tr '\n' ' ' <"$NARROW_LOG")" == "validate reconcile-auth reconcile-lane restore-lane restore-auth " ]]
+	printf 'PASS failed reserved narrowing restores lane and authorization snapshots\n'
+
+	for unsafe_lane in preparing tagged; do
+		: >"$NARROW_LOG"
+		LANE_PHASE=reserved
+		LANE_TAG=null
+		if [[ "$unsafe_lane" == preparing ]]; then
+			LANE_PHASE=preparing
+		else
+			LANE_TAG='"v1.2.3"'
+		fi
+		if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,44 >/dev/null 2>&1; then
+			printf 'FAIL reserved narrowing accepted unsafe lane state %s\n' "$unsafe_lane"
+			exit 1
+		fi
+		[[ "$(tr '\n' ' ' <"$NARROW_LOG")" == "validate " ]]
+	done
+	printf 'PASS reserved narrowing rejects post-reservation phases and assigned tags\n'
+)
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
 	RESERVED_LOG="${TEST_ROOT}/reserved.log"
 	: >"$RESERVED_LOG"
 	old_manifest='42@2222222222222222222222222222222222222222'
@@ -335,7 +465,7 @@ printf 'PASS durable protected-main queue remains pending after version-manager 
 	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >"${TEST_ROOT}/legacy-mismatch.out" 2>&1; then
 		exit 1
 	fi
-	grep -q 'cannot be normalized against reviewed aggregate' "${TEST_ROOT}/legacy-mismatch.out"
+	grep -q 'cannot be normalized against persisted authorization' "${TEST_ROOT}/legacy-mismatch.out"
 	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate " ]]
 	printf 'PASS reserved recovery rejects non-equivalent legacy PR identities without mutation\n'
 

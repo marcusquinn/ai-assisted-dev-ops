@@ -213,6 +213,63 @@ _full_loop_recovery_resolve_lane_authorization() {
 	return $?
 }
 
+_full_loop_recovery_validate_reserved_authorization_narrowing() {
+	local repo="$1"
+	local previous_sources="$2"
+	local reviewed_sources="$3"
+	local previous_json=""
+	local reviewed_json=""
+	local removed_prs=""
+	local removed_pr=""
+	local receipt_path=""
+	local receipt_status=""
+	previous_json=$(release_authorization_manifest_json "$previous_sources") || return 1
+	reviewed_json=$(release_authorization_manifest_json "$reviewed_sources") || return 1
+	jq -en --argjson previous "$previous_json" --argjson reviewed "$reviewed_json" '
+		all($previous[]; . as $candidate
+			| ([$reviewed[] | select(.pr == $candidate.pr)]) as $matches
+			| (($matches | length) == 0
+				or (($matches | length) == 1 and $matches[0] == $candidate)))
+	' >/dev/null || {
+		printf 'Reserved release authorization narrowing changed an existing source merge identity\n' >&2
+		return 1
+	}
+	removed_prs=$(jq -rn --argjson previous "$previous_json" --argjson reviewed "$reviewed_json" '
+		$previous[] as $candidate
+		| select(([$reviewed[] | select(.pr == $candidate.pr)] | length) == 0)
+		| $candidate.pr
+	') || return 1
+	[[ -n "$removed_prs" ]] || return 1
+	while IFS= read -r removed_pr; do
+		[[ "$removed_pr" =~ ^[0-9]+$ ]] || return 1
+		receipt_path=$(_full_loop_release_receipt_path "$repo" "$removed_pr") || return 1
+		receipt_status=""
+		[[ -f "$receipt_path" ]] && IFS= read -r receipt_status <"$receipt_path" || true
+		if [[ "$receipt_status" != "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]]; then
+			printf 'Reserved release authorization cannot remove PR #%s with release:%s\n' \
+				"$removed_pr" "${receipt_status:-missing}" >&2
+			return 1
+		fi
+	done <<<"$removed_prs"
+	return 0
+}
+
+_full_loop_recovery_write_reserved_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local previous_sources="$3"
+	local reviewed_sources="$4"
+	local existing=""
+	local previous_record=""
+	previous_sources=$(release_authorization_manifest_string "$previous_sources") || return 1
+	reviewed_sources=$(release_authorization_manifest_string "$reviewed_sources") || return 1
+	existing=$(_full_loop_read_release_authorization "$repo" "$source_pr") || return 1
+	[[ "$existing" == "$previous_sources" ]] || return 1
+	previous_record=$(_full_loop_read_release_authorization_record "$repo" "$source_pr") || return 1
+	_full_loop_write_release_authorization_record "$repo" "$source_pr" "$reviewed_sources" "$previous_record"
+	return $?
+}
+
 _full_loop_recovery_expand_reserved_authorization() {
 	local repo="$1"
 	local source_pr="$2"
@@ -220,7 +277,8 @@ _full_loop_recovery_expand_reserved_authorization() {
 	local previous_auth=""
 	local lane_sources=""
 	local normalized_lane_sources=""
-	local authorization_expanded=false
+	local authorization_changed=0
+	local authorization_narrowed=0
 	local existing_tag_rc=0
 	_full_loop_recovery_validate_receipt "$repo" "$source_pr" || return 1
 	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
@@ -229,7 +287,11 @@ _full_loop_recovery_expand_reserved_authorization() {
 	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
 	_full_loop_release_reset_tag_worktree || return 1
 	previous_auth=$(_full_loop_read_release_authorization "$repo" "$source_pr") || return 1
-	release_authorization_subset "$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+	if ! release_authorization_subset "$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"; then
+		_full_loop_recovery_validate_reserved_authorization_narrowing "$repo" "$previous_auth" \
+			"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+		authorization_narrowed=1
+	fi
 	release_lane_read "$repo" || return 1
 	jq -e --argjson source_pr "$source_pr" '
 		.active == true and .source_pr == $source_pr and .phase == "reserved"
@@ -241,8 +303,8 @@ _full_loop_recovery_expand_reserved_authorization() {
 	}
 	lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	normalized_lane_sources=$(_full_loop_recovery_resolve_lane_authorization \
-		"$lane_sources" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED") || {
-		printf 'Reserved release lane authorization cannot be normalized against reviewed aggregate PR #%s\n' "$source_pr" >&2
+		"$lane_sources" "$previous_auth") || {
+		printf 'Reserved release lane authorization cannot be normalized against persisted authorization for PR #%s\n' "$source_pr" >&2
 		return 1
 	}
 	if ! release_authorization_compare "$normalized_lane_sources" "$previous_auth"; then
@@ -257,22 +319,27 @@ _full_loop_recovery_expand_reserved_authorization() {
 		return 0
 	fi
 	if [[ "$previous_auth" != "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
-		_full_loop_expand_release_authorization_for_aggregate "$repo" "$source_pr" \
-			"$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
-		authorization_expanded=true
+		if [[ "$authorization_narrowed" -eq 1 ]]; then
+			_full_loop_recovery_write_reserved_authorization "$repo" "$source_pr" \
+				"$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+		else
+			_full_loop_expand_release_authorization_for_aggregate "$repo" "$source_pr" \
+				"$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+		fi
+		authorization_changed=1
 	fi
 	if ! release_lane_expand_reserved_authorization "$repo" "$source_pr" "$lane_sources" \
 		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"; then
 		release_lane_restore_reserved_authorization "$repo" "$source_pr" \
 			"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT" || true
-		if [[ "$authorization_expanded" == "true" ]]; then
+		if [[ "$authorization_changed" -eq 1 ]]; then
 			_full_loop_restore_release_authorization_after_aggregate "$repo" "$source_pr" \
 				"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$previous_auth" || return 1
 		fi
 		printf 'Reserved release lane authorization migration failed for PR #%s; prior state was restored\n' "$source_pr" >&2
 		return 1
 	fi
-	printf 'Expanded side-effect-free reserved release authorization for reviewed aggregate PR #%s\n' "$source_pr"
+	printf 'Reconciled side-effect-free reserved release authorization for reviewed aggregate PR #%s\n' "$source_pr"
 	return 0
 }
 
