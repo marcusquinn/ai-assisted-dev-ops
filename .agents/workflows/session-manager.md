@@ -21,7 +21,7 @@ tools:
 
 - **Purpose**: Detect session completion, suggest new sessions, spawn parallel work
 - **Triggers**: PR merge, release, topic shift, context limits
-- **Actions**: Suggest @agent-review, new session, worktree + spawn. Loop agents (`/preflight-loop`, `/pr-loop`, `/postflight-loop`) detect completion and offer spawning.
+- **Actions**: Continue active work in-session through its linked worktree; suggest @agent-review or spawn only for a completed task, explicit parallel request, topic shift, or context limit. Loop agents (`/preflight-loop`, `/pr-loop`, `/postflight-loop`) detect completion and offer spawning.
 
 <!-- AI-CONTEXT-END -->
 
@@ -39,7 +39,16 @@ tools:
 
 ## Spawning New Sessions
 
-### Worktree + New Session (Recommended)
+Creating or opening a linked worktree for the active objective does not change
+the OpenCode session root and does not require a new chat. Re-run the pre-edit
+check against the linked path, then use absolute paths for file tools and set
+Bash `workdir` to that worktree. A canonical session root is not a blocker when
+the target passes policy. Stop only for a verified permission or ownership
+failure; never infer one from the unchanged session root.
+
+### Parallel Worktree + New Session
+
+Use only for an explicit parallel task, unrelated topic, or requested handoff:
 
 ```bash
 ~/.aidevops/agents/scripts/worktree-helper.sh add feature/parallel-task
