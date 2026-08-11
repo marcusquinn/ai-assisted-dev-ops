@@ -259,6 +259,7 @@ _BATCH_REPO_PATH=""
 _BATCH_RESULT_IDS=()
 _BATCH_RESULT_TITLES=()
 _BATCH_RESULT_REFS=()
+_BATCH_PUBLICATION_RESULT="not-run"
 
 # ---------------------------------------------------------------------------
 # _parse_batch_args: parse CLI args for the batch subcommand into the
@@ -428,14 +429,23 @@ _commit_batch_planning() {
 	local commit_msg="plan: batch add ${n} task(s) via /new-task --batch"
 	local planning_helper="$SCRIPT_DIR/planning-commit-helper.sh"
 
+	_BATCH_PUBLICATION_RESULT="failed"
 	if [[ -x "$planning_helper" ]]; then
 		log_info "Committing $n planning file(s)..."
-		"$planning_helper" "$commit_msg" || log_warn "Planning commit failed — files written but not committed"
+		local output=""
+		if output=$("$planning_helper" "$commit_msg"); then
+			_BATCH_PUBLICATION_RESULT=$(printf '%s\n' "$output" | grep '^AIDEVOPS_PLANNING_COMMIT_RESULT=' | tail -1 | cut -d= -f2-)
+			[[ -n "$_BATCH_PUBLICATION_RESULT" ]] || _BATCH_PUBLICATION_RESULT="published"
+		else
+			log_warn "Planning commit failed — all created issues remain publication:pending"
+			return 1
+		fi
 	else
 		log_info "planning-commit-helper.sh not found, using direct git commit..."
-		git -C "$repo_path" add TODO.md "todo/tasks/" 2>/dev/null || true
-		git -C "$repo_path" commit -m "$commit_msg" 2>/dev/null || true
-		git -C "$repo_path" push 2>/dev/null || log_warn "Push failed — committed locally"
+		git -C "$repo_path" add TODO.md "todo/tasks/" 2>/dev/null || return 1
+		git -C "$repo_path" commit -m "$commit_msg" 2>/dev/null || return 1
+		git -C "$repo_path" push 2>/dev/null || return 1
+		_BATCH_PUBLICATION_RESULT="direct"
 	fi
 	return 0
 }
@@ -444,10 +454,17 @@ _commit_batch_planning() {
 # _print_batch_summary: print the ID / Title / GH# table from the module-level
 # result arrays populated by cmd_batch's allocation loop.
 # ---------------------------------------------------------------------------
+_print_batch_summary_row() {
+	printf "%-12s %-48s %-12s %s\n" "$1" "$2" "$3" "$4"
+	return 0
+}
+
 _print_batch_summary() {
 	echo ""
-	printf "%-12s %-55s %s\n" "ID" "Title" "GH#"
-	printf "%-12s %-55s %s\n" "------------" "-------------------------------------------------------" "-------"
+	_print_batch_summary_row "ID" "Title" "GH#" "Publication"
+	local short_separator="------------"
+	_print_batch_summary_row "$short_separator" "------------------------------------------------" \
+		"$short_separator" "$short_separator"
 
 	local i=0
 	local n="${#_BATCH_RESULT_IDS[@]}"
@@ -456,10 +473,10 @@ _print_batch_summary() {
 		local ttitle="${_BATCH_RESULT_TITLES[$i]}"
 		local tref="${_BATCH_RESULT_REFS[$i]}"
 		# Truncate title if too long for display
-		if [[ ${#ttitle} -gt 55 ]]; then
-			ttitle="${ttitle:0:52}..."
+		if [[ ${#ttitle} -gt 48 ]]; then
+			ttitle="${ttitle:0:45}..."
 		fi
-		printf "%-12s %-55s %s\n" "$tid" "$ttitle" "$tref"
+		_print_batch_summary_row "$tid" "$ttitle" "$tref" "$_BATCH_PUBLICATION_RESULT"
 		i=$((i + 1))
 	done
 	echo ""
@@ -585,6 +602,7 @@ cmd_batch() {
 	_BATCH_RESULT_IDS=()
 	_BATCH_RESULT_TITLES=()
 	_BATCH_RESULT_REFS=()
+	_BATCH_PUBLICATION_RESULT="not-run"
 	local any_failed=false
 
 	local title
@@ -595,13 +613,13 @@ cmd_batch() {
 
 	# Single commit+push for all planning files
 	if [[ "$_BATCH_DRY_RUN" == "false" && ${#_BATCH_RESULT_IDS[@]} -gt 0 ]]; then
-		_commit_batch_planning "${#_BATCH_RESULT_IDS[@]}" "$repo_path"
+		_commit_batch_planning "${#_BATCH_RESULT_IDS[@]}" "$repo_path" || any_failed=true
 	fi
 
 	_print_batch_summary
 
 	if [[ "$any_failed" == "true" ]]; then
-		log_warn "Some tasks failed to allocate — check stderr above"
+		log_warn "Some tasks failed to allocate or publish; affected issues remain publication:pending and are safe to retry"
 		return 1
 	fi
 

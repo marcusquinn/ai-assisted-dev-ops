@@ -1249,6 +1249,24 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 #
 # Returns: 0 always (best-effort)
 #######################################
+_repair_pending_planning_publications() {
+	local repos_json="$1"
+	local helper="${HOME}/.aidevops/agents/scripts/planning-publication-reconcile.sh"
+	[[ -x "$helper" && -f "$repos_json" ]] || return 0
+	local cap="${AIDEVOPS_PUBLICATION_REPAIR_REPO_CAP:-3}"
+	[[ "$cap" =~ ^[1-9][0-9]*$ ]] || cap=3
+	local path="" slug="" scanned=0 sha=""
+	while IFS=$'\t' read -r path slug; do
+		[[ -d "$path/.git" || -f "$path/.git" ]] || continue
+		scanned=$((scanned + 1))
+		sha=$(git -C "$path" rev-parse HEAD 2>/dev/null) || continue
+		(cd "$path" && AIDEVOPS_PUBLICATION_RECONCILE_LIMIT=10 \
+			"$helper" reconcile --repo "$slug" --sha "$sha") >>"$LOGFILE" 2>&1 || true
+		[[ "$scanned" -ge "$cap" ]] && break
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false) | [.path, .slug] | @tsv' "$repos_json" 2>/dev/null || true)
+	return 0
+}
+
 reconcile_issues_single_pass() {
 	local repos_json="$REPOS_JSON"
 	[[ -f "$repos_json" ]] || return 0
@@ -1351,6 +1369,7 @@ reconcile_issues_single_pass() {
 	local _t2984_start_ts=$SECONDS _t2984_budget _t2984_aborted=0
 	_t2984_budget="${RECONCILE_TIME_BUDGET_SECS:-360}"
 	[[ "$_t2984_budget" =~ ^[0-9]+$ ]] || _t2984_budget=360
+	_repair_pending_planning_publications "$repos_json"
 
 	# The production scheduler invokes only this single pass. Repair recently
 	# closed parents through a persisted cursor window before open-issue

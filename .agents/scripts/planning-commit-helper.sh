@@ -579,7 +579,10 @@ commit_planning_files() {
 	default_branch=$(_todo_default_branch "$repo_root")
 	if [[ "$current_branch" == "$default_branch" ]] && _todo_branch_requires_planning_pr "$repo_root" "$default_branch"; then
 		todo_commit_push "$repo_root" "$commit_msg" "TODO.md todo/"
-		return $?
+		local publication_rc=$?
+		[[ "$publication_rc" -eq 0 ]] &&
+			printf 'AIDEVOPS_PLANNING_COMMIT_RESULT=%s\n' "${TODO_COMMIT_PUSH_RESULT:-unknown}"
+		return "$publication_rc"
 	fi
 	local changed_paths=""
 	changed_paths=$(_planning_publish_changed_paths "$repo_root")
@@ -591,6 +594,7 @@ commit_planning_files() {
 			return 1
 		fi
 		log_success "Planning files published without changing local Git state"
+		printf 'AIDEVOPS_PLANNING_COMMIT_RESULT=direct\n'
 		if [[ -n "$PLANNING_PUBLICATION_RECEIPT" ]]; then
 			printf 'AIDEVOPS_PLANNING_PUBLICATION_RECEIPT=%s\n' "$PLANNING_PUBLICATION_RECEIPT"
 			printf 'AIDEVOPS_PLANNING_PUBLISHED_COMMIT=%s\n' "$PLANNING_PUBLISHED_COMMIT"
