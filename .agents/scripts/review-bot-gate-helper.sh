@@ -6,6 +6,7 @@
 # Usage:
 #   review-bot-gate-helper.sh check         <PR_NUMBER> [REPO]
 #   review-bot-gate-helper.sh event-check
+#   review-bot-gate-helper.sh is-trusted-issue-sync-pr <PR_NUMBER> [REPO]
 #   review-bot-gate-helper.sh classify-infra-rate-limit <AUTHOR_ASSOCIATION> [REPO]
 #   review-bot-gate-helper.sh wait          <PR_NUMBER> [REPO] [MAX_WAIT_SECONDS]
 #   review-bot-gate-helper.sh list          <PR_NUMBER> [REPO]
@@ -18,6 +19,7 @@
 # Commands:
 #   check          — Check once, return PASS/PASS_ADVISORY/PASS_RATE_LIMITED/WAITING/SKIP
 #   event-check    — Accept trusted bot review evidence from the Actions event
+#   is-trusted-issue-sync-pr — Verify the exact generated PR identity from live REST metadata
 #   classify-infra-rate-limit — Classify API exhaustion from immutable event trust
 #   wait           — Poll until a bot posts or timeout (default 600s)
 #   list           — List all bot comments found on the PR
@@ -61,6 +63,8 @@
 #                                "tools": { "coderabbitai": { "completion_behavior": "fast" } } } }
 #   REVIEW_GATE_EVIDENCE_SNAPSHOT_DISABLE — Set to 1 to disable per-check reuse
 #                              of the three review/comment API collections.
+#   REVIEW_GATE_AUTHOR_ASSOCIATION_RESOLVED — Set to true only when the caller
+#                              already finalized immutable author trust evidence.
 #
 # t1382: https://github.com/marcusquinn/aidevops/issues/2735
 # GH#3827: Rate-limit grace period — pass gate after timeout when bots are
@@ -100,6 +104,9 @@ RBG_CODERABBIT_NITS_LABEL="coderabbit-nits-ok"
 RBG_RECONCILE_MODE_NITS="nits"
 RBG_RECONCILE_MODE_SUPERSEDED="superseded"
 RBG_AUTHOR_CLASS_TRUSTED="trusted"
+RBG_GITHUB_ACTIONS_BOT_ID="41898282"
+RBG_ISSUE_SYNC_PR_BRANCH="aidevops/issue-sync-todo"
+RBG_ISSUE_SYNC_PR_MARKER="<!-- aidevops:issue-sync-todo-pr -->"
 
 # Rate-limit / quota notice patterns — entries that indicate the bot tried to
 # review but was capacity-constrained. Used by grace-period logic
@@ -189,11 +196,12 @@ _RBG_EVIDENCE_SNAPSHOT_READY=0
 # --- Functions ---
 
 usage() {
-	echo "Usage: $(basename "$0") {check|event-check|classify-infra-rate-limit|wait|list|request-retry|status-json|batch-retry|reconcile-stale-coderabbit|dismiss-coderabbit-nits} <PR_NUMBER> [REPO] [EXTRA]"
+	echo "Usage: $(basename "$0") {check|event-check|is-trusted-issue-sync-pr|classify-infra-rate-limit|wait|list|request-retry|status-json|batch-retry|reconcile-stale-coderabbit|dismiss-coderabbit-nits} <PR_NUMBER> [REPO] [EXTRA]"
 	echo ""
 	echo "Commands:"
 	echo "  check          Check once for bot reviews (returns PASS/PASS_ADVISORY/PASS_RATE_LIMITED/WAITING/SKIP)"
 	echo "  event-check    Check trusted bot review evidence from REVIEW_GATE_EVENT_* variables"
+	echo "  is-trusted-issue-sync-pr  Return TRUSTED (0), UNTRUSTED (1), or API error (2) from live PR metadata"
 	echo "  classify-infra-rate-limit  Resolve trusted/default-advisory API exhaustion without another API call"
 	echo "  wait           Poll until bot reviews appear or timeout"
 	echo "  list           List all bot comments found"
@@ -1265,6 +1273,55 @@ any_bot_has_success_status() {
 	return 1
 }
 
+_rbg_is_trusted_issue_sync_pr_metadata() {
+	local repo="$1"
+	local pr_metadata_json="$2"
+
+	[[ -n "$repo" && -n "$pr_metadata_json" ]] || return 1
+	command -v jq >/dev/null 2>&1 || return 1
+
+	# GitHub assigns its official Actions bot CONTRIBUTOR association on PRs it
+	# creates. Normalize only the complete deterministic Issue Sync identity.
+	# Every field comes from one live REST pull payload; any parse failure or
+	# missing/mismatched value remains external.
+	#aidevops:trust-boundary
+	jq -e \
+		--arg repo "$repo" \
+		--argjson bot_id "$RBG_GITHUB_ACTIONS_BOT_ID" \
+		--arg branch "$RBG_ISSUE_SYNC_PR_BRANCH" \
+		--arg marker "$RBG_ISSUE_SYNC_PR_MARKER" '
+		try (
+			.user.login == "github-actions[bot]" and
+			.user.id == $bot_id and
+			.user.type == "Bot" and
+			.head.repo.full_name == $repo and
+			.base.repo.full_name == $repo and
+			.head.ref == $branch and
+			(.body | contains($marker))
+		) catch false
+	' <<<"$pr_metadata_json" >/dev/null 2>&1
+}
+
+do_is_trusted_issue_sync_pr() {
+	local pr_number="$1"
+	local repo="$2"
+	local pr_api=""
+	local pr_metadata_json=""
+
+	pr_api=$(printf 'repos/%s/pulls/%s' "$repo" "$pr_number")
+	pr_metadata_json=$(gh api "$pr_api") || {
+		echo "ERROR: Could not fetch live PR metadata for Issue Sync trust classification." >&2
+		return 2
+	}
+
+	if _rbg_is_trusted_issue_sync_pr_metadata "$repo" "$pr_metadata_json"; then
+		echo "TRUSTED"
+		return 0
+	fi
+	echo "UNTRUSTED"
+	return 1
+}
+
 _resolve_pr_author_association() {
 	local pr_number="$1"
 	local repo="$2"
@@ -1274,10 +1331,15 @@ _resolve_pr_author_association() {
 	local pr_api=""
 
 	# Internal callers can pass the live REST pull payload they already fetched.
-	# Only the REST field is authoritative; login, labels, and runner identity do
-	# not establish author trust.
-	if [[ -n "$pr_metadata_json" ]] &&
-		association=$(jq -r "$association_filter" <<<"$pr_metadata_json" 2>/dev/null); then
+	# The REST association remains authoritative except for the exact official
+	# Issue Sync identity independently validated above. Login, labels, or runner
+	# identity alone never establish trust.
+	if [[ -n "$pr_metadata_json" ]]; then
+		if _rbg_is_trusted_issue_sync_pr_metadata "$repo" "$pr_metadata_json"; then
+			printf '%s\n' "COLLABORATOR"
+			return 0
+		fi
+		association=$(jq -r "$association_filter" <<<"$pr_metadata_json" 2>/dev/null) || association=""
 		if [[ -n "$association" ]]; then
 			printf '%s\n' "$association"
 			return 0
@@ -1288,8 +1350,12 @@ _resolve_pr_author_association() {
 	# Reuse the canonical pull REST field and collapse all API/parse failures to
 	# unknown so the trust checks below continue to fail closed.
 	pr_api=$(printf 'repos/%s/pulls/%s' "$repo" "$pr_number")
-	association=$(gh api "$pr_api" \
-		--jq "$association_filter" 2>/dev/null) || association=""
+	pr_metadata_json=$(gh api "$pr_api" 2>/dev/null) || pr_metadata_json=""
+	if _rbg_is_trusted_issue_sync_pr_metadata "$repo" "$pr_metadata_json"; then
+		printf '%s\n' "COLLABORATOR"
+		return 0
+	fi
+	association=$(jq -r "$association_filter" <<<"$pr_metadata_json" 2>/dev/null) || association=""
 	printf '%s\n' "$association"
 	return 0
 }
@@ -1447,9 +1513,17 @@ do_check() {
 	local REVIEW_GATE_NON_REVIEW_BOTS=""
 	_rbg_reset_evidence_snapshot
 
-	if [[ -z "$REVIEW_GATE_AUTHOR_ASSOCIATION" ]]; then
-		REVIEW_GATE_AUTHOR_ASSOCIATION=$(_resolve_pr_author_association \
-			"$pr_number" "$repo" "$pr_metadata_json")
+	if [[ "${REVIEW_GATE_AUTHOR_ASSOCIATION_RESOLVED:-false}" != "true" ]]; then
+		case "$REVIEW_GATE_AUTHOR_ASSOCIATION" in
+		OWNER | MEMBER | COLLABORATOR) ;;
+		*)
+			local resolved_author_association=""
+			resolved_author_association=$(_resolve_pr_author_association \
+				"$pr_number" "$repo" "$pr_metadata_json")
+			[[ -n "$resolved_author_association" ]] &&
+				REVIEW_GATE_AUTHOR_ASSOCIATION="$resolved_author_association"
+			;;
+		esac
 	fi
 
 	# #aidevops:trust-boundary — skip labels are an internal exception. Resolve
@@ -1970,6 +2044,9 @@ main() {
 	case "$command" in
 	check)
 		do_check "$pr_number" "$repo"
+		;;
+	is-trusted-issue-sync-pr)
+		do_is_trusted_issue_sync_pr "$pr_number" "$repo"
 		;;
 	wait)
 		do_wait "$pr_number" "$repo" "$max_wait"

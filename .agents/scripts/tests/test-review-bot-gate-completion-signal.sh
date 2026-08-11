@@ -729,7 +729,7 @@ test_trusted_default_does_not_require_completed_review() {
 test_owner_rest_association_does_not_require_completed_review() {
 	gh() {
 		if [[ "${1:-}" == "api" && "${2:-}" == "repos/testorg/otherrepo/pulls/123" ]]; then
-			printf '%s\n' 'OWNER'
+			printf '%s\n' '{"author_association":"OWNER"}'
 			return 0
 		fi
 		return 2
@@ -744,6 +744,89 @@ test_owner_rest_association_does_not_require_completed_review() {
 	else
 		print_result "REST resolver restores trusted OWNER advisory behavior" 1 \
 			"association=${association:-<empty>}"
+	fi
+	return 0
+}
+
+test_issue_sync_bot_metadata_normalizes_trust() {
+	local pr_metadata='{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","repo":{"full_name":"testorg/otherrepo"}},"base":{"repo":{"full_name":"testorg/otherrepo"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+	local association=""
+
+	association=$(_resolve_pr_author_association 123 'testorg/otherrepo' "$pr_metadata")
+	if [[ "$association" == "COLLABORATOR" ]] &&
+		! REVIEW_GATE_AUTHOR_ASSOCIATION="$association" _review_gate_requires_completed_review 'testorg/otherrepo'; then
+		print_result "exact Issue Sync bot metadata restores trusted advisory behavior" 0
+	else
+		print_result "exact Issue Sync bot metadata restores trusted advisory behavior" 1 \
+			"association=${association:-<empty>}"
+	fi
+	return 0
+}
+
+test_issue_sync_bot_metadata_mismatches_fail_closed() {
+	local pr_metadata='{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","repo":{"full_name":"testorg/otherrepo"}},"base":{"repo":{"full_name":"testorg/otherrepo"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+	local filter=""
+	local candidate=""
+	local association=""
+	local failures=""
+	local -a mismatch_filters=(
+		'.user.login = "lookalike[bot]"'
+		'.user.id = 999'
+		'.user.id = "41898282"'
+		'.user.type = "User"'
+		'.head.repo.full_name = "attacker/otherrepo"'
+		'.base.repo.full_name = "attacker/otherrepo"'
+		'.head.ref = "feature/not-issue-sync"'
+		'.body = "ordinary pull request"'
+		'del(.user.id)'
+		'.head = "not-an-object"'
+		'.body = null'
+	)
+
+	for filter in "${mismatch_filters[@]}"; do
+		candidate=$(jq -c "$filter" <<<"$pr_metadata")
+		association=$(_resolve_pr_author_association 123 'testorg/otherrepo' "$candidate")
+		if [[ "$association" != "CONTRIBUTOR" ]] ||
+			! REVIEW_GATE_AUTHOR_ASSOCIATION="$association" _review_gate_requires_completed_review 'testorg/otherrepo'; then
+			failures="${failures}${filter}; "
+		fi
+	done
+
+	if [[ -z "$failures" ]]; then
+		print_result "Issue Sync bot metadata mismatches remain external" 0
+	else
+		print_result "Issue Sync bot metadata mismatches remain external" 1 "$failures"
+	fi
+	return 0
+}
+
+test_issue_sync_bot_check_uses_advisory_default() {
+	local output=""
+	local rc=0
+
+	if output=$(
+		gh() {
+			if [[ "${1:-}" == "api" && "${2:-}" == "repos/testorg/otherrepo/pulls/123" ]]; then
+				printf '%s\n' '{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","repo":{"full_name":"testorg/otherrepo"}},"base":{"repo":{"full_name":"testorg/otherrepo"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+				return 0
+			fi
+			return 2
+		}
+		check_for_skip_label() { return 1; }
+		get_all_bot_commenters() { return 0; }
+		_get_success_status_contexts() { return 0; }
+		REVIEW_GATE_AUTHOR_ASSOCIATION=CONTRIBUTOR do_check 123 'testorg/otherrepo' 2>/dev/null
+	); then
+		rc=0
+	else
+		rc=$?
+	fi
+
+	if [[ "$rc" -eq 0 && "$output" == "PASS_ADVISORY" ]]; then
+		print_result "full helper check applies advisory default to exact Issue Sync bot" 0
+	else
+		print_result "full helper check applies advisory default to exact Issue Sync bot" 1 \
+			"rc=${rc} output=${output:-<empty>}"
 	fi
 	return 0
 }
@@ -1498,6 +1581,9 @@ test_status_json_fails_closed_without_pr_metadata() {
 run_completion_requirement_tests() {
 	test_trusted_default_does_not_require_completed_review
 	test_owner_rest_association_does_not_require_completed_review
+	test_issue_sync_bot_metadata_normalizes_trust
+	test_issue_sync_bot_metadata_mismatches_fail_closed
+	test_issue_sync_bot_check_uses_advisory_default
 	test_trusted_strict_repo_requires_completed_review
 	test_trusted_retired_tool_policy_does_not_require_completed_review
 	test_external_default_requires_completed_review

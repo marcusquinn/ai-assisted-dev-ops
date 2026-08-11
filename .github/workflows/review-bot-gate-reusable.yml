@@ -148,6 +148,7 @@ jobs:
           # deterministic Issue Sync identity: official immutable bot ID/type,
           # same repository on both sides, fixed branch, and generated body marker.
           # Any missing or mismatched field remains external and fail-closed.
+          HELPER="${GITHUB_WORKSPACE}/__aidevops/.agents/scripts/review-bot-gate-helper.sh"
           # aidevops:review-gate-trust-start
           TRUSTED_ISSUE_SYNC_PR=false
           #aidevops:trust-boundary
@@ -159,6 +160,20 @@ jobs:
             [[ "${REVIEW_GATE_PR_HEAD_REF}" == "aidevops/issue-sync-todo" ]] &&
             [[ "${REVIEW_GATE_PR_BODY}" == *"<!-- aidevops:issue-sync-todo-pr -->"* ]]; then
             TRUSTED_ISSUE_SYNC_PR=true
+          fi
+
+          # issue_comment payloads omit the PR head/base metadata. For the exact
+          # official-bot candidate only, recover those fields from one live REST
+          # pull payload and apply the shared fail-closed classifier.
+          #aidevops:trust-boundary
+          if [[ "${TRUSTED_ISSUE_SYNC_PR}" != "true" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_LOGIN}" == "github-actions[bot]" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_ID}" == "41898282" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_TYPE}" == "Bot" ]] &&
+            [[ "${REVIEW_GATE_PR_BODY}" == *"<!-- aidevops:issue-sync-todo-pr -->"* ]] &&
+            bash "${HELPER}" is-trusted-issue-sync-pr "${PR_NUMBER}" "${REPO}" >/dev/null; then
+            TRUSTED_ISSUE_SYNC_PR=true
+            echo "Trusted Issue Sync PR confirmed from live metadata omitted by the event"
           fi
 
           # Check if this is an external contributor PR using immutable event
@@ -186,6 +201,9 @@ jobs:
             fi
             ;;
           esac
+          # The workflow has finalized immutable event/live author evidence.
+          # Prevent the helper from repeating a failed live metadata lookup.
+          export REVIEW_GATE_AUTHOR_ASSOCIATION_RESOLVED=true
           echo "is_external_pr=${IS_EXTERNAL_PR}" >> "${GITHUB_OUTPUT}"
           echo "trusted_issue_sync_pr=${TRUSTED_ISSUE_SYNC_PR}" >> "${GITHUB_OUTPUT}"
           echo "effective_author_association=${REVIEW_GATE_AUTHOR_ASSOCIATION}" >> "${GITHUB_OUTPUT}"
@@ -201,7 +219,6 @@ jobs:
           #   - rate-limit behaviour (configurable via repos.json or env var)
           # Output values: PASS / PASS_ADVISORY / PASS_RATE_LIMITED / WAITING / SKIP
           # Exit codes:    0 = PASS/PASS_ADVISORY/PASS_RATE_LIMITED/SKIP  1 = WAITING  2 = error
-          HELPER="${GITHUB_WORKSPACE}/__aidevops/.agents/scripts/review-bot-gate-helper.sh"
           RESULT=""
           HELPER_EXIT=0
           HELPER_STDERR=$(mktemp)

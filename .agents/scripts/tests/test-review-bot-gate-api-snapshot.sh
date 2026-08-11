@@ -75,7 +75,11 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 mode="snapshot"
-[[ -n "$jq_filter" ]] && mode="direct"
+if [[ -n "$jq_filter" ]]; then
+	mode="direct"
+elif [[ "$endpoint" == "repos/testorg/testrepo/pulls/123" ]]; then
+	mode="metadata"
+fi
 printf '%s:%s\n' "$mode" "$endpoint" >>"$call_log"
 
 if [[ "$scenario" == "fail-once" && "$mode" == "snapshot" &&
@@ -212,7 +216,7 @@ test_preloaded_metadata_avoids_duplicate_lookups() {
 	IFS= read -r output <"$output_file" || true
 	calls=$(call_count)
 	command_calls=$(matching_call_count 'command:')
-	pull_metadata_calls=$(exact_call_count 'direct:repos/testorg/testrepo/pulls/123')
+	pull_metadata_calls=$(exact_call_count 'metadata:repos/testorg/testrepo/pulls/123')
 	status_calls=$(exact_call_count 'direct:repos/testorg/testrepo/commits/head-123/status?per_page=100')
 	check_calls=$(exact_call_count 'direct:repos/testorg/testrepo/commits/head-123/check-runs?per_page=100')
 	if [[ "$status" -eq 0 && "$output" == "PASS" && "$calls" == "5" &&
@@ -305,7 +309,7 @@ test_missing_metadata_uses_rest_association_without_graphql_projection() {
 	local calls command_calls pull_metadata_calls
 	calls=$(call_count)
 	command_calls=$(matching_call_count 'command:')
-	pull_metadata_calls=$(exact_call_count 'direct:repos/testorg/testrepo/pulls/123')
+	pull_metadata_calls=$(exact_call_count 'metadata:repos/testorg/testrepo/pulls/123')
 	if [[ "$RUN_STATUS" -eq 0 && "$RUN_OUTPUT" == "PASS" && "$calls" == "4" &&
 		"$command_calls" == "0" && "$pull_metadata_calls" == "1" ]]; then
 		print_result "missing association uses one REST pull lookup without gh pr projection" 0
@@ -322,13 +326,39 @@ test_rest_association_failure_remains_blocked() {
 	local calls command_calls pull_metadata_calls
 	calls=$(call_count)
 	command_calls=$(matching_call_count 'command:')
-	pull_metadata_calls=$(exact_call_count 'direct:repos/testorg/testrepo/pulls/123')
+	pull_metadata_calls=$(exact_call_count 'metadata:repos/testorg/testrepo/pulls/123')
 	if [[ "$RUN_STATUS" -eq 1 && "$RUN_OUTPUT" == "WAITING" && "$calls" == "4" &&
 		"$command_calls" == "0" && "$pull_metadata_calls" == "1" ]]; then
 		print_result "REST association failure keeps unknown authors blocked" 0
 	else
 		print_result "REST association failure keeps unknown authors blocked" 1 \
 			"status=${RUN_STATUS} output=${RUN_OUTPUT} calls=${calls} command=${command_calls} pull=${pull_metadata_calls}"
+	fi
+	return 0
+}
+
+test_finalized_external_association_avoids_metadata_retry() {
+	local output_file="${TEST_ROOT}/resolved-external-output"
+	local status=0 output="" calls pull_metadata_calls
+	printf '%s\n' empty >"$SCENARIO_FILE"
+	: >"$CALL_LOG"
+	if REVIEW_GATE_AUTHOR_ASSOCIATION=CONTRIBUTOR \
+		REVIEW_GATE_AUTHOR_ASSOCIATION_RESOLVED=true \
+		REVIEW_GATE_EVIDENCE_SNAPSHOT_DISABLE=0 \
+		do_check 123 'testorg/testrepo' >"$output_file" 2>/dev/null; then
+		status=0
+	else
+		status=$?
+	fi
+	IFS= read -r output <"$output_file" || true
+	calls=$(call_count)
+	pull_metadata_calls=$(exact_call_count 'metadata:repos/testorg/testrepo/pulls/123')
+	if [[ "$status" -eq 1 && "$output" == "WAITING" && "$calls" == "3" &&
+		"$pull_metadata_calls" == "0" ]]; then
+		print_result "finalized external association avoids a duplicate REST metadata lookup" 0
+	else
+		print_result "finalized external association avoids a duplicate REST metadata lookup" 1 \
+			"status=${status} output=${output} calls=${calls} pull=${pull_metadata_calls}"
 	fi
 	return 0
 }
@@ -359,6 +389,7 @@ test_disable_toggle_restores_direct_queries
 test_snapshot_failure_falls_back_without_losing_capability
 test_missing_metadata_uses_rest_association_without_graphql_projection
 test_rest_association_failure_remains_blocked
+test_finalized_external_association_avoids_metadata_retry
 
 printf '\nTests run: %d, failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
 if [[ "$TESTS_FAILED" -gt 0 ]]; then

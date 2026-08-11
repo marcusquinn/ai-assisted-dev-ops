@@ -10,8 +10,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit 1
 WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/review-bot-gate-reusable.yml"
+HELPER_FILE="${REPO_ROOT}/.agents/scripts/review-bot-gate-helper.sh"
 STATE_DIR="$(mktemp -d)"
 trap 'rm -rf "${STATE_DIR}"' EXIT
+mkdir -p "${STATE_DIR}/bin"
+cat >"${STATE_DIR}/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "api" ]] || exit 2
+[[ "${2:-}" == "repos/marcusquinn/aidevops/pulls/123" ]] || exit 2
+case "${REVIEW_GATE_LIVE_TRUSTED:-false}" in
+true)
+	printf '%s\n' '{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":41898282,"type":"Bot"},"head":{"ref":"aidevops/issue-sync-todo","repo":{"full_name":"marcusquinn/aidevops"}},"base":{"repo":{"full_name":"marcusquinn/aidevops"}},"body":"<!-- aidevops:issue-sync-todo-pr -->"}'
+	;;
+error) exit 42 ;;
+*)
+	printf '%s\n' '{"author_association":"CONTRIBUTOR","user":{"login":"github-actions[bot]","id":999,"type":"Bot"}}'
+	;;
+esac
+EOF
+chmod +x "${STATE_DIR}/bin/gh"
 
 START_COUNT=$(grep -Fc '# aidevops:review-gate-trust-start' "${WORKFLOW_FILE}")
 END_COUNT=$(grep -Fc '# aidevops:review-gate-trust-end' "${WORKFLOW_FILE}")
@@ -58,12 +75,17 @@ run_case() {
 	local base_repository="${12}"
 	local head_ref="${13}"
 	local pr_body="${14}"
+	local live_trusted="${15:-false}"
 	local output_file=""
 
 	CASE_INDEX=$((CASE_INDEX + 1))
 	output_file="${STATE_DIR}/case-${CASE_INDEX}.out"
 	if ! GITHUB_OUTPUT="${output_file}" \
+		HELPER="${HELPER_FILE}" \
+		PATH="${STATE_DIR}/bin:${PATH}" \
+		PR_NUMBER=123 \
 		REPO="marcusquinn/aidevops" \
+		REVIEW_GATE_LIVE_TRUSTED="${live_trusted}" \
 		REVIEW_GATE_AUTHOR_ASSOCIATION="${author_association}" \
 		REVIEW_GATE_PR_AUTHOR_LOGIN="${author_login}" \
 		REVIEW_GATE_PR_AUTHOR_ID="${author_id}" \
@@ -105,6 +127,12 @@ run_case \
 	'feature/example' 'ordinary pull request'
 
 run_case \
+	'issue_comment metadata omission uses the live shared classifier' \
+	false true COLLABORATOR pass fast \
+	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
+	'' '' '' "${MARKER}" true
+
+run_case \
 	'external user cannot spoof marker and deterministic branch' \
 	true false CONTRIBUTOR wait strict \
 	CONTRIBUTOR attacker 999 User \
@@ -138,5 +166,25 @@ run_case \
 	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'aidevops/issue-sync-todo' 'ordinary pull request'
+
+LIVE_ERROR_STATUS=0
+if REVIEW_GATE_LIVE_TRUSTED=error PATH="${STATE_DIR}/bin:${PATH}" \
+	bash "${HELPER_FILE}" is-trusted-issue-sync-pr 123 marcusquinn/aidevops >/dev/null 2>&1; then
+	LIVE_ERROR_STATUS=0
+else
+	LIVE_ERROR_STATUS=$?
+fi
+if [[ "${LIVE_ERROR_STATUS}" -ne 2 ]]; then
+	printf 'FAIL: live helper API failure expected exit 2, got %s\n' "${LIVE_ERROR_STATUS}" >&2
+	exit 1
+fi
+printf 'PASS: live helper API failures remain distinct and fail-closed\n'
+
+HELP_OUTPUT=$(bash "${HELPER_FILE}" help 2>/dev/null || true)
+if [[ "${HELP_OUTPUT}" != *"is-trusted-issue-sync-pr"* ]]; then
+	printf 'FAIL: runtime help omits is-trusted-issue-sync-pr\n' >&2
+	exit 1
+fi
+printf 'PASS: runtime help documents the live Issue Sync classifier\n'
 
 printf 'All review-bot Issue Sync trust tests passed.\n'
