@@ -341,6 +341,12 @@ The same shim deterministically normalizes mutually exclusive dispatch intent:
 explicit `no-auto-dispatch` hold wins a same-command conflict; adding either
 label to an existing issue removes its opposite without blocking the edit.
 
+The signature footer also records `origin:interactive` or `origin:worker` in a
+hidden provenance marker. Contributors may lack permission to apply repository
+labels during creation; repository triage restores the matching `origin:*`
+label while retaining `external-contributor` + `needs-maintainer-review` as the
+authority gate.
+
 ```bash
 gh issue create -R marcusquinn/aidevops \
   --title "TITLE" \

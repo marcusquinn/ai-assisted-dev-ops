@@ -23,6 +23,10 @@ jobs:
             const author = issue.user.login;
             const association = issue.author_association;
             const issueLabels = new Set((issue.labels || []).map(label => label.name));
+            const originMatch = (issue.body || '').match(
+              /^<!-- aidevops:origin:(interactive|worker) -->$/m
+            );
+            const reportedOrigin = originMatch ? `origin:${originMatch[1]}` : null;
 
             // OWNER/MEMBER are authoritative associations. COLLABORATOR can
             // represent read/triage access, so require a live write-level lookup.
@@ -83,7 +87,15 @@ jobs:
 
             console.log(`Author ${author} has role ${association} — applying triage gate`);
 
-            // Apply the critical trust label before cleanup/comment calls. Only
+            // #aidevops:trust-boundary — the body marker records composition
+            // provenance only. External authority remains gated by NMR and the
+            // external-contributor label even when an origin marker is present.
+            const triageLabels = ['needs-maintainer-review', 'external-contributor'];
+            if (reportedOrigin) {
+              triageLabels.push(reportedOrigin);
+            }
+
+            // Apply the critical trust label and provenance before cleanup/comment calls. Only
             // attempt label creation after addLabels reports a missing/invalid
             // label and getLabel independently confirms a 404.
             try {
@@ -91,7 +103,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issue.number,
-                labels: ['needs-maintainer-review']
+                labels: triageLabels
               });
             } catch (addError) {
               if (![404, 422].includes(addError.status)) {
@@ -125,7 +137,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issue.number,
-                labels: ['needs-maintainer-review']
+                labels: triageLabels
               });
             }
 
@@ -133,10 +145,9 @@ jobs:
             // machine-generated. A non-maintainer creating one is either a mistake or an
             // attempt to bypass the assignee gate. Strip the label and apply needs-maintainer-review.
             //
-            // GH#18623: origin:worker is ALSO machine-only — strip it independently of
-            // file-size-debt/function-complexity-debt. A non-maintainer opening an issue with
-            // only the origin:worker label would previously keep that label, since the stripping
-            // logic was nested inside the debt-label check.
+            // GH#18623: an unproven origin:worker label is machine-only. Preserve it only
+            // when the aidevops footer reports worker composition; NMR and
+            // external-contributor still prevent dispatch before approval.
             const debtLabels = ['file-size-debt', 'function-complexity-debt'];
             for (const debtLabel of debtLabels) {
               if (issueLabels.has(debtLabel)) {
@@ -153,8 +164,8 @@ jobs:
                 }
               }
             }
-            if (issueLabels.has('origin:worker')) {
-              console.log(`Non-maintainer ${author} created issue with origin:worker label — stripping label`);
+            if (issueLabels.has('origin:worker') && reportedOrigin !== 'origin:worker') {
+              console.log(`Non-maintainer ${author} created issue with unproven origin:worker label — stripping label`);
               try {
                 await github.rest.issues.removeLabel({
                   owner: context.repo.owner,

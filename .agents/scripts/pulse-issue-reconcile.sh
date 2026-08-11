@@ -923,17 +923,15 @@ normalize_active_issue_assignments() {
 # t2112: backfill labelless aidevops-shaped issues.
 #
 # Scans each pulse:true repo for open issues whose titles match the aidevops
-# shape (`^tNNN(\.NNN)*: ` or `^GH#NNN: `) but that have ZERO labels in any
-# aidevops namespace (origin:*, tier:*, status:*). Such issues were created
-# via a bare `gh issue create` call that bypassed the `gh_create_issue`
-# wrapper — they are invisible to the enrichment pipeline (which keys off
-# TODO.md entries) and unreachable by the dedup / dispatch guards.
+# task shape or whose signed body carries an aidevops origin marker, but that
+# have ZERO labels in any aidevops namespace (origin:*, tier:*, status:*).
+# This covers bare wrapper bypasses and contributor-created reports whose
+# GitHub role could not apply labels at creation time.
 #
 # Backfill steps per candidate:
-#   1. Add `origin:worker` + `tier:standard` as conservative defaults. The
-#      origin label is the conservative choice: a labelless issue almost
-#      always signals automation, and if the creator was actually interactive
-#      they would have used the wrapper.
+#   1. Restore a signed origin marker when present. Trusted legacy task-shaped
+#      issues fall back to `origin:worker` + `tier:standard`; external authors
+#      retain NMR + external-contributor and receive no tier until approval.
 #   2. Extract hashtag labels from the body (#tag on its own or end-of-line,
 #      3+ chars, not a pure number which would be an issue ref) and apply
 #      them via `ensure_labels_exist` + `gh issue edit --add-label`.
@@ -1018,12 +1016,13 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 		fi
 		[[ -n "$issues_json" && "$issues_json" != "null" ]] || continue
 
-		# jq filter: title starts with tNNN(.NNN)*: OR GH#NNN:, AND no label
-		# in the aidevops namespaces. Cap at 10 candidates per repo per cycle.
+		# A task-shaped title or signed aidevops origin marker qualifies when no
+		# origin/tier/status label has already established provenance/lifecycle.
 		local candidates
 		candidates=$(printf '%s' "$issues_json" | jq -c '
 			[.[] |
-			 select((.title | test("^(t[0-9]+(\\.[0-9]+)*|GH#[0-9]+): ")) and
+			 select(((.title | test("^(t[0-9]+(\\.[0-9]+)*|GH#[0-9]+): ")) or
+			         ((.body // "") | test("(^|\\n)<!-- aidevops:origin:(interactive|worker) -->(\\n|$)"))) and
 			        ((.labels // []) |
 			         map(.name) |
 			         map(select(test("^(origin:|tier:|status:)"))) |
@@ -1094,7 +1093,7 @@ This issue was created via a bare \`${_raw_cmd}\` call that bypassed the \`${_wr
 This comment is idempotent; the HTML sentinel prevents duplicates on subsequent pulse cycles."
 	local external_comment_template
 	external_comment_template="${external_sentinel}
-Thanks for filing this issue. Because it was created by a contributor outside the maintainer team, the framework's reconcile pass (\`reconcile_labelless_aidevops_issues\` in \`pulse-issue-reconcile.sh\`, t2450) has applied \`needs-maintainer-review\` and extracted hashtag labels from the body — but intentionally withheld the \`origin:*\` and \`tier:*\` labels that would otherwise make this issue dispatchable to an automated worker.
+Thanks for filing this issue. Because it was created by a contributor outside the maintainer team, the framework's reconcile pass (\`reconcile_labelless_aidevops_issues\` in \`pulse-issue-reconcile.sh\`, t2450) has applied \`needs-maintainer-review\` and \`external-contributor\`, restored signed \`origin:*\` composition provenance when present, and withheld \`tier:*\` dispatch metadata until approval.
 
 **What happens next:** a maintainer will triage this issue and either
 
@@ -1119,6 +1118,13 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 	assoc=$(printf '%s' "$issue_json" | jq -r '.author_association // "NONE"' 2>/dev/null || echo "NONE")
 	author_type=$(printf '%s' "$issue_json" | jq -r '.user.type // ""' 2>/dev/null || echo "")
 	author_login=$(printf '%s' "$issue_json" | jq -r '.user.login // ""' 2>/dev/null || echo "")
+	local origin_interactive="origin:interactive" origin_worker="origin:worker"
+	local reported_origin=""
+	if printf '%s\n' "$issue_body" | grep -Fqx '<!-- aidevops:origin:interactive -->'; then
+		reported_origin="$origin_interactive"
+	elif printf '%s\n' "$issue_body" | grep -Fqx '<!-- aidevops:origin:worker -->'; then
+		reported_origin="$origin_worker"
+	fi
 	local is_external="$_PIR_BOOL_TRUE"
 	if [[ "$author_type" == "Bot" ]]; then
 		is_external="$_PIR_BOOL_FALSE"
@@ -1165,15 +1171,23 @@ This comment is idempotent; the HTML sentinel prevents duplicates on subsequent 
 	local -a add_args
 	local labels_csv_lia comment_template_use
 	if [[ "$is_external" == "$_PIR_BOOL_TRUE" ]]; then
-		add_args=("$_PIR_ADD_LABEL_FLAG" "$_PIR_NMR_LABEL")
-		labels_csv_lia="$_PIR_NMR_LABEL"
+		add_args=("$_PIR_ADD_LABEL_FLAG" "$_PIR_NMR_LABEL"
+			"$_PIR_ADD_LABEL_FLAG" "external-contributor")
+		labels_csv_lia="$_PIR_NMR_LABEL,external-contributor"
+		if [[ -n "$reported_origin" ]]; then
+			add_args+=("$_PIR_ADD_LABEL_FLAG" "$reported_origin")
+			labels_csv_lia="${labels_csv_lia},${reported_origin}"
+		fi
 		comment_template_use="$external_comment_template"
 	else
-		add_args=("$_PIR_ADD_LABEL_FLAG" "origin:worker"
-			"$_PIR_REMOVE_LABEL_FLAG" "origin:interactive"
+		local internal_origin="${reported_origin:-$origin_worker}"
+		local opposite_origin="$origin_interactive"
+		[[ "$internal_origin" == "$origin_interactive" ]] && opposite_origin="$origin_worker"
+		add_args=("$_PIR_ADD_LABEL_FLAG" "$internal_origin"
+			"$_PIR_REMOVE_LABEL_FLAG" "$opposite_origin"
 			"$_PIR_REMOVE_LABEL_FLAG" "origin:worker-takeover"
 			"$_PIR_ADD_LABEL_FLAG" "$_PIR_TIER_STANDARD")
-		labels_csv_lia="origin:worker,$_PIR_TIER_STANDARD"
+		labels_csv_lia="${internal_origin},$_PIR_TIER_STANDARD"
 		comment_template_use="$comment_template"
 	fi
 	if [[ -n "$body_tags" ]]; then
@@ -1608,7 +1622,7 @@ reconcile_issues_single_pass() {
 
 			# Stage 5: backfill labelless aidevops-shaped issues (per-repo cap)
 			if [[ "$lia_per_repo" -lt "$lia_max_repo" ]] && \
-				_should_lia "$issue_title" "$labels_csv"; then
+				_should_lia "$issue_title" "$labels_csv" "$issue_body"; then
 				if _action_lia_single "$slug" "$issue_num" "$issue_title" "$issue_body" "$issue_sync_helper"; then
 					lia_fixed=$((lia_fixed + 1))
 					lia_per_repo=$((lia_per_repo + 1))

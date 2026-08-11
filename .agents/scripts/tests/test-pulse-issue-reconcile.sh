@@ -304,6 +304,7 @@ test_should_predicates() {
 		_should_lia 'GH#567: fix' ''          && echo 'lia-gh:1' || echo 'lia-gh:0'
 		_should_lia 't1234: fix' 'origin:worker' && echo 'lia-labeled:1' || echo 'lia-labeled:0'
 		_should_lia 'not a task title' ''     && echo 'lia-badtitle:1' || echo 'lia-badtitle:0'
+		_should_lia 'normal contributor report' '' '<!-- aidevops:origin:interactive -->' && echo 'lia-signed:1' || echo 'lia-signed:0'
 	" 2>/dev/null)
 
 	local all_ok=1
@@ -337,8 +338,10 @@ test_should_predicates() {
 		"_should_lia: labeled issue should return 1" || all_ok=0
 	_assert_should_predicate_result "$result" 'lia-badtitle:0' \
 		"_should_lia: non-task title should return 1" || all_ok=0
+	_assert_should_predicate_result "$result" 'lia-signed:1' \
+		"_should_lia: signed contributor report should return 0" || all_ok=0
 
-	[[ "$all_ok" == "1" ]] && _pass "_should_* predicates: all 14 cases correct"
+	[[ "$all_ok" == "1" ]] && _pass "_should_* predicates: all 15 cases correct"
 	return 0
 }
 

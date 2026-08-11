@@ -1077,13 +1077,15 @@ _should_cpt() {
 }
 
 # Stage 5 predicate: issue is an aidevops-shaped labelless candidate.
-# Title must match tNNN: or GH#NNN: AND no origin:/tier:/status: labels.
-# Args: $1 = issue_title, $2 = labels_csv
+# A task-shaped title or an aidevops origin marker qualifies, provided no
+# origin:/tier:/status: label has already established provenance/lifecycle.
+# Args: $1 = issue_title, $2 = labels_csv, $3 = issue_body
 _should_lia() {
 	local issue_title="$1"
 	local labels_csv="$2"
-	# Title must match aidevops task shape
-	if ! printf '%s' "$issue_title" | grep -qE '^(t[0-9]+(\.[0-9]+)*|GH#[0-9]+): '; then
+	local issue_body="${3:-}"
+	if ! printf '%s' "$issue_title" | grep -qE '^(t[0-9]+(\.[0-9]+)*|GH#[0-9]+): ' &&
+		! printf '%s\n' "$issue_body" | grep -Eq '^<!-- aidevops:origin:(interactive|worker) -->$'; then
 		return 1
 	fi
 	# Must have no origin:/tier:/status: labels (unquoted patterns avoid ratchet)

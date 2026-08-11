@@ -60,6 +60,14 @@ main() {
 		"trusted bots run through stale-NMR cleanup instead of returning early"
 	check_pattern "hasExternalAuthoritySource = issueLabels\.has\('external-contributor'\)" \
 		"trusted automation preserves explicit external-source authority gates"
+	check_pattern "aidevops:origin:\(interactive\|worker\)" \
+		"signed aidevops origin provenance is parsed from contributor issue bodies"
+	check_pattern "const triageLabels = \['needs-maintainer-review', 'external-contributor'\]" \
+		"external contributor authority and NMR labels are applied together"
+	check_pattern "triageLabels\.push\(reportedOrigin\)" \
+		"reported interactive or worker origin is restored by repository automation"
+	check_pattern "reportedOrigin !== 'origin:worker'" \
+		"unproven external worker labels are still stripped"
 	check_pattern "collaborators/\{username\}/permission" \
 		"collaborator authority uses the repository permission endpoint"
 	check_pattern "Run trusted-author cleanup first" \

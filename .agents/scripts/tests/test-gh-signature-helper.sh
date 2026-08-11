@@ -115,6 +115,10 @@ assert_contains "contains HTML sig marker" "<!-- aidevops:sig -->" "$result"
 assert_contains "contains ---" "---" "$result"
 assert_contains "contains signature" "plugin for [OpenCode](https://opencode.ai) v1.0.0" "$result"
 assert_contains "contains tokens" "5,000 tokens on this" "$result"
+result=$(AIDEVOPS_SESSION_ORIGIN=interactive "$HELPER" footer --cli "OpenCode" --tokens 0)
+assert_contains "interactive footer records issue origin provenance" "<!-- aidevops:origin:interactive -->" "$result"
+result=$(AIDEVOPS_SESSION_ORIGIN=worker "$HELPER" footer --cli "OpenCode" --tokens 0)
+assert_contains "worker footer records issue origin provenance" "<!-- aidevops:origin:worker -->" "$result"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 6: comma formatting for various numbers

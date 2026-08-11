@@ -11,8 +11,8 @@
 #   #500 — aidevops-shaped + labelless + MEMBER author          (MUST be blessed internal)
 #   #501 — non-aidevops shape (random bug title)                (MUST be ignored)
 #   #502 — aidevops-shaped + already has origin:worker          (MUST be ignored)
-#   #503 — aidevops-shaped + labelless + CONTRIBUTOR author     (MUST be gated external, t2450)
-#   #504 — aidevops-shaped + labelless + NONE author, no tags   (MUST be gated external, t2450)
+#   #503 — signed interactive + normal title + CONTRIBUTOR      (MUST restore origin + gate)
+#   #504 — signed worker + task title + NONE author              (MUST restore origin + gate)
 #   #505 — aidevops-shaped + labelless + read collaborator       (MUST be gated external)
 #   #506 — aidevops-shaped + labelless + write collaborator      (MUST be blessed internal)
 #   #507 — aidevops-shaped + labelless + trusted bot             (MUST be blessed internal)
@@ -23,8 +23,8 @@
 #   - #501/#502 neither edited nor commented
 #
 # Assertions — external path (t2450):
-#   - #503/#504 edits add needs-maintainer-review; body tags still applied (#503)
-#   - #503/#504 edits DO NOT add origin:worker, tier:simple, tier:standard, tier:thinking
+#   - #503/#504 edits add needs-maintainer-review + external-contributor
+#   - signed origins are restored, while tier labels remain withheld
 #   - #503/#504 comments contain the EXTERNAL sentinel (labelless-backfill-external)
 
 set -u
@@ -84,14 +84,14 @@ FIXTURE_ISSUES_JSON=$(
   },
   {
     "number": 503,
-    "title": "t2548: Fix orphan-task-id bug",
-    "body": "External CONTRIBUTOR-authored labelless aidevops-shaped issue.\n\n## Tags inline: #ai #security\n",
+    "title": "Fix orphan-task-id bug",
+    "body": "External CONTRIBUTOR-authored signed aidevops issue.\n\n## Tags inline: #ai #security\n\n<!-- aidevops:origin:interactive -->\n<!-- aidevops:sig -->\n",
     "labels": []
   },
   {
     "number": 504,
     "title": "GH#9999: propose additional dedup layer",
-    "body": "External NONE-authored labelless aidevops-shaped issue with no body tags.",
+    "body": "External NONE-authored labelless aidevops-shaped issue with no body tags.\n\n<!-- aidevops:origin:worker -->\n<!-- aidevops:sig -->\n",
     "labels": []
   },
   {
@@ -265,7 +265,7 @@ fi
 # GH#29394: COLLABORATOR must be live permission-checked, while trusted bots
 # retain the automation fast path.
 edit_line_505=$(grep '^gh issue edit 505 --repo test/repo' "$TRACE_FILE" | head -1)
-if [[ "$edit_line_505" != *"--add-label needs-maintainer-review"* || "$edit_line_505" == *"--add-label origin:worker"* ]]; then
+if [[ "$edit_line_505" != *"--add-label needs-maintainer-review"* || "$edit_line_505" == *"--add-label origin:"* ]]; then
 	printf 'FAIL: #505 read collaborator did not retain the external-authority gate\n'
 	printf '  got: %s\n' "$edit_line_505"
 	failed=1
@@ -345,7 +345,12 @@ else
 		printf '  got: %s\n' "$edit_line_503"
 		failed=1
 	fi
-	# MUST NOT apply maintainer-trust labels for an external author
+	if [[ "$edit_line_503" != *"--add-label external-contributor"* || "$edit_line_503" != *"--add-label origin:interactive"* ]]; then
+		printf 'FAIL: #503 edit missing external or interactive provenance labels\n'
+		printf '  got: %s\n' "$edit_line_503"
+		failed=1
+	fi
+	# Origin is provenance, not trust; tier metadata remains withheld.
 	for forbidden in "origin:worker" "tier:simple" "tier:standard" "tier:thinking"; do
 		if [[ "$edit_line_503" == *"--add-label $forbidden"* ]]; then
 			printf 'FAIL: #503 edit added forbidden label %s for external author\n' "$forbidden"
@@ -394,7 +399,12 @@ else
 		printf '  got: %s\n' "$edit_line_504"
 		failed=1
 	fi
-	for forbidden in "origin:worker" "tier:simple" "tier:standard" "tier:thinking"; do
+	if [[ "$edit_line_504" != *"--add-label external-contributor"* || "$edit_line_504" != *"--add-label origin:worker"* ]]; then
+		printf 'FAIL: #504 edit missing external or worker provenance labels\n'
+		printf '  got: %s\n' "$edit_line_504"
+		failed=1
+	fi
+	for forbidden in "tier:simple" "tier:standard" "tier:thinking"; do
 		if [[ "$edit_line_504" == *"--add-label $forbidden"* ]]; then
 			printf 'FAIL: #504 edit added forbidden label %s for external author\n' "$forbidden"
 			printf '  got: %s\n' "$edit_line_504"
