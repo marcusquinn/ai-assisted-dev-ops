@@ -21,6 +21,7 @@ subagents:
   - video-muapi
   - video-director
   - humanise
+  - content-provenance
   - distribution-youtube
   - distribution-short-form
   - distribution-social

@@ -23,6 +23,7 @@ subagents:
   - best-practices
   - auditing
   - secretlint
+  - content-provenance
   - qlty
   # Context tools
   - context-builder
