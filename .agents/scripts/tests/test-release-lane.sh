@@ -155,11 +155,24 @@ run_legacy_and_api_failure_test() (
 	return $?
 )
 
-run_stale_same_source_recovery_test() (
+run_default_stale_boundary_and_fencing_test() (
+	local original_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"reserved","tag":null,"updated_at":"2020-01-01T00:00:00Z","operation_token":"token-old","terminal_receipt":null}'
+	local state="$original_state"
 	local written=""
-	local recovered_state=""
+	export AIDEVOPS_TEST_NOW_EPOCH=1000000299
+	local writes=0
+	date() {
+		if [[ "${1:-}" == "-u" && "${2:-}" == "-d" ]]; then
+			printf '%s\n' 1000000000
+		elif [[ "${1:-}" == "+%s" ]]; then
+			printf '%s\n' "$AIDEVOPS_TEST_NOW_EPOCH"
+		else
+			command date "$@"
+		fi
+		return 0
+	}
 	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"reserved","tag":null,"updated_at":"2020-01-01T00:00:00Z","operation_token":"token-old"}'
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
 		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
 		return 0
 	}
@@ -168,22 +181,44 @@ run_stale_same_source_recovery_test() (
 		local state_json="$2"
 		local expected_head="$3"
 		written="$state_json"
-		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]]
-		return $?
-	}
-	AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1 release_lane_acquire test/repo 101 101 >/dev/null || return 1
-	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" && "$(jq -r '.phase' <<<"$written")" == "reserved" &&
-	"$(jq -r '.operation_token' <<<"$written")" != "token-old" ]] || return 1
-	recovered_state="$written"
-	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON="$recovered_state"
-		_AIDEVOPS_RELEASE_LANE_HEAD="2222222222222222222222222222222222222222"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		state="$state_json"
+		writes=$((writes + 1))
 		return 0
 	}
+	release_lane_acquire test/repo 101 101 >/dev/null || return 1
+	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "adopted" && "$writes" -eq 0 &&
+		"$_AIDEVOPS_RELEASE_LANE_TOKEN" == "token-old" ]] || return 1
+	AIDEVOPS_TEST_NOW_EPOCH=1000000300
+	release_lane_acquire test/repo 101 101 >/dev/null || return 1
+	[[ "$_AIDEVOPS_RELEASE_LANE_RESULT" == "acquired" && "$(jq -r '.phase' <<<"$written")" == "reserved" &&
+	"$(jq -r '.operation_token' <<<"$written")" != "token-old" && "$writes" -eq 1 ]] || return 1
 	_AIDEVOPS_RELEASE_LANE_TOKEN="token-old"
 	if release_lane_update test/repo 101 preparing; then
 		return 1
 	fi
+	return 0
+)
+
+run_stale_reclamation_guard_test() (
+	local base_state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"reserved","tag":null,"updated_at":"2020-01-01T00:00:00Z","operation_token":"token-old","terminal_receipt":null}'
+	local state="$base_state"
+	date() {
+		if [[ "${1:-}" == "-u" && "${2:-}" == "-d" ]]; then
+			printf '%s\n' 1000000000
+		elif [[ "${1:-}" == "+%s" ]]; then
+			printf '%s\n' 1000000300
+		else
+			command date "$@"
+		fi
+		return 0
+	}
+	state=$(jq -c '.phase="preparing"' <<<"$base_state") || return 1
+	if _release_lane_stale_prepublication "$state"; then return 1; fi
+	state=$(jq -c '.tag="v1.2.3"' <<<"$base_state") || return 1
+	if _release_lane_stale_prepublication "$state"; then return 1; fi
+	state=$(jq -c '.terminal_receipt={status:"published"}' <<<"$base_state") || return 1
+	if _release_lane_stale_prepublication "$state"; then return 1; fi
 	return 0
 )
 
@@ -293,7 +328,8 @@ if run_merge_guard_test; then assert_result 'exact-tip lane blocks ordinary merg
 if run_merge_guard_api_uncertainty_test; then assert_result 'merge coordination fails closed when lane state is unavailable' true; else assert_result 'merge coordination fails closed when lane state is unavailable' false; fi
 if run_http_classification_test; then assert_result 'only verified HTTP 404 is classified as an absent lane' true; else assert_result 'only verified HTTP 404 is classified as an absent lane' false; fi
 if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' true; else assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' false; fi
-if run_stale_same_source_recovery_test; then assert_result 'stale recovery rotates its token and fences the prior owner' true; else assert_result 'stale recovery rotates its token and fences the prior owner' false; fi
+if run_default_stale_boundary_and_fencing_test; then assert_result 'default stale recovery adopts at 299s, reclaims at 300s, and fences the prior owner' true; else assert_result 'default stale recovery adopts at 299s, reclaims at 300s, and fences the prior owner' false; fi
+if run_stale_reclamation_guard_test; then assert_result 'preparing, tagged, and receipted lanes remain reconcile-only' true; else assert_result 'preparing, tagged, and receipted lanes remain reconcile-only' false; fi
 if run_aggregate_recovery_rotation_test; then assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' true; else assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' false; fi
 if run_aggregate_recovery_rejection_test; then assert_result 'aggregate recovery rejects competing owners and terminal lanes' true; else assert_result 'aggregate recovery rejects competing owners and terminal lanes' false; fi
 if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggregate authorization uses owned CAS expansion and exact rollback' true; else assert_result 'reserved aggregate authorization uses owned CAS expansion and exact rollback' false; fi

@@ -17,6 +17,7 @@ _AIDEVOPS_RELEASE_LANE_PHASE_RESERVED="reserved"
 _AIDEVOPS_RELEASE_LANE_JSON_STRING_TYPE="string"
 _AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX="lane-"
 _AIDEVOPS_RELEASE_LANE_OWNER_PREFIX="process-"
+_AIDEVOPS_RELEASE_LANE_STALE_PREPUBLICATION_SECONDS=300
 
 _release_lane_cache_path() {
 	local repo="$1"
@@ -138,7 +139,7 @@ _release_lane_stale_prepublication() {
 	local updated_at=""
 	local updated_epoch=""
 	local now_epoch=""
-	local stale_after="${AIDEVOPS_RELEASE_LANE_STALE_SECONDS:-7200}"
+	local stale_after="${AIDEVOPS_RELEASE_LANE_STALE_SECONDS:-$_AIDEVOPS_RELEASE_LANE_STALE_PREPUBLICATION_SECONDS}"
 	[[ "$stale_after" =~ ^[0-9]+$ && "$stale_after" -gt 0 ]] || return 1
 	phase=$(jq -r '.phase' <<<"$state_json") || return 1
 	tag_name=$(jq -r '.tag // ""' <<<"$state_json") || return 1
@@ -147,6 +148,7 @@ _release_lane_stale_prepublication() {
 	# reconcile-only because the original process may already be publishing.
 	[[ "$phase" == "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" ]] || return 1
 	[[ -z "$tag_name" ]] || return 1
+	jq -e '(.terminal_receipt // null) == null' <<<"$state_json" >/dev/null || return 1
 	updated_epoch=$(date -u -d "$updated_at" +%s 2>/dev/null ||
 		date -u -jf '%Y-%m-%dT%H:%M:%SZ' "$updated_at" +%s 2>/dev/null || true)
 	now_epoch=$(date +%s 2>/dev/null || true)
