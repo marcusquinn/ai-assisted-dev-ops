@@ -542,19 +542,7 @@ import os
 import sqlite3
 import sys
 
-(
-    db_path,
-    worktree_path,
-    branch,
-    owner_pid_text,
-    session_id,
-    batch_id,
-    task_id,
-    owner_comm,
-    trusted_session_text,
-    registered_by,
-    registration_reason,
-) = sys.argv[1:]
+db_path, worktree_path, branch, owner_pid_text, session_id, batch_id, task_id, owner_comm, trusted_session_text, registered_by, registration_reason = sys.argv[1:]
 owner_pid = int(owner_pid_text)
 trusted_session = trusted_session_text == "1"
 
@@ -566,11 +554,7 @@ try:
            FROM worktree_owners WHERE worktree_path = ?""",
         (worktree_path,),
     ).fetchone()
-    if (
-        existing_owner
-        and isinstance(existing_owner[0], int)
-        and existing_owner[0] != owner_pid
-    ):
+    if existing_owner and isinstance(existing_owner[0], int) and existing_owner[0] != owner_pid:
         try:
             os.kill(existing_owner[0], 0)
         except OSError:
@@ -588,37 +572,17 @@ try:
                registered_by = ?, registration_reason = ?
            WHERE worktree_path = ?
              AND (owner_pid = ? OR (? AND owner_session = ?))""",
-        (
-            branch,
-            owner_pid,
-            session_id,
-            batch_id,
-            task_id,
-            owner_comm,
-            registered_by,
-            registration_reason,
-            worktree_path,
-            owner_pid,
-            trusted_session,
-            session_id,
-        ),
+        (branch, owner_pid, session_id, batch_id, task_id, owner_comm,
+         registered_by, registration_reason, worktree_path, owner_pid,
+         trusted_session, session_id),
     )
     connection.execute(
         """INSERT OR IGNORE INTO worktree_owners
            (worktree_path, branch, owner_pid, owner_session, owner_batch,
             task_id, owner_comm, owner_dead_seen_at, registered_by, registration_reason)
            VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)""",
-        (
-            worktree_path,
-            branch,
-            owner_pid,
-            session_id,
-            batch_id,
-            task_id,
-            owner_comm,
-            registered_by,
-            registration_reason,
-        ),
+        (worktree_path, branch, owner_pid, session_id, batch_id, task_id,
+         owner_comm, registered_by, registration_reason),
     )
     final_owner = connection.execute(
         """SELECT owner_pid, COALESCE(owner_session, '')
