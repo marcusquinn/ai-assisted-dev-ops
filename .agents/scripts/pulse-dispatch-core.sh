@@ -33,6 +33,10 @@
 #   - _dispatch_waiting_for_maintainer_permission
 #   - _dispatch_permission_history_requires_grant
 #   - _dispatch_has_interactive_hold
+#   - _dispatch_registered_worktree_count
+#   - _dispatch_run_guarded_worktree_cleanup
+#   - _dispatch_cleanup_worktree_capacity
+#   - _dispatch_worktree_capacity_gate
 #   - _dispatch_dedup_check_layers  (t1999: extracted from dispatch_with_dedup)
 #   - dispatch_with_dedup           (t1999: thin orchestrator, <80 lines)
 #   - _ensure_issue_body_has_brief
@@ -1274,6 +1278,87 @@ _dispatch_has_interactive_hold() {
 #   1 - blocked (reason logged to LOGFILE by the failing gate)
 #   3 - expected benign dispatch block with structured DISPATCH_BLOCK_REASON
 #######################################
+_dispatch_registered_worktree_count() {
+	local repo_path="$1"
+	local worktree_list=""
+	local count=""
+	worktree_list=$(git -C "$repo_path" worktree list 2>/dev/null) || return 1
+	[[ -n "$worktree_list" ]] || return 1
+	count=$(printf '%s\n' "$worktree_list" | wc -l | tr -d ' ')
+	[[ "$count" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$count"
+	return 0
+}
+
+_dispatch_run_guarded_worktree_cleanup() {
+	local repo_path="$1"
+	local helper="$2"
+	(
+		cd -- "$repo_path" || exit 125
+		bash "$helper" clean --auto --force-merged
+	) >>"${LOGFILE:-/dev/null}" 2>&1
+}
+
+# At the dispatch worktree cap, synchronously give the existing guarded cleanup
+# one bounded chance to recover capacity. The helper remains responsible for
+# preserving dirty, active, open-PR, unmerged, and externally-owned worktrees.
+_dispatch_cleanup_worktree_capacity() {
+	local repo_path="$1"
+	local issue_number="$2"
+	local repo_slug="$3"
+	local before_count="$4"
+	local max_count="$5"
+	local helper="${AIDEVOPS_WORKTREE_HELPER:-${BASH_SOURCE[0]%/*}/worktree-helper.sh}"
+	local cleanup_timeout="${AIDEVOPS_DISPATCH_WORKTREE_CLEANUP_TIMEOUT:-60}"
+	local cleanup_rc=0
+	local after_count=""
+
+	[[ "$cleanup_timeout" =~ ^[0-9]+$ ]] || cleanup_timeout=60
+	[[ "$cleanup_timeout" -ge 1 ]] || cleanup_timeout=1
+	if [[ ! -x "$helper" ]]; then
+		echo "[dispatch_with_dedup] Capacity cleanup unavailable for #${issue_number} in ${repo_slug}: guarded helper not executable (${helper}); count remains ${before_count}/${max_count}" >>"$LOGFILE"
+		return 1
+	fi
+	if ! declare -F run_stage_with_timeout >/dev/null 2>&1; then
+		echo "[dispatch_with_dedup] Capacity cleanup unavailable for #${issue_number} in ${repo_slug}: bounded stage runner missing; count remains ${before_count}/${max_count}" >>"$LOGFILE"
+		return 1
+	fi
+
+	echo "[dispatch_with_dedup] Worktree count ${before_count} >= cap ${max_count} for #${issue_number} in ${repo_slug}; attempting guarded cleanup (timeout ${cleanup_timeout}s)" >>"$LOGFILE"
+	run_stage_with_timeout "dispatch_worktree_capacity_cleanup" "$cleanup_timeout" \
+		_dispatch_run_guarded_worktree_cleanup "$repo_path" "$helper" || cleanup_rc=$?
+	if ! after_count=$(_dispatch_registered_worktree_count "$repo_path"); then
+		echo "[dispatch_with_dedup] Guarded capacity cleanup could not verify the post-cleanup worktree count for #${issue_number} in ${repo_slug} (before ${before_count}, cap ${max_count}, cleanup_rc=${cleanup_rc}); dispatch remains fail-closed" >>"$LOGFILE"
+		return 1
+	fi
+	if [[ "$after_count" =~ ^[0-9]+$ ]] && [[ "$after_count" -lt "$max_count" ]]; then
+		echo "[dispatch_with_dedup] Guarded capacity cleanup recovered dispatch capacity for #${issue_number} in ${repo_slug}: ${before_count} -> ${after_count} worktrees (cap ${max_count}, cleanup_rc=${cleanup_rc})" >>"$LOGFILE"
+		return 0
+	fi
+
+	[[ "$after_count" =~ ^[0-9]+$ ]] || after_count="$before_count"
+	echo "[dispatch_with_dedup] Guarded capacity cleanup could not recover dispatch capacity for #${issue_number} in ${repo_slug}: ${before_count} -> ${after_count} worktrees (cap ${max_count}, cleanup_rc=${cleanup_rc}); existing cleanup safety gates preserved remaining worktrees" >>"$LOGFILE"
+	return 1
+}
+
+_dispatch_worktree_capacity_gate() {
+	local repo_path="$1"
+	local issue_number="$2"
+	local repo_slug="$3"
+	local max_count="$4"
+	local count=""
+
+	if ! count=$(_dispatch_registered_worktree_count "$repo_path"); then
+		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: unable to verify registered worktree count; capacity gate remains fail-closed" >>"$LOGFILE"
+		return 1
+	fi
+	if [[ "$count" -lt "$max_count" ]]; then
+		return 0
+	fi
+	_dispatch_cleanup_worktree_capacity "$repo_path" "$issue_number" "$repo_slug" "$count" "$max_count"
+	return $?
+}
+
 _dispatch_dedup_check_layers() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -1324,11 +1409,11 @@ _dispatch_dedup_check_layers() {
 	# registered git worktrees. At that scale, new worktrees risk consuming
 	# tens of GB; stale merged ones should be cleaned before adding more.
 	_dss_t0=$(_ds_now_ns)
-	local _wt_count="" _wt_max=""
+	local _wt_max=""
 	_wt_max="${AIDEVOPS_MAX_WORKTREES:-200}"
-	_wt_count=$(git -C "$repo_path" worktree list 2>/dev/null | wc -l | tr -d ' ')
-	if [[ -n "$_wt_count" ]] && [[ "$_wt_count" -ge "$_wt_max" ]]; then
-		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: worktree count ${_wt_count} >= cap ${_wt_max}. Run: worktree-helper.sh clean --auto --force-merged" >>"$LOGFILE"
+	[[ "$_wt_max" =~ ^[1-9][0-9]*$ ]] || _wt_max=200
+	if ! _dispatch_worktree_capacity_gate "$repo_path" "$issue_number" "$repo_slug" "$_wt_max"; then
+		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: worktree capacity remains unavailable after bounded guarded cleanup" >>"$LOGFILE"
 		_ds_record "$issue_number" "$repo_slug" "dedup.worktree_cap" "$_dss_t0"
 		return 1
 	fi
