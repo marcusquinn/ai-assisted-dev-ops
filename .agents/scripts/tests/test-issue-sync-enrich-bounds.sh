@@ -67,12 +67,30 @@ _enrich_prefetch_issues_map() {
 }
 
 test_workflow_push_sets_bounded_enrich() {
-	if grep -q 'AIDEVOPS_ENRICH_MAX_ISSUES' "$WORKFLOW_FILE" \
-		&& grep -q 'AIDEVOPS_ENRICH_MAX_SECONDS' "$WORKFLOW_FILE" \
-		&& grep -q 'manual dispatch still' "$WORKFLOW_FILE"; then
+	if grep -q 'AIDEVOPS_ENRICH_MAX_ISSUES' "$WORKFLOW_FILE" &&
+		grep -q 'AIDEVOPS_ENRICH_MAX_SECONDS' "$WORKFLOW_FILE" &&
+		grep -q 'manual dispatch still' "$WORKFLOW_FILE"; then
 		print_result "push workflow configures bounded enrich while documenting manual full enrich" 0
 	else
 		print_result "push workflow configures bounded enrich while documenting manual full enrich" 1
+	fi
+	return 0
+}
+
+test_workflow_manual_enrich_has_full_pass_headroom() {
+	local manual_job
+	manual_job=$(awk '
+		/^  manual-sync:/ { capture = 1 }
+		capture && /^  [[:alnum:]_-]+:/ && $0 !~ /^  manual-sync:/ { exit }
+		capture { print }
+	' "$WORKFLOW_FILE")
+	if grep -q '^    timeout-minutes: 30$' <<<"$manual_job" &&
+		[[ "$manual_job" != *"AIDEVOPS_ENRICH_MAX_ISSUES"* ]] &&
+		[[ "$manual_job" != *"AIDEVOPS_ENRICH_MAX_SECONDS"* ]]; then
+		print_result "manual full enrich has 30-minute headroom without routine bounds" 0
+	else
+		printf '%s\n' "$manual_job"
+		print_result "manual full enrich has 30-minute headroom without routine bounds" 1
 	fi
 	return 0
 }
@@ -163,6 +181,7 @@ test_elapsed_bound_tolerates_date_failure() {
 
 main() {
 	test_workflow_push_sets_bounded_enrich
+	test_workflow_manual_enrich_has_full_pass_headroom
 	test_max_issues_bounds_enrich_loop
 	test_target_task_ignores_routine_bounds
 	test_invalid_bounds_are_ignored
