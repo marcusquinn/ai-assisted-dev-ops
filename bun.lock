@@ -43,7 +43,7 @@
       "dependencies": {
         "@aidevops/gui-shared": "workspace:*",
         "@fontsource/courier-prime": "5.2.8",
-        "@fontsource/dm-mono": "5.2.7",
+        "@fontsource/dm-mono": "5.3.0",
         "@fontsource/dm-sans": "5.3.0",
         "@fontsource/fredoka": "5.2.10",
         "@fontsource/ibm-plex-mono": "5.2.7",
@@ -133,7 +133,7 @@
 
     "@fontsource/courier-prime": ["@fontsource/courier-prime@5.2.8", "", {}, "sha512-M3xOCcXnGuFi9TcGCrz4hm5yeWg4Sn35MALRLPnqNoHhawTFvhyi2KSI2+5RyFtDNJrb58bPh8LLipgiI9KA0w=="],
 
-    "@fontsource/dm-mono": ["@fontsource/dm-mono@5.2.7", "", {}, "sha512-Ma1az2atTVgQWuOWwjuxx26p/6A6CU9HBNKq1CFV6YKpKhpswnf9ry9Ql4+T6bTZzkdtSfS6tjJvqZOljVzIFQ=="],
+    "@fontsource/dm-mono": ["@fontsource/dm-mono@5.3.0", "", {}, "sha512-OINjI8C1S/wpchhQxl7njZdMn4+hnDCpQ4YtvvOpKNARo+0J8O1x1IcrChxNjHOhfVv1by8C/FQoy3hXK+C1Ug=="],
 
     "@fontsource/dm-sans": ["@fontsource/dm-sans@5.3.0", "", {}, "sha512-lYJtMXXO28q1z+yz+z8XKd0s4hXaa9QdkETzkyD760sidCv5heI86weYA0sx0Nc4pAMAQTUuyf4gO44cYKKS9g=="],
 
