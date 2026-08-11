@@ -367,8 +367,95 @@ test_legacy_registry_schema_migrates_on_owner_check() {
 	fi
 	local has_owner_comm=""
 	has_owner_comm=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'owner_comm';" 2>/dev/null || true)
+	local has_registered_by=""
+	has_registered_by=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'registered_by';" 2>/dev/null || true)
+	local has_registration_reason=""
+	has_registration_reason=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'registration_reason';" 2>/dev/null || true)
 	[[ "$has_owner_comm" == "1" ]] || rc=1
+	[[ "$has_registered_by" == "1" ]] || rc=1
+	[[ "$has_registration_reason" == "1" ]] || rc=1
 	print_result "legacy registry schema migrates during owner check" "$rc"
+	return 0
+}
+
+test_expired_blank_auto_owner_unregisters() {
+	local wt_path
+	wt_path=$(make_worktree_dir "expired-blank-auto-owner")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/auto-expired-blank-owner" --owner-pid "$owner_pid"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET created_at = '2020-01-01T00:00:00Z',
+            owner_session = '',
+            task_id = '',
+            owner_comm = 'opencode'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() { printf '%s' 'opencode'; return 0; }
+	export WORKTREE_BLANK_AUTO_OWNER_GRACE_HOURS=1
+
+	local rc=0
+	if is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_missing "$wt_path" || rc=1
+	print_result "expired blank auto owner unregisters despite live runtime pid" "$rc"
+	return 0
+}
+
+test_recent_blank_auto_owner_still_blocks() {
+	local wt_path
+	wt_path=$(make_worktree_dir "recent-blank-auto-owner")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/auto-recent-blank-owner" --owner-pid "$owner_pid"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET owner_session = '', task_id = '', owner_comm = 'opencode'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() { printf '%s' 'opencode'; return 0; }
+	export WORKTREE_BLANK_AUTO_OWNER_GRACE_HOURS=24
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	print_result "recent blank auto owner keeps grace" "$rc"
+	return 0
+}
+
+test_non_auto_blank_owner_still_blocks() {
+	local wt_path
+	wt_path=$(make_worktree_dir "non-auto-blank-owner")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/manual-blank-owner" --owner-pid "$owner_pid"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET created_at = '2020-01-01T00:00:00Z',
+            owner_session = '',
+            task_id = '',
+            owner_comm = 'opencode'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() { printf '%s' 'opencode'; return 0; }
+	export WORKTREE_BLANK_AUTO_OWNER_GRACE_HOURS=1
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	print_result "non-auto blank owner remains protected" "$rc"
 	return 0
 }
 
@@ -418,6 +505,9 @@ main() {
 	test_mismatched_legacy_dispatch_precreate_identity_blocks
 	test_explicit_cleanup_lease_identity
 	test_legacy_registry_schema_migrates_on_owner_check
+	test_expired_blank_auto_owner_unregisters
+	test_recent_blank_auto_owner_still_blocks
+	test_non_auto_blank_owner_still_blocks
 	test_should_skip_cleanup_branch_merged_within_grace
 	printf 'Results: %s/%s passed, %s failed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]] && return 0
