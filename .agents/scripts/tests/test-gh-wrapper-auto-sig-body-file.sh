@@ -132,6 +132,20 @@ assert_body_file_signed() {
 	return 0
 }
 
+assert_pr_edit_body_file_signed() {
+	local body_file="${TEST_ROOT}/pr-edit.md"
+	printf '## Edited summary\n\nBody\n' >"$body_file"
+	reset_capture
+	gh_pr_edit_safe 1 --repo o/r --body-file "$body_file" >/dev/null 2>&1
+	if [[ "$(count_captured_signatures)" == "1" ]] && ! grep -q '<!-- aidevops:sig -->' "$body_file"; then
+		print_result "gh_pr_edit_safe --body-file signs posted copy without mutating source" 0
+	else
+		print_result "gh_pr_edit_safe --body-file signs posted copy without mutating source" 1 \
+			"captured signatures=$(count_captured_signatures), original_mutated=$(grep -c '<!-- aidevops:sig -->' "$body_file" 2>/dev/null || printf '0')"
+	fi
+	return 0
+}
+
 assert_existing_signature_not_duplicated() {
 	local body_file="${TEST_ROOT}/already-signed.md"
 	printf '## Summary\n\nBody\n\n<!-- aidevops:sig -->\n---\n[aidevops.sh](https://aidevops.sh) existing\n' >"$body_file"
@@ -281,6 +295,7 @@ assert_close_comment_signed_once() {
 
 assert_body_file_signed "gh_create_pr --body-file signs temp body" "pr-create"
 assert_body_file_signed "gh_pr_comment --body-file signs temp body" "pr-comment"
+assert_pr_edit_body_file_signed
 assert_existing_signature_not_duplicated
 assert_signed_relative_body_file_normalized
 assert_missing_body_file_rejected_before_gh

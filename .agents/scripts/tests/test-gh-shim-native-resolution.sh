@@ -95,6 +95,14 @@ run_case "installed ordinary passthrough" "$TMP/home/.aidevops/agents/scripts/gh
 run_case "repository intercepted command" "$TMP/repo/.agents/scripts/gh" "issue" "view"
 
 : >"$TMP/native.log"
+if NATIVE_GH_LOG="$TMP/native.log" PATH="$TMP/repo/.agents/scripts:$TMP/native-linux:/usr/bin:/bin" \
+	"$TMP/repo/.agents/scripts/gh" --version && [[ $(wc -l <"$TMP/native.log" | tr -d ' ') -eq 1 ]]; then
+	pass "interactive shim-first PATH reaches native gh without recursion"
+else
+	fail "interactive shim-first PATH native resolution failed"
+fi
+
+: >"$TMP/native.log"
 if NATIVE_GH_LOG="$TMP/native.log" AIDEVOPS_GH_SHIM_DISABLE=1 \
 	PATH="$TMP/runtime-bundles/old/agents/scripts:$TMP/home/.aidevops/agents/scripts:$TMP/repo/.agents/scripts:$TMP/home/.aidevops/bin:$TMP/native-linux:/usr/bin:/bin" \
 	"$TMP/runtime-bundles/old/agents/scripts/gh" --version; then

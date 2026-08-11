@@ -101,6 +101,7 @@ printf 'AIDEVOPS_TEMP_DIR=%s\n' "${AIDEVOPS_TEMP_DIR:-}"
 printf 'TMPDIR=%s\n' "${TMPDIR:-}"
 printf 'TMP=%s\n' "${TMP:-}"
 printf 'TEMP=%s\n' "${TEMP:-}"
+printf 'GH_PATH=%s\n' "$(command -v gh || true)"
 printf 'PWD=%s\n' "$PWD"
 printf 'ARGS=%s\n' "$*"
 SH
@@ -207,13 +208,14 @@ if [[ "${output}" == *"AIDEVOPS_OPENCODE_ISOLATED_DB=1"* ]] \
     && [[ "${output}" == *"TMPDIR=/host/tmpdir"* ]] \
     && [[ "${output}" == *"TMP=/host/tmp"* ]] \
     && [[ "${output}" == *"TEMP=/host/temp"* ]] \
+    && [[ "${output}" == *"GH_PATH=${REPO_ROOT}/.agents/scripts/gh"* ]] \
     && [[ "${output}" == *"PWD=${launch_dir}"* ]] \
     && [[ "${project_auth_count}" == "1" ]] \
     && [[ "${line_count}" == "2" ]] \
     && [[ "${prewarm_line}" == *"|db path" ]] \
     && [[ ! -e "${work_dir}/opencode-launcher/last-data-dir" ]] \
     && [[ "${output}" != *"sqlite-migration"* ]]; then
-    _pass "isolated launcher sets per-session data dir and copies auth"
+    _pass "isolated launcher sets per-session data dir, copies auth, and exports the gh shim"
 else
     _fail "isolated launcher output unexpected: ${output}"
 fi

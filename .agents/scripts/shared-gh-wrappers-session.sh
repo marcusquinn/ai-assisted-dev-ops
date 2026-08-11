@@ -16,7 +16,7 @@
 # Part of aidevops framework: https://aidevops.sh
 
 # Apply strict mode only when executed directly (not when sourced)
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && set -euo pipefail
+[[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] && set -euo pipefail
 
 # Include guard
 [[ -n "${_SHARED_GH_WRAPPERS_SESSION_LIB_LOADED:-}" ]] && return 0

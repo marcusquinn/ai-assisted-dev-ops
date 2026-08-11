@@ -31,18 +31,23 @@
 _SHARED_GH_WRAPPERS_CREATE_LIB_LOADED=1
 _GH_CREATE_AUTO_DISPATCH_LABEL="auto-dispatch"
 
-# Defensive SCRIPT_DIR fallback
-if [[ -z "${SCRIPT_DIR:-}" ]]; then
-	_lib_path="${BASH_SOURCE[0]%/*}"
-	[[ "$_lib_path" == "${BASH_SOURCE[0]}" ]] && _lib_path="."
-	SCRIPT_DIR="$(cd "$_lib_path" && pwd)"
-	unset _lib_path
+# Resolve this module's directory rather than trusting a caller-owned
+# SCRIPT_DIR. Recovery shells commonly export SCRIPT_DIR for their own helper.
+_GH_WRAPPERS_CREATE_SOURCE="${BASH_SOURCE[0]:-${0:-}}"
+_GH_WRAPPERS_CREATE_DIR="$(cd "$(dirname "${_GH_WRAPPERS_CREATE_SOURCE}")" 2>/dev/null && pwd)" || _GH_WRAPPERS_CREATE_DIR=""
+if [[ -z "${_GH_WRAPPERS_CREATE_DIR}" || ! -f "${_GH_WRAPPERS_CREATE_DIR}/privacy-guard-helper.sh" ]]; then
+	printf 'shared-gh-wrappers-create: cannot load privacy-guard-helper.sh from this module directory\n' >&2
+	return 1
 fi
 
-if ! command -v privacy_guard_public_write >/dev/null 2>&1 && [[ -f "${SCRIPT_DIR}/privacy-guard-helper.sh" ]]; then
+if ! command -v privacy_guard_public_write >/dev/null 2>&1; then
 	# shellcheck source=privacy-guard-helper.sh
-	# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
-	source "${SCRIPT_DIR}/privacy-guard-helper.sh"
+	# shellcheck disable=SC1091  # resolved from this module's directory at runtime
+	source "${_GH_WRAPPERS_CREATE_DIR}/privacy-guard-helper.sh"
+fi
+if ! command -v privacy_guard_public_write >/dev/null 2>&1; then
+	printf 'shared-gh-wrappers-create: privacy_guard_public_write did not load\n' >&2
+	return 1
 fi
 
 #######################################

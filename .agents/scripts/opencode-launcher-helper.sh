@@ -336,6 +336,20 @@ require_opencode_cli() {
     return 0
 }
 
+prepend_aidevops_gh_shim() {
+    local shim_path="${SCRIPT_DIR}/gh"
+
+    if [[ ! -x "${shim_path}" ]]; then
+        print_error "aidevops gh shim is unavailable: ${shim_path}"
+        return 1
+    fi
+    case ":${PATH}:" in
+    *":${SCRIPT_DIR}:"*) ;;
+    *) export PATH="${SCRIPT_DIR}:${PATH}" ;;
+    esac
+    return 0
+}
+
 require_node_cli() {
     if ! command -v node >/dev/null 2>&1; then
         print_error "node not found in PATH"
@@ -1637,6 +1651,7 @@ cmd_remote_interactive() {
 
 main() {
     aidevops_init_temp_workspace || { print_error "Could not initialize aidevops temporary workspace"; return 1; }
+    prepend_aidevops_gh_shim || return 1
     TMP="${TMP:-${TMPDIR}}"
     TEMP="${TEMP:-${TMPDIR}}"
     export TMP TEMP

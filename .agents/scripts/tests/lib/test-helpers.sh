@@ -201,11 +201,11 @@ _test_copy_shared_deps() {
 			fi
 			dep_queue+=("$sub_dep")
 		done < <(awk '
-			/source.*shared-gh-wrappers-[a-z]/ {
+			/source.*(shared-gh-wrappers-[a-z][a-z-]*|privacy-guard-helper)\.sh/ {
 				line = $0
 				sub(/.*\//, "", line)
 				sub(/".*/, "", line)
-				if (line != "" && line ~ /^shared-gh-wrappers-/) print line
+				if (line != "" && (line ~ /^shared-gh-wrappers-/ || line == "privacy-guard-helper.sh")) print line
 			}
 		' "${dest_dir}/${sibling}" 2>/dev/null || true)
 	done

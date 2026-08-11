@@ -102,6 +102,7 @@ while IFS= read -r sibling; do
 		missing=$((missing + 1))
 	fi
 done <<<"$deps_output"
+
 assert_eq "all discovered siblings exist on disk" "0" "$missing"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +143,14 @@ while IFS= read -r sibling; do
 	fi
 done <<<"$deps_output"
 
+if [[ -f "${tmpdir}/privacy-guard-helper.sh" ]]; then
+	echo "  PASS: privacy-guard-helper.sh landed in tmpdir"
+	PASS=$((PASS + 1))
+else
+	echo "  FAIL: privacy-guard-helper.sh missing from tmpdir"
+	FAIL=$((FAIL + 1))
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 4: sourcing the copy succeeds and wrappers are callable
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +169,7 @@ assert_func_defined "gh_create_issue defined after source" "gh_create_issue"
 assert_func_defined "gh_issue_comment defined after source" "gh_issue_comment"
 assert_func_defined "gh_pr_comment defined after source" "gh_pr_comment"
 assert_func_defined "_gh_wrapper_auto_sig defined after source" "_gh_wrapper_auto_sig"
+assert_func_defined "privacy_guard_public_write defined after source" "privacy_guard_public_write"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test 5: copy fails loudly when a dep is missing (simulate future split with

@@ -51,14 +51,20 @@
 # Part of aidevops framework: https://aidevops.sh
 
 # Apply strict mode only when executed directly (not when sourced)
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && set -euo pipefail
+[[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] && set -euo pipefail
 
 # Include guard
 [[ -n "${_SHARED_GH_WRAPPERS_CHECKS_LIB_LOADED:-}" ]] && return 0
 _SHARED_GH_WRAPPERS_CHECKS_LIB_LOADED=1
 
-_gh_checks_lib_dir="${BASH_SOURCE[0]%/*}"
-[[ "$_gh_checks_lib_dir" == "${BASH_SOURCE[0]}" ]] && _gh_checks_lib_dir="."
+_gh_checks_lib_dir="${_SHARED_GH_WRAPPERS_DIR:-}"
+if [[ -z "$_gh_checks_lib_dir" && -n "${BASH_SOURCE[0]:-}" ]]; then
+	_gh_checks_lib_dir="${BASH_SOURCE[0]%/*}"
+	[[ "$_gh_checks_lib_dir" == "${BASH_SOURCE[0]}" ]] && _gh_checks_lib_dir="."
+elif [[ -z "$_gh_checks_lib_dir" && -n "${ZSH_VERSION:-}" && -f "${0:-}" ]]; then
+	_gh_checks_lib_dir="${0%/*}"
+	[[ "$_gh_checks_lib_dir" == "$0" ]] && _gh_checks_lib_dir="."
+fi
 if ! declare -F gh_request_state_singleflight_begin >/dev/null 2>&1 && [[ -f "${_gh_checks_lib_dir}/shared-gh-request-state.sh" ]]; then
 	# shellcheck source=./shared-gh-request-state.sh
 	# shellcheck disable=SC1091

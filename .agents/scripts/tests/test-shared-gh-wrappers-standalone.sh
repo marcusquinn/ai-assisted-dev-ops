@@ -164,6 +164,24 @@ else
 fi
 
 # =============================================================================
+# Test 4b: caller-owned SCRIPT_DIR cannot skip the public-write privacy guard.
+# =============================================================================
+bash_privacy_guard=$(SCRIPT_DIR="${SCRIPT_DIR_TEST}/missing-caller-dir" bash -c "
+source '${WRAPPERS_FILE}' 2>/dev/null
+if command -v privacy_guard_public_write >/dev/null 2>&1; then
+    printf 'DEFINED\\n'
+else
+    printf 'MISSING\\n'
+fi
+" 2>&1)
+if [[ "$bash_privacy_guard" == *"DEFINED"* ]]; then
+	pass "4b: bash: caller SCRIPT_DIR cannot skip public-write privacy dependency"
+else
+	fail "4b: bash: caller SCRIPT_DIR cannot skip public-write privacy dependency" \
+		"output: $(printf '%q' "$bash_privacy_guard")"
+fi
+
+# =============================================================================
 # Test 5: bash — sourcing constants FIRST then wrappers keeps canonical print_info
 #          (stubs do NOT override the canonical implementation)
 # =============================================================================
@@ -253,6 +271,22 @@ fi
 	else
 		fail "8: zsh: all major wrapper functions defined after standalone sourcing" \
 			"output: $(printf '%q' "$zsh_wrappers")"
+	fi
+
+	# Test 8b: zsh must also load the privacy guard with a caller-owned SCRIPT_DIR.
+	zsh_privacy_guard=$(SCRIPT_DIR="${SCRIPT_DIR_TEST}/missing-caller-dir" zsh -c "
+source '${WRAPPERS_FILE}' 2>/dev/null
+if (( \${+functions[privacy_guard_public_write]} )); then
+    printf 'DEFINED\\n'
+else
+    printf 'MISSING\\n'
+fi
+" 2>&1)
+	if [[ "$zsh_privacy_guard" == *"DEFINED"* ]]; then
+		pass "8b: zsh: caller SCRIPT_DIR cannot skip public-write privacy dependency"
+	else
+		fail "8b: zsh: caller SCRIPT_DIR cannot skip public-write privacy dependency" \
+			"output: $(printf '%q' "$zsh_privacy_guard")"
 	fi
 
 	# Test 9: zsh — gh_create_pr --help should exercise the wrapper entry path

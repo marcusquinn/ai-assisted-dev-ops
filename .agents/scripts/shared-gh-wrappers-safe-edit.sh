@@ -21,7 +21,7 @@
 # Part of aidevops framework: https://aidevops.sh
 
 # Apply strict mode only when executed directly (not when sourced)
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && set -euo pipefail
+[[ "${BASH_SOURCE[0]:-}" == "${0:-}" ]] && set -euo pipefail
 
 # Include guard
 [[ -n "${_SHARED_GH_WRAPPERS_SAFE_EDIT_LIB_LOADED:-}" ]] && return 0
@@ -29,36 +29,37 @@ _SHARED_GH_WRAPPERS_SAFE_EDIT_LIB_LOADED=1
 _GH_AUDIT_ISSUE_EDIT_OP="issue_edit"
 _GH_AUDIT_NMR_LABEL="needs-maintainer-review"
 
-# Defensive SCRIPT_DIR fallback
-if [[ -z "${SCRIPT_DIR:-}" ]]; then
-	_lib_path="${BASH_SOURCE[0]%/*}"
-	[[ "$_lib_path" == "${BASH_SOURCE[0]}" ]] && _lib_path="."
-	SCRIPT_DIR="$(cd "$_lib_path" && pwd)"
-	unset _lib_path
+# Resolve this module's dependencies from its own location. Do not inherit a
+# caller-owned SCRIPT_DIR from an interactive recovery shell.
+_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR="${_SHARED_GH_WRAPPERS_DIR:-}"
+if [[ -z "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}" && -n "${BASH_SOURCE[0]:-}" ]]; then
+	_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _SHARED_GH_WRAPPERS_SAFE_EDIT_DIR=""
+elif [[ -z "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}" && -n "${ZSH_VERSION:-}" && -f "${0:-}" ]]; then
+	_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR="$(cd "$(dirname "${0}")" 2>/dev/null && pwd)" || _SHARED_GH_WRAPPERS_SAFE_EDIT_DIR=""
 fi
 
 # Load dependencies when this focused module is sourced directly instead of via
 # shared-gh-wrappers.sh. Set our include guard before this block so the
 # orchestrator can safely source this file without recursive redefinition.
 if ! command -v _gh_validate_edit_args >/dev/null 2>&1; then
-	if [[ -f "${SCRIPT_DIR}/shared-gh-wrappers.sh" ]]; then
+	if [[ -f "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}/shared-gh-wrappers.sh" ]]; then
 		# shellcheck source=shared-gh-wrappers.sh
-		# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
-		source "${SCRIPT_DIR}/shared-gh-wrappers.sh"
+		# shellcheck disable=SC1091  # resolved from this module's directory at runtime
+		source "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}/shared-gh-wrappers.sh"
 	fi
 fi
 if ! command -v _rest_should_fallback >/dev/null 2>&1 ||
 	! command -v _rest_issue_edit >/dev/null 2>&1; then
-	if [[ -f "${SCRIPT_DIR}/shared-gh-wrappers-rest-fallback.sh" ]]; then
+	if [[ -f "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}/shared-gh-wrappers-rest-fallback.sh" ]]; then
 		# shellcheck source=shared-gh-wrappers-rest-fallback.sh
-		# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
-		source "${SCRIPT_DIR}/shared-gh-wrappers-rest-fallback.sh"
+		# shellcheck disable=SC1091  # resolved from this module's directory at runtime
+		source "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}/shared-gh-wrappers-rest-fallback.sh"
 	fi
 fi
-if ! command -v _gh_guard_public_write_args >/dev/null 2>&1 && [[ -f "${SCRIPT_DIR}/shared-gh-wrappers-create.sh" ]]; then
+if ! command -v _gh_guard_public_write_args >/dev/null 2>&1 && [[ -f "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}/shared-gh-wrappers-create.sh" ]]; then
 	# shellcheck source=shared-gh-wrappers-create.sh
-	# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
-	source "${SCRIPT_DIR}/shared-gh-wrappers-create.sh"
+	# shellcheck disable=SC1091  # resolved from this module's directory at runtime
+	source "${_SHARED_GH_WRAPPERS_SAFE_EDIT_DIR}/shared-gh-wrappers-create.sh"
 fi
 
 #######################################
@@ -463,6 +464,10 @@ gh_pr_edit_safe() {
 		return 1
 	fi
 	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
+	if command -v _gh_wrapper_auto_sig >/dev/null 2>&1; then
+		_gh_wrapper_auto_sig "$@"
+		set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"
+	fi
 	if ! _gh_validate_edit_args "$@"; then
 		_gh_edit_audit_rejection "gh pr edit" "$_GH_EDIT_REJECTION_REASON" "$@"
 		return 1
