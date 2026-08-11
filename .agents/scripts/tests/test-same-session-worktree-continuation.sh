@@ -24,8 +24,8 @@ require_literal() {
 }
 
 main() {
-	require_literal 'Creating/opening its linked worktree does not require a new chat' \
-		"$AGENTS_DOC" 'always-loaded guidance permits a false session-bound blocker' || return 1
+	require_literal 'continue through verification in the same session/worktree' \
+		"$AGENTS_DOC" 'always-loaded guidance permits same-session continuation' || return 1
 	require_literal 'never infer one from the unchanged session root' \
 		"$SESSION_MANAGER_DOC" 'session manager treats an unchanged root as a blocker' || return 1
 	require_literal '**Same-session default**' \
