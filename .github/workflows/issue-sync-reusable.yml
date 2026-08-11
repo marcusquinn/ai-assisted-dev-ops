@@ -293,6 +293,16 @@ jobs:
           AIDEVOPS_ENRICH_MAX_ISSUES: '75'
           AIDEVOPS_ENRICH_MAX_SECONDS: '300'
 
+      - name: Reconcile pending planning publication
+        if: steps.check-author.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PUBLICATION_SHA: ${{ github.sha }}
+          PUBLICATION_REPO: ${{ github.repository }}
+        run: |
+          bash __aidevops/.agents/scripts/planning-publication-reconcile.sh reconcile \
+            --repo "$PUBLICATION_REPO" --sha "$PUBLICATION_SHA"
+
       - name: Pull any missing refs back to TODO.md
         if: steps.check-author.outputs.skip != 'true'
         run: |
