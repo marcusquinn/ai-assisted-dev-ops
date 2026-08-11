@@ -789,7 +789,8 @@ _full_loop_release_validate_published_reconciliation_intent() {
 	persisted_sources=$(_full_loop_read_release_authorization "$repo" "$requested_pr") || return 1
 	persisted_json=$(release_authorization_manifest_json "$persisted_sources") || return 1
 	observed_json=$(release_authorization_observed_sources_json "$persisted_json" "$source_json") || return 1
-	observed_sources=$(jq -r 'sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")' <<<"$observed_json") || return 1
+	observed_sources=$(jq -r 'sort_by(.pr) | map([.pr, .merge] | join("@")) | join(",")' \
+		<<<"$observed_json") || return 1
 	release_authorization_compare "$persisted_sources" "$observed_sources" || return 1
 	release_lane_read "$repo" || return 1
 	jq -e --argjson source_pr "$requested_pr" --arg tag_name "$tag_name" --arg expected "$persisted_sources" '
