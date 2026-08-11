@@ -13,12 +13,15 @@ _FULL_LOOP_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RELEASE_SUPERSEDED="superseded"
 _FULL_LOOP_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RELEASE_RECONCILE_PUBLISHED="published-reconcile"
+_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED="authorized-published-reconcile"
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "${TEST_ROOT}/bin" "${TEST_ROOT}/receipts"
 
 # shellcheck source=../full-loop-release-reconcile.sh
 source "${SCRIPT_DIR}/full-loop-release-reconcile.sh"
+# shellcheck source=../release-authorization-manifest-helper.sh
+source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 
 stale_publication_jobs_fixture() {
 	local mode="${1:-valid}"
@@ -286,6 +289,18 @@ printf 'PASS historical authorization gaps use idempotent detached production ev
 		90 1111111111111111111111111111111111111111 "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED"
 	cmp -s "$conflict_receipt" "${TEST_ROOT}/receipt-conflict-original.status"
 	cmp -s "$conflict_evidence" "${TEST_ROOT}/receipt-conflict-original.json"
+	_full_loop_validate_release_candidates test/repo "$conflict_source_json" \
+		"$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" v1.2.5 "$conflict_tag_commit"
+	_full_loop_persist_release_success test/repo "$conflict_release_path" "$conflict_source_json" \
+		90 1111111111111111111111111111111111111111 "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED"
+	grep -qx "$_FULL_LOOP_RELEASE_SUPERSEDED" "$conflict_receipt"
+	jq -e --arg tag_commit "$conflict_tag_commit" '
+		.status == "superseded" and .pr_number == 89 and .aggregate_pr == 90
+		and .release_commit == $tag_commit
+	' "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-89.aggregate.json" >/dev/null
+	_full_loop_persist_release_success test/repo "$conflict_release_path" "$conflict_source_json" \
+		90 1111111111111111111111111111111111111111 "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED"
+	grep -qx "$_FULL_LOOP_RELEASE_SUPERSEDED" "$conflict_receipt"
 	conflicting_source_json=$(jq '.aggregated_sources[0].merge = "5555555555555555555555555555555555555555"' \
 		<<<"$conflict_source_json")
 	if _full_loop_validate_release_candidates test/repo "$conflicting_source_json" \
@@ -294,7 +309,7 @@ printf 'PASS historical authorization gaps use idempotent detached production ev
 		exit 1
 	fi
 )
-printf 'PASS published aggregate reconciliation preserves terminal no-release receipts\n'
+printf 'PASS published aggregate reconciliation repairs only authorization-bound terminal no-release receipts\n'
 
 (
 	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/future-release-receipts"
@@ -585,9 +600,22 @@ _full_loop_validate_release_candidates() {
 	local mode="$3"
 	local tag_name="$4"
 	local tag_commit="$5"
-	[[ -n "$repo" && -n "$source_json" && "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
+	[[ -n "$repo" && -n "$source_json" && "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]] || return 1
 	[[ "$tag_name" == "v1.2.3" && "$tag_commit" == "3333333333333333333333333333333333333333" ]]
 	return $?
+}
+_full_loop_read_release_authorization() {
+	local repo="$1"
+	local requested_pr="$2"
+	[[ "$repo" == "test/repo" && "$requested_pr" == "90" ]] || return 1
+	printf '%s\n' '90@1111111111111111111111111111111111111111'
+	return 0
+}
+release_lane_read() {
+	local repo="$1"
+	[[ "$repo" == "test/repo" ]] || return 1
+	_AIDEVOPS_RELEASE_LANE_JSON='{"active":true,"source_pr":90,"expected_sources":"90@1111111111111111111111111111111111111111","phase":"remote-publication","tag":"v1.2.3","terminal_receipt":null}'
+	return 0
 }
 _full_loop_release_resolve_tag_commit() {
 	local tag_name="$1"
@@ -602,7 +630,7 @@ _full_loop_persist_release_success() {
 	local source_pr="$4"
 	local source_merge="$5"
 	local mode="$6"
-	[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
+	[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]] || return 1
 	printf '%s|%s|%s|%s|%s|%s\n' \
 		"$repo" "$release_path" "$source_json" "$source_pr" "$source_merge" "$mode" \
 		>"$FAKE_PERSIST_LOG"

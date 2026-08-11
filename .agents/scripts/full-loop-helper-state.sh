@@ -29,6 +29,7 @@ _FULL_LOOP_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RELEASE_SUPERSEDED="superseded"
 _FULL_LOOP_RELEASE_STRICT="strict"
 _FULL_LOOP_RELEASE_RECONCILE_PUBLISHED="published-reconcile"
+_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED="authorized-published-reconcile"
 _FULL_LOOP_RELEASE_EVIDENCE_RECEIPT_CONFLICT="receipt-conflict"
 _FULL_LOOP_RELEASE_ROLE_AGGREGATED="aggregated"
 _FULL_LOOP_SHA40_REGEX='^[0-9a-f]{40}$'
@@ -625,7 +626,8 @@ _full_loop_validate_release_candidates() {
 		'[{pr:.source_pr,merge:.source_merge,role:"source"}]
 		+ [.aggregated_sources[] | {pr,merge,role:$aggregate_role}]
 		| .[] | [.pr,.merge,.role] | @tsv' <<<"$source_json") || return 1
-	if [[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]]; then
+	if [[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
+		"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]]; then
 		[[ "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
 	elif [[ "$mode" != "$_FULL_LOOP_RELEASE_STRICT" ]]; then
 		return 1
@@ -638,7 +640,9 @@ _full_loop_validate_release_candidates() {
 		"" | "$_FULL_LOOP_PHASE_FAILED") ;;
 		"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
 			[[ "$mode" == "$_FULL_LOOP_RELEASE_STRICT" ||
-				("$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" && "$candidate_role" == "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED") ]] || {
+				(("$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
+					"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED") &&
+					"$candidate_role" == "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED") ]] || {
 				printf 'Cannot aggregate terminal release:%s evidence for PR #%s\n' "$candidate_status" "$candidate_pr" >&2
 				return 1
 			}
@@ -650,12 +654,16 @@ _full_loop_validate_release_candidates() {
 			fi
 			;;
 		"$_FULL_LOOP_RELEASE_SUPERSEDED")
-			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" && "$candidate_role" == "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED" ]] || return 1
+			[[ ( "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
+				"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ) &&
+				"$candidate_role" == "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED" ]] || return 1
 			_full_loop_release_candidate_evidence_matches "$repo" "$candidate_pr" "$candidate_merge" \
 				"$source_pr" "$source_merge" "$tag_name" "$tag_commit" aggregate || return 1
 			;;
 		"$_FULL_LOOP_RELEASE_PUBLISHED")
-			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" && "$candidate_role" == "source" ]] || return 1
+			[[ ( "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
+				"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ) &&
+				"$candidate_role" == "source" ]] || return 1
 			;;
 		*)
 			printf 'Cannot aggregate terminal release:%s evidence for PR #%s\n' "$candidate_status" "$candidate_pr" >&2
@@ -695,7 +703,8 @@ _full_loop_persist_release_success() {
 				"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
 			;;
 		"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
-			if [[ "$mode" == "$_FULL_LOOP_RELEASE_STRICT" ]]; then
+			if [[ "$mode" == "$_FULL_LOOP_RELEASE_STRICT" ||
+				"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]]; then
 				_full_loop_write_superseded_release_receipt "$repo" "$aggregated_pr" "$aggregated_merge" \
 					"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
 			else
@@ -704,7 +713,8 @@ _full_loop_persist_release_success() {
 			fi
 			;;
 		"$_FULL_LOOP_RELEASE_SUPERSEDED")
-			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
+			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
+				"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]] || return 1
 			_full_loop_release_candidate_evidence_matches "$repo" "$aggregated_pr" "$aggregated_merge" \
 				"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" aggregate || return 1
 			_full_loop_update_superseded_cleanup_receipt "$repo" "$aggregated_pr" || return 1
@@ -724,7 +734,8 @@ _full_loop_persist_release_success() {
 		full_loop_update_cleanup_release_status "$repo" "$release_source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED" || return 1
 		;;
 	"$_FULL_LOOP_RELEASE_PUBLISHED")
-		[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
+		[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ||
+			"$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" ]] || return 1
 		;;
 	*) return 1 ;;
 	esac

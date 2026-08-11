@@ -774,6 +774,33 @@ _full_loop_release_reset_tag_worktree() {
 	return 0
 }
 
+_full_loop_release_validate_published_reconciliation_intent() {
+	local repo="$1"
+	local requested_pr="$2"
+	local tag_name="$3"
+	local source_json="$4"
+	local persisted_sources=""
+	local persisted_json=""
+	local observed_json=""
+	local observed_sources=""
+
+	[[ "$requested_pr" =~ ^[0-9]+$ && "$tag_name" =~ $_FULL_LOOP_RELEASE_VERSION_TAG_REGEX ]] || return 1
+	declare -F release_lane_read >/dev/null 2>&1 || return 1
+	persisted_sources=$(_full_loop_read_release_authorization "$repo" "$requested_pr") || return 1
+	persisted_json=$(release_authorization_manifest_json "$persisted_sources") || return 1
+	observed_json=$(release_authorization_observed_sources_json "$persisted_json" "$source_json") || return 1
+	observed_sources=$(jq -r 'sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")' <<<"$observed_json") || return 1
+	release_authorization_compare "$persisted_sources" "$observed_sources" || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$requested_pr" --arg tag_name "$tag_name" --arg expected "$persisted_sources" '
+		.active == true and .source_pr == $source_pr and .tag == $tag_name
+		and .expected_sources == $expected
+		and (.phase == "remote-publication" or .phase == "exact-tag-deployment")
+		and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	return 0
+}
+
 _full_loop_release_finalize_reconciliation() {
 	local repo="$1"
 	local requested_pr="$2"
@@ -793,8 +820,10 @@ _full_loop_release_finalize_reconciliation() {
 		'([.source_pr] + [.aggregated_sources[].pr]) | any(. == $requested)' <<<"$source_json") || return 1
 	[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || return 1
 	tag_commit=$(_full_loop_release_resolve_tag_commit "$tag_name") || return 1
+	_full_loop_release_validate_published_reconciliation_intent \
+		"$repo" "$requested_pr" "$tag_name" "$source_json" || return 1
 	_full_loop_validate_release_candidates "$repo" "$source_json" \
-		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" "$tag_name" "$tag_commit" || return 1
+		"$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED" "$tag_name" "$tag_commit" || return 1
 	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
 	if declare -F release_lane_update_if_owned >/dev/null 2>&1; then
 		release_lane_update_if_owned "$repo" "$requested_pr" "exact-tag-deployment" "$tag_name" || return 1
@@ -814,7 +843,7 @@ _full_loop_release_finalize_reconciliation() {
 			bash "$version_manager" post-release
 	) || return 1
 	_full_loop_persist_release_success "$repo" "$_FULL_LOOP_RELEASE_PATH" "$source_json" \
-		"$source_pr" "$source_merge" "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED"
+		"$source_pr" "$source_merge" "$_FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED"
 	return $?
 }
 
