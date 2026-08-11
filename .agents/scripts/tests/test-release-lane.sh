@@ -96,6 +96,21 @@ run_merge_guard_test() (
 		_AIDEVOPS_RELEASE_LANE_JSON="$state"
 		return 0
 	}
+	gh() {
+		local endpoint="${2:-}"
+		case "$endpoint" in
+		"repos/test/repo/pulls/404")
+			jq -cn '{number:404,state:"open",base:{ref:"main",sha:("4" * 40)},
+				head:{sha:("5" * 40)},body:(
+				"Aidevops-Release-Aggregator-PR: 404\n"
+				+ "Aidevops-Release-Aggregates: 101@" + ("1" * 40)
+			)}'
+			;;
+		"repos/test/repo/pulls/404/files?per_page=1") printf '0\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
 	output=$(AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 202 main feature/ordinary 2>&1) || rc=$?
 	[[ "$rc" -eq 75 && "$output" == *"source_pr=101"* && "$output" == *"phase=remote-publication"* ]] || return 1
@@ -103,6 +118,8 @@ run_merge_guard_test() (
 		release_lane_merge_guard test/repo 101 main feature/release-owner || return 1
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 303 main chore/release-v1.2.3-provenance || return 1
+	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+		release_lane_merge_guard test/repo 404 main release/aggregate-recovery || return 1
 	state='{"schema_version":1,"repository":"test/repo","active":false,"source_pr":101,"phase":"terminal","tag":"v1.2.3","operation_token":"token-old","terminal_receipt":"superseded"}'
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 202 main feature/ordinary || return 1

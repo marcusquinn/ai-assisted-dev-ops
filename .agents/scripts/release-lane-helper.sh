@@ -382,6 +382,41 @@ release_lane_finalize() {
 	return $?
 }
 
+#aidevops:trust-boundary
+_release_lane_pr_is_metadata_only_aggregate() {
+	local repo="$1"
+	local pr_number="$2"
+	local pr_json=""
+	local body=""
+	local identity_count=0
+	local aggregate_count=0
+	local files_count=""
+	command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || return 1
+	pr_json=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null) || return 1
+	jq -e --argjson pr "$pr_number" '
+		.state == "open" and .base.ref == "main"
+		and (.number == $pr)
+		and (.head.sha | test("^[0-9a-f]{40}$"))
+		and (.base.sha | test("^[0-9a-f]{40}$"))
+	' <<<"$pr_json" >/dev/null || return 1
+	body=$(jq -er '.body // ""' <<<"$pr_json") || return 1
+	identity_count=$(awk -v expected="Aidevops-Release-Aggregator-PR: ${pr_number}" \
+		'$0 == expected { count++ } END { print count + 0 }' <<<"$body") || return 1
+	[[ "$identity_count" -eq 1 ]] || return 1
+	aggregate_count=$(awk '
+		/^Aidevops-Release-Aggregates: / {
+			value = substr($0, index($0, ": ") + 2)
+			if (value !~ /^[0-9]+@[0-9a-f]{40}$/) exit 2
+			count++
+		}
+		END { print count + 0 }
+	' <<<"$body") || return 1
+	[[ "$aggregate_count" -gt 0 ]] || return 1
+	files_count=$(gh api "repos/${repo}/pulls/${pr_number}/files?per_page=1" --jq 'length' 2>/dev/null) || return 1
+	[[ "$files_count" == "0" ]]
+	return $?
+}
+
 release_lane_merge_guard() {
 	local repo="$1"
 	local pr_number="$2"
@@ -420,6 +455,9 @@ release_lane_merge_guard() {
 	source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	tag_name=$(jq -r '.tag // ""' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	if [[ "$pr_number" == "$source_pr" || (-n "$tag_name" && "$head_ref" == "chore/release-${tag_name}-provenance") ]]; then
+		return 0
+	fi
+	if _release_lane_pr_is_metadata_only_aggregate "$repo" "$pr_number"; then
 		return 0
 	fi
 	printf 'ACTIVE_RELEASE_LANE_MERGE_BLOCKED source_pr=%s phase=%s tag=%s\n' \
