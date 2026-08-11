@@ -48,6 +48,8 @@ _PULSE_ISSUE_RECONCILE_NORMALIZE_LOADED=1
 #   2. At most one `tier:*` label. Rank matches
 #      .github/workflows/dedup-tier-labels.yml so this pass is idempotent
 #      with the GH Action: rank `reasoning > standard > simple`.
+#      Auto-dispatch issues with no tier receive conservative `tier:standard`
+#      without changing their dispatch, review, or hold labels.
 #
 # Also counts (but does not auto-fix) triage-missing issues — those with
 # `origin:interactive` label AND no `tier:*` AND no `auto-dispatch` AND no
@@ -250,6 +252,16 @@ _normalize_label_invariants_for_repo() {
 		if [[ "$tier_count" -gt 1 ]] &&
 			_enforce_tier_invariant_one_issue "$issue_num" "$slug" "${tier_arr[@]}"; then
 			_LI_TIER_FIXED=$((_LI_TIER_FIXED + 1))
+		fi
+		# An existing auto-dispatch label is the only authority needed for this
+		# conservative metadata repair. Do not add auto-dispatch, clear holds, or
+		# alter needs-maintainer-review; this only makes already-authorized work
+		# routable with the framework's default tier before pickup.
+		if [[ "$has_auto" == "true" && "$tier_count" -eq 0 ]]; then
+			if gh issue edit "$issue_num" --repo "$slug" --add-label "tier:standard" >/dev/null 2>&1; then
+				_LI_TIER_FIXED=$((_LI_TIER_FIXED + 1))
+				echo "[pulse-wrapper] label_invariants: backfilled tier:standard on auto-dispatch #${issue_num} in ${slug}" >>"$LOGFILE"
+			fi
 		fi
 
 		# Triage-missing count (flag only, no auto-fix). origin:interactive
