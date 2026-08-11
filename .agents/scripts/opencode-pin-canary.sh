@@ -84,6 +84,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 port_file, request_file = sys.argv[1:]
+CANARY = "canary"
+CONTENT_LENGTH = "Content-Length"
+CREATED = "created"
+MODEL = "model"
+OBJECT = "object"
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
@@ -91,12 +96,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         payload = json.dumps({
-            "object": "list",
-            "data": [{"id": "canary", "object": "model", "created": 0, "owned_by": "canary"}],
+            OBJECT: "list",
+            "data": [{"id": CANARY, OBJECT: MODEL, CREATED: 0, "owned_by": CANARY}],
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_header(CONTENT_LENGTH, str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
@@ -107,18 +112,18 @@ class Handler(BaseHTTPRequestHandler):
             requests.write(self.path + "\n")
         now = int(time.time())
         chunks = [
-            {"id": "canary", "object": "chat.completion.chunk", "created": now,
-             "model": "canary", "choices": [{"index": 0,
+            {"id": CANARY, OBJECT: "chat.completion.chunk", CREATED: now,
+             MODEL: CANARY, "choices": [{"index": 0,
              "delta": {"role": "assistant", "content": "Four"}, "finish_reason": None}]},
-            {"id": "canary", "object": "chat.completion.chunk", "created": now,
-             "model": "canary", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            {"id": CANARY, OBJECT: "chat.completion.chunk", CREATED: now,
+             MODEL: CANARY, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
         ]
         payload = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
         payload += "data: [DONE]\n\n"
         encoded = payload.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header(CONTENT_LENGTH, str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -148,15 +153,16 @@ run_isolated_probe() {
 	local output_file="$canary_root/$label.output"
 	local plugin_path="$SCRIPT_DIR/../plugins/opencode-aidevops/index.mjs"
 	local plugin_url=""
+	local model_id="canary"
 	local request_count_before=0
 	local request_count_after=0
 	mkdir -p "$probe_root/home" "$probe_root/config/opencode" "$probe_root/data" "$probe_root/cache"
 	if [[ -f "$plugin_path" ]]; then
 		plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$plugin_path")
 	fi
-	jq -n --arg api "http://127.0.0.1:${port}/v1" --arg plugin "$plugin_url" \
-		'{provider:{canary:{npm:"@ai-sdk/openai-compatible",name:"Canary",api:$api,
-		options:{apiKey:"canary-local-only"},models:{canary:{name:"Canary"}}}}}
+	jq -n --arg api "http://127.0.0.1:${port}/v1" --arg plugin "$plugin_url" --arg model "$model_id" \
+		'{provider:{($model):{npm:"@ai-sdk/openai-compatible",name:"Canary",api:$api,
+		options:{apiKey:"canary-local-only"},models:{($model):{name:"Canary"}}}}}
 		+ (if $plugin == "" then {} else {plugin:[$plugin]} end)' \
 		>"$probe_root/config/opencode/opencode.json"
 	[[ -f "$request_file" ]] && request_count_before=$(wc -l <"$request_file" | tr -d ' ')
