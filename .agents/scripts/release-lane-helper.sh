@@ -380,6 +380,51 @@ release_lane_finalize() {
 	return $?
 }
 
+release_lane_merge_guard() {
+	local repo="$1"
+	local pr_number="$2"
+	local base_ref="$3"
+	local head_ref="$4"
+	local coordinated_repo="${AIDEVOPS_RELEASE_LANE_COORDINATED_REPO:-marcusquinn/aidevops}"
+	local read_rc=0
+	local active=""
+	local phase=""
+	local source_pr=""
+	local tag_name=""
+	local terminal_receipt=""
+
+	[[ "$repo" == "$coordinated_repo" && "$base_ref" == "main" ]] || return 0
+	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+	release_lane_read "$repo" || read_rc=$?
+	case "$read_rc" in
+	2) return 0 ;;
+	0) ;;
+	*)
+		printf 'Cannot verify repository release lane; ordinary merge is blocked\n' >&2
+		return 75
+		;;
+	esac
+	active=$(jq -r '.active' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	phase=$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	terminal_receipt=$(jq -r 'if .terminal_receipt == null then "" elif (.terminal_receipt | type) == "string" then .terminal_receipt else .terminal_receipt.status // "" end' \
+		<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	if [[ "$active" == "false" || "$phase" == "terminal" || "$terminal_receipt" == "published" || "$terminal_receipt" == "superseded" || "$terminal_receipt" == "recovered" ]]; then
+		return 0
+	fi
+	case "$phase" in
+	remote-publication | exact-tag-deployment) ;;
+	*) return 0 ;;
+	esac
+	source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	tag_name=$(jq -r '.tag // ""' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	if [[ "$pr_number" == "$source_pr" || (-n "$tag_name" && "$head_ref" == "chore/release-${tag_name}-provenance") ]]; then
+		return 0
+	fi
+	printf 'ACTIVE_RELEASE_LANE_MERGE_BLOCKED source_pr=%s phase=%s tag=%s\n' \
+		"$source_pr" "$phase" "${tag_name:-pending}" >&2
+	return 75
+}
+
 release_lane_setup_guard() {
 	local repo="$1"
 	local source_pr="${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}"

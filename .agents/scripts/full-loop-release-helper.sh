@@ -340,7 +340,15 @@ _full_loop_release_existing_with_lane() {
 	_full_loop_release_existing_command "$release_type" "$source_pr" || existing_rc=$?
 	if [[ "$release_type" == "reconcile" && "$lane_owned" == "true" ]]; then
 		if [[ "$existing_rc" -eq 0 ]]; then
-			release_lane_finalize "$existing_repo" "$source_pr" "published" || return 1
+			local receipt_path=""
+			local receipt_status=""
+			receipt_path=$(_full_loop_release_receipt_path "$existing_repo" "$source_pr") || return 1
+			[[ -f "$receipt_path" ]] && IFS= read -r receipt_status <"$receipt_path" || true
+			case "$receipt_status" in
+			"$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED") ;;
+			*) return 1 ;;
+			esac
+			release_lane_finalize "$existing_repo" "$source_pr" "$receipt_status" || return 1
 		elif [[ "$existing_rc" -eq 8 ]]; then
 			release_lane_update "$existing_repo" "$source_pr" "remote-publication" || return 1
 		fi

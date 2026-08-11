@@ -88,6 +88,36 @@ run_setup_guard_test() {
 	return $?
 }
 
+run_merge_guard_test() (
+	local state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"phase":"remote-publication","tag":"v1.2.3","operation_token":"token-old"}'
+	local output=""
+	local rc=0
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		return 0
+	}
+	output=$(AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+		release_lane_merge_guard test/repo 202 main feature/ordinary 2>&1) || rc=$?
+	[[ "$rc" -eq 75 && "$output" == *"source_pr=101"* && "$output" == *"phase=remote-publication"* ]] || return 1
+	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+		release_lane_merge_guard test/repo 101 main feature/release-owner || return 1
+	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+		release_lane_merge_guard test/repo 303 main chore/release-v1.2.3-provenance || return 1
+	state='{"schema_version":1,"repository":"test/repo","active":false,"source_pr":101,"phase":"terminal","tag":"v1.2.3","operation_token":"token-old","terminal_receipt":"superseded"}'
+	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+		release_lane_merge_guard test/repo 202 main feature/ordinary || return 1
+	return 0
+)
+
+run_merge_guard_api_uncertainty_test() (
+	release_lane_read() { return 1; }
+	if AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+		release_lane_merge_guard test/repo 202 main feature/ordinary >/dev/null 2>&1; then
+		return 1
+	fi
+	return 0
+)
+
 run_http_classification_test() (
 	local mode="missing"
 	local rc=0
@@ -259,6 +289,8 @@ if run_competing_source_test; then assert_result 'competing source receives acti
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
 if run_setup_guard_test; then assert_result 'exact-tag deployment blocks generic setup and permits matching owner' true; else assert_result 'exact-tag deployment blocks generic setup and permits matching owner' false; fi
+if run_merge_guard_test; then assert_result 'exact-tip lane blocks ordinary merges while preserving release ownership and terminal recovery' true; else assert_result 'exact-tip lane blocks ordinary merges while preserving release ownership and terminal recovery' false; fi
+if run_merge_guard_api_uncertainty_test; then assert_result 'merge coordination fails closed when lane state is unavailable' true; else assert_result 'merge coordination fails closed when lane state is unavailable' false; fi
 if run_http_classification_test; then assert_result 'only verified HTTP 404 is classified as an absent lane' true; else assert_result 'only verified HTTP 404 is classified as an absent lane' false; fi
 if run_legacy_and_api_failure_test; then assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' true; else assert_result 'legacy absent lane remains compatible while API uncertainty blocks setup' false; fi
 if run_stale_same_source_recovery_test; then assert_result 'stale recovery rotates its token and fences the prior owner' true; else assert_result 'stale recovery rotates its token and fences the prior owner' false; fi

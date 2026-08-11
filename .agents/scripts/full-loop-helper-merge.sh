@@ -49,6 +49,10 @@ source "${SCRIPT_DIR}/shared-phase-filing.sh"
 # shellcheck disable=SC1091  # sub-library resolved at runtime via SCRIPT_DIR
 source "${SCRIPT_DIR}/gh-merge-cache-remediation-lib.sh"
 
+# shellcheck source=./release-lane-helper.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via SCRIPT_DIR
+source "${SCRIPT_DIR}/release-lane-helper.sh"
+
 if [[ -f "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh" ]]; then
 	# shellcheck source=./full-loop-cleanup-receipt.sh
 	source "${SCRIPT_DIR}/full-loop-cleanup-receipt.sh"
@@ -1787,6 +1791,21 @@ cmd_merge() {
 		print_error "Merge blocked by review bot gate. Address bot findings or wait for reviews."
 		return 1
 	}
+	if [[ "$repo" == "${AIDEVOPS_RELEASE_LANE_COORDINATED_REPO:-marcusquinn/aidevops}" ]]; then
+		local _release_lane_pr_refs=""
+		local _release_lane_base_ref=""
+		local _release_lane_head_ref=""
+		local _release_lane_pr_endpoint="repos/${repo}/pulls"
+		_release_lane_pr_refs=$(gh api "${_release_lane_pr_endpoint}/${pr_number}" --jq '[.base.ref, .head.ref] | @tsv' 2>/dev/null) || {
+			print_error "Merge blocked: cannot verify release-lane PR identity"
+			return 1
+		}
+		IFS=$'\t' read -r _release_lane_base_ref _release_lane_head_ref <<<"$_release_lane_pr_refs"
+		release_lane_merge_guard "$repo" "$pr_number" "$_release_lane_base_ref" "$_release_lane_head_ref" || {
+			print_error "Merge deferred by active exact-tip release lane"
+			return 1
+		}
+	fi
 	local _cleanup_target=""
 	local _cleanup_worktree=""
 	local _cleanup_branch=""

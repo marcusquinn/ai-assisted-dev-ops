@@ -241,6 +241,10 @@ source "${_PULSE_MERGE_DIR}/pr-supersession-helper.sh"
 # shellcheck disable=SC1091  # sub-library resolved at runtime via _PULSE_MERGE_DIR
 source "${_PULSE_MERGE_DIR}/gh-merge-cache-remediation-lib.sh"
 
+# shellcheck source=./release-lane-helper.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via _PULSE_MERGE_DIR
+source "${_PULSE_MERGE_DIR}/release-lane-helper.sh"
+
 readonly _PM_PARENT_TASK_LABEL_NEEDLE=",parent-task,"
 
 # Source author permission check helpers (GH#21426 — extracted to bring
@@ -1393,6 +1397,12 @@ _process_single_ready_pr() {
 	if _pmp_is_protected_release_pr "$pr_head_ref_name" "$pr_labels"; then
 		echo "[pulse-wrapper] Merge pass: deferring protected release PR #${pr_number} in ${repo_slug} to provenance-preserving exact-merge reconciliation" >>"$LOGFILE"
 		return 4
+	fi
+	if [[ "$repo_slug" == "${AIDEVOPS_RELEASE_LANE_COORDINATED_REPO:-marcusquinn/aidevops}" ]]; then
+		if ! release_lane_merge_guard "$repo_slug" "$pr_number" "$pr_base_ref_name" "$pr_head_ref_name"; then
+			echo "[pulse-wrapper] Merge pass: deferring PR #${pr_number} in ${repo_slug} for active exact-tip release lane" >>"$LOGFILE"
+			return 1
+		fi
 	fi
 
 	# REST-first PR lists cannot preserve GraphQL-only mergeable state, so a
