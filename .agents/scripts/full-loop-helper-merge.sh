@@ -982,6 +982,33 @@ _merge_remove_body_snapshot() {
 	return 0
 }
 
+# Release provenance later reads merge commit trailers with `git
+# interpret-trailers --parse`. Reject an aggregation body whose raw trailers
+# would be hidden by a non-terminal signature divider before it reaches any
+# merge transport.
+_merge_validate_release_aggregation_body() {
+	local body_file="$1"
+	local raw_aggregator=""
+	local raw_aggregates=""
+	local parsed_trailers=""
+	local parsed_aggregator=""
+	local parsed_aggregates=""
+
+	raw_aggregator=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' "$body_file") || return 1
+	raw_aggregates=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' "$body_file") || return 1
+	[[ -n "$raw_aggregator" || -n "$raw_aggregates" ]] || return 0
+
+	parsed_trailers=$(git interpret-trailers --parse <"$body_file") || return 1
+	parsed_aggregator=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$parsed_trailers") || return 1
+	parsed_aggregates=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$parsed_trailers") || return 1
+	if [[ "$raw_aggregator" != "$parsed_aggregator" || "$raw_aggregates" != "$parsed_aggregates" ||
+		! "$parsed_aggregator" =~ ^[0-9]+$ || -z "$parsed_aggregates" ]]; then
+		print_error "Release-aggregation trailers must be a terminal parseable block; place any signature footer and --- before the Aidevops-Release trailers."
+		return 1
+	fi
+	return 0
+}
+
 _merge_execute() {
 	local pr_number="$1" repo="$2" merge_method="$3"
 	local has_admin="$4" has_auto="$5" squash_subject=""
@@ -1777,6 +1804,10 @@ cmd_merge() {
 	if [[ -n "$merge_body_file" ]]; then
 		_merge_body_snapshot=$(_merge_snapshot_body_file "$merge_body_file") || return 1
 		merge_body_file="$_merge_body_snapshot"
+		if ! _merge_validate_release_aggregation_body "$merge_body_file"; then
+			_merge_remove_body_snapshot "$_merge_body_snapshot"
+			return 1
+		fi
 	fi
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base

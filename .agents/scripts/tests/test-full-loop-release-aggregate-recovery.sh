@@ -228,11 +228,15 @@ _full_loop_recovery_run_version_manager() {
 	printf 'version-manager\n' >>"$CALL_LOG"
 	return 1
 }
+_full_loop_recovery_resume_publication() {
+	printf 'resume\n' >>"$CALL_LOG"
+	return 1
+}
 if _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 >/dev/null 2>&1; then
 	printf 'FAIL failed recovery returned success\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager restore " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager resume restore " ]]
 printf 'PASS failed recovery restores authorization and release-lane state\n'
 
 : >"$CALL_LOG"
@@ -241,8 +245,22 @@ if _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 >/dev/null 2>&
 	printf 'FAIL unsafe failed recovery returned success\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager resume " ]]
 printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
+
+: >"$CALL_LOG"
+_full_loop_recovery_resume_publication() {
+	printf 'resume\n' >>"$CALL_LOG"
+	return 8
+}
+durable_queue_rc=0
+durable_queue_output=$(_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 2>&1) || durable_queue_rc=$?
+[[ "$durable_queue_rc" -eq 8 ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager resume " ]]
+[[ "$durable_queue_output" == *"aidevops release status 42"* ]]
+[[ "$durable_queue_output" == *"aidevops release reconcile 42"* ]]
+[[ "$durable_queue_output" != *"Aggregate recovery failed after tag state changed"* ]]
+printf 'PASS durable protected-main queue remains pending after version-manager uncertainty\n'
 
 (
 	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED

@@ -402,6 +402,7 @@ _full_loop_release_recover_aggregate() {
 	local tag_name="$3"
 	local expected_sources="$4"
 	local recovery_rc=0
+	local resume_rc=0
 	local new_tag_object=""
 	local tag_sources=""
 	_full_loop_recovery_validate_receipt "$repo" "$source_pr" || return 1
@@ -420,6 +421,19 @@ _full_loop_release_recover_aggregate() {
 	_full_loop_recovery_begin_state_transaction "$repo" "$source_pr" "$tag_name" || return 1
 	_full_loop_recovery_run_version_manager "$source_pr" "$tag_name" || recovery_rc=$?
 	if [[ "$recovery_rc" -ne 0 && "$recovery_rc" -ne 8 ]]; then
+		# A protected-main PR can be created after the replacement tag is durable
+		# but before version-manager reports its normal queued exit. Reconcile the
+		# exact tag before treating that post-mutation state as a failure.
+		_full_loop_recovery_resume_publication "$repo" "$source_pr" "$tag_name" || resume_rc=$?
+		case "$resume_rc" in
+		0) return 0 ;;
+		8)
+			printf 'release:aggregate-recovery queued tag=%s source_pr=%s\n' "$tag_name" "$source_pr"
+			printf 'Resume with: aidevops release status %s\n' "$source_pr"
+			printf 'Resume with: aidevops release reconcile %s\n' "$source_pr"
+			return 8
+			;;
+		esac
 		if _full_loop_recovery_tag_rollback_safe "$repo" "$tag_name"; then
 			_full_loop_recovery_restore_state_transaction "$repo" "$source_pr" || true
 		else
@@ -431,5 +445,7 @@ _full_loop_release_recover_aggregate() {
 	_full_loop_recovery_write_evidence "$repo" "$source_pr" "$tag_name" "$new_tag_object" || return 1
 	release_lane_update "$repo" "$source_pr" remote-publication "$tag_name" || return 1
 	printf 'release:aggregate-recovery queued tag=%s source_pr=%s\n' "$tag_name" "$source_pr"
+	printf 'Resume with: aidevops release status %s\n' "$source_pr"
+	printf 'Resume with: aidevops release reconcile %s\n' "$source_pr"
 	return 8
 }
