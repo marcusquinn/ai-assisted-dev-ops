@@ -75,7 +75,7 @@
     "react": "19.2.8",
     "react-dom": "19.1.0",
     "secretlint": "11.7.1",
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   },
   "overrides": {
     "esbuild": "0.28.1",
