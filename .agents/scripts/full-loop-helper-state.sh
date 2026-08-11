@@ -27,6 +27,7 @@ _FULL_LOOP_STATE_LIB_LOADED=1
 _FULL_LOOP_RELEASE_NOT_REQUESTED="not-requested"
 _FULL_LOOP_RELEASE_PUBLISHED="published"
 _FULL_LOOP_RELEASE_SUPERSEDED="superseded"
+_FULL_LOOP_RELEASE_STRICT="strict"
 _FULL_LOOP_RELEASE_RECONCILE_PUBLISHED="published-reconcile"
 _FULL_LOOP_RELEASE_EVIDENCE_RECEIPT_CONFLICT="receipt-conflict"
 _FULL_LOOP_RELEASE_ROLE_AGGREGATED="aggregated"
@@ -606,7 +607,7 @@ _full_loop_read_release_receipt_status() {
 _full_loop_validate_release_candidates() {
 	local repo="$1"
 	local source_json="$2"
-	local mode="${3:-strict}"
+	local mode="${3:-$_FULL_LOOP_RELEASE_STRICT}"
 	local tag_name="${4:-}"
 	local tag_commit="${5:-}"
 	local source_pr=""
@@ -626,7 +627,7 @@ _full_loop_validate_release_candidates() {
 		| .[] | [.pr,.merge,.role] | @tsv' <<<"$source_json") || return 1
 	if [[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]]; then
 		[[ "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$tag_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
-	elif [[ "$mode" != "strict" ]]; then
+	elif [[ "$mode" != "$_FULL_LOOP_RELEASE_STRICT" ]]; then
 		return 1
 	fi
 	while IFS=$'\t' read -r candidate_pr candidate_merge candidate_role; do
@@ -636,7 +637,8 @@ _full_loop_validate_release_candidates() {
 		case "$candidate_status" in
 		"" | "$_FULL_LOOP_PHASE_FAILED") ;;
 		"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
-			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" && "$candidate_role" == "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED" ]] || {
+			[[ "$mode" == "$_FULL_LOOP_RELEASE_STRICT" ||
+				("$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" && "$candidate_role" == "$_FULL_LOOP_RELEASE_ROLE_AGGREGATED") ]] || {
 				printf 'Cannot aggregate terminal release:%s evidence for PR #%s\n' "$candidate_status" "$candidate_pr" >&2
 				return 1
 			}
@@ -693,9 +695,13 @@ _full_loop_persist_release_success() {
 				"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
 			;;
 		"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
-			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
-			_full_loop_write_release_receipt_conflict_evidence "$repo" "$aggregated_pr" "$aggregated_merge" \
-				"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+			if [[ "$mode" == "$_FULL_LOOP_RELEASE_STRICT" ]]; then
+				_full_loop_write_superseded_release_receipt "$repo" "$aggregated_pr" "$aggregated_merge" \
+					"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+			else
+				_full_loop_write_release_receipt_conflict_evidence "$repo" "$aggregated_pr" "$aggregated_merge" \
+					"$release_source_pr" "$release_source_merge" "$tag_name" "$tag_commit" || return 1
+			fi
 			;;
 		"$_FULL_LOOP_RELEASE_SUPERSEDED")
 			[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
@@ -711,6 +717,11 @@ _full_loop_persist_release_success() {
 	case "$receipt_status" in
 	"" | "$_FULL_LOOP_PHASE_FAILED")
 		_full_loop_write_release_receipt "$repo" "$release_source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED" || return 1
+		;;
+	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
+		[[ "$mode" == "$_FULL_LOOP_RELEASE_STRICT" ]] || return 1
+		_full_loop_write_release_receipt "$repo" "$release_source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED" || return 1
+		full_loop_update_cleanup_release_status "$repo" "$release_source_pr" "$_FULL_LOOP_RELEASE_PUBLISHED" || return 1
 		;;
 	"$_FULL_LOOP_RELEASE_PUBLISHED")
 		[[ "$mode" == "$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" ]] || return 1
@@ -731,9 +742,16 @@ _full_loop_write_release_receipt() {
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$pr_number") || return 1
 	mkdir -p "${receipt_path%/*}" || return 1
 	current_status=$(_full_loop_read_release_receipt_status "$receipt_path") || return 1
-	case "$current_status" in
-	"$_FULL_LOOP_RELEASE_NOT_REQUESTED" | "$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED")
-		[[ "$current_status" == "$status" ]] || return 1
+	case "${current_status}:${status}" in
+	"${_FULL_LOOP_RELEASE_NOT_REQUESTED}:${_FULL_LOOP_RELEASE_NOT_REQUESTED}" | \
+		"${_FULL_LOOP_RELEASE_NOT_REQUESTED}:${_FULL_LOOP_RELEASE_PUBLISHED}" | \
+		"${_FULL_LOOP_RELEASE_NOT_REQUESTED}:${_FULL_LOOP_RELEASE_SUPERSEDED}" | \
+		"${_FULL_LOOP_RELEASE_PUBLISHED}:${_FULL_LOOP_RELEASE_PUBLISHED}" | \
+		"${_FULL_LOOP_RELEASE_SUPERSEDED}:${_FULL_LOOP_RELEASE_SUPERSEDED}") ;;
+	"${_FULL_LOOP_RELEASE_NOT_REQUESTED}:"* | \
+		"${_FULL_LOOP_RELEASE_PUBLISHED}:"* | \
+		"${_FULL_LOOP_RELEASE_SUPERSEDED}:"*)
+		return 1
 		;;
 	esac
 	printf '%s\n' "$status" >"${receipt_path}.tmp.$$" || return 1

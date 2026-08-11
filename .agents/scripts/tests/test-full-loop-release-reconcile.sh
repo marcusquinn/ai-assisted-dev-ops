@@ -261,10 +261,7 @@ printf 'PASS historical authorization gaps use idempotent detached production ev
 	[[ ! -s "$conflict_receipt" ]]
 	printf '%s\n' "$_FULL_LOOP_RELEASE_NOT_REQUESTED" >"$conflict_receipt"
 	cp "$conflict_receipt" "${TEST_ROOT}/receipt-conflict-original.status"
-	if _full_loop_validate_release_candidates test/repo "$conflict_source_json" >/dev/null 2>&1; then
-		printf 'FAIL release preparation accepted terminal no-release evidence\n'
-		exit 1
-	fi
+	_full_loop_validate_release_candidates test/repo "$conflict_source_json"
 	_full_loop_validate_release_candidates test/repo "$conflict_source_json" \
 		"$_FULL_LOOP_RELEASE_RECONCILE_PUBLISHED" v1.2.5 "$conflict_tag_commit"
 	_full_loop_persist_release_success test/repo "$conflict_release_path" "$conflict_source_json" \
@@ -298,6 +295,45 @@ printf 'PASS historical authorization gaps use idempotent detached production ev
 	fi
 )
 printf 'PASS published aggregate reconciliation preserves terminal no-release receipts\n'
+
+(
+	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="${TEST_ROOT}/future-release-receipts"
+	# shellcheck source=../full-loop-helper-state.sh
+	source "${SCRIPT_DIR}/full-loop-helper-state.sh"
+	future_release_path="${TEST_ROOT}/future-release"
+	mkdir -p "$future_release_path"
+	printf '1.2.6\n' >"${future_release_path}/VERSION"
+	future_tag_commit="6666666666666666666666666666666666666666"
+	future_source_json=$(jq -cn '
+		{source_pr:92,source_merge:"7777777777777777777777777777777777777777",
+		 aggregated_sources:[{pr:91,merge:"8888888888888888888888888888888888888888"}]}
+	')
+	git() {
+		local args="$*"
+		case "$args" in
+		*"rev-parse refs/tags/v1.2.6^{commit}"*) printf '%s\n' "$future_tag_commit" ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	full_loop_update_cleanup_release_status() {
+		return 0
+	}
+	_full_loop_write_release_receipt test/repo 91 "$_FULL_LOOP_RELEASE_NOT_REQUESTED"
+	_full_loop_write_release_receipt test/repo 92 "$_FULL_LOOP_RELEASE_NOT_REQUESTED"
+	_full_loop_validate_release_candidates test/repo "$future_source_json"
+	_full_loop_persist_release_success test/repo "$future_release_path" "$future_source_json" \
+		92 7777777777777777777777777777777777777777
+	grep -qx "$_FULL_LOOP_RELEASE_SUPERSEDED" \
+		"${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-91.status"
+	grep -qx "$_FULL_LOOP_RELEASE_PUBLISHED" \
+		"${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-92.status"
+	jq -e --arg tag_commit "$future_tag_commit" '
+		.status == "superseded" and .pr_number == 91 and .aggregate_pr == 92
+		and .release_commit == $tag_commit
+	' "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-91.aggregate.json" >/dev/null
+)
+printf 'PASS a later authorized release includes merged no-release PRs without renewed consent\n'
 
 legacy_source_json_file="${TEST_ROOT}/legacy-source.json"
 (
@@ -1403,10 +1439,10 @@ terminal_rc=0
 AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 \
 	>/dev/null 2>&1 || terminal_rc=$?
 if [[ "$terminal_rc" -ne 1 ]]; then
-	printf 'FAIL terminal not-requested evidence allowed publication recovery\n'
+	printf 'FAIL reconciliation inferred fresh publication intent from not-requested evidence\n'
 	exit 1
 fi
-printf 'PASS not-requested evidence remains an irreversible publication block\n'
+printf 'PASS reconciliation cannot replace the explicit release command as publication intent\n'
 rm -f "${TEST_ROOT}/receipts/test_repo-90.status"
 
 _full_loop_release_latest_tag() {

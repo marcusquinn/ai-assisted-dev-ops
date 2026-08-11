@@ -235,7 +235,7 @@ printf 'PASS intervening main commit records both SHAs without publication\n'
 
 printf '%s\n' not-requested >"$ROOT/receipts/marcusquinn_aidevops-44.status"
 cp "$ROOT/vm.log" "$ROOT/vm-before-skipped-release.log"
-if (
+(
 	cd "$ROOT/repo/linked-branch"
 	PATH="$ROOT/bin:/usr/bin:/bin" \
 		GIT_CALL_LOG="$ROOT/git.log" \
@@ -247,13 +247,13 @@ if (
 		AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts" \
 		AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
 		bash "$SCRIPT_DIR/full-loop-release-helper.sh" patch 44 incremental
-); then
-	printf 'FAIL skipped release evidence was replaced\n'
+)
+grep -qx 'published' "$ROOT/receipts/marcusquinn_aidevops-44.status"
+if cmp -s "$ROOT/vm.log" "$ROOT/vm-before-skipped-release.log"; then
+	printf 'FAIL later release authorization did not invoke publication\n'
 	exit 1
 fi
-grep -qx 'not-requested' "$ROOT/receipts/marcusquinn_aidevops-44.status"
-cmp -s "$ROOT/vm.log" "$ROOT/vm-before-skipped-release.log"
-printf 'PASS skipped release evidence cannot trigger publication\n'
+printf 'PASS no-release evidence permits a later explicitly authorized publication\n'
 
 (
 	cd "$ROOT/repo/linked-branch"

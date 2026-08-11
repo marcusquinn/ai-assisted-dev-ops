@@ -30,17 +30,17 @@ GitHub release creation, npm OIDC publication, and Homebrew update work:
 
 ### Intervening-main recovery
 
-An authorized source that is no longer the direct `main` tip cannot publish by
-ancestor reachability alone. Recovery requires a new reviewed aggregation PR at
-the exact release tip. Its immutable squash-merge message records:
+A source merged to the default branch is eligible for the next authorized
+release, but if it is no longer the direct `main` tip, provenance requires a new
+reviewed aggregation PR at the exact release tip. Its immutable message records:
 
 ```text
 Aidevops-Release-Aggregator-PR: <aggregation-pr>
 Aidevops-Release-Aggregates: <authorized-pr>@<merge-sha>
 ```
 
-Repeat `Aidevops-Release-Aggregates` for every authorized source settled by the
-release. The release helper verifies the aggregation PR and every listed PR
+Repeat `Aidevops-Release-Aggregates` for every otherwise-unreleased merged source
+settled by the release. The release helper verifies the aggregation PR and every listed PR
 against GitHub, requires their exact merge SHAs to be ancestors of the aggregate
 tip, and copies the complete manifest into the signed tag. An intervening direct
 commit without this reviewed attestation remains blocked.
@@ -104,12 +104,12 @@ PR #28725 demonstrated the fail-closed duplicate-trailer case: its squash
 message retained an earlier separated trailer block plus the final contiguous
 block. No release was attempted from that ambiguous manifest; a new reviewed
 single-block aggregation supersedes it. PR #28727 then demonstrated the
-terminal-receipt guard: publication was rejected because its manifest included
-PR #28720, which already recorded `release:not-requested`. Aggregation manifests
-must include only sources whose current receipts still permit publication; code
-from terminal non-publishing sources may remain in the release tree without
-rewriting those receipts. PR #28729 reviews the remaining authorized source,
-PR #28701 at its exact merge SHA.
+terminal-receipt guard then in force: publication was rejected because its
+manifest included PR #28720, which already recorded `release:not-requested`.
+That receipt is now defined as "no immediate publication" rather than permanent
+exclusion, so a later explicitly authorized release may transition it before
+publication. Published and superseded receipts remain immutable. PR #28729
+records the historical recovery under the former rule.
 
 Aggregation PR #28736 reviews authorized PR #28735 at
 `023ae92964f6add94517d99a4091e6b1a20c9445` through the same path because the

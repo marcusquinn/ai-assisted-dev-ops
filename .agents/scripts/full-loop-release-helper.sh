@@ -208,8 +208,8 @@ _full_loop_release_guard_existing() {
 		return 0
 		;;
 	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
-		printf 'Cannot replace terminal release:not-requested evidence for PR #%s\n' "$source_pr" >&2
-		return 1
+		# No publication was requested by the originating session. A later
+		# explicitly authorized release may publish this already-merged PR.
 		;;
 	"" | "$_FULL_LOOP_PHASE_FAILED") ;;
 	*)
