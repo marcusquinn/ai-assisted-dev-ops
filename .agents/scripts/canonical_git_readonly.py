@@ -91,9 +91,14 @@ def _bundle_is_read_only(args: list[str]) -> bool:
     return len(paths) == 1 and not paths[0].startswith("-")
 
 
+def _is_hash_object_write_flag(arg: str) -> bool:
+    return arg == "-w" or (
+        arg.startswith("-") and not arg.startswith("--") and "w" in arg[1:]
+    )
+
+
 def _hash_object_is_read_only(args: list[str]) -> bool:
     """Allow hashing inputs while rejecting object database writes."""
-    value_options = {"-t"}
     read_only_options = {
         "--literally",
         "--no-filters",
@@ -112,16 +117,16 @@ def _hash_object_is_read_only(args: list[str]) -> bool:
         if arg == "--":
             options_ended = True
             continue
-        if arg == "-w" or (
-            arg.startswith("-") and not arg.startswith("--") and "w" in arg[1:]
-        ):
+        if _is_hash_object_write_flag(arg):
             return False
-        if arg in value_options:
+        if arg == "-t":
             expect_value = True
             continue
-        if arg in read_only_options or arg.startswith("--path="):
-            continue
-        if arg.startswith("-"):
+        if (
+            arg.startswith("-")
+            and arg not in read_only_options
+            and not arg.startswith("--path=")
+        ):
             return False
 
     return not expect_value
