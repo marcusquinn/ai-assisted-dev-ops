@@ -82,7 +82,20 @@ fi
 
 if grep -qF 'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6' "$WORKFLOW" &&
 	grep -qF 'bun install --frozen-lockfile --ignore-scripts' "$WORKFLOW" &&
-	grep -qF '"ajv": "^8.18.0"' "$PACKAGE_JSON"; then
+	python3 - "$PACKAGE_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as package_file:
+    package_json = json.load(package_file)
+
+for dependency_group in ("dependencies", "devDependencies"):
+    if "ajv" in package_json.get(dependency_group, {}):
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+then
 	pass "post-merge verification installs locked JavaScript dependencies without lifecycle scripts"
 else
 	fail "post-merge JavaScript dependency bootstrap" "missing direct Ajv dependency, pinned Bun setup, or locked install"
