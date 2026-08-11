@@ -152,26 +152,65 @@ test_export_before_self_check() {
 	return 0
 }
 
-# Test 5: dashboard refresh failures must not be blindly swallowed by the wrapper.
+# Test 5: dashboard refresh must run before the slow quality sweep, and failures
+# must not be blindly swallowed. This ensures a quality-sweep timeout cannot
+# prevent the primary health surface from refreshing.
+test_health_update_precedes_quality_sweep() {
+	local temp_dir="" trace=""
+	temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/stats-wrapper-order-XXXXXX") || {
+		print_result "dashboard refresh precedes quality sweep" 1 "Could not create temporary directory"
+		return 0
+	}
+
+	cat >"$temp_dir/stats-functions.sh" <<'MOCK_STATS_FUNCTIONS'
+update_health_issues() {
+	printf 'health\n' >>"$STATS_WRAPPER_TRACE"
+}
+run_daily_quality_sweep() {
+	printf 'sweep\n' >>"$STATS_WRAPPER_TRACE"
+}
+MOCK_STATS_FUNCTIONS
+
+	if ! (
+		# shellcheck source=/dev/null
+		source "$WRAPPER_SCRIPT"
+		STATS_LOGFILE="$temp_dir/stats.log"
+		STATS_WRAPPER_TRACE="$temp_dir/trace"
+		SCRIPT_DIR="$temp_dir"
+		_stats_wrapper_run_work
+	); then
+		print_result "dashboard refresh precedes quality sweep" 1 "Work runner returned non-zero"
+		rm -rf "$temp_dir"
+		return 0
+	fi
+
+	trace=$(<"$temp_dir/trace")
+	rm -rf "$temp_dir"
+	if [[ "$trace" == $'health\nsweep' ]]; then
+		print_result "dashboard refresh precedes quality sweep" 0
+		return 0
+	fi
+	print_result "dashboard refresh precedes quality sweep" 1 "Expected health then sweep, got: ${trace:-<empty>}"
+	return 0
+}
+
+# Test 6: dashboard refresh failures must not be blindly swallowed by the wrapper.
 # The wrapper may intentionally defer EX_TEMPFAIL/rate-limit exits, but ordinary
 # dashboard failures must still flow through _stats_wrapper_run_health_update so
 # the EXIT trap can emit HEALTH-DASHBOARD-FAIL.
 test_dashboard_update_failure_not_swallowed() {
 	local production_snippet
 	production_snippet=$(awk '
-		# The scheduler now invokes the work via _stats_wrapper_run_with_timeout,
-		# so inspect the actual work body rather than relying on its former
-		# placement inline in main().
-		/^[[:space:]]*run_daily_quality_sweep \|\| \{/ { in_production=1 }
+		/^_stats_wrapper_run_work\(\) \{/ { in_production=1 }
 		in_production { print }
-		in_production && /^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*$/ { exit }
+		in_production && /^[[:space:]]*return 0[[:space:]]*$/ { exit }
 	' "$WRAPPER_SCRIPT")
 	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*update_health_issues[[:space:]]*\|\|[[:space:]]*true'; then
 		print_result "dashboard update failures propagate to stats-wrapper trap" 1 \
 			"stats-wrapper.sh still swallows update_health_issues failures with '|| true'"
 		return 0
 	fi
-	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*$'; then
+	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*\|\|[[:space:]]*return[[:space:]]+\$\?[[:space:]]*$'; then
 		print_result "dashboard update failures propagate to stats-wrapper trap" 0
 		return 0
 	fi
@@ -198,7 +237,7 @@ test_transient_dashboard_tempfail_is_deferred() {
 	return 0
 }
 
-# Test 6: the dashboard updater itself must return non-zero when the body edit
+# Test 7: the dashboard updater itself must return non-zero when the body edit
 # fails, otherwise the wrapper's direct update_health_issues call still exits 0
 # and the HEALTH-DASHBOARD-FAIL trap never fires.
 test_dashboard_body_edit_failure_returns_nonzero() {
@@ -222,6 +261,7 @@ main_test() {
 	test_detect_session_origin_returns_worker_when_headless
 	test_export_is_inside_main_not_top_level
 	test_export_before_self_check
+	test_health_update_precedes_quality_sweep
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred
 	test_dashboard_body_edit_failure_returns_nonzero
