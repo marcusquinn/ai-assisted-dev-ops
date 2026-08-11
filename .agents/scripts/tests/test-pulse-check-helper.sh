@@ -283,6 +283,7 @@ COMMON_ENV=(
 	"PULSE_CHECK_PULSE_DIAGNOSE_HELPER=${TEST_ROOT}/pulse-diagnose.sh"
 	"PULSE_CHECK_GH_WRAPPERS=${TEST_ROOT}/wrappers.sh"
 	"PULSE_CHECK_CAPTURE=${TEST_ROOT}/capture.txt"
+	"PULSE_CHECK_PULSE_HEALTH_FILE=${TEST_ROOT}/missing-pulse-health.json"
 )
 
 printf '%s=== pulse-check-helper.sh tests ===%s\n' "$TEST_BLUE" "$TEST_NC"
@@ -355,6 +356,30 @@ chmod +x "${TEST_ROOT}/current-state-active-no-gauge.sh"
 JSON_ACTIVE_NO_GAUGE_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-active-no-gauge.sh" "$HELPER" json 2>&1)
 assert_eq "json falls back to process count when capacity gauge is absent" "2" "$(printf '%s' "$JSON_ACTIVE_NO_GAUGE_OUT" | jq -r '.summary.max_workers')"
 assert_eq "json absent capacity gauge avoids impossible active over max report" "Active workers: 2 / 2" "$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-active-no-gauge.sh" "$HELPER" report 2>&1 | grep -o 'Active workers: [0-9] / [0-9]')"
+
+cat >"${TEST_ROOT}/pulse-health.json" <<'JSON'
+{"workers_active":1,"workers_max":2}
+JSON
+cat >"${TEST_ROOT}/current-state-active-health-only.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "dispatch_alive": true,
+  "dispatch_stage_events": 12,
+  "pulse_gauges": {},
+  "current_state_guardrails": {},
+  "worker_outcomes": {"spawned": 0},
+  "worker_terminal_events": 1,
+  "graphql_budget_status": "OK fixture"
+}
+JSON
+SH
+chmod +x "${TEST_ROOT}/current-state-active-health-only.sh"
+JSON_ACTIVE_HEALTH_OUT=$(env "${COMMON_ENV[@]}" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-active-health-only.sh" \
+	"PULSE_CHECK_PULSE_HEALTH_FILE=${TEST_ROOT}/pulse-health.json" "$HELPER" json 2>&1)
+assert_eq "json falls back to pulse health max when capacity gauge is absent" "2" "$(printf '%s' "$JSON_ACTIVE_HEALTH_OUT" | jq -r '.summary.max_workers')"
+assert_eq "json derives available slots from pulse health when gauge is absent" "1" "$(printf '%s' "$JSON_ACTIVE_HEALTH_OUT" | jq -r '.summary.available_slots')"
 
 cat >"${TEST_ROOT}/current-state-shortfall.sh" <<'SH'
 #!/usr/bin/env bash

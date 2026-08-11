@@ -25,6 +25,7 @@ GH_WRAPPERS="${PULSE_CHECK_GH_WRAPPERS:-${SCRIPT_DIR}/shared-gh-wrappers.sh}"
 REPORT_FILTER="${PULSE_CHECK_REPORT_FILTER:-${SCRIPT_DIR}/pulse-check-report.jq}"
 QUEUE_SCANNER="${PULSE_CHECK_QUEUE_SCANNER:-${SCRIPT_DIR}/pulse-check-queue-scan.py}"
 REPOS_JSON="${PULSE_CHECK_REPOS_JSON:-${HOME}/.config/aidevops/repos.json}"
+PULSE_HEALTH_FILE="${PULSE_CHECK_PULSE_HEALTH_FILE:-${HOME}/.aidevops/logs/pulse-health.json}"
 
 COMMAND="report"
 WINDOW="15m"
@@ -143,8 +144,13 @@ _collect_report_json() {
 	local runner_health="{}"
 	local api_budget="{}"
 	local queue="{}"
+	local pulse_health="{}"
 
 	current_state=$(_run_json_helper '{}' "$CURRENT_STATE_HELPER" --window "$WINDOW" --json)
+	if [[ -f "$PULSE_HEALTH_FILE" ]]; then
+		pulse_health=$(jq -c . "$PULSE_HEALTH_FILE" 2>/dev/null || printf '{}')
+		current_state=$(printf '%s' "$current_state" | jq -c --argjson health "$pulse_health" '. + {pulse_health: $health}' 2>/dev/null || printf '%s' "$current_state")
+	fi
 	worker_summary=$(_run_json_helper '{}' "$WORKER_ACTIVITY_HELPER" summary --since "$SINCE" --json --no-pr-check)
 	worker_recent=$(_run_json_helper '{}' "$WORKER_ACTIVITY_HELPER" summary --since "$RECENT_SINCE" --json --no-pr-check)
 	providers=$(_run_json_helper '{}' "$WORKER_ACTIVITY_HELPER" providers --since "$RECENT_SINCE" --json)

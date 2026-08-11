@@ -9,9 +9,9 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
   autofile: $autofile
 };
 
-(if ($current.active_worker_processes // null) == null then null else ($current.active_worker_processes | number_or_zero) end) as $active_worker_processes |
-($current.pulse_gauges.dispatch_capacity_final_max_workers // null) as $raw_max_workers |
-($current.current_state_guardrails.available_slots_last // $current.pulse_gauges.pulse_dispatch_guardrail_available_slots // null) as $raw_available_slots |
+(if ($current.active_worker_processes // $current.pulse_health.workers_active // null) == null then null else ($current.active_worker_processes // $current.pulse_health.workers_active | number_or_zero) end) as $active_worker_processes |
+($current.pulse_gauges.dispatch_capacity_final_max_workers // $current.pulse_health.workers_max // null) as $raw_max_workers |
+($current.current_state_guardrails.available_slots_last // $current.pulse_gauges.pulse_dispatch_guardrail_available_slots // (if ($current.pulse_health.workers_max // null) == null or $active_worker_processes == null then null else ([($current.pulse_health.workers_max | number_or_zero) - $active_worker_processes, 0] | max) end)) as $raw_available_slots |
 ($raw_available_slots // 0 | number_or_zero) as $available_slots |
 (if $raw_max_workers == null then
   (if $active_worker_processes == null then $available_slots else ($active_worker_processes + $available_slots) end)
