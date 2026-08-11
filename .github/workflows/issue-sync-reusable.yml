@@ -645,7 +645,11 @@ jobs:
     name: Manual Sync
     if: github.event_name == 'workflow_dispatch' && inputs.command != 'event' && inputs.command != 'reconcile' && inputs.command != 'audit'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 10
+    # GH#30017: manual enrich intentionally traverses the full backlog without
+    # routine bounds. Run 31500070848 made healthy progress through 114 tasks
+    # until the old 10-minute deadline cancelled it; 30 minutes covers the
+    # previously observed ~18-minute cold pass while retaining useful headroom.
+    timeout-minutes: 30
     concurrency:
       group: issue-sync-manual
       cancel-in-progress: false

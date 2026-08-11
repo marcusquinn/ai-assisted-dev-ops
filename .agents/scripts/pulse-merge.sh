@@ -436,18 +436,26 @@ _check_pr_merge_gates() {
 	# or its linked issue is a stronger trust signal than author-association
 	# (requires root-owned SSH key that workers cannot forge). Symmetric with
 	# t3052 which extended the worker-briefed gate the same way (PR #21767).
-	local _author_collab_rc=0
-	_is_collaborator_author "$pr_author" "$repo_slug"
-	_author_collab_rc=$?
-	local _author_collab_permission="${_PULSE_AUTHOR_PERMISSION_VALUE:-}"
-	if [[ "$_author_collab_rc" -eq 2 ]]; then
+	local _author_collab_rc=0 _trusted_issue_sync=0
+	local _author_collab_permission=""
+	if [[ "$pr_author" == "app/github-actions" || "$pr_author" == "github-actions[bot]" ]] &&
+		_pulse_is_trusted_issue_sync_pr "$pr_number" "$repo_slug" "$expected_head_sha"; then
+		_trusted_issue_sync=1
+		_author_collab_permission="write"
+		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted repository-generated Issue Sync automation, proceeding" >>"$LOGFILE"
+	else
+		_is_collaborator_author "$pr_author" "$repo_slug"
+		_author_collab_rc=$?
+		_author_collab_permission="${_PULSE_AUTHOR_PERMISSION_VALUE:-}"
+	fi
+	if [[ "$_trusted_issue_sync" -eq 0 && "$_author_collab_rc" -eq 2 ]]; then
 		if [[ "${DRY_RUN:-0}" != "1" ]]; then
 			check_permission_failure_pr "$pr_number" "$repo_slug" "$pr_author" "${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown}" || true
 		fi
 		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — permission check failed for author ${pr_author} (HTTP ${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown})" >>"$LOGFILE"
 		return 1
 	fi
-	if [[ "$_author_collab_rc" -ne 0 ]]; then
+	if [[ "$_trusted_issue_sync" -eq 0 && "$_author_collab_rc" -ne 0 ]]; then
 		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted Dependabot with allowlisted dependency update, proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$expected_head_sha"; then
@@ -485,7 +493,7 @@ _check_pr_merge_gates() {
 	local pr_labels_for_ext
 	pr_labels_for_ext=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels \
 		--jq '[.labels[].name] | join(",")' 2>/dev/null) || pr_labels_for_ext=""
-	if [[ "$pr_labels_for_ext" == *"external-contributor"* ]]; then
+	if [[ "$_trusted_issue_sync" -eq 0 && "$pr_labels_for_ext" == *"external-contributor"* ]]; then
 		if ! _external_pr_has_linked_issue "$pr_number" "$repo_slug"; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — external-contributor PR has no linked issue (t1958)" >>"$LOGFILE"
 			return 1

@@ -318,6 +318,9 @@ export PULSE_QUEUED_SCAN_LIMIT=100
 #   #9: triage-missing shape but routine-tracking non-task → not counted
 #   #10: triage-missing shape but supervisor non-task → not counted
 #   #11/#12: null/missing labels → no jq error and no edits
+#   #13: auto-dispatch missing tier → conservative tier:standard backfill
+#   #14: auto-dispatch + no-auto-dispatch missing tier → backfill without
+#         clearing the explicit hold
 OLD_ISO=$(date -u -d '-1 hour' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
 	TZ=UTC date -v-1H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "2026-04-13T00:00:00Z")
 NEW_ISO=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
@@ -336,7 +339,9 @@ ISSUES_JSON=$(
 	{"number":9,"labels":[{"name":"origin:interactive"},{"name":"routine-tracking"}],"createdAt":"${OLD_ISO}"},
 	{"number":10,"labels":[{"name":"origin:interactive"},{"name":"supervisor"}],"createdAt":"${OLD_ISO}"},
 	{"number":11,"labels":null,"createdAt":"${OLD_ISO}"},
-	{"number":12,"createdAt":"${OLD_ISO}"}
+	{"number":12,"createdAt":"${OLD_ISO}"},
+	{"number":13,"labels":[{"name":"auto-dispatch"},{"name":"needs-maintainer-review"}],"createdAt":"${OLD_ISO}"},
+	{"number":14,"labels":[{"name":"auto-dispatch"},{"name":"no-auto-dispatch"}],"createdAt":"${OLD_ISO}"}
 ]
 JSON
 )
@@ -477,6 +482,22 @@ else
 	print_result "reconciler tolerates null and missing labels" 1 "(edits: #11=$n11 #12=$n12)"
 fi
 
+# Already-authorized auto-dispatch work missing a tier is routable after the
+# pass. This must not mutate review or explicit no-auto-dispatch safeguards.
+edit13=$(grep "^issue edit 13 " "$GH_CALLS" | head -1)
+if [[ "$edit13" == *"--add-label tier:standard"* && "$edit13" != *"--remove-label needs-maintainer-review"* ]]; then
+	print_result "reconciler backfills a missing auto-dispatch tier without clearing review" 0
+else
+	print_result "reconciler backfills a missing auto-dispatch tier without clearing review" 1 "(line: '$edit13')"
+fi
+
+edit14=$(grep "^issue edit 14 " "$GH_CALLS" | head -1)
+if [[ "$edit14" == *"--add-label tier:standard"* && "$edit14" != *"--remove-label no-auto-dispatch"* ]]; then
+	print_result "reconciler backfills a missing tier without clearing explicit hold" 0
+else
+	print_result "reconciler backfills a missing tier without clearing explicit hold" 1 "(line: '$edit14')"
+fi
+
 # Counter file must be written with exact numbers
 COUNTER_FILE="${HOME}/.aidevops/cache/pulse-label-invariants.$(hostname -s 2>/dev/null || echo unknown).json"
 if [[ -f "$COUNTER_FILE" ]]; then
@@ -497,11 +518,11 @@ if [[ -f "$COUNTER_FILE" ]]; then
 		print_result "counter status_fixed=3 (issues #1, #2, #4)" 1 "(got: $status_fixed)"
 	fi
 
-	# tier_fixed: #3 → 1
-	if [[ "$tier_fixed" -eq 1 ]]; then
-		print_result "counter tier_fixed=1 (issue #3)" 0
+	# tier_fixed: #3 dedup plus #13/#14 missing-tier backfill → 3
+	if [[ "$tier_fixed" -eq 3 ]]; then
+		print_result "counter tier_fixed=3 (issues #3, #13, #14)" 0
 	else
-		print_result "counter tier_fixed=1 (issue #3)" 1 "(got: $tier_fixed)"
+		print_result "counter tier_fixed=3 (issues #3, #13, #14)" 1 "(got: $tier_fixed)"
 	fi
 
 	# triage_missing: #6 only (#7 is recent, #8 has a tier, #9/#10 are non-task labels)

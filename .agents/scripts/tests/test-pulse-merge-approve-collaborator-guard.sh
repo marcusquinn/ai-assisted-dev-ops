@@ -91,6 +91,26 @@ EOF
 	echo "999" >"${TEST_ROOT}/linked-issue.txt"
 	# Default: no current-head V2 PR approval.
 	echo "NO_APPROVAL" >"${TEST_ROOT}/crypto-approval-result.txt"
+	rm -f "${TEST_ROOT}/approval-response-head.txt" "${TEST_ROOT}/issue-sync-trusted"
+	return 0
+}
+
+write_approval_helper_mocks() {
+	# Marker presence alone has no authority; fixtures emit explicit V2 states.
+	export AGENTS_DIR="${TEST_ROOT}/mock-agents"
+	mkdir -p "${AGENTS_DIR}/scripts"
+	cat >"${AGENTS_DIR}/scripts/approval-helper.sh" <<'AHEOF'
+#!/usr/bin/env bash
+cat "${TEST_ROOT}/crypto-approval-result.txt"
+return 0 2>/dev/null || exit 0
+AHEOF
+	chmod +x "${AGENTS_DIR}/scripts/approval-helper.sh"
+	cat >"${AGENTS_DIR}/scripts/review-bot-gate-helper.sh" <<'RBEOF'
+#!/usr/bin/env bash
+printf '%s\n' "review-helper $*" >>"${GH_LOG:-/dev/null}"
+[[ "${1:-}" == "is-trusted-issue-sync-pr" && -f "${TEST_ROOT}/issue-sync-trusted" && -n "${4:-}" ]]
+RBEOF
+	chmod +x "${AGENTS_DIR}/scripts/review-bot-gate-helper.sh"
 	return 0
 }
 
@@ -103,16 +123,7 @@ setup_test_env() {
 	GH_LOG="${TEST_ROOT}/gh-calls.log"
 	: >"$GH_LOG"
 	export TEST_ROOT GH_LOG
-	# Point AGENTS_DIR to a mock directory whose approval-helper fixture emits
-	# explicit V2 verification states. Marker presence alone has no authority.
-	export AGENTS_DIR="${TEST_ROOT}/mock-agents"
-	mkdir -p "${AGENTS_DIR}/scripts"
-	cat >"${AGENTS_DIR}/scripts/approval-helper.sh" <<'AHEOF'
-#!/usr/bin/env bash
-cat "${TEST_ROOT}/crypto-approval-result.txt"
-return 0 2>/dev/null || exit 0
-AHEOF
-	chmod +x "${AGENTS_DIR}/scripts/approval-helper.sh"
+	write_approval_helper_mocks
 
 	# Mock gh: logs every call and answers the five endpoints that
 	# `approve_collaborator_pr`, `_is_collaborator_author`, and
@@ -153,7 +164,25 @@ if [[ "${1:-}" == "api" && "$*" == *"/collaborators/"*"/permission"* && "$*" == 
 	exit 0
 fi
 
-# `gh api repos/SLUG/pulls/N/reviews --jq ...` — existing trusted approval
+# `gh api -X POST repos/SLUG/pulls/N/reviews ... commit_id=SHA` — exact-head
+# approval mutation. Return the requested commit unless a race fixture overrides
+# the response, allowing the caller's post-mutation binding check to be pinned.
+if [[ "${1:-}" == "api" && "${2:-}" == "-X" && "${3:-}" == "POST" &&
+	"${4:-}" == repos/*/pulls/*/reviews ]]; then
+	_response_head=""
+	for _arg in "$@"; do
+		case "$_arg" in
+		commit_id=*) _response_head="${_arg#commit_id=}" ;;
+		esac
+	done
+	if [[ -s "${TEST_ROOT}/approval-response-head.txt" ]]; then
+		_response_head=$(<"${TEST_ROOT}/approval-response-head.txt")
+	fi
+	printf '{"state":"APPROVED","commit_id":"%s"}\n' "$_response_head"
+	exit 0
+fi
+
+# `gh api repos/SLUG/pulls/N/reviews` — existing trusted approval
 if [[ "${1:-}" == "api" && "$*" == *"/pulls/"*"/reviews"* ]]; then
 	_reviews_exit_code=$(<"${TEST_ROOT}/reviews-exit-code.txt")
 	if [[ "$_reviews_exit_code" -ne 0 ]]; then
@@ -203,6 +232,8 @@ define_helpers_under_test() {
 	local crypto_src
 	local current_head_crypto_src
 	local trusted_approval_src
+	local issue_sync_src
+	local exact_head_approval_src
 	approve_src=$(awk '
 		/^approve_collaborator_pr\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
@@ -218,6 +249,12 @@ define_helpers_under_test() {
 	' "$MERGE_SCRIPT")
 	trusted_approval_src=$(awk '
 		/^_trusted_existing_approver\(\) \{/,/^}$/ { print }
+	' "$MERGE_SCRIPT")
+	issue_sync_src=$(awk '
+		/^_pulse_is_trusted_issue_sync_pr\(\) \{/,/^}$/ { print }
+	' "$MERGE_SCRIPT")
+	exact_head_approval_src=$(awk '
+		/^_pulse_approve_pr_at_head\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 
 	if [[ -z "$approve_src" ]]; then
@@ -238,6 +275,14 @@ define_helpers_under_test() {
 	fi
 	if [[ -z "$trusted_approval_src" ]]; then
 		printf 'ERROR: could not extract _trusted_existing_approver from %s\n' "$MERGE_SCRIPT" >&2
+		return 1
+	fi
+	if [[ -z "$issue_sync_src" ]]; then
+		printf 'ERROR: could not extract _pulse_is_trusted_issue_sync_pr from %s\n' "$MERGE_SCRIPT" >&2
+		return 1
+	fi
+	if [[ -z "$exact_head_approval_src" ]]; then
+		printf 'ERROR: could not extract _pulse_approve_pr_at_head from %s\n' "$MERGE_SCRIPT" >&2
 		return 1
 	fi
 
@@ -263,13 +308,17 @@ define_helpers_under_test() {
 	# shellcheck disable=SC1090
 	eval "$trusted_approval_src"
 	# shellcheck disable=SC1090
+	eval "$issue_sync_src"
+	# shellcheck disable=SC1090
+	eval "$exact_head_approval_src"
+	# shellcheck disable=SC1090
 	eval "$approve_src"
 	return 0
 }
 
-# Helper: count "gh pr review ... --approve" calls in the log.
+# Helper: count legacy or exact-head approval mutations in the log.
 count_approve_calls() {
-	grep -cF "pr review" "$GH_LOG" 2>/dev/null || true
+	grep -Ec 'gh pr review|gh api -X POST repos/.*/pulls/[0-9]+/reviews' "$GH_LOG" 2>/dev/null || true
 }
 
 # =============================================================================
@@ -649,6 +698,57 @@ test_case_p_contributor_no_crypto_still_refused() {
 	return 0
 }
 
+test_case_q_trusted_issue_sync_can_be_approved() {
+	reset_mock_state
+	touch "${TEST_ROOT}/issue-sync-trusted"
+
+	local result=0
+	approve_collaborator_pr "940" "owner/repo" "app/github-actions" "head-940" || result=$?
+	if [[ "$result" -eq 0 && "$(count_approve_calls)" -eq 1 ]] &&
+		grep -qF "review-helper is-trusted-issue-sync-pr 940 owner/repo head-940" "$GH_LOG" &&
+		grep -qF "commit_id=head-940" "$GH_LOG" &&
+		grep -qF "trusted repository-generated Issue Sync PR verified" "$GH_LOG"; then
+		print_result "Case Q: exact-head Issue Sync automation receives head-bound approval" 0
+		return 0
+	fi
+	print_result "Case Q: exact-head Issue Sync automation is approved" 1 \
+		"rc=${result}; approve=$(count_approve_calls); calls=$(cat "$GH_LOG"); log=$(cat "$LOGFILE")"
+	return 0
+}
+
+test_case_s_issue_sync_approval_response_mismatch_fails() {
+	reset_mock_state
+	touch "${TEST_ROOT}/issue-sync-trusted"
+	printf 'raced-head\n' >"${TEST_ROOT}/approval-response-head.txt"
+
+	local result=0
+	approve_collaborator_pr "942" "owner/repo" "app/github-actions" "head-942" || result=$?
+	if [[ "$result" -eq 1 && "$(count_approve_calls)" -eq 1 ]] &&
+		grep -qF "commit_id=head-942" "$GH_LOG" &&
+		grep -qF "failed to approve PR #942" "$LOGFILE"; then
+		print_result "Case S: mismatched approval response fails closed" 0
+		return 0
+	fi
+	print_result "Case S: mismatched approval response is rejected" 1 \
+		"rc=${result}; approve=$(count_approve_calls); calls=$(cat "$GH_LOG"); log=$(cat "$LOGFILE")"
+	return 0
+}
+
+test_case_r_unverified_issue_sync_is_not_approved() {
+	reset_mock_state
+
+	local result=0
+	approve_collaborator_pr "941" "owner/repo" "app/github-actions" "head-941" || result=$?
+	if [[ "$result" -eq 0 && "$(count_approve_calls)" -eq 0 ]] &&
+		grep -qF "GH#17671 defense-in-depth" "$LOGFILE"; then
+		print_result "Case R: unverified Actions automation remains blocked from approval" 0
+		return 0
+	fi
+	print_result "Case R: unverified Actions automation is not approved" 1 \
+		"rc=${result}; approve=$(count_approve_calls); log=$(cat "$LOGFILE")"
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -669,6 +769,9 @@ main() {
 	test_case_n_contributor_with_crypto_on_pr
 	test_case_o_contributor_with_crypto_on_linked_issue
 	test_case_p_contributor_no_crypto_still_refused
+	test_case_q_trusted_issue_sync_can_be_approved
+	test_case_r_unverified_issue_sync_is_not_approved
+	test_case_s_issue_sync_approval_response_mismatch_fails
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

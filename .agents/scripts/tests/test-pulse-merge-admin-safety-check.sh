@@ -41,6 +41,7 @@ source "${SCRIPT_DIR}/../pulse-merge-required-checks.sh"
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
 readonly TEST_RESET='\033[0m'
+readonly ISSUE_SYNC_GRAPHQL_AUTHOR="github-actions"
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -74,6 +75,7 @@ set_fixture() {
 	local issue_approval_result="$4"
 	local pr_approval_result="${5:-$issue_approval_result}"
 	local pr_author="${6:-}"
+	rm -f "${TEST_ROOT}/issue-sync-trusted"
 	if [[ -z "$pr_author" ]]; then
 		if [[ "$labels_json" == *"external-contributor"* || "$is_cross_repo" == "true" ]]; then
 			pr_author="external-contributor"
@@ -168,7 +170,7 @@ exit 0
 GHEOF
 	chmod +x "${TEST_ROOT}/bin/gh"
 
-# Mock approval-helper.sh — PR V2 authority is distinct from issue authority.
+	# Mock approval-helper.sh — PR V2 authority is distinct from issue authority.
 	export AGENTS_DIR="${TEST_ROOT}/agents"
 	cat >"${TEST_ROOT}/agents/scripts/approval-helper.sh" <<'AHEOF'
 #!/usr/bin/env bash
@@ -181,9 +183,18 @@ AHEOF
 	chmod +x "${TEST_ROOT}/agents/scripts/approval-helper.sh"
 	cat >"${TEST_ROOT}/agents/scripts/review-bot-gate-helper.sh" <<'RBEOF'
 #!/usr/bin/env bash
-[[ "${1:-}" == "status-json" ]] || exit 1
-cat "${TEST_ROOT}/review-evidence.json"
-exit 0
+printf '%s\n' "review-helper $*" >>"${GH_LOG:-/dev/null}"
+case "${1:-}" in
+status-json)
+	cat "${TEST_ROOT}/review-evidence.json"
+	exit 0
+	;;
+is-trusted-issue-sync-pr)
+	[[ -f "${TEST_ROOT}/issue-sync-trusted" && "${4:-}" == "head-current" ]]
+	exit $?
+	;;
+*) exit 1 ;;
+esac
 RBEOF
 	chmod +x "${TEST_ROOT}/agents/scripts/review-bot-gate-helper.sh"
 	return 0
@@ -213,6 +224,8 @@ define_helpers_under_test() {
 		/^_extract_linked_issue\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 	gates_src=$(awk '
+		/^_pulse_is_trusted_issue_sync_pr\(\) \{/,/^}$/ { print }
+		/^_pulse_merge_classify_final_authority\(\) \{/,/^}$/ { print }
 		/^_pulse_merge_admin_pr_json_graphql\(\) \{/,/^}$/ { print }
 		/^_external_pr_has_linked_issue\(\) \{/,/^}$/ { print }
 		/^_external_pr_linked_issue_crypto_approved\(\) \{/,/^}$/ { print }
@@ -239,7 +252,7 @@ define_helpers_under_test() {
 		local author="$1"
 		local repo_slug="$2"
 		[[ -n "$repo_slug" ]] || return 2
-		[[ "$author" == "external-contributor" ]] && return 1
+		[[ "$author" == "external-contributor" || "$author" == "$ISSUE_SYNC_GRAPHQL_AUTHOR" ]] && return 1
 		return 0
 	}
 	_is_trusted_dependabot_update_pr() {
@@ -545,6 +558,41 @@ test_case_i_unlabeled_non_collaborator_is_external() {
 	return 0
 }
 
+test_case_t_trusted_issue_sync_is_internal() {
+	: >"$LOGFILE"
+	: >"$GH_LOG"
+	set_fixture '[{"name":"external-contributor"}]' 'false' \
+		'<!-- aidevops:issue-sync-todo-pr -->' 'NOT_VERIFIED' 'NO_APPROVAL' "$ISSUE_SYNC_GRAPHQL_AUTHOR"
+	touch "${TEST_ROOT}/issue-sync-trusted"
+
+	local result=0
+	_pulse_merge_admin_safety_check "950" "owner/repo" "head-current" || result=$?
+	if [[ "$result" -eq 0 ]] &&
+		grep -qF "review-helper is-trusted-issue-sync-pr 950 owner/repo head-current" "$GH_LOG" &&
+		grep -qF "Trusted repository-generated Issue Sync authority verified" "$LOGFILE"; then
+		print_result "Case T: exact-head Issue Sync automation bypasses external-author authority only" 0
+		return 0
+	fi
+	print_result "Case T: exact-head Issue Sync automation is trusted" 1 "rc=${result}; calls=$(cat "$GH_LOG"); log=$(cat "$LOGFILE")"
+	return 0
+}
+
+test_case_u_unverified_issue_sync_candidate_fails_closed() {
+	: >"$LOGFILE"
+	: >"$GH_LOG"
+	set_fixture '[]' 'false' '<!-- aidevops:issue-sync-todo-pr -->' \
+		'NOT_VERIFIED' 'NO_APPROVAL' "$ISSUE_SYNC_GRAPHQL_AUTHOR"
+
+	local result=0
+	_pulse_merge_admin_safety_check "951" "owner/repo" "head-current" || result=$?
+	if [[ "$result" -eq 1 ]] && grep -qF "external/fork PR has no linked issue" "$LOGFILE"; then
+		print_result "Case U: unverified Actions automation remains external and fail-closed" 0
+		return 0
+	fi
+	print_result "Case U: unverified Actions automation remains blocked" 1 "rc=${result}; log=$(cat "$LOGFILE")"
+	return 0
+}
+
 test_case_j_final_gate_rejects_stale_cached_review_evidence() {
 	: >"$LOGFILE"
 	set_fixture '[{"name":"bug"}]' 'false' \
@@ -669,6 +717,8 @@ main() {
 	test_case_g_issue_approval_without_pr_v2_is_blocked
 	test_case_h_live_nmr_blocks_even_with_v2_approval
 	test_case_i_unlabeled_non_collaborator_is_external
+	test_case_t_trusted_issue_sync_is_internal
+	test_case_u_unverified_issue_sync_candidate_fails_closed
 	test_case_j_final_gate_rejects_stale_cached_review_evidence
 	test_case_k_final_gate_refreshes_current_review_evidence
 	test_case_l_collaborator_linked_issue_nmr_blocks_final_gate

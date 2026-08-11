@@ -233,6 +233,16 @@ test("allows cross-repository linked writes only inside the trusted Git workspac
       () => checkCanonicalWriteSafetyGate(join(foreignLinked, "README.md"), scriptsDir, repo),
       "canonical context must not block a structurally safe foreign linked-worktree target",
     );
+    const workspaceRootPatch = `*** Begin Patch\n*** Update File: ${join(foreignLinked, "README.md")}\n@@\n-foreign\n+updated\n*** End Patch\n`;
+    assert.doesNotThrow(
+      () => checkCanonicalWriteSafetyGate("", scriptsDir, root, workspaceRootPatch),
+      "a non-repository session root inside the trusted workspace must allow an absolute linked-worktree patch",
+    );
+    assert.throws(
+      () => checkCanonicalWriteSafetyGate("", scriptsDir, outsideRoot, workspaceRootPatch),
+      /limited to the trusted Git workspace/,
+      "a non-repository session root outside the trusted workspace must remain blocked",
+    );
     assert.throws(
       () => checkCanonicalWriteSafetyGate(join(outsideLinked, "README.md"), scriptsDir, linked),
       /limited to the trusted Git workspace/,

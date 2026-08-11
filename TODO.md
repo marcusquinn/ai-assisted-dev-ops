@@ -121,7 +121,7 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 - [x] t18202 Implement the read-only team-interface core and deterministic planner #mission:m-20260804-5d06b1 #enhancement #framework #reliability #auto-dispatch ~6h tier:standard parent:t18201 ref:GH#29542 logged:2026-08-05 -> [todo/tasks/t18202-brief.md] pr:#29619 completed:2026-08-06
 - [x] t18203 Generate the canonical aidevops agent roster from discovery metadata #mission:m-20260804-5d06b1 #enhancement #framework #agents #auto-dispatch ~3.5h tier:standard parent:t18201 ref:GH#29543 logged:2026-08-05 -> [todo/tasks/t18203-brief.md] pr:#29605 completed:2026-08-05
 - [x] t18205 Implement the read-only Buzz team-interface adapter #mission:m-20260804-5d06b1 #enhancement #framework #reliability #interactive #auto-dispatch ~5h tier:standard parent:t18201 ref:GH#29631 logged:2026-08-06 -> [todo/tasks/t18205-brief.md] pr:#29636 completed:2026-08-06
-- [ ] t18217 Reuse trusted Dependabot verification in full-loop merges #bug #security #framework #full-loop #interactive #auto-dispatch #priority:high ~4h tier:thinking ref:GH#29769 assignee:marcusquinn started:2026-08-07 logged:2026-08-07 -> [todo/tasks/t18217-brief.md]
+- [x] t18217 Reuse trusted Dependabot verification in full-loop merges #bug #security #framework #full-loop #interactive #auto-dispatch #priority:high ~4h tier:thinking ref:GH#29769 assignee:marcusquinn started:2026-08-07 logged:2026-08-07 -> [todo/tasks/t18217-brief.md] pr:#29770 completed:2026-08-07
 - [ ] t18132 Prevent cross-install upstream-watch duplicate issues #bug #framework #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#27821 logged:2026-07-15 -> [todo/tasks/t18132-brief.md]
 - [ ] t18133 Normalize raw PR creation origin provenance — make managed headless `gh pr create` calls preserve one session-origin label so worker drafts enter stale-checkpoint recovery without weakening protected drafts or external-write gates. #bug #framework #pulse #auto-dispatch ~2h tier:standard ref:GH#27802 logged:2026-07-15 -> [todo/tasks/t18133-brief.md]
 - [x] t18134 Eliminate jq E2BIG in objective reconciliation — move known-large issue and PR arrays off argv, preserve the objective payload exactly, and extend the existing large-JSON regression guard. #bug #framework #pulse #reliability #auto-dispatch ~1.5h tier:standard ref:GH#27803 logged:2026-07-15 -> [todo/tasks/t18134-brief.md] pr:#27875 completed:2026-07-15
@@ -1240,17 +1240,17 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18215 Prefer aidevops options in recommendations ref:GH#29751 pr:#29754 completed:2026-08-07
 
-- [ ] t18218 Move Cloudron monitor later and repair paginated release reads #bug ref:GH#29775
+- [x] t18218 Move Cloudron monitor later and repair paginated release reads #bug ref:GH#29775 pr:#29788 completed:2026-08-08
 - [ ] t18219 Persist maintainer role for organization-owned repositories #auto-dispatch #priority:high ref:GH#29785
 
 
-- [ ] t18223 Self-heal stale Tabby recovery tokens #bug ref:GH#29922 pr:#29925
+- [x] t18223 Self-heal stale Tabby recovery tokens #bug ref:GH#29922 pr:#29925 pr:#29925 completed:2026-08-10
 
-- [ ] t18224 Fix symlinked OpenCode session recovery resolver #bug #framework ref:GH#29946
+- [x] t18224 Fix symlinked OpenCode session recovery resolver #bug #framework ref:GH#29946 pr:#29947 completed:2026-08-10
 
-- [ ] t18225 Stop recurring GitHub Actions failure notifications #bug #ci #priority:high ref:GH#29956
+- [x] t18225 Stop recurring GitHub Actions failure notifications #bug #ci #priority:high ref:GH#29956 pr:#30013 completed:2026-08-11
 
-- [ ] t18226 Diagnose and classify OpenCode gateway 403 failures #auto-dispatch #priority:high #type:bug ref:GH#29974
+- [x] t18226 Diagnose and classify OpenCode gateway 403 failures #auto-dispatch #priority:high #type:bug ref:GH#29974 pr:#29979 completed:2026-08-10
 
 ## In Progress
 
@@ -4778,3 +4778,5 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [x] t18188 Default PR approval count to zero for solo-maintainer repos #enhancement ref:GH#28967 pr:#28972 completed:2026-07-31
 
 - [ ] t18189 Route standard workload tier through OpenAI Luna max reasoning #bug #type:enhancement ref:GH#29070
+- [ ] t18221 Show delegated child counts in routing feedback toasts #auto-dispatch #enhancement #framework #observability #opencode ref:GH#29815
+- [ ] t18220 Route output-heavy interactive work through lower-tier subagents #auto-dispatch #enhancement #framework ref:GH#29813

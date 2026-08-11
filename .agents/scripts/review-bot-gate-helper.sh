@@ -6,7 +6,7 @@
 # Usage:
 #   review-bot-gate-helper.sh check         <PR_NUMBER> [REPO]
 #   review-bot-gate-helper.sh event-check
-#   review-bot-gate-helper.sh is-trusted-issue-sync-pr <PR_NUMBER> [REPO]
+#   review-bot-gate-helper.sh is-trusted-issue-sync-pr <PR_NUMBER> [REPO] [EXPECTED_HEAD_SHA]
 #   review-bot-gate-helper.sh classify-infra-rate-limit <AUTHOR_ASSOCIATION> [REPO]
 #   review-bot-gate-helper.sh wait          <PR_NUMBER> [REPO] [MAX_WAIT_SECONDS]
 #   review-bot-gate-helper.sh list          <PR_NUMBER> [REPO]
@@ -19,7 +19,7 @@
 # Commands:
 #   check          — Check once, return PASS/PASS_ADVISORY/PASS_RATE_LIMITED/WAITING/SKIP
 #   event-check    — Accept trusted bot review evidence from the Actions event
-#   is-trusted-issue-sync-pr — Verify the exact generated PR identity from live REST metadata
+#   is-trusted-issue-sync-pr — Verify the exact generated PR identity and optional head
 #   classify-infra-rate-limit — Classify API exhaustion from immutable event trust
 #   wait           — Poll until a bot posts or timeout (default 600s)
 #   list           — List all bot comments found on the PR
@@ -1276,6 +1276,7 @@ any_bot_has_success_status() {
 _rbg_is_trusted_issue_sync_pr_metadata() {
 	local repo="$1"
 	local pr_metadata_json="$2"
+	local expected_head_sha="${3:-}"
 
 	[[ -n "$repo" && -n "$pr_metadata_json" ]] || return 1
 	command -v jq >/dev/null 2>&1 || return 1
@@ -1289,6 +1290,7 @@ _rbg_is_trusted_issue_sync_pr_metadata() {
 		--arg repo "$repo" \
 		--argjson bot_id "$RBG_GITHUB_ACTIONS_BOT_ID" \
 		--arg branch "$RBG_ISSUE_SYNC_PR_BRANCH" \
+		--arg expected_head "$expected_head_sha" \
 		--arg marker "$RBG_ISSUE_SYNC_PR_MARKER" '
 		try (
 			.user.login == "github-actions[bot]" and
@@ -1297,6 +1299,7 @@ _rbg_is_trusted_issue_sync_pr_metadata() {
 			.head.repo.full_name == $repo and
 			.base.repo.full_name == $repo and
 			.head.ref == $branch and
+			(($expected_head | length) == 0 or .head.sha == $expected_head) and
 			(.body | contains($marker))
 		) catch false
 	' <<<"$pr_metadata_json" >/dev/null 2>&1
@@ -1305,6 +1308,7 @@ _rbg_is_trusted_issue_sync_pr_metadata() {
 do_is_trusted_issue_sync_pr() {
 	local pr_number="$1"
 	local repo="$2"
+	local expected_head_sha="${3:-}"
 	local pr_api=""
 	local pr_metadata_json=""
 
@@ -1314,7 +1318,7 @@ do_is_trusted_issue_sync_pr() {
 		return 2
 	}
 
-	if _rbg_is_trusted_issue_sync_pr_metadata "$repo" "$pr_metadata_json"; then
+	if _rbg_is_trusted_issue_sync_pr_metadata "$repo" "$pr_metadata_json" "$expected_head_sha"; then
 		echo "TRUSTED"
 		return 0
 	fi
@@ -2046,7 +2050,7 @@ main() {
 		do_check "$pr_number" "$repo"
 		;;
 	is-trusted-issue-sync-pr)
-		do_is_trusted_issue_sync_pr "$pr_number" "$repo"
+		do_is_trusted_issue_sync_pr "$pr_number" "$repo" "$max_wait"
 		;;
 	wait)
 		do_wait "$pr_number" "$repo" "$max_wait"

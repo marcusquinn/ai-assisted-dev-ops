@@ -74,6 +74,12 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
         and not _is_within_workspace(target_probe, workspace_root)
     )
 
+    context_within_workspace = (
+        _repository_within_workspace(context, workspace_root)
+        if context.inside_git
+        else _is_within_workspace(cwd, workspace_root)
+    )
+
     if target.classification == "unknown":
         decision = "deny"
         reason = f"write target classification failed closed: {target.reason}"
@@ -87,7 +93,7 @@ def check_write(cwd: str, file_path: str) -> dict[str, Any]:
             "trusted Git workspace"
         )
     elif cross_repository_target and not (
-        _repository_within_workspace(context, workspace_root)
+        context_within_workspace
         and _repository_within_workspace(target, workspace_root)
     ):
         decision = "deny"

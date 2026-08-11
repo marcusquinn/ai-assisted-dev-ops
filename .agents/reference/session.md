@@ -55,7 +55,7 @@ wt switch -c feature/my-feature   # Worktrunk (preferred)
 worktree-helper.sh add feature/x  # Fallback
 ```
 
-- After switching to a worktree, re-read files at the worktree path before editing. Edit tracking is path-specific.
+- After creating or switching to a worktree, re-read files at its path before editing. Edit tracking is path-specific. For the active objective, continue the current chat with absolute file paths and Bash `workdir`; the unchanged OpenCode session root is not a blocker.
 - Worktree ownership: remove only if you created it this session, it's deployed/complete, or user asked. Ownership enforced by `worktree-helper.sh registry list`; `remove`/`clean` refuse live worktrees owned by other processes.
 - Safety hooks block destructive commands (`git reset --hard`, `rm -rf`). Verify with `install-hooks.sh --test`. See `workflows/git-workflow.md` "Destructive Command Safety Hooks".
 - Full docs: `workflows/git-workflow.md`, `tools/git/worktrunk.md`.
