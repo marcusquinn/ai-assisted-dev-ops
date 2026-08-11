@@ -21,6 +21,19 @@ PROVIDER_STATUS_LINE = re.compile(
 )
 OPENCODE_ERROR_LOG = re.compile(r"^timestamp=.*\blevel=error\b.*\bproviderid=", re.I)
 GATEWAY_DISPLAY = re.compile(r"^forbidden: request was blocked by a gateway or proxy\.?", re.I)
+STRUCTURED_QUOTA_TOKENS = (
+    "insufficient_quota", "insufficient quota", "quota_exceeded", "quota exceeded",
+    "credit_exhausted", "credit exhausted", "exhausted your credit",
+)
+STRUCTURED_SPECIAL_RESULTS = {
+    (403, True): ("provider_error", "gateway_denied", "403", "structured_api_error|html_403"),
+    (429, True): ("quota_exceeded", "quota_exceeded", "429", "structured_api_error|quota"),
+}
+STRUCTURED_STANDARD_RESULTS = {
+    401: ("auth_error", "auth_error", "401", "structured_api_error|401"),
+    403: ("access_denied", "access_denied", "403", "structured_api_error|403"),
+    429: ("rate_limit", "rate_limit", "429", "structured_api_error|429"),
+}
 
 
 def structured_api_error(obj):
@@ -62,6 +75,21 @@ def trusted_legacy_record(obj):
     return has_provider and has_error
 
 
+def classify_line(line):
+    if not line.startswith("{"):
+        return ("plaintext", line) if trusted_plaintext(line) else None
+    try:
+        obj = json.loads(line)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    structured = structured_api_error(obj)
+    if structured:
+        return "structured", structured
+    return ("plaintext", line) if trusted_legacy_record(obj) else None
+
+
 def collect(path):
     trusted_chunks = []
     structured_errors = []
@@ -69,21 +97,12 @@ def collect(path):
         line = raw_line.strip()
         if not line:
             continue
-        if line.startswith("{"):
-            try:
-                obj = json.loads(line)
-            except Exception:
-                obj = None
-            if isinstance(obj, dict):
-                structured = structured_api_error(obj)
-                if structured:
-                    structured_errors.append(structured)
-                    continue
-                if trusted_legacy_record(obj):
-                    trusted_chunks.append(line)
+        classified = classify_line(line)
+        if not classified:
             continue
-        if trusted_plaintext(line):
-            trusted_chunks.append(line)
+        kind, value = classified
+        target = structured_errors if kind == "structured" else trusted_chunks
+        target.append(value)
     return trusted_chunks, structured_errors
 
 
@@ -94,23 +113,18 @@ def emit(reason, provider_type, status, pattern):
 def classify_structured(record):
     status = record["status"]
     details = f"{record['message']}\n{record['body']}".lower()
-    if status == 403:
-        if record["body_kind"] == "html" or any(token in details for token in ("gateway", "proxy")):
-            return "provider_error", "gateway_denied", "403", "structured_api_error|html_403"
-        return "access_denied", "access_denied", "403", "structured_api_error|403"
-    if status == 401:
-        return "auth_error", "auth_error", "401", "structured_api_error|401"
-    if status == 429:
-        quota_tokens = (
-            "insufficient_quota", "insufficient quota", "quota_exceeded", "quota exceeded",
-            "credit_exhausted", "credit exhausted", "exhausted your credit",
-        )
-        if any(token in details for token in quota_tokens):
-            return "quota_exceeded", "quota_exceeded", "429", "structured_api_error|quota"
-        return "rate_limit", "rate_limit", "429", "structured_api_error|429"
-    if 500 <= status <= 599:
-        return "provider_error", "server_error", str(status), "structured_api_error|5xx"
-    return "provider_error", "api_error", str(status), "structured_api_error|http_status"
+    gateway_denied = status == 403 and (
+        record["body_kind"] == "html" or any(token in details for token in ("gateway", "proxy"))
+    )
+    quota_exceeded = status == 429 and any(token in details for token in STRUCTURED_QUOTA_TOKENS)
+    result = STRUCTURED_SPECIAL_RESULTS.get((status, gateway_denied or quota_exceeded))
+    result = result or STRUCTURED_STANDARD_RESULTS.get(status)
+    result = result or (
+        ("provider_error", "server_error", str(status), "structured_api_error|5xx")
+        if 500 <= status <= 599
+        else ("provider_error", "api_error", str(status), "structured_api_error|http_status")
+    )
+    return result
 
 
 def classify_plaintext(text):
@@ -119,15 +133,14 @@ def classify_plaintext(text):
         "exceeded your current quota", "credit_exhausted", "credit exhausted", "exhausted your credit",
     )
     if any(token in text for token in quota):
-        return "quota_exceeded", "quota_exceeded", "429", "trusted_quota|insufficient_quota|quota_exceeded|credit_exhausted"
-    if any(token in text for token in ("rate limit", "rate_limit", "too many requests")) or re.search(r"\b429\b", text):
-        return "rate_limit", "rate_limit", "429", "trusted_rate_limit|429|too_many_requests"
-    if any(token in text for token in ("blocked by a gateway or proxy", "html gateway response")):
-        return "provider_error", "gateway_denied", "403", "trusted_gateway_denied|html_403"
-    if re.search(r"\b403\b", text) or any(token in text for token in ("forbidden", "access_denied", "access denied")):
-        return "access_denied", "access_denied", "403", "trusted_access_denied|403|forbidden"
-    server = re.search(r"\b(500|502|503|504)\b", text)
-    if server or any(token in text for token in ("server_error", "internal server error", "service unavailable", "bad gateway", "gateway timeout", "connection refused", "connection reset", "overloaded")):
+        result = "quota_exceeded", "quota_exceeded", "429", "trusted_quota|insufficient_quota|quota_exceeded|credit_exhausted"
+    elif any(token in text for token in ("rate limit", "rate_limit", "too many requests")) or re.search(r"\b429\b", text):
+        result = "rate_limit", "rate_limit", "429", "trusted_rate_limit|429|too_many_requests"
+    elif any(token in text for token in ("blocked by a gateway or proxy", "html gateway response")):
+        result = "provider_error", "gateway_denied", "403", "trusted_gateway_denied|html_403"
+    elif re.search(r"\b403\b", text) or any(token in text for token in ("forbidden", "access_denied", "access denied")):
+        result = "access_denied", "access_denied", "403", "trusted_access_denied|403|forbidden"
+    elif re.search(r"\b(500|502|503|504)\b", text) or any(token in text for token in ("server_error", "internal server error", "service unavailable", "bad gateway", "gateway timeout", "connection refused", "connection reset", "overloaded")):
         status = "500"
         if "504" in text or "gateway timeout" in text:
             status = "504"
@@ -135,11 +148,15 @@ def classify_plaintext(text):
             status = "503"
         elif "502" in text or "bad gateway" in text:
             status = "502"
-        return "provider_error", "server_error", status, "trusted_server_error|5xx|connection_failure|overloaded"
-    auth = ("unauthorized", "invalid api key", "authentication failed", "token refresh failed", "invalid_grant", "invalid refresh token")
-    if re.search(r"\b401\b", text) or any(token in text for token in auth) or ("auth" in text and "failed" in text):
-        return "auth_error", "auth_error", "401", "trusted_auth_error|401|token_refresh|invalid_grant"
-    return None
+        result = "provider_error", "server_error", status, "trusted_server_error|5xx|connection_failure|overloaded"
+    elif re.search(r"\b401\b", text) or any(token in text for token in (
+        "unauthorized", "invalid api key", "authentication failed", "token refresh failed",
+        "invalid_grant", "invalid refresh token",
+    )) or ("auth" in text and "failed" in text):
+        result = "auth_error", "auth_error", "401", "trusted_auth_error|401|token_refresh|invalid_grant"
+    else:
+        result = None
+    return result
 
 
 def main(argv):
