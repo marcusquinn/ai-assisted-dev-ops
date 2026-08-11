@@ -383,11 +383,13 @@ RUNNER_EOF
 }
 
 # Run cmd_merge in an isolated subprocess with a controlled review-bot gate.
-# Args: pr_number repo gate_rc
+# Args: pr_number repo gate_rc [gate_kind] [gate_detail]
 run_cmd_merge_with_gate() {
 	local pr_number="$1"
 	local repo="$2"
 	local gate_rc="$3"
+	local gate_kind="${4:-review-bot}"
+	local gate_detail="${5:-}"
 	local scripts_dir="${SCRIPT_DIR}/.."
 	local tmp_runner=""
 	tmp_runner=$(mktemp)
@@ -397,7 +399,11 @@ set -euo pipefail
 SCRIPT_DIR='${scripts_dir}'
 source '${scripts_dir}/shared-constants.sh'
 source '${scripts_dir}/full-loop-helper-merge.sh'
-cmd_pre_merge_gate() { return '${gate_rc}'; }
+cmd_pre_merge_gate() {
+	FULL_LOOP_PRE_MERGE_BLOCKER_KIND='${gate_kind}'
+	FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL='${gate_detail}'
+	return '${gate_rc}'
+}
 _merge_guard_prospective_todo() { return 0; }
 _retarget_stacked_children_interactive() { return 0; }
 release_interactive_claim_on_merge() { return 0; }
@@ -683,6 +689,31 @@ test_review_gate_failure_blocks_rest_fallback() {
 	[[ -f "${TEST_ROOT}/logs/gh-api-calls.txt" ]] && rest_called=1
 	print_result "review gate failure: REST fallback not called" "$rest_called"
 
+	return 0
+}
+
+# Test 7a: A cooldown-classified gate failure reports the real blocker.
+test_cooldown_gate_failure_reports_cooldown() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "graphql-rate-limit"
+
+	local exit_code=0
+	local output=""
+	output=$(run_cmd_merge_with_gate "42" "testorg/testrepo" "1" \
+		"github-api-cooldown" "1893456000" 2>&1) || exit_code=$?
+	print_result "cooldown gate failure: cmd_merge exits non-zero" "$((exit_code == 0 ? 1 : 0))"
+	print_result "cooldown gate failure: truthful expiry guidance" \
+		"$([[ "$output" == *"Merge deferred: GitHub API cooldown is active; retry after epoch 1893456000."* ]] && printf '0' || printf '1')" \
+		"output=$output"
+	print_result "cooldown gate failure: no review-bot remediation" \
+		"$([[ "$output" != *"Address bot findings"* ]] && printf '0' || printf '1')" \
+		"output=$output"
+
+	local merge_called=0
+	if [[ -f "${TEST_ROOT}/logs/gh-calls.txt" ]] && grep -q "pr merge" "${TEST_ROOT}/logs/gh-calls.txt"; then
+		merge_called=1
+	fi
+	print_result "cooldown gate failure: merge is not attempted" "$merge_called"
 	return 0
 }
 
@@ -1439,6 +1470,7 @@ main() {
 	test_graphql_rate_limit_cmd_merge_phase_autofile
 	test_graphql_rate_limit_auto_no_rest_fallback
 	test_review_gate_failure_blocks_rest_fallback
+	test_cooldown_gate_failure_reports_cooldown
 	test_auto_review_required_interactive_admin_fallback
 	test_auto_review_required_headless_no_admin_fallback
 	test_stale_cache_401_retry

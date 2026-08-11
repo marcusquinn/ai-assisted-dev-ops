@@ -117,6 +117,7 @@ chmod +x "${ROOT}/bin/gh"
 
 run_gate() {
 	local mode="$1"
+	local output_mode="${2:-quiet}"
 	local runner="${ROOT}/runner-${mode}.sh"
 	cat >"$runner" <<RUNNER
 #!/usr/bin/env bash
@@ -149,6 +150,10 @@ gh_pr_checks_exact_json() {
 			printf '%s\n' 'exact check read unavailable' >&2
 			return 2
 			;;
+		cooldown)
+			printf '%s\n' 'gh_pr_checks_exact_json: error_kind=github-api-cooldown expires_at=1893456000 operation=pull-request-identity-read' >&2
+			return 2
+			;;
 		changed-wording)
 			printf "%s\n" "no required checks configured for the 'remote-branch' branch" >&2
 			return 1
@@ -170,8 +175,13 @@ gh_pr_checks_exact_json() {
 cmd_pre_merge_gate 42 testorg/testrepo
 RUNNER
 	chmod +x "$runner"
-	GH_TEST_MODE="$mode" REVIEW_GATE_TEST_RESULT="${REVIEW_GATE_TEST_RESULT:-PASS}" \
-		PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" >/dev/null 2>&1
+	if [[ "$output_mode" == "visible" ]]; then
+		GH_TEST_MODE="$mode" REVIEW_GATE_TEST_RESULT="${REVIEW_GATE_TEST_RESULT:-PASS}" \
+			PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner"
+	else
+		GH_TEST_MODE="$mode" REVIEW_GATE_TEST_RESULT="${REVIEW_GATE_TEST_RESULT:-PASS}" \
+			PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" bash "$runner" >/dev/null 2>&1
+	fi
 	return $?
 }
 
@@ -212,5 +222,14 @@ for mode in draft pending changes closed api-error changed-wording malformed emp
 	fi
 	printf 'PASS unsafe remote state is blocked: %s\n' "$mode"
 done
+
+cooldown_rc=0
+cooldown_output=$(run_gate cooldown visible 2>&1) || cooldown_rc=$?
+if [[ "$cooldown_rc" -ne 0 && "$cooldown_output" == *"GitHub API cooldown is active until epoch 1893456000"* ]]; then
+	printf 'PASS cooldown evidence remains truthful through the readiness gate\n'
+else
+	printf 'FAIL cooldown evidence was collapsed: rc=%s output=%s\n' "$cooldown_rc" "$cooldown_output"
+	exit 1
+fi
 
 exit 0

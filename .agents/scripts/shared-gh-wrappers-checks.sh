@@ -503,6 +503,35 @@ _gh_pr_checks_exact_error() {
 }
 
 #######################################
+# Preserve a cooldown classification while keeping the public exact-check
+# helper contract at exit 2 for API/parse failures.
+# Args: $1=operation detail, $2=read exit
+#######################################
+_gh_pr_checks_exact_read_error() {
+	local operation="$1"
+	local read_exit="$2"
+	local expires_at="unknown"
+
+	if [[ "$read_exit" -eq 75 ]] &&
+		declare -F _gh_secondary_cooldown_active >/dev/null 2>&1 &&
+		_gh_secondary_cooldown_active; then
+		if declare -F _gh_secondary_cooldown_expires_at >/dev/null 2>&1; then
+			expires_at="$(_gh_secondary_cooldown_expires_at 2>/dev/null || printf 'unknown')"
+		fi
+		[[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at="unknown"
+		_gh_pr_checks_exact_error "error_kind=github-api-cooldown expires_at=${expires_at} operation=${operation}"
+		return 0
+	fi
+	if [[ "$read_exit" -eq 75 ]]; then
+		_gh_pr_checks_exact_error "error_kind=github-api-read-deferred operation=${operation}"
+		return 0
+	fi
+
+	_gh_pr_checks_exact_error "${operation} failed"
+	return 0
+}
+
+#######################################
 # Normalize and deduplicate collected status-rollup pages like gh CLI 2.96.0.
 # The newest StatusContext wins by context name. The newest CheckRun wins by
 # name/workflow/event. Deduplication happens before required-only filtering.
@@ -586,15 +615,17 @@ _gh_pr_checks_exact_identity() {
 	local slug="$1"
 	local pr_number="$2"
 	local identity_json="" identity=""
+	local identity_exit=0
 	local object_type='object'
 	local string_type='string'
 
 	identity_json=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="gh-pr-checks-identity-rest" \
-		_gh_checks_api_read "repos/${slug}/pulls/${pr_number}" 2>/dev/null) || {
-		_gh_pr_checks_exact_error "pull-request identity read failed"
+		_gh_checks_api_read "repos/${slug}/pulls/${pr_number}" 2>/dev/null) || identity_exit=$?
+	if [[ "$identity_exit" -ne 0 ]]; then
+		_gh_pr_checks_exact_read_error "pull-request-identity-read" "$identity_exit"
 		return 2
-	}
+	fi
 	identity=$(printf '%s' "$identity_json" | jq -er --argjson expected "$pr_number" \
 		--arg object_type "$object_type" --arg string_type "$string_type" '
 		select(type == $object_type and .number == $expected)
@@ -719,13 +750,15 @@ _gh_pr_checks_exact_collect_pages() {
 			cursor_flag="-F"
 			cursor_field="endCursor=null"
 		fi
+		local response_exit=0
 		response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 			AIDEVOPS_GH_ROUTE_DECISION="gh-pr-checks-status-rollup-exact-cost" \
-			_gh_checks_api_read graphql -f id="$node_id" "$cursor_flag" "$cursor_field" -f query="$query" 2>/dev/null) || {
+			_gh_checks_api_read graphql -f id="$node_id" "$cursor_flag" "$cursor_field" -f query="$query" 2>/dev/null) || response_exit=$?
+		if [[ "$response_exit" -ne 0 ]]; then
 			rm -f "$pages_file"
-			_gh_pr_checks_exact_error "status-rollup page ${page_number} read failed"
+			_gh_pr_checks_exact_read_error "status-rollup-page-${page_number}-read" "$response_exit"
 			return 2
-		}
+		fi
 		page_meta=$(_gh_pr_checks_exact_page_meta "$response") || page_meta=""
 		if [[ -z "$page_meta" ]]; then
 			_gh_pr_checks_exact_error "status-rollup page ${page_number} response was partial or malformed"

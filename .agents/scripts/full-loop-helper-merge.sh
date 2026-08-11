@@ -1788,6 +1788,25 @@ _merge_parse_command_args() {
 	return 0
 }
 
+_merge_report_pre_merge_gate_failure() {
+	case "${FULL_LOOP_PRE_MERGE_BLOCKER_KIND:-}" in
+	github-api-cooldown)
+		if [[ "${FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL:-}" =~ ^[0-9]+$ ]]; then
+			print_error "Merge deferred: GitHub API cooldown is active; retry after epoch ${FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL}."
+		else
+			print_error "Merge deferred: GitHub API cooldown is active; retry after the cooldown expires."
+		fi
+		;;
+	review-bot)
+		print_error "Merge blocked by review bot gate. Address bot findings or wait for reviews."
+		;;
+	*)
+		print_error "Merge blocked by the pre-merge safety gate. Address the diagnostic above before retrying."
+		;;
+	esac
+	return 0
+}
+
 cmd_merge() {
 	local pr_number="${1:-}"
 	if [[ -z "$pr_number" ]]; then
@@ -1821,7 +1840,7 @@ cmd_merge() {
 
 	# Gate: enforce review-bot-gate before merge.
 	cmd_pre_merge_gate "$pr_number" "$repo" || {
-		print_error "Merge blocked by review bot gate. Address bot findings or wait for reviews."
+		_merge_report_pre_merge_gate_failure
 		return 1
 	}
 	if [[ "$repo" == "${AIDEVOPS_RELEASE_LANE_COORDINATED_REPO:-marcusquinn/aidevops}" ]]; then

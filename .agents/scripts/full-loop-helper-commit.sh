@@ -95,6 +95,8 @@ _full_loop_query_required_checks() {
 	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="required-context resolution failed"
 	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_EVIDENCE="required-checks-pass"
 	FULL_LOOP_REQUIRED_CHECKS_SUCCESS_SUMMARY="required checks are terminal-success"
+	FULL_LOOP_PRE_MERGE_BLOCKER_KIND=""
+	FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL=""
 
 	required_contexts=$(_required_contexts_for_default_branch "$repo") || required_contexts_rc=$?
 	if [[ "$required_contexts_rc" -eq 0 && -z "$required_contexts" ]]; then
@@ -114,6 +116,19 @@ _full_loop_query_required_checks() {
 	required_checks_stderr=$(<"$required_checks_stderr_file")
 	rm -f "$required_checks_stderr_file"
 	FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="exact check read exit ${required_rc}"
+	if [[ "$required_checks_stderr" == *"error_kind=github-api-cooldown"* ]]; then
+		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="github-api-cooldown"
+		FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL="unknown"
+		if [[ "$required_checks_stderr" =~ expires_at=([0-9]+) ]]; then
+			FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL="${BASH_REMATCH[1]}"
+		fi
+		FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE="github-api-cooldown"
+		if [[ "$FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL" =~ ^[0-9]+$ ]]; then
+			FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="GitHub API cooldown is active until epoch ${FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL}"
+		else
+			FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="GitHub API cooldown is active"
+		fi
+	fi
 
 	if [[ "$required_rc" -eq 1 && -z "$required_checks" && -n "$pr_head_ref" && "$required_checks_stderr" == "$expected_no_required_checks" ]]; then
 		required_checks="[]"
@@ -322,6 +337,8 @@ _full_loop_verify_pr_readiness() {
 cmd_pre_merge_gate() {
 	local pr_number="${1:-}"
 	local repo="${2:-}"
+	FULL_LOOP_PRE_MERGE_BLOCKER_KIND=""
+	FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL=""
 
 	if [[ -z "$pr_number" ]]; then
 		print_error "Usage: full-loop-helper.sh pre-merge-gate <PR_NUMBER> [REPO]"
@@ -341,6 +358,7 @@ cmd_pre_merge_gate() {
 
 	local rbg_helper=""
 	if ! rbg_helper=$(_full_loop_review_bot_gate_helper_path); then
+		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="review-bot"
 		print_error "review-bot-gate-helper.sh not found — refusing an unreviewed merge"
 		return 1
 	fi
@@ -361,6 +379,7 @@ cmd_pre_merge_gate() {
 		return 0
 		;;
 	*)
+		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="review-bot"
 		print_error "Review bot gate: ${rbg_status:-FAILED} — do NOT merge PR #${pr_number}"
 		printf '%s\n' "$rbg_result" | tail -5
 		return 1

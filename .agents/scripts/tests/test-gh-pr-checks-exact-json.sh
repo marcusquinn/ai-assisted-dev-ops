@@ -28,6 +28,10 @@ if [[ "$endpoint" == "repos/owner/repo/pulls/42" ]]; then
 	if [[ "${GH_TEST_MODE:-multipage}" == "identity-error" ]]; then
 		exit 1
 	fi
+	if [[ "${GH_TEST_MODE:-multipage}" == "identity-cooldown" ||
+		"${GH_TEST_MODE:-multipage}" == "identity-read-deferred" ]]; then
+		exit 75
+	fi
 	if [[ "${GH_TEST_MODE:-multipage}" == "identity-malformed" ]]; then
 		printf '%s\n' '{"number":42,"node_id":"","head":{"ref":"feature/test","sha":"bad"}}'
 		exit 0
@@ -49,6 +53,9 @@ args="$*"
 page=1
 [[ "$args" == *"endCursor=CURSOR1"* ]] && page=2
 
+if [[ "$mode" == "graphql-cooldown" ]]; then
+	exit 75
+fi
 if [[ "$mode" == "graphql-error" ]]; then
 	printf '%s\n' '{"data":{"node":null,"rateLimit":{"cost":2}},"errors":[{"message":"field unavailable"}]}'
 	exit 0
@@ -135,6 +142,16 @@ export CALL_LOG
 export PATH="${TEST_ROOT}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 # shellcheck source=../shared-gh-wrappers-checks.sh
 source "$LIB"
+
+_gh_secondary_cooldown_expires_at() {
+	printf '1893456000'
+	return 0
+}
+
+_gh_secondary_cooldown_active() {
+	[[ "${GH_TEST_MODE:-}" == *"cooldown"* ]] || return 1
+	return 0
+}
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -254,6 +271,21 @@ for failure_mode in identity-error identity-malformed missing-cost zero-cost gra
 	assert_eq "${failure_mode} fails indeterminate" "2" "$CASE_RC"
 	assert_eq "${failure_mode} emits no JSON" "" "$CASE_OUT"
 done
+
+run_case identity-cooldown required
+assert_eq "cooldown identity read keeps the exact-check public exit contract" "2" "$CASE_RC"
+assert_contains "cooldown identity read preserves a stable classification" \
+	"error_kind=github-api-cooldown expires_at=1893456000 operation=pull-request-identity-read" "$CASE_ERR"
+
+run_case graphql-cooldown required
+assert_eq "cooldown status-rollup read keeps the exact-check public exit contract" "2" "$CASE_RC"
+assert_contains "cooldown status-rollup read preserves a stable classification" \
+	"error_kind=github-api-cooldown expires_at=1893456000 operation=status-rollup-page-1-read" "$CASE_ERR"
+
+run_case identity-read-deferred required
+assert_eq "non-cooldown read deferral keeps the exact-check public exit contract" "2" "$CASE_RC"
+assert_contains "non-cooldown read deferral is not mislabeled as a cooldown" \
+	"error_kind=github-api-read-deferred operation=pull-request-identity-read" "$CASE_ERR"
 
 run_case multipage required 1
 assert_eq "page bound fails closed" "2" "$CASE_RC"
