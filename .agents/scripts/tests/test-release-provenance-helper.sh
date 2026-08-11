@@ -246,10 +246,10 @@ printf 'PASS duplicate, malformed, and SHA-mismatched expected sources are rejec
 git -C "$AGG_REPO" commit -q --allow-empty -m "complete reviewed aggregate source
 
 Aidevops-Release-Aggregator-PR: 100
+Aidevops-Release-Aggregates: 45@${AGG_FOURTH}
 Aidevops-Release-Aggregates: 42@${AGG_ORIGINAL}
-Aidevops-Release-Aggregates: 43@${AGG_SECOND}
 Aidevops-Release-Aggregates: 44@${AGG_THIRD}
-Aidevops-Release-Aggregates: 45@${AGG_FOURTH}"
+Aidevops-Release-Aggregates: 43@${AGG_SECOND}"
 COMPLETE_AGGREGATE_MERGE=$(git -C "$AGG_REPO" rev-parse HEAD)
 export COMPLETE_AGGREGATE_MERGE
 git -C "$AGG_REPO" push -q --force origin HEAD:main
@@ -291,7 +291,7 @@ if (
 	exit 1
 fi
 printf 'PASS unreviewed direct commit cannot aggregate release authority\n'
-git -C "$AGG_REPO" switch -q --detach "$AGGREGATE_MERGE"
+git -C "$AGG_REPO" switch -q --detach "$COMPLETE_AGGREGATE_MERGE"
 
 printf '2.0.0\n' >"${AGG_REPO}/VERSION"
 printf '{"name":"fixture","version":"2.0.0"}\n' >"${AGG_REPO}/package.json"
@@ -302,9 +302,12 @@ export AGG_TAG_COMMIT
 git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - aggregate fixture
 
 Aidevops-Version: 2.0.0
-Aidevops-Source-PR: 99
-Aidevops-Source-Merge: ${AGGREGATE_MERGE}
-Aidevops-Aggregated-Source: 42@${AGG_ORIGINAL}"
+Aidevops-Source-PR: 100
+Aidevops-Source-Merge: ${COMPLETE_AGGREGATE_MERGE}
+Aidevops-Aggregated-Source: 42@${AGG_ORIGINAL}
+Aidevops-Aggregated-Source: 43@${AGG_SECOND}
+Aidevops-Aggregated-Source: 44@${AGG_THIRD}
+Aidevops-Aggregated-Source: 45@${AGG_FOURTH}"
 git -C "$AGG_REPO" push -q origin HEAD:main --tags
 tag_authorization_json=$(
 	cd "$AGG_REPO" || exit 1
@@ -319,14 +322,14 @@ printf 'PASS immutable-tag authorization resolves every trusted PR to its verifi
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
 		bash "$HELPER" verify --tag v2.0.0 --repo test/aggregate >/dev/null
 )
-printf 'PASS immutable tag provenance verifies the reviewed aggregate and every included source\n'
+printf 'PASS immutable tag provenance compares aggregate source sets independent of trailer order\n'
 
 git -C "$AGG_REPO" tag -d v2.0.0 >/dev/null
 git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - tampered aggregate fixture
 
 Aidevops-Version: 2.0.0
-Aidevops-Source-PR: 99
-Aidevops-Source-Merge: ${AGGREGATE_MERGE}"
+Aidevops-Source-PR: 100
+Aidevops-Source-Merge: ${COMPLETE_AGGREGATE_MERGE}"
 
 (
 	cd "$AGG_REPO" || exit 1
@@ -339,8 +342,8 @@ git -C "$AGG_REPO" tag -d v2.0.0 >/dev/null
 git -C "$AGG_REPO" tag -a v2.0.0 -m "Release v2.0.0 - conflicting aggregate fixture
 
 Aidevops-Version: 2.0.0
-Aidevops-Source-PR: 99
-Aidevops-Source-Merge: ${AGGREGATE_MERGE}
+Aidevops-Source-PR: 100
+Aidevops-Source-Merge: ${COMPLETE_AGGREGATE_MERGE}
 Aidevops-Aggregated-Source: 42@0000000000000000000000000000000000000000"
 if (
 	cd "$AGG_REPO" || exit 1

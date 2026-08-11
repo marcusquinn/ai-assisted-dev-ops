@@ -524,7 +524,7 @@ _release_provenance_verify_aggregate_manifest() {
 		_RELEASE_PROVENANCE_AGGREGATED_SOURCES="$manifest_json"
 		return 0
 	fi
-	if [[ "$(jq -cS . <<<"$manifest_json")" != "$(jq -cS . <<<"$_RELEASE_PROVENANCE_AGGREGATED_SOURCES")" ]]; then
+	if [[ "$(jq -cS 'sort_by(.pr)' <<<"$manifest_json")" != "$(jq -cS 'sort_by(.pr)' <<<"$_RELEASE_PROVENANCE_AGGREGATED_SOURCES")" ]]; then
 		_release_provenance_error "tag aggregated sources differ from the reviewed aggregation manifest"
 		return 1
 	fi
