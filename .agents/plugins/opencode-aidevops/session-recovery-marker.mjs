@@ -273,9 +273,18 @@ function runCli(argv) {
   return 0;
 }
 
+export function pathsReferenceSameFile(candidatePath, expectedPath, canonicalize = realpathSync) {
+  if (!candidatePath || !expectedPath) return false;
+  try {
+    return canonicalize(candidatePath) === canonicalize(expectedPath);
+  } catch {
+    return false;
+  }
+}
+
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 const modulePath = fileURLToPath(import.meta.url);
-if (invokedPath && existsSync(invokedPath) && realpathSync(invokedPath) === realpathSync(modulePath)) {
+if (pathsReferenceSameFile(invokedPath, modulePath)) {
   try {
     process.exitCode = runCli(process.argv.slice(2));
   } catch (error) {

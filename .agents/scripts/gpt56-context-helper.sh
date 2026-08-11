@@ -8,7 +8,6 @@ SETTINGS_FILE="${AIDEVOPS_SETTINGS_FILE:-${HOME}/.config/aidevops/settings.json}
 BOOLEAN_TRUE="true"
 PLUGIN_HEALTH_SCHEMA="aidevops.opencode-plugin-health/v1"
 OPENCODE_BIN="${OPENCODE_BIN:-opencode}"
-NODE_BIN="${NODE_BIN:-node}"
 PLUGIN_ENTRY="${AIDEVOPS_PLUGIN_ENTRY:-${HOME}/.aidevops/agents/plugins/opencode-aidevops/index.mjs}"
 
 usage() {
@@ -54,7 +53,7 @@ show_status() {
 		requested="enabled"
 	fi
 	printf '%s\n' "GPT-5.6 OpenCode context cap requested: ${requested}"
-	if ! command -v "$OPENCODE_BIN" >/dev/null 2>&1 || ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+	if ! command -v "$OPENCODE_BIN" >/dev/null 2>&1; then
 		printf '%s\n' "OpenCode plugin effective state: unavailable (OpenCode is not installed)"
 		return 0
 	fi
@@ -77,11 +76,7 @@ show_status() {
 		if AIDEVOPS_PLUGIN_HEALTH_PROBE_FILE="$probe_file" \
 			AIDEVOPS_PLUGIN_HEALTH_PROBE_NONCE="$probe_nonce" \
 			AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY=1 \
-			"$NODE_BIN" --input-type=module --eval '
-				const plugin = await import(process.argv[1]);
-				const hooks = await plugin.AidevopsPlugin({directory: process.argv[2], client: {}});
-				await hooks.config({});
-			' "$PLUGIN_ENTRY" "$PWD" >>"$probe_output" 2>>"$probe_error"; then
+			"$OPENCODE_BIN" models openai --verbose >>"$probe_output" 2>>"$probe_error"; then
 			probe_status=0
 		else
 			probe_status=$?

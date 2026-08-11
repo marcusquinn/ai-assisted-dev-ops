@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   createSessionRecoveryMarkerHandler,
   currentDirectorySequence,
+  pathsReferenceSameFile,
   resolveSessionRecoveryMarker,
   writeSessionRecoveryMarker,
 } from "../../plugins/opencode-aidevops/session-recovery-marker.mjs";
@@ -85,6 +86,19 @@ assert.equal(
   subcommandImport.status,
   0,
   `plugin import should ignore non-path CLI subcommands: ${subcommandImport.stderr}`,
+);
+const bunVirtualPath = "/$bunfs/root/src/index.js";
+assert.equal(
+  pathsReferenceSameFile(bunVirtualPath, resolverPath, (candidate) => {
+    if (candidate === bunVirtualPath) {
+      const error = new Error(`ENOENT: no such file or directory, lstat '${candidate}'`);
+      error.code = "ENOENT";
+      throw error;
+    }
+    return realpathSync(candidate);
+  }),
+  false,
+  "Bun virtual argv paths must not break plugin module evaluation when canonicalization fails",
 );
 
 const emitted = [];

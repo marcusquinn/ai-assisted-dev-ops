@@ -17,13 +17,16 @@ printf '%s\n' '// mock plugin entry' >"$PLUGIN_ENTRY"
 cat >"${MOCK_BIN}/opencode" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '{"plugin":["file://%s"]}\n' "${AIDEVOPS_PLUGIN_ENTRY:?}"
-MOCK
-cat >"${MOCK_BIN}/node" <<'MOCK'
-#!/usr/bin/env bash
-set -euo pipefail
+if [[ "${1:-}" == "debug" && "${2:-}" == "config" ]]; then
+	printf '{"plugin":["file://%s"]}\n' "${AIDEVOPS_PLUGIN_ENTRY:?}"
+	exit 0
+fi
+if [[ "${1:-}" != "models" || "${2:-}" != "openai" || "${3:-}" != "--verbose" ]]; then
+	printf '%s\n' "unexpected packaged OpenCode invocation: $*" >&2
+	exit 2
+fi
 if [[ "${MOCK_PLUGIN_ACTIVE:-1}" != "1" ]]; then
-	printf '%s\n' 'mock plugin import failed at $HOME/plugin.mjs' >&2
+	printf '%s\n' 'mock packaged OpenCode plugin import failed at $HOME/plugin.mjs' >&2
 	exit 1
 fi
 jq -cn --arg nonce "${AIDEVOPS_PLUGIN_HEALTH_PROBE_NONCE:?}" \
@@ -32,8 +35,9 @@ jq -cn --arg nonce "${AIDEVOPS_PLUGIN_HEALTH_PROBE_NONCE:?}" \
 	factory_initialized:{config_hook:true,terminal_title_status:true},
 	config_applied:{terminal_title_status:true,gpt56_limits:{context:300000,input:260000,output:128000}}}}' \
 	>"${AIDEVOPS_PLUGIN_HEALTH_PROBE_FILE:?}"
+printf '%s\n' 'openai/gpt-5.6-sol limit: context=300000 input=260000 output=128000'
 MOCK
-chmod +x "${MOCK_BIN}/opencode" "${MOCK_BIN}/node"
+chmod +x "${MOCK_BIN}/opencode"
 export PATH="${MOCK_BIN}:${PATH}"
 export AIDEVOPS_PLUGIN_ENTRY="$PLUGIN_ENTRY"
 
@@ -56,7 +60,7 @@ assert_contains "$output" "Terminal-title status hook: registered"
 
 output=$(MOCK_PLUGIN_ACTIVE=0 bash "$HELPER" status)
 assert_contains "$output" "inactive or initialization failed"
-assert_contains "$output" "mock plugin import failed at \$HOME/plugin.mjs"
+assert_contains "$output" "mock packaged OpenCode plugin import failed at \$HOME/plugin.mjs"
 assert_contains "$output" "requested state not confirmed"
 
 output=$(OPENCODE_BIN="${TEST_HOME}/missing-opencode" bash "$HELPER" status)
