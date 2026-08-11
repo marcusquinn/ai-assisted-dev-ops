@@ -91,10 +91,47 @@ def _bundle_is_read_only(args: list[str]) -> bool:
     return len(paths) == 1 and not paths[0].startswith("-")
 
 
+def _hash_object_is_read_only(args: list[str]) -> bool:
+    """Allow hashing inputs while rejecting object database writes."""
+    value_options = {"-t"}
+    read_only_options = {
+        "--literally",
+        "--no-filters",
+        "--stdin",
+        "--stdin-paths",
+    }
+    expect_value = False
+    options_ended = False
+
+    for arg in args:
+        if options_ended:
+            continue
+        if expect_value:
+            expect_value = False
+            continue
+        if arg == "--":
+            options_ended = True
+            continue
+        if arg == "-w" or (
+            arg.startswith("-") and not arg.startswith("--") and "w" in arg[1:]
+        ):
+            return False
+        if arg in value_options:
+            expect_value = True
+            continue
+        if arg in read_only_options or arg.startswith("--path="):
+            continue
+        if arg.startswith("-"):
+            return False
+
+    return not expect_value
+
+
 CANONICAL_CHECKS: dict[str, Callable[[list[str]], bool]] = {
     "branch": _branch_is_read_only,
     "bundle": _bundle_is_read_only,
     "config": _config_is_read_only,
     "clean": _clean_is_read_only,
+    "hash-object": _hash_object_is_read_only,
     **REF_QUERY_CHECKS,
 }

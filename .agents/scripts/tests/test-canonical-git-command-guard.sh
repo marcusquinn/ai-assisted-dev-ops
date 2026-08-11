@@ -134,6 +134,8 @@ assert_blocked "blocks chained canonical mutation" "git status && git branch -M 
 assert_blocked "blocks canonical update-ref plumbing" "/usr/bin/git update-ref refs/heads/main HEAD"
 assert_blocked "blocks canonical bundle creation" "git bundle create '$TEST_ROOT/commits.bundle' HEAD"
 assert_blocked "blocks canonical bundle unbundle" "git bundle unbundle '$TEST_ROOT/commits.bundle'"
+assert_blocked "blocks canonical hash-object writes" "git hash-object -w --stdin"
+assert_blocked "blocks combined canonical hash-object write flags" "git hash-object -wt blob --stdin"
 assert_blocked "blocks merge-tree writes in a canonical checkout" \
 	"git merge-tree --write-tree '$INITIAL_HEAD' '$INITIAL_HEAD'"
 assert_blocked "blocks destructive clean with exclude containing n" "git clean --force --exclude=nope"
@@ -201,6 +203,10 @@ assert_allowed "allows reordered canonical symbolic-ref query flags" "$REPO" "gi
 assert_allowed "allows canonical non-recursive symbolic-ref query" "$REPO" "git symbolic-ref --no-recurse refs/remotes/origin/HEAD"
 assert_allowed "allows canonical bundle verification" "$REPO" "git bundle verify '$TEST_ROOT/commits.bundle'"
 assert_allowed "allows quiet canonical bundle verification" "$REPO" "git bundle verify --quiet '$TEST_ROOT/commits.bundle'"
+assert_allowed "allows canonical stdin hashing" "$REPO" "git hash-object --stdin"
+assert_allowed "allows canonical stdin path hashing" "$REPO" "git hash-object --stdin-paths"
+assert_allowed "allows canonical path hashing" "$REPO" "git hash-object README.md"
+assert_allowed "allows canonical option-like path hashing after terminator" "$REPO" "git hash-object -- -w"
 assert_allowed "allows canonical worktree creation" "$REPO" "git worktree add '$LINKED' -b feature/example"
 
 PROSPECTIVE_CONTEXT=$(mktemp -d "${TEST_ROOT}/aidevops-prospective-todo.XXXXXX")
@@ -275,6 +281,28 @@ if (cd "$REPO" && env PATH="${SHIM_BIN}:/usr/bin:/bin" git status --short >/dev/
 	pass "deployed symlink shim resolves policy engine"
 else
 	fail "deployed symlink shim resolves policy engine"
+fi
+HASH_INPUT="canonical hash-object read-only fixture $RANDOM"
+printf '%s\n' "$HASH_INPUT" >"${REPO}/hash-input.txt"
+EXPECTED_STDIN_HASH=$(printf '%s' "$HASH_INPUT" | /usr/bin/git hash-object --stdin)
+EXPECTED_PATH_HASH=$(/usr/bin/git -C "$REPO" hash-object hash-input.txt)
+COUNT_OUTPUT=$(/usr/bin/git -C "$REPO" count-objects)
+OBJECT_COUNT_BEFORE=${COUNT_OUTPUT%% *}
+SHIM_STDIN_HASH=$(printf '%s' "$HASH_INPUT" | (cd "$REPO" && env PATH="${SHIM_BIN}:/usr/bin:/bin" git hash-object --stdin))
+SHIM_PATH_HASH=$(cd "$REPO" && env PATH="${SHIM_BIN}:/usr/bin:/bin" git hash-object hash-input.txt)
+if [[ "$SHIM_STDIN_HASH" == "$EXPECTED_STDIN_HASH" && "$SHIM_PATH_HASH" == "$EXPECTED_PATH_HASH" ]]; then
+	pass "deployed symlink shim allows read-only content and path hashing"
+else
+	fail "deployed symlink shim preserves native read-only hash-object output"
+fi
+WRITE_OUTPUT=$(printf '%s' "blocked hash-object write $RANDOM" | (cd "$REPO" && env PATH="${SHIM_BIN}:/usr/bin:/bin" git hash-object -w --stdin) 2>&1)
+WRITE_RC=$?
+COUNT_OUTPUT=$(/usr/bin/git -C "$REPO" count-objects)
+OBJECT_COUNT_AFTER=${COUNT_OUTPUT%% *}
+if [[ "$WRITE_RC" -eq 42 && "$WRITE_OUTPUT" == *"BLOCKED by canonical Git guard"* && "$OBJECT_COUNT_AFTER" == "$OBJECT_COUNT_BEFORE" && "$(git -C "$REPO" rev-parse HEAD)" == "$INITIAL_HEAD" ]]; then
+	pass "deployed symlink shim blocks hash-object writes without changing objects or refs"
+else
+	fail "deployed symlink shim blocks hash-object writes without changing objects or refs (rc=$WRITE_RC objects=${OBJECT_COUNT_BEFORE}->${OBJECT_COUNT_AFTER})"
 fi
 if (cd "$REPO" && env PATH="${SHIM_BIN}:/usr/bin:/bin" git switch --detach main >/dev/null 2>&1); then
 	fail "deployed symlink shim blocks canonical mutation"
