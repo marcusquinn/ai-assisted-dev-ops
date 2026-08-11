@@ -17,10 +17,12 @@ For prompt-economy reasons these rules live here rather than in always-on AGENTS
 
 ## Task Creation
 
-The proposed atomicity contract between issue dispatchability and protected-
-branch planning publication is documented in
-`reference/planning-publication-lifecycle.md`. Follow that decision record when
-implementing the pending-publication state and its reconciliation phases.
+Issue-first planning uses the implemented atomic publication contract in
+`reference/planning-publication-lifecycle.md`: online local creators add
+`publication:pending` and withhold positive dispatch labels until the exact
+default-branch TODO/ref/brief snapshot is validated. Direct publication or a
+merged planning PR triggers idempotent reconciliation; failed or closed-unmerged
+publication leaves the issue blocked and safe to retry.
 
 1. Define the task: `/define` (interactive interview) or `/new-task` (quick creation)
 2. Brief file at `todo/tasks/{task_id}-brief.md` is MANDATORY (see `templates/brief-template.md`)

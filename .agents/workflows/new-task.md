@@ -51,7 +51,7 @@ Allocated: {task_id} (ref:{task_ref})
 Task: "{title}"
 
 Options:
-1. Add to TODO.md with brief (recommended — queued for pulse dispatch)
+1. Add to TODO.md with brief (recommended — dispatches after planning publication)
 2. Add to TODO.md with brief AND claim for this session (prevents pulse pickup)
 3. Customize estimate, tags, and dependencies
 4. Just show the ID (don't add to TODO.md)
@@ -170,6 +170,12 @@ if [[ -n "${task_ref:-}" && "${task_ref:-}" != "none" && "${task_ref:-}" != "off
 fi
 ```
 
+Online local creation leaves the issue `publication:pending` and omits positive
+dispatch labels until the exact default-branch TODO/ref/brief snapshot lands.
+Planning-PR and failed-publication outcomes remain blocked and must never be
+reported as queued. A closed-unmerged planning PR remains pending; retry
+publication idempotently without creating a new issue.
+
 `#{origin}`: `#interactive` (user present) or `#worker` (headless). Detect via `detect_session_origin` from `shared-constants.sh`. Maps to `origin:interactive` / `origin:worker` GitHub labels on issue sync.
 
 **Auto-dispatch default:** Worker-ready implementation tasks default to `#auto-dispatch`, including issues created by interactive agents (user-facing sessions) or workers.
@@ -220,7 +226,7 @@ If `TASK_OFFLINE=true`: warn user about offline mode (+100 offset), reconciliati
 User: /new-task Add CSV export button
 AI:   Allocated: t325 (ref:GH#1260)
       Brief: todo/tasks/t325-brief.md (What: CSV export on data table, How: ExportButton + papaparse)
-      1. Add to TODO.md (queued)  2. Claim for this session  3. Edit  4. Cancel
+      1. Add to TODO.md (publish planning)  2. Claim for this session  3. Edit  4. Cancel
 
 User: 2
 AI:   Added and claimed:
