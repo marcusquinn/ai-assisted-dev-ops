@@ -7,7 +7,7 @@
 # Covers the t2252 guards that prevent the terminal/tab title from being
 # clobbered with bare "main"/"master"/"aidevops/main" when the canonical
 # repo sits on main (t1990). The guard fires in cmd_sync; cmd_rename with
-# an explicit title remains unguarded (manual override).
+# an explicit title remains unguarded unless an active OpenCode plugin owns OSC.
 # =============================================================================
 
 set -euo pipefail
@@ -221,6 +221,38 @@ echo "Test 8: sync in detached HEAD skips OSC"
 run_helper_detached sync
 assert_exit "exit 0 detached HEAD" "0" "$RC"
 assert_no_osc "no OSC in detached HEAD" "$OUTPUT"
+
+# Test 9: child shells inside managed OpenCode sessions yield to the plugin.
+echo ""
+echo "Test 9: managed OpenCode session suppresses shell OSC writes"
+EXTRA_ENV="OPENCODE=1 AIDEVOPS_TERMINAL_TITLE_OWNER=aidevops" run_helper_on_branch "feature/plugin-owner" rename "plugin-owned"
+EXTRA_ENV=""
+assert_exit "exit 0 when plugin owns title" "0" "$RC"
+assert_no_osc "no shell OSC while plugin owns title" "$OUTPUT"
+
+# Test 10: explicit native ownership also keeps one in-TUI OSC writer.
+echo ""
+echo "Test 10: native title owner suppresses in-TUI shell OSC writes"
+EXTRA_ENV="OPENCODE=1 AIDEVOPS_TERMINAL_TITLE_OWNER=native" run_helper_on_branch "feature/native-owner" rename "native-owned"
+EXTRA_ENV=""
+assert_exit "exit 0 when native path owns title" "0" "$RC"
+assert_no_osc "no shell OSC while OpenCode owns the title" "$OUTPUT"
+
+# Test 11: the ownership marker does not disable ordinary shell sessions.
+echo ""
+echo "Test 11: native owner marker outside OpenCode preserves shell rename"
+EXTRA_ENV="OPENCODE=0 AIDEVOPS_TERMINAL_TITLE_OWNER=native" run_helper_on_branch "feature/native-shell" rename "native-shell"
+EXTRA_ENV=""
+assert_exit "exit 0 outside OpenCode" "0" "$RC"
+assert_has_osc "ordinary shell OSC remains available" "$OUTPUT"
+
+# Test 12: reset follows the same in-TUI ownership guard as rename/sync.
+echo ""
+echo "Test 12: managed OpenCode session suppresses shell reset OSC"
+EXTRA_ENV="OPENCODE=1 AIDEVOPS_TERMINAL_TITLE_OWNER=aidevops" run_helper_on_branch "feature/plugin-reset" reset
+EXTRA_ENV=""
+assert_exit "exit 0 for plugin-owned reset" "0" "$RC"
+assert_no_osc "no reset OSC while plugin owns title" "$OUTPUT"
 
 # -----------------------------------------------------------------------------
 # Summary

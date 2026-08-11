@@ -5,6 +5,7 @@ import { closeSync, openSync, writeSync } from "node:fs";
 
 const CONTROL_CHAR_RE = /[\u0000-\u001F\u007F]/g;
 const STATUS_PREFIX_RE = /^(?:\[(?:RUN|WAIT)\]|⚪|🔴|🟡|🟢)\s+/u;
+export const TERMINAL_TITLE_CONTROLLER_SYMBOL = Symbol.for("aidevops.terminal-title-controller.v1");
 const STATUS_LABELS = new Map([
   ["busy", "⚪"],
   ["retry", "🔴"],
@@ -58,7 +59,9 @@ function writeTerminalTitle(title) {
 export function createTerminalTitleController({
   writeTitle = writeTerminalTitle,
   isEnabled = () =>
-    process.env.TERMINAL_TITLE_ENABLED !== "false" && process.env.AIDEVOPS_TABBY_ENABLED !== "false",
+    process.env.AIDEVOPS_TERMINAL_TITLE_OWNER !== "native" &&
+    process.env.TERMINAL_TITLE_ENABLED !== "false" &&
+    process.env.AIDEVOPS_TABBY_ENABLED !== "false",
 } = {}) {
   let baseTitle = "";
   let status = "";
@@ -74,8 +77,6 @@ export function createTerminalTitleController({
       return render();
     },
     setStatus(nextStatus) {
-      const nextLabel = terminalTitleStatusLabel(nextStatus);
-      if (nextLabel === terminalTitleStatusLabel(status)) return false;
       status = nextStatus;
       return render();
     },
@@ -87,6 +88,7 @@ export function createTerminalTitleController({
 }
 
 const terminalTitleController = createTerminalTitleController();
+Reflect.set(globalThis, TERMINAL_TITLE_CONTROLLER_SYMBOL, terminalTitleController);
 
 export function emitTerminalTitle(title) {
   return terminalTitleController.emit(title);

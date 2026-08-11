@@ -27,7 +27,7 @@ const { getDbPath } = await import("../../../.opencode/lib/opencode-db-path.ts")
 const { getAidevopsVersion, sanitizeSessionTitle, withAidevopsTitleSuffix } = await import(
   "../../../.opencode/lib/session-title-suffix.ts"
 );
-const { isTerminalTitleEnabled, sanitizeTerminalTitle, terminalTitleSequence } = await import(
+const { emitTerminalTitle, isTerminalTitleEnabled, sanitizeTerminalTitle, terminalTitleSequence } = await import(
   "../../../.opencode/lib/terminal-title.ts"
 );
 
@@ -162,7 +162,33 @@ assertEq(
   false,
   isTerminalTitleEnabled({ AIDEVOPS_TABBY_ENABLED: "false" }),
 );
+assertEq(
+  "native terminal-title ownership disables aidevops OSC",
+  false,
+  isTerminalTitleEnabled({ AIDEVOPS_TERMINAL_TITLE_OWNER: "native" }),
+);
 assertEq("terminal title emit defaults to enabled", true, isTerminalTitleEnabled({}));
+
+const titleControllerSymbol = Symbol.for("aidevops.terminal-title-controller.v1");
+const previousTitleController = Reflect.get(globalThis, titleControllerSymbol);
+let delegatedTitle = "";
+try {
+  Reflect.set(globalThis, titleControllerSymbol, {
+    emit(title) {
+      delegatedTitle = title;
+      return true;
+    },
+  });
+  assertEq(
+    "native session rename delegates to the plugin title controller",
+    true,
+    emitTerminalTitle("Issue #123: shared controller"),
+  );
+  assertEq("shared controller receives the undecorated base title", "Issue #123: shared controller", delegatedTitle);
+} finally {
+  if (previousTitleController === undefined) Reflect.deleteProperty(globalThis, titleControllerSymbol);
+  else Reflect.set(globalThis, titleControllerSymbol, previousTitleController);
+}
 
 // --- stable session purpose -------------------------------------------------
 console.log("\nGroup 4: stable session purpose");

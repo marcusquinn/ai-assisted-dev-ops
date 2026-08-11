@@ -46,6 +46,12 @@ TERMINAL_TITLE_ENABLED="${TERMINAL_TITLE_ENABLED:-${AIDEVOPS_TABBY_ENABLED:-true
 set_tab_title() {
 	local title="$1"
 
+	# OpenCode child shells inherit this ownership marker from aidevops-managed
+	# launchers. Whichever TUI component owns OSC, shell helpers must not race it.
+	if [[ "${OPENCODE:-}" == "1" && -n "${AIDEVOPS_TERMINAL_TITLE_OWNER:-}" ]]; then
+		return 0
+	fi
+
 	if [[ "$TERMINAL_TITLE_ENABLED" == "false" ]]; then
 		return 0
 	fi
@@ -59,7 +65,7 @@ set_tab_title() {
 # Reset tab title to default (empty string triggers terminal default)
 reset_tab_title() {
 	# Send empty title to reset
-	printf '\033]0;\007'
+	set_tab_title ""
 	log_success "Tab title reset to default"
 }
 

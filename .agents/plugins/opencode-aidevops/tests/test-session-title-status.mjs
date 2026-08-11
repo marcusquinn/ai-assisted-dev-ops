@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { createSessionTitleStatusHandler } from "../session-title-status.mjs";
 import {
   createTerminalTitleController,
+  TERMINAL_TITLE_CONTROLLER_SYMBOL,
   terminalTitleSequence,
   withTerminalTitleStatus,
 } from "../terminal-title.mjs";
@@ -52,6 +53,37 @@ test("terminal title controller preserves status across later session title upda
     "🟢 Issue #123: renamed title",
     "Issue #123: renamed title",
   ]);
+});
+
+test("terminal title controller reasserts an unchanged status after a competing write", () => {
+  const writes = [];
+  const controller = createTerminalTitleController({
+    isEnabled: () => true,
+    writeTitle: (title) => writes.push(title),
+  });
+
+  controller.emit("Issue #123: durable status");
+  controller.setStatus("busy");
+  writes.push("OC | Issue #123: durable status");
+  controller.setStatus("busy");
+
+  assert.equal(writes.at(-1), "⚪ Issue #123: durable status");
+  assert.equal(typeof Reflect.get(globalThis, TERMINAL_TITLE_CONTROLLER_SYMBOL)?.emit, "function");
+});
+
+test("terminal title controller yields to explicit native ownership", () => {
+  const previousOwner = process.env.AIDEVOPS_TERMINAL_TITLE_OWNER;
+  const writes = [];
+  process.env.AIDEVOPS_TERMINAL_TITLE_OWNER = "native";
+  try {
+    const controller = createTerminalTitleController({ writeTitle: (title) => writes.push(title) });
+    assert.equal(controller.emit("Issue #123: native owner"), false);
+    assert.equal(controller.setStatus("busy"), false);
+    assert.deepEqual(writes, []);
+  } finally {
+    if (previousOwner === undefined) delete process.env.AIDEVOPS_TERMINAL_TITLE_OWNER;
+    else process.env.AIDEVOPS_TERMINAL_TITLE_OWNER = previousOwner;
+  }
 });
 
 test("terminal title sequences reject empty and control-only titles", () => {

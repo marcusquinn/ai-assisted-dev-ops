@@ -12,8 +12,10 @@ import { closeSync, openSync, writeSync } from "node:fs"
 
 const OSC_TITLE_PREFIX = "\u001B]0;"
 const OSC_TITLE_SUFFIX = "\u0007"
+const TERMINAL_TITLE_CONTROLLER_SYMBOL = Symbol.for("aidevops.terminal-title-controller.v1")
 
 type TerminalTitleEnv = Record<string, string | undefined>
+type SharedTerminalTitleController = { emit: (title: string) => boolean }
 
 // biome-ignore lint/complexity/useRegexLiterals: regex literals trigger noControlCharactersInRegex for this C0/DEL sanitizer range.
 const CONTROL_CHARACTERS_PATTERN = new RegExp("[\\x00-\\x1F\\x7F]+", "g")
@@ -22,7 +24,11 @@ const CONTROL_CHARACTERS_PATTERN = new RegExp("[\\x00-\\x1F\\x7F]+", "g")
  * Honour the same opt-out environment variables as terminal-title-helper.sh.
  */
 export function isTerminalTitleEnabled(env: TerminalTitleEnv = process.env): boolean {
-  return env.TERMINAL_TITLE_ENABLED !== "false" && env.AIDEVOPS_TABBY_ENABLED !== "false"
+  return (
+    env.AIDEVOPS_TERMINAL_TITLE_OWNER !== "native" &&
+    env.TERMINAL_TITLE_ENABLED !== "false" &&
+    env.AIDEVOPS_TABBY_ENABLED !== "false"
+  )
 }
 
 /**
@@ -44,22 +50,17 @@ export function terminalTitleSequence(title: string): string {
   return `${OSC_TITLE_PREFIX}${sanitizedTitle}${OSC_TITLE_SUFFIX}`
 }
 
-/**
- * Best-effort terminal title update. Prefer /dev/tty so the sequence reaches
- * the controlling terminal even if a tool framework captures stdout; fall back
- * to stderr for runtimes where /dev/tty is unavailable so tool return payloads
- * are not polluted with terminal control sequences.
- */
-export function emitTerminalTitle(title: string): boolean {
-  if (!isTerminalTitleEnabled()) {
-    return false
+function sharedTerminalTitleController(): SharedTerminalTitleController | undefined {
+  const controller = Reflect.get(globalThis, TERMINAL_TITLE_CONTROLLER_SYMBOL) as
+    | Partial<SharedTerminalTitleController>
+    | undefined
+  if (typeof controller?.emit !== "function") {
+    return undefined
   }
+  return controller as SharedTerminalTitleController
+}
 
-  const sequence = terminalTitleSequence(title)
-  if (!sequence) {
-    return false
-  }
-
+function writeTerminalTitleSequence(sequence: string): boolean {
   try {
     const fd = openSync("/dev/tty", "w")
     try {
@@ -75,4 +76,28 @@ export function emitTerminalTitle(title: string): boolean {
       return false
     }
   }
+}
+
+/**
+ * Best-effort terminal title update. Prefer /dev/tty so the sequence reaches
+ * the controlling terminal even if a tool framework captures stdout; fall back
+ * to stderr for runtimes where /dev/tty is unavailable so tool return payloads
+ * are not polluted with terminal control sequences.
+ */
+export function emitTerminalTitle(title: string): boolean {
+  if (!isTerminalTitleEnabled()) {
+    return false
+  }
+
+  const sharedController = sharedTerminalTitleController()
+  if (sharedController) {
+    return sharedController.emit(title)
+  }
+
+  const sequence = terminalTitleSequence(title)
+  if (!sequence) {
+    return false
+  }
+
+  return writeTerminalTitleSequence(sequence)
 }
