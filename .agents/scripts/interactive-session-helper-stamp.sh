@@ -22,6 +22,7 @@
 # Include guard
 [[ -n "${_ISC_STAMP_LIB_LOADED:-}" ]] && return 0
 _ISC_STAMP_LIB_LOADED=1
+ISC_CLAIM_AUDIT_SCHEMA="aidevops-interactive-claim/v1"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -365,6 +366,7 @@ _isc_post_claim_comment() {
 	local body
 	body=$(
 		cat <<EOF
+<!-- ${ISC_CLAIM_AUDIT_SCHEMA} -->
 <!-- ops:start -->
 > Interactive session claimed by @${user}${worktree_note} on ${hostname}.
 > Pulse dispatch blocked via \`status:in-review\` + self-assignment.

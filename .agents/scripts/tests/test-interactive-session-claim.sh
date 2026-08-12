@@ -312,6 +312,15 @@ source "$HELPER_PATH" >/dev/null 2>&1
 # Helper sets `set -euo pipefail` — drop -e for negative assertions
 set +e
 
+# Capture the canonical claim audit payload directly without tying its
+# assertions to the implementation details of the GitHub comment wrapper.
+CLAIM_COMMENT_LOG="${TEST_ROOT}/claim-comments.log"
+: >"$CLAIM_COMMENT_LOG"
+gh_issue_comment() {
+	printf '%s\n' "$*" >>"$CLAIM_COMMENT_LOG"
+	return 0
+}
+
 # Persisted runtime cooldowns must not suppress the stubbed write calls this
 # isolated command-shape suite asserts.
 _gh_secondary_cooldown_preflight() {
@@ -381,6 +390,7 @@ fi
 # second claim supplies the linked worktree. Repeating both phases remains
 # idempotent and does not add another ownership comment.
 : >"$STUB_LOG"
+: >"$CLAIM_COMMENT_LOG"
 STAGED_STAMP_FILE="${HOME}/.aidevops/.agent-workspace/interactive-claims/testowner-testrepo-18739.json"
 export STUB_ISSUE_HAS_IN_REVIEW=0
 _isc_cmd_claim 18739 testowner/testrepo --implementing --defer-comment >/dev/null 2>&1
@@ -388,9 +398,11 @@ export STUB_ISSUE_HAS_IN_REVIEW=1
 _isc_cmd_claim 18739 testowner/testrepo --implementing --worktree /tmp/wt-linked >/dev/null 2>&1
 _isc_cmd_claim 18739 testowner/testrepo --implementing --defer-comment >/dev/null 2>&1
 _isc_cmd_claim 18739 testowner/testrepo --implementing --worktree /tmp/wt-linked >/dev/null 2>&1
-staged_comment_count=$(grep -c '^gh issue comment ' "$STUB_LOG" 2>/dev/null || true)
+staged_comment_count=$(grep -Fc '<!-- aidevops-interactive-claim/v1 -->' "$CLAIM_COMMENT_LOG" 2>/dev/null || true)
 staged_worktree=$(jq -r '.worktree_path // empty' "$STAGED_STAMP_FILE" 2>/dev/null)
-if [[ "$staged_comment_count" == "1" && "$staged_worktree" == "/tmp/wt-linked" ]]; then
+if [[ "$staged_comment_count" == "1" && "$staged_worktree" == "/tmp/wt-linked" ]] &&
+	grep -Fq '<!-- aidevops-interactive-claim/v1 -->' "$CLAIM_COMMENT_LOG" &&
+	grep -Fq "> Interactive session claimed by @testuser in \`wt-linked\` on " "$CLAIM_COMMENT_LOG"; then
 	print_result "deferred worktree claim posts one idempotent ownership comment" 0
 else
 	print_result "deferred worktree claim posts one idempotent ownership comment" 1 \

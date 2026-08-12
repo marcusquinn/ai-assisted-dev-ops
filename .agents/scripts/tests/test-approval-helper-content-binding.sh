@@ -351,7 +351,8 @@ Auto-approved: cryptographic approval verified. Stale recovery tick reset."
 	assert_verify "trusted deterministic lifecycle audit comment is excluded" pr 42 VERIFIED 0 "$PR_HEAD"
 
 	reset_and_sign issue 41
-	local claim_marker="<!-- ops:start -->
+	local claim_marker="<!-- aidevops-interactive-claim/v1 -->
+<!-- ops:start -->
 > Interactive session claimed by @maintainer on Linux.
 > Pulse dispatch blocked via \`status:in-review\` + self-assignment.
 <!-- ops:end -->
@@ -359,9 +360,17 @@ Auto-approved: cryptographic approval verified. Stale recovery tick reset."
 ---
 [aidevops.sh](https://aidevops.sh) v3.32.175 automated scan."
 	local claim_comments=""
-	claim_comments=$(jq -c --arg body "$claim_marker" '.[0] += [{id:4303,node_id:"IC_4303",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:00Z",updated_at:"2026-01-01T00:06:00Z",body:$body}]' "${FIXTURES}/comments-41.json")
+	local worktree_claim_marker="<!-- aidevops-interactive-claim/v1 -->
+<!-- ops:start -->
+> Interactive session claimed by @maintainer in \`linked-worktree\` on Linux.
+> Pulse dispatch blocked via \`status:in-review\` + self-assignment.
+<!-- ops:end -->
+<!-- aidevops:sig -->
+---
+[aidevops.sh](https://aidevops.sh) v3.32.175 automated scan."
+	claim_comments=$(jq -c --arg body "$claim_marker" --arg worktree_body "$worktree_claim_marker" '.[0] += [{id:4303,node_id:"IC_4303",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:00Z",updated_at:"2026-01-01T00:06:00Z",body:$body},{id:4306,node_id:"IC_4306",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:01Z",updated_at:"2026-01-01T00:06:01Z",body:$worktree_body}]' "${FIXTURES}/comments-41.json")
 	printf '%s\n' "$claim_comments" >"${FIXTURES}/comments-41.json"
-	assert_verify "trusted interactive claim audit does not stale issue approval" issue 41 VERIFIED 0
+	assert_verify "canonical interactive claim refreshes, including worktree-qualified form, preserve approval" issue 41 VERIFIED 0
 
 	claim_comments=$(jq -c --arg body "$claim_marker" '.[0] += [{id:4304,node_id:"IC_4304",user:{id:105,node_id:"U_105",login:"external-author",type:"User"},author_association:"CONTRIBUTOR",created_at:"2026-01-01T00:07:00Z",updated_at:"2026-01-01T00:07:00Z",body:$body}]' "${FIXTURES}/comments-41.json")
 	printf '%s\n' "$claim_comments" >"${FIXTURES}/comments-41.json"
