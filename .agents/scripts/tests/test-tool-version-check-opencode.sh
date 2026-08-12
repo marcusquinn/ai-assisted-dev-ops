@@ -226,6 +226,39 @@ assert_eq "headless pin repair status" "0" "$guard_rc"
 assert_eq "headless repair uses resolved binary outside PATH" "1.18.16" "$("$SANDBOX/version-guard/runtime/opencode")"
 assert_eq "headless pin reinstall command" "install -g opencode-ai@1.18.16" "$(tr '\n' ';' <"$SANDBOX/version-guard/calls" | sed 's/;$//')"
 
+printf 'Test 4b: concurrent headless version guard waits for repair and avoids duplicate reinstall\n'
+mkdir -p "$SANDBOX/version-guard-lock/runtime" "$SANDBOX/version-guard-lock/bin" "$SANDBOX/version-guard-lock/state"
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+write_executable "$SANDBOX/version-guard-lock/runtime/opencode" '#!/usr/bin/env bash
+version=$(<"'"$SANDBOX"'/version-guard-lock/version")
+printf "%s\n" "$version"'
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+write_executable "$SANDBOX/version-guard-lock/bin/npm" '#!/usr/bin/env bash
+printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard-lock/calls"
+printf "1.18.16\n" >"'"$SANDBOX"'/version-guard-lock/version"'
+printf '1.18.7\n' >"$SANDBOX/version-guard-lock/version"
+mkdir "$SANDBOX/version-guard-lock/state/opencode-pin-repair.lock"
+(
+ sleep 1
+ printf '1.18.16\n' >"$SANDBOX/version-guard-lock/version"
+ rmdir "$SANDBOX/version-guard-lock/state/opencode-pin-repair.lock"
+) &
+lock_repair_pid=$!
+guard_rc=0
+(
+	source_extracted
+	STATE_DIR="$SANDBOX/version-guard-lock/state"
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard-lock/runtime/opencode"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	PATH="$SANDBOX/version-guard-lock/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || guard_rc=$?
+wait "$lock_repair_pid" 2>/dev/null || true
+assert_eq "headless pin repair lock wait status" "0" "$guard_rc"
+assert_eq "headless pin repair lock avoids duplicate reinstall" "0" "$([[ -f "$SANDBOX/version-guard-lock/calls" ]] && wc -l <"$SANDBOX/version-guard-lock/calls" || printf '0\n')"
+
 printf 'Test 5: headless version guard fails closed when reinstall fails\n'
 mkdir -p "$SANDBOX/version-install-failure"
 write_executable "$SANDBOX/version-install-failure/opencode" '#!/usr/bin/env bash

@@ -1606,14 +1606,46 @@ _enforce_opencode_version_pin() {
 		return 0
 	fi
 
+	# Multiple Pulse candidates can hit the canary at once. Serialise the repair
+	# path so concurrent workers do not race a global package-manager reinstall
+	# and falsely fail closed while another process is restoring the same pin.
+	local repair_lock_base="${STATE_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
+	local repair_lock_dir="${repair_lock_base}/opencode-pin-repair.lock"
+	mkdir -p "$repair_lock_base" 2>/dev/null || true
+	local repair_lock_acquired=0
+	local repair_lock_waited=0
+	while ! mkdir "$repair_lock_dir" 2>/dev/null; do
+		if [[ "$repair_lock_waited" -ge "30" ]]; then
+			print_error "Timed out waiting for OpenCode ${pin} repair lock -- refusing headless launch"
+			return 1
+		fi
+		sleep 1
+		repair_lock_waited=$((repair_lock_waited + 1))
+	done
+	repair_lock_acquired=1
+
+	# Another canary may have repaired the runtime while this process waited.
+	if ! installed=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null); then
+		installed="unknown"
+	fi
+	installed="${installed#v}"
+	installed="${installed%%[[:space:]]*}"
+	[[ "$installed" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || installed="unknown"
+	if [[ "$installed" == "$pin" ]]; then
+		rmdir "$repair_lock_dir" 2>/dev/null || true
+		return 0
+	fi
+
 	print_warning "OpenCode version drift: installed=$installed, pin=$pin -- reinstalling"
 	local repair_cmd=""
 	if ! repair_cmd=$(aidevops_opencode_upgrade_command "$pin"); then
 		print_error "Cannot build OpenCode ${pin} repair command -- refusing headless launch"
+		[[ "$repair_lock_acquired" -eq 0 ]] || rmdir "$repair_lock_dir" 2>/dev/null || true
 		return 1
 	fi
 	if ! AIDEVOPS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT" bash -c "$repair_cmd" >/dev/null 2>&1; then
 		print_error "Failed to restore OpenCode to ${pin} -- refusing headless launch"
+		[[ "$repair_lock_acquired" -eq 0 ]] || rmdir "$repair_lock_dir" 2>/dev/null || true
 		return 1
 	fi
 
@@ -1626,8 +1658,10 @@ _enforce_opencode_version_pin() {
 	[[ "$restored" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || restored="unknown"
 	if [[ "$restored" != "$pin" ]]; then
 		print_error "OpenCode version mismatch after repair: installed=$restored, pin=$pin -- refusing headless launch"
+		[[ "$repair_lock_acquired" -eq 0 ]] || rmdir "$repair_lock_dir" 2>/dev/null || true
 		return 1
 	fi
+	rmdir "$repair_lock_dir" 2>/dev/null || true
 	print_info "OpenCode restored to ${pin}"
 	return 0
 }
