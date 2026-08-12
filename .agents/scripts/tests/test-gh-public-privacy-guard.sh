@@ -63,6 +63,20 @@ else
 	fail "private entity inventory redacts generic placeholders"
 fi
 
+redacted=$(privacy_redact_public_text 'Local source: /Users/example/Git/private-project' "$entities_file")
+if [[ "$redacted" == 'Local source: [local-path]' ]]; then
+	pass "public text redacts local filesystem paths"
+else
+	fail "public text redacts local filesystem paths" "redacted=$redacted"
+fi
+
+redacted=$(privacy_redact_public_text_from_inventory 'Synthetic Private Person at /Users/example/Git/private-project')
+if [[ "$redacted" == '[private-person] at [local-path]' ]]; then
+	pass "public text inventory helper redacts before publication"
+else
+	fail "public text inventory helper redacts before publication" "redacted=$redacted"
+fi
+
 out=$(privacy_scan_public_text 'Synthetic Private Person' "$entities_file")
 rc=$?
 if [[ "$rc" -eq 1 && "$out" == '[private-person]' ]]; then

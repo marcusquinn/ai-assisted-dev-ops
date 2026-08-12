@@ -328,11 +328,51 @@ privacy_redact_public_text() {
 	local entities_file="$2"
 	local class value redacted="$text"
 	[[ -f "$entities_file" ]] || return 1
+	redacted=$(privacy_redact_local_paths "$redacted") || return 1
 	while IFS=$'\t' read -r class value || [[ -n "$class" ]]; do
 		[[ -z "$class" || -z "$value" ]] && continue
 		redacted="${redacted//"$value"/[private-${class}]}"
 	done <"$entities_file"
 	printf '%s' "$redacted"
+	return 0
+}
+
+#######################################
+# Build a public-safe copy of text from the local entity inventory.
+# Arguments: $1=text
+#######################################
+privacy_redact_public_text_from_inventory() {
+	local text="$1"
+	local entities_file redacted
+
+	entities_file=$(mktemp) || return 1
+	if ! privacy_enumerate_private_entities "$entities_file"; then
+		rm -f "$entities_file"
+		return 1
+	fi
+	redacted=$(privacy_redact_public_text "$text" "$entities_file") || {
+		rm -f "$entities_file"
+		return 1
+	}
+	rm -f "$entities_file"
+	printf '%s' "$redacted"
+	return 0
+}
+
+#######################################
+# Replace local filesystem paths before rendering text for a public surface.
+# Mirrors privacy_scan_local_paths() so callers can preserve useful dashboard
+# data without bypassing the public-write privacy guard.
+# Arguments: $1=text
+#######################################
+privacy_redact_local_paths() {
+	local text="$1"
+	# shellcheck disable=SC2016  # sed expressions intentionally use single quotes
+	printf '%s' "$text" | sed -E \
+		-e 's%(^|[[:space:]`"(:=])/Users/[^[:space:]`")]*%\1[local-path]%g' \
+		-e 's%(^|[[:space:]`"(:=])/home/[^[:space:]`")]*%\1[local-path]%g' \
+		-e 's%(^|[[:space:]`"(:=])~/(Git|Projects|Code|src|work|dev)/[^[:space:]`")]*%\1[local-path]%g' \
+		-e 's%(^|[[:space:]`"(:=])file:///(Users|home)/[^[:space:]`")]*%\1[local-path]%g'
 	return 0
 }
 

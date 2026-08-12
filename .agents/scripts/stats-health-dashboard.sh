@@ -62,6 +62,10 @@ source "${SCRIPT_DIR}/stats-health-dashboard-issue.sh"
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/stats-health-dashboard-data.sh"
 
+# shellcheck source=./privacy-guard-helper.sh
+# shellcheck disable=SC1091  # sibling library resolved at runtime via $SCRIPT_DIR
+source "${SCRIPT_DIR}/privacy-guard-helper.sh"
+
 # --- Orchestration functions ---
 
 #######################################
@@ -219,7 +223,17 @@ _update_health_issue_body_or_fail() {
 	local health_issue_number="$1"
 	local repo_slug="$2"
 	local body="$3"
-	local body_edit_stderr
+	local body_edit_stderr sanitized_body=""
+
+	# Health dashboards aggregate helper output from many local repositories.
+	# Sanitize that output before the public write rather than letting one local
+	# path prevent the entire dashboard—including its freshness marker—from
+	# updating. The write wrapper independently scans the final body.
+	sanitized_body=$(privacy_redact_public_text_from_inventory "$body") || {
+		echo "[stats] Health issue: could not sanitize public body for #${health_issue_number}" \
+			>>"${LOGFILE:-/dev/null}"
+		return 1
+	}
 
 	# Use gh_issue_edit_safe (not bare `gh issue edit`) so the REST fallback
 	# in shared-gh-wrappers-safe-edit.sh fires when GraphQL is rate-limited.
@@ -227,7 +241,7 @@ _update_health_issue_body_or_fail() {
 	# update when the 5000/hr GraphQL budget is exhausted, leaving the
 	# dashboard stale until the budget resets (up to 1h). GH#33.
 	body_edit_stderr=$(_gh_with_timeout write gh_issue_edit_safe "$health_issue_number" --repo "$repo_slug" \
-		--body "$body" 2>&1 >/dev/null) || {
+		--body "$sanitized_body" 2>&1 >/dev/null) || {
 		echo "[stats] Health issue: failed to update body for #${health_issue_number}: ${body_edit_stderr}" \
 			>>"${LOGFILE:-/dev/null}"
 		return 1

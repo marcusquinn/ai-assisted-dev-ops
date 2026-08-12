@@ -130,15 +130,33 @@ _assemble_health_issue_body() {
 }
 
 # shellcheck disable=SC2317
-_gh_with_timeout() {
-	record_call "gh_with_timeout"
-	return 1
-}
-
-# shellcheck disable=SC2317
 _update_health_issue_title() {
 	record_call "title"
 	return 0
+}
+
+# shellcheck disable=SC2317
+privacy_redact_public_text_from_inventory() {
+	local body="$1"
+	record_call "sanitize"
+	printf '%s' "${body//\/Users\/example\/Git\/private-project/[local-path]}"
+	return 0
+}
+
+# shellcheck disable=SC2317
+gh_issue_edit_safe() {
+	local health_issue_number="$1"
+	shift
+	record_call "edit:${health_issue_number}:$*"
+	return 0
+}
+
+# shellcheck disable=SC2317
+_gh_with_timeout() {
+	local mode="$1"
+	shift
+	"$@"
+	return $?
 }
 
 cache_file="${HOME}/.aidevops/logs/health-issue-alice-owner-repo"
@@ -157,6 +175,15 @@ if [[ "$(<"$CALLS_FILE")" == "resolve" ]]; then
 	pass "abstains immediately after resolver sentinel"
 else
 	fail "abstains immediately after resolver sentinel" "expected only 'resolve', but got: $(tr '\n' ' ' <"$CALLS_FILE")"
+fi
+
+: >"$CALLS_FILE"
+_update_health_issue_body_or_fail "42" "owner/repo" "Local source: /Users/example/Git/private-project"
+calls=$(<"$CALLS_FILE")
+if [[ "$calls" == *"sanitize"* && "$calls" == *"--body Local source: [local-path]"* && "$calls" != *"private-project"* ]]; then
+	pass "sanitizes dashboard body before public issue edit"
+else
+	fail "sanitizes dashboard body before public issue edit" "calls=${calls}"
 fi
 
 if ((TESTS_FAILED > 0)); then
