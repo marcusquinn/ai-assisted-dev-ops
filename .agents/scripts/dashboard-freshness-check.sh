@@ -233,17 +233,17 @@ _cadence_gate_ok() {
 
 # Emit "slug issue_number" lines for every known dashboard. Prefer local
 # ~/.aidevops/logs/health-issue-* cache files written by stats-health-dashboard.sh,
-# and include open `source:health-dashboard` issues in configured repos. The
-# GitHub enumeration is intentional even when some caches exist: it covers
-# orphaned historical dashboards after cache migration, identity changes, or
-# fresh hosts where only the stale dashboard's cache is absent.
+# and include the current authenticated supervisor dashboard in configured repos
+# when that repository has no local cache. The authenticated identity constraint
+# keeps retired dashboards for other operators from repeatedly filing stale
+# alerts after a host or supervisor changes.
 # Historical cache names included the role segment
 # (`health-issue-<runner>-supervisor-<slug-dashed>`); current canonical identity
 # caches omit it (`health-issue-<canonical>-<slug-dashed>`). Resolve both by
 # matching the longest repos.json slug suffix instead of parsing a fixed segment
 # position.
 _enumerate_dashboards() {
-	local cache issue slug_raw slug key seen="|" cached_slugs="|" slug_candidates
+	local cache issue slug_raw slug key seen="|" cached_slugs="|" slug_candidates current_user=""
 	slug_candidates="$(_repo_slug_candidates)"
 	shopt -s nullglob
 	for cache in "${HEALTH_ISSUE_CACHE_DIR}"/health-issue-*; do
@@ -262,6 +262,8 @@ _enumerate_dashboards() {
 	done
 	shopt -u nullglob
 	if command -v gh >/dev/null 2>&1 && gh auth status &>/dev/null 2>&1; then
+		current_user=$(_dashboard_scan_current_user)
+		[[ -n "$current_user" ]] || return 0
 		while IFS= read -r slug; do
 			[[ -n "$slug" ]] || continue
 			case "$cached_slugs" in
@@ -275,7 +277,7 @@ _enumerate_dashboards() {
 				esac
 				seen="${seen}${key}|"
 				printf '%s %s\n' "$slug" "$issue"
-			done < <(_github_health_dashboard_issue_numbers "$slug")
+			done < <(_github_health_dashboard_issue_numbers "$slug" "$current_user")
 		done < <(_repo_slugs_for_dashboard_scan)
 	fi
 	return 0
@@ -295,15 +297,28 @@ _repo_slugs_for_dashboard_scan() {
 	return 0
 }
 
-# Emit open supervisor health-dashboard issue numbers for a repo via
-# REST-backed gh api. Contributor dashboards are intentionally excluded: they
-# can be stale when that contributor is offline and are not the operator's
-# primary single-glance health surface.
+# Resolve the authenticated GitHub login once for remote dashboard enumeration.
+# Output: validated GitHub login, or empty when it cannot be safely determined.
+_dashboard_scan_current_user() {
+	local current_user=""
+	current_user=$(gh api user --jq '.login // ""' 2>>"$LOGFILE" || true)
+	[[ "$current_user" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || return 0
+	printf '%s\n' "$current_user"
+	return 0
+}
+
+# Emit the open supervisor health-dashboard issue number for the authenticated
+# operator in a repo via REST-backed gh api. Contributor dashboards and
+# historical dashboards for other supervisors are intentionally excluded: they
+# can be stale when that operator is offline and are not this host's primary
+# single-glance health surface.
 _github_health_dashboard_issue_numbers() {
 	local slug="$1"
-	[[ -n "$slug" ]] || return 0
+	local current_user="$2"
+	[[ -n "$slug" && "$current_user" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || return 0
 	gh api --paginate "repos/${slug}/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100" \
-		--jq '.[] | select(.pull_request == null) | .number' 2>>"$LOGFILE" || true
+		--jq ".[] | select(.pull_request == null) | select(any(.labels[]?; .name == \"operator:${current_user}\")) | .number" \
+		2>>"$LOGFILE" || true
 	return 0
 }
 

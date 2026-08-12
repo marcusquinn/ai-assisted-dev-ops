@@ -27,9 +27,9 @@
 #      closes the recovered missing-marker alert and files a stale alert.
 #  11. open issue list failures are logged instead of silently treated as an
 #      empty dedup result.
-#  12. scan without a local health-issue cache falls back to open
-#      source:health-dashboard issues for configured repos, while a local cache
-#      suppresses historical dashboards for that same repo.
+#  12. scan without a local health-issue cache falls back to the authenticated
+#      operator's open source:health-dashboard issue for configured repos, while
+#      a local cache suppresses historical dashboards for that same repo.
 #  13. source regression: recovered stale and missing-marker alert paths share
 #      the parameterized close helper and accept a pre-fetched open issue list.
 #
@@ -204,7 +204,14 @@ run_scan_stub_script() {
 						return 0
 						;;
 					api)
+						if [[ "$gh_args" == *"user --jq .login // \"\""* ]]; then
+							printf '%s\n' "testrunner"
+							return 0
+						fi
 						if [[ "$gh_args" == *"repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100"* ]]; then
+							if [[ "${DASHBOARD_TITLE:-}" == "[Supervisor:historical] stale" ]]; then
+								return 0
+							fi
 							printf "%s\n" 424242
 							return 0
 						fi
@@ -520,8 +527,9 @@ created_count=$(grep -c '^issue create ' "$calls_file" 2>/dev/null || true)
 [[ "$created_count" =~ ^[0-9]+$ ]] || created_count=0
 
 if (( created_count == 1 )) \
-	&& grep -q '^api --paginate repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100 ' "$calls_file"; then
-	pass "missing cache → source:health-dashboard fallback scans dashboard"
+	&& grep -q '^api --paginate repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100 ' "$calls_file" \
+	&& grep -q 'operator:testrunner' "$calls_file"; then
+	pass "missing cache → current supervisor dashboard fallback scans dashboard"
 else
 	fail "source health-dashboard fallback" \
 		"created=$created_count; calls:\n$(cat "$calls_file")"
@@ -547,7 +555,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 12b: contributor health dashboards are ignored
+# Test 12b: a dashboard for a different supervisor is ignored when no local
+# cache exists, preventing stale alerts for inactive historical operators.
+# ---------------------------------------------------------------------------
+echo "Testing: historical supervisor dashboard is ignored"
+rm -f "$HEALTH_CACHE"
+run_scan_with_stubs "$STALE_BODY" 0 "export DASHBOARD_TITLE='[Supervisor:historical] stale'" >/dev/null
+calls_file="${TMP}/gh-calls.log"
+created_count=$(grep -c '^issue create ' "$calls_file" 2>/dev/null || true)
+[[ "$created_count" =~ ^[0-9]+$ ]] || created_count=0
+
+if (( created_count == 0 )); then
+	pass "historical supervisor dashboard without operator label → no alert"
+else
+	fail "historical supervisor dashboard ignored" \
+		"created=$created_count; calls:\n$(cat "$calls_file")"
+fi
+printf '%s\n' 424242 >"$HEALTH_CACHE"
+
+# ---------------------------------------------------------------------------
+# Test 12c: contributor health dashboards are ignored
 # ---------------------------------------------------------------------------
 echo "Testing: contributor dashboard is ignored"
 run_scan_with_stubs "$STALE_BODY" 0 "export DASHBOARD_TITLE='[Contributor:testrunner] stale'; export DASHBOARD_ROLE_LABEL=contributor" >/dev/null
