@@ -442,6 +442,67 @@ _prioritize_health_repo_entries() {
 }
 
 #######################################
+# Refresh the first priority dashboard before optional aggregate work.
+# Arguments:
+#   $1 - priority-ordered newline-delimited slug|path entries
+# Output: refreshed priority slug, or empty when no entry exists
+#######################################
+_refresh_priority_health_issue() {
+	local repo_entries="$1"
+	local priority_entry="" priority_slug="" priority_path=""
+
+	priority_entry=$(printf '%s\n' "$repo_entries" | awk 'NR == 1 { print; exit }')
+	[[ -z "$priority_entry" ]] && return 0
+	IFS='|' read -r priority_slug priority_path <<<"$priority_entry"
+	if ! _update_health_issue_for_repo "$priority_slug" "$priority_path" "" "" ""; then
+		echo "[stats] Health issue update failed for priority ${priority_slug}" >>"$LOGFILE"
+		return 1
+	fi
+	printf '%s\n' "$priority_slug"
+	return 0
+}
+
+#######################################
+# Build optional cross-repository dashboard sections once per refresh cycle.
+# Arguments:
+#   $1 - priority-ordered newline-delimited slug|path entries
+#   $2-$4 - output variable names for activity, session, and person stats
+#######################################
+_build_cross_repo_health_summaries() {
+	local repo_entries="$1"
+	local activity_var="$2" session_var="$3" person_stats_var="$4"
+	local cross_repo_md="" cross_repo_session_time_md="" cross_repo_person_stats_md=""
+	local activity_helper="${HOME}/.aidevops/agents/scripts/contributor-activity-helper.sh"
+	if [[ -x "$activity_helper" ]]; then
+		local all_repo_paths
+		all_repo_paths=$(printf '%s\n' "$repo_entries" | awk -F'|' 'NF >= 2 && $2 != "" { print $2 }')
+		if [[ -n "$all_repo_paths" ]]; then
+			local -a cross_args=()
+			while IFS= read -r rp; do
+				[[ -n "$rp" ]] && cross_args+=("$rp")
+			done <<<"$all_repo_paths"
+			if [[ ${#cross_args[@]} -gt 1 && ${#cross_args[@]} -le $_HEALTH_CROSS_REPO_MAX_REPOS ]]; then
+				cross_repo_md=$(timeout 120 bash "$activity_helper" cross-repo-summary "${cross_args[@]}" --period month --format markdown || echo "_Cross-repo data unavailable._")
+				cross_repo_session_time_md=$(timeout 120 bash "$activity_helper" cross-repo-session-time "${cross_args[@]}" --period all --format markdown || echo "_Cross-repo session data unavailable._")
+			elif [[ ${#cross_args[@]} -gt $_HEALTH_CROSS_REPO_MAX_REPOS ]]; then
+				local cross_repo_skip_message="Cross-repo summary skipped: ${#cross_args[@]} repositories exceeds limit ${_HEALTH_CROSS_REPO_MAX_REPOS}."
+				echo "[stats] ${cross_repo_skip_message}" >>"${LOGFILE:-/dev/null}"
+				cross_repo_md="_${cross_repo_skip_message}_"
+				cross_repo_session_time_md="_${cross_repo_skip_message}_"
+			fi
+		fi
+	fi
+	local cross_repo_cache="${PERSON_STATS_CACHE_DIR}/person-stats-cache-cross-repo.md"
+	if [[ -f "$cross_repo_cache" ]]; then
+		cross_repo_person_stats_md=$(_read_person_stats_cache "cross-repo")
+	fi
+	printf -v "$activity_var" '%s' "$cross_repo_md"
+	printf -v "$session_var" '%s' "$cross_repo_session_time_md"
+	printf -v "$person_stats_var" '%s' "$cross_repo_person_stats_md"
+	return 0
+}
+
+#######################################
 # Update health issues for ALL pulse-enabled repos
 #
 # Iterates repos.json and calls _update_health_issue_for_repo for each
@@ -484,59 +545,17 @@ update_health_issues() {
 	fi
 	repo_entries=$(_prioritize_health_repo_entries "$repo_entries")
 
-	# The primary framework dashboard is the operator health surface. Publish it
-	# before optional cache and cross-repository work, each of which can consume
-	# most of the wrapper's bounded wall-clock budget. The regular loop below
-	# skips it afterwards, preventing a duplicate update in the same cycle.
-	local priority_entry=""
 	local priority_slug=""
-	priority_entry=$(printf '%s\n' "$repo_entries" | awk 'NR == 1 { print; exit }')
-	if [[ -n "$priority_entry" ]]; then
-		local priority_path
-		IFS='|' read -r priority_slug priority_path <<<"$priority_entry"
-		if ! _update_health_issue_for_repo "$priority_slug" "$priority_path" "" "" ""; then
-			echo "[stats] Health issue update failed for priority ${priority_slug}" >>"$LOGFILE"
-			return 1
-		fi
-	fi
+	priority_slug=$(_refresh_priority_health_issue "$repo_entries") || return 1
 
 	# Refresh person-stats cache if stale (t1426: hourly, not every pulse)
 	_refresh_person_stats_cache || true
 
-	# Pre-compute cross-repo summaries ONCE for all health issues.
-	# This avoids N×N git log walks (one cross-repo scan per repo dashboard)
-	# and redundant DB queries for session time.
-	# Person stats read from cache (refreshed hourly by _refresh_person_stats_cache).
-	# Skip the optional cross-repo summaries above _HEALTH_CROSS_REPO_MAX_REPOS;
-	# the contributor activity helper can time out at that scale and stall the
-	# dashboard refresh.
 	local cross_repo_md=""
 	local cross_repo_session_time_md=""
 	local cross_repo_person_stats_md=""
-	local activity_helper="${HOME}/.aidevops/agents/scripts/contributor-activity-helper.sh"
-	if [[ -x "$activity_helper" ]]; then
-		local all_repo_paths
-		all_repo_paths=$(printf '%s\n' "$repo_entries" | awk -F'|' 'NF >= 2 && $2 != "" { print $2 }')
-		if [[ -n "$all_repo_paths" ]]; then
-			local -a cross_args=()
-			while IFS= read -r rp; do
-				[[ -n "$rp" ]] && cross_args+=("$rp")
-			done <<<"$all_repo_paths"
-			if [[ ${#cross_args[@]} -gt 1 && ${#cross_args[@]} -le $_HEALTH_CROSS_REPO_MAX_REPOS ]]; then
-				cross_repo_md=$(timeout 120 bash "$activity_helper" cross-repo-summary "${cross_args[@]}" --period month --format markdown || echo "_Cross-repo data unavailable._")
-				cross_repo_session_time_md=$(timeout 120 bash "$activity_helper" cross-repo-session-time "${cross_args[@]}" --period all --format markdown || echo "_Cross-repo session data unavailable._")
-			elif [[ ${#cross_args[@]} -gt $_HEALTH_CROSS_REPO_MAX_REPOS ]]; then
-				local cross_repo_skip_message="Cross-repo summary skipped: ${#cross_args[@]} repositories exceeds limit ${_HEALTH_CROSS_REPO_MAX_REPOS}."
-				echo "[stats] ${cross_repo_skip_message}" >>"${LOGFILE:-/dev/null}"
-				cross_repo_md="_${cross_repo_skip_message}_"
-				cross_repo_session_time_md="_${cross_repo_skip_message}_"
-			fi
-		fi
-	fi
-	local cross_repo_cache="${PERSON_STATS_CACHE_DIR}/person-stats-cache-cross-repo.md"
-	if [[ -f "$cross_repo_cache" ]]; then
-		cross_repo_person_stats_md=$(_read_person_stats_cache "cross-repo")
-	fi
+	_build_cross_repo_health_summaries "$repo_entries" \
+		cross_repo_md cross_repo_session_time_md cross_repo_person_stats_md
 
 	local updated=0
 	local failed=0
@@ -551,7 +570,7 @@ update_health_issues() {
 		updated=$((updated + 1))
 	done <<<"$repo_entries"
 
-	[[ -n "$priority_entry" ]] && updated=$((updated + 1))
+	[[ -n "$priority_slug" ]] && updated=$((updated + 1))
 	if [[ "$updated" -gt 0 ]]; then
 		echo "[stats] Health issues: updated $updated repo(s)" >>"$LOGFILE"
 	fi

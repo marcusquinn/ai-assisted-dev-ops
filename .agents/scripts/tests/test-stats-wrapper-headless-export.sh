@@ -241,7 +241,7 @@ MOCK_STATS_FUNCTIONS
 test_priority_dashboard_precedes_optional_cross_repo_work() {
 	local dashboard_script priority_line cache_line
 	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
-	priority_line=$(grep -nE "^[[:space:]]*if ! _update_health_issue_for_repo \"[\$]priority_slug\"" "$dashboard_script" | head -1 | cut -d: -f1)
+	priority_line=$(grep -nE "^[[:space:]]*priority_slug=[\$]\(_refresh_priority_health_issue \"[\$]repo_entries\"\)" "$dashboard_script" | head -1 | cut -d: -f1)
 	cache_line=$(grep -nE '^[[:space:]]*_refresh_person_stats_cache \|\| true' "$dashboard_script" | head -1 | cut -d: -f1)
 	if [[ -n "$priority_line" && -n "$cache_line" && "$priority_line" -lt "$cache_line" ]]; then
 		print_result "priority dashboard refresh precedes optional cross-repo work" 0
