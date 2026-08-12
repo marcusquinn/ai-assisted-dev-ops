@@ -623,7 +623,7 @@ recover_failed_launch_state() {
 		return 0
 	fi
 
-	local issue_state assigned_to_self has_queued has_in_progress is_blocked
+	local issue_state="" assigned_to_self="" has_queued="" has_in_progress="" is_blocked=""
 	issue_state=$(echo "$issue_meta_json" | jq -r '.state // ""' 2>/dev/null)
 	assigned_to_self=$(echo "$issue_meta_json" | jq -r --arg self "$self_login" '([.assignees[].login] | index($self)) != null' 2>/dev/null)
 	has_queued=$(echo "$issue_meta_json" | jq -r '([.labels[].name] | index("status:queued")) != null' 2>/dev/null)
