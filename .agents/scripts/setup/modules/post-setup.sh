@@ -201,20 +201,16 @@ setup_tabby() {
 	local tabby_helper="$HOME/.aidevops/agents/scripts/tabby-helper.sh"
 	local tabby_config
 
-	# Platform-aware config path
-	if [[ "$(uname -s)" == "Darwin" ]]; then
-		tabby_config="$HOME/Library/Application Support/tabby/config.yaml"
-	else
-		tabby_config="$HOME/.config/tabby-terminal/config.yaml"
-	fi
-
-	# Skip if Tabby not installed
-	if [[ ! -f "$tabby_config" ]]; then
+	# Skip if helper not deployed yet
+	if [[ ! -x "$tabby_helper" ]]; then
 		return 0
 	fi
 
-	# Skip if helper not deployed yet
-	if [[ ! -x "$tabby_helper" ]]; then
+	# Keep setup and the standalone helper on one config-resolution contract.
+	tabby_config="$(bash "$tabby_helper" config-path)"
+
+	# Skip if Tabby not installed
+	if [[ ! -f "$tabby_config" ]]; then
 		return 0
 	fi
 

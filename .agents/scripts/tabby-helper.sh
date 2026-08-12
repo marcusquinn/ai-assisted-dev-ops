@@ -18,7 +18,7 @@
 #
 # Requires: python3 (ships with macOS), repos.json
 # Tabby config: ~/Library/Application Support/tabby/config.yaml (macOS)
-#               ~/.config/tabby-terminal/config.yaml (Linux)
+#               ${XDG_CONFIG_HOME:-~/.config}/tabby/config.yaml (Linux)
 
 set -euo pipefail
 
@@ -27,15 +27,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=shared-constants.sh
 [[ -f "${SCRIPT_DIR}/shared-constants.sh" ]] && source "${SCRIPT_DIR}/shared-constants.sh"
 REPOS_JSON="${HOME}/.config/aidevops/repos.json"
+TABBY_CONFIG_OVERRIDE="${TABBY_CONFIG:-}"
 
-# Tabby config path (platform-aware, unless caller provided an override)
-if [[ -z "${TABBY_CONFIG:-}" ]]; then
-	if [[ "$(uname -s)" == "Darwin" ]]; then
-		TABBY_CONFIG="${HOME}/Library/Application Support/tabby/config.yaml"
+_resolve_tabby_config() {
+	local platform="${1:-$(uname -s)}"
+
+	if [[ -n "$TABBY_CONFIG_OVERRIDE" ]]; then
+		printf '%s\n' "$TABBY_CONFIG_OVERRIDE"
+	elif [[ -n "${TABBY_CONFIG_DIRECTORY:-}" ]]; then
+		printf '%s/config.yaml\n' "${TABBY_CONFIG_DIRECTORY%/}"
+	elif [[ "$platform" == "Darwin" ]]; then
+		printf '%s/Library/Application Support/tabby/config.yaml\n' "$HOME"
 	else
-		TABBY_CONFIG="${HOME}/.config/tabby-terminal/config.yaml"
+		printf '%s/tabby/config.yaml\n' "${XDG_CONFIG_HOME:-$HOME/.config}"
 	fi
-fi
+	return 0
+}
+
+TABBY_CONFIG="$(_resolve_tabby_config)"
 
 _info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 _success() { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -346,6 +355,12 @@ cmd_help() {
 	return 0
 }
 
+cmd_config_path() {
+	local platform="${1:-$(uname -s)}"
+	_resolve_tabby_config "$platform"
+	return 0
+}
+
 # --- Main ---
 main() {
 	local cmd="${1:-sync}"
@@ -355,6 +370,7 @@ main() {
 	status) cmd_status ;;
 	zshrc) cmd_zshrc ;;
 	fix-shell) cmd_fix_shell ;;
+	config-path) cmd_config_path "${2:-}" ;;
 	help | --help | -h) cmd_help ;;
 	*)
 		_error "Unknown command: $cmd"

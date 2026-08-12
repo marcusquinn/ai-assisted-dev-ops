@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit
 HELPER="${REPO_ROOT}/.agents/scripts/tabby-profile-sync.py"
+TABBY_HELPER="${REPO_ROOT}/.agents/scripts/tabby-helper.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -261,6 +262,23 @@ if [[ "${sync_output}" == *"Repaired 1 existing Tabby profile(s)."* ]] && grep -
 else
 	_fail "sync did not repair existing profile: ${sync_output}"
 fi
+
+_info "Test 11: Tabby config path precedence matches active platform configuration"
+config_home="${tmp_root}/xdg"
+runtime_dir="${tmp_root}/runtime-tabby"
+explicit_config="${tmp_root}/explicit.yaml"
+
+resolved=$(HOME="${tmp_root}" XDG_CONFIG_HOME="${config_home}" TABBY_CONFIG='' TABBY_CONFIG_DIRECTORY='' bash "${TABBY_HELPER}" config-path Linux)
+[[ "$resolved" == "${config_home}/tabby/config.yaml" ]] && _pass "Linux XDG default resolved" || _fail "Linux XDG default mismatch: ${resolved}"
+
+resolved=$(HOME="${tmp_root}" XDG_CONFIG_HOME="${config_home}" TABBY_CONFIG='' TABBY_CONFIG_DIRECTORY="${runtime_dir}/" bash "${TABBY_HELPER}" config-path Linux)
+[[ "$resolved" == "${runtime_dir}/config.yaml" ]] && _pass "runtime directory override resolved" || _fail "runtime directory override mismatch: ${resolved}"
+
+resolved=$(HOME="${tmp_root}" XDG_CONFIG_HOME="${config_home}" TABBY_CONFIG="${explicit_config}" TABBY_CONFIG_DIRECTORY="${runtime_dir}" bash "${TABBY_HELPER}" config-path Linux)
+[[ "$resolved" == "${explicit_config}" ]] && _pass "explicit file override resolved" || _fail "explicit file override mismatch: ${resolved}"
+
+resolved=$(HOME="${tmp_root}" TABBY_CONFIG='' TABBY_CONFIG_DIRECTORY='' bash "${TABBY_HELPER}" config-path Darwin)
+[[ "$resolved" == "${tmp_root}/Library/Application Support/tabby/config.yaml" ]] && _pass "macOS default preserved" || _fail "macOS default mismatch: ${resolved}"
 
 echo ""
 if ((fail_count == 0)); then
