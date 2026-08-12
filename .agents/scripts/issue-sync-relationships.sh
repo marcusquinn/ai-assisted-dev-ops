@@ -1204,6 +1204,29 @@ _relationship_prepare_workset() {
 	return 0
 }
 
+#######################################
+# Persist and report a completed bulk relationship pass. Bash dynamic scope
+# supplies the command-local timing, workset, and pending-task variables while
+# keeping cmd_relationships focused on orchestration.
+#######################################
+_relationship_finalize_command() {
+	[[ $total -gt 25 ]] && printf "\n" >&2
+	mutation_finished=$(date +%s 2>/dev/null || printf '%s' "$mutation_started")
+	backend_calls=$(_relationship_backend_call_count)
+	if [[ -z "$target_task" ]]; then
+		if [[ ${#pending_tasks[@]} -gt 0 ]]; then
+			_relationship_write_resume_state "$_RELATIONSHIP_STATE_FILE" "$_RELATIONSHIP_INPUT_REVISION" "${pending_tasks[@]}" || \
+				print_warning "Relationship progress could not be persisted; the next run will restart safely"
+		else
+			rm -f "$_RELATIONSHIP_STATE_FILE"
+		fi
+	fi
+	_relationship_print_summary "$attempted" "$complete" "$pending_before" "$retryable_total" "$deadline_exhausted" \
+		"$candidate_total" "${#pending_tasks[@]}" "$_RELATIONSHIP_RESUME_STATUS" \
+		"$((parse_finished - parse_started))" "$((mutation_finished - mutation_started))" "$backend_calls"
+	return 0
+}
+
 # Bulk relationship sync command.
 # Scans TODO.md for tasks with relationship metadata or subtask patterns,
 # resolves to GitHub node IDs, and sets relationships via GraphQL.
@@ -1304,20 +1327,7 @@ cmd_relationships() {
 			pending_tasks+=("$current_task")
 		fi
 	done
-	[[ $total -gt 25 ]] && printf "\n" >&2
-	mutation_finished=$(date +%s 2>/dev/null || printf '%s' "$mutation_started")
-	backend_calls=$(_relationship_backend_call_count)
-	if [[ -z "$target_task" ]]; then
-		if [[ ${#pending_tasks[@]} -gt 0 ]]; then
-			_relationship_write_resume_state "$_RELATIONSHIP_STATE_FILE" "$_RELATIONSHIP_INPUT_REVISION" "${pending_tasks[@]}" || \
-				print_warning "Relationship progress could not be persisted; the next run will restart safely"
-		else
-			rm -f "$_RELATIONSHIP_STATE_FILE"
-		fi
-	fi
-	_relationship_print_summary "$attempted" "$complete" "$pending_before" "$retryable_total" "$deadline_exhausted" \
-		"$candidate_total" "${#pending_tasks[@]}" "$_RELATIONSHIP_RESUME_STATUS" \
-		"$((parse_finished - parse_started))" "$((mutation_finished - mutation_started))" "$backend_calls"
+	_relationship_finalize_command
 	[[ "$owns_scope" -eq 0 ]] || _end_relationship_sync_scope
 	[[ "$retryable_total" -eq 0 ]] || return 1
 	return 0
