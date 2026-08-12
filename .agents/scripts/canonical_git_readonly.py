@@ -97,36 +97,39 @@ def _is_hash_object_write_flag(arg: str) -> bool:
     )
 
 
-def _hash_object_is_read_only(args: list[str]) -> bool:
-    """Allow hashing inputs while rejecting object database writes."""
+def _hash_object_options(args: list[str]) -> list[str]:
+    try:
+        return args[: args.index("--")]
+    except ValueError:
+        return args
+
+
+def _is_unknown_hash_object_option(arg: str) -> bool:
     read_only_options = {
         "--literally",
         "--no-filters",
         "--stdin",
         "--stdin-paths",
     }
-    expect_value = False
-    options_ended = False
+    return (
+        arg.startswith("-")
+        and arg not in read_only_options
+        and not arg.startswith("--path=")
+    )
 
-    for arg in args:
-        if options_ended:
-            continue
+
+def _hash_object_is_read_only(args: list[str]) -> bool:
+    """Allow hashing inputs while rejecting object database writes."""
+    expect_value = False
+
+    for arg in _hash_object_options(args):
         if expect_value:
             expect_value = False
             continue
-        if arg == "--":
-            options_ended = True
-            continue
-        if _is_hash_object_write_flag(arg):
-            return False
         if arg == "-t":
             expect_value = True
             continue
-        if (
-            arg.startswith("-")
-            and arg not in read_only_options
-            and not arg.startswith("--path=")
-        ):
+        if _is_hash_object_write_flag(arg) or _is_unknown_hash_object_option(arg):
             return False
 
     return not expect_value
