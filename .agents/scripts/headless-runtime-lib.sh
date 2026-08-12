@@ -668,6 +668,57 @@ run_without_opencode_session_env() {
 	return $?
 }
 
+# Replace the inherited process-scoped Git config with the three signing
+# entries added by _configure_headless_worker_signing_env. The clean sandbox
+# can then inherit a contiguous GIT_CONFIG_* set without admitting unrelated
+# ambient Git configuration that happened to precede those entries.
+prepare_headless_signing_sandbox_env() {
+	local role="${1:-worker}"
+	[[ "$role" == "worker" ]] || return 0
+	[[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" == "1" ]] || return 0
+	local config_start="${_AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START:-}"
+	# A proven pre-existing signing setup does not add dynamic entries and needs
+	# no sandbox passthrough. Preserve that migration path (GH#29902).
+	[[ -n "$config_start" ]] || return 0
+	local config_count="${GIT_CONFIG_COUNT:-}"
+	[[ "$config_start" =~ ^[0-9]+$ && "$config_count" =~ ^[0-9]+$ ]] || return 1
+	[[ "$config_count" -eq $((config_start + 3)) ]] || return 1
+
+	local source_key_var="" source_value_var=""
+	local signing_format="" signing_key="" signing_required=""
+	source_key_var="GIT_CONFIG_KEY_${config_start}"
+	source_value_var="GIT_CONFIG_VALUE_${config_start}"
+	[[ "${!source_key_var:-}" == "gpg.format" && "${!source_value_var:-}" == "ssh" ]] || return 1
+	signing_format="${!source_value_var}"
+	config_start=$((config_start + 1))
+	source_key_var="GIT_CONFIG_KEY_${config_start}"
+	source_value_var="GIT_CONFIG_VALUE_${config_start}"
+	[[ "${!source_key_var:-}" == "user.signingkey" && -n "${!source_value_var:-}" ]] || return 1
+	signing_key="${!source_value_var}"
+	config_start=$((config_start + 1))
+	source_key_var="GIT_CONFIG_KEY_${config_start}"
+	source_value_var="GIT_CONFIG_VALUE_${config_start}"
+	[[ "${!source_key_var:-}" == "commit.gpgsign" && "${!source_value_var:-}" == "true" ]] || return 1
+	signing_required="${!source_value_var}"
+
+	export GIT_CONFIG_COUNT=3
+	export GIT_CONFIG_KEY_0="gpg.format" GIT_CONFIG_VALUE_0="$signing_format"
+	export GIT_CONFIG_KEY_1="user.signingkey" GIT_CONFIG_VALUE_1="$signing_key"
+	export GIT_CONFIG_KEY_2="commit.gpgsign" GIT_CONFIG_VALUE_2="$signing_required"
+	export _AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START=0
+	return 0
+}
+
+_headless_signing_sandbox_env_is_normalized() {
+	[[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" == "1" ]] || return 1
+	[[ "${_AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START:-}" == "0" ]] || return 1
+	[[ "${GIT_CONFIG_COUNT:-}" == "3" ]] || return 1
+	[[ "${GIT_CONFIG_KEY_0:-}" == "gpg.format" && "${GIT_CONFIG_VALUE_0:-}" == "ssh" ]] || return 1
+	[[ "${GIT_CONFIG_KEY_1:-}" == "user.signingkey" && -n "${GIT_CONFIG_VALUE_1:-}" ]] || return 1
+	[[ "${GIT_CONFIG_KEY_2:-}" == "commit.gpgsign" && "${GIT_CONFIG_VALUE_2:-}" == "true" ]] || return 1
+	return 0
+}
+
 build_sandbox_passthrough_csv() {
 	local provider="${1:-}"
 	local role="${2:-worker}"
@@ -714,6 +765,11 @@ build_sandbox_passthrough_csv() {
 		# Keep it explicit: arbitrary WORKER_* values may carry unrelated runtime
 		# configuration and must not cross the clean sandbox boundary.
 		WORKER_ISSUE_NUMBER | WORKER_REPO_SLUG | DISPATCH_REPO_SLUG | WORKER_SESSION_KEY | WORKER_WORKTREE_PATH | WORKER_GITHUB_LOGIN) ;;
+		# Only the normalized signing-specific process config may cross the
+		# sandbox boundary; arbitrary ambient GIT_CONFIG_* remains excluded.
+		GIT_CONFIG_COUNT | GIT_CONFIG_KEY_0 | GIT_CONFIG_VALUE_0 | GIT_CONFIG_KEY_1 | GIT_CONFIG_VALUE_1 | GIT_CONFIG_KEY_2 | GIT_CONFIG_VALUE_2)
+			_headless_signing_sandbox_env_is_normalized || continue
+			;;
 		# OTEL_* is passed through so headless workers under the sandbox
 		# can export OTLP traces when OTEL_EXPORTER_OTLP_ENDPOINT is set.
 		# Without this, opencode never initialises its OTLP exporter and

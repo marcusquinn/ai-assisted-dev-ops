@@ -183,6 +183,11 @@ _invoke_opencode_prepare_child_command() {
 # Execute one sandboxed command while preserving the child's pipeline status.
 _invoke_opencode_run_sandboxed() {
 	local passthrough_csv=""
+	if ! prepare_headless_signing_sandbox_env "$runtime_role"; then
+		print_error "Headless signing configuration could not be safely isolated for the sandbox"
+		printf '%s' "87" >"$exit_code_file"
+		return 87
+	fi
 	passthrough_csv="$(build_sandbox_passthrough_csv \
 		"${_invoke_provider:-}" "$runtime_role" "$public_triage_auth_ready")"
 	local -a sandbox_args=(run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io)

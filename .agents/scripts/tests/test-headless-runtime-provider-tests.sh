@@ -737,6 +737,23 @@ test_sandbox_passthrough_scopes_provider_env() {
 	return 0
 }
 
+test_sandbox_passthrough_rejects_unvalidated_git_config() {
+	local csv=""
+	csv=$(
+		GIT_CONFIG_COUNT=1 \
+			GIT_CONFIG_KEY_0='http.extraHeader' \
+			GIT_CONFIG_VALUE_0='unrelated' \
+			build_sandbox_passthrough_csv "openai" "worker"
+	)
+	if [[ ",$csv," != *",GIT_CONFIG_COUNT,"* && ",$csv," != *",GIT_CONFIG_KEY_0,"* &&
+		",$csv," != *",GIT_CONFIG_VALUE_0,"* ]]; then
+		print_result "sandbox passthrough rejects unvalidated ambient Git configuration" 0
+		return 0
+	fi
+	print_result "sandbox passthrough rejects unvalidated ambient Git configuration" 1 "$csv"
+	return 0
+}
+
 test_triage_sandbox_passthrough_excludes_github_and_worker_authority() {
 	local csv=""
 	csv=$(

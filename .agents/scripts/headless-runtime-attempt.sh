@@ -82,6 +82,7 @@ _configure_headless_worker_signing_env() {
 		export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
 		return 0
 	fi
+	export _AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START="${GIT_CONFIG_COUNT:-0}"
 	_append_headless_worker_git_config_env "gpg.format" "ssh" || return 1
 	_append_headless_worker_git_config_env "user.signingkey" "$signing_public_key" || return 1
 	_append_headless_worker_git_config_env "commit.gpgsign" "$_HEADLESS_SIGNING_TRUE" || return 1

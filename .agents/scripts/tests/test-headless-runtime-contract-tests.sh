@@ -281,17 +281,49 @@ test_worker_signing_config_is_process_scoped_and_idempotent() {
 			_configure_headless_worker_signing_env "$TEST_ROOT"
 		AIDEVOPS_HEADLESS_SIGNING_PUBLIC_KEY="$signing_public_key" \
 			_configure_headless_worker_signing_env "$TEST_ROOT"
-		printf '%s|%s=%s|%s=%s|%s=%s|%s=%s\n' \
+		printf '%s|%s|%s=%s|%s=%s|%s=%s|%s=%s\n' \
 			"$GIT_CONFIG_COUNT" \
+			"$_AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START" \
 			"$GIT_CONFIG_KEY_0" "$GIT_CONFIG_VALUE_0" \
 			"$GIT_CONFIG_KEY_1" "$GIT_CONFIG_VALUE_1" \
 			"$GIT_CONFIG_KEY_2" "$GIT_CONFIG_VALUE_2" \
 			"$GIT_CONFIG_KEY_3" "$GIT_CONFIG_VALUE_3"
 	)
-	if [[ "$result" == "4|http.sslVerify=true|gpg.format=ssh|user.signingkey=${signing_public_key}|commit.gpgsign=true" ]]; then
+	if [[ "$result" == "4|1|http.sslVerify=true|gpg.format=ssh|user.signingkey=${signing_public_key}|commit.gpgsign=true" ]]; then
 		print_result "worker signing key uses idempotent process-scoped Git configuration" 0
 	else
 		print_result "worker signing key uses idempotent process-scoped Git configuration" 1 "$result"
+	fi
+	return 0
+}
+
+test_worker_signing_sandbox_env_excludes_ambient_git_config() {
+	local signing_public_key="${TEST_ROOT}/sandbox-worker-signing-key.pub"
+	printf '%s\n' 'ssh-ed25519 AAAAC3NzaSandboxFixture aidevops-headless-signing' >"$signing_public_key"
+	local result="" status=0
+	result=$(
+		export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
+		export _AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START=1
+		export GIT_CONFIG_COUNT=4
+		export GIT_CONFIG_KEY_0="http.extraHeader" GIT_CONFIG_VALUE_0="unrelated"
+		export GIT_CONFIG_KEY_1="gpg.format" GIT_CONFIG_VALUE_1="ssh"
+		export GIT_CONFIG_KEY_2="user.signingkey" GIT_CONFIG_VALUE_2="$signing_public_key"
+		export GIT_CONFIG_KEY_3="commit.gpgsign" GIT_CONFIG_VALUE_3="true"
+		prepare_headless_signing_sandbox_env worker
+		local csv=""
+		csv=$(build_sandbox_passthrough_csv "openai" "worker")
+		"$SANDBOX_EXEC_HELPER" run --passthrough "$csv" -- \
+			git config --get-regexp '^(gpg\.format|user\.signingkey|commit\.gpgsign|http\.extraheader)$' 2>/dev/null
+		printf 'csv=%s count=%s ambient=%s\n' "$csv" "$GIT_CONFIG_COUNT" "${GIT_CONFIG_KEY_3:-missing}"
+	) || status=$?
+	if [[ "$status" -eq 0 && "$result" == *"gpg.format ssh"* &&
+		"$result" == *"user.signingkey ${signing_public_key}"* && "$result" == *"commit.gpgsign true"* &&
+		"$result" != *"http.extraheader"* && "$result" == *"csv="*"GIT_CONFIG_COUNT"* &&
+		"$result" == *"count=3 ambient=commit.gpgsign"* ]]; then
+		print_result "worker sandbox receives only validated signing Git configuration" 0
+	else
+		print_result "worker sandbox receives only validated signing Git configuration" 1 \
+			"status=$status result=${result:-<empty>}"
 	fi
 	return 0
 }
@@ -322,6 +354,22 @@ test_worker_signing_preflight_accepts_proven_existing_signing() {
 	else
 		print_result "worker signing migration accepts a proven existing signing configuration" 1 \
 			"status=$status result=${result:-<empty>}"
+	fi
+	return 0
+}
+
+test_worker_signing_sandbox_preserves_proven_existing_config() {
+	local status=0
+	(
+		export _AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED=1
+		unset _AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START 2>/dev/null || true
+		unset GIT_CONFIG_COUNT 2>/dev/null || true
+		prepare_headless_signing_sandbox_env worker
+	) || status=$?
+	if [[ "$status" -eq 0 ]]; then
+		print_result "worker sandbox preserves proven existing signing migration path" 0
+	else
+		print_result "worker sandbox preserves proven existing signing migration path" 1 "status=$status"
 	fi
 	return 0
 }
@@ -410,7 +458,9 @@ test_worker_signing_preflight_fails_before_runtime_attempt() {
 run_worker_signing_contract_tests() {
 	test_worker_signing_preflight_skips_unsigned_repositories
 	test_worker_signing_config_is_process_scoped_and_idempotent
+	test_worker_signing_sandbox_env_excludes_ambient_git_config
 	test_worker_signing_preflight_accepts_proven_existing_signing
+	test_worker_signing_sandbox_preserves_proven_existing_config
 	test_worker_signing_config_rejects_unusable_existing_signing
 	test_worker_signing_preflight_self_heals_agent_once
 	test_worker_signing_preflight_fails_before_runtime_attempt
