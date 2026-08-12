@@ -947,7 +947,7 @@ _hrff_retry_class_for_reason() {
 		worker_noop_zero_output | crash_during_startup | access_denied | rate_limit* | provider_error | \
 		startup_no_model_activity | service_interruption_exhausted | worker_runtime_not_invoked | \
 		worker_sensitive_temp_preflight_failed | worker_ownership_lost | worker_ledger_ready_failed | \
-		worker_claim_ready_transition_failed)
+		worker_claim_ready_transition_failed | signal_terminated_continue | watchdog_stall_killed)
 		printf '%s\n' "$_HRFF_RETRY_CLASS_INFRASTRUCTURE"
 		;;
 	permission_required | awaiting_maintainer_permission | worker_signing_unavailable)

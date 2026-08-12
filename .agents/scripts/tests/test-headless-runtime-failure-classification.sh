@@ -186,6 +186,14 @@ assert_eq "access denied is retryable infrastructure without provider rotation" 
 	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" "$(_hrff_retry_class_for_reason "access_denied" "0")"
 assert_eq "access denied remains infrastructure after session creation" \
 	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" "$(_hrff_retry_class_for_reason "access_denied" "1")"
+assert_eq "terminated worker remains retryable infrastructure after session creation" \
+	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" "$(_hrff_retry_class_for_reason "signal_terminated_continue" "1")"
+assert_eq "watchdog hard kill remains retryable infrastructure after session creation" \
+	"$_HRFF_RETRY_CLASS_INFRASTRUCTURE" "$(_hrff_retry_class_for_reason "watchdog_stall_killed" "1")"
+assert_eq "permission request remains a maintainer gate" \
+	"$_HRFF_RETRY_CLASS_MAINTAINER_GATE" "$(_hrff_retry_class_for_reason "permission_required" "1")"
+assert_eq "unknown session-bearing failure remains remediation" \
+	"$_HRFF_RETRY_CLASS_REMEDIATION" "$(_hrff_retry_class_for_reason "context_exhausted" "1")"
 
 write_retry_fixture() {
 	local name="$1"
