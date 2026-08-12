@@ -252,6 +252,24 @@ test_priority_dashboard_precedes_optional_cross_repo_work() {
 	return 0
 }
 
+test_slow_priority_dashboard_skips_optional_cross_repo_work() {
+	local dashboard_script production_snippet
+	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
+	production_snippet=$(awk '
+		/^update_health_issues\(\) \{/ { in_production=1 }
+		in_production { print }
+		in_production && /^}$/ { exit }
+	' "$dashboard_script")
+	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*if ! _health_dashboard_optional_work_has_budget "[$]refresh_start_epoch"; then' &&
+		printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*return 0[[:space:]]*$'; then
+		print_result "slow priority dashboard skips optional cross-repo work" 0
+		return 0
+	fi
+	print_result "slow priority dashboard skips optional cross-repo work" 1 \
+		"Expected update_health_issues to return after the priority refresh consumes the optional-work budget"
+	return 0
+}
+
 # Test 8: dashboard refresh failures must not be blindly swallowed by the wrapper.
 # The wrapper may intentionally defer EX_TEMPFAIL/rate-limit exits, but ordinary
 # dashboard failures must still flow through _stats_wrapper_run_health_update so
@@ -322,6 +340,7 @@ main_test() {
 	test_health_update_precedes_quality_sweep
 	test_health_update_survives_slow_quality_sweep
 	test_priority_dashboard_precedes_optional_cross_repo_work
+	test_slow_priority_dashboard_skips_optional_cross_repo_work
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred
 	test_dashboard_body_edit_failure_returns_nonzero

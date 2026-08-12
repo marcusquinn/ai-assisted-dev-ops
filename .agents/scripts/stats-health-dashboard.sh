@@ -463,6 +463,32 @@ _refresh_priority_health_issue() {
 }
 
 #######################################
+# Skip the optional cross-repository dashboard pass when the primary
+# dashboard update has already consumed most of the wrapper's time budget.
+# This preserves the next scheduler interval for the primary health surface
+# instead of turning a slow, non-critical repository into a timeout.
+# Arguments:
+#   $1 - stats refresh start epoch
+# Returns: 0 to continue optional work, 1 to skip it
+#######################################
+_health_dashboard_optional_work_has_budget() {
+	local refresh_start_epoch="$1"
+	local timeout_seconds="${STATS_TIMEOUT:-600}"
+	local optional_reserve_seconds="${STATS_OPTIONAL_WORK_RESERVE_SECONDS:-120}"
+	local now_epoch elapsed_seconds latest_start_epoch
+
+	[[ "$refresh_start_epoch" =~ ^[0-9]+$ ]] || return 1
+	[[ "$timeout_seconds" =~ ^[0-9]+$ ]] || timeout_seconds="600"
+	[[ "$optional_reserve_seconds" =~ ^[0-9]+$ ]] || optional_reserve_seconds="120"
+	latest_start_epoch=$((timeout_seconds - optional_reserve_seconds))
+	[[ "$latest_start_epoch" -gt 0 ]] || return 1
+	now_epoch=$(date +%s)
+	elapsed_seconds=$((now_epoch - refresh_start_epoch))
+	[[ "$elapsed_seconds" -lt "$latest_start_epoch" ]]
+	return $?
+}
+
+#######################################
 # Build optional cross-repository dashboard sections once per refresh cycle.
 # Arguments:
 #   $1 - priority-ordered newline-delimited slug|path entries
@@ -545,8 +571,14 @@ update_health_issues() {
 	fi
 	repo_entries=$(_prioritize_health_repo_entries "$repo_entries")
 
+	local refresh_start_epoch
+	refresh_start_epoch=$(date +%s)
 	local priority_slug=""
 	priority_slug=$(_refresh_priority_health_issue "$repo_entries") || return 1
+	if ! _health_dashboard_optional_work_has_budget "$refresh_start_epoch"; then
+		echo "[stats] Health dashboard optional cross-repo work skipped after priority refresh exhausted its time budget" >>"$LOGFILE"
+		return 0
+	fi
 
 	# Refresh person-stats cache if stale (t1426: hourly, not every pulse)
 	_refresh_person_stats_cache || true
