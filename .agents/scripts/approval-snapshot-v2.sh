@@ -6,6 +6,10 @@
 [[ -n "${_APPROVAL_SNAPSHOT_V2_LOADED:-}" ]] && return 0
 _APPROVAL_SNAPSHOT_V2_LOADED=1
 APPROVAL_TARGET_ISSUE="issue"
+APPROVAL_SNAPSHOT_V2_SCHEMA="aidevops-approval-snapshot/v2"
+APPROVAL_SNAPSHOT_PROFILE_CURRENT="current"
+APPROVAL_SNAPSHOT_PROFILE_LEGACY="legacy"
+APPROVAL_JSON_OBJECT="object"
 
 _approval_snapshot_v2_create_temp_dir() {
 	local root="${AIDEVOPS_TEMP_DIR:-${HOME:?}/.aidevops/.agent-workspace/tmp}"
@@ -96,7 +100,7 @@ _approval_snapshot_v2_linked_references_json() {
 	local source_timestamp_profile="${3:-stable}"
 	local empty_string=""
 	local timestamp_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
-	[[ "$source_timestamp_profile" == "stable" || "$source_timestamp_profile" == "legacy" ]] || return 1
+	[[ "$source_timestamp_profile" == "stable" || "$source_timestamp_profile" == "$APPROVAL_SNAPSHOT_PROFILE_LEGACY" ]] || return 1
 
 	# GitHub timeline cross-reference events are the authoritative read-only
 	# projection of issue/PR links. Keep external text and URLs as opaque bytes;
@@ -109,7 +113,7 @@ _approval_snapshot_v2_linked_references_json() {
 	# signatures mutually stale. Source identity and scope-bearing content remain
 	# bound below.
 	jq -cS --arg empty "$empty_string" --arg cutoff "$issued_at_cutoff" --arg timestamp_pattern "$timestamp_pattern" \
-		--arg source_timestamp_profile "$source_timestamp_profile" '
+		--arg source_timestamp_profile "$source_timestamp_profile" --arg legacy_profile "$APPROVAL_SNAPSHOT_PROFILE_LEGACY" --arg issue_kind "$APPROVAL_TARGET_ISSUE" '
 		def is_linked_reference:
 			(.event // $empty) == "cross-referenced"
 			or (.event // $empty) == "connected"
@@ -143,7 +147,7 @@ _approval_snapshot_v2_linked_references_json() {
 			commit_id: (.commit_id // $empty),
 			commit_url: (.commit_url // $empty),
 			source: (if (.source.issue // null) == null then null else ({
-				kind: (if (.source.issue.pull_request // null) == null then "issue" else "pr" end),
+				kind: (if (.source.issue.pull_request // null) == null then $issue_kind else "pr" end),
 				repository: ((.source.issue.repository.full_name // $empty) | ascii_downcase),
 				number: (.source.issue.number // null),
 				id: (.source.issue.id // null),
@@ -157,7 +161,7 @@ _approval_snapshot_v2_linked_references_json() {
 					login: (.source.issue.user.login // $empty),
 					type: (.source.issue.user.type // $empty)
 				}
-			} + (if $source_timestamp_profile == "legacy" then {
+			} + (if $source_timestamp_profile == $legacy_profile then {
 				updated_at: (.source.issue.updated_at // $empty)
 			} else {} end)) end)
 		}
@@ -203,9 +207,9 @@ _approval_snapshot_v2_issue_lifecycle_json() {
 	# verifier can permit only the narrowly reviewed claim mutations. The lock
 	# anchor is authoritative only when REST and the complete timeline agree that
 	# the issue is currently inside an uninterrupted lock interval.
-	jq -cS -n --argjson issue "$issue_json" --argjson pages "$timeline_pages" --arg empty "$empty_string" '
+	jq -cS -n --argjson issue "$issue_json" --argjson pages "$timeline_pages" --arg empty "$empty_string" --arg object "$APPROVAL_JSON_OBJECT" '
 		def valid_actor:
-			(.actor | type) == "object"
+			(.actor | type) == $object
 			and (.actor.type // $empty) == "User"
 			and ((.actor.id // null) != null)
 			and ((.actor.login // $empty) | test("^[A-Za-z0-9_.-]+$"));
@@ -252,7 +256,7 @@ approval_snapshot_v2_build() (
 	local excluded_comment_id="${4:-}"
 	local issued_at_cutoff="${5:-}"
 	local source_timestamp_profile="${6:-stable}"
-	local issue_lifecycle_profile="${7:-current}"
+	local issue_lifecycle_profile="${7:-$APPROVAL_SNAPSHOT_PROFILE_CURRENT}"
 	local issue_json="" comments_pages="" comments_json="" timeline_pages="" linked_references_json="" normalized_slug=""
 	local issue_lifecycle_json=""
 	local empty_string=""
@@ -260,11 +264,11 @@ approval_snapshot_v2_build() (
 
 	[[ "$target_type" == "$APPROVAL_TARGET_ISSUE" || "$target_type" == "pr" ]] || return 1
 	[[ "$target_number" =~ ^[0-9]+$ && "$slug" == */* ]] || return 1
-	[[ "$issue_lifecycle_profile" == "current" || "$issue_lifecycle_profile" == "legacy" ]] || return 1
+	[[ "$issue_lifecycle_profile" == "$APPROVAL_SNAPSHOT_PROFILE_CURRENT" || "$issue_lifecycle_profile" == "$APPROVAL_SNAPSHOT_PROFILE_LEGACY" ]] || return 1
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 
 	issue_json=$(gh api "repos/${slug}/issues/${target_number}" 2>/dev/null) || return 1
-	printf '%s' "$issue_json" | jq -e 'type == "object" and (.id != null) and (.node_id != null)' >/dev/null 2>&1 || return 1
+	printf '%s' "$issue_json" | jq -e --arg object "$APPROVAL_JSON_OBJECT" 'type == $object and (.id != null) and (.node_id != null)' >/dev/null 2>&1 || return 1
 	if [[ "$target_type" == "pr" ]]; then
 		printf '%s' "$issue_json" | jq -e 'has("pull_request")' >/dev/null 2>&1 || return 1
 	else
@@ -275,7 +279,7 @@ approval_snapshot_v2_build() (
 	comments_json=$(_approval_snapshot_v2_comments_json "$comments_pages" "$excluded_comment_id" "conversation") || return 1
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 1
 	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages" "$issued_at_cutoff" "$source_timestamp_profile") || return 1
-	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "current" ]]; then
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "$APPROVAL_SNAPSHOT_PROFILE_CURRENT" ]]; then
 		issue_lifecycle_json=$(_approval_snapshot_v2_issue_lifecycle_json "$issue_json" "$timeline_pages") || return 1
 	fi
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1
@@ -283,26 +287,26 @@ approval_snapshot_v2_build() (
 	_approval_snapshot_v2_write_json_file "$temp_dir/issue.json" "$issue_json" || return 1
 	_approval_snapshot_v2_write_json_file "$temp_dir/comments.json" "$comments_json" || return 1
 	_approval_snapshot_v2_write_json_file "$temp_dir/linked-references.json" "$linked_references_json" || return 1
-	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "current" ]]; then
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "$APPROVAL_SNAPSHOT_PROFILE_CURRENT" ]]; then
 		_approval_snapshot_v2_write_json_file "$temp_dir/issue-lifecycle.json" "$issue_lifecycle_json" || return 1
 	fi
 
 	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
-		if [[ "$issue_lifecycle_profile" == "legacy" ]]; then
-			jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --argjson number "$target_number" \
+		if [[ "$issue_lifecycle_profile" == "$APPROVAL_SNAPSHOT_PROFILE_LEGACY" ]]; then
+			jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --arg schema "$APPROVAL_SNAPSHOT_V2_SCHEMA" --argjson number "$target_number" \
 				--slurpfile issue_input "$temp_dir/issue.json" --slurpfile comments_input "$temp_dir/comments.json" \
 				--slurpfile linked_references_input "$temp_dir/linked-references.json" '
 				($issue_input[0]) as $issue |
-				{schema:"aidevops-approval-snapshot/v2",target:{kind:$issue_kind,repository:$repo,number:$number,id:$issue.id,node_id:$issue.node_id},author:{id:($issue.user.id//null),node_id:($issue.user.node_id//$empty),login:($issue.user.login//$empty),type:($issue.user.type//$empty),association:($issue.author_association//$empty)},created_at:($issue.created_at//$empty),title:($issue.title//$empty),body:($issue.body//$empty),comments:$comments_input[0],linked_references:$linked_references_input[0]}
+				{schema:$schema,target:{kind:$issue_kind,repository:$repo,number:$number,id:$issue.id,node_id:$issue.node_id},author:{id:($issue.user.id//null),node_id:($issue.user.node_id//$empty),login:($issue.user.login//$empty),type:($issue.user.type//$empty),association:($issue.author_association//$empty)},created_at:($issue.created_at//$empty),title:($issue.title//$empty),body:($issue.body//$empty),comments:$comments_input[0],linked_references:$linked_references_input[0]}
 			'
 			return $?
 		fi
-		jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --argjson number "$target_number" \
+		jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --arg schema "$APPROVAL_SNAPSHOT_V2_SCHEMA" --argjson number "$target_number" \
 			--slurpfile issue_input "$temp_dir/issue.json" --slurpfile comments_input "$temp_dir/comments.json" \
 			--slurpfile linked_references_input "$temp_dir/linked-references.json" --slurpfile lifecycle_input "$temp_dir/issue-lifecycle.json" '
 			($issue_input[0]) as $issue |
 			{
-				schema: "aidevops-approval-snapshot/v2",
+				schema: $schema,
 				target: {kind: $issue_kind, repository: $repo, number: $number, id: $issue.id, node_id: $issue.node_id},
 				author: {
 					id: ($issue.user.id // null), node_id: ($issue.user.node_id // $empty),
@@ -322,7 +326,7 @@ approval_snapshot_v2_build() (
 
 	local pr_json="" review_comment_pages="" review_comments_json="" review_pages="" reviews_json=""
 	pr_json=$(gh api "repos/${slug}/pulls/${target_number}" 2>/dev/null) || return 1
-	printf '%s' "$pr_json" | jq -e --arg empty "$empty_string" 'type == "object" and (.id != null) and (.node_id != null) and ((.head.sha // $empty) != $empty) and ((.base.ref // $empty) != $empty)' >/dev/null 2>&1 || return 1
+	printf '%s' "$pr_json" | jq -e --arg empty "$empty_string" --arg object "$APPROVAL_JSON_OBJECT" 'type == $object and (.id != null) and (.node_id != null) and ((.head.sha // $empty) != $empty) and ((.base.ref // $empty) != $empty)' >/dev/null 2>&1 || return 1
 	review_comment_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/pulls/${target_number}/comments?per_page=100") || return 1
 	review_comments_json=$(_approval_snapshot_v2_comments_json "$review_comment_pages" "" "review") || return 1
 	review_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/pulls/${target_number}/reviews?per_page=100") || return 1
@@ -331,13 +335,13 @@ approval_snapshot_v2_build() (
 	_approval_snapshot_v2_write_json_file "$temp_dir/review-comments.json" "$review_comments_json" || return 1
 	_approval_snapshot_v2_write_json_file "$temp_dir/reviews.json" "$reviews_json" || return 1
 
-	jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --argjson number "$target_number" \
+	jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg schema "$APPROVAL_SNAPSHOT_V2_SCHEMA" --argjson number "$target_number" \
 		--slurpfile issue_input "$temp_dir/issue.json" --slurpfile pr_input "$temp_dir/pr.json" \
 		--slurpfile comments_input "$temp_dir/comments.json" --slurpfile review_comments_input "$temp_dir/review-comments.json" \
 		--slurpfile reviews_input "$temp_dir/reviews.json" --slurpfile linked_references_input "$temp_dir/linked-references.json" '
 		($issue_input[0]) as $issue | ($pr_input[0]) as $pr |
 		{
-			schema: "aidevops-approval-snapshot/v2",
+			schema: $schema,
 			target: {kind: "pr", repository: $repo, number: $number, id: $pr.id, node_id: $pr.node_id, issue_id: $issue.id},
 			author: {
 				id: ($pr.user.id // null), node_id: ($pr.user.node_id // $empty),
@@ -396,7 +400,7 @@ approval_snapshot_v2_payload() (
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1
 	trap 'rm -rf "$temp_dir"' EXIT
 	_approval_snapshot_v2_write_json_file "$temp_dir/snapshot.json" "$snapshot_json" || return 1
-	jq -cS -n --arg type "$target_type" --arg repo "$normalized_slug" --argjson number "$target_number" \
+	jq -cS -n --arg type "$target_type" --arg repo "$normalized_slug" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --argjson number "$target_number" \
 		--arg issued "$issued_at" --arg digest "$digest" --slurpfile snapshot_input "$temp_dir/snapshot.json" '
 		($snapshot_input[0]) as $snapshot |
 		{
@@ -412,7 +416,7 @@ approval_snapshot_v2_payload() (
 				base_ref: $snapshot.base.ref,
 				base_repository: $snapshot.base.repository
 			} else null end),
-			issue: (if $type == "issue" then {lifecycle: $snapshot.lifecycle} else null end)
+			issue: (if $type == $issue_kind then {lifecycle: $snapshot.lifecycle} else null end)
 		}
 	'
 	return $?

@@ -984,7 +984,7 @@ _approval_verify_locked_issue_continuity() {
 	# legacy exact-snapshot approval, never continuity authority.
 	signed_lifecycle=$(jq -c '.issue.lifecycle // empty' <<<"$payload" 2>/dev/null) || return 1
 	[[ -n "$signed_lifecycle" ]] || return 1
-	if ! jq -e '.locked == true and (.lock_anchor | type == "object")' <<<"$signed_lifecycle" >/dev/null 2>&1; then
+	if ! jq -e --arg object "$APPROVAL_JSON_OBJECT" '.locked == true and (.lock_anchor | type == $object)' <<<"$signed_lifecycle" >/dev/null 2>&1; then
 		return 1
 	fi
 	signed_anchor=$(jq -c '.lock_anchor' <<<"$signed_lifecycle") || return 1
@@ -1017,8 +1017,8 @@ _approval_verify_locked_issue_continuity() {
 
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 2
 	mutation_rows=$(jq -r --arg issued "$issued_at" '
-		[.[][]? | select((.created_at // "") > $issued) |
-		select((.event // "") == "assigned" or (.event // "") == "unassigned" or (.event // "") == "labeled" or (.event // "") == "unlabeled" or (.event // "") == "milestoned" or (.event // "") == "demilestoned" or (.event // "") == "closed" or (.event // "") == "reopened" or (.event // "") == "renamed" or (.event // "") == "locked" or (.event // "") == "unlocked" or (.event // "") == "connected" or (.event // "") == "disconnected" or (.event // "") == "added_to_project" or (.event // "") == "moved_columns_in_project" or (.event // "") == "removed_from_project" or (.event // "") == "transferred" or (.event // "") == "converted_to_discussion" or (.event // "") == "marked_as_duplicate" or (.event // "") == "unmarked_as_duplicate" or (.event // "") == "pinned" or (.event // "") == "unpinned") |
+		[.[][]? | select((.created_at // "") > $issued) | (.event // "") as $event |
+		select(["assigned","unassigned","labeled","unlabeled","milestoned","demilestoned","closed","reopened","renamed","locked","unlocked","connected","disconnected","added_to_project","moved_columns_in_project","removed_from_project","transferred","converted_to_discussion","marked_as_duplicate","unmarked_as_duplicate","pinned","unpinned"] | index($event)) |
 		[(.event // ""), (.actor.login // ""), (.label.name // .assignee.login // "")] | @tsv][]
 	' <<<"$timeline_pages" 2>/dev/null) || return 2
 	[[ -n "$mutation_rows" ]] || return 1
@@ -1036,6 +1036,48 @@ _approval_verify_locked_issue_continuity() {
 			return 1
 		}
 	done <<<"$mutation_rows"
+	return 0
+}
+
+_approval_classify_digest_mismatch() {
+	local target_type="$1"
+	local target_number="$2"
+	local slug="$3"
+	local comment_id="$4"
+	local issued_at="$5"
+	local issue_lifecycle_profile="$6"
+	local payload="$7"
+	local snapshot_json="$8"
+	local signed_digest="$9"
+	local legacy_snapshot_json="" legacy_digest="" continuity_rc=0
+
+	legacy_snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "$APPROVAL_SNAPSHOT_PROFILE_LEGACY" "$issue_lifecycle_profile") || {
+		printf 'API_ERROR\n'
+		return 0
+	}
+	legacy_digest=$(approval_snapshot_v2_digest "$legacy_snapshot_json") || {
+		printf 'API_ERROR\n'
+		return 0
+	}
+	if [[ "$legacy_digest" == "$signed_digest" ]]; then
+		printf 'LEGACY_MATCH\n'
+		return 0
+	fi
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
+		_approval_verify_locked_issue_continuity "$payload" "$snapshot_json" "$signed_digest" "$slug" "$target_number" "$issued_at" || continuity_rc=$?
+		if [[ "$continuity_rc" -eq 0 ]]; then
+			printf 'APPROVAL_REASON: proven-locked-continuity\n' >&2
+			printf 'VERIFIED\n'
+			return 0
+		fi
+		if [[ "$continuity_rc" -eq 2 ]]; then
+			printf 'APPROVAL_REASON: continuity-api-uncertain\n' >&2
+			printf 'API_ERROR\n'
+			return 0
+		fi
+	fi
+	printf 'APPROVAL_REASON: stale-or-unproven-continuity\n' >&2
+	printf 'STALE_APPROVAL\n'
 	return 0
 }
 
@@ -1266,8 +1308,7 @@ _approval_classify_signed_comment() {
 	local body="$5"
 	local pub_key="$6"
 	local expected_head_sha="${7:-}"
-	local payload="" snapshot_json="" current_digest="" signed_digest="" normalized_slug="" issued_at=""
-	local legacy_snapshot_json="" legacy_digest="" continuity_rc=1
+	local payload="" snapshot_json="" current_digest="" signed_digest="" normalized_slug="" issued_at="" mismatch_classification=""
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 
 	payload=$(_extract_fenced_block "$body" 1)
@@ -1288,35 +1329,32 @@ _approval_classify_signed_comment() {
 	fi
 
 	if ! jq -e --arg type "$target_type" --arg repo "$normalized_slug" --arg number "$target_number" \
-		--arg sha_pattern "$PERMISSION_SHA256_PATTERN" --arg string_type "$PERMISSION_JSON_STRING_TYPE" '
+		--arg sha_pattern "$PERMISSION_SHA256_PATTERN" --arg string_type "$PERMISSION_JSON_STRING_TYPE" --arg object "$APPROVAL_JSON_OBJECT" '
 		.schema == "aidevops-approval/v2"
 		and .target.kind == $type
 		and .target.repository == $repo
 		and (.target.number | tostring) == $number
 		and (.snapshot_sha256 | type == $string_type and test($sha_pattern))
 		and (.issued_at | type == $string_type and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-		and (if $type == "pr" then (.authority == "merge" and (.pr | type == "object")) else (.authority == "development" and .pr == null and ((.issue // null) == null or (.issue.lifecycle | type == "object"))) end)
+		and (if $type == "pr" then (.authority == "merge" and (.pr | type == $object)) else (.authority == "development" and .pr == null and ((.issue // null) == null or (.issue.lifecycle | type == $object))) end)
 	' <<<"$payload" >/dev/null 2>&1; then
 		printf 'MALFORMED_APPROVAL\n'
 		return 0
 	fi
 
-	if [[ "$target_type" == "pr" && -n "$expected_head_sha" ]]; then
-		local payload_head=""
-		payload_head=$(jq -r '.pr.head_sha // ""' <<<"$payload") || payload_head=""
-		if [[ "$payload_head" != "$expected_head_sha" ]]; then
-			printf 'STALE_APPROVAL\n'
-			return 0
-		fi
+	if [[ "$target_type" == "pr" && -n "$expected_head_sha" ]] &&
+		! jq -e --arg expected "$expected_head_sha" '.pr.head_sha == $expected' <<<"$payload" >/dev/null 2>&1; then
+		printf 'STALE_APPROVAL\n'
+		return 0
 	fi
 
 	issued_at=$(jq -r '.issued_at' <<<"$payload") || {
 		printf 'MALFORMED_APPROVAL\n'
 		return 0
 	}
-	local issue_lifecycle_profile="current"
-	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]] && ! jq -e '.issue.lifecycle | type == "object"' <<<"$payload" >/dev/null 2>&1; then
-		issue_lifecycle_profile="legacy"
+	local issue_lifecycle_profile="$APPROVAL_SNAPSHOT_PROFILE_CURRENT"
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]] && ! jq -e --arg object "$APPROVAL_JSON_OBJECT" '.issue.lifecycle | type == $object' <<<"$payload" >/dev/null 2>&1; then
+		issue_lifecycle_profile="$APPROVAL_SNAPSHOT_PROFILE_LEGACY"
 	fi
 	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "stable" "$issue_lifecycle_profile") || {
 		printf 'API_ERROR\n'
@@ -1332,34 +1370,16 @@ _approval_classify_signed_comment() {
 		# included mutable linked-source updated_at metadata. Accept that profile
 		# only when its complete current digest still matches the signed digest;
 		# new approvals always use the stable profile above.
-		legacy_snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "legacy" "$issue_lifecycle_profile") || {
-			printf 'API_ERROR\n'
-			return 0
-		}
-		legacy_digest=$(approval_snapshot_v2_digest "$legacy_snapshot_json") || {
-			printf 'API_ERROR\n'
-			return 0
-		}
-		if [[ "$legacy_digest" != "$signed_digest" ]]; then
-			if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
-				continuity_rc=0
-				_approval_verify_locked_issue_continuity "$payload" "$snapshot_json" "$signed_digest" "$slug" "$target_number" "$issued_at" || continuity_rc=$?
-				if [[ "$continuity_rc" -eq 0 ]]; then
-					printf 'APPROVAL_REASON: proven-locked-continuity\n' >&2
-					printf 'VERIFIED\n'
-					return 0
-				fi
-				if [[ "$continuity_rc" -eq 2 ]]; then
-					printf 'APPROVAL_REASON: continuity-api-uncertain\n' >&2
-					printf 'API_ERROR\n'
-					return 0
-				fi
-			fi
-			printf 'APPROVAL_REASON: stale-or-unproven-continuity\n' >&2
-			printf 'STALE_APPROVAL\n'
+		mismatch_classification=$(_approval_classify_digest_mismatch "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" \
+			"$issue_lifecycle_profile" "$payload" "$snapshot_json" "$signed_digest")
+		if [[ "$mismatch_classification" != "LEGACY_MATCH" ]]; then
+			printf '%s\n' "$mismatch_classification"
 			return 0
 		fi
-		snapshot_json="$legacy_snapshot_json"
+		snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "$APPROVAL_SNAPSHOT_PROFILE_LEGACY" "$issue_lifecycle_profile") || {
+			printf 'API_ERROR\n'
+			return 0
+		}
 	fi
 
 	if [[ "$target_type" == "pr" ]]; then
