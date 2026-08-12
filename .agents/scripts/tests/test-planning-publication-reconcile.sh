@@ -39,5 +39,14 @@ remove_line=$(grep -n -- "$REMOVE_PATTERN" "$RECONCILER" | cut -d: -f1)
 verify_line=$(grep -n -m1 -- "$VERIFY_PATTERN" "$RECONCILER" | cut -d: -f1)
 [[ "$remove_line" -gt "$verify_line" ]]
 
+awk '
+	/name: Reconcile pending planning publication/ { publication_line = NR }
+	/name: Reconcile issue relationships/ { relationship_line = NR }
+	/name: Enrich plan-linked issues/ { enrichment_line = NR }
+	END {
+		exit !(publication_line > 0 && publication_line < relationship_line && publication_line < enrichment_line)
+	}
+' "$WORKFLOW"
+
 printf 'PASS exact-SHA mapping validation precedes blocker removal\n'
-printf 'PASS default-branch workflow invokes bounded reconciliation\n'
+printf 'PASS default-branch workflow reconciles publication before maintenance\n'
