@@ -24,6 +24,34 @@
 
 runtime_audit_id() { printf 'deployed-vs-source-mtime-drift\n'; return 0; }
 
+_runtime_audit_sha256() {
+	local path="$1"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$path" | cut -d ' ' -f 1
+		return $?
+	fi
+	shasum -a 256 "$path" | cut -d ' ' -f 1
+	return $?
+}
+
+_runtime_audit_bounded_diff() {
+	local deployed_path="$1"
+	local source_path="$2"
+	local name="$3"
+	local deployed_dir="$4"
+	local source_dir="$5"
+	local rendered=""
+
+	rendered=$(diff -u --label "deployed/${name}" --label "source/${name}" \
+		"$deployed_path" "$source_path" 2>/dev/null | sed -n '1,80p') || true
+	# Source files can themselves mention either checkout. Redact those literals so
+	# generated worker instructions never require or disclose host-only paths.
+	rendered=${rendered//"$deployed_dir"/<deployed-dir>}
+	rendered=${rendered//"$source_dir"/<source-dir>}
+	printf '%s\n' "$rendered"
+	return 0
+}
+
 runtime_audit_check() {
 	local deployed_dir="${AIDEVOPS_DEPLOYED_DIR:-${HOME}/.aidevops/agents/scripts}"
 	local source_dir="${AIDEVOPS_SOURCE_DIR:-${HOME}/Git/aidevops/.agents/scripts}"
@@ -58,11 +86,16 @@ runtime_audit_check() {
 		return 0
 	fi
 
-	local evidence_table="| File | Drift | Deployed mtime | Source mtime |"$'\n'"| --- | --- | --- | --- |"
-	local entry name d_str dm sm
+	local evidence_table="| File | Drift | Deployed mtime | Source mtime | Deployed SHA-256 | Source SHA-256 |"$'\n'"| --- | --- | --- | --- | --- | --- |"
+	local comparison_evidence=""
+	local entry name d_str dm sm deployed_sha source_sha bounded_diff
 	for entry in "${drifted[@]}"; do
 		IFS='|' read -r name d_str dm sm <<<"$entry"
-		evidence_table+=$'\n'"| \`${name}\` | ${d_str}s | $(date -r "$dm" '+%Y-%m-%d %H:%M:%SZ' || printf '%s\n' "$dm") | $(date -r "$sm" '+%Y-%m-%d %H:%M:%SZ' || printf '%s\n' "$sm") |"
+		deployed_sha=$(_runtime_audit_sha256 "${deployed_dir}/${name}" 2>/dev/null || printf 'unavailable')
+		source_sha=$(_runtime_audit_sha256 "${source_dir}/${name}" 2>/dev/null || printf 'unavailable')
+		evidence_table+=$'\n'"| \`${name}\` | ${d_str}s | $(date -r "$dm" '+%Y-%m-%d %H:%M:%SZ' || printf '%s\n' "$dm") | $(date -r "$sm" '+%Y-%m-%d %H:%M:%SZ' || printf '%s\n' "$sm") | \`${deployed_sha}\` | \`${source_sha}\` |"
+		bounded_diff=$(_runtime_audit_bounded_diff "${deployed_dir}/${name}" "${source_dir}/${name}" "$name" "$deployed_dir" "$source_dir")
+		comparison_evidence+=$'\n'"### \`${name}\`"$'\n\n'"~~~~diff"$'\n'"${bounded_diff}"$'\n'"~~~~"$'\n'
 	done
 
 	local first_file
@@ -77,11 +110,15 @@ runtime_audit_check() {
 	body=$(cat <<MARKDOWN
 ## Task
 
-The pulse executes scripts from \`${deployed_dir}/\`, but the source of truth is \`${source_dir}/\`. The files below have a source-newer-than-deployed delta exceeding ${drift}s (${drift_hours}h).
+The pulse executes a deployed runtime copy, while the repository remains the source of truth. The trusted audit compared both copies before dispatch. The files below have a source-newer-than-deployed delta exceeding ${drift}s (${drift_hours}h).
 
 ## Evidence
 
 ${evidence_rendered}
+
+The following sanitized comparison was captured by the audit. Each diff is limited to its first 80 lines; host-only checkout paths are replaced with placeholders.
+
+${comparison_evidence}
 
 ## Why
 
@@ -89,8 +126,8 @@ This is the canonical t2036 footgun — debugging a runtime symptom by reading s
 
 ## How
 
-1. Compare the diff: \`diff <(cat ${deployed_dir}/<file>) <(cat ${source_dir}/<file>)\` for each drifted file.
-2. If the source-side change is desired live: run \`aidevops update\` (or \`setup.sh --non-interactive\` from the source repo).
+1. Review the embedded hashes and bounded diff; do not read the host's canonical checkout.
+2. If the source-side change is desired live, run \`aidevops update\` from the worker's normal project boundary.
 3. Restart pulse if pulse-* files were touched: \`pulse-lifecycle-helper.sh restart-if-running\`.
 4. If the source-side change should NOT be deployed yet (work-in-progress): note that here and close. The drift will resolve when the work merges and a deploy fires.
 

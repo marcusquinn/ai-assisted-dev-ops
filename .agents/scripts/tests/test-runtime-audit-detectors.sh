@@ -53,6 +53,19 @@ assert_contains() {
 	return 0
 }
 
+assert_not_contains() {
+	local label="$1" needle="$2" haystack="$3"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	if printf '%s' "$haystack" | grep -qF -- "$needle" 2>/dev/null; then
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected not to find: $(printf '%q' "$needle")"
+	else
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	fi
+	return 0
+}
+
 assert_empty() {
 	local label="$1" value="$2"
 	TESTS_RUN=$((TESTS_RUN + 1))
@@ -274,6 +287,11 @@ assert_rc "3.1 firing fixture returns 1" "1" "$rc"
 assert_contains "3.2 firing body has correct id" '"id": "deployed-vs-source-mtime-drift"' "$out"
 assert_contains "3.3 firing references file" "pulse-wrapper.sh" "$out"
 assert_contains "3.4 firing body has marker" 'detector=deployed-vs-source-mtime-drift' "$out"
+assert_contains "3.5 firing body embeds bounded comparison evidence" "-deployed-content" "$out"
+assert_contains "3.6 firing body embeds source-side comparison evidence" "+source-content" "$out"
+assert_contains "3.7 firing body embeds SHA-256 evidence" "Deployed SHA-256" "$out"
+assert_not_contains "3.8 worker brief omits canonical source directory" "$DRIFT_SOURCE" "$out"
+assert_not_contains "3.9 worker brief omits trusted deployed directory" "$DRIFT_DEPLOYED" "$out"
 
 # Clean fixture: same mtime on both sides
 DRIFT_DEPLOYED2="$TMPDIR_TEST/deployed2"
@@ -289,14 +307,14 @@ out=$(_run_detector "$RULES_DIR/deployed-vs-source-mtime-drift.sh" \
 	"AIDEVOPS_SOURCE_DIR=$DRIFT_SOURCE2" \
 	"DRIFT_SECONDS=3600" \
 	"WATCHED_FILES=pulse-wrapper.sh") && rc=0 || rc=$?
-assert_rc "3.5 same-mtime fixture returns 0" "0" "$rc"
-assert_empty "3.6 same-mtime emits no output" "$out"
+assert_rc "3.10 same-mtime fixture returns 0" "0" "$rc"
+assert_empty "3.11 same-mtime emits no output" "$out"
 
 # Missing dirs → no-op
 out=$(_run_detector "$RULES_DIR/deployed-vs-source-mtime-drift.sh" \
 	"AIDEVOPS_DEPLOYED_DIR=/nonexistent/x" \
 	"AIDEVOPS_SOURCE_DIR=/nonexistent/y") && rc=0 || rc=$?
-assert_rc "3.7 missing dirs returns 0" "0" "$rc"
+assert_rc "3.12 missing dirs returns 0" "0" "$rc"
 
 # ---------------------------------------------------------------------------
 # Test 4: log-pattern-novelty
