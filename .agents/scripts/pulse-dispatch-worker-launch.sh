@@ -29,6 +29,8 @@ _PULSE_DISPATCH_WORKER_LAUNCH_LOADED=1
 readonly _DLW_STANDARD_TIER="standard"
 
 _DLW_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+# shellcheck source=lib/descriptor-safe-log.sh
+source "${_DLW_SCRIPT_DIR}/lib/descriptor-safe-log.sh"
 if [[ -r "${_DLW_SCRIPT_DIR}/lib/version.sh" ]]; then
 	# shellcheck source=lib/version.sh
 	source "${_DLW_SCRIPT_DIR}/lib/version.sh"
@@ -844,8 +846,7 @@ _dlw_renew_prelaunch_lease() {
 	if [[ "$claim_rc" -ne 0 ]]; then
 		printf '[lifecycle] WARN dispatcher prelaunch lease renewal failed before OpenCode warm-up issue=%s repo=%s session=%s helper_rc=%s pid=%s\n' \
 			"$issue_number" "$repo_slug" "$session_key" "$claim_rc" "$$" >>"$worker_log"
-		printf '[dispatch_worker_launch] WARN prelaunch lease renewal failed issue=%s repo=%s session=%s helper_rc=%s\n' \
-			"$issue_number" "$repo_slug" "$session_key" "$claim_rc" >>"${LOGFILE:-/dev/stderr}"
+		aidevops_log_line "[dispatch_worker_launch] WARN prelaunch lease renewal failed issue=${issue_number} repo=${repo_slug} session=${session_key} helper_rc=${claim_rc}"
 		return 1
 	fi
 	printf '[lifecycle] dispatcher_prelaunch_lease_renew_done session=%s pid=%s\n' \

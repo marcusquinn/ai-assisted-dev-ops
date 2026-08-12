@@ -6,6 +6,8 @@
 [[ -n "${_PULSE_MERGE_REQUIRED_CHECKS_LOADED:-}" ]] && return 0
 _PULSE_MERGE_REQUIRED_CHECKS_LOADED=1
 _PULSE_MERGE_REQUIRED_CHECKS_DIR="${BASH_SOURCE[0]%/*}"
+# shellcheck source=lib/descriptor-safe-log.sh
+source "${_PULSE_MERGE_REQUIRED_CHECKS_DIR}/lib/descriptor-safe-log.sh"
 PMRC_CHECK_COMPLETED="completed"
 PMRC_CHECK_SUCCESS="success"
 PMRC_CHECK_FAILURE="failure"
@@ -180,20 +182,19 @@ _ruleset_ref_matches_default_branch() {
 _required_contexts_from_rulesets_for_default_branch() {
 	local repo_slug="$1"
 	local default_branch="$2"
-	local log_target="${LOGFILE:-/dev/stderr}"
 	local rulesets_json="" rulesets_rc=0
 
 	rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>&1) || rulesets_rc=$?
 	if [[ "$rulesets_rc" -ne 0 ]]; then
 		if _pmrc_private_plan_feature_unavailable "$rulesets_json"; then
-			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets unavailable for ${repo_slug} on the private plan (HTTP 403) — empty contexts (GH#29484)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets unavailable for ${repo_slug} on the private plan (HTTP 403) — empty contexts (GH#29484)"
 			return 0
 		fi
-		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#23019)"
 		return 1
 	fi
 	if ! _pmrc_rulesets_list_schema_valid "$rulesets_json"; then
-		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)"
 		return 1
 	fi
 	[[ "$rulesets_json" != "[]" ]] || return 0
@@ -202,14 +203,14 @@ _required_contexts_from_rulesets_for_default_branch() {
 	active_ids=$(printf '%s' "$rulesets_json" | jq -r \
 		--arg active "$PMRC_RULESET_ACTIVE" --arg branch "$PMRC_RULESET_BRANCH" \
 		'.[] | select(.enforcement == $active and .target == $branch) | .id' 2>/dev/null) || {
-		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#23019)"
 		return 1
 	}
 	[[ -n "$active_ids" ]] || return 0
 
 	local contexts_tmp=""
 	contexts_tmp=$(mktemp) || {
-		echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: mktemp failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: mktemp failed for ${repo_slug} — caller will fail closed (GH#23019)"
 		return 1
 	}
 
@@ -218,23 +219,23 @@ _required_contexts_from_rulesets_for_default_branch() {
 	while IFS= read -r id; do
 		[[ -n "$id" ]] || continue
 		detail=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets/${id}" 2>/dev/null) || {
-			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#23019)"
 			rm -f "$contexts_tmp"
 			return 1
 		}
 		if ! _pmrc_branch_ruleset_detail_schema_valid "$detail" "$id"; then
-			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019, GH#28864)"
 			rm -f "$contexts_tmp"
 			return 1
 		fi
 
 		include_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.include // [] | .[]' 2>/dev/null) || {
-			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#23019)"
 			rm -f "$contexts_tmp"
 			return 1
 		}
 		exclude_patterns=$(printf '%s' "$detail" | jq -r '.conditions.ref_name.exclude // [] | .[]' 2>/dev/null) || {
-			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} exclude parse failed for ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: ruleset detail ${id} exclude parse failed for ${repo_slug} — caller will fail closed (GH#23019)"
 			rm -f "$contexts_tmp"
 			return 1
 		}
@@ -260,7 +261,7 @@ _required_contexts_from_rulesets_for_default_branch() {
 		[[ "$excluded_default" -eq 0 ]] || continue
 
 		contexts=$(printf '%s' "$detail" | jq -r '.rules[]? | select(.type == "required_status_checks") | (.parameters.required_status_checks // [])[]? | (.context // .name // empty)' 2>/dev/null) || {
-			echo "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: required-check parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#23019)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_from_rulesets_for_default_branch: required-check parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#23019)"
 			rm -f "$contexts_tmp"
 			return 1
 		}
@@ -284,11 +285,10 @@ _required_contexts_from_rulesets_for_default_branch() {
 #######################################
 _required_contexts_for_default_branch_uncached() {
 	local repo_slug="$1"
-	local log_target="${LOGFILE:-/dev/stderr}"
 	local default_branch="" default_branch_rc=0
 	default_branch=$(_pmrc_gh_read gh api "repos/${repo_slug}" --jq '.default_branch' 2>/dev/null) || default_branch_rc=$?
 	if [[ "$default_branch_rc" -ne 0 || -z "$default_branch" ]]; then
-		echo "[pulse-merge] _required_contexts_for_default_branch: failed to resolve default branch for ${repo_slug} — caller will fail closed (t2922)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: failed to resolve default branch for ${repo_slug} — caller will fail closed (t2922)"
 		return 1
 	fi
 
@@ -309,25 +309,25 @@ _required_contexts_for_default_branch_uncached() {
 			local ruleset_contexts_unavailable=""
 			ruleset_contexts_unavailable=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
 			if [[ -n "$ruleset_contexts_unavailable" ]]; then
-				echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection on ${repo_slug} (${classic_unavailable_reason}), but active rulesets require contexts (GH#23019, GH#28864)" >>"$log_target"
+				aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection on ${repo_slug} (${classic_unavailable_reason}), but active rulesets require contexts (GH#23019, GH#28864)"
 				printf '%s\n' "$ruleset_contexts_unavailable"
 				return 0
 			fi
-			echo "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection or required ruleset contexts on ${repo_slug} default branch (${classic_unavailable_reason}) — empty contexts (t3193, GH#23019, GH#28864)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: no classic branch protection or required ruleset contexts on ${repo_slug} default branch (${classic_unavailable_reason}) — empty contexts (t3193, GH#23019, GH#28864)"
 			return 0
 		fi
-		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection API failed for ${repo_slug} (exit ${protection_rc}) — caller will fail closed (t2922)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: branch protection API failed for ${repo_slug} (exit ${protection_rc}) — caller will fail closed (t2922)"
 		return 1
 	fi
 
 	local classic_contexts="" ruleset_contexts=""
 	classic_contexts=$(printf '%s' "$protection_resp" | jq -r '(.contexts // [])[], (.checks // [])[].context? // empty' 2>/dev/null) || {
-		echo "[pulse-merge] _required_contexts_for_default_branch: branch protection parse failed for ${repo_slug} — caller will fail closed (t2922)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: branch protection parse failed for ${repo_slug} — caller will fail closed (t2922)"
 		return 1
 	}
 	ruleset_contexts=$(_required_contexts_from_rulesets_for_default_branch "$repo_slug" "$default_branch") || return 1
 	if [[ -n "$ruleset_contexts" ]]; then
-		echo "[pulse-merge] _required_contexts_for_default_branch: active rulesets add required contexts for ${repo_slug} (GH#23019)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: active rulesets add required contexts for ${repo_slug} (GH#23019)"
 	fi
 
 	printf '%s\n%s\n' "$classic_contexts" "$ruleset_contexts" | awk 'NF && !seen[$0]++'
@@ -386,9 +386,7 @@ _pmrc_snapshot_log_failure() {
 	local repo_slug="$1"
 	local subject="$2"
 	local stage="$3"
-	local log_target="${LOGFILE:-/dev/stderr}"
-
-	echo "[pulse-merge] pre-merge snapshot: ${stage} failed for ${subject} in ${repo_slug} — failing closed (GH#28209)" >>"$log_target"
+	aidevops_log_line "[pulse-merge] pre-merge snapshot: ${stage} failed for ${subject} in ${repo_slug} — failing closed (GH#28209)"
 	return 0
 }
 
@@ -587,7 +585,6 @@ _pmrc_review_thread_resolution_required() {
 	local repo_slug="$1"
 	local base_branch="$2"
 	local encoded_branch="" rules_json="" required=""
-	local log_target="${LOGFILE:-/dev/stderr}"
 
 	[[ -n "$repo_slug" && -n "$base_branch" ]] || return 1
 	encoded_branch=$(jq -nr --arg branch "$base_branch" '$branch | @uri') || return 1
@@ -595,10 +592,11 @@ _pmrc_review_thread_resolution_required() {
 	rules_json=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="pulse-effective-rules-rest" \
 		_pmrc_gh_read gh api "repos/${repo_slug}/rules/branches/${encoded_branch}" 2>/dev/null) || {
-		echo "[pulse-merge] pre-merge snapshot: effective rules fetch failed for ${repo_slug} branch ${base_branch} — failing closed (GH#28130)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] pre-merge snapshot: effective rules fetch failed for ${repo_slug} branch ${base_branch} — failing closed (GH#28130)"
 		return 1
 	}
-	required=$(printf '%s' "$rules_json" | jq -r --arg array_type "$PMRC_JSON_ARRAY" '
+	# shellcheck disable=SC2016 # jq program, not a shell interpolation context.
+	required=$(aidevops_run_with_log_stderr jq -r --arg array_type "$PMRC_JSON_ARRAY" '
 		if type != $array_type then error("effective rules response must be an array")
 		else [
 			.[]?
@@ -606,8 +604,8 @@ _pmrc_review_thread_resolution_required() {
 			| (.parameters?.required_review_thread_resolution? // false)
 		] | any
 		end
-	' 2>>"$log_target") || {
-		echo "[pulse-merge] pre-merge snapshot: effective rules parse failed for ${repo_slug} branch ${base_branch} — failing closed (GH#28130)" >>"$log_target"
+	' <<<"$rules_json") || {
+		aidevops_log_line "[pulse-merge] pre-merge snapshot: effective rules parse failed for ${repo_slug} branch ${base_branch} — failing closed (GH#28130)"
 		return 1
 	}
 	case "$required" in
@@ -622,7 +620,7 @@ _pmrc_snapshot_review_threads_clear() {
 	local pr_number="$2"
 	local base_branch="$3"
 	local owner="${repo_slug%%/*}" name="${repo_slug##*/}" response="" counts="" has_next=""
-	local total_count="" bot_count="" resolution_required="" reported_cost="" log_target="${LOGFILE:-/dev/stderr}"
+	local total_count="" bot_count="" resolution_required="" reported_cost=""
 	# Retain gemini-code-assist so unresolved historical bot threads stay typed.
 	local bot_re="coderabbitai|gemini-code-assist|augment-code|augmentcode|copilot"
 
@@ -652,7 +650,7 @@ _pmrc_snapshot_review_threads_clear() {
 	fi
 	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty') || return 1
 	if [[ "$reported_cost" != "1" ]]; then
-		echo "[pulse-merge] pre-merge snapshot: review-thread GraphQL cost contract changed for ${repo_slug} PR #${pr_number} — failing closed (GH#27777)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] pre-merge snapshot: review-thread GraphQL cost contract changed for ${repo_slug} PR #${pr_number} — failing closed (GH#27777)"
 		return 1
 	fi
 	has_next=$(printf '%s' "$response" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage // false') || return 1
@@ -671,14 +669,14 @@ _pmrc_snapshot_review_threads_clear() {
 	[[ "$total_count" =~ ^[0-9]+$ && "$bot_count" =~ ^[0-9]+$ ]] || return 1
 	if [[ "$bot_count" -gt 0 ]]; then
 		_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_REVIEW_BOT_THREADS"
-		echo "[pulse-merge] pre-merge snapshot: PR #${pr_number} in ${repo_slug} has ${bot_count} unresolved review-bot thread(s) — merge blocked until resolved or classified (GH#27137)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] pre-merge snapshot: PR #${pr_number} in ${repo_slug} has ${bot_count} unresolved review-bot thread(s) — merge blocked until resolved or classified (GH#27137)"
 		return 1
 	fi
 	[[ "$total_count" -gt 0 ]] || return 0
 	resolution_required=$(_pmrc_review_thread_resolution_required "$repo_slug" "$base_branch") || return 1
 	if [[ "$resolution_required" == "$PMRC_BOOL_TRUE" ]]; then
 		_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND="$PMRC_BLOCKER_REQUIRED_REVIEW_THREADS"
-		echo "[pulse-merge] pre-merge snapshot: PR #${pr_number} in ${repo_slug} has ${total_count} unresolved review thread(s), and branch ${base_branch} requires thread resolution — merge blocked (GH#28130)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] pre-merge snapshot: PR #${pr_number} in ${repo_slug} has ${total_count} unresolved review thread(s), and branch ${base_branch} requires thread resolution — merge blocked (GH#28130)"
 		return 1
 	fi
 	return 0
@@ -725,7 +723,6 @@ _pmrc_rerun_infrastructure_check() {
 	local state_root="${AIDEVOPS_TEMP_DIR:-${HOME:+$HOME/.aidevops/.agent-workspace/tmp}}"
 	local state_dir="${PULSE_MERGE_INFRA_RERUN_STATE_DIR:-${state_root:+$state_root/pulse-infra-check-reruns}}"
 	local state_file="" now_epoch="${PULSE_MERGE_NOW_EPOCH:-$(date +%s)}" last_attempt="0"
-	local log_target="${LOGFILE:-/dev/stderr}"
 
 	[[ -n "$repo_slug" && "$pr_number" =~ ^[0-9]+$ ]] || return 1
 	[[ "$check_url" == "https://github.com/${repo_slug}/actions/runs/"*"/job/"* ]] || return 1
@@ -738,12 +735,12 @@ _pmrc_rerun_infrastructure_check() {
 
 	if declare -F repo_allows_pulse_write_actions >/dev/null 2>&1 &&
 		! repo_allows_pulse_write_actions "$repo_slug"; then
-		echo "[pulse-merge] infrastructure rerun deferred for PR #${pr_number} check '${check_name}' in ${repo_slug} — repository writes are disabled" >>"$log_target"
+		aidevops_log_line "[pulse-merge] infrastructure rerun deferred for PR #${pr_number} check '${check_name}' in ${repo_slug} — repository writes are disabled"
 		return 1
 	fi
 
 	if _pmrc_actions_incident_blocks_rerun; then
-		echo "[pulse-merge] infrastructure rerun deferred for PR #${pr_number} check '${check_name}' in ${repo_slug} — GitHub Status reports an active Actions incident; retry amplification suppressed" >>"$log_target"
+		aidevops_log_line "[pulse-merge] infrastructure rerun deferred for PR #${pr_number} check '${check_name}' in ${repo_slug} — GitHub Status reports an active Actions incident; retry amplification suppressed"
 		return 0
 	fi
 
@@ -754,7 +751,7 @@ _pmrc_rerun_infrastructure_check() {
 	fi
 	[[ "$last_attempt" =~ ^[0-9]+$ ]] || last_attempt=0
 	if [[ $((now_epoch - last_attempt)) -lt "$cooldown_seconds" ]]; then
-		echo "[pulse-merge] infrastructure rerun cooldown active for PR #${pr_number} check '${check_name}' in ${repo_slug} (run=${run_id}, cooldown=${cooldown_seconds}s) — merge remains blocked" >>"$log_target"
+		aidevops_log_line "[pulse-merge] infrastructure rerun cooldown active for PR #${pr_number} check '${check_name}' in ${repo_slug} (run=${run_id}, cooldown=${cooldown_seconds}s) — merge remains blocked"
 		return 0
 	fi
 
@@ -762,10 +759,10 @@ _pmrc_rerun_infrastructure_check() {
 	#aidevops:trust-boundary — the run ID comes from the current-head check-run
 	# URL returned by GitHub, and the repository already passed pulse write policy.
 	if gh run rerun "$run_id" --repo "$repo_slug" --failed >/dev/null 2>&1; then
-		echo "[pulse-merge] requested infrastructure rerun for PR #${pr_number} check '${check_name}' in ${repo_slug} (run=${run_id}) — merge remains blocked pending fresh success (GH#27825)" >>"$log_target"
+		aidevops_log_line "[pulse-merge] requested infrastructure rerun for PR #${pr_number} check '${check_name}' in ${repo_slug} (run=${run_id}) — merge remains blocked pending fresh success (GH#27825)"
 		return 0
 	fi
-	echo "[pulse-merge] infrastructure rerun request failed for PR #${pr_number} check '${check_name}' in ${repo_slug} (run=${run_id}); cooldown recorded — merge remains blocked (GH#27825)" >>"$log_target"
+	aidevops_log_line "[pulse-merge] infrastructure rerun request failed for PR #${pr_number} check '${check_name}' in ${repo_slug} (run=${run_id}); cooldown recorded — merge remains blocked (GH#27825)"
 	return 0
 }
 
@@ -1213,11 +1210,10 @@ _ruleset_required_review_count_for_default_branch() {
 	local repo_slug="$1"
 	local default_branch="$2"
 	local rulesets_json="${3:-}"
-	local log_target="${LOGFILE:-/dev/stderr}"
 
 	if [[ -z "$rulesets_json" ]]; then
 		rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>/dev/null) || {
-			echo "[pulse-merge] _ruleset_required_review_count_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#24577)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#24577)"
 			return 1
 		}
 	fi
@@ -1227,8 +1223,8 @@ _ruleset_required_review_count_for_default_branch() {
 	}
 
 	local active_ids=""
-	active_ids=$(printf '%s' "$rulesets_json" | jq -r '.[]? | select(.enforcement == "active") | .id // empty' 2>>"$log_target") || {
-		echo "[pulse-merge] _ruleset_required_review_count_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#24577)" >>"$log_target"
+	active_ids=$(printf '%s' "$rulesets_json" | aidevops_run_with_log_stderr jq -r '.[]? | select(.enforcement == "active") | .id // empty') || {
+		aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#24577)"
 		return 1
 	}
 	[[ -n "$active_ids" ]] || {
@@ -1242,11 +1238,11 @@ _ruleset_required_review_count_for_default_branch() {
 	while IFS= read -r id; do
 		[[ -n "$id" ]] || continue
 		detail=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets/${id}" 2>/dev/null) || {
-			echo "[pulse-merge] _ruleset_required_review_count_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#24577)" >>"$log_target"
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#24577)"
 			return 1
 		}
-		include_patterns=$(printf '%s' "$detail" | jq -r '.conditions?.ref_name?.include? // [] | .[]' 2>>"$log_target") || return 1
-		exclude_patterns=$(printf '%s' "$detail" | jq -r '.conditions?.ref_name?.exclude? // [] | .[]' 2>>"$log_target") || return 1
+		include_patterns=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '.conditions?.ref_name?.include? // [] | .[]') || return 1
+		exclude_patterns=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '.conditions?.ref_name?.exclude? // [] | .[]') || return 1
 
 		matches_default=0
 		while IFS= read -r pattern; do
@@ -1266,8 +1262,8 @@ _ruleset_required_review_count_for_default_branch() {
 		done <<<"$exclude_patterns"
 		[[ "$excluded_default" -eq 0 ]] || continue
 
-		approval_count=$(printf '%s' "$detail" | jq -r '[.rules[]? | select(.type == "pull_request") | (.parameters?.required_approving_review_count? // 0)] | max // 0' 2>>"$log_target") || {
-			echo "[pulse-merge] _ruleset_required_review_count_for_default_branch: pull-request rule parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#24577)" >>"$log_target"
+		approval_count=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '[.rules[]? | select(.type == "pull_request") | (.parameters?.required_approving_review_count? // 0)] | max // 0') || {
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: pull-request rule parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#24577)"
 			return 1
 		}
 		[[ "$approval_count" =~ ^[0-9]+$ ]] || approval_count=0
