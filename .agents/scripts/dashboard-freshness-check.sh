@@ -13,14 +13,14 @@
 #
 # This scanner closes that gap by reading the dashboard body, extracting the
 # `last_refresh: <ISO8601>` marker emitted by _build_health_issue_body, and
-# filing a `review-followup` + `priority:high` alert when staleness exceeds
-# a configurable threshold (default 48h).
+# filing an operator-owned, non-dispatchable alert when staleness exceeds a
+# configurable threshold (default 48h).
 #
 # Design principles:
 #   - Single-pass, cheap: one gh API call per tracked dashboard.
 #   - Cadence-gated: default one check per hour, throttled via state file.
-#   - Idempotent alerting: one open alert per dashboard, dedup'd by generated
-#     alert title plus dashboard issue suffix.
+#   - Idempotent alerting: one incident per dashboard freshness marker. A closed
+#     incident is reopened while the marker remains unchanged, never duplicated.
 #   - Fail-open: any error (gh offline, cache missing, body missing marker)
 #     logs and exits 0 — never blocks the pulse.
 #
@@ -233,17 +233,17 @@ _cadence_gate_ok() {
 
 # Emit "slug issue_number" lines for every known dashboard. Prefer local
 # ~/.aidevops/logs/health-issue-* cache files written by stats-health-dashboard.sh,
-# and include the current authenticated supervisor dashboard in configured repos
-# when that repository has no local cache. The authenticated identity constraint
-# keeps retired dashboards for other operators from repeatedly filing stale
-# alerts after a host or supervisor changes.
+# and reconcile them with the current authenticated supervisor dashboard in each
+# configured repo. Remote reconciliation is still required when a cache exists:
+# a stale cache for a retired operator must not suppress the active dashboard.
 # Historical cache names included the role segment
 # (`health-issue-<runner>-supervisor-<slug-dashed>`); current canonical identity
 # caches omit it (`health-issue-<canonical>-<slug-dashed>`). Resolve both by
 # matching the longest repos.json slug suffix instead of parsing a fixed segment
 # position.
 _enumerate_dashboards() {
-	local cache issue slug_raw slug key seen="|" cached_slugs="|" slug_candidates current_user=""
+	local current_user="$1"
+	local cache issue slug_raw slug key seen="|" slug_candidates
 	slug_candidates="$(_repo_slug_candidates)"
 	shopt -s nullglob
 	for cache in "${HEALTH_ISSUE_CACHE_DIR}"/health-issue-*; do
@@ -257,18 +257,12 @@ _enumerate_dashboards() {
 			*"|${key}|"*) continue ;;
 		esac
 		seen="${seen}${key}|"
-		cached_slugs="${cached_slugs}${slug}|"
 		printf '%s %s\n' "$slug" "$issue"
 	done
 	shopt -u nullglob
 	if command -v gh >/dev/null 2>&1 && gh auth status &>/dev/null 2>&1; then
-		current_user=$(_dashboard_scan_current_user)
-		[[ -n "$current_user" ]] || return 0
 		while IFS= read -r slug; do
 			[[ -n "$slug" ]] || continue
-			case "$cached_slugs" in
-			*"|${slug}|"*) continue ;;
-			esac
 			while IFS= read -r issue; do
 				[[ "$issue" =~ ^[0-9]+$ ]] || continue
 				key="${slug} ${issue}"
@@ -330,6 +324,19 @@ _dashboard_issue_is_supervisor() {
 	printf '%s\n' "$issue_json" | jq -e '
 		((.title // "") | startswith("[Supervisor:"))
 		or any(.labels[]?; (.name // .) == "supervisor")
+	' >/dev/null 2>&1
+	return $?
+}
+
+# Return success only when the dashboard belongs to the authenticated operator.
+# Local cache files are untrusted discovery hints: stale files can survive host
+# or identity changes, so every candidate must be validated against GitHub.
+_dashboard_issue_matches_operator() {
+	local issue_json="$1"
+	local current_user="$2"
+	[[ "$current_user" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] || return 1
+	printf '%s\n' "$issue_json" | jq -e --arg operator "operator:${current_user}" '
+		any(.labels[]?; (.name // .) == $operator)
 	' >/dev/null 2>&1
 	return $?
 }
@@ -477,6 +484,76 @@ _open_issue_titles_json() {
 	fi
 	[[ -n "$issue_list_json" ]] || issue_list_json="[]"
 	printf '%s\n' "$issue_list_json"
+	return 0
+}
+
+# Find a prior alert for the same dashboard state, including closed issues.
+# The last_refresh value is the durable incident fingerprint: closing an alert
+# without changing that marker does not create a new incident on the next scan.
+_matching_incident_json() {
+	local slug="$1"
+	local dash_issue="$2"
+	local fingerprint="$3"
+	local dashboard_marker="<!-- aidevops:dashboard-freshness:${slug}:${dash_issue} -->"
+	local incident_marker="<!-- aidevops:dashboard-freshness-incident:last_refresh=${fingerprint} -->"
+	local legacy_fragment="last refreshed \`${fingerprint}\`"
+	local search_query="repo:${slug} is:issue in:title \"(#${dash_issue})\""
+	local search_json search_status=0
+	search_json="$(gh api --method GET "search/issues" -f q="$search_query" -f per_page=100 \
+		--jq '.items[] | {number,state,title,body}' 2>>"$LOGFILE")" || search_status=$?
+	if (( search_status != 0 )); then
+		_log_error "Failed to search dashboard-freshness incidents in ${slug}: gh api exited ${search_status}"
+		return 2
+	fi
+	printf '%s\n' "$search_json" |
+		jq -cs --arg dashboard "$dashboard_marker" --arg incident "$incident_marker" --arg legacy "$legacy_fragment" --arg suffix "(#${dash_issue})" '
+			map(select((.title // "") | endswith($suffix)))
+			| map(select(((.body // "") | contains($dashboard)) and (((.body // "") | contains($incident)) or ((.body // "") | contains($legacy)))))
+			| sort_by(.number) | last // empty' || true
+	return 0
+}
+
+_reopen_incident_alert() {
+	local slug="$1"
+	local alert_issue="$2"
+	local current_user="$3"
+	if [[ "${DASHBOARD_FRESHNESS_DRY_RUN:-0}" == "1" ]]; then
+		_log_info "DRY-RUN: would reopen dashboard-freshness incident ${slug}#${alert_issue}"
+		return 0
+	fi
+	if ! gh issue reopen "$alert_issue" --repo "$slug" 2>>"$LOGFILE"; then
+		_log_warn "Failed to reopen dashboard-freshness incident ${slug}#${alert_issue}"
+		return 0
+	fi
+	gh issue edit "$alert_issue" --repo "$slug" \
+		--remove-label "auto-dispatch,review-followup,status:done,not-planned" \
+		--add-label "no-auto-dispatch,priority:high,origin:worker,operator:${current_user}" \
+		2>>"$LOGFILE" || _log_warn "Reopened ${slug}#${alert_issue}, but could not normalize operational labels"
+	return 0
+}
+
+# Return success when the same dashboard state already has an incident. Closed
+# incidents are reopened because only a refreshed dashboard resolves the fault.
+_preserve_existing_incident() {
+	local slug="$1"
+	local dash_issue="$2"
+	local fingerprint="$3"
+	local current_user="$4"
+	local incident_json alert_issue alert_state incident_status=0
+	incident_json="$(_matching_incident_json "$slug" "$dash_issue" "$fingerprint")" || incident_status=$?
+	if (( incident_status != 0 )); then
+		return 2
+	fi
+	[[ -n "$incident_json" ]] || return 1
+	alert_issue="$(printf '%s\n' "$incident_json" | jq -r '.number // empty')"
+	alert_state="$(printf '%s\n' "$incident_json" | jq -r '.state // empty')"
+	[[ "$alert_issue" =~ ^[0-9]+$ ]] || return 1
+	if [[ "$alert_state" == "closed" ]]; then
+		_reopen_incident_alert "$slug" "$alert_issue" "$current_user"
+		_log_info "Reused closed dashboard-freshness incident ${slug}#${alert_issue} for unchanged marker ${fingerprint}"
+	else
+		_log_info "Dashboard-freshness incident ${slug}#${alert_issue} already tracks unchanged marker ${fingerprint}"
+	fi
 	return 0
 }
 
@@ -649,6 +726,7 @@ _write_stale_alert_body() {
 	local body_summary="$4"
 	local generator_marker="$5"
 	local marker="$6"
+	local incident_marker="$7"
 
 	# Reference the macOS launchctl via a local variable so the raw
 	# `launchctl` token in the heredoc does not trigger the shell-portability
@@ -720,6 +798,7 @@ The supervisor health dashboard is the framework's primary single-glance health 
 
 ${generator_marker}
 ${marker}
+${incident_marker}
 EOF
 	return 0
 }
@@ -734,12 +813,15 @@ _file_stale_alert() {
 	local dash_issue="$2"
 	local age_secs="$3"
 	local iso="${4:-}"
+	local current_user="$5"
 	local human_age="stale"
 	local threshold_human
 	threshold_human="$(_format_age "$DASHBOARD_FRESHNESS_THRESHOLD_SECONDS")"
 
 	local marker="<!-- aidevops:dashboard-freshness:${slug}:${dash_issue} -->"
 	local generator_marker="<!-- aidevops:generator=dashboard-freshness-check -->"
+	local fingerprint="${iso:-$MARKER_MISSING}"
+	local incident_marker="<!-- aidevops:dashboard-freshness-incident:last_refresh=${fingerprint} -->"
 	local title body_summary
 
 	if [[ "$age_secs" == "$MARKER_MISSING" ]]; then
@@ -757,7 +839,7 @@ _file_stale_alert() {
 		return 0
 	}
 	_write_stale_alert_body "$body_file" "$slug" "$dash_issue" \
-		"$body_summary" "$generator_marker" "$marker"
+		"$body_summary" "$generator_marker" "$marker" "$incident_marker"
 
 	if [[ "${DASHBOARD_FRESHNESS_DRY_RUN:-0}" == "1" ]]; then
 		_log_info "DRY-RUN: would file alert on ${slug} dashboard #${dash_issue} (age=${age_secs})"
@@ -778,7 +860,7 @@ _file_stale_alert() {
 	fi
 	# shellcheck disable=SC2086
 	if ! $gh_create_cmd --repo "$slug" --title "$title" --body-file "$body_file" \
-		--label "review-followup,priority:high,auto-dispatch,origin:worker" 2>>"$LOGFILE"; then
+		--label "no-auto-dispatch,priority:high,origin:worker,operator:${current_user}" 2>>"$LOGFILE"; then
 		_log_error "Failed to file stale-dashboard alert at ${slug}#${dash_issue}"
 		rm -f "$body_file" 2>/dev/null || true
 		return 1
@@ -795,6 +877,7 @@ _file_stale_alert() {
 scan_one_dashboard() {
 	local slug="$1"
 	local dash_issue="$2"
+	local current_user="$3"
 	local issue_json issue_state body age_line age_secs iso open_issues_json
 
 	if ! command -v gh >/dev/null 2>&1; then
@@ -813,6 +896,10 @@ scan_one_dashboard() {
 	fi
 	if ! _dashboard_issue_is_supervisor "$issue_json"; then
 		_log_info "Dashboard ${slug}#${dash_issue} is not a supervisor dashboard — skipping stale scan"
+		return 0
+	fi
+	if ! _dashboard_issue_matches_operator "$issue_json" "$current_user"; then
+		_log_info "Dashboard ${slug}#${dash_issue} does not belong to operator:${current_user} — skipping stale scan"
 		return 0
 	fi
 	issue_state=$(printf '%s\n' "$issue_json" | jq -r '.state // ""' 2>/dev/null || true)
@@ -837,11 +924,20 @@ scan_one_dashboard() {
 	age_line="$(printf '%s' "$body" | _compute_body_age)"
 	if [[ "$age_line" == "$MARKER_MISSING" ]]; then
 		_log_warn "Dashboard ${slug}#${dash_issue} is missing last_refresh marker"
+		local incident_status=0
+		_preserve_existing_incident "$slug" "$dash_issue" "$MARKER_MISSING" "$current_user" || incident_status=$?
+		if (( incident_status == 0 )); then
+			return 0
+		fi
+		if (( incident_status == 2 )); then
+			_log_warn "Incident dedup unavailable for ${slug}#${dash_issue} — failing closed without creating an alert"
+			return 0
+		fi
 		if _alert_already_open "$slug" "$dash_issue" "$open_issues_json"; then
 			_log_info "Alert already open at ${slug}#${dash_issue} — skipping"
 			return 0
 		fi
-		_file_stale_alert "$slug" "$dash_issue" "$MARKER_MISSING" "" || true
+		_file_stale_alert "$slug" "$dash_issue" "$MARKER_MISSING" "" "$current_user" || true
 		return 0
 	fi
 
@@ -861,11 +957,20 @@ scan_one_dashboard() {
 
 	_log_warn "Dashboard ${slug}#${dash_issue} STALE (${age_secs}s > ${DASHBOARD_FRESHNESS_THRESHOLD_SECONDS}s, last_refresh=${iso})"
 	_close_recovered_missing_marker_alerts "$slug" "$dash_issue" "$iso" "$age_secs" "$open_issues_json"
+	local incident_status=0
+	_preserve_existing_incident "$slug" "$dash_issue" "$iso" "$current_user" || incident_status=$?
+	if (( incident_status == 0 )); then
+		return 0
+	fi
+	if (( incident_status == 2 )); then
+		_log_warn "Incident dedup unavailable for ${slug}#${dash_issue} — failing closed without creating an alert"
+		return 0
+	fi
 	if _stale_alert_already_open "$slug" "$dash_issue" "$open_issues_json"; then
 		_log_info "Alert already open at ${slug}#${dash_issue} — skipping"
 		return 0
 	fi
-	_file_stale_alert "$slug" "$dash_issue" "$age_secs" "$iso" || true
+	_file_stale_alert "$slug" "$dash_issue" "$age_secs" "$iso" "$current_user" || true
 	return 0
 }
 
@@ -886,9 +991,14 @@ cmd_scan() {
 
 	_log_info "dashboard-freshness scan: threshold=${DASHBOARD_FRESHNESS_THRESHOLD_SECONDS}s"
 
-	local checked=0
+	local checked=0 current_user=""
 	local dashes
-	dashes="$(_enumerate_dashboards)"
+	current_user="$(_dashboard_scan_current_user)"
+	if [[ -z "$current_user" ]]; then
+		_log_warn "Authenticated GitHub operator unavailable — skipping dashboard freshness scan"
+		return 0
+	fi
+	dashes="$(_enumerate_dashboards "$current_user")"
 	if [[ -z "$dashes" ]]; then
 		_log_info "No dashboards to scan (no cache files found)"
 		return 0
@@ -896,7 +1006,7 @@ cmd_scan() {
 
 	while IFS=' ' read -r slug dash_issue; do
 		[[ -z "$slug" || -z "$dash_issue" ]] && continue
-		scan_one_dashboard "$slug" "$dash_issue" || true
+		scan_one_dashboard "$slug" "$dash_issue" "$current_user" || true
 		checked=$(( checked + 1 ))
 	done <<<"$dashes"
 

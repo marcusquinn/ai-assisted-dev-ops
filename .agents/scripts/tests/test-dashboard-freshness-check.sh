@@ -11,8 +11,8 @@
 #   2. check-body on a stale body → exit 1, prints an age line.
 #   3. check-body on a body missing the last_refresh marker → exit 1,
 #      prints "MISSING".
-#   4. scan with a stale dashboard fixture → files exactly one alert issue
-#      via the stubbed `gh` invocation (label & title format asserted).
+#   4. scan with a stale dashboard fixture → files exactly one operator-owned,
+#      non-dispatchable alert issue via the stubbed `gh` invocation.
 #   5. scan with a stale dashboard AND a pre-existing open alert → files
 #      NO second alert (dedup via <!-- aidevops:dashboard-freshness:*:* -->
 #      generated-title match scoped to the dashboard issue suffix).
@@ -28,9 +28,11 @@
 #  11. open issue list failures are logged instead of silently treated as an
 #      empty dedup result.
 #  12. scan without a local health-issue cache falls back to the authenticated
-#      operator's open source:health-dashboard issue for configured repos, while
-#      a local cache suppresses historical dashboards for that same repo.
-#  13. source regression: recovered stale and missing-marker alert paths share
+#      operator's open source:health-dashboard issue for configured repos, and
+#      remote reconciliation remains active when a local cache exists.
+#  13. local cache candidates must match the authenticated operator.
+#  14. a closed incident with the same last_refresh is reopened, not duplicated.
+#  15. source regression: recovered stale and missing-marker alert paths share
 #      the parameterized close helper and accept a pre-fetched open issue list.
 #
 # The scanner is expected to use `command -v gh` + `gh auth status` guards
@@ -196,6 +198,45 @@ run_scan_stub_script() {
 			#   gh api repos/.../issues/N  → dashboard issue JSON (body from fixture)
 			#   gh api --paginate repos/.../issues?state=open... → alert dedup/recovery check
 			#   gh issue create ...  → URL + 0
+			stub_gh_api() {
+				local gh_args="$1"
+				if [[ "$gh_args" == *"user --jq .login // \"\""* ]]; then
+					printf '%s\n' "testrunner"
+					return 0
+				fi
+				if [[ "$gh_args" == *"repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100"* ]]; then
+					[[ "${DASHBOARD_TITLE:-}" == "[Supervisor:historical] stale" ]] || printf '%s\n' 424242
+					return 0
+				fi
+				if [[ "$gh_args" == *"search/issues"* ]] && [[ "$gh_args" == *"(#424242)"* ]]; then
+					[[ "${INCIDENT_SEARCH_FAIL:-0}" == "1" ]] && return 1
+					if [[ "${INCIDENT_EXISTS:-0}" == "1" ]]; then
+						jq -n --arg state "${INCIDENT_STATE:-closed}" --arg body "Dashboard last refreshed \`${STALE_ISO}\` <!-- aidevops:dashboard-freshness:test/repo:424242 -->" \
+							'{number: 98, state: $state, title: "Supervisor health dashboard stale: prior (#424242)", body: $body}'
+					fi
+					return 0
+				fi
+				if [[ "$gh_args" == *"repos/test/repo/issues?state=open&per_page=100"* ]]; then
+					[[ "${GH_ISSUE_LIST_FAIL:-0}" == "1" ]] && return 1
+					if [[ "$ALERT_EXISTS" == "1" ]]; then
+						if [[ "$ALERT_KIND" == "missing" ]]; then
+							printf '%s\n' '{"number":99,"title":"Supervisor health dashboard missing last_refresh marker (#424242)"}'
+						else
+							printf '%s\n' '{"number":99,"title":"Supervisor health dashboard stale: test/repo (#424242)"}'
+						fi
+					fi
+					return 0
+				fi
+				if [[ "$gh_args" == *"repos/test/repo --jq .private | tostring"* ]]; then
+					printf '%s\n' 'false'
+					return 0
+				fi
+				jq -n --arg state "${DASHBOARD_STATE:-OPEN}" --arg title "${DASHBOARD_TITLE:-[Supervisor:testrunner] ok}" \
+					--arg role "${DASHBOARD_ROLE_LABEL:-supervisor}" --arg operator "operator:${DASHBOARD_OPERATOR:-testrunner}" \
+					--rawfile body "$BODY_FIXTURE" \
+					'{state: $state, title: $title, labels: [{name: $role}, {name: $operator}], body: $body}'
+				return 0
+			}
 			gh() {
 				printf "%s\n" "$*" >> "$GH_CALLS_LOG"
 				local gh_args="$*"
@@ -204,50 +245,12 @@ run_scan_stub_script() {
 						return 0
 						;;
 					api)
-						if [[ "$gh_args" == *"user --jq .login // \"\""* ]]; then
-							printf '%s\n' "testrunner"
-							return 0
-						fi
-						if [[ "$gh_args" == *"repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100"* ]]; then
-							if [[ "${DASHBOARD_TITLE:-}" == "[Supervisor:historical] stale" ]]; then
-								return 0
-							fi
-							printf "%s\n" 424242
-							return 0
-						fi
-						if [[ "$gh_args" == *"repos/test/repo/issues?state=open&per_page=100"* ]]; then
-							if [[ "${GH_ISSUE_LIST_FAIL:-0}" == "1" ]]; then
-								printf "simulated gh api issue list failure\n" >&2
-								return 1
-							fi
-							if [[ "$gh_args" != *"--paginate"* ]] \
-								|| [[ "$gh_args" != *"--jq"* ]]; then
-								return 0
-							elif [[ "$ALERT_EXISTS" == "1" ]]; then
-								if [[ "$ALERT_KIND" == "missing" ]]; then
-									printf "%s\n" "{\"number\":99,\"title\":\"Supervisor health dashboard missing last_refresh marker (#424242)\"}"
-								else
-									printf "%s\n" "{\"number\":99,\"title\":\"Supervisor health dashboard stale: test/repo (#424242)\"}"
-								fi
-							fi
-							return 0
-						fi
-						if [[ "$gh_args" == *"repos/test/repo --jq .private | tostring"* ]]; then
-							printf '%s\n' 'false'
-							return 0
-						fi
-						# $2 = repos/test/repo/issues/424242
-						jq -n \
-							--arg state "${DASHBOARD_STATE:-OPEN}" \
-							--arg title "${DASHBOARD_TITLE:-[Supervisor:testrunner] ok}" \
-							--arg role "${DASHBOARD_ROLE_LABEL:-supervisor}" \
-							--rawfile body "$BODY_FIXTURE" \
-							"{state: \$state, title: \$title, labels: [{name: \$role}], body: \$body}"
-						return 0
+						stub_gh_api "$gh_args"
+						return $?
 						;;
 					issue)
 						case "$2" in
-							comment | close)
+							comment | close | reopen | edit)
 								return 0
 								;;
 							create)
@@ -272,7 +275,7 @@ run_scan_stub_script() {
 				esac
 				return 0
 			}
-			export -f gh
+			export -f gh stub_gh_api
 			# shellcheck disable=SC1091
 			eval "$EXTRA_ENV"
 			# Force force-scan so the scanner does not throttle itself
@@ -305,6 +308,7 @@ run_scan_with_stubs() {
 		ALERT_EXISTS="$alert_exists" \
 		ALERT_KIND="$alert_kind" \
 		ALERT_BODY_CAPTURE="$alert_body_capture" \
+		STALE_ISO="$STALE_ISO" \
 		EXTRA_ENV="$extra_env" \
 		SCANNER_PATH="$SCANNER" \
 		bash -c "$(run_scan_stub_script)" 2>&1
@@ -327,10 +331,13 @@ else
 		"expected 1, got $created_count; calls:\n$(cat "$calls_file")"
 fi
 
-# Assert the alert carries the correct labels and a dashboard-freshness marker.
-if grep -q 'review-followup' "$calls_file" \
-	&& grep -q 'priority:high' "$calls_file"; then
-	pass "alert labelled review-followup + priority:high"
+# Assert operational incidents cannot enter the code-worker dispatch queue.
+if grep -q 'no-auto-dispatch' "$calls_file" \
+	&& grep -q 'operator:testrunner' "$calls_file" \
+	&& grep -q 'priority:high' "$calls_file" \
+	&& ! grep -q 'review-followup' "$calls_file" \
+	&& ! grep -q -- '--label auto-dispatch' "$calls_file"; then
+	pass "alert is operator-owned and non-dispatchable"
 else
 	fail "alert labelling" "calls:\n$(cat "$calls_file")"
 fi
@@ -348,6 +355,12 @@ if grep -q 'macOS / launchd:' "$alert_body" \
 	pass "alert body includes macOS launchd and Linux systemd remediation"
 else
 	fail "alert body scheduler remediation" "body:\n$(cat "$alert_body")"
+fi
+
+if grep -q '<!-- aidevops:dashboard-freshness-incident:last_refresh=' "$alert_body"; then
+	pass "alert body records durable last_refresh incident fingerprint"
+else
+	fail "incident fingerprint" "body:\n$(cat "$alert_body")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -537,21 +550,19 @@ fi
 printf '%s\n' 424242 >"$HEALTH_CACHE"
 
 # ---------------------------------------------------------------------------
-# Test 12a: a current local cache suppresses obsolete remote dashboards for
-# the same repository. A changed operator identity must not make a historical
-# dashboard stale forever when the current cache already identifies the active
-# surface.
+# Test 12a: local cache discovery still reconciles the authenticated remote
+# dashboard so a historical cache cannot hide the active surface.
 # ---------------------------------------------------------------------------
-echo "Testing: cached dashboard suppresses historical remote dashboards"
+echo "Testing: cached dashboard still reconciles current remote dashboard"
 run_scan_with_stubs "$STALE_BODY" 0 "" >/dev/null
 calls_file="${TMP}/gh-calls.log"
 remote_dashboard_list_count=$(grep -c '^api --paginate repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100 ' "$calls_file" 2>/dev/null || true)
 [[ "$remote_dashboard_list_count" =~ ^[0-9]+$ ]] || remote_dashboard_list_count=0
 
-if (( remote_dashboard_list_count == 0 )); then
-	pass "local cache suppresses historical source health-dashboard enumeration"
+if (( remote_dashboard_list_count == 1 )); then
+	pass "local cache retains current source health-dashboard reconciliation"
 else
-	fail "cached dashboard suppression" "expected no remote dashboard listing; calls:\n$(cat "$calls_file")"
+	fail "cached dashboard reconciliation" "expected one remote dashboard listing; calls:\n$(cat "$calls_file")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -574,7 +585,24 @@ fi
 printf '%s\n' 424242 >"$HEALTH_CACHE"
 
 # ---------------------------------------------------------------------------
-# Test 12c: contributor health dashboards are ignored
+# Test 12c: local cache for another operator is ignored
+# ---------------------------------------------------------------------------
+echo "Testing: local cache dashboard operator is validated"
+run_scan_with_stubs "$STALE_BODY" 0 "export DASHBOARD_OPERATOR=historical" >/dev/null
+calls_file="${TMP}/gh-calls.log"
+created_count=$(grep -c '^issue create ' "$calls_file" 2>/dev/null || true)
+[[ "$created_count" =~ ^[0-9]+$ ]] || created_count=0
+
+if (( created_count == 0 )) \
+	&& grep -q 'does not belong to operator:testrunner' "${HOME_ISO}/.aidevops/logs/dashboard-freshness.log"; then
+	pass "historical local cache dashboard → no alert"
+else
+	fail "local cache operator validation" \
+		"created=$created_count; calls:\n$(cat "$calls_file")"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 12d: contributor health dashboards are ignored
 # ---------------------------------------------------------------------------
 echo "Testing: contributor dashboard is ignored"
 run_scan_with_stubs "$STALE_BODY" 0 "export DASHBOARD_TITLE='[Contributor:testrunner] stale'; export DASHBOARD_ROLE_LABEL=contributor" >/dev/null
@@ -593,7 +621,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 13: source shape for shared recovered-alert helper and cached issue list
+# Test 13: unchanged closed incident is reopened instead of duplicated
+# ---------------------------------------------------------------------------
+echo "Testing: closed unchanged incident is reopened"
+run_scan_with_stubs "$STALE_BODY" 0 "export INCIDENT_EXISTS=1; export INCIDENT_STATE=closed" >/dev/null
+calls_file="${TMP}/gh-calls.log"
+created_count=$(grep -c '^issue create ' "$calls_file" 2>/dev/null || true)
+reopen_count=$(grep -c '^issue reopen 98 ' "$calls_file" 2>/dev/null || true)
+edit_count=$(grep -c '^issue edit 98 ' "$calls_file" 2>/dev/null || true)
+[[ "$created_count" =~ ^[0-9]+$ ]] || created_count=0
+[[ "$reopen_count" =~ ^[0-9]+$ ]] || reopen_count=0
+[[ "$edit_count" =~ ^[0-9]+$ ]] || edit_count=0
+
+if (( created_count == 0 && reopen_count == 1 && edit_count == 1 )); then
+	pass "closed unchanged incident → reopen and normalize labels"
+else
+	fail "closed incident reuse" \
+		"created=$created_count reopen=$reopen_count edit=$edit_count; calls:\n$(cat "$calls_file")"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 14: failed all-state incident lookup fails closed without duplication
+# ---------------------------------------------------------------------------
+echo "Testing: incident lookup failure fails closed"
+run_scan_with_stubs "$STALE_BODY" 0 "export INCIDENT_SEARCH_FAIL=1" >/dev/null
+calls_file="${TMP}/gh-calls.log"
+created_count=$(grep -c '^issue create ' "$calls_file" 2>/dev/null || true)
+[[ "$created_count" =~ ^[0-9]+$ ]] || created_count=0
+
+if (( created_count == 0 )) \
+	&& grep -q 'Incident dedup unavailable for test/repo#424242' "${HOME_ISO}/.aidevops/logs/dashboard-freshness.log"; then
+	pass "incident lookup failure → no potentially duplicate alert"
+else
+	fail "incident lookup fail-closed" \
+		"created=$created_count; calls:\n$(cat "$calls_file")"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 15: source shape for shared recovered-alert helper and cached issue list
 # ---------------------------------------------------------------------------
 echo "Testing: recovered-alert source shape"
 if grep -q '^_close_recovered_alerts_for_kind()' "$SCANNER" \
@@ -608,7 +673,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 14: missing-marker body → alerts with MISSING title
+# Test 16: missing-marker body → alerts with MISSING title
 # ---------------------------------------------------------------------------
 echo "Testing: missing-marker body files alert"
 run_scan_with_stubs "$MISSING_BODY" 0 "" >/dev/null
