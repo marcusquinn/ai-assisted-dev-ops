@@ -355,22 +355,6 @@ _update_health_issue_for_repo() {
 	[[ -z "$health_issue_number" ]] && return 0
 	[[ "$health_issue_number" == "$_HEALTH_QUERY_FAILED_SENTINEL" ]] && return 0
 
-	# t2687: periodic dedup scan (at most once per HEALTH_DEDUP_INTERVAL
-	# seconds per repo+runner+role, default 1h). Closes duplicates that
-	# slipped in during past GraphQL rate-limit windows when the cache
-	# was valid so the label-scan inside _find_health_issue never ran.
-	_periodic_health_issue_dedup \
-		"$repo_slug" "$runner_user" "$runner_role" \
-		"$role_label" "$role_display" "$health_issue_number" \
-		"$canonical_identity" "$identity_aliases"
-	_normalize_health_issue_labels \
-		"$health_issue_number" "$repo_slug" "$runner_user" \
-		"$runner_role" "$canonical_identity"
-
-	if [[ "$runner_role" == "supervisor" ]]; then
-		_ensure_health_issue_pinned "$health_issue_number" "$repo_slug" "$runner_user"
-	fi
-
 	_cache_health_issue_number "$health_issue_number" "$health_issue_file"
 
 	local now_iso
@@ -387,6 +371,27 @@ _update_health_issue_for_repo() {
 	_refresh_health_issue_title_from_body \
 		"$health_issue_number" "$repo_slug" "$runner_prefix" "$body" "$now_iso"
 	_record_health_issue_refresh_state "$health_issue_file" "$activity_state"
+
+	# Publish the freshness marker before periodic maintenance. The latter can
+	# consume multiple GitHub requests (dedup, label normalization, pinning),
+	# and must not leave the primary operator dashboard stale when the bounded
+	# stats-wrapper run reaches its deadline.
+	#
+	# t2687: periodic dedup scan (at most once per HEALTH_DEDUP_INTERVAL
+	# seconds per repo+runner+role, default 1h). Closes duplicates that
+	# slipped in during past GraphQL rate-limit windows when the cache
+	# was valid so the label-scan inside _find_health_issue never ran.
+	_periodic_health_issue_dedup \
+		"$repo_slug" "$runner_user" "$runner_role" \
+		"$role_label" "$role_display" "$health_issue_number" \
+		"$canonical_identity" "$identity_aliases"
+	_normalize_health_issue_labels \
+		"$health_issue_number" "$repo_slug" "$runner_user" \
+		"$runner_role" "$canonical_identity"
+
+	if [[ "$runner_role" == "supervisor" ]]; then
+		_ensure_health_issue_pinned "$health_issue_number" "$repo_slug" "$runner_user"
+	fi
 
 	return 0
 }

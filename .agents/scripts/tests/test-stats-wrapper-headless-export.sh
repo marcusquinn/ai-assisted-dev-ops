@@ -270,6 +270,25 @@ test_slow_priority_dashboard_skips_optional_cross_repo_work() {
 	return 0
 }
 
+test_dashboard_freshness_precedes_maintenance() {
+	local dashboard_script production_snippet update_line maintenance_line
+	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
+	production_snippet=$(awk '
+		/^_update_health_issue_for_repo\(\) \{/ { in_production=1 }
+		in_production { print }
+		in_production && /^}$/ { exit }
+	' "$dashboard_script")
+	update_line=$(printf '%s\n' "$production_snippet" | grep -nE '^[[:space:]]*_update_health_issue_body_or_fail ' | head -1 | cut -d: -f1)
+	maintenance_line=$(printf '%s\n' "$production_snippet" | grep -nE '^[[:space:]]*(_periodic_health_issue_dedup|_normalize_health_issue_labels|_ensure_health_issue_pinned)' | head -1 | cut -d: -f1)
+	if [[ -n "$update_line" && -n "$maintenance_line" && "$update_line" -lt "$maintenance_line" ]]; then
+		print_result "dashboard freshness publishes before lifecycle maintenance" 0
+		return 0
+	fi
+	print_result "dashboard freshness publishes before lifecycle maintenance" 1 \
+		"Expected body update before maintenance; update_line=${update_line:-<missing>} maintenance_line=${maintenance_line:-<missing>}"
+	return 0
+}
+
 # Test 8: dashboard refresh failures must not be blindly swallowed by the wrapper.
 # The wrapper may intentionally defer EX_TEMPFAIL/rate-limit exits, but ordinary
 # dashboard failures must still flow through _stats_wrapper_run_health_update so
@@ -341,6 +360,7 @@ main_test() {
 	test_health_update_survives_slow_quality_sweep
 	test_priority_dashboard_precedes_optional_cross_repo_work
 	test_slow_priority_dashboard_skips_optional_cross_repo_work
+	test_dashboard_freshness_precedes_maintenance
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred
 	test_dashboard_body_edit_failure_returns_nonzero
