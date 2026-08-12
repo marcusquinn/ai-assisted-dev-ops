@@ -30,6 +30,8 @@ print_result() {
 }
 
 write_fake_gh_stub() {
+	local default_reviewer_comments='{"latestReviews":[],"comments":[]}'
+	export STUB_REVIEWER_COMMENTS_RESPONSE="${STUB_REVIEWER_COMMENTS_RESPONSE:-$default_reviewer_comments}"
 	cat >"${TEST_ROOT}/bin/gh" <<'GH_STUB'
 #!/usr/bin/env bash
 if [[ "$1" == "api" && "${2:-}" == "rate_limit" ]]; then
@@ -47,13 +49,12 @@ if [[ "$1" == "api" && "${2:-}" =~ ^repos/owner/repo/pulls/[0-9]+$ ]]; then
 fi
 if [[ "$1" == "pr" && "${2:-}" == "list" ]]; then
 	printf '%s\n' "${STUB_PR_LIST:-1	Fix active PR	false	origin:worker	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
-	exit 0
-fi
+	exit 0; fi
 if [[ "$1" == "pr" && "${2:-}" == "view" ]]; then
-	if [[ "$*" == *"--json isCrossRepository"* ]]; then
-		exit 1
-	else
-		printf '%s\n' "${STUB_PR_VIEW:-Fix active PR	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
+	if [[ "$*" == *"comments"* ]]; then
+		printf '%s\n' "$STUB_REVIEWER_COMMENTS_RESPONSE"
+	elif [[ "$*" == *"--json isCrossRepository"* ]]; then exit 1
+	else printf '%s\n' "${STUB_PR_VIEW:-Fix active PR	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
 	fi
 	exit 0
 fi
@@ -383,6 +384,7 @@ setup_test_env() {
 	unset STUB_WORKTREE_REGISTER_OWNER STUB_WORKTREE_OWNER_PID STUB_WORKTREE_OWNER_SESSION
 	unset STUB_ACTIVE_RESPONSE_WORKER
 	unset STUB_HEADLESS_MARK_COMPLETE
+	unset STUB_REVIEWER_COMMENTS_RESPONSE
 	unset PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN
 	unset PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL
 	TEST_ROOT="$(mktemp -d -t prrts.XXXXXX)"
@@ -1193,7 +1195,7 @@ test_dispatch_prompt_requires_contract_v3_praise_only_resolution() {
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	if grep -q '^worker_contract_version=4$' "$state_file" 2>/dev/null &&
+	if grep -q '^worker_contract_version=5$' "$state_file" 2>/dev/null &&
 		grep -Fq 'classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
@@ -1268,6 +1270,24 @@ test_dispatch_prompt_marks_dynamic_metadata_untrusted() {
 		print_result "dispatch prompt quarantines dynamic metadata as untrusted" 0
 	else
 		print_result "dispatch prompt quarantines dynamic metadata as untrusted" 1 "prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_prompt_includes_change_request_reviewer_comments() {
+	setup_test_env
+	# shellcheck disable=SC2016 # Backticks are literal untrusted fixture content.
+	export STUB_REVIEWER_COMMENTS_RESPONSE='{"latestReviews":[{"author":{"login":"maintainer"},"state":"CHANGES_REQUESTED"},{"author":{"login":"approver"},"state":"APPROVED"}],"comments":[{"author":{"login":"maintainer"},"createdAt":"2026-08-09T21:18:47Z","body":"Add the bridges namespace. `untrusted`"},{"author":{"login":"approver"},"createdAt":"2026-08-09T22:00:00Z","body":"This must stay hidden"}]}'
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if grep -Fq 'Untrusted recent top-level comments from reviewers whose latest review requests changes:' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'maintainer at 2026-08-09T21:18:47Z: Add the bridges namespace.  untrusted ' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		! grep -Fq 'This must stay hidden' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+		print_result "dispatch prompt includes bounded change-request reviewer comments" 0
+	else
+		print_result "dispatch prompt includes bounded change-request reviewer comments" 1 \
+			"prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
 	return 0
@@ -1616,9 +1636,9 @@ test_dispatch_retries_escalated_previous_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=4$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=5$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 4 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 5 (stored=2)' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
 		print_result "dispatch retries escalation created under previous worker contract" 1 \
@@ -2346,6 +2366,7 @@ main() {
 	test_dispatch_prompt_explains_shell_redirection_constraint
 	test_dispatch_prompt_declares_precreated_worktree_contract
 	test_dispatch_prompt_marks_dynamic_metadata_untrusted
+	test_dispatch_prompt_includes_change_request_reviewer_comments
 	test_dispatch_pr_launches_targeted_worker_with_human_opt_in
 	test_dispatch_pr_reports_no_match_as_converged
 	test_dispatch_pr_reports_fetch_failure_as_retryable
