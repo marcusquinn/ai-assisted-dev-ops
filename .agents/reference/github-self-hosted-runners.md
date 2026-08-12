@@ -212,12 +212,40 @@ docker inspect github-runner-dind-1 \
 
 ## Updating the runner image
 
-1. Build and publish the replacement image under the expected image tag.
-2. Restart one service instance and confirm it registers successfully in GitHub.
-3. Run a workflow that uses the self-hosted labels.
-4. Restart the remaining services only after the canary runner passes.
+`DISABLE_AUTO_UPDATE=true` is safe only when the canonical runner Docker image is
+rebuilt before GitHub deprecates the embedded `actions/runner` version. If the
+image is not maintained, ephemeral runners can register but then refuse work
+because the bundled runner binary is too old.
+
+1. Check the latest upstream `actions/runner` release before maintenance.
+2. Build and publish the replacement `<OWNER>/github-runner:<TAG>` image with
+   that runner version under the expected image tag.
+3. Restart one canary service instance:
+
+   ```bash
+   sudo systemctl restart github-runner-dind@1.service
+   ```
+
+4. Verify the canary in GitHub before rotating the pool:
+
+   ```bash
+   gh api repos/<OWNER>/<REPO>/actions/runners \
+     --jq '.runners[] | {name, status, busy, labels, runner_group_name}'
+   ```
+
+   The canary should be `status=online`, not busy unless it picked up a job, and
+   should report the current runner version in the GitHub UI/API detail surface
+   used by the project.
+5. Run a workflow that uses the self-hosted labels.
+6. Restart the remaining services only after the canary runner passes.
 
 Do not rotate all runners at once unless the current pool is already broken.
+
+Monitor runner freshness as part of image maintenance. Alert when every runner in
+the repository is offline, and separately when OpenCode Agent workflow runs stay
+queued longer than the project threshold (for example, 10-15 minutes during an
+active work session). A full-pool offline state plus growing queued runs is a CI
+capacity incident, not ordinary job latency.
 
 ## Security notes
 
@@ -238,6 +266,7 @@ Do not rotate all runners at once unless the current pool is already broken.
 |---------|-------|---------------|
 | Runner offline in GitHub | `systemctl status github-runner-dind@N.service` | Restart the affected service and verify registration credentials. |
 | Service restarts repeatedly | `systemctl show ... NRestarts ExecMainStatus` | Check image entrypoint, registration token freshness, and network access. |
+| Runner registers, then logs `Runner version vX is deprecated and cannot receive messages` | Runner image tag and embedded `actions/runner` release | Rebuild and publish the runner image with the current upstream runner version, then canary one instance before rotating the pool; do not treat this as a token or network failure. |
 | Docker commands fail inside workflow | Container process list for inner `dockerd` | Confirm the runner container is privileged and inner Docker daemon started. |
 | Builds are slow or disk-heavy | Inner Docker storage driver and job cache usage | Confirm `overlay2` is active for the inner daemon; migrate off `vfs`, then clean stale job artifacts and review image layers. |
 | Container name conflict | `docker ps -a --filter name=github-runner-dind-N` | Startup should fail before replacing the container; inspect whether a job is still running, then remove only verified stale containers manually. |
@@ -250,9 +279,12 @@ Do not rotate all runners at once unless the current pool is already broken.
 4. Restart only the affected instance first.
 5. If registration fails, rotate the registration/access credential in the
    private environment file without printing it to the terminal transcript.
-6. If container startup fails, verify the image tag and resource flags in the
+6. If the runner registers but GitHub rejects it as deprecated, rebuild the
+   runner image with the current `actions/runner` release instead of rotating
+   credentials.
+7. If container startup fails, verify the image tag and resource flags in the
    launch script.
-7. After repair, confirm GitHub shows the runner online and run a workflow that
+8. After repair, confirm GitHub shows the runner online and run a workflow that
    targets the self-hosted labels.
 
 ## Documentation hygiene
