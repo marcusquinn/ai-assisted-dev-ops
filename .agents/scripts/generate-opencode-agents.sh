@@ -248,6 +248,8 @@ _write_permissive_stub() {
 	local extra_tools="$4"
 	local quoted_desc
 	quoted_desc=$(_yaml_quote_scalar "$src_desc")
+	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
+	worktree_base="${worktree_base%/}"
 	{
 		printf '%s\n' \
 			"---" \
@@ -262,8 +264,8 @@ _write_permissive_stub() {
 			'    "~/.config/aidevops/**": allow' \
 			'    "~/.config/opencode/command": allow' \
 			'    "~/.config/opencode/command/**": allow' \
-			'    "~/Git/_worktrees": allow' \
-			'    "~/Git/_worktrees/**": allow' \
+			"    \"${worktree_base}\": allow" \
+			"    \"${worktree_base}/**\": allow" \
 			"tools:" \
 			"  read: true" \
 			"  bash: true"

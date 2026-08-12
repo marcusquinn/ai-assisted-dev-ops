@@ -53,9 +53,9 @@ def managed_external_directories():
         "~/.config/aidevops/**",
         "~/.config/opencode/command",
         "~/.config/opencode/command/**",
-        "~/Git/_worktrees",
-        "~/Git/_worktrees/**",
     ]
+    worktree_base = os.environ.get("AIDEVOPS_WORKTREE_BASE_DIR", "~/Git/_worktrees").rstrip("/")
+    paths.extend((worktree_base, f"{worktree_base}/**"))
     configured_temp = tempfile.gettempdir().rstrip("/")
     temp_dirs = {configured_temp, os.path.realpath(configured_temp)}
     if sys.platform == "darwin":
