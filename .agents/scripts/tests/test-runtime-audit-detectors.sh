@@ -103,7 +103,8 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 # Helper: run a detector in a clean subshell with an env block, capture
 # stdout and rc.
 _run_detector() {
-	local detector_file="$1"; shift
+	local detector_file="$1"
+	shift
 	local out
 	local rc=0
 	# shellcheck disable=SC2068  # passing through env assignments
@@ -266,8 +267,8 @@ mkdir -p "$DRIFT_DEPLOYED" "$DRIFT_SOURCE"
 
 # pulse-wrapper.sh: deployed touched 3 days ago, source touched 1 minute ago
 # → drift = ~3 days = 259200 > DRIFT_SECONDS (3600 in this test)
-echo "deployed-content" > "$DRIFT_DEPLOYED/pulse-wrapper.sh"
-echo "source-content"   > "$DRIFT_SOURCE/pulse-wrapper.sh"
+echo "deployed-content" >"$DRIFT_DEPLOYED/pulse-wrapper.sh"
+echo "source-content" >"$DRIFT_SOURCE/pulse-wrapper.sh"
 
 # Use touch -t to set deployed mtime in the past
 # Format: [[CC]YY]MMDDhhmm[.SS]
@@ -297,8 +298,8 @@ assert_not_contains "3.9 worker brief omits trusted deployed directory" "$DRIFT_
 DRIFT_DEPLOYED2="$TMPDIR_TEST/deployed2"
 DRIFT_SOURCE2="$TMPDIR_TEST/source2"
 mkdir -p "$DRIFT_DEPLOYED2" "$DRIFT_SOURCE2"
-echo "x" > "$DRIFT_DEPLOYED2/pulse-wrapper.sh"
-echo "x" > "$DRIFT_SOURCE2/pulse-wrapper.sh"
+echo "x" >"$DRIFT_DEPLOYED2/pulse-wrapper.sh"
+echo "x" >"$DRIFT_SOURCE2/pulse-wrapper.sh"
 # Touch both with same reference — touch -r preserves mtime exactly.
 touch -r "$DRIFT_DEPLOYED2/pulse-wrapper.sh" "$DRIFT_SOURCE2/pulse-wrapper.sh"
 
@@ -339,7 +340,7 @@ LOG_FIRING="$TMPDIR_TEST/log-firing.log"
 	for i in $(seq 1 50); do
 		printf '2026-04-30T00:00:00Z OTHER recent line padding iteration %d\n' "$i"
 	done
-} > "$LOG_FIRING"
+} >"$LOG_FIRING"
 
 out=$(_run_detector "$RULES_DIR/log-pattern-novelty.sh" \
 	"LOG_FILE=$LOG_FIRING" \
@@ -362,7 +363,7 @@ LOG_PID_STABLE="$TMPDIR_TEST/log-pid-stable.log"
 	for _ in $(seq 1 100); do
 		printf 'Acquired lock (PID 1220368, age 5s, holder: pulse-instance-lock.sh)\n'
 	done
-} > "$LOG_PID_STABLE"
+} >"$LOG_PID_STABLE"
 
 out=$(_run_detector "$RULES_DIR/log-pattern-novelty.sh" \
 	"LOG_FILE=$LOG_PID_STABLE" \
@@ -376,7 +377,7 @@ assert_empty "4.7 equivalent PID templates emit no finding" "$out"
 LOG_SHORT="$TMPDIR_TEST/log-short.log"
 for i in $(seq 1 50); do
 	printf 'short line %d\n' "$i"
-done > "$LOG_SHORT"
+done >"$LOG_SHORT"
 
 out=$(_run_detector "$RULES_DIR/log-pattern-novelty.sh" \
 	"LOG_FILE=$LOG_SHORT" \
@@ -395,7 +396,7 @@ echo ""
 echo "--- Section 5: idle-state-stuck ---"
 
 PID_FIRING="$TMPDIR_TEST/pid-firing.pid"
-echo "SETUP:99999" > "$PID_FIRING"
+echo "SETUP:99999" >"$PID_FIRING"
 
 # Fake "PID dead" callable
 FAKE_DEAD="$TMPDIR_TEST/pid-dead.sh"
@@ -429,7 +430,7 @@ assert_empty "5.6 alive-PID emits no output" "$out"
 
 # No SETUP marker → no-op
 PID_CLEAN="$TMPDIR_TEST/pid-clean.pid"
-echo "12345" > "$PID_CLEAN"
+echo "12345" >"$PID_CLEAN"
 out=$(_run_detector "$RULES_DIR/idle-state-stuck.sh" \
 	"PID_FILE=$PID_CLEAN") && rc=0 || rc=$?
 assert_rc "5.7 no-SETUP-marker returns 0" "0" "$rc"

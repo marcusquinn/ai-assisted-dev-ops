@@ -22,7 +22,10 @@
 
 # shellcheck shell=bash
 
-runtime_audit_id() { printf 'deployed-vs-source-mtime-drift\n'; return 0; }
+runtime_audit_id() {
+	printf 'deployed-vs-source-mtime-drift\n'
+	return 0
+}
 
 _runtime_audit_sha256() {
 	local path="$1"
@@ -107,7 +110,8 @@ runtime_audit_check() {
 	local evidence_rendered
 	evidence_rendered="$evidence_table"
 	local body
-	body=$(cat <<MARKDOWN
+	body=$(
+		cat <<MARKDOWN
 ## Task
 
 The pulse executes a deployed runtime copy, while the repository remains the source of truth. The trusted audit compared both copies before dispatch. The files below have a source-newer-than-deployed delta exceeding ${drift}s (${drift_hours}h).
@@ -146,7 +150,7 @@ Re-run the audit; the cited files should no longer appear:
 
 <!-- aidevops:generator=runtime-audit detector=deployed-vs-source-mtime-drift -->
 MARKDOWN
-)
+	)
 
 	jq -n --arg id "deployed-vs-source-mtime-drift" --arg title "$title" --arg body "$body" \
 		'{id: $id, title: $title, body: $body}'
