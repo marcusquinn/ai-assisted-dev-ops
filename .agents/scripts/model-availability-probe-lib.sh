@@ -133,8 +133,9 @@ _probe_format_cooldown_until() {
 	return 0
 }
 
-# Check OAuth pool cooldowns before cached health can mask them.
-# Returns: 0=no blocking cooldown, 2=all usable OAuth pool accounts cooling.
+# Check OAuth pool availability before cached health can mask it.
+# Returns: 0=not blocked, 2=all pool accounts cooling, 3=all pool accounts
+# have authentication errors.
 _probe_oauth_pool_cooldown_gate() {
 	local provider="$1"
 	local quiet="${2:-false}"
@@ -173,6 +174,12 @@ _probe_oauth_pool_cooldown_gate() {
 		[[ "$quiet" != "true" ]] && print_warning "$provider: rate-limited until $until_text"
 		_record_health "$provider" "rate_limited" 429 0 "OAuth pool cooldown active until $until_text" 0
 		return 2
+	fi
+
+	if [[ "${total:-0}" -gt 0 && "${available:--1}" -eq 0 && "${_auth_errors:-0}" -gt 0 ]]; then
+		[[ "$quiet" != "true" ]] && print_warning "$provider: all OAuth pool accounts have authentication errors"
+		_record_health "$provider" "key_invalid" 401 0 "All OAuth pool accounts have authentication errors" 0
+		return 3
 	fi
 
 	return 0
@@ -729,8 +736,8 @@ probe_provider() {
 
 	local oauth_pool_exit=0
 	_probe_oauth_pool_cooldown_gate "$provider" "$quiet" || oauth_pool_exit=$?
-	if [[ "$oauth_pool_exit" -eq 2 ]]; then
-		return 2
+	if [[ "$oauth_pool_exit" -ne 0 ]]; then
+		return "$oauth_pool_exit"
 	fi
 
 	# Return cached result when still valid (unless forced)

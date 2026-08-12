@@ -257,7 +257,7 @@ for provider in local ollama; do
 	esac
 done
 
-section "OAuth Pool Cooldown Gate (GH#26465)"
+section "OAuth Pool Availability Gate (GH#26465, GH#30024)"
 
 cooldown_home=$(mktemp -d "$TEST_DB_DIR/home-cooldown.XXXXXX")
 future_ms=$((($(date +%s) + 900) * 1000))
@@ -274,6 +274,18 @@ else
 		"exit=${cooldown_exit}, output=${cooldown_output}"
 fi
 
+auth_error_home=$(mktemp -d "$TEST_DB_DIR/home-auth-error.XXXXXX")
+write_oauth_auth_json "$auth_error_home"
+write_oauth_pool_json "$auth_error_home" '{"openai":[{"email":"one@example.test","status":"auth-error"}]}'
+auth_error_exit=0
+auth_error_output=$(run_with_timeout 10 env HOME="$auth_error_home" PATH="$NO_GOPASS_BIN:$PATH" OPENAI_API_KEY= JSONC_DEFAULTS="$REPO_DIR/.agents/configs/aidevops.defaults.jsonc" bash "$HELPER" check openai 2>&1) || auth_error_exit=$?
+if [[ "$auth_error_exit" -eq 3 && "$auth_error_output" == *"all OAuth pool accounts have authentication errors"* ]]; then
+	pass "all OAuth pool auth errors override cached and auth.json availability (GH#30024)"
+else
+	fail "all OAuth pool auth errors override cached and auth.json availability (GH#30024)" \
+		"exit=${auth_error_exit}, output=${auth_error_output}"
+fi
+
 partial_home=$(mktemp -d "$TEST_DB_DIR/home-partial.XXXXXX")
 write_oauth_auth_json "$partial_home"
 write_oauth_pool_json "$partial_home" "{\"openai\":[{\"email\":\"one@example.test\",\"status\":\"rate-limited\",\"cooldownUntil\":${future_ms}},{\"email\":\"two@example.test\",\"status\":\"idle\",\"cooldownUntil\":0}]}"
@@ -283,6 +295,17 @@ if [[ "$partial_exit" -eq 0 ]]; then
 	pass "partial OAuth pool with one usable account remains available"
 else
 	fail "partial OAuth pool with one usable account remains available" "exit=${partial_exit}"
+fi
+
+mixed_auth_error_home=$(mktemp -d "$TEST_DB_DIR/home-mixed-auth-error.XXXXXX")
+write_oauth_auth_json "$mixed_auth_error_home"
+write_oauth_pool_json "$mixed_auth_error_home" '{"openai":[{"email":"one@example.test","status":"auth-error"},{"email":"two@example.test","status":"idle"}]}'
+mixed_auth_error_exit=0
+run_with_timeout 10 env HOME="$mixed_auth_error_home" PATH="$NO_GOPASS_BIN:$PATH" OPENAI_API_KEY= JSONC_DEFAULTS="$REPO_DIR/.agents/configs/aidevops.defaults.jsonc" bash "$HELPER" check openai --quiet >/dev/null 2>&1 || mixed_auth_error_exit=$?
+if [[ "$mixed_auth_error_exit" -eq 0 ]]; then
+	pass "mixed OAuth pool with usable account remains available after auth error (GH#30024)"
+else
+	fail "mixed OAuth pool with usable account remains available after auth error (GH#30024)" "exit=${mixed_auth_error_exit}"
 fi
 
 expired_home=$(mktemp -d "$TEST_DB_DIR/home-expired.XXXXXX")
@@ -308,6 +331,20 @@ if [[ "$static_exit" -eq 0 ]]; then
 	pass "static API key path bypasses OAuth pool cooldown and can use cached health"
 else
 	fail "static API key path bypasses OAuth pool cooldown and can use cached health" "exit=${static_exit}"
+fi
+
+static_auth_error_home=$(mktemp -d "$TEST_DB_DIR/home-static-auth-error.XXXXXX")
+write_oauth_auth_json "$static_auth_error_home"
+write_oauth_pool_json "$static_auth_error_home" '{"openai":[{"email":"one@example.test","status":"auth-error"}]}'
+run_with_timeout 10 env HOME="$static_auth_error_home" JSONC_DEFAULTS="$REPO_DIR/.agents/configs/aidevops.defaults.jsonc" bash "$HELPER" status >/dev/null 2>&1 || true
+sqlite3 "$static_auth_error_home/.aidevops/.agent-workspace/model-availability.db" \
+	"INSERT OR REPLACE INTO provider_health (provider,status,http_code,response_ms,error_message,models_count,checked_at,ttl_seconds) VALUES ('openai','healthy',200,0,'test cached healthy',1,strftime('%Y-%m-%dT%H:%M:%SZ','now'),300);" >/dev/null 2>&1
+static_auth_error_exit=0
+run_with_timeout 10 env HOME="$static_auth_error_home" OPENAI_API_KEY="test-static-key" JSONC_DEFAULTS="$REPO_DIR/.agents/configs/aidevops.defaults.jsonc" bash "$HELPER" check openai --quiet >/dev/null 2>&1 || static_auth_error_exit=$?
+if [[ "$static_auth_error_exit" -eq 0 ]]; then
+	pass "static API key bypasses OAuth pool auth errors (GH#30024)"
+else
+	fail "static API key bypasses OAuth pool auth errors (GH#30024)" "exit=${static_auth_error_exit}"
 fi
 
 # ============================================================
