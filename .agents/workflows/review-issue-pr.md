@@ -248,7 +248,7 @@ For interactive maintainer review, complete the full checklist and post the stru
 1. Verify checkout freshness and report provenance.
 2. Complete duplicate, temporal, root-cause, safety, and dispatchability checks.
 3. Post the review using the format below so the decision has durable evidence.
-4. Only after an `Approve` recommendation is posted, state that cryptographic approval is appropriate and provide the approval command if the user requests it.
+4. End every review with `Maintainer approval`: include the ready-to-run command after an `Approve` recommendation; otherwise state why none is appropriate. Never wait for the user to request it.
 
 Before claiming approval is missing or asking the maintainer to approve again,
 query the authoritative current state with
@@ -261,6 +261,10 @@ Do not expose an approval command as the next action merely because a dispatch h
 Assessment language describes a recommendation, not an exercised authority action. Use `Recommendation: Approve`, never `Approved`, until a trusted maintainer actually performs the approval step. Apply the same distinction in the task-tool result and user-facing summary.
 
 For an issue with an imperfect linked PR, recommend issue approval when the problem and root-cause direction are valid, then record a separate PR disposition: `merge`, `repair`, `replace`, or `close`. Do not downgrade the issue to `Request Changes` because implementation needs work.
+
+For batch reviews, group approved targets by repository and use the batch syntax
+in `reference/task-lifecycle.md`. One command must list all eligible targets and
+accept one exact `APPROVE`; never mix repositories or include non-Approve targets.
 
 ```markdown
 ## Review: Recommendation: Approve / Request Changes / Decline
@@ -329,6 +333,12 @@ For an issue with an imperfect linked PR, recommend issue approval when the prob
 
 **Tier prerequisite met**: Yes/No — [does the brief satisfy `reference/task-taxonomy.md` "Canonical Assignment Policy" for the recommended tier?]
 **What's needed to dispatch**: [list missing prerequisites, or "Ready for dispatch"]
+
+### Maintainer approval
+
+[`sudo aidevops approve issue|pr <numbers...> <owner/repo>` or mixed
+`sudo aidevops approve batch issue:<N> pr:<N>... <owner/repo>`; otherwise
+`No approval command — <reason>`.]
 ```
 
 **Why this section exists**: Tier recommendations without brief verification led to issues being labelled `tier:simple` when no brief with code blocks existed — making them undispatchable at that tier. This section forces the reviewer to check prerequisites before recommending a tier, whether invoked via `/review-issue-pr` or encountered mid-session. See AGENTS.md "Briefs, Tiers, and Dispatchability" for the full prerequisite chain.

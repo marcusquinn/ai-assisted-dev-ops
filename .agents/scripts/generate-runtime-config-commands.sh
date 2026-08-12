@@ -529,7 +529,9 @@ This is the legacy alias for `/review issue ...` or `/review pr ...`.
 **Core questions to answer:**
 1. Is the issue real? (reproducible, not duplicate, actually a bug)
 2. Is this the best solution? (simplest approach, fixes root cause)
-3. Is the scope appropriate? (minimal changes, no scope creep)' \
+3. Is the scope appropriate? (minimal changes, no scope creep)
+
+End every completed review with the exact ready-to-run approval command when the recommendation is Approve. Group same-kind targets as `sudo aidevops approve issue|pr N N... owner/repo`, or mixed targets as `sudo aidevops approve batch issue:N pr:N... owner/repo`; otherwise state why no approval command is appropriate.' \
 		"false"; then
 		count=$((count + 1))
 	fi

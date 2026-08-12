@@ -9,8 +9,8 @@
 #
 # Usage (must be run with sudo for issue/pr approval):
 #   sudo aidevops approve setup          # One-time: generate approval key pair
-#   sudo aidevops approve issue <number> [owner/repo] # Approve an issue for development
-#   sudo aidevops approve pr <number>    # Approve a PR for merge
+#   sudo aidevops approve issue <number...> [owner/repo] # Approve issues for development
+#   sudo aidevops approve pr <number...> [owner/repo]    # Approve PRs for merge
 #   aidevops approve verify <number>     # Verify approval on an issue (no sudo)
 #   aidevops approve status              # Show approval key setup status
 #
@@ -78,6 +78,7 @@ readonly _APPROVAL_NMR_LABEL="needs-maintainer-review"
 readonly _APPROVAL_AUTO_DISPATCH_LABEL="auto-dispatch"
 readonly _APPROVAL_MISSING_FIELD="__missing__"
 readonly _APPROVAL_GH_INVALID_TOKEN="invalid-token"
+readonly _APPROVAL_BATCH_MODE="batch"
 
 _APPROVAL_GH_RATE_LIMIT_RESET=""
 _APPROVAL_GH_AUTH_FAILURE=""
@@ -488,38 +489,6 @@ _validate_approval_target_kind() {
 	return 0
 }
 
-_confirm_approval() {
-	local target_type="$1"
-	local target_number="$2"
-	local slug="$3"
-	local title="$4"
-	local label="Issue"
-
-	if [[ "$target_type" == "pr" ]]; then
-		label="PR"
-		echo ""
-		echo "Approving PR to merge:"
-	else
-		echo ""
-		echo "Approving issue:"
-	fi
-
-	echo "  ${label}:  #$target_number"
-	echo "  Repo:   $slug"
-	echo "  Title:  $title"
-	echo ""
-	printf "Type APPROVE to confirm: "
-
-	local confirmation
-	read -r confirmation
-	if [[ "$confirmation" != "APPROVE" ]]; then
-		_print_error "Approval cancelled"
-		return 1
-	fi
-
-	return 0
-}
-
 _sign_approval_payload() {
 	local payload="$1"
 	local actual_key="$2"
@@ -916,27 +885,11 @@ _kick_pulse_after_approval() {
 	return 0
 }
 
-_approve_target() {
+_approve_target_after_confirmation() {
 	local target_type="$1"
-	local target_number="${2:-}"
-	local slug="${3:-}"
-	local usage="Usage: sudo aidevops approve ${target_type} <number> [owner/repo]"
-	local slug_error="Could not detect repo slug. Provide it: sudo aidevops approve ${target_type} ${target_number} owner/repo"
-
-	_require_number_arg "$target_number" "$target_type" "$usage" || return 1
-	_require_interactive_root "$usage" || return 1
-
-	local actual_key
-	actual_key=$(_approval_private_key_path)
-	_require_approval_key "$actual_key" || return 1
-	_require_gh_auth || return 1
-
-	slug=$(_resolve_slug_or_fail "$slug" "$slug_error") || return 1
-	_validate_approval_target_kind "$target_type" "$target_number" "$slug" || return 1
-
-	local title
-	title=$(_fetch_target_title "$target_type" "$target_number" "$slug")
-	_confirm_approval "$target_type" "$target_number" "$slug" "$title" || return 1
+	local target_number="$2"
+	local slug="$3"
+	local actual_key="$4"
 
 	local timestamp payload sig_file comment_body
 	timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -995,6 +948,156 @@ _approve_target() {
 	_print_ok "$target_type_cap #$target_number approved and signed"
 	echo ""
 	return 0
+}
+
+_confirm_approval_batch() {
+	local approval_mode="$1"
+	local slug="$2"
+	shift 2
+	local target_count=$(($# / 3))
+	local target_type=""
+	local target_number=""
+	local title=""
+	local confirmation=""
+
+	echo ""
+	if [[ "$approval_mode" == "$_APPROVAL_BATCH_MODE" ]]; then
+		echo "Approving ${target_count} issue/PR target(s):"
+	elif [[ "$approval_mode" == "pr" ]]; then
+		echo "Approving ${target_count} PR(s) to merge:"
+	else
+		echo "Approving ${target_count} issue(s) for development:"
+	fi
+	echo "  Repo: $slug"
+	while [[ $# -gt 0 ]]; do
+		target_type="$1"
+		target_number="$2"
+		title="$3"
+		shift 3
+		printf '  - %s #%s: %s\n' "$target_type" "$target_number" "$title"
+	done
+	echo ""
+	printf 'Type APPROVE once to confirm all %s target(s): ' "$target_count"
+	read -r confirmation
+	if [[ "$confirmation" != "APPROVE" ]]; then
+		_print_error "Approval cancelled"
+		return 1
+	fi
+	return 0
+}
+
+_execute_approval_batch() {
+	local slug="$1"
+	local actual_key="$2"
+	shift 2
+	local target_spec=""
+	local target_type=""
+	local target_number=""
+	local failed=0
+	local target_count=$#
+
+	for target_spec in "$@"; do
+		target_type="${target_spec%%:*}"
+		target_number="${target_spec#*:}"
+		if ! _approve_target_after_confirmation "$target_type" "$target_number" "$slug" "$actual_key"; then
+			failed=$((failed + 1))
+		fi
+	done
+	if [[ "$failed" -gt 0 ]]; then
+		_print_error "${failed} of ${target_count} approval(s) failed; successful targets remain signed"
+		return 1
+	fi
+	_print_ok "All ${target_count} target(s) approved and signed"
+	return 0
+}
+
+_approve_targets() {
+	local approval_mode="$1"
+	shift
+	local usage="Usage: sudo aidevops approve ${approval_mode} <number> [number...] [owner/repo]"
+	if [[ "$approval_mode" == "$_APPROVAL_BATCH_MODE" ]]; then
+		usage="Usage: sudo aidevops approve batch issue:<number>|pr:<number> [...] [owner/repo]"
+	fi
+	local slug=""
+	local arg=""
+	local target_type=""
+	local target_number=""
+	local existing_target=""
+	local title=""
+	local actual_key=""
+	local index=0
+	local -a target_types=()
+	local -a target_numbers=()
+	local -a target_keys=()
+	local -a display_rows=()
+
+	for arg in "$@"; do
+		if [[ "$arg" == */* ]]; then
+			if [[ -n "$slug" ]]; then
+				_print_error "Provide only one owner/repo slug"
+				return 1
+			fi
+			slug="$arg"
+			continue
+		fi
+		if [[ "$approval_mode" == "$_APPROVAL_BATCH_MODE" ]]; then
+			if [[ ! "$arg" =~ ^(issue|pr):([0-9]+)$ ]]; then
+				_print_error "$usage"
+				return 1
+			fi
+			target_type="${arg%%:*}"
+			target_number="${arg#*:}"
+		else
+			target_type="$approval_mode"
+			target_number="$arg"
+			_require_number_arg "$target_number" "$target_type" "$usage" || return 1
+		fi
+		for existing_target in "${target_keys[@]}"; do
+			if [[ "$existing_target" == "${target_type}:${target_number}" ]]; then
+				_print_error "Duplicate target in approval batch: ${target_type}:${target_number}"
+				return 1
+			fi
+		done
+		target_types+=("$target_type")
+		target_numbers+=("$target_number")
+		target_keys+=("${target_type}:${target_number}")
+	done
+
+	if [[ ${#target_numbers[@]} -eq 0 ]]; then
+		_print_error "$usage"
+		return 1
+	fi
+
+	_require_interactive_root "$usage" || return 1
+	actual_key=$(_approval_private_key_path)
+	_require_approval_key "$actual_key" || return 1
+	_require_gh_auth || return 1
+
+	slug=$(_resolve_slug_or_fail "$slug" "Could not detect repo slug. Provide it as the final owner/repo argument.") || return 1
+	for ((index = 0; index < ${#target_numbers[@]}; index++)); do
+		target_type="${target_types[$index]}"
+		target_number="${target_numbers[$index]}"
+		_validate_approval_target_kind "$target_type" "$target_number" "$slug" || return 1
+		title=$(_fetch_target_title "$target_type" "$target_number" "$slug")
+		display_rows+=("$target_type" "$target_number" "$title")
+	done
+
+	_confirm_approval_batch "$approval_mode" "$slug" "${display_rows[@]}" || return 1
+	_execute_approval_batch "$slug" "$actual_key" "${target_keys[@]}"
+	return $?
+}
+
+# Compatibility wrapper for callers that approve a single target directly.
+_approve_target() {
+	local target_type="$1"
+	local target_number="${2:-}"
+	local slug="${3:-}"
+	if [[ -n "$slug" ]]; then
+		_approve_targets "$target_type" "$target_number" "$slug"
+	else
+		_approve_targets "$target_type" "$target_number"
+	fi
+	return $?
 }
 
 _extract_fenced_block() {
@@ -1238,24 +1341,27 @@ cmd_setup() {
 	echo "You can now approve issues/PRs with:"
 	echo "  sudo aidevops approve issue <number> <owner/repo>"
 	echo "  sudo aidevops approve pr <number> <owner/repo>"
+	echo "  sudo aidevops approve issue <number> [number...] <owner/repo>"
+	echo "  sudo aidevops approve batch issue:<number> pr:<number> [...] <owner/repo>"
 	return 0
 }
 
 # ── Approve Issue ────────────────────────────────────────────────────────────
 
 cmd_issue_approved() {
-	local issue_number="${1:-}"
-	local slug="${2:-}"
-	_approve_target "issue" "$issue_number" "$slug"
+	_approve_targets "issue" "$@"
 	return $?
 }
 
 # ── Approve PR ───────────────────────────────────────────────────────────────
 
 cmd_pr_approved() {
-	local pr_number="${1:-}"
-	local slug="${2:-}"
-	_approve_target "pr" "$pr_number" "$slug"
+	_approve_targets "pr" "$@"
+	return $?
+}
+
+cmd_batch_approved() {
+	_approve_targets "$_APPROVAL_BATCH_MODE" "$@"
 	return $?
 }
 
@@ -1598,8 +1704,9 @@ cmd_help() {
 	echo ""
 	echo "Commands (require sudo):"
 	echo "  setup                      Generate root-protected approval key pair"
-	echo "  issue <number> [slug]      Approve an issue"
-	echo "  pr <number> [slug]         Approve a PR"
+	echo "  issue <number...> [slug]   Approve one or more issues with one confirmation"
+	echo "  pr <number...> [slug]      Approve one or more PRs with one confirmation"
+	echo "  batch <kind:number...> [slug] Approve mixed issues/PRs with one confirmation"
 	echo "  permissions issue|pr <number> [slug] --request perm-<id>"
 	echo ""
 	echo "Commands (no sudo needed):"
@@ -1612,6 +1719,9 @@ cmd_help() {
 	echo "Examples:"
 	echo "  sudo aidevops approve setup"
 	echo "  sudo aidevops approve issue 17438 <owner/repo>"
+	echo "  sudo aidevops approve issue 17438 17440 17442 <owner/repo>"
+	echo "  sudo aidevops approve pr 17439 17441 <owner/repo>"
+	echo "  sudo aidevops approve batch issue:17438 pr:17439 pr:17441 <owner/repo>"
 	echo "  sudo aidevops approve permissions issue 17438 <owner/repo> --request perm-0123456789abcdef"
 	echo "  aidevops approve verify 17438"
 	echo "  aidevops approve verify pr 17439 <owner/repo> --expect-head <sha>"
@@ -1631,6 +1741,7 @@ main() {
 	setup) cmd_setup "$@" ;;
 	issue | issue-approved) cmd_issue_approved "$@" ;;
 	pr | pr-approved) cmd_pr_approved "$@" ;;
+	batch) cmd_batch_approved "$@" ;;
 	permissions) cmd_permissions "$@" ;;
 	verify-permissions) cmd_verify_permissions "$@" ;;
 	verify) cmd_verify "$@" ;;

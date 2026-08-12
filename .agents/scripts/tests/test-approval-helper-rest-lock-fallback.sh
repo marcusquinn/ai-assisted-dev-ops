@@ -265,22 +265,13 @@ run_case "post-approval protection failure blocks final success" '
 	set -uo pipefail
 	# shellcheck disable=SC1090
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
-	_require_number_arg() { return 0; }
-	_require_interactive_root() { return 0; }
-	_approval_private_key_path() { printf "mock-key"; return 0; }
-	_require_approval_key() { return 0; }
-	_require_gh_auth() { return 0; }
-	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
-	_validate_approval_target_kind() { return 0; }
-	_fetch_target_title() { printf "Mock issue"; return 0; }
-	_confirm_approval() { return 0; }
 	approval_snapshot_v2_payload() { printf "%s" "{\"schema\":\"aidevops-approval/v2\"}"; return 0; }
 	_sign_approval_payload() { local payload="$1"; local actual_key="$2"; local sig_file="$3"; : "$payload" "$actual_key"; printf "mock-signature" >"$sig_file"; return 0; }
 	gh_issue_comment() { return 0; }
 	cmd_verify() { printf "VERIFIED"; return 0; }
 	_post_issue_approval_updates() { return 1; }
 	_kick_pulse_after_approval() { printf "KICKED_RECONCILIATION"; return 0; }
-	_approve_target issue 123 marcusquinn/aidevops
+	_approve_target_after_confirmation issue 123 marcusquinn/aidevops mock-key
 ' 1
 assert_contains "post-approval failure suppresses final success" "$LAST_OUTPUT" "post-approval protection updates did not reach the required state"
 assert_not_contains "post-approval failure does not print success" "$LAST_OUTPUT" "Issue #123 approved and signed"

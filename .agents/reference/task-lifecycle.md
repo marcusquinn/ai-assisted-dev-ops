@@ -209,7 +209,7 @@ For multi-runner coordination (concurrent pulse runners across machines), see `r
 
 ## Cryptographic approval and review-block semantics
 
-**Cryptographic issue/PR approval (human-only gate):** `sudo aidevops approve issue <number> [owner/repo]` — SSH-signed approval comment; workers cannot forge it (private key is root-only). Setup once with `sudo aidevops approve setup`. Verify: `aidevops approve verify <number>`. This is distinct from the `ai-approved` label (which is a simple collaborator gate, not cryptographic).
+**Cryptographic issue/PR approval (human-only gate):** `sudo aidevops approve issue|pr <number...> [owner/repo]` — SSH-signed approval comments; workers cannot forge them (the private key is root-only). Multiple same-kind targets in one repository are listed together and require one exact `APPROVE` confirmation; mixed targets use `sudo aidevops approve batch issue:<number> pr:<number>... [owner/repo]` with the same single confirmation. Setup once with `sudo aidevops approve setup`. Verify: `aidevops approve verify <number>`. This is distinct from the `ai-approved` label (which is a simple collaborator gate, not cryptographic).
 
 **Canonical split:** `needs-maintainer-review` means missing external-author authority and requires cryptographic approval. `hold-for-review` means an internal/manual content, policy, architecture, or security decision and is removed explicitly after review. `status:blocked`, cooldown state, or a root-cause meta-issue represents a machine-recoverable structural/circuit-breaker failure.
 

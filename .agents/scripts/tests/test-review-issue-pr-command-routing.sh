@@ -67,6 +67,10 @@ grep -Fq 'workflows/review.md' "${COMMAND_DIR}/review-issue-pr.md" || {
 	printf 'FAIL review command does not load the shared review policy\n' >&2
 	exit 1
 }
+grep -Fq 'End every completed review with the exact ready-to-run approval command' "${COMMAND_DIR}/review-issue-pr.md" || {
+	printf 'FAIL review command does not require approval command output\n' >&2
+	exit 1
+}
 grep -Fq 'subtask: true' "${COMMAND_DIR}/agent-review.md" || {
 	printf 'FAIL unrelated subtask routing was removed\n' >&2
 	exit 1
@@ -103,6 +107,10 @@ grep -Fq 'review-issue-pr|Review external issue or PR - validate problem and eva
 }
 grep -Fq 'workflows/review.md' "$CALL_LOG" || {
 	printf 'FAIL fallback generator does not load the shared review policy\n' >&2
+	exit 1
+}
+grep -Fq 'End every completed review with the exact ready-to-run approval command' "$CALL_LOG" || {
+	printf 'FAIL fallback generator does not require approval command output\n' >&2
 	exit 1
 }
 grep -Fq 'agent-review|Systematic review and improvement of agent instructions|Build+|true|' "$CALL_LOG" || {
