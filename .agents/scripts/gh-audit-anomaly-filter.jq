@@ -47,6 +47,12 @@ def expected_permission_block_transition:
     or . == "status:in-progress"
     or . == "status:in-review"
   )] | length == 0)
+  and ([.before.labels[]? | select(
+    . == "status:queued"
+    or . == "status:claimed"
+    or . == "status:in-progress"
+    or . == "status:in-review"
+  )] | length > 0)
   and ((.suspicious // []) | length > 0)
   and all(.suspicious[];
     . == "protected_label_removed:status:claimed"

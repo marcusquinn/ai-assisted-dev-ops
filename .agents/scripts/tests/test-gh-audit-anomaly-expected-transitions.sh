@@ -68,12 +68,13 @@ cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:19:00Z","op":"issue_edit","repo":"example/repo","number":20,"caller_script":"/runtime/agents/scripts/full-loop-helper-commit.sh","caller_function":"_label_issue_in_review","flags":{"pr_review_handoff_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["status:in-review"]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:20:00Z","op":"issue_edit","repo":"example/repo","number":21,"caller_script":"/runtime/agents/scripts/full-loop-helper-commit.sh","caller_function":"_label_issue_in_review","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["status:in-review"]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:21:00Z","op":"issue_edit","repo":"example/repo","number":22,"caller_script":"/runtime/agents/scripts/full-loop-helper.sh","caller_function":"main","flags":{"pr_review_handoff_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["status:in-review"]},"suspicious":["protected_label_removed:status:in-progress"]}
+{"ts":"2026-07-31T00:22:00Z","op":"issue_edit","repo":"example/repo","number":23,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring","needs-maintainer-permissions"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["needs-maintainer-permissions"]},"suspicious":["protected_label_removed:status:in-progress"]}
 EOF
 
 output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state.json" \
 	GH_AUDIT_QUIET=true "$HELPER" scan --all --dry-run)
 
-[[ "$output" == *"**Anomalies found:** 12"* ]] || fail "expected transitions were not excluded exactly"
+[[ "$output" == *"**Anomalies found:** 13"* ]] || fail "expected transitions were not excluded exactly"
 [[ "$output" == *"| #3 |"* ]] || fail "unexpected lifecycle transition was hidden"
 [[ "$output" == *"| #4 |"* ]] || fail "approval transition with an additional signal was hidden"
 [[ "$output" == *"| #5 |"* ]] || fail "malformed provenance was dropped instead of retained"
@@ -86,6 +87,7 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #16 |"* ]] || fail "trusted-author NMR transition with an additional signal was hidden"
 [[ "$output" == *"| #19 |"* ]] || fail "unavailable capture with an additional destructive signal was hidden"
 [[ "$output" == *"| #21 |"* ]] || fail "unverified full-loop handoff was hidden"
+[[ "$output" == *"| #23 |"* ]] || fail "permission block without a prior active status was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
 [[ "$output" != *"private/repo"* ]] || fail "private repository name leaked into the report"
 [[ "$output" != *"inaccessible/repo"* ]] || fail "unverified repository name leaked into the report"
