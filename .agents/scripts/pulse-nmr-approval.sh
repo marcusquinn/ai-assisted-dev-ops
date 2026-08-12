@@ -60,6 +60,7 @@ fi
 
 NMR_REVALIDATION_STATE_FILE="${AIDEVOPS_NMR_REVALIDATION_STATE_FILE:-${HOME}/.aidevops/cache/nmr-revalidation-state.json}"
 NMR_TEMPORARY_REVALIDATE_SECONDS="${AIDEVOPS_NMR_TEMPORARY_REVALIDATE_SECONDS:-3600}"
+NMR_STATE_PRUNE_LIMIT="${AIDEVOPS_NMR_STATE_PRUNE_LIMIT:-25}"
 NMR_REASON_FILTER="${NMR_SCRIPT_DIR}/pulse-nmr-reason.jq"
 NMR_TRUSTED_RESOLUTION_FILTER="${NMR_SCRIPT_DIR}/pulse-nmr-trusted-resolution.jq"
 NMR_STATE_RECORD_FILTER="${NMR_SCRIPT_DIR}/pulse-nmr-state-record.jq"
@@ -1083,6 +1084,49 @@ _nmr_record_revalidation_state() {
 	return 0
 }
 
+_nmr_prune_closed_revalidation_state() {
+	[[ -f "$NMR_REVALIDATION_STATE_FILE" ]] || return 0
+	local limit="$NMR_STATE_PRUNE_LIMIT"
+	[[ "$limit" =~ ^[1-9][0-9]*$ ]] || limit=25
+	local current=""
+	current=$(<"$NMR_REVALIDATION_STATE_FILE") || return 0
+	printf '%s' "$current" | jq -e '.entries | type == "object"' >/dev/null 2>&1 || return 0
+	local cursor=""
+	cursor=$(printf '%s' "$current" | jq -r '.prune_cursor // empty' 2>/dev/null) || cursor=""
+
+	local key=""
+	local slug=""
+	local issue_num=""
+	local issue_json=""
+	local state=""
+	local checked=0
+	while IFS= read -r key; do
+		[[ "$checked" -lt "$limit" ]] || break
+		checked=$((checked + 1))
+		cursor="$key"
+		[[ "$key" == *#* ]] || continue
+		slug="${key%#*}"
+		issue_num="${key##*#}"
+		[[ -n "$slug" && "$issue_num" =~ ^[0-9]+$ ]] || continue
+		issue_json=$(gh api "$(_nmr_issue_api_path "$issue_num" "$slug")" 2>/dev/null) || continue
+		state=$(printf '%s' "$issue_json" | jq -r '.state // empty' 2>/dev/null) || continue
+		[[ "$state" == "closed" || "$state" == "CLOSED" ]] || continue
+		current=$(printf '%s' "$current" | jq --arg key "$key" 'del(.entries[$key])' 2>/dev/null) || return 0
+	done < <(printf '%s' "$current" | jq -r --arg cursor "$cursor" '
+		.entries | keys as $keys | (($keys | map(select(. > $cursor))) + ($keys | map(select(. <= $cursor))))[]
+	' 2>/dev/null)
+
+	[[ "$checked" -gt 0 ]] || return 0
+	current=$(printf '%s' "$current" | jq --arg cursor "$cursor" '.prune_cursor = $cursor' 2>/dev/null) || return 0
+	local state_dir="${NMR_REVALIDATION_STATE_FILE%/*}"
+	[[ "$state_dir" != "$NMR_REVALIDATION_STATE_FILE" ]] || return 0
+	local tmp_file=""
+	tmp_file=$(mktemp "${state_dir}/.nmr-prune.XXXXXX") || return 0
+	printf '%s\n' "$current" >"$tmp_file" || { rm -f "$tmp_file"; return 0; }
+	mv "$tmp_file" "$NMR_REVALIDATION_STATE_FILE" 2>/dev/null || rm -f "$tmp_file"
+	return 0
+}
+
 _nmr_emit_decision_packet() {
 	local issue_num="$1"
 	local slug="$2"
@@ -2096,6 +2140,7 @@ Auto-approved: ${approval_reason}. Stale recovery tick reset." \
 auto_approve_maintainer_issues() {
 	local repos_json="$REPOS_JSON"
 	[[ -f "$repos_json" ]] || return 0
+	_nmr_prune_closed_revalidation_state || true
 
 	local total_approved=0
 	local total_normalized=0
