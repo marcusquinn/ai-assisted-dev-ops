@@ -183,6 +183,18 @@ test_dashboard_wraps_person_stats_rate_limit_probes() {
 	return 0
 }
 
+test_dashboard_wraps_local_activity_helpers_with_timeout() {
+	local name="dashboard bounds local activity helper calls"
+	local summary_pattern="timeout_sec \"\$STATS_HEALTH_ACTIVITY_TIMEOUT\" bash \"\$activity_helper\" summary"
+	local session_pattern="timeout_sec \"\$STATS_HEALTH_ACTIVITY_TIMEOUT\" bash \"\$activity_helper\" session-time"
+	if grep -Fq "$summary_pattern" "$DASHBOARD_LIB" && grep -Fq "$session_pattern" "$DASHBOARD_LIB"; then
+		pass "$name"
+	else
+		fail "$name" "missing wall-clock timeout around local activity or session-time helper"
+	fi
+	return 0
+}
+
 test_dashboard_preserves_partial_cache() {
 	local name="dashboard caches partial person-stats output and updates marker"
 	local fake_home="${TMP_DIR}/home-partial"
@@ -288,6 +300,7 @@ test_cross_repo_collection_failures_are_partial
 test_legacy_all_zero_cache_is_unavailable
 test_dashboard_wraps_person_stats_with_timeout
 test_dashboard_wraps_person_stats_rate_limit_probes
+test_dashboard_wraps_local_activity_helpers_with_timeout
 test_dashboard_preserves_partial_cache
 test_dashboard_skips_marker_when_all_refreshes_fail
 

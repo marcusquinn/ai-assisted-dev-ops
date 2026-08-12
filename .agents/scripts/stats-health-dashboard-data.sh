@@ -51,6 +51,12 @@ readonly STATS_HEALTH_EX_PARTIAL="${EX_PARTIAL:-75}"
 # unbounded blocking point when GitHub is slow.
 : "${STATS_HEALTH_PERSON_STATS_RATE_LIMIT_TIMEOUT:=10}"
 
+# The primary dashboard must publish its freshness marker within the enclosing
+# stats-wrapper ceiling. Activity and session-time helpers can walk large local
+# histories, so bound each best-effort section independently rather than let a
+# single slow history scan consume the whole dashboard refresh budget.
+: "${STATS_HEALTH_ACTIVITY_TIMEOUT:=60}"
+
 # --- Functions ---
 
 #######################################
@@ -711,7 +717,7 @@ _gather_activity_stats_for_repo() {
 	local repo_path="$1"
 	local activity_helper="${HOME}/.aidevops/agents/scripts/contributor-activity-helper.sh"
 	if [[ -x "$activity_helper" ]]; then
-		bash "$activity_helper" summary "$repo_path" --period month --format markdown || echo "_Activity data unavailable._"
+		timeout_sec "$STATS_HEALTH_ACTIVITY_TIMEOUT" bash "$activity_helper" summary "$repo_path" --period month --format markdown || echo "_Activity data unavailable._"
 	else
 		echo "_Activity helper not installed._"
 	fi
@@ -729,7 +735,7 @@ _gather_session_time_for_repo() {
 	local repo_path="$1"
 	local activity_helper="${HOME}/.aidevops/agents/scripts/contributor-activity-helper.sh"
 	if [[ -x "$activity_helper" ]]; then
-		bash "$activity_helper" session-time "$repo_path" --period all --format markdown || echo "_Session data unavailable._"
+		timeout_sec "$STATS_HEALTH_ACTIVITY_TIMEOUT" bash "$activity_helper" session-time "$repo_path" --period all --format markdown || echo "_Session data unavailable._"
 	else
 		echo "_Activity helper not installed._"
 	fi
