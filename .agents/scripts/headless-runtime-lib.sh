@@ -672,8 +672,16 @@ run_without_opencode_session_env() {
 # entries added by _configure_headless_worker_signing_env. The clean sandbox
 # can then inherit a contiguous GIT_CONFIG_* set without admitting unrelated
 # ambient Git configuration that happened to precede those entries.
+_headless_git_config_env_value() {
+	local variable_name="$1"
+	printf '%s' "${!variable_name:-}"
+	return 0
+}
+
 prepare_headless_signing_sandbox_env() {
 	local role="${1:-worker}"
+	local format_key="gpg.format" signing_key_name="user.signingkey"
+	local required_key="commit.gpgsign" format_value="ssh" required_value="true"
 	[[ "$role" == "worker" ]] || return 0
 	[[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" == "1" ]] || return 0
 	local config_start="${_AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START:-}"
@@ -684,27 +692,33 @@ prepare_headless_signing_sandbox_env() {
 	[[ "$config_start" =~ ^[0-9]+$ && "$config_count" =~ ^[0-9]+$ ]] || return 1
 	[[ "$config_count" -eq $((config_start + 3)) ]] || return 1
 
-	local source_key_var="" source_value_var=""
+	local source_key_var="" source_value_var="" source_key="" source_value=""
 	local signing_format="" signing_key="" signing_required=""
-	source_key_var="GIT_CONFIG_KEY_${config_start}"
-	source_value_var="GIT_CONFIG_VALUE_${config_start}"
-	[[ "${!source_key_var:-}" == "gpg.format" && "${!source_value_var:-}" == "ssh" ]] || return 1
-	signing_format="${!source_value_var}"
+	printf -v source_key_var 'GIT_CONFIG_KEY_%s' "$config_start"
+	printf -v source_value_var 'GIT_CONFIG_VALUE_%s' "$config_start"
+	source_key=$(_headless_git_config_env_value "$source_key_var")
+	source_value=$(_headless_git_config_env_value "$source_value_var")
+	[[ "$source_key" == "$format_key" && "$source_value" == "$format_value" ]] || return 1
+	signing_format="$source_value"
 	config_start=$((config_start + 1))
-	source_key_var="GIT_CONFIG_KEY_${config_start}"
-	source_value_var="GIT_CONFIG_VALUE_${config_start}"
-	[[ "${!source_key_var:-}" == "user.signingkey" && -n "${!source_value_var:-}" ]] || return 1
-	signing_key="${!source_value_var}"
+	printf -v source_key_var 'GIT_CONFIG_KEY_%s' "$config_start"
+	printf -v source_value_var 'GIT_CONFIG_VALUE_%s' "$config_start"
+	source_key=$(_headless_git_config_env_value "$source_key_var")
+	source_value=$(_headless_git_config_env_value "$source_value_var")
+	[[ "$source_key" == "$signing_key_name" && -n "$source_value" ]] || return 1
+	signing_key="$source_value"
 	config_start=$((config_start + 1))
-	source_key_var="GIT_CONFIG_KEY_${config_start}"
-	source_value_var="GIT_CONFIG_VALUE_${config_start}"
-	[[ "${!source_key_var:-}" == "commit.gpgsign" && "${!source_value_var:-}" == "true" ]] || return 1
-	signing_required="${!source_value_var}"
+	printf -v source_key_var 'GIT_CONFIG_KEY_%s' "$config_start"
+	printf -v source_value_var 'GIT_CONFIG_VALUE_%s' "$config_start"
+	source_key=$(_headless_git_config_env_value "$source_key_var")
+	source_value=$(_headless_git_config_env_value "$source_value_var")
+	[[ "$source_key" == "$required_key" && "$source_value" == "$required_value" ]] || return 1
+	signing_required="$source_value"
 
 	export GIT_CONFIG_COUNT=3
-	export GIT_CONFIG_KEY_0="gpg.format" GIT_CONFIG_VALUE_0="$signing_format"
-	export GIT_CONFIG_KEY_1="user.signingkey" GIT_CONFIG_VALUE_1="$signing_key"
-	export GIT_CONFIG_KEY_2="commit.gpgsign" GIT_CONFIG_VALUE_2="$signing_required"
+	export GIT_CONFIG_KEY_0="$format_key" GIT_CONFIG_VALUE_0="$signing_format"
+	export GIT_CONFIG_KEY_1="$signing_key_name" GIT_CONFIG_VALUE_1="$signing_key"
+	export GIT_CONFIG_KEY_2="$required_key" GIT_CONFIG_VALUE_2="$signing_required"
 	export _AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START=0
 	return 0
 }
@@ -713,9 +727,10 @@ _headless_signing_sandbox_env_is_normalized() {
 	[[ "${_AIDEVOPS_HEADLESS_SIGNING_ENV_CONFIGURED:-0}" == "1" ]] || return 1
 	[[ "${_AIDEVOPS_HEADLESS_SIGNING_GIT_CONFIG_START:-}" == "0" ]] || return 1
 	[[ "${GIT_CONFIG_COUNT:-}" == "3" ]] || return 1
-	[[ "${GIT_CONFIG_KEY_0:-}" == "gpg.format" && "${GIT_CONFIG_VALUE_0:-}" == "ssh" ]] || return 1
-	[[ "${GIT_CONFIG_KEY_1:-}" == "user.signingkey" && -n "${GIT_CONFIG_VALUE_1:-}" ]] || return 1
-	[[ "${GIT_CONFIG_KEY_2:-}" == "commit.gpgsign" && "${GIT_CONFIG_VALUE_2:-}" == "true" ]] || return 1
+	local normalized_signature=""
+	normalized_signature="${GIT_CONFIG_KEY_0:-}=${GIT_CONFIG_VALUE_0:-}|${GIT_CONFIG_KEY_1:-}|${GIT_CONFIG_KEY_2:-}=${GIT_CONFIG_VALUE_2:-}"
+	[[ "$normalized_signature" == "gpg.format=ssh|user.signingkey|commit.gpgsign=true" ]] || return 1
+	[[ -n "${GIT_CONFIG_VALUE_1:-}" ]] || return 1
 	return 0
 }
 
