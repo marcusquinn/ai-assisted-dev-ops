@@ -432,6 +432,23 @@ fi
 unset HEALTH_FIXTURE
 
 : >"$GH_CALLS"
+priority_entries=$(_prioritize_health_repo_entries $'owner/slow|/repo/slow\nmarcusquinn/aidevops|/repo/framework\nowner/other|/repo/other')
+if [[ "$priority_entries" == $'marcusquinn/aidevops|/repo/framework\nowner/slow|/repo/slow\nowner/other|/repo/other' ]]; then
+	pass "health dashboard prioritizes the framework repository without dropping entries"
+else
+	fail "health dashboard prioritizes the framework repository without dropping entries" "entries=${priority_entries}"
+fi
+
+STATS_HEALTH_PRIORITY_REPO="owner/other"
+priority_entries=$(_prioritize_health_repo_entries $'owner/slow|/repo/slow\nmarcusquinn/aidevops|/repo/framework\nowner/other|/repo/other')
+unset STATS_HEALTH_PRIORITY_REPO
+if [[ "$priority_entries" == $'owner/other|/repo/other\nowner/slow|/repo/slow\nmarcusquinn/aidevops|/repo/framework' ]]; then
+	pass "health dashboard supports an explicit priority repository override"
+else
+	fail "health dashboard supports an explicit priority repository override" "entries=${priority_entries}"
+fi
+
+: >"$GH_CALLS"
 export HEALTH_FIXTURE=label_hygiene
 gh() {
 	local call="$*"

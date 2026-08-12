@@ -43,6 +43,10 @@ readonly _HEALTH_CROSS_REPO_MAX_REPOS=30
 readonly _HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT=43200
 readonly _HEALTH_ACTIVITY_STATE_ACTIVE="active"
 readonly _HEALTH_ACTIVITY_STATE_IDLE="idle"
+# The framework dashboard is the primary operator health surface. Refresh it
+# before lower-priority managed repositories so a bounded stats run still
+# publishes its freshness marker when a later repository is slow or rate-limited.
+readonly _HEALTH_PRIORITY_REPO_DEFAULT="marcusquinn/aidevops"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -411,6 +415,33 @@ _filter_routine_eligible_repo_entries() {
 }
 
 #######################################
+# Put the primary framework dashboard first without dropping or duplicating
+# configured repositories. Deployments may override the default for forks or
+# an independently managed framework repository.
+# Arguments:
+#   $1 - newline-delimited slug|path entries
+# Output: priority entry first (when present), then all other entries in order
+#######################################
+_prioritize_health_repo_entries() {
+	local repo_entries="$1"
+	local priority_repo="${STATS_HEALTH_PRIORITY_REPO:-${AIDEVOPS_HEALTH_PRIORITY_REPO:-$_HEALTH_PRIORITY_REPO_DEFAULT}}"
+	local slug path
+
+	[[ "$priority_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+		printf '%s\n' "$repo_entries"
+		return 0
+	}
+
+	while IFS='|' read -r slug path; do
+		[[ "$slug" == "$priority_repo" ]] && printf '%s|%s\n' "$slug" "$path"
+	done <<<"$repo_entries"
+	while IFS='|' read -r slug path; do
+		[[ -n "$slug" && "$slug" != "$priority_repo" ]] && printf '%s|%s\n' "$slug" "$path"
+	done <<<"$repo_entries"
+	return 0
+}
+
+#######################################
 # Update health issues for ALL pulse-enabled repos
 #
 # Iterates repos.json and calls _update_health_issue_for_repo for each
@@ -451,6 +482,7 @@ update_health_issues() {
 	if [[ -z "$repo_entries" ]]; then
 		return 0
 	fi
+	repo_entries=$(_prioritize_health_repo_entries "$repo_entries")
 
 	# Refresh person-stats cache if stale (t1426: hourly, not every pulse)
 	_refresh_person_stats_cache || true
