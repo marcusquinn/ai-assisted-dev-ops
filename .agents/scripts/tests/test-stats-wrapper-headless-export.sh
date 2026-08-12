@@ -297,6 +297,46 @@ test_dashboard_body_edit_failure_returns_nonzero() {
 	return 0
 }
 
+# Test 9: the configured primary repo must refresh before the optional person
+# stats and cross-repo summaries. A slow aggregate stage must not consume the
+# whole scheduler tick before it reaches the primary supervisor dashboard.
+test_priority_dashboard_refresh_precedes_aggregate_work() {
+	local priority_line person_stats_line cross_repo_line priority_call
+	priority_call="_refresh_priority_health_issue \"\$repo_entries\" || return \$?"
+	priority_line=$(grep -nF "$priority_call" "$HEALTH_DASHBOARD_SCRIPT" | cut -d: -f1)
+	person_stats_line=$(grep -nF '_refresh_person_stats_cache || true' "$HEALTH_DASHBOARD_SCRIPT" | cut -d: -f1)
+	cross_repo_line=$(grep -nF 'Pre-compute cross-repo summaries ONCE' "$HEALTH_DASHBOARD_SCRIPT" | cut -d: -f1)
+	if [[ -n "$priority_line" && -n "$person_stats_line" && -n "$cross_repo_line" \
+		&& "$priority_line" -lt "$person_stats_line" && "$priority_line" -lt "$cross_repo_line" ]]; then
+		print_result "priority dashboard refresh precedes aggregate work" 0
+		return 0
+	fi
+	print_result "priority dashboard refresh precedes aggregate work" 1 \
+		"Expected priority=$priority_line before person_stats=$person_stats_line and cross_repo=$cross_repo_line"
+	return 0
+}
+
+# Test 10: the priority refresh must use a bounded timeout derived from the
+# scheduler ceiling so an individual repository cannot consume the entire run.
+test_priority_dashboard_refresh_is_bounded() {
+	local priority_snippet child_call timeout_check
+	priority_snippet=$(awk '
+		/^_refresh_priority_health_issue\(\) \{/ { in_helper=1 }
+		in_helper { print }
+		in_helper && /^[[:space:]]*}$/ { exit }
+	' "$HEALTH_DASHBOARD_SCRIPT")
+	child_call="_update_health_issue_for_repo \"\$priority_slug\" \"\$priority_path\" \"\" \"\" \"\" &"
+	timeout_check="if [[ \"\$priority_elapsed\" -ge \"\$priority_timeout\" ]]"
+	if printf '%s' "$priority_snippet" | grep -qF "$child_call" \
+		&& printf '%s' "$priority_snippet" | grep -qF "$timeout_check"; then
+		print_result "priority dashboard refresh uses bounded timeout" 0
+		return 0
+	fi
+	print_result "priority dashboard refresh uses bounded timeout" 1 \
+		"Expected bounded child process around _update_health_issue_for_repo"
+	return 0
+}
+
 main_test() {
 	test_export_line_present_at_top_of_main
 	test_detect_session_origin_returns_worker_when_headless
@@ -307,6 +347,8 @@ main_test() {
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred
 	test_dashboard_body_edit_failure_returns_nonzero
+	test_priority_dashboard_refresh_precedes_aggregate_work
+	test_priority_dashboard_refresh_is_bounded
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

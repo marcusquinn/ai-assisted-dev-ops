@@ -41,6 +41,7 @@ _STATS_HEALTH_DASHBOARD_LOADED=1
 readonly _HEALTH_QUERY_FAILED_SENTINEL="__QUERY_FAILED__"
 readonly _HEALTH_CROSS_REPO_MAX_REPOS=30
 readonly _HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT=43200
+readonly _HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT_DEFAULT=180
 readonly _HEALTH_ACTIVITY_STATE_ACTIVE="active"
 readonly _HEALTH_ACTIVITY_STATE_IDLE="idle"
 
@@ -192,6 +193,70 @@ _record_health_issue_refresh_state() {
 		|| "$activity_state" == "$_HEALTH_ACTIVITY_STATE_IDLE" ]] \
 		|| activity_state="$_HEALTH_ACTIVITY_STATE_ACTIVE"
 	printf '%s|%s\n' "$activity_state" "$(date +%s)" >"${health_issue_file}.refresh-state"
+	return 0
+}
+
+#######################################
+# Resolve the maximum time reserved for the first configured dashboard.
+# This priority refresh protects the primary local supervisor dashboard from
+# becoming stale when remaining repositories consume the scheduler ceiling.
+# Arguments:
+#   $1 - wrapper timeout ceiling in seconds
+# Output: bounded timeout in seconds
+#######################################
+_health_priority_repo_refresh_timeout() {
+	local wrapper_timeout="$1"
+	local priority_timeout="${HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT:-$_HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT_DEFAULT}"
+	[[ "$wrapper_timeout" =~ ^[0-9]+$ ]] || wrapper_timeout="$_HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT_DEFAULT"
+	[[ "$priority_timeout" =~ ^[0-9]+$ ]] || priority_timeout="$_HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT_DEFAULT"
+	[[ "$priority_timeout" -gt 0 ]] || priority_timeout="$_HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT_DEFAULT"
+	if [[ "$priority_timeout" -gt "$wrapper_timeout" ]]; then
+		priority_timeout="$wrapper_timeout"
+	fi
+	printf '%s\n' "$priority_timeout"
+	return 0
+}
+
+#######################################
+# Refresh the first configured eligible repository before aggregate work.
+# Arguments:
+#   $1 - newline-delimited eligible slug|path entries
+# Returns: 0 when the priority refresh completes or safely skips, 1 on failure
+#######################################
+_refresh_priority_health_issue() {
+	local repo_entries="$1"
+	local priority_entry="" priority_slug="" priority_path="" priority_pid=""
+	local priority_start="" priority_now="" priority_elapsed="" priority_ec=0
+	priority_entry=$(printf '%s\n' "$repo_entries" | awk 'NF { print; exit }')
+	[[ -n "$priority_entry" ]] || return 0
+	IFS='|' read -r priority_slug priority_path <<<"$priority_entry"
+	[[ -n "$priority_slug" ]] || return 0
+
+	local priority_timeout="${STATS_TIMEOUT:-$_HEALTH_PRIORITY_REPO_REFRESH_TIMEOUT_DEFAULT}"
+	priority_timeout=$(_health_priority_repo_refresh_timeout "$priority_timeout")
+	priority_start=$(date +%s)
+	_update_health_issue_for_repo "$priority_slug" "$priority_path" "" "" "" &
+	priority_pid=$!
+	while kill -0 "$priority_pid" 2>/dev/null; do
+		priority_now=$(date +%s)
+		priority_elapsed=$((priority_now - priority_start))
+		if [[ "$priority_elapsed" -ge "$priority_timeout" ]]; then
+			_kill_tree "$priority_pid" || true
+			sleep 2
+			if kill -0 "$priority_pid" 2>/dev/null; then
+				_force_kill_tree "$priority_pid" || true
+			fi
+			wait "$priority_pid" 2>/dev/null || true
+			echo "[stats] Priority health dashboard refresh timed out for ${priority_slug} after ${priority_timeout}s" >>"$LOGFILE"
+			return 124
+		fi
+		sleep 1
+	done
+	wait "$priority_pid" || priority_ec=$?
+	if [[ "$priority_ec" -ne 0 ]]; then
+		echo "[stats] Priority health dashboard refresh failed for ${priority_slug} (rc=${priority_ec})" >>"$LOGFILE"
+		return "$priority_ec"
+	fi
 	return 0
 }
 
@@ -451,6 +516,7 @@ update_health_issues() {
 	if [[ -z "$repo_entries" ]]; then
 		return 0
 	fi
+	_refresh_priority_health_issue "$repo_entries" || return $?
 
 	# Refresh person-stats cache if stale (t1426: hourly, not every pulse)
 	_refresh_person_stats_cache || true
