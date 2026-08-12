@@ -103,6 +103,10 @@ def _persist_managed_external_directories(config):
     if existing == 'allow':
         return
     rules = {'*': existing} if isinstance(existing, str) else dict(existing or {})
+    worktree_base = os.environ.get('AIDEVOPS_WORKTREE_BASE_DIR', '~/Git/_worktrees').rstrip('/')
+    if worktree_base != '~/Git/_worktrees':
+        rules.pop('~/Git/_worktrees', None)
+        rules.pop('~/Git/_worktrees/**', None)
     managed_paths = managed_external_directories()
     for path in managed_paths:
         rules.pop(path, None)

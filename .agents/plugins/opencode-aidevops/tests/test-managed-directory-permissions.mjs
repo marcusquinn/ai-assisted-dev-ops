@@ -36,7 +36,7 @@ test("uses the configured worktree base instead of hardcoding ~/Git", () => {
 
 test("registers the configured worktree base for global and agent permissions", () => {
   const config = {
-    permission: { external_directory: { "*": "ask" } },
+    permission: { external_directory: { "*": "ask", "~/Git/_worktrees": "allow", "~/Git/_worktrees/**": "allow" } },
     agent: { "Build+": { permission: { external_directory: "ask" } } },
   };
   const env = { AIDEVOPS_WORKTREE_BASE_DIR: "/Users/test/Projects/.worktrees" };
@@ -46,6 +46,7 @@ test("registers the configured worktree base for global and agent permissions", 
     assert.equal(target.permission.external_directory["/Users/test/Projects/.worktrees"], "allow");
     assert.equal(target.permission.external_directory["/Users/test/Projects/.worktrees/**"], "allow");
     assert.equal(target.permission.external_directory["~/Git/_worktrees"], undefined);
+    assert.equal(target.permission.external_directory["~/Git/_worktrees/**"], undefined);
   }
 });
 

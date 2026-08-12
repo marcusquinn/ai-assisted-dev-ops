@@ -77,6 +77,12 @@ function addManagedDirectoryRules(target, env) {
   const rules = typeof existing === "string"
     ? { "*": existing }
     : { ...existing };
+  const configuredWorktreeBase = (env.AIDEVOPS_WORKTREE_BASE_DIR || "~/Git/_worktrees")
+    .replace(/\/+$/, "");
+  if (configuredWorktreeBase !== "~/Git/_worktrees") {
+    delete rules["~/Git/_worktrees"];
+    delete rules["~/Git/_worktrees/**"];
+  }
   let count = 0;
   for (const path of managedExternalDirectories(env)) {
     if (rules[path] !== "allow") count++;
