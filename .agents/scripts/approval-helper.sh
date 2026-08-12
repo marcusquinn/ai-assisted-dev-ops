@@ -892,6 +892,14 @@ _approve_target_after_confirmation() {
 	local actual_key="$4"
 
 	local timestamp payload sig_file comment_body
+	# #aidevops:trust-boundary — issue continuity can only begin from an
+	# authoritative locked snapshot. PR approval semantics remain unchanged.
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
+		_approval_lock_issue "$target_number" "$slug" >/dev/null 2>&1 || {
+			_print_error "Could not lock issue before building its approval snapshot"
+			return 1
+		}
+	fi
 	timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	payload=$(approval_snapshot_v2_payload "$target_type" "$target_number" "$slug" "$timestamp") || {
 		_print_error "Could not build the immutable approval snapshot; approval was not posted"
@@ -947,6 +955,87 @@ _approve_target_after_confirmation() {
 	target_type_cap="$(printf '%s' "${target_type:0:1}" | tr '[:lower:]' '[:upper:]')${target_type:1}"
 	_print_ok "$target_type_cap #$target_number approved and signed"
 	echo ""
+	return 0
+}
+
+_approval_continuity_actor_authorized() {
+	local slug="$1"
+	local login="$2"
+	local permission=""
+	[[ "$login" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+	permission=$(gh api "repos/${slug}/collaborators/${login}/permission" --jq '.permission // "none"' 2>/dev/null) || return 2
+	case "$permission" in
+	admin | maintain | write) return 0 ;;
+	esac
+	return 1
+}
+
+_approval_verify_locked_issue_continuity() {
+	local payload="$1"
+	local current_snapshot="$2"
+	local signed_digest="$3"
+	local slug="$4"
+	local target_number="$5"
+	local issued_at="$6"
+	local signed_lifecycle="" current_anchor="" signed_anchor="" candidate="" candidate_digest=""
+	local timeline_pages="" mutation_rows="" event="" actor="" subject="" actor_rc=0
+
+	# #aidevops:trust-boundary — no embedded lifecycle proof means this is a
+	# legacy exact-snapshot approval, never continuity authority.
+	signed_lifecycle=$(jq -c '.issue.lifecycle // empty' <<<"$payload" 2>/dev/null) || return 1
+	[[ -n "$signed_lifecycle" ]] || return 1
+	if ! jq -e '.locked == true and (.lock_anchor | type == "object")' <<<"$signed_lifecycle" >/dev/null 2>&1; then
+		return 1
+	fi
+	signed_anchor=$(jq -c '.lock_anchor' <<<"$signed_lifecycle") || return 1
+	current_anchor=$(jq -c '.lifecycle.lock_anchor // empty' <<<"$current_snapshot") || return 1
+	[[ -n "$current_anchor" && "$current_anchor" == "$signed_anchor" ]] || return 1
+	if ! jq -e '.lifecycle.locked == true' <<<"$current_snapshot" >/dev/null 2>&1; then
+		return 1
+	fi
+
+	# Replacing only lifecycle metadata must recreate the signed digest. This
+	# proves title, body, comments, references, identity, and all scope-bearing
+	# bytes remain exactly as reviewed.
+	candidate=$(jq -cS --argjson lifecycle "$signed_lifecycle" '.lifecycle = $lifecycle' <<<"$current_snapshot") || return 1
+	candidate_digest=$(approval_snapshot_v2_digest "$candidate") || return 2
+	[[ "$candidate_digest" == "$signed_digest" ]] || return 1
+	if ! jq -e --argjson signed "$signed_lifecycle" '
+		def allowed_label: . == "needs-maintainer-review" or . == "auto-dispatch" or . == "status:available" or . == "status:queued" or . == "status:in-review" or . == "status:in-progress";
+		.lifecycle as $current |
+		$current.state == $signed.state
+		and $current.state_reason == $signed.state_reason
+		and $current.locked == $signed.locked
+		and $current.active_lock_reason == $signed.active_lock_reason
+		and $current.milestone == $signed.milestone
+		and $current.lock_anchor == $signed.lock_anchor
+		and ([(($current.labels + $signed.labels)[] | .name)] | unique | all(allowed_label))
+		and ($current.assignees != $signed.assignees or $current.labels != $signed.labels)
+	' <<<"$current_snapshot" >/dev/null 2>&1; then
+		return 1
+	fi
+
+	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 2
+	mutation_rows=$(jq -r --arg issued "$issued_at" '
+		[.[][]? | select((.created_at // "") > $issued) |
+		select((.event // "") == "assigned" or (.event // "") == "unassigned" or (.event // "") == "labeled" or (.event // "") == "unlabeled" or (.event // "") == "milestoned" or (.event // "") == "demilestoned" or (.event // "") == "closed" or (.event // "") == "reopened" or (.event // "") == "renamed" or (.event // "") == "locked" or (.event // "") == "unlocked" or (.event // "") == "connected" or (.event // "") == "disconnected" or (.event // "") == "added_to_project" or (.event // "") == "moved_columns_in_project" or (.event // "") == "removed_from_project" or (.event // "") == "transferred" or (.event // "") == "converted_to_discussion" or (.event // "") == "marked_as_duplicate" or (.event // "") == "unmarked_as_duplicate" or (.event // "") == "pinned" or (.event // "") == "unpinned") |
+		[(.event // ""), (.actor.login // ""), (.label.name // .assignee.login // "")] | @tsv][]
+	' <<<"$timeline_pages" 2>/dev/null) || return 2
+	[[ -n "$mutation_rows" ]] || return 1
+
+	while IFS=$'\t' read -r event actor subject; do
+		[[ -n "$event" ]] || continue
+		case "$event:$subject" in
+		assigned:* | unassigned:* | labeled:needs-maintainer-review | unlabeled:needs-maintainer-review | labeled:auto-dispatch | unlabeled:auto-dispatch | labeled:status:available | unlabeled:status:available | labeled:status:queued | unlabeled:status:queued | labeled:status:in-review | unlabeled:status:in-review | labeled:status:in-progress | unlabeled:status:in-progress) ;;
+		*) return 1 ;;
+		esac
+		actor_rc=0
+		_approval_continuity_actor_authorized "$slug" "$actor" || actor_rc=$?
+		[[ "$actor_rc" -eq 0 ]] || {
+			[[ "$actor_rc" -eq 2 ]] && return 2
+			return 1
+		}
+	done <<<"$mutation_rows"
 	return 0
 }
 
@@ -1178,7 +1267,7 @@ _approval_classify_signed_comment() {
 	local pub_key="$6"
 	local expected_head_sha="${7:-}"
 	local payload="" snapshot_json="" current_digest="" signed_digest="" normalized_slug="" issued_at=""
-	local legacy_snapshot_json="" legacy_digest=""
+	local legacy_snapshot_json="" legacy_digest="" continuity_rc=1
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 
 	payload=$(_extract_fenced_block "$body" 1)
@@ -1206,7 +1295,7 @@ _approval_classify_signed_comment() {
 		and (.target.number | tostring) == $number
 		and (.snapshot_sha256 | type == $string_type and test($sha_pattern))
 		and (.issued_at | type == $string_type and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-		and (if $type == "pr" then (.authority == "merge" and (.pr | type == "object")) else (.authority == "development" and .pr == null) end)
+		and (if $type == "pr" then (.authority == "merge" and (.pr | type == "object")) else (.authority == "development" and .pr == null and ((.issue // null) == null or (.issue.lifecycle | type == "object"))) end)
 	' <<<"$payload" >/dev/null 2>&1; then
 		printf 'MALFORMED_APPROVAL\n'
 		return 0
@@ -1225,7 +1314,11 @@ _approval_classify_signed_comment() {
 		printf 'MALFORMED_APPROVAL\n'
 		return 0
 	}
-	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at") || {
+	local issue_lifecycle_profile="current"
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]] && ! jq -e '.issue.lifecycle | type == "object"' <<<"$payload" >/dev/null 2>&1; then
+		issue_lifecycle_profile="legacy"
+	fi
+	snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "stable" "$issue_lifecycle_profile") || {
 		printf 'API_ERROR\n'
 		return 0
 	}
@@ -1239,7 +1332,7 @@ _approval_classify_signed_comment() {
 		# included mutable linked-source updated_at metadata. Accept that profile
 		# only when its complete current digest still matches the signed digest;
 		# new approvals always use the stable profile above.
-		legacy_snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "legacy") || {
+		legacy_snapshot_json=$(approval_snapshot_v2_build "$target_type" "$target_number" "$slug" "$comment_id" "$issued_at" "legacy" "$issue_lifecycle_profile") || {
 			printf 'API_ERROR\n'
 			return 0
 		}
@@ -1248,6 +1341,21 @@ _approval_classify_signed_comment() {
 			return 0
 		}
 		if [[ "$legacy_digest" != "$signed_digest" ]]; then
+			if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
+				continuity_rc=0
+				_approval_verify_locked_issue_continuity "$payload" "$snapshot_json" "$signed_digest" "$slug" "$target_number" "$issued_at" || continuity_rc=$?
+				if [[ "$continuity_rc" -eq 0 ]]; then
+					printf 'APPROVAL_REASON: proven-locked-continuity\n' >&2
+					printf 'VERIFIED\n'
+					return 0
+				fi
+				if [[ "$continuity_rc" -eq 2 ]]; then
+					printf 'APPROVAL_REASON: continuity-api-uncertain\n' >&2
+					printf 'API_ERROR\n'
+					return 0
+				fi
+			fi
+			printf 'APPROVAL_REASON: stale-or-unproven-continuity\n' >&2
 			printf 'STALE_APPROVAL\n'
 			return 0
 		fi
@@ -1267,6 +1375,7 @@ _approval_classify_signed_comment() {
 		fi
 	fi
 
+	printf 'APPROVAL_REASON: exact-snapshot\n' >&2
 	printf 'VERIFIED\n'
 	return 0
 }

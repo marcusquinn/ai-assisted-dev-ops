@@ -49,7 +49,8 @@ if [[ -n "${GH_FAIL_ENDPOINT:-}" && "$endpoint" == *"${GH_FAIL_ENDPOINT}"* ]]; t
 fi
 case "$endpoint" in
 	user) printf '%s\n' "${GH_AUTH_USER:-maintainer}" ;;
-	repos/owner/repo/collaborators/trusted-collab/permission) printf '%s\n' "${GH_PERMISSION:-write}" ;;
+repos/owner/repo/collaborators/trusted-collab/permission | repos/owner/repo/collaborators/maintainer/permission) printf '%s\n' "${GH_PERMISSION:-write}" ;;
+repos/owner/repo/collaborators/contributor/permission) printf '%s\n' "read" ;;
 	repos/owner/repo/issues/41) cat "${FIXTURES}/issue-41.json" ;;
 repos/owner/repo/issues/41/comments*) cat "${FIXTURES}/comments-41.json" ;;
 repos/owner/repo/issues/41/timeline*) cat "${FIXTURES}/timeline-41.json" ;;
@@ -403,6 +404,45 @@ test_post_approval_linked_references() {
 	return 0
 }
 
+write_locked_issue_fixture() {
+	write_baseline_fixtures
+	jq '.locked = true | .active_lock_reason = "resolved" | .labels = [] | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	jq '.[0] += [{id:418,node_id:"EV_418",event:"locked",created_at:"2026-01-01T00:04:00Z",actor:{id:1,node_id:"U_1",login:"maintainer",type:"User"}}]' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	append_signed_comment issue 41 "2026-01-01T00:05:00Z" 4199
+	return 0
+}
+
+append_issue_timeline_event() {
+	local event_json="$1"
+	jq --argjson event "$event_json" '.[0] += [$event]' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	return 0
+}
+
+test_locked_issue_continuity() {
+	write_locked_issue_fixture
+	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}] | .labels = [{id:7,node_id:"L_7",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":420,"node_id":"EV_420","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
+	append_issue_timeline_event '{"id":421,"node_id":"EV_421","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
+	assert_verify "trusted allowlisted mutations preserve continuously locked issue approval" issue 41 VERIFIED 0
+
+	write_locked_issue_fixture
+	jq '.labels = [{id:8,node_id:"L_8",name:"security"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":422,"node_id":"EV_422","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"security"}}'
+	assert_verify "unsupported label mutation remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.assignees = [{id:2,node_id:"U_2",login:"contributor",type:"User"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":423,"node_id":"EV_423","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":2,"login":"contributor","type":"User"},"assignee":{"id":2,"login":"contributor","type":"User"}}'
+	assert_verify "contributor lifecycle mutation remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":424,"node_id":"EV_424","event":"unlocked","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"}}'
+	append_issue_timeline_event '{"id":425,"node_id":"EV_425","event":"locked","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"}}'
+	assert_verify "unlock and relock gap remains stale" issue 41 STALE_APPROVAL 4
+	return 0
+}
+
 test_linked_source_timestamp_profiles() {
 	write_baseline_fixtures
 	append_signed_comment pr 42 "2026-01-01T00:05:00Z" 4298 legacy
@@ -453,6 +493,7 @@ main() {
 	assert_verify "repeat approval verifies against the newest exact snapshot" pr 42 VERIFIED 0 "$PR_HEAD"
 	test_trusted_lifecycle_comments
 	test_post_approval_linked_references
+	test_locked_issue_continuity
 
 	reset_and_sign pr 42
 	local marker_drift="<!-- aidevops-signed-approval --> unsigned external drift"

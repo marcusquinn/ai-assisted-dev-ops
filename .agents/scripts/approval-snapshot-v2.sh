@@ -194,6 +194,57 @@ _approval_snapshot_v2_reviews_json() {
 	return $?
 }
 
+_approval_snapshot_v2_issue_lifecycle_json() {
+	local issue_json="$1"
+	local timeline_pages="$2"
+	local empty_string=""
+
+	# #aidevops:trust-boundary — lifecycle state is content-bound so a later
+	# verifier can permit only the narrowly reviewed claim mutations. The lock
+	# anchor is authoritative only when REST and the complete timeline agree that
+	# the issue is currently inside an uninterrupted lock interval.
+	jq -cS -n --argjson issue "$issue_json" --argjson pages "$timeline_pages" --arg empty "$empty_string" '
+		def valid_actor:
+			(.actor | type) == "object"
+			and (.actor.type // $empty) == "User"
+			and ((.actor.id // null) != null)
+			and ((.actor.login // $empty) | test("^[A-Za-z0-9_.-]+$"));
+		def valid_timestamp:
+			type == "string"
+			and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+			and ((try (fromdateiso8601 | todateiso8601) catch $empty) == .);
+		[$pages[][]? | select((.event // $empty) == "locked" or (.event // $empty) == "unlocked")] as $locks |
+		([$locks[] | select(.event == "locked")] | sort_by(.created_at, .id) | last // null) as $anchor |
+		if ($issue.locked // false) == true
+			and $anchor != null
+			and ($anchor.created_at | valid_timestamp)
+			and ($anchor | valid_actor)
+			and (any($locks[]; .event == "unlocked" and ((.created_at // $empty) > $anchor.created_at)) | not)
+		then {
+			state: ($issue.state // $empty),
+			state_reason: ($issue.state_reason // null),
+			locked: true,
+			active_lock_reason: ($issue.active_lock_reason // null),
+			labels: [($issue.labels // [])[] | {id: (.id // null), node_id: (.node_id // $empty), name: (.name // $empty)}] | sort_by(.name, .id),
+			assignees: [($issue.assignees // [])[] | {id: (.id // null), node_id: (.node_id // $empty), login: (.login // $empty), type: (.type // $empty)}] | sort_by(.login, .id),
+			milestone: (if ($issue.milestone // null) == null then null else {id: ($issue.milestone.id // null), node_id: ($issue.milestone.node_id // $empty), number: ($issue.milestone.number // null), title: ($issue.milestone.title // $empty)} end),
+			lock_anchor: {id: ($anchor.id // null), node_id: ($anchor.node_id // $empty), created_at: $anchor.created_at, actor: {id: $anchor.actor.id, login: $anchor.actor.login, type: $anchor.actor.type}}
+		}
+		else {
+			state: ($issue.state // $empty),
+			state_reason: ($issue.state_reason // null),
+			locked: ($issue.locked // false),
+			active_lock_reason: ($issue.active_lock_reason // null),
+			labels: [($issue.labels // [])[] | {id: (.id // null), node_id: (.node_id // $empty), name: (.name // $empty)}] | sort_by(.name, .id),
+			assignees: [($issue.assignees // [])[] | {id: (.id // null), node_id: (.node_id // $empty), login: (.login // $empty), type: (.type // $empty)}] | sort_by(.login, .id),
+			milestone: (if ($issue.milestone // null) == null then null else {id: ($issue.milestone.id // null), node_id: ($issue.milestone.node_id // $empty), number: ($issue.milestone.number // null), title: ($issue.milestone.title // $empty)} end),
+			lock_anchor: null
+		}
+		end
+	' || return 1
+	return 0
+}
+
 approval_snapshot_v2_build() (
 	local target_type="$1"
 	local target_number="$2"
@@ -201,12 +252,15 @@ approval_snapshot_v2_build() (
 	local excluded_comment_id="${4:-}"
 	local issued_at_cutoff="${5:-}"
 	local source_timestamp_profile="${6:-stable}"
+	local issue_lifecycle_profile="${7:-current}"
 	local issue_json="" comments_pages="" comments_json="" timeline_pages="" linked_references_json="" normalized_slug=""
+	local issue_lifecycle_json=""
 	local empty_string=""
 	local temp_dir=""
 
 	[[ "$target_type" == "$APPROVAL_TARGET_ISSUE" || "$target_type" == "pr" ]] || return 1
 	[[ "$target_number" =~ ^[0-9]+$ && "$slug" == */* ]] || return 1
+	[[ "$issue_lifecycle_profile" == "current" || "$issue_lifecycle_profile" == "legacy" ]] || return 1
 	normalized_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]')
 
 	issue_json=$(gh api "repos/${slug}/issues/${target_number}" 2>/dev/null) || return 1
@@ -221,16 +275,31 @@ approval_snapshot_v2_build() (
 	comments_json=$(_approval_snapshot_v2_comments_json "$comments_pages" "$excluded_comment_id" "conversation") || return 1
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 1
 	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages" "$issued_at_cutoff" "$source_timestamp_profile") || return 1
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "current" ]]; then
+		issue_lifecycle_json=$(_approval_snapshot_v2_issue_lifecycle_json "$issue_json" "$timeline_pages") || return 1
+	fi
 	temp_dir=$(_approval_snapshot_v2_create_temp_dir) || return 1
 	trap 'rm -rf "$temp_dir"' EXIT
 	_approval_snapshot_v2_write_json_file "$temp_dir/issue.json" "$issue_json" || return 1
 	_approval_snapshot_v2_write_json_file "$temp_dir/comments.json" "$comments_json" || return 1
 	_approval_snapshot_v2_write_json_file "$temp_dir/linked-references.json" "$linked_references_json" || return 1
+	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "current" ]]; then
+		_approval_snapshot_v2_write_json_file "$temp_dir/issue-lifecycle.json" "$issue_lifecycle_json" || return 1
+	fi
 
 	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
+		if [[ "$issue_lifecycle_profile" == "legacy" ]]; then
+			jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --argjson number "$target_number" \
+				--slurpfile issue_input "$temp_dir/issue.json" --slurpfile comments_input "$temp_dir/comments.json" \
+				--slurpfile linked_references_input "$temp_dir/linked-references.json" '
+				($issue_input[0]) as $issue |
+				{schema:"aidevops-approval-snapshot/v2",target:{kind:$issue_kind,repository:$repo,number:$number,id:$issue.id,node_id:$issue.node_id},author:{id:($issue.user.id//null),node_id:($issue.user.node_id//$empty),login:($issue.user.login//$empty),type:($issue.user.type//$empty),association:($issue.author_association//$empty)},created_at:($issue.created_at//$empty),title:($issue.title//$empty),body:($issue.body//$empty),comments:$comments_input[0],linked_references:$linked_references_input[0]}
+			'
+			return $?
+		fi
 		jq -cS -n --arg repo "$normalized_slug" --arg empty "$empty_string" --arg issue_kind "$APPROVAL_TARGET_ISSUE" --argjson number "$target_number" \
 			--slurpfile issue_input "$temp_dir/issue.json" --slurpfile comments_input "$temp_dir/comments.json" \
-			--slurpfile linked_references_input "$temp_dir/linked-references.json" '
+			--slurpfile linked_references_input "$temp_dir/linked-references.json" --slurpfile lifecycle_input "$temp_dir/issue-lifecycle.json" '
 			($issue_input[0]) as $issue |
 			{
 				schema: "aidevops-approval-snapshot/v2",
@@ -244,7 +313,8 @@ approval_snapshot_v2_build() (
 				title: ($issue.title // $empty),
 				body: ($issue.body // $empty),
 				comments: $comments_input[0],
-				linked_references: $linked_references_input[0]
+				linked_references: $linked_references_input[0],
+				lifecycle: $lifecycle_input[0]
 			}
 		'
 		return $?
@@ -341,7 +411,8 @@ approval_snapshot_v2_payload() (
 				head_repository: $snapshot.head.repository,
 				base_ref: $snapshot.base.ref,
 				base_repository: $snapshot.base.repository
-			} else null end)
+			} else null end),
+			issue: (if $type == "issue" then {lifecycle: $snapshot.lifecycle} else null end)
 		}
 	'
 	return $?
