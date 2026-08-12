@@ -125,6 +125,9 @@ expired_result=$(_sync_declared_blocked_by_edges t1 "${TMP_DIR}/TODO.md" example
 pass "edge loop stops with retryable state after aggregate exhaustion"
 
 : >"$_RELATIONSHIP_RESULT_FILE"
+# The preceding edge-loop assertion intentionally expires the aggregate scope.
+# Start a fresh fixture scope before exercising bounded mutation behavior.
+AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 30 ))
 MUTATION_FIXTURE=""
 _gh_with_timeout() {
 	local operation="$1"

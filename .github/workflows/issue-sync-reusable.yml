@@ -224,6 +224,19 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.AIDEVOPS_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Restore durable relationship progress
+        id: relationship-state-restore
+        if: steps.check-author.outputs.skip != 'true'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/aidevops-relationship-state
+          key: issue-sync-relationships-${{ github.repository_id }}-${{ hashFiles('TODO.md') }}-restore
+          # A prior revision can restore safely: the state file embeds the
+          # relationship-input revision and invalidates itself before use.
+          restore-keys: |
+            issue-sync-relationships-${{ github.repository_id }}-${{ hashFiles('TODO.md') }}-
+            issue-sync-relationships-${{ github.repository_id }}-
+
       - name: Configure Git
         if: steps.check-author.outputs.skip != 'true'
         run: |
@@ -292,6 +305,16 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AIDEVOPS_RELATIONSHIP_STATE_DIR: ${{ runner.temp }}/aidevops-relationship-state
+
+      - name: Persist durable relationship progress
+        if: always() && steps.relationship-sync.outputs.pending == 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/aidevops-relationship-state
+          # Cache entries are immutable, so each run writes a new revision-keyed
+          # checkpoint and the next run restores the newest matching entry.
+          key: issue-sync-relationships-${{ github.repository_id }}-${{ hashFiles('TODO.md') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Enrich plan-linked issues
         if: steps.check-author.outputs.skip != 'true'

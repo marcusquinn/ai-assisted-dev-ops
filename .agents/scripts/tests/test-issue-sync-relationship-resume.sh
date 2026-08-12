@@ -14,7 +14,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export AIDEVOPS_RELATIONSHIP_STATE_DIR="${TMP_DIR}/state"
+HOSTED_ARTIFACT_DIR="${TMP_DIR}/hosted-artifact"
+export AIDEVOPS_RELATIONSHIP_STATE_DIR="${TMP_DIR}/hosted-runner-one/state"
 TODO_FILE="${TMP_DIR}/TODO.md"
 ATTEMPT_LOG="${TMP_DIR}/attempts.log"
 DEADLINE_FLAG="${TMP_DIR}/deadline"
@@ -84,6 +85,12 @@ for ((task_number = 1; task_number <= 800; task_number++)); do
 	printf -- '- [ ] t%d Task %d blocked-by:t900 ref:GH#%d\n' \
 		"$task_number" "$task_number" "$task_number" >>"$TODO_FILE"
 done
+# A large historical completed set must not consume recurring broad hosted
+# reconciliation. Targeted relationship sync remains available for repairs.
+for ((task_number = 1001; task_number <= 1141; task_number++)); do
+	printf -- '- [x] t%d Completed task %d blocked-by:t900 ref:GH#%d\n' \
+		"$task_number" "$task_number" "$task_number" >>"$TODO_FILE"
+done
 : >"$ATTEMPT_LOG"
 
 first_rc=0
@@ -98,7 +105,16 @@ first_pending=$(grep -c '^pending=' "$state_file" || true)
 if [[ "${AIDEVOPS_BENCHMARK_OUTPUT:-0}" == "1" ]]; then
 	printf '%s\n' "$first_output"
 fi
-pass "800-task reconciliation persists bounded first-pass progress"
+pass "800 active-task reconciliation persists bounded first-pass progress"
+
+# Hosted runners are ephemeral. Simulate the workflow handoff by copying only
+# the persisted state into a fresh runner state directory before the next pass.
+mkdir -p "$HOSTED_ARTIFACT_DIR"
+cp "$state_file" "$HOSTED_ARTIFACT_DIR/example_repo.state"
+export AIDEVOPS_RELATIONSHIP_STATE_DIR="${TMP_DIR}/hosted-runner-two/state"
+mkdir -p "$AIDEVOPS_RELATIONSHIP_STATE_DIR"
+cp "$HOSTED_ARTIFACT_DIR/example_repo.state" "$AIDEVOPS_RELATIONSHIP_STATE_DIR/example_repo.state"
+state_file=$(_relationship_resume_state_file "example/repo")
 
 : >"$ATTEMPT_LOG"
 rm -f "$DEADLINE_FLAG"

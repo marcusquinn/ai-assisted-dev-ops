@@ -296,6 +296,7 @@ _relationship_print_summary() {
 	local created already_present failed deferred first_incomplete
 	local mapping_calls snapshot_calls mutation_calls verify_calls status_calls other_calls
 	local mapping_seconds snapshot_seconds mutation_class_seconds verify_seconds status_seconds
+	local timed_seconds unaccounted_seconds
 	created=$(_relationship_outcome_count "$_REL_OUTCOME_CREATED")
 	already_present=$(_relationship_outcome_count "$_REL_OUTCOME_ALREADY_PRESENT")
 	failed=$(_relationship_outcome_count "failed")
@@ -312,6 +313,9 @@ _relationship_print_summary() {
 	mutation_class_seconds=$(_relationship_operation_seconds mutation)
 	verify_seconds=$(_relationship_operation_seconds verify)
 	status_seconds=$(_relationship_operation_seconds status)
+	timed_seconds=$((mapping_seconds + snapshot_seconds + mutation_class_seconds + verify_seconds + status_seconds))
+	unaccounted_seconds=$((mutation_seconds - timed_seconds))
+	[[ "$unaccounted_seconds" -ge 0 ]] || unaccounted_seconds=0
 	printf '\n=== Relationships Sync ===\nEdges: created=%d already-present=%d failed=%d deferred=%d\n' \
 		"$created" "$already_present" "$failed" "$deferred"
 	printf 'Tasks: attempted=%d complete=%d/%d | Retryable: %d | Deadline exhausted: %s\n' \
@@ -324,6 +328,8 @@ _relationship_print_summary() {
 		"$mapping_calls" "$snapshot_calls" "$mutation_calls" "$verify_calls" "$status_calls" "$other_calls"
 	printf 'Operation timing: mapping=%ss snapshot=%ss mutation=%ss verify=%ss status=%ss\n' \
 		"$mapping_seconds" "$snapshot_seconds" "$mutation_class_seconds" "$verify_seconds" "$status_seconds"
+	printf 'Timing coverage: operations=%ss unaccounted=%ss\n' \
+		"$timed_seconds" "$unaccounted_seconds"
 	printf 'Failure: %s\n' "$first_incomplete"
 	[[ "$retryable_total" -eq 0 ]] || printf 'Recovery: rerun .agents/scripts/issue-sync-helper.sh relationships\n'
 	return 0
@@ -1148,7 +1154,10 @@ _relationship_prepare_workset() {
 	local todo_file="$2"
 	local repo="$3"
 	local revision_input="" seen_list=$'\n' line="" tid="" dominated=false task=""
-	local todo_line_re='^[[:space:]]*-[[:space:]]+\[[[:space:]x>-]\][[:space:]]+(t[0-9]+(\.[0-9]+)*)[[:space:]]'
+	# Broad reconciliation only needs active work. Explicit single-task sync still
+	# repairs completed tasks after publication, but unchanged historical rows do
+	# not consume every hosted default-branch pass.
+	local todo_line_re='^[[:space:]]*-[[:space:]]+\[[[:space:]>-]\][[:space:]]+(t[0-9]+(\.[0-9]+)*)[[:space:]]'
 	local tasks=() unique_tasks=()
 	_RELATIONSHIP_WORK_TASKS=()
 	_RELATIONSHIP_CANDIDATE_TOTAL=0
@@ -1253,6 +1262,19 @@ cmd_relationships() {
 		attempted=$((attempted + 1))
 		task_retryable=0
 		_relationship_print_progress "$attempted" "$total"
+		# All nested paths must respect the same absolute deadline. Mapping and
+		# hierarchy helpers otherwise perform local work after a transport call
+		# has consumed the final second of the aggregate budget.
+		if _relationship_deadline_expired; then
+			deadline_exhausted=true
+			_relationship_record_outcome "$_REL_OUTCOME_DEFERRED_DEADLINE"
+			retryable_total=$((retryable_total + 1))
+			pending_tasks+=("$current_task")
+			for ((remaining_index = index + 1; remaining_index < total; remaining_index++)); do
+				pending_tasks+=("${_RELATIONSHIP_WORK_TASKS[remaining_index]}")
+			done
+			break
+		fi
 
 		# Blocked-by / blocks
 		result=$(_sync_blocked_by_for_task "$current_task" "$todo_file" "$repo" 2>/dev/null || echo "$_RELATIONSHIP_RETRY_RESULT")
