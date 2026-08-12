@@ -235,7 +235,24 @@ MOCK_STATS_FUNCTIONS
 	return 0
 }
 
-# Test 7: dashboard refresh failures must not be blindly swallowed by the wrapper.
+# Test 7: priority dashboard selection must be followed immediately by its
+# update, before optional cross-repository summaries can consume the wrapper
+# timeout. Static ordering keeps this focused on the scheduler safety contract.
+test_priority_dashboard_precedes_optional_cross_repo_work() {
+	local dashboard_script priority_line cache_line
+	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
+	priority_line=$(grep -nE "^[[:space:]]*if ! _update_health_issue_for_repo \"[\$]priority_slug\"" "$dashboard_script" | head -1 | cut -d: -f1)
+	cache_line=$(grep -nE '^[[:space:]]*_refresh_person_stats_cache \|\| true' "$dashboard_script" | head -1 | cut -d: -f1)
+	if [[ -n "$priority_line" && -n "$cache_line" && "$priority_line" -lt "$cache_line" ]]; then
+		print_result "priority dashboard refresh precedes optional cross-repo work" 0
+		return 0
+	fi
+	print_result "priority dashboard refresh precedes optional cross-repo work" 1 \
+		"Expected priority update before person-stats refresh; priority_line=${priority_line:-<missing>} cache_line=${cache_line:-<missing>}"
+	return 0
+}
+
+# Test 8: dashboard refresh failures must not be blindly swallowed by the wrapper.
 # The wrapper may intentionally defer EX_TEMPFAIL/rate-limit exits, but ordinary
 # dashboard failures must still flow through _stats_wrapper_run_health_update so
 # the EXIT trap can emit HEALTH-DASHBOARD-FAIL.
@@ -278,7 +295,7 @@ test_transient_dashboard_tempfail_is_deferred() {
 	return 0
 }
 
-# Test 8: the dashboard updater itself must return non-zero when the body edit
+# Test 9: the dashboard updater itself must return non-zero when the body edit
 # fails, otherwise the wrapper's direct update_health_issues call still exits 0
 # and the HEALTH-DASHBOARD-FAIL trap never fires.
 test_dashboard_body_edit_failure_returns_nonzero() {
@@ -304,6 +321,7 @@ main_test() {
 	test_export_before_self_check
 	test_health_update_precedes_quality_sweep
 	test_health_update_survives_slow_quality_sweep
+	test_priority_dashboard_precedes_optional_cross_repo_work
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred
 	test_dashboard_body_edit_failure_returns_nonzero

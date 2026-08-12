@@ -484,6 +484,22 @@ update_health_issues() {
 	fi
 	repo_entries=$(_prioritize_health_repo_entries "$repo_entries")
 
+	# The primary framework dashboard is the operator health surface. Publish it
+	# before optional cache and cross-repository work, each of which can consume
+	# most of the wrapper's bounded wall-clock budget. The regular loop below
+	# skips it afterwards, preventing a duplicate update in the same cycle.
+	local priority_entry=""
+	local priority_slug=""
+	priority_entry=$(printf '%s\n' "$repo_entries" | awk 'NR == 1 { print; exit }')
+	if [[ -n "$priority_entry" ]]; then
+		local priority_path
+		IFS='|' read -r priority_slug priority_path <<<"$priority_entry"
+		if ! _update_health_issue_for_repo "$priority_slug" "$priority_path" "" "" ""; then
+			echo "[stats] Health issue update failed for priority ${priority_slug}" >>"$LOGFILE"
+			return 1
+		fi
+	fi
+
 	# Refresh person-stats cache if stale (t1426: hourly, not every pulse)
 	_refresh_person_stats_cache || true
 
@@ -526,6 +542,7 @@ update_health_issues() {
 	local failed=0
 	while IFS='|' read -r slug path; do
 		[[ -z "$slug" ]] && continue
+		[[ "$slug" == "${priority_slug:-}" ]] && continue
 		if ! _update_health_issue_for_repo "$slug" "$path" "$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md"; then
 			echo "[stats] Health issue update failed for ${slug}" >>"$LOGFILE"
 			failed=$((failed + 1))
@@ -534,6 +551,7 @@ update_health_issues() {
 		updated=$((updated + 1))
 	done <<<"$repo_entries"
 
+	[[ -n "$priority_entry" ]] && updated=$((updated + 1))
 	if [[ "$updated" -gt 0 ]]; then
 		echo "[stats] Health issues: updated $updated repo(s)" >>"$LOGFILE"
 	fi
