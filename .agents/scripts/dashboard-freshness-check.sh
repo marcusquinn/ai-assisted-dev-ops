@@ -243,7 +243,7 @@ _cadence_gate_ok() {
 # matching the longest repos.json slug suffix instead of parsing a fixed segment
 # position.
 _enumerate_dashboards() {
-	local cache issue slug_raw slug key seen="|" slug_candidates
+	local cache issue slug_raw slug key seen="|" cached_slugs="|" slug_candidates
 	slug_candidates="$(_repo_slug_candidates)"
 	shopt -s nullglob
 	for cache in "${HEALTH_ISSUE_CACHE_DIR}"/health-issue-*; do
@@ -257,12 +257,16 @@ _enumerate_dashboards() {
 			*"|${key}|"*) continue ;;
 		esac
 		seen="${seen}${key}|"
+		cached_slugs="${cached_slugs}${slug}|"
 		printf '%s %s\n' "$slug" "$issue"
 	done
 	shopt -u nullglob
 	if command -v gh >/dev/null 2>&1 && gh auth status &>/dev/null 2>&1; then
 		while IFS= read -r slug; do
 			[[ -n "$slug" ]] || continue
+			case "$cached_slugs" in
+			*"|${slug}|"*) continue ;;
+			esac
 			while IFS= read -r issue; do
 				[[ "$issue" =~ ^[0-9]+$ ]] || continue
 				key="${slug} ${issue}"

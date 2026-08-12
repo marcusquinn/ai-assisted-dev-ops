@@ -28,7 +28,8 @@
 #  11. open issue list failures are logged instead of silently treated as an
 #      empty dedup result.
 #  12. scan without a local health-issue cache falls back to open
-#      source:health-dashboard issues for configured repos.
+#      source:health-dashboard issues for configured repos, while a local cache
+#      suppresses historical dashboards for that same repo.
 #  13. source regression: recovered stale and missing-marker alert paths share
 #      the parameterized close helper and accept a pre-fetched open issue list.
 #
@@ -222,6 +223,10 @@ run_scan_stub_script() {
 									printf "%s\n" "{\"number\":99,\"title\":\"Supervisor health dashboard stale: test/repo (#424242)\"}"
 								fi
 							fi
+							return 0
+						fi
+						if [[ "$gh_args" == *"repos/test/repo --jq .private | tostring"* ]]; then
+							printf '%s\n' 'false'
 							return 0
 						fi
 						# $2 = repos/test/repo/issues/424242
@@ -522,6 +527,24 @@ else
 		"created=$created_count; calls:\n$(cat "$calls_file")"
 fi
 printf '%s\n' 424242 >"$HEALTH_CACHE"
+
+# ---------------------------------------------------------------------------
+# Test 12a: a current local cache suppresses obsolete remote dashboards for
+# the same repository. A changed operator identity must not make a historical
+# dashboard stale forever when the current cache already identifies the active
+# surface.
+# ---------------------------------------------------------------------------
+echo "Testing: cached dashboard suppresses historical remote dashboards"
+run_scan_with_stubs "$STALE_BODY" 0 "" >/dev/null
+calls_file="${TMP}/gh-calls.log"
+remote_dashboard_list_count=$(grep -c '^api --paginate repos/test/repo/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100 ' "$calls_file" 2>/dev/null || true)
+[[ "$remote_dashboard_list_count" =~ ^[0-9]+$ ]] || remote_dashboard_list_count=0
+
+if (( remote_dashboard_list_count == 0 )); then
+	pass "local cache suppresses historical source health-dashboard enumeration"
+else
+	fail "cached dashboard suppression" "expected no remote dashboard listing; calls:\n$(cat "$calls_file")"
+fi
 
 # ---------------------------------------------------------------------------
 # Test 12b: contributor health dashboards are ignored
