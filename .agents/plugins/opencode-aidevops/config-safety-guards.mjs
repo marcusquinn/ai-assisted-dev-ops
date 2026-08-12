@@ -38,7 +38,7 @@ if (process.platform === "darwin") {
   }
 }
 
-const MANAGED_EXTERNAL_DIRECTORIES = [
+const STABLE_MANAGED_EXTERNAL_DIRECTORIES = [
   "~/.aidevops",
   "~/.aidevops/**",
   "~/.config/aidevops",
@@ -47,12 +47,24 @@ const MANAGED_EXTERNAL_DIRECTORIES = [
   "~/.config/opencode/command/**",
   "~/.config/opencode/skills",
   "~/.config/opencode/skills/**",
-  "~/Git/_worktrees",
-  "~/Git/_worktrees/**",
-  ...[...tempDirectories].sort().flatMap((path) => [path, `${path}/**`]),
 ];
 
-function addManagedDirectoryRules(target) {
+export function managedExternalDirectories(env = process.env) {
+  const isConfigured = Object.hasOwn(env, "AIDEVOPS_WORKTREE_BASE_DIR");
+  const configured = env.AIDEVOPS_WORKTREE_BASE_DIR;
+  const worktreeBase = isConfigured ? configured.replace(/\/+$/, "") : "~/Git/_worktrees";
+  if (isConfigured && (!worktreeBase.startsWith("/") || worktreeBase === "/")) {
+    throw new TypeError("AIDEVOPS_WORKTREE_BASE_DIR must be a non-root absolute path");
+  }
+  return [
+    ...STABLE_MANAGED_EXTERNAL_DIRECTORIES,
+    worktreeBase,
+    `${worktreeBase}/**`,
+    ...[...tempDirectories].sort().flatMap((path) => [path, `${path}/**`]),
+  ];
+}
+
+function addManagedDirectoryRules(target, env) {
   if (typeof target.permission === "string") {
     const defaultPermission = target.permission;
     target.permission = {
@@ -69,8 +81,13 @@ function addManagedDirectoryRules(target) {
   const rules = typeof existing === "string"
     ? { "*": existing }
     : { ...existing };
+  const configuredWorktreeBase = managedExternalDirectories(env)[STABLE_MANAGED_EXTERNAL_DIRECTORIES.length];
+  if (configuredWorktreeBase !== "~/Git/_worktrees") {
+    delete rules["~/Git/_worktrees"];
+    delete rules["~/Git/_worktrees/**"];
+  }
   let count = 0;
-  for (const path of MANAGED_EXTERNAL_DIRECTORIES) {
+  for (const path of managedExternalDirectories(env)) {
     if (rules[path] !== "allow") count++;
     // OpenCode uses the last matching rule, so managed exceptions must follow
     // broad user defaults such as `"*": "ask"`.
@@ -81,10 +98,10 @@ function addManagedDirectoryRules(target) {
   return count;
 }
 
-export function registerManagedDirectoryPermissions(config) {
-  let count = addManagedDirectoryRules(config);
+export function registerManagedDirectoryPermissions(config, env = process.env) {
+  let count = addManagedDirectoryRules(config, env);
   for (const agent of Object.values(config.agent || {})) {
-    count += addManagedDirectoryRules(agent);
+    count += addManagedDirectoryRules(agent, env);
   }
   return count;
 }

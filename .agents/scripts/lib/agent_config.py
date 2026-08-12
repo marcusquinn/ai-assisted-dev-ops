@@ -53,9 +53,13 @@ def managed_external_directories():
         "~/.config/aidevops/**",
         "~/.config/opencode/command",
         "~/.config/opencode/command/**",
-        "~/Git/_worktrees",
-        "~/Git/_worktrees/**",
     ]
+    is_worktree_base_configured = "AIDEVOPS_WORKTREE_BASE_DIR" in os.environ
+    configured_worktree_base = os.environ.get("AIDEVOPS_WORKTREE_BASE_DIR", "")
+    worktree_base = configured_worktree_base.rstrip("/") if is_worktree_base_configured else "~/Git/_worktrees"
+    if is_worktree_base_configured and (not worktree_base.startswith("/") or worktree_base == "/"):
+        raise ValueError("AIDEVOPS_WORKTREE_BASE_DIR must be a non-root absolute path")
+    paths.extend((worktree_base, f"{worktree_base}/**"))
     configured_temp = tempfile.gettempdir().rstrip("/")
     temp_dirs = {configured_temp, os.path.realpath(configured_temp)}
     if sys.platform == "darwin":

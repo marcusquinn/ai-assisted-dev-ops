@@ -86,6 +86,13 @@ source_status=$?
 set -e
 [[ "$source_status" -eq 0 ]]
 
+for unsafe_worktree_base in "" "/" "///" "relative/worktrees" "~"; do
+	if AIDEVOPS_WORKTREE_BASE_DIR="$unsafe_worktree_base" _validated_worktree_base >/dev/null 2>&1; then
+		printf 'FAIL: accepted unsafe configured worktree base %q\n' "$unsafe_worktree_base" >&2
+		exit 1
+	fi
+done
+
 if ! _write_subagent_stub "$AGENTS_DIR/tools/code-review/bounded-review.md" >/dev/null; then
 	printf '%s\n' 'FAIL: could not generate bounded OpenCode subagent' >&2
 	exit 1

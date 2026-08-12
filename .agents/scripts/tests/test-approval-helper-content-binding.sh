@@ -406,7 +406,7 @@ test_post_approval_linked_references() {
 
 write_locked_issue_fixture() {
 	write_baseline_fixtures
-	jq '.locked = true | .active_lock_reason = "resolved" | .labels = [] | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	jq '.locked = true | .active_lock_reason = "resolved" | .labels = [{id:6,node_id:"L_6",name:"external-contributor"},{id:7,node_id:"L_7",name:"origin:interactive"},{id:8,node_id:"L_8",name:"review:approve"},{id:9,node_id:"L_9",name:"tier:standard"}] | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	jq '.[0] += [{id:418,node_id:"EV_418",event:"locked",created_at:"2026-01-01T00:04:00Z",actor:{id:1,node_id:"U_1",login:"maintainer",type:"User"}}]' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
 	append_signed_comment issue 41 "2026-01-01T00:05:00Z" 4199
 	return 0
@@ -420,7 +420,7 @@ append_issue_timeline_event() {
 
 test_locked_issue_continuity() {
 	write_locked_issue_fixture
-	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}] | .labels = [{id:7,node_id:"L_7",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}] | .labels += [{id:10,node_id:"L_10",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	append_issue_timeline_event '{"id":420,"node_id":"EV_420","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
 	append_issue_timeline_event '{"id":421,"node_id":"EV_421","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
 	assert_verify "trusted allowlisted mutations preserve continuously locked issue approval" issue 41 VERIFIED 0

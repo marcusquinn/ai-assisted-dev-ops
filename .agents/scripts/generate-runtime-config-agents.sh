@@ -318,6 +318,22 @@ _write_restrictive_subagent_source() {
 # Arguments: $1 - source .md file path
 # Requires: AGENTS_DIR and agent_dir to be set (exported for xargs usage)
 # Outputs: "1" to stdout on success (for counting)
+_validated_worktree_base() {
+	local worktree_base="${HOME}/Git/_worktrees"
+	if [[ -n "${AIDEVOPS_WORKTREE_BASE_DIR+x}" ]]; then
+		worktree_base="$AIDEVOPS_WORKTREE_BASE_DIR"
+	fi
+	while [[ "$worktree_base" == */ ]]; do
+		worktree_base="${worktree_base%/}"
+	done
+	if [[ "$worktree_base" != /* || "$worktree_base" == "/" ]]; then
+		printf 'AIDEVOPS_WORKTREE_BASE_DIR must be a non-root absolute path\n' >&2
+		return 1
+	fi
+	printf '%s\n' "$worktree_base"
+	return 0
+}
+
 _write_subagent_stub() {
 	local f="$1"
 	local name
@@ -381,6 +397,8 @@ _write_subagent_stub() {
 
 	local quoted_desc
 	quoted_desc=$(_yaml_quote_scalar "$src_desc")
+	local worktree_base=""
+	worktree_base=$(_validated_worktree_base) || return 1
 
 	{
 		printf '%s\n' \
@@ -401,8 +419,8 @@ _write_subagent_stub() {
 			'    "~/.config/aidevops/**": allow' \
 			'    "~/.config/opencode/command": allow' \
 			'    "~/.config/opencode/command/**": allow' \
-			'    "~/Git/_worktrees": allow' \
-			'    "~/Git/_worktrees/**": allow' \
+			"    \"${worktree_base}\": allow" \
+			"    \"${worktree_base}/**\": allow" \
 			"tools:" \
 			"  read: true" \
 			"  bash: true"
@@ -514,6 +532,7 @@ _generate_subagents_opencode() {
 	export -f _yaml_quote_scalar 2>/dev/null || true
 	export -f _read_subagent_runtime_guards 2>/dev/null || true
 	export -f _write_restrictive_subagent_source 2>/dev/null || true
+	export -f _validated_worktree_base 2>/dev/null || true
 	export -f _write_subagent_stub 2>/dev/null || true
 	export AGENTS_DIR
 	export agent_dir

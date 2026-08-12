@@ -1003,13 +1003,15 @@ _approval_verify_locked_issue_continuity() {
 	if ! jq -e --argjson signed "$signed_lifecycle" '
 		def allowed_label: . == "needs-maintainer-review" or . == "auto-dispatch" or . == "status:available" or . == "status:queued" or . == "status:in-review" or . == "status:in-progress";
 		.lifecycle as $current |
+		($current.labels | map(.name)) as $current_labels |
+		($signed.labels | map(.name)) as $signed_labels |
 		$current.state == $signed.state
 		and $current.state_reason == $signed.state_reason
 		and $current.locked == $signed.locked
 		and $current.active_lock_reason == $signed.active_lock_reason
 		and $current.milestone == $signed.milestone
 		and $current.lock_anchor == $signed.lock_anchor
-		and ([(($current.labels + $signed.labels)[] | .name)] | unique | all(allowed_label))
+		and ([($current_labels - $signed_labels)[], ($signed_labels - $current_labels)[]] | unique | all(allowed_label))
 		and ($current.assignees != $signed.assignees or $current.labels != $signed.labels)
 	' <<<"$current_snapshot" >/dev/null 2>&1; then
 		return 1

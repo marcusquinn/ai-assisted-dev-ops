@@ -248,6 +248,17 @@ _write_permissive_stub() {
 	local extra_tools="$4"
 	local quoted_desc
 	quoted_desc=$(_yaml_quote_scalar "$src_desc")
+	local worktree_base="${HOME}/Git/_worktrees"
+	if [[ -n "${AIDEVOPS_WORKTREE_BASE_DIR+x}" ]]; then
+		worktree_base="$AIDEVOPS_WORKTREE_BASE_DIR"
+	fi
+	while [[ "$worktree_base" == */ ]]; do
+		worktree_base="${worktree_base%/}"
+	done
+	if [[ "$worktree_base" != /* || "$worktree_base" == "/" ]]; then
+		printf 'AIDEVOPS_WORKTREE_BASE_DIR must be a non-root absolute path\n' >&2
+		return 1
+	fi
 	{
 		printf '%s\n' \
 			"---" \
@@ -262,8 +273,8 @@ _write_permissive_stub() {
 			'    "~/.config/aidevops/**": allow' \
 			'    "~/.config/opencode/command": allow' \
 			'    "~/.config/opencode/command/**": allow' \
-			'    "~/Git/_worktrees": allow' \
-			'    "~/Git/_worktrees/**": allow' \
+			"    \"${worktree_base}\": allow" \
+			"    \"${worktree_base}/**\": allow" \
 			"tools:" \
 			"  read: true" \
 			"  bash: true"

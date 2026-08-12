@@ -24,6 +24,7 @@ import {
   enforceTeamInterfaceConversationIsolation,
   enforceTeamInterfaceRemoteInteractiveSelection,
   ensureAgentGuard,
+  managedExternalDirectories,
   registerManagedDirectoryPermissions,
 } from "./config-safety-guards.mjs";
 import {
@@ -39,6 +40,7 @@ export {
   enforcePublicTriageIsolation,
   enforceTeamInterfaceConversationIsolation,
   enforceTeamInterfaceRemoteInteractiveSelection,
+  managedExternalDirectories,
   registerManagedDirectoryPermissions,
   registerResearchOnlyAgent,
 };
