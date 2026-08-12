@@ -519,7 +519,7 @@ Dispatch cooldown active until ${iso} following a no_worker_process launch failu
 }
 
 #######################################
-# Confirm launch recovery removed this runner's queued ownership and applied
+# Confirm launch recovery removed this runner's launch ownership and applied
 # the intended replacement status before publishing any success receipt.
 # Args: issue number, repo slug, runner login, target status
 #######################################
@@ -535,9 +535,48 @@ _verify_launch_recovery_state() {
 	printf '%s' "$issue_meta_json" | jq -e --arg self "$self_login" --arg target "status:${target_status}" '
 		.state == "OPEN" and
 		(([.labels[].name] | index("status:queued")) == null) and
+		(([.labels[].name] | index("status:in-progress")) == null) and
 		(([.labels[].name] | index($target)) != null) and
 		(([.assignees[].login] | index($self)) == null)
 	' >/dev/null 2>&1 || return 1
+	return 0
+}
+
+#######################################
+# Prove that an in-progress issue is still owned by the exact registered
+# prelaunch attempt that launch validation is recovering. The local ledger and
+# latest durable dispatch marker must agree on every generated identity field,
+# and the registered PID/start-token pair must no longer identify a live
+# process. Queued issues retain their established recovery path.
+# Args: issue number, repo slug, ledger entry JSON
+#######################################
+_launch_recovery_owns_registered_attempt() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local ledger_entry="$3"
+	local fields="" session_key="" attempt_id="" lease_token="" runner_device=""
+	local worker_pid="" owner_process_start="" ledger_status="" lease_phase=""
+
+	fields=$(printf '%s' "$ledger_entry" | jq -r '[.session_key // "", .attempt_id // "", .lease_token // "", .runner_device // "", (.pid // "" | tostring), .owner_process_start // "", .status // "", .lease_phase // ""] | @tsv' 2>/dev/null) || return 1
+	IFS=$'\t' read -r session_key attempt_id lease_token runner_device worker_pid owner_process_start ledger_status lease_phase <<<"$fields"
+	[[ -n "$session_key" && -n "$attempt_id" && -n "$lease_token" && -n "$runner_device" ]] || return 1
+	[[ "$worker_pid" =~ ^[1-9][0-9]*$ && -n "$owner_process_start" ]] || return 1
+	[[ "$ledger_status" == "in-flight" && "$lease_phase" == "prelaunch" ]] || return 1
+
+	if kill -0 "$worker_pid" 2>/dev/null; then
+		local current_start=""
+		current_start=$(_process_start_token "$worker_pid" 2>/dev/null || true)
+		[[ -n "$current_start" && "$current_start" != "$owner_process_start" ]] || return 1
+	fi
+
+	local comments_endpoint="" latest_dispatch=""
+	comments_endpoint=$(printf 'repos/%s/issues/%s/comments' "$repo_slug" "$issue_number")
+	latest_dispatch=$(gh api "$comments_endpoint" --paginate --jq \
+		'[.[] | select(.body | contains("<!-- aidevops:dispatch "))] | last | .body // ""' 2>/dev/null) || return 1
+	[[ "$latest_dispatch" == *"lease_token=${lease_token} "* ]] || return 1
+	[[ "$latest_dispatch" == *"device=${runner_device} "* ]] || return 1
+	[[ "$latest_dispatch" == *"session=${session_key} "* ]] || return 1
+	[[ "$latest_dispatch" == *"attempt_id=${attempt_id} "* ]] || return 1
 	return 0
 }
 
@@ -551,16 +590,15 @@ recover_failed_launch_state() {
 		return 0
 	fi
 
-	# Mark in-flight ledger entry as failed even if GitHub claim edits never stuck.
-	local ledger_helper
+	# Capture the exact in-flight attempt. It is marked failed only after its
+	# GitHub ownership has been proven and released.
+	local ledger_helper ledger_entry="" session_key="" lease_token="" attempt_id=""
 	ledger_helper="${SCRIPT_DIR}/dispatch-ledger-helper.sh"
 	if [[ -x "$ledger_helper" ]]; then
-		local ledger_entry session_key
 		ledger_entry=$("$ledger_helper" check-issue --issue "$issue_number" --repo "$repo_slug" 2>/dev/null || true)
 		session_key=$(printf '%s' "$ledger_entry" | jq -r '.session_key // ""' 2>/dev/null)
-		if [[ -n "$session_key" ]]; then
-			"$ledger_helper" fail --session-key "$session_key" >/dev/null 2>&1 || true
-		fi
+		lease_token=$(printf '%s' "$ledger_entry" | jq -r '.lease_token // ""' 2>/dev/null)
+		attempt_id=$(printf '%s' "$ledger_entry" | jq -r '.attempt_id // ""' 2>/dev/null)
 	fi
 
 	# For no-worker failures, skip cleanup if a late-started worker appears.
@@ -585,17 +623,29 @@ recover_failed_launch_state() {
 		return 0
 	fi
 
-	local issue_state assigned_to_self has_queued is_blocked
+	local issue_state assigned_to_self has_queued has_in_progress is_blocked
 	issue_state=$(echo "$issue_meta_json" | jq -r '.state // ""' 2>/dev/null)
 	assigned_to_self=$(echo "$issue_meta_json" | jq -r --arg self "$self_login" '([.assignees[].login] | index($self)) != null' 2>/dev/null)
 	has_queued=$(echo "$issue_meta_json" | jq -r '([.labels[].name] | index("status:queued")) != null' 2>/dev/null)
+	has_in_progress=$(echo "$issue_meta_json" | jq -r '([.labels[].name] | index("status:in-progress")) != null' 2>/dev/null)
 	is_blocked=$(echo "$issue_meta_json" | jq -r '([.labels[].name] | index("status:blocked")) != null' 2>/dev/null)
 
 	[[ "$assigned_to_self" == "true" || "$assigned_to_self" == "$_PULSE_CLEANUP_FALSE" ]] || assigned_to_self=""
 	[[ "$has_queued" == "true" || "$has_queued" == "$_PULSE_CLEANUP_FALSE" ]] || has_queued=""
+	[[ "$has_in_progress" == "true" || "$has_in_progress" == "$_PULSE_CLEANUP_FALSE" ]] || has_in_progress=""
 	[[ "$is_blocked" == "true" || "$is_blocked" == "$_PULSE_CLEANUP_FALSE" ]] || is_blocked=""
 
-	if [[ "$issue_state" != "OPEN" ]] || [[ "$assigned_to_self" != "true" ]] || [[ "$has_queued" != "true" ]]; then
+	if [[ "$issue_state" != "OPEN" ]] || [[ "$assigned_to_self" != "true" ]]; then
+		return 0
+	fi
+	if [[ "$has_queued" != "true" ]]; then
+		if [[ "$has_in_progress" != "true" ]] || ! _launch_recovery_owns_registered_attempt "$issue_number" "$repo_slug" "$ledger_entry"; then
+			echo "[pulse-wrapper] Launch recovery skipped for #${issue_number} (${repo_slug}): in-progress ownership does not match the failed registered attempt" >>"$LOGFILE"
+			return 0
+		fi
+	fi
+	if [[ "$has_queued" == "true" && "$has_in_progress" == "true" ]]; then
+		echo "[pulse-wrapper] Launch recovery skipped for #${issue_number} (${repo_slug}): ambiguous queued/in-progress overlap" >>"$LOGFILE"
 		return 0
 	fi
 
@@ -612,6 +662,12 @@ recover_failed_launch_state() {
 	if ! _verify_launch_recovery_state "$issue_number" "$repo_slug" "$self_login" "$target_status"; then
 		echo "[pulse-wrapper] Launch recovery uncertain for #${issue_number} (${repo_slug}): post-mutation verification failed" >>"$LOGFILE"
 		return 1
+	fi
+	if [[ -n "$session_key" && -x "$ledger_helper" ]]; then
+		local -a fail_args=(fail --session-key "$session_key")
+		[[ -n "$lease_token" ]] && fail_args+=(--lease-token "$lease_token")
+		[[ -n "$attempt_id" ]] && fail_args+=(--attempt-id "$attempt_id")
+		"$ledger_helper" "${fail_args[@]}" >/dev/null 2>&1 || true
 	fi
 
 	# t2394: Invalidate stale cross-runner claims immediately (see helper below).
@@ -647,7 +703,7 @@ recover_failed_launch_state() {
 		;;
 	esac
 
-	echo "[pulse-wrapper] Launch recovery reset #${issue_number} (${repo_slug}) after ${failure_reason} crash_type=${effective_crash_type:-unclassified}: removed self assignee + status:queued" >>"$LOGFILE"
+	echo "[pulse-wrapper] Launch recovery reset #${issue_number} (${repo_slug}) after ${failure_reason} crash_type=${effective_crash_type:-unclassified}: removed self assignee + launch status" >>"$LOGFILE"
 	return 0
 }
 
