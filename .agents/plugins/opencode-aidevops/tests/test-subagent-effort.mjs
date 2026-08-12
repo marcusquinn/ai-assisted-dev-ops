@@ -11,7 +11,10 @@ import {
   normalizeEffortTier,
   resolveTierReasoning,
 } from "../subagent-effort.mjs";
-import { capabilityEscalationEvidence } from "../subagent-effort-escalation.mjs";
+import {
+  appendCapabilityEscalationContract,
+  capabilityEscalationEvidence,
+} from "../subagent-effort-escalation.mjs";
 import { SubagentLifecycleTracker, eventSessionID } from "../subagent-lifecycle-tracker.mjs";
 
 const TIER_REASONING = {
@@ -543,10 +546,25 @@ test("conversation turns keep one route attempt and capability escalation reuses
 
   const initialOutput = {
     message: { sessionID: "child", agent: "explore" },
-    parts: [{ type: "text", text: "Inspect this bounded implementation detail." }],
+    parts: [{
+      id: "part-initial",
+      sessionID: "child",
+      messageID: "message-initial",
+      type: "text",
+      text: "Inspect this bounded implementation detail.",
+    }],
   };
   await hooks.chatMessage({}, initialOutput);
-  assert.match(initialOutput.parts.at(-1).text, /capability escalation contract/);
+  assert.equal(initialOutput.parts.length, 1);
+  assert.deepEqual(
+    {
+      id: initialOutput.parts[0].id,
+      sessionID: initialOutput.parts[0].sessionID,
+      messageID: initialOutput.parts[0].messageID,
+    },
+    { id: "part-initial", sessionID: "child", messageID: "message-initial" },
+  );
+  assert.match(initialOutput.parts[0].text, /capability escalation contract/);
   for (let turn = 0; turn < 18; turn += 1) {
     await hooks.chatParams({
       provider: { id: "openai" },
@@ -700,4 +718,42 @@ test("non-capability blockers and headless tasks never auto-escalate", async () 
 
   assert.equal(promptCalls, 0);
   assert.equal(taskOutput.metadata.aidevopsRoutingEscalation, undefined);
+});
+
+test("capability contract preserves persisted part identity and fails open", () => {
+  const completeOutput = {
+    parts: [{
+      id: "part-1",
+      sessionID: "session-1",
+      messageID: "message-1",
+      type: "text",
+      text: "Original prompt",
+      synthetic: false,
+    }],
+  };
+
+  appendCapabilityEscalationContract(completeOutput);
+  appendCapabilityEscalationContract(completeOutput);
+
+  assert.equal(completeOutput.parts.length, 1);
+  assert.deepEqual(
+    completeOutput.parts[0],
+    {
+      id: "part-1",
+      sessionID: "session-1",
+      messageID: "message-1",
+      type: "text",
+      text: completeOutput.parts[0].text,
+      synthetic: false,
+    },
+  );
+  assert.equal(
+    completeOutput.parts[0].text.match(/\[AIDEvOps capability escalation contract\]/g)?.length,
+    1,
+  );
+  assert.match(completeOutput.parts[0].text, /^Original prompt\n\n/);
+
+  const incompleteOutput = { parts: [{ type: "text", text: "Incomplete host part" }] };
+  appendCapabilityEscalationContract(incompleteOutput);
+  assert.deepEqual(incompleteOutput, { parts: [{ type: "text", text: "Incomplete host part" }] });
 });

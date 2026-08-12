@@ -65,16 +65,22 @@ export function appendCapabilityEscalationContract(output) {
   const marker = "[AIDEvOps capability escalation contract]";
   const parts = Array.isArray(output?.parts) ? output.parts : [];
   if (parts.some((part) => part?.type === "text" && String(part.text || "").includes(marker))) return;
-  parts.push({
-    type: "text",
-    synthetic: true,
-    text: [
-      marker,
-      "After bounded attempts, emit `BLOCKED: capability limit - <evidence>` only when model capability is the sole blocker.",
-      "Do not use it for permission, authentication, provider, rate-limit, secret, policy, trust-boundary, locality, billing, or side-effect uncertainty.",
-    ].join("\n"),
-  });
-  output.parts = parts;
+  const targetIndex = parts.findIndex((part) => part?.type === "text"
+    && typeof part.id === "string"
+    && typeof part.sessionID === "string"
+    && typeof part.messageID === "string");
+  if (targetIndex < 0) return;
+
+  const contract = [
+    marker,
+    "After bounded attempts, emit `BLOCKED: capability limit - <evidence>` only when model capability is the sole blocker.",
+    "Do not use it for permission, authentication, provider, rate-limit, secret, policy, trust-boundary, locality, billing, or side-effect uncertainty.",
+  ].join("\n");
+  const target = parts[targetIndex];
+  const originalText = String(target.text || "");
+  output.parts = parts.map((part, index) => index === targetIndex
+    ? { ...target, text: originalText ? `${originalText}\n\n${contract}` : contract }
+    : part);
 }
 
 class InteractiveSubagentEscalator {
