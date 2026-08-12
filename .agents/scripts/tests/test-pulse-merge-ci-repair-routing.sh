@@ -57,6 +57,7 @@ setup_test_env() {
 	export AIDEVOPS_CI_REPAIR_WORKTREE_BASE_DIR="${TEST_ROOT}/worktrees"
 	export AIDEVOPS_HEADLESS_RUNTIME_DIR="${TEST_ROOT}/headless-runtime"
 	export AIDEVOPS_CI_REPAIR_SESSION_LOCK_WAIT_STEPS="0"
+	export AIDEVOPS_PULSE_RUNNER_LOGIN="expected-runner"
 	mkdir -p "${TEST_ROOT}/repo"
 	TEST_PR_HEAD_SHA="abcdef0123456789abcdef0123456789abcdef01"
 	export TEST_PR_HEAD_SHA
@@ -66,7 +67,7 @@ setup_test_env() {
 	printf 'stale-owner\n' >"${TEST_ROOT}/issue-assignees.txt"
 	cat >"${TEST_ROOT}/bin/headless-runtime-helper.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "$*" >>"${GH_LOG}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "${WORKER_GITHUB_LOGIN:-}" "$*" >>"${GH_LOG}"
 if [[ "$*" == *"--detach"* ]]; then
 	sleep "${TEST_WORKER_SLEEP_SECONDS:-2}" >/dev/null 2>&1 &
 	printf 'Dispatched PID: %s\n' "$!"
@@ -919,7 +920,7 @@ test_ci_feedback_emits_terminal_failure_with_conclusion_and_url() {
 	prompt_file=$(find "$AIDEVOPS_CI_REPAIR_STATE_DIR" -name prompt.md -type f -print -quit)
 	if [[ -z "$prompt_file" ]] || ! grep -qF '**Lint**: failure — [check URL](https://github.com/owner/repo/actions/runs/123/job/456)' "$prompt_file"; then
 		print_result "terminal failure dispatch includes conclusion and check URL" 1 "Dispatch log: $(cat "$GH_LOG")"
-	elif ! grep -q "${TEST_ROOT}/worktrees/.*|1|run --role worker.*--dir ${TEST_ROOT}/worktrees/" "$GH_LOG"; then
+	elif ! grep -q "${TEST_ROOT}/worktrees/.*|1|expected-runner|run --role worker.*--dir ${TEST_ROOT}/worktrees/" "$GH_LOG"; then
 		print_result "terminal failure dispatch uses matching worker worktree env and directory" 1 "Dispatch log: $(cat "$GH_LOG")"
 	elif grep -qF 'gh pr close 100' "$GH_LOG"; then
 		print_result "terminal failure preserves existing PR" 1 "Unexpected close: $(cat "$GH_LOG")"
