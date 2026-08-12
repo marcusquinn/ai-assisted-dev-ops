@@ -80,6 +80,34 @@ else
 	print_result "_enrich_prefetch_issues_map function exists (GH#20129)" 1 "(function not found)"
 fi
 
+if declare -f _enrich_resolve_actor >/dev/null 2>&1; then
+	print_result "_enrich_resolve_actor function exists (GH#30021)" 0
+else
+	print_result "_enrich_resolve_actor function exists (GH#30021)" 1 "(function not found)"
+fi
+
+# A bulk invocation may consult the resolver repeatedly, but authentication
+# identity must be fetched at most once and then exported to task subprocesses.
+ACTOR_LOOKUP_LOG="${TEST_ROOT}/actor-lookups.log"
+gh() {
+	printf 'lookup\n' >>"$ACTOR_LOOKUP_LOG"
+	printf 'fixture-user\n'
+	return 0
+}
+unset AIDEVOPS_SESSION_USER AIDEVOPS_ENRICH_ACTOR AIDEVOPS_ENRICH_ACTOR_RESOLVED
+for _actor_fixture in $(seq 1 60); do
+	_enrich_resolve_actor
+done
+ACTOR_LOOKUPS=$(wc -l <"$ACTOR_LOOKUP_LOG" | tr -d ' ')
+if [[ "$ACTOR_LOOKUPS" -eq 1 && "$AIDEVOPS_ENRICH_ACTOR" == "fixture-user" ]]; then
+	print_result "60-task actor resolution performs one authenticated lookup" 0
+else
+	print_result "60-task actor resolution performs one authenticated lookup" 1 \
+		"(lookups=${ACTOR_LOOKUPS}, actor=${AIDEVOPS_ENRICH_ACTOR:-unset})"
+fi
+unset -f gh
+unset AIDEVOPS_ENRICH_ACTOR AIDEVOPS_ENRICH_ACTOR_RESOLVED
+
 # Verify cmd_enrich calls both helpers (use grep on the actual file path)
 if grep -q '_enrich_check_rate_limit' "${TEST_SCRIPTS_DIR}/../issue-sync-helper-enrich.sh"; then
 	print_result "cmd_enrich calls _enrich_check_rate_limit" 0

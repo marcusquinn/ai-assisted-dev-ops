@@ -365,15 +365,6 @@ _enrich_process_task() {
 		print_error "Skipping enrich for $task_id — empty description; fix TODO entry before retrying (t2377)"
 		return 0
 	fi
-	local body
-	local _compose_rc=0
-	body=$(compose_issue_body "$task_id" "$project_root") || _compose_rc=$?
-	# Layer 1 (t2377): composition failure = no authoritative body available.
-	if [[ $_compose_rc -ne 0 || -z "$body" ]]; then
-		print_error "Skipping enrich for $task_id — compose_issue_body failed (rc=$_compose_rc). Task ID is not in TODO.md; fix the TODO entry or remove the brief file (t2377)."
-		return 0
-	fi
-
 	if [[ "$DRY_RUN" == "true" ]]; then
 		local _dry_tier_msg=""
 		[[ -n "$tier_label" ]] && _dry_tier_msg=" tier=${tier_label}(replace)"
@@ -404,6 +395,16 @@ _enrich_process_task() {
 	# GH#19856: cross-runner dedup guard — abort if another runner holds
 	# an active claim.
 	if _enrich_check_active_claim "$num" "$repo" "$task_id" "$_state_json"; then
+		return 0
+	fi
+
+	# Compose the authoritative body only after prefetched metadata and the
+	# active-claim guard prove that this task is eligible for mutation.
+	local body
+	local _compose_rc=0
+	body=$(compose_issue_body "$task_id" "$project_root") || _compose_rc=$?
+	if [[ $_compose_rc -ne 0 || -z "$body" ]]; then
+		print_error "Skipping enrich for $task_id — compose_issue_body failed (rc=$_compose_rc). Task ID is not in TODO.md; fix the TODO entry or remove the brief file (t2377)."
 		return 0
 	fi
 

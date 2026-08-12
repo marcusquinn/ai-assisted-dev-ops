@@ -203,6 +203,31 @@ else
 	print_result "enrich guard blocks active interactive claim with zero GitHub writes" 1 "(guard passed or emitted a write)"
 fi
 
+# A structurally blocked task must return before authoritative body composition.
+# This keeps broad no-op sweeps on their prefetched, read-only path (GH#30021).
+TODO_FIXTURE="${TEST_ROOT}/TODO.md"
+mkdir -p "${TEST_ROOT}/todo/tasks"
+printf '%s\n' '- [ ] t30021: Blocked fixture #bug ref:GH#123' >"$TODO_FIXTURE"
+compose_issue_body() {
+	printf 'compose\n' >>"${TEST_ROOT}/compose-calls.log"
+	printf 'unexpected body\n'
+	return 0
+}
+require_task_issue_mapping() {
+	return 0
+}
+: >"${TEST_ROOT}/compose-calls.log"
+ENRICH_PREFETCH_FILE="${TEST_ROOT}/prefetch.json"
+printf '%s\n' "[$active_claim_json]" >"$ENRICH_PREFETCH_FILE"
+if _enrich_process_task "t30021" "test/repo" "$TODO_FIXTURE" "$TEST_ROOT" \
+	'- [ ] t30021: Blocked fixture #bug ref:GH#123' >/dev/null 2>&1 &&
+	[[ ! -s "${TEST_ROOT}/compose-calls.log" ]]; then
+	print_result "blocked enrich task returns before authoritative body composition" 0
+else
+	print_result "blocked enrich task returns before authoritative body composition" 1 "(compose_issue_body was called)"
+fi
+unset ENRICH_PREFETCH_FILE
+
 # Metadata uncertainty must also fail closed without trying recovery writes.
 : >"$GH_WRITE_LOG"
 write_stub_gh '{}' true

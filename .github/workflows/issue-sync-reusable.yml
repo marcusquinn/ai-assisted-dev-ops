@@ -287,6 +287,9 @@ jobs:
           bash __aidevops/.agents/scripts/issue-sync-helper.sh enrich --verbose || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Resolve the trusted human actor once at workflow scope; bot actors
+          # retain the command's authenticated-login fallback.
+          AIDEVOPS_SESSION_USER: ${{ endsWith(github.actor, '[bot]') && '' || github.actor }}
           # Push/release runs share a 20-minute budget with close/push/pull and
           # TODO.md push. Keep routine enrichment bounded; manual dispatch still
           # runs full `enrich` because these env vars are not set there.

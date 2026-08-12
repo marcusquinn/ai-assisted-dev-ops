@@ -398,8 +398,7 @@ _enrich_check_active_claim() {
 		# GH#19922: resolve runner login so the assignment guard can apply the self-login
 		# exemption — without it the runner blocks its own enrichment when it is
 		# also an assignee (e.g. single-user setups).
-		local _user="${AIDEVOPS_SESSION_USER:-}"
-		[[ -z "$_user" ]] && _user=$(gh api user --jq '.login // ""' 2>/dev/null || echo "")
+		local _user="${AIDEVOPS_ENRICH_ACTOR:-${AIDEVOPS_SESSION_USER:-}}"
 		local _dedup_result=""
 		# GH#19922: pass pre-fetched JSON via ISSUE_META_JSON env var to avoid
 		# a redundant metadata read. GH#28498: inspection must never invoke stale
@@ -413,6 +412,17 @@ _enrich_check_active_claim() {
 	return 1
 }
 
+_enrich_resolve_actor() {
+	[[ "${AIDEVOPS_ENRICH_ACTOR_RESOLVED:-}" == "1" ]] && return 0
+	AIDEVOPS_ENRICH_ACTOR="${AIDEVOPS_SESSION_USER:-}"
+	if [[ -z "$AIDEVOPS_ENRICH_ACTOR" ]]; then
+		AIDEVOPS_ENRICH_ACTOR=$(gh api user --jq '.login // ""' 2>/dev/null || echo "")
+	fi
+	AIDEVOPS_ENRICH_ACTOR_RESOLVED=1
+	export AIDEVOPS_ENRICH_ACTOR AIDEVOPS_ENRICH_ACTOR_RESOLVED
+	return 0
+}
+
 # =============================================================================
 # cmd_enrich
 # =============================================================================
@@ -421,6 +431,9 @@ cmd_enrich() {
 	local target_task="${1:-}"
 	_init_cmd || return 1
 	local repo="$_CMD_REPO" todo_file="$_CMD_TODO" project_root="$_CMD_ROOT"
+	# Keep the actor cache scoped to this command invocation, even when callers
+	# source the helper and invoke cmd_enrich more than once in the same shell.
+	unset AIDEVOPS_ENRICH_ACTOR AIDEVOPS_ENRICH_ACTOR_RESOLVED
 
 	local tasks=()
 	while IFS= read -r tid; do
@@ -444,6 +457,10 @@ cmd_enrich() {
 	if [[ -z "$target_task" ]] && _enrich_check_rate_limit; then
 		return 0
 	fi
+
+	# Resolve identity once for the invocation. Per-task processing occurs in
+	# command substitutions, so export the bounded result for every child.
+	_enrich_resolve_actor
 
 	# GH#20129 Approach A: batch prefetch — issue ONE gh issue list call for all
 	# open issues instead of per-task gh issue view calls. The prefetch JSON is
