@@ -783,6 +783,8 @@ _full_loop_release_validate_published_reconciliation_intent() {
 	local persisted_json=""
 	local observed_json=""
 	local observed_sources=""
+	local lane_sources=""
+	local lane_intent_json=""
 
 	[[ "$requested_pr" =~ ^[0-9]+$ && "$tag_name" =~ $_FULL_LOOP_RELEASE_VERSION_TAG_REGEX ]] || return 1
 	declare -F release_lane_read >/dev/null 2>&1 || return 1
@@ -793,12 +795,20 @@ _full_loop_release_validate_published_reconciliation_intent() {
 		<<<"$observed_json") || return 1
 	release_authorization_compare "$persisted_sources" "$observed_sources" || return 1
 	release_lane_read "$repo" || return 1
-	jq -e --argjson source_pr "$requested_pr" --arg tag_name "$tag_name" --arg expected "$persisted_sources" '
+	jq -e --argjson source_pr "$requested_pr" --arg tag_name "$tag_name" '
 		.active == true and .source_pr == $source_pr and .tag == $tag_name
-		and .expected_sources == $expected
+		and (.expected_sources | type) == "string"
 		and (.phase == "remote-publication" or .phase == "exact-tag-deployment")
 		and ((.terminal_receipt // null) == null)
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	if [[ "$lane_sources" != "$persisted_sources" ]]; then
+		lane_intent_json=$(release_authorization_intent_json "$lane_sources") || return 1
+		jq -e --argjson lane_intent "$lane_intent_json" --argjson persisted "$persisted_json" '
+			all($lane_intent[]; .merge == null)
+			and ([$lane_intent[].pr] | sort) == ([$persisted[].pr] | sort)
+		' <<<"$persisted_json" >/dev/null || return 1
+	fi
 	return 0
 }
 

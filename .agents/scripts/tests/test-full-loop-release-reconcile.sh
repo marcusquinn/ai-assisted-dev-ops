@@ -611,10 +611,12 @@ _full_loop_read_release_authorization() {
 	printf '%s\n' '90@1111111111111111111111111111111111111111'
 	return 0
 }
+lane_expected_sources='90@1111111111111111111111111111111111111111'
 release_lane_read() {
 	local repo="$1"
 	[[ "$repo" == "test/repo" ]] || return 1
-	_AIDEVOPS_RELEASE_LANE_JSON='{"active":true,"source_pr":90,"expected_sources":"90@1111111111111111111111111111111111111111","phase":"remote-publication","tag":"v1.2.3","terminal_receipt":null}'
+	_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$lane_expected_sources" \
+		'{active:true,source_pr:90,expected_sources:$expected,phase:"remote-publication",tag:"v1.2.3",terminal_receipt:null}') || return 1
 	return 0
 }
 _full_loop_release_resolve_tag_commit() {
@@ -646,9 +648,32 @@ if ! _full_loop_release_finalize_reconciliation test/repo 90 v1.2.3 ||
 	printf 'FAIL reconciliation did not finalize with current hardened runtime against the tag checkout\n'
 	exit 1
 fi
+lane_expected_sources='90'
+if ! _full_loop_release_finalize_reconciliation test/repo 90 v1.2.3; then
+	printf 'FAIL published reconciliation rejected equivalent legacy PR-only lane intent\n'
+	exit 1
+fi
+lane_state_before="$_AIDEVOPS_RELEASE_LANE_JSON"
+if ! _full_loop_release_validate_published_reconciliation_intent test/repo 90 v1.2.3 \
+	'{"source_pr":90,"source_merge":"1111111111111111111111111111111111111111","aggregated_sources":[]}' ||
+	[[ "$_AIDEVOPS_RELEASE_LANE_JSON" != "$lane_state_before" ]]; then
+	printf 'FAIL published validation mutated equivalent legacy lane intent\n'
+	exit 1
+fi
+for lane_expected_sources in \
+	'91' \
+	'90,91' \
+	'90,90' \
+	'90@2222222222222222222222222222222222222222'; do
+	if _full_loop_release_finalize_reconciliation test/repo 90 v1.2.3; then
+		printf 'FAIL published reconciliation accepted mismatched lane intent: %s\n' "$lane_expected_sources"
+		exit 1
+	fi
+done
+lane_expected_sources='90@1111111111111111111111111111111111111111'
 SCRIPT_DIR="$saved_script_dir"
 _FULL_LOOP_RELEASE_PATH=""
-printf 'PASS reconciliation uses current hardened runtime against immutable tag content\n'
+printf 'PASS reconciliation uses hardened tag runtime and accepts only equivalent legacy lane intent\n'
 
 cat >"${TEST_ROOT}/bin/gh" <<'STUB'
 #!/usr/bin/env bash
