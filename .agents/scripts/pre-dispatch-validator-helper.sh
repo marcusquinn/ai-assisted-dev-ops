@@ -1119,21 +1119,29 @@ _rf_get_routed_review_at() {
 	local review_state=""
 	local submitted_at=""
 	local commit_id=""
-	local latest=""
+	local latest_exact=""
+	local latest_any=""
 
 	review_rows=$(gh api --paginate "repos/${slug}/pulls/${source_pr}/reviews" \
 		--jq '.[] | [.state // "", .submitted_at // "", .commit_id // ""] | @tsv' 2>/dev/null) || return 1
 	while IFS=$'\t' read -r review_state submitted_at commit_id; do
 		[[ "$review_state" == "CHANGES_REQUESTED" ]] || continue
-		[[ -z "$source_sha" || "$commit_id" == "$source_sha" ]] || continue
 		[[ "$submitted_at" == *T* ]] || continue
-		if [[ -z "$latest" || "$submitted_at" > "$latest" ]]; then
-			latest="$submitted_at"
+		if [[ -z "$latest_any" || "$submitted_at" > "$latest_any" ]]; then
+			latest_any="$submitted_at"
+		fi
+		if [[ (-z "$source_sha" || "$commit_id" == "$source_sha") &&
+			(-z "$latest_exact" || "$submitted_at" > "$latest_exact") ]]; then
+			latest_exact="$submitted_at"
 		fi
 	done <<<"$review_rows"
 
-	if [[ -n "$latest" ]]; then
-		printf '%s\n' "$latest"
+	if [[ -n "$latest_exact" ]]; then
+		printf '%s\n' "$latest_exact"
+		return 0
+	fi
+	if [[ -n "$latest_any" ]]; then
+		printf '%s\n' "$latest_any"
 		return 0
 	fi
 

@@ -463,7 +463,11 @@ if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/pulls/73\$'; t
 fi
 
 if [[ "\${1:-}" == "api" ]] && printf '%s' "\$args" | grep -qE 'pulls/73/reviews'; then
-	printf 'CHANGES_REQUESTED\t2026-05-08T12:00:00Z\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+	if [[ '${issue_metadata_mode}' == "review-sha-mismatch" ]]; then
+		printf 'CHANGES_REQUESTED\t2026-05-08T12:00:00Z\tbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+	else
+		printf 'CHANGES_REQUESTED\t2026-05-08T12:00:00Z\taaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+	fi
 	exit 0
 fi
 
@@ -830,19 +834,37 @@ test_routed_review_closes_for_matching_post_review_merge() {
 	setup_test_env
 	create_gh_stub_routed_review_feedback "2026-05-08T13:00:00Z" "src/runtime-guard.sh"
 
+	local output=""
 	local rc=0
-	"$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+	output=$("$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" 2>&1) || rc=$?
 
 	if [[ "$rc" -eq 10 ]]; then
 		print_result "routed_review closes for matching post-review merge" 0
 	else
 		print_result "routed_review closes for matching post-review merge" 1 "Expected exit 10, got ${rc}"
 	fi
-	if grep -qF 'Source PR:** #73' "${TEST_ROOT}/review-actions.log" &&
-		grep -qF 'routed review window for closed unmerged source PR #73 after 2026-05-08T12:00:00Z' "${TEST_ROOT}/review-actions.log"; then
+	if [[ "$output" == *"source=73 window=routed review window for closed unmerged source PR #73 after 2026-05-08T12:00:00Z"* ]]; then
 		print_result "routed_review close rationale identifies bounded source window" 0
 	else
 		print_result "routed_review close rationale identifies bounded source window" 1 "Expected exact source PR and bounded window in close rationale"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_routed_review_falls_back_to_requested_change_on_prior_head() {
+	setup_test_env
+	create_gh_stub_routed_review_feedback "2026-05-08T11:00:00Z" "TODO.md" "review-sha-mismatch"
+
+	local output=""
+	local rc=0
+	output=$("$HELPER_SCRIPT" validate "47" "marcusquinn/aidevops" 2>&1) || rc=$?
+
+	if [[ "$rc" -eq 0 && "$output" == *"routed review window for closed unmerged source PR #73 after 2026-05-08T12:00:00Z"* ]]; then
+		print_result "routed_review falls back to requested change on prior head" 0
+	else
+		print_result "routed_review falls back to requested change on prior head" 1 "Expected review-bounded exit 0, got ${rc}"
 	fi
 
 	teardown_test_env
@@ -1038,6 +1060,7 @@ main() {
 	test_source_review_scanner_label_enters_supersession_scope
 	test_routed_review_ignores_merge_before_requested_changes
 	test_routed_review_closes_for_matching_post_review_merge
+	test_routed_review_falls_back_to_requested_change_on_prior_head
 	test_routed_review_metadata_failure_blocks_dispatch
 	test_routed_review_missing_created_at_blocks_dispatch
 	test_routed_review_source_metadata_failure_blocks_dispatch
