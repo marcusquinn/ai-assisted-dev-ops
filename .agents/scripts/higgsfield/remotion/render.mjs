@@ -5,7 +5,8 @@
 //   node render.mjs --still --text "Title" --aspect 9:16 --output title.png
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,8 +51,7 @@ function copyMusicToPublic(brief, briefPath, publicDir) {
     );
     return undefined;
   }
-  // Use timestamp prefix to avoid filename collisions across renders
-  const musicFilename = `music-${Date.now()}-${basename(musicAbsPath)}`;
+  const musicFilename = `music-${fileDigest(musicAbsPath).slice(0, 12)}-${basename(musicAbsPath)}`;
   const musicDest = join(publicDir, musicFilename);
   copyFileSync(musicAbsPath, musicDest);
   console.log(`  Copied ${basename(musicAbsPath)} -> public/${musicFilename}`);
@@ -70,6 +70,25 @@ function calculateFrames(scenes, sceneVideoFilenames, transitionDuration, fps) {
   return { sceneCount, totalSceneDuration, totalFrames };
 }
 
+function fileDigest(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function stableDigest(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function validateBrief(brief, videoPaths) {
+  const scenes = brief.scenes || [];
+  if (!Array.isArray(scenes) || scenes.length === 0) throw new Error("brief requires at least one scene");
+  if (scenes.length !== videoPaths.length) throw new Error("scene/video count mismatch");
+  if (!ASPECT_DIMS[brief.aspect || "9:16"]) throw new Error("brief has an unsupported aspect ratio");
+  for (const scene of scenes) {
+    if (!Number.isFinite(scene.duration) || scene.duration <= 0) throw new Error("every scene requires a positive duration");
+    if (scene.fit && !["cover", "contain"].includes(scene.fit)) throw new Error("scene fit must be cover or contain");
+  }
+}
+
 /**
  * Normalize captions from brief format to FullVideo.tsx format.
  * Maps startFrame-based captions to scene indices and clamps out-of-range values.
@@ -79,11 +98,12 @@ function normalizeCaptions(rawCaptions, scenes, fps) {
   return rawCaptions.map((cap) => {
     if (typeof cap.scene === "number") {
       // Clamp to last scene so out-of-range indices don't silently drop captions
-      return { ...cap, scene: Math.min(cap.scene, lastSceneIndex) };
+      if (cap.scene < 0 || cap.scene > lastSceneIndex) throw new Error("caption scene is outside the render");
+      return { ...cap, scene: cap.scene };
     }
     // Derive scene index from startFrame
     let frameOffset = 0;
-    let sceneIdx = lastSceneIndex; // Default to last scene (fallback for beyond-end frames)
+    let sceneIdx = -1;
     for (let s = 0; s < scenes.length; s++) {
       const sceneDur = (scenes[s].duration || 5) * fps;
       if ((cap.startFrame || 0) >= frameOffset && (cap.startFrame || 0) < frameOffset + sceneDur) {
@@ -92,11 +112,13 @@ function normalizeCaptions(rawCaptions, scenes, fps) {
       }
       frameOffset += sceneDur;
     }
+    if (sceneIdx < 0) throw new Error("caption timing is outside the render");
     return {
       scene: sceneIdx,
       text: cap.text || "",
       position: cap.position || "bottom",
-      style: cap.style || "bold-white",
+      style: cap.style || "bold-white", startFrame: cap.startFrame, endFrame: cap.endFrame,
+      words: cap.words || [],
     };
   });
 }
@@ -142,6 +164,12 @@ function renderVideo(opts) {
       process.exit(1);
     }
   }
+  try {
+    validateBrief(brief, videoPaths);
+  } catch (error) {
+    console.error(`Invalid render input: ${error.message}`);
+    process.exit(1);
+  }
 
   // Copy videos into Remotion's public/ directory so staticFile() can resolve them.
   // staticFile() only accepts filenames (not absolute paths), so we copy each video
@@ -151,7 +179,7 @@ function renderVideo(opts) {
     mkdirSync(publicDir, { recursive: true });
   }
   const sceneVideoFilenames = videoPaths.map((absPath, i) => {
-    const filename = `scene-${i}.mp4`;
+    const filename = `scene-${i}-${fileDigest(absPath).slice(0, 12)}.mp4`;
     const dest = join(publicDir, filename);
     copyFileSync(absPath, dest);
     console.log(`  Copied ${basename(absPath)} -> public/${filename}`);
@@ -171,14 +199,8 @@ function renderVideo(opts) {
     transitionStyle: brief.transitionStyle || opts.transition || "fade",
     transitionDuration: parseInt(opts["transition-duration"] || "15", 10),
     musicPath: copyMusicToPublic(brief, briefPath, publicDir),
+    fitPolicy: brief.fitPolicy || "cover",
   };
-
-  // Warn on scene/video count mismatch (different sources can diverge)
-  if (sceneVideoFilenames.length !== scenes.length) {
-    console.warn(
-      `Warning: ${sceneVideoFilenames.length} videos provided but brief defines ${scenes.length} scenes`
-    );
-  }
 
   const { totalSceneDuration, totalFrames } = calculateFrames(
     scenes, sceneVideoFilenames, props.transitionDuration, fps
@@ -212,6 +234,10 @@ function renderVideo(opts) {
       stdio: "inherit",
       timeout: 600000, // 10 min
     });
+    if (!existsSync(output) || statSync(output).size === 0) throw new Error("render produced no output bytes");
+    const recipe = { brief_sha256: fileDigest(briefPath), input_sha256: videoPaths.map(fileDigest), props, width, height, totalFrames, fps };
+    const manifest = { schema_version: 1, output: basename(output), output_sha256: `sha256:${fileDigest(output)}`, recipe_sha256: `sha256:${stableDigest(recipe)}`, captions: props.captions, fit_policy: props.fitPolicy, status: "completed" };
+    writeFileSync(`${output}.manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(`\nRender complete: ${output}`);
   } catch (err) {
     console.error(`Render failed: ${err.message}`);
