@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import tempfile
 import unittest
 from email.message import Message
@@ -16,6 +17,8 @@ from unittest.mock import patch
 from _knowledge_social_linkedin_outbound_provider import LinkedInPreparedProvider
 from _knowledge_social_outbound import ClaimedOperation
 from _knowledge_social_youtube_outbound_provider import YouTubePreparedProvider
+
+FIXTURE_ACCESS_TOKEN = secrets.token_hex(24)
 
 
 class Response:
@@ -56,7 +59,7 @@ def claimed(provider: str, **values: str | None) -> ClaimedOperation:
 
 
 class OutboundProviderTests(unittest.TestCase):
-    @patch.dict(os.environ, {"LINKEDIN_FIXTURE_ACCESS_TOKEN": "fixture-token"})
+    @patch.dict(os.environ, {"LINKEDIN_FIXTURE_ACCESS_TOKEN": FIXTURE_ACCESS_TOKEN})
     def test_linkedin_identity_mismatch_prevents_post(self) -> None:
         calls: list[str] = []
 
@@ -69,7 +72,7 @@ class OutboundProviderTests(unittest.TestCase):
             provider.verify_identity()
         self.assertEqual(calls, ["GET"])
 
-    @patch.dict(os.environ, {"YOUTUBE_FIXTURE_ACCESS_TOKEN": "fixture-token"})
+    @patch.dict(os.environ, {"YOUTUBE_FIXTURE_ACCESS_TOKEN": FIXTURE_ACCESS_TOKEN})
     def test_youtube_upload_requires_exact_channel_and_bound_media(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".mp4") as media:
             media.write(b"fixture video")
@@ -87,7 +90,7 @@ class OutboundProviderTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "does not match"):
                 provider.verify_identity()
 
-    @patch.dict(os.environ, {"YOUTUBE_FIXTURE_ACCESS_TOKEN": "fixture-token"})
+    @patch.dict(os.environ, {"YOUTUBE_FIXTURE_ACCESS_TOKEN": FIXTURE_ACCESS_TOKEN})
     def test_youtube_successful_private_upload_returns_stable_id(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".mp4") as media:
             media.write(b"fixture video")
@@ -114,7 +117,7 @@ class OutboundProviderTests(unittest.TestCase):
                 ["https://www.googleapis.com/upload/session_fixture"],
             )
 
-    @patch.dict(os.environ, {"YOUTUBE_FIXTURE_ACCESS_TOKEN": "fixture-token"})
+    @patch.dict(os.environ, {"YOUTUBE_FIXTURE_ACCESS_TOKEN": FIXTURE_ACCESS_TOKEN})
     def test_youtube_rejects_unsupported_media_before_mutation(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".txt") as media:
             media.write(b"fixture video")
