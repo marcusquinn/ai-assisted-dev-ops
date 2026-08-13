@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Campaign Research Dossier v1",
+  "description": "Reference-oriented, freshness-aware campaign research handoff. Raw sensitive evidence remains outside the dossier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "campaign_id", "semantic_snapshot_sha256", "generated_at", "coverage", "audiences", "buying_roles", "competitors", "creators", "trends", "channel_fit", "opportunities", "contradictions", "provenance_ledger"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "semantic_snapshot_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "coverage": {"type": "object", "additionalProperties": false, "required": ["status", "source_counts"], "properties": {"status": {"enum": ["complete", "partial", "unavailable"]}, "source_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}}},
+    "audiences": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "buying_roles": {"type": "array", "items": {"type": "string"}},
+    "competitors": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "creators": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "trends": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "channel_fit": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "opportunities": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "contradictions": {"type": "array", "items": {"$ref": "#/$defs/insight"}},
+    "provenance_ledger": {"type": "array", "items": {"$ref": "#/$defs/provenance"}}
+  },
+  "$defs": {
+    "insight": {"type": "object", "additionalProperties": false, "required": ["label", "summary", "confidence", "evidence_source_ids"], "properties": {"label": {"type": "string", "minLength": 1}, "summary": {"type": "string", "minLength": 1}, "confidence": {"enum": ["low", "medium", "high"]}, "evidence_source_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}}},
+    "provenance": {"type": "object", "additionalProperties": false, "required": ["source_id", "source_type", "reference", "captured_at", "freshness", "authorization_mode", "status", "confidence", "sensitivity"], "properties": {"source_id": {"type": "string"}, "source_type": {"enum": ["manual", "export", "knowledge_query", "public_search", "seo"]}, "reference": {"type": "string"}, "captured_at": {"type": "string", "format": "date-time"}, "freshness": {"enum": ["fresh", "stale", "unknown"]}, "authorization_mode": {"enum": ["manual", "authorized_export", "authorized_collector", "public_lawful"]}, "status": {"enum": ["complete", "partial", "gated", "absent", "stale", "rate_limited", "failed"]}, "confidence": {"enum": ["low", "medium", "high"]}, "sensitivity": {"enum": ["public", "internal", "sensitive"]}}}
+  }
+}

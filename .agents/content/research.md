@@ -276,6 +276,18 @@ Identify 3-5 direct competitors from primary keyword SERP (positions 1-10) and `
 
 ## Storage and Integration
 
+### Campaign research dossier handoff
+
+For an intake-backed campaign, run `aidevops campaign research <id> --source
+<evidence.json>` after collecting only authorized exports, Knowledge Plane
+results, manual evidence, or lawful public research. It normalizes evidence into
+`_campaigns/active/<id>/research/dossier.json`; use that contract rather than
+copying provider output into a campaign brief. Treat observations as hypotheses:
+gated, stale, partial, absent, and rate-limited sources are evidence gaps, not
+findings. The human-readable `dossier.md` intentionally contains references and
+redacted insights only; preserve raw sensitive competitive artifacts under
+`_campaigns/intel/`.
+
 Save to the project's `context/` directory (see `content/context-templates.md`):
 
 - `context/audience-profiles.md` — audience segments and personas

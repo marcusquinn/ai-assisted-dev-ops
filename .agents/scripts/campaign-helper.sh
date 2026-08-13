@@ -61,6 +61,7 @@ readonly CAMPAIGNS_DRAFTS_DIR="drafts"
 readonly CAMPAIGNS_INTAKE_FILE="intake.json"
 readonly CAMPAIGNS_CHANNEL_SPECS="${SCRIPT_DIR}/../configs/campaign-channel-specs.json"
 readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter email blog"
+readonly CAMPAIGN_RESEARCH_HELPER="${SCRIPT_DIR}/campaign-research-helper.py"
 
 # ---------------------------------------------------------------------------
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -1314,6 +1315,12 @@ P5 Commands (AI creative agent):
       Output: _campaigns/active/<id>/drafts/<channel>-v<N>.md
       Human-gated: drafts require manual review before promotion to creative/.
 
+Campaign research:
+  research <id> [--source <evidence.json>]... [--repo <path>]
+       Build a schema-v1, provenance-led research dossier from supplied exports,
+       authorized collector results, manual evidence, or lawful public research.
+       Raw sensitive evidence stays in _campaigns/intel/; no collector is implied.
+
 P6 Commands (post-launch cross-plane):
   launch <id> [--repo <path>]
       Move _campaigns/active/<id>/ → launched/<id>/
@@ -1367,6 +1374,10 @@ main() {
 	launch) cmd_launch "$@" ;;
 	promote) cmd_promote "$@" ;;
 	feedback) cmd_feedback "$@" ;;
+	research)
+		[[ -x "$CAMPAIGN_RESEARCH_HELPER" || -f "$CAMPAIGN_RESEARCH_HELPER" ]] || { print_error "Campaign research helper not found: ${CAMPAIGN_RESEARCH_HELPER}"; return 1; }
+		python3 "$CAMPAIGN_RESEARCH_HELPER" "$@"
+		;;
 	help | --help | -h) cmd_help ;;
 	*)
 		print_error "Unknown command: ${command}"
