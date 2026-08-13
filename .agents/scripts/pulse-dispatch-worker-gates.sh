@@ -284,6 +284,9 @@ PY
 _dlw_allow_soft_canary_failure() {
 	local reason="$1"
 	_dlw_canary_failure_is_soft "$reason" || return 1
+	if _dlw_min_worker_floor_active; then
+		return 0
+	fi
 	_dlw_recent_worker_evidence || return 1
 	return 0
 }
@@ -330,7 +333,11 @@ _dlw_canary_preflight() {
 	local canary_reason
 	canary_reason=$(_dlw_canary_last_failure_reason)
 	if _dlw_allow_soft_canary_failure "$canary_reason"; then
-		echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: soft worker canary failure reason=${canary_reason} bypassed because recent worker evidence exists (bounded t3449)" >>"$LOGFILE"
+		if _dlw_min_worker_floor_active; then
+			echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: soft worker canary failure reason=${canary_reason} bypassed to preserve minimum worker floor (bounded t3449/t2878)" >>"$LOGFILE"
+		else
+			echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: soft worker canary failure reason=${canary_reason} bypassed because recent worker evidence exists (bounded t3449)" >>"$LOGFILE"
+		fi
 		return 0
 	fi
 

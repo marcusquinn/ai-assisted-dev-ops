@@ -34,6 +34,20 @@ export LOGFILE="${HOME}/.aidevops/logs/pulse.log"
 export STOP_FLAG="${HOME}/.aidevops/logs/stop"
 : >"$LOGFILE"
 
+TEST_BIN="${TEST_ROOT}/bin"
+mkdir -p "$TEST_BIN"
+cat >"${TEST_BIN}/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "api" && "$2" == "-i" && "$3" == "user" ]]; then
+	printf 'HTTP/2 200\r\nx-ratelimit-resource: core\r\nx-ratelimit-limit: 5000\r\nx-ratelimit-remaining: 4999\r\nx-ratelimit-reset: 1789999999\r\n\r\n{}\n'
+	exit 0
+fi
+printf '{}\n'
+exit 0
+EOF
+chmod +x "${TEST_BIN}/gh"
+export PATH="${TEST_BIN}:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../pulse-capacity.sh
 source "${SCRIPT_DIR}/pulse-capacity.sh"
@@ -823,6 +837,34 @@ EOF
 	return 0
 }
 
+test_soft_canary_failure_bypasses_under_minimum_floor_without_recent_evidence() {
+	local fake_helper worker_log state_dir
+	fake_helper="${TEST_ROOT}/fake-floor-canary.sh"
+	worker_log="${TEST_ROOT}/worker-floor.log"
+	state_dir="${HOME}/.aidevops/.agent-workspace/headless-runtime"
+	cat >"$fake_helper" <<'EOF'
+#!/usr/bin/env bash
+state_dir="${AIDEVOPS_HEADLESS_RUNTIME_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
+mkdir -p "$state_dir"
+date +%s >"${state_dir}/canary-last-fail"
+printf 'transient\n' >"${state_dir}/canary-last-fail.reason"
+exit 1
+EOF
+	chmod +x "$fake_helper"
+	HEADLESS_RUNTIME_HELPER="$fake_helper"
+	AIDEVOPS_HEADLESS_RUNTIME_DIR="$state_dir"
+	AIDEVOPS_DISPATCH_LEDGER_DIR="${TEST_ROOT}/empty-ledger"
+	mkdir -p "$AIDEVOPS_DISPATCH_LEDGER_DIR"
+	TEST_ACTIVE_WORKERS=5
+	AIDEVOPS_MIN_WORKER_CONCURRENCY=6
+	if _dlw_canary_preflight 104 "o/r" "$worker_log" "standard" ""; then
+		print_result "canary: soft failure bypassed under minimum worker floor" 0
+	else
+		print_result "canary: soft failure bypassed under minimum worker floor" 1
+	fi
+	return 0
+}
+
 test_capacity_raises_soft_cap_to_floor
 test_capacity_reads_min_floor_from_config_default
 test_capacity_respects_existing_higher_cap
@@ -846,6 +888,7 @@ test_early_exit_refill_reuses_precomputed_active_count
 test_active_pulse_refill_uses_min_floor_above_raw_max
 test_soft_canary_failure_bypasses_with_recent_worker_evidence
 test_hard_canary_failure_blocks_despite_recent_worker_evidence
+test_soft_canary_failure_bypasses_under_minimum_floor_without_recent_evidence
 
 echo ""
 echo "===================="
