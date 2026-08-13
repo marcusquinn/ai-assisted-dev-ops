@@ -280,6 +280,80 @@ resolved=$(HOME="${tmp_root}" XDG_CONFIG_HOME="${config_home}" TABBY_CONFIG="${e
 resolved=$(HOME="${tmp_root}" TABBY_CONFIG='' TABBY_CONFIG_DIRECTORY='' bash "${TABBY_HELPER}" config-path Darwin)
 [[ "$resolved" == "${tmp_root}/Library/Application Support/tabby/config.yaml" ]] && _pass "macOS default preserved" || _fail "macOS default mismatch: ${resolved}"
 
+_info "Test 12: sync converts inline empty profiles and keeps valid YAML"
+inline_config="${tmp_root}/inline-empty.yaml"
+printf 'version: 8\nprofiles: []\ngroups: []\n' >"${inline_config}"
+if PYTHONPATH="${REPO_ROOT}/.agents/scripts" python3 "${HELPER}" --repos-json "${repos_json}" --tabby-config "${inline_config}" >/dev/null &&
+	python3 -c 'import sys, yaml; value = yaml.safe_load(open(sys.argv[1])); assert isinstance(value["profiles"], list) and value["profiles"]' "${inline_config}" &&
+	! grep -qF 'profiles: []' "${inline_config}"; then
+	_pass "inline empty profiles converted to valid block list"
+else
+	_fail "inline empty profiles sync failed"
+fi
+
+_info "Test 13: missing and block-empty profiles shapes remain valid"
+for shape in missing block_empty; do
+	shape_config="${tmp_root}/${shape}.yaml"
+	if [[ "${shape}" == "missing" ]]; then
+		printf 'version: 8\ngroups: []\n' >"${shape_config}"
+	else
+		printf 'version: 8\nprofiles:\ngroups: []\n' >"${shape_config}"
+	fi
+	if PYTHONPATH="${REPO_ROOT}/.agents/scripts" python3 "${HELPER}" --repos-json "${repos_json}" --tabby-config "${shape_config}" >/dev/null &&
+		python3 -c 'import sys, yaml; value = yaml.safe_load(open(sys.argv[1])); assert isinstance(value["profiles"], list) and value["profiles"]' "${shape_config}"; then
+		_pass "${shape} profiles shape remains valid"
+	else
+		_fail "${shape} profiles shape failed"
+	fi
+done
+
+_info "Test 14: malformed source is rejected without modification"
+malformed_config="${tmp_root}/malformed.yaml"
+printf 'version: 8\nprofiles: []\n  - name: broken\ngroups: []\n' >"${malformed_config}"
+malformed_before=$(shasum -a 256 "${malformed_config}" | cut -d ' ' -f 1)
+if PYTHONPATH="${REPO_ROOT}/.agents/scripts" python3 "${HELPER}" --repos-json "${repos_json}" --tabby-config "${malformed_config}" --status-only >/dev/null 2>&1; then
+	_fail "malformed status unexpectedly succeeded"
+else
+	malformed_after=$(shasum -a 256 "${malformed_config}" | cut -d ' ' -f 1)
+	[[ "${malformed_before}" == "${malformed_after}" ]] && _pass "malformed source rejected unchanged" || _fail "malformed source changed"
+fi
+
+_info "Test 15: failed candidate validation preserves the active config"
+run_python_test "invalid candidate is not written" "${load_module_code}
+import pathlib, tempfile
+from tabby_yaml_helpers import save_yaml
+path = pathlib.Path(tempfile.mkdtemp()) / 'config.yaml'
+original = 'version: 8\\nprofiles: []\\ngroups: []\\n'
+path.write_text(original)
+try:
+    save_yaml(str(path), 'version: 8\\nprofiles: []\\n  - broken\\n')
+except Exception:
+    pass
+else:
+    raise AssertionError('invalid candidate accepted')
+assert path.read_text() == original
+"
+
+_info "Test 16: atomic replacement failure preserves the active config"
+run_python_test "replacement failure leaves original unchanged" "${load_module_code}
+import pathlib, tempfile
+from unittest import mock
+from tabby_yaml_helpers import save_yaml
+path = pathlib.Path(tempfile.mkdtemp()) / 'config.yaml'
+original = 'version: 8\\nprofiles: []\\ngroups: []\\n'
+candidate = 'version: 8\\nprofiles:\\n  - name: demo\\ngroups: []\\n'
+path.write_text(original)
+with mock.patch('tabby_yaml_helpers.os.replace', side_effect=OSError('simulated')):
+    try:
+        save_yaml(str(path), candidate)
+    except OSError:
+        pass
+    else:
+        raise AssertionError('replacement failure was ignored')
+assert path.read_text() == original
+assert list(path.parent.glob('.config.yaml.*')) == []
+"
+
 echo ""
 if ((fail_count == 0)); then
 	printf '%bAll %d tests passed.%b\n' "${TEST_GREEN}" "${pass_count}" "${TEST_NC}"

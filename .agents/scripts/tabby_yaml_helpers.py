@@ -11,20 +11,52 @@ and new profile/group insertion.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from typing import Optional
+
+import yaml
 
 
 def load_yaml_simple(path: str) -> str:
-    """Load file content as string."""
+    """Load and validate a Tabby YAML document as text."""
     with open(path, "r") as f:
-        return f.read()
+        content = f.read()
+    validate_yaml_document(content)
+    return content
 
 
 def save_yaml(path: str, content: str) -> None:
-    """Save content to file."""
-    with open(path, "w") as f:
-        f.write(content)
+    """Validate and atomically replace a Tabby YAML document."""
+    validate_yaml_document(content)
+    destination = os.path.abspath(path)
+    directory = os.path.dirname(destination)
+    mode = os.stat(destination).st_mode & 0o777
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(destination)}.", dir=directory, text=True
+    )
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def validate_yaml_document(content: str) -> None:
+    """Require a mapping document with list-valued Tabby sections."""
+    document = yaml.safe_load(content)
+    if not isinstance(document, dict):
+        raise ValueError("Tabby config must be a YAML mapping")
+    for key in ("profiles", "groups"):
+        value = document.get(key)
+        if value is not None and not isinstance(value, list):
+            raise ValueError(f"Tabby config '{key}' must be a list")
 
 
 _CWD_LINE_RE = re.compile(r"^(?P<indent>\s+)cwd:\s*(?P<value>.*)$")
@@ -185,6 +217,14 @@ def find_version_insert_at(lines: list[str]) -> int:
 def insert_profiles_block(config_text: str, new_block: str) -> str:
     """Insert new_block into the profiles section of config_text."""
     lines = config_text.split("\n")
+    for i, line in enumerate(lines):
+        inline_empty = re.match(r"^(profiles:)\s*\[\]\s*(#.*)?$", line)
+        if inline_empty:
+            comment = inline_empty.group(2)
+            lines[i] = f"profiles:{f' {comment}' if comment else ''}"
+            break
+        if re.match(r"^profiles:\s*\S", line):
+            raise ValueError("Unsupported inline profiles value")
     has_profiles_key, insert_line = find_profiles_insert_line(lines)
 
     if not has_profiles_key:
