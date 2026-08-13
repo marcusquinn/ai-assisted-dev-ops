@@ -17,7 +17,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 HELPER_PATH = SCRIPTS_DIR / "email_jmap_push.py"
 sys.path.insert(0, str(SCRIPTS_DIR))
 SPEC = importlib.util.spec_from_file_location("email_jmap_push", HELPER_PATH)
-assert SPEC and SPEC.loader
+if not SPEC or not SPEC.loader:
+    raise RuntimeError(f"Unable to load {HELPER_PATH}")
 HELPER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HELPER)
 
