@@ -1667,6 +1667,35 @@ _provision_headless_opencode_runtime() {
 	return 0
 }
 
+_clear_stale_opencode_pin_repair_lock() {
+	local repair_lock_dir="$1"
+	local pin="$2"
+	local runtime_root="$3"
+	local installer_pid=""
+	local install_root=""
+	local live_installer=0
+
+	if [[ ! -d "$repair_lock_dir" ]]; then
+		return 1
+	fi
+	for install_root in "$runtime_root"/."$pin".install.*; do
+		[[ -e "$install_root" ]] || continue
+		installer_pid="${install_root##*.install.}"
+		if [[ "$installer_pid" =~ ^[0-9]+$ ]] && kill -0 "$installer_pid" 2>/dev/null; then
+			live_installer=1
+			continue
+		fi
+		rm -rf "$install_root"
+	done
+	if [[ "$live_installer" -eq 1 ]]; then
+		return 1
+	fi
+	if rmdir "$repair_lock_dir" 2>/dev/null; then
+		return 0
+	fi
+	return 1
+}
+
 #######################################
 # Version guard -- bind affected worker launches to an isolated exact-version
 # OpenCode runtime. General/interactive installs remain free to track latest.
@@ -1694,11 +1723,17 @@ _enforce_opencode_version_pin() {
 	# provisioning so workers never race while publishing the pinned runtime.
 	local repair_lock_base="${STATE_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
 	local repair_lock_dir="${repair_lock_base}/opencode-pin-repair.lock"
+	local runtime_root="${repair_lock_base}/opencode-runtimes"
+	local repair_lock_wait_limit="${AIDEVOPS_OPENCODE_PIN_REPAIR_LOCK_WAIT_LIMIT:-30}"
 	mkdir -p "$repair_lock_base" 2>/dev/null || true
 	local repair_lock_acquired=0
 	local repair_lock_waited=0
 	while ! mkdir "$repair_lock_dir" 2>/dev/null; do
-		if [[ "$repair_lock_waited" -ge "30" ]]; then
+		if [[ "$repair_lock_waited" -ge "$repair_lock_wait_limit" ]]; then
+			if _clear_stale_opencode_pin_repair_lock "$repair_lock_dir" "$pin" "$runtime_root"; then
+				repair_lock_waited=0
+				continue
+			fi
 			print_error "Timed out waiting for OpenCode ${pin} repair lock -- refusing headless launch"
 			return 1
 		fi
