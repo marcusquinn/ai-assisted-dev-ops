@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,18 @@ DEFAULT_FORMATS = {"facebook": ("image", "1:1", None), "instagram": ("image", "4
 
 class ManifestError(ValueError):
     """Raised when a production contract cannot be created or trusted."""
+
+
+@dataclass(frozen=True)
+class ManifestRequest:
+    """Inputs needed to construct one immutable production job."""
+
+    campaign_id: str
+    brief: dict[str, Any]
+    channel: str
+    variant: int
+    asset_class: str | None
+    capability: str | None
 
 
 def digest(value: Any) -> str:
@@ -101,8 +114,14 @@ def build_brief(campaign_id: str, intake: dict[str, Any], revision: int) -> dict
     }
 
 
-def build_manifest(campaign_id: str, brief: dict[str, Any], channel: str, variant: int, asset_class: str, capability: str | None) -> dict[str, Any]:
+def build_manifest(request: ManifestRequest) -> dict[str, Any]:
     """Build an unexecuted job without guessing a provider or asset completion."""
+    campaign_id = request.campaign_id
+    brief = request.brief
+    channel = request.channel
+    variant = request.variant
+    asset_class = request.asset_class
+    capability = request.capability
     default_asset, dimensions, duration = DEFAULT_FORMATS[channel]
     asset_class = asset_class or default_asset
     if asset_class not in ASSET_OWNERS:
@@ -142,7 +161,10 @@ def command_create(arguments: argparse.Namespace) -> int:
             atomic_json_write(brief_path, brief)
     else:
         atomic_json_write(brief_path, brief)
-    manifest = build_manifest(arguments.campaign_id, brief, arguments.channel, arguments.variant, arguments.asset_class, arguments.capability)
+    manifest = build_manifest(ManifestRequest(
+        arguments.campaign_id, brief, arguments.channel, arguments.variant,
+        arguments.asset_class, arguments.capability,
+    ))
     manifest_path = campaign_dir / "drafts" / "production-manifests" / f"{arguments.channel}-v{arguments.variant}.json"
     if manifest_path.exists():
         existing = read_document(manifest_path, "production manifest")
