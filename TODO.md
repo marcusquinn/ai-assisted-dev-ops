@@ -337,6 +337,7 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 - [x] t2102 fix(pulse-simplification): pull aidevops worktree fresh before ratchet-check — `_complexity_scan_ratchet_check` runs against whatever state the pulse's simplification workspace has, which may not reflect a just-merged threshold change (secondary cause of #19024 duplicate). Add `git -C "$aidevops_path" pull --ff-only origin main` before the ratchet-check invocation; skip-and-log on pull failure, offline, or non-main HEAD — never crash the pulse. Single-file ~3-line change. #bug #pulse #auto-dispatch #interactive ~20m tier:simple ref:GH#19037 logged:2026-04-15 -> [todo/tasks/t2102-brief.md] pr:#19108 completed:2026-04-15
 - [ ] t2103 feat(pulse): pre-dispatch no-op validator for auto-generated issues — new `pre-dispatch-validator-helper.sh` with a `validate <issue> <slug>` subcommand that runs a registered validator for the issue's generator type in a fresh checkout before spawning a worker. Exit 0=dispatch, 10=falsified+close, 20=validator-error+warn+dispatch. First validator: ratchet-down (runs `complexity-scan-helper.sh ratchet-check . 5`, returns 10 on "No ratchet-down available"). Generator identification via hidden body marker `<!-- aidevops:generator=ratchet-down -->`. Defense-in-depth layer — workers ignored "Worker triage responsibility" prompt rule on #19024, so moving the check before dispatch makes it deterministic. Extensible to quality-debt, review-followup, contribution-watch as follow-ups. Requires research to find the right dispatch hook point. New helper + new test harness + docs in `reference/pre-dispatch-validators.md`. #enhancement #pulse #auto-dispatch #interactive ~3h tier:standard ref:GH#19038 logged:2026-04-15 -> [todo/tasks/t2103-brief.md]
 - [ ] t18195 Add reversible Buzz Desktop OpenCode ACP compatibility remediation to setup and update #auto-dispatch ~1h ref:GH#29498 logged:2026-08-04
+- [ ] t18228 Define evidence-backed brand product and offer campaign intake #enhancement #interactive #auto-dispatch ~5h tier:standard ref:GH#30135 logged:2026-08-13 -> [todo/tasks/t18228-brief.md]
 - [x] t18187 Fix Pulse scheduler regression rejecting generated routines repositories #auto-dispatch #bug ~1h ref:GH#28957 logged:2026-07-31 pr:#28961 completed:2026-07-31
 - [x] t2105 fix(cli): wire `aidevops issue` subcommand to interactive-session-helper.sh — `prompts/build.txt` and `.agents/AGENTS.md` document `aidevops issue release <N>` as a fallback for releasing stale interactive claims, but the subcommand is not in the `aidevops.sh` dispatch table. Calling it falls through to the help text. Discovered live on 2026-04-15 while releasing a stale claim on #18768 during the t2053.1 session. Two-line fix: add `issue) _dispatch_helper "interactive-session-helper.sh" ...` after the `approve)` case at `aidevops.sh:3861`, and a matching one-line entry in `cmd_help()` at `aidevops.sh:3514`. Helper already implements claim/release/status/scan-stale; this is plumbing only. #bug #tooling #auto-dispatch #interactive ~20m tier:simple ref:GH#19042 logged:2026-04-15 -> [todo/tasks/t2105-brief.md] pr:#19052 completed:2026-04-15
 - [x] t2108 fix(pulse-merge): make body keyword authoritative for linked issue extraction — `_extract_linked_issue` in `pulse-merge.sh:967` falls back to matching `GH#NNN:` in PR titles even when the body has no closing keyword (`For #NNN`, `Ref #NNN`, planning-only PRs). The fallback then drives `_handle_post_merge_actions` to close the issue. t2099 (PR #19034) added a `parent-task` label guard at the close-call site; this fixes the leaf-issue half by making the title fallback only fire when the body ALSO has a closing keyword. Discovered live on 2026-04-15 — the t2105 brief PR (#19043) hit this exact pattern 14 minutes after the t2099 fix merged. 2-file change (function rewrite + new 4-scenario test), reference pattern is `tests/test-pulse-merge-parent-task-close-guard.sh`. **Implementation must use `tNNN:` title format, NOT `GH#NNN:`, to avoid the bug closing #19051 during its own fix's merge.** #bug #pulse #auto-dispatch #interactive ~30m tier:simple ref:GH#19051 logged:2026-04-15 -> [todo/tasks/t2108-brief.md] pr:#19076 completed:2026-04-15
@@ -1251,6 +1252,28 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [x] t18225 Stop recurring GitHub Actions failure notifications #bug #ci #priority:high ref:GH#29956 pr:#30013 completed:2026-08-11
 
 - [x] t18226 Diagnose and classify OpenCode gateway 403 failures #auto-dispatch #priority:high #type:bug ref:GH#29974 pr:#29979 completed:2026-08-10
+
+- [ ] t18230 End-to-end branded growth operating system #enhancement #parent #interactive ~60h tier:thinking ref:GH#30136 logged:2026-08-13 -> [todo/tasks/t18230-brief.md]
+
+- [ ] t18231 Build structured audience competitor and channel research dossiers #enhancement #interactive #auto-dispatch ~6.5h tier:standard ref:GH#30137 logged:2026-08-13 blocked-by:t18228 -> [todo/tasks/t18231-brief.md]
+
+- [ ] t18232 Bridge reviewed campaign schedules into the approval-bound outbound queue #enhancement #interactive #auto-dispatch ~8h tier:standard ref:GH#30138 logged:2026-08-13 blocked-by:t18233 -> [todo/tasks/t18232-brief.md]
+
+- [ ] t18233 Harden campaign asset provenance review and production gates #enhancement #interactive #auto-dispatch ~8h tier:standard ref:GH#30139 logged:2026-08-13 blocked-by:t18234 -> [todo/tasks/t18233-brief.md]
+
+- [ ] t18234 Generate authentic branded campaign briefs and production manifests #enhancement #interactive #auto-dispatch ~7.5h tier:standard ref:GH#30140 logged:2026-08-13 blocked-by:t18231 -> [todo/tasks/t18234-brief.md]
+
+- [ ] t18235 Add approval-bound LinkedIn and YouTube publishing adapters #enhancement #interactive #auto-dispatch ~10h tier:standard ref:GH#30141 logged:2026-08-13 blocked-by:t18232 -> [todo/tasks/t18235-brief.md]
+
+- [ ] t18236 Implement normalized marketing performance lead and revenue ingestion #enhancement #interactive #auto-dispatch ~13h tier:thinking ref:GH#30142 logged:2026-08-13 blocked-by:t18238 -> [todo/tasks/t18236-brief.md]
+
+- [ ] t18237 Add approval-bound Meta and TikTok publishing adapters #enhancement #interactive #auto-dispatch ~10h tier:standard ref:GH#30143 logged:2026-08-13 blocked-by:t18232 -> [todo/tasks/t18237-brief.md]
+
+- [ ] t18238 Add social provider health rate-limit and receipt reconciliation #enhancement #interactive #auto-dispatch ~6.5h tier:standard ref:GH#30144 logged:2026-08-13 blocked-by:t18235 blocked-by:t18237 -> [todo/tasks/t18238-brief.md]
+
+- [ ] t18239 Integrate an end-to-end branded growth campaign command and verification scenario #enhancement #interactive #auto-dispatch ~9.5h tier:standard ref:GH#30146 logged:2026-08-13 blocked-by:t18240 -> [todo/tasks/t18239-brief.md]
+
+- [ ] t18240 Add privacy-safe attribution experiments reporting and growth recommendations #enhancement #interactive #auto-dispatch ~11h tier:thinking ref:GH#30147 logged:2026-08-13 blocked-by:t18236 -> [todo/tasks/t18240-brief.md]
 
 ## In Progress
 
