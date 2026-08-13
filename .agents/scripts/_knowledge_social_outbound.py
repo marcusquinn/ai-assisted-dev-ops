@@ -18,7 +18,11 @@ from knowledge_social_store import SocialStoreError, validate_opaque
 
 ACTIONS = ("post", "reply", "like", "bookmark")
 OUTBOUND_PROVIDER_ACTIONS = {
+    "meta_facebook": ("post", "reply"),
+    "meta_instagram": ("post",),
+    "meta_threads": ("post", "reply"),
     "reddit": ACTIONS,
+    "tiktok": ("post",),
     "xapi": ACTIONS,
 }
 TERMINAL_STATES = ("succeeded", "failed", "unknown", "cancelled")
@@ -166,6 +170,12 @@ def _validated_destination(
         if REDDIT_DESTINATION_ID.fullmatch(destination) is None:
             raise SocialStoreError("Reddit destination subreddit ID is invalid")
         return destination
+    if provider in ("meta_instagram", "tiktok") and action == "post":
+        if destination is None:
+            raise SocialStoreError(
+                "visual outbound posts require an approved opaque media reference"
+            )
+        return validate_opaque(destination, "destination_remote_id")
     if destination is not None:
         raise SocialStoreError("this outbound operation does not accept a destination")
     return None

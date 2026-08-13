@@ -1,6 +1,6 @@
 ---
 name: social
-description: Social media distribution - X, LinkedIn, Reddit platform-native content
+description: Social media distribution - approval-bound platform-native content
 mode: subagent
 model: standard
 ---
@@ -8,7 +8,7 @@ model: standard
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Social - X, LinkedIn, and Reddit Distribution
+# Social Distribution
 
 <!-- AI-CONTEXT-START -->
 
@@ -26,7 +26,10 @@ model: standard
 - **Professional framing on LinkedIn** — thought leadership, not sales pitch
 - **One idea per post** — clarity beats comprehensiveness
 
-**Platform Tools**: `content/social-xurl.md` (official X API), `content/social-bird.md` (X browser-cookie fallback), `content/social-linkedin.md`, `content/social-reddit.md`
+**Platform Tools**: `content/social-xurl.md` (official X API),
+`content/social-linkedin.md`, `content/social-reddit.md`, `content/social-meta.md`,
+and `content/social-tiktok.md`. Meta/TikTok writes require the approved outbound
+queue; unavailable capability states do not permit browser fallbacks.
 
 <!-- AI-CONTEXT-END -->
 
@@ -205,3 +208,5 @@ Happy to share more details on the research methodology if anyone's interested.
 **Distribution**: `content/distribution/youtube/`, `content/distribution/short-form.md`, `content/distribution/blog.md`, `content/distribution/email.md`, `content/distribution/podcast.md`
 
 **Tools**: `content/social-xurl.md` (official X API), `content/social-bird.md` (fallback), `content/social-linkedin.md`, `content/social-reddit.md`, `content/humanise.md` (AI pattern removal)
+
+**Approval-bound publishing**: `content/social-meta.md`, `content/social-tiktok.md`, and the outbound queue. Verify capability readiness, product identity, media rights, and an unexpired exact-intent approval before scheduling.

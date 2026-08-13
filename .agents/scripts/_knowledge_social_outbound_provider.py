@@ -325,8 +325,24 @@ def _prepare_reddit(claimed: ClaimedOperation) -> PreparedProvider:
     )
 
 
+def _prepare_meta(claimed: ClaimedOperation) -> PreparedProvider:
+    from _knowledge_social_meta_outbound_provider import MetaPreparedProvider
+
+    return MetaPreparedProvider(claimed)
+
+
+def _prepare_tiktok(claimed: ClaimedOperation) -> PreparedProvider:
+    from _knowledge_social_tiktok_outbound_provider import TikTokPreparedProvider
+
+    return TikTokPreparedProvider(claimed)
+
+
 PROVIDER_FACTORIES: dict[str, Callable[[ClaimedOperation], PreparedProvider]] = {
+    "meta_facebook": _prepare_meta,
+    "meta_instagram": _prepare_meta,
+    "meta_threads": _prepare_meta,
     "reddit": _prepare_reddit,
+    "tiktok": _prepare_tiktok,
     "xapi": _prepare_x,
 }
 

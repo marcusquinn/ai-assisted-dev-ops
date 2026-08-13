@@ -1,5 +1,5 @@
 ---
-description: Bounded Facebook, Instagram, and Threads account knowledge ingestion
+description: Bounded Facebook, Instagram, and Threads account knowledge and approval-bound publishing
 mode: subagent
 tools:
   read: true
@@ -25,7 +25,9 @@ tools:
   and Threads posts, authored replies, or mentions
 - **Isolation**: one filtered token, stable identity, provider namespace, stream
   registry, checkpoint, and coverage record per product
-- **Mutation boundary**: collector modules issue only allowlisted `GET` requests
+- **Mutation boundary**: collectors issue only allowlisted `GET` requests; the
+  separate outbound queue exposes only approved, identity-rechecked publish
+  intents through fixture-backed official-provider adapters.
 
 <!-- AI-CONTEXT-END -->
 
@@ -174,3 +176,17 @@ separate approved browser-gap workflow.
 - The provider module has no mutation endpoint registry and every constructed
   HTTP request fixes `method="GET"`. It does not import browser or outbound
   operations modules.
+
+## Approval-bound publishing
+
+Facebook Page posts and replies, Instagram Professional media posts, and Threads
+posts/replies are catalogued outbound routes. They are unavailable until a
+product-specific official transport, exact managed identity, applicable publish
+permissions/app review, and approved queue intent are all ready. Personal
+profiles, messages, follower actions, and browser automation remain unsupported.
+
+The outbound adapter rechecks the selected identity before the provider boundary,
+binds each request to its immutable operation ID, and returns only opaque post or
+job IDs. Accepted-but-ambiguous provider results become `unknown`; reconcile by
+that stable ID rather than replaying a publish. Fixtures never contain tokens or
+campaign bodies, and the default adapter cannot perform a live mutation.

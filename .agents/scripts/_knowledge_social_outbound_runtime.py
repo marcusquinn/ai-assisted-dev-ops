@@ -214,8 +214,11 @@ def _assert_outcome_fields(
     if status == "succeeded":
         if provider_remote_id is None or failure_class is not None:
             raise SocialStoreError("successful outbound receipt requires only a provider ID")
-    elif provider_remote_id is not None or failure_class is None:
-        raise SocialStoreError("unsuccessful outbound receipt requires only a failure class")
+    elif status == "failed":
+        if provider_remote_id is not None or failure_class is None:
+            raise SocialStoreError("failed outbound receipt requires only a failure class")
+    elif failure_class is None:
+        raise SocialStoreError("unknown outbound receipt requires a failure class")
 
 
 def _validated_outcome(outcome: AttemptOutcome) -> AttemptOutcome:

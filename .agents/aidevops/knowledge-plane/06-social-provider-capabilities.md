@@ -3,8 +3,8 @@
 
 # Social Provider Account-Knowledge Capabilities
 
-This matrix is the planning contract for authenticated, read-only social corpus
-collection. It distinguishes implemented routes from candidate official APIs,
+This matrix is the planning contract for authenticated social corpus collection
+and approval-bound publishing. It distinguishes implemented routes from candidate official APIs,
 account exports, permission-gated access, explicit browser gaps, and categories
 for which no safe route has been verified. It does not authorize scraping or a
 platform mutation.
@@ -37,6 +37,7 @@ a claim that the route is enabled.
 | Facebook | **Live/Gate/Export** managed Page posts; **No/Export** personal profile | **No/Export** curated activity and per-post comments | **No/Export** | **No/Export** personal relationships | **No** | One managed-Page `/posts` stream; app review and Page authority remain explicit, with all personal-account categories excluded. |
 | Instagram | **Live/Gate/Export** Professional media | **No/Export** comments and saved activity | **No/Export** mentions | **No/Export** followers and following | **No/Export** saved collections | One Page-connected Business/Creator `/media` stream; personal accounts and unimplemented per-media edges remain explicit. |
 | Threads | **Live/Gate/Export** posts | **No/Export** likes and repost history | **Live/Gate/Export** authored replies and mentions; **No** messages | **No/Export** followers and following | **No** custom feeds | Three product-scoped streams with app-scoped identity, independent cursors, and stream-specific permission gates. |
+| TikTok | **Gate** selected-account video publishing | **No** | **No** messages/comments | **No** follows | **No** | Catalogued fixture-backed outbound post adapter; official transport, identity, media rights, and publish authority are runtime gates. |
 | Medium | **Live/Export** authored posts; **Live/Partial** explicit responses | **Live/Export/No** bookmarks, claps, highlights, and list membership when present | **No** | **Live/Export/No** publication membership and follows when present | **Live/Export/No** owned lists when present | Identity-verified native HTML ZIP import with exact replay, bounded local parsing, and per-archive complete/unavailable coverage; legacy API access is not live parity. |
 | Patreon | **Live/Gate** creator campaign posts | **No** patron curation or creator-side interaction history | **No** messages, comments, or mentions | **Live/Gate** minimized current creator memberships; **No** patron-owned memberships or subscriptions | **Live** creator campaigns, tiers, and benefits | Creator-owned campaign allowlist, exact read scopes, identity and ownership recheck, 99-request cap, opaque cursors, and a membership-services purpose gate; no patron-account collection. |
 | beehiiv | **Gate/Live/Partial/Export** confirmed posts and paywall-enforced free web content; **Export** drafts and archives | **No** subscriber-derived engagement statistics | **No** | **Gate/Export/No** subscriber records are excluded pending an explicit PII need and authorization | **Gate/No** segments and newsletter-list membership expose audience structure and are not collected | Explicit creator-ownership attestation plus one expected, singly visible publication; exact GET-only API-v2 routes, bounded page replay, 100-page cap, and no subscriber PII, premium expansion, remote media, dashboard automation, or mutation reachability. |
@@ -140,7 +141,15 @@ separate provider family.
   enables posts, authored replies, and mentions. `.agents/content/social-meta.md`
   records the official SDK/sample versions, account/app-review gates, scopes,
   pagination, retention boundary, export dispositions, and unsupported
-  categories checked on 2026-07-27.
+   categories checked on 2026-07-27.
+- **Approval-bound Meta/TikTok publishing:**
+  `.agents/scripts/_knowledge_social_{meta,tiktok}_outbound_provider.py` and
+  `.agents/scripts/tests/test-social-meta-tiktok-outbound.py` prove allowlisted
+  actions, identity binding, opaque idempotency keys, unavailable-by-default
+  operation, and unknown accepted-job recovery without campaign content or
+  credentials in receipts. `.agents/content/social-meta.md` and
+  `.agents/content/social-tiktok.md` define the product gates and unsupported
+  browser fallback.
 - **Live Medium export:** `.agents/scripts/knowledge_social_medium.py`,
   `.agents/scripts/_knowledge_social_medium*.py`, and
   `.agents/tests/test-knowledge-social-medium.sh` prove selected-account

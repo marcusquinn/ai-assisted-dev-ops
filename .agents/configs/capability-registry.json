@@ -73,6 +73,17 @@
       "probes": {"deployed": {"path": "scripts/campaign-research-helper.py"}, "tool_visible": {"tool": "python3"}}
     },
     {
+      "name": "approval-bound-social-publishing",
+      "aliases": ["meta-publishing", "tiktok-publishing", "social-outbound"],
+      "owner": "Social",
+      "description": "Approved Meta and TikTok publishing through identity-bound official transports",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["content/social-meta.md", "content/social-tiktok.md", "scripts/knowledge_social_operations.py"],
+      "fallback": "approval-required-manual-handoff",
+      "required": ["deployed", "configured", "authenticated", "authorized", "reachable", "usable"],
+      "probes": {"deployed": {"path": "scripts/_knowledge_social_meta_outbound_provider.py"}, "configured": {"live": "requires selected official provider transport"}, "authenticated": {"live": "requires selected product token"}, "authorized": {"live": "requires exact identity and publish permission check"}, "reachable": {"live": "requires official provider health request"}, "usable": {"live": "requires approved intent and preflight"}}
+    },
+    {
       "name": "vault-operations",
       "aliases": ["vault", "protected-data", "encrypted-memory"],
       "owner": "Vault",
