@@ -10,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=./issue-sync-lib.sh
 source "${SCRIPT_DIR}/issue-sync-lib.sh"
+# shellcheck source=./shared-gh-wrappers.sh
+source "${SCRIPT_DIR}/shared-gh-wrappers.sh"
 
 PUBLICATION_PENDING_LABEL="publication:pending"
 PUBLICATION_AVAILABLE_LABEL="status:available"
@@ -101,7 +103,8 @@ _publication_reconcile_one() {
 	[[ -n "$status_label" ]] && projected_labels="${projected_labels:+${projected_labels},}${status_label}"
 
 	if [[ -n "$projected_labels" ]]; then
-		"${SCRIPT_DIR}/gh-write-helper.sh" issue edit "$issue_num" --repo "$repo" \
+		# Keep audit provenance at the reconciler instead of the generic CLI shim.
+		gh_issue_edit_safe "$issue_num" --repo "$repo" \
 			--add-label "$projected_labels" >/dev/null || return 1
 	fi
 	issue_json=$(gh issue view "$issue_num" --repo "$repo" --json number,title,state,labels) || return 1
@@ -113,7 +116,7 @@ _publication_reconcile_one() {
 
 	# The blocker is intentionally the final mutation. Every prior failure leaves
 	# the issue undispatchable and safely retryable.
-	"${SCRIPT_DIR}/gh-write-helper.sh" issue edit "$issue_num" --repo "$repo" \
+	gh_issue_edit_safe "$issue_num" --repo "$repo" \
 		--remove-label "$PUBLICATION_PENDING_LABEL" >/dev/null || return 1
 	issue_json=$(gh issue view "$issue_num" --repo "$repo" --json labels) || return 1
 	if _publication_issue_has_labels "$issue_json" "$PUBLICATION_PENDING_LABEL"; then

@@ -307,6 +307,17 @@ _gh_audit_record_op() {
 		_gh_audit_verify_full_loop_review_transition "$repo" "$number" "$before_json" "$after_json"; then
 		flags_json='{"pr_review_handoff_verified":"v1-current-state"}'
 	fi
+	# aidevops:trust-boundary — planning publication may remove its temporary
+	# manual hold only after preserving publication:pending. Require an exact,
+	# content-preserving transition and re-read the current issue so a generic
+	# wrapper invocation cannot suppress an unrelated protected-label removal.
+	if [[ "$op" == "$_GH_AUDIT_ISSUE_EDIT_OP" &&
+		"$caller_function" == "_publication_reconcile_one" ]] &&
+		[[ "$caller_script" == */agents/scripts/planning-publication-reconcile.sh ||
+			"$caller_script" == */.agents/scripts/planning-publication-reconcile.sh ]] &&
+		_gh_audit_verify_planning_publication_transition "$repo" "$number" "$before_json" "$after_json"; then
+		flags_json='{"planning_publication_verified":"v1-current-state"}'
+	fi
 
 	GH_AUDIT_QUIET=true "$audit_helper" record \
 		--op "$op" \
@@ -356,6 +367,48 @@ _gh_audit_verify_full_loop_review_transition() {
 		(.state | strings | ascii_downcase) == $open
 		and ([.labels[]?.name] | index($review) != null)
 		and ([.labels[]?.name] | index($active) == null)
+	' >/dev/null 2>&1 || return 1
+	return 0
+}
+
+#######################################
+# Verify that planning publication released only its temporary manual hold.
+# Args: repo, issue number, before JSON, after JSON
+# Returns: 0 only for a comparable no-auto-dispatch removal that retains the
+# publication blocker and is still reflected by the current remote issue.
+#######################################
+_gh_audit_verify_planning_publication_transition() {
+	local repo="$1"
+	local number="$2"
+	local before_json="$3"
+	local after_json="$4"
+	local issue_json=""
+	local manual_hold="no-auto-dispatch"
+	local publication_hold="publication:pending"
+	local auto_dispatch="auto-dispatch"
+	local open_state="open"
+
+	[[ -n "$repo" && "$number" =~ ^[0-9]+$ ]] || return 1
+	jq -e -n --arg manual "$manual_hold" --arg publication "$publication_hold" \
+		--arg auto "$auto_dispatch" --argjson before "$before_json" --argjson after "$after_json" '
+		($before.capture_status // "ok") == "ok"
+		and ($after.capture_status // "ok") == "ok"
+		and $before.title_len == $after.title_len
+		and $before.body_len == $after.body_len
+		and ([$before.labels[]?] | index($manual) != null)
+		and ([$before.labels[]?] | index($publication) != null)
+		and ([$after.labels[]?] | index($manual) == null)
+		and ([$after.labels[]?] | index($publication) != null)
+		and ([$after.labels[]?] | index($auto) != null)
+	' >/dev/null 2>&1 || return 1
+
+	issue_json=$(gh api "repos/${repo}/issues/${number}" 2>/dev/null) || return 1
+	printf '%s\n' "$issue_json" | jq -e --arg manual "$manual_hold" \
+		--arg publication "$publication_hold" --arg auto "$auto_dispatch" --arg open "$open_state" '
+		(.state | strings | ascii_downcase) == $open
+		and ([.labels[]?.name] | index($manual) == null)
+		and ([.labels[]?.name] | index($publication) != null)
+		and ([.labels[]?.name] | index($auto) != null)
 	' >/dev/null 2>&1 || return 1
 	return 0
 }

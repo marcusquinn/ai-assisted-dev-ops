@@ -95,6 +95,25 @@ def expected_full_loop_review_transition:
   and ((.after.labels // []) | index("status:in-progress") == null)
   and ((.after.labels // []) | index("status:in-review") != null);
 
+def expected_planning_publication_transition:
+  comparable_state
+  and .op == $issue_edit
+  and .caller_function == "_publication_reconcile_one"
+  and framework_script("planning-publication-reconcile.sh")
+  and .flags.planning_publication_verified == "v1-current-state"
+  and .suspicious == ["protected_label_removed:no-auto-dispatch"]
+  and (.delta.labels_removed // []) == ["no-auto-dispatch"]
+  and ((.delta.labels_added // []) | all(
+    . == "auto-dispatch" or . == "status:available" or . == "status:blocked"
+  ))
+  and (.delta.title_delta_pct == 0)
+  and (.delta.body_delta_pct == 0)
+  and ((.before.labels // []) | index("no-auto-dispatch") != null)
+  and ((.before.labels // []) | index("publication:pending") != null)
+  and ((.after.labels // []) | index("no-auto-dispatch") == null)
+  and ((.after.labels // []) | index("publication:pending") != null)
+  and ((.after.labels // []) | index("auto-dispatch") != null);
+
 # Snapshot-read failures are observability degradation, not evidence of a
 # destructive mutation. Keep them in the immutable audit log, but do not file a
 # security-anomaly issue unless the same entry contains another suspicious
@@ -120,5 +139,6 @@ select(try ((.suspicious | length) > 0) catch true)
   or expected_permission_block_transition
   or expected_trusted_author_nmr_transition
   or expected_full_loop_review_transition
+  or expected_planning_publication_transition
   or unavailable_capture_only
 ) catch false) | not)

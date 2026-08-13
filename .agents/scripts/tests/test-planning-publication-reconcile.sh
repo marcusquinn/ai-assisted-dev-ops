@@ -14,6 +14,8 @@ REMOVE_PATTERN='--remove-label "$PUBLICATION_PENDING_LABEL"'
 WORKFLOW_PATTERN='--repo "$PUBLICATION_REPO" --sha "$PUBLICATION_SHA"'
 # shellcheck disable=SC2016
 VERIFY_PATTERN='_publication_issue_has_labels "$issue_json" "$projected_labels"'
+# shellcheck disable=SC2016
+SAFE_EDIT_PATTERN='gh_issue_edit_safe "$issue_num" --repo "$repo"'
 
 # shellcheck source=../planning-publication-reconcile.sh
 source "$RECONCILER"
@@ -32,6 +34,10 @@ grep -Fq '_publication_exact_default_snapshot' "$RECONCILER"
 grep -Fq '_publication_validate_mapping' "$RECONCILER"
 grep -Fq 'verify-brief-helper.sh" check-readiness' "$RECONCILER"
 grep -Fq -- "$REMOVE_PATTERN" "$RECONCILER"
+grep -Fq -- "$SAFE_EDIT_PATTERN" "$RECONCILER"
+if grep -Fq 'gh-write-helper.sh" issue edit' "$RECONCILER"; then
+	exit 1
+fi
 grep -Fq 'Reconcile pending planning publication' "$WORKFLOW"
 grep -Fq -- "$WORKFLOW_PATTERN" "$WORKFLOW"
 

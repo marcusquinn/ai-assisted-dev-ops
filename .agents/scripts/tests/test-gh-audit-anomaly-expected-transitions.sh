@@ -69,12 +69,14 @@ cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:20:00Z","op":"issue_edit","repo":"example/repo","number":21,"caller_script":"/runtime/agents/scripts/full-loop-helper-commit.sh","caller_function":"_label_issue_in_review","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["status:in-review"]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:21:00Z","op":"issue_edit","repo":"example/repo","number":22,"caller_script":"/runtime/agents/scripts/full-loop-helper.sh","caller_function":"main","flags":{"pr_review_handoff_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-progress"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["status:in-review"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["status:in-review"]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:22:00Z","op":"issue_edit","repo":"example/repo","number":23,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring","needs-maintainer-permissions"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["needs-maintainer-permissions"]},"suspicious":["protected_label_removed:status:in-progress"]}
+{"ts":"2026-07-31T00:23:00Z","op":"issue_edit","repo":"example/repo","number":24,"caller_script":"/runtime/agents/scripts/planning-publication-reconcile.sh","caller_function":"_publication_reconcile_one","flags":{"planning_publication_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["no-auto-dispatch","publication:pending"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["auto-dispatch","status:blocked","publication:pending"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["no-auto-dispatch"],"labels_added":["auto-dispatch","status:blocked"]},"suspicious":["protected_label_removed:no-auto-dispatch"]}
+{"ts":"2026-07-31T00:24:00Z","op":"issue_edit","repo":"example/repo","number":25,"caller_script":"/runtime/agents/scripts/planning-publication-reconcile.sh","caller_function":"_publication_reconcile_one","flags":{"planning_publication_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["no-auto-dispatch"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["no-auto-dispatch"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:no-auto-dispatch"]}
 EOF
 
 output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state.json" \
 	GH_AUDIT_QUIET=true "$HELPER" scan --all --dry-run)
 
-[[ "$output" == *"**Anomalies found:** 13"* ]] || fail "expected transitions were not excluded exactly"
+[[ "$output" == *"**Anomalies found:** 14"* ]] || fail "expected transitions were not excluded exactly"
 [[ "$output" == *"| #3 |"* ]] || fail "unexpected lifecycle transition was hidden"
 [[ "$output" == *"| #4 |"* ]] || fail "approval transition with an additional signal was hidden"
 [[ "$output" == *"| #5 |"* ]] || fail "malformed provenance was dropped instead of retained"
@@ -88,6 +90,7 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #19 |"* ]] || fail "unavailable capture with an additional destructive signal was hidden"
 [[ "$output" == *"| #21 |"* ]] || fail "unverified full-loop handoff was hidden"
 [[ "$output" == *"| #23 |"* ]] || fail "permission block without a prior active status was hidden"
+[[ "$output" == *"| #25 |"* ]] || fail "planning transition without publication evidence was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
 [[ "$output" != *"private/repo"* ]] || fail "private repository name leaked into the report"
 [[ "$output" != *"inaccessible/repo"* ]] || fail "unverified repository name leaked into the report"
@@ -95,7 +98,8 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"public/repo"* ]] || fail "verified public repository name was redacted"
 [[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* &&
 	"$output" != *"| #12 |"* && "$output" != *"| #14 |"* && "$output" != *"| #17 |"* &&
-	"$output" != *"| #18 |"* && "$output" != *"| #20 |"* && "$output" != *"| #22 |"* ]] ||
+	"$output" != *"| #18 |"* && "$output" != *"| #20 |"* && "$output" != *"| #22 |"* &&
+	"$output" != *"| #24 |"* ]] ||
 	fail "an exact expected transition remained actionable"
 
 MALFORMED_LOG="${TEST_ROOT}/malformed-audit.log"
@@ -181,6 +185,40 @@ _gh_actor_has_repo_write_authority() {
 	[[ "$repo_slug" == "example/repo" ]] || return 2
 	[[ "$actor" == "trusted-runner" || ("$actor" == "trusted-author" && "$association" == "COLLABORATOR") ]]
 	return $?
+}
+gh() {
+	local command="$1"
+	local resource="${2:-}"
+	[[ "$command" == "api" && "$resource" == "repos/example/repo/issues/24" ]] || return 1
+	printf '%s\n' '{"state":"open","labels":[{"name":"auto-dispatch"},{"name":"status:blocked"},{"name":"publication:pending"}]}'
+	return 0
+}
+_gh_audit_record_op \
+	"issue_edit" "example/repo" "24" \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["no-auto-dispatch","publication:pending"]}' \
+	'{"capture_status":"ok","title_len":1,"body_len":1,"labels":["auto-dispatch","status:blocked","publication:pending"]}' \
+	"/runtime/agents/scripts/planning-publication-reconcile.sh" \
+	"_publication_reconcile_one" "1"
+jq -e 'select(.number == 24) | .flags.planning_publication_verified == "v1-current-state"' "$PROOF_LOG" >/dev/null ||
+	fail "verified planning publication transition did not produce audit proof"
+
+gh() {
+	local command="$1"
+	local resource="${2:-}"
+	[[ "$command" == "api" ]] || return 1
+	case "$resource" in
+	repos/example/repo/issues/25 | repos/example/repo/issues/27)
+		printf '%s\n' '{"user":{"login":"trusted-author","type":"User"},"author_association":"COLLABORATOR","labels":[{"name":"hold-for-review"}]}'
+		;;
+	repos/example/repo/issues/26)
+		printf '%s\n' '{"user":{"login":"external-author","type":"User"},"author_association":"CONTRIBUTOR","labels":[]}'
+		;;
+	user)
+		printf '%s\n' "$CURRENT_ACTOR"
+		;;
+	*) return 1 ;;
+	esac
+	return 0
 }
 _gh_audit_record_op \
 	"issue_edit" "example/repo" "25" \
