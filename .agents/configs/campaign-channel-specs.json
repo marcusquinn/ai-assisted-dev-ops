@@ -33,7 +33,9 @@
     },
     "twitter": {
       "canonical_id": "twitter",
-      "fanout_aliases": ["social-x"],
+      "fanout_aliases": ["social-x", "x"],
+      "outbound_channel": "x",
+      "outbound_provider": "xapi",
       "display_name": "Twitter / X",
       "max_words": 50,
       "format": "micro",
@@ -50,6 +52,18 @@
       "cta_style": "button",
       "sections": ["subject_line", "preview_text", "greeting", "body", "cta", "signature"],
       "guidelines": "Subject line: 6-10 words, curiosity or benefit-driven. Preview text: extends subject, not repeats it. Body: scannable with subheadings. Single primary CTA button. P.S. line for secondary offer. Mobile-first formatting."
+    },
+    "reddit": {
+      "canonical_id": "reddit",
+      "fanout_aliases": ["social-reddit"],
+      "outbound_channel": "reddit",
+      "outbound_provider": "reddit",
+      "display_name": "Reddit",
+      "max_words": 400,
+      "format": "community-post",
+      "cta_style": "discussion",
+      "sections": ["title", "body", "disclosure"],
+      "guidelines": "Use a reviewed title and body. Name the destination subreddit at enqueue time; follow community rules and required disclosures."
     },
     "blog": {
       "canonical_id": "blog",

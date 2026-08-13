@@ -573,6 +573,36 @@ write_run_summary() {
 	return 0
 }
 
+# Emit only stable source references for a manifest-ready channel prompt. These
+# references let the campaign distribution bridge consume reviewed outputs later
+# without treating generated prompts as approved assets.
+# Args: output_dir plan_id channel
+write_distribution_reference() {
+	local output_dir="$1"
+	local plan_id="$2"
+	local channel="$3"
+	local reference="${output_dir}/${channel}/distribution-reference.json"
+
+	case "$channel" in
+	social-x) channel="x" ;;
+	social-reddit) channel="reddit" ;;
+	*) return 0 ;;
+	esac
+
+	{
+		printf '{\n'
+		printf '  "version": 1,\n'
+		printf '  "source": "fanout:%s:%s",\n' "$plan_id" "$channel"
+		printf '  "channel": "%s",\n' "$channel"
+		printf '  "status": "prompts_ready",\n'
+		printf '  "bridge": "campaign-distribution-helper.py",\n'
+		printf '  "requires": ["approved production manifest", "verified output", "queue approval"]\n'
+		printf '}\n'
+	} >"$reference"
+
+	return 0
+}
+
 # ─── Commands ─────────────────────────────────────────────────────────
 
 cmd_plan() {
@@ -659,6 +689,7 @@ _generate_channel_prompts() {
 			"$PLAN_TONE" "$PLAN_CTA" "$PLAN_NOTES" \
 			"${ch_dir}/prompt.md"
 		write_manifest_ready_job "$ch" "$PLAN_ID" "${ch_dir}/prompt.md" "${ch_dir}/manifest-ready.job"
+		write_distribution_reference "$output_dir" "$PLAN_ID" "$ch"
 
 		echo "pending" >"${ch_dir}/.status"
 		completed=$((completed + 1))

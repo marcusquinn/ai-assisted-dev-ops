@@ -351,6 +351,17 @@ write was not accepted. `operations-list` returns bounded, content-free receipt
 metadata; it never returns body text, handles, profile names, or raw provider
 responses.
 
+### Reviewed campaign distribution bridge
+
+`campaign-distribution-helper.py` is a producer/read-model bridge for approved
+campaign outputs. It validates the production manifest's review, provenance,
+rights, and output digest before it can preview or create a stable X/Reddit queue
+draft. `enqueue --approve-until EPOCH` is an explicit owner approval request; the
+bridge never runs a provider. It stores receipt-derived state in the campaign's
+`distribution/` record and, when given a calendar schedule ID, projects the same
+state back to that row. `unknown` remains unknown until `reconcile` supplies queue
+evidence; replaying the same source and intent key recreates the same operation.
+
 ## Mention and reply workflow
 
 Notification projection is a mutable local overlay on immutable mention/reply

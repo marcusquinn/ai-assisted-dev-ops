@@ -108,6 +108,14 @@ validate_positive_int() {
 	return 0
 }
 
+# Validate a real Gregorian calendar date without accepting platform-specific
+# normalisation such as 2026-02-30.
+validate_calendar_date() {
+	local value="$1"
+	python3 -c 'import datetime, sys; datetime.date.fromisoformat(sys.argv[1])' "$value" >/dev/null 2>&1 || return 1
+	return 0
+}
+
 # =============================================================================
 # Database Initialization
 # =============================================================================
@@ -139,6 +147,10 @@ init_db() {
             scheduled_time  TEXT DEFAULT '',
             status          TEXT DEFAULT 'scheduled',
             published_url   TEXT DEFAULT '',
+            distribution_id TEXT DEFAULT '',
+            operation_id    TEXT DEFAULT '',
+            operation_state TEXT DEFAULT '',
+            remote_id       TEXT DEFAULT '',
             created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             FOREIGN KEY (content_id) REFERENCES content_items(id)
         );
@@ -156,12 +168,18 @@ init_db() {
 
         CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule(scheduled_date);
         CREATE INDEX IF NOT EXISTS idx_schedule_platform ON schedule(platform);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_idempotency ON schedule(content_id, platform, scheduled_date, scheduled_time);
         CREATE INDEX IF NOT EXISTS idx_content_stage ON content_items(stage);
         CREATE INDEX IF NOT EXISTS idx_cadence_platform ON cadence_log(platform, post_date);
     " 2>/dev/null || {
 		print_error "Failed to initialize content calendar database"
 		return 1
 	}
+	# Existing calendars retain their rows; new nullable bridge projection columns
+	# are added independently because CREATE TABLE does not migrate old databases.
+	for column in distribution_id operation_id operation_state remote_id; do
+		sqlite3 "$CC_DB" "ALTER TABLE schedule ADD COLUMN ${column} TEXT DEFAULT '';" 2>/dev/null || true
+	done
 
 	return 0
 }
@@ -364,9 +382,17 @@ cmd_schedule() {
 		return 1
 	fi
 
-	# Validate date format
+	# Validate an actual UTC calendar date and optional time, not only its shape.
 	if ! [[ "$sched_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
 		print_error "Invalid date format. Use YYYY-MM-DD"
+		return 1
+	fi
+	if ! validate_calendar_date "$sched_date"; then
+		print_error "Invalid calendar date: ${sched_date}"
+		return 1
+	fi
+	if [[ -n "$sched_time" && ! "$sched_time" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+		print_error "Invalid time format. Use HH:MM (UTC)"
 		return 1
 	fi
 
@@ -380,9 +406,18 @@ cmd_schedule() {
 		return 1
 	fi
 
+	local escaped_platform escaped_date escaped_time
+	escaped_platform="$(sql_escape "$platform")"
+	escaped_date="$(sql_escape "$sched_date")"
+	escaped_time="$(sql_escape "$sched_time")"
+	if sqlite3 "$CC_DB" "SELECT 1 FROM schedule WHERE content_id=${content_id} AND platform='${escaped_platform}' AND scheduled_date='${escaped_date}' AND scheduled_time='${escaped_time}' LIMIT 1;" | grep -q 1; then
+		print_error "An identical schedule already exists for content item #${content_id}"
+		return 1
+	fi
+
 	sqlite3 "$CC_DB" "
         INSERT INTO schedule (content_id, platform, scheduled_date, scheduled_time)
-        VALUES (${content_id}, '${platform}', '${sched_date}', '${sched_time}');
+        VALUES (${content_id}, '${escaped_platform}', '${escaped_date}', '${escaped_time}');
     "
 
 	local title

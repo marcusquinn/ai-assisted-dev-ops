@@ -60,9 +60,10 @@ readonly CAMPAIGNS_LEARNINGS_FILE="learnings.md"
 readonly CAMPAIGNS_DRAFTS_DIR="drafts"
 readonly CAMPAIGNS_INTAKE_FILE="intake.json"
 readonly CAMPAIGNS_CHANNEL_SPECS="${SCRIPT_DIR}/../configs/campaign-channel-specs.json"
-readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter email blog"
+readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter reddit email blog"
 readonly CAMPAIGN_RESEARCH_HELPER="${SCRIPT_DIR}/campaign-research-helper.py"
 readonly CAMPAIGN_PRODUCTION_HELPER="${SCRIPT_DIR}/campaign-production-helper.py"
+readonly CAMPAIGN_DISTRIBUTION_HELPER="${SCRIPT_DIR}/campaign-distribution-helper.py"
 
 # ---------------------------------------------------------------------------
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -170,8 +171,8 @@ _next_campaign_id() {
 		current="$(cat "$counter_file" 2>/dev/null || echo "0")"
 		[[ "$current" =~ ^[0-9]+$ ]] || current=0
 	fi
-	local next=$(( current + 1 ))
-	printf '%d' "$next" > "$counter_file"
+	local next=$((current + 1))
+	printf '%d' "$next" >"$counter_file"
 	printf 'c%03d' "$next"
 	return 0
 }
@@ -195,7 +196,7 @@ _read_validated_intake() {
 		(.objectives | type == $json_array and length > 0) and (.audiences | type == $json_array and length > 0) and
 		(.positioning | type == $json_object) and (.positioning.statement | type == $json_string and length > 0) and (.proof | type == $json_array and length > 0) and
 		(all(.proof[]; type == $json_object and (.claim | type == $json_string and length > 0) and (.evidence_reference | type == $json_string and length > 0 and test("^(?!/)(?!~)(?!.*(^|/)\\.\\.(/|$)).+")) and (.approval_status | IN($approved, $pending, $rejected)))) and
-		(.channels | type == $json_array and length > 0 and all(.[]; IN("facebook", "instagram", "linkedin", "twitter", "email", "blog"))) and
+		(.channels | type == $json_array and length > 0 and all(.[]; IN("facebook", "instagram", "linkedin", "twitter", "reddit", "email", "blog"))) and
 		(.dates | type == $json_object) and (.dates.start | type == $json_string and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and (.dates.end | type == $json_string and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and .dates.start <= .dates.end and
 		(.kpis | type == $json_array and length > 0) and (.disclosures | type == $json_array) and (.sensitivity | IN("public", "internal", "sensitive")) and
 		(.approvals | type == $json_object) and (.approvals.owner | type == $json_string and length > 0) and (.approvals.claims | IN($approved, $pending, $required)) and (.approvals.creative | IN($approved, $pending, $required))
@@ -1400,6 +1401,10 @@ main() {
 	production)
 		[[ -f "$CAMPAIGN_PRODUCTION_HELPER" ]] || { print_error "Campaign production helper not found: ${CAMPAIGN_PRODUCTION_HELPER}"; return 1; }
 		python3 "$CAMPAIGN_PRODUCTION_HELPER" "$@"
+		;;
+	distribution)
+		[[ -f "$CAMPAIGN_DISTRIBUTION_HELPER" ]] || { print_error "Campaign distribution helper not found: ${CAMPAIGN_DISTRIBUTION_HELPER}"; return 1; }
+		python3 "$CAMPAIGN_DISTRIBUTION_HELPER" "$@"
 		;;
 	research)
 		[[ -x "$CAMPAIGN_RESEARCH_HELPER" || -f "$CAMPAIGN_RESEARCH_HELPER" ]] || { print_error "Campaign research helper not found: ${CAMPAIGN_RESEARCH_HELPER}"; return 1; }
