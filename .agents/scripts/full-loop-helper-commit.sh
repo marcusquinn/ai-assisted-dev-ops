@@ -173,7 +173,7 @@ _full_loop_pr_readiness_json_graphql() {
 	local response="" pr_json=""
 	local jq_string_type="string"
 
-	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" && "$owner" != "$name" ]] || return 1
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" && "$repo_slug" == */* ]] || return 1
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="full-loop-readiness-exact-cost" \

@@ -258,6 +258,16 @@ test_full_loop_readiness_integration() {
 	fi
 
 	: >"$GH_LOG"
+	rc=0
+	_full_loop_verify_pr_readiness 42 awardsapp/awardsapp >/dev/null 2>&1 || rc=$?
+	if [[ "$rc" -eq 0 ]] && grep -q -- "-F owner=awardsapp -F name=awardsapp" "$GH_LOG" \
+		&& grep -q "exact-checks awardsapp/awardsapp 42 required" "$GH_LOG"; then
+		record_result "full-loop readiness supports same-name owner/repo slugs" 0
+	else
+		record_result "full-loop readiness supports same-name owner/repo slugs" 1
+	fi
+
+	: >"$GH_LOG"
 	export READINESS_RESPONSE_MODE="missing-cost"
 	rc=0
 	_full_loop_verify_pr_readiness 42 owner/repo >/dev/null 2>&1 || rc=$?
