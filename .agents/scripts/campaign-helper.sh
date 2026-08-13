@@ -58,6 +58,7 @@ readonly CAMPAIGNS_BRIEF_FILE="brief.md"
 readonly CAMPAIGNS_RESULTS_FILE="results.md"
 readonly CAMPAIGNS_LEARNINGS_FILE="learnings.md"
 readonly CAMPAIGNS_DRAFTS_DIR="drafts"
+readonly CAMPAIGNS_INTAKE_FILE="intake.json"
 readonly CAMPAIGNS_CHANNEL_SPECS="${SCRIPT_DIR}/../configs/campaign-channel-specs.json"
 readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter email blog"
 
@@ -163,48 +164,145 @@ _next_campaign_id() {
 	return 0
 }
 
-# Write brief.md for a new campaign
-_write_campaign_brief() {
-	local dest="$1" campaign_id="$2" name="$3" channel="${4:-}" created="$5"
-	cat >"$dest" <<BRIEF
-# Campaign Brief: ${name}
+_read_validated_intake() {
+	local intake_file="${1:-}" json_array='array' json_object='object' json_string='string'
+	local approved='approved' pending='pending' rejected='rejected' required='required'
+	if [[ -z "$intake_file" || ! -f "$intake_file" ]]; then
+		print_error "Campaign intake file not found: ${intake_file:-missing --intake <file>}"
+		return 1
+	fi
+	if ! jq empty "$intake_file" 2>/dev/null; then
+		print_error "Campaign intake must be valid JSON: ${intake_file}"
+		return 1
+	fi
+	if ! jq -e --arg json_array "$json_array" --arg json_object "$json_object" --arg json_string "$json_string" --arg approved "$approved" --arg pending "$pending" --arg rejected "$rejected" --arg required "$required" '
+		type == $json_object and .schema_version == 1 and
+		(.brand | type == $json_object) and (.brand.name | type == $json_string and length > 0) and (.brand.reference | type == $json_string and test("^(context/brand-identity\\.toon|DESIGN\\.md|_campaigns/lib/brand/)")) and
+		(.product | type == $json_object) and (.product.name | type == $json_string and length > 0) and (.product.description | type == $json_string and length > 0) and
+		(.offer | type == $json_object) and (.offer.summary | type == $json_string and length > 0) and (.offer.terms | type == $json_string and length > 0) and
+		(.objectives | type == $json_array and length > 0) and (.audiences | type == $json_array and length > 0) and
+		(.positioning | type == $json_object) and (.positioning.statement | type == $json_string and length > 0) and (.proof | type == $json_array and length > 0) and
+		(all(.proof[]; type == $json_object and (.claim | type == $json_string and length > 0) and (.evidence_reference | type == $json_string and length > 0 and test("^(?!/)(?!~)(?!.*(^|/)\\.\\.(/|$)).+")) and (.approval_status | IN($approved, $pending, $rejected)))) and
+		(.channels | type == $json_array and length > 0 and all(.[]; IN("facebook", "instagram", "linkedin", "twitter", "email", "blog"))) and
+		(.dates | type == $json_object) and (.dates.start | type == $json_string and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and (.dates.end | type == $json_string and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and .dates.start <= .dates.end and
+		(.kpis | type == $json_array and length > 0) and (.disclosures | type == $json_array) and (.sensitivity | IN("public", "internal", "sensitive")) and
+		(.approvals | type == $json_object) and (.approvals.owner | type == $json_string and length > 0) and (.approvals.claims | IN($approved, $pending, $required)) and (.approvals.creative | IN($approved, $pending, $required))
+	' "$intake_file" >/dev/null 2>&1; then
+		print_error "Invalid campaign intake: missing required fields or unsafe claim evidence. See .agents/schemas/campaign-intake.schema.json."
+		return 1
+	fi
+	jq -S -c . "$intake_file"
+	return 0
+}
 
-**ID:** ${campaign_id}
-**Name:** ${name}
-**Channel:** ${channel:-unset}
+_render_campaign_brief() {
+	local intake="$1" campaign_id="$2" created="$3" separator=', '
+	local brand_name brand_reference product_name product_description offer_summary offer_terms positioning
+	local objectives audiences proof channels dates kpis disclosures approval_owner claims_approval creative_approval sensitivity
+	brand_name="$(jq -r '.brand.name' <<<"$intake")"
+	brand_reference="$(jq -r '.brand.reference' <<<"$intake")"
+	product_name="$(jq -r '.product.name' <<<"$intake")"
+	product_description="$(jq -r '.product.description' <<<"$intake")"
+	offer_summary="$(jq -r '.offer.summary' <<<"$intake")"
+	offer_terms="$(jq -r '.offer.terms' <<<"$intake")"
+	positioning="$(jq -r '.positioning.statement' <<<"$intake")"
+	objectives="$(_format_intake_metrics "$intake" objectives)"
+	audiences="$(jq -r --arg separator "$separator" '.audiences | map("- **\(.segment):** buying roles — \(.buying_roles | join($separator))") | join("\n")' <<<"$intake")"
+	proof="$(jq -r '.proof | map("- **\(.approval_status):** \(.claim) — evidence: `\(.evidence_reference)`") | join("\n")' <<<"$intake")"
+	channels="$(jq -r --arg separator "$separator" '.channels | join($separator)' <<<"$intake")"
+	dates="$(jq -r '.dates | "\(.start) to \(.end)"' <<<"$intake")"
+	kpis="$(_format_intake_metrics "$intake" kpis)"
+	disclosures="$(jq -r '.disclosures | if length == 0 then "None specified" else join("; ") end' <<<"$intake")"
+	approval_owner="$(jq -r '.approvals.owner' <<<"$intake")"
+	claims_approval="$(jq -r '.approvals.claims' <<<"$intake")"
+	creative_approval="$(jq -r '.approvals.creative' <<<"$intake")"
+	sensitivity="$(jq -r '.sensitivity' <<<"$intake")"
+	cat <<BRIEF
+# Campaign Brief: ${campaign_id}
+
+**Intake schema:** v1
 **Created:** ${created}
 **Status:** active
+**Sensitivity:** ${sensitivity}
 
-## Goal
+## Brand and product
 
-<!-- What does this campaign aim to achieve? Be specific: metric, target, timeline. -->
+**Brand:** ${brand_name}
+**Canonical brand reference:** \`${brand_reference}\`
+**Product:** ${product_name}
 
-## Audience
+${product_description}
 
-<!-- Who are we reaching? Demographics, psychographics, pain points, platform. -->
+## Offer and positioning
 
-## Message
+**Offer:** ${offer_summary}
+**Terms:** ${offer_terms}
 
-<!-- Core message. What do we want them to feel / do? -->
+${positioning}
 
-## Creative Direction
+## Objectives and audiences
 
-<!-- Visual style, tone, format requirements, brand constraints. -->
+${objectives}
 
-## Distribution Plan
+${audiences}
 
-<!-- Channels, scheduling, budget allocation, posting cadence. -->
+## Proof-linked claims
 
-## Success Criteria
+${proof}
 
-<!-- How will we know it worked? Metrics, thresholds, timeframes. -->
+## Channels, dates, and KPIs
 
----
+**Channels:** ${channels}
+**Dates:** ${dates}
 
-_Next: fill in sections above, then run: \`aidevops campaign status ${campaign_id}\`_
-_To launch: \`aidevops campaign launch ${campaign_id}\`_
+${kpis}
+
+## Disclosures and approvals
+
+**Disclosures:** ${disclosures}
+**Approval owner:** ${approval_owner}
+**Claims approval:** ${claims_approval}
+**Creative approval:** ${creative_approval}
+
+<!-- CAMPAIGN_INTAKE_JSON_V1
+${intake}
+-->
 BRIEF
 	return 0
+}
+
+_format_intake_metrics() {
+	local intake="$1" field="$2"
+	jq -r --arg field "$field" '.[$field] | map("- **\(.metric):** \(.target)") | join("\n")' <<<"$intake"
+	return 0
+}
+
+_write_intake_atomically() {
+	local campaign_dir="$1" intake="$2" campaign_id="$3" created="$4" intake_tmp='' brief_tmp=''
+	intake_tmp="$(mktemp "${campaign_dir}/.intake.XXXXXX")" || return 1
+	brief_tmp="$(mktemp "${campaign_dir}/.brief.XXXXXX")" || { rm -f "$intake_tmp"; return 1; }
+	printf '%s\n' "$intake" > "$intake_tmp"
+	if ! _render_campaign_brief "$intake" "$campaign_id" "$created" > "$brief_tmp"; then
+		rm -f "$intake_tmp" "$brief_tmp"
+		print_error "Unable to render campaign brief; no existing brief was replaced."
+		return 1
+	fi
+	mv "$intake_tmp" "${campaign_dir}/${CAMPAIGNS_INTAKE_FILE}"
+	mv "$brief_tmp" "${campaign_dir}/${CAMPAIGNS_BRIEF_FILE}"
+	return 0
+}
+
+_find_matching_intake() {
+	local active_base="$1" intake="$2" candidate existing
+	for candidate in "$active_base"/*; do
+		[[ -f "${candidate}/${CAMPAIGNS_INTAKE_FILE}" ]] || continue
+		existing="$(jq -S -c . "${candidate}/${CAMPAIGNS_INTAKE_FILE}" 2>/dev/null || true)"
+		if [[ "$existing" == "$intake" ]]; then
+			basename "$candidate"
+			return 0
+		fi
+	done
+	return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -212,20 +310,27 @@ BRIEF
 # ---------------------------------------------------------------------------
 
 cmd_new() {
-	local name='' channel='' repo_path=''
+	local name='' channel='' intake_file='' repo_path=''
 
 	while [[ $# -gt 0 ]]; do
 		local _cur="${1:-}" _nxt="${2:-}"
 		case "$_cur" in
 		--channel) channel="$_nxt"; shift 2 ;;
+		--intake) intake_file="$_nxt"; shift 2 ;;
 		--repo) repo_path="$_nxt"; shift 2 ;;
 		-*) _err_opt_unknown "$_cur"; return 1 ;;
 		*) name="$_cur"; shift ;;
 		esac
 	done
 
-	[[ -z "$name" ]] && { print_error "Usage: campaign new <name> [--channel <ch>]"; return 1; }
+	[[ -z "$name" ]] && { print_error "Usage: campaign new <name> --intake <file> [--channel <ch>]"; return 1; }
 	[[ -z "$repo_path" ]] && repo_path="$(pwd)"
+	local intake
+	intake="$(_read_validated_intake "$intake_file")" || return 1
+	if [[ -n "$channel" ]] && ! jq -e --arg channel "$channel" '.channels | index($channel) != null' <<<"$intake" >/dev/null; then
+		print_error "Channel must be declared by intake: ${channel}"
+		return 1
+	fi
 
 	local campaigns_dir
 	campaigns_dir="$(_resolve_campaigns_dir "$repo_path")"
@@ -233,6 +338,11 @@ cmd_new() {
 
 	local active_base="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}"
 	mkdir -p "$active_base"
+	local existing_id
+	if existing_id="$(_find_matching_intake "$active_base" "$intake")"; then
+		print_success "Campaign already exists for this intake: ${existing_id}"
+		return 0
+	fi
 
 	local slug
 	slug="$(_slugify "$name")"
@@ -246,18 +356,24 @@ cmd_new() {
 		return 1
 	fi
 
-	mkdir -p "${campaign_dir}/research"
-	mkdir -p "${campaign_dir}/creative"
-	[[ -n "$channel" ]] && mkdir -p "${campaign_dir}/distribution/${channel}"
-
 	local created
 	created="$(_current_date)"
-	_write_campaign_brief "${campaign_dir}/${CAMPAIGNS_BRIEF_FILE}" "$dir_name" "$name" "$channel" "$created"
+	local staging_dir
+	staging_dir="$(mktemp -d "${active_base}/.campaign.XXXXXX")" || return 1
+	mkdir -p "${staging_dir}/research" "${staging_dir}/creative"
+	[[ -n "$channel" ]] && mkdir -p "${staging_dir}/distribution/${channel}"
+	if ! _write_intake_atomically "$staging_dir" "$intake" "$dir_name" "$created"; then
+		rm -rf "$staging_dir"
+		return 1
+	fi
+	mv "$staging_dir" "$campaign_dir"
 
 	print_success "Campaign created: ${dir_name}"
 	echo "  Path:    ${campaign_dir}"
 	echo "  Brief:   ${campaign_dir}/${CAMPAIGNS_BRIEF_FILE}"
-	echo "  Channel: ${channel:-unset}"
+	local channel_summary
+	channel_summary="$(jq -r --arg separator ', ' '.channels | join($separator)' <<<"$intake")"
+	echo "  Channels: ${channel_summary}"
 	echo ""
 	_print_next_steps
 	echo "  1. Edit brief:   ${campaign_dir}/${CAMPAIGNS_BRIEF_FILE}"
@@ -265,6 +381,39 @@ cmd_new() {
 	echo "  3. Launch:       aidevops campaign launch ${dir_name}"
 	return 0
 }
+
+cmd_update_intake() {
+	local command_name="${1:-update}" campaign_id='' intake_file='' repo_path=''
+	shift || true
+	while [[ $# -gt 0 ]]; do
+		local _cur="${1:-}" _nxt="${2:-}"
+		case "$_cur" in
+		--intake) intake_file="$_nxt"; shift 2 ;;
+		--repo) repo_path="$_nxt"; shift 2 ;;
+		-*) _err_opt_unknown "$_cur"; return 1 ;;
+		*) campaign_id="$_cur"; shift ;;
+		esac
+	done
+	[[ -n "$campaign_id" && -n "$intake_file" ]] || { print_error "Usage: campaign ${command_name} <id> --intake <file> [--repo <path>]"; return 1; }
+	[[ -z "$repo_path" ]] && repo_path="$(pwd)"
+	local intake campaigns_dir campaign_dir created
+	intake="$(_read_validated_intake "$intake_file")" || return 1
+	campaigns_dir="$(_resolve_campaigns_dir "$repo_path")"
+	_require_campaigns_plane "$campaigns_dir" || return 1
+	campaign_dir="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}/${campaign_id}"
+	[[ -d "$campaign_dir" ]] || { _err_active_not_found "$campaign_id"; return 1; }
+	if [[ "$command_name" == "update" && ! -f "${campaign_dir}/${CAMPAIGNS_INTAKE_FILE}" ]]; then
+		print_error "Legacy brief detected. Migrate explicitly: aidevops campaign migrate ${campaign_id} --intake <file>"
+		return 1
+	fi
+	created="$(_current_date)"
+	_write_intake_atomically "$campaign_dir" "$intake" "$campaign_id" "$created" || return 1
+	print_success "Campaign intake ${command_name}d: ${campaign_id}"
+	return 0
+}
+
+cmd_update() { cmd_update_intake update "$@"; return $?; }
+cmd_migrate() { cmd_update_intake migrate "$@"; return $?; }
 
 # ---------------------------------------------------------------------------
 # _list_campaigns_in — enumerate campaigns in a phase directory
@@ -1137,9 +1286,15 @@ cmd_help() {
 campaign-helper.sh — _campaigns/ plane CLI (P2) + creative drafting (P5) + performance (P6)
 
 P2 Commands (lifecycle management):
-  new <name> [--channel <ch>] [--repo <path>]
-      Scaffold _campaigns/active/<id>/ with brief.md + research/ + creative/.
+  new <name> --intake <file> [--channel <ch>] [--repo <path>]
+      Create an active campaign with a validated schema-v1 intake-backed brief.
       Campaign ID auto-provisioned (c001, c002, ...) from .campaign-counter.
+
+  update <id> --intake <file> [--repo <path>]
+      Atomically replace the structured intake and rendered brief for an active campaign.
+
+  migrate <id> --intake <file> [--repo <path>]
+      Explicitly upgrade a legacy brief before structured updates.
 
   list [--repo <path>]
       Show all campaigns across active/, launched/, archive/ with status.
@@ -1203,6 +1358,8 @@ main() {
 
 	case "$command" in
 	new) cmd_new "$@" ;;
+	update) cmd_update "$@" ;;
+	migrate) cmd_migrate "$@" ;;
 	list | ls) cmd_list "$@" ;;
 	status | show) cmd_status "$@" ;;
 	archive) cmd_archive "$@" ;;

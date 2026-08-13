@@ -30,7 +30,7 @@ or scatters across the filesystem unmanaged.
 
 ## Directory Layout
 
-```
+```text
 _campaigns/
 ├── .gitignore             # intel/ and active/ ignored by default (see Sensitivity)
 ├── CAMPAIGNS.md           # User-facing contract overview (written at provision time)
@@ -171,6 +171,24 @@ aidevops campaign ls [--active|--launched|--all] [<repo-path>]
 
 **Phase 2 CLI (t2963 — shipped):** `campaign new`, `campaign list`,
 `campaign launch`, `campaign archive`, and sequential campaign IDs.
+
+### Campaign intake contract (schema v1)
+
+`campaign new <name> --intake <file>` requires a JSON document conforming to
+`.agents/schemas/campaign-intake.schema.json`. It records the canonical brand
+reference, product, offer, objectives, audience buying roles, positioning,
+proof-linked claims, objections, exclusions, channels, dates, KPIs,
+disclosures, sensitivity, and approval policy. The rendered `brief.md` keeps a
+stable `CAMPAIGN_INTAKE_JSON_V1` block and references brand sources rather than
+copying brand identity data.
+
+`campaign update <id> --intake <file>` validates and atomically replaces the
+intake and rendered brief. Existing unversioned briefs remain readable by
+status, draft, launch, and archive commands; convert them only with explicit
+`campaign migrate <id> --intake <file>`. Replaying a normalized intake returns
+the existing active campaign instead of creating a duplicate. Claim evidence is
+mandatory and its approval status is always explicit; text alone never makes a
+claim approved.
 
 **Phase 4 CLI (t2965 — shipped):** `campaign asset` — asset binary management.
 

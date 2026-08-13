@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Campaign Intake v1",
+  "description": "Versioned intake for evidence-backed campaign briefs. Canonical brand sources are referenced, never copied.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "brand", "product", "offer", "objectives", "audiences", "positioning", "proof", "objections", "exclusions", "channels", "dates", "kpis", "disclosures", "sensitivity", "approvals"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "brand": {"type": "object", "additionalProperties": false, "required": ["name", "reference"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 160}, "reference": {"type": "string", "pattern": "^(context/brand-identity\\.toon|DESIGN\\.md|_campaigns/lib/brand/)"}}},
+    "product": {"type": "object", "additionalProperties": false, "required": ["name", "description"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 160}, "description": {"type": "string", "minLength": 1, "maxLength": 2000}}},
+    "offer": {"type": "object", "additionalProperties": false, "required": ["summary", "terms"], "properties": {"summary": {"type": "string", "minLength": 1, "maxLength": 2000}, "terms": {"type": "string", "minLength": 1, "maxLength": 2000}}},
+    "objectives": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/metric"}},
+    "audiences": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["segment", "buying_roles", "pains", "jobs", "outcomes"], "properties": {"segment": {"type": "string", "minLength": 1, "maxLength": 240}, "buying_roles": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 120}}, "pains": {"type": "array", "items": {"type": "string"}}, "jobs": {"type": "array", "items": {"type": "string"}}, "outcomes": {"type": "array", "items": {"type": "string"}}}}},
+    "positioning": {"type": "object", "additionalProperties": false, "required": ["statement", "differentiators"], "properties": {"statement": {"type": "string", "minLength": 1, "maxLength": 2000}, "differentiators": {"type": "array", "items": {"type": "string"}}}},
+    "proof": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["claim", "evidence_reference", "approval_status"], "properties": {"claim": {"type": "string", "minLength": 1, "maxLength": 2000}, "evidence_reference": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!~)(?!.*(^|/)\\.\\.(/|$)).+"}, "approval_status": {"enum": ["approved", "pending", "rejected"]}}}},
+    "objections": {"type": "array", "items": {"type": "string"}},
+    "exclusions": {"type": "array", "items": {"type": "string"}},
+    "channels": {"type": "array", "minItems": 1, "items": {"enum": ["facebook", "instagram", "linkedin", "twitter", "email", "blog"]}},
+    "dates": {"type": "object", "additionalProperties": false, "required": ["start", "end"], "properties": {"start": {"type": "string", "format": "date"}, "end": {"type": "string", "format": "date"}}},
+    "kpis": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/metric"}},
+    "disclosures": {"type": "array", "items": {"type": "string"}},
+    "sensitivity": {"enum": ["public", "internal", "sensitive"]},
+    "approvals": {"type": "object", "additionalProperties": false, "required": ["owner", "claims", "creative"], "properties": {"owner": {"type": "string", "minLength": 1, "maxLength": 160}, "claims": {"enum": ["approved", "pending", "required"]}, "creative": {"enum": ["approved", "pending", "required"]}}}
+  },
+  "$defs": {"metric": {"type": "object", "additionalProperties": false, "required": ["metric", "target"], "properties": {"metric": {"type": "string", "minLength": 1, "maxLength": 120}, "target": {"type": "string", "minLength": 1, "maxLength": 240}}}}
+}
