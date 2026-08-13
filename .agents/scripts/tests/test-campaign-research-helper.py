@@ -37,7 +37,7 @@ class CampaignResearchHelperTests(unittest.TestCase):
         command = ["python3", str(HELPER), "c001-test", "--repo", str(self.repo)]
         for source in sources:
             command.extend(["--source", str(source)])
-        return subprocess.run(command, text=True, capture_output=True, check=False)
+        return subprocess.run(command, text=True, capture_output=True, check=False)  # nosec B603: fixed interpreter and local helper path
 
     def test_generates_reference_oriented_dossier(self) -> None:
         result = self.invoke(self.source())

@@ -171,24 +171,38 @@ def validate_dossier(dossier: dict[str, Any]) -> None:
     if not re.fullmatch(r"[a-f0-9]{64}", dossier["semantic_snapshot_sha256"]):
         raise DossierError("generated dossier snapshot hash is invalid")
     parse_time(dossier["generated_at"], "generated_at")
-    coverage = dossier["coverage"]
+    validate_coverage(dossier["coverage"])
+    validate_ledger(dossier["provenance_ledger"])
+    for key in ("audiences", "competitors", "creators", "trends", "channel_fit", "opportunities", "contradictions"):
+        validate_insights(key, dossier[key])
+
+
+def validate_coverage(coverage: Any) -> None:
+    """Validate the fixed coverage summary shape."""
     if not isinstance(coverage, dict) or coverage.get("status") not in {"complete", "partial", "unavailable"} or not isinstance(coverage.get("source_counts"), dict):
         raise DossierError("generated dossier coverage is invalid")
+
+
+def validate_ledger(ledger: Any) -> None:
+    """Validate source provenance without accepting duplicate source IDs."""
     source_ids = set()
-    for source in dossier["provenance_ledger"]:
+    for source in ledger:
         if not isinstance(source, dict) or set(source) != {"source_id", "source_type", "reference", "captured_at", "freshness", "authorization_mode", "status", "confidence", "sensitivity"}:
             raise DossierError("generated dossier provenance is invalid")
         if source["source_id"] in source_ids:
             raise DossierError("generated dossier provenance has duplicate source IDs")
         source_ids.add(source["source_id"])
-    for key in ("audiences", "competitors", "creators", "trends", "channel_fit", "opportunities", "contradictions"):
-        if not isinstance(dossier[key], list):
-            raise DossierError(f"generated dossier {key} must be an array")
-        for insight in dossier[key]:
-            if not isinstance(insight, dict) or set(insight) != {"label", "summary", "confidence", "evidence_source_ids"}:
-                raise DossierError(f"generated dossier {key} insight is invalid")
-            if insight["confidence"] not in CONFIDENCES or not insight["evidence_source_ids"]:
-                raise DossierError(f"generated dossier {key} confidence or provenance is invalid")
+
+
+def validate_insights(key: str, insights: Any) -> None:
+    """Validate one evidence-linked insight collection."""
+    if not isinstance(insights, list):
+        raise DossierError(f"generated dossier {key} must be an array")
+    for insight in insights:
+        if not isinstance(insight, dict) or set(insight) != {"label", "summary", "confidence", "evidence_source_ids"}:
+            raise DossierError(f"generated dossier {key} insight is invalid")
+        if insight["confidence"] not in CONFIDENCES or not insight["evidence_source_ids"]:
+            raise DossierError(f"generated dossier {key} confidence or provenance is invalid")
 
 
 def atomic_write(path: Path, content: str) -> None:
