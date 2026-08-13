@@ -226,6 +226,28 @@ Channel specs: `.agents/configs/campaign-channel-specs.json`.
 **Phase 6 CLI (t2969 — shipped):** `campaign launch`, `campaign promote`,
 `campaign feedback` — cross-plane promotion of results and learnings.
 
+### Campaign research dossier contract (schema v1)
+
+`campaign research <id> --source <evidence.json>` produces
+`_campaigns/active/<id>/research/dossier.json` plus `dossier.md`. The dossier is
+reference-oriented: it holds structured audience and buying-role refinement,
+competitor, creator, trend, channel-fit, opportunity, and contradiction records
+with a provenance ledger. Its semantic snapshot hash makes an unchanged source
+replay idempotent.
+
+Source packages are bounded supplied files or exports; the command does not
+invent a live collector, read authority, or provider configuration. Every source
+records type, reference, capture time, freshness, authorization mode, confidence,
+sensitivity, and an explicit `complete`, `partial`, `gated`, `absent`, `stale`,
+`rate_limited`, or `failed` status. Gated and unavailable evidence is coverage
+metadata, never a positive finding. A fully failed refresh preserves a prior
+valid dossier.
+
+Keep raw sensitive competitive artifacts in `_campaigns/intel/`; the active
+dossier references them without copying private identifiers into its human
+summary. Campaign brief and content consumers use `research/dossier.json` and
+degrade to `research_unavailable` when its coverage is unavailable.
+
 ## CAMPAIGNS.md Contract File
 
 Written to `_campaigns/CAMPAIGNS.md` at provision time. Describes the directory
@@ -259,5 +281,6 @@ Promotion is handled by `campaign-helper.sh promote` (t2969). Integration with
 
 `.agents/scripts/campaigns-provision-helper.sh` — provisioning and introspection.
 `.agents/scripts/campaign-asset-helper.sh` — asset binary management (P4).
+`.agents/scripts/campaign-research-helper.py` — bounded dossier normalization (P7).
 
 <!-- AI-CONTEXT-END -->
