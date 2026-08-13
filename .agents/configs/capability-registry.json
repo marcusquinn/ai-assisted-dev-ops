@@ -62,6 +62,17 @@
       "probes": {"configured": {"env_any": ["DATAFORSEO_USERNAME"]}, "authenticated": {"env_all": ["DATAFORSEO_USERNAME", "DATAFORSEO_PASSWORD"]}, "authorized": {"live": "requires provider permission check"}, "reachable": {"live": "requires MCP handshake"}, "tool_visible": {"tool": "dataforseo_*"}}
     },
     {
+      "name": "campaign-research-dossiers",
+      "aliases": ["campaign-research", "research-dossier"],
+      "owner": "Research",
+      "description": "Bounded, provenance-led campaign research normalization from supplied authorized evidence",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["content/research.md", "scripts/campaign-research-helper.py"],
+      "fallback": "research-unavailable",
+      "required": ["deployed", "runtime_compatible", "tool_visible"],
+      "probes": {"deployed": {"path": "scripts/campaign-research-helper.py"}, "tool_visible": {"tool": "python3"}}
+    },
+    {
       "name": "vault-operations",
       "aliases": ["vault", "protected-data", "encrypted-memory"],
       "owner": "Vault",
