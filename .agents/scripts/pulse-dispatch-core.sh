@@ -1229,10 +1229,11 @@ _is_task_committed_to_main() {
 #######################################
 # Detect labels that mean a human/review workflow owns the target.
 #
-# status:in-review and origin:interactive are live interactive hold signals only
-# while the issue is not explicitly worker-dispatchable. auto-dispatch is the
-# handoff signal for issues left by an interactive session after the human has
-# moved on, so it must not strand work forever (GH#22964/GH#22965).
+# status:in-review is a live interactive hold signal while the issue is not
+# explicitly worker-dispatchable. origin:interactive is provenance only unless a
+# same-session owner/assignee is still attached; unassigned status:available
+# issues must remain dispatchable so TODO/brief sync does not strand worker-ready
+# backlog items that lack auto-dispatch labels.
 #
 # Args:
 #   $1 - issue metadata JSON with optional .labels[].name
@@ -1242,7 +1243,14 @@ _dispatch_has_interactive_hold() {
 	local issue_meta_json="$1"
 	[[ -n "$issue_meta_json" ]] || return 1
 	printf '%s' "$issue_meta_json" |
-		jq -e '(.labels // []) | map(.name) | ((index("auto-dispatch") | not) and (index("status:in-review") or index("origin:interactive")))' >/dev/null 2>&1
+		jq -e '
+			([.labels[]?.name]) as $labels |
+			(($labels | index("auto-dispatch")) | not) and
+			(
+				($labels | index("status:in-review")) or
+				(($labels | index("origin:interactive")) and (((.assignees // []) | length) > 0))
+			)
+		' >/dev/null 2>&1
 	return $?
 }
 

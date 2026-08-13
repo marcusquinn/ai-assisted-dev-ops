@@ -346,6 +346,28 @@ test_has_open_pr_detects_response_metered_commit_reference() {
 	return 0
 }
 
+test_has_open_pr_allows_owner_repo_same_name() {
+	local output=""
+	export GH_OPEN_COMMITS_JSON='[{"number":1061,"title":"Same-name repo fix","isDraft":false,"commits":[{"messageHeadline":"Fixes #10001 in same-name owner repo"}]}]'
+	printf '' >"$GH_GRAPHQL_CALL_LOG"
+
+	if output=$("$HELPER_SCRIPT" has-open-pr 10001 awardsapp/awardsapp 't10001: same-name repo dispatch dedup'); then
+		unset GH_OPEN_COMMITS_JSON
+		if [[ "$output" == *"open PR #1061 has commits targeting issue #10001"* ]] && \
+			grep -qF '1|dispatch-dedup-open-commits-exact-cost|' "$GH_GRAPHQL_CALL_LOG"; then
+			print_result "has-open-pr supports owner/repo slugs with identical names" 0
+			return 0
+		fi
+		print_result "has-open-pr supports owner/repo slugs with identical names" 1 "output=${output}"
+		return 0
+	fi
+
+	unset GH_OPEN_COMMITS_JSON
+	print_result "has-open-pr supports owner/repo slugs with identical names" 1 \
+		"Expected same-name repo slug to reach open-commit PR lookup"
+	return 0
+}
+
 test_has_open_pr_returns_nonzero_without_match() {
 	set_gh_fixtures ''
 	set_gh_pr_view_fixtures ''
@@ -943,6 +965,7 @@ main() {
 	test_has_open_pr_detects_closing_keyword
 	test_has_open_pr_detects_task_id_fallback
 	test_has_open_pr_detects_response_metered_commit_reference
+	test_has_open_pr_allows_owner_repo_same_name
 	test_has_open_pr_returns_nonzero_without_match
 	test_has_open_pr_ignores_planning_for_reference
 	test_has_open_pr_ignores_planning_ref_reference

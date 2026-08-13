@@ -170,7 +170,7 @@ _ddpr_graphql_open_commits() {
 	local owner="${repo_slug%%/*}"
 	local repo="${repo_slug#*/}"
 	local response="" pr_json=""
-	[[ -n "$owner" && -n "$repo" && "$owner" != "$repo" && "$repo" != */* ]] || return 1
+	[[ -n "$owner" && -n "$repo" && "$repo_slug" == */* && "$repo" != */* ]] || return 1
 
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \

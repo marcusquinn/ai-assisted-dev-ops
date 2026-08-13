@@ -117,13 +117,23 @@ test_interactive_hold_blocks_in_review_without_handoff() {
 	return 0
 }
 
-test_interactive_hold_blocks_origin_interactive() {
-	local meta='{"labels":[{"name":"origin:interactive"},{"name":"bug"}]}'
+test_interactive_hold_allows_unassigned_origin_interactive() {
+	local meta='{"labels":[{"name":"origin:interactive"},{"name":"status:available"},{"name":"bug"}],"assignees":[]}'
 	if _dispatch_has_interactive_hold "$meta"; then
-		print_result "interactive hold blocks origin:interactive" 0
+		print_result "interactive hold allows unassigned origin:interactive backlog" 1 "provenance-only origin:interactive must not strand available work"
 		return 0
 	fi
-	print_result "interactive hold blocks origin:interactive" 1 "expected origin:interactive to block"
+	print_result "interactive hold allows unassigned origin:interactive backlog" 0
+	return 0
+}
+
+test_interactive_hold_blocks_assigned_origin_interactive() {
+	local meta='{"labels":[{"name":"origin:interactive"},{"name":"bug"}],"assignees":[{"login":"owner"}]}'
+	if _dispatch_has_interactive_hold "$meta"; then
+		print_result "interactive hold blocks assigned origin:interactive" 0
+		return 0
+	fi
+	print_result "interactive hold blocks assigned origin:interactive" 1 "expected assigned origin:interactive work to block"
 	return 0
 }
 
@@ -214,7 +224,8 @@ main() {
 	test_pr_guard_uses_rest_issue_object
 	test_pr_guard_allows_plain_issue
 	test_interactive_hold_blocks_in_review_without_handoff
-	test_interactive_hold_blocks_origin_interactive
+	test_interactive_hold_allows_unassigned_origin_interactive
+	test_interactive_hold_blocks_assigned_origin_interactive
 	test_interactive_hold_allows_auto_dispatch_handoff
 	test_interactive_hold_allows_auto_dispatch_review_handoff
 	test_interactive_hold_allows_worker_issue
