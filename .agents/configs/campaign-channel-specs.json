@@ -2,6 +2,8 @@
   "version": 1,
   "channels": {
     "facebook": {
+      "canonical_id": "facebook",
+      "fanout_aliases": ["facebook"],
       "display_name": "Facebook",
       "max_words": 250,
       "format": "short-form",
@@ -10,6 +12,8 @@
       "guidelines": "Conversational tone. Lead with a hook (question or bold claim). 1-3 short paragraphs. End with a clear CTA. Emojis sparingly. Hashtags optional (2-3 max)."
     },
     "instagram": {
+      "canonical_id": "instagram",
+      "fanout_aliases": ["short-form"],
       "display_name": "Instagram",
       "max_words": 200,
       "format": "caption",
@@ -18,6 +22,8 @@
       "guidelines": "Visual-first platform. Caption supports the image/video. Lead with a hook. Line breaks for readability. CTA directs to link in bio. 5-15 relevant hashtags at end."
     },
     "linkedin": {
+      "canonical_id": "linkedin",
+      "fanout_aliases": ["social-linkedin"],
       "display_name": "LinkedIn",
       "max_words": 500,
       "format": "thought-leadership",
@@ -26,6 +32,8 @@
       "guidelines": "Professional tone. Open with a surprising insight or counter-intuitive claim. Use line breaks generously (mobile-first). End with a question to drive comments. No hashtags in body; 3-5 at end. Avoid hard-sell CTAs."
     },
     "twitter": {
+      "canonical_id": "twitter",
+      "fanout_aliases": ["social-x"],
       "display_name": "Twitter / X",
       "max_words": 50,
       "format": "micro",
@@ -34,6 +42,8 @@
       "guidelines": "280 characters max. Punchy, direct. One clear idea per post. Thread-friendly: first post must stand alone. Links shorten to 23 chars. 1-2 hashtags max."
     },
     "email": {
+      "canonical_id": "email",
+      "fanout_aliases": ["email"],
       "display_name": "Email",
       "max_words": 800,
       "format": "long-form",
@@ -42,6 +52,8 @@
       "guidelines": "Subject line: 6-10 words, curiosity or benefit-driven. Preview text: extends subject, not repeats it. Body: scannable with subheadings. Single primary CTA button. P.S. line for secondary offer. Mobile-first formatting."
     },
     "blog": {
+      "canonical_id": "blog",
+      "fanout_aliases": ["blog"],
       "display_name": "Blog Post",
       "max_words": 1500,
       "format": "article",

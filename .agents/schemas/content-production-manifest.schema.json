@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Content Production Manifest v1",
+  "description": "A channel-native production job. Status describes verified work only; prompts are not generated assets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "campaign_id", "brief_id", "channel", "variant_id", "revision", "input_snapshot_sha256", "format", "asset_inputs", "execution", "authenticity", "review", "experiment", "lifecycle", "outputs"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "job_id": {"type": "string", "pattern": "^job:[a-z0-9][a-z0-9:-]{0,240}$"},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "brief_id": {"type": "string", "minLength": 1},
+    "channel": {"enum": ["facebook", "instagram", "linkedin", "twitter", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"]},
+    "variant_id": {"type": "string", "pattern": "^v[1-9][0-9]*$"},
+    "revision": {"type": "integer", "minimum": 1},
+    "input_snapshot_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "format": {"type": "object", "additionalProperties": false, "required": ["asset_class", "dimensions", "duration_seconds"], "properties": {"asset_class": {"enum": ["writing", "image", "video", "audio", "editor"]}, "dimensions": {"type": "string", "minLength": 1}, "duration_seconds": {"type": ["integer", "null"], "minimum": 1}}},
+    "asset_inputs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["reference", "required"], "properties": {"reference": {"type": "string", "minLength": 1}, "required": {"type": "boolean"}}}},
+    "execution": {"type": "object", "additionalProperties": false, "required": ["owner", "provider_route", "capability", "fallback", "status"], "properties": {"owner": {"type": "string", "minLength": 1}, "provider_route": {"type": ["string", "null"]}, "capability": {"type": "string", "minLength": 1}, "fallback": {"type": ["string", "null"]}, "status": {"enum": ["capability_required", "blocked", "ready"]}}},
+    "authenticity": {"type": "object", "additionalProperties": false, "required": ["disclosure_requirements", "rights_requirements"], "properties": {"disclosure_requirements": {"type": "array", "items": {"type": "string"}}, "rights_requirements": {"type": "array", "items": {"type": "string"}}}},
+    "review": {"type": "object", "additionalProperties": false, "required": ["criteria", "status"], "properties": {"criteria": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "status": {"enum": ["required", "pending", "approved", "rejected"]}}},
+    "experiment": {"type": "object", "additionalProperties": false, "required": ["experiment_id", "hypothesis"], "properties": {"experiment_id": {"type": "string", "minLength": 1}, "hypothesis": {"type": "string", "minLength": 1}}},
+    "lifecycle": {"type": "object", "additionalProperties": false, "required": ["status", "status_evidence"], "properties": {"status": {"enum": ["brief_ready", "prompts_ready", "queued", "running", "generated", "edited", "review_required", "approved", "rejected", "failed", "blocked"]}, "status_evidence": {"type": "array", "items": {"type": "string"}}}},
+    "outputs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "media_type"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "media_type": {"type": "string", "minLength": 1}}}}
+  }
+}

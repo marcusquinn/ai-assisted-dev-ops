@@ -37,6 +37,9 @@ readonly WORKSPACE_DIR="${HOME}/.aidevops/.agent-workspace/work/content-fanout"
 readonly TEMPLATES_DIR="${WORKSPACE_DIR}/templates"
 readonly PLANS_DIR="${WORKSPACE_DIR}/plans"
 readonly OUTPUTS_DIR="${WORKSPACE_DIR}/outputs"
+readonly DEFAULT_CONTENT_FORMAT="script"
+readonly MANIFEST_READY_STATUS="prompts_ready"
+readonly NO_COMPLETED_ASSET_EVIDENCE="prompt prepared; no asset has been generated, approved, published, or measured"
 
 # All available channels (space-separated for iteration)
 readonly ALL_CHANNELS="blog email podcast short-form social-linkedin social-reddit social-x youtube"
@@ -362,7 +365,7 @@ write_channel_prompt() {
 	local outputs
 	outputs=$(channel_outputs "$ch" 2>/dev/null || echo "Channel-specific content")
 	local formats
-	formats=$(channel_formats "$ch" 2>/dev/null || echo "script")
+	formats=$(channel_formats "$ch" 2>/dev/null || echo "$DEFAULT_CONTENT_FORMAT")
 
 	{
 		echo "# Fan-Out Prompt: ${ch}"
@@ -394,6 +397,33 @@ write_channel_prompt() {
 		echo "- [ ] No cross-posting smell (platform-native language)"
 		echo "- [ ] Story angle is consistent with brief"
 	} >"$prompt_file"
+
+	return 0
+}
+
+# Write a manifest-ready job descriptor alongside a prepared prompt.
+# Args: ch plan_id prompt_file manifest_file
+write_manifest_ready_job() {
+	local ch="$1"
+	local plan_id="$2"
+	local prompt_file="$3"
+	local manifest_file="$4"
+	local formats owner
+	formats=$(channel_formats "$ch" 2>/dev/null || echo "$DEFAULT_CONTENT_FORMAT")
+	owner=$(channel_subagent "$ch" 2>/dev/null || echo "content")
+
+	{
+		echo "schema_version: 1"
+		echo "job_id: fanout:${plan_id}:${ch}:v1"
+		echo "channel: ${ch}"
+		echo "variant_id: v1"
+		echo "owner: ${owner}"
+		echo "formats: ${formats}"
+		echo "prompt_path: ${prompt_file}"
+		echo "status: ${MANIFEST_READY_STATUS}"
+		echo "status_evidence: ${NO_COMPLETED_ASSET_EVIDENCE}"
+		echo "outputs: []"
+	} >"$manifest_file"
 
 	return 0
 }
@@ -628,6 +658,7 @@ _generate_channel_prompts() {
 			"$ch" "$PLAN_TOPIC" "$PLAN_ANGLE" "$PLAN_AUDIENCE" \
 			"$PLAN_TONE" "$PLAN_CTA" "$PLAN_NOTES" \
 			"${ch_dir}/prompt.md"
+		write_manifest_ready_job "$ch" "$PLAN_ID" "${ch_dir}/prompt.md" "${ch_dir}/manifest-ready.job"
 
 		echo "pending" >"${ch_dir}/.status"
 		completed=$((completed + 1))

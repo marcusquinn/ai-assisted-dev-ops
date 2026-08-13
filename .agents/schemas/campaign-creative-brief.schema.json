@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Campaign Creative Brief v1",
+  "description": "Versioned, evidence-linked creative strategy. A brief is planning evidence, never evidence that an asset was generated or published.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "brief_id", "campaign_id", "revision", "source_snapshot_sha256", "objective", "audience_insight", "message", "creative", "brand_references", "claims", "authenticity", "review", "lifecycle"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "brief_id": {"type": "string", "pattern": "^brief:[a-z0-9][a-z0-9-]{0,159}$"},
+    "campaign_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "revision": {"type": "integer", "minimum": 1},
+    "source_snapshot_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "objective": {"type": "object", "additionalProperties": false, "required": ["metric", "target"], "properties": {"metric": {"type": "string", "minLength": 1}, "target": {"type": "string", "minLength": 1}}},
+    "audience_insight": {"type": "object", "additionalProperties": false, "required": ["segment", "pain", "outcome"], "properties": {"segment": {"type": "string", "minLength": 1}, "pain": {"type": "string", "minLength": 1}, "outcome": {"type": "string", "minLength": 1}}},
+    "message": {"type": "object", "additionalProperties": false, "required": ["positioning", "hook", "story", "cta"], "properties": {"positioning": {"type": "string", "minLength": 1}, "hook": {"type": "string", "minLength": 1}, "story": {"type": "string", "minLength": 1}, "cta": {"type": "string", "minLength": 1}}},
+    "creative": {"type": "object", "additionalProperties": false, "required": ["copy_direction", "script_direction", "shot_direction", "visual_direction", "audio_direction"], "properties": {"copy_direction": {"type": "string"}, "script_direction": {"type": "string"}, "shot_direction": {"type": "string"}, "visual_direction": {"type": "string"}, "audio_direction": {"type": "string"}}},
+    "brand_references": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "claims": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["claim", "evidence_reference", "approval_status"], "properties": {"claim": {"type": "string", "minLength": 1}, "evidence_reference": {"type": "string", "minLength": 1}, "approval_status": {"enum": ["approved", "pending", "rejected"]}}}},
+    "authenticity": {"type": "object", "additionalProperties": false, "required": ["synthetic_people_or_voice", "testimonial_or_ugc_style", "source_requirements", "consent_requirements", "disclosure_requirements"], "properties": {"synthetic_people_or_voice": {"type": "boolean"}, "testimonial_or_ugc_style": {"type": "boolean"}, "source_requirements": {"type": "array", "items": {"type": "string"}}, "consent_requirements": {"type": "array", "items": {"type": "string"}}, "disclosure_requirements": {"type": "array", "items": {"type": "string"}}}},
+    "review": {"type": "object", "additionalProperties": false, "required": ["criteria", "owner", "status"], "properties": {"criteria": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "owner": {"type": "string", "minLength": 1}, "status": {"enum": ["required", "pending", "approved", "rejected"]}}},
+    "lifecycle": {"type": "object", "additionalProperties": false, "required": ["status", "asset_evidence"], "properties": {"status": {"const": "brief_ready"}, "asset_evidence": {"type": "array", "maxItems": 0}}}
+  }
+}
