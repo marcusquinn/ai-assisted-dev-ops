@@ -61,6 +61,43 @@ readonly _HRFF_RETRY_CLASS_REMEDIATION="meaningful_remediation"
 readonly _HRFF_RETRY_CLASS_UNKNOWN="unknown"
 readonly _HRFF_SESSION_COUNT_QUERY_PREFIX="SELECT count(*) FROM session WHERE time_created >= "
 
+#######################################
+# Count worker activity created during an attempt.
+# Fresh sessions count directly. A continued session also counts messages
+# created after the attempt began because its session row predates the attempt.
+#
+# Args:
+#   $1 = OpenCode database path
+#   $2 = worker start epoch in milliseconds
+#   $3 = persisted session ID (optional)
+# Outputs: non-negative count, or an empty string when session evidence fails
+#######################################
+_hrff_worker_activity_count() {
+	local db_path="$1"
+	local start_epoch_ms="$2"
+	local persisted_session="${3:-}"
+	local session_count=""
+	local message_count="0"
+	local persisted_session_sql=""
+
+	session_count=$(sqlite3 "$db_path" \
+		"${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}" \
+		2>/dev/null) || session_count=""
+	[[ "$session_count" =~ ^[0-9]+$ ]] || {
+		printf '%s' ""
+		return 0
+	}
+	if [[ -n "$persisted_session" ]]; then
+		persisted_session_sql="${persisted_session//\'/\'\'}"
+		message_count=$(sqlite3 "$db_path" \
+			"SELECT count(*) FROM message WHERE session_id = '${persisted_session_sql}' AND time_created >= ${start_epoch_ms}" \
+			2>/dev/null) || message_count="0"
+		[[ "$message_count" =~ ^[0-9]+$ ]] || message_count="0"
+	fi
+	printf '%s' "$((session_count + message_count))"
+	return 0
+}
+
 # Per-issue transient rate-limit release circuit breaker (t3570 / GH#23102).
 # These defaults intentionally keep the first transient failures visible while
 # suppressing repeated CLAIM_RELEASED storms during provider capacity outages.
@@ -645,9 +682,8 @@ classify_worker_exit() {
 		if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$_db_zo" \
 			&& "$start_epoch_ms" =~ ^[0-9]+$ && "$start_epoch_ms" -gt 0 ]]; then
 			local _cnt_zo=""
-			_cnt_zo=$(sqlite3 "$_db_zo" \
-				"${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}" \
-				2>/dev/null) || _cnt_zo=""
+			_cnt_zo=$(_hrff_worker_activity_count "$_db_zo" "$start_epoch_ms" \
+				"${_invoke_persisted_session:-}")
 			if [[ "$_cnt_zo" =~ ^[0-9]+$ && "$_cnt_zo" -eq 0 ]]; then
 				printf '%s' "worker_noop_zero_output"
 				return 0
@@ -978,7 +1014,8 @@ _hrff_worker_session_count() {
 	local count="0"
 	[[ -n "$active_db" && -f "$active_db" ]] || active_db="$shared_db"
 	if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$active_db" && "$start_epoch_ms" =~ ^[0-9]+$ && "$start_epoch_ms" -gt 0 ]]; then
-		count=$(sqlite3 "$active_db" "${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}" 2>/dev/null) || count="0"
+		count=$(_hrff_worker_activity_count "$active_db" "$start_epoch_ms" \
+			"${_invoke_persisted_session:-}")
 	fi
 	[[ "$count" =~ ^[0-9]+$ ]] || count="0"
 	printf '%s\n' "$count"
@@ -1254,9 +1291,8 @@ _exit_trap_handler() {
 			[[ -z "$_db" || ! -f "$_db" ]] && _db="$_shared"
 			if command -v sqlite3 >/dev/null 2>&1 && [[ -f "$_db" && "$_start_ms" =~ ^[0-9]+$ ]] && (( _start_ms > 0 )); then
 				local _cnt=""
-				_cnt=$(sqlite3 "$_db" \
-					"${_HRFF_SESSION_COUNT_QUERY_PREFIX}${_start_ms}" \
-					2>/dev/null) || _cnt=""
+				_cnt=$(_hrff_worker_activity_count "$_db" "$_start_ms" \
+					"${_invoke_persisted_session:-}")
 				[[ "$_cnt" =~ ^[0-9]+$ ]] && session_count="$_cnt"
 			fi
 		else

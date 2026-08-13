@@ -74,7 +74,7 @@ teardown() {
 _make_db() {
 	local db_path="$1"
 	sqlite3 "$db_path" \
-		"CREATE TABLE IF NOT EXISTS session (id TEXT, title TEXT, time_created INTEGER);" \
+		"CREATE TABLE IF NOT EXISTS session (id TEXT, title TEXT, time_created INTEGER); CREATE TABLE IF NOT EXISTS message (id TEXT, session_id TEXT, time_created INTEGER);" \
 		2>/dev/null
 	return 0
 }
@@ -84,6 +84,17 @@ _insert_session() {
 	local ts_ms="$2"
 	sqlite3 "$db_path" \
 		"INSERT INTO session VALUES ('test-id-$(date +%s%N)', 'test session', ${ts_ms});" \
+		2>/dev/null
+	return 0
+}
+
+_insert_message() {
+	local db_path="$1"
+	local session_id="$2"
+	local ts_ms="$3"
+	local session_id_sql="${session_id//\'/\'\'}"
+	sqlite3 "$db_path" \
+		"INSERT INTO message VALUES ('message-$(date +%s%N)', '${session_id_sql}', ${ts_ms});" \
 		2>/dev/null
 	return 0
 }
@@ -185,6 +196,57 @@ test_clean_exit_session_before_start() {
 	unset _WORKER_ISOLATED_DB_PATH
 
 	assert_eq "worker_noop_zero_output (clean, session before start)" "$result" "worker_noop_zero_output"
+	return 0
+}
+
+# GH#30173: a continued session retains its original creation time, so a new
+# message scoped to that session is the attempt activity signal.
+test_clean_exit_continued_session_with_new_message() {
+	local db_path="${TMPDIR_TEST}/clean-continued-session.db"
+	local persisted_session="continued'session"
+	_make_db "$db_path"
+	local old_ts=$(( $(_now_ms) - 10000 ))
+	sqlite3 "$db_path" \
+		"INSERT INTO session VALUES ('continued''session', 'continued session', ${old_ts});" \
+		2>/dev/null
+	local start_ms
+	start_ms=$(_now_ms)
+	_insert_message "$db_path" "$persisted_session" "$start_ms"
+
+	_WORKER_ISOLATED_DB_PATH="$db_path"
+	_WORKER_START_EPOCH_MS="$start_ms"
+	_invoke_persisted_session="$persisted_session"
+	local result
+	result=$(classify_worker_exit 0 "$start_ms")
+	local activity_count
+	activity_count=$(_hrff_worker_session_count)
+	unset _WORKER_ISOLATED_DB_PATH _WORKER_START_EPOCH_MS _invoke_persisted_session
+
+	assert_eq "clean (continued session with new message)" "$result" "clean"
+	assert_eq "continued-session activity count" "$activity_count" "1"
+	return 0
+}
+
+test_clean_exit_continued_session_without_scoped_activity() {
+	local db_path="${TMPDIR_TEST}/clean-continued-session-no-activity.db"
+	local persisted_session="continued-session"
+	_make_db "$db_path"
+	local old_ts=$(( $(_now_ms) - 10000 ))
+	sqlite3 "$db_path" \
+		"INSERT INTO session VALUES ('continued-session', 'continued session', ${old_ts});" \
+		2>/dev/null
+	local start_ms
+	start_ms=$(_now_ms)
+	_insert_message "$db_path" "different-session" "$start_ms"
+
+	_WORKER_ISOLATED_DB_PATH="$db_path"
+	_invoke_persisted_session="$persisted_session"
+	local result
+	result=$(classify_worker_exit 0 "$start_ms")
+	unset _WORKER_ISOLATED_DB_PATH _invoke_persisted_session
+
+	assert_eq "worker_noop_zero_output (continued session without scoped activity)" \
+		"$result" "worker_noop_zero_output"
 	return 0
 }
 
@@ -487,6 +549,8 @@ main() {
 	test_clean_exit_zero_sessions
 	test_clean_exit_with_sessions
 	test_clean_exit_session_before_start
+	test_clean_exit_continued_session_with_new_message
+	test_clean_exit_continued_session_without_scoped_activity
 	test_signal_killed_with_zero_sessions
 	test_crash_during_startup_empty_db
 	test_crash_during_startup_no_db
