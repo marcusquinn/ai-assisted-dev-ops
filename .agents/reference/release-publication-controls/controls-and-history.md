@@ -289,11 +289,7 @@ receipts are irreversible publication boundaries. The exact branch base is
 - Aggregation PR #29867 reviews authorized OpenCode session metadata PR #29862
   at `31bd4c803423a14b7fb05713cb96c8fe7437dae5` and Tabby dry-run PR #29863 at
   `a716c1b61a139f89d964a00e0ad9a37737a3a7d7`; exact base is `ae4179a6e6bfbb4051f2434570cc36a26e9946b9`.
-- Aggregation PR #30195 reviews authorized continued-session worker activity PR
-  #30188 at `21df5823366d2672c7c1a11f625828b3077e78b3` and awardsapp pulse
-  dispatch PR #30191 at `5529ec3b8274a36c958add1cb421d82c7c755de0`; exact
-  base is `5529ec3b8274a36c958add1cb421d82c7c755de0`.
-
+- Aggregation PR #30195 reviews authorized PR #30188 at `21df5823366d2672c7c1a11f625828b3077e78b3` and PR #30191 at `5529ec3b8274a36c958add1cb421d82c7c755de0`; exact base is `5529ec3b8274a36c958add1cb421d82c7c755de0`.
 Manual arbitrary-version package publication is intentionally unsupported. A
 recovery operation must use an existing tag that passes the same verifier.
 
