@@ -431,7 +431,7 @@ PY
 "$HELPER" provision --base "$MIGRATION_BASE" >/dev/null
 assert_eq "schema v2 migrates additively to all local operation tables" \
 	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT (SELECT user_version FROM pragma_user_version) || ':' || count(*) FROM sqlite_master WHERE name IN ('outbound_operations','outbound_approvals','outbound_attempts','notification_state')")" \
-	"6:4"
+	"7:4"
 assert_eq "schema v4 adds provider-neutral subject and destination fields" \
 	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT count(*) FROM pragma_table_info('outbound_operations') WHERE name IN ('destination_remote_id','subject','subject_sha256','intent_version')")" \
 	"4"
@@ -557,7 +557,7 @@ assert_eq "Reddit post mapping binds destination, subject, and private body" \
 	"$(reddit_log_count 'post aidevops Reddit subject fixture private reddit post fixture marker')" "1"
 assert_eq "Reddit provider fields use the versioned immutable intent" \
 	"$(sql_value "$ROOT/index/social.db" "SELECT provider || ':' || intent_version || ':' || destination_remote_id FROM outbound_operations WHERE operation_id='op_reddit_post'")" \
-	"reddit:2:aidevops"
+	"reddit:3:aidevops"
 
 expect_failure "Reddit post titles reject more than 300 characters" \
 	"300-character title limit" "$HELPER" operation-create --base "$BASE" \

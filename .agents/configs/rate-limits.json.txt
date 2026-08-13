@@ -75,6 +75,24 @@
       "input_tokens_per_min": 0,
       "output_tokens_per_min": 0,
       "billing_type": "token"
+    },
+    "linkedin": {
+      "_comment": "LinkedIn API capacity is product and application gated; do not infer a quota from read access.",
+      "_docs": "https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/rate-limits",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-gated"
+    },
+    "youtube": {
+      "_comment": "YouTube Data API v3 default daily quota is project-specific; uploads are quota-expensive and must retain provider 403/quota responses.",
+      "_docs": "https://developers.google.com/youtube/v3/determine_quota_cost",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-quota"
     }
   }
 }

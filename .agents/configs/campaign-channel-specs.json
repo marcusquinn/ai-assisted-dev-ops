@@ -24,6 +24,8 @@
     "linkedin": {
       "canonical_id": "linkedin",
       "fanout_aliases": ["social-linkedin"],
+      "outbound_channel": "linkedin",
+      "outbound_provider": "linkedin",
       "display_name": "LinkedIn",
       "max_words": 500,
       "format": "thought-leadership",
@@ -64,6 +66,18 @@
       "cta_style": "discussion",
       "sections": ["title", "body", "disclosure"],
       "guidelines": "Use a reviewed title and body. Name the destination subreddit at enqueue time; follow community rules and required disclosures."
+    },
+    "youtube": {
+      "canonical_id": "youtube",
+      "fanout_aliases": ["social-youtube"],
+      "outbound_channel": "youtube",
+      "outbound_provider": "youtube",
+      "display_name": "YouTube",
+      "max_words": 5000,
+      "format": "video",
+      "cta_style": "spoken-and-description",
+      "sections": ["title", "description", "disclosure"],
+      "guidelines": "Queue only an approved private video file with a reviewed title and description. Upload is private by default; channel identity, OAuth authorization, and provider quota must be ready before remote mutation."
     },
     "blog": {
       "canonical_id": "blog",

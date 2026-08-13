@@ -57,6 +57,21 @@ def add_outbound_v4_columns(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def add_outbound_v7_columns(connection: sqlite3.Connection) -> None:
+    """Add private, hash-bound video source selectors without rewriting intents."""
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(outbound_operations)").fetchall()
+    }
+    additions = (
+        ("media_path", "ALTER TABLE outbound_operations ADD COLUMN media_path TEXT"),
+        ("media_sha256", "ALTER TABLE outbound_operations ADD COLUMN media_sha256 TEXT"),
+    )
+    for column, statement in additions:
+        if column not in columns:
+            connection.execute(statement)
+
+
 def add_source_v5_columns(connection: sqlite3.Connection) -> None:
     table = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fetch_batches'"

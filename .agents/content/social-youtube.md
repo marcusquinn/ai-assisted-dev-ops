@@ -65,6 +65,19 @@ The boundary serializes only allowlisted text, IDs, timestamps, direction, count
 position, and privacy-status fields. It never downloads audiovisual media and has
 no write endpoint or mutation action.
 
+## Approved outbound video uploads
+
+The approval-bound outbound queue can upload one reviewed private video to an
+exactly verified owned channel. It requires a named OAuth profile with the
+official upload scope, a private media file bound by SHA-256 before approval, a
+non-empty title (at most 100 characters), and a private description. The provider
+first calls `channels.list(mine=true)` and fails closed on a different channel or
+unready authorization. It initiates the official resumable `videos.insert`
+upload route and maps any transport ambiguity to `unknown`; executors never
+blindly create a second video. The initial implementation publishes as `private`
+only—thumbnail, captions, scheduling, and changing a video's visibility require
+separate approved capabilities. Receipts contain only operation and video IDs.
+
 ## Explicit gaps and retention
 
 Every successful page also records unavailable coverage for:

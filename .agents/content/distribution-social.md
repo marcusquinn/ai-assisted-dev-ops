@@ -1,6 +1,6 @@
 ---
 name: social
-description: Social media distribution - X, LinkedIn, Reddit platform-native content
+description: Social media distribution - X, LinkedIn, Reddit, and YouTube platform-native content
 mode: subagent
 model: standard
 ---
@@ -8,13 +8,13 @@ model: standard
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Social - X, LinkedIn, and Reddit Distribution
+# Social - X, LinkedIn, Reddit, and YouTube Distribution
 
 <!-- AI-CONTEXT-START -->
 
 ## Quick Reference
 
-- **Purpose**: Distribute content across X, LinkedIn, Reddit with platform-native tone and format
+- **Purpose**: Distribute content across X, LinkedIn, Reddit, and YouTube with platform-native tone and format
 - **Key Principle**: Same story, different delivery — adapt voice and format per platform
 - **Metrics**: Engagement rate, shares, profile visits, link clicks
 
@@ -26,7 +26,7 @@ model: standard
 - **Professional framing on LinkedIn** — thought leadership, not sales pitch
 - **One idea per post** — clarity beats comprehensiveness
 
-**Platform Tools**: `content/social-xurl.md` (official X API), `content/social-bird.md` (X browser-cookie fallback), `content/social-linkedin.md`, `content/social-reddit.md`
+**Platform Tools**: `content/social-xurl.md` (official X API), `content/social-bird.md` (X browser-cookie fallback), `content/social-linkedin.md`, `content/social-reddit.md`, `content/social-youtube.md`
 
 <!-- AI-CONTEXT-END -->
 

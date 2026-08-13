@@ -325,9 +325,23 @@ def _prepare_reddit(claimed: ClaimedOperation) -> PreparedProvider:
     )
 
 
+def _prepare_linkedin(claimed: ClaimedOperation) -> PreparedProvider:
+    from _knowledge_social_linkedin_outbound_provider import LinkedInPreparedProvider
+
+    return LinkedInPreparedProvider(claimed)
+
+
+def _prepare_youtube(claimed: ClaimedOperation) -> PreparedProvider:
+    from _knowledge_social_youtube_outbound_provider import YouTubePreparedProvider
+
+    return YouTubePreparedProvider(claimed)
+
+
 PROVIDER_FACTORIES: dict[str, Callable[[ClaimedOperation], PreparedProvider]] = {
+    "linkedin": _prepare_linkedin,
     "reddit": _prepare_reddit,
     "xapi": _prepare_x,
+    "youtube": _prepare_youtube,
 }
 
 
