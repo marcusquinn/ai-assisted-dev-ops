@@ -6,9 +6,9 @@
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { calculateFrames, fileDigest, normalizeCaptions, stableDigest, validateBrief } from "./render-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -59,71 +59,6 @@ function copyMusicToPublic(brief, briefPath, publicDir) {
 }
 
 /**
- * Calculate total duration and frame count for the composition.
- * Uses only scenes that have corresponding video files to avoid empty frames.
- */
-function calculateFrames(scenes, sceneVideoFilenames, transitionDuration, fps) {
-  const sceneCount = Math.min(scenes.length, sceneVideoFilenames.length);
-  const totalSceneDuration = scenes.slice(0, sceneCount).reduce((sum, s) => sum + (s.duration || 5), 0);
-  const transitionOverlap = Math.max(0, (sceneCount - 1)) * transitionDuration;
-  const totalFrames = Math.max(1, totalSceneDuration * fps - transitionOverlap);
-  return { sceneCount, totalSceneDuration, totalFrames };
-}
-
-function fileDigest(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-function stableDigest(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function validateBrief(brief, videoPaths) {
-  const scenes = brief.scenes || [];
-  if (!Array.isArray(scenes) || scenes.length === 0) throw new Error("brief requires at least one scene");
-  if (scenes.length !== videoPaths.length) throw new Error("scene/video count mismatch");
-  if (!ASPECT_DIMS[brief.aspect || "9:16"]) throw new Error("brief has an unsupported aspect ratio");
-  for (const scene of scenes) {
-    if (!Number.isFinite(scene.duration) || scene.duration <= 0) throw new Error("every scene requires a positive duration");
-    if (scene.fit && !["cover", "contain"].includes(scene.fit)) throw new Error("scene fit must be cover or contain");
-  }
-}
-
-/**
- * Normalize captions from brief format to FullVideo.tsx format.
- * Maps startFrame-based captions to scene indices and clamps out-of-range values.
- */
-function normalizeCaptions(rawCaptions, scenes, fps) {
-  const lastSceneIndex = Math.max(0, scenes.length - 1);
-  return rawCaptions.map((cap) => {
-    if (typeof cap.scene === "number") {
-      // Clamp to last scene so out-of-range indices don't silently drop captions
-      if (cap.scene < 0 || cap.scene > lastSceneIndex) throw new Error("caption scene is outside the render");
-      return { ...cap, scene: cap.scene };
-    }
-    // Derive scene index from startFrame
-    let frameOffset = 0;
-    let sceneIdx = -1;
-    for (let s = 0; s < scenes.length; s++) {
-      const sceneDur = (scenes[s].duration || 5) * fps;
-      if ((cap.startFrame || 0) >= frameOffset && (cap.startFrame || 0) < frameOffset + sceneDur) {
-        sceneIdx = s;
-        break;
-      }
-      frameOffset += sceneDur;
-    }
-    if (sceneIdx < 0) throw new Error("caption timing is outside the render");
-    return {
-      scene: sceneIdx,
-      text: cap.text || "",
-      position: cap.position || "bottom",
-      style: cap.style || "bold-white", startFrame: cap.startFrame, endFrame: cap.endFrame,
-      words: cap.words || [],
-    };
-  });
-}
-
-/**
  * Parse CLI arguments into a key-value options object.
  * Supports --key value and --flag (boolean) patterns.
  * @returns {Record<string, string | boolean>} Parsed options
@@ -165,7 +100,7 @@ function renderVideo(opts) {
     }
   }
   try {
-    validateBrief(brief, videoPaths);
+    validateBrief(brief, videoPaths, ASPECT_DIMS);
   } catch (error) {
     console.error(`Invalid render input: ${error.message}`);
     process.exit(1);

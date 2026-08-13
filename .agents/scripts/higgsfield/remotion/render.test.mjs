@@ -3,30 +3,24 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { normalizeCaptions, validateBrief } from "./render-contract.mjs";
 
-const renderer = new URL("./render.mjs", import.meta.url).pathname;
+const aspectDimensions = { "9:16": [1080, 1920] };
+const brief = { aspect: "9:16", scenes: [{ prompt: "one", duration: 1, fit: "contain" }] };
 const root = mkdtempSync(join(tmpdir(), "remotion-render-"));
 
 try {
-  const brief = join(root, "brief.json");
-  const video = join(root, "scene.mp4");
-  writeFileSync(video, "fixture bytes");
-  writeFileSync(brief, JSON.stringify({ aspect: "9:16", scenes: [{ prompt: "one", duration: 1, fit: "contain" }], captions: [{ startFrame: 99, text: "late" }] }));
-  execFileSync(process.execPath, [renderer, "--brief", brief, "--videos", video], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  normalizeCaptions([{ startFrame: 99, text: "late" }], brief.scenes, 30);
   assert.fail("expected timing validation to fail");
 } catch (error) {
-  assert.match(`${error.stderr}`, /caption timing is outside the render/);
+  assert.match(`${error.message}`, /caption timing is outside the render/);
 }
 
 try {
-  const brief = join(root, "brief-mismatch.json");
-  const video = join(root, "scene-mismatch.mp4");
-  writeFileSync(video, "fixture bytes");
-  writeFileSync(brief, JSON.stringify({ aspect: "9:16", scenes: [{ prompt: "one", duration: 1 }, { prompt: "two", duration: 1 }] }));
-  execFileSync(process.execPath, [renderer, "--brief", brief, "--videos", video], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  validateBrief({ ...brief, scenes: [...brief.scenes, { prompt: "two", duration: 1 }] }, ["one.mp4"], aspectDimensions);
   assert.fail("expected scene/video mismatch to fail");
 } catch (error) {
-  assert.match(`${error.stderr}`, /scene\/video count mismatch/);
+  assert.match(`${error.message}`, /scene\/video count mismatch/);
 }
 
 rmSync(root, { recursive: true, force: true });
