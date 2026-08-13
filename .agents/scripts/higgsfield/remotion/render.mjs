@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { calculateFrames, normalizeCaptions, validateBrief } from "./render-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -59,49 +60,6 @@ function copyMusicToPublic(brief, briefPath, publicDir) {
 }
 
 /**
- * Calculate total duration and frame count for the composition.
- * Uses only scenes that have corresponding video files to avoid empty frames.
- */
-function calculateFrames(scenes, sceneVideoFilenames, transitionDuration, fps) {
-  const sceneCount = Math.min(scenes.length, sceneVideoFilenames.length);
-  const totalSceneDuration = scenes.slice(0, sceneCount).reduce((sum, s) => sum + (s.duration || 5), 0);
-  const transitionOverlap = Math.max(0, (sceneCount - 1)) * transitionDuration;
-  const totalFrames = Math.max(1, totalSceneDuration * fps - transitionOverlap);
-  return { sceneCount, totalSceneDuration, totalFrames };
-}
-
-/**
- * Normalize captions from brief format to FullVideo.tsx format.
- * Maps startFrame-based captions to scene indices and clamps out-of-range values.
- */
-function normalizeCaptions(rawCaptions, scenes, fps) {
-  const lastSceneIndex = Math.max(0, scenes.length - 1);
-  return rawCaptions.map((cap) => {
-    if (typeof cap.scene === "number") {
-      // Clamp to last scene so out-of-range indices don't silently drop captions
-      return { ...cap, scene: Math.min(cap.scene, lastSceneIndex) };
-    }
-    // Derive scene index from startFrame
-    let frameOffset = 0;
-    let sceneIdx = lastSceneIndex; // Default to last scene (fallback for beyond-end frames)
-    for (let s = 0; s < scenes.length; s++) {
-      const sceneDur = (scenes[s].duration || 5) * fps;
-      if ((cap.startFrame || 0) >= frameOffset && (cap.startFrame || 0) < frameOffset + sceneDur) {
-        sceneIdx = s;
-        break;
-      }
-      frameOffset += sceneDur;
-    }
-    return {
-      scene: sceneIdx,
-      text: cap.text || "",
-      position: cap.position || "bottom",
-      style: cap.style || "bold-white",
-    };
-  });
-}
-
-/**
  * Parse CLI arguments into a key-value options object.
  * Supports --key value and --flag (boolean) patterns.
  * @returns {Record<string, string | boolean>} Parsed options
@@ -142,6 +100,12 @@ function renderVideo(opts) {
       process.exit(1);
     }
   }
+  try {
+    validateBrief(brief, videoPaths, ASPECT_DIMS);
+  } catch (err) {
+    console.error(`Invalid render input: ${err.message}`);
+    process.exit(1);
+  }
 
   // Copy videos into Remotion's public/ directory so staticFile() can resolve them.
   // staticFile() only accepts filenames (not absolute paths), so we copy each video
@@ -172,13 +136,6 @@ function renderVideo(opts) {
     transitionDuration: parseInt(opts["transition-duration"] || "15", 10),
     musicPath: copyMusicToPublic(brief, briefPath, publicDir),
   };
-
-  // Warn on scene/video count mismatch (different sources can diverge)
-  if (sceneVideoFilenames.length !== scenes.length) {
-    console.warn(
-      `Warning: ${sceneVideoFilenames.length} videos provided but brief defines ${scenes.length} scenes`
-    );
-  }
 
   const { totalSceneDuration, totalFrames } = calculateFrames(
     scenes, sceneVideoFilenames, props.transitionDuration, fps
@@ -269,7 +226,7 @@ function renderStill(opts) {
 // Main
 const opts = parseArgs();
 
-if (!opts.brief && !opts.still && !opts.help) {
+if (!opts.brief && !opts.still) {
   console.log(`
 Higgsfield Post-Production Renderer (Remotion)
 
