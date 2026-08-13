@@ -14,17 +14,25 @@ function statusCode(error) {
 }
 
 function responseBodyKind(body) {
-  if (body === undefined || body === null) return "unavailable";
-  if (typeof body !== "string") return "unknown";
-  const trimmed = body.trim();
-  if (!trimmed) return "empty";
-  if (/^(?:<!doctype\s+html|<html\b)/i.test(trimmed)) return "html";
-  try {
-    JSON.parse(trimmed);
-    return "json";
-  } catch {
-    return "text";
+  let kind = "unknown";
+  if (body === undefined || body === null) {
+    kind = "unavailable";
+  } else if (typeof body === "string") {
+    const trimmed = body.trim();
+    if (!trimmed) {
+      kind = "empty";
+    } else if (/^(?:<!doctype\s+html|<html\b)/i.test(trimmed)) {
+      kind = "html";
+    } else {
+      try {
+        JSON.parse(trimmed);
+        kind = "json";
+      } catch {
+        kind = "text";
+      }
+    }
   }
+  return kind;
 }
 
 function requestIdentity(headers) {
