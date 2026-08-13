@@ -596,7 +596,13 @@ _merge_fetch_pinned_commit_objects() {
 			fetch --quiet --no-tags -- "$remote_url" "refs/heads/${base_ref}" || return 1
 		fetched_sha=$(_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
 			rev-parse FETCH_HEAD 2>/dev/null) || return 1
-		[[ "$fetched_sha" == "$base_sha" ]] || return 1
+		if [[ "$fetched_sha" != "$base_sha" ]]; then
+			_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+				fetch --quiet --no-tags -- "$remote_url" "$base_sha" || return 1
+			fetched_sha=$(_merge_run_repository_isolated_git "$real_git" -C "$object_repo" \
+				rev-parse FETCH_HEAD 2>/dev/null) || return 1
+			[[ "$fetched_sha" == "$base_sha" ]] || return 1
+		fi
 	fi
 	if ! _merge_run_repository_isolated_git "$real_git" -C "$object_repo" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
 		[[ -n "$remote_url" ]] || return 1

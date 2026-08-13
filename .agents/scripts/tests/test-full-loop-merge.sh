@@ -1428,6 +1428,9 @@ test_prospective_todo_merge_guard() {
 	base_sha=$(<"${fixture_root}/base.sha")
 	head_sha=$(<"${fixture_root}/head.sha")
 	remote_url=$(<"${fixture_root}/remote.url")
+	printf 'advance target default branch after PR snapshot\n' >>"${fixture_root}/work/TODO.md"
+	/usr/bin/git -C "${fixture_root}/work" commit -q -am 'advance target main after PR snapshot' || return 0
+	/usr/bin/git -C "${fixture_root}/work" push -q origin main || return 0
 	storage_before=$(prospective_git_storage_digest "$fixture_dir")
 	if /usr/bin/git -C "$fixture_dir" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then absent_before=1; fi
 	run_prospective_todo_guard "$fixture_dir" "$base_sha" "$head_sha" live "$remote_url" >/dev/null || rc=$?
