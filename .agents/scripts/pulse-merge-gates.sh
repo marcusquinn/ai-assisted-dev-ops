@@ -168,7 +168,7 @@ _pulse_merge_admin_pr_json_graphql() {
 	local name="${repo_slug#*/}"
 	local response="" pr_json=""
 
-	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" && "$owner" != "$name" ]] || return 1
+	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" && "$repo_slug" == */* && "$name" != */* ]] || return 1
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="pulse-admin-authority-exact-cost" \

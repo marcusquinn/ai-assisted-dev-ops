@@ -306,6 +306,28 @@ test_case_a_collaborator_pr_returns_0() {
 	return 0
 }
 
+test_case_a2_same_name_owner_repo_pr_returns_0() {
+	set_fixture '[{"name":"bug"},{"name":"tier:standard"}]' 'false' \
+		'## Summary\n\nResolves #101' 'VERIFIED'
+
+	local result
+	_pulse_merge_admin_safety_check "101" "awardsapp/awardsapp"
+	result=$?
+
+	if [[ "$result" -ne 0 ]]; then
+		print_result "Case A2: same-name owner/repo PR returns 0" 1 \
+			"Expected 0, got ${result}; log=$(cat "$LOGFILE")"
+		return 0
+	fi
+	if ! grep -qF 'gh api graphql' "$GH_LOG"; then
+		print_result "Case A2: same-name owner/repo reaches GraphQL metadata read" 1 \
+			"Expected GraphQL metadata call; calls=$(cat "$GH_LOG")"
+		return 0
+	fi
+	print_result "Case A2: same-name owner/repo PR — returns 0" 0
+	return 0
+}
+
 test_case_l_collaborator_linked_issue_nmr_blocks_final_gate() {
 	: >"$LOGFILE"
 	set_fixture '[{"name":"bug"}]' 'false' \
@@ -709,6 +731,7 @@ main() {
 	fi
 
 	test_case_a_collaborator_pr_returns_0
+	test_case_a2_same_name_owner_repo_pr_returns_0
 	test_case_b_external_no_linked_issue_returns_1
 	test_case_c_external_no_approval_returns_1
 	test_case_d_external_with_approval_returns_0
