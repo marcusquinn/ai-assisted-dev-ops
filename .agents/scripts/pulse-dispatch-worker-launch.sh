@@ -1780,7 +1780,10 @@ _dispatch_launch_worker() {
 
 	# t1894/t1934: Lock issue and linked PRs during worker execution.
 	_ds_t0=$(_ds_now_ns)
-	lock_issue_for_worker "$issue_number" "$repo_slug"
+	if ! lock_issue_for_worker "$issue_number" "$repo_slug"; then
+		_ds_record "$issue_number" "$repo_slug" "lock_issue" "$_ds_t0"
+		_dlw_pre_runtime_failure "$issue_number" "$repo_slug" "conversation_lock_failed" 2 || return $?
+	fi
 	_ds_record "$issue_number" "$repo_slug" "lock_issue" "$_ds_t0"
 
 	_ds_t0=$(_ds_now_ns)

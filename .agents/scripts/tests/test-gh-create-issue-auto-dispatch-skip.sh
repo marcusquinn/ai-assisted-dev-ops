@@ -26,6 +26,7 @@
 #   3. auto-dispatch in labels → [INFO] skip log emitted
 #   4. auto-dispatch in comma-separated list → --assignee NOT passed
 #   5. caller passes explicit --assignee → always forwarded (no override)
+#   6. auto-dispatch creation locks and verifies the issue conversation
 #
 # Stub strategy: define `gh` as a shell function AFTER sourcing the helper.
 # Shell functions take precedence over PATH binaries, so the stub captures
@@ -120,6 +121,14 @@ gh() {
 		printf '"testuser"\n'
 		return 0
 	fi
+	if [[ "$1" == "api" && "$2" == "repos/owner/repo/issues/9991" ]]; then
+		printf 'true\n'
+		return 0
+	fi
+	if [[ "$1" == "api" && "$2" == "repos/owner/repo" ]]; then
+		printf 'false\n'
+		return 0
+	fi
 	if [[ "$1" == "issue" && "$2" == "create" ]]; then
 		printf 'https://github.com/owner/repo/issues/9991\n'
 		return 0
@@ -155,6 +164,14 @@ if ! grep -q -- "--assignee" "$GH_CALLS" 2>/dev/null; then
 else
 	fail "auto-dispatch in labels → --assignee NOT passed" \
 		"gh was called with --assignee when auto-dispatch was present"
+fi
+
+if grep -q -- "issue lock 9991 --repo owner/repo --reason resolved" "$GH_CALLS" 2>/dev/null &&
+	grep -q -- "api repos/owner/repo/issues/9991 --jq .locked == true" "$GH_CALLS" 2>/dev/null; then
+	pass "auto-dispatch creation freezes and verifies the issue conversation"
+else
+	fail "auto-dispatch creation freezes and verifies the issue conversation" \
+		"expected issue lock plus independent locked-state read"
 fi
 
 # =============================================================================

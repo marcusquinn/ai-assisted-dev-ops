@@ -56,6 +56,10 @@ gh() {
 			printf 'api-login\n'
 			return 0
 		fi
+		if [[ "$path" == repos/*/issues/* && "${GH_ISSUE_LABELS:-}" != "" ]]; then
+			printf '%s\n' "$GH_ISSUE_LABELS"
+			return 0
+		fi
 		local method="GET" body="" prev=""
 		local arg
 		for arg in "$@"; do
@@ -235,6 +239,7 @@ else
 fi
 
 : >"$CALL_LOG"
+GH_ISSUE_LABELS=bug
 GH_UNLOCK_MODE=already_unlocked _unlock_issue_after_dispatch_release "12345" "owner/repo"
 if grep -q 'INFO Release unlock skipped for GitHub issue #12345 in owner/repo: already unlocked' "$CALL_LOG" &&
 	! grep -q 'WARN Failed to unlock released' "$CALL_LOG"; then
@@ -246,12 +251,23 @@ else
 fi
 
 : >"$CALL_LOG"
+GH_ISSUE_LABELS=bug
 GH_UNLOCK_MODE=hard_fail _unlock_issue_after_dispatch_release "12345" "owner/repo"
 if grep -q 'WARN Failed to unlock released GitHub issue #12345 in owner/repo (non-fatal): GraphQL: repository access denied' "$CALL_LOG"; then
 	printf 'PASS hard unlock failures include issue, repo, and cause\n'
 else
 	printf 'FAIL hard unlock failure did not include issue, repo, and cause\n'
 	sed 's/^/  /' "$CALL_LOG"
+	exit 1
+fi
+
+: >"$CALL_LOG"
+GH_ISSUE_LABELS=auto-dispatch,status:available _unlock_issue_after_dispatch_release "12345" "owner/repo"
+if grep -q 'INFO Retaining conversation lock for auto-dispatch issue #12345' "$CALL_LOG" &&
+	! grep -q '^UNLOCK ' "$CALL_LOG"; then
+	printf 'PASS auto-dispatch claim release retains conversation lock\n'
+else
+	printf 'FAIL auto-dispatch claim release reopened conversation\n'
 	exit 1
 fi
 

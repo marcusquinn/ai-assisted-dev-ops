@@ -89,6 +89,10 @@ gh() {
 		printf 'Resolves #42\n'
 		return 0
 	fi
+	if [[ "$group" == "api" ]]; then
+		printf 'bug\n'
+		return 0
+	fi
 	return 0
 }
 

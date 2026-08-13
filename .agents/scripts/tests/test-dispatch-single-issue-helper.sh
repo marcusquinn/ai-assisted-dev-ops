@@ -499,6 +499,35 @@ test_ceremony_failure_blocks_launch_and_releases_claim() {
 	return 0
 }
 
+test_conversation_lock_failure_blocks_manual_launch() {
+	reset_test_state
+	local test_dir=""
+	test_dir=$(mktemp -d)
+	local launch_log="${test_dir}/launch.log"
+	local rc=0
+
+	(
+		_DSI_ARG_NO_CEREMONY=0
+		_DSI_WORKTREE_PATH="$test_dir"
+		_dsi_apply_prelaunch_ceremony_if_enabled() { return 0; }
+		_dsi_create_worktree() { return 0; }
+		_dsi_guard_no_existing_dispatch() { return 0; }
+		lock_issue_for_worker() { return 1; }
+		_dsi_reset_after_prelaunch_failure() { return 0; }
+		_dsi_launch_and_report() {
+			printf 'launched\n' >"$launch_log"
+			return 0
+		}
+		_dsi_dispatch_after_dedup_clear 1 owner/repo runner-self session-key >/dev/null 2>&1
+	) || rc=$?
+
+	local blocked=1
+	[[ "$rc" -eq 1 && ! -e "$launch_log" ]] && blocked=0
+	print_result "manual dispatch lock failure blocks worker launch" "$blocked" "rc=$rc"
+	rm -rf "$test_dir"
+	return 0
+}
+
 test_no_ceremony_flag_parses_correctly() {
 	reset_test_state
 
@@ -1450,6 +1479,7 @@ _run_tests() {
 	test_ceremony_handles_empty_self_login
 	test_ceremony_handles_set_issue_status_failure
 	test_ceremony_failure_blocks_launch_and_releases_claim
+	test_conversation_lock_failure_blocks_manual_launch
 	test_no_ceremony_flag_parses_correctly
 	test_model_override_guidance_is_provider_neutral
 	test_load_issue_meta_accepts_lowercase_open

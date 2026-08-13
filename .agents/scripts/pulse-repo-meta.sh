@@ -291,6 +291,16 @@ list_dispatchable_issue_candidates_json() {
 	fi
 	rm -f "$issue_dispatch_err"
 
+	# GH#30180: auto-dispatch is the worker-authorization boundary, not the
+	# later spawn boundary. Reconcile from the complete raw open-issue snapshot
+	# so queued and dependency-blocked issues are frozen too.
+	if [[ "$snapshot_succeeded" -eq 1 ]] && declare -F reconcile_auto_dispatch_issue_locks >/dev/null 2>&1; then
+		reconcile_auto_dispatch_issue_locks "$repo_slug" "$issue_json" || {
+			printf '[pulse-wrapper] auto-dispatch lock reconciliation failed for %s; affected dispatches remain fail-closed\n' \
+				"$repo_slug" >>"$LOGFILE"
+		}
+	fi
+
 	local candidates_json=""
 	candidates_json=$(_filter_dispatchable_issue_candidates_json "$issue_json")
 

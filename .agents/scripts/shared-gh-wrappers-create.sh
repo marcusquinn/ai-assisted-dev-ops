@@ -458,6 +458,47 @@ _gh_ci_prepare_parent_contract_and_signature() {
 	return 0
 }
 
+_gh_lock_created_auto_dispatch_issue() {
+	local issue_number="$1"
+	local target_repo="$2"
+	local lock_dir="${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR:-${HOME}/.aidevops/cache/auto-dispatch-locks}"
+	local lock_key="${target_repo//\//--}-${issue_number}"
+	local locked_state=""
+
+	# aidevops:trust-boundary — freeze worker-authorized instructions at
+	# creation time instead of leaving a public comment window until spawn.
+	if gh issue lock "$issue_number" --repo "$target_repo" --reason resolved >/dev/null 2>&1; then
+		locked_state=$(gh api "repos/${target_repo}/issues/${issue_number}" --jq '.locked == true' 2>/dev/null) || locked_state=""
+	fi
+	if [[ "$locked_state" != "true" ]]; then
+		print_warning "Issue #${issue_number} was created with auto-dispatch, but its conversation lock could not be verified; Pulse will fail closed before worker spawn."
+		return 1
+	fi
+	mkdir -p "$lock_dir" 2>/dev/null || return 1
+	: >"${lock_dir}/${lock_key}" 2>/dev/null || return 1
+	return 0
+}
+
+_gh_finish_created_issue() {
+	local issue_output="$1"
+	local target_repo="$2"
+	local auto_assignee="$3"
+	shift 3
+	local issue_number="${issue_output##*/}"
+	issue_number="${issue_number%%[[:space:]]*}"
+
+	if [[ "$issue_number" =~ ^[0-9]+$ ]] &&
+		_gh_wrapper_args_have_label "$_GH_CREATE_AUTO_DISPATCH_LABEL" "$@"; then
+		_gh_lock_created_auto_dispatch_issue "$issue_number" "$target_repo" || true
+	fi
+	if [[ -n "$auto_assignee" && "$issue_number" =~ ^[0-9]+$ ]] &&
+		! gh issue edit "$issue_number" --repo "$target_repo" --add-assignee "$auto_assignee" >/dev/null 2>&1; then # aidevops-allow: raw-gh-wrapper
+		print_warning "Issue #${issue_number} was created, but automatic assignment to ${auto_assignee} failed; continuing with the durable issue."
+	fi
+	_gh_auto_link_sub_issue "$issue_output" "$@"
+	return 0
+}
+
 gh_create_issue() {
 	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_create_issue 2>/dev/null || true
@@ -547,15 +588,7 @@ gh_create_issue() {
 	fi
 	echo "$issue_output"
 	if [[ $rc -eq 0 ]]; then
-		if [[ -n "$auto_assignee" ]]; then
-			local issue_number="${issue_output##*/}"
-			issue_number="${issue_number%%[[:space:]]*}"
-			if [[ "$issue_number" =~ ^[0-9]+$ ]] &&
-				! gh issue edit "$issue_number" --repo "$target_repo" --add-assignee "$auto_assignee" >/dev/null 2>&1; then # aidevops-allow: raw-gh-wrapper
-				print_warning "Issue #${issue_number} was created, but automatic assignment to ${auto_assignee} failed; continuing with the durable issue."
-			fi
-		fi
-		_gh_auto_link_sub_issue "$issue_output" "$@"
+		_gh_finish_created_issue "$issue_output" "$target_repo" "$auto_assignee" "$@"
 	fi
 	return $rc
 }

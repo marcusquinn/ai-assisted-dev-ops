@@ -37,6 +37,27 @@ Regression tests:
 - `.agents/scripts/tests/test-gh-create-issue-auto-dispatch-skip.sh` (gh_create_issue path)
 - `.agents/scripts/tests/test-claim-task-id-autodispatch.sh` (claim-task-id path)
 
+## Auto-Dispatch Conversation Lock (GH#30180)
+
+`auto-dispatch` is both an execution authorization and an instruction-freeze
+boundary. Managed creation through `gh_create_issue` locks the conversation and
+verifies the resulting GitHub state. Pulse reconciles the complete visible open
+issue snapshot so queued and dependency-blocked auto-dispatch issues are also
+locked before any worker reads them. The final spawn gate independently repeats
+that lock and verification and fails closed if GitHub cannot confirm it.
+
+Worker cleanup retains the lock while `auto-dispatch` remains active, including
+retryable failures. Pulse unlocks only locks it owns after automatic execution
+eligibility is removed, or existing terminal lifecycle handling removes the
+label before cleanup. GitHub locking is defence-in-depth: author/collaborator
+validation and untrusted-content rules still apply to content written before the
+lock.
+
+Regression tests:
+- `.agents/scripts/tests/test-auto-dispatch-conversation-lock.sh`
+- `.agents/scripts/tests/test-gh-create-issue-auto-dispatch-skip.sh`
+- `.agents/scripts/tests/test-precreation-failure-skip.sh`
+
 ## General Dedup Rule — Combined Signal (t1996)
 
 The dispatch dedup signal is `(active status label) AND (non-self assignee)` — both required, neither sufficient alone. Every code path that emits a dispatch claim must consult `dispatch-dedup-helper.sh is-assigned` before assigning a worker. Label-only or assignee-only filters are not safe in multi-operator conditions.

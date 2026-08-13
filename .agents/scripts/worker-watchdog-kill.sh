@@ -206,7 +206,17 @@ _watchdog_unlock_issue_and_prs() {
 
 	[[ -n "$issue_number" && -n "$repo_slug" ]] || return 0
 
-	# Unlock the issue
+	local labels=""
+	if ! labels=$(gh api "repos/${repo_slug}/issues/${issue_number}" --jq '[.labels[]? | .name] | join(",")' 2>/dev/null); then
+		log_msg "Could not verify labels for #${issue_number} in ${repo_slug}; retained conversation lock"
+		return 0
+	fi
+	# aidevops:trust-boundary — watchdog recovery must not reopen a retryable
+	# worker-authorized instruction surface to public comments.
+	if [[ ",$labels," == *,auto-dispatch,* && ",$labels," != *,no-auto-dispatch,* ]]; then
+		log_msg "Retained conversation lock for auto-dispatch #${issue_number} in ${repo_slug} after watchdog kill"
+		return 0
+	fi
 	gh issue unlock "$issue_number" --repo "$repo_slug" >/dev/null 2>&1 || true
 	log_msg "Unlocked #${issue_number} in ${repo_slug} after watchdog kill (t1934)"
 

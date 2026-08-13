@@ -56,6 +56,9 @@ source "${_DSI_SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=./shared-gh-wrappers.sh
 # shellcheck disable=SC1091
 source "${_DSI_SCRIPT_DIR}/shared-gh-wrappers.sh"
+# shellcheck source=./pulse-dispatch-core.sh
+# shellcheck disable=SC1091
+source "${_DSI_SCRIPT_DIR}/pulse-dispatch-core.sh"
 
 # Paths
 _DSI_LOG_DIR="${HOME}/.aidevops/logs"
@@ -1569,6 +1572,13 @@ _dsi_dispatch_after_dedup_clear() {
 	# on the same worktree cannot be joined by a second manual launch.
 	if ! _dsi_guard_no_existing_dispatch "$issue_number" "$repo_slug" "$_DSI_WORKTREE_PATH"; then
 		_dsi_reset_after_prelaunch_failure "$issue_number" "$repo_slug" "$self_login" "existing_dispatch_after_precreate"
+		return 1
+	fi
+
+	# aidevops:trust-boundary — manual dispatch has the same immutable issue
+	# instruction contract as Pulse and must fail closed before runtime launch.
+	if ! lock_issue_for_worker "$issue_number" "$repo_slug"; then
+		_dsi_reset_after_prelaunch_failure "$issue_number" "$repo_slug" "$self_login" "conversation_lock_failed"
 		return 1
 	fi
 

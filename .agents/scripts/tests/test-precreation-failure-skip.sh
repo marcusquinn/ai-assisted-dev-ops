@@ -750,7 +750,7 @@ _dlw_assign_and_label() {
 }
 lock_issue_for_worker() {
 	printf 'lock\n' >>"$ORCHESTRATOR_CALLS_FILE"
-	return 0
+	return "${STUB_LOCK_RC:-0}"
 }
 _dlw_post_launch_hooks() { return 0; }
 
@@ -775,6 +775,21 @@ else
 	fail "assignment failure occurs at final boundary before lock and spawn" "calls='$actual_calls'"
 fi
 STUB_ASSIGN_RC=0
+
+# A conversation-lock failure must stop before runtime spawn.
+: >"$ORCHESTRATOR_CALLS_FILE"
+: >"${TMP}/setsid-calls.txt"
+STUB_LOCK_RC=1
+lock_failure_rc=0
+_dispatch_launch_worker "77781" "owner/repo" "test-dispatch" "Test Issue" \
+	"testuser" "$FAKE_REPO" "test prompt" "session-key-lock-failure" "" "{}" || lock_failure_rc=$?
+actual_calls=$(tr '\n' ' ' <"$ORCHESTRATOR_CALLS_FILE")
+if [[ "$lock_failure_rc" -eq 2 && "$actual_calls" == *"lock "* && ! -s "${TMP}/setsid-calls.txt" ]]; then
+	pass "conversation-lock failure blocks worker spawn"
+else
+	fail "conversation-lock failure blocks worker spawn" "rc=$lock_failure_rc calls='$actual_calls'"
+fi
+STUB_LOCK_RC=0
 
 # A repeated-zero-output hold must stop before worktree, ownership, lock, or spawn.
 : >"$ORCHESTRATOR_CALLS_FILE"

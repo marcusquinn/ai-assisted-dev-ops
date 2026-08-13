@@ -297,6 +297,18 @@ _unlock_issue_after_dispatch_release() {
 		return 0
 	fi
 
+	local labels=""
+	if ! labels=$(gh api "repos/${repo_slug}/issues/${issue_number}" --jq '[.labels[]? | .name] | join(",")' 2>/dev/null); then
+		print_warning "Failed to verify labels before release unlock for #${issue_number} in ${repo_slug}; retaining conversation lock"
+		return 0
+	fi
+	# aidevops:trust-boundary — a retryable auto-dispatch issue remains frozen
+	# between workers; release only the claim, not the public instruction surface.
+	if [[ ",$labels," == *,auto-dispatch,* && ",$labels," != *,no-auto-dispatch,* ]]; then
+		print_info "Retaining conversation lock for auto-dispatch issue #${issue_number} in ${repo_slug} after claim release"
+		return 0
+	fi
+
 	unlock_output=$(gh issue unlock "$issue_number" --repo "$repo_slug" 2>&1) || {
 		if _hrff_unlock_failure_is_benign "$unlock_output"; then
 			print_info "Release unlock skipped for GitHub issue #${issue_number} in ${repo_slug}: already unlocked"

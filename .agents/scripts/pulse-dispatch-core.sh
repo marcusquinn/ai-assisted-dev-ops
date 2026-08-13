@@ -236,26 +236,82 @@ check_dispatch_dedup() {
 }
 
 #######################################
-# Lock an issue (and any linked PRs) to prevent mid-flight prompt
-# injection (t1894, t1934). Once a worker is dispatched, the issue
-# state is frozen — any comment arriving after dispatch is either
-# noise or adversarial. Lock the conversation to prevent influence.
+# Lock an issue (and any linked PRs) to prevent prompt injection
+# (t1894, t1934, GH#30180). Auto-dispatch is the authorization boundary,
+# so the issue must be frozen before it enters worker-readable context.
 # Also locks open PRs linked to the issue (worker may read PR comments).
-# Non-fatal: locking failure doesn't block dispatch.
+# The issue lock is strict and verified; linked PR locks remain best-effort.
 #######################################
 lock_issue_for_worker() {
 	local issue_num="$1"
 	local slug="$2"
 	local reason="${3:-resolved}"
 
-	[[ -n "$issue_num" && -n "$slug" ]] || return 0
+	[[ -n "$issue_num" && -n "$slug" ]] || return 1
 
-	# Lock the issue itself
-	gh issue lock "$issue_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1 || true
+	# aidevops:trust-boundary — never launch a worker when the mutable public
+	# instruction surface could not be frozen and independently re-read.
+	local locked_state=""
+	if ! gh issue lock "$issue_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1; then
+		echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
+		return 1
+	fi
+	locked_state=$(gh api "repos/${slug}/issues/${issue_num}" --jq '.locked == true' 2>/dev/null) || locked_state=""
+	if [[ "$locked_state" != "true" ]]; then
+		echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
+		return 1
+	fi
+	_record_auto_dispatch_lock "$issue_num" "$slug" || return 1
 	echo "[pulse-wrapper] Locked #${issue_num} in ${slug} during worker execution (t1934)" >>"$LOGFILE"
 
 	# Lock any open PRs linked to this issue (t1934: PRs have same injection surface)
 	_lock_linked_prs "$issue_num" "$slug" "$reason"
+
+	return 0
+}
+
+_auto_dispatch_lock_marker() {
+	local issue_num="$1"
+	local slug="$2"
+	local lock_dir="${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR:-${HOME}/.aidevops/cache/auto-dispatch-locks}"
+	local lock_key="${slug//\//--}-${issue_num}"
+	printf '%s/%s\n' "$lock_dir" "$lock_key"
+	return 0
+}
+
+_record_auto_dispatch_lock() {
+	local issue_num="$1"
+	local slug="$2"
+	local marker=""
+	marker=$(_auto_dispatch_lock_marker "$issue_num" "$slug") || return 1
+	mkdir -p "${marker%/*}" 2>/dev/null || return 1
+	: >"$marker" 2>/dev/null || return 1
+	return 0
+}
+
+#######################################
+# Reconcile conversation locks for every visible auto-dispatch issue,
+# including blocked and queued work that cannot reach the launch path yet.
+# Only markers owned by this mechanism may trigger an unlock.
+#######################################
+reconcile_auto_dispatch_issue_locks() {
+	local slug="$1"
+	local issue_json="$2"
+	local issue_num="" marker="" labels="" labels_csv=""
+	[[ -n "$slug" && -n "$issue_json" ]] || return 1
+
+	while IFS=$'\t' read -r issue_num labels; do
+		[[ "$issue_num" =~ ^[0-9]+$ ]] || continue
+		marker=$(_auto_dispatch_lock_marker "$issue_num" "$slug") || continue
+		labels_csv=",${labels},"
+		if [[ "$labels_csv" == *,auto-dispatch,* && "$labels_csv" != *,no-auto-dispatch,* ]]; then
+			lock_issue_for_worker "$issue_num" "$slug" || return 1
+		elif [[ -f "$marker" && "$labels_csv" != *,no-auto-dispatch,* ]]; then
+			gh issue unlock "$issue_num" --repo "$slug" >/dev/null 2>&1 || return 1
+			rm -f "$marker" 2>/dev/null || return 1
+			echo "[pulse-wrapper] Unlocked #${issue_num} in ${slug} after auto-dispatch removal (GH#30180)" >>"$LOGFILE"
+		fi
+	done < <(printf '%s' "$issue_json" | jq -r '.[] | [(.number | tostring), ([.labels[]? | .name? // .] | join(","))] | @tsv' 2>/dev/null)
 
 	return 0
 }
@@ -288,9 +344,9 @@ _lock_linked_prs() {
 }
 
 #######################################
-# Unlock an issue (and any linked PRs) after worker completion or
-# failure (t1894, t1934). Symmetric with lock_issue_for_worker.
-# Non-fatal: unlocking failure is logged but doesn't block.
+# Release conversation locks after terminal worker handling only when the issue
+# is no longer auto-dispatch eligible. Retryable work stays frozen across the
+# worker-to-Pulse handoff, closing the post-worker comment race (GH#30180).
 #######################################
 unlock_issue_after_worker() {
 	local issue_num="$1"
@@ -298,8 +354,22 @@ unlock_issue_after_worker() {
 
 	[[ -n "$issue_num" && -n "$slug" ]] || return 0
 
-	# Unlock the issue itself
+	local labels=""
+	if ! labels=$(gh api "repos/${slug}/issues/${issue_num}" --jq '[.labels[]? | .name] | join(",")' 2>/dev/null); then
+		echo "[pulse-wrapper] Could not verify labels before unlocking #${issue_num} in ${slug}; retaining conversation lock (GH#30180)" >>"$LOGFILE"
+		return 1
+	fi
+	# aidevops:trust-boundary — auto-dispatch remains authoritative across
+	# retries, so completion cleanup must not reopen its instruction surface.
+	if [[ ",$labels," == *,auto-dispatch,* && ",$labels," != *,no-auto-dispatch,* ]]; then
+		echo "[pulse-wrapper] Retained conversation lock for auto-dispatch #${issue_num} in ${slug} after worker handoff (GH#30180)" >>"$LOGFILE"
+		return 0
+	fi
+
 	gh issue unlock "$issue_num" --repo "$slug" >/dev/null 2>&1 || true
+	local marker=""
+	marker=$(_auto_dispatch_lock_marker "$issue_num" "$slug") || marker=""
+	[[ -z "$marker" ]] || rm -f "$marker" 2>/dev/null || true
 	echo "[pulse-wrapper] Unlocked #${issue_num} in ${slug} after worker completion (t1934)" >>"$LOGFILE"
 
 	# Unlock any open PRs linked to this issue (symmetric with lock)
