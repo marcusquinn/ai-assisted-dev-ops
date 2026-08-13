@@ -71,8 +71,9 @@ readonly CAMPAIGNS_LIB_ASSETS="lib/assets"
 readonly ASSET_MANIFEST_FILE="manifest.json"
 readonly BLOB_THRESHOLD_BYTES=31457280
 readonly PREVIEW_DEFAULT_SIZE=640
-readonly PREVIEW_MAX_SIZE=1568  # screenshot-limits.md hard cap for AI review
+readonly PREVIEW_MAX_SIZE=640
 readonly ASSET_NONE="null"      # Sentinel: field absent / no value
+readonly ASSET_UNVERIFIED="unverified"
 
 # ---------------------------------------------------------------------------
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -136,7 +137,8 @@ _sha256_file() {
 	elif command -v shasum >/dev/null 2>&1; then
 		shasum -a 256 "$file_path" | awk '{print $1}'
 	else
-		echo "unknown"
+		print_error "A SHA-256 tool (sha256sum or shasum) is required"
+		return 1
 	fi
 	return 0
 }
@@ -237,7 +239,7 @@ _read_manifest() {
 	if [[ -f "$manifest_path" ]]; then
 		cat "$manifest_path"
 	else
-		printf '{"version":1,"assets":[]}'
+		printf '{"version":2,"assets":[]}'
 	fi
 	return 0
 }
@@ -256,16 +258,13 @@ _append_manifest_entry() {
 	local size_bytes="$8"
 	local blob_path="$9"
 	local preview_path="${10}"
-	if ! command -v jq >/dev/null 2>&1; then
-		print_warning "jq not found — writing minimal manifest entry as text"
-		return 0
-	fi
+	command -v jq >/dev/null 2>&1 || { print_error "jq is required before asset ingestion"; return 1; }
 	local ts actor
 	ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")
 	actor="${USER:-unknown}"
 	local existing
 	existing=$(_read_manifest "$manifest_path")
-	printf '%s' "$existing" | jq \
+	printf '%s' "$existing" | jq -e \
 		--arg id "$asset_id" \
 		--arg fn "$filename" \
 		--arg kind "$kind" \
@@ -276,14 +275,22 @@ _append_manifest_entry() {
 		--arg bp "$blob_path" \
 		--arg pp "$preview_path" \
 		--arg none "$ASSET_NONE" \
+		--arg unverified "$ASSET_UNVERIFIED" \
 		--arg ts "$ts" \
 		--arg by "$actor" \
-		'.assets += [{id:$id,filename:$fn,kind:$kind,target:$tgt,sensitivity:$sens,
+		'if (.version != 1 and .version != 2) or (.assets | type != "array") then error("invalid asset manifest")
+		 elif (.assets | any(.id == $id)) then error("duplicate asset id")
+		 else {version:2,assets:(.assets + [{id:$id,filename:$fn,kind:$kind,target:$tgt,sensitivity:$sens,
 		              sha256:$sha,size_bytes:$sz,
 		              blob_path:(if $bp == $none then null else $bp end),
 		              preview_path:(if $pp == $none then null else $pp end),
-		              ingested_at:$ts,ingested_by:$by}]' \
+		              lineage:{source_asset_id:null,source_sha256:null},
+		              rights:{license:$unverified,consent:$unverified,territory:$unverified,expires_at:null},
+		              review:{status:"required"},recipe:{tool:"campaign-asset-helper",provider:"local",hash:$sha},
+		              variant:"source",synthetic_disclosure:"not_applicable",output_status:"source",
+		              ingested_at:$ts,ingested_by:$by}])} end' \
 		>"${manifest_path}.tmp" && mv "${manifest_path}.tmp" "$manifest_path"
+	[[ -f "$manifest_path" ]] || return 1
 	return 0
 }
 
@@ -426,7 +433,7 @@ _cmd_add() {
 	local kind
 	kind=$(_classify_asset_kind "$file_path")
 	local sha256
-	sha256=$(_sha256_file "$file_path")
+	sha256=$(_sha256_file "$file_path") || return 1
 	local slug_base
 	slug_base=$(_slugify "${filename%.*}")
 	local ts_short
@@ -435,24 +442,33 @@ _cmd_add() {
 	local blob_path="$ASSET_NONE"
 	local repo_name
 	repo_name=$(basename "$repo_path")
+	local staged_path="" staged_blob_path="" staged_preview_path=""
 	if [[ "$size_bytes" -ge "$BLOB_THRESHOLD_BYTES" ]]; then
 		blob_path=$(_store_asset_blob "$file_path" "$asset_id" "$repo_name") || return 1
+		staged_blob_path="$blob_path"
 		_create_symlink_in_target "$blob_path" "$target_dir" "$filename" || return 1
+		staged_path="${target_dir}/${filename}"
 	else
 		_copy_asset_inline "$file_path" "$target_dir" || return 1
+		staged_path="${target_dir}/${filename}"
 	fi
 	local preview_path="$ASSET_NONE"
 	local previews_dir="${target_dir}/.previews"
 	if [[ "$no_preview" -eq 0 ]]; then
 		preview_path=$(_generate_preview "$file_path" "$kind" "$PREVIEW_DEFAULT_SIZE" "$previews_dir") || true
+		[[ "$preview_path" != "$ASSET_NONE" ]] && staged_preview_path="$preview_path"
 	fi
 	local assets_dir="${campaigns_dir}/${CAMPAIGNS_LIB_ASSETS}"
 	mkdir -p "$assets_dir"
 	local manifest_path="${assets_dir}/${ASSET_MANIFEST_FILE}"
 	local target_subdir="${target}"
 	[[ "$target" == "campaign" ]] && target_subdir="active/${campaign_id}/creative"
-	_append_manifest_entry "$manifest_path" "$asset_id" "$filename" "$kind" \
-		"$target_subdir" "$sensitivity" "$sha256" "$size_bytes" "$blob_path" "$preview_path"
+	if ! _append_manifest_entry "$manifest_path" "$asset_id" "$filename" "$kind" \
+		"$target_subdir" "$sensitivity" "$sha256" "$size_bytes" "$blob_path" "$preview_path"; then
+		rm -f "$staged_path" "$staged_preview_path"
+		[[ -n "$staged_blob_path" ]] && rm -f "$staged_blob_path"
+		return 1
+	fi
 	print_success "Asset ingested: ${asset_id} (${kind}, ${size_bytes}B)"
 	if [[ "$blob_path" != "$ASSET_NONE" ]]; then
 		print_info "  blob: ${blob_path}"

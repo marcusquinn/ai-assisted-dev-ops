@@ -4,96 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import os
-import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
-CHANNELS = {"facebook", "instagram", "linkedin", "twitter", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"}
-ASSET_OWNERS = {"writing": "content/production-writing.md", "image": "content/production-image.md", "video": "content/production-video.md", "audio": "content/production-audio.md", "editor": "tools/video/video-editor.md"}
-DEFAULT_FORMATS = {"facebook": ("image", "1:1", None), "instagram": ("image", "4:5", None), "linkedin": ("image", "1.91:1", None), "twitter": ("writing", "text", None), "email": ("writing", "text", None), "blog": ("writing", "text", None), "youtube": ("video", "16:9", 60), "short-form": ("video", "9:16", 30), "social-linkedin": ("image", "1.91:1", None), "social-reddit": ("writing", "text", None), "social-x": ("writing", "text", None), "podcast": ("audio", "audio", 300)}
-
-
-class ManifestError(ValueError):
-    """Raised when a production contract cannot be created or trusted."""
-
-
-@dataclass(frozen=True)
-class ManifestRequest:
-    """Inputs needed to construct one immutable production job."""
-
-    campaign_id: str
-    brief: dict[str, Any]
-    channel: str
-    variant: int
-    asset_class: str | None
-    capability: str | None
-
-
-def digest(value: Any) -> str:
-    """Return a stable SHA-256 reference for JSON-compatible content."""
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
-
-
-def atomic_json_write(path: Path, document: dict[str, Any]) -> None:
-    """Atomically write a JSON document without replacing valid state on failure."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(document, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
-
-
-def read_document(path: Path, label: str) -> dict[str, Any]:
-    """Read one object document with a useful contract error."""
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ManifestError(f"invalid {label}: {path}: {error}") from error
-    if not isinstance(document, dict):
-        raise ManifestError(f"invalid {label}: {path} must contain an object")
-    return document
-
-
-def validate_brief(document: dict[str, Any]) -> None:
-    """Validate fields that downstream production must rely on."""
-    required = ("schema_version", "brief_id", "campaign_id", "source_snapshot_sha256", "claims", "lifecycle")
-    if any(not document.get(field) for field in required) or document.get("schema_version") != 1:
-        raise ManifestError("creative brief is missing required schema-v1 fields")
-    if document["lifecycle"].get("status") != "brief_ready":
-        raise ManifestError("creative brief lifecycle must be brief_ready")
-    if not all(claim.get("evidence_reference") for claim in document["claims"]):
-        raise ManifestError("creative brief claims require evidence references")
-
-
-def validate_manifest(document: dict[str, Any]) -> None:
-    """Reject invalid status claims and incomplete downstream jobs."""
-    required = ("schema_version", "job_id", "campaign_id", "brief_id", "channel", "variant_id", "input_snapshot_sha256", "format", "execution", "lifecycle", "outputs")
-    if any(field not in document for field in required) or document.get("schema_version") != 1:
-        raise ManifestError("manifest is missing required schema-v1 fields")
-    if document["channel"] not in CHANNELS:
-        raise ManifestError("manifest has an unsupported channel")
-    status = document["lifecycle"].get("status")
-    outputs = document["outputs"]
-    if status in {"generated", "edited", "approved"} and not outputs:
-        raise ManifestError(f"manifest status {status} requires verified outputs")
-    if status in {"brief_ready", "prompts_ready", "queued", "running", "blocked"} and outputs:
-        raise ManifestError(f"manifest status {status} must not claim completed outputs")
-    if status == "blocked" and document["execution"].get("status") != "blocked":
-        raise ManifestError("blocked lifecycle requires an explicit blocked execution route")
-
+from campaign_production_contract import (
+    ASSET_OWNERS, CHANNELS, DEFAULT_FORMATS, ManifestError, ManifestRequest,
+    atomic_json_write, digest, read_document, validate_brief,
+    validate_distribution_eligibility, validate_manifest,
+)
 
 def build_brief(campaign_id: str, intake: dict[str, Any], revision: int) -> dict[str, Any]:
     """Convert validated intake facts to one evidence-linked strategy brief."""
@@ -196,6 +114,19 @@ def command_validate(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def command_eligibility(arguments: argparse.Namespace) -> int:
+    """Validate every recorded job before campaign launch or promotion."""
+    campaign_dir = Path(arguments.campaign_dir).resolve()
+    directory = campaign_dir / "drafts" / "production-manifests"
+    manifests = sorted(directory.glob("*.json")) if directory.is_dir() else []
+    if not manifests:
+        raise ManifestError("no production manifests exist; distribution is fail-closed")
+    for path in manifests:
+        validate_distribution_eligibility(read_document(path, "production manifest"), campaign_dir)
+    print(f"Campaign production eligible: {campaign_dir}")
+    return 0
+
+
 def main() -> int:
     """Parse the narrow campaign production contract CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -215,6 +146,9 @@ def main() -> int:
     validate = commands.add_parser("validate")
     validate.add_argument("manifest")
     validate.set_defaults(handler=command_validate)
+    eligibility = commands.add_parser("eligibility")
+    eligibility.add_argument("campaign_dir")
+    eligibility.set_defaults(handler=command_eligibility)
     arguments = parser.parse_args()
     if getattr(arguments, "variant", 1) < 1:
         raise ManifestError("variant must be a positive integer")

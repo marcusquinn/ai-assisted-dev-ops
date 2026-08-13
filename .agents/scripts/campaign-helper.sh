@@ -130,6 +130,16 @@ _require_launched_campaign() {
 	return 0
 }
 
+_require_campaign_production_eligibility() {
+	local campaign_dir="$1"
+	if [[ ! -f "$CAMPAIGN_PRODUCTION_HELPER" ]]; then
+		print_error "Campaign production helper not found: ${CAMPAIGN_PRODUCTION_HELPER}"
+		return 1
+	fi
+	python3 "$CAMPAIGN_PRODUCTION_HELPER" eligibility "$campaign_dir"
+	return $?
+}
+
 _current_ym() {
 	date -u '+%Y-%m'
 	return 0
@@ -705,6 +715,7 @@ cmd_launch() {
 		print_error "Path checked: ${active_dir}"
 		return 1
 	fi
+	_require_campaign_production_eligibility "$active_dir" || return 1
 
 	local launched_base="${campaigns_dir}/${CAMPAIGNS_LAUNCHED_DIR}"
 	mkdir -p "$launched_base"
@@ -815,6 +826,7 @@ cmd_promote() {
 
 	local launched_dir
 	launched_dir="$(_require_launched_campaign "$campaigns_dir" "$campaign_id")" || return 1
+	_require_campaign_production_eligibility "$launched_dir" || return 1
 
 	local exit_code=0
 	[[ "$do_results" == true ]] && { _promote_results "$launched_dir" "$campaign_id" "$repo_path" || exit_code=1; }
@@ -1321,8 +1333,10 @@ P5 Commands (AI creative agent):
       Jobs remain brief_ready or blocked until a downstream owner records verified evidence.
   production list <id> [--repo <path>]
       List schema-v1 production jobs and their verified lifecycle states.
-  production validate <manifest-path>
-      Validate a production manifest before consuming it downstream.
+   production validate <manifest-path>
+       Validate a production manifest before consuming it downstream.
+   production eligibility <campaign-dir>
+       Verify every recorded job has approved review, rights, provenance, and output integrity.
 
 Campaign research:
   research <id> [--source <evidence.json>]... [--repo <path>]
@@ -1331,9 +1345,9 @@ Campaign research:
        Raw sensitive evidence stays in _campaigns/intel/; no collector is implied.
 
 P6 Commands (post-launch cross-plane):
-  launch <id> [--repo <path>]
-      Move _campaigns/active/<id>/ → launched/<id>/
-      Creates results.md + learnings.md templates for post-launch tracking.
+   launch <id> [--repo <path>]
+       Move _campaigns/active/<id>/ → launched/<id>/
+       Requires eligible, approved production manifests; creates results.md + learnings.md templates.
 
   promote <id> [--results] [--learnings] [--repo <path>]
       --results    Push launched/<id>/results.md to _performance/marketing/<id>.md

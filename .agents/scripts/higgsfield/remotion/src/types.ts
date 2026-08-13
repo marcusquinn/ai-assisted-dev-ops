@@ -14,12 +14,16 @@ export interface CaptionEntry {
   text: string;
   position: CaptionPosition;
   style: CaptionStyle;
+  startFrame?: number;
+  endFrame?: number;
+  words?: Array<{ text: string; startFrame: number; endFrame: number }>;
 }
 
 export interface SceneEntry {
   prompt: string;
   duration: number;
   dialogue?: string | null;
+  fit?: "cover" | "contain";
 }
 
 export interface BriefProps {
@@ -32,6 +36,7 @@ export interface BriefProps {
   transitionStyle?: "fade" | "slide" | "wipe" | "none";
   transitionDuration?: number; // Frames (default 15 at 30fps = 0.5s)
   musicPath?: string;          // Optional background music
+  fitPolicy?: "cover" | "contain";
 }
 
 export interface SceneVideoProps {

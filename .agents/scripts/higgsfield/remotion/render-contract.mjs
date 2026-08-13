@@ -1,3 +1,14 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+export function fileDigest(path) {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+export function stableDigest(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 export function validateBrief(brief, videoPaths, aspectDimensions) {
   const scenes = brief.scenes || [];
   if (!Array.isArray(scenes) || scenes.length === 0) throw new Error("brief requires at least one scene");
@@ -36,10 +47,44 @@ export function normalizeCaptions(rawCaptions, scenes, fps) {
           text: caption.text || "",
           position: caption.position || "bottom",
           style: caption.style || "bold-white",
+          startFrame: caption.startFrame,
+          endFrame: caption.endFrame,
+          words: caption.words || [],
         };
       }
       frameOffset += sceneFrames;
     }
     throw new Error("caption timing is outside the render");
   });
+}
+
+export function buildSceneVideoFilenames(videoPaths) {
+  return videoPaths.map((videoPath, index) => `scene-${index}-${fileDigest(videoPath).slice(0, 12)}.mp4`);
+}
+
+export function buildRenderProps(brief, sceneVideos, transitionDuration, musicPath) {
+  const scenes = brief.scenes || [];
+  return {
+    title: brief.title || "Untitled",
+    scenes,
+    aspect: brief.aspect || "9:16",
+    captions: normalizeCaptions(brief.captions || [], scenes, 30),
+    sceneVideos,
+    transitionStyle: brief.transitionStyle || "fade",
+    transitionDuration,
+    musicPath,
+    fitPolicy: brief.fitPolicy || "cover",
+  };
+}
+
+export function buildRenderManifest(outputPath, outputName, recipe, props) {
+  return {
+    schema_version: 1,
+    output: outputName,
+    output_sha256: `sha256:${fileDigest(outputPath)}`,
+    recipe_sha256: `sha256:${stableDigest(recipe)}`,
+    captions: props.captions,
+    fit_policy: props.fitPolicy,
+    status: "completed",
+  };
 }
