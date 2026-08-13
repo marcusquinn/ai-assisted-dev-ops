@@ -47,6 +47,9 @@ readonly DEFAULT_HEADLESS_MODELS="anthropic/claude-sonnet-4-6"
 readonly STATE_DIR="${AIDEVOPS_HEADLESS_RUNTIME_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
 readonly STATE_DB="${STATE_DIR}/state.db"
 readonly OPENCODE_BIN_DEFAULT="${OPENCODE_BIN:-opencode}"
+# Linux headless dispatch may bind this to an aidevops-managed exact-version
+# runtime without mutating the general/interactive OpenCode installation.
+HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
 readonly SANDBOX_EXEC_HELPER="${SCRIPT_DIR}/sandbox-exec-helper.sh"
 readonly DISPATCH_LEDGER_HELPER="${SCRIPT_DIR}/dispatch-ledger-helper.sh"
 readonly OAUTH_POOL_HELPER="${SCRIPT_DIR}/oauth-pool-helper.sh"

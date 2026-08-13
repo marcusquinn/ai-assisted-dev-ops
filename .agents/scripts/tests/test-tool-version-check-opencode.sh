@@ -51,10 +51,16 @@ extract_function() {
 		/^_opencode_upgrade_cmd\(\)/, /^}$/ { print; next }
 	' "$TOOL_VERSION_CHECK" >>"$SANDBOX/extract.sh"
 	awk '
+		/^_validate_opencode_binary\(\)/, /^}/ { print; next }
+		/^_resolve_headless_opencode_install_binary\(\)/, /^}/ { print; next }
+		/^_provision_headless_opencode_runtime\(\)/, /^}/ { print; next }
 		/^_enforce_opencode_version_pin\(\)/, /^}$/ { print; next }
 	' "$HEADLESS_RUNTIME_LIB" >>"$SANDBOX/extract.sh"
 	if ! grep -q '^aidevops_opencode_pin_applies()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_opencode_upgrade_cmd()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_validate_opencode_binary()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_resolve_headless_opencode_install_binary()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_provision_headless_opencode_runtime()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_enforce_opencode_version_pin()' "$SANDBOX/extract.sh"; then
 		printf 'FAIL: extraction did not capture OpenCode version functions\n' >&2
 		exit 1
@@ -201,74 +207,77 @@ printf "npm %s\n" "$*" >>"'"$SANDBOX"'/npm-case/calls"'
 )
 assert_eq "npm OpenCode upgrade command" "npm install -g opencode-ai@1.15.10" "$(tr '\n' ';' <"$SANDBOX/npm-case/calls" | sed 's/;$//')"
 
-printf 'Test 4: headless version guard restores the pinned release\n'
-mkdir -p "$SANDBOX/version-guard/runtime" "$SANDBOX/version-guard/bin"
-# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+printf 'Test 4: headless guard provisions an isolated pin without changing newer general install\n'
+mkdir -p "$SANDBOX/version-guard/runtime" "$SANDBOX/version-guard/bin" "$SANDBOX/version-guard/state"
 write_executable "$SANDBOX/version-guard/runtime/opencode" '#!/usr/bin/env bash
-version=$(<"'"$SANDBOX"'/version-guard/version")
-printf "%s\n" "$version"'
+printf "1.18.17\n"'
 # shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
 write_executable "$SANDBOX/version-guard/bin/npm" '#!/usr/bin/env bash
 printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard/calls"
-printf "1.18.16\n" >"'"$SANDBOX"'/version-guard/version"'
-printf '1.18.7\n' >"$SANDBOX/version-guard/version"
+prefix=""
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == "--prefix" ]]; then prefix="$2"; shift 2; continue; fi
+  shift
+done
+mkdir -p "$prefix/node_modules/opencode-linux-x64/bin"
+cat >"$prefix/node_modules/opencode-linux-x64/bin/opencode" <<"BIN"
+#!/usr/bin/env bash
+printf "1.18.16\n"
+BIN
+chmod +x "$prefix/node_modules/opencode-linux-x64/bin/opencode"'
 guard_rc=0
+headless_bin=""
 (
 	source_extracted
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/runtime/opencode"
+	HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	STATE_DIR="$SANDBOX/version-guard/state"
+	AIDEVOPS_TEST_UNAME_M="x86_64"
 	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }
 	PATH="$SANDBOX/version-guard/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
+	printf '%s\n' "$HEADLESS_OPENCODE_BIN" >"$SANDBOX/version-guard/headless-bin"
 ) || guard_rc=$?
 assert_eq "headless pin repair status" "0" "$guard_rc"
-assert_eq "headless repair uses resolved binary outside PATH" "1.18.16" "$("$SANDBOX/version-guard/runtime/opencode")"
-assert_eq "headless pin reinstall command" "install -g opencode-ai@1.18.16" "$(tr '\n' ';' <"$SANDBOX/version-guard/calls" | sed 's/;$//')"
+headless_bin=$(<"$SANDBOX/version-guard/headless-bin")
+assert_eq "general install remains newer" "1.18.17" "$("$SANDBOX/version-guard/runtime/opencode")"
+assert_eq "isolated headless runtime is pinned" "1.18.16" "$("$headless_bin")"
+install_call=$(<"$SANDBOX/version-guard/calls")
+[[ "$install_call" == "install --ignore-scripts --no-audit --no-fund --prefix "*"/opencode-runtimes/.1.18.16.install."*"/prefix opencode-ai@1.18.16" ]] && install_shape="valid" || install_shape="invalid"
+assert_eq "isolated install requests exact pin" "valid" "$install_shape"
 
-printf 'Test 4b: concurrent headless version guard waits for repair and avoids duplicate reinstall\n'
-mkdir -p "$SANDBOX/version-guard-lock/runtime" "$SANDBOX/version-guard-lock/bin" "$SANDBOX/version-guard-lock/state"
-# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
-write_executable "$SANDBOX/version-guard-lock/runtime/opencode" '#!/usr/bin/env bash
-version=$(<"'"$SANDBOX"'/version-guard-lock/version")
-printf "%s\n" "$version"'
-# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
-write_executable "$SANDBOX/version-guard-lock/bin/npm" '#!/usr/bin/env bash
-printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard-lock/calls"
-printf "1.18.16\n" >"'"$SANDBOX"'/version-guard-lock/version"'
-printf '1.18.7\n' >"$SANDBOX/version-guard-lock/version"
-mkdir "$SANDBOX/version-guard-lock/state/opencode-pin-repair.lock"
-(
- sleep 1
- printf '1.18.16\n' >"$SANDBOX/version-guard-lock/version"
- rmdir "$SANDBOX/version-guard-lock/state/opencode-pin-repair.lock"
-) &
-lock_repair_pid=$!
-guard_rc=0
+printf 'Test 4b: existing isolated pin is reused without package-manager mutation\n'
+reuse_rc=0
 (
 	source_extracted
-	STATE_DIR="$SANDBOX/version-guard-lock/state"
-	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard-lock/runtime/opencode"
+	STATE_DIR="$SANDBOX/version-guard/state"
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/runtime/opencode"
+	HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	AIDEVOPS_TEST_UNAME_M="x86_64"
 	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }
-	PATH="$SANDBOX/version-guard-lock/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
-) || guard_rc=$?
-wait "$lock_repair_pid" 2>/dev/null || true
-assert_eq "headless pin repair lock wait status" "0" "$guard_rc"
-assert_eq "headless pin repair lock avoids duplicate reinstall" "0" "$([[ -f "$SANDBOX/version-guard-lock/calls" ]] && wc -l <"$SANDBOX/version-guard-lock/calls" || printf '0\n')"
+	PATH="$SANDBOX/version-guard/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || reuse_rc=$?
+assert_eq "existing isolated runtime reuse status" "0" "$reuse_rc"
+assert_eq "existing isolated runtime avoids second install" "1" "$(wc -l <"$SANDBOX/version-guard/calls" | tr -d ' ')"
 
-printf 'Test 5: headless version guard fails closed when reinstall fails\n'
-mkdir -p "$SANDBOX/version-install-failure"
+printf 'Test 5: headless version guard fails closed when isolated provisioning fails\n'
+mkdir -p "$SANDBOX/version-install-failure/state"
 write_executable "$SANDBOX/version-install-failure/opencode" '#!/usr/bin/env bash
-printf "1.18.7\n"'
+printf "1.18.17\n"'
 write_executable "$SANDBOX/version-install-failure/npm" '#!/usr/bin/env bash
 exit 42'
 guard_rc=0
 (
 	source_extracted
+	STATE_DIR="$SANDBOX/version-install-failure/state"
 	OPENCODE_BIN_DEFAULT="$SANDBOX/version-install-failure/opencode"
+	HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	AIDEVOPS_TEST_UNAME_M="x86_64"
 	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
 	print_warning() { return 0; }
 	print_info() { return 0; }
@@ -277,42 +286,28 @@ guard_rc=0
 ) || guard_rc=$?
 assert_eq "headless failed reinstall status" "1" "$guard_rc"
 
-printf 'Test 6: headless version guard verifies the repaired binary\n'
-mkdir -p "$SANDBOX/version-mismatch"
-write_executable "$SANDBOX/version-mismatch/opencode" '#!/usr/bin/env bash
-printf "1.18.7\n"'
-write_executable "$SANDBOX/version-mismatch/npm" '#!/usr/bin/env bash
-exit 0'
-guard_rc=0
+printf 'Test 6: non-Linux headless dispatch keeps the general binary\n'
+scope_rc=0
 (
 	source_extracted
-	OPENCODE_BIN_DEFAULT="$SANDBOX/version-mismatch/opencode"
-	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/runtime/opencode"
+	HEADLESS_OPENCODE_BIN="unexpected"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Darwin"
 	print_warning() { return 0; }
 	print_info() { return 0; }
 	print_error() { return 0; }
-	PATH="$SANDBOX/version-mismatch:$SYSTEM_PATH" _enforce_opencode_version_pin
-) || guard_rc=$?
-assert_eq "headless post-repair mismatch status" "1" "$guard_rc"
+	_enforce_opencode_version_pin
+	printf '%s\n' "$HEADLESS_OPENCODE_BIN" >"$SANDBOX/version-guard/non-linux-bin"
+) || scope_rc=$?
+assert_eq "non-Linux scope status" "0" "$scope_rc"
+assert_eq "non-Linux uses general binary" "$SANDBOX/version-guard/runtime/opencode" "$(<"$SANDBOX/version-guard/non-linux-bin")"
 
-printf 'Test 7: headless version guard rejects a failed version probe\n'
-mkdir -p "$SANDBOX/version-probe-failure"
-write_executable "$SANDBOX/version-probe-failure/opencode" '#!/usr/bin/env bash
-printf "1.18.9\n"
-exit 3'
-write_executable "$SANDBOX/version-probe-failure/npm" '#!/usr/bin/env bash
-exit 0'
-guard_rc=0
-(
-	source_extracted
-	OPENCODE_BIN_DEFAULT="$SANDBOX/version-probe-failure/opencode"
-	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
-	print_warning() { return 0; }
-	print_info() { return 0; }
-	print_error() { return 0; }
-	PATH="$SANDBOX/version-probe-failure:$SYSTEM_PATH" _enforce_opencode_version_pin
-) || guard_rc=$?
-assert_eq "headless failed version probe status" "1" "$guard_rc"
+printf 'Test 7: headless run and auth paths consume the isolated runtime binding\n'
+model_source="$REPO_ROOT/.agents/scripts/headless-runtime-model.sh"
+provider_source="$REPO_ROOT/.agents/scripts/headless-runtime-provider.sh"
+# shellcheck disable=SC2016 # Literal source pattern, not a shell expansion.
+binding_count=$(grep -c 'HEADLESS_OPENCODE_BIN:-\$OPENCODE_BIN_DEFAULT' "$model_source" "$provider_source" | awk -F: '{ total += $2 } END { print total + 0 }')
+assert_eq "isolated runtime reaches run and auth call sites" "3" "$binding_count"
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

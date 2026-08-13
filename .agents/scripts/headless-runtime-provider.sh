@@ -95,7 +95,7 @@ get_auth_signature() {
 	case "$provider" in
 	anthropic)
 		local auth_status auth_mtime
-		auth_status=$(timeout_sec 10 "$OPENCODE_BIN_DEFAULT" auth status 2>/dev/null || true)
+		auth_status=$(timeout_sec 10 "${HEADLESS_OPENCODE_BIN:-$OPENCODE_BIN_DEFAULT}" auth status 2>/dev/null || true)
 		auth_mtime=$(file_mtime "$OPENCODE_AUTH_FILE")
 		auth_material="${auth_material}|status=${auth_status}|mtime=${auth_mtime}"
 		;;
@@ -106,7 +106,7 @@ get_auth_signature() {
 			# OpenAI can also be authenticated via OpenCode OAuth (no direct API key needed).
 			# Include the OAuth auth status in the signature so backoff clears on re-auth.
 			local auth_status auth_mtime
-			auth_status=$(timeout_sec 10 "$OPENCODE_BIN_DEFAULT" auth status 2>/dev/null || true)
+			auth_status=$(timeout_sec 10 "${HEADLESS_OPENCODE_BIN:-$OPENCODE_BIN_DEFAULT}" auth status 2>/dev/null || true)
 			auth_mtime=$(file_mtime "$OPENCODE_AUTH_FILE")
 			auth_material="${auth_material}|status=${auth_status}|mtime=${auth_mtime}|env=missing"
 		fi

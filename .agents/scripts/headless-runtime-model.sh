@@ -490,7 +490,7 @@ _build_run_cmd() {
 	shift 7
 
 	# Emit base command args as null-delimited tokens (bash 3.2 compat: no local -a in subshell)
-	printf '%s\0' "$OPENCODE_BIN_DEFAULT" run "$prompt" --dir "$work_dir" -m "$selected_model" --title "$title" --format json
+	printf '%s\0' "${HEADLESS_OPENCODE_BIN:-$OPENCODE_BIN_DEFAULT}" run "$prompt" --dir "$work_dir" -m "$selected_model" --title "$title" --format json
 	if [[ -n "$agent_name" ]]; then
 		printf '%s\0' --agent "$agent_name"
 	fi

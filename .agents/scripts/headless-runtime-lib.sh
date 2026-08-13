@@ -1568,47 +1568,130 @@ _find_alternative_opencode_binary() {
 }
 
 #######################################
-# Version guard -- enforce OPENCODE_PINNED_VERSION for affected worker launches.
-#
-# Something outside our control (unknown process, worker side-effect)
-# periodically upgrades opencode to @latest. This guard runs on every
-# canary check and reinstalls the pinned version if it drifted.
-# Cheap: one `opencode --version` + optional package-managed repair and
-# verification.
-# Returns non-zero when repair fails or the installed runtime remains drifted,
-# allowing every headless launch path to fail closed before starting a worker.
+# Resolve the native OpenCode executable from an isolated npm prefix.
+#######################################
+_resolve_headless_opencode_install_binary() {
+	local install_root="$1"
+	local machine_arch="${AIDEVOPS_TEST_UNAME_M:-}"
+	if [[ -z "$machine_arch" ]]; then
+		machine_arch=$(uname -m 2>/dev/null || true)
+	fi
+	local package_arch=""
+	case "$machine_arch" in
+	x86_64 | amd64) package_arch="x64" ;;
+	aarch64 | arm64) package_arch="arm64" ;;
+	*) return 1 ;;
+	esac
+
+	local base="opencode-linux-${package_arch}"
+	local suffixes=("")
+	if [[ "$package_arch" == "x64" ]] && ! grep -qE '(^|[[:space:]])avx2([[:space:]]|$)' /proc/cpuinfo 2>/dev/null; then
+		suffixes=("-baseline" "")
+	fi
+	if ldd --version 2>&1 | grep -qi musl; then
+		if [[ "$package_arch" == "x64" ]]; then
+			suffixes=("-musl" "-baseline-musl" "" "-baseline")
+		else
+			suffixes=("-musl" "")
+		fi
+	fi
+
+	local suffix=""
+	for suffix in "${suffixes[@]}"; do
+		local binary="$install_root/node_modules/${base}${suffix}/bin/opencode"
+		if [[ -x "$binary" ]]; then
+			printf '%s\n' "$binary"
+			return 0
+		fi
+	done
+	return 1
+}
+
+#######################################
+# Install an exact OpenCode release into an isolated, versioned prefix and
+# publish it atomically. The runtime uses the normal HOME only after install so
+# existing provider authentication remains available to workers.
+#######################################
+_provision_headless_opencode_runtime() {
+	local pin="$1"
+	local runtime_root="${STATE_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}/opencode-runtimes"
+	local install_root="$runtime_root/$pin"
+	local existing_bin=""
+	if existing_bin=$(_resolve_headless_opencode_install_binary "$install_root" 2>/dev/null) &&
+		_validate_opencode_binary "$existing_bin" && [[ "${_VALIDATE_OC_VERSION#v}" == "$pin" ]]; then
+		HEADLESS_OPENCODE_BIN="$existing_bin"
+		return 0
+	fi
+
+	command -v npm >/dev/null 2>&1 || {
+		print_error "Cannot provision pinned OpenCode ${pin}: npm is unavailable"
+		return 1
+	}
+	mkdir -p "$runtime_root" || return 1
+	local temp_root="$runtime_root/.${pin}.install.$$"
+	local isolated_home="$temp_root/home"
+	local isolated_cache="$temp_root/cache"
+	mkdir -p "$temp_root/prefix" "$isolated_home" "$isolated_cache" || return 1
+	if ! env -i HOME="$isolated_home" PATH="$PATH" \
+		GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+		npm_config_userconfig=/dev/null npm_config_cache="$isolated_cache" \
+		npm install --ignore-scripts --no-audit --no-fund --prefix "$temp_root/prefix" \
+		"opencode-ai@${pin}" >/dev/null 2>&1; then
+		print_error "Failed to provision isolated OpenCode ${pin}; general installation was not changed"
+		rm -rf "$temp_root"
+		return 1
+	fi
+	local candidate_bin=""
+	if ! candidate_bin=$(_resolve_headless_opencode_install_binary "$temp_root/prefix") ||
+		! _validate_opencode_binary "$candidate_bin" || [[ "${_VALIDATE_OC_VERSION#v}" != "$pin" ]]; then
+		print_error "Isolated OpenCode ${pin} failed exact-version verification"
+		rm -rf "$temp_root"
+		return 1
+	fi
+
+	local stale_root="$runtime_root/.${pin}.stale.$$"
+	if [[ -e "$install_root" ]]; then
+		mv "$install_root" "$stale_root" || {
+			rm -rf "$temp_root"
+			return 1
+		}
+	fi
+	if ! mv "$temp_root/prefix" "$install_root"; then
+		[[ ! -e "$stale_root" ]] || mv "$stale_root" "$install_root" 2>/dev/null || true
+		rm -rf "$temp_root"
+		return 1
+	fi
+	rm -rf "$temp_root" "$stale_root"
+	HEADLESS_OPENCODE_BIN=$(_resolve_headless_opencode_install_binary "$install_root") || return 1
+	print_info "OpenCode headless runtime ready at pinned version ${pin}"
+	return 0
+}
+
+#######################################
+# Version guard -- bind affected worker launches to an isolated exact-version
+# OpenCode runtime. General/interactive installs remain free to track latest.
 #######################################
 _enforce_opencode_version_pin() {
 	local pin="${OPENCODE_PINNED_VERSION:-}"
 	# No pin or pin is "latest" -> nothing to enforce
 	if [[ -z "$pin" || "$pin" == "latest" ]]; then
+		HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
 		return 0
 	fi
 	# The scheduled compatibility evaluator must exercise its isolated candidate,
 	# not repair it back to the current pin before the canary starts.
 	if [[ "${AIDEVOPS_OPENCODE_PIN_CANDIDATE_EVALUATION:-0}" == "1" ]]; then
+		HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
 		return 0
 	fi
 	local pin_platform="${AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE:-$(uname -s 2>/dev/null || printf 'unknown')}"
 	if ! aidevops_opencode_pin_applies "$pin_platform" "headless"; then
+		HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
 		return 0
 	fi
 
-	local installed=""
-	if ! installed=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null); then
-		installed="unknown"
-	fi
-	installed="${installed#v}"
-	installed="${installed%%[[:space:]]*}"
-	[[ "$installed" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || installed="unknown"
-
-	if [[ "$installed" == "$pin" ]]; then
-		return 0
-	fi
-
-	# Multiple Pulse candidates can hit the canary at once. Serialise the repair
-	# path so concurrent workers do not race a global package-manager reinstall
-	# and falsely fail closed while another process is restoring the same pin.
+	# Multiple Pulse candidates can hit the canary at once. Serialize isolated
+	# provisioning so workers never race while publishing the pinned runtime.
 	local repair_lock_base="${STATE_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
 	local repair_lock_dir="${repair_lock_base}/opencode-pin-repair.lock"
 	mkdir -p "$repair_lock_base" 2>/dev/null || true
@@ -1624,45 +1707,12 @@ _enforce_opencode_version_pin() {
 	done
 	repair_lock_acquired=1
 
-	# Another canary may have repaired the runtime while this process waited.
-	if ! installed=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null); then
-		installed="unknown"
-	fi
-	installed="${installed#v}"
-	installed="${installed%%[[:space:]]*}"
-	[[ "$installed" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || installed="unknown"
-	if [[ "$installed" == "$pin" ]]; then
-		rmdir "$repair_lock_dir" 2>/dev/null || true
-		return 0
-	fi
-
-	print_warning "OpenCode version drift: installed=$installed, pin=$pin -- reinstalling"
-	local repair_cmd=""
-	if ! repair_cmd=$(aidevops_opencode_upgrade_command "$pin"); then
-		print_error "Cannot build OpenCode ${pin} repair command -- refusing headless launch"
-		[[ "$repair_lock_acquired" -eq 0 ]] || rmdir "$repair_lock_dir" 2>/dev/null || true
-		return 1
-	fi
-	if ! AIDEVOPS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT" bash -c "$repair_cmd" >/dev/null 2>&1; then
-		print_error "Failed to restore OpenCode to ${pin} -- refusing headless launch"
-		[[ "$repair_lock_acquired" -eq 0 ]] || rmdir "$repair_lock_dir" 2>/dev/null || true
-		return 1
-	fi
-
-	local restored=""
-	if ! restored=$("$OPENCODE_BIN_DEFAULT" --version 2>/dev/null); then
-		restored="unknown"
-	fi
-	restored="${restored#v}"
-	restored="${restored%%[[:space:]]*}"
-	[[ "$restored" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || restored="unknown"
-	if [[ "$restored" != "$pin" ]]; then
-		print_error "OpenCode version mismatch after repair: installed=$restored, pin=$pin -- refusing headless launch"
+	if ! _provision_headless_opencode_runtime "$pin"; then
+		print_error "OpenCode ${pin} isolated runtime provisioning failed -- refusing headless launch"
 		[[ "$repair_lock_acquired" -eq 0 ]] || rmdir "$repair_lock_dir" 2>/dev/null || true
 		return 1
 	fi
 	rmdir "$repair_lock_dir" 2>/dev/null || true
-	print_info "OpenCode restored to ${pin}"
 	return 0
 }
 
@@ -1772,9 +1822,9 @@ _canary_negative_cache_is_active() {
 _resolve_canary_opencode_binary() {
 	local fail_cache_file="$1"
 	local fail_reason_file="$2"
-	_CANARY_EFFECTIVE_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	_CANARY_EFFECTIVE_OPENCODE_BIN="${HEADLESS_OPENCODE_BIN:-$OPENCODE_BIN_DEFAULT}"
 	local validate_rc=0
-	_validate_opencode_binary "$OPENCODE_BIN_DEFAULT" || validate_rc=$?
+	_validate_opencode_binary "$_CANARY_EFFECTIVE_OPENCODE_BIN" || validate_rc=$?
 	if [[ "$validate_rc" -eq 0 ]]; then
 		return 0
 	fi
@@ -1783,14 +1833,14 @@ _resolve_canary_opencode_binary() {
 	local wrong_version="${_VALIDATE_OC_VERSION:-<missing>}"
 	local alt_bin=""
 	if alt_bin=$(_find_alternative_opencode_binary); then
-		print_warning "Canary: OPENCODE_BIN_DEFAULT='${OPENCODE_BIN_DEFAULT}' is invalid (version='${wrong_version}', rc=${validate_rc}) — falling back to '${alt_bin}' (t2887)"
+		print_warning "Canary: headless OpenCode binary='${_CANARY_EFFECTIVE_OPENCODE_BIN}' is invalid (version='${wrong_version}', rc=${validate_rc}) — falling back to '${alt_bin}' (t2887)"
 		_CANARY_EFFECTIVE_OPENCODE_BIN="$alt_bin"
 		export OPENCODE_BIN="$alt_bin"
 		return 0
 	fi
 
 	# Structural failure: stamp config_error so later attempts fail fast.
-	print_warning "Canary: OPENCODE_BIN_DEFAULT='${OPENCODE_BIN_DEFAULT}' returns '${wrong_version}' (rc=${validate_rc}) — not anomalyco/opencode."
+	print_warning "Canary: headless OpenCode binary='${_CANARY_EFFECTIVE_OPENCODE_BIN}' returns '${wrong_version}' (rc=${validate_rc}) — not anomalyco/opencode."
 	print_warning "Canary: searched $(_opencode_fixed_candidate_dirs_for_warning) — no valid binary found."
 	print_warning "Canary: install with 'npm install -g opencode-ai' or set OPENCODE_BIN to a valid binary (t2887)."
 	mkdir -p "${STATE_DIR}" 2>/dev/null || true
