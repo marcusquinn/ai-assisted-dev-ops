@@ -27,6 +27,7 @@ META_PRODUCTS = {
     "meta_threads": "threads",
 }
 Transport = Callable[[dict[str, str]], dict[str, str]]
+ProviderOutcome = tuple[str | None, str | None]
 
 
 def _product(claimed: ClaimedOperation) -> str:
@@ -55,6 +56,17 @@ def _request(claimed: ClaimedOperation) -> dict[str, str]:
     return request
 
 
+def _provider_outcome(result: dict[str, str]) -> ProviderOutcome:
+    outcome: ProviderOutcome = (None, "provider_unavailable")
+    state = result.get("state")
+    remote_id = result.get("id") or result.get("job_id")
+    if state == "succeeded" and isinstance(remote_id, str):
+        outcome = (validate_opaque(remote_id, "provider_remote_id"), None)
+    elif state in ("accepted", "unknown") and isinstance(remote_id, str):
+        outcome = (validate_opaque(remote_id, "provider_remote_id"), "runtime")
+    return outcome
+
+
 @dataclass(frozen=True)
 class MetaPreparedProvider(PreparedProvider):
     """Validate one selected Meta product before its official write transport."""
@@ -81,18 +93,10 @@ class MetaPreparedProvider(PreparedProvider):
             raise ProviderIdentityError("selected Meta identity does not match approved account")
 
     def invoke(self) -> tuple[str | None, str | None]:
-        if self.transport is None:
-            return None, "provider_unavailable"
-        try:
-            result = self.transport(_request(self.claimed))
-            state = result.get("state")
-            remote_id = result.get("id") or result.get("job_id")
-            if state == "succeeded" and isinstance(remote_id, str):
-                return validate_opaque(remote_id, "provider_remote_id"), None
-            if state in ("accepted", "unknown") and isinstance(remote_id, str):
-                return validate_opaque(remote_id, "provider_remote_id"), "runtime"
-            if state == "rate_limited":
-                return None, "provider_unavailable"
-        except (SocialStoreError, TypeError, ValueError):
-            return None, "validation"
-        return None, "provider_unavailable"
+        outcome: ProviderOutcome = (None, "provider_unavailable")
+        if self.transport is not None:
+            try:
+                outcome = _provider_outcome(self.transport(_request(self.claimed)))
+            except (SocialStoreError, TypeError, ValueError):
+                outcome = (None, "validation")
+        return outcome

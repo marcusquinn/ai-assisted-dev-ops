@@ -17,6 +17,18 @@ from _knowledge_social_outbound_provider import (
 from knowledge_social_store import SocialStoreError, validate_opaque
 
 Transport = Callable[[dict[str, str]], dict[str, str]]
+ProviderOutcome = tuple[str | None, str | None]
+
+
+def _provider_outcome(result: dict[str, str]) -> ProviderOutcome:
+    outcome: ProviderOutcome = (None, "provider_unavailable")
+    state = result.get("state")
+    remote_id = result.get("id") or result.get("publish_id")
+    if state == "succeeded" and isinstance(remote_id, str):
+        outcome = (validate_opaque(remote_id, "provider_remote_id"), None)
+    elif state in ("accepted", "unknown") and isinstance(remote_id, str):
+        outcome = (validate_opaque(remote_id, "provider_remote_id"), "runtime")
+    return outcome
 
 
 @dataclass(frozen=True)
@@ -53,18 +65,10 @@ class TikTokPreparedProvider(PreparedProvider):
             raise ProviderIdentityError("selected TikTok identity does not match approved account")
 
     def invoke(self) -> tuple[str | None, str | None]:
-        if self.transport is None:
-            return None, "provider_unavailable"
-        try:
-            result = self.transport(self._request())
-            state = result.get("state")
-            remote_id = result.get("id") or result.get("publish_id")
-            if state == "succeeded" and isinstance(remote_id, str):
-                return validate_opaque(remote_id, "provider_remote_id"), None
-            if state in ("accepted", "unknown") and isinstance(remote_id, str):
-                return validate_opaque(remote_id, "provider_remote_id"), "runtime"
-            if state == "rate_limited":
-                return None, "provider_unavailable"
-        except (ProviderAdapterError, SocialStoreError, TypeError, ValueError):
-            return None, "validation"
-        return None, "provider_unavailable"
+        outcome: ProviderOutcome = (None, "provider_unavailable")
+        if self.transport is not None:
+            try:
+                outcome = _provider_outcome(self.transport(self._request()))
+            except (ProviderAdapterError, SocialStoreError, TypeError, ValueError):
+                outcome = (None, "validation")
+        return outcome
