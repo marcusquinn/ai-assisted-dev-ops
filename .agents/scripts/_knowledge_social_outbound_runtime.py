@@ -49,6 +49,31 @@ class AttemptOutcome:
     finished_at: int | None = None
 
 
+def record_provider_checkpoint(
+    database: sqlite3.Connection,
+    claimed: ClaimedOperation,
+    executor_id: str,
+    checkpoint_id: str,
+) -> None:
+    """Persist an opaque resumable provider ID before remote continuation."""
+    executor_id = validate_opaque(executor_id, "executor_id")
+    checkpoint_id = validate_opaque(checkpoint_id, "provider_checkpoint_id")
+    changed = database.execute(
+        """UPDATE outbound_attempts SET diagnostics=?
+             WHERE attempt_id=? AND operation_id=? AND claim_token=? AND executor_id=?
+               AND status='running' AND provider_started_at IS NOT NULL""",
+        (
+            canonical_json({"phase": "provider", "checkpoint": checkpoint_id}),
+            claimed.attempt_id,
+            claimed.operation_id,
+            claimed.claim_token,
+            executor_id,
+        ),
+    ).rowcount
+    if changed != 1:
+        raise SocialStoreError("outbound provider checkpoint is stale")
+
+
 def due_operation_ids(
     database: sqlite3.Connection,
     principal_id: str,
@@ -166,6 +191,8 @@ def claim_operation(
         username=row["username"],
         claim_token=claim_token,
         attempt_id=attempt_id,
+        media_path=row["media_path"],
+        media_sha256=row["media_sha256"],
     )
 
 

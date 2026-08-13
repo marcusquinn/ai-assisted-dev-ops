@@ -20,6 +20,7 @@ from _knowledge_social_store_migration import (
     recover_orphaned_fetch_batches_v6 as _recover_orphaned_fetch_batches_v6,
 )
 from _knowledge_social_store_schema import (
+    add_outbound_v7_columns as _add_outbound_v7_columns,
     add_outbound_v4_columns as _add_outbound_v4_columns,
     add_source_v5_columns as _add_source_v5_columns,
     add_sync_run_v2_columns as _add_sync_run_v2_columns,
@@ -41,8 +42,8 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 6
-SCHEMA_VERSION_SQL = "PRAGMA user_version=6"
+SCHEMA_VERSION = 7
+SCHEMA_VERSION_SQL = "PRAGMA user_version=7"
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
 
@@ -200,7 +201,8 @@ def _tables() -> tuple[str, ...]:
             target_remote_id TEXT, destination_remote_id TEXT,
             payload TEXT, payload_sha256 TEXT NOT NULL,
             subject TEXT, subject_sha256 TEXT,
-            intent_version INTEGER NOT NULL DEFAULT 2 CHECK(intent_version IN (1,2)),
+            media_path TEXT, media_sha256 TEXT,
+            intent_version INTEGER NOT NULL DEFAULT 3 CHECK(intent_version IN (1,2,3)),
             intent_sha256 TEXT NOT NULL UNIQUE, app_profile TEXT, username TEXT,
             scheduled_at INTEGER NOT NULL, state TEXT NOT NULL
                 CHECK(state IN ('draft','approved','claimed','succeeded','failed','unknown','cancelled')),
@@ -341,6 +343,7 @@ def migrate(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
         _add_sync_run_v2_columns(connection)
         _add_outbound_v4_columns(connection)
+        _add_outbound_v7_columns(connection)
         if current in range(1, SCHEMA_VERSION):
             _migrate_fetch_batches_v6(connection)
             _recover_orphaned_fetch_batches_v6(connection)

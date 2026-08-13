@@ -14,7 +14,7 @@ model: standard
 
 ## Quick Reference
 
-- **Purpose**: Distribute content across X, LinkedIn, Reddit with platform-native tone and format
+- **Purpose**: Distribute content across X, LinkedIn, Reddit, and YouTube with platform-native tone and format
 - **Key Principle**: Same story, different delivery — adapt voice and format per platform
 - **Metrics**: Engagement rate, shares, profile visits, link clicks
 
@@ -28,8 +28,9 @@ model: standard
 
 **Platform Tools**: `content/social-xurl.md` (official X API),
 `content/social-linkedin.md`, `content/social-reddit.md`, `content/social-meta.md`,
-and `content/social-tiktok.md`. Meta/TikTok writes require the approved outbound
-queue; unavailable capability states do not permit browser fallbacks.
+`content/social-tiktok.md`, and `content/social-youtube.md`. Meta, TikTok,
+LinkedIn, and YouTube writes require the approved outbound queue; unavailable
+capability states do not permit browser fallbacks.
 
 <!-- AI-CONTEXT-END -->
 

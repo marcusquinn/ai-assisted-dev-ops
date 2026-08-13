@@ -73,6 +73,28 @@
       "probes": {"deployed": {"path": "scripts/campaign-research-helper.py"}, "tool_visible": {"tool": "python3"}}
     },
     {
+      "name": "linkedin-approved-posting",
+      "aliases": ["linkedin-publish", "linkedin-outbound"],
+      "owner": "Social",
+      "description": "Approval-bound official LinkedIn member text posts",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["content/social-linkedin.md", "scripts/_knowledge_social_linkedin_outbound_provider.py"],
+      "fallback": "gated-no-mutation",
+      "required": ["deployed", "configured", "authenticated", "authorized", "reachable"],
+      "probes": {"deployed": {"path": "scripts/_knowledge_social_linkedin_outbound_provider.py"}, "configured": {"env_pattern": "LINKEDIN_<PROFILE>_ACCESS_TOKEN"}, "authenticated": {"live": "requires selected token"}, "authorized": {"live": "requires Posts product eligibility and exact member binding"}, "reachable": {"live": "requires official LinkedIn API request"}}
+    },
+    {
+      "name": "youtube-approved-upload",
+      "aliases": ["youtube-publish", "youtube-outbound"],
+      "owner": "Social",
+      "description": "Approval-bound official YouTube private video uploads",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["content/social-youtube.md", "scripts/_knowledge_social_youtube_outbound_provider.py"],
+      "fallback": "gated-no-mutation",
+      "required": ["deployed", "configured", "authenticated", "authorized", "reachable"],
+      "probes": {"deployed": {"path": "scripts/_knowledge_social_youtube_outbound_provider.py"}, "configured": {"env_pattern": "YOUTUBE_<PROFILE>_ACCESS_TOKEN"}, "authenticated": {"live": "requires selected token"}, "authorized": {"live": "requires youtube.upload scope and exact channel binding"}, "reachable": {"live": "requires official YouTube Data API request"}}
+    },
+    {
       "name": "approval-bound-social-publishing",
       "aliases": ["meta-publishing", "tiktok-publishing", "social-outbound"],
       "owner": "Social",

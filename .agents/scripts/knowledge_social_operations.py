@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -50,6 +51,7 @@ from _knowledge_social_outbound_runtime import (
     expire_claims,
     finalize_operation,
     mark_provider_started,
+    record_provider_checkpoint,
 )
 from knowledge_corpus_catalog import DEFAULT_ALIAS, authorized_scope
 from knowledge_corpus_context import CatalogError, validate_private_file
@@ -133,6 +135,30 @@ def _read_private_subject(path: Path) -> str:
     return subject
 
 
+def _private_media_digest(path: Path) -> tuple[str, str]:
+    """Return an absolute private media path and a bounded streaming digest."""
+    try:
+        validate_private_file(path, "outbound media", repair=False)
+        resolved = path.resolve(strict=True)
+        before = resolved.stat()
+        if not resolved.is_file() or before.st_size < 1 or before.st_size > 2 * 1024**3:
+            raise OperationsError("outbound media is unavailable or outside the size limit")
+        digest = hashlib.sha256()
+        with resolved.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        after = resolved.stat()
+        if (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ):
+            raise OperationsError("outbound media replacement detected")
+    except (CatalogError, OSError) as error:
+        raise OperationsError("outbound media is unavailable or unsafe") from error
+    return str(resolved), digest.hexdigest()
+
+
 def _managed_context(args: argparse.Namespace) -> tuple[str, Path]:
     principal_id, corpora = authorized_scope(
         args.base or DEFAULT_BASE, "knowledge.manage", args.alias
@@ -206,7 +232,13 @@ def _execute_claimed(
             database, claimed, executor_id, "authorization", args
         )
 
-    provider_remote_id, failure_class = provider.invoke()
+    if claimed.provider == "youtube":
+        checkpoint = lambda checkpoint_id: record_provider_checkpoint(
+            database, claimed, executor_id, checkpoint_id
+        )
+        provider_remote_id, failure_class = provider.invoke(checkpoint)
+    else:
+        provider_remote_id, failure_class = provider.invoke()
     if failure_class is not None:
         return _unknown_provider_outcome(
             database,
@@ -293,6 +325,9 @@ def _handle_operation_create(
     created_at = _required_now(current_time)
     payload = _read_private_body(args.body_file) if args.body_file else None
     subject = _read_private_subject(args.subject_file) if args.subject_file else None
+    media_path, media_sha256 = (
+        _private_media_digest(args.media_file) if args.media_file else (None, None)
+    )
     if subject is not None and len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
         raise OperationsError("outbound subject exceeds the private subject limit")
     return create_operation(
@@ -313,6 +348,8 @@ def _handle_operation_create(
             created_by=principal_id,
             destination_remote_id=args.destination_id,
             subject=subject,
+            media_path=media_path,
+            media_sha256=media_sha256,
             operation_id=args.operation_id,
             created_at=created_at,
         ),
@@ -508,6 +545,7 @@ def _add_create_command(commands: Any) -> None:
     create.add_argument("--destination-id")
     create.add_argument("--body-file", type=Path)
     create.add_argument("--subject-file", type=Path)
+    create.add_argument("--media-file", type=Path)
     create.add_argument("--app", "--profile", dest="app")
     create.add_argument("--username")
     create.add_argument("--scheduled-at", type=int)
