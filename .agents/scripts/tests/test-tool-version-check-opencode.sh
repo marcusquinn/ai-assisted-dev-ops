@@ -54,6 +54,7 @@ extract_function() {
 		/^_validate_opencode_binary\(\)/, /^}/ { print; next }
 		/^_resolve_headless_opencode_install_binary\(\)/, /^}/ { print; next }
 		/^_provision_headless_opencode_runtime\(\)/, /^}/ { print; next }
+		/^_recover_stale_opencode_pin_repair_lock\(\)/, /^}/ { print; next }
 		/^_enforce_opencode_version_pin\(\)/, /^}$/ { print; next }
 	' "$HEADLESS_RUNTIME_LIB" >>"$SANDBOX/extract.sh"
 	if ! grep -q '^aidevops_opencode_pin_applies()' "$SANDBOX/extract.sh" ||
@@ -61,6 +62,7 @@ extract_function() {
 		! grep -q '^_validate_opencode_binary()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_resolve_headless_opencode_install_binary()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_provision_headless_opencode_runtime()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_recover_stale_opencode_pin_repair_lock()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_enforce_opencode_version_pin()' "$SANDBOX/extract.sh"; then
 		printf 'FAIL: extraction did not capture OpenCode version functions\n' >&2
 		exit 1
@@ -264,6 +266,48 @@ reuse_rc=0
 ) || reuse_rc=$?
 assert_eq "existing isolated runtime reuse status" "0" "$reuse_rc"
 assert_eq "existing isolated runtime avoids second install" "1" "$(wc -l <"$SANDBOX/version-guard/calls" | tr -d ' ')"
+
+printf 'Test 4c: stale repair lock and dead installer root are recovered\n'
+mkdir -p "$SANDBOX/stale-repair/state/opencode-pin-repair.lock" \
+	"$SANDBOX/stale-repair/state/opencode-runtimes/.1.18.16.install.99999999/prefix"
+stale_repair_rc=0
+(
+	source_extracted
+	STATE_DIR="$SANDBOX/stale-repair/state"
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/runtime/opencode"
+	HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	AIDEVOPS_TEST_UNAME_M="x86_64"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	sleep() { return 0; }
+	PATH="$SANDBOX/version-guard/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || stale_repair_rc=$?
+assert_eq "dead installer repair status" "0" "$stale_repair_rc"
+assert_eq "dead installer root removed" "0" "$([[ -e "$SANDBOX/stale-repair/state/opencode-runtimes/.1.18.16.install.99999999" ]] && printf '1\n' || printf '0\n')"
+assert_eq "repair lock released after provisioning" "0" "$([[ -e "$SANDBOX/stale-repair/state/opencode-pin-repair.lock" ]] && printf '1\n' || printf '0\n')"
+
+printf 'Test 4d: live installer keeps repair lock fail-closed\n'
+mkdir -p "$SANDBOX/live-repair/state/opencode-pin-repair.lock" \
+	"$SANDBOX/live-repair/state/opencode-runtimes/.1.18.16.install.$$/prefix"
+live_repair_rc=0
+(
+	source_extracted
+	STATE_DIR="$SANDBOX/live-repair/state"
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-guard/runtime/opencode"
+	HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	AIDEVOPS_TEST_UNAME_M="x86_64"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	sleep() { return 0; }
+	PATH="$SANDBOX/version-guard/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
+) || live_repair_rc=$?
+assert_eq "live installer repair status" "1" "$live_repair_rc"
+assert_eq "live installer root preserved" "1" "$([[ -d "$SANDBOX/live-repair/state/opencode-runtimes/.1.18.16.install.$$/prefix" ]] && printf '1\n' || printf '0\n')"
+assert_eq "live installer lock preserved" "1" "$([[ -d "$SANDBOX/live-repair/state/opencode-pin-repair.lock" ]] && printf '1\n' || printf '0\n')"
 
 printf 'Test 5: headless version guard fails closed when isolated provisioning fails\n'
 mkdir -p "$SANDBOX/version-install-failure/state"

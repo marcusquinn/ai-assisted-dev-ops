@@ -1668,6 +1668,40 @@ _provision_headless_opencode_runtime() {
 }
 
 #######################################
+# Recover an abandoned OpenCode repair lock after its bounded wait expires.
+# Installer temp roots encode their owner PID; any live or unrecognizable owner
+# keeps the lock fail-closed. Only an empty lock directory is removed.
+#######################################
+_recover_stale_opencode_pin_repair_lock() {
+	local pin="$1"
+	local repair_lock_dir="$2"
+	local runtime_root="${STATE_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}/opencode-runtimes"
+	local temp_root=""
+	local owner_pid=""
+	local found_temp_root=0
+
+	for temp_root in "$runtime_root/.${pin}.install."*; do
+		[[ -e "$temp_root" ]] || continue
+		found_temp_root=1
+		owner_pid="${temp_root##*.install.}"
+		if [[ ! "$owner_pid" =~ ^[0-9]+$ ]] || kill -0 "$owner_pid" 2>/dev/null; then
+			return 1
+		fi
+	done
+
+	if [[ "$found_temp_root" -eq 1 ]]; then
+		for temp_root in "$runtime_root/.${pin}.install."*; do
+			[[ -e "$temp_root" ]] || continue
+			rm -rf "$temp_root" || return 1
+		done
+	fi
+
+	rmdir "$repair_lock_dir" 2>/dev/null || return 1
+	print_warning "Recovered stale OpenCode ${pin} repair lock"
+	return 0
+}
+
+#######################################
 # Version guard -- bind affected worker launches to an isolated exact-version
 # OpenCode runtime. General/interactive installs remain free to track latest.
 #######################################
@@ -1697,8 +1731,15 @@ _enforce_opencode_version_pin() {
 	mkdir -p "$repair_lock_base" 2>/dev/null || true
 	local repair_lock_acquired=0
 	local repair_lock_waited=0
+	local stale_recovery_attempted=0
 	while ! mkdir "$repair_lock_dir" 2>/dev/null; do
 		if [[ "$repair_lock_waited" -ge "30" ]]; then
+			if [[ "$stale_recovery_attempted" -eq 0 ]] &&
+				_recover_stale_opencode_pin_repair_lock "$pin" "$repair_lock_dir"; then
+				stale_recovery_attempted=1
+				repair_lock_waited=0
+				continue
+			fi
 			print_error "Timed out waiting for OpenCode ${pin} repair lock -- refusing headless launch"
 			return 1
 		fi
