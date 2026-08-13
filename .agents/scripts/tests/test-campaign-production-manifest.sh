@@ -72,14 +72,14 @@ test_unsupported_capability_and_invalid_promotion() {
 }
 
 test_fanout_manifest_ready_job_is_not_an_asset() {
-	local root brief plan output job
+	local root brief plan output job reference
 	root="$(mktemp -d "${TMPDIR:-/tmp}/campaign-production.XXXXXX")"
 	brief="$root/story.md"
 	cat > "$brief" <<'BRIEF'
 topic: Evidence-led campaign production
 angle: Truthful lifecycle status
 audience: Marketing owners
-channels: social-linkedin
+channels: social-linkedin, social-x
 tone: practical
 cta: Review the manifest
 notes: Contract fixture
@@ -87,10 +87,16 @@ BRIEF
 	plan="$(bash "$FANOUT_HELPER" plan "$brief" 2>&1 | grep 'Plan written:' | sed 's/.*Plan written: //')"
 	output="$(bash "$FANOUT_HELPER" run "$plan" 2>&1 | grep 'Output dir:' | sed 's/.*Output dir: *//')"
 	job="$output/social-linkedin/manifest-ready.job"
+	reference="$output/social-x/distribution-reference.json"
 	if [[ -f "$job" ]] && grep -q '^status: prompts_ready$' "$job" && grep -q '^outputs: \[\]$' "$job" && grep -q 'no asset has been generated' "$job"; then
 		_pass "fan-out exports manifest-ready prompts without claiming assets"
 	else
 		_fail "fan-out manifest-ready job overstated lifecycle status"
+	fi
+	if [[ -f "$reference" ]] && jq -e '.channel == "x" and .status == "prompts_ready" and (.requires | index("queue approval"))' "$reference" >/dev/null; then
+		_pass "fan-out exposes a non-executing X distribution reference"
+	else
+		_fail "fan-out did not expose a safe distribution reference"
 	fi
 	rm -rf "$root"
 	return 0

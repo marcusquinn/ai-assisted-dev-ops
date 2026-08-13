@@ -10,7 +10,7 @@
     "job_id": {"type": "string", "pattern": "^job:[a-z0-9][a-z0-9:-]{0,240}$"},
     "campaign_id": {"type": "string", "minLength": 1},
     "brief_id": {"type": "string", "minLength": 1},
-    "channel": {"enum": ["facebook", "instagram", "linkedin", "twitter", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"]},
+    "channel": {"enum": ["facebook", "instagram", "linkedin", "twitter", "reddit", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"]},
     "variant_id": {"type": "string", "pattern": "^v[1-9][0-9]*$"},
     "revision": {"type": "integer", "minimum": 1},
     "input_snapshot_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},

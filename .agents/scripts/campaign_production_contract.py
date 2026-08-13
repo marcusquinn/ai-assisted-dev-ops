@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-CHANNELS = {"facebook", "instagram", "linkedin", "twitter", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"}
+CHANNELS = {"facebook", "instagram", "linkedin", "twitter", "reddit", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"}
 ASSET_OWNERS = {"writing": "content/production-writing.md", "image": "content/production-image.md", "video": "content/production-video.md", "audio": "content/production-audio.md", "editor": "tools/video/video-editor.md"}
 DEFAULT_FORMATS = {
     "facebook": ("image", "1:1", None), "instagram": ("image", "4:5", None),
@@ -19,7 +19,7 @@ DEFAULT_FORMATS = {
     "email": ("writing", "text", None), "blog": ("writing", "text", None),
     "youtube": ("video", "16:9", 60), "short-form": ("video", "9:16", 30),
     "social-linkedin": ("image", "1.91:1", None), "social-reddit": ("writing", "text", None),
-    "social-x": ("writing", "text", None), "podcast": ("audio", "audio", 300),
+    "social-x": ("writing", "text", None), "reddit": ("writing", "text", None), "podcast": ("audio", "audio", 300),
 }
 
 

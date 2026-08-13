@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Campaign Distribution Record v1",
+  "description": "A producer record for an approval-bound outbound operation; it never authorizes or executes a provider write.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "source_id", "campaign_id", "channel", "operation_id", "intent_key", "status"],
+  "properties": {
+    "version": {"const": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "campaign_id": {"type": "string", "minLength": 1},
+    "channel": {"enum": ["x", "reddit"]},
+    "operation_id": {"type": "string", "minLength": 1},
+    "intent_key": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "scheduled_at": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["preview", "draft", "approved", "claimed", "unknown", "failed", "succeeded", "cancelled"]},
+    "provider_remote_id": {"type": ["string", "null"]},
+    "updated_at": {"type": "integer", "minimum": 0}
+  }
+}
