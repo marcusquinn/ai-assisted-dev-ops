@@ -236,6 +236,44 @@ check_dispatch_dedup() {
 }
 
 #######################################
+# Verify an issue conversation lock after GitHub accepts the lock mutation.
+# The issue REST read can briefly lag the mutation, so retry boundedly while
+# preserving the fail-closed trust boundary.
+#
+# Args:
+#   $1 = issue number
+#   $2 = repository slug
+# Returns:
+#   0 when a read confirms locked=true, 1 after bounded exhaustion
+#######################################
+_verify_issue_conversation_lock() {
+	local issue_num="$1"
+	local slug="$2"
+	local attempts="${AIDEVOPS_CONVERSATION_LOCK_VERIFY_ATTEMPTS:-3}"
+	local retry_delay="${AIDEVOPS_CONVERSATION_LOCK_VERIFY_DELAY:-2}"
+	local attempt=1
+	local locked_state=""
+
+	[[ "$attempts" =~ ^[1-9][0-9]*$ ]] || attempts=3
+	[[ "$attempts" -le 3 ]] || attempts=3
+	[[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=2
+	[[ "$retry_delay" -le 5 ]] || retry_delay=2
+
+	while [[ "$attempt" -le "$attempts" ]]; do
+		locked_state=$(gh api "repos/${slug}/issues/${issue_num}" --jq '.locked == true' 2>/dev/null) || locked_state=""
+		if [[ "$locked_state" == "true" ]]; then
+			return 0
+		fi
+		if [[ "$attempt" -lt "$attempts" ]]; then
+			sleep "$retry_delay"
+		fi
+		attempt=$((attempt + 1))
+	done
+
+	return 1
+}
+
+#######################################
 # Lock an issue (and any linked PRs) to prevent prompt injection
 # (t1894, t1934, GH#30180). Auto-dispatch is the authorization boundary,
 # so the issue must be frozen before it enters worker-readable context.
@@ -251,13 +289,11 @@ lock_issue_for_worker() {
 
 	# aidevops:trust-boundary — never launch a worker when the mutable public
 	# instruction surface could not be frozen and independently re-read.
-	local locked_state=""
 	if ! gh issue lock "$issue_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1; then
 		echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
 		return 1
 	fi
-	locked_state=$(gh api "repos/${slug}/issues/${issue_num}" --jq '.locked == true' 2>/dev/null) || locked_state=""
-	if [[ "$locked_state" != "true" ]]; then
+	if ! _verify_issue_conversation_lock "$issue_num" "$slug"; then
 		echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
 		return 1
 	fi

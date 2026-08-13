@@ -12,7 +12,8 @@ trap 'rm -rf "$TMP"' EXIT
 LOGFILE="${TMP}/pulse.log"
 GH_CALLS="${TMP}/gh-calls.log"
 AIDEVOPS_AUTO_DISPATCH_LOCK_DIR="${TMP}/locks"
-export LOGFILE GH_CALLS AIDEVOPS_AUTO_DISPATCH_LOCK_DIR
+AIDEVOPS_CONVERSATION_LOCK_VERIFY_DELAY=0
+export LOGFILE GH_CALLS AIDEVOPS_AUTO_DISPATCH_LOCK_DIR AIDEVOPS_CONVERSATION_LOCK_VERIFY_DELAY
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -34,13 +35,23 @@ fail() {
 
 GH_LOCKED=true
 GH_LOCK_RC=0
+GH_API_RC=0
 gh() {
 	printf '%s\n' "$*" >>"$GH_CALLS"
 	if [[ "$1" == "issue" && "$2" == "lock" ]]; then
 		return "$GH_LOCK_RC"
 	fi
 	if [[ "$1" == "api" ]]; then
-		printf '%s\n' "$GH_LOCKED"
+		local api_count
+		api_count=$(grep -c -- '^api ' "$GH_CALLS" 2>/dev/null || true)
+		if [[ "$GH_API_RC" -ne 0 ]]; then
+			return "$GH_API_RC"
+		fi
+		if [[ "$GH_LOCKED" == *,* ]]; then
+			printf '%s\n' "$GH_LOCKED" | cut -d, -f"$api_count"
+		else
+			printf '%s\n' "$GH_LOCKED"
+		fi
 		return 0
 	fi
 	return 0
@@ -66,8 +77,9 @@ else
 fi
 
 : >"$GH_CALLS"
-GH_LOCKED=false
+GH_LOCKED=false,false,false
 if ! lock_issue_for_worker 42 owner/repo &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]] &&
 	grep -q -- 'dispatch remains blocked' "$LOGFILE"; then
 	pass "unverified issue lock fails closed"
 else
@@ -75,6 +87,41 @@ else
 fi
 
 : >"$GH_CALLS"
+GH_LOCKED=false,true
+if lock_issue_for_worker 43 owner/repo &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 2 ]] &&
+	[[ -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-43" ]]; then
+	pass "stale lock read retries and then succeeds"
+else
+	fail "stale lock read retries and then succeeds"
+fi
+
+: >"$GH_CALLS"
+GH_LOCKED=false
+GH_API_RC=1
+if ! lock_issue_for_worker 44 owner/repo &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]] &&
+	[[ ! -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-44" ]]; then
+	pass "lock verification API errors exhaust retries and fail closed"
+else
+	fail "lock verification API errors exhaust retries and fail closed"
+fi
+
+: >"$GH_CALLS"
+GH_LOCKED=false,false,false
+AIDEVOPS_CONVERSATION_LOCK_VERIFY_ATTEMPTS=999
+AIDEVOPS_CONVERSATION_LOCK_VERIFY_DELAY=999
+if ! lock_issue_for_worker 45 owner/repo &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]]; then
+	pass "oversized verification controls remain capped"
+else
+	fail "oversized verification controls remain capped"
+fi
+unset AIDEVOPS_CONVERSATION_LOCK_VERIFY_ATTEMPTS
+AIDEVOPS_CONVERSATION_LOCK_VERIFY_DELAY=0
+
+: >"$GH_CALLS"
+GH_API_RC=0
 GH_LOCKED=true
 snapshot='[
   {"number":51,"labels":[{"name":"auto-dispatch"},{"name":"status:blocked"}]},
