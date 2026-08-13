@@ -54,6 +54,7 @@ extract_function() {
 		/^_validate_opencode_binary\(\)/, /^}/ { print; next }
 		/^_resolve_headless_opencode_install_binary\(\)/, /^}/ { print; next }
 		/^_provision_headless_opencode_runtime\(\)/, /^}/ { print; next }
+		/^_clear_stale_opencode_pin_repair_lock\(\)/, /^}/ { print; next }
 		/^_enforce_opencode_version_pin\(\)/, /^}$/ { print; next }
 	' "$HEADLESS_RUNTIME_LIB" >>"$SANDBOX/extract.sh"
 	if ! grep -q '^aidevops_opencode_pin_applies()' "$SANDBOX/extract.sh" ||
@@ -61,6 +62,7 @@ extract_function() {
 		! grep -q '^_validate_opencode_binary()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_resolve_headless_opencode_install_binary()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_provision_headless_opencode_runtime()' "$SANDBOX/extract.sh" ||
+		! grep -q '^_clear_stale_opencode_pin_repair_lock()' "$SANDBOX/extract.sh" ||
 		! grep -q '^_enforce_opencode_version_pin()' "$SANDBOX/extract.sh"; then
 		printf 'FAIL: extraction did not capture OpenCode version functions\n' >&2
 		exit 1
@@ -264,6 +266,49 @@ reuse_rc=0
 ) || reuse_rc=$?
 assert_eq "existing isolated runtime reuse status" "0" "$reuse_rc"
 assert_eq "existing isolated runtime avoids second install" "1" "$(wc -l <"$SANDBOX/version-guard/calls" | tr -d ' ')"
+
+printf 'Test 4c: stale pin repair locks are cleared after the bounded wait\n'
+mkdir -p "$SANDBOX/version-stale-lock/state/opencode-runtimes" "$SANDBOX/version-stale-lock/bin"
+write_executable "$SANDBOX/version-stale-lock/runtime-opencode" '#!/usr/bin/env bash
+printf "1.18.17\n"'
+# shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
+write_executable "$SANDBOX/version-stale-lock/bin/npm" '#!/usr/bin/env bash
+prefix=""
+while [[ "$#" -gt 0 ]]; do
+  if [[ "$1" == "--prefix" ]]; then prefix="$2"; shift 2; continue; fi
+  shift
+done
+mkdir -p "$prefix/node_modules/opencode-linux-x64/bin"
+cat >"$prefix/node_modules/opencode-linux-x64/bin/opencode" <<"BIN"
+#!/usr/bin/env bash
+printf "1.18.16\n"
+BIN
+chmod +x "$prefix/node_modules/opencode-linux-x64/bin/opencode"'
+( : ) &
+dead_installer_pid=$!
+wait "$dead_installer_pid" || true
+mkdir -p "$SANDBOX/version-stale-lock/state/opencode-pin-repair.lock"
+mkdir -p "$SANDBOX/version-stale-lock/state/opencode-runtimes/.1.18.16.install.$dead_installer_pid"
+stale_lock_rc=0
+(
+	source_extracted
+	STATE_DIR="$SANDBOX/version-stale-lock/state"
+	OPENCODE_BIN_DEFAULT="$SANDBOX/version-stale-lock/runtime-opencode"
+	HEADLESS_OPENCODE_BIN="$OPENCODE_BIN_DEFAULT"
+	AIDEVOPS_TEST_UNAME_M="x86_64"
+	AIDEVOPS_OPENCODE_PIN_PLATFORM_OVERRIDE="Linux"
+	AIDEVOPS_OPENCODE_PIN_REPAIR_LOCK_WAIT_LIMIT=0
+	print_warning() { return 0; }
+	print_info() { return 0; }
+	print_error() { return 0; }
+	PATH="$SANDBOX/version-stale-lock/bin:$SYSTEM_PATH" _enforce_opencode_version_pin
+	printf '%s\n' "$HEADLESS_OPENCODE_BIN" >"$SANDBOX/version-stale-lock/headless-bin"
+) || stale_lock_rc=$?
+assert_eq "stale lock repair status" "0" "$stale_lock_rc"
+assert_eq "stale lock is removed" "0" "$([[ -e "$SANDBOX/version-stale-lock/state/opencode-pin-repair.lock" ]] && printf '1\n' || printf '0\n')"
+assert_eq "dead install temp is removed" "0" "$([[ -e "$SANDBOX/version-stale-lock/state/opencode-runtimes/.1.18.16.install.$dead_installer_pid" ]] && printf '1\n' || printf '0\n')"
+stale_headless_bin=$(<"$SANDBOX/version-stale-lock/headless-bin")
+assert_eq "stale lock path provisions pinned runtime" "1.18.16" "$("$stale_headless_bin")"
 
 printf 'Test 5: headless version guard fails closed when isolated provisioning fails\n'
 mkdir -p "$SANDBOX/version-install-failure/state"
