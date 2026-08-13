@@ -120,62 +120,67 @@ class YouTubePreparedProvider:
         except (HTTPError, URLError, OSError, SocialStoreError, ProviderAdapterError):
             raise ProviderIdentityError("YouTube upload capability or identity is unavailable") from None
 
-    def invoke(
-        self, checkpoint: Callable[[str], None] | None = None
+    def _upload(
+        self, checkpoint: Callable[[str], None] | None
     ) -> tuple[str | None, str | None]:
         if self.claimed.action != "post" or self.claimed.payload is None or self.claimed.subject is None:
             return None, "validation"
-        try:
-            media, size = _verified_media(self.claimed)
-            media_type = _media_type(media)
-            token = _access_token(_profile(self.claimed))
-            metadata = json.dumps(
-                {
-                    "snippet": {
-                        "title": self.claimed.subject,
-                        "description": self.claimed.payload,
-                    },
-                    "status": {"privacyStatus": "private"},
+        media, size = _verified_media(self.claimed)
+        media_type = _media_type(media)
+        token = _access_token(_profile(self.claimed))
+        metadata = json.dumps(
+            {
+                "snippet": {
+                    "title": self.claimed.subject,
+                    "description": self.claimed.payload,
                 },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            initiate = Request(
-                f"{UPLOAD_BASE}/videos?{urlencode({'uploadType': 'resumable', 'part': 'snippet,status'})}",
-                data=metadata,
+                "status": {"privacyStatus": "private"},
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        initiate = Request(
+            f"{UPLOAD_BASE}/videos?{urlencode({'uploadType': 'resumable', 'part': 'snippet,status'})}",
+            data=metadata,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=UTF-8",
+                "Content-Length": str(len(metadata)),
+                "X-Upload-Content-Length": str(size),
+                "X-Upload-Content-Type": media_type,
+                "User-Agent": "aidevops-youtube-outbound/1",
+            },
+            method="POST",
+        )
+        with self.opener(initiate, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            location = response.headers.get("Location")
+        if not isinstance(location, str) or not location.startswith("https://www.googleapis.com/"):
+            return None, "validation"
+        if checkpoint is not None:
+            checkpoint(location)
+        with media.open("rb") as handle:
+            upload = Request(
+                location,
+                data=handle.read(),
                 headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json; charset=UTF-8",
-                    "Content-Length": str(len(metadata)),
-                    "X-Upload-Content-Length": str(size),
-                    "X-Upload-Content-Type": media_type,
+                    "Content-Type": media_type,
+                    "Content-Length": str(size),
                     "User-Agent": "aidevops-youtube-outbound/1",
                 },
-                method="POST",
+                method="PUT",
             )
-            with self.opener(initiate, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                location = response.headers.get("Location")
-            if not isinstance(location, str) or not location.startswith("https://www.googleapis.com/"):
-                return None, "validation"
-            if checkpoint is not None:
-                checkpoint(location)
-            with media.open("rb") as handle:
-                upload = Request(
-                    location,
-                    data=handle.read(),
-                    headers={
-                        "Content-Type": media_type,
-                        "Content-Length": str(size),
-                        "User-Agent": "aidevops-youtube-outbound/1",
-                    },
-                    method="PUT",
-                )
-                with self.opener(upload, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                    payload = _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
-            remote_id = payload.get("id")
-            if not isinstance(remote_id, str):
-                return None, "validation"
-            return validate_opaque(remote_id, "provider_remote_id"), None
+            with self.opener(upload, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                payload = _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
+        remote_id = payload.get("id")
+        if not isinstance(remote_id, str):
+            return None, "validation"
+        return validate_opaque(remote_id, "provider_remote_id"), None
+
+    def invoke(
+        self, checkpoint: Callable[[str], None] | None = None
+    ) -> tuple[str | None, str | None]:
+        try:
+            return self._upload(checkpoint)
         except (HTTPError, URLError, OSError):
             return None, "provider_unavailable"
         except (SocialStoreError, ProviderAdapterError, UnicodeError):

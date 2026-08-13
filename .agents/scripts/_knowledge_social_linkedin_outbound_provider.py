@@ -102,40 +102,43 @@ class LinkedInPreparedProvider:
         except (HTTPError, URLError, OSError, SocialStoreError, ProviderAdapterError):
             raise ProviderIdentityError("LinkedIn outbound capability or identity is unavailable") from None
 
-    def invoke(self) -> tuple[str | None, str | None]:
+    def _post(self) -> tuple[str | None, str | None]:
         if self.claimed.action != "post" or self.claimed.payload is None:
             return None, "validation"
-        try:
-            token = _access_token(_profile(self.claimed))
-            body = json.dumps(
-                {
-                    "author": self.claimed.remote_account_id,
-                    "commentary": self.claimed.payload,
-                    "visibility": "PUBLIC",
-                    "distribution": {
-                        "feedDistribution": "MAIN_FEED",
-                        "targetEntities": [],
-                        "thirdPartyDistributionChannels": [],
-                    },
-                    "lifecycleState": "PUBLISHED",
-                    "isReshareDisabledByAuthor": False,
+        token = _access_token(_profile(self.claimed))
+        body = json.dumps(
+            {
+                "author": self.claimed.remote_account_id,
+                "commentary": self.claimed.payload,
+                "visibility": "PUBLIC",
+                "distribution": {
+                    "feedDistribution": "MAIN_FEED",
+                    "targetEntities": [],
+                    "thirdPartyDistributionChannels": [],
                 },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            with self.opener(
-                _request(token, POST_ENDPOINT, method="POST", data=body),
-                timeout=HTTP_TIMEOUT_SECONDS,
-            ) as response:
-                if getattr(response, "status", 201) not in (200, 201):
-                    return None, "provider_unavailable"
-                remote_id = response.headers.get("x-restli-id")
-                if not isinstance(remote_id, str) or not remote_id:
-                    payload = _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
-                    remote_id = payload.get("id")
-                if not isinstance(remote_id, str):
-                    return None, "validation"
-                return validate_opaque(remote_id, "provider_remote_id"), None
+                "lifecycleState": "PUBLISHED",
+                "isReshareDisabledByAuthor": False,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        with self.opener(
+            _request(token, POST_ENDPOINT, method="POST", data=body),
+            timeout=HTTP_TIMEOUT_SECONDS,
+        ) as response:
+            if getattr(response, "status", 201) not in (200, 201):
+                return None, "provider_unavailable"
+            remote_id = response.headers.get("x-restli-id")
+            if not isinstance(remote_id, str) or not remote_id:
+                payload = _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
+                remote_id = payload.get("id")
+            if not isinstance(remote_id, str):
+                return None, "validation"
+            return validate_opaque(remote_id, "provider_remote_id"), None
+
+    def invoke(self) -> tuple[str | None, str | None]:
+        try:
+            return self._post()
         except (HTTPError, URLError, OSError):
             return None, "provider_unavailable"
         except (SocialStoreError, ProviderAdapterError, UnicodeError):
