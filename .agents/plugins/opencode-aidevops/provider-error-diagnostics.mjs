@@ -14,8 +14,11 @@ function statusCode(error) {
 }
 
 function responseBodyKind(body) {
-  if (body === undefined || body === null) return "unavailable";
-  if (typeof body !== "string") return "unknown";
+  let kind = null;
+  if (body === undefined || body === null) kind = "unavailable";
+  else if (typeof body !== "string") kind = "unknown";
+  if (kind !== null) return kind;
+
   const trimmed = body.trim();
   if (!trimmed) return "empty";
   if (/^(?:<!doctype\s+html|<html\b)/i.test(trimmed)) return "html";

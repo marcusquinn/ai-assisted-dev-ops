@@ -211,6 +211,44 @@ function IconSwitch<TValue extends string>({ ariaLabel, options, value }: {
   );
 }
 
+function LocalRepoSelector({ repos, selectedLocalRepoIndex, selectRepoByIndex, setSelectedLocalRepoIndex, setSelectedSessionId }: {
+  repos: GuiStatusData["local_repos"]["repos"];
+  selectedLocalRepoIndex: number;
+  selectRepoByIndex: (index: number) => void;
+  setSelectedLocalRepoIndex: (index: number) => void;
+  setSelectedSessionId: (id: string | undefined) => void;
+}) {
+  return (
+    <section className="repo-session-selector" aria-label={text.localRepoSelector}>
+      <span className="repo-selector-heading" id="local-repo-selector-label">{text.localRepos}</span>
+      <div className="selector-with-stepper repo-selector-row">
+        <button aria-label="Previous local repo" className="selector-step-button" disabled={repos.length === 0} onClick={() => selectRepoByIndex(wrappedOptionIndex(selectedLocalRepoIndex, repos.length, -1))} type="button"><FiChevronLeft aria-hidden="true" /></button>
+        <select aria-labelledby="local-repo-selector-label" onChange={(event) => { setSelectedLocalRepoIndex(Number.parseInt(event.currentTarget.value, 10)); setSelectedSessionId(undefined); }} value={Math.min(selectedLocalRepoIndex, Math.max(0, repos.length - 1))}>
+          {repos.length === 0 ? <option value={0}>No local repos</option> : repos.map((repo, index) => <option key={repo.path_ref} value={index}>{repo.name}</option>)}
+        </select>
+        <button aria-label="Next local repo" className="selector-step-button" disabled={repos.length === 0} onClick={() => selectRepoByIndex(wrappedOptionIndex(selectedLocalRepoIndex, repos.length, 1))} type="button"><FiChevronRight aria-hidden="true" /></button>
+      </div>
+    </section>
+  );
+}
+
+function SessionHistoryList({ activeSessionId, selectedRepo, sessions, setSelectedSessionId }: {
+  activeSessionId: string | undefined;
+  selectedRepo: GuiStatusData["local_repos"]["repos"][number] | undefined;
+  sessions: GuiStatusData["opencode_sessions"]["sessions"];
+  setSelectedSessionId: (id: string | undefined) => void;
+}) {
+  return (
+    <section className="sidebar-group session-history-list">
+      {selectedRepo ? <ul>
+        {sessions.length === 0
+          ? <li><button className="surface-link active" type="button"><span className="surface-icon" aria-hidden="true"><FiHash /></span><span className="surface-copy"><strong>{selectedRepo.name}</strong><small>No OpenCode sessions found for this repo yet.</small></span><em>{text.planned}</em></button></li>
+          : sessions.map((session) => <li key={session.id_ref}><button className={activeSessionId === session.id_ref ? "surface-link active" : "surface-link"} onClick={() => setSelectedSessionId(session.id_ref)} type="button"><span className="surface-icon" aria-hidden="true"><FiHash /></span><span className="surface-copy"><strong>{session.title}</strong><small>{session.updated_at}</small></span></button></li>)}
+      </ul> : <p className="empty-sidebar-state">No local repos discovered.</p>}
+    </section>
+  );
+}
+
 function ConversationSidebar({ conversationMode, selectedLocalRepoIndex, selectedSessionId, setConversationMode, setSelectedLocalRepoIndex, setSelectedSessionId, status }: {
   conversationMode: ConversationMode;
   selectedLocalRepoIndex: number;
@@ -245,23 +283,8 @@ function ConversationSidebar({ conversationMode, selectedLocalRepoIndex, selecte
       <SidebarModeTabs mode={conversationMode} setMode={setConversationMode} />
       {conversationMode === "people" ? <PeopleChannelList /> : <>
       <button className="new-session-button" disabled title="Creating sessions needs an audited OpenCode write route." type="button">{text.newSession}</button>
-      <section className="repo-session-selector" aria-label={text.localRepoSelector}>
-        <span className="repo-selector-heading" id="local-repo-selector-label">{text.localRepos}</span>
-        <div className="selector-with-stepper repo-selector-row">
-          <button aria-label="Previous local repo" className="selector-step-button" disabled={repos.length === 0} onClick={() => selectRepoByIndex(wrappedOptionIndex(selectedLocalRepoIndex, repos.length, -1))} type="button"><FiChevronLeft aria-hidden="true" /></button>
-          <select aria-labelledby="local-repo-selector-label" onChange={(event) => { setSelectedLocalRepoIndex(Number.parseInt(event.currentTarget.value, 10)); setSelectedSessionId(undefined); }} value={Math.min(selectedLocalRepoIndex, Math.max(0, repos.length - 1))}>
-            {repos.length === 0 ? <option value={0}>No local repos</option> : repos.map((repo, index) => <option key={repo.path_ref} value={index}>{repo.name}</option>)}
-          </select>
-          <button aria-label="Next local repo" className="selector-step-button" disabled={repos.length === 0} onClick={() => selectRepoByIndex(wrappedOptionIndex(selectedLocalRepoIndex, repos.length, 1))} type="button"><FiChevronRight aria-hidden="true" /></button>
-        </div>
-      </section>
-      <section className="sidebar-group session-history-list">
-        {selectedRepo ? <ul>
-          {sessions.length === 0
-            ? <li><button className="surface-link active" type="button"><span className="surface-icon" aria-hidden="true"><FiHash /></span><span className="surface-copy"><strong>{selectedRepo.name}</strong><small>No OpenCode sessions found for this repo yet.</small></span><em>{text.planned}</em></button></li>
-            : sessions.map((session) => <li key={session.id_ref}><button className={activeSessionId === session.id_ref ? "surface-link active" : "surface-link"} onClick={() => setSelectedSessionId(session.id_ref)} type="button"><span className="surface-icon" aria-hidden="true"><FiHash /></span><span className="surface-copy"><strong>{session.title}</strong><small>{session.updated_at}</small></span></button></li>)}
-        </ul> : <p className="empty-sidebar-state">No local repos discovered.</p>}
-      </section>
+      <LocalRepoSelector repos={repos} selectedLocalRepoIndex={selectedLocalRepoIndex} selectRepoByIndex={selectRepoByIndex} setSelectedLocalRepoIndex={setSelectedLocalRepoIndex} setSelectedSessionId={setSelectedSessionId} />
+      <SessionHistoryList activeSessionId={activeSessionId} selectedRepo={selectedRepo} sessions={sessions} setSelectedSessionId={setSelectedSessionId} />
       </>}
     </section>
   );
