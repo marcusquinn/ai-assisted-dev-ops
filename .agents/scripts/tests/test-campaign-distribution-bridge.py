@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,7 +48,12 @@ class CampaignDistributionBridgeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _command(self, action: str, *extra: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["python3", str(HELPER), action, "--campaign-dir", str(self.campaign), "--manifest", str(self.manifest), "--connection-id", "conn", "--account-id", "account", "--scheduled-at", "2000000000", "--queue-helper", str(self.queue), *extra], text=True, capture_output=True, check=False)
+        return subprocess.run(  # nosec B603
+            [sys.executable, str(HELPER), action, "--campaign-dir", str(self.campaign), "--manifest", str(self.manifest), "--connection-id", "conn", "--account-id", "account", "--scheduled-at", "2000000000", "--queue-helper", str(self.queue), *extra],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
     def test_preview_is_dry_run_and_stable(self) -> None:
         first = self._command("preview")

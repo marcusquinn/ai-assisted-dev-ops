@@ -116,9 +116,13 @@ def _write_record(campaign_dir: Path, record: dict[str, Any]) -> None:
 
 def _queue(arguments: argparse.Namespace, command: list[str]) -> Any:
     helper = Path(arguments.queue_helper).resolve()
-    if not helper.is_file():
+    if not helper.is_file() or not os.access(helper, os.X_OK):
         raise DistributionError("outbound queue helper is unavailable")
-    result = subprocess.run([str(helper), *command], text=True, capture_output=True, check=False)
+    # The executable is a locally resolved, executable queue helper; command values
+    # are passed as a fixed argument vector rather than through a shell.
+    result = subprocess.run(  # nosec B603
+        [str(helper), *command], text=True, capture_output=True, check=False
+    )
     if result.returncode != 0:
         raise DistributionError(f"outbound queue rejected operation: {result.stderr.strip() or result.stdout.strip()}")
     try:
