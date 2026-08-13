@@ -51,6 +51,7 @@ case "$endpoint" in
 	user) printf '%s\n' "${GH_AUTH_USER:-maintainer}" ;;
 repos/owner/repo/collaborators/trusted-collab/permission | repos/owner/repo/collaborators/maintainer/permission) printf '%s\n' "${GH_PERMISSION:-write}" ;;
 repos/owner/repo/collaborators/contributor/permission) printf '%s\n' "read" ;;
+repos/owner/repo/collaborators/github-actions%5Bbot%5D/permission | repos/owner/repo/collaborators/github-actions\[bot\]/permission) printf '%s\n' "none" ;;
 	repos/owner/repo/issues/41) cat "${FIXTURES}/issue-41.json" ;;
 repos/owner/repo/issues/41/comments*) cat "${FIXTURES}/comments-41.json" ;;
 repos/owner/repo/issues/41/timeline*) cat "${FIXTURES}/timeline-41.json" ;;
@@ -360,14 +361,20 @@ Auto-approved: cryptographic approval verified. Stale recovery tick reset."
 ---
 [aidevops.sh](https://aidevops.sh) v3.32.175 automated scan."
 	local claim_comments=""
-	local worktree_claim_marker="<!-- aidevops-interactive-claim/v1 -->
+	local claim_writer_body="<!-- aidevops-interactive-claim/v1 -->
 <!-- ops:start -->
 > Interactive session claimed by @maintainer in \`linked-worktree\` on Linux.
 > Pulse dispatch blocked via \`status:in-review\` + self-assignment.
-<!-- ops:end -->
-<!-- aidevops:sig -->
----
-[aidevops.sh](https://aidevops.sh) v3.32.175 automated scan."
+<!-- ops:end -->"
+	local worktree_claim_marker=""
+	worktree_claim_marker=$(AIDEVOPS_SESSION_ORIGIN=interactive AIDEVOPS_SIG_CLI="Test CLI" AIDEVOPS_SIG_CLI_VERSION="1.0.0" AIDEVOPS_SIG_MODEL="test/model" AIDEVOPS_SIG_TOKENS="1" \
+		"${SCRIPT_DIR}/../gh-signature-helper.sh" footer --body "$claim_writer_body") || return 1
+	worktree_claim_marker="${claim_writer_body}${worktree_claim_marker}"
+	if [[ "$worktree_claim_marker" != *$'<!-- ops:end -->\n<!-- aidevops:origin:interactive -->\n<!-- aidevops:sig -->'* ]]; then
+		print_result "canonical claim writer produces the verifier footer contract" 1
+		return 0
+	fi
+	print_result "canonical claim writer produces the verifier footer contract" 0
 	claim_comments=$(jq -c --arg body "$claim_marker" --arg worktree_body "$worktree_claim_marker" '.[0] += [{id:4303,node_id:"IC_4303",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:00Z",updated_at:"2026-01-01T00:06:00Z",body:$body},{id:4306,node_id:"IC_4306",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:01Z",updated_at:"2026-01-01T00:06:01Z",body:$worktree_body}]' "${FIXTURES}/comments-41.json")
 	printf '%s\n' "$claim_comments" >"${FIXTURES}/comments-41.json"
 	assert_verify "canonical interactive claim refreshes, including worktree-qualified form, preserve approval" issue 41 VERIFIED 0
@@ -428,6 +435,44 @@ append_issue_timeline_event() {
 }
 
 test_locked_issue_continuity() {
+	# Production regression from the first #30153 signature: approval-helper
+	# performed the trusted handoff, then the narrowly scoped repository workflow
+	# filled the one missing default status label under github-actions[bot].
+	write_locked_issue_fixture
+	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}] | .labels += [{id:10,node_id:"L_10",name:"auto-dispatch"},{id:11,node_id:"L_11",name:"status:available"}] | .labels |= map(select(.name != "needs-maintainer-review"))' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":426,"node_id":"EV_426","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"auto-dispatch"}}'
+	append_issue_timeline_event '{"id":427,"node_id":"EV_427","event":"unlabeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"needs-maintainer-review"}}'
+	append_issue_timeline_event '{"id":428,"node_id":"EV_428","event":"assigned","created_at":"2026-01-01T00:06:02Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
+	append_issue_timeline_event '{"id":429,"node_id":"EV_429","event":"labeled","created_at":"2026-01-01T00:06:03Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
+	assert_verify "exact repository default-status automation preserves first locked issue approval" issue 41 VERIFIED 0
+
+	# GitHub documents timeline responses in chronological order; keep that API
+	# contract executable because continuity authorization is sequence-sensitive.
+	jq '.[0] |= reverse' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
+	assert_verify "out-of-order timeline data fails sequence-sensitive continuity" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:11,node_id:"L_11",name:"status:available"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4291,"node_id":"EV_4291","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
+	assert_verify "official Actions default without prior auto-dispatch fails closed" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:10,node_id:"L_10",name:"auto-dispatch"},{id:11,node_id:"L_11",name:"status:available"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4292,"node_id":"EV_4292","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"auto-dispatch"}}'
+	append_issue_timeline_event '{"id":4293,"node_id":"EV_4293","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:queued"}}'
+	append_issue_timeline_event '{"id":4294,"node_id":"EV_4294","event":"labeled","created_at":"2026-01-01T00:06:02Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
+	assert_verify "official Actions default after another status mutation fails closed" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:11,node_id:"L_11",name:"status:available"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":430,"node_id":"EV_430","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":999,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
+	assert_verify "lookalike Actions bot cannot preserve locked issue approval" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:11,node_id:"L_11",name:"status:queued"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":431,"node_id":"EV_431","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:queued"}}'
+	assert_verify "official Actions bot has no generic lifecycle authority" issue 41 STALE_APPROVAL 4
+
 	write_locked_issue_fixture
 	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}] | .labels += [{id:10,node_id:"L_10",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	append_issue_timeline_event '{"id":420,"node_id":"EV_420","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'

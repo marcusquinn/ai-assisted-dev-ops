@@ -76,6 +76,10 @@ readonly APPROVAL_NAMESPACE="aidevops-approve"
 readonly APPROVAL_MARKER="<!-- aidevops-signed-approval -->"
 readonly _APPROVAL_NMR_LABEL="needs-maintainer-review"
 readonly _APPROVAL_AUTO_DISPATCH_LABEL="auto-dispatch"
+readonly _APPROVAL_AVAILABLE_LABEL="status:available"
+readonly _APPROVAL_QUEUED_LABEL="status:queued"
+readonly _APPROVAL_IN_PROGRESS_LABEL="status:in-progress"
+readonly _APPROVAL_GITHUB_ACTIONS_BOT_ID="41898282"
 readonly _APPROVAL_MISSING_FIELD="__missing__"
 readonly _APPROVAL_GH_INVALID_TOKEN="invalid-token"
 readonly _APPROVAL_BATCH_MODE="batch"
@@ -639,8 +643,29 @@ _approval_verify_issue_state() {
 		_print_error "Approval state verification failed: auto-dispatch is missing on #$target_number"
 		return 1
 	fi
-	if ! printf '%s' "$issue_json" | jq -e --arg user "$gh_user" '(.assignees // []) | any(.login == $user)' >/dev/null 2>&1; then
-		_print_error "Approval state verification failed: $gh_user is not assigned to #$target_number"
+	# Pulse may claim the issue as soon as auto-dispatch becomes visible. Accept
+	# only the initial available state or its two forward worker states here;
+	# continuity verification still authenticates every timeline mutation.
+	if ! printf '%s' "$issue_json" | jq -e \
+		--arg available "$_APPROVAL_AVAILABLE_LABEL" \
+		--arg queued "$_APPROVAL_QUEUED_LABEL" \
+		--arg in_progress "$_APPROVAL_IN_PROGRESS_LABEL" '
+			[(.labels // [])[].name] as $labels |
+			[$available, $queued, "status:claimed", $in_progress, "status:in-review", "status:done", "status:blocked"] as $core |
+			[$labels[] | select(. as $label | $core | index($label) != null)] as $current |
+			($current | length) == 1 and
+			([$available, $queued, $in_progress] | index($current[0]) != null)
+		' >/dev/null 2>&1; then
+		_print_error "Approval state verification failed: no dispatchable or active status is present on #$target_number"
+		return 1
+	fi
+	if ! printf '%s' "$issue_json" | jq -e \
+		--arg user "$gh_user" \
+		--arg available "$_APPROVAL_AVAILABLE_LABEL" '
+			[(.labels // [])[].name] as $labels |
+			(($labels | index($available)) == null) or ((.assignees // []) | any(.login == $user))
+		' >/dev/null 2>&1; then
+		_print_error "Approval state verification failed: $gh_user is not assigned to available issue #$target_number"
 		return 1
 	fi
 	if ! printf '%s' "$issue_json" | jq -e '.locked == true' >/dev/null 2>&1; then
@@ -674,6 +699,11 @@ _approval_apply_issue_lifecycle_updates() {
 	local gh_user=""
 	local edit_err=""
 	local lock_err=""
+	local status_err=""
+	local restore_err=""
+	local _ah_labels_json=""
+	local _ah_stamp_file=""
+	local _ah_had_in_review=0
 
 	gh_user=$(gh api user --jq '.login' 2>/dev/null || printf '')
 	if [[ -z "$gh_user" || "$gh_user" == "null" ]]; then
@@ -681,49 +711,67 @@ _approval_apply_issue_lifecycle_updates() {
 		return 1
 	fi
 
-	edit_err=$(gh_issue_edit_safe "$target_number" --repo "$slug" \
-		--remove-label "$_APPROVAL_NMR_LABEL" \
-		--add-label "$_APPROVAL_AUTO_DISPATCH_LABEL" \
-		--add-assignee "$gh_user" 2>&1 >/dev/null) || {
-		_print_error "Failed to update approval labels/assignee on issue #$target_number"
-		[[ -n "$edit_err" ]] && _print_error "$edit_err"
+	# Capture whether an interactive claim stamp may need cleanup before the
+	# authoritative status transition removes status:in-review.
+	_ah_labels_json=$(gh_issue_view "$target_number" --repo "$slug" \
+		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+	[[ ",${_ah_labels_json}," == *",status:in-review,"* ]] && _ah_had_in_review=1
+
+	# Establish the final status while NMR still blocks dispatch. This prevents
+	# the default-status workflow from owning the normal handoff path.
+	status_err=$(set_issue_status "$target_number" "$slug" "available" 2>&1 >/dev/null) || {
+		_print_error "Failed to transition approved issue #$target_number to status:available"
+		[[ -n "$status_err" ]] && _print_error "$status_err"
 		return 1
 	}
-	_print_info "Labels updated: removed needs-maintainer-review, added auto-dispatch"
+
+	# The REST fallback applies additions before removals; native gh performs one
+	# combined edit. If transport uncertainty follows a partial mutation, restore
+	# NMR synchronously before reporting failure.
+	edit_err=$(gh_issue_edit_safe "$target_number" --repo "$slug" \
+		--add-label "$_APPROVAL_AUTO_DISPATCH_LABEL" \
+		--add-assignee "$gh_user" \
+		--remove-label "$_APPROVAL_NMR_LABEL" 2>&1 >/dev/null) || {
+		_print_error "Failed to update approval labels/assignee on issue #$target_number"
+		[[ -n "$edit_err" ]] && _print_error "$edit_err"
+		restore_err=$(_approval_restore_nmr_hold issue "$target_number" "$slug" 2>&1 >/dev/null) || {
+			_print_error "Failed to restore needs-maintainer-review after uncertain lifecycle update on issue #$target_number"
+			[[ -n "$restore_err" ]] && _print_error "$restore_err"
+		}
+		return 1
+	}
+	_print_info "Lifecycle updated: status:available, removed needs-maintainer-review, added auto-dispatch"
 	_print_info "Assigned to $gh_user"
 
 	lock_err=$(_approval_lock_issue "$target_number" "$slug" 2>&1 >/dev/null) || {
 		_print_error "Approval advisory lock failure: issue #$target_number could not be locked after approval state updates"
 		[[ -n "$lock_err" ]] && _print_error "$lock_err"
+		restore_err=$(_approval_restore_nmr_hold issue "$target_number" "$slug" 2>&1 >/dev/null) || {
+			_print_error "Failed to restore needs-maintainer-review after lock uncertainty on issue #$target_number"
+			[[ -n "$restore_err" ]] && _print_error "$restore_err"
+		}
 		return 1
 	}
 	_print_info "Issue #$target_number locked (scope finalized, unlocks after worker completion)"
 
-	# t2057: idempotent release of status:in-review. Signing is the handoff to
-	# automation, so the interactive hold must lift. Best-effort: verification
-	# below checks the approval-critical state, not local stamp cleanup.
-	local _ah_labels_json
-	_ah_labels_json=$(gh_issue_view "$target_number" --repo "$slug" \
-		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
-	if [[ "$_ah_labels_json" == *"status:in-review"* ]]; then
-		local _ah_helper=""
-		if [[ -x "${HOME}/.aidevops/agents/scripts/interactive-session-helper.sh" ]]; then
-			_ah_helper="${HOME}/.aidevops/agents/scripts/interactive-session-helper.sh"
-		else
-			local _ah_script_dir
-			_ah_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _ah_script_dir=""
-			if [[ -n "$_ah_script_dir" && -x "${_ah_script_dir}/interactive-session-helper.sh" ]]; then
-				_ah_helper="${_ah_script_dir}/interactive-session-helper.sh"
-			fi
-		fi
-		if [[ -n "$_ah_helper" ]]; then
-			"$_ah_helper" release "$target_number" "$slug" >/dev/null 2>&1 || true
-			_print_info "Released status:in-review (interactive review transitioned to available)"
-		fi
+	if ! _approval_verify_issue_state "$target_number" "$slug" "$gh_user"; then
+		restore_err=$(_approval_restore_nmr_hold issue "$target_number" "$slug" 2>&1 >/dev/null) || {
+			_print_error "Failed to restore needs-maintainer-review after final-state uncertainty on issue #$target_number"
+			[[ -n "$restore_err" ]] && _print_error "$restore_err"
+		}
+		return 1
 	fi
 
-	_approval_verify_issue_state "$target_number" "$slug" "$gh_user"
-	return $?
+	# t2057: remove only the local claim stamp after the complete remote state is
+	# verified. Invoking `release` here would perform a second remote status write
+	# that can overwrite a concurrent queued worker claim. On uncertainty, retain
+	# the stamp as a durable ownership/recovery marker.
+	if [[ "$_ah_had_in_review" -eq 1 ]]; then
+		_ah_stamp_file="${_APPROVAL_HOME}/.aidevops/.agent-workspace/interactive-claims/${slug//\//-}-${target_number}.json"
+		rm -f "$_ah_stamp_file" 2>/dev/null || true
+		_print_info "Released the local interactive claim after the verified remote lifecycle handoff"
+	fi
+	return 0
 }
 
 _approval_apply_pr_lifecycle_updates() {
@@ -970,6 +1018,19 @@ _approval_continuity_actor_authorized() {
 	return 1
 }
 
+_approval_continuity_is_repository_status_default() {
+	local event="$1"
+	local subject="$2"
+	local actor="$3"
+	local actor_id="$4"
+	local actor_type="$5"
+	[[ "$event" == "labeled" && "$subject" == "$_APPROVAL_AVAILABLE_LABEL" ]] || return 1
+	[[ "$actor" == "github-actions[bot]" ]] || return 1
+	[[ "$actor_id" == "$_APPROVAL_GITHUB_ACTIONS_BOT_ID" ]] || return 1
+	[[ "$actor_type" == "Bot" ]] || return 1
+	return 0
+}
+
 _approval_verify_locked_issue_continuity() {
 	local payload="$1"
 	local current_snapshot="$2"
@@ -978,7 +1039,8 @@ _approval_verify_locked_issue_continuity() {
 	local target_number="$5"
 	local issued_at="$6"
 	local signed_lifecycle="" current_anchor="" signed_anchor="" candidate="" candidate_digest=""
-	local timeline_pages="" mutation_rows="" event="" actor="" subject="" actor_rc=0
+	local timeline_pages="" mutation_rows="" event="" actor="" subject="" actor_id="" actor_type="" actor_rc=0
+	local signed_has_status=0 saw_auto_dispatch=0 saw_status_mutation=0 saw_status_default=0
 
 	# #aidevops:trust-boundary — no embedded lifecycle proof means this is a
 	# legacy exact-snapshot approval, never continuity authority.
@@ -988,6 +1050,9 @@ _approval_verify_locked_issue_continuity() {
 		return 1
 	fi
 	signed_anchor=$(jq -c '.lock_anchor' <<<"$signed_lifecycle") || return 1
+	if jq -e '[.labels[]?.name | select(startswith("status:"))] | length > 0' <<<"$signed_lifecycle" >/dev/null 2>&1; then
+		signed_has_status=1
+	fi
 	current_anchor=$(jq -c '.lifecycle.lock_anchor // empty' <<<"$current_snapshot") || return 1
 	[[ -n "$current_anchor" && "$current_anchor" == "$signed_anchor" ]] || return 1
 	if ! jq -e '.lifecycle.locked == true' <<<"$current_snapshot" >/dev/null 2>&1; then
@@ -1021,22 +1086,35 @@ _approval_verify_locked_issue_continuity() {
 	mutation_rows=$(jq -r --arg issued "$issued_at" '
 		[.[][]? | select((.created_at // "") > $issued) | (.event // "") as $event |
 		select(["assigned","unassigned","labeled","unlabeled","milestoned","demilestoned","closed","reopened","renamed","locked","unlocked","connected","disconnected","added_to_project","moved_columns_in_project","removed_from_project","transferred","converted_to_discussion","marked_as_duplicate","unmarked_as_duplicate","pinned","unpinned"] | index($event)) |
-		[(.event // ""), (.actor.login // ""), (.label.name // .assignee.login // "")] | @tsv][]
+		[(.event // ""), (.actor.login // ""), (.label.name // .assignee.login // ""), ((.actor.id // "") | tostring), (.actor.type // "")] | @tsv][]
 	' <<<"$timeline_pages" 2>/dev/null) || return 2
 	[[ -n "$mutation_rows" ]] || return 1
 
-	while IFS=$'\t' read -r event actor subject; do
+	while IFS=$'\t' read -r event actor subject actor_id actor_type; do
 		[[ -n "$event" ]] || continue
 		case "$event:$subject" in
 		assigned:* | unassigned:* | labeled:needs-maintainer-review | unlabeled:needs-maintainer-review | labeled:auto-dispatch | unlabeled:auto-dispatch | labeled:status:available | unlabeled:status:available | labeled:status:queued | unlabeled:status:queued | labeled:status:in-review | unlabeled:status:in-review | labeled:status:in-progress | unlabeled:status:in-progress) ;;
 		*) return 1 ;;
 		esac
+		# #aidevops:trust-boundary — GitHub's official Actions bot has no
+		# collaborator permission. Accept its single non-scope-bearing default only
+		# for the expected no-status handoff sequence: an authorized maintainer first
+		# exposed auto-dispatch and no status mutation has occurred. The immutable
+		# bot ID/type prevents lookalikes; this grants no generic workflow authority.
+		if _approval_continuity_is_repository_status_default "$event" "$subject" "$actor" "$actor_id" "$actor_type"; then
+			[[ "$signed_has_status" -eq 0 && "$saw_auto_dispatch" -eq 1 && "$saw_status_mutation" -eq 0 && "$saw_status_default" -eq 0 ]] || return 1
+			saw_status_default=1
+			saw_status_mutation=1
+			continue
+		fi
 		actor_rc=0
 		_approval_continuity_actor_authorized "$slug" "$actor" || actor_rc=$?
 		[[ "$actor_rc" -eq 0 ]] || {
 			[[ "$actor_rc" -eq 2 ]] && return 2
 			return 1
 		}
+		[[ "$event:$subject" == "labeled:$_APPROVAL_AUTO_DISPATCH_LABEL" ]] && saw_auto_dispatch=1
+		[[ "$subject" == status:* ]] && saw_status_mutation=1
 	done <<<"$mutation_rows"
 	return 0
 }

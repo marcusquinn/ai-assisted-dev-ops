@@ -111,6 +111,7 @@ run_case "REST 204 lock fallback succeeds" '
 	# shellcheck disable=SC1090
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
 	_rest_should_fallback() { return 0; }
+	set_issue_status() { return 0; }
 	gh_issue_edit_safe() { return 0; }
 	gh_issue_view() { printf "bug,auto-dispatch"; return 0; }
 	gh() {
@@ -122,7 +123,7 @@ run_case "REST 204 lock fallback succeeds" '
 		if [[ "$arg1" == "issue" && "$arg2" == "lock" ]]; then return 1; fi
 		if [[ "$arg1" == "api" && "$arg2" == "-X" && "$arg3" == "PUT" && "$arg4" == "/repos/marcusquinn/aidevops/issues/123/lock" ]]; then return 0; fi
 		if [[ "$arg1" == "api" && "$arg2" == "/repos/marcusquinn/aidevops/issues/123" ]]; then
-			printf "%s" "{\"labels\":[{\"name\":\"auto-dispatch\"}],\"assignees\":[{\"login\":\"marcusquinn\"}],\"locked\":true}"
+			printf "%s" "{\"labels\":[{\"name\":\"auto-dispatch\"},{\"name\":\"status:available\"}],\"assignees\":[{\"login\":\"marcusquinn\"}],\"locked\":true}"
 			return 0
 		fi
 		return 1
@@ -134,11 +135,79 @@ assert_not_contains "successful fallback does not print false lock error" "$LAST
 assert_not_contains "successful fallback does not print advisory lock failure" "$LAST_OUTPUT" "Approval advisory lock failure"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "status transition failure blocks approval handoff" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	set_issue_status() { printf "simulated status failure" >&2; return 1; }
+	gh_issue_edit_safe() { printf "UNEXPECTED EDIT"; return 0; }
+	gh() {
+		if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then printf "marcusquinn"; return 0; fi
+		return 1
+	}
+	_approval_apply_issue_lifecycle_updates 123 marcusquinn/aidevops
+' 1
+assert_contains "status transition failure is explicit" "$LAST_OUTPUT" "Failed to transition approved issue #123 to status:available"
+assert_not_contains "status transition failure preserves NMR handoff" "$LAST_OUTPUT" "UNEXPECTED EDIT"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "partial lifecycle edit failure restores NMR" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	set_issue_status() { return 0; }
+	gh_issue_edit_safe() {
+		if [[ "$*" == *"--add-label needs-maintainer-review"* && "$*" != *"--remove-label needs-maintainer-review"* ]]; then
+			printf "RESTORE %s\n" "$*" >>"$restore_trace"
+			return 0
+		fi
+		printf "simulated partial mutation" >&2
+		return 1
+	}
+	restore_trace=$(mktemp)
+	gh() {
+		if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then printf "marcusquinn"; return 0; fi
+		return 1
+	}
+	rc=0
+	_approval_apply_issue_lifecycle_updates 123 marcusquinn/aidevops || rc=$?
+	cat "$restore_trace"
+	rm -f "$restore_trace"
+	exit "$rc"
+' 1
+assert_contains "partial lifecycle edit failure is explicit" "$LAST_OUTPUT" "Failed to update approval labels/assignee"
+assert_contains "partial lifecycle edit failure reasserts NMR" "$LAST_OUTPUT" "RESTORE 123 --repo marcusquinn/aidevops --add-label needs-maintainer-review"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "failed NMR restoration remains explicit" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	set_issue_status() { return 0; }
+	gh_issue_edit_safe() {
+		if [[ "$*" == *"--add-label needs-maintainer-review"* && "$*" != *"--remove-label needs-maintainer-review"* ]]; then
+			printf "simulated restore failure" >&2
+			return 1
+		fi
+		printf "simulated partial mutation" >&2
+		return 1
+	}
+	gh() {
+		if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then printf "marcusquinn"; return 0; fi
+		return 1
+	}
+	_approval_apply_issue_lifecycle_updates 123 marcusquinn/aidevops
+' 1
+assert_contains "failed NMR restoration reports unsafe state" "$LAST_OUTPUT" "Failed to restore needs-maintainer-review after uncertain lifecycle update"
+assert_contains "failed NMR restoration preserves root evidence" "$LAST_OUTPUT" "simulated restore failure"
+
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "PR-backed issue lock falls back to REST without GraphQL fallback" '
 	set -uo pipefail
 	# shellcheck disable=SC1090
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
 	_rest_should_fallback() { return 1; }
+	set_issue_status() { return 0; }
 	gh_issue_edit_safe() { return 0; }
 	gh_issue_view() { printf "bug,auto-dispatch"; return 0; }
 	gh() {
@@ -150,7 +219,7 @@ run_case "PR-backed issue lock falls back to REST without GraphQL fallback" '
 		if [[ "$arg1" == "issue" && "$arg2" == "lock" ]]; then return 1; fi
 		if [[ "$arg1" == "api" && "$arg2" == "-X" && "$arg3" == "PUT" && "$arg4" == "/repos/marcusquinn/aidevops/issues/2417/lock" ]]; then return 0; fi
 		if [[ "$arg1" == "api" && "$arg2" == "/repos/marcusquinn/aidevops/issues/2417" ]]; then
-			printf "%s" "{\"labels\":[{\"name\":\"auto-dispatch\"}],\"assignees\":[{\"login\":\"marcusquinn\"}],\"locked\":true}"
+			printf "%s" "{\"labels\":[{\"name\":\"auto-dispatch\"},{\"name\":\"status:available\"}],\"assignees\":[{\"login\":\"marcusquinn\"}],\"locked\":true}"
 			return 0
 		fi
 		return 1
@@ -245,6 +314,7 @@ run_case "genuine lock failure is distinguished" '
 	# shellcheck disable=SC1090
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
 	_rest_should_fallback() { return 0; }
+	set_issue_status() { return 0; }
 	gh_issue_edit_safe() { return 0; }
 	gh() {
 		local arg1="${1:-}"

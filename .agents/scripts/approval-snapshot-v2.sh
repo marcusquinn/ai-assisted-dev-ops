@@ -71,7 +71,7 @@ _approval_snapshot_v2_comments_json() {
 			# optional worktree qualifier bounded to its backtick-delimited basename;
 			# trusted prose or copied markers must remain approval-significant.
 			((.author_association // $empty) == "OWNER" or (.author_association // $empty) == "MEMBER" or (.author_association // $empty) == "COLLABORATOR")
-			and ((.body // $empty) | test("^<!-- aidevops-interactive-claim/v1 -->\\n<!-- ops:start -->\\n> Interactive session claimed by @[^\\n`]+(?: in `[^`\\n]+`)? on [^\\n]+\\.\\n> Pulse dispatch blocked via `status:in-review` \\+ self-assignment\\.\\n<!-- ops:end -->\\n<!-- aidevops:sig -->\\n---\\n[^\\n]+\\n?$"))
+			and ((.body // $empty) | test("^<!-- aidevops-interactive-claim/v1 -->\\n<!-- ops:start -->\\n> Interactive session claimed by @[^\\n`]+(?: in `[^`\\n]+`)? on [^\\n]+\\.\\n> Pulse dispatch blocked via `status:in-review` \\+ self-assignment\\.\\n<!-- ops:end -->\\n(?:<!-- aidevops:origin:interactive -->\\n)?<!-- aidevops:sig -->\\n---\\n[^\\n]+\\n?$"))
 		) | not)
 		| {
 			source: $source,
