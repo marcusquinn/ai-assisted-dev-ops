@@ -132,6 +132,11 @@ All subagent paths relative to `content/`.
 
 `content-fanout-helper.sh` automates the diamond pipeline from brief to channel-specific outputs.
 
+For campaign work, create the evidence-linked creative brief and provider-neutral
+job first: `campaign-helper.sh production create <id> --channel <channel>`. The
+manifest remains `brief_ready` until a production owner records verified output;
+fan-out prompt preparation remains `prompts_ready`, never generated or published.
+
 ```bash
 content-fanout-helper.sh template default   # Brief template
 content-fanout-helper.sh plan ~/brief.md    # Generate fan-out plan

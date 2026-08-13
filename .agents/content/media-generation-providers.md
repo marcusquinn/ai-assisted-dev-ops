@@ -68,6 +68,11 @@ retention, and support when accessed through a gateway.
   and the user has authorized the cost.
 - **Do not hide asynchronous state.** A submitted task is not a completed asset;
   return task IDs and make timeout recovery explicit.
+- **Consume campaign jobs as requirements, not provider selections.** A
+  schema-v1 production manifest names asset class, format, rights, disclosure,
+  and fallback. Verify current capability evidence before setting its provider
+  route; an unavailable capability stays `blocked` rather than silently
+  switching providers.
 - **Do not preserve stale capability tables.** Update this file when a new
   provider changes routing; keep provider agents focused on their own contract.
 

@@ -62,6 +62,7 @@ readonly CAMPAIGNS_INTAKE_FILE="intake.json"
 readonly CAMPAIGNS_CHANNEL_SPECS="${SCRIPT_DIR}/../configs/campaign-channel-specs.json"
 readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter email blog"
 readonly CAMPAIGN_RESEARCH_HELPER="${SCRIPT_DIR}/campaign-research-helper.py"
+readonly CAMPAIGN_PRODUCTION_HELPER="${SCRIPT_DIR}/campaign-production-helper.py"
 
 # ---------------------------------------------------------------------------
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -1313,7 +1314,15 @@ P5 Commands (AI creative agent):
       Tone defaults to 'professional'. Variant defaults to 1.
       Model defaults to 'standard' (simple|standard|thinking).
       Output: _campaigns/active/<id>/drafts/<channel>-v<N>.md
-      Human-gated: drafts require manual review before promotion to creative/.
+       Human-gated: drafts require manual review before promotion to creative/.
+
+  production create <id> --channel <ch> [--variant N] [--asset-class writing|image|video|audio|editor] [--capability <class>] [--repo <path>]
+      Create a schema-v1 creative brief and a truthful, provider-neutral production job.
+      Jobs remain brief_ready or blocked until a downstream owner records verified evidence.
+  production list <id> [--repo <path>]
+      List schema-v1 production jobs and their verified lifecycle states.
+  production validate <manifest-path>
+      Validate a production manifest before consuming it downstream.
 
 Campaign research:
   research <id> [--source <evidence.json>]... [--repo <path>]
@@ -1374,6 +1383,10 @@ main() {
 	launch) cmd_launch "$@" ;;
 	promote) cmd_promote "$@" ;;
 	feedback) cmd_feedback "$@" ;;
+	production)
+		[[ -f "$CAMPAIGN_PRODUCTION_HELPER" ]] || { print_error "Campaign production helper not found: ${CAMPAIGN_PRODUCTION_HELPER}"; return 1; }
+		python3 "$CAMPAIGN_PRODUCTION_HELPER" "$@"
+		;;
 	research)
 		[[ -x "$CAMPAIGN_RESEARCH_HELPER" || -f "$CAMPAIGN_RESEARCH_HELPER" ]] || { print_error "Campaign research helper not found: ${CAMPAIGN_RESEARCH_HELPER}"; return 1; }
 		python3 "$CAMPAIGN_RESEARCH_HELPER" "$@"
