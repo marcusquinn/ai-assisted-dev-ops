@@ -74,10 +74,19 @@ gh() {
 		printf '%s\n' '{"path":".agents/scripts/vault-crypto-helper.py","start_line":119,"annotation_level":"warning","title":"Bandit B603","message":"subprocess call: check for execution of untrusted input"}'
 		return 0
 	fi
+	if [[ "$_api" == "api" && "$_paginate" == "repos/marcusquinn/aidevops/pulls/25324" ]]; then
+		printf '%s\n' '{"state":"open","head":{"sha":"abc123"}}'
+		return 0
+	fi
+	if [[ "$_api" == "api" && "$_paginate" == "repos/marcusquinn/aidevops/pulls/25319" ]]; then
+		printf '%s\n' '{"state":"closed","head":{"sha":"def456"}}'
+		return 0
+	fi
 	return 1
 }
 
-cluster_json=$(cat <<'JSON'
+cluster_json=$(
+	cat <<'JSON'
 {
   "repo": "marcusquinn/aidevops",
   "check_name": "CodeFactor",
@@ -172,7 +181,8 @@ qlty_decorated_empty_sarif_cluster_json='{
   ]
 }'
 
-empty_evidence_cluster_json=$(cat <<'JSON'
+empty_evidence_cluster_json=$(
+	cat <<'JSON'
 {
   "repo": "marcusquinn/aidevops",
   "check_name": "ShellCheck",
@@ -185,7 +195,8 @@ empty_evidence_cluster_json=$(cat <<'JSON'
 JSON
 )
 
-events_json=$(cat <<'JSON'
+events_json=$(
+	cat <<'JSON'
 [
   {
     "repo": "marcusquinn/aidevops",
@@ -217,12 +228,20 @@ else
 fi
 paths_json=$(fetch_pr_changed_paths_json "marcusquinn/aidevops" "25324")
 annotations_json=$(fetch_check_run_annotations_summary_json "marcusquinn/aidevops" "123")
+mixed_annotation_signature=$(codefactor_signature_from_annotations '[{"annotation_level":"notice","message":"Starting a process with a partial executable path (B607)"},{"annotation_level":"warning","message":"subprocess call - check for execution of untrusted input. (B603)"}]')
 GH_MODE=fail
 failed_paths_json=$(fetch_pr_changed_paths_json "marcusquinn/aidevops" "25324")
 failed_annotations_json=$(fetch_check_run_annotations_summary_json "marcusquinn/aidevops" "123")
 GH_MODE=success
+open_source=$(resolve_source_from_subject "https://api.github.com/repos/marcusquinn/aidevops/pulls/25324" "marcusquinn/aidevops" "false")
+if closed_source=$(resolve_source_from_subject "https://api.github.com/repos/marcusquinn/aidevops/pulls/25319" "marcusquinn/aidevops" "false"); then
+	closed_source_status=0
+else
+	closed_source_status=$?
+fi
 
-failed_runs_json=$(cat <<'JSON'
+failed_runs_json=$(
+	cat <<'JSON'
 [
   {
     "name": "CodeFactor",
@@ -244,7 +263,8 @@ failed_runs_json=$(cat <<'JSON'
 ]
 JSON
 )
-checks_json=$(cat <<'JSON'
+checks_json=$(
+	cat <<'JSON'
 {"check_runs":[]}
 JSON
 )
@@ -283,8 +303,12 @@ assert_contains "fetch_pr_changed_paths_json returns unique sorted paths" '[".ag
 assert_equals "fetch_pr_changed_paths_json emits one JSON array on gh failure" '[]' "$failed_paths_json"
 assert_equals "fetch_check_run_annotations_summary_json returns provider annotations" '[{"path":".agents/scripts/vault-crypto-helper.py","start_line":119,"annotation_level":"warning","title":"Bandit B603","message":"subprocess call: check for execution of untrusted input"}]' "$annotations_json"
 assert_equals "fetch_check_run_annotations_summary_json emits one JSON array on gh failure" '[]' "$failed_annotations_json"
+assert_equals "CodeFactor signature selects the highest-severity finding" 'failure:codefactor.io:subprocess call - check for execution of untrusted input. (B603)' "$mixed_annotation_signature"
+assert_equals "resolve_source_from_subject retains open PR failures" 'pr|#25324|https://github.com/marcusquinn/aidevops/pull/25324|25324||abc123' "$open_source"
+assert_equals "resolve_source_from_subject rejects stale closed PR failures" "1" "$closed_source_status"
 assert_equals "process_failed_runs attaches paths to CodeFactor failure" '[".agents/scripts/vault-crypto-helper.py",".agents/scripts/vault-helper.sh"]' "$codefactor_paths_json"
 assert_equals "process_failed_runs attaches annotations to CodeFactor failure" '[{"path":".agents/scripts/vault-crypto-helper.py","start_line":119,"annotation_level":"warning","title":"Bandit B603","message":"subprocess call: check for execution of untrusted input"}]' "$codefactor_annotations_json"
+assert_equals "process_failed_runs fingerprints CodeFactor findings" 'failure:codefactor.io:subprocess call: check for execution of untrusted input' "$(printf '%s\n' "$mined_events_json" | jq -r '.[0].signature')"
 assert_equals "process_failed_runs does not leak CodeFactor paths to later checks" '[]' "$shellcheck_paths_json"
 
 printf '\nTests run: %s\n' "$TESTS_RUN"

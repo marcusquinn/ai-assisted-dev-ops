@@ -402,8 +402,16 @@ resolve_source_from_subject() {
 	if [[ -n "$pr_number" ]]; then
 		local pr_json
 		pr_json=$(gh api "repos/${repo_slug}/pulls/${pr_number}" 2>/dev/null || printf '{}')
-		local head_sha
+		local head_sha pr_state
 		head_sha=$(printf '%s\n' "$pr_json" | jq -r '.head.sha // empty')
+		pr_state=$(printf '%s\n' "$pr_json" | jq -r '.state // empty')
+		# A notification can remain unread after its PR was superseded, closed, or
+		# merged. Mining that stale check cannot identify a currently actionable
+		# systemic failure and can combine several abandoned iterations into a
+		# false cluster (GH#30197).
+		if [[ "$pr_state" != "open" ]] || [[ -z "$head_sha" ]]; then
+			return 1
+		fi
 		printf '%s\n' "pr|#${pr_number}|https://github.com/${repo_slug}/pull/${pr_number}|${pr_number}||${head_sha}"
 		return 0
 	fi
@@ -494,6 +502,33 @@ fetch_check_run_annotations_summary_json() {
 	fi
 
 	printf '%s\n' "$annotations" | jq -s -c '[.[] | select(((.path // "") | length) > 0 or ((.message // "") | length) > 0)][0:5]' 2>/dev/null || printf '%s\n' '[]'
+	return 0
+}
+
+codefactor_signature_from_annotations() {
+	local annotations_json="$1"
+	local finding_signature
+	finding_signature=$(printf '%s\n' "$annotations_json" | jq -r '
+		[
+			.[]
+			| {
+				severity: ({failure: 3, warning: 2, notice: 1}[.annotation_level] // 0),
+				finding: ((.message // .title // empty)
+				| gsub("[\\r\\n\\t]+"; " ")
+				| gsub("[[:space:]]+"; " ")
+				| sub("^[[:space:]]+"; "")
+				| sub("[[:space:]]+$"; ""))
+			}
+			| select(.finding | length > 0)
+		]
+		| sort_by([-.severity, .finding])
+		| .[0].finding // empty
+	' 2>/dev/null || printf '')
+	if [[ -n "$finding_signature" ]]; then
+		printf 'failure:codefactor.io:%s' "$finding_signature"
+	else
+		printf 'failure:codefactor.io'
+	fi
 	return 0
 }
 
@@ -682,6 +717,7 @@ process_failed_runs() {
 			fi
 			run_affected_paths="$affected_paths_json"
 			run_annotations=$(fetch_check_run_annotations_summary_json "$repo_slug" "$(printf '%s\n' "$run_json" | jq -r '.id // empty')")
+			signature=$(codefactor_signature_from_annotations "$run_annotations")
 		fi
 		if [[ "$source_kind" == "pr" ]] && [[ -n "$pr_number" ]] &&
 			{ [[ "$check_name" =~ [Cc]ode[Ff]actor ]] || [[ "$signature" == "failure:codefactor.io" ]]; }; then
