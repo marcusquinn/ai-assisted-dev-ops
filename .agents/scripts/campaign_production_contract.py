@@ -11,10 +11,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-
 CHANNELS = {"facebook", "instagram", "linkedin", "twitter", "email", "blog", "youtube", "short-form", "social-linkedin", "social-reddit", "social-x", "podcast"}
 ASSET_OWNERS = {"writing": "content/production-writing.md", "image": "content/production-image.md", "video": "content/production-video.md", "audio": "content/production-audio.md", "editor": "tools/video/video-editor.md"}
-DEFAULT_FORMATS = {"facebook": ("image", "1:1", None), "instagram": ("image", "4:5", None), "linkedin": ("image", "1.91:1", None), "twitter": ("writing", "text", None), "email": ("writing", "text", None), "blog": ("writing", "text", None), "youtube": ("video", "16:9", 60), "short-form": ("video", "9:16", 30), "social-linkedin": ("image", "1.91:1", None), "social-reddit": ("writing", "text", None), "social-x": ("writing", "text", None), "podcast": ("audio", "audio", 300)}
+DEFAULT_FORMATS = {
+    "facebook": ("image", "1:1", None), "instagram": ("image", "4:5", None),
+    "linkedin": ("image", "1.91:1", None), "twitter": ("writing", "text", None),
+    "email": ("writing", "text", None), "blog": ("writing", "text", None),
+    "youtube": ("video", "16:9", 60), "short-form": ("video", "9:16", 30),
+    "social-linkedin": ("image", "1.91:1", None), "social-reddit": ("writing", "text", None),
+    "social-x": ("writing", "text", None), "podcast": ("audio", "audio", 300),
+}
 
 
 class ManifestError(ValueError):
@@ -101,29 +107,41 @@ def _file_digest(path: Path) -> str:
     return "sha256:" + hasher.hexdigest()
 
 
-def validate_distribution_eligibility(document: dict[str, Any], campaign_dir: Path) -> None:
-    """Fail closed unless a completed output has review, rights, and provenance evidence."""
-    validate_manifest(document)
-    if document["lifecycle"].get("status") != "approved":
-        raise ManifestError("production manifest lifecycle must be approved before distribution")
-    review, authenticity = document["review"], document["authenticity"]
+def _require_approved_review(document: dict[str, Any]) -> None:
+    review = document["review"]
     if review.get("status") != "approved" or not review.get("decision_by") or not review.get("decision_at"):
         raise ManifestError("production manifest requires an attributed approved review")
+
+
+def _require_rights_and_provenance(document: dict[str, Any]) -> None:
+    authenticity = document["authenticity"]
     provenance, clearance = authenticity.get("provenance"), authenticity.get("rights_clearance")
     if not provenance or not provenance.get("source") or not provenance.get("recipe_sha256"):
         raise ManifestError("production manifest requires source provenance and a recipe hash")
     if not clearance or any(not clearance.get(field) for field in ("license", "consent", "territory")):
         raise ManifestError("production manifest requires license, consent, and territory clearance")
-    expires_at = clearance.get("expires_at")
     try:
-        if expires_at and date.fromisoformat(expires_at) < date.today():
+        if clearance.get("expires_at") and date.fromisoformat(clearance["expires_at"]) < date.today():
             raise ManifestError("production manifest rights clearance has expired")
     except ValueError as error:
         raise ManifestError("production manifest rights expiry must be an ISO date") from error
+
+
+def _verify_outputs(outputs: list[dict[str, Any]], campaign_dir: Path) -> None:
     root = campaign_dir.resolve()
-    for output in document["outputs"]:
+    for output in outputs:
         output_path = (root / output["path"]).resolve()
         if root not in output_path.parents or not output_path.is_file():
             raise ManifestError("production manifest output is missing or outside the campaign directory")
         if _file_digest(output_path) != output["sha256"]:
             raise ManifestError("production manifest output hash does not match recorded evidence")
+
+
+def validate_distribution_eligibility(document: dict[str, Any], campaign_dir: Path) -> None:
+    """Fail closed unless a completed output has review, rights, and provenance evidence."""
+    validate_manifest(document)
+    if document["lifecycle"].get("status") != "approved":
+        raise ManifestError("production manifest lifecycle must be approved before distribution")
+    _require_approved_review(document)
+    _require_rights_and_provenance(document)
+    _verify_outputs(document["outputs"], campaign_dir)

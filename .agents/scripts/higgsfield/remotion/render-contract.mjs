@@ -24,7 +24,11 @@ export function calculateFrames(scenes, sceneVideoFilenames, transitionDuration,
   const sceneCount = Math.min(scenes.length, sceneVideoFilenames.length);
   const totalSceneDuration = scenes.slice(0, sceneCount).reduce((sum, scene) => sum + (scene.duration || 5), 0);
   const transitionOverlap = Math.max(0, sceneCount - 1) * transitionDuration;
-  return { sceneCount, totalSceneDuration, totalFrames: Math.max(1, totalSceneDuration * fps - transitionOverlap) };
+  return {
+    sceneCount,
+    totalSceneDuration,
+    totalFrames: Math.max(1, totalSceneDuration * fps - transitionOverlap),
+  };
 }
 
 export function normalizeCaptions(rawCaptions, scenes, fps) {
@@ -38,7 +42,15 @@ export function normalizeCaptions(rawCaptions, scenes, fps) {
     for (let scene = 0; scene < scenes.length; scene += 1) {
       const sceneFrames = (scenes[scene].duration || 5) * fps;
       if ((caption.startFrame || 0) >= frameOffset && (caption.startFrame || 0) < frameOffset + sceneFrames) {
-        return { scene, text: caption.text || "", position: caption.position || "bottom", style: caption.style || "bold-white", startFrame: caption.startFrame, endFrame: caption.endFrame, words: caption.words || [] };
+        return {
+          scene,
+          text: caption.text || "",
+          position: caption.position || "bottom",
+          style: caption.style || "bold-white",
+          startFrame: caption.startFrame,
+          endFrame: caption.endFrame,
+          words: caption.words || [],
+        };
       }
       frameOffset += sceneFrames;
     }
