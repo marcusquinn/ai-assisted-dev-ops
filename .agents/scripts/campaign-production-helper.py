@@ -95,6 +95,46 @@ def validate_manifest(document: dict[str, Any]) -> None:
         raise ManifestError("blocked lifecycle requires an explicit blocked execution route")
 
 
+def _file_digest(path: Path) -> str:
+    """Return a SHA-256 reference for output bytes."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return "sha256:" + hasher.hexdigest()
+
+
+def validate_distribution_eligibility(document: dict[str, Any], campaign_dir: Path) -> None:
+    """Fail closed unless a completed output has review, rights, and provenance evidence."""
+    validate_manifest(document)
+    if document["lifecycle"].get("status") != "approved":
+        raise ManifestError("production manifest lifecycle must be approved before distribution")
+    review = document["review"]
+    if review.get("status") != "approved" or not review.get("decision_by") or not review.get("decision_at"):
+        raise ManifestError("production manifest requires an attributed approved review")
+    authenticity = document["authenticity"]
+    provenance = authenticity.get("provenance")
+    clearance = authenticity.get("rights_clearance")
+    if not provenance or not provenance.get("source") or not provenance.get("recipe_sha256"):
+        raise ManifestError("production manifest requires source provenance and a recipe hash")
+    if not clearance or any(not clearance.get(field) for field in ("license", "consent", "territory")):
+        raise ManifestError("production manifest requires license, consent, and territory clearance")
+    expires_at = clearance.get("expires_at")
+    if expires_at:
+        try:
+            if __import__("datetime").date.fromisoformat(expires_at) < __import__("datetime").date.today():
+                raise ManifestError("production manifest rights clearance has expired")
+        except ValueError as error:
+            raise ManifestError("production manifest rights expiry must be an ISO date") from error
+    root = campaign_dir.resolve()
+    for output in document["outputs"]:
+        output_path = (root / output["path"]).resolve()
+        if root not in output_path.parents or not output_path.is_file():
+            raise ManifestError("production manifest output is missing or outside the campaign directory")
+        if _file_digest(output_path) != output["sha256"]:
+            raise ManifestError("production manifest output hash does not match recorded evidence")
+
+
 def build_brief(campaign_id: str, intake: dict[str, Any], revision: int) -> dict[str, Any]:
     """Convert validated intake facts to one evidence-linked strategy brief."""
     audience = intake["audiences"][0]
@@ -196,6 +236,19 @@ def command_validate(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def command_eligibility(arguments: argparse.Namespace) -> int:
+    """Validate every recorded job before campaign launch or promotion."""
+    campaign_dir = Path(arguments.campaign_dir).resolve()
+    directory = campaign_dir / "drafts" / "production-manifests"
+    manifests = sorted(directory.glob("*.json")) if directory.is_dir() else []
+    if not manifests:
+        raise ManifestError("no production manifests exist; distribution is fail-closed")
+    for path in manifests:
+        validate_distribution_eligibility(read_document(path, "production manifest"), campaign_dir)
+    print(f"Campaign production eligible: {campaign_dir}")
+    return 0
+
+
 def main() -> int:
     """Parse the narrow campaign production contract CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -215,6 +268,9 @@ def main() -> int:
     validate = commands.add_parser("validate")
     validate.add_argument("manifest")
     validate.set_defaults(handler=command_validate)
+    eligibility = commands.add_parser("eligibility")
+    eligibility.add_argument("campaign_dir")
+    eligibility.set_defaults(handler=command_eligibility)
     arguments = parser.parse_args()
     if getattr(arguments, "variant", 1) < 1:
         raise ManifestError("variant must be a positive integer")

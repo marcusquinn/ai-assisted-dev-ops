@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Campaign Asset Manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "assets"],
+  "properties": {
+    "version": {"const": 2},
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "filename", "kind", "sha256", "size_bytes", "lineage", "rights", "review", "recipe", "variant", "output_status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "filename": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "lineage": {"type": "object", "required": ["source_asset_id", "source_sha256"], "properties": {"source_asset_id": {"type": ["string", "null"]}, "source_sha256": {"type": ["string", "null"]}}},
+          "rights": {"type": "object", "required": ["license", "consent", "territory", "expires_at"], "properties": {"license": {"type": "string"}, "consent": {"type": "string"}, "territory": {"type": "string"}, "expires_at": {"type": ["string", "null"]}}},
+          "review": {"type": "object", "required": ["status"], "properties": {"status": {"enum": ["required", "pending", "approved", "rejected"]}}},
+          "recipe": {"type": "object", "required": ["tool", "provider", "hash"], "properties": {"tool": {"type": "string"}, "provider": {"type": "string"}, "hash": {"type": "string"}}},
+          "variant": {"type": "string", "minLength": 1},
+          "synthetic_disclosure": {"type": "string"},
+          "output_status": {"enum": ["source", "in_progress", "completed", "failed"]}
+        }
+      }
+    }
+  }
+}

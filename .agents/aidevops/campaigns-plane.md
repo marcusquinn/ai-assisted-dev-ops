@@ -66,7 +66,7 @@ _campaigns/
 |--------|-----------|-------------|---------|
 | `lib/brand/` | Yes | `internal` | Reusable brand identity files (logos, colours, voice) |
 | `lib/swipe/` | Yes | `internal` | Inspiration files: saved ads, landing pages, email examples |
-| `lib/assets/` | Yes | `internal` | Binary asset manifest + 640px preview thumbnails (P4) |
+| `lib/assets/` | Yes | `internal` | Schema-v2 binary asset manifest + 640px preview thumbnails (P4) |
 | `intel/` | **No** (gitignored) | `sensitive` | Competitive intel — local-LLM-only, never committed |
 | `active/<id>/` | **No** (gitignored) | `internal` | In-progress campaign creative (drafts, briefs, schedules) |
 | `launched/<id>/` | Yes | varies | Post-launch directory: results + learnings are versioned |
@@ -208,7 +208,12 @@ aidevops campaign asset list [--type image|video|audio|pdf|all] [--campaign <id>
 aidevops campaign asset manifest <asset-id>
 ```
 
-Asset manifest lives at `_campaigns/lib/assets/manifest.json`. Preview thumbnails
+Asset manifest lives at `_campaigns/lib/assets/manifest.json`. New writes use schema
+v2: originals and derivatives record byte hashes, source lineage, recipe/provider,
+variant, rights/consent/territory/expiry, synthetic disclosure, review, and output
+state. Schema-v1 manifests remain readable; promotion and launch fail closed until
+every production manifest has approved review, rights clearance, source/recipe
+provenance, and matching output hashes. Preview thumbnails
 go to `<target-dir>/.previews/<filename>_preview.png`. Requires ImageMagick (`convert`)
 for image/PDF previews and `ffmpeg` for video first-frame extraction. Max preview
 size is 640px per side (safe below the 1568px crash limit in `reference/screenshot-limits.md`).

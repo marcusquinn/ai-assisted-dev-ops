@@ -25,6 +25,7 @@ export const FullVideo: React.FC<BriefProps> = ({
   transitionStyle = "fade",
   transitionDuration = 15,
   musicPath,
+  fitPolicy = "cover",
 }) => {
   const { fps } = useVideoConfig();
   const useTransitions = transitionStyle !== "none" && sceneVideos.length > 1;
@@ -58,7 +59,7 @@ export const FullVideo: React.FC<BriefProps> = ({
                 <AbsoluteFill>
                   <OffthreadVideo
                     src={toVideoSrc(videoSrc)}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    style={{ width: "100%", height: "100%", objectFit: scene?.fit || fitPolicy }}
                   />
                   {caption && (
                     <CaptionOverlay
@@ -120,7 +121,7 @@ export const FullVideo: React.FC<BriefProps> = ({
             <AbsoluteFill>
               <OffthreadVideo
                 src={toVideoSrc(videoSrc)}
-                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                style={{ width: "100%", height: "100%", objectFit: scene?.fit || fitPolicy }}
               />
               {caption && (
                 <CaptionOverlay
