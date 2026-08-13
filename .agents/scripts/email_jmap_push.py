@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from email_jmap_transport import _get_auth, _make_auth_header, _session_context
 
@@ -26,6 +27,14 @@ def _build_event_source_url(event_source_url, types):
         separator = "&" if "?" in url else "?"
         url = url + separator + "ping=30"
     return url, type_list
+
+
+def _validate_event_source_url(url):
+    """Reject EventSource URLs that are not absolute HTTP(S) endpoints."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("JMAP EventSource URL must use HTTP(S)")
+    return url
 
 
 def _process_sse_stream(resp, timeout, start_time):
@@ -64,6 +73,11 @@ def cmd_push(args):
         print("ERROR: Server does not provide eventSourceUrl (push not supported)", file=sys.stderr)
         return 1
     url, type_list = _build_event_source_url(event_source_url, args.types or "mail")
+    try:
+        _validate_event_source_url(url)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
     timeout = args.timeout or 300
     auth_type, credential = _get_auth()
     auth_header = _make_auth_header(args.user, auth_type, credential)
@@ -81,7 +95,8 @@ def cmd_push(args):
     })
     start_time = time.time()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # The scheme and authority are validated by _validate_event_source_url above.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
             _process_sse_stream(response, timeout, start_time)
     except urllib.error.URLError as error:
         print(f"ERROR: EventSource connection failed: {error.reason}", file=sys.stderr)

@@ -57,3 +57,34 @@ export function normalizeCaptions(rawCaptions, scenes, fps) {
     throw new Error("caption timing is outside the render");
   });
 }
+
+export function buildSceneVideoFilenames(videoPaths) {
+  return videoPaths.map((videoPath, index) => `scene-${index}-${fileDigest(videoPath).slice(0, 12)}.mp4`);
+}
+
+export function buildRenderProps(brief, sceneVideos, transitionDuration, musicPath) {
+  const scenes = brief.scenes || [];
+  return {
+    title: brief.title || "Untitled",
+    scenes,
+    aspect: brief.aspect || "9:16",
+    captions: normalizeCaptions(brief.captions || [], scenes, 30),
+    sceneVideos,
+    transitionStyle: brief.transitionStyle || "fade",
+    transitionDuration,
+    musicPath,
+    fitPolicy: brief.fitPolicy || "cover",
+  };
+}
+
+export function buildRenderManifest(outputPath, outputName, recipe, props) {
+  return {
+    schema_version: 1,
+    output: outputName,
+    output_sha256: `sha256:${fileDigest(outputPath)}`,
+    recipe_sha256: `sha256:${stableDigest(recipe)}`,
+    captions: props.captions,
+    fit_policy: props.fitPolicy,
+    status: "completed",
+  };
+}

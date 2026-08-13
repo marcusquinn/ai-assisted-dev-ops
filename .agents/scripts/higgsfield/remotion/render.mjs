@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { calculateFrames, fileDigest, normalizeCaptions, stableDigest, validateBrief } from "./render-contract.mjs";
+import { buildRenderManifest, buildRenderProps, buildSceneVideoFilenames, calculateFrames, fileDigest, validateBrief } from "./render-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +76,29 @@ function parseArgs() {
   return opts;
 }
 
+function copySceneVideos(videoPaths, publicDir) {
+  const filenames = buildSceneVideoFilenames(videoPaths);
+  filenames.forEach((filename, index) => {
+    const videoPath = videoPaths[index];
+    copyFileSync(videoPath, join(publicDir, filename));
+    console.log(`  Copied ${basename(videoPath)} -> public/${filename}`);
+  });
+  return filenames;
+}
+
+function renderComposition(output, renderArgs, recipe, props) {
+  try {
+    execFileSync("npx", renderArgs, { cwd: __dirname, stdio: "inherit", timeout: 600000 });
+    if (!existsSync(output) || statSync(output).size === 0) throw new Error("render produced no output bytes");
+    const manifest = buildRenderManifest(output, basename(output), recipe, props);
+    writeFileSync(`${output}.manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
+    console.log(`\nRender complete: ${output}`);
+  } catch (error) {
+    console.error(`Render failed: ${error.message}`);
+    process.exit(1);
+  }
+}
+
 /**
  * Render a multi-scene video composition from a brief JSON and scene video files.
  * Copies assets to public/, builds Remotion props, and invokes npx remotion render.
@@ -113,29 +136,19 @@ function renderVideo(opts) {
   if (!existsSync(publicDir)) {
     mkdirSync(publicDir, { recursive: true });
   }
-  const sceneVideoFilenames = videoPaths.map((absPath, i) => {
-    const filename = `scene-${i}-${fileDigest(absPath).slice(0, 12)}.mp4`;
-    const dest = join(publicDir, filename);
-    copyFileSync(absPath, dest);
-    console.log(`  Copied ${basename(absPath)} -> public/${filename}`);
-    return filename;
-  });
+  const sceneVideoFilenames = copySceneVideos(videoPaths, publicDir);
 
   const fps = 30;
   const scenes = brief.scenes || [];
 
   // Build props for Remotion
-  const props = {
-    title: brief.title || "Untitled",
-    scenes,
-    aspect: brief.aspect || "9:16",
-    captions: normalizeCaptions(brief.captions || [], scenes, fps),
-    sceneVideos: sceneVideoFilenames,
-    transitionStyle: brief.transitionStyle || opts.transition || "fade",
-    transitionDuration: parseInt(opts["transition-duration"] || "15", 10),
-    musicPath: copyMusicToPublic(brief, briefPath, publicDir),
-    fitPolicy: brief.fitPolicy || "cover",
-  };
+  const transitionDuration = parseInt(opts["transition-duration"] || "15", 10);
+  const props = buildRenderProps(
+    { ...brief, transitionStyle: brief.transitionStyle || opts.transition },
+    sceneVideoFilenames,
+    transitionDuration,
+    copyMusicToPublic(brief, briefPath, publicDir)
+  );
 
   const { totalSceneDuration, totalFrames } = calculateFrames(
     scenes, sceneVideoFilenames, props.transitionDuration, fps
@@ -163,21 +176,8 @@ function renderVideo(opts) {
   console.log(`  Transitions: ${props.transitionStyle} (${props.transitionDuration}f)`);
   console.log(`  Captions: ${props.captions.length}`);
 
-  try {
-    execFileSync("npx", renderArgs, {
-      cwd: __dirname,
-      stdio: "inherit",
-      timeout: 600000, // 10 min
-    });
-    if (!existsSync(output) || statSync(output).size === 0) throw new Error("render produced no output bytes");
-    const recipe = { brief_sha256: fileDigest(briefPath), input_sha256: videoPaths.map(fileDigest), props, width, height, totalFrames, fps };
-    const manifest = { schema_version: 1, output: basename(output), output_sha256: `sha256:${fileDigest(output)}`, recipe_sha256: `sha256:${stableDigest(recipe)}`, captions: props.captions, fit_policy: props.fitPolicy, status: "completed" };
-    writeFileSync(`${output}.manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
-    console.log(`\nRender complete: ${output}`);
-  } catch (err) {
-    console.error(`Render failed: ${err.message}`);
-    process.exit(1);
-  }
+  const recipe = { brief_sha256: fileDigest(briefPath), input_sha256: videoPaths.map(fileDigest), props, width, height, totalFrames, fps };
+  renderComposition(output, renderArgs, recipe, props);
 }
 
 /**
