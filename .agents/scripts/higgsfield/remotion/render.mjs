@@ -230,7 +230,7 @@ function renderStill(opts) {
 // Main
 const opts = parseArgs();
 
-if (!opts.brief && !opts.still && !opts.help) {
+function printUsage() {
   console.log(`
 Higgsfield Post-Production Renderer (Remotion)
 
@@ -255,10 +255,11 @@ Still options:
   --font               Font family (default: Inter)
   --output             Output file path (default: graphic.png)
 `);
-  process.exit(0);
 }
 
-if (opts.still) {
+if (opts.help || (!opts.brief && !opts.still)) {
+  printUsage();
+} else if (opts.still) {
   renderStill(opts);
 } else {
   renderVideo(opts);

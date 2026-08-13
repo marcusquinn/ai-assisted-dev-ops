@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { buildRenderProps, buildSceneVideoFilenames, normalizeCaptions, validateBrief } from "./render-contract.mjs";
+import { execFileSync } from "node:child_process";
+import {
+  buildRenderProps,
+  buildSceneVideoFilenames,
+  normalizeCaptions,
+  validateBrief,
+} from "./render-contract.mjs";
 
 const aspectDimensions = { "9:16": [1080, 1920] };
 const brief = { aspect: "9:16", scenes: [{ prompt: "one", duration: 1, fit: "contain" }] };
@@ -15,8 +21,20 @@ assert.deepEqual(
   ["scene-0.mp4"]
 );
 assert.throws(
-  () => validateBrief({ ...brief, scenes: [...brief.scenes, { prompt: "two", duration: 1 }] }, ["one.mp4"], aspectDimensions),
+  () =>
+    validateBrief(
+      { ...brief, scenes: [...brief.scenes, { prompt: "two", duration: 1 }] },
+      ["one.mp4"],
+      aspectDimensions,
+    ),
   /scene\/video count mismatch/
 );
+const renderPath = new URL("./render.mjs", import.meta.url).pathname;
+const helpOutput = execFileSync(process.execPath, [renderPath, "--help"], {
+  encoding: "utf8",
+});
+assert.match(helpOutput, /Higgsfield Post-Production Renderer/);
 
-console.log("PASS: renderer rejects mismatched scenes and unsafe caption timing");
+console.log(
+  "PASS: renderer rejects mismatched scenes and unsafe caption timing, and prints help safely",
+);
