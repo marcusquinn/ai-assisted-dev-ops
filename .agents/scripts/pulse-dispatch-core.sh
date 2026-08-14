@@ -289,11 +289,17 @@ lock_issue_for_worker() {
 
 	# aidevops:trust-boundary — never launch a worker when the mutable public
 	# instruction surface could not be frozen and independently re-read.
+	local lock_applied=0
 	if ! gh issue lock "$issue_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1; then
-		echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
-		return 1
+		if ! _verify_issue_conversation_lock "$issue_num" "$slug"; then
+			echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
+			return 1
+		fi
+		echo "[pulse-wrapper] Reused existing verified conversation lock for #${issue_num} in ${slug} (GH#30180)" >>"$LOGFILE"
+	else
+		lock_applied=1
 	fi
-	if ! _verify_issue_conversation_lock "$issue_num" "$slug"; then
+	if [[ "$lock_applied" -eq 1 ]] && ! _verify_issue_conversation_lock "$issue_num" "$slug"; then
 		echo "[pulse-wrapper] Failed to verify conversation lock for #${issue_num} in ${slug}; dispatch remains blocked (GH#30180)" >>"$LOGFILE"
 		return 1
 	fi
@@ -712,20 +718,19 @@ _issue_thread_is_trusted_maintainer_only() {
 	local issue_author_association
 	local issue_author_login
 	issue_json=$(gh api "$issue_api_path" 2>/dev/null) || return 1
-	IFS=$'\t' read -r issue_author_association issue_author_login < <(printf '%s' "$issue_json" \
-		| jq -r '[.author_association // "NONE", (.user.login // .author.login // "")] | @tsv') || {
+	IFS=$'\t' read -r issue_author_association issue_author_login < <(printf '%s' "$issue_json" |
+		jq -r '[.author_association // "NONE", (.user.login // .author.login // "")] | @tsv') || {
 		issue_author_association=""
 		issue_author_login=""
 	}
 	case "$issue_author_association" in
-		OWNER | MEMBER)
-			;;
-		COLLABORATOR)
-			_issue_actor_has_repo_write_permission "$repo_slug" "$issue_author_login" || return 1
-			;;
-		*)
-			return 1
-			;;
+	OWNER | MEMBER) ;;
+	COLLABORATOR)
+		_issue_actor_has_repo_write_permission "$repo_slug" "$issue_author_login" || return 1
+		;;
+	*)
+		return 1
+		;;
 	esac
 
 	local comments_json
@@ -1245,8 +1250,8 @@ _is_bot_generated_cleanup_issue() {
 
 _dispatch_waiting_for_maintainer_permission() {
 	local issue_meta_json="$1"
-	printf '%s' "$issue_meta_json" \
-		| jq -e '.labels | map(.name) | index("needs-maintainer-permissions") != null' >/dev/null 2>&1
+	printf '%s' "$issue_meta_json" |
+		jq -e '.labels | map(.name) | index("needs-maintainer-permissions") != null' >/dev/null 2>&1
 	return $?
 }
 
@@ -1845,9 +1850,9 @@ _release_dispatch_claim_on_abort() {
 	# audit comment is preserved.
 	local _is_pre_launch_abort=0
 	case "$reason" in
-		worker_launch_rc_* | predispatch_validator_closed | eligibility_gate)
-			_is_pre_launch_abort=1
-			;;
+	worker_launch_rc_* | predispatch_validator_closed | eligibility_gate)
+		_is_pre_launch_abort=1
+		;;
 	esac
 
 	if [[ "$_is_pre_launch_abort" == "1" ]]; then
@@ -2173,8 +2178,8 @@ _ensure_issue_body_has_brief() {
 	# "## How" bodies ~5KB each; the old check treated them as stubs and
 	# force-enriched them into emptiness.
 	local current_body
-	if [[ -n "$pre_fetched_json" ]] \
-		&& printf '%s' "$pre_fetched_json" | jq -e '.body' >/dev/null 2>&1; then
+	if [[ -n "$pre_fetched_json" ]] &&
+		printf '%s' "$pre_fetched_json" | jq -e '.body' >/dev/null 2>&1; then
 		current_body=$(printf '%s' "$pre_fetched_json" | jq -r '.body // ""' 2>/dev/null) || current_body=""
 	else
 		# t3027: route through gh_issue_view wrapper for REST fallback under
