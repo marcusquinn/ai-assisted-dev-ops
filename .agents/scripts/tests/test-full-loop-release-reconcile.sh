@@ -1488,6 +1488,7 @@ fi
 printf 'PASS published reconciliation is idempotent\n'
 
 printf 'not-requested\n' >"${TEST_ROOT}/receipts/test_repo-90.status"
+lane_expected_sources='91'
 terminal_rc=0
 AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 \
 	>/dev/null 2>&1 || terminal_rc=$?
@@ -1496,7 +1497,15 @@ if [[ "$terminal_rc" -ne 1 ]]; then
 	exit 1
 fi
 printf 'PASS reconciliation cannot replace the explicit release command as publication intent\n'
-rm -f "${TEST_ROOT}/receipts/test_repo-90.status"
+lane_expected_sources='90@1111111111111111111111111111111111111111'
+rm -f "${TEST_ROOT}/finalize.log"
+AIDEVOPS_FULL_LOOP_REPO=test/repo _full_loop_release_existing_command reconcile 90 >/dev/null
+if ! grep -qx 'test/repo 90 v1.2.3' "${TEST_ROOT}/finalize.log"; then
+	printf 'FAIL matching explicit publication intent did not transition not-requested evidence\n'
+	exit 1
+fi
+printf 'PASS matching explicit publication intent may transition not-requested evidence\n'
+rm -f "${TEST_ROOT}/receipts/test_repo-90.status" "${TEST_ROOT}/finalize.log"
 
 _full_loop_release_latest_tag() {
 	printf 'v1.2.4\n'

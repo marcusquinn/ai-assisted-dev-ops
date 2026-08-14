@@ -1037,6 +1037,7 @@ _full_loop_release_existing_command() {
 	local protected_tag_state_rc=0
 	local receipt_path=""
 	local receipt_status=""
+	local source_json=""
 
 	[[ "$mode" == "status" || "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]] || return 1
 	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
@@ -1046,10 +1047,7 @@ _full_loop_release_existing_command() {
 	printf 'RELEASE_RECEIPT=%s\n' "${receipt_status:-missing}"
 	case "$receipt_status" in
 	"" | "$_FULL_LOOP_PHASE_FAILED" | "$_FULL_LOOP_RELEASE_PUBLISHED" | "$_FULL_LOOP_RELEASE_SUPERSEDED") ;;
-	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
-		printf 'Cannot reconcile terminal release:not-requested evidence for PR #%s\n' "$requested_pr" >&2
-		return 1
-		;;
+	"$_FULL_LOOP_RELEASE_NOT_REQUESTED") ;;
 	*)
 		printf 'Cannot reconcile unknown release:%s evidence for PR #%s\n' "$receipt_status" "$requested_pr" >&2
 		return 1
@@ -1057,6 +1055,19 @@ _full_loop_release_existing_command() {
 	esac
 	_full_loop_release_find_tag_for_pr "$repo" "$requested_pr" || return $?
 	tag_name="$_FULL_LOOP_RELEASE_FOUND_TAG"
+	if [[ "$receipt_status" == "$_FULL_LOOP_RELEASE_NOT_REQUESTED" ]]; then
+		[[ "$mode" == "$_FULL_LOOP_RELEASE_MODE_RECONCILE" ]] || {
+			printf 'Cannot reconcile terminal release:not-requested evidence for PR #%s\n' "$requested_pr" >&2
+			return 1
+		}
+		source_json=$(_full_loop_release_source_json_from_tag "$tag_name") || return 1
+		_full_loop_release_validate_published_reconciliation_intent \
+			"$repo" "$requested_pr" "$tag_name" "$source_json" || {
+			printf 'Cannot reconcile release:not-requested without matching explicit publication intent for PR #%s\n' \
+				"$requested_pr" >&2
+			return 1
+		}
+	fi
 	latest_tag=$(_full_loop_release_latest_tag) || return 1
 	if [[ "$tag_name" != "$latest_tag" ]]; then
 		printf 'STALE_RELEASE_TAG=%s\nLATEST_RELEASE_TAG=%s\n' "$tag_name" "$latest_tag"
