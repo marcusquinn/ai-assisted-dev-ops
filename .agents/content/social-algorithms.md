@@ -74,8 +74,9 @@ The public X For You implementation is a useful dated example, not a universal
 recipe. As documented in `xai-org/x-algorithm` on 2026-08-14:
 
 - `home-mixer/params/param.rs` publishes defaults for predicted actions. Copy-link
-  shares and eligible mutual-follow replies carry the largest positive defaults;
-  replies, quotes, direct-message shares, and author follows exceed a like.
+  shares and predicted replies to eligible original posts from mutual follows
+  carry the largest positive defaults; replies, quotes, direct-message shares,
+  and author follows exceed a like.
 - Not-interested, block, mute, and report predictions have negative weights.
 - The coefficients multiply a viewer's **predicted probability** of each action
   (or a predicted continuous value), not observed engagement totals. Therefore
