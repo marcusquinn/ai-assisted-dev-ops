@@ -976,7 +976,7 @@ test_opencode_project_table_migration_replay_detected() {
 	local project_table_error="table \`project\` already exists"
 	printf '%s\n' 'Error: Unexpected error' "$project_table_error" >"$output_file"
 
-	if _opencode_project_table_migration_replay_detected 1 "$output_file" && \
+	if _opencode_project_table_migration_replay_detected 1 "$output_file" &&
 		! _opencode_project_table_migration_replay_detected 0 "$output_file"; then
 		print_result "detects OpenCode project table migration replay startup failure" 0
 		return 0
@@ -990,12 +990,15 @@ test_opencode_project_table_migration_replay_detected() {
 test_large_opencode_prompt_uses_file_attachment() {
 	local prompt="large-seed-prompt-with-worker-contract"
 	local old_threshold="${HEADLESS_PROMPT_FILE_THRESHOLD_BYTES:-}"
+	local old_prompt_dir="${AIDEVOPS_HEADLESS_PROMPT_DIR:-}"
 	HEADLESS_PROMPT_FILE_THRESHOLD_BYTES=8
 
 	_prepare_runtime_prompt_transport "opencode" "$prompt"
 
 	local prompt_arg="$_HEADLESS_RUN_PROMPT_ARG"
 	local prompt_file="$_HEADLESS_RUN_PROMPT_FILE"
+	local prompt_dir="${prompt_file%/*}"
+	local observed_prompt_dir="${AIDEVOPS_HEADLESS_PROMPT_DIR:-}"
 	local cmd_text=""
 	cmd_text=$(
 		while IFS= read -r -d '' arg; do
@@ -1007,6 +1010,7 @@ test_large_opencode_prompt_uses_file_attachment() {
 	if [[ "$prompt_arg" != *"$prompt"* ]] &&
 		[[ -f "$prompt_file" ]] &&
 		[[ "$(<"$prompt_file")" == "$prompt" ]] &&
+		[[ "$observed_prompt_dir" == "$prompt_dir" ]] &&
 		[[ "$cmd_text" == *"<--file><${prompt_file}>"* ]] &&
 		[[ "$cmd_text" != *"$prompt"* ]]; then
 		_cleanup_headless_runtime_temp_paths
@@ -1014,6 +1018,11 @@ test_large_opencode_prompt_uses_file_attachment() {
 			HEADLESS_PROMPT_FILE_THRESHOLD_BYTES="$old_threshold"
 		else
 			unset HEADLESS_PROMPT_FILE_THRESHOLD_BYTES
+		fi
+		if [[ -n "$old_prompt_dir" ]]; then
+			AIDEVOPS_HEADLESS_PROMPT_DIR="$old_prompt_dir"
+		else
+			unset AIDEVOPS_HEADLESS_PROMPT_DIR
 		fi
 		print_result "large opencode prompts use file attachment instead of argv" 0
 		return 0
@@ -1025,8 +1034,13 @@ test_large_opencode_prompt_uses_file_attachment() {
 	else
 		unset HEADLESS_PROMPT_FILE_THRESHOLD_BYTES
 	fi
+	if [[ -n "$old_prompt_dir" ]]; then
+		AIDEVOPS_HEADLESS_PROMPT_DIR="$old_prompt_dir"
+	else
+		unset AIDEVOPS_HEADLESS_PROMPT_DIR
+	fi
 	print_result "large opencode prompts use file attachment instead of argv" 1 \
-		"prompt_arg=${prompt_arg} prompt_file=${prompt_file} cmd=${cmd_text}"
+		"prompt_arg=${prompt_arg} prompt_file=${prompt_file} prompt_dir=${observed_prompt_dir} cmd=${cmd_text}"
 	return 0
 }
 
@@ -1071,7 +1085,10 @@ test_public_triage_isolated_data_is_discarded() {
 	local lifecycle_state=""
 	lifecycle_state=$(
 		local merge_count=0 replay_count=0 preserve_count=0
-		_replay_preserved_worker_dbs() { replay_count=$((replay_count + 1)); return 0; }
+		_replay_preserved_worker_dbs() {
+			replay_count=$((replay_count + 1))
+			return 0
+		}
 		_merge_worker_db() {
 			local isolated_dir="$1"
 			: "$isolated_dir"
@@ -1123,8 +1140,8 @@ test_public_triage_cleanup_failure_is_reported() {
 	)
 	command rm -rf "$triage_dir"
 
-	if [[ "$lifecycle_state" == *"db_cleanup_failed"* && \
-		"$lifecycle_state" == *"guardian=retained"* && \
+	if [[ "$lifecycle_state" == *"db_cleanup_failed"* &&
+		"$lifecycle_state" == *"guardian=retained"* &&
 		"$lifecycle_state" == *"state=1|yes|"* ]]; then
 		print_result "public triage reports isolated-data cleanup failure" 0
 		return 0
@@ -1168,9 +1185,9 @@ test_public_triage_does_not_persist_session_or_failure_output() {
 		persisted_marker=1
 	fi
 
-	if [[ "$session_state" == "openai|issue-42|ses_worker|openai/test" && \
-		"$handle_status" -eq 75 && ! -f "$output_file" && \
-		"$stored_details" == "ephemeral workload details suppressed" && \
+	if [[ "$session_state" == "openai|issue-42|ses_worker|openai/test" &&
+		"$handle_status" -eq 75 && ! -f "$output_file" &&
+		"$stored_details" == "ephemeral workload details suppressed" &&
 		"$persisted_marker" -eq 0 ]]; then
 		print_result "public triage persists neither sessions nor transcript-derived failure output" 0
 		return 0
@@ -1277,7 +1294,7 @@ test_registered_temp_cleanup_failure_is_reported_and_retained() {
 	_HEADLESS_RUNTIME_TEMP_PATHS=""
 	command rm -rf "$temp_path"
 
-	if [[ "$state" == *"headless_runtime_temp_cleanup_failed"* && \
+	if [[ "$state" == *"headless_runtime_temp_cleanup_failed"* &&
 		"$state" == *"status=1 retained=${temp_path}"* ]]; then
 		print_result "registered temp cleanup reports and retains undeleted paths" 0
 		return 0
@@ -1306,7 +1323,7 @@ test_public_triage_output_temp_starts_cleanup_guardian() {
 	)
 	command rm -f "$output_path"
 
-	if [[ "$state" == *"guardian=${output_path}"* && \
+	if [[ "$state" == *"guardian=${output_path}"* &&
 		"$state" == *"registered=${output_path}"* ]]; then
 		print_result "public triage output temp starts a detached cleanup guardian" 0
 		return 0

@@ -59,6 +59,26 @@ test("registers the configured worktree base for global and agent permissions", 
   }
 });
 
+test("allows only the current headless prompt attachment directory", () => {
+  const promptDir = "/managed-runtime/aidevops-headless-prompt.abc123";
+  const rules = managedExternalDirectories({ AIDEVOPS_HEADLESS_PROMPT_DIR: `${promptDir}/` });
+
+  assert.ok(rules.includes(promptDir));
+  assert.ok(rules.includes(`${promptDir}/**`));
+  assert.equal(rules.includes("/managed-runtime"), false);
+  assert.equal(rules.includes("/managed-runtime/**"), false);
+});
+
+test("ignores unsafe headless prompt attachment directories", () => {
+  for (const value of ["", "/", "relative/path", "/tmp/aidevops-*", "/tmp/aidevops\nnext"]) {
+    assert.equal(
+      managedExternalDirectories({ AIDEVOPS_HEADLESS_PROMPT_DIR: value })
+        .some((path) => path.includes("aidevops-headless-prompt")),
+      false,
+    );
+  }
+});
+
 test("adds narrow managed-directory exceptions after a broad ask rule", () => {
   const config = {
     permission: {

@@ -56,7 +56,7 @@ _headless_private_workload_enabled() {
 # never continue from or persist session/transcript-derived state afterward.
 _headless_run_is_ephemeral() {
 	local role="$1"
-	if _headless_private_workload_enabled || \
+	if _headless_private_workload_enabled ||
 		[[ "$role" == "${HEADLESS_ROLE_TRIAGE:-triage}" ]]; then
 		return 0
 	fi
@@ -167,6 +167,7 @@ _prepare_runtime_prompt_transport() {
 	_HEADLESS_RUN_PROMPT_ARG="$prompt_text"
 	_HEADLESS_RUN_PROMPT_FILE=""
 	_HEADLESS_CLAUDE_STDIN_FILE=""
+	unset AIDEVOPS_HEADLESS_PROMPT_DIR
 
 	[[ "$threshold" =~ ^[0-9]+$ ]] || threshold=8192
 	[[ "$force_file_transport" =~ ^[01]$ ]] || force_file_transport=0
@@ -188,6 +189,7 @@ _prepare_runtime_prompt_transport() {
 	local prompt_path="${prompt_dir}/seed-prompt.md"
 	if ! printf '%s' "$prompt_text" >"$prompt_path"; then
 		rm -rf "$prompt_dir" 2>/dev/null || true
+		unset AIDEVOPS_HEADLESS_PROMPT_DIR
 		[[ "$force_file_transport" -ne 1 ]] || return 1
 		return 0
 	fi
@@ -202,8 +204,12 @@ _prepare_runtime_prompt_transport() {
 	opencode | *)
 		# OpenCode has no stdin prompt mode in `opencode run --help`; attach the
 		# seed file and pass a short instruction, avoiding process-table bloat.
+		# The attached path is framework-generated and bounded to this attempt;
+		# expose only its directory to the OpenCode config hook so workers can read
+		# the attachment without a generic external_directory approval.
 		_HEADLESS_RUN_PROMPT_ARG="Read and execute the complete seed prompt attached as seed-prompt.md. Treat the attached file as the user prompt for this headless run."
 		_HEADLESS_RUN_PROMPT_FILE="$prompt_path"
+		export AIDEVOPS_HEADLESS_PROMPT_DIR="$prompt_dir"
 		;;
 	esac
 
@@ -372,7 +378,7 @@ _validate_private_workload_profile() {
 		print_error "--private-workload requires a regular .opencode/opencode.json profile"
 		return 1
 	fi
-	if [[ ! -f "$profile_validator" ]] || ! command -v python3 >/dev/null 2>&1 || \
+	if [[ ! -f "$profile_validator" ]] || ! command -v python3 >/dev/null 2>&1 ||
 		! python3 "$profile_validator" "$work_dir_value" "$expected_model" \
 			"$expected_agent" "$expected_provider" "$expected_profile_sha256" \
 			>/dev/null 2>&1; then

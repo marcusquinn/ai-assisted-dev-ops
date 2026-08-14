@@ -49,6 +49,19 @@ const STABLE_MANAGED_EXTERNAL_DIRECTORIES = [
   "~/.config/opencode/skills/**",
 ];
 
+function safeRuntimeManagedDirectory(value) {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/\/+$/, "");
+  if (!normalized.startsWith("/") || normalized === "/") return "";
+  if (/[*?\n\r\0]/.test(normalized)) return "";
+  return normalized;
+}
+
+function runtimeManagedExternalDirectories(env) {
+  const promptDir = safeRuntimeManagedDirectory(env.AIDEVOPS_HEADLESS_PROMPT_DIR);
+  return promptDir ? [promptDir, `${promptDir}/**`] : [];
+}
+
 export function managedExternalDirectories(env = process.env) {
   const isConfigured = Object.hasOwn(env, "AIDEVOPS_WORKTREE_BASE_DIR");
   const configured = env.AIDEVOPS_WORKTREE_BASE_DIR;
@@ -60,6 +73,7 @@ export function managedExternalDirectories(env = process.env) {
     ...STABLE_MANAGED_EXTERNAL_DIRECTORIES,
     worktreeBase,
     `${worktreeBase}/**`,
+    ...runtimeManagedExternalDirectories(env),
     ...[...tempDirectories].sort().flatMap((path) => [path, `${path}/**`]),
   ];
 }
