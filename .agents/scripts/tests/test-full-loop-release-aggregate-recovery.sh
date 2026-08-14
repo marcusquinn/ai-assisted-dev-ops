@@ -75,6 +75,7 @@ printf 'PASS recovery rejects remote tag, GitHub, npm, and Homebrew publication\
 printf 'PASS rollback requires every publication channel to remain absent\n'
 
 _FULL_LOOP_PHASE_FAILED=failed
+_FULL_LOOP_RELEASE_NOT_REQUESTED=not-requested
 _full_loop_release_receipt_path() {
 	printf '%s/release.status\n' "$TEST_ROOT"
 	return 0
@@ -84,9 +85,26 @@ if _full_loop_recovery_validate_receipt test/repo 42 >/dev/null 2>&1; then
 	printf 'FAIL recovery accepted a terminal release receipt\n'
 	exit 1
 fi
+INTENT_MODE=match
+_full_loop_release_validate_published_reconciliation_intent() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local source_json="$4"
+	[[ "$INTENT_MODE" == "match" && "$repo" == "test/repo" && "$source_pr" == "42" &&
+		"$tag_name" == "v1.2.3" && "$source_json" == '{"source_pr":42}' ]]
+	return $?
+}
+printf 'not-requested\n' >"${TEST_ROOT}/release.status"
+_full_loop_recovery_validate_receipt test/repo 42 v1.2.3 '{"source_pr":42}'
+INTENT_MODE=mismatch
+if _full_loop_recovery_validate_receipt test/repo 42 v1.2.3 '{"source_pr":42}' >/dev/null 2>&1; then
+	printf 'FAIL recovery accepted release:not-requested without matching publication intent\n'
+	exit 1
+fi
 printf 'failed\n' >"${TEST_ROOT}/release.status"
 _full_loop_recovery_validate_receipt test/repo 42
-printf 'PASS recovery rejects terminal receipts and permits failed retries\n'
+printf 'PASS recovery accepts authorized release:not-requested and rejects other terminal receipts\n'
 
 STATE_LOG="${TEST_ROOT}/state.log"
 : >"$STATE_LOG"
@@ -185,7 +203,7 @@ _full_loop_recovery_run_version_manager() {
 success_rc=0
 _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || success_rc=$?
 [[ "$success_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager evidence lane " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager evidence lane " ]]
 printf 'PASS queued recovery records evidence and retains the expanded transaction\n'
 
 : >"$CALL_LOG"
@@ -201,7 +219,7 @@ _full_loop_recovery_tag_is_bound_to_current_aggregate() { return 1; }
 same_sources_rc=0
 _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || same_sources_rc=$?
 [[ "$same_sources_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate load channels begin version-manager evidence lane " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate load channels begin version-manager evidence lane " ]]
 printf 'PASS fresh same-source aggregation still replaces the historical tag\n'
 
 : >"$CALL_LOG"
@@ -216,7 +234,7 @@ _full_loop_recovery_resume_publication() {
 resume_rc=0
 _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || resume_rc=$?
 [[ "$resume_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate load resume " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate load resume " ]]
 printf 'PASS interrupted aggregate recovery resumes without another tag replacement\n'
 
 : >"$CALL_LOG"
@@ -236,7 +254,7 @@ if _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 >/dev/null 2>&
 	printf 'FAIL failed recovery returned success\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager resume restore " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager resume restore " ]]
 printf 'PASS failed recovery restores authorization and release-lane state\n'
 
 : >"$CALL_LOG"
@@ -245,7 +263,7 @@ if _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 >/dev/null 2>&
 	printf 'FAIL unsafe failed recovery returned success\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager resume " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager resume " ]]
 printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 
 : >"$CALL_LOG"
@@ -256,7 +274,7 @@ _full_loop_recovery_resume_publication() {
 durable_queue_rc=0
 durable_queue_output=$(_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 2>&1) || durable_queue_rc=$?
 [[ "$durable_queue_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "receipt tag aggregate channels begin version-manager resume " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager resume " ]]
 [[ "$durable_queue_output" == *"aidevops release status 42"* ]]
 [[ "$durable_queue_output" == *"aidevops release reconcile 42"* ]]
 [[ "$durable_queue_output" != *"Aggregate recovery failed after tag state changed"* ]]

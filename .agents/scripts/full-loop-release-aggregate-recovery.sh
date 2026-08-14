@@ -92,15 +92,28 @@ _full_loop_recovery_verify_channels_absent() {
 	return 0
 }
 
+#aidevops:trust-boundary
 _full_loop_recovery_validate_receipt() {
 	local repo="$1"
 	local source_pr="$2"
+	local tag_name="${3:-}"
+	local source_json="${4:-}"
 	local receipt_path=""
 	local status=""
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$source_pr") || return 1
 	[[ -f "$receipt_path" ]] && IFS= read -r status <"$receipt_path" || true
 	case "$status" in
 	"" | "$_FULL_LOOP_PHASE_FAILED") return 0 ;;
+	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
+		if [[ -n "$tag_name" && -n "$source_json" ]] &&
+			declare -F _full_loop_release_validate_published_reconciliation_intent >/dev/null 2>&1 &&
+			_full_loop_release_validate_published_reconciliation_intent \
+				"$repo" "$source_pr" "$tag_name" "$source_json"; then
+			return 0
+		fi
+		printf 'Aggregate recovery refused: release:not-requested lacks matching explicit publication intent\n' >&2
+		return 1
+		;;
 	esac
 	printf 'Aggregate recovery refused: release receipt is terminal (%s)\n' "$status" >&2
 	return 1
@@ -405,8 +418,9 @@ _full_loop_release_recover_aggregate() {
 	local resume_rc=0
 	local new_tag_object=""
 	local tag_sources=""
-	_full_loop_recovery_validate_receipt "$repo" "$source_pr" || return 1
 	_full_loop_recovery_validate_existing_tag "$repo" "$source_pr" "$tag_name" || return 1
+	_full_loop_recovery_validate_receipt "$repo" "$source_pr" "$tag_name" \
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_TAG_SOURCE_JSON" || return 1
 	_full_loop_recovery_prepare_aggregate "$repo" "$source_pr" "$expected_sources" || return 1
 	tag_sources=$(_full_loop_recovery_tag_sources) || return 1
 	if [[ "$tag_sources" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
