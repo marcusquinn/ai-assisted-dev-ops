@@ -15,6 +15,7 @@ PASSWORD_REPO="${TEST_ROOT}/password-store"
 MARKED_REPO="${TEST_ROOT}/marked-repo"
 SEPARATE_REPO="${TEST_ROOT}/separate-repo"
 SEPARATE_GIT_DIR="${TEST_ROOT}/separate-repo-git"
+SNAPSHOT_REPO="${TEST_ROOT}/snapshot.git"
 TESTS=0
 FAILURES=0
 
@@ -165,6 +166,8 @@ assert_blocked "blocks git-dir-only mutation targeting a registered separate Git
 	"git -C '$PASSWORD_REPO' --git-dir='$SEPARATE_GIT_DIR' update-ref refs/heads/blocked '$INITIAL_HEAD'"
 assert_blocked "blocks an unrelated Git directory from mutating a managed worktree" \
 	"git --git-dir='$PASSWORD_REPO/.git' --work-tree='$MARKED_REPO' reset --hard"
+assert_blocked "blocks an unrelated Git directory from mutating a marker-managed separate-git-dir worktree" \
+	"git --git-dir='$PASSWORD_REPO/.git' --work-tree='$SEPARATE_REPO' reset --hard"
 assert_allowed "allows gopass-style Git mutation in an unrelated password store" "$REPO" \
 	"git -C '$PASSWORD_REPO' add test-secret.gpg"
 if (cd "$REPO" && env PATH="${SCRIPT_DIR}:/usr/bin:/bin" "$SHIM" -C "$PASSWORD_REPO" add test-secret.gpg); then
@@ -226,6 +229,9 @@ assert_allowed "allows unrelated writes in an unmanaged isolated bare temp repo"
 	"$REPO" "git -C '$PROSPECTIVE_REPO' update-ref refs/heads/main '$INITIAL_HEAD'"
 
 git -C "$REPO" worktree add -q -b feature/example "$LINKED"
+git init --bare -q "$SNAPSHOT_REPO"
+assert_allowed "allows an isolated snapshot repository to index a linked worktree" "$REPO" \
+	"git --git-dir='$SNAPSHOT_REPO' --work-tree='$LINKED' add --all --sparse"
 assert_allowed "allows canonical linked worktree removal" "$REPO" "git worktree remove --force '$LINKED'"
 assert_allowed "allows canonical linked worktree removal with option terminator" "$REPO" "git worktree remove -f -- '$LINKED'"
 assert_blocked "blocks canonical worktree removal of canonical root" "git worktree remove --force '$REPO'"

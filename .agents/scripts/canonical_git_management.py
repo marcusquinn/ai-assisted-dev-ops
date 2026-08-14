@@ -38,8 +38,27 @@ def _registered_roots() -> list[Path]:
     return roots
 
 
+def _gitdir_target(root: Path) -> Path | None:
+    dot_git = root / ".git"
+    if not dot_git.is_file():
+        return None
+    try:
+        marker = dot_git.read_text(encoding="utf-8").strip()
+        if not marker.startswith("gitdir:"):
+            return None
+        target = Path(marker.split(":", 1)[1].strip()).expanduser()
+        if not target.is_absolute():
+            target = root / target
+        return target.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def is_managed_root(repo_root: str) -> bool:
     root = Path(repo_root).resolve()
+    git_dir = _gitdir_target(root)
+    if git_dir and linked_worktree_root(str(git_dir)) == root:
+        return False
     return (root / ".aidevops.json").is_file() or root in _registered_roots()
 
 
@@ -49,19 +68,8 @@ def is_registered_common_dir(common_dir: str) -> bool:
         dot_git = root / ".git"
         if dot_git.is_dir() and dot_git.resolve() == common:
             return True
-        if not dot_git.is_file():
-            continue
-        try:
-            marker = dot_git.read_text(encoding="utf-8").strip()
-            if not marker.startswith("gitdir:"):
-                continue
-            target = Path(marker.split(":", 1)[1].strip()).expanduser()
-            if not target.is_absolute():
-                target = root / target
-            if target.resolve() == common:
-                return True
-        except (OSError, RuntimeError, ValueError):
-            continue
+        if _gitdir_target(root) == common:
+            return True
     return False
 
 
