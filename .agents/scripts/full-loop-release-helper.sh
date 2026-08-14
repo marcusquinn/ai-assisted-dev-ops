@@ -102,6 +102,8 @@ _FULL_LOOP_RESOLVED_SOURCE_PR=""
 _FULL_LOOP_RESOLVED_SOURCE_MERGE=""
 _FULL_LOOP_RESOLVED_REQUESTED_MERGE=""
 _FULL_LOOP_RESOLVED_EXPECTED_SOURCES=""
+_FULL_LOOP_RELEASE_ACTION_RECONCILE="reconcile"
+_FULL_LOOP_RELEASE_BOOL_TRUE="true"
 
 _full_loop_capture_release_authorization() {
 	local repo="$1"
@@ -314,6 +316,7 @@ _full_loop_release_existing_with_lane() {
 	local existing_rc=0
 	local lane_read_rc=0
 	local lane_owned=false
+	local lane_phase=""
 	existing_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
 	release_lane_read "$existing_repo" || lane_read_rc=$?
 	case "$lane_read_rc" in
@@ -322,9 +325,10 @@ _full_loop_release_existing_with_lane() {
 		if jq -e --argjson source_pr "$source_pr" '.active == true and .source_pr == $source_pr' \
 			<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
 			lane_owned=true
+			lane_phase=$(jq -er '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 			_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -r '.operation_token' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 		fi
-		if [[ "$release_type" == "reconcile" ]] &&
+		if [[ "$release_type" == "$_FULL_LOOP_RELEASE_ACTION_RECONCILE" ]] &&
 			! jq -e --argjson source_pr "$source_pr" '.active != true or .source_pr == $source_pr' \
 				<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
 			printf 'A different source owns the active release lane\n' >&2
@@ -337,8 +341,18 @@ _full_loop_release_existing_with_lane() {
 		return 1
 		;;
 	esac
+	if [[ "$release_type" == "$_FULL_LOOP_RELEASE_ACTION_RECONCILE" &&
+		"$lane_owned" == "$_FULL_LOOP_RELEASE_BOOL_TRUE" ]]; then
+		case "$lane_phase" in
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_PHASE" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_FULL_LOOP_AGGREGATE_COMMIT_PHASE")
+			printf 'Aggregate recovery transaction remains fenced in phase %s; rerun recover-aggregate to resume it\n' "$lane_phase"
+			return 8
+			;;
+		esac
+	fi
 	_full_loop_release_existing_command "$release_type" "$source_pr" || existing_rc=$?
-	if [[ "$release_type" == "reconcile" && "$lane_owned" == "true" ]]; then
+	if [[ "$release_type" == "$_FULL_LOOP_RELEASE_ACTION_RECONCILE" &&
+		"$lane_owned" == "$_FULL_LOOP_RELEASE_BOOL_TRUE" ]]; then
 		if [[ "$existing_rc" -eq 0 ]]; then
 			local receipt_path=""
 			local receipt_status=""
@@ -350,7 +364,12 @@ _full_loop_release_existing_with_lane() {
 			esac
 			release_lane_finalize "$existing_repo" "$source_pr" "$receipt_status" || return 1
 		elif [[ "$existing_rc" -eq 8 ]]; then
-			release_lane_update "$existing_repo" "$source_pr" "remote-publication" || return 1
+			case "$lane_phase" in
+			"$_FULL_LOOP_AGGREGATE_RECOVERY_PHASE" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_FULL_LOOP_AGGREGATE_COMMIT_PHASE")
+				printf 'Aggregate recovery transaction remains fenced in phase %s\n' "$lane_phase"
+				;;
+			*) release_lane_update "$existing_repo" "$source_pr" "remote-publication" || return 1 ;;
+			esac
 		fi
 	fi
 	return "$existing_rc"
@@ -388,6 +407,7 @@ _full_loop_release_resolve_persisted_intent() {
 	local persisted_sources="$4"
 	local persisted_prs=""
 	local requested_prs=""
+	local migration_rc=0
 	_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$requested_sources"
 	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
 	if [[ -z "$requested_sources" ]]; then
@@ -396,7 +416,15 @@ _full_loop_release_resolve_persisted_intent() {
 	fi
 	requested_prs=$(release_authorization_intent_json "$requested_sources" | jq -c 'map(.pr)') || return 1
 	persisted_prs=$(release_authorization_intent_json "$persisted_sources" | jq -c 'map(.pr)') || return 1
-	[[ "$requested_prs" != "$persisted_prs" ]] || return 0
+	if [[ "$requested_prs" == "$persisted_prs" ]]; then
+		_full_loop_recovery_reserved_lane_requires_migration "$repo" "$source_pr" \
+			"$persisted_sources" || migration_rc=$?
+		case "$migration_rc" in
+		0) ;;
+		1) return 0 ;;
+		*) return 1 ;;
+		esac
+	fi
 	_full_loop_recovery_expand_reserved_authorization "$repo" "$source_pr" "$requested_sources" || return $?
 	_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"
 	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=true
@@ -423,7 +451,7 @@ _full_loop_release_start_new() {
 	2) ;;
 	*) return "$existing_state_rc" ;;
 	esac
-	if [[ "$_FULL_LOOP_RESERVED_RECOVERY_COMPLETED" == "true" ]]; then
+	if [[ "$_FULL_LOOP_RESERVED_RECOVERY_COMPLETED" == "$_FULL_LOOP_RELEASE_BOOL_TRUE" ]]; then
 		_full_loop_release_run_new "$repo" "$source_pr" "$release_type" "$deployment_scope" "$expected_sources"
 		return $?
 	fi

@@ -23,6 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=./task-identity-lib.sh
 source "${SCRIPT_DIR}/task-identity-lib.sh"
+# shellcheck source=./release-lane-helper.sh
+source "${SCRIPT_DIR}/release-lane-helper.sh"
 
 # Repository root directory
 # First try git (works when called from any location within a repo)
@@ -35,6 +37,52 @@ fi
 VERSION_FILE="$REPO_ROOT/VERSION"
 _VERSION_MANAGER_ACTION_RELEASE="release"
 _VERSION_MANAGER_ACTION_RECOVER_AGGREGATE="recover-aggregate"
+_VERSION_MANAGER_AGGREGATE_TAG_MODE=""
+_VERSION_MANAGER_AGGREGATE_TAG_MODE_PROVISIONAL="provisional"
+_VERSION_MANAGER_AGGREGATE_TAG_MODE_RECOVERED="recovered"
+
+_version_manager_load_aggregate_lane_context() {
+	local repository="${AIDEVOPS_RELEASE_LANE_REPOSITORY:-}"
+	local source_pr="${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}"
+	local tag_name="${AIDEVOPS_RELEASE_LANE_TAG:-}"
+	local expected_sources="${AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES:-}"
+	local operation_token="${AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN:-}"
+	[[ -n "$repository" && "$source_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && -n "$expected_sources" ]] || return 1
+	[[ -n "$operation_token" ]] || return 1
+	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
+	return 0
+}
+
+_version_manager_require_aggregate_lane_context() {
+	local tag_name="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	_version_manager_load_aggregate_lane_context || return 1
+	[[ "${AIDEVOPS_RELEASE_LANE_TAG:-}" == "$tag_name" ]] || return 1
+	[[ "${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}" == "$source_pr" ]] || return 1
+	[[ "${AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES:-}" == "$expected_sources" ]] || return 1
+	return 0
+}
+
+#aidevops:trust-boundary
+_version_manager_claim_aggregate_lane() {
+	_version_manager_load_aggregate_lane_context || return 1
+	release_lane_claim_aggregate_publication \
+		"${AIDEVOPS_RELEASE_LANE_REPOSITORY:-}" "${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}" \
+		"${AIDEVOPS_RELEASE_LANE_TAG:-}" "${AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES:-}"
+	return $?
+}
+
+#aidevops:trust-boundary
+_version_manager_verify_aggregate_lane_fence() {
+	[[ -n "${AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN:-}" ]] || return 0
+	_version_manager_load_aggregate_lane_context || return 1
+	release_lane_verify_aggregate_publication \
+		"${AIDEVOPS_RELEASE_LANE_REPOSITORY:-}" "${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}" \
+		"${AIDEVOPS_RELEASE_LANE_TAG:-}" "${AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES:-}"
+	return $?
+}
 
 _version_manager_marker_is_truthy() {
 	local marker=""
@@ -657,17 +705,40 @@ _validate_aggregate_recovery_context() {
 	local old_tag_object="$4"
 	local version=""
 	local current_object=""
+	local source_merge=""
+	local tag_parent=""
+	local tag_tree=""
+	local parent_tree=""
+	_VERSION_MANAGER_AGGREGATE_TAG_MODE=""
 	assert_release_linked_worktree || return 1
 	verify_remote_sync main || return 1
 	check_working_tree_clean || return 1
 	version=$(get_current_version) || return 1
 	[[ "$tag_name" == "v${version}" ]] || return 1
 	current_object=$(git rev-parse "refs/tags/${tag_name}" 2>/dev/null) || return 1
-	[[ "$current_object" == "$old_tag_object" ]] || return 1
-	verify_release_source_pr "$source_pr" main "" "$expected_sources" || return 1
-	[[ -n "${VERSION_MANAGER_AGGREGATED_SOURCES:-}" ]] || return 1
-	[[ "${VERSION_MANAGER_SOURCE_MERGE_SHA:-}" == "$(git rev-parse HEAD 2>/dev/null)" ]] || return 1
+	if [[ "$current_object" == "$old_tag_object" ]]; then
+		verify_release_source_pr "$source_pr" main "" "$expected_sources" || return 1
+		[[ -n "${VERSION_MANAGER_AGGREGATED_SOURCES:-}" ]] || return 1
+		source_merge="${VERSION_MANAGER_SOURCE_MERGE_SHA:-}"
+		[[ "$source_merge" == "$(git rev-parse HEAD 2>/dev/null)" ]] || return 1
+		validate_version_consistency "$version" || return 1
+		_VERSION_MANAGER_AGGREGATE_TAG_MODE="$_VERSION_MANAGER_AGGREGATE_TAG_MODE_PROVISIONAL"
+		return 0
+	fi
+	_verify_bump_commit_at_ref "$tag_name" "$version" || return 1
+	tag_parent=$(git rev-parse "${tag_name}^{commit}^" 2>/dev/null) || return 1
+	git checkout --detach --quiet "${tag_name}^{commit}" || return 1
 	validate_version_consistency "$version" || return 1
+	_verify_recovered_aggregate_tag "$tag_name" || return 1
+	verify_release_tag_source "$tag_name" "$source_pr" main "" "$expected_sources" || return 1
+	[[ -n "${VERSION_MANAGER_AGGREGATED_SOURCES:-}" ]] || return 1
+	source_merge="${VERSION_MANAGER_SOURCE_MERGE_SHA:-}"
+	_version_manager_tag_absent_from_all_remotes "refs/tags/${tag_name}" || return 1
+	[[ "$tag_parent" == "$source_merge" ]] || return 1
+	tag_tree=$(git rev-parse "${tag_name}^{tree}" 2>/dev/null) || return 1
+	parent_tree=$(git rev-parse "${tag_parent}^{tree}" 2>/dev/null) || return 1
+	[[ "$tag_tree" == "$parent_tree" ]] || return 1
+	_VERSION_MANAGER_AGGREGATE_TAG_MODE="$_VERSION_MANAGER_AGGREGATE_TAG_MODE_RECOVERED"
 	return 0
 }
 
@@ -677,6 +748,7 @@ _verify_recovered_aggregate_tag() {
 	local resolver="${AIDEVOPS_RELEASE_SOURCE_RESOLVER:-${SCRIPT_DIR}/release-provenance-helper.sh}"
 	[[ -n "$repo_slug" ]] || repo_slug=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null) || return 1
 	[[ -x "$resolver" ]] || return 1
+	git -C "$REPO_ROOT" verify-tag "$tag_name" >/dev/null 2>&1 || return 1
 	(cd "$REPO_ROOT" && bash "$resolver" verify-local-source --tag "$tag_name" --repo "$repo_slug" >/dev/null)
 	return $?
 }
@@ -687,17 +759,40 @@ _execute_aggregate_recovery() {
 	local version="${tag_name#v}"
 	local source_merge="${VERSION_MANAGER_SOURCE_MERGE_SHA:-}"
 	local push_rc=0
-	_create_aggregate_recovery_bump_commit "$version" "$source_merge" || return 1
-	replace_unpublished_aggregate_tag "$version" "$old_tag_object" || return 1
-	if ! _verify_recovered_aggregate_tag "$tag_name"; then
-		restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
-		return 1
-	fi
+	local replacement_created=false
+	_version_manager_claim_aggregate_lane || return 1
+	case "$_VERSION_MANAGER_AGGREGATE_TAG_MODE" in
+	"$_VERSION_MANAGER_AGGREGATE_TAG_MODE_PROVISIONAL")
+		_create_aggregate_recovery_bump_commit "$version" "$source_merge" || return 1
+		_version_manager_verify_aggregate_lane_fence || return 1
+		replace_unpublished_aggregate_tag "$version" "$old_tag_object" || return 1
+		replacement_created=true
+		if ! _verify_recovered_aggregate_tag "$tag_name"; then
+			restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
+			return 1
+		fi
+		if ! _version_manager_verify_aggregate_lane_fence; then
+			restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
+			return 1
+		fi
+		;;
+	"$_VERSION_MANAGER_AGGREGATE_TAG_MODE_RECOVERED")
+		_version_manager_verify_aggregate_lane_fence || return 1
+		git checkout --detach --quiet "${tag_name}^{commit}" || return 1
+		_verify_bump_commit_at_ref HEAD "$version" || return 1
+		[[ "$(git rev-parse HEAD^ 2>/dev/null)" == "$source_merge" ]] || return 1
+		check_working_tree_clean || return 1
+		_version_manager_verify_aggregate_lane_fence || return 1
+		;;
+	*) return 1 ;;
+	esac
 	push_changes "$version" || push_rc=$?
 	case "$push_rc" in
 	0 | 8) return "$push_rc" ;;
 	esac
-	restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
+	if [[ "$replacement_created" == "true" ]]; then
+		restore_unpublished_aggregate_tag "$version" "$old_tag_object" || true
+	fi
 	return 1
 }
 
@@ -707,6 +802,7 @@ _main_recover_aggregate() {
 	local expected_sources=""
 	local old_tag_object=""
 	_parse_aggregate_recovery_args "$@" || return 1
+	_version_manager_require_aggregate_lane_context "$tag_name" "$source_pr" "$expected_sources" || return 1
 	_validate_aggregate_recovery_context "$tag_name" "$source_pr" "$expected_sources" "$old_tag_object" || return 1
 	_execute_aggregate_recovery "$tag_name" "$old_tag_object"
 	return $?

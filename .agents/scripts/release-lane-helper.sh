@@ -18,6 +18,10 @@ _AIDEVOPS_RELEASE_LANE_JSON_STRING_TYPE="string"
 _AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX="lane-"
 _AIDEVOPS_RELEASE_LANE_OWNER_PREFIX="process-"
 _AIDEVOPS_RELEASE_LANE_STALE_PREPUBLICATION_SECONDS=300
+_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY="aggregation-recovery"
+_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH="aggregation-recovery-refresh"
+_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT="aggregate-publication-committing"
+_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH="reserved-authorization-refresh"
 
 _release_lane_cache_path() {
 	local repo="$1"
@@ -229,15 +233,18 @@ release_lane_begin_aggregate_recovery() {
 	local repo="$1"
 	local source_pr="$2"
 	local tag_name="$3"
-	local previous_sources="$4"
-	local expected_sources="$5"
-	local provisional_tag_object="${6:-}"
+	local lane_sources="$4"
+	local previous_sources="$5"
+	local expected_sources="$6"
+	local provisional_tag_object="${7:-}"
 	local operation_token=""
 	local state_json=""
 	local snapshot_json=""
+	local write_rc=0
+	[[ -n "$lane_sources" && -n "$previous_sources" && -n "$expected_sources" ]] || return 1
 	[[ "$provisional_tag_object" =~ ^[0-9a-f]{40}$ ]] || return 1
 	release_lane_read "$repo" || return 1
-	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" --arg previous "$previous_sources" '
+	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" --arg previous "$lane_sources" '
 		.active == true and .source_pr == $source_pr and .tag == $tag
 		and .expected_sources == $previous
 		and (.phase == "remote-publication" or .phase == "reconcile-required")
@@ -247,15 +254,186 @@ release_lane_begin_aggregate_recovery() {
 	snapshot_json="$_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT"
 	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
 	state_json=$(jq -c --arg expected "$expected_sources" --arg token "$operation_token" \
-		--arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-		--arg provisional "$provisional_tag_object" --argjson previous "$snapshot_json" '
+		--arg prior "$previous_sources" --arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg provisional "$provisional_tag_object" \
+		--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" \
+		--argjson previous "$snapshot_json" '
 		.expected_sources=$expected | .operation_token=$token | .owner=$owner
-		| .phase="aggregation-recovery" | .updated_at=$now
-		| .aggregate_recovery={previous_state:$previous,provisional_tag_object:$provisional}
+		| .phase=$refresh | .updated_at=$now
+		| .aggregate_recovery={previous_state:$previous,provisional_tag_object:$provisional,
+			refresh:{previous_expected_sources:$prior,pending_expected_sources:$expected}}
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" --arg token "$operation_token" \
+			--arg expected "$expected_sources" --arg previous "$previous_sources" \
+			--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" \
+			--arg provisional "$provisional_tag_object" '
+			.active == true and .source_pr == $source_pr and .tag == $tag
+			and .operation_token == $token and .phase == $refresh
+			and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+			and .aggregate_recovery.provisional_tag_object == $provisional
+			and .aggregate_recovery.refresh.previous_expected_sources == $previous
+			and .aggregate_recovery.refresh.pending_expected_sources == $expected
+		' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return "$write_rc"
+	fi
 	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
 	return 0
+}
+
+release_lane_begin_aggregate_refresh() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local previous_sources="$4"
+	local expected_sources="$5"
+	local provisional_tag_object="$6"
+	local operation_token=""
+	local state_json=""
+	local write_rc=0
+	[[ -n "$previous_sources" && -n "$expected_sources" && "$previous_sources" != "$expected_sources" ]] || return 1
+	[[ "$provisional_tag_object" =~ ^[0-9a-f]{40}$ ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" --arg previous "$previous_sources" \
+		--arg provisional "$provisional_tag_object" --arg recovery "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" \
+		--arg committing "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" '
+		.active == true and .source_pr == $source_pr and .tag == $tag
+		and .expected_sources == $previous and (.phase == $recovery or .phase == $committing)
+		and ((.terminal_receipt // null) == null)
+		and .aggregate_recovery.provisional_tag_object == $provisional
+		and (.aggregate_recovery.previous_state.schema_version == 1)
+		and ((.aggregate_recovery.previous_state.aggregate_recovery // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
+	state_json=$(jq -c --arg expected "$expected_sources" --arg token "$operation_token" \
+		--arg previous "$previous_sources" --arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" \
+		--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+		.expected_sources=$expected | .operation_token=$token | .owner=$owner
+		| .phase=$refresh | .updated_at=$now
+		| .aggregate_recovery.refresh={previous_expected_sources:$previous,pending_expected_sources:$expected}
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" --arg token "$operation_token" \
+			--arg expected "$expected_sources" --arg previous "$previous_sources" \
+			--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" \
+			--arg provisional "$provisional_tag_object" '
+			.active == true and .source_pr == $source_pr and .tag == $tag
+			and .operation_token == $token and .phase == $refresh
+			and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+			and .aggregate_recovery.provisional_tag_object == $provisional
+			and .aggregate_recovery.refresh.previous_expected_sources == $previous
+			and .aggregate_recovery.refresh.pending_expected_sources == $expected
+		' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return "$write_rc"
+	fi
+	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
+	return 0
+}
+
+release_lane_finish_aggregate_refresh() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local previous_sources="$4"
+	local expected_sources="$5"
+	local provisional_tag_object="$6"
+	local state_json=""
+	local write_rc=0
+	[[ -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
+		--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --arg previous "$previous_sources" \
+		--arg expected "$expected_sources" --arg provisional "$provisional_tag_object" \
+		--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" '
+		.active == true and .source_pr == $source_pr and .tag == $tag
+		and .operation_token == $token and .phase == $refresh
+		and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+		and .aggregate_recovery.provisional_tag_object == $provisional
+		and .aggregate_recovery.refresh.previous_expected_sources == $previous
+		and .aggregate_recovery.refresh.pending_expected_sources == $expected
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	state_json=$(jq -c --arg recovery "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+		.phase=$recovery | .updated_at=$now | del(.aggregate_recovery.refresh)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
+			--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --arg expected "$expected_sources" \
+			--arg provisional "$provisional_tag_object" \
+			--arg recovery "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" '
+			.active == true and .source_pr == $source_pr and .tag == $tag
+			and .operation_token == $token and .phase == $recovery
+			and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+			and .aggregate_recovery.provisional_tag_object == $provisional
+			and ((.aggregate_recovery.refresh // null) == null)
+		' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return "$write_rc"
+	fi
+	return 0
+}
+
+release_lane_claim_aggregate_publication() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local expected_sources="$4"
+	local state_json=""
+	local write_rc=0
+	[[ -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	if jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
+		--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --arg expected "$expected_sources" \
+		--arg committing "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" '
+		.active == true and .source_pr == $source_pr and .tag == $tag
+		and .operation_token == $token and .phase == $committing
+		and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		return 0
+	fi
+	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
+		--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --arg expected "$expected_sources" \
+		--arg recovery "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" '
+		.active == true and .source_pr == $source_pr and .tag == $tag
+		and .operation_token == $token and .phase == $recovery
+		and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+		and ((.aggregate_recovery.refresh // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	state_json=$(jq -c --arg committing "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.phase=$committing | .updated_at=$now' \
+		<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
+			--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --arg expected "$expected_sources" \
+			--arg committing "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" '
+			.active == true and .source_pr == $source_pr and .tag == $tag
+			and .operation_token == $token and .phase == $committing
+			and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+		' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return "$write_rc"
+	fi
+	return 0
+}
+
+release_lane_verify_aggregate_publication() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local expected_sources="$4"
+	[[ -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
+		--arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --arg expected "$expected_sources" \
+		--arg committing "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" '
+		.active == true and .source_pr == $source_pr and .tag == $tag
+		and .operation_token == $token and .phase == $committing
+		and .expected_sources == $expected and ((.terminal_receipt // null) == null)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null
+	return $?
 }
 
 release_lane_expand_reserved_authorization() {
@@ -265,9 +443,27 @@ release_lane_expand_reserved_authorization() {
 	# and rollback must restore that representation rather than a resolved manifest.
 	local previous_sources="$3"
 	local expected_sources="$4"
+	local operation_token=""
 	local state_json=""
+	local snapshot_json=""
+	local write_rc=0
+	[[ -n "$previous_sources" && -n "$expected_sources" && "$previous_sources" != "$expected_sources" ]] || return 1
 	[[ -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
 	release_lane_read "$repo" || return 1
+	if jq -e --argjson source_pr "$source_pr" --arg previous "$previous_sources" \
+		--arg expected "$expected_sources" --arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" '
+		.active == true and .source_pr == $source_pr and .operation_token != ""
+		and .phase == $refresh and .tag == null and .expected_sources == $expected
+		and ((.terminal_receipt // null) == null)
+		and .reserved_authorization_refresh.previous_expected_sources == $previous
+		and .reserved_authorization_refresh.pending_expected_sources == $expected
+		and (.reserved_authorization_refresh.previous_state.schema_version == 1)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -er '.operation_token' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT=$(jq -ce '.reserved_authorization_refresh.previous_state' \
+			<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		return 0
+	fi
 	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
 		--arg previous "$previous_sources" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
 		.active == true and .source_pr == $source_pr and .operation_token == $token
@@ -275,10 +471,68 @@ release_lane_expand_reserved_authorization() {
 		and ((.terminal_receipt // null) == null)
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
 	_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT="$_AIDEVOPS_RELEASE_LANE_JSON"
-	state_json=$(jq -c --arg expected "$expected_sources" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-		'.expected_sources=$expected | .updated_at=$now' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD"
-	return $?
+	snapshot_json="$_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT"
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
+	state_json=$(jq -c --arg expected "$expected_sources" --arg previous "$previous_sources" \
+		--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" --arg token "$operation_token" \
+		--arg owner "${_AIDEVOPS_RELEASE_LANE_OWNER_PREFIX}$$" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+		--argjson snapshot "$snapshot_json" '
+		.expected_sources=$expected | .phase=$refresh | .operation_token=$token
+		| .owner=$owner | .updated_at=$now
+		| .reserved_authorization_refresh={previous_state:$snapshot,
+			previous_expected_sources:$previous,pending_expected_sources:$expected}
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		jq -e --argjson source_pr "$source_pr" --arg token "$operation_token" \
+			--arg previous "$previous_sources" --arg expected "$expected_sources" \
+			--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" '
+			.active == true and .source_pr == $source_pr and .operation_token == $token
+			and .phase == $refresh and .tag == null and .expected_sources == $expected
+			and ((.terminal_receipt // null) == null)
+			and .reserved_authorization_refresh.previous_expected_sources == $previous
+			and .reserved_authorization_refresh.pending_expected_sources == $expected
+		' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return "$write_rc"
+	fi
+	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
+	return 0
+}
+
+release_lane_finish_reserved_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local previous_sources="$3"
+	local expected_sources="$4"
+	local state_json=""
+	local write_rc=0
+	[[ -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
+		--arg previous "$previous_sources" --arg expected "$expected_sources" \
+		--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" '
+		.active == true and .source_pr == $source_pr and .operation_token == $token
+		and .phase == $refresh and .tag == null and .expected_sources == $expected
+		and ((.terminal_receipt // null) == null)
+		and .reserved_authorization_refresh.previous_expected_sources == $previous
+		and .reserved_authorization_refresh.pending_expected_sources == $expected
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	state_json=$(jq -c --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+		.phase=$reserved | .updated_at=$now | del(.reserved_authorization_refresh)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
+			--arg expected "$expected_sources" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
+			.active == true and .source_pr == $source_pr and .operation_token == $token
+			and .phase == $reserved and .tag == null and .expected_sources == $expected
+			and ((.terminal_receipt // null) == null)
+			and ((.reserved_authorization_refresh // null) == null)
+		' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return "$write_rc"
+	fi
+	return 0
 }
 
 release_lane_restore_reserved_authorization() {
@@ -286,18 +540,23 @@ release_lane_restore_reserved_authorization() {
 	local source_pr="$2"
 	local expected_sources="$3"
 	local snapshot_json="$4"
+	local write_rc=0
 	release_lane_read "$repo" || return 1
 	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
-		--arg expected "$expected_sources" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
+		--arg expected "$expected_sources" --arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" '
 		.active == true and .source_pr == $source_pr and .operation_token == $token
-		and .phase == $reserved and .tag == null and .expected_sources == $expected
+		and .phase == $refresh and .tag == null and .expected_sources == $expected
 		and ((.terminal_receipt // null) == null)
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
 	jq -e --argjson source_pr "$source_pr" --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" '
 		.schema_version == 1 and .active == true and .source_pr == $source_pr
 		and .phase == $reserved and .tag == null
 	' <<<"$snapshot_json" >/dev/null || return 1
-	_release_lane_write "$repo" "$snapshot_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_release_lane_write "$repo" "$snapshot_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || write_rc=$?
+	if [[ "$write_rc" -ne 0 ]]; then
+		release_lane_read "$repo" || return "$write_rc"
+		[[ "$(jq -cS . <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" == "$(jq -cS . <<<"$snapshot_json")" ]] || return "$write_rc"
+	fi
 	_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -r '.operation_token' <<<"$snapshot_json") || return 1
 	return 0
 }
@@ -307,8 +566,12 @@ release_lane_restore_aggregate_recovery() {
 	local source_pr="$2"
 	local snapshot_json="$3"
 	release_lane_read "$repo" || return 1
-	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" '
-		.active == true and .source_pr == $source_pr and .phase == "aggregation-recovery"
+	jq -e --argjson source_pr "$source_pr" --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
+		--arg recovery "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" \
+		--arg refresh "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" \
+		--arg committing "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" '
+		.active == true and .source_pr == $source_pr
+		and (.phase == $recovery or .phase == $refresh or .phase == $committing)
 		and .operation_token == $token
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
 	if [[ -z "$snapshot_json" ]]; then
@@ -449,15 +712,22 @@ release_lane_merge_guard() {
 		return 0
 	fi
 	case "$phase" in
-	remote-publication | exact-tag-deployment) ;;
+	remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH") ;;
 	*) return 0 ;;
 	esac
 	source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	tag_name=$(jq -r '.tag // ""' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	if [[ "$pr_number" == "$source_pr" || (-n "$tag_name" && "$head_ref" == "chore/release-${tag_name}-provenance") ]]; then
-		return 0
+	[[ "$pr_number" == "$source_pr" ]] && return 0
+	#aidevops:trust-boundary
+	if [[ -n "$tag_name" && "$head_ref" == "chore/release-${tag_name}-provenance" ]]; then
+		case "$phase" in
+		"$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH") ;;
+		*) return 0 ;;
+		esac
 	fi
-	if _release_lane_pr_is_metadata_only_aggregate "$repo" "$pr_number"; then
+	if [[ "$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" &&
+		"$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" ]] &&
+		_release_lane_pr_is_metadata_only_aggregate "$repo" "$pr_number"; then
 		return 0
 	fi
 	printf 'ACTIVE_RELEASE_LANE_MERGE_BLOCKED source_pr=%s phase=%s tag=%s\n' \

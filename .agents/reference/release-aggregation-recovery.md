@@ -29,7 +29,10 @@ must appear once in the aggregate commit trailers at its verified merge SHA.
   descendant.
 - The persisted authorization is an exact subset of the reviewed aggregate.
 - The lane is in `remote-publication` or `reconcile-required` for the same source
-  and tag.
+  and tag, or it contains one valid interrupted `aggregation-recovery` or
+  `aggregation-recovery-refresh` transaction, or an owned
+  `aggregate-publication-committing` transaction whose provisional tag and exact
+  snapshots remain unchanged.
 
 Any unavailable channel read is uncertainty, not absence, and blocks recovery.
 
@@ -37,31 +40,66 @@ Any unavailable channel read is uncertainty, not absence, and blocks recovery.
 
 1. Verify the provisional tag and all channel-absence evidence.
 2. Resolve the exact aggregate and normalize every source to `PR@MERGE_SHA`.
-3. Persist the expanded authorization and rotate the release-lane token into
-   `aggregation-recovery`, fencing the prior process. Both records embed their
-   exact pre-transaction JSON for compare-and-swap restoration.
-4. Create an empty `chore(release): bump version to X.Y.Z` commit whose parent is
+3. Rotate the release-lane token into `aggregation-recovery-refresh`, fencing the
+   prior process before authorization broadens. Persist the expanded
+   authorization, then advance the same owned lane to `aggregation-recovery`.
+   Both records embed their exact pre-transaction JSON for compare-and-swap
+   restoration.
+4. Claim `aggregate-publication-committing` with the same token, then create an
+   empty `chore(release): bump version to X.Y.Z` commit whose parent is
    the exact aggregate. The tree and semantic version do not change.
 5. Replace only the local tag with a newly signed aggregate-bound tag and run the
    ordinary protected-main publication queue.
-6. Record `.aggregate-recovery.json` evidence and return the lane to
-   `remote-publication` for normal reconciliation.
+6. Record `.aggregate-recovery.json` evidence and retain the committing phase
+   while a protected-main PR is open. Only after the exact release commit is
+   reachable from `origin/main` may the lane enter `remote-publication` for
+   normal reconciliation.
 
-## Rollback and interruption
+The earlier side-effect-free reserved-lane normalization uses the same ordering:
+rotate into `reserved-authorization-refresh`, persist the exact authorization,
+then return to `reserved`. A retry must inspect this phase even when the requested
+and persisted PR sets already match, because the authorization write may have
+completed before the prior process finished the lane transition.
 
-Before a durable queue exists, any failure restores the exact original tag
-object, authorization manifest, and release-lane JSON. Recovery uses compare-and-
-swap lane writes, so a concurrent owner change fails closed rather than being
-overwritten.
+## Failure and interruption
+
+An initial failure before authorization changes may restore the exact prior lane
+snapshot. Once authorization has expanded, recovery does not independently
+restore the authorization and lane records: that two-write rollback would expose
+another crash window. It retains the fenced transaction for an idempotent retry.
+A refreshed aggregate first rotates the lane into
+`aggregation-recovery-refresh`, then writes authorization, and finally returns to
+`aggregation-recovery`. If a provisional-tag attempt fails after claiming the
+committing phase, a retry may rotate that unchanged, unpublished transaction into
+a newer reviewed refresh. Recovery uses compare-and-swap lane writes, so a
+concurrent owner change fails closed rather than being overwritten.
+
+Before local tag replacement or any direct push, protected recovery-branch push,
+PR mutation, merge queue request, or final tag push, version-manager rereads the
+remote lane and requires the exact repository, source, tag, manifest, operation
+token, and `aggregate-publication-committing` phase. A stale process cannot
+publish after its token is rotated; ambiguous claim writes are accepted only
+after an exact remote reread.
 
 Once the protected release PR or remote tag is durable, do not restore or mutate
-the provisional state. Resume with `aidevops release reconcile <source-pr>`; the
-normal verifier and channel convergence gates own completion.
+the provisional state. While the PR remains open, rerun the same
+`recover-aggregate` command to repair or observe its exact queue; generic
+reconciliation leaves the committing fence unchanged. After the release commit
+reaches `main`, recovery transitions to `remote-publication` and the normal
+reconciliation and channel convergence gates own completion.
 
 Rerunning `recover-aggregate` after an interruption reloads the persisted
 snapshots. If the replacement aggregate-bound tag already exists, the command
-enters normal reconciliation without replacing the tag or creating another bump
-commit. Inconsistent or incomplete recovery state fails closed.
+resumes its exact protected queue from the persisted aggregate before resolving
+the newer `main`; it does not replace the tag or create another bump commit. The
+recovered-tag validator checks the tag's direct aggregate parent and immutable
+source manifest rather than requiring that parent to remain the current main tip.
+Once that release commit reaches `main`, recovery enters normal reconciliation.
+If `main` advanced before the provisional tag changed, a newer reviewed exact-tip
+aggregate may refresh the fenced transaction. The refresh must be a strict
+authorization superset, preserve the original snapshots, and rotate the lane
+token without nesting recovery state. Ordinary merges remain blocked during
+every recovery and committing phase. Inconsistent state fails closed.
 
 The recovery command never force-pushes, rewrites a remote tag, increments the
 version, or infers publication authority from commit ancestry.

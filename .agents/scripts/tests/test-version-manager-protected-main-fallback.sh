@@ -177,6 +177,16 @@ export REPO_ROOT="$REPO"
 # shellcheck source=../version-manager-git.sh
 source "${SCRIPT_DIR}/version-manager-git.sh"
 
+AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN=stale-token
+export AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN
+_version_manager_verify_aggregate_lane_fence() { return 1; }
+fenced_push_rc=0
+push_changes 1.2.3 >/dev/null 2>&1 || fenced_push_rc=$?
+[[ "$fenced_push_rc" -eq 1 && ! -e "$DIRECT_PUSH_COUNT" ]]
+unset AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN
+unset -f _version_manager_verify_aggregate_lane_fence
+printf 'PASS stale aggregate lane is checked immediately before direct publication push\n'
+
 push_rc=0
 push_output=$(push_changes 1.2.3 2>&1) || push_rc=$?
 if [[ "$push_rc" -ne 8 ]]; then
@@ -205,6 +215,21 @@ printf 'PASS recovery branch preserves the original release commit and tag objec
 grep -q '^pr create .*--head chore/release-v1.2.3-provenance .*--base main ' "$FAKE_GH_LOG"
 grep -q "^pr merge 77 --repo test/repo --auto --merge --match-head-commit ${RECOVERY_HEAD}$" "$FAKE_GH_LOG"
 printf 'PASS recovery queues merge topology against the exact PR head\n'
+
+merge_calls_before=$(grep -c '^pr merge ' "$FAKE_GH_LOG")
+AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN=stale-token
+export AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN
+_version_manager_verify_aggregate_lane_fence() { return 1; }
+if _version_manager_queue_exact_merge test/repo "$RECOVERY_BRANCH" "$RECOVERY_HEAD" \
+	77 1.2.3 "$TAG_OBJECT" "$RELEASE_COMMIT" >/dev/null 2>&1; then
+	printf 'FAIL stale aggregate lane queued a protected-main merge\n'
+	exit 1
+fi
+merge_calls_after=$(grep -c '^pr merge ' "$FAKE_GH_LOG")
+[[ "$merge_calls_after" -eq "$merge_calls_before" ]]
+unset AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN
+unset -f _version_manager_verify_aggregate_lane_fence
+printf 'PASS stale aggregate lane is checked immediately before protected-main merge queueing\n'
 
 STALE_PR_HEAD="$CURRENT_MAIN"
 export STALE_PR_HEAD

@@ -120,6 +120,35 @@ run_merge_guard_test() (
 		release_lane_merge_guard test/repo 303 main chore/release-v1.2.3-provenance || return 1
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 404 main release/aggregate-recovery || return 1
+	for recovery_phase in aggregation-recovery aggregation-recovery-refresh aggregate-publication-committing reserved-authorization-refresh; do
+		state=$(jq -cn --arg phase "$recovery_phase" \
+			'{schema_version:1,repository:"test/repo",active:true,source_pr:101,phase:$phase,
+			  tag:(if $phase == "reserved-authorization-refresh" then null else "v1.2.3" end),
+			  operation_token:"token-old"}')
+		rc=0
+		output=$(AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+			release_lane_merge_guard test/repo 202 main feature/ordinary 2>&1) || rc=$?
+		[[ "$rc" -eq 75 && "$output" == *"phase=${recovery_phase}"* ]] || return 1
+		rc=0
+		AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+			release_lane_merge_guard test/repo 303 main chore/release-v1.2.3-provenance \
+			>/dev/null 2>&1 || rc=$?
+		if [[ "$recovery_phase" == "aggregate-publication-committing" ]]; then
+			[[ "$rc" -eq 0 ]] || return 1
+		else
+			[[ "$rc" -eq 75 ]] || return 1
+		fi
+		rc=0
+		AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
+			release_lane_merge_guard test/repo 404 main release/aggregate-recovery \
+			>/dev/null 2>&1 || rc=$?
+		if [[ "$recovery_phase" == "aggregate-publication-committing" ||
+			"$recovery_phase" == "reserved-authorization-refresh" ]]; then
+			[[ "$rc" -eq 75 ]] || return 1
+		else
+			[[ "$rc" -eq 0 ]] || return 1
+		fi
+	done
 	state='{"schema_version":1,"repository":"test/repo","active":false,"source_pr":101,"phase":"terminal","tag":"v1.2.3","operation_token":"token-old","terminal_receipt":"superseded"}'
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 202 main feature/ordinary || return 1
@@ -242,6 +271,13 @@ run_stale_reclamation_guard_test() (
 run_aggregate_recovery_rotation_test() (
 	local state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101","phase":"remote-publication","tag":"v1.2.3","updated_at":"2026-08-09T00:00:00Z","operation_token":"token-old"}'
 	local old_state="$state"
+	local first_recovery_token=""
+	local refresh_token=""
+	local initial_authorization='101@1111111111111111111111111111111111111111'
+	local initial_expanded='101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222'
+	local refreshed_expanded=""
+	local claimed_state=""
+	local write_mode="success"
 	release_lane_read() {
 		_AIDEVOPS_RELEASE_LANE_JSON="$state"
 		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
@@ -253,16 +289,57 @@ run_aggregate_recovery_rotation_test() (
 		local expected_head="$3"
 		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
 		state="$state_json"
+		[[ "$write_mode" == "success" ]] || return 1
 		return 0
 	}
+	write_mode="ambiguous"
 	release_lane_begin_aggregate_recovery test/repo 101 v1.2.3 101 \
-		'101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222' \
+		"$initial_authorization" "$initial_expanded" \
 		3333333333333333333333333333333333333333 || return 1
-	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-recovery" &&
-	"$(jq -r '.expected_sources' <<<"$state")" == 101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222 &&
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-recovery-refresh" &&
+	"$(jq -r '.expected_sources' <<<"$state")" == "$initial_expanded" &&
 	"$(jq -r '.operation_token' <<<"$state")" != "token-old" &&
 	"$(jq -r '.aggregate_recovery.provisional_tag_object' <<<"$state")" == 3333333333333333333333333333333333333333 &&
+	"$(jq -r '.aggregate_recovery.refresh.previous_expected_sources' <<<"$state")" == "$initial_authorization" &&
+	"$(jq -r '.aggregate_recovery.refresh.pending_expected_sources' <<<"$state")" == "$initial_expanded" &&
 	"$(jq -c '.aggregate_recovery.previous_state' <<<"$state")" == "$old_state" ]] || return 1
+	release_lane_finish_aggregate_refresh test/repo 101 v1.2.3 "$initial_authorization" \
+		"$initial_expanded" 3333333333333333333333333333333333333333 || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-recovery" &&
+	"$(jq -r '.aggregate_recovery.refresh // empty' <<<"$state")" == "" ]] || return 1
+	first_recovery_token=$(jq -r '.operation_token' <<<"$state") || return 1
+	refreshed_expanded="${initial_expanded},103@4444444444444444444444444444444444444444"
+	write_mode="ambiguous"
+	release_lane_begin_aggregate_refresh test/repo 101 v1.2.3 "$initial_expanded" \
+		"$refreshed_expanded" 3333333333333333333333333333333333333333 || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-recovery-refresh" &&
+	"$(jq -r '.expected_sources' <<<"$state")" == "$refreshed_expanded" &&
+	"$(jq -r '.operation_token' <<<"$state")" != "$first_recovery_token" &&
+	"$(jq -c '.aggregate_recovery.previous_state' <<<"$state")" == "$old_state" &&
+	"$(jq -r '.aggregate_recovery.refresh.previous_expected_sources' <<<"$state")" == "$initial_expanded" &&
+	"$(jq -r '.aggregate_recovery.refresh.pending_expected_sources' <<<"$state")" == "$refreshed_expanded" &&
+	"$(jq -r '.aggregate_recovery.provisional_tag_object' <<<"$state")" == 3333333333333333333333333333333333333333 ]] || return 1
+	refresh_token=$(jq -r '.operation_token' <<<"$state") || return 1
+	write_mode="ambiguous"
+	release_lane_finish_aggregate_refresh test/repo 101 v1.2.3 "$initial_expanded" \
+		"$refreshed_expanded" 3333333333333333333333333333333333333333 || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-recovery" &&
+	"$(jq -r '.operation_token' <<<"$state")" == "$refresh_token" &&
+	"$(jq -r '.expected_sources' <<<"$state")" == "$refreshed_expanded" &&
+	"$(jq -r '.aggregate_recovery.refresh // empty' <<<"$state")" == "" &&
+	"$(jq -c '.aggregate_recovery.previous_state' <<<"$state")" == "$old_state" ]] || return 1
+	write_mode="ambiguous"
+	release_lane_claim_aggregate_publication test/repo 101 v1.2.3 "$refreshed_expanded" || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregate-publication-committing" &&
+	"$(jq -r '.operation_token' <<<"$state")" == "$refresh_token" ]] || return 1
+	release_lane_verify_aggregate_publication test/repo 101 v1.2.3 "$refreshed_expanded" || return 1
+	claimed_state="$state"
+	state=$(jq -c '.operation_token="lane-rotated"' <<<"$state") || return 1
+	if release_lane_verify_aggregate_publication test/repo 101 v1.2.3 "$refreshed_expanded"; then
+		return 1
+	fi
+	state="$claimed_state"
+	write_mode="success"
 	release_lane_restore_aggregate_recovery test/repo 101 "$old_state" || return 1
 	[[ "$state" == "$old_state" ]]
 	return $?
@@ -281,11 +358,13 @@ run_aggregate_recovery_rejection_test() (
 	}
 	if release_lane_begin_aggregate_recovery test/repo 101 v1.2.3 101 \
 		'101@1111111111111111111111111111111111111111' \
+		'101@1111111111111111111111111111111111111111' \
 		3333333333333333333333333333333333333333; then
 		return 1
 	fi
 	state_mode="terminal"
 	if release_lane_begin_aggregate_recovery test/repo 101 v1.2.3 101 \
+		'101@1111111111111111111111111111111111111111' \
 		'101@1111111111111111111111111111111111111111' \
 		3333333333333333333333333333333333333333; then
 		return 1
@@ -298,6 +377,7 @@ run_reserved_aggregate_authorization_test() (
 	local state="$old_state"
 	local expanded='101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222'
 	local write_conflict=false
+	local first_token=""
 	release_lane_read() {
 		_AIDEVOPS_RELEASE_LANE_JSON="$state"
 		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
@@ -315,7 +395,23 @@ run_reserved_aggregate_authorization_test() (
 	_AIDEVOPS_RELEASE_LANE_TOKEN="token-owned"
 	release_lane_expand_reserved_authorization test/repo 101 \
 		'101' "$expanded" || return 1
-	[[ "$(jq -r '.expected_sources' <<<"$state")" == "$expanded" ]] || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "reserved-authorization-refresh" &&
+	"$(jq -r '.expected_sources' <<<"$state")" == "$expanded" &&
+	"$(jq -r '.operation_token' <<<"$state")" != "token-owned" &&
+	"$(jq -r '.reserved_authorization_refresh.previous_expected_sources' <<<"$state")" == "101" &&
+	"$(jq -r '.reserved_authorization_refresh.pending_expected_sources' <<<"$state")" == "$expanded" &&
+	"$(jq -c '.reserved_authorization_refresh.previous_state' <<<"$state")" == "$old_state" ]] || return 1
+	first_token=$(jq -r '.operation_token' <<<"$state") || return 1
+	_AIDEVOPS_RELEASE_LANE_TOKEN="token-owned"
+	release_lane_expand_reserved_authorization test/repo 101 '101' "$expanded" || return 1
+	[[ "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "$first_token" ]] || return 1
+	release_lane_finish_reserved_authorization test/repo 101 '101' "$expanded" || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "reserved" &&
+	"$(jq -r '.expected_sources' <<<"$state")" == "$expanded" &&
+	"$(jq -r '.reserved_authorization_refresh // empty' <<<"$state")" == "" ]] || return 1
+	state="$old_state"
+	_AIDEVOPS_RELEASE_LANE_TOKEN="token-owned"
+	release_lane_expand_reserved_authorization test/repo 101 '101' "$expanded" || return 1
 	release_lane_restore_reserved_authorization test/repo 101 "$expanded" "$old_state" || return 1
 	[[ "$state" == "$old_state" ]] || return 1
 	write_conflict=true
@@ -349,7 +445,7 @@ if run_default_stale_boundary_and_fencing_test; then assert_result 'default stal
 if run_stale_reclamation_guard_test; then assert_result 'preparing, tagged, and receipted lanes remain reconcile-only' true; else assert_result 'preparing, tagged, and receipted lanes remain reconcile-only' false; fi
 if run_aggregate_recovery_rotation_test; then assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' true; else assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' false; fi
 if run_aggregate_recovery_rejection_test; then assert_result 'aggregate recovery rejects competing owners and terminal lanes' true; else assert_result 'aggregate recovery rejects competing owners and terminal lanes' false; fi
-if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggregate authorization uses owned CAS expansion and exact rollback' true; else assert_result 'reserved aggregate authorization uses owned CAS expansion and exact rollback' false; fi
+if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggregate authorization rotates through a resumable lane-first transaction' true; else assert_result 'reserved aggregate authorization rotates through a resumable lane-first transaction' false; fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

@@ -315,8 +315,22 @@ tag_authorization_json=$(
 		bash "$HELPER" resolve-tag-authorization --tag v2.0.0 --source-pr 42 --repo test/aggregate \
 		--expected-sources 42,43,44,45
 )
-jq -e '(.expected_sources | map(.pr)) == [42,43,44,45]' <<<"$tag_authorization_json" >/dev/null
-printf 'PASS immutable-tag authorization resolves every trusted PR to its verified merge SHA\n'
+jq -e --arg source_merge "$COMPLETE_AGGREGATE_MERGE" '
+	.mode == "aggregate" and .source_pr == 100 and .source_merge == $source_merge
+	and (.expected_sources | map(.pr)) == [42,43,44,45]
+	and (.aggregated_sources | map(.pr)) == [42,43,44,45]
+' <<<"$tag_authorization_json" >/dev/null
+printf 'PASS immutable-tag authorization resolves exact source provenance and every trusted merge SHA\n'
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-authorization --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources 42,43,44
+) >/dev/null 2>&1; then
+	printf 'FAIL immutable-tag authorization accepted a strict subset of the signed aggregate\n'
+	exit 1
+fi
+printf 'PASS immutable-tag authorization rejects incomplete persisted source sets\n'
 (
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \

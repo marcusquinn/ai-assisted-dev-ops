@@ -38,6 +38,16 @@ _VERSION_MANAGER_PR_STATE_OPEN="open"
 _VERSION_MANAGER_PR_STATE_CLOSED="closed"
 _VERSION_MANAGER_TIMESTAMP_REGEX='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
+#aidevops:trust-boundary
+_version_manager_require_aggregate_fence() {
+	if declare -F _version_manager_verify_aggregate_lane_fence >/dev/null 2>&1; then
+		_version_manager_verify_aggregate_lane_fence
+		return $?
+	fi
+	[[ -z "${AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN:-}" ]]
+	return $?
+}
+
 _version_manager_push_requires_pr() {
 	local push_output="$1"
 
@@ -337,6 +347,7 @@ _version_manager_prepare_protected_release_head() {
 		return 1
 	fi
 
+	_version_manager_require_aggregate_fence || return 1
 	if push_output=$(git -C "$REPO_ROOT" push origin \
 		"${_VERSION_MANAGER_PROTECTED_RELEASE_HEAD}:refs/heads/${branch_name}" 2>&1); then
 		return 0
@@ -409,9 +420,11 @@ _version_manager_queue_exact_merge() {
 		"$tag_object" "$release_commit" || return 1
 	is_draft=$(jq -r '.draft // false' <<<"$_VERSION_MANAGER_PROTECTED_PR_JSON") || return 1
 	if [[ "$is_draft" == "true" ]]; then
+		_version_manager_require_aggregate_fence || return 1
 		gh pr ready "$pr_number" --repo "$repo" >/dev/null 2>&1 || return 1 # aidevops-allow: raw-gh-wrapper
 	fi
 
+	_version_manager_require_aggregate_fence || return 1
 	merge_output=$(gh pr merge "$pr_number" --repo "$repo" --auto --merge \
 		--match-head-commit "$expected_head" 2>&1) || merge_rc=$? # aidevops-allow: raw-gh-wrapper
 	if [[ "$merge_rc" -eq 0 ]]; then
@@ -436,6 +449,7 @@ _version_manager_queue_exact_merge() {
 
 	# Prevent generic squash automation from destroying ancestry when native
 	# merge queueing is unavailable. Reconciliation retries the exact merge.
+	_version_manager_require_aggregate_fence || return 1
 	if gh pr ready "$pr_number" --repo "$repo" --undo >/dev/null 2>&1; then # aidevops-allow: raw-gh-wrapper
 		_VERSION_MANAGER_PROTECTED_RELEASE_RESULT="queued-draft"
 		print_warning "Protected release PR #${pr_number} is preserved as a draft because exact merge queueing was unavailable"
@@ -478,6 +492,7 @@ _version_manager_create_or_reuse_protected_pr() {
 			fi
 			create_args+=(--label "$origin_label" --label "status:in-review" --label "release")
 		fi
+		_version_manager_require_aggregate_fence || return 1
 		create_output=$(gh pr create "${create_args[@]}" 2>&1) || create_rc=$? # aidevops-allow: raw-gh-wrapper
 		rm -f "$body_file"
 		_version_manager_find_protected_release_pr "$repo" "$branch_name" || return 1
@@ -529,6 +544,7 @@ _version_manager_publish_reachable_tag() {
 		print_info "Create a newly reviewed exact-tip aggregation release; no tag or package channel was mutated"
 		return 1
 	fi
+	_version_manager_require_aggregate_fence || return 1
 	if ! push_output=$(git -C "$REPO_ROOT" push origin \
 		"refs/tags/${tag_name}:refs/tags/${tag_name}" 2>&1); then
 		print_error "Failed to publish preserved ${tag_name} after main became reachable"

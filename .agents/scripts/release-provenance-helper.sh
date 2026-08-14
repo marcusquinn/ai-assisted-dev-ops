@@ -161,14 +161,29 @@ _release_provenance_resolve_tag_authorization() {
 	local release_head=""
 	local tag_commit=""
 	local expected_sources_json=""
+	local source_json=""
+	local observed_sources_json=""
 	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$requested_pr" =~ ^[0-9]+$ ]] || return 1
 	[[ "$repo_slug" =~ ^[^/]+/[^/]+$ && "$branch_name" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
 	release_head=$(git rev-parse HEAD 2>/dev/null) || return 1
 	tag_commit=$(git rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
 	[[ "$release_head" == "$tag_commit" ]] || return 1
+	_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name" \
+		"$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" >/dev/null || return 1
 	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
 		"$repo_slug" "$branch_name" "$tag_commit") || return 1
-	jq -cn --argjson expected "$expected_sources_json" '{expected_sources:$expected}'
+	source_json=$(jq -cn --argjson requested_pr "$requested_pr" \
+		--argjson source_pr "$_RELEASE_PROVENANCE_SOURCE_PR" \
+		--arg source_merge "$_RELEASE_PROVENANCE_SOURCE_MERGE" \
+		--argjson aggregated "$_RELEASE_PROVENANCE_AGGREGATED_SOURCES" '
+		{mode:(if ($aggregated | length) == 0 then "direct" else "aggregate" end),
+		 requested_pr:$requested_pr,source_pr:$source_pr,source_merge:$source_merge,
+		 aggregated_sources:($aggregated | sort_by(.pr))}
+	') || return 1
+	observed_sources_json=$(release_authorization_observed_sources_json \
+		"$expected_sources_json" "$source_json") || return 1
+	_release_provenance_assert_expected_sources "$expected_sources_json" "$observed_sources_json" || return 1
+	jq -c --argjson expected "$expected_sources_json" '. + {expected_sources:$expected}' <<<"$source_json"
 	return $?
 }
 

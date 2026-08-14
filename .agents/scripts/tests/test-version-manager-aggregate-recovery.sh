@@ -62,8 +62,21 @@ verify_release_source_pr() {
 	VERSION_MANAGER_AGGREGATED_SOURCES="42@${SOURCE_MERGE}"
 	return 0
 }
+verify_release_tag_source() {
+	VERSION_MANAGER_SOURCE_PR=99
+	VERSION_MANAGER_SOURCE_MERGE_SHA="$AGGREGATE_MERGE"
+	VERSION_MANAGER_AGGREGATED_SOURCES="42@${SOURCE_MERGE}"
+	VERSION_MANAGER_EXPECTED_SOURCES="42@${SOURCE_MERGE}"
+	return 0
+}
 validate_version_consistency() { return 0; }
-_verify_recovered_aggregate_tag() { return 0; }
+ROTATE_AFTER_TAG=false
+_verify_recovered_aggregate_tag() {
+	if [[ "$ROTATE_AFTER_TAG" == "true" ]]; then
+		LANE_TOKEN="lane-rotated"
+	fi
+	return 0
+}
 release_source_pr_required() { return 0; }
 _release_contains_efficiency_change() { return 1; }
 push_changes() { return "${PUSH_RC:-8}"; }
@@ -86,6 +99,29 @@ expected_sources=""
 old_tag_object=""
 _parse_aggregate_recovery_args --tag v1.2.3 --source-pr 42 \
 	--expected-sources "42@${SOURCE_MERGE}" --old-tag-object "$OLD_TAG_OBJECT"
+AIDEVOPS_RELEASE_LANE_REPOSITORY=test/repo
+AIDEVOPS_RELEASE_LANE_SOURCE_PR=42
+AIDEVOPS_RELEASE_LANE_TAG=v1.2.3
+AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES="42@${SOURCE_MERGE}"
+AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN=lane-owned
+export AIDEVOPS_RELEASE_LANE_REPOSITORY AIDEVOPS_RELEASE_LANE_SOURCE_PR
+export AIDEVOPS_RELEASE_LANE_TAG AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES
+export AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN
+LANE_TOKEN=lane-owned
+LANE_PHASE=aggregation-recovery
+release_lane_claim_aggregate_publication() {
+	[[ "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "$LANE_TOKEN" ]] || return 1
+	case "$LANE_PHASE" in
+	aggregation-recovery) LANE_PHASE=aggregate-publication-committing ;;
+	aggregate-publication-committing) ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+release_lane_verify_aggregate_publication() {
+	[[ "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "$LANE_TOKEN" && "$LANE_PHASE" == "aggregate-publication-committing" ]]
+	return $?
+}
 _validate_aggregate_recovery_context "$tag_name" "$source_pr" "$expected_sources" "$old_tag_object"
 recovery_rc=0
 _execute_aggregate_recovery "$tag_name" "$old_tag_object" || recovery_rc=$?
@@ -97,8 +133,48 @@ NEW_TAG_OBJECT=$(git -C "$RECOVERY" rev-parse refs/tags/v1.2.3)
 git -C "$RECOVERY" for-each-ref --format='%(contents)' refs/tags/v1.2.3 | grep -q "Aidevops-Source-PR: 99"
 printf 'PASS aggregate recovery replaces a local-only tag without incrementing the version\n'
 
+printf 'advanced main\n' >"${REPO}/advanced.txt"
+git -C "$REPO" add advanced.txt
+git -C "$REPO" commit -q -m 'concurrent main advance'
+git -C "$REPO" push -q origin main
+ADVANCED_MAIN=$(git -C "$REPO" rev-parse HEAD)
+git -C "$RECOVERY" fetch -q origin main
+git -C "$RECOVERY" reset -q --hard origin/main
+_validate_aggregate_recovery_context "$tag_name" "$source_pr" "$expected_sources" "$old_tag_object"
+[[ "$_VERSION_MANAGER_AGGREGATE_TAG_MODE" == "recovered" ]]
+[[ "$(git -C "$RECOVERY" rev-parse origin/main)" == "$ADVANCED_MAIN" ]]
+resumed_rc=0
+_execute_aggregate_recovery "$tag_name" "$old_tag_object" || resumed_rc=$?
+[[ "$resumed_rc" -eq 8 ]]
+[[ "$(git -C "$RECOVERY" rev-parse refs/tags/v1.2.3)" == "$NEW_TAG_OBJECT" ]]
+[[ "$(git -C "$RECOVERY" rev-parse HEAD)" == "$(git -C "$RECOVERY" rev-parse 'v1.2.3^{commit}')" ]]
+printf 'PASS interrupted aggregate recovery resumes the exact replacement tag after main advances\n'
+
 restore_unpublished_aggregate_tag 1.2.3 "$OLD_TAG_OBJECT"
 git -C "$RECOVERY" reset -q --hard "$AGGREGATE_MERGE"
+_VERSION_MANAGER_AGGREGATE_TAG_MODE="$_VERSION_MANAGER_AGGREGATE_TAG_MODE_PROVISIONAL"
+LANE_TOKEN=lane-rotated
+LANE_PHASE=aggregation-recovery
+stale_rc=0
+_execute_aggregate_recovery v1.2.3 "$OLD_TAG_OBJECT" || stale_rc=$?
+[[ "$stale_rc" -eq 1 ]]
+[[ "$(git -C "$RECOVERY" rev-parse refs/tags/v1.2.3)" == "$OLD_TAG_OBJECT" ]]
+[[ "$(git -C "$RECOVERY" rev-parse HEAD)" == "$AGGREGATE_MERGE" ]]
+printf 'PASS rotated aggregate lane token fences a stale process before local mutation\n'
+
+LANE_TOKEN=lane-owned
+LANE_PHASE=aggregation-recovery
+ROTATE_AFTER_TAG=true
+post_tag_rc=0
+_execute_aggregate_recovery v1.2.3 "$OLD_TAG_OBJECT" || post_tag_rc=$?
+[[ "$post_tag_rc" -eq 1 ]]
+[[ "$(git -C "$RECOVERY" rev-parse refs/tags/v1.2.3)" == "$OLD_TAG_OBJECT" ]]
+printf 'PASS post-tag lane rotation restores the unpublished provisional tag\n'
+
+git -C "$RECOVERY" reset -q --hard "$AGGREGATE_MERGE"
+LANE_TOKEN=lane-owned
+LANE_PHASE=aggregation-recovery
+ROTATE_AFTER_TAG=false
 PUSH_RC=1
 failed_rc=0
 _main_recover_aggregate --tag v1.2.3 --source-pr 42 \

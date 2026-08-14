@@ -47,6 +47,7 @@ source "${SCRIPT_DIR}/version-manager-protected-main.sh"
 # from "commit succeeded" (0). Callers that expect a new bump commit on HEAD
 # must treat exit 2 as fatal — see _release_execute (t2437/GH#20073).
 readonly VERSION_MANAGER_NO_CHANGES_EXIT=2
+readonly _VERSION_MANAGER_SOURCE_ENTRY_JQ='"\(.pr)@\(.merge)"'
 
 # --- Functions ---
 
@@ -155,13 +156,41 @@ verify_release_source_pr() {
 	source_json=$(cd "$REPO_ROOT" && bash "$resolver" "${resolver_args[@]}") || return 1
 	VERSION_MANAGER_SOURCE_PR=$(jq -er '.source_pr' <<<"$source_json") || return 1
 	VERSION_MANAGER_SOURCE_MERGE_SHA=$(jq -er '.source_merge' <<<"$source_json") || return 1
-	VERSION_MANAGER_AGGREGATED_SOURCES=$(jq -cr '.aggregated_sources // [] | .[] | "\(.pr)@\(.merge)"' <<<"$source_json") || return 1
-	VERSION_MANAGER_EXPECTED_SOURCES=$(jq -er '
-		(.expected_sources // (if .mode == "direct" then [{pr:.source_pr,merge:.source_merge}] else .aggregated_sources end))
-		| sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
-	' <<<"$source_json") || return 1
+	VERSION_MANAGER_AGGREGATED_SOURCES=$(jq -cr ".aggregated_sources // [] | .[] | ${_VERSION_MANAGER_SOURCE_ENTRY_JQ}" \
+		<<<"$source_json") || return 1
+	VERSION_MANAGER_EXPECTED_SOURCES=$(jq -er "
+		(.expected_sources // (if .mode == \"direct\" then [{pr:.source_pr,merge:.source_merge}] else .aggregated_sources end))
+		| sort_by(.pr) | map(${_VERSION_MANAGER_SOURCE_ENTRY_JQ}) | join(\",\")
+	" <<<"$source_json") || return 1
 	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA VERSION_MANAGER_AGGREGATED_SOURCES VERSION_MANAGER_EXPECTED_SOURCES
 	print_success "Release provenance verified: PR #${VERSION_MANAGER_SOURCE_PR}, merge ${VERSION_MANAGER_SOURCE_MERGE_SHA}"
+	return 0
+}
+
+verify_release_tag_source() {
+	local tag_name="$1"
+	local source_pr="$2"
+	local branch="${3:-main}"
+	local repo_slug="${4:-}"
+	local expected_sources="${5:-}"
+	local resolver="${AIDEVOPS_RELEASE_SOURCE_RESOLVER:-${SCRIPT_DIR}/release-provenance-helper.sh}"
+	local source_json=""
+	local -a resolver_args=(resolve-tag-authorization --tag "$tag_name" --source-pr "$source_pr" --branch "$branch")
+	if [[ -z "$repo_slug" ]]; then
+		repo_slug=$(_release_repo_slug 2>/dev/null || true)
+	fi
+	[[ -n "$repo_slug" && -x "$resolver" ]] || return 1
+	resolver_args+=(--repo "$repo_slug")
+	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
+	source_json=$(cd "$REPO_ROOT" && bash "$resolver" "${resolver_args[@]}") || return 1
+	VERSION_MANAGER_SOURCE_PR=$(jq -er '.source_pr' <<<"$source_json") || return 1
+	VERSION_MANAGER_SOURCE_MERGE_SHA=$(jq -er '.source_merge' <<<"$source_json") || return 1
+	VERSION_MANAGER_AGGREGATED_SOURCES=$(jq -cr ".aggregated_sources // [] | .[] | ${_VERSION_MANAGER_SOURCE_ENTRY_JQ}" \
+		<<<"$source_json") || return 1
+	VERSION_MANAGER_EXPECTED_SOURCES=$(jq -er ".expected_sources | sort_by(.pr) | map(${_VERSION_MANAGER_SOURCE_ENTRY_JQ}) | join(\",\")" \
+		<<<"$source_json") || return 1
+	export VERSION_MANAGER_SOURCE_PR VERSION_MANAGER_SOURCE_MERGE_SHA
+	export VERSION_MANAGER_AGGREGATED_SOURCES VERSION_MANAGER_EXPECTED_SOURCES
 	return 0
 }
 
@@ -620,6 +649,7 @@ push_changes() {
 		# Use --atomic to ensure commit and tag are pushed together (all-or-nothing).
 		# Capture stderr so permanent branch-policy rejection is classified after
 		# one attempt rather than retried as transient contention.
+		_version_manager_require_aggregate_fence || return 1
 		if push_output=$(git push --atomic origin HEAD:refs/heads/main --tags 2>&1); then
 			print_success "Pushed changes and tags to remote"
 			return 0
@@ -649,6 +679,16 @@ push_changes() {
 			return 1
 		fi
 		if [[ "$(git rev-parse origin/main 2>/dev/null)" != "$release_parent" ]]; then
+			if [[ -n "${AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN:-}" ]]; then
+				_version_manager_require_aggregate_fence || return 1
+				if _version_manager_queue_protected_main_release "$version"; then
+					case "$_VERSION_MANAGER_PROTECTED_RELEASE_RESULT" in
+					remote-tag-present | tag-pushed) return 0 ;;
+					esac
+					return 8
+				fi
+				return 1
+			fi
 			print_error "origin/main advanced after release provenance was recorded"
 			print_info "Discard this release worktree and rerun from the latest merged source PR"
 			git tag -d "$tag_name" 2>/dev/null || true

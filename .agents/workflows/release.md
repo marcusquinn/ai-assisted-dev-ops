@@ -101,11 +101,24 @@ aidevops release recover-aggregate <original-source-pr> --tag <vX.Y.Z> \
 The command requires the reviewed aggregate at the exact `origin/main` tip,
 confirms the tag is absent from the remote, GitHub Releases, npm, and Homebrew,
 and verifies the existing authorization is an exact subset of the aggregate.
-It then rotates the lane token, expands authorization, creates a same-version
-empty bump commit over the aggregate, and replaces only the local unpublished
-tag. A failure before durable publication restores the exact previous tag
-object, authorization manifest, and lane state. Remote tags are never rewritten.
-See `reference/release-aggregation-recovery.md` for the state and rollback
+It first rotates the lane token into a fenced refresh phase, expands
+authorization, and completes that state transition. Version-manager then claims
+an `aggregate-publication-committing` phase before creating a same-version empty
+bump commit over the aggregate and replacing only the local unpublished tag.
+The exact lane token is rechecked immediately before every publication push and
+protected-main PR mutation. The committing phase remains exclusive while its
+protected PR is open; rerun the same recovery command to resume that queue from
+the persisted aggregate even if `main` advanced. It enters `remote-publication`
+only after the exact release commit reaches `main`. Once authorization expands,
+failures retain the fenced transaction for retry instead of attempting separate
+lane and authorization rollback writes. If `main` advances before the local tag
+changes, a refreshed exact-tip aggregate may extend the fenced source set through
+an idempotent `aggregation-recovery-refresh` phase that preserves the original
+snapshots and rotates the lane token before authorization changes. Interrupted
+refreshes resume from that fenced phase. Reserved-lane authorization migration
+likewise rotates through `reserved-authorization-refresh` before widening the
+persisted manifest. Remote tags are never rewritten. See
+`reference/release-aggregation-recovery.md` for the state and interruption
 contract.
 
 Protected-main reconciliation rechecks the exact tree immediately before pushing the preserved tag. A descendant with a different tree is `aggregation-required` and stops before tag or package mutation, even when it contains the signed release commit. During exact-tag deployment, generic `setup.sh --non-interactive` is blocked by the release lane; only setup carrying the matching source PR and tag may enter the existing setup mutex. The acquisition order is release lane, then setup lock.

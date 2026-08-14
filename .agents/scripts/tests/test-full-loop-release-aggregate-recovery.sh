@@ -86,6 +86,7 @@ if _full_loop_recovery_validate_receipt test/repo 42 >/dev/null 2>&1; then
 	exit 1
 fi
 INTENT_MODE=match
+INTERRUPTED_INTENT_MODE=mismatch
 _full_loop_release_validate_published_reconciliation_intent() {
 	local repo="$1"
 	local source_pr="$2"
@@ -95,9 +96,21 @@ _full_loop_release_validate_published_reconciliation_intent() {
 		"$tag_name" == "v1.2.3" && "$source_json" == '{"source_pr":42}' ]]
 	return $?
 }
+_full_loop_recovery_validate_interrupted_publication_intent() {
+	local repo="$1"
+	local source_pr="$2"
+	local tag_name="$3"
+	local source_json="$4"
+	[[ "$INTERRUPTED_INTENT_MODE" == "match" && "$repo" == "test/repo" && "$source_pr" == "42" &&
+		"$tag_name" == "v1.2.3" && "$source_json" == '{"source_pr":42}' ]]
+	return $?
+}
 printf 'not-requested\n' >"${TEST_ROOT}/release.status"
 _full_loop_recovery_validate_receipt test/repo 42 v1.2.3 '{"source_pr":42}'
 INTENT_MODE=mismatch
+INTERRUPTED_INTENT_MODE=match
+_full_loop_recovery_validate_receipt test/repo 42 v1.2.3 '{"source_pr":42}'
+INTERRUPTED_INTENT_MODE=mismatch
 if _full_loop_recovery_validate_receipt test/repo 42 v1.2.3 '{"source_pr":42}' >/dev/null 2>&1; then
 	printf 'FAIL recovery accepted release:not-requested without matching publication intent\n'
 	exit 1
@@ -124,11 +137,83 @@ _full_loop_restore_release_authorization_after_aggregate() {
 	return 0
 }
 if _full_loop_recovery_begin_state_transaction test/repo 42 v1.2.3; then
-	printf 'FAIL lane read failure retained expanded authorization\n'
+	printf 'FAIL lane read failure began aggregate recovery\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$STATE_LOG")" == "expand restore-auth " ]]
-printf 'PASS lane uncertainty restores the pre-transaction authorization\n'
+[[ ! -s "$STATE_LOG" ]]
+printf 'PASS lane uncertainty blocks authorization expansion before mutation\n'
+
+(
+	transaction_log="${TEST_ROOT}/initial-transaction.log"
+	old_authorization='42@2222222222222222222222222222222222222222'
+	expanded_authorization="${old_authorization},43@3333333333333333333333333333333333333333"
+	authorization="$old_authorization"
+	lane_phase=remote-publication
+	auth_write_mode=success
+	: >"$transaction_log"
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expanded_authorization"
+	_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT=1111111111111111111111111111111111111111
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$authorization"
+		return 0
+	}
+	_full_loop_read_release_authorization_recovery_snapshot() { return 1; }
+	release_authorization_subset() { return 0; }
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg phase "$lane_phase" \
+			'{schema_version:1,active:true,source_pr:42,tag:"v1.2.3",phase:$phase,expected_sources:"42",operation_token:"lane-old"}')
+		return 0
+	}
+	release_lane_begin_aggregate_recovery() {
+		local repo="$1"
+		local source_pr="$2"
+		local tag_name="$3"
+		local lane_sources="$4"
+		local previous_sources="$5"
+		local expected_sources="$6"
+		local provisional="$7"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" && "$tag_name" == "v1.2.3" ]] || return 1
+		[[ "$lane_sources" == "42" && "$previous_sources" == "$old_authorization" ]] || return 1
+		[[ "$expected_sources" == "$expanded_authorization" && "$provisional" == "$_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT" ]] || return 1
+		printf 'fence\n' >>"$transaction_log"
+		lane_phase=aggregation-recovery-refresh
+		_AIDEVOPS_RELEASE_LANE_TOKEN=lane-new
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"remote-publication","operation_token":"lane-old"}'
+		return 0
+	}
+	_full_loop_expand_release_authorization_for_aggregate() {
+		[[ "$lane_phase" == "aggregation-recovery-refresh" ]] || return 1
+		printf 'authorize\n' >>"$transaction_log"
+		[[ "$auth_write_mode" == "success" ]] || return 1
+		authorization="$expanded_authorization"
+		return 0
+	}
+	release_lane_finish_aggregate_refresh() {
+		[[ "$authorization" == "$expanded_authorization" ]] || return 1
+		printf 'finish\n' >>"$transaction_log"
+		lane_phase=aggregation-recovery
+		return 0
+	}
+	release_lane_restore_aggregate_recovery() {
+		printf 'restore-lane\n' >>"$transaction_log"
+		lane_phase=remote-publication
+		return 0
+	}
+	_full_loop_recovery_begin_state_transaction test/repo 42 v1.2.3
+	[[ "$(tr '\n' ' ' <"$transaction_log")" == "fence authorize finish " ]]
+	[[ "$authorization" == "$expanded_authorization" && "$lane_phase" == "aggregation-recovery" ]]
+
+	authorization="$old_authorization"
+	lane_phase=remote-publication
+	auth_write_mode=failure
+	: >"$transaction_log"
+	if _full_loop_recovery_begin_state_transaction test/repo 42 v1.2.3; then
+		exit 1
+	fi
+	[[ "$(tr '\n' ' ' <"$transaction_log")" == "fence authorize restore-lane " ]]
+	[[ "$authorization" == "$old_authorization" && "$lane_phase" == "remote-publication" ]]
+)
+printf 'PASS initial recovery fences the lane before authorization and restores pre-write failures\n'
 
 _FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="42@2222222222222222222222222222222222222222,43@3333333333333333333333333333333333333333"
 _full_loop_read_release_authorization() {
@@ -143,11 +228,357 @@ release_lane_read() {
 	_AIDEVOPS_RELEASE_LANE_JSON='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":42,"expected_sources":"42@2222222222222222222222222222222222222222,43@3333333333333333333333333333333333333333","phase":"aggregation-recovery","tag":"v1.2.3","operation_token":"lane-new","aggregate_recovery":{"provisional_tag_object":"1111111111111111111111111111111111111111","previous_state":{"schema_version":1,"repository":"test/repo","active":true,"source_pr":42,"expected_sources":"42","phase":"remote-publication","tag":"v1.2.3","operation_token":"lane-old"}}}'
 	return 0
 }
+_full_loop_recovery_validate_interrupted_publication_intent() {
+	release_lane_read
+	return $?
+}
 _full_loop_recovery_load_existing_state_transaction test/repo 42 v1.2.3
 [[ "$_FULL_LOOP_AGGREGATE_RECOVERY_PREVIOUS_AUTH" == "42@2222222222222222222222222222222222222222" ]]
 [[ "$_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT" == 1111111111111111111111111111111111111111 ]]
 [[ "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "lane-new" ]]
 printf 'PASS interrupted recovery reloads exact authorization and lane snapshots\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	root_merge=2222222222222222222222222222222222222222
+	current_merge=3333333333333333333333333333333333333333
+	refreshed_merge=4444444444444444444444444444444444444444
+	provisional=1111111111111111111111111111111111111111
+	replacement=5555555555555555555555555555555555555555
+	root_authorization="42@${root_merge}"
+	test_current_authorization="${root_authorization},43@${current_merge}"
+	test_refreshed_authorization="${test_current_authorization},44@${refreshed_merge}"
+	root_record=$(jq -cn --arg merge "$root_merge" \
+		'{schema_version:1,repository:"test/repo",requested_pr:42,expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
+	previous_lane=$(jq -cn \
+		'{schema_version:1,repository:"test/repo",active:true,source_pr:42,expected_sources:"42",phase:"remote-publication",tag:"v1.2.3",operation_token:"lane-old",terminal_receipt:null}')
+	lane_json=$(jq -cn --arg expected "$test_current_authorization" --arg provisional "$provisional" \
+		--argjson previous "$previous_lane" \
+		'{schema_version:1,repository:"test/repo",active:true,source_pr:42,expected_sources:$expected,phase:"aggregation-recovery",tag:"v1.2.3",operation_token:"lane-current",terminal_receipt:null,aggregate_recovery:{previous_state:$previous,provisional_tag_object:$provisional}}')
+	current_source=$(jq -cn --arg merge "$root_merge" \
+		'{source_pr:42,source_merge:$merge,aggregated_sources:[]}')
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$test_current_authorization"
+		return 0
+	}
+	_full_loop_read_release_authorization_recovery_snapshot() {
+		printf '%s\n' "$root_record"
+		return 0
+	}
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$lane_json"
+		return 0
+	}
+	TAG_BOUND_MODE=match
+	_full_loop_recovery_tag_is_bound_to_current_aggregate() {
+		[[ "$TAG_BOUND_MODE" == "match" ]]
+		return $?
+	}
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$test_refreshed_authorization"
+	_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT="$provisional"
+	_full_loop_recovery_validate_interrupted_publication_intent test/repo 42 v1.2.3 "$current_source"
+	lane_json=$(jq -cn --arg expected "$test_refreshed_authorization" \
+		--arg refresh_previous "$test_current_authorization" --arg provisional "$provisional" \
+		--argjson previous "$previous_lane" \
+		'{schema_version:1,repository:"test/repo",active:true,source_pr:42,expected_sources:$expected,phase:"aggregation-recovery-refresh",tag:"v1.2.3",operation_token:"lane-refresh",terminal_receipt:null,aggregate_recovery:{previous_state:$previous,provisional_tag_object:$provisional,refresh:{previous_expected_sources:$refresh_previous,pending_expected_sources:$expected}}}')
+	_full_loop_recovery_validate_interrupted_publication_intent test/repo 42 v1.2.3 "$current_source"
+	test_current_authorization="$test_refreshed_authorization"
+	_full_loop_recovery_validate_interrupted_publication_intent test/repo 42 v1.2.3 "$current_source"
+	test_current_authorization="${root_authorization},43@${current_merge}"
+	lane_json=$(jq -cn --arg expected "$test_current_authorization" --arg provisional "$provisional" \
+		--argjson previous "$previous_lane" \
+		'{schema_version:1,repository:"test/repo",active:true,source_pr:42,expected_sources:$expected,phase:"aggregation-recovery",tag:"v1.2.3",operation_token:"lane-current",terminal_receipt:null,aggregate_recovery:{previous_state:$previous,provisional_tag_object:$provisional}}')
+
+	nested_root=$(jq -c '.aggregate_recovery={previous_authorization:.}' <<<"$root_record")
+	root_record="$nested_root"
+	if _full_loop_recovery_validate_interrupted_publication_intent test/repo 42 v1.2.3 "$current_source"; then
+		exit 1
+	fi
+	root_record=$(jq -cn --arg merge "$root_merge" \
+		'{schema_version:1,repository:"test/repo",requested_pr:42,expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
+
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$test_current_authorization"
+	_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT="$replacement"
+	current_source=$(jq -cn --arg root "$root_merge" --arg current "$current_merge" \
+		'{source_pr:99,source_merge:"6666666666666666666666666666666666666666",aggregated_sources:[{pr:42,merge:$root},{pr:43,merge:$current}]}')
+	_full_loop_recovery_validate_interrupted_publication_intent test/repo 42 v1.2.3 "$current_source"
+	TAG_BOUND_MODE=mismatch
+	if _full_loop_recovery_validate_interrupted_publication_intent test/repo 42 v1.2.3 "$current_source"; then
+		exit 1
+	fi
+)
+printf 'PASS interrupted intent requires exact root snapshots and aggregate-bound replacement tags\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	test_authorization='42@2222222222222222222222222222222222222222,43@3333333333333333333333333333333333333333'
+	_FULL_LOOP_AGGREGATE_RECOVERY_TAG_SOURCE_JSON='{"source_pr":99,"source_merge":"4444444444444444444444444444444444444444","aggregated_sources":[{"pr":42,"merge":"2222222222222222222222222222222222222222"},{"pr":43,"merge":"3333333333333333333333333333333333333333"}]}'
+	_full_loop_read_release_authorization_recovery_snapshot() {
+		printf '%s\n' '{"schema_version":1}'
+		return 0
+	}
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$test_authorization"
+		return 0
+	}
+	_full_loop_recovery_validate_receipt() { return 0; }
+	load_mode=transaction
+	_full_loop_recovery_load_existing_state_transaction() {
+		[[ "$load_mode" == "transaction" ]]
+		return $?
+	}
+	_full_loop_recovery_load_remote_publication_state() {
+		[[ "$load_mode" == "remote" ]]
+		return $?
+	}
+	_full_loop_recovery_prepare_existing_context test/repo 42 v1.2.3 43,42
+	[[ "$_FULL_LOOP_AGGREGATE_RECOVERY_EXISTING_CONTEXT" == "transaction" ]]
+	[[ "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" == "$test_authorization" ]]
+	[[ "$_FULL_LOOP_RESOLVED_SOURCE_PR" == "99" &&
+		"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" == "4444444444444444444444444444444444444444" ]]
+	load_mode=remote
+	_full_loop_recovery_prepare_existing_context test/repo 42 v1.2.3 42,43
+	[[ "$_FULL_LOOP_AGGREGATE_RECOVERY_EXISTING_CONTEXT" == "remote-publication" ]]
+	if _full_loop_recovery_prepare_existing_context test/repo 42 v1.2.3 42; then
+		exit 1
+	fi
+	if _full_loop_recovery_prepare_existing_context test/repo 42 v1.2.3 \
+		'42@9999999999999999999999999999999999999999,43@3333333333333333333333333333333333333333'; then
+		exit 1
+	fi
+)
+printf 'PASS persisted recovery context can resume after main advances while preserving exact PR intent\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	root_merge=2222222222222222222222222222222222222222
+	current_merge=3333333333333333333333333333333333333333
+	refreshed_merge=4444444444444444444444444444444444444444
+	provisional=1111111111111111111111111111111111111111
+	root_authorization="42@${root_merge}"
+	test_current_authorization="${root_authorization},43@${current_merge}"
+	test_refreshed_authorization="${test_current_authorization},44@${refreshed_merge}"
+	root_record=$(jq -cn --arg merge "$root_merge" \
+		'{schema_version:1,repository:"test/repo",requested_pr:42,expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
+	test_current_record=$(jq -cn --arg root "$root_merge" --arg current "$current_merge" --argjson previous "$root_record" \
+		'{schema_version:1,repository:"test/repo",requested_pr:42,expected_sources:[{pr:42,merge:$root},{pr:43,merge:$current}],recorded_at:"2026-08-09T00:01:00Z",aggregate_recovery:{previous_authorization:$previous}}')
+	test_refreshed_record=$(jq -cn --arg root "$root_merge" --arg current "$current_merge" \
+		--arg refreshed "$refreshed_merge" --argjson previous "$root_record" \
+		'{schema_version:1,repository:"test/repo",requested_pr:42,expected_sources:[{pr:42,merge:$root},{pr:43,merge:$current},{pr:44,merge:$refreshed}],recorded_at:"2026-08-09T00:02:00Z",aggregate_recovery:{previous_authorization:$previous}}')
+	test_lane_snapshot='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":42,"expected_sources":"42","phase":"remote-publication","tag":"v1.2.3","operation_token":"lane-old"}'
+	test_authorization="$test_current_authorization"
+	test_phase="aggregation-recovery"
+	set_test_lane_json() {
+		if [[ "$test_phase" == "aggregation-recovery-refresh" ]]; then
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$test_refreshed_authorization" \
+				--arg current "$test_current_authorization" --argjson previous "$test_lane_snapshot" \
+				'{phase:"aggregation-recovery-refresh",operation_token:"lane-refreshed",aggregate_recovery:{previous_state:$previous,refresh:{previous_expected_sources:$current,pending_expected_sources:$expected}}}')
+		else
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg current "$test_current_authorization" \
+				--argjson previous "$test_lane_snapshot" \
+				'{phase:"aggregation-recovery",operation_token:"lane-current",expected_sources:$current,aggregate_recovery:{previous_state:$previous}}')
+		fi
+		return 0
+	}
+	set_test_lane_json
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$test_authorization"
+		return 0
+	}
+	_full_loop_read_release_authorization_record() {
+		if [[ "$test_authorization" == "$test_refreshed_authorization" ]]; then
+			printf '%s\n' "$test_refreshed_record"
+		else
+			printf '%s\n' "$test_current_record"
+		fi
+		return 0
+	}
+	_full_loop_read_release_authorization_recovery_snapshot() {
+		printf '%s\n' "$root_record"
+		return 0
+	}
+	_full_loop_recovery_validate_interrupted_publication_intent() {
+		set_test_lane_json
+		return $?
+	}
+	REFRESH_LOG="${TEST_ROOT}/refresh.log"
+	: >"$REFRESH_LOG"
+	written_expected=""
+	written_previous=""
+	AUTH_WRITE_MODE=success
+	_full_loop_write_release_authorization_record() {
+		local repo="$1"
+		local source_pr="$2"
+		local expected="$3"
+		local previous="$4"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" ]] || return 1
+		written_expected="$expected"
+		written_previous="$previous"
+		printf 'write\n' >>"$REFRESH_LOG"
+		[[ "$AUTH_WRITE_MODE" == "success" ]] || return 1
+		test_authorization="$expected"
+		return 0
+	}
+	BEGIN_MODE=success
+	release_lane_begin_aggregate_refresh() {
+		local repo="$1"
+		local source_pr="$2"
+		local tag_name="$3"
+		local previous="$4"
+		local expected="$5"
+		local old_tag="$6"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" && "$tag_name" == "v1.2.3" ]] || return 1
+		[[ "$previous" == "$test_current_authorization" && "$expected" == "$test_refreshed_authorization" &&
+			"$old_tag" == "$provisional" ]] || return 1
+		printf 'begin\n' >>"$REFRESH_LOG"
+		[[ "$BEGIN_MODE" == "success" ]] || return 1
+		test_phase="aggregation-recovery-refresh"
+		_AIDEVOPS_RELEASE_LANE_TOKEN=lane-refreshed
+		return 0
+	}
+	FINISH_MODE=success
+	release_lane_finish_aggregate_refresh() {
+		local repo="$1"
+		local source_pr="$2"
+		local tag_name="$3"
+		local previous="$4"
+		local expected="$5"
+		local old_tag="$6"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" && "$tag_name" == "v1.2.3" ]] || return 1
+		[[ "$previous" == "$test_current_authorization" && "$expected" == "$test_refreshed_authorization" &&
+			"$old_tag" == "$provisional" ]] || return 1
+		printf 'finish\n' >>"$REFRESH_LOG"
+		[[ "$FINISH_MODE" == "success" ]] || return 1
+		test_phase="aggregation-recovery"
+		return 0
+	}
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$test_refreshed_authorization"
+	_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT="$provisional"
+	_FULL_LOOP_AGGREGATE_RECOVERY_TAG_SOURCE_JSON='{"source_pr":42}'
+	_full_loop_recovery_refresh_state_transaction test/repo 42 v1.2.3
+	[[ "$written_expected" == "$test_refreshed_authorization" && "$written_previous" == "$root_record" ]]
+	[[ "$_FULL_LOOP_AGGREGATE_RECOVERY_PREVIOUS_AUTH" == "$root_authorization" ]]
+	[[ "$_FULL_LOOP_AGGREGATE_RECOVERY_LANE_SNAPSHOT" == "$test_lane_snapshot" ]]
+	[[ "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "lane-refreshed" ]]
+	[[ "$(tr '\n' ' ' <"$REFRESH_LOG")" == "begin write finish " ]]
+
+	test_authorization="$test_current_authorization"
+	test_phase="aggregation-recovery"
+	BEGIN_MODE=failure
+	: >"$REFRESH_LOG"
+	if _full_loop_recovery_refresh_state_transaction test/repo 42 v1.2.3; then
+		exit 1
+	fi
+	[[ "$test_authorization" == "$test_current_authorization" ]]
+	[[ "$(tr '\n' ' ' <"$REFRESH_LOG")" == "begin " ]]
+
+	BEGIN_MODE=success
+	AUTH_WRITE_MODE=failure
+	: >"$REFRESH_LOG"
+	if _full_loop_recovery_refresh_state_transaction test/repo 42 v1.2.3; then
+		exit 1
+	fi
+	[[ "$test_phase" == "aggregation-recovery-refresh" && "$test_authorization" == "$test_current_authorization" ]]
+	[[ "$(tr '\n' ' ' <"$REFRESH_LOG")" == "begin write " ]]
+	AUTH_WRITE_MODE=success
+	: >"$REFRESH_LOG"
+	_full_loop_recovery_refresh_state_transaction test/repo 42 v1.2.3
+	[[ "$test_authorization" == "$test_refreshed_authorization" && "$test_phase" == "aggregation-recovery" ]]
+	[[ "$(tr '\n' ' ' <"$REFRESH_LOG")" == "write finish " ]]
+
+	test_phase="aggregation-recovery-refresh"
+	FINISH_MODE=failure
+	: >"$REFRESH_LOG"
+	if _full_loop_recovery_refresh_state_transaction test/repo 42 v1.2.3; then
+		exit 1
+	fi
+	[[ "$(tr '\n' ' ' <"$REFRESH_LOG")" == "finish " ]]
+	FINISH_MODE=success
+	: >"$REFRESH_LOG"
+	_full_loop_recovery_refresh_state_transaction test/repo 42 v1.2.3
+	[[ "$test_phase" == "aggregation-recovery" ]]
+	[[ "$(tr '\n' ' ' <"$REFRESH_LOG")" == "finish " ]]
+)
+printf 'PASS refreshed recovery fences first and resumes every partial state without blind rollback\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	provisional=1111111111111111111111111111111111111111
+	replacement=2222222222222222222222222222222222222222
+	expected='42@3333333333333333333333333333333333333333'
+	current_tag="$provisional"
+	tag_bound=false
+	main_reachable=true
+	lane_phase="aggregate-publication-committing"
+	update_mode=success
+	transition_log="${TEST_ROOT}/transition.log"
+	: >"$transition_log"
+	_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT="$provisional"
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expected"
+	_AIDEVOPS_RELEASE_LANE_TOKEN=lane-owned
+	git() {
+		printf '%s\n' "$current_tag"
+		return 0
+	}
+	_full_loop_recovery_tag_is_bound_to_current_aggregate() {
+		[[ "$tag_bound" == "true" ]]
+		return $?
+	}
+	_full_loop_recovery_release_commit_main_reachability() {
+		[[ "$main_reachable" == "true" ]] && return 0
+		return 2
+	}
+	_full_loop_read_release_authorization() {
+		printf '%s\n' "$expected"
+		return 0
+	}
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$expected" --arg phase "$lane_phase" \
+			'{active:true,source_pr:42,tag:"v1.2.3",operation_token:"lane-owned",phase:$phase,expected_sources:$expected,terminal_receipt:null,aggregate_recovery:{}}')
+		return 0
+	}
+	release_lane_update() {
+		local repo="$1"
+		local source_pr="$2"
+		local phase="$3"
+		local tag_name="$4"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" && "$phase" == "remote-publication" &&
+			"$tag_name" == "v1.2.3" ]] || return 1
+		printf 'update\n' >>"$transition_log"
+		lane_phase="remote-publication"
+		[[ "$update_mode" == "success" ]] || return 1
+		return 0
+	}
+	if _full_loop_recovery_transition_durable_publication test/repo 42 v1.2.3; then
+		exit 1
+	fi
+	[[ ! -s "$transition_log" ]]
+	current_tag="$replacement"
+	if _full_loop_recovery_transition_durable_publication test/repo 42 v1.2.3; then
+		exit 1
+	fi
+	[[ ! -s "$transition_log" ]]
+	tag_bound=true
+	main_reachable=false
+	pending_rc=0
+	_full_loop_recovery_transition_durable_publication test/repo 42 v1.2.3 || pending_rc=$?
+	[[ "$pending_rc" -eq 8 && ! -s "$transition_log" ]]
+	main_reachable=true
+	_full_loop_recovery_transition_durable_publication test/repo 42 v1.2.3
+	[[ "$(tr '\n' ' ' <"$transition_log")" == "update " ]]
+	lane_phase="aggregate-publication-committing"
+	update_mode=ambiguous
+	: >"$transition_log"
+	_full_loop_recovery_transition_durable_publication test/repo 42 v1.2.3
+	[[ "$lane_phase" == "remote-publication" && "$(tr '\n' ' ' <"$transition_log")" == "update " ]]
+)
+printf 'PASS durable transition waits for main reachability and classifies ambiguous lane writes\n'
 
 CALL_LOG="${TEST_ROOT}/calls.log"
 : >"$CALL_LOG"
@@ -158,6 +589,10 @@ _full_loop_recovery_validate_receipt() {
 _full_loop_recovery_validate_existing_tag() {
 	_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT="1111111111111111111111111111111111111111"
 	printf 'tag\n' >>"$CALL_LOG"
+	return 0
+}
+_full_loop_recovery_prepare_existing_context() {
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXISTING_CONTEXT=none
 	return 0
 }
 _full_loop_recovery_verify_channels_absent() {
@@ -178,33 +613,45 @@ _full_loop_recovery_begin_state_transaction() {
 	printf 'begin\n' >>"$CALL_LOG"
 	return 0
 }
-_full_loop_recovery_restore_state_transaction() {
-	printf 'restore\n' >>"$CALL_LOG"
-	return 0
-}
 _full_loop_recovery_tag_rollback_safe() { return 0; }
 _full_loop_recovery_write_evidence() {
 	printf 'evidence\n' >>"$CALL_LOG"
-	return 0
-}
-release_lane_update() {
-	printf 'lane\n' >>"$CALL_LOG"
 	return 0
 }
 git() {
 	printf '4444444444444444444444444444444444444444\n'
 	return 0
 }
-
+TAG_BINDING_MODE=unbound
+_full_loop_recovery_tag_is_bound_to_current_aggregate() {
+	[[ "$TAG_BINDING_MODE" == "bound" ]]
+	return $?
+}
+DURABLE_MODE=pending
+_full_loop_recovery_transition_durable_publication() {
+	printf 'durable\n' >>"$CALL_LOG"
+	case "$DURABLE_MODE" in
+	success) return 0 ;;
+	pending) return 8 ;;
+	*) return 1 ;;
+	esac
+}
+REMOTE_MODE=success
+_full_loop_recovery_load_remote_publication_state() {
+	printf 'remote\n' >>"$CALL_LOG"
+	[[ "$REMOTE_MODE" == "success" ]]
+	return $?
+}
 _full_loop_recovery_run_version_manager() {
 	printf 'version-manager\n' >>"$CALL_LOG"
+	TAG_BINDING_MODE=bound
 	return 8
 }
 success_rc=0
 _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || success_rc=$?
 [[ "$success_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager evidence lane " ]]
-printf 'PASS queued recovery records evidence and retains the expanded transaction\n'
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt channels begin version-manager evidence durable " ]]
+printf 'PASS queued recovery retains the committing fence until main reachability\n'
 
 : >"$CALL_LOG"
 _full_loop_recovery_tag_sources() {
@@ -215,14 +662,15 @@ _full_loop_recovery_load_existing_state_transaction() {
 	printf 'load\n' >>"$CALL_LOG"
 	return 1
 }
-_full_loop_recovery_tag_is_bound_to_current_aggregate() { return 1; }
+TAG_BINDING_MODE=unbound
 same_sources_rc=0
 _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || same_sources_rc=$?
 [[ "$same_sources_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate load channels begin version-manager evidence lane " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt load channels begin version-manager evidence durable " ]]
 printf 'PASS fresh same-source aggregation still replaces the historical tag\n'
 
 : >"$CALL_LOG"
+DURABLE_MODE=success
 _full_loop_recovery_load_existing_state_transaction() {
 	printf 'load\n' >>"$CALL_LOG"
 	return 0
@@ -231,11 +679,49 @@ _full_loop_recovery_resume_publication() {
 	printf 'resume\n' >>"$CALL_LOG"
 	return 8
 }
+TAG_BINDING_MODE=bound
 resume_rc=0
 _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || resume_rc=$?
 [[ "$resume_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate load resume " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt load durable resume " ]]
 printf 'PASS interrupted aggregate recovery resumes without another tag replacement\n'
+
+: >"$CALL_LOG"
+DURABLE_MODE=pending
+_full_loop_release_prepare_tag_worktree() {
+	printf 'prepare-worktree\n' >>"$CALL_LOG"
+	return 0
+}
+pending_resume_rc=0
+pending_resume_output=$(_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 2>&1) || pending_resume_rc=$?
+[[ "$pending_resume_rc" -eq 8 ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt load durable prepare-worktree evidence version-manager durable " ]]
+[[ "$pending_resume_output" == *"same recover-aggregate command"* ]]
+printf 'PASS interrupted committing recovery idempotently repairs its protected queue\n'
+
+: >"$CALL_LOG"
+DURABLE_MODE=success
+_full_loop_recovery_load_existing_state_transaction() {
+	printf 'load\n' >>"$CALL_LOG"
+	return 1
+}
+remote_resume_rc=0
+_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || remote_resume_rc=$?
+[[ "$remote_resume_rc" -eq 8 ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt load remote resume " ]]
+printf 'PASS remote-publication recovery reruns enter normal reconciliation\n'
+
+: >"$CALL_LOG"
+_full_loop_recovery_load_existing_state_transaction() {
+	printf 'load\n' >>"$CALL_LOG"
+	return 0
+}
+TAG_BINDING_MODE=unbound
+pre_mutation_rc=0
+_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 || pre_mutation_rc=$?
+[[ "$pre_mutation_rc" -eq 8 ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt load channels begin version-manager evidence durable " ]]
+printf 'PASS interrupted pre-mutation recovery completes the aggregate tag replacement\n'
 
 : >"$CALL_LOG"
 _full_loop_recovery_tag_sources() {
@@ -250,12 +736,14 @@ _full_loop_recovery_resume_publication() {
 	printf 'resume\n' >>"$CALL_LOG"
 	return 1
 }
+DURABLE_MODE=failure
+TAG_BINDING_MODE=unbound
 if _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 >/dev/null 2>&1; then
 	printf 'FAIL failed recovery returned success\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager resume restore " ]]
-printf 'PASS failed recovery restores authorization and release-lane state\n'
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt channels begin version-manager durable " ]]
+printf 'PASS pre-tag failure retains its fenced transaction without non-atomic rollback\n'
 
 : >"$CALL_LOG"
 _full_loop_recovery_tag_rollback_safe() { return 1; }
@@ -263,7 +751,7 @@ if _full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 >/dev/null 2>&
 	printf 'FAIL unsafe failed recovery returned success\n'
 	exit 1
 fi
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager resume " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt channels begin version-manager durable " ]]
 printf 'PASS uncertain tag rollback retains expanded state for reconciliation\n'
 
 : >"$CALL_LOG"
@@ -271,24 +759,95 @@ _full_loop_recovery_resume_publication() {
 	printf 'resume\n' >>"$CALL_LOG"
 	return 8
 }
+DURABLE_MODE=pending
+TAG_BINDING_MODE=bound
 durable_queue_rc=0
 durable_queue_output=$(_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42,43 2>&1) || durable_queue_rc=$?
 [[ "$durable_queue_rc" -eq 8 ]]
-[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag receipt aggregate channels begin version-manager resume " ]]
+[[ "$(tr '\n' ' ' <"$CALL_LOG")" == "tag aggregate receipt channels begin version-manager durable " ]]
 [[ "$durable_queue_output" == *"aidevops release status 42"* ]]
-[[ "$durable_queue_output" == *"aidevops release reconcile 42"* ]]
+[[ "$durable_queue_output" == *"same recover-aggregate command"* ]]
 [[ "$durable_queue_output" != *"Aggregate recovery failed after tag state changed"* ]]
-printf 'PASS durable protected-main queue remains pending after version-manager uncertainty\n'
+printf 'PASS protected-main queue remains exclusively fenced while its merge is pending\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	queue_log="${TEST_ROOT}/advanced-main-queue.log"
+	release_checkout="${TEST_ROOT}/advanced-main-release"
+	provisional=1111111111111111111111111111111111111111
+	replacement=2222222222222222222222222222222222222222
+	expected='42@3333333333333333333333333333333333333333'
+	mkdir -p "$release_checkout/.agents/scripts"
+	cat >"$release_checkout/.agents/scripts/version-manager.sh" <<'STUB'
+#!/usr/bin/env bash
+[[ "$PWD" == "$RECOVERY_RELEASE_PATH" ]] || exit 1
+[[ "$AIDEVOPS_RELEASE_LANE_OPERATION_TOKEN" == "lane-owned" ]] || exit 1
+[[ "$AIDEVOPS_RELEASE_LANE_EXPECTED_SOURCES" == "42@3333333333333333333333333333333333333333" ]] || exit 1
+[[ "$*" == "recover-aggregate --tag v1.2.3 --source-pr 42 --expected-sources 42@3333333333333333333333333333333333333333 --old-tag-object 1111111111111111111111111111111111111111" ]] || exit 1
+printf 'version-manager\n' >>"$RECOVERY_QUEUE_LOG"
+exit 8
+STUB
+	export RECOVERY_QUEUE_LOG="$queue_log" RECOVERY_RELEASE_PATH="$release_checkout"
+	: >"$queue_log"
+	_full_loop_recovery_validate_existing_tag() {
+		_FULL_LOOP_AGGREGATE_RECOVERY_OLD_TAG_OBJECT="$provisional"
+		printf 'tag\n' >>"$queue_log"
+		return 0
+	}
+	_full_loop_recovery_prepare_existing_context() {
+		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expected"
+		_FULL_LOOP_RESOLVED_SOURCE_MERGE=3333333333333333333333333333333333333333
+		_FULL_LOOP_AGGREGATE_RECOVERY_EXISTING_CONTEXT=transaction
+		_AIDEVOPS_RELEASE_LANE_TOKEN=lane-owned
+		return 0
+	}
+	_full_loop_recovery_tag_is_bound_to_current_aggregate() { return 0; }
+	_full_loop_recovery_transition_durable_publication() {
+		printf 'durable\n' >>"$queue_log"
+		return 8
+	}
+	_full_loop_recovery_write_evidence() {
+		printf 'evidence\n' >>"$queue_log"
+		return 0
+	}
+	_full_loop_release_prepare_tag_worktree() {
+		printf 'prepare-worktree\n' >>"$queue_log"
+		_FULL_LOOP_RELEASE_PATH="$release_checkout"
+		return 0
+	}
+	_full_loop_recovery_prepare_aggregate() {
+		printf 'fresh-aggregate\n' >>"$queue_log"
+		return 1
+	}
+	git() {
+		printf '%s\n' "$replacement"
+		return 0
+	}
+	queue_rc=0
+	_full_loop_release_recover_aggregate test/repo 42 v1.2.3 42 || queue_rc=$?
+	[[ "$queue_rc" -eq 8 ]]
+	[[ "$(tr '\n' ' ' <"$queue_log")" == "tag durable prepare-worktree evidence version-manager durable " ]]
+)
+printf 'PASS persisted replacement-tag recovery recreates its detached tag worktree before queue repair\n'
 
 (
 	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
 	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH=reserved-authorization-refresh
 	RESERVED_LOG="${TEST_ROOT}/reserved.log"
 	: >"$RESERVED_LOG"
 	old_manifest='42@2222222222222222222222222222222222222222'
 	legacy_lane_intent='42'
 	expanded_manifest="${old_manifest},43@3333333333333333333333333333333333333333"
+	authorization="$old_manifest"
+	lane_phase=reserved
+	test_lane_sources="$legacy_lane_intent"
+	finish_mode=success
+	root_authorization_record=$(jq -cn --arg merge 2222222222222222222222222222222222222222 \
+		'{schema_version:1,repository:"test/repo",requested_pr:42,
+		  expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
 	_full_loop_recovery_validate_receipt() { return 0; }
 	_full_loop_release_find_tag_for_pr() { return 2; }
 	_full_loop_recovery_prepare_aggregate() {
@@ -302,89 +861,112 @@ printf 'PASS durable protected-main queue remains pending after version-manager 
 	}
 	_full_loop_release_reset_tag_worktree() { return 0; }
 	_full_loop_read_release_authorization() {
-		printf '%s\n' "$old_manifest"
+		printf '%s\n' "$authorization"
 		return 0
 	}
-	release_authorization_subset() { return 0; }
+	_full_loop_read_release_authorization_recovery_snapshot() {
+		printf '%s\n' "$root_authorization_record"
+		return 0
+	}
 	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$legacy_lane_intent" \
-			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$previous,terminal_receipt:null}')
+		if [[ "$lane_phase" == "reserved-authorization-refresh" ]]; then
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$legacy_lane_intent" \
+				--arg expected "$expanded_manifest" \
+				'{schema_version:1,active:true,source_pr:42,phase:"reserved-authorization-refresh",
+				  tag:null,expected_sources:$expected,operation_token:"lane-refresh",terminal_receipt:null,
+				  reserved_authorization_refresh:{previous_expected_sources:$previous,
+				    pending_expected_sources:$expected,previous_state:{schema_version:1}}}')
+		else
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$test_lane_sources" \
+				'{schema_version:1,active:true,source_pr:42,phase:"reserved",tag:null,
+				  expected_sources:$expected,operation_token:"lane-old",terminal_receipt:null}')
+		fi
 		return 0
 	}
 	release_lane_acquire() {
-		_AIDEVOPS_RELEASE_LANE_RESULT=acquired
+		printf 'acquire\n' >>"$RESERVED_LOG"
+		_AIDEVOPS_RELEASE_LANE_RESULT=adopted
 		_AIDEVOPS_RELEASE_LANE_TOKEN=owned
 		return 0
 	}
 	_full_loop_expand_release_authorization_for_aggregate() {
+		[[ "$lane_phase" == "reserved-authorization-refresh" ]] || return 1
 		printf 'expand-auth\n' >>"$RESERVED_LOG"
+		authorization="$expanded_manifest"
 		return 0
 	}
 	release_lane_expand_reserved_authorization() {
 		[[ "$3" == "$legacy_lane_intent" ]] || return 1
-		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
-		printf 'expand-lane\n' >>"$RESERVED_LOG"
+		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"schema_version":1,"phase":"reserved"}'
+		printf 'fence\n' >>"$RESERVED_LOG"
+		lane_phase=reserved-authorization-refresh
+		test_lane_sources="$expanded_manifest"
 		return 0
 	}
-	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43
-	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate expand-auth expand-lane " ]]
-	printf 'PASS reserved recovery normalizes legacy lane intent before transactional expansion\n'
-
-	: >"$RESERVED_LOG"
-	_full_loop_read_release_authorization() {
-		printf '%s\n' "$expanded_manifest"
+	release_lane_finish_reserved_authorization() {
+		[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved-authorization-refresh" ]] || return 1
+		printf 'finish\n' >>"$RESERVED_LOG"
+		[[ "$finish_mode" == "success" ]] || return 1
+		lane_phase=reserved
+		test_lane_sources="$expanded_manifest"
 		return 0
-	}
-	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$expanded_manifest" \
-			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$expected,terminal_receipt:null}')
-		return 0
-	}
-	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
-	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate " ]]
-	printf 'PASS reserved recovery recognizes an already-converged authorization and lane\n'
-
-	: >"$RESERVED_LOG"
-	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn \
-			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:"44",terminal_receipt:null}')
-		return 0
-	}
-	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >"${TEST_ROOT}/legacy-mismatch.out" 2>&1; then
-		exit 1
-	fi
-	grep -q 'cannot be normalized against reviewed aggregate' "${TEST_ROOT}/legacy-mismatch.out"
-	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate " ]]
-	printf 'PASS reserved recovery rejects non-equivalent legacy PR identities without mutation\n'
-
-	: >"$RESERVED_LOG"
-	_full_loop_read_release_authorization() {
-		printf '%s\n' "$old_manifest"
-		return 0
-	}
-	release_lane_read() {
-		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$legacy_lane_intent" \
-			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$previous,terminal_receipt:null}')
-		return 0
-	}
-	release_lane_expand_reserved_authorization() {
-		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"phase":"reserved"}'
-		printf 'expand-lane\n' >>"$RESERVED_LOG"
-		return 1
 	}
 	release_lane_restore_reserved_authorization() {
 		printf 'restore-lane\n' >>"$RESERVED_LOG"
+		lane_phase=reserved
+		test_lane_sources="$legacy_lane_intent"
 		return 0
 	}
-	_full_loop_restore_release_authorization_after_aggregate() {
-		printf 'restore-auth\n' >>"$RESERVED_LOG"
-		return 0
-	}
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate acquire fence expand-auth finish " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" ]]
+	printf 'PASS reserved recovery fences the lane before authorization expansion\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$expanded_manifest"
+	lane_phase=reserved
+	test_lane_sources="$legacy_lane_intent"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate acquire fence finish " ]]
+	[[ "$lane_phase" == "reserved" && "$test_lane_sources" == "$expanded_manifest" ]]
+	printf 'PASS reserved recovery repairs an authorization-first interruption without skipping the stale lane\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reserved-authorization-refresh
+	test_lane_sources="$expanded_manifest"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate acquire fence expand-auth finish " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" ]]
+	printf 'PASS reserved recovery resumes an interruption between lane fencing and authorization\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reserved
+	test_lane_sources="$legacy_lane_intent"
+	finish_mode=failure
 	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null 2>&1; then
 		exit 1
 	fi
-	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate expand-auth expand-lane restore-lane restore-auth " ]]
-	printf 'PASS reserved recovery restores lane and authorization after a partial write\n'
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate acquire fence expand-auth finish " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved-authorization-refresh" ]]
+	finish_mode=success
+	: >"$RESERVED_LOG"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate acquire fence finish " ]]
+	[[ "$lane_phase" == "reserved" ]]
+	printf 'PASS reserved recovery retains and resumes a fenced post-authorization interruption\n'
+
+	lane_phase=reserved
+	test_lane_sources="$legacy_lane_intent"
+	_full_loop_recovery_reserved_lane_requires_migration test/repo 42 "$expanded_manifest"
+	test_lane_sources="$expanded_manifest"
+	if _full_loop_recovery_reserved_lane_requires_migration test/repo 42 "$expanded_manifest"; then
+		exit 1
+	fi
+	lane_phase=reserved-authorization-refresh
+	_full_loop_recovery_reserved_lane_requires_migration test/repo 42 "$expanded_manifest"
+	printf 'PASS equal persisted PR sets still resume stale or fenced reserved-lane migration\n'
 )
 
 exit 0
