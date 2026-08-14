@@ -465,11 +465,13 @@ cross_repo_summary() {
 
 	# Collect JSON (with active_days_list) from each repo, then aggregate.
 	# Capture repo_count from stderr line "REPO_COUNT=N".
-	local all_json repo_count_line repo_count
-	all_json=$(_cross_repo_summary_collect_json "$period" "${repo_paths[@]}" 2>/tmp/_crs_stderr) || true
-	repo_count_line=$(grep '^REPO_COUNT=' /tmp/_crs_stderr 2>/dev/null || echo "REPO_COUNT=0")
+	local all_json repo_count_line repo_count stderr_file
+	stderr_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-cross-repo-summary-XXXXXX") || return 1
+	trap 'rm -f "${stderr_file:-}"' RETURN
+	all_json=$(_cross_repo_summary_collect_json "$period" "${repo_paths[@]}" 2>"$stderr_file") || true
+	repo_count_line=$(grep '^REPO_COUNT=' "$stderr_file" 2>/dev/null || echo "REPO_COUNT=0")
 	repo_count="${repo_count_line#REPO_COUNT=}"
-	cat /tmp/_crs_stderr >&2 2>/dev/null || true
+	cat "$stderr_file" >&2 2>/dev/null || true
 
 	_cross_repo_summary_aggregate "$all_json" "$format" "$period" "$repo_count"
 	return 0
