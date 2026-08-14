@@ -1,5 +1,5 @@
 ---
-description: Run comprehensive web performance analysis (Core Web Vitals, network, accessibility)
+description: Manage normalized marketing performance data or audit web performance
 agent: Build+
 mode: subagent
 ---
@@ -7,7 +7,48 @@ mode: subagent
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-Analyze web performance for `$ARGUMENTS` using Chrome DevTools MCP. Verify: `which npx && npx chrome-devtools-mcp@latest --version || echo "Install: npm i -g chrome-devtools-mcp"`. Read `~/.aidevops/agents/tools/performance/performance.md` for CWV thresholds and fix patterns.
+# Performance
+
+Use the marketing Performance Plane when `$ARGUMENTS` begins with `init`,
+`validate`, `ingest`, `list`, `status`, `reconcile`, or `export`. Run the deployed
+`performance-helper.py` with the supplied arguments. In this source repository,
+the equivalent entry point is `.agents/scripts/performance-helper.py`.
+
+```bash
+performance-helper.py init --repo .
+performance-helper.py validate --adapter crm --input export.json --repo .
+performance-helper.py ingest --adapter payment --input events.json --repo . --dry-run
+performance-helper.py status --repo .
+performance-helper.py reconcile --repo .
+performance-helper.py export --kind audience --scope outreach --repo .
+```
+
+Adapters accept provider-neutral JSON envelopes for `campaign`, `social`,
+`analytics`, `crm`, `commerce`, `payment`, `outreach`, and `manual`. Campaign
+promotion also accepts the existing `results.md` table. Validation and dry-run do
+not mutate the repository. Ingest writes only pseudonymous subjects, normalized
+events, source evidence references, checkpoints, and rebuildable projections to
+`_performance/marketing/`.
+
+Safety requirements:
+
+- Keep raw contact details, credentials, exports, and private source payloads in
+  their authorized source stores. Subjects require a caller-generated SHA-256
+  source identifier; the helper rejects raw identifiers.
+- Measurement ingest does not authorize outreach, targeting, spend, account
+  mutation, or publishing.
+- Audience export fails closed: only current marketing consent is eligible, and
+  active global or channel suppression always excludes the subject.
+- Never merge identities automatically. Merge/split records require explicit
+  evidence and `automatic: false`.
+- Treat stale, partial, missing-scope, ambiguous-currency, and unverified records
+  as unverified evidence. Reconcile quarantines malformed records by safe line or
+  event reference without copying source content.
+
+For all other arguments, analyze web performance using Chrome DevTools MCP.
+Verify `command -v npx` and `npx chrome-devtools-mcp@latest --version`, then read
+`~/.aidevops/agents/tools/performance/performance.md` for CWV thresholds and fix
+patterns.
 
 Run: Lighthouse audit → Core Web Vitals (FCP, LCP, CLS, FID, TTFB) → Network analysis (third-party scripts, request chains, bundle sizes) → Accessibility (WCAG).
 

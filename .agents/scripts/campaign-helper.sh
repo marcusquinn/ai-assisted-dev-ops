@@ -64,6 +64,7 @@ readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter reddit em
 readonly CAMPAIGN_RESEARCH_HELPER="${SCRIPT_DIR}/campaign-research-helper.py"
 readonly CAMPAIGN_PRODUCTION_HELPER="${SCRIPT_DIR}/campaign-production-helper.py"
 readonly CAMPAIGN_DISTRIBUTION_HELPER="${SCRIPT_DIR}/campaign-distribution-helper.py"
+readonly CAMPAIGN_PERFORMANCE_HELPER="${SCRIPT_DIR}/performance-helper.py"
 
 # ---------------------------------------------------------------------------
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -771,9 +772,14 @@ _promote_results() {
 	[[ ! -f "$results_file" ]] && { _err_results_missing "$results_file"; return 1; }
 
 	local perf_dir="${repo_path}/_performance/marketing"
+	local evidence_ref="_campaigns/launched/${campaign_id}/${CAMPAIGNS_RESULTS_FILE}"
+	python3 "$CAMPAIGN_PERFORMANCE_HELPER" validate --adapter campaign --input "$results_file" \
+		--source-account "$campaign_id" --evidence-ref "$evidence_ref" --repo "$repo_path" >/dev/null || return 1
 	mkdir -p "$perf_dir"
 	local dest="${perf_dir}/${campaign_id}.md"
 	cp "$results_file" "$dest"
+	python3 "$CAMPAIGN_PERFORMANCE_HELPER" ingest --adapter campaign --input "$results_file" \
+		--source-account "$campaign_id" --evidence-ref "$evidence_ref" --repo "$repo_path" >/dev/null || return 1
 	print_success "Promoted results to: ${dest}"
 	return 0
 }

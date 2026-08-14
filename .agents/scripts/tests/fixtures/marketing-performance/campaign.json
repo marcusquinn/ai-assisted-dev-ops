@@ -1,0 +1,5 @@
+{
+  "source": {"provider": "campaign-manual", "source_class": "campaign", "account_id": "campaign-a", "captured_at": "2026-08-14T10:00:00Z", "cursor": "campaign:1", "coverage": 1, "scope_status": "complete", "evidence_ref": "fixture:campaign"},
+  "subjects": [],
+  "events": [{"source_event_id": "impressions-1", "event_type": "outcome", "metric": {"id": "marketing.reach.impressions", "label": "Impressions", "kind": "count", "version": 1}, "measurement": {"value": 1000, "unit": "impression", "currency": null, "aggregation": "sum", "period_start": null, "period_end": null}, "occurred_at": "2026-08-14T09:00:00Z", "dimensions": {"campaign_id": "campaign-a"}, "quality": {"confidence": "high", "freshness": "fresh", "verification_status": "verified", "notes": null}}]
+}

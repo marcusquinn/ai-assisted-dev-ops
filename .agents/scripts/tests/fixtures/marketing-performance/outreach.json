@@ -1,0 +1,5 @@
+{
+  "source": {"provider": "outreach-fixture", "source_class": "outreach", "account_id": "outreach-a", "captured_at": "2026-08-14T10:05:00Z", "cursor": "outreach:1", "coverage": 0.75, "scope_status": "partial", "evidence_ref": "fixture:outreach"},
+  "subjects": [],
+  "events": [{"source_event_id": "reply-1", "event_type": "outcome", "metric": {"id": "marketing.outreach.replies", "label": "Replies", "kind": "count", "version": 1}, "measurement": {"value": 2, "unit": "reply", "currency": null, "aggregation": "sum", "period_start": null, "period_end": null}, "occurred_at": "2026-08-14T09:05:00Z", "dimensions": {"channel": "email"}, "quality": {"confidence": "medium", "freshness": "fresh", "verification_status": "partial", "notes": "Synthetic partial-scope fixture"}}]
+}

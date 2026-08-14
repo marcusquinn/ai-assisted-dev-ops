@@ -1,15 +1,15 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Performance Plane — KPI and Result Schema
+# Performance Plane — KPI, Ingest, and Result Schema
 
 The `_performance/` plane is the canonical home for measurable outcomes across
 aidevops-managed work: campaign results, case outcomes, project delivery metrics,
 system health, and future result-bearing domains.
 
-This document defines the Phase 1 KPI/result schema only. Directory layout,
-ingest paths, CLI commands, dashboards, and recurring review workflows are
-deferred to later `_performance/` phases tracked by parent issue #22372.
+The Phase 1 KPI/result schema remains backward compatible. The marketing ingest
+layer adds provider-neutral events and pseudonymous subject records, then rebuilds
+Phase 1-compatible result projections without changing existing result records.
 
 ## Schema Goals
 
@@ -243,15 +243,84 @@ Comparison rules:
 - Use `baseline.type: "previous_period"` for trend reporting when no explicit
   target exists.
 
-## Out of Scope for Phase 1
+## Marketing Ingest Contract
 
-The following are intentionally deferred:
+Marketing data uses these versioned schemas:
 
-- `_performance/<domain>/` directory layout and file naming.
-- Promotion paths from `_campaigns/`, `_cases/`, and `_projects/`.
-- `aidevops performance ...` CLI commands.
-- Dashboard generation, stale-metric detection, and review cadence.
-- Cross-plane lesson promotion back to `_knowledge/insights/`.
+- `schemas/marketing-performance-event.schema.json` — touchpoints, outcomes,
+  corrections, refunds, costs, source evidence, freshness, and coverage.
+- `schemas/marketing-subject.schema.json` — pseudonymous people, accounts, and
+  audiences plus source/time-bound consent, suppression, and merge/split evidence.
 
-Later phases may extend this schema, but they should keep the Phase 1 record
-fields backwards compatible or document a `schema_version` migration.
+Source providers retain private raw exports and provider identifiers. Normalized
+records contain an evidence reference and a pre-hashed source subject identifier,
+never an email address, phone number, access token, or provider payload. Stable
+event IDs derive from provider + account + source event ID. Stable subject IDs
+derive from provider + account + caller-generated source hash. Cross-source
+identity links are never inferred; merge and split entries require explicit
+evidence and `automatic: false`.
+
+### Directory and durability model
+
+```text
+_performance/marketing/
+├── config.json                  # plane schema and stale threshold
+├── raw/events.jsonl             # append-only normalized observations
+├── raw/subjects.jsonl           # append-only identity/consent ledger records
+├── projections/results.jsonl    # rebuildable Phase 1-compatible results
+├── state/sources.json           # per-provider/account cursor and coverage
+├── state/leases/                # bounded concurrent writer exclusion
+├── quarantine/records.jsonl     # content-free invalid-record references
+└── <campaign-id>.md             # backward-compatible manual campaign result
+```
+
+Ingest validates the complete batch before mutation, obtains a per-source lease,
+appends normalized records, rebuilds projections, and only then commits the source
+cursor. Stable IDs make retries and replay idempotent. Late and out-of-order events
+are sorted during rebuild. Corrections and refunds are compensating append-only
+events; history is never overwritten. A failed projection leaves the cursor
+unchanged, so source-specific replay remains safe.
+
+Backfill is explicit: run `validate`, then `ingest --dry-run`, then `ingest` for a
+legacy campaign or provider export. Back up `config.json` and `state/` before a
+schema migration. Rollback restores those files and runs `reconcile`; raw
+normalized evidence remains immutable. Unsupported schema versions reject writes.
+
+### Source adapters and quality
+
+The initial bounded adapters are campaign/manual, social metric or receipt,
+analytics conversion, CRM lead/stage, commerce/payment sale/refund, and outreach
+outcome envelopes. They normalize supplied local exports; they do not claim a
+provider API exists and do not fetch remote data. Source service helpers continue
+to own credentials, scopes, pagination, and provider-specific semantics.
+
+Each source checkpoint records provider/account isolation, cursor, capture time,
+scope status, and coverage. `status` compares capture time with the configured
+freshness threshold. Missing scopes, partial coverage, stale evidence, identity
+ambiguity, invalid units, and missing ISO currency cannot produce verified
+projections. Counts, currency, percentages, and ratios retain explicit units and
+dimensions; currency records never aggregate across currency codes.
+
+### Consent and authority boundary
+
+Measurement consent and marketing activation are separate purposes. Ingest may
+record lawful-basis evidence but never performs outreach, targeting, publishing,
+spend, or account mutation. Audience export fails closed unless the latest
+marketing consent is `granted`; an active `all` or channel suppression excludes
+the subject. Suppression and consent changes are time-bound ledger entries rather
+than destructive updates.
+
+### CLI
+
+`performance-helper.py` provides `init`, `validate`, `ingest`, `list`, `status`,
+`reconcile`, and `export`. `validate` and `ingest --dry-run` do not write. `list`
+reads normalized events or projections, `reconcile` rebuilds projections and
+records content-free quarantine references, and `export` emits results or
+consent-safe pseudonymous audience IDs. Existing campaign promotion still writes
+`_performance/marketing/<campaign-id>.md` and now ingests its numeric metric table
+through the same event contract.
+
+Dashboard generation, recurring review cadence, non-marketing promotion paths,
+cross-plane lesson promotion, and attribution/experiment assignment remain later
+phases. They must consume these records without weakening source, consent, or
+verification semantics.

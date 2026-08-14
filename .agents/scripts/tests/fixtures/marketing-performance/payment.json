@@ -1,0 +1,5 @@
+{
+  "source": {"provider": "payment-fixture", "source_class": "payment", "account_id": "store-a", "captured_at": "2026-08-14T10:04:00Z", "cursor": "payment:1", "coverage": 1, "scope_status": "complete", "evidence_ref": "fixture:payment"},
+  "subjects": [],
+  "events": [{"source_event_id": "sale-1", "event_type": "outcome", "metric": {"id": "marketing.revenue.gross", "label": "Gross revenue", "kind": "currency", "version": 1}, "measurement": {"value": 125, "unit": "currency", "currency": "GBP", "aggregation": "sum", "period_start": null, "period_end": null}, "occurred_at": "2026-08-14T09:04:00Z", "dimensions": {"channel": "store"}, "quality": {"confidence": "high", "freshness": "fresh", "verification_status": "verified", "notes": null}}]
+}

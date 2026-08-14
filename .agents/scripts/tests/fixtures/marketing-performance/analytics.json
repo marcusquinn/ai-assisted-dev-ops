@@ -1,0 +1,5 @@
+{
+  "source": {"provider": "analytics-fixture", "source_class": "analytics", "account_id": "site-a", "captured_at": "2026-08-14T10:02:00Z", "cursor": "analytics:1", "coverage": 1, "scope_status": "complete", "evidence_ref": "fixture:analytics"},
+  "subjects": [],
+  "events": [{"source_event_id": "conversion-1", "event_type": "outcome", "metric": {"id": "marketing.conversions.total", "label": "Conversions", "kind": "count", "version": 1}, "measurement": {"value": 4, "unit": "conversion", "currency": null, "aggregation": "sum", "period_start": null, "period_end": null}, "occurred_at": "2026-08-14T09:02:00Z", "dimensions": {"channel": "web"}, "quality": {"confidence": "high", "freshness": "fresh", "verification_status": "verified", "notes": null}}]
+}

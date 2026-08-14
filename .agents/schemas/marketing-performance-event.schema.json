@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidevops.local/schemas/marketing-performance-event.schema.json",
+  "title": "Marketing performance event v1",
+  "description": "Provider-neutral, privacy-safe marketing touchpoint or outcome with source evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "event_id", "event_type", "source", "metric", "measurement", "occurred_at", "dimensions", "quality"],
+  "properties": {
+    "schema": {"const": "aidevops.marketing-performance-event/v1"},
+    "event_id": {"type": "string", "pattern": "^mpe_[a-f0-9]{32}$"},
+    "event_type": {"enum": ["touchpoint", "outcome", "correction", "refund", "cost"]},
+    "subject_ref": {"type": ["string", "null"], "pattern": "^mps_[a-f0-9]{32}$"},
+    "correction_of": {"type": ["string", "null"], "pattern": "^mpe_[a-f0-9]{32}$"},
+    "source": {"$ref": "#/$defs/source"},
+    "metric": {"$ref": "#/$defs/metric"},
+    "measurement": {"$ref": "#/$defs/measurement"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": {"type": ["string", "number", "boolean"]}
+    },
+    "quality": {"$ref": "#/$defs/quality"}
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "source_class", "account_id", "source_event_id", "evidence_ref", "captured_at", "scope_status", "coverage"],
+      "properties": {
+        "provider": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "source_class": {"enum": ["campaign", "social", "analytics", "crm", "commerce", "payment", "outreach", "manual"]},
+        "account_id": {"type": "string", "pattern": "^[a-zA-Z0-9._:-]+$"},
+        "source_event_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "evidence_ref": {"type": "string", "minLength": 1, "maxLength": 512},
+        "captured_at": {"type": "string", "format": "date-time"},
+        "scope_status": {"enum": ["complete", "partial", "missing"]},
+        "coverage": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "kind", "version"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+\\.[a-z0-9_]+$"},
+        "label": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["count", "currency", "ratio", "percentage"]},
+        "version": {"const": 1}
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit", "aggregation", "period_start", "period_end"],
+      "properties": {
+        "value": {"type": "number"},
+        "unit": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+        "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+        "aggregation": {"enum": ["sum", "average", "latest"]},
+        "period_start": {"type": ["string", "null"], "format": "date-time"},
+        "period_end": {"type": ["string", "null"], "format": "date-time"}
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confidence", "freshness", "verification_status"],
+      "properties": {
+        "confidence": {"enum": ["low", "medium", "high", "verified"]},
+        "freshness": {"enum": ["fresh", "stale", "unknown"]},
+        "verification_status": {"enum": ["verified", "unverified", "partial", "invalid"]},
+        "notes": {"type": ["string", "null"], "maxLength": 500}
+      }
+    }
+  }
+}

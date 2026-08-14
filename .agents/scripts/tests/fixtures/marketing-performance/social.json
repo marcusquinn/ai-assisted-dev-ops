@@ -1,0 +1,5 @@
+{
+  "source": {"provider": "social-fixture", "source_class": "social", "account_id": "brand-a", "captured_at": "2026-08-14T10:01:00Z", "cursor": "social:1", "coverage": 1, "scope_status": "complete", "evidence_ref": "fixture:social"},
+  "subjects": [],
+  "events": [{"source_event_id": "engagement-1", "event_type": "touchpoint", "metric": {"id": "marketing.engagement.total", "label": "Engagements", "kind": "count", "version": 1}, "measurement": {"value": 25, "unit": "engagement", "currency": null, "aggregation": "sum", "period_start": null, "period_end": null}, "occurred_at": "2026-08-14T09:01:00Z", "dimensions": {"channel": "social"}, "quality": {"confidence": "high", "freshness": "fresh", "verification_status": "verified", "notes": null}}]
+}

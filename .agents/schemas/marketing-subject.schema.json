@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidevops.local/schemas/marketing-subject.schema.json",
+  "title": "Marketing subject v1",
+  "description": "Pseudonymous subject identity with time-bound consent, suppression, and identity-change provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "subject_id", "subject_type", "source_links", "consent", "suppressions", "identity_changes", "updated_at"],
+  "properties": {
+    "schema": {"const": "aidevops.marketing-subject/v1"},
+    "subject_id": {"type": "string", "pattern": "^mps_[a-f0-9]{32}$"},
+    "subject_type": {"enum": ["person", "account", "audience"]},
+    "source_links": {"type": "array", "items": {"$ref": "#/$defs/sourceLink"}, "minItems": 1},
+    "consent": {"type": "array", "items": {"$ref": "#/$defs/consent"}},
+    "suppressions": {"type": "array", "items": {"$ref": "#/$defs/suppression"}},
+    "identity_changes": {"type": "array", "items": {"$ref": "#/$defs/identityChange"}},
+    "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "sourceLink": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider", "account_id", "source_subject_hash", "linked_at", "evidence_ref"],
+      "properties": {
+        "provider": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "account_id": {"type": "string", "pattern": "^[a-zA-Z0-9._:-]+$"},
+        "source_subject_hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "linked_at": {"type": "string", "format": "date-time"},
+        "evidence_ref": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "consent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["purpose", "status", "lawful_basis", "source_ref", "effective_at"],
+      "properties": {
+        "purpose": {"enum": ["measurement", "marketing", "personalization"]},
+        "status": {"enum": ["granted", "denied", "withdrawn", "unknown"]},
+        "lawful_basis": {"enum": ["consent", "contract", "legitimate_interest", "legal_obligation", "unknown"]},
+        "source_ref": {"type": "string", "minLength": 1},
+        "effective_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "suppression": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "status", "reason", "source_ref", "effective_at"],
+      "properties": {
+        "scope": {"enum": ["all", "email", "social", "ads", "outreach"]},
+        "status": {"enum": ["active", "revoked"]},
+        "reason": {"type": "string", "minLength": 1},
+        "source_ref": {"type": "string", "minLength": 1},
+        "effective_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "identityChange": {
+      "type": "object", "additionalProperties": false,
+      "required": ["action", "related_subject_ids", "evidence_ref", "effective_at", "automatic"],
+      "properties": {
+        "action": {"enum": ["merge", "split"]},
+        "related_subject_ids": {"type": "array", "items": {"type": "string", "pattern": "^mps_[a-f0-9]{32}$"}, "minItems": 1},
+        "evidence_ref": {"type": "string", "minLength": 1},
+        "effective_at": {"type": "string", "format": "date-time"},
+        "automatic": {"const": false}
+      }
+    }
+  }
+}
