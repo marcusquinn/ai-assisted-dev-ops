@@ -105,6 +105,7 @@ _full_loop_release_candidate_tags_for_pr() {
 	local direct_marker=",${requested_pr},"
 	local aggregate_marker=",${requested_pr}@"
 	local legacy_source_marker=""
+	local emitted=0
 
 	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
 	ref_format+='%(trailers:key=Aidevops-Source-PR,valueonly,separator=%x2C)%1f'
@@ -121,13 +122,23 @@ _full_loop_release_candidate_tags_for_pr() {
 		if [[ ",${source_prs}," == *"$direct_marker"* ]] ||
 			[[ ",${aggregated_sources}," == *"$aggregate_marker"* ]]; then
 			printf '%s\n' "$candidate_tag"
+			emitted=1
 			continue
 		fi
 		legacy_source_marker=",${source_merge},"
 		if [[ -n "$source_merge" && "$legacy_source_lookup" == *"$legacy_source_marker"* ]]; then
 			printf '%s\n' "$candidate_tag"
+			emitted=1
 		fi
 	done <<<"$trailer_index"
+	if [[ "$emitted" -eq 0 ]]; then
+		# Some signed annotated tags do not expose parsed custom trailers through
+		# `for-each-ref %(trailers:...)` even though their raw tag body is valid and
+		# `_full_loop_release_source_json_from_tag` can verify it. Fall back to a full
+		# newest-first semver tag scan so recovery remains correct; the caller still
+		# performs strict body/provenance checks before accepting any tag.
+		git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname || return 1
+	fi
 	return 0
 }
 

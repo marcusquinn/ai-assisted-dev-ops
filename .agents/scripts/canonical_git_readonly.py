@@ -65,10 +65,52 @@ def _config_is_read_only(args: list[str]) -> bool:
         "--remove-section",
         "--replace-all",
     }
-    return (
+    return _config_is_allowed_global_auth_write(args) or (
         bool(args)
         and any(arg in read_flags for arg in args)
         and not any(arg in write_flags for arg in args)
+    )
+
+
+def _config_is_allowed_global_auth_write(args: list[str]) -> bool:
+    """Allow GitHub CLI auth setup to update user-scoped credential config.
+
+    The canonical guard protects repository worktrees. A `gh auth refresh` or
+    `gh auth setup-git` may run while the shell happens to be inside a canonical
+    checkout, but its intended mutation is `~/.gitconfig`, not the repository.
+    Keep this narrow: only explicit user-scope writes to credential helper keys
+    are allowed; repo-local config writes remain blocked.
+    """
+    if not args or not any(arg in {"--global", "--user"} for arg in args):
+        return False
+    if any(arg in {"--local", "--worktree", "--file", "-f"} for arg in args):
+        return False
+    if any(arg.startswith(('--file=', '--blob=')) for arg in args):
+        return False
+    destructive_writes = {"--unset", "--unset-all", "--remove-section", "--rename-section"}
+    if any(arg in destructive_writes for arg in args):
+        return False
+
+    value_options = {"--type", "--fixed-value"}
+    skip_next = False
+    keys: list[str] = []
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in value_options:
+            skip_next = True
+            continue
+        if arg.startswith("--") or arg in {"--global", "--user", "--add", "--replace-all"}:
+            continue
+        if arg.startswith("-"):
+            return False
+        keys.append(arg)
+    if not keys:
+        return False
+    key = keys[0]
+    return key == "credential.helper" or (
+        key.startswith("credential.") and key.endswith(".helper")
     )
 
 

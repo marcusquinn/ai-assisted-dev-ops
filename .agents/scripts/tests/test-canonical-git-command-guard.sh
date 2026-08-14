@@ -149,6 +149,14 @@ assert_blocked "blocks canonical symbolic-ref unknown options" "git symbolic-ref
 assert_blocked "blocks canonical symbolic-ref without a ref" "git symbolic-ref --short"
 assert_blocked "blocks canonical symbolic-ref option terminator" "git symbolic-ref -- refs/remotes/origin/HEAD"
 assert_blocked "blocks canonical symbolic-ref second ref after option terminator" "git symbolic-ref -- HEAD refs/heads/safety/example"
+assert_allowed "allows gh auth global credential helper config from canonical cwd" "$REPO" \
+	"git config --global credential.https://github.com.helper '!gh auth git-credential'"
+assert_allowed "allows gh auth global replace-all credential helper config" "$REPO" \
+	"git config --global --replace-all credential.helper '!gh auth git-credential'"
+assert_blocked "blocks canonical local credential helper config" \
+	"git config credential.helper '!gh auth git-credential'"
+assert_blocked "blocks canonical global non-credential config write" \
+	"git config --global include.path '$TEST_ROOT/unsafe.gitconfig'"
 assert_blocked "blocks mutation in a repository with an aidevops project marker" \
 	"git -C '$MARKED_REPO' add managed.txt"
 assert_blocked "blocks git-dir-only mutation targeting a managed canonical repository" \

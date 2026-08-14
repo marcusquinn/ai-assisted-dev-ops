@@ -471,6 +471,71 @@ if [[ "$candidate_tags" != $'v1.9.0\nv1.7.0' ]]; then
 fi
 printf 'PASS one-pass trailer index preserves exact newest-first candidates\n'
 
+fallback_candidate_tags_file="${TEST_ROOT}/candidate-tags-fallback.txt"
+(
+	git() {
+		local args="$*"
+		case "$args" in
+		*" for-each-ref "*)
+			printf '%b\n' \
+				'v2.0.0\x1f\x1f\x1f' \
+				'v1.9.0\x1f\x1f\x1f'
+			;;
+		*" log --all --fixed-strings "*) return 0 ;;
+		*" tag --list "*)
+			printf '%s\n' v2.0.0 v1.9.0
+			;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_candidate_tags_for_pr 89
+) >"$fallback_candidate_tags_file"
+fallback_candidate_tags=$(<"$fallback_candidate_tags_file")
+if [[ "$fallback_candidate_tags" != $'v2.0.0\nv1.9.0' ]]; then
+	printf 'FAIL empty trailer index did not fall back to full tag scan\n'
+	exit 1
+fi
+printf 'PASS empty trailer index falls back to full tag scan\n'
+
+fallback_find_tag_file="${TEST_ROOT}/find-tag-fallback.txt"
+(
+	git() {
+		local args="$*"
+		case "$args" in
+		*" fetch origin --tags --quiet"*) return 0 ;;
+		*" for-each-ref "*)
+			printf '%b\n' 'v2.0.0\x1f\x1f\x1f'
+			;;
+		*" log --all --fixed-strings "*) return 0 ;;
+		*" tag --list "*) printf '%s\n' v2.0.0 ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_tag_body() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v2.0.0" ]] || return 1
+		printf '%s\n' 'Aidevops-Source-PR: 89'
+		return 0
+	}
+	_full_loop_release_source_json_from_tag() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v2.0.0" ]] || return 1
+		printf '%s\n' '{"source_pr":89,"source_merge":"1111111111111111111111111111111111111111","aggregated_sources":[]}'
+		return 0
+	}
+	_full_loop_release_verify_candidate_tag_provenance() { return 0; }
+	_full_loop_release_find_tag_for_pr test/repo 89 || exit 1
+	printf '%s\n' "$_FULL_LOOP_RELEASE_FOUND_TAG"
+) >"$fallback_find_tag_file"
+fallback_find_tag=$(<"$fallback_find_tag_file")
+if [[ "$fallback_find_tag" != "v2.0.0" ]]; then
+	printf 'FAIL full tag fallback did not recover a body-parseable signed tag\n'
+	exit 1
+fi
+printf 'PASS full tag fallback recovers a body-parseable signed tag\n'
+
 if (
 	git() {
 		local args="$*"
