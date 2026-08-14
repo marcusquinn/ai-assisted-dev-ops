@@ -149,8 +149,8 @@ knowledge-social-helper.sh sync-linkedin \
   --stream authored_posts --profile personal --budget 11 --page-size 10
 ```
 
-Python 3.14.3 and the local `urllib.request` exports (`Request`, `urlopen`) were
-verified before implementation; no LinkedIn SDK was installed or imported.
+Python 3.12.3 and the local `urllib.request` exports (`Request`, `urlopen`) were
+verified before implementation; no LinkedIn SDK is installed or imported.
 
 ### Approved outbound posts
 
