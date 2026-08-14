@@ -48,10 +48,17 @@ def _digest(value: Any) -> str:
 
 
 def _campaign_dir(value: str) -> Path:
-    path = Path(value).resolve()
-    if not path.is_dir():
+    campaign_input = Path(value).absolute()
+    if any(
+        path.is_symlink()
+        for path in (
+            campaign_input.parent.parent,
+            campaign_input.parent,
+            campaign_input,
+        )
+    ) or not campaign_input.is_dir():
         raise DistributionError("campaign directory is unavailable")
-    return path
+    return campaign_input.resolve()
 
 
 def _safe_output(campaign_dir: Path, manifest: dict[str, Any], requested: str | None) -> Path:
@@ -60,7 +67,15 @@ def _safe_output(campaign_dir: Path, manifest: dict[str, Any], requested: str | 
         if len(outputs) != 1:
             raise DistributionError("select one reviewed output with --output")
         requested = outputs[0]["path"]
-    output = (campaign_dir / requested).resolve()
+    relative = Path(requested)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise DistributionError("distribution output path is unsafe")
+    candidate = campaign_dir
+    for component in relative.parts:
+        candidate /= component
+        if candidate.is_symlink():
+            raise DistributionError("distribution output path must not contain symlinks")
+    output = candidate.resolve()
     if campaign_dir not in output.parents or not output.is_file():
         raise DistributionError("distribution output is missing or outside its campaign")
     matching = next((entry for entry in outputs if entry["path"] == requested), None)
@@ -74,10 +89,13 @@ def _safe_output(campaign_dir: Path, manifest: dict[str, Any], requested: str | 
 
 def _source(arguments: argparse.Namespace) -> tuple[Path, dict[str, Any], Path, str, str, str]:
     campaign_dir = _campaign_dir(arguments.campaign_dir)
-    manifest_path = Path(arguments.manifest).resolve()
+    manifest_input = Path(arguments.manifest).absolute()
+    if manifest_input.is_symlink() or not manifest_input.is_file():
+        raise DistributionError("production manifest must be a regular non-symlink file")
+    manifest_path = manifest_input.resolve()
     if campaign_dir not in manifest_path.parents:
         raise DistributionError("production manifest must be inside its campaign")
-    manifest = read_document(manifest_path, "production manifest")
+    manifest = read_document(manifest_input, "production manifest")
     validate_distribution_eligibility(manifest, campaign_dir)
     channel = _canonical_channel(arguments.channel or str(manifest["channel"]))
     output = _safe_output(campaign_dir, manifest, arguments.output)
@@ -106,12 +124,33 @@ def _record_path(campaign_dir: Path, source_id: str) -> Path:
     return campaign_dir / "distribution" / (hashlib.sha256(source_id.encode()).hexdigest() + ".json")
 
 
+def _require_record_destination(campaign_dir: Path, source_id: str) -> None:
+    destination = _record_path(campaign_dir, source_id)
+    directory = destination.parent
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise DistributionError("campaign distribution directory is unsafe")
+    if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        raise DistributionError("campaign distribution record path is unsafe")
+
+
 def _write_record(campaign_dir: Path, record: dict[str, Any]) -> None:
     destination = _record_path(campaign_dir, record["source_id"])
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, destination)
+    directory = destination.parent
+    _require_record_destination(campaign_dir, record["source_id"])
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=directory
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _queue(arguments: argparse.Namespace, command: list[str]) -> Any:
@@ -198,6 +237,9 @@ def _private_copy(output: Path) -> Path:
 
 def command_enqueue(arguments: argparse.Namespace) -> int:
     campaign_dir, _manifest, output, channel, source_id, intent_key = _source(arguments)
+    _require_record_destination(campaign_dir, source_id)
+    if arguments.approve_until is not None and arguments.approve_until <= int(time.time()):
+        raise DistributionError("--approve-until must be a future epoch")
     operation_id = _operation_id(source_id, intent_key)
     body = _private_copy(output)
     try:
@@ -222,8 +264,6 @@ def command_enqueue(arguments: argparse.Namespace) -> int:
     finally:
         body.unlink(missing_ok=True)
     if arguments.approve_until is not None:
-        if arguments.approve_until <= int(time.time()):
-            raise DistributionError("--approve-until must be a future epoch")
         approval = ["operation-approve", "--alias", arguments.alias, "--operation-id", operation_id,
                     "--expires-at", str(arguments.approve_until)]
         if arguments.base:
@@ -236,6 +276,7 @@ def command_enqueue(arguments: argparse.Namespace) -> int:
 
 def command_status(arguments: argparse.Namespace) -> int:
     campaign_dir, _manifest, _output, _channel, source_id, intent_key = _source(arguments)
+    _require_record_destination(campaign_dir, source_id)
     operation_id = _operation_id(source_id, intent_key)
     command = ["operations-list", "--alias", arguments.alias, "--operation-id", operation_id]
     if arguments.base:
@@ -249,7 +290,8 @@ def command_status(arguments: argparse.Namespace) -> int:
 
 
 def command_reconcile(arguments: argparse.Namespace) -> int:
-    _campaign_dir, _manifest, _output, _channel, source_id, intent_key = _source(arguments)
+    campaign_dir, _manifest, _output, _channel, source_id, intent_key = _source(arguments)
+    _require_record_destination(campaign_dir, source_id)
     command = ["operation-reconcile", "--alias", arguments.alias, "--operation-id", _operation_id(source_id, intent_key),
                "--outcome", arguments.outcome]
     if arguments.provider_id:

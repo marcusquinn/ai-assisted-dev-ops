@@ -1,0 +1,58 @@
+{
+  "source": "normalized",
+  "account_ref": "normalized-primary",
+  "cursor": "normalized-event-4",
+  "observed_at": "2026-08-08T17:00:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "events": [
+    {
+      "source_event_id": "event-001",
+      "revision": 1,
+      "event_type": "conversion",
+      "occurred_at": "2026-08-08T12:00:00Z",
+      "correction_of": null,
+      "subject": {"kind": "aggregate", "identity_state": "not_applicable", "source_ref": null, "candidate_refs": []},
+      "scope": {"campaign_id": "c001-growth", "channel": "direct"},
+      "measurement": {"metric_id": "marketing.conversions.total", "value": 1, "unit": "conversion", "aggregation": "sum", "currency": null},
+      "quality": {"confidence": "high", "completeness": "complete", "source_type": "api_export", "collected_by": "normalized-import"},
+      "governance": {"consent": [], "suppression": null}
+    },
+    {
+      "source_event_id": "event-001",
+      "revision": 2,
+      "event_type": "conversion",
+      "occurred_at": "2026-08-08T12:00:00Z",
+      "correction_of": null,
+      "subject": {"kind": "aggregate", "identity_state": "not_applicable", "source_ref": null, "candidate_refs": []},
+      "scope": {"campaign_id": "c001-growth", "channel": "direct"},
+      "measurement": {"metric_id": "marketing.conversions.total", "value": 2, "unit": "conversion", "aggregation": "sum", "currency": null},
+      "quality": {"confidence": "high", "completeness": "complete", "source_type": "api_export", "collected_by": "normalized-import"},
+      "governance": {"consent": [], "suppression": null}
+    },
+    {
+      "source_event_id": "event-002",
+      "revision": 1,
+      "event_type": "conversion",
+      "occurred_at": "2026-08-07T12:00:00Z",
+      "correction_of": null,
+      "subject": {"kind": "aggregate", "identity_state": "not_applicable", "source_ref": null, "candidate_refs": []},
+      "scope": {"campaign_id": "c001-growth", "channel": "direct"},
+      "measurement": {"metric_id": "marketing.conversions.total", "value": 1, "unit": "conversion", "aggregation": "sum", "currency": null},
+      "quality": {"confidence": "high", "completeness": "complete", "source_type": "api_export", "collected_by": "normalized-import"},
+      "governance": {"consent": [], "suppression": null}
+    },
+    {
+      "source_event_id": "event-003",
+      "revision": 1,
+      "event_type": "correction",
+      "occurred_at": "2026-08-08T15:00:00Z",
+      "correction_of": "event-002",
+      "subject": {"kind": "aggregate", "identity_state": "not_applicable", "source_ref": null, "candidate_refs": []},
+      "scope": {"campaign_id": "c001-growth", "channel": "direct"},
+      "measurement": {"metric_id": "marketing.conversions.total", "value": 3, "unit": "conversion", "aggregation": "sum", "currency": null},
+      "quality": {"confidence": "high", "completeness": "complete", "source_type": "api_export", "collected_by": "normalized-import"},
+      "governance": {"consent": [], "suppression": null}
+    }
+  ]
+}

@@ -1,15 +1,16 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Performance Plane — KPI and Result Schema
+# Performance Plane — KPI, Marketing Ingest, and Result Schema
 
 The `_performance/` plane is the canonical home for measurable outcomes across
 aidevops-managed work: campaign results, case outcomes, project delivery metrics,
 system health, and future result-bearing domains.
 
-This document defines the Phase 1 KPI/result schema only. Directory layout,
-ingest paths, CLI commands, dashboards, and recurring review workflows are
-deferred to later `_performance/` phases tracked by parent issue #22372.
+This document defines the backwards-compatible Phase 1 KPI/result schema and
+the Phase 2 marketing ingest contract. Other domain ingest paths, dashboards,
+and recurring review workflows remain deferred to later `_performance/` phases
+tracked by parent issue #22372.
 
 ## Schema Goals
 
@@ -243,15 +244,155 @@ Comparison rules:
 - Use `baseline.type: "previous_period"` for trend reporting when no explicit
   target exists.
 
-## Out of Scope for Phase 1
+## Marketing Ingest Contract
 
-The following are intentionally deferred:
+Marketing ingest converts source-specific observations into immutable,
+provider-neutral event history and rebuildable Phase 1 result projections. It
+does not grant outreach, targeting, spend, account mutation, or publishing
+authority.
 
-- `_performance/<domain>/` directory layout and file naming.
-- Promotion paths from `_campaigns/`, `_cases/`, and `_projects/`.
-- `aidevops performance ...` CLI commands.
-- Dashboard generation, stale-metric detection, and review cadence.
+### Directory Layout
+
+`aidevops performance init` provisions this layout without overwriting existing
+campaign result files:
+
+```text
+_performance/
+├── .gitignore
+└── marketing/
+    ├── README.md
+    ├── _config/plane.json
+    ├── summaries/<account>/       # account-isolated public-safe projections
+    ├── raw/                       # gitignored source evidence
+    ├── index/performance.sqlite   # gitignored local projection/index
+    ├── exports/                   # gitignored explicit exports
+    └── quarantine/                # gitignored rejected source references
+```
+
+Raw provider exports and direct identifiers remain in `raw/` or their
+authoritative source system. The SQLite store contains only bounded source and
+account aliases, keyed evidence digests, HMAC-pseudonymous event and subject
+references, normalized measurements, and append-only governance evidence.
+
+### Event and Result Ownership
+
+- `.agents/schemas/marketing-performance-event.schema.json` is the normalized,
+  privacy-safe event contract.
+- `.agents/schemas/marketing-subject.schema.json` is the subject, consent,
+  suppression, and identity-link projection contract.
+- Source systems own raw observations. `_performance/marketing/` owns normalized
+  projections and source coverage state, not provider credentials or raw PII.
+- Stable event identity is isolated by source and local account alias. A retry
+  with the same source event and revision is idempotent. A changed payload at the
+  same identity is quarantined rather than replacing history.
+- Higher revisions and explicit corrections append new rows. Effective views use
+  the latest revision and omit explicitly superseded events. Corrections require
+  an existing source/account-local target with matching subject, scope, metric,
+  unit, currency, aggregation, and reporting period; refunds and costs remain
+  separate compensating outcomes.
+- Every accepted event can project to the Phase 1 result shape. Metric IDs,
+  units, dimensions, confidence, source refs, reporting periods, and timestamp
+  semantics above stay backwards compatible.
+- Bounded Phase 1 scalar dimensions are retained. Controlled public dimensions
+  keep validated aliases/numbers/booleans; all other analytical values are
+  store-local HMAC pseudonyms. Keys or values that identify contact destinations,
+  credentials, payloads, or similar direct data are rejected before persistence.
+- Normalized event JSON uses integers for safe whole values and canonical decimal
+  strings for fractional measurements, avoiding binary rounding. Phase 1 result
+  projections restore those validated decimals as exact JSON-number tokens.
+
+### Subject Identity and Governance
+
+Source contact, lead, account, and audience identifiers are transformed with a
+per-plane random HMAC salt before they enter the index. Normalized records never
+contain email addresses, phone numbers, remote account IDs, provider payloads,
+or contact destinations.
+
+Identity links are versioned owner decisions:
+
+- `isolated` is the default for one pseudonymous source subject.
+- `linked` requires an explicit reconciliation record naming only pseudonymous
+  subject IDs and evidence.
+- `split` appends a reversal; it never deletes the historical link.
+- `ambiguous` source records are quarantined and cannot produce a verified
+  metric or audience export.
+
+Consent and suppression are independent append-only ledgers. Each entry records
+purpose, state, source/account alias, effective time, observation time, lawful
+basis when supplied, and an evidence digest. Audience export requires current
+`audience` consent to be `granted`, no current suppression, and an unambiguous
+subject. Measurement ingest itself never makes a subject eligible for outreach.
+
+### Source Coverage, Freshness, and Recovery
+
+Each source/account pair has its own lease, cursor, freshness budget, coverage
+state, and missing-scope list. Ingest follows these rules:
+
+1. Acquire the exact source/account lease.
+2. Persist immutable raw evidence by digest.
+3. Validate and append normalized events plus governance ledgers.
+4. Commit the cursor only when the batch is complete and every record is durable.
+5. Leave partial or invalid batches replayable; successful sibling events remain
+   idempotently committed while rejected references remain quarantined.
+
+The index stores only an HMAC checkpoint reference. File/live source adapters own
+their private resume token; an older observation can append late events but cannot
+replace a newer source checkpoint or freshness watermark. Content-addressed raw
+evidence is retained after a failed transaction so an expired worker cannot
+delete an artifact a newly fenced worker is about to reference.
+
+Expired leases are recoverable. Missing scopes, partial coverage, stale evidence,
+invalid units/currencies, same-revision conflicts, and identity ambiguity stay
+explicit in `status`; they never become `verified` through inference. Rebuilding
+projections reads immutable event and reconciliation history rather than editing
+source observations.
+
+Missing, symlinked, uninitialized, or corrupt index files fail closed once a local
+index directory exists; read or ingest commands do not silently replace history or
+its pseudonymization salt. Exact-byte campaign replays can finish a prose promotion
+that was interrupted after the database commit, while changed prose without a new
+accepted metric revision remains blocked.
+
+### Adapter Availability
+
+`normalized` provider-neutral JSON and manual campaign `results.md` imports are
+the initial executable write surfaces. Social, analytics, CRM, commerce/payment,
+and outreach adapters ship with synthetic fixture contracts so normalization can
+be tested without credentials or customer data. Those fixture adapters are
+disabled unless `AIDEVOPS_TEST_MODE=1`; documentation or an API wrapper alone is
+not represented as live ingest capability.
+
+### CLI
+
+```bash
+aidevops performance init [--repo PATH]
+aidevops performance validate --adapter normalized --input batch.json
+aidevops performance ingest --adapter normalized --input batch.json [--dry-run]
+aidevops performance ingest-campaign --campaign-id ID --results results.md
+aidevops performance backfill --input phase1-results.jsonl [--dry-run]
+aidevops performance list [--source SOURCE] [--history|--subjects]
+aidevops performance status [--json]
+aidevops performance reconcile --input owner-decisions.json
+aidevops performance rebuild
+aidevops performance export --purpose measurement|audience --output FILE
+```
+
+`backfill` is the explicit, checkpointed migration path for existing Phase 1
+marketing result JSONL. It preserves supported reporting periods and currency,
+uses deterministic event identities, rejects incompatible metric/unit semantics,
+and never treats legacy result data as audience consent. `rebuild` regenerates
+account-isolated campaign summaries from immutable event and reconciliation
+history.
+
+`/performance <URL>` remains the separate web-performance audit command.
+
+## Deferred Beyond Marketing Ingest
+
+- Provider-authenticated live marketing adapters and scheduled collectors.
+- Promotion paths from `_cases/` and `_projects/`.
+- Dashboard generation and recurring review cadence.
+- Attribution, experiment assignment, and optimization decisions.
 - Cross-plane lesson promotion back to `_knowledge/insights/`.
 
-Later phases may extend this schema, but they should keep the Phase 1 record
-fields backwards compatible or document a `schema_version` migration.
+Later phases may extend these schemas, but they must keep Phase 1 result fields
+readable and require an explicit migration for unsupported write versions.

@@ -1,0 +1,51 @@
+{
+  "fixture_schema_version": 1,
+  "source": "outreach",
+  "account_ref": "outreach-primary",
+  "cursor": "outreach-event-3",
+  "observed_at": "2026-08-08T16:00:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "records": [
+    {
+      "id": "message-001",
+      "kind": "sent",
+      "subject_ref": "synthetic-contact-alpha",
+      "occurred_at": "2026-08-08T12:00:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "email",
+      "consent": [
+        {
+          "purpose": "audience",
+          "state": "granted",
+          "lawful_basis": "synthetic-opt-in",
+          "effective_at": "2026-08-08T11:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "message-002",
+      "kind": "unsubscribe",
+      "subject_ref": "synthetic-contact-alpha",
+      "occurred_at": "2026-08-08T13:00:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "email"
+    },
+    {
+      "id": "message-003",
+      "kind": "reply",
+      "subject_ref": "synthetic-contact-beta",
+      "occurred_at": "2026-08-08T14:00:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "email",
+      "consent": [
+        {
+          "purpose": "audience",
+          "state": "granted",
+          "lawful_basis": "synthetic-opt-in",
+          "effective_at": "2026-08-08T13:30:00Z"
+        }
+      ]
+    }
+  ]
+}

@@ -1205,6 +1205,17 @@ _help_detailed_sections() {
 	echo "  aidevops campaign promote <id> [--results|--learnings] # Cross-plane promotion (P6)"
 	echo "  aidevops campaign feedback [<id>]              # Surface _feedback/ insights for research (P6)"
 	echo ""
+	echo "Performance Plane:"
+	echo "  aidevops performance init                     # Provision _performance/marketing/"
+	echo "  aidevops performance validate --adapter normalized --input <file>"
+	echo "  aidevops performance ingest --adapter normalized --input <file> [--dry-run]"
+	echo "  aidevops performance backfill --input <phase1.jsonl> [--dry-run]"
+	echo "  aidevops performance list [--source <source>|--subjects|--results]"
+	echo "  aidevops performance status [--json]           # Coverage, freshness, quarantine"
+	echo "  aidevops performance reconcile --input <file>  # Append owner decisions"
+	echo "  aidevops performance rebuild                   # Rebuild campaign summaries"
+	echo "  aidevops performance export --purpose measurement|audience --output <file>"
+	echo ""
 	echo "LLM Stats:"
 	echo "  aidevops stats               # Show usage summary (last 30 days)"
 	echo "  aidevops stats summary       # Overall usage summary"
@@ -1962,6 +1973,7 @@ main() {
 			;;
 		esac
 		;;
+	performance) _dispatch_helper "performance-helper.sh" "performance-helper.sh" "$@" ;;
 	reach) _dispatch_helper "reach-helper.sh" "reach-helper.sh" "$@" ;;
 	config | configure) _dispatch_config "$@" ;;
 	uninstall | remove) cmd_uninstall ;;

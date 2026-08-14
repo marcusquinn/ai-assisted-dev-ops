@@ -1,0 +1,16 @@
+# Private/local performance-plane state
+raw/
+exports/
+index/
+quarantine/
+marketing/raw/
+marketing/exports/
+marketing/index/
+marketing/quarantine/
+marketing/leases/
+
+# Keep explicit public-safe projections and configuration versionable
+!marketing/summaries/
+!marketing/summaries/**
+!marketing/_config/
+!marketing/_config/**

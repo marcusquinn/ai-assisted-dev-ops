@@ -1,0 +1,34 @@
+{
+  "source": "normalized",
+  "account_ref": "normalized-partial",
+  "cursor": "partial-event-2",
+  "observed_at": "2026-08-08T18:00:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "events": [
+    {
+      "source_event_id": "partial-valid",
+      "revision": 1,
+      "event_type": "lead_created",
+      "occurred_at": "2026-08-08T16:00:00Z",
+      "correction_of": null,
+      "subject": {"kind": "lead", "identity_state": "isolated", "source_ref": "synthetic-partial-lead", "candidate_refs": []},
+      "scope": {"campaign_id": "c001-growth"},
+      "measurement": {"metric_id": "marketing.leads.created", "value": 1, "unit": "lead", "aggregation": "sum", "currency": null},
+      "quality": {"confidence": "high", "completeness": "complete", "source_type": "api_export", "collected_by": "normalized-import"},
+      "governance": {"consent": [], "suppression": null}
+    },
+    {
+      "source_event_id": "partial-invalid-currency",
+      "revision": 1,
+      "event_type": "revenue",
+      "occurred_at": "2026-08-08T17:00:00Z",
+      "correction_of": null,
+      "subject": {"kind": "aggregate", "identity_state": "not_applicable", "source_ref": null, "candidate_refs": []},
+      "scope": {"campaign_id": "c001-growth"},
+      "measurement": {"metric_id": "marketing.revenue.gross", "value": 50, "unit": "currency", "aggregation": "sum", "currency": null},
+      "quality": {"confidence": "verified", "completeness": "complete", "source_type": "api_export", "collected_by": "normalized-import"},
+      "governance": {"consent": [], "suppression": null}
+    }
+  ]
+}

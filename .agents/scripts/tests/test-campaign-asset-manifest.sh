@@ -69,6 +69,19 @@ test_campaign_launch_requires_approved_integrity_evidence() {
 	jq --arg digest "$digest" '.lifecycle.status = "approved" | .review = {criteria:.review.criteria,status:"approved",decision_by:"Marketing",decision_at:"2026-08-13T00:00:00Z"} | .authenticity.provenance = {source:"asset:original",recipe_sha256:$digest} | .authenticity.rights_clearance = {license:"owned",consent:"recorded",territory:"global",expires_at:null} | .outputs = [{path:"creative/final.txt",sha256:$digest,media_type:"text/plain"}]' "$manifest" > "${manifest}.new"
 	mv "${manifest}.new" "$manifest"
 	bash "$CAMPAIGN_HELPER" launch c001-example --repo "$repo" >/dev/null && _pass "launch accepts approved reviewed outputs with matching evidence" || _fail "launch rejected complete production evidence"
+	local launched_dir="${repo}/_campaigns/launched/c001-example"
+	rm -f "${launched_dir}/launched.stamp" "${launched_dir}/results.md" "${launched_dir}/learnings.md"
+	printf '2026-08-13\n' >"${launched_dir}/.launch-date.pending"
+	out="$(bash "$CAMPAIGN_HELPER" launch c001-example --repo "$repo" 2>&1)" || true
+	if [[ -f "${launched_dir}/launched.stamp" ]] &&
+		[[ -f "${launched_dir}/results.md" ]] &&
+		[[ -f "${launched_dir}/learnings.md" ]] &&
+		[[ ! -e "${launched_dir}/.launch-date.pending" ]] &&
+		[[ "$(<"${launched_dir}/launched.stamp")" == "2026-08-13" ]]; then
+		_pass "launch retry repairs an interrupted post-move transition"
+	else
+		_fail "launch retry did not repair interrupted state: $out"
+	fi
 	rm -rf "$root"
 	return 0
 }

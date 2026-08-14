@@ -1,0 +1,27 @@
+{
+  "fixture_schema_version": 1,
+  "source": "social",
+  "account_ref": "social-primary",
+  "cursor": "social-page-2",
+  "observed_at": "2026-08-08T12:00:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "records": [
+    {
+      "id": "receipt-001",
+      "kind": "receipt",
+      "value": 1,
+      "occurred_at": "2026-08-08T10:00:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "linkedin"
+    },
+    {
+      "id": "metric-001",
+      "kind": "impression",
+      "value": 640,
+      "occurred_at": "2026-08-08T11:00:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "linkedin"
+    }
+  ]
+}

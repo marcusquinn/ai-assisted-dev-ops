@@ -103,9 +103,8 @@ rg -n '_performance/marketing|results.md|promote' .agents/scripts/campaign-helpe
 ### Verification Before Dispatch
 
 ```bash
-python3 -m unittest .agents/scripts/tests/test-marketing-performance-ingest.py
-python3 -m json.tool .agents/schemas/marketing-performance-event.schema.json >/dev/null
-python3 -m json.tool .agents/schemas/marketing-subject.schema.json >/dev/null
+python3 .agents/scripts/tests/test-marketing-performance-ingest.py
+python3 -c 'import json; from pathlib import Path; json.loads(Path(".agents/schemas/marketing-performance-event.schema.json").read_text()); json.loads(Path(".agents/schemas/marketing-subject.schema.json").read_text())'
 bash .agents/scripts/tests/test-campaign-status-routing.sh
 .agents/scripts/linters-local.sh --changed
 ```
@@ -115,9 +114,9 @@ bash .agents/scripts/tests/test-campaign-status-routing.sh
 
 ### Recoverability Checkpoint
 
-- [ ] Focused tests pass: marketing performance ingest suite
-- [ ] WIP commit created before broad gates: `wip: add marketing performance ingest`
-- [ ] Evidence-triggered broad verification then run: `.agents/scripts/linters-local.sh --changed`
+- [x] Focused tests pass: marketing performance ingest suite (12 tests)
+- [x] WIP commit created before broad gates: `wip: add marketing performance ingest`
+- [x] Evidence-triggered broad verification then run: `.agents/scripts/linters-local.sh --changed`
 
 ### Safety-Stop Recovery
 

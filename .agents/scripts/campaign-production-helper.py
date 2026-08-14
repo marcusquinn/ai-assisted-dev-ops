@@ -10,7 +10,7 @@ from typing import Any
 from campaign_production_contract import (
     ASSET_OWNERS, CHANNELS, DEFAULT_FORMATS, ManifestError, ManifestRequest,
     atomic_json_write, digest, read_document, validate_brief,
-    validate_distribution_eligibility, validate_manifest,
+    validate_campaign_id, validate_distribution_eligibility, validate_manifest,
 )
 
 def build_brief(campaign_id: str, intake: dict[str, Any], revision: int) -> dict[str, Any]:
@@ -47,7 +47,7 @@ def build_manifest(request: ManifestRequest) -> dict[str, Any]:
     is_supported = capability in (None, "", asset_class)
     execution_status = "capability_required" if is_supported else "blocked"
     status = "brief_ready" if is_supported else "blocked"
-    snapshot = digest({"brief": brief["source_snapshot_sha256"], "channel": channel, "variant": variant, "asset_class": asset_class})
+    snapshot = digest({"brief": digest(brief), "channel": channel, "variant": variant, "asset_class": asset_class})
     return {
         "schema_version": 1, "job_id": f"job:{campaign_id}:{channel}:v{variant}", "campaign_id": campaign_id, "brief_id": brief["brief_id"], "channel": channel, "variant_id": f"v{variant}", "revision": 1, "input_snapshot_sha256": snapshot,
         "format": {"asset_class": asset_class, "dimensions": dimensions, "duration_seconds": duration},
@@ -62,12 +62,20 @@ def build_manifest(request: ManifestRequest) -> dict[str, Any]:
 
 def command_create(arguments: argparse.Namespace) -> int:
     """Create idempotent brief and job records for a selected campaign variant."""
-    campaign_dir = Path(arguments.repo).resolve() / "_campaigns" / "active" / arguments.campaign_id
+    campaign_id = validate_campaign_id(arguments.campaign_id)
+    campaigns_dir = Path(arguments.repo).resolve() / "_campaigns"
+    active_dir = campaigns_dir / "active"
+    campaign_dir = active_dir / campaign_id
+    drafts_dir = campaign_dir / "drafts"
+    manifests_dir = drafts_dir / "production-manifests"
+    for path in (campaigns_dir, active_dir, campaign_dir, drafts_dir, manifests_dir):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise ManifestError("campaign production path contains an unsafe component")
     intake = read_document(campaign_dir / "intake.json", "campaign intake")
     if arguments.channel not in intake.get("channels", []):
         raise ManifestError("channel must be declared by the campaign intake")
     brief_path = campaign_dir / "drafts" / "creative-brief-v1.json"
-    brief = build_brief(arguments.campaign_id, intake, 1)
+    brief = build_brief(campaign_id, intake, 1)
     if brief_path.exists():
         existing = read_document(brief_path, "creative brief")
         validate_brief(existing)
@@ -80,10 +88,10 @@ def command_create(arguments: argparse.Namespace) -> int:
     else:
         atomic_json_write(brief_path, brief)
     manifest = build_manifest(ManifestRequest(
-        arguments.campaign_id, brief, arguments.channel, arguments.variant,
+        campaign_id, brief, arguments.channel, arguments.variant,
         arguments.asset_class, arguments.capability,
     ))
-    manifest_path = campaign_dir / "drafts" / "production-manifests" / f"{arguments.channel}-v{arguments.variant}.json"
+    manifest_path = manifests_dir / f"{arguments.channel}-v{arguments.variant}.json"
     if manifest_path.exists():
         existing = read_document(manifest_path, "production manifest")
         validate_manifest(existing)
@@ -98,7 +106,15 @@ def command_create(arguments: argparse.Namespace) -> int:
 
 def command_list(arguments: argparse.Namespace) -> int:
     """List recorded jobs without inferring work from prompt files."""
-    directory = Path(arguments.repo).resolve() / "_campaigns" / "active" / arguments.campaign_id / "drafts" / "production-manifests"
+    campaign_id = validate_campaign_id(arguments.campaign_id)
+    campaigns_dir = Path(arguments.repo).resolve() / "_campaigns"
+    active_dir = campaigns_dir / "active"
+    campaign_dir = active_dir / campaign_id
+    drafts_dir = campaign_dir / "drafts"
+    directory = drafts_dir / "production-manifests"
+    for path in (campaigns_dir, active_dir, campaign_dir, drafts_dir, directory):
+        if path.is_symlink() or not path.is_dir():
+            raise ManifestError("campaign production path contains an unsafe component")
     for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
         document = read_document(path, "production manifest")
         validate_manifest(document)
@@ -116,12 +132,25 @@ def command_validate(arguments: argparse.Namespace) -> int:
 
 def command_eligibility(arguments: argparse.Namespace) -> int:
     """Validate every recorded job before campaign launch or promotion."""
-    campaign_dir = Path(arguments.campaign_dir).resolve()
-    directory = campaign_dir / "drafts" / "production-manifests"
+    campaign_input = Path(arguments.campaign_dir).absolute()
+    if any(
+        path.is_symlink()
+        for path in (campaign_input.parent.parent, campaign_input.parent, campaign_input)
+    ) or not campaign_input.is_dir():
+        raise ManifestError("campaign directory must be a regular non-symlink directory")
+    campaign_dir = campaign_input.resolve()
+    drafts_dir = campaign_dir / "drafts"
+    directory = drafts_dir / "production-manifests"
+    if drafts_dir.is_symlink() or not drafts_dir.is_dir():
+        raise ManifestError("campaign drafts directory must be a regular directory")
+    if directory.is_symlink() or not directory.is_dir():
+        raise ManifestError("production manifest directory must be a regular directory")
     manifests = sorted(directory.glob("*.json")) if directory.is_dir() else []
     if not manifests:
         raise ManifestError("no production manifests exist; distribution is fail-closed")
     for path in manifests:
+        if path.is_symlink() or not path.is_file():
+            raise ManifestError("production manifests must be regular non-symlink files")
         validate_distribution_eligibility(read_document(path, "production manifest"), campaign_dir)
     print(f"Campaign production eligible: {campaign_dir}")
     return 0

@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "description": "Canonical aidevops registry for underscore-prefixed data planes and cross-plane routing surfaces.",
   "evidence_contract": {
     "version": 1,
@@ -96,17 +96,18 @@
     "_performance": {
       "purpose": "Metrics, analytics snapshots, experiment results, and operational performance evidence.",
       "lifecycle_state": "captured -> normalised -> analysed -> reported -> archived",
-      "helper": "agent-managed; no single helper yet",
+      "helper": ".agents/scripts/performance-helper.sh",
       "versioning_policy": {
-        "versioned_paths": ["reports/", "summaries/", "_config/"],
-        "gitignored_paths": ["raw/", "exports/", "index/"],
+        "versioned_paths": ["reports/", "summaries/", "_config/", "marketing/summaries/", "marketing/_config/"],
+        "gitignored_paths": ["raw/", "exports/", "index/", "marketing/raw/", "marketing/exports/", "marketing/index/", "marketing/quarantine/"],
         "large_blob_policy": "Raw exports stay gitignored or external; derived summaries and reports are versioned."
       },
       "sensitivity_default": "internal",
-      "ingress": ["campaign results promotion", "analytics exports", "operational measurement routines"],
+      "ingress": ["campaign results promotion", "provider-neutral normalized marketing events", "analytics exports", "operational measurement routines"],
       "egress": ["campaign learnings", "decision reports", "knowledge insights"],
-      "index_retrieval_surface": ["performance reports", "agent search over summaries", "future metrics indexes"],
-      "routing_notes": "Use for measured outcomes, not unverified anecdotes."
+      "index_retrieval_surface": ["performance-helper list", "performance-helper status", "performance reports", "agent search over summaries"],
+      "authority": "normalized-projection-and-pointer",
+      "routing_notes": "Use for measured outcomes, not unverified anecdotes. Raw provider evidence stays private and authoritative in its source; marketing records use pseudonymous subjects and digest references."
     },
     "_feedback": {
       "purpose": "User feedback, survey responses, review extracts, pain points, and qualitative signals.",

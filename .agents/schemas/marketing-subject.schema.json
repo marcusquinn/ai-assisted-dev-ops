@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Marketing Subject v1",
+  "description": "Pseudonymous marketing subject with append-only consent, suppression, and explicit identity-link provenance. Direct contact identifiers and destinations are forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "subject_id", "kind", "identity_state", "canonical_subject_id", "aliases", "consent", "suppression", "identity_history", "audience_eligible", "eligibility_reason"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "subject_id": {"$ref": "#/$defs/subjectRef"},
+    "kind": {"enum": ["anonymous", "lead", "contact", "account", "audience"]},
+    "identity_state": {"enum": ["isolated", "linked", "split", "ambiguous"]},
+    "canonical_subject_id": {"$ref": "#/$defs/subjectRef"},
+    "aliases": {"type": "array", "items": {"$ref": "#/$defs/subjectRef"}, "uniqueItems": true},
+    "consent": {"type": "array", "items": {"$ref": "#/$defs/consent"}},
+    "suppression": {"type": "array", "items": {"$ref": "#/$defs/suppression"}},
+    "identity_history": {"type": "array", "items": {"$ref": "#/$defs/identity"}},
+    "audience_eligible": {"type": "boolean"},
+    "eligibility_reason": {"enum": ["eligible", "consent_unknown", "consent_denied", "suppressed", "identity_ambiguous", "subject_ineligible"]}
+  },
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "alias": {"type": "string", "pattern": "^(?!(?=(?:[^0-9]*[0-9]){10,15}[^0-9]*$)[0-9._:-]+$)(?!(?:1[-._:]?)?(?:800|833|844|855|866|877|888)[-._:]?[a-z0-9]{7,}$)[a-z0-9][a-z0-9._:-]{0,127}$"},
+    "subjectRef": {"type": "string", "pattern": "^mkt-subj-v1:[a-f0-9]{64}$"},
+    "evidenceRef": {"type": "string", "pattern": "^mkt-evidence-v1:sha256:[a-f0-9]{64}$"},
+    "sourceKind": {"enum": ["campaign", "phase1", "social", "analytics", "crm", "commerce", "outreach", "normalized", "owner"]},
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "account_ref", "observed_at", "evidence_ref"],
+      "properties": {
+        "source": {"$ref": "#/$defs/sourceKind"},
+        "account_ref": {"$ref": "#/$defs/alias"},
+        "observed_at": {"$ref": "#/$defs/timestamp"},
+        "evidence_ref": {"$ref": "#/$defs/evidenceRef"}
+      }
+    },
+    "consent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "state", "lawful_basis", "effective_at", "provenance"],
+      "properties": {
+        "purpose": {"enum": ["measurement", "audience"]},
+        "state": {"enum": ["granted", "denied", "unknown"]},
+        "lawful_basis": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+        "effective_at": {"$ref": "#/$defs/timestamp"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "suppression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason", "effective_at", "provenance"],
+      "properties": {
+        "state": {"enum": ["clear", "suppressed"]},
+        "reason": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+        "effective_at": {"$ref": "#/$defs/timestamp"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "canonical_subject_id", "member_subject_id", "effective_at", "provenance"],
+      "properties": {
+        "action": {"enum": ["link", "split"]},
+        "canonical_subject_id": {"$ref": "#/$defs/subjectRef"},
+        "member_subject_id": {"$ref": "#/$defs/subjectRef"},
+        "effective_at": {"$ref": "#/$defs/timestamp"},
+        "provenance": {"$ref": "#/$defs/provenance"}
+      }
+    }
+  }
+}

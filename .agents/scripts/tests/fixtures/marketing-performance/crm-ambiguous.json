@@ -1,0 +1,18 @@
+{
+  "fixture_schema_version": 1,
+  "source": "crm",
+  "account_ref": "crm-ambiguous",
+  "cursor": "crm-ambiguous-1",
+  "observed_at": "2026-08-08T14:30:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "records": [
+    {
+      "id": "lead-event-ambiguous",
+      "kind": "lead_created",
+      "candidate_subject_refs": ["synthetic-candidate-one", "synthetic-candidate-two"],
+      "occurred_at": "2026-08-08T12:00:00Z",
+      "campaign_id": "c001-growth"
+    }
+  ]
+}

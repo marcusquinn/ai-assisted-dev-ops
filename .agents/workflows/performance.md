@@ -61,3 +61,27 @@ For each issue: **What** (problem), **Where** (file path), **How** (code/config 
 - `tools/performance/performance.md` — full performance subagent
 - `tools/browser/pagespeed.md` — PageSpeed Insights integration
 - `tools/browser/chrome-devtools.md` — Chrome DevTools MCP
+
+## Marketing Performance Data Plane
+
+This slash command remains a web-performance audit. For provider-neutral
+marketing outcomes, use the separate CLI:
+
+```bash
+aidevops performance init
+aidevops performance validate --adapter normalized --input batch.json
+aidevops performance ingest --adapter normalized --input batch.json --dry-run
+aidevops performance backfill --input phase1-results.jsonl --dry-run
+aidevops performance status --json
+aidevops performance list --results
+aidevops performance reconcile --input owner-decisions.json
+aidevops performance rebuild
+aidevops performance export --purpose measurement --output metrics.jsonl
+```
+
+Normalized records contain only local source/account aliases, evidence digests,
+and HMAC-pseudonymous event/subject IDs. Raw exports stay gitignored. The
+fixture-only social, analytics, CRM, commerce, and outreach adapters never make
+live provider calls and are disabled outside the test harness. Measurement
+ingest does not authorize outreach, targeting, spend, account mutation, or
+publishing.

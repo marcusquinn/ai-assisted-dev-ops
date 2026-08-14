@@ -1,0 +1,49 @@
+{
+  "fixture_schema_version": 1,
+  "source": "crm",
+  "account_ref": "crm-primary",
+  "cursor": "crm-event-3",
+  "observed_at": "2026-08-08T14:00:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "records": [
+    {
+      "id": "lead-event-001",
+      "kind": "lead_created",
+      "subject_ref": "synthetic-lead-alpha",
+      "occurred_at": "2026-08-08T09:00:00Z",
+      "campaign_id": "c001-growth",
+      "consent": [
+        {
+          "purpose": "audience",
+          "state": "granted",
+          "lawful_basis": "synthetic-opt-in",
+          "effective_at": "2026-08-08T09:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "lead-event-002",
+      "kind": "lead_stage",
+      "stage": "qualified",
+      "subject_ref": "synthetic-lead-alpha",
+      "occurred_at": "2026-08-08T10:00:00Z",
+      "campaign_id": "c001-growth"
+    },
+    {
+      "id": "lead-event-003",
+      "kind": "lead_created",
+      "subject_ref": "synthetic-lead-beta",
+      "occurred_at": "2026-08-08T11:00:00Z",
+      "campaign_id": "c001-growth",
+      "consent": [
+        {
+          "purpose": "audience",
+          "state": "granted",
+          "lawful_basis": "synthetic-opt-in",
+          "effective_at": "2026-08-08T11:00:00Z"
+        }
+      ]
+    }
+  ]
+}

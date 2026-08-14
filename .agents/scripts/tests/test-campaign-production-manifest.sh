@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit 1
 CAMPAIGN_HELPER="${REPO_ROOT}/.agents/scripts/campaign-helper.sh"
+PRODUCTION_HELPER="${REPO_ROOT}/.agents/scripts/campaign-production-helper.py"
 FANOUT_HELPER="${REPO_ROOT}/.agents/scripts/content-fanout-helper.sh"
 MANIFEST_SCHEMA="${REPO_ROOT}/.agents/schemas/content-production-manifest.schema.json"
 BRIEF_SCHEMA="${REPO_ROOT}/.agents/schemas/campaign-creative-brief.schema.json"
@@ -102,12 +103,67 @@ BRIEF
 	return 0
 }
 
+test_symlinked_drafts_fail_closed() {
+	local root repo intake campaign outside out rc=0
+	root="$(mktemp -d "${TMPDIR:-/tmp}/campaign-production.XXXXXX")"
+	repo="$(_make_repo "$root")"
+	intake="$root/intake.json"
+	_write_intake "$intake"
+	bash "$CAMPAIGN_HELPER" new "Example" --intake "$intake" --repo "$repo" >/dev/null
+	campaign="$repo/_campaigns/active/c001-example"
+	rc=0
+	out="$(bash "$CAMPAIGN_HELPER" production create ../../escape --channel linkedin --repo "$repo" 2>&1)" || rc=$?
+	if [[ "$rc" -ne 0 && "$out" != *"Traceback"* ]]; then
+		_pass "production creation rejects campaign-ID path traversal"
+	else
+		_fail "production creation accepted campaign-ID path traversal"
+	fi
+	rc=0
+	out="$(bash "$CAMPAIGN_HELPER" production create c001-18005551234 --channel linkedin --repo "$repo" 2>&1)" || rc=$?
+	if [[ "$rc" -ne 0 && "$out" != *"Traceback"* ]]; then
+		_pass "production creation rejects embedded contact destinations"
+	else
+		_fail "production creation accepted an embedded contact destination"
+	fi
+	outside="$root/outside-drafts"
+	mkdir -p "$outside"
+	rm -rf "$campaign/drafts"
+	ln -s "$outside" "$campaign/drafts"
+	out="$(bash "$CAMPAIGN_HELPER" production create c001-example --channel linkedin --repo "$repo" 2>&1)" || rc=$?
+	if [[ "$rc" -ne 0 && ! -e "$outside/creative-brief-v1.json" &&
+		! -e "$outside/production-manifests" && "$out" != *"Traceback"* ]]; then
+		_pass "production creation rejects a symlinked drafts parent"
+	else
+		_fail "production creation followed a symlinked drafts parent"
+	fi
+	local outside_campaigns="$root/outside-campaigns"
+	mv "$repo/_campaigns" "$outside_campaigns"
+	ln -s "$outside_campaigns" "$repo/_campaigns"
+	rc=0
+	out="$(bash "$CAMPAIGN_HELPER" production create c001-example --channel linkedin --repo "$repo" 2>&1)" || rc=$?
+	if [[ "$rc" -ne 0 && "$out" != *"Traceback"* ]]; then
+		_pass "production creation rejects a symlinked campaign plane"
+	else
+		_fail "production creation followed a symlinked campaign plane"
+	fi
+	rc=0
+	out="$(python3 "$PRODUCTION_HELPER" list c001-example --repo "$repo" 2>&1)" || rc=$?
+	if [[ "$rc" -ne 0 && "$out" != *"Traceback"* ]]; then
+		_pass "production listing rejects a symlinked campaign plane"
+	else
+		_fail "production listing followed a symlinked campaign plane"
+	fi
+	rm -rf "$root"
+	return 0
+}
+
 main() {
 	python3 -m json.tool "$MANIFEST_SCHEMA" >/dev/null
 	python3 -m json.tool "$BRIEF_SCHEMA" >/dev/null
 	test_create_replay_and_truthful_status
 	test_unsupported_capability_and_invalid_promotion
 	test_fanout_manifest_ready_job_is_not_an_asset
+	test_symlinked_drafts_fail_closed
 	printf 'Results: %d passed, %d failed\n' "$pass_count" "$fail_count"
 	[[ "$fail_count" -eq 0 ]]
 	return $?

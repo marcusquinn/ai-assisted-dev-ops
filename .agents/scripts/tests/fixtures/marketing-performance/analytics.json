@@ -1,0 +1,27 @@
+{
+  "fixture_schema_version": 1,
+  "source": "analytics",
+  "account_ref": "analytics-primary",
+  "cursor": "analytics-window-2",
+  "observed_at": "2026-08-08T13:00:00Z",
+  "coverage": "complete",
+  "missing_scopes": [],
+  "records": [
+    {
+      "id": "visit-001",
+      "kind": "visit",
+      "value": 120,
+      "occurred_at": "2026-08-08T12:00:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "organic"
+    },
+    {
+      "id": "conversion-001",
+      "kind": "conversion",
+      "value": 6,
+      "occurred_at": "2026-08-08T12:30:00Z",
+      "campaign_id": "c001-growth",
+      "channel": "organic"
+    }
+  ]
+}

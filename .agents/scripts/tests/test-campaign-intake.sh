@@ -106,10 +106,50 @@ test_legacy_requires_explicit_migration() {
 	return 0
 }
 
+test_symlinked_campaign_writes_fail_closed() {
+	local tmp_root repo_path intake_file campaign outside_campaign before out outside_drafts
+	tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/campaign-intake.XXXXXX")"
+	repo_path="$(_make_repo "$tmp_root")"
+	intake_file="${tmp_root}/intake.json"
+	_write_valid_intake "$intake_file"
+	bash "$HELPER" new "Example launch" --intake "$intake_file" --repo "$repo_path" >/dev/null
+	campaign="${repo_path}/_campaigns/active/c001-example-launch"
+	outside_campaign="${tmp_root}/outside-campaign"
+	mv "$campaign" "$outside_campaign"
+	ln -s "$outside_campaign" "$campaign"
+	before="$(<"${outside_campaign}/brief.md")"
+	out="$(bash "$HELPER" update c001-example-launch --intake "$intake_file" --repo "$repo_path" 2>&1 || true)"
+	if [[ "$out" == *"Active campaign not found"* ]] && [[ "$(<"${outside_campaign}/brief.md")" == "$before" ]]; then
+		_pass "campaign update rejects a symlinked campaign directory"
+	else
+		_fail "campaign update followed a symlinked campaign directory: $out"
+	fi
+	rm "$campaign"
+	mv "$outside_campaign" "$campaign"
+	outside_drafts="${tmp_root}/outside-drafts"
+	mkdir "$outside_drafts"
+	ln -s "$outside_drafts" "${campaign}/drafts"
+	out="$(bash "$HELPER" draft c001-example-launch --channel email --variant 1 --repo "$repo_path" 2>&1 || true)"
+	if [[ "$out" == *"drafts directory is unsafe"* ]] && [[ -z "$(ls -A "$outside_drafts")" ]]; then
+		_pass "campaign draft rejects a symlinked drafts directory"
+	else
+		_fail "campaign draft followed a symlinked drafts directory: $out"
+	fi
+	out="$(bash "$HELPER" draft c001-example-launch --channel email --variant ../escape --repo "$repo_path" 2>&1 || true)"
+	if [[ "$out" == *"positive integer"* ]] && [[ ! -e "${tmp_root}/escape.md" ]]; then
+		_pass "campaign draft rejects a traversal variant"
+	else
+		_fail "campaign draft accepted a traversal variant: $out"
+	fi
+	rm -rf "$tmp_root"
+	return 0
+}
+
 main() {
 	test_valid_create_and_idempotency
 	test_invalid_input_preserves_state
 	test_legacy_requires_explicit_migration
+	test_symlinked_campaign_writes_fail_closed
 	printf 'Results: %d passed, %d failed\n' "$pass_count" "$fail_count"
 	[[ "$fail_count" -eq 0 ]]
 	return $?

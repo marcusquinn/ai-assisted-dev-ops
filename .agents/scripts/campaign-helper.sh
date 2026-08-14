@@ -26,7 +26,7 @@
 #       Move _campaigns/active/<id>/ → launched/<id>/, stamp dates,
 #       create results.md + learnings.md templates.
 #   campaign-helper.sh promote <id> [--results] [--learnings] [--repo <path>]
-#       --results    Push metrics to _performance/marketing/<id>.md
+#       --results    Preserve results prose and ingest normalized performance records
 #       --learnings  Promote insights to _knowledge/insights/marketing/<YYYY-MM>/<id>-learnings.md
 #   campaign-helper.sh feedback [<id>] [--repo <path>]
 #       Surface _feedback/ insights as campaign research input.
@@ -64,6 +64,7 @@ readonly CAMPAIGNS_VALID_CHANNELS="facebook instagram linkedin twitter reddit em
 readonly CAMPAIGN_RESEARCH_HELPER="${SCRIPT_DIR}/campaign-research-helper.py"
 readonly CAMPAIGN_PRODUCTION_HELPER="${SCRIPT_DIR}/campaign-production-helper.py"
 readonly CAMPAIGN_DISTRIBUTION_HELPER="${SCRIPT_DIR}/campaign-distribution-helper.py"
+readonly PERFORMANCE_HELPER="${SCRIPT_DIR}/performance-helper.sh"
 
 # ---------------------------------------------------------------------------
 # Error helpers — centralise repeated messages to satisfy string-literal ratchet
@@ -108,9 +109,50 @@ _resolve_campaigns_dir() {
 	return 0
 }
 
+_validate_campaign_id() {
+	local campaign_id="$1"
+	if ! PYTHONPATH="$SCRIPT_DIR" python3 - "$campaign_id" 2>/dev/null <<'PY'
+import sys
+from campaign_production_contract import ManifestError, validate_campaign_id
+
+try:
+    validate_campaign_id(sys.argv[1])
+except ManifestError:
+    raise SystemExit(1)
+PY
+	then
+		print_error "Campaign ID must be a bounded lowercase alias"
+		return 1
+	fi
+	return 0
+}
+
+_require_public_campaign_text() {
+	local input_path="$1"
+	if ! PYTHONPATH="$SCRIPT_DIR" python3 - "$input_path" 2>/dev/null <<'PY'
+import sys
+from pathlib import Path
+from performance_contract import contains_direct_identifier
+
+data = Path(sys.argv[1]).read_bytes()
+if len(data) > 20 * 1024 * 1024:
+    raise SystemExit(1)
+try:
+    text = data.decode("utf-8")
+except UnicodeDecodeError:
+    raise SystemExit(1)
+raise SystemExit(1 if contains_direct_identifier(text) else 0)
+PY
+	then
+		print_error "Campaign public prose must be bounded UTF-8 without contact destinations"
+		return 1
+	fi
+	return 0
+}
+
 _require_campaigns_plane() {
 	local campaigns_dir="$1"
-	if [[ ! -d "$campaigns_dir" ]]; then
+	if [[ -L "$campaigns_dir" ]] || [[ ! -d "$campaigns_dir" ]]; then
 		print_error "_campaigns/ plane not found at: ${campaigns_dir}"
 		print_error "Run 'aidevops campaign init' first (requires P1 to be deployed)."
 		return 1
@@ -120,8 +162,14 @@ _require_campaigns_plane() {
 
 _require_launched_campaign() {
 	local campaigns_dir="$1" campaign_id="$2"
-	local launched_dir="${campaigns_dir}/${CAMPAIGNS_LAUNCHED_DIR}/${campaign_id}"
-	if [[ ! -d "$launched_dir" ]]; then
+	_validate_campaign_id "$campaign_id" || return 1
+	local launched_root="${campaigns_dir}/${CAMPAIGNS_LAUNCHED_DIR}"
+	if [[ -L "$launched_root" ]] || [[ ! -d "$launched_root" ]]; then
+		print_error "Campaign launched directory is unsafe"
+		return 1
+	fi
+	local launched_dir="${launched_root}/${campaign_id}"
+	if [[ -L "$launched_dir" ]] || [[ ! -d "$launched_dir" ]]; then
 		print_error "Launched campaign not found: ${campaign_id}"
 		print_error "Path checked: ${launched_dir}"
 		print_error "Run: aidevops campaign launch ${campaign_id}"
@@ -292,6 +340,12 @@ _format_intake_metrics() {
 
 _write_intake_atomically() {
 	local campaign_dir="$1" intake="$2" campaign_id="$3" created="$4" intake_tmp='' brief_tmp=''
+	if [[ -L "$campaign_dir" ]] || [[ ! -d "$campaign_dir" ]] ||
+		[[ -L "${campaign_dir}/${CAMPAIGNS_INTAKE_FILE}" ]] ||
+		[[ -L "${campaign_dir}/${CAMPAIGNS_BRIEF_FILE}" ]]; then
+		print_error "Campaign intake destination is unsafe"
+		return 1
+	fi
 	intake_tmp="$(mktemp "${campaign_dir}/.intake.XXXXXX")" || return 1
 	brief_tmp="$(mktemp "${campaign_dir}/.brief.XXXXXX")" || { rm -f "$intake_tmp"; return 1; }
 	printf '%s\n' "$intake" > "$intake_tmp"
@@ -350,6 +404,10 @@ cmd_new() {
 	_require_campaigns_plane "$campaigns_dir" || return 1
 
 	local active_base="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}"
+	if [[ -L "$active_base" ]] || { [[ -e "$active_base" ]] && [[ ! -d "$active_base" ]]; }; then
+		print_error "Campaign active directory is unsafe"
+		return 1
+	fi
 	mkdir -p "$active_base"
 	local existing_id
 	if existing_id="$(_find_matching_intake "$active_base" "$intake")"; then
@@ -409,12 +467,17 @@ cmd_update_intake() {
 	done
 	[[ -n "$campaign_id" && -n "$intake_file" ]] || { print_error "Usage: campaign ${command_name} <id> --intake <file> [--repo <path>]"; return 1; }
 	[[ -z "$repo_path" ]] && repo_path="$(pwd)"
+	_validate_campaign_id "$campaign_id" || return 1
 	local intake campaigns_dir campaign_dir created
 	intake="$(_read_validated_intake "$intake_file")" || return 1
 	campaigns_dir="$(_resolve_campaigns_dir "$repo_path")"
 	_require_campaigns_plane "$campaigns_dir" || return 1
-	campaign_dir="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}/${campaign_id}"
-	[[ -d "$campaign_dir" ]] || { _err_active_not_found "$campaign_id"; return 1; }
+	local active_base="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}"
+	campaign_dir="${active_base}/${campaign_id}"
+	if [[ -L "$active_base" ]] || [[ -L "$campaign_dir" ]] || [[ ! -d "$campaign_dir" ]]; then
+		_err_active_not_found "$campaign_id"
+		return 1
+	fi
 	if [[ "$command_name" == "update" && ! -f "${campaign_dir}/${CAMPAIGNS_INTAKE_FILE}" ]]; then
 		print_error "Legacy brief detected. Migrate explicitly: aidevops campaign migrate ${campaign_id} --intake <file>"
 		return 1
@@ -615,6 +678,8 @@ _write_results_fallback() {
 # Campaign Results: ${campaign_id}
 
 **Launched:** ${launched_date}
+**Observed:**
+**Revision:** 1
 **Status:** in-progress
 
 ## Metrics
@@ -691,6 +756,62 @@ LEARNINGS
 	return 0
 }
 
+_complete_launch_files() {
+	local launched_dir="$1" campaign_id="$2" launch_date="$3"
+	local results_file="${launched_dir}/${CAMPAIGNS_RESULTS_FILE}"
+	local learnings_file="${launched_dir}/${CAMPAIGNS_LEARNINGS_FILE}"
+	local stamp_file="${launched_dir}/launched.stamp"
+	local pending_file="${launched_dir}/.launch-date.pending"
+	local protected_file=''
+	for protected_file in "$stamp_file" "$results_file" "$learnings_file" "$pending_file"; do
+		if [[ -L "$protected_file" ]] || {
+			[[ -e "$protected_file" ]] && [[ ! -f "$protected_file" ]];
+		}; then
+			print_error "Campaign launch file is unsafe: $(basename "$protected_file")"
+			return 1
+		fi
+	done
+	local temporary=''
+	if [[ ! -f "$results_file" ]]; then
+		temporary="$(mktemp "${launched_dir}/.results.XXXXXX")" || return 1
+		if ! _write_results_fallback "$temporary" "$campaign_id" "$launch_date"; then
+			rm -f "$temporary"
+			return 1
+		fi
+		mv "$temporary" "$results_file" || return 1
+	fi
+	if [[ ! -f "$learnings_file" ]]; then
+		temporary="$(mktemp "${launched_dir}/.learnings.XXXXXX")" || return 1
+		if ! _write_learnings_fallback "$temporary" "$campaign_id" "$launch_date"; then
+			rm -f "$temporary"
+			return 1
+		fi
+		mv "$temporary" "$learnings_file" || return 1
+	fi
+	if [[ ! -f "$stamp_file" ]]; then
+		temporary="$(mktemp "${launched_dir}/.launched.XXXXXX")" || return 1
+		printf '%s\n' "$launch_date" >"$temporary"
+		mv "$temporary" "$stamp_file" || return 1
+	fi
+	rm -f "$pending_file"
+	return 0
+}
+
+_print_launch_summary() {
+	local launched_dir="$1" campaign_id="$2"
+	print_success "Campaign launched: ${campaign_id}"
+	echo "  Launched path:   ${launched_dir}"
+	echo "  Results:         ${launched_dir}/${CAMPAIGNS_RESULTS_FILE}"
+	echo "  Learnings:       ${launched_dir}/${CAMPAIGNS_LEARNINGS_FILE}"
+	echo ""
+	_print_next_steps
+	echo "  1. Fill in ${CAMPAIGNS_RESULTS_FILE} with post-launch metrics"
+	echo "  2. Run: aidevops campaign promote ${campaign_id} --results"
+	echo "  3. Fill in ${CAMPAIGNS_LEARNINGS_FILE} with retrospective insights"
+	echo "  4. Run: aidevops campaign promote ${campaign_id} --learnings"
+	return 0
+}
+
 cmd_launch() {
 	local campaign_id='' repo_path=''
 
@@ -709,55 +830,84 @@ cmd_launch() {
 	local campaigns_dir
 	campaigns_dir="$(_resolve_campaigns_dir "$repo_path")"
 	_require_campaigns_plane "$campaigns_dir" || return 1
+	_validate_campaign_id "$campaign_id" || return 1
 
-	local active_dir="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}/${campaign_id}"
-	if [[ ! -d "$active_dir" ]]; then
-		_err_active_not_found "$campaign_id"
-		print_error "Path checked: ${active_dir}"
+	local active_base="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}"
+	local active_dir="${active_base}/${campaign_id}"
+	local launched_base="${campaigns_dir}/${CAMPAIGNS_LAUNCHED_DIR}"
+	if [[ -L "$active_base" ]] || [[ -L "$launched_base" ]] || {
+		[[ -e "$launched_base" ]] && [[ ! -d "$launched_base" ]];
+	}; then
+		print_error "Campaign launched directory is unsafe"
 		return 1
 	fi
-	_require_campaign_production_eligibility "$active_dir" || return 1
-
-	local launched_base="${campaigns_dir}/${CAMPAIGNS_LAUNCHED_DIR}"
 	mkdir -p "$launched_base"
 	local launched_dir="${launched_base}/${campaign_id}"
-
-	if [[ -d "$launched_dir" ]]; then
-		print_error "Campaign already launched: ${campaign_id}"
-		print_error "Launched path exists: ${launched_dir}"
+	if [[ -L "$active_dir" ]] || [[ -L "$launched_dir" ]]; then
+		print_error "Campaign lifecycle path is unsafe"
 		return 1
 	fi
 
-	local launch_date
-	launch_date="$(_current_date)"
-
-	# Move active → launched (git-aware)
-	if command -v git >/dev/null 2>&1 && git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
-		git -C "$repo_path" mv "$active_dir" "$launched_dir" 2>/dev/null || mv "$active_dir" "$launched_dir"
+	local launch_date pending_file stamp_file
+	pending_file="${active_dir}/.launch-date.pending"
+	stamp_file="${launched_dir}/launched.stamp"
+	if [[ ! -d "$active_dir" ]]; then
+		if [[ ! -d "$launched_dir" ]]; then
+			_err_active_not_found "$campaign_id"
+			print_error "Path checked: ${active_dir}"
+			return 1
+		fi
+		_require_campaign_production_eligibility "$launched_dir" || return 1
+		pending_file="${launched_dir}/.launch-date.pending"
+		if [[ -L "$stamp_file" ]] || { [[ -e "$stamp_file" ]] && [[ ! -f "$stamp_file" ]]; } ||
+			[[ -L "$pending_file" ]] || { [[ -e "$pending_file" ]] && [[ ! -f "$pending_file" ]]; }; then
+			print_error "Campaign launch metadata is unsafe"
+			return 1
+		fi
+		if [[ -f "$stamp_file" ]]; then
+			launch_date="$(<"$stamp_file")"
+		elif [[ -f "$pending_file" ]]; then
+			launch_date="$(<"$pending_file")"
+		else
+			launch_date="$(_current_date)"
+		fi
 	else
-		mv "$active_dir" "$launched_dir"
+		if [[ -e "$launched_dir" ]]; then
+			print_error "Campaign already exists in both active and launched states: ${campaign_id}"
+			return 1
+		fi
+		_require_campaign_production_eligibility "$active_dir" || return 1
+		local protected_file=''
+		for protected_file in launched.stamp "$CAMPAIGNS_RESULTS_FILE" "$CAMPAIGNS_LEARNINGS_FILE" .launch-date.pending; do
+			if [[ -L "${active_dir}/${protected_file}" ]] || {
+				[[ -e "${active_dir}/${protected_file}" ]] &&
+				[[ ! -f "${active_dir}/${protected_file}" ]];
+			}; then
+				print_error "Campaign launch file is unsafe: ${protected_file}"
+				return 1
+			fi
+		done
+		if [[ -f "$pending_file" ]]; then
+			launch_date="$(<"$pending_file")"
+		else
+			launch_date="$(_current_date)"
+			local pending_tmp
+			pending_tmp="$(mktemp "${active_dir}/.launch-date.XXXXXX")" || return 1
+			printf '%s\n' "$launch_date" >"$pending_tmp"
+			mv "$pending_tmp" "$pending_file" || return 1
+		fi
+		if command -v git >/dev/null 2>&1 && git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+			git -C "$repo_path" mv "$active_dir" "$launched_dir" 2>/dev/null || mv "$active_dir" "$launched_dir"
+		else
+			mv "$active_dir" "$launched_dir"
+		fi
 	fi
-
-	# Stamp launch date
-	printf '%s\n' "$launch_date" > "${launched_dir}/launched.stamp"
-
-	# Create results.md and learnings.md templates (P6 deliverable)
-	local results_file="${launched_dir}/${CAMPAIGNS_RESULTS_FILE}"
-	local learnings_file="${launched_dir}/${CAMPAIGNS_LEARNINGS_FILE}"
-
-	[[ ! -f "$results_file" ]] && _write_results_fallback "$results_file" "$campaign_id" "$launch_date"
-	[[ ! -f "$learnings_file" ]] && _write_learnings_fallback "$learnings_file" "$campaign_id" "$launch_date"
-
-	print_success "Campaign launched: ${campaign_id}"
-	echo "  Launched path:   ${launched_dir}"
-	echo "  Results:         ${results_file}"
-	echo "  Learnings:       ${learnings_file}"
-	echo ""
-	_print_next_steps
-	echo "  1. Fill in ${CAMPAIGNS_RESULTS_FILE} with post-launch metrics"
-	echo "  2. Run: aidevops campaign promote ${campaign_id} --results"
-	echo "  3. Fill in ${CAMPAIGNS_LEARNINGS_FILE} with retrospective insights"
-	echo "  4. Run: aidevops campaign promote ${campaign_id} --learnings"
+	if [[ ! "$launch_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+		print_error "Campaign launch date is invalid"
+		return 1
+	fi
+	_complete_launch_files "$launched_dir" "$campaign_id" "$launch_date" || return 1
+	_print_launch_summary "$launched_dir" "$campaign_id"
 	return 0
 }
 
@@ -769,26 +919,139 @@ _promote_results() {
 	local launched_dir="$1" campaign_id="$2" repo_path="$3"
 	local results_file="${launched_dir}/${CAMPAIGNS_RESULTS_FILE}"
 	[[ ! -f "$results_file" ]] && { _err_results_missing "$results_file"; return 1; }
+	local campaign_phase_dir="${launched_dir%/*}"
+	local campaigns_dir="${campaign_phase_dir%/*}"
+	if [[ -L "$campaigns_dir" ]] || [[ -L "$campaign_phase_dir" ]] ||
+		[[ -L "$launched_dir" ]] || [[ -L "$results_file" ]]; then
+		print_error "Campaign results must be a regular non-symlink file"
+		return 1
+	fi
+	_require_public_campaign_text "$results_file" || return 1
+	if [[ ! -f "$PERFORMANCE_HELPER" ]]; then
+		print_error "performance-helper.sh not found; cannot normalize campaign results"
+		return 1
+	fi
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	if [[ -L "$temp_root" ]] || ! mkdir -p "$temp_root" || [[ ! -d "$temp_root" ]]; then
+		print_error "Campaign snapshot directory is unsafe"
+		return 1
+	fi
+	chmod 700 "$temp_root"
+	local results_snapshot=""
+	results_snapshot="$(mktemp "${temp_root%/}/campaign-results.XXXXXX")" || {
+		print_error "Could not create a private campaign results snapshot"
+		return 1
+	}
+	chmod 600 "$results_snapshot"
+	if ! cp -p "$results_file" "$results_snapshot"; then
+		rm -f "$results_snapshot"
+		print_error "Could not snapshot campaign results for promotion"
+		return 1
+	fi
+	local ingest_output=""
+	if ! ingest_output="$(bash "$PERFORMANCE_HELPER" ingest-campaign --campaign-id "$campaign_id" --results "$results_snapshot" --repo "$repo_path" 2>&1)"; then
+		rm -f "$results_snapshot"
+		print_error "Campaign result normalization failed: ${ingest_output}"
+		return 1
+	fi
+	local ingest_coverage="" ingest_quarantined="" ingest_accepted="" ingest_exact_replay=""
+	if ! ingest_coverage="$(printf '%s' "$ingest_output" | jq -er '.coverage' 2>/dev/null)" ||
+		! ingest_quarantined="$(printf '%s' "$ingest_output" | jq -er '.quarantined' 2>/dev/null)" ||
+		! ingest_accepted="$(printf '%s' "$ingest_output" | jq -er '.accepted' 2>/dev/null)" ||
+		! ingest_exact_replay="$(printf '%s' "$ingest_output" | jq -er '(.exact_replay // false) | tostring' 2>/dev/null)" ||
+		[[ ! "$ingest_quarantined" =~ ^[0-9]+$ ]] || [[ ! "$ingest_accepted" =~ ^[0-9]+$ ]]; then
+		rm -f "$results_snapshot"
+		print_error "Campaign result normalization returned an invalid report"
+		return 1
+	fi
+	if [[ "$ingest_quarantined" -gt 0 ]]; then
+		rm -f "$results_snapshot"
+		print_error "Campaign result normalization quarantined ${ingest_quarantined} record(s); existing promoted prose was preserved"
+		return 1
+	fi
 
-	local perf_dir="${repo_path}/_performance/marketing"
+	local plane_dir="${repo_path}/_performance"
+	local perf_dir="${plane_dir}/marketing"
+	if [[ -L "$plane_dir" ]] || [[ -L "$perf_dir" ]]; then
+		rm -f "$results_snapshot"
+		print_error "Campaign performance destination is unsafe"
+		return 1
+	fi
 	mkdir -p "$perf_dir"
 	local dest="${perf_dir}/${campaign_id}.md"
-	cp "$results_file" "$dest"
+	if [[ -L "$dest" ]] || { [[ -e "$dest" ]] && [[ ! -f "$dest" ]]; }; then
+		rm -f "$results_snapshot"
+		print_error "Campaign results destination is not a safe regular file"
+		return 1
+	fi
+	if [[ "$ingest_accepted" -eq 0 ]] &&
+		{ [[ ! -f "$dest" ]] || ! cmp -s "$results_snapshot" "$dest"; } &&
+		[[ "$ingest_exact_replay" != "true" ]]; then
+		rm -f "$results_snapshot"
+		print_error "Campaign results prose changed without a new accepted metric revision; existing promotion was preserved"
+		return 1
+	fi
+	local dest_snapshot=""
+	dest_snapshot="$(mktemp "${perf_dir}/.${campaign_id}.XXXXXX")" || {
+		rm -f "$results_snapshot"
+		print_error "Could not create an atomic campaign promotion snapshot"
+		return 1
+	}
+	if ! cp "$results_snapshot" "$dest_snapshot" || ! chmod 644 "$dest_snapshot" || ! mv "$dest_snapshot" "$dest"; then
+		rm -f "$results_snapshot" "$dest_snapshot"
+		print_error "Could not atomically promote campaign results"
+		return 1
+	fi
+	rm -f "$results_snapshot"
 	print_success "Promoted results to: ${dest}"
+	print_success "Normalized campaign metrics into the performance plane"
+	if [[ "$ingest_coverage" != "complete" ]]; then
+		print_warning "Campaign performance coverage is ${ingest_coverage}; review performance status before using it as verified evidence"
+	fi
 	return 0
 }
 
 _promote_learnings() {
 	local launched_dir="$1" campaign_id="$2" repo_path="$3"
 	local learnings_file="${launched_dir}/${CAMPAIGNS_LEARNINGS_FILE}"
-	[[ ! -f "$learnings_file" ]] && { _err_learnings_missing "$learnings_file"; return 1; }
+	if [[ -L "$learnings_file" ]] || [[ ! -f "$learnings_file" ]]; then
+		_err_learnings_missing "$learnings_file"
+		return 1
+	fi
+	_require_public_campaign_text "$learnings_file" || return 1
 
 	local ym
 	ym="$(_current_ym)"
-	local insights_dir="${repo_path}/_knowledge/insights/marketing/${ym}"
-	mkdir -p "$insights_dir"
+	local knowledge_dir="${repo_path}/_knowledge"
+	local insights_root="${knowledge_dir}/insights"
+	local marketing_dir="${insights_root}/marketing"
+	local insights_dir="${marketing_dir}/${ym}"
+	local path_component=''
+	for path_component in "$knowledge_dir" "$insights_root" "$marketing_dir" "$insights_dir"; do
+		if [[ -L "$path_component" ]]; then
+			print_error "Campaign learnings destination contains a symlink"
+			return 1
+		fi
+	done
+	if ! mkdir -p "$insights_dir" || [[ ! -d "$insights_dir" ]]; then
+		print_error "Could not create the campaign learnings destination"
+		return 1
+	fi
 	local dest="${insights_dir}/${campaign_id}-learnings.md"
-	cp "$learnings_file" "$dest"
+	if [[ -L "$dest" ]] || { [[ -e "$dest" ]] && [[ ! -f "$dest" ]]; }; then
+		print_error "Campaign learnings destination is unsafe"
+		return 1
+	fi
+	local dest_snapshot="${dest}.tmp.$$"
+	if [[ -e "$dest_snapshot" ]] || [[ -L "$dest_snapshot" ]]; then
+		print_error "Campaign learnings temporary destination is unsafe"
+		return 1
+	fi
+	if ! cp "$learnings_file" "$dest_snapshot" || ! chmod 644 "$dest_snapshot" || ! mv "$dest_snapshot" "$dest"; then
+		rm -f "$dest_snapshot"
+		print_error "Could not atomically promote campaign learnings"
+		return 1
+	fi
 	print_success "Promoted learnings to: ${dest}"
 	return 0
 }
@@ -1104,14 +1367,19 @@ EOF
 }
 
 _require_draft_inputs() {
-	local campaign_id="${1:-}" channel="${2:-}"
-	if [[ -z "$campaign_id" ]] || [[ -z "$channel" ]]; then
+	local campaign_id="${1:-}" channel="${2:-}" variant="${3:-}"
+	if [[ -z "$campaign_id" ]] || [[ -z "$channel" ]] || [[ -z "$variant" ]]; then
 		print_error "Usage: campaign draft <id> --channel <channel> [--tone <tone>] [--variant N]"
 		print_error "Channels: ${CAMPAIGNS_VALID_CHANNELS}"
 		return 1
 	fi
 
+	_validate_campaign_id "$campaign_id" || return 1
 	_validate_channel "$channel" || return 1
+	if [[ ! "$variant" =~ ^[1-9][0-9]*$ ]]; then
+		print_error "Draft variant must be a positive integer"
+		return 1
+	fi
 	return 0
 }
 
@@ -1122,8 +1390,9 @@ _require_active_campaign_dir() {
 		return 1
 	fi
 
-	local campaign_dir="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}/${campaign_id}"
-	if [[ ! -d "$campaign_dir" ]]; then
+	local active_base="${campaigns_dir}/${CAMPAIGNS_ACTIVE_DIR}"
+	local campaign_dir="${active_base}/${campaign_id}"
+	if [[ -L "$active_base" ]] || [[ -L "$campaign_dir" ]] || [[ ! -d "$campaign_dir" ]]; then
 		_err_active_not_found "$campaign_id"
 		print_error "Path checked: ${campaign_dir}"
 		print_error "Draft generation only works on active campaigns."
@@ -1142,7 +1411,7 @@ _read_campaign_brief() {
 	fi
 
 	local brief_file="${campaign_dir}/${CAMPAIGNS_BRIEF_FILE}"
-	if [[ ! -f "$brief_file" ]]; then
+	if [[ -L "$brief_file" ]] || [[ ! -f "$brief_file" ]]; then
 		print_error "Campaign brief not found: ${brief_file}"
 		print_error "Create a brief first: edit ${brief_file}"
 		return 1
@@ -1160,9 +1429,17 @@ _prepare_draft_file() {
 	fi
 
 	local drafts_dir="${campaign_dir}/${CAMPAIGNS_DRAFTS_DIR}"
+	if [[ -L "$drafts_dir" ]] || { [[ -e "$drafts_dir" ]] && [[ ! -d "$drafts_dir" ]]; }; then
+		print_error "Campaign drafts directory is unsafe"
+		return 1
+	fi
 	mkdir -p "$drafts_dir" || return 1
 
 	local draft_file="${drafts_dir}/${channel}-v${variant}.md"
+	if [[ -L "$draft_file" ]] || { [[ -e "$draft_file" ]] && [[ ! -f "$draft_file" ]]; }; then
+		print_error "Campaign draft destination is unsafe"
+		return 1
+	fi
 	printf '%s\n' "$draft_file"
 	return 0
 }
@@ -1252,7 +1529,7 @@ cmd_draft() {
 		esac
 	done
 
-	_require_draft_inputs "$campaign_id" "$channel" || return 1
+	_require_draft_inputs "$campaign_id" "$channel" "$variant" || return 1
 
 	[[ -z "$repo_path" ]] && repo_path="$(pwd)"
 
@@ -1351,7 +1628,7 @@ P6 Commands (post-launch cross-plane):
        Requires eligible, approved production manifests; creates results.md + learnings.md templates.
 
   promote <id> [--results] [--learnings] [--repo <path>]
-      --results    Push launched/<id>/results.md to _performance/marketing/<id>.md
+      --results    Preserve results.md and ingest normalized performance records
       --learnings  Push launched/<id>/learnings.md to
                    _knowledge/insights/marketing/<YYYY-MM>/<id>-learnings.md
 

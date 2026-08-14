@@ -1,0 +1,20 @@
+{
+  "schema": "aidevops.marketing-performance-config/v1",
+  "schema_version": 1,
+  "default_stale_after_seconds": 86400,
+  "source_stale_after_seconds": {
+    "campaign": 604800,
+    "phase1": 604800,
+    "social": 86400,
+    "analytics": 86400,
+    "crm": 86400,
+    "commerce": 86400,
+    "outreach": 86400,
+    "normalized": 86400
+  },
+  "lease_seconds": 300,
+  "max_batch_events": 10000,
+  "fixture_only_adapters": ["social", "analytics", "crm", "commerce", "outreach"],
+  "versioned_paths": ["marketing/_config/", "marketing/summaries/"],
+  "gitignored_paths": ["marketing/raw/", "marketing/index/", "marketing/exports/", "marketing/quarantine/"]
+}
