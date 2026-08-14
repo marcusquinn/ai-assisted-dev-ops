@@ -15,14 +15,6 @@ from typing import Any
 
 from knowledge_social_import import canonical_json
 from knowledge_social_store import SocialStoreError, validate_opaque
-from _knowledge_social_outbound_validation import (
-    MAX_SUBJECT_BYTES,
-    optional_selector as _optional_selector,
-    validated_destination as _validated_destination,
-    validated_media as _validated_media,
-    validated_subject as _validated_subject,
-    validated_target as _validated_target,
-)
 
 ACTIONS = ("post", "reply", "like", "bookmark")
 OUTBOUND_PROVIDER_ACTIONS = {
@@ -46,9 +38,14 @@ FAILURE_CLASSES = (
     "validation",
 )
 MAX_PAYLOAD_BYTES = 16 * 1024
+MAX_SUBJECT_BYTES = 4 * 1024
+MAX_REDDIT_SUBJECT_CHARS = 300
+MAX_SELECTOR_BYTES = 256
 MAX_APPROVAL_SECONDS = 31 * 24 * 60 * 60
 CURRENT_INTENT_VERSION = 3
 REDDIT_PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+REDDIT_TARGET_ID = re.compile(r"^t[13]_[A-Za-z0-9]+$")
+REDDIT_DESTINATION_ID = re.compile(r"^[A-Za-z0-9_]{3,21}$")
 
 
 @dataclass(frozen=True)
@@ -125,6 +122,20 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _optional_selector(value: str | None, field: str) -> str | None:
+    if value is None:
+        return None
+    if not value:
+        raise SocialStoreError(f"{field} must be one non-empty line")
+    if value.startswith("-"):
+        raise SocialStoreError(f"{field} must not be option-shaped")
+    if any(marker in value for marker in ("\x00", "\n", "\r")):
+        raise SocialStoreError(f"{field} must be one non-empty line")
+    if len(value.encode("utf-8")) > MAX_SELECTOR_BYTES:
+        raise SocialStoreError(f"{field} is too long")
+    return value
+
+
 def _validated_payload(action: str, payload: str | None) -> str | None:
     if action in ("post", "reply"):
         if payload is None or not payload.strip() or "\x00" in payload:
@@ -135,6 +146,83 @@ def _validated_payload(action: str, payload: str | None) -> str | None:
     if payload is not None:
         raise SocialStoreError(f"{action} does not accept a body")
     return None
+
+
+def _validated_subject(provider: str, action: str, subject: str | None) -> str | None:
+    if provider == "reddit" and action == "post":
+        if subject is None or not subject.strip():
+            raise SocialStoreError("Reddit posts require a non-empty private subject file")
+        if any(marker in subject for marker in ("\x00", "\n", "\r")):
+            raise SocialStoreError("outbound subject must be one non-empty line")
+        if len(subject) > MAX_REDDIT_SUBJECT_CHARS:
+            raise SocialStoreError(
+                "Reddit post subject exceeds the 300-character title limit"
+            )
+        if len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
+            raise SocialStoreError("outbound subject exceeds the private subject limit")
+        return subject
+    if provider == "youtube" and action == "post":
+        if subject is None or not subject.strip():
+            raise SocialStoreError("YouTube uploads require a non-empty private title file")
+        if any(marker in subject for marker in ("\x00", "\n", "\r")):
+            raise SocialStoreError("YouTube upload title must be one non-empty line")
+        if len(subject) > 100:
+            raise SocialStoreError("YouTube upload title exceeds the 100-character limit")
+        return subject
+    if subject is not None:
+        raise SocialStoreError("this outbound operation does not accept a subject")
+    return None
+
+
+def _validated_media(
+    provider: str, action: str, media_path: str | None, media_sha256: str | None
+) -> tuple[str | None, str | None]:
+    if provider == "youtube" and action == "post":
+        if media_path is None or media_sha256 is None:
+            raise SocialStoreError("YouTube uploads require a verified private media file")
+        media_path = _optional_selector(media_path, "media_path")
+        if media_path is None or not media_path.startswith("/"):
+            raise SocialStoreError("YouTube media path must be an absolute private path")
+        if re.fullmatch(r"[0-9a-f]{64}", media_sha256) is None:
+            raise SocialStoreError("YouTube media integrity digest is invalid")
+        return media_path, media_sha256
+    if media_path is not None or media_sha256 is not None:
+        raise SocialStoreError("this outbound operation does not accept media")
+    return None, None
+
+
+def _validated_destination(
+    provider: str, action: str, destination: str | None
+) -> str | None:
+    if provider == "reddit" and action == "post":
+        if destination is None:
+            raise SocialStoreError("Reddit posts require a destination subreddit ID")
+        destination = validate_opaque(destination, "destination_remote_id")
+        if REDDIT_DESTINATION_ID.fullmatch(destination) is None:
+            raise SocialStoreError("Reddit destination subreddit ID is invalid")
+        return destination
+    if provider in ("meta_instagram", "tiktok") and action == "post":
+        if destination is None:
+            raise SocialStoreError(
+                "visual outbound posts require an approved opaque media reference"
+            )
+        return validate_opaque(destination, "destination_remote_id")
+    if destination is not None:
+        raise SocialStoreError("this outbound operation does not accept a destination")
+    return None
+
+
+def _validated_target(provider: str, action: str, target: str | None) -> str | None:
+    if action == "post":
+        if target is not None:
+            raise SocialStoreError("post does not accept a target")
+        return None
+    if target is None:
+        raise SocialStoreError(f"{action} requires a target post ID")
+    target = validate_opaque(target, "target_remote_id")
+    if provider == "reddit" and REDDIT_TARGET_ID.fullmatch(target) is None:
+        raise SocialStoreError("Reddit targets require a t1_ or t3_ fullname")
+    return target
 
 
 def _intent_document(values: dict[str, Any]) -> dict[str, Any]:
