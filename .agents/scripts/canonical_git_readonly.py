@@ -87,14 +87,20 @@ def _config_is_allowed_global_auth_write(args: list[str]) -> bool:
     credential_key = key == "credential.helper" or (
         key.startswith("credential.") and key.endswith(".helper")
     )
-    return (
-        bool(args)
-        and any(arg in {"--global", "--user"} for arg in args)
-        and not any(arg in {"--local", "--worktree", "--file", "-f"} for arg in args)
-        and not any(arg.startswith(("--file=", "--blob=")) for arg in args)
-        and not any(arg in destructive_writes for arg in args)
-        and bool(key)
-        and credential_key
+    user_scoped = any(arg in {"--global", "--user"} for arg in args)
+    repo_scoped = any(arg in {"--local", "--worktree", "--file", "-f"} for arg in args)
+    alternate_source = any(arg.startswith(("--file=", "--blob=")) for arg in args)
+    destructive = any(arg in destructive_writes for arg in args)
+    return all(
+        (
+            args,
+            user_scoped,
+            not repo_scoped,
+            not alternate_source,
+            not destructive,
+            key,
+            credential_key,
+        )
     )
 
 
