@@ -422,6 +422,7 @@ import sys
 
 with sqlite3.connect(sys.argv[1]) as database:
     database.execute("DROP TABLE notification_state")
+    database.execute("DROP TABLE outbound_reconciliations")
     database.execute("DROP TABLE outbound_attempts")
     database.execute("DROP TABLE outbound_approvals")
     database.execute("DROP TABLE outbound_operations")
@@ -430,8 +431,8 @@ with sqlite3.connect(sys.argv[1]) as database:
 PY
 "$HELPER" provision --base "$MIGRATION_BASE" >/dev/null
 assert_eq "schema v2 migrates additively to all local operation tables" \
-	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT (SELECT user_version FROM pragma_user_version) || ':' || count(*) FROM sqlite_master WHERE name IN ('outbound_operations','outbound_approvals','outbound_attempts','notification_state')")" \
-	"7:4"
+	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT (SELECT user_version FROM pragma_user_version) || ':' || count(*) FROM sqlite_master WHERE name IN ('outbound_operations','outbound_approvals','outbound_attempts','outbound_reconciliations','notification_state')")" \
+	"8:5"
 assert_eq "schema v4 adds provider-neutral subject and destination fields" \
 	"$(sql_value "$MIGRATION_ROOT/index/social.db" "SELECT count(*) FROM pragma_table_info('outbound_operations') WHERE name IN ('destination_remote_id','subject','subject_sha256','intent_version')")" \
 	"4"

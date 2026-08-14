@@ -41,6 +41,7 @@ FAILURE_CLASSES = (
     "executor_lost",
     "identity",
     "provider_unavailable",
+    "rate_limit",
     "reconciled_not_sent",
     "runtime",
     "validation",

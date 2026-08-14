@@ -35,23 +35,28 @@ def _health(connection: Connection, record: dict[str, Any], now: int) -> str:
     return health
 
 
+def health_record(
+    connection: Connection, record: dict[str, Any], now: int
+) -> dict[str, Any]:
+    """Project one content-free collector record for shared health consumers."""
+    boundary = due_at(connection, record, now)
+    health = _health(connection, record, now)
+    last_success = record.get("last_success", 0)
+    return {
+        "connection_id": connection.connection_id,
+        "connector_id": connection.connector_id,
+        "due": boundary is not None and boundary <= now,
+        "freshness_lag_seconds": now - last_success if last_success else None,
+        "health": health,
+        "missed_sla": health in ("stale", "terminal-failure"),
+        "mode": connection.mode,
+        "next_due": boundary,
+    }
+
+
 def plan(connections: list[Connection], state: dict[str, Any], now: int) -> list[dict[str, Any]]:
     result = []
     for connection in connections:
         record = _record(state, connection.connection_id)
-        boundary = due_at(connection, record, now)
-        health = _health(connection, record, now)
-        last_success = record.get("last_success", 0)
-        result.append(
-            {
-                "connection_id": connection.connection_id,
-                "connector_id": connection.connector_id,
-                "due": boundary is not None and boundary <= now,
-                "freshness_lag_seconds": now - last_success if last_success else None,
-                "health": health,
-                "missed_sla": health in ("stale", "terminal-failure"),
-                "mode": connection.mode,
-                "next_due": boundary,
-            }
-        )
+        result.append(health_record(connection, record, now))
     return result

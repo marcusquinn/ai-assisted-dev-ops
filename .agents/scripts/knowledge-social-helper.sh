@@ -32,6 +32,7 @@ SYNC_HELPER="${SCRIPT_DIR}/knowledge_social_sync.py"
 SHARE_HELPER="${SCRIPT_DIR}/knowledge_social_share.py"
 BROWSER_HELPER="${SCRIPT_DIR}/knowledge_social_browser.py"
 OPERATIONS_HELPER="${SCRIPT_DIR}/knowledge_social_operations.py"
+PROVIDER_HEALTH_HELPER="${SCRIPT_DIR}/social-provider-health.py"
 REGISTRY_HELPER="${SCRIPT_DIR}/knowledge_social_registry.py"
 VAULT_RUNTIME_CHECK="${SCRIPT_DIR}/vault-runtime-check.py"
 VAULT_RUNTIME_PYTHON="${HOME:+$HOME/.aidevops/.agent-workspace/python-env/vault/bin/python3}"
@@ -54,6 +55,10 @@ usage_operations() {
     [--base PATH] [--alias ALIAS] [--operation-id ID] [--limit N]
   knowledge-social-helper.sh operation-reconcile [--base PATH] [--alias ALIAS] \
     --operation-id ID --outcome succeeded|not-sent [--provider-id ID]
+  knowledge-social-helper.sh provider-health-status|provider-health-collect|provider-health-report \
+    [--base PATH] [--alias ALIAS] [--provider PROVIDER] [--stale-seconds SECONDS]
+  knowledge-social-helper.sh provider-health-reconcile [--base PATH] [--alias ALIAS] \
+    [--decisions-file PRIVATE_JSON] [--limit 1-100] [--per-provider-limit 1-20]
   knowledge-social-helper.sh notifications-refresh [--base PATH] [--alias ALIAS]
   knowledge-social-helper.sh notifications-list [--base PATH] [--alias ALIAS] \
     [--status unread|seen|action-required|responded|dismissed] [--limit 1-1000]
@@ -66,6 +71,11 @@ to an expiring approval. Due runners verify the stable X identity immediately
 before one mapped write attempt. Ambiguous outcomes are never retried; reconcile
 them explicitly. Notification commands maintain a local workflow overlay without
 mutating mention/reply evidence.
+
+Provider health commands aggregate only content-free readiness, queue, cooldown,
+freshness, and receipt evidence. Reconciliation expires stale claims and applies
+only explicit owner decisions within global and per-provider bounds; it never
+creates or retries a publish intent.
 
 EOF
 	return 0
@@ -559,6 +569,23 @@ run_registry_command() {
 	return 0
 }
 
+run_provider_health_command() {
+	local subcommand="$1"
+	shift || return 1
+	require_runtime || return 1
+	if [[ ! -r "$PROVIDER_HEALTH_HELPER" ]]; then
+		printf 'ERROR: social provider health implementation missing: %s\n' "$PROVIDER_HEALTH_HELPER" >&2
+		return 1
+	fi
+	case "$subcommand" in
+	provider-health-status | provider-health-collect | provider-health-report | provider-health-reconcile)
+		python3 "$PROVIDER_HEALTH_HELPER" "${subcommand#provider-health-}" "$@" || return 1
+		;;
+	*) return 1 ;;
+	esac
+	return 0
+}
+
 run_query_command() {
 	local subcommand="$1"
 	shift || return 1
@@ -632,6 +659,9 @@ main() {
 		;;
 	providers | provider-resolve | provider-run)
 		run_registry_command "$subcommand" "$@" || return 1
+		;;
+	provider-health-status | provider-health-collect | provider-health-report | provider-health-reconcile)
+		run_provider_health_command "$subcommand" "$@" || return 1
 		;;
 	sync-due | reconcile-due | reconcile | receipts)
 		require_runtime || return 1

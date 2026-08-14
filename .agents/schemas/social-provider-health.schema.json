@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Social Provider Health v1",
+  "description": "Content-free readiness, queue, cooldown, freshness, and receipt evidence. This document never authorizes or executes a provider write.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_at", "status", "partial", "summary", "providers"],
+  "properties": {
+    "schema": {"const": "aidevops.social-provider-health/v1"},
+    "generated_at": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["healthy", "partial", "blocked", "unconfigured"]},
+    "partial": {"type": "boolean"},
+    "summary": {"$ref": "#/$defs/summary"},
+    "providers": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/provider"}
+    }
+  },
+  "$defs": {
+    "nullableEpoch": {"type": ["integer", "null"], "minimum": 0},
+    "nullableCount": {"type": ["integer", "null"], "minimum": 0},
+    "status": {
+      "enum": [
+        "unconfigured",
+        "unauthenticated",
+        "ambiguous",
+        "rate_limited",
+        "unreachable",
+        "stale",
+        "usable",
+        "awaiting_approval",
+        "ready",
+        "partial",
+        "unknown"
+      ]
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalogued",
+        "deployed",
+        "installed",
+        "configured",
+        "enabled",
+        "authenticated",
+        "authorized",
+        "reachable",
+        "runtime_compatible",
+        "tool_visible",
+        "usable"
+      ],
+      "properties": {
+        "catalogued": {"type": ["boolean", "null"]},
+        "deployed": {"type": ["boolean", "null"]},
+        "installed": {"type": ["boolean", "null"]},
+        "configured": {"type": ["boolean", "null"]},
+        "enabled": {"type": ["boolean", "null"]},
+        "authenticated": {"type": ["boolean", "null"]},
+        "authorized": {"type": ["boolean", "null"]},
+        "reachable": {"type": ["boolean", "null"]},
+        "runtime_compatible": {"type": ["boolean", "null"]},
+        "tool_visible": {"type": ["boolean", "null"]},
+        "usable": {"type": ["boolean", "null"]}
+      }
+    },
+    "supportedActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read", "write"],
+      "properties": {
+        "read": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "write": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    },
+    "queue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "draft",
+        "approved",
+        "claimed",
+        "succeeded",
+        "failed",
+        "unknown",
+        "cancelled",
+        "due",
+        "leased",
+        "total"
+      ],
+      "properties": {
+        "draft": {"type": "integer", "minimum": 0},
+        "approved": {"type": "integer", "minimum": 0},
+        "claimed": {"type": "integer", "minimum": 0},
+        "succeeded": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "unknown": {"type": "integer", "minimum": 0},
+        "cancelled": {"type": "integer", "minimum": 0},
+        "due": {"type": "integer", "minimum": 0},
+        "leased": {"type": "integer", "minimum": 0},
+        "total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remaining", "limit", "reset_at", "cooldown"],
+      "properties": {
+        "remaining": {"$ref": "#/$defs/nullableCount"},
+        "limit": {"$ref": "#/$defs/nullableCount"},
+        "reset_at": {"$ref": "#/$defs/nullableEpoch"},
+        "cooldown": {"type": "boolean"}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_at", "lag_seconds", "stale_after_seconds", "stale"],
+      "properties": {
+        "evidence_at": {"$ref": "#/$defs/nullableEpoch"},
+        "lag_seconds": {"$ref": "#/$defs/nullableCount"},
+        "stale_after_seconds": {"$ref": "#/$defs/nullableCount"},
+        "stale": {"type": "boolean"}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "mode", "dimensions", "queue", "quota", "freshness", "status", "fallback", "next_action"],
+      "properties": {
+        "action": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["read", "write"]},
+        "dimensions": {"$ref": "#/$defs/dimensions"},
+        "queue": {"$ref": "#/$defs/queue"},
+        "quota": {"$ref": "#/$defs/quota"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "status": {"$ref": "#/$defs/status"},
+        "fallback": {"type": "string", "minLength": 1},
+        "next_action": {"type": "string", "minLength": 1}
+      }
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "account_alias",
+        "status",
+        "dimensions",
+        "supported_actions",
+        "actions",
+        "queue",
+        "quota",
+        "freshness",
+        "last_success_at",
+        "last_failure_class",
+        "fallback",
+        "next_action"
+      ],
+      "properties": {
+        "account_alias": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "dimensions": {"$ref": "#/$defs/dimensions"},
+        "supported_actions": {"$ref": "#/$defs/supportedActions"},
+        "actions": {"type": "array", "items": {"$ref": "#/$defs/action"}},
+        "queue": {"$ref": "#/$defs/queue"},
+        "quota": {"$ref": "#/$defs/quota"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "last_success_at": {"$ref": "#/$defs/nullableEpoch"},
+        "last_failure_class": {"type": ["string", "null"]},
+        "fallback": {"type": "string", "minLength": 1},
+        "next_action": {"type": "string", "minLength": 1}
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "status",
+        "dimensions",
+        "supported_actions",
+        "accounts",
+        "queue",
+        "quota",
+        "freshness",
+        "last_success_at",
+        "last_failure_class",
+        "fallback",
+        "next_action"
+      ],
+      "properties": {
+        "provider_id": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/status"},
+        "dimensions": {"$ref": "#/$defs/dimensions"},
+        "supported_actions": {"$ref": "#/$defs/supportedActions"},
+        "accounts": {"type": "array", "items": {"$ref": "#/$defs/account"}},
+        "queue": {"$ref": "#/$defs/queue"},
+        "quota": {"$ref": "#/$defs/quota"},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "last_success_at": {"$ref": "#/$defs/nullableEpoch"},
+        "last_failure_class": {"type": ["string", "null"]},
+        "fallback": {"type": "string", "minLength": 1},
+        "next_action": {"type": "string", "minLength": 1}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["catalogued_providers", "configured_providers", "usable_providers", "queued_operations", "unresolved_unknown_receipts"],
+      "properties": {
+        "catalogued_providers": {"type": "integer", "minimum": 0},
+        "configured_providers": {"type": "integer", "minimum": 0},
+        "usable_providers": {"type": "integer", "minimum": 0},
+        "queued_operations": {"type": "integer", "minimum": 0},
+        "unresolved_unknown_receipts": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

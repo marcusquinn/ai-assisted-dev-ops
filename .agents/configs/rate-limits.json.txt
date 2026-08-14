@@ -2,6 +2,7 @@
   "_comment": "Rate limit configuration per provider (t1330). Copy to ~/.config/aidevops/rate-limits.json and adjust for your plan.",
   "_note": "Values are per-minute limits. Set to 0 to disable tracking for that metric.",
   "_threshold": "warn_pct controls when a provider is flagged as throttle-risk (default 80%).",
+  "_cooldown_semantics": "Persisted provider rate-limit and retry/reset evidence is authoritative. A structured rate limit without a valid reset uses one bounded local safety cooldown while quotas remain unknown; repeated responses pause work instead of triggering retries or notification storms.",
   "warn_pct": 80,
   "window_minutes": 1,
   "providers": {
@@ -75,6 +76,54 @@
       "input_tokens_per_min": 0,
       "output_tokens_per_min": 0,
       "billing_type": "token"
+    },
+    "xapi": {
+      "_comment": "X API limits vary by endpoint, app, account, and product tier; retain provider reset evidence and do not infer a universal request budget.",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-window"
+    },
+    "reddit": {
+      "_comment": "Reddit API limits are runtime and identity specific; retain provider retry/reset evidence and do not infer a universal request budget.",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-window"
+    },
+    "meta_facebook": {
+      "_comment": "Facebook Graph limits depend on the selected app, product, Page, and account; only persisted provider reset evidence activates cooldown.",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-gated"
+    },
+    "meta_instagram": {
+      "_comment": "Instagram Graph limits depend on the selected app, product, and Professional account; only persisted provider reset evidence activates cooldown.",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-gated"
+    },
+    "meta_threads": {
+      "_comment": "Threads limits depend on the selected app, product, and account; only persisted provider reset evidence activates cooldown.",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-gated"
+    },
+    "tiktok": {
+      "_comment": "TikTok publishing limits and review gates depend on the selected app and account; only persisted provider reset evidence activates cooldown.",
+      "requests_per_min": 0,
+      "tokens_per_min": 0,
+      "input_tokens_per_min": 0,
+      "output_tokens_per_min": 0,
+      "billing_type": "provider-gated"
     },
     "linkedin": {
       "_comment": "LinkedIn API capacity is product and application gated; do not infer a quota from read access.",

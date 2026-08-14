@@ -39,6 +39,7 @@ LOCAL_ONLY_TABLES = frozenset(
         "outbound_operations",
         "outbound_approvals",
         "outbound_attempts",
+        "outbound_reconciliations",
         "notification_state",
     }
 )

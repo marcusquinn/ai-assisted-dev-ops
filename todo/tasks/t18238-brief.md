@@ -115,9 +115,9 @@ shellcheck .agents/scripts/knowledge-social-helper.sh
 
 ### Recoverability Checkpoint
 
-- [ ] Focused tests pass: health and shared outbound suites
-- [ ] WIP commit created before broad gates: `wip: add social provider health`
-- [ ] Evidence-triggered broad verification then run: `.agents/scripts/linters-local.sh --changed`
+- [x] Focused tests pass: health and shared outbound suites
+- [x] WIP commit created before broad gates: `276ac4c45` (`wip: add social provider health`)
+- [x] Evidence-triggered broad verification run: `.agents/scripts/linters-local.sh --changed`
 
 ### Safety-Stop Recovery
 

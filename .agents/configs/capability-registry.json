@@ -73,37 +73,48 @@
       "probes": {"deployed": {"path": "scripts/campaign-research-helper.py"}, "tool_visible": {"tool": "python3"}}
     },
     {
+      "name": "social-provider-readiness",
+      "aliases": ["social-health", "provider-health", "social-readiness"],
+      "owner": "Content",
+      "description": "Content-free provider, account, action, queue, cooldown, freshness, and receipt readiness",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["aidevops/knowledge-plane/06-social-provider-capabilities.md", "scripts/social-provider-health.py"],
+      "fallback": "gated-no-mutation",
+      "required": ["deployed", "runtime_compatible", "tool_visible"],
+      "probes": {"deployed": {"path": "scripts/social-provider-health.py"}, "configured": {"live": "requires a selected social corpus connection"}, "authenticated": {"live": "requires fresh identity-bound provider evidence"}, "authorized": {"live": "requires an unexpired exact-intent approval"}, "reachable": {"live": "requires fresh provider evidence without an active cooldown"}, "tool_visible": {"tool": "python3"}, "usable": {"live": "requires provider-health action status usable"}}
+    },
+    {
       "name": "linkedin-approved-posting",
       "aliases": ["linkedin-publish", "linkedin-outbound"],
-      "owner": "Social",
+      "owner": "Content",
       "description": "Approval-bound official LinkedIn member text posts",
       "runtimes": ["opencode", "claude-code"],
       "entry_points": ["content/social-linkedin.md", "scripts/_knowledge_social_linkedin_outbound_provider.py"],
       "fallback": "gated-no-mutation",
-      "required": ["deployed", "configured", "authenticated", "authorized", "reachable"],
-      "probes": {"deployed": {"path": "scripts/_knowledge_social_linkedin_outbound_provider.py"}, "configured": {"env_pattern": "LINKEDIN_<PROFILE>_ACCESS_TOKEN"}, "authenticated": {"live": "requires selected token"}, "authorized": {"live": "requires Posts product eligibility and exact member binding"}, "reachable": {"live": "requires official LinkedIn API request"}}
+      "required": ["deployed", "configured", "authenticated", "authorized", "reachable", "usable"],
+      "probes": {"deployed": {"path": "scripts/_knowledge_social_linkedin_outbound_provider.py"}, "configured": {"env_pattern": "LINKEDIN_<PROFILE>_ACCESS_TOKEN"}, "authenticated": {"live": "requires selected token"}, "authorized": {"live": "requires Posts product eligibility and exact member binding"}, "reachable": {"live": "requires official LinkedIn API request"}, "usable": {"live": "requires provider-health LinkedIn post status usable"}}
     },
     {
       "name": "youtube-approved-upload",
       "aliases": ["youtube-publish", "youtube-outbound"],
-      "owner": "Social",
+      "owner": "Content",
       "description": "Approval-bound official YouTube private video uploads",
       "runtimes": ["opencode", "claude-code"],
       "entry_points": ["content/social-youtube.md", "scripts/_knowledge_social_youtube_outbound_provider.py"],
       "fallback": "gated-no-mutation",
-      "required": ["deployed", "configured", "authenticated", "authorized", "reachable"],
-      "probes": {"deployed": {"path": "scripts/_knowledge_social_youtube_outbound_provider.py"}, "configured": {"env_pattern": "YOUTUBE_<PROFILE>_ACCESS_TOKEN"}, "authenticated": {"live": "requires selected token"}, "authorized": {"live": "requires youtube.upload scope and exact channel binding"}, "reachable": {"live": "requires official YouTube Data API request"}}
+      "required": ["deployed", "configured", "authenticated", "authorized", "reachable", "usable"],
+      "probes": {"deployed": {"path": "scripts/_knowledge_social_youtube_outbound_provider.py"}, "configured": {"env_pattern": "YOUTUBE_<PROFILE>_ACCESS_TOKEN"}, "authenticated": {"live": "requires selected token"}, "authorized": {"live": "requires youtube.upload scope and exact channel binding"}, "reachable": {"live": "requires official YouTube Data API request"}, "usable": {"live": "requires provider-health YouTube post status usable"}}
     },
     {
       "name": "approval-bound-social-publishing",
       "aliases": ["meta-publishing", "tiktok-publishing", "social-outbound"],
-      "owner": "Social",
+      "owner": "Content",
       "description": "Approved Meta and TikTok publishing through identity-bound official transports",
       "runtimes": ["opencode", "claude-code"],
-      "entry_points": ["content/social-meta.md", "content/social-tiktok.md", "scripts/knowledge_social_operations.py"],
+      "entry_points": ["content/social-meta.md", "content/social-tiktok.md", "scripts/knowledge_social_operations.py", "scripts/social-provider-health.py"],
       "fallback": "approval-required-manual-handoff",
       "required": ["deployed", "configured", "authenticated", "authorized", "reachable", "usable"],
-      "probes": {"deployed": {"path": "scripts/_knowledge_social_meta_outbound_provider.py"}, "configured": {"live": "requires selected official provider transport"}, "authenticated": {"live": "requires selected product token"}, "authorized": {"live": "requires exact identity and publish permission check"}, "reachable": {"live": "requires official provider health request"}, "usable": {"live": "requires approved intent and preflight"}}
+      "probes": {"deployed": {"path": "scripts/_knowledge_social_meta_outbound_provider.py"}, "configured": {"live": "requires selected official provider transport"}, "authenticated": {"live": "requires selected product token"}, "authorized": {"live": "requires exact identity and publish permission check"}, "reachable": {"live": "requires official provider health request"}, "usable": {"live": "requires provider-health action status usable"}}
     },
     {
       "name": "vault-operations",

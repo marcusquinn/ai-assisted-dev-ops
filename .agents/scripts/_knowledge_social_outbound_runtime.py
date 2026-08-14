@@ -47,6 +47,25 @@ class AttemptOutcome:
     provider_remote_id: str | None = None
     failure_class: str | None = None
     finished_at: int | None = None
+    retry_after: int | None = None
+
+
+def active_connection_cooldown(
+    database: sqlite3.Connection, connection_id: str, current_time: int
+) -> int | None:
+    """Return the latest active reset boundary for one exact connection."""
+    connection_id = validate_opaque(connection_id, "connection_id")
+    if current_time < 0:
+        raise SocialStoreError("cooldown time must be a non-negative epoch")
+    row = database.execute(
+        """SELECT MAX(CAST(retry_after AS INTEGER)) AS reset_at
+             FROM sync_runs
+            WHERE connection_id=? AND status='paused' AND failure_class='rate_limit'
+              AND retry_after!='' AND retry_after NOT GLOB '*[^0-9]*'
+              AND CAST(retry_after AS INTEGER)>?""",
+        (connection_id, current_time),
+    ).fetchone()
+    return int(row["reset_at"]) if row and row["reset_at"] is not None else None
 
 
 def record_provider_checkpoint(
@@ -91,10 +110,84 @@ def due_operation_ids(
                AND o.created_by=? AND a.principal_id=?
                AND a.intent_sha256=o.intent_sha256
                AND a.revoked_at IS NULL AND a.expires_at>?
-             ORDER BY o.scheduled_at,o.operation_id LIMIT ?""",
-        (current_time, principal_id, principal_id, current_time, limit),
+               AND NOT EXISTS(
+                   SELECT 1 FROM sync_runs s
+                    WHERE s.connection_id=o.connection_id
+                      AND s.status='paused' AND s.failure_class='rate_limit'
+                      AND s.retry_after!=''
+                      AND s.retry_after NOT GLOB '*[^0-9]*'
+                      AND CAST(s.retry_after AS INTEGER)>?
+               )
+              ORDER BY o.scheduled_at,o.operation_id LIMIT ?""",
+        (
+            current_time,
+            principal_id,
+            principal_id,
+            current_time,
+            current_time,
+            limit,
+        ),
     ).fetchall()
-    return [str(_verified_operation(database, row["operation_id"])["operation_id"]) for row in rows]
+    return [
+        str(_verified_operation(database, row["operation_id"])["operation_id"])
+        for row in rows
+    ]
+
+
+def outbound_health_rows(
+    database: sqlite3.Connection,
+    principal_id: str,
+    current_time: int,
+) -> list[dict[str, Any]]:
+    """Return content-free operation evidence for health aggregation."""
+    principal_id = validate_opaque(principal_id, "principal_id")
+    if current_time < 0:
+        raise SocialStoreError("health time must be a non-negative epoch")
+    has_reconciliations = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='outbound_reconciliations'"
+    ).fetchone()
+    attempt_status = (
+        "COALESCE(r.resolved_state,a.status)" if has_reconciliations else "a.status"
+    )
+    finished_at = (
+        "COALESCE(r.reconciled_at,a.finished_at)"
+        if has_reconciliations
+        else "a.finished_at"
+    )
+    failure_class = (
+        "CASE WHEN r.outcome='succeeded' THEN NULL "
+        "WHEN r.outcome='not-sent' THEN 'reconciled_not_sent' "
+        "ELSE a.failure_class END"
+        if has_reconciliations
+        else "a.failure_class"
+    )
+    reconciliation_join = (
+        "LEFT JOIN outbound_reconciliations r ON r.attempt_id=a.attempt_id"
+        if has_reconciliations
+        else ""
+    )
+    rows = database.execute(
+        f"""SELECT o.operation_id,o.provider,o.connection_id,o.action,o.state,
+                  o.scheduled_at,o.updated_at,o.claim_expires_at,
+                  a.attempt_id,{attempt_status} AS attempt_status,
+                  a.provider_started_at,{finished_at} AS finished_at,
+                  {failure_class} AS failure_class,
+                  CASE WHEN EXISTS(
+                      SELECT 1 FROM outbound_approvals p
+                       WHERE p.operation_id=o.operation_id
+                         AND p.principal_id=o.created_by
+                         AND p.intent_sha256=o.intent_sha256
+                         AND p.revoked_at IS NULL AND p.expires_at>?
+                   ) THEN 1 ELSE 0 END AS has_current_approval
+             FROM outbound_operations o
+              LEFT JOIN outbound_attempts a ON a.attempt_id=o.last_attempt_id
+              {reconciliation_join}
+             WHERE o.created_by=?
+             ORDER BY o.connection_id,o.action,o.created_at,o.operation_id""",  # nosec B608 -- fixed internal projections
+        (current_time, principal_id),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _claimable_operation(
@@ -107,6 +200,10 @@ def _claimable_operation(
         or row["created_by"] != principal_id
     ):
         raise SocialStoreError("operation is not due and approved")
+    if active_connection_cooldown(
+        database, str(row["connection_id"]), request.current_time
+    ) is not None:
+        raise SocialStoreError("operation account is in provider cooldown")
     approval = database.execute(
         """SELECT approval_id FROM outbound_approvals
             WHERE operation_id=? AND principal_id=? AND intent_sha256=?
@@ -215,11 +312,20 @@ def mark_provider_started(
                    JOIN outbound_approvals a ON a.operation_id=o.operation_id
                     WHERE o.operation_id=outbound_attempts.operation_id
                       AND o.state='claimed' AND o.claim_token=outbound_attempts.claim_token
-                      AND o.claimed_by=? AND o.last_attempt_id=outbound_attempts.attempt_id
-                      AND o.claim_expires_at>? AND a.principal_id=o.created_by
-                      AND a.intent_sha256=o.intent_sha256 AND a.revoked_at IS NULL
-                      AND a.expires_at>?
-               )""",
+                       AND o.claimed_by=? AND o.last_attempt_id=outbound_attempts.attempt_id
+                       AND o.claim_expires_at>? AND a.principal_id=o.created_by
+                       AND a.intent_sha256=o.intent_sha256 AND a.revoked_at IS NULL
+                       AND a.expires_at>?
+                       AND NOT EXISTS(
+                           SELECT 1 FROM sync_runs s
+                            WHERE s.connection_id=o.connection_id
+                              AND s.status='paused'
+                              AND s.failure_class='rate_limit'
+                              AND s.retry_after!=''
+                              AND s.retry_after NOT GLOB '*[^0-9]*'
+                              AND CAST(s.retry_after AS INTEGER)>?
+                       )
+                )""",
         (
             started_at,
             claimed.attempt_id,
@@ -229,10 +335,91 @@ def mark_provider_started(
             executor_id,
             started_at,
             started_at,
+            started_at,
         ),
     ).rowcount
     if changed != 1:
         raise SocialStoreError("outbound provider boundary is stale or already marked")
+
+
+def defer_claim_for_cooldown(
+    database: sqlite3.Connection,
+    claimed: ClaimedOperation,
+    executor_id: str,
+    current_time: int,
+) -> dict[str, Any] | None:
+    """Return a pre-provider claim to approved while preserving its attempt."""
+    executor_id = validate_opaque(executor_id, "executor_id")
+    database.execute("BEGIN IMMEDIATE")
+    try:
+        row = database.execute(
+            """SELECT o.connection_id,o.state,o.claim_token,o.claimed_by,
+                      o.last_attempt_id,a.status,a.provider_started_at
+                 FROM outbound_operations o
+                 JOIN outbound_attempts a ON a.attempt_id=o.last_attempt_id
+                WHERE o.operation_id=?""",
+            (claimed.operation_id,),
+        ).fetchone()
+        expected = (
+            "claimed",
+            claimed.claim_token,
+            executor_id,
+            claimed.attempt_id,
+            "running",
+            None,
+        )
+        actual = tuple(row)[1:] if row is not None else ()
+        if actual != expected:
+            raise SocialStoreError("cooldown deferral claim is stale")
+        reset_at = active_connection_cooldown(
+            database, str(row["connection_id"]), current_time
+        )
+        if reset_at is None:
+            database.execute("ROLLBACK")
+            return None
+        attempt_changed = database.execute(
+            """UPDATE outbound_attempts
+                  SET status='failed',finished_at=?,failure_class='rate_limit',
+                      diagnostics=?
+                WHERE attempt_id=? AND operation_id=? AND claim_token=?
+                  AND executor_id=? AND status='running'
+                  AND provider_started_at IS NULL""",
+            (
+                current_time,
+                canonical_json({"phase": "pre-provider", "reason": "cooldown"}),
+                claimed.attempt_id,
+                claimed.operation_id,
+                claimed.claim_token,
+                executor_id,
+            ),
+        ).rowcount
+        operation_changed = database.execute(
+            """UPDATE outbound_operations
+                  SET state='approved',claimed_by=NULL,claim_expires_at=NULL,updated_at=?
+                WHERE operation_id=? AND state='claimed' AND claim_token=?
+                  AND claimed_by=? AND last_attempt_id=?""",
+            (
+                current_time,
+                claimed.operation_id,
+                claimed.claim_token,
+                executor_id,
+                claimed.attempt_id,
+            ),
+        ).rowcount
+        if attempt_changed != 1 or operation_changed != 1:
+            raise SocialStoreError("cooldown deferral claim is inconsistent")
+        database.execute("COMMIT")
+    except Exception:
+        if database.in_transaction:
+            database.execute("ROLLBACK")
+        raise
+    return {
+        "operation_id": claimed.operation_id,
+        "attempt_id": claimed.attempt_id,
+        "state": "approved",
+        "failure_class": "rate_limit",
+        "retry_after": reset_at,
+    }
 
 
 def _assert_outcome_fields(
@@ -257,6 +444,14 @@ def _validated_outcome(outcome: AttemptOutcome) -> AttemptOutcome:
         provider_remote_id = validate_opaque(provider_remote_id, "provider_remote_id")
     if outcome.failure_class is not None and outcome.failure_class not in FAILURE_CLASSES:
         raise SocialStoreError("invalid outbound failure class")
+    retry_after = outcome.retry_after
+    if retry_after is not None and (
+        isinstance(retry_after, bool)
+        or not isinstance(retry_after, int)
+        or retry_after <= finished_at
+        or outcome.failure_class != "rate_limit"
+    ):
+        raise SocialStoreError("invalid outbound rate-limit reset")
     _assert_outcome_fields(
         outcome.status, provider_remote_id, outcome.failure_class
     )
@@ -265,6 +460,7 @@ def _validated_outcome(outcome: AttemptOutcome) -> AttemptOutcome:
         provider_remote_id,
         outcome.failure_class,
         finished_at,
+        retry_after,
     )
 
 
@@ -272,14 +468,14 @@ def _provider_started(
     database: sqlite3.Connection,
     claimed: ClaimedOperation,
     executor_id: str,
-) -> bool:
+) -> tuple[bool, int]:
     row = database.execute(
-        "SELECT state,claim_token,claimed_by,last_attempt_id FROM outbound_operations "
-        "WHERE operation_id=?",
+        "SELECT state,claim_token,claimed_by,last_attempt_id,claim_expires_at "
+        "FROM outbound_operations WHERE operation_id=?",
         (claimed.operation_id,),
     ).fetchone()
     expected = ("claimed", claimed.claim_token, executor_id, claimed.attempt_id)
-    actual = tuple(row) if row is not None else ()
+    actual = tuple(row)[:4] if row is not None else ()
     if actual != expected:
         raise SocialStoreError("stale outbound executor cannot finalize")
     attempt = database.execute(
@@ -295,7 +491,7 @@ def _provider_started(
     ).fetchone()
     if attempt is None:
         raise SocialStoreError("outbound attempt is no longer running")
-    return attempt["provider_started_at"] is not None
+    return attempt["provider_started_at"] is not None, int(row["claim_expires_at"])
 
 
 def _assert_outcome_boundary(provider_started: bool, outcome: AttemptOutcome) -> None:
@@ -303,6 +499,19 @@ def _assert_outcome_boundary(provider_started: bool, outcome: AttemptOutcome) ->
         raise SocialStoreError("started provider attempts cannot be retry-safe failures")
     if not provider_started and outcome.status in ("succeeded", "unknown"):
         raise SocialStoreError("provider outcome requires a started provider attempt")
+
+
+def _expired_claim_outcome(outcome: AttemptOutcome) -> AttemptOutcome:
+    failure_class = outcome.failure_class or "executor_lost"
+    return AttemptOutcome(
+        "unknown",
+        provider_remote_id=outcome.provider_remote_id,
+        failure_class=failure_class,
+        finished_at=outcome.finished_at,
+        retry_after=(
+            outcome.retry_after if failure_class == "rate_limit" else None
+        ),
+    )
 
 
 def _persist_outcome(
@@ -339,6 +548,44 @@ def _persist_outcome(
     )
 
 
+def _persist_rate_limit_cooldown(
+    database: sqlite3.Connection,
+    claimed: ClaimedOperation,
+    executor_id: str,
+    outcome: AttemptOutcome,
+) -> None:
+    if outcome.retry_after is None:
+        return
+    row = database.execute(
+        """SELECT o.connection_id,o.action,a.provider_started_at
+             FROM outbound_operations o
+             JOIN outbound_attempts a ON a.attempt_id=o.last_attempt_id
+            WHERE o.operation_id=? AND a.attempt_id=?""",
+        (claimed.operation_id, claimed.attempt_id),
+    ).fetchone()
+    if row is None:
+        raise SocialStoreError("outbound rate-limit receipt is unavailable")
+    database.execute(
+        """INSERT INTO sync_runs(
+               run_id,connection_id,status,failure_class,retry_after,stream,run_kind,
+               collector_id,started_at,completed_at,diagnostics)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            _new_id("run"),
+            row["connection_id"],
+            "paused",
+            "rate_limit",
+            str(outcome.retry_after),
+            row["action"],
+            "outbound",
+            executor_id,
+            row["provider_started_at"] or outcome.finished_at,
+            outcome.finished_at,
+            canonical_json({"phase": "provider", "reason": "rate_limit"}),
+        ),
+    )
+
+
 def _outcome_receipt(
     claimed: ClaimedOperation, outcome: AttemptOutcome
 ) -> dict[str, Any]:
@@ -351,6 +598,8 @@ def _outcome_receipt(
         result["provider_remote_id"] = outcome.provider_remote_id
     if outcome.failure_class is not None:
         result["failure_class"] = outcome.failure_class
+    if outcome.retry_after is not None:
+        result["retry_after"] = outcome.retry_after
     return result
 
 
@@ -365,9 +614,15 @@ def finalize_operation(
     executor_id = validate_opaque(executor_id, "executor_id")
     database.execute("BEGIN IMMEDIATE")
     try:
-        provider_started = _provider_started(database, claimed, executor_id)
-        _assert_outcome_boundary(provider_started, outcome)
+        provider_started, claim_expires_at = _provider_started(
+            database, claimed, executor_id
+        )
+        if claim_expires_at <= int(outcome.finished_at):
+            outcome = _expired_claim_outcome(outcome)
+        else:
+            _assert_outcome_boundary(provider_started, outcome)
         _persist_outcome(database, claimed, executor_id, outcome, provider_started)
+        _persist_rate_limit_cooldown(database, claimed, executor_id, outcome)
         database.execute("COMMIT")
     except Exception:
         if database.in_transaction:

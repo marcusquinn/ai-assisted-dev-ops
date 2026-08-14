@@ -9,12 +9,18 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from _knowledge_social_linkedin import API_VERSION
 from _knowledge_social_linkedin_provider import PROFILE_NAME, _access_token
 from _knowledge_social_outbound import ClaimedOperation
-from _knowledge_social_outbound_provider import ProviderAdapterError, ProviderIdentityError
+from _knowledge_social_outbound_provider import (
+    ProviderAdapterError,
+    ProviderIdentityError,
+    ProviderRateLimitError,
+    redirect_free_provider_open,
+    raise_for_provider_rate_limit,
+)
 from knowledge_social_import import reject_credentials
 from knowledge_social_store import SocialStoreError, validate_opaque
 
@@ -79,7 +85,7 @@ class LinkedInPreparedProvider:
     """Prepared official LinkedIn post route with exact member binding."""
 
     claimed: ClaimedOperation
-    opener: UrlOpen = urlopen
+    opener: UrlOpen = redirect_free_provider_open
 
     def verify_identity(self) -> None:
         try:
@@ -88,7 +94,9 @@ class LinkedInPreparedProvider:
                 token, f"{IDENTITY_ENDPOINT}?q=memberAndApplication", method="GET"
             )
             with self.opener(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-                if getattr(response, "status", 200) != 200:
+                status = getattr(response, "status", 200)
+                raise_for_provider_rate_limit(status, response.headers)
+                if status != 200:
                     raise ProviderIdentityError("LinkedIn outbound capability or identity is unavailable")
                 member_id = _member_id(
                     _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
@@ -99,7 +107,14 @@ class LinkedInPreparedProvider:
                 )
         except ProviderIdentityError:
             raise
-        except (HTTPError, URLError, OSError, SocialStoreError, ProviderAdapterError):
+        except ProviderRateLimitError:
+            raise
+        except HTTPError as error:
+            raise_for_provider_rate_limit(error.code, error.headers)
+            raise ProviderIdentityError(
+                "LinkedIn outbound capability or identity is unavailable"
+            ) from None
+        except (URLError, OSError, SocialStoreError, ProviderAdapterError):
             raise ProviderIdentityError("LinkedIn outbound capability or identity is unavailable") from None
 
     def _post(self) -> tuple[str | None, str | None]:
@@ -126,7 +141,9 @@ class LinkedInPreparedProvider:
             _request(token, POST_ENDPOINT, method="POST", data=body),
             timeout=HTTP_TIMEOUT_SECONDS,
         ) as response:
-            if getattr(response, "status", 201) not in (200, 201):
+            status = getattr(response, "status", 201)
+            raise_for_provider_rate_limit(status, response.headers)
+            if status not in (200, 201):
                 return None, "provider_unavailable"
             remote_id = response.headers.get("x-restli-id")
             if not isinstance(remote_id, str) or not remote_id:
@@ -139,7 +156,12 @@ class LinkedInPreparedProvider:
     def invoke(self) -> tuple[str | None, str | None]:
         try:
             return self._post()
-        except (HTTPError, URLError, OSError):
+        except ProviderRateLimitError:
+            raise
+        except HTTPError as error:
+            raise_for_provider_rate_limit(error.code, error.headers)
+            return None, "provider_unavailable"
+        except (URLError, OSError):
             return None, "provider_unavailable"
         except (SocialStoreError, ProviderAdapterError, UnicodeError):
             return None, "validation"

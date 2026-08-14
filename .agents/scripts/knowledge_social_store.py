@@ -42,8 +42,8 @@ from knowledge_corpus_context import (
     validate_private_file,
 )
 
-SCHEMA_VERSION = 7
-SCHEMA_VERSION_SQL = "PRAGMA user_version=7"
+SCHEMA_VERSION = 8
+SCHEMA_VERSION_SQL = "PRAGMA user_version=8"
 SQLITE_MUTABLE_SIDECARS = ("-journal", "-shm", "-wal")
 
 
@@ -232,8 +232,38 @@ def _tables() -> tuple[str, ...]:
             provider_remote_id TEXT, failure_class TEXT, diagnostics TEXT,
             CHECK(provider_started_at IS NULL OR provider_started_at>=started_at),
             CHECK((status='running' AND finished_at IS NULL) OR
-                  (status!='running' AND finished_at IS NOT NULL)),
+                   (status!='running' AND finished_at IS NOT NULL)),
             UNIQUE(operation_id, claim_token))""",
+        """CREATE TABLE IF NOT EXISTS outbound_reconciliations (
+            reconciliation_id TEXT PRIMARY KEY,
+            operation_id TEXT NOT NULL REFERENCES outbound_operations(operation_id),
+            attempt_id TEXT NOT NULL REFERENCES outbound_attempts(attempt_id),
+            principal_id TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK(outcome IN ('succeeded','not-sent')),
+            resolved_state TEXT NOT NULL CHECK(resolved_state IN ('succeeded','failed')),
+            provider_remote_id TEXT, reconciled_at INTEGER NOT NULL,
+            original_status TEXT NOT NULL CHECK(original_status='unknown'),
+            original_failure_class TEXT NOT NULL, original_provider_remote_id TEXT,
+            original_finished_at INTEGER NOT NULL, original_diagnostics TEXT,
+            UNIQUE(operation_id, attempt_id),
+            CHECK(
+                (outcome='succeeded' AND resolved_state='succeeded' AND
+                 provider_remote_id IS NOT NULL) OR
+                (outcome='not-sent' AND resolved_state='failed' AND
+                provider_remote_id IS NULL)
+            ))""",
+        """CREATE TRIGGER IF NOT EXISTS outbound_unknown_attempts_no_update
+            BEFORE UPDATE ON outbound_attempts WHEN OLD.status='unknown'
+            BEGIN SELECT RAISE(ABORT,'unknown outbound receipts are immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS outbound_unknown_attempts_no_delete
+            BEFORE DELETE ON outbound_attempts WHEN OLD.status='unknown'
+            BEGIN SELECT RAISE(ABORT,'unknown outbound receipts are immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS outbound_reconciliations_no_update
+            BEFORE UPDATE ON outbound_reconciliations
+            BEGIN SELECT RAISE(ABORT,'outbound reconciliation receipts are immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS outbound_reconciliations_no_delete
+            BEFORE DELETE ON outbound_reconciliations
+            BEGIN SELECT RAISE(ABORT,'outbound reconciliation receipts are immutable'); END""",
         """CREATE TABLE IF NOT EXISTS notification_state (
             notification_id TEXT PRIMARY KEY, principal_id TEXT NOT NULL,
             provider TEXT NOT NULL, connection_id TEXT NOT NULL,
@@ -250,6 +280,7 @@ def _tables() -> tuple[str, ...]:
         "CREATE INDEX IF NOT EXISTS idx_reconciliation_status ON reconciliation_items(connection_id, stream, status)",
         "CREATE INDEX IF NOT EXISTS idx_outbound_due ON outbound_operations(state,scheduled_at,operation_id)",
         "CREATE INDEX IF NOT EXISTS idx_outbound_approvals ON outbound_approvals(operation_id,expires_at,revoked_at)",
+        "CREATE INDEX IF NOT EXISTS idx_outbound_reconciliations ON outbound_reconciliations(operation_id,reconciled_at)",
         "CREATE INDEX IF NOT EXISTS idx_notification_status ON notification_state(principal_id,status,updated_at)",
     )
 

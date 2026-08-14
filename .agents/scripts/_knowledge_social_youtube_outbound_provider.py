@@ -13,11 +13,21 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-from _knowledge_social_youtube_provider import PROFILE_NAME, _access_token
+from _knowledge_social_youtube_provider import (
+    PROFILE_NAME,
+    RATE_LIMIT_REASONS,
+    _access_token,
+)
 from _knowledge_social_outbound import ClaimedOperation
-from _knowledge_social_outbound_provider import ProviderAdapterError, ProviderIdentityError
+from _knowledge_social_outbound_provider import (
+    ProviderAdapterError,
+    ProviderIdentityError,
+    ProviderRateLimitError,
+    redirect_free_provider_open,
+    raise_for_provider_rate_limit,
+)
 from knowledge_social_import import reject_credentials
 from knowledge_social_store import SocialStoreError, validate_opaque
 
@@ -46,6 +56,28 @@ def _decode_response(payload: bytes) -> dict[str, Any]:
         raise ProviderAdapterError("YouTube write response root must be an object")
     reject_credentials(decoded)
     return decoded
+
+
+def _http_error_status(error: HTTPError) -> int:
+    """Normalize only allowlisted YouTube quota reasons to HTTP 429."""
+    if error.code != 403:
+        return error.code
+    try:
+        payload = _decode_response(error.read(MAX_RESPONSE_BYTES + 1))
+    except (OSError, SocialStoreError, ProviderAdapterError):
+        return error.code
+    envelope = payload.get("error")
+    entries = envelope.get("errors") if isinstance(envelope, dict) else None
+    if not isinstance(entries, list):
+        return error.code
+    reasons = {
+        reason
+        for entry in entries
+        if isinstance(entry, dict)
+        for reason in (entry.get("reason"),)
+        if isinstance(reason, str)
+    }
+    return 429 if reasons.intersection(RATE_LIMIT_REASONS) else error.code
 
 
 def _api_request(token: str, endpoint: str, params: dict[str, str]) -> Request:
@@ -88,7 +120,7 @@ class YouTubePreparedProvider:
     """Prepared YouTube video upload with exact owned-channel verification."""
 
     claimed: ClaimedOperation
-    opener: UrlOpen = urlopen
+    opener: UrlOpen = redirect_free_provider_open
 
     def verify_identity(self) -> None:
         try:
@@ -101,7 +133,9 @@ class YouTubePreparedProvider:
                 ),
                 timeout=HTTP_TIMEOUT_SECONDS,
             ) as response:
-                if getattr(response, "status", 200) != 200:
+                status = getattr(response, "status", 200)
+                raise_for_provider_rate_limit(status, response.headers)
+                if status != 200:
                     raise ProviderIdentityError("YouTube upload capability or identity is unavailable")
                 payload = _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
             items = payload.get("items")
@@ -117,7 +151,14 @@ class YouTubePreparedProvider:
             _verified_media(self.claimed)
         except ProviderIdentityError:
             raise
-        except (HTTPError, URLError, OSError, SocialStoreError, ProviderAdapterError):
+        except ProviderRateLimitError:
+            raise
+        except HTTPError as error:
+            raise_for_provider_rate_limit(_http_error_status(error), error.headers)
+            raise ProviderIdentityError(
+                "YouTube upload capability or identity is unavailable"
+            ) from None
+        except (URLError, OSError, SocialStoreError, ProviderAdapterError):
             raise ProviderIdentityError("YouTube upload capability or identity is unavailable") from None
 
     def _upload(
@@ -153,6 +194,10 @@ class YouTubePreparedProvider:
             method="POST",
         )
         with self.opener(initiate, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            status = getattr(response, "status", 200)
+            raise_for_provider_rate_limit(status, response.headers)
+            if status not in (200, 201):
+                return None, "provider_unavailable"
             location = response.headers.get("Location")
         if not isinstance(location, str) or not location.startswith("https://www.googleapis.com/"):
             return None, "validation"
@@ -170,6 +215,10 @@ class YouTubePreparedProvider:
                 method="PUT",
             )
             with self.opener(upload, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                status = getattr(response, "status", 200)
+                raise_for_provider_rate_limit(status, response.headers)
+                if status not in (200, 201):
+                    return None, "provider_unavailable"
                 payload = _decode_response(response.read(MAX_RESPONSE_BYTES + 1))
         remote_id = payload.get("id")
         if not isinstance(remote_id, str):
@@ -181,7 +230,12 @@ class YouTubePreparedProvider:
     ) -> tuple[str | None, str | None]:
         try:
             return self._upload(checkpoint)
-        except (HTTPError, URLError, OSError):
+        except ProviderRateLimitError:
+            raise
+        except HTTPError as error:
+            raise_for_provider_rate_limit(_http_error_status(error), error.headers)
+            return None, "provider_unavailable"
+        except (URLError, OSError):
             return None, "provider_unavailable"
         except (SocialStoreError, ProviderAdapterError, UnicodeError):
             return None, "validation"

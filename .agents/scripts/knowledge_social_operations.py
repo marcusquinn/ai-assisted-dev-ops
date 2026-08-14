@@ -38,8 +38,10 @@ from _knowledge_social_outbound import (
     revoke_approval,
 )
 from _knowledge_social_outbound_provider import (
+    DEFAULT_PROVIDER_RETRY_SECONDS,
     ProviderAdapterError,
     ProviderIdentityError,
+    ProviderRateLimitError,
     prepare_provider,
 )
 from _knowledge_social_outbound_reconciliation import (
@@ -51,6 +53,7 @@ from _knowledge_social_outbound_runtime import (
     AttemptOutcome,
     ClaimRequest,
     claim_operation,
+    defer_claim_for_cooldown,
     due_operation_ids,
     expire_claims,
     finalize_operation,
@@ -135,6 +138,34 @@ def _unknown_provider_outcome(
     )
 
 
+def _rate_limited_provider_outcome(
+    database: sqlite3.Connection,
+    claimed: ClaimedOperation,
+    executor_id: str,
+    status: str,
+    error: ProviderRateLimitError,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    finished_at = _clock(args)
+    retry_seconds = (
+        error.retry_after_seconds
+        if error.retry_after_seconds is not None and error.retry_after_seconds > 0
+        else DEFAULT_PROVIDER_RETRY_SECONDS
+    )
+    retry_after = finished_at + retry_seconds
+    return finalize_operation(
+        database,
+        claimed,
+        executor_id,
+        AttemptOutcome(
+            status,
+            failure_class="rate_limit",
+            finished_at=finished_at,
+            retry_after=retry_after,
+        ),
+    )
+
+
 def _execute_claimed(
     database: sqlite3.Connection,
     claimed: ClaimedOperation,
@@ -149,27 +180,42 @@ def _execute_claimed(
         )
     try:
         provider.verify_identity()
+    except ProviderRateLimitError as error:
+        return _rate_limited_provider_outcome(
+            database, claimed, executor_id, "failed", error, args
+        )
     except ProviderIdentityError:
         return _pre_provider_failure(
             database, claimed, executor_id, "identity", args
         )
 
+    provider_started_at = _clock(args)
     try:
         mark_provider_started(
-            database, claimed, executor_id, started_at=_clock(args)
+            database, claimed, executor_id, started_at=provider_started_at
         )
     except SocialStoreError:
+        deferred = defer_claim_for_cooldown(
+            database, claimed, executor_id, provider_started_at
+        )
+        if deferred is not None:
+            return deferred
         return _pre_provider_failure(
             database, claimed, executor_id, "authorization", args
         )
 
-    if claimed.provider == "youtube":
-        checkpoint = lambda checkpoint_id: record_provider_checkpoint(
-            database, claimed, executor_id, checkpoint_id
+    try:
+        if claimed.provider == "youtube":
+            checkpoint = lambda checkpoint_id: record_provider_checkpoint(
+                database, claimed, executor_id, checkpoint_id
+            )
+            provider_remote_id, failure_class = provider.invoke(checkpoint)
+        else:
+            provider_remote_id, failure_class = provider.invoke()
+    except ProviderRateLimitError as error:
+        return _rate_limited_provider_outcome(
+            database, claimed, executor_id, "unknown", error, args
         )
-        provider_remote_id, failure_class = provider.invoke(checkpoint)
-    else:
-        provider_remote_id, failure_class = provider.invoke()
     if failure_class is not None:
         return _unknown_provider_outcome(
             database,

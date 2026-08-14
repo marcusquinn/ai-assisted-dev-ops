@@ -26,6 +26,59 @@ archive for the remaining category. Until a provider child records fresh
 evidence, every mark other than **Live** is a disposition for investigation, not
 a claim that the route is enabled.
 
+## Runtime provider readiness
+
+The planning matrix above documents implemented and candidate routes; it is not
+runtime evidence. Use the content-free provider health surface before selecting
+or executing a channel:
+
+```bash
+knowledge-social-helper.sh provider-health-status [--provider PROVIDER]
+knowledge-social-helper.sh provider-health-report [--provider PROVIDER]
+knowledge-social-helper.sh provider-health-collect
+knowledge-social-helper.sh provider-health-reconcile \
+  [--decisions-file PRIVATE_JSON] [--limit 1-100] [--per-provider-limit 1-20]
+```
+
+The JSON contract is
+`.agents/schemas/social-provider-health.schema.json`. It reports every provider
+in the read registry or outbound action catalogue plus each provider present in
+the selected corpus. Each exact local account alias and each enabled read stream
+or supported write action has separate canonical readiness dimensions. Alias
+visibility follows the selected corpus grant; aliases are local selectors, not
+remote account IDs. A read action is `usable` only after fresh authenticated,
+authorized, reachable stream evidence. A write action additionally requires an
+unexpired exact-intent approval for a due operation and no unresolved ambiguous
+receipt for that action. Both require no active selected-account cooldown.
+Documentation, environment-variable presence, or a previous success cannot by
+itself make an action usable.
+
+Quota values remain `null` when no provider evidence establishes them. A
+persisted future retry/reset boundary activates cooldown and transactionally
+fences both new outbound claims and the provider-start boundary for that exact
+connection. Structured outbound rate-limit evidence without a valid reset uses
+one bounded local safety cooldown without inferring quota. A cooldown discovered
+after claim records a retry-safe pre-provider receipt and returns the operation
+to `approved` without contacting the provider. Repeated reset responses pause
+work and never justify bypass, rapid polling, or notification storms. One
+blocked, stale, or unknown enabled action makes the aggregate `partial` while
+preserving healthy sibling evidence.
+
+Health collection reads no campaign body, subject, media path, credential,
+remote account ID, or provider response body. Snapshots are atomically replaced
+as owner-only files. Provider results arriving after claim expiry remain
+`unknown` with their content-free evidence retained for reconciliation.
+Reconciliation first fences expired claims as `unknown`; those transitions
+consume the global pass budget. It then selects exact explicit owner decisions,
+and only actual resolutions consume the remaining global and
+per-provider budgets. Cooldown or undecided receipts cannot starve eligible
+sibling accounts; a no-decision inspection is bounded by the same remaining
+global and per-provider limits. Original unknown attempt evidence and appended
+reconciliation receipts are immutable. The routine never creates a publish
+intent, places an ambiguous operation back in the queue, or contacts a provider.
+A successful decision requires the stable opaque provider receipt ID;
+`not-sent` forbids one.
+
 ## Requested providers
 
 | Provider | Authored content | Interactions and curation | Mentions or messages | Relationships and subscriptions | Lists or custom feeds | Current disposition |
