@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from knowledge_social_store import SocialStoreError, validate_opaque
 
@@ -14,6 +15,32 @@ MAX_REDDIT_SUBJECT_CHARS = 300
 MAX_SELECTOR_BYTES = 256
 REDDIT_TARGET_ID = re.compile(r"^t[13]_[A-Za-z0-9]+$")
 REDDIT_DESTINATION_ID = re.compile(r"^[A-Za-z0-9_]{3,21}$")
+
+
+@dataclass(frozen=True)
+class SubjectPolicy:
+    """Provider-specific title requirements and public validation messages."""
+
+    required_message: str
+    line_message: str
+    maximum_chars: int
+    length_message: str
+
+
+SUBJECT_POLICIES = {
+    "reddit": SubjectPolicy(
+        "Reddit posts require a non-empty private subject file",
+        "outbound subject must be one non-empty line",
+        MAX_REDDIT_SUBJECT_CHARS,
+        "Reddit post subject exceeds the 300-character title limit",
+    ),
+    "youtube": SubjectPolicy(
+        "YouTube uploads require a non-empty private title file",
+        "YouTube upload title must be one non-empty line",
+        100,
+        "YouTube upload title exceeds the 100-character limit",
+    ),
+}
 
 
 def optional_selector(value: str | None, field: str) -> str | None:
@@ -33,42 +60,26 @@ def optional_selector(value: str | None, field: str) -> str | None:
 
 def _validated_required_subject(
     subject: str | None,
-    *,
-    required_message: str,
-    line_message: str,
-    maximum_chars: int,
-    length_message: str,
+    policy: SubjectPolicy,
 ) -> str:
     if subject is None or not subject.strip():
-        raise SocialStoreError(required_message)
+        raise SocialStoreError(policy.required_message)
     if any(marker in subject for marker in ("\x00", "\n", "\r")):
-        raise SocialStoreError(line_message)
-    if len(subject) > maximum_chars:
-        raise SocialStoreError(length_message)
+        raise SocialStoreError(policy.line_message)
+    if len(subject) > policy.maximum_chars:
+        raise SocialStoreError(policy.length_message)
     return subject
 
 
 def _validated_reddit_subject(subject: str | None) -> str:
-    subject = _validated_required_subject(
-        subject,
-        required_message="Reddit posts require a non-empty private subject file",
-        line_message="outbound subject must be one non-empty line",
-        maximum_chars=MAX_REDDIT_SUBJECT_CHARS,
-        length_message="Reddit post subject exceeds the 300-character title limit",
-    )
+    subject = _validated_required_subject(subject, SUBJECT_POLICIES["reddit"])
     if len(subject.encode("utf-8")) > MAX_SUBJECT_BYTES:
         raise SocialStoreError("outbound subject exceeds the private subject limit")
     return subject
 
 
 def _validated_youtube_subject(subject: str | None) -> str:
-    return _validated_required_subject(
-        subject,
-        required_message="YouTube uploads require a non-empty private title file",
-        line_message="YouTube upload title must be one non-empty line",
-        maximum_chars=100,
-        length_message="YouTube upload title exceeds the 100-character limit",
-    )
+    return _validated_required_subject(subject, SUBJECT_POLICIES["youtube"])
 
 
 def validated_subject(provider: str, action: str, subject: str | None) -> str | None:
