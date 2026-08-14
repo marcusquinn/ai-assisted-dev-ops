@@ -9,19 +9,10 @@ import re
 
 SCHEMA_VERSION = 1
 SOURCE_KINDS = {"campaign", "phase1", "social", "analytics", "crm", "commerce", "outreach", "normalized"}
-EVENT_TYPES = {
-    "impression", "engagement", "follower", "subscriber", "social_receipt",
-    "visit", "conversion", "lead_created", "lead_stage", "sale", "revenue",
-    "refund", "cost", "outreach_sent", "outreach_reply", "outreach_bounce",
-    "unsubscribe", "correction",
-}
+EVENT_TYPES = set("impression engagement follower subscriber social_receipt visit conversion lead_created lead_stage sale revenue refund cost outreach_sent outreach_reply outreach_bounce unsubscribe correction".split())
 SUBJECT_KINDS = {"aggregate", "anonymous", "lead", "contact", "account", "audience"}
 IDENTITY_STATES = {"not_applicable", "isolated", "linked", "split", "ambiguous"}
-UNITS = {
-    "impression", "engagement", "follower", "subscriber", "receipt", "visit",
-    "conversion", "lead", "sale", "refund", "currency", "message", "reply",
-    "bounce", "unsubscribe", "ratio",
-}
+UNITS = set("impression engagement follower subscriber receipt visit conversion lead sale refund currency message reply bounce unsubscribe ratio".split())
 AGGREGATIONS = {"sum", "average", "latest", "none"}
 CONFIDENCE = {"low", "medium", "high", "verified"}
 COMPLETENESS = {"complete", "partial", "unknown"}

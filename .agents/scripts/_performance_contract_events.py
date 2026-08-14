@@ -12,26 +12,17 @@ from typing import Any
 
 from _performance_contract_definitions import (
     AGGREGATIONS,
-    COMPLETENESS,
-    CONFIDENCE,
     EVENT_TYPES,
-    IDENTITY_STATES,
     MAX_SAFE_JSON_INTEGER,
     METRIC_CONTRACTS,
     METRIC_DEFINITIONS,
     METRIC_RE,
-    SOURCE_KINDS,
-    SOURCE_TYPES,
-    SUBJECT_KINDS,
     UNITS,
     PerformanceContractError,
 )
 from _performance_contract_values import (
     decimal_text,
-    normalize_dimensions,
-    optional_alias,
     parse_timestamp,
-    require_alias,
     require_private_ref,
     timestamp_epoch,
 )
