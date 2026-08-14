@@ -80,6 +80,16 @@ class MarketingPerformanceTests(unittest.TestCase):
         self.assertEqual(projection["measurement"]["value"], 8)
         self.assertEqual(len(projection["quality"]["evidence"]), 2)
 
+    def test_legacy_campaign_markdown_remains_ingestible(self) -> None:
+        results = Path(self.temp.name) / "results.md"
+        results.write_text("""# Campaign Results: c001\n\n**Launched:** 2026-08-14\n\n| Metric | Value |\n|---|---|\n| Impressions | 100 |\n| CTR (%) | 5 |\n| Cost | GBP 20 |\n""", encoding="utf-8")
+        result = self.invoke("ingest", "--adapter", "campaign", "--input", str(results), "--source-account", "c001", "--evidence-ref", "_campaigns/launched/c001/results.md")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = self.records("raw/events.jsonl")
+        self.assertEqual(len(events), 3)
+        ctr = next(item for item in events if item["metric"]["id"] == "marketing.engagement.ctr")
+        self.assertEqual(ctr["measurement"]["value"], 0.05)
+
     def test_refund_and_correction_append_without_rewriting_history(self) -> None:
         fixture = json.loads(self.fixture("payment").read_text(encoding="utf-8"))
         original_id = "mpe_" + hashlib.sha256("payment-fixture\0store-a\0sale-1".encode()).hexdigest()[:32]

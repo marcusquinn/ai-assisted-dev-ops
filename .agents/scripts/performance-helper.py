@@ -200,8 +200,11 @@ def normalize_subject(raw: Any, source: dict[str, Any]) -> dict[str, Any]:
         if item.get("action") not in {"merge", "split"} or item.get("automatic") is not False:
             raise PerformanceError("identity merge/split must be explicit and automatic=false")
         require_timestamp(item.get("effective_at"), "identity_change.effective_at")
-        if not item.get("evidence_ref") or not item.get("related_subject_ids"):
+        related = item.get("related_subject_ids")
+        if not item.get("evidence_ref") or not isinstance(related, list) or not related:
             raise PerformanceError("identity change provenance is required")
+        if not all(re.fullmatch(r"mps_[a-f0-9]{32}", str(subject_id)) for subject_id in related):
+            raise PerformanceError("identity change related_subject_ids are invalid")
     return {
         "schema": SUBJECT_SCHEMA,
         "subject_id": subject_id,
@@ -424,16 +427,17 @@ def command_ingest(arguments: argparse.Namespace) -> int:
     initialize(root)
     lock_name = hashlib.sha256(source_key(source).encode()).hexdigest() + ".lock"
     with Lease(root / "state" / "leases" / lock_name):
-        summary["subjects_added"] = append_versions(root / "raw" / "subjects.jsonl", subjects)
-        summary["events_added"] = append_new(root / "raw" / "events.jsonl", events, "event_id")
-        summary["projection"] = project(root)
-        state_path = root / "state" / "sources.json"
-        state = read_json(state_path, "source state")
-        state["sources"][source_key(source)] = {
-            "cursor": source["cursor"], "captured_at": source["captured_at"], "scope_status": source["scope_status"],
-            "coverage": source["coverage"], "last_success_at": utc_now(), "event_count": len(events),
-        }
-        atomic_json(state_path, state)
+        with Lease(root / "state" / "ingest.lock"):
+            summary["subjects_added"] = append_versions(root / "raw" / "subjects.jsonl", subjects)
+            summary["events_added"] = append_new(root / "raw" / "events.jsonl", events, "event_id")
+            summary["projection"] = project(root)
+            state_path = root / "state" / "sources.json"
+            state = read_json(state_path, "source state")
+            state["sources"][source_key(source)] = {
+                "cursor": source["cursor"], "captured_at": source["captured_at"], "scope_status": source["scope_status"],
+                "coverage": source["coverage"], "last_success_at": utc_now(), "event_count": len(events),
+            }
+            atomic_json(state_path, state)
     print(json.dumps(summary, sort_keys=True))
     return 0
 

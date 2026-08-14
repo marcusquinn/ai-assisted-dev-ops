@@ -32,6 +32,9 @@ def _markdown(text: str, account: str, evidence_ref: str | None) -> dict[str, An
         if not raw:
             continue
         metric_id, label, kind, unit = METRICS[cells[0].lower()]
+        value = float(raw)
+        if kind == "percentage":
+            value /= 100
         currency = None
         if kind == "currency":
             match = re.search(r"\b[A-Z]{3}\b", cells[1])
@@ -39,7 +42,7 @@ def _markdown(text: str, account: str, evidence_ref: str | None) -> dict[str, An
         events.append({
             "source_event_id": f"{account}:{metric_id}:{occurred}", "event_type": "cost" if metric_id == "marketing.spend.cost" else "outcome",
             "metric": {"id": metric_id, "label": label, "kind": kind, "version": 1},
-            "measurement": {"value": float(raw), "unit": unit, "currency": currency, "aggregation": "sum", "period_start": None, "period_end": None},
+            "measurement": {"value": value, "unit": unit, "currency": currency, "aggregation": "sum", "period_start": None, "period_end": None},
             "occurred_at": occurred, "dimensions": {"campaign_id": account},
             "quality": {"confidence": "medium", "freshness": "unknown", "verification_status": "unverified", "notes": "Imported from legacy campaign results.md"},
         })
