@@ -25,6 +25,9 @@ model: standard
 - **Hook-first on X** — front-load value in first line (visible before truncation)
 - **Professional framing on LinkedIn** — thought leadership, not sales pitch
 - **One idea per post** — clarity beats comprehensiveness
+- **Evidence before algorithm claims** — use `content/social-algorithms.md`; treat
+  platform signals as dated hypotheses and never translate prediction weights
+  into raw engagement-count formulas
 
 **Platform Tools**: `content/social-xurl.md` (official X API),
 `content/social-linkedin.md`, `content/social-reddit.md`, `content/social-meta.md`,
@@ -204,7 +207,7 @@ Happy to share more details on the research methodology if anyone's interested.
 
 ## Related
 
-**Content Pipeline**: `content/research.md` (audience research), `content/story.md` (hooks/narrative), `content/platform-personas.md` (legacy voice), `content/optimization.md` (A/B testing)
+**Content Pipeline**: `content/research.md` (audience research), `content/story.md` (hooks/narrative), `content/social-algorithms.md` (recommendation-system evidence), `content/platform-personas.md` (legacy voice), `content/optimization.md` (A/B testing)
 
 **Distribution**: `content/distribution/youtube/`, `content/distribution/short-form.md`, `content/distribution/blog.md`, `content/distribution/email.md`, `content/distribution/podcast.md`
 

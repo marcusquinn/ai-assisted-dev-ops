@@ -25,6 +25,7 @@ subagents:
   - distribution-youtube
   - distribution-short-form
   - distribution-social
+  - social-algorithms
   - distribution-blog
   - distribution-email
   - distribution-podcast
@@ -89,6 +90,7 @@ Content agent. Domain: blog, video, social, newsletters, podcasts, short-form, A
 | YouTube | `distribution-youtube/` | Long-form (channel-intel, topic-research, script-writer, optimizer, pipeline) |
 | Short-form | `distribution-short-form.md` | TikTok, Reels, Shorts (9:16, 1-3s cuts) |
 | Social | `distribution-social.md` | X, LinkedIn, Reddit (platform-native tone) |
+| Social algorithms | `social-algorithms.md` | Evidence-led recommendation-system hypotheses and experiments |
 | Blog | `distribution-blog.md` | SEO-optimized articles (references `seo/`) |
 | Email | `distribution-email.md` | Newsletters, sequences |
 | Podcast | `distribution-podcast.md` | Audio-first distribution |
@@ -153,7 +155,7 @@ content-fanout-helper.sh run <plan-file>    # Execute (also: channels, status, e
 | Video | `content/media-generation-providers.md`, `content/video-kie.md`, `content/video-higgsfield.md`, `tools/video/video-prompt-design.md` |
 | Voice | `tools/voice/speech-to-speech.md`, `voice-helper.sh` |
 | SEO/Blog | `seo/`, `content/seo-writer.md`, `content/editor.md`, `content/meta-creator.md`, `content/internal-linker.md` |
-| Social | `content/social-bird.md` (X), `content/social-linkedin.md`, `content/social-reddit.md` |
+| Social | `content/social-algorithms.md` (recommendation guidance), `content/social-xurl.md` (X), `content/social-linkedin.md`, `content/social-reddit.md` |
 | Email | `content/marketing-sales.md` (FluentCRM), `content/distribution-email.md` |
 | Analysis | `seo-content-analyzer.py analyze article.md --keyword "target keyword"` |
 

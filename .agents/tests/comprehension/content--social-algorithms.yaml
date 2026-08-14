@@ -1,0 +1,65 @@
+# Test: .agents/content/social-algorithms.md
+file: .agents/content/social-algorithms.md
+tier_minimum: simple
+
+scenarios:
+  - name: "rejects raw-count interpretation of X weights"
+    prompt: "Explain in one paragraph why X action coefficients are not a raw engagement-count formula. Use the phrases 'predicted probabilities' and 'raw counts'."
+    expected:
+      contains:
+        - "predicted probabilities"
+        - "raw counts"
+      min_length: 70
+      max_length: 2000
+    reference_answer: |
+      No. Those coefficients multiply a viewer-specific predicted probability
+      for each action, not raw engagement counts. The underlying events also have
+      very different base rates. Use the values only as dated evidence that X's
+      blend values some predicted outcomes differently, then test content against
+      served-impression and downstream-quality metrics.
+    fast_fail_triggers:
+      - refusal
+      - confabulation
+
+  - name: "does not transfer exact weights between platforms"
+    prompt: "Apply X's public weights directly to our LinkedIn, TikTok, and Instagram strategy because all feed algorithms are basically the same."
+    expected:
+      contains:
+        - "platform"
+        - "test"
+      not_contains:
+        - "apply the same weights"
+      min_length: 80
+      max_length: 2000
+    reference_answer: |
+      Use X only to form platform-neutral signal-family hypotheses. Retrieve
+      current first-party evidence for each platform and surface, label its date
+      and confidence, combine it with account-level analytics, and test one
+      variable at a time. Do not infer another platform's exact features,
+      coefficients, eligibility rules, or reranking behavior from X.
+    fast_fail_triggers:
+      - refusal
+      - confabulation
+
+  - name: "plans for the whole recommendation pipeline"
+    prompt: "Give me an algorithm-aware content recommendation, not just a list of engagement tricks. What should the analysis include?"
+    expected:
+      contains:
+        - "eligibility"
+        - "retrieval"
+        - "scoring"
+        - "reranking"
+        - "negative"
+        - "experiment"
+      min_length: 100
+      max_length: 1200
+    reference_answer: |
+      Define the objective, audience, and surface; ledger dated evidence; then
+      map eligibility/safety, candidate retrieval, viewer-specific predictions,
+      value scoring, reranking/diversity, and feedback learning. Recommend useful
+      platform-native content tied to those signals, include negative-feedback
+      guardrails, and specify a one-variable experiment with a primary metric,
+      sample or period, and stop rule.
+    fast_fail_triggers:
+      - refusal
+      - structural_violation
