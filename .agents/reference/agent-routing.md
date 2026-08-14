@@ -52,7 +52,7 @@ Full index: `subagent-index.toon`.
 | Business | company ops, finance, invoice, receipts, strategy, runners | Company operations, financial ops, invoicing, receipts, runner configs, strategy |
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | Compliance, terms of service, privacy policy |
 | Vault | vault, encrypted memory, protected data, lock, unlock, rekey, device trust, remote lock, remote unlock, secure sync | Vault setup/management, protected-data routing, encrypted sync/fleet trust, remote lock/unlock-request, secure-message policy |
-| Research | research, compare, market, competitor, technical analysis | Tech research, competitive analysis, market research |
+| Research | research, compare, market, competitor, technical analysis, external tool, repository evaluation, do we already do this, adoption fit | Tech research, competitive analysis, market research, and external tool/repository evaluation; use `reference/external-tool-evaluation.md` for source-level adoption decisions |
 | Health | health, wellness, nutrition, fitness, medical lifestyle | Health and wellness content |
 
 For narrower domains such as Reports, App Stack, WordPress, Shopify, Cloudflare, Proxmox, Remotion, CalDAV, public relations, or browser/mobile work, read `reference/domain-index.md` and the relevant skill/subagent entry before defaulting to Build+. For repeatable browser operations or web data mining, route through `/auto-browse` and `.agents/workflows/auto-browse.md` so profile state, safety gates, and private/shareable artifact boundaries are handled consistently.

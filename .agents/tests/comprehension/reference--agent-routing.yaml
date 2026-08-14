@@ -71,3 +71,24 @@ scenarios:
       delegation overhead would cost more than it saves.
     fast_fail_triggers:
       - refusal
+
+  - name: "routes external-tool adoption evaluation to Research"
+    prompt: "Someone sent https://example.invalid/tool. Do we already do this, is there value to learn, and is it worth adopting?"
+    expected:
+      contains:
+        - "Research"
+        - "source"
+        - "cost"
+        - "no action"
+      min_length: 70
+      max_length: 700
+    reference_answer: |
+      Route this to Research and use reference/external-tool-evaluation.md.
+      State the inspection depth, inspect source and tests when implementation
+      claims affect the recommendation, and compare the actual local
+      implementation rather than feature names. Assess marginal model/API cost,
+      latency, resource and maintenance friction, security and failure
+      boundaries, then allow an evidence-backed rejection or no action rather
+      than treating feature parity as value.
+    fast_fail_triggers:
+      - refusal

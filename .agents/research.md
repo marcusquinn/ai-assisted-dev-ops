@@ -46,19 +46,20 @@ Stay in analyst mode. Answer with findings, evidence, and recommendations; do no
 3. Identify gaps, risks, and opportunities
 4. Report with evidence
 
-### Tool evaluation
+### External tool and repository evaluation
 
-1. Verify official docs and maintenance status
-2. Check adoption and ecosystem fit
-3. Compare realistic alternatives
-4. Recommend one option with rationale
+For questions about whether aidevops already duplicates an external tool or
+repository, what is worth learning, or whether to adopt it, use
+`reference/external-tool-evaluation.md`. State inspection depth, compare actual
+implementations, assess marginal cost/friction and failure boundaries, and make
+an evidence-backed recommendation that can reject or take no action.
 
 ### Output format
 
 - Decision
 - Options
 - Evidence/citations
-- Recommendation
+- Recommendation, including no action when warranted
 - Next steps
 
 Research informs implementation; it does not perform it.
