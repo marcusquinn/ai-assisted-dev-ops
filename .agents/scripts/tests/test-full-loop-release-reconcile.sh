@@ -530,14 +530,19 @@ fallback_candidate_tags_file="${TEST_ROOT}/candidate-tags-fallback.txt"
 	git() {
 		local args="$*"
 		case "$args" in
+		*"%(refname:short)%00%(contents)%00"*)
+			printf 'v2.0.0\0Aidevops-Source-PR: 89\0\n'
+			printf 'v1.9.0\0Aidevops-Aggregated-Source: 89@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0\n'
+			printf 'v1.8.0\0Aidevops-Source-PR: 90\nAidevops-Source-Merge: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\0\n'
+			;;
 		*" for-each-ref "*)
 			printf '%b\n' \
 				'v2.0.0\x1f\x1f\x1f' \
-				'v1.9.0\x1f\x1f\x1f'
+				'v1.9.0\x1f\x1f\x1f' \
+				'v1.8.0\x1f\x1f\x1f'
 			;;
-		*" log --all --fixed-strings "*) return 0 ;;
-		*" tag --list "*)
-			printf '%s\n' v2.0.0 v1.9.0
+		*" log --all --fixed-strings "*)
+			printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 			;;
 		*) return 1 ;;
 		esac
@@ -546,11 +551,11 @@ fallback_candidate_tags_file="${TEST_ROOT}/candidate-tags-fallback.txt"
 	_full_loop_release_candidate_tags_for_pr 89
 ) >"$fallback_candidate_tags_file"
 fallback_candidate_tags=$(<"$fallback_candidate_tags_file")
-if [[ "$fallback_candidate_tags" != $'v2.0.0\nv1.9.0' ]]; then
-	printf 'FAIL empty trailer index did not fall back to full tag scan\n'
+if [[ "$fallback_candidate_tags" != $'v2.0.0\nv1.9.0\nv1.8.0' ]]; then
+	printf 'FAIL empty trailer index did not build an exact raw-body candidate index\n'
 	exit 1
 fi
-printf 'PASS empty trailer index falls back to full tag scan\n'
+printf 'PASS empty trailer index covers direct, aggregate, and legacy raw-body candidates\n'
 
 fallback_find_tag_file="${TEST_ROOT}/find-tag-fallback.txt"
 (
@@ -558,11 +563,13 @@ fallback_find_tag_file="${TEST_ROOT}/find-tag-fallback.txt"
 		local args="$*"
 		case "$args" in
 		*" fetch origin --tags --quiet"*) return 0 ;;
+		*"%(refname:short)%00%(contents)%00"*)
+			printf 'v2.0.0\0Aidevops-Source-PR: 89\0\n'
+			;;
 		*" for-each-ref "*)
 			printf '%b\n' 'v2.0.0\x1f\x1f\x1f'
 			;;
 		*" log --all --fixed-strings "*) return 0 ;;
-		*" tag --list "*) printf '%s\n' v2.0.0 ;;
 		*) return 1 ;;
 		esac
 		return 0
@@ -589,6 +596,115 @@ if [[ "$fallback_find_tag" != "v2.0.0" ]]; then
 	exit 1
 fi
 printf 'PASS full tag fallback recovers a body-parseable signed tag\n'
+
+malformed_tag_log="${TEST_ROOT}/malformed-tag-timing.log"
+if (
+	git() {
+		local args="$*"
+		case "$args" in
+		*" fetch origin --tags --quiet"*) return 0 ;;
+		*"%(refname:short)%00%(contents)%00"*)
+			printf 'v2.0.1\0Aidevops-Source-PR: 89\0\n'
+			;;
+		*" for-each-ref "*) printf '%b\n' 'v2.0.1\x1f\x1f\x1f' ;;
+		*" log --all --fixed-strings "*) return 0 ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_tag_body() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v2.0.1" ]] || return 1
+		printf '%s\n' 'Aidevops-Source-PR: 89'
+		return 0
+	}
+	_full_loop_release_source_json_from_tag() {
+		local tag_name="$1"
+		[[ "$tag_name" == "v2.0.1" ]] || return 1
+		return 1
+	}
+	_full_loop_release_find_tag_for_pr test/repo 89 2>"$malformed_tag_log"
+); then
+	printf 'FAIL malformed matching tag was treated as a safe no-match\n'
+	exit 1
+fi
+if ! grep -q 'phase=release-tag-provenance-reconstruction .*result=invalid' "$malformed_tag_log"; then
+	printf 'FAIL malformed tag diagnostics did not identify provenance reconstruction\n'
+	exit 1
+fi
+printf 'PASS malformed matching tags fail closed with phase diagnostics\n'
+
+large_scan_log="${TEST_ROOT}/large-scan.log"
+large_body_log="${TEST_ROOT}/large-body.log"
+large_reconstruction_log="${TEST_ROOT}/large-reconstruction.log"
+large_timing_log="${TEST_ROOT}/large-timing.log"
+stale_receipt="${TEST_ROOT}/receipts/test_repo-89.status"
+printf '%s\n' "$_FULL_LOOP_PHASE_FAILED" >"$stale_receipt"
+(
+	_full_loop_resolve_repo() {
+		local requested_repo="$1"
+		printf '%s\n' "${requested_repo:-test/repo}"
+		return 0
+	}
+	_full_loop_release_receipt_path() {
+		local repo="$1"
+		local pr_number="$2"
+		printf '%s/receipts/%s-%s.status\n' "$TEST_ROOT" "${repo//\//_}" "$pr_number"
+		return 0
+	}
+	git() {
+		local args="$*"
+		local tag_number=0
+		case "$args" in
+		*" fetch origin --tags --quiet"*) return 0 ;;
+		*"%(refname:short)%00%(contents)%00"*)
+			printf 'raw-index\n' >>"$large_scan_log"
+			for ((tag_number = 500; tag_number >= 1; tag_number--)); do
+				printf 'v9.%s.0\0Release without requested provenance\0\n' "$tag_number"
+			done
+			;;
+		*" for-each-ref "*)
+			for ((tag_number = 500; tag_number >= 1; tag_number--)); do
+				printf 'v9.%s.0\x1f\x1f\x1f\n' "$tag_number"
+			done
+			;;
+		*" log --all --fixed-strings "*) return 0 ;;
+		*" tag --list "*)
+			printf 'unexpected-full-list\n' >>"$large_scan_log"
+			return 1
+			;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_release_tag_body() {
+		local tag_name="$1"
+		printf '%s\n' "$tag_name" >>"$large_body_log"
+		return 1
+	}
+	_full_loop_release_source_json_from_tag() {
+		local tag_name="$1"
+		printf '%s\n' "$tag_name" >>"$large_reconstruction_log"
+		return 1
+	}
+	for lookup_mode in status reconcile status; do
+		lookup_rc=0
+		AIDEVOPS_FULL_LOOP_REPO=test/repo \
+			_full_loop_release_existing_command "$lookup_mode" 89 >/dev/null 2>>"$large_timing_log" || lookup_rc=$?
+		[[ "$lookup_rc" -eq 2 ]] || exit 1
+	done
+)
+if [[ "$(grep -c '^raw-index$' "$large_scan_log")" -ne 3 ]] ||
+	grep -q '^unexpected-full-list$' "$large_scan_log" ||
+	[[ -e "$large_body_log" || -e "$large_reconstruction_log" ]]; then
+	printf 'FAIL repeated large no-match lookups reconstructed historical tag provenance\n'
+	exit 1
+fi
+if [[ "$(grep -c 'phase=release-tag-candidate-index state=finish .*items=0$' "$large_timing_log")" -ne 3 ]]; then
+	printf 'FAIL repeated status/reconcile lookups did not report bounded zero-candidate scans\n'
+	exit 1
+fi
+printf 'PASS repeated status/reconcile no-match lookups use one raw index and zero reconstructions across 500 tags\n'
 
 if (
 	git() {

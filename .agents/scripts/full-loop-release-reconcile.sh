@@ -30,6 +30,45 @@ _FULL_LOOP_RELEASE_TIMESTAMP_REGEX='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2
 # shellcheck source=./version-manager-protected-main.sh
 source "${SCRIPT_DIR}/version-manager-protected-main.sh"
 
+_full_loop_release_epoch_seconds() {
+	date +%s 2>/dev/null
+	return $?
+}
+
+_full_loop_release_timing_start() {
+	local phase="$1"
+	local started_at=""
+
+	started_at=$(_full_loop_release_epoch_seconds || true)
+	[[ "$started_at" =~ ^[0-9]+$ ]] || started_at=0
+	printf 'RELEASE_TIMING phase=%s state=start\n' "$phase" >&2
+	printf '%s\n' "$started_at"
+	return 0
+}
+
+_full_loop_release_timing_finish() {
+	local phase="$1"
+	local started_at="$2"
+	local result="$3"
+	local item_count="${4:-}"
+	local finished_at=""
+	local elapsed_seconds=0
+
+	finished_at=$(_full_loop_release_epoch_seconds || true)
+	if [[ "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ &&
+		"$finished_at" -ge "$started_at" ]]; then
+		elapsed_seconds=$((finished_at - started_at))
+	fi
+	if [[ "$item_count" =~ ^[0-9]+$ ]]; then
+		printf 'RELEASE_TIMING phase=%s state=finish elapsed_seconds=%s result=%s items=%s\n' \
+			"$phase" "$elapsed_seconds" "$result" "$item_count" >&2
+	else
+		printf 'RELEASE_TIMING phase=%s state=finish elapsed_seconds=%s result=%s\n' \
+			"$phase" "$elapsed_seconds" "$result" >&2
+	fi
+	return 0
+}
+
 _full_loop_release_tag_body() {
 	local tag_name="$1"
 	git -C "$REPO_ROOT" for-each-ref --format='%(contents)' "refs/tags/${tag_name}"
@@ -92,6 +131,49 @@ _full_loop_release_verify_candidate_tag_provenance() {
 	return 1
 }
 
+_full_loop_release_raw_candidate_tags_for_pr() {
+	local requested_pr="$1"
+	local legacy_source_lookup="$2"
+	local candidate_tag=""
+	local tag_body=""
+	local trailer=""
+	local source_merge=""
+	local legacy_source_marker=""
+	local matched=0
+	local pipeline_status=()
+
+	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
+	git -C "$REPO_ROOT" for-each-ref --sort=-version:refname \
+		--format='%(refname:short)%00%(contents)%00' 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' |
+		while IFS= read -r -d '' candidate_tag && IFS= read -r -d '' tag_body; do
+			candidate_tag="${candidate_tag#$'\n'}"
+			[[ -n "$candidate_tag" ]] || continue
+			matched=0
+			source_merge=""
+			while IFS= read -r trailer; do
+				case "$trailer" in
+				"Aidevops-Source-PR: ${requested_pr}" | "Aidevops-Aggregated-Source: ${requested_pr}@"*)
+					matched=1
+					;;
+				"Aidevops-Source-Merge: "*)
+					source_merge="${trailer#Aidevops-Source-Merge: }"
+					;;
+				esac
+			done <<<"$tag_body"
+			if [[ "$matched" -eq 0 && -n "$source_merge" ]]; then
+				legacy_source_marker=",${source_merge},"
+				[[ "$legacy_source_lookup" == *"$legacy_source_marker"* ]] && matched=1
+			fi
+			if [[ "$matched" -eq 1 ]]; then
+				printf '%s\n' "$candidate_tag"
+			fi
+			true
+		done
+	pipeline_status=("${PIPESTATUS[@]}")
+	[[ "${pipeline_status[0]}" -eq 0 && "${pipeline_status[1]}" -eq 0 ]] || return 1
+	return 0
+}
+
 _full_loop_release_candidate_tags_for_pr() {
 	local requested_pr="$1"
 	local ref_format='%(refname:short)%1f'
@@ -134,10 +216,11 @@ _full_loop_release_candidate_tags_for_pr() {
 	if [[ "$emitted" -eq 0 ]]; then
 		# Some signed annotated tags do not expose parsed custom trailers through
 		# `for-each-ref %(trailers:...)` even though their raw tag body is valid and
-		# `_full_loop_release_source_json_from_tag` can verify it. Fall back to a full
-		# newest-first semver tag scan so recovery remains correct; the caller still
-		# performs strict body/provenance checks before accepting any tag.
-		git -C "$REPO_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname || return 1
+		# `_full_loop_release_source_json_from_tag` can verify it. Build one raw-body
+		# index and emit only tags with an exact direct, aggregate, or legacy source
+		# marker. The caller still reconstructs and verifies every emitted candidate,
+		# while no-match lookups avoid reconstructing every historical release.
+		_full_loop_release_raw_candidate_tags_for_pr "$requested_pr" "$legacy_source_lookup" || return 1
 	fi
 	return 0
 }
@@ -152,13 +235,40 @@ _full_loop_release_find_tag_for_pr() {
 	local source_json=""
 	local requested_present="false"
 	local textually_matched=0
+	local candidate_count=0
+	local candidate_number=0
+	local discovery_started=""
+	local phase_started=""
 
 	_FULL_LOOP_RELEASE_FOUND_TAG=""
-	git -C "$REPO_ROOT" fetch origin --tags --quiet || return 1
-	candidate_tags=$(_full_loop_release_candidate_tags_for_pr "$requested_pr") || return 1
+	discovery_started=$(_full_loop_release_timing_start release-tag-discovery)
+	phase_started=$(_full_loop_release_timing_start release-tag-fetch)
+	if ! git -C "$REPO_ROOT" fetch origin --tags --quiet; then
+		_full_loop_release_timing_finish release-tag-fetch "$phase_started" failed
+		_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-tag-fetch "$phase_started" ok
+	phase_started=$(_full_loop_release_timing_start release-tag-candidate-index)
+	if ! candidate_tags=$(_full_loop_release_candidate_tags_for_pr "$requested_pr"); then
+		_full_loop_release_timing_finish release-tag-candidate-index "$phase_started" failed
+		_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed
+		return 1
+	fi
+	while IFS= read -r candidate_tag; do
+		[[ -n "$candidate_tag" ]] && candidate_count=$((candidate_count + 1))
+	done <<<"$candidate_tags"
+	_full_loop_release_timing_finish release-tag-candidate-index "$phase_started" ok "$candidate_count"
 	while IFS= read -r candidate_tag; do
 		[[ -n "$candidate_tag" ]] || continue
-		tag_body=$(_full_loop_release_tag_body "$candidate_tag") || return 1
+		candidate_number=$((candidate_number + 1))
+		phase_started=$(_full_loop_release_timing_start release-tag-candidate-body)
+		if ! tag_body=$(_full_loop_release_tag_body "$candidate_tag"); then
+			_full_loop_release_timing_finish release-tag-candidate-body "$phase_started" failed "$candidate_number"
+			_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed "$candidate_count"
+			return 1
+		fi
+		_full_loop_release_timing_finish release-tag-candidate-body "$phase_started" ok "$candidate_number"
 		textually_matched=0
 		while IFS= read -r trailer; do
 			case "$trailer" in
@@ -168,20 +278,38 @@ _full_loop_release_find_tag_for_pr() {
 				;;
 			esac
 		done <<<"$tag_body"
+		phase_started=$(_full_loop_release_timing_start release-tag-provenance-reconstruction)
 		if ! source_json=$(_full_loop_release_source_json_from_tag "$candidate_tag"); then
-			[[ "$textually_matched" -eq 0 ]] || return 1
+			_full_loop_release_timing_finish release-tag-provenance-reconstruction "$phase_started" invalid "$candidate_number"
+			if [[ "$textually_matched" -ne 0 ]]; then
+				_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed "$candidate_count"
+				return 1
+			fi
 			continue
 		fi
+		_full_loop_release_timing_finish release-tag-provenance-reconstruction "$phase_started" ok "$candidate_number"
 		requested_present=$(jq -r --argjson requested "$requested_pr" \
-			'([.source_pr] + [.aggregated_sources[].pr]) | any(. == $requested)' <<<"$source_json") || return 1
+			'([.source_pr] + [.aggregated_sources[].pr]) | any(. == $requested)' <<<"$source_json") || {
+			_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed "$candidate_count"
+			return 1
+		}
 		if [[ "$textually_matched" -eq 1 && "$requested_present" != "$_FULL_LOOP_RELEASE_TRUE" ]]; then
+			_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed "$candidate_count"
 			return 1
 		fi
 		[[ "$requested_present" == "$_FULL_LOOP_RELEASE_TRUE" ]] || continue
-		_full_loop_release_verify_candidate_tag_provenance "$repo" "$candidate_tag" || return 1
+		phase_started=$(_full_loop_release_timing_start release-tag-signature-verification)
+		if ! _full_loop_release_verify_candidate_tag_provenance "$repo" "$candidate_tag"; then
+			_full_loop_release_timing_finish release-tag-signature-verification "$phase_started" failed "$candidate_number"
+			_full_loop_release_timing_finish release-tag-discovery "$discovery_started" failed "$candidate_count"
+			return 1
+		fi
+		_full_loop_release_timing_finish release-tag-signature-verification "$phase_started" ok "$candidate_number"
 		_FULL_LOOP_RELEASE_FOUND_TAG="$candidate_tag"
+		_full_loop_release_timing_finish release-tag-discovery "$discovery_started" found "$candidate_count"
 		return 0
 	done <<<"$candidate_tags"
+	_full_loop_release_timing_finish release-tag-discovery "$discovery_started" not-found "$candidate_count"
 	return 2
 }
 

@@ -8,7 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
 mkdir -p "$ROOT/bin" "$ROOT/repo/linked-branch" "$ROOT/repo/.agents/scripts" \
-	"$ROOT/repo/.git" "$ROOT/worktrees" "$ROOT/cleanup"
+	"$ROOT/repo/.git" "$ROOT/worktrees" "$ROOT/cleanup" "$ROOT/state"
+export AIDEVOPS_STATE_DIR="$ROOT/state"
+export LANE_HEAD_FILE="$ROOT/lane-head"
+export LANE_STATE_FILE="$ROOT/lane-state.json"
 : >"$ROOT/repo/aidevops.sh"
 : >"$ROOT/repo/.agents/scripts/version-manager.sh"
 
@@ -41,6 +44,56 @@ chmod +x "$ROOT/bin/git"
 
 cat >"$ROOT/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+	endpoint=""
+	for api_arg in "$@"; do
+		case "$api_arg" in repos/*) endpoint="$api_arg" ;; esac
+	done
+	case "$endpoint" in
+	"repos/marcusquinn/aidevops/git/ref/heads/aidevops/release-lane")
+		if [[ -f "${LANE_HEAD_FILE:?}" ]]; then
+			IFS= read -r lane_head <"$LANE_HEAD_FILE"
+			printf '%s\n' "$lane_head"
+			exit 0
+		fi
+		[[ "$*" == *"--include"* ]] && printf 'HTTP/2 404\n'
+		exit 1
+		;;
+	"repos/marcusquinn/aidevops/git/ref/heads/main")
+		printf '%040d\n' 0
+		exit 0
+		;;
+	"repos/marcusquinn/aidevops/git/commits/"*)
+		printf '%040d\n' 1
+		exit 0
+		;;
+	"repos/marcusquinn/aidevops/git/blobs")
+		payload=$(</dev/stdin)
+		jq -r '.content' <<<"$payload" >"${LANE_STATE_FILE:?}"
+		printf '%040d\n' 2
+		exit 0
+		;;
+	"repos/marcusquinn/aidevops/git/trees")
+		printf '%040d\n' 3
+		exit 0
+		;;
+	"repos/marcusquinn/aidevops/git/commits")
+		printf '%040d\n' 4
+		exit 0
+		;;
+	"repos/marcusquinn/aidevops/git/refs" | "repos/marcusquinn/aidevops/git/refs/heads/aidevops/release-lane")
+		printf '%040d\n' 4 >"${LANE_HEAD_FILE:?}"
+		exit 0
+		;;
+	"repos/marcusquinn/aidevops/contents/.aidevops-release-lane.json?ref="*)
+		[[ -f "${LANE_STATE_FILE:?}" ]] || exit 1
+		IFS= read -r lane_state <"$LANE_STATE_FILE"
+		printf '%s\n' "$lane_state"
+		exit 0
+		;;
+	esac
+	exit 1
+fi
 if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
 	printf 'repo-view-cwd=%s\n' "$PWD" >>"${GH_CALL_LOG:?}"
 	case "$PWD" in
@@ -192,6 +245,7 @@ if [[ "$pending_rc" -ne 8 ||
 	exit 1
 fi
 printf 'PASS durable queued release returns pending without false terminal evidence\n'
+rm -f "$LANE_HEAD_FILE" "$LANE_STATE_FILE"
 
 if (
 	cd "$ROOT/repo/linked-branch"
@@ -214,6 +268,7 @@ grep -qx 'failed' "$ROOT/receipts/marcusquinn_aidevops-43.status"
 jq -e '.status == "failed" and .requested_pr == 43 and .requested_merge == .current_head' \
 	"$ROOT/receipts/marcusquinn_aidevops-43.failure.json" >/dev/null
 printf 'PASS failed release persists actionable provenance without publication evidence\n'
+rm -f "$LANE_HEAD_FILE" "$LANE_STATE_FILE"
 
 if (
 	cd "$ROOT/repo/linked-branch"
@@ -232,6 +287,7 @@ jq -e '.requested_pr == 47 and .requested_merge == "0000000000000000000000000000
 	and .current_head == "0000000000000000000000000000000000000000" and .release_source_pr == null' \
 	"$ROOT/receipts/marcusquinn_aidevops-47.failure.json" >/dev/null
 printf 'PASS intervening main commit records both SHAs without publication\n'
+rm -f "$LANE_HEAD_FILE" "$LANE_STATE_FILE"
 
 printf '%s\n' not-requested >"$ROOT/receipts/marcusquinn_aidevops-44.status"
 cp "$ROOT/vm.log" "$ROOT/vm-before-skipped-release.log"

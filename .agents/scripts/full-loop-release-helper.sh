@@ -192,7 +192,9 @@ _full_loop_release_guard_existing() {
 	local receipt_path=""
 	local release_status=""
 	local existing_tag_rc=0
+	local guard_started=""
 
+	guard_started=$(_full_loop_release_timing_start release-existing-guard)
 	receipt_path=$(_full_loop_release_receipt_path "$repo" "$source_pr") || return 1
 	if [[ -f "$receipt_path" ]]; then
 		IFS= read -r release_status <"$receipt_path" || return 1
@@ -201,12 +203,14 @@ _full_loop_release_guard_existing() {
 	"$_FULL_LOOP_RELEASE_PUBLISHED")
 		full_loop_update_cleanup_release_status "$repo" "$source_pr" "$release_status" || return 1
 		printf 'release:published already recorded for PR #%s; skipping duplicate publication\n' "$source_pr"
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" receipt-published
 		return 0
 		;;
 	"$_FULL_LOOP_RELEASE_SUPERSEDED")
 		_full_loop_verify_superseded_release_receipt "$repo" "$source_pr" || return 1
 		full_loop_update_cleanup_release_status "$repo" "$source_pr" "$release_status" || return 1
 		printf 'release:superseded already recorded for PR #%s; skipping duplicate publication\n' "$source_pr"
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" receipt-superseded
 		return 0
 		;;
 	"$_FULL_LOOP_RELEASE_NOT_REQUESTED")
@@ -216,6 +220,7 @@ _full_loop_release_guard_existing() {
 	"" | "$_FULL_LOOP_PHASE_FAILED") ;;
 	*)
 		printf 'Cannot replace unknown release:%s evidence for PR #%s\n' "$release_status" "$source_pr" >&2
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" failed
 		return 1
 		;;
 	esac
@@ -224,12 +229,22 @@ _full_loop_release_guard_existing() {
 	0)
 		_full_loop_release_validate_existing_tag_authorization "$repo" "$source_pr" "$expected_sources" || return 1
 		printf 'Existing signed release tag found for PR #%s; reconciling without another version bump\n' "$source_pr"
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" existing-tag
 		_full_loop_release_existing_command reconcile "$source_pr"
 		return $?
 		;;
-	1) return 1 ;;
-	2) return 2 ;;
-	*) return 1 ;;
+	1)
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" failed
+		return 1
+		;;
+	2)
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" no-tag
+		return 2
+		;;
+	*)
+		_full_loop_release_timing_finish release-existing-guard "$guard_started" failed
+		return 1
+		;;
 	esac
 }
 
@@ -251,6 +266,56 @@ EOF
 	return 0
 }
 
+_full_loop_release_prepare_new() {
+	local repo="$1"
+	local source_pr="$2"
+	local release_path="$3"
+	local resolver="$4"
+	local expected_sources="$5"
+	local phase_started=""
+
+	phase_started=$(_full_loop_release_timing_start release-run-fetch-main)
+	if ! git -C "$REPO_ROOT" fetch origin main >/dev/null; then
+		_full_loop_release_timing_finish release-run-fetch-main "$phase_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-fetch-main "$phase_started" ok
+	phase_started=$(_full_loop_release_timing_start release-run-worktree-add)
+	if ! git -C "$REPO_ROOT" worktree add --detach "$release_path" origin/main >/dev/null; then
+		_full_loop_release_timing_finish release-run-worktree-add "$phase_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-worktree-add "$phase_started" ok
+	_FULL_LOOP_RELEASE_PATH="$release_path"
+	trap 'cleanup_release_worktree' EXIT
+
+	phase_started=$(_full_loop_release_timing_start release-run-capture-authorization)
+	if ! _full_loop_capture_release_authorization "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources"; then
+		_full_loop_release_timing_finish release-run-capture-authorization "$phase_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-capture-authorization "$phase_started" ok
+	phase_started=$(_full_loop_release_timing_start release-run-resolve-source)
+	if ! _full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"; then
+		_full_loop_release_timing_finish release-run-resolve-source "$phase_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-resolve-source "$phase_started" ok
+	phase_started=$(_full_loop_release_timing_start release-run-validate-candidates)
+	if ! _full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON"; then
+		_full_loop_release_timing_finish release-run-validate-candidates "$phase_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-validate-candidates "$phase_started" ok
+	phase_started=$(_full_loop_release_timing_start release-run-lane-preparing)
+	if ! release_lane_update "$repo" "$source_pr" "preparing"; then
+		_full_loop_release_timing_finish release-run-lane-preparing "$phase_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-lane-preparing "$phase_started" ok
+	return 0
+}
+
 _full_loop_release_run_new() {
 	local repo="$1"
 	local source_pr="$2"
@@ -262,21 +327,26 @@ _full_loop_release_run_new() {
 	local resolver=""
 	local version_manager=""
 	local release_rc=0
-	[[ -d "$worktree_base" ]] || return 1
-	git -C "$REPO_ROOT" fetch origin main >/dev/null || return 1
-	git -C "$REPO_ROOT" worktree add --detach "$release_path" origin/main >/dev/null || return 1
-	_FULL_LOOP_RELEASE_PATH="$release_path"
-	trap 'cleanup_release_worktree' EXIT
-
+	local run_started=""
+	local phase_started=""
+	run_started=$(_full_loop_release_timing_start release-run-new)
+	if [[ ! -d "$worktree_base" ]]; then
+		_full_loop_release_timing_finish release-run-new "$run_started" failed
+		return 1
+	fi
 	resolver="${AIDEVOPS_FULL_LOOP_SOURCE_RESOLVER:-$release_path/.agents/scripts/release-provenance-helper.sh}"
-	_full_loop_capture_release_authorization "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources" || return 1
-	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$release_path" "$resolver" "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES" || return 1
-	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
-	release_lane_update "$repo" "$source_pr" "preparing" || return 1
+	if ! _full_loop_release_prepare_new "$repo" "$source_pr" "$release_path" "$resolver" "$expected_sources"; then
+		_full_loop_release_timing_finish release-run-new "$run_started" failed
+		return 1
+	fi
 
 	version_manager="${AIDEVOPS_FULL_LOOP_VERSION_MANAGER:-$release_path/.agents/scripts/version-manager.sh}"
 	[[ "$version_manager" = /* ]] || version_manager="$PWD/$version_manager"
-	[[ -f "$version_manager" ]] || return 1
+	if [[ ! -f "$version_manager" ]]; then
+		_full_loop_release_timing_finish release-run-new "$run_started" failed
+		return 1
+	fi
+	phase_started=$(_full_loop_release_timing_start release-run-version-manager)
 	(
 		trap - EXIT
 		cd "$release_path" || exit 1
@@ -287,26 +357,42 @@ _full_loop_release_run_new() {
 			--expected-sources "$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
 	) || release_rc=$?
 	if [[ "$release_rc" -eq 8 ]]; then
+		_full_loop_release_timing_finish release-run-version-manager "$phase_started" queued
 		local queued_tag=""
 		[[ -r "$release_path/VERSION" ]] && queued_tag="v$(tr -d '[:space:]' <"$release_path/VERSION")"
 		release_lane_update "$repo" "$source_pr" "remote-publication" "$queued_tag" || return 1
 		printf 'release:queued for PR #%s; publication continues remotely\n' "$source_pr"
 		printf 'Resume with: aidevops release reconcile %s\n' "$source_pr"
+		_full_loop_release_timing_finish release-run-new "$run_started" queued
 		return 8
 	fi
 	if [[ "$release_rc" -ne 0 ]]; then
+		_full_loop_release_timing_finish release-run-version-manager "$phase_started" failed
 		release_lane_update "$repo" "$source_pr" "reconcile-required" || true
 		_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" \
 			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$_FULL_LOOP_RESOLVED_SOURCE_PR" || true
 		printf 'Publication may still be durable or queued. Reconcile without another version bump:\n' >&2
 		printf '  aidevops release status %s\n' "$source_pr" >&2
 		printf '  aidevops release reconcile %s\n' "$source_pr" >&2
+		_full_loop_release_timing_finish release-run-new "$run_started" failed
 		return 1
 	fi
+	_full_loop_release_timing_finish release-run-version-manager "$phase_started" ok
+	phase_started=$(_full_loop_release_timing_start release-run-persist-success)
 	_full_loop_persist_release_success "$repo" "$release_path" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" \
-		"$_FULL_LOOP_RESOLVED_SOURCE_PR" "$_FULL_LOOP_RESOLVED_SOURCE_MERGE" || return 1
-	release_lane_finalize "$repo" "$source_pr" "published"
-	return $?
+		"$_FULL_LOOP_RESOLVED_SOURCE_PR" "$_FULL_LOOP_RESOLVED_SOURCE_MERGE" || {
+		_full_loop_release_timing_finish release-run-persist-success "$phase_started" failed
+		_full_loop_release_timing_finish release-run-new "$run_started" failed
+		return 1
+	}
+	if ! release_lane_finalize "$repo" "$source_pr" "published"; then
+		_full_loop_release_timing_finish release-run-persist-success "$phase_started" failed
+		_full_loop_release_timing_finish release-run-new "$run_started" failed
+		return 1
+	fi
+	_full_loop_release_timing_finish release-run-persist-success "$phase_started" ok
+	_full_loop_release_timing_finish release-run-new "$run_started" published
+	return 0
 }
 
 _full_loop_release_existing_with_lane() {
