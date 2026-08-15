@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from performance_contract import canonical_json, timestamp_epoch
+from _performance_store_types import SourceStateContext
 
 
 def _at_or_after(value: str, previous: object) -> bool:
@@ -31,8 +32,13 @@ def _preserved_fields(existing: Any) -> tuple[str, str, str, str, object]:
     )
 
 
-def update_source_state(store: Any, adapter: str, header: dict[str, Any], evidence_ref: str, recorded_at: str, partial: bool) -> bool:
+def update_source_state(store: Any, context: SourceStateContext) -> bool:
     """Advance only monotonic source observations and successful checkpoints."""
+    adapter = context.adapter
+    header = context.header
+    evidence_ref = context.evidence_ref
+    recorded_at = context.recorded_at
+    partial = context.partial
     source = header["source"]
     account_ref = header["account_ref"]
     existing = store.connection.execute(
