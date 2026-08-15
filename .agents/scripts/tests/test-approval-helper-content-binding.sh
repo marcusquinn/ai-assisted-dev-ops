@@ -421,8 +421,9 @@ test_post_approval_linked_references() {
 }
 
 write_locked_issue_fixture() {
+	local include_tier="${1:-true}"
 	write_baseline_fixtures
-	jq '.locked = true | .active_lock_reason = "resolved" | .labels = [{id:6,node_id:"L_6",name:"external-contributor"},{id:7,node_id:"L_7",name:"origin:interactive"},{id:8,node_id:"L_8",name:"review:approve"},{id:9,node_id:"L_9",name:"tier:standard"}] | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	jq --arg include_tier "$include_tier" '.locked = true | .active_lock_reason = "resolved" | .labels = ([{id:6,node_id:"L_6",name:"external-contributor"},{id:7,node_id:"L_7",name:"origin:interactive"},{id:8,node_id:"L_8",name:"review:approve"}] + if $include_tier == "true" then [{id:9,node_id:"L_9",name:"tier:standard"}] else [] end) | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	jq '.[0] += [{id:418,node_id:"EV_418",event:"locked",created_at:"2026-01-01T00:04:00Z",actor:{id:1,node_id:"U_1",login:"maintainer",type:"User"}}]' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
 	append_signed_comment issue 41 "2026-01-01T00:05:00Z" 4199
 	return 0
@@ -435,6 +436,8 @@ append_issue_timeline_event() {
 }
 
 test_locked_issue_continuity() {
+	local event_json=""
+	local tier=""
 	# Production regression from the first #30153 signature: approval-helper
 	# performed the trusted handoff, then the narrowly scoped repository workflow
 	# filled the one missing default status label under github-actions[bot].
@@ -478,6 +481,24 @@ test_locked_issue_continuity() {
 	append_issue_timeline_event '{"id":420,"node_id":"EV_420","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
 	append_issue_timeline_event '{"id":421,"node_id":"EV_421","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
 	assert_verify "trusted allowlisted mutations preserve continuously locked issue approval" issue 41 VERIFIED 0
+
+	for tier in simple standard thinking; do
+		write_locked_issue_fixture false
+		jq --arg tier "tier:${tier}" '.labels += [{id:10,node_id:"L_10",name:$tier}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+		event_json=$(jq -nc --arg tier "tier:${tier}" '{id:4211,node_id:"EV_4211",event:"labeled",created_at:"2026-01-01T00:06:00Z",actor:{id:1,login:"maintainer",type:"User"},label:{name:$tier}}')
+		append_issue_timeline_event "$event_json"
+		assert_verify "trusted ${tier} tier backfill preserves continuously locked issue approval" issue 41 VERIFIED 0
+	done
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4212,"node_id":"EV_4212","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":2,"login":"contributor","type":"User"},"label":{"name":"tier:standard"}}'
+	assert_verify "untrusted tier backfill remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels |= map(select(.name != "tier:standard"))' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4213,"node_id":"EV_4213","event":"unlabeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	assert_verify "trusted tier removal remains stale" issue 41 STALE_APPROVAL 4
 
 	write_locked_issue_fixture
 	jq '.labels = [{id:8,node_id:"L_8",name:"security"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
