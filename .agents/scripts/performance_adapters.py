@@ -22,7 +22,6 @@ from performance_legacy import normalize_phase1_results
 
 MAX_INPUT_BYTES = _MAX_INPUT_BYTES
 
-
 def load_adapter(
     adapter: str,
     path: Path,
