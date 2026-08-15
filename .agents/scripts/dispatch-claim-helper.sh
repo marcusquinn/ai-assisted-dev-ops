@@ -146,6 +146,10 @@ if [[ -r "${DISPATCH_CLAIM_HELPER_DIR}/shared-repo-state-guard.sh" ]]; then
 	# shellcheck source=shared-repo-state-guard.sh
 	source "${DISPATCH_CLAIM_HELPER_DIR}/shared-repo-state-guard.sh"
 fi
+if [[ -r "${DISPATCH_CLAIM_HELPER_DIR}/interactive-claim-fence.sh" ]]; then
+	# shellcheck source=interactive-claim-fence.sh
+	source "${DISPATCH_CLAIM_HELPER_DIR}/interactive-claim-fence.sh"
+fi
 if [[ -r "${DISPATCH_CLAIM_HELPER_DIR}/dispatch-override-resolve.sh" ]]; then
 	# shellcheck disable=SC1091
 	source "${DISPATCH_CLAIM_HELPER_DIR}/dispatch-override-resolve.sh"
@@ -1095,6 +1099,12 @@ _guard_no_active_assignment_read_only() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local runner="$3"
+	if declare -F _interactive_claim_fence_blocks_dispatch >/dev/null 2>&1 &&
+		_interactive_claim_fence_blocks_dispatch "$issue_number" "$repo_slug"; then
+		printf 'CLAIM_BLOCKED: live_interactive_owner issue=#%s repo=%s\n' \
+			"$issue_number" "$repo_slug"
+		return 1
+	fi
 	local dedup_helper="${DISPATCH_ASSIGNMENT_GUARD_HELPER:-${DISPATCH_CLAIM_HELPER_DIR}/dispatch-dedup-helper.sh}"
 	if [[ ! -x "$dedup_helper" ]]; then
 		printf 'CLAIM_BLOCKED: assignment_guard_unavailable issue=#%s repo=%s helper=%s\n' \

@@ -218,6 +218,10 @@ _pulse_merge_ready_pr_json_fields() {
 _PULSE_MERGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_PULSE_MERGE_DIR}/shared-claim-lifecycle.sh"
 
+# Final duplicate-implementation fence for live interactive issue owners.
+# shellcheck source=interactive-claim-fence.sh
+source "${_PULSE_MERGE_DIR}/interactive-claim-fence.sh"
+
 # Source shared phase-filing helpers (t2740). auto_file_next_phase is called
 # from _handle_post_merge_actions to auto-file the next phase child issue
 # when a phase child PR merges for a parent-task issue.
@@ -394,6 +398,11 @@ _check_pr_merge_gates() {
 	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
 	local _ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
 	_PULSE_REVIEW_GATE_EVIDENCE=""
+	if [[ -n "$linked_issue" ]] &&
+		_interactive_claim_fence_blocks_merge "$linked_issue" "$repo_slug" "$expected_head_sha"; then
+		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — linked issue #${linked_issue} has a live interactive owner with different unmerged work (GH#30274)" >>"$LOGFILE"
+		return 1
+	fi
 
 	# Skip CHANGES_REQUESTED — needs a fix worker, not a merge.
 	#
