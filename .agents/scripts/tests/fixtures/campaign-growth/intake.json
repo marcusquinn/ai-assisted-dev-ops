@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "brand": {"name": "Northstar", "reference": "DESIGN.md"},
+  "product": {"name": "Northstar Analytics", "description": "Privacy-safe growth analytics"},
+  "offer": {"summary": "A 14-day evaluation", "terms": "New customers only"},
+  "objectives": [{"metric": "Qualified leads", "target": "25"}],
+  "audiences": [{"segment": "Operations leaders", "buying_roles": ["Champion"], "pains": ["Unknown attribution"], "jobs": ["Measure campaigns"], "outcomes": ["Reliable decisions"]}],
+  "positioning": {"statement": "Evidence before automation", "differentiators": ["Privacy safe"]},
+  "proof": [{"claim": "Evidence-backed reports", "evidence_reference": "research/northstar-study.json", "approval_status": "approved"}],
+  "objections": ["Migration effort"],
+  "exclusions": ["Unsupported regions"],
+  "channels": ["twitter", "reddit"],
+  "dates": {"start": "2026-08-01", "end": "2026-08-31"},
+  "kpis": [{"metric": "Reach", "target": "1000"}],
+  "disclosures": ["Synthetic fixture"],
+  "sensitivity": "internal",
+  "approvals": {"owner": "Marketing", "claims": "approved", "creative": "approved"}
+}

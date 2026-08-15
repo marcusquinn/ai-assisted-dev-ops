@@ -139,6 +139,11 @@ job first: `campaign-helper.sh production create <id> --channel <channel>`. The
 manifest remains `brief_ready` until a production owner records verified output;
 fan-out prompt preparation remains `prompts_ready`, never generated or published.
 
+For an end-to-end cross-owner campaign lifecycle, use
+`aidevops campaign grow plan --intake <file>` first, then attach the content
+owner's reviewed evidence to the growth checkpoint. The campaign growth workflow
+coordinates state and recovery; it does not bypass creative or publishing approval.
+
 ```bash
 content-fanout-helper.sh template default   # Brief template
 content-fanout-helper.sh plan ~/brief.md    # Generate fan-out plan

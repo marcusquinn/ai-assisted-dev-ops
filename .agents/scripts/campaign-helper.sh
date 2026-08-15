@@ -1675,6 +1675,10 @@ main() {
 	launch) cmd_launch "$@" ;;
 	promote) cmd_promote "$@" ;;
 	feedback) cmd_feedback "$@" ;;
+	grow | growth)
+		[[ -f "${SCRIPT_DIR}/campaign-growth-helper.py" ]] || { print_error "Campaign growth helper not found: ${SCRIPT_DIR}/campaign-growth-helper.py"; return 1; }
+		python3 "${SCRIPT_DIR}/campaign-growth-helper.py" "$@"
+		;;
 	production)
 		[[ -f "$CAMPAIGN_PRODUCTION_HELPER" ]] || { print_error "Campaign production helper not found: ${CAMPAIGN_PRODUCTION_HELPER}"; return 1; }
 		python3 "$CAMPAIGN_PRODUCTION_HELPER" "$@"

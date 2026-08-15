@@ -1068,7 +1068,7 @@ _help_commands() {
 	echo "  vault <cmd>        Local encrypted Vault broker (init/unlock/lock/status/read/update)"
 	echo "  config <cmd>       Feature toggles (list/get/set/reset/path/help)"
 	echo "  knowledge <cmd>    Knowledge plane management (init/status/provision)"
-	echo "  campaign <cmd>     Campaign plane: init/provision/ls (P1) + asset (P4) + new/list/status/archive (P2) + draft (P5) + launch/promote (P6)"
+	echo "  campaign <cmd>     Campaign plane: init/provision/ls (P1) + asset (P4) + new/list/status/archive (P2) + draft (P5) + launch/promote (P6) + grow (orchestration)"
 	echo "  stats <cmd>        LLM usage analytics (summary/models/projects/costs/trend)"
 	echo "  tabby <cmd>        Manage Tabby terminal profiles (sync/status/zshrc/help)"
 	echo "  buzz <cmd>         Manage Buzz Desktop OpenCode ACP compatibility"
@@ -1204,6 +1204,8 @@ _help_detailed_sections() {
 	echo "  aidevops campaign launch <id>                  # Move active/<id> → launched/, create templates (P6)"
 	echo "  aidevops campaign promote <id> [--results|--learnings] # Cross-plane promotion (P6)"
 	echo "  aidevops campaign feedback [<id>]              # Surface _feedback/ insights for research (P6)"
+	echo "  aidevops campaign grow plan --intake <file>    # Non-mutating growth orchestration plan"
+	echo "  aidevops campaign grow <start|status|resume> <id> # Evidence-backed growth checkpoint"
 	echo ""
 	echo "Performance Plane:"
 	echo "  aidevops performance init                     # Provision _performance/marketing/"
@@ -1967,6 +1969,17 @@ main() {
 		asset | assets)
 			shift
 			_dispatch_helper "campaign-asset-helper.sh" "campaign-asset-helper.sh" "$@"
+			;;
+		grow | growth)
+			shift
+			local _growth_helper="${AIDEVOPS_CLI_MODULES_DIR%/aidevops-cli}/campaign-growth-helper.py"
+			[[ ! -f "$_growth_helper" ]] && _growth_helper="$AGENTS_DIR/scripts/campaign-growth-helper.py"
+			if [[ -f "$_growth_helper" ]]; then
+				python3 "$_growth_helper" "$@"
+			else
+				print_error "campaign-growth-helper.py not found. Run: aidevops update"
+				return 1
+			fi
 			;;
 		*)
 			_dispatch_helper "$_camp_helper" "$_camp_helper" "$@"

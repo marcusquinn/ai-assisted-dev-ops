@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "stages": {
+    "research": {"status": "succeeded", "evidence": ["research/dossier.json"]},
+    "production": {"status": "succeeded", "evidence": ["creative/x-v1.md", "creative/reddit-v1.md", "media/metadata.json"]},
+    "review": {"status": "succeeded", "evidence": ["review/approved.json"]},
+    "distribution": {"status": "succeeded", "approval": "approved", "evidence": ["distribution/x-receipt.json", "distribution/reddit-receipt.json"], "operation_ids": ["op-x-001", "op-reddit-001"]},
+    "performance": {"status": "succeeded", "evidence": ["metrics/funnel.json"]},
+    "report": {"status": "succeeded", "evidence": ["reports/recommendation.json"]}
+  }
+}
