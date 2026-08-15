@@ -8,9 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import secrets
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +30,11 @@ from performance_store_schema import (
     resolve_paths,
 )
 from _performance_store_ingest import ingest as _ingest
+from _performance_store_leases import (
+    acquire_lease as _acquire_lease,
+    recover_expired_leases as _recover_expired_leases,
+    release_lease as _release_lease,
+)
 from _performance_store_evidence import (
     ensure_private_directory as _ensure_private_directory,
     regular_file_digest as _regular_file_digest,
@@ -148,35 +151,10 @@ class MarketingPerformanceStore:
         return f"mkt-evidence-v1:sha256:{scoped_digest}", content_digest
 
     def _acquire_lease(self, source: str, account_ref: str) -> str:
-        token = secrets.token_hex(24)
-        now_epoch = int(time.time())
-        lease_seconds = int(self.config["lease_seconds"])
-        self.connection.execute("BEGIN IMMEDIATE")
-        try:
-            existing = self.connection.execute(
-                "SELECT expires_at FROM leases WHERE source=? AND account_ref=?",
-                (source, account_ref),
-            ).fetchone()
-            if existing is not None and int(existing["expires_at"]) > now_epoch:
-                raise PerformanceStoreError("exact source/account ingest is already leased")
-            self.connection.execute(
-                "INSERT INTO leases(source,account_ref,token,acquired_at,expires_at) "
-                "VALUES(?,?,?,?,?) ON CONFLICT(source,account_ref) DO UPDATE SET "
-                "token=excluded.token,acquired_at=excluded.acquired_at,expires_at=excluded.expires_at",
-                (source, account_ref, token, now_epoch, now_epoch + lease_seconds),
-            )
-            self.connection.commit()
-        except Exception:
-            self.connection.rollback()
-            raise
-        return token
+        return _acquire_lease(self, source, account_ref)
 
     def _release_lease(self, source: str, account_ref: str, token: str) -> None:
-        self.connection.execute(
-            "DELETE FROM leases WHERE source=? AND account_ref=? AND token=?",
-            (source, account_ref, token),
-        )
-        self.connection.commit()
+        _release_lease(self, source, account_ref, token)
 
     @staticmethod
     def _ensure_private_directory(path: Path) -> None:
@@ -552,9 +530,4 @@ class MarketingPerformanceStore:
 
     def recover_expired_leases(self) -> int:
         """Remove only expired mutable lease projections."""
-        cursor = self.connection.execute(
-            "DELETE FROM leases WHERE expires_at <= ?",
-            (int(time.time()),),
-        )
-        self.connection.commit()
-        return int(cursor.rowcount)
+        return _recover_expired_leases(self)
