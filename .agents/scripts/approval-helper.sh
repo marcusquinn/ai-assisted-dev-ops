@@ -1066,9 +1066,12 @@ _approval_verify_locked_issue_continuity() {
 	candidate_digest=$(approval_snapshot_v2_digest "$candidate") || return 2
 	[[ "$candidate_digest" == "$signed_digest" ]] || return 1
 	# #aidevops:trust-boundary — deterministic tier backfill may only select a
-	# canonical workload tier; timeline authorization below still binds its actor.
+	# canonical workload tier. Core status labels are workflow metadata rather
+	# than development scope, so continuously locked issues may traverse the full
+	# set_issue_status state machine; timeline authorization below still binds
+	# every mutation to a write-authorized actor or the one narrow bot default.
 	if ! jq -e --argjson signed "$signed_lifecycle" '
-		def allowed_label: . == "needs-maintainer-review" or . == "auto-dispatch" or . == "status:available" or . == "status:queued" or . == "status:in-review" or . == "status:in-progress" or . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
+		def allowed_label: . == "needs-maintainer-review" or . == "auto-dispatch" or . == "status:available" or . == "status:queued" or . == "status:claimed" or . == "status:in-progress" or . == "status:in-review" or . == "status:done" or . == "status:blocked" or . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
 		def tier_label: . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
 		.lifecycle as $current |
 		($current.labels | map(.name)) as $current_labels |
@@ -1103,7 +1106,7 @@ _approval_verify_locked_issue_continuity() {
 	while IFS=$'\t' read -r event actor subject actor_id actor_type; do
 		[[ -n "$event" ]] || continue
 		case "$event:$subject" in
-		assigned:* | unassigned:* | labeled:needs-maintainer-review | unlabeled:needs-maintainer-review | labeled:auto-dispatch | unlabeled:auto-dispatch | labeled:status:available | unlabeled:status:available | labeled:status:queued | unlabeled:status:queued | labeled:status:in-review | unlabeled:status:in-review | labeled:status:in-progress | unlabeled:status:in-progress | labeled:tier:simple | labeled:tier:standard | labeled:tier:thinking) ;;
+		assigned:* | unassigned:* | labeled:needs-maintainer-review | unlabeled:needs-maintainer-review | labeled:auto-dispatch | unlabeled:auto-dispatch | labeled:status:available | unlabeled:status:available | labeled:status:queued | unlabeled:status:queued | labeled:status:claimed | unlabeled:status:claimed | labeled:status:in-progress | unlabeled:status:in-progress | labeled:status:in-review | unlabeled:status:in-review | labeled:status:done | unlabeled:status:done | labeled:status:blocked | unlabeled:status:blocked | labeled:tier:simple | labeled:tier:standard | labeled:tier:thinking) ;;
 		*) return 1 ;;
 		esac
 		# #aidevops:trust-boundary — GitHub's official Actions bot has no

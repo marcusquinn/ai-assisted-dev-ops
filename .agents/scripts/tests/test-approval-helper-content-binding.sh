@@ -427,8 +427,9 @@ test_post_approval_linked_references() {
 
 write_locked_issue_fixture() {
 	local include_tier="${1:-true}"
+	local initial_status="${2:-}"
 	write_baseline_fixtures
-	jq --arg include_tier "$include_tier" '.locked = true | .active_lock_reason = "resolved" | .labels = ([{id:6,node_id:"L_6",name:"external-contributor"},{id:7,node_id:"L_7",name:"origin:interactive"},{id:8,node_id:"L_8",name:"review:approve"}] + if $include_tier == "true" then [{id:9,node_id:"L_9",name:"tier:standard"}] else [] end) | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	jq --arg include_tier "$include_tier" --arg initial_status "$initial_status" '.locked = true | .active_lock_reason = "resolved" | .labels = ([{id:6,node_id:"L_6",name:"external-contributor"},{id:7,node_id:"L_7",name:"origin:interactive"},{id:8,node_id:"L_8",name:"review:approve"}] + if $include_tier == "true" then [{id:9,node_id:"L_9",name:"tier:standard"}] else [] end + if $initial_status != "" then [{id:10,node_id:"L_10",name:("status:" + $initial_status)}] else [] end) | .assignees = []' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	jq '.[0] += [{id:418,node_id:"EV_418",event:"locked",created_at:"2026-01-01T00:04:00Z",actor:{id:1,node_id:"U_1",login:"maintainer",type:"User"}}]' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
 	append_signed_comment issue 41 "2026-01-01T00:05:00Z" 4199
 	return 0
@@ -542,6 +543,18 @@ test_locked_issue_continuity() {
 	append_issue_timeline_event '{"id":420,"node_id":"EV_420","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
 	append_issue_timeline_event '{"id":421,"node_id":"EV_421","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
 	assert_verify "trusted allowlisted mutations preserve continuously locked issue approval" issue 41 VERIFIED 0
+
+	local lifecycle_status=""
+	local lifecycle_event_id=432
+	for lifecycle_status in claimed blocked "done"; do
+		write_locked_issue_fixture true available
+		jq --arg status "status:${lifecycle_status}" '.labels |= map(select(.name != "status:available")) | .labels += [{id:12,node_id:"L_12",name:$status}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+		append_issue_timeline_event "{\"id\":${lifecycle_event_id},\"node_id\":\"EV_${lifecycle_event_id}\",\"event\":\"unlabeled\",\"created_at\":\"2026-01-01T00:06:00Z\",\"actor\":{\"id\":1,\"login\":\"maintainer\",\"type\":\"User\"},\"label\":{\"name\":\"status:available\"}}"
+		lifecycle_event_id=$((lifecycle_event_id + 1))
+		append_issue_timeline_event "{\"id\":${lifecycle_event_id},\"node_id\":\"EV_${lifecycle_event_id}\",\"event\":\"labeled\",\"created_at\":\"2026-01-01T00:06:01Z\",\"actor\":{\"id\":1,\"login\":\"maintainer\",\"type\":\"User\"},\"label\":{\"name\":\"status:${lifecycle_status}\"}}"
+		assert_verify "trusted status:${lifecycle_status} transition preserves continuously locked issue approval" issue 41 VERIFIED 0
+		lifecycle_event_id=$((lifecycle_event_id + 1))
+	done
 
 	write_locked_issue_fixture
 	jq '.labels = [{id:8,node_id:"L_8",name:"security"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
