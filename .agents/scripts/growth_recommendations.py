@@ -11,7 +11,6 @@ from typing import Any
 
 from growth_recommendation_validation import validate_recommendation_artifact
 from marketing_optimization_contract import (
-    OptimizationError,
     add_seconds,
     digest_document,
     typed_reference,

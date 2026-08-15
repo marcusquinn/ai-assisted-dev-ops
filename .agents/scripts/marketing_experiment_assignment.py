@@ -9,7 +9,10 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
-from marketing_experiment_evidence import AssignmentEvidence, load_assignment_evidence
+from marketing_experiment_evidence import (
+    AssignmentEvidence,
+    load_assignment_evidence as load_assignment_evidence,
+)
 from marketing_experiment_assignment_grouping import (
     GroupingContext,
     contaminated_subjects,

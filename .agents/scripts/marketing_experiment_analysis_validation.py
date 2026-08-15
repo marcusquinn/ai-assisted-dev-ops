@@ -24,7 +24,7 @@ from marketing_optimization_validation_common import (
     exact,
     reference,
 )
-from performance_contract import optional_alias, require_alias
+from performance_contract import optional_alias
 
 ANALYSIS_FIELDS = frozenset(
     "analysis_version input_snapshot_sha256 as_of look_number look_type previous_run_ref status "
