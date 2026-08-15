@@ -138,7 +138,7 @@ privacy_is_target_public() {
 	if ! is_private=$("$gh_bin" api "repos/${slug}" --jq '.private | tostring' 2>/dev/null); then
 		is_private=$("$gh_bin" api graphql \
 			-f "query=${graphql_query}" \
-			-F "owner=${owner}" -F "name=${repo}" \
+			-f "owner=${owner}" -f "name=${repo}" \
 			--jq '.data.repository.isPrivate | tostring' 2>/dev/null) || {
 			privacy_log WARN "gh REST and GraphQL privacy probes failed for $slug — fail-open"
 			return 2

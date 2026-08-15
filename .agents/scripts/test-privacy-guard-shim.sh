@@ -213,6 +213,7 @@ RECORD_FILE="${TMP}/gh-invocation.log"
 AUTH_RECORD_FILE="${TMP}/gh-auth-invocation.log"
 API_RECORD_FILE="${TMP}/gh-api-invocation.log"
 REST_RATE_LIMIT_FILE="${TMP}/rest-rate-limited"
+REQUIRE_RAW_FIELDS_FILE="${TMP}/require-raw-graphql-fields"
 cat >"$REAL_GH_DIR/gh" <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "auth" && "\${2:-}" == "status" ]]; then
@@ -229,6 +230,11 @@ if [[ "\${1:-}" == "api" && "\${2:-}" == repos/* ]]; then
 fi
 if [[ "\${1:-}" == "api" && "\${2:-}" == "graphql" ]]; then
 	printf '%s\n' "GRAPHQL" >> '$API_RECORD_FILE'
+	if [[ -f '$REQUIRE_RAW_FIELDS_FILE' ]]; then
+		for arg in "\$@"; do
+			[[ "\$arg" != "-F" ]] || exit 1
+		done
+	fi
 	printf '%s\n' false
 	exit 0
 fi
@@ -302,12 +308,13 @@ fi
 rm -f "$PRIV_HOME/.aidevops/cache/repo-privacy.json" \
 	"$RECORD_FILE" "$AUTH_RECORD_FILE" "$API_RECORD_FILE"
 touch "$REST_RATE_LIMIT_FILE"
-out=$(run_shim "$PATH_DIR" issue create --repo marcusquinn/aidevops --title "test" --body "Clean quota fallback content" 2>&1)
+touch "$REQUIRE_RAW_FIELDS_FILE"
+out=$(run_shim "$PATH_DIR" issue create --repo 123/true --title "test" --body "Clean quota fallback content" 2>&1)
 rc=$?
-rm -f "$REST_RATE_LIMIT_FILE"
+rm -f "$REST_RATE_LIMIT_FILE" "$REQUIRE_RAW_FIELDS_FILE"
 if [[ "$rc" -eq 0 ]] && [[ -f "$RECORD_FILE" && ! -f "$AUTH_RECORD_FILE" && -f "$API_RECORD_FILE" ]] &&
 	grep -q '^REST$' "$API_RECORD_FILE" && grep -q '^GRAPHQL$' "$API_RECORD_FILE"; then
-	pass "REST quota exhaustion falls back to GraphQL privacy probe"
+	pass "REST quota exhaustion falls back with string-safe GraphQL variables"
 else
 	fail "expected REST then GraphQL privacy probes without auth-status probe. rc=$rc out='$out'"
 fi
