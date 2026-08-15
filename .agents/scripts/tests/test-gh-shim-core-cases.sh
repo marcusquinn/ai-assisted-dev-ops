@@ -78,6 +78,22 @@ for close_form in long equals short; do
 	fi
 done
 
+for close_form in long equals short; do
+	_reset_log
+	case "$close_form" in
+	long) "$SHIM_RUN" pr close 125 --repo owner/repo --comment "close evidence" 2>/dev/null ;;
+	equals) "$SHIM_RUN" pr close 125 --repo owner/repo --comment="close evidence" 2>/dev/null ;;
+	short) "$SHIM_RUN" pr close 125 --repo owner/repo -c "close evidence" 2>/dev/null ;;
+	esac
+	argv=$(_read_argv)
+	close_count=$(grep -c '^close$' "$STUB_GH_LOG" 2>/dev/null || true)
+	if [[ "$argv" == *"<!-- aidevops:sig -->"* && "$close_count" -eq 1 ]]; then
+		_pass "${close_form} PR-close comment signs exactly one close mutation"
+	else
+		_fail "${close_form} PR-close comment signing" "argv: $argv"
+	fi
+done
+
 _reset_log
 "$SHIM_RUN" issue close 124 --repo owner/repo --reason completed 2>/dev/null
 argv=$(_read_argv)
