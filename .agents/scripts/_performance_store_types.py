@@ -35,3 +35,12 @@ class SourceStateContext:
     evidence_ref: str
     recorded_at: str
     partial: bool
+
+
+@dataclass(frozen=True)
+class EvidenceWriteContext:
+    source: str
+    account_ref: str
+    digest: str
+    suffix: str
+    raw_bytes: bytes

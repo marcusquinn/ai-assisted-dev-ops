@@ -39,6 +39,7 @@ from _performance_store_evidence import (
 )
 from _performance_store_state import update_source_state as _update_source_state
 from _performance_store_types import (
+    EvidenceWriteContext,
     GovernanceContext,
     QuarantineContext,
     SourceStateContext,
@@ -195,7 +196,9 @@ class MarketingPerformanceStore:
         suffix: str,
         raw_bytes: bytes,
     ) -> tuple[Path, bool]:
-        return _write_raw(self, source, account_ref, digest, suffix, raw_bytes)
+        return _write_raw(
+            self, EvidenceWriteContext(source, account_ref, digest, suffix, raw_bytes)
+        )
 
     @staticmethod
     def _safe_error(error: dict[str, Any]) -> dict[str, Any]:
