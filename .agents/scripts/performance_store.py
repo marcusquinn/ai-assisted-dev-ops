@@ -8,10 +8,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import sqlite3
-import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +32,11 @@ from performance_store_schema import (
     resolve_paths,
 )
 from _performance_store_ingest import ingest as _ingest
+from _performance_store_evidence import (
+    ensure_private_directory as _ensure_private_directory,
+    regular_file_digest as _regular_file_digest,
+    write_raw as _write_raw,
+)
 from _performance_store_state import update_source_state as _update_source_state
 from _performance_store_types import (
     GovernanceContext,
@@ -177,39 +180,12 @@ class MarketingPerformanceStore:
     @staticmethod
     def _ensure_private_directory(path: Path) -> None:
         """Create one private directory without accepting a symlink."""
-        if path.is_symlink():
-            raise PerformanceStoreError("raw evidence directory is unsafe")
-        path.mkdir(parents=False, exist_ok=True, mode=0o700)
-        if path.is_symlink() or not path.is_dir():
-            raise PerformanceStoreError("raw evidence directory is unsafe")
-        os.chmod(path, 0o700)
+        _ensure_private_directory(MarketingPerformanceStore, path)
 
     @staticmethod
     def _regular_file_digest(path: Path) -> str:
         """Hash one regular file through a no-follow descriptor."""
-        descriptor = -1
-        try:
-            descriptor = os.open(
-                path,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            )
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise PerformanceStoreError(
-                    "raw evidence destination is not a regular file"
-                )
-            digest = hashlib.sha256()
-            with os.fdopen(descriptor, "rb") as handle:
-                descriptor = -1
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return digest.hexdigest()
-        except OSError as exc:
-            raise PerformanceStoreError(
-                "raw evidence destination is not a readable regular file"
-            ) from exc
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+        return _regular_file_digest(MarketingPerformanceStore, path)
 
     def _write_raw(
         self,
@@ -219,42 +195,7 @@ class MarketingPerformanceStore:
         suffix: str,
         raw_bytes: bytes,
     ) -> tuple[Path, bool]:
-        source_directory = self.paths.raw / source
-        directory = source_directory / account_ref
-        for private_directory in (
-            self.paths.raw,
-            source_directory,
-            directory,
-        ):
-            self._ensure_private_directory(private_directory)
-        destination = directory / f"{digest}{suffix}"
-        if destination.is_symlink() or (
-            destination.exists() and not destination.is_file()
-        ):
-            raise PerformanceStoreError("raw evidence destination is not a regular file")
-        if destination.exists():
-            if self._regular_file_digest(destination) != digest:
-                raise PerformanceStoreError("raw evidence digest collision")
-            return destination, False
-        temporary = directory / f".{digest}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(raw_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                os.link(temporary, destination)
-                created = True
-            except FileExistsError:
-                created = False
-            temporary.unlink()
-            if self._regular_file_digest(destination) != digest:
-                raise PerformanceStoreError("raw evidence failed digest verification")
-            return destination, created
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        return _write_raw(self, source, account_ref, digest, suffix, raw_bytes)
 
     @staticmethod
     def _safe_error(error: dict[str, Any]) -> dict[str, Any]:
