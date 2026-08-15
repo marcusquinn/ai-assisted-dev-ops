@@ -435,11 +435,53 @@ append_issue_timeline_event() {
 	return 0
 }
 
-test_locked_issue_continuity() {
+test_locked_issue_tier_backfill_continuity() {
 	local event_json=""
 	local output=""
 	local rc=0
 	local tier=""
+	for tier in simple standard thinking; do
+		write_locked_issue_fixture false
+		jq --arg tier "tier:${tier}" '.labels += [{id:10,node_id:"L_10",name:$tier}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+		event_json=$(jq -nc --arg tier "tier:${tier}" '{id:4211,node_id:"EV_4211",event:"labeled",created_at:"2026-01-01T00:06:00Z",actor:{id:1,login:"maintainer",type:"User"},label:{name:$tier}}')
+		append_issue_timeline_event "$event_json"
+		assert_verify "trusted ${tier} tier backfill preserves continuously locked issue approval" issue 41 VERIFIED 0
+	done
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42111,"node_id":"EV_42111","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
+	assert_verify "adding a second canonical tier remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:simple"},{id:11,node_id:"L_11",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42112,"node_id":"EV_42112","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:simple"}}'
+	append_issue_timeline_event '{"id":42113,"node_id":"EV_42113","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
+	assert_verify "adding multiple canonical tiers remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42114,"node_id":"EV_42114","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	output=$(GH_FAIL_ENDPOINT="collaborators/maintainer/permission" run_verify issue 41) || rc=$?
+	if [[ "$output" == "API_ERROR" && "$rc" -eq 6 ]]; then
+		print_result "tier backfill permission uncertainty fails closed" 0
+	else
+		print_result "tier backfill permission uncertainty fails closed" 1 "expected=API_ERROR/6, actual=${output}/${rc}"
+	fi
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4212,"node_id":"EV_4212","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":2,"login":"contributor","type":"User"},"label":{"name":"tier:standard"}}'
+	assert_verify "untrusted tier backfill remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels |= map(select(.name != "tier:standard"))' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4213,"node_id":"EV_4213","event":"unlabeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	assert_verify "trusted tier removal remains stale" issue 41 STALE_APPROVAL 4
+	return 0
+}
+
+test_locked_issue_continuity() {
 	# Production regression from the first #30153 signature: approval-helper
 	# performed the trusted handoff, then the narrowly scoped repository workflow
 	# filled the one missing default status label under github-actions[bot].
@@ -483,46 +525,6 @@ test_locked_issue_continuity() {
 	append_issue_timeline_event '{"id":420,"node_id":"EV_420","event":"assigned","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
 	append_issue_timeline_event '{"id":421,"node_id":"EV_421","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
 	assert_verify "trusted allowlisted mutations preserve continuously locked issue approval" issue 41 VERIFIED 0
-
-	for tier in simple standard thinking; do
-		write_locked_issue_fixture false
-		jq --arg tier "tier:${tier}" '.labels += [{id:10,node_id:"L_10",name:$tier}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
-		event_json=$(jq -nc --arg tier "tier:${tier}" '{id:4211,node_id:"EV_4211",event:"labeled",created_at:"2026-01-01T00:06:00Z",actor:{id:1,login:"maintainer",type:"User"},label:{name:$tier}}')
-		append_issue_timeline_event "$event_json"
-		assert_verify "trusted ${tier} tier backfill preserves continuously locked issue approval" issue 41 VERIFIED 0
-	done
-
-	write_locked_issue_fixture
-	jq '.labels += [{id:10,node_id:"L_10",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
-	append_issue_timeline_event '{"id":42111,"node_id":"EV_42111","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
-	assert_verify "adding a second canonical tier remains stale" issue 41 STALE_APPROVAL 4
-
-	write_locked_issue_fixture false
-	jq '.labels += [{id:10,node_id:"L_10",name:"tier:simple"},{id:11,node_id:"L_11",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
-	append_issue_timeline_event '{"id":42112,"node_id":"EV_42112","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:simple"}}'
-	append_issue_timeline_event '{"id":42113,"node_id":"EV_42113","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
-	assert_verify "adding multiple canonical tiers remains stale" issue 41 STALE_APPROVAL 4
-
-	write_locked_issue_fixture false
-	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
-	append_issue_timeline_event '{"id":42114,"node_id":"EV_42114","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
-	rc=0
-	output=$(GH_FAIL_ENDPOINT="collaborators/maintainer/permission" run_verify issue 41) || rc=$?
-	if [[ "$output" == "API_ERROR" && "$rc" -eq 6 ]]; then
-		print_result "tier backfill permission uncertainty fails closed" 0
-	else
-		print_result "tier backfill permission uncertainty fails closed" 1 "expected=API_ERROR/6, actual=${output}/${rc}"
-	fi
-
-	write_locked_issue_fixture false
-	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
-	append_issue_timeline_event '{"id":4212,"node_id":"EV_4212","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":2,"login":"contributor","type":"User"},"label":{"name":"tier:standard"}}'
-	assert_verify "untrusted tier backfill remains stale" issue 41 STALE_APPROVAL 4
-
-	write_locked_issue_fixture
-	jq '.labels |= map(select(.name != "tier:standard"))' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
-	append_issue_timeline_event '{"id":4213,"node_id":"EV_4213","event":"unlabeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
-	assert_verify "trusted tier removal remains stale" issue 41 STALE_APPROVAL 4
 
 	write_locked_issue_fixture
 	jq '.labels = [{id:8,node_id:"L_8",name:"security"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
@@ -593,6 +595,7 @@ main() {
 	test_trusted_lifecycle_comments
 	test_post_approval_linked_references
 	test_locked_issue_continuity
+	test_locked_issue_tier_backfill_continuity
 
 	reset_and_sign pr 42
 	local marker_drift="<!-- aidevops-signed-approval --> unsigned external drift"
