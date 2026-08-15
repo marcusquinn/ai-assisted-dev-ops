@@ -24,8 +24,6 @@ from performance_contract import (
     canonical_json,
     event_for_fingerprint,
     timestamp_epoch,
-    utc_now,
-    validate_batch_header,
     validate_event,
 )
 from performance_store_schema import (
@@ -35,6 +33,9 @@ from performance_store_schema import (
     provision_plane,
     resolve_paths,
 )
+from _performance_store_ingest import ingest as _ingest
+from _performance_store_state import update_source_state as _update_source_state
+from _performance_store_types import GovernanceContext, QuarantineContext
 
 
 class PerformanceStoreError(PerformanceContractError):
@@ -43,6 +44,8 @@ class PerformanceStoreError(PerformanceContractError):
 
 class MarketingPerformanceStore:
     """Own source/account leases, immutable events, and rebuildable projections."""
+
+    error_type = PerformanceStoreError
 
     def __init__(
         self,
@@ -260,17 +263,13 @@ class MarketingPerformanceStore:
 
     def _quarantine(
         self,
-        source: str,
-        account_ref: str,
-        source_event_id: str,
-        reason: str,
-        evidence_ref: str,
-        recorded_at: str,
-        details: dict[str, Any],
+        context: QuarantineContext,
     ) -> str:
-        source_event_ref = self._source_event_ref(source, account_ref, source_event_id)
+        source_event_ref = self._source_event_ref(
+            context.source, context.account_ref, context.source_event_id
+        )
         digest = hashlib.sha256(
-            f"{source}\0{account_ref}\0{source_event_ref}\0{reason}\0{evidence_ref}".encode(
+            f"{context.source}\0{context.account_ref}\0{source_event_ref}\0{context.reason}\0{context.evidence_ref}".encode(
                 "utf-8"
             )
         ).hexdigest()
@@ -281,66 +280,60 @@ class MarketingPerformanceStore:
             ") VALUES(?,?,?,?,?,?,?,?)",
             (
                 quarantine_ref,
-                source,
-                account_ref,
+                context.source,
+                context.account_ref,
                 source_event_ref,
-                reason,
-                evidence_ref,
-                recorded_at,
-                canonical_json(details),
+                context.reason,
+                context.evidence_ref,
+                context.recorded_at,
+                canonical_json(context.details),
             ),
         )
         return quarantine_ref
 
     def _insert_governance(
         self,
-        event: dict[str, Any],
-        record_ref: str,
-        subject_id: str | None,
-        source: str,
-        account_ref: str,
-        observed_at: str,
-        evidence_ref: str,
+        context: GovernanceContext,
     ) -> None:
-        if subject_id is None:
+        if context.subject_id is None:
             return
-        for index, consent in enumerate(event["governance"]["consent"]):
-            ledger_ref = self.pseudonym("mkt-consent-v1", record_ref, str(index), canonical_json(consent))
+        for index, consent in enumerate(context.event["governance"]["consent"]):
+            ledger_ref = self.pseudonym("mkt-consent-v1", context.record_ref, str(index), canonical_json(consent))
             self.connection.execute(
                 "INSERT OR IGNORE INTO consent_ledger("
                 "ledger_ref,subject_id,purpose,state,lawful_basis,source,account_ref,effective_at,observed_at,evidence_ref"
                 ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     ledger_ref,
-                    subject_id,
+                    context.subject_id,
                     consent["purpose"],
                     consent["state"],
                     consent["lawful_basis"],
-                    source,
-                    account_ref,
+                    context.source,
+                    context.account_ref,
                     consent["effective_at"],
-                    observed_at,
-                    evidence_ref,
+                    context.observed_at,
+                    context.evidence_ref,
                 ),
             )
-        suppression = event["governance"]["suppression"]
+        suppression = context.event["governance"]["suppression"]
         if suppression is None:
             return
-        ledger_ref = self.pseudonym("mkt-suppression-v1", record_ref, canonical_json(suppression))
+        ledger_ref = self.pseudonym("mkt-suppression-v1", context.record_ref, canonical_json(suppression))
         self.connection.execute(
             "INSERT OR IGNORE INTO suppression_ledger("
             "ledger_ref,subject_id,state,reason,source,account_ref,effective_at,observed_at,evidence_ref"
             ") VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 ledger_ref,
-                subject_id,
+                context.subject_id,
                 suppression["state"],
                 suppression["reason"],
-                source,
-                account_ref,
+                context.source,
+                context.account_ref,
                 suppression["effective_at"],
-                observed_at,
-                evidence_ref,
+                context.observed_at,
+                context.evidence_ref,
             ),
         )
 
@@ -376,27 +369,19 @@ class MarketingPerformanceStore:
         if existing is not None:
             if str(existing["payload_fingerprint"]) == fingerprint:
                 return "duplicate"
-            self._quarantine(
-                source,
-                account_ref,
-                event["source_event_id"],
-                "same_revision_payload_conflict",
-                evidence_ref,
-                recorded_at,
+            self._quarantine(QuarantineContext(
+                source, account_ref, event["source_event_id"],
+                "same_revision_payload_conflict", evidence_ref, recorded_at,
                 {"reason": "same_revision_payload_conflict"},
-            )
+            ))
             return "conflict"
         subject = event["subject"]
         if subject["identity_state"] == "ambiguous":
-            self._quarantine(
-                source,
-                account_ref,
-                event["source_event_id"],
-                "identity_ambiguous",
-                evidence_ref,
-                recorded_at,
+            self._quarantine(QuarantineContext(
+                source, account_ref, event["source_event_id"],
+                "identity_ambiguous", evidence_ref, recorded_at,
                 {"reason": "identity_ambiguous", "candidate_count": len(subject["candidate_refs"])},
-            )
+            ))
             return "quarantined"
         subject_id = None
         if subject["source_ref"] is not None:
@@ -449,15 +434,10 @@ class MarketingPerformanceStore:
                 ):
                     reason = "correction_target_already_corrected"
             if reason is not None:
-                self._quarantine(
-                    source,
-                    account_ref,
-                    event["source_event_id"],
-                    reason,
-                    evidence_ref,
-                    recorded_at,
-                    {"reason": reason},
-                )
+                self._quarantine(QuarantineContext(
+                    source, account_ref, event["source_event_id"], reason,
+                    evidence_ref, recorded_at, {"reason": reason},
+                ))
                 return "quarantined"
         self.connection.execute(
             "INSERT INTO events("
@@ -503,15 +483,10 @@ class MarketingPerformanceStore:
                 fingerprint,
             ),
         )
-        self._insert_governance(
-            event,
-            record_ref,
-            subject_id,
-            source,
-            account_ref,
-            header["observed_at"],
-            evidence_ref,
-        )
+        self._insert_governance(GovernanceContext(
+            event, record_ref, subject_id, source, account_ref,
+            header["observed_at"], evidence_ref,
+        ))
         return "inserted"
 
     def _events_match_evidence(
@@ -591,83 +566,9 @@ class MarketingPerformanceStore:
         partial: bool,
     ) -> bool:
         """Advance only monotonic source observations and successful checkpoints."""
-        source = header["source"]
-        account_ref = header["account_ref"]
-        existing = self.connection.execute(
-            "SELECT * FROM sources WHERE source=? AND account_ref=?",
-            (source, account_ref),
-        ).fetchone()
-        observed_at = header["observed_at"]
-        observed_epoch = timestamp_epoch(observed_at)
-        latest_observation = (
-            existing is None
-            or existing["last_observed_at"] is None
-            or observed_epoch >= timestamp_epoch(str(existing["last_observed_at"]))
+        return _update_source_state(
+            self, adapter, header, evidence_ref, recorded_at, partial
         )
-        prior_success = None if existing is None else existing["last_success_at"]
-        successful_checkpoint = (
-            not partial
-            and (
-                prior_success is None
-                or observed_epoch >= timestamp_epoch(str(prior_success))
-            )
-        )
-        prior_cursor = None if existing is None else existing["cursor_ref"]
-        next_cursor = prior_cursor
-        if successful_checkpoint and header["cursor"] is not None:
-            next_cursor = self._cursor_ref(source, account_ref, header["cursor"])
-        cursor_advanced = bool(
-            successful_checkpoint
-            and header["cursor"] is not None
-            and next_cursor != prior_cursor
-        )
-        if existing is None or latest_observation:
-            state_adapter = adapter
-            state_status = "partial" if partial else "ready"
-            state_coverage = "partial" if partial else header["coverage"]
-            missing_scopes = canonical_json(sorted(set(header["missing_scopes"])))
-            last_evidence_ref = evidence_ref
-        else:
-            state_adapter = str(existing["adapter"])
-            state_status = str(existing["status"])
-            state_coverage = str(existing["coverage"])
-            missing_scopes = str(existing["missing_scopes_json"])
-            last_evidence_ref = existing["last_evidence_ref"]
-        last_observed_at = observed_at
-        if existing is not None and existing["last_observed_at"] is not None:
-            if observed_epoch < timestamp_epoch(str(existing["last_observed_at"])):
-                last_observed_at = str(existing["last_observed_at"])
-        last_success_at = prior_success
-        if successful_checkpoint:
-            last_success_at = observed_at
-        stale_map = self.config["source_stale_after_seconds"]
-        stale_after = int(
-            stale_map.get(source, self.config["default_stale_after_seconds"])
-        )
-        self.connection.execute(
-            "INSERT INTO sources("
-            "source,account_ref,adapter,status,coverage,missing_scopes_json,cursor_ref,last_observed_at,last_success_at,last_evidence_ref,stale_after_seconds,updated_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,account_ref) DO UPDATE SET "
-            "adapter=excluded.adapter,status=excluded.status,coverage=excluded.coverage,"
-            "missing_scopes_json=excluded.missing_scopes_json,cursor_ref=excluded.cursor_ref,"
-            "last_observed_at=excluded.last_observed_at,last_success_at=excluded.last_success_at,"
-            "last_evidence_ref=excluded.last_evidence_ref,stale_after_seconds=excluded.stale_after_seconds,updated_at=excluded.updated_at",
-            (
-                source,
-                account_ref,
-                state_adapter,
-                state_status,
-                state_coverage,
-                missing_scopes,
-                next_cursor,
-                last_observed_at,
-                last_success_at,
-                last_evidence_ref,
-                stale_after,
-                recorded_at,
-            ),
-        )
-        return cursor_advanced
 
     def _checkpoint_conflicts(self, header: dict[str, Any]) -> bool:
         """Detect a conflicting opaque cursor at the same successful watermark."""
@@ -698,158 +599,7 @@ class MarketingPerformanceStore:
         dry_run: bool = False,
     ) -> dict[str, Any]:
         """Validate, lease, append, and advance one exact source/account cursor."""
-        header = validate_batch_header(result.batch)
-        total_records = len(header["events"]) + len(result.errors)
-        if total_records > int(self.config["max_batch_events"]):
-            raise PerformanceStoreError("batch exceeds configured event limit")
-        events, validation_errors = self._validate_events(header, result.errors)
-        safe_errors = [self._safe_error(error) for error in validation_errors]
-        if dry_run:
-            return {
-                "schema": "aidevops.marketing-performance-ingest/v1",
-                "dry_run": True,
-                "source": header["source"],
-                "account_ref": header["account_ref"],
-                "accepted": len(events),
-                "quarantined": len(validation_errors),
-                "coverage": (
-                    "partial"
-                    if validation_errors or header["missing_scopes"]
-                    else header["coverage"]
-                ),
-                "errors": safe_errors,
-            }
-        source = header["source"]
-        account_ref = header["account_ref"]
-        lease_token = self._acquire_lease(source, account_ref)
-        evidence_ref, content_digest = self._evidence_ref(source, account_ref, result.raw_bytes)
-        raw_path: Path | None = None
-        try:
-            raw_path, _ = self._write_raw(
-                source,
-                account_ref,
-                content_digest,
-                result.suffix,
-                result.raw_bytes,
-            )
-            recorded_at = utc_now()
-            now_epoch = int(time.time())
-            self.connection.execute("BEGIN IMMEDIATE")
-            lease = self.connection.execute(
-                "SELECT token,expires_at FROM leases WHERE source=? AND account_ref=?",
-                (source, account_ref),
-            ).fetchone()
-            if lease is None or str(lease["token"]) != lease_token or int(lease["expires_at"]) <= now_epoch:
-                raise PerformanceStoreError("source/account lease expired before commit")
-            relative_path = raw_path.relative_to(self.paths.repo).as_posix()
-            self.connection.execute(
-                "INSERT OR IGNORE INTO evidence("
-                "evidence_ref,source,account_ref,sha256,relative_path,observed_at,recorded_at"
-                ") VALUES(?,?,?,?,?,?,?)",
-                (
-                    evidence_ref,
-                    source,
-                    account_ref,
-                    content_digest,
-                    relative_path,
-                    header["observed_at"],
-                    recorded_at,
-                ),
-            )
-            counts = {"inserted": 0, "duplicate": 0, "conflict": 0, "quarantined": 0}
-            for event in events:
-                outcome = self._insert_event(event, header, evidence_ref, recorded_at)
-                counts[outcome] += 1
-            for error in validation_errors:
-                source_event_id = str(error.get("source_event_id", f"record-{error.get('index', 'unknown')}"))
-                safe_error = self._safe_error(error)
-                self._quarantine(
-                    source,
-                    account_ref,
-                    source_event_id,
-                    "adapter_or_contract_rejected",
-                    evidence_ref,
-                    recorded_at,
-                    safe_error,
-                )
-                counts["quarantined"] += 1
-            complete_campaign_revision = (
-                adapter == "campaign"
-                and bool(events)
-                and counts["inserted"] == len(events)
-                and counts["duplicate"] == 0
-                and counts["conflict"] == 0
-                and counts["quarantined"] == 0
-                and header["coverage"] == "complete"
-                and not header["missing_scopes"]
-            )
-            if (
-                self._checkpoint_conflicts(header)
-                and not complete_campaign_revision
-                and counts["conflict"] == 0
-                and counts["quarantined"] == 0
-            ):
-                self._quarantine(
-                    source,
-                    account_ref,
-                    "batch-cursor",
-                    "same_watermark_cursor_conflict",
-                    evidence_ref,
-                    recorded_at,
-                    {"reason": "same_watermark_cursor_conflict"},
-                )
-                counts["quarantined"] += 1
-            exact_replay = (
-                counts["duplicate"] == len(events)
-                and counts["inserted"] == 0
-                and counts["conflict"] == 0
-                and counts["quarantined"] == 0
-                and self._events_match_evidence(events, header, evidence_ref)
-                and self._events_are_current(events, header)
-            )
-            partial = (
-                header["coverage"] != "complete"
-                or bool(header["missing_scopes"])
-                or any(
-                    counts[name] > 0 for name in ("conflict", "quarantined")
-                )
-            )
-            cursor_advanced = self._update_source_state(
-                adapter,
-                header,
-                evidence_ref,
-                recorded_at,
-                partial,
-            )
-            self.connection.execute(
-                "DELETE FROM leases WHERE source=? AND account_ref=? AND token=?",
-                (source, account_ref, lease_token),
-            )
-            self.connection.commit()
-            return {
-                "schema": "aidevops.marketing-performance-ingest/v1",
-                "dry_run": False,
-                "source": source,
-                "account_ref": account_ref,
-                "evidence_ref": evidence_ref,
-                "accepted": counts["inserted"],
-                "duplicates": counts["duplicate"],
-                "quarantined": counts["quarantined"] + counts["conflict"],
-                "coverage": "partial" if partial else header["coverage"],
-                "cursor_advanced": cursor_advanced,
-                "exact_replay": exact_replay,
-                "errors": safe_errors,
-            }
-        except Exception:
-            self.connection.rollback()
-            try:
-                self._release_lease(source, account_ref, lease_token)
-            except sqlite3.Error:
-                pass
-            # Published raw evidence is content-addressed and immutable. Retain an
-            # unreferenced artifact after rollback so an expired worker cannot
-            # delete a file another fenced worker is about to reference.
-            raise
+        return _ingest(self, adapter, result, dry_run)
 
     def recover_expired_leases(self) -> int:
         """Remove only expired mutable lease projections."""
