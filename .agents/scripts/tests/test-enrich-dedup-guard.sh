@@ -195,19 +195,42 @@ fi
 # path must block enrichment without edit/comment recovery writes (GH#28498).
 : >"$GH_WRITE_LOG"
 export AIDEVOPS_SESSION_USER="runnerB"
-active_claim_json='{"state":"OPEN","assignees":[{"login":"runnerA"}],"labels":[{"name":"origin:interactive"},{"name":"status:in-review"}]}'
-if _enrich_check_active_claim 123 "test/repo" "t28498" "$active_claim_json" >/dev/null 2>&1 \
-	&& [[ ! -s "$GH_WRITE_LOG" ]]; then
+active_claim_json='{"number":123,"state":"OPEN","assignees":[{"login":"runnerA"}],"labels":[{"name":"origin:interactive"},{"name":"status:in-review"}]}'
+if _enrich_check_active_claim 123 "test/repo" "t28498" "$active_claim_json" >/dev/null 2>&1 &&
+	[[ ! -s "$GH_WRITE_LOG" ]]; then
 	print_result "enrich guard blocks active interactive claim with zero GitHub writes" 0
 else
 	print_result "enrich guard blocks active interactive claim with zero GitHub writes" 1 "(guard passed or emitted a write)"
 fi
 
+# An explicit, forced single-task repair may bypass dispatch-only labels, but
+# never a foreign claim or uncertain metadata. This is limited to the enrich
+# migration path; dispatch-dedup-helper itself remains unchanged.
+parent_task_json='{"number":123,"state":"OPEN","assignees":[],"labels":[{"name":"parent-task"}]}'
+parent_no_auto_json='{"number":123,"state":"OPEN","assignees":[],"labels":[{"name":"parent-task"},{"name":"no-auto-dispatch"}]}'
+export ENRICH_EXPLICIT_FORCED_TARGET=true
+if ! _enrich_check_active_claim 123 "test/repo" "t30287" "$parent_task_json" >/dev/null 2>&1; then
+	print_result "forced single-task enrich permits parent-task dispatch blocker" 0
+else
+	print_result "forced single-task enrich permits parent-task dispatch blocker" 1 "(unexpected block)"
+fi
+if ! _enrich_check_active_claim 123 "test/repo" "t30287" "$parent_no_auto_json" >/dev/null 2>&1; then
+	print_result "forced single-task enrich permits parent-task plus no-auto-dispatch" 0
+else
+	print_result "forced single-task enrich permits parent-task plus no-auto-dispatch" 1 "(unexpected block)"
+fi
+if _enrich_check_active_claim 123 "test/repo" "t30287" "$active_claim_json" >/dev/null 2>&1; then
+	print_result "forced single-task enrich still blocks foreign active owner" 0
+else
+	print_result "forced single-task enrich still blocks foreign active owner" 1 "(unexpected pass)"
+fi
+unset ENRICH_EXPLICIT_FORCED_TARGET
+
 # A structurally blocked task must return before authoritative body composition.
 # This keeps broad no-op sweeps on their prefetched, read-only path (GH#30021).
 TODO_FIXTURE="${TEST_ROOT}/TODO.md"
 mkdir -p "${TEST_ROOT}/todo/tasks"
-printf '%s\n' '- [ ] t30021: Blocked fixture #bug ref:GH#123' >"$TODO_FIXTURE"
+printf '%s\n' '- [ ] t30021 Blocked fixture #bug ref:GH#123' >"$TODO_FIXTURE"
 compose_issue_body() {
 	printf 'compose\n' >>"${TEST_ROOT}/compose-calls.log"
 	printf 'unexpected body\n'
@@ -220,7 +243,7 @@ require_task_issue_mapping() {
 ENRICH_PREFETCH_FILE="${TEST_ROOT}/prefetch.json"
 printf '%s\n' "[$active_claim_json]" >"$ENRICH_PREFETCH_FILE"
 if _enrich_process_task "t30021" "test/repo" "$TODO_FIXTURE" "$TEST_ROOT" \
-	'- [ ] t30021: Blocked fixture #bug ref:GH#123' >/dev/null 2>&1 &&
+	'- [ ] t30021 Blocked fixture #bug ref:GH#123' >/dev/null 2>&1 &&
 	[[ ! -s "${TEST_ROOT}/compose-calls.log" ]]; then
 	print_result "blocked enrich task returns before authoritative body composition" 0
 else
@@ -231,12 +254,35 @@ unset ENRICH_PREFETCH_FILE
 # Metadata uncertainty must also fail closed without trying recovery writes.
 : >"$GH_WRITE_LOG"
 write_stub_gh '{}' true
-if _enrich_check_active_claim 123 "test/repo" "t28498" "" >/dev/null 2>&1 \
-	&& [[ ! -s "$GH_WRITE_LOG" ]]; then
+if _enrich_check_active_claim 123 "test/repo" "t28498" "" >/dev/null 2>&1 &&
+	[[ ! -s "$GH_WRITE_LOG" ]]; then
 	print_result "enrich guard fails closed on uncertain metadata with zero GitHub writes" 0
 else
 	print_result "enrich guard fails closed on uncertain metadata with zero GitHub writes" 1 "(guard passed or emitted a write)"
 fi
+
+# Dry-run must inspect the same guard as execution rather than claiming a
+# mutation that execution would skip. The structural exception is activated
+# only by the explicit forced single-task command state.
+DRY_RUN=true
+ENRICH_EXPLICIT_FORCED_TARGET=false
+ENRICH_PREFETCH_FILE="${TEST_ROOT}/prefetch-parity.json"
+printf '%s\n' "[$active_claim_json]" >"$ENRICH_PREFETCH_FILE"
+if ! _enrich_process_task "t30021" "test/repo" "$TODO_FIXTURE" "$TEST_ROOT" \
+	'- [ ] t30021 Blocked fixture #bug ref:GH#123' 2>&1 | grep -q 'Would enrich'; then
+	print_result "dry-run and execution both block a foreign active owner" 0
+else
+	print_result "dry-run and execution both block a foreign active owner" 1 "(dry-run bypassed guard)"
+fi
+ENRICH_EXPLICIT_FORCED_TARGET=true
+printf '%s\n' "[$parent_task_json]" >"$ENRICH_PREFETCH_FILE"
+if _enrich_process_task "t30021" "test/repo" "$TODO_FIXTURE" "$TEST_ROOT" \
+	'- [ ] t30021 Blocked fixture #bug ref:GH#123' 2>&1 | grep -q 'Would enrich'; then
+	print_result "dry-run predicts forced parent-task enrichment" 0
+else
+	print_result "dry-run predicts forced parent-task enrichment" 1 "(dry-run did not match execution guard)"
+fi
+unset DRY_RUN ENRICH_EXPLICIT_FORCED_TARGET ENRICH_PREFETCH_FILE
 
 # Part 3b — _ensure_issue_body_has_brief also has the guard
 if grep -q 'is-assigned-read-only' "${TEST_SCRIPTS_DIR}/pulse-dispatch-core.sh"; then

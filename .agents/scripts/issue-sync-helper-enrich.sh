@@ -337,15 +337,15 @@ _enrich_check_rate_limit() {
 	[[ $_rc -ne 0 || -z "$_rl_json" ]] && return 1
 	_rl_remaining=$(printf '%s' "$_rl_json" | jq -r '.resources.graphql.remaining // 9999' 2>/dev/null || echo "9999")
 	if [[ "$_rl_remaining" -ge "$threshold" ]]; then
-		return 1  # healthy — proceed
+		return 1 # healthy — proceed
 	fi
 	_rl_reset=$(printf '%s' "$_rl_json" | jq -r '.resources.graphql.reset // 0' 2>/dev/null || echo "0")
 	local _reset_time
-	_reset_time=$(date -d "@${_rl_reset}" '+%H:%M:%SZ' 2>/dev/null \
-		|| TZ=UTC date -r "$_rl_reset" '+%H:%M:%SZ' 2>/dev/null \
-		|| echo "unknown")
+	_reset_time=$(date -d "@${_rl_reset}" '+%H:%M:%SZ' 2>/dev/null ||
+		TZ=UTC date -r "$_rl_reset" '+%H:%M:%SZ' 2>/dev/null ||
+		echo "unknown")
 	echo "::warning::GraphQL rate-limit too low for enrich, skipping this cycle (remaining=${_rl_remaining}, reset=${_reset_time}, threshold=${threshold}) — GH#20129"
-	return 0  # tell caller to skip
+	return 0 # tell caller to skip
 }
 
 # _enrich_prefetch_issues_map: fetch all open issues in one batch call and
@@ -404,6 +404,15 @@ _enrich_check_active_claim() {
 		# a redundant metadata read. GH#28498: inspection must never invoke stale
 		# recovery, which can mutate a live interactive owner's claim.
 		_dedup_result=$(ISSUE_META_JSON="$pre_fetched_json" "$_dedup_helper" is-assigned-read-only "$num" "$repo" "$_user" 2>/dev/null) || true
+		# GH#30287: parent-task and no-auto-dispatch prohibit worker dispatch,
+		# but do not represent a foreign owner. An explicitly targeted, forced
+		# maintainer repair may migrate a legacy body through enrich. Keep every
+		# other signal fail-closed, including uncertain metadata and live claims.
+		if [[ "${ENRICH_EXPLICIT_FORCED_TARGET:-false}" == "true" &&
+			("$_dedup_result" == PARENT_TASK_BLOCKED\ * || "$_dedup_result" == NO_AUTO_DISPATCH_BLOCKED\ *) ]]; then
+			print_info "Allowing explicit forced enrich for #$num ($task_id) despite dispatch-only blocker: $_dedup_result (GH#30287)"
+			return 1
+		fi
 		if [[ -n "$_dedup_result" ]]; then
 			print_warning "Skipping enrich for #$num ($task_id) — active claim detected: $_dedup_result (GH#19856)"
 			return 0
@@ -431,6 +440,11 @@ cmd_enrich() {
 	local target_task="${1:-}"
 	_init_cmd || return 1
 	local repo="$_CMD_REPO" todo_file="$_CMD_TODO" project_root="$_CMD_ROOT"
+	ENRICH_EXPLICIT_FORCED_TARGET=false
+	if [[ -n "$target_task" && "${FORCE_ENRICH:-false}" == "true" ]]; then
+		ENRICH_EXPLICIT_FORCED_TARGET=true
+	fi
+	export ENRICH_EXPLICIT_FORCED_TARGET
 	# Keep the actor cache scoped to this command invocation, even when callers
 	# source the helper and invoke cmd_enrich more than once in the same shell.
 	unset AIDEVOPS_ENRICH_ACTOR AIDEVOPS_ENRICH_ACTOR_RESOLVED

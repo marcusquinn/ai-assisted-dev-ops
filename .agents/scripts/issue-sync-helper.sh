@@ -365,14 +365,9 @@ _enrich_process_task() {
 		print_error "Skipping enrich for $task_id — empty description; fix TODO entry before retrying (t2377)"
 		return 0
 	fi
-	if [[ "$DRY_RUN" == "true" ]]; then
-		local _dry_tier_msg=""
-		[[ -n "$tier_label" ]] && _dry_tier_msg=" tier=${tier_label}(replace)"
-		print_info "[DRY-RUN] Would enrich #$num ($task_id) labels=${labels}${_dry_tier_msg}"
-		echo "ENRICHED"
-		return 0
+	if [[ "$DRY_RUN" != "true" ]]; then
+		require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$num" || return 1
 	fi
-	require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$num" || return 1
 
 	# t2165: fetch title, body, and labels in a single gh issue view call and
 	# forward to helpers.
@@ -395,6 +390,13 @@ _enrich_process_task() {
 	# GH#19856: cross-runner dedup guard — abort if another runner holds
 	# an active claim.
 	if _enrich_check_active_claim "$num" "$repo" "$task_id" "$_state_json"; then
+		return 0
+	fi
+	if [[ "$DRY_RUN" == "true" ]]; then
+		local _dry_tier_msg=""
+		[[ -n "$tier_label" ]] && _dry_tier_msg=" tier=${tier_label}(replace)"
+		print_info "[DRY-RUN] Would enrich #$num ($task_id) labels=${labels}${_dry_tier_msg}"
+		echo "ENRICHED"
 		return 0
 	fi
 
