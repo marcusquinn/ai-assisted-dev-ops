@@ -45,7 +45,12 @@ set -euo pipefail
 [[ "${1:-}" == "api" ]] || exit 1
 endpoint="${2:-}"
 if [[ -n "${GH_FAIL_ENDPOINT:-}" && "$endpoint" == *"${GH_FAIL_ENDPOINT}"* ]]; then
-	exit 1
+	fail_count_file="${FIXTURES}/gh-fail-count"
+	fail_count=0
+	[[ ! -f "$fail_count_file" ]] || fail_count=$(<"$fail_count_file")
+	fail_count=$((fail_count + 1))
+	printf '%s\n' "$fail_count" >"$fail_count_file"
+	[[ "$fail_count" -le "${GH_FAIL_ENDPOINT_AFTER:-0}" ]] || exit 1
 fi
 case "$endpoint" in
 	user) printf '%s\n' "${GH_AUTH_USER:-maintainer}" ;;
@@ -473,7 +478,8 @@ test_locked_issue_tier_backfill_continuity() {
 	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	append_issue_timeline_event '{"id":42115,"node_id":"EV_42115","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
 	rc=0
-	output=$(GH_FAIL_ENDPOINT="issues/41/timeline" run_verify issue 41) || rc=$?
+	rm -f "${FIXTURES}/gh-fail-count"
+	output=$(GH_FAIL_ENDPOINT="issues/41/timeline" GH_FAIL_ENDPOINT_AFTER=1 run_verify issue 41) || rc=$?
 	if [[ "$output" == "API_ERROR" && "$rc" -eq 6 ]]; then
 		print_result "tier backfill timeline uncertainty fails closed" 0
 	else
