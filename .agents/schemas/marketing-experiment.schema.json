@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidevops.local/schemas/marketing-experiment.schema.json",
+  "title": "Marketing Experiment v1",
+  "description": "Preregistered aggregate marketing experiment and immutable decision audit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "experiment_id", "version", "state", "hypothesis", "owner", "assignment", "variants", "metrics", "sample_policy", "window", "stopping_policy", "exclusions", "analysis", "decision"],
+  "properties": {
+    "schema": {"const": "aidevops.marketing-experiment/v1"},
+    "experiment_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"},
+    "version": {"type": "integer", "minimum": 1},
+    "state": {"enum": ["draft", "approved", "running", "analysis_ready", "decided", "archived"]},
+    "hypothesis": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "owner": {"type": "string", "minLength": 1, "maxLength": 128},
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "method", "control_variant"],
+      "properties": {
+        "unit": {"enum": ["anonymous_subject", "account", "session", "aggregate_cohort"]},
+        "method": {"enum": ["deterministic_hash", "provider_randomized", "preassigned_cohort"]},
+        "control_variant": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "variants": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "guardrails"],
+      "properties": {
+        "primary": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"},
+        "guardrails": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"}}
+      }
+    },
+    "sample_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_per_variant", "privacy_minimum", "confidence_threshold"],
+      "properties": {
+        "minimum_per_variant": {"type": "integer", "minimum": 2},
+        "privacy_minimum": {"type": "integer", "minimum": 2},
+        "confidence_threshold": {"type": "number", "minimum": 0.5, "maximum": 0.9999}
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["starts_at", "ends_at", "minimum_days"],
+      "properties": {
+        "starts_at": {"type": "string", "format": "date-time"},
+        "ends_at": {"type": "string", "format": "date-time"},
+        "minimum_days": {"type": "integer", "minimum": 1}
+      }
+    },
+    "stopping_policy": {"type": "string", "minLength": 1, "maxLength": 512},
+    "exclusions": {"type": "array", "items": {"type": "string", "maxLength": 256}},
+    "analysis": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/analysis"}]},
+    "decision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/decision"}]}
+  },
+  "$defs": {
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["analysis_id", "run_id", "source_snapshot", "status", "reason", "observed_at", "variants", "peeking_detected"],
+      "properties": {
+        "analysis_id": {"type": "string", "pattern": "^mkt-experiment-analysis-v1:[a-f0-9]{64}$"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "source_snapshot": {"type": "string", "minLength": 1, "maxLength": 256},
+        "status": {"enum": ["insufficient_evidence", "no_material_difference", "candidate_winner", "guardrail_regression", "contradictory"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "variants": {"type": "array", "items": {"type": "object"}},
+        "peeking_detected": {"type": "boolean"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "selected_variant", "decided_at", "decided_by", "rationale"],
+      "properties": {
+        "status": {"enum": ["adopt", "retain_control", "continue", "stop", "inconclusive"]},
+        "selected_variant": {"type": ["string", "null"]},
+        "decided_at": {"type": "string", "format": "date-time"},
+        "decided_by": {"type": "string", "minLength": 1, "maxLength": 128},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 1000}
+      }
+    }
+  }
+}

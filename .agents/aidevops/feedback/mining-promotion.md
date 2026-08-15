@@ -130,6 +130,22 @@ Approved mined themes route to the smallest durable surface that can use them.
 | `_performance/` annotations | Feedback explains, qualifies, or challenges a metric movement, experiment result, incident trend, campaign result, or business KPI. | Metric or result ID, observation window, feedback theme, evidence count, segment/channel, source capture IDs, confidence, and sensitivity tier. | Qualitative annotations contextualize numbers; they do not replace measurements. Link to the metric artifact rather than duplicating dashboards. |
 | TODO / GitHub task | Mined feedback reveals actionable work: a bug, missing doc, product gap, process gap, follow-up investigation, or automation opportunity with enough context for a worker. | Public-safe title, worker-ready problem statement, sanitized evidence summary, affected files or discovery path when known, verification expectation, source theme ID, and privacy review result. | Public repos must never contain private/client names, local paths, raw quotes, emails, or sensitive evidence. Use placeholders and keep detailed evidence in `_feedback/` or a private plane. |
 
+### Validated growth learning
+
+An attribution projection or recommendation is not automatically durable
+learning. Promote a growth insight only after a reviewed experiment decision or
+repeated evidence has met the applicable sample, privacy, freshness, and
+contradiction gates. Carry forward the experiment/analysis or recommendation ID,
+aggregate evidence count, source snapshot, metric, model/window assumptions,
+confidence, caveat, owner decision, and retest date.
+
+Promoted knowledge contains the smallest reusable conclusion and a pointer to
+the governed evidence bundle. It never contains raw journeys, subject IDs,
+small-cohort breakdowns, private excerpts, contact destinations, or provider
+payloads. Observational attribution is labelled as a hypothesis-generating
+signal, not a causal result. Superseding evidence appends a new insight or marks
+the old recommendation superseded; it does not erase the prior audit record.
+
 ### Durable insights: `_knowledge/insights/`
 
 Promote to knowledge when the feedback is useful outside the immediate workflow.
