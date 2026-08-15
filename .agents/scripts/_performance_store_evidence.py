@@ -9,6 +9,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
+from _performance_store_types import EvidenceWriteContext
+
 
 def ensure_private_directory(store: Any, path: Path) -> None:
     """Create one private directory without accepting a symlink."""
@@ -40,8 +42,13 @@ def regular_file_digest(store: Any, path: Path) -> str:
             os.close(descriptor)
 
 
-def write_raw(store: Any, source: str, account_ref: str, digest: str, suffix: str, raw_bytes: bytes) -> tuple[Path, bool]:
+def write_raw(store: Any, context: EvidenceWriteContext) -> tuple[Path, bool]:
     """Publish one content-addressed evidence artifact without replacement."""
+    source = context.source
+    account_ref = context.account_ref
+    digest = context.digest
+    suffix = context.suffix
+    raw_bytes = context.raw_bytes
     source_directory = store.paths.raw / source
     directory = source_directory / account_ref
     for private_directory in (store.paths.raw, source_directory, directory):
