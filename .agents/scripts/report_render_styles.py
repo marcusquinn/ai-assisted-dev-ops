@@ -5,73 +5,34 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-STYLE_SLUGS = (
-    "axel",
-    "arxiv",
-    "wikipedia",
-    "medium",
-    "ghost",
-    "ulysses",
-    "ia",
-    "docuseal",
-    "times",
-    "consumer",
-    "tavily",
-    "supermemory",
-    "savvy",
-    "exsqueezeme",
-    "mellowyellow",
-    "terminalshop",
-    "scalefusion",
-    "zeroheight",
-    "superx",
-    "wpcodebox",
-    "outrank",
-    "lottiefiles",
-    "knob",
-    "postedapp",
-    "serper",
-    "indexsy",
-    "lifee",
-    "bento",
-    "ibm",
-    "apple",
-    "cabinet",
-    "heron",
-    "usgraphics",
-    "signal-agency",
+SCRIPT_DIRECTORY = str(Path(__file__).resolve().parent)
+if SCRIPT_DIRECTORY not in sys.path:
+    sys.path.insert(0, SCRIPT_DIRECTORY)
+
+from _report_render_brand_styles import (
+    DEFAULT_TOKENS,
+    _front_matter,
+    _parse_tokens,
+    ensure_contrast as _ensure_contrast,
+    hex_to_rgb as _hex_to_rgb,
+    relative_luminance as _relative_luminance,
+    tokens_for,
+)
+
+__all__ = ["_front_matter"]
+
+STYLE_SLUGS = tuple(
+    """axel arxiv wikipedia medium ghost ulysses ia docuseal times consumer
+    tavily supermemory savvy exsqueezeme mellowyellow terminalshop scalefusion
+    zeroheight superx wpcodebox outrank lottiefiles knob postedapp serper indexsy
+    lifee bento ibm apple cabinet heron usgraphics signal-agency""".split()
 )
 
 STYLE_SLUG_SET = frozenset(STYLE_SLUGS)
 SORTED_STYLE_SLUGS = tuple(sorted(STYLE_SLUG_SET))
-
-TOKEN_SECTION_PREFIXES = {
-    "colors": "",
-    "rounded": "rounded.",
-    "typography": "",
-}
-
-DEFAULT_TOKENS = {
-    "background": "#f8f6f1",
-    "surface": "#ffffff",
-    "on-surface": "#111827",
-    "muted": "#4b5563",
-    "outline": "#d1d5db",
-    "primary": "#2563eb",
-    "primary-container": "#dbeafe",
-    "headline-display.fontFamily": 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif',
-    "headline-display.fontSize": "64px",
-    "headline-display.fontWeight": "650",
-    "headline-display.lineHeight": "1.05",
-    "headline-display.letterSpacing": "-0.03em",
-    "body-md.fontFamily": 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif',
-    "body-md.fontSize": "16px",
-    "body-md.lineHeight": "1.62",
-    "code-md.fontFamily": '"IBM Plex Mono", "SFMono-Regular", Consolas, monospace',
-    "rounded.lg": "12px",
-}
 
 SIGNAL_AGENCY_FONT_IMPORT = """@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
 """
@@ -81,192 +42,14 @@ FONT_IMPORTS = {
 }
 
 
-def _brand_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "tools" / "design" / "library" / "brands"
-
-
 def _base_report_css() -> str:
     return (Path(__file__).resolve().parents[1] / "templates" / "reports" / "llm-visibility-report.css").read_text(
         encoding="utf-8"
     )
 
 
-def _front_matter(path: Path) -> list[str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    start = -1
-    for index, line in enumerate(lines[:100]):
-        if line.strip() == "---":
-            start = index
-            break
-    if start == -1:
-        return []
-    for index, line in enumerate(lines[start + 1 :], start=start + 1):
-        if line.strip() == "---":
-            return lines[start + 1 : index]
-    return []
-
-
-def _clean(value: str) -> str:
-    return value.strip().strip('"').strip("'")
-
-
-def _hex_to_rgb(value: str) -> tuple[float, float, float] | None:
-    raw = value.strip()
-    if not raw.startswith("#"):
-        return None
-    raw = raw[1:]
-    if len(raw) == 3:
-        raw = "".join(ch * 2 for ch in raw)
-    if len(raw) != 6:
-        return None
-    try:
-        return tuple(int(raw[index : index + 2], 16) / 255 for index in (0, 2, 4))  # type: ignore[return-value]
-    except ValueError:
-        return None
-
-
-def _rgb_to_hex(rgb: tuple[float, float, float]) -> str:
-    return "#" + "".join(f"{round(max(0, min(1, channel)) * 255):02X}" for channel in rgb)
-
-
-def _relative_luminance(rgb: tuple[float, float, float]) -> float:
-    def channel(value: float) -> float:
-        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
-
-    r, g, b = (channel(value) for value in rgb)
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-
-def _contrast_ratio(fg: tuple[float, float, float], bg: tuple[float, float, float]) -> float:
-    light = max(_relative_luminance(fg), _relative_luminance(bg))
-    dark = min(_relative_luminance(fg), _relative_luminance(bg))
-    return (light + 0.05) / (dark + 0.05)
-
-
-def _mix(rgb: tuple[float, float, float], target: tuple[float, float, float], amount: float) -> tuple[float, float, float]:
-    return tuple(channel + (target[index] - channel) * amount for index, channel in enumerate(rgb))  # type: ignore[return-value]
-
-
-def _ensure_contrast(fg_value: str, bg_value: str, minimum: float) -> str:
-    fg = _hex_to_rgb(fg_value)
-    bg = _hex_to_rgb(bg_value)
-    if fg is None or bg is None or _contrast_ratio(fg, bg) >= minimum:
-        return fg_value
-    target = (1.0, 1.0, 1.0) if _relative_luminance(bg) < 0.45 else (0.0, 0.0, 0.0)
-    adjusted = fg
-    for step in range(1, 21):
-        adjusted = _mix(fg, target, step / 20)
-        if _contrast_ratio(adjusted, bg) >= minimum:
-            return _rgb_to_hex(adjusted)
-    return _rgb_to_hex(adjusted)
-
-
-def _accessible_tokens(tokens: dict[str, str]) -> dict[str, str]:
-    adjusted = dict(tokens)
-    surface = adjusted.get("surface", adjusted["background"])
-    adjusted["on-surface"] = _ensure_contrast(adjusted["on-surface"], surface, 4.5)
-    adjusted["muted"] = _ensure_contrast(adjusted["muted"], surface, 4.5)
-    adjusted["primary"] = _ensure_contrast(adjusted["primary"], surface, 4.5)
-    adjusted["outline"] = _ensure_contrast(adjusted["outline"], surface, 2.0)
-    if "surface-dark" in adjusted:
-        dark_surface = adjusted.get("surface-dark", adjusted.get("background-dark", surface))
-        adjusted["on-surface-dark"] = _ensure_contrast(adjusted.get("on-surface-dark", "#ffffff"), dark_surface, 4.5)
-        adjusted["muted-dark"] = _ensure_contrast(adjusted.get("muted-dark", "#cbd5e1"), dark_surface, 4.5)
-        adjusted["primary-dark"] = _ensure_contrast(adjusted.get("primary-dark", adjusted["primary"]), dark_surface, 4.5)
-        adjusted["outline-dark"] = _ensure_contrast(adjusted.get("outline-dark", "#334155"), dark_surface, 2.0)
-    return adjusted
-
-
-def _parse_mapping(line: str, prefix: str = "") -> tuple[str, str] | None:
-    if ":" not in line:
-        return None
-    key, value = line.split(":", 1)
-    return f"{prefix}{key.strip()}", _clean(value)
-
-
-def _indent_width(line: str) -> int:
-    width = 0
-    for char in line:
-        if char == " ":
-            width += 1
-            continue
-        if char == "\t":
-            width += 4
-            continue
-        break
-    return width
-
-
-def _parse_nested_mapping(lines: list[str]) -> dict[str, object]:
-    root: dict[str, object] = {}
-    stack: list[tuple[int, dict[str, object]]] = []
-    for line in lines:
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        stripped = line.strip()
-        parsed = _parse_mapping(stripped)
-        if parsed is None:
-            continue
-        key, value = parsed
-        indent = _indent_width(line)
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        parent = stack[-1][1] if stack else root
-        if stripped.endswith(":") and value == "":
-            child: dict[str, object] = {}
-            parent[key] = child
-            stack.append((indent, child))
-            continue
-        parent[key] = value
-    return root
-
-
-def _flatten_token_mapping(value: object, prefix: str = "") -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    flattened: dict[str, str] = {}
-    for key, item in value.items():
-        token_key = f"{prefix}{key}"
-        if isinstance(item, dict):
-            flattened.update(_flatten_token_mapping(item, f"{token_key}."))
-            continue
-        flattened[token_key] = str(item)
-    return flattened
-
-
-def _parse_section_header(stripped: str, indent: int) -> tuple[str, str] | None:
-    if indent == 0 and stripped.endswith(":"):
-        return stripped[:-1], ""
-    return None
-
-
-def _parse_section_token(section: str, nested: str, stripped: str, indent: int) -> tuple[str, tuple[str, str] | None]:
-    prefix_by_section = {"colors": "", "rounded": "rounded."}
-    if section in prefix_by_section and indent == 2:
-        return nested, _parse_mapping(stripped, prefix_by_section[section])
-    if section == "typography":
-        next_nested, key, value = _parse_typography_line(stripped, nested, indent)
-        return next_nested, (key, value) if value is not None else None
-    return nested, None
-
-
-def _parse_tokens(lines: list[str]) -> dict[str, str]:
-    tokens: dict[str, str] = {}
-    document = _parse_nested_mapping(lines)
-    for section, prefix in TOKEN_SECTION_PREFIXES.items():
-        tokens.update(_flatten_token_mapping(document.get(section), prefix))
-    return tokens
-
-
 def _tokens_for(name: str) -> dict[str, str]:
-    if name not in STYLE_SLUG_SET:
-        raise ValueError(f"Invalid style name: {name}")
-
-    path = _brand_root() / name / "DESIGN.md"
-    tokens = dict(DEFAULT_TOKENS)
-    if path.exists():
-        tokens.update(_parse_tokens(_front_matter(path)))
-    return _accessible_tokens(tokens)
+    return tokens_for(name, STYLE_SLUG_SET)
 
 
 def _dark_variable_css(tokens: dict[str, str], selector: str) -> str:

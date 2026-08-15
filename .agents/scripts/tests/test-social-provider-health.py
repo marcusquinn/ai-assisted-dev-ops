@@ -115,10 +115,14 @@ class SocialProviderHealthTests(unittest.TestCase):
         connection_id: str,
         provider: str,
         remote_account_id: str,
-        *,
-        configured: bool = True,
-        streams: tuple[str, ...] = ("authored",),
+        **options: object,
     ) -> None:
+        configured = bool(options.pop("configured", True))
+        streams = options.pop("streams", ("authored",))
+        if options:
+            raise TypeError(f"unexpected connection option: {sorted(options)[0]}")
+        if not isinstance(streams, tuple):
+            raise TypeError("connection streams must be a tuple")
         self.database.execute(
             "INSERT INTO connections(connection_id,provider,remote_account_id,"
             "auth_profile_ref,enabled_streams,policy_json) VALUES(?,?,?,?,?,?)",
@@ -137,11 +141,13 @@ class SocialProviderHealthTests(unittest.TestCase):
         connection_id: str,
         account_id: str,
         operation_id: str,
-        *,
-        payload: str = "private fixture body",
-        approved: bool = True,
-        created_at: int = NOW - 30,
+        **options: object,
     ) -> None:
+        payload = str(options.pop("payload", "private fixture body"))
+        approved = bool(options.pop("approved", True))
+        created_at = int(options.pop("created_at", NOW - 30))
+        if options:
+            raise TypeError(f"unexpected operation option: {sorted(options)[0]}")
         provider = self.database.execute(
             "SELECT provider FROM connections WHERE connection_id=?", (connection_id,)
         ).fetchone()[0]

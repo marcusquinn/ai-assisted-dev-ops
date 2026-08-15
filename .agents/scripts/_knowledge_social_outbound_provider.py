@@ -6,99 +6,32 @@
 from __future__ import annotations
 
 import json
-import math
-import os
 import subprocess
-import sys
-import time
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from urllib.request import HTTPRedirectHandler, build_opener
 
 from _knowledge_social_outbound import ClaimedOperation
 from _knowledge_social_x import XAdapterError, response_status
 from _knowledge_social_x_reader import GuardedXurl, verified_identity
-from knowledge_social_import import canonical_json, reject_credentials
+from _knowledge_social_provider_common import (
+    DEFAULT_PROVIDER_RETRY_SECONDS,
+    MAX_PROVIDER_OUTPUT_BYTES,
+    MAX_PROVIDER_RETRY_SECONDS,
+    WRITE_TIMEOUT_SECONDS,
+    PreparedProvider,
+    ProviderAdapterError,
+    ProviderIdentityError,
+    ProviderRateLimitError,
+    provider_retry_seconds,
+    raise_for_provider_rate_limit,
+    redirect_free_provider_open,
+)
+from _knowledge_social_reddit_outbound_provider import prepare_reddit
+from knowledge_social_import import reject_credentials
 from knowledge_social_store import SocialStoreError, validate_opaque
 
-WRITE_TIMEOUT_SECONDS = 120
-MAX_PROVIDER_OUTPUT_BYTES = 1024 * 1024
-MAX_PROVIDER_RETRY_SECONDS = 31 * 24 * 60 * 60
-DEFAULT_PROVIDER_RETRY_SECONDS = 60
-
-
-class ProviderAdapterError(RuntimeError):
-    """Raised when an approved operation cannot be mapped to safe provider argv."""
-
-
-class ProviderIdentityError(RuntimeError):
-    """Raised when the selected provider account cannot be verified safely."""
-
-
-class ProviderRateLimitError(RuntimeError):
-    """Raised with bounded provider reset evidence after an HTTP rate limit."""
-
-    def __init__(self, retry_after_seconds: int | None):
-        super().__init__("provider rate limit")
-        self.retry_after_seconds = retry_after_seconds
-
-
-def provider_retry_seconds(
-    value: str | None, current_time: float | None = None
-) -> int | None:
-    """Parse one provider Retry-After duration or HTTP date into a bounded delay."""
-    if value is None or not isinstance(value, str) or len(value) > 128:
-        return None
-    parsed_date = False
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        parsed_date = True
-        try:
-            parsed = parsedate_to_datetime(value)
-            if parsed.utcoffset() is None:
-                return None
-            seconds = parsed.timestamp() - (
-                time.time() if current_time is None else current_time
-            )
-        except (OverflowError, TypeError, ValueError):
-            return None
-    if not math.isfinite(seconds):
-        return None
-    if seconds < 0:
-        return 0 if parsed_date else None
-    return min(math.ceil(seconds), MAX_PROVIDER_RETRY_SECONDS)
-
-
-def raise_for_provider_rate_limit(status: int, headers: Any) -> None:
-    """Raise only when a provider response supplies an HTTP 429 classification."""
-    if status == 429:
-        retry_after = headers.get("Retry-After") if headers is not None else None
-        raise ProviderRateLimitError(provider_retry_seconds(retry_after))
-
-
-class RejectProviderRedirect(HTTPRedirectHandler):
-    """Reject redirects before urllib can forward provider authorization headers."""
-
-    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-
-def redirect_free_provider_open(request: Any, **kwargs: Any) -> Any:
-    """Open one provider request without following any redirect."""
-    return build_opener(RejectProviderRedirect()).open(request, **kwargs)
-
-
-class PreparedProvider(Protocol):
-    """One validated provider selection for an immutable claimed operation."""
-
-    def verify_identity(self) -> None:
-        """Verify the selected provider identity before the write boundary."""
-
-    def invoke(self) -> tuple[str | None, str | None]:
-        """Invoke one approved write and return only a safe receipt classification."""
+__all__ = ["DEFAULT_PROVIDER_RETRY_SECONDS", "prepare_provider"]
 
 
 def _profile_args(claimed: ClaimedOperation) -> list[str]:
@@ -217,172 +150,12 @@ class XPreparedProvider:
         return invoke_provider(self.helper, self.claimed)
 
 
-def _reddit_response_id(output: str) -> str:
-    if len(output.encode("utf-8")) > MAX_PROVIDER_OUTPUT_BYTES:
-        raise ProviderAdapterError("Reddit write response exceeds the safety limit")
-    try:
-        response = json.loads(output)
-    except json.JSONDecodeError as error:
-        raise ProviderAdapterError("Reddit write response is not valid JSON") from error
-    if not isinstance(response, dict):
-        raise ProviderAdapterError("Reddit write response root must be an object")
-    reject_credentials(response)
-    data = response.get("data")
-    remote_id = data.get("id") if isinstance(data, dict) else None
-    if not isinstance(remote_id, str):
-        raise ProviderAdapterError("Reddit write response has no stable remote ID")
-    return validate_opaque(remote_id, "provider_remote_id")
-
-
-@dataclass(frozen=True)
-class RedditPreparedProvider:
-    """Prepared bounded PRAW subprocess invocation for one claimed operation."""
-
-    helper: Path
-    claimed: ClaimedOperation
-
-    def _environment(self) -> dict[str, str]:
-        if self.claimed.app_profile is None:
-            raise ProviderAdapterError("Reddit operation has no auth profile")
-        profile_prefix = f"REDDIT_{self.claimed.app_profile.upper()}_"
-        credential_names = {
-            f"{profile_prefix}{field}"
-            for field in (
-                "CLIENT_ID",
-                "CLIENT_SECRET",
-                "PASSWORD",
-                "USER_AGENT",
-                "USERNAME",
-            )
-        }
-        inherited = {
-            "HOME",
-            "HTTPS_PROXY",
-            "HTTP_PROXY",
-            "LANG",
-            "LC_ALL",
-            "NO_PROXY",
-            "PATH",
-            "REQUESTS_CA_BUNDLE",
-            "SSL_CERT_FILE",
-            "TMPDIR",
-            "https_proxy",
-            "http_proxy",
-            "no_proxy",
-        }
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if key in inherited or key in credential_names
-        }
-        if os.environ.get("AIDEVOPS_TEST_MODE") == "1":
-            for key in (
-                "AIDEVOPS_TEST_MODE",
-                "PYTHONPATH",
-                "REDDIT_LOG",
-                "REDDIT_MODE",
-            ):
-                if key in os.environ:
-                    environment[key] = os.environ[key]
-        return environment
-
-    def _run(
-        self, request: dict[str, str], *, confirm_write: bool
-    ) -> subprocess.CompletedProcess[str]:
-        if self.claimed.app_profile is None:
-            raise ProviderAdapterError("Reddit operation has no auth profile")
-        command = [
-            sys.executable,
-            str(self.helper),
-            "--profile",
-            self.claimed.app_profile,
-        ]
-        if confirm_write:
-            command.append("--confirm-write")
-        return subprocess.run(  # nosec B603 -- fixed local helper and fixed argv
-            command,
-            check=False,
-            capture_output=True,
-            input=canonical_json(request),
-            env=self._environment(),
-            text=True,
-            timeout=WRITE_TIMEOUT_SECONDS,
-        )
-
-    def verify_identity(self) -> None:
-        try:
-            completed = self._run({"action": "identity"}, confirm_write=False)
-            if completed.returncode != 0:
-                raise ProviderIdentityError(
-                    "selected provider identity could not be verified"
-                )
-            remote_id = _reddit_response_id(completed.stdout)
-            if remote_id != self.claimed.remote_account_id:
-                raise ProviderIdentityError(
-                    "selected provider identity does not match the approved account"
-                )
-        except ProviderIdentityError:
-            raise
-        except (
-            OSError,
-            ProviderAdapterError,
-            SocialStoreError,
-            subprocess.SubprocessError,
-            UnicodeError,
-        ) as error:
-            raise ProviderIdentityError(
-                "selected provider identity could not be verified"
-            ) from error
-
-    def _write_request(self) -> dict[str, str]:
-        request = {"action": self.claimed.action}
-        if self.claimed.action == "post":
-            if (
-                self.claimed.destination_remote_id is None
-                or self.claimed.subject is None
-                or self.claimed.payload is None
-            ):
-                raise ProviderAdapterError("Reddit post has an invalid action shape")
-            request.update(
-                {
-                    "destination": self.claimed.destination_remote_id,
-                    "subject": self.claimed.subject,
-                    "payload": self.claimed.payload,
-                }
-            )
-            return request
-        if self.claimed.target_remote_id is None:
-            raise ProviderAdapterError("Reddit engagement has no target ID")
-        request["target"] = self.claimed.target_remote_id
-        if self.claimed.action == "reply":
-            if self.claimed.payload is None:
-                raise ProviderAdapterError("Reddit reply has no body")
-            request["payload"] = self.claimed.payload
-        elif self.claimed.action not in ("like", "bookmark"):
-            raise ProviderAdapterError("Reddit outbound action is unsupported")
-        return request
-
-    def invoke(self) -> tuple[str | None, str | None]:
-        try:
-            completed = self._run(self._write_request(), confirm_write=True)
-        except (OSError, ProviderAdapterError, subprocess.SubprocessError, UnicodeError):
-            return None, "provider_unavailable"
-        if completed.returncode != 0:
-            return None, "provider_unavailable"
-        try:
-            return _reddit_response_id(completed.stdout), None
-        except (ProviderAdapterError, SocialStoreError, UnicodeError):
-            return None, "validation"
-
-
 def _prepare_x(claimed: ClaimedOperation) -> PreparedProvider:
     return XPreparedProvider(Path(__file__).with_name("xurl-helper.sh"), claimed)
 
 
 def _prepare_reddit(claimed: ClaimedOperation) -> PreparedProvider:
-    return RedditPreparedProvider(
-        Path(__file__).with_name("_knowledge_social_reddit_provider.py"), claimed
-    )
+    return prepare_reddit(claimed)
 
 
 def _prepare_meta(claimed: ClaimedOperation) -> PreparedProvider:
