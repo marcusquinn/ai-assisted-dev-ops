@@ -43,22 +43,22 @@ This issue retains `parent-task` and is never closed by an individual child PR. 
 - **Rationale:** Planning-only parent; implementation seeds belong on leaf issues only.
 - **Status:** `not-created`
 - **Freshness evidence:** Repository and GitHub discovery completed against `45cd1150e`.
-- **Verification run:** `UNVERIFIED — planning only`
+- **Verification run:** Completed 2026-08-15 — all phase issues closed; campaign-growth 6/6 and status-routing 2/2 tests pass; corrective PR #30282 passed every required gate.
 - **Stale-assumption warning:** Reconcile child order if provider APIs or prerequisite contracts change.
 
 ## Phases
 
-- Phase 1 - t18228 / #30135 — define evidence-backed brand, product, and offer campaign intake
-- Phase 2 - t18231 / #30137 — build structured audience, competitor, creator, trend, and channel research dossiers [auto-fire:on-prior-merge]
-- Phase 3 - t18234 / #30140 — generate authentic branded campaign briefs and production manifests [auto-fire:on-prior-merge]
-- Phase 4 - t18233 / #30139 — harden campaign asset provenance, review, and production gates [auto-fire:on-prior-merge]
-- Phase 5 - t18232 / #30138 — bridge reviewed campaign schedules into the approval-bound outbound queue [auto-fire:on-prior-merge]
-- Phase 6A - t18237 / #30143 — add approval-bound Meta and TikTok publishing adapters [auto-fire:on-prior-merge]
-- Phase 6B - t18235 / #30141 — add approval-bound LinkedIn and YouTube publishing adapters [auto-fire:on-prior-merge]
-- Phase 7 - t18238 / #30144 — add provider health, rate-limit, and receipt reconciliation [auto-fire:on-prior-merge]
-- Phase 8 - t18236 / #30142 — implement normalized performance, lead, and revenue ingestion [auto-fire:on-prior-merge]
-- Phase 9 - t18240 / #30147 — add privacy-safe attribution, experiments, reporting, and growth recommendations [auto-fire:on-prior-merge]
-- Phase 10 - t18239 / #30146 — integrate the end-to-end command and fixture-backed verification scenario [auto-fire:on-prior-merge]
+- Phase 1 - t18228 — define evidence-backed brand, product, and offer campaign intake #30135
+- Phase 2 - t18231 — build structured audience, competitor, creator, trend, and channel research dossiers [auto-fire:on-prior-merge] #30137
+- Phase 3 - t18234 — generate authentic branded campaign briefs and production manifests [auto-fire:on-prior-merge] #30140
+- Phase 4 - t18233 — harden campaign asset provenance, review, and production gates [auto-fire:on-prior-merge] #30139
+- Phase 5 - t18232 — bridge reviewed campaign schedules into the approval-bound outbound queue [auto-fire:on-prior-merge] #30138
+- Phase 6A - t18237 — add approval-bound Meta and TikTok publishing adapters [auto-fire:on-prior-merge] #30143
+- Phase 6B - t18235 — add approval-bound LinkedIn and YouTube publishing adapters [auto-fire:on-prior-merge] #30141
+- Phase 7 - t18238 — add provider health, rate-limit, and receipt reconciliation [auto-fire:on-prior-merge] #30144
+- Phase 8 - t18236 — implement normalized performance, lead, and revenue ingestion [auto-fire:on-prior-merge] #30142
+- Phase 9 - t18240 — add privacy-safe attribution, experiments, reporting, and growth recommendations [auto-fire:on-prior-merge] #30147
+- Phase 10 - t18239 — integrate the end-to-end command and fixture-backed verification scenario [auto-fire:on-prior-merge] #30146
 
 ## How (Approach)
 
@@ -127,13 +127,20 @@ for brief in todo/tasks/t182{28,30,31,32,33,34,35,36,37,38,39,40}-brief.md; do .
 - `todo/tasks/t18239-brief.md`
 - `todo/tasks/t18240-brief.md`
 
+## Completion Evidence
+
+- All 11 declared phases are native sub-issues of #30136 and are closed with no active dependency blockers.
+- Phase 9's original delivery in PR #30266 was completed by the privacy-safe corrective implementation in #30275 / PR #30282.
+- Final integration shipped in PR #30272; its hermetic campaign-growth and status-routing suites pass against the corrected Phase 9 head.
+- Required CI, Qlty, SonarCloud, maintainer, and review-bot gates passed for the corrective implementation without quality overrides.
+
 ## Acceptance Criteria
 
-- [ ] Every phase has a substantive schema-v2 leaf brief, native parent linkage, and verifiable dependency state.
-- [ ] The parent never receives `auto-dispatch`; only ready leaves are available.
-- [ ] The roadmap reuses existing first-party owners and does not introduce duplicate generic media, UGC, scheduler, publisher, CRM, or analytics agents.
-- [ ] The final system preserves human approval for publishing, outreach, budget, audience, offer, and other consequential mutations.
-- [ ] The final integration scenario proves intake → research → brief → production → review → approved distribution → receipt → outcomes → recommendation, including negative and recovery paths.
+- [x] Every phase has a substantive schema-v2 leaf brief, native parent linkage, and verifiable dependency state.
+- [x] The parent never receives `auto-dispatch`; only ready leaves are available.
+- [x] The roadmap reuses existing first-party owners and does not introduce duplicate generic media, UGC, scheduler, publisher, CRM, or analytics agents.
+- [x] The final system preserves human approval for publishing, outreach, budget, audience, offer, and other consequential mutations.
+- [x] The final integration scenario proves intake → research → brief → production → review → approved distribution → receipt → outcomes → recommendation, including negative and recovery paths.
 
 ## Context & Decisions
 
