@@ -35,7 +35,11 @@ from performance_store_schema import (
 )
 from _performance_store_ingest import ingest as _ingest
 from _performance_store_state import update_source_state as _update_source_state
-from _performance_store_types import GovernanceContext, QuarantineContext
+from _performance_store_types import (
+    GovernanceContext,
+    QuarantineContext,
+    SourceStateContext,
+)
 
 
 class PerformanceStoreError(PerformanceContractError):
@@ -567,7 +571,8 @@ class MarketingPerformanceStore:
     ) -> bool:
         """Advance only monotonic source observations and successful checkpoints."""
         return _update_source_state(
-            self, adapter, header, evidence_ref, recorded_at, partial
+            self,
+            SourceStateContext(adapter, header, evidence_ref, recorded_at, partial),
         )
 
     def _checkpoint_conflicts(self, header: dict[str, Any]) -> bool:

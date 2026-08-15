@@ -26,3 +26,12 @@ class GovernanceContext:
     account_ref: str
     observed_at: str
     evidence_ref: str
+
+
+@dataclass(frozen=True)
+class SourceStateContext:
+    adapter: str
+    header: dict[str, Any]
+    evidence_ref: str
+    recorded_at: str
+    partial: bool
