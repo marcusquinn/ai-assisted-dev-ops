@@ -471,6 +471,17 @@ test_locked_issue_tier_backfill_continuity() {
 
 	write_locked_issue_fixture false
 	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42115,"node_id":"EV_42115","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	rc=0
+	output=$(GH_FAIL_ENDPOINT="issues/41/timeline" run_verify issue 41) || rc=$?
+	if [[ "$output" == "API_ERROR" && "$rc" -eq 6 ]]; then
+		print_result "tier backfill timeline uncertainty fails closed" 0
+	else
+		print_result "tier backfill timeline uncertainty fails closed" 1 "expected=API_ERROR/6, actual=${output}/${rc}"
+	fi
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	append_issue_timeline_event '{"id":4212,"node_id":"EV_4212","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":2,"login":"contributor","type":"User"},"label":{"name":"tier:standard"}}'
 	assert_verify "untrusted tier backfill remains stale" issue 41 STALE_APPROVAL 4
 
