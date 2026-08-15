@@ -1144,6 +1144,32 @@ _ci_repair_session_identity() {
 }
 
 #######################################
+# Resolve CI repair identity from the active gh credential context.
+# Caller-provided environment identity is never accepted as authority.
+#######################################
+_ci_repair_resolve_runner_login() {
+	local runner_login=""
+
+	# #aidevops:trust-boundary — bind worker ownership to authenticated GitHub
+	# identity rather than a mutable environment variable.
+	runner_login=$(gh api user --jq '.login // ""' 2>/dev/null || true)
+	if [[ "$runner_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		printf '%s\n' "$runner_login"
+		return 0
+	fi
+
+	runner_login=$(gh api graphql \
+		-f 'query=query { viewer { login } }' \
+		--jq '.data.viewer.login // ""' 2>/dev/null || true)
+	if [[ "$runner_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		printf '%s\n' "$runner_login"
+		return 0
+	fi
+
+	return 1
+}
+
+#######################################
 # Launch through the runtime's native detach path and publish its process identity.
 #######################################
 _ci_repair_launch_worker() {
@@ -1164,16 +1190,21 @@ _ci_repair_launch_worker() {
 	local process_start=""
 	local session_identity=""
 	local dispatched_status=""
+	local runner_login=""
 	local wait_count=0
 	local wait_max="${AIDEVOPS_CI_REPAIR_SESSION_LOCK_WAIT_STEPS:-200}"
 	local process_pattern="${WORKER_PROCESS_PATTERN:-opencode|claude|Claude}|headless-runtime-helper"
 
 	[[ "$wait_max" =~ ^[0-9]+$ ]] || wait_max=200
+	runner_login=$(_ci_repair_resolve_runner_login) || {
+		printf '%s\n' "[pulse-wrapper] _ci_repair_launch_worker: authenticated GitHub runner identity unavailable for ${repo_slug} PR #${pr_number}; launch blocked" >>"$LOGFILE"
+		return 1
+	}
 	launch_output=$(env \
 		HEADLESS=1 WORKER_ISSUE_NUMBER="$linked_issue" WORKER_REPO_SLUG="$repo_slug" \
 		WORKER_WORKTREE_PATH="$worktree_path" GITHUB_REPOSITORY="$repo_slug" \
 		WORKER_NO_EXIT_PUSH=1 WORKER_PROCESS_PATTERN="$process_pattern" AIDEVOPS_ALLOW_WORKER_WORKTREE_OWNER_TRANSFER=1 \
-		WORKER_GITHUB_LOGIN="${AIDEVOPS_PULSE_RUNNER_LOGIN:-}" \
+		WORKER_GITHUB_LOGIN="$runner_login" \
 		AIDEVOPS_PR_REPAIR_NUMBER="$pr_number" AIDEVOPS_PR_REPAIR_HEAD_SHA="$pr_head_sha" \
 		AIDEVOPS_PR_REPAIR_HEAD_REF="$pr_head_ref" AIDEVOPS_PR_REPAIR_FINGERPRINT="$failure_fingerprint" \
 		AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE="linked-issue" \

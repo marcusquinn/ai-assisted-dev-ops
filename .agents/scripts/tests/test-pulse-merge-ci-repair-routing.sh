@@ -53,11 +53,15 @@ setup_test_env() {
 	unset TEST_INITIAL_PR_HEAD_SHA
 	unset TEST_INITIAL_PR_HEAD_EMPTY
 	unset TEST_WORKTREE_ADD_FAIL
+	unset TEST_GH_REST_FAIL
+	unset TEST_GH_REST_LOGIN
+	unset TEST_GH_GRAPHQL_FAIL
+	unset TEST_GH_GRAPHQL_LOGIN
+	unset AIDEVOPS_PULSE_RUNNER_LOGIN
 	export AIDEVOPS_CI_REPAIR_STATE_DIR="${TEST_ROOT}/repair-state"
 	export AIDEVOPS_CI_REPAIR_WORKTREE_BASE_DIR="${TEST_ROOT}/worktrees"
 	export AIDEVOPS_HEADLESS_RUNTIME_DIR="${TEST_ROOT}/headless-runtime"
 	export AIDEVOPS_CI_REPAIR_SESSION_LOCK_WAIT_STEPS="0"
-	export AIDEVOPS_PULSE_RUNNER_LOGIN="expected-runner"
 	mkdir -p "${TEST_ROOT}/repo"
 	TEST_PR_HEAD_SHA="abcdef0123456789abcdef0123456789abcdef01"
 	export TEST_PR_HEAD_SHA
@@ -204,9 +208,28 @@ if [[ "${1:-} ${2:-}" == "run view" ]]; then
 	esac
 	exit 0
 fi
+
 GHEOF
+	_append_gh_auth_mock_routes
 	_append_gh_mock_routes
 	chmod +x "${TEST_ROOT}/bin/gh"
+	return 0
+}
+
+_append_gh_auth_mock_routes() {
+	cat >>"${TEST_ROOT}/bin/gh" <<'GHEOF'
+	if [[ "${1:-} ${2:-}" == "api user" ]]; then
+		[[ "${TEST_GH_REST_FAIL:-0}" == "1" ]] && exit 1
+		printf '%s\n' "${TEST_GH_REST_LOGIN:-expected-runner}"
+		exit 0
+	fi
+
+	if [[ "${1:-} ${2:-}" == "api graphql" ]]; then
+		[[ "${TEST_GH_GRAPHQL_FAIL:-0}" == "1" ]] && exit 1
+		printf '%s\n' "${TEST_GH_GRAPHQL_LOGIN:-expected-runner}"
+		exit 0
+	fi
+GHEOF
 	return 0
 }
 
@@ -443,6 +466,7 @@ define_feedback_helpers() {
 		_ci_repair_claim_lease
 		_ci_repair_create_worktree
 		_ci_repair_session_identity
+		_ci_repair_resolve_runner_login
 		_ci_repair_launch_worker
 		_ci_repair_write_prompt
 		_ci_repair_legacy_lease_is_active
@@ -755,6 +779,57 @@ test_changes_requested_empty_labels_refresh_current_metadata() {
 		print_result "refreshed empty PR labels preserve review routing" 1 "route_calls=${ROUTE_CALLS}, route_args=${ROUTE_ARGS}"
 	else
 		print_result "empty PR labels refresh current metadata before review routing" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_ci_repair_resolves_authenticated_runner_identity() {
+	setup_test_env
+	define_feedback_helpers || { print_result "defines authenticated CI repair identity helpers" 1 "could not extract feedback helpers"; teardown_test_env; return 0; }
+
+	local resolved_login=""
+	local rc=0
+	resolved_login=$(AIDEVOPS_PULSE_RUNNER_LOGIN="forged-runner" _ci_repair_resolve_runner_login) || rc=$?
+	if [[ "$rc" -eq 0 && "$resolved_login" == "expected-runner" ]]; then
+		print_result "CI repair identity ignores caller environment and uses authenticated REST viewer" 0
+	else
+		print_result "CI repair identity ignores caller environment and uses authenticated REST viewer" 1 "login=${resolved_login:-missing}, rc=${rc}"
+	fi
+
+	rc=0
+	resolved_login=$(TEST_GH_REST_FAIL=1 TEST_GH_GRAPHQL_LOGIN="graphql-runner" _ci_repair_resolve_runner_login) || rc=$?
+	if [[ "$rc" -eq 0 && "$resolved_login" == "graphql-runner" ]]; then
+		print_result "CI repair identity uses authenticated GraphQL viewer fallback" 0
+	else
+		print_result "CI repair identity uses authenticated GraphQL viewer fallback" 1 "login=${resolved_login:-missing}, rc=${rc}"
+	fi
+
+	mkdir -p "${TEST_ROOT}/lease-success"
+	: >"$GH_LOG"
+	rc=0
+	AIDEVOPS_PULSE_RUNNER_LOGIN="forged-runner" _ci_repair_launch_worker \
+		"${TEST_ROOT}/lease-success" "$AIDEVOPS_HEADLESS_RUNTIME_HELPER" "owner/repo" "100" "42" \
+		"$TEST_PR_HEAD_SHA" "feature/repair" "fingerprint" "${TEST_ROOT}/worktrees/repair" \
+		"1" "ci-repair-auth-success" "${TEST_ROOT}/prompt.md" || rc=$?
+	if [[ "$rc" -eq 0 ]] && grep -qF '|expected-runner|run --role worker' "$GH_LOG"; then
+		print_result "authenticated CI repair identity reaches worker launch" 0
+	else
+		print_result "authenticated CI repair identity reaches worker launch" 1 "rc=${rc}, log=$(<"$GH_LOG")"
+	fi
+
+	: >"$GH_LOG"
+	rc=0
+	TEST_GH_REST_FAIL=1 TEST_GH_GRAPHQL_FAIL=1 _ci_repair_launch_worker \
+		"${TEST_ROOT}/lease" "$AIDEVOPS_HEADLESS_RUNTIME_HELPER" "owner/repo" "100" "42" \
+		"$TEST_PR_HEAD_SHA" "feature/repair" "fingerprint" "${TEST_ROOT}/worktrees/repair" \
+		"1" "ci-repair-auth-test" "${TEST_ROOT}/prompt.md" || rc=$?
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "CI repair launch fails closed without authenticated identity" 1 "launch unexpectedly succeeded"
+	elif grep -qF 'run --role worker' "$GH_LOG"; then
+		print_result "CI repair launch fails closed without authenticated identity" 1 "worker helper was invoked"
+	else
+		print_result "CI repair launch fails closed without authenticated identity" 0
 	fi
 	teardown_test_env
 	return 0
@@ -1225,6 +1300,7 @@ main() {
 	test_rest_missing_review_decision_refreshes_before_ci_route
 	test_coderabbit_nits_ok_dismissed_once_before_late_gate
 	test_changes_requested_empty_labels_refresh_current_metadata
+	test_ci_repair_resolves_authenticated_runner_identity
 	test_ci_repair_dedupes_identical_evidence_for_same_head
 	test_ci_repair_dedupes_changed_evidence_for_same_head
 	test_ci_repair_respects_live_legacy_lease
