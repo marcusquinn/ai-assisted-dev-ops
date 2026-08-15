@@ -29,7 +29,6 @@ from _performance_contract_values import (
 from _performance_contract_subjects import (
     normalize_scope as _normalize_scope,
     normalize_subject as _normalize_subject,
-    validate_batch_header,
 )
 from _performance_contract_governance import (
     normalize_governance as _normalize_governance,

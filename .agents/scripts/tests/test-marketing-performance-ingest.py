@@ -107,40 +107,47 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
     @staticmethod
     def normalized_event(
         source_event_id: str,
-        *,
-        event_type: str = "conversion",
-        metric_id: str = "marketing.conversions.total",
-        value: object = 1,
-        unit: str = "conversion",
-        aggregation: str = "sum",
-        currency: str | None = None,
-        occurred_at: str = "2026-08-08T12:00:00Z",
-        correction_of: str | None = None,
-        subject: dict[str, object] | None = None,
-        scope: dict[str, object] | None = None,
-        confidence: str = "high",
-        governance: dict[str, object] | None = None,
+        **overrides: object,
     ) -> dict[str, object]:
+        options = {
+            "event_type": "conversion",
+            "metric_id": "marketing.conversions.total",
+            "value": 1,
+            "unit": "conversion",
+            "aggregation": "sum",
+            "currency": None,
+            "occurred_at": "2026-08-08T12:00:00Z",
+            "correction_of": None,
+            "subject": None,
+            "scope": None,
+            "confidence": "high",
+            "governance": None,
+        }
+        unknown = set(overrides) - set(options)
+        if unknown:
+            raise TypeError(f"unknown normalized event options: {sorted(unknown)}")
+        options.update(overrides)
+        confidence = options["confidence"]
         return {
             "source_event_id": source_event_id,
             "revision": 1,
-            "event_type": event_type,
-            "occurred_at": occurred_at,
-            "correction_of": correction_of,
-            "subject": subject
+            "event_type": options["event_type"],
+            "occurred_at": options["occurred_at"],
+            "correction_of": options["correction_of"],
+            "subject": options["subject"]
             or {
                 "kind": "aggregate",
                 "identity_state": "not_applicable",
                 "source_ref": None,
                 "candidate_refs": [],
             },
-            "scope": scope or {"campaign_id": "c001-growth", "channel": "direct"},
+            "scope": options["scope"] or {"campaign_id": "c001-growth", "channel": "direct"},
             "measurement": {
-                "metric_id": metric_id,
-                "value": value,
-                "unit": unit,
-                "aggregation": aggregation,
-                "currency": currency,
+                "metric_id": options["metric_id"],
+                "value": options["value"],
+                "unit": options["unit"],
+                "aggregation": options["aggregation"],
+                "currency": options["currency"],
             },
             "quality": {
                 "confidence": confidence,
@@ -149,30 +156,31 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
                 "collected_by": "normalized-import",
                 "verified_by": "synthetic-reviewer" if confidence == "verified" else None,
             },
-            "governance": governance or {"consent": [], "suppression": None},
+            "governance": options["governance"] or {"consent": [], "suppression": None},
         }
 
     def write_batch(
         self,
         name: str,
         events: list[dict[str, object]],
-        *,
-        account_ref: str,
-        observed_at: str,
-        cursor: str,
-        coverage: str = "complete",
-        missing_scopes: list[str] | None = None,
+        **metadata: object,
     ) -> Path:
+        unknown = set(metadata) - {"account_ref", "observed_at", "cursor", "coverage", "missing_scopes"}
+        if unknown:
+            raise TypeError(f"unknown batch metadata: {sorted(unknown)}")
+        for required in ("account_ref", "observed_at", "cursor"):
+            if required not in metadata:
+                raise TypeError(f"missing required batch metadata: {required}")
         path = self.root / name
         path.write_text(
             json.dumps(
                 {
                     "source": "normalized",
-                    "account_ref": account_ref,
-                    "cursor": cursor,
-                    "observed_at": observed_at,
-                    "coverage": coverage,
-                    "missing_scopes": missing_scopes or [],
+                    "account_ref": metadata["account_ref"],
+                    "cursor": metadata["cursor"],
+                    "observed_at": metadata["observed_at"],
+                    "coverage": metadata.get("coverage", "complete"),
+                    "missing_scopes": metadata.get("missing_scopes") or [],
                     "events": events,
                 }
             ),

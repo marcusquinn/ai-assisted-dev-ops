@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from performance_contract import PerformanceContractError
-from _performance_store_config import CONFIG_SCHEMA, validate_config
-from _performance_store_paths import PlanePaths, resolve_paths
+from _performance_store_config import CONFIG_SCHEMA as _CONFIG_SCHEMA, validate_config
+from _performance_store_paths import PlanePaths, resolve_paths as _resolve_paths
 from _performance_store_files import write_new as _write_new
 
 STORE_SCHEMA_VERSION = 2
+CONFIG_SCHEMA = _CONFIG_SCHEMA
+resolve_paths = _resolve_paths
 PERFORMANCE_GITIGNORE = """# Private/local performance-plane state
 raw/
 exports/

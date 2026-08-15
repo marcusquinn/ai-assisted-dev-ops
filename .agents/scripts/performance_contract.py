@@ -5,4 +5,5 @@
 
 from _performance_contract_definitions import *  # noqa: F403
 from _performance_contract_events import *  # noqa: F403
+from _performance_contract_subjects import validate_batch_header
 from _performance_contract_values import *  # noqa: F403

@@ -11,7 +11,7 @@ from _performance_adapter_campaign import normalize_campaign
 from _performance_adapter_common import (
     ADAPTERS,
     FIXTURE_ONLY_ADAPTERS,
-    MAX_INPUT_BYTES,
+    MAX_INPUT_BYTES as _MAX_INPUT_BYTES,
     AdapterResult,
     PerformanceAdapterError,
     load_json,
@@ -19,6 +19,8 @@ from _performance_adapter_common import (
 )
 from _performance_adapter_fixture import normalize_fixture
 from performance_legacy import normalize_phase1_results
+
+MAX_INPUT_BYTES = _MAX_INPUT_BYTES
 
 
 def load_adapter(
