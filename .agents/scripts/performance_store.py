@@ -18,7 +18,6 @@ from performance_contract import (
     PUBLIC_DIMENSION_KEYS,
     PerformanceContractError,
     canonical_json,
-    event_for_fingerprint,
     timestamp_epoch,
     validate_event,
 )
@@ -40,9 +39,15 @@ from _performance_store_evidence import (
     regular_file_digest as _regular_file_digest,
     write_raw as _write_raw,
 )
+from _performance_store_persistence import (
+    insert_event as _persist_event,
+    insert_governance as _persist_governance,
+    quarantine as _persist_quarantine,
+)
 from _performance_store_state import update_source_state as _update_source_state
 from _performance_store_types import (
     EvidenceWriteContext,
+    EventInsertContext,
     GovernanceContext,
     QuarantineContext,
     SourceStateContext,
@@ -191,77 +196,13 @@ class MarketingPerformanceStore:
         self,
         context: QuarantineContext,
     ) -> str:
-        source_event_ref = self._source_event_ref(
-            context.source, context.account_ref, context.source_event_id
-        )
-        digest = hashlib.sha256(
-            f"{context.source}\0{context.account_ref}\0{source_event_ref}\0{context.reason}\0{context.evidence_ref}".encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        quarantine_ref = f"mkt-quarantine-v1:{digest}"
-        self.connection.execute(
-            "INSERT OR IGNORE INTO quarantine("
-            "quarantine_ref,source,account_ref,source_event_ref,reason,evidence_ref,recorded_at,details_json"
-            ") VALUES(?,?,?,?,?,?,?,?)",
-            (
-                quarantine_ref,
-                context.source,
-                context.account_ref,
-                source_event_ref,
-                context.reason,
-                context.evidence_ref,
-                context.recorded_at,
-                canonical_json(context.details),
-            ),
-        )
-        return quarantine_ref
+        return _persist_quarantine(self, context)
 
     def _insert_governance(
         self,
         context: GovernanceContext,
     ) -> None:
-        if context.subject_id is None:
-            return
-        for index, consent in enumerate(context.event["governance"]["consent"]):
-            ledger_ref = self.pseudonym("mkt-consent-v1", context.record_ref, str(index), canonical_json(consent))
-            self.connection.execute(
-                "INSERT OR IGNORE INTO consent_ledger("
-                "ledger_ref,subject_id,purpose,state,lawful_basis,source,account_ref,effective_at,observed_at,evidence_ref"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    ledger_ref,
-                    context.subject_id,
-                    consent["purpose"],
-                    consent["state"],
-                    consent["lawful_basis"],
-                    context.source,
-                    context.account_ref,
-                    consent["effective_at"],
-                    context.observed_at,
-                    context.evidence_ref,
-                ),
-            )
-        suppression = context.event["governance"]["suppression"]
-        if suppression is None:
-            return
-        ledger_ref = self.pseudonym("mkt-suppression-v1", context.record_ref, canonical_json(suppression))
-        self.connection.execute(
-            "INSERT OR IGNORE INTO suppression_ledger("
-            "ledger_ref,subject_id,state,reason,source,account_ref,effective_at,observed_at,evidence_ref"
-            ") VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                ledger_ref,
-                context.subject_id,
-                suppression["state"],
-                suppression["reason"],
-                context.source,
-                context.account_ref,
-                suppression["effective_at"],
-                context.observed_at,
-                context.evidence_ref,
-            ),
-        )
+        _persist_governance(self, context)
 
     def _insert_event(
         self,
@@ -270,150 +211,9 @@ class MarketingPerformanceStore:
         evidence_ref: str,
         recorded_at: str,
     ) -> str:
-        event = {
-            **event,
-            "scope": {
-                **event["scope"],
-                "dimensions": self._storage_dimensions(
-                    header["source"],
-                    header["account_ref"],
-                    event["scope"]["dimensions"]
-                ),
-            },
-        }
-        source = header["source"]
-        account_ref = header["account_ref"]
-        event_ref = self._source_event_ref(source, account_ref, event["source_event_id"])
-        record_ref = self._record_ref(event_ref, int(event["revision"]))
-        fingerprint = hashlib.sha256(
-            canonical_json(event_for_fingerprint(event)).encode("utf-8")
-        ).hexdigest()
-        existing = self.connection.execute(
-            "SELECT payload_fingerprint FROM events WHERE record_ref=?",
-            (record_ref,),
-        ).fetchone()
-        if existing is not None:
-            if str(existing["payload_fingerprint"]) == fingerprint:
-                return "duplicate"
-            self._quarantine(QuarantineContext(
-                source, account_ref, event["source_event_id"],
-                "same_revision_payload_conflict", evidence_ref, recorded_at,
-                {"reason": "same_revision_payload_conflict"},
-            ))
-            return "conflict"
-        subject = event["subject"]
-        if subject["identity_state"] == "ambiguous":
-            self._quarantine(QuarantineContext(
-                source, account_ref, event["source_event_id"],
-                "identity_ambiguous", evidence_ref, recorded_at,
-                {"reason": "identity_ambiguous", "candidate_count": len(subject["candidate_refs"])},
-            ))
-            return "quarantined"
-        subject_id = None
-        if subject["source_ref"] is not None:
-            subject_id = self._subject_ref(source, account_ref, subject["source_ref"])
-        correction_ref = None
-        if event["correction_of"] is not None:
-            correction_ref = self._source_event_ref(source, account_ref, event["correction_of"])
-        scope = event["scope"]
-        measurement = event["measurement"]
-        quality = event["quality"]
-        if correction_ref is not None:
-            target = self.connection.execute(
-                "SELECT * FROM events WHERE event_ref=? ORDER BY revision DESC LIMIT 1",
-                (correction_ref,),
-            ).fetchone()
-            correction_fields = (
-                "subject_id",
-                "campaign_id",
-                "channel",
-                "creative_id",
-                "touchpoint_id",
-                "outcome_id",
-                "dimensions_json",
-                "metric_id",
-                "unit",
-                "aggregation",
-                "currency",
-                "period_start",
-                "period_end",
-            )
-            correction_values = {
-                "subject_id": subject_id,
-                **scope,
-                **measurement,
-                "dimensions_json": canonical_json(scope["dimensions"]),
-            }
-            reason = None
-            if target is None:
-                reason = "correction_target_pending"
-            elif any(target[field] != correction_values[field] for field in correction_fields):
-                reason = "correction_target_mismatch"
-            else:
-                existing_correction = self.connection.execute(
-                    "SELECT event_ref FROM events WHERE correction_ref=? LIMIT 1",
-                    (correction_ref,),
-                ).fetchone()
-                if (
-                    existing_correction is not None
-                    and str(existing_correction["event_ref"]) != event_ref
-                ):
-                    reason = "correction_target_already_corrected"
-            if reason is not None:
-                self._quarantine(QuarantineContext(
-                    source, account_ref, event["source_event_id"], reason,
-                    evidence_ref, recorded_at, {"reason": reason},
-                ))
-                return "quarantined"
-        self.connection.execute(
-            "INSERT INTO events("
-            "record_ref,event_ref,source,account_ref,revision,correction_ref,event_type,occurred_at,observed_at,recorded_at,"
-            "source_observed_at,source_recorded_at,"
-            "subject_id,subject_kind,identity_state,campaign_id,channel,creative_id,touchpoint_id,outcome_id,"
-            "dimensions_json,metric_id,value_text,unit,aggregation,currency,period_start,period_end,confidence,completeness,source_type,collected_by,evidence_ref,payload_fingerprint"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                record_ref,
-                event_ref,
-                source,
-                account_ref,
-                event["revision"],
-                correction_ref,
-                event["event_type"],
-                event["occurred_at"],
-                header["observed_at"],
-                recorded_at,
-                event["source_observed_at"],
-                event["source_recorded_at"],
-                subject_id,
-                subject["kind"],
-                subject["identity_state"],
-                scope["campaign_id"],
-                scope["channel"],
-                scope["creative_id"],
-                scope["touchpoint_id"],
-                scope["outcome_id"],
-                canonical_json(scope["dimensions"]),
-                measurement["metric_id"],
-                measurement["value"],
-                measurement["unit"],
-                measurement["aggregation"],
-                measurement["currency"],
-                measurement["period_start"],
-                measurement["period_end"],
-                quality["confidence"],
-                quality["completeness"],
-                quality["source_type"],
-                quality["collected_by"],
-                evidence_ref,
-                fingerprint,
-            ),
+        return _persist_event(
+            self, EventInsertContext(event, header, evidence_ref, recorded_at)
         )
-        self._insert_governance(GovernanceContext(
-            event, record_ref, subject_id, source, account_ref,
-            header["observed_at"], evidence_ref,
-        ))
-        return "inserted"
 
     def _events_match_evidence(
         self,

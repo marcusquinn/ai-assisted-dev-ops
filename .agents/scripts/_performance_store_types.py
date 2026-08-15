@@ -44,3 +44,11 @@ class EvidenceWriteContext:
     digest: str
     suffix: str
     raw_bytes: bytes
+
+
+@dataclass(frozen=True)
+class EventInsertContext:
+    event: dict[str, Any]
+    header: dict[str, Any]
+    evidence_ref: str
+    recorded_at: str
