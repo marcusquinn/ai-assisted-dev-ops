@@ -16,7 +16,11 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from campaign_production_fixture import approved_manifest
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 AGENTS = SCRIPTS.parent
@@ -28,6 +32,43 @@ AIDEVOPS = REPO_ROOT / "aidevops.sh"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "marketing-performance"
 EVENT_SCHEMA = AGENTS / "schemas" / "marketing-performance-event.schema.json"
 SUBJECT_SCHEMA = AGENTS / "schemas" / "marketing-subject.schema.json"
+
+
+def write_reconciliation(path: Path, **action: object) -> None:
+    """Write one reconciliation action without duplicating envelope setup."""
+    path.write_text(
+        json.dumps({"schema": "aidevops.marketing-performance-reconciliation/v1", "actions": [action]}),
+        encoding="utf-8",
+    )
+
+
+@dataclass(frozen=True)
+class EventSpec:
+    """Behavior-neutral options for one normalized synthetic event."""
+
+    event_type: str = "conversion"
+    metric_id: str = "marketing.conversions.total"
+    value: object = 1
+    unit: str = "conversion"
+    aggregation: str = "sum"
+    currency: str | None = None
+    occurred_at: str = "2026-08-08T12:00:00Z"
+    correction_of: str | None = None
+    subject: dict[str, object] | None = None
+    scope: dict[str, object] | None = None
+    confidence: str = "high"
+    governance: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class BatchSpec:
+    """Source checkpoint options for one normalized synthetic batch."""
+
+    account_ref: str
+    observed_at: str
+    cursor: str
+    coverage: str = "complete"
+    missing_scopes: list[str] | None = None
 
 
 class MarketingPerformanceIngestTests(unittest.TestCase):
@@ -107,72 +148,57 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
     @staticmethod
     def normalized_event(
         source_event_id: str,
-        *,
-        event_type: str = "conversion",
-        metric_id: str = "marketing.conversions.total",
-        value: object = 1,
-        unit: str = "conversion",
-        aggregation: str = "sum",
-        currency: str | None = None,
-        occurred_at: str = "2026-08-08T12:00:00Z",
-        correction_of: str | None = None,
-        subject: dict[str, object] | None = None,
-        scope: dict[str, object] | None = None,
-        confidence: str = "high",
-        governance: dict[str, object] | None = None,
+        **options: Any,
     ) -> dict[str, object]:
+        spec = EventSpec(**options)
         return {
             "source_event_id": source_event_id,
             "revision": 1,
-            "event_type": event_type,
-            "occurred_at": occurred_at,
-            "correction_of": correction_of,
-            "subject": subject
+            "event_type": spec.event_type,
+            "occurred_at": spec.occurred_at,
+            "correction_of": spec.correction_of,
+            "subject": spec.subject
             or {
                 "kind": "aggregate",
                 "identity_state": "not_applicable",
                 "source_ref": None,
                 "candidate_refs": [],
             },
-            "scope": scope or {"campaign_id": "c001-growth", "channel": "direct"},
+            "scope": spec.scope or {"campaign_id": "c001-growth", "channel": "direct"},
             "measurement": {
-                "metric_id": metric_id,
-                "value": value,
-                "unit": unit,
-                "aggregation": aggregation,
-                "currency": currency,
+                "metric_id": spec.metric_id,
+                "value": spec.value,
+                "unit": spec.unit,
+                "aggregation": spec.aggregation,
+                "currency": spec.currency,
             },
             "quality": {
-                "confidence": confidence,
+                "confidence": spec.confidence,
                 "completeness": "complete",
                 "source_type": "api_export",
                 "collected_by": "normalized-import",
-                "verified_by": "synthetic-reviewer" if confidence == "verified" else None,
+                "verified_by": "synthetic-reviewer" if spec.confidence == "verified" else None,
             },
-            "governance": governance or {"consent": [], "suppression": None},
+            "governance": spec.governance or {"consent": [], "suppression": None},
         }
 
     def write_batch(
         self,
         name: str,
         events: list[dict[str, object]],
-        *,
-        account_ref: str,
-        observed_at: str,
-        cursor: str,
-        coverage: str = "complete",
-        missing_scopes: list[str] | None = None,
+        **options: Any,
     ) -> Path:
+        spec = BatchSpec(**options)
         path = self.root / name
         path.write_text(
             json.dumps(
                 {
                     "source": "normalized",
-                    "account_ref": account_ref,
-                    "cursor": cursor,
-                    "observed_at": observed_at,
-                    "coverage": coverage,
-                    "missing_scopes": missing_scopes or [],
+                    "account_ref": spec.account_ref,
+                    "cursor": spec.cursor,
+                    "observed_at": spec.observed_at,
+                    "coverage": spec.coverage,
+                    "missing_scopes": spec.missing_scopes or [],
                     "events": events,
                 }
             ),
@@ -1455,22 +1481,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
 
         leads = [record["subject_id"] for record in subjects if record["kind"] == "lead"]
         reconciliation = self.root / "reconciliation.json"
-        reconciliation.write_text(
-            json.dumps(
-                {
-                    "schema": "aidevops.marketing-performance-reconciliation/v1",
-                    "actions": [
-                        {
-                            "action": "link",
-                            "canonical_subject_id": leads[0],
-                            "member_subject_id": leads[1],
-                            "effective_at": "2026-08-09T00:00:00.500000Z",
-                            "evidence_ref": "owner-reviewed-synthetic-link",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        write_reconciliation(
+            reconciliation,
+            action="link",
+            canonical_subject_id=leads[0],
+            member_subject_id=leads[1],
+            effective_at="2026-08-09T00:00:00.500000Z",
+            evidence_ref="owner-reviewed-synthetic-link",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1495,22 +1512,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         )
         self.assertEqual(1, len(self.query("SELECT link_ref FROM identity_links")))
 
-        reconciliation.write_text(
-            json.dumps(
-                {
-                    "schema": "aidevops.marketing-performance-reconciliation/v1",
-                    "actions": [
-                        {
-                            "action": "split",
-                            "canonical_subject_id": leads[0],
-                            "member_subject_id": leads[1],
-                            "effective_at": "2026-08-09T00:00:00Z",
-                            "evidence_ref": "owner-reviewed-older-split",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        write_reconciliation(
+            reconciliation,
+            action="split",
+            canonical_subject_id=leads[0],
+            member_subject_id=leads[1],
+            effective_at="2026-08-09T00:00:00Z",
+            evidence_ref="owner-reviewed-older-split",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         still_linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1795,31 +1803,7 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         manifest = campaign / "drafts" / "production-manifests" / "twitter-v1.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "job_id": "job:c001-growth:twitter:v1",
-                    "campaign_id": "c001-growth",
-                    "brief_id": "brief:c001-growth",
-                    "channel": "twitter",
-                    "variant_id": "v1",
-                    "revision": 1,
-                    "input_snapshot_sha256": input_snapshot,
-                    "format": {"asset_class": "writing", "dimensions": "text", "duration_seconds": None},
-                    "asset_inputs": [],
-                    "execution": {"owner": "content", "provider_route": None, "capability": "writing", "fallback": None, "status": "ready"},
-                    "authenticity": {
-                        "disclosure_requirements": [],
-                        "rights_requirements": [],
-                        "provenance": {"source": "owned", "recipe_sha256": "sha256:" + "b" * 64},
-                        "rights_clearance": {"license": "owned", "consent": "documented", "territory": "global", "expires_at": None},
-                    },
-                    "review": {"criteria": ["reviewed"], "status": "approved", "decision_by": "owner", "decision_at": "2026-08-08T00:00:00Z"},
-                    "experiment": {"experiment_id": "experiment-1", "hypothesis": "synthetic fixture"},
-                    "lifecycle": {"status": "approved", "status_evidence": ["reviewed"]},
-                    "outputs": [{"path": "creative/post.txt", "sha256": digest, "media_type": "text/plain"}],
-                }
-            ),
+            json.dumps(approved_manifest("c001-growth", input_snapshot, digest)),
             encoding="utf-8",
         )
 

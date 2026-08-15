@@ -9,14 +9,15 @@ import json
 import os
 import secrets
 import sqlite3
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from performance_contract import PerformanceContractError
+from _performance_store_config import CONFIG_SCHEMA as CONFIG_SCHEMA, validate_config
+from _performance_store_paths import PlanePaths, resolve_paths as resolve_paths
+from _performance_store_files import write_new as _write_new
 
 STORE_SCHEMA_VERSION = 2
-CONFIG_SCHEMA = "aidevops.marketing-performance-config/v1"
 PERFORMANCE_GITIGNORE = """# Private/local performance-plane state
 raw/
 exports/
@@ -44,69 +45,6 @@ Use `aidevops performance status --json` for source coverage and freshness.
 """
 
 
-@dataclass(frozen=True)
-class PlanePaths:
-    """Resolved performance plane paths for one repository."""
-
-    repo: Path
-    plane: Path
-    marketing: Path
-    config_dir: Path
-    config: Path
-    raw: Path
-    index: Path
-    exports: Path
-    quarantine: Path
-    summaries: Path
-    database: Path
-
-
-def resolve_paths(repo: Path) -> PlanePaths:
-    """Resolve but do not provision one repository-local plane."""
-    resolved = repo.expanduser().resolve()
-    if not resolved.is_dir():
-        raise PerformanceContractError("repository path must be an existing directory")
-    plane = resolved / "_performance"
-    marketing = plane / "marketing"
-    return PlanePaths(
-        repo=resolved,
-        plane=plane,
-        marketing=marketing,
-        config_dir=marketing / "_config",
-        config=marketing / "_config" / "plane.json",
-        raw=marketing / "raw",
-        index=marketing / "index",
-        exports=marketing / "exports",
-        quarantine=marketing / "quarantine",
-        summaries=marketing / "summaries",
-        database=marketing / "index" / "performance.sqlite",
-    )
-
-
-def _write_new(path: Path, content: bytes, mode: int) -> None:
-    """Create one file atomically without replacing user-owned state."""
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise PerformanceContractError(f"performance plane file is unsafe: {path.name}")
-    if path.exists():
-        return
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise PerformanceContractError(f"performance plane file is unsafe: {path.name}")
-        if path.exists():
-            temporary.unlink()
-            return
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
 def _ensure_directory(path: Path, mode: int | None = None) -> None:
     """Create one repository-local directory without following a symlink."""
     if path.is_symlink():
@@ -131,28 +69,6 @@ def _template_config() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise PerformanceContractError("marketing performance config template is unavailable") from exc
     return validate_config(document)
-
-
-def validate_config(document: Any) -> dict[str, Any]:
-    """Validate bounded deterministic plane settings."""
-    if not isinstance(document, dict) or document.get("schema") != CONFIG_SCHEMA:
-        raise PerformanceContractError("unsupported marketing performance config schema")
-    if document.get("schema_version") != 1:
-        raise PerformanceContractError("unsupported marketing performance config version")
-    for field in ("default_stale_after_seconds", "lease_seconds", "max_batch_events"):
-        value = document.get(field)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise PerformanceContractError(f"config {field} must be a positive integer")
-    stale = document.get("source_stale_after_seconds")
-    if not isinstance(stale, dict):
-        raise PerformanceContractError("config source_stale_after_seconds must be an object")
-    for source, seconds in stale.items():
-        if not isinstance(source, str) or not isinstance(seconds, int) or isinstance(seconds, bool) or seconds < 1:
-            raise PerformanceContractError("config source freshness entries are invalid")
-    fixtures = document.get("fixture_only_adapters")
-    if not isinstance(fixtures, list) or not all(isinstance(item, str) for item in fixtures):
-        raise PerformanceContractError("config fixture_only_adapters must be an array")
-    return document
 
 
 def provision_plane(paths: PlanePaths) -> dict[str, Any]:

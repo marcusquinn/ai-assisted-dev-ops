@@ -15,6 +15,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from campaign_production_fixture import approved_manifest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / ".agents" / "scripts" / "campaign-distribution-helper.py"
 
@@ -99,16 +101,12 @@ class CampaignDistributionBridgeTests(unittest.TestCase):
         ).hexdigest()
         self.manifest = self.campaign / "drafts" / "production-manifests" / "twitter-v1.json"
         self.manifest.parent.mkdir(parents=True)
-        self.manifest.write_text(json.dumps({
-            "schema_version": 1, "job_id": "job:c001:twitter:v1", "campaign_id": "c001", "brief_id": "brief:c001",
-            "channel": "twitter", "variant_id": "v1", "revision": 1, "input_snapshot_sha256": input_snapshot,
-            "format": {"asset_class": "writing", "dimensions": "text", "duration_seconds": None}, "asset_inputs": [],
-            "execution": {"owner": "content", "provider_route": None, "capability": "writing", "fallback": None, "status": "ready"},
-            "authenticity": {"disclosure_requirements": [], "rights_requirements": [], "provenance": {"source": "owned", "recipe_sha256": "sha256:" + "b" * 64}, "rights_clearance": {"license": "owned", "consent": "documented", "territory": "global", "expires_at": None}},
-            "review": {"criteria": ["reviewed"], "status": "approved", "decision_by": "owner", "decision_at": "2026-08-13T00:00:00Z"},
-            "experiment": {"experiment_id": "e1", "hypothesis": "test"}, "lifecycle": {"status": "approved", "status_evidence": ["reviewed"]},
-            "outputs": [{"path": "creative/post.txt", "sha256": digest, "media_type": "text/plain"}],
-        }), encoding="utf-8")
+        manifest_document = approved_manifest(
+            "c001", input_snapshot, digest,
+            decision_at="2026-08-13T00:00:00Z",
+            experiment_id="e1", hypothesis="test",
+        )
+        self.manifest.write_text(json.dumps(manifest_document), encoding="utf-8")
         self.queue = self.root / "queue.sh"
         self.queue.write_text("#!/usr/bin/env bash\nprintf '%s\\n' '{\"operation_id\":\"ignored\",\"state\":\"draft\"}'\n", encoding="utf-8")
         self.queue.chmod(0o755)

@@ -18,8 +18,6 @@ from performance_contract import (
     PUBLIC_DIMENSION_KEYS,
     PerformanceContractError,
     canonical_json,
-    timestamp_epoch,
-    validate_event,
 )
 from performance_store_schema import (
     PlanePaths,
@@ -28,7 +26,11 @@ from performance_store_schema import (
     provision_plane,
     resolve_paths,
 )
-from _performance_store_ingest import ingest as _ingest
+from _performance_store_ingest import (
+    checkpoint_conflicts as _checkpoint_conflicts,
+    ingest as _ingest,
+    validate_events as _validate_events,
+)
 from _performance_store_leases import (
     acquire_lease as _acquire_lease,
     recover_expired_leases as _recover_expired_leases,
@@ -262,26 +264,7 @@ class MarketingPerformanceStore:
         header: dict[str, Any],
         adapter_errors: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        events: list[dict[str, Any]] = []
-        errors = [dict(error) for error in adapter_errors]
-        effective_coverage = "partial" if header["missing_scopes"] else header["coverage"]
-        for index, raw_event in enumerate(header["events"]):
-            try:
-                events.append(
-                    validate_event(raw_event, effective_coverage, header["missing_scopes"])
-                )
-            except PerformanceContractError as exc:
-                source_event_id = f"record-{index}"
-                if isinstance(raw_event, dict) and isinstance(raw_event.get("source_event_id"), str):
-                    source_event_id = raw_event["source_event_id"]
-                errors.append(
-                    {
-                        "index": index,
-                        "reason": str(exc),
-                        "source_event_id": source_event_id,
-                    }
-                )
-        return events, errors
+        return _validate_events(self, header, adapter_errors)
 
     def _update_source_state(
         self,
@@ -299,24 +282,7 @@ class MarketingPerformanceStore:
 
     def _checkpoint_conflicts(self, header: dict[str, Any]) -> bool:
         """Detect a conflicting opaque cursor at the same successful watermark."""
-        if header["cursor"] is None:
-            return False
-        existing = self.connection.execute(
-            "SELECT cursor_ref,last_success_at FROM sources WHERE source=? AND account_ref=?",
-            (header["source"], header["account_ref"]),
-        ).fetchone()
-        if (
-            existing is None
-            or existing["cursor_ref"] is None
-            or existing["last_success_at"] is None
-            or timestamp_epoch(header["observed_at"])
-            != timestamp_epoch(str(existing["last_success_at"]))
-        ):
-            return False
-        incoming = self._cursor_ref(
-            header["source"], header["account_ref"], header["cursor"]
-        )
-        return incoming != str(existing["cursor_ref"])
+        return _checkpoint_conflicts(self, header)
 
     def ingest(
         self,
