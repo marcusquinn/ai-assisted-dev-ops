@@ -212,14 +212,23 @@ mkdir -p "$REAL_GH_DIR"
 RECORD_FILE="${TMP}/gh-invocation.log"
 AUTH_RECORD_FILE="${TMP}/gh-auth-invocation.log"
 API_RECORD_FILE="${TMP}/gh-api-invocation.log"
+REST_RATE_LIMIT_FILE="${TMP}/rest-rate-limited"
 cat >"$REAL_GH_DIR/gh" <<STUB
 #!/usr/bin/env bash
 if [[ "\${1:-}" == "auth" && "\${2:-}" == "status" ]]; then
 	printf '%s\n' "REAL_GH_AUTH_INVOKED" > '$AUTH_RECORD_FILE'
-	exit 0
+	exit 1
 fi
 if [[ "\${1:-}" == "api" && "\${2:-}" == repos/* ]]; then
-	printf '%s\n' "REAL_GH_API_INVOKED" > '$API_RECORD_FILE'
+	printf '%s\n' "REST" >> '$API_RECORD_FILE'
+	if [[ -f '$REST_RATE_LIMIT_FILE' ]]; then
+		exit 1
+	fi
+	printf '%s\n' false
+	exit 0
+fi
+if [[ "\${1:-}" == "api" && "\${2:-}" == "graphql" ]]; then
+	printf '%s\n' "GRAPHQL" >> '$API_RECORD_FILE'
 	printf '%s\n' false
 	exit 0
 fi
@@ -275,16 +284,32 @@ run_shim() {
 	return 0
 }
 
-# -- Test 2.0: cold privacy probes bypass the active shim and use native gh
+# -- Test 2.0: cold privacy probes bypass the active shim and query the target
+# directly instead of trusting `gh auth status`.
 rm -f "$PRIV_HOME/.aidevops/cache/repo-privacy.json" \
 	"$RECORD_FILE" "$AUTH_RECORD_FILE" "$API_RECORD_FILE"
 out=$(run_shim "$PATH_DIR" issue create --repo marcusquinn/aidevops --title "test" --body "Clean cold-cache content" 2>&1)
 rc=$?
-if [[ "$rc" -eq 0 ]] && [[ -f "$RECORD_FILE" && -f "$AUTH_RECORD_FILE" && -f "$API_RECORD_FILE" ]] &&
+if [[ "$rc" -eq 0 ]] && [[ -f "$RECORD_FILE" && ! -f "$AUTH_RECORD_FILE" && -f "$API_RECORD_FILE" ]] &&
+	grep -q '^REST$' "$API_RECORD_FILE" &&
 	[[ "$out" != *"gh not authenticated"* ]]; then
-	pass "cold privacy probes use native gh without shim recursion"
+	pass "cold privacy probe does not trust gh auth status"
 else
-	fail "expected native auth/API/final invocations without auth warning. rc=$rc out='$out'"
+	fail "expected native REST/final invocations without auth-status probe. rc=$rc out='$out'"
+fi
+
+# -- Test 2.0a: REST quota exhaustion falls back to authenticated GraphQL.
+rm -f "$PRIV_HOME/.aidevops/cache/repo-privacy.json" \
+	"$RECORD_FILE" "$AUTH_RECORD_FILE" "$API_RECORD_FILE"
+touch "$REST_RATE_LIMIT_FILE"
+out=$(run_shim "$PATH_DIR" issue create --repo marcusquinn/aidevops --title "test" --body "Clean quota fallback content" 2>&1)
+rc=$?
+rm -f "$REST_RATE_LIMIT_FILE"
+if [[ "$rc" -eq 0 ]] && [[ -f "$RECORD_FILE" && ! -f "$AUTH_RECORD_FILE" && -f "$API_RECORD_FILE" ]] &&
+	grep -q '^REST$' "$API_RECORD_FILE" && grep -q '^GRAPHQL$' "$API_RECORD_FILE"; then
+	pass "REST quota exhaustion falls back to GraphQL privacy probe"
+else
+	fail "expected REST then GraphQL privacy probes without auth-status probe. rc=$rc out='$out'"
 fi
 
 # Restore the warm cache used by the remaining integration cases.

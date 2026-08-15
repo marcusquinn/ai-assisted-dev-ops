@@ -873,24 +873,32 @@ while [[ $_i -lt ${#_modified_args[@]} ]]; do
 		_body_file_eq=1
 		;;
 	--comment)
-		_comment_idx=$_i
-		_comment_val="${_modified_args[_i + 1]:-}"
-		_comment_eq=0
+		if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:close" ]]; then
+			_comment_idx=$_i
+			_comment_val="${_modified_args[_i + 1]:-}"
+			_comment_eq=0
+		fi
 		;;
 	--comment=*)
-		_comment_idx=$_i
-		_comment_val="${_modified_args[_i]#--comment=}"
-		_comment_eq=1
+		if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:close" ]]; then
+			_comment_idx=$_i
+			_comment_val="${_modified_args[_i]#--comment=}"
+			_comment_eq=1
+		fi
 		;;
 	-c)
-		_comment_idx=$_i
-		_comment_val="${_modified_args[_i + 1]:-}"
-		_comment_eq=0
+		if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:close" ]]; then
+			_comment_idx=$_i
+			_comment_val="${_modified_args[_i + 1]:-}"
+			_comment_eq=0
+		fi
 		;;
 	-c=*)
-		_comment_idx=$_i
-		_comment_val="${_modified_args[_i]#-c=}"
-		_comment_eq=1
+		if [[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:close" ]]; then
+			_comment_idx=$_i
+			_comment_val="${_modified_args[_i]#-c=}"
+			_comment_eq=1
+		fi
 		;;
 	esac
 	_i=$((_i + 1))

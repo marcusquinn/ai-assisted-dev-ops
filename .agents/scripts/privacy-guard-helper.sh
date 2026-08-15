@@ -123,19 +123,27 @@ privacy_is_target_public() {
 		privacy_log WARN "gh CLI not installed — fail-open, allowing push to $slug"
 		return 2
 	fi
-	if ! "$gh_bin" auth status >/dev/null 2>&1; then
-		privacy_log WARN "gh not authenticated — fail-open, allowing push to $slug"
-		return 2
-	fi
-
 	# Use `.private | tostring` — NOT `.private // "unknown"`. The `//` operator
 	# treats `false` as null-ish, so `.private // "unknown"` returns "unknown"
 	# for every public repo. `tostring` returns "true", "false", or "null".
-	local is_private
-	is_private=$("$gh_bin" api "repos/${slug}" --jq '.private | tostring' 2>/dev/null) || {
-		privacy_log WARN "gh api repos/${slug} failed — fail-open"
-		return 2
-	}
+	# Do not gate this request on `gh auth status`: gh validates credentials via
+	# REST /user and reports an authenticated token as "invalid" when that REST
+	# resource is rate-limited. Query the required property directly, then fall
+	# back to GraphQL because its quota is independent from REST core quota.
+	local is_private owner repo graphql_query
+	owner="${slug%%/*}"
+	repo="${slug#*/}"
+	# shellcheck disable=SC2016 # GraphQL variables must reach gh literally.
+	graphql_query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){isPrivate}}'
+	if ! is_private=$("$gh_bin" api "repos/${slug}" --jq '.private | tostring' 2>/dev/null); then
+		is_private=$("$gh_bin" api graphql \
+			-f "query=${graphql_query}" \
+			-F "owner=${owner}" -F "name=${repo}" \
+			--jq '.data.repository.isPrivate | tostring' 2>/dev/null) || {
+			privacy_log WARN "gh REST and GraphQL privacy probes failed for $slug — fail-open"
+			return 2
+		}
+	fi
 
 	case "$is_private" in
 	true)
