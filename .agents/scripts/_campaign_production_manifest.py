@@ -8,8 +8,8 @@ from _campaign_production_manifest_evidence import (
     validate_authenticity as _validate_authenticity,
     validate_collections as _validate_collections,
     validate_review as _validate_review,
-    validate_status as _validate_status,
 )
+from _campaign_production_manifest_status import validate_status as _validate_status
 from _campaign_production_definitions import (
     ASSET_OWNERS,
     BRIEF_ID_RE,
