@@ -1069,16 +1069,24 @@ _approval_verify_locked_issue_continuity() {
 	# canonical workload tier; timeline authorization below still binds its actor.
 	if ! jq -e --argjson signed "$signed_lifecycle" '
 		def allowed_label: . == "needs-maintainer-review" or . == "auto-dispatch" or . == "status:available" or . == "status:queued" or . == "status:in-review" or . == "status:in-progress" or . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
+		def tier_label: . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
 		.lifecycle as $current |
 		($current.labels | map(.name)) as $current_labels |
 		($signed.labels | map(.name)) as $signed_labels |
+		($current_labels - $signed_labels) as $added_labels |
+		($signed_labels - $current_labels) as $removed_labels |
+		([$added_labels[] | select(tier_label)] | length) as $added_tiers |
+		([$removed_labels[] | select(tier_label)] | length) as $removed_tiers |
+		([$signed_labels[] | select(tier_label)] | length) as $signed_tiers |
+		([$current_labels[] | select(tier_label)] | length) as $current_tiers |
 		$current.state == $signed.state
 		and $current.state_reason == $signed.state_reason
 		and $current.locked == $signed.locked
 		and $current.active_lock_reason == $signed.active_lock_reason
 		and $current.milestone == $signed.milestone
 		and $current.lock_anchor == $signed.lock_anchor
-		and ([($current_labels - $signed_labels)[], ($signed_labels - $current_labels)[]] | unique | all(allowed_label))
+		and ([$added_labels[], $removed_labels[]] | unique | all(allowed_label))
+		and (if ($added_tiers + $removed_tiers) > 0 then $signed_tiers == 0 and $current_tiers == 1 and $added_tiers == 1 and $removed_tiers == 0 else true end)
 		and ($current.assignees != $signed.assignees or $current.labels != $signed.labels)
 	' <<<"$current_snapshot" >/dev/null 2>&1; then
 		return 1

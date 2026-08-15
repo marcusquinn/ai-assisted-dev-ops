@@ -437,6 +437,8 @@ append_issue_timeline_event() {
 
 test_locked_issue_continuity() {
 	local event_json=""
+	local output=""
+	local rc=0
 	local tier=""
 	# Production regression from the first #30153 signature: approval-helper
 	# performed the trusted handoff, then the narrowly scoped repository workflow
@@ -489,6 +491,28 @@ test_locked_issue_continuity() {
 		append_issue_timeline_event "$event_json"
 		assert_verify "trusted ${tier} tier backfill preserves continuously locked issue approval" issue 41 VERIFIED 0
 	done
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42111,"node_id":"EV_42111","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
+	assert_verify "adding a second canonical tier remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:simple"},{id:11,node_id:"L_11",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42112,"node_id":"EV_42112","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:simple"}}'
+	append_issue_timeline_event '{"id":42113,"node_id":"EV_42113","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
+	assert_verify "adding multiple canonical tiers remains stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture false
+	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42114,"node_id":"EV_42114","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	rc=0
+	output=$(GH_FAIL_ENDPOINT="collaborators/maintainer/permission" run_verify issue 41) || rc=$?
+	if [[ "$output" == "API_ERROR" && "$rc" -eq 6 ]]; then
+		print_result "tier backfill permission uncertainty fails closed" 0
+	else
+		print_result "tier backfill permission uncertainty fails closed" 1 "expected=API_ERROR/6, actual=${output}/${rc}"
+	fi
 
 	write_locked_issue_fixture false
 	jq '.labels += [{id:10,node_id:"L_10",name:"tier:standard"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
