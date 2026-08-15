@@ -98,4 +98,3 @@ def validate_collections(document: dict[str, Any]) -> None:
     outputs = document["outputs"]
     if not isinstance(outputs, list) or any(not _valid_output(item) for item in outputs):
         raise ManifestError("manifest outputs must contain path, sha256, and media_type objects")
-
