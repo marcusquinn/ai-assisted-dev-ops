@@ -163,7 +163,9 @@ resolve_server_ref() {
 		if [[ -z "$current_identity" ]]; then
 			local cfg_identity
 			cfg_identity=$(echo "$ssh_defaults" | jq -r '.ssh_identity_file // empty')
-			[[ -n "$cfg_identity" ]] && merged=$(echo "$merged" | jq --arg v "$cfg_identity" '.ssh_identity_file = $v')
+			local expanded_cfg_identity="${cfg_identity/#\~/$HOME}"
+			[[ -n "$cfg_identity" && -f "$expanded_cfg_identity" ]] &&
+				merged=$(echo "$merged" | jq --arg v "$cfg_identity" '.ssh_identity_file = $v')
 		fi
 	fi
 
@@ -292,6 +294,8 @@ execute_wp_via_ssh() {
 	local_path=$(echo "$site_config" | jq -r '.path // empty')
 	local password_file
 	password_file=$(echo "$site_config" | jq -r '.password_file // empty')
+	local ssh_password_env
+	ssh_password_env=$(echo "$site_config" | jq -r '.ssh_password_env // empty')
 	local ssh_identity_file
 	ssh_identity_file=$(echo "$site_config" | jq -r '.ssh_identity_file // empty')
 
@@ -325,7 +329,10 @@ execute_wp_via_ssh() {
 			ssh -n "${ssh_identity_flag[@]}" -p "$ssh_port" "${ssh_user}@${ssh_host}" "$remote_cmd"
 			return $?
 		fi
-		# Fallback: sshpass with password file (backward compatible for password-auth users)
+		if [[ -n "$ssh_password_env" ]]; then
+			execute_ssh_with_password_env "$ssh_password_env" "$ssh_port" "${ssh_user}@${ssh_host}" "$remote_cmd"
+			return $?
+		fi
 		check_sshpass
 		local expanded_password_file
 		if [[ -n "$password_file" ]]; then
@@ -365,6 +372,28 @@ execute_wp_via_ssh() {
 		return 1
 		;;
 	esac
+}
+
+# Execute SSH with a password injected through a named environment variable.
+execute_ssh_with_password_env() {
+	local password_env="$1"
+	local ssh_port="$2"
+	local ssh_target="$3"
+	local remote_cmd="$4"
+
+	if [[ ! "$password_env" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+		print_error "Invalid ssh_password_env name: $password_env"
+		return 1
+	fi
+	if [[ -z "${!password_env:-}" ]]; then
+		print_error "SSH password environment variable is not set: $password_env"
+		print_info "Run with: aidevops secret $password_env -- wp-helper.sh ..."
+		return 1
+	fi
+
+	check_sshpass
+	SSHPASS="${!password_env}" sshpass -e ssh -n -p "$ssh_port" "$ssh_target" "$remote_cmd"
+	return $?
 }
 
 # Run WP-CLI command on a site
@@ -638,21 +667,28 @@ Setup (per-tenant, e.g. "acme"):
 
 Server References (DRY server config):
   Define shared server infrastructure in the "servers" section and reference
-  it from sites using "server_ref". Site-level fields override server defaults.
+	  it from sites using "server_ref". One server/account credential can therefore
+	  serve every site under that account. Site-level fields override server defaults.
 
   "servers": {
-    "hetzner-vps-1": {
-      "ssh_host": "123.45.67.89",
-      "ssh_user": "root",
-      "ssh_port": 22
+    "hostinger-account-1": {
+      "type": "hostinger",
+      "ssh_host": "ssh.example.com",
+      "ssh_user": "u123456789",
+      "ssh_port": 65002,
+      "ssh_password_env": "HOSTINGER_SSH_PASSWORD_ACCOUNT_1"
     }
   },
   "sites": {
     "my-site": {
-      "server_ref": "hetzner-vps-1",
-      "wp_path": "/var/www/my-site/public"
+      "server_ref": "hostinger-account-1",
+      "wp_path": "/domains/example.com/public_html"
     }
   }
+
+  Store only the shared password as a secret, then inject it when running:
+    aidevops secret set HOSTINGER_SSH_PASSWORD_ACCOUNT_1
+    aidevops secret HOSTINGER_SSH_PASSWORD_ACCOUNT_1 -- wp-helper.sh my-site core version
 
 SSH Config Integration:
   If ssh_host matches a Host alias in ~/.ssh/config, connection parameters

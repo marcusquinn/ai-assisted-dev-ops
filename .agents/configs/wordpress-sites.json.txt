@@ -12,7 +12,7 @@
   },
 
   "servers": {
-    "_note": "DRY server definitions — reference from sites using 'server_ref'. Site-level fields override server defaults.",
+    "_note": "DRY hosting-account/server definitions — reference from sites using 'server_ref'. Store one credential per account, not per domain. Site-level fields override server defaults.",
     "hetzner-vps-1": {
       "type": "hetzner",
       "ssh_host": "123.45.67.89",
@@ -23,7 +23,9 @@
       "type": "hostinger",
       "ssh_host": "ssh.example.com",
       "ssh_port": 65002,
-      "ssh_user": "u123456789"
+      "ssh_user": "u123456789",
+      "ssh_password_env": "HOSTINGER_SSH_PASSWORD_ACCOUNT_1",
+      "_credential_note": "The env-var name is safe config. Store its value once with: aidevops secret set HOSTINGER_SSH_PASSWORD_ACCOUNT_1"
     },
     "cloudways-master": {
       "type": "cloudways",
@@ -46,7 +48,7 @@
       "type": "hostinger",
       "url": "https://example.com",
       "server_ref": "hostinger-shared-1",
-      "_note": "server_ref inherits ssh_host, ssh_port, ssh_user from servers.hostinger-shared-1",
+      "_note": "server_ref inherits the shared account connection and credential reference; all sites on this Hostinger account reuse it",
       "wp_path": "/domains/example.com/public_html",
       "mainwp_connected": true,
       "mainwp_site_id": 123,

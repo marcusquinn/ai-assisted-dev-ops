@@ -37,6 +37,8 @@ tools:
 | MainWP | Fleet operations, connected sites |
 | WordPress MCP | AI-powered admin actions |
 
+**Shared-host credential rule:** Before requesting SSH access for several sites, identify hosting account/server boundaries. Configure one entry under `servers`, reference it from each site with `server_ref`, and store/inject one password or key per account—not one credential set per domain. Hostinger websites with the same account username share SSH access.
+
 **wp-helper.sh Commands**:
 
 ```bash

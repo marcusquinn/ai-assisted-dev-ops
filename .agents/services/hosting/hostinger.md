@@ -23,12 +23,31 @@ tools:
 - **API**: REST at `https://developers.hostinger.com`
 - **Auth**: Bearer token in `~/.config/aidevops/credentials.sh` as `HOSTINGER_API_TOKEN`
 - **SSH**: Port 65002, key auth (recommended) or password auth; framework prefers key when `ssh_identity_file` is configured
+- **Credential scope**: Hostinger SSH access is hosting-account scoped, not domain scoped; inventory and group sites before requesting credentials
 - **Panel**: Custom hPanel
 - **No MCP required** — uses curl for API, ssh for key auth or sshpass for password auth
 
 <!-- AI-CONTEXT-END -->
 
 ## Configuration
+
+### Discover account boundaries first
+
+Before asking for SSH credentials, use the Hostinger API token to inventory websites and group them by account `username`. Domains with the same username share one SSH login and must reuse one server/account configuration. Do not request or store duplicate credentials per domain.
+
+Connection metadata (`ssh_host`, `ssh_port`, `ssh_user`, and domain paths) belongs in configuration and is not a password. Store only the shared password or private key securely. For WordPress fleets, prefer `wordpress-sites.json` `servers` plus per-site `server_ref`; `wp-helper.sh` supports an account-level `ssh_password_env` reference.
+
+Name secrets by account alias rather than site, for example `HOSTINGER_SSH_PASSWORD_ACCOUNT_1`. Run commands with the referenced secret injected:
+
+```bash
+aidevops secret set HOSTINGER_SSH_PASSWORD_ACCOUNT_1
+aidevops secret HOSTINGER_SSH_PASSWORD_ACCOUNT_1 -- \
+  wp-helper.sh example-site plugin list
+```
+
+Only request another SSH credential when API inventory, the hosting panel, or a failed authenticated probe shows a genuinely different account/server.
+
+### Legacy Hostinger helper
 
 Copy template and edit with server details:
 
@@ -92,6 +111,8 @@ sudo apt-get install sshpass  # Linux
 ## Security
 
 - SSH key auth is recommended; set `ssh_identity_file` in site config (e.g. `~/.ssh/hostinger_ed25519`)
+- Keep one credential per hosting account/server and reference it from every site on that account
+- Do not put non-secret host, port, username, or domain-path metadata in the secret store
 - Store passwords in files with 600 permissions; never commit them
 - Port 65002 (non-standard); be aware of concurrent connection limits
 
