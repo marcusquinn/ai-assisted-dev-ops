@@ -1,0 +1,28 @@
+{
+  "schema": "aidevops.marketing-optimization-config/v1",
+  "schema_version": 1,
+  "default_attribution_model": "last_touch",
+  "default_attribution_model_version": 1,
+  "default_lookback_seconds": 2592000,
+  "default_refund_maturity_seconds": 1209600,
+  "default_minimum_cell_size": 10,
+  "default_minimum_sample_per_variant": 250,
+  "default_minimum_conversions_per_variant": 10,
+  "default_minimum_runtime_seconds": 604800,
+  "default_alpha": "0.05",
+  "default_power": "0.8",
+  "default_recommendation_owner": "growth-owner",
+  "default_required_approval": "owner-approval",
+  "default_recommendation_time_horizon_seconds": 2592000,
+  "default_rollback_window_seconds": 604800,
+  "default_retest_window_seconds": 1209600,
+  "supported_attribution_models": ["direct", "last_touch"],
+  "eligible_touchpoint_events": ["engagement", "visit", "outreach_reply"],
+  "view_through_event": "impression",
+  "versioned_paths": [
+    "marketing/attribution/",
+    "marketing/experiments/",
+    "marketing/recommendations/"
+  ],
+  "gitignored_paths": ["marketing/optimization-work/"]
+}

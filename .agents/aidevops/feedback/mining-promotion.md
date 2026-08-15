@@ -130,22 +130,6 @@ Approved mined themes route to the smallest durable surface that can use them.
 | `_performance/` annotations | Feedback explains, qualifies, or challenges a metric movement, experiment result, incident trend, campaign result, or business KPI. | Metric or result ID, observation window, feedback theme, evidence count, segment/channel, source capture IDs, confidence, and sensitivity tier. | Qualitative annotations contextualize numbers; they do not replace measurements. Link to the metric artifact rather than duplicating dashboards. |
 | TODO / GitHub task | Mined feedback reveals actionable work: a bug, missing doc, product gap, process gap, follow-up investigation, or automation opportunity with enough context for a worker. | Public-safe title, worker-ready problem statement, sanitized evidence summary, affected files or discovery path when known, verification expectation, source theme ID, and privacy review result. | Public repos must never contain private/client names, local paths, raw quotes, emails, or sensitive evidence. Use placeholders and keep detailed evidence in `_feedback/` or a private plane. |
 
-### Validated growth learning
-
-An attribution projection or recommendation is not automatically durable
-learning. Promote a growth insight only after a reviewed experiment decision or
-repeated evidence has met the applicable sample, privacy, freshness, and
-contradiction gates. Carry forward the experiment/analysis or recommendation ID,
-aggregate evidence count, source snapshot, metric, model/window assumptions,
-confidence, caveat, owner decision, and retest date.
-
-Promoted knowledge contains the smallest reusable conclusion and a pointer to
-the governed evidence bundle. It never contains raw journeys, subject IDs,
-small-cohort breakdowns, private excerpts, contact destinations, or provider
-payloads. Observational attribution is labelled as a hypothesis-generating
-signal, not a causal result. Superseding evidence appends a new insight or marks
-the old recommendation superseded; it does not erase the prior audit record.
-
 ### Durable insights: `_knowledge/insights/`
 
 Promote to knowledge when the feedback is useful outside the immediate workflow.
@@ -205,6 +189,29 @@ the feedback bundle that supports the explanation.
 
 Do not present feedback as measurement. Label promoted content as qualitative
 context with confidence and evidence count.
+
+### Validated optimization learning
+
+Promote optimization learning only from an immutable aggregate report,
+attribution, experiment-run, or recommendation reference. Carry the measured
+window, evidence rank, confidence, freshness/coverage caveats, target metric,
+owner, approval state, rollback, falsifier, and retest date. Keep raw provider
+payloads, subject rows, contact destinations, and private source material behind
+their original access boundary.
+
+Attribution and qualitative feedback remain observational even when they agree.
+Only an eligible verified preregistered experiment may support causal wording,
+and only for its measured population and window. Sparse, stale, partial,
+contradictory, invalid, or guardrail-breaching evidence stays qualified or
+`insufficient_evidence`; it is not promoted as a winner.
+
+Prevent feedback loops by preserving source lineage and deduplicating any theme
+already represented in the report or recommendation. A recommendation, its
+summary, and feedback reacting to that summary are not independent confirmations
+of the same claim. Promotion copies the smallest reviewed learning to campaign
+research or knowledge; it never changes approval state or grants authority to
+publish, message, spend, retarget, change offers, mutate accounts, or export
+audiences.
 
 ### TODO / GitHub tasks
 

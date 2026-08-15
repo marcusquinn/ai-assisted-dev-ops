@@ -55,12 +55,13 @@ def insert_governance(store: _StoreHost, context: GovernanceContext) -> None:
         )
         store.connection.execute(
             "INSERT OR IGNORE INTO consent_ledger("
-            "ledger_ref,subject_id,purpose,state,lawful_basis,source,account_ref,effective_at,observed_at,evidence_ref"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "ledger_ref,subject_id,purpose,state,lawful_basis,source,account_ref,effective_at,observed_at,recorded_at,evidence_ref"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ledger_ref, context.subject_id, consent["purpose"], consent["state"],
                 consent["lawful_basis"], context.source, context.account_ref,
-                consent["effective_at"], context.observed_at, context.evidence_ref,
+                consent["effective_at"], context.observed_at, context.recorded_at,
+                context.evidence_ref,
             ),
         )
     suppression = context.event["governance"]["suppression"]
@@ -71,12 +72,12 @@ def insert_governance(store: _StoreHost, context: GovernanceContext) -> None:
     )
     store.connection.execute(
         "INSERT OR IGNORE INTO suppression_ledger("
-        "ledger_ref,subject_id,state,reason,source,account_ref,effective_at,observed_at,evidence_ref"
-        ") VALUES(?,?,?,?,?,?,?,?,?)",
+        "ledger_ref,subject_id,state,reason,source,account_ref,effective_at,observed_at,recorded_at,evidence_ref"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?)",
         (
             ledger_ref, context.subject_id, suppression["state"], suppression["reason"],
             context.source, context.account_ref, suppression["effective_at"],
-            context.observed_at, context.evidence_ref,
+            context.observed_at, context.recorded_at, context.evidence_ref,
         ),
     )
 
@@ -188,6 +189,6 @@ def insert_event(store: _StoreHost, context: EventInsertContext) -> str:
     )
     store._insert_governance(GovernanceContext(
         event, record_ref, subject_id, source, account_ref,
-        header["observed_at"], context.evidence_ref,
+        header["observed_at"], context.recorded_at, context.evidence_ref,
     ))
     return "inserted"

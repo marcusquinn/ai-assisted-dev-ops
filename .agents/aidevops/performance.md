@@ -1,16 +1,17 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Performance Plane — KPI, Marketing Ingest, and Result Schema
+# Performance Plane — KPI, Marketing Ingest, and Optimization Projections
 
 The `_performance/` plane is the canonical home for measurable outcomes across
 aidevops-managed work: campaign results, case outcomes, project delivery metrics,
 system health, and future result-bearing domains.
 
-This document defines the backwards-compatible Phase 1 KPI/result schema and
-the Phase 2 marketing ingest contract. Other domain ingest paths, dashboards,
-and recurring review workflows remain deferred to later `_performance/` phases
-tracked by parent issue #22372.
+This document defines the backwards-compatible Phase 1 KPI/result schema, the
+Phase 2 marketing ingest contract, and the derived marketing optimization
+projections. Other domain ingest paths, dashboards, and recurring review
+workflows remain deferred to later `_performance/` phases tracked by parent
+issue #22372.
 
 ## Schema Goals
 
@@ -386,59 +387,109 @@ history.
 
 `/performance <URL>` remains the separate web-performance audit command.
 
-## Attribution and Experiment Projections
+## Marketing Optimization Projections
 
-`marketing-optimization-helper.py` reads normalized, immutable marketing events
-and writes rebuildable analytical projections. It never updates source events,
-consent, suppression, identity links, campaigns, provider accounts, or prior
-experiment decisions.
+`.agents/scripts/marketing-optimization-helper.py` is the provider-neutral
+read/derive boundary for attribution, experiments, aggregate reports, and growth
+recommendations. It reads normalized history through
+`PerformanceReporting.event_records()`, `subject_records()`, and `status()`; it
+does not ingest, reconcile, repair, export audiences, or mutate providers. Live
+reads require an explicit `--as-of` boundary. `--input` accepts the equivalent
+hermetic snapshot contract for tests and offline replay. Store schema v3 keeps
+append-only source, lease, and governance visibility history so live replay uses
+only revisions and state recorded at or before that boundary; unavailable
+pre-migration history fails closed instead of borrowing current state.
 
-Three versioned schemas define this layer:
+`init` provisions these paths without replacing existing artifacts:
 
-- `schemas/marketing-attribution.schema.json` records the source snapshot,
-  direct or last-touch model, lookback-window version, aggregate credit,
-  source coverage, uncertainty, and a mandatory non-causal caveat.
-- `schemas/marketing-experiment.schema.json` preregisters hypothesis, assignment
-  unit, control and treatment variants, primary and guardrail metrics, minimum
-  sample/privacy thresholds, window, exclusions, stopping policy, owner,
-  analysis, and decision audit.
-- `schemas/growth-recommendation.schema.json` records evidence, impact range,
-  confidence, owner, required approval, rollback, retest date, status, and any
-  recommendation it supersedes.
-
-Attribution is a projection, not source truth. The same source snapshot, model,
-window, and versions produce the same `projection_id`; changing a model or
-window version produces a new projection without erasing old decisions. Refunds
-and costs remain compensating outcomes. Missing touchpoints stay unattributed,
-and ambiguous identity increases uncertainty rather than being guessed.
-
-Experiment analysis accepts aggregate observations only. A result is
-`insufficient_evidence` until every variant meets both the preregistered sample
-minimum and inherited privacy threshold and the minimum test duration has
-elapsed. Guardrail regressions block winner adoption. Randomized assignment may
-support a bounded experimental claim; all other comparisons remain
-observational.
-
-```bash
-marketing-optimization-helper.py attribute --input events.json --model last_touch --window-days 30 --model-version 1 --window-version 1 --run-id RUN --generated-at TIME
-marketing-optimization-helper.py experiment --input experiment.json --run-id RUN --observed-at TIME
-marketing-optimization-helper.py report --input evidence.json --minimum-cohort 10 --generated-at TIME
-marketing-optimization-helper.py recommend --input evidence.json --owner content --approval ROLE --rollback PLAN --retest-at TIME --created-at TIME
-marketing-optimization-helper.py status --input report.json --now TIME
+```text
+_performance/marketing/
+├── _config/optimization.json
+├── attribution/<typed-ref>.json
+├── experiments/<typed-ref>.json
+├── recommendations/<typed-ref>.json
+├── index/optimization-{assignments,snapshots}/<ref>.json # private 0600
+└── optimization-work/                 # gitignored local work
+_reports/drafts/<report-ref>/
+├── report.json
+└── report.md
 ```
 
-Projection and report publication uses an atomic temporary-file replacement.
-Concurrent runs use distinct run IDs; callers must compare source snapshot and
-version before replacing a newer published projection. A failed run leaves the
-previous published artifact intact. Reports move through
-`_reports/drafts` review before a published bundle; raw evidence remains in its
-private source plane.
+Derived JSON uses content-derived typed references. Exact replay is idempotent;
+a different payload at an existing reference fails closed. Recomputing from a
+new model, definition, assignment, or snapshot produces a new artifact and
+preserves prior evidence and owner decisions. Experiment registration also
+creates immutable append-time receipts: one atomic identity slot per
+`experiment_id` and `definition_version`, and one assignment-registration slot
+per definition. Pseudonymous assignment rows and recomputation snapshots remain
+under owner-only, gitignored `marketing/index/` paths; public experiment storage
+contains only aggregate artifacts and opaque receipts. Analysis run references
+also include the experiment definition identity, preventing cross-experiment
+collisions. Evidence paths supplied to report or recommendation commands are
+selectors only: the helper validates their complete shape, references, and safe
+aliases, then re-reads the matching attribution, report, experiment analysis, or
+prior recommendation through descriptor-pinned registered storage. Unregistered
+or conflicting artifacts fail closed.
 
-Existing Phase 1 records without attribution remain valid and report as
-unattributed. Rebuilds derive new projections from effective immutable event and
-reconciliation history rather than editing historical records.
+### Analysis Semantics
 
-## Deferred Beyond Marketing Optimization
+- Direct and last-touch attribution record model version, lookback, source
+  coverage, freshness, refunds, costs, currency compatibility, and uncertainty.
+  Both models remain `observational_only`; they cannot establish causality.
+  Increment `--model-version` only when model semantics change and pass the prior
+  attribution reference with `--supersedes`; both versions remain immutable.
+- Causal experiment wording requires an approved immutable definition whose
+  trusted local registration receipt predates `data_policy.started_at` and binds
+  the owner, approval, preregistration, and complete definition. Changed content
+  must increment `definition_version` and supersede the immediately preceding
+  registered version. A separately registered, verified, randomized, sticky
+  subject-assignment snapshot needs its own append-time receipt before the same
+  start boundary. Repository policy cannot be relaxed below 250 subjects and 10
+  conversions per variant, seven days of runtime, or 10 subjects per published
+  cell. Higher configured floors remain authoritative. Sample/runtime,
+  conversion, stopping, assignment balance, contamination, privacy, freshness,
+  event confidence/completeness, practical-effect, and explicit guardrail
+  observations fail closed to an insufficient or invalid result. Safety looks
+  cannot select positive winners. Every registered sequential look recursively
+  validates the complete predecessor run/look chain and assignment receipt.
+- Reports emit aggregate rows only and separate reach, engagement, account
+  growth, traffic, conversion, leads, sales, revenue/refunds, costs, outreach,
+  and guardrails. Attribution and report overrides cannot lower the configured
+  distinct-subject/aggregate threshold; cells below it hide values and
+  dimensions, contributing counts, and count-derived coverage diagnostics.
+  Registered external artifacts must satisfy the same floor and suppression
+  invariants before they can qualify a report or recommendation.
+- Recommendations rank eligible causal experiments above verified or directional
+  observations. Every recommendation includes uncertainty, owner, required
+  approval, metric-bound rollback comparator and threshold, retest, provenance,
+  and supersession. Recommendations are handoffs only: they cannot publish,
+  message, spend, retarget, change offers, mutate accounts, or export audiences.
+
+### Optimization CLI
+
+```bash
+python3 .agents/scripts/marketing-optimization-helper.py init --repo PATH
+python3 .agents/scripts/marketing-optimization-helper.py status --repo PATH
+python3 .agents/scripts/marketing-optimization-helper.py attribute --repo PATH --as-of UTC --outcome-metric-id ID
+python3 .agents/scripts/marketing-optimization-helper.py experiment-register --repo PATH --definition experiment.json
+python3 .agents/scripts/marketing-optimization-helper.py experiment-assignment-register --repo PATH --definition experiment.json --assignment-snapshot assignments.json
+python3 .agents/scripts/marketing-optimization-helper.py experiment-analyze --repo PATH --definition experiment.json --assignment-snapshot assignments.json --look-number N --look-type final --as-of UTC
+python3 .agents/scripts/marketing-optimization-helper.py experiment-decide --repo PATH --experiment analysis.json --decision owner-decision.json
+python3 .agents/scripts/marketing-optimization-helper.py report --repo PATH --as-of UTC --attribution attribution.json --experiment experiment.json
+python3 .agents/scripts/marketing-optimization-helper.py recommend --repo PATH --report report.json --prior prior-recommendation.json
+```
+
+Experiment analysis must persist an immutable look-number reservation; repeated
+exact replay is idempotent, while a changed snapshot at the same look fails
+closed. Other derive commands support `--dry-run`. A shared atomic transition
+slot per analysis run serializes an owner decision against any successor look;
+recommendation successors require the prior immutable
+artifact through `--prior`. The explicit owner-decision command records supplied
+approval evidence locally; it does not execute the approved change. Registration
+timestamps come from the local system clock, never definition or assignment
+input, so evidence first presented after the experiment starts is ineligible.
+
+## Deferred Beyond Marketing Ingest
 
 - Provider-authenticated live marketing adapters and scheduled collectors.
 - Promotion paths from `_cases/` and `_projects/`.

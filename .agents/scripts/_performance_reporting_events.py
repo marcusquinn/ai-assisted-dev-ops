@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from performance_contract import decimal_wire
+from performance_contract import PerformanceContractError, decimal_wire, timestamp_epoch
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class EventQuery:
     source: str | None = None
     account_ref: str | None = None
     campaign_id: str | None = None
-    now_epoch: int | None = None
+    now_epoch: float | None = None
 
     @classmethod
     def from_options(cls, options: dict[str, Any]) -> "EventQuery":
@@ -33,10 +33,15 @@ def _subject_projection(row: Any, subjects: dict[str, dict[str, Any]]) -> tuple[
     subject = next((item for item in subjects.values() if str(subject_id) in item["aliases"]), None)
     canonical = subject["subject_id"] if subject else str(subject_id)
     state = subject["identity_state"] if subject else str(row["identity_state"])
-    governance = {
-        "audience_eligible": bool(subject and subject["audience_eligible"]),
-        "eligibility_reason": subject["eligibility_reason"] if subject else "consent_unknown",
-    }
+    uncertain = state in {"ambiguous", "split"}
+    governance = (
+        {"audience_eligible": False, "eligibility_reason": "identity_ambiguous"}
+        if uncertain
+        else {
+            "audience_eligible": bool(subject and subject["audience_eligible"]),
+            "eligibility_reason": subject["eligibility_reason"] if subject else "consent_unknown",
+        }
+    )
     return canonical, state, governance
 
 
@@ -65,13 +70,62 @@ def _measurement_record(row: Any) -> dict[str, Any]:
     }
 
 
-def _event_record(reporting: Any, row: Any, state: dict[str, Any], subjects: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _effective_event_semantics(reporting: Any, row: Any, now_epoch: float | None) -> tuple[str, str]:
+    """Resolve a correction to its target's type and economic occurrence time."""
+    event_type = str(row["event_type"])
+    occurred_at = str(row["occurred_at"])
+    target_ref = row["correction_ref"]
+    seen: set[str] = set()
+    while target_ref is not None:
+        reference = str(target_ref)
+        if reference in seen:
+            raise PerformanceContractError("event correction chain contains a cycle")
+        seen.add(reference)
+        candidates = list(
+            reporting.connection.execute(
+                "SELECT event_type,correction_ref,occurred_at,recorded_at,revision "
+                "FROM events WHERE source=? AND account_ref=? AND event_ref=?",
+                (str(row["source"]), str(row["account_ref"]), reference),
+            )
+        )
+        if now_epoch is not None:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if timestamp_epoch(str(candidate["occurred_at"])) <= now_epoch
+                and timestamp_epoch(str(candidate["recorded_at"])) <= now_epoch
+            ]
+        if not candidates:
+            raise PerformanceContractError("event correction target is unavailable")
+        target = max(candidates, key=lambda candidate: int(candidate["revision"]))
+        event_type = str(target["event_type"])
+        occurred_at = str(target["occurred_at"])
+        target_ref = target["correction_ref"]
+    return event_type, occurred_at
+
+
+def _event_record(
+    reporting: Any,
+    row: Any,
+    state: dict[str, Any],
+    subjects: dict[str, dict[str, Any]],
+    *,
+    history: bool,
+    now_epoch: float | None,
+) -> dict[str, Any]:
+    """Project one stored row, restoring corrected effective event semantics."""
     canonical, identity_state, governance = _subject_projection(row, subjects)
     confidence = reporting._effective_confidence(str(row["confidence"]), state["status"], str(row["completeness"]), identity_state)
+    event_type = str(row["event_type"])
+    occurred_at = str(row["occurred_at"])
+    correction_ref = row["correction_ref"]
+    if not history and correction_ref is not None:
+        event_type, occurred_at = _effective_event_semantics(reporting, row, now_epoch)
+        correction_ref = None
     return {
         "schema_version": 1, "record_ref": str(row["record_ref"]), "event_ref": str(row["event_ref"]),
         "source": _source_record(row, state),
-        "event": {"type": str(row["event_type"]), "occurred_at": str(row["occurred_at"]), "correction_of": row["correction_ref"]},
+        "event": {"type": event_type, "occurred_at": occurred_at, "correction_of": correction_ref},
         "subject": {"subject_id": canonical, "kind": str(row["subject_kind"]), "identity_state": identity_state},
         "scope": _scope_record(row), "measurement": _measurement_record(row),
         "quality": {
@@ -87,5 +141,29 @@ def event_records(reporting: Any, query: EventQuery) -> list[dict[str, Any]]:
     """Return schema-valid pseudonymous event records."""
     source_state = {(row["source"], row["account_ref"]): row for row in reporting._source_rows(query.now_epoch)}
     subjects = {row["subject_id"]: row for row in reporting.subject_records(query.now_epoch)}
-    rows = reporting._effective_rows(history=query.history, source=query.source, account_ref=query.account_ref, campaign_id=query.campaign_id)
-    return [_event_record(reporting, row, source_state[(str(row["source"]), str(row["account_ref"]))], subjects) for row in rows]
+    rows = reporting._effective_rows(
+        history=query.history,
+        source=query.source,
+        account_ref=query.account_ref,
+        campaign_id=query.campaign_id,
+        now_epoch=query.now_epoch,
+    )
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        key = (str(row["source"]), str(row["account_ref"]))
+        state = source_state.get(key)
+        if state is None:
+            raise PerformanceContractError(
+                "source state is unavailable at the requested boundary"
+            )
+        output.append(
+            _event_record(
+                reporting,
+                row,
+                state,
+                subjects,
+                history=query.history,
+                now_epoch=query.now_epoch,
+            )
+        )
+    return output

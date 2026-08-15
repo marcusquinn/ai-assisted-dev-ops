@@ -17,7 +17,7 @@ from _performance_store_config import CONFIG_SCHEMA as CONFIG_SCHEMA, validate_c
 from _performance_store_paths import PlanePaths, resolve_paths as resolve_paths
 from _performance_store_files import write_new as _write_new
 
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 3
 PERFORMANCE_GITIGNORE = """# Private/local performance-plane state
 raw/
 exports/
@@ -28,6 +28,7 @@ marketing/exports/
 marketing/index/
 marketing/quarantine/
 marketing/leases/
+marketing/optimization-work/
 
 # Explicit public-safe projections and configuration remain versionable
 !marketing/summaries/
@@ -178,6 +179,133 @@ def migrate(
         raise PerformanceContractError("performance store schema is newer than this runtime")
     if version == STORE_SCHEMA_VERSION:
         return
+    if version == 2:
+        consent_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(consent_ledger)")
+        }
+        suppression_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(suppression_ledger)")
+        }
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            if "recorded_at" not in consent_columns:
+                connection.execute(
+                    "ALTER TABLE consent_ledger ADD COLUMN recorded_at TEXT"
+                )
+            if "recorded_at" not in suppression_columns:
+                connection.execute(
+                    "ALTER TABLE suppression_ledger ADD COLUMN recorded_at TEXT"
+                )
+            connection.execute(
+                "UPDATE consent_ledger SET recorded_at=observed_at "
+                "WHERE recorded_at IS NULL"
+            )
+            connection.execute(
+                "UPDATE suppression_ledger SET recorded_at=observed_at "
+                "WHERE recorded_at IS NULL"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS source_history (
+                    state_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    account_ref TEXT NOT NULL,
+                    adapter TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    coverage TEXT NOT NULL,
+                    missing_scopes_json TEXT NOT NULL,
+                    cursor_ref TEXT,
+                    last_observed_at TEXT,
+                    last_success_at TEXT,
+                    last_evidence_ref TEXT,
+                    stale_after_seconds INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS source_history_boundary_idx "
+                "ON source_history(source,account_ref,updated_at,state_id)"
+            )
+            connection.execute(
+                """
+                INSERT INTO source_history(
+                    source,account_ref,adapter,status,coverage,missing_scopes_json,
+                    cursor_ref,last_observed_at,last_success_at,last_evidence_ref,
+                    stale_after_seconds,updated_at
+                )
+                SELECT
+                    source,account_ref,adapter,status,coverage,missing_scopes_json,
+                    cursor_ref,last_observed_at,last_success_at,last_evidence_ref,
+                    stale_after_seconds,updated_at
+                FROM sources
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM source_history
+                    WHERE source_history.source=sources.source
+                      AND source_history.account_ref=sources.account_ref
+                      AND source_history.updated_at=sources.updated_at
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS lease_history (
+                    lease_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    account_ref TEXT NOT NULL,
+                    token TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    occurred_at INTEGER NOT NULL,
+                    expires_at INTEGER
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS lease_history_boundary_idx "
+                "ON lease_history(source,account_ref,token,occurred_at,lease_event_id)"
+            )
+            connection.execute(
+                """
+                INSERT INTO lease_history(
+                    source,account_ref,token,action,occurred_at,expires_at
+                )
+                SELECT source,account_ref,token,'acquire',acquired_at,expires_at
+                FROM leases
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM lease_history
+                    WHERE lease_history.token=leases.token
+                      AND lease_history.action='acquire'
+                )
+                """
+            )
+            connection.execute(
+                "CREATE TRIGGER IF NOT EXISTS source_history_no_update "
+                "BEFORE UPDATE ON source_history BEGIN "
+                "SELECT RAISE(ABORT, 'source history is immutable'); END"
+            )
+            connection.execute(
+                "CREATE TRIGGER IF NOT EXISTS source_history_no_delete "
+                "BEFORE DELETE ON source_history BEGIN "
+                "SELECT RAISE(ABORT, 'source history is immutable'); END"
+            )
+            connection.execute(
+                "CREATE TRIGGER IF NOT EXISTS lease_history_no_update "
+                "BEFORE UPDATE ON lease_history BEGIN "
+                "SELECT RAISE(ABORT, 'lease history is immutable'); END"
+            )
+            connection.execute(
+                "CREATE TRIGGER IF NOT EXISTS lease_history_no_delete "
+                "BEFORE DELETE ON lease_history BEGIN "
+                "SELECT RAISE(ABORT, 'lease history is immutable'); END"
+            )
+            connection.execute("PRAGMA user_version=3")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        return
     if version == 1:
         connection.execute("BEGIN IMMEDIATE")
         try:
@@ -206,6 +334,7 @@ def migrate(
         except Exception:
             connection.rollback()
             raise
+        migrate(connection, initialize=initialize)
         return
     if version != 0:
         raise PerformanceContractError("unsupported performance store migration path")
@@ -235,6 +364,22 @@ def migrate(
             updated_at TEXT NOT NULL,
             PRIMARY KEY(source, account_ref)
         );
+        CREATE TABLE source_history (
+            state_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            account_ref TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            status TEXT NOT NULL,
+            coverage TEXT NOT NULL,
+            missing_scopes_json TEXT NOT NULL,
+            cursor_ref TEXT,
+            last_observed_at TEXT,
+            last_success_at TEXT,
+            last_evidence_ref TEXT,
+            stale_after_seconds INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX source_history_boundary_idx ON source_history(source,account_ref,updated_at,state_id);
         CREATE TABLE leases (
             source TEXT NOT NULL,
             account_ref TEXT NOT NULL,
@@ -243,6 +388,16 @@ def migrate(
             expires_at INTEGER NOT NULL,
             PRIMARY KEY(source, account_ref)
         );
+        CREATE TABLE lease_history (
+            lease_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            account_ref TEXT NOT NULL,
+            token TEXT NOT NULL,
+            action TEXT NOT NULL,
+            occurred_at INTEGER NOT NULL,
+            expires_at INTEGER
+        );
+        CREATE INDEX lease_history_boundary_idx ON lease_history(source,account_ref,token,occurred_at,lease_event_id);
         CREATE TABLE evidence (
             evidence_ref TEXT PRIMARY KEY,
             source TEXT NOT NULL,
@@ -301,6 +456,7 @@ def migrate(
             account_ref TEXT NOT NULL,
             effective_at TEXT NOT NULL,
             observed_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
             evidence_ref TEXT NOT NULL REFERENCES evidence(evidence_ref)
         );
         CREATE INDEX consent_subject_idx ON consent_ledger(subject_id, purpose, effective_at);
@@ -313,6 +469,7 @@ def migrate(
             account_ref TEXT NOT NULL,
             effective_at TEXT NOT NULL,
             observed_at TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
             evidence_ref TEXT NOT NULL REFERENCES evidence(evidence_ref)
         );
         CREATE INDEX suppression_subject_idx ON suppression_ledger(subject_id, effective_at);
@@ -360,7 +517,11 @@ def migrate(
         CREATE TRIGGER reconciliation_no_delete BEFORE DELETE ON reconciliations BEGIN SELECT RAISE(ABORT, 'reconciliations are immutable'); END;
         CREATE TRIGGER identity_links_no_update BEFORE UPDATE ON identity_links BEGIN SELECT RAISE(ABORT, 'identity links are immutable'); END;
         CREATE TRIGGER identity_links_no_delete BEFORE DELETE ON identity_links BEGIN SELECT RAISE(ABORT, 'identity links are immutable'); END;
-        PRAGMA user_version=2;
+        CREATE TRIGGER source_history_no_update BEFORE UPDATE ON source_history BEGIN SELECT RAISE(ABORT, 'source history is immutable'); END;
+        CREATE TRIGGER source_history_no_delete BEFORE DELETE ON source_history BEGIN SELECT RAISE(ABORT, 'source history is immutable'); END;
+        CREATE TRIGGER lease_history_no_update BEFORE UPDATE ON lease_history BEGIN SELECT RAISE(ABORT, 'lease history is immutable'); END;
+        CREATE TRIGGER lease_history_no_delete BEFORE DELETE ON lease_history BEGIN SELECT RAISE(ABORT, 'lease history is immutable'); END;
+        PRAGMA user_version=3;
         COMMIT;
         """
     )

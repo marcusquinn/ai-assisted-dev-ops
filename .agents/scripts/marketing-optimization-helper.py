@@ -1,105 +1,156 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-"""Deterministic privacy-safe marketing attribution and experiment analysis."""
+"""Build privacy-safe marketing attribution, experiments, reports, and recommendations."""
 
 from __future__ import annotations
 
 import argparse
-import json
+import sqlite3
+import sys
 from typing import Any
 
-from marketing_optimization_attribution import AttributionOptions
-from marketing_optimization_attribution import attribute as _attribute
-from marketing_optimization_common import OptimizationError
-from marketing_optimization_common import load_document as _load
-from marketing_optimization_common import write_document as _write
-from marketing_optimization_experiment import analyze_experiment
-from marketing_optimization_reporting import RecommendationOptions, build_report
-from marketing_optimization_reporting import recommend as _recommend
-from marketing_optimization_reporting import status
+from marketing_optimization_cli import (
+    cmd_attribution,
+    cmd_experiment_analyze,
+    cmd_experiment_assignment_register,
+    cmd_experiment_decide,
+    cmd_experiment_register,
+    cmd_init,
+    cmd_recommend,
+    cmd_report,
+    cmd_status,
+)
+from performance_contract import SOURCE_KINDS, PerformanceContractError
+from performance_store import PerformanceStoreError
 
 
-def attribute(document: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
-    """Preserve the helper API while grouping versioned run options."""
-    names = ("model", "window_days", "model_version", "window_version", "run_id", "generated_at")
-    values = dict(zip(names, args, strict=False))
-    values.update(kwargs)
-    return _attribute(document, AttributionOptions(**values))
+def _repo_option(parser: argparse.ArgumentParser) -> None:
+    """Add the local repository root option."""
+    parser.add_argument("--repo", default=".")
 
 
-def recommend(document: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
-    """Preserve the helper API while grouping recommendation governance."""
-    names = ("owner", "approval", "rollback", "retest_at", "created_at")
-    values = dict(zip(names, args, strict=False))
-    values.update(kwargs)
-    return _recommend(document, RecommendationOptions(**values))
+def _dry_run_option(parser: argparse.ArgumentParser) -> None:
+    """Add the immutable-output suppression option."""
+    parser.add_argument("--dry-run", action="store_true")
+
+
+def _snapshot_options(parser: argparse.ArgumentParser) -> None:
+    """Add normalized snapshot or live projection options."""
+    parser.add_argument("--input", help="Hermetic normalized snapshot JSON")
+    parser.add_argument("--as-of", help="Required UTC boundary for live performance reads")
+    parser.add_argument("--source", choices=tuple(sorted(SOURCE_KINDS)))
+    _repo_option(parser)
+
+
+def _attribution_parser(subparsers: Any) -> None:
+    """Configure direct and last-touch attribution options."""
+    parser = subparsers.add_parser("attribute", help="Build direct or last-touch aggregate attribution")
+    _snapshot_options(parser)
+    parser.add_argument("--outcome-metric-id", required=True)
+    parser.add_argument("--model", choices=("direct", "last_touch"))
+    parser.add_argument("--model-version", type=int)
+    parser.add_argument("--lookback-seconds", type=int)
+    parser.add_argument("--refund-maturity-seconds", type=int)
+    parser.add_argument("--minimum-cell-size", type=int)
+    parser.add_argument("--include-view-through", action="store_true")
+    parser.add_argument("--account-ref")
+    parser.add_argument("--campaign-id")
+    parser.add_argument("--currency")
+    parser.add_argument("--supersedes")
+    _dry_run_option(parser)
+    parser.set_defaults(handler=cmd_attribution)
+
+
+def _experiment_parsers(subparsers: Any) -> None:
+    """Configure experiment registry, analysis, and decision commands."""
+    register = subparsers.add_parser("experiment-register", help="Register one preregistered experiment version")
+    register.add_argument("--definition", required=True)
+    _repo_option(register)
+    _dry_run_option(register)
+    register.set_defaults(handler=cmd_experiment_register)
+
+    assignment = subparsers.add_parser(
+        "experiment-assignment-register",
+        help="Register immutable verified assignment evidence",
+    )
+    assignment.add_argument("--definition", required=True)
+    assignment.add_argument("--assignment-snapshot", required=True)
+    _repo_option(assignment)
+    _dry_run_option(assignment)
+    assignment.set_defaults(handler=cmd_experiment_assignment_register)
+
+    analyze = subparsers.add_parser("experiment-analyze", help="Analyse one preregistered experiment look")
+    analyze.add_argument("--definition", required=True)
+    analyze.add_argument("--assignment-snapshot")
+    analyze.add_argument("--look-number", type=int, required=True)
+    analyze.add_argument("--look-type", choices=("interim", "final", "safety"), required=True)
+    _snapshot_options(analyze)
+    _dry_run_option(analyze)
+    analyze.set_defaults(handler=cmd_experiment_analyze)
+
+    decide = subparsers.add_parser("experiment-decide", help="Record an explicit owner decision")
+    decide.add_argument("--experiment", required=True)
+    decide.add_argument("--decision", required=True)
+    _repo_option(decide)
+    _dry_run_option(decide)
+    decide.set_defaults(handler=cmd_experiment_decide)
+
+
+def _report_parser(subparsers: Any) -> None:
+    """Configure aggregate report generation."""
+    parser = subparsers.add_parser("report", help="Build a freshness-aware aggregate report draft")
+    _snapshot_options(parser)
+    parser.add_argument("--account-ref")
+    parser.add_argument("--campaign-id")
+    parser.add_argument("--attribution", action="append", default=[])
+    parser.add_argument("--experiment", action="append", default=[])
+    parser.add_argument("--minimum-cell-size", type=int)
+    _dry_run_option(parser)
+    parser.set_defaults(handler=cmd_report)
+
+
+def _recommend_parser(subparsers: Any) -> None:
+    """Configure recommendation generation."""
+    parser = subparsers.add_parser("recommend", help="Build evidence-ranked approval-bound recommendations")
+    parser.add_argument("--report", required=True)
+    parser.add_argument("--prior", action="append", default=[])
+    _repo_option(parser)
+    _dry_run_option(parser)
+    parser.set_defaults(handler=cmd_recommend)
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the complete provider-neutral optimization CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    attribute_parser = subparsers.add_parser("attribute", help="Build a versioned attribution projection")
-    attribute_parser.add_argument("--input", required=True)
-    attribute_parser.add_argument("--output")
-    attribute_parser.add_argument("--model", choices=("direct", "last_touch"), default="last_touch")
-    attribute_parser.add_argument("--window-days", type=int, default=30)
-    attribute_parser.add_argument("--model-version", type=int, default=1)
-    attribute_parser.add_argument("--window-version", type=int, default=1)
-    attribute_parser.add_argument("--run-id", required=True)
-    attribute_parser.add_argument("--generated-at", required=True)
-
-    experiment_parser = subparsers.add_parser("experiment", help="Analyze a preregistered aggregate experiment")
-    experiment_parser.add_argument("--input", required=True)
-    experiment_parser.add_argument("--output")
-    experiment_parser.add_argument("--run-id", required=True)
-    experiment_parser.add_argument("--observed-at", required=True)
-
-    report_parser = subparsers.add_parser("report", help="Build a freshness-aware aggregate report")
-    report_parser.add_argument("--input", required=True)
-    report_parser.add_argument("--output")
-    report_parser.add_argument("--minimum-cohort", type=int, default=10)
-    report_parser.add_argument("--stale-after-hours", type=int, default=48)
-    report_parser.add_argument("--generated-at", required=True)
-
-    recommend_parser = subparsers.add_parser("recommend", help="Create an approval-bound recommendation")
-    recommend_parser.add_argument("--input", required=True)
-    recommend_parser.add_argument("--output")
-    recommend_parser.add_argument("--owner", choices=("content", "marketing", "product", "sales", "seo", "campaign-owner", "report-owner"), required=True)
-    recommend_parser.add_argument("--approval", required=True)
-    recommend_parser.add_argument("--rollback", required=True)
-    recommend_parser.add_argument("--retest-at", required=True)
-    recommend_parser.add_argument("--created-at", required=True)
-
-    status_parser = subparsers.add_parser("status", help="Check projection or report freshness")
-    status_parser.add_argument("--input", required=True)
-    status_parser.add_argument("--output")
-    status_parser.add_argument("--now", required=True)
-    status_parser.add_argument("--stale-after-hours", type=int, default=48)
+    init_parser = subparsers.add_parser("init", help="Provision optimization policy and output paths")
+    _repo_option(init_parser)
+    init_parser.set_defaults(handler=cmd_init)
+    status_parser = subparsers.add_parser("status", help="Show optimization artifact status")
+    _repo_option(status_parser)
+    status_parser.set_defaults(handler=cmd_status)
+    _attribution_parser(subparsers)
+    _experiment_parsers(subparsers)
+    _report_parser(subparsers)
+    _recommend_parser(subparsers)
     return parser
 
 
-def _run(args: argparse.Namespace, document: dict[str, Any]) -> dict[str, Any]:
-    if args.command == "attribute":
-        return attribute(document, args.model, args.window_days, args.model_version, args.window_version, args.run_id, args.generated_at)
-    if args.command == "experiment":
-        return analyze_experiment(document, args.run_id, args.observed_at)
-    if args.command == "report":
-        return build_report(document, args.minimum_cohort, args.stale_after_hours, args.generated_at)
-    if args.command == "recommend":
-        return recommend(document, args.owner, args.approval, args.rollback, args.retest_at, args.created_at)
-    return status(document, args.now, args.stale_after_hours)
-
-
 def main(argv: list[str] | None = None) -> int:
+    """Dispatch one deterministic optimization operation."""
     args = build_parser().parse_args(argv)
     try:
-        _write(_run(args, _load(args.input)), args.output)
-    except (OSError, json.JSONDecodeError, OptimizationError, KeyError, TypeError, ValueError) as exc:
-        print(json.dumps({"schema": "aidevops.marketing-optimization-error/v1", "error": str(exc)}))
-        return 2
-    return 0
+        return int(args.handler(args))
+    except (PerformanceContractError, PerformanceStoreError) as exc:
+        print(f"marketing-optimization: {exc}", file=sys.stderr)
+        return 1
+    except (KeyError, TypeError, ValueError):
+        print("marketing-optimization: input shape is invalid", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error):
+        print("marketing-optimization: local storage operation failed", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

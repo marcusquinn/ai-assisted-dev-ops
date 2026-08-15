@@ -63,11 +63,29 @@ def update_source_state(store: Any, context: SourceStateContext) -> bool:
     last_success_at = observed_at if successful else prior_success
     stale_map = store.config["source_stale_after_seconds"]
     stale_after = int(stale_map.get(source, store.config["default_stale_after_seconds"]))
+    state_values = (
+        source,
+        account_ref,
+        *state[:4],
+        next_cursor,
+        last_observed_at,
+        last_success_at,
+        state[4],
+        stale_after,
+        recorded_at,
+    )
     store.connection.execute(
         "INSERT INTO sources(source,account_ref,adapter,status,coverage,missing_scopes_json,cursor_ref,last_observed_at,last_success_at,last_evidence_ref,stale_after_seconds,updated_at) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(source,account_ref) DO UPDATE SET "
         "adapter=excluded.adapter,status=excluded.status,coverage=excluded.coverage,missing_scopes_json=excluded.missing_scopes_json,cursor_ref=excluded.cursor_ref,"
         "last_observed_at=excluded.last_observed_at,last_success_at=excluded.last_success_at,last_evidence_ref=excluded.last_evidence_ref,stale_after_seconds=excluded.stale_after_seconds,updated_at=excluded.updated_at",
-        (source, account_ref, *state[:4], next_cursor, last_observed_at, last_success_at, state[4], stale_after, recorded_at),
+        state_values,
+    )
+    store.connection.execute(
+        "INSERT INTO source_history("
+        "source,account_ref,adapter,status,coverage,missing_scopes_json,cursor_ref,"
+        "last_observed_at,last_success_at,last_evidence_ref,stale_after_seconds,updated_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        state_values,
     )
     return cursor_advanced

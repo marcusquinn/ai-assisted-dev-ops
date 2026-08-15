@@ -1,0 +1,58 @@
+{
+  "schema": "aidevops.marketing-optimization-revenue-fixture/v1",
+  "as_of": "2026-08-30T00:00:00Z",
+  "outcome": {
+    "event_type": "revenue",
+    "measurement": {
+      "metric_id": "marketing.revenue.gross",
+      "value": 100,
+      "unit": "currency",
+      "currency": "USD"
+    }
+  },
+  "events": [
+    {
+      "digit": "5",
+      "event_type": "refund",
+      "occurred_at": "2026-08-03T12:00:00Z",
+      "outcome_id": "outcome-a",
+      "measurement": {
+        "metric_id": "marketing.revenue.refunded",
+        "value": 20,
+        "unit": "currency",
+        "currency": "USD"
+      }
+    },
+    {
+      "digit": "6",
+      "event_type": "cost",
+      "occurred_at": "2026-08-01T12:00:00Z",
+      "outcome_id": "outcome-a",
+      "measurement": {
+        "metric_id": "marketing.cost.amount",
+        "value": 40,
+        "unit": "currency",
+        "currency": "USD"
+      }
+    },
+    {
+      "digit": "7",
+      "event_type": "refund",
+      "occurred_at": "2026-08-04T12:00:00Z",
+      "outcome_id": "unmatched-outcome",
+      "measurement": {
+        "metric_id": "marketing.revenue.refunded",
+        "value": 5,
+        "unit": "currency",
+        "currency": "USD"
+      }
+    }
+  ],
+  "expected": {
+    "gross_value": 100,
+    "refund_value": 20,
+    "net_value": 80,
+    "cost_value": 40,
+    "roi": 1
+  }
+}

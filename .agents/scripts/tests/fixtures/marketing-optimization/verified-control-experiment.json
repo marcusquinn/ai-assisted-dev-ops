@@ -1,0 +1,101 @@
+{
+  "schema": "aidevops.marketing-optimization-experiment-fixture/v1",
+  "settings": {
+    "control_subjects": 250,
+    "treatment_subjects": 250,
+    "control_conversions": 10,
+    "treatment_conversions": 80,
+    "treatment_guardrails": 0
+  },
+  "definition": {
+    "schema_version": 1,
+    "experiment_id": "landing-page-test",
+    "definition_version": 1,
+    "lifecycle": "approved",
+    "owner": "growth-owner",
+    "approval_ref": "owner-approval-1",
+    "hypothesis": {
+      "change": "Use the treatment creative snapshot.",
+      "expected_direction": "increase",
+      "rationale": "The treatment should improve qualified conversion rate.",
+      "preregistered_at": "2026-07-31T00:00:00Z"
+    },
+    "variants": [
+      {
+        "variant_id": "control",
+        "role": "control",
+        "asset_snapshot_ref": "asset-control",
+        "allocation": "0.5"
+      },
+      {
+        "variant_id": "treatment",
+        "role": "treatment",
+        "asset_snapshot_ref": "asset-treatment",
+        "allocation": "0.5"
+      }
+    ],
+    "assignment": {
+      "unit": "subject",
+      "method": "randomized",
+      "verification": "verified",
+      "snapshot_ref": "populated-by-test-fixture-loader",
+      "sticky": true,
+      "exposure_metric_id": "marketing.experiment.exposures",
+      "contamination_policy": "mark_invalid"
+    },
+    "metrics": {
+      "primary": {
+        "metric_id": "marketing.conversions.total",
+        "denominator_metric_id": "marketing.experiment.exposures",
+        "unit": "ratio",
+        "direction": "higher_is_better",
+        "minimum_practical_effect": "0.1"
+      },
+      "secondary": [],
+      "guardrails": [
+        {
+          "metric_id": "marketing.unsubscribes.total",
+          "unit": "ratio",
+          "direction": "lower_is_better",
+          "harm_threshold": "0.1"
+        }
+      ]
+    },
+    "sample_plan": {
+      "baseline": "0.1",
+      "minimum_detectable_effect": "0.1",
+      "alpha": "0.05",
+      "power": "0.8",
+      "required_sample_per_variant": 250,
+      "minimum_conversions_per_variant": 10,
+      "minimum_runtime_seconds": 604800
+    },
+    "stopping_policy": {
+      "method": "fixed_horizon",
+      "allowed_looks": 1,
+      "alpha_spending": null,
+      "safety_stop": true
+    },
+    "privacy": {
+      "policy_ref": "aggregate-v1",
+      "minimum_cell_size": 10,
+      "minimum_subject_count": 10,
+      "suppression_mode": "null_with_reason",
+      "aggregate_only": true
+    },
+    "data_policy": {
+      "campaign_id": "growth-campaign",
+      "account_ref": "fixture-account",
+      "started_at": "2026-08-01T00:00:00Z",
+      "ended_at": "2026-08-10T00:00:00Z",
+      "refund_maturity_seconds": 0,
+      "require_complete_coverage": true,
+      "require_fresh_sources": true
+    },
+    "decision": null,
+    "provenance": {
+      "source_snapshot_refs": [],
+      "supersedes": null
+    }
+  }
+}

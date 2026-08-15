@@ -1,94 +1,260 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aidevops.local/schemas/marketing-experiment.schema.json",
   "title": "Marketing Experiment v1",
-  "description": "Preregistered aggregate marketing experiment and immutable decision audit.",
+  "description": "Privacy-safe preregistration, aggregate analysis, and owner decision contract. Variant labels never substitute for verified assignment evidence.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "experiment_id", "version", "state", "hypothesis", "owner", "assignment", "variants", "metrics", "sample_policy", "window", "stopping_policy", "exclusions", "analysis", "decision"],
+  "required": ["schema_version", "experiment_id", "definition_version", "lifecycle", "owner", "approval_ref", "hypothesis", "variants", "assignment", "metrics", "sample_plan", "stopping_policy", "privacy", "data_policy", "decision", "provenance"],
   "properties": {
-    "schema": {"const": "aidevops.marketing-experiment/v1"},
-    "experiment_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"},
-    "version": {"type": "integer", "minimum": 1},
-    "state": {"enum": ["draft", "approved", "running", "analysis_ready", "decided", "archived"]},
-    "hypothesis": {"type": "string", "minLength": 1, "maxLength": 1000},
-    "owner": {"type": "string", "minLength": 1, "maxLength": 128},
+    "schema_version": {"const": 1},
+    "experiment_ref": {"type": "string", "pattern": "^mkt-experiment-v1:[a-f0-9]{64}$"},
+    "experiment_id": {"$ref": "#/$defs/alias"},
+    "definition_version": {"type": "integer", "minimum": 1, "maximum": 1000000},
+    "lifecycle": {"enum": ["draft", "approved", "running", "analysis_ready", "decided", "archived"]},
+    "owner": {"$ref": "#/$defs/alias"},
+    "approval_ref": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+    "hypothesis": {"$ref": "#/$defs/hypothesis"},
+    "variants": {"type": "array", "minItems": 2, "maxItems": 50, "items": {"$ref": "#/$defs/variant"}},
+    "assignment": {"$ref": "#/$defs/assignment"},
+    "metrics": {"$ref": "#/$defs/metrics"},
+    "sample_plan": {"$ref": "#/$defs/samplePlan"},
+    "stopping_policy": {"$ref": "#/$defs/stoppingPolicy"},
+    "privacy": {"$ref": "#/$defs/privacy"},
+    "data_policy": {"$ref": "#/$defs/dataPolicy"},
+    "analysis": {"$ref": "#/$defs/analysis"},
+    "decision": {"oneOf": [{"$ref": "#/$defs/decision"}, {"type": "null"}]},
+    "provenance": {"$ref": "#/$defs/provenance"}
+  },
+  "allOf": [
+    {
+      "if": {"required": ["analysis"]},
+      "then": {"required": ["experiment_ref"]}
+    }
+  ],
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"},
+    "alias": {"type": "string", "pattern": "^(?!(?=(?:[^0-9]*[0-9]){10,15}[^0-9]*$)[0-9._:-]+$)(?!(?:1[-._:]?)?(?:800|833|844|855|866|877|888)[-._:]?[a-z0-9]{7,}$)[a-z0-9][a-z0-9._:-]{0,127}$"},
+    "safeText": {"type": "string", "maxLength": 1024, "pattern": "^(?!.*(?:https?://|www\\.|@|\\+?[0-9][0-9 .()_-]{8,}[0-9]))[^\\r\\n]{1,1024}$"},
+    "metricId": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"},
+    "decimal": {"oneOf": [{"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991}, {"type": "string", "maxLength": 128, "pattern": "^-?(?:0|[1-9][0-9]*)\\.[0-9]*[1-9]$"}]},
+    "nullableDecimal": {"oneOf": [{"$ref": "#/$defs/decimal"}, {"type": "null"}]},
+    "nullableCount": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+    "hypothesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change", "expected_direction", "rationale", "preregistered_at"],
+      "properties": {
+        "change": {"$ref": "#/$defs/safeText"},
+        "expected_direction": {"enum": ["increase", "decrease", "non_inferior"]},
+        "rationale": {"$ref": "#/$defs/safeText"},
+        "preregistered_at": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id", "role", "asset_snapshot_ref", "allocation"],
+      "properties": {
+        "variant_id": {"$ref": "#/$defs/alias"},
+        "role": {"enum": ["control", "treatment"]},
+        "asset_snapshot_ref": {"$ref": "#/$defs/alias"},
+        "allocation": {"$ref": "#/$defs/decimal"}
+      }
+    },
     "assignment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["unit", "method", "control_variant"],
+      "required": ["unit", "method", "verification", "snapshot_ref", "sticky", "exposure_metric_id", "contamination_policy"],
       "properties": {
-        "unit": {"enum": ["anonymous_subject", "account", "session", "aggregate_cohort"]},
-        "method": {"enum": ["deterministic_hash", "provider_randomized", "preassigned_cohort"]},
-        "control_variant": {"type": "string", "minLength": 1, "maxLength": 128}
+        "unit": {"enum": ["subject", "account", "session", "geo"]},
+        "method": {"enum": ["randomized", "deterministic_split", "observational"]},
+        "verification": {"enum": ["verified", "unverified"]},
+        "snapshot_ref": {"oneOf": [{"type": "string", "pattern": "^mkt-assignment-v1:sha256:[a-f0-9]{64}$"}, {"type": "null"}]},
+        "sticky": {"type": "boolean"},
+        "exposure_metric_id": {"$ref": "#/$defs/metricId"},
+        "contamination_policy": {"enum": ["exclude_crossovers", "mark_invalid"]}
       }
     },
-    "variants": {
-      "type": "array",
-      "minItems": 2,
-      "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1, "maxLength": 128}
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric_id", "denominator_metric_id", "unit", "direction", "minimum_practical_effect"],
+      "properties": {
+        "metric_id": {"$ref": "#/$defs/metricId"},
+        "denominator_metric_id": {"oneOf": [{"$ref": "#/$defs/metricId"}, {"type": "null"}]},
+        "unit": {"$ref": "#/$defs/alias"},
+        "direction": {"enum": ["higher_is_better", "lower_is_better", "neutral"]},
+        "minimum_practical_effect": {"$ref": "#/$defs/decimal"}
+      }
+    },
+    "primaryMetric": {
+      "allOf": [
+        {"$ref": "#/$defs/metric"},
+        {
+          "properties": {
+            "denominator_metric_id": {"$ref": "#/$defs/metricId"},
+            "unit": {"const": "ratio"}
+          }
+        }
+      ]
+    },
+    "guardrail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric_id", "unit", "direction", "harm_threshold"],
+      "properties": {
+        "metric_id": {"$ref": "#/$defs/metricId"},
+        "unit": {"const": "ratio"},
+        "direction": {"enum": ["higher_is_better", "lower_is_better"]},
+        "harm_threshold": {"$ref": "#/$defs/decimal"}
+      }
     },
     "metrics": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["primary", "guardrails"],
+      "required": ["primary", "secondary", "guardrails"],
       "properties": {
-        "primary": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"},
-        "guardrails": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"}}
+        "primary": {"$ref": "#/$defs/primaryMetric"},
+        "secondary": {"type": "array", "items": {"$ref": "#/$defs/metric"}},
+        "guardrails": {"type": "array", "items": {"$ref": "#/$defs/guardrail"}}
       }
     },
-    "sample_policy": {
+    "samplePlan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["minimum_per_variant", "privacy_minimum", "confidence_threshold"],
+      "required": ["baseline", "minimum_detectable_effect", "alpha", "power", "required_sample_per_variant", "minimum_conversions_per_variant", "minimum_runtime_seconds"],
       "properties": {
-        "minimum_per_variant": {"type": "integer", "minimum": 2},
-        "privacy_minimum": {"type": "integer", "minimum": 2},
-        "confidence_threshold": {"type": "number", "minimum": 0.5, "maximum": 0.9999}
+        "baseline": {"$ref": "#/$defs/decimal"},
+        "minimum_detectable_effect": {"$ref": "#/$defs/decimal"},
+        "alpha": {"$ref": "#/$defs/decimal"},
+        "power": {"$ref": "#/$defs/decimal"},
+        "required_sample_per_variant": {"type": "integer", "minimum": 250, "maximum": 1000000000},
+        "minimum_conversions_per_variant": {"type": "integer", "minimum": 10, "maximum": 1000000000},
+        "minimum_runtime_seconds": {"type": "integer", "minimum": 604800, "maximum": 31536000}
       }
     },
-    "window": {
+    "stoppingPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["starts_at", "ends_at", "minimum_days"],
+      "required": ["method", "allowed_looks", "alpha_spending", "safety_stop"],
       "properties": {
-        "starts_at": {"type": "string", "format": "date-time"},
-        "ends_at": {"type": "string", "format": "date-time"},
-        "minimum_days": {"type": "integer", "minimum": 1}
+        "method": {"enum": ["fixed_horizon", "sequential"]},
+        "allowed_looks": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "alpha_spending": {"oneOf": [{"enum": ["obrien_fleming", "pocock"]}, {"type": "null"}]},
+        "safety_stop": {"type": "boolean"}
       }
     },
-    "stopping_policy": {"type": "string", "minLength": 1, "maxLength": 512},
-    "exclusions": {"type": "array", "items": {"type": "string", "maxLength": 256}},
-    "analysis": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/analysis"}]},
-    "decision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/decision"}]}
-  },
-  "$defs": {
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_ref", "minimum_cell_size", "minimum_subject_count", "suppression_mode", "aggregate_only"],
+      "properties": {
+        "policy_ref": {"$ref": "#/$defs/alias"},
+        "minimum_cell_size": {"type": "integer", "minimum": 10, "maximum": 1000000},
+        "minimum_subject_count": {"type": "integer", "minimum": 10, "maximum": 1000000000},
+        "suppression_mode": {"const": "null_with_reason"},
+        "aggregate_only": {"const": true}
+      }
+    },
+    "dataPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["campaign_id", "account_ref", "started_at", "ended_at", "refund_maturity_seconds", "require_complete_coverage", "require_fresh_sources"],
+      "properties": {
+        "campaign_id": {"$ref": "#/$defs/alias"},
+        "account_ref": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "ended_at": {"$ref": "#/$defs/timestamp"},
+        "refund_maturity_seconds": {"type": "integer", "minimum": 0, "maximum": 31536000},
+        "require_complete_coverage": {"type": "boolean"},
+        "require_fresh_sources": {"type": "boolean"}
+      }
+    },
+    "variantResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant_id", "suppressed", "exposed_count", "eligible_count", "numerator", "denominator", "metric_value", "gross_value", "refund_value", "net_value"],
+      "properties": {
+        "variant_id": {"$ref": "#/$defs/alias"},
+        "suppressed": {"type": "boolean"},
+        "exposed_count": {"$ref": "#/$defs/nullableCount"},
+        "eligible_count": {"$ref": "#/$defs/nullableCount"},
+        "numerator": {"$ref": "#/$defs/nullableDecimal"},
+        "denominator": {"$ref": "#/$defs/nullableDecimal"},
+        "metric_value": {"$ref": "#/$defs/nullableDecimal"},
+        "gross_value": {"$ref": "#/$defs/nullableDecimal"},
+        "refund_value": {"$ref": "#/$defs/nullableDecimal"},
+        "net_value": {"$ref": "#/$defs/nullableDecimal"}
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["control_variant_id", "treatment_variant_id", "absolute_effect", "relative_effect", "confidence_interval_low", "confidence_interval_high", "adjusted_alpha", "significant", "practically_significant"],
+      "properties": {
+        "control_variant_id": {"$ref": "#/$defs/alias"},
+        "treatment_variant_id": {"$ref": "#/$defs/alias"},
+        "absolute_effect": {"$ref": "#/$defs/nullableDecimal"},
+        "relative_effect": {"$ref": "#/$defs/nullableDecimal"},
+        "confidence_interval_low": {"$ref": "#/$defs/nullableDecimal"},
+        "confidence_interval_high": {"$ref": "#/$defs/nullableDecimal"},
+        "adjusted_alpha": {"$ref": "#/$defs/decimal"},
+        "significant": {"type": "boolean"},
+        "practically_significant": {"type": "boolean"}
+      }
+    },
+    "guardrailResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric_id", "status", "effect"],
+      "properties": {
+        "metric_id": {"$ref": "#/$defs/metricId"},
+        "status": {"enum": ["pass", "breach", "insufficient_evidence"]},
+        "effect": {"$ref": "#/$defs/nullableDecimal"}
+      }
+    },
     "analysis": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["analysis_id", "run_id", "source_snapshot", "status", "reason", "observed_at", "variants", "peeking_detected"],
+      "required": ["run_ref", "analysis_version", "input_snapshot_sha256", "as_of", "look_number", "look_type", "previous_run_ref", "status", "recommended_lifecycle", "decision_eligible", "variant_results", "comparisons", "guardrails", "causal_status", "winner_variant_id", "insufficient_reasons"],
       "properties": {
-        "analysis_id": {"type": "string", "pattern": "^mkt-experiment-analysis-v1:[a-f0-9]{64}$"},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-        "source_snapshot": {"type": "string", "minLength": 1, "maxLength": 256},
-        "status": {"enum": ["insufficient_evidence", "no_material_difference", "candidate_winner", "guardrail_regression", "contradictory"]},
-        "reason": {"type": "string", "minLength": 1, "maxLength": 512},
-        "observed_at": {"type": "string", "format": "date-time"},
-        "variants": {"type": "array", "items": {"type": "object"}},
-        "peeking_detected": {"type": "boolean"}
+        "run_ref": {"type": "string", "pattern": "^mkt-experiment-run-v1:[a-f0-9]{64}$"},
+        "analysis_version": {"const": 1},
+        "input_snapshot_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "as_of": {"$ref": "#/$defs/timestamp"},
+        "look_number": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "look_type": {"enum": ["interim", "final", "safety"]},
+        "previous_run_ref": {"oneOf": [{"type": "string", "pattern": "^mkt-experiment-run-v1:[a-f0-9]{64}$"}, {"type": "null"}]},
+        "status": {"enum": ["complete", "insufficient_evidence", "invalid", "guardrail_breach"]},
+        "recommended_lifecycle": {"enum": ["running", "analysis_ready"]},
+        "decision_eligible": {"type": "boolean"},
+        "variant_results": {"type": "array", "items": {"$ref": "#/$defs/variantResult"}},
+        "comparisons": {"type": "array", "items": {"$ref": "#/$defs/comparison"}},
+        "guardrails": {"type": "array", "items": {"$ref": "#/$defs/guardrailResult"}},
+        "causal_status": {"enum": ["causal_supported", "observational", "invalid", "insufficient_evidence"]},
+        "winner_variant_id": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+        "insufficient_reasons": {"type": "array", "items": {"$ref": "#/$defs/alias"}, "uniqueItems": true}
       }
     },
     "decision": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "selected_variant", "decided_at", "decided_by", "rationale"],
+      "required": ["status", "winner_variant_id", "reason", "decided_at", "owner_approval_ref"],
       "properties": {
-        "status": {"enum": ["adopt", "retain_control", "continue", "stop", "inconclusive"]},
-        "selected_variant": {"type": ["string", "null"]},
-        "decided_at": {"type": "string", "format": "date-time"},
-        "decided_by": {"type": "string", "minLength": 1, "maxLength": 128},
-        "rationale": {"type": "string", "minLength": 1, "maxLength": 1000}
+        "status": {"enum": ["winner", "no_winner", "guardrail_stop", "invalidated"]},
+        "winner_variant_id": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+        "reason": {"$ref": "#/$defs/safeText"},
+        "decided_at": {"$ref": "#/$defs/timestamp"},
+        "owner_approval_ref": {"$ref": "#/$defs/alias"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_snapshot_refs", "supersedes"],
+      "properties": {
+        "source_snapshot_refs": {"type": "array", "items": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "uniqueItems": true},
+        "supersedes": {"oneOf": [{"type": "string", "pattern": "^mkt-experiment-v1:[a-f0-9]{64}$"}, {"type": "null"}]}
       }
     }
   }

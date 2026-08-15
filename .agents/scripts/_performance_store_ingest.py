@@ -136,7 +136,17 @@ def ingest(store: Any, adapter: str, result: Any, dry_run: bool = False) -> dict
         exact_replay = _exact_replay(store, events, counts, header, evidence_ref)
         partial = _is_partial(header, counts)
         cursor_advanced = store._update_source_state(adapter, header, evidence_ref, recorded_at, partial)
-        store.connection.execute("DELETE FROM leases WHERE source=? AND account_ref=? AND token=?", (source, account_ref, lease_token))
+        release = store.connection.execute(
+            "DELETE FROM leases WHERE source=? AND account_ref=? AND token=?",
+            (source, account_ref, lease_token),
+        )
+        if release.rowcount > 0:
+            store.connection.execute(
+                "INSERT INTO lease_history("
+                "source,account_ref,token,action,occurred_at,expires_at"
+                ") VALUES(?,?,?,?,?,NULL)",
+                (source, account_ref, lease_token, "release", int(time.time())),
+            )
         store.connection.commit()
         return {
             "schema": "aidevops.marketing-performance-ingest/v1", "dry_run": False,

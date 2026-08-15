@@ -1,77 +1,255 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aidevops.local/schemas/marketing-attribution.schema.json",
   "title": "Marketing Attribution Projection v1",
-  "description": "Rebuildable privacy-safe attribution projection over immutable normalized marketing events.",
+  "description": "Aggregate, privacy-safe direct or last-touch attribution. Attribution is observational unless a separate valid experiment supports causality.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "projection_id", "run_id", "source_snapshot", "model", "window", "generated_at", "coverage", "causality", "aggregates"],
+  "required": ["schema_version", "attribution_ref", "run", "scope", "model", "window", "outcomes", "costs", "allocations", "coverage", "uncertainty", "causal_assessment", "provenance"],
   "properties": {
-    "schema": {"const": "aidevops.marketing-attribution/v1"},
-    "projection_id": {"type": "string", "pattern": "^mkt-attribution-v1:[a-f0-9]{64}$"},
-    "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
-    "source_snapshot": {"type": "string", "minLength": 1, "maxLength": 256},
+    "schema_version": {"const": 1},
+    "attribution_ref": {"type": "string", "pattern": "^mkt-attribution-v1:[a-f0-9]{64}$"},
+    "run": {"$ref": "#/$defs/run"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "model": {"$ref": "#/$defs/model"},
+    "window": {"$ref": "#/$defs/window"},
+    "outcomes": {"$ref": "#/$defs/outcomes"},
+    "costs": {"$ref": "#/$defs/costs"},
+    "allocations": {"type": "array", "items": {"$ref": "#/$defs/allocation"}},
+    "coverage": {"$ref": "#/$defs/coverage"},
+    "uncertainty": {"$ref": "#/$defs/uncertainty"},
+    "causal_assessment": {"$ref": "#/$defs/causalAssessment"},
+    "provenance": {"$ref": "#/$defs/provenance"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcomes": {
+            "properties": {"suppressed": {"const": true}},
+            "required": ["suppressed"]
+          }
+        },
+        "required": ["outcomes"]
+      },
+      "then": {
+        "properties": {
+          "costs": {"properties": {"value": {"type": "null"}, "roi": {"type": "null"}}},
+          "allocations": {
+            "items": {
+              "properties": {"suppressed": {"const": true}},
+              "required": ["suppressed"]
+            }
+          },
+          "coverage": {
+            "properties": {
+              "fraction": {"type": "null"},
+              "suppressed_allocations": {"type": "null"},
+              "late_events": {"type": "null"},
+              "unmatched_refunds": {"type": "null"}
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "fraction": {"$ref": "#/$defs/decimal"},
+              "suppressed_allocations": {"type": "integer", "minimum": 0},
+              "late_events": {"type": "integer", "minimum": 0},
+              "unmatched_refunds": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"},
+    "alias": {"type": "string", "pattern": "^(?!(?=(?:[^0-9]*[0-9]){10,15}[^0-9]*$)[0-9._:-]+$)(?!(?:1[-._:]?)?(?:800|833|844|855|866|877|888)[-._:]?[a-z0-9]{7,}$)[a-z0-9][a-z0-9._:-]{0,127}$"},
+    "safeText": {"type": "string", "maxLength": 1024, "pattern": "^(?!.*(?:https?://|www\\.|@|\\+?[0-9][0-9 .()_-]{8,}[0-9]))[^\\r\\n]{1,1024}$"},
+    "metricId": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"},
+    "decimal": {"oneOf": [{"type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991}, {"type": "string", "maxLength": 128, "pattern": "^-?(?:0|[1-9][0-9]*)\\.[0-9]*[1-9]$"}]},
+    "nullableDecimal": {"oneOf": [{"$ref": "#/$defs/decimal"}, {"type": "null"}]},
+    "nullableCount": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+    "nullableAlias": {"oneOf": [{"$ref": "#/$defs/alias"}, {"type": "null"}]},
+    "nullableCurrency": {"oneOf": [{"type": "string", "pattern": "^[A-Z]{3}$"}, {"type": "null"}]},
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["analysis_version", "input_snapshot_sha256", "as_of", "generated_at", "status"],
+      "properties": {
+        "analysis_version": {"const": 1},
+        "input_snapshot_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "as_of": {"$ref": "#/$defs/timestamp"},
+        "generated_at": {"$ref": "#/$defs/timestamp"},
+        "status": {"enum": ["complete", "partial", "insufficient_evidence"]}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["account_ref", "campaign_id", "outcome_metric_id", "currency"],
+      "properties": {
+        "account_ref": {"$ref": "#/$defs/nullableAlias"},
+        "campaign_id": {"$ref": "#/$defs/nullableAlias"},
+        "outcome_metric_id": {"$ref": "#/$defs/metricId"},
+        "currency": {"$ref": "#/$defs/nullableCurrency"}
+      }
+    },
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "version"],
+      "required": ["id", "version", "lookback_seconds", "include_view_through", "tie_break"],
       "properties": {
-        "name": {"enum": ["direct", "last_touch"]},
-        "version": {"type": "integer", "minimum": 1}
+        "id": {"enum": ["direct", "last_touch"]},
+        "version": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "lookback_seconds": {"type": "integer", "minimum": 1, "maximum": 31536000},
+        "include_view_through": {"type": "boolean"},
+        "tie_break": {"const": "occurred_at_then_record_ref"}
       }
     },
     "window": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["days", "version"],
+      "required": ["outcome_start", "outcome_end", "refund_maturity_seconds", "maturity"],
       "properties": {
-        "days": {"type": "integer", "minimum": 1, "maximum": 365},
-        "version": {"type": "integer", "minimum": 1}
+        "outcome_start": {"oneOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]},
+        "outcome_end": {"$ref": "#/$defs/timestamp"},
+        "refund_maturity_seconds": {"type": "integer", "minimum": 0, "maximum": 31536000},
+        "maturity": {"enum": ["mature", "provisional", "not_applicable"]}
       }
     },
-    "generated_at": {"type": "string", "format": "date-time"},
+    "outcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suppressed", "eligible_count", "attributed_count", "unattributed_count", "identity_uncertain_count", "gross_value", "refund_value", "net_value", "unit", "currency"],
+      "properties": {
+        "suppressed": {"type": "boolean"},
+        "eligible_count": {"$ref": "#/$defs/nullableCount"},
+        "attributed_count": {"$ref": "#/$defs/nullableCount"},
+        "unattributed_count": {"$ref": "#/$defs/nullableCount"},
+        "identity_uncertain_count": {"$ref": "#/$defs/nullableCount"},
+        "gross_value": {"$ref": "#/$defs/nullableDecimal"},
+        "refund_value": {"$ref": "#/$defs/nullableDecimal"},
+        "net_value": {"$ref": "#/$defs/nullableDecimal"},
+        "unit": {"$ref": "#/$defs/alias"},
+        "currency": {"$ref": "#/$defs/nullableCurrency"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"suppressed": {"const": true}}, "required": ["suppressed"]},
+          "then": {
+            "properties": {
+              "eligible_count": {"type": "null"},
+              "attributed_count": {"type": "null"},
+              "unattributed_count": {"type": "null"},
+              "identity_uncertain_count": {"type": "null"},
+              "gross_value": {"type": "null"},
+              "refund_value": {"type": "null"},
+              "net_value": {"type": "null"}
+            }
+          },
+          "else": {
+            "properties": {
+              "eligible_count": {"type": "integer", "minimum": 10},
+              "attributed_count": {"type": "integer", "minimum": 0},
+              "unattributed_count": {"type": "integer", "minimum": 0},
+              "identity_uncertain_count": {"type": "integer", "minimum": 0}
+            }
+          }
+        }
+      ]
+    },
+    "costs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "currency", "allocation", "roi"],
+      "properties": {
+        "value": {"$ref": "#/$defs/nullableDecimal"},
+        "currency": {"$ref": "#/$defs/nullableCurrency"},
+        "allocation": {"enum": ["exact", "unallocated", "not_applicable", "currency_mismatch"]},
+        "roi": {"$ref": "#/$defs/nullableDecimal"}
+      }
+    },
+    "allocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bucket", "touchpoint_ref", "channel", "creative_id", "outcome_count", "credit", "value", "suppressed", "suppression_reason"],
+      "properties": {
+        "bucket": {"enum": ["touchpoint", "direct_observed", "unattributed", "identity_uncertain"]},
+        "touchpoint_ref": {"oneOf": [{"type": "string", "pattern": "^mkt-record-v1:[a-f0-9]{64}$"}, {"type": "null"}]},
+        "channel": {"$ref": "#/$defs/nullableAlias"},
+        "creative_id": {"$ref": "#/$defs/nullableAlias"},
+        "outcome_count": {"$ref": "#/$defs/nullableCount"},
+        "credit": {"$ref": "#/$defs/nullableDecimal"},
+        "value": {"$ref": "#/$defs/nullableDecimal"},
+        "suppressed": {"type": "boolean"},
+        "suppression_reason": {"oneOf": [{"const": "below_minimum_cell_size"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"suppressed": {"const": true}}, "required": ["suppressed"]},
+          "then": {
+            "properties": {
+              "touchpoint_ref": {"type": "null"},
+              "channel": {"type": "null"},
+              "creative_id": {"type": "null"},
+              "outcome_count": {"type": "null"},
+              "credit": {"type": "null"},
+              "value": {"type": "null"},
+              "suppression_reason": {"const": "below_minimum_cell_size"}
+            }
+          },
+          "else": {
+            "properties": {
+              "outcome_count": {"type": "integer", "minimum": 10},
+              "credit": {"$ref": "#/$defs/decimal"},
+              "suppression_reason": {"type": "null"}
+            }
+          }
+        }
+      ]
+    },
     "coverage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "matched_outcomes", "unattributed_outcomes", "identity_uncertain_outcomes"],
+      "required": ["fraction", "minimum_cell_size", "suppressed_allocations", "late_events", "unmatched_refunds", "missing_scopes"],
       "properties": {
-        "source": {"enum": ["complete", "partial", "unknown"]},
-        "matched_outcomes": {"type": "integer", "minimum": 0},
-        "unattributed_outcomes": {"type": "integer", "minimum": 0},
-        "identity_uncertain_outcomes": {"type": "integer", "minimum": 0}
+        "fraction": {"$ref": "#/$defs/nullableDecimal"},
+        "minimum_cell_size": {"type": "integer", "minimum": 10, "maximum": 1000000},
+        "suppressed_allocations": {"$ref": "#/$defs/nullableCount"},
+        "late_events": {"$ref": "#/$defs/nullableCount"},
+        "unmatched_refunds": {"$ref": "#/$defs/nullableCount"},
+        "missing_scopes": {"type": "array", "items": {"$ref": "#/$defs/alias"}, "uniqueItems": true}
       }
     },
-    "causality": {
+    "uncertainty": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["claim", "caveat"],
+      "required": ["data_confidence", "reasons"],
       "properties": {
-        "claim": {"enum": ["observational", "experimental"]},
-        "caveat": {"type": "string", "minLength": 1, "maxLength": 512}
+        "data_confidence": {"enum": ["low", "medium", "high", "verified"]},
+        "reasons": {"type": "array", "items": {"$ref": "#/$defs/alias"}, "uniqueItems": true}
       }
     },
-    "aggregates": {
-      "type": "array",
-      "items": {"$ref": "#/$defs/aggregate"}
-    }
-  },
-  "$defs": {
-    "amount": {"type": "string", "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"},
-    "aggregate": {
+    "causalAssessment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["campaign_id", "channel", "credited_outcomes", "credit", "revenue", "refunds", "costs", "net_revenue", "currency", "uncertainty"],
+      "required": ["status", "statement"],
       "properties": {
-        "campaign_id": {"type": ["string", "null"], "maxLength": 128},
-        "channel": {"type": ["string", "null"], "maxLength": 128},
-        "credited_outcomes": {"type": "integer", "minimum": 0},
-        "credit": {"$ref": "#/$defs/amount"},
-        "revenue": {"$ref": "#/$defs/amount"},
-        "refunds": {"$ref": "#/$defs/amount"},
-        "costs": {"$ref": "#/$defs/amount"},
-        "net_revenue": {"$ref": "#/$defs/amount"},
-        "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
-        "uncertainty": {"enum": ["low", "medium", "high"]}
+        "status": {"const": "observational_only"},
+        "statement": {"const": "Attribution describes observed associations and does not establish causal lift."}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_snapshot_refs", "evidence_refs", "supersedes"],
+      "properties": {
+        "source_snapshot_refs": {"type": "array", "items": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "uniqueItems": true},
+        "evidence_refs": {"type": "array", "items": {"type": "string", "pattern": "^mkt-evidence-v1:sha256:[a-f0-9]{64}$"}, "uniqueItems": true},
+        "supersedes": {"oneOf": [{"type": "string", "pattern": "^mkt-attribution-v1:[a-f0-9]{64}$"}, {"type": "null"}]}
       }
     }
   }

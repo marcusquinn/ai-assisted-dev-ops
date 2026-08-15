@@ -16,13 +16,13 @@ import sys
 import tempfile
 import time
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
-from campaign_production_fixture import approved_manifest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+import _performance_store_evidence as performance_evidence  # noqa: E402
+from performance_store import MarketingPerformanceStore  # noqa: E402
 AGENTS = SCRIPTS.parent
 REPO_ROOT = AGENTS.parent
 HELPER = SCRIPTS / "performance-helper.py"
@@ -32,43 +32,6 @@ AIDEVOPS = REPO_ROOT / "aidevops.sh"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "marketing-performance"
 EVENT_SCHEMA = AGENTS / "schemas" / "marketing-performance-event.schema.json"
 SUBJECT_SCHEMA = AGENTS / "schemas" / "marketing-subject.schema.json"
-
-
-def write_reconciliation(path: Path, **action: object) -> None:
-    """Write one reconciliation action without duplicating envelope setup."""
-    path.write_text(
-        json.dumps({"schema": "aidevops.marketing-performance-reconciliation/v1", "actions": [action]}),
-        encoding="utf-8",
-    )
-
-
-@dataclass(frozen=True)
-class EventSpec:
-    """Behavior-neutral options for one normalized synthetic event."""
-
-    event_type: str = "conversion"
-    metric_id: str = "marketing.conversions.total"
-    value: object = 1
-    unit: str = "conversion"
-    aggregation: str = "sum"
-    currency: str | None = None
-    occurred_at: str = "2026-08-08T12:00:00Z"
-    correction_of: str | None = None
-    subject: dict[str, object] | None = None
-    scope: dict[str, object] | None = None
-    confidence: str = "high"
-    governance: dict[str, object] | None = None
-
-
-@dataclass(frozen=True)
-class BatchSpec:
-    """Source checkpoint options for one normalized synthetic batch."""
-
-    account_ref: str
-    observed_at: str
-    cursor: str
-    coverage: str = "complete"
-    missing_scopes: list[str] | None = None
 
 
 class MarketingPerformanceIngestTests(unittest.TestCase):
@@ -148,57 +111,72 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
     @staticmethod
     def normalized_event(
         source_event_id: str,
-        **options: Any,
+        *,
+        event_type: str = "conversion",
+        metric_id: str = "marketing.conversions.total",
+        value: object = 1,
+        unit: str = "conversion",
+        aggregation: str = "sum",
+        currency: str | None = None,
+        occurred_at: str = "2026-08-08T12:00:00Z",
+        correction_of: str | None = None,
+        subject: dict[str, object] | None = None,
+        scope: dict[str, object] | None = None,
+        confidence: str = "high",
+        governance: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        spec = EventSpec(**options)
         return {
             "source_event_id": source_event_id,
             "revision": 1,
-            "event_type": spec.event_type,
-            "occurred_at": spec.occurred_at,
-            "correction_of": spec.correction_of,
-            "subject": spec.subject
+            "event_type": event_type,
+            "occurred_at": occurred_at,
+            "correction_of": correction_of,
+            "subject": subject
             or {
                 "kind": "aggregate",
                 "identity_state": "not_applicable",
                 "source_ref": None,
                 "candidate_refs": [],
             },
-            "scope": spec.scope or {"campaign_id": "c001-growth", "channel": "direct"},
+            "scope": scope or {"campaign_id": "c001-growth", "channel": "direct"},
             "measurement": {
-                "metric_id": spec.metric_id,
-                "value": spec.value,
-                "unit": spec.unit,
-                "aggregation": spec.aggregation,
-                "currency": spec.currency,
+                "metric_id": metric_id,
+                "value": value,
+                "unit": unit,
+                "aggregation": aggregation,
+                "currency": currency,
             },
             "quality": {
-                "confidence": spec.confidence,
+                "confidence": confidence,
                 "completeness": "complete",
                 "source_type": "api_export",
                 "collected_by": "normalized-import",
-                "verified_by": "synthetic-reviewer" if spec.confidence == "verified" else None,
+                "verified_by": "synthetic-reviewer" if confidence == "verified" else None,
             },
-            "governance": spec.governance or {"consent": [], "suppression": None},
+            "governance": governance or {"consent": [], "suppression": None},
         }
 
     def write_batch(
         self,
         name: str,
         events: list[dict[str, object]],
-        **options: Any,
+        *,
+        account_ref: str,
+        observed_at: str,
+        cursor: str,
+        coverage: str = "complete",
+        missing_scopes: list[str] | None = None,
     ) -> Path:
-        spec = BatchSpec(**options)
         path = self.root / name
         path.write_text(
             json.dumps(
                 {
                     "source": "normalized",
-                    "account_ref": spec.account_ref,
-                    "cursor": spec.cursor,
-                    "observed_at": spec.observed_at,
-                    "coverage": spec.coverage,
-                    "missing_scopes": spec.missing_scopes or [],
+                    "account_ref": account_ref,
+                    "cursor": cursor,
+                    "observed_at": observed_at,
+                    "coverage": coverage,
+                    "missing_scopes": missing_scopes or [],
                     "events": events,
                 }
             ),
@@ -305,7 +283,11 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         self.assertEqual(0o700, stat.S_IMODE((private / "index").stat().st_mode))
         self.assertEqual(0o600, stat.S_IMODE(self.database.stat().st_mode))
         self.assertIn("marketing/raw/", (self.repo / "_performance" / ".gitignore").read_text(encoding="utf-8"))
-        self.assertEqual(2, int(self.query("PRAGMA user_version")[0][0]))
+        self.assertIn(
+            "marketing/optimization-work/",
+            (self.repo / "_performance" / ".gitignore").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(3, int(self.query("PRAGMA user_version")[0][0]))
 
     def test_init_rejects_symlinked_private_plane(self) -> None:
         outside = self.root / "outside-performance"
@@ -395,6 +377,50 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         )
         self.assertEqual([], list(outside.iterdir()))
 
+    def test_raw_evidence_publication_rejects_directory_rebinding(self) -> None:
+        self.initialize()
+        raw_bytes = b'{"schema":"synthetic-evidence/v1"}\n'
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        outside = self.root / "outside-race"
+        outside.mkdir()
+        original_digest = performance_evidence._regular_file_digest
+        swapped = False
+
+        def swap_account_directory(store: object, directory_fd: int, name: str) -> str | None:
+            nonlocal swapped
+            result = original_digest(store, directory_fd, name)
+            if result is None and not swapped:
+                account = self.repo / "_performance" / "marketing" / "raw" / "normalized" / "race-account"
+                pinned = account.with_name("race-account-pinned")
+                account.rename(pinned)
+                account.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return result
+
+        with MarketingPerformanceStore.open(self.repo) as store:
+            with mock.patch.object(
+                performance_evidence,
+                "_regular_file_digest",
+                side_effect=swap_account_directory,
+            ):
+                with self.assertRaisesRegex(store.error_type, "changed during publication"):
+                    store._write_raw("normalized", "race-account", digest, ".json", raw_bytes)
+
+        self.assertEqual([], list(outside.iterdir()))
+        self.assertEqual(
+            [],
+            list(
+                (
+                    self.repo
+                    / "_performance"
+                    / "marketing"
+                    / "raw"
+                    / "normalized"
+                    / "race-account-pinned"
+                ).iterdir()
+            ),
+        )
+
     def test_schema_v1_store_migrates_additively(self) -> None:
         self.initialize()
         before = self.write_batch(
@@ -425,7 +451,7 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         )
         connection.close()
         migrated = self.initialize()
-        self.assertEqual(2, migrated["store_schema_version"])
+        self.assertEqual(3, migrated["store_schema_version"])
         columns = {row[1] for row in self.query("PRAGMA table_info(events)")}
         self.assertTrue(
             {
@@ -438,6 +464,12 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
             <= columns
         )
         self.assertEqual(1, len(self.query("SELECT record_ref FROM events")))
+        self.assertEqual(
+            {"recorded_at"},
+            {"recorded_at"}
+            & {row[1] for row in self.query("PRAGMA table_info(consent_ledger)")},
+        )
+        self.assertEqual(1, len(self.query("SELECT state_id FROM source_history")))
         replay = self.ingest_path("normalized", before)
         self.assertEqual(1, replay["duplicates"])
         self.assertTrue(replay["exact_replay"])
@@ -507,10 +539,8 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
             "--json",
             "--repo",
             str(self.repo),
-            "--now",
-            "1786212000",
         )
-        self.assertEqual("ready", status["status"])
+        self.assertEqual("partial", status["status"])
         self.assertEqual(8, status["summary"]["source_accounts"])
         self.assertEqual(35, status["summary"]["event_history"])
         listed = self.document("list", "--repo", str(self.repo))
@@ -871,6 +901,99 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         self.assertEqual(3, partial["quarantined"])
         self.assertFalse(partial["cursor_advanced"])
 
+    def test_effective_correction_preserves_ambiguous_metric_event_type(self) -> None:
+        self.initialize()
+        target = self.normalized_event(
+            "ambiguous-target",
+            event_type="engagement",
+            metric_id="marketing.return_on_investment.ratio",
+            value=1,
+            unit="ratio",
+            aggregation="latest",
+        )
+        correction = self.normalized_event(
+            "ambiguous-correction",
+            event_type="correction",
+            metric_id="marketing.return_on_investment.ratio",
+            value=2,
+            unit="ratio",
+            aggregation="latest",
+            occurred_at="2026-08-08T13:00:00Z",
+            correction_of="ambiguous-target",
+        )
+        path = self.write_batch(
+            "ambiguous-correction.json",
+            [target, correction],
+            account_ref="ambiguous-correction",
+            observed_at="2026-08-08T14:00:00Z",
+            cursor="ambiguous-correction-1",
+        )
+        self.ingest_path("normalized", path)
+
+        records = self.document(
+            "list",
+            "--repo",
+            str(self.repo),
+            "--source",
+            "normalized",
+            "--account-ref",
+            "ambiguous-correction",
+        )["records"]
+
+        self.assertEqual(1, len(records))
+        self.assertEqual("engagement", records[0]["event"]["type"])
+        self.assertEqual("2026-08-08T12:00:00Z", records[0]["event"]["occurred_at"])
+        self.assertIsNone(records[0]["event"]["correction_of"])
+        self.assertEqual(2, records[0]["measurement"]["value"])
+
+    def test_effective_events_reject_cyclic_corrections(self) -> None:
+        self.initialize()
+        first = self.normalized_event("cycle-a")
+        second = self.normalized_event(
+            "cycle-b",
+            event_type="correction",
+            value=2,
+            occurred_at="2026-08-08T13:00:00Z",
+            correction_of="cycle-a",
+        )
+        initial = self.write_batch(
+            "cycle-initial.json",
+            [first, second],
+            account_ref="correction-cycle",
+            observed_at="2026-08-08T14:00:00Z",
+            cursor="cycle-1",
+        )
+        self.ingest_path("normalized", initial)
+
+        revised = self.normalized_event(
+            "cycle-a",
+            event_type="correction",
+            value=3,
+            occurred_at="2026-08-08T14:00:00Z",
+            correction_of="cycle-b",
+        )
+        revised["revision"] = 2
+        cyclic = self.write_batch(
+            "cycle-revised.json",
+            [revised],
+            account_ref="correction-cycle",
+            observed_at="2026-08-08T15:00:00Z",
+            cursor="cycle-2",
+        )
+        self.ingest_path("normalized", cyclic)
+
+        failed = self.command(
+            "list",
+            "--repo",
+            str(self.repo),
+            "--source",
+            "normalized",
+            "--account-ref",
+            "correction-cycle",
+            expected=1,
+        )
+        self.assertIn("correction chain contains a cycle", failed.stderr)
+
     def test_replay_account_isolation_and_same_revision_conflict(self) -> None:
         self.initialize()
         first = self.ingest("social", "social.json")
@@ -890,6 +1013,8 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
             "list", "--repo", str(self.repo), "--source", "normalized"
         )["records"]
         self.assertEqual([2, 3], sorted(record["measurement"]["value"] for record in effective))
+        self.assertEqual(["conversion", "conversion"], sorted(record["event"]["type"] for record in effective))
+        self.assertTrue(all(record["event"]["correction_of"] is None for record in effective))
         history = self.document(
             "list", "--repo", str(self.repo), "--source", "normalized", "--history"
         )["records"]
@@ -1481,13 +1606,22 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
 
         leads = [record["subject_id"] for record in subjects if record["kind"] == "lead"]
         reconciliation = self.root / "reconciliation.json"
-        write_reconciliation(
-            reconciliation,
-            action="link",
-            canonical_subject_id=leads[0],
-            member_subject_id=leads[1],
-            effective_at="2026-08-09T00:00:00.500000Z",
-            evidence_ref="owner-reviewed-synthetic-link",
+        reconciliation.write_text(
+            json.dumps(
+                {
+                    "schema": "aidevops.marketing-performance-reconciliation/v1",
+                    "actions": [
+                        {
+                            "action": "link",
+                            "canonical_subject_id": leads[0],
+                            "member_subject_id": leads[1],
+                            "effective_at": "2026-08-09T00:00:00.500000Z",
+                            "evidence_ref": "owner-reviewed-synthetic-link",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1512,13 +1646,22 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         )
         self.assertEqual(1, len(self.query("SELECT link_ref FROM identity_links")))
 
-        write_reconciliation(
-            reconciliation,
-            action="split",
-            canonical_subject_id=leads[0],
-            member_subject_id=leads[1],
-            effective_at="2026-08-09T00:00:00Z",
-            evidence_ref="owner-reviewed-older-split",
+        reconciliation.write_text(
+            json.dumps(
+                {
+                    "schema": "aidevops.marketing-performance-reconciliation/v1",
+                    "actions": [
+                        {
+                            "action": "split",
+                            "canonical_subject_id": leads[0],
+                            "member_subject_id": leads[1],
+                            "effective_at": "2026-08-09T00:00:00Z",
+                            "evidence_ref": "owner-reviewed-older-split",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         still_linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1532,6 +1675,12 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         split = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
         self.assertEqual(4, len(split))
+        split_subjects = [record for record in split if record["identity_state"] == "split"]
+        self.assertTrue(split_subjects)
+        self.assertFalse(any(record["audience_eligible"] for record in split_subjects))
+        self.assertTrue(
+            all(record["eligibility_reason"] == "identity_ambiguous" for record in split_subjects)
+        )
 
     def test_identity_cycles_are_rejected_and_legacy_ambiguity_cannot_verify(self) -> None:
         self.initialize()
@@ -1803,7 +1952,31 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         manifest = campaign / "drafts" / "production-manifests" / "twitter-v1.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
-            json.dumps(approved_manifest("c001-growth", input_snapshot, digest)),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "job_id": "job:c001-growth:twitter:v1",
+                    "campaign_id": "c001-growth",
+                    "brief_id": "brief:c001-growth",
+                    "channel": "twitter",
+                    "variant_id": "v1",
+                    "revision": 1,
+                    "input_snapshot_sha256": input_snapshot,
+                    "format": {"asset_class": "writing", "dimensions": "text", "duration_seconds": None},
+                    "asset_inputs": [],
+                    "execution": {"owner": "content", "provider_route": None, "capability": "writing", "fallback": None, "status": "ready"},
+                    "authenticity": {
+                        "disclosure_requirements": [],
+                        "rights_requirements": [],
+                        "provenance": {"source": "owned", "recipe_sha256": "sha256:" + "b" * 64},
+                        "rights_clearance": {"license": "owned", "consent": "documented", "territory": "global", "expires_at": None},
+                    },
+                    "review": {"criteria": ["reviewed"], "status": "approved", "decision_by": "owner", "decision_at": "2026-08-08T00:00:00Z"},
+                    "experiment": {"experiment_id": "experiment-1", "hypothesis": "synthetic fixture"},
+                    "lifecycle": {"status": "approved", "status_evidence": ["reviewed"]},
+                    "outputs": [{"path": "creative/post.txt", "sha256": digest, "media_type": "text/plain"}],
+                }
+            ),
             encoding="utf-8",
         )
 

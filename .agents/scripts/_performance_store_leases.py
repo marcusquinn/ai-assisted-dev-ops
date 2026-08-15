@@ -26,6 +26,12 @@ def acquire_lease(store: Any, source: str, account_ref: str) -> str:
             "token=excluded.token,acquired_at=excluded.acquired_at,expires_at=excluded.expires_at",
             (source, account_ref, token, now_epoch, now_epoch + lease_seconds),
         )
+        store.connection.execute(
+            "INSERT INTO lease_history("
+            "source,account_ref,token,action,occurred_at,expires_at"
+            ") VALUES(?,?,?,?,?,?)",
+            (source, account_ref, token, "acquire", now_epoch, now_epoch + lease_seconds),
+        )
         store.connection.commit()
     except Exception:
         store.connection.rollback()
@@ -34,10 +40,17 @@ def acquire_lease(store: Any, source: str, account_ref: str) -> str:
 
 
 def release_lease(store: Any, source: str, account_ref: str, token: str) -> None:
-    store.connection.execute(
+    cursor = store.connection.execute(
         "DELETE FROM leases WHERE source=? AND account_ref=? AND token=?",
         (source, account_ref, token),
     )
+    if cursor.rowcount > 0:
+        store.connection.execute(
+            "INSERT INTO lease_history("
+            "source,account_ref,token,action,occurred_at,expires_at"
+            ") VALUES(?,?,?,?,?,NULL)",
+            (source, account_ref, token, "release", int(time.time())),
+        )
     store.connection.commit()
 
 

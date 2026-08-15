@@ -1,0 +1,199 @@
+{
+  "schema": "aidevops.marketing-optimization-snapshot/v1",
+  "as_of": "2026-08-15T00:00:00Z",
+  "events": [
+    {
+      "schema_version": 1,
+      "record_ref": "mkt-record-v1:1111111111111111111111111111111111111111111111111111111111111111",
+      "event_ref": "mkt-event-v1:1111111111111111111111111111111111111111111111111111111111111111",
+      "source": {
+        "kind": "normalized",
+        "account_ref": "fixture-account",
+        "revision": 1,
+        "observed_at": "2026-08-01T12:00:00Z",
+        "recorded_at": "2026-08-01T12:00:00Z",
+        "source_observed_at": "2026-08-01T12:00:00Z",
+        "source_recorded_at": "2026-08-01T12:00:00Z",
+        "evidence_ref": "mkt-evidence-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "coverage": "complete",
+        "missing_scopes": []
+      },
+      "event": {
+        "type": "engagement",
+        "occurred_at": "2026-08-01T12:00:00Z",
+        "correction_of": null
+      },
+      "subject": {
+        "subject_id": "mkt-subj-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "lead",
+        "identity_state": "isolated"
+      },
+      "scope": {
+        "campaign_id": "growth-campaign",
+        "channel": "search",
+        "creative_id": "creative-a",
+        "touchpoint_id": "touch-a",
+        "outcome_id": null,
+        "dimensions": {}
+      },
+      "measurement": {
+        "metric_id": "marketing.engagement.total",
+        "value": 1,
+        "unit": "engagement",
+        "aggregation": "sum",
+        "currency": null
+      },
+      "quality": {
+        "confidence": "high",
+        "effective_confidence": "high",
+        "completeness": "complete",
+        "source_type": "fixture",
+        "collected_by": "synthetic-fixture",
+        "evidence_ref": "mkt-evidence-v1:sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "governance": {
+        "audience_eligible": false,
+        "eligibility_reason": "consent_unknown"
+      }
+    },
+    {
+      "schema_version": 1,
+      "record_ref": "mkt-record-v1:2222222222222222222222222222222222222222222222222222222222222222",
+      "event_ref": "mkt-event-v1:2222222222222222222222222222222222222222222222222222222222222222",
+      "source": {
+        "kind": "normalized",
+        "account_ref": "fixture-account",
+        "revision": 1,
+        "observed_at": "2026-08-02T12:00:00Z",
+        "recorded_at": "2026-08-02T12:00:00Z",
+        "source_observed_at": "2026-08-02T12:00:00Z",
+        "source_recorded_at": "2026-08-02T12:00:00Z",
+        "evidence_ref": "mkt-evidence-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "coverage": "complete",
+        "missing_scopes": []
+      },
+      "event": {
+        "type": "conversion",
+        "occurred_at": "2026-08-02T12:00:00Z",
+        "correction_of": null
+      },
+      "subject": {
+        "subject_id": "mkt-subj-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "lead",
+        "identity_state": "isolated"
+      },
+      "scope": {
+        "campaign_id": "growth-campaign",
+        "channel": "search",
+        "creative_id": "creative-a",
+        "touchpoint_id": null,
+        "outcome_id": "outcome-a",
+        "dimensions": {}
+      },
+      "measurement": {
+        "metric_id": "marketing.conversions.total",
+        "value": 1,
+        "unit": "conversion",
+        "aggregation": "sum",
+        "currency": null
+      },
+      "quality": {
+        "confidence": "high",
+        "effective_confidence": "high",
+        "completeness": "complete",
+        "source_type": "fixture",
+        "collected_by": "synthetic-fixture",
+        "evidence_ref": "mkt-evidence-v1:sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "governance": {
+        "audience_eligible": false,
+        "eligibility_reason": "consent_unknown"
+      }
+    },
+    {
+      "schema_version": 1,
+      "record_ref": "mkt-record-v1:3333333333333333333333333333333333333333333333333333333333333333",
+      "event_ref": "mkt-event-v1:3333333333333333333333333333333333333333333333333333333333333333",
+      "source": {
+        "kind": "normalized",
+        "account_ref": "fixture-account",
+        "revision": 1,
+        "observed_at": "2026-08-16T12:00:00Z",
+        "recorded_at": "2026-08-16T12:00:00Z",
+        "source_observed_at": "2026-08-16T12:00:00Z",
+        "source_recorded_at": "2026-08-16T12:00:00Z",
+        "evidence_ref": "mkt-evidence-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "coverage": "complete",
+        "missing_scopes": []
+      },
+      "event": {
+        "type": "conversion",
+        "occurred_at": "2026-08-16T12:00:00Z",
+        "correction_of": null
+      },
+      "subject": {
+        "subject_id": "mkt-subj-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "lead",
+        "identity_state": "isolated"
+      },
+      "scope": {
+        "campaign_id": "growth-campaign",
+        "channel": "search",
+        "creative_id": "creative-a",
+        "touchpoint_id": null,
+        "outcome_id": "outcome-a",
+        "dimensions": {}
+      },
+      "measurement": {
+        "metric_id": "marketing.conversions.total",
+        "value": 1,
+        "unit": "conversion",
+        "aggregation": "sum",
+        "currency": null
+      },
+      "quality": {
+        "confidence": "high",
+        "effective_confidence": "high",
+        "completeness": "complete",
+        "source_type": "fixture",
+        "collected_by": "synthetic-fixture",
+        "evidence_ref": "mkt-evidence-v1:sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "governance": {
+        "audience_eligible": false,
+        "eligibility_reason": "consent_unknown"
+      }
+    }
+  ],
+  "subjects": [
+    {
+      "schema_version": 1,
+      "subject_id": "mkt-subj-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "lead",
+      "identity_state": "isolated",
+      "canonical_subject_id": "mkt-subj-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "aliases": [
+        "mkt-subj-v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "consent": [],
+      "suppression": [],
+      "identity_history": [],
+      "audience_eligible": false,
+      "eligibility_reason": "consent_unknown"
+    }
+  ],
+  "sources": [
+    {
+      "source": "normalized",
+      "account_ref": "fixture-account",
+      "status": "ready",
+      "coverage": "complete",
+      "missing_scopes": [],
+      "last_observed_at": "2026-08-02T12:00:00Z",
+      "stale_after_seconds": 86400,
+      "lag_seconds": 1071360,
+      "stale": true,
+      "unresolved_quarantine": 0
+    }
+  ]
+}

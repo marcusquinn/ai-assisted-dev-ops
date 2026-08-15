@@ -25,6 +25,7 @@ class GovernanceContext:
     source: str
     account_ref: str
     observed_at: str
+    recorded_at: str
     evidence_ref: str
 
 

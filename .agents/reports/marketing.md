@@ -28,18 +28,37 @@ agents; this doc owns report structure and handoff.
 
 ## Report Sections
 
-1. Scope: campaign, channel, audience, offer, date range, spend, and goals.
-2. Executive summary: performance, constraint, opportunity, and decision.
-3. Funnel view: reach/impressions, engagement, account growth, traffic,
-   conversion, leads/stages, sales, revenue/refunds, costs, and ROI/payback only
-   where units and coverage make them valid.
-4. Creative/content findings: message, hook, offer, channel fit, and evidence.
-5. Experiment log: preregistered hypothesis/control, variants, assignment,
-   sample/privacy thresholds, window, exclusions, primary/guardrail outcomes,
-   confidence, decision, and next test.
-6. Recommendations: evidence refs, expected impact range, confidence, owner,
-   required approval, rollback, retest date, and supersession status.
-7. Handoff: campaign routine, client report agent, or worker-ready backlog.
+1. Scope: account/campaign, date range, as-of boundary, currency, and goals.
+2. Evidence quality: freshness, coverage, missing scopes, suppressed cells, and
+   confidence.
+3. Outcome view: reach, engagement, account growth, traffic, conversions, leads,
+   sales, revenue/refunds, costs, outreach, and guardrails as distinct categories.
+4. Attribution: model/window/version, visible aggregate allocations, costs/refunds,
+   uncertainty, and an explicit observational-only statement.
+5. Experiment log: preregistered variants, assignment integrity, sample/runtime,
+   effect interval, guardrails, causal status, and owner decision eligibility.
+6. Recommendations: evidence rank, target metric, expected impact, confidence,
+   owner/approval, rollback, falsifier, and retest date.
+7. Handoff: owner-reviewed campaign/content task, instrumentation task, client
+   report, or worker-ready backlog.
+
+## Canonical Optimization Report
+
+Run `.agents/scripts/marketing-optimization-helper.py report` against an explicit
+normalized snapshot or live `--as-of` boundary. Supply immutable attribution and
+experiment artifacts explicitly. The command writes canonical JSON plus a
+reviewable Markdown draft under `_reports/drafts/<report-ref>/`; exact replay is
+idempotent and changed evidence produces a new reference.
+
+The report is aggregate-only. Below-threshold cells hide values and dimensions,
+and stale/partial/missing evidence remains visible in `quality.reasons` instead of
+being inferred away. ROI is shown only when outcome/refund/cost currencies are
+compatible. Payback remains unavailable without valid time-to-recovery evidence.
+
+Attribution is always observational. Only an eligible verified experiment may
+support causal wording, and then only for its measured population and window.
+`insufficient_evidence`, invalid assignment, guardrail breach, or an ineligible
+look must not be rendered as a winner.
 
 ## Evidence Rules
 
@@ -47,33 +66,21 @@ agents; this doc owns report structure and handoff.
 - State attribution limits; do not overclaim causality from correlation.
 - Cite dashboards, exports, screenshots, source tables, or tool outputs.
 - Record currency, time zone, date range, and data freshness.
-- Make recommendations measurable with owner, target metric, and re-test date.
-- Name the attribution model, lookback window, model/window versions, coverage,
-  unknown identity, and unattributed outcomes. Observational credit is not
-  incremental lift.
-- Suppress cohorts below the inherited privacy/minimum-sample threshold. Never
-  include subject-level journeys, direct identifiers, or raw private evidence.
-- Mark missing, partial, stale, contradictory, novelty-sensitive, or seasonal
-  evidence explicitly. Do not infer values for a missing funnel stage.
-- Keep platform reach/engagement/account-growth metrics distinct from CRM leads,
-  commerce sales/revenue/refunds, and costs.
+- Preserve report, attribution, experiment-run, and source-snapshot references;
+  do not embed raw provider payloads or subject-level rows.
+- Make recommendations measurable with owner, required approval, target metric,
+  expected-impact status/range, rollback, falsifier, and retest date.
+- Rank causal experiments above observations. Observational signals may propose a
+  controlled test but must not carry an estimated causal impact.
 
-## Freshness and Publication
+## Decision Outputs and Authority
 
-`marketing-optimization-helper.py report` creates a deterministic aggregate
-draft. Every source records observed time, age, coverage, and `fresh` or `stale`
-status. Stale evidence can preserve historical context but cannot silently drive
-a current recommendation. No-data is a valid report state.
-
-Drafts follow `_reports/drafts` → review → published bundle. Atomic publication
-must leave the previous report available on partial failure. A report records its
-source snapshot, projection/analysis IDs, caveats, suppression count, and
-decision outputs so model-version recomputes remain auditable.
-
-Report generation and recommendation generation do not grant authority to
-publish content, send messages, change budgets/audiences/offers, retarget, or
-mutate provider accounts. Route those proposals to the domain owner and preserve
-the required approval in the recommendation record.
+`recommend` emits immutable, supersedable records. A recommendation may prepare a
+content iteration, propose a controlled experiment, or request instrumentation;
+it cannot publish, message, spend, retarget, change an offer, mutate an account,
+or export an audience. `approval_status: not_requested` remains unchanged until a
+separate owner decision exists, and recording that decision still does not
+execute it.
 
 ## Export Notes
 
@@ -82,3 +89,5 @@ the required approval in the recommendation record.
   bundles.
 - Use `tools/design/report-presentation.md` for charts, KPI strips, source
   cards, recommendations, and print-safe campaign appendices.
+- Review `_reports/drafts/<report-ref>/` before any client-facing or published
+  export; derived optimization output does not grant publishing authority.
