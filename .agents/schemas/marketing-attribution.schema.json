@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidevops.local/schemas/marketing-attribution.schema.json",
+  "title": "Marketing Attribution Projection v1",
+  "description": "Rebuildable privacy-safe attribution projection over immutable normalized marketing events.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "projection_id", "run_id", "source_snapshot", "model", "window", "generated_at", "coverage", "causality", "aggregates"],
+  "properties": {
+    "schema": {"const": "aidevops.marketing-attribution/v1"},
+    "projection_id": {"type": "string", "pattern": "^mkt-attribution-v1:[a-f0-9]{64}$"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source_snapshot": {"type": "string", "minLength": 1, "maxLength": 256},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"enum": ["direct", "last_touch"]},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["days", "version"],
+      "properties": {
+        "days": {"type": "integer", "minimum": 1, "maximum": 365},
+        "version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "generated_at": {"type": "string", "format": "date-time"},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "matched_outcomes", "unattributed_outcomes", "identity_uncertain_outcomes"],
+      "properties": {
+        "source": {"enum": ["complete", "partial", "unknown"]},
+        "matched_outcomes": {"type": "integer", "minimum": 0},
+        "unattributed_outcomes": {"type": "integer", "minimum": 0},
+        "identity_uncertain_outcomes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "causality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim", "caveat"],
+      "properties": {
+        "claim": {"enum": ["observational", "experimental"]},
+        "caveat": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "aggregates": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/aggregate"}
+    }
+  },
+  "$defs": {
+    "amount": {"type": "string", "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$"},
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["campaign_id", "channel", "credited_outcomes", "credit", "revenue", "refunds", "costs", "net_revenue", "currency", "uncertainty"],
+      "properties": {
+        "campaign_id": {"type": ["string", "null"], "maxLength": 128},
+        "channel": {"type": ["string", "null"], "maxLength": 128},
+        "credited_outcomes": {"type": "integer", "minimum": 0},
+        "credit": {"$ref": "#/$defs/amount"},
+        "revenue": {"$ref": "#/$defs/amount"},
+        "refunds": {"$ref": "#/$defs/amount"},
+        "costs": {"$ref": "#/$defs/amount"},
+        "net_revenue": {"$ref": "#/$defs/amount"},
+        "currency": {"type": ["string", "null"], "pattern": "^[A-Z]{3}$"},
+        "uncertainty": {"enum": ["low", "medium", "high"]}
+      }
+    }
+  }
+}

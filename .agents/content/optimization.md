@@ -24,9 +24,9 @@ tools:
 
 - **Purpose**: Optimize content via A/B testing, variant generation, and analytics-driven iteration
 - **Input**: Published content, performance metrics, test hypotheses
-- **Output**: Winning variants, optimization recommendations, analytics insights
+- **Output**: Evidence-qualified candidate variants, approval-bound optimization recommendations, analytics insights
 - **Related**: `content/production-*.md` (variants), `content/distribution-*.md` (platform metrics), `content/research.md` (next cycle)
-- **Core rules**: 10+ variants before committing | 250+ samples before judging | <2% = kill | 2-3% = scale | >3% = go aggressive | Proven first, original second
+- **Core rules**: Preregister hypothesis/control/metrics | Meet sample and privacy thresholds | Check guardrails and freshness | Human approval before consequential changes
 
 <!-- AI-CONTEXT-END -->
 
@@ -44,7 +44,12 @@ tools:
 
 **Platform minimums**: YouTube: 250 impressions, 2% CTR, 50% retention | TikTok: 500 views, 70% completion | Blog: 100 visitors, 2min+ avg | Email: 250 sends, 20% open | Thumbnail: 1000 impressions, 5% CTR
 
-**Statistical significance**: 95% confidence minimum; 7+ days for day-of-week variance; 14+ days for audiences <1000.
+**Statistical validity**: Preregister the primary metric, control, guardrails,
+minimum sample, duration, exclusions, and stopping policy. The default decision
+threshold is 95% confidence, 7+ days for day-of-week variance, and 14+ days for
+audiences under 1000, but power analysis and inherited privacy minimums may
+require more evidence. Do not peek, extend, or swap metrics to manufacture a
+winner.
 
 ### What to Test (priority order)
 
@@ -72,8 +77,8 @@ thumbnail-helper.sh analyze VIDEO_ID
 1. **Generate**: 10+ variants via `content/production-*.md` agents
 2. **Deploy**: YouTube A/B, TikTok separate videos, Google Optimize for blog, email list split
 3. **Collect**: 250+ samples per variant (CTR, retention, completion, time on page)
-4. **Analyze**: Lift = `(variant - baseline) / baseline * 100`; require 95% significance
-5. **Scale winners**: Extract pattern, store (`/remember "Hook pattern: ..."`), apply to next 10 pieces
+4. **Analyze**: Use `marketing-optimization-helper.py experiment`; require preregistered sample, duration, confidence, privacy, and guardrail checks
+5. **Review candidates**: Route creative changes to Content, channel/campaign changes to Marketing, and product changes to Product; preserve owner approval
 6. **Batch cycle**: Week 1 produce → Week 2 collect → Week 3 analyze + kill bottom 7 → Week 4 produce from top 3
 
 ## Variant Generation
@@ -116,7 +121,23 @@ content-calendar-helper.sh stats                # overall health
 
 **Seasonality**: Q4 (Oct-Dec) highest buying intent → reviews, comparisons, affiliate. Q1 educational/how-to. Q2-Q3 experiment + build backlog.
 
-**Feedback loop**: Publish → collect analytics → analyze → extract patterns → store (`/remember "Pattern: ..."`) → feed research cycle → repeat.
+**Feedback loop**: Publish with approval → collect normalized evidence → build a
+freshness-aware aggregate report → analyze the preregistered test → review the
+candidate recommendation → retest. Observational attribution can suggest a test,
+but cannot justify a causal winner.
+
+## Performance Evidence Handoff
+
+Consume only privacy-safe projections from the Performance Plane. A usable
+handoff includes source snapshot and coverage, attribution model/window/version,
+experiment analysis ID, primary and guardrail metrics, aggregate sample sizes,
+confidence, freshness, caveats, and any contradicting evidence. Sparse cohorts
+remain suppressed and raw journeys or subject IDs do not enter content briefs.
+
+Recommendations must name the observed problem, target metric, expected impact
+range, confidence, owner, required approval, rollback, and retest date. They are
+decision inputs only: this agent does not autonomously publish, message, change
+spend, retarget, change audiences/offers, or mutate provider accounts.
 
 ## Proven First, Original Second
 
@@ -135,4 +156,6 @@ content-calendar-helper.sh stats                # overall health
 
 **Feeds into**: `content/research.md` (next research), `content/production-*.md` (next batch). **Uses from**: `content/distribution-*.md` (analytics), `content/production-*.md` (variants). **Related**: `tools/task-management/beads.md`, `reference/memory.md`.
 
-**After optimization**: Store winners (`/remember "Pattern: ..."`), update calendar to prioritize what works, feed winning topics into research cycle, scale with 10 more pieces using winning patterns.
+**After optimization**: Promote only reviewed, privacy-safe validated learning.
+Keep the experiment and decision references, note novelty/seasonality limits,
+and supersede prior recommendations instead of erasing their audit trail.
