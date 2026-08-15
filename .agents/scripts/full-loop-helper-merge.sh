@@ -1167,28 +1167,35 @@ _merge_verify_completed_state() {
 
 # --- Resource Unlocking ---
 
-# _merge_unlock_resources — unlock PR and linked issue after worker self-merge.
+# _merge_unlock_resources — guarded linked-issue cleanup after worker self-merge.
 #
-# t1934: Issues/PRs are locked at dispatch time to prevent prompt injection.
-# The worker merge path must unlock them — the pulse deterministic merge path
-# has its own unlock, but workers that self-merge bypass it.
+# t1934 / GH#30180: auto-dispatch issue conversations stay locked across worker
+# handoffs. Linked PR conversations are not worker-owned locks and must remain
+# untouched so this cleanup cannot remove an independent safety lock.
 #
 # Args: pr_number repo
 _merge_unlock_resources() {
 	local pr_number="$1"
 	local repo="$2"
 
-	gh pr unlock "$pr_number" --repo "$repo" >/dev/null 2>&1 || true
-
-	# Find and unlock the issue linked via "Resolves/Closes/Fixes #NNN" in the PR body.
 	local _linked_issue=""
 	_linked_issue=$(gh pr view "$pr_number" --repo "$repo" --json body \
 		--jq '.body' 2>/dev/null |
 		grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+' |
 		grep -oE '[0-9]+' | head -1) || _linked_issue=""
-	if [[ -n "$_linked_issue" && "$_linked_issue" =~ ^[0-9]+$ ]]; then
-		gh issue unlock "$_linked_issue" --repo "$repo" >/dev/null 2>&1 || true
+	[[ -n "$_linked_issue" && "$_linked_issue" =~ ^[0-9]+$ ]] || return 0
+
+	local labels=""
+	if ! labels=$(gh api "repos/${repo}/issues/${_linked_issue}" --jq '[.labels[]? | .name] | join(",")' 2>/dev/null); then
+		print_warning "Could not verify linked issue labels for #${_linked_issue}; retaining conversation lock"
+		return 0
 	fi
+	# #aidevops:trust-boundary — never reopen a retryable auto-dispatch
+	# instruction surface during merge cleanup.
+	if [[ ",$labels," == *,auto-dispatch,* && ",$labels," != *,no-auto-dispatch,* ]]; then
+		return 0
+	fi
+	gh issue unlock "$_linked_issue" --repo "$repo" >/dev/null 2>&1 || true
 
 	return 0
 }

@@ -94,7 +94,7 @@ gh() {
 			printf 'true\n'
 			return 0
 		fi
-		printf 'bug\n'
+		printf '%s\n' "${STUB_ISSUE_LABELS:-bug}"
 		return 0
 	fi
 	return 0
@@ -117,22 +117,35 @@ pass "pulse dispatch leaves linked PR conversations unlocked"
 
 reset_calls
 _merge_unlock_resources "88" "owner/repo"
-if ! assert_call "pr unlock 88 --repo owner/repo" ||
-	! assert_call "issue unlock 42 --repo owner/repo" ||
+if ! assert_call "issue unlock 42 --repo owner/repo" ||
+	! assert_no_call "pr unlock 88 --repo owner/repo" ||
 	! assert_no_call "issue unlock 88 --repo owner/repo"; then
-	fail "full-loop merge cleanup did not preserve PR/issue command routing" || true
+	fail "full-loop merge cleanup touched a PR lock or missed issue cleanup" || true
 	exit 1
 fi
-pass "full-loop merge cleanup routes PR and issue unlocks separately"
+pass "full-loop merge cleanup leaves PR locks untouched"
 
 reset_calls
-_watchdog_unlock_issue_and_prs "42" "owner/repo"
+_watchdog_unlock_issue "42" "owner/repo"
 if ! assert_call "issue unlock 42 --repo owner/repo" ||
-	! assert_call "pr unlock 77 --repo owner/repo" ||
-	! assert_no_call "issue unlock 77 --repo owner/repo"; then
-	fail "watchdog cleanup did not preserve PR/issue command routing" || true
+	! assert_no_call "pr unlock 77 --repo owner/repo" ||
+	! assert_no_call "pr list --repo owner/repo --state open --json number,title --jq [.[] | select(.title | test(\"(GH)?#42([^0-9]|$)\"))] | .[].number --limit 5"; then
+	fail "watchdog cleanup touched a linked PR conversation" || true
 	exit 1
 fi
-pass "watchdog cleanup routes PR and issue unlocks separately"
+pass "watchdog cleanup leaves linked PR locks untouched"
 
-printf 'Tests run: 3\nTests failed: 0\n'
+reset_calls
+export STUB_ISSUE_LABELS="auto-dispatch"
+_merge_unlock_resources "88" "owner/repo"
+_watchdog_unlock_issue "42" "owner/repo"
+unset STUB_ISSUE_LABELS
+if ! assert_no_call "issue unlock 42 --repo owner/repo" ||
+	! assert_no_call "pr unlock 88 --repo owner/repo" ||
+	! assert_no_call "pr unlock 77 --repo owner/repo"; then
+	fail "auto-dispatch cleanup reopened a protected conversation" || true
+	exit 1
+fi
+pass "merge and watchdog cleanup retain auto-dispatch issue locks"
+
+printf 'Tests run: 4\nTests failed: 0\n'

@@ -678,7 +678,7 @@ recover_failed_launch_state() {
 	_post_launch_cooldown_marker "$issue_number" "$repo_slug" "$self_login" "$failure_reason"
 	# t2897: Record zero-attempt outcome for the per-runner circuit breaker.
 	_record_runner_health_zero_attempt "$issue_number" "$repo_slug" "$failure_reason"
-	# t1934: Unlock issue and linked PRs (locked at dispatch time)
+	# t1934 / GH#30180: Guardedly release only the issue conversation lock.
 	unlock_issue_after_worker "$issue_number" "$repo_slug"
 
 	# Record the launch failure in the fast-fail counter (t1888).

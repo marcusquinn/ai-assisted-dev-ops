@@ -79,7 +79,7 @@ _dlw_display_version_or_unknown() {
 #   - Issue edit: replace assignees, add status:queued + origin:worker
 #   - Worker log file setup (per-issue temp log, GH#14483)
 #   - Model/tier resolution (round-robin, t1997)
-#   - Issue + linked PR lock (t1894/t1934)
+#   - Verified issue conversation lock; linked PRs stay open for CI (t1894/t1934)
 #   - Git pull to latest remote commit (GH#17584)
 #   - Worktree pre-creation for the worker (5-8 tool call savings)
 #   - Worker command construction + nohup launch (GH#17549)

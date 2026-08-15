@@ -8,7 +8,7 @@
 #   - Graceful then force kill of the process tree
 #   - Posting a comment on the GitHub issue with the kill reason
 #   - Updating issue labels (status:available or status:blocked)
-#   - Unlocking the issue and any linked PRs (t1934)
+#   - Guarded issue conversation cleanup (t1934 / GH#30180)
 #   - Recording the failure in the fast-fail counter
 #
 # Usage: source "${SCRIPT_DIR}/worker-watchdog-kill.sh"
@@ -194,13 +194,14 @@ _Automated by \`worker-watchdog.sh\` (t1419)_"
 }
 
 #######################################
-# Unlock an issue and any linked PRs after watchdog kill (t1934).
+# Guardedly unlock an issue after watchdog kill (t1934 / GH#30180).
 # Issues are locked at dispatch time (pulse-wrapper.sh lock_issue_for_worker)
 # to prevent prompt injection. The watchdog must unlock on kill so the
-# issue can be re-dispatched on the next pulse cycle.
+# issue can be re-dispatched when it is no longer auto-dispatch eligible.
+# Linked PR conversations are never watchdog-owned locks.
 # Non-fatal: unlock failures are logged but never block.
 #######################################
-_watchdog_unlock_issue_and_prs() {
+_watchdog_unlock_issue() {
 	local issue_number="$1"
 	local repo_slug="$2"
 
@@ -219,20 +220,6 @@ _watchdog_unlock_issue_and_prs() {
 	fi
 	gh issue unlock "$issue_number" --repo "$repo_slug" >/dev/null 2>&1 || true
 	log_msg "Unlocked #${issue_number} in ${repo_slug} after watchdog kill (t1934)"
-
-	# Unlock any open PRs linked to this issue
-	local pr_numbers
-	pr_numbers=$(gh pr list --repo "$repo_slug" --state open \
-		--json number,title --jq \
-		"[.[] | select(.title | test(\"(GH)?#${issue_number}([^0-9]|$)\"))] | .[].number" \
-		--limit 5 2>/dev/null) || pr_numbers=""
-
-	local pr_num
-	while IFS= read -r pr_num; do
-		[[ -n "$pr_num" && "$pr_num" =~ ^[0-9]+$ ]] || continue
-		gh pr unlock "$pr_num" --repo "$repo_slug" >/dev/null 2>&1 || true
-		log_msg "Unlocked PR #${pr_num} in ${repo_slug} (linked to issue #${issue_number}) (t1934)"
-	done <<<"$pr_numbers"
 
 	return 0
 }
@@ -275,10 +262,10 @@ post_kill_github_update() {
 		"$duration" "$evidence_summary" \
 		"$destination_status" "$destination_text"
 
-	# t1934: Unlock issue and linked PRs after watchdog kill.
+	# t1934 / GH#30180: Guardedly unlock the issue after watchdog kill.
 	# Issues are locked at dispatch time to prevent prompt injection.
-	# The watchdog must unlock on kill so the issue can be re-dispatched.
-	_watchdog_unlock_issue_and_prs "$issue_number" "$repo_slug"
+	# Linked PR conversations are not worker-owned locks.
+	_watchdog_unlock_issue "$issue_number" "$repo_slug"
 
 	# Record failure in the fast-fail counter and escalate tier if threshold reached.
 	# The fast-fail state file is shared with pulse-wrapper.sh — both use the same
