@@ -117,6 +117,17 @@
       "probes": {"deployed": {"path": "scripts/_knowledge_social_meta_outbound_provider.py"}, "configured": {"live": "requires selected official provider transport"}, "authenticated": {"live": "requires selected product token"}, "authorized": {"live": "requires exact identity and publish permission check"}, "reachable": {"live": "requires official provider health request"}, "usable": {"live": "requires provider-health action status usable"}}
     },
     {
+      "name": "campaign-growth-orchestration",
+      "aliases": ["campaign-grow", "growth-campaign"],
+      "owner": "Campaigns Plane",
+      "description": "Evidence-backed cross-owner campaign growth planning, state, and recovery without provider mutation",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["workflows/campaign-growth.md", "scripts/campaign-growth-helper.py"],
+      "fallback": "evidence-only-manual-handoff",
+      "required": ["deployed", "runtime_compatible", "tool_visible"],
+      "probes": {"deployed": {"path": "scripts/campaign-growth-helper.py"}, "tool_visible": {"tool": "python3"}}
+    },
+    {
       "name": "vault-operations",
       "aliases": ["vault", "protected-data", "encrypted-memory"],
       "owner": "Vault",

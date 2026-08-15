@@ -231,6 +231,30 @@ Channel specs: `.agents/configs/campaign-channel-specs.json`.
 **Phase 6 CLI (t2969 — shipped):** `campaign launch`, `campaign promote`,
 `campaign feedback` — cross-plane promotion of results and learnings.
 
+### Campaign growth orchestration
+
+`aidevops campaign grow` is the progressive entry point for a complete growth
+campaign. It coordinates evidence from research, creative production/review,
+approved distribution receipts, performance, and reporting without becoming a
+publisher, provider client, or analytics engine.
+
+```bash
+aidevops campaign grow plan --intake intake.json
+aidevops campaign grow start <campaign-id> --repo <repo> --evidence owner-evidence.json
+aidevops campaign grow status <campaign-id> --repo <repo>
+aidevops campaign grow resume <campaign-id> --repo <repo> --evidence owner-evidence.json
+```
+
+`plan` is non-mutating and reports channels, capabilities, artifacts, approvals,
+and degraded fallbacks. `start` and `resume` write only
+`active/<id>/orchestration/campaign-growth-state.json`; each owner remains
+authoritative for its own research, assets, queue receipts, performance records,
+and recommendations. A distribution stage must carry explicit, current owner
+approval. Unknown provider outcomes, partial metrics, missing evidence, expired
+approval, suppression, or insufficient experiment evidence remain truthful stage
+states and never become success. See `workflows/campaign-growth.md` for evidence
+shape, recovery, and specialist routing.
+
 ### Campaign research dossier contract (schema v1)
 
 `campaign research <id> --source <evidence.json>` produces
