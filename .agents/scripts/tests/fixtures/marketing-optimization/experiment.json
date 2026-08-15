@@ -1,0 +1,18 @@
+{
+  "experiment_id": "creative-headline-1",
+  "source_snapshot": "fixture:experiment-2026-08-01",
+  "state": "analysis_ready",
+  "hypothesis": "The treatment headline improves conversion without increasing unsubscribes.",
+  "owner": "content",
+  "variants": ["control", "treatment"],
+  "assignment": {"unit": "anonymous_subject", "method": "deterministic_hash", "control_variant": "control"},
+  "metrics": {"primary": "marketing.conversions.total", "guardrails": ["marketing.unsubscribe.total"]},
+  "sample_policy": {"minimum_per_variant": 250, "privacy_minimum": 10, "confidence_threshold": 0.95},
+  "window": {"starts_at": "2026-07-01T00:00:00Z", "ends_at": "2026-07-15T00:00:00Z", "minimum_days": 7},
+  "stopping_policy": "Analyze after the fixed window and minimum sample are complete.",
+  "exclusions": ["invalid automated traffic"],
+  "observations": [
+    {"variant": "control", "sample": 1000, "successes": 100, "guardrails": {"marketing.unsubscribe.total": {"value": 5, "regressed": false}}},
+    {"variant": "treatment", "sample": 1000, "successes": 160, "guardrails": {"marketing.unsubscribe.total": {"value": 6, "regressed": false}}}
+  ]
+}

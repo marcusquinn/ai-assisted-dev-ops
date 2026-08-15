@@ -386,12 +386,63 @@ history.
 
 `/performance <URL>` remains the separate web-performance audit command.
 
-## Deferred Beyond Marketing Ingest
+## Attribution and Experiment Projections
+
+`marketing-optimization-helper.py` reads normalized, immutable marketing events
+and writes rebuildable analytical projections. It never updates source events,
+consent, suppression, identity links, campaigns, provider accounts, or prior
+experiment decisions.
+
+Three versioned schemas define this layer:
+
+- `schemas/marketing-attribution.schema.json` records the source snapshot,
+  direct or last-touch model, lookback-window version, aggregate credit,
+  source coverage, uncertainty, and a mandatory non-causal caveat.
+- `schemas/marketing-experiment.schema.json` preregisters hypothesis, assignment
+  unit, control and treatment variants, primary and guardrail metrics, minimum
+  sample/privacy thresholds, window, exclusions, stopping policy, owner,
+  analysis, and decision audit.
+- `schemas/growth-recommendation.schema.json` records evidence, impact range,
+  confidence, owner, required approval, rollback, retest date, status, and any
+  recommendation it supersedes.
+
+Attribution is a projection, not source truth. The same source snapshot, model,
+window, and versions produce the same `projection_id`; changing a model or
+window version produces a new projection without erasing old decisions. Refunds
+and costs remain compensating outcomes. Missing touchpoints stay unattributed,
+and ambiguous identity increases uncertainty rather than being guessed.
+
+Experiment analysis accepts aggregate observations only. A result is
+`insufficient_evidence` until every variant meets both the preregistered sample
+minimum and inherited privacy threshold and the minimum test duration has
+elapsed. Guardrail regressions block winner adoption. Randomized assignment may
+support a bounded experimental claim; all other comparisons remain
+observational.
+
+```bash
+marketing-optimization-helper.py attribute --input events.json --model last_touch --window-days 30 --model-version 1 --window-version 1 --run-id RUN --generated-at TIME
+marketing-optimization-helper.py experiment --input experiment.json --run-id RUN --observed-at TIME
+marketing-optimization-helper.py report --input evidence.json --minimum-cohort 10 --generated-at TIME
+marketing-optimization-helper.py recommend --input evidence.json --owner content --approval ROLE --rollback PLAN --retest-at TIME --created-at TIME
+marketing-optimization-helper.py status --input report.json --now TIME
+```
+
+Projection and report publication uses an atomic temporary-file replacement.
+Concurrent runs use distinct run IDs; callers must compare source snapshot and
+version before replacing a newer published projection. A failed run leaves the
+previous published artifact intact. Reports move through
+`_reports/drafts` review before a published bundle; raw evidence remains in its
+private source plane.
+
+Existing Phase 1 records without attribution remain valid and report as
+unattributed. Rebuilds derive new projections from effective immutable event and
+reconciliation history rather than editing historical records.
+
+## Deferred Beyond Marketing Optimization
 
 - Provider-authenticated live marketing adapters and scheduled collectors.
 - Promotion paths from `_cases/` and `_projects/`.
 - Dashboard generation and recurring review cadence.
-- Attribution, experiment assignment, and optimization decisions.
 - Cross-plane lesson promotion back to `_knowledge/insights/`.
 
 Later phases may extend these schemas, but they must keep Phase 1 result fields

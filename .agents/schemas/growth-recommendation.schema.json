@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aidevops.local/schemas/growth-recommendation.schema.json",
+  "title": "Growth Recommendation v1",
+  "description": "Approval-bound aggregate recommendation derived from privacy-safe evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "recommendation_id", "status", "observed_problem", "target_metric", "evidence", "expected_impact", "confidence", "owner", "required_approval", "prohibited_mutations", "rollback", "retest_at", "created_at", "supersedes"],
+  "properties": {
+    "schema": {"const": "aidevops.growth-recommendation/v1"},
+    "recommendation_id": {"type": "string", "pattern": "^growth-rec-v1:[a-f0-9]{64}$"},
+    "status": {"enum": ["draft", "awaiting_approval", "approved", "testing", "validated", "rejected", "superseded", "insufficient_evidence"]},
+    "observed_problem": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "target_metric": {"type": "string", "pattern": "^marketing\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)+$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["refs", "source_snapshot", "sample_size", "privacy_safe", "causality"],
+      "properties": {
+        "refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+        "source_snapshot": {"type": "string", "minLength": 1, "maxLength": 256},
+        "sample_size": {"type": "integer", "minimum": 0},
+        "privacy_safe": {"const": true},
+        "causality": {"enum": ["observational", "experimental"]}
+      }
+    },
+    "expected_impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "maximum", "unit"],
+      "properties": {
+        "minimum": {"type": "number"},
+        "maximum": {"type": "number"},
+        "unit": {"enum": ["absolute", "relative_fraction", "percentage_points", "currency"]}
+      }
+    },
+    "confidence": {"enum": ["low", "medium", "high", "verified"]},
+    "owner": {"enum": ["content", "marketing", "product", "sales", "seo", "campaign-owner", "report-owner"]},
+    "required_approval": {"type": "string", "minLength": 1, "maxLength": 256},
+    "prohibited_mutations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"enum": ["publish", "message", "spend", "retarget", "change_audience", "change_offer", "mutate_provider_account"]}
+    },
+    "rollback": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "retest_at": {"type": "string", "format": "date-time"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "supersedes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^growth-rec-v1:[a-f0-9]{64}$"}}
+  }
+}
