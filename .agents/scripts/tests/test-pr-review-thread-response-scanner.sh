@@ -55,6 +55,7 @@ if [[ "$1" == "api" && "${2:-}" == "rate_limit" ]]; then
 	printf '%s\n' "${STUB_GRAPHQL_REMAINING:-100}"
 	exit 0
 fi
+if [[ "$1" == "api" && "${2:-}" == "user" ]]; then printf '%s\n' "${STUB_GH_LOGIN:-worker-login}"; exit 0; fi
 if [[ "$1" == "api" && "${2:-}" =~ ^repos/owner/repo/pulls/[0-9]+$ ]]; then
 	[[ "${AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS:-}" == "1" ]] || exit 1
 	case "${STUB_PR_REPOSITORY_MODE:-same}" in
@@ -65,8 +66,7 @@ if [[ "$1" == "api" && "${2:-}" =~ ^repos/owner/repo/pulls/[0-9]+$ ]]; then
 	exit 0
 fi
 if [[ "$1" == "pr" && "${2:-}" == "list" ]]; then
-	printf '%s\n' "${STUB_PR_LIST:-1	Fix active PR	false	origin:worker	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
-	exit 0; fi
+	printf '%s\n' "${STUB_PR_LIST:-1	Fix active PR	false	origin:worker	feature/review	${TEST_HEAD_OID_1}	worker-bot}"; exit 0; fi
 if [[ "$1" == "pr" && "${2:-}" == "view" ]]; then
 	if [[ "$*" == *"comments"* ]]; then
 		printf '%s\n' "$STUB_REVIEWER_COMMENTS_RESPONSE"
