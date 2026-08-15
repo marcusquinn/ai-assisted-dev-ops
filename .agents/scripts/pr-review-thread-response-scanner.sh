@@ -57,7 +57,7 @@ PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="6"
+PRRTS_WORKER_CONTRACT_VERSION="7"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
@@ -352,12 +352,12 @@ cmd_reply() {
 		marker_rc=0
 		_prrts_thread_has_marker "$thread_id" "$marker" || marker_rc=$?
 		case "$marker_rc" in
-			0)
-				_prrts_log "reply: skipped ${repo_slug} thread ${thread_id} — marker already present"
-				return 0
-				;;
-			1) ;;
-			*) return 1 ;;
+		0)
+			_prrts_log "reply: skipped ${repo_slug} thread ${thread_id} — marker already present"
+			return 0
+			;;
+		1) ;;
+		*) return 1 ;;
 		esac
 	fi
 	if [[ "$dry_run" == "$PRRTS_BOOL_TRUE" ]]; then
@@ -1904,8 +1904,27 @@ _prrts_repair_linked_issue() {
 
 _prrts_worker_login() {
 	local pr_number="$1"
+	local worker_login=""
 	: "$pr_number"
-	return 0
+
+	# #aidevops:trust-boundary — ordinary PR repair binds ownership to the
+	# authenticated gh viewer. Checkpoint continuation overrides this function
+	# with its independently verified linked-issue assignee contract.
+	worker_login=$(gh api user --jq '.login // ""' 2>/dev/null || true)
+	if [[ "$worker_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		printf '%s' "$worker_login"
+		return 0
+	fi
+
+	worker_login=$(gh api graphql \
+		-f 'query=query { viewer { login } }' \
+		--jq '.data.viewer.login // ""' 2>/dev/null || true)
+	if [[ "$worker_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		printf '%s' "$worker_login"
+		return 0
+	fi
+
+	return 1
 }
 
 _prrts_prelaunch_target_fence() {
@@ -2292,6 +2311,10 @@ _prrts_dispatch_worker() {
 		_prrts_log "dispatch: headless-runtime-helper missing or not executable: ${HEADLESS_RUNTIME_HELPER}"
 		return 1
 	fi
+	if ! worker_login=$(_prrts_worker_login "$pr_number"); then
+		_prrts_log "dispatch: authenticated GitHub worker identity unavailable for ${repo_slug}#${pr_number}; launch blocked"
+		return 1
+	fi
 	if ! _prrts_prepare_worker_worktree "$repo_slug" "$repo_path" "$pr_number" "$head_ref" "$head_oid" worker_worktree_path; then
 		return 1
 	fi
@@ -2302,7 +2325,6 @@ _prrts_dispatch_worker() {
 	fi
 	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
 	repair_linked_issue=$(_prrts_repair_linked_issue "$pr_number") || repair_linked_issue=""
-	worker_login=$(_prrts_worker_login "$pr_number") || worker_login=""
 	[[ -n "$worker_task" ]] || return 1
 	prompt_file="$(_prrts_write_prompt_file "$repo_slug" "$worker_worktree_path" "$pr_number" "$title" "$thread_count" "$fingerprint" "$preview")"
 	session_key="$(_prrts_session_key "$repo_slug" "$pr_number")"

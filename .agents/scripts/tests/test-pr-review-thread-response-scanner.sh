@@ -29,11 +29,28 @@ print_result() {
 	return 0
 }
 
+write_fake_gh_identity_stub() {
+	cat >"${TEST_ROOT}/bin/gh" <<'GH_STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "api" && "${2:-}" == "user" ]]; then
+	[[ "${STUB_GH_REST_FAIL:-0}" == "1" ]] && exit 1
+	printf '%s\n' "${STUB_GH_LOGIN:-worker-login}"
+	exit 0
+fi
+if [[ "$1" == "api" && "${2:-}" == "graphql" && "$*" == *"viewer { login }"* ]]; then
+	[[ "${STUB_GH_GRAPHQL_FAIL:-0}" == "1" ]] && exit 1
+	printf '%s\n' "${STUB_GH_GRAPHQL_LOGIN:-worker-login}"
+	exit 0
+fi
+GH_STUB
+	return 0
+}
+
 write_fake_gh_stub() {
 	local default_reviewer_comments='{"latestReviews":[],"comments":[]}'
 	export STUB_REVIEWER_COMMENTS_RESPONSE="${STUB_REVIEWER_COMMENTS_RESPONSE:-$default_reviewer_comments}"
-	cat >"${TEST_ROOT}/bin/gh" <<'GH_STUB'
-#!/usr/bin/env bash
+	write_fake_gh_identity_stub
+	cat >>"${TEST_ROOT}/bin/gh" <<'GH_STUB'
 if [[ "$1" == "api" && "${2:-}" == "rate_limit" ]]; then
 	printf '%s\n' "${STUB_GRAPHQL_REMAINING:-100}"
 	exit 0
@@ -260,6 +277,7 @@ done
 printf '%s\n' "$all_args" >"${HEADLESS_ARGS_CAPTURE}"
 printf '%s\n' "${WORKER_WORKTREE_PATH:-}" >"${HEADLESS_ENV_CAPTURE}"
 printf 'WORKER_ISSUE_NUMBER=%s\n' "${WORKER_ISSUE_NUMBER:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'WORKER_GITHUB_LOGIN=%s\n' "${WORKER_GITHUB_LOGIN:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'WORKER_NO_EXIT_PUSH=%s\n' "${WORKER_NO_EXIT_PUSH:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_ALLOW_WORKER_WORKTREE_OWNER_TRANSFER=%s\n' "${AIDEVOPS_ALLOW_WORKER_WORKTREE_OWNER_TRANSFER:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_WORKTREE_OWNER_TRANSFER_MODE=%s\n' "${AIDEVOPS_WORKTREE_OWNER_TRANSFER_MODE:-}" >>"${HEADLESS_ENV_CAPTURE}"
@@ -377,7 +395,8 @@ WORKTREE_STUB
 }
 
 setup_test_env() {
-	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD
+	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD STUB_GH_LOGIN
+	unset STUB_GH_REST_FAIL STUB_GH_GRAPHQL_FAIL STUB_GH_GRAPHQL_LOGIN
 	unset STUB_GIT_INVALID_BRANCH STUB_GIT_FETCH_FAIL STUB_GIT_CANONICAL_FETCH_FAIL
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
 	unset STUB_GIT_WORKTREE_DIRTY STUB_GIT_DIVERGED STUB_GIT_FAST_FORWARD_FAIL
@@ -1012,6 +1031,57 @@ test_dispatch_launches_worker_and_writes_state() {
 	return 0
 }
 
+test_dispatch_resolves_worker_github_login() {
+	setup_test_env
+	export STUB_GH_LOGIN="dispatch-runner"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if grep -q '^WORKER_GITHUB_LOGIN=dispatch-runner$' "$HEADLESS_ENV_CAPTURE" 2>/dev/null; then
+		print_result "dispatch resolves and forwards the GitHub worker login" 0
+	else
+		print_result "dispatch resolves and forwards the GitHub worker login" 1 \
+			"env=$(tr '\n' ';' <"$HEADLESS_ENV_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_uses_graphql_worker_login_fallback() {
+	setup_test_env
+	export STUB_GH_LOGIN="invalid_rest_login"
+	export STUB_GH_GRAPHQL_LOGIN="graphql-runner"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if grep -q '^WORKER_GITHUB_LOGIN=graphql-runner$' "$HEADLESS_ENV_CAPTURE" 2>/dev/null; then
+		print_result "dispatch rejects malformed REST login and forwards GraphQL fallback" 0
+	else
+		print_result "dispatch rejects malformed REST login and forwards GraphQL fallback" 1 \
+			"env=$(tr '\n' ';' <"$HEADLESS_ENV_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_fails_closed_without_authenticated_worker_login() {
+	setup_test_env
+	export STUB_GH_LOGIN="invalid_rest_login"
+	export STUB_GH_GRAPHQL_LOGIN="invalid_graphql_login"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo" || true
+	if [[ -s "$HEADLESS_LOG" ]]; then
+		print_result "dispatch blocks launch without authenticated worker login" 1 "headless worker launched"
+	elif [[ -s "$WORKTREE_HELPER_LOG" || -s "$GIT_FETCH_CWD_LOG" ]]; then
+		print_result "dispatch blocks launch without authenticated worker login" 1 \
+			"worktree or fetch side effect occurred"
+	elif grep -qF 'authenticated GitHub worker identity unavailable for owner/repo#1; launch blocked' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch blocks launch without authenticated worker login" 0
+	else
+		print_result "dispatch blocks launch without authenticated worker login" 1 \
+			"log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_pr_defers_at_atomic_global_capacity() {
 	setup_test_env
 	export PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL=1
@@ -1189,13 +1259,13 @@ test_dispatch_prompt_requires_machine_readable_completion_state() {
 	return 0
 }
 
-test_dispatch_prompt_requires_contract_v6_remediation_role_and_praise_only_resolution() {
+test_dispatch_prompt_requires_contract_v7_remediation_role_and_praise_only_resolution() {
 	setup_test_env
 	local stable_scanner="${HOME}/.aidevops/agents/scripts/pr-review-thread-response-scanner.sh"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	if grep -q '^worker_contract_version=6$' "$state_file" 2>/dev/null &&
+	if grep -q '^worker_contract_version=7$' "$state_file" 2>/dev/null &&
 		grep -Fq 'classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Perform one bounded remediation pass' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
@@ -1203,9 +1273,9 @@ test_dispatch_prompt_requires_contract_v6_remediation_role_and_praise_only_resol
 		grep -Fq 'fix actionable defects in the linked worktree' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -Fq 'PR-loop review model' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
-		print_result "dispatch prompt requires contract-v6 remediation role and praise-only resolution" 0
+		print_result "dispatch prompt requires contract-v7 remediation role and praise-only resolution" 0
 	else
-		print_result "dispatch prompt requires contract-v6 remediation role and praise-only resolution" 1 \
+		print_result "dispatch prompt requires contract-v7 remediation role and praise-only resolution" 1 \
 			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
@@ -1640,9 +1710,9 @@ test_dispatch_retries_escalated_previous_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=6$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=7$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 6 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 7 (stored=2)' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
 		print_result "dispatch retries escalation created under previous worker contract" 1 \
@@ -2340,6 +2410,9 @@ main() {
 	test_scan_pr_excludes_human_threads_by_default
 	test_scan_pr_can_include_human_threads_with_opt_in
 	test_dispatch_launches_worker_and_writes_state
+	test_dispatch_resolves_worker_github_login
+	test_dispatch_uses_graphql_worker_login_fallback
+	test_dispatch_fails_closed_without_authenticated_worker_login
 	test_dispatch_pr_defers_at_atomic_global_capacity
 	test_dispatch_repo_shares_atomic_global_capacity
 	test_dispatch_preserves_expired_matching_live_capacity_lease
@@ -2365,7 +2438,7 @@ main() {
 	test_dispatch_prompt_uses_stable_deployed_scanner_path
 	test_dispatch_prompt_mentions_graphql_only_thread_operations
 	test_dispatch_prompt_requires_machine_readable_completion_state
-	test_dispatch_prompt_requires_contract_v6_remediation_role_and_praise_only_resolution
+	test_dispatch_prompt_requires_contract_v7_remediation_role_and_praise_only_resolution
 	test_dispatch_prompt_requires_exactly_one_terminal_call
 	test_dispatch_prompt_explains_shell_redirection_constraint
 	test_dispatch_prompt_declares_precreated_worktree_contract
