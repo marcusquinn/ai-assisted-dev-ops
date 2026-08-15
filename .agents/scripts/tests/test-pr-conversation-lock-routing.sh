@@ -148,4 +148,11 @@ if ! assert_no_call "issue unlock 42 --repo owner/repo" ||
 fi
 pass "merge and watchdog cleanup retain auto-dispatch issue locks"
 
-printf 'Tests run: 4\nTests failed: 0\n'
+# shellcheck disable=SC2016 # Literal production source guard.
+if grep -Fq 'unlock_issue_after_worker "$pr_number"' "${SCRIPTS_DIR}/pulse-merge.sh"; then
+	fail "deterministic merge cleanup still routes PR numbers through issue unlocks" || true
+	exit 1
+fi
+pass "deterministic merge paths never route PR numbers through issue unlocks"
+
+printf 'Tests run: 5\nTests failed: 0\n'

@@ -1106,10 +1106,9 @@ _handle_post_merge_actions() {
 	closing_comment=$(_pm_build_closing_comment "$pr_number" "$repo_slug" \
 		"$linked_issue" "$merge_summary" "$pr_base_ref_name")
 
-	# Upsert one canonical PR closeout across concurrent runner accounts, then
-	# unlock the merged PR (t1934, GH#27502).
+	# Upsert one canonical PR closeout across concurrent runner accounts. Linked
+	# PR conversation locks are not owned by worker lifecycle cleanup (GH#30280).
 	_pm_upsert_pr_closing_comment "$pr_number" "$repo_slug" "$closing_comment"
-	unlock_issue_after_worker "$pr_number" "$repo_slug"
 
 	# Close linked issue with the same closing comment
 	if [[ -n "$linked_issue" ]]; then
@@ -1304,7 +1303,6 @@ _Closed by deterministic merge pass (GH#24399)._" 2>/dev/null; then
 			_pulse_merge_invalidate_pr_list_cache "$repo_slug" "closed superseded duplicate PR #${pr_number}"
 		fi
 	fi
-	unlock_issue_after_worker "$pr_number" "$repo_slug"
 	echo "[pulse-wrapper] Merge pass: closed superseded duplicate PR #${pr_number} in ${repo_slug} — issue #${linked_issue} already closed by merged PR #${superseding_pr} (GH#24399)" >>"$LOGFILE"
 	return 0
 }
