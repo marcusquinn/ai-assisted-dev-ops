@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from marketing_experiment import ExperimentAnalysisRequest, analyze_experiment
@@ -31,6 +32,16 @@ from marketing_optimization_registry import (
 )
 
 
+@dataclass(frozen=True)
+class RunResolutionContext:
+    """Stable registry evidence shared across one recursive run-chain lookup."""
+
+    paths: OptimizationPaths
+    registered: dict[str, Any]
+    assignment: dict[str, Any] | None
+    visited: set[str]
+
+
 def _registered_look(
     paths: OptimizationPaths,
     definition: dict[str, Any],
@@ -46,20 +57,17 @@ def _registered_look(
 
 
 def _resolve_registered_run(
-    paths: OptimizationPaths,
-    registered: dict[str, Any],
-    assignment: dict[str, Any] | None,
+    context: RunResolutionContext,
     run_ref: str,
     expected_look: int,
-    visited: set[str],
 ) -> dict[str, Any]:
     """Resolve and recursively validate one immutable sequential run chain."""
-    if run_ref in visited:
+    if run_ref in context.visited:
         raise OptimizationError("experiment analysis run chain contains a cycle")
-    visited.add(run_ref)
+    context.visited.add(run_ref)
     stored = read_immutable_json(
-        paths,
-        artifact_path(paths, "experiment", run_ref),
+        context.paths,
+        artifact_path(context.paths, "experiment", run_ref),
         "registered analysis",
     )
     canonical = register_experiment(stored)
@@ -68,34 +76,31 @@ def _resolve_registered_run(
         analysis.get("look_number"),
         "experiment analysis look_number",
         1,
-        int(registered["stopping_policy"]["allowed_looks"]),
+        int(context.registered["stopping_policy"]["allowed_looks"]),
     )
     registration_matches = (
-        canonical["experiment_ref"] == registered["experiment_ref"],
+        canonical["experiment_ref"] == context.registered["experiment_ref"],
         analysis.get("run_ref") == run_ref,
-        experiment_run_reference(str(registered["experiment_ref"]), analysis) == run_ref,
+        experiment_run_reference(str(context.registered["experiment_ref"]), analysis) == run_ref,
         look_number == expected_look,
-        _registered_look(paths, registered, expected_look) == canonical,
+        _registered_look(context.paths, context.registered, expected_look) == canonical,
     )
     if not all(registration_matches):
         raise OptimizationError("experiment analysis run chain is not registered")
-    validate_analysis_semantics(registered, analysis, assignment)
+    validate_analysis_semantics(context.registered, analysis, context.assignment)
     previous_run_ref = analysis.get("previous_run_ref")
-    sequential = registered["stopping_policy"]["method"] == "sequential"
+    sequential = context.registered["stopping_policy"]["method"] == "sequential"
     if expected_look == 1:
         if previous_run_ref is not None:
             raise OptimizationError("first experiment analysis look cannot name a previous run")
-        predecessor = registered
+        predecessor = context.registered
     else:
         if not sequential or previous_run_ref is None:
             raise OptimizationError("sequential experiment analysis is missing its previous run")
         previous = _resolve_registered_run(
-            paths,
-            registered,
-            assignment,
+            context,
             str(previous_run_ref),
             expected_look - 1,
-            visited,
         )
         previous_analysis = require_object(previous.get("analysis"), "previous registered analysis")
         if parse_datetime(analysis["as_of"], "analysis as_of") <= parse_datetime(
@@ -103,16 +108,16 @@ def _resolve_registered_run(
             "previous analysis as_of",
         ):
             raise OptimizationError("experiment analysis run chain is not chronological")
-        registered_successor_transition(paths, canonical)
+        registered_successor_transition(context.paths, canonical)
         predecessor = previous
-    snapshot = registered_snapshot(paths, str(analysis["input_snapshot_sha256"]))
+    snapshot = registered_snapshot(context.paths, str(analysis["input_snapshot_sha256"]))
     recomputed = analyze_experiment(
         predecessor,
         snapshot,
         ExperimentAnalysisRequest(
             look_number=look_number,
             look_type=str(analysis["look_type"]),
-            assignment_document=assignment,
+            assignment_document=context.assignment,
         ),
     )
     if recomputed != canonical:
@@ -135,14 +140,8 @@ def registered_analysis(paths: OptimizationPaths, candidate: dict[str, Any]) -> 
         int(registered["stopping_policy"]["allowed_looks"]),
     )
     assignment = registered_assignment(paths, registered, None)
-    canonical = _resolve_registered_run(
-        paths,
-        registered,
-        assignment,
-        run_ref,
-        look_number,
-        set(),
-    )
+    context = RunResolutionContext(paths, registered, assignment, set())
+    canonical = _resolve_registered_run(context, run_ref, look_number)
     if canonical != requested:
         raise OptimizationError("experiment analysis is not registered")
     return canonical

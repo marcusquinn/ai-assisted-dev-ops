@@ -79,21 +79,12 @@ class PerformanceReporting:
 
     def _effective_rows(
         self,
-        *,
-        history: bool = False,
-        source: str | None = None,
-        account_ref: str | None = None,
-        campaign_id: str | None = None,
-        now_epoch: float | None = None,
+        query: EventQuery | None = None,
+        **options: Any,
     ) -> list[Any]:
-        return _effective_rows(
-            self,
-            history,
-            source,
-            account_ref,
-            campaign_id,
-            now_epoch,
-        )
+        if query is not None and options:
+            raise TypeError("event query cannot be combined with legacy options")
+        return _effective_rows(self, query or EventQuery.from_options(options))
 
     def _current_links(
         self,

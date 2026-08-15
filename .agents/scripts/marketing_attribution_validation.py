@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from marketing_optimization_contract import (
@@ -204,65 +205,65 @@ def validate_coverage(value: Any, label: str) -> None:
     alias_list(coverage["missing_scopes"], f"{label}.missing_scopes")
 
 
-def validate_attribution_privacy(
-    outcomes: dict[str, Any],
-    costs: dict[str, Any],
-    allocations: list[Any],
-    coverage: dict[str, Any],
-    run_status: Any,
-    label: str,
-) -> None:
-    """Validate cross-section privacy floors and suppression invariants."""
-    suppressed = outcomes["suppressed"] is True
-    minimum_cell_size = int(coverage["minimum_cell_size"])
-    sensitive_coverage = (
-        "fraction",
-        "suppressed_allocations",
-        "late_events",
-        "unmatched_refunds",
-    )
-    if suppressed:
-        if run_status != "insufficient_evidence":
-            raise OptimizationError(f"{label} suppressed evidence must be insufficient")
-        if costs["value"] is not None or costs["roi"] is not None:
-            raise OptimizationError(f"{label} exposes suppressed cost evidence")
-        if any(coverage[field] is not None for field in sensitive_coverage):
-            raise OptimizationError(f"{label} exposes suppressed coverage counts")
-        if any(not require_object(item, f"{label} allocation")["suppressed"] for item in allocations):
-            raise OptimizationError(f"{label} exposes an allocation below the aggregate floor")
-        return
-    eligible_count = outcomes["eligible_count"]
-    if (
-        not isinstance(eligible_count, int)
-        or isinstance(eligible_count, bool)
-        or eligible_count < minimum_cell_size
-    ):
-        raise OptimizationError(f"{label} eligible count is below its privacy floor")
-    if any(outcomes[field] is None for field in (
-        "attributed_count",
-        "unattributed_count",
-        "identity_uncertain_count",
-    )):
-        raise OptimizationError(f"{label} visible outcome counts are incomplete")
-    if any(coverage[field] is None for field in sensitive_coverage):
-        raise OptimizationError(f"{label} visible coverage counts are incomplete")
+@dataclass(frozen=True)
+class AttributionPrivacyContext:
+    """Cross-section values needed to enforce aggregate privacy floors."""
+
+    outcomes: dict[str, Any]
+    costs: dict[str, Any]
+    allocations: list[Any]
+    coverage: dict[str, Any]
+    run_status: Any
+    label: str
+
+
+def _validate_suppressed_privacy(context: AttributionPrivacyContext) -> None:
+    """Require every sensitive section to remain hidden when suppressed."""
+    sensitive_coverage = ("fraction", "suppressed_allocations", "late_events", "unmatched_refunds")
+    if context.run_status != "insufficient_evidence":
+        raise OptimizationError(f"{context.label} suppressed evidence must be insufficient")
+    if context.costs["value"] is not None or context.costs["roi"] is not None:
+        raise OptimizationError(f"{context.label} exposes suppressed cost evidence")
+    if any(context.coverage[field] is not None for field in sensitive_coverage):
+        raise OptimizationError(f"{context.label} exposes suppressed coverage counts")
+    if any(not require_object(item, f"{context.label} allocation")["suppressed"] for item in context.allocations):
+        raise OptimizationError(f"{context.label} exposes an allocation below the aggregate floor")
+
+
+def _valid_visible_count(value: Any, minimum: int) -> bool:
+    """Return whether one visible count meets the declared aggregate floor."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _validate_visible_privacy(context: AttributionPrivacyContext) -> None:
+    """Require complete visible counts and floor-eligible allocations."""
+    minimum = int(context.coverage["minimum_cell_size"])
+    if not _valid_visible_count(context.outcomes["eligible_count"], minimum):
+        raise OptimizationError(f"{context.label} eligible count is below its privacy floor")
+    outcome_fields = ("attributed_count", "unattributed_count", "identity_uncertain_count")
+    if any(context.outcomes[field] is None for field in outcome_fields):
+        raise OptimizationError(f"{context.label} visible outcome counts are incomplete")
+    coverage_fields = ("fraction", "suppressed_allocations", "late_events", "unmatched_refunds")
+    if any(context.coverage[field] is None for field in coverage_fields):
+        raise OptimizationError(f"{context.label} visible coverage counts are incomplete")
     suppressed_allocations = 0
-    for index, item in enumerate(allocations):
-        allocation = require_object(item, f"{label} allocations[{index}]")
+    for index, item in enumerate(context.allocations):
+        allocation = require_object(item, f"{context.label} allocations[{index}]")
         if allocation["suppressed"]:
             suppressed_allocations += 1
             continue
-        outcome_count = allocation["outcome_count"]
-        if (
-            not isinstance(outcome_count, int)
-            or isinstance(outcome_count, bool)
-            or outcome_count < minimum_cell_size
-        ):
-            raise OptimizationError(
-                f"{label} allocation outcome count is below its privacy floor"
-            )
-    if coverage["suppressed_allocations"] != suppressed_allocations:
-        raise OptimizationError(f"{label} suppressed allocation count is inconsistent")
+        if not _valid_visible_count(allocation["outcome_count"], minimum):
+            raise OptimizationError(f"{context.label} allocation outcome count is below its privacy floor")
+    if context.coverage["suppressed_allocations"] != suppressed_allocations:
+        raise OptimizationError(f"{context.label} suppressed allocation count is inconsistent")
+
+
+def validate_attribution_privacy(context: AttributionPrivacyContext) -> None:
+    """Validate cross-section privacy floors and suppression invariants."""
+    if context.outcomes["suppressed"] is True:
+        _validate_suppressed_privacy(context)
+    else:
+        _validate_visible_privacy(context)
 
 
 def validate_attribution_artifact(document: dict[str, Any]) -> str:
@@ -299,14 +300,11 @@ def validate_attribution_artifact(document: dict[str, Any]) -> str:
     for index, value in enumerate(allocations):
         validate_allocation(value, f"attribution allocations[{index}]")
     validate_coverage(document["coverage"], "attribution coverage")
-    validate_attribution_privacy(
-        document["outcomes"],
-        document["costs"],
-        allocations,
-        document["coverage"],
-        document["run"]["status"],
-        "attribution",
+    privacy = AttributionPrivacyContext(
+        document["outcomes"], document["costs"], allocations,
+        document["coverage"], document["run"]["status"], "attribution",
     )
+    validate_attribution_privacy(privacy)
     uncertainty = exact(document["uncertainty"], {"data_confidence", "reasons"}, "attribution uncertainty")
     enum_value(
         uncertainty["data_confidence"],

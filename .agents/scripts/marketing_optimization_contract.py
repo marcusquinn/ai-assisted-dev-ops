@@ -206,56 +206,32 @@ def source_is_stale(as_of: str, source: dict[str, Any]) -> bool:
     )
 
 
-def snapshot_quality(snapshot: OptimizationSnapshot) -> tuple[list[str], list[str]]:
-    """Return normalized source/event quality reasons and missing scopes."""
-    reasons: set[str] = set()
-    missing: set[str] = set()
-    source_keys: set[tuple[str, str]] = set()
-    expected_keys = {
-        (str(event["source"]["kind"]), str(event["source"]["account_ref"]))
-        for event in snapshot.events
-    }
-    if not snapshot.sources:
-        reasons.add("missing_sources")
-    for source in snapshot.sources:
-        key = (str(source.get("source")), str(source.get("account_ref")))
-        if key in source_keys:
-            reasons.add("duplicate_source_summary")
-        source_keys.add(key)
-        observed_at = source.get("last_observed_at")
-        if observed_at is None or source.get("lag_seconds") is None:
-            reasons.add("unknown_source_freshness")
-        elif parse_datetime(observed_at, "source last_observed_at") > parse_datetime(
-            snapshot.as_of,
-            "snapshot as_of",
-        ):
-            reasons.add("future_source_observation")
-        if source_is_stale(snapshot.as_of, source):
-            reasons.add("stale_source")
-        if source.get("status") in {"leased", "unavailable", "unknown"}:
-            reasons.add("source_not_ready")
-        coverage = source.get("coverage")
-        if coverage in {"partial", "unknown"}:
-            reasons.add(f"{coverage}_coverage")
-        if int(source.get("unresolved_quarantine", 0)) > 0:
-            reasons.add("unresolved_quarantine")
-        missing.update(str(item) for item in source.get("missing_scopes", []))
-    if expected_keys - source_keys:
-        reasons.add("missing_source_summary")
-    for event in snapshot.events:
-        coverage = event["source"].get("coverage")
-        if coverage in {"partial", "unknown"}:
-            reasons.add(f"{coverage}_coverage")
-        missing.update(str(item) for item in event["source"].get("missing_scopes", []))
-        quality = event["quality"]
-        completeness = str(quality["completeness"])
-        if completeness in {"partial", "unknown"}:
-            reasons.add(f"{completeness}_coverage")
-        if quality["effective_confidence"] not in {"high", "verified"}:
-            reasons.add("insufficient_event_confidence")
-    if missing:
-        reasons.add("missing_scopes")
-    return sorted(reasons), sorted(missing)
+def _timestamp_field(field_name: str) -> bool:
+    """Return whether one output field is expected to contain a timestamp."""
+    explicit_fields = {"period_start", "period_end", "started_at", "ended_at"}
+    return field_name == "as_of" or field_name.endswith("_at") or field_name in explicit_fields
+
+
+def _safe_timestamp(value: Any, field: str, field_name: str) -> bool:
+    """Return whether one string is a valid timestamp in a timestamp field."""
+    if not isinstance(value, str) or not _timestamp_field(field_name):
+        return False
+    try:
+        parse_timestamp(value, field)
+    except PerformanceContractError:
+        return False
+    return True
+
+
+def _unsafe_identifier_text(value: Any, safe_decimal: bool, safe_timestamp: bool) -> bool:
+    """Return whether one scalar contains a direct identifier."""
+    if not isinstance(value, str):
+        return False
+    if SAFE_DIGEST_REF_RE.fullmatch(value):
+        return False
+    if safe_decimal or safe_timestamp:
+        return False
+    return contains_direct_identifier(value)
 
 
 def assert_public_safe(value: Any, field: str = "document") -> None:
@@ -272,24 +248,9 @@ def assert_public_safe(value: Any, field: str = "document") -> None:
         return
     field_name = field.rsplit(".", 1)[-1]
     safe_decimal = field_name in DECIMAL_FIELD_NAMES and SAFE_DECIMAL_RE.fullmatch(str(value))
-    timestamp_field = field_name == "as_of" or field_name.endswith("_at") or field_name in {
-        "period_start",
-        "period_end",
-        "started_at",
-        "ended_at",
-    }
-    safe_timestamp = False
-    if isinstance(value, str) and timestamp_field:
-        try:
-            parse_timestamp(value, field)
-            safe_timestamp = True
-        except PerformanceContractError:
-            pass
-    if (
-        isinstance(value, str)
-        and not SAFE_DIGEST_REF_RE.fullmatch(value)
-        and not safe_decimal
-        and not safe_timestamp
-        and contains_direct_identifier(value)
-    ):
+    safe_timestamp = _safe_timestamp(value, field, field_name)
+    if _unsafe_identifier_text(value, bool(safe_decimal), safe_timestamp):
         raise OptimizationError(f"{field} cannot contain direct identifiers")
+
+
+from marketing_optimization_snapshot_quality import snapshot_quality  # noqa: E402

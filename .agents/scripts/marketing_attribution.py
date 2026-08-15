@@ -12,11 +12,11 @@ from decimal import Decimal
 import re
 from typing import Any
 
+from _marketing_attribution_finance import value_summary
 from marketing_attribution_render import (
     AllocationTotals,
     CountSummary,
     UncertaintyConditions,
-    ValueSummary,
     analysis_status,
     confidence,
     cost_document,
@@ -25,7 +25,6 @@ from marketing_attribution_render import (
     maturity,
     outcome_document,
     render_allocations,
-    selected_currency,
     source_quality,
     uncertainty_reasons,
     visible,
@@ -195,125 +194,6 @@ def _allocation_totals(
     return totals
 
 
-def _currencies(events: list[dict[str, Any]]) -> set[str]:
-    """Return non-null measurement currencies."""
-    return {str(event["measurement"]["currency"]) for event in events if event["measurement"].get("currency")}
-
-
-def _refund_summary(
-    snapshot: OptimizationSnapshot,
-    outcomes: list[dict[str, Any]],
-) -> tuple[Decimal, int, list[dict[str, Any]], bool]:
-    """Sum refunds matched by aggregate-safe outcome ID."""
-    if not outcomes or any(event["measurement"]["unit"] != "currency" for event in outcomes):
-        return Decimal(0), 0, [], False
-    outcome_by_scope: dict[tuple[str, str, str | None, str], tuple[Any, str]] = {}
-    for event in outcomes:
-        outcome_id = event["scope"].get("outcome_id")
-        if outcome_id is None:
-            continue
-        key = (
-            event["source"]["kind"],
-            event["source"]["account_ref"],
-            event["scope"].get("campaign_id"),
-            str(outcome_id),
-        )
-        if key in outcome_by_scope:
-            raise OptimizationError("attribution outcomes contain duplicate refund match keys")
-        outcome_by_scope[key] = (
-            parse_datetime(event["event"]["occurred_at"], "outcome occurred_at"),
-            str(event["measurement"]["currency"]),
-        )
-    refunds = [
-        event
-        for event in snapshot.events
-        if event["event"]["type"] == "refund" and event["measurement"]["unit"] == "currency"
-    ]
-    matched: list[dict[str, Any]] = []
-    currency_mismatch = False
-    for event in refunds:
-        outcome = outcome_by_scope.get(
-            (
-                event["source"]["kind"],
-                event["source"]["account_ref"],
-                event["scope"].get("campaign_id"),
-                str(event["scope"].get("outcome_id")),
-            )
-        )
-        if outcome is None:
-            continue
-        outcome_at, outcome_currency = outcome
-        refund_at = parse_datetime(event["event"]["occurred_at"], "refund occurred_at")
-        if refund_at < outcome_at:
-            continue
-        if event["measurement"].get("currency") != outcome_currency:
-            currency_mismatch = True
-            continue
-        matched.append(event)
-    unmatched = len(refunds) - len(matched)
-    value = sum((number(event["measurement"]["value"], "refund value") for event in matched), Decimal(0))
-    return value, unmatched, matched, currency_mismatch
-
-
-def _cost_summary(
-    snapshot: OptimizationSnapshot,
-    net_value: Decimal,
-    outcome_currency: str | None,
-) -> tuple[Decimal | None, str | None, str, Decimal | None, bool]:
-    """Return cost, currency, allocation state, ROI, and mismatch state."""
-    costs = [event for event in snapshot.events if event["event"]["type"] == "cost"]
-    if not costs:
-        return None, None, "not_applicable", None, False
-    currencies = _currencies(costs)
-    cost_currency = next(iter(currencies)) if len(currencies) == 1 else None
-    mismatch = len(currencies) != 1 or (outcome_currency is not None and cost_currency != outcome_currency)
-    if mismatch:
-        return None, cost_currency, "currency_mismatch", None, True
-    total = sum((number(event["measurement"]["value"], "cost value") for event in costs), Decimal(0))
-    roi = divide(net_value - total, total) if outcome_currency is not None else None
-    exact = all(event["scope"].get("campaign_id") is not None for event in costs)
-    return total, cost_currency, "exact" if exact else "unallocated", roi, False
-
-
-def _value_summary(
-    snapshot: OptimizationSnapshot,
-    outcomes: list[dict[str, Any]],
-    request: AttributionRequest,
-) -> ValueSummary:
-    """Calculate exact aggregate values and explicit currency mismatch state."""
-    units = {str(event["measurement"]["unit"]) for event in outcomes}
-    if len(units) > 1:
-        raise OptimizationError("attribution outcomes contain incompatible measurement units")
-    if request.currency is not None and outcomes and units != {"currency"}:
-        raise OptimizationError("currency filters cannot be applied to non-currency outcomes")
-    gross_value = sum((number(event["measurement"]["value"], "outcome value") for event in outcomes), Decimal(0))
-    refund_value, unmatched_refunds, matched_refunds, refund_currency_mismatch = _refund_summary(
-        snapshot,
-        outcomes,
-    )
-    currencies = _currencies(outcomes + matched_refunds)
-    currency = selected_currency(currencies, request.currency)
-    currency_mismatch = (
-        refund_currency_mismatch
-        or len(currencies) > 1
-        or bool(request.currency and currencies and currencies != {request.currency})
-    )
-    net_value = gross_value - refund_value
-    cost_value, cost_currency, cost_allocation, roi, cost_mismatch = _cost_summary(snapshot, net_value, currency)
-    return ValueSummary(
-        gross=gross_value,
-        refund=refund_value,
-        net=net_value,
-        currency=currency,
-        currency_mismatch=currency_mismatch or cost_mismatch,
-        unmatched_refunds=unmatched_refunds,
-        cost=cost_value,
-        cost_currency=cost_currency,
-        cost_allocation=cost_allocation,
-        roi=roi,
-    )
-
-
 def _count_summary(
     outcomes: list[dict[str, Any]],
     totals: dict[tuple[str, str | None, str | None, str | None], AllocationTotals],
@@ -385,7 +265,7 @@ def build_attribution(snapshot: OptimizationSnapshot, request: AttributionReques
         canonical_by_alias,
     )
     counts = _count_summary(outcomes, totals)
-    values = _value_summary(snapshot, outcomes, request)
+    values = value_summary(snapshot, outcomes, request.currency)
     suppressed = _privacy_size(outcomes, canonical_by_alias) < request.minimum_cell_size
     allocations, suppressed_allocations = render_allocations(totals, request.minimum_cell_size, values.currency_mismatch)
     source_reasons, missing_scopes = source_quality(snapshot)

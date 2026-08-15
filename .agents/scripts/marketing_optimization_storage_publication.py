@@ -9,10 +9,23 @@ import os
 import secrets
 import stat
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from marketing_optimization_contract import OptimizationError
 
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class TemporaryWriteRequest:
+    """Dependencies and payload for one pinned temporary write."""
+
+    directory_fd: int
+    prefix: str
+    payload: bytes
+    create: Callable[[int, str], tuple[int, str]]
+    unlink: Callable[[int, str], None]
+    mode: int
 
 
 def stored_payload(directory_fd: int, name: str) -> bytes | None:
@@ -61,26 +74,19 @@ def unlink_entry(directory_fd: int, name: str) -> None:
         pass
 
 
-def write_temporary(
-    directory_fd: int,
-    prefix: str,
-    payload: bytes,
-    create: Callable[[int, str], tuple[int, str]],
-    unlink: Callable[[int, str], None],
-    mode: int,
-) -> tuple[int, str]:
+def write_temporary(request: TemporaryWriteRequest) -> tuple[int, str]:
     """Write and synchronize one temporary payload while retaining its descriptor."""
-    descriptor, name = create(directory_fd, prefix)
+    descriptor, name = request.create(request.directory_fd, request.prefix)
     try:
-        os.fchmod(descriptor, mode)
+        os.fchmod(descriptor, request.mode)
         with os.fdopen(os.dup(descriptor), "wb") as handle:
-            handle.write(payload)
+            handle.write(request.payload)
             handle.flush()
             os.fsync(handle.fileno())
         return descriptor, name
     except Exception:
         os.close(descriptor)
-        unlink(directory_fd, name)
+        request.unlink(request.directory_fd, name)
         raise
 
 

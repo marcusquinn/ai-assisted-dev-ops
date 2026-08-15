@@ -7,6 +7,7 @@ import time
 from collections import defaultdict
 from typing import Any
 
+from _performance_reporting_events import EventQuery, current_events
 from performance_contract import PerformanceContractError, timestamp_epoch, utc_now
 
 
@@ -146,63 +147,25 @@ def _event_rows(reporting: Any, source: str | None, account_ref: str | None) -> 
     return list(reporting.connection.execute("SELECT * FROM events ORDER BY occurred_at,recorded_at,record_ref"))
 
 
-def _latest_events(rows: list[Any]) -> dict[tuple[str, str, str], Any]:
-    latest: dict[tuple[str, str, str], Any] = {}
-    for row in rows:
-        key = (str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))
-        if key not in latest or int(row["revision"]) > int(latest[key]["revision"]):
-            latest[key] = row
-    return latest
-
-
-def _current_events(rows: list[Any], latest: dict[tuple[str, str, str], Any]) -> list[Any]:
-    """Return effective rows after rejecting cyclic correction chains."""
-    for start in latest:
-        current = start
-        seen: set[tuple[str, str, str]] = set()
-        while current in latest and latest[current]["correction_ref"] is not None:
-            if current in seen:
-                raise PerformanceContractError("event correction chain contains a cycle")
-            seen.add(current)
-            row = latest[current]
-            current = (
-                str(row["source"]),
-                str(row["account_ref"]),
-                str(row["correction_ref"]),
-            )
-        if current not in latest:
-            raise PerformanceContractError("event correction target is unavailable")
-    correction_refs = {str(row["correction_ref"]) for row in latest.values() if row["correction_ref"] is not None}
-    return [
-        row for row in rows
-        if latest.get((str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))) is row
-        and str(row["event_ref"]) not in correction_refs
-    ]
-
-
 def _campaign_events(rows: list[Any], campaign_id: str | None) -> list[Any]:
     return [row for row in rows if campaign_id is None or row["campaign_id"] == campaign_id]
 
 
 def effective_rows(
     reporting: Any,
-    history: bool = False,
-    source: str | None = None,
-    account_ref: str | None = None,
-    campaign_id: str | None = None,
-    now_epoch: float | None = None,
+    query: EventQuery,
 ) -> list[Any]:
-    rows = _event_rows(reporting, source, account_ref)
-    if now_epoch is not None:
+    rows = _event_rows(reporting, query.source, query.account_ref)
+    if query.now_epoch is not None:
         rows = [
             row
             for row in rows
-            if timestamp_epoch(str(row["occurred_at"])) <= now_epoch
-            and timestamp_epoch(str(row["recorded_at"])) <= now_epoch
+            if timestamp_epoch(str(row["occurred_at"])) <= query.now_epoch
+            and timestamp_epoch(str(row["recorded_at"])) <= query.now_epoch
         ]
-    if history:
-        return _campaign_events(rows, campaign_id)
-    return _campaign_events(_current_events(rows, _latest_events(rows)), campaign_id)
+    if query.history:
+        return _campaign_events(rows, query.campaign_id)
+    return _campaign_events(current_events(rows), query.campaign_id)
 
 
 def current_links(

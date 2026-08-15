@@ -104,14 +104,53 @@ def _effective_event_semantics(reporting: Any, row: Any, now_epoch: float | None
     return event_type, occurred_at
 
 
+def _latest_events(rows: list[Any]) -> dict[tuple[str, str, str], Any]:
+    """Index the highest stored revision for each event identity."""
+    latest: dict[tuple[str, str, str], Any] = {}
+    for row in rows:
+        key = (str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))
+        if key not in latest or int(row["revision"]) > int(latest[key]["revision"]):
+            latest[key] = row
+    return latest
+
+
+def current_events(rows: list[Any]) -> list[Any]:
+    """Return effective rows after rejecting cyclic correction chains."""
+    latest = _latest_events(rows)
+    for start in latest:
+        current = start
+        seen: set[tuple[str, str, str]] = set()
+        while current in latest and latest[current]["correction_ref"] is not None:
+            if current in seen:
+                raise PerformanceContractError("event correction chain contains a cycle")
+            seen.add(current)
+            row = latest[current]
+            current = (
+                str(row["source"]),
+                str(row["account_ref"]),
+                str(row["correction_ref"]),
+            )
+        if current not in latest:
+            raise PerformanceContractError("event correction target is unavailable")
+    correction_refs = {
+        str(row["correction_ref"])
+        for row in latest.values()
+        if row["correction_ref"] is not None
+    }
+    return [
+        row
+        for row in rows
+        if latest.get((str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))) is row
+        and str(row["event_ref"]) not in correction_refs
+    ]
+
+
 def _event_record(
     reporting: Any,
     row: Any,
     state: dict[str, Any],
     subjects: dict[str, dict[str, Any]],
-    *,
-    history: bool,
-    now_epoch: float | None,
+    query: EventQuery,
 ) -> dict[str, Any]:
     """Project one stored row, restoring corrected effective event semantics."""
     canonical, identity_state, governance = _subject_projection(row, subjects)
@@ -119,8 +158,8 @@ def _event_record(
     event_type = str(row["event_type"])
     occurred_at = str(row["occurred_at"])
     correction_ref = row["correction_ref"]
-    if not history and correction_ref is not None:
-        event_type, occurred_at = _effective_event_semantics(reporting, row, now_epoch)
+    if not query.history and correction_ref is not None:
+        event_type, occurred_at = _effective_event_semantics(reporting, row, query.now_epoch)
         correction_ref = None
     return {
         "schema_version": 1, "record_ref": str(row["record_ref"]), "event_ref": str(row["event_ref"]),
@@ -141,13 +180,7 @@ def event_records(reporting: Any, query: EventQuery) -> list[dict[str, Any]]:
     """Return schema-valid pseudonymous event records."""
     source_state = {(row["source"], row["account_ref"]): row for row in reporting._source_rows(query.now_epoch)}
     subjects = {row["subject_id"]: row for row in reporting.subject_records(query.now_epoch)}
-    rows = reporting._effective_rows(
-        history=query.history,
-        source=query.source,
-        account_ref=query.account_ref,
-        campaign_id=query.campaign_id,
-        now_epoch=query.now_epoch,
-    )
+    rows = reporting._effective_rows(query)
     output: list[dict[str, Any]] = []
     for row in rows:
         key = (str(row["source"]), str(row["account_ref"]))
@@ -162,8 +195,7 @@ def event_records(reporting: Any, query: EventQuery) -> list[dict[str, Any]]:
                 row,
                 state,
                 subjects,
-                history=query.history,
-                now_epoch=query.now_epoch,
+                query,
             )
         )
     return output

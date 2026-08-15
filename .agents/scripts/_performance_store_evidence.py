@@ -6,10 +6,23 @@ import hashlib
 import os
 import secrets
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from _performance_store_types import EvidenceWriteContext
+
+
+@dataclass(frozen=True)
+class RawPublication:
+    """Pinned state for one no-replacement evidence publication."""
+
+    store: Any
+    directory: Path
+    directory_fd: int
+    destination_name: str
+    digest: str
+    raw_bytes: bytes
 
 
 def ensure_private_directory(store: Any, path: Path) -> None:
@@ -164,6 +177,65 @@ def _unlink(directory_fd: int, name: str) -> None:
         pass
 
 
+def _publish_raw_artifact(publication: RawPublication) -> bool:
+    """Write, link, and verify one artifact through a pinned directory."""
+    temporary_name = f".{publication.digest}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    temporary_fd = -1
+    created = False
+    try:
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=publication.directory_fd,
+        )
+        with os.fdopen(os.dup(temporary_fd), "wb") as handle:
+            handle.write(publication.raw_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(
+                temporary_name,
+                publication.destination_name,
+                src_dir_fd=publication.directory_fd,
+                dst_dir_fd=publication.directory_fd,
+                follow_symlinks=False,
+            )
+            os.fsync(publication.directory_fd)
+            created = True
+        except FileExistsError:
+            created = False
+        destination_matches = _descriptor_matches_entry(
+            temporary_fd,
+            publication.directory_fd,
+            publication.destination_name,
+        )
+        if created and not destination_matches:
+            raise publication.store.error_type("raw evidence changed during publication")
+        observed_digest = _regular_file_digest(
+            publication.store,
+            publication.directory_fd,
+            publication.destination_name,
+        )
+        if observed_digest != publication.digest:
+            if created and destination_matches:
+                _unlink(publication.directory_fd, publication.destination_name)
+            raise publication.store.error_type("raw evidence failed digest verification")
+        if not _directory_binding_matches(
+            publication.store,
+            publication.directory,
+            publication.directory_fd,
+        ):
+            if created and destination_matches:
+                _unlink(publication.directory_fd, publication.destination_name)
+            raise publication.store.error_type("raw evidence directory changed during publication")
+        return created
+    finally:
+        if temporary_fd >= 0:
+            os.close(temporary_fd)
+        _unlink(publication.directory_fd, temporary_name)
+
+
 def write_raw(store: Any, context: EvidenceWriteContext) -> tuple[Path, bool]:
     """Publish one content-addressed evidence artifact without replacement."""
     source = context.source
@@ -179,9 +251,6 @@ def write_raw(store: Any, context: EvidenceWriteContext) -> tuple[Path, bool]:
     raw_fd = _open_directory(store, store.paths.raw)
     source_fd = -1
     directory_fd = -1
-    temporary_fd = -1
-    temporary_name = ""
-    created = False
     try:
         source_fd = _private_child(store, raw_fd, source)
         directory_fd = _private_child(store, source_fd, account_ref)
@@ -192,47 +261,19 @@ def write_raw(store: Any, context: EvidenceWriteContext) -> tuple[Path, bool]:
             if not _directory_binding_matches(store, directory, directory_fd):
                 raise store.error_type("raw evidence directory changed during publication")
             return directory / destination_name, False
-        temporary_name = f".{digest}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
-        temporary_fd = os.open(
-            temporary_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=directory_fd,
+        publication = RawPublication(
+            store,
+            directory,
+            directory_fd,
+            destination_name,
+            digest,
+            raw_bytes,
         )
-        with os.fdopen(os.dup(temporary_fd), "wb") as handle:
-            handle.write(raw_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(
-                temporary_name,
-                destination_name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-            os.fsync(directory_fd)
-            created = True
-        except FileExistsError:
-            created = False
-        if created and not _descriptor_matches_entry(temporary_fd, directory_fd, destination_name):
-            raise store.error_type("raw evidence changed during publication")
-        if _regular_file_digest(store, directory_fd, destination_name) != digest:
-            if created and _descriptor_matches_entry(temporary_fd, directory_fd, destination_name):
-                _unlink(directory_fd, destination_name)
-            raise store.error_type("raw evidence failed digest verification")
-        if not _directory_binding_matches(store, directory, directory_fd):
-            if created and _descriptor_matches_entry(temporary_fd, directory_fd, destination_name):
-                _unlink(directory_fd, destination_name)
-            raise store.error_type("raw evidence directory changed during publication")
+        created = _publish_raw_artifact(publication)
         return directory / destination_name, created
     except OSError as error:
         raise store.error_type("raw evidence publication failed") from error
     finally:
-        if temporary_fd >= 0:
-            os.close(temporary_fd)
-        if temporary_name and directory_fd >= 0:
-            _unlink(directory_fd, temporary_name)
         if directory_fd >= 0:
             os.close(directory_fd)
         if source_fd >= 0:

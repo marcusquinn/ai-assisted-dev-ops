@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import os
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 
 from marketing_optimization_contract import OptimizationError
 from marketing_optimization_storage_publication import (
     MAX_OUTPUT_BYTES,
+    TemporaryWriteRequest,
     create_temporary,
     descriptor_matches_entry,
     publish_temporary,
@@ -19,6 +21,17 @@ from marketing_optimization_storage_publication import (
     unlink_entry,
     write_temporary,
 )
+
+
+@dataclass(frozen=True)
+class ImmutablePublication:
+    """Target, payload, and modes for one immutable publication."""
+
+    root: Path
+    path: Path
+    payload: bytes
+    file_mode: int = 0o644
+    directory_mode: int = 0o755
 
 
 def _relative_parts(root: Path, target: Path) -> tuple[str, ...]:
@@ -92,7 +105,8 @@ def _unlink_entry(directory_fd: int, name: str) -> None:
 
 def _write_temporary(directory_fd: int, prefix: str, payload: bytes, mode: int) -> tuple[int, str]:
     """Write and synchronize one temporary payload while retaining its descriptor."""
-    return write_temporary(directory_fd, prefix, payload, _create_temporary, _unlink_entry, mode)
+    request = TemporaryWriteRequest(directory_fd, prefix, payload, _create_temporary, _unlink_entry, mode)
+    return write_temporary(request)
 
 
 def _descriptor_matches_entry(descriptor: int, directory_fd: int, name: str) -> bool:
@@ -170,15 +184,13 @@ def read_bytes(root: Path, path: Path) -> bytes:
     return payload
 
 
-def immutable_bytes(
-    root: Path,
-    path: Path,
-    payload: bytes,
-    *,
-    file_mode: int = 0o644,
-    directory_mode: int = 0o755,
-) -> Path:
+def immutable_bytes(publication: ImmutablePublication) -> Path:
     """Publish bytes once beneath a pinned, race-safe repository directory."""
+    root = publication.root
+    path = publication.path
+    payload = publication.payload
+    file_mode = publication.file_mode
+    directory_mode = publication.directory_mode
     if len(payload) > MAX_OUTPUT_BYTES:
         raise OptimizationError("immutable optimization output exceeds the size limit")
     directory_fd = _open_directory_fd(root, path.parent, create=True)

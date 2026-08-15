@@ -111,20 +111,27 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
     @staticmethod
     def normalized_event(
         source_event_id: str,
-        *,
-        event_type: str = "conversion",
-        metric_id: str = "marketing.conversions.total",
-        value: object = 1,
-        unit: str = "conversion",
-        aggregation: str = "sum",
-        currency: str | None = None,
-        occurred_at: str = "2026-08-08T12:00:00Z",
-        correction_of: str | None = None,
-        subject: dict[str, object] | None = None,
-        scope: dict[str, object] | None = None,
-        confidence: str = "high",
-        governance: dict[str, object] | None = None,
+        **options: object,
     ) -> dict[str, object]:
+        allowed = {
+            "event_type", "metric_id", "value", "unit", "aggregation", "currency",
+            "occurred_at", "correction_of", "subject", "scope", "confidence", "governance",
+        }
+        unknown = set(options) - allowed
+        if unknown:
+            raise TypeError(f"unknown normalized event options: {sorted(unknown)}")
+        event_type = str(options.get("event_type", "conversion"))
+        metric_id = str(options.get("metric_id", "marketing.conversions.total"))
+        value = options.get("value", 1)
+        unit = str(options.get("unit", "conversion"))
+        aggregation = str(options.get("aggregation", "sum"))
+        currency = options.get("currency")
+        occurred_at = str(options.get("occurred_at", "2026-08-08T12:00:00Z"))
+        correction_of = options.get("correction_of")
+        subject = options.get("subject")
+        scope = options.get("scope")
+        confidence = str(options.get("confidence", "high"))
+        governance = options.get("governance")
         return {
             "source_event_id": source_event_id,
             "revision": 1,
@@ -160,29 +167,53 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         self,
         name: str,
         events: list[dict[str, object]],
-        *,
-        account_ref: str,
-        observed_at: str,
-        cursor: str,
-        coverage: str = "complete",
-        missing_scopes: list[str] | None = None,
+        **metadata: object,
     ) -> Path:
+        allowed = {"account_ref", "observed_at", "cursor", "coverage", "missing_scopes"}
+        unknown = set(metadata) - allowed
+        if unknown:
+            raise TypeError(f"unknown batch metadata: {sorted(unknown)}")
         path = self.root / name
         path.write_text(
             json.dumps(
                 {
                     "source": "normalized",
-                    "account_ref": account_ref,
-                    "cursor": cursor,
-                    "observed_at": observed_at,
-                    "coverage": coverage,
-                    "missing_scopes": missing_scopes or [],
+                    "account_ref": metadata["account_ref"],
+                    "cursor": metadata["cursor"],
+                    "observed_at": metadata["observed_at"],
+                    "coverage": metadata.get("coverage", "complete"),
+                    "missing_scopes": metadata.get("missing_scopes") or [],
                     "events": events,
                 }
             ),
             encoding="utf-8",
         )
         return path
+
+    @staticmethod
+    def write_reconciliation(
+        path: Path,
+        canonical_subject_id: str,
+        member_subject_id: str,
+        **fields: str,
+    ) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": "aidevops.marketing-performance-reconciliation/v1",
+                    "actions": [
+                        {
+                            "action": fields["action"],
+                            "canonical_subject_id": canonical_subject_id,
+                            "member_subject_id": member_subject_id,
+                            "effective_at": fields["effective_at"],
+                            "evidence_ref": fields["evidence_ref"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
     @property
     def database(self) -> Path:
@@ -1606,22 +1637,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
 
         leads = [record["subject_id"] for record in subjects if record["kind"] == "lead"]
         reconciliation = self.root / "reconciliation.json"
-        reconciliation.write_text(
-            json.dumps(
-                {
-                    "schema": "aidevops.marketing-performance-reconciliation/v1",
-                    "actions": [
-                        {
-                            "action": "link",
-                            "canonical_subject_id": leads[0],
-                            "member_subject_id": leads[1],
-                            "effective_at": "2026-08-09T00:00:00.500000Z",
-                            "evidence_ref": "owner-reviewed-synthetic-link",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        self.write_reconciliation(
+            reconciliation,
+            leads[0],
+            leads[1],
+            action="link",
+            effective_at="2026-08-09T00:00:00.500000Z",
+            evidence_ref="owner-reviewed-synthetic-link",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1646,22 +1668,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         )
         self.assertEqual(1, len(self.query("SELECT link_ref FROM identity_links")))
 
-        reconciliation.write_text(
-            json.dumps(
-                {
-                    "schema": "aidevops.marketing-performance-reconciliation/v1",
-                    "actions": [
-                        {
-                            "action": "split",
-                            "canonical_subject_id": leads[0],
-                            "member_subject_id": leads[1],
-                            "effective_at": "2026-08-09T00:00:00Z",
-                            "evidence_ref": "owner-reviewed-older-split",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        self.write_reconciliation(
+            reconciliation,
+            leads[0],
+            leads[1],
+            action="split",
+            effective_at="2026-08-09T00:00:00Z",
+            evidence_ref="owner-reviewed-older-split",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         still_linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1714,22 +1727,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         reconciliation_path = self.root / "cycle-reconciliation.json"
 
         def reconcile(canonical: str, member: str, evidence: str, expected: int = 0) -> None:
-            reconciliation_path.write_text(
-                json.dumps(
-                    {
-                        "schema": "aidevops.marketing-performance-reconciliation/v1",
-                        "actions": [
-                            {
-                                "action": "link",
-                                "canonical_subject_id": canonical,
-                                "member_subject_id": member,
-                                "effective_at": "2026-08-09T00:00:00.500000Z",
-                                "evidence_ref": evidence,
-                            }
-                        ],
-                    }
-                ),
-                encoding="utf-8",
+            self.write_reconciliation(
+                reconciliation_path,
+                canonical,
+                member,
+                action="link",
+                effective_at="2026-08-09T00:00:00.500000Z",
+                evidence_ref=evidence,
             )
             self.command(
                 "reconcile",

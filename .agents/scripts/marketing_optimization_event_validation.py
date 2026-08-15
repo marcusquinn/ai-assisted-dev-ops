@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal
 from typing import Any
 
 from marketing_optimization_contract import (
@@ -17,28 +16,24 @@ from marketing_optimization_contract import (
     identity_is_uncertain,
 )
 from marketing_optimization_event_quality import validate_event_quality
+from marketing_optimization_event_measurement import validate_measurement
+from marketing_optimization_event_validation_common import nullable_timestamp, object_fields
 from performance_contract import (
-    AGGREGATIONS,
     COMPLETENESS,
     EVENT_TYPES,
     IDENTITY_STATES,
     MAX_SAFE_JSON_INTEGER,
-    METRIC_CONTRACTS,
     PUBLIC_DIMENSION_KEYS,
     SOURCE_KINDS,
     SUBJECT_KINDS,
-    UNITS,
     PerformanceContractError,
-    decimal_text,
     normalize_dimensions,
     optional_alias,
     parse_timestamp,
     require_alias,
-    timestamp_epoch,
 )
 
 DIMENSION_REF_RE = re.compile(r"^mkt-dim-v1:[a-f0-9]{64}$")
-CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 ELIGIBILITY_REASONS = {
     "eligible",
     "aggregate",
@@ -48,22 +43,6 @@ ELIGIBILITY_REASONS = {
     "identity_ambiguous",
     "subject_ineligible",
 }
-
-
-def _object(value: Any, label: str, required: set[str], optional: set[str] | None = None) -> dict[str, Any]:
-    """Require one object with no missing or undeclared fields."""
-    if not isinstance(value, dict):
-        raise PerformanceContractError(f"{label} must be an object")
-    missing = required - set(value)
-    extras = set(value) - required - (optional or set())
-    if missing or extras:
-        raise PerformanceContractError(f"{label} fields do not match the normalized event contract")
-    return value
-
-
-def _timestamp(value: Any, label: str) -> str | None:
-    """Validate one nullable canonical timestamp."""
-    return None if value is None else parse_timestamp(value, label)
 
 
 def _source(value: Any) -> tuple[dict[str, Any], str]:
@@ -80,7 +59,7 @@ def _source(value: Any) -> tuple[dict[str, Any], str]:
         "coverage",
         "missing_scopes",
     }
-    source = _object(value, "event.source", fields)
+    source = object_fields(value, "event.source", fields)
     if source["kind"] not in SOURCE_KINDS:
         raise PerformanceContractError("event.source.kind is unsupported")
     require_alias(source["account_ref"], "event.source.account_ref")
@@ -89,8 +68,8 @@ def _source(value: Any) -> tuple[dict[str, Any], str]:
         raise PerformanceContractError("event.source.revision must be a bounded positive integer")
     parse_timestamp(source["observed_at"], "event.source.observed_at")
     parse_timestamp(source["recorded_at"], "event.source.recorded_at")
-    _timestamp(source["source_observed_at"], "event.source.source_observed_at")
-    _timestamp(source["source_recorded_at"], "event.source.source_recorded_at")
+    nullable_timestamp(source["source_observed_at"], "event.source.source_observed_at")
+    nullable_timestamp(source["source_recorded_at"], "event.source.source_recorded_at")
     evidence_ref = str(source["evidence_ref"])
     if not EVIDENCE_REF_RE.fullmatch(evidence_ref):
         raise PerformanceContractError("event.source.evidence_ref is invalid")
@@ -104,7 +83,7 @@ def _source(value: Any) -> tuple[dict[str, Any], str]:
 
 def _event(value: Any) -> str:
     """Validate normalized event identity, time, and correction binding."""
-    event = _object(value, "event.event", {"type", "occurred_at", "correction_of"})
+    event = object_fields(value, "event.event", {"type", "occurred_at", "correction_of"})
     event_type = event["type"]
     if event_type not in EVENT_TYPES:
         raise PerformanceContractError("event.event.type is unsupported")
@@ -119,7 +98,7 @@ def _event(value: Any) -> str:
 
 def _subject(value: Any) -> str:
     """Validate pseudonymous subject shape and aggregate consistency."""
-    subject = _object(value, "event.subject", {"subject_id", "kind", "identity_state"})
+    subject = object_fields(value, "event.subject", {"subject_id", "kind", "identity_state"})
     subject_id = subject["subject_id"]
     kind = subject["kind"]
     identity_state = subject["identity_state"]
@@ -136,7 +115,7 @@ def _subject(value: Any) -> str:
 def _scope(value: Any) -> None:
     """Validate output-bound aliases and privacy-safe dimensions."""
     fields = {"campaign_id", "channel", "creative_id", "touchpoint_id", "outcome_id", "dimensions"}
-    scope = _object(value, "event.scope", fields)
+    scope = object_fields(value, "event.scope", fields)
     for field in fields - {"dimensions"}:
         optional_alias(scope[field], f"event.scope.{field}")
     dimensions = normalize_dimensions(scope["dimensions"], "event.scope.dimensions")
@@ -147,43 +126,9 @@ def _scope(value: Any) -> None:
             require_alias(item, f"event.scope.dimensions.{key}")
 
 
-def _measurement(value: Any, event_type: str) -> None:
-    """Validate exact metric values, units, periods, and optional catalog rules."""
-    required = {"metric_id", "value", "unit", "aggregation", "currency"}
-    measurement = _object(value, "event.measurement", required, {"period_start", "period_end"})
-    metric_id = measurement["metric_id"]
-    if not isinstance(metric_id, str) or not re.fullmatch(r"marketing\.[a-z0-9_]+(?:\.[a-z0-9_]+)+", metric_id):
-        raise PerformanceContractError("event.measurement.metric_id is invalid")
-    unit = measurement["unit"]
-    aggregation = measurement["aggregation"]
-    if unit not in UNITS or aggregation not in AGGREGATIONS:
-        raise PerformanceContractError("event.measurement unit or aggregation is unsupported")
-    contract = METRIC_CONTRACTS.get(metric_id)
-    if contract is not None:
-        event_types, expected_unit, aggregations = contract
-        if event_type != "correction" and event_type not in event_types:
-            raise PerformanceContractError("event type does not match metric identity")
-        if unit != expected_unit or aggregation not in aggregations:
-            raise PerformanceContractError("measurement does not match metric identity")
-    normalized_value = decimal_text(measurement["value"], "event.measurement.value")
-    if Decimal(normalized_value) < 0 and event_type != "correction" and unit != "ratio":
-        raise PerformanceContractError("non-correction count and currency values cannot be negative")
-    currency = measurement["currency"]
-    if (unit == "currency" and (not isinstance(currency, str) or not CURRENCY_RE.fullmatch(currency))) or (
-        unit != "currency" and currency is not None
-    ):
-        raise PerformanceContractError("event.measurement currency is inconsistent")
-    period_start = _timestamp(measurement.get("period_start"), "event.measurement.period_start")
-    period_end = _timestamp(measurement.get("period_end"), "event.measurement.period_end")
-    if (period_start is None) != (period_end is None):
-        raise PerformanceContractError("measurement periods require both start and end")
-    if period_start is not None and timestamp_epoch(period_start) > timestamp_epoch(str(period_end)):
-        raise PerformanceContractError("measurement period start must not follow end")
-
-
 def _governance(value: Any, identity_state: str) -> None:
     """Validate the aggregate-safe audience eligibility projection."""
-    governance = _object(value, "event.governance", {"audience_eligible", "eligibility_reason"})
+    governance = object_fields(value, "event.governance", {"audience_eligible", "eligibility_reason"})
     eligible = governance["audience_eligible"]
     reason = governance["eligibility_reason"]
     if not isinstance(eligible, bool) or reason not in ELIGIBILITY_REASONS:
@@ -197,7 +142,7 @@ def _governance(value: Any, identity_state: str) -> None:
 def validate_normalized_event(value: Any) -> dict[str, Any]:
     """Validate every field consumed or re-emitted by optimization analyses."""
     fields = {"schema_version", "record_ref", "event_ref", "source", "event", "subject", "scope", "measurement", "quality", "governance"}
-    event = _object(value, "event", fields)
+    event = object_fields(value, "event", fields)
     if event["schema_version"] != 1 or not RECORD_REF_RE.fullmatch(str(event["record_ref"])):
         raise PerformanceContractError("event record reference is invalid")
     if not EVENT_REF_RE.fullmatch(str(event["event_ref"])):
@@ -206,7 +151,7 @@ def validate_normalized_event(value: Any) -> dict[str, Any]:
     event_type = _event(event["event"])
     identity_state = _subject(event["subject"])
     _scope(event["scope"])
-    _measurement(event["measurement"], event_type)
+    validate_measurement(event["measurement"], event_type)
     validate_event_quality(event["quality"], source, evidence_ref)
     _governance(event["governance"], identity_state)
     return event

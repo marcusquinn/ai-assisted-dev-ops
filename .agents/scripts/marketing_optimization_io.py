@@ -28,14 +28,18 @@ from marketing_optimization_contract import (
     require_integer,
     require_object,
 )
+from marketing_optimization_event_corrections import effective_events
 from marketing_optimization_event_validation import validate_normalized_event
 from marketing_optimization_snapshot_validation import (
     subject_uncertainty_map,
     validate_source_summary,
     validate_subject_projection,
 )
+from marketing_optimization_snapshot_selection import event_order_key as _event_order_key
+from marketing_optimization_snapshot_selection import filter_events as _filter_events
+from marketing_optimization_snapshot_selection import filter_sources as _filter_sources
 from marketing_optimization_storage import ensure_directory as ensure_storage_directory
-from marketing_optimization_storage import immutable_bytes
+from marketing_optimization_storage import ImmutablePublication, immutable_bytes
 from marketing_optimization_storage import read_bytes as read_storage_bytes
 from marketing_optimization_storage import read_optional_bytes as read_optional_storage_bytes
 from marketing_optimization_validation_common import ASSIGNMENT_REF_RE
@@ -73,6 +77,17 @@ class SnapshotRequest:
     account_ref: str | None = None
     campaign_id: str | None = None
     source: str | None = None
+
+
+@dataclass(frozen=True)
+class RepositorySnapshotRequest:
+    """Scope for one deterministic performance-plane snapshot read."""
+
+    repo: Path
+    as_of: str
+    source: str | None = None
+    account_ref: str | None = None
+    campaign_id: str | None = None
 
 
 def resolve_paths(repo: Path) -> OptimizationPaths:
@@ -140,26 +155,20 @@ def immutable_json(paths: OptimizationPaths, path: Path, document: dict[str, Any
     """Validate and atomically publish canonical JSON."""
     assert_public_safe(document)
     payload = (canonical_json(document) + "\n").encode("utf-8")
-    return immutable_bytes(paths.repo, path, payload)
+    return immutable_bytes(ImmutablePublication(paths.repo, path, payload))
 
 
 def immutable_private_json(paths: OptimizationPaths, path: Path, document: dict[str, Any]) -> Path:
     """Publish canonical pseudonymous evidence with owner-only permissions."""
     assert_public_safe(document)
     payload = (canonical_json(document) + "\n").encode("utf-8")
-    return immutable_bytes(
-        paths.repo,
-        path,
-        payload,
-        file_mode=0o600,
-        directory_mode=0o700,
-    )
+    return immutable_bytes(ImmutablePublication(paths.repo, path, payload, 0o600, 0o700))
 
 
 def immutable_text(paths: OptimizationPaths, path: Path, text: str) -> Path:
     """Publish one bounded public-safe text artifact."""
     assert_public_safe(text)
-    return immutable_bytes(paths.repo, path, text.encode("utf-8"))
+    return immutable_bytes(ImmutablePublication(paths.repo, path, text.encode("utf-8")))
 
 
 def ensure_layout(paths: OptimizationPaths) -> None:
@@ -248,119 +257,6 @@ def _validate_subject(value: Any, index: int) -> dict[str, Any]:
     return validate_subject_projection(value, index)
 
 
-def _event_order_key(event: dict[str, Any]) -> tuple[Any, str]:
-    """Return a chronological event key with a stable record tie-break."""
-    occurred = parse_datetime(event["event"]["occurred_at"], "event occurred_at")
-    return occurred, str(event["record_ref"])
-
-
-def _filter_events(
-    events: list[dict[str, Any]],
-    as_of: str,
-    source: str | None,
-    account_ref: str | None,
-    campaign_id: str | None,
-) -> list[dict[str, Any]]:
-    """Apply deterministic time and scope filters."""
-    boundary = parse_datetime(as_of, "snapshot as_of")
-    filtered: list[dict[str, Any]] = []
-    for event in events:
-        occurred = parse_datetime(event["event"]["occurred_at"], "event occurred_at")
-        recorded = parse_datetime(event["source"]["recorded_at"], "source recorded_at")
-        kind_matches = source is None or event["source"]["kind"] == source
-        source_matches = account_ref is None or event["source"]["account_ref"] == account_ref
-        campaign_matches = campaign_id is None or event["scope"]["campaign_id"] == campaign_id
-        if max(occurred, recorded) <= boundary and kind_matches and source_matches and campaign_matches:
-            filtered.append(event)
-    return sorted(filtered, key=_event_order_key)
-
-
-def _effective_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Resolve corrections and reject duplicate identities in one hermetic snapshot."""
-    by_event_ref: dict[str, dict[str, Any]] = {}
-    record_refs: set[str] = set()
-    for event in events:
-        event_ref = str(event["event_ref"])
-        record_ref = str(event["record_ref"])
-        if event_ref in by_event_ref:
-            raise OptimizationError("optimization snapshot contains duplicate event_ref values")
-        if record_ref in record_refs:
-            raise OptimizationError("optimization snapshot contains duplicate record_ref values")
-        by_event_ref[event_ref] = event
-        record_refs.add(record_ref)
-
-    corrected_refs: set[str] = set()
-    for event in events:
-        target_ref = event["event"].get("correction_of")
-        if target_ref is None:
-            continue
-        target = by_event_ref.get(str(target_ref))
-        if target is None:
-            raise OptimizationError("optimization snapshot correction target is unavailable")
-        if str(target_ref) in corrected_refs:
-            raise OptimizationError("optimization snapshot correction target is ambiguous")
-        if (
-            event["source"]["kind"] != target["source"]["kind"]
-            or event["source"]["account_ref"] != target["source"]["account_ref"]
-            or event["subject"] != target["subject"]
-            or event["scope"] != target["scope"]
-            or {
-                key: value
-                for key, value in event["measurement"].items()
-                if key != "value"
-            }
-            != {
-                key: value
-                for key, value in target["measurement"].items()
-                if key != "value"
-            }
-        ):
-            raise OptimizationError("optimization snapshot correction target semantics do not match")
-        corrected_refs.add(str(target_ref))
-
-    def resolved_semantics(event: dict[str, Any], seen: set[str]) -> tuple[str, str]:
-        event_ref = str(event["event_ref"])
-        if event_ref in seen:
-            raise OptimizationError("optimization snapshot correction chain contains a cycle")
-        if event["event"]["type"] != "correction":
-            return str(event["event"]["type"]), str(event["event"]["occurred_at"])
-        target = by_event_ref[str(event["event"]["correction_of"])]
-        return resolved_semantics(target, seen | {event_ref})
-
-    for event in events:
-        if event["event"]["type"] == "correction":
-            resolved_semantics(event, set())
-
-    output: list[dict[str, Any]] = []
-    for event in events:
-        if str(event["event_ref"]) in corrected_refs:
-            continue
-        if event["event"]["type"] != "correction":
-            output.append(event)
-            continue
-        replacement = copy.deepcopy(event)
-        event_type, occurred_at = resolved_semantics(event, set())
-        replacement["event"]["type"] = event_type
-        replacement["event"]["occurred_at"] = occurred_at
-        replacement["event"]["correction_of"] = None
-        output.append(_validate_event(replacement, len(output)))
-    return sorted(output, key=_event_order_key)
-
-
-def _filter_sources(
-    sources: list[dict[str, Any]],
-    source: str | None,
-    account_ref: str | None,
-) -> list[dict[str, Any]]:
-    """Keep source quality summaries inside the explicitly requested scope."""
-    return [
-        item
-        for item in sources
-        if (source is None or item["source"] == source)
-        and (account_ref is None or item["account_ref"] == account_ref)
-    ]
-
-
 def _snapshot(
     as_of: str,
     events: list[dict[str, Any]],
@@ -422,7 +318,7 @@ def snapshot_from_document(
     subjects = [_validate_subject(item, index) for index, item in enumerate(require_list(document.get("subjects"), "subjects"))]
     sources = [validate_source_summary(item, index) for index, item in enumerate(require_list(document.get("sources"), "sources"))]
     filtered = _filter_events(events, as_of, source, account_ref, campaign_id)
-    effective = _effective_events(filtered)
+    effective = effective_events(filtered, _validate_event, _event_order_key)
     _validate_subject_coverage(effective, subjects)
     return _snapshot(as_of, effective, subjects, _filter_sources(sources, source, account_ref))
 
@@ -467,23 +363,42 @@ def registered_snapshot(paths: OptimizationPaths, reference: str) -> Optimizatio
     return snapshot
 
 
+def _repository_snapshot_request(
+    repo: Path | RepositorySnapshotRequest,
+    options: dict[str, Any],
+) -> RepositorySnapshotRequest:
+    """Normalize the legacy keyword API into one explicit request model."""
+    if isinstance(repo, RepositorySnapshotRequest):
+        if options:
+            raise OptimizationError("repository snapshot request cannot include legacy options")
+        return repo
+    allowed = {"as_of", "source", "account_ref", "campaign_id"}
+    unexpected = set(options) - allowed
+    if unexpected or "as_of" not in options:
+        raise OptimizationError("repository snapshot options are invalid")
+    return RepositorySnapshotRequest(
+        repo=repo,
+        as_of=options["as_of"],
+        source=options.get("source"),
+        account_ref=options.get("account_ref"),
+        campaign_id=options.get("campaign_id"),
+    )
+
+
 def snapshot_from_repo(
-    repo: Path,
-    *,
-    as_of: str,
-    source: str | None = None,
-    account_ref: str | None = None,
-    campaign_id: str | None = None,
+    repo: Path | RepositorySnapshotRequest,
+    **options: Any,
 ) -> OptimizationSnapshot:
     """Read effective events and current governance from the performance plane."""
-    canonical_as_of = parse_timestamp(as_of, "snapshot as_of")
+    request = _repository_snapshot_request(repo, options)
+    canonical_as_of = parse_timestamp(request.as_of, "snapshot as_of")
     boundary_epoch = parse_datetime(canonical_as_of, "snapshot as_of").timestamp()
-    with MarketingPerformanceStore.open(repo.resolve()) as store:
+    with MarketingPerformanceStore.open(request.repo.resolve()) as store:
         reporting = PerformanceReporting(store)
         event_records = reporting.event_records(
-            source=source,
-            account_ref=account_ref,
-            campaign_id=campaign_id,
+            source=request.source,
+            account_ref=request.account_ref,
+            campaign_id=request.campaign_id,
             now_epoch=boundary_epoch,
         )
         subject_records = reporting.subject_records(boundary_epoch)
@@ -491,10 +406,17 @@ def snapshot_from_repo(
     events = [_validate_event(item, index) for index, item in enumerate(event_records)]
     subjects = [_validate_subject(item, index) for index, item in enumerate(subject_records)]
     sources = [validate_source_summary(item, index) for index, item in enumerate(source_records)]
-    filtered = _filter_events(events, canonical_as_of, source, account_ref, campaign_id)
-    effective = _effective_events(filtered)
+    filtered = _filter_events(
+        events,
+        canonical_as_of,
+        request.source,
+        request.account_ref,
+        request.campaign_id,
+    )
+    effective = effective_events(filtered, _validate_event, _event_order_key)
     _validate_subject_coverage(effective, subjects)
-    return _snapshot(canonical_as_of, effective, subjects, _filter_sources(sources, source, account_ref))
+    filtered_sources = _filter_sources(sources, request.source, request.account_ref)
+    return _snapshot(canonical_as_of, effective, subjects, filtered_sources)
 
 
 def load_snapshot(request: SnapshotRequest) -> OptimizationSnapshot:

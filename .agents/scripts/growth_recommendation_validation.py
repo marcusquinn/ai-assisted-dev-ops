@@ -36,6 +36,12 @@ from marketing_optimization_validation_common import (
 )
 from performance_contract import optional_alias, require_alias
 
+RECOMMENDATION_FIELDS = (
+    "schema_version", "recommendation_ref", "recommendation_key", "status", "scope", "finding", "evidence",
+    "evidence_rank", "causal_assessment", "target_metric", "expected_impact", "uncertainty", "action",
+    "authority", "rollback", "retest", "provenance",
+)
+
 
 def _validate_scope_and_finding(document: dict[str, Any]) -> dict[str, Any]:
     """Validate recommendation scope and aggregate finding fields."""
@@ -286,25 +292,7 @@ def validate_recommendation_artifact(document: dict[str, Any]) -> str:
     assert_public_safe(document, "growth recommendation")
     exact(
         document,
-        {
-            "schema_version",
-            "recommendation_ref",
-            "recommendation_key",
-            "status",
-            "scope",
-            "finding",
-            "evidence",
-            "evidence_rank",
-            "causal_assessment",
-            "target_metric",
-            "expected_impact",
-            "uncertainty",
-            "action",
-            "authority",
-            "rollback",
-            "retest",
-            "provenance",
-        },
+        set(RECOMMENDATION_FIELDS),
         "growth recommendation",
     )
     if document["schema_version"] != 1:
