@@ -21,105 +21,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from campaign_production_contract import ManifestError, read_document, validate_distribution_eligibility
+from campaign_production_contract import ManifestError
+from _campaign_distribution_source import (
+    PUBLIC_STATES,
+    DistributionError,
+    operation_id as _operation_id,
+    resolve_source as _source,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_QUEUE_HELPER = SCRIPT_DIR / "knowledge-social-helper.sh"
-CHANNELS = {
-    "x": {"aliases": {"x", "twitter", "social-x"}, "provider": "xapi"},
-    "reddit": {"aliases": {"reddit", "social-reddit"}, "provider": "reddit"},
-}
-PUBLIC_STATES = {"draft", "approved", "claimed", "unknown", "failed", "succeeded", "cancelled"}
-
-
-class DistributionError(ValueError):
-    """Raised when a campaign cannot safely become an outbound intent."""
-
-
-def _canonical_channel(channel: str) -> str:
-    for canonical, values in CHANNELS.items():
-        if channel in values["aliases"]:
-            return canonical
-    raise DistributionError("channel must be x or reddit (aliases: twitter, social-x, social-reddit)")
-
-
-def _digest(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def _campaign_dir(value: str) -> Path:
-    campaign_input = Path(value).absolute()
-    if any(
-        path.is_symlink()
-        for path in (
-            campaign_input.parent.parent,
-            campaign_input.parent,
-            campaign_input,
-        )
-    ) or not campaign_input.is_dir():
-        raise DistributionError("campaign directory is unavailable")
-    return campaign_input.resolve()
-
-
-def _safe_output(campaign_dir: Path, manifest: dict[str, Any], requested: str | None) -> Path:
-    outputs = manifest["outputs"]
-    if requested is None:
-        if len(outputs) != 1:
-            raise DistributionError("select one reviewed output with --output")
-        requested = outputs[0]["path"]
-    relative = Path(requested)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise DistributionError("distribution output path is unsafe")
-    candidate = campaign_dir
-    for component in relative.parts:
-        candidate /= component
-        if candidate.is_symlink():
-            raise DistributionError("distribution output path must not contain symlinks")
-    output = candidate.resolve()
-    if campaign_dir not in output.parents or not output.is_file():
-        raise DistributionError("distribution output is missing or outside its campaign")
-    matching = next((entry for entry in outputs if entry["path"] == requested), None)
-    if matching is None:
-        raise DistributionError("selected output is not recorded by the approved manifest")
-    digest = "sha256:" + hashlib.sha256(output.read_bytes()).hexdigest()
-    if digest != matching["sha256"]:
-        raise DistributionError("selected output no longer matches approved evidence")
-    return output
-
-
-def _source(arguments: argparse.Namespace) -> tuple[Path, dict[str, Any], Path, str, str, str]:
-    campaign_dir = _campaign_dir(arguments.campaign_dir)
-    manifest_input = Path(arguments.manifest).absolute()
-    if manifest_input.is_symlink() or not manifest_input.is_file():
-        raise DistributionError("production manifest must be a regular non-symlink file")
-    manifest_path = manifest_input.resolve()
-    if campaign_dir not in manifest_path.parents:
-        raise DistributionError("production manifest must be inside its campaign")
-    manifest = read_document(manifest_input, "production manifest")
-    validate_distribution_eligibility(manifest, campaign_dir)
-    channel = _canonical_channel(arguments.channel or str(manifest["channel"]))
-    output = _safe_output(campaign_dir, manifest, arguments.output)
-    scheduled_at = int(arguments.scheduled_at)
-    if scheduled_at < 0:
-        raise DistributionError("scheduled_at must be a non-negative epoch")
-    source_id = f"campaign:{manifest['campaign_id']}:{manifest['variant_id']}:{channel}"
-    intent_key = _digest({
-        "source_id": source_id, "channel": channel, "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-        "scheduled_at": scheduled_at, "connection_id": arguments.connection_id, "account_id": arguments.account_id,
-        "destination_id": getattr(arguments, "destination_id", None),
-        "subject_sha256": (
-            hashlib.sha256(Path(arguments.subject).read_bytes()).hexdigest()
-            if getattr(arguments, "subject", None) and Path(arguments.subject).is_file()
-            else None
-        ),
-    })
-    return campaign_dir, manifest, output, channel, source_id, intent_key
-
-
-def _operation_id(source_id: str, intent_key: str) -> str:
-    return "op_campaign_" + hashlib.sha256(f"{source_id}:{intent_key}".encode()).hexdigest()[:32]
-
-
 def _record_path(campaign_dir: Path, source_id: str) -> Path:
     return campaign_dir / "distribution" / (hashlib.sha256(source_id.encode()).hexdigest() + ".json")
 
