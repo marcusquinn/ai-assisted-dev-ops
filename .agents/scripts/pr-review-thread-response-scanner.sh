@@ -57,7 +57,7 @@ PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="6"
+PRRTS_WORKER_CONTRACT_VERSION="7"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
@@ -1905,6 +1905,7 @@ _prrts_repair_linked_issue() {
 _prrts_worker_login() {
 	local pr_number="$1"
 	: "$pr_number"
+	gh api user --jq '.login' 2>/dev/null || printf ''
 	return 0
 }
 
