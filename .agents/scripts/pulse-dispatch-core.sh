@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# pulse-dispatch-core.sh — Core worker dispatch primitives — dedup check, issue lock/unlock + linked PR lock, impl-commit detection, main-commit check, large-file gate, dispatch_with_dedup orchestrator + helpers, terminal blocker matching.
+# pulse-dispatch-core.sh — Core worker dispatch primitives — dedup check, issue lock/unlock, impl-commit detection, main-commit check, large-file gate, dispatch_with_dedup orchestrator + helpers, terminal blocker matching.
 #
 # Extracted from pulse-wrapper.sh in Phase 9 of the phased decomposition
 # (parent: GH#18356, plan: todo/plans/pulse-wrapper-decomposition.md §6).
@@ -15,9 +15,7 @@
 #   - has_worker_for_repo_issue
 #   - check_dispatch_dedup
 #   - lock_issue_for_worker
-#   - _lock_linked_prs
 #   - unlock_issue_after_worker
-#   - _unlock_linked_prs
 #   - _count_impl_commits
 #   - _task_id_in_recent_commits
 #   - _task_id_in_merged_pr
@@ -274,11 +272,11 @@ _verify_issue_conversation_lock() {
 }
 
 #######################################
-# Lock an issue (and any linked PRs) to prevent prompt injection
+# Lock an issue to prevent prompt injection
 # (t1894, t1934, GH#30180). Auto-dispatch is the authorization boundary,
 # so the issue must be frozen before it enters worker-readable context.
-# Also locks open PRs linked to the issue (worker may read PR comments).
-# The issue lock is strict and verified; linked PR locks remain best-effort.
+# The issue lock is strict and verified. Linked PR conversations remain open so
+# write-access CI can post reviews and status comments during worker execution.
 #######################################
 lock_issue_for_worker() {
 	local issue_num="$1"
@@ -305,9 +303,6 @@ lock_issue_for_worker() {
 	fi
 	_record_auto_dispatch_lock "$issue_num" "$slug" || return 1
 	echo "[pulse-wrapper] Locked #${issue_num} in ${slug} during worker execution (t1934)" >>"$LOGFILE"
-
-	# Lock any open PRs linked to this issue (t1934: PRs have same injection surface)
-	_lock_linked_prs "$issue_num" "$slug" "$reason"
 
 	return 0
 }
@@ -371,33 +366,6 @@ reconcile_auto_dispatch_issue_locks() {
 }
 
 #######################################
-# Lock open PRs that reference a given issue number (t1934).
-# Finds PRs whose title contains the issue number pattern
-# (e.g., "GH#123" or "#123") and locks their conversations.
-# Non-fatal: best-effort, failures are logged but ignored.
-#######################################
-_lock_linked_prs() {
-	local issue_num="$1"
-	local slug="$2"
-	local reason="${3:-resolved}"
-
-	local pr_numbers
-	pr_numbers=$(gh_pr_list --repo "$slug" --state open \
-		--json number,title --jq \
-		"[.[] | select(.title | test(\"(GH)?#${issue_num}([^0-9]|$)\"))] | .[].number" \
-		--limit 5 2>/dev/null) || pr_numbers=""
-
-	local pr_num
-	while IFS= read -r pr_num; do
-		[[ -n "$pr_num" && "$pr_num" =~ ^[0-9]+$ ]] || continue
-		gh pr lock "$pr_num" --repo "$slug" --reason "$reason" >/dev/null 2>&1 || true
-		echo "[pulse-wrapper] Locked PR #${pr_num} in ${slug} (linked to issue #${issue_num}) (t1934)" >>"$LOGFILE"
-	done <<<"$pr_numbers"
-
-	return 0
-}
-
-#######################################
 # Release conversation locks after terminal worker handling only when the issue
 # is no longer auto-dispatch eligible. Retryable work stays frozen across the
 # worker-to-Pulse handoff, closing the post-worker comment race (GH#30180).
@@ -425,33 +393,6 @@ unlock_issue_after_worker() {
 	marker=$(_auto_dispatch_lock_marker "$issue_num" "$slug") || marker=""
 	[[ -z "$marker" ]] || rm -f "$marker" 2>/dev/null || true
 	echo "[pulse-wrapper] Unlocked #${issue_num} in ${slug} after worker completion (t1934)" >>"$LOGFILE"
-
-	# Unlock any open PRs linked to this issue (symmetric with lock)
-	_unlock_linked_prs "$issue_num" "$slug"
-
-	return 0
-}
-
-#######################################
-# Unlock open PRs that reference a given issue number (t1934).
-# Symmetric with _lock_linked_prs. Non-fatal.
-#######################################
-_unlock_linked_prs() {
-	local issue_num="$1"
-	local slug="$2"
-
-	local pr_numbers
-	pr_numbers=$(gh_pr_list --repo "$slug" --state open \
-		--json number,title --jq \
-		"[.[] | select(.title | test(\"(GH)?#${issue_num}([^0-9]|$)\"))] | .[].number" \
-		--limit 5 2>/dev/null) || pr_numbers=""
-
-	local pr_num
-	while IFS= read -r pr_num; do
-		[[ -n "$pr_num" && "$pr_num" =~ ^[0-9]+$ ]] || continue
-		gh pr unlock "$pr_num" --repo "$slug" >/dev/null 2>&1 || true
-		echo "[pulse-wrapper] Unlocked PR #${pr_num} in ${slug} (linked to issue #${issue_num}) (t1934)" >>"$LOGFILE"
-	done <<<"$pr_numbers"
 
 	return 0
 }

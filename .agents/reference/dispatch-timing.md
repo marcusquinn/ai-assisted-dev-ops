@@ -41,7 +41,7 @@ pulse-dispatch-worker-launch.sh    — launch sub-stages instrumented
 |-----------------------|----------------------------------------------------|
 | `assign_and_label`    | Issue edit: swap assignees + status:queued + origin:worker |
 | `resolve_tier_model`  | Label-based tier resolution + round-robin model select |
-| `lock_issue`          | Issue + linked PR lock (t1894/t1934)                |
+| `lock_issue`          | Verified issue conversation lock (t1894/t1934); linked PRs remain open for CI reviews |
 | `precreate_worktree`  | Git worktree pre-creation (or reuse) + dep restore  |
 | `worker_spawn`        | DB prewarm + setsid/nohup launch + early-exit monitor |
 | `post_launch_hooks`   | Stagger delay + ledger + dispatch comment + claim audit |

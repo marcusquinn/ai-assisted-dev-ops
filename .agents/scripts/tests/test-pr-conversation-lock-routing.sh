@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Regression test: PR conversation lock operations must use the PR-specific gh
-# commands while linked issue operations retain the issue-specific commands.
+# Regression test: worker dispatch locks only the authoritative issue
+# conversation, leaving linked PR conversations available to CI review bots.
 
 set -euo pipefail
 
@@ -90,6 +90,10 @@ gh() {
 		return 0
 	fi
 	if [[ "$group" == "api" ]]; then
+		if [[ "$*" == *'.locked == true'* ]]; then
+			printf 'true\n'
+			return 0
+		fi
 		printf 'bug\n'
 		return 0
 	fi
@@ -103,22 +107,13 @@ log_msg() {
 }
 
 reset_calls
-_lock_linked_prs "42" "owner/repo" "resolved"
-if ! assert_call "pr lock 77 --repo owner/repo --reason resolved" ||
-	! assert_no_call "issue lock 77 --repo owner/repo --reason resolved"; then
-	fail "pulse linked-PR locking did not use gh pr lock" || true
+if ! lock_issue_for_worker "42" "owner/repo" "resolved" ||
+	! assert_call "issue lock 42 --repo owner/repo --reason resolved" ||
+	! assert_no_call "pr lock 77 --repo owner/repo --reason resolved"; then
+	fail "pulse dispatch did not preserve linked PR conversations for CI" || true
 	exit 1
 fi
-pass "pulse linked-PR locking uses gh pr lock"
-
-reset_calls
-_unlock_linked_prs "42" "owner/repo"
-if ! assert_call "pr unlock 77 --repo owner/repo" ||
-	! assert_no_call "issue unlock 77 --repo owner/repo"; then
-	fail "pulse linked-PR cleanup did not use gh pr unlock" || true
-	exit 1
-fi
-pass "pulse linked-PR cleanup uses gh pr unlock"
+pass "pulse dispatch leaves linked PR conversations unlocked"
 
 reset_calls
 _merge_unlock_resources "88" "owner/repo"
@@ -140,4 +135,4 @@ if ! assert_call "issue unlock 42 --repo owner/repo" ||
 fi
 pass "watchdog cleanup routes PR and issue unlocks separately"
 
-printf 'Tests run: 4\nTests failed: 0\n'
+printf 'Tests run: 3\nTests failed: 0\n'
