@@ -95,6 +95,25 @@ def expected_full_loop_review_transition:
   and ((.after.labels // []) | index("status:in-progress") == null)
   and ((.after.labels // []) | index("status:in-review") != null);
 
+def expected_feedback_redispatch_transition:
+  comparable_state
+  and .op == $issue_edit
+  and .caller_function == "main"
+  and framework_script("pulse-merge-feedback.sh")
+  and .suspicious == ["protected_label_removed:status:in-review"]
+  and (.delta.labels_removed // []) == ["status:in-review"]
+  and (.delta.labels_added // []) == ["status:available"]
+  and (.delta.title_delta_pct == 0)
+  and (.delta.body_delta_pct == 0)
+  and ((.before.labels // []) | index("origin:worker") != null)
+  and ((.after.labels // []) | index("origin:worker") != null)
+  and ([.before.labels[]?, .after.labels[]?]
+    | any(startswith("source:ci-feedback") or startswith("source:review-feedback") or startswith("source:conflict-feedback")))
+  and ((.before.labels // []) | index("status:in-review") != null)
+  and ((.before.labels // []) | index("status:available") == null)
+  and ((.after.labels // []) | index("status:in-review") == null)
+  and ((.after.labels // []) | index("status:available") != null);
+
 def expected_planning_publication_transition:
   comparable_state
   and .op == $issue_edit
@@ -139,6 +158,7 @@ select(try ((.suspicious | length) > 0) catch true)
   or expected_permission_block_transition
   or expected_trusted_author_nmr_transition
   or expected_full_loop_review_transition
+  or expected_feedback_redispatch_transition
   or expected_planning_publication_transition
   or unavailable_capture_only
 ) catch false) | not)

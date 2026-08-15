@@ -71,12 +71,14 @@ cat >"$LOG_FILE" <<'EOF'
 {"ts":"2026-07-31T00:22:00Z","op":"issue_edit","repo":"example/repo","number":23,"caller_script":"/runtime/agents/scripts/worker-permission-helper.sh","caller_function":"permission_apply_block","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["monitoring","needs-maintainer-permissions"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-progress"],"labels_added":["needs-maintainer-permissions"]},"suspicious":["protected_label_removed:status:in-progress"]}
 {"ts":"2026-07-31T00:23:00Z","op":"issue_edit","repo":"example/repo","number":24,"caller_script":"/runtime/agents/scripts/planning-publication-reconcile.sh","caller_function":"_publication_reconcile_one","flags":{"planning_publication_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["no-auto-dispatch","publication:pending"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["auto-dispatch","status:blocked","publication:pending"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["no-auto-dispatch"],"labels_added":["auto-dispatch","status:blocked"]},"suspicious":["protected_label_removed:no-auto-dispatch"]}
 {"ts":"2026-07-31T00:24:00Z","op":"issue_edit","repo":"example/repo","number":25,"caller_script":"/runtime/agents/scripts/planning-publication-reconcile.sh","caller_function":"_publication_reconcile_one","flags":{"planning_publication_verified":"v1-current-state"},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["no-auto-dispatch"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["auto-dispatch"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["no-auto-dispatch"],"labels_added":["auto-dispatch"]},"suspicious":["protected_label_removed:no-auto-dispatch"]}
+{"ts":"2026-07-31T00:25:00Z","op":"issue_edit","repo":"example/repo","number":26,"caller_script":"/runtime/agents/scripts/pulse-merge-feedback.sh","caller_function":"main","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["origin:worker","source:ci-feedback","status:in-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["origin:worker","source:ci-feedback","status:available"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-review"],"labels_added":["status:available"]},"suspicious":["protected_label_removed:status:in-review"]}
+{"ts":"2026-07-31T00:26:00Z","op":"issue_edit","repo":"example/repo","number":27,"caller_script":"/runtime/agents/scripts/pulse-merge-feedback.sh","caller_function":"main","flags":{},"before":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["origin:worker","status:in-review"]},"after":{"capture_status":"ok","title_len":1,"body_len":1,"labels":["origin:worker","source:ci-feedback","status:available"]},"delta":{"comparable":true,"title_delta_pct":0,"body_delta_pct":0,"labels_removed":["status:in-review"],"labels_added":["status:available","source:ci-feedback"]},"suspicious":["protected_label_removed:status:in-review"]}
 EOF
 
 output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state.json" \
 	GH_AUDIT_QUIET=true "$HELPER" scan --all --dry-run)
 
-[[ "$output" == *"**Anomalies found:** 14"* ]] || fail "expected transitions were not excluded exactly"
+[[ "$output" == *"**Anomalies found:** 15"* ]] || fail "expected transitions were not excluded exactly"
 [[ "$output" == *"| #3 |"* ]] || fail "unexpected lifecycle transition was hidden"
 [[ "$output" == *"| #4 |"* ]] || fail "approval transition with an additional signal was hidden"
 [[ "$output" == *"| #5 |"* ]] || fail "malformed provenance was dropped instead of retained"
@@ -91,6 +93,7 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" == *"| #21 |"* ]] || fail "unverified full-loop handoff was hidden"
 [[ "$output" == *"| #23 |"* ]] || fail "permission block without a prior active status was hidden"
 [[ "$output" == *"| #25 |"* ]] || fail "planning transition without publication evidence was hidden"
+[[ "$output" == *"| #27 |"* ]] || fail "feedback redispatch with an additional label change was hidden"
 [[ "$output" == *"The audit log stores lengths, not content."* ]] || fail "recovery guidance overclaimed audit content"
 [[ "$output" != *"private/repo"* ]] || fail "private repository name leaked into the report"
 [[ "$output" != *"inaccessible/repo"* ]] || fail "unverified repository name leaked into the report"
@@ -99,7 +102,7 @@ output=$(GH_AUDIT_LOG_FILE="$LOG_FILE" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/state
 [[ "$output" != *"| #1 |"* && "$output" != *"| #2 |"* && "$output" != *"| #7 |"* && "$output" != *"| #9 |"* &&
 	"$output" != *"| #12 |"* && "$output" != *"| #14 |"* && "$output" != *"| #17 |"* &&
 	"$output" != *"| #18 |"* && "$output" != *"| #20 |"* && "$output" != *"| #22 |"* &&
-	"$output" != *"| #24 |"* ]] ||
+	"$output" != *"| #24 |"* && "$output" != *"| #26 |"* ]] ||
 	fail "an exact expected transition remained actionable"
 
 MALFORMED_LOG="${TEST_ROOT}/malformed-audit.log"
