@@ -64,6 +64,29 @@ class ValidatedReconciliation:
     reconciled_at: int
 
 
+@dataclass(frozen=True)
+class ReconciliationOptions:
+    """Validated controls for one bounded reconciliation pass."""
+
+    decisions: Iterable[ReconciliationRequest] = ()
+    cooldowns: Mapping[str, int] | None = None
+    limit: int = 10
+    per_provider_limit: int = 3
+
+
+@dataclass
+class ReconciliationBatch:
+    """Mutable result state shared by the bounded candidate loop."""
+
+    remaining: int
+    decision_by_id: dict[str, ReconciliationRequest]
+    resolved: list[dict[str, Any]]
+    skipped: list[dict[str, str]]
+    pending: list[dict[str, Any]]
+    selected_ids: set[str]
+    provider_counts: dict[str, int]
+
+
 def _validated_reconciliation(
     request: ReconciliationRequest,
 ) -> ValidatedReconciliation:
@@ -218,13 +241,19 @@ def unknown_receipts(
     return [dict(row) for row in rows]
 
 
+def _require_range(value: int, minimum: int, maximum: int, message: str) -> None:
+    if not minimum <= value <= maximum:
+        raise SocialStoreError(message)
+
+
 def _validated_limits(limit: int, per_provider_limit: int) -> None:
-    if limit < 1 or limit > 100:
-        raise SocialStoreError("reconciliation limit must be between 1 and 100")
-    if per_provider_limit < 1 or per_provider_limit > 20:
-        raise SocialStoreError(
-            "per-provider reconciliation limit must be between 1 and 20"
-        )
+    _require_range(limit, 1, 100, "reconciliation limit must be between 1 and 100")
+    _require_range(
+        per_provider_limit,
+        1,
+        20,
+        "per-provider reconciliation limit must be between 1 and 20",
+    )
 
 
 def _decision_map(
@@ -281,100 +310,132 @@ def _bounded_receipts(
     return selected
 
 
-def bounded_reconcile(
+def _reconciliation_options(values: Mapping[str, Any]) -> ReconciliationOptions:
+    unknown = set(values) - {"decisions", "cooldowns", "limit", "per_provider_limit"}
+    if unknown:
+        name = sorted(unknown)[0]
+        raise TypeError(f"bounded_reconcile() got an unexpected keyword argument '{name}'")
+    return ReconciliationOptions(**values)
+
+
+def _candidate_receipts(
     database: sqlite3.Connection,
     principal_id: str,
-    current_time: int,
-    *,
-    decisions: Iterable[ReconciliationRequest] = (),
-    cooldowns: Mapping[str, int] | None = None,
-    limit: int = 10,
-    per_provider_limit: int = 3,
-) -> dict[str, Any]:
-    """Apply bounded, account-cooldown-aware owner decisions without replay."""
-    _validated_limits(limit, per_provider_limit)
-    if current_time < 0:
-        raise SocialStoreError("reconciliation time must be a non-negative epoch")
-    principal_id = validate_opaque(principal_id, "principal_id")
-    decision_by_id = _decision_map(decisions, principal_id)
-    if len(decision_by_id) > limit:
-        raise SocialStoreError("reconciliation decisions exceed the global limit")
-    expired = expire_claims(database, principal_id, current_time, limit)
-    remaining = limit - len(expired)
-    candidates = (
-        _decision_receipts(database, principal_id, decision_by_id)
-        if decision_by_id
-        else _bounded_receipts(
-            unknown_receipts(
-                database,
-                principal_id,
-                min(1000, limit * len(OUTBOUND_PROVIDER_ACTIONS)),
-            ),
-            remaining,
-            per_provider_limit,
-        )
+    batch: ReconciliationBatch,
+    options: ReconciliationOptions,
+) -> list[dict[str, Any]]:
+    if batch.decision_by_id:
+        return _decision_receipts(database, principal_id, batch.decision_by_id)
+    return _bounded_receipts(
+        unknown_receipts(
+            database,
+            principal_id,
+            min(1000, options.limit * len(OUTBOUND_PROVIDER_ACTIONS)),
+        ),
+        batch.remaining,
+        options.per_provider_limit,
     )
-    cooldowns = cooldowns or {}
-    resolved: list[dict[str, Any]] = []
-    skipped: list[dict[str, str]] = []
-    pending: list[dict[str, Any]] = []
-    selected_ids: set[str] = set()
-    provider_counts: dict[str, int] = {}
+
+
+def _skip_reason(
+    receipt: dict[str, Any],
+    batch: ReconciliationBatch,
+    options: ReconciliationOptions,
+    current_time: int,
+) -> str | None:
+    connection_id = str(receipt["connection_id"])
+    provider = str(receipt["provider"])
+    cooldowns = options.cooldowns or {}
+    if cooldowns.get(connection_id, 0) > current_time:
+        return "cooldown"
+    if batch.remaining == 0:
+        return "global_budget"
+    if batch.provider_counts.get(provider, 0) >= options.per_provider_limit:
+        return "provider_budget"
+    return None
+
+
+def _record_skip(
+    batch: ReconciliationBatch, receipt: dict[str, Any], reason: str
+) -> None:
+    batch.skipped.append(
+        {
+            "operation_id": str(receipt["operation_id"]),
+            "provider_id": str(receipt["provider"]),
+            "reason": reason,
+        }
+    )
+    batch.pending.append(receipt)
+
+
+def _process_candidates(
+    database: sqlite3.Connection,
+    candidates: Iterable[dict[str, Any]],
+    batch: ReconciliationBatch,
+    options: ReconciliationOptions,
+    current_time: int,
+) -> None:
     for receipt in candidates:
         operation_id = str(receipt["operation_id"])
         provider = str(receipt["provider"])
-        connection_id = str(receipt["connection_id"])
-        selected_ids.add(operation_id)
-        decision = decision_by_id.get(operation_id)
+        batch.selected_ids.add(operation_id)
+        decision = batch.decision_by_id.get(operation_id)
         if decision is None:
-            pending.append(receipt)
+            batch.pending.append(receipt)
             continue
-        if cooldowns.get(connection_id, 0) > current_time:
-            skipped.append(
-                {
-                    "operation_id": operation_id,
-                    "provider_id": provider,
-                    "reason": "cooldown",
-                }
-            )
-            pending.append(receipt)
+        reason = _skip_reason(receipt, batch, options, current_time)
+        if reason is not None:
+            _record_skip(batch, receipt, reason)
             continue
-        if remaining == 0:
-            skipped.append(
-                {
-                    "operation_id": operation_id,
-                    "provider_id": provider,
-                    "reason": "global_budget",
-                }
-            )
-            pending.append(receipt)
-            continue
-        if provider_counts.get(provider, 0) >= per_provider_limit:
-            skipped.append(
-                {
-                    "operation_id": operation_id,
-                    "provider_id": provider,
-                    "reason": "provider_budget",
-                }
-            )
-            pending.append(receipt)
-            continue
-        resolved.append(reconcile_unknown(database, decision))
-        provider_counts[provider] = provider_counts.get(provider, 0) + 1
-        remaining -= 1
-    for operation_id in sorted(set(decision_by_id) - selected_ids):
-        skipped.append(
+        batch.resolved.append(reconcile_unknown(database, decision))
+        batch.provider_counts[provider] = batch.provider_counts.get(provider, 0) + 1
+        batch.remaining -= 1
+
+
+def _record_unselected_decisions(batch: ReconciliationBatch) -> None:
+    for operation_id in sorted(set(batch.decision_by_id) - batch.selected_ids):
+        batch.skipped.append(
             {
                 "operation_id": operation_id,
                 "provider_id": "unknown",
                 "reason": "not_due_or_budgeted",
             }
         )
+
+
+def bounded_reconcile(
+    database: sqlite3.Connection,
+    principal_id: str,
+    current_time: int,
+    **values: Any,
+) -> dict[str, Any]:
+    """Apply bounded, account-cooldown-aware owner decisions without replay."""
+    options = _reconciliation_options(values)
+    _validated_limits(options.limit, options.per_provider_limit)
+    if current_time < 0:
+        raise SocialStoreError("reconciliation time must be a non-negative epoch")
+    principal_id = validate_opaque(principal_id, "principal_id")
+    decision_by_id = _decision_map(options.decisions, principal_id)
+    if len(decision_by_id) > options.limit:
+        raise SocialStoreError("reconciliation decisions exceed the global limit")
+    expired = expire_claims(database, principal_id, current_time, options.limit)
+    batch = ReconciliationBatch(
+        remaining=options.limit - len(expired),
+        decision_by_id=decision_by_id,
+        resolved=[],
+        skipped=[],
+        pending=[],
+        selected_ids=set(),
+        provider_counts={},
+    )
+    candidates = _candidate_receipts(database, principal_id, batch, options)
+    _process_candidates(database, candidates, batch, options, current_time)
+    _record_unselected_decisions(batch)
     return {
         "expired_claims": expired,
-        "resolved": resolved,
-        "resolved_count": len(resolved),
-        "skipped": skipped,
-        "unresolved": pending,
-        "unresolved_count": len(pending),
+        "resolved": batch.resolved,
+        "resolved_count": len(batch.resolved),
+        "skipped": batch.skipped,
+        "unresolved": batch.pending,
+        "unresolved_count": len(batch.pending),
     }

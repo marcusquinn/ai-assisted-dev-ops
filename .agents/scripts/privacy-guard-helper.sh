@@ -289,11 +289,14 @@ privacy_enumerate_private_entities() {
 # Arguments:
 #   $1 - text content
 #   $2 - entity file from privacy_enumerate_private_entities
+#   $3 - optional precomputed aidevops script basename allowlist
 # Output: generic hit classes only
 #######################################
 privacy_scan_public_text() {
 	local text="$1"
 	local entities_file="$2"
+	local aidevops_script_basenames_provided="${3+x}"
+	local aidevops_script_basenames="${3:-}"
 	local hits=0 class value secret_hits path_hits
 
 	[[ -f "$entities_file" ]] || return 2
@@ -303,7 +306,11 @@ privacy_scan_public_text() {
 	1) printf '%s\n' '[local-path]'; hits=$((hits + 1)) ;;
 	2) return 2 ;;
 	esac
-	secret_hits=$(privacy_scan_secret_material_text "$text")
+	if [[ -n "$aidevops_script_basenames_provided" ]]; then
+		secret_hits=$(privacy_scan_secret_material_text "$text" "$aidevops_script_basenames")
+	else
+		secret_hits=$(privacy_scan_secret_material_text "$text")
+	fi
 	if [[ $? -eq 1 ]]; then
 		printf '%s\n' "$secret_hits"
 		hits=$((hits + 1))
@@ -769,18 +776,25 @@ _privacy_redact_aidevops_script_references() {
 # Scan free-form text for private-key material or obvious credential values.
 # Arguments:
 #   $1 - text content to scan
+#   $2 - optional precomputed aidevops script basename allowlist
 # Output: one finding label per hit class
 # Returns: 0 no hits, 1 hit(s)
 #######################################
 privacy_scan_secret_material_text() {
 	local text="$1"
+	local basenames_provided="${2+x}"
+	local basenames_text="${2:-}"
 	local hits=0
 	local scan_text
 
 	if [[ -z "$text" ]]; then
 		return 0
 	fi
-	scan_text=$(_privacy_redact_aidevops_script_references "$text")
+	if [[ -n "$basenames_provided" ]]; then
+		scan_text=$(_privacy_redact_aidevops_script_references "$text" "$basenames_text")
+	else
+		scan_text=$(_privacy_redact_aidevops_script_references "$text")
+	fi
 	if [[ "$scan_text" != "$text" ]]; then
 		printf '%s\n' '[privacy-scan][ALLOW] aidevops script file reference' >&2
 	fi
@@ -1017,6 +1031,7 @@ privacy_scan_public_diff() {
 	local entities_file="$3"
 	local diff_base="$base_sha" diff_output
 	local current_file="" line_num=0 hits=0 line added matching_hits scan_rc hit
+	local aidevops_script_basenames
 
 	[[ -f "$entities_file" ]] || return 2
 	if [[ "$base_sha" =~ ^0+$ ]]; then
@@ -1026,6 +1041,7 @@ privacy_scan_public_diff() {
 		[[ -z "$diff_base" ]] && diff_base=$(git hash-object -t tree /dev/null)
 	fi
 	diff_output=$(git diff --unified=0 --no-color "$diff_base" "$head_sha" -- . 2>/dev/null) || return 2
+	aidevops_script_basenames=$(_privacy_aidevops_script_reference_basenames)
 	while IFS= read -r line; do
 		case "$line" in
 		"+""++ b/"*)
@@ -1040,7 +1056,7 @@ privacy_scan_public_diff() {
 		"+"*)
 			[[ "$line" == "+""++ " ]] && continue
 			added="${line:1}"
-			matching_hits=$(privacy_scan_public_text "$added" "$entities_file")
+			matching_hits=$(privacy_scan_public_text "$added" "$entities_file" "$aidevops_script_basenames")
 			scan_rc=$?
 			if [[ "$scan_rc" -eq 1 ]]; then
 				while IFS= read -r hit; do

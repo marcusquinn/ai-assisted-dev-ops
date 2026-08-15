@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,16 @@ class OperationsError(RuntimeError):
     """Raised for privacy-safe outbound CLI failures."""
 
 
+@dataclass(frozen=True)
+class ProviderExecution:
+    """Stable operation state shared across one provider execution."""
+
+    database: sqlite3.Connection
+    claimed: ClaimedOperation
+    executor_id: str
+    args: argparse.Namespace
+
+
 def _clock(args: argparse.Namespace) -> int:
     override = getattr(args, "now_epoch", None)
     if override is not None:
@@ -101,52 +112,45 @@ def _managed_context(args: argparse.Namespace) -> tuple[str, Path]:
 
 
 def _pre_provider_failure(
-    database: sqlite3.Connection,
-    claimed: ClaimedOperation,
-    executor_id: str,
+    execution: ProviderExecution,
     failure_class: str,
-    args: argparse.Namespace,
 ) -> dict[str, Any]:
     return finalize_operation(
-        database,
-        claimed,
-        executor_id,
+        execution.database,
+        execution.claimed,
+        execution.executor_id,
         AttemptOutcome(
-            "failed", failure_class=failure_class, finished_at=_clock(args)
+            "failed",
+            failure_class=failure_class,
+            finished_at=_clock(execution.args),
         ),
     )
 
 
 def _unknown_provider_outcome(
-    database: sqlite3.Connection,
-    claimed: ClaimedOperation,
-    executor_id: str,
+    execution: ProviderExecution,
     provider_outcome: tuple[str | None, str],
-    args: argparse.Namespace,
 ) -> dict[str, Any]:
     provider_remote_id, failure_class = provider_outcome
     return finalize_operation(
-        database,
-        claimed,
-        executor_id,
+        execution.database,
+        execution.claimed,
+        execution.executor_id,
         AttemptOutcome(
             "unknown",
             provider_remote_id=provider_remote_id,
             failure_class=failure_class,
-            finished_at=_clock(args),
+            finished_at=_clock(execution.args),
         ),
     )
 
 
 def _rate_limited_provider_outcome(
-    database: sqlite3.Connection,
-    claimed: ClaimedOperation,
-    executor_id: str,
+    execution: ProviderExecution,
     status: str,
     error: ProviderRateLimitError,
-    args: argparse.Namespace,
 ) -> dict[str, Any]:
-    finished_at = _clock(args)
+    finished_at = _clock(execution.args)
     retry_seconds = (
         error.retry_after_seconds
         if error.retry_after_seconds is not None and error.retry_after_seconds > 0
@@ -154,14 +158,85 @@ def _rate_limited_provider_outcome(
     )
     retry_after = finished_at + retry_seconds
     return finalize_operation(
-        database,
-        claimed,
-        executor_id,
+        execution.database,
+        execution.claimed,
+        execution.executor_id,
         AttemptOutcome(
             status,
             failure_class="rate_limit",
             finished_at=finished_at,
             retry_after=retry_after,
+        ),
+    )
+
+
+def _prepared_provider(execution: ProviderExecution) -> Any:
+    try:
+        return prepare_provider(execution.claimed)
+    except ProviderAdapterError:
+        return _pre_provider_failure(execution, "validation")
+
+
+def _verify_provider(execution: ProviderExecution, provider: Any) -> dict[str, Any] | None:
+    try:
+        provider.verify_identity()
+    except ProviderRateLimitError as error:
+        return _rate_limited_provider_outcome(execution, "failed", error)
+    except ProviderIdentityError:
+        return _pre_provider_failure(execution, "identity")
+    return None
+
+
+def _start_provider(execution: ProviderExecution) -> dict[str, Any] | None:
+    provider_started_at = _clock(execution.args)
+    try:
+        mark_provider_started(
+            execution.database,
+            execution.claimed,
+            execution.executor_id,
+            started_at=provider_started_at,
+        )
+    except SocialStoreError:
+        deferred = defer_claim_for_cooldown(
+            execution.database,
+            execution.claimed,
+            execution.executor_id,
+            provider_started_at,
+        )
+        return deferred or _pre_provider_failure(execution, "authorization")
+    return None
+
+
+def _invoke_prepared_provider(
+    execution: ProviderExecution, provider: Any
+) -> dict[str, Any]:
+    try:
+        if execution.claimed.provider == "youtube":
+            checkpoint = lambda checkpoint_id: record_provider_checkpoint(
+                execution.database,
+                execution.claimed,
+                execution.executor_id,
+                checkpoint_id,
+            )
+            provider_remote_id, failure_class = provider.invoke(checkpoint)
+        else:
+            provider_remote_id, failure_class = provider.invoke()
+    except ProviderRateLimitError as error:
+        return _rate_limited_provider_outcome(execution, "unknown", error)
+    if failure_class is not None:
+        return _unknown_provider_outcome(
+            execution, (provider_remote_id, failure_class)
+        )
+    if provider_remote_id is None:
+        raise OperationsError("successful provider outcome has no remote ID")
+    return finalize_operation(
+        execution.database,
+        execution.claimed,
+        execution.executor_id,
+        AttemptOutcome(
+            "succeeded",
+            provider_remote_id=provider_remote_id,
+            finished_at=_clock(execution.args),
         ),
     )
 
@@ -172,70 +247,16 @@ def _execute_claimed(
     executor_id: str,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    try:
-        provider = prepare_provider(claimed)
-    except ProviderAdapterError:
-        return _pre_provider_failure(
-            database, claimed, executor_id, "validation", args
-        )
-    try:
-        provider.verify_identity()
-    except ProviderRateLimitError as error:
-        return _rate_limited_provider_outcome(
-            database, claimed, executor_id, "failed", error, args
-        )
-    except ProviderIdentityError:
-        return _pre_provider_failure(
-            database, claimed, executor_id, "identity", args
-        )
-
-    provider_started_at = _clock(args)
-    try:
-        mark_provider_started(
-            database, claimed, executor_id, started_at=provider_started_at
-        )
-    except SocialStoreError:
-        deferred = defer_claim_for_cooldown(
-            database, claimed, executor_id, provider_started_at
-        )
-        if deferred is not None:
-            return deferred
-        return _pre_provider_failure(
-            database, claimed, executor_id, "authorization", args
-        )
-
-    try:
-        if claimed.provider == "youtube":
-            checkpoint = lambda checkpoint_id: record_provider_checkpoint(
-                database, claimed, executor_id, checkpoint_id
-            )
-            provider_remote_id, failure_class = provider.invoke(checkpoint)
-        else:
-            provider_remote_id, failure_class = provider.invoke()
-    except ProviderRateLimitError as error:
-        return _rate_limited_provider_outcome(
-            database, claimed, executor_id, "unknown", error, args
-        )
-    if failure_class is not None:
-        return _unknown_provider_outcome(
-            database,
-            claimed,
-            executor_id,
-            (provider_remote_id, failure_class),
-            args,
-        )
-    if provider_remote_id is None:
-        raise OperationsError("successful provider outcome has no remote ID")
-    return finalize_operation(
-        database,
-        claimed,
-        executor_id,
-        AttemptOutcome(
-            "succeeded",
-            provider_remote_id=provider_remote_id,
-            finished_at=_clock(args),
-        ),
-    )
+    execution = ProviderExecution(database, claimed, executor_id, args)
+    provider = _prepared_provider(execution)
+    if isinstance(provider, dict):
+        return provider
+    result = _verify_provider(execution, provider)
+    if result is None:
+        result = _start_provider(execution)
+    if result is None:
+        result = _invoke_prepared_provider(execution, provider)
+    return result
 
 
 def _executor_id(args: argparse.Namespace) -> str:

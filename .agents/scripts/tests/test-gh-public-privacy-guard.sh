@@ -118,6 +118,15 @@ else
 	fail "empty precomputed aidevops script basename allowlist" "redacted=$redacted"
 fi
 
+out=$(privacy_scan_secret_material_text "$precomputed_input" "$ALLOWED_BASENAME" 2>"$TMP/precomputed-scan.err")
+rc=$?
+err=$(<"$TMP/precomputed-scan.err")
+if [[ "$rc" -eq 0 && -z "$out" && "$err" == '[privacy-scan][ALLOW] aidevops script file reference' ]]; then
+	pass "secret scanner accepts a precomputed aidevops script basename allowlist"
+else
+	fail "secret scanner precomputed aidevops script basename allowlist" "rc=$rc out=$out err=$err"
+fi
+
 out=$(privacy_scan_secret_material_text "Reference basename \`$ALLOWED_BASENAME\` in the issue body" 2>"$TMP/allow-basename.err")
 rc=$?
 err=$(<"$TMP/allow-basename.err")
