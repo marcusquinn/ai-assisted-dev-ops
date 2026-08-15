@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ AGENTS = SCRIPTS.parent
 HELPER = SCRIPTS / "marketing-optimization-helper.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "marketing-optimization"
 
+sys.path.insert(0, str(SCRIPTS))
 SPEC = importlib.util.spec_from_file_location("marketing_optimization_helper", HELPER)
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError("unable to load marketing optimization helper")
