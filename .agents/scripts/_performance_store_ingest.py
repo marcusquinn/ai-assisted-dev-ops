@@ -7,7 +7,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from performance_contract import utc_now, validate_batch_header
+from performance_contract import (
+    PerformanceContractError,
+    timestamp_epoch,
+    utc_now,
+    validate_batch_header,
+    validate_event,
+)
 from _performance_store_types import QuarantineContext
 
 
@@ -35,6 +41,37 @@ def _is_partial(header: dict[str, Any], counts: dict[str, int]) -> bool:
     if header["coverage"] != "complete" or bool(header["missing_scopes"]):
         return True
     return any(counts[name] > 0 for name in ("conflict", "quarantined"))
+
+
+def validate_events(store: Any, header: dict[str, Any], adapter_errors: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    events: list[dict[str, Any]] = []
+    errors = [dict(error) for error in adapter_errors]
+    coverage = "partial" if header["missing_scopes"] else header["coverage"]
+    for index, raw_event in enumerate(header["events"]):
+        try:
+            events.append(validate_event(raw_event, coverage, header["missing_scopes"]))
+        except PerformanceContractError as error:
+            source_event_id = f"record-{index}"
+            if isinstance(raw_event, dict) and isinstance(raw_event.get("source_event_id"), str):
+                source_event_id = raw_event["source_event_id"]
+            errors.append({"index": index, "reason": str(error), "source_event_id": source_event_id})
+    return events, errors
+
+
+def checkpoint_conflicts(store: Any, header: dict[str, Any]) -> bool:
+    """Detect a conflicting opaque cursor at the same successful watermark."""
+    if header["cursor"] is None:
+        return False
+    existing = store.connection.execute(
+        "SELECT cursor_ref,last_success_at FROM sources WHERE source=? AND account_ref=?",
+        (header["source"], header["account_ref"]),
+    ).fetchone()
+    if existing is None or existing["cursor_ref"] is None or existing["last_success_at"] is None:
+        return False
+    if timestamp_epoch(header["observed_at"]) != timestamp_epoch(str(existing["last_success_at"])):
+        return False
+    incoming = store._cursor_ref(header["source"], header["account_ref"], header["cursor"])
+    return incoming != str(existing["cursor_ref"])
 
 
 def _dry_run(header: dict[str, Any], events: list[dict[str, Any]], errors: list[dict[str, Any]], safe_errors: list[dict[str, Any]]) -> dict[str, Any]:

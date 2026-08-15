@@ -18,6 +18,8 @@ import time
 import unittest
 from pathlib import Path
 
+from campaign_production_fixture import approved_manifest
+
 SCRIPTS = Path(__file__).resolve().parents[1]
 AGENTS = SCRIPTS.parent
 REPO_ROOT = AGENTS.parent
@@ -28,6 +30,14 @@ AIDEVOPS = REPO_ROOT / "aidevops.sh"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "marketing-performance"
 EVENT_SCHEMA = AGENTS / "schemas" / "marketing-performance-event.schema.json"
 SUBJECT_SCHEMA = AGENTS / "schemas" / "marketing-subject.schema.json"
+
+
+def write_reconciliation(path: Path, **action: object) -> None:
+    """Write one reconciliation action without duplicating envelope setup."""
+    path.write_text(
+        json.dumps({"schema": "aidevops.marketing-performance-reconciliation/v1", "actions": [action]}),
+        encoding="utf-8",
+    )
 
 
 class MarketingPerformanceIngestTests(unittest.TestCase):
@@ -1463,22 +1473,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
 
         leads = [record["subject_id"] for record in subjects if record["kind"] == "lead"]
         reconciliation = self.root / "reconciliation.json"
-        reconciliation.write_text(
-            json.dumps(
-                {
-                    "schema": "aidevops.marketing-performance-reconciliation/v1",
-                    "actions": [
-                        {
-                            "action": "link",
-                            "canonical_subject_id": leads[0],
-                            "member_subject_id": leads[1],
-                            "effective_at": "2026-08-09T00:00:00.500000Z",
-                            "evidence_ref": "owner-reviewed-synthetic-link",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        write_reconciliation(
+            reconciliation,
+            action="link",
+            canonical_subject_id=leads[0],
+            member_subject_id=leads[1],
+            effective_at="2026-08-09T00:00:00.500000Z",
+            evidence_ref="owner-reviewed-synthetic-link",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1503,22 +1504,13 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         )
         self.assertEqual(1, len(self.query("SELECT link_ref FROM identity_links")))
 
-        reconciliation.write_text(
-            json.dumps(
-                {
-                    "schema": "aidevops.marketing-performance-reconciliation/v1",
-                    "actions": [
-                        {
-                            "action": "split",
-                            "canonical_subject_id": leads[0],
-                            "member_subject_id": leads[1],
-                            "effective_at": "2026-08-09T00:00:00Z",
-                            "evidence_ref": "owner-reviewed-older-split",
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        write_reconciliation(
+            reconciliation,
+            action="split",
+            canonical_subject_id=leads[0],
+            member_subject_id=leads[1],
+            effective_at="2026-08-09T00:00:00Z",
+            evidence_ref="owner-reviewed-older-split",
         )
         self.document("reconcile", "--input", str(reconciliation), "--repo", str(self.repo))
         still_linked = self.document("list", "--subjects", "--repo", str(self.repo))["records"]
@@ -1803,31 +1795,7 @@ class MarketingPerformanceIngestTests(unittest.TestCase):
         manifest = campaign / "drafts" / "production-manifests" / "twitter-v1.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "job_id": "job:c001-growth:twitter:v1",
-                    "campaign_id": "c001-growth",
-                    "brief_id": "brief:c001-growth",
-                    "channel": "twitter",
-                    "variant_id": "v1",
-                    "revision": 1,
-                    "input_snapshot_sha256": input_snapshot,
-                    "format": {"asset_class": "writing", "dimensions": "text", "duration_seconds": None},
-                    "asset_inputs": [],
-                    "execution": {"owner": "content", "provider_route": None, "capability": "writing", "fallback": None, "status": "ready"},
-                    "authenticity": {
-                        "disclosure_requirements": [],
-                        "rights_requirements": [],
-                        "provenance": {"source": "owned", "recipe_sha256": "sha256:" + "b" * 64},
-                        "rights_clearance": {"license": "owned", "consent": "documented", "territory": "global", "expires_at": None},
-                    },
-                    "review": {"criteria": ["reviewed"], "status": "approved", "decision_by": "owner", "decision_at": "2026-08-08T00:00:00Z"},
-                    "experiment": {"experiment_id": "experiment-1", "hypothesis": "synthetic fixture"},
-                    "lifecycle": {"status": "approved", "status_evidence": ["reviewed"]},
-                    "outputs": [{"path": "creative/post.txt", "sha256": digest, "media_type": "text/plain"}],
-                }
-            ),
+            json.dumps(approved_manifest("c001-growth", input_snapshot, digest)),
             encoding="utf-8",
         )
 
