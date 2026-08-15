@@ -1070,6 +1070,8 @@ _stale_assignment_load_threshold_context() {
 	return 0
 }
 
+# GH#30274: a live interactive stamp + owned worktree outranks age and absent
+# headless-worker evidence, so the function checks that fence before API reads.
 _is_stale_assignment() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -1086,7 +1088,7 @@ _is_stale_assignment() {
 	# GH#18816: fail-CLOSED on API failure. A transient gh error is NOT evidence
 	# that the assignment is stale — block this pulse cycle and retry next cycle.
 	local comments_json
-	if ! comments_json=$(_stale_assignment_fetch_comments_json "$issue_number" "$repo_slug"); then
+	if _interactive_claim_fence_blocks_dispatch "$issue_number" "$repo_slug" || ! comments_json=$(_stale_assignment_fetch_comments_json "$issue_number" "$repo_slug"); then
 		# Cannot fetch comments — cannot determine staleness. Fail-CLOSED:
 		# keep the existing assignment protection for this pulse cycle.
 		return 1

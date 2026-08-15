@@ -127,7 +127,7 @@ fi
 
 # gh pr list → empty (no open PR for stale recovery to detect)
 if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
-	printf ''
+	printf '[]\n'
 	exit 0
 fi
 

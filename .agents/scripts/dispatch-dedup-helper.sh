@@ -72,6 +72,10 @@ CLAIM_HELPER="${SCRIPT_DIR}/dispatch-claim-helper.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/shared-constants.sh"
 
+# Live interactive ownership is stronger than GitHub-visible activity age.
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/interactive-claim-fence.sh"
+
 # GH#18917: cost circuit breaker extracted to keep this file below 2000 lines.
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/dispatch-dedup-cost.sh"
