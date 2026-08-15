@@ -34,6 +34,14 @@ class ActionResult:
     evidence_ref: str
 
 
+@dataclass(frozen=True)
+class ReconciliationContext:
+    action_type: str
+    effective_at: str
+    evidence_ref: str
+    recorded_at: str
+
+
 def _document_actions(document: Any) -> list[dict[str, Any]]:
     if not isinstance(document, dict) or document.get("schema") != "aidevops.marketing-performance-reconciliation/v1":
         raise PerformanceContractError("unsupported reconciliation schema")
@@ -58,7 +66,10 @@ def _common(action: Any) -> tuple[str, str, str]:
     return action_type, effective_at, evidence_ref
 
 
-def _identity_action(reporting: Any, action: dict[str, Any], action_type: str, effective_at: str, evidence_ref: str, recorded_at: str) -> ActionResult:
+def _identity_action(reporting: Any, action: dict[str, Any], context: ReconciliationContext) -> ActionResult:
+    action_type = context.action_type
+    effective_at = context.effective_at
+    evidence_ref = context.evidence_ref
     canonical = action.get("canonical_subject_id")
     member = action.get("member_subject_id")
     if not isinstance(canonical, str) or not SUBJECT_REF_RE.fullmatch(canonical):
@@ -77,14 +88,17 @@ def _identity_action(reporting: Any, action: dict[str, Any], action_type: str, e
     link_ref = reporting.store.pseudonym("mkt-link-v1", action_type, canonical, member, effective_at, evidence_ref)
     reporting.connection.execute(
         "INSERT OR IGNORE INTO identity_links(link_ref,action,canonical_subject_id,member_subject_id,evidence_ref,effective_at,recorded_at) VALUES(?,?,?,?,?,?,?)",
-        (link_ref, action_type, canonical, member, evidence_ref, effective_at, recorded_at),
+        (link_ref, action_type, canonical, member, evidence_ref, effective_at, context.recorded_at),
     )
     if action_type == "link":
         reporting._assert_identity_graph_acyclic_from(effective_at)
     return ActionResult(action_type, member, action_type, (action_type, canonical, member), effective_at, evidence_ref)
 
 
-def _quarantine_action(reporting: Any, action: dict[str, Any], action_type: str, effective_at: str, evidence_ref: str) -> ActionResult:
+def _quarantine_action(reporting: Any, action: dict[str, Any], context: ReconciliationContext) -> ActionResult:
+    action_type = context.action_type
+    effective_at = context.effective_at
+    evidence_ref = context.evidence_ref
     target_ref = action.get("quarantine_ref")
     resolution = action.get("resolution")
     if not isinstance(target_ref, str) or not QUARANTINE_REF_RE.fullmatch(target_ref):
@@ -98,10 +112,11 @@ def _quarantine_action(reporting: Any, action: dict[str, Any], action_type: str,
 
 def _apply_action(reporting: Any, action: dict[str, Any], recorded_at: str) -> int:
     action_type, effective_at, evidence_ref = _common(action)
+    context = ReconciliationContext(action_type, effective_at, evidence_ref, recorded_at)
     if action_type in {"link", "split"}:
-        result = _identity_action(reporting, action, action_type, effective_at, evidence_ref, recorded_at)
+        result = _identity_action(reporting, action, context)
     else:
-        result = _quarantine_action(reporting, action, action_type, effective_at, evidence_ref)
+        result = _quarantine_action(reporting, action, context)
     reconciliation_ref = reporting.store.pseudonym("mkt-reconciliation-v1", *result.reference_parts, effective_at, evidence_ref)
     payload = {key: value for key, value in action.items() if key != "evidence_ref"}
     cursor = reporting.connection.execute(
