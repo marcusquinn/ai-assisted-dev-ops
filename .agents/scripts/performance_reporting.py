@@ -19,8 +19,8 @@ from _performance_reporting_queries import (
     source_rows as _source_rows,
 )
 from _performance_reporting_reconciliation import (
-    QUARANTINE_REF_RE,
-    SUBJECT_REF_RE,
+    QUARANTINE_REF_RE as _QUARANTINE_REF_RE,
+    SUBJECT_REF_RE as _SUBJECT_REF_RE,
     reconcile as _reconcile,
 )
 from _performance_reporting_subjects import subject_records as _subject_records
@@ -34,6 +34,18 @@ from performance_contract import (
 from performance_store import MarketingPerformanceStore
 
 CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2, "verified": 3}
+QUARANTINE_REF_RE = _QUARANTINE_REF_RE
+SUBJECT_REF_RE = _SUBJECT_REF_RE
+
+
+def _source_confidence_cap(source_status: str, completeness: str) -> str:
+    if completeness == "partial" or source_status == "partial":
+        return "medium"
+    if completeness == "unknown" or source_status in {"unavailable", "unknown"}:
+        return "low"
+    if source_status == "stale":
+        return "high"
+    return "verified"
 
 
 def read_snapshot(method: Any) -> Any:
@@ -133,16 +145,9 @@ class PerformanceReporting:
 
     @staticmethod
     def _effective_confidence(confidence: str, source_status: str, completeness: str, identity_state: str) -> str:
-        cap = "verified"
-        if completeness == "partial" or source_status == "partial":
-            cap = "medium"
-        elif completeness == "unknown" or source_status in {"unavailable", "unknown"}:
-            cap = "low"
-        elif source_status == "stale":
-            cap = "high"
-        if identity_state == "ambiguous" and CONFIDENCE_RANK[cap] > CONFIDENCE_RANK["high"]:
-            cap = "high"
-        return confidence if CONFIDENCE_RANK[confidence] <= CONFIDENCE_RANK[cap] else cap
+        cap = _source_confidence_cap(source_status, completeness)
+        identity_cap = "high" if identity_state == "ambiguous" else "verified"
+        return min((confidence, cap, identity_cap), key=CONFIDENCE_RANK.__getitem__)
 
     @read_snapshot
     def event_records(self, **options: Any) -> list[dict[str, Any]]:

@@ -66,10 +66,7 @@ def _common(action: Any) -> tuple[str, str, str]:
     return action_type, effective_at, evidence_ref
 
 
-def _identity_action(reporting: Any, action: dict[str, Any], context: ReconciliationContext) -> ActionResult:
-    action_type = context.action_type
-    effective_at = context.effective_at
-    evidence_ref = context.evidence_ref
+def _identity_refs(action: dict[str, Any]) -> tuple[str, str]:
     canonical = action.get("canonical_subject_id")
     member = action.get("member_subject_id")
     if not isinstance(canonical, str) or not SUBJECT_REF_RE.fullmatch(canonical):
@@ -78,13 +75,29 @@ def _identity_action(reporting: Any, action: dict[str, Any], context: Reconcilia
         raise PerformanceContractError("member_subject_id is invalid")
     if canonical == member:
         raise PerformanceContractError("identity reconciliation requires distinct subjects")
+    return canonical, member
+
+
+def _require_known_subjects(reporting: Any, canonical: str, member: str) -> None:
     known = int(reporting.connection.execute("SELECT COUNT(DISTINCT subject_id) FROM events WHERE subject_id IN (?,?)", (canonical, member)).fetchone()[0])
     if known < 2:
         raise PerformanceContractError("identity reconciliation subjects must already exist")
+
+
+def _reject_competing_link(reporting: Any, action_type: str, canonical: str, member: str, effective_at: str) -> None:
     competing = list(reporting.connection.execute("SELECT action,canonical_subject_id FROM identity_links WHERE member_subject_id=? AND effective_at=?", (member, effective_at)))
     conflict = any(str(row["action"]) != action_type or str(row["canonical_subject_id"]) != canonical for row in competing)
     if conflict:
         raise PerformanceContractError("identity reconciliation conflicts at the same effective time")
+
+
+def _identity_action(reporting: Any, action: dict[str, Any], context: ReconciliationContext) -> ActionResult:
+    action_type = context.action_type
+    effective_at = context.effective_at
+    evidence_ref = context.evidence_ref
+    canonical, member = _identity_refs(action)
+    _require_known_subjects(reporting, canonical, member)
+    _reject_competing_link(reporting, action_type, canonical, member, effective_at)
     link_ref = reporting.store.pseudonym("mkt-link-v1", action_type, canonical, member, effective_at, evidence_ref)
     reporting.connection.execute(
         "INSERT OR IGNORE INTO identity_links(link_ref,action,canonical_subject_id,member_subject_id,evidence_ref,effective_at,recorded_at) VALUES(?,?,?,?,?,?,?)",

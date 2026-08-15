@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from performance_contract import timestamp_epoch, utc_now
+
+
+@dataclass(frozen=True)
+class SubjectContext:
+    states: dict[str, str]
+    identity_history: list[dict[str, Any]]
+    kinds: dict[str, str]
+    identity_states: dict[str, str]
+    cycles: set[str]
+    consent_rows: list[dict[str, Any]]
+    suppression_rows: list[dict[str, Any]]
+    boundary: float
 
 
 def _now_timestamp(now_epoch: int | None) -> str:
@@ -40,9 +53,16 @@ def _groups(reporting: Any, subjects: set[str], links: dict[str, str]) -> tuple[
     return groups, cycles
 
 
-def _ledger_rows(reporting: Any, table: str) -> list[dict[str, Any]]:
-    rows = [dict(row) for row in reporting.connection.execute(f"SELECT * FROM {table}")]
+def _sorted_ledger(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (timestamp_epoch(str(row["effective_at"])), timestamp_epoch(str(row["observed_at"])), str(row["ledger_ref"])))
+
+
+def _consent_rows(reporting: Any) -> list[dict[str, Any]]:
+    return _sorted_ledger([dict(row) for row in reporting.connection.execute("SELECT * FROM consent_ledger")])
+
+
+def _suppression_rows(reporting: Any) -> list[dict[str, Any]]:
+    return _sorted_ledger([dict(row) for row in reporting.connection.execute("SELECT * FROM suppression_ledger")])
 
 
 def _latest_consent(rows: list[dict[str, Any]], boundary: float) -> dict[tuple[str, str], dict[str, Any]]:
@@ -81,20 +101,30 @@ def _eligibility(cycle: bool, states: list[str], suppressions: dict[str, dict[st
     return False, "consent_unknown"
 
 
-def _group_record(reporting: Any, canonical: str, members: set[str], context: dict[str, Any]) -> dict[str, Any]:
-    consent_rows = [row for row in context["consent_rows"] if str(row["subject_id"]) in members]
-    suppression_rows = [row for row in context["suppression_rows"] if str(row["subject_id"]) in members]
-    latest_consent = _latest_consent(consent_rows, context["boundary"])
-    latest_suppression = _latest_suppression(suppression_rows, context["boundary"])
+def _group_governance(context: SubjectContext, canonical: str, members: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, str]:
+    consent_rows = [row for row in context.consent_rows if str(row["subject_id"]) in members]
+    suppression_rows = [row for row in context.suppression_rows if str(row["subject_id"]) in members]
+    latest_consent = _latest_consent(consent_rows, context.boundary)
+    latest_suppression = _latest_suppression(suppression_rows, context.boundary)
     audience_states = [str(latest_consent[(member, "audience")]["state"]) if (member, "audience") in latest_consent else "unknown" for member in members]
-    cycle = canonical in context["cycles"]
+    cycle = canonical in context.cycles
     eligible, reason = _eligibility(cycle, audience_states, latest_suppression)
-    history = [row for row in context["identity_history"] if str(row["member_subject_id"]) in members]
-    states = context["states"]
-    identity_states = context["identity_states"]
-    state = "ambiguous" if cycle else "linked" if len(members) > 1 else states.get(canonical, identity_states.get(canonical, "isolated"))
-    kinds = context["kinds"]
+    return consent_rows, suppression_rows, eligible, reason
+
+
+def _group_identity(context: SubjectContext, canonical: str, members: set[str]) -> tuple[list[dict[str, Any]], str, str]:
+    history = [row for row in context.identity_history if str(row["member_subject_id"]) in members]
+    states = context.states
+    identity_states = context.identity_states
+    state = "ambiguous" if canonical in context.cycles else "linked" if len(members) > 1 else states.get(canonical, identity_states.get(canonical, "isolated"))
+    kinds = context.kinds
     kind = kinds.get(canonical) or next((kinds[item] for item in sorted(members) if item in kinds), "anonymous")
+    return history, state, kind
+
+
+def _group_record(reporting: Any, canonical: str, members: set[str], context: SubjectContext) -> dict[str, Any]:
+    consent_rows, suppression_rows, eligible, reason = _group_governance(context, canonical, members)
+    history, state, kind = _group_identity(context, canonical, members)
     return {
         "schema_version": 1, "subject_id": canonical, "kind": kind,
         "identity_state": state, "canonical_subject_id": canonical, "aliases": sorted(members),
@@ -111,11 +141,8 @@ def subject_records(reporting: Any, now_epoch: int | None = None) -> list[dict[s
     links, states, identity_history = reporting._current_links(now_timestamp)
     subjects, kinds, identity_states = _facts(reporting, identity_history)
     groups, cycles = _groups(reporting, subjects, links)
-    context = {
-        "states": states, "identity_history": identity_history, "kinds": kinds,
-        "identity_states": identity_states, "cycles": cycles,
-        "consent_rows": _ledger_rows(reporting, "consent_ledger"),
-        "suppression_rows": _ledger_rows(reporting, "suppression_ledger"),
-        "boundary": timestamp_epoch(now_timestamp),
-    }
+    context = SubjectContext(
+        states, identity_history, kinds, identity_states, cycles,
+        _consent_rows(reporting), _suppression_rows(reporting), timestamp_epoch(now_timestamp),
+    )
     return [_group_record(reporting, canonical, members, context) for canonical, members in sorted(groups.items())]

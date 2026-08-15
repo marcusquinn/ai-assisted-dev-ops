@@ -10,14 +10,19 @@ from typing import Any
 from performance_contract import PerformanceContractError, timestamp_epoch
 
 
-def source_rows(reporting: Any, now_epoch: int | None = None) -> list[dict[str, Any]]:
-    now = int(time.time()) if now_epoch is None else now_epoch
-    resolutions = {
+def _resolved_quarantine_refs(reporting: Any, now: int) -> set[str]:
+    return {
         str(row["target_ref"])
         for row in reporting.connection.execute("SELECT target_ref,effective_at FROM reconciliations WHERE action='resolve_quarantine'")
         if timestamp_epoch(str(row["effective_at"])) <= now
     }
-    event_refs = {str(row["event_ref"]) for row in reporting.connection.execute("SELECT DISTINCT event_ref FROM events")}
+
+
+def _known_event_refs(reporting: Any) -> set[str]:
+    return {str(row["event_ref"]) for row in reporting.connection.execute("SELECT DISTINCT event_ref FROM events")}
+
+
+def _unresolved_counts(reporting: Any, resolutions: set[str], event_refs: set[str]) -> dict[tuple[str, str], int]:
     unresolved: dict[tuple[str, str], int] = defaultdict(int)
     for row in reporting.connection.execute("SELECT * FROM quarantine"):
         if str(row["quarantine_ref"]) in resolutions:
@@ -25,10 +30,21 @@ def source_rows(reporting: Any, now_epoch: int | None = None) -> list[dict[str, 
         resolved_pending = str(row["reason"]) == "correction_target_pending" and str(row["source_event_ref"]) in event_refs
         if not resolved_pending:
             unresolved[(str(row["source"]), str(row["account_ref"]))] += 1
-    active = {
+    return unresolved
+
+
+def _active_leases(reporting: Any, now: int) -> set[tuple[str, str]]:
+    return {
         (str(row["source"]), str(row["account_ref"]))
         for row in reporting.connection.execute("SELECT source,account_ref FROM leases WHERE expires_at>?", (now,))
     }
+
+
+def source_rows(reporting: Any, now_epoch: int | None = None) -> list[dict[str, Any]]:
+    now = int(time.time()) if now_epoch is None else now_epoch
+    resolutions = _resolved_quarantine_refs(reporting, now)
+    unresolved = _unresolved_counts(reporting, resolutions, _known_event_refs(reporting))
+    active = _active_leases(reporting, now)
     return [_source_record(row, now, unresolved, active) for row in reporting.connection.execute("SELECT * FROM sources ORDER BY source,account_ref")]
 
 
@@ -55,25 +71,52 @@ def _source_record(row: Any, now: int, unresolved: dict[tuple[str, str], int], a
     }
 
 
-def effective_rows(reporting: Any, history: bool = False, source: str | None = None, account_ref: str | None = None, campaign_id: str | None = None) -> list[Any]:
-    clauses: list[str] = []
-    parameters: list[str] = []
-    for field, value in (("source", source), ("account_ref", account_ref)):
-        if value is not None:
-            clauses.append(f"{field}=?")
-            parameters.append(value)
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    rows = list(reporting.connection.execute("SELECT * FROM events" + where + " ORDER BY occurred_at,recorded_at,record_ref", tuple(parameters)))
-    if history:
-        return [row for row in rows if campaign_id is None or row["campaign_id"] == campaign_id]
+def _event_rows(reporting: Any, source: str | None, account_ref: str | None) -> list[Any]:
+    if source is not None and account_ref is not None:
+        return list(reporting.connection.execute(
+            "SELECT * FROM events WHERE source=? AND account_ref=? ORDER BY occurred_at,recorded_at,record_ref",
+            (source, account_ref),
+        ))
+    if source is not None:
+        return list(reporting.connection.execute(
+            "SELECT * FROM events WHERE source=? ORDER BY occurred_at,recorded_at,record_ref",
+            (source,),
+        ))
+    if account_ref is not None:
+        return list(reporting.connection.execute(
+            "SELECT * FROM events WHERE account_ref=? ORDER BY occurred_at,recorded_at,record_ref",
+            (account_ref,),
+        ))
+    return list(reporting.connection.execute("SELECT * FROM events ORDER BY occurred_at,recorded_at,record_ref"))
+
+
+def _latest_events(rows: list[Any]) -> dict[tuple[str, str, str], Any]:
     latest: dict[tuple[str, str, str], Any] = {}
     for row in rows:
         key = (str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))
         if key not in latest or int(row["revision"]) > int(latest[key]["revision"]):
             latest[key] = row
+    return latest
+
+
+def _current_events(rows: list[Any], latest: dict[tuple[str, str, str], Any]) -> list[Any]:
     correction_refs = {str(row["correction_ref"]) for row in latest.values() if row["correction_ref"] is not None}
-    effective = [row for row in rows if latest.get((str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))) is row and str(row["event_ref"]) not in correction_refs]
-    return [row for row in effective if campaign_id is None or row["campaign_id"] == campaign_id]
+    return [
+        row for row in rows
+        if latest.get((str(row["source"]), str(row["account_ref"]), str(row["event_ref"]))) is row
+        and str(row["event_ref"]) not in correction_refs
+    ]
+
+
+def _campaign_events(rows: list[Any], campaign_id: str | None) -> list[Any]:
+    return [row for row in rows if campaign_id is None or row["campaign_id"] == campaign_id]
+
+
+def effective_rows(reporting: Any, history: bool = False, source: str | None = None, account_ref: str | None = None, campaign_id: str | None = None) -> list[Any]:
+    rows = _event_rows(reporting, source, account_ref)
+    if history:
+        return _campaign_events(rows, campaign_id)
+    return _campaign_events(_current_events(rows, _latest_events(rows)), campaign_id)
 
 
 def current_links(reporting: Any, now_timestamp: str) -> tuple[dict[str, str], dict[str, str], list[dict[str, Any]]]:
