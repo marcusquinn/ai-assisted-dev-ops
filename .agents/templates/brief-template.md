@@ -95,7 +95,13 @@ override = `tier:thinking`.
      `Closes #NNN`") still auto-closes the issue on merge. Rephrase to avoid
      the literal keyword+hash+number sequence: "will use a closing keyword",
      "will resolve with a Closes-hash-NNN", or split the `#` from the number.
-     Canonical foot-gun: t2190 session PR #19680. -->
+      **Adjective-form foot-gun (GH#30278).** Never write
+      `closed #NNN`, `fixed #NNN`, or `resolved #NNN` as descriptive prose.
+      GitHub and pulse treat these adjective forms as closing clauses just as
+      they treat `Closes #NNN`. For superseded or historical work, use
+      `superseded by #NNN`, `addressed in #NNN`, or `see #NNN (closed)`.
+
+      Canonical foot-gun: t2190 session PR #19680. -->
 
 <!-- TODO(t2219): delete this comment block once t2219 (GH#19719) merges.
 
