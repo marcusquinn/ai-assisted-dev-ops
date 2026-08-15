@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,7 +33,7 @@ class CampaignGrowthE2E(unittest.TestCase):
         self.temporary.cleanup()
 
     def run_helper(self, *arguments: str, expected: int = 0) -> dict[str, object]:
-        result = subprocess.run(["python3", str(HELPER), *arguments], capture_output=True, text=True, check=False)
+        result = subprocess.run([sys.executable, str(HELPER), *arguments], capture_output=True, text=True, check=False)  # nosec B603
         self.assertEqual(result.returncode, expected, result.stderr)
         return json.loads(result.stdout) if result.stdout else {}
 
