@@ -173,16 +173,121 @@ fi
 # processes running. The sandbox DB is separate (XDG_DATA_HOME), so
 # --force here only waives the *process count* check, not any real risk.
 
-# Lower thresholds so VACUUM is exercised even on tiny synthetic DB
+# Lower the fragmentation threshold so VACUUM is exercised on the synthetic DB.
 set +e
-out=$(VACUUM_FREELIST_THRESHOLD=0.01 FORCE_VACUUM_SIZE_MB=0 _run_helper maintain --force 2>&1)
+out=$(VACUUM_FREELIST_THRESHOLD=0.01 _run_helper maintain --force 2>&1)
 rc=$?
 set -e
-if [[ "$rc" -eq 0 ]] && grep -q "Maintenance complete" <<<"$out"; then
+if [[ "$rc" -eq 0 ]] && grep -q "Step 3/3: VACUUM (" <<<"$out" && grep -q "Maintenance complete" <<<"$out"; then
 	_pass "maintain succeeds on synthetic DB"
 else
 	_fail "maintain failed (rc=$rc) — output: $out"
 fi
+
+# -----------------------------------------------------------------------------
+# Test 5b: compact DB is not vacuumed solely because it exceeds the size marker
+# -----------------------------------------------------------------------------
+
+set +e
+out=$(VACUUM_FREELIST_THRESHOLD=0.99 FORCE_VACUUM_SIZE_MB=0 _run_helper maintain --force 2>&1)
+rc=$?
+set -e
+state_file="$SANDBOX/fakehome/.aidevops/.agent-workspace/work/opencode-maintenance/last-run.json"
+if [[ "$rc" -eq 0 ]] && grep -q "VACUUM skipped (low fragmentation" <<<"$out" &&
+	grep -q '"outcome": "success"' "$state_file" &&
+	grep -q '"vacuum_ran": false' "$state_file"; then
+	_pass "compact DB is not vacuumed solely because it is large"
+else
+	_fail "compact DB unexpectedly selected VACUUM (rc=$rc) — output: $out"
+fi
+
+# -----------------------------------------------------------------------------
+# Test 5c: insufficient or unknown capacity safely defers VACUUM
+# -----------------------------------------------------------------------------
+
+capacity_bin="$SANDBOX/capacity-bin"
+mkdir -p "$capacity_bin"
+cat >"$capacity_bin/df" <<'MOCK_DF_LOW'
+#!/usr/bin/env bash
+printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on'
+printf '%s\n' 'mock 1000 999 1 100% /'
+exit 0
+MOCK_DF_LOW
+chmod +x "$capacity_bin/df"
+
+set +e
+out=$(PATH="$capacity_bin:$PATH" VACUUM_FREELIST_THRESHOLD=0 _run_helper maintain --force 2>&1)
+rc=$?
+set -e
+if [[ "$rc" -eq 0 ]] && grep -q "VACUUM deferred (insufficient-capacity" <<<"$out" &&
+	grep -q "Maintenance deferred after safe preliminary steps" <<<"$out" &&
+	grep -q '"outcome": "deferred"' "$state_file" &&
+	grep -q '"vacuum_deferred": true' "$state_file" &&
+	grep -q '"vacuum_ran": false' "$state_file"; then
+	_pass "insufficient capacity defers VACUUM without reporting success"
+else
+	_fail "insufficient capacity did not defer VACUUM safely (rc=$rc) — output: $out"
+fi
+
+cat >"$capacity_bin/df" <<'MOCK_DF_UNKNOWN'
+#!/usr/bin/env bash
+exit 1
+MOCK_DF_UNKNOWN
+chmod +x "$capacity_bin/df"
+
+set +e
+out=$(PATH="$capacity_bin:$PATH" VACUUM_FREELIST_THRESHOLD=0 _run_helper maintain --force 2>&1)
+rc=$?
+set -e
+if [[ "$rc" -eq 0 ]] && grep -q "VACUUM deferred (capacity-unknown" <<<"$out" &&
+	grep -q '"outcome": "deferred"' "$state_file" &&
+	grep -q '"vacuum_ran": false' "$state_file"; then
+	_pass "unknown capacity fails closed before VACUUM"
+else
+	_fail "unknown capacity did not fail closed (rc=$rc) — output: $out"
+fi
+
+# -----------------------------------------------------------------------------
+# Test 5d: attempted VACUUM failure remains a partial non-success outcome
+# -----------------------------------------------------------------------------
+
+cat >"$capacity_bin/df" <<'MOCK_DF_HIGH'
+#!/usr/bin/env bash
+printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on'
+printf '%s\n' 'mock 1000000000 1 999999999 1% /'
+exit 0
+MOCK_DF_HIGH
+cat >"$capacity_bin/sqlite3" <<'MOCK_SQLITE'
+#!/usr/bin/env bash
+last_arg=""
+for candidate in "$@"; do
+	last_arg="$candidate"
+done
+if [[ "$last_arg" == "VACUUM;" ]]; then
+	printf '%s\n' 'database or disk is full' >&2
+	exit 1
+fi
+exec "$REAL_SQLITE3" "$@"
+MOCK_SQLITE
+chmod +x "$capacity_bin/df" "$capacity_bin/sqlite3"
+real_sqlite3=$(command -v sqlite3)
+
+set +e
+out=$(PATH="$capacity_bin:$PATH" REAL_SQLITE3="$real_sqlite3" VACUUM_FREELIST_THRESHOLD=0 _run_helper maintain --force 2>&1)
+rc=$?
+set -e
+if [[ "$rc" -eq 10 ]] && grep -q "VACUUM failed: database or disk is full" <<<"$out" &&
+	grep -q "Maintenance partially completed" <<<"$out" &&
+	grep -q '"outcome": "partial"' "$state_file" &&
+	grep -q '"vacuum_ran": true' "$state_file"; then
+	_pass "failed VACUUM remains a partial non-success outcome"
+else
+	_fail "failed VACUUM outcome was inaccurate (rc=$rc) — output: $out"
+fi
+rm -rf "$capacity_bin"
+
+# Restore a successful compact state for the existing notice/throttle fixtures.
+VACUUM_FREELIST_THRESHOLD=0.99 _run_helper maintain --force >/dev/null
 
 # -----------------------------------------------------------------------------
 # Test 6: state file is written after maintain
