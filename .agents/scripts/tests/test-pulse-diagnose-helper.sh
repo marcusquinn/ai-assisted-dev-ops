@@ -264,6 +264,10 @@ if [[ "$*" == *"pr view"*"29285"* ]]; then
   fi
   exit 0
 fi
+if [[ "$*" == *"pr view"*"30321"* ]]; then
+  echo '{"number":30321,"title":"classifier performance fixture","state":"OPEN","author":{"login":"worker"},"mergedAt":null,"closedAt":null,"createdAt":"2026-08-16T20:00:00Z","labels":[],"reviewDecision":"","mergeStateStatus":"CLEAN","headRefName":"feature/performance-fixture","baseRefName":"main","isDraft":false}'
+  exit 0
+fi
 if [[ "$*" == *"issue view"*"21860"* ]]; then
   cat <<'JSON'
 {"number":21860,"title":"t3206: worker re-dispatch loops on same branch","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-04-26T08:00:00Z","closedAt":null,"labels":[{"name":"auto-dispatch"},{"name":"status:queued"}],"assignees":[]}
@@ -368,6 +372,36 @@ if command -v jq >/dev/null 2>&1; then
 		FAIL=$((FAIL + 1))
 		printf '  ✗ JSON rules array has ≥30 entries (got %s)\n' "$jq_count"
 	fi
+fi
+
+# --- Test 3b: event classification has no per-line external processes ---
+printf '\nTest 3b: event classification hot path\n'
+classifier_body=$(awk '/^_classify_log_line\(\)/ { capture=1 } capture { print } capture && /^}/ { exit }' "$HELPER")
+timestamp_body=$(awk '/^_extract_timestamp\(\)/ { capture=1 } capture { print } capture && /^}/ { exit }' "$HELPER")
+assert_not_contains "classifier avoids external grep" "grep" "$classifier_body"
+assert_not_contains "timestamp extraction avoids external grep" "grep" "$timestamp_body"
+assert_contains "classifier uses Bash regex matching" "=~ \$regex" "$classifier_body"
+
+PERF_LOGFILE="${TMPDIR_TEST}/pulse-performance.log"
+: >"$PERF_LOGFILE"
+for perf_index in $(seq 1 1000); do
+	printf '2026-08-16T20:00:%02dZ [pulse-mystery] unknown event %d for PR #30321\n' \
+		"$((perf_index % 60))" "$perf_index" >>"$PERF_LOGFILE"
+done
+perf_started=$(date +%s)
+output=$(PULSE_DIAGNOSE_LOGFILE="$PERF_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="${TMPDIR_TEST}/performance-logdir" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 30321 --repo marcusquinn/aidevops 2>&1) || true
+perf_elapsed=$(($(date +%s) - perf_started))
+assert_contains "large event set preserves unclassified count" "Unclassified pulse events: 1000" "$output"
+TOTAL=$((TOTAL + 1))
+if [[ "$perf_elapsed" -lt 15 ]]; then
+	PASS=$((PASS + 1))
+	printf '  ✓ 1000-event classification finishes within 15s (got %ss)\n' "$perf_elapsed"
+else
+	FAIL=$((FAIL + 1))
+	printf '  ✗ 1000-event classification finishes within 15s (got %ss)\n' "$perf_elapsed"
 fi
 
 # --- Test 4: PR #20329 — escalated dirty PR (notify + admin-bypass merge) ---

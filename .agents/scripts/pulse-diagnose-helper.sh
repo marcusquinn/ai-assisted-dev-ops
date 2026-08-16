@@ -154,7 +154,11 @@ dps-notify-cooldown|pulse-dirty-pr-sweep.sh|694|PR #.*notify skipped.*cooldown|N
 dps-sweep-complete|pulse-dirty-pr-sweep.sh|858|sweep complete:|Dirty PR sweep pass completed (summary)
 dps-sweep-stop|pulse-dirty-pr-sweep.sh|822|stop flag present.*skipping sweep|Dirty PR sweep skipped — stop flag present
 INVENTORY
+	return 0
 }
+
+_RULE_INVENTORY=$(_build_rule_inventory)
+readonly _RULE_INVENTORY
 
 # Shared path resolution and retry helpers.
 # shellcheck source=./pulse-diagnose-utils.sh
@@ -377,34 +381,41 @@ _issue_blocker_summary_json() {
 #   2026-04-21T17:45:03Z  ... or [2026-04-21T17:45:03Z] ...
 _extract_timestamp() {
 	local line="$1"
-	local ts
+	local output_var="${2:-}"
+	local timestamp_value="$_UNKNOWN"
 	# ISO timestamp at start of line or after [
-	ts=$(printf '%s' "$line" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?' | head -1)
-	if [[ -n "$ts" ]]; then
-		echo "$ts"
-		return 0
+	if [[ "$line" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z?) ]]; then
+		timestamp_value="${BASH_REMATCH[1]}"
 	fi
-	echo "$_UNKNOWN"
+	if [[ -n "$output_var" ]]; then
+		printf -v "$output_var" '%s' "$timestamp_value"
+	else
+		printf '%s\n' "$timestamp_value"
+	fi
 	return 0
 }
 
 # Classify a single log line against the rule inventory.
-# Args: $1 = log line
-# Outputs: rule_id|script|line_range|description  (or "unclassified" if no match)
+# Args: $1 = log line, $2 = optional output variable
+# Outputs or assigns: rule_id|script|line_range|description
 _classify_log_line() {
 	local line="$1"
-	local inventory
-	inventory=$(_build_rule_inventory)
+	local output_var="${2:-}"
+	local result="${_UNCLASSIFIED}|||Unclassified pulse log entry"
 
 	while IFS='|' read -r rule_id script line_range regex description; do
 		[[ -z "$rule_id" ]] && continue
-		if printf '%s' "$line" | grep -qE "$regex" 2>/dev/null; then
-			printf '%s|%s|%s|%s' "$rule_id" "$script" "$line_range" "$description"
-			return 0
+		if [[ "$line" =~ $regex ]]; then
+			result="${rule_id}|${script}|${line_range}|${description}"
+			break
 		fi
-	done <<< "$inventory"
+	done <<< "$_RULE_INVENTORY"
 
-	printf '%s|||Unclassified pulse log entry\n' "$_UNCLASSIFIED"
+	if [[ -n "$output_var" ]]; then
+		printf -v "$output_var" '%s' "$result"
+	else
+		printf '%s\n' "$result"
+	fi
 	return 0
 }
 
@@ -783,8 +794,8 @@ _cmd_pr_build_events() {
 	while IFS= read -r line; do
 		[[ -z "$line" ]] && continue
 		local ts classification
-		ts=$(_extract_timestamp "$line")
-		classification=$(_classify_log_line "$line")
+		_extract_timestamp "$line" ts
+		_classify_log_line "$line" classification
 
 		local rule_id script line_range description
 		IFS='|' read -r rule_id script line_range description <<< "$classification"
@@ -998,8 +1009,7 @@ cmd_rules() {
 		esac
 	done
 
-	local inventory
-	inventory=$(_build_rule_inventory)
+	local inventory="$_RULE_INVENTORY"
 	local count=0
 
 	if [[ "$json_output" -eq 1 ]]; then
@@ -1449,8 +1459,8 @@ _render_issue_linked_prs() {
 				[[ -z "$log_line" ]] && continue
 				event_count=$((event_count + 1))
 				local ts="" classification="" rule_id="" script_name="" line_range="" description=""
-				ts=$(_extract_timestamp "$log_line")
-				classification=$(_classify_log_line "$log_line")
+				_extract_timestamp "$log_line" ts
+				_classify_log_line "$log_line" classification
 				IFS='|' read -r rule_id script_name line_range description <<< "$classification"
 				[[ "$rule_id" == "$_UNCLASSIFIED" && "$verbose" -ne 1 ]] && { unclassified_count=$((unclassified_count + 1)); continue; }
 				printf '    %s  %b%-25s%b  %s\n' \
