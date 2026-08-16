@@ -132,6 +132,21 @@ if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
 	human)
 		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD_HUMAN","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"maintainer"},"path":"script.sh","line":12,"url":"https://example.invalid/human","updatedAt":"2026-06-03T00:00:00Z"}]}},{"id":"THREAD_BOT","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"bot.sh","line":3,"url":"https://example.invalid/bot","updatedAt":"2026-06-03T00:00:00Z"}]} }],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		;;
+	many|remaining)
+		thread_start=1
+		[[ "${STUB_THREADS_MODE}" == "remaining" ]] && thread_start=4
+		thread_end=10
+		printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":['
+		thread_number="$thread_start"
+		while [[ "$thread_number" -le "$thread_end" ]]; do
+			thread_id=$(printf '%02d' "$thread_number")
+			[[ "$thread_number" -eq "$thread_start" ]] || printf ','
+			printf '{"id":"THREAD%s","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"batch.sh","line":%s,"url":"https://example.invalid/thread%s","updatedAt":"2026-06-03T00:00:00Z"}]}}' \
+				"$thread_id" "$thread_number" "$thread_id"
+			thread_number=$((thread_number + 1))
+		done
+		printf '%s\n' '],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
+		;;
 	outdated)
 		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"THREAD_OLD","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"coderabbitai[bot]"},"path":"old.sh","line":7,"url":"https://example.invalid/outdated","updatedAt":"2026-06-03T00:00:00Z"}]}}],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		;;
@@ -406,6 +421,7 @@ setup_test_env() {
 	unset STUB_REVIEWER_COMMENTS_RESPONSE
 	unset PR_REVIEW_THREAD_RESPONSE_ESCALATE_AFTER PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN
 	unset PR_REVIEW_THREAD_RESPONSE_MAX_GLOBAL PR_REVIEW_THREAD_RESPONSE_GLOBAL_LEASE_TTL
+	unset PR_REVIEW_THREAD_RESPONSE_MAX_THREADS_PER_DISPATCH
 	TEST_ROOT="$(mktemp -d -t prrts.XXXXXX)"
 	export HOME="${TEST_ROOT}/home"
 	export LOGFILE="${TEST_ROOT}/scanner.log"
@@ -1031,6 +1047,73 @@ test_dispatch_launches_worker_and_writes_state() {
 	return 0
 }
 
+test_dispatch_batches_prompt_and_preserves_full_state() {
+	setup_test_env
+	export STUB_THREADS_MODE="many"
+	export STUB_HEADLESS_MARK_COMPLETE=true
+	export PR_REVIEW_THREAD_RESPONSE_MAX_THREADS_PER_DISPATCH=3
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	wait_for_state_marker "$state_file" '^analysis_complete=true$' || true
+	wait_for_headless_completion || true
+	local old_epoch=""
+	old_epoch="$(($(date +%s) - 400))"
+	if ! grep -q '^thread_count=10$' "$state_file" 2>/dev/null ||
+		! grep -q 'THREAD10:https://example.invalid/thread10' "$state_file" 2>/dev/null ||
+		! grep -Fq 'Assigned review threads in this batch: 3' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
+		! grep -Fq 'THREAD03:https://example.invalid/thread03' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
+		grep -Fq 'THREAD04:https://example.invalid/thread04' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
+		! grep -Fq 'Other unresolved threads outside this assigned batch are expected' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
+		! grep -Fq 'assigning batch 3/10 unresolved threads' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch bounds prompt work while preserving complete fingerprint state" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
+		teardown_test_env
+		return 0
+	fi
+	print_result "dispatch bounds prompt work while preserving complete fingerprint state" 0
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	unset STUB_HEADLESS_MARK_COMPLETE
+	export STUB_THREADS_MODE="remaining"
+	: >"$HEADLESS_LOG"
+	: >"$HEADLESS_COMPLETE_LOG"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" ]] &&
+		grep -q '^thread_count=7$' "$state_file" 2>/dev/null &&
+		grep -q 'THREAD10:https://example.invalid/thread10' "$state_file" 2>/dev/null &&
+		grep -Fq 'Assigned review threads in this batch: 3' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'THREAD04:https://example.invalid/thread04' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'THREAD06:https://example.invalid/thread06' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		! grep -Fq 'THREAD07:https://example.invalid/thread07' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+		print_result "changed full fingerprint dispatches the next bounded batch" 0
+	else
+		print_result "changed full fingerprint dispatches the next bounded batch" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_defaults_invalid_batch_limit() {
+	setup_test_env
+	export STUB_THREADS_MODE="many"
+	export PR_REVIEW_THREAD_RESPONSE_MAX_THREADS_PER_DISPATCH="invalid"
+	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	if grep -q '^thread_count=10$' "$state_file" 2>/dev/null &&
+		grep -Fq 'Assigned review threads in this batch: 8' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'THREAD08:https://example.invalid/thread08' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		! grep -Fq 'THREAD09:https://example.invalid/thread09' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+		print_result "invalid thread batch limit falls back to eight" 0
+	else
+		print_result "invalid thread batch limit falls back to eight" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_resolves_worker_github_login() {
 	setup_test_env
 	export STUB_GH_LOGIN="dispatch-runner"
@@ -1234,7 +1317,7 @@ test_dispatch_prompt_mentions_graphql_only_thread_operations() {
 	if grep -q 'Review-thread read/reply/resolve operations are GraphQL-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -q 'resolveReviewThread' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -q 'has no REST endpoint' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
-		grep -q 'Completion requires each verified-addressed thread to be resolved' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+		grep -q 'Completion requires each verified-addressed assigned thread to be resolved' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
 		print_result "dispatch prompt explains GraphQL-only thread resolution" 0
 	else
 		print_result "dispatch prompt explains GraphQL-only thread resolution" 1 "prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
@@ -1259,23 +1342,23 @@ test_dispatch_prompt_requires_machine_readable_completion_state() {
 	return 0
 }
 
-test_dispatch_prompt_requires_contract_v7_remediation_role_and_praise_only_resolution() {
+test_dispatch_prompt_requires_contract_v8_remediation_role_and_praise_only_resolution() {
 	setup_test_env
 	local stable_scanner="${HOME}/.aidevops/agents/scripts/pr-review-thread-response-scanner.sh"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	if grep -q '^worker_contract_version=7$' "$state_file" 2>/dev/null &&
-		grep -Fq 'classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+	if grep -q '^worker_contract_version=8$' "$state_file" 2>/dev/null &&
+		grep -Fq 'For each assigned review thread, classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Perform one bounded remediation pass' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Do not invoke a PR-review or code-review' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'fix actionable defects in the linked worktree' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -Fq 'PR-loop review model' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
-		print_result "dispatch prompt requires contract-v7 remediation role and praise-only resolution" 0
+		print_result "dispatch prompt requires contract-v8 remediation role and praise-only resolution" 0
 	else
-		print_result "dispatch prompt requires contract-v7 remediation role and praise-only resolution" 1 \
+		print_result "dispatch prompt requires contract-v8 remediation role and praise-only resolution" 1 \
 			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
@@ -1375,7 +1458,7 @@ test_dispatch_pr_launches_targeted_worker_with_human_opt_in() {
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	if [[ -s "$HEADLESS_LOG" && -f "$state_file" ]] &&
 		grep -q 'Target: PR #1 in owner/repo' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
-		grep -q 'For each unresolved review thread' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -q 'For each assigned review thread' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -q 'For each unresolved bot finding' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
 		print_result "dispatch-pr launches bounded targeted worker with human opt-in" 0
 	else
@@ -1710,9 +1793,9 @@ test_dispatch_retries_escalated_previous_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=7$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=8$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 7 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 8 (stored=2)' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
 		print_result "dispatch retries escalation created under previous worker contract" 1 \
@@ -2410,6 +2493,8 @@ main() {
 	test_scan_pr_excludes_human_threads_by_default
 	test_scan_pr_can_include_human_threads_with_opt_in
 	test_dispatch_launches_worker_and_writes_state
+	test_dispatch_batches_prompt_and_preserves_full_state
+	test_dispatch_defaults_invalid_batch_limit
 	test_dispatch_resolves_worker_github_login
 	test_dispatch_uses_graphql_worker_login_fallback
 	test_dispatch_fails_closed_without_authenticated_worker_login
@@ -2438,7 +2523,7 @@ main() {
 	test_dispatch_prompt_uses_stable_deployed_scanner_path
 	test_dispatch_prompt_mentions_graphql_only_thread_operations
 	test_dispatch_prompt_requires_machine_readable_completion_state
-	test_dispatch_prompt_requires_contract_v7_remediation_role_and_praise_only_resolution
+	test_dispatch_prompt_requires_contract_v8_remediation_role_and_praise_only_resolution
 	test_dispatch_prompt_requires_exactly_one_terminal_call
 	test_dispatch_prompt_explains_shell_redirection_constraint
 	test_dispatch_prompt_declares_precreated_worktree_contract
