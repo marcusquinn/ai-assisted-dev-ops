@@ -121,6 +121,14 @@ if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
 		printf '%s\n' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
 		exit 0
 	fi
+GH_STUB
+	append_fake_gh_thread_modes
+	chmod +x "${TEST_ROOT}/bin/gh"
+	return 0
+}
+
+append_fake_gh_thread_modes() {
+	cat >>"${TEST_ROOT}/bin/gh" <<'GH_STUB'
 	case "${STUB_THREADS_MODE:-unresolved}" in
 	rate_limit|error)
 		printf 'GraphQL failure\n' >&2
@@ -159,7 +167,6 @@ fi
 printf '[]\n'
 exit 0
 GH_STUB
-	chmod +x "${TEST_ROOT}/bin/gh"
 	return 0
 }
 
@@ -1060,7 +1067,7 @@ test_dispatch_batches_prompt_and_preserves_full_state() {
 	old_epoch="$(($(date +%s) - 400))"
 	if ! grep -q '^thread_count=10$' "$state_file" 2>/dev/null ||
 		! grep -q 'THREAD10:https://example.invalid/thread10' "$state_file" 2>/dev/null ||
-		! grep -Fq 'Assigned review threads in this batch: 3' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
+		! grep -Fq 'Assigned review threads in this batch (3):' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
 		! grep -Fq 'THREAD03:https://example.invalid/thread03' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
 		grep -Fq 'THREAD04:https://example.invalid/thread04' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
 		! grep -Fq 'Other unresolved threads outside this assigned batch are expected' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null ||
@@ -1081,7 +1088,7 @@ test_dispatch_batches_prompt_and_preserves_full_state() {
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^thread_count=7$' "$state_file" 2>/dev/null &&
 		grep -q 'THREAD10:https://example.invalid/thread10' "$state_file" 2>/dev/null &&
-		grep -Fq 'Assigned review threads in this batch: 3' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'Assigned review threads in this batch (3):' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'THREAD04:https://example.invalid/thread04' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'THREAD06:https://example.invalid/thread06' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -Fq 'THREAD07:https://example.invalid/thread07' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
@@ -1102,7 +1109,7 @@ test_dispatch_defaults_invalid_batch_limit() {
 	wait_for_headless_log || true
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	if grep -q '^thread_count=10$' "$state_file" 2>/dev/null &&
-		grep -Fq 'Assigned review threads in this batch: 8' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fq 'Assigned review threads in this batch (8):' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'THREAD08:https://example.invalid/thread08' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -Fq 'THREAD09:https://example.invalid/thread09' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
 		print_result "invalid thread batch limit falls back to eight" 0

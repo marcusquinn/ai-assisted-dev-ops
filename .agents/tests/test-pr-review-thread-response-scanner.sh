@@ -234,7 +234,7 @@ FAKE_HEADLESS
 		_fail "dispatch-pr succeeds"
 	fi
 
-	if [[ -f "$prompt_file" ]] && grep -q -- 'Unresolved thread IDs: THREAD_1:' "$prompt_file"; then
+	if [[ -f "$prompt_file" ]] && grep -q -- 'Assigned review threads in this batch (1): THREAD_1:' "$prompt_file"; then
 		_pass "prompt exposes GraphQL thread ID fingerprint"
 	else
 		_fail "prompt exposes GraphQL thread ID fingerprint" "prompt: ${prompt_file}"
