@@ -1652,9 +1652,10 @@ cmd_remote_interactive() {
 main() {
     aidevops_init_temp_workspace || { print_error "Could not initialize aidevops temporary workspace"; return 1; }
     prepend_aidevops_gh_shim || return 1
-    TMP="${TMP:-${TMPDIR}}"
-    TEMP="${TEMP:-${TMPDIR}}"
-    export TMP TEMP
+    TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
+    TMP="${TMP:-$TMPDIR}"
+    TEMP="${TEMP:-$TMPDIR}"
+    export TMPDIR TMP TEMP
     case "${1:-}" in
     conversation)
         shift || true

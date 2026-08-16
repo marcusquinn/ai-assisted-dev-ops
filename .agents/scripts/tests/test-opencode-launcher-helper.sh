@@ -220,6 +220,17 @@ else
     _fail "isolated launcher output unexpected: ${output}"
 fi
 
+output=$(env -u TMPDIR -u TMP -u TEMP PATH="${fake_bin}:$PATH" HOME="${home_dir}" \
+    AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --dir "${launch_dir}" --session-id unset-host-temp -- --version 2>&1)
+if [[ "${output}" == *"TMPDIR=/tmp"* ]] \
+    && [[ "${output}" == *"TMP=/tmp"* ]] \
+    && [[ "${output}" == *"TEMP=/tmp"* ]]; then
+    _pass "launcher supplies conventional runtime scratch defaults when host variables are unset"
+else
+    _fail "launcher unset-host temporary environment fallback failed: ${output}"
+fi
+
 rm -f "${fake_log}"
 output=$(PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" FAKE_OPENCODE_LOG="${fake_log}" \
     "${HELPER}" --dir "${launch_dir}" --session-id test-session -- --version 2>&1)
