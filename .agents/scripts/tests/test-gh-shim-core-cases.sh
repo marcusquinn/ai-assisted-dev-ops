@@ -290,6 +290,60 @@ else
 	_fail "explicit raw pr origin normalization" "count=${origin_count} argv: $argv"
 fi
 
+_reset_log
+STUB_MANAGED_LABELS="bug" \
+	"$SHIM_RUN" pr create --repo owner/repo --title "fresh repo" --body "For #25901" 2>/dev/null
+argv=$(_read_argv)
+created_origin_count=$(grep -c '^label create origin:' "$STUB_GH_LABEL_LOG" 2>/dev/null || true)
+if [[ "$created_origin_count" -eq 3 ]] &&
+	[[ "$argv" == *$'--label\norigin:interactive'* ]]; then
+	_pass "fresh repo provisions canonical origins before raw pr create"
+else
+	_fail "fresh repo origin provisioning" "creates=${created_origin_count} calls: $(cat "$STUB_GH_CALL_LOG") argv: $argv"
+fi
+
+_reset_log
+STUB_MANAGED_LABELS="bug" \
+	"$SHIM_RUN" pr create --repo owner/repo --title "explicit canonical" \
+	--label "origin:worker" --body "For #25901" 2>/dev/null
+created_origin_count=$(grep -c '^label create origin:' "$STUB_GH_LABEL_LOG" 2>/dev/null || true)
+if [[ "$created_origin_count" -eq 3 ]]; then
+	_pass "explicit canonical origin receives missing-label provisioning"
+else
+	_fail "explicit canonical origin provisioning" "creates=${created_origin_count} calls: $(cat "$STUB_GH_CALL_LOG")"
+fi
+
+_reset_log
+STUB_MANAGED_LABELS="bug" \
+	"$SHIM_RUN" pr create --repo owner/repo --title "explicit custom" \
+	--label "origin:custom" --body "For #25901" 2>/dev/null
+if [[ ! -s "$STUB_GH_LABEL_LOG" ]]; then
+	_pass "arbitrary origin label is never auto-provisioned"
+else
+	_fail "arbitrary origin provisioning guard" "creates: $(cat "$STUB_GH_LABEL_LOG")"
+fi
+
+_reset_log
+STUB_MANAGED_LABEL_INVENTORY_FAIL=1 \
+	"$SHIM_RUN" pr create --repo owner/repo --title "inventory unavailable" \
+	--body "For #25901" 2>/dev/null
+argv=$(_read_argv)
+if [[ "$argv" == *$'--label\norigin:interactive'* ]] && [[ ! -s "$STUB_GH_LABEL_LOG" ]]; then
+	_pass "inventory failure preserves native pr-create fallback"
+else
+	_fail "inventory failure fallback" "argv: $argv creates: $(cat "$STUB_GH_LABEL_LOG")"
+fi
+
+_reset_log
+SHIM_TEST_MODE=1 STUB_MANAGED_LABELS="bug" \
+	"$SHIM_RUN" pr create --repo owner/repo --title "test mode" \
+	--body "For #25901" >/dev/null 2>&1
+if [[ ! -s "$STUB_GH_LABEL_LOG" ]]; then
+	_pass "shim test mode performs no managed-label writes"
+else
+	_fail "shim test-mode label-write guard" "creates: $(cat "$STUB_GH_LABEL_LOG")"
+fi
+
 echo ""
 echo "Test 6a: issue-first repos block PR creation without linked issue"
 _reset_log

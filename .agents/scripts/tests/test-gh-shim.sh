@@ -82,6 +82,20 @@ fi
 if [[ -n "${STUB_GH_CALL_LOG:-}" ]]; then
 	printf '%s\t%s\n' "${1:-}" "${2:-}" >>"$STUB_GH_CALL_LOG"
 fi
+if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/labels\?per_page=100$ ]]; then
+	[[ "${STUB_MANAGED_LABEL_INVENTORY_FAIL:-0}" != "1" ]] || exit 42
+	managed_labels="${STUB_MANAGED_LABELS-}"
+	if [[ -z "${STUB_MANAGED_LABELS+x}" ]]; then
+		managed_labels=$'origin:worker\norigin:interactive\norigin:worker-takeover\nstatus:in-review\nbug'
+	fi
+	printf '%s\n' "$managed_labels"
+	exit 0
+fi
+if [[ "$1" == "label" && "$2" == "create" ]]; then
+	[[ -z "${STUB_GH_LABEL_LOG:-}" ]] || printf '%s\n' "$*" >>"$STUB_GH_LABEL_LOG"
+	[[ "${STUB_MANAGED_LABEL_CREATE_FAIL:-0}" != "1" ]] || exit 43
+	exit 0
+fi
 : >"$STUB_GH_LOG"
 for arg in "$@"; do
 	printf '%s\n' "$arg" >>"$STUB_GH_LOG"
@@ -273,6 +287,7 @@ cp "$SHIM" "$TMP/scripts/gh"
 chmod +x "$TMP/scripts/gh"
 cp "$REPO_DIR/.agents/scripts/gh-native-transport-lib.sh" "$TMP/scripts/gh-native-transport-lib.sh"
 cp "$REPO_DIR/.agents/scripts/gh-api-guards-lib.sh" "$TMP/scripts/gh-api-guards-lib.sh"
+cp "$REPO_DIR/.agents/scripts/managed-label-provisioning-lib.sh" "$TMP/scripts/managed-label-provisioning-lib.sh"
 cp "$REPO_DIR/.agents/scripts/gh-write-policy-lib.sh" "$TMP/scripts/gh-write-policy-lib.sh"
 cp "$REPO_DIR/.agents/scripts/gh-api-instrument.sh" "$TMP/scripts/gh-api-instrument.sh"
 cp "$REPO_DIR/.agents/scripts/gh-quota-attribution-lib.sh" "$TMP/scripts/gh-quota-attribution-lib.sh"
@@ -298,6 +313,7 @@ export STUB_GH_BODY_LOG="$TMP/gh-body.log"
 export STUB_GH_BODY_PATH_LOG="$TMP/gh-body-path.log"
 export STUB_GH_MAIN_CALL_LOG="$TMP/gh-main-call.log"
 export STUB_GH_CALL_LOG="$TMP/gh-call.log"
+export STUB_GH_LABEL_LOG="$TMP/gh-label.log"
 
 SHIM_RUN="$TMP/scripts/gh"
 
@@ -318,6 +334,10 @@ _reset_log() {
 	: >"$STUB_GH_BODY_PATH_LOG"
 	: >"$STUB_GH_MAIN_CALL_LOG"
 	: >"$STUB_GH_CALL_LOG"
+	: >"$STUB_GH_LABEL_LOG"
+	unset STUB_MANAGED_LABELS
+	unset STUB_MANAGED_LABEL_INVENTORY_FAIL
+	unset STUB_MANAGED_LABEL_CREATE_FAIL
 	return 0
 }
 

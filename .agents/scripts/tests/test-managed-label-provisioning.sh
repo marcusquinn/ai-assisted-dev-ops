@@ -84,6 +84,15 @@ assert_count "missing solved label is created once" 1 'gh label create solved:in
 assert_count "present origin labels are not recreated" 0 'gh label create origin:worker --repo'
 assert_count "present solved labels are not recreated" 0 'gh label create solved:worker --repo'
 
+# Tracking creation reuses the canonical origin set and adds its own labels.
+: >"$CALL_LOG"
+TEST_LABEL_SNAPSHOT=$'origin:worker\norigin:interactive\norigin:worker-takeover'
+managed_labels_ensure_tracking_set owner/repo \
+	_gh_managed_label_names_snapshot _gh_managed_label_create_runner
+assert_count "tracking set provisions status label" 1 'gh label create status:in-review '
+assert_count "tracking set provisions bug label" 1 'gh label create bug '
+assert_count "tracking set reuses present origins" 0 'gh label create origin:'
+
 # Failed inventory is fail-closed: do not fan out speculative writes or cache.
 : >"$CALL_LOG"
 _ORIGIN_LABELS_ENSURED=""

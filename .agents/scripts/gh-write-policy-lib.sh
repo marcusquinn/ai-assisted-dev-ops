@@ -11,6 +11,8 @@
 
 [[ -n "${_GH_WRITE_POLICY_LIB_LOADED:-}" ]] && return 0
 _GH_WRITE_POLICY_LIB_LOADED=1
+_SHIM_ORIGIN_INTERACTIVE_LABEL="origin:interactive"
+_SHIM_MANAGED_LABEL_SET=""
 
 if [[ -z "${_SHIM_DIR:-}" ]]; then
 	_gh_write_policy_path="${BASH_SOURCE[0]%/*}"
@@ -679,6 +681,57 @@ _shim_normalize_dispatch_labels() {
 	return 0
 }
 
+_shim_managed_label_inventory_runner() {
+	local repo="$1"
+	# The generic provisioner consumes gh's projected name stream, whereas the
+	# explicit paginator owns raw JSON pages. Keep native pagination for this
+	# bounded inventory while retaining the normal transport attribution.
+	AIDEVOPS_GH_EXPLICIT_PAGINATION_DISABLE=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="managed-label-inventory-rest" \
+		_shim_run_transport "$REAL_GH" rest gh_managed_label_inventory 0 \
+		api "/repos/${repo}/labels?per_page=100" --paginate --jq '.[].name'
+	return $?
+}
+
+_shim_managed_label_create_runner() {
+	local repo="$1"
+	local label_name="$2"
+	local label_description="$3"
+	local label_color="$4"
+	AIDEVOPS_GH_ROUTE_DECISION="managed-label-create-rest" \
+		_shim_run_transport "$REAL_GH" rest gh_managed_label_create 0 \
+		label create "$label_name" --repo "$repo" \
+		--description "$label_description" --color "$label_color" >/dev/null 2>&1
+	return $?
+}
+
+_shim_ensure_origin_labels_for_create() {
+	local repo=""
+	repo=$(_shim_target_repo_slug "${_modified_args[@]}" 2>/dev/null || true)
+	[[ -n "$repo" ]] || return 0
+	managed_labels_ensure_origin_set "$repo" \
+		_shim_managed_label_inventory_runner _shim_managed_label_create_runner
+	return $?
+}
+
+_shim_ensure_tracking_labels_for_create() {
+	local repo=""
+	repo=$(_shim_target_repo_slug "${_modified_args[@]}" 2>/dev/null || true)
+	[[ -n "$repo" ]] || return 0
+	managed_labels_ensure_tracking_set "$repo" \
+		_shim_managed_label_inventory_runner _shim_managed_label_create_runner
+	return $?
+}
+
+_shim_ensure_requested_managed_labels_for_create() {
+	case "$_SHIM_MANAGED_LABEL_SET" in
+	origin) _shim_ensure_origin_labels_for_create ;;
+	tracking) _shim_ensure_tracking_labels_for_create ;;
+	*) return 0 ;;
+	esac
+	return $?
+}
+
 _shim_normalize_interactive_tracking_issue_create() {
 	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "issue:create" ]] || return 0
 	[[ -z "${FULL_LOOP_HEADLESS:-}${AIDEVOPS_HEADLESS:-}${OPENCODE_HEADLESS:-}${GITHUB_ACTIONS:-}" ]] || return 0
@@ -686,8 +739,9 @@ _shim_normalize_interactive_tracking_issue_create() {
 	local title=""
 	title="$(_shim_issue_create_get_title 2>/dev/null || true)"
 	[[ "$title" =~ ^(t[0-9]+(\.[0-9]+)*|GH#[0-9]+):[[:space:]] ]] || return 0
+	_SHIM_MANAGED_LABEL_SET="tracking"
 
-	_shim_issue_create_has_label_prefix "origin:" || _modified_args+=(--label "origin:interactive")
+	_shim_issue_create_has_label_prefix "origin:" || _modified_args+=(--label "$_SHIM_ORIGIN_INTERACTIVE_LABEL")
 	_shim_issue_create_has_label_prefix "status:" || _modified_args+=(--label "status:in-review")
 	_shim_issue_create_has_type_label || _modified_args+=(--label "bug")
 	return 0
@@ -697,11 +751,19 @@ _shim_normalize_pr_create_origin() {
 	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "pr:create" ]] || return 0
 	# Respect an explicit immutable origin. Raw gh callers otherwise receive the
 	# same session provenance as gh_create_pr so worker drafts are recoverable.
-	_shim_issue_create_has_label_prefix "origin:" && return 0
-	local origin_label="origin:interactive"
+	if _shim_issue_create_has_label_prefix "origin:"; then
+		if _shim_issue_create_has_label "origin:worker" ||
+			_shim_issue_create_has_label "$_SHIM_ORIGIN_INTERACTIVE_LABEL" ||
+			_shim_issue_create_has_label "origin:worker-takeover"; then
+			_SHIM_MANAGED_LABEL_SET="origin"
+		fi
+		return 0
+	fi
+	local origin_label="$_SHIM_ORIGIN_INTERACTIVE_LABEL"
 	if _shim_is_headless_automation; then
 		origin_label="origin:worker"
 	fi
+	_SHIM_MANAGED_LABEL_SET="origin"
 	_modified_args+=(--label "$origin_label")
 	return 0
 }

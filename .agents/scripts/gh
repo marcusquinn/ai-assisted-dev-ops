@@ -95,6 +95,9 @@ source "${_SHIM_DIR}/gh-native-transport-lib.sh"
 # shellcheck source=./gh-api-guards-lib.sh
 # shellcheck disable=SC1091  # sibling library resolved at runtime via $_SHIM_DIR
 source "${_SHIM_DIR}/gh-api-guards-lib.sh"
+# shellcheck source=./managed-label-provisioning-lib.sh
+# shellcheck disable=SC1091  # sibling library resolved at runtime via $_SHIM_DIR
+source "${_SHIM_DIR}/managed-label-provisioning-lib.sh"
 # shellcheck source=./gh-write-policy-lib.sh
 # shellcheck disable=SC1091  # sibling library resolved at runtime via $_SHIM_DIR
 source "${_SHIM_DIR}/gh-write-policy-lib.sh"
@@ -1011,6 +1014,10 @@ if [[ "${SHIM_TEST_MODE:-}" == "1" ]]; then
 	done
 	exit 0
 fi
+
+# Managed-label provisioning is a write and must happen only after all normal
+# authorization, privacy, and local preparation gates accept the native create.
+_shim_ensure_requested_managed_labels_for_create || true
 
 # GH#21857: instrument write commands (issue comment/create/edit, pr create/
 # comment/edit) — these all use the GraphQL endpoint.

@@ -507,11 +507,8 @@ _gh_managed_label_names_snapshot() {
 _gh_managed_label_snapshot_has() {
 	local snapshot="$1"
 	local expected_name="$2"
-	local actual_name=""
-	while IFS= read -r actual_name; do
-		[[ "$actual_name" == "$expected_name" ]] && return 0
-	done <<<"$snapshot"
-	return 1
+	managed_label_snapshot_has "$snapshot" "$expected_name"
+	return $?
 }
 
 # =============================================================================
@@ -795,6 +792,10 @@ NON_TASK_LABELS=(
 #   - ISSUE_STATUS_LABELS, NON_TASK_LABELS (status)
 #   - _gh_with_timeout (status)
 if [[ -n "$_SHARED_GH_WRAPPERS_DIR" ]]; then
+	# shellcheck source=managed-label-provisioning-lib.sh
+	# shellcheck disable=SC1091  # sub-library resolved at runtime via $_SHARED_GH_WRAPPERS_DIR
+	source "$_SHARED_GH_WRAPPERS_DIR/managed-label-provisioning-lib.sh"
+
 	# shellcheck source=shared-gh-wrappers-session.sh
 	# shellcheck disable=SC1091  # sub-library resolved at runtime via $_SHARED_GH_WRAPPERS_DIR
 	source "$_SHARED_GH_WRAPPERS_DIR/shared-gh-wrappers-session.sh"

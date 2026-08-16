@@ -325,6 +325,20 @@ else
 	_fail "tracking issue label normalization" "argv: $argv"
 fi
 
+_reset_log
+STUB_MANAGED_LABELS="origin:worker" \
+	"$SHIM_RUN" issue create --repo owner/repo --title "t3565: Fresh labels" \
+	--body "tracking body" 2>/dev/null
+argv=$(_read_argv)
+if grep -q '^label create origin:interactive ' "$STUB_GH_LABEL_LOG" &&
+	grep -q '^label create status:in-review ' "$STUB_GH_LABEL_LOG" &&
+	grep -q '^label create bug ' "$STUB_GH_LABEL_LOG" &&
+	[[ "$argv" == *$'--label\norigin:interactive'* ]]; then
+	_pass "fresh repo provisions every shim-injected tracking label"
+else
+	_fail "fresh tracking-label provisioning" "argv: $argv creates: $(cat "$STUB_GH_LABEL_LOG") calls: $(cat "$STUB_GH_CALL_LOG")"
+fi
+
 # =============================================================================
 # Test 17: raw issue normalization respects explicit labels and headless mode
 # =============================================================================
@@ -372,6 +386,21 @@ fi
 # =============================================================================
 echo ""
 echo "Test 18: headless external write guard blocks raw comments"
+_reset_log
+if AIDEVOPS_HEADLESS=1 "$SHIM_RUN" pr create --repo external/repo \
+	--title "blocked create" --body "For #123" 2>"$TMP/guard-create.err"; then
+	_fail "headless pr create guard" "write unexpectedly passed"
+else
+	argv=$(_read_argv)
+	if [[ -z "$argv" ]] && [[ ! -s "$STUB_GH_LABEL_LOG" ]] &&
+		grep -q "external-write-guard" "$TMP/guard-create.err"; then
+		_pass "blocked headless pr create performs no label writes"
+	else
+		_fail "headless pr create label-write guard" \
+			"argv: $argv creates: $(cat "$STUB_GH_LABEL_LOG") err: $(cat "$TMP/guard-create.err")"
+	fi
+fi
+
 _reset_log
 if AIDEVOPS_HEADLESS=1 "$SHIM_RUN" issue comment 123 --repo external/repo --body "uninstigated" 2>"$TMP/guard-issue.err"; then
 	_fail "headless issue comment guard" "write unexpectedly passed"

@@ -1273,6 +1273,9 @@ _save_cleanup_scope() {
 # See shared-gh-wrappers.sh for full documentation.
 
 _SC_SELF="${BASH_SOURCE[0]:-${0:-}}"
+# shellcheck source=./managed-label-provisioning-lib.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via _SC_SELF
+_source_shared_module_with_retry "${_SC_SELF%/*}/managed-label-provisioning-lib.sh"
 # shellcheck source=./shared-gh-wrappers.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via _SC_SELF
 _source_shared_module_with_retry "${_SC_SELF%/*}/shared-gh-wrappers.sh"

@@ -995,25 +995,18 @@ _ensure_origin_labels_for_args() {
 ensure_origin_labels_exist() {
 	local repo="$1"
 	[[ -z "$repo" ]] && return 1
-	local labels_snapshot=""
-	labels_snapshot=$(_gh_managed_label_names_snapshot "$repo") || return 1
-	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "origin:worker"; then
-		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
-			_gh_with_timeout write gh label create "origin:worker" --repo "$repo" \
-			--description "Created by headless/pulse worker session" \
-			--color "C5DEF5" 2>/dev/null || return 1
-	fi
-	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "origin:interactive"; then
-		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
-			_gh_with_timeout write gh label create "origin:interactive" --repo "$repo" \
-			--description "Created by interactive user session" \
-			--color "BFD4F2" 2>/dev/null || return 1
-	fi
-	if ! _gh_managed_label_snapshot_has "$labels_snapshot" "origin:worker-takeover"; then
-		AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
-			_gh_with_timeout write gh label create "origin:worker-takeover" --repo "$repo" \
-			--description "Worker took over from interactive session" \
-			--color "D4C5F9" 2>/dev/null || return 1
-	fi
-	return 0
+	managed_labels_ensure_origin_set "$repo" \
+		_gh_managed_label_names_snapshot _gh_managed_label_create_runner
+	return $?
+}
+
+_gh_managed_label_create_runner() {
+	local repo="$1"
+	local label_name="$2"
+	local label_description="$3"
+	local label_color="$4"
+	AIDEVOPS_GH_ROUTE_DECISION="$_GH_MANAGED_LABEL_CREATE_ROUTE" \
+		_gh_with_timeout write gh label create "$label_name" --repo "$repo" \
+		--description "$label_description" --color "$label_color" 2>/dev/null
+	return $?
 }
