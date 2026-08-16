@@ -118,9 +118,9 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 - [x] t18199 Make issue sync recover from split REST and GraphQL availability #bug #framework #reliability #github-api #auto-dispatch ~4h tier:standard ref:GH#29517 logged:2026-08-04 -> [todo/tasks/t18199-brief.md] pr:#29525 completed:2026-08-04
 - [x] t18200 Avoid false dependency holds from descriptive issue prose #bug #framework #reliability #pulse #auto-dispatch ~2h tier:standard ref:GH#29520 logged:2026-08-04 -> [todo/tasks/t18200-brief.md] pr:#29533 completed:2026-08-05
 - [x] t18201 Coordinate Milestone 2 read-only team-interface delivery #mission:m-20260804-5d06b1 #enhancement #framework #parent-task #no-auto-dispatch ~25.5h tier:thinking ref:GH#29541 logged:2026-08-05 -> [todo/tasks/t18201-brief.md] pr:#29694 testing:runtime-verified completed:2026-08-07
-- [x] t18202 Implement the read-only team-interface core and deterministic planner #mission:m-20260804-5d06b1 #enhancement #framework #reliability #auto-dispatch ~6h tier:standard parent:t18201 ref:GH#29542 logged:2026-08-05 -> [todo/tasks/t18202-brief.md] pr:#29619 completed:2026-08-06
+- [x] t18202 Implement the read-only team-interface core and deterministic planner #mission:m-20260804-5d06b1 #enhancement #framework #reliability #auto-dispatch ~6h tier:standard parent:t18201 ref:GH#29625 logged:2026-08-05 -> [todo/tasks/t18202-brief.md] pr:#29619 completed:2026-08-06
 - [x] t18203 Generate the canonical aidevops agent roster from discovery metadata #mission:m-20260804-5d06b1 #enhancement #framework #agents #auto-dispatch ~3.5h tier:standard parent:t18201 ref:GH#29543 logged:2026-08-05 -> [todo/tasks/t18203-brief.md] pr:#29605 completed:2026-08-05
-- [x] t18205 Implement the read-only Buzz team-interface adapter #mission:m-20260804-5d06b1 #enhancement #framework #reliability #interactive #auto-dispatch ~5h tier:standard parent:t18201 ref:GH#29631 logged:2026-08-06 -> [todo/tasks/t18205-brief.md] pr:#29636 completed:2026-08-06
+- [x] t18205 Implement the read-only Buzz team-interface adapter #mission:m-20260804-5d06b1 #enhancement #framework #reliability #interactive #auto-dispatch ~5h tier:standard parent:t18201 ref:GH#29637 logged:2026-08-06 -> [todo/tasks/t18205-brief.md] pr:#29636 completed:2026-08-06
 - [x] t18217 Reuse trusted Dependabot verification in full-loop merges #bug #security #framework #full-loop #interactive #auto-dispatch #priority:high ~4h tier:thinking ref:GH#29769 assignee:marcusquinn started:2026-08-07 logged:2026-08-07 -> [todo/tasks/t18217-brief.md] pr:#29770 completed:2026-08-07
 - [ ] t18132 Prevent cross-install upstream-watch duplicate issues #bug #framework #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#27821 logged:2026-07-15 -> [todo/tasks/t18132-brief.md]
 - [ ] t18133 Normalize raw PR creation origin provenance — make managed headless `gh pr create` calls preserve one session-origin label so worker drafts enter stale-checkpoint recovery without weakening protected drafts or external-write gates. #bug #framework #pulse #auto-dispatch ~2h tier:standard ref:GH#27802 logged:2026-07-15 -> [todo/tasks/t18133-brief.md]
@@ -1275,11 +1275,11 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18240 Add privacy-safe attribution experiments reporting and growth recommendations #enhancement #interactive #auto-dispatch ~11h tier:thinking ref:GH#30147 logged:2026-08-13 blocked-by:t18236 -> [todo/tasks/t18240-brief.md] pr:#30266 pr:#30282 completed:2026-08-15
 
-- [ ] t18242 Prevent stale recovery from displacing live interactive sessions #bug #interactive #auto-dispatch ~4h tier:thinking ref:GH#30274 logged:2026-08-15
+- [x] t18242 Prevent stale recovery from displacing live interactive sessions #bug #interactive #auto-dispatch ~4h tier:thinking ref:GH#30274 logged:2026-08-15 pr:#30295 completed:2026-08-15
 
 - [x] t18243 Complete the privacy-safe marketing optimization contract #bug #interactive #auto-dispatch ~11h tier:thinking ref:GH#30275 logged:2026-08-15 started:2026-08-15 pr:#30282 completed:2026-08-15
 
-- [ ] t18244 Make generated writing and GitHub briefs reader-first #content #documentation #feat #publication:pending ref:GH#30305
+- [x] t18244 Make generated writing and GitHub briefs reader-first #content #documentation #feat #publication:pending ref:GH#30305 pr:#30306 completed:2026-08-16
 
 ## In Progress
 
@@ -1338,7 +1338,7 @@ t165,Provider-agnostic task claiming via TODO.md,marcusquinn,orchestration archi
 
 ## Done
 - [x] t18222 Ship owner-reviewed Buzz interactive team runtime #agents #auto-dispatch #feat #framework #reliability #security ~8h tier:thinking ref:GH#29831 assignee:marcusquinn started:2026-08-08 logged:2026-08-09 -> [todo/tasks/t18222-brief.md] pr:#29834 testing:runtime-verified completed:2026-08-09
-- [x] t18208 Generate restricted OpenCode conversation launch overlays #mission:m-20260804-5d06b1 #enhancement #security #framework #agents #interactive #auto-dispatch ~5h tier:thinking parent:t18201 ref:GH#29647 logged:2026-08-06 -> [todo/tasks/t18208-brief.md] pr:#29673 testing:runtime-verified completed:2026-08-07
+- [x] t18208 Generate restricted OpenCode conversation launch overlays #mission:m-20260804-5d06b1 #enhancement #security #framework #agents #interactive #auto-dispatch ~5h tier:thinking parent:t18201 ref:GH#29686 logged:2026-08-06 -> [todo/tasks/t18208-brief.md] pr:#29673 testing:runtime-verified completed:2026-08-07
 - [x] t18207 Refactor Matrix behind the team-interface contracts #mission:m-20260804-5d06b1 #enhancement #security #reliability #framework #interactive #auto-dispatch ~6h tier:thinking parent:t18201 ref:GH#29646 logged:2026-08-06 -> [todo/tasks/t18207-brief.md] pr:#29669 testing:runtime-verified completed:2026-08-07
 - [x] t18206 Prevent bodyless parent snapshots from closing incomplete trackers #bug #framework #pulse #reliability #interactive #auto-dispatch ~4h tier:standard ref:GH#29645 logged:2026-08-06 -> [todo/tasks/t18206-brief.md] pr:#29650 testing:self-assessed completed:2026-08-07
 - [x] t18204 Add private Reach egress and search-observation contracts #auto-dispatch #feat ref:GH#29551 pr:#29555 testing:runtime-verified completed:2026-08-05
@@ -4809,3 +4809,5 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [ ] t18189 Route standard workload tier through OpenAI Luna max reasoning #bug #type:enhancement ref:GH#29070
 - [ ] t18221 Show delegated child counts in routing feedback toasts #auto-dispatch #enhancement #framework #observability #opencode ref:GH#29815
 - [ ] t18220 Route output-heavy interactive work through lower-tier subagents #auto-dispatch #enhancement #framework ref:GH#29813
+- [ ] t18241 Fix legacy release lane normalization during published reconciliation #bug ref:GH#30149
+- [ ] t18227 Add provenance-preserving content metadata subagent #feature ref:GH#30062
