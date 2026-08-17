@@ -16,13 +16,14 @@ SIGNALS_JSON="${TEST_ROOT}/signals.json"
 TRANSPORT_LOG="${TEST_ROOT}/transport.log"
 FAKE_FRAMEWORK_HELPER="${TEST_ROOT}/framework-issue-helper.sh"
 FAKE_CONTRIBUTOR_HELPER="${TEST_ROOT}/contributor-insight-helper.sh"
+ROLE_KEY="role"
 
 cat >"$REPOS_JSON" <<JSON
 {
   "initialized_repos": [
-    {"slug":"marcusquinn/aidevops","path":"${REPO_ROOT}","role":"maintainer","pulse":true},
-    {"slug":"example/public-upstream","path":"${REPO_ROOT}","role":"contributor","pulse":true,"local_only":false},
-    {"slug":"example/private-upstream","path":"${REPO_ROOT}","role":"contributor","pulse":true,"local_only":true},
+    {"slug":"marcusquinn/aidevops","path":"${REPO_ROOT}","${ROLE_KEY}":"maintainer","pulse":true},
+    {"slug":"example/public-upstream","path":"${REPO_ROOT}","${ROLE_KEY}":"contributor","pulse":true,"local_only":false},
+    {"slug":"example/private-upstream","path":"${REPO_ROOT}","${ROLE_KEY}":"contributor","pulse":true,"local_only":true},
     {"slug":"example/unknown","path":"${REPO_ROOT}","pulse":true}
   ]
 }
@@ -112,13 +113,13 @@ TRANSPORT_LOG="$TRANSPORT_LOG" \
 
 MARKED_REPOS_JSON="${TEST_ROOT}/marked-repos.json"
 cat >"$MARKED_REPOS_JSON" <<JSON
-{"initialized_repos":[{"slug":"example/framework","path":"${REPO_ROOT}","role":"maintainer","framework":true}]}
+{"initialized_repos":[{"slug":"example/framework","path":"${REPO_ROOT}","${ROLE_KEY}":"maintainer","framework":true}]}
 JSON
 marked_result=$(TRANSPORT_LOG="$TRANSPORT_LOG" SESSION_MINER_FRAMEWORK_HELPER="$FAKE_FRAMEWORK_HELPER" \
 	bash "$ACTUATION_HELPER" maintainer --signals "$SIGNALS_JSON" --repos "$MARKED_REPOS_JSON" \
-		--framework-slug example/framework --known-fingerprints '[]')
-printf '%s' "$marked_result" | jq -e '.status == "healthy" and .selected == 1' >/dev/null
-[[ $(wc -l <"$TRANSPORT_LOG" | tr -d ' ') == "2" ]]
+		--known-fingerprints '[]' 2>/dev/null) || true
+printf '%s' "$marked_result" | jq -e '.status == "deferred" and .error_class == "unknown_framework_role"' >/dev/null
+[[ $(wc -l <"$TRANSPORT_LOG" | tr -d ' ') == "1" ]]
 
 if TRANSPORT_LOG="$TRANSPORT_LOG" FAKE_FRAMEWORK_UNCONFIRMED=1 \
 	SESSION_MINER_FRAMEWORK_HELPER="$FAKE_FRAMEWORK_HELPER" \

@@ -1021,6 +1021,7 @@ output_results() {
 run_actuation() {
 	local since_ms="$1"
 	_actuation_fingerprints='[]'
+	_actuation_status="healthy"
 	[[ "$_create_issues" == true ]] || return 0
 	[[ "$_dry_run" != true ]] || return 0
 	[[ -x "$ACTUATION_HELPER" && -f "$REPOS_JSON" ]] || return 1
@@ -1028,27 +1029,22 @@ run_actuation() {
 	local known_fingerprints='[]'
 	known_fingerprints=$(state_existing_json | jq -c '.fingerprints // []') || known_fingerprints='[]'
 	local framework_entry='{}' framework_path="" framework_slug="" framework_signals="" result="" receipts='[]'
-	framework_entry=$(jq -c --arg configured_slug "${SESSION_MINER_FRAMEWORK_SLUG:-}" '
-		[.initialized_repos[]? | select(.role == "maintainer")]
-		| if $configured_slug != "" then
-			[.[] | select(.slug == $configured_slug)]
-		  else
-			([.[] | select(.slug == "marcusquinn/aidevops")] as $legacy
-			 | if ($legacy | length) == 1 then $legacy
-			   elif ($legacy | length) == 0 then
-				[.[] | select(.framework == true or .is_framework_dir == true)]
-			   else [] end)
-		  end
+	framework_entry=$(jq -c '
+		[.initialized_repos[]? | select(.slug == "marcusquinn/aidevops" and .role == "maintainer")]
 		| if length == 1 then .[0] else {} end
 	' "$REPOS_JSON" 2>/dev/null) || framework_entry='{}'
 	framework_path=$(printf '%s' "$framework_entry" | jq -r '.path // ""') || framework_path=""
 	framework_slug=$(printf '%s' "$framework_entry" | jq -r '.slug // ""') || framework_slug=""
+	if [[ -z "$framework_slug" ]]; then
+		_actuation_status="skipped_no_framework_registration"
+		_counts_json=$(printf '%s' "$_counts_json" | jq -c '.actuated = 0') || return 1
+		return 0
+	fi
 	[[ -n "$framework_path" && -d "$framework_path" ]] || return 1
-	[[ -n "$framework_slug" ]] || return 1
 	framework_signals=$(run_repo_scoped_pipeline "$_db_path" "$framework_path" "$framework_slug" "$since_ms") || return 1
 	validate_compressed_metadata "$framework_signals" "$since_ms" || return 1
 	result=$("$ACTUATION_HELPER" maintainer --signals "$framework_signals" --repos "$REPOS_JSON" \
-		--framework-slug "$framework_slug" --known-fingerprints "$known_fingerprints") || return 1
+		--known-fingerprints "$known_fingerprints") || return 1
 	receipts=$(printf '%s' "$result" | jq -c '.fingerprints // []') || return 1
 	_actuation_fingerprints=$(printf '%s' "$_actuation_fingerprints" | jq -c --argjson receipts "$receipts" '. + $receipts | unique') || return 1
 
@@ -1157,6 +1153,7 @@ main() {
 	_counts_json=""
 	_new_watermark_ms=""
 	_actuation_fingerprints='[]'
+	_actuation_status="healthy"
 
 	# Run extraction + compression pipeline
 	run_pipeline "$db_path" "$since_ms" || {
@@ -1185,7 +1182,7 @@ main() {
 		duration=$((ended_epoch - started_epoch))
 		[[ "$duration" -ge 0 ]] || duration=0
 		[[ -n "$watermark" ]] || watermark="$since_ms"
-		state_write healthy "" "$duration" "$_counts_json" "$watermark" "$_actuation_fingerprints" true || return 1
+		state_write "$_actuation_status" "" "$duration" "$_counts_json" "$watermark" "$_actuation_fingerprints" true || return 1
 	fi
 
 	cleanup_old_pulses

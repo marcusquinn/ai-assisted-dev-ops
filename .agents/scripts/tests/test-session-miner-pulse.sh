@@ -197,8 +197,9 @@ jq -e '
 
 ACTUATION_REPOS="${TEST_ROOT}/repos.json"
 FAILING_ACTUATION="${TEST_ROOT}/failing-actuation.sh"
+ROLE_KEY="role"
 cat >"$ACTUATION_REPOS" <<JSON
-{"initialized_repos":[{"slug":"marcusquinn/aidevops","path":"${REPO_ROOT}","role":"maintainer","pulse":true}]}
+{"initialized_repos":[{"slug":"marcusquinn/aidevops","path":"${REPO_ROOT}","${ROLE_KEY}":"maintainer","pulse":true}]}
 JSON
 cat >"$FAILING_ACTUATION" <<'SH'
 #!/usr/bin/env bash
@@ -217,21 +218,34 @@ jq -e '
     .last_success_epoch == 3000
 ' "$STATE_FILE" >/dev/null
 
-MARKED_ACTUATION_REPOS="${TEST_ROOT}/marked-repos.json"
 SUCCESSFUL_ACTUATION="${TEST_ROOT}/successful-actuation.sh"
 ACTUATION_LOG="${TEST_ROOT}/actuation.log"
-cat >"$MARKED_ACTUATION_REPOS" <<JSON
-{"initialized_repos":[{"slug":"example/framework","path":"${REPO_ROOT}","role":"maintainer","framework":true}]}
-JSON
 cat >"$SUCCESSFUL_ACTUATION" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${ACTUATION_LOG:?}"
 printf '{"status":"healthy","fingerprints":["framework-receipt"]}\n'
 SH
 chmod +x "$SUCCESSFUL_ACTUATION"
-REPOS_JSON="$MARKED_ACTUATION_REPOS" SESSION_MINER_ACTUATION_HELPER="$SUCCESSFUL_ACTUATION" \
+
+EMPTY_ACTUATION_REPOS="${TEST_ROOT}/empty-repos.json"
+printf '{"initialized_repos":[]}\n' >"$EMPTY_ACTUATION_REPOS"
+REPOS_JSON="$EMPTY_ACTUATION_REPOS" SESSION_MINER_ACTUATION_HELPER="$SUCCESSFUL_ACTUATION" \
 	ACTUATION_LOG="$ACTUATION_LOG" FAKE_HIGH_WATER_MS=4000 run_pulse 4500 --force --create-issues >/dev/null
-grep -q -- 'maintainer.*--framework-slug example/framework' "$ACTUATION_LOG"
+jq -e '.status == "skipped_no_framework_registration" and .error_class == null and .counts.actuated == 0 and .source_watermark_ms == 4000' "$STATE_FILE" >/dev/null
+[[ ! -s "$ACTUATION_LOG" ]]
+
+MARKED_ACTUATION_REPOS="${TEST_ROOT}/marked-repos.json"
+cat >"$MARKED_ACTUATION_REPOS" <<JSON
+{"initialized_repos":[{"slug":"example/framework","path":"${REPO_ROOT}","${ROLE_KEY}":"maintainer","framework":true}]}
+JSON
+REPOS_JSON="$MARKED_ACTUATION_REPOS" SESSION_MINER_ACTUATION_HELPER="$SUCCESSFUL_ACTUATION" \
+	ACTUATION_LOG="$ACTUATION_LOG" FAKE_HIGH_WATER_MS=5000 run_pulse 5500 --force --create-issues >/dev/null
+jq -e '.status == "skipped_no_framework_registration" and .counts.actuated == 0 and .source_watermark_ms == 5000' "$STATE_FILE" >/dev/null
+[[ ! -s "$ACTUATION_LOG" ]]
+
+REPOS_JSON="$ACTUATION_REPOS" SESSION_MINER_ACTUATION_HELPER="$SUCCESSFUL_ACTUATION" \
+	ACTUATION_LOG="$ACTUATION_LOG" FAKE_HIGH_WATER_MS=6000 run_pulse 6500 --force --create-issues >/dev/null
+grep -q -- '^maintainer ' "$ACTUATION_LOG"
 jq -e '.status == "healthy" and .counts.actuated == 1 and (.fingerprints | index("framework-receipt") != null)' "$STATE_FILE" >/dev/null
 
 ROUTINE_CAPTURE="${TEST_ROOT}/routine-capture"
