@@ -5,9 +5,9 @@
 
 Maximise output per token. Compress prose, not results.
 
-**OpenCode Bash tool calls do not support shell redirections, pipes, subshells,
-or process substitutions.** Run dependent commands as separate tool calls; use
-the runtime's file tools for file content instead of shell redirection.
+**OpenCode Bash supports pipelines, but its parser rejects redirection, dynamic
+expansion, grouping/subshell syntax, background execution, and unquoted globs.**
+Split blocked operations into separate calls and use file tools for persisted content.
 
 ## 1. Ship early, keep the audit trail intact
 
@@ -18,7 +18,7 @@ the runtime's file tools for file content instead of shell redirection.
 git add -A && git commit -m 'feat: <what you just did> (<task-id>)'
 ```
 
-- After the first commit, push and open a draft PR. Later commits only need `git push`; finish with `gh pr ready`. In OpenCode, run each command separately and use the Write tool to create the PR body file.
+- After the first commit, push and open a draft PR. Later commits only need `git push`; finish with `gh pr ready`. In OpenCode, use the Write tool to create the PR body file before the GitHub call.
 
 ```bash
 git push -u origin HEAD
@@ -29,7 +29,7 @@ then run the GitHub write in the next Bash tool call so the signature gate can
 read the completed file before execution:
 
 ```bash
-gh pr create --draft --title '<task-id>: <description>' --body-file "$PR_BODY_FILE"
+gh pr create --draft --title 'GH#123: description' --body-file '/path/to/pr-body.md'
 ```
 
 - **ShellCheck before push for `.sh` files (t234).** Do not push violations. In OpenCode, first run `command -v shellcheck`, then list changed files with `git diff --name-only origin/HEAD..HEAD`, and run ShellCheck separately for each changed `.sh` file. If ShellCheck is unavailable, skip and note it in the PR body.

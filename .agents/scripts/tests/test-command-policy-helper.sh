@@ -205,6 +205,40 @@ PY
 	return 0
 }
 
+test_worker_protocol_bash_examples() {
+	local prompt="${SCRIPT_DIR}/../prompts/worker-efficiency-protocol.md"
+	if python3 - "$SCRIPT_DIR" "$prompt" <<'PY'; then
+import pathlib
+import sys
+
+scripts_dir = pathlib.Path(sys.argv[1])
+prompt = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(scripts_dir))
+
+from command_policy_parser import _shell_invocations
+
+commands = []
+in_bash_block = False
+for line in prompt.read_text(encoding="utf-8").splitlines():
+    if line == "```bash":
+        in_bash_block = True
+    elif in_bash_block and line == "```":
+        in_bash_block = False
+    elif in_bash_block and line.strip():
+        commands.append(line)
+
+if len(commands) < 3:
+    raise SystemExit(f"expected at least 3 Bash examples, found {len(commands)}")
+for command in commands:
+    _shell_invocations(command)
+PY
+		pass "worker protocol Bash examples satisfy command parser"
+	else
+		fail "worker protocol Bash examples satisfy command parser"
+	fi
+	return 0
+}
+
 test_account_mutation_authorization() {
 	local command_text="gh repo fork owner/source --clone=false"
 	local authorization=""
@@ -771,6 +805,7 @@ PY
 main() {
 	test_validation
 	test_evaluate_invocations_compatibility
+	test_worker_protocol_bash_examples
 	test_static_decisions
 	test_process_table_parser
 	test_process_termination_policy
