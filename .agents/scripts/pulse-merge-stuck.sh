@@ -59,6 +59,8 @@ _PULSE_MERGE_STUCK_LOADED=1
 # (test harness, pulse-merge-routine.sh) the pulse-wrapper.sh bootstrap has
 # NOT run; guard each bare var so set -u does not abort.
 : "${LOGFILE:=${HOME}/.aidevops/logs/pulse.log}"
+_PMS_HOLD_FOR_REVIEW_LABEL="hold-for-review"
+_PMS_LABELS_CSV_JQ='[.labels[]?.name] | join(",")'
 
 # Source the pulse-stats helper for gauge/counter writes.
 _PULSE_MERGE_STUCK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -202,7 +204,7 @@ _pms_is_eligible_stuck() {
 	mergeable=$(printf '%s' "$pr_obj" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null)
 	review_decision=$(printf '%s' "$pr_obj" | jq -r '.reviewDecision // ""' 2>/dev/null)
 	is_draft=$(printf '%s' "$pr_obj" | jq -r '.isDraft // false' 2>/dev/null)
-	labels=$(printf '%s' "$pr_obj" | jq -r '[.labels[].name] | join(",")' 2>/dev/null)
+	labels=$(printf '%s' "$pr_obj" | jq -r "$_PMS_LABELS_CSV_JQ" 2>/dev/null)
 
 	# Skip drafts unconditionally
 	[[ "$is_draft" == "true" ]] && {
@@ -210,7 +212,7 @@ _pms_is_eligible_stuck() {
 		return 0
 	}
 	# Skip hold-for-review opt-out
-	[[ "$labels" == *"hold-for-review"* ]] && {
+	[[ "$labels" == *"$_PMS_HOLD_FOR_REVIEW_LABEL"* ]] && {
 		printf '0'
 		return 0
 	}
@@ -251,10 +253,10 @@ _pms_is_pattern_outage_candidate() {
 	local pr_obj="$1"
 	local is_draft="" labels="" review_decision="" is_stuck=""
 	is_draft=$(printf '%s' "$pr_obj" | jq -r '.isDraft // false' 2>/dev/null)
-	labels=$(printf '%s' "$pr_obj" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null)
+	labels=$(printf '%s' "$pr_obj" | jq -r "$_PMS_LABELS_CSV_JQ" 2>/dev/null)
 	review_decision=$(printf '%s' "$pr_obj" | jq -r '.reviewDecision // ""' 2>/dev/null)
 
-	if [[ "$is_draft" == "true" || "$labels" == *"hold-for-review"* ]]; then
+	if [[ "$is_draft" == "true" || "$labels" == *"$_PMS_HOLD_FOR_REVIEW_LABEL"* ]]; then
 		printf '0'
 		return 0
 	fi
@@ -443,7 +445,7 @@ _classify_stuck_pr() {
 
 	local mergeable="" labels="" head_sha="" check_runs=""
 	mergeable=$(printf '%s' "$pr_meta" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null)
-	labels=$(printf '%s' "$pr_meta" | jq -r '[.labels[].name] | join(",")' 2>/dev/null)
+	labels=$(printf '%s' "$pr_meta" | jq -r "$_PMS_LABELS_CSV_JQ" 2>/dev/null)
 	head_sha=$(_pms_head_sha_from_pr_json "$pr_meta")
 	check_runs=$(_pms_check_runs_for_head "$repo_slug" "$head_sha")
 
