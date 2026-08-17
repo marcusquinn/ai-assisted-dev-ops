@@ -256,6 +256,32 @@ test_typescript_is_maintainer_allowlisted() {
 	return 0
 }
 
+test_worker_intake_authenticates_paginated_checks() {
+	local graphql_calls=""
+	local fixture_tmp="${TEST_ROOT}/graphql-paginated.json"
+
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	jq '.data.repository.pullRequest.statusCheckRollup.contexts.pageInfo.hasNextPage = true' \
+		"${TEST_ROOT}/graphql.json" >"$fixture_tmp"
+	mv "$fixture_tmp" "${TEST_ROOT}/graphql.json"
+	_TRUSTED_DEPENDABOT_LAST_PR_JSON=""
+	_TRUSTED_DEPENDABOT_LAST_REPO=""
+	_TRUSTED_DEPENDABOT_LAST_PR=""
+	_TRUSTED_DEPENDABOT_LAST_HEAD=""
+	: >"$GH_LOG"
+	if ! _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
+		&& _is_authentic_dependabot_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
+		graphql_calls=$(grep -cF 'gh api graphql' "$GH_LOG" 2>/dev/null) || graphql_calls=0
+		if [[ "$graphql_calls" -eq 2 ]] \
+			&& grep -qF '1|trusted-dependabot-auth-exact-cost|gh api graphql' "$GH_LOG"; then
+			print_result "worker intake authenticates independently of paginated checks" 0
+			return 0
+		fi
+	fi
+	print_result "worker intake authenticates independently of paginated checks" 1 "gh log: $(<"$GH_LOG")"
+	return 0
+}
+
 test_trusted_dependabot_binds_expected_head() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
@@ -478,6 +504,7 @@ main() {
 	test_trusted_dependabot_uses_response_metered_graphql
 	test_worker_intake_reuses_trusted_snapshot
 	test_typescript_is_maintainer_allowlisted
+	test_worker_intake_authenticates_paginated_checks
 	test_trusted_dependabot_binds_expected_head
 	test_standard_dependabot_body_parser
 	test_quoted_dependabot_dependency_names

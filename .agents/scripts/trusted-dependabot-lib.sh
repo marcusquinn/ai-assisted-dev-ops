@@ -150,21 +150,64 @@ _trusted_dependabot_project_pr_json() {
 	return $?
 }
 
+_trusted_dependabot_project_auth_json() {
+	local response="$1"
+
+	printf '%s' "$response" | jq -ce '
+		def string_type: "string";
+		def array_type: "array";
+		(if ((.errors // []) | length) > 0
+		 then error("GraphQL returned errors")
+		 else .data.repository.pullRequest end) as $pr
+		| if $pr == null then error("pull request unavailable")
+		  elif (($pr.author.__typename | type) != string_type or ($pr.author.__typename | length) == 0
+			or ($pr.author.login | type) != string_type or ($pr.author.login | length) == 0
+			or ($pr.headRefOid | type) != string_type or ($pr.headRefOid | length) == 0
+			or ($pr.headRepository.nameWithOwner | type) != string_type or ($pr.headRepository.nameWithOwner | length) == 0
+			or ($pr.headRepositoryOwner.login | type) != string_type or ($pr.headRepositoryOwner.login | length) == 0
+			or ($pr.commits.nodes | type) != array_type or ($pr.commits.nodes | length) == 0
+			or ([$pr.commits.nodes[] | select((.commit.authors.nodes | type) != array_type or (.commit.authors.nodes | length) == 0)] | length) > 0)
+		  then error("Dependabot authentication snapshot is incomplete")
+		  elif (($pr.commits.pageInfo.hasNextPage // false)
+			or ([$pr.commits.nodes[]?.commit.authors.pageInfo.hasNextPage // false] | any))
+		  then error("Dependabot authentication snapshot is paginated")
+		  else {
+			author: $pr.author,
+			headRefOid: $pr.headRefOid,
+			headRepository: $pr.headRepository,
+			headRepositoryOwner: $pr.headRepositoryOwner,
+			commits: [$pr.commits.nodes[] | {
+				authors: [.commit.authors.nodes[] | {login: (.user.login // "")}]
+			}]
+		  } end
+	' 2>/dev/null
+	return $?
+}
+
 _trusted_dependabot_pr_json_graphql() {
 	local pr_number="$1"
 	local repo_slug="$2"
+	local snapshot_mode="${3:-full}"
 	local owner="${repo_slug%%/*}"
 	local name="${repo_slug##*/}"
 	local response=""
 	local reported_cost=""
 	local pr_json=""
+	local route_decision="trusted-dependabot-exact-cost"
 
 	[[ "$pr_number" =~ ^[0-9]+$ && -n "$owner" && -n "$name" ]] || return 1
-	#aidevops:trust-boundary — this fixed snapshot binds bot identity, exact head,
-	# repository ownership, commit authors, files, and checks in one API response.
+	case "$snapshot_mode" in
+	full) ;;
+	auth)
+		route_decision="trusted-dependabot-auth-exact-cost"
+		;;
+	*) return 1 ;;
+	esac
+	#aidevops:trust-boundary — both modes bind bot identity, exact head, repository
+	# ownership, and commit authors; full mode additionally binds files and checks.
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
-		AIDEVOPS_GH_ROUTE_DECISION="trusted-dependabot-exact-cost" \
+		AIDEVOPS_GH_ROUTE_DECISION="$route_decision" \
 		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
 		query($owner: String!, $name: String!, $pr: Int!) {
 			repository(owner: $owner, name: $name) {
@@ -207,7 +250,11 @@ _trusted_dependabot_pr_json_graphql() {
 		}' 2>/dev/null) || return 1
 	reported_cost=$(printf '%s' "$response" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || return 1
 	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
-	pr_json=$(_trusted_dependabot_project_pr_json "$response") || return 1
+	if [[ "$snapshot_mode" == "auth" ]]; then
+		pr_json=$(_trusted_dependabot_project_auth_json "$response") || return 1
+	else
+		pr_json=$(_trusted_dependabot_project_pr_json "$response") || return 1
+	fi
 	[[ -n "$pr_json" ]] || return 1
 	printf '%s\n' "$pr_json"
 	return 0
@@ -261,7 +308,7 @@ _is_authentic_dependabot_pr() {
 		&& -n "$_TRUSTED_DEPENDABOT_LAST_PR_JSON" ]]; then
 		pr_json="$_TRUSTED_DEPENDABOT_LAST_PR_JSON"
 	else
-		pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
+		pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug" auth) || return 1
 		_TRUSTED_DEPENDABOT_LAST_PR_JSON="$pr_json"
 		_TRUSTED_DEPENDABOT_LAST_REPO="$repo_slug"
 		_TRUSTED_DEPENDABOT_LAST_PR="$pr_number"
