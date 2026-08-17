@@ -20,6 +20,7 @@ from extract_shared import (
 
 
 ERROR_CATEGORIES = {
+    "command_policy": re.compile(r"BLOCKED\s+by\s+shared\s+command\s+policy", re.IGNORECASE),
     "workdir_not_found": re.compile(r"NotFound:\s*FileSystem\.access\s*\(", re.IGNORECASE),
     "file_not_found": re.compile(r"(file not found|no such file|ENOENT)", re.IGNORECASE),
     "edit_stale_read": re.compile(r"modified since.*(last read|was read)", re.IGNORECASE),

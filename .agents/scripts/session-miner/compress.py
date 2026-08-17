@@ -192,6 +192,7 @@ def compress_steerage(chunks_dir: Path) -> dict:
 
 
 _SEVERITY_RANK = {
+    "command_policy": "high",
     "permission": "high",
     "not_read_first": "high",
     "edit_stale_read": "medium",
