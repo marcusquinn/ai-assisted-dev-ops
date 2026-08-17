@@ -291,16 +291,32 @@ test_worker_exit_preserves_natural_and_signal_fallbacks() {
 	return 0
 }
 
-test_completed_attempt_path_classifies_zero_status_sentinel() {
-	local f durable_path result
+test_exit_trap_classifies_completed_zero_status_sentinel() {
+	local f
 	f=$(_fresh_exit_code_file)
+	printf '0' >"${f}.wait_status"
 	printf 'hard_kill_stall' >"${f}.kill_reason"
 	_WORKER_EXIT_CODE_FILE=""
 	_WORKER_LAST_EXIT_CODE_FILE="$f"
-	durable_path=$(_hrff_durable_exit_code_file)
-	result=$(classify_worker_exit 0 0 "" "$durable_path")
-	assert_eq "completed attempt path preserves sentinel classification after finalization" \
-		"$result" "hard_kill_stall"
+	_WORKER_RUNTIME_LAUNCH_STARTED=1
+	_WORKER_PRELAUNCH_FAILURE_REASON=""
+	_WORKER_START_EPOCH_MS=0
+	DISPATCH_LEDGER_HELPER=""
+	AIDEVOPS_DISPATCH_LEASE_TOKEN=""
+	TEST_TRAP_RESULT=""
+	_hrff_finalize_exit_trap() {
+		local session_key="$1"
+		local reason="$2"
+		local exit_status="$3"
+		local session_count="$4"
+		local force_nonzero_exit="$5"
+		TEST_TRAP_RESULT="${session_key}|${reason}|${exit_status}|${session_count}|${force_nonzero_exit}"
+		return 0
+	}
+	_exit_trap_handler "test-session"
+	assert_eq "exit trap preserves sentinel classification after finalization and status 0" \
+		"$TEST_TRAP_RESULT" "test-session|hard_kill_stall|0|0|0"
+	unset -f _hrff_finalize_exit_trap
 	return 0
 }
 
@@ -385,7 +401,7 @@ main() {
 	test_worker_exit_prefers_explicit_kill_reason_over_zero_status
 	test_worker_exit_prefers_watchdog_sentinel_over_zero_status
 	test_worker_exit_preserves_natural_and_signal_fallbacks
-	test_completed_attempt_path_classifies_zero_status_sentinel
+	test_exit_trap_classifies_completed_zero_status_sentinel
 
 	# Structural assertions on consumer site
 	test_worker_exited_line_carries_kill_reason
