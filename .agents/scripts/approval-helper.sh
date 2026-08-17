@@ -624,6 +624,17 @@ _approval_fetch_issue_json() {
 	return $?
 }
 
+_approval_current_github_login() {
+	local gh_user=""
+
+	gh_user=$(gh api user --jq '.login // empty' 2>/dev/null) || return 1
+	if [[ ! "$gh_user" =~ ^[[:alnum:]]([[:alnum:]-]{0,37}[[:alnum:]])?$ ]]; then
+		return 1
+	fi
+	printf '%s\n' "$gh_user"
+	return 0
+}
+
 _approval_verify_issue_state() {
 	local target_number="$1"
 	local slug="$2"
@@ -705,11 +716,10 @@ _approval_apply_issue_lifecycle_updates() {
 	local _ah_stamp_file=""
 	local _ah_had_in_review=0
 
-	gh_user=$(gh api user --jq '.login' 2>/dev/null || printf '')
-	if [[ -z "$gh_user" || "$gh_user" == "null" ]]; then
-		_print_error "Could not detect GitHub username — approval state was not changed"
+	gh_user=$(_approval_current_github_login) || {
+		_print_error "Could not validate GitHub username — approval state was not changed"
 		return 1
-	fi
+	}
 
 	# Capture whether an interactive claim stamp may need cleanup before the
 	# authoritative status transition removes status:in-review.
