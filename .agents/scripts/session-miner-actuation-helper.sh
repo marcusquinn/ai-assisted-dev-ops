@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 1
-FRAMEWORK_SLUG="marcusquinn/aidevops"
+DEFAULT_FRAMEWORK_SLUG="marcusquinn/aidevops"
 FRAMEWORK_HELPER="${SESSION_MINER_FRAMEWORK_HELPER:-${SCRIPT_DIR}/framework-issue-helper.sh}"
 CONTRIBUTOR_HELPER="${SESSION_MINER_CONTRIBUTOR_HELPER:-${SCRIPT_DIR}/contributor-insight-helper.sh}"
 
@@ -138,8 +138,9 @@ cmd_maintainer() {
 	local signals_file="$1"
 	local repos_file="$2"
 	local known_fingerprints="$3"
+	local framework_slug="$4"
 	local role="" framework_path=""
-	role=$(_sma_role_for_slug "$repos_file" "$FRAMEWORK_SLUG") || role=""
+	role=$(_sma_role_for_slug "$repos_file" "$framework_slug") || role=""
 	if [[ "$role" != "maintainer" ]]; then
 		_sma_emit_result deferred 0 '[]' "unknown_framework_role"
 		return 1
@@ -148,7 +149,7 @@ cmd_maintainer() {
 		_sma_emit_result failed 0 '[]' "framework_helper_unavailable"
 		return 1
 	}
-	framework_path=$(jq -r --arg slug "$FRAMEWORK_SLUG" '
+	framework_path=$(jq -r --arg slug "$framework_slug" '
 		[.initialized_repos[]? | select(.slug == $slug and .role == "maintainer")]
 		| if length == 1 then .[0].path // "" else "" end
 	' "$repos_file" 2>/dev/null) || framework_path=""
@@ -236,7 +237,7 @@ cmd_contributor() {
 main() {
 	local mode="${1:-}"
 	[[ $# -gt 0 ]] && shift
-	local signals_file="" repos_file="" slug="" known_fingerprints='[]'
+	local signals_file="" repos_file="" slug="" framework_slug="${SESSION_MINER_FRAMEWORK_SLUG:-$DEFAULT_FRAMEWORK_SLUG}" known_fingerprints='[]'
 	while [[ $# -gt 0 ]]; do
 		local option="$1"
 		case "$option" in
@@ -253,6 +254,11 @@ main() {
 		--slug)
 			[[ $# -ge 2 ]] || return 2
 			slug="$2"
+			shift 2
+			;;
+		--framework-slug)
+			[[ $# -ge 2 ]] || return 2
+			framework_slug="$2"
 			shift 2
 			;;
 		--known-fingerprints)
@@ -273,13 +279,13 @@ main() {
 	}
 	printf '%s' "$known_fingerprints" | jq -e 'type == "array"' >/dev/null 2>&1 || return 2
 	case "$mode" in
-	maintainer) cmd_maintainer "$signals_file" "$repos_file" "$known_fingerprints" ;;
+	maintainer) cmd_maintainer "$signals_file" "$repos_file" "$known_fingerprints" "$framework_slug" ;;
 	contributor)
 		[[ -n "$slug" ]] || return 2
 		cmd_contributor "$signals_file" "$repos_file" "$slug"
 		;;
 	*)
-		_sma_log ERROR "Usage: session-miner-actuation-helper.sh {maintainer|contributor} --signals FILE --repos FILE [--slug OWNER/REPO]"
+		_sma_log ERROR "Usage: session-miner-actuation-helper.sh {maintainer|contributor} --signals FILE --repos FILE [--framework-slug OWNER/REPO] [--slug OWNER/REPO]"
 		return 2
 		;;
 	esac

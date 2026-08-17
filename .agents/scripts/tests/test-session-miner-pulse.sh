@@ -217,6 +217,23 @@ jq -e '
     .last_success_epoch == 3000
 ' "$STATE_FILE" >/dev/null
 
+MARKED_ACTUATION_REPOS="${TEST_ROOT}/marked-repos.json"
+SUCCESSFUL_ACTUATION="${TEST_ROOT}/successful-actuation.sh"
+ACTUATION_LOG="${TEST_ROOT}/actuation.log"
+cat >"$MARKED_ACTUATION_REPOS" <<JSON
+{"initialized_repos":[{"slug":"example/framework","path":"${REPO_ROOT}","role":"maintainer","framework":true}]}
+JSON
+cat >"$SUCCESSFUL_ACTUATION" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${ACTUATION_LOG:?}"
+printf '{"status":"healthy","fingerprints":["framework-receipt"]}\n'
+SH
+chmod +x "$SUCCESSFUL_ACTUATION"
+REPOS_JSON="$MARKED_ACTUATION_REPOS" SESSION_MINER_ACTUATION_HELPER="$SUCCESSFUL_ACTUATION" \
+	ACTUATION_LOG="$ACTUATION_LOG" FAKE_HIGH_WATER_MS=4000 run_pulse 4500 --force --create-issues >/dev/null
+grep -q -- 'maintainer.*--framework-slug example/framework' "$ACTUATION_LOG"
+jq -e '.status == "healthy" and .counts.actuated == 1 and (.fingerprints | index("framework-receipt") != null)' "$STATE_FILE" >/dev/null
+
 ROUTINE_CAPTURE="${TEST_ROOT}/routine-capture"
 (
 	unset _PULSE_ROUTINES_LOADED

@@ -110,6 +110,16 @@ TRANSPORT_LOG="$TRANSPORT_LOG" \
 	--signals "$SIGNALS_JSON" --repos "$REPOS_JSON" --known-fingerprints "$known_fingerprints" >/dev/null
 [[ $(wc -l <"$TRANSPORT_LOG" | tr -d ' ') == "1" ]]
 
+MARKED_REPOS_JSON="${TEST_ROOT}/marked-repos.json"
+cat >"$MARKED_REPOS_JSON" <<JSON
+{"initialized_repos":[{"slug":"example/framework","path":"${REPO_ROOT}","role":"maintainer","framework":true}]}
+JSON
+marked_result=$(TRANSPORT_LOG="$TRANSPORT_LOG" SESSION_MINER_FRAMEWORK_HELPER="$FAKE_FRAMEWORK_HELPER" \
+	bash "$ACTUATION_HELPER" maintainer --signals "$SIGNALS_JSON" --repos "$MARKED_REPOS_JSON" \
+		--framework-slug example/framework --known-fingerprints '[]')
+printf '%s' "$marked_result" | jq -e '.status == "healthy" and .selected == 1' >/dev/null
+[[ $(wc -l <"$TRANSPORT_LOG" | tr -d ' ') == "2" ]]
+
 if TRANSPORT_LOG="$TRANSPORT_LOG" FAKE_FRAMEWORK_UNCONFIRMED=1 \
 	SESSION_MINER_FRAMEWORK_HELPER="$FAKE_FRAMEWORK_HELPER" \
 	bash "$ACTUATION_HELPER" maintainer \

@@ -1027,16 +1027,28 @@ run_actuation() {
 
 	local known_fingerprints='[]'
 	known_fingerprints=$(state_existing_json | jq -c '.fingerprints // []') || known_fingerprints='[]'
-	local framework_path="" framework_signals="" result="" receipts='[]'
-	framework_path=$(jq -r '
-		[.initialized_repos[]? | select(.slug == "marcusquinn/aidevops" and .role == "maintainer")]
-		| if length == 1 then .[0].path // "" else "" end
-	' "$REPOS_JSON" 2>/dev/null) || framework_path=""
+	local framework_entry='{}' framework_path="" framework_slug="" framework_signals="" result="" receipts='[]'
+	framework_entry=$(jq -c --arg configured_slug "${SESSION_MINER_FRAMEWORK_SLUG:-}" '
+		[.initialized_repos[]? | select(.role == "maintainer")]
+		| if $configured_slug != "" then
+			[.[] | select(.slug == $configured_slug)]
+		  else
+			([.[] | select(.slug == "marcusquinn/aidevops")] as $legacy
+			 | if ($legacy | length) == 1 then $legacy
+			   elif ($legacy | length) == 0 then
+				[.[] | select(.framework == true or .is_framework_dir == true)]
+			   else [] end)
+		  end
+		| if length == 1 then .[0] else {} end
+	' "$REPOS_JSON" 2>/dev/null) || framework_entry='{}'
+	framework_path=$(printf '%s' "$framework_entry" | jq -r '.path // ""') || framework_path=""
+	framework_slug=$(printf '%s' "$framework_entry" | jq -r '.slug // ""') || framework_slug=""
 	[[ -n "$framework_path" && -d "$framework_path" ]] || return 1
-	framework_signals=$(run_repo_scoped_pipeline "$_db_path" "$framework_path" "marcusquinn/aidevops" "$since_ms") || return 1
+	[[ -n "$framework_slug" ]] || return 1
+	framework_signals=$(run_repo_scoped_pipeline "$_db_path" "$framework_path" "$framework_slug" "$since_ms") || return 1
 	validate_compressed_metadata "$framework_signals" "$since_ms" || return 1
 	result=$("$ACTUATION_HELPER" maintainer --signals "$framework_signals" --repos "$REPOS_JSON" \
-		--known-fingerprints "$known_fingerprints") || return 1
+		--framework-slug "$framework_slug" --known-fingerprints "$known_fingerprints") || return 1
 	receipts=$(printf '%s' "$result" | jq -c '.fingerprints // []') || return 1
 	_actuation_fingerprints=$(printf '%s' "$_actuation_fingerprints" | jq -c --argjson receipts "$receipts" '. + $receipts | unique') || return 1
 
