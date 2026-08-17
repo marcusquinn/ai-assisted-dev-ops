@@ -272,7 +272,11 @@ test_authority_bound_verification() {
 
 file_mode() {
 	local path="$1"
-	stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null
+	if [[ "$(uname -s)" == "Darwin" ]]; then
+		stat -f '%Lp' "$path"
+		return $?
+	fi
+	stat -c '%a' "$path"
 	return $?
 }
 

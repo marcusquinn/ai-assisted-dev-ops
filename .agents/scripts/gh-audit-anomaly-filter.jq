@@ -22,7 +22,7 @@ def expected_approval_transition:
   and .flags.approval_verified == "v2-current-state"
   and .suspicious == [("protected_label_removed:" + $nmr)]
   and (.delta.labels_removed // []) == [$nmr]
-  and (((.delta.labels_added // []) - ["auto-dispatch"]) | length == 0)
+  and (((.delta.labels_added // []) - ["auto-dispatch", "status:available"]) | length == 0)
   and (.delta.title_delta_pct == 0)
   and (.delta.body_delta_pct == 0)
   and ((.before.labels // []) | index($nmr) != null)
