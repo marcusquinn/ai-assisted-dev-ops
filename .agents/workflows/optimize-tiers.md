@@ -81,7 +81,7 @@ Read `todo/research/optimize-brief-tiers.md` for the full program definition, th
 
 1. Review current telemetry (`tier-report`) to identify the dominant escalation reason
 2. Form a hypothesis about which brief template change would reduce that reason
-3. Modify `templates/brief-template.md` or `workflows/brief.md`
+3. Modify `~/.aidevops/agents/templates/brief-template.md` or `workflows/brief.md`
 4. Re-enrich a subset of corpus cases with the modified template
 5. Re-test Haiku on the subset
 6. Score and compare against baseline
@@ -115,7 +115,7 @@ Tier telemetry is recorded automatically by:
 
 - `workflows/brief.md` — centralised brief formatting (the file being optimised)
 - `reference/task-taxonomy.md` — tier definitions and cascade model
-- `templates/brief-template.md` — task brief template (modified by autoresearch)
+- `~/.aidevops/agents/templates/brief-template.md` — task brief template (modified by autoresearch)
 - `templates/escalation-report-template.md` — escalation reason codes
 - `scripts/brief-tier-test-helper.sh` — test harness
 - `todo/research/optimize-brief-tiers.md` — autoresearch program definition

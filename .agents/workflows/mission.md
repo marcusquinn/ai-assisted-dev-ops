@@ -170,7 +170,7 @@ Mission dirs: `research/` (comparisons, API evals), `agents/` (temp agents, draf
 - `scripts/commands/full-loop.md` — Worker execution (dispatched per feature)
 - `scripts/commands/pulse.md` — Supervisor dispatch (mission-aware)
 - `workflows/plans.md` — Planning patterns for decomposition
-- `templates/brief-template.md` — Brief format (Full mode features)
+- `~/.aidevops/agents/templates/brief-template.md` — Brief format (Full mode features)
 - `templates/mission-template.md` — Mission state file template (t1357.1)
 - `tools/build-agent/build-agent.md` — Agent lifecycle (draft tier for mission agents)
 - `reference/orchestration.md` — Model routing for mission workers

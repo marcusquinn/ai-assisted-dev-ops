@@ -21,7 +21,7 @@ tools:
 
 - **Purpose**: Single source of truth for all GitHub-written content — briefs, issue bodies, PR descriptions, comments, escalation reports
 - **Historical evidence**: A 47-PR bounded-worker corpus completed exact `oldString`/`newString` contracts reliably and failed on descriptive prose.
-- **Template**: `templates/brief-template.md`
+- **Template**: `~/.aidevops/agents/templates/brief-template.md`
 - **Escalation template**: `templates/escalation-report-template.md`
 - **Tier criteria**: `reference/task-taxonomy.md`
 
@@ -95,7 +95,7 @@ The wrapper currently self-assigns in violation of t2157. Until t2406/GH#19991 m
 ## Dispatch Readiness Contract (brief schema v2)
 
 New briefs intended for auto-dispatch use `<!-- aidevops:brief-schema=v2 -->`
-from `templates/brief-template.md`. Before adding `auto-dispatch` or moving the
+from `~/.aidevops/agents/templates/brief-template.md`. Before adding `auto-dispatch` or moving the
 issue to `status:queued`, run `verify-brief-helper.sh check-readiness <brief>`.
 Unmarked historical briefs retain the legacy heading-based check and are not
 retroactively blocked.
@@ -190,7 +190,7 @@ Seeded draft PR bodies must mentor the next worker with:
 - Verification already run, plus explicit `UNVERIFIED` items.
 - Stale-assumption warning: what would make the seed wrong and what to re-check before continuing.
 
-Record the decision in `templates/brief-template.md` under **Seeded Draft PR** whether a seed was created or intentionally skipped.
+Record the decision in `~/.aidevops/agents/templates/brief-template.md` under **Seeded Draft PR** whether a seed was created or intentionally skipped.
 
 ## Tier Classification
 
@@ -235,7 +235,7 @@ exact SHA instead of duplicating source scans.
 
 - **Routing**: See `brief/routing.md` for when to use this agent (work item creation, comments, PR descriptions)
 - **Headless resilience**: Anticipate empty results, wrong paths, ambiguous states in headless briefs. Every step should answer "what if this returns nothing?" Details: `brief/tier-standard.md`
-- **Progressive context**: For tasks with 3+ workflow/reference docs or >2,000 reference lines, include `### Progressive Context Plan` from `templates/brief-template.md` so workers know what to load, when, why, and when to stop.
+- **Progressive context**: For tasks with 3+ workflow/reference docs or >2,000 reference lines, include `### Progressive Context Plan` from `~/.aidevops/agents/templates/brief-template.md` so workers know what to load, when, why, and when to stop.
 - **UI/UX briefs**: Include repo `DESIGN.md` status/path, the relevant rule or canonical example, similar-but-different alternatives considered, and a responsive/accessibility verification plan. Point to `tools/design/design-md.md` and `workflows/ui-verification.md`; do not inline a full design template.
 - **Tier-specific formats**:
   - `tier:simple` → `brief/tier-simple.md` (prescriptive, exact code blocks)
@@ -254,7 +254,7 @@ for the classified tier. Load on demand — do not inline the format rules.
 
 ## Related
 
-- `templates/brief-template.md` — Full task brief template (for `/define`, `/new-task`)
+- `~/.aidevops/agents/templates/brief-template.md` — Full task brief template (for `/define`, `/new-task`)
 - `templates/escalation-report-template.md` — Failure report format for cascade dispatch
 - `reference/task-taxonomy.md` — Tier definitions, cascade model, escalation reasons
 - `reference/large-file-split.md` — Playbook for shell library splits (scanner-filed issues, PR body template)

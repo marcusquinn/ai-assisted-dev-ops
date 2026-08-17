@@ -12,7 +12,7 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-Resolve consequential unknowns, then generate a complete brief from `templates/brief-template.md`. Surface assumptions that can change the result without spending user attention on information already supplied or safely inferable.
+Resolve consequential unknowns, then generate a complete brief from `~/.aidevops/agents/templates/brief-template.md`. Surface assumptions that can change the result without spending user attention on information already supplied or safely inferable.
 
 Topic: $ARGUMENTS
 
@@ -90,7 +90,7 @@ After drafting, run one compact blind-spot pass across assumptions, affected sur
 
 In headless mode, default to option 1 (skip). See `scripts/brief-readiness-helper.sh` for the scoring logic.
 
-Read `templates/brief-template.md` and format using `workflows/brief.md` for the classified tier. Populate from interview answers:
+Read `~/.aidevops/agents/templates/brief-template.md` and format using `workflows/brief.md` for the classified tier. Populate from interview answers:
 
 For auto-dispatch, use the single `workflows/brief.md` "Dispatch Readiness Contract (brief schema v2)" checklist and run `verify-brief-helper.sh check-readiness <brief>` before queueing.
 
@@ -139,7 +139,7 @@ When `--headless` or `$ARGUMENTS` contains ` -- ` (supervisor dispatch), skip in
 
 ## Related
 
-- `templates/brief-template.md` — Output template
+- `~/.aidevops/agents/templates/brief-template.md` — Output template
 - `reference/define-probes/` — Per-type candidate questions
 - `scripts/commands/new-task.md` — Task creation (called after brief generation)
 - `workflows/plans.md` — Planning workflow integration

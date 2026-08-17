@@ -13,7 +13,7 @@ Topic/context: $ARGUMENTS
 
 ## Core Rule
 
-All TODOs, plans, and issues created by this workflow MUST use `workflows/brief.md` and `templates/brief-template.md` so future workers can execute without the original chat. For auto-dispatch, use only the shared "Dispatch Readiness Contract (brief schema v2)" checklist and its `verify-brief-helper.sh check-readiness <brief>` gate. Saving is explicit later intent: keep the work as a local TODO/plan and do not ask whether to dispatch it. If an implementation issue is created, that creation authorizes implementation, so add `auto-dispatch` when readiness passes. If the user says `/full-loop`, "work on it now", or equivalent, route to `/full-loop` instead of stopping after capture.
+All TODOs, plans, and issues created by this workflow MUST use `workflows/brief.md` and `~/.aidevops/agents/templates/brief-template.md` so future workers can execute without the original chat. For auto-dispatch, use only the shared "Dispatch Readiness Contract (brief schema v2)" checklist and its `verify-brief-helper.sh check-readiness <brief>` gate. Saving is explicit later intent: keep the work as a local TODO/plan and do not ask whether to dispatch it. If an implementation issue is created, that creation authorizes implementation, so add `auto-dispatch` when readiness passes. If the user says `/full-loop`, "work on it now", or equivalent, route to `/full-loop` instead of stopping after capture.
 
 ## Intent Routing
 
@@ -48,7 +48,7 @@ once created, automatic implementation is the default.
 - **Estimate**: `~Xh (ai:Xh test:Xh read:Xm)`
 - **Tags**: #feature, #bugfix, #enhancement, #docs, etc.
 - **Context**: Decisions, findings, constraints, open questions, links
-- **Brief**: Create `todo/tasks/{task_id}-brief.md` from `templates/brief-template.md` using `workflows/brief.md` pre-composition checks.
+- **Brief**: Create `todo/tasks/{task_id}-brief.md` from `~/.aidevops/agents/templates/brief-template.md` using `workflows/brief.md` pre-composition checks.
 
 ## Step 1b: Dispatch Tags (MANDATORY)
 

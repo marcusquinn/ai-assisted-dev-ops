@@ -25,7 +25,7 @@ merged planning PR triggers idempotent reconciliation; failed or closed-unmerged
 publication leaves the issue blocked and safe to retry.
 
 1. Define the task: `/define` (interactive interview) or `/new-task` (quick creation)
-2. Brief file at `todo/tasks/{task_id}-brief.md` is MANDATORY (see `templates/brief-template.md`)
+2. Brief file at `todo/tasks/{task_id}-brief.md` is MANDATORY (see `~/.aidevops/agents/templates/brief-template.md`)
 3. Brief must include: session origin, what, why, how, acceptance criteria, context
 4. Resolve the execution route before publication: implement now, create a worker-ready implementation issue and auto-dispatch it, or save a local TODO/plan for later. Creating the implementation issue is itself approval to implement; do not seek a second dispatch decision afterward.
 5. Full-loop: keep canonical repo on `main` → create/use linked worktree → implement → test → verify → commit/PR
