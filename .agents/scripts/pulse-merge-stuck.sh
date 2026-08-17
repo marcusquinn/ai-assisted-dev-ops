@@ -251,7 +251,7 @@ _pms_is_eligible_stuck() {
 #######################################
 _pms_is_pattern_outage_candidate() {
 	local pr_obj="$1"
-	local is_draft="" labels="" review_decision="" is_stuck=""
+	local is_draft labels review_decision is_stuck
 	is_draft=$(printf '%s' "$pr_obj" | jq -r '.isDraft // false' 2>/dev/null)
 	labels=$(printf '%s' "$pr_obj" | jq -r "$_PMS_LABELS_CSV_JQ" 2>/dev/null)
 	review_decision=$(printf '%s' "$pr_obj" | jq -r '.reviewDecision // ""' 2>/dev/null)
