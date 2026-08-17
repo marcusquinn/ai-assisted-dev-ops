@@ -12,6 +12,10 @@ _TRUSTED_DEPENDABOT_LIB_LOADED=1
 
 _TRUSTED_DEPENDABOT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$_TRUSTED_DEPENDABOT_DIR" == "${BASH_SOURCE[0]}" ]] && _TRUSTED_DEPENDABOT_DIR="."
+_TRUSTED_DEPENDABOT_LAST_PR_JSON=""
+_TRUSTED_DEPENDABOT_LAST_REPO=""
+_TRUSTED_DEPENDABOT_LAST_PR=""
+_TRUSTED_DEPENDABOT_LAST_HEAD=""
 
 _trusted_dependabot_log() {
 	local message="$1"
@@ -209,12 +213,11 @@ _trusted_dependabot_pr_json_graphql() {
 	return 0
 }
 
-_is_trusted_dependabot_update_pr() {
-	local pr_number="$1"
+_trusted_dependabot_snapshot_is_authentic() {
+	local pr_json="$1"
 	local repo_slug="$2"
 	local pr_author="${3:-}"
 	local expected_head_sha="${4:-}"
-	local pr_json=""
 	local repo_owner="${repo_slug%%/*}"
 	local api_author=""
 	local api_author_type=""
@@ -222,6 +225,58 @@ _is_trusted_dependabot_update_pr() {
 	local head_repo=""
 	local snapshot_head=""
 	local bad_commits=""
+
+	[[ -n "$pr_json" && "$pr_json" != "null" && -n "$repo_slug" && -n "$expected_head_sha" ]] || return 1
+	case "$pr_author" in
+	dependabot\[bot\] | app/dependabot | "") ;;
+	*) return 1 ;;
+	esac
+
+	api_author=$(printf '%s' "$pr_json" | jq -r '.author.login // ""' 2>/dev/null) || return 1
+	api_author_type=$(printf '%s' "$pr_json" | jq -r '.author.__typename // ""' 2>/dev/null) || return 1
+	head_owner=$(printf '%s' "$pr_json" | jq -r '.headRepositoryOwner.login // .headRepositoryOwner.name // ""' 2>/dev/null) || return 1
+	head_repo=$(printf '%s' "$pr_json" | jq -r '.headRepository.nameWithOwner // ""' 2>/dev/null) || return 1
+	snapshot_head=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""' 2>/dev/null) || return 1
+	#aidevops:trust-boundary — worker intake and merge trust share this exact-head
+	# GitHub Bot, repository ownership, and commit-authorship verification.
+	[[ "$api_author_type" == "Bot" && "$api_author" == "dependabot" ]] || return 1
+	[[ "$head_owner" == "$repo_owner" && "$head_repo" == "$repo_slug" ]] || return 1
+	[[ "$snapshot_head" == "$expected_head_sha" ]] || return 1
+	bad_commits=$(printf '%s' "$pr_json" | jq '[.commits[]? | select([.authors[]?.login] | index("dependabot[bot]") | not)] | length' 2>/dev/null) || return 1
+	[[ "$bad_commits" == "0" ]] || return 1
+	return 0
+}
+
+_is_authentic_dependabot_pr() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local pr_author="${3:-}"
+	local expected_head_sha="${4:-}"
+	local pr_json=""
+
+	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+	if [[ "$_TRUSTED_DEPENDABOT_LAST_REPO" == "$repo_slug" \
+		&& "$_TRUSTED_DEPENDABOT_LAST_PR" == "$pr_number" \
+		&& "$_TRUSTED_DEPENDABOT_LAST_HEAD" == "$expected_head_sha" \
+		&& -n "$_TRUSTED_DEPENDABOT_LAST_PR_JSON" ]]; then
+		pr_json="$_TRUSTED_DEPENDABOT_LAST_PR_JSON"
+	else
+		pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
+		_TRUSTED_DEPENDABOT_LAST_PR_JSON="$pr_json"
+		_TRUSTED_DEPENDABOT_LAST_REPO="$repo_slug"
+		_TRUSTED_DEPENDABOT_LAST_PR="$pr_number"
+		_TRUSTED_DEPENDABOT_LAST_HEAD="$expected_head_sha"
+	fi
+	_trusted_dependabot_snapshot_is_authentic "$pr_json" "$repo_slug" "$pr_author" "$expected_head_sha"
+	return $?
+}
+
+_is_trusted_dependabot_update_pr() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local pr_author="${3:-}"
+	local expected_head_sha="${4:-}"
+	local pr_json=""
 	local bad_files=""
 	local security_failures=""
 	local body=""
@@ -238,18 +293,11 @@ _is_trusted_dependabot_update_pr() {
 	esac
 
 	pr_json=$(_trusted_dependabot_pr_json_graphql "$pr_number" "$repo_slug") || return 1
-	[[ -n "$pr_json" && "$pr_json" != "null" ]] || return 1
-	api_author=$(printf '%s' "$pr_json" | jq -r '.author.login // ""' 2>/dev/null) || return 1
-	api_author_type=$(printf '%s' "$pr_json" | jq -r '.author.__typename // ""' 2>/dev/null) || return 1
-	head_owner=$(printf '%s' "$pr_json" | jq -r '.headRepositoryOwner.login // .headRepositoryOwner.name // ""' 2>/dev/null) || return 1
-	head_repo=$(printf '%s' "$pr_json" | jq -r '.headRepository.nameWithOwner // ""' 2>/dev/null) || return 1
-	snapshot_head=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""' 2>/dev/null) || return 1
-	[[ "$api_author_type" == "Bot" && "$api_author" == "dependabot" ]] || return 1
-	[[ "$head_owner" == "$repo_owner" && "$head_repo" == "$repo_slug" ]] || return 1
-	[[ "$snapshot_head" == "$expected_head_sha" ]] || return 1
-
-	bad_commits=$(printf '%s' "$pr_json" | jq '[.commits[]? | select([.authors[]?.login] | index("dependabot[bot]") | not)] | length' 2>/dev/null) || return 1
-	[[ "$bad_commits" == "0" ]] || return 1
+	_TRUSTED_DEPENDABOT_LAST_PR_JSON="$pr_json"
+	_TRUSTED_DEPENDABOT_LAST_REPO="$repo_slug"
+	_TRUSTED_DEPENDABOT_LAST_PR="$pr_number"
+	_TRUSTED_DEPENDABOT_LAST_HEAD="$expected_head_sha"
+	_trusted_dependabot_snapshot_is_authentic "$pr_json" "$repo_slug" "$pr_author" "$expected_head_sha" || return 1
 	bad_files=$(printf '%s' "$pr_json" | jq -r '[.files[]?.path | select(test("(^|/)(requirements(-lock)?\\.txt|requirements.*\\.txt|pyproject\\.toml|poetry\\.lock|uv\\.lock|Pipfile\\.lock|package(-lock)?\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb?|composer\\.(json|lock)|Gemfile\\.lock|go\\.(mod|sum)|Cargo\\.(toml|lock))$|^\\.github/dependabot\\.yml$"; "i") | not)] | length' 2>/dev/null) || return 1
 	[[ "$bad_files" == "0" ]] || return 1
 	security_failures=$(printf '%s' "$pr_json" | jq 'def up(v): (v // "" | ascii_upcase); [.statusCheckRollup[]? | select(((.name // .context // "") | test("security|socket|codeql|dependabot"; "i")) and (up(.conclusion) == "FAILURE" or up(.conclusion) == "ERROR" or up(.state) == "FAILURE" or up(.state) == "ERROR"))] | length' 2>/dev/null) || return 1

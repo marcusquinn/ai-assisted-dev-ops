@@ -226,6 +226,22 @@ test_trusted_dependabot_uses_response_metered_graphql() {
 	return 0
 }
 
+test_worker_intake_reuses_trusted_snapshot() {
+	local graphql_calls=""
+	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
+	: >"$GH_LOG"
+	_is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" || true
+	if _is_authentic_dependabot_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
+		graphql_calls=$(grep -cF 'gh api graphql' "$GH_LOG" 2>/dev/null) || graphql_calls=0
+		if [[ "$graphql_calls" -eq 1 ]]; then
+			print_result "worker intake reuses the exact-head trust snapshot" 0
+			return 0
+		fi
+	fi
+	print_result "worker intake reuses the exact-head trust snapshot" 1 "gh log: $(<"$GH_LOG")"
+	return 0
+}
+
 test_trusted_dependabot_binds_expected_head() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
@@ -432,6 +448,7 @@ main() {
 	define_helpers_under_test
 	test_trusted_dependabot_passes
 	test_trusted_dependabot_uses_response_metered_graphql
+	test_worker_intake_reuses_trusted_snapshot
 	test_trusted_dependabot_binds_expected_head
 	test_standard_dependabot_body_parser
 	test_quoted_dependabot_dependency_names

@@ -263,6 +263,12 @@ source "${_PULSE_MERGE_DIR}/pulse-merge-author-checks.sh"
 # shellcheck disable=SC1091  # sub-library resolved at runtime via _PULSE_MERGE_DIR
 source "${_PULSE_MERGE_DIR}/pulse-merge-gates.sh"
 
+# Source fail-closed Dependabot worker intake for bot PRs that cannot use the
+# narrow automatic merge policy or the linked worker-issue feedback router.
+# shellcheck source=./pulse-dependabot-intake.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via _PULSE_MERGE_DIR
+source "${_PULSE_MERGE_DIR}/pulse-dependabot-intake.sh"
+
 # Source merge processing helpers (GH#21301 — extracted to bring
 # pulse-merge.sh below the 1500-line file-size-debt threshold).
 # shellcheck source=./pulse-merge-process.sh
@@ -469,6 +475,9 @@ _check_pr_merge_gates() {
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted Dependabot with allowlisted dependency update, proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator but has maintainer crypto-approval, proceeding (t3063)" >>"$LOGFILE"
+		elif _pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" "policy-ineligible"; then
+			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR is outside automatic merge policy; routed to worker intake (GH#30351)" >>"$LOGFILE"
+			return 1
 		else
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE"
 			return 1
@@ -1500,6 +1509,11 @@ _process_single_ready_pr() {
 					[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}mergeability_s" "$_mergeability_start"
 					return 1
 				fi
+				if _pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$pr_head_ref_oid" "merge-conflict"; then
+					echo "[pulse-wrapper] Merge pass: preserving authentic Dependabot PR #${pr_number} in ${repo_slug} after routing its merge conflict to worker intake (GH#30351)" >>"$LOGFILE"
+					[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}mergeability_s" "$_mergeability_start"
+					return 1
+				fi
 
 			# GH#23371: some PRs are already known to be protected from
 			# automated close handling from the PR list metadata (draft,
@@ -1645,6 +1659,10 @@ _process_single_ready_pr() {
 			# CI failure: route to fix worker if applicable (t2203: consolidated).
 			local _ci_route_rc=0
 			_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "ci" "$pr_labels" "" "$pr_updated_at" "$pr_head_ref_oid" || _ci_route_rc=$?
+			if [[ "$_ci_route_rc" -eq 1 ]] \
+				&& _pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$pr_head_ref_oid" "terminal-ci-failure"; then
+				echo "[pulse-wrapper] Merge pass: authentic Dependabot PR #${pr_number} in ${repo_slug} has terminal CI failures; routed to worker intake (GH#30351)" >>"$LOGFILE"
+			fi
 			if [[ "$_ci_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
 				|| "$_ci_route_rc" -eq "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
 				echo "[pulse-wrapper] Merge pass: CI feedback route for PR #${pr_number} in ${repo_slug} remains partial; preserving the PR for retry or maintainer review" >>"$LOGFILE"
