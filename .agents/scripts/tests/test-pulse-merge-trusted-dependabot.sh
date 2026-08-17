@@ -275,7 +275,8 @@ test_quoted_dependabot_dependency_names() {
 		'- dependency-name: "@types/react"' \
 		"- dependency-name: 'react'")
 	dependencies=$(_trusted_dependabot_dependencies_from_body "$body") || dependencies=""
-	if [[ "$dependencies" == $'@types/react\nreact' ]]; then
+	if [[ $'\n'"$dependencies"$'\n' == *$'\n@types/react\n'* &&
+		$'\n'"$dependencies"$'\n' == *$'\nreact\n'* ]]; then
 		print_result "quoted Dependabot YAML dependency names are normalized" 0
 		return 0
 	fi
@@ -392,6 +393,21 @@ test_unallowlisted_dependency_fails() {
 	return 0
 }
 
+test_types_bun_is_allowlisted() {
+	local policy_path="${SCRIPT_DIR}/../../configs/trusted-dependabot-updates.conf"
+	local original_policy_path="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$policy_path"
+	if _trusted_dependabot_dependency_allowed "" "@types/bun"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$original_policy_path"
+		print_result "@types/bun is allowlisted for trusted Dependabot updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$original_policy_path"
+	print_result "@types/bun is allowlisted for trusted Dependabot updates" 1
+	return 0
+}
+
 test_trusted_dependabot_can_be_approved() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	: >"$GH_LOG"
@@ -460,6 +476,7 @@ main() {
 	test_security_failure_fails
 	test_non_dependency_file_fails
 	test_unallowlisted_dependency_fails
+	test_types_bun_is_allowlisted
 	test_trusted_dependabot_can_be_approved
 	test_review_bot_failure_is_ignored_when_other_checks_green
 	test_precomputed_status_rollup_skips_graphql
