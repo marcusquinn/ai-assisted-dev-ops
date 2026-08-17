@@ -25,11 +25,13 @@
 #      must not bypass the collaborator check) and keeps processing when GitHub
 #      returns a null PR author for deleted users.
 #   8. Effective preflight snapshots suppress superseded check-run failures.
-#   9. _detect_pattern_outage excludes per-PR review/policy gates, preserves
+#   9. Pattern-outage candidates include aged worker CHANGES_REQUESTED PRs
+#      without changing individual escalation eligibility.
+#  10. _detect_pattern_outage excludes per-PR review/policy gates, preserves
 #      genuine shared CI failures, and de-duplicates repeated PR observations.
 #      Open and closed outage markers both deterministically suppress re-filing.
 #      Generated Markdown includes the final affected PR.
-#  10. pulse-merge-stuck.sh and pulse-stats-helper.sh pass shellcheck.
+#  11. pulse-merge-stuck.sh and pulse-stats-helper.sh pass shellcheck.
 #
 # The test never makes real network calls; functions that require gh API
 # (_classify_stuck_pr, _escalate_individual_stuck_pr, full pulse_merge_stuck_run_pass)
@@ -752,6 +754,22 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "--- Section 8: pattern outage deduplication ---"
 
+pattern_candidate_fixture='[
+  {"number":101,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"updatedAt":"2025-01-01T00:00:00Z"},
+  {"number":102,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker"}],"updatedAt":"2025-01-01T00:00:00Z"},
+  {"number":103,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[],"updatedAt":"2025-01-01T00:00:00Z"},
+  {"number":104,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":true,"labels":[{"name":"origin:worker"}],"updatedAt":"2025-01-01T00:00:00Z"},
+  {"number":105,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker"},{"name":"hold-for-review"}],"updatedAt":"2025-01-01T00:00:00Z"},
+  {"number":106,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker-takeover"}],"updatedAt":"2026-01-01T00:00:00Z"}
+]'
+pattern_now=$(_pms_iso_to_epoch "2026-01-01T00:00:00Z")
+pattern_candidates=$(_pms_collect_pattern_outage_candidates \
+	"$pattern_candidate_fixture" "6" "$pattern_now" "60")
+assert_eq "8a: pattern candidates add only aged worker review-blocked PRs" \
+	$'101\n102' "$pattern_candidates"
+assert_eq "8b: CHANGES_REQUESTED worker remains ineligible for individual escalation" \
+	"0" "$(_pms_is_eligible_stuck "$(printf '%s' "$pattern_candidate_fixture" | jq -c '.[1]')")"
+
 _pms_failure_fingerprint() {
 	local pr_number="$1"
 	local repo_slug="$2"
@@ -781,28 +799,28 @@ _pms_file_outage_issue() {
 
 AIDEVOPS_MERGE_PATTERN_MIN_PRS=3
 _detect_pattern_outage "example/repo" $'11\n11\n12\n13\n'
-assert_eq "7a: genuine shared CI failure files one outage despite duplicate observations" \
+assert_eq "8c: genuine shared CI failure files one outage despite duplicate observations" \
 	"example/repo|3|E2E Shard 1/4,E2E Shard 2/4|11,12,13" \
 	"$PMS_TEST_OUTAGE_ARGS"
 
 PMS_TEST_OUTAGE_ARGS=""
 _detect_pattern_outage "example/repo" $'21\n22\n23\n'
-assert_eq "7b: CodeRabbit cluster does not file a broken-base outage" \
+assert_eq "8d: CodeRabbit cluster does not file a broken-base outage" \
 	"" "$PMS_TEST_OUTAGE_ARGS"
 
 PMS_TEST_OUTAGE_ARGS=""
 _detect_pattern_outage "example/repo" $'31\n32\n33\n'
-assert_eq "7c: maintainer review and assignee gate cluster does not file an outage" \
+assert_eq "8e: maintainer review and assignee gate cluster does not file an outage" \
 	"" "$PMS_TEST_OUTAGE_ARGS"
 
-assert_eq "7d: mixed policy and genuine CI fingerprint remains outage-eligible" \
+assert_eq "8f: mixed policy and genuine CI fingerprint remains outage-eligible" \
 	"1" "$(
 		_pms_is_per_pr_gate_fingerprint 'CodeRabbit,CI / build'
 		printf '%s' "$?"
 	)"
 
 got=$(_pms_format_pr_markdown_list "11,12,13")
-assert_eq "7e: affected-PR Markdown retains the final entry" \
+assert_eq "8g: affected-PR Markdown retains the final entry" \
 	$'- #11\n- #12\n- #13' "$got"
 
 PMS_TEST_EXISTING_STATE="OPEN"

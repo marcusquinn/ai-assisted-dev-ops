@@ -258,6 +258,39 @@ test_non_numeric_wait_status() {
 	return 0
 }
 
+# Durable exit classification must consult kill-site sentinels before treating
+# a persisted wrapper status as a natural or signal-derived process exit.
+test_worker_exit_prefers_explicit_kill_reason_over_zero_status() {
+	local f result
+	f=$(_fresh_exit_code_file)
+	printf 'hard_kill_stall' >"${f}.kill_reason"
+	result=$(classify_worker_exit 0 0 "" "$f")
+	assert_eq "durable exit classification prefers .kill_reason over status 0" \
+		"$result" "hard_kill_stall"
+	return 0
+}
+
+test_worker_exit_prefers_watchdog_sentinel_over_zero_status() {
+	local f result
+	f=$(_fresh_exit_code_file)
+	touch "${f}.watchdog_stall_killed"
+	result=$(classify_worker_exit 0 0 "" "$f")
+	assert_eq "durable exit classification prefers watchdog sentinel over status 0" \
+		"$result" "hard_kill_stall"
+	return 0
+}
+
+test_worker_exit_preserves_natural_and_signal_fallbacks() {
+	local f result
+	f=$(_fresh_exit_code_file)
+	result=$(classify_worker_exit 0 0 "" "$f")
+	assert_eq "durable exit classification preserves natural status 0" "$result" "clean"
+	result=$(classify_worker_exit 143 0 "" "$f")
+	assert_eq "durable exit classification preserves signal fallback" \
+		"$result" "signal_killed:15"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Tests — structural assertions on the consumer site (headless-runtime-helper.sh)
 # ---------------------------------------------------------------------------
@@ -281,6 +314,17 @@ test_exit_trap_prefers_dispatch_terminal_reason() {
 	assert_grep "dispatch terminal reason takes precedence over generic exit classification" \
 		'if \[\[ -n "\$ledger_terminal_reason" \]\]; then' \
 		"${SCRIPT_DIR}/../headless-runtime-failure.sh"
+	return 0
+}
+
+test_exit_trap_retains_completed_attempt_sentinel_path() {
+	# shellcheck disable=SC2016 # Match literal variable references in source.
+	assert_grep "runtime invocation retains completed attempt sentinel path" \
+		'_WORKER_LAST_EXIT_CODE_FILE="\$exit_code_file"' \
+		"${AGENTS_SCRIPTS}/headless-runtime-invoke.sh"
+	assert_grep "exit trap falls back to completed attempt sentinel path" \
+		'_WORKER_EXIT_CODE_FILE:-\$\{_WORKER_LAST_EXIT_CODE_FILE:-\}' \
+		"${AGENTS_SCRIPTS}/headless-runtime-failure.sh"
 	return 0
 }
 
@@ -325,10 +369,14 @@ main() {
 	test_missing_exit_code_file_path
 	test_nonexistent_exit_code_file
 	test_non_numeric_wait_status
+	test_worker_exit_prefers_explicit_kill_reason_over_zero_status
+	test_worker_exit_prefers_watchdog_sentinel_over_zero_status
+	test_worker_exit_preserves_natural_and_signal_fallbacks
 
 	# Structural assertions on consumer site
 	test_worker_exited_line_carries_kill_reason
 	test_exit_trap_prefers_dispatch_terminal_reason
+	test_exit_trap_retains_completed_attempt_sentinel_path
 	test_invoke_opencode_calls_classifier
 	test_classifier_function_defined
 

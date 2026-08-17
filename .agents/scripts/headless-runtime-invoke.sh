@@ -46,6 +46,9 @@ _invoke_opencode_validate_context() {
 		public_triage=1
 	fi
 	_WORKER_EXIT_CODE_FILE="$exit_code_file"
+	# Finalization clears the active invocation pointer, but a later EXIT trap
+	# still needs the completed attempt's wait-status and kill-site sentinels.
+	_WORKER_LAST_EXIT_CODE_FILE="$exit_code_file"
 	return 0
 }
 

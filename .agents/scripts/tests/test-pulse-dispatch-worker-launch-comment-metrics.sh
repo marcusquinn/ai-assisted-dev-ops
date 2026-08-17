@@ -167,6 +167,20 @@ if [[ "$(<"${TEST_TMP}/blocked-prompt")" == *"original composed prompt"* ]]; the
 	fail "clean-room blocker leaked the original composed prompt"
 fi
 
+completion_contract=$(_dlw_first_pass_completion_contract)
+# shellcheck disable=SC2016 # Markdown backticks are intentional literals.
+if [[ "$completion_contract" != *'terminal failing check caused by your current changes'* ]] \
+	|| [[ "$completion_contract" != *'canonical `### Files Scope` section'* ]] \
+	|| [[ "$completion_contract" != *'blocker dossier'* ]] \
+	|| [[ "$completion_contract" != *'revised brief or follow-up issue'* ]]; then
+	fail "first-pass contract does not bound CI remediation to canonical files scope"
+fi
+completion_contract_call_sites=$(grep -cE '^[[:space:]]+_dlw_first_pass_completion_contract$' \
+	"${SCRIPTS_DIR}/pulse-dispatch-worker-prompt.sh")
+if [[ "$completion_contract_call_sites" != "3" ]]; then
+	fail "first-pass scope contract is not shared by all three authorizing prompt paths"
+fi
+
 retry_context=$(OBJECTIVE_RECONCILIATION_HELPER="$OBJECTIVE_HELPER" \
 	AIDEVOPS_RETRY_CONTEXT_MAX_CHARS=512 _dlw_prior_attempt_context 123 owner/repo)
 if [[ "$retry_context" != *"Validated prior-attempt state"* || "$retry_context" != *"attempt-prior"* ]]; then

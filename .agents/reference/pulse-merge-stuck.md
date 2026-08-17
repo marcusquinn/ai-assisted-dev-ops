@@ -32,9 +32,11 @@ Once per pulse cycle (~120s), per repo, after the deterministic merge pass:
    issue (or PR if no linked issue), keyed off the
    `<!-- merge-stuck:individual -->` HTML marker so repeat cycles do not spam.
 4. **Detects pattern outages** — when ≥`AIDEVOPS_MERGE_PATTERN_MIN_PRS` (default
-   3) PRs share the same failure fingerprint (sorted set of FAILURE check
+   3) aged PRs share the same failure fingerprint (sorted set of FAILURE check
    names, hashed to 16 hex chars), files **one** investigation meta-issue per
-   fingerprint dedup'd by `<!-- merge-stuck:pattern:<hash16> -->`.
+   fingerprint dedup'd by `<!-- merge-stuck:pattern:<hash16> -->`. This
+   diagnostic set includes worker-owned `CHANGES_REQUESTED` PRs without making
+   them eligible for individual escalation or merge.
 5. **Tracks zero-progress** across all repos. If a cycle has eligible-but-
    unmerged PRs and zero merges, the `pulse_merge_zero_progress_cycles` gauge
    increments. Reaching `AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES` (default 5
@@ -53,6 +55,14 @@ Once per pulse cycle (~120s), per repo, after the deterministic merge pass:
 | `STUCK_BRANCHPROTECT_API_ERROR` | 5xx / network from the protection API | Counter increment only — transient, retry next cycle |
 | `STUCK_AUTH` | 401 / "bad credentials" from any `gh` call | Counter increment only — operator action required |
 | `STUCK_OTHER` | Eligible + idle but no distinct signal | Counter increment only |
+
+Pattern-outage grouping deliberately uses a wider candidate set than the table
+above. Alongside individually eligible stuck PRs, it admits aged, non-draft,
+non-held PRs carrying `origin:worker` or `origin:worker-takeover` when their
+review decision is `CHANGES_REQUESTED`. `_detect_pattern_outage` still requires a
+terminal CI failure fingerprint and excludes per-PR review/policy-only gates.
+This keeps substantive review objections blocking while allowing a shared
+broken-base failure to produce one deduplicated outage issue.
 
 ## Configuration
 
@@ -184,6 +194,8 @@ Set `AIDEVOPS_MERGE_STUCK_ENABLED=0` in your env. The module's entry point
 - defaults applied as positive integers post-source
 - `_pms_iso_to_epoch` round-trip + garbage rejection
 - `_pms_hash_fingerprint` 16-char hex output, deterministic, distinct inputs
+- separate pattern-candidate admission for worker-owned `CHANGES_REQUESTED` PRs,
+  including draft, hold, ownership, and age exclusions
 - `pulse_stats_set_gauge` / `pulse_stats_get_gauge` round-trip + non-numeric
   rejection + gauge isolation
 - `pulse_merge_zero_progress_record` state transitions (reset on merge,

@@ -647,6 +647,8 @@ _hrff_resolve_release_runner_login() {
 # Args:
 #   $1 = wait_status  (bash exit status; >128 means signal N = wait_status - 128)
 #   $2 = start_epoch_ms (milliseconds epoch when worker was prepared; 0 = unknown)
+#   $3 = persisted_session_id (optional continued-session identity)
+#   $4 = exit_code_file (optional sentinel base path)
 #
 # Globals (optional, set by _invoke_opencode / _cmd_run_prepare):
 #   _WORKER_ISOLATED_DB_PATH  — path to isolated worker opencode.db (if active)
@@ -664,6 +666,23 @@ classify_worker_exit() {
 	local wait_status="$1"
 	local start_epoch_ms="${2:-0}"
 	local persisted_session_id="${3:-${_WORKER_PERSISTED_SESSION_ID:-}}"
+	local exit_code_file="${4:-}"
+	local kill_reason=""
+
+	# Kill-site sentinels are more authoritative than the recorded wait status.
+	# A watchdog can hard-kill a worker while the wrapper still persists status 0;
+	# preserve natural/unknown fallbacks so ordinary clean and signal exits retain
+	# the existing classifier behaviour.
+	if [[ -n "$exit_code_file" ]] && declare -F classify_worker_kill_reason >/dev/null 2>&1; then
+		kill_reason=$(classify_worker_kill_reason "$exit_code_file" "$wait_status") || kill_reason=""
+		case "$kill_reason" in
+		"" | natural | unknown) ;;
+		*)
+			printf '%s' "$kill_reason"
+			return 0
+			;;
+		esac
+	fi
 
 	# Signal detection: bash encodes signal N as exit status 128+N
 	if [[ "$wait_status" =~ ^[0-9]+$ ]] && (( wait_status > 128 )); then
@@ -1237,8 +1256,9 @@ _exit_trap_handler() {
 	# from the trap and emits reason=clean for SIGTERM/SIGKILL kills (canonical
 	# failure: GH#21707 — 6+ workers all reported reason=clean session_count=0
 	# despite wait_status=143).
-	local _wait_file="${_WORKER_EXIT_CODE_FILE:-}.wait_status"
-	if [[ -n "${_WORKER_EXIT_CODE_FILE:-}" && -f "$_wait_file" ]]; then
+	local _durable_exit_code_file="${_WORKER_EXIT_CODE_FILE:-${_WORKER_LAST_EXIT_CODE_FILE:-}}"
+	local _wait_file="${_durable_exit_code_file}.wait_status"
+	if [[ -n "$_durable_exit_code_file" && -f "$_wait_file" ]]; then
 		local _w=""
 		_w=$(<"$_wait_file") || _w=""
 		# Trim CR/LF/whitespace (bash 3.2 compatible).
@@ -1277,7 +1297,8 @@ _exit_trap_handler() {
 		if declare -F classify_worker_exit >/dev/null 2>&1; then
 			local _start_ms="${_WORKER_START_EPOCH_MS:-0}"
 			local _classified=""
-			_classified=$(classify_worker_exit "$exit_status" "$_start_ms" "${_WORKER_PERSISTED_SESSION_ID:-}" 2>/dev/null) || true
+			_classified=$(classify_worker_exit "$exit_status" "$_start_ms" \
+				"${_WORKER_PERSISTED_SESSION_ID:-}" "$_durable_exit_code_file" 2>/dev/null) || true
 			if [[ -n "$_classified" ]]; then
 				reason="$_classified"
 			else

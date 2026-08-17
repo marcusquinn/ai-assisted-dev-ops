@@ -328,11 +328,12 @@ _dlw_first_pass_completion_contract() {
 
 First-pass completion contract:
 1. Before editing, verify the issue is still open and not already satisfied by the default branch, an open/closed PR, or a pushed issue branch. Reuse salvageable commits instead of restarting.
-2. Treat prior structured CI/review feedback in the issue body as cumulative evidence. Address every terminal failing check, including advisory checks, not only the first required failure.
+2. Treat prior structured CI/review feedback in the issue body as cumulative evidence. Address every terminal failing check caused by your current changes, including advisory checks, not only the first required failure. Report unrelated or pre-existing failures with evidence; do not repair them inside this task.
 3. Validate the stated target files and verification commands against the current dependency/runtime versions before implementation.
-4. After the first coherent commit, push and create a draft PR early so progress is durable and visible to every runner. Continue implementation and local verification on that PR; do not hand off while it is draft or has unpushed changes. Once the completed exact head is pushed, the PR is non-draft, its merge summary exists, and one immediate remote check shows no terminal failure, attempt merge once. If only asynchronous CI, bot review, human approval, or native auto-merge remains, exit and hand off to pulse. Never poll those gates or bypass approval, review, CI, branch-protection, or security controls.
-5. Do not post routine dispatch, stale, or progress comments. Prefer commits, the PR, check runs, and one final completion or blocker dossier.
-6. For routine tool discovery, use `command -v TOOL`, `TOOL --version`, or repository wrappers. Do not use file-reading tools to inspect `~/.bun/bin`, `~/.qlty/bin`, or `~/.local/bin`; unrelated external-directory reads still require maintainer approval.
+4. Scope boundary: modify only paths declared in the brief's canonical `### Files Scope` section (`## Files Scope` is accepted for legacy briefs). Reading other files for context is allowed. If a required fix needs an undeclared path, stop that edit path and provide a blocker dossier with the failing command, affected path, and reason; request a revised brief or follow-up issue instead of expanding scope silently.
+5. After the first coherent commit, push and create a draft PR early so progress is durable and visible to every runner. Continue implementation and local verification on that PR; do not hand off while it is draft or has unpushed changes. Once the completed exact head is pushed, the PR is non-draft, its merge summary exists, and one immediate remote check shows no terminal failure, attempt merge once. If only asynchronous CI, bot review, human approval, or native auto-merge remains, exit and hand off to pulse. Never poll those gates or bypass approval, review, CI, branch-protection, or security controls.
+6. Do not post routine dispatch, stale, or progress comments. Prefer commits, the PR, check runs, and one final completion or blocker dossier.
+7. For routine tool discovery, use `command -v TOOL`, `TOOL --version`, or repository wrappers. Do not use file-reading tools to inspect `~/.bun/bin`, `~/.qlty/bin`, or `~/.local/bin`; unrelated external-directory reads still require maintainer approval.
 EOF
 	return 0
 }
