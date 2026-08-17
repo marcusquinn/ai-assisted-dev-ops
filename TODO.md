@@ -110,6 +110,8 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 <!--TOON:ready[0]{id,desc,owner,tags,est,logged}:
 -->
 
+- [ ] t18293 Reject malformed GitHub login output before approval lifecycle mutation #bug #security #framework #reliability #interactive #auto-dispatch ~2h tier:standard ref:GH#30338 logged:2026-08-17 -> [todo/tasks/t18293-brief.md]
+
 - [x] t18193 Define provider-neutral team-interface core contracts #mission:m-20260804-5d06b1 #enhancement #framework #auto-dispatch ~4h tier:standard ref:GH#29494 logged:2026-08-04 -> [todo/tasks/t18193-brief.md] pr:#29505 completed:2026-08-04
 - [x] t18194 Define adaptive ingress trust and authority contracts #mission:m-20260804-5d06b1 #enhancement #security #framework #auto-dispatch ~3.5h tier:standard blocked-by:t18193 ref:GH#29495 logged:2026-08-04 -> [todo/tasks/t18194-brief.md] pr:#29518 completed:2026-08-04
 - [x] t18196 Define isolated app-team manifest contracts #mission:m-20260804-5d06b1 #enhancement #security #framework #auto-dispatch ~3.5h tier:standard blocked-by:t18193 ref:GH#29501 logged:2026-08-04 -> [todo/tasks/t18196-brief.md] pr:#29510 completed:2026-08-04
@@ -517,6 +519,8 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 - [x] t2564 docs(opencode): document project_id drift and /sessions session visibility recovery — Opencode 1.14.19 identifies git-tracked projects by a git commit SHA stored in `session.project_id`; when opencode regenerates this SHA (binary update, rebase, certain reference events) prior sessions orphan off the TUI `/sessions` picker. Live diagnosis 2026-04-21 on aidevops repo: 696 sessions orphaned on old project_id after opencode-ai binary update on 2026-04-20; one-line SQL `UPDATE session SET project_id='NEW' WHERE project_id='OLD'` restored full visibility. Archive DB needs no action — TUI doesn't read it. Add `## Project ID drift — /sessions loses history` section to `.agents/reference/opencode-maintenance.md` with Symptom/Cause/Diagnose/Fix/Archive-DB subsections so the next hit is a 2-minute recovery instead of a multi-hour diagnosis. EDIT `.agents/reference/opencode-maintenance.md`. #documentation #framework #auto-dispatch ~30m tier:simple ref:GH#20216 logged:2026-04-21 pr:#20279 completed:2026-04-21
 
 ## Backlog
+
+- [ ] t18294 Stop approval batches after systemic GitHub transport failure #bug #framework #reliability #interactive #auto-dispatch ~3h tier:standard blocked-by:t18293 ref:GH#30339 logged:2026-08-17 -> [todo/tasks/t18294-brief.md]
 
 - [x] t18071 Establish privacy-safe linter forensics and bounded resource baselines across mission targets #mission:m-20260710-11431d #investigate #performance #security #interactive ~30m tier:thinking ref:GH#26914 assignee:marcusquinn started:2026-07-10T03:55:55Z logged:2026-07-10 -> [todo/tasks/t18071-brief.md] pr:#26918 completed:2026-07-10
 - [x] t18072 Fix framework changed-file coverage, deduplicate discovery, and fail closed on timeouts #mission:m-20260710-11431d #performance #quality #security #shell #interactive ~45m tier:standard blocked-by:t18071 ref:GH#26919 assignee:marcusquinn started:2026-07-10T05:17:21Z logged:2026-07-10 -> [todo/tasks/t18072-brief.md] pr:#26925 completed:2026-07-10
