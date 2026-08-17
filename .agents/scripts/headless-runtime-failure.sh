@@ -1238,6 +1238,19 @@ _hrff_finalize_exit_trap() {
 }
 
 #######################################
+# Resolve the active or most recently completed invocation sentinel base path.
+# Finalization clears the active pointer before a later EXIT trap can classify
+# the durable outcome.
+# Stdout: sentinel base path, possibly empty.
+#######################################
+_hrff_durable_exit_code_file() {
+	local active_path="${_WORKER_EXIT_CODE_FILE:-}"
+	local completed_path="${_WORKER_LAST_EXIT_CODE_FILE:-}"
+	printf '%s' "${active_path:-$completed_path}"
+	return 0
+}
+
+#######################################
 # Classify worker termination and post CLAIM_RELEASED. Falls back to
 # process_exit when runtime/session evidence cannot identify the cause.
 # Args: $1=session_key (baked into the EXIT trap at registration time)
@@ -1256,7 +1269,8 @@ _exit_trap_handler() {
 	# from the trap and emits reason=clean for SIGTERM/SIGKILL kills (canonical
 	# failure: GH#21707 — 6+ workers all reported reason=clean session_count=0
 	# despite wait_status=143).
-	local _durable_exit_code_file="${_WORKER_EXIT_CODE_FILE:-${_WORKER_LAST_EXIT_CODE_FILE:-}}"
+	local _durable_exit_code_file=""
+	_durable_exit_code_file=$(_hrff_durable_exit_code_file)
 	local _wait_file="${_durable_exit_code_file}.wait_status"
 	if [[ -n "$_durable_exit_code_file" && -f "$_wait_file" ]]; then
 		local _w=""

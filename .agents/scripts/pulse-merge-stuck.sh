@@ -288,7 +288,7 @@ _pms_collect_pattern_outage_candidates() {
 	local pr_count="$2"
 	local now_epoch="$3"
 	local age_threshold_secs="$4"
-	local i=0 pr_obj="" pr_num="" pr_updated="" pr_age_secs=0 is_candidate=""
+	local i=0 pr_obj="" pr_num="" pr_updated="" pr_updated_epoch=0 pr_age_secs=0 is_candidate=""
 
 	while [[ "$i" -lt "$pr_count" ]]; do
 		_pms_diagnostic_budget_exhausted && return 1
@@ -300,10 +300,13 @@ _pms_collect_pattern_outage_candidates() {
 		pr_num=$(printf '%s' "$pr_obj" | jq -r '.number // empty' 2>/dev/null)
 		pr_updated=$(printf '%s' "$pr_obj" | jq -r '.updatedAt // empty' 2>/dev/null)
 		[[ "$pr_num" =~ ^[0-9]+$ && -n "$pr_updated" ]] || continue
-		pr_age_secs=$((now_epoch - $(_pms_iso_to_epoch "$pr_updated")))
+		pr_updated_epoch=$(_pms_iso_to_epoch "$pr_updated")
+		[[ "$pr_updated_epoch" =~ ^[1-9][0-9]*$ ]] || continue
+		pr_age_secs=$((now_epoch - pr_updated_epoch))
 		[[ "$pr_age_secs" -ge "$age_threshold_secs" ]] || continue
 		printf '%s\n' "$pr_num"
 	done
+	_pms_diagnostic_budget_exhausted && return 1
 	return 0
 }
 
@@ -822,6 +825,10 @@ _detect_pattern_outage() {
 
 	while IFS= read -r pr_num; do
 		[[ -n "$pr_num" ]] || continue
+		if _pms_diagnostic_budget_exhausted; then
+			echo "[pulse-merge-stuck] _detect_pattern_outage: diagnostic budget exhausted for ${repo_slug}; aggregate deferred" >>"$LOGFILE"
+			return 0
+		fi
 		local fp head_sha=""
 		if [[ -n "$pr_json" ]]; then
 			head_sha=$(printf '%s' "$pr_json" | jq -r --argjson number "$pr_num" '.[] | select(.number == $number) | .headRefOid // empty' 2>/dev/null) || head_sha=""

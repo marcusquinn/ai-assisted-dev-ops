@@ -760,11 +760,12 @@ pattern_candidate_fixture='[
   {"number":103,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[],"updatedAt":"2025-01-01T00:00:00Z"},
   {"number":104,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":true,"labels":[{"name":"origin:worker"}],"updatedAt":"2025-01-01T00:00:00Z"},
   {"number":105,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker"},{"name":"hold-for-review"}],"updatedAt":"2025-01-01T00:00:00Z"},
-  {"number":106,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker-takeover"}],"updatedAt":"2026-01-01T00:00:00Z"}
+  {"number":106,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker-takeover"}],"updatedAt":"2026-01-01T00:00:00Z"},
+  {"number":107,"mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","isDraft":false,"labels":[{"name":"origin:worker"}],"updatedAt":"not-a-timestamp"}
 ]'
 pattern_now=$(_pms_iso_to_epoch "2026-01-01T00:00:00Z")
 pattern_candidates=$(_pms_collect_pattern_outage_candidates \
-	"$pattern_candidate_fixture" "6" "$pattern_now" "60")
+	"$pattern_candidate_fixture" "7" "$pattern_now" "60")
 assert_eq "8a: pattern candidates add only aged worker review-blocked PRs" \
 	$'101\n102' "$pattern_candidates"
 assert_eq "8b: CHANGES_REQUESTED worker remains ineligible for individual escalation" \
@@ -822,6 +823,23 @@ assert_eq "8f: mixed policy and genuine CI fingerprint remains outage-eligible" 
 got=$(_pms_format_pr_markdown_list "11,12,13")
 assert_eq "8g: affected-PR Markdown retains the final entry" \
 	$'- #11\n- #12\n- #13' "$got"
+
+eval "$(declare -f _pms_diagnostic_budget_exhausted | sed '1s/_pms_diagnostic_budget_exhausted/_pms_diagnostic_budget_exhausted_production/')"
+PMS_TEST_BUDGET_CALLS=0
+_pms_diagnostic_budget_exhausted() {
+	PMS_TEST_BUDGET_CALLS=$((PMS_TEST_BUDGET_CALLS + 1))
+	if [[ "$PMS_TEST_BUDGET_CALLS" -gt 1 ]]; then
+		return 0
+	fi
+	return 1
+}
+PMS_TEST_OUTAGE_ARGS=""
+_detect_pattern_outage "example/repo" $'11\n12\n13\n'
+assert_eq "8h: exhausted diagnostic budget defers partial outage aggregate" \
+	"" "$PMS_TEST_OUTAGE_ARGS"
+unset -f _pms_diagnostic_budget_exhausted
+eval "$(declare -f _pms_diagnostic_budget_exhausted_production | sed '1s/_pms_diagnostic_budget_exhausted_production/_pms_diagnostic_budget_exhausted/')"
+unset -f _pms_diagnostic_budget_exhausted_production
 
 PMS_TEST_EXISTING_STATE="OPEN"
 PMS_TEST_CLOSE_CALLS=0

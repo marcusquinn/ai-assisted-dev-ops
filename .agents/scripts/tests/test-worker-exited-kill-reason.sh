@@ -291,6 +291,19 @@ test_worker_exit_preserves_natural_and_signal_fallbacks() {
 	return 0
 }
 
+test_completed_attempt_path_classifies_zero_status_sentinel() {
+	local f durable_path result
+	f=$(_fresh_exit_code_file)
+	printf 'hard_kill_stall' >"${f}.kill_reason"
+	_WORKER_EXIT_CODE_FILE=""
+	_WORKER_LAST_EXIT_CODE_FILE="$f"
+	durable_path=$(_hrff_durable_exit_code_file)
+	result=$(classify_worker_exit 0 0 "" "$durable_path")
+	assert_eq "completed attempt path preserves sentinel classification after finalization" \
+		"$result" "hard_kill_stall"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Tests — structural assertions on the consumer site (headless-runtime-helper.sh)
 # ---------------------------------------------------------------------------
@@ -322,8 +335,8 @@ test_exit_trap_retains_completed_attempt_sentinel_path() {
 	assert_grep "runtime invocation retains completed attempt sentinel path" \
 		'_WORKER_LAST_EXIT_CODE_FILE="\$exit_code_file"' \
 		"${AGENTS_SCRIPTS}/headless-runtime-invoke.sh"
-	assert_grep "exit trap falls back to completed attempt sentinel path" \
-		'_WORKER_EXIT_CODE_FILE:-\$\{_WORKER_LAST_EXIT_CODE_FILE:-\}' \
+	assert_grep "exit trap resolves the durable attempt sentinel path" \
+		'_durable_exit_code_file=\$\(_hrff_durable_exit_code_file\)' \
 		"${AGENTS_SCRIPTS}/headless-runtime-failure.sh"
 	return 0
 }
@@ -372,6 +385,7 @@ main() {
 	test_worker_exit_prefers_explicit_kill_reason_over_zero_status
 	test_worker_exit_prefers_watchdog_sentinel_over_zero_status
 	test_worker_exit_preserves_natural_and_signal_fallbacks
+	test_completed_attempt_path_classifies_zero_status_sentinel
 
 	# Structural assertions on consumer site
 	test_worker_exited_line_carries_kill_reason
