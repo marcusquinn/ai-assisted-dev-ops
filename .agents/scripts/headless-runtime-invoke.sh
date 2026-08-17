@@ -96,6 +96,35 @@ _invoke_opencode_copy_isolated_auth() {
 }
 
 # Export isolated runtime paths and prepare continuation state.
+_invoke_opencode_discard_failed_continuation() {
+	local arg=""
+	local skip_session_value=0
+	local -a fresh_cmd=()
+
+	for arg in "${cmd[@]}"; do
+		if [[ "$skip_session_value" -eq 1 ]]; then
+			skip_session_value=0
+			continue
+		fi
+		case "$arg" in
+		--session)
+			skip_session_value=1
+			;;
+		--continue)
+			;;
+		*)
+			fresh_cmd+=("$arg")
+			;;
+		esac
+	done
+	cmd=("${fresh_cmd[@]}")
+	clear_session_id "${_invoke_provider:-}" "${_invoke_session_key:-}"
+	persisted_session=""
+	_invoke_persisted_session=""
+	_WORKER_PERSISTED_SESSION_ID=""
+	return 0
+}
+
 _invoke_opencode_export_isolation() {
 	[[ -n "$isolated_data_dir" ]] || return 0
 	export XDG_DATA_HOME="$isolated_data_dir"
@@ -134,6 +163,8 @@ _invoke_opencode_export_isolation() {
 			print_info "[lifecycle] db_seeded session=$_invoke_persisted_session pid=$$"
 		else
 			print_warning "[lifecycle] db_seed_failed session=$_invoke_persisted_session pid=$$"
+			_invoke_opencode_discard_failed_continuation
+			print_info "[lifecycle] db_seed_failed_fresh_session pid=$$"
 		fi
 	fi
 	if [[ -f "${isolated_data_dir}/opencode/auth.json" ]]; then

@@ -270,6 +270,7 @@ main() {
 	test_does_not_double_append
 	test_extract_session_id_from_output_returns_latest_session_id
 	test_stale_session_retry_clears_continuation_state
+	test_db_seed_failure_starts_fresh_opencode_session
 	test_provider_sessions_scope_issue_keys_by_repo_slug
 	test_provider_sessions_keep_pulse_unscoped
 	test_blocked_completion_records_blocked_label

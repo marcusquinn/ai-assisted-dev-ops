@@ -94,6 +94,39 @@ test_stale_session_retry_clears_continuation_state() {
 	return 0
 }
 
+test_db_seed_failure_starts_fresh_opencode_session() {
+	local state=""
+	state=$(
+		local persisted_session="ses_stale"
+		local _invoke_persisted_session="ses_stale" _WORKER_PERSISTED_SESSION_ID="ses_stale"
+		local _invoke_provider="openai" _invoke_session_key="issue-30328"
+		local cleared_provider="" cleared_key=""
+		local isolated_data_dir="${TEST_ROOT}/failed-seed-isolation"
+		local runtime_role="worker" public_triage=0 private_workload=0
+		local -a cmd=(opencode run prompt --session ses_stale --continue --title title)
+		clear_session_id() {
+			cleared_provider="$1"
+			cleared_key="$2"
+			return 0
+		}
+		_headless_run_is_ephemeral() { return 0; }
+		_sync_worker_db_migration_metadata() { return 0; }
+		_seed_worker_db_session_context() { return 1; }
+		print_info() { return 0; }
+		print_warning() { return 0; }
+		_invoke_opencode_export_isolation >/dev/null
+		printf '%s|%s|%s|%s|%s' "${cmd[*]}" "$persisted_session" "$_invoke_persisted_session" \
+			"$_WORKER_PERSISTED_SESSION_ID" "${cleared_provider}:${cleared_key}"
+	)
+
+	if [[ "$state" == "opencode run prompt --title title||||openai:issue-30328" ]]; then
+		print_result "DB seed failure removes stale continuation command state" 0
+		return 0
+	fi
+	print_result "DB seed failure removes stale continuation command state" 1 "state=${state:-<empty>}"
+	return 0
+}
+
 test_provider_sessions_scope_issue_keys_by_repo_slug() {
 	local provider="openai"
 	local model="openai/gpt-5.5"
