@@ -83,6 +83,10 @@ readonly _APPROVAL_GITHUB_ACTIONS_BOT_ID="41898282"
 readonly _APPROVAL_MISSING_FIELD="__missing__"
 readonly _APPROVAL_GH_INVALID_TOKEN="invalid-token"
 readonly _APPROVAL_BATCH_MODE="batch"
+readonly _APPROVAL_BATCH_FAILURE_ISOLATED="isolated-target"
+readonly _APPROVAL_BATCH_FAILURE_SYSTEMIC="systemic-transport"
+readonly _APPROVAL_BATCH_FAILURE_RATE_LIMIT="shared-rate-limit"
+readonly _APPROVAL_BATCH_FAILURE_AUTH="shared-auth-failure"
 
 _APPROVAL_GH_RATE_LIMIT_RESET=""
 _APPROVAL_GH_AUTH_FAILURE=""
@@ -181,9 +185,43 @@ _approval_probe_auth_failure() {
 				printf "invalid-token"
 				exit 0
 			}
+			if (status ~ /^5[0-9][0-9]$/) {
+				printf "systemic-transport"
+				exit 0
+			}
 			exit 1
 		}'
 	return $?
+}
+
+_approval_classify_batch_failure() {
+	local probe=""
+	local failure_kind=""
+	local reset=""
+
+	if declare -F _gh_secondary_cooldown_active >/dev/null 2>&1 && _gh_secondary_cooldown_active; then
+		printf '%s' "$_APPROVAL_BATCH_FAILURE_RATE_LIMIT"
+		return 0
+	fi
+	if probe=$(_approval_probe_auth_failure); then
+		IFS=$'\t' read -r failure_kind reset <<<"$probe"
+		case "$failure_kind" in
+		authenticated) printf '%s' "$_APPROVAL_BATCH_FAILURE_ISOLATED" ;;
+		core-rate-limit) printf '%s' "$_APPROVAL_BATCH_FAILURE_RATE_LIMIT" ;;
+		"$_APPROVAL_GH_INVALID_TOKEN") printf '%s' "$_APPROVAL_BATCH_FAILURE_AUTH" ;;
+		"$_APPROVAL_BATCH_FAILURE_SYSTEMIC") printf '%s' "$_APPROVAL_BATCH_FAILURE_SYSTEMIC" ;;
+		*) printf 'unknown' ;;
+		esac
+		return 0
+	fi
+	if declare -F _gh_secondary_cooldown_active >/dev/null 2>&1 && _gh_secondary_cooldown_active; then
+		printf '%s' "$_APPROVAL_BATCH_FAILURE_RATE_LIMIT"
+	else
+		# The target operation and an independent authenticated API probe both
+		# failed, which is sufficient evidence to stop mutating untouched targets.
+		printf '%s' "$_APPROVAL_BATCH_FAILURE_SYSTEMIC"
+	fi
+	return 0
 }
 
 _approval_report_core_rate_limit() {
@@ -1228,16 +1266,37 @@ _execute_approval_batch() {
 	local target_type=""
 	local target_number=""
 	local failed=0
+	local successful=0
+	local attempted=0
+	local unattempted=0
+	local failure_class=""
+	local stopped=0
 	local target_count=$#
 
 	for target_spec in "$@"; do
+		attempted=$((attempted + 1))
 		target_type="${target_spec%%:*}"
 		target_number="${target_spec#*:}"
 		if ! _approve_target_after_confirmation "$target_type" "$target_number" "$slug" "$actual_key"; then
 			failed=$((failed + 1))
+			failure_class=$(_approval_classify_batch_failure)
+			case "$failure_class" in
+			"$_APPROVAL_BATCH_FAILURE_SYSTEMIC" | "$_APPROVAL_BATCH_FAILURE_RATE_LIMIT" | "$_APPROVAL_BATCH_FAILURE_AUTH")
+				stopped=1
+				break
+				;;
+			esac
+		else
+			successful=$((successful + 1))
 		fi
 	done
 	if [[ "$failed" -gt 0 ]]; then
+		if [[ "$stopped" -eq 1 ]]; then
+			unattempted=$((target_count - attempted))
+			_print_error "Approval batch stopped after ${failure_class}: ${successful} succeeded and remain signed, ${failed} failed, ${unattempted} unattempted"
+			_print_info "For each attempted target, run 'aidevops approve verify', then recover incomplete lifecycle state with 'aidevops approve reconcile'"
+			return 1
+		fi
 		_print_error "${failed} of ${target_count} approval(s) failed; successful targets remain signed"
 		return 1
 	fi
