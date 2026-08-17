@@ -118,7 +118,7 @@ At issue creation:
   when the generator's contract proves that shape; do not infer tiers from a noun.
 - Keep exactly one `tier:*` label. Explicit policy upgrades replace lower labels.
 
-See `templates/brief-template.md` "Tier checklist" for the structured version used during task creation.
+See `~/.aidevops/agents/templates/brief-template.md` "Tier checklist" for the structured version used during task creation.
 
 ### Deterministic Enforcement
 

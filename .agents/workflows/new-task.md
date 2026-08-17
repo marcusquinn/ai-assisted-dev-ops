@@ -79,7 +79,7 @@ fi
 
 This prevents redundant brief files when the issue body already carries all the context a worker needs.
 
-Every task MUST have a brief at `todo/tasks/{task_id}-brief.md`. Use `templates/brief-template.md`, formatted per `workflows/brief.md`. Required sections:
+Every task MUST have a brief at `todo/tasks/{task_id}-brief.md`. Use `~/.aidevops/agents/templates/brief-template.md`, formatted per `workflows/brief.md`. Required sections:
 
 Before adding `auto-dispatch`, apply the single `workflows/brief.md` "Dispatch Readiness Contract (brief schema v2)" checklist and require `verify-brief-helper.sh check-readiness <brief>` to pass. Historical unmarked briefs keep legacy compatibility.
 
@@ -97,7 +97,7 @@ Before adding `auto-dispatch`, apply the single `workflows/brief.md` "Dispatch R
 2. "How many lines will be added?"
 3. "Is projected total > 80 lines?" → If yes: add warning. If > 100 lines: plan extract-helpers refactor first to avoid dispatch failures from complexity gates.
 
-Fill in the `### Complexity Impact` subsection in the brief (see `templates/brief-template.md`). This prevents the class of failure where workers blindly grow a function past the 100-line `function-complexity` gate and dispatch 7+ times. If the task only creates new files/functions, delete the Complexity Impact section.
+Fill in the `### Complexity Impact` subsection in the brief (see `~/.aidevops/agents/templates/brief-template.md`). This prevents the class of failure where workers blindly grow a function past the 100-line `function-complexity` gate and dispatch 7+ times. If the task only creates new files/functions, delete the Complexity Impact section.
 
 **Session ID:** `$OPENCODE_SESSION_ID` / `$CLAUDE_SESSION_ID`, or `{app}:unknown-{ISO-date}` if unavailable.
 

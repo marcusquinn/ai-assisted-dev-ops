@@ -78,7 +78,7 @@ Full canonical dispatch-blocker label set (labels + claim-states + validator-sta
 
 ### MANDATORY: Task Brief Requirement
 
-Every task MUST have `todo/tasks/{task_id}-brief.md`. Use `templates/brief-template.md`. Captures: origin (session ID, date, author), what, why, how (with file refs), acceptance criteria, context. Detect runtime: `$OPENCODE_SESSION_ID`, `$CLAUDE_SESSION_ID`, or `{app}:unknown-{date}`.
+Every task MUST have `todo/tasks/{task_id}-brief.md`. Use `~/.aidevops/agents/templates/brief-template.md`. Captures: origin (session ID, date, author), what, why, how (with file refs), acceptance criteria, context. Detect runtime: `$OPENCODE_SESSION_ID`, `$CLAUDE_SESSION_ID`, or `{app}:unknown-{date}`.
 
 **Tier-aware implementation context (t1901):** Preserve the mentorship goal without inventing certainty. `tier:simple` briefs provide complete exact edits or new-file content. `tier:standard` briefs name verified files/reference patterns and add skeletons for resolved boundaries where they reduce worker invention. `tier:thinking` briefs stay problem-first with constraints, prior art/evidence, decisions, non-goals, and acceptance boundaries; add file-level scaffolding only after the design determines it.
 

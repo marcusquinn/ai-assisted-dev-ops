@@ -77,7 +77,7 @@ _compose_consolidation_worker_instructions() {
    - Resolved questions, rejected ideas, or superseded decisions
    - The final agreed-upon approach
 
-2. **Compose a single coherent issue body** in the aidevops brief format (see \`templates/brief-template.md\`):
+2. **Compose a single coherent issue body** in the aidevops brief format (see \`~/.aidevops/agents/templates/brief-template.md\`):
    - \`## What\` — the deliverable
    - \`## Why\` — the problem and rationale
    - \`## How\` — approach with explicit file paths and line references

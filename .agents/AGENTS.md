@@ -66,7 +66,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Completion messages: state aim and solved outcome, then delivery bullets; omit routine-owned cleanup unless user action is required or work is at risk. See `reference/session.md`.
 - Memory recall is mandatory before non-trivial edits, debugging, PR review, git side effects, or design decisions: CLI `memory-helper.sh recall --query "<task keywords>" --limit 5`; OpenCode tool `aidevops_memory` with `{action:"recall", query:"<task keywords>", limit:"5"}`. Store only concrete reusable lessons: `{action:"store", content:"<lesson with evidence>", confidence:"medium"}`. Empty `aidevops_memory` calls are invalid; never use them as placeholders.
 - Before non-trivial code changes, run one duplicate/collision check: `prework-discovery-helper.sh --keywords "<task>" --files "<targets>" [--repo owner/repo]`.
-- Before changing third-party API/error-code mappings, verify the installed dependency version and local exported symbols first; brief authors include this checklist via `templates/brief-template.md`.
+- Before changing third-party API/error-code mappings, verify the installed dependency version and local exported symbols first; brief authors include this checklist via `~/.aidevops/agents/templates/brief-template.md`.
 
 ### Automation safety invariants
 
@@ -115,7 +115,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 
 ### GitHub and worker context
 
-- Managed-repo issues, PRs, and comments that describe work MUST include worker-ready context: files to modify, reference pattern, verification, and explicit note when paths cannot be known. Brief template source: `templates/brief-template.md`.
+- Managed-repo issues, PRs, and comments that describe work MUST include worker-ready context: files to modify, reference pattern, verification, and explicit note when paths cannot be known. Brief template source: `~/.aidevops/agents/templates/brief-template.md`.
 - Use GitHub wrappers for managed-repo issue/PR creation so origin labels and signatures are applied; never hand-compose signature footers. PR/issue/comment bodies must satisfy same-command `--body-file` discipline. Thread-clean reading and non-collaborator body immunity: `reference/gh-command-discipline.md`.
 - Auto-generated issue triage outcomes: verify premise first; falsified → close with rationale; correct+obvious → implement+PR; correct+ambiguous only → decision-ready comment + `hold-for-review`. Scope/style uncertainty is not a review hold. Full templates: `reference/worker-discipline.md`.
 - Parent/research tasks: `parent-task` is a permanent dispatch block; PRs against parent issues use `For #NNN`/`Ref #NNN` until the final child/phase. New worker-ready implementation issues default to auto-dispatch because issue creation authorizes implementation; use `no-auto-dispatch` only for an explicit recorded durable hold. If implementing an auto-dispatch issue interactively, use `interactive-start-helper.sh --issue <N> --repo <owner/repo> --task "..." --auto-dispatch`.

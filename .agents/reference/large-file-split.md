@@ -40,7 +40,7 @@ but workers couldn't discover from the brief.
 | > 100 lines | **Mandatory** — plan extract-helpers refactor first, list the helpers to extract in `### Complexity Impact` |
 
 **Brief requirement:** include the `### Complexity Impact` subsection (from
-`templates/brief-template.md`) in every brief that modifies an existing function body.
+`~/.aidevops/agents/templates/brief-template.md`) in every brief that modifies an existing function body.
 Workers dispatched without this context cannot detect the impending gate failure.
 
 **Extract-helpers pattern:** see section 2 of this document for the canonical
