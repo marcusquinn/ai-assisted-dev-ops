@@ -5,6 +5,8 @@
 
 Canonical rules for `.agents/scripts/**/*.sh`: **source `shared-constants.sh` OR use `[[ -z "${VAR+x}" ]]` guards**. Never assign `RED`, `GREEN`, `YELLOW`, `BLUE`, `PURPLE`, `CYAN`, `WHITE`, or `NC` at top level without a guard. Never `readonly` those names outside `shared-constants.sh`. Enforcement: `shell-init-pattern-check.sh` + CI. See `AGENTS.md` → "Quality Standards".
 
+> **Shell script context only:** Code in this guide is for `.sh` files, not OpenCode Bash tool calls. OpenCode blocks redirections, pipes, subshells, and process substitutions in Bash tool calls; use separate calls and runtime file tools instead.
+
 **Incident rationale (GH#18702):** On 2026-04-09, `init-routines-helper.sh:22` had an unguarded `GREEN='\033[0;32m'`. `setup.sh` sources it after `shared-constants.sh` (which has `readonly GREEN`). Under `set -Eeuo pipefail`, the re-assignment fatally aborted `setup.sh`, silently skipping `setup_privacy_guard` and `setup_canonical_guard` — **auto-update broken for 4 days** (cascade: GH#18693, fixed: PR #18728).
 
 ## Banned patterns
@@ -34,7 +36,7 @@ fi
 
 All-or-nothing: colors partially undefined under `set -u` when parent set some without the sentinel. Pattern B handles each independently. Migrate opportunistically.
 
-## Allowed patterns
+## Allowed shell script patterns
 
 ### A — source `shared-constants.sh` (preferred)
 

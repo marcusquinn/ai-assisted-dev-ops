@@ -5,6 +5,10 @@
 
 Maximise output per token. Compress prose, not results.
 
+**OpenCode Bash tool calls do not support shell redirections, pipes, subshells,
+or process substitutions.** Run dependent commands as separate tool calls; use
+the runtime's file tools for file content instead of shell redirection.
+
 ## 1. Ship early, keep the audit trail intact
 
 - Start with `TodoWrite`: 3-7 subtasks, exactly one `in_progress`, last subtask `gh pr ready`.
@@ -14,40 +18,21 @@ Maximise output per token. Compress prose, not results.
 git add -A && git commit -m 'feat: <what you just did> (<task-id>)'
 ```
 
-- After the first commit, push and open a draft PR. Later commits only need `git push`; finish with `gh pr ready`.
+- After the first commit, push and open a draft PR. Later commits only need `git push`; finish with `gh pr ready`. In OpenCode, run each command separately and use the Write tool to create the PR body file.
 
 ```bash
 git push -u origin HEAD
-gh_issue=$(grep -E '^\s*- \[.\] <task-id> ' TODO.md 2>/dev/null | grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || true)
-PR_BODY_FILE="${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}/aidevops-pr-body.md"
-cat <<'EOF' > "$PR_BODY_FILE"
-WIP - incremental commits
-EOF
-[[ -n "$gh_issue" ]] && printf '\nResolves #%s\n' "$gh_issue" >> "$PR_BODY_FILE"
-~/.aidevops/agents/scripts/gh-signature-helper.sh footer --model "$ANTHROPIC_MODEL" >> "$PR_BODY_FILE"
 ```
 
-Run the GitHub write in the next Bash tool call so the signature gate can read
-the completed body file before execution:
+Create a body file with the required `Resolves #<issue>` and signature footer,
+then run the GitHub write in the next Bash tool call so the signature gate can
+read the completed file before execution:
 
 ```bash
 gh pr create --draft --title '<task-id>: <description>' --body-file "$PR_BODY_FILE"
 ```
 
-- **ShellCheck before push for `.sh` files (t234).** Do not push violations. If `shellcheck` is missing, skip and note it in the PR body.
-
-```bash
-if command -v shellcheck &>/dev/null; then
-  sc_errors=0
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    shellcheck -x -S warning -- "$f" || sc_errors=$((sc_errors + 1))
-  done < <(git diff --name-only origin/HEAD..HEAD 2>/dev/null | grep '\.sh$' || true)
-  [[ "$sc_errors" -gt 0 ]] && echo "ShellCheck: $sc_errors file(s) failed — fix before pushing" && exit 1
-else
-  echo "shellcheck not installed — skipping (note in PR body)"
-fi
-```
+- **ShellCheck before push for `.sh` files (t234).** Do not push violations. In OpenCode, first run `command -v shellcheck`, then list changed files with `git diff --name-only origin/HEAD..HEAD`, and run ShellCheck separately for each changed `.sh` file. If ShellCheck is unavailable, skip and note it in the PR body.
 
 - **PR titles must include the task ID (t318.2).** Use `<task-id>: <description>`.
   - `tNNN` for TODO tasks, e.g. `t318.2: Verify supervisor worker PRs include task ID`
@@ -116,6 +101,6 @@ Before `FULL_LOOP_COMPLETE`, verify:
 2. Verification run: tests, ShellCheck on changed `.sh` files, lint/typecheck if configured, expected output files exist.
 3. Generalization check: replace hardcoded values that should be parameterized.
 4. Minimal state changes: only requested files changed; no extra side effects.
-5. Commit+PR gate (GH#5317): `git status --porcelain` is empty and `gh pr list --head "$(git rev-parse --abbrev-ref HEAD)"` returns a PR. This is the #1 worker failure mode.
+5. Commit+PR gate (GH#5317): `git status --porcelain` is empty and `gh pr list --head <current-branch-name>` returns a PR. This is the #1 worker failure mode.
 
 `FULL_LOOP_COMPLETE` is irreversible. Extra verification is cheaper than a retry cycle.
