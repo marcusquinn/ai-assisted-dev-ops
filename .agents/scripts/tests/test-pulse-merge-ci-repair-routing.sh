@@ -424,6 +424,17 @@ define_process_helper() {
 	_pulse_merge_changes_requested_thread_remediation_first_enabled() { return 1; }
 	_pulse_merge_preflight_snapshot_gate() { _PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON="$PREFLIGHT_EVIDENCE"; return "$PREFLIGHT_RC"; }
 	_pulse_merge_final_trust_gate() { _PULSE_FINAL_REQUIRES_SYNCHRONOUS_MERGE=0; _PULSE_MERGE_PREFLIGHT_BLOCKING_CHECKS_JSON="$PREFLIGHT_EVIDENCE"; return "$PREFLIGHT_RC"; }
+	# The extracted merge-gate function calls this shared fence directly. Keep
+	# the harness deterministic while still validating that the dependency is
+	# present rather than allowing a command-not-found false green.
+	_interactive_claim_fence_blocks_merge() { return 1; }
+	# Keep extracted-function tests fail-closed when a production dependency is
+	# renamed, removed, or forgotten by the harness.
+	_require_merge_gate_dependencies() {
+		declare -F _interactive_claim_fence_blocks_merge >/dev/null 2>&1 || return 1
+		return 0
+	}
+	_require_merge_gate_dependencies || return 1
 	_pulse_merge_maybe_dispatch_preflight_remediation() { return 0; }
 	_close_conflicting_pr() { return 0; }
 	_pmp_is_protected_release_pr() { return 1; }
@@ -1271,6 +1282,18 @@ test_ci_feedback_skips_advisory_failure_when_required_clean() {
 	return 0
 }
 
+test_missing_merge_gate_dependency_fails_harness() {
+	setup_test_env
+	unset -f _interactive_claim_fence_blocks_merge
+	if _require_merge_gate_dependencies; then
+		print_result "missing merge-gate dependency fails harness" 1 "dependency validation unexpectedly passed"
+	else
+		print_result "missing merge-gate dependency fails harness" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_ci_feedback_includes_required_and_advisory_failures_together() {
 	setup_test_env
 	TEST_CHECK_SCENARIO="required_and_advisory"
@@ -1322,6 +1345,7 @@ main() {
 	test_ci_repair_consumes_abandoned_append_only_claim
 	test_ci_repair_waits_for_prelock_startup_before_retry
 	test_ci_feedback_skips_advisory_failure_when_required_clean
+	test_missing_merge_gate_dependency_fails_harness
 
 	printf '\nTests run: %d, failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then
