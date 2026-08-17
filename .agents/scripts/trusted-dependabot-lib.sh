@@ -85,7 +85,7 @@ _trusted_dependabot_dependencies_from_body() {
 			}
 			END { if (invalid || parsed == 0) exit 1 }
 		') || return 1
-		printf '%s\n' "$dependencies" | sort -u
+		printf '%s\n' "$dependencies" | LC_ALL=C sort -u
 		return 0
 	fi
 
@@ -94,7 +94,7 @@ _trusted_dependabot_dependencies_from_body() {
 	dependencies=$(printf '%s\n' "$first_line" \
 		| grep -oE '\[[^][]+\]\(' \
 		| sed -E 's/^\[//; s/\]\($//' \
-		| sort -u) || dependencies=""
+		| LC_ALL=C sort -u) || dependencies=""
 	[[ -n "$dependencies" ]] || return 1
 	printf '%s\n' "$dependencies"
 	return 0
