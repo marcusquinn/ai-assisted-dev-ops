@@ -68,12 +68,12 @@ export function createGuiApiApp() {
 
   app.post(APP_ACTION_ROUTE_MANIFEST.route, handleAppAction);
   app.get(APP_ACTION_STATUS_ROUTE_MANIFEST.route, handleAppActionStatus);
-  app.post(PULSE_WORKERS_ACTION_ROUTE_MANIFEST.route, handlePulseWorkerAction);
-  app.get(PULSE_WORKERS_ACTION_STATUS_ROUTE_MANIFEST.route, handlePulseWorkerActionStatus);
+	app.post(PULSE_WORKERS_ACTION_ROUTE_MANIFEST.route, handlePulseWorkerAction);
+	app.get(PULSE_WORKERS_ACTION_STATUS_ROUTE_MANIFEST.route, handlePulseWorkerActionStatus);
 
-  app.get(FILE_EXPLORER_ROUTE_MANIFEST.route, (context) => context.json(
-    ...fileExplorerResult(context.req.param("root"), context.req.query("path") ?? ""),
-  ));
+	app.get(FILE_EXPLORER_ROUTE_MANIFEST.route, (context) => context.json(
+		...fileExplorerResult(context.req.param("root") ?? "", context.req.query("path") ?? ""),
+	));
 
   for (const route of BANNED_ROUTE_PATTERNS) {
     app.post(route, (context) => context.json(
@@ -99,9 +99,18 @@ export function createGuiApiApp() {
 }
 
 function handleAppAction(context: Context) {
-  const appId = context.req.param("appId");
-  const action = context.req.param("action") as GuiAppActionId;
-  const command = appActionCommands[appId]?.[action];
+	const appId = context.req.param("appId");
+	const actionParam = context.req.param("action");
+	if (appId === undefined || actionParam === undefined) {
+		return context.json(createEnvelope({
+			operation_id: APP_ACTION_ROUTE_MANIFEST.operation_id,
+			source: { surface: "apps", authority: "allowlisted local command runner", path_refs: [] },
+			data: rejectedJob(appId ?? "unknown", "install", "Missing app action parameters."),
+			errors: ["action_not_allowlisted"],
+		}), 400);
+	}
+	const action = actionParam as GuiAppActionId;
+	const command = appActionCommands[appId]?.[action];
   if (command === undefined) {
     return context.json(createEnvelope({
       operation_id: APP_ACTION_ROUTE_MANIFEST.operation_id,
@@ -120,7 +129,7 @@ function handleAppAction(context: Context) {
 }
 
 function handleAppActionStatus(context: Context) {
-  const job = appActionJobs.get(context.req.param("jobId"));
+	const job = appActionJobs.get(context.req.param("jobId") ?? "");
   if (job === undefined) {
     return context.json(createEnvelope({
       operation_id: APP_ACTION_STATUS_ROUTE_MANIFEST.operation_id,
@@ -137,16 +146,17 @@ function handleAppActionStatus(context: Context) {
 }
 
 function handlePulseWorkerAction(context: Context) {
-  const action = context.req.param("action") as GuiPulseWorkerActionId;
-  if (!Object.hasOwn(pulseWorkerActionCommands, action)) {
-    return context.json(createEnvelope({
-      operation_id: PULSE_WORKERS_ACTION_ROUTE_MANIFEST.operation_id,
-      source: { surface: "pulse_workers", authority: "allowlisted local command runner", path_refs: [] },
-      data: rejectedPulseWorkerJob(action, "No allowlisted command for this Pulse & Workers action."),
-      errors: ["action_not_allowlisted"],
-    }), 400);
-  }
-  const actionCommand = pulseWorkerActionCommands[action];
+	const actionParam = context.req.param("action");
+	if (actionParam === undefined || !Object.hasOwn(pulseWorkerActionCommands, actionParam)) {
+		return context.json(createEnvelope({
+			operation_id: PULSE_WORKERS_ACTION_ROUTE_MANIFEST.operation_id,
+			source: { surface: "pulse_workers", authority: "allowlisted local command runner", path_refs: [] },
+			data: rejectedPulseWorkerJob("diagnose", "No allowlisted command for this Pulse & Workers action."),
+			errors: ["action_not_allowlisted"],
+		}), 400);
+	}
+	const action = actionParam as GuiPulseWorkerActionId;
+	const actionCommand = pulseWorkerActionCommands[action];
   const job = startPulseWorkerActionJob(action, actionCommand.command, actionCommand.target_ref, actionCommand.audit_ref);
   return context.json(createEnvelope({
     operation_id: PULSE_WORKERS_ACTION_ROUTE_MANIFEST.operation_id,
@@ -157,7 +167,7 @@ function handlePulseWorkerAction(context: Context) {
 }
 
 function handlePulseWorkerActionStatus(context: Context) {
-  const job = pulseWorkerActionJobs.get(context.req.param("jobId"));
+	const job = pulseWorkerActionJobs.get(context.req.param("jobId") ?? "");
   if (job === undefined) {
     return context.json(createEnvelope({
       operation_id: PULSE_WORKERS_ACTION_STATUS_ROUTE_MANIFEST.operation_id,

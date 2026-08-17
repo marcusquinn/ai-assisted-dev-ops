@@ -42,14 +42,16 @@ export function ScreenshotCaptureNotificationHost(): ReactElement | null {
   const nextNotificationId = useRef(0);
   const [screenshotNotifications, setScreenshotNotifications] = useState<ScreenshotCapturedNotification[]>([]);
 
-  useEffect(() => {
-    const showScreenshotNotification = (event: Event) => {
-      const detail = (event as CustomEvent<Partial<ScreenshotCapturedDetail>>).detail;
-      if (detail !== undefined && typeof detail.path === "string" && typeof detail.url === "string") {
-        nextNotificationId.current += 1;
-        setScreenshotNotifications((current) => [...current, { id: nextNotificationId.current, path: detail.path, url: detail.url }]);
-      }
-    };
+	useEffect(() => {
+		const showScreenshotNotification = (event: Event) => {
+			const detail = (event as CustomEvent<Partial<ScreenshotCapturedDetail>>).detail;
+			const path = detail?.path;
+			const url = detail?.url;
+			if (typeof path === "string" && typeof url === "string") {
+				nextNotificationId.current += 1;
+				setScreenshotNotifications((current) => [...current, { id: nextNotificationId.current, path, url }]);
+			}
+		};
 
     window.addEventListener("aidevops:screenshot-captured", showScreenshotNotification);
     return () => window.removeEventListener("aidevops:screenshot-captured", showScreenshotNotification);

@@ -97,7 +97,7 @@ function buildGuiStateNotifications(input: BuildNotificationInput): GuiNotificat
   const appNeedsUpdate = (input.aiApps ?? []).filter((app) => app.needs_update);
   const authErrors = (input.oauthPool?.providers ?? []).filter((provider) => provider.auth_errors > 0);
   const rateLimited = (input.oauthPool?.providers ?? []).filter((provider) => provider.rate_limited > 0);
-  const oauthPoolSourceRef = input.oauthPool?.path_ref ?? "oauth_pool";
+	const oauthPoolSourceRef = input.oauthPool?.path_ref || "oauth_pool";
   const notifications: GuiNotificationSummary[] = [];
 
   if (input.restartRequired) {

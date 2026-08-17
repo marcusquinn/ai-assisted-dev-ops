@@ -47,8 +47,9 @@ describe("notification logic", () => {
     const notifications = buildStatusNotifications({
       aiApps: [],
       greetingOutput: "",
-      oauthPool: {
-        health: "present",
+		oauthPool: {
+			path_ref: "",
+			health: "present",
         providers: [{
           accounts: [],
           active_or_idle: 0,

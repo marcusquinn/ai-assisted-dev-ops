@@ -58,10 +58,11 @@ function isTrustedHelper(path: string): boolean {
 }
 
 function isInventory(value: unknown): value is SecretInventory {
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.secrets) || value.secrets.length > 512) return false;
-  if (!isRecord(value.backends) || Object.keys(value).length !== 3 || Object.keys(value.backends).length !== 2) return false;
-  if (!BACKEND_STATES.has(value.backends.gopass) || !BACKEND_STATES.has(value.backends.credentials)) return false;
-  return value.secrets.every((secret, index) => isSecretReference(secret, index === 0 ? "" : value.secrets[index - 1]?.name));
+	if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.secrets) || value.secrets.length > 512) return false;
+	if (!isRecord(value.backends) || Object.keys(value).length !== 3 || Object.keys(value.backends).length !== 2) return false;
+	if (!BACKEND_STATES.has(value.backends.gopass) || !BACKEND_STATES.has(value.backends.credentials)) return false;
+	const secrets = value.secrets;
+	return secrets.every((secret, index) => isSecretReference(secret, index === 0 ? "" : secrets[index - 1]?.name));
 }
 
 function isSecretReference(value: unknown, previousName: string | undefined): value is GuiSecretReference {

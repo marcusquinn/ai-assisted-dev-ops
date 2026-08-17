@@ -76,7 +76,7 @@ _trusted_dependabot_dependencies_from_body() {
 					}
 					value = substr(value, 2, length(value) - 2)
 				}
-				if (value == "" || value ~ /[[:space:]\"]/ || index(value, sq) > 0) {
+				if (value == "" || value ~ /[[:space:]"]/ || index(value, sq) > 0) {
 					invalid = 1
 					next
 				}

@@ -242,6 +242,20 @@ test_worker_intake_reuses_trusted_snapshot() {
 	return 0
 }
 
+test_typescript_is_maintainer_allowlisted() {
+	local fixture_conf="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	if _trusted_dependabot_dependency_allowed "" "typescript"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_conf"
+		print_result "TypeScript is allowlisted for trusted Dependabot updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_conf"
+	print_result "TypeScript is allowlisted for trusted Dependabot updates" 1
+	return 0
+}
+
 test_trusted_dependabot_binds_expected_head() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current" \
@@ -463,6 +477,7 @@ main() {
 	test_trusted_dependabot_passes
 	test_trusted_dependabot_uses_response_metered_graphql
 	test_worker_intake_reuses_trusted_snapshot
+	test_typescript_is_maintainer_allowlisted
 	test_trusted_dependabot_binds_expected_head
 	test_standard_dependabot_body_parser
 	test_quoted_dependabot_dependency_names

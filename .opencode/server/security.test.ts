@@ -38,10 +38,13 @@ async function allocateLoopbackPort(): Promise<number> {
     hostname: DEFAULT_LISTEN_HOST,
     port: 0,
     fetch: () => new Response('reserved'),
-  })
-  const port = reservation.port
-  await reservation.stop(true)
-  return port
+	})
+	const port = reservation.port
+	await reservation.stop(true)
+	if (port === undefined) {
+		throw new Error('Loopback port reservation did not return a port.')
+	}
+	return port
 }
 
 async function waitForServer(url: string, headers: HeadersInit = {}): Promise<void> {
