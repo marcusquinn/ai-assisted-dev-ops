@@ -366,7 +366,7 @@ _wah_blocker_details_json() {
 	local live_sessions_json="${4:-[]}"
 	local blocker_log="$WAH_BLOCKER_LOG_FILE"
 	if [[ ! -f "$blocker_log" ]]; then
-		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
+		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"retained_supervisor_permission_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
 		return 0
 	fi
 	jq -Rsc --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg repo "$repo_slug" --arg empty '' --argjson live_sessions "$live_sessions_json" '
@@ -397,13 +397,17 @@ _wah_blocker_details_json() {
 			event_total: ($window | length),
 			active_total: ($active | length),
 			retained_unverified_total: ($retained | length),
+			retained_supervisor_permission_total: ([$retained[]
+				| select(((.reason // "") | contains("permission"))
+					and ((((.session_key // "") | startswith("supervisor-pulse")))
+						or (((.source // "") | contains("supervisor-pulse")))))] | length),
 			event_counts: (reduce $window[] as $row ({}; .[$row.event // "unknown"] += 1)),
 			reason_counts: (reduce $window[] as $row ({}; .[$row.reason // "unknown"] += 1)),
 			active_blockers: ($active | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source, permission, tool, risk_level, grantable, detail})),
 			retained_unverified: ($retained | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source})),
 			recent_blockers: ($window | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, blocking, source}))
 		}' "$blocker_log" 2>/dev/null ||
-		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
+		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"retained_supervisor_permission_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
 	return 0
 }
 
@@ -689,6 +693,7 @@ _wah_emit_human() {
 	printf '  Events in window:            %s\n' "$(printf '%s' "$blocker_json" | jq -r '.event_total // 0' 2>/dev/null || printf '0')"
 	printf '  Proven current:              %s\n' "$(printf '%s' "$blocker_json" | jq -r '.active_total // 0' 2>/dev/null || printf '0')"
 	printf '  Retained/unverified:         %s\n' "$(printf '%s' "$blocker_json" | jq -r '.retained_unverified_total // 0' 2>/dev/null || printf '0')"
+	printf '  Retained supervisor perms:   %s\n' "$(printf '%s' "$blocker_json" | jq -r '.retained_supervisor_permission_total // 0' 2>/dev/null || printf '0')"
 	printf '  Reasons:                     %s\n' "$(printf '%s' "$blocker_json" | jq -c '.reason_counts // {}' 2>/dev/null || printf '{}')"
 	printf '  Active blockers:             %s\n' "$(printf '%s' "$blocker_json" | jq -c '.active_blockers // []' 2>/dev/null || printf '[]')"
 	printf '  Retained blockers:           %s\n' "$(printf '%s' "$blocker_json" | jq -c '.retained_unverified // []' 2>/dev/null || printf '[]')"

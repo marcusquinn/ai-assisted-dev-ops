@@ -38,9 +38,8 @@ If no worker launches, log `NO_DISPATCHABLE_EVIDENCE` with counts/reasons, sleep
 
 ### 1. Normalise PATH and check capacity
 
-`pulse-wrapper.sh` is a bash library. If the host tool shell is zsh, run
-wrapper-backed snippets in a bash subshell, not by sourcing the wrapper directly
-from zsh. Example: `bash -lc 'source ~/.aidevops/agents/scripts/pulse-wrapper.sh; list_active_worker_processes'`.
+Use the standalone worker activity helper for capacity checks. It is safe in
+interactive command policies and does not require sourcing `pulse-wrapper.sh`.
 
 ```bash
 export PATH="/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
@@ -48,8 +47,7 @@ export PATH="/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
 MAX_WORKERS=$(cat ~/.aidevops/logs/pulse-max-workers 2>/dev/null || echo 4)
 [[ "$MAX_WORKERS" =~ ^[0-9]+$ ]] || MAX_WORKERS=4
-source ~/.aidevops/agents/scripts/pulse-wrapper.sh
-WORKER_COUNT=$(list_active_worker_processes | wc -l | tr -d ' ')
+WORKER_COUNT=$(~/.aidevops/agents/scripts/worker-activity-helper.sh live-workers)
 [[ "$WORKER_COUNT" =~ ^[0-9]+$ ]] || WORKER_COUNT=0
 AVAILABLE=$((MAX_WORKERS - WORKER_COUNT))
 RUNNER_USER=$(gh api user --jq '.login' 2>/dev/null || whoami)
@@ -175,10 +173,9 @@ After initial dispatch, enter a monitoring loop. Each cycle:
 3. **Check capacity**:
 
    ```bash
-   source ~/.aidevops/agents/scripts/pulse-wrapper.sh
    MAX_WORKERS=$(cat ~/.aidevops/logs/pulse-max-workers 2>/dev/null || echo 4)
    [[ "$MAX_WORKERS" =~ ^[0-9]+$ ]] || MAX_WORKERS=4
-   WORKER_COUNT=$(list_active_worker_processes | wc -l | tr -d ' ')
+   WORKER_COUNT=$(~/.aidevops/agents/scripts/worker-activity-helper.sh live-workers)
    [[ "$WORKER_COUNT" =~ ^[0-9]+$ ]] || WORKER_COUNT=0
    AVAILABLE=$((MAX_WORKERS - WORKER_COUNT))
    ```

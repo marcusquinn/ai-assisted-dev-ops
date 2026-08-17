@@ -44,6 +44,12 @@ end) as $max_workers |
 (if $hist_delivery.delivered_successes == null then null else ($hist_delivery.delivered_successes | number_or_zero) end) as $hist_delivered |
 ($summary.metrics.failure_families // []) as $failure_families |
 ($recent_summary.metrics.failure_families // []) as $recent_failure_families |
+($summary.progress_blockers // {}) as $progress_blockers |
+([$progress_blockers.retained_unverified[]?
+  | select(((.reason // "") | contains("permission"))
+    and ((((.session_key // "") | startswith("supervisor-pulse")))
+      or (((.source // "") | contains("supervisor-pulse")))))] | length) as $bounded_retained_supervisor_permission_blockers |
+($progress_blockers.retained_supervisor_permission_total // $bounded_retained_supervisor_permission_blockers | number_or_zero) as $retained_supervisor_permission_blockers |
 ($api.graphql_circuit_breaker_trips // 0 | number_or_zero) as $graphql_trips |
 {
   generated_at: (now | todateiso8601),
@@ -77,6 +83,7 @@ end) as $max_workers |
     auto_dispatch_scan_state: (if $queue_error == "" then "scanned" else $queue_error end),
     graphql_budget_status: ($current.graphql_budget_status // "unknown"),
     runner_health: ($runner.finding // "unknown"),
+    retained_supervisor_permission_blockers: $retained_supervisor_permission_blockers,
     recurrent_failure_families: ([$failure_families[] | select((.count // 0) >= $failure_threshold and (.confidence // "low") == "high" and (.family // "") != "other-failure")] | length)
   },
   queue: ($queue.aggregate // {}),
@@ -103,7 +110,14 @@ end) as $max_workers |
       pulse_stats: ($recent_summary.pulse_stats // {}),
       delivery_stages: ($recent_summary.delivery_stages // {check_state: "unavailable"})
     },
-    providers: ($providers.provider_diagnostics // {})
+    providers: ($providers.provider_diagnostics // {}),
+    progress_blockers: {
+      scope: ($progress_blockers.scope // "global"),
+      events_in_window: ($progress_blockers.event_total // 0),
+      proven_current: ($progress_blockers.active_total // 0),
+      retained_unverified: ($progress_blockers.retained_unverified_total // 0),
+      retained_supervisor_permission: $retained_supervisor_permission_blockers
+    }
   },
   failure_family_remediation: ($failure_families | map(. as $family | {
     fingerprint,
@@ -125,6 +139,20 @@ end) as $max_workers |
     cadence_api_risk: ($api.cadence_api_risk // "unknown")
   },
   findings: ([
+    if $retained_supervisor_permission_blockers > 0 then
+      finding(
+        "retained-supervisor-permission-blockers";
+        "medium";
+        "Retained supervisor permission blockers require classification";
+        [
+          ("retained_supervisor_permission_blockers=" + ($retained_supervisor_permission_blockers | tostring)),
+          ("retained_unverified_blockers_all_sources=" + (($progress_blockers.retained_unverified_total // 0) | tostring)),
+          "blocker_evidence=aggregate_redacted"
+        ];
+        "Run worker-activity-helper.sh live-workers and worker-activity-helper.sh summary --since 7d to classify retained records. Reconcile only confirmed stale sessions by appending an audited non-blocking terminal event with worker-blocker-cli.mjs resolve-session; do not delete blocker evidence or clear records that still have a live owner.";
+        false
+      )
+    else empty end,
     if $dependency_inconsistent > 0 then
       finding(
         "pulse-dependency-inconsistent-availability";

@@ -202,6 +202,7 @@ _render_text_report() {
 		"- Recent worker metric events: " + (.summary.recent_worker_events | tostring) + "; " + .inputs.historical_window + " runtime handoff rate: " + (.summary.historical_runtime_handoff_rate | percent_text) + "; delivered success rate: " + (.summary.historical_delivery_success_rate | percent_text),
 		"- GraphQL/API: " + (.summary.graphql_budget_status // "unknown"),
 		"- Runner health: " + (.summary.runner_health // "unknown"),
+		"- Retained supervisor permission blockers: " + (.summary.retained_supervisor_permission_blockers | tostring) + " (advisory only; does not change runner health)",
 		"",
 		"## Findings",
 		(if (.findings | length) == 0 then "- None above thresholds" else (.findings[] | "- [" + .severity + "] " + .title + " (`" + .id + "`) — " + .recommendation) end),
@@ -210,6 +211,7 @@ _render_text_report() {
 		"- pulse-current-state-helper.sh --window " + .inputs.current_window + " --json",
 		"- worker-activity-helper.sh summary --since " + .inputs.recent_window + " --json --no-pr-check",
 		"- worker-activity-helper.sh summary --since " + .inputs.historical_window + " --json --no-pr-check",
+		"- worker-activity-helper.sh live-workers",
 		"- pulse-diagnose-helper.sh cycle-health --window 1h",
 		"",
 		"Privacy: report aggregates repos.json queue state and omits repo slugs, local paths, and issue titles."

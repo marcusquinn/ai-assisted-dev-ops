@@ -135,6 +135,12 @@ if [[ "$cmd" == "providers" ]]; then
 JSON
   exit 0
 fi
+if [[ "${PULSE_CHECK_BLOCKER_FIXTURE:-}" == "retained" ]]; then
+  cat <<'JSON'
+{"window":{"since":"7d"},"metrics":{"total":0,"terminal_session_total":0,"runtime_handoffs":0,"succeeded":null,"result_counts":{},"diagnostic_focus":{},"timing_ms":{"samples":0,"avg":0,"max":0},"recent_examples":[],"failure_groups":[],"failure_families":[]},"pulse_stats":{},"progress_blockers":{"scope":"global","event_total":13,"active_total":0,"retained_unverified_total":13,"retained_supervisor_permission_total":12,"active_blockers":[],"retained_unverified":[{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse","repo_slug":"private/repo-one","detail":"/private/path"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse-retry","repo_slug":"private/repo-two","detail":"private title"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"manual-cli","repo_slug":"private/repo-three"}]},"delivery_stages":{"pr_opened":null,"pr_merged":null,"issue_solved":null,"delivered_successes":null,"check_state":"skipped"}}
+JSON
+  exit 0
+fi
 since="24h"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -295,6 +301,18 @@ assert_contains "underfilled finding appears" "pulse-underfilled-auto-dispatch-q
 assert_contains "launch accounting finding appears" "pulse-launch-accounting-gap" "$OUT"
 assert_not_contains "text report omits private slug" "private/repo-one" "$OUT"
 assert_not_contains "text report omits issue titles" "secret one" "$OUT"
+
+BLOCKER_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_BLOCKER_FIXTURE=retained" "$HELPER" report --since 7d 2>&1)
+assert_contains "healthy idle report exposes retained supervisor blocker advisory" "retained-supervisor-permission-blockers" "$BLOCKER_OUT"
+assert_contains "retained blocker report preserves healthy runner state" "Runner health: HEALTHY" "$BLOCKER_OUT"
+assert_contains "retained blocker report shows zero active workers" "Active workers: 0 / 6" "$BLOCKER_OUT"
+assert_contains "retained blocker report gives no-source worker count command" "worker-activity-helper.sh live-workers" "$BLOCKER_OUT"
+assert_contains "retained blocker report gives audited reconciliation guidance" "worker-blocker-cli.mjs resolve-session" "$BLOCKER_OUT"
+assert_not_contains "retained blocker report omits private blocker slug" "private/repo-one" "$BLOCKER_OUT"
+assert_not_contains "retained blocker report omits private blocker path" "/private/path" "$BLOCKER_OUT"
+BLOCKER_JSON=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_BLOCKER_FIXTURE=retained" "$HELPER" json --since 7d 2>&1)
+assert_eq "json uses uncapped retained supervisor permission aggregate" "12" "$(printf '%s' "$BLOCKER_JSON" | jq -r '.summary.retained_supervisor_permission_blockers')"
+assert_not_contains "retained blocker JSON omits private blocker title" "private title" "$BLOCKER_JSON"
 
 JSON_OUT=$(env "${COMMON_ENV[@]}" "$HELPER" json 2>&1)
 IDS=$(printf '%s' "$JSON_OUT" | jq -r '[.findings[].id] | sort | join(",")')

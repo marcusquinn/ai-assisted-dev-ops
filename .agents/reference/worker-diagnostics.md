@@ -114,6 +114,16 @@ successful `scoped_permission_granted` resume. A non-blocking grant event clears
 the prior blocker for the same worker session even though the envelope request
 ID differs from the source OpenCode request ID.
 
+For an interactive-safe live worker count, run
+`worker-activity-helper.sh live-workers`; do not source `pulse-wrapper.sh` merely
+to call `list_active_worker_processes`. When `pulse-check-helper.sh report` shows
+retained supervisor permission blockers, compare that count with `live-workers`
+and the bounded summary. A retained record with no live matching owner is
+historical evidence, not a failed or active worker. After confirming the session
+is stale, append an auditable terminal reconciliation with
+`worker-blocker-cli.mjs resolve-session` using its exact repository, session, and
+request scope. Never delete the JSONL evidence or reconcile a live owner.
+
 ## Manual Worker Launch
 
 Use `aidevops launch-worker` when an operator needs a controlled headless

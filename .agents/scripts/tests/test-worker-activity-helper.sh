@@ -207,7 +207,7 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_awaiting_approval","status":"blocked","reason":"needs_maintainer_permissions","blocking":true,"source":"test","issue_number":22,"repo_slug":"marcusquinn/aidevops","session_key":"issue-22","request_id":"perm-old"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-terminal","request_id":"perm-terminal"}\n' "$((T_25H_AGO - 2))"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"headless_session_terminal_reconciled","status":"resolved","reason":"success","blocking":false,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-terminal","request_id":"perm-terminal"}\n' "$((T_25H_AGO - 1))"
-	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-retained","request_id":"perm-retained"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"opencode-permission-broker","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"supervisor-pulse","request_id":"perm-retained"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-live","request_id":"perm-live"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-pid-reuse","request_id":"perm-pid-reuse"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-legacy","request_id":"perm-legacy"}\n' "$T_25H_AGO"
@@ -217,8 +217,8 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 
 {
 	printf '{"session_key":"routine-live","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:00Z"}\n' "$$" "$OWNER_PROCESS_START"
-	printf '{"session_key":"routine-retained","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:01Z"}\n' "$$" "$OWNER_PROCESS_START"
-	printf '{"session_key":"routine-retained","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"completed","updated_at":"2026-07-26T01:00:02Z"}\n' "$$"
+	printf '{"session_key":"supervisor-pulse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:01Z"}\n' "$$" "$OWNER_PROCESS_START"
+	printf '{"session_key":"supervisor-pulse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"completed","updated_at":"2026-07-26T01:00:02Z"}\n' "$$"
 	printf '{"session_key":"routine-pid-reuse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"not-%s","status":"in-flight","updated_at":"2026-07-26T01:00:03Z"}\n' "$$" "$OWNER_PROCESS_START"
 	printf '{"session_key":"routine-legacy","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"in-flight","updated_at":"2026-07-26T01:00:04Z"}\n' "$$"
 } >"$LEDGER"
@@ -422,8 +422,10 @@ assert_eq "2t: live null-issue session remains proven current" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "routine-live")] | length')"
 assert_eq "2u: unowned null-issue records remain visible but unverified" "3" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.retained_unverified_total')"
+assert_eq "2u2: retained supervisor permission blockers have an uncapped aggregate" "1" \
+	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.retained_supervisor_permission_total')"
 assert_eq "2v: retained bucket preserves the unowned session identity" "1" \
-	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-retained")] | length')"
+	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "supervisor-pulse")] | length')"
 assert_eq "2w: mismatched PID identity is not treated as a live owner" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-pid-reuse")] | length')"
 assert_eq "2x: legacy PID-only ownership remains unverified" "1" \
@@ -546,6 +548,8 @@ assert_contains "5i: human output shows failure families" "Failure families" "$O
 assert_contains "5j: human output shows bounded blocker evidence" "worker-progress-blockers.jsonl" "$OUT"
 assert_contains "5k: human output shows proven current blocker count" "Proven current:              3" "$OUT"
 assert_contains "5l: human output separates retained blocker count" "Retained/unverified:         3" "$OUT"
+assert_contains "5l2: human output shows retained supervisor permission count" \
+	"Retained supervisor perms:   1" "$OUT"
 assert_contains "5m: human output says reporting window is not a runtime limit" \
 	"observation only, not a worker runtime limit" "$OUT"
 
