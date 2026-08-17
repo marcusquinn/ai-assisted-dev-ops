@@ -406,6 +406,20 @@ test_repository_allows_types_bun() {
 	return 0
 }
 
+test_repository_allows_hono() {
+	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	if _trusted_dependabot_dependency_allowed "" "hono"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+		print_result "repository allowlist permits hono updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+	print_result "repository allowlist permits hono updates" 1
+	return 0
+}
+
 test_trusted_dependabot_can_be_approved() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	: >"$GH_LOG"
@@ -475,6 +489,7 @@ main() {
 	test_non_dependency_file_fails
 	test_unallowlisted_dependency_fails
 	test_repository_allows_types_bun
+	test_repository_allows_hono
 	test_trusted_dependabot_can_be_approved
 	test_review_bot_failure_is_ignored_when_other_checks_green
 	test_precomputed_status_rollup_skips_graphql
