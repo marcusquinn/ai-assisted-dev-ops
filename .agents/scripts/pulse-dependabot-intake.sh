@@ -74,6 +74,61 @@ _pulse_dependabot_intake_body() {
 	return 0
 }
 
+_pulse_dependabot_intake_lock_dir() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local lock_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}/locks"
+	local repo_key="${repo_slug//[^a-zA-Z0-9_.-]/-}"
+
+	printf '%s/dependabot-intake-%s-%s.lock' "$lock_root" "$repo_key" "$pr_number"
+	return 0
+}
+
+_pulse_dependabot_acquire_intake_lock() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local output_var="$3"
+	local lock_dir=""
+	local lock_pid=""
+	local stale_dir=""
+	local attempt=0
+
+	lock_dir=$(_pulse_dependabot_intake_lock_dir "$pr_number" "$repo_slug") || return 1
+	mkdir -p "${lock_dir%/*}" 2>/dev/null || return 1
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		lock_pid=""
+		[[ -f "${lock_dir}/pid" ]] && lock_pid=$(<"${lock_dir}/pid")
+		if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
+			stale_dir="${lock_dir}.stale.$$"
+			if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
+				rm -rf "$stale_dir"
+				continue
+			fi
+		fi
+		attempt=$((attempt + 1))
+		[[ "$attempt" -lt 300 ]] || return 1
+		sleep 0.1
+	done
+	printf '%s\n' "$$" >"${lock_dir}/pid" 2>/dev/null || {
+		rmdir "$lock_dir" 2>/dev/null || true
+		return 1
+	}
+	printf -v "$output_var" '%s' "$lock_dir"
+	return 0
+}
+
+_pulse_dependabot_release_intake_lock() {
+	local lock_dir="$1"
+	local lock_pid=""
+
+	[[ -n "$lock_dir" && -d "$lock_dir" ]] || return 0
+	[[ -f "${lock_dir}/pid" ]] && lock_pid=$(<"${lock_dir}/pid")
+	[[ "$lock_pid" == "$$" ]] || return 1
+	rm -f "${lock_dir}/pid" 2>/dev/null || return 1
+	rmdir "$lock_dir" 2>/dev/null || return 1
+	return 0
+}
+
 _pulse_route_dependabot_pr_to_worker_issue() {
 	local pr_number="$1"
 	local repo_slug="$2"
@@ -85,6 +140,7 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 	local temp_dir=""
 	local body_file=""
 	local issue_output=""
+	local lock_dir=""
 
 	case "$reason" in
 	policy-ineligible | terminal-ci-failure | merge-conflict) ;;
@@ -104,12 +160,32 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 		echo "[pulse-dependabot-intake] DRY-RUN: authentic PR #${pr_number} in ${repo_slug} would route ${reason} to a worker issue" >>"$LOGFILE"
 		return 0
 	fi
+	if ! _pulse_dependabot_acquire_intake_lock "$pr_number" "$repo_slug" lock_dir; then
+		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: worker intake lock unavailable" >>"$LOGFILE"
+		return 1
+	fi
+	existing_url=$(_pulse_dependabot_existing_intake_issue "$pr_number" "$repo_slug" "$marker") || {
+		_pulse_dependabot_release_intake_lock "$lock_dir" || true
+		return 1
+	}
+	if [[ -n "$existing_url" ]]; then
+		_pulse_dependabot_release_intake_lock "$lock_dir" || return 1
+		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: existing worker issue ${existing_url}" >>"$LOGFILE"
+		return 0
+	fi
 
 	temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
-	mkdir -p "$temp_dir" 2>/dev/null || return 1
-	body_file=$(mktemp "${temp_dir}/dependabot-intake.XXXXXX") || return 1
+	mkdir -p "$temp_dir" 2>/dev/null || {
+		_pulse_dependabot_release_intake_lock "$lock_dir" || true
+		return 1
+	}
+	body_file=$(mktemp "${temp_dir}/dependabot-intake.XXXXXX") || {
+		_pulse_dependabot_release_intake_lock "$lock_dir" || true
+		return 1
+	}
 	_pulse_dependabot_intake_body "$pr_number" "$repo_slug" "$expected_head_sha" "$reason" "$marker" >"$body_file" || {
 		rm -f "$body_file"
+		_pulse_dependabot_release_intake_lock "$lock_dir" || true
 		return 1
 	}
 	issue_output=$(gh_create_issue --repo "$repo_slug" \
@@ -118,10 +194,12 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 		--label "auto-dispatch,origin:worker,tier:standard,dependencies" 2>&1) || {
 		local create_rc=$?
 		rm -f "$body_file"
+		_pulse_dependabot_release_intake_lock "$lock_dir" || true
 		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: worker issue creation failed" >>"$LOGFILE"
 		return "$create_rc"
 	}
 	rm -f "$body_file"
+	_pulse_dependabot_release_intake_lock "$lock_dir" || return 1
 	echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: routed ${reason} to ${issue_output}" >>"$LOGFILE"
 	return 0
 }

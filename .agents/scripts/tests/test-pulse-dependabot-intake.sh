@@ -111,6 +111,69 @@ test_dry_run_has_no_write() {
 	return $?
 }
 
+test_concurrent_routes_create_once() {
+	local worker_script="${TEST_ROOT}/concurrent-worker.sh"
+	local shared_state="${TEST_ROOT}/concurrent-state"
+	local create_count="${TEST_ROOT}/concurrent-create-count"
+	local worker_one=""
+	local worker_two=""
+
+	mkdir -p "$shared_state"
+	cat >"$worker_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+INTAKE_SCRIPT="$1"
+TEST_ROOT="$2"
+SHARED_STATE="$3"
+CREATE_COUNT="$4"
+export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/concurrent-tmp"
+export LOGFILE="${TEST_ROOT}/concurrent-pulse.log"
+mkdir -p "$AIDEVOPS_TEMP_DIR"
+
+_is_authentic_dependabot_pr() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local pr_author="$3"
+	local expected_head_sha="$4"
+	[[ "$pr_number" == "30038" && "$repo_slug" == "owner/repo" \
+		&& "$pr_author" == "app/dependabot" && "$expected_head_sha" == "head-current" ]]
+	return $?
+}
+
+gh_issue_list() {
+	if [[ -f "${SHARED_STATE}/created" ]]; then
+		printf '%s\n' '[{"number":42,"url":"https://github.com/owner/repo/issues/42","body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->"}]'
+	else
+		printf '%s\n' '[]'
+	fi
+	return 0
+}
+
+gh_create_issue() {
+	printf '%s\n' "$$" >>"$CREATE_COUNT"
+	sleep 1
+	: >"${SHARED_STATE}/created"
+	printf '%s\n' 'https://github.com/owner/repo/issues/42'
+	return 0
+}
+
+# shellcheck source=../pulse-dependabot-intake.sh
+source "$INTAKE_SCRIPT"
+_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible"
+exit 0
+EOF
+	chmod 700 "$worker_script"
+	"$worker_script" "$INTAKE_SCRIPT" "$TEST_ROOT" "$shared_state" "$create_count" &
+	worker_one=$!
+	"$worker_script" "$INTAKE_SCRIPT" "$TEST_ROOT" "$shared_state" "$create_count" &
+	worker_two=$!
+	wait "$worker_one"
+	wait "$worker_two"
+	[[ "$(wc -l <"$create_count" | tr -d ' ')" == "1" ]]
+	return $?
+}
+
 main() {
 	setup_test_env
 	trap teardown_test_env EXIT
@@ -123,6 +186,8 @@ main() {
 	printf 'PASS unverified authors fail closed\n'
 	test_dry_run_has_no_write
 	printf 'PASS dry-run performs no GitHub write\n'
+	test_concurrent_routes_create_once
+	printf 'PASS concurrent routes converge on one issue\n'
 	return 0
 }
 
