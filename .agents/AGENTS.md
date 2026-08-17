@@ -66,7 +66,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Completion messages: state aim and solved outcome, then delivery bullets; omit routine-owned cleanup unless user action is required or work is at risk. See `reference/session.md`.
 - Memory recall is mandatory before non-trivial edits, debugging, PR review, git side effects, or design decisions: CLI `memory-helper.sh recall --query "<task keywords>" --limit 5`; OpenCode tool `aidevops_memory` with `{action:"recall", query:"<task keywords>", limit:"5"}`. Store only concrete reusable lessons: `{action:"store", content:"<lesson with evidence>", confidence:"medium"}`. Empty `aidevops_memory` calls are invalid; never use them as placeholders.
 - Before non-trivial code changes, run one duplicate/collision check: `prework-discovery-helper.sh --keywords "<task>" --files "<targets>" [--repo owner/repo]`.
-- Before changing third-party API/error-code mappings, verify the installed dependency version and local exported symbols first; brief authors include this checklist via `~/.aidevops/agents/templates/brief-template.md`.
+- Before third-party API/error mapping changes, verify the installed version and local exports; use `~/.aidevops/agents/templates/brief-template.md`.
 
 ### Automation safety invariants
 
