@@ -9,6 +9,8 @@ INTAKE_SCRIPT="${SCRIPT_DIR}/../pulse-dependabot-intake.sh"
 TEST_ROOT=""
 ISSUES_JSON="[]"
 AUTHENTIC=1
+PR_LABELS=""
+PR_VIEW_FAIL=0
 
 setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
@@ -37,6 +39,12 @@ _is_authentic_dependabot_pr() {
 
 gh_issue_list() {
 	printf '%s\n' "$ISSUES_JSON"
+	return 0
+}
+
+gh_pr_view() {
+	[[ "$PR_VIEW_FAIL" -eq 0 ]] || return 1
+	printf '%s\n' "$PR_LABELS"
 	return 0
 }
 
@@ -75,6 +83,8 @@ test_creates_worker_ready_issue() {
 	rm -f "${TEST_ROOT}/create-args" "${TEST_ROOT}/created-body"
 	ISSUES_JSON="[]"
 	AUTHENTIC=1
+	PR_LABELS=""
+	PR_VIEW_FAIL=0
 	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible"
 	[[ -f "${TEST_ROOT}/create-args" ]] || return 1
 	assert_file_contains "worker issue has auto-dispatch ownership" "${TEST_ROOT}/create-args" "auto-dispatch,origin:worker,tier:standard,dependencies"
@@ -100,6 +110,38 @@ test_rejects_unverified_author() {
 	fi
 	[[ ! -e "${TEST_ROOT}/create-args" ]]
 	return $?
+}
+
+test_preserves_explicit_maintainer_hold() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/create-args"
+	ISSUES_JSON="[]"
+	AUTHENTIC=1
+	PR_LABELS="needs-maintainer-review"
+	PR_VIEW_FAIL=0
+	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 3 ]] || return 1
+	[[ ! -e "${TEST_ROOT}/create-args" ]] || return 1
+	assert_file_contains "explicit hold is preserved" "$LOGFILE" "preserving explicit needs-maintainer-review hold; no worker issue created"
+	PR_LABELS=""
+	return 0
+}
+
+test_fails_closed_when_hold_state_is_unavailable() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/create-args"
+	ISSUES_JSON="[]"
+	AUTHENTIC=1
+	PR_LABELS=""
+	PR_VIEW_FAIL=1
+	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 1 ]] || return 1
+	[[ ! -e "${TEST_ROOT}/create-args" ]] || return 1
+	assert_file_contains "unavailable hold state fails closed" "$LOGFILE" "live maintainer-review hold state unavailable; failing closed"
+	PR_VIEW_FAIL=0
+	return 0
 }
 
 test_dry_run_has_no_write() {
@@ -158,6 +200,11 @@ gh_create_issue() {
 	return 0
 }
 
+gh_pr_view() {
+	printf '%s\n' ''
+	return 0
+}
+
 # shellcheck source=../pulse-dependabot-intake.sh
 source "$INTAKE_SCRIPT"
 _pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible"
@@ -184,6 +231,8 @@ main() {
 	printf 'PASS existing intake is idempotent\n'
 	test_rejects_unverified_author
 	printf 'PASS unverified authors fail closed\n'
+	test_preserves_explicit_maintainer_hold
+	test_fails_closed_when_hold_state_is_unavailable
 	test_dry_run_has_no_write
 	printf 'PASS dry-run performs no GitHub write\n'
 	test_concurrent_routes_create_once

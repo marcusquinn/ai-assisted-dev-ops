@@ -403,6 +403,7 @@ _check_pr_merge_gates() {
 	local review_gate_mode="${8:-merge}"
 	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
 	local _ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
+	local _dependabot_intake_rc=0
 	_PULSE_REVIEW_GATE_EVIDENCE=""
 	if [[ -n "$linked_issue" ]] &&
 		_interactive_claim_fence_blocks_merge "$linked_issue" "$repo_slug" "$expected_head_sha"; then
@@ -475,11 +476,19 @@ _check_pr_merge_gates() {
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted Dependabot with allowlisted dependency update, proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator but has maintainer crypto-approval, proceeding (t3063)" >>"$LOGFILE"
-		elif _pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" "policy-ineligible"; then
-			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR is outside automatic merge policy; routed to worker intake (GH#30351)" >>"$LOGFILE"
-			return 1
 		else
-			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE"
+			_pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" "policy-ineligible" || _dependabot_intake_rc=$?
+			case "$_dependabot_intake_rc" in
+			0)
+				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR is outside automatic merge policy; routed to worker intake (GH#30351)" >>"$LOGFILE"
+				;;
+			3)
+				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR has an explicit maintainer-review hold; preserving it without worker intake (GH#30389)" >>"$LOGFILE"
+				;;
+			*)
+				echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE"
+				;;
+			esac
 			return 1
 		fi
 	fi

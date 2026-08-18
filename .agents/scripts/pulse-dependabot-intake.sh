@@ -31,6 +31,20 @@ _pulse_dependabot_existing_intake_issue() {
 	return $?
 }
 
+# Return 0 when the source PR carries an explicit maintainer-review hold,
+# 1 when it does not, and 2 when the live label state cannot be verified.
+_pulse_dependabot_pr_has_maintainer_hold() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local labels=""
+
+	declare -F gh_pr_view >/dev/null 2>&1 || return 2
+	labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels \
+		--jq '[.labels[].name] | join(",")' 2>/dev/null) || return 2
+	[[ ",${labels}," == *",needs-maintainer-review,"* ]]
+	return $?
+}
+
 _pulse_dependabot_intake_body() {
 	local pr_number="$1"
 	local repo_slug="$2"
@@ -141,6 +155,7 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 	local body_file=""
 	local issue_output=""
 	local lock_dir=""
+	local hold_rc=0
 
 	case "$reason" in
 	policy-ineligible | terminal-ci-failure | merge-conflict) ;;
@@ -149,6 +164,7 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 	declare -F _is_authentic_dependabot_pr >/dev/null 2>&1 || return 1
 	declare -F gh_create_issue >/dev/null 2>&1 || return 1
 	declare -F gh_issue_list >/dev/null 2>&1 || return 1
+	declare -F gh_pr_view >/dev/null 2>&1 || return 1
 	marker=$(_pulse_dependabot_intake_marker "$repo_slug" "$pr_number") || return 1
 	existing_url=$(_pulse_dependabot_existing_intake_issue "$pr_number" "$repo_slug" "$marker") || return 1
 	if [[ -n "$existing_url" ]]; then
@@ -156,6 +172,18 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 		return 0
 	fi
 	_is_authentic_dependabot_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" || return 1
+	_pulse_dependabot_pr_has_maintainer_hold "$pr_number" "$repo_slug" || hold_rc=$?
+	case "$hold_rc" in
+	0)
+		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: preserving explicit needs-maintainer-review hold; no worker issue created" >>"$LOGFILE"
+		return 3
+		;;
+	1) ;;
+	*)
+		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: live maintainer-review hold state unavailable; failing closed" >>"$LOGFILE"
+		return 1
+		;;
+	esac
 	if [[ "${DRY_RUN:-0}" == "1" ]]; then
 		echo "[pulse-dependabot-intake] DRY-RUN: authentic PR #${pr_number} in ${repo_slug} would route ${reason} to a worker issue" >>"$LOGFILE"
 		return 0
