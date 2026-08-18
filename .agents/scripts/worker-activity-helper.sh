@@ -29,6 +29,9 @@
 #                                     [--repo OWNER/REPO]
 #   worker-activity-helper.sh providers [--since 1h|6h|24h|48h|7d]
 #                                      [--json]
+#   worker-activity-helper.sh supervisor-blockers [--since 1h|6h|24h|48h|7d]
+#                                                [--json]
+#                                                [--repo OWNER/REPO]
 #   worker-activity-helper.sh live-workers
 #   worker-activity-helper.sh help
 
@@ -59,6 +62,9 @@ WAH_DELIVERY_FAILED="failed"
 WAH_JSON_NULL="null"
 WAH_RUNTIME_ROLE="worker"
 WAH_FAILURE_FAMILY_FILTER="${SCRIPT_DIR}/worker-activity-failure-families.jq"
+WAH_SUPERVISOR_STALE_CLASSIFICATION="stale_reconcile_candidate"
+WAH_SUPERVISOR_UNDERSPECIFIED_CLASSIFICATION="underspecified"
+WAH_EMPTY_TEXT=''
 
 # Shared jq definitions keep terminal-session semantics identical in the scalar
 # and rich aggregators without duplicating a long filter in both functions.
@@ -195,6 +201,18 @@ _wah_parse_since() {
 	7d) printf '604800\n' ;;
 	*) return 1 ;;
 	esac
+	return 0
+}
+
+#######################################
+# Render a Unix epoch in portable ISO-8601 form.
+# Args: epoch
+#######################################
+_wah_epoch_iso() {
+	local epoch="$1"
+	date -u -r "$epoch" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
+		date -u -d "@${epoch}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
+		printf '%s\n' "(unknown)"
 	return 0
 }
 
@@ -369,7 +387,7 @@ _wah_blocker_details_json() {
 		printf '{"event_total":0,"active_total":0,"retained_unverified_total":0,"retained_supervisor_permission_total":0,"event_counts":{},"reason_counts":{},"active_blockers":[],"retained_unverified":[],"recent_blockers":[]}'
 		return 0
 	fi
-	jq -Rsc --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg repo "$repo_slug" --arg empty '' --argjson live_sessions "$live_sessions_json" '
+	jq -Rsc --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg repo "$repo_slug" --arg empty '' --arg string_type string --arg stale_classification "$WAH_SUPERVISOR_STALE_CLASSIFICATION" --arg underspecified_classification "$WAH_SUPERVISOR_UNDERSPECIFIED_CLASSIFICATION" --argjson live_sessions "$live_sessions_json" '
 		def scoped:
 			select(.schema == "aidevops-worker-blocker/v1")
 			| select(($repo == $empty) or (((.repo_slug // $empty) | ascii_downcase) == ($repo | ascii_downcase)))
@@ -388,19 +406,51 @@ _wah_blocker_details_json() {
 				((.repo_slug // $empty) | ascii_downcase) == (($row.repo_slug // $empty) | ascii_downcase)
 				and (.session_key // $empty) == ($row.session_key // $empty));
 		def proven_current: has_issue_scope or has_live_owner;
+		def supervisor_permission:
+			((.reason // $empty) | contains("permission"))
+			and ((((.session_key // $empty) | startswith("supervisor-pulse")))
+				or (((.source // $empty) | contains("supervisor-pulse"))));
+		def has_text($value): ($value | type) == $string_type and ($value | length) > 0;
+		def missing_reconciliation_scope:
+			[
+				if has_text(.repo_slug // $empty) then empty else "repo_slug" end,
+				if has_issue_scope then empty else "issue_number" end,
+				if has_text(.session_key // $empty) then empty else "session_key" end
+			];
+		def reconciliation_command:
+			. as $row
+			| (["node", ".agents/scripts/worker-blocker-log.mjs", "resolve-session",
+				"--repo-slug", $row.repo_slug,
+				"--issue-number", ($row.issue_number | tostring),
+				"--session-key", $row.session_key]
+				+ (if has_text($row.request_id // $empty) then ["--request-id", $row.request_id] else [] end)
+				+ ["--event", "supervisor_permission_terminal_reconciled",
+					"--status", "resolved", "--reason", "stale_supervisor_permission",
+					"--source", "worker-activity-helper", "--detail",
+					"No live dispatch owner for retained supervisor permission blocker"]
+			) | @sh;
 		[split("\n")[] | fromjson? | scoped] as $all
 		| [$all[] | select((.ts // 0) >= $cutoff)] as $window
 		| ($all | group_by(identity) | map(sort_by(.ts // 0) | last) | map(select(.blocking == true))) as $unresolved
 		| ($unresolved | map(select(proven_current))) as $active
 		| ($unresolved | map(select(proven_current | not))) as $retained
+		| [$unresolved[] | select(supervisor_permission) | . as $row
+			| ($row | has_live_owner) as $live_owner
+			| ($row | missing_reconciliation_scope) as $missing_scope_fields
+			| ($row + {
+				live_owner: $live_owner,
+				missing_scope_fields: $missing_scope_fields,
+				classification: (if $live_owner then "live_owner" elif ($missing_scope_fields | length) > 0 then $underspecified_classification else $stale_classification end)
+			})
+			| if .classification == $stale_classification then . + {reconciliation_command: reconciliation_command} else . end
+			| {ts, timestamp, issue_number, repo_slug, session_key, request_id, source, reason, live_owner, missing_scope_fields, classification, reconciliation_command}
+		] as $supervisor_permission_classifications
 		| {
 			event_total: ($window | length),
 			active_total: ($active | length),
 			retained_unverified_total: ($retained | length),
-			retained_supervisor_permission_total: ([$retained[]
-				| select(((.reason // "") | contains("permission"))
-					and ((((.session_key // "") | startswith("supervisor-pulse")))
-						or (((.source // "") | contains("supervisor-pulse")))))] | length),
+			retained_supervisor_permission_total: ([$retained[] | select(supervisor_permission)] | length),
+			supervisor_permission_classifications: ($supervisor_permission_classifications | sort_by(.ts // 0) | reverse),
 			event_counts: (reduce $window[] as $row ({}; .[$row.event // "unknown"] += 1)),
 			reason_counts: (reduce $window[] as $row ({}; .[$row.reason // "unknown"] += 1)),
 			active_blockers: ($active | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, timestamp, issue_number, repo_slug, session_key, request_id, event, reason, status, source, permission, tool, risk_level, grantable, detail})),
@@ -875,9 +925,7 @@ cmd_summary() {
 	local now_epoch cutoff_epoch cutoff_iso
 	now_epoch=$(date +%s)
 	cutoff_epoch=$((now_epoch - since_seconds))
-	cutoff_iso=$(date -u -r "$cutoff_epoch" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
-		cutoff_iso=$(date -u -d "@${cutoff_epoch}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
-		cutoff_iso="(unknown)"
+	cutoff_iso=$(_wah_epoch_iso "$cutoff_epoch")
 
 	# Aggregate metrics (single jq+awk pass).
 	local agg total terminal_total succ wk wc sic rl of details_json blocker_json live_blocker_sessions_json
@@ -952,9 +1000,7 @@ cmd_providers() {
 	local now_epoch cutoff_epoch cutoff_iso usage_json
 	now_epoch=$(date +%s)
 	cutoff_epoch=$((now_epoch - since_seconds))
-	cutoff_iso=$(date -u -r "$cutoff_epoch" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
-		cutoff_iso=$(date -u -d "@${cutoff_epoch}" +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) ||
-		cutoff_iso="(unknown)"
+	cutoff_iso=$(_wah_epoch_iso "$cutoff_epoch")
 	usage_json=$(_wah_provider_usage_json "$cutoff_epoch")
 
 	if [[ $emit_json -eq 1 ]]; then
@@ -966,6 +1012,78 @@ cmd_providers() {
 			'{window: {since: $since, cutoff_iso: $cutoff_iso, cutoff_epoch: $cutoff_epoch}, provider_diagnostics: $usage}'
 	else
 		_wah_emit_providers_human "$since_label" "$cutoff_iso" "$usage_json"
+	fi
+	return 0
+}
+
+#######################################
+# Classify unresolved supervisor permission blockers and emit reconciliation
+# commands only for fully-scoped records whose dispatch owner is not live.
+#######################################
+cmd_supervisor_blockers() {
+	local since_label="7d" emit_json=0 repo_label="$WAH_EMPTY_TEXT"
+	while [[ $# -gt 0 ]]; do
+		local arg="$1"
+		case "$arg" in
+		--since)
+			since_label="${2:-}"
+			shift 2
+			;;
+		--json)
+			emit_json=1
+			shift
+			;;
+		--repo)
+			repo_label="${2:-}"
+			shift 2
+			;;
+		-h | --help)
+			cmd_help
+			return 0
+			;;
+		*)
+			printf 'unknown flag: %s\n' "$arg" >&2
+			return 2
+			;;
+		esac
+	done
+
+	local since_seconds now_epoch cutoff_epoch cutoff_iso live_sessions_json blocker_json
+	since_seconds=$(_wah_parse_since "$since_label") || {
+		printf 'invalid --since value: %s (use 1h|6h|24h|48h|7d)\n' "$since_label" >&2
+		return 2
+	}
+	now_epoch=$(date +%s)
+	cutoff_epoch=$((now_epoch - since_seconds))
+	cutoff_iso=$(_wah_epoch_iso "$cutoff_epoch")
+	live_sessions_json=$(_wah_live_blocker_sessions_json "$repo_label")
+	blocker_json=$(_wah_blocker_details_json "$cutoff_epoch" "$now_epoch" "$repo_label" "$live_sessions_json")
+
+	if [[ $emit_json -eq 1 ]]; then
+		jq -n --arg since "$since_label" --arg cutoff_iso "$cutoff_iso" --arg repo "$repo_label" --arg empty '' --arg stale_classification "$WAH_SUPERVISOR_STALE_CLASSIFICATION" --arg underspecified_classification "$WAH_SUPERVISOR_UNDERSPECIFIED_CLASSIFICATION" --argjson blockers "$blocker_json" '
+			($blockers.supervisor_permission_classifications // []) as $classifications
+			| {
+				window: {since: $since, cutoff_iso: $cutoff_iso},
+				repo: (if $repo == $empty then null else $repo end),
+				summary: {
+					total: ($classifications | length),
+					stale_reconcile_candidates: ([$classifications[] | select(.classification == $stale_classification)] | length),
+					live_owners: ([$classifications[] | select(.classification == "live_owner")] | length),
+					underspecified: ([$classifications[] | select(.classification == $underspecified_classification)] | length)
+				},
+				classifications: $classifications
+			}'
+	else
+		printf 'Supervisor permission blocker classification since %s (cutoff: %s)\n' "$since_label" "$cutoff_iso"
+		printf '%s' "$blocker_json" | jq -r --arg underspecified_classification "$WAH_SUPERVISOR_UNDERSPECIFIED_CLASSIFICATION" '
+			(.supervisor_permission_classifications // []) as $rows
+			| if ($rows | length) == 0 then "  No unresolved supervisor permission blockers."
+			else $rows[] |
+				"  [\(.classification)] session=\(.session_key // null) request=\(.request_id // null)"
+				+ (if (.reconciliation_command // null) != null then "\n    " + .reconciliation_command
+				elif .classification == $underspecified_classification then " (missing: \(.missing_scope_fields | join(", ")); protected)"
+				else " (live owner; protected)" end)
+			end' 2>/dev/null || printf '  Classification unavailable; no reconciliation command emitted.\n'
 	fi
 	return 0
 }
@@ -994,6 +1112,7 @@ worker-activity-helper.sh — Canonical worker activity summary
 Usage:
   worker-activity-helper.sh summary [OPTIONS]
   worker-activity-helper.sh providers [OPTIONS]
+  worker-activity-helper.sh supervisor-blockers [OPTIONS]
   worker-activity-helper.sh live-workers
   worker-activity-helper.sh help
 
@@ -1033,6 +1152,10 @@ Examples:
   # Current logical worker count (portable across macOS and Linux).
   worker-activity-helper.sh live-workers
 
+  # Classify retained supervisor permission records; only fully scoped stale
+  # records receive an exact audited resolve-session command.
+  worker-activity-helper.sh supervisor-blockers --since 7d
+
 NOT a substitute for:
   - worker-NNN.log mtime → file touch time, not outcome.
   - recursive grep over ~/.aidevops/logs or OpenCode storage → unbounded noise.
@@ -1052,6 +1175,7 @@ main() {
 	case "$cmd" in
 	summary) cmd_summary "$@" ;;
 	providers | provider-usage) cmd_providers "$@" ;;
+	supervisor-blockers | supervisor-permission-blockers) cmd_supervisor_blockers "$@" ;;
 	live-workers | worker-count) cmd_live_workers ;;
 	help | -h | --help) cmd_help ;;
 	*)

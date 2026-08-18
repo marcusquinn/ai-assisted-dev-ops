@@ -208,6 +208,8 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-terminal","request_id":"perm-terminal"}\n' "$((T_25H_AGO - 2))"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"headless_session_terminal_reconciled","status":"resolved","reason":"success","blocking":false,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-terminal","request_id":"perm-terminal"}\n' "$((T_25H_AGO - 1))"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"opencode-permission-broker","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"supervisor-pulse","request_id":"perm-retained"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"opencode-permission-broker","issue_number":24,"repo_slug":"marcusquinn/aidevops","session_key":"supervisor-pulse-stale","request_id":"perm-stale"}\n' "$T_25H_AGO"
+	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"opencode-permission-broker","issue_number":25,"repo_slug":"marcusquinn/aidevops","session_key":"supervisor-pulse-live","request_id":"perm-live"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-live","request_id":"perm-live"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-pid-reuse","request_id":"perm-pid-reuse"}\n' "$T_25H_AGO"
 	printf '{"schema":"aidevops-worker-blocker/v1","ts":%d,"timestamp":"older","event":"permission_request_captured","status":"blocked","reason":"permission_required","blocking":true,"source":"test","issue_number":null,"repo_slug":"marcusquinn/aidevops","session_key":"routine-legacy","request_id":"perm-legacy"}\n' "$T_25H_AGO"
@@ -219,6 +221,7 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 	printf '{"session_key":"routine-live","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:00Z"}\n' "$$" "$OWNER_PROCESS_START"
 	printf '{"session_key":"supervisor-pulse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:01Z"}\n' "$$" "$OWNER_PROCESS_START"
 	printf '{"session_key":"supervisor-pulse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"completed","updated_at":"2026-07-26T01:00:02Z"}\n' "$$"
+	printf '{"session_key":"supervisor-pulse-live","issue_number":"25","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"%s","status":"in-flight","updated_at":"2026-07-26T01:00:03Z"}\n' "$$" "$OWNER_PROCESS_START"
 	printf '{"session_key":"routine-pid-reuse","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"owner_process_start":"not-%s","status":"in-flight","updated_at":"2026-07-26T01:00:03Z"}\n' "$$" "$OWNER_PROCESS_START"
 	printf '{"session_key":"routine-legacy","issue_number":"","repo_slug":"marcusquinn/aidevops","pid":%d,"status":"in-flight","updated_at":"2026-07-26T01:00:04Z"}\n' "$$"
 } >"$LEDGER"
@@ -408,7 +411,7 @@ assert_eq "2n2: delivery stages are explicitly skipped" "skipped" \
 	"$(printf '%s' "$JSON" | jq -r '.delivery_stages.check_state')"
 assert_eq "2o: blocker events obey the 24h window" "5" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.event_total')"
-assert_eq "2p: issue-scoped and live unscoped blockers remain proven current" "3" \
+assert_eq "2p: issue-scoped and live unscoped blockers remain proven current" "5" \
 	"$(printf '%s' "$JSON" | jq -r '.progress_blockers.active_total')"
 assert_eq "2q: grant clears only the exact request identity" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.active_blockers[] | select(.session_key == "issue-20" and .request_id == "perm-other")] | length')"
@@ -430,6 +433,20 @@ assert_eq "2w: mismatched PID identity is not treated as a live owner" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-pid-reuse")] | length')"
 assert_eq "2x: legacy PID-only ownership remains unverified" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.progress_blockers.retained_unverified[] | select(.session_key == "routine-legacy")] | length')"
+CLASSIFICATIONS=$(env "${RUN_ENV[@]}" "$HELPER" supervisor-blockers --since 24h --json 2>&1)
+assert_eq "2x2: supervisor classifications expose the stale scoped candidate" "1" \
+	"$(printf '%s' "$CLASSIFICATIONS" | jq -r '.summary.stale_reconcile_candidates')"
+assert_eq "2x3: supervisor classifications protect a live owner" "1" \
+	"$(printf '%s' "$CLASSIFICATIONS" | jq -r '.summary.live_owners')"
+assert_eq "2x4: supervisor classifications protect missing issue scope" "1" \
+	"$(printf '%s' "$CLASSIFICATIONS" | jq -r '.summary.underspecified')"
+STALE_COMMAND=$(printf '%s' "$CLASSIFICATIONS" | jq -r '.classifications[] | select(.classification == "stale_reconcile_candidate") | .reconciliation_command')
+assert_contains "2x5: stale supervisor classification emits exact reconciliation command" \
+	"resolve-session" "$STALE_COMMAND"
+assert_contains "2x5b: stale supervisor command retains exact session scope" \
+	"supervisor-pulse-stale" "$STALE_COMMAND"
+assert_contains "2x6: underspecified supervisor classification names missing issue scope" \
+	"issue_number" "$CLASSIFICATIONS"
 
 # --repo must scope every repo-attributable runtime surface while keeping
 # unscoped legacy data visible as excluded evidence and Pulse counters global.
@@ -546,7 +563,7 @@ assert_contains "5g: human output shows failure groups" "Failure groups" "$OUT"
 assert_contains "5h: human output shows diagnostic focus" "Diagnostic focus" "$OUT"
 assert_contains "5i: human output shows failure families" "Failure families" "$OUT"
 assert_contains "5j: human output shows bounded blocker evidence" "worker-progress-blockers.jsonl" "$OUT"
-assert_contains "5k: human output shows proven current blocker count" "Proven current:              3" "$OUT"
+assert_contains "5k: human output shows proven current blocker count" "Proven current:              5" "$OUT"
 assert_contains "5l: human output separates retained blocker count" "Retained/unverified:         3" "$OUT"
 assert_contains "5l2: human output shows retained supervisor permission count" \
 	"Retained supervisor perms:   1" "$OUT"

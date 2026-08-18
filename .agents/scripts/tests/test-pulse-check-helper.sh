@@ -137,7 +137,7 @@ JSON
 fi
 if [[ "${PULSE_CHECK_BLOCKER_FIXTURE:-}" == "retained" ]]; then
   cat <<'JSON'
-{"window":{"since":"7d"},"metrics":{"total":0,"terminal_session_total":0,"runtime_handoffs":0,"succeeded":null,"result_counts":{},"diagnostic_focus":{},"timing_ms":{"samples":0,"avg":0,"max":0},"recent_examples":[],"failure_groups":[],"failure_families":[]},"pulse_stats":{},"progress_blockers":{"scope":"global","event_total":13,"active_total":0,"retained_unverified_total":13,"retained_supervisor_permission_total":12,"active_blockers":[],"retained_unverified":[{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse","repo_slug":"private/repo-one","detail":"/private/path"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse-retry","repo_slug":"private/repo-two","detail":"private title"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"manual-cli","repo_slug":"private/repo-three"}]},"delivery_stages":{"pr_opened":null,"pr_merged":null,"issue_solved":null,"delivered_successes":null,"check_state":"skipped"}}
+{"window":{"since":"7d"},"metrics":{"total":0,"terminal_session_total":0,"runtime_handoffs":0,"succeeded":null,"result_counts":{},"diagnostic_focus":{},"timing_ms":{"samples":0,"avg":0,"max":0},"recent_examples":[],"failure_groups":[],"failure_families":[]},"pulse_stats":{},"progress_blockers":{"scope":"global","event_total":13,"active_total":0,"retained_unverified_total":13,"retained_supervisor_permission_total":12,"supervisor_permission_classifications":[{"classification":"stale_reconcile_candidate"},{"classification":"live_owner"},{"classification":"underspecified"}],"active_blockers":[],"retained_unverified":[{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse","repo_slug":"private/repo-one","detail":"/private/path"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse-retry","repo_slug":"private/repo-two","detail":"private title"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"manual-cli","repo_slug":"private/repo-three"}]},"delivery_stages":{"pr_opened":null,"pr_merged":null,"issue_solved":null,"delivered_successes":null,"check_state":"skipped"}}
 JSON
   exit 0
 fi
@@ -307,7 +307,10 @@ assert_contains "healthy idle report exposes retained supervisor blocker advisor
 assert_contains "retained blocker report preserves healthy runner state" "Runner health: HEALTHY" "$BLOCKER_OUT"
 assert_contains "retained blocker report shows zero active workers" "Active workers: 0 / 6" "$BLOCKER_OUT"
 assert_contains "retained blocker report gives no-source worker count command" "worker-activity-helper.sh live-workers" "$BLOCKER_OUT"
-assert_contains "retained blocker report gives audited reconciliation guidance" "worker-blocker-cli.mjs resolve-session" "$BLOCKER_OUT"
+assert_contains "retained blocker report gives scoped classification command" "worker-activity-helper.sh supervisor-blockers --since 7d" "$BLOCKER_OUT"
+assert_contains "retained blocker report classifies stale candidates" "1 stale fully scoped" "$BLOCKER_OUT"
+assert_contains "retained blocker report protects live owners" "1 live-owner protected" "$BLOCKER_OUT"
+assert_contains "retained blocker report protects underspecified records" "1 underspecified protected" "$BLOCKER_OUT"
 assert_not_contains "retained blocker report omits private blocker slug" "private/repo-one" "$BLOCKER_OUT"
 assert_not_contains "retained blocker report omits private blocker path" "/private/path" "$BLOCKER_OUT"
 BLOCKER_JSON=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_BLOCKER_FIXTURE=retained" "$HELPER" json --since 7d 2>&1)

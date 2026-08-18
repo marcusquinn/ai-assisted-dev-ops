@@ -117,12 +117,12 @@ ID differs from the source OpenCode request ID.
 For an interactive-safe live worker count, run
 `worker-activity-helper.sh live-workers`; do not source `pulse-wrapper.sh` merely
 to call `list_active_worker_processes`. When `pulse-check-helper.sh report` shows
-retained supervisor permission blockers, compare that count with `live-workers`
-and the bounded summary. A retained record with no live matching owner is
-historical evidence, not a failed or active worker. After confirming the session
-is stale, append an auditable terminal reconciliation with
-`worker-blocker-cli.mjs resolve-session` using its exact repository, session, and
-request scope. Never delete the JSONL evidence or reconcile a live owner.
+retained supervisor permission blockers, run
+`worker-activity-helper.sh supervisor-blockers --since 7d`. It groups records by
+session/request scope, distinguishes live owners and incomplete scope from stale
+candidates, and emits the exact audited `resolve-session` command only when the
+repository, issue, and session scopes are present and no live owner exists. Never
+delete the JSONL evidence or reconcile a live or underspecified record.
 
 ## Manual Worker Launch
 

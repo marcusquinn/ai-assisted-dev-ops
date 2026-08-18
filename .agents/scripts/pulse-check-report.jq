@@ -50,6 +50,10 @@ end) as $max_workers |
     and ((((.session_key // "") | startswith("supervisor-pulse")))
       or (((.source // "") | contains("supervisor-pulse")))))] | length) as $bounded_retained_supervisor_permission_blockers |
 ($progress_blockers.retained_supervisor_permission_total // $bounded_retained_supervisor_permission_blockers | number_or_zero) as $retained_supervisor_permission_blockers |
+($progress_blockers.supervisor_permission_classifications // []) as $supervisor_permission_classifications |
+([$supervisor_permission_classifications[] | select(.classification == "stale_reconcile_candidate")] | length) as $stale_supervisor_permission_candidates |
+([$supervisor_permission_classifications[] | select(.classification == "live_owner")] | length) as $live_supervisor_permission_owners |
+([$supervisor_permission_classifications[] | select(.classification == "underspecified")] | length) as $underspecified_supervisor_permission_records |
 ($api.graphql_circuit_breaker_trips // 0 | number_or_zero) as $graphql_trips |
 {
   generated_at: (now | todateiso8601),
@@ -84,6 +88,9 @@ end) as $max_workers |
     graphql_budget_status: ($current.graphql_budget_status // "unknown"),
     runner_health: ($runner.finding // "unknown"),
     retained_supervisor_permission_blockers: $retained_supervisor_permission_blockers,
+    stale_supervisor_permission_candidates: $stale_supervisor_permission_candidates,
+    live_supervisor_permission_owners: $live_supervisor_permission_owners,
+    underspecified_supervisor_permission_records: $underspecified_supervisor_permission_records,
     recurrent_failure_families: ([$failure_families[] | select((.count // 0) >= $failure_threshold and (.confidence // "low") == "high" and (.family // "") != "other-failure")] | length)
   },
   queue: ($queue.aggregate // {}),
@@ -149,7 +156,7 @@ end) as $max_workers |
           ("retained_unverified_blockers_all_sources=" + (($progress_blockers.retained_unverified_total // 0) | tostring)),
           "blocker_evidence=aggregate_redacted"
         ];
-        "Run worker-activity-helper.sh live-workers and worker-activity-helper.sh summary --since 7d to classify retained records. Reconcile only confirmed stale sessions by appending an audited non-blocking terminal event with worker-blocker-cli.mjs resolve-session; do not delete blocker evidence or clear records that still have a live owner.";
+        "Run worker-activity-helper.sh supervisor-blockers --since 7d. It groups retained supervisor records, protects live or underspecified scope, and emits an exact audited resolve-session command only for fully scoped stale sessions; do not delete blocker evidence.";
         false
       )
     else empty end,

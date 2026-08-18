@@ -203,6 +203,7 @@ _render_text_report() {
 		"- GraphQL/API: " + (.summary.graphql_budget_status // "unknown"),
 		"- Runner health: " + (.summary.runner_health // "unknown"),
 		"- Retained supervisor permission blockers: " + (.summary.retained_supervisor_permission_blockers | tostring) + " (advisory only; does not change runner health)",
+		"- Supervisor permission classification: " + (.summary.stale_supervisor_permission_candidates | tostring) + " stale fully scoped; " + (.summary.live_supervisor_permission_owners | tostring) + " live-owner protected; " + (.summary.underspecified_supervisor_permission_records | tostring) + " underspecified protected",
 		"",
 		"## Findings",
 		(if (.findings | length) == 0 then "- None above thresholds" else (.findings[] | "- [" + .severity + "] " + .title + " (`" + .id + "`) — " + .recommendation) end),
@@ -212,6 +213,7 @@ _render_text_report() {
 		"- worker-activity-helper.sh summary --since " + .inputs.recent_window + " --json --no-pr-check",
 		"- worker-activity-helper.sh summary --since " + .inputs.historical_window + " --json --no-pr-check",
 		"- worker-activity-helper.sh live-workers",
+		"- worker-activity-helper.sh supervisor-blockers --since " + .inputs.historical_window,
 		"- pulse-diagnose-helper.sh cycle-health --window 1h",
 		"",
 		"Privacy: report aggregates repos.json queue state and omits repo slugs, local paths, and issue titles."
