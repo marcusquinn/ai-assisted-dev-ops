@@ -461,6 +461,20 @@ test_repository_allows_types_bun() {
 	return 0
 }
 
+test_repository_allows_vite_react_plugin() {
+	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	if _trusted_dependabot_dependency_allowed "" "@vitejs/plugin-react"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+		print_result "repository allowlist permits @vitejs/plugin-react updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+	print_result "repository allowlist permits @vitejs/plugin-react updates" 1
+	return 0
+}
+
 test_repository_allows_hono() {
 	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
 
@@ -558,6 +572,7 @@ main() {
 	test_trusted_dependabot_uses_response_metered_graphql
 	test_worker_intake_reuses_trusted_snapshot
 	test_typescript_is_maintainer_allowlisted
+	test_repository_allows_vite_react_plugin
 	test_worker_intake_authenticates_paginated_checks
 	test_trusted_dependabot_binds_expected_head
 	test_standard_dependabot_body_parser
