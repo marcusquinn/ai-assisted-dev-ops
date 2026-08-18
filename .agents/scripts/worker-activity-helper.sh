@@ -30,6 +30,10 @@
 #   worker-activity-helper.sh providers [--since 1h|6h|24h|48h|7d]
 #                                      [--json]
 #   worker-activity-helper.sh live-workers
+#
+# `summary` includes a per-scope retained supervisor-permission classification.
+# It emits an audited resolve command only for a non-live record with complete
+# repository, issue, session, and request scope.
 #   worker-activity-helper.sh help
 
 set -euo pipefail
