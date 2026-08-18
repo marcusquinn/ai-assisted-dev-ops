@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "aidevops-dspy-integration",
@@ -56,7 +57,7 @@
         "@fontsource/source-sans-3": "5.3.0",
         "@fontsource/source-serif-4": "5.2.9",
         "@fontsource/tilt-neon": "5.2.10",
-        "@fontsource/ubuntu": "5.2.8",
+        "@fontsource/ubuntu": "5.3.0",
         "@fontsource/ubuntu-mono": "5.2.8",
         "@fontsource/zilla-slab": "5.3.0",
         "react": "19.2.8",
@@ -159,7 +160,7 @@
 
     "@fontsource/tilt-neon": ["@fontsource/tilt-neon@5.2.10", "", {}, "sha512-qBointHhyP7K/avRTmfYkHUrGoCOLt3EG0dpXKJdHua/2OjU74YrCUeVIFO9agSX6A0dM2dUUsrE2ZuxYwC1Eg=="],
 
-    "@fontsource/ubuntu": ["@fontsource/ubuntu@5.2.8", "", {}, "sha512-esSJCpgigwWOm4Ug9f7AMozUyBq5Iobea5C9QYsl2OlCb62wZABBUbXahHLdFv5Ru4lJCD9tUX6xEAeLwUTNBg=="],
+    "@fontsource/ubuntu": ["@fontsource/ubuntu@5.3.0", "", {}, "sha512-LsjJXgE430QLs8LKfn1RIFbbdGAiZBU1gao8ASa4Z2kGNGh7lMb7Rzx09v3bLLuuK+3XA/JSLgPWTAbLD6r1fg=="],
 
     "@fontsource/ubuntu-mono": ["@fontsource/ubuntu-mono@5.2.8", "", {}, "sha512-N4nT8+GYWWcDODVSBLU4f3PycZQH9YIF6SypDI0rti3HrLqcXFS9u6wMvAd9vx1FmjAQkYv7Ld9CZ8XYTEOD0A=="],
 
