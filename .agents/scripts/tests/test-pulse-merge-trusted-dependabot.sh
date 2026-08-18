@@ -45,13 +45,15 @@ write_pr_fixture() {
 	local changed_path="$3"
 	local security_conclusion="$4"
 	local framework_conclusion="${5:-SUCCESS}"
+	local package_manager="${6:-pip}"
+	local dependency_name="${7:-pyarrow}"
 	cat >"${TEST_ROOT}/pr.json" <<EOF
 {
   "author": {"__typename": "Bot", "login": "${author_login}"},
   "headRefOid": "head-current",
   "headRepositoryOwner": {"login": "owner"},
   "headRepository": {"nameWithOwner": "owner/repo"},
-  "body": "Bumps the pip group with 1 update in the / directory: [pyarrow](https://github.com/apache/arrow).\n\n---\nupdated-dependencies:\n- dependency-name: pyarrow\n  dependency-version: 23.0.1\n  dependency-type: direct:production\n  dependency-group: pip\n...",
+  "body": "Bumps the ${package_manager} group with 1 update in the / directory: [${dependency_name}](source).\n\n---\nupdated-dependencies:\n- dependency-name: ${dependency_name}\n  dependency-version: 23.0.1\n  dependency-type: direct:production\n  dependency-group: ${package_manager}\n...",
   "commits": [
     {"authors": [{"login": "${commit_login}"}]}
   ],
@@ -419,6 +421,19 @@ test_non_dependency_file_fails() {
 	return 0
 }
 
+test_trusted_actions_dependabot_passes() {
+	write_pr_fixture "dependabot" "dependabot[bot]" ".github/workflows/test.yml" "SUCCESS" "SUCCESS" "actions" "actions/checkout"
+	printf 'pip:pyarrow\nactions:actions/checkout\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+	if _is_trusted_dependabot_update_pr "24473" "owner/repo" "dependabot[bot]" "head-current"; then
+		printf 'pip:pyarrow\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+		print_result "allowlisted Actions Dependabot workflow update passes narrow gate" 0
+		return 0
+	fi
+	printf 'pip:pyarrow\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+	print_result "allowlisted Actions Dependabot workflow update passes narrow gate" 1 "Expected helper to trust fixture. Log: $(<"$LOGFILE")"
+	return 0
+}
+
 test_unallowlisted_dependency_fails() {
 	write_pr_fixture "dependabot" "dependabot[bot]" "requirements-lock.txt" "SUCCESS"
 	printf 'other-package\n' >"$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
@@ -457,6 +472,31 @@ test_repository_allows_hono() {
 	fi
 	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
 	print_result "repository allowlist permits hono updates" 1
+	return 0
+}
+
+test_repository_allows_trusted_actions() {
+	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+	local dependency_name=""
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	for dependency_name in \
+		actions/checkout \
+		actions/github-script \
+		qltysh/qlty-action/install \
+		actions/setup-node \
+		actions/upload-artifact \
+		github/codeql-action/upload-sarif \
+		anomalyco/opencode/github \
+		actions/download-artifact; do
+		if ! _trusted_dependabot_dependency_allowed "actions" "$dependency_name"; then
+			export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+			print_result "repository allowlist permits trusted Actions updates" 1 "Missing actions:${dependency_name}"
+			return 0
+		fi
+	done
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+	print_result "repository allowlist permits trusted Actions updates" 0
 	return 0
 }
 
@@ -529,9 +569,11 @@ main() {
 	test_dependabot_login_with_user_type_fails
 	test_security_failure_fails
 	test_non_dependency_file_fails
+	test_trusted_actions_dependabot_passes
 	test_unallowlisted_dependency_fails
 	test_repository_allows_types_bun
 	test_repository_allows_hono
+	test_repository_allows_trusted_actions
 	test_trusted_dependabot_can_be_approved
 	test_review_bot_failure_is_ignored_when_other_checks_green
 	test_precomputed_status_rollup_skips_graphql

@@ -345,13 +345,16 @@ _is_trusted_dependabot_update_pr() {
 	_TRUSTED_DEPENDABOT_LAST_PR="$pr_number"
 	_TRUSTED_DEPENDABOT_LAST_HEAD="$expected_head_sha"
 	_trusted_dependabot_snapshot_is_authentic "$pr_json" "$repo_slug" "$pr_author" "$expected_head_sha" || return 1
-	bad_files=$(printf '%s' "$pr_json" | jq -r '[.files[]?.path | select(test("(^|/)(requirements(-lock)?\\.txt|requirements.*\\.txt|pyproject\\.toml|poetry\\.lock|uv\\.lock|Pipfile\\.lock|package(-lock)?\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb?|composer\\.(json|lock)|Gemfile\\.lock|go\\.(mod|sum)|Cargo\\.(toml|lock))$|^\\.github/dependabot\\.yml$"; "i") | not)] | length' 2>/dev/null) || return 1
-	[[ "$bad_files" == "0" ]] || return 1
-	security_failures=$(printf '%s' "$pr_json" | jq 'def up(v): (v // "" | ascii_upcase); [.statusCheckRollup[]? | select(((.name // .context // "") | test("security|socket|codeql|dependabot"; "i")) and (up(.conclusion) == "FAILURE" or up(.conclusion) == "ERROR" or up(.state) == "FAILURE" or up(.state) == "ERROR"))] | length' 2>/dev/null) || return 1
-	[[ "$security_failures" == "0" ]] || return 1
 
 	body=$(printf '%s' "$pr_json" | jq -r '.body // ""' 2>/dev/null) || body=""
 	package_manager=$(printf '%s' "$body" | sed -nE 's/^Bumps the ([A-Za-z0-9_.-]+) group.*$/\1/p' | sed -n '1p')
+	# GitHub Actions updates are dependency-only only when Dependabot's declared
+	# actions group changes a top-level workflow file. All other ecosystems retain
+	# the manifest-and-lockfile boundary below.
+	bad_files=$(printf '%s' "$pr_json" | jq -r --arg package_manager "$package_manager" '[.files[]?.path | select((test("(^|/)(requirements(-lock)?\\.txt|requirements.*\\.txt|pyproject\\.toml|poetry\\.lock|uv\\.lock|Pipfile\\.lock|package(-lock)?\\.json|pnpm-lock\\.yaml|yarn\\.lock|bun\\.lockb?|composer\\.(json|lock)|Gemfile\\.lock|go\\.(mod|sum)|Cargo\\.(toml|lock))$|^\\.github/dependabot\\.yml$"; "i") or ($package_manager == "actions" and test("^\\.github/workflows/[^/]+\\.ya?ml$"; "i"))) | not)] | length' 2>/dev/null) || return 1
+	[[ "$bad_files" == "0" ]] || return 1
+	security_failures=$(printf '%s' "$pr_json" | jq 'def up(v): (v // "" | ascii_upcase); [.statusCheckRollup[]? | select(((.name // .context // "") | test("security|socket|codeql|dependabot"; "i")) and (up(.conclusion) == "FAILURE" or up(.conclusion) == "ERROR" or up(.state) == "FAILURE" or up(.state) == "ERROR"))] | length' 2>/dev/null) || return 1
+	[[ "$security_failures" == "0" ]] || return 1
 	dependencies=$(_trusted_dependabot_dependencies_from_body "$body") || return 1
 	while IFS= read -r dependency_name; do
 		[[ -n "$dependency_name" ]] || continue
