@@ -14,9 +14,19 @@ HELPER_FILE="${REPO_ROOT}/.agents/scripts/review-bot-gate-helper.sh"
 STATE_DIR="$(mktemp -d)"
 trap 'rm -rf "${STATE_DIR}"' EXIT
 mkdir -p "${STATE_DIR}/bin"
+mkdir -p "${STATE_DIR}/__aidevops/.agents/scripts"
+mkdir -p "${STATE_DIR}/__aidevops/.agents/configs"
+ln -s "${REPO_ROOT}/.agents/scripts/trusted-dependabot-lib.sh" \
+	"${STATE_DIR}/__aidevops/.agents/scripts/trusted-dependabot-lib.sh"
+ln -s "${REPO_ROOT}/.agents/configs/trusted-dependabot-updates.conf" \
+	"${STATE_DIR}/__aidevops/.agents/configs/trusted-dependabot-updates.conf"
 cat >"${STATE_DIR}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 [[ "${1:-}" == "api" ]] || exit 2
+if [[ "${2:-}" == "graphql" ]]; then
+	printf '%s\n' '{"data":{"repository":{"pullRequest":{"author":{"__typename":"Bot","login":"dependabot"},"body":"Bumps [vite](source) from 8.1.5 to 8.2.1.","headRefOid":"head-123","headRepository":{"nameWithOwner":"marcusquinn/aidevops"},"headRepositoryOwner":{"login":"marcusquinn"},"commits":{"pageInfo":{"hasNextPage":false},"nodes":[{"commit":{"authors":{"pageInfo":{"hasNextPage":false},"nodes":[{"user":{"login":"dependabot[bot]"}}]}}}]},"files":{"pageInfo":{"hasNextPage":false},"nodes":[{"path":"package.json"},{"path":"bun.lock"}]},"statusCheckRollup":{"contexts":{"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"CheckRun","name":"ShellCheck","conclusion":"SUCCESS","status":"COMPLETED","workflowName":"Code Quality Analysis"}]}}}},"rateLimit":{"cost":1}}}'
+	exit 0
+fi
 [[ "${2:-}" == "repos/marcusquinn/aidevops/pulls/123" ]] || exit 2
 case "${REVIEW_GATE_LIVE_TRUSTED:-false}" in
 true)
@@ -49,6 +59,11 @@ if [[ -z "${CLASSIFIER}" ]]; then
 	printf 'FAIL: review-gate trust classifier extraction was empty\n' >&2
 	exit 1
 fi
+if ! grep -Fq 'TRUSTED_DEPENDABOT_PR=false' "${WORKFLOW_FILE}" ||
+	! grep -Fq '_is_trusted_dependabot_update_pr' "${WORKFLOW_FILE}"; then
+	printf 'FAIL: review-gate classifier must delegate Dependabot trust to the shared exact-head verifier\n' >&2
+	exit 1
+fi
 
 assert_output() {
 	local output_file="$1"
@@ -67,24 +82,28 @@ run_case() {
 	local case_name="$1"
 	local expected_external="$2"
 	local expected_trusted="$3"
-	local expected_association="$4"
-	local expected_rate_limit="$5"
-	local expected_completion="$6"
-	local author_association="$7"
-	local author_login="$8"
-	local author_id="$9"
-	local author_type="${10}"
-	local head_repository="${11}"
-	local base_repository="${12}"
-	local head_ref="${13}"
-	local pr_body="${14}"
-	local live_trusted="${15:-false}"
+	local expected_dependabot="$4"
+	local expected_association="$5"
+	local expected_rate_limit="$6"
+	local expected_completion="$7"
+	local author_association="$8"
+	local author_login="$9"
+	local author_id="${10}"
+	local author_type="${11}"
+	local head_repository="${12}"
+	local base_repository="${13}"
+	local head_ref="${14}"
+	local pr_body="${15}"
+	local expected_head_sha="${16:-}"
+	local live_trusted="${17:-false}"
 	local output_file=""
 
 	CASE_INDEX=$((CASE_INDEX + 1))
 	output_file="${STATE_DIR}/case-${CASE_INDEX}.out"
 	if ! GITHUB_OUTPUT="${output_file}" \
 		HELPER="${HELPER_FILE}" \
+		GITHUB_WORKSPACE="${STATE_DIR}" \
+		DEPENDABOT_LIB="${STATE_DIR}/__aidevops/.agents/scripts/trusted-dependabot-lib.sh" \
 		PATH="${STATE_DIR}/bin:${PATH}" \
 		PR_NUMBER=123 \
 		REPO="marcusquinn/aidevops" \
@@ -97,6 +116,7 @@ run_case() {
 		REVIEW_GATE_PR_BASE_REPOSITORY="${base_repository}" \
 		REVIEW_GATE_PR_HEAD_REF="${head_ref}" \
 		REVIEW_GATE_PR_BODY="${pr_body}" \
+		REVIEW_GATE_EXPECTED_HEAD_SHA="${expected_head_sha}" \
 		REVIEW_GATE_RATE_LIMIT_BEHAVIOR=pass \
 		REVIEW_GATE_COMPLETION_BEHAVIOR=fast \
 		bash -c "${CLASSIFIER}" >/dev/null; then
@@ -106,6 +126,7 @@ run_case() {
 
 	assert_output "${output_file}" is_external_pr "${expected_external}" "${case_name}"
 	assert_output "${output_file}" trusted_issue_sync_pr "${expected_trusted}" "${case_name}"
+	assert_output "${output_file}" trusted_dependabot_pr "${expected_dependabot}" "${case_name}"
 	assert_output "${output_file}" effective_author_association "${expected_association}" "${case_name}"
 	assert_output "${output_file}" effective_rate_limit_behavior "${expected_rate_limit}" "${case_name}"
 	assert_output "${output_file}" effective_completion_behavior "${expected_completion}" "${case_name}"
@@ -117,55 +138,62 @@ MARKER='<!-- aidevops:issue-sync-todo-pr -->'
 
 run_case \
 	'official same-repository Issue Sync bot is trusted' \
-	false true COLLABORATOR pass fast \
+	false true false COLLABORATOR pass fast \
 	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'aidevops/issue-sync-todo' "${MARKER}"
 
 run_case \
+	'exact same-repository Dependabot update is trusted' \
+	false false true COLLABORATOR pass fast \
+	CONTRIBUTOR 'dependabot[bot]' 49699333 Bot \
+	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
+	'dependabot/bun/vite-8.2.1' 'Bumps vite from 8.1.5 to 8.2.1' head-123
+
+run_case \
 	'owner association remains trusted without automation normalization' \
-	false false OWNER pass fast \
+	false false false OWNER pass fast \
 	OWNER maintainer 123 User \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'feature/example' 'ordinary pull request'
 
 run_case \
 	'issue_comment metadata omission uses the live shared classifier' \
-	false true COLLABORATOR pass fast \
+	false true false COLLABORATOR pass fast \
 	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
-	'' '' '' "${MARKER}" true
+	'' '' '' "${MARKER}" '' true
 
 run_case \
 	'external user cannot spoof marker and deterministic branch' \
-	true false CONTRIBUTOR wait strict \
+	true false false CONTRIBUTOR wait strict \
 	CONTRIBUTOR attacker 999 User \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'aidevops/issue-sync-todo' "${MARKER}"
 
 run_case \
 	'lookalike bot ID remains external' \
-	true false CONTRIBUTOR wait strict \
+	true false false CONTRIBUTOR wait strict \
 	CONTRIBUTOR 'github-actions[bot]' 999 Bot \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'aidevops/issue-sync-todo' "${MARKER}"
 
 run_case \
 	'forked Issue Sync branch remains external' \
-	true false CONTRIBUTOR wait strict \
+	true false false CONTRIBUTOR wait strict \
 	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
 	'attacker/aidevops' 'marcusquinn/aidevops' \
 	'aidevops/issue-sync-todo' "${MARKER}"
 
 run_case \
 	'wrong same-repository branch remains external' \
-	true false CONTRIBUTOR wait strict \
+	true false false CONTRIBUTOR wait strict \
 	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'feature/not-issue-sync' "${MARKER}"
 
 run_case \
 	'missing generated marker remains external' \
-	true false CONTRIBUTOR wait strict \
+	true false false CONTRIBUTOR wait strict \
 	CONTRIBUTOR 'github-actions[bot]' 41898282 Bot \
 	'marcusquinn/aidevops' 'marcusquinn/aidevops' \
 	'aidevops/issue-sync-todo' 'ordinary pull request'

@@ -149,8 +149,10 @@ jobs:
           # same repository on both sides, fixed branch, and generated body marker.
           # Any missing or mismatched field remains external and fail-closed.
           HELPER="${GITHUB_WORKSPACE}/__aidevops/.agents/scripts/review-bot-gate-helper.sh"
+          DEPENDABOT_LIB="${GITHUB_WORKSPACE}/__aidevops/.agents/scripts/trusted-dependabot-lib.sh"
           # aidevops:review-gate-trust-start
           TRUSTED_ISSUE_SYNC_PR=false
+          TRUSTED_DEPENDABOT_PR=false
           #aidevops:trust-boundary
           if [[ "${REVIEW_GATE_PR_AUTHOR_LOGIN}" == "github-actions[bot]" ]] &&
             [[ "${REVIEW_GATE_PR_AUTHOR_ID}" == "41898282" ]] &&
@@ -176,6 +178,30 @@ jobs:
             echo "Trusted Issue Sync PR confirmed from live metadata omitted by the event"
           fi
 
+          # Dependabot reports as CONTRIBUTOR even for an exact same-repository
+          # dependency update. Reuse the live, head-bound trust gate rather than
+          # accepting event metadata alone: it verifies the GitHub bot identity,
+          # repository ownership, Dependabot-authored commits, allowed files and
+          # dependencies, and terminal security checks.
+          #aidevops:trust-boundary
+          if [[ "${REVIEW_GATE_PR_AUTHOR_LOGIN}" == "dependabot[bot]" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_ID}" == "49699333" ]] &&
+            [[ "${REVIEW_GATE_PR_AUTHOR_TYPE}" == "Bot" ]] &&
+            [[ -f "${DEPENDABOT_LIB}" ]]; then
+            DEPENDABOT_EXPECTED_HEAD_SHA="${REVIEW_GATE_EXPECTED_HEAD_SHA}"
+            if [[ -z "${DEPENDABOT_EXPECTED_HEAD_SHA}" ]]; then
+              DEPENDABOT_EXPECTED_HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+                --jq '.head.sha // ""' 2>/dev/null || true)
+            fi
+            if [[ -n "${DEPENDABOT_EXPECTED_HEAD_SHA}" ]] &&
+              source "${DEPENDABOT_LIB}" &&
+              _is_trusted_dependabot_update_pr "${PR_NUMBER}" "${REPO}" \
+                "${REVIEW_GATE_PR_AUTHOR_LOGIN}" "${DEPENDABOT_EXPECTED_HEAD_SHA}"; then
+              TRUSTED_DEPENDABOT_PR=true
+              echo "Trusted same-repository Dependabot update confirmed from live exact-head metadata"
+            fi
+          fi
+
           # Check if this is an external contributor PR using immutable event
           # evidence, so API exhaustion cannot accidentally grant trust. The
           # normalized association is exported because the fetched helper
@@ -188,10 +214,10 @@ jobs:
             IS_EXTERNAL_PR=false
             ;;
           *)
-            if [[ "${TRUSTED_ISSUE_SYNC_PR}" == "true" ]]; then
+            if [[ "${TRUSTED_ISSUE_SYNC_PR}" == "true" || "${TRUSTED_DEPENDABOT_PR}" == "true" ]]; then
               export REVIEW_GATE_AUTHOR_ASSOCIATION=COLLABORATOR
               IS_EXTERNAL_PR=false
-              echo "Trusted repository-generated Issue Sync PR detected — applying internal advisory policy"
+              echo "Trusted repository automation PR detected — applying internal advisory policy"
             else
               IS_EXTERNAL_PR=true
               echo "External contributor PR detected — advisory review bypass DISABLED"
@@ -206,6 +232,7 @@ jobs:
           export REVIEW_GATE_AUTHOR_ASSOCIATION_RESOLVED=true
           echo "is_external_pr=${IS_EXTERNAL_PR}" >> "${GITHUB_OUTPUT}"
           echo "trusted_issue_sync_pr=${TRUSTED_ISSUE_SYNC_PR}" >> "${GITHUB_OUTPUT}"
+          echo "trusted_dependabot_pr=${TRUSTED_DEPENDABOT_PR}" >> "${GITHUB_OUTPUT}"
           echo "effective_author_association=${REVIEW_GATE_AUTHOR_ASSOCIATION}" >> "${GITHUB_OUTPUT}"
           echo "effective_rate_limit_behavior=${REVIEW_GATE_RATE_LIMIT_BEHAVIOR}" >> "${GITHUB_OUTPUT}"
           echo "effective_completion_behavior=${REVIEW_GATE_COMPLETION_BEHAVIOR}" >> "${GITHUB_OUTPUT}"
