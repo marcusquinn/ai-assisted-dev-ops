@@ -61,7 +61,7 @@
   "license": "MIT",
   "dependencies": {
     "@vitejs/plugin-react": "5.2.0",
-    "elysia": "1.4.27",
+    "elysia": "1.4.29",
     "file-type": "21.3.2",
     "hono": "4.13.0",
     "vite": "8.2.1"
