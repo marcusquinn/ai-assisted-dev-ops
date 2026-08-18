@@ -62,7 +62,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "5.2.0",
     "elysia": "1.4.29",
-    "file-type": "21.3.2",
+    "file-type": "21.3.4",
     "hono": "4.13.0",
     "vite": "8.2.1"
   },
@@ -88,7 +88,7 @@
     "typescript": "^5.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "os": [
     "darwin",
