@@ -57,6 +57,91 @@ _PULSE_MERGE_PROCESS_LOADED=1
 : "${PULSE_MERGE_BATCH_LIMIT:=50}"
 : "${PULSE_MERGE_CHECKPOINT_FILE:=${HOME}/.aidevops/logs/pulse-merge-checkpoint}"
 : "${PULSE_MERGE_PR_CURSOR_FILE:=${PULSE_MERGE_CHECKPOINT_FILE}.pr-cursor}"
+: "${AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_SECONDS:=3600}"
+: "${AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_DIR:=${HOME}/.aidevops/cache/pulse-update-branch-conflicts}"
+
+#######################################
+# Return the persistent state path for one interactive PR's semantic
+# update-branch conflict. The head SHA in the state file is the freshness
+# signal: a pushed head bypasses the stored cooldown immediately.
+#
+# Args: $1=pr_number, $2=repo_slug
+#######################################
+_pmp_update_branch_conflict_cooldown_file() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local state_key=""
+
+	state_key=$(printf '%s-%s' "$repo_slug" "$pr_number" | tr -c '[:alnum:]._-' '_')
+	[[ -n "$state_key" ]] || return 1
+	printf '%s/%s' "$AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_DIR" "$state_key"
+	return 0
+}
+
+#######################################
+# Check whether this exact PR head remains in a semantic-conflict cooldown.
+#
+# Args: $1=pr_number, $2=repo_slug, $3=head_sha
+#######################################
+_pmp_update_branch_conflict_cooldown_active() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head_sha="$3"
+	local state_file=""
+	local recorded_head_sha=""
+	local expires_at=""
+	local now=""
+
+	[[ -n "$expected_head_sha" ]] || return 1
+	state_file=$(_pmp_update_branch_conflict_cooldown_file "$pr_number" "$repo_slug") || return 1
+	[[ -f "$state_file" ]] || return 1
+	IFS=$'\t' read -r recorded_head_sha expires_at <"$state_file" || return 1
+	[[ "$recorded_head_sha" == "$expected_head_sha" ]] || return 1
+	[[ "$expires_at" =~ ^[0-9]+$ ]] || return 1
+	now=$(date +%s)
+	[[ "$now" =~ ^[0-9]+$ ]] || return 1
+	[[ "$now" -lt "$expires_at" ]] || return 1
+	return 0
+}
+
+#######################################
+# Persist a semantic-conflict cooldown for this exact interactive PR head. The
+# normal conflict path still runs after the first failed write, preserving
+# worker feedback routing and close policy. Pulse serialises merge passes, so
+# replacing this single-PR state atomically is sufficient.
+#
+# Args: $1=pr_number, $2=repo_slug, $3=head_sha
+#######################################
+_pmp_record_update_branch_conflict_cooldown() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head_sha="$3"
+	local state_file=""
+	local state_dir=""
+	local state_tmp=""
+	local now=""
+	local expires_at=""
+
+	[[ -n "$expected_head_sha" ]] || return 1
+	[[ "$AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_SECONDS" =~ ^[0-9]+$ ]] || return 1
+	now=$(date +%s)
+	[[ "$now" =~ ^[0-9]+$ ]] || return 1
+	expires_at=$((now + AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_SECONDS))
+	state_file=$(_pmp_update_branch_conflict_cooldown_file "$pr_number" "$repo_slug") || return 1
+	state_dir=$(dirname "$state_file")
+	mkdir -p "$state_dir" || return 1
+	state_tmp=$(mktemp "${state_file}.XXXXXX") || return 1
+	printf '%s\t%s\n' "$expected_head_sha" "$expires_at" >"$state_tmp" || {
+		rm -f "$state_tmp"
+		return 1
+	}
+	mv -f "$state_tmp" "$state_file" || {
+		rm -f "$state_tmp"
+		return 1
+	}
+	echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — recorded semantic update-branch conflict cooldown for head ${expected_head_sha:0:12} until ${expires_at} (GH#30396)" >>"$LOGFILE"
+	return 0
+}
 
 _pmp_is_protected_release_pr() {
 	local head_ref="$1"
@@ -555,8 +640,9 @@ _merge_ready_prs_for_repo() {
 # fall through to the close path).
 #
 # Rate-limit considerations: one REST update-branch call per CONFLICTING
-# PR per merge cycle. No retry — the next pulse cycle will try again if
-# appropriate.
+# PR per merge cycle. A confirmed interactive semantic conflict is persisted
+# for a bounded cooldown so later cycles do not retry an impossible write
+# until the head changes or the cooldown expires (GH#30396).
 #
 # Args: $1=pr_number, $2=repo_slug, $3=expected current head SHA
 #######################################
@@ -564,6 +650,14 @@ _attempt_pr_update_branch() {
 	local pr_number="$1"
 	local repo_slug="$2"
 	local expected_head_sha="${3:-}"
+	_PMP_UPDATE_BRANCH_SEMANTIC_CONFLICT_PR=""
+	_PMP_UPDATE_BRANCH_SEMANTIC_CONFLICT_REPO=""
+	_PMP_UPDATE_BRANCH_SEMANTIC_CONFLICT_HEAD=""
+
+	if _pmp_update_branch_conflict_cooldown_active "$pr_number" "$repo_slug" "$expected_head_sha"; then
+		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — skipping update-branch; semantic conflict cooldown active for unchanged head ${expected_head_sha:0:12} (GH#30396)" >>"$LOGFILE"
+		return 1
+	fi
 
 	local _ub_output _ub_exit
 	_ub_output=$(_pmp_update_branch_rest "$pr_number" "$repo_slug" "$expected_head_sha" 2>&1)
@@ -577,6 +671,19 @@ _attempt_pr_update_branch() {
 		return 0
 	fi
 
+	if [[ "$_ub_output" == *"HTTP 422"* ]]; then
+		_PMP_UPDATE_BRANCH_SEMANTIC_CONFLICT_PR="$pr_number"
+		_PMP_UPDATE_BRANCH_SEMANTIC_CONFLICT_REPO="$repo_slug"
+		_PMP_UPDATE_BRANCH_SEMANTIC_CONFLICT_HEAD="$expected_head_sha"
+		local _ub_labels=""
+		_ub_labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels \
+			--jq '[.labels[]?.name] | join(",")' 2>/dev/null) || _ub_labels=""
+		case ",${_ub_labels}," in
+		*,origin:interactive,*)
+			_pmp_record_update_branch_conflict_cooldown "$pr_number" "$repo_slug" "$expected_head_sha" || true
+			;;
+		esac
+	fi
 	echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — update-branch failed, falling through to close (t2116): ${_ub_output}" >>"$LOGFILE"
 	return 1
 }

@@ -64,6 +64,8 @@ setup_test_env() {
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
+	export AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_DIR="${TEST_ROOT}/update-branch-conflicts"
+	export AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_SECONDS=3600
 	: >"$LOGFILE"
 	LAST_GH_ARGS_FILE="${TEST_ROOT}/gh-args.log"
 	LAST_GH_QUOTA_FILE="${TEST_ROOT}/gh-quota.log"
@@ -99,6 +101,10 @@ if [[ "${1:-}" == "api" && "${2:-}" == "--method" && "${3:-}" == "PUT" && "${4:-
 	exit "${GH_UB_EXIT:-0}"
 fi
 if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
+	if [[ "$*" == *"--json labels"* ]]; then
+		printf '%s\n' "${GH_PR_LABELS:-}"
+		exit 0
+	fi
 	printf '%s\n' "${GH_VIEW_MERGEABLE:-MERGEABLE}"
 	exit "${GH_VIEW_EXIT:-0}"
 fi
@@ -121,10 +127,13 @@ define_helper_under_test() {
 	# shellcheck source=/dev/null
 	source "$REST_STATE_SCRIPT"
 	helper_src=$(awk '
+		/^_pmp_update_branch_conflict_cooldown_file\(\) \{/,/^}$/ { print }
+		/^_pmp_update_branch_conflict_cooldown_active\(\) \{/,/^}$/ { print }
+		/^_pmp_record_update_branch_conflict_cooldown\(\) \{/,/^}$/ { print }
 		/^_attempt_pr_update_branch\(\) \{/,/^}$/ { print }
 		/^_resolve_pr_mergeable_status\(\) \{/,/^}$/ { print }
 	' "$PROCESS_SCRIPT")
-	if [[ -z "$helper_src" || "$helper_src" != *"_attempt_pr_update_branch"* || "$helper_src" != *"_resolve_pr_mergeable_status"* ]] \
+	if [[ -z "$helper_src" || "$helper_src" != *"_pmp_record_update_branch_conflict_cooldown"* || "$helper_src" != *"_attempt_pr_update_branch"* || "$helper_src" != *"_resolve_pr_mergeable_status"* ]] \
 		|| ! declare -F _pmp_update_branch_rest >/dev/null 2>&1 \
 		|| ! declare -F _pmp_refresh_unknown_mergeable_state_into >/dev/null 2>&1; then
 		printf 'ERROR: could not extract pulse-merge-process helpers from %s\n' "$PROCESS_SCRIPT" >&2
@@ -218,6 +227,50 @@ test_update_branch_http_422_records_known_cost() {
 		print_result "update-branch HTTP 422 carries explicit one-request cost" 1 \
 			"rc=${rc}; quota=$(cat "$LAST_GH_QUOTA_FILE")"
 	fi
+	return 0
+}
+
+test_semantic_conflict_cooldown_skips_duplicate_write() {
+	install_gh_stub
+	: >"$LAST_GH_ARGS_FILE"
+	: >"$LOGFILE"
+
+	local rc=0
+	GH_UB_EXIT=1 GH_UB_STATUS=422 GH_PR_LABELS=origin:interactive \
+		_attempt_pr_update_branch "19094" "marcusquinn/aidevops" "fedcba9876543210" || rc=$?
+	if [[ "$rc" -ne 1 ]]; then
+		print_result "semantic conflict cooldown skips duplicate update-branch write" 1 \
+			"Expected semantic conflict to return 1, got ${rc}"
+		return 0
+	fi
+
+	: >"$LAST_GH_ARGS_FILE"
+	: >"$LOGFILE"
+	rc=0
+	_attempt_pr_update_branch "19094" "marcusquinn/aidevops" "fedcba9876543210" || rc=$?
+	if [[ "$rc" -ne 1 ]]; then
+		print_result "semantic conflict cooldown skips duplicate update-branch write" 1 \
+			"Expected cooldown skip to return 1, got ${rc}"
+		return 0
+	fi
+
+	if [[ -s "$LAST_GH_ARGS_FILE" ]] || ! grep -q "semantic conflict cooldown active" "$LOGFILE"; then
+		print_result "semantic conflict cooldown skips duplicate update-branch write" 1 \
+			"Expected no gh call and a cooldown log. Calls: $(cat "$LAST_GH_ARGS_FILE"); log: $(cat "$LOGFILE")"
+		return 0
+	fi
+
+	: >"$LAST_GH_ARGS_FILE"
+	: >"$LOGFILE"
+	rc=0
+	GH_UB_EXIT=0 _attempt_pr_update_branch "19094" "marcusquinn/aidevops" "0123456789abcdef" || rc=$?
+	if [[ "$rc" -ne 0 ]] || ! grep -q "update-branch" "$LAST_GH_ARGS_FILE"; then
+		print_result "semantic conflict cooldown skips duplicate update-branch write" 1 \
+			"Expected a changed head to bypass cooldown. rc=${rc}; calls: $(cat "$LAST_GH_ARGS_FILE")"
+		return 0
+	fi
+
+	print_result "semantic conflict cooldown skips duplicate update-branch write" 0
 	return 0
 }
 
@@ -598,6 +651,7 @@ main() {
 	test_update_branch_missing_head_fails_before_write
 	test_update_branch_failure_returns_one
 	test_update_branch_http_422_records_known_cost
+	test_semantic_conflict_cooldown_skips_duplicate_write
 	test_update_branch_tags_log_with_task_id
 	test_resolve_mergeable_retries_unknown
 	test_resolve_mergeable_accepts_boolean_true

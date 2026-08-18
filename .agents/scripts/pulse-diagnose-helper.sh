@@ -110,6 +110,8 @@ pw-skip-parent-close|pulse-wrapper.sh|1152|Deterministic merge: skipping close o
 pw-skip-dup-closing-comment|pulse-wrapper.sh|1162|Deterministic merge: skipped duplicate closing comment|Skipped duplicate closing comment on linked issue
 pw-update-branch-ok|pulse-wrapper.sh|679|Merge pass: PR #.*update-branch succeeded|Update-branch succeeded (synced PR with base)
 pw-update-branch-fail|pulse-wrapper.sh|686|Merge pass: PR #.*update-branch failed|Update-branch failed — falling through to conflict handling
+pw-update-branch-cooldown|pulse-merge-process.sh|640|Merge pass: PR #.*semantic conflict cooldown active|Update-branch skipped — unchanged interactive head is in semantic-conflict cooldown
+pw-update-branch-cooldown-recorded|pulse-merge-process.sh|130|Merge pass: PR #.*recorded semantic update-branch conflict cooldown|Recorded semantic-conflict cooldown for the current PR head
 pw-skip-conflicting-nmr|pulse-wrapper.sh|1289|Merge pass: skipping CONFLICTING-close.*needs-maintainer-review|Skipped CONFLICTING-close — linked issue has NMR
 pw-update-branch-refetch|pulse-wrapper.sh|1307|Merge pass: PR #.*update-branch succeeded, refetched|Update-branch succeeded on CONFLICTING PR, refetched mergeable state
 pw-approve-self|pulse-wrapper.sh|332|approve_collaborator_pr: PR #.*is self-authored.*skipping approval|Skipped PR approval — self-authored PR
