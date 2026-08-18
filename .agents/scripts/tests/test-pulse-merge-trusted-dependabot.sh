@@ -475,6 +475,20 @@ test_repository_allows_hono() {
 	return 0
 }
 
+test_repository_allows_vite_react_plugin() {
+	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	if _trusted_dependabot_dependency_allowed "" "@vitejs/plugin-react"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+		print_result "repository allowlist permits @vitejs/plugin-react updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+	print_result "repository allowlist permits @vitejs/plugin-react updates" 1
+	return 0
+}
+
 test_repository_allows_elysia() {
 	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
 
@@ -601,6 +615,7 @@ main() {
 	test_unallowlisted_dependency_fails
 	test_repository_allows_types_bun
 	test_repository_allows_hono
+	test_repository_allows_vite_react_plugin
 	test_repository_allows_elysia
 	test_repository_allows_fontsource_ubuntu
 	test_repository_allows_trusted_actions
