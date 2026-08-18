@@ -17,7 +17,7 @@ apps/
   web/          # React/Next web app
   api/          # API/server runtime when not colocated with web
   worker/       # background jobs/schedules when not hosting-native
-  desktop/      # Electron shell when needed
+  desktop/      # Electron/Tauri shell, or separate Rust workspace for GPUI
   mobile/       # Expo app when needed
   extension/    # WXT extension when needed
 packages/
@@ -36,13 +36,14 @@ Add surfaces only when a user workflow requires them; keep package boundaries re
 
 ## Defaults
 
-- Language: TypeScript throughout.
+- Language: TypeScript by default; a deliberately selected GPUI/native desktop client uses Rust or the platform language at that boundary.
 - Web: React/Next for product UX.
 - Data: Postgres + Drizzle + migrations; RLS for workspace/user boundaries.
 - Validation: shared schemas in domain/API packages.
 - UI: component library package with design tokens and accessibility rules.
 - Background jobs: explicit `apps/worker` / `packages/jobs` or hosting-native queue/cron; see `operations-jobs-scheduling.md`.
 - Local-first desktop/extension cache: PGlite only when Postgres schema reuse is worth the startup/performance trade-off.
+- Desktop framework: use `desktop-frameworks.md`; a GPUI client can reuse service contracts and generated API types, but not React UI packages or browser-only TypeScript code.
 
 ## Package rules
 

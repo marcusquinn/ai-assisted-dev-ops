@@ -1,6 +1,6 @@
 ---
 name: app-stack
-description: Opinionated app-stack selection for static sites, TypeScript monorepos, desktop, mobile, extensions, and metadata-driven business apps
+description: Opinionated app-stack selection for static sites, monorepos, desktop, mobile, extensions, and metadata-driven business apps
 mode: subagent
 ---
 
@@ -16,7 +16,7 @@ mode: subagent
 - **Plain site**: no-build HTML/CSS/JS unless CMS or repeated-layout scale justifies more.
 - **CMS/editorial site**: WordPress; see `tools/wordpress.md`.
 - **Application**: TypeScript monorepo, React/Next web-first, Postgres + Drizzle + RLS.
-- **Desktop**: Electron by default when Chromium, DevTools, extension reuse, or browser automation matter.
+- **Desktop**: choose Electron for web-platform reuse, Tauri for a lighter webview shell, or GPUI/native for Rust-native, GPU-rendered UI; benchmark the actual workload.
 - **Mobile**: Expo/React Native unless native Swift/Kotlin constraints dominate.
 - **Extension**: WXT; see `tools/ui/wxt.md`.
 
@@ -31,7 +31,7 @@ mode: subagent
 | Define required/optional public pages, trust pages, schema, docs/API/MCP/CLI surfaces | `app-stack/public-site-surfaces.md` |
 | Standardise user-facing record fields and relationships | `app-stack/standard-objects.md` |
 | Design TypeScript monorepo app structure | `app-stack/monorepo-app-stack.md` |
-| Choose/shape desktop shell | `app-stack/electron-desktop.md` |
+| Choose/shape desktop framework | `app-stack/desktop-frameworks.md` |
 | Model workspace tenancy/collaboration | `app-stack/workspace-model.md` |
 | Design app database foundation | `app-stack/database-foundation.md` |
 | Place schemas and migrations | `app-stack/migration-layout.md` |

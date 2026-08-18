@@ -24,7 +24,7 @@ mode: subagent
 | Web | React/Next | Main product UX, dashboards, authenticated apps, SSR/SEO where useful |
 | API | TypeScript package/API app | Shared validation, typed clients, server-side auth, workflow orchestration |
 | Database | Postgres + Drizzle | Durable relational data, RLS, migrations, shared schema typing |
-| Desktop | Electron | Chromium fidelity, DevTools, browser automation, extension reuse, PGlite filesystem storage |
+| Desktop | Choose by rendering model | Electron for Chromium/web reuse; Tauri for a lighter webview shell; GPUI for Rust-native GPU-rendered custom UI; platform-native for maximum OS integration |
 | Mobile | Expo/React Native | Shared TypeScript product logic and cross-platform iteration |
 | Extension | WXT | Cross-browser extension with typed entrypoints and modern build tooling |
 | Local-first | PGlite where Postgres schema reuse matters | Desktop/extension CRUD cache or offline-first app slice |
@@ -35,6 +35,7 @@ mode: subagent
 - Do not add local-first sync until offline/collaboration needs are explicit.
 - Do not add multi-tenant complexity until workspace/account isolation is required.
 - Do not pick Tauri only for bundle-size aesthetics if Chromium/DevTools/browser integration matters.
+- Do not pick GPUI only from speed claims; prototype the critical UI path and account for its pre-1.0 API stability and smaller ecosystem.
 - Do not model app-specific business objects before the kernel tables and workspace boundary are clear.
 
 ## Verification before committing to a stack
