@@ -476,14 +476,46 @@ jobs:
       # known failing Microsoft package source before apt update so shfmt install
       # is not blocked by unrelated 403/signature errors.
       run: |
+        # Keep each network-bound apt phase within a five-minute budget. The
+        # heartbeat makes a slow runner distinguishable from a silent stall.
+        run_with_heartbeat() {
+          local phase="$1"
+          local timeout_seconds="$2"
+          local heartbeat_pid
+          local status=0
+          shift 2
+
+          printf '::notice::Starting %s (timeout: %ss)\n' "$phase" "$timeout_seconds"
+          (
+            local elapsed=0
+            while true; do
+              sleep 30
+              elapsed=$((elapsed + 30))
+              printf '::notice::%s still running (%ss/%ss)\n' "$phase" "$elapsed" "$timeout_seconds"
+            done
+          ) &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null || true; wait "$heartbeat_pid" 2>/dev/null || true' EXIT INT TERM
+
+          timeout --kill-after=30s "${timeout_seconds}s" "$@" || status=$?
+
+          kill "$heartbeat_pid" 2>/dev/null || true
+          wait "$heartbeat_pid" 2>/dev/null || true
+          trap - EXIT INT TERM
+          if [ "$status" -ne 0 ]; then
+            printf '::error::%s exited with status %s (timeout: %ss)\n' "$phase" "$status" "$timeout_seconds"
+          fi
+          return "$status"
+        }
+
         for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
           [ -e "$source_file" ] || continue
           if grep -q 'packages.microsoft.com' "$source_file"; then
             sudo mv "$source_file" "${source_file}.disabled"
           fi
         done
-        sudo apt-get update -qq
-        sudo apt-get install -y shfmt
+        run_with_heartbeat "apt-get update" 300 sudo apt-get update -qq
+        run_with_heartbeat "apt-get install shfmt" 300 sudo apt-get install -y shfmt
         shfmt --version
 
     - name: Shell function complexity
