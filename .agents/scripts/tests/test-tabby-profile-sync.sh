@@ -354,6 +354,38 @@ assert path.read_text() == original
 assert list(path.parent.glob('.config.yaml.*')) == []
 "
 
+_info "Test 17: Bash-only Linux shell is used for generated profiles"
+bash_only_shell_dir="${tmp_root}/bash-only"
+mkdir -p "${bash_only_shell_dir}"
+bash_only_shell="${bash_only_shell_dir}/bash"
+printf '#!/bin/sh\nexit 0\n' >"${bash_only_shell}"
+chmod 700 "${bash_only_shell}"
+bash_only_config="${tmp_root}/bash-only.yaml"
+printf 'version: 8\nprofiles: []\ngroups: []\n' >"${bash_only_config}"
+if AIDEVOPS_TABBY_LOGIN_SHELL="${bash_only_shell}" SHELL=/missing/zsh \
+	PYTHONPATH="${REPO_ROOT}/.agents/scripts" python3 "${HELPER}" \
+	--repos-json "${repos_json}" --tabby-config "${bash_only_config}" >/dev/null &&
+	grep -qF "command: ${bash_only_shell}" "${bash_only_config}"; then
+	_pass "Bash-only Linux profile uses configured executable shell"
+else
+	_fail "Bash-only Linux profile did not use configured executable shell"
+fi
+
+_info "Test 18: status rejects a missing managed profile executable"
+missing_command_config="${tmp_root}/missing-command.yaml"
+printf "profiles:\n  - name: aidevops\n    options:\n      command: /missing/zsh\n      args:\n        - '-l'\n        - '-c'\n        - 'exec aidevops opencode --tabby-shell'\n      cwd: %s\ngroups: []\n" \
+	"${repo_path}" >"${missing_command_config}"
+set +e
+status_output=$(PYTHONPATH="${REPO_ROOT}/.agents/scripts" python3 "${HELPER}" \
+	--repos-json "${repos_json}" --tabby-config "${missing_command_config}" --status-only 2>&1)
+status_rc=$?
+set -e
+if [[ "${status_rc}" -eq 2 && "${status_output}" == *"command '/missing/zsh'"* && "${status_output}" == *"aidevops tabby sync"* ]]; then
+	_pass "status reports missing managed profile executable"
+else
+	_fail "status missing-command result unexpected: rc=${status_rc} output=${status_output}"
+fi
+
 echo ""
 if ((fail_count == 0)); then
 	printf '%bAll %d tests passed.%b\n' "${TEST_GREEN}" "${pass_count}" "${TEST_NC}"

@@ -82,7 +82,15 @@ def _is_command_field_opencode(value: str) -> bool:
         PRE_RECOVERY_TABBY_COMMAND_FIELD_OPENCODE,
         LEGACY_TABBY_COMMAND_FIELD_OPENCODE,
     )
-    return value in opencode_commands or normalised in opencode_commands
+    if value in opencode_commands or normalised in opencode_commands:
+        return True
+    return bool(
+        re.fullmatch(
+            r"/[^\s]+ -l -c '(?:exec aidevops opencode --tabby-shell|"
+            r"aidevops opencode; exec zsh|opencode; exec zsh)'",
+            normalised,
+        )
+    )
 
 
 def _is_legacy_direct_opencode_args(args: list[str]) -> bool:

@@ -103,12 +103,55 @@ _normalize_stale_get_dispatch_info() {
 }
 
 #######################################
+# Reuse the authoritative closing-reference open-PR classifier from reactive
+# stale recovery without loading its globals into the pulse wrapper process.
+# Output: "PR|kind" when linked evidence exists, empty when absence is proven.
+# Returns: 0 on a determinate result, 1 when evidence cannot be established.
+#######################################
+_normalize_stale_find_open_pr() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local stale_module_dir="${SCRIPT_DIR:-${BASH_SOURCE[0]%/*}}"
+	local stale_module="${stale_module_dir}/dispatch-dedup-stale.sh"
+
+	if declare -F _stale_recovery_find_open_pr >/dev/null 2>&1; then
+		_stale_recovery_find_open_pr "$issue_number" "$repo_slug" || return 1
+		return 0
+	fi
+	[[ -r "$stale_module" ]] || return 1
+	if ! (
+		# shellcheck source=dispatch-dedup-stale.sh
+		source "$stale_module"
+		_stale_recovery_find_open_pr "$issue_number" "$repo_slug"
+	); then
+		return 1
+	fi
+	return 0
+}
+
+_normalize_stale_open_pr_blocks_reset() {
+	local stale_num="$1"
+	local slug="$2"
+	local open_pr=""
+	if ! open_pr=$(_normalize_stale_find_open_pr "$stale_num" "$slug"); then
+		echo "[pulse-wrapper] Stale assignment skip (open-PR lookup fail-closed): #${stale_num} in ${slug} — authoritative linkage unavailable" >>"$LOGFILE"
+		return 0
+	fi
+	if [[ -n "$open_pr" ]]; then
+		echo "[pulse-wrapper] Stale assignment skip (open PR #${open_pr%%|*}): #${stale_num} in ${slug} — durable implementation handoff exists" >>"$LOGFILE"
+		return 0
+	fi
+	return 1
+}
+
+#######################################
 # (Phase 12 helper) Decide whether a stale-assigned issue should be skipped
 # (worker still active) or reset (worker gone).
 #
 # Applies checks in order:
-#   1. Local pgrep — is any process referencing this issue number still running?
-#   2. Dispatch-comment ownership gate (t1933 + t2375):
+#   1. Authoritative open-PR linkage — durable handoff evidence blocks reset.
+#   2. Local pgrep — is any process referencing this issue number still running?
+#   3. Dispatch-comment ownership gate (t1933 + t2375):
 #        - gh-api failure to fetch dispatch info → fail-CLOSED (skip).
 #        - dispatch_runner != self_login → cross-machine worker. Skip `ps -p`
 #          (PID collisions across machines are meaningless); apply time-based
@@ -117,7 +160,7 @@ _normalize_stale_get_dispatch_info() {
 #          the recorded Worker PID.
 #        - dispatch_runner empty but dispatch_pid present → legacy format,
 #          fail-CLOSED (cannot verify ownership).
-#   3. Worker log recency — local log written in last 10 min (local workers only).
+#   4. Worker log recency — local log written in last 10 min (local workers only).
 #
 # Returns: 0 = skip (worker still active or unverifiable), 1 = reset (worker gone)
 #
@@ -134,6 +177,14 @@ _normalize_stale_should_skip_reset() {
 	local now_epoch="$3"
 	local cross_runner_max_runtime="$4"
 	local self_login="$5"
+
+	# An open PR linked by GitHub's authoritative closing metadata is durable
+	# ownership evidence even after the worker process and dispatch lease expire.
+	# Indeterminate linkage fails closed so transient API faults cannot launch a
+	# competing implementation.
+	if _normalize_stale_open_pr_blocks_reset "$stale_num" "$slug"; then
+		return 0
+	fi
 
 	# Check 1: local worker process still referencing this issue
 	if pgrep -f "pulse-reconcile.*[^0-9]${stale_num}([^0-9]|$)" >/dev/null 2>&1 || pgrep -f "#${stale_num}([^0-9]|$)" >/dev/null 2>&1; then

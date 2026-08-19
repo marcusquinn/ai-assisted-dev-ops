@@ -14,6 +14,7 @@ from tabby_profile_utils import (
     _profile_block_end,
     _profile_mentions_opencode_launch,
 )
+from tabby_shell_resolver import resolve_login_shell
 
 
 def _enable_dynamic_title(profile_text: str) -> tuple[str, bool]:
@@ -36,8 +37,11 @@ def _enable_dynamic_title(profile_text: str) -> tuple[str, bool]:
     return "\n".join(lines), True
 
 
-def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
+def repair_broken_opencode_launch_profiles(
+    config_text: str, shell_path: str | None = None
+) -> tuple[str, int]:
     """Repair fragile OpenCode profiles without touching custom profiles."""
+    shell_path = shell_path or resolve_login_shell()
     lines = config_text.split("\n")
     repaired: list[str] = []
     repairs = 0
@@ -59,7 +63,7 @@ def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
 
         original_block = "\n".join(profile_lines)
         repaired_block, repaired_count = _repair_broken_opencode_launch_profile_block(
-            original_block
+            original_block, shell_path
         )
         repaired_block, dynamic_title_changed = _enable_dynamic_title(repaired_block)
         repaired.extend(repaired_block.split("\n"))

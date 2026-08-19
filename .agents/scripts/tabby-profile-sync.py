@@ -38,8 +38,11 @@ from tabby_profile_utils import (
 from tabby_profile_validation import (
     ProfileArgTypeIssue,
     find_profile_arg_type_issues,
+    find_profile_command_issues,
     report_profile_arg_type_issues,
+    report_profile_command_issues,
 )
+from tabby_shell_resolver import ShellResolutionError, resolve_login_shell
 from tabby_yaml_helpers import (
     load_yaml_simple,
     save_yaml,
@@ -123,9 +126,11 @@ def build_profile_yaml(
     tab_colour: str,
     scheme: dict,
     group_id: str,
+    shell_path: str | None = None,
 ) -> str:
     """Build a YAML profile block as a string."""
     profile_id = f"local:custom:{name.replace('/', '-')}:{uuid.uuid4()}"
+    shell_path = shell_path or resolve_login_shell()
 
     # Build colour list
     colours_yaml = ""
@@ -135,7 +140,7 @@ def build_profile_yaml(
     profile = f"""  - name: {name}
     icon: fas fa-terminal
     options:
-      command: /bin/zsh
+      command: {shell_path}
       args:
         - '-l'
         - '-c'
@@ -285,10 +290,11 @@ def ensure_group(config_text: str) -> tuple[str, str]:
 
 
 def build_new_profiles(
-    repos: list[dict], existing_cwds: set[str], group_id: str
+    repos: list[dict], existing_cwds: set[str], group_id: str, shell_path: str | None = None
 ) -> list[tuple]:
     """Build profile entries for repos that don't yet have a Tabby profile."""
     new_profiles = []
+    shell_path = shell_path or resolve_login_shell()
     for repo in repos:
         if repo["path"] not in existing_cwds:
             tab_colour = generate_tab_colour(repo["path"])
@@ -299,6 +305,7 @@ def build_new_profiles(
                 tab_colour=tab_colour,
                 scheme=scheme,
                 group_id=group_id,
+                shell_path=shell_path,
             )
             new_profiles.append((repo, profile_yaml, tab_colour, scheme["name"]))
     return new_profiles
@@ -306,6 +313,7 @@ def build_new_profiles(
 
 def sync_profiles(args: argparse.Namespace) -> None:
     """Perform the profile sync: discover new repos and insert their profiles."""
+    shell_path = resolve_login_shell()
     repos = get_profile_targets(args.repos_json)
     config_text = load_yaml_simple(args.tabby_config)
     existing_cwds = extract_existing_cwds(config_text)
@@ -314,10 +322,14 @@ def sync_profiles(args: argparse.Namespace) -> None:
     # types visible instead of silently leaving a profile that can freeze Tabby.
     report_profile_arg_type_issues(config_text)
 
-    config_text, repaired_count = repair_broken_opencode_launch_profiles(config_text)
+    config_text, repaired_count = repair_broken_opencode_launch_profiles(
+        config_text, shell_path
+    )
+    if report_profile_command_issues(config_text):
+        raise SystemExit(2)
 
     config_text, group_id = ensure_group(config_text)
-    new_profiles = build_new_profiles(repos, existing_cwds, group_id)
+    new_profiles = build_new_profiles(repos, existing_cwds, group_id, shell_path)
 
     if not new_profiles:
         if repaired_count:
@@ -353,11 +365,17 @@ def main() -> None:
 
     if args.status_only:
         show_status(repos, existing_cwds)
-        if report_profile_arg_type_issues(config_text):
+        if report_profile_arg_type_issues(config_text) or report_profile_command_issues(
+            config_text
+        ):
             raise SystemExit(2)
         return
 
-    sync_profiles(args)
+    try:
+        sync_profiles(args)
+    except ShellResolutionError as exc:
+        print(f"Tabby profile sync failed: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":

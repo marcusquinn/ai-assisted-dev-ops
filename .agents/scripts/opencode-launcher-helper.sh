@@ -47,7 +47,7 @@ Options:
   --shared-db          Use OpenCode's normal shared data directory
   --dir PATH           Working directory for OpenCode (default: current dir)
   --session-id ID      Explicit isolated DB name (default: stable per-project shard)
-  --tabby-shell        Restore Tabby's exact saved session, then leave zsh open
+  --tabby-shell        Restore Tabby's exact saved session, then leave the login shell open
   --dry-run            Print the environment/command without executing
   -h, --help           Show this help
 
@@ -284,6 +284,26 @@ print_terminal_title_environment() {
     return 0
 }
 
+resolve_tabby_login_shell() {
+    local resolver="${SCRIPT_DIR}/tabby_shell_resolver.py"
+    local shell_path=""
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        print_error "python3 is required to resolve Tabby's login shell"
+        return 1
+    fi
+    if ! shell_path=$(python3 "${resolver}" 2>/dev/null); then
+        print_error "No safe executable login shell is available for Tabby recovery"
+        return 1
+    fi
+    if [[ "${shell_path}" != /* || ! -f "${shell_path}" || ! -x "${shell_path}" ]]; then
+        print_error "Resolved Tabby login shell is not an absolute executable: ${shell_path:-<empty>}"
+        return 1
+    fi
+    printf '%s' "${shell_path}"
+    return 0
+}
+
 run_isolated_tui() {
     local launch_dir="$1"
     local data_dir="$2"
@@ -291,6 +311,11 @@ run_isolated_tui() {
     local dry_run="$4"
     shift 4
     local -a opencode_args=("$@")
+    local login_shell=""
+
+    if ((tabby_shell == 1)); then
+        login_shell=$(resolve_tabby_login_shell) || return 1
+    fi
 
     if ((dry_run == 1)); then
         printf 'cd %q && TMPDIR=%q TMP=%q TEMP=%q XDG_DATA_HOME=%q AIDEVOPS_OPENCODE_ISOLATED_DB=1' "${launch_dir}" "${TMPDIR}" "${TMP}" "${TEMP}" "${data_dir}"
@@ -298,7 +323,7 @@ run_isolated_tui() {
         print_terminal_title_environment
         printf ' opencode'
         ((${#opencode_args[@]} == 0)) || printf ' %q' "${opencode_args[@]}"
-        ((tabby_shell == 1)) && printf '; cd %q && exec /bin/zsh -l' "${launch_dir}"
+        ((tabby_shell == 1)) && printf '; cd %q && exec %q -l' "${launch_dir}" "${login_shell}"
         printf '\n'
         return 0
     fi
@@ -321,7 +346,7 @@ run_isolated_tui() {
         if ! emit_tabby_current_directory "${launch_dir}"; then
             : # Shell startup will report the real project directory to Tabby.
         fi
-        exec /bin/zsh -l
+        exec "${login_shell}" -l
         return 1
     fi
     exec opencode "${opencode_args[@]}"

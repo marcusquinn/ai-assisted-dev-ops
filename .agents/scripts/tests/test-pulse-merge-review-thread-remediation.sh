@@ -32,14 +32,20 @@ print_result() {
 
 setup_test_env() {
 	TEST_ROOT="$(mktemp -d -t pulse-review-remediation.XXXXXX)"
-	mkdir -p "${TEST_ROOT}/scripts" "${TEST_ROOT}/repo" "${TEST_ROOT}/config"
+	mkdir -p "${TEST_ROOT}/scripts" "${TEST_ROOT}/repo" "${TEST_ROOT}/config" "${TEST_ROOT}/state"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
 	export SCANNER_LOG="${TEST_ROOT}/scanner.log"
 	export AIDEVOPS_REPOS_JSON="${TEST_ROOT}/config/repos.json"
+	export AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR="${TEST_ROOT}/state"
 	printf '{"initialized_repos":[{"slug":"owner/repo","path":"%s"}]}\n' "${TEST_ROOT}/repo" >"$AIDEVOPS_REPOS_JSON"
 	cat >"${TEST_ROOT}/scripts/pr-review-thread-response-scanner.sh" <<'SCANNER'
 #!/usr/bin/env bash
 printf 'include_human=%s args=%s\n' "${PR_REVIEW_THREAD_RESPONSE_INCLUDE_HUMAN:-false}" "$*" >>"${SCANNER_LOG:?}"
+if [[ -n "${SCANNER_ATTENTION_REASON:-}" ]]; then
+	safe_slug="$(printf '%s' "$2" | tr '/:' '--')"
+	printf 'analysis_complete=true\nmaintainer_attention=true\nblocker_reason=%s\n' "$SCANNER_ATTENTION_REASON" \
+		>"${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR:?}/${safe_slug}-${4}.state"
+fi
 exit "${SCANNER_RC:-0}"
 SCANNER
 	chmod +x "${TEST_ROOT}/scripts/pr-review-thread-response-scanner.sh"
@@ -52,9 +58,12 @@ SCANNER
 	PULSE_REVIEW_REMEDIATION_NO_MATCH_RC=11
 	PULSE_REVIEW_REMEDIATION_MAINTAINER_ATTENTION_RC=12
 	PULSE_REVIEW_REMEDIATION_RETRYABLE_FAILURE_RC=13
+	PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED="repeat_exhausted"
+	PULSE_MERGE_BOOL_TRUE="true"
 	_PULSE_MERGE_REMEDIATION_OUTCOME=""
 	_PULSE_MERGE_PREFLIGHT_BLOCKER_KIND=""
 	unset AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST
+	unset SCANNER_ATTENTION_REASON
 	unset DRY_RUN
 	return 0
 }
@@ -68,9 +77,12 @@ teardown_test_env() {
 }
 
 define_helpers_under_test() {
-	local src_repo_path="" src_dispatch="" src_maybe_dispatch="" src_preflight_dispatch="" src_enabled="" src_changes_gate=""
+	local src_repo_path="" src_repeat_exhausted="" src_dispatch="" src_maybe_dispatch="" src_preflight_dispatch="" src_enabled="" src_changes_gate=""
 	src_repo_path=$(awk '
 		/^_pulse_merge_repo_path_for_slug\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
+	' "$MERGE_SCRIPT")
+	src_repeat_exhausted=$(awk '
+		/^_pulse_merge_review_thread_repeat_exhausted\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$MERGE_SCRIPT")
 	src_dispatch=$(awk '
 		/^_pulse_merge_dispatch_review_thread_remediation\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
@@ -87,12 +99,14 @@ define_helpers_under_test() {
 	src_changes_gate=$(awk '
 		/^_handle_changes_requested_review_gate\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$MERGE_SCRIPT")
-	if [[ -z "$src_repo_path" || -z "$src_dispatch" || -z "$src_maybe_dispatch" || -z "$src_preflight_dispatch" || -z "$src_enabled" || -z "$src_changes_gate" ]]; then
+	if [[ -z "$src_repo_path" || -z "$src_repeat_exhausted" || -z "$src_dispatch" || -z "$src_maybe_dispatch" || -z "$src_preflight_dispatch" || -z "$src_enabled" || -z "$src_changes_gate" ]]; then
 		printf 'ERROR: could not extract helpers from %s\n' "$MERGE_SCRIPT" >&2
 		return 1
 	fi
 	# shellcheck disable=SC1090
 	eval "$src_repo_path"
+	# shellcheck disable=SC1090
+	eval "$src_repeat_exhausted"
 	# shellcheck disable=SC1090
 	eval "$src_dispatch"
 	# shellcheck disable=SC1090
@@ -542,6 +556,41 @@ test_changes_requested_terminal_attention_preserves_pr_without_routing() {
 	return 0
 }
 
+test_changes_requested_repeat_exhaustion_routes_through_fix_worker() {
+	setup_test_env
+	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
+	export SCANNER_RC=12
+	export SCANNER_ATTENTION_REASON="same_unresolved_thread_fingerprint"
+	define_helpers_under_test || {
+		teardown_test_env
+		return 0
+	}
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		local pr_number="$1"
+		local repo_slug="$2"
+		local linked_issue="$3"
+		local route_kind="$4"
+		printf '%s|%s|%s|%s\n' "$pr_number" "$repo_slug" "$linked_issue" "$route_kind" >>"$route_log"
+		return 0
+	}
+	_pulse_merge_dismiss_coderabbit_nits() {
+		return 1
+	}
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" || true
+	if grep -q '^77|owner/repo|42|review$' "$route_log" &&
+		grep -q 'same unresolved thread fingerprint exhausted bounded response remediation' "$LOGFILE"; then
+		print_result "same-fingerprint response exhaustion routes through trust-gated fix worker" 0
+	else
+		print_result "same-fingerprint response exhaustion routes through trust-gated fix worker" 1 \
+			"route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_changes_requested_hard_dispatch_failure_still_routes() {
 	setup_test_env
 	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
@@ -691,6 +740,7 @@ main() {
 	test_changes_requested_active_remediation_preserves_pr_without_routing
 	test_changes_requested_converged_remediation_exposes_repair_only_mode
 	test_changes_requested_terminal_attention_preserves_pr_without_routing
+	test_changes_requested_repeat_exhaustion_routes_through_fix_worker
 	test_changes_requested_hard_dispatch_failure_still_routes
 	test_changes_requested_skips_remediation_for_external_contributor
 	test_changes_requested_empty_worker_label_pattern_does_not_match_every_label

@@ -144,6 +144,16 @@ mkdir -p "${work_dir}" "${tui_dry_run_work_dir}" "${desktop_dry_run_work_dir}" \
     "${launch_dir}" "${home_dir}/.local/share/opencode" \
     "${home_dir}/.config/aidevops" "${home_dir}/.config/opencode"
 make_fake_opencode "${fake_bin}"
+fake_login_shell_dir="${tmp_root}/login-shell"
+fake_login_shell="${fake_login_shell_dir}/bash"
+fake_login_shell_log="${tmp_root}/fake-login-shell.log"
+mkdir -p "${fake_login_shell_dir}"
+cat >"${fake_login_shell}" <<'SH'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$*" "$PWD" >>"${FAKE_LOGIN_SHELL_LOG:?}"
+exit 0
+SH
+chmod +x "${fake_login_shell}"
 printf '{"anthropic":{}}\n' >"${home_dir}/.local/share/opencode/auth.json"
 printf '{"command":{"persistent-canary":{"template":"unsafe"}},"instructions":["persistent-canary.md"],"plugin":["file:///persistent-canary.mjs"]}\n' >"${home_dir}/.config/opencode/opencode.json"
 printf '{"initialized_repos":[{"path":"%s"}]}\n' "${launch_dir}" >"${home_dir}/.config/aidevops/repos.json"
@@ -297,6 +307,27 @@ if [[ "${tabby_output}" == *"AIDEVOPS_TABBY_SESSION_RECOVERY=1"* ]] \
     _pass "Tabby first launch enables recovery and leaves a shell open"
 else
     _fail "Tabby first-launch command unexpected: ${tabby_output}"
+fi
+
+tabby_output=$(AIDEVOPS_TABBY_LOGIN_SHELL="${fake_login_shell}" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --tabby-shell --dir "${launch_dir}" --session-id tabby-bash-only --dry-run 2>&1)
+if [[ "${tabby_output}" == *"exec ${fake_login_shell} -l"* ]] \
+    && [[ "${tabby_output}" != *"exec /bin/zsh -l"* ]]; then
+    _pass "Tabby dry-run uses the resolved Bash-only login shell"
+else
+    _fail "Tabby Bash-only dry-run command unexpected: ${tabby_output}"
+fi
+
+rm -f "${fake_login_shell_log}"
+AIDEVOPS_TABBY_LOGIN_SHELL="${fake_login_shell}" FAKE_LOGIN_SHELL_LOG="${fake_login_shell_log}" \
+    PATH="${fake_bin}:$PATH" HOME="${home_dir}" AIDEVOPS_WORK_DIR="${work_dir}" \
+    "${HELPER}" --tabby-shell --dir "${launch_dir}" --session-id tabby-bash-return >/dev/null 2>&1
+if [[ -f "${fake_login_shell_log}" ]] \
+    && grep -qF -- "-l|${launch_dir}" "${fake_login_shell_log}"; then
+    _pass "Tabby post-TUI recovery execs the resolved login shell"
+else
+    _fail "Tabby post-TUI recovery did not exec the resolved login shell"
 fi
 
 tabby_output=$(TERM_PROGRAM=Tabby TABBY_CONFIG_DIRECTORY="${tmp_root}/tabby" \

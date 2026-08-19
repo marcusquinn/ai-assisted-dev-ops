@@ -143,7 +143,6 @@ _issue_needs_consolidation() {
 	if [[ ",$issue_labels," == *",needs-consolidation,"* ]]; then
 		was_already_labeled=true
 	fi
-
 	# t2161: Defence-in-depth — if an open PR already resolves this parent
 	# (closing keyword + #N), the work is in flight. Skip consolidation
 	# regardless of substantive-comment count. This catches the cascade
@@ -190,6 +189,7 @@ _issue_needs_consolidation() {
 			+ "|^<!-- stale-recovery-tick"
 			+ "|^<!-- cost-circuit-breaker:fired"
 			+ "|^<!-- triage-escalation"
+			+ "|^<!-- review-feedback-"
 			+ "|CLAIM_RELEASED reason="
 			+ "|^(Worker failed:|## Worker Watchdog Kill)"
 			+ "|^(\\*\\*)?Stale assignment recovered"

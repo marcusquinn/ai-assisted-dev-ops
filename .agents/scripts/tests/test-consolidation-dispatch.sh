@@ -98,6 +98,14 @@ issue-view)
 	title) printf '%s\n' "${GH_ISSUE_VIEW_TITLE:-Parent Title}" ;;
 	body) printf '%s\n' "${GH_ISSUE_VIEW_BODY:-Parent body}" ;;
 	labels) printf '%s\n' "${GH_ISSUE_VIEW_LABELS:-bug,tier:standard}" ;;
+	state,closedAt)
+		[[ "${GH_ISSUE_VIEW_STATE_FAIL:-0}" == "1" ]] && exit 1
+		if [[ -n "${GH_ISSUE_VIEW_STATE_JSON:-}" ]]; then
+			printf '%s\n' "$GH_ISSUE_VIEW_STATE_JSON"
+		else
+			printf '%s\n' '{"state":"CLOSED","closedAt":"2020-01-01T00:00:00Z"}'
+		fi
+		;;
 	*) printf '\n' ;;
 	esac
 	;;
@@ -209,7 +217,7 @@ teardown_gh_stub() {
 	fi
 	TEST_ROOT=""
 	GH_LOG=""
-	unset GH_ISSUE_VIEW_TITLE GH_ISSUE_VIEW_BODY GH_ISSUE_VIEW_LABELS
+	unset GH_ISSUE_VIEW_TITLE GH_ISSUE_VIEW_BODY GH_ISSUE_VIEW_LABELS GH_ISSUE_VIEW_STATE_JSON GH_ISSUE_VIEW_STATE_FAIL
 	unset GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON GH_ISSUE_CREATE_URL
 	unset GH_ISSUE_LIST_FAIL
 	unset GH_PR_LIST_RESOLVING_JSON
@@ -373,13 +381,16 @@ test_consolidation_child_exists_detects_parent_dispatch_comment_on_later_page() 
 	setup_gh_stub
 	GH_ISSUE_LIST_CHILD_JSON="[]"
 	GH_API_COMMENTS_JSON=$(jq -n '[[{"body":"old operational comment"}],[{"body":"## Issue Consolidation Dispatched\n\nA consolidation task has been filed as **#9005**."}]]')
-	export GH_ISSUE_LIST_CHILD_JSON GH_API_COMMENTS_JSON
+	# shellcheck disable=SC2089
+	GH_ISSUE_VIEW_STATE_JSON='{"state":"OPEN","closedAt":null}'
+	# shellcheck disable=SC2090
+	export GH_ISSUE_LIST_CHILD_JSON GH_API_COMMENTS_JSON GH_ISSUE_VIEW_STATE_JSON
 
 	if _consolidation_child_exists 123 "owner/repo"; then
-		print_result "_consolidation_child_exists blocks when parent dispatch marker is paginated" 0
+		print_result "_consolidation_child_exists verifies paginated marker's open child" 0
 	else
-		print_result "_consolidation_child_exists blocks when parent dispatch marker is paginated" 1 \
-			"returned non-zero despite existing parent dispatch comment"
+		print_result "_consolidation_child_exists verifies paginated marker's open child" 1 \
+			"returned non-zero despite directly verified open child"
 	fi
 
 	teardown_gh_stub
@@ -531,6 +542,16 @@ fixture_operational_review_comments() {
 [
   {"user": {"login": "maintainer-one", "type": "User"}, "created_at": "2026-07-24T10:00:00Z", "body": "<!-- triage-escalation -->\nAutomated triage escalation metadata and decision context. This operational body is intentionally long enough to clear the consolidation threshold without representing human scope discussion."},
   {"user": {"login": "maintainer-one", "type": "User"}, "created_at": "2026-07-24T10:05:00Z", "body": "## Review: Recommendation: Approve\n\nStructured maintainer review evidence. This canonical workflow body is intentionally long enough to clear the consolidation threshold without representing human scope discussion."}
+]
+JSON
+	return 0
+}
+
+fixture_review_feedback_supersession_comments() {
+	cat <<'JSON'
+[
+  {"user": {"login": "alice", "type": "User"}, "created_at": "2026-07-24T11:00:00Z", "body": "A genuine scope-changing comment with enough implementation detail to clear the configured consolidation threshold."},
+  {"user": {"login": "maintainer-one", "type": "User"}, "created_at": "2026-07-24T11:05:00Z", "body": "<!-- review-feedback-supersession-ambiguous -->\n## Possible review-feedback supersession\nThis pulse-generated operational comment is intentionally long enough to clear the consolidation threshold."}
 ]
 JSON
 	return 0
@@ -734,6 +755,126 @@ test_operational_review_comments_are_filtered() {
 	else
 		print_result "two genuine human comments still trigger consolidation" 1 \
 			"_issue_needs_consolidation returned 1 for two substantive comments"
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_review_feedback_markers_are_filtered() {
+	setup_gh_stub
+	GH_ISSUE_VIEW_LABELS="bug,tier:standard,needs-consolidation"
+	GH_API_COMMENTS_JSON=$(fixture_review_feedback_supersession_comments)
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	GH_ISSUE_LIST_CHILD_CLOSED_JSON="[]"
+	export GH_ISSUE_VIEW_LABELS GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON
+
+	if _issue_needs_consolidation 30428 "marcusquinn/aidevops"; then
+		print_result "review-feedback marker does not trigger consolidation" 1 \
+			"one human comment plus operational marker met threshold=2"
+	else
+		print_result "review-feedback marker does not trigger consolidation" 0
+	fi
+
+	local substantive_json
+	substantive_json=$(_consolidation_substantive_comments 30428 "marcusquinn/aidevops")
+	if [[ "$(printf '%s' "$substantive_json" | jq -r 'length')" -eq 1 ]] &&
+		! printf '%s' "$substantive_json" | jq -e '.[].body | contains("review-feedback-supersession")' >/dev/null; then
+		print_result "review-feedback marker is excluded from consolidation body" 0
+	else
+		print_result "review-feedback marker is excluded from consolidation body" 1 \
+			"substantive_json=${substantive_json}"
+	fi
+
+	if grep -qE 'issue edit .* --remove-label needs-consolidation' "$GH_LOG" 2>/dev/null; then
+		print_result "review-feedback marker allows stale consolidation label cleanup" 0
+	else
+		print_result "review-feedback marker allows stale consolidation label cleanup" 1
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_expired_dispatch_comment_releases_parent() {
+	setup_gh_stub
+	GH_ISSUE_VIEW_LABELS="bug,tier:standard,needs-consolidation"
+	GH_API_COMMENTS_JSON=$(jq -n '[[{"body":"## Issue Consolidation Dispatched\n\nA consolidation task has been filed as **#9005**."}]]')
+	# shellcheck disable=SC2089
+	GH_ISSUE_VIEW_STATE_JSON='{"state":"CLOSED","closedAt":"2020-01-01T00:00:00Z"}'
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	GH_ISSUE_LIST_CHILD_CLOSED_JSON="[]"
+	# shellcheck disable=SC2090
+	export GH_ISSUE_VIEW_LABELS GH_API_COMMENTS_JSON GH_ISSUE_VIEW_STATE_JSON
+	export GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON
+
+	if _issue_needs_consolidation 30427 "marcusquinn/aidevops"; then
+		print_result "expired dispatch comment releases parent" 1 \
+			"historical marker still owned parent"
+	elif grep -qE 'issue edit .* --remove-label needs-consolidation' "$GH_LOG" 2>/dev/null; then
+		print_result "expired dispatch comment releases parent" 0
+	else
+		print_result "expired dispatch comment releases parent" 1 \
+			"stale label was not cleared after ownership expired"
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_dispatch_comment_keeps_open_child_owner() {
+	setup_gh_stub
+	GH_API_COMMENTS_JSON=$(jq -n '[[{"body":"## Issue Consolidation Dispatched\n\nA consolidation task has been filed as **#9005**."}]]')
+	# shellcheck disable=SC2089
+	GH_ISSUE_VIEW_STATE_JSON='{"state":"OPEN","closedAt":null}'
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	GH_ISSUE_LIST_CHILD_CLOSED_JSON="[]"
+	# shellcheck disable=SC2090
+	export GH_API_COMMENTS_JSON GH_ISSUE_VIEW_STATE_JSON GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON
+
+	if _consolidation_child_exists 30427 "marcusquinn/aidevops"; then
+		print_result "dispatch comment keeps directly verified open child owner" 0
+	else
+		print_result "dispatch comment keeps directly verified open child owner" 1
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_dispatch_comment_state_failure_fails_closed() {
+	setup_gh_stub
+	GH_API_COMMENTS_JSON=$(jq -n '[[{"body":"## Issue Consolidation Dispatched\n\nA consolidation task has been filed as **#9005**."}]]')
+	GH_ISSUE_VIEW_STATE_FAIL=1
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	GH_ISSUE_LIST_CHILD_CLOSED_JSON="[]"
+	export GH_API_COMMENTS_JSON GH_ISSUE_VIEW_STATE_FAIL GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON
+
+	if _consolidation_child_exists 30427 "marcusquinn/aidevops"; then
+		print_result "dispatch comment state uncertainty fails closed" 0
+	else
+		print_result "dispatch comment state uncertainty fails closed" 1
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_active_consolidation_lock_keeps_parent_owner() {
+	setup_gh_stub
+	GH_ISSUE_VIEW_LABELS="bug,tier:standard,needs-consolidation,consolidation-in-progress"
+	GH_API_COMMENTS_JSON="[]"
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	GH_ISSUE_LIST_CHILD_CLOSED_JSON="[]"
+	export GH_ISSUE_VIEW_LABELS GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON
+
+	if _issue_needs_consolidation 30427 "marcusquinn/aidevops"; then
+		print_result "active consolidation lock keeps parent owned" 1
+	elif grep -qE 'issue edit .* --remove-label needs-consolidation' "$GH_LOG" 2>/dev/null; then
+		print_result "active consolidation lock keeps parent owned" 1 \
+			"active ownership cleared needs-consolidation"
+	else
+		print_result "active consolidation lock keeps parent owned" 0
 	fi
 
 	teardown_gh_stub
@@ -1046,6 +1187,11 @@ main() {
 	test_stale_recovery_tick_comments_are_filtered
 	test_cost_circuit_breaker_comments_are_filtered
 	test_operational_review_comments_are_filtered
+	test_review_feedback_markers_are_filtered
+	test_expired_dispatch_comment_releases_parent
+	test_dispatch_comment_keeps_open_child_owner
+	test_dispatch_comment_state_failure_fails_closed
+	test_active_consolidation_lock_keeps_parent_owner
 	test_recently_closed_child_blocks_redispatch_within_grace
 	test_grace_zero_restores_open_only_semantics
 	test_backfill_clears_stale_label_on_consolidated_parent

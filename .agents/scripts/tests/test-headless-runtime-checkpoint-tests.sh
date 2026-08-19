@@ -453,6 +453,48 @@ test_checkpoint_terminal_telemetry_is_deferred() {
 	return 0
 }
 
+test_ready_missing_summary_preserves_in_review_handoff() {
+	local result=""
+	local transition_marker="${TEST_ROOT}/ready-missing-summary-transition"
+	rm -f "$transition_marker"
+	result=$(
+		(
+			DISPATCH_REPO_SLUG="test-owner/test-repo"
+			_HRW_TERMINAL_OUTCOME="unset"
+			_HRW_FINAL_RUNTIME_EVENT="unset"
+			_HRW_FINAL_RUNTIME_STATUS="unset"
+			_HRW_FINAL_RUNTIME_CLASSIFICATION="unset"
+			_HRW_RECOVERY_CLASSIFICATION=""
+			_worker_produced_output() { printf 'ready_missing_summary'; return 0; }
+			_hrff_resolve_release_runner_login() { printf 'worker-bot'; return 0; }
+			set_issue_status() { printf '%s\n' "$*" >"$transition_marker"; return 0; }
+			gh() {
+				printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"worker-bot"}]}'
+				return 0
+			}
+			_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
+
+			_hrw_finish_success_run "issue-99999" "${TEST_ROOT}"
+			printf 'terminal=%s|event=%s|status=%s|classification=%s\n' \
+				"$_HRW_TERMINAL_OUTCOME" "$_HRW_FINAL_RUNTIME_EVENT" \
+				"$_HRW_FINAL_RUNTIME_STATUS" "$_HRW_FINAL_RUNTIME_CLASSIFICATION"
+		)
+	)
+	local transition=""
+	[[ -f "$transition_marker" ]] && transition=$(<"$transition_marker")
+	if [[ "$transition" == *"99999 test-owner/test-repo in-review"* &&
+		"$transition" == *"--remove-label auto-dispatch"* &&
+		"$result" == *"release=worker_ready_missing_summary"* &&
+		"$result" == *"terminal=deferred|event=worker.deferred|status=checkpointed|classification=worker_ready_missing_summary"* &&
+		"$result" != *"release=worker_complete"* ]]; then
+		print_result "ready PR missing summary preserves an in-review non-dispatchable handoff" 0
+	else
+		print_result "ready PR missing summary preserves an in-review non-dispatchable handoff" 1 \
+			"result=${result} transition=${transition:-<none>}"
+	fi
+	return 0
+}
+
 test_failed_ci_ready_pr_is_durable_handoff() {
 	local pr_json result
 	pr_json='[{"number":457,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"abc123","labels":[{"name":"origin:worker"}],"statusCheckRollup":[{"name":"tests","conclusion":"FAILURE"},{"name":"tests","conclusion":"SUCCESS"}]}]'
@@ -628,6 +670,7 @@ test_pr_checkpoint_lifecycle_cases() {
 	test_failed_worker_draft_retains_claim_when_block_not_visible
 	test_protected_draft_is_not_mutated_or_completed
 	test_checkpoint_terminal_telemetry_is_deferred
+	test_ready_missing_summary_preserves_in_review_handoff
 	test_failed_ci_ready_pr_is_durable_handoff
 	test_closed_unmerged_pr_is_failed_not_completed
 	test_failed_worker_ready_pr_remains_completed_handoff

@@ -26,14 +26,14 @@ Tabby's command-line editor parses unquoted shell operators (`&&`, `;`, `>`,
 and similar) into object-valued arguments. Its PTY launcher accepts only string
 arguments, so such a saved profile can leave the Tabby renderer unresponsive.
 For a custom command containing operators, paste the complete quoted invocation
-`/bin/zsh -l -c '<command>'` into the combined command-line field. Do not paste
+`<login-shell> -l -c '<command>'` into the combined command-line field. Do not paste
 only the inner command. `tabby-helper.sh status` reports profiles containing
 non-string arguments and exits nonzero; repair them before launch.
 
 The safe generated shape is:
 
 ```yaml
-command: /bin/zsh
+command: /absolute/path/to/login-shell
 args:
   - '-l'
   - '-c'
@@ -47,7 +47,11 @@ marker as Tabby's current directory with `OSC 1337`. When Tabby restores the
 tab, the launcher validates marker ownership and permissions, isolated-storage
 containment, the session ID, original directory, and the matching SQLite row
 before running `opencode --session <id>`. Invalid markers fail closed. A normal
-OpenCode exit returns to a login zsh in the original project directory.
+OpenCode exit returns to the same resolved login shell in the original project
+directory. Resolution accepts only an absolute executable POSIX shell, prefers
+`AIDEVOPS_TABBY_LOGIN_SHELL`, the configured `SHELL`, and the account login
+shell, then uses deterministic platform fallbacks (`/bin/zsh` first on macOS,
+`/bin/bash` first elsewhere). Sync fails visibly if no safe shell is available.
 
 Tabby stores a snapshot of each recovered tab's profile command. Tabs saved
 before the managed profile migration may therefore keep launching plain
@@ -66,7 +70,7 @@ For manual one-off profiles that should run OpenCode and then leave a shell open
 use the same non-interactive login command instead of mixing `-i` and `-c`:
 
 ```yaml
-command: /bin/zsh
+command: /absolute/path/to/login-shell
 args:
   - '-l'
   - '-c'

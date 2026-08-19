@@ -76,6 +76,8 @@ PULSE_REVIEW_REMEDIATION_DEFERRED_RC=10
 PULSE_REVIEW_REMEDIATION_NO_MATCH_RC=11
 PULSE_REVIEW_REMEDIATION_MAINTAINER_ATTENTION_RC=12
 PULSE_REVIEW_REMEDIATION_RETRYABLE_FAILURE_RC=13
+PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED="repeat_exhausted"
+PULSE_MERGE_BOOL_TRUE="true"
 _PULSE_MERGE_REMEDIATION_OUTCOME=""
 PULSE_REVIEW_DECISION_CHANGES_REQUESTED="CHANGES_REQUESTED"
 PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY="ci-rebase-only"
@@ -119,6 +121,37 @@ _pulse_merge_repo_path_for_slug() {
 	return 0
 }
 
+_pulse_merge_review_thread_repeat_exhausted() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local state_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR:-${HOME}/.aidevops/.agent-workspace/pr-review-thread-response}"
+	local safe_slug=""
+	local state_file=""
+	local analysis_complete=""
+	local maintainer_attention=""
+	local blocker_reason=""
+	local key=""
+	local value=""
+
+	[[ "$repo_slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$pr_number" =~ ^[1-9][0-9]*$ ]] || return 1
+	safe_slug="${repo_slug//\//-}"
+	safe_slug="${safe_slug//:/-}"
+	state_file="${state_dir}/${safe_slug}-${pr_number}.state"
+	[[ -f "$state_file" ]] || return 1
+	while IFS='=' read -r key value; do
+		case "$key" in
+		analysis_complete) analysis_complete="$value" ;;
+		maintainer_attention) maintainer_attention="$value" ;;
+		blocker_reason) blocker_reason="$value" ;;
+		esac
+	done <"$state_file"
+	if [[ "$analysis_complete" == "$PULSE_MERGE_BOOL_TRUE" && "$maintainer_attention" == "$PULSE_MERGE_BOOL_TRUE" &&
+		"$blocker_reason" == "same_unresolved_thread_fingerprint" ]]; then
+		return 0
+	fi
+	return 1
+}
+
 _pulse_merge_dispatch_review_thread_remediation() {
 	local pr_number="$1"
 	local repo_slug="$2"
@@ -147,8 +180,13 @@ _pulse_merge_dispatch_review_thread_remediation() {
 		return 0
 	fi
 	if [[ "$scanner_rc" -eq "$PULSE_REVIEW_REMEDIATION_MAINTAINER_ATTENTION_RC" ]]; then
-		_PULSE_MERGE_REMEDIATION_OUTCOME="maintainer_attention"
-		echo "[pulse-merge] review-thread remediation reached terminal maintainer attention for PR #${pr_number} in ${repo_slug} ${reason}" >>"$LOGFILE"
+		if _pulse_merge_review_thread_repeat_exhausted "$repo_slug" "$pr_number"; then
+			_PULSE_MERGE_REMEDIATION_OUTCOME="$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED"
+			echo "[pulse-merge] review-thread remediation exhausted the same unresolved thread fingerprint for PR #${pr_number} in ${repo_slug} ${reason}" >>"$LOGFILE"
+		else
+			_PULSE_MERGE_REMEDIATION_OUTCOME="maintainer_attention"
+			echo "[pulse-merge] review-thread remediation reached terminal maintainer attention for PR #${pr_number} in ${repo_slug} ${reason}" >>"$LOGFILE"
+		fi
 		return 0
 	fi
 	if [[ "$scanner_rc" -eq "$PULSE_REVIEW_REMEDIATION_RETRYABLE_FAILURE_RC" ]]; then
@@ -364,10 +402,12 @@ _handle_changes_requested_review_gate() {
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; no matching unresolved thread remained after refresh, preserving the review block while allowing trust-gated CI-drift repair evaluation" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "maintainer_attention" ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; terminal review-thread maintainer attention pending, preserving PR" >>"$LOGFILE"
+		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED" ]]; then
+			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — same unresolved thread fingerprint exhausted bounded response remediation; applying the existing trust-gated fix-worker route" >>"$LOGFILE"
 		else
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; review-thread remediation queued" >>"$LOGFILE"
 		fi
-		return 1
+		[[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED" ]] || return 1
 	fi
 
 	# If remediation is unavailable or fails to dispatch, route worker-authored
@@ -1423,7 +1463,7 @@ _process_single_ready_pr() {
 		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — state=${pr_state:-missing} is not OPEN (GH#28279)" >>"$LOGFILE"
 		return 1
 	fi
-	if [[ "$pr_is_draft" == "true" ]]; then
+	if [[ "$pr_is_draft" == "$PULSE_MERGE_BOOL_TRUE" ]]; then
 		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — draft PR not eligible for auto-merge (GH#23525)" >>"$LOGFILE"
 		return 1
 	fi
@@ -1462,7 +1502,7 @@ _process_single_ready_pr() {
 	# discarded as CONFLICTING during their wait (previous behaviour punished
 	# maintainer review latency by throwing away worker work — see t2116
 	# post-mortem for PR #18988, #19083).
-	if [[ "$pr_mergeable" == "CONFLICTING" && "$PULSE_MERGE_CLOSE_CONFLICTING" == "true" ]]; then
+	if [[ "$pr_mergeable" == "CONFLICTING" && "$PULSE_MERGE_CLOSE_CONFLICTING" == "$PULSE_MERGE_BOOL_TRUE" ]]; then
 		if [[ "${DRY_RUN:-0}" == "1" ]]; then
 			echo "[pulse-wrapper] DRY-RUN: PR #${pr_number} in ${repo_slug} is CONFLICTING; would evaluate rebase, repair routing, or protected close" >>"$LOGFILE"
 			return 2

@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).parent.parent / ".agents" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -30,6 +31,7 @@ spec.loader.exec_module(tabby_profile_sync)
 
 # Re-import helpers directly so tests exercise the same module the script uses.
 from tabby_yaml_helpers import extract_existing_cwds  # noqa: E402
+from tabby_shell_resolver import ShellResolutionError, resolve_login_shell  # noqa: E402
 
 
 class TestTabbyProfileSync(unittest.TestCase):
@@ -354,6 +356,43 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
         self.assertNotIn("        - exec aidevops opencode --tabby-shell", profile)
         self.assertIn("    disableDynamicTitle: false", profile)
 
+    def test_generated_profile_uses_supplied_resolved_shell(self):
+        profile = tabby_profile_sync.build_profile_yaml(
+            name="repo",
+            cwd="/srv/repo",
+            tab_colour="#DA5CD3",
+            scheme={
+                "name": "test",
+                "foreground": "#ffffff",
+                "background": "#000000",
+                "cursor": "#ffffff",
+                "colors": ["#000000"],
+            },
+            group_id="group-1",
+            shell_path="/bin/bash",
+        )
+
+        self.assertIn("      command: /bin/bash", profile)
+
+    def test_missing_managed_shell_is_repaired(self):
+        original = """profiles:
+  - name: repo
+    options:
+      command: /missing/zsh
+      args:
+        - '-l'
+        - '-c'
+        - 'exec aidevops opencode --tabby-shell'
+"""
+
+        repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
+            original, shell_path="/bin/bash"
+        )
+
+        self.assertEqual(repairs, 1)
+        self.assertIn("      command: /bin/bash", repaired)
+        self.assertNotIn("/missing/zsh", repaired)
+
     def test_existing_opencode_profile_enables_dynamic_title(self):
         repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
             """profiles:
@@ -567,7 +606,73 @@ class TestProfileArgTypeValidation(unittest.TestCase):
             "site.local: non-string argument at line(s) 6, 7",
             stderr.getvalue(),
         )
-        self.assertIn("full quoted /bin/zsh -l -c", stderr.getvalue())
+        self.assertIn("full quoted <login-shell> -l -c", stderr.getvalue())
+
+    def test_missing_managed_profile_command_is_reported(self):
+        config = self._profile_config(
+            """        - '-l'
+        - '-c'
+        - 'exec aidevops opencode --tabby-shell'
+""",
+            command="/missing/zsh",
+        )
+
+        issues = tabby_profile_sync.find_profile_command_issues(config)
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].profile_name, "site.local")
+        self.assertEqual(issues[0].value, "/missing/zsh")
+
+
+class TestTabbyShellResolver(unittest.TestCase):
+    """Cross-platform shell resolution fixtures for managed Tabby profiles."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _shell(self, name: str) -> str:
+        path = self.root / name
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o700)
+        return str(path)
+
+    def test_configured_bash_wins_without_zsh(self):
+        bash_path = self._shell("bash")
+        with mock.patch.dict(
+            os.environ,
+            {"AIDEVOPS_TABBY_LOGIN_SHELL": bash_path, "SHELL": "/missing/zsh"},
+        ), mock.patch("tabby_shell_resolver._account_login_shell", return_value=""):
+            resolved = resolve_login_shell(fallback_candidates=[])
+
+        self.assertEqual(resolved, bash_path)
+
+    def test_macos_fallback_prefers_valid_zsh(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AIDEVOPS_TABBY_LOGIN_SHELL": "", "SHELL": ""},
+        ), mock.patch("tabby_shell_resolver._account_login_shell", return_value=""):
+            resolved = resolve_login_shell(
+                configured_shell="relative/zsh",
+                fallback_candidates=["/bin/zsh", "/bin/bash"],
+                platform_name="Darwin",
+                validator=lambda candidate: candidate == "/bin/zsh",
+            )
+
+        self.assertEqual(resolved, "/bin/zsh")
+
+    def test_invalid_candidates_fail_visibly(self):
+        with mock.patch.dict(
+            os.environ,
+            {"AIDEVOPS_TABBY_LOGIN_SHELL": "relative/bash", "SHELL": ""},
+        ), mock.patch("tabby_shell_resolver._account_login_shell", return_value=""):
+            with self.assertRaises(ShellResolutionError):
+                resolve_login_shell(
+                    fallback_candidates=[], validator=lambda _candidate: False
+                )
 
 
 if __name__ == "__main__":

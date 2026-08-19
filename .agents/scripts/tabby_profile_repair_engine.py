@@ -17,22 +17,25 @@ from tabby_profile_utils import (
     _line_indent_len,
     _line_is_option_key,
     _next_option_line,
+    _normalise_yaml_scalar,
     _option_key_match,
     _parse_block_args,
     _parse_inline_args,
     _tabby_autorun_env_end,
 )
+from tabby_shell_resolver import is_executable_command, resolve_login_shell
 
 
 class _ProfileRepairContext:
     """Mutable state for repairing one Tabby profile block."""
 
-    def __init__(self, lines: list[str]) -> None:
+    def __init__(self, lines: list[str], shell_path: str) -> None:
         self.lines = lines
         self.repaired: list[str] = []
         self.repairs = 0
         self.pending_command_field_indent: str | None = None
         self.index = 0
+        self.shell_path = shell_path
 
 
 def _append_direct_args(
@@ -62,10 +65,24 @@ def _repair_command_field(context: _ProfileRepairContext, line: str) -> bool:
     if _has_prior_option_key(context.repaired, indent, "command"):
         context.index = _block_end(context.lines, context.index, len(indent))
     else:
-        context.repaired.append(f"{indent}command: /bin/zsh")
+        context.repaired.append(f"{indent}command: {context.shell_path}")
         context.pending_command_field_indent = indent
         context.index += 1
     context.repairs += 1
+    return True
+
+
+def _repair_missing_command(context: _ProfileRepairContext, line: str) -> bool:
+    """Replace an invalid split command in one managed OpenCode profile."""
+    match = re.match(r"^(?P<indent>\s*)command:\s*(?P<value>.*)$", line)
+    if not match:
+        return False
+    command = _normalise_yaml_scalar(match.group("value"))
+    if is_executable_command(command):
+        return False
+    context.repaired.append(f"{match.group('indent')}command: {context.shell_path}")
+    context.repairs += 1
+    context.index += 1
     return True
 
 
@@ -153,12 +170,17 @@ def _repair_block_args(
     context.index = block_end
 
 
-def _repair_broken_opencode_launch_profile_block(config_text: str) -> tuple[str, int]:
+def _repair_broken_opencode_launch_profile_block(
+    config_text: str, shell_path: str | None = None
+) -> tuple[str, int]:
     """Repair fragile Tabby OpenCode launch profiles inside one profile block."""
-    context = _ProfileRepairContext(config_text.split("\n"))
+    shell_path = shell_path or resolve_login_shell()
+    context = _ProfileRepairContext(config_text.split("\n"), shell_path)
     while context.index < len(context.lines):
         line = context.lines[context.index]
         if _repair_command_field(context, line):
+            continue
+        if _repair_missing_command(context, line):
             continue
         if _skip_duplicate_option(context, line):
             continue

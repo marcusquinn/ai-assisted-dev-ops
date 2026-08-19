@@ -457,6 +457,8 @@ _reevaluate_simplification_labels() {
 #       (CONSOLIDATION_RECENT_CLOSE_GRACE_MIN minutes, default 30), OR
 #   (c) (t2151) the parent carries the `consolidation-in-progress` label —
 #       another pulse runner is mid-way through creating a child right now.
+#   (d) a dispatch pointer's linked child is directly verified open/recent,
+#       or GitHub cannot establish that linked child's state.
 #
 # (a) and (b) cover single-runner cascades (t1982 / t2144).
 # (c) covers the cross-runner race window between "about to create child"
@@ -481,20 +483,60 @@ _reevaluate_simplification_labels() {
 # Returns: 0 if an open-or-recently-closed child exists OR lock label is
 #          present, 1 otherwise.
 #######################################
-_consolidation_dispatch_comment_exists() {
+_consolidation_grace_cutoff() {
+	local grace_minutes="$1"
+	local cutoff_iso=""
+
+	cutoff_iso=$(date -u -d "${grace_minutes} minutes ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) || cutoff_iso=""
+	if [[ -z "$cutoff_iso" ]]; then
+		cutoff_iso=$(date -u -v-"${grace_minutes}"M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) || cutoff_iso=""
+	fi
+	[[ -n "$cutoff_iso" ]] || return 1
+	printf '%s' "$cutoff_iso"
+	return 0
+}
+
+#######################################
+_consolidation_dispatch_comment_owns_parent() {
 	local parent_num="$1"
 	local repo_slug="$2"
+	local grace_minutes="$3"
 
 	[[ -n "$parent_num" && -n "$repo_slug" ]] || return 1
 
-	local marker_count
-	marker_count=$(set -o pipefail; gh api "repos/${repo_slug}/issues/${parent_num}/comments?per_page=100" \
+	local marker_state="" marker_count=0 marker_child=""
+	marker_state=$(set -o pipefail; gh api "repos/${repo_slug}/issues/${parent_num}/comments?per_page=100" \
 		--paginate --slurp | jq -r --arg array_type "$_PTE_JSON_ARRAY_TYPE" '
 			[ (if (type == $array_type and ((.[0]? | type) == $array_type)) then .[] else . end)[]
-			| select((.body // "") | contains("## Issue Consolidation Dispatched")) ] | length
-	') || return 1
-	[[ "$marker_count" =~ ^[0-9]+$ ]] || marker_count=0
-	if [[ "$marker_count" -gt 0 ]]; then
+			| select((.body // "") | contains("## Issue Consolidation Dispatched")) ] as $markers
+			| [ $markers[]
+				| ((.body // "") | try capture("filed as \\*\\*#(?<number>[1-9][0-9]*)\\*\\*").number catch "")
+				| select(length > 0) ] as $children
+			| "\($markers | length)|\($children | last // "")"
+	') || return 0
+	marker_count="${marker_state%%|*}"
+	marker_child="${marker_state#*|}"
+	[[ "$marker_count" =~ ^[0-9]+$ ]] || return 0
+	[[ "$marker_count" -gt 0 ]] || return 1
+	[[ "$marker_child" =~ ^[1-9][0-9]*$ ]] || {
+		# A marker without a parseable child identity cannot be proven stale.
+		return 0
+	}
+
+	local child_json=""
+	child_json=$(gh issue view "$marker_child" --repo "$repo_slug" \
+		--json state,closedAt 2>/dev/null) || return 0
+	if printf '%s' "$child_json" | jq -e '.state == "OPEN"' >/dev/null 2>&1; then
+		return 0
+	fi
+	printf '%s' "$child_json" | jq -e '.state == "CLOSED" and (.closedAt | type == "string")' >/dev/null 2>&1 || return 0
+	[[ "$grace_minutes" =~ ^[0-9]+$ ]] || grace_minutes=30
+	[[ "$grace_minutes" -gt 0 ]] || return 1
+
+	local cutoff_iso=""
+	cutoff_iso=$(_consolidation_grace_cutoff "$grace_minutes") || cutoff_iso=""
+	[[ -n "$cutoff_iso" ]] || return 0
+	if printf '%s' "$child_json" | jq -e --arg cutoff "$cutoff_iso" '.closedAt > $cutoff' >/dev/null 2>&1; then
 		return 0
 	fi
 	return 1
@@ -506,13 +548,6 @@ _consolidation_child_exists() {
 	local grace_minutes="${3:-${CONSOLIDATION_RECENT_CLOSE_GRACE_MIN:-30}}"
 
 	[[ -n "$parent_num" && -n "$repo_slug" ]] || return 1
-
-	# t3565: Parent pointer comments are an idempotency signal too. Search API
-	# can time out or lag on large repos; a previously posted dispatch comment
-	# means a child was already created, so block repeat child creation.
-	if _consolidation_dispatch_comment_exists "$parent_num" "$repo_slug"; then
-		return 0
-	fi
 
 	# Fast path: any open child immediately owns the parent.
 	local open_count open_exit=0
@@ -541,27 +576,35 @@ _consolidation_child_exists() {
 	# window. grace_minutes=0 disables the window (test hook).
 	[[ "$grace_minutes" =~ ^[0-9]+$ ]] || grace_minutes=30
 	if [[ "$grace_minutes" -eq 0 ]]; then
-		return 1
+		_consolidation_dispatch_comment_owns_parent "$parent_num" "$repo_slug" "$grace_minutes"
+		return $?
 	fi
 
-	# Prefer GNU date -d (Linux, coreutils); fall back to BSD date -v (macOS).
 	local cutoff_iso=""
-	cutoff_iso=$(date -u -d "${grace_minutes} minutes ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) || cutoff_iso=""
+	cutoff_iso=$(_consolidation_grace_cutoff "$grace_minutes") || cutoff_iso=""
+	# If both date variants fail, a pointer comment still provides a direct
+	# linked-child check and fails closed if its state cannot be established.
 	if [[ -z "$cutoff_iso" ]]; then
-		cutoff_iso=$(date -u -v-"${grace_minutes}"M +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null) || cutoff_iso=""
+		_consolidation_dispatch_comment_owns_parent "$parent_num" "$repo_slug" "$grace_minutes"
+		return $?
 	fi
-	# If both date variants failed (highly unusual), fall back to open-only
-	# behaviour. This preserves pre-t2144 semantics rather than risking
-	# false negatives from a broken cutoff.
-	[[ -n "$cutoff_iso" ]] || return 1
 
-	local recent_closed_count
+	local recent_closed_count recent_closed_exit=0
 	recent_closed_count=$(gh_issue_list --repo "$repo_slug" --state closed \
 		--label "consolidation-task" \
 		--search "in:body \"Consolidation target: #${parent_num}\" closed:>${cutoff_iso}" \
-		--json number --jq 'length' --limit 5 2>/dev/null) || recent_closed_count=0
+		--json number --jq 'length' --limit 5 2>/dev/null) || recent_closed_exit=$?
+	[[ "$recent_closed_exit" -eq 0 ]] || return 0
 	[[ "$recent_closed_count" =~ ^[0-9]+$ ]] || recent_closed_count=0
-	[[ "$recent_closed_count" -gt 0 ]]
+	if [[ "$recent_closed_count" -gt 0 ]]; then
+		return 0
+	fi
+
+	# Parent pointer comments are a search-lag fallback, not permanent
+	# ownership. Resolve the linked child directly and retain ownership only
+	# while it is open/recent, or when GitHub cannot prove its state.
+	_consolidation_dispatch_comment_owns_parent "$parent_num" "$repo_slug" "$grace_minutes"
+	return $?
 }
 
 #######################################
@@ -673,6 +716,7 @@ _consolidation_substantive_comments() {
 			and (.body | test("^<!-- stale-recovery-tick") | not)
 			and (.body | test("^<!-- cost-circuit-breaker:fired") | not)
 			and (.body | test("^<!-- triage-escalation") | not)
+			and (.body | test("^<!-- review-feedback-") | not)
 			and (.body | test("CLAIM_RELEASED reason=") | not)
 			and (.body | test("^(Worker failed:|## Worker Watchdog Kill)") | not)
 			and (.body | test("^(\\*\\*)?Stale assignment recovered") | not)
