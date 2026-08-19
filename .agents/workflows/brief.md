@@ -72,9 +72,10 @@ are evidence rather than gates. Server-side checks enforce only explicit checkli
 contract, and dispatch-path invariants; composition owns the judgment.
 
 For long-running shell/framework tasks, add a recoverability checkpoint to the
-brief: run the focused test(s), create a WIP commit before broad lint/release
-gates, then continue verification. This prevents runtime/watchdog failures from
-leaving only dirty local edits for pulse recovery.
+brief: exercise the affected production-facing path or run the narrowest
+applicable existing check, create a WIP commit before broad lint/release gates,
+then continue verification. This prevents runtime/watchdog failures from leaving
+only dirty local edits for pulse recovery.
 
 If a safety fuse can trip, also include the Safety-Stop Recovery fields from
 `reference/safety-stop-recovery.md`. A fuse never fulfils acceptance criteria:
@@ -224,7 +225,9 @@ A dispatch comment that says "implement issue #42" teaches nothing. One that say
 At implementation review, record material deviations from the brief and verification gaps in the existing PR summary/review evidence. Routine work that followed the brief does not require a separate implementation-notes artifact.
 
 Verification commands must also mentor efficient execution. Brief ordinary code
-work with focused tests plus changed-file or affected-package lint/typecheck.
+work with the affected production-facing path plus applicable existing checks
+and changed-file or affected-package lint/typecheck. Add focused test coverage
+only under `reference/ci-gate-policy.md`.
 Include a full-repository gate only when named blast-radius evidence requires it
 (shared config, root tooling, dependency graph, cross-package contracts, or
 release infrastructure); never use `linters-local.sh --full` as generic

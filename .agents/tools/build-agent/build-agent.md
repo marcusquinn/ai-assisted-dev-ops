@@ -21,7 +21,7 @@ mode: subagent
 - **Slash command**: `/build-agent {name} {kind} [category]` → `.agents/scripts/commands/build-agent.md` (interactive harness for creating new agents)
 - **Related**: `@code-standards`, `.agents/aidevops/architecture.md`, `tools/browser/browser-automation.md`
 - **After creating/promoting**: `~/.aidevops/agents/scripts/subagent-index-helper.sh generate`
-- **Testing**: `agent-test-helper.sh run my-tests` or `claude -p "Test query"`
+- **Behavioural verification when material**: reuse an existing `agent-test-helper.sh` suite or a bounded live prompt; do not create a suite by default
 - **Workload tier**: Author `simple`, `standard`, or `thinking`; the preference-ordered runtime mapping in `tools/context/model-routing.md` selects concrete providers/models.
 
 <!-- AI-CONTEXT-END -->
@@ -159,7 +159,7 @@ Every loaded token needs decision value, but size reduction is not the success c
 
 **Tighten only with semantic equivalence:** verbose phrasing → direct rule; narrative → preserve the protected rationale and its task/issue evidence; repeated examples → keep an authoritative example only when every boundary remains covered; multi-sentence rule → one sentence only when scope and conditions survive. **Preserve:** task IDs (`tNNN`), issue refs (`GH#NNN`), all rules/constraints, interfaces, triggers, file paths, command examples, code blocks, safety-critical detail.
 
-Verify the target with Agent Testing/comprehension scenarios and domain-specific checks. Historical evidence: the t1679 `build.txt` pass reduced bytes by 63% while its 25 protected patterns remained covered; that result is not blanket permission to remove untested prose. See `agent-review.md` and `tools/code-review/code-simplifier.md` "Instruction surfaces".
+Verify the target through its delivered runtime context, applicable existing checks, and existing relevant Agent Testing/comprehension scenarios. Add or expand scenarios only when requested, required by the target contract, or when they are the lowest-cost way to resolve material delivery uncertainty; do not create a harness by default. Historical evidence: the t1679 `build.txt` pass reduced bytes by 63% while its 25 protected patterns remained covered; that result is not blanket permission to remove unverified prose. See `agent-review.md` and `tools/code-review/code-simplifier.md` "Instruction surfaces".
 
 ## Code Examples: When to Include
 

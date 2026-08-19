@@ -82,7 +82,7 @@ See `aidevops/extension.md`:
 2. Add config template
 3. Create agent documentation
 4. Update service index
-5. Test thoroughly
+5. Verify through the shipped framework path and applicable existing checks; do not add tests or test infrastructure by default (`reference/ci-gate-policy.md`)
 
 ## OpenCode Plugins
 

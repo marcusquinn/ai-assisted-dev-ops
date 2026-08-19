@@ -86,7 +86,7 @@ Example report structure:
 
 | Metric | Minimum | Target |
 |--------|---------|--------|
-| Code Coverage | 80% | 90% |
+| Code Coverage | Repository-configured threshold, if any | Project-defined target |
 | Bugs | 0 major | 0 total |
 | Vulnerabilities | 0 high | 0 total |
 | Code Smells | <10 major | <5 total |

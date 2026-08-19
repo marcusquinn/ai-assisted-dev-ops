@@ -15,7 +15,8 @@ Use this file as a candidate pool during `/define` for **bugfix** tasks. Reuse s
 Apply unless overridden:
 
 - Preserve all behavior except the bug.
-- Add a regression test (fail before, pass after).
+- Reproduce and verify the failure through the existing production-facing path, logs, or framework diagnostics.
+- Add a focused regression test only when explicitly requested or when it is the lowest-cost way to resolve material uncertainty; see `reference/ci-gate-policy.md`.
 - Prefer root-cause fix over symptom suppression.
 - No scope creep — fix the reported bug only.
 

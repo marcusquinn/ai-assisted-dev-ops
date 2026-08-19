@@ -72,7 +72,7 @@ Every finding/task that targets `tier:simple` MUST use one of these contracts.
 2. **Preserve indentation**: Copy whitespace exactly. Tab/space mismatch causes Edit tool failures.
 3. **One action per block**: Don't bundle unrelated changes into one contract. Write a separate replacement, full-content, or exact-transform block for each action.
 4. **New files**: Provide complete file content, not a skeleton. Include imports, function signatures, and all boilerplate.
-5. **Verification must be automated**: `grep`, `shellcheck`, `test -f`, `jq .`, etc. Never "verify visually" or "check manually".
+5. **Verification must be concrete and proportional**: Prefer an existing deterministic command such as `grep`, `shellcheck`, `test -f`, or `jq .`. For UI or user workflows, evidence from the real rendered/product path may be visual or manual. Never create a harness merely to automate a simple task.
 6. **Done When is mandatory**: End every issue body with `### Done When` containing a concrete check (e.g., `shellcheck {file}` exits 0, PR merged, issue closed). Without this, a worker may stop after applying the edit without completing the delivery lifecycle.
 7. **No consequence laundering**: Exact text does not make a trust-boundary,
    destructive, irreversible, or authority-gated change simple. Use the canonical

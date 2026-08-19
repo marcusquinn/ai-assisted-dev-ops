@@ -68,8 +68,8 @@ for topic in ["AI", "ML", "DL"]:
 parallel for item in items:              # fan-out
   session "Process" context: item
 
-loop until **all tests pass** (max: 10):
-  session "Fix failing tests"
+loop until **requested behaviour works and existing required checks pass** (max: 10):
+  session "Exercise the normal product path, inspect logs, and fix the next evidenced failure"
 
 loop while **there are items to process** (max: 50):
   session "Process next item"
@@ -149,17 +149,18 @@ agent developer:
 
 loop until **task is complete** (max: 50):
   session: developer
-    prompt: "Implement the feature, run tests, fix issues"
+    prompt: "Implement the feature incrementally, verify it through the normal product path, and fix evidenced issues"
 
 parallel:
   lint = session "Run linters and fix issues"
   types = session "Check types and fix issues"
-  tests = session "Run tests and fix failures"
+  runtime = session "Exercise the affected product path and inspect standard logs"
+  tests = session "Run applicable existing required tests and fix failures"
 
 if **any checks failed**:
   loop until **all checks pass** (max: 5):
     session "Fix remaining issues"
-      context: { lint, types, tests }
+      context: { lint, types, runtime, tests }
 ```
 
 ## Related

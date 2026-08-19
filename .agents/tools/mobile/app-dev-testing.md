@@ -21,6 +21,7 @@ tools:
 ## Quick Reference
 
 - **Levels**: Unit → Integration → E2E → Visual → Accessibility → Performance
+- **Routine-development default**: real app on the simulator/device → platform/app logs and crash output → existing configured checks. The levels below are a selection guide, not a mandate to create suites or mocks.
 - **Tool decision**:
 
 ```text
@@ -36,11 +37,13 @@ Mobile web layout?         -> playwright-emulation (device presets, touch)
 
 ## Testing Strategy
 
-**Unit**: Expo → Jest + React Native Testing Library. Swift → XCTest (`xcodebuild-mcp test_sim`). Cover: business logic, data transforms, state management.
+Use only layers already configured or explicitly requested. For ordinary feature/fix work, exercise the affected flow in the running app first and inspect Metro/Xcode/device logs. Do not install a runner, create a mock server, or add Maestro/E2E infrastructure without user approval.
 
-**Integration**: API clients (mock servers), navigation flows, state persistence, notification handling.
+**Unit (when an existing suite applies)**: Expo → Jest + React Native Testing Library. Swift → XCTest (`xcodebuild-mcp test_sim`). Focus on business logic, data transforms, or state management only when a test is the lowest-cost evidence.
 
-**E2E (Maestro)**:
+**Integration (when already configured or explicitly requested)**: API clients, navigation flows, state persistence, notification handling. Prefer the real development backend; mock servers are new test infrastructure and require approval.
+
+**E2E (existing Maestro flows or explicit setup request)**:
 
 ```yaml
 appId: com.example.myapp
@@ -71,7 +74,7 @@ serve-sim button home                  # Hardware button control
 serve-sim --kill                       # Cleanup helper(s)
 ```
 
-**Visual**: Screenshots at key states via `ios-simulator-mcp` or `agent-device`; use `serve-sim` when the user or agent needs a live browser-visible Apple Simulator stream. Test light/dark modes across: iPhone SE, iPhone 16, iPhone 16 Pro Max, iPad.
+**Visual**: Screenshots at affected states via `ios-simulator-mcp` or `agent-device`; use `serve-sim` when the user or agent needs a live browser-visible Apple Simulator stream. Use one representative device by default; broaden to the full device/theme matrix for responsive changes or submission readiness.
 
 **Accessibility**: `agent-device snapshot` — inspect tree. Verify labels, VoiceOver/TalkBack, colour contrast, Dynamic Type. See `tools/accessibility/accessibility-audit.md`.
 

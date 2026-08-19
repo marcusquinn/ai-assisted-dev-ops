@@ -306,7 +306,7 @@ override = `tier:thinking`.
 
 - **Callers/readers:** {paths and reference flow, or evidence-backed N/A}
 - **Writers/mutation paths:** {every known write path, or evidence-backed N/A}
-- **Tests/fixtures:** {tests, fixtures, and mocks that encode the behavior}
+- **Existing verification/tests:** {production path, logs, framework checks, and any existing tests that encode the behaviour; evidence-backed N/A when none applies}
 - **Schemas/config:** {schema, config, serialization, or evidence-backed N/A}
 - **Generated/deployed mirrors:** {generated output, deployed copy, or evidence-backed N/A}
 - **Migrations/backfills:** {ordering and backfill paths, or evidence-backed N/A}
@@ -332,7 +332,7 @@ override = `tier:thinking`.
 ```
 
 2. {Next step with code skeleton if applicable}
-3. {Final step — e.g., "Run `shellcheck` on new file, verify hook fires with test harness"}
+3. {Final step — e.g., "Run `shellcheck` on the new file, then exercise the hook through its normal invocation path and inspect its standard log"}
 
 ### Hazards and Compatibility
 
@@ -387,8 +387,11 @@ from `_parse_phases_section` — then add new logic to the slimmed parent functi
 
 ### Verification Before Dispatch
 
-<!-- CI gate policy: prefer fast required develop gates (format, lint,
-     typecheck, unit tests). Mark E2E/visual/performance checks as advisory
+<!-- CI gate policy: prioritise time-to-functional and start with the existing
+     production-facing path, standard logs, and framework diagnostics. Run fast
+     required develop gates (format, lint, typecheck, configured unit tests), but
+     do not add tests by default or create test infrastructure without approval.
+     Mark E2E/visual/performance checks as advisory
      unless this task targets staging/release promotion or directly changes a
      critical tested path. Advisory failures should become follow-up issues with
      evidence, not hidden blockers. See `.agents/reference/ci-gate-policy.md`.
@@ -405,7 +408,7 @@ from `_parse_phases_section` — then add new logic to the slimmed parent functi
       a follow-up. -->
 
 ```bash
-{Focused test(s) covering the changed behaviour}
+{Production-facing reproduction/runtime/log command, or an existing focused test when applicable}
 {Changed-file or affected-package lint/typecheck/build; for aidevops use .agents/scripts/linters-local.sh --changed}
 ```
 
@@ -417,12 +420,12 @@ from `_parse_phases_section` — then add new logic to the slimmed parent functi
 ### Recoverability Checkpoint
 
 <!-- REQUIRED for long-running shell/framework tasks, dispatch-path changes, or
-     tasks touching 4+ files. After focused tests pass, commit a WIP checkpoint
+     tasks touching 4+ files. After focused verification passes, commit a WIP checkpoint
      before broad lint/release gates so watchdog/runtime failures leave a
      recoverable branch instead of only dirty runner-local edits. Delete for
      small single-pass tasks. -->
 
-- [ ] Focused tests pass: `{command}`
+- [ ] Focused functional verification passes: `{command}`
 - [ ] WIP commit created before broad gates: `wip: {short description}`
 - [ ] Evidence-triggered broad verification then run: `{command or not required — reason}`
 
@@ -519,9 +522,9 @@ and one explicit negative/regression guarantee.
     prompt: "{what the human should check}"
   ```
 
-- [ ] Task-relevant tests pass (`npm test -- <target>` / `bun test <target>` / project-specific affected test command)
+- [ ] The affected production-facing path works; applicable existing or repository-required tests pass (`npm test -- <target>` / `bun test <target>` / project-specific affected test command)
 - [ ] Changed-file or affected-package lint is clean (`linters-local.sh --changed` / scoped `eslint` / `shellcheck`; React/TypeScript ESLint warnings such as `react-hooks/exhaustive-deps` count as actionable even when lint exits `0`)
-- [ ] UI changes cite the checked/updated DESIGN.md source or a follow-up issue; layout changes include mobile/tablet/desktop responsive evidence and named accessibility checks.
+- [ ] UI changes cite the checked/updated DESIGN.md source or a follow-up issue; layout changes include desktop plus one relevant mobile viewport by default, with broader breakpoint and named accessibility evidence when acceptance criteria or risk requires it.
 - [ ] Qlty smells resolved (for `#simplification` tasks): `~/.qlty/bin/qlty smells --all 2>&1 | grep '<target_file>' | grep -c . | grep -q '^0$'`
 
   ```yaml
@@ -553,7 +556,7 @@ and one explicit negative/regression guarantee.
 
 - `path/to/file.ts:45` — {why relevant, what to change}
 - `path/to/related.ts` — {dependency or pattern to follow}
-- `path/to/test.test.ts` — {existing test patterns}
+- `path/to/test.test.ts` — {existing test pattern when relevant; omit rather than invent}
 
 ## Dependencies
 
@@ -567,7 +570,7 @@ and one explicit negative/regression guarantee.
 |-------|------|-------|
 | Research/read | {Xm} | {what to read} |
 | Implementation | {Xh} | {scope} |
-| Testing | {Xm} | {test strategy} |
+| Verification | {Xm} | {production-facing evidence and applicable existing checks} |
 | **Total** | **{Xh}** | |
 
 <!-- READING BUDGET CHECK (GH#18458):

@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # =============================================================================
-# Testing Setup Helper - Per-repo testing infrastructure detection and config
+# Testing Setup Helper - Existing testing-infrastructure inventory and verification
 # =============================================================================
-# Discovers existing test infrastructure, compares against bundle-recommended
-# quality gates, and generates configuration to fill gaps.
+# Discovers existing test infrastructure and classifies bundle quality-gate
+# candidates. It never installs runners or generates infrastructure.
 #
 # Usage:
 #   testing-setup-helper.sh discover [project-path]    Scan for existing test infra
-#   testing-setup-helper.sh gaps [project-path]        Show gaps vs bundle gates
+#   testing-setup-helper.sh gaps [project-path]        Classify bundle candidates
 #   testing-setup-helper.sh status [project-path]      Show current test health
-#   testing-setup-helper.sh verify [project-path]      Run configured tests
+#   testing-setup-helper.sh verify [project-path]      Run discovered existing checks
 #   testing-setup-helper.sh help                       Show this help
 #
 # Integration with /testing-setup command:
@@ -545,17 +545,14 @@ cmd_gaps() {
 	# Resolve bundle
 	local bundle_json
 	bundle_json=$("${SCRIPT_DIR}/bundle-helper.sh" resolve "$project_dir" 2>/dev/null) || {
-		print_warning "Could not resolve bundle, using cli-tool fallback"
-		bundle_json=$("${SCRIPT_DIR}/bundle-helper.sh" load cli-tool 2>/dev/null) || {
-			print_error "Cannot load any bundle"
-			return 1
-		}
+		print_error "Could not resolve project bundle; candidate analysis unavailable"
+		return 1
 	}
 
 	local bundle_name
 	bundle_name=$(echo "$bundle_json" | jq -r '.name // "unknown"')
 
-	# Get recommended quality gates
+	# Get report-only bundle candidates. These never imply installation.
 	local quality_gates skip_gates
 	quality_gates=$(echo "$bundle_json" | jq -r '.quality_gates // []')
 	skip_gates=$(echo "$bundle_json" | jq -r '.skip_gates // []')
@@ -576,8 +573,9 @@ cmd_gaps() {
 	while IFS= read -r gate; do
 		[[ -z "$gate" ]] && continue
 
-		# Check if gate is in skip list
-		if echo "$skip_gates" | jq -e --arg g "$gate" 'index($g) != null' >/dev/null 2>&1; then
+		# A composed quality gate overrides a skip declaration from another bundle.
+		if echo "$skip_gates" | jq -e --arg g "$gate" 'index($g) != null' >/dev/null 2>&1 &&
+			! echo "$quality_gates" | jq -e --arg g "$gate" 'index($g) != null' >/dev/null 2>&1; then
 			skipped+=("$gate")
 			continue
 		fi
@@ -619,9 +617,12 @@ cmd_gaps() {
 		'{
 			bundle: $bundle,
 			project_path: $path,
+			candidate_only: true,
+			action: "report_only",
 			ready: $ready,
 			needs_attention: $needs_attention,
 			missing: $missing,
+			unconfigured_candidates: $missing,
 			skipped_by_bundle: $skipped
 		}'
 
@@ -651,7 +652,7 @@ cmd_status() {
 		echo "  Bundle:     ${bundle}"
 		echo "  Configured: ${configured_at}"
 	else
-		echo "  Config:     not found (run /testing-setup to configure)"
+		echo "  Config:     not found (optional; no action implied)"
 	fi
 
 	echo ""
@@ -726,14 +727,14 @@ _verify_runner() {
 		fi
 		;;
 	jest)
-		if (cd "$project_dir" && npx jest --passWithNoTests --silent 2>/dev/null); then
+		if (cd "$project_dir" && npx --no-install jest --passWithNoTests --silent 2>/dev/null); then
 			echo "pass:jest"
 		else
 			echo "fail:jest"
 		fi
 		;;
 	vitest)
-		if (cd "$project_dir" && npx vitest run --silent 2>/dev/null); then
+		if (cd "$project_dir" && npx --no-install vitest run --silent 2>/dev/null); then
 			echo "pass:vitest"
 		else
 			echo "fail:vitest"
@@ -798,21 +799,21 @@ _verify_linter() {
 
 	case "$linter_name" in
 	eslint)
-		if (cd "$project_dir" && npx eslint . --quiet 2>/dev/null); then
+		if (cd "$project_dir" && npx --no-install eslint . --quiet 2>/dev/null); then
 			echo "pass:eslint"
 		else
 			echo "fail:eslint"
 		fi
 		;;
 	prettier)
-		if (cd "$project_dir" && npx prettier --check . 2>/dev/null); then
+		if (cd "$project_dir" && npx --no-install prettier --check . 2>/dev/null); then
 			echo "pass:prettier"
 		else
 			echo "fail:prettier"
 		fi
 		;;
 	typescript-check)
-		if (cd "$project_dir" && npx tsc --noEmit 2>/dev/null); then
+		if (cd "$project_dir" && npx --no-install tsc --noEmit 2>/dev/null); then
 			echo "pass:typescript-check"
 		else
 			echo "fail:typescript-check"
@@ -1047,16 +1048,16 @@ cmd_verify() {
 
 cmd_help() {
 	cat <<'HELP'
-Testing Setup Helper - Per-repo testing infrastructure detection and config
+Testing Setup Helper - Existing testing-infrastructure inventory and verification
 
 Usage:
   testing-setup-helper.sh <command> [project-path]
 
 Commands:
   discover [path]    Scan project for existing test infrastructure (JSON output)
-  gaps [path]        Compare discovered infra against bundle quality gates (JSON)
+  gaps [path]        Classify bundle quality-gate candidates (report-only JSON)
   status [path]      Show human-readable test infrastructure status
-  verify [path]      Run all discovered test runners and linters
+  verify [path]      Explicitly run discovered existing test runners and linters
   help               Show this help
 
 Options:
@@ -1069,9 +1070,9 @@ Examples:
   testing-setup-helper.sh verify ~/Git/my-project
 
 Integration:
-  This helper is used by the /testing-setup command for the interactive
-  onboarding flow. Use the command for guided setup, or this helper for
-  scripted/CI usage.
+  This helper is used by the explicitly invoked /testing-setup workflow. It
+  inventories and verifies existing tooling; candidate output never authorises
+  installation or configuration.
 
 Related:
   /testing-setup                    Interactive setup command

@@ -6,7 +6,7 @@
 # =============================================================================
 # Gate orchestration extracted from linters-local.sh (GH#21418).
 # Resolves the project bundle and dispatches all quality gates in order,
-# honouring bundle skip_gates overrides.
+# honouring effective bundle skips while required quality_gates take precedence.
 #
 # Usage: source "${SCRIPT_DIR}/linters-local-gates.sh"
 #
@@ -42,8 +42,8 @@ source "${SCRIPT_DIR}/lint-file-discovery.sh"
 # Bundle-Aware Gate Filtering (t1364.6)
 # =============================================================================
 # Resolves the project bundle and checks whether a gate should be skipped.
-# Bundle skip_gates override: if a bundle says skip a gate, it's skipped.
-# BUNDLE_SKIP_GATES is populated once in main() and checked per gate.
+# A composed quality_gate overrides a skip declaration from another bundle.
+# BUNDLE_SKIP_GATES contains only effective skips and is checked per gate.
 
 BUNDLE_SKIP_GATES=""
 LINTERS_LOCAL_GATES_RAN=""
@@ -402,7 +402,7 @@ load_bundle_gates() {
 		return 0
 	fi
 
-	BUNDLE_SKIP_GATES=$(echo "$bundle_json" | jq -r '.skip_gates[]? // empty' 2>/dev/null) || true
+	BUNDLE_SKIP_GATES=$(echo "$bundle_json" | jq -r '((.skip_gates // []) - (.quality_gates // []))[]? // empty' 2>/dev/null) || true
 
 	local bundle_name
 	bundle_name=$(echo "$bundle_json" | jq -r '.name // "unknown"' 2>/dev/null) || true

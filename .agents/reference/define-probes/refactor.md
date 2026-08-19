@@ -10,7 +10,7 @@ mode: subagent
 
 Use this file as a candidate pool during `/define` for **refactor** tasks. Ask only when an unanswered point can materially change scope, behaviour-preservation boundaries, migration risk, or acceptance criteria.
 
-**Defaults** (apply unless overridden): zero behaviour changes, all existing tests pass unchanged, no new dependencies, improve one primary goal (readability/maintainability/performance), no tests → add before refactoring.
+**Defaults** (apply unless overridden): zero behaviour changes, applicable existing tests pass unchanged, no new dependencies, improve one primary goal (readability/maintainability/performance). Do not create tests merely because none exist; apply `reference/ci-gate-policy.md`.
 
 ## Decision-Relevant Candidates
 
@@ -30,10 +30,11 @@ Use this file as a candidate pool during `/define` for **refactor** tasks. Ask o
 ## Optional Probes
 
 **Behaviour Preservation** — How will you verify that behaviour hasn't changed?
-1. Existing tests cover it — they must all pass (recommended)
-2. No tests exist — I'll add them before refactoring
-3. Manual testing against specific scenarios
-4. Type system / compiler will catch regressions
+1. Applicable existing or repository-required tests cover it — they pass unchanged (recommended)
+2. Exercise the existing production-facing path against representative scenarios
+3. Compare standard logs, outputs, or observable behaviour before and after
+4. Type system / compiler plus existing required checks
+5. Add focused coverage only if requested, required by acceptance/repository policy, or the lowest-cost way to resolve a material uncertainty
 
 **Outside View** — Refactors of this scope typically follow [detected pattern]. Should this refactor:
 1. Follow the same approach (recommended — consistency)
@@ -41,7 +42,7 @@ Use this file as a candidate pool during `/define` for **refactor** tasks. Ask o
 3. I'm not sure what the existing pattern is
 
 **Pre-mortem** — Refactor is merged and something breaks in production. Most likely cause?
-1. A code path that wasn't covered by tests (recommended)
+1. A code path that was not exercised by the chosen evidence (recommended)
 2. Subtle behaviour change in edge cases
 3. Performance regression under load
 4. Downstream consumers that depend on internal implementation details
@@ -59,7 +60,7 @@ Use this file as a candidate pool during `/define` for **refactor** tasks. Ask o
 ## Sufficiency Test
 
 Before generating the brief, confirm you can answer:
-- What tests exist for the code being refactored?
+- What existing runtime evidence and checks cover the code being refactored?
 - What's the public API that must not change?
 - What's the primary metric that improves (readability/performance/extensibility)?
 - What would a reviewer check to verify behaviour preservation?

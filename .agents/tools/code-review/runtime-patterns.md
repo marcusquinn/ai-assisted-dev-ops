@@ -202,11 +202,13 @@ async function waitForQuiescence(
 }
 ```
 
-## Runtime Testing Signals
+## Runtime Evidence Signals
 
-These patterns require runtime testing — static analysis cannot verify them:
+These patterns require production-like runtime evidence because static analysis
+cannot verify them. Exercise an existing app, staging, sandbox, or integration
+path; do not create a harness unless separately justified and approved.
 
-| Pattern | Risk | Required testing |
+| Pattern | Risk | Required runtime evidence |
 |---------|------|-----------------|
 | `switch`/`case` on status/state | Missing entry states | Trigger each state |
 | `while true` / unbounded loops | Infinite loop | Verify termination |
@@ -214,6 +216,6 @@ These patterns require runtime testing — static analysis cannot verify them:
 | Payment/checkout flows | Duplicate charge | Full payment flow |
 | Auth token refresh | Race condition | Concurrent requests |
 | Webhook handlers | Missing event types | Send each event type |
-| Database migrations | Irreversible | Test on staging first |
+| Database migrations | Irreversible | Exercise on staging first |
 
 **Prevention rule:** Before implementing any of these patterns, enumerate the complete state space — every possible state, event, and status value including errors. Implement handlers for all of them before writing the happy path.

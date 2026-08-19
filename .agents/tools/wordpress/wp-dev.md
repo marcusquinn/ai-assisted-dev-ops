@@ -53,6 +53,10 @@ Requires WordPress Abilities API plugin. Repo: `~/Git/wordpress/mcp-adapter`.
 
 ## Testing Environments
 
+Use an existing selected environment for routine development. The options below
+are references, not setup defaults; installing or configuring a new environment,
+runner, or suite requires an explicit request.
+
 **Playground** (instant, no Docker, ephemeral): `npx @wp-playground/cli server --port=8888 --blueprint=blueprint.json`. Blueprint steps: `defineWpConfigConsts`, `installPlugin`, `enableMultisite`. [Docs](https://wordpress.github.io/wordpress-playground/blueprints). *Flaky in CI.*
 
 **LocalWP** (5-10 min, full persistence, no Docker): Sites at `~/Local Sites/`. WP-CLI: `/Applications/Local.app/Contents/Resources/extraResources/bin/wp-cli.phar`
@@ -121,6 +125,6 @@ function my_fixed_filter($value) { return $modified_value; }
 
 ## Testing
 
-**PHPUnit**: `wp-env run tests-cli phpunit` or `composer require --dev phpunit/phpunit wp-phpunit/wp-phpunit && vendor/bin/phpunit`. **E2E**: `npx playwright test` or `npx cypress run`. **Security**: `./.agents/scripts/secretlint-helper.sh scan`
+Run already configured checks when applicable: **PHPUnit** `wp-env run tests-cli phpunit` or `vendor/bin/phpunit`; **E2E** `npx --no-install playwright test` or `npx --no-install cypress run`; **Security** `./.agents/scripts/secretlint-helper.sh scan`. For routine feature/fix work, verify first through the real LocalWP/wp-env flow and `debug.log`. Do not install PHPUnit, Playwright, Cypress, or new test infrastructure without explicit user approval.
 
-**Release checklist**: single + multisite, min/latest PHP/WP, PHPUnit + E2E passing, no PHP errors/warnings in debug log, no JS console errors, activation/deactivation/uninstall tested, security + code quality passed.
+**Release checklist**: single + multisite, min/latest PHP/WP, configured/required PHPUnit and E2E checks passing, no PHP errors/warnings in debug log, no JS console errors, activation/deactivation/uninstall exercised, security + code quality passed. Do not add missing test infrastructure solely for release verification without approval.

@@ -105,7 +105,7 @@ Start: `~/.aidevops/agents/scripts/full-loop-helper.sh start "$ARGUMENTS"`. Add 
 Iterate until emitting `<promise>TASK_COMPLETE</promise>`.
 
 **Completion criteria (ALL required):**
-1. Requirements implemented; tests pass; lint/shellcheck/type-check clean. For React/TypeScript ESLint, a `0` exit with warnings is not clean; use `lint-warning-helper.sh run -- <lint command>` or an equivalent `--max-warnings=0` gate and track/fix warnings such as `react-hooks/exhaustive-deps`.
+1. Requirements implemented; applicable existing/required tests pass; lint/shellcheck/type-check clean. Do not add test code merely to satisfy this criterion; follow `reference/ci-gate-policy.md`. For React/TypeScript ESLint, a `0` exit with warnings is not clean; use `lint-warning-helper.sh run -- <lint command>` or an equivalent `--max-warnings=0` gate and track/fix warnings such as `react-hooks/exhaustive-deps`.
 2. **README gate (t099):** update if user-facing features change; skip for refactor/bugfix.
 3. Conventional commits; headless rules observed; deferred findings → tracked tasks (`findings-to-tasks-helper.sh create`).
 4. **Runtime testing gate (t1660.7):** risk-appropriate verification (see below).
@@ -132,7 +132,7 @@ ANY critical pattern → entire PR requires `runtime-verified`. Critical/high + 
 
 Do not skip linters/type-checkers. Optimise how they run:
 
-1. Inner loop: run the narrowest repo-supported check that covers changed files/packages first (for JS/TS monorepos, package filters such as `pnpm -F <package> lint`, `typecheck`, and targeted tests; otherwise changed-file or affected-package commands).
+1. Inner loop: run the narrowest repo-supported check that covers changed files/packages first (for JS/TS monorepos, package filters such as `pnpm -F <package> lint`, `typecheck`, and existing targeted tests when applicable; otherwise changed-file or affected-package commands).
 2. Preflight/PR readiness: broaden to affected packages, then full repo only when the task changes shared config, root tooling, dependency graph, or cross-package contracts.
 3. Broad root checks must be bounded and non-TUI in background/headless sessions: prefer `--ui=stream` plus explicit concurrency caps or env knobs (for example `TURBO_LINT_CONCURRENCY`, `TURBO_TYPECHECK_CONCURRENCY`).
 4. Avoid launching `format:fix && lint:fix && typecheck && test` unbounded across multiple active sessions. Stagger expensive broad gates or lower concurrency so worker throughput stays reliable without exhausting local CPU/RAM.
@@ -177,7 +177,7 @@ PR_NUMBER=$(full-loop-helper.sh commit-and-pr \
   --message "feat: description of changes" \
   --title "GH#${ISSUE_NUMBER}: description" \
   --summary "What was implemented" \
-  --testing "shellcheck clean, tests pass" \
+  --testing "requested behaviour verified through normal path; shellcheck and applicable existing tests pass" \
   --decisions "any notable trade-offs")
 ```
 

@@ -55,6 +55,14 @@ export const BUILTIN_TTSR_RULES = [
     systemPrompt: "Before ANY file modification: run pre-edit-check.sh. NEVER edit on main/master.",
   },
   {
+    id: "mission-first-verification",
+    description: "Prevent unapproved test-infrastructure scope drift",
+    pattern: "\\b(?:I'll|I will|I'm going to|Let me|Let's|Let us|We should|I plan to)\\s+(?:create|add|build|set up|implement|expand|write|introduce)\\s+(?:(?:a|an|the)\\s+)?(?:new\\s+)?(?:(?:(?:unit|integration|regression|e2e|end-to-end)\\s+)?tests?\\b|test(?:ing)?\\s+(?:harness|framework|runner|infrastructure|suite)|(?:mock|fixture)s?(?:\\s+(?:server|system|framework|layer|data))?\\b|coverage\\s+(?:gate|threshold|tool|requirement)|CI\\s+test\\s+gate|test-only\\s+(?:interface|endpoint|path|hook))",
+    correction: "New test infrastructure is permission-gated. Proceed only when the user explicitly requested or approved it; otherwise use production-facing paths, standard logs, and existing framework/test systems.",
+    severity: "warn",
+    systemPrompt: "Prioritise time-to-functional. Run existing required checks, but never add/expand tests by default. Add focused coverage only when explicitly requested, specifically required by acceptance/repository policy, or the lowest-cost way to resolve material uncertainty; prefer production paths/logs and ask before new runners, harnesses, mocks/fixtures, coverage or CI test gates, or test-only interfaces.",
+  },
+  {
     id: "shell-explicit-returns",
     description: "Shell functions must have explicit return statements",
     pattern: "(?:function\\s+\\w+|\\w+\\s*\\(\\)\\s*\\{)(?:(?!return\\s+[0-9]).){50,}\\}",

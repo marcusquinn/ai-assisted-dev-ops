@@ -31,6 +31,7 @@ tools:
 - **Subagent suites**: Set suite-level `"command": "aidevops-<name>"`; each prompt runs through `opencode run --command`. Do not use `agent` alone for a `mode: subagent` target because OpenCode falls back to its primary agent.
 - **Server mode**: `POST /session` → `POST /session/:id/message` → extract text → delete. Override host/port with `OPENCODE_HOST`/`OPENCODE_PORT`
 - **When to use**: Validate agent changes before merging, regression-test after AGENTS.md/subagent edits, compare behavior across models, smoke-test after framework updates
+- **Scope rule**: Reuse shipped/existing suites first. Create or expand a suite only when explicitly requested or when a bounded scenario is the lowest-cost way to resolve material behavioural uncertainty; this agent is not a routine post-edit requirement.
 
 <!-- AI-CONTEXT-END -->
 

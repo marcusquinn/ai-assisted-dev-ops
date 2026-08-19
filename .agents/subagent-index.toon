@@ -217,7 +217,7 @@ ip-reputation-helper.sh,IP reputation checker - multi-provider risk scoring for 
 beads-sync-helper.sh,Sync TODO.md/PLANS.md with Beads graph
 todo-ready.sh,Show tasks with no open blockers
 full-loop-helper.sh,End-to-end development loop (task to PR to deploy)
-milestone-validation-worker.sh,Milestone validation for missions — auto-detect tech stack run tests build lint and optional Playwright browser tests
+milestone-validation-worker.sh,Milestone validation for missions — exercise product paths and run configured or repository-required checks with optional existing browser tests
 session-review-helper.sh,Gather session context for review
 session-checkpoint-helper.sh,Persist session state to survive context compaction
 mail-helper.sh,TOON-based inter-agent mailbox system
@@ -245,7 +245,7 @@ yt-dlp-helper.sh,YouTube video/audio download and local file conversion
 privacy-filter-helper.sh,Privacy filter for public PR contributions
 self-improve-helper.sh,Self-improving agent system (analyze refine test pr)
 agent-test-helper.sh,Agent testing framework (run run-one compare baseline list create results)
-testing-setup-helper.sh,Per-repo testing infrastructure setup (discover gaps status verify) with bundle-aware defaults
+testing-setup-helper.sh,Existing testing-infrastructure inventory and explicit verification (discover gaps status verify); bundle gaps are report-only candidates
 cron-helper.sh,Cron job management for scheduled AI agent dispatch
 cron-dispatch.sh,Execute cron jobs via OpenCode server API
 runner-helper.sh,Named headless AI agent instances (create run status list edit logs stop destroy)

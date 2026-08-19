@@ -10,7 +10,7 @@ mode: subagent
 
 Use this file as a candidate pool during `/define` for **feature** tasks. Ask only about unanswered points whose resolution could materially change scope, architecture, trust boundaries, user-visible behaviour, or acceptance criteria.
 
-**Defaults** (apply unless overridden): minimal footprint, follow existing patterns, include tests for new behaviour, no breaking API changes.
+**Defaults** (apply unless overridden): minimal footprint, follow existing patterns, verify new behaviour through the existing production-facing path, no breaking API changes. Do not add tests by default; apply `reference/ci-gate-policy.md`.
 
 ## Sufficiency Test
 
@@ -37,7 +37,7 @@ Options: No — stateless, computed on demand (recommended) · Yes — local sto
 Options: Inferred from description (recommended) · Performance too slow for large inputs · UI confusing or hard to discover · Conflicts with existing feature
 
 **Backcasting** — Working backwards from "done", what's the last thing you'd verify?
-Options: End-to-end test passes with realistic data (recommended) · Documentation updated · Existing features still work · Specify
+Options: Feature works through the real user/API/CLI path with realistic data (recommended) · Existing required checks pass · Existing features still work · Specify
 
 **Domain Grounding** — Similar features follow [detected pattern]. Should this feature:
 Options: Follow the same pattern (recommended — consistency) · Diverge — explain why · Not sure — show me the pattern

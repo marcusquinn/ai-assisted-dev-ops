@@ -25,7 +25,7 @@ tools:
 | **Entry points** | Standalone or `milestone-validation-worker.sh --browser-qa` |
 | **Purpose** | Visual smoke QA: screenshots, broken links, console/network errors, empty/error pages |
 | **Output** | Text/JSON report plus `{output-dir}/qa-report.json` and screenshots |
-| **Prerequisites** | Node.js v18+, Playwright (`npm install playwright && npx playwright install`) |
+| **Prerequisites** | Existing Node.js v18+ and Playwright installation; if unavailable, use another existing browser path or get approval before installing |
 
 <!-- AI-CONTEXT-END -->
 

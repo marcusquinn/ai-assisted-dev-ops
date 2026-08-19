@@ -88,7 +88,7 @@ Subagents are advisory, never the active critical path. Mark each delegated prom
 - Conversation starters: `workflows/conversation-starter.md`. Implementation: `workflows/branch.md`.
 - Git safety: stash before destructive ops. NEVER auto-commit (only when user requests).
 - Context: rg/fd → Augment (semantic) → Context7 (library docs). TOON for data serialization.
-- Quality: targeted tests plus changed-file/affected-package lint (`linters-local.sh --changed`) before commit. Use full-repository gates only for evidenced shared contracts/root tooling/release infrastructure; never as generic completion proof. See `workflows/full-loop.md` and `tools/code-review/best-practices.md`.
+- Quality: production-facing behaviour/log evidence plus existing applicable checks and changed-file/affected-package lint (`linters-local.sh --changed`). Use full-repository gates only for evidenced shared contracts/root tooling/release infrastructure; never as generic completion proof. See `reference/ci-gate-policy.md` and `workflows/full-loop.md`.
 - Draft agents: `~/.aidevops/agents/draft/` with `status: draft`. See `tools/build-agent/build-agent.md`.
 - File reading: re-read only before a second edit or if another tool may have modified the file.
 - Style: clear, direct, casual-professional. Bullet points and code blocks. Write code to files directly — don't display unless asked.
@@ -104,8 +104,8 @@ Subagents are advisory, never the active critical path. Mark each delegated prom
 5. **Plan**: Create a TodoWrite checklist. Check off steps as completed. Don't end turn between steps.
 6. **Code**: Read files before editing. Small, incremental changes. Retry failed patches. Check for `.env` needs.
 7. **Debug**: Root-cause only — don't address symptoms. Use logs/print statements to inspect state.
-8. **Test**: Narrow-to-broad. Start with targeted tests and changed-file/affected-package checks. Run full-repository gates only when blast-radius evidence requires them. Add tests if codebase has them. Iterate until all required gates pass. UI changes: `workflows/ui-verification.md` (Playwright screenshots, DevTools console, accessibility). Never self-assess visual changes.
-9. **Validate**: Verify against original intent. Hierarchy: tools (tests/lint/build) → browser (UI) → primary sources → self-review → ask user.
+8. **Verify**: Time-to-functional first. Exercise the existing app/API/CLI path and inspect standard logs or framework diagnostics, then run the narrowest existing applicable checks. Run required tests but add test code only when requested, specifically required by acceptance/repository policy, or when a focused test is the lowest-cost way to resolve material uncertainty. Never create test infrastructure without user approval. Broaden checks only when blast-radius evidence requires it. UI changes: `workflows/ui-verification.md`; never self-assess visual changes.
+9. **Validate**: Verify against original intent. Hierarchy: user-visible/runtime evidence → logs/observability → existing checks/build → primary sources → self-review → ask user.
 
 ### External Content Lookup
 
@@ -130,7 +130,7 @@ Subagents are advisory, never the active critical path. Mark each delegated prom
 | Audio/voice | `content/production-audio.md` + `tools/voice/speech-to-speech.md` |
 | SEO/blog posts | `seo/` + `content/distribution-*.md` |
 | WordPress | `tools/wordpress/wp-dev.md` |
-| UI/layout/design/CSS | `tools/design/design-md.md` + `workflows/ui-verification.md` + `tools/browser/playwright-emulation.md` + `tools/browser/chrome-devtools.md` |
+| UI/layout/design/CSS | `tools/design/design-md.md` + `workflows/ui-verification.md` + `tools/ui/frontend-debugging.md`; load Playwright emulation only for an explicit or risk-justified browser matrix |
 | Design system/brand/style | `tools/design/design-md.md` + `tools/design/design-inspiration.md` + `tools/design/ui-ux-inspiration.md` + `tools/design/ui-ux-catalogue.toon` + `tools/design/brand-identity.md` |
 | Browser automation | `tools/browser/browser-automation.md` |
 | Accessibility | `tools/accessibility/accessibility-audit.md` |

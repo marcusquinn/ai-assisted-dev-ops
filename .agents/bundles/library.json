@@ -1,7 +1,7 @@
 {
   "$schema": "./schema.json",
   "name": "library",
-  "description": "Reusable libraries and packages: npm modules, Python packages, Rust crates, Go modules. Emphasises thorough testing, API design review, and documentation quality since consumers depend on stability.",
+  "description": "Reusable libraries and packages: npm modules, Python packages, Rust crates, Go modules. Emphasises stable public contracts, API design review, and documentation quality since consumers depend on compatibility.",
   "version": "1.0.0",
   "markers": [
     "package.json",

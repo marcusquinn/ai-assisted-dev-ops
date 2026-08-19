@@ -28,9 +28,9 @@ publication leaves the issue blocked and safe to retry.
 2. Brief file at `todo/tasks/{task_id}-brief.md` is MANDATORY (see `~/.aidevops/agents/templates/brief-template.md`)
 3. Brief must include: session origin, what, why, how, acceptance criteria, context
 4. Resolve the execution route before publication: implement now, create a worker-ready implementation issue and auto-dispatch it, or save a local TODO/plan for later. Creating the implementation issue is itself approval to implement; do not seek a second dispatch decision afterward.
-5. Full-loop: keep canonical repo on `main` → create/use linked worktree → implement → test → verify → commit/PR
+5. Full-loop: keep canonical repo on `main` → create/use linked worktree → implement → verify through the normal product path and applicable existing gates → commit/PR
 6. Queue: add to TODO.md for supervisor dispatch
-7. Never skip testing. Never declare "done" without verification.
+7. Never skip verification. Run applicable existing required tests, but do not add tests by default or create test infrastructure without explicit authority; see `reference/ci-gate-policy.md`.
 8. **Performance/optimization issues require evidence** (GH#17832-17835): actual measurements (timing, profiling), verified line references, and data scale assessment. "May cause O(n^2)" without data is not actionable — use the "Performance Optimization" issue template. See "Framework Rules > AI-Generated Issue Quality" above.
 
 Format: `- [ ] t001 Description @owner #tag ~4h started:ISO blocked-by:t002`

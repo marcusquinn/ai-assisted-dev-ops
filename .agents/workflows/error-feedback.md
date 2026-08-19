@@ -43,7 +43,7 @@ gh api repos/{owner}/{repo}/actions/runs --jq '.workflow_runs[:5] | .[] | "\(.na
 bash ~/.aidevops/agents/scripts/linters-local.sh           # universal quality check
 bash ~/.aidevops/agents/scripts/qlty-cli.sh fmt --all      # auto-fix all
 shellcheck script.sh                                       # bash scripts
-npx eslint . --format json                                 # JavaScript
+npx --no-install eslint . --format json                    # Existing JavaScript linter
 pylint module/ --output-format=json                        # Python
 ```
 

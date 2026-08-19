@@ -112,7 +112,8 @@ Build a REST API for todos.
 When complete:
 - All CRUD endpoints working
 - Input validation in place
-- Tests passing (coverage > 80%)
+- Direct API smoke check passes through the normal server path
+- Existing required checks pass
 - README with API docs
 - Output: <promise>COMPLETE</promise>
 ```
@@ -124,12 +125,12 @@ Break large tasks into phases, each with explicit acceptance criteria. Output `<
 ### 3. Self-Correction Loop
 
 ```text
-Implement feature X following TDD:
-1. Write failing tests
-2. Implement feature
-3. Run tests — if any fail, debug and fix
-4. Refactor if needed
-5. Repeat until all green
+Implement feature X incrementally:
+1. Make the smallest functional change
+2. Exercise it through the existing app/API/CLI path
+3. Inspect standard logs or framework diagnostics
+4. Run existing required checks; add focused coverage only if requested, required by acceptance/repository policy, or needed to resolve material uncertainty
+5. Repeat until the requested behaviour is verified
 6. Output: <promise>COMPLETE</promise>
 ```
 
@@ -193,8 +194,8 @@ session "Synthesize all reviews"
   context: { security, perf, style }
 
 # AI-evaluated loop condition
-loop until **all tests pass and coverage exceeds 80%** (max: 20):
-  session "Run tests, analyze failures, fix bugs"
+loop until **requested behaviour works and existing required checks pass** (max: 20):
+  session "Exercise the production-facing path, inspect logs, and fix the next evidenced defect"
 
 # Error recovery
 loop until **task complete** (max: 50):

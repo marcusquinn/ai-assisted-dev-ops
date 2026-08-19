@@ -98,9 +98,9 @@ This is a headless session. No user is present. No user input will arrive.
 Before `FULL_LOOP_COMPLETE`, verify:
 
 1. Requirements checklist: every requirement marked `[DONE]` or `[TODO]`; any `[TODO]` means keep working.
-2. Verification run: tests, ShellCheck on changed `.sh` files, lint/typecheck if configured, expected output files exist.
+2. Verification run: production-facing behaviour or reproduction, standard logs when available, applicable existing tests, ShellCheck on changed `.sh` files, lint/typecheck if configured, expected output files exist. Do not add tests by default; add focused coverage only when the task or acceptance/repository policy requires it or it is the lowest-cost way to resolve material uncertainty. Never create test infrastructure without explicit task authority.
 3. Generalization check: replace hardcoded values that should be parameterized.
 4. Minimal state changes: only requested files changed; no extra side effects.
 5. Commit+PR gate (GH#5317): `git status --porcelain` is empty and `gh pr list --head <current-branch-name>` returns a PR. This is the #1 worker failure mode.
 
-`FULL_LOOP_COMPLETE` is irreversible. Extra verification is cheaper than a retry cycle.
+`FULL_LOOP_COMPLETE` is irreversible. Relevant evidence is cheaper than a retry cycle; unrelated verification machinery is scope drift.

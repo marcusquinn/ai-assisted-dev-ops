@@ -44,7 +44,7 @@ gh pr list --state open --limit 5 2>/dev/null || echo "No open PRs"
 | Initial request fulfilled | Compare first message to current state | 40% |
 | TODO items completed | Count `[x]` vs `[ ]` in session scope | 20% |
 | Branch purpose achieved | Compare branch name to commits | 20% |
-| Tests passing | Run test suite | 10% |
+| Functional evidence and required checks | Inspect production-facing verification; run applicable existing checks | 10% |
 | No blocking errors | Check for unresolved issues | 10% |
 
 Output: score, completed `[x]` / outstanding `[ ]` items with blockers, scope changes.

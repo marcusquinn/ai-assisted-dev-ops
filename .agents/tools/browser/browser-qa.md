@@ -97,7 +97,7 @@ browser-qa-helper.sh screenshot --url http://localhost:3000 \
 | tablet | 768 | 1024 |
 | mobile | 375 | 667 |
 
-**Size guardrails (GH#4213):** `browser-qa-helper.sh screenshot` is the ONLY path with automatic size guardrails. Default resize target: `4000px` max dimension; Anthropic hard limit: `8000px`. All other paths (Playwright MCP `browser_screenshot`, raw Playwright code, `ui-verification.md`) have zero automatic protection — use `fullPage: false` or manually resize before sending to vision API:
+**Size guardrails (GH#4213):** `browser-qa-helper.sh screenshot` is the ONLY path with automatic size guardrails. Default resize target: `4000px` max dimension; Anthropic hard limit: `8000px`. Other paths such as Playwright MCP `browser_screenshot` or raw Playwright code have zero automatic protection — use `fullPage: false` or manually resize before sending to vision API:
 
 ```bash
 sips --resampleHeightWidthMax 1568 screenshot.png --out screenshot-resized.png  # macOS

@@ -69,9 +69,12 @@ Patterns that cause silent failures, infinite loops, and race conditions. Static
 
 **Prevention rule:** Before implementing any pattern below, enumerate the complete state space — every possible state, event, and status value including errors. Implement handlers for all of them before writing the happy path.
 
-### Runtime Testing Signals
+### Runtime Evidence Signals
 
-| Pattern | Risk | Required testing |
+Use an existing app, staging, sandbox, or integration path. These signals do not
+by themselves justify creating a new test harness.
+
+| Pattern | Risk | Required runtime evidence |
 |---------|------|-----------------|
 | `switch`/`case` on status/state | Missing entry states | Trigger each state |
 | `while true` / unbounded loops | Infinite loop | Verify termination |
@@ -79,7 +82,7 @@ Patterns that cause silent failures, infinite loops, and race conditions. Static
 | Payment/checkout flows | Duplicate charge | Full payment flow |
 | Auth token refresh | Race condition | Concurrent requests |
 | Webhook handlers | Missing event types | Send each event type |
-| Database migrations | Irreversible | Test on staging first |
+| Database migrations | Irreversible | Exercise on staging first |
 
 Full patterns and code examples: [`runtime-patterns.md`](runtime-patterns.md)
 

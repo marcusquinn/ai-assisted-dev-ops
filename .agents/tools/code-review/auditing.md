@@ -27,7 +27,7 @@ tools:
 - **Config**: `configs/code-audit-config.json`
 - **Commands**: `services` | `audit [repo]` | `report [repo] [file]` | `start-mcp [service] [port]`
 - **MCP Ports**: CodeRabbit (3003), Codacy (3004), SonarCloud (3005)
-- **Quality Gates**: 80% coverage, 0 major bugs, 0 high vulnerabilities, <3% duplication
+- **Quality Gates**: repository-configured coverage policy (if any), 0 major bugs, 0 high vulnerabilities, <3% duplication
 
 <!-- AI-CONTEXT-END -->
 
@@ -77,7 +77,7 @@ Config structure (per service): `{ "accounts": { "<account>": { "api_token": "..
 
 | Metric | Threshold | Fail Build |
 |--------|-----------|------------|
-| Code Coverage | ≥80% (target 90%) | Yes |
+| Code Coverage | Repository-configured threshold only; no aidevops default | Only when already required |
 | Major Bugs | 0 | Yes |
 | High Vulnerabilities | 0 | Yes |
 | Security Hotspots | 0 high-severity | Yes |

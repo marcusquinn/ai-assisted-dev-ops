@@ -33,15 +33,18 @@ ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add refactor/
 
 **Golden rule: Same inputs → Same outputs.** If behavior changes: split into `bugfix/`/`feature/` or document the intentional change.
 
-## Testing & Review
+## Verification & Review
 
-All existing tests must pass before and after:
+Exercise the unchanged production-facing path and run applicable existing or
+repository-required checks before and after. Do not broaden to every suite or
+add coverage unless `reference/ci-gate-policy.md` justifies it:
 
 ```bash
 npm test  # or project-specific test command
 ```
 
-**PR reviewers verify:** no behavior changes (unless documented), tests pass, no performance regression.
+**PR reviewers verify:** no behavior changes (unless documented), applicable
+checks pass, and no performance regression.
 
 ## Examples
 
@@ -55,5 +58,5 @@ refactor/consolidate-api-handlers
 refactor: extract authentication into dedicated service
 
 - Move auth logic from UserController to AuthService
-- No behavior changes; all existing tests pass
+- No behavior changes; applicable existing checks pass
 ```

@@ -341,7 +341,7 @@ _run_playwright_tests() {
 	fi
 	print_info "Running Playwright smoke tests (base URL: ${base_url})..."
 	if WP_BASE_URL="$base_url" WP_PLUGIN_SLUG="$slug" \
-		npx playwright test "$smoke_test_file" \
+		npx --no-install playwright test "$smoke_test_file" \
 		--reporter=line 2>&1; then
 		print_success "Playwright smoke tests: PASS"
 	else

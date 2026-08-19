@@ -77,7 +77,7 @@
     },
     "skip_gates": {
       "type": "array",
-      "description": "Quality gates to explicitly skip for this project type. Overrides quality_gates when a gate is irrelevant (e.g., shellcheck on a pure TypeScript project).",
+      "description": "Quality gates to explicitly skip when irrelevant to this project type (e.g., shellcheck on a pure TypeScript project). During composition, an explicit quality_gates declaration from any selected bundle takes precedence over skip_gates.",
       "items": {
         "type": "string"
       },

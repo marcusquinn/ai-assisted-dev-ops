@@ -41,13 +41,13 @@ If it can wait for the normal release cycle, use `bugfix/` instead.
 ## Workflow
 
 1. Apply the minimal fix only.
-2. Test immediately.
+2. Verify immediately through the affected production-facing path and standard logs; run applicable existing required checks.
 3. Fast-track review, or deploy directly if authorized.
 4. Merge back to `main` via PR unless the user explicitly authorizes an emergency direct release.
 
 ### After Deployment
 
-- [ ] Add regression tests
+- [ ] Add focused regression protection now when acceptance/repository policy or a named security, destructive-operation, portability, or contract risk requires it; otherwise consider it after behaviour stabilises. Do not create test infrastructure without approval
 - [ ] Document the incident
 - [ ] Review how the issue escaped
 

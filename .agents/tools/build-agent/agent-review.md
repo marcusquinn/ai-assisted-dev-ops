@@ -41,7 +41,7 @@ tools:
    - **Deterministic enforcement candidate** — syntax or policy mechanics suitable for a hook, validator, wrapper, or CI gate; keep the invariant until enforcement and delivery are verified.
 4. **Recover provenance and scan for conflicts.** Search task IDs, issue/PR context, recent file history, related surfaces, and current enforcement. Compare the assembled stack for contradictory requirements, stale paths or capabilities, shadowed canonical rules, and provider/model names used as abstract workload tiers. Record each conflict and resolution; do not silently rely on prompt order.
 5. **Choose the smallest safe treatment.** Keep, tighten, relocate, enforce, or remove. Incomplete provenance, delivery, or behavioural evidence defaults to preservation. Counts and line length identify review pressure, not a desired semantic result.
-6. **Verify the delivered behaviour.** Test the canonical source and every generated/runtime route affected. Use deterministic contract tests for structure and Agent Testing or comprehension scenarios for judgment. A smaller file or unchanged aggregate score is not proof that a protected lesson still reaches its decision point.
+6. **Verify the delivered behaviour.** Exercise the canonical source through every affected generated/runtime route and inspect the delivered context. Run applicable existing deterministic checks and existing relevant Agent Testing/comprehension scenarios. Add or expand scenarios only when requested, required by the target contract, or when they are the lowest-cost way to resolve material delivery uncertainty; never create a harness by default. A smaller file or unchanged aggregate score is not proof that a protected lesson still reaches its decision point.
 
 ## Review Checklist
 
@@ -56,7 +56,7 @@ tools:
 | 7 | **Code examples** (authoritative/working) | Keep only when authoritative; otherwise use Grep references for `"pattern"` under `.agents/scripts/` or stable section headings |
 | 8 | **AI-CONTEXT block** (standalone essentials) | Rewrite if an AI would get stuck with only this |
 | 9 | **Slash commands** | Keep as thin adapters under `scripts/commands/` or the owning domain subagent |
-| 10 | **Target-specific verification** | Test canonical semantics plus every changed delivery route |
+| 10 | **Target-specific verification** | Exercise canonical semantics through every changed delivery route; use existing checks where applicable |
 
 Before consolidating, relocating, or removing a directive, recover the protected failure/rationale from nearby task IDs, issue/PR context, and recent file history. Record its current enforcement or routing, and distinguish exact duplication from reinforcement at another decision boundary, runtime-specific variants, and similar-but-different hazards. Relocation must name the reliable trigger that delivers the lesson at its decision point. Removal requires evidence that the knowledge is obsolete or fully superseded and identifies any mechanism that preserves or enforces it.
 
@@ -85,4 +85,4 @@ When flagging code issues, use the structured categories in `tools/code-review/r
 
 ## Contributing
 
-Create proposal → edit in a linked worktree → run target-specific tests and `.agents/scripts/linters-local.sh --changed` → commit/PR. Ref: `workflows/git-workflow.md`.
+Create proposal → edit in a linked worktree → verify the delivered route and run applicable existing checks plus `.agents/scripts/linters-local.sh --changed` → commit/PR. Ref: `reference/ci-gate-policy.md`, `workflows/git-workflow.md`.

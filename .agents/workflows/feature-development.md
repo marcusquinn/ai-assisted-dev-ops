@@ -59,20 +59,23 @@ Do NOT update version numbers during development. Version bump happens after the
 - **README.md**: Update if user-facing features change
 - **Code**: Docblocks on new functions; document complex logic
 
-### 6. Test
+### 6. Verify
 
-- [ ] Feature works as specified
+- [ ] Feature works as specified through the existing user/API/CLI path
+- [ ] Standard logs, observability, or framework diagnostics show no related failure
 - [ ] Edge cases and error handling work
 - [ ] No regression in existing functionality
 - [ ] Performance acceptable
 - [ ] Accessibility requirements met (if UI)
 
 ```bash
-npm test -- <affected-test> # or the project-specific targeted test command
+# Run an existing applicable targeted test only when it adds relevant evidence
+npm test -- <affected-test>
 bash ~/.aidevops/agents/scripts/linters-local.sh --changed
 ```
 
-Broaden to affected packages next. Run a full-repository gate only when the
+Do not add tests by default or create test infrastructure without user approval;
+follow `reference/ci-gate-policy.md`. Broaden to affected packages next. Run a full-repository gate only when the
 feature changes shared config, root tooling, the dependency graph,
 cross-package contracts, or release infrastructure; record that trigger.
 
@@ -101,4 +104,4 @@ Closes #123"
 1. **TODO.md**: Move task to Done section with date
 2. **todo/PLANS.md**: Update status and outcomes (if applicable)
 3. **CHANGELOG.md**: Add entry following `workflows/changelog.md` format
-4. Targeted tests and changed-file/affected quality checks pass (`linters-local.sh --changed` for aidevops)
+4. Production-facing behaviour is verified; applicable existing tests and changed-file/affected quality checks pass (`linters-local.sh --changed` for aidevops)

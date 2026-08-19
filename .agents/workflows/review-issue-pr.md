@@ -320,7 +320,7 @@ accept one exact `APPROVE`; never mix repositories or include non-Approve target
 - **Recommendation**: APPROVE / REQUEST CHANGES / DECLINE
 - **PR disposition**: MERGE / REPAIR / REPLACE / CLOSE / NOT APPLICABLE — [owner and immediate next action]
 - **Labels**: [e.g., `tier:simple`, `bug`, `status:available`]
-- **Implementation guidance**: [key steps, test cases to add]
+- **Implementation guidance**: [key steps, production-facing verification, and any focused coverage justified by `reference/ci-gate-policy.md`]
 
 ### Dispatchability Assessment
 

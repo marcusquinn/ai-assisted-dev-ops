@@ -17,6 +17,11 @@ tools:
 
 # Extension Testing - Cross-Browser QA
 
+Use the extension's existing runner and real loaded-extension path by default.
+The runner, E2E, and CI sections below are options for an explicitly requested
+testing-infrastructure objective, not instructions to create them during routine
+extension development. See `reference/ci-gate-policy.md`.
+
 **Decision tree**:
 
 ```text
@@ -32,7 +37,7 @@ Cross-browser verification?  → Chrome + Firefox + Edge (manual or CI)
 
 ```bash
 npm run test   # Vitest (recommended with WXT)
-npx jest       # Jest alternative
+npx --no-install jest  # Existing Jest alternative
 ```
 
 ## E2E Testing (Playwright)
@@ -95,6 +100,9 @@ Firefox: load temporary add-on from `.output/firefox-mv2/` (or MV3). Edge: same 
 
 ## Cross-Browser CI
 
+Configure this only when CI test integration is explicitly requested or already
+required by repository policy.
+
 ```yaml
 name: Extension Tests
 on: [push, pull_request]
@@ -111,7 +119,7 @@ jobs:
 
 ## Pre-Submission Checklist
 
-- [ ] All unit tests pass; E2E tests pass in Chrome
+- [ ] Applicable configured/required unit and E2E checks pass; do not add a missing suite solely for submission verification
 - [ ] Manual testing complete in Firefox and Edge
 - [ ] No console errors or warnings
 - [ ] Permissions minimal and justified; CSP configured

@@ -33,16 +33,18 @@ Identify root cause before writing code. Document findings in the commit message
 - Minimal changes only — no new features, no refactoring
 - Maintain backward compatibility
 - Comment explaining *why* the fix works
-- Add regression test covering the exact failure
+- Verify the exact failure through its existing production-facing path, reproduction, logs, or framework diagnostics
+- Add focused regression coverage only when requested, required by acceptance/repository policy or a named security, destructive-operation, portability, or contract risk, or when it is the lowest-cost way to resolve material uncertainty; never invent test infrastructure without approval
 
-## 3. Test
+## 3. Verify
 
 - [ ] Bug is fixed, no regression in related functionality
-- [ ] Regression and affected-package tests and quality checks pass
-- [ ] Tested on latest and minimum supported versions
+- [ ] The real reproduction or affected product path now works and standard logs show no related failure
+- [ ] Applicable existing targeted tests and affected-package quality checks pass
+- [ ] Latest and minimum supported versions are checked when the reported failure or compatibility contract requires them
 
 ```bash
-# Project-specific regression test, then affected-package tests when needed
+# Existing project-specific check when applicable, then changed-file quality gates
 ~/.aidevops/agents/scripts/linters-local.sh --changed
 ```
 
@@ -108,6 +110,6 @@ Standard bugs use the normal worktree + PR flow via `/full-loop`.
 
 - [ ] Root cause identified and documented in commit
 - [ ] Fix is minimal and focused — no unrelated changes
-- [ ] Regression test added; targeted and affected-package tests pass
+- [ ] Reported failure is verified through the real reproduction/path; applicable existing tests pass
 - [ ] Changed-file/affected quality checks pass (`linters-local.sh --changed` for aidevops)
 - [ ] CHANGELOG updated, docs updated if user-facing

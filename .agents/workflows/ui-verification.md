@@ -21,7 +21,7 @@ tools:
 
 **Purpose**: Verify UI/layout/design changes across devices, catch browser errors, validate accessibility.
 **Trigger**: CSS, layout, responsive design, UI components, visual changes, or task descriptions containing: layout, responsive, design, UI, UX, visual, styling, CSS.
-**Principle**: Never self-assess "looks good" — use real browser verification with evidence.
+**Principle**: Never self-assess "looks good" — use the real rendered product path with existing browser/runtime helpers and evidence. Do not create a standalone Playwright script or visual-test harness for routine verification.
 
 <!-- AI-CONTEXT-END -->
 
@@ -37,40 +37,15 @@ Record the decision before screenshots: breakpoints covered, navigation orientat
 
 > **NEVER `fullPage: true`** for AI vision review — exceeds 8000px, hard-crashes session. Viewport-sized only. See `reference/screenshot-limits.md` and AGENTS.md "Screenshot Size Limits".
 
-Capture `before-` baseline before changes, `after-` after. **Responsive-critical edge cases:** also test `mobile-sm` 320x568, `mobile-landscape` 844x390, `tablet-landscape` 1194x834.
+Use the existing `browser-qa-helper.sh` or the repository's already configured browser workflow. For routine UI work, check only the affected page at desktop and one relevant mobile viewport. Capture a before baseline only when it will change the implementation/review decision. Broaden to tablet, landscape, theme, or additional edge viewports only for responsive-critical changes, new layout systems, or release readiness.
 
-```typescript
-import { chromium, devices } from 'playwright';
-import { mkdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-const artifactRoot = join(process.env.AIDEVOPS_TEMP_DIR || join(homedir(), '.aidevops', '.agent-workspace', 'tmp'), 'ui-verify');
-await mkdir(artifactRoot, { recursive: true });
-const standardDevices = [
-  { name: 'mobile-sm',  config: { viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true } },
-  { name: 'mobile',     config: devices['iPhone 14'] },           // 390x844
-  { name: 'mobile-landscape', config: { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true } },
-  { name: 'tablet',     config: devices['iPad Pro 11'] },         // 834x1194
-  { name: 'tablet-landscape', config: { viewport: { width: 1194, height: 834 }, hasTouch: true } },
-  { name: 'desktop',    config: { viewport: { width: 1280, height: 800 } } },
-  { name: 'desktop-lg', config: { viewport: { width: 1920, height: 1080 } } },
-];
-const browser = await chromium.launch();
-for (const { name, config } of standardDevices) {
-  const ctx = await browser.newContext({ ...config });
-  const page = await ctx.newPage();
-  const errors = [], failed = [];
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  page.on('requestfailed', r => failed.push({ url: r.url(), err: r.failure()?.errorText }));
-  await page.goto(targetUrl);
-  await page.waitForLoadState('networkidle');
-  await page.screenshot({ path: join(artifactRoot, `before-${name}.png`) });
-  if (errors.length) console.error(`[${name}] errors:`, errors);
-  if (failed.length) console.error(`[${name}] failed:`, failed);
-  await ctx.close();
-}
-await browser.close();
+```bash
+browser-qa-helper.sh smoke --url "$DEV_URL" --pages "$AFFECTED_PATHS"
+browser-qa-helper.sh screenshot --url "$DEV_URL" \
+  --pages "$AFFECTED_PATHS" --viewports desktop,mobile --max-dim 1568
 ```
+
+Do not turn these commands into a committed one-off script. If the helper or an existing project workflow cannot cover a material uncertainty, explain the gap before proposing new browser-test infrastructure.
 
 **With Chrome DevTools MCP:** `captureConsole({logLevel:'error'})`, `analyzeCSSCoverage({reportUnused:true})`, `monitorNetwork({filters:[...]})`.
 
@@ -78,7 +53,7 @@ await browser.close();
 
 ### 3. Accessibility Verification
 
-Not optional for UI changes.
+Always check accessibility relevant to the changed surface, using the smallest existing route that provides evidence. A full matrix is for broad component/layout changes and release readiness, not every CSS edit.
 
 ```bash
 ~/.aidevops/agents/scripts/accessibility-helper.sh audit <url>
@@ -95,13 +70,13 @@ Not optional for UI changes.
 | Touch targets | Device emulation | 2.5.8 AA |
 | Text scaling | Viewport at 200% zoom | 1.4.4 AA |
 
-**Dark mode / reduced motion:** Test `colorScheme: 'light'` and `'dark'` (screenshot each); test `reducedMotion: 'reduce'` (verify animations disabled).
+**Dark mode / reduced motion:** Check both themes when the changed surface supports or affects them. Check reduced motion when animations or transitions changed.
 
 ### 4. Report
 
 ```markdown
 ## UI Verification Report
-### Screenshots — mobile-sm/mobile/mobile-landscape/tablet/tablet-landscape/desktop/desktop-lg: [before] [after] -- <what changed>
+### Screenshots — <selected affected viewports>: [before when decision-relevant] [after] -- <what changed>
 ### Responsive Behaviour — conventions checked, devices tested, key layout/navigation/wrapping decisions, follow-up issues
 ### Browser Errors — <none or list>
 ### Accessibility — contrast pass/fail, keyboard pass/fail, axe violations
@@ -112,7 +87,7 @@ Not optional for UI changes.
 
 ## Design Principles Checklist
 
-Quality gates — not suggestions. Check during verification; report violations as `[S1/S2/S3] <principle> -- <description>`.
+Apply the principles relevant to the changed surface; report observed violations as `[S1/S2/S3] <principle> -- <description>`. Do not manufacture a broad audit for an unrelated small edit.
 
 ### Severity
 
@@ -176,11 +151,11 @@ Evaluate against `seo/mom-test-ux.md` after technical checks: Clarity (goal clea
 
 ## Quick Verification (Minimal)
 
-For small CSS tweaks: screenshot at desktop plus at least one mobile viewport when layout, spacing, typography, wrapping, or navigation can change; check console errors, contrast, paragraph width/text size/touch targets, and overflow. Full workflow for significant layout changes, new components, or responsive redesigns.
+This is the default for routine UI work: screenshot at desktop plus one mobile viewport when layout, spacing, typography, wrapping, or navigation can change; check console errors and the relevant contrast, text/touch-target, and overflow risks. Use the full workflow only for significant layout changes, new components, responsive redesigns, or release readiness.
 
 ## Build Workflow Integration
 
-- **Step 8 (Testing)**: Run steps 1-3 alongside unit/integration tests; check applicable design principles.
+- **Step 8 (Verification)**: Use Quick Verification by default. Run the broader steps only when change scope or risk requires them; existing unit/integration tests remain complementary evidence when applicable.
 - **Step 9 (Validate)**: Include report as evidence. "Browser (UI)" = *actual browser screenshots*, not self-assessment.
 
 **Skip when**: Backend-only, docs-only, CI/CD config, DB migrations (unless affecting displayed data), API-only (unless affecting rendered content). When in doubt, run quick verification — under 30 seconds.

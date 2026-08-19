@@ -50,7 +50,7 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | Model routing | model, tier, Haiku, Sonnet, Opus, fallback, budget | `tools/context/model-routing.md`, `reference/orchestration.md` |
 | Orchestration | pulse, workers, dashboard, headless, dispatch, supervisor | `reference/orchestration.md`, `tools/ai-assistants/headless-dispatch.md`, `scripts/commands/pulse.md`, `scripts/commands/dashboard.md` |
 | Upstream watch | upstream, dependency watch, release monitor, source tracking | `scripts/upstream-watch-helper.sh`, `.agents/configs/upstream-watch.json` |
-| Testing | tests, test setup, harness, fixtures, verification | `scripts/commands/testing-setup.md`, `tools/build-agent/agent-testing.md`, `scripts/testing-setup-helper.sh` |
+| Testing infrastructure | testing setup, install test framework, new harness, fixtures, coverage setup | `scripts/commands/testing-setup.md`, `tools/testing-setup.md`, `scripts/testing-setup-helper.sh` |
 | Agent/MCP dev | build agent, create agent, MCP server, mcporter, plugin | `tools/build-agent/build-agent.md`, `tools/build-mcp/build-mcp.md`, `tools/mcp-toolkit/mcporter.md` |
 | Self-Improvement | self-improve, learning, autoagent, framework issue, pattern | `reference/self-improvement.md`, `tools/autoagent/autoagent.md`, `scripts/commands/autoagent.md` |
 | Framework | aidevops, setup, architecture, skills, framework docs | `aidevops/architecture.md`, `scripts/commands/skills.md` |
@@ -60,3 +60,5 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 **Creating report agents**: When a report will repeat, read `reports/routine-handoff.md` and `tools/build-agent/build-agent.md`. Deterministic collection belongs in `run:` steps; `agent:Reports` owns evidence interpretation, narrative, recommendations, and handoff tasks.
 
 **Creating agents**: When a user asks to create, build, or design an agent — regardless of which primary agent is active — always read `tools/build-agent/build-agent.md` first. It contains the tier prompt (draft/custom/shared), design checklist, and lifecycle rules.
+
+**Routine feature verification**: Keep ordinary “verify/prove this works” requests with Build+ and `reference/ci-gate-policy.md`; they do not trigger testing-infrastructure setup. Load `tools/build-agent/agent-testing.md` only for explicit agent-behaviour testing.

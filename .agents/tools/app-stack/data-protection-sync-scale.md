@@ -66,7 +66,7 @@ Rules:
 - Counters and aggregates need reconciliation jobs and visible freshness metadata.
 - Analytics events must respect consent, privacy, retention, and workspace boundaries.
 
-## Test, seed, and demo data
+## Test, seed, and demo data (when in scope)
 
 | Object | Purpose |
 |--------|---------|
@@ -80,8 +80,8 @@ Rules:
 
 - Demo and test data must be synthetic or masked; never depend on private customer/source rows.
 - Seed scripts are idempotent, environment-aware, and safe to rerun locally.
-- Every standard object pack should have at least one fixture path through create/read/update/delete, permissions, audit, and export.
-- Load/performance fixtures should include realistic relationship depth, search volume, job queues, and archival/retention edges.
+- Exercise one representative standard-object path through create/read/update/delete, permissions, audit, and export in the running system. Add a fixture path only when explicitly requested or when it is the lowest-cost way to protect a material contract.
+- When load/performance fixtures are explicitly in scope, include realistic relationship depth, search volume, job queues, and archival/retention edges.
 
 ## Verification
 
@@ -89,4 +89,4 @@ Rules:
 - Trace one offline edit through client mutation, server validation, conflict policy, change event, and sync cursor advance.
 - Trace one dashboard/read model from source write to projection update, freshness display, rebuild, and permission check.
 - Prove one critical query budget with query plan/index evidence, partition/archive path, and counter reconciliation job.
-- Trace one seed scenario from clean database to deterministic test assertions without private data.
+- When seed or fixture support is in scope, trace one synthetic scenario from a clean database to the selected product-path or deterministic assertions without private data.

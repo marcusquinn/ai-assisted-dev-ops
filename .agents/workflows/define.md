@@ -23,8 +23,8 @@ Topic: $ARGUMENTS
 | Type | Signal Words | Default Assumptions |
 |------|-------------|---------------------|
 | **feature** | add, create, build, implement, new | Minimal footprint, no new deps without discussion |
-| **bugfix** | fix, broken, wrong, error, crash, regression | Preserve all other behaviour, add regression test |
-| **refactor** | clean, restructure, improve, simplify, extract | No behaviour changes, all tests must still pass |
+| **bugfix** | fix, broken, wrong, error, crash, regression | Preserve all other behaviour; verify the reported failure through the existing path |
+| **refactor** | clean, restructure, improve, simplify, extract | No behaviour changes; applicable existing checks must still pass |
 | **docs** | document, readme, guide, explain, describe | Accurate, concise, follows existing doc patterns |
 | **research** | investigate, explore, evaluate, compare, spike | Time-boxed, deliverable is a written recommendation |
 

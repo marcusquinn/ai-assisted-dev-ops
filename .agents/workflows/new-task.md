@@ -89,7 +89,7 @@ Before adding `auto-dispatch`, apply the single `workflows/brief.md` "Dispatch R
 | **What** | Clear deliverable — what it must produce, not just "implement X" |
 | **Why** | Problem, user need, business value, or dependency |
 | **How** | Tier-appropriate implementation context from `workflows/brief.md`: complete exact edits for `tier:simple`; verified files, reference patterns, and resolved skeletons for `tier:standard`; problem, constraints, evidence, decisions, non-goals, and acceptance boundaries for `tier:thinking`. Search with `git ls-files` and exact content search; use evidence-backed "not yet knowable" only when a thinking-tier decision genuinely determines the files. Include Complexity Impact and executable verification where applicable. |
-| **Acceptance** | Specific testable criteria + "Tests pass" + "Lint clean" |
+| **Acceptance** | Specific observable criteria + production-facing verification + applicable existing required checks/lint |
 | **Context** | Key decisions, constraints, things ruled out |
 
 **Complexity Impact (t2803):** When the task edits an existing shell function, ask:

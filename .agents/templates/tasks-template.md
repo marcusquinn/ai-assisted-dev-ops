@@ -20,13 +20,13 @@ tasks-{slug},{Feature Name},prd-{slug},not_started,{est},{est_ai},{est_test},{es
 ## Relevant Files
 
 - `path/to/file1.ts` - {Brief description of why this file is relevant}
-- `path/to/file1.test.ts` - Unit tests for file1.ts
+- `path/to/file1.test.ts` - {Existing test relevant to the change; omit when none applies}
 - `path/to/file2.ts` - {Brief description}
 
 ## Notes
 
-- Unit tests should be placed alongside the code files they test
-- Run tests with: `npm test` or `bun test` or project-specific command
+- Prioritise time-to-functional and verify through the existing production-facing path, standard logs, and framework systems
+- Run applicable existing required tests with the project-specific command; do not add tests by default or create test infrastructure without approval
 - Check off tasks as you complete them by changing `- [ ]` to `- [x]`
 - Time estimates use format: `~Xh (ai:Xh test:Xh)`
 
@@ -56,10 +56,10 @@ Update after completing each sub-task, not just parent tasks.
   - [ ] 3.1 {Sub-task description} ~{Xm}
   - [ ] 3.2 {Sub-task description} ~{Xm}
 
-- [ ] 4.0 Testing ~{Xh} (ai:{Xm} test:{Xh})
-  - [ ] 4.1 Write unit tests for new functionality ~{Xm}
-  - [ ] 4.2 Run targeted and affected-package tests; broaden only when change evidence requires it ~{Xm}
-  - [ ] 4.3 Manual testing of feature ~{Xm}
+- [ ] 4.0 Functional verification ~{Xh} (ai:{Xm} test:{Xh})
+  - [ ] 4.1 Exercise the requested behaviour through the existing user/API/CLI path ~{Xm}
+  - [ ] 4.2 Inspect standard logs, observability, or framework diagnostics ~{Xm}
+  - [ ] 4.3 Run applicable existing targeted and affected-package checks; broaden only when change evidence requires it ~{Xm}
 
 - [ ] 5.0 Documentation ~{Xm} (ai:{Xm} read:{Xm})
   - [ ] 5.1 Update relevant documentation ~{Xm}
@@ -77,7 +77,7 @@ Update after completing each sub-task, not just parent tasks.
 1.0,,{First Parent Task},{Xh},{Xh},{Xh},pending,,
 2.0,,{Second Parent Task},{Xh},{Xh},{Xh},pending,,
 3.0,,{Third Parent Task},{Xh},{Xh},{Xh},pending,,
-4.0,,Testing,{Xh},{Xm},{Xh},pending,,
+4.0,,Functional verification,{Xh},{Xm},{Xh},pending,,
 5.0,,Documentation,{Xm},{Xm},,pending,,
 6.0,,Quality & Review,{Xm},{Xm},{Xm},pending,,
 -->
@@ -90,7 +90,7 @@ Update after completing each sub-task, not just parent tasks.
 | 1.0 {Task 1} | {Xh} | - | - |
 | 2.0 {Task 2} | {Xh} | - | - |
 | 3.0 {Task 3} | {Xh} | - | - |
-| 4.0 Testing | {Xh} | - | - |
+| 4.0 Functional verification | {Xh} | - | - |
 | 5.0 Documentation | {Xm} | - | - |
 | 6.0 Quality | {Xm} | - | - |
 | **Total** | **{Xh}** | **-** | **-** |
@@ -104,7 +104,7 @@ Update after completing each sub-task, not just parent tasks.
 Before marking this task list complete:
 
 - [ ] All tasks checked off
-- [ ] Tests passing
+- [ ] Requested behaviour verified through the real path; applicable existing required checks pass
 - [ ] Linters passing
 - [ ] Documentation updated
 - [ ] CHANGELOG.md updated

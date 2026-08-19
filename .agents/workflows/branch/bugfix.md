@@ -35,7 +35,7 @@ ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add bugfix/{d
 
 ## Rules
 
-- **Regression test**: MANDATORY to prevent recurrence.
+- **Verification**: Reproduce the reported failure through the existing product path and confirm the fix there. Add a focused regression test only under `reference/ci-gate-policy.md`; new test infrastructure requires user approval.
 - **Scope**: Minimal changes only — no new features or refactoring.
 - **Investigation**: See `workflows/bug-fixing.md`.
 

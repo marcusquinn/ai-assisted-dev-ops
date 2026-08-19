@@ -1,5 +1,5 @@
 ---
-description: Interactive per-repo testing infrastructure setup with bundle-aware defaults
+description: Explicit, permission-gated per-repo testing infrastructure setup
 agent: Build+
 mode: subagent
 tools:
@@ -12,114 +12,89 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-Configure testing infrastructure for the current project. Detects bundle, discovers existing tooling, identifies gaps against bundle quality gates, generates configuration, and verifies end-to-end.
+# Testing Infrastructure Setup
+
+Use this workflow only when the user explicitly asks to create or change testing infrastructure. Routine feature/bug verification stays with Build+ and `reference/ci-gate-policy.md`. Discovery and `--verify-only` are safe, but a missing runner, suite, coverage target, or CI gate is not an implied deliverable.
 
 Arguments: $ARGUMENTS
 
 ## Workflow
 
-### Step 1: Detect Project Bundle
+### 1. Discover Existing Infrastructure
 
-```bash
-BUNDLE=$(~/.aidevops/agents/scripts/bundle-helper.sh resolve .)
-BUNDLE_NAME=$(echo "$BUNDLE" | jq -r '.name')
-QUALITY_GATES=$(echo "$BUNDLE" | jq -r '.quality_gates[]')
-SKIP_GATES=$(echo "$BUNDLE" | jq -r '.skip_gates[]' 2>/dev/null)
-```
+Run `testing-setup-helper.sh discover .` and inspect repository-owned configuration:
 
-Display detected bundle and quality gates. No bundle → fall back to `cli-tool`. Offer override (web-app, cli-tool, library, infrastructure, content-site, agent).
+| Category | Evidence |
+|----------|----------|
+| Test runners | Existing package scripts/dependencies, language manifests, runner configs |
+| Tests/fixtures | Existing `tests/`, `test/`, `__tests__/`, specs, or language-native test files |
+| CI | Existing workflow test steps and branch-required checks |
+| Coverage | Existing config, commands, and repository threshold |
+| Browser/E2E | Existing Playwright, Cypress, Maestro, or project-native setup |
 
-### Step 2: Discover Existing Infrastructure
+Display what is found and its source. Do not turn an absent category into a recommendation.
 
-Run `testing-setup-helper.sh discover .` to scan:
+### 2. Interpret Bundle Context
 
-| Category | What to find | How |
-|----------|-------------|-----|
-| Test runners | jest, vitest, pytest, cargo test, go test, bats | `package.json` scripts/devDeps, `pyproject.toml`, `Cargo.toml`, `go.mod`, `*.bats` |
-| Test directories | `tests/`, `test/`, `__tests__/`, `spec/`, `*_test.go` | Directory/file existence |
-| Test configs | `jest.config.*`, `vitest.config.*`, `pytest.ini`, `.bats` | File glob |
-| CI pipelines | `.github/workflows/`, `.gitlab-ci.yml` | File existence, grep for test steps |
-| Linter configs | `.eslintrc*`, `.prettierrc*`, `tsconfig.json`, `.shellcheckrc` | File glob |
-| Coverage configs | `.nycrc`, `coverage/`, `jest --coverage`, `c8`, `istanbul` | Config files, package.json scripts |
-| E2E/integration | `playwright.config.*`, `cypress.config.*`, `*.spec.ts` | File glob |
+Resolve the project bundle with `bundle-helper.sh resolve .`. Bundle quality gates describe tools relevant to a project type; only gates already configured or explicitly selected are actionable. If detection is uncertain, report that instead of treating the `cli-tool` fallback as authority to add tooling.
 
-Display `[found]`/`[missing]` status table with source details.
+`testing-setup-helper.sh gaps .` may identify missing bundle candidates. Label them as candidates, never as required gaps.
 
-### Step 3: Gap Analysis
+### 3. Apply the Permission Boundary
 
-Compare discovered infrastructure against bundle quality gates:
+The explicit setup request authorises work on its stated target, not every discovered candidate. Before creating any item not named in the request, explain why existing production-facing paths and tooling are insufficient and obtain a specific user selection:
 
-| Gate Status | Action |
-|-------------|--------|
-| **found + configured** | Verify it runs — execute test command, report pass/fail |
-| **found + misconfigured** | Show what's wrong, offer to fix |
-| **missing + recommended** | Offer to install and configure |
-| **missing + skipped** | Note as intentionally skipped by bundle |
+- test runner or harness;
+- mock server, fixture framework, or test-only product interface;
+- coverage tool or threshold;
+- CI test gate or pre-commit hook;
+- sample or baseline test suite.
 
-Group results: Ready, Needs attention, Missing (recommended), Skipped by bundle.
+Prefer an already installed alternative when it satisfies the objective. Do not invent a coverage threshold; use an explicit repository or user policy.
 
-### Step 4: Interactive Configuration
+With `--non-interactive`, apply only choices explicitly supplied in `$ARGUMENTS` and leave every unspecified candidate unchanged. `--dry-run` reports proposed files without writing them. `--verify-only` runs the existing setup without changing it.
 
-For each gap, offer: (1) install and configure (recommended), (2) skip — handle manually, (3) use alternative already installed.
+### 4. Configure Only Selected Components
 
-**Categories:** missing test runner (install dep, create config, sample test, add `test` script), missing coverage (c8/istanbul, 80% threshold default), missing CI integration (add test step to workflow), pre-commit hooks (aidevops hooks or husky/lint-staged).
-
-> Runner installation is agent-driven (requires judgment for alternatives, conflict handling). The helper provides `discover`, `gaps`, `status`, `verify` — the deterministic parts.
-
-### Step 5: Generate Configuration
-
-Create all configuration files from collected choices: test runner configs, coverage configs, CI workflow additions, pre-commit hooks, and `.aidevops-testing.json`:
+Create only the files the user selected. Do not silently add adjacent coverage, CI, hooks, fixtures, mocks, or sample tests. Record the selected setup in `.aidevops-testing.json` when requested:
 
 ```json
 {
   "bundle": "web-app",
   "configured_at": "2026-03-26T12:00:00Z",
   "test_runners": ["vitest"],
-  "quality_gates": ["eslint", "prettier", "typescript-check", "vitest"],
-  "coverage": { "enabled": true, "threshold": 80 },
-  "ci_integration": true,
-  "pre_commit_hooks": true
+  "quality_gates": ["vitest"],
+  "coverage": { "enabled": false },
+  "ci_integration": false,
+  "pre_commit_hooks": false
 }
 ```
 
-### Step 6: Verify and Summarize
+### 5. Verify and Summarise
 
-```bash
-testing-setup-helper.sh verify .
-```
+Run `testing-setup-helper.sh verify .` for selected/configured runners and report `[pass]`, `[fail]`, or `[skip]` per gate. List every created/modified file and then:
 
-Execute each configured runner — report `[pass]`/`[fail]`/`[skip]` per gate. Then display files created/modified and next steps:
+1. Exercise the affected behaviour through its production-facing path.
+2. Run `testing-setup-helper.sh status` to check the selected setup.
+3. Trigger CI only when CI integration was explicitly selected.
+4. Add test cases later only under `reference/ci-gate-policy.md`.
 
-1. Write tests for existing code
-2. Run `testing-setup-helper.sh status` to check test health
-3. Push to trigger CI pipeline test step
-4. Consider `/testing-coverage` to identify untested code paths
+## Available Bundle Integrations (Not Defaults)
 
-## Options
-
-| Option | Description |
-|--------|-------------|
-| `--bundle <name>` | Override auto-detected bundle |
-| `--non-interactive` | Accept all defaults without prompting |
-| `--dry-run` | Show what would be configured without making changes |
-| `--skip-install` | Configure files only, don't install packages |
-| `--verify-only` | Run verification on existing setup without changes |
-
-## Bundle-to-Runner Mapping
-
-| Bundle | Primary Runner | Secondary | Coverage Tool |
+| Bundle | Common runner | Secondary | Coverage tool |
 |--------|---------------|-----------|---------------|
 | `web-app` | vitest | playwright | c8 |
-| `library` | vitest | — | c8 |
-| `cli-tool` | bats / bash tests | — | kcov |
-| `agent` | agent-test-helper.sh | bash tests | — |
+| `library` | language/project-specific | — | project-specific |
+| `cli-tool` | bats / existing shell tests | — | kcov |
+| `agent` | agent-test-helper.sh | existing shell tests | — |
 | `infrastructure` | terraform validate | — | — |
 | `content-site` | playwright | lighthouse | — |
 
+This table helps interpret an explicit setup request. It never authorises installation merely because a bundle was detected.
+
 ## Related
 
-- `tools/build-agent/agent-testing.md` — Agent-specific testing framework
-- `bundles/*.json` — Bundle definitions with quality gates
-- `.agents/scripts/linters-local.sh` — Local quality checks (run directly, not via `scripts/linters-local.sh`)
-- `.agents/scripts/bundle-helper.sh` — Bundle detection and resolution
-- `workflows/preflight.md` — Pre-commit quality workflow
+- `reference/ci-gate-policy.md` — mission-first verification and permission boundary
+- `tools/build-agent/agent-testing.md` — agent-specific behavioural testing
+- `bundles/*.json` — project-type context and configured quality gates
+- `.agents/scripts/testing-setup-helper.sh` — deterministic discovery and verification

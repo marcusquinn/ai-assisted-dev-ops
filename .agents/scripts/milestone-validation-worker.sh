@@ -5,9 +5,9 @@
 # Part of aidevops framework: https://aidevops.sh
 #
 # Specialised worker dispatched after all features in a milestone complete.
-# Pulls the mission branch, runs full test suite + build, optionally runs
-# Playwright browser tests (UI missions), reports pass/fail with specific
-# issues, and creates fix tasks on failure linked to the milestone.
+# Pulls the mission branch, exercises the product path, runs configured or
+# repository-required checks, optionally runs existing Playwright browser tests
+# (UI missions), reports specific failures, and creates linked fix tasks.
 #
 # Usage:
 #   milestone-validation-worker.sh <mission-file> <milestone-number> [options]
@@ -111,6 +111,7 @@ CREATE_FIX_TASKS=true
 REPORT_ONLY=false
 JSON_OUTPUT=false
 VERBOSE=false
+readonly MV_CHECK_TEST_SUITE="Test suite"
 
 # Validation results
 VALIDATION_PASSED=true
@@ -146,7 +147,14 @@ detect_pkg_manager() {
 # =============================================================================
 
 show_help() {
-	grep '^#' "$0" | grep -v '#!/usr/bin/env' | sed 's/^# //' | sed 's/^#//'
+	awk '
+		NR == 1 { next }
+		/^$/ { exit }
+		/^#/ {
+			sub(/^# ?/, "")
+			print
+		}
+	' "$0"
 	return 0
 }
 
@@ -573,7 +581,7 @@ _run_node_tests() {
 			record_fail "Test suite ($pkg_cmd test)" "$failure_summary"
 		fi
 	else
-		record_skip "Test suite" "No 'test' script in package.json"
+		record_skip "$MV_CHECK_TEST_SUITE" "No 'test' script in package.json"
 	fi
 	return 0
 }
@@ -584,10 +592,10 @@ _run_python_tests() {
 	local test_output
 	local test_exit=0
 
-	if command -v pytest >/dev/null 2>&1; then
-		test_output=$(cd "$repo_path" && pytest --tb=short 2>&1) || test_exit=$?
-	elif [[ -f "$repo_path/.venv/bin/pytest" ]]; then
+	if [[ -x "$repo_path/.venv/bin/pytest" ]]; then
 		test_output=$(cd "$repo_path" && .venv/bin/pytest --tb=short 2>&1) || test_exit=$?
+	elif command -v pytest >/dev/null 2>&1; then
+		test_output=$(cd "$repo_path" && pytest --tb=short 2>&1) || test_exit=$?
 	else
 		record_skip "Test suite (pytest)" "pytest not found"
 		return 0
@@ -667,8 +675,15 @@ run_test_suite() {
 
 	if [[ -f "$repo_path/package.json" ]]; then
 		_run_node_tests "$repo_path"
-	elif [[ -f "$repo_path/pyproject.toml" ]] || [[ -f "$repo_path/setup.py" ]] || [[ -f "$repo_path/pytest.ini" ]]; then
+	elif [[ -f "$repo_path/pytest.ini" ]] ||
+		{ [[ -f "$repo_path/pyproject.toml" ]] && grep -qi 'pytest' "$repo_path/pyproject.toml"; } ||
+		{ [[ -f "$repo_path/setup.cfg" ]] && grep -qiE '\[tool:pytest\]|pytest' "$repo_path/setup.cfg"; } ||
+		{ [[ -f "$repo_path/setup.py" ]] && grep -qi 'pytest' "$repo_path/setup.py"; } ||
+		{ [[ -f "$repo_path/requirements.txt" ]] && grep -qi 'pytest' "$repo_path/requirements.txt"; } ||
+		{ [[ -f "$repo_path/requirements-dev.txt" ]] && grep -qi 'pytest' "$repo_path/requirements-dev.txt"; }; then
 		_run_python_tests "$repo_path"
+	elif [[ -f "$repo_path/pyproject.toml" ]] || [[ -f "$repo_path/setup.py" ]]; then
+		record_skip "$MV_CHECK_TEST_SUITE" "No configured Python test runner found"
 	elif [[ -f "$repo_path/Cargo.toml" ]]; then
 		_run_rust_tests "$repo_path"
 	elif [[ -f "$repo_path/go.mod" ]]; then
@@ -676,7 +691,7 @@ run_test_suite() {
 	elif [[ -d "$repo_path/.agents/scripts" ]]; then
 		_run_shell_tests "$repo_path"
 	else
-		record_skip "Test suite" "No recognised test framework found"
+		record_skip "$MV_CHECK_TEST_SUITE" "No recognised test framework found"
 	fi
 	return 0
 }
@@ -775,7 +790,7 @@ run_linter() {
 			else
 				local issue_count
 				issue_count=$(echo "$lint_output" | grep -cE '(error|warning)' || echo "unknown")
-				record_warning "Linter ($pkg_cmd run lint)" "$issue_count issues found"
+				record_fail "Linter ($pkg_cmd run lint)" "$issue_count issues found"
 			fi
 			return 0
 		fi
@@ -783,20 +798,21 @@ run_linter() {
 
 	# TypeScript type checking
 	if [[ -f "$repo_path/tsconfig.json" ]]; then
-		if command -v npx >/dev/null 2>&1; then
+		local tsc_bin="${repo_path}/node_modules/.bin/tsc"
+		if [[ -x "$tsc_bin" ]]; then
 			local tsc_output
 			local tsc_exit=0
-			tsc_output=$(cd "$repo_path" && npx tsc --noEmit 2>&1) || tsc_exit=$?
+			tsc_output=$(cd "$repo_path" && "$tsc_bin" --noEmit 2>&1) || tsc_exit=$?
 
 			if [[ $tsc_exit -eq 0 ]]; then
 				record_pass "TypeScript type check"
 			else
 				local error_count
 				error_count=$(echo "$tsc_output" | grep -c "error TS" || echo "unknown")
-				record_warning "TypeScript type check" "$error_count type errors"
+				record_fail "TypeScript type check" "$error_count type errors"
 			fi
 		else
-			record_skip "TypeScript type check" "npx not available"
+			record_skip "TypeScript type check" "repository-local TypeScript compiler not installed"
 		fi
 		return 0
 	fi
@@ -813,7 +829,7 @@ run_linter() {
 			else
 				local issue_count
 				issue_count=$(echo "$lint_output" | grep -c "Found" || echo "unknown")
-				record_warning "Linter (ruff)" "$issue_count issues"
+				record_fail "Linter (ruff)" "$issue_count issues"
 			fi
 			return 0
 		fi
@@ -849,15 +865,16 @@ run_browser_tests() {
 		return 0
 	fi
 
-	# Check if Playwright is installed
-	if ! command -v npx >/dev/null 2>&1; then
-		record_skip "Browser tests (Playwright)" "npx not available"
+	# Use only an existing repository-local Playwright binary; never auto-install.
+	local playwright_bin="${repo_path}/node_modules/.bin/playwright"
+	if [[ ! -x "$playwright_bin" ]]; then
+		record_skip "Browser tests (Playwright)" "repository-local Playwright not installed"
 		return 0
 	fi
 
 	local pw_output
 	local pw_exit=0
-	pw_output=$(cd "$repo_path" && BASE_URL="$base_url" npx playwright test 2>&1) || pw_exit=$?
+	pw_output=$(cd "$repo_path" && BASE_URL="$base_url" "$playwright_bin" test 2>&1) || pw_exit=$?
 
 	if [[ $pw_exit -eq 0 ]]; then
 		record_pass "Browser tests (Playwright)"
@@ -963,27 +980,19 @@ run_custom_validation() {
 	return 0
 }
 
-# Check for dependency installation
+# Check dependency availability without installing anything.
 check_dependencies() {
 	local repo_path="$1"
 
-	log_info "Checking dependencies..."
+	log_info "Checking existing dependencies..."
 
 	if [[ -f "$repo_path/package.json" ]]; then
-		if [[ ! -d "$repo_path/node_modules" ]]; then
-			log_info "Installing dependencies..."
-			local pkg_cmd
-			pkg_cmd=$(detect_pkg_manager "$repo_path")
-
-			local install_exit=0
-			(cd "$repo_path" && $pkg_cmd install) >/dev/null 2>&1 || install_exit=$?
-
-			if [[ $install_exit -ne 0 ]]; then
-				record_fail "Dependency installation" "$pkg_cmd install failed with exit code $install_exit"
-				return 0
-			fi
+		if [[ ! -d "$repo_path/node_modules" ]] &&
+			[[ ! -f "$repo_path/.pnp.cjs" ]] && [[ ! -f "$repo_path/.pnp.js" ]]; then
+			record_fail "Dependency availability" "Node dependencies are missing; milestone validation never installs packages"
+			return 1
 		fi
-		record_pass "Dependencies installed"
+		record_pass "Existing Node dependencies available"
 		return 0
 	fi
 
@@ -1243,6 +1252,7 @@ check_milestone_readiness() {
 MV_FINAL_ATTEMPT=1
 run_validation_with_retries() {
 	local validation_criteria="$1"
+	local dependencies_available=true
 	MV_FINAL_ATTEMPT=1
 
 	while [[ $MV_FINAL_ATTEMPT -le $MV_MAX_RETRIES ]]; do
@@ -1253,13 +1263,21 @@ run_validation_with_retries() {
 			sleep 2
 		fi
 
-		check_dependencies "$REPO_PATH"
-		run_test_suite "$REPO_PATH"
-		run_build "$REPO_PATH"
-		run_linter "$REPO_PATH"
-		run_browser_tests "$REPO_PATH" "$BROWSER_URL"
+		dependencies_available=true
+		if check_dependencies "$REPO_PATH"; then
+			run_test_suite "$REPO_PATH"
+			run_build "$REPO_PATH"
+			run_linter "$REPO_PATH"
+			run_browser_tests "$REPO_PATH" "$BROWSER_URL"
+		else
+			dependencies_available=false
+			record_skip "Configured project checks" "Dependencies unavailable; no installation attempted"
+		fi
 		run_browser_qa "$BROWSER_URL"
 		run_custom_validation "$REPO_PATH" "$validation_criteria"
+		if [[ "$dependencies_available" != "true" ]]; then
+			break
+		fi
 
 		if [[ "$VALIDATION_PASSED" == "true" ]]; then
 			break
@@ -1302,7 +1320,7 @@ handle_validation_result() {
 		return 0
 	else
 		update_milestone_status "$MISSION_FILE" "$MILESTONE_NUM" "failed"
-		append_progress_log "$MISSION_FILE" "Milestone $MILESTONE_NUM validation failed" "${#VALIDATION_FAILURES[@]} failure(s) after $MV_MAX_RETRIES attempt(s): ${VALIDATION_FAILURES[*]}"
+		append_progress_log "$MISSION_FILE" "Milestone $MILESTONE_NUM validation failed" "${#VALIDATION_FAILURES[@]} failure(s) after $attempt attempt(s): ${VALIDATION_FAILURES[*]}"
 		create_fix_tasks "$MISSION_FILE" "$MILESTONE_NUM" "$REPO_PATH"
 		return 1
 	fi

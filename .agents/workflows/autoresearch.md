@@ -121,7 +121,7 @@ Ask sequentially; show inferred default as option 1; Enter accepts default.
 **Q5 — Constraints?** Auto-detect test command:
 
 ```text
-1. Tests must pass: <detected command>  [default: include]
+1. Existing detected tests must keep passing: <detected command>  [default: include when configured]
 2. No new dependencies                  [default: include]
 3. Keep public API unchanged            [default: skip]
 4. Lint clean                           [default: skip]

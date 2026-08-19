@@ -14,35 +14,55 @@ Even when the user requests a testing deliverable, tie it to the behaviour,
 decision, or risk it is intended to protect. Start from the session aim and the
 uncertainty blocking it.
 
-1. Before adding, running, or reviewing a test, identify what decision its
+Time-to-functional is the default priority. Running existing checks and creating
+new test assets are separate decisions:
+
+1. Start with the production-facing behaviour through the existing app, API,
+   CLI, integration, or deployment path. Prefer standard logs, telemetry,
+   framework diagnostics, and existing targeted checks over synthetic machinery.
+2. Run explicit repository-required gates directly. Before adding or broadening
+   test code, or running a non-required broad suite, identify what decision its
    result can change or what material uncertainty it reduces. Do not create a
    test for information already supported by sufficient existing evidence.
-2. Review each test against the outcome that justified it. Retain regression
-   coverage when it protects an important contract; narrow, update, or remove
-   tests whose signal no longer justifies their maintenance or execution cost.
-3. Treat observed behaviour, user reports, production and usage logs, existing
+3. Do not add or expand test code merely because code changed or a suite exists.
+   Add a focused test only when the user or acceptance criteria explicitly asks
+   for it, a repository policy specifically requires the coverage, or it is the
+   lowest-cost way to resolve material uncertainty. A required test command
+   requires running existing tests, not automatically writing more.
+4. New runners, harnesses, mock systems, fixture frameworks, test-only product
+   interfaces, coverage thresholds, and CI test gates are scope expansion. Get
+   explicit user approval unless the task itself explicitly requests that
+   infrastructure. Keep one-off diagnostic probes temporary and out of the
+   committed diff.
+5. Missing new coverage is not itself a defect or an automatic follow-up task.
+   Durable regression protection may be back-filled after behaviour and design
+   stabilise; named security, destructive-operation, portability, or repository
+   contract requirements remain scoped exceptions.
+6. Review retained tests against the outcome that justified them. Keep coverage
+   that protects an important contract; narrow, update, or remove tests whose
+   signal no longer justifies their maintenance or execution cost.
+7. Treat observed behaviour, user reports, production and usage logs, existing
    contracts, targeted reproductions, and tests as complementary evidence.
    Compare provenance, freshness, relevance, and reliability; synthetic tests
    do not automatically outrank live evidence.
-4. Stop gathering evidence and make the reasoned improvement once the available
+8. Stop gathering evidence and make the reasoned improvement once the available
    information is sufficient for a safe decision. Still satisfy explicit
-   acceptance criteria and repository-required gates, and reconsider earlier
-   conclusions when material new evidence—whether or not from tests—appears.
-5. Report how verification supports the session aim and what uncertainty
-   remains. Passing tests alone do not prove the user-visible outcome.
+   acceptance criteria and repository-required gates, reconsider conclusions
+   when material new evidence appears, and report any remaining uncertainty.
+   Passing tests alone do not prove the user-visible outcome.
 
 ## Default policy
 
 | Target | Required gates | E2E role | Merge posture |
 |---|---|---|---|
-| `develop` / integration work branch | Format, lint, typecheck, unit tests, cheap security/secret checks | Skipped or advisory by default | Optimise for continual progress and rapid worker feedback. |
+| `develop` / integration work branch | Format, lint, typecheck, configured unit tests, cheap security/secret checks | Skipped or advisory by default | Optimise for continual progress and rapid worker feedback. |
 | `staging` / release candidate | Core gates plus E2E/smoke tests relevant to promoted areas | Required when it protects the promotion path | Optimise for integrated confidence before production-like deployment. |
 | `main` / production release | Core gates, release checks, required E2E/smoke/security checks | Required where branch rules declare it | Optimise for release assurance and auditability. |
 
 ## Design rules
 
 1. Keep develop PR required checks fast and deterministic. Prefer format, lint,
-   typecheck, and unit tests over broad browser suites.
+   typecheck, and existing configured unit tests over broad browser suites.
 2. Do not require "branch up to date" on high-throughput develop queues unless
    the repository has a merge queue that batches/revalidates automatically.
 3. Run E2E at staging or release-promotion boundaries, where integrated state is
@@ -136,3 +156,5 @@ work; only defects in the PR's own code block the PR.
 - Unbounded local `format:fix && lint:fix && typecheck && test` chains across
   several active sessions; they preserve quality intent but destroy throughput
   by oversubscribing CPU/RAM.
+- Creating a standalone harness, mock system, coverage gate, or test-only product
+  path for ordinary feature or bug work without explicit scope and evidence.
