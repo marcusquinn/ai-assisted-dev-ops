@@ -234,6 +234,15 @@ missing_json="$TMP_DIR/missing-cycle-state.json"
 "$HELPER" --log-dir "$missing_dir" --repo-path "$PWD" --window 15m --json >"$missing_json"
 jq -e '.cycle_state.availability == "unavailable"' "$missing_json" >/dev/null
 
+upstream_mismatch_dir="$TMP_DIR/upstream-mismatch"
+mkdir -p "$upstream_mismatch_dir"
+printf 'ERROR Refusing reconciliation: HEAD is not exact origin/main SHA private-sha\n' >"$upstream_mismatch_dir/pulse-wrapper.log"
+upstream_mismatch_json="$TMP_DIR/upstream-mismatch.json"
+"$HELPER" --log-dir "$upstream_mismatch_dir" --repo-path "$PWD" --window 15m --json >"$upstream_mismatch_json"
+jq -e '.canonical_reconciliation.refusal_count == 1' "$upstream_mismatch_json" >/dev/null
+jq -e '.canonical_reconciliation.classification == "upstream_or_default_branch_mismatch"' "$upstream_mismatch_json" >/dev/null
+jq -e '.canonical_reconciliation.canonical_recovery_advisory_observed == false' "$upstream_mismatch_json" >/dev/null
+
 printf '{malformed\n' >"$missing_dir/pulse-health.json"
 malformed_health_json="$TMP_DIR/malformed-health-state.json"
 "$HELPER" --log-dir "$missing_dir" --repo-path "$PWD" --window 15m --json >"$malformed_health_json"
