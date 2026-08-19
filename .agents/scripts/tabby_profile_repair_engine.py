@@ -170,6 +170,17 @@ def _repair_block_args(
     context.index = block_end
 
 
+def _repair_command_or_duplicate(
+    context: _ProfileRepairContext, line: str
+) -> bool:
+    """Repair command fields or skip a duplicate managed option."""
+    if _repair_command_field(context, line):
+        return True
+    if _repair_missing_command(context, line):
+        return True
+    return _skip_duplicate_option(context, line)
+
+
 def _repair_broken_opencode_launch_profile_block(
     config_text: str, shell_path: str | None = None
 ) -> tuple[str, int]:
@@ -178,11 +189,7 @@ def _repair_broken_opencode_launch_profile_block(
     context = _ProfileRepairContext(config_text.split("\n"), shell_path)
     while context.index < len(context.lines):
         line = context.lines[context.index]
-        if _repair_command_field(context, line):
-            continue
-        if _repair_missing_command(context, line):
-            continue
-        if _skip_duplicate_option(context, line):
+        if _repair_command_or_duplicate(context, line):
             continue
 
         _flush_pending_command_args(context, line)
