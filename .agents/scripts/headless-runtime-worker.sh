@@ -1868,6 +1868,21 @@ _hrw_preserve_ready_missing_linkage_handoff() {
 	return 0
 }
 
+_hrw_preserve_draft_checkpoint_handoff() {
+	local session_key="$1"
+	local output_class="$2"
+	_escalate_worker_pr_checkpoint "$session_key" "${DISPATCH_REPO_SLUG:-}" "$output_class"
+	if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_DRAFT_CHECKPOINT" ]]; then
+		_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
+		_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
+		_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
+		_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_RECOVERY_CLASSIFICATION"
+	else
+		_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_RECOVERY_CLASSIFICATION"
+	fi
+	return 0
+}
+
 _hrw_finish_success_run() {
 	local session_key="$1"
 	local work_dir="$2"
@@ -1922,16 +1937,8 @@ _hrw_finish_success_run() {
 			release_needed=0
 			;;
 		draft_checkpoint)
-			_escalate_worker_pr_checkpoint "$session_key" "${DISPATCH_REPO_SLUG:-}" "$output_class"
+			_hrw_preserve_draft_checkpoint_handoff "$session_key" "$output_class"
 			release_needed=0
-			if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_DRAFT_CHECKPOINT" ]]; then
-				_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
-				_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
-				_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
-				_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_RECOVERY_CLASSIFICATION"
-			else
-				_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_RECOVERY_CLASSIFICATION"
-			fi
 			;;
 		ready_missing_summary)
 			_hrw_preserve_ready_missing_summary_handoff "$session_key" "$output_class"
