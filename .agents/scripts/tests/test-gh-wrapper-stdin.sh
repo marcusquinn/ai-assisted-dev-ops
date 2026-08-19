@@ -58,11 +58,27 @@ gh() {
 		esac
 		previous="$argument"
 	done
+	if [[ "${1:-} ${2:-}" == "api repos/test/repo" ]]; then
+		printf 'false\n'
+		return 0
+	fi
+	if [[ "${1:-} ${2:-}" == "api graphql" ]]; then
+		printf 'false\n'
+		return 0
+	fi
+	if [[ "${1:-} ${2:-}" == "api /repos/test/repo/issues/999" ]]; then
+		printf 'origin:interactive\n'
+		return 0
+	fi
 	if [[ "${STUB_CREATE_FAIL:-0}" == "1" && "${1:-} ${2:-}" == "issue create" ]]; then
 		cp "$CAPTURED_BODY" "$NATIVE_BODY"
 		return 1
 	fi
-	printf 'https://github.com/test/repo/issues/999\n'
+	if [[ "${1:-} ${2:-}" == "pr create" ]]; then
+		printf 'https://github.com/test/repo/pull/999\n'
+	else
+		printf 'https://github.com/test/repo/issues/999\n'
+	fi
 	return 0
 }
 export -f gh
@@ -166,6 +182,7 @@ cat >"${STUB_BIN}/gh" <<'STUB'
 printf '%s\n' "$*" >>"$GH_CALLS"
 case "${1:-} ${2:-}" in
 "issue view" | "pr view") printf '%s\n' '{"title":"Existing","body":"Existing","labels":[]}' ;;
+"api repos/test/repo" | "api graphql") printf '%s\n' 'false' ;;
 esac
 exit 0
 STUB

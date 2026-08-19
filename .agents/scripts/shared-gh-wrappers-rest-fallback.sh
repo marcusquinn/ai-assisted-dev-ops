@@ -26,6 +26,11 @@
 [[ -n "${_SHARED_GH_WRAPPERS_REST_FALLBACK_LOADED:-}" ]] && return 0
 _SHARED_GH_WRAPPERS_REST_FALLBACK_LOADED=1
 
+# A durable PR exists, but a required post-create invariant is not yet
+# verified. Callers must preserve the emitted PR URL and reconcile that PR;
+# they must not retry creation and risk a duplicate.
+_GH_PR_CREATE_PARTIAL_RC=78
+
 _gh_rest_fallback_dir="${_SHARED_GH_WRAPPERS_DIR:-}"
 if [[ -z "$_gh_rest_fallback_dir" && -n "${BASH_SOURCE[0]:-}" ]]; then
 	_gh_rest_fallback_dir="${BASH_SOURCE[0]%/*}"
@@ -355,6 +360,17 @@ _rest_should_fallback() {
 		return 0
 	fi
 	return 1
+}
+
+#######################################
+# Write-safe fallback decision. AIDEVOPS_GH_FORCE_REST_READS is intentionally
+# ignored so a read-routing optimization cannot authorize a second create
+# transport after a write failure. Explicit test override and live low-budget
+# evidence still use the shared fallback decision.
+#######################################
+_rest_should_fallback_write() {
+	AIDEVOPS_GH_FORCE_REST_READS=0 _rest_should_fallback "$@"
+	return $?
 }
 
 #######################################
@@ -1067,13 +1083,38 @@ _rest_pr_autodetect_base() {
 }
 
 #######################################
+# Verify labels after a durable REST PR creation.
+# Args: $1=repo $2=PR URL $3..=requested labels
+# Returns: 0=verified/no labels, 78=durable PR with unverified labels
+#######################################
+_rest_pr_create_label_postcondition() {
+	local repo="$1"
+	local html_url="$2"
+	shift 2
+	[[ $# -gt 0 ]] || return 0
+	local pr_number=""
+	pr_number=$(printf '%s' "$html_url" | grep -oE '[0-9]+$' || true)
+	if [[ -z "$pr_number" ]]; then
+		printf '[aidevops] _rest_pr_create: created PR but could not resolve its number to verify requested labels\n' >&2
+		return "$_GH_PR_CREATE_PARTIAL_RC"
+	fi
+	if ! _rest_apply_labels_verified "$repo" "$pr_number" "$@"; then
+		printf '[aidevops] _rest_pr_create: created PR #%s but could not verify requested labels after bounded retries; not retrying creation\n' "$pr_number" >&2
+		return "$_GH_PR_CREATE_PARTIAL_RC"
+	fi
+	return 0
+}
+
+#######################################
 # _rest_pr_create: POST /repos/{owner}/{repo}/pulls.
 # Parses gh-style args (--head, --base, --title, --body, --body-file, --draft,
 # --label) into a REST payload. Labels are applied via a separate
 # POST /repos/{owner}/{repo}/issues/{pr_number}/labels call because the
 # GitHub pulls endpoint does not accept a labels field at creation time.
-# Emits the PR html_url on stdout, mirroring `gh pr create`. Returns underlying
-# gh api exit code.
+# Emits the PR html_url on stdout, mirroring `gh pr create`. Returns the
+# underlying gh api exit code, or 78 when the PR exists but requested labels
+# could not be verified. Exit 78 is a durable partial success, never authority
+# to retry creation.
 # When --head or --base are omitted, auto-detects from git HEAD / repo
 # default branch respectively (see _rest_pr_autodetect_head/base above).
 #######################################
@@ -1163,17 +1204,10 @@ _rest_pr_create() {
 	fi
 
 	# Apply labels via the issues endpoint (PRs share it).
-	if [[ ${#labels[@]} -gt 0 ]]; then
-		local pr_number
-		pr_number=$(printf '%s' "$html_url" | grep -oE '[0-9]+$' || true)
-		if [[ -z "$pr_number" ]]; then
-			printf '[aidevops] _rest_pr_create: created PR but could not resolve its number to verify requested labels\n' >&2
-		elif ! _rest_apply_labels_verified "$repo" "$pr_number" "${labels[@]}"; then
-			printf '[aidevops] _rest_pr_create: created PR #%s but could not verify requested labels after bounded retries; not retrying creation\n' "$pr_number" >&2
-		fi
-	fi
+	local label_rc=0
+	_rest_pr_create_label_postcondition "$repo" "$html_url" "${labels[@]}" || label_rc=$?
 	printf '%s\n' "$html_url"
-	return 0
+	return "$label_rc"
 }
 
 #######################################

@@ -820,6 +820,139 @@ _gh_create_pr_should_default_draft() {
 	return 0
 }
 
+#######################################
+# Resolve the one origin label gh_create_pr must establish.
+# Args: PR create argv
+# Output: origin:interactive|origin:worker|origin:worker-takeover
+# Returns: 0=resolved, 2=conflicting or unsupported origin labels
+#######################################
+_gh_create_pr_expected_origin_label() {
+	local expected=""
+	while [[ $# -gt 0 ]]; do
+		local cur="$1"
+		local label_val=""
+		case "$cur" in
+		--label)
+			label_val="${2:-}"
+			[[ $# -gt 1 ]] && shift
+			;;
+		--label=*) label_val="${cur#--label=}" ;;
+		esac
+		if [[ -n "$label_val" ]]; then
+			local saved_ifs="$IFS"
+			local label_part=""
+			IFS=','
+			for label_part in $label_val; do
+				case "$label_part" in
+				origin:interactive | origin:worker | origin:worker-takeover)
+					if [[ -n "$expected" && "$expected" != "$label_part" ]]; then
+						IFS="$saved_ifs"
+						printf '[aidevops][gh-wrapper][BLOCK] gh_create_pr requires exactly one origin label\n' >&2
+						return 2
+					fi
+					expected="$label_part"
+					;;
+				esac
+			done
+			IFS="$saved_ifs"
+		fi
+		shift
+	done
+	[[ -n "$expected" ]] || expected=$(session_origin_label)
+	case "$expected" in
+	origin:interactive | origin:worker | origin:worker-takeover) ;;
+	*)
+		printf '[aidevops][gh-wrapper][BLOCK] gh_create_pr resolved unsupported origin label: %s\n' "$expected" >&2
+		return 2
+		;;
+	esac
+	printf '%s\n' "$expected"
+	return 0
+}
+
+#######################################
+# Resolve a durable PR URL, repository, and number from gh create output.
+# Sets _GH_CREATE_PR_DURABLE_URL/REPO/NUMBER.
+# Args: $1=create output, remaining args=PR create argv
+# Returns: 0=durable identity resolved, 1=unavailable or inconsistent
+#######################################
+_gh_create_pr_resolve_durable_identity() {
+	local output="$1"
+	shift
+	_GH_CREATE_PR_DURABLE_URL=""
+	_GH_CREATE_PR_DURABLE_REPO=""
+	_GH_CREATE_PR_DURABLE_NUMBER=""
+	local line=""
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" =~ ^https://[^[:space:]]+/pull/[0-9]+$ ]]; then
+			_GH_CREATE_PR_DURABLE_URL="$line"
+		fi
+	done <<<"$output"
+	[[ -n "$_GH_CREATE_PR_DURABLE_URL" ]] || return 1
+
+	local url_without_scheme="${_GH_CREATE_PR_DURABLE_URL#*://}"
+	local url_path="${url_without_scheme#*/}"
+	local url_repo="${url_path%/pull/*}"
+	local repo=""
+	repo=$(_gh_extract_repo_from_args "$@")
+	[[ -n "$repo" ]] || repo="$url_repo"
+	if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || "$repo" != "$url_repo" ]]; then
+		return 1
+	fi
+	_GH_CREATE_PR_DURABLE_REPO="$repo"
+	_GH_CREATE_PR_DURABLE_NUMBER="${_GH_CREATE_PR_DURABLE_URL##*/}"
+	return 0
+}
+
+#######################################
+# Verify that a PR has exactly the expected origin label.
+# Args: $1=repo $2=PR number $3=expected origin label
+# Returns: 0=exact postcondition, 1=missing/wrong/dual/unavailable
+#######################################
+_gh_create_pr_origin_is_exact() {
+	local repo="$1"
+	local pr_number="$2"
+	local expected_origin="$3"
+	local origin_labels=""
+	origin_labels=$(_gh_with_timeout read gh api "/repos/${repo}/issues/${pr_number}" \
+		--jq '[.labels[].name | select(startswith("origin:"))] | join(",")' 2>/dev/null) || return 1
+	[[ "$origin_labels" == "$expected_origin" ]]
+}
+
+#######################################
+# Enforce the common post-create origin invariant without recreating a PR.
+# Args: $1=create output $2=expected origin, remaining args=PR create argv
+# Returns: 0=verified/reconciled, 78=durable PR remains unverified
+#######################################
+_gh_create_pr_enforce_origin_postcondition() {
+	local output="$1"
+	local expected_origin="$2"
+	shift 2
+	if ! _gh_create_pr_resolve_durable_identity "$output" "$@"; then
+		printf '[aidevops] gh_create_pr: create returned without a verifiable durable PR identity; refusing ordinary success\n' >&2
+		return "$_GH_PR_CREATE_PARTIAL_RC"
+	fi
+	if _gh_create_pr_origin_is_exact "$_GH_CREATE_PR_DURABLE_REPO" \
+		"$_GH_CREATE_PR_DURABLE_NUMBER" "$expected_origin"; then
+		return 0
+	fi
+
+	local origin_name="${expected_origin#origin:}"
+	if declare -F set_origin_label >/dev/null 2>&1; then
+		set_origin_label "$_GH_CREATE_PR_DURABLE_NUMBER" \
+			"$_GH_CREATE_PR_DURABLE_REPO" "$origin_name" --pr >/dev/null 2>&1 || true
+	fi
+	# A transport can report failure after applying its mutation. Read back even
+	# when set_origin_label returned non-zero before classifying partial success.
+	if _gh_create_pr_origin_is_exact "$_GH_CREATE_PR_DURABLE_REPO" \
+		"$_GH_CREATE_PR_DURABLE_NUMBER" "$expected_origin"; then
+		return 0
+	fi
+	printf '[aidevops] gh_create_pr: durable PR #%s exists but exact %s provenance is unverified; not retrying creation\n' \
+		"$_GH_CREATE_PR_DURABLE_NUMBER" "$expected_origin" >&2
+	return "$_GH_PR_CREATE_PARTIAL_RC"
+}
+
 gh_create_pr() {
 	_gh_wrapper_enter_cleanup_scope
 	gh_record_call graphql gh_create_pr 2>/dev/null || true
@@ -833,6 +966,10 @@ gh_create_pr() {
 		_gh_edit_audit_rejection "gh pr create" "$_GH_EDIT_REJECTION_REASON" "$@"
 		return 1
 	fi
+	local expected_origin_label=""
+	expected_origin_label=$(_gh_create_pr_expected_origin_label "$@") || return $?
+	local is_help=0
+	_gh_wrapper_args_have_flag "--help" "$@" && is_help=1
 
 	# t3088: defence-in-depth — only auto-inject the session origin label when
 	# the caller has NOT already specified one. Prevents the dual-origin-label
@@ -869,7 +1006,11 @@ gh_create_pr() {
 	local pr_output rc
 	pr_output=$("${pr_cmd[@]}") # aidevops-allow: raw-gh-wrapper
 	rc=$?
-	if [[ $rc -ne 0 ]] && _rest_should_fallback; then
+	if [[ $rc -ne 0 ]] && _gh_create_pr_resolve_durable_identity "$pr_output" "$@"; then
+		# Native gh can create the PR and fail during a follow-up mutation. The URL
+		# proves creation; never invoke another create transport for this result.
+		rc="$_GH_PR_CREATE_PARTIAL_RC"
+	elif [[ $rc -ne 0 ]] && _rest_should_fallback_write; then
 		print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to REST for pr create"
 		if [[ ${#_origin_label_args[@]} -gt 0 || ${#_draft_args[@]} -gt 0 ]]; then
 			pr_output=$(_rest_pr_create "$@" "${_draft_args[@]}" "${_origin_label_args[@]}")
@@ -878,8 +1019,18 @@ gh_create_pr() {
 		fi
 		rc=$?
 	fi
+	if [[ "$is_help" -eq 0 && ( "$rc" -eq 0 || "$rc" -eq "$_GH_PR_CREATE_PARTIAL_RC" ) ]]; then
+		local postcondition_rc=0
+		_gh_create_pr_enforce_origin_postcondition "$pr_output" "$expected_origin_label" "$@" \
+			|| postcondition_rc=$?
+		if [[ "$postcondition_rc" -eq 0 ]]; then
+			rc=0
+		else
+			rc="$postcondition_rc"
+		fi
+	fi
 	printf '%s\n' "$pr_output"
-	return $rc
+	return "$rc"
 }
 
 # t2767: Partial-success recovery for gh pr create.

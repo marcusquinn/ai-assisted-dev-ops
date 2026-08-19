@@ -59,6 +59,9 @@ _PULSE_MERGE_PROCESS_LOADED=1
 : "${PULSE_MERGE_PR_CURSOR_FILE:=${PULSE_MERGE_CHECKPOINT_FILE}.pr-cursor}"
 : "${AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_SECONDS:=3600}"
 : "${AIDEVOPS_UPDATE_BRANCH_CONFLICT_COOLDOWN_DIR:=${HOME}/.aidevops/cache/pulse-update-branch-conflicts}"
+_PMP_ORIGIN_INTERACTIVE_PATTERN=",origin:interactive,"
+_PMP_ORIGIN_WORKER_PATTERN=",origin:worker,"
+_PMP_ORIGIN_TAKEOVER_PATTERN=",origin:worker-takeover,"
 
 #######################################
 # Return the persistent state path for one interactive PR's semantic
@@ -678,11 +681,9 @@ _attempt_pr_update_branch() {
 		local _ub_labels=""
 		_ub_labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels \
 			--jq '[.labels[]?.name] | join(",")' 2>/dev/null) || _ub_labels=""
-		case ",${_ub_labels}," in
-		*,origin:interactive,*)
+		if [[ ",${_ub_labels}," == *"$_PMP_ORIGIN_INTERACTIVE_PATTERN"* ]]; then
 			_pmp_record_update_branch_conflict_cooldown "$pr_number" "$repo_slug" "$expected_head_sha" || true
-			;;
-		esac
+		fi
 	fi
 	echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — update-branch failed, falling through to close (t2116): ${_ub_output}" >>"$LOGFILE"
 	return 1
@@ -1021,8 +1022,59 @@ _route_issue_origin_is_trusted() {
 		echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} linked issue #${linked_issue} has origin:worker but PR author trust could not be confirmed" >>"$LOGFILE"
 		return 1
 	fi
-	echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} using linked issue #${linked_issue} origin:worker fallback" >>"$LOGFILE"
+	if ! declare -F set_origin_label >/dev/null 2>&1 \
+		|| ! set_origin_label "$pr_number" "$repo_slug" worker --pr >/dev/null 2>&1; then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} trusted linked issue #${linked_issue} has origin:worker, but PR origin reconciliation failed — deferring routing" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	local reconciled_labels=""
+	if ! reconciled_labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null); then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} origin:worker reconciliation from trusted linked issue #${linked_issue} was not verified — deferring routing" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	local reconciled_label_list=",${reconciled_labels},"
+	if [[ "$reconciled_label_list" != *"$_PMP_ORIGIN_WORKER_PATTERN"* \
+		|| "$reconciled_label_list" == *"$_PMP_ORIGIN_INTERACTIVE_PATTERN"* \
+		|| "$reconciled_label_list" == *"$_PMP_ORIGIN_TAKEOVER_PATTERN"* ]]; then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} origin:worker reconciliation from trusted linked issue #${linked_issue} was not verified — deferring routing" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} restored origin:worker from trusted linked issue #${linked_issue}" >>"$LOGFILE"
 	return 0
+}
+
+_route_pr_issue_supplies_worker_origin() {
+	local label_list="$1"
+	local issue_labels="$2"
+	[[ "$label_list" != *"$_PMP_ORIGIN_WORKER_PATTERN"* \
+		&& "$label_list" != *"$_PMP_ORIGIN_TAKEOVER_PATTERN"* \
+		&& "$label_list" != *"$_PMP_ORIGIN_INTERACTIVE_PATTERN"* \
+		&& ",${issue_labels}," == *"$_PMP_ORIGIN_WORKER_PATTERN"* ]]
+}
+
+_route_pr_log_unroutable() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local kind="$4"
+	local label_list="$5"
+	if [[ "$label_list" == *"$_PMP_ORIGIN_INTERACTIVE_PATTERN"* ]]; then
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} retains active origin:interactive ownership; ${kind} repair routing is not eligible" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} and linked issue #${linked_issue} have no trusted origin metadata for ${kind} repair routing" >>"$LOGFILE"
+	fi
+	return 0
+}
+
+_route_pr_has_linked_issue() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local kind="$4"
+	[[ -n "$linked_issue" ]] && return 0
+	echo "[pulse-wrapper] _route_pr_to_fix_worker: PR #${pr_number} in ${repo_slug} has no linked issue for ${kind} repair routing" >>"$LOGFILE"
+	return 1
 }
 
 _route_pr_issue_labels_for_dispatch() {
@@ -1102,12 +1154,11 @@ _route_pr_to_fix_worker() {
 	local issue_labels=""
 	local issue_has_worker_origin=0
 	local label_list=""
-	local takeover_pattern=",origin:worker-takeover,"
+	local takeover_pattern="$_PMP_ORIGIN_TAKEOVER_PATTERN"
 	local has_routed_label=0
 	local issue_labels_rc=0
 
-	# No linked issue → nothing to route to
-	[[ -z "$linked_issue" ]] && return 1
+	_route_pr_has_linked_issue "$pr_number" "$repo_slug" "$linked_issue" "$kind" || return 1
 
 	# Fetch labels if not provided by caller
 	if [[ -z "$pr_labels" ]]; then
@@ -1146,21 +1197,20 @@ _route_pr_to_fix_worker() {
 	issue_labels=$(_route_pr_issue_labels_for_dispatch "$pr_number" "$repo_slug" "$linked_issue") || issue_labels_rc=$?
 	[[ "$issue_labels_rc" -eq 0 ]] || return "$issue_labels_rc"
 
-	if [[ "$label_list" != *",origin:worker,"* \
-		&& "$label_list" != *"$takeover_pattern"* \
-		&& "$label_list" != *",origin:interactive,"* ]]; then
-		if [[ ",${issue_labels}," == *",origin:worker,"* ]]; then
-			issue_has_worker_origin=1
-		fi
+	if _route_pr_issue_supplies_worker_origin "$label_list" "$issue_labels"; then
+		issue_has_worker_origin=1
 	fi
 
 	# Worker-origin PRs: dispatch directly
 	if [[ ( -n "${_OW_LABEL_PAT:-}" && "$label_list" == *"${_OW_LABEL_PAT:-}"* ) ]] \
 		|| [[ "$label_list" == *"$takeover_pattern"* ]] \
 		|| [[ "$issue_has_worker_origin" -eq 1 ]]; then
-		[[ "$issue_has_worker_origin" -eq 0 ]] \
-			|| _route_issue_origin_is_trusted "$pr_number" "$repo_slug" "$linked_issue" \
-			|| return 1
+		if [[ "$issue_has_worker_origin" -eq 1 ]]; then
+			local origin_reconcile_rc=0
+			_route_issue_origin_is_trusted "$pr_number" "$repo_slug" "$linked_issue" \
+				|| origin_reconcile_rc=$?
+			[[ "$origin_reconcile_rc" -eq 0 ]] || return "$origin_reconcile_rc"
+		fi
 		_route_pr_feedback_terminal_guard "$has_routed_label" "$pr_number" "$repo_slug" \
 			"$linked_issue" "$kind" "$routed_label" || return $?
 		_dispatch_pr_repair_by_kind "$kind" "$pr_number" "$repo_slug" "$linked_issue" "$pr_title" "$checks_json"
@@ -1168,7 +1218,7 @@ _route_pr_to_fix_worker() {
 	fi
 
 	# Stale interactive PRs: handover first, then dispatch
-	if [[ "$label_list" == *",origin:interactive,"* ]] \
+	if [[ "$label_list" == *"$_PMP_ORIGIN_INTERACTIVE_PATTERN"* ]] \
 		&& _interactive_pr_is_stale "$pr_number" "$repo_slug" "$updated_at" "$head_ref_oid"; then
 		if ! _interactive_pr_trigger_handover "$pr_number" "$repo_slug"; then
 			echo "[pulse-wrapper] _route_pr_to_fix_worker: interactive handover was not confirmed for PR #${pr_number} in ${repo_slug} — refusing destructive routing" >>"$LOGFILE"
@@ -1186,7 +1236,9 @@ _route_pr_to_fix_worker() {
 		return $?
 	fi
 
-	# Not routable (no matching origin label or not stale)
+	# Not routable (no matching origin label or not stale). Keep one bounded,
+	# terminal diagnostic so a lost provenance label cannot become a silent loop.
+	_route_pr_log_unroutable "$pr_number" "$repo_slug" "$linked_issue" "$kind" "$label_list"
 	return 1
 }
 

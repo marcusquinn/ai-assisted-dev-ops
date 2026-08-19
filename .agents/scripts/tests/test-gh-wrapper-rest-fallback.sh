@@ -122,6 +122,12 @@ export -f print_info
 _gh_with_timeout() { shift; "$@"; return $?; }
 export -f _gh_with_timeout
 
+# Public-write privacy scanning has dedicated coverage. Keep this REST transport
+# harness focused on fallback and post-create invariants instead of requiring
+# every synthetic fixture to emulate repository visibility APIs.
+# shellcheck disable=SC2317
+_gh_guard_public_write_args() { return 0; }
+
 # Post-source stubs. Shell functions beat PATH binaries.
 _stub_jq_filter_arg() {
 	local start_index="${1:-}"
@@ -254,6 +260,10 @@ _stub_gh_api() {
 		local fixture='{"number":42,"state":"open","locked":false,"labels":[{"name":"bug"}],"assignees":[]}'
 		fixture="${STUB_ISSUE_VIEW_FIXTURE:-$fixture}"
 		jq_filter="$(_stub_jq_filter_arg 3 api "$@")"
+		if [[ "$jq_filter" == *'startswith("origin:")'* ]]; then
+			local origin_fixture='{"labels":[{"name":"origin:interactive"}]}'
+			fixture="${STUB_CREATE_ORIGIN_FIXTURE:-$origin_fixture}"
+		fi
 		_stub_print_fixture_with_jq "$fixture" "$jq_filter" -r
 		return $?
 	fi
@@ -310,6 +320,10 @@ _stub_gh_pr() {
 	if [[ "$subcommand" != "create" && "$subcommand" != "comment" && "$subcommand" != "view" && "$subcommand" != "list" ]]; then
 		return 1
 	fi
+	if [[ "$subcommand" == "create" && "${STUB_PRIMARY_PARTIAL_URL:-0}" == "1" ]]; then
+		printf 'https://github.com/owner/repo/pull/9100\n'
+		return 1
+	fi
 	if [[ "${STUB_PRIMARY_FAIL:-0}" == "1" ]]; then
 		printf 'primary stub forced failure (rate limit)\n' >&2
 		return 1
@@ -354,6 +368,21 @@ gh() {
 	return 0
 }
 export -f gh
+
+# Deterministic origin reconciliation used only by the common gh_create_pr
+# postcondition tests below. The state mutation remains inside the wrapper's
+# command-substitution shell, matching production ordering before readback.
+set_origin_label() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local origin_name="$3"
+	printf 'set-origin %s %s %s\n' "$pr_number" "$repo_slug" "$origin_name" >>"$GH_CALLS"
+	[[ "${STUB_SET_ORIGIN_FAIL:-0}" != "1" ]] || return 1
+	STUB_CREATE_ORIGIN_FIXTURE=$(jq -cn --arg name "origin:${origin_name}" '{labels: [{name: $name}]}') || return 1
+	export STUB_CREATE_ORIGIN_FIXTURE
+	return 0
+}
+export -f set_origin_label
 
 # Stub _rest_append_sig as a no-op to prevent gh-signature-helper.sh calls
 # during tests. The helper queries the OpenCode SQLite session DB which can
@@ -420,6 +449,24 @@ else
 	fail "should_fallback returns false when rate_limit unparseable (fail-safe)" \
 		"expected false but got true — would trigger unnecessary REST fallback"
 fi
+
+# A read-only routing override must not authorize a write fallback.
+export AIDEVOPS_GH_FORCE_REST_READS=1
+STUB_RATE_LIMIT_REMAINING=100
+if ! _rest_should_fallback_write; then
+	pass "write fallback ignores AIDEVOPS_GH_FORCE_REST_READS"
+else
+	fail "write fallback ignores AIDEVOPS_GH_FORCE_REST_READS" \
+		"read-only override incorrectly authorized a write transport"
+fi
+STUB_RATE_LIMIT_REMAINING=0
+if _rest_should_fallback_write; then
+	pass "write fallback still honors live low GraphQL budget"
+else
+	fail "write fallback still honors live low GraphQL budget" \
+		"live exhausted budget did not authorize REST write fallback"
+fi
+unset AIDEVOPS_GH_FORCE_REST_READS
 
 # Reset for remaining tests
 export STUB_RATE_LIMIT_REMAINING=5000
@@ -824,7 +871,7 @@ label_failure_output=$(_rest_pr_create \
 pull_create_count=$(grep -cE '^api -X POST /repos/owner/repo/pulls' "$GH_CALLS" 2>/dev/null || true)
 label_apply_count=$(grep -cE '^api -X POST /repos/owner/repo/issues/9999/labels' "$GH_CALLS" 2>/dev/null || true)
 
-if [[ $label_failure_rc -eq 0 && "$label_failure_output" == "https://github.com/owner/repo/issues/9999" &&
+if [[ $label_failure_rc -eq 78 && "$label_failure_output" == "https://github.com/owner/repo/issues/9999" &&
 	"$pull_create_count" -eq 1 && "$label_apply_count" -eq 3 ]] &&
 	grep -q 'created PR #9999 but could not verify requested labels after bounded retries; not retrying creation' "$label_failure_stderr" 2>/dev/null; then
 	pass "_rest_pr_create surfaces label failure without risking duplicate PR creation"
@@ -841,6 +888,7 @@ unset STUB_REST_FAIL_MATCH STUB_ISSUE_VIEW_FIXTURE AIDEVOPS_GH_REST_LABEL_RETRY_
 : >"$GH_INFO_OUTPUT"
 export STUB_PRIMARY_FAIL=1
 export STUB_RATE_LIMIT_REMAINING=0
+export STUB_ISSUE_VIEW_FIXTURE='{"labels":[{"name":"origin:interactive"}],"assignees":[]}'
 
 gh_pr_comment 8888 --repo "owner/repo" --body "fallback pr comment" >/dev/null 2>&1 || true
 
@@ -860,7 +908,7 @@ else
 		"INFO log: $(cat "$GH_INFO_OUTPUT")"
 fi
 
-unset STUB_PRIMARY_FAIL
+unset STUB_PRIMARY_FAIL STUB_ISSUE_VIEW_FIXTURE
 export STUB_RATE_LIMIT_REMAINING=5000
 
 # =============================================================================
@@ -955,6 +1003,84 @@ else
 	fail "gh_create_pr does NOT fall back when primary succeeds" \
 		"GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
 fi
+
+# =============================================================================
+# Test 19b: missing origin is reconciled on the durable PR, not recreated
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_CREATE_ORIGIN_FIXTURE='{"labels":[]}'
+origin_reconcile_output=""
+origin_reconcile_rc=0
+origin_reconcile_output=$(gh_create_pr \
+	--repo "owner/repo" \
+	--title "t9997: origin reconcile" \
+	--head "feature/t9997-origin-reconcile" \
+	--base "main" \
+	--body "origin reconcile body" 2>/dev/null) || origin_reconcile_rc=$?
+origin_reconcile_create_count=$(grep -cE '^pr create' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$origin_reconcile_rc" -eq 0 \
+	&& "$origin_reconcile_output" == "https://github.com/owner/repo/pull/9100" \
+	&& "$origin_reconcile_create_count" -eq 1 ]] \
+	&& grep -qF 'set-origin 9100 owner/repo interactive' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_create_pr reconciles missing origin on the durable PR"
+else
+	fail "gh_create_pr reconciles missing origin on the durable PR" \
+		"rc=${origin_reconcile_rc}; output=${origin_reconcile_output}; calls=$(cat "$GH_CALLS")"
+fi
+
+# =============================================================================
+# Test 19c: failed reconciliation returns typed partial success with URL
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_CREATE_ORIGIN_FIXTURE='{"labels":[]}'
+export STUB_SET_ORIGIN_FAIL=1
+origin_partial_output=""
+origin_partial_rc=0
+origin_partial_stderr="${TMP}/pr-origin-partial.stderr"
+origin_partial_output=$(gh_create_pr \
+	--repo "owner/repo" \
+	--title "t9997: origin partial" \
+	--head "feature/t9997-origin-partial" \
+	--base "main" \
+	--body "origin partial body" 2>"$origin_partial_stderr") || origin_partial_rc=$?
+origin_partial_create_count=$(grep -cE '^pr create' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$origin_partial_rc" -eq 78 \
+	&& "$origin_partial_output" == "https://github.com/owner/repo/pull/9100" \
+	&& "$origin_partial_create_count" -eq 1 ]] \
+	&& grep -q 'durable PR #9100 exists but exact origin:interactive provenance is unverified; not retrying creation' \
+		"$origin_partial_stderr" 2>/dev/null; then
+	pass "gh_create_pr preserves URL and returns typed partial success"
+else
+	fail "gh_create_pr preserves URL and returns typed partial success" \
+		"rc=${origin_partial_rc}; output=${origin_partial_output}; calls=$(cat "$GH_CALLS"); stderr=$(cat "$origin_partial_stderr")"
+fi
+unset STUB_CREATE_ORIGIN_FIXTURE STUB_SET_ORIGIN_FAIL
+
+# =============================================================================
+# Test 19d: native partial success with URL never invokes REST create
+# =============================================================================
+: >"$GH_CALLS"
+export STUB_PRIMARY_PARTIAL_URL=1
+native_partial_output=""
+native_partial_rc=0
+native_partial_output=$(gh_create_pr \
+	--repo "owner/repo" \
+	--title "t9997: native partial" \
+	--head "feature/t9997-native-partial" \
+	--base "main" \
+	--body "native partial body" 2>/dev/null) || native_partial_rc=$?
+native_partial_create_count=$(grep -cE '^pr create' "$GH_CALLS" 2>/dev/null || true)
+native_partial_rest_count=$(grep -cE '^api.*-X POST.*/repos/owner/repo/pulls' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$native_partial_rc" -eq 0 \
+	&& "$native_partial_output" == "https://github.com/owner/repo/pull/9100" \
+	&& "$native_partial_create_count" -eq 1 \
+	&& "$native_partial_rest_count" -eq 0 ]]; then
+	pass "gh_create_pr never recreates a native partial success with durable URL"
+else
+	fail "gh_create_pr never recreates a native partial success with durable URL" \
+		"rc=${native_partial_rc}; output=${native_partial_output}; creates=${native_partial_create_count}; rest=${native_partial_rest_count}; calls=$(cat "$GH_CALLS")"
+fi
+unset STUB_PRIMARY_PARTIAL_URL
 
 # =============================================================================
 # Test 20: gh_create_pr → does NOT fall back when primary fails but healthy

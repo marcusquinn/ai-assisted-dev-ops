@@ -75,7 +75,7 @@ fi
 # pr/issue create paths print a URL on stdout for caller capture
 case "$1 $2" in
 "pr create" | "issue create")
-	echo "https://example.invalid/test/repo/pull/0"
+	echo "https://example.invalid/o/r/pull/0"
 	;;
 esac
 exit 0
@@ -112,6 +112,12 @@ _gh_wrapper_auto_sig() {
 
 # Stub _gh_validate_edit_args (always pass — body validation isn't under test)
 _gh_validate_edit_args() { return 0; }
+
+# Privacy/write-policy and durable readback have dedicated suites. This harness
+# inspects only the exact create argv emitted by the wrapper.
+_gh_guard_public_write_args() { return 0; }
+_gh_create_pr_origin_is_exact() { return 0; }
+_gh_lock_created_auto_dispatch_issue() { return 0; }
 
 # Stub _gh_should_fallback_to_rest (never fall back — REST path adds noise)
 _gh_should_fallback_to_rest() { return 1; }
@@ -380,6 +386,18 @@ else
 	print_result "B8: AIDEVOPS_PR_CREATE_READY leaves interactive PR non-draft" 0
 fi
 unset AIDEVOPS_PR_CREATE_READY GH_ARGV_RECORD_FILE
+
+# B9: conflicting caller origins are rejected before any PR create write.
+reset_recorder
+dual_origin_rc=0
+gh_create_pr --repo o/r --title "t1: conflicting origins" --body "Resolves #1" \
+	--label "origin:worker,origin:interactive" >/dev/null 2>&1 || dual_origin_rc=$?
+if [[ "$dual_origin_rc" -eq 2 ]] && ! grep -q '^pr create ' "$GH_RECORD_FILE"; then
+	print_result "B9: gh_create_pr rejects conflicting origins before create" 0
+else
+	print_result "B9: gh_create_pr rejects conflicting origins before create" 1 \
+		"rc=${dual_origin_rc}; calls=$(tr '\n' ' ' <"$GH_RECORD_FILE")"
+fi
 
 # ---------------------------------------------------------------------------
 # Layer B': gh_create_issue defence-in-depth (mirrors PR tests)

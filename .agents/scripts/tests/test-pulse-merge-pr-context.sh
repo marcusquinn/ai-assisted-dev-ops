@@ -50,6 +50,9 @@ define_functions_under_test() {
 		/^_attempt_pr_ci_rebase_retry\(\) \{/,/^}$/ { print }
 		/^_dispatch_pr_repair_by_kind\(\) \{/,/^}$/ { print }
 		/^_route_issue_origin_is_trusted\(\) \{/,/^}$/ { print }
+		/^_route_pr_issue_supplies_worker_origin\(\) \{/,/^}$/ { print }
+		/^_route_pr_log_unroutable\(\) \{/,/^}$/ { print }
+		/^_route_pr_has_linked_issue\(\) \{/,/^}$/ { print }
 		/^_route_pr_issue_labels_for_dispatch\(\) \{/,/^}$/ { print }
 		/^_route_pr_feedback_terminal_guard\(\) \{/,/^}$/ { print }
 		/^_route_pr_to_fix_worker\(\) \{/,/^}$/ { print }
@@ -59,6 +62,9 @@ define_functions_under_test() {
 		return 1
 	fi
 	_OW_LABEL_PAT=',origin:worker,'
+	_PMP_ORIGIN_INTERACTIVE_PATTERN=',origin:interactive,'
+	_PMP_ORIGIN_WORKER_PATTERN=',origin:worker,'
+	_PMP_ORIGIN_TAKEOVER_PATTERN=',origin:worker-takeover,'
 	eval "$fn_src"
 	return 0
 }
@@ -67,6 +73,8 @@ install_stubs() {
 	ISSUE_LABELS="origin:worker,status:in-review"
 	ISSUE_METADATA_FAIL=0
 	PR_AUTHOR="maintainer"
+	SET_ORIGIN_RC=0
+	RECONCILED_PR_LABELS="origin:worker"
 	ROUTE_GUARD_RC=0
 	COMPARE_FAIL=0
 	COMPARE_BEHIND=1
@@ -102,7 +110,7 @@ install_stubs() {
 			return 0
 		fi
 		if [[ "$args" == *"labels"* ]]; then
-			printf 'origin:worker\n'
+			printf '%s\n' "${RECONCILED_PR_LABELS:-origin:worker}"
 			return 0
 		fi
 		if [[ "$args" == *"author"* ]]; then
@@ -119,6 +127,7 @@ install_stubs() {
 	_pulse_merge_admin_safety_check() { local pr_number="$1"; local repo_slug="$2"; local expected_head_sha="${3:-}"; printf 'admin-safety %s %s %s\n' "$pr_number" "$repo_slug" "$expected_head_sha" >>"$GH_CALL_LOG"; return "$ADMIN_SAFETY_RC"; }
 	_pmp_update_branch_rest() { local pr_number="$1"; local repo_slug="$2"; local head_oid="$3"; printf 'update-branch %s %s %s\n' "$pr_number" "$repo_slug" "$head_oid" >>"$GH_CALL_LOG"; return "$UPDATE_BRANCH_RC"; }
 	_feedback_route_guard_existing_terminal_label() { local pr_number="$1"; local repo_slug="$2"; local linked_issue="$3"; local kind="$4"; printf 'route-guard %s %s %s %s\n' "$pr_number" "$repo_slug" "$linked_issue" "$kind" >>"$GH_CALL_LOG"; return "$ROUTE_GUARD_RC"; }
+	set_origin_label() { local pr_number="$1"; local repo_slug="$2"; local origin_name="$3"; local mode="${4:-}"; printf 'set-origin %s %s %s %s\n' "$pr_number" "$repo_slug" "$origin_name" "$mode" >>"$GH_CALL_LOG"; return "$SET_ORIGIN_RC"; }
 	_interactive_pr_is_stale() { return 1; }
 	_is_collaborator_author() { local author="$1"; [[ "$author" == "maintainer" ]]; return $?; }
 	return 0
@@ -247,7 +256,8 @@ test_route_falls_back_to_linked_worker_issue_for_ci() {
 	export PR_AUTHOR="maintainer"
 	_route_pr_to_fix_worker "8614" "owner/repo" "456" "ci" "status:in-review" || true
 
-	if ! grep -q "dispatch-ci 8614 owner/repo 456" "$GH_CALL_LOG"; then
+	if ! grep -q "dispatch-ci 8614 owner/repo 456" "$GH_CALL_LOG" \
+		|| ! grep -q "set-origin 8614 owner/repo worker --pr" "$GH_CALL_LOG"; then
 		fail "fix-worker route falls back to linked worker issue for CI" "Expected CI dispatch: $(cat "$GH_CALL_LOG")"
 		return 0
 	fi
@@ -284,6 +294,43 @@ test_issue_origin_fallback_requires_collaborator_pr_author() {
 		return 0
 	fi
 	pass "issue-origin fallback requires collaborator PR author"
+	return 0
+}
+
+test_issue_origin_reconciliation_failure_is_retryable() {
+	install_stubs
+	SET_ORIGIN_RC=1
+	: >"$GH_CALL_LOG"
+	local route_rc=0
+	_route_pr_to_fix_worker "8615" "owner/repo" "456" "ci" "status:in-review" || route_rc=$?
+	if [[ "$route_rc" -ne 75 ]] || grep -q "dispatch-ci" "$GH_CALL_LOG" \
+		|| ! grep -q "set-origin 8615 owner/repo worker --pr" "$GH_CALL_LOG"; then
+		fail "issue-origin reconciliation failure is retryable" \
+			"rc=${route_rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG")"
+		return 0
+	fi
+	if ! grep -q "origin reconciliation failed — deferring routing" "$LOGFILE"; then
+		fail "issue-origin reconciliation failure is retryable" "missing bounded diagnostic"
+		return 0
+	fi
+	pass "issue-origin reconciliation failure defers without dispatch"
+	return 0
+}
+
+test_missing_origin_has_terminal_diagnostic() {
+	install_stubs
+	ISSUE_LABELS="status:in-review"
+	: >"$LOGFILE"
+	: >"$GH_CALL_LOG"
+	local route_rc=0
+	_route_pr_to_fix_worker "8616" "owner/repo" "456" "review" "status:in-review" || route_rc=$?
+	if [[ "$route_rc" -ne 1 ]] || grep -q "dispatch-review" "$GH_CALL_LOG" \
+		|| ! grep -q "have no trusted origin metadata for review repair routing" "$LOGFILE"; then
+		fail "missing origin has terminal diagnostic" \
+			"rc=${route_rc}; calls=$(tr '\n' ';' <"$GH_CALL_LOG"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	pass "missing PR and issue origin emits bounded routing diagnostic"
 	return 0
 }
 
@@ -456,6 +503,8 @@ main() {
 	test_route_falls_back_to_linked_worker_issue_for_ci
 	test_route_falls_back_to_linked_worker_issue_for_conflict
 	test_issue_origin_fallback_requires_collaborator_pr_author
+	test_issue_origin_reconciliation_failure_is_retryable
+	test_missing_origin_has_terminal_diagnostic
 	test_fresh_interactive_pr_is_not_routed
 	test_interactive_route_requires_confirmed_handover
 	test_interactive_route_dispatches_after_confirmed_takeover
