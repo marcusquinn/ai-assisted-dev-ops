@@ -6,6 +6,8 @@ const VALUE_OPTION_KEYS = new Map([
   ["--archive-dir", "archiveDir"],
   ["--before", "cutoff"],
   ["--db", "dbPath"],
+  ["--max-duration-seconds", "maxDurationSeconds"],
+  ["--max-partitions", "maxPartitions"],
   ["--max-rows", "maxRows"],
 ]);
 
@@ -32,7 +34,7 @@ export function runRetentionCommand(argv, actions) {
   try {
     const { command, options } = parseCli(argv);
     const action = actions[command];
-    if (typeof action !== "function") throw new TypeError("command must be inventory or archive");
+    if (typeof action !== "function") throw new TypeError("command must be inventory, archive, or maintain");
     process.stdout.write(`${JSON.stringify(action(options))}\n`);
     return 0;
   } catch (error) {

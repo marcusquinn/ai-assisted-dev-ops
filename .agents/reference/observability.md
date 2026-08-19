@@ -105,7 +105,13 @@ transaction rechecks the exact source range, temporarily suspends only the
 delete guard, restores it, and appends an immutable `runtime_event_archives`
 manifest row. A failed/corrupt archive leaves source rows intact. Interruption
 after file verification is resumable and reuses the verified partition.
-Archive deletion is not automatic.
+
+Core routine `r918` runs producer-owned maintenance daily through the shared
+Pulse scheduler. It repeatedly applies the same verified partition primitive
+until the backlog is clear or the default 20-partition/120-second run bound is
+reached; any residual backlog is reported and left for the next run. It does
+not install a dedicated launchd plist or systemd unit. The one-partition
+`retention` command remains explicit and dry-run-first.
 
 ```bash
 # Physical and classified bytes; never prints raw payloads
@@ -116,6 +122,9 @@ observability-helper.sh retention --dry-run
 
 # Explicit maintenance after reviewing the dry run
 observability-helper.sh retention --apply --max-rows 5000
+
+# Bounded catch-up used by shared-Pulse routine r918
+observability-helper.sh retention-maintenance --apply --max-partitions 20 --max-duration-seconds 120
 ```
 
 The shared storage inventory reports active, archive, protected, reclaimable,

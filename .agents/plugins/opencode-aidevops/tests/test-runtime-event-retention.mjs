@@ -24,6 +24,7 @@ import {
 import {
   archiveRuntimeEvents,
   isProtectedRuntimeEvent,
+  maintainRuntimeEvents,
   runtimeEventRetentionInventory,
   verifyRuntimeEventArchive,
 } from "../../../scripts/runtime-events-retention.mjs";
@@ -220,6 +221,92 @@ test("synthetic high-volume cycles converge in the active partition", {
     }
     assert.equal(Number(scalar(dbPath, "SELECT COUNT(*) FROM runtime_event_archives;")), 3);
     assert.equal(runtimeEventRetentionInventory({ archiveDir, cutoff: CUTOFF, dbPath }).candidate_bytes, 0);
+  } finally {
+    rmSync(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("bounded producer maintenance catches up across scheduled runs", {
+  skip: !sqliteAvailable() && "sqlite3 is unavailable",
+}, () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "aidevops-runtime-maintenance-"));
+  const dbPath = join(tempDir, "observability.db");
+  const archiveDir = join(tempDir, "archives");
+  try {
+    assert.equal(initialiseRuntimeEventStore(dbPath), true);
+    for (let index = 0; index < 125; index++) appendFixture(5000 + index);
+
+    const dryRun = maintainRuntimeEvents({
+      archiveDir,
+      cutoff: CUTOFF,
+      dbPath,
+      maxPartitions: 2,
+      maxRows: 50,
+    });
+    assert.equal(dryRun.status, "maintenance_dry_run");
+    assert.equal(dryRun.candidate_rows, 50);
+    assert.equal(dryRun.more_candidates, true);
+    assert.equal(Number(scalar(dbPath, "SELECT COUNT(*) FROM runtime_events;")), 125);
+
+    const clockValues = [0, 0, 1001];
+    const durationBounded = maintainRuntimeEvents({
+      apply: true,
+      archiveDir,
+      clock: () => clockValues.shift() ?? 1001,
+      cutoff: CUTOFF,
+      dbPath,
+      maxDurationSeconds: 1,
+      maxPartitions: 20,
+      maxRows: 50,
+    });
+    assert.equal(durationBounded.status, "maintained");
+    assert.equal(durationBounded.stop_reason, "max_duration");
+    assert.equal(durationBounded.partitions_archived, 1);
+    assert.equal(durationBounded.source_rows_archived, 50);
+    assert.equal(durationBounded.backlog_remaining, true);
+    assert.equal(Number(scalar(dbPath, "SELECT COUNT(*) FROM runtime_events;")), 75);
+
+    const bounded = maintainRuntimeEvents({
+      apply: true,
+      archiveDir,
+      cutoff: CUTOFF,
+      dbPath,
+      maxPartitions: 1,
+      maxRows: 50,
+    });
+    assert.equal(bounded.status, "maintained");
+    assert.equal(bounded.stop_reason, "max_partitions");
+    assert.equal(bounded.partitions_archived, 1);
+    assert.equal(bounded.source_rows_archived, 50);
+    assert.equal(bounded.backlog_remaining, true);
+    assert.equal(Number(scalar(dbPath, "SELECT COUNT(*) FROM runtime_events;")), 25);
+
+    const converged = maintainRuntimeEvents({
+      apply: true,
+      archiveDir,
+      cutoff: CUTOFF,
+      dbPath,
+      maxPartitions: 2,
+      maxRows: 50,
+    });
+    assert.equal(converged.stop_reason, "no_candidates");
+    assert.equal(converged.partitions_archived, 1);
+    assert.equal(converged.source_rows_archived, 25);
+    assert.equal(converged.backlog_remaining, false);
+    assert.equal(Number(scalar(dbPath, "SELECT COUNT(*) FROM runtime_events;")), 0);
+    assert.equal(Number(scalar(dbPath, "SELECT COUNT(*) FROM runtime_event_archives;")), 3);
+
+    const noOp = maintainRuntimeEvents({
+      apply: true,
+      archiveDir,
+      cutoff: CUTOFF,
+      dbPath,
+      maxPartitions: 2,
+      maxRows: 50,
+    });
+    assert.equal(noOp.status, "no_candidates");
+    assert.equal(noOp.partitions_archived, 0);
+    assert.equal(noOp.backlog_remaining, false);
   } finally {
     rmSync(tempDir, { force: true, recursive: true });
   }

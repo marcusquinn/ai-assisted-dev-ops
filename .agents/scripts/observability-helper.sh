@@ -650,21 +650,29 @@ cmd_runtime_events() {
 	return 0
 }
 
-cmd_storage() {
+require_node() {
 	command -v node &>/dev/null || {
 		print_error "node required"
 		return 1
 	}
+	return 0
+}
+
+cmd_storage() {
+	require_node || return 1
 	node "$RUNTIME_EVENTS_RETENTION" inventory --db "${OBS_DIR}/llm-requests.db" "$@"
 	return $?
 }
 
 cmd_retention() {
-	command -v node &>/dev/null || {
-		print_error "node required"
-		return 1
-	}
+	require_node || return 1
 	node "$RUNTIME_EVENTS_RETENTION" archive --db "${OBS_DIR}/llm-requests.db" "$@"
+	return $?
+}
+
+cmd_retention_maintenance() {
+	require_node || return 1
+	node "$RUNTIME_EVENTS_RETENTION" maintain --db "${OBS_DIR}/llm-requests.db" "$@"
 	return $?
 }
 
@@ -673,7 +681,8 @@ cmd_help() {
 Observability Helper — LLM request and runtime-event evidence
 Usage: observability-helper.sh [command] [options]
 Commands: ingest | record (--model X) | rate-limits | cache-health | runtime-events [limit]
-          storage [--json] | retention [--dry-run|--apply] [--before ISO] [--max-rows N] | help
+          storage [--json] | retention [--dry-run|--apply] [--before ISO] [--max-rows N]
+          retention-maintenance [--dry-run|--apply] [--max-partitions N] [--max-duration-seconds N] | help
 
 Record options:
   --model MODEL          Model name (required)
@@ -698,7 +707,7 @@ main() {
 	local command="${1:-help}"
 	shift || true
 	case "$command" in
-	storage | retention) ;;
+	storage | storage-inventory | retention | archive | retention-maintenance | maintain-retention) ;;
 	*)
 		init_log_file
 		init_storage || return 1
@@ -711,6 +720,7 @@ main() {
 	runtime-events | runtime_events | events) cmd_runtime_events "$@" ;;
 	storage | storage-inventory) cmd_storage "$@" ;;
 	retention | archive) cmd_retention "$@" ;;
+	retention-maintenance | maintain-retention) cmd_retention_maintenance "$@" ;;
 	help | --help | -h) cmd_help ;; *)
 		print_error "Unknown: $command"
 		cmd_help

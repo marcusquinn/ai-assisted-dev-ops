@@ -25,12 +25,15 @@ import {
 } from "./runtime-events-store.mjs";
 import { runRetentionCommand } from "./runtime-events-retention-cli.mjs";
 import { buildRuntimeEventRetentionInventory } from "./runtime-events-retention-inventory.mjs";
+import { runRuntimeEventMaintenance } from "./runtime-events-retention-maintenance.mjs";
 import { verifyArchiveArtifacts } from "./runtime-events-retention-verification.mjs";
 import { canonicalizeSqliteDbPath, sqlEscape } from "./sqlite-process.mjs";
 
 export const RUNTIME_EVENT_ARCHIVE_SCHEMA_VERSION = 1;
 export const RUNTIME_EVENT_ACTIVE_DAYS_DEFAULT = 30;
 export const RUNTIME_EVENT_ARCHIVE_MAX_ROWS_DEFAULT = 5000;
+export const RUNTIME_EVENT_MAINTENANCE_MAX_PARTITIONS_DEFAULT = 20;
+export const RUNTIME_EVENT_MAINTENANCE_MAX_DURATION_SECONDS_DEFAULT = 120;
 
 const ERROR_STATUS = new Set([
   "blocked", "cancelled", "denied", "error", "failed", "rejected", "timed_out", "timeout",
@@ -326,14 +329,28 @@ export function archiveRuntimeEvents(options = {}) {
   const cutoffAt = normalizedCutoff(options.cutoff, options);
   const maxRows = normalizedMaxRows(options.maxRows);
   if (!existsSync(dbPath)) {
-    return Object.freeze({ applied: false, candidate_bytes: 0, candidate_rows: 0, status: "database_missing" });
+    return Object.freeze({
+      applied: false,
+      candidate_bytes: 0,
+      candidate_rows: 0,
+      more_candidates: false,
+      status: "database_missing",
+    });
   }
   if (options.apply && !initialiseRuntimeEventStore(dbPath)) {
     throw new Error("runtime-event store is unavailable");
   }
-  const rows = candidateRows(dbPath, cutoffAt, maxRows, { readonly: !options.apply });
+  const selectedRows = candidateRows(dbPath, cutoffAt, maxRows + 1, { readonly: !options.apply });
+  const moreCandidates = selectedRows.length > maxRows;
+  const rows = selectedRows.slice(0, maxRows);
   if (rows.length === 0) {
-    return Object.freeze({ applied: false, candidate_bytes: 0, candidate_rows: 0, status: "no_candidates" });
+    return Object.freeze({
+      applied: false,
+      candidate_bytes: 0,
+      candidate_rows: 0,
+      more_candidates: false,
+      status: "no_candidates",
+    });
   }
   const partition = buildPartition(rows, cutoffAt, options.createdAt);
   const result = {
@@ -341,6 +358,7 @@ export function archiveRuntimeEvents(options = {}) {
     candidate_bytes: partition.header.source_logical_bytes,
     candidate_rows: partition.header.source_row_count,
     compacted_rows: partition.header.compacted_row_count,
+    more_candidates: moreCandidates,
     partition_id: partition.header.partition_id,
     protected_rows: partition.header.protected_row_count,
     status: options.apply ? "prepared" : "dry_run",
@@ -358,6 +376,16 @@ export function archiveRuntimeEvents(options = {}) {
     archive_bytes: persisted.manifest.archive_bytes,
     archive_file: persisted.manifest.archive_file,
     status: "archived",
+  });
+}
+
+/** Apply verified partitions until caught up or an explicit work bound is reached. */
+export function maintainRuntimeEvents(options = {}) {
+  return runRuntimeEventMaintenance(options, {
+    archive: archiveRuntimeEvents,
+    maxDurationSecondsDefault: RUNTIME_EVENT_MAINTENANCE_MAX_DURATION_SECONDS_DEFAULT,
+    maxPartitionsDefault: RUNTIME_EVENT_MAINTENANCE_MAX_PARTITIONS_DEFAULT,
+    normalizeCutoff: normalizedCutoff,
   });
 }
 
@@ -379,6 +407,7 @@ export function runRetentionCli(argv = process.argv.slice(2)) {
   return runRetentionCommand(argv, {
     archive: archiveRuntimeEvents,
     inventory: runtimeEventRetentionInventory,
+    maintain: maintainRuntimeEvents,
   });
 }
 

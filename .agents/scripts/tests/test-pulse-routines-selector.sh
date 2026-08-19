@@ -399,6 +399,8 @@ _test_generated_routines_repository_contract() {
 	ids=$(_collect_routine_ids "${fixture_dir}/TODO.md")
 	if [[ $'\n'"$ids"$'\n' == *$'\nr916\n'* ]] &&
 		[[ $'\n'"$ids"$'\n' == *$'\nr917\n'* ]] &&
+		[[ $'\n'"$ids"$'\n' == *$'\nr918\n'* ]] &&
+		grep -Fqx -- '- [x] r918 Observability retention — archive bounded runtime evidence repeat:daily(@03:10) ~2m run:scripts/observability-helper.sh retention-maintenance --apply --max-partitions 20 --max-duration-seconds 120' "${fixture_dir}/TODO.md" &&
 		[[ $'\n'"$ids"$'\n' == *$'\nr-user-contract\n'* ]] &&
 		[[ $'\n'"$ids"$'\n' != *$'\nr-task-lookalike\n'* ]]; then
 		pass "Case 10 (GH#28957): generated repository exposes core and user routines only"

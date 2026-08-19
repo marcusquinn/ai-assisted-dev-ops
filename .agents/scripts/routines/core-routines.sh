@@ -33,6 +33,7 @@ r914|x|Repo aidevops health — bump stale .aidevops.json, detect drift|repeat:d
 r915|x|Pulse check — worker utilisation and self-improvement recommendations|repeat:daily(@06:20)|~5m|scripts/pulse-check-helper.sh apply|script
 r916|x|Cloudron packages — check upstream releases|repeat:daily(@01:30)|~2m|scripts/cloudron-package-monitor-helper.sh upstream --apply|script|UTC
 r917|x|Cloudron packages — audit compatibility|repeat:weekly(sun@07:40)|~5m|scripts/cloudron-package-monitor-helper.sh compatibility --apply|script
+r918|x|Observability retention — archive bounded runtime evidence|repeat:daily(@03:10)|~2m|scripts/observability-helper.sh retention-maintenance --apply --max-partitions 20 --max-duration-seconds 120|script
 ENTRIES
 	return 0
 }
@@ -139,7 +140,7 @@ EOF
 EOF
 	fi
 	cat <<'EOF'
-- `jq '.r916, .r917' ~/.aidevops/.agent-workspace/pulse/routine-state.json` — last-run state
+- `jq '.r916, .r917, .r918' ~/.aidevops/.agent-workspace/pulse/routine-state.json` — last-run state
 - `aidevops status` — framework and supervisor overview
 EOF
 	return 0
@@ -981,6 +982,46 @@ the version-controlled \`repeat:\` expression; r917 has no dedicated platform un
 - Audits local package files without building or executing upstream content.
 - Creates issues only after target-local deduplication and authority checks.
 - Never acknowledges a finding when GitHub/API operations fail.
+$(_pulse_diag_commands "$os")
+$(_platform_footnote "$os")
+EOF
+	return 0
+}
+
+describe_r918() {
+	local os="${1:-}"
+	[[ -n "$os" ]] || os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+	cat <<EOF
+# r918: Observability retention
+
+## Overview
+
+Daily producer-owned maintenance for the append-only runtime-event store. It
+archives old rows through the existing verified partition transaction until
+the candidate backlog is clear or an explicit work bound is reached.
+
+## Schedule
+
+| Field | Value |
+|-------|-------|
+| Frequency | Daily at 03:10 |
+| Type | script |
+| Expected duration | ~2 minutes |
+| Script | \`scripts/observability-helper.sh retention-maintenance --apply --max-partitions 20 --max-duration-seconds 120\` |
+$(_scheduler_row_pulse "repeat:daily(@03:10)")
+
+Pulse reads the enabled routine from registered \`TODO.md\` files; r918 has no
+dedicated launchd plist or systemd unit.
+
+## Safety rails
+
+- Each partition is bounded, immutable, checksum-verified, and committed only
+  after the exact source range is rechecked in one immediate transaction.
+- Protected lifecycle, terminal, error, permission, security, audit, release,
+  deploy, and subagent evidence remains preserved verbatim in the archive.
+- A run stops after 20 partitions or 120 seconds and reports whether backlog
+  remains for the next scheduled run.
+- Missing stores and empty candidate sets are successful no-ops.
 $(_pulse_diag_commands "$os")
 $(_platform_footnote "$os")
 EOF
