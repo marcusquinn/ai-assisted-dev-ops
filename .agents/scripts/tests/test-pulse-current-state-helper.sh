@@ -93,7 +93,13 @@ json.dump({
         },
     ]
 }, open(os.path.join(root, 'objective-reconciliation.json'), 'w'))
-open(os.path.join(root, 'pulse-wrapper.log'), 'w').write('[pulse] useful activity\nPR opened #2\nPR merged #2\nissue closed #1\nInstance lock acquired\n')
+open(os.path.join(root, 'pulse-wrapper.log'), 'w').write(
+    '[pulse] useful activity\n'
+    'ERROR Refusing reconciliation: HEAD is not exact origin/develop SHA private-sha\n'
+    '[pulse-canonical-recovery] diagnostic-only canonical state: /private/path (state=uncommitted)\n'
+    '[pulse-canonical-recovery] advisory filed locally: /private/path/canonical-recovery-repo.advisory\n'
+    'PR opened #2\nPR merged #2\nissue closed #1\nInstance lock acquired\n'
+)
 state_dir = os.path.join(root, 'review-thread-state')
 os.makedirs(state_dir, exist_ok=True)
 open(os.path.join(state_dir, 'owner-repo-12.state'), 'w').write(
@@ -188,6 +194,13 @@ jq -e '.review_thread_attention[0].attempt_count == 3' "$json_output" >/dev/null
 jq -e '.objective_reconciliation.objectives_without_next_action == 1' "$json_output" >/dev/null
 jq -e '.objective_reconciliation.expired_assumptions == 1' "$json_output" >/dev/null
 jq -e '.objective_reconciliation.oldest_unverified_assumption.number == 41' "$json_output" >/dev/null
+jq -e '.canonical_reconciliation.refusal_count == 1' "$json_output" >/dev/null
+jq -e '.canonical_reconciliation.classification == "dirty_or_uncommitted"' "$json_output" >/dev/null
+jq -e '.canonical_reconciliation.canonical_recovery_advisory_observed == true' "$json_output" >/dev/null
+if grep -Eq '/private/path|develop SHA|private-sha' "$json_output"; then
+	printf 'FAIL canonical reconciliation projection exposes raw diagnostic context\n' >&2
+	exit 1
+fi
 sqlite3 "$AIDEVOPS_OBS_DB_OVERRIDE" "SELECT COUNT(*) FROM runtime_events WHERE subject_id='pulse:current' AND event_type IN ('state.snapshot','state.delta');" | grep -Eq '^[12]$'
 sqlite3 "$AIDEVOPS_OBS_DB_OVERRIDE" "SELECT payload_json FROM runtime_events WHERE subject_id='pulse:current' ORDER BY id LIMIT 1;" | grep -q 'review_thread_attention_count'
 if sqlite3 "$AIDEVOPS_OBS_DB_OVERRIDE" "SELECT payload_json FROM runtime_events WHERE subject_id='pulse:current';" | grep -Eq 'marcusquinn/aidevops|owner-repo|state_file|wrapper_activity'; then

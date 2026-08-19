@@ -119,6 +119,7 @@ cat <<'JSON'
   "pulse_gauges": {"dispatch_capacity_final_max_workers": 6},
   "worker_outcomes": {"spawned": 4},
   "worker_terminal_events": 0,
+  "canonical_reconciliation": {"refusal_count": 2, "classification": "dirty_or_uncommitted", "canonical_recovery_advisory_observed": true},
   "graphql_budget_status": "OK fixture"
 }
 JSON
@@ -299,8 +300,10 @@ assert_contains "text report shows empty active capacity" "Active workers: 0 / 6
 assert_contains "text report distinguishes eligible work" "Auto-dispatch queue: 5 available (4 eligible) / 6 open" "$OUT"
 assert_contains "underfilled finding appears" "pulse-underfilled-auto-dispatch-queue" "$OUT"
 assert_contains "launch accounting finding appears" "pulse-launch-accounting-gap" "$OUT"
+assert_contains "canonical reconciliation finding appears" "pulse-canonical-reconciliation-stops" "$OUT"
 assert_not_contains "text report omits private slug" "private/repo-one" "$OUT"
 assert_not_contains "text report omits issue titles" "secret one" "$OUT"
+assert_not_contains "text report omits canonical branch detail" "origin/develop" "$OUT"
 
 BLOCKER_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_BLOCKER_FIXTURE=retained" "$HELPER" report --since 7d 2>&1)
 assert_contains "healthy idle report exposes retained supervisor blocker advisory" "retained-supervisor-permission-blockers" "$BLOCKER_OUT"
@@ -316,7 +319,7 @@ assert_not_contains "retained blocker JSON omits private blocker title" "private
 
 JSON_OUT=$(env "${COMMON_ENV[@]}" "$HELPER" json 2>&1)
 IDS=$(printf '%s' "$JSON_OUT" | jq -r '[.findings[].id] | sort | join(",")')
-assert_eq "json finding IDs" "auto-dispatch-missing-tier-labels,pulse-launch-accounting-gap,pulse-underfilled-auto-dispatch-queue" "$IDS"
+assert_eq "json finding IDs" "auto-dispatch-missing-tier-labels,pulse-canonical-reconciliation-stops,pulse-launch-accounting-gap,pulse-underfilled-auto-dispatch-queue" "$IDS"
 JSON_PRIVATE_COUNT=$(printf '%s' "$JSON_OUT" | grep -c "private/repo-one" 2>/dev/null || true)
 assert_eq "json output removes raw worker examples" "0" "$JSON_PRIVATE_COUNT"
 ACTIVE_SOURCE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.active_workers_source')
@@ -325,6 +328,9 @@ HANDOFF_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_runtime_hand
 assert_eq "json runtime handoff rate uses terminal session denominator" "90" "$HANDOFF_RATE"
 SUCCESS_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_success_rate')
 assert_eq "json delivered success rate is unknown without GitHub delivery check" "null" "$SUCCESS_RATE"
+assert_eq "json reports canonical reconciliation refusal aggregate" "2" "$(printf '%s' "$JSON_OUT" | jq -r '.current_state.canonical_reconciliation.refusal_count')"
+assert_eq "json reports canonical reconciliation classification" "dirty_or_uncommitted" "$(printf '%s' "$JSON_OUT" | jq -r '.current_state.canonical_reconciliation.classification')"
+assert_not_contains "json omits canonical branch detail" "origin/develop" "$JSON_OUT"
 
 MALFORMED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=malformed" "$HELPER" json 2>&1)
 assert_contains "malformed queue emits normalization shortfall" "pulse-eligible-queue-under-target" "$MALFORMED_OUT"

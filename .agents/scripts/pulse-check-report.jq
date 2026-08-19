@@ -45,6 +45,9 @@ end) as $max_workers |
 ($summary.metrics.failure_families // []) as $failure_families |
 ($recent_summary.metrics.failure_families // []) as $recent_failure_families |
 ($summary.progress_blockers // {}) as $progress_blockers |
+($current.canonical_reconciliation.refusal_count // 0 | number_or_zero) as $canonical_reconciliation_refusal_count |
+($current.canonical_reconciliation.classification // "none") as $canonical_reconciliation_classification |
+($current.canonical_reconciliation.canonical_recovery_advisory_observed // false) as $canonical_recovery_advisory_observed |
 ([$progress_blockers.retained_unverified[]?
   | select(((.reason // "") | contains("permission"))
     and ((((.session_key // "") | startswith("supervisor-pulse")))
@@ -84,6 +87,7 @@ end) as $max_workers |
     graphql_budget_status: ($current.graphql_budget_status // "unknown"),
     runner_health: ($runner.finding // "unknown"),
     retained_supervisor_permission_blockers: $retained_supervisor_permission_blockers,
+    canonical_reconciliation_refusals: $canonical_reconciliation_refusal_count,
     recurrent_failure_families: ([$failure_families[] | select((.count // 0) >= $failure_threshold and (.confidence // "low") == "high" and (.family // "") != "other-failure")] | length)
   },
   queue: ($queue.aggregate // {}),
@@ -94,6 +98,11 @@ end) as $max_workers |
     pulse_gauges: ($current.pulse_gauges // {}),
     current_state_guardrails: ($current.current_state_guardrails // {}),
     dispatch_pacing: ($current.dispatch_pacing // {}),
+    canonical_reconciliation: {
+      refusal_count: $canonical_reconciliation_refusal_count,
+      classification: $canonical_reconciliation_classification,
+      canonical_recovery_advisory_observed: $canonical_recovery_advisory_observed
+    },
     active_worker_processes: ($current.active_worker_processes // null),
     top_pre_launch_blockers: ($current.top_pre_launch_blockers // [])
   },
@@ -139,6 +148,20 @@ end) as $max_workers |
     cadence_api_risk: ($api.cadence_api_risk // "unknown")
   },
   findings: ([
+    if $canonical_reconciliation_refusal_count > 0 then
+      finding(
+        "pulse-canonical-reconciliation-stops";
+        "medium";
+        "Canonical reconciliation stopped on a non-exact default-branch HEAD";
+        [
+          ("reconciliation_refusal_count=" + ($canonical_reconciliation_refusal_count | tostring)),
+          ("canonical_reconciliation_classification=" + $canonical_reconciliation_classification),
+          ("canonical_recovery_advisory_observed=" + ($canonical_recovery_advisory_observed | tostring))
+        ];
+        "Inspect the audited canonical-recovery advisory and reconciliation evidence. Preserve canonical checkout state; do not reset, stash, or clean it from pulse.";
+        false
+      )
+    else empty end,
     if $retained_supervisor_permission_blockers > 0 then
       finding(
         "retained-supervisor-permission-blockers";

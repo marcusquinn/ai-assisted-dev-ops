@@ -433,13 +433,30 @@ if os.path.exists(stats_path):
         counter_hits = {}
         gauge_values = {}
 
+wrapper_log_lines = recent_lines(os.path.join(log_dir, 'pulse-wrapper.log'), 400)
 wrapper_activity = []
-for line in recent_lines(os.path.join(log_dir, 'pulse-wrapper.log'), 400):
+for line in wrapper_log_lines:
     if 'Instance lock acquired' in line or 'detector-loop' in line:
         continue
     if line.strip():
         wrapper_activity.append(line)
 wrapper_activity = wrapper_activity[-10:]
+
+canonical_reconciliation_refusal_count = sum(
+    1 for line in wrapper_log_lines
+    if 'Refusing reconciliation: HEAD is not exact origin/' in line
+)
+canonical_recovery_advisory_observed = any(
+    'diagnostic-only canonical state:' in line or 'advisory filed locally:' in line
+    for line in wrapper_log_lines
+)
+canonical_reconciliation_classification = 'none'
+if canonical_reconciliation_refusal_count:
+    canonical_reconciliation_classification = (
+        'dirty_or_uncommitted'
+        if canonical_recovery_advisory_observed
+        else 'upstream_or_default_branch_mismatch'
+    )
 
 metric_class_counts = Counter(classify_metric(item) for item in metrics)
 stage_counts = Counter(record['stage'] for record in stage_records)
@@ -638,6 +655,11 @@ result = {
     'top_pre_launch_blockers': top_pre_launch_blockers[:5],
     'pulse_counter_hits': counter_hits,
     'pulse_gauges': gauge_values,
+    'canonical_reconciliation': {
+        'refusal_count': canonical_reconciliation_refusal_count,
+        'classification': canonical_reconciliation_classification,
+        'canonical_recovery_advisory_observed': canonical_recovery_advisory_observed,
+    },
     'wrapper_activity_lines': len(wrapper_activity),
     'active_worker_processes': active_worker_processes,
     'worker_worktrees': len(worktrees),
@@ -663,6 +685,7 @@ runtime_state = {
         'rest_search_calls': api_pressure['rest_search_calls'],
     },
     'current_state_guardrails': current_state_guardrails,
+    'canonical_reconciliation': result['canonical_reconciliation'],
     'dispatch_alive': result['dispatch_alive'],
     'dispatch_api_blocked': dispatch_api_blocked,
     'dispatch_pacing': dispatch_pacing,
