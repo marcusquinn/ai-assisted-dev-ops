@@ -15,6 +15,7 @@ TESTS_RUN=0
 TESTS_FAILED=0
 FIXTURE_TRUSTED=0
 FIXTURE_LABELS=""
+WORKER_BRIEFED_CALLS="${TEST_ROOT}/worker-briefed-calls.log"
 PULSE_UNKNOWN_STATE="UNKNOWN"
 PULSE_REVIEW_EVIDENCE_SCHEMA="aidevops.review-gate-evidence/v1"
 export LOGFILE AGENTS_DIR
@@ -55,12 +56,16 @@ _is_collaborator_author() {
 	return 1
 }
 _is_trusted_dependabot_update_pr() { return 1; }
+_pulse_route_dependabot_pr_to_worker_issue() { return 1; }
 _has_maintainer_crypto_approval() { return 1; }
 check_permission_failure_pr() { return 0; }
 check_pr_modifies_workflows() { return 1; }
 check_gh_workflow_scope() { return 0; }
 _pm_issue_api() { printf 'repos/%s/issues/%s\n' "$1" "$2"; }
-_attempt_worker_briefed_auto_merge() { return 0; }
+_attempt_worker_briefed_auto_merge() {
+	printf 'called\n' >>"$WORKER_BRIEFED_CALLS"
+	return 1
+}
 _check_interactive_pr_gates() { return 0; }
 gh() { return 0; }
 gh_pr_view() {
@@ -94,12 +99,14 @@ run_gate() {
 FIXTURE_TRUSTED=1
 FIXTURE_LABELS="external-contributor"
 : >"$TRUST_CALLS"
+: >"$WORKER_BRIEFED_CALLS"
 result=$(run_gate)
-if [[ "$result" -eq 0 ]] && grep -q '^950 owner/repo head-current$' "$TRUST_CALLS"; then
-	print_result "exact-head Issue Sync automation passes Pulse's early authority gate" 0
+if [[ "$result" -eq 0 ]] && grep -q '^950 owner/repo head-current$' "$TRUST_CALLS" &&
+	[[ ! -s "$WORKER_BRIEFED_CALLS" ]]; then
+	print_result "exact-head Issue Sync automation bypasses worker linked-issue gate" 0
 else
-	print_result "exact-head Issue Sync automation passes Pulse's early authority gate" 1 \
-		"rc=${result} calls=$(cat "$TRUST_CALLS") log=$(cat "$LOGFILE")"
+	print_result "exact-head Issue Sync automation bypasses worker linked-issue gate" 1 \
+		"rc=${result} trust=$(cat "$TRUST_CALLS") worker_calls=$(cat "$WORKER_BRIEFED_CALLS") log=$(cat "$LOGFILE")"
 fi
 
 FIXTURE_TRUSTED=0

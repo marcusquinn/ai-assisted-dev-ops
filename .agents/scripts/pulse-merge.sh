@@ -603,10 +603,12 @@ _check_pr_merge_gates() {
 	#
 	# Uses comma-delimited matching: ",origin:worker," does NOT match
 	# ",origin:worker-takeover," (substring-safe).
-	if [[ -n "${_OW_LABEL_PAT:-}" && ",${_oi_labels_str}," == *"${_OW_LABEL_PAT:-}"* ]]; then
+	if [[ -n "${_OW_LABEL_PAT:-}" && ",${_oi_labels_str}," == *"${_OW_LABEL_PAT:-}"* && "$_trusted_issue_sync" -eq 0 ]]; then
 		if ! _attempt_worker_briefed_auto_merge "$pr_number" "$repo_slug" "$_oi_labels_str" "$_oi_is_draft" "$linked_issue" "$_author_collab_permission" "$pr_author"; then
 			return 1
 		fi
+	elif [[ "$_trusted_issue_sync" -eq 1 ]]; then
+		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — exact-head Issue Sync trust satisfies worker authority without a linked issue" >>"$LOGFILE"
 	fi
 
 	# A converged CHANGES_REQUESTED remediation may perform a branch repair,
