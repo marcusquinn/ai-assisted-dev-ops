@@ -60,6 +60,10 @@ _sync_blocked_by_for_task() {
 		printf 'RELS:0 RETRYABLE:0\n'
 		;;
 	retry) printf 'RELS:0 RETRYABLE:1\n' ;;
+	resolution)
+		_relationship_record_diagnostic "$task_id" "${task_id}->t9" "dependency-mapping-unresolved"
+		printf 'RELS:0 RETRYABLE:1\n'
+		;;
 	error) return 1 ;;
 	*) return 1 ;;
 	esac
@@ -175,5 +179,35 @@ for BLOCKED_MODE in retry error; do
 	[[ "$unresolved_output" == *"Backend calls: 0"* ]] || fail "${BLOCKED_MODE} retry unexpectedly made a backend call"
 done
 pass "unresolved and errored relationship work remain pending without backend calls"
+
+# A failed resolution cannot be repaired by retrying unchanged TODO input. Keep
+# a durable, revision-scoped marker so Pulse performs one diagnostic attempt,
+# then waits for a changed relationship declaration before trying again.
+TEST_REPO="example/resolution"
+printf -- '- [ ] t1 Unresolved task blocked-by:t9 ref:GH#1\n' >"$TODO_FILE"
+: >"$ATTEMPT_LOG"
+rm -f "$DEADLINE_FLAG"
+BLOCKED_MODE="resolution"
+resolution_rc=0
+resolution_output=$(run_relationship_scoped_command cmd_relationships 2>/dev/null) || resolution_rc=$?
+resolution_state=$(_relationship_resume_state_file "$TEST_REPO")
+[[ "$resolution_rc" -eq 1 ]] || fail "failed resolution was not retryable on its first attempt"
+grep -q '^suppressed=t1$' "$resolution_state" || fail "failed resolution did not persist its bounded retry marker"
+[[ "$resolution_output" == *"Unresolved relationship: task=t1 edge=t1->t9 reason=dependency-mapping-unresolved"* ]] || \
+	fail "failed resolution omitted a privacy-safe edge diagnostic"
+
+: >"$ATTEMPT_LOG"
+suppressed_output=$(run_relationship_scoped_command cmd_relationships 2>/dev/null) || fail "unchanged unresolved input remained retryable"
+[[ ! -s "$ATTEMPT_LOG" ]] || fail "unchanged unresolved input repeated relationship work"
+[[ "$suppressed_output" == *"resume=suppressed"* ]] || fail "suppressed workset was not classified"
+grep -q '^suppressed=t1$' "$resolution_state" || fail "suppressed marker was not retained"
+
+printf -- '- [ ] t2 New relationship input blocked-by:t9 ref:GH#2\n' >>"$TODO_FILE"
+: >"$ATTEMPT_LOG"
+changed_resolution_rc=0
+run_relationship_scoped_command cmd_relationships >/dev/null 2>&1 || changed_resolution_rc=$?
+[[ "$changed_resolution_rc" -eq 1 ]] || fail "changed relationship input did not re-enable resolution"
+[[ -s "$ATTEMPT_LOG" ]] || fail "changed relationship input did not invalidate suppression"
+pass "failed resolution diagnostics suppress unchanged relationship retries"
 
 printf 'PASS: resumable relationship reconciliation regressions\n'

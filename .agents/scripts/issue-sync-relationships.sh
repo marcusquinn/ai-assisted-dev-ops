@@ -66,6 +66,7 @@ _NODE_ID_RATE_LIMITED_FILE=""
 # survive those subshell boundaries while Bash variables do not.
 _RELATIONSHIP_EDGE_SEEN_FILE=""
 _RELATIONSHIP_RESULT_FILE=""
+_RELATIONSHIP_DIAGNOSTIC_FILE=""
 _RELATIONSHIP_BACKEND_CALL_FILE=""
 _RELATIONSHIP_SUCCESS_RESULT="RELS:0 RETRYABLE:0"
 _RELATIONSHIP_RETRY_RESULT="RELS:0 RETRYABLE:1"
@@ -74,6 +75,7 @@ _RELATIONSHIP_SYNC_DEADLINE_EPOCH=
 _RELATIONSHIP_RESUME_TASKS=()
 _RELATIONSHIP_RESUME_FRESH="fresh"
 _RELATIONSHIP_RESUME_STATUS="$_RELATIONSHIP_RESUME_FRESH"
+_RELATIONSHIP_RESUME_SUPPRESSED_TASKS=()
 _RELATIONSHIP_WORK_TASKS=()
 _RELATIONSHIP_CANDIDATE_TOTAL=0
 _RELATIONSHIP_INPUT_REVISION=""
@@ -93,11 +95,15 @@ _init_relationship_sync_state() {
 	if [[ -z "$_RELATIONSHIP_RESULT_FILE" ]]; then
 		_RELATIONSHIP_RESULT_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-relationship-results.XXXXXX") || return 1
 	fi
+	if [[ -z "$_RELATIONSHIP_DIAGNOSTIC_FILE" ]]; then
+		_RELATIONSHIP_DIAGNOSTIC_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-relationship-diagnostics.XXXXXX") || return 1
+	fi
 	if [[ -z "$_RELATIONSHIP_BACKEND_CALL_FILE" ]]; then
 		_RELATIONSHIP_BACKEND_CALL_FILE=$(mktemp "${TMPDIR:-/tmp}/aidevops-relationship-calls.XXXXXX") || return 1
 	fi
 	: >"$_RELATIONSHIP_EDGE_SEEN_FILE"
 	: >"$_RELATIONSHIP_RESULT_FILE"
+	: >"$_RELATIONSHIP_DIAGNOSTIC_FILE"
 	: >"$_RELATIONSHIP_BACKEND_CALL_FILE"
 	_AIDEVOPS_GH_CALL_COUNT_FILE="$_RELATIONSHIP_BACKEND_CALL_FILE"
 	return 0
@@ -111,6 +117,10 @@ _cleanup_relationship_sync_state() {
 	if [[ -n "$_RELATIONSHIP_RESULT_FILE" ]]; then
 		rm -f "$_RELATIONSHIP_RESULT_FILE"
 		_RELATIONSHIP_RESULT_FILE=""
+	fi
+	if [[ -n "$_RELATIONSHIP_DIAGNOSTIC_FILE" ]]; then
+		rm -f "$_RELATIONSHIP_DIAGNOSTIC_FILE"
+		_RELATIONSHIP_DIAGNOSTIC_FILE=""
 	fi
 	if [[ -n "$_RELATIONSHIP_BACKEND_CALL_FILE" ]]; then
 		rm -f "$_RELATIONSHIP_BACKEND_CALL_FILE"
@@ -146,6 +156,7 @@ _end_relationship_sync_scope() {
 _register_relationship_sync_cleanup() {
 	push_cleanup "rm -f '${_RELATIONSHIP_EDGE_SEEN_FILE}'"
 	push_cleanup "rm -f '${_RELATIONSHIP_RESULT_FILE}'"
+	push_cleanup "rm -f '${_RELATIONSHIP_DIAGNOSTIC_FILE}'"
 	push_cleanup "rm -f '${_RELATIONSHIP_BACKEND_CALL_FILE}'"
 	_register_relationship_batch_cleanup
 	return 0
@@ -159,6 +170,18 @@ _relationship_record_outcome() {
 	esac
 	[[ -f "${_RELATIONSHIP_RESULT_FILE:-}" ]] || return 0
 	printf '%s\n' "$outcome" >>"$_RELATIONSHIP_RESULT_FILE"
+	return 0
+}
+
+# Shared pulse logs may be retained. Keep diagnostics limited to normalized
+# TODO identifiers and reason classes rather than raw API or filesystem output.
+_relationship_record_diagnostic() {
+	local task_id="$1" edge="$2" reason="$3" edge_pattern='^[A-Za-z0-9._#>/-]+$'
+	[[ "$task_id" =~ ^t[0-9]+(\.[0-9]+)*$ ]] || return 1
+	[[ "$edge" =~ $edge_pattern ]] || return 1
+	[[ "$reason" =~ ^[a-z0-9-]+$ ]] || return 1
+	[[ -f "${_RELATIONSHIP_DIAGNOSTIC_FILE:-}" ]] || return 0
+	printf 'task=%s edge=%s reason=%s\n' "$task_id" "$edge" "$reason" >>"$_RELATIONSHIP_DIAGNOSTIC_FILE"
 	return 0
 }
 
@@ -233,8 +256,9 @@ _relationship_resume_state_file() {
 _relationship_load_resume_state() {
 	local state_file="$1"
 	local expected_revision="$2"
-	local line="" state_revision="" state_version="" valid=1 pending_task=""
+	local line="" state_revision="" state_version="" valid=1 pending_task="" suppressed_task=""
 	_RELATIONSHIP_RESUME_TASKS=()
+	_RELATIONSHIP_RESUME_SUPPRESSED_TASKS=()
 	_RELATIONSHIP_RESUME_STATUS="$_RELATIONSHIP_RESUME_FRESH"
 	[[ -f "$state_file" ]] || return 0
 	while IFS= read -r line; do
@@ -249,11 +273,20 @@ _relationship_load_resume_state() {
 				valid=0
 			fi
 			;;
+		suppressed=*)
+			suppressed_task="${line#suppressed=}"
+			if [[ "$suppressed_task" =~ ^t[0-9]+(\.[0-9]+)*$ ]]; then
+				_RELATIONSHIP_RESUME_SUPPRESSED_TASKS+=("$suppressed_task")
+			else
+				valid=0
+			fi
+			;;
 		*) valid=0 ;;
 		esac
 	done <"$state_file"
-	if [[ "$valid" -ne 1 || "$state_version" != "1" || "$state_revision" != "$expected_revision" ]]; then
+	if [[ "$valid" -ne 1 || "$state_version" != "2" || "$state_revision" != "$expected_revision" ]]; then
 		_RELATIONSHIP_RESUME_TASKS=()
+		_RELATIONSHIP_RESUME_SUPPRESSED_TASKS=()
 		_RELATIONSHIP_RESUME_STATUS="invalidated"
 		rm -f "$state_file"
 		return 0
@@ -280,9 +313,12 @@ _relationship_write_resume_state() {
 	umask "$previous_umask"
 	[[ "$mktemp_rc" -eq 0 && -n "$temp_file" ]] || return 1
 	{
-		printf 'version=1\nrevision=%s\n' "$revision"
+		printf 'version=2\nrevision=%s\n' "$revision"
 		for task_id in "$@"; do
 			printf 'pending=%s\n' "$task_id"
+		done
+		for task_id in "${_RELATIONSHIP_RESUME_SUPPRESSED_TASKS[@]}"; do
+			printf 'suppressed=%s\n' "$task_id"
 		done
 	} >"$temp_file" || { rm -f "$temp_file"; return 1; }
 	mv "$temp_file" "$state_file" || { rm -f "$temp_file"; return 1; }
@@ -293,7 +329,7 @@ _relationship_print_summary() {
 	local attempted="$1" complete="$2" total="$3" retryable_total="$4" deadline_exhausted="$5"
 	local candidate_total="${6:-$total}" remaining="${7:-0}" resume_status="${8:-fresh}"
 	local parse_seconds="${9:-0}" mutation_seconds="${10:-0}" backend_calls="${11:-0}"
-	local created already_present failed deferred first_incomplete
+	local created already_present failed deferred first_incomplete diagnostic=""
 	local mapping_calls snapshot_calls mutation_calls verify_calls status_calls other_calls
 	local mapping_seconds snapshot_seconds mutation_class_seconds verify_seconds status_seconds
 	local timed_seconds unaccounted_seconds
@@ -331,6 +367,12 @@ _relationship_print_summary() {
 	printf 'Timing coverage: operations=%ss unaccounted=%ss\n' \
 		"$timed_seconds" "$unaccounted_seconds"
 	printf 'Failure: %s\n' "$first_incomplete"
+	if [[ -f "${_RELATIONSHIP_DIAGNOSTIC_FILE:-}" ]]; then
+		while IFS= read -r diagnostic; do
+			[[ -n "$diagnostic" ]] || continue
+			printf 'Unresolved relationship: %s\n' "$diagnostic"
+		done <"$_RELATIONSHIP_DIAGNOSTIC_FILE"
+	fi
 	[[ "$retryable_total" -eq 0 ]] || printf 'Recovery: rerun .agents/scripts/issue-sync-helper.sh relationships\n'
 	return 0
 }
@@ -778,6 +820,7 @@ _sync_declared_blocked_by_edges() {
 			[[ -z "$dep_gh_num" ]] && {
 				log_verbose "$task_id: blocked-by $dep_task_id has no ref:GH#"
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+				_relationship_record_diagnostic "$task_id" "${task_id}->${dep_task_id}" "dependency-mapping-unresolved"
 				retryable_errors=$((retryable_errors + 1))
 				continue
 			}
@@ -797,6 +840,7 @@ _sync_declared_blocked_by_edges() {
 			dep_node_id=$(_relationship_run_timed mapping _cached_node_id "$dep_gh_num" "$repo")
 			if [[ -z "$dep_node_id" ]]; then
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+				_relationship_record_diagnostic "$task_id" "${task_id}->${dep_task_id}" "dependency-node-unresolved"
 				retryable_errors=$((retryable_errors + 1))
 				_hold_dependency_sync_retry "$this_gh_num" "$repo" "blocking_node_unresolved"
 				continue
@@ -855,6 +899,7 @@ _sync_declared_blocks_edges() {
 			[[ -z "$dep_gh_num" ]] && {
 				log_verbose "$task_id: blocks $dep_task_id has no ref:GH#"
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+				_relationship_record_diagnostic "$task_id" "${dep_task_id}->${task_id}" "dependency-mapping-unresolved"
 				retryable_errors=$((retryable_errors + 1))
 				continue
 			}
@@ -871,6 +916,7 @@ _sync_declared_blocks_edges() {
 			dep_node_id=$(_relationship_run_timed mapping _cached_node_id "$dep_gh_num" "$repo")
 			if [[ -z "$dep_node_id" ]]; then
 				_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+				_relationship_record_diagnostic "$task_id" "${dep_task_id}->${task_id}" "dependency-node-unresolved"
 				retryable_errors=$((retryable_errors + 1))
 				_hold_dependency_sync_retry "$dep_gh_num" "$repo" "blocking_node_unresolved"
 				continue
@@ -929,6 +975,7 @@ _sync_blocked_by_for_task() {
 	if [[ -z "$this_gh_num" ]]; then
 		log_verbose "$task_id: declared relationship mapping unresolved; retaining for retry"
 		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+		_relationship_record_diagnostic "$task_id" "${task_id}->unmapped" "task-mapping-unresolved"
 		echo "$_RELATIONSHIP_RETRY_RESULT"
 		return 0
 	fi
@@ -936,6 +983,7 @@ _sync_blocked_by_for_task() {
 	if [[ -z "$this_node_id" ]]; then
 		log_verbose "$task_id: could not resolve node ID for #$this_gh_num"
 		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+		_relationship_record_diagnostic "$task_id" "${task_id}->node" "task-node-unresolved"
 		_hold_dependency_sync_retry "$this_gh_num" "$repo" "blocked_issue_node_unresolved"
 		echo "RELS:0 RETRYABLE:1"
 		return 0
@@ -975,6 +1023,7 @@ _link_sub_issue_pair() {
 	[[ -z "$child_gh_num" ]] && {
 		log_verbose "$child_id: no ref:GH# — skipping sub-issue"
 		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+		_relationship_record_diagnostic "$child_id" "${child_id}->${parent_id}" "task-mapping-unresolved"
 		return 1
 	}
 	local parent_gh_num
@@ -982,6 +1031,7 @@ _link_sub_issue_pair() {
 	[[ -z "$parent_gh_num" ]] && {
 		log_verbose "$child_id: parent $parent_id has no ref:GH# — skipping sub-issue"
 		_relationship_record_outcome "$_REL_OUTCOME_FAILED_RESOLUTION"
+		_relationship_record_diagnostic "$child_id" "${child_id}->${parent_id}" "parent-mapping-unresolved"
 		return 1
 	}
 
@@ -1201,6 +1251,32 @@ _relationship_prepare_workset() {
 	if [[ ${#_RELATIONSHIP_RESUME_TASKS[@]} -gt 0 ]]; then
 		_RELATIONSHIP_WORK_TASKS=("${_RELATIONSHIP_RESUME_TASKS[@]}")
 	fi
+	if [[ ${#_RELATIONSHIP_RESUME_SUPPRESSED_TASKS[@]} -gt 0 ]]; then
+		local retained_tasks=() suppressed_task="" task_is_suppressed=false
+		for task in "${_RELATIONSHIP_WORK_TASKS[@]}"; do
+			task_is_suppressed=false
+			for suppressed_task in "${_RELATIONSHIP_RESUME_SUPPRESSED_TASKS[@]}"; do
+				[[ "$task" == "$suppressed_task" ]] && task_is_suppressed=true && break
+			done
+			[[ "$task_is_suppressed" == "true" ]] || retained_tasks+=("$task")
+		done
+		_RELATIONSHIP_WORK_TASKS=("${retained_tasks[@]}")
+		_RELATIONSHIP_RESUME_STATUS="suppressed"
+	fi
+	return 0
+}
+
+_relationship_restore_suppressed_tasks() {
+	suppressed_tasks=("${_RELATIONSHIP_RESUME_SUPPRESSED_TASKS[@]}")
+	return 0
+}
+
+_relationship_suppress_failed_task() {
+	local task_id="$1"
+	if [[ -f "${_RELATIONSHIP_DIAGNOSTIC_FILE:-}" ]] && \
+		grep -q "^task=${task_id} " "$_RELATIONSHIP_DIAGNOSTIC_FILE"; then
+		suppressed_tasks+=("$task_id")
+	fi
 	return 0
 }
 
@@ -1213,8 +1289,9 @@ _relationship_finalize_command() {
 	[[ $total -gt 25 ]] && printf "\n" >&2
 	mutation_finished=$(date +%s 2>/dev/null || printf '%s' "$mutation_started")
 	backend_calls=$(_relationship_backend_call_count)
+	_RELATIONSHIP_RESUME_SUPPRESSED_TASKS=("${suppressed_tasks[@]}")
 	if [[ -z "$target_task" ]]; then
-		if [[ ${#pending_tasks[@]} -gt 0 ]]; then
+		if [[ ${#pending_tasks[@]} -gt 0 || ${#_RELATIONSHIP_RESUME_SUPPRESSED_TASKS[@]} -gt 0 ]]; then
 			_relationship_write_resume_state "$_RELATIONSHIP_STATE_FILE" "$_RELATIONSHIP_INPUT_REVISION" "${pending_tasks[@]}" || \
 				print_warning "Relationship progress could not be persisted; the next run will restart safely"
 		else
@@ -1241,7 +1318,7 @@ cmd_relationships() {
 	local total=0 candidate_total=0 pending_before=0 index=0 remaining_index=0
 	local blocked_set=0 sub_set=0 attempted=0 complete=0 retryable_total=0 task_retryable=0
 	local deadline_exhausted=false backend_calls=0
-	local pending_tasks=()
+	local pending_tasks=() suppressed_tasks=()
 	if [[ "$_RELATIONSHIP_SYNC_SCOPE_ACTIVE" -ne 1 ]]; then
 		_save_cleanup_scope
 		trap '_run_cleanups' RETURN
@@ -1265,8 +1342,8 @@ cmd_relationships() {
 		[[ "$owns_scope" -eq 0 ]] || _end_relationship_sync_scope
 		return 1
 	fi
-	candidate_total="$_RELATIONSHIP_CANDIDATE_TOTAL"
-	total="${#_RELATIONSHIP_WORK_TASKS[@]}"
+	_relationship_restore_suppressed_tasks
+	candidate_total="$_RELATIONSHIP_CANDIDATE_TOTAL"; total="${#_RELATIONSHIP_WORK_TASKS[@]}"
 	pending_before="$total"
 	parse_finished=$(date +%s 2>/dev/null || printf '%s' "$parse_started")
 	print_info "Syncing relationships for $candidate_total task(s) in $repo (pending: $total, resume: $_RELATIONSHIP_RESUME_STATUS)"
@@ -1325,6 +1402,7 @@ cmd_relationships() {
 			complete=$((complete + 1))
 		else
 			pending_tasks+=("$current_task")
+			_relationship_suppress_failed_task "$current_task"
 		fi
 	done
 	_relationship_finalize_command
