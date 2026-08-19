@@ -170,8 +170,9 @@ run_isolated_probe() {
 	local output_file="$canary_root/$label.output"
 	local plugin_path="${_CANARY_PLUGIN_PATH:-$SCRIPT_DIR/../plugins/opencode-aidevops/index.mjs}"
 	local plugin_url=""
-	local provider_id="canary"
-	local model_id="canary"
+	local canary_id="canary"
+	local provider_id="$canary_id"
+	local model_id="$canary_id"
 	local model_ref="${provider_id}/${model_id}"
 	local request_count_before=0
 	local request_count_after=0
@@ -338,5 +339,8 @@ cmd_canary() {
 case "${1:-}" in
 status) cmd_status "${2:-}" ;;
 canary) cmd_canary "${2:-latest}" ;;
-*) usage >&2; exit 2 ;;
+*)
+	usage >&2
+	exit 2
+	;;
 esac

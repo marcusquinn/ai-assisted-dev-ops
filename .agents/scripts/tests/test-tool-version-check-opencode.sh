@@ -284,7 +284,7 @@ cat >"$prefix/node_modules/opencode-linux-x64/bin/opencode" <<"BIN"
 printf "1.18.18\n"
 BIN
 chmod +x "$prefix/node_modules/opencode-linux-x64/bin/opencode"'
-( : ) &
+(:) &
 dead_installer_pid=$!
 wait "$dead_installer_pid" || true
 mkdir -p "$SANDBOX/version-stale-lock/state/opencode-pin-repair.lock"
