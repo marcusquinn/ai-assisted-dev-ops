@@ -918,6 +918,169 @@ test_automatic_maintenance_is_bounded_and_policy_bound() {
 	return 0
 }
 
+test_automatic_maintenance_checks_capacity_before_aggregate_size() {
+	local home_path="${TEST_DIR}/automatic-capacity-first-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local archive_path="" bucket_path="" output="" receipt_path=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	archive_path=$(create_archived_fixture "${TEST_DIR}/automatic-capacity-first-repo" \
+		"${TEST_DIR}/automatic-capacity-first-worktree" "$recovery_root" \
+		"bugfix/gh30443-capacity-first") || rc=1
+	bucket_path="${archive_path%/*}"
+	install_clear_evidence_stubs
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		aidevops_disk_capacity_snapshot() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			AIDEVOPS_DISK_CAPACITY_TOTAL_KB=100000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=1
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=0
+			return 0
+		}
+		_worktree_recovery_maintenance_measure_store() {
+			return 1
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS=3650 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "removed" ]] || rc=1
+	receipt_path=$(printf '%s\n' "$output" | jq -r '.receipt') || rc=1
+	jq -e '
+		.automatic_policy.pressure_active == true and
+		.automatic_policy.pressure_reason == "filesystem-free-kb-soft-limit" and
+		.automatic_policy.store_bytes == null and
+		.entries[0].maintenance.selected_reason == "pressure"
+	' "$receipt_path" >/dev/null || rc=1
+	[[ ! -e "$bucket_path" ]] || rc=1
+	print_result "automatic_maintenance_checks_capacity_before_aggregate_size" "$rc" \
+		"Expected known low capacity to bypass aggregate sizing and retain exact candidate checks"
+	return 0
+}
+
+test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out() {
+	local home_path="${TEST_DIR}/automatic-age-fallback-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local archive_path="" bucket_path="" output="" receipt_path=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	archive_path=$(create_archived_fixture "${TEST_DIR}/automatic-age-fallback-repo" \
+		"${TEST_DIR}/automatic-age-fallback-worktree" "$recovery_root" \
+		"bugfix/gh30443-age-fallback") || rc=1
+	bucket_path="${archive_path%/*}"
+	install_clear_evidence_stubs
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		aidevops_disk_capacity_snapshot() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			AIDEVOPS_DISK_CAPACITY_TOTAL_KB=100000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=90000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=90
+			return 0
+		}
+		_worktree_recovery_maintenance_measure_store() {
+			local ignored_root="$1"
+			local aggregate_timeout="$2"
+			: "$ignored_root"
+			[[ "$aggregate_timeout" == "73" ]] || return 1
+			printf 'null|unavailable|sizing-timeout'
+			return 0
+		}
+		_worktree_recovery_maintenance_age_seconds() {
+			local ignored_entry="$1"
+			: "$ignored_entry"
+			printf '691200\n'
+			return 0
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_AGGREGATE_SIZE_TIMEOUT_TENTHS=73 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS=7 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "removed" ]] || rc=1
+	receipt_path=$(printf '%s\n' "$output" | jq -r '.receipt') || rc=1
+	jq -e '
+		.automatic_policy.pressure_active == false and
+		.automatic_policy.pressure_reason == "aggregate-size-unavailable" and
+		.automatic_policy.store_bytes == null and
+		.entries[0].maintenance.selected_reason == "retention"
+	' "$receipt_path" >/dev/null || rc=1
+	[[ ! -e "$bucket_path" ]] || rc=1
+	print_result "automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out" "$rc" \
+		"Expected healthy capacity and unavailable aggregate size to preserve bounded age retention"
+	return 0
+}
+
+test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable() {
+	local home_path="${TEST_DIR}/automatic-bucket-timeout-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local archive_path="" bucket_path="" output=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	archive_path=$(create_archived_fixture "${TEST_DIR}/automatic-bucket-timeout-repo" \
+		"${TEST_DIR}/automatic-bucket-timeout-worktree" "$recovery_root" \
+		"bugfix/gh30443-bucket-timeout") || rc=1
+	bucket_path="${archive_path%/*}"
+	install_clear_evidence_stubs
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		aidevops_disk_capacity_snapshot() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			AIDEVOPS_DISK_CAPACITY_TOTAL_KB=100000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=90000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=90
+			return 0
+		}
+		_worktree_recovery_maintenance_measure_store() {
+			local ignored_root="$1"
+			local ignored_timeout="$2"
+			: "$ignored_root" "$ignored_timeout"
+			printf '1024|exact|'
+			return 0
+		}
+		_worktree_recovery_measure_path() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			printf 'null|unavailable|sizing-timeout'
+			return 0
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS=1 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "no-candidates" ]] || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.policy.unknown_count')" == "1" ]] || rc=1
+	[[ -d "$bucket_path" ]] || rc=1
+	print_result "automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable" "$rc" \
+		"Expected per-bucket sizing uncertainty to remain non-destructive"
+	return 0
+}
+
 test_automatic_maintenance_resumes_interrupted_apply() {
 	local home_path="${TEST_DIR}/automatic-resume-home"
 	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
@@ -1099,6 +1262,9 @@ test_receipt_publication_owns_only_reserved_temp
 test_shared_producer_lock_fails_closed_and_reclaims_stale
 test_apply_handles_attributable_legacy_root_transaction
 test_automatic_maintenance_is_bounded_and_policy_bound
+test_automatic_maintenance_checks_capacity_before_aggregate_size
+test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out
+test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable
 test_automatic_maintenance_resumes_interrupted_apply
 test_automatic_maintenance_rejects_symlink_cursor
 test_large_plan_avoids_json_argv_limits

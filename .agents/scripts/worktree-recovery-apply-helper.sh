@@ -171,6 +171,9 @@ _worktree_recovery_apply_validate_automatic_plan_shape() {
 	local placeholder="apply-sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	local selected_retention="retention"
 	local selected_pressure="pressure"
+	local reason_aggregate_unavailable="aggregate-size-unavailable"
+	local reason_filesystem_kb="filesystem-free-kb-soft-limit"
+	local reason_filesystem_percent="filesystem-free-percent-soft-limit"
 
 	manual_shape=$(printf '%s\n' "$plan_json" | jq -c --arg placeholder "$placeholder" \
 		'.confirmation_token = $placeholder') || return 1
@@ -182,7 +185,10 @@ _worktree_recovery_apply_validate_automatic_plan_shape() {
 		--arg number_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_NUMBER" \
 		--arg object_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_OBJECT" \
 		--arg selected_retention "$selected_retention" \
-		--arg selected_pressure "$selected_pressure" '
+		--arg selected_pressure "$selected_pressure" \
+		--arg reason_aggregate_unavailable "$reason_aggregate_unavailable" \
+		--arg reason_filesystem_kb "$reason_filesystem_kb" \
+		--arg reason_filesystem_percent "$reason_filesystem_percent" '
 		.automatic_policy as $policy |
 		($policy | type == $object_type) and
 		($policy | keys | sort) == (["available_kb","available_percent","max_bytes",
@@ -193,10 +199,15 @@ _worktree_recovery_apply_validate_automatic_plan_shape() {
 		$policy.schema == $policy_schema and $policy.policy_id == $policy_id and
 		([ $policy.retention_days,$policy.max_scan,$policy.max_candidates,$policy.max_bytes,
 			$policy.max_store_bytes,$policy.pressure_min_free_kb,
-			$policy.pressure_min_free_percent,$policy.store_bytes,$policy.available_kb,
+			$policy.pressure_min_free_percent,$policy.available_kb,
 			$policy.available_percent,$policy.scanned_count,$policy.protected_count,
 			$policy.unknown_count ] |
 			all(type == $number_type and . >= 0 and . == floor)) and
+		(($policy.store_bytes | type == $number_type and . >= 0 and . == floor) or
+			($policy.store_bytes == null and
+				(if $policy.pressure_active
+				then $policy.pressure_reason | IN($reason_filesystem_kb,$reason_filesystem_percent)
+				else $policy.pressure_reason == $reason_aggregate_unavailable end))) and
 		$policy.retention_days > 0 and $policy.max_scan > 0 and
 		$policy.max_candidates > 0 and $policy.max_bytes > 0 and
 		$policy.max_store_bytes > 0 and $policy.pressure_min_free_percent <= 100 and

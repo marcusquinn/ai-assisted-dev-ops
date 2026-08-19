@@ -34,7 +34,7 @@ fi
 _worktree_recovery_measure_path() {
 	local path="$1"
 	local du_command="${AIDEVOPS_WORKTREE_RECOVERY_DU_COMMAND:-${AIDEVOPS_STORAGE_DU_COMMAND:-du}}"
-	local timeout_tenths="${AIDEVOPS_WORKTREE_RECOVERY_SIZE_TIMEOUT_TENTHS:-${AIDEVOPS_STORAGE_SIZE_TIMEOUT_TENTHS:-20}}"
+	local timeout_tenths="${2:-${AIDEVOPS_WORKTREE_RECOVERY_SIZE_TIMEOUT_TENTHS:-${AIDEVOPS_STORAGE_SIZE_TIMEOUT_TENTHS:-20}}}"
 	local output_file=""
 	local pid=""
 	local elapsed=0

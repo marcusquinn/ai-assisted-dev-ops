@@ -130,30 +130,50 @@ PY
 	return $?
 }
 
+_worktree_recovery_maintenance_measure_store() {
+	local recovery_root="$1"
+	local timeout_tenths="$2"
+
+	_worktree_recovery_measure_path "$recovery_root" "$timeout_tenths"
+	return $?
+}
+
 _worktree_recovery_maintenance_pressure_json() {
 	local recovery_root="$1"
 	local max_store_bytes="$2"
 	local minimum_free_kb="$3"
 	local minimum_free_percent="$4"
+	local aggregate_timeout_tenths="$5"
 	local measured=""
-	local store_bytes=""
-	local confidence=""
+	local store_bytes="$WORKTREE_RECOVERY_PLAN_JSON_NULL"
+	local confidence="$WORKTREE_RECOVERY_UNAVAILABLE"
+	local ignored=""
 	local pressure=false
 	local reason="none"
 
-	measured=$(_worktree_recovery_measure_path "$recovery_root") || return 1
-	IFS='|' read -r store_bytes confidence _ <<<"$measured"
-	[[ "$confidence" == "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" && "$store_bytes" =~ ^[0-9]+$ ]] || return 1
 	aidevops_disk_capacity_snapshot "$recovery_root" || return 1
-	if [[ "$store_bytes" -gt "$max_store_bytes" ]]; then
-		pressure=true
-		reason="store-soft-limit"
-	elif [[ "$AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB" -lt "$minimum_free_kb" ]]; then
+	if [[ "$AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB" -lt "$minimum_free_kb" ]]; then
 		pressure=true
 		reason="filesystem-free-kb-soft-limit"
 	elif [[ $((AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB * 100)) -lt $((AIDEVOPS_DISK_CAPACITY_TOTAL_KB * minimum_free_percent)) ]]; then
 		pressure=true
 		reason="filesystem-free-percent-soft-limit"
+	fi
+	if [[ "$pressure" == "true" ]]; then
+		store_bytes="$WORKTREE_RECOVERY_PLAN_JSON_NULL"
+	else
+		measured=$(_worktree_recovery_maintenance_measure_store "$recovery_root" \
+			"$aggregate_timeout_tenths") || return 1
+		IFS='|' read -r store_bytes confidence ignored <<<"$measured"
+		if [[ "$confidence" == "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" && "$store_bytes" =~ ^[0-9]+$ ]]; then
+			if [[ "$store_bytes" -gt "$max_store_bytes" ]]; then
+				pressure=true
+				reason="store-soft-limit"
+			fi
+		else
+			store_bytes="$WORKTREE_RECOVERY_PLAN_JSON_NULL"
+			reason="aggregate-size-unavailable"
+		fi
 	fi
 	jq -cn --argjson active "$pressure" --arg reason "$reason" \
 		--argjson store_bytes "$store_bytes" \
@@ -330,6 +350,7 @@ _worktree_recovery_maintenance_limits_json() {
 	local max_store_bytes=""
 	local minimum_free_kb=""
 	local minimum_free_percent=""
+	local aggregate_timeout_tenths=""
 	local pressure_json=""
 
 	max_scan=$(_worktree_recovery_maintenance_uint "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN:-50}" 50 1 500)
@@ -340,8 +361,10 @@ _worktree_recovery_maintenance_limits_json() {
 	max_store_bytes=$(_worktree_recovery_maintenance_uint "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_STORE_BYTES:-5368709120}" 5368709120 1 1099511627776)
 	minimum_free_kb=$(_worktree_recovery_maintenance_uint "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB:-10485760}" 10485760 0 1099511627776)
 	minimum_free_percent=$(_worktree_recovery_maintenance_uint "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT:-10}" 10 0 100)
+	aggregate_timeout_tenths=$(_worktree_recovery_maintenance_uint \
+		"${AIDEVOPS_WORKTREE_RECOVERY_AGGREGATE_SIZE_TIMEOUT_TENTHS:-20}" 20 1 36000)
 	pressure_json=$(_worktree_recovery_maintenance_pressure_json "$recovery_root" "$max_store_bytes" \
-		"$minimum_free_kb" "$minimum_free_percent") || return 1
+		"$minimum_free_kb" "$minimum_free_percent" "$aggregate_timeout_tenths") || return 1
 	jq -cn --argjson max_scan "$max_scan" --argjson max_candidates "$max_candidates" \
 		--argjson max_bytes "$max_bytes" --argjson retention_days "$retention_days" \
 		--argjson max_store_bytes "$max_store_bytes" --argjson minimum_free_kb "$minimum_free_kb" \
