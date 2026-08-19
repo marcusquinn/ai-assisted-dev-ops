@@ -41,6 +41,8 @@ _HRW_TELEMETRY_DEFERRED="deferred"
 _HRW_STATUS_CHECKPOINTED="checkpointed"
 _HRW_REASON_DRAFT_CHECKPOINT="worker_draft_checkpoint"
 _HRW_REASON_DRAFT_ESCALATION_FAILED="worker_draft_checkpoint_escalation_failed"
+_HRW_REASON_READY_MISSING_LINKAGE="worker_ready_missing_linkage"
+_HRW_REASON_READY_LINKAGE_HANDOFF_FAILED="worker_ready_missing_linkage_transition_failed"
 _HRW_REASON_READY_MISSING_SUMMARY="worker_ready_missing_summary"
 _HRW_REASON_READY_HANDOFF_FAILED="worker_ready_missing_summary_transition_failed"
 _HRW_REASON_CLOSED_UNMERGED="worker_closed_unmerged_pr"
@@ -538,6 +540,8 @@ _hrw_worker_base_commit_state() {
 #   "closed_unmerged"       — exact-head PR closed without merge
 #   "unverified_open_pr"    — issue-search fallback cannot prove exact head
 #   "head_mismatch"         — local HEAD is not the open PR head
+#   "ready_missing_linkage" — exact-head ready PR lacks a closing issue reference
+#   "merged_missing_linkage" — exact-head merged PR lacks a closing issue reference
 #   "ready_missing_summary" — exact-head ready PR lacks MERGE_SUMMARY
 #   "merged_missing_summary" — exact-head merged PR lacks MERGE_SUMMARY
 #   "noop"                  — no commits, no pushed branch, no PR
@@ -639,7 +643,7 @@ _worker_produced_output() {
 	pr_state="${pr_handoff%%|*}"
 	case "$pr_state" in
 		ready | merged) printf 'pr_exists'; return 0 ;;
-		draft_checkpoint | protected_draft | closed_unmerged | unverified_open_pr | head_mismatch | ready_missing_summary | merged_missing_summary)
+		draft_checkpoint | protected_draft | closed_unmerged | unverified_open_pr | head_mismatch | ready_missing_linkage | merged_missing_linkage | ready_missing_summary | merged_missing_summary)
 			printf '%s' "$pr_state"
 			return 0
 			;;
@@ -1076,7 +1080,8 @@ _recover_worker_output_on_failure() {
 			return 0
 		fi
 		if [[ "$pr_state" == "protected_draft" || "$pr_state" == "unverified_open_pr" || \
-			"$pr_state" == "head_mismatch" || "$pr_state" == "ready_missing_summary" || \
+			"$pr_state" == "head_mismatch" || "$pr_state" == "ready_missing_linkage" || \
+			"$pr_state" == "merged_missing_linkage" || "$pr_state" == "ready_missing_summary" || \
 			"$pr_state" == "merged_missing_summary" ]]; then
 			_HRW_RECOVERY_CLASSIFICATION="worker_${pr_state}"
 			print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — not completion evidence; retaining claim"
@@ -1847,6 +1852,22 @@ _hrw_preserve_ready_missing_summary_handoff() {
 	return 0
 }
 
+_hrw_preserve_ready_missing_linkage_handoff() {
+	local session_key="$1"
+	local output_class="$2"
+	_escalate_worker_pr_checkpoint "$session_key" "${DISPATCH_REPO_SLUG:-}" "$output_class" \
+		"$_HRW_REASON_READY_MISSING_LINKAGE" "$_HRW_REASON_READY_LINKAGE_HANDOFF_FAILED"
+	if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_READY_MISSING_LINKAGE" ]]; then
+		_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
+		_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
+		_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_CHECKPOINTED"
+		_HRW_FINAL_RUNTIME_CLASSIFICATION="$_HRW_REASON_READY_MISSING_LINKAGE"
+	else
+		_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_RECOVERY_CLASSIFICATION"
+	fi
+	return 0
+}
+
 _hrw_finish_success_run() {
 	local session_key="$1"
 	local work_dir="$2"
@@ -1916,6 +1937,10 @@ _hrw_finish_success_run() {
 			_hrw_preserve_ready_missing_summary_handoff "$session_key" "$output_class"
 			release_needed=0
 			;;
+		ready_missing_linkage)
+			_hrw_preserve_ready_missing_linkage_handoff "$session_key" "$output_class"
+			release_needed=0
+			;;
 		closed_unmerged)
 			print_warning "[lifecycle] ${_HRW_REASON_CLOSED_UNMERGED} session=${session_key} — closed PR is not completion evidence"
 			_hrw_release_dispatch_claim "$session_key" "$_HRW_REASON_CLOSED_UNMERGED"
@@ -1923,7 +1948,7 @@ _hrw_finish_success_run() {
 			release_needed=0
 			_hrw_mark_failed_terminal_state "$_HRW_STATUS_FAILED" "$_HRW_REASON_CLOSED_UNMERGED"
 			;;
-		protected_draft | unverified_open_pr | head_mismatch | merged_missing_summary)
+		protected_draft | unverified_open_pr | head_mismatch | merged_missing_linkage | merged_missing_summary)
 			local noncomplete_reason="worker_${output_class}"
 			print_warning "[lifecycle] ${noncomplete_reason} session=${session_key} — protected/inconclusive PR state is not completion evidence; retaining claim"
 			release_needed=0

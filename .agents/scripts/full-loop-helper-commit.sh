@@ -1793,6 +1793,82 @@ _create_pr() {
 	return 0
 }
 
+# Verify that a worker-created leaf PR has the same-repository closing reference
+# needed by GitHub's closingIssuesReferences metadata and by pulse's worker
+# merge gate. A partial PR create can leave an otherwise valid PR with an empty
+# body; repair that narrow condition before the issue/PR transition to review.
+# Arguments: PR number, repository slug, expected issue number, generated body.
+_ensure_worker_pr_linkage() {
+	local pr_number="$1"
+	local repo="$2"
+	local issue_number="$3"
+	local generated_body="$4"
+	local current_body=""
+
+	if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ || "$repo" != */* || ! "$issue_number" =~ ^[1-9][0-9]*$ || -z "$generated_body" ]]; then
+		print_error "Cannot validate worker PR linkage: invalid PR, repository, issue, or generated body"
+		return 1
+	fi
+
+	current_body=$(_gh_with_timeout read gh api "repos/${repo}/pulls/${pr_number}" --jq '.body // empty' 2>/dev/null) || {
+		print_error "Cannot validate worker PR #${pr_number} linkage before review transition"
+		return 1
+	}
+
+	local closing_issues=""
+	closing_issues=$(printf '%s' "$current_body" |
+		grep -ioE '(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+#[0-9]+' |
+		grep -oE '[0-9]+' | sort -u) || closing_issues=""
+	if [[ "$closing_issues" == "$issue_number" ]]; then
+		return 0
+	fi
+
+	# A qualified close reference targets another repository. Do not add a local
+	# reference to an ambiguous body: pulse must remain fail-closed for cross-repo
+	# or multi-issue relationships.
+	if [[ -n "$closing_issues" ]] || printf '%s' "$current_body" | grep -Eiq \
+		'(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+[^[:space:]]+#[0-9]+'; then
+		print_error "Worker PR #${pr_number} has ambiguous or cross-repository closing references; refusing linkage repair"
+		return 1
+	fi
+
+	local repaired_body="$generated_body"
+	if [[ -n "$current_body" ]]; then
+		repaired_body="${current_body}"$'\n\n'"Resolves #${issue_number}"
+	fi
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local repair_body_file=""
+	if ! mkdir -p "$temp_root" || ! repair_body_file=$(mktemp "${temp_root}/aidevops-worker-pr-body.XXXXXX"); then
+		print_error "Could not create worker PR linkage repair body file"
+		return 1
+	fi
+	if ! printf '%s\n' "$repaired_body" >"$repair_body_file"; then
+		rm -f "$repair_body_file"
+		print_error "Could not write worker PR linkage repair body"
+		return 1
+	fi
+	if ! gh_pr_edit_safe "$pr_number" --repo "$repo" --body-file "$repair_body_file" >/dev/null; then
+		rm -f "$repair_body_file"
+		print_error "Failed to repair missing linked issue reference on worker PR #${pr_number}"
+		return 1
+	fi
+	rm -f "$repair_body_file"
+
+	current_body=$(_gh_with_timeout read gh api "repos/${repo}/pulls/${pr_number}" --jq '.body // empty' 2>/dev/null) || {
+		print_error "Could not verify repaired linked issue reference on worker PR #${pr_number}"
+		return 1
+	}
+	closing_issues=$(printf '%s' "$current_body" |
+		grep -ioE '(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+#[0-9]+' |
+		grep -oE '[0-9]+' | sort -u) || closing_issues=""
+	if [[ "$closing_issues" != "$issue_number" ]]; then
+		print_error "Worker PR #${pr_number} linkage repair did not produce Resolves #${issue_number}"
+		return 1
+	fi
+	print_success "Repaired and verified linked issue reference on worker PR #${pr_number}"
+	return 0
+}
+
 # --- Merge Summary ---
 
 # Post the MERGE_SUMMARY comment on the PR (full-loop step 4.2.1).

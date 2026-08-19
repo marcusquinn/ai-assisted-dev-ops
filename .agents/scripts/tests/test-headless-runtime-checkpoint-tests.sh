@@ -32,6 +32,9 @@ test_post_pr_handoff_detects_open_pending_pr() {
 		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/123/comments"* ]]; then
 			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 			return 0
+		elif [[ "$args" == *"api repos/"* && "$args" == *"/pulls/123"* ]]; then
+			printf '%s' 'Resolves #99999'
+			return 0
 		fi
 		return 1
 	}
@@ -90,6 +93,9 @@ test_post_pr_handoff_treats_ci_as_monitoring_state() {
 		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/126/comments"* ]]; then
 			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 			return 0
+		elif [[ "$args" == *"api repos/"* && "$args" == *"/pulls/126"* ]]; then
+			printf '%s' 'Resolves #99999'
+			return 0
 		fi
 		return 1
 	}
@@ -139,6 +145,9 @@ test_post_pr_handoff_rejects_mismatched_head_or_missing_summary() {
 			else
 				printf '%s' '[[]]'
 			fi
+			return 0
+		elif [[ "$args" == *"api repos/"* && "$args" == *"/pulls/125"* ]]; then
+			printf '%s' 'Resolves #99999'
 			return 0
 		fi
 		return 1
@@ -495,6 +504,47 @@ test_ready_missing_summary_preserves_in_review_handoff() {
 	return 0
 }
 
+test_ready_missing_linkage_preserves_in_review_handoff() {
+	local result=""
+	local transition_marker="${TEST_ROOT}/ready-missing-linkage-transition"
+	rm -f "$transition_marker"
+	result=$(
+		(
+			DISPATCH_REPO_SLUG="test-owner/test-repo"
+			_HRW_TERMINAL_OUTCOME="unset"
+			_HRW_FINAL_RUNTIME_EVENT="unset"
+			_HRW_FINAL_RUNTIME_STATUS="unset"
+			_HRW_FINAL_RUNTIME_CLASSIFICATION="unset"
+			_HRW_RECOVERY_CLASSIFICATION=""
+			_worker_produced_output() { printf 'ready_missing_linkage'; return 0; }
+			_hrff_resolve_release_runner_login() { printf 'worker-bot'; return 0; }
+			set_issue_status() { printf '%s\n' "$*" >"$transition_marker"; return 0; }
+			gh() {
+				printf '%s\n' '{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"worker-bot"}]}'
+				return 0
+			}
+			_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
+
+			_hrw_finish_success_run "issue-99999" "${TEST_ROOT}"
+			printf 'terminal=%s|event=%s|status=%s|classification=%s\n' \
+				"$_HRW_TERMINAL_OUTCOME" "$_HRW_FINAL_RUNTIME_EVENT" \
+				"$_HRW_FINAL_RUNTIME_STATUS" "$_HRW_FINAL_RUNTIME_CLASSIFICATION"
+		)
+	)
+	local transition=""
+	[[ -f "$transition_marker" ]] && transition=$(<"$transition_marker")
+	if [[ "$transition" == *"99999 test-owner/test-repo in-review"* &&
+		"$result" == *"release=worker_ready_missing_linkage"* &&
+		"$result" == *"terminal=deferred|event=worker.deferred|status=checkpointed|classification=worker_ready_missing_linkage"* &&
+		"$result" != *"release=worker_complete"* ]]; then
+		print_result "ready PR missing linked issue preserves an actionable in-review handoff" 0
+	else
+		print_result "ready PR missing linked issue preserves an actionable in-review handoff" 1 \
+			"result=${result} transition=${transition:-<none>}"
+	fi
+	return 0
+}
+
 test_failed_ci_ready_pr_is_durable_handoff() {
 	local pr_json result
 	pr_json='[{"number":457,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"abc123","labels":[{"name":"origin:worker"}],"statusCheckRollup":[{"name":"tests","conclusion":"FAILURE"},{"name":"tests","conclusion":"SUCCESS"}]}]'
@@ -595,6 +645,9 @@ test_post_pr_handoff_overrides_watchdog_next_action() {
 		if [[ "$args" == *"api --paginate"* && "$args" == *"/issues/124/comments"* ]]; then
 			printf '%s' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 			return 0
+		elif [[ "$args" == *"api repos/"* && "$args" == *"/pulls/124"* ]]; then
+			printf '%s' 'Resolves #99999'
+			return 0
 		fi
 		return 1
 	}
@@ -671,6 +724,7 @@ test_pr_checkpoint_lifecycle_cases() {
 	test_protected_draft_is_not_mutated_or_completed
 	test_checkpoint_terminal_telemetry_is_deferred
 	test_ready_missing_summary_preserves_in_review_handoff
+	test_ready_missing_linkage_preserves_in_review_handoff
 	test_failed_ci_ready_pr_is_durable_handoff
 	test_closed_unmerged_pr_is_failed_not_completed
 	test_failed_worker_ready_pr_remains_completed_handoff

@@ -233,6 +233,13 @@ Worker aborted PR creation: issue #${issue_number} was already closed by the tim
 
 	local pr_number=""
 	pr_number=$(_create_pr "$repo" "$pr_title" "$pr_body" "$origin_label" "${extra_labels[@]+"${extra_labels[@]}"}") || return 1
+	# A worker PR is only eligible for the worker-briefed merge path when GitHub
+	# can associate it with the issue that dispatched the worker. Creation should
+	# already preserve this body, but recover from partial GraphQL writes before
+	# marking either side in review.
+	if [[ "$origin_label" == "origin:worker" && "$closing_keyword" == "Resolves" ]]; then
+		_ensure_worker_pr_linkage "$pr_number" "$repo" "$issue_number" "$pr_body" || return 1
+	fi
 
 	_post_merge_summary "$pr_number" "$repo" "$issue_number" "$summary_what" "$files_changed" "$summary_testing" "$summary_decisions" || return 1
 	_label_issue_in_review "$issue_number" "$repo"
