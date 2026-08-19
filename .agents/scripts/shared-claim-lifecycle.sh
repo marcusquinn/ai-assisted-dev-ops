@@ -164,8 +164,8 @@ _release_interactive_claim_on_merge() {
 #
 # Exact-head output states:
 #   ready | merged | closed_unmerged | draft_checkpoint |
-#   protected_draft | head_mismatch | ready_missing_summary |
-#   merged_missing_summary
+#   protected_draft | head_mismatch | ready_missing_linkage |
+#   merged_missing_linkage | ready_missing_summary | merged_missing_summary
 # Issue-search matches are deliberately `unverified_open_pr`: search can return
 # a sibling or stale index hit and therefore proves dedup, never completion.
 # Every state is emitted as "state|PR_NUMBER"; absent/unknown have no number.
@@ -218,6 +218,25 @@ _pr_handoff_has_merge_summary() {
 	[[ "$summary_count" =~ ^[0-9]+$ && "$summary_count" -gt 0 ]]
 }
 
+# Require a same-repository GitHub closing reference before a worker handoff is
+# treated as complete. This deliberately mirrors pulse-merge.sh's narrow body
+# matcher: parent-task For/Ref references and qualified cross-repository closes
+# are not safe evidence that this worker's issue will close.
+_pr_handoff_has_linked_issue() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local issue_number="$3"
+	local pr_body=""
+	local closing_issues=""
+
+	[[ "$repo_slug" == */* && "$pr_number" =~ ^[1-9][0-9]*$ && "$issue_number" =~ ^[1-9][0-9]*$ ]] || return 1
+	pr_body=$(gh api "repos/${repo_slug}/pulls/${pr_number}" --jq '.body // empty' 2>/dev/null) || return 1
+	closing_issues=$(printf '%s' "$pr_body" |
+		grep -ioE '(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+#[0-9]+' |
+		grep -oE '[0-9]+' | sort -u) || closing_issues=""
+	[[ "$closing_issues" == "$issue_number" ]]
+}
+
 _pr_handoff_state_for_branch_or_issue() {
 	local branch_name="$1"
 	local issue_number="$2"
@@ -248,6 +267,10 @@ _pr_handoff_state_for_branch_or_issue() {
 				if [[ "$require_merge_summary" -eq 1 ]] && \
 					_pr_handoff_state_is_completion_candidate "${pr_state%%|*}"; then
 					local pr_number="${pr_state#*|}"
+					if ! _pr_handoff_has_linked_issue "$repo_slug" "$pr_number" "$issue_number"; then
+						printf '%s_missing_linkage|%s' "${pr_state%%|*}" "$pr_number"
+						return 0
+					fi
 					if ! _pr_handoff_has_merge_summary "$repo_slug" "$pr_number"; then
 						printf '%s_missing_summary|%s' "${pr_state%%|*}" "$pr_number"
 						return 0

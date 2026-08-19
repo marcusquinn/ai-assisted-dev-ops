@@ -176,6 +176,8 @@ test_worker_produced_output_branch_with_pr_returns_pr_exists() {
 	gh() {
 		if [[ "${*}" == *"api --paginate"* && "${*}" == *"/issues/123/comments"* ]]; then
 			printf '%s\n' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
+		elif [[ "${*}" == *"api repos/"* && "${*}" == *"/pulls/123"* ]]; then
+			printf '%s\n' 'Resolves #99999'
 		else
 			return 1
 		fi

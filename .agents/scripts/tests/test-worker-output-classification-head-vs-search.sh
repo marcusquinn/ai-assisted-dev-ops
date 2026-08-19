@@ -177,6 +177,8 @@ case "${1:-}" in
 			else
 				printf '%s\n' '[[]]'
 			fi
+		elif [[ "$*" == *"/pulls/"* ]]; then
+			printf '%s\n' "${STUB_LINKED_BODY:-}"
 		else
 			printf '{}\n'
 		fi
@@ -349,6 +351,7 @@ test_case_ready_and_terminal_states_are_preserved() {
 test_case_ready_requires_exact_head_and_merge_summary() {
 	export STUB_HEAD_JSON='[{"number":331,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"remote-head","labels":[],"statusCheckRollup":[]}]'
 	export STUB_SEARCH_JSON='[]'
+	export STUB_LINKED_BODY='Resolves #27501'
 	export STUB_SUMMARY_COUNT=1
 	local got
 	got=$(_pr_handoff_state_for_branch_or_issue "feature/exact" "27501" "owner/repo" \
@@ -377,12 +380,31 @@ test_case_ready_requires_exact_head_and_merge_summary() {
 		print_result "ready handoff accepts exact head with MERGE_SUMMARY" 1 "got: '$got'"
 	fi
 	unset STUB_SUMMARY_COUNT
+	unset STUB_LINKED_BODY
+	return 0
+}
+
+test_case_ready_requires_same_repo_linkage() {
+	export STUB_HEAD_JSON='[{"number":333,"state":"OPEN","isDraft":false,"mergedAt":null,"headRefOid":"remote-head","labels":[],"statusCheckRollup":[]}]'
+	export STUB_SEARCH_JSON='[]'
+	export STUB_SUMMARY_COUNT=1
+	export STUB_LINKED_BODY='## Summary\n\nNo closing reference survived creation.'
+	local got
+	got=$(_pr_handoff_state_for_branch_or_issue "feature/exact" "27501" "owner/repo" \
+		"head-only" "remote-head" 1)
+	if [[ "$got" == "ready_missing_linkage|333" ]]; then
+		print_result "ready handoff requires a same-repository closing reference" 0
+	else
+		print_result "ready handoff requires a same-repository closing reference" 1 "got: '$got'"
+	fi
+	unset STUB_SUMMARY_COUNT STUB_LINKED_BODY
 	return 0
 }
 
 test_case_merged_requires_exact_head_and_merge_summary() {
 	export STUB_HEAD_JSON='[{"number":332,"state":"MERGED","isDraft":false,"mergedAt":"2026-07-13T00:00:00Z","headRefOid":"merged-head","labels":[],"statusCheckRollup":[]}]'
 	export STUB_SEARCH_JSON='[]'
+	export STUB_LINKED_BODY='Resolves #27501'
 	export STUB_SUMMARY_COUNT=1
 	local got
 	got=$(_pr_handoff_state_for_branch_or_issue "feature/merged" "27501" "owner/repo" \
@@ -402,6 +424,7 @@ test_case_merged_requires_exact_head_and_merge_summary() {
 		print_result "merged handoff requires canonical MERGE_SUMMARY" 1 "got: '$got'"
 	fi
 	unset STUB_SUMMARY_COUNT
+	unset STUB_LINKED_BODY
 	return 0
 }
 
@@ -546,6 +569,7 @@ test_case_d3_failed_head_probe_is_unknown
 test_case_draft_state_is_preserved
 test_case_ready_and_terminal_states_are_preserved
 test_case_ready_requires_exact_head_and_merge_summary
+test_case_ready_requires_same_repo_linkage
 test_case_merged_requires_exact_head_and_merge_summary
 test_case_head_only_does_not_capture_unrelated_issue_draft
 test_case_active_pr_wins_over_historical_pr
