@@ -1285,8 +1285,10 @@ _detect_cross_account_inherit() {
 		return 1
 	fi
 
-	# Must use secrets:inherit (the broken cross-account pattern)
-	if ! printf '%s' "$decoded" | grep -q 'secrets:[[:space:]]*inherit'; then
+	# Must use an active secrets:inherit key (the broken cross-account pattern).
+	# Explanatory comments in the canonical caller must not trigger the advisory.
+	if ! printf '%s' "$decoded" | grep -qE \
+		'^[[:space:]]*secrets:[[:space:]]*inherit([[:space:]]+#.*)?[[:space:]]*$'; then
 		return 1
 	fi
 
