@@ -400,6 +400,124 @@ extra trusted commentary" '.[0] += [{id:4305,node_id:"IC_4305",user:{id:1,node_i
 	return 0
 }
 
+test_trusted_dispatch_audit_comments() {
+	reset_and_sign issue 41
+	local worker_footer="<!-- aidevops:origin:worker -->
+<!-- aidevops:sig -->
+---
+[aidevops.sh](https://aidevops.sh) v3.32.275 automated scan."
+	local self_hosting_audit="<!-- self-hosting-tier-override -->
+<!-- provenance:start -->
+## Self-Hosting Tier Override
+
+Pre-dispatch self-hosting detector replaced lower workload-tier labels with \`tier:thinking\` on this issue.
+
+**Matched pattern:** \`pulse-dispatch-\` in issue body
+
+**Rationale:** Issues modifying the dispatch path have a self-referential property — workers dispatched to fix them run through the code being fixed. Applying the terminal workload tier upfront avoids wasted lower-tier attempts while runtime routing retains control of the exact model and reasoning level.
+
+**Bypass:** \`AIDEVOPS_SKIP_SELF_HOSTING_DETECTOR=1\`
+
+_Automated by \`pre-dispatch-validator-helper.sh\` (t2819). This comment is posted once via the \`<!-- self-hosting-tier-override -->\` marker; re-runs are no-ops._
+<!-- provenance:end -->
+${worker_footer}"
+	local dispatch_claim_audit="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+DISPATCH_CLAIM nonce=abc123 runner=runner-a ts=2026-01-01T00:06:00Z max_age_s=600 version=3.32.275 opencode_version=1.0.0 lease_token=abc123 device=device-a session=issue-41 phase=prelaunch expires_at=1760000000
+<!-- ops:end -->
+${worker_footer}"
+	local dispatch_lease_audit="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+DISPATCH_LEASE phase=ready lease_token=abc123 device=device-a session=issue-41 expires_at=1760000000 ts=2026-01-01T00:06:02Z attempt_id=attempt:abc123
+<!-- ops:end -->
+${worker_footer}"
+	local dispatch_launch_audit="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+Dispatching worker (deterministic).
+<!-- aidevops:dispatch lease_token=abc123 device=device-a session=issue-41 attempt_id=attempt:abc123 claim_id=4311 -->
+- **Worker PID**: 12345
+- **Model**: openai/gpt-5.6
+- **Tier**: thinking
+- **Runner**: runner-a
+- **aidevops**: v3.32.275
+- **OpenCode**: v1.0.0
+- **Issue**: #41
+<!-- ops:end -->
+${worker_footer}"
+	local claim_release_audit="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+CLAIM_RELEASED reason=claim_only_no_worker runner=runner-a ts=2026-01-01T00:07:00Z issue=41 opencode_version=1.0.0
+<!-- ops:end -->
+${worker_footer}"
+	local no_work_skip_audit="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+<!-- no-work-escalation-skip -->
+## Tier Escalation Skipped: Infrastructure Failure (no_work)
+
+**Trigger:** 1 worker failure(s) classified as \`no_work\` — the worker exited during setup without reading any target files.
+**Action:** Tier escalation **skipped**. The issue stays at its current tier so the next retry can succeed cheaply once the infrastructure issue resolves.
+**Reason:** worker_noop_zero_output
+
+**Why no cascade:** \`no_work\` means the worker never produced reliable implementation evidence — it crashed during runtime setup (FD exhaustion, plugin init failure, branch naming race, auth refresh race) or stale-recovery falsely concluded no progress. A more expensive model cannot fix an infrastructure problem it never reached. Cascading to \`tier:thinking\` would waste capacity on a problem the mapped standard or simple model can handle once the infrastructure clears.
+
+After 3 consecutive \`no_work\` failures the per-issue no_work circuit breaker (t2769) applies \`status:blocked\` and files a machine-recoverable root-cause meta-issue.
+
+_Automated by \`escalate_issue_tier()\` no_work skip (t2387) in worker-lifecycle-common.sh_
+<!-- ops:end -->
+${worker_footer}"
+	local dispatch_comments=""
+	dispatch_comments=$(jq -c \
+		--arg self_hosting "$self_hosting_audit" \
+		--arg claim "$dispatch_claim_audit" \
+		--arg lease "$dispatch_lease_audit" \
+		--arg launch "$dispatch_launch_audit" \
+		--arg release "$claim_release_audit" \
+		--arg no_work "$no_work_skip_audit" '
+		.[0] += [
+			{id:4310,node_id:"IC_4310",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:00Z",updated_at:"2026-01-01T00:06:00Z",body:$self_hosting},
+			{id:4311,node_id:"IC_4311",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:01Z",updated_at:"2026-01-01T00:06:01Z",body:$claim},
+			{id:4312,node_id:"IC_4312",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:02Z",updated_at:"2026-01-01T00:06:02Z",body:$lease},
+			{id:4313,node_id:"IC_4313",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:06:03Z",updated_at:"2026-01-01T00:06:03Z",body:$launch},
+			{id:4314,node_id:"IC_4314",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:07:00Z",updated_at:"2026-01-01T00:07:00Z",body:$release},
+			{id:4318,node_id:"IC_4318",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:07:01Z",updated_at:"2026-01-01T00:07:01Z",body:$no_work}
+		]' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$dispatch_comments" >"${FIXTURES}/comments-41.json"
+	assert_verify "trusted canonical dispatch audit comments preserve issue approval" issue 41 VERIFIED 0
+
+	write_baseline_fixtures
+	dispatch_comments=$(jq -c --arg body "$dispatch_claim_audit" '.[0] += [{id:4319,node_id:"IC_4319",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:04:00Z",updated_at:"2026-01-01T00:04:00Z",body:$body}]' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$dispatch_comments" >"${FIXTURES}/comments-41.json"
+	append_signed_comment issue 41 "2026-01-01T00:05:00Z"
+	assert_verify "pre-approval canonical dispatch audit remains in the signed snapshot" issue 41 VERIFIED 0
+	dispatch_comments=$(jq -c '.[0] |= map(if .id == 4319 then .body += "\nchanged after approval" else . end)' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$dispatch_comments" >"${FIXTURES}/comments-41.json"
+	assert_verify "pre-approval canonical dispatch audit drift remains stale" issue 41 STALE_APPROVAL 4
+	return 0
+}
+
+test_dispatch_audit_comments_fail_closed() {
+	local worker_footer="<!-- aidevops:origin:worker -->
+<!-- aidevops:sig -->
+---
+[aidevops.sh](https://aidevops.sh) v3.32.275 automated scan."
+	local dispatch_claim_audit="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+DISPATCH_CLAIM nonce=abc123 runner=runner-a ts=2026-01-01T00:06:00Z max_age_s=600 version=3.32.275 opencode_version=1.0.0 lease_token=abc123 device=device-a session=issue-41 phase=prelaunch expires_at=1760000000
+<!-- ops:end -->
+${worker_footer}"
+	local dispatch_comments=""
+	reset_and_sign issue 41
+	dispatch_comments=$(jq -c --arg body "$dispatch_claim_audit" '.[0] += [{id:4315,node_id:"IC_4315",user:{id:105,node_id:"U_105",login:"external-author",type:"User"},author_association:"CONTRIBUTOR",created_at:"2026-01-01T00:08:00Z",updated_at:"2026-01-01T00:08:00Z",body:$body}]' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$dispatch_comments" >"${FIXTURES}/comments-41.json"
+	assert_verify "external canonical dispatch audit lookalike remains content-bound" issue 41 STALE_APPROVAL 4
+
+	reset_and_sign issue 41
+	dispatch_comments=$(jq -c --arg body "${dispatch_claim_audit}
+extra trusted commentary" '.[0] += [{id:4316,node_id:"IC_4316",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:08:00Z",updated_at:"2026-01-01T00:08:00Z",body:$body}]' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$dispatch_comments" >"${FIXTURES}/comments-41.json"
+	assert_verify "trusted dispatch audit with extra prose remains content-bound" issue 41 STALE_APPROVAL 4
+
+	reset_and_sign issue 41
+	dispatch_comments=$(jq -c --arg body "${dispatch_claim_audit/DISPATCH_CLAIM/DISPATCH_UNKNOWN}" '.[0] += [{id:4317,node_id:"IC_4317",user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:08:00Z",updated_at:"2026-01-01T00:08:00Z",body:$body}]' "${FIXTURES}/comments-41.json")
+	printf '%s\n' "$dispatch_comments" >"${FIXTURES}/comments-41.json"
+	assert_verify "trusted unknown dispatch audit shape remains content-bound" issue 41 STALE_APPROVAL 4
+	return 0
+}
+
 test_post_approval_linked_references() {
 	reset_and_sign issue 41
 	jq '.[0] += [(.[0][0] | .id = 420 | .node_id = "EV_420" | .created_at = "2026-01-01T00:06:00Z" | .source.issue.number = 10)]' \
@@ -627,6 +745,8 @@ main() {
 	append_signed_comment pr 42 "2026-01-01T00:06:00Z" 4300
 	assert_verify "repeat approval verifies against the newest exact snapshot" pr 42 VERIFIED 0 "$PR_HEAD"
 	test_trusted_lifecycle_comments
+	test_trusted_dispatch_audit_comments
+	test_dispatch_audit_comments_fail_closed
 	test_post_approval_linked_references
 	test_locked_issue_continuity
 	test_locked_issue_tier_backfill_continuity

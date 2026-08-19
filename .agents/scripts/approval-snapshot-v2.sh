@@ -48,6 +48,7 @@ _approval_snapshot_v2_comments_json() {
 	local pages_json="$1"
 	local excluded_comment_id="${2:-}"
 	local source_name="${3:-conversation}"
+	local issued_at_cutoff="${4:-}"
 	local empty_string=""
 
 	# #aidevops:trust-boundary — exclude the exact approval comment whose
@@ -55,12 +56,33 @@ _approval_snapshot_v2_comments_json() {
 	# audit written after verification. Marker text is attacker-controlled:
 	# excluding arbitrary marker comments would let an external contributor hide
 	# later drift by copying the marker into an unsigned comment.
-	jq -cS --arg excluded "$excluded_comment_id" --arg source "$source_name" --arg empty "$empty_string" '
+	jq -cS --arg excluded "$excluded_comment_id" --arg source "$source_name" --arg cutoff "$issued_at_cutoff" --arg empty "$empty_string" '
+		def trusted_association:
+			. == "OWNER" or . == "MEMBER" or . == "COLLABORATOR";
+		def aidevops_worker_footer:
+			"(?:\\n<!-- aidevops:origin:worker -->)?\\n<!-- aidevops:sig -->\\n---\\n\\[aidevops\\.sh\\]\\(https://aidevops\\.sh\\) v[A-Za-z0-9._+-]+ [^\\n]+\\n?";
+		def canonical_dispatch_audit:
+			test(
+				"^<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\\n(?:" +
+				"DISPATCH_CLAIM nonce=[A-Za-z0-9._:-]+ runner=[A-Za-z0-9._:-]+ ts=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z max_age_s=[0-9]+ version=[A-Za-z0-9._+-]+ opencode_version=[A-Za-z0-9._+-]+ lease_token=[A-Za-z0-9._:-]+ device=[A-Za-z0-9._:-]+ session=issue-[0-9]+ phase=prelaunch expires_at=[0-9]+(?: [a-z_]+=[A-Za-z0-9._:-]+)*" +
+				"|DISPATCH_LEASE phase=(?:prelaunch|ready|terminal) lease_token=[A-Za-z0-9._:-]+ device=[A-Za-z0-9._:-]+ session=issue-[0-9]+ expires_at=[0-9]+ ts=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z attempt_id=[A-Za-z0-9._:-]+" +
+				"|Dispatching worker \\(deterministic\\)\\.\\n<!-- aidevops:dispatch lease_token=[A-Za-z0-9._:-]+ device=[A-Za-z0-9._:-]+ session=issue-[0-9]+ attempt_id=[A-Za-z0-9._:-]+ claim_id=[0-9]+ -->\\n- \\*\\*Worker PID\\*\\*: [0-9]+\\n- \\*\\*Model\\*\\*: (?:[A-Za-z0-9._/+:-]+|auto-select \\(round-robin\\))\\n- \\*\\*Tier\\*\\*: [a-z]+\\n- \\*\\*Runner\\*\\*: [A-Za-z0-9._:-]+\\n- \\*\\*aidevops\\*\\*: v?[A-Za-z0-9._+-]+\\n- \\*\\*OpenCode\\*\\*: v?[A-Za-z0-9._+-]+\\n- \\*\\*Issue\\*\\*: #[0-9]+" +
+				"|CLAIM_RELEASED reason=[A-Za-z0-9._:-]+ runner=[A-Za-z0-9._:-]+ ts=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?: [a-z_]+=[A-Za-z0-9._:@/+:-]+)*" +
+				")\\n<!-- ops:end -->" + aidevops_worker_footer + "$"
+			);
+		def canonical_self_hosting_override:
+			test(
+				"^<!-- self-hosting-tier-override -->\\n<!-- provenance:start -->\\n## Self-Hosting Tier Override\\n\\nPre-dispatch self-hosting detector replaced lower workload-tier labels with `tier:thinking` on this issue\\.\\n\\n\\*\\*Matched pattern:\\*\\* `[A-Za-z0-9._-]+` in issue body\\n\\n\\*\\*Rationale:\\*\\* Issues modifying the dispatch path have a self-referential property — workers dispatched to fix them run through the code being fixed\\. Applying the terminal workload tier upfront avoids wasted lower-tier attempts while runtime routing retains control of the exact model and reasoning level\\.\\n\\n\\*\\*Bypass:\\*\\* `AIDEVOPS_SKIP_SELF_HOSTING_DETECTOR=1`\\n\\n_Automated by `pre-dispatch-validator-helper\\.sh` \\(t2819\\)\\. This comment is posted once via the `<!-- self-hosting-tier-override -->` marker; re-runs are no-ops\\._\\n<!-- provenance:end -->" + aidevops_worker_footer + "$"
+			);
+		def canonical_no_work_escalation_skip:
+			test(
+				"^<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\\n<!-- no-work-escalation-skip -->\\n## Tier Escalation Skipped: Infrastructure Failure \\(no_work\\)\\n\\n\\*\\*Trigger:\\*\\* [0-9]+ worker failure\\(s\\) classified as `no_work` — the worker exited during setup without reading any target files\\.\\n\\*\\*Action:\\*\\* Tier escalation \\*\\*skipped\\*\\*\\. The issue stays at its current tier so the next retry can succeed cheaply once the infrastructure issue resolves\\.\\n\\*\\*Reason:\\*\\* [A-Za-z0-9._:-]+\\n\\n\\*\\*Why no cascade:\\*\\* `no_work` means the worker never produced reliable implementation evidence — it crashed during runtime setup \\(FD exhaustion, plugin init failure, branch naming race, auth refresh race\\) or stale-recovery falsely concluded no progress\\. A more expensive model cannot fix an infrastructure problem it never reached\\. Cascading to `tier:thinking` would waste capacity on a problem the mapped standard or simple model can handle once the infrastructure clears\\.\\n\\nAfter [0-9]+ consecutive `no_work` failures the per-issue no_work circuit breaker \\(t2769\\) applies `status:blocked` and files a machine-recoverable root-cause meta-issue\\.\\n\\n_Automated by `escalate_issue_tier\\(\\)` no_work skip \\(t2387\\) in worker-lifecycle-common\\.sh_\\n<!-- ops:end -->" + aidevops_worker_footer + "$"
+			);
 		[.[][]?
 		| select((.id | tostring) != $excluded)
 		| select((.user.type // $empty) != "Bot")
 		| select((
-			((.author_association // $empty) == "OWNER" or (.author_association // $empty) == "MEMBER" or (.author_association // $empty) == "COLLABORATOR")
+			((.author_association // $empty) | trusted_association)
 			and ((.body // $empty) | startswith("<!-- aidevops-signed-approval -->\n<!-- stale-recovery-tick:0 (reset: auto-approved by maintainer — "))
 			and ((.body // $empty) | contains(") -->\nAuto-approved: "))
 			and ((.body // $empty) | contains(". Stale recovery tick reset."))
@@ -70,8 +92,20 @@ _approval_snapshot_v2_comments_json() {
 			# emitted by _isc_post_claim_comment is non-scope-bearing. Keep the
 			# optional worktree qualifier bounded to its backtick-delimited basename;
 			# trusted prose or copied markers must remain approval-significant.
-			((.author_association // $empty) == "OWNER" or (.author_association // $empty) == "MEMBER" or (.author_association // $empty) == "COLLABORATOR")
+			((.author_association // $empty) | trusted_association)
 			and ((.body // $empty) | test("^<!-- aidevops-interactive-claim/v1 -->\\n<!-- ops:start -->\\n> Interactive session claimed by @[^\\n`]+(?: in `[^`\\n]+`)? on [^\\n]+\\.\\n> Pulse dispatch blocked via `status:in-review` \\+ self-assignment\\.\\n<!-- ops:end -->\\n(?:<!-- aidevops:origin:interactive -->\\n)?<!-- aidevops:sig -->\\n---\\n[^\\n]+\\n?$"))
+		) | not)
+		| select((
+			# #aidevops:trust-boundary — these comments are excluded only when
+			# both GitHub authority and the complete canonical writer envelope
+			# match. Partial markers, extra prose, and unknown field shapes remain
+			# content-bound so copied audit text cannot extend signed authority.
+			# Pre-approval audits also remain bound for backwards-compatible V2
+			# verification; only canonical comments posted after signing are drift.
+			((.author_association // $empty) | trusted_association)
+			and ($cutoff != $empty)
+			and ((.created_at // $empty) > $cutoff)
+			and ((.body // $empty) | canonical_dispatch_audit or canonical_self_hosting_override or canonical_no_work_escalation_skip)
 		) | not)
 		| {
 			source: $source,
@@ -280,7 +314,7 @@ approval_snapshot_v2_build() (
 	fi
 
 	comments_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/comments?per_page=100") || return 1
-	comments_json=$(_approval_snapshot_v2_comments_json "$comments_pages" "$excluded_comment_id" "conversation") || return 1
+	comments_json=$(_approval_snapshot_v2_comments_json "$comments_pages" "$excluded_comment_id" "conversation" "$issued_at_cutoff") || return 1
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 1
 	linked_references_json=$(_approval_snapshot_v2_linked_references_json "$timeline_pages" "$issued_at_cutoff" "$source_timestamp_profile") || return 1
 	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" && "$issue_lifecycle_profile" == "$APPROVAL_SNAPSHOT_PROFILE_CURRENT" ]]; then
@@ -332,7 +366,7 @@ approval_snapshot_v2_build() (
 	pr_json=$(gh api "repos/${slug}/pulls/${target_number}" 2>/dev/null) || return 1
 	printf '%s' "$pr_json" | jq -e --arg empty "$empty_string" --arg object "$APPROVAL_JSON_OBJECT" 'type == $object and (.id != null) and (.node_id != null) and ((.head.sha // $empty) != $empty) and ((.base.ref // $empty) != $empty)' >/dev/null 2>&1 || return 1
 	review_comment_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/pulls/${target_number}/comments?per_page=100") || return 1
-	review_comments_json=$(_approval_snapshot_v2_comments_json "$review_comment_pages" "" "review") || return 1
+	review_comments_json=$(_approval_snapshot_v2_comments_json "$review_comment_pages" "" "review" "$issued_at_cutoff") || return 1
 	review_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/pulls/${target_number}/reviews?per_page=100") || return 1
 	reviews_json=$(_approval_snapshot_v2_reviews_json "$review_pages") || return 1
 	_approval_snapshot_v2_write_json_file "$temp_dir/pr.json" "$pr_json" || return 1
