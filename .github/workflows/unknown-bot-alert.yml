@@ -49,6 +49,7 @@ jobs:
             # known review bots when the single-source config fetch is briefly
             # unavailable or not yet updated on the default branch.
             KNOWN_BOTS=(
+              "coderabbitai[bot]"
               "sonarqubecloud[bot]"
               "codacy-production[bot]"
               "github-actions[bot]"

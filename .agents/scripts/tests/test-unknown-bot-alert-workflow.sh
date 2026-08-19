@@ -75,6 +75,18 @@ test_generated_guidance_targets_current_docs() {
 	return 0
 }
 
+test_coderabbit_bot_is_known() {
+	if grep -Fxq 'coderabbitai[bot]' "$KNOWN_BOTS_FILE"; then
+		print_result "coderabbit bot is in known bots config" 0
+	else
+		print_result "coderabbit bot is in known bots config" 1 "missing from $KNOWN_BOTS_FILE"
+		return 1
+	fi
+
+	assert_contains "coderabbit bot is in workflow fallback" '"coderabbitai[bot]"'
+	return 0
+}
+
 test_sonarqubecloud_bot_is_known() {
 	if grep -Fxq 'sonarqubecloud[bot]' "$KNOWN_BOTS_FILE"; then
 		print_result "sonarqubecloud bot is in known bots config" 0
@@ -108,6 +120,7 @@ main() {
 	test_comment_body_is_data_not_shell_source
 	test_missing_unknown_bot_label_does_not_break_workflow
 	test_generated_guidance_targets_current_docs
+	test_coderabbit_bot_is_known
 	test_sonarqubecloud_bot_is_known
 	test_codacy_production_bot_is_known
 
