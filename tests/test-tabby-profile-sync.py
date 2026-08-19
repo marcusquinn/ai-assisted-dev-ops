@@ -341,14 +341,16 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
         profile = tabby_profile_sync.build_profile_yaml(
             name="repo",
             cwd="/Users/alice/repo",
-            tab_colour="#DA5CD3",
-            scheme={
-                "name": "test",
-                "foreground": "#ffffff",
-                "background": "#000000",
-                "cursor": "#ffffff",
-                "colors": ["#000000"],
-            },
+            appearance=tabby_profile_sync.ProfileAppearance(
+                "#DA5CD3",
+                {
+                    "name": "test",
+                    "foreground": "#ffffff",
+                    "background": "#000000",
+                    "cursor": "#ffffff",
+                    "colors": ["#000000"],
+                },
+            ),
             group_id="group-1",
         )
 
@@ -360,14 +362,16 @@ class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
         profile = tabby_profile_sync.build_profile_yaml(
             name="repo",
             cwd="/srv/repo",
-            tab_colour="#DA5CD3",
-            scheme={
-                "name": "test",
-                "foreground": "#ffffff",
-                "background": "#000000",
-                "cursor": "#ffffff",
-                "colors": ["#000000"],
-            },
+            appearance=tabby_profile_sync.ProfileAppearance(
+                "#DA5CD3",
+                {
+                    "name": "test",
+                    "foreground": "#ffffff",
+                    "background": "#000000",
+                    "cursor": "#ffffff",
+                    "colors": ["#000000"],
+                },
+            ),
             group_id="group-1",
             shell_path="/bin/bash",
         )

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Iterator
 from typing import NamedTuple
 
 from tabby_profile_utils import (
@@ -33,6 +34,23 @@ class ProfileCommandIssue(NamedTuple):
     profile_name: str
     line_number: int
     value: str
+
+
+def _profile_ranges(lines: list[str]) -> Iterator[tuple[str, int, int]]:
+    """Yield profile names and bounded line ranges from a Tabby config."""
+    index = 0
+    while index < len(lines):
+        profile_match = re.match(r"^  - name:\s*(?P<name>.+?)\s*$", lines[index])
+        if not profile_match:
+            index += 1
+            continue
+        profile_end = _profile_block_end(lines, index)
+        yield (
+            _normalise_yaml_scalar(profile_match.group("name")),
+            index,
+            profile_end,
+        )
+        index = profile_end
 
 
 def _is_non_string_yaml_list_item(value: str) -> bool:
@@ -111,21 +129,12 @@ def find_profile_arg_type_issues(config_text: str) -> list[ProfileArgTypeIssue]:
     """Find profile args that Tabby cannot pass to its PTY as ``string[]``."""
     lines = config_text.split("\n")
     issues: list[ProfileArgTypeIssue] = []
-    index = 0
-    while index < len(lines):
-        profile_match = re.match(r"^  - name:\s*(?P<name>.+?)\s*$", lines[index])
-        if not profile_match:
-            index += 1
-            continue
-
-        profile_name = _normalise_yaml_scalar(profile_match.group("name"))
-        profile_end = _profile_block_end(lines, index)
+    for profile_name, profile_start, profile_end in _profile_ranges(lines):
         issues.extend(
             _find_profile_arg_type_issues(
-                lines, index, profile_end, profile_name
+                lines, profile_start, profile_end, profile_name
             )
         )
-        index = profile_end
     return issues
 
 
@@ -158,29 +167,33 @@ def report_profile_arg_type_issues(config_text: str) -> bool:
     return True
 
 
+def _profile_command_issue(
+    lines: list[str], profile_name: str, profile_start: int, profile_end: int
+) -> ProfileCommandIssue | None:
+    """Return the invalid command issue for one managed profile, if any."""
+    if not _profile_mentions_opencode_launch(lines[profile_start:profile_end]):
+        return None
+    for line_index in range(profile_start + 1, profile_end):
+        command_match = re.match(r"^\s*command:\s*(?P<value>.*)$", lines[line_index])
+        if not command_match:
+            continue
+        command = _normalise_yaml_scalar(command_match.group("value"))
+        if is_executable_command(command):
+            return None
+        return ProfileCommandIssue(profile_name, line_index + 1, command)
+    return None
+
+
 def find_profile_command_issues(config_text: str) -> list[ProfileCommandIssue]:
     """Find managed OpenCode profiles with an invalid command executable."""
     lines = config_text.split("\n")
     issues: list[ProfileCommandIssue] = []
-    index = 0
-    while index < len(lines):
-        profile_match = re.match(r"^  - name:\s*(?P<name>.+?)\s*$", lines[index])
-        if not profile_match:
-            index += 1
-            continue
-        profile_end = _profile_block_end(lines, index)
-        profile_lines = lines[index:profile_end]
-        if _profile_mentions_opencode_launch(profile_lines):
-            profile_name = _normalise_yaml_scalar(profile_match.group("name"))
-            for line_index in range(index + 1, profile_end):
-                command_match = re.match(r"^\s*command:\s*(?P<value>.*)$", lines[line_index])
-                if not command_match:
-                    continue
-                command = _normalise_yaml_scalar(command_match.group("value"))
-                if not is_executable_command(command):
-                    issues.append(ProfileCommandIssue(profile_name, line_index + 1, command))
-                break
-        index = profile_end
+    for profile_name, profile_start, profile_end in _profile_ranges(lines):
+        issue = _profile_command_issue(
+            lines, profile_name, profile_start, profile_end
+        )
+        if issue is not None:
+            issues.append(issue)
     return issues
 
 

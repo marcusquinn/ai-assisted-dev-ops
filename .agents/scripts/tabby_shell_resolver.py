@@ -22,16 +22,11 @@ class ShellResolutionError(RuntimeError):
 
 def is_executable_command(path: str) -> bool:
     """Return whether ``path`` is an absolute executable regular file."""
-    return bool(
-        path
-        and "\x00" not in path
-        and "\n" not in path
-        and "\r" not in path
-        and not any(character.isspace() for character in path)
-        and os.path.isabs(path)
-        and os.path.isfile(path)
-        and os.access(path, os.X_OK)
-    )
+    if not path or any(character in path for character in ("\x00", "\n", "\r")):
+        return False
+    if any(character.isspace() for character in path):
+        return False
+    return os.path.isabs(path) and os.path.isfile(path) and os.access(path, os.X_OK)
 
 
 def is_executable_shell(path: str) -> bool:

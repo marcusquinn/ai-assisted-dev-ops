@@ -97,7 +97,8 @@ assert 'exec aidevops opencode --tabby-shell' in repaired, repaired
 _info "Test 3: generated profiles use aidevops OpenCode launcher"
 run_python_test "generated profile uses aidevops launcher" "${load_module_code}
 scheme = {'name': 'Test', 'foreground': '#fff', 'background': '#000', 'cursor': '#fff', 'colors': ['#000', '#fff']}
-profile = mod.build_profile_yaml('aidevops', '/tmp/aidevops', '#123456', scheme, 'group-1')
+appearance = mod.ProfileAppearance('#123456', scheme)
+profile = mod.build_profile_yaml('aidevops', '/tmp/aidevops', appearance, 'group-1')
 assert \"- '-i'\" not in profile, profile
 assert 'TABBY_AUTORUN: opencode' not in profile, profile
 assert \"- '-l'\" in profile and \"- '-c'\" in profile, profile

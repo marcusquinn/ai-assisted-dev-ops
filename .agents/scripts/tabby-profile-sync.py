@@ -22,7 +22,7 @@ import re
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from tabby_colour_utils import generate_tab_colour, find_closest_scheme
 from tabby_profile_repair import (
@@ -50,6 +50,13 @@ from tabby_yaml_helpers import (
     extract_group_id,
     insert_profiles_block,
 )
+
+
+class ProfileAppearance(NamedTuple):
+    """Colour settings used to render one generated Tabby profile."""
+
+    tab_colour: str
+    scheme: dict
 
 
 def is_linked_worktree(repo_path: str) -> bool:
@@ -123,14 +130,15 @@ def profile_name_from_path(repo_path: str) -> str:
 def build_profile_yaml(
     name: str,
     cwd: str,
-    tab_colour: str,
-    scheme: dict,
+    appearance: ProfileAppearance,
     group_id: str,
     shell_path: str | None = None,
 ) -> str:
     """Build a YAML profile block as a string."""
     profile_id = f"local:custom:{name.replace('/', '-')}:{uuid.uuid4()}"
     shell_path = shell_path or resolve_login_shell()
+    tab_colour = appearance.tab_colour
+    scheme = appearance.scheme
 
     # Build colour list
     colours_yaml = ""
@@ -302,8 +310,7 @@ def build_new_profiles(
             profile_yaml = build_profile_yaml(
                 name=repo["name"],
                 cwd=repo["path"],
-                tab_colour=tab_colour,
-                scheme=scheme,
+                appearance=ProfileAppearance(tab_colour, scheme),
                 group_id=group_id,
                 shell_path=shell_path,
             )
