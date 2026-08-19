@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/shared-constants.sh"
 
 _CANARY_TEMP_ROOT=""
 _CANARY_MOCK_PID=""
+_CANARY_PLUGIN_PATH=""
 
 cleanup_canary() {
 	if [[ -n "$_CANARY_MOCK_PID" ]]; then
@@ -38,6 +39,22 @@ install_isolated_opencode() {
 		npm_config_userconfig=/dev/null npm_config_cache="$isolated_cache" \
 		npm install --ignore-scripts --no-audit --no-fund --prefix "$install_root" \
 		"opencode-ai@${version}" >/dev/null
+}
+
+install_isolated_plugin() {
+	local install_root="$1"
+	local isolated_home="$2"
+	local isolated_cache="$3"
+	local source_root="$SCRIPT_DIR/../plugins/opencode-aidevops"
+	mkdir -p "$install_root" "$isolated_home" "$isolated_cache"
+	cp -R "$source_root/." "$install_root/" || return 1
+	env -i \
+		HOME="$isolated_home" PATH="$PATH" \
+		GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+		npm_config_userconfig=/dev/null npm_config_cache="$isolated_cache" \
+		npm ci --ignore-scripts --no-audit --no-fund --prefix "$install_root" >/dev/null || return 1
+	_CANARY_PLUGIN_PATH="$install_root/index.mjs"
+	return 0
 }
 
 resolve_installed_opencode_binary() {
@@ -151,35 +168,46 @@ run_isolated_probe() {
 	local request_file="$5"
 	local probe_root="$canary_root/probe-$label"
 	local output_file="$canary_root/$label.output"
-	local plugin_path="$SCRIPT_DIR/../plugins/opencode-aidevops/index.mjs"
+	local plugin_path="${_CANARY_PLUGIN_PATH:-$SCRIPT_DIR/../plugins/opencode-aidevops/index.mjs}"
 	local plugin_url=""
+	local provider_id="canary"
 	local model_id="canary"
+	local model_ref="${provider_id}/${model_id}"
 	local request_count_before=0
 	local request_count_after=0
+	local probe_timeout_seconds=120
 	mkdir -p "$probe_root/home" "$probe_root/config/opencode" "$probe_root/data" "$probe_root/cache"
 	if [[ -f "$plugin_path" ]]; then
 		plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$plugin_path")
 	fi
-	jq -n --arg api "http://127.0.0.1:${port}/v1" --arg plugin "$plugin_url" --arg model "$model_id" \
-		'{provider:{($model):{npm:"@ai-sdk/openai-compatible",name:"Canary",api:$api,
-		options:{apiKey:"canary-local-only"},models:{($model):{name:"Canary"}}}}}
+	jq -n --arg api "http://127.0.0.1:${port}/v1" --arg plugin "$plugin_url" \
+		--arg provider "$provider_id" --arg model "$model_id" --arg model_ref "$model_ref" \
+		'{model:$model_ref,small_model:$model_ref,
+		provider:{($provider):{npm:"@ai-sdk/openai-compatible@3.0.31",name:"Canary",
+		options:{baseURL:$api,apiKey:"canary-local-only"},models:{($model):{name:"Canary"}}}}}
 		+ (if $plugin == "" then {} else {plugin:[$plugin]} end)' \
 		>"$probe_root/config/opencode/opencode.json"
+	local routing_file="$probe_root/config/model-routing.json"
+	jq -n --arg model "$model_ref" \
+		'{tiers:{simple:{models:[$model]},standard:{models:[$model]},thinking:{models:[$model]}},
+		escalation_order:["simple","standard","thinking"]}' >"$routing_file"
 	[[ -f "$request_file" ]] && request_count_before=$(wc -l <"$request_file" | tr -d ' ')
 
-	local timeout_command=(timeout --kill-after=5s 60s)
+	local timeout_command=(timeout --kill-after=5s "${probe_timeout_seconds}s")
 	if ! command -v timeout >/dev/null 2>&1; then
-		timeout_command=(perl -e 'alarm 60; exec @ARGV' --)
+		timeout_command=(perl -e "alarm ${probe_timeout_seconds}; exec @ARGV" --)
 	fi
 	local probe_rc=0
 	env -i \
 		HOME="$probe_root/home" PATH="$PATH" \
 		XDG_CONFIG_HOME="$probe_root/config" XDG_DATA_HOME="$probe_root/data" \
-		XDG_CACHE_HOME="$probe_root/cache" AIDEVOPS_HEADLESS=1 \
+		XDG_CACHE_HOME="$probe_root/cache" AIDEVOPS_HEADLESS=1 AIDEVOPS_PLUGIN_DEBUG=1 \
+		AIDEVOPS_MODEL_ROUTING_TABLE="$routing_file" \
 		GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
 		"${timeout_command[@]}" "$binary" run \
 		"What is two plus two? Answer with the single word: Four" \
-		-m canary/canary --dir "$probe_root/home" --agent build \
+		-m "$model_ref" --dir "$probe_root/home" --agent build \
+		--print-logs --log-level DEBUG \
 		>"$output_file" 2>&1 || probe_rc=$?
 	[[ -f "$request_file" ]] && request_count_after=$(wc -l <"$request_file" | tr -d ' ')
 	if [[ "$probe_rc" -eq 0 && "$request_count_after" -gt "$request_count_before" ]] && grep -q 'Four' "$output_file"; then
@@ -189,6 +217,12 @@ run_isolated_probe() {
 	printf 'FAIL: %s isolated probe exited %s (provider requests: %s -> %s)\n' \
 		"$label" "$probe_rc" "$request_count_before" "$request_count_after" >&2
 	command tail -n 20 "$output_file" >&2 || true
+	local log_file
+	for log_file in "$probe_root/data/opencode/log/"*.log; do
+		[[ -f "$log_file" ]] || continue
+		printf '%s\n' "OpenCode log: $log_file" >&2
+		command tail -n 80 "$log_file" >&2 || true
+	done
 	return 1
 }
 
@@ -260,6 +294,11 @@ cmd_canary() {
 	if ! install_isolated_opencode "$_CANARY_TEMP_ROOT/candidate" "$candidate" \
 		"$_CANARY_TEMP_ROOT/install-home-candidate" "$_CANARY_TEMP_ROOT/npm-cache-candidate"; then
 		printf 'RESULT=inconclusive\nINCONCLUSIVE: candidate installation failed\n' >&2
+		return 2
+	fi
+	if ! install_isolated_plugin "$_CANARY_TEMP_ROOT/plugin" \
+		"$_CANARY_TEMP_ROOT/install-home-plugin" "$_CANARY_TEMP_ROOT/npm-cache-plugin"; then
+		printf 'RESULT=inconclusive\nINCONCLUSIVE: locked plugin installation failed\n' >&2
 		return 2
 	fi
 	local baseline_bin=""
