@@ -51,7 +51,7 @@ _run_contrast_checks() {
 
 		if [[ -f "$contrast_script" ]]; then
 			local contrast_result
-			contrast_result=$(node "$contrast_script" "$full_url" --format json --level "$level" 2>/dev/null) || contrast_result='{"error": "contrast check failed"}'
+			contrast_result=$(run_playwright_node "$contrast_script" "$full_url" --format json --level "$level" 2>/dev/null) || contrast_result='{"error": "contrast check failed"}'
 			contrast_json=$(jq -c \
 				--arg page "$page_path" \
 				--argjson contrast "$contrast_result" \
@@ -190,13 +190,16 @@ _generate_a11y_script() {
 ${document_checks}"
 
 	cat >"$script_file" <<SCRIPT
-import { chromium } from 'playwright';
+const playwrightImport = await import(process.env.AIDEVOPS_PLAYWRIGHT_MODULE);
+const { chromium } = playwrightImport.chromium ? playwrightImport : playwrightImport.default;
 
 const baseUrl = '${safe_url}'.replace(/\/\$/, '');
 const pages = [${pages_array}];
 
 async function run() {
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = { headless: true };
+  if (process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE) launchOptions.executablePath = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext();
   const page = await context.newPage();
   const a11yResults = [];
@@ -283,7 +286,7 @@ cmd_a11y() {
 	_generate_a11y_script "$script_file" "$safe_url" "$pages_array"
 
 	local exit_code=0
-	node "$script_file" "$contrast_json" || exit_code=$?
+	run_playwright_node "$script_file" "$contrast_json" || exit_code=$?
 	rm -rf "$script_dir"
 	return $exit_code
 }

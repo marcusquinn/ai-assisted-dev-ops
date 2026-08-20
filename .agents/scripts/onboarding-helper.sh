@@ -344,11 +344,19 @@ check_context_tools() {
 check_browser() {
 	echo -e "${BLUE}Browser Automation${NC}"
 
-	if is_installed "npx" && npx --no-install playwright --version &>/dev/null 2>&1; then
-		print_service "Playwright" "ready" "installed"
-	else
-		print_service "Playwright" "optional" "not installed"
+	local playwright_runtime="${SCRIPT_DIR}/playwright-runtime.mjs"
+	local playwright_state="optional"
+	local playwright_detail="Node package not importable"
+	if is_installed "node"; then
+		if node "$playwright_runtime" check &>/dev/null; then
+			playwright_state="ready"
+			playwright_detail="Node package and browser binary ready"
+		elif node "$playwright_runtime" resolve &>/dev/null; then
+			playwright_state="partial"
+			playwright_detail="Node package ready; browser binary missing"
+		fi
 	fi
+	print_service "Playwright" "$playwright_state" "$playwright_detail"
 
 	# Stagehand needs OpenAI or Anthropic key
 	if is_configured "OPENAI_API_KEY" || is_configured "ANTHROPIC_API_KEY"; then

@@ -114,7 +114,7 @@ cmd_stability() {
 	log_info "Running stability test on ${url} for pages: ${pages} (${reloads} reloads each)"
 	local exit_code=0
 	local output
-	output=$(node "$script_file") || exit_code=$?
+	output=$(run_playwright_node "$script_file") || exit_code=$?
 	rm -rf "$script_dir"
 
 	if [[ $exit_code -ne 0 ]]; then
@@ -182,14 +182,17 @@ _generate_smoke_script() {
 	local timeout="$4"
 
 	cat >"$script_file" <<SCRIPT
-import { chromium } from 'playwright';
+const playwrightImport = await import(process.env.AIDEVOPS_PLAYWRIGHT_MODULE);
+const { chromium } = playwrightImport.chromium ? playwrightImport : playwrightImport.default;
 
 const baseUrl = '${safe_url}'.replace(/\/\$/, '');
 const pages = [${pages_array}];
 const timeout = ${timeout};
 
 async function run() {
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = { headless: true };
+  if (process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE) launchOptions.executablePath = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext();
   const results = [];
 
@@ -327,7 +330,7 @@ cmd_smoke() {
 	log_info "Running smoke test on ${url} for pages: ${pages}"
 	local exit_code=0
 	local output
-	output=$(node "$script_file") || exit_code=$?
+	output=$(run_playwright_node "$script_file") || exit_code=$?
 	rm -rf "$script_dir"
 
 	if [[ $exit_code -ne 0 ]]; then

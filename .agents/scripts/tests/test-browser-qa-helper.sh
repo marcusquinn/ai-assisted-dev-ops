@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 HELPER="${SCRIPT_DIR}/../browser-qa-helper.sh"
+PLAYWRIGHT_RUNTIME="${SCRIPT_DIR}/../playwright-runtime.mjs"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -235,6 +236,75 @@ test_format_stability_markdown_unstable() {
 	return 0
 }
 
+test_runtime_resolves_npx_cached_package() {
+	local tmp_dir
+	tmp_dir=$(mktemp -d)
+	local fake_bin="${tmp_dir}/bin"
+	local fake_modules="${tmp_dir}/cache/node_modules"
+	local isolated_dir="${tmp_dir}/isolated"
+	local browser_path="${tmp_dir}/chromium"
+	mkdir -p "$fake_bin" "${fake_modules}/.bin" "${fake_modules}/playwright" "$isolated_dir"
+	touch "$browser_path"
+
+	cat >"${fake_modules}/playwright/package.json" <<'JSON'
+{"name":"playwright","type":"module","exports":"./index.mjs"}
+JSON
+	cat >"${fake_modules}/playwright/index.mjs" <<'JS'
+export const chromium = { executablePath: () => process.env.FAKE_PLAYWRIGHT_BROWSER };
+JS
+	cat >"${fake_bin}/npx" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "--no-install" ]] || exit 2
+while [[ $# -gt 0 && "$1" != "node" ]]; do shift; done
+[[ "${1:-}" == "node" ]] || exit 2
+shift
+export PATH="${FAKE_PLAYWRIGHT_MODULES}/.bin:${PATH}"
+exec node "$@"
+SH
+	chmod +x "${fake_bin}/npx"
+
+	local node_path
+	node_path=$(command -v node)
+	local direct_exit=0
+	(
+		cd "$isolated_dir" || exit 1
+		PATH="${node_path%/*}:/usr/bin:/bin" node --input-type=module -e "import('playwright')"
+	) >/dev/null 2>&1 || direct_exit=$?
+
+	local resolved=""
+	resolved=$(
+		AIDEVOPS_PLAYWRIGHT_MODULE="" \
+			FAKE_PLAYWRIGHT_BROWSER="$browser_path" \
+			FAKE_PLAYWRIGHT_MODULES="$fake_modules" \
+			PATH="${fake_bin}:${node_path%/*}:/usr/bin:/bin" \
+			node "$PLAYWRIGHT_RUNTIME" check
+	) || true
+
+	rm -f "$browser_path"
+	local missing_browser_status=""
+	missing_browser_status=$(
+		AIDEVOPS_PLAYWRIGHT_MODULE="" \
+			FAKE_PLAYWRIGHT_BROWSER="$browser_path" \
+			FAKE_PLAYWRIGHT_MODULES="$fake_modules" \
+			PATH="${fake_bin}:${node_path%/*}:/usr/bin:/bin" \
+			node "$PLAYWRIGHT_RUNTIME" status
+	) || true
+	local status_distinguishes_browser=0
+	if node -e 'const s=JSON.parse(process.argv[1]); process.exit(s.packageImportable && !s.browserBinaryAvailable ? 0 : 1)' "$missing_browser_status"; then
+		status_distinguishes_browser=1
+	fi
+
+	if [[ "$direct_exit" -ne 0 && "$resolved" == *"${fake_modules}/playwright/index.mjs" && "$status_distinguishes_browser" -eq 1 && ! -e "${isolated_dir}/package.json" && ! -d "${isolated_dir}/node_modules" ]]; then
+		print_result "runtime resolves npx cache when bare import fails" 0
+	else
+		print_result "runtime resolves npx cache when bare import fails" 1 "direct_exit=${direct_exit}, resolved=${resolved:-none}, browser_status=${missing_browser_status:-none}"
+	fi
+
+	rm -rf "$tmp_dir"
+	return 0
+}
+
 main() {
 	# Source after function declarations so helper functions are available here.
 	# main() in helper is guarded and will not auto-run when sourced.
@@ -262,6 +332,7 @@ main() {
 	test_stability_script_generation
 	test_format_stability_markdown_stable
 	test_format_stability_markdown_unstable
+	test_runtime_resolves_npx_cached_package
 
 	echo "============================================="
 	echo "  Results: ${TESTS_PASSED}/${TESTS_RUN} passed, ${TESTS_FAILED} failed"

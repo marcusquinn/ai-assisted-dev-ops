@@ -86,14 +86,17 @@ cmd_links() {
 	script_file="$script_dir/script.mjs"
 
 	cat >"$script_file" <<'SCRIPT'
-import { chromium } from 'playwright';
+const playwrightImport = await import(process.env.AIDEVOPS_PLAYWRIGHT_MODULE);
+const { chromium } = playwrightImport.chromium ? playwrightImport : playwrightImport.default;
 
 const baseUrl = process.argv[2].replace(/\/$/, '');
 const maxDepth = parseInt(process.argv[3] || '2', 10);
 const timeout = parseInt(process.argv[4] || '30000', 10);
 
 async function run() {
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = { headless: true };
+  if (process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE) launchOptions.executablePath = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext();
   const page = await context.newPage();
 
@@ -151,7 +154,7 @@ SCRIPT
 
 	log_info "Checking links from ${url} (depth: ${depth})"
 	local exit_code=0
-	node "$script_file" "$url" "$depth" "$timeout" || exit_code=$?
+	run_playwright_node "$script_file" "$url" "$depth" "$timeout" || exit_code=$?
 	rm -rf "$script_dir"
 	return $exit_code
 }
@@ -174,7 +177,8 @@ _generate_stability_script() {
 	local poll_max_wait="$7"
 
 	cat >"$script_file" <<SCRIPT
-import { chromium } from 'playwright';
+const playwrightImport = await import(process.env.AIDEVOPS_PLAYWRIGHT_MODULE);
+const { chromium } = playwrightImport.chromium ? playwrightImport : playwrightImport.default;
 
 const baseUrl = '${safe_url}'.replace(/\/\$/, '');
 const pages = [${pages_array}];
@@ -229,7 +233,9 @@ async function domFingerprint(page) {
 }
 
 async function run() {
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = { headless: true };
+  if (process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE) launchOptions.executablePath = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+  const browser = await chromium.launch(launchOptions);
   const allResults = [];
 
   for (const pagePath of pages) {
@@ -388,7 +394,8 @@ Examples:
 
 Prerequisites:
   - Node.js and npm installed
-  - Playwright installed: npm install playwright && npx playwright install
+  - Importable Playwright Node package (CLI presence alone is insufficient)
+  - Playwright browser binary: npx playwright install chromium
 
 Integration:
   Used by milestone-validation.md (Phase 3: Browser QA) during mission orchestration.
@@ -404,6 +411,9 @@ HELP
 main() {
 	local command="${1:-help}"
 	shift || true
+	if [[ "$command" != "help" && "$command" != "--help" && "$command" != "-h" ]]; then
+		check_playwright || return 1
+	fi
 
 	case "$command" in
 	run) cmd_run "$@" ;;

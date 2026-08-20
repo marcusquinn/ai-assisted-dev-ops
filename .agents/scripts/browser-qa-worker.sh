@@ -228,23 +228,18 @@ check_prerequisites() {
 		return 2
 	fi
 
-	# Check for npx (comes with Node.js)
-	if ! command -v npx >/dev/null 2>&1; then
-		log_error "npx is required but not found"
+	local runtime_script="${SCRIPT_DIR}/playwright-runtime.mjs"
+	if [[ ! -f "$runtime_script" ]]; then
+		log_error "Playwright runtime resolver not found: ${runtime_script}"
 		return 2
 	fi
 
-	# Check if Playwright is available
-	local pw_check=0
-	npx --no-install playwright --version >/dev/null 2>&1 || pw_check=$?
-	if [[ $pw_check -ne 0 ]]; then
-		log_warn "Playwright not installed globally. Will attempt to use npx."
-		# Check if playwright is in any local node_modules
-		if ! node -e "require('playwright')" 2>/dev/null; then
-			log_error "Playwright is not installed. Run: npm install playwright && npx playwright install"
-			return 2
-		fi
+	local resolved_module
+	if ! resolved_module=$(node "$runtime_script" check); then
+		log_error "Browser QA requires an importable Playwright package and browser binary"
+		return 2
 	fi
+	export AIDEVOPS_PLAYWRIGHT_MODULE="$resolved_module"
 
 	return 0
 }
@@ -376,7 +371,7 @@ run_browser_qa() {
 
 	# Run the Playwright QA script
 	local qa_exit=0
-	node "${node_args[@]}" || qa_exit=$?
+	AIDEVOPS_PLAYWRIGHT_MODULE="$AIDEVOPS_PLAYWRIGHT_MODULE" node "${node_args[@]}" || qa_exit=$?
 
 	case $qa_exit in
 	0)

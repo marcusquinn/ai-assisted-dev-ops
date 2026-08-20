@@ -249,19 +249,38 @@ _build_pages_js_array() {
 # Prerequisite Checks
 # =============================================================================
 
-# Verify Playwright is installed and available.
+# Resolve the exact Playwright package and browser runtime used by generated scripts.
 check_playwright() {
-	if ! command -v npx &>/dev/null; then
-		log_error "npx not found. Install Node.js first."
+	if ! command -v node &>/dev/null; then
+		log_error "Node.js not found. Install Node.js first."
 		return 1
 	fi
 
-	# Check if playwright is available (don't install browsers, just check)
-	if ! npx --no-install playwright --version &>/dev/null 2>&1; then
-		log_error "Playwright not installed. Run: npm install playwright && npx playwright install"
+	local runtime_script="${SCRIPT_DIR}/playwright-runtime.mjs"
+	if [[ ! -f "$runtime_script" ]]; then
+		log_error "Playwright runtime resolver not found: ${runtime_script}"
 		return 1
 	fi
+
+	local resolved_module
+	if ! resolved_module=$(node "$runtime_script" check); then
+		log_error "Browser QA requires both an importable Playwright Node package and an installed browser binary."
+		return 1
+	fi
+	export AIDEVOPS_PLAYWRIGHT_MODULE="$resolved_module"
 	return 0
+}
+
+# Run a Node script with the exact Playwright module verified by check_playwright.
+# Args: $1 = script path, remaining args are passed to the script.
+run_playwright_node() {
+	local script_file="$1"
+	shift
+	if [[ -z "${AIDEVOPS_PLAYWRIGHT_MODULE:-}" ]]; then
+		check_playwright || return 1
+	fi
+	AIDEVOPS_PLAYWRIGHT_MODULE="$AIDEVOPS_PLAYWRIGHT_MODULE" node "$script_file" "$@"
+	return $?
 }
 
 # Wait for a URL to become reachable.
@@ -300,7 +319,8 @@ _generate_screenshot_script() {
 	local full_page="$7"
 
 	cat >"$script_file" <<SCRIPT
-import { chromium } from 'playwright';
+const playwrightImport = await import(process.env.AIDEVOPS_PLAYWRIGHT_MODULE);
+const { chromium } = playwrightImport.chromium ? playwrightImport : playwrightImport.default;
 
 const baseUrl = '${safe_url}'.replace(/\/\$/, '');
 const viewports = [${viewport_array}];
@@ -310,7 +330,9 @@ const timeout = ${timeout};
 const fullPage = ${full_page};
 
 async function run() {
-  const browser = await chromium.launch({ headless: true });
+  const launchOptions = { headless: true };
+  if (process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE) launchOptions.executablePath = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+  const browser = await chromium.launch(launchOptions);
   const results = [];
 
   for (const vp of viewports) {
@@ -425,7 +447,7 @@ cmd_screenshot() {
 
 	log_info "Capturing screenshots for ${pages} at viewports: ${viewports}"
 	local exit_code=0
-	node "$script_file" || exit_code=$?
+	run_playwright_node "$script_file" || exit_code=$?
 	rm -rf "$script_dir"
 
 	if [[ "$exit_code" -ne 0 ]]; then

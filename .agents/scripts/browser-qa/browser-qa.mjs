@@ -23,7 +23,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { chromium } from 'playwright';
+import { loadPlaywright } from '../playwright-runtime.mjs';
 
 // ============================================================================
 // CLI Argument Parsing
@@ -322,6 +322,7 @@ async function main() {
   const flows = parseFlows(options.baseUrl, options.flows);
   let browser;
   try {
+    const { chromium } = await loadPlaywright();
     browser = await chromium.launch(launchOptions());
     const context = await browser.newContext({ viewport: { width: options.viewportWidth, height: options.viewportHeight }, ignoreHTTPSErrors: true });
     const page = await context.newPage();

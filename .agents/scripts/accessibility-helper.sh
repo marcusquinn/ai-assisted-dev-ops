@@ -1040,16 +1040,17 @@ bulk_audit() {
 # ============================================================================
 
 check_playwright() {
-	if ! command -v npx &>/dev/null; then
-		print_error "npx not found (required for Playwright)"
-		print_info "Install Node.js: https://nodejs.org/"
+	if ! command -v node &>/dev/null; then
+		print_error "Node.js not found (required for Playwright)"
 		return 1
 	fi
-	if ! npx --no-install playwright --version &>/dev/null 2>&1; then
-		print_warning "Playwright not installed"
-		print_info "Install: npm install playwright && npx playwright install chromium"
+	local runtime_script="${SCRIPT_DIR}/playwright-runtime.mjs"
+	local resolved_module
+	if ! resolved_module=$(node "$runtime_script" check); then
+		print_warning "Playwright package or browser binary is unavailable"
 		return 1
 	fi
+	export AIDEVOPS_PLAYWRIGHT_MODULE="$resolved_module"
 	return 0
 }
 
@@ -1075,24 +1076,11 @@ run_playwright_contrast() {
 		return 1
 	fi
 
-	local script_dir
-	script_dir="$(dirname "$script_path")"
 	local exit_code=0
-
-	# Install dependencies if node_modules is missing
-	if [[ ! -d "${script_dir}/node_modules" ]]; then
-		print_info "Installing Playwright dependencies..."
-		if ! (cd "$script_dir" && npm install --silent 2>/dev/null); then
-			print_error "Failed to install Playwright dependencies"
-			return 1
-		fi
-	fi
-
-	# Run from the script directory so node resolves local node_modules
 	case "$format" in
 	"json")
 		report_file="${report_file}.json"
-		if (cd "$script_dir" && node playwright-contrast.mjs "$url" --format json --level "$level") >"$report_file" 2>&1; then
+		if node "$script_path" "$url" --format json --level "$level" >"$report_file" 2>&1; then
 			exit_code=0
 		else
 			exit_code=$?
@@ -1100,7 +1088,7 @@ run_playwright_contrast() {
 		;;
 	"markdown" | "md")
 		report_file="${report_file}.md"
-		if (cd "$script_dir" && node playwright-contrast.mjs "$url" --format markdown --level "$level") >"$report_file" 2>&1; then
+		if node "$script_path" "$url" --format markdown --level "$level" >"$report_file" 2>&1; then
 			exit_code=0
 		else
 			exit_code=$?
@@ -1108,7 +1096,7 @@ run_playwright_contrast() {
 		;;
 	"summary" | *)
 		report_file="${report_file}.txt"
-		if (cd "$script_dir" && node playwright-contrast.mjs "$url" --format summary --level "$level") 2>&1 | tee "$report_file"; then
+		if node "$script_path" "$url" --format summary --level "$level" 2>&1 | tee "$report_file"; then
 			exit_code=0
 		else
 			exit_code=${PIPESTATUS[0]}
