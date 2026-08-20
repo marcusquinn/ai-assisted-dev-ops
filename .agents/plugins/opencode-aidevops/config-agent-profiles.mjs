@@ -120,7 +120,7 @@ function createOnDemandMcpProfile(mcp, agentsDir) {
       [mcp.toolPattern]: true,
     },
     permission: {
-      ...(parsed?.profile.permission || {}),
+      ...parsed?.profile.permission,
       [MCP_ACTIVATION_TOOL]: "allow",
       [mcp.toolPattern]: "allow",
     },
