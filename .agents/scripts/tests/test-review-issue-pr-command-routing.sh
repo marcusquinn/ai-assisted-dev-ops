@@ -12,6 +12,8 @@ COMMAND_LIB="${SCRIPT_DIR}/../generate-runtime-config-commands.sh"
 LEGACY_LIB="${SCRIPT_DIR}/../generate-opencode-commands-quality.sh"
 REVIEW_COMMAND_SOURCE="${SCRIPT_DIR}/../commands/review.md"
 FULL_LOOP_SOURCE="${SCRIPT_DIR}/../../workflows/full-loop.md"
+REVIEW_CORE_SOURCE="${SCRIPT_DIR}/../../reference/review-core.md"
+MAINTAINER_WORKFLOW_SOURCE="${SCRIPT_DIR}/../../workflows/review-issue-pr.md"
 TMP_DIR=$(mktemp -d -t aidevops-review-command.XXXXXX) || exit 1
 COMMAND_DIR="${TMP_DIR}/commands"
 CALL_LOG="${TMP_DIR}/legacy-calls"
@@ -37,6 +39,22 @@ grep -Fq 'workflows/review.md' "$REVIEW_COMMAND_SOURCE" || {
 }
 grep -Fq 'reference/review-core.md' "$FULL_LOOP_SOURCE" || {
 	printf 'FAIL full-loop does not load the shared review policy\n' >&2
+	exit 1
+}
+grep -Fq "judges a report's technical merit independently from" "$REVIEW_CORE_SOURCE" || {
+	printf 'FAIL shared review policy does not separate approval from execution readiness\n' >&2
+	exit 1
+}
+grep -Fq 'Never require reporters to supply aidevops brief-schema' "$MAINTAINER_WORKFLOW_SOURCE" || {
+	printf 'FAIL maintainer workflow makes internal schema a reporter prerequisite\n' >&2
+	exit 1
+}
+grep -Fq 'project/maintainer responsible for adding files, implementation pattern, verification, tier, and dispatch metadata' "$MAINTAINER_WORKFLOW_SOURCE" || {
+	printf 'FAIL maintainer workflow does not assign enrichment ownership\n' >&2
+	exit 1
+}
+grep -Fq 'readiness failure alone must not rewrite an otherwise valid issue verdict' "$MAINTAINER_WORKFLOW_SOURCE" || {
+	printf 'FAIL maintainer workflow does not preserve verdicts across dispatch validation\n' >&2
 	exit 1
 }
 

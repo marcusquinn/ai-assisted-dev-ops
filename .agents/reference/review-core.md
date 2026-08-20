@@ -32,6 +32,12 @@ scope classification, finding verification, and disposition.
 | `closeout` | local, branch, commit | Did this change introduce a material defect? | accepted/rejected findings plus clean or blocked |
 | `triage` | prefetched external issue/PR | Is this item actionable with available sandbox evidence? | one bounded structured recommendation |
 
+The `maintainer` policy judges a report's technical merit independently from
+execution readiness. Free-form or externally authored reports can be approved
+without aidevops brief-schema or dispatch metadata. If an approved report is not
+worker-ready, project maintainers own its enrichment; readiness validators may
+block dispatch, but must not change the issue verdict.
+
 Activation boundaries:
 
 - `review-issue-pr.md` owns interactive maintainer decisions and durable GitHub
