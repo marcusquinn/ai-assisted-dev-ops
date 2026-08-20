@@ -475,7 +475,22 @@ BEGIN { in_block=0; block_done=0; block="" }
     line=$0
     sub(/\[ \]/, "[x]", line)
     sub(/[[:space:]]*$/, "", line)
-    block = line " " proof " completed:" today
+    line_token_count=split(line, line_tokens, /[[:space:]]+/)
+    proof_token_count=split(proof, proof_tokens, /[[:space:]]+/)
+    for (proof_index=1; proof_index <= proof_token_count; proof_index++) {
+        proof_present=0
+        for (line_index=1; line_index <= line_token_count; line_index++) {
+            if (line_tokens[line_index] == proof_tokens[proof_index]) {
+                proof_present=1
+                break
+            }
+        }
+        if (!proof_present) {
+            line = line " " proof_tokens[proof_index]
+            line_tokens[++line_token_count] = proof_tokens[proof_index]
+        }
+    }
+    block = line " completed:" today
     next
 }
 

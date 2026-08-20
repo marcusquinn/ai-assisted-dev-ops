@@ -7,7 +7,7 @@
 # Verifies that complete_task() in task-complete-helper.sh moves completed entries
 # to the ## Done section instead of doing in-place [x] marking.
 #
-# Tests (8 edge cases):
+# Tests (9 edge cases):
 #   1. Single-line task (no subtasks) moves from Ready to Done
 #   2. Task with explicit subtask IDs (t123.1) — guard prevents completion
 #   3. Task with indented subtasks (all complete) — block moves to Done
@@ -16,6 +16,7 @@
 #   6. ## Done header missing — errors out clearly, no data loss
 #   7. Multiple consecutive tasks — block boundary doesn't bleed into next entry
 #   8. Completion commit keeps task proof in TODO.md and uses a guard-safe footer
+#   9. Existing proof metadata is merged token-by-token without duplicates
 #
 # Strategy:
 #   - Create a real git repo in a temp dir (script does git add/commit).
@@ -434,6 +435,63 @@ if grep -qE "verified:2026-01-15 testing:runtime-verified" "$REPO_PATH/TODO.md";
 	pass "proof metadata remains in TODO.md"
 else
 	fail "proof metadata remains in TODO.md" "proof metadata missing from TODO.md"
+fi
+
+# =============================================================================
+# Test 9: Existing proof metadata is merged token-by-token
+# =============================================================================
+printf '\nTest 9: existing proof metadata is merged token-by-token\n'
+
+FIXTURE="${FIXTURE_HEADER}- [ ] t900 duplicate proof metadata #tag ~1h ref:GH#900 logged:2026-01-01 pr:#9001
+${FIXTURE_SECTIONS}"
+
+setup_repo "$FIXTURE" "repo9-same-proof"
+
+if "$HELPER" t900 --pr 9001 --testing-level runtime-verified --no-push --skip-merge-check \
+	--repo-path "$REPO_PATH" >/dev/null 2>&1; then
+	pass "helper completes task with a pre-existing PR proof"
+else
+	fail "helper completes task with a pre-existing PR proof" "helper unexpectedly failed"
+fi
+
+completed_line=$(grep -E "^- \[x\] t900 " "$REPO_PATH/TODO.md")
+pr_token_count=$(printf '%s\n' "$completed_line" | grep -o 'pr:#9001' | wc -l | tr -d ' ')
+if [[ "$pr_token_count" == "1" ]]; then
+	pass "identical PR proof remains exactly once"
+else
+	fail "identical PR proof remains exactly once" "got $pr_token_count occurrences: $completed_line"
+fi
+
+if printf '%s\n' "$completed_line" | grep -qE 'pr:#9001 testing:runtime-verified'; then
+	pass "missing testing proof is appended after the existing PR proof"
+else
+	fail "missing testing proof is appended after the existing PR proof" "got: $completed_line"
+fi
+
+completed_token_count=$(printf '%s\n' "$completed_line" | grep -oE 'completed:[0-9]{4}-[0-9]{2}-[0-9]{2}' | wc -l | tr -d ' ')
+if [[ "$completed_token_count" == "1" ]]; then
+	pass "completion date is appended exactly once"
+else
+	fail "completion date is appended exactly once" "got $completed_token_count occurrences: $completed_line"
+fi
+
+FIXTURE="${FIXTURE_HEADER}- [ ] t901 distinct proof metadata #tag ~1h ref:GH#901 logged:2026-01-01 pr:#9000
+${FIXTURE_SECTIONS}"
+
+setup_repo "$FIXTURE" "repo9-distinct-proof"
+
+if "$HELPER" t901 --pr 9001 --no-push --skip-merge-check \
+	--repo-path "$REPO_PATH" >/dev/null 2>&1; then
+	pass "helper completes task with a distinct existing PR proof"
+else
+	fail "helper completes task with a distinct existing PR proof" "helper unexpectedly failed"
+fi
+
+completed_line=$(grep -E "^- \[x\] t901 " "$REPO_PATH/TODO.md")
+if printf '%s\n' "$completed_line" | grep -qE 'pr:#9000 pr:#9001'; then
+	pass "distinct existing PR proof is preserved"
+else
+	fail "distinct existing PR proof is preserved" "got: $completed_line"
 fi
 
 # =============================================================================
