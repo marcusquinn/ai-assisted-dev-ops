@@ -14,6 +14,7 @@
 #   - _post_simplification_gate_cleared_comment
 #   - _reevaluate_stale_continuations
 #   - _reevaluate_simplification_labels
+#   - _consolidation_live_interactive_claim
 #   - _consolidation_child_exists
 #   - _consolidation_resolving_pr_exists
 #   - _consolidation_substantive_comments
@@ -79,6 +80,77 @@ _clear_needs_consolidation_label() {
 		--remove-label "needs-consolidation" >/dev/null 2>&1 || true
 	echo "[pulse-wrapper] Consolidation gate cleared for #${issue_number} (${repo_slug}) — ${reason}" >>"$LOGFILE"
 	return 0
+}
+
+#######################################
+# Return whether an issue has a fresh, positively verified interactive claim.
+# This mirrors stale-assignment recovery's ownership proof: a signed claim
+# comment must be recent, its author must still be assigned, and the open
+# issue must retain status:in-review. API or timestamp ambiguity returns 2 so
+# consolidation defers rather than creating a conflicting planning task.
+# Args: $1=issue_number $2=repo_slug
+# Returns: 0=live claim, 1=no live claim, 2=ambiguous read
+#######################################
+_consolidation_live_interactive_claim() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local issue_meta_json="" comments_json="" claim_record=""
+	local claim_timestamp="" claim_author="" claim_epoch="" now_epoch=""
+	local claim_age=0 stale_threshold="${INTERACTIVE_STALE_THRESHOLD_SECONDS:-7200}"
+
+	comments_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments" \
+		--paginate --jq '.' 2>/dev/null) || return 2
+	claim_record=$(printf '%s' "$comments_json" | jq -r '
+		[.[] | if type == "array" then .[] else . end
+		 | select((.body // "") | contains("<!-- aidevops-interactive-claim/v1 -->"))
+		 | [(.created_at // .createdAt // ""), (.user.login // .author.login // "")] | @tsv]
+		| last // empty
+	' 2>/dev/null) || return 2
+	[[ -n "$claim_record" ]] || return 1
+	issue_meta_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
+		--json state,labels,assignees 2>/dev/null) || return 2
+	IFS=$'\t' read -r claim_timestamp claim_author <<<"$claim_record"
+	[[ -n "$claim_timestamp" && -n "$claim_author" ]] || return 2
+	claim_epoch=$(date -u -d "$claim_timestamp" +%s 2>/dev/null) ||
+		claim_epoch=$(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$claim_timestamp" +%s 2>/dev/null) || return 2
+	now_epoch=$(date +%s) || return 2
+	[[ "$claim_epoch" =~ ^[0-9]+$ && "$now_epoch" =~ ^[0-9]+$ && "$stale_threshold" =~ ^[0-9]+$ ]] || return 2
+	claim_age=$((now_epoch - claim_epoch))
+	[[ "$claim_age" -ge 0 && "$claim_age" -lt "$stale_threshold" ]] || return 1
+
+	if printf '%s' "$issue_meta_json" | jq -e --arg claimant "$claim_author" '
+		(.state | ascii_downcase) == "open" and
+		([.labels[]?.name] | index("status:in-review") != null) and
+		([.assignees[]?.login] | index($claimant) != null)
+	' >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+_consolidation_dispatch_defers_for_interactive_claim() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local interactive_claim_rc=0
+
+	_consolidation_live_interactive_claim "$issue_number" "$repo_slug" || interactive_claim_rc=$?
+	if [[ "$interactive_claim_rc" -eq 0 || "$interactive_claim_rc" -eq 2 ]]; then
+		echo "[pulse-wrapper] Consolidation: live or unreadable interactive ownership for #${issue_number} in ${repo_slug}; deferring dispatch" >>"$LOGFILE"
+		return 0
+	fi
+	return 1
+}
+
+_consolidation_dispatch_preflight_skips() {
+	local issue_number="$1"
+	local repo_slug="$2"
+
+	_consolidation_skip_if_resolved "$issue_number" "$repo_slug" && return 0
+	if _consolidation_resolving_pr_exists "$issue_number" "$repo_slug"; then
+		echo "[pulse-wrapper] Consolidation: in-flight resolving PR exists for #${issue_number} in ${repo_slug}; skipping dispatch (t2161)" >>"$LOGFILE"
+		return 0
+	fi
+	return 1
 }
 
 #######################################
@@ -228,12 +300,12 @@ _reevaluate_stale_continuations() {
 		grep -oE '[0-9]+') || continuation_nums=""
 	[[ -n "$continuation_nums" ]] || return 1
 
-	local all_stale="true"
+	local all_stale=1
 	local cont_num
 	while IFS= read -r cont_num; do
 		[[ "$cont_num" =~ ^[0-9]+$ ]] || continue
 		if ! _pte_rest_core_deferrable_allows_next "simplification_continuation:${repo_slug}#${issue_number}:${cont_num}"; then
-			all_stale="false"
+			all_stale=0
 			break
 		fi
 
@@ -241,14 +313,14 @@ _reevaluate_stale_continuations() {
 		cont_info=$(gh issue view "$cont_num" --repo "$repo_slug" \
 			--json state,labels,title 2>/dev/null) || cont_info=""
 		if [[ -z "$cont_info" ]]; then
-			all_stale="false"
+			all_stale=0
 			break # Unresolvable → conservative
 		fi
 
 		cont_state=$(printf '%s' "$cont_info" | jq -r '.state // "OPEN"' 2>/dev/null)
 		cont_state_upper=$(printf '%s' "$cont_state" | tr '[:lower:]' '[:upper:]')
 		if [[ "$cont_state_upper" != "CLOSED" ]]; then
-			all_stale="false"
+			all_stale=0
 			break # Open → work in progress
 		fi
 
@@ -267,25 +339,25 @@ _reevaluate_stale_continuations() {
 		cont_file_path=$(printf '%s' "$cont_title" |
 			sed 's/^file-size-debt: //;s/^simplification-debt: //;s/ exceeds [0-9]* lines$//' 2>/dev/null) || cont_file_path=""
 		if [[ -z "$cont_file_path" || "$cont_file_path" == "$cont_title" ]]; then
-			all_stale="false"
+			all_stale=0
 			break # Path unresolvable → conservative
 		fi
 
 		# Guard: function is in pulse-dispatch-large-file-gate.sh (sourced first)
 		if ! declare -F _large_file_gate_verify_prior_reduced_size >/dev/null 2>&1; then
-			all_stale="false"
+			all_stale=0
 			break # Function unavailable → conservative
 		fi
 
 		# Returns 0 = file under threshold (valid), 1 = still over (stale)
 		if _large_file_gate_verify_prior_reduced_size \
 			"$cont_num" "$cont_file_path" "$repo_path"; then
-			all_stale="false"
+			all_stale=0
 			break # Prior work was effective → valid citation
 		fi
 	done < <(printf '%s\n' "$continuation_nums")
 
-	if [[ "$all_stale" == "true" ]]; then
+	if [[ "$all_stale" -eq 1 ]]; then
 		gh issue edit "$issue_number" --repo "$repo_slug" \
 			--remove-label "needs-simplification" >/dev/null 2>&1 || true
 		echo "[pulse-triage] Cleared stale needs-simplification on #${issue_number} (all cited continuations phantom; next dispatch will re-evaluate the gate)" >>"$LOGFILE"

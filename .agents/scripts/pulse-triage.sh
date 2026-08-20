@@ -143,6 +143,17 @@ _issue_needs_consolidation() {
 	if [[ ",$issue_labels," == *",needs-consolidation,"* ]]; then
 		was_already_labeled=true
 	fi
+	# A fresh interactive claim is stronger evidence of live ownership than a
+	# comment-count heuristic. Clear any stale planning label, but defer on an
+	# ambiguous ownership read so a transient API failure cannot create a child.
+	local interactive_claim_rc=0
+	_consolidation_live_interactive_claim "$issue_number" "$repo_slug" || interactive_claim_rc=$?
+	if [[ "$interactive_claim_rc" -eq 0 ]]; then
+		[[ "$was_already_labeled" != false ]] &&
+			_clear_needs_consolidation_label "$issue_number" "$repo_slug" "live interactive claim exists"
+		return 1
+	fi
+	[[ "$interactive_claim_rc" -eq 2 ]] && return 1
 	# t2161: Defence-in-depth — if an open PR already resolves this parent
 	# (closing keyword + #N), the work is in flight. Skip consolidation
 	# regardless of substantive-comment count. This catches the cascade
@@ -246,16 +257,18 @@ _dispatch_issue_consolidation() {
 	local repo_slug="$2"
 	local repo_path="$3"
 
+	# Re-check immediately before any visible consolidation mutation. This
+	# closes the classification-to-dispatch race when an interactive session
+	# claims the issue between pulse stages; ambiguity must defer safely too.
+	if _consolidation_dispatch_defers_for_interactive_claim "$issue_number" "$repo_slug"; then
+		return 0
+	fi
+
 	# Ensure labels exist on this repo up front. Idempotent (--force).
 	_ensure_consolidation_labels "$repo_slug"
 
-	# t3050: pre-flight skip when parent work already resolved. Fail-open.
-	_consolidation_skip_if_resolved "$issue_number" "$repo_slug" && return 0
-
-	# t2161: skip if a resolving PR already exists — defence-in-depth vs
-	# cross-runner version drift; cheaper than child_exists, runs first.
-	if _consolidation_resolving_pr_exists "$issue_number" "$repo_slug"; then
-		echo "[pulse-wrapper] Consolidation: in-flight resolving PR exists for #${issue_number} in ${repo_slug}; skipping dispatch (t2161)" >>"$LOGFILE"
+	# Resolve and in-flight-PR checks precede child/lock acquisition.
+	if _consolidation_dispatch_preflight_skips "$issue_number" "$repo_slug"; then
 		return 0
 	fi
 

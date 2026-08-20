@@ -33,8 +33,8 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit 1
+TEST_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+REPO_ROOT="$(cd "${TEST_SCRIPT_DIR}/../../.." && pwd)" || exit 1
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -146,6 +146,7 @@ if [[ "$cmd1" == "issue" && "$cmd2" == "view" ]]; then
 	title) printf '%s\n' "${GH_ISSUE_VIEW_TITLE:-Parent Title}" ;;
 	body) printf '%s\n' "${GH_ISSUE_VIEW_BODY:-Parent body}" ;;
 	labels) printf '%s\n' "${GH_ISSUE_VIEW_LABELS:-bug,tier:standard}" ;;
+	state,labels,assignees) printf '%s\n' '{"state":"OPEN","labels":[],"assignees":[]}' ;;
 	*) printf '\n' ;;
 	esac
 	exit 0
@@ -224,6 +225,9 @@ _setup_gh_stub_globals() {
 	printf '{"initialized_repos": []}\n' >"$REPOS_JSON"
 	# Tests should never actually sleep during tiebreak re-check.
 	export CONSOLIDATION_LOCK_TIEBREAK_WAIT_SEC=0
+	# pulse-triage.sh resolves its sub-libraries from SCRIPT_DIR when supplied.
+	# Keep the test's own directory separate so it cannot redirect those sources.
+	SCRIPT_DIR="${REPO_ROOT}/.agents/scripts"
 
 	# shellcheck disable=SC1091
 	source "${REPO_ROOT}/.agents/scripts/pulse-triage.sh"
@@ -233,6 +237,26 @@ _setup_gh_stub_globals() {
 	# issue create` path. Mirrors test-consolidation-dispatch.sh.
 	gh_create_issue() {
 		gh issue create "$@"
+		return $?
+	}
+	gh_issue_comment() {
+		gh issue comment "$@"
+		return $?
+	}
+	gh_issue_list() {
+		gh issue list "$@"
+		return $?
+	}
+	gh_pr_list() {
+		gh pr list "$@"
+		return $?
+	}
+	repo_allows_pulse_write_actions() {
+		local repo_slug="$1"
+		if [[ "$repo_slug" == "owner/repo" || "$repo_slug" == "marcusquinn/aidevops" ]]; then
+			return 0
+		fi
+		return 1
 	}
 	return 0
 }

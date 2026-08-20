@@ -98,6 +98,13 @@ issue-view)
 	title) printf '%s\n' "${GH_ISSUE_VIEW_TITLE:-Parent Title}" ;;
 	body) printf '%s\n' "${GH_ISSUE_VIEW_BODY:-Parent body}" ;;
 	labels) printf '%s\n' "${GH_ISSUE_VIEW_LABELS:-bug,tier:standard}" ;;
+	state,labels,assignees)
+		if [[ -n "${GH_ISSUE_META_JSON:-}" ]]; then
+			printf '%s\n' "$GH_ISSUE_META_JSON"
+		else
+			printf '%s\n' '{"state":"OPEN","labels":[],"assignees":[]}'
+		fi
+		;;
 	state,closedAt)
 		[[ "${GH_ISSUE_VIEW_STATE_FAIL:-0}" == "1" ]] && exit 1
 		if [[ -n "${GH_ISSUE_VIEW_STATE_JSON:-}" ]]; then
@@ -217,7 +224,7 @@ teardown_gh_stub() {
 	fi
 	TEST_ROOT=""
 	GH_LOG=""
-	unset GH_ISSUE_VIEW_TITLE GH_ISSUE_VIEW_BODY GH_ISSUE_VIEW_LABELS GH_ISSUE_VIEW_STATE_JSON GH_ISSUE_VIEW_STATE_FAIL
+	unset GH_ISSUE_VIEW_TITLE GH_ISSUE_VIEW_BODY GH_ISSUE_VIEW_LABELS GH_ISSUE_VIEW_STATE_JSON GH_ISSUE_VIEW_STATE_FAIL GH_ISSUE_META_JSON
 	unset GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON GH_ISSUE_CREATE_URL
 	unset GH_ISSUE_LIST_FAIL
 	unset GH_PR_LIST_RESOLVING_JSON
@@ -1170,6 +1177,58 @@ test_dispatch_skips_with_inflight_resolving_pr() {
 	return 0
 }
 
+fixture_live_interactive_claim() {
+	local claim_time
+	claim_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+	jq -n --arg timestamp "$claim_time" '[{
+		"created_at": $timestamp,
+		"user": {"login": "interactive-owner", "type": "User"},
+		"body": "<!-- aidevops-interactive-claim/v1 -->\n<!-- ops:start -->\n> Interactive session claimed by @interactive-owner.\n<!-- ops:end -->"
+	}]'
+	return 0
+}
+
+test_live_interactive_claim_blocks_classification_and_clears_stale_label() {
+	setup_gh_stub
+	GH_ISSUE_VIEW_LABELS="bug,needs-consolidation,status:in-review"
+	GH_ISSUE_META_JSON=$(jq -n '{state: "OPEN", labels: [{name: "status:in-review"}], assignees: [{login: "interactive-owner"}]}')
+	GH_API_COMMENTS_JSON=$(fixture_live_interactive_claim)
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	export GH_ISSUE_VIEW_LABELS GH_ISSUE_META_JSON GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON
+
+	if _issue_needs_consolidation 30461 "marcusquinn/aidevops"; then
+		print_result "live interactive claim blocks consolidation classification" 1
+	elif grep -qE 'issue edit .* --remove-label needs-consolidation' "$GH_LOG" 2>/dev/null; then
+		print_result "live interactive claim blocks consolidation classification and clears stale label" 0
+	else
+		print_result "live interactive claim blocks consolidation classification and clears stale label" 1 \
+			"expected stale needs-consolidation cleanup"
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
+test_live_interactive_claim_appearing_after_classification_blocks_dispatch() {
+	setup_gh_stub
+	GH_ISSUE_META_JSON=$(jq -n '{state: "OPEN", labels: [{name: "status:in-review"}], assignees: [{login: "interactive-owner"}]}')
+	GH_API_COMMENTS_JSON=$(fixture_live_interactive_claim)
+	GH_ISSUE_LIST_CHILD_JSON="[]"
+	export GH_ISSUE_META_JSON GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON
+
+	_dispatch_issue_consolidation 30461 "marcusquinn/aidevops" "/tmp/fake-path" || true
+
+	if grep -qE 'issue (create|edit|comment)' "$GH_LOG" 2>/dev/null; then
+		print_result "late live interactive claim blocks dispatch without mutation" 1 \
+			"dispatch emitted a visible issue mutation"
+	else
+		print_result "late live interactive claim blocks dispatch without mutation" 0
+	fi
+
+	teardown_gh_stub
+	return 0
+}
+
 main() {
 	test_dispatch_creates_child_issue
 	test_child_body_contains_parent_content_and_authors
@@ -1205,6 +1264,8 @@ main() {
 	test_resolving_pr_helper_ignores_non_closing_reference
 	test_needs_consolidation_skips_with_inflight_resolving_pr
 	test_dispatch_skips_with_inflight_resolving_pr
+	test_live_interactive_claim_blocks_classification_and_clears_stale_label
+	test_live_interactive_claim_appearing_after_classification_blocks_dispatch
 
 	echo
 	echo "============================================"
