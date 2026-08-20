@@ -17,12 +17,12 @@ mkdir -p "$fixture_scripts_dir" "$caller_dir" "$stub_dir"
 cp "${source_scripts_dir}/setup-mcp-integrations.sh" "$fixture_scripts_dir/"
 cp "${source_scripts_dir}/mcp-diagnose.sh" "$fixture_scripts_dir/"
 cat >"${fixture_scripts_dir}/shared-constants.sh" <<'CONSTANTS'
-PURPLE=""
-BLUE=""
-GREEN=""
-CYAN=""
-RED=""
-NC=""
+[[ -z "${PURPLE+x}" ]] && PURPLE=""
+[[ -z "${BLUE+x}" ]] && BLUE=""
+[[ -z "${GREEN+x}" ]] && GREEN=""
+[[ -z "${CYAN+x}" ]] && CYAN=""
+[[ -z "${RED+x}" ]] && RED=""
+[[ -z "${NC+x}" ]] && NC=""
 print_error() {
 	local message="$1"
 	printf '[ERROR] %s\n' "$message" >&2
