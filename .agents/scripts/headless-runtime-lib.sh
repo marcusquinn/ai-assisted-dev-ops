@@ -1789,6 +1789,14 @@ _classify_canary_failure_reason() {
 			return 0
 			;;
 	esac
+	if [[ "$reason" == "local_error" ]]; then
+		local lowered=""
+		lowered=$(_read_failure_output_lowercase "$output_file")
+		if ! _classify_local_runtime_failure "$lowered" >/dev/null; then
+			printf '%s' "inconclusive"
+			return 0
+		fi
+	fi
 	printf '%s' "local_error"
 	return 0
 }

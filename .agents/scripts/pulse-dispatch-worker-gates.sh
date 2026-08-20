@@ -231,7 +231,7 @@ _dlw_canary_last_failure_reason() {
 _dlw_canary_failure_is_soft() {
 	local reason="$1"
 	case "$reason" in
-		overload | provider_error | rate_limit | timeout | transient)
+		inconclusive | overload | provider_error | rate_limit | timeout | transient)
 			return 0
 			;;
 	esac

@@ -170,6 +170,16 @@ check_classification \
 	'OSError: [Errno 28] No space left on device while writing worker log' \
 	"local_error" "" "" "runtime_storage_full" "local_runtime"
 
+empty_canary_path=$(write_fixture "empty_canary" "")
+assert_eq "empty canary output is inconclusive" "inconclusive" \
+	"$(_classify_canary_failure_reason "$empty_canary_path" "1")"
+generic_canary_path=$(write_fixture "generic_canary" "unexpected canary response")
+assert_eq "generic canary output is inconclusive" "inconclusive" \
+	"$(_classify_canary_failure_reason "$generic_canary_path" "1")"
+runtime_canary_path=$(write_fixture "runtime_canary" "Error: spawn opencode ENOENT")
+assert_eq "explicit local runtime canary failure stays hard" "local_error" \
+	"$(_classify_canary_failure_reason "$runtime_canary_path" "1")"
+
 mkdir -p "$METRICS_DIR"
 append_runtime_metric "worker" "issue-22379" "openai/gpt-5.5" "openai" \
 	"provider_error" "1" "provider_error" "1" "1234" "22379" "marcusquinn/aidevops" \

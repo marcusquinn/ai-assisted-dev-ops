@@ -837,6 +837,32 @@ EOF
 	return 0
 }
 
+test_local_error_canary_failure_stays_hard_under_minimum_floor() {
+	local fake_helper worker_log state_dir
+	fake_helper="${TEST_ROOT}/fake-local-error-canary.sh"
+	worker_log="${TEST_ROOT}/worker-local-error.log"
+	state_dir="${HOME}/.aidevops/.agent-workspace/headless-runtime"
+	cat >"$fake_helper" <<'EOF'
+#!/usr/bin/env bash
+state_dir="${AIDEVOPS_HEADLESS_RUNTIME_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
+mkdir -p "$state_dir"
+date +%s >"${state_dir}/canary-last-fail"
+printf 'local_error\n' >"${state_dir}/canary-last-fail.reason"
+exit 1
+EOF
+	chmod +x "$fake_helper"
+	HEADLESS_RUNTIME_HELPER="$fake_helper"
+	AIDEVOPS_HEADLESS_RUNTIME_DIR="$state_dir"
+	TEST_ACTIVE_WORKERS=5
+	AIDEVOPS_MIN_WORKER_CONCURRENCY=6
+	if _dlw_canary_preflight 105 "o/r" "$worker_log" "standard" ""; then
+		print_result "canary: local runtime failure stays hard under minimum floor" 1 "unexpected success"
+	else
+		print_result "canary: local runtime failure stays hard under minimum floor" 0
+	fi
+	return 0
+}
+
 test_soft_canary_failure_bypasses_under_minimum_floor_without_recent_evidence() {
 	local fake_helper worker_log state_dir
 	fake_helper="${TEST_ROOT}/fake-floor-canary.sh"
@@ -847,7 +873,7 @@ test_soft_canary_failure_bypasses_under_minimum_floor_without_recent_evidence() 
 state_dir="${AIDEVOPS_HEADLESS_RUNTIME_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
 mkdir -p "$state_dir"
 date +%s >"${state_dir}/canary-last-fail"
-printf 'transient\n' >"${state_dir}/canary-last-fail.reason"
+printf 'inconclusive\n' >"${state_dir}/canary-last-fail.reason"
 exit 1
 EOF
 	chmod +x "$fake_helper"
@@ -858,9 +884,9 @@ EOF
 	TEST_ACTIVE_WORKERS=5
 	AIDEVOPS_MIN_WORKER_CONCURRENCY=6
 	if _dlw_canary_preflight 104 "o/r" "$worker_log" "standard" ""; then
-		print_result "canary: soft failure bypassed under minimum worker floor" 0
+		print_result "canary: inconclusive failure bypassed under minimum worker floor" 0
 	else
-		print_result "canary: soft failure bypassed under minimum worker floor" 1
+		print_result "canary: inconclusive failure bypassed under minimum worker floor" 1
 	fi
 	return 0
 }
@@ -888,6 +914,7 @@ test_early_exit_refill_reuses_precomputed_active_count
 test_active_pulse_refill_uses_min_floor_above_raw_max
 test_soft_canary_failure_bypasses_with_recent_worker_evidence
 test_hard_canary_failure_blocks_despite_recent_worker_evidence
+test_local_error_canary_failure_stays_hard_under_minimum_floor
 test_soft_canary_failure_bypasses_under_minimum_floor_without_recent_evidence
 
 echo ""
