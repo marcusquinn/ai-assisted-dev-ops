@@ -41,13 +41,29 @@ export function operationFingerprint(toolName, args) {
   return createHash("sha256").update(shape).digest("hex");
 }
 
-export function toolOutcomeFailed(output) {
-  const status = String(output?.metadata?.status || output?.status || "").toLowerCase();
-  if (["error", "failed", "aborted", "cancelled", "canceled", "timeout", "timed_out"].includes(status)) return true;
-  if (output?.error || output?.metadata?.error) return true;
-  if (Number.isInteger(output?.metadata?.exitCode) && output.metadata.exitCode !== 0) return true;
+export function classifyToolOutcome(output) {
   const text = String(output?.output || "").trim();
-  return /^(?:error|failed|aborted|cancelled|canceled|tool execution aborted|operation timed out)\b/i.test(text);
+  if (/^BLOCKED by shared command policy\b/i.test(text)) return "policy_block";
+
+  const status = String(output?.metadata?.status || output?.status || "").toLowerCase();
+  const failedStatuses = [
+    "aborted", "blocked", "cancelled", "canceled", "denied", "error", "failed",
+    "rejected", "timed_out", "timeout",
+  ];
+  if (failedStatuses.includes(status) || output?.error || output?.metadata?.error) return "tool_error";
+
+  const exitCode = [output?.metadata?.exit, output?.metadata?.exitCode, output?.metadata?.exit_code]
+    .find((value) => Number.isInteger(value));
+  if (exitCode !== undefined) return exitCode === 0 ? "success" : "command_failure";
+  if (["completed", "success", "succeeded"].includes(status)) return "success";
+  if (/^(?:error|failed|aborted|cancelled|canceled|tool execution aborted|operation timed out)\b/i.test(text)) {
+    return "tool_error";
+  }
+  return "success";
+}
+
+export function toolOutcomeFailed(output) {
+  return classifyToolOutcome(output) !== "success";
 }
 
 export function isExplicitCompletionClaim(text) {

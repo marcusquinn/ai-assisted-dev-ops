@@ -8,6 +8,7 @@ import {
   activeTodos,
   boundedText,
   capMap,
+  classifyToolOutcome,
   isExplicitCompletionClaim,
   operationFingerprint,
   sessionId,
@@ -223,4 +224,10 @@ export function createSessionContinuationGuard(options = {}) {
   };
 }
 
-export { COMPLETION_CORRECTION_MARKER, isExplicitCompletionClaim, operationFingerprint, toolOutcomeFailed };
+export {
+  COMPLETION_CORRECTION_MARKER,
+  classifyToolOutcome,
+  isExplicitCompletionClaim,
+  operationFingerprint,
+  toolOutcomeFailed,
+};

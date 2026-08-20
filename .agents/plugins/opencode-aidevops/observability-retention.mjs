@@ -60,7 +60,7 @@ export function summarizeToolMetadata(metadata) {
     omitted_keys: Object.keys(source).length,
   };
   const status = normalizedStatus(firstDefined(source, ["status", "state", "outcome"]));
-  const exitCode = safeInteger(firstDefined(source, ["exitCode", "exit_code"]));
+  const exitCode = safeInteger(firstDefined(source, ["exit", "exitCode", "exit_code"]));
   const outputBytes = safeInteger(firstDefined(source, ["outputBytes", "output_bytes", "bytes"]));
   const outputLines = safeInteger(firstDefined(source, ["outputLines", "output_lines", "lineCount"]));
   const truncated = firstDefined(source, ["truncated", "isTruncated"]);
@@ -75,7 +75,7 @@ export function summarizeToolMetadata(metadata) {
   if (source.error !== undefined) summary.has_error = Boolean(source.error);
 
   const retainedSourceKeys = [
-    "status", "state", "outcome", "exitCode", "exit_code", "outputBytes",
+    "status", "state", "outcome", "exit", "exitCode", "exit_code", "outputBytes",
     "output_bytes", "bytes", "outputLines", "output_lines", "lineCount",
     "truncated", "isTruncated", "timedOut", "timed_out", "timeout", "error",
   ].filter((key) => Object.hasOwn(source, key)).length;

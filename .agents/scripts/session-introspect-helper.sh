@@ -135,6 +135,18 @@ _escape_sql() {
 	printf '%s' "$1" | sed "s/'/''/g"
 }
 
+_outcome_category_sql() {
+	local db="$1"
+	local has_column
+	has_column=$(sqlite3 "$db" "SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='outcome_category';")
+	if [[ "$has_column" == "1" ]]; then
+		printf '%s' "CASE WHEN outcome_category IS NOT NULL AND outcome_category<>'' THEN outcome_category WHEN success=0 THEN 'unknown_failure' ELSE 'legacy_unknown' END"
+	else
+		printf '%s' "CASE WHEN success=0 THEN 'unknown_failure' ELSE 'legacy_unknown' END"
+	fi
+	return 0
+}
+
 # =============================================================================
 # Commands
 # =============================================================================
@@ -250,6 +262,18 @@ cmd_patterns() {
 		ORDER BY n DESC;
 	")
 
+	# Additive outcome categories retain unknown legacy rows without guessing.
+	local outcome_expr
+	outcome_expr=$(_outcome_category_sql "$db")
+	local outcomes
+	outcomes=$(sqlite3 -separator '|' "$db" "
+		SELECT ${outcome_expr} AS category, COUNT(*) AS n
+		FROM tool_calls
+		WHERE session_id='${sid_esc}' ${since}
+		GROUP BY 1
+		ORDER BY n DESC, category;
+	")
+
 	# Repeated-path evidence — parse filePath from metadata JSON. Two accesses is
 	# the semantic minimum for repetition, not a heuristic problem threshold.
 	# Report the evidence and leave interpretation to the retrospective.
@@ -279,10 +303,10 @@ cmd_patterns() {
 
 	if [[ "$json_flag" == "true" ]]; then
 		_patterns_json "$sid" "$total" "$errors" "$first_ts" "$last_ts" \
-			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads"
+			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes"
 	else
 		_patterns_table "$sid" "$total" "$errors" "$first_ts" "$last_ts" \
-			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads"
+			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes"
 	fi
 	return 0
 }
@@ -290,6 +314,7 @@ cmd_patterns() {
 _patterns_table() {
 	local sid="$1" total="$2" errors="$3" first_ts="$4" last_ts="$5"
 	local avg_dur="$6" rate="$7" by_tool="$8" rereads="$9"
+	local outcomes="${10}"
 	printf 'Session: %s\n' "$sid"
 	printf 'Window:  %s → %s\n' "${first_ts:-?}" "${last_ts:-?}"
 	printf 'Calls:   %s total, %s error(s), %s calls/min, avg %sms\n\n' \
@@ -301,6 +326,16 @@ _patterns_table() {
 			[[ -z "$tool" ]] && continue
 			printf '  %-12s %6s calls (%s errors)\n' "$tool" "$n" "$err"
 		done <<<"$by_tool"
+	else
+		printf '  (none)\n'
+	fi
+
+	printf '\nOutcome categories:\n'
+	if [[ -n "$outcomes" ]]; then
+		while IFS='|' read -r category n; do
+			[[ -z "$category" ]] && continue
+			printf '  %-18s %6s calls\n' "$category" "$n"
+		done <<<"$outcomes"
 	else
 		printf '  (none)\n'
 	fi
@@ -321,6 +356,7 @@ _patterns_table() {
 _patterns_json() {
 	local sid="$1" total="$2" errors="$3" first_ts="$4" last_ts="$5"
 	local avg_dur="$6" rate="$7" by_tool="$8" rereads="$9"
+	local outcomes="${10}"
 	command -v jq >/dev/null 2>&1 || { print_error "jq required with --json"; return 1; }
 	local by_tool_json
 	by_tool_json=$(printf '%s' "$by_tool" | jq -R -s '
@@ -337,16 +373,30 @@ _patterns_json() {
 			count: (.[1] | tonumber? // 0)
 		})
 	')
+	local outcomes_json
+	outcomes_json=$(printf '%s' "$outcomes" | jq -R -s '
+		split("\n") | map(select(length > 0) | split("|") | {
+			key: .[0],
+			value: (.[1] | tonumber? // 0)
+		}) | from_entries
+	')
 	jq -n \
 		--arg sid "$sid" --arg first_ts "$first_ts" --arg last_ts "$last_ts" \
 		--argjson total "${total:-0}" --argjson errors "${errors:-0}" \
 		--argjson avg_dur "${avg_dur:-0}" --arg rate "$rate" \
-		--argjson by_tool "$by_tool_json" --argjson rereads "$rereads_json" \
+		--argjson by_tool "$by_tool_json" --argjson outcomes "$outcomes_json" \
+		--argjson rereads "$rereads_json" \
 		--argjson minimum_repeat_count "$REPEATED_PATH_MIN_COUNT" '
 		{
 			session: $sid,
 			window: { first: $first_ts, last: $last_ts },
-			calls: { total: $total, errors: $errors, rate_per_min: ($rate|tonumber), avg_ms: $avg_dur },
+			calls: {
+				total: $total,
+				errors: $errors,
+				rate_per_min: ($rate|tonumber),
+				avg_ms: $avg_dur,
+				outcomes: $outcomes
+			},
 			by_tool: $by_tool,
 			repeated_file_access: {
 				semantic_minimum: $minimum_repeat_count,
@@ -375,9 +425,11 @@ cmd_errors() {
 
 	local since; since=$(_since_clause "$since_min") || return 1
 	local sid_esc; sid_esc=$(_escape_sql "$sid")
+	local outcome_expr
+	outcome_expr=$(_outcome_category_sql "$db")
 
 	local query="
-		SELECT timestamp, tool_name, COALESCE(intent,''), COALESCE(duration_ms,0)
+		SELECT timestamp, tool_name, COALESCE(intent,''), COALESCE(duration_ms,0), ${outcome_expr}
 		FROM tool_calls
 		WHERE session_id='${sid_esc}' AND success=0 ${since}
 		ORDER BY timestamp DESC
@@ -388,16 +440,17 @@ cmd_errors() {
 		sqlite3 -separator '|' "$db" "$query" | jq -R -s --arg sid "$sid" '
 			split("\n") | map(select(length > 0) | split("|") | {
 				timestamp: .[0], tool: .[1], intent: .[2],
-				duration_ms: (.[3] | tonumber? // 0)
+				duration_ms: (.[3] | tonumber? // 0), category: .[4]
 			}) | { session: $sid, errors: . }'
 	else
 		printf 'Session: %s\n\n' "$sid"
-		printf '%-23s  %-8s  %-6s  %s\n' "TIMESTAMP" "TOOL" "MS" "INTENT"
-		printf '%-23s  %-8s  %-6s  %s\n' "-----------------------" "--------" "------" "----------------------------------------"
+		printf '%-23s  %-8s  %-6s  %-18s  %s\n' "TIMESTAMP" "TOOL" "MS" "CATEGORY" "INTENT"
+		printf '%-23s  %-8s  %-6s  %-18s  %s\n' "-----------------------" "--------" "------" "------------------" "----------------------------------------"
 		local count=0
-		while IFS='|' read -r ts tool intent dur; do
+		while IFS='|' read -r ts tool intent dur category; do
 			[[ -z "$ts" ]] && continue
-			printf '%-23s  %-8s  %-6s  %s\n' "${ts:0:23}" "${tool:0:8}" "${dur}" "${intent:0:60}"
+			printf '%-23s  %-8s  %-6s  %-18s  %s\n' \
+				"${ts:0:23}" "${tool:0:8}" "${dur}" "${category:0:18}" "${intent:0:60}"
 			count=$((count + 1))
 		done < <(sqlite3 -separator '|' "$db" "$query")
 		printf '\n%d error(s) shown\n' "$count"

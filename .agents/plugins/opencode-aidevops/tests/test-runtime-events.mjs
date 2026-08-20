@@ -451,6 +451,50 @@ test("SQLite enforces append-only rows and concurrent state versions", {
   }
 });
 
+test("OpenCode observability migrates existing tool-call rows without guessing outcomes", {
+  skip: !sqliteAvailable() && "sqlite3 is unavailable",
+}, () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "aidevops-observability-migration-"));
+  const dbPath = join(tempDir, "llm-requests.db");
+  const observabilityUrl = new URL("../observability.mjs", import.meta.url).href;
+  const driver = `
+    const observability = await import(${JSON.stringify(observabilityUrl)});
+    if (!observability.initObservability()) process.exit(2);
+    process.exit(0);
+  `;
+
+  try {
+    execFileSync("sqlite3", [dbPath, `
+      CREATE TABLE tool_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        call_id TEXT,
+        tool_name TEXT NOT NULL,
+        intent TEXT,
+        success INTEGER DEFAULT 1,
+        duration_ms INTEGER,
+        metadata TEXT
+      );
+      INSERT INTO tool_calls (session_id, call_id, tool_name, success)
+      VALUES ('legacy-session', 'legacy-call', 'Bash', 0);
+    `]);
+    execFileSync(process.execPath, ["--input-type=module", "-e", driver], {
+      env: { ...process.env, AIDEVOPS_OBS_DB_OVERRIDE: dbPath },
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    const migrated = execFileSync("sqlite3", [dbPath, `
+      SELECT
+        (SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='outcome_category'),
+        (SELECT success FROM tool_calls WHERE call_id='legacy-call'),
+        (SELECT outcome_category IS NULL FROM tool_calls WHERE call_id='legacy-call');
+    `], { encoding: "utf8" }).trim();
+    assert.equal(migrated, "1|0|1");
+  } finally {
+    rmSync(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("OpenCode observability emits runtime evidence without changing legacy tables", {
   skip: !sqliteAvailable() && "sqlite3 is unavailable",
 }, () => {
@@ -543,11 +587,14 @@ test("OpenCode observability emits runtime evidence without changing legacy tabl
         (SELECT json_extract(payload_json, '$.observation.provider_error.request_id')
           FROM runtime_events WHERE event_type = 'session.error'),
         (SELECT payload_json NOT LIKE '%private%' AND payload_json NOT LIKE '%doctype%'
-          FROM runtime_events WHERE event_type = 'session.error');
+          FROM runtime_events WHERE event_type = 'session.error'),
+        (SELECT json_extract(payload_json, '$.outcome_category')
+          FROM runtime_events WHERE event_type = 'tool.completed'),
+        (SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='outcome_category');
     `], { encoding: "utf8" }).trim();
     assert.equal(
       counts,
-      "1|1|6|session.created,message.part.updated,message.completed,session.error,tool.completed,subagent.cancellation.receipt|100|PartFailure|gateway_denied|req-safe|1",
+      "1|1|6|session.created,message.part.updated,message.completed,session.error,tool.completed,subagent.cancellation.receipt|100|PartFailure|gateway_denied|req-safe|1|success|1",
     );
   } finally {
     rmSync(tempDir, { force: true, recursive: true });

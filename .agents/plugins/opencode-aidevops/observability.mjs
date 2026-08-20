@@ -47,6 +47,7 @@ import {
 } from "./observability-retention.mjs";
 import {
   buildToolCallInsertSql,
+  classifyToolOutcome,
   toolCallSucceeded,
 } from "./observability-tool-calls.mjs";
 import {
@@ -70,7 +71,7 @@ const COST_BACKFILL_MARKER = `${DB_PATH}.cost-backfill-v1.done`;
 
 export { getPricing };
 export { getRoutingFeedback, recordRoutingDecision };
-export { buildToolCallInsertSql, toolCallSucceeded };
+export { buildToolCallInsertSql, classifyToolOutcome, toolCallSucceeded };
 
 /**
  * Initialise the observability database with WAL mode and schema.
@@ -102,7 +103,7 @@ function initDatabase() {
   // 100% of worker startups. Read-only check first — no lock contention,
   // skips the slow path entirely once the DB is ready.
   if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
-    return _runDataMigrations({ intentColumnReady: true, routingColumnsReady: true });
+    return _runDataMigrations({ toolCallColumnsReady: true, routingColumnsReady: true });
   }
 
   // SLOW PATH (t2900): serialise schema creation across concurrent workers
@@ -113,7 +114,7 @@ function initDatabase() {
     // DOUBLE-CHECKED LOCKING: another worker may have completed init while
     // we waited. If schema is now ready, skip the writer-lock-heavy path.
     if (existsSync(DB_PATH) && _isSchemaInitialized(DB_PATH)) {
-      return _runDataMigrations({ intentColumnReady: true, routingColumnsReady: true });
+      return _runDataMigrations({ toolCallColumnsReady: true, routingColumnsReady: true });
     }
     if (!_createSchema()) return false;
     return _runDataMigrations();
@@ -127,21 +128,24 @@ function initDatabase() {
  * Historical data backfills are scheduled after startup so large observability
  * databases do not block the OpenCode TUI on table scans or writer locks.
  *
- * @param {{ intentColumnReady?: boolean, routingColumnsReady?: boolean }} [options]
+ * @param {{ toolCallColumnsReady?: boolean, routingColumnsReady?: boolean }} [options]
  * @returns {boolean} true on success (best-effort — never returns false)
  */
 function _runDataMigrations(options = {}) {
-  // Migration: add intent column to tool_calls if it doesn't exist (t1309).
-  // Check first to avoid noisy "duplicate column" errors in logs.
-  // Fresh DBs already have the column from the CREATE TABLE above.
-  const hasIntentCol = options.intentColumnReady
-    ? "1"
-    : sqliteExecSync(
-      "SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='intent';",
-      5000,
-    );
-  if (hasIntentCol === "0") {
-    sqliteExecSync("ALTER TABLE tool_calls ADD COLUMN intent TEXT;", 5000);
+  if (!options.toolCallColumnsReady) {
+    const toolCallColumns = [
+      ["intent", "TEXT"],
+      ["outcome_category", "TEXT"],
+    ];
+    for (const [column, definition] of toolCallColumns) {
+      const exists = sqliteExecSync(
+        `SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name=${sqlEscape(column)};`,
+        5000,
+      );
+      if (exists === "0") {
+        sqliteExecSync(`ALTER TABLE tool_calls ADD COLUMN ${column} ${definition};`, 5000);
+      }
+    }
   }
 
   if (!options.routingColumnsReady) {
@@ -501,7 +505,8 @@ export function recordToolCall(input, output, intent, durationMs) {
     }
   }
 
-  const isSuccess = toolCallSucceeded(output) ? 1 : 0;
+  const outcomeCategory = classifyToolOutcome(output);
+  const isSuccess = outcomeCategory === "success" ? 1 : 0;
 
   const sql = buildToolCallInsertSql({
     sessionID,
@@ -511,6 +516,7 @@ export function recordToolCall(input, output, intent, durationMs) {
     isSuccess,
     durationMs,
     metadata: output?.metadata,
+    outcomeCategory,
   });
 
   sqliteExec(sql);
@@ -525,6 +531,7 @@ export function recordToolCall(input, output, intent, durationMs) {
       duration_ms: durationMs ?? null,
       success: isSuccess === 1,
       tool_name: toolName,
+      outcome_category: outcomeCategory,
     },
   });
   projectRuntimeEvent(runtimeEnvelope);

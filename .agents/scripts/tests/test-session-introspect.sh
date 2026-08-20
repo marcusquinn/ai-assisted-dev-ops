@@ -54,7 +54,8 @@ CREATE TABLE tool_calls (
   intent TEXT,
   success INTEGER DEFAULT 1,
   duration_ms INTEGER,
-  metadata TEXT
+  metadata TEXT,
+  outcome_category TEXT
 );
 
 CREATE TABLE session_summaries (
@@ -73,24 +74,25 @@ CREATE TABLE session_summaries (
 );
 
 -- Session A (most recent — becomes the "current" for default lookup)
-INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, duration_ms, metadata) VALUES
- ('2026-04-18T04:00:00Z', 'sess-A', 'Read',   'scanning file index',           1, 120, '{"args":{"filePath":"/repo/a.sh"}}'),
- ('2026-04-18T04:00:05Z', 'sess-A', 'Read',   'reading auth handler',          1,  90, '{"args":{"filePath":"/repo/b.sh"}}'),
- ('2026-04-18T04:00:10Z', 'sess-A', 'Read',   'rechecking auth handler',       1,  88, '{"args":{"filePath":"/repo/b.sh"}}'),
- ('2026-04-18T04:00:15Z', 'sess-A', 'Read',   're-reading auth handler',       1,  95, '{"args":{"filePath":"/repo/b.sh"}}'),
- ('2026-04-18T04:00:20Z', 'sess-A', 'Read',   'reading auth handler AGAIN',    1,  80, '{"args":{"filePath":"/repo/b.sh"}}'),
- ('2026-04-18T04:00:25Z', 'sess-A', 'Edit',   'patching auth handler',         1, 240, '{"args":{"filePath":"/repo/b.sh"}}'),
- ('2026-04-18T04:00:30Z', 'sess-A', 'Bash',   'running shellcheck',            0, 850, '{}'),
- ('2026-04-18T04:00:35Z', 'sess-A', 'Bash',   'running shellcheck retry',      0, 910, '{}'),
- ('2026-04-18T04:00:40Z', 'sess-A', 'Bash',   'running shellcheck final',      1, 780, '{}');
+INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, duration_ms, metadata, outcome_category) VALUES
+ ('2026-04-18T04:00:00Z', 'sess-A', 'Read',   'scanning file index',           1, 120, '{"args":{"filePath":"/repo/a.sh"}}', NULL),
+ ('2026-04-18T04:00:05Z', 'sess-A', 'Read',   'reading auth handler',          1,  90, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
+ ('2026-04-18T04:00:10Z', 'sess-A', 'Read',   'rechecking auth handler',       1,  88, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
+ ('2026-04-18T04:00:15Z', 'sess-A', 'Read',   're-reading auth handler',       1,  95, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
+ ('2026-04-18T04:00:20Z', 'sess-A', 'Read',   'reading auth handler AGAIN',    1,  80, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
+ ('2026-04-18T04:00:25Z', 'sess-A', 'Edit',   'patching auth handler',         1, 240, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
+ ('2026-04-18T04:00:30Z', 'sess-A', 'Bash',   'running shellcheck',            0, 850, '{}', 'command_failure'),
+ ('2026-04-18T04:00:35Z', 'sess-A', 'Bash',   'running blocked retry',         0, 910, '{}', 'policy_block'),
+ ('2026-04-18T04:00:40Z', 'sess-A', 'Bash',   'running shellcheck final',      1, 780, '{}', 'success'),
+ ('2026-04-18T04:00:45Z', 'sess-A', 'Task',   'handling runtime error',        0,  50, '{}', 'tool_error');
 
 INSERT INTO session_summaries (session_id, first_seen, last_seen, request_count, total_tool_calls, total_errors, total_cost, models_used)
-VALUES ('sess-A', '2026-04-18T04:00:00Z', '2026-04-18T04:00:40Z', 9, 9, 2, 0.0184, 'claude-sonnet-4');
+VALUES ('sess-A', '2026-04-18T04:00:00Z', '2026-04-18T04:00:45Z', 10, 10, 3, 0.0184, 'claude-sonnet-4');
 
 -- Session B (older)
-INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, duration_ms, metadata) VALUES
- ('2026-04-17T10:00:00Z', 'sess-B', 'Read',   'initial context scan',          1, 100, '{"args":{"filePath":"/repo/c.sh"}}'),
- ('2026-04-17T10:00:05Z', 'sess-B', 'Write',  'creating new helper',           1, 200, '{"args":{"filePath":"/repo/new.sh"}}');
+INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, duration_ms, metadata, outcome_category) VALUES
+ ('2026-04-17T10:00:00Z', 'sess-B', 'Read',   'initial context scan',          1, 100, '{"args":{"filePath":"/repo/c.sh"}}', 'success'),
+ ('2026-04-17T10:00:05Z', 'sess-B', 'Write',  'creating new helper',           1, 200, '{"args":{"filePath":"/repo/new.sh"}}', 'success');
 
 INSERT INTO session_summaries (session_id, first_seen, last_seen, request_count, total_tool_calls, total_errors, total_cost, models_used)
 VALUES ('sess-B', '2026-04-17T10:00:00Z', '2026-04-17T10:00:05Z', 2, 2, 0, 0.0041, 'claude-sonnet-4');
@@ -127,15 +129,20 @@ fi
 printf '\n%s=== patterns ===%s\n' "$GREEN" "$NC"
 out=$("$HELPER" patterns 2>&1) || true
 assert_contains "patterns: shows session ID"         "$out" "sess-A"
-assert_contains "patterns: shows total calls"        "$out" "9 total"
-assert_contains "patterns: shows error count"        "$out" "2 error"
+assert_contains "patterns: shows total calls"        "$out" "10 total"
+assert_contains "patterns: shows error count"        "$out" "3 error"
+assert_contains "patterns: separates command failures" "$out" "command_failure"
+assert_contains "patterns: separates policy blocks"  "$out" "policy_block"
+assert_contains "patterns: separates tool errors"    "$out" "tool_error"
+assert_contains "patterns: preserves unknown legacy outcomes" "$out" "legacy_unknown"
 assert_contains "patterns: reports repeated-path evidence" "$out" "/repo/b.sh"
 assert_contains "patterns: requires contextual interpretation" "$out" "Interpret in context"
 
 printf '\n%s=== errors ===%s\n' "$GREEN" "$NC"
 out=$("$HELPER" errors 2>&1) || true
 assert_contains "errors: shows failed Bash call"     "$out" "shellcheck"
-assert_contains "errors: excludes succeeded calls"   "$out" "2 error"
+assert_contains "errors: shows outcome category"     "$out" "command_failure"
+assert_contains "errors: excludes succeeded calls"   "$out" "3 error"
 
 printf '\n%s=== sessions ===%s\n' "$GREEN" "$NC"
 out=$("$HELPER" sessions 2>&1) || true
@@ -166,6 +173,23 @@ if command -v jq >/dev/null 2>&1; then
 		pass "patterns --json: surfaces repeated-path evidence"
 	else
 		fail "patterns --json: missing repeated_file_access.evidence" "$out"
+	fi
+	if printf '%s' "$out" | jq -e '
+		.calls.outcomes.command_failure == 1 and
+		.calls.outcomes.policy_block == 1 and
+		.calls.outcomes.tool_error == 1 and
+		.calls.outcomes.legacy_unknown == 1
+	' >/dev/null 2>&1; then
+		pass "patterns --json: separates outcome categories"
+	else
+		fail "patterns --json: missing outcome category counters" "$out"
+	fi
+
+	out=$("$HELPER" errors --json 2>&1) || true
+	if printf '%s' "$out" | jq -e '.errors | map(.category) | index("policy_block") != null' >/dev/null 2>&1; then
+		pass "errors --json: includes outcome categories"
+	else
+		fail "errors --json: missing outcome categories" "$out"
 	fi
 
 	out=$("$HELPER" sessions --json 2>&1) || true

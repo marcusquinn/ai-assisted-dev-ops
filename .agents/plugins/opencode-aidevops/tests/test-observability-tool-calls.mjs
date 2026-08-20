@@ -22,7 +22,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildToolCallInsertSql, toolCallSucceeded } from "../observability.mjs";
+import { buildToolCallInsertSql, classifyToolOutcome, toolCallSucceeded } from "../observability.mjs";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -97,11 +97,29 @@ describe("toolCallSucceeded", () => {
 
   test("rejects non-zero metadata exit codes", () => {
     assert.equal(toolCallSucceeded({ output: "", metadata: { exitCode: 1 } }), false);
+    assert.equal(toolCallSucceeded({ output: "", metadata: { exit: 7 } }), false);
   });
 
   test("rejects leading terminal failure markers without structured status", () => {
     assert.equal(toolCallSucceeded({ output: "Error: file not found" }), false);
     assert.equal(toolCallSucceeded({ output: "FAILED to read file" }), false);
+  });
+});
+
+describe("classifyToolOutcome", () => {
+  test("distinguishes command failures and policy blocks", () => {
+    assert.equal(classifyToolOutcome({ output: "", metadata: { exit: 7 } }), "command_failure");
+    assert.equal(classifyToolOutcome({
+      output: "BLOCKED by shared command policy (forbid, command.parse-error)",
+    }), "policy_block");
+  });
+
+  test("distinguishes tool errors from successful output", () => {
+    assert.equal(classifyToolOutcome({ output: "", metadata: { status: "failed" } }), "tool_error");
+    assert.equal(classifyToolOutcome({
+      output: "Error: this is fixture text",
+      metadata: { exit: 0 },
+    }), "success");
   });
 });
 
@@ -137,8 +155,7 @@ describe("buildToolCallInsertSql — column/value alignment", () => {
       metadata: { filePath: "/tmp/x" },
     });
     const cols = extractColumns(sql);
-    // Order must match the CREATE TABLE in observability-init.mjs.
-    // Any drift breaks SQLite positional binding in the live path.
+    // Keep the explicit INSERT contract stable for downstream readers.
     assert.deepEqual(cols, [
       "session_id",
       "call_id",
@@ -147,7 +164,23 @@ describe("buildToolCallInsertSql — column/value alignment", () => {
       "success",
       "duration_ms",
       "metadata",
+      "outcome_category",
     ]);
+  });
+
+  test("persists the bounded outcome category", () => {
+    const sql = buildToolCallInsertSql({
+      sessionID: "s1",
+      callID: "c1",
+      toolName: "Bash",
+      intent: "running a fixture",
+      isSuccess: 0,
+      durationMs: 10,
+      metadata: { exit: 7 },
+      outcomeCategory: "command_failure",
+    });
+    const vals = extractValues(sql);
+    assert.equal(vals[7], "'command_failure'");
   });
 });
 

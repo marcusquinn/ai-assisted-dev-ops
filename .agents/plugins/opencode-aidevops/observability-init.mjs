@@ -16,8 +16,8 @@ import { dirname } from "path";
 import { sqliteExecSync } from "./observability-sqlite.mjs";
 
 /**
- * Read-only check: are all expected tables present and is the t1309 `intent`
- * column on `tool_calls`, and are routing/version columns present on
+ * Read-only check: are all expected tables present and are the required
+ * `tool_calls` and routing/version columns present on
  * `llm_requests`?
  * Uses `sqlite3 -readonly` so it never contends on
  * the writer lock — safe to call from N concurrent workers without race.
@@ -36,7 +36,8 @@ export function isSchemaInitialized(dbPath) {
        "SELECT " +
       "(SELECT COUNT(*) FROM sqlite_master WHERE type='table' " +
        "AND name IN ('llm_requests','tool_calls','session_summaries','runtime_events','runtime_event_archives')) AS tbls, " +
-       "(SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name='intent') AS intent_col, " +
+        "(SELECT COUNT(*) FROM pragma_table_info('tool_calls') " +
+        "WHERE name IN ('intent','outcome_category')) AS tool_call_cols, " +
        "(SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name IN " +
         "('parent_session_id','routing_tier','routing_candidate_index','routing_attempt','routing_reason','routing_escalated','aidevops_version')) AS routing_cols, " +
        "(SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' " +
@@ -49,8 +50,8 @@ export function isSchemaInitialized(dbPath) {
       },
     ).trim();
     if (!result) return false;
-    const [tbls, intentCol, routingCols, guards] = result.split("|");
-    return tbls === "5" && intentCol === "1" && routingCols === "7" && guards === "4";
+    const [tbls, toolCallCols, routingCols, guards] = result.split("|");
+    return tbls === "5" && toolCallCols === "2" && routingCols === "7" && guards === "4";
   } catch {
     return false;
   }
@@ -117,7 +118,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   intent TEXT,
   success INTEGER DEFAULT 1,
   duration_ms INTEGER,
-  metadata TEXT
+  metadata TEXT,
+  outcome_category TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session

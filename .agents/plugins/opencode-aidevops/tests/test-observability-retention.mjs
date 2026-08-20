@@ -15,7 +15,7 @@ describe("tool metadata retention", () => {
     const summary = summarizeToolMetadata({
       bytes: 4096,
       error: "sensitive-value",
-      exitCode: 7,
+      exit: 7,
       filePath: "/private/project/file.txt",
       raw: "x".repeat(100_000),
       status: "failed",

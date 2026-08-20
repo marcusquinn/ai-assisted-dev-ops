@@ -112,8 +112,8 @@ test("observability.mjs skips heavy cost backfill when no rows need migration", 
   );
   assert.match(
     src,
-    /_runDataMigrations\(\{ intentColumnReady: true, routingColumnsReady: true \}\)/,
-    "Known-good schemas should skip redundant intent and routing-column migration probes.",
+    /_runDataMigrations\(\{ toolCallColumnsReady: true, routingColumnsReady: true \}\)/,
+    "Known-good schemas should skip redundant tool-call and routing-column migration probes.",
   );
 });
 
