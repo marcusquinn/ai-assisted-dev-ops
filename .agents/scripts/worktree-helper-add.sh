@@ -875,7 +875,14 @@ _worktree_refresh_origin_branch() {
 			[[ -n "$worktree_path" && "$worktree_path" != "$current_root" && -d "$worktree_path" ]] || continue
 			# `rev-parse HEAD` does not read the index. Probe with status so a
 			# truncated/corrupt sibling index cannot poison fresh-base fetches.
-			GIT_OPTIONAL_LOCKS=0 git -C "$worktree_path" status --porcelain --untracked-files=no >/dev/null 2>&1 || continue
+			if ! GIT_OPTIONAL_LOCKS=0 git -C "$worktree_path" status --porcelain --untracked-files=no >/dev/null 2>&1; then
+				if declare -F log_worktree_removal_event >/dev/null 2>&1; then
+					log_worktree_removal_event "${_WTAR_SKIPPED:-skipped}" "${_WTAR_WH_CALLER:-worktree-helper.sh}" \
+						"$worktree_path" "unreadable-git-state" "skipped" \
+						"operation=fresh-base-fetch target_branch=$branch"
+				fi
+				continue
+			fi
 			fetch_cwd="$worktree_path"
 			break
 		done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')

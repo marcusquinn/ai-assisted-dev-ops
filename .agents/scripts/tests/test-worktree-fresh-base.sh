@@ -72,16 +72,21 @@ printf 'PASS canonical-guard bootstrap fetch worktree is removed\n'
 # selector must skip that candidate and use the bootstrap path instead of
 # allowing one unhealthy worktree to block all new worktree creation.
 UNHEALTHY_FETCH_MARKER="${ROOT}/unhealthy-fetch-attempted"
+UNHEALTHY_AUDIT_MARKER="${ROOT}/unhealthy-fetch-audit"
 if ! (
 	cd "$CANONICAL" || exit 1
 	SCRIPT_DIR="$(cd "$(dirname "$ADD_HELPER")" && pwd)"
 	# shellcheck source=../worktree-helper-add.sh
 	source "$ADD_HELPER"
+	log_worktree_removal_event() {
+		printf '%s\n' "$*" >>"$UNHEALTHY_AUDIT_MARKER"
+		return 0
+	}
 	git() {
 		local first_arg="${1:-}"
 		local second_arg="${2:-}"
 		local third_arg="${3:-}"
-		if [[ "$first_arg" == "-C" && "$second_arg" == "$FRESH_PATH" && "$third_arg" == "status" ]]; then
+		if [[ "$first_arg" == "-C" && "$third_arg" == "status" ]]; then
 			return 128
 		fi
 		if [[ "$first_arg" == "-C" && "$second_arg" == "$FRESH_PATH" && "$third_arg" == "fetch" ]]; then
@@ -98,6 +103,10 @@ if ! (
 fi
 if [[ -e "$UNHEALTHY_FETCH_MARKER" ]]; then
 	printf 'FAIL fetch was attempted through an unhealthy sibling worktree\n'
+	exit 1
+fi
+if ! grep -q "unreadable-git-state.*operation=fresh-base-fetch.*target_branch=main" "$UNHEALTHY_AUDIT_MARKER"; then
+	printf 'FAIL unhealthy sibling skip was not audited\n'
 	exit 1
 fi
 printf 'PASS unhealthy sibling is skipped for bootstrap fetch fallback\n'

@@ -1397,6 +1397,7 @@ _clean_degraded_visibility_fallback_allowed() {
 	local default_br="$8"
 
 	[[ "${WORKTREE_REMOVAL_GUARD_REASON:-}" == "${_WT_CWD_REASON_DEGRADED:-cwd-visibility-degraded}" ]] || return 1
+	_clean_worktree_index_is_readable "$worktree_path" "$worktree_branch" "$audit_context" || return 1
 	if worktree_has_changes "$worktree_path"; then
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$worktree_path" "degraded-cwd-dirty-skip" "$_WT_CLEAN_MODE_SKIPPED" "$audit_context"
 		return 1

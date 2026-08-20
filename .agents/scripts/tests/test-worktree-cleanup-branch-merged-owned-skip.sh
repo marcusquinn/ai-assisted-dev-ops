@@ -1072,6 +1072,39 @@ test_force_merged_preserves_unreadable_index() {
 	return 0
 }
 
+test_degraded_cleanup_audits_unreadable_index() {
+	local repo_path="${TEST_ROOT}/repo-degraded-unreadable-index"
+	local wt_path="${TEST_ROOT}/wt-degraded-unreadable-index"
+	local log_file="${TEST_ROOT}/degraded-unreadable-index-cleanup.log"
+	local branch="feature/gh-99027-degraded-unreadable-index"
+	local git_dir=""
+	local rc=0
+	export AIDEVOPS_CLEANUP_LOG="$log_file"
+	setup_repo "$repo_path" || rc=1
+	git -C "$repo_path" branch "$branch" main || rc=1
+	git -C "$repo_path" worktree add -q "$wt_path" "$branch" || rc=1
+	git_dir=$(git -C "$wt_path" rev-parse --absolute-git-dir) || rc=1
+	: >"${git_dir}/index"
+
+	if (
+		cd "$repo_path" || exit 1
+		source_clean_lib_with_stubs || exit 1
+		WORKTREE_REMOVAL_GUARD_REASON="cwd-visibility-degraded"
+		_clean_has_exact_removal_lease() { return 0; }
+		_clean_degraded_visibility_fallback_allowed "$wt_path" "$branch" \
+			"$_WT_CLEAN_TYPE_CLOSED_PR" "" "$branch" "" \
+			"test=degraded-unreadable-index" "main"
+	); then
+		rc=1
+	fi
+
+	[[ -d "$wt_path" ]] || rc=1
+	assert_file_contains "$log_file" "worktree-skipped.*unreadable-git-state.*mode=skipped" || rc=1
+	print_result "degraded cleanup audits unreadable index" "$rc" \
+		"Expected unreadable index to block degraded recoverable cleanup"
+	return 0
+}
+
 echo "=== test-worktree-cleanup-branch-merged-owned-skip.sh ==="
 test_protected_pass_set_blocks_branch_merged_removal
 test_terminal_pr_proof_bypasses_protected_pass_skip
@@ -1100,6 +1133,7 @@ test_fix_numeric_closed_issue_branch_removes_worktree_preserves_branch
 test_closed_issue_dirty_unproven_branch_stashes_and_preserves_branch
 test_closed_issue_dirty_lock_race_preserves_files
 test_force_merged_preserves_unreadable_index
+test_degraded_cleanup_audits_unreadable_index
 
 printf '\nResults: %d/%d passed, %d failed.\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 if [[ "$TESTS_FAILED" -gt 0 ]]; then
