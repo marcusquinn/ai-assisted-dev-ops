@@ -21,6 +21,8 @@ tools:
 ## Quick Reference
 
 **Setup All**: `bash .agents/scripts/setup-mcp-integrations.sh all`
+**Generate Templates**: `bash .agents/scripts/setup-mcp-integrations.sh templates`
+**Help**: `bash .agents/scripts/setup-mcp-integrations.sh --help`
 **Validate**: `bash .agents/scripts/validate-mcp-integrations.sh`
 
 | Category | Integration | Key Requirement |
@@ -41,7 +43,7 @@ tools:
 | | MCPorter | Discover, call, compose, generate CLIs for MCP servers |
 | | OpenAPI Search MCP | Remote Cloudflare Worker, no auth |
 
-**Config Location**: `configs/mcp-templates/`
+**Config Location**: `configs/mcp-templates/` beneath the aidevops repository or deployed `~/.aidevops/` root, independent of the caller's working directory.
 
 **Security**: MCP servers are a trust boundary -- they access conversation context, credentials, and network. Verify source, scan dependencies (`npx @socketsecurity/cli npm info <pkg>`), and scan source (`skill-scanner scan /path`) before installing. See `tools/mcp-toolkit/mcporter.md` "Security Considerations".
 

@@ -358,6 +358,9 @@ jobs:
         bash .agents/scripts/tests/test-mcp-inspector-health-identity.sh
         echo "MCP inspector health identity regression test passed"
 
+    - name: MCP Helper Help Regression (GH#30473)
+      run: bash .agents/scripts/tests/test-mcp-helper-help.sh
+
     - name: Secret Safety Policy Check
       run: |
         echo "Running secret safety policy checks..."

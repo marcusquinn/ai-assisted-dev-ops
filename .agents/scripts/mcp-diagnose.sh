@@ -19,17 +19,28 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 
 set -euo pipefail
 
-MCP_NAME="${1:-}"
-
-if [[ -z "$MCP_NAME" ]]; then
+show_usage() {
 	echo "Usage: mcp-diagnose.sh <mcp-name>"
 	echo "       mcp-diagnose.sh check-all"
 	echo ""
 	echo "Examples:"
 	echo "  mcp-diagnose.sh context7"
 	echo "  mcp-diagnose.sh check-all"
+	return 0
+}
+
+MCP_NAME="${1:-}"
+
+case "$MCP_NAME" in
+help | --help | -h)
+	show_usage
+	exit 0
+	;;
+"")
+	show_usage
 	exit 1
-fi
+	;;
+esac
 
 # =============================================================================
 # check-all: scan all enabled MCP servers for connection errors (t1682)

@@ -10,6 +10,8 @@ set -euo pipefail
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)" || exit
+TEMPLATE_DIR="${REPO_ROOT}/configs/mcp-templates"
 
 # shellcheck source=./shared-constants.sh
 source "${SCRIPT_DIR}/shared-constants.sh"
@@ -76,6 +78,26 @@ is_known_mcp() {
 	done
 
 	return 1
+}
+
+show_usage() {
+	local script_name
+	script_name="$(basename "$0")"
+
+	printf 'Usage: %s [integration_name|all|templates]\n' "$script_name"
+	printf '\nAvailable MCP integrations:\n'
+	for mcp in "${MCP_LIST[@]}"; do
+		printf '  - %s\n' "$mcp"
+	done
+	printf '\nCommands:\n'
+	printf '  all        Install all MCP integrations\n'
+	printf '  templates  Generate configuration templates in %s\n' "$TEMPLATE_DIR"
+	printf '  help       Show this help (also --help or -h)\n'
+	printf '\nExamples:\n'
+	printf '  %s chrome-devtools\n' "$script_name"
+	printf '  %s all\n' "$script_name"
+	printf '  %s templates\n' "$script_name"
+	return 0
 }
 
 # Check prerequisites
@@ -581,7 +603,7 @@ EOF
 create_config_templates() {
 	print_header "Creating MCP Configuration Templates"
 
-	local config_dir="configs/mcp-templates"
+	local config_dir="$TEMPLATE_DIR"
 	mkdir -p "$config_dir"
 
 	_write_chrome_devtools_template "$config_dir"
@@ -598,23 +620,30 @@ create_config_templates() {
 main() {
 	local command="${1:-help}"
 
+	case "$command" in
+	help | --help | -h)
+		show_usage
+		return 0
+		;;
+	templates)
+		create_config_templates
+		return 0
+		;;
+	all) ;;
+	*)
+		if ! is_known_mcp "$command"; then
+			print_error "Unknown MCP integration: $command"
+			show_usage
+			return 1
+		fi
+		;;
+	esac
+
 	print_header "Advanced MCP Integrations Setup"
 	echo
 
 	check_prerequisites
 	echo
-
-	if [[ $# -eq 0 ]]; then
-		print_info "Available MCP integrations:"
-		for mcp in "${MCP_LIST[@]}"; do
-			echo "  - $mcp"
-		done
-		echo
-		print_info "Usage: $0 [integration_name|all]"
-		print_info "Example: $0 chrome-devtools"
-		print_info "Example: $0 all"
-		exit 0
-	fi
 
 	create_config_templates
 	echo
@@ -625,19 +654,15 @@ main() {
 			install_mcp "$mcp"
 			echo
 		done
-	elif is_known_mcp "$command"; then
-		install_mcp "$command"
 	else
-		print_error "Unknown MCP integration: $command"
-		print_info "Available integrations: ${MCP_LIST[*]}"
-		exit 1
+		install_mcp "$command"
 	fi
 
 	echo
 	print_success "MCP integrations setup completed!"
 	print_info "Next steps:"
 	print_info "1. Configure API keys in your environment"
-	print_info "2. Review configuration templates in configs/mcp-templates/"
+	print_info "2. Review configuration templates in ${TEMPLATE_DIR}/"
 	print_info "3. Test integrations with your AI assistant"
 	print_info "4. Check .agents/MCP-INTEGRATIONS.md for usage examples"
 	return 0
