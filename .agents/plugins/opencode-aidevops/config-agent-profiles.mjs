@@ -119,6 +119,11 @@ function createOnDemandMcpProfile(mcp, agentsDir) {
       [MCP_ACTIVATION_TOOL]: true,
       [mcp.toolPattern]: true,
     },
+    permission: {
+      ...(parsed?.profile.permission || {}),
+      [MCP_ACTIVATION_TOOL]: "allow",
+      [mcp.toolPattern]: "allow",
+    },
   };
 }
 
@@ -132,6 +137,12 @@ function ensureOnDemandMcpAgent(config, mcp, agentsDir) {
   if (!(MCP_ACTIVATION_TOOL in config.agent[mcp.agentName].tools)) {
     config.agent[mcp.agentName].tools[MCP_ACTIVATION_TOOL] = true;
   }
+  config.agent[mcp.agentName].tools[mcp.toolPattern] = true;
+  if (!config.agent[mcp.agentName].permission) config.agent[mcp.agentName].permission = {};
+  if (!(MCP_ACTIVATION_TOOL in config.agent[mcp.agentName].permission)) {
+    config.agent[mcp.agentName].permission[MCP_ACTIVATION_TOOL] = "allow";
+  }
+  config.agent[mcp.agentName].permission[mcp.toolPattern] = "allow";
   return false;
 }
 

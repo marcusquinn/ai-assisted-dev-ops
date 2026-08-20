@@ -5,12 +5,40 @@
  * Create the bounded MCP activation tool.
  * @param {function} tool
  * @param {object} z
- * @param {{client: object, directory?: string, allowedNames: string[]}} options
+ * @param {{client: object, directory?: string, allowedNames: string[], connectTimeoutMs?: number, pollIntervalMs?: number, pause?: function}} options
  * @returns {object}
  */
 export function createMcpActivationTool(tool, z, options) {
   const allowedNames = [...new Set(options.allowedNames || [])];
   const allowed = new Set(allowedNames);
+  const connectTimeoutMs = options.connectTimeoutMs || 30_000;
+  const pollIntervalMs = options.pollIntervalMs || 500;
+  const pause = options.pause
+    || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+
+  async function waitForConnection(name) {
+    const statusMethod = options.client?.status;
+    if (typeof statusMethod !== "function") return;
+
+    const request = options.directory ? { query: { directory: options.directory } } : {};
+    const deadline = Date.now() + connectTimeoutMs;
+    let status = "unknown";
+    do {
+      const result = await statusMethod.call(options.client, request);
+      if (result?.error) {
+        throw new Error(result.error.message || String(result.error));
+      }
+      const payload = result?.data ?? result;
+      status = payload?.[name]?.status || "unknown";
+      if (status === "connected") return;
+      if (["error", "failed"].includes(status)) {
+        throw new Error(`MCP entered ${status} status`);
+      }
+      await pause(pollIntervalMs);
+    } while (Date.now() < deadline);
+
+    throw new Error(`MCP did not become ready (last status: ${status})`);
+  }
 
   return tool({
     description:
@@ -34,12 +62,13 @@ export function createMcpActivationTool(tool, z, options) {
 
       try {
         const result = await method.call(options.client, {
-          name,
-          ...(options.directory ? { directory: options.directory } : {}),
+          path: { name },
+          ...(options.directory ? { query: { directory: options.directory } } : {}),
         });
         if (result?.error) {
           return `Error: MCP ${action} failed for ${name}: ${result.error.message || String(result.error)}`;
         }
+        if (action === "connect") await waitForConnection(name);
       } catch (error) {
         return `Error: MCP ${action} failed for ${name}: ${error instanceof Error ? error.message : String(error)}`;
       }

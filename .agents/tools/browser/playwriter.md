@@ -80,7 +80,8 @@ mcp:
   "tools": { "aidevops_mcp": false, "playwriter_*": false },
   "agent": {
     "playwriter": {
-      "tools": { "aidevops_mcp": true, "playwriter_*": true }
+      "tools": { "aidevops_mcp": true },
+      "permission": { "playwriter_*": "allow" }
     }
   }
 }

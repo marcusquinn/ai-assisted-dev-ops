@@ -216,6 +216,9 @@ function getMcpRegistry() {
       eager: false,
       toolPattern: "playwright_*",
       globallyEnabled: false,
+      activationAgent: "playwright",
+      agentSource: ["tools", "browser", "playwright.md"],
+      modelTier: "standard",
       description: "Cross-browser test automation",
     },
     {

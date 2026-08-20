@@ -30,6 +30,7 @@ subagents:
   - context7
   - toon
   # Browser/testing
+  - playwriter
   - playwright
   - stagehand
   - pagespeed

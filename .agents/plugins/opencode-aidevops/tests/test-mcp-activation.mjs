@@ -15,22 +15,31 @@ const schemaNode = { describe() { return this; } };
 const z = { enum() { return schemaNode; } };
 const tool = (definition) => definition;
 
-test("registers only the explicit Playwriter activation profile", () => {
+test("registers only the explicit browser MCP activation profiles", () => {
   const config = {};
   const count = registerOnDemandMcpAgents(config, AGENTS_DIR);
 
-  assert.equal(count, 1);
-  assert.deepEqual(Object.keys(config.agent), ["playwriter"]);
+  assert.equal(count, 2);
+  assert.deepEqual(Object.keys(config.agent), ["playwriter", "playwright"]);
   assert.equal(config.tools.aidevops_mcp, false);
   assert.equal(config.agent.playwriter.mode, "subagent");
   assert.equal(config.agent.playwriter.tools.aidevops_mcp, true);
   assert.equal(config.agent.playwriter.tools["playwriter_*"], true);
+  assert.equal(config.agent.playwriter.permission.aidevops_mcp, "allow");
+  assert.equal(config.agent.playwriter.permission["playwriter_*"], "allow");
   assert.match(config.agent.playwriter.prompt, /connect.*playwriter/);
   assert.match(config.agent.playwriter.prompt, /no browser tab is approved/i);
   assert.match(config.agent.playwriter.prompt, /# Playwriter - Browser Extension MCP/);
+  assert.equal(config.agent.playwright.mode, "subagent");
+  assert.equal(config.agent.playwright.tools.aidevops_mcp, true);
+  assert.equal(config.agent.playwright.tools["playwright_*"], true);
+  assert.equal(config.agent.playwright.permission.aidevops_mcp, "allow");
+  assert.equal(config.agent.playwright.permission["playwright_*"], "allow");
+  assert.match(config.agent.playwright.prompt, /connect.*playwright/);
+  assert.match(config.agent.playwright.prompt, /# Playwright MCP/);
 });
 
-test("migrates Playwriter to disconnected and globally denied", () => {
+test("migrates browser MCPs to disconnected and globally denied", () => {
   const config = {
     mcp: {
       playwriter: {
@@ -38,14 +47,21 @@ test("migrates Playwriter to disconnected and globally denied", () => {
         command: ["npx", "playwriter@latest"],
         enabled: true,
       },
+      playwright: {
+        type: "local",
+        command: ["npx", "-y", "@playwright/mcp@latest"],
+        enabled: true,
+      },
     },
-    tools: { "playwriter_*": true },
+    tools: { "playwriter_*": true, "playwright_*": true },
   };
 
   registerMcpServers(config);
 
   assert.equal(config.mcp.playwriter.enabled, false);
+  assert.equal(config.mcp.playwright.enabled, false);
   assert.equal(config.tools["playwriter_*"], false);
+  assert.equal(config.tools["playwright_*"], false);
 });
 
 test("connects and disconnects only registry-approved MCP names", async () => {
@@ -74,8 +90,50 @@ test("connects and disconnects only registry-approved MCP names", async () => {
     /Disconnected MCP playwriter/,
   );
   assert.deepEqual(calls, [
-    ["connect", { name: "playwriter", directory: "/workspace" }],
-    ["disconnect", { name: "playwriter", directory: "/workspace" }],
+    ["connect", { path: { name: "playwriter" }, query: { directory: "/workspace" } }],
+    ["disconnect", { path: { name: "playwriter" }, query: { directory: "/workspace" } }],
+  ]);
+});
+
+test("omits the optional SDK query when no directory is available", async () => {
+  const calls = [];
+  const activation = createMcpActivationTool(tool, z, {
+    client: { async connect(args) { calls.push(args); } },
+    allowedNames: ["playwright"],
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /Connected MCP playwright/,
+  );
+  assert.deepEqual(calls, [{ path: { name: "playwright" } }]);
+});
+
+test("waits until an asynchronously connecting MCP reports ready", async () => {
+  const statuses = ["disabled", "connecting", "connected"];
+  const calls = [];
+  const activation = createMcpActivationTool(tool, z, {
+    client: {
+      async connect(args) { calls.push(["connect", args]); },
+      async status(args) {
+        calls.push(["status", args]);
+        return { data: { playwright: { status: statuses.shift() } } };
+      },
+    },
+    directory: "/workspace",
+    allowedNames: ["playwright"],
+    pause: async () => {},
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /Connected MCP playwright/,
+  );
+  assert.deepEqual(calls, [
+    ["connect", { path: { name: "playwright" }, query: { directory: "/workspace" } }],
+    ["status", { query: { directory: "/workspace" } }],
+    ["status", { query: { directory: "/workspace" } }],
+    ["status", { query: { directory: "/workspace" } }],
   ]);
 });
 

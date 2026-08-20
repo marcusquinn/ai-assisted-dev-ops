@@ -55,6 +55,7 @@ npx mcporter generate-cli --command https://mcp.context7.com/mcp --compile
 | MCP | Tokens | Activation | When to enable |
 |-----|--------|------------|----------------|
 | `playwriter` | ~3K | `@playwriter` calls `aidevops_mcp` | Browser automation needed |
+| `playwright` | Varies | `@playwright` calls `aidevops_mcp` | Isolated browser automation needed |
 | `google-analytics-mcp` | ~800 | Disabled by default | Analytics reporting |
 | `context7` | ~800 | Disabled by default | Library docs lookup |
 
@@ -122,7 +123,7 @@ mcp:
 ---
 ```
 
-The `mcp:` field is declarative -- it documents which MCP the subagent requires. Tool permission alone does not connect an OpenCode MCP configured with `enabled: false`. Explicit activation profiles, currently `@playwriter`, call `aidevops_mcp` before their first MCP operation.
+The `mcp:` field is declarative -- it documents which MCP the subagent requires. Tool permission alone does not connect an OpenCode MCP configured with `enabled: false`. Explicit activation profiles, currently `@playwriter` and `@playwright`, call `aidevops_mcp` before their first MCP operation.
 
 ### Main Agent Pattern
 
@@ -150,8 +151,10 @@ In `opencode.json`, MCP tools are denied globally and granted only to an owning 
   "agent": {
     "playwriter": {
       "tools": {
-        "aidevops_mcp": true,
-        "playwriter_*": true
+        "aidevops_mcp": true
+      },
+      "permission": {
+        "playwriter_*": "allow"
       }
     }
   }

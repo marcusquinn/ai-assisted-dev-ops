@@ -29,6 +29,7 @@ mcp:
 - **Purpose**: Cross-browser testing and automation (fastest browser engine) — engine for dev-browser, agent-browser, and Stagehand
 - **Install**: `npm install playwright && npx playwright install` (lib + browsers) | `npx @playwright/mcp@latest` (MCP server)
 - **Setup**: `./setup.sh --interactive` → "Setup browser automation tools"
+- **OpenCode activation**: Invoke `@playwright`; it connects the disabled MCP on demand through the registry-allowlisted `aidevops_mcp` tool
 - **MCP config**: `{ "playwright": { "command": "npx", "args": ["@playwright/mcp@latest"] } }`
 - **Browsers**: chromium, firefox, webkit + custom (Brave, Edge, Chrome via `executablePath`); Browser QA defaults to Brave when installed and falls back to bundled Chromium
 - **Headless**: Yes (default) | **Proxy**: HTTP/SOCKS5 | **Session**: `storageState` / `userDataDir`
@@ -40,6 +41,10 @@ mcp:
 - **Subagents**: `playwright-emulation.md` (device/viewport), `playwright-cli.md` (CLI agent)
 
 <!-- AI-CONTEXT-END -->
+
+## OpenCode Activation
+
+aidevops keeps Playwright disconnected and its tool schema hidden globally. Use `@playwright` for isolated browser work; the bounded agent connects Playwright before its first operation and disconnects after completion. The activation tool accepts only MCP names declared by the plugin registry.
 
 ## Custom Browser Engines
 
