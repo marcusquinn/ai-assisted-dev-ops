@@ -13,6 +13,9 @@ GH_PR_HEAD_REF=""
 GH_PR_HEAD_OID=""
 GH_PR_HEAD_REPO=""
 GH_RELEASE_STATUS="not-requested"
+GH_RELEASE_TAG_MODE=""
+GH_RELEASE_TAG_COMMIT="1111111111111111111111111111111111111111"
+GH_RELEASE_TAG_OBJECT="2222222222222222222222222222222222222222"
 TESTS_RUN=0
 TESTS_FAILED=0
 
@@ -57,6 +60,37 @@ gh() {
 	local command="${1:-}"
 	local subcommand="${2:-}"
 	local args="$*"
+	if [[ "$command" == "api" && -n "$GH_RELEASE_TAG_MODE" ]]; then
+		case "$subcommand" in
+		"repos/example/repo/git/ref/tags/v1.2.3")
+			if [[ "$GH_RELEASE_TAG_MODE" == "lightweight" ]]; then
+				jq -cn --arg sha "$GH_RELEASE_TAG_COMMIT" \
+					'{ref:"refs/tags/v1.2.3",object:{type:"commit",sha:$sha}}'
+			else
+				jq -cn --arg sha "$GH_RELEASE_TAG_OBJECT" \
+					'{ref:"refs/tags/v1.2.3",object:{type:"tag",sha:$sha}}'
+			fi
+			return 0
+			;;
+		"repos/example/repo/git/tags/${GH_RELEASE_TAG_OBJECT}")
+			case "$GH_RELEASE_TAG_MODE" in
+			annotated) jq -cn --arg sha "$GH_RELEASE_TAG_COMMIT" '{object:{type:"commit",sha:$sha}}' ;;
+			non-commit) jq -cn --arg sha "$GH_RELEASE_TAG_COMMIT" '{object:{type:"tree",sha:$sha}}' ;;
+			malformed) printf '%s\n' '{"object":true}' ;;
+			esac
+			return 0
+			;;
+		"repos/example/repo/releases/tags/v1.2.3")
+			printf '%s\n' '{"tag_name":"v1.2.3","draft":false}'
+			return 0
+			;;
+		"repos/example/repo/actions/runs?event=release&status=success&per_page=100")
+			jq -cn --arg sha "$GH_RELEASE_TAG_COMMIT" \
+				'{workflow_runs:[{event:"release",status:"completed",conclusion:"success",head_branch:"v1.2.3",head_sha:$sha}]}'
+			return 0
+			;;
+		esac
+	fi
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
 		if [[ "$args" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
 			jq -cn --arg head_ref "$GH_PR_HEAD_REF" --arg head_oid "$GH_PR_HEAD_OID" \
@@ -666,6 +700,34 @@ test_refresh_canonical_reports_pending_without_mutation() {
 	return 0
 }
 
+test_release_tag_commit_resolution() {
+	setup_subject
+	local stderr_file="${TEST_ROOT}/tag-resolution.stderr"
+	local resolved_commit=""
+	local rc=0
+
+	GH_RELEASE_TAG_MODE="annotated"
+	resolved_commit=$(_full_loop_resolve_remote_release_tag_commit "example/repo" "v1.2.3" 2>"$stderr_file") || rc=1
+	[[ "$resolved_commit" == "$GH_RELEASE_TAG_COMMIT" && ! -s "$stderr_file" ]] || rc=1
+	_full_loop_verify_published_release "example/repo" "v1.2.3" "$GH_RELEASE_TAG_COMMIT" 2>"$stderr_file" || rc=1
+	[[ ! -s "$stderr_file" ]] || rc=1
+
+	GH_RELEASE_TAG_MODE="lightweight"
+	resolved_commit=$(_full_loop_resolve_remote_release_tag_commit "example/repo" "v1.2.3" 2>"$stderr_file") || rc=1
+	[[ "$resolved_commit" == "$GH_RELEASE_TAG_COMMIT" && ! -s "$stderr_file" ]] || rc=1
+
+	GH_RELEASE_TAG_MODE="non-commit"
+	if _full_loop_resolve_remote_release_tag_commit "example/repo" "v1.2.3" 2>"$stderr_file"; then rc=1; fi
+	[[ ! -s "$stderr_file" ]] || rc=1
+
+	GH_RELEASE_TAG_MODE="malformed"
+	if _full_loop_resolve_remote_release_tag_commit "example/repo" "v1.2.3" 2>"$stderr_file"; then rc=1; fi
+	[[ ! -s "$stderr_file" ]] || rc=1
+
+	print_result "annotated and lightweight release tags resolve while invalid tag targets fail closed" "$rc"
+	return 0
+}
+
 main() {
 	resolve_fixture_git
 	setup_subject
@@ -683,6 +745,7 @@ main() {
 	test_cleanup_plan_rejects_unrelated_same_content_branch
 	test_cleanup_plan_rejects_ambiguous_alias_repository
 	test_worktree_metadata_match_rejects_missing_record
+	test_release_tag_commit_resolution
 	# This fixture replaces the canonical resolver, so keep it last.
 	test_cmd_merge_persists_cleanup_without_canonical_path
 	printf '\n%d/%d tests passed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN"

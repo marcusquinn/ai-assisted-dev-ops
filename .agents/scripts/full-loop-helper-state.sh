@@ -2019,7 +2019,8 @@ _full_loop_resolve_remote_release_tag_commit() {
 	[[ "$object_sha" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
 	if [[ "$object_type" == "tag" ]]; then
 		tag_json=$(gh api "repos/${repo}/git/tags/${object_sha}" 2>/dev/null) || return 1
-		object_sha=$(jq -er '.object.type == "commit" | .object.sha' <<<"$tag_json") || return 1
+		object_sha=$(jq -er 'select((.object | type) == "object") | select(.object.type == "commit") | .object.sha' \
+			<<<"$tag_json") || return 1
 	fi
 	[[ "$object_sha" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
 	printf '%s\n' "$object_sha"
