@@ -86,6 +86,10 @@ content-calendar-helper.sh export --format [json|csv]
 
 **Search intent mapping**:
 
+Use these four labels for format and CTA selection, not as the complete audience
+model. Preserve the user job, desired outcome, constraints, query provenance, and
+trend state from `seo/conversational-search-intent.md` on the topic brief.
+
 | Intent | Format | CTA |
 |--------|--------|-----|
 | Informational | How-to, guide, explainer | Newsletter, related post |
@@ -112,11 +116,17 @@ content-calendar-helper.sh export --format [json|csv]
 
 ## Seasonality
 
-| Quarter | Focus |
-|---------|-------|
-| Q4 (Oct-Dec) | Monetization content — reviews, comparisons, "best of" lists (highest buying intent) |
-| Q1 (Jan-Mar) | Educational content — getting started guides, tutorials (New Year motivation) |
-| Q2-Q3 (Apr-Sep) | Maintenance — test new formats, build Q4 backlog |
+Schedule from market-specific evidence, not universal quarter assumptions. Record
+the locale, comparison years/windows, peak lead time, commercial relevance, and
+confidence on each seasonal topic.
+
+| Trend state | Scheduling response |
+|-------------|---------------------|
+| Evergreen | Maintain a measured baseline and refresh when facts or SERPs change |
+| Seasonal | Publish/update before the evidenced recurring rise, not after its peak |
+| Rising | Validate acceleration across comparable windows, then shorten production lead time |
+| Event-driven | Confirm the event and standing; use PR/news workflows when journalist-facing |
+| Decaying or uncertain | Reduce priority or collect another window before committing production |
 
 ## Content Lifecycle
 
@@ -137,10 +147,10 @@ Advancing to `publish` auto-updates schedule entries and logs to cadence tracker
 
 | Tool | Purpose | Reference |
 |------|---------|-----------|
+| Conversational Search Intent | User jobs, query clusters, provenance, trend state | `seo/conversational-search-intent.md` |
 | Keyword Research | Topic discovery, volume data | `seo/keyword-research.md` |
 | GSC | Performance tracking, gap detection | `seo/google-search-console.md` |
 | Content Guidelines | Platform voice and format specs | `content/guidelines.md` |
 | Content Optimization | A/B testing, analytics loops | `content/optimization.md` |
 | Distribution Agents | Platform-specific publishing | `content/distribution-*.md` |
 | TODO.md | Task tracking | Root `TODO.md` with `#content` tag |
-

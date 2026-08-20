@@ -18,6 +18,8 @@ Find timely public stories the client can credibly comment on. Monitoring collec
 - Standing areas and proof assets.
 - Spokespeople.
 - Source feeds/search terms.
+- Audience question and search-intent clusters when relevant, sourced through
+  `seo/conversational-search-intent.md` with locale and recency window.
 - Client exclusions and “never pitch” preferences.
 
 ## Direct-source pipeline
@@ -28,6 +30,10 @@ Find timely public stories the client can credibly comment on. Monitoring collec
 4. Run `newsworthiness-check.md` and story-origin freshness checks.
 5. Triage into `pitch_ready`, `big_story_watch`, or `watch_context`.
 6. Run `reactive-comment.md` or `media-list-builder.md` only for pitch-ready items.
+
+Search interest and conversational query growth can prioritize monitoring, but
+neither establishes that a story is true, newsworthy, or within the client's
+standing. Keep query evidence separate from article evidence.
 
 ## Report sections
 

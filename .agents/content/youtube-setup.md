@@ -70,7 +70,7 @@ Display the comparison table. Highlight: views/video ratio, views/subscriber rat
 Tell the user setup is complete and suggest:
 
 - `/youtube research @competitor` — analyze competitor content strategy
-- `/youtube research trending` — find trending topics in their niche
+- `/youtube research trending` — identify and validate trend candidates
 - `content/distribution-youtube-pipeline.md` — set up automated monitoring
 - `/youtube script "topic"` — generate first script
 

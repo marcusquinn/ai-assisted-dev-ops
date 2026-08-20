@@ -56,6 +56,9 @@ Report: scores → Publishing Readiness (Y/N) → Priority Actions (Critical/Hig
 ## Integration
 
 - Feeds `content/seo-writer.md` (creation)
+- Treats `seo-content-analyzer.py intent` as a lexical four-class baseline; use
+  `seo/conversational-search-intent.md` for user jobs, query forms, constraints,
+  trend state, provenance, and multi-label interpretation
 - Uses `seo/dataforseo.md` (SERP data)
 - Works with `seo/eeat-score.md` (validation)
 - Informs `content/meta-creator.md` (meta)

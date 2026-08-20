@@ -1,9 +1,10 @@
 ---
 name: seo
-description: SEO optimization and analysis - keyword research, Search Console, DataForSEO, site crawling
+description: SEO and GEO analysis - search intent, keyword research, Search Console, and site crawling
 mode: subagent
 subagents:
   - keyword-research
+  - conversational-search-intent
   - google-search-console
   - gsc-sitemaps
   - dataforseo
@@ -55,7 +56,7 @@ subagents:
 
 **Subagents** (`seo/` and `services/analytics/`):
 
-- **Research**: `keyword-research` (SERP weakness, 17 types, KeywordScore 0-100) | `ranking-opportunities` (quick wins, striking distance, cannibalization) | `query-fanout-research` (thematic fan-out) | `keyword-mapper` (placement/density) | `domain-research`
+- **Research**: `conversational-search-intent` (user jobs, query forms, provenance, trends) | `keyword-research` (SERP weakness, 17 types, KeywordScore 0-100) | `ranking-opportunities` (quick wins, striking distance, cannibalization) | `query-fanout-research` (thematic fan-out) | `keyword-mapper` (placement/density) | `domain-research`
 - **Data providers**: `google-search-console` (queries, performance, index) | `dataforseo` (SERP, keywords, backlinks, on-page REST API) | `serper` (Google Search API) | `ahrefs` (backlinks, DR, REST API v3) | `semrush` (domain analytics, competitor research)
 - **Analytics**: `google-analytics` (GA4 reporting) | `analytics-tracking` (GA4 setup, events, UTM, attribution)
 - **Technical**: `site-crawler` (links, meta, redirects) | `screaming-frog` (SEO Spider CLI) | `contentking` (real-time monitoring) | `pagespeed`
@@ -70,9 +71,9 @@ subagents:
 
 ## SEO Workflow
 
-**Keyword research**: `/keyword-research "seed"` | `/autocomplete-research "question"` | `/keyword-research-extended "top keywords"`. Domain/Competitor/Gap modes: `seo/keyword-research.md`. GSC MCP for query performance, CTR, position, index coverage: `seo/google-search-console.md`.
+**Keyword and intent research**: Frame ambiguous, conversational, market, trend, or log-derived seeds with `seo/conversational-search-intent.md`, then run `/keyword-research "seed"` | `/autocomplete-research "question"` | `/keyword-research-extended "top keywords"`. Domain/Competitor/Gap modes: `seo/keyword-research.md`. GSC query evidence: `seo/google-search-console.md`.
 
-**AI search (GEO/SRO)**: baseline → fanout → GEO → SRO → hallucination defense → agent discovery. Focus: deterministic retrieval signals (clarity, structure, consistency, discoverability). Scorecard: `seo/ai-search-readiness.md`.
+**AI search (GEO/SRO)**: intent evidence → baseline → fanout → GEO → SRO → hallucination defense → agent discovery. Focus: deterministic retrieval signals (clarity, structure, consistency, discoverability). Scorecard: `seo/ai-search-readiness.md`.
 
 **SERP/backlinks/technical**: SERP via DataForSEO (comprehensive) or Serper (quick) | Backlinks via DataForSEO or Ahrefs | PageSpeed/CWV: `tools/browser/pagespeed.md` | On-page: DataForSEO | Crawling: `seo/site-crawler.md` | Real-time monitoring: `seo/contentking.md`.
 

@@ -35,7 +35,7 @@ Supervisor Pulse
     |
     +-- Worker 2: Topic Research
     |   Input:  competitor data from memory + keyword seeds
-    |   Output: content gaps, trending topics -> memory
+    |   Output: content gaps, trend candidates/validated trends -> memory
     |   Quota:  ~200 units (includes search)
     |
     +-- Worker 3: Script Generation
@@ -95,7 +95,7 @@ Add tasks with auto-dispatch tags so the pulse picks them up:
 
 ```markdown
 - [ ] yt-intel Scan competitor channels for new videos and outliers @runner #youtube #auto-dispatch ~30m
-- [ ] yt-research Analyze content gaps and trending topics from intel data @runner #youtube #auto-dispatch ~30m blocked-by:yt-intel
+- [ ] yt-research Analyze content gaps and validate trend candidates from intel data @runner #youtube #auto-dispatch ~30m blocked-by:yt-intel
 - [ ] yt-scripts Generate draft scripts for top 3 topic opportunities @runner #youtube #auto-dispatch ~30m blocked-by:yt-research
 - [ ] yt-optimize Generate titles, tags, descriptions for draft scripts @runner #youtube #auto-dispatch ~20m blocked-by:yt-scripts
 ```
@@ -137,16 +137,23 @@ Each worker receives these prompts via the supervisor:
 ```text
 1. Recall intel data: memory-helper.sh recall --namespace youtube "Intel scan"
 2. Recall my channel topics: memory-helper.sh recall --namespace youtube "My channel"
-3. Extract topic clusters from competitor videos (group by title keywords)
-4. Identify gaps: topics competitors cover that I don't
-5. Check for trending signals: topics multiple competitors covered recently
-6. For top 5 opportunities:
-   a. Run: youtube-helper.sh search "[topic]" video 10
-   b. Assess competition level
-   c. Suggest unique angle
-7. Store findings: memory-helper.sh store --namespace youtube-topics
-   "Opportunity [date]: [topic] - [demand signal], [competition], [suggested angle]"
-8. Report via mailbox with ranked opportunity list
+3. Read: seo/conversational-search-intent.md and classify source/evidence roles
+4. Extract user-job/topic clusters from competitor videos; label them supply
+5. Identify gaps: topics competitors cover that I don't
+6. Find trend candidates from recent publisher activity; label this supply
+7. For each candidate, collect an independent demand source: a supported Google
+   web-search estimate (`keyword-research-helper.sh research`) with provider,
+   locale, and date; a privacy-approved first-party YouTube Analytics export; or
+   an approved trend export with comparable windows
+8. Treat one estimated-volume snapshot as demand evidence, not trend evidence;
+   when demand or time-series evidence is unavailable, mark the candidate
+   `uncertain` and do not call it validated
+9. Run: youtube-helper.sh search "[topic]" video 10, then assess supply,
+   competition, demand evidence, trend state, business fit, and confidence
+10. Store only safe aggregates and source IDs: memory-helper.sh store
+    --namespace youtube-topics "Opportunity [date]: [topic] - [source IDs],
+    [state/role], [window/locale], [demand], [supply], [trend/confidence], [angle]"
+11. Report validated opportunities separately from uncertain candidates
 ```
 
 ### Worker 3: Script Generation
@@ -154,7 +161,8 @@ Each worker receives these prompts via the supervisor:
 ```text
 1. Recall opportunities: memory-helper.sh recall --namespace youtube-topics "Opportunity"
 2. Recall channel voice: memory-helper.sh recall --namespace youtube "Channel voice"
-3. Select top 3 opportunities by demand/competition ratio
+3. Select top 3 validated opportunities by evidence-weighted demand, supply gap,
+   and business fit; skip uncertain or unvalidated candidates
 4. For each opportunity:
    a. Get competitor transcript if available: youtube-helper.sh transcript VIDEO_ID
    b. Choose storytelling framework based on content type

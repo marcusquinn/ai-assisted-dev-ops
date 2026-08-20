@@ -19,11 +19,17 @@ tools:
 # Query Fan-Out Research
 
 - **Purpose**: expose hidden sub-query themes behind one user intent
-- **Inputs**: seed intent, market context, existing page set
+- **Inputs**: normalized intent packet, market context, existing page set, source IDs
 - **Outputs**: fan-out map, priority tiers, coverage matrix, remediation backlog
 - **Retrieval model**: broad discovery → domain deep-dive → third-party validation
 
 ## Workflow
+
+**0) Normalize the seed** — when the input is conversational, ambiguous,
+trend/news-led, or log-derived, use `conversational-search-intent.md` to preserve
+the raw query and identify the user job, outcome, constraints, provenance, and
+grounding hypothesis. If no observed evidence exists, label the seed as a
+hypothesis.
 
 **1) Build theme branches** — one core intent → 3-7 branches (selection criteria, trust, risk, alternatives, constraints). Each branch is a distinct retrieval objective.
 
@@ -56,12 +62,15 @@ Predict stages before content work: product-detail branches → stage 2; trust/r
 ## Guardrails
 
 - Optimize for thematic completeness, not maximal query count
+- Keep generated branches separate from observed demand until corroborated by
+  search metrics, first-party language, or other dated evidence
 - Avoid duplicate pages for near-identical branches
 - Keep branch language aligned with real user phrasing
 - Re-baseline when SERP intent or product positioning changes
 
 ## Related Subagents
 
+- `conversational-search-intent.md` — normalize intent and preserve provenance
 - `geo-strategy.md` — criteria-led optimization strategy
 - `sro-grounding.md` — snippet and selection tuning
 - `keyword-mapper.md` — keyword-to-section placement

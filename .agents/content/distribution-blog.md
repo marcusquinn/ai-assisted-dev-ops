@@ -37,17 +37,22 @@ model: standard
 ### Keyword Research
 
 ```bash
-keyword-research-helper.sh volume "<keyword>"
-keyword-research-helper.sh related "<keyword>"
-keyword-research-helper.sh difficulty "<keyword>"
+keyword-research-helper.sh research "<keyword>" \
+  --provider dataforseo --locale us-en
+keyword-research-helper.sh extended "<keyword>" \
+  --provider dataforseo --locale us-en
 ```
+
+Frame the user job, constraints, query provenance, and evidence role with
+`seo/conversational-search-intent.md`. Record provider, locale, and capture date;
+keyword metrics are estimates, not universal thresholds.
 
 | Factor | Target |
 |--------|--------|
-| Monthly volume | 500+ pillar, 100+ supporting |
-| Keyword difficulty | <40 new sites, <60 established |
+| Monthly volume | Market-relative opportunity with provider, locale, and capture date |
+| Keyword difficulty | Relative to site authority and inspected SERP; no universal cutoff |
 | Search intent | Informational or commercial investigation |
-| SERP features | Featured snippet opportunity = priority |
+| SERP features | Prioritize only when the retrieval opportunity and business fit align |
 
 **Content brief**: Include primary keyword, 3–5 secondary keywords, search intent, SERP-derived word count, competitor gaps, unique angle, and internal link targets.
 

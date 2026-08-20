@@ -25,6 +25,8 @@ tools:
 - **Output**: Validated idea + feature spec + design brief ready for development
 - **Tools**: Browser (store research), web search (market data), crawl4ai (review scraping)
 - **Applies to**: Mobile apps, browser extensions, desktop apps, web apps, SaaS
+- **Search demand**: `seo/conversational-search-intent.md` for user-job/query
+  evidence; keyword providers for estimated volume; trend data for direction
 
 <!-- AI-CONTEXT-END -->
 
@@ -50,11 +52,16 @@ tools:
 ### Market Research Process
 
 1. **Search relevant stores** — App Store, Play Store, Chrome Web Store, Firefox Add-ons, Product Hunt, AlternativeTo, Setapp, Mac App Store
-2. **Read 1-2 star reviews** — reveal unmet needs
-3. **Read 5-star reviews** — reveal what users value most
-4. **Check download counts and ratings** — validates market size
+2. **Read 1-2 star reviews** — collect candidate unmet needs
+3. **Read 5-star reviews** — collect candidate valued outcomes
+4. **Check download counts and ratings** — competitor-adoption and supply proxies;
+   do not equate them with total market size
 5. **Search social media** for complaints about the problem domain
-6. **Check Google Trends** for search volume
+6. **Frame search demand** — classify observed and proposed query language,
+   desired outcomes, and evidence provenance with
+   `seo/conversational-search-intent.md`
+7. **Validate demand** — use a keyword provider for estimated volume and dated
+   trend data for relative direction and seasonality
 
 ### Competitive Analysis Template
 
@@ -70,17 +77,24 @@ tools:
 | Last updated | Active development signal |
 | Growth channels | How they acquire users |
 
-### Competitor Onboarding as Validation
+### Competitor Onboarding as Benchmark Evidence
 
-If a competitor makes $10k+/month, their onboarding is battle-tested. Study it:
+If reliable evidence shows competitor adoption or revenue, study its onboarding
+as a supply/benchmark signal. Public screens do not prove why the flow performs
+or that it fits your audience.
 
-1. **Download top 3-5 competitors** making the most money
+1. **Select 3-5 competitors** with the strongest verified adoption or revenue
+   evidence available
 2. **Screenshot every onboarding screen** — first launch to paywall
 3. **Map the structure**: Questions asked, value promised, paywall placement
-4. **Identify the pattern**: Successful products converge through A/B testing
-5. **Adapt structure, not content**: Use their proven architecture with your branding
+4. **Identify hypotheses**: Record repeated structures without claiming unseen
+   A/B-test evidence
+5. **Test structure, not copied content**: Validate candidate patterns with your
+   users, product, and brand
 
-Same applies to pricing: if competitors charge $4.99/month and succeed, that price is validated.
+Competitor pricing proves an offer exists, not willingness-to-pay or your optimal
+price. Validate pricing with customer research, conversion data, or a bounded
+experiment.
 
 ### Feature Scoping
 
@@ -106,6 +120,8 @@ Same applies to pricing: if competitors charge $4.99/month and succeed, that pri
 7. **Design brief**: Colours, typography, mood, references
 8. **Growth strategy**: Discovery channels (see `product/growth.md`)
 9. **Success metrics**: Downloads, retention, revenue targets
+10. **Validation evidence**: Attached intent ledger/source IDs with supported
+    claims, state/role, privacy status, measured window, and evidence confidence
 
 ## Design Research
 
@@ -133,7 +149,11 @@ Use crawl4ai or browser tools. Focus on: pain points, feature requests, praise p
 
 ### Trend Analysis
 
-Google Trends (search interest), App Annie/Sensor Tower (downloads), Reddit/Twitter (sentiment), YouTube "best X app" videos (reviewer priorities).
+Record locale and comparable windows. Use trend data for relative interest,
+seasonality, acceleration, and decay—not absolute search volume. Combine it with
+keyword estimates, first-party query evidence, store/download signals,
+community sentiment, and reviewer priorities. Classify query evidence through
+`seo/conversational-search-intent.md` before turning it into product claims.
 
 ## Related
 

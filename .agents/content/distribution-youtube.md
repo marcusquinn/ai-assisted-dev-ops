@@ -42,8 +42,9 @@ Subagent docs: `content/distribution-youtube/`. Helpers: `scripts/youtube-helper
 |--------|----------|------------|
 | YouTube Data API v3 | Channel metadata, video stats, playlists | 10,000 units/day free |
 | yt-dlp | Transcripts, full metadata, downloads | Unlimited (local) |
-| DataForSEO | YouTube SERP rankings, keyword volume | Per-request pricing |
-| Serper | Google Trends, web search | Per-request pricing |
+| DataForSEO | Google web-search keyword estimates and related terms | Per-request pricing |
+| Serper | Web-search context and autocomplete | Per-request pricing |
+| Approved trend source/export | Relative interest time series | Source-dependent |
 | Outscraper | YouTube comments, sentiment | Per-request pricing |
 
 Most research needs no browser automation — API + yt-dlp avoids context-filling screenshots.
@@ -70,6 +71,10 @@ youtube-helper.sh search "topic keyword" video 20
 youtube-helper.sh quota
 ```
 
+`trending` returns candidates from the current platform view; it does not prove a
+durable audience trend. Validate with `seo/conversational-search-intent.md` and
+the dated evidence workflow in `distribution-youtube-topic-research.md`.
+
 ## Quota Management
 
 Daily limit: 10,000 units. **Search costs 100 units** — prefer `playlistItems` (1 unit/50 videos). Transcripts via yt-dlp cost 0 units.
@@ -87,7 +92,7 @@ Daily limit: 10,000 units. **Search costs 100 units** — prefer `playlistItems`
 | Namespace | Content |
 |-----------|---------|
 | `youtube` | Channel profiles, competitor data, niche definition |
-| `youtube-topics` | Research findings, content gaps, trending topics |
+| `youtube-topics` | Research findings, content gaps, trend candidates, validated trends |
 | `youtube-scripts` | Generated scripts, outlines, hooks |
 | `youtube-patterns` | What titles/hooks/topics performed well |
 
@@ -109,6 +114,7 @@ memory-helper.sh recall --namespace youtube "competitor analysis"
 
 | Agent | When to Use |
 |-------|-------------|
+| `seo/conversational-search-intent.md` | User jobs, query provenance, and trend evidence |
 | `seo.md` | Deep keyword research, SERP analysis, backlink data |
 | `content.md` | General content writing, video production (Remotion, HeyGen), cross-platform promotion |
 | `research.md` | Broad web research beyond YouTube |

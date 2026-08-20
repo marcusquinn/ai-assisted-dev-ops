@@ -46,6 +46,21 @@ tools:
 
 **Common patterns**: top queries (`dimensions: ["query"]`, `orderBy: impressions`), page performance (`dimensions: ["page"]`, `orderBy: clicks`), CTR opportunities (`impressions > 100`, `ctr < 0.05`), device/geo breakdown.
 
+### Conversational Query Candidates
+
+- Preserve raw query/page rows, then classify a derived copy with
+  `conversational-search-intent.md`; use segmented RE2 discovery patterns from
+  `seo-regex.md` rather than one catch-all expression.
+- Keep raw rows only in an authorized private evidence location and assign a
+  privacy status. Sanitize or aggregate query samples before reports, exports,
+  comments, or public artifacts; never expose sensitive query text or paths.
+- Prompt-shaped wording is a candidate signal, not proof of AI Mode or another
+  answer-engine surface unless the source explicitly supplies that dimension.
+- GSC query rows are not conversation sessions. Do not invent antecedents for
+  refinements such as “more”, “those”, or “yes, pricing”.
+- Keep query, page, date range, country/device where relevant, clicks,
+  impressions, CTR, and position attached to each evidence cluster.
+
 ## MCP Configuration
 
 > `@anthropic/google-search-console-mcp` is internal/unreleased. If unavailable via npm, use curl fallback or check with aidevops maintainer.

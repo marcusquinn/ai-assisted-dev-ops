@@ -1,5 +1,5 @@
 ---
-description: Research YouTube competitors, trending topics, and content opportunities
+description: Research YouTube competitors, trend candidates, and content opportunities
 agent: Build+
 mode: subagent
 ---
@@ -7,7 +7,8 @@ mode: subagent
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-Analyze YouTube competitors, find trending topics, and identify content gaps in your niche.
+Analyze YouTube competitors, validate trend candidates, and identify content gaps
+in your niche.
 
 Target: $ARGUMENTS
 
@@ -18,7 +19,7 @@ Target: $ARGUMENTS
 | Argument | Mode |
 |----------|------|
 | `@handle` | Competitor analysis |
-| `trending` / `trends` | Trending topics in niche |
+| `trending` / `trends` | Trend candidates and validation in niche |
 | `gaps` / `opportunities` | Content gap analysis |
 | `video VIDEO_ID` | Analyze specific video |
 | `--all` | Full research cycle (all competitors) |
@@ -49,20 +50,29 @@ Target: $ARGUMENTS
 ```bash
 ~/.aidevops/agents/scripts/memory-helper.sh store \
   --type WORKING_SOLUTION --namespace youtube-topics \
-  "Competitor @handle outliers: [topic1], [topic2], [topic3]. Pattern: [insight]"
+  "Competitor @handle outliers: [topic1], [topic2], [topic3]. \
+   Sources/window: [safe IDs/date]. Evidence: [observed/supply]. \
+   Confidence: [value]. Pattern hypothesis: [insight]"
 ```
 
-#### Mode B: Trending Topics (`trending`)
+#### Mode B: Trend Research (`trending`)
 
-1. Search trending videos: `youtube-helper.sh trending "niche topic" 20`
-2. **Cluster by topic:** group by keywords/themes, identify rising topics, note view counts.
-3. **Cross-reference with competitors:** which trending topics haven't they covered? Which are oversaturated?
-4. Store opportunities:
+1. Read `seo/conversational-search-intent.md` and
+   `content/distribution-youtube-topic-research.md`.
+2. Collect trend candidates: `youtube-helper.sh trending "niche topic" 20`.
+   Treat the result as current platform supply/engagement, not proven demand.
+3. Cluster by validated user job and topic; retain capture date, locale, source
+   class, evidence role, and source IDs.
+4. Compare equivalent dated windows and corroborate with an independent demand
+   signal before assigning `rising`, `seasonal`, `event-driven`, or `decaying`.
+5. Cross-reference supply: which validated topics are uncovered or saturated?
+6. Store opportunities:
 
 ```bash
 ~/.aidevops/agents/scripts/memory-helper.sh store \
   --type WORKING_SOLUTION --namespace youtube-topics \
-  "Trending opportunity: [topic]. Gap: [competitors haven't covered]. Volume: [estimate]"
+  "Trend candidate: [topic]. State/confidence: [value]. Window: [dates]. \
+   Evidence: [source IDs]. Supply gap: [description]."
 ```
 
 #### Mode C: Content Gap Analysis (`gaps`)
@@ -70,8 +80,8 @@ Target: $ARGUMENTS
 1. Compare your videos vs competitors: topics covered/not covered, unique angles.
 2. **Keyword clustering:** extract common keywords from competitor titles, group into clusters, rank by frequency and avg views.
 3. **Opportunity scoring:**
-   - High views + low competition = high opportunity
-   - High views + high competition = proven topic, need unique angle
+   - High engagement + low competing supply = candidate; validate query demand
+   - High engagement + high supply = observed performance pattern; validate demand and find a unique angle
    - Low views + low competition = risky, validate demand first
 
 #### Mode D: Video Analysis (`video VIDEO_ID`)
@@ -94,6 +104,10 @@ YouTube Research: {target}
 Summary:
 - {key insight 1-3}
 
+Evidence status: {candidate/validated/uncertain}
+Sources: {safe source IDs + evidence state/role}
+Window/locale/confidence: {values or not available}
+
 Outlier Videos (3x+ avg views):
 1. {title} - {views} views ({ratio}x avg)
 
@@ -105,12 +119,14 @@ Content Opportunities:
 1. {opportunity} - {reasoning}
 
 Next Steps:
-1. /youtube script "{topic}"
+1. {collect missing evidence, or /youtube script "{topic}" only when validated}
 2. /youtube research @handle
 3. /youtube research video VIDEO_ID
 ```
 
-Offer follow-up: generate script for top opportunity, research another competitor, set up monitoring (`pipeline.md`), or export findings.
+Offer follow-up: generate a script only for a validated opportunity, collect
+missing evidence for a candidate, research another competitor, set up monitoring
+(`pipeline.md`), or export findings.
 
 ## Example: Competitor Analysis
 
@@ -130,13 +146,14 @@ Hook: contrarian statement -> immediate value promise
 
 Opportunities:
 1. "100+ Python Concepts you Need to Know" - proven format, untapped niche
-2. "I built the same AI app 10 times" - trending topic + proven format
+2. "I built the same AI app 10 times" - candidate topic requiring trend validation + proven format
 
 Next: /youtube script "100+ Python Concepts you Need to Know"
 ```
 
 ## Related
 
+- `seo/conversational-search-intent.md` - Query intent and trend evidence
 - `content/distribution-youtube.md` - Main YouTube agent
 - `content/distribution-youtube-channel-intel.md` - Deep competitor profiling
 - `content/distribution-youtube-topic-research.md` - Advanced topic research

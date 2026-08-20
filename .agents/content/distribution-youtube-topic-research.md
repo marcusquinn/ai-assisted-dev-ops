@@ -18,7 +18,8 @@ tools:
 
 # YouTube Topic Research
 
-Find video topics with proven demand but low competition. Combines YouTube search data, competitor analysis, keyword research, and trend detection.
+Find video topics with validated demand and a viable supply gap. Combine YouTube
+search data, competitor analysis, keyword research, and dated trend evidence.
 
 ## Data Sources
 
@@ -27,9 +28,18 @@ Find video topics with proven demand but low competition. Combines YouTube searc
 | YouTube Data API | Search results, video counts per topic | `youtube-helper.sh search` |
 | Competitor videos | What topics are already covered | `youtube-helper.sh videos` |
 | yt-dlp transcripts | Deep topic extraction from video content | `youtube-helper.sh transcript` |
-| DataForSEO | YouTube SERP data, keyword volume, competition | `keyword-research-helper.sh` |
-| Serper | Google Trends signals, web search context | `seo/serper.md` |
+| DataForSEO | Google web-search keyword estimates and related language | `keyword-research-helper.sh research` |
+| Serper | Web-search context and autocomplete | `seo/serper.md` |
+| Approved trend source/export | Relative interest time series with locale and window | User-provided export or verified browser source |
 | Memory | Previous research, patterns, preferences | `memory-helper.sh` |
+
+## Intent and Evidence Framing
+
+Before clustering keywords or declaring a trend, use
+`seo/conversational-search-intent.md` to identify the user job, desired outcome,
+query form, constraints, provenance, and trend state. Keep YouTube/API evidence,
+autocomplete suggestions, competitor titles, and model-generated ideas as
+separate source classes until corroborated.
 
 ## Workflow: Content Gap Analysis
 
@@ -42,10 +52,12 @@ youtube-helper.sh videos @competitor 200 json | node -e "
 process.stdin.on('data', d => {
     JSON.parse(d).forEach(v => console.log(v.snippet?.title));
 });
-" > /tmp/competitor_titles.txt
+" > "${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}/competitor_titles.txt"
 ```
 
-**Prompt**: "Group these [N] video titles from [competitor] into topic clusters. For each: topic name, video count, view trend (up/down)."
+**Prompt**: "Group these [N] video titles from [competitor] into topic clusters.
+For each: topic name and coverage count. If dated view metrics are also supplied,
+report engagement/outlier evidence separately; do not infer a trend from titles."
 
 ### Step 2: Map Your Coverage
 
@@ -54,12 +66,15 @@ youtube-helper.sh videos @yourchannel 200 json | node -e "
 process.stdin.on('data', d => {
     JSON.parse(d).forEach(v => console.log(v.snippet?.title));
 });
-" > /tmp/my_titles.txt
+" > "${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}/my_titles.txt"
 ```
 
 ### Step 3: Identify Gaps
 
-Gaps are topics where: (1) multiple competitors cover (proven demand), (2) you have zero coverage, (3) at least one competitor video is an outlier (3x+ their median views).
+Gaps are topics where: (1) multiple competitors provide a publisher-supply
+signal, (2) you have zero coverage, and (3) at least one competitor video is an
+outlier (3x+ their median views). Validate audience demand separately before
+prioritizing production.
 
 **Prompt**: "Compare my topic clusters vs competitors. Identify topics where 2+ competitors have videos, I have zero coverage, and at least one competitor video is an outlier (3x+ median views)."
 
@@ -73,26 +88,38 @@ memory-helper.sh store --type WORKING_SOLUTION --namespace youtube-topics \
 
 ## Workflow: Trend Detection
 
-Find topics gaining momentum before saturation.
+Find topics gaining momentum before saturation. Require comparable dated windows
+and preferably two independent time-aware signals. A current result snapshot or
+recent publisher activity alone cannot establish rising audience demand.
 
-### Method 1: YouTube Search Volume Signals
+### Method 1: YouTube Result-Mix Captures
 
 ```bash
-# Recent publish dates = trending; old results = saturated
+# Capture result mix for comparison with an earlier/later equivalent window
 youtube-helper.sh search "your niche topic 2026" video 20
 ```
 
-### Method 2: DataForSEO YouTube SERP
+Record capture date, locale, query, result freshness, view velocity where
+available, and changes from the comparison capture. Recent results can indicate
+new supply without proving increased demand.
+
+### Method 2: Supported Web-Search Demand Estimate
 
 ```bash
-keyword-research-helper.sh volume "topic keyword" --engine youtube
+keyword-research-helper.sh research "topic keyword" \
+  --provider dataforseo --locale us-en
 ```
 
-Returns: video rankings, estimated search volume, competition level, related keywords via `serp/youtube/organic/live` endpoint.
+Returns related Google web-search keywords with estimated volume and difficulty.
+Treat this as an independent web-demand proxy, not YouTube-native volume or a
+trend. Record provider, locale, and capture date; establish direction only from
+equivalent dated captures or a comparable trend time series.
 
 ### Method 3: Competitor Upload Velocity
 
-Multiple competitors suddenly covering a topic = trending signal. Look for the same topic across channels within a 2-week window.
+Multiple competitors suddenly covering a topic is a publisher-supply signal.
+Look for the same topic across channels within a defined window, then corroborate
+it with search interest, query data, or audience engagement.
 
 ```bash
 for ch in @comp1 @comp2 @comp3; do
@@ -102,13 +129,24 @@ for ch in @comp1 @comp2 @comp3; do
 done
 ```
 
-### Method 4: Google Trends via Serper
+### Method 4: Verified Trend Time Series
 
-**Prompt**: "Search Google Trends for '[topic]' — is interest rising, stable, or declining over the past 12 months?" (requires `seo/serper.md` configuration)
+**Prompt**: "Compare relative search interest for '[topic]' across the selected
+locale and equivalent windows. Classify it as evergreen, seasonal, rising,
+event-driven, decaying, or uncertain; report the baseline, dates, and caveats."
+(requires a user-provided export or a verified browser-accessible trend source)
+
+Do not call relative trend interest absolute search volume. Record the trend
+state, comparison window, locale, supporting signals, and confidence in the
+topic opportunity.
 
 ## Workflow: Keyword Clustering
 
 Group related keywords into video topics. One video = one keyword cluster.
+
+Start from the validated user job and outcome, then cluster wording variants that
+share a retrieval objective. Do not merge distinct audience constraints merely
+because they contain the same high-volume term.
 
 ### Step 1: Seed Keywords
 
@@ -137,17 +175,25 @@ process.stdin.on('data', d => {
 
 ### Step 3: Cluster with AI
 
-**Prompt**: "Group these [N] keywords into clusters (one cluster = one video). For each: (1) primary keyword (highest volume), (2) supporting keywords (2-5), (3) suggested video title, (4) estimated competition (low/medium/high based on existing video count)."
+**Prompt**: "Group these [N] keywords into clusters (one cluster = one video).
+For each: (1) candidate primary keyword by intent fit, with volume unknown until
+validated, (2) supporting keywords (2-5), (3) suggested video title, and (4)
+estimated supply/competition based on existing video count."
 
 ### Step 4: Validate with Search Volume
 
 ```bash
-keyword-research-helper.sh volume "primary keyword" --engine youtube
+keyword-research-helper.sh research "primary keyword" \
+  --provider dataforseo --locale us-en
 ```
+
+This supported route estimates Google web-search demand. For YouTube-native
+demand, use an authorized first-party YouTube Analytics export; otherwise label
+platform demand `uncertain`.
 
 ## Workflow: Angle Generation
 
-Find the unique take that hasn't been done on a proven topic.
+Find the unique take that has not been done on a validated topic.
 
 ### Step 1: Analyze Existing Coverage
 
@@ -184,9 +230,13 @@ youtube-helper.sh transcript VIDEO_ID_3
 ```markdown
 ## Topic Opportunity: [Topic Name]
 
-**Demand signal**: [search volume, competitor coverage, trend direction]
+**Intent cluster**: [user job + desired outcome + constraints]
+**Demand evidence**: [search volume, first-party evidence, trend direction]
+**Supply signal**: [competitor coverage and publication velocity]
 **Competition**: [low/medium/high] — [X] existing videos, [Y] in last 30 days
 **Gap type**: [uncovered / underserved / new angle needed]
+**Trend evidence**: [state, locale, captured/comparison windows, confidence]
+**Source IDs**: [source class + evidence state/role]
 
 ### Existing Coverage
 - @competitor1: "[title]" — [views] views, [angle used]
@@ -208,8 +258,10 @@ youtube-helper.sh transcript VIDEO_ID_3
 ```bash
 # Store a validated topic opportunity
 memory-helper.sh store --type WORKING_SOLUTION --namespace youtube-topics \
-  "Topic: [name]. Demand: [signal]. Competition: [level]. \
-   Best angle: [type] — [description]. Keywords: [list]."
+  "Topic: [name]. Sources: [safe IDs]. Evidence: [state/role]. \
+   Window/locale: [value]. Demand: [signal]. Supply: [signal]. \
+   Trend/confidence: [value]. Privacy/export: [status]. \
+   Best angle: [type] — [description]."
 
 # Recall previous research
 memory-helper.sh recall --namespace youtube-topics "content gap"
@@ -221,9 +273,10 @@ memory-helper.sh store --type FAILED_APPROACH --namespace youtube-topics \
 
 ## Related
 
+- `seo/conversational-search-intent.md` — Query intent and trend evidence framing
 - `channel-intel.md` — Competitor data feeds into gap analysis
 - `script-writer.md` — Turn validated topics into scripts
 - `optimizer.md` — Optimize titles/tags for chosen keywords
 - `seo/keyword-research.md` — Deep keyword volume and competition data
-- `seo/dataforseo.md` — YouTube SERP API for ranking data
-- `seo/serper.md` — Google Trends and web search signals
+- `seo/dataforseo.md` — Provider reference; use only implemented helper routes
+- `seo/serper.md` — Web-search context and autocomplete

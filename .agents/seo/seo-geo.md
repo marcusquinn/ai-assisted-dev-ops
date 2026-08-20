@@ -13,10 +13,12 @@ Target: $ARGUMENTS
 
 ## Process
 
-1. Read `~/.aidevops/agents/seo/geo-strategy.md`
-2. Build criteria coverage matrix for target intents/pages
-3. Identify strong/partial/missing criteria with evidence references
-4. Produce prioritized implementation plan for retrieval-first improvements
+1. Read `~/.aidevops/agents/seo/conversational-search-intent.md` and establish
+   the intent ledger, provenance, constraints, and grounding hypotheses
+2. Read `~/.aidevops/agents/seo/geo-strategy.md`
+3. Build criteria coverage matrix for target intents/pages
+4. Identify strong/partial/missing criteria with evidence references
+5. Produce prioritized implementation plan for retrieval-first improvements
 
 ## Usage
 
@@ -30,6 +32,7 @@ Target: $ARGUMENTS
 
 ## Related
 
+- `seo/conversational-search-intent.md`
 - `seo/geo-strategy.md`
 - `commands/seo-sro.md`
 - `commands/seo-fanout.md`

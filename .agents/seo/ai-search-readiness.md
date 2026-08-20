@@ -31,7 +31,7 @@ Run a complete, high-signal workflow to improve AI search citations and answer q
 
 | Phase | Name | Action |
 |-------|------|--------|
-| 0 | Grounding eligibility gate | Classify queries by grounding likelihood; validate crawler/bot accessibility via `site:yourdomain.com [category]` checks |
+| 0 | Intent evidence and grounding gate | `conversational-search-intent.md` → normalize user jobs, provenance, constraints, and grounding likelihood; validate crawler/bot accessibility via `site:yourdomain.com [category]` checks |
 | 1 | Query decomposition | `query-fanout-research.md` → thematic branches and sub-query map per intent |
 | 2 | Criteria alignment | `geo-strategy.md` → criteria matrix and page-level strong/partial/missing coverage map |
 | 3 | Snippet survivability | `sro-grounding.md` → top-of-page and sentence-level changes that improve selection likelihood |

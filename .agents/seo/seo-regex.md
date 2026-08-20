@@ -21,35 +21,49 @@ tools:
 - **Purpose**: Regex patterns for GSC query filtering, URL analysis, and SEO data processing
 - **GSC syntax**: RE2 — no lookaheads/lookbehinds/backreferences. Apply via Performance > Filter > Query/Page > Matches regex.
 - **Helpers**: `scripts/seo-analysis-helper.sh`, `scripts/keyword-research-helper.sh`
+- **Interpretation**: `seo/conversational-search-intent.md`; regex finds
+  candidates but cannot prove intent or AI-surface attribution
 
 <!-- AI-CONTEXT-END -->
 
 ## GSC Query Filters
 
+Copy one expression at a time; comments label separate filters. Review matched
+queries only in an authorized private workspace and assign a privacy status.
+Sanitize or aggregate samples before reports/exports. Starter words are
+heuristic candidates, not surface attribution or complete intent labels.
+
 ```regex
 # --- Brand vs Non-Brand ---
 # Brand queries (replace with your brand)
-(brand|brandname|brand\.com)
-# Non-brand: GSC lacks lookaheads — use "Does not match" filter instead
-^(?!.*(brand|brandname)).*$
+(?i)\b(brand|brandname|brand\.com)\b
+# Non-brand: apply the same pattern with GSC's "Does not match regex" operator
 
 # --- Question Queries ---
 # All questions
-^(what|how|why|when|where|who|which|can|does|is|are|do|should|will|would)\b
+(?i)^(what|how|why|when|where|who|which|can|could|do|does|did|is|are|should|would|will)\b.*
 # How-to
-^how (to|do|does|can|should)
+(?i)^how (to|do|does|can|could|should)\b.*
 # Comparisons
-(vs|versus|compared to|or|better than|difference between)
+(?i)\b(vs|versus|compared (with|to)|better than|difference between)\b
+
+# --- Conversational Candidate Segments ---
+# Task/decision directives
+(?i)^(please\s+)?(act as|pretend|compare|recommend|suggest|explain|find|show|tell|give|list|plan|make|organize|estimate|optimi[sz]e|summari[sz]e|write|draft|generate|rewrite|translate|help)\b.*
+# Context-dependent refinements; antecedent remains unknown in GSC
+(?i)^((what|how) about|more|others?|another|next|continue|go on|show (me )?(more|map)|any other|only|instead|again|shorter|longer|fix it|compare (them|those)|why (that|this)|where else|anything else|is that all|sources?)\b.*
+# Dialogue/control candidates — analyse separately from SEO opportunities
+(?i)^(hi|hello|hey|good (morning|afternoon|evening)|how are you|thanks?|thank you|cheers|sorry|yes|yep|yeah|no|nope|ok|okay|perfect|great|stop|cancel|restart|try again|done|bye)[.!?]*$
 
 # --- Intent Classification ---
 # Informational
-^(what|how|why|guide|tutorial|learn|example|definition)
+(?i)^(what|how|why|guide|tutorial|learn|example|definition)\b
 # Transactional
-(buy|price|cost|cheap|deal|discount|coupon|order|purchase|shop)
+(?i)\b(buy|price|pricing|cost|cheap|deal|discount|coupon|order|purchase|shop)\b
 # Navigational
-(login|sign in|dashboard|account|support|contact)
+(?i)\b(login|sign in|dashboard|account|support|contact|official site)\b
 # Commercial investigation
-(best|top|review|comparison|alternative|vs)
+(?i)\b(best|top|review|reviews|compare|comparison|alternative|alternatives|vs|versus)\b
 
 # --- Long-Tail ---
 # 4+ words
@@ -102,6 +116,7 @@ keyword-research-helper.sh research "devops tools" --filter "^(best|top)"
 
 ## Related
 
+- `seo/conversational-search-intent.md` - Multi-axis intent interpretation
 - `seo/google-search-console.md` - GSC API integration
 - `seo/keyword-research.md` - Keyword research workflows
 - `seo/ranking-opportunities.md` - Ranking opportunity analysis

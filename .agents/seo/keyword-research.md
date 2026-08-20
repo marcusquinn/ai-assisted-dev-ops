@@ -13,6 +13,8 @@ mode: subagent
 - **Providers**: DataForSEO (primary), Serper (alternative), Ahrefs (optional DR/UR)
 - **Webmaster Tools**: Google Search Console, Bing Webmaster Tools (owned sites)
 - **Config**: `~/.config/aidevops/keyword-research.json`
+- **Intent framing**: `conversational-search-intent.md` for user jobs, query
+  forms, constraints, provenance, and trend state before or after collection
 
 | Mode | Command/Flag | Purpose |
 |------|-------------|---------|
@@ -29,6 +31,19 @@ mode: subagent
 | Full | `--full` (default for extended) | + KeywordScore, Domain Score, 17 weaknesses |
 
 <!-- AI-CONTEXT-END -->
+
+## Intent Interpretation
+
+Use `conversational-search-intent.md` before expansion when a seed is ambiguous,
+prompt-shaped, multi-step, trend/news-led, or taken from query logs. Use it after
+collection to cluster observed and suggested language by user job, outcome,
+journey state, constraints, and evidence confidence.
+
+The provider `Intent` field and `--intent` filter are four-class lexical/SERP
+signals. They do not capture conversational form, follow-up context, topic
+velocity, or attribution to an AI-search surface. Preserve source and raw query;
+label autocomplete and model-generated variants as hypotheses until metrics or
+first-party evidence corroborate them.
 
 ## Commands
 
@@ -59,7 +74,7 @@ Full SERP analysis with weakness detection and KeywordScore.
 
 ## Output Format
 
-```
+```text
 # Basic
 | Keyword                  | Volume  | CPC    | KD  | Intent        |
 | best seo tools 2025      | 12,100  | $4.50  | 45  | Commercial    |
@@ -148,12 +163,15 @@ Config (`~/.config/aidevops/keyword-research.json`): `default_locale`, `default_
 
 ## Recommended Workflow
 
-1. **Discovery**: `/keyword-research` — broad expansion
-2. **Long-tail**: `/autocomplete-research` — question keywords
-3. **Competition**: `/keyword-research-extended --competitor` — rival keywords
-4. **Gaps**: `/keyword-research-extended --gap` — opportunities
-5. **Analysis**: `/keyword-research-extended` — full SERP data on top candidates
-6. **Export**: `--csv` — content planning spreadsheets
+1. **Intent frame**: identify user job, desired outcome, locale, audience, and
+   material constraints with `conversational-search-intent.md`
+2. **Discovery**: `/keyword-research` — broad expansion
+3. **Long-tail**: `/autocomplete-research` — suggested question/query language
+4. **Competition**: `/keyword-research-extended --competitor` — rival keywords
+5. **Gaps**: `/keyword-research-extended --gap` — opportunities
+6. **Analysis**: `/keyword-research-extended` — full SERP data on top candidates
+7. **Cluster**: merge metrics with the intent ledger while retaining provenance
+8. **Export**: `--csv` — content planning spreadsheets
 
 ```bash
 /keyword-research "dog training" --min-volume 1000 --max-difficulty 40 --csv

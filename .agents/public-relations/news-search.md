@@ -25,6 +25,18 @@ For every result, capture:
 
 Never invent missing authors, outlets, or publication dates.
 
+## Query Planning
+
+Use `seo/conversational-search-intent.md` when the job includes audience search
+language, event/topic expansion, emerging questions, or demand clustering. Pass
+entity, audience, locale, recency window, user-job variants, and unknowns into
+news retrieval. Keep suggested or generated query variants separate from
+observed demand.
+
+Intent analysis plans retrieval; it is not article evidence. This workflow still
+owns source-of-record, publication date, author/outlet, syndication, and factual
+verification.
+
 ## Source order
 
 1. User-provided URLs and pasted evidence.

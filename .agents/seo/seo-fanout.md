@@ -13,10 +13,12 @@ Target: $ARGUMENTS
 
 ## Process
 
-1. Read `~/.aidevops/agents/seo/query-fanout-research.md`
-2. Generate thematic branches and prioritized sub-queries
-3. Map existing pages to branch coverage
-4. Produce remediation backlog for missing/partial high-priority branches
+1. Read `~/.aidevops/agents/seo/conversational-search-intent.md` and normalize
+   ambiguous, conversational, trend-led, or log-derived inputs with provenance
+2. Read `~/.aidevops/agents/seo/query-fanout-research.md`
+3. Generate thematic branches and prioritized sub-queries
+4. Map existing pages to branch coverage
+5. Produce remediation backlog for missing/partial high-priority branches
 
 ## Usage
 
@@ -30,6 +32,7 @@ Target: $ARGUMENTS
 
 ## Related
 
+- `seo/conversational-search-intent.md`
 - `seo/query-fanout-research.md`
 - `commands/seo-geo.md`
 - `commands/seo-ai-readiness.md`

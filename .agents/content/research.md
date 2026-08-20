@@ -27,7 +27,9 @@ Pre-writing research to validate niches, understand audiences, and analyse compe
 - **Purpose**: Audience research, niche validation, competitor content analysis
 - **Input**: Topic, niche, or URL(s) to analyse
 - **Output**: Research brief with audience profile, niche viability score, competitor gaps
-- **Related**: `content/seo-writer.md` (uses research output), `content/context-templates.md` (stores findings), `content/content-calendar.md` (prioritises topics)
+- **Related**: `seo/conversational-search-intent.md` (query/user-job evidence),
+  `content/seo-writer.md` (uses research output), `content/context-templates.md`
+  (stores findings), `content/content-calendar.md` (prioritises topics)
 
 <!-- AI-CONTEXT-END -->
 
@@ -48,6 +50,13 @@ Apply first-principles thinking, bias checks (confirmation, anchoring, availabil
 5. **Cross-platform signals** — TikTok/X/IG/Reddit format migration patterns
 6. **Web search** — industry reports, surveys, forum threads
 7. **DataForSEO** (`seo/dataforseo.md`) — keyword volume and demographics
+
+When research includes GSC rows, autocomplete, natural-language prompts,
+internal search, or trend/news queries, build an intent ledger with
+`seo/conversational-search-intent.md`. Preserve whether each phrase was observed,
+measured, suggested, inferred, or generated and whether it evidences demand,
+supply, language, an event, context, or only a hypothesis before combining it
+with audience evidence.
 
 #### 11-Dimension Reddit Research Framework
 
@@ -179,36 +188,42 @@ Watch for content performing well on one platform that hasn't migrated to others
 
 #### Validation Signals
 
-At least 2 required before proceeding:
+Require at least one demand or first-party behavioural signal plus one independent
+corroborating source class before proceeding. Two community, competitor, or
+publisher-supply signals do not establish audience demand.
 
 | Signal | Source | Threshold |
 |--------|--------|-----------|
-| Search volume | DataForSEO / GSC | >100 monthly for primary keyword |
-| Forum activity | Reddit, Quora, niche forums | Active threads in last 90 days |
-| Competitor content | SERP analysis | 3+ competitors publishing on topic |
-| Social engagement | LinkedIn, X | Meaningful engagement on topic posts |
-| Reddit depth | 11-Dimension analysis | 5+ dimensions with active discussion |
+| Search evidence | DataForSEO / GSC | Estimated market demand or owned-site exposure; record provider, locale, window, and observed/estimated status |
+| Community problem evidence | Reddit, Quora, niche forums | Active, dated discussion; corroborates language/pain, not market size |
+| Publisher supply | SERP analysis | 3+ competitors publishing on topic; evidence of coverage/competition only |
+| Social engagement | LinkedIn, X | Dated engagement with platform and sampling caveats |
+| Community depth | 11-Dimension analysis | 5+ dimensions with active discussion; retain source IDs and evidence role |
 
 ### 2. Niche Validation
 
-**Formula**: `Viability = (Demand × Buying Intent × (1 / Competition)) × Business Fit`
+**Formula**: `Viability = (0.30 × Demand) + (0.30 × Buying Intent) + (0.25 × Competition Advantage) + (0.15 × Business Fit)`
 
 **Scoring (1-5):**
 
 | Factor | Weight | Signals |
 |--------|--------|---------|
-| Demand | 30% | Google Trends direction, Reddit activity (3+ subreddits or 1 large 50K+), Whop marketplace (3+ active sellers) |
-| Buying Intent | 30% | High: "best [X] to buy", comparison queries, active sales, affiliate programs, ads. Low: informational-only, no paid products |
-| Competition (inv.) | 25% | SERP DA: 5=DA<40, 4=DA 40-60, 3=DA 60-70, 2=DA 70-85, 1=DA 85+ |
+| Demand | 30% | Provider-estimated query volume with locale/window, comparable dated trend series, or first-party behaviour; use community, seller, and publisher activity only as corroboration |
+| Buying Intent | 30% | Transactional/comparison query evidence, first-party conversion or sales, or customer research; marketplace offers and ads are commercial-supply proxies only |
+| Competition Advantage | 25% | SERP DA: 5=DA<40, 4=DA 40-60, 3=DA 60-70, 2=DA 70-85, 1=DA 85+ |
 | Business Fit | 15% | Affiliates (easiest), info products $5-$27, courses $100-$5K, SaaS $10-$100/mo, services $500+ |
 
 **Thresholds:** 4.0+ = pillar + cluster | 3.5-3.9 = 2-3 test pieces | 3.0-3.4 = only if Business Fit = 5 | 2.5-2.9 = deprioritise | <2.5 = skip.
 
-**Q4 Seasonality Bonus:** +0.5 to Buying Intent in Oct-Dec.
+**Seasonality adjustment:** apply only when dated search, conversion, or sales
+evidence shows a repeatable market-specific pattern. Never apply a blanket Q4
+bonus across niches.
 
 **Validation steps:**
 
-1. Pull primary keyword + 10-20 related terms with volume and difficulty (`seo/keyword-research.md`)
+1. Frame the user job and evidence provenance with
+   `seo/conversational-search-intent.md`, then pull the primary query and 10-20
+   related terms with volume and difficulty (`seo/keyword-research.md`)
 2. SERP analysis: top 10 results — DA, word count, content type, freshness, gaps
 3. Content quality audit: top 3 results — coverage, gaps, depth, freshness, format
 4. Funnel mapping: Awareness ("what is [topic]") → Consideration ("best [topic] tools") → Decision ("[your product] for [topic]")
@@ -249,10 +264,15 @@ Identify 3-5 direct competitors from primary keyword SERP (positions 1-10) and `
 ## Niche Viability
 [Scorecard from step 2]
 
-## Keyword Targets
-| Keyword | Volume | Difficulty | Intent | Priority |
-|---------|--------|------------|--------|----------|
-| [primary] | [vol] | [diff] | [intent] | P0 |
+## Query and Keyword Targets
+| Intent cluster | User job | Primary query | Volume | Difficulty | Classic intent | Trend state | Source IDs | Priority |
+|----------------|----------|---------------|--------|------------|----------------|-------------|------------|----------|
+| [cluster] | [outcome] | [primary] | [vol/none] | [diff/none] | [intent] | [state] | [IDs] | P0 |
+
+Attach the canonical ledger from `seo/conversational-search-intent.md` for every
+source ID. Preserve its locator, capture window/locale, supported claim,
+evidence state/role, privacy status, metrics, and evidence confidence; the
+summary table does not replace that ledger.
 
 ## Competitor Landscape
 [Summary from step 3]
@@ -298,5 +318,6 @@ Save to the project's `context/` directory (see `content/context-templates.md`):
 Read automatically by `content/seo-writer.md` and `content/editor.md`.
 
 - **Feeds into**: `content/seo-writer.md`, `content/content-calendar.md`, `content/context-templates.md`
-- **Uses data from**: `seo/dataforseo.md`, `seo/google-search-console.md`, `seo/keyword-research.md`
+- **Uses data from**: `seo/conversational-search-intent.md`,
+  `seo/dataforseo.md`, `seo/google-search-console.md`, `seo/keyword-research.md`
 - **Related**: `research.md` (general research agent), `seo/content-analyzer.md` (post-writing analysis)

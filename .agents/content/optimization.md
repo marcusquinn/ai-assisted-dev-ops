@@ -163,7 +163,10 @@ content-calendar-helper.sh stats                # overall health
 
 **Cadence**: YouTube 2-3/week | Shorts/TikTok/Reels daily | Blog 1-2/week | Email 1/week | Social daily
 
-**Seasonality**: Q4 (Oct-Dec) highest buying intent → reviews, comparisons, affiliate. Q1 educational/how-to. Q2-Q3 experiment + build backlog.
+**Seasonality**: use dated, market-specific evidence rather than universal
+quarter assumptions. Preserve locale, comparison windows, trend state, and
+confidence from `seo/conversational-search-intent.md`; schedule with the
+evidence-led rules in `content/content-calendar.md`.
 
 **Feedback loop**: Publish after owner approval → collect normalized outcomes →
 build an aggregate report → analyze preregistered evidence → review the

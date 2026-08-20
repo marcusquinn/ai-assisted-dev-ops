@@ -69,7 +69,13 @@ Optional project-level `context/*.md` files for SEO content creation. Adapted fr
 - **Pillar keyword**: [main keyword] (volume: X, difficulty: Y)
 - **Cluster keywords**: [subtopic 1] (vol: X), [subtopic 2] (vol: X)
 - **Long-tail variations**: [long-tail 1], [long-tail 2]
-- **Search intent**: [informational/commercial/transactional]
+- **User job / desired outcome**: [what the audience needs to complete]
+- **Classic search intent**: [informational/navigational/commercial/transactional]
+- **Journey state**: [discover/understand/evaluate/act/use-resolve/monitor]
+- **Material constraints**: [audience/location/budget/time/risk/format/exclusions]
+- **Query evidence**: [source IDs; source class; evidence state/role; captured window]
+- **Privacy/export status**: [public/internal/sensitive/redacted]
+- **Trend state**: [evergreen/seasonal/rising/event-driven/decaying/uncertain]
 Repeat structure per cluster.
 ## Current Rankings
 | Keyword | Position | URL | Opportunity |

@@ -15,6 +15,7 @@ Target: $ARGUMENTS
 
 1. Read `~/.aidevops/agents/seo/ai-search-readiness.md`
 2. Execute chained phases:
+   - Conversational search-intent evidence and grounding classification
    - Fan-out decomposition
    - GEO criteria alignment
    - Page-type tactic weighting for PDP, category, homepage, article, local,
@@ -43,6 +44,7 @@ Target: $ARGUMENTS
 
 ## Related
 
+- `seo/conversational-search-intent.md`
 - `seo/ai-search-readiness.md`
 - `seo/ai-search-scoring.md`
 - `seo/ai-search-report-template.md`

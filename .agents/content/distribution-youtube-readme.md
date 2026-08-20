@@ -31,7 +31,7 @@ subagents:
 | Subagent | Purpose |
 |----------|---------|
 | `channel-intel.md` | Competitor analysis, outlier detection, content DNA |
-| `topic-research.md` | Niche trends, content gaps, keyword clustering |
+| `topic-research.md` | Trend candidates/validation, content gaps, keyword clustering |
 | `script-writer.md` | Long-form scripts with hooks and retention curves |
 | `optimizer.md` | Title, description, tags, thumbnail optimization |
 | `pipeline.md` | End-to-end cron-driven automation pipeline |

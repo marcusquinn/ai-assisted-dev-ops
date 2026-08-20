@@ -44,7 +44,7 @@ Full index: `subagent-index.toon`.
 | Aidevops | aidevops, framework, setup, config, troubleshooting, MCP, agent, skill | Framework setup, configuration, troubleshooting, extension, releases |
 | Build+ | implement, fix, refactor, bug, CI, tests, PR | Code: features, bug fixes, refactors, CI, PRs (default) |
 | Automate | schedule, cron, dispatch, pulse, monitoring, routine | Scheduling, dispatch, monitoring, background orchestration, pulse supervisor |
-| SEO | SEO, ranking, keyword, schema, GSC, sitemap, backlinks | SEO audits, keyword research, GSC, schema markup |
+| SEO | SEO, GEO, AI search, ranking, keyword, search intent, conversational query, autocomplete, query fan-out, GSC, schema, sitemap, backlinks, search trends | SEO/GEO audits, query and keyword research, search-intent analysis, GSC, and schema markup |
 | Content | blog, video, script, social, newsletter, audio, image | Media production and distribution: blog, video, audio, image, social, newsletters, AI video generation |
 | Marketing-Sales | ads, CRO, email campaign, CRM, copy, outreach, funnel | Email campaigns, FluentCRM, Meta Ads, CRO, direct response copy, CRM pipeline, proposals, outreach |
 | PR | PR, public relations, press, journalist, media list, pitch, newsjacking, coverage tracking, reactive comment | Earned media strategy, journalist research, media lists, newsworthiness, newsjacking, pitch critique, coverage tracking |
@@ -54,6 +54,12 @@ Full index: `subagent-index.toon`.
 | Vault | vault, encrypted memory, protected data, lock, unlock, rekey, device trust, remote lock, remote unlock, secure sync | Vault setup/management, protected-data routing, encrypted sync/fleet trust, remote lock/unlock-request, secure-message policy |
 | Research | research, compare, market, competitor, technical analysis, external tool, repository evaluation, do we already do this, adoption fit | Tech research, competitive analysis, market research, and external tool/repository evaluation; use `reference/external-tool-evaluation.md` for source-level adoption decisions |
 | Health | health, wellness, nutrition, fitness, medical lifestyle | Health and wellness content |
+
+Routing boundary: SEO owns search-demand evidence, query provenance, keyword
+metrics, and intent/trend interpretation. Research owns the wider market and
+competitor synthesis, Content owns topic production, and PR owns current-story
+verification, newsworthiness, standing, and journalist-facing action. Hand off
+the intent ledger; do not move adjacent-domain judgment into SEO.
 
 For narrower domains such as Reports, App Stack, WordPress, Shopify, Cloudflare, Proxmox, Remotion, CalDAV, public relations, or browser/mobile work, read `reference/domain-index.md` and the relevant skill/subagent entry before defaulting to Build+. For repeatable browser operations or web data mining, route through `/auto-browse` and `.agents/workflows/auto-browse.md` so profile state, safety gates, and private/shareable artifact boundaries are handled consistently.
 

@@ -20,13 +20,15 @@ tools:
 
 Increase citation likelihood in AI search by matching decision criteria with verifiable page content on pages that already rank. Ranking is prerequisite — unranked pages cannot be consistently cited. Optimize for deterministic retrieval signals, not daily answer volatility.
 
-**Inputs:** core query set, top landing pages, page types, competitor set, proof assets (certifications, policies, prices, case evidence)
+**Inputs:** intent ledger, core query set, top landing pages, page types, competitor set, proof assets (certifications, policies, prices, case evidence)
 **Outputs:** criteria matrix, source-ID evidence ledger, page-type gap map, weighted implementation plan, per-engine report lines
 
 ## Workflow
 
 ### 1) Scope high-value intents
 
+- Normalize observed and proposed queries with `conversational-search-intent.md`;
+  retain source IDs, user job, constraints, grounding hypothesis, and confidence
 - Select 5-20 intents that influence revenue or lead quality; map each to an existing target page
 - Exclude intents without a realistic ranking path
 - Classify by grounding likelihood to avoid optimizing non-retrieval prompts
@@ -99,6 +101,7 @@ AI models query G2, Capterra, and TrustRadius as a validation stage after extrac
 
 ## Related Subagents
 
+- `conversational-search-intent.md` for query evidence, user jobs, and intent clusters
 - `sro-grounding.md` for snippet selection and grounding optimization
 - `query-fanout-research.md` for sub-query and theme decomposition
 - `ai-hallucination-defense.md` for contradiction and claim-evidence audits

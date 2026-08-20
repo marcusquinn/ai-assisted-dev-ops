@@ -46,6 +46,14 @@ Stay in analyst mode. Answer with findings, evidence, and recommendations; do no
 3. Identify gaps, risks, and opportunities
 4. Report with evidence
 
+### Search-demand market research
+
+When market research depends on keywords, audience query language, search
+intent, conversational prompts, or trend-led topics, route interpretation to
+`seo/conversational-search-intent.md`. Keep general market evidence here; SEO
+owns query provenance, user-job clusters, keyword validation, and search-trend
+interpretation.
+
 ### External tool and repository evaluation
 
 For questions about whether aidevops already duplicates an external tool or

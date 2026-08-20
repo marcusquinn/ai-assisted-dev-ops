@@ -32,7 +32,10 @@ youtube-helper.sh quota                    # Check quota before heavy ops
 
 1. **Channel data** — `youtube-helper.sh channel @handle json`. Extract: subscriber count, total views, video count, creation date, upload frequency (total videos / channel age).
 
-2. **Video enumeration** — `youtube-helper.sh videos @handle 200 json`. Calculate: avg views/video, median views, upload frequency, view trend (recent vs historical), duration distribution.
+2. **Video enumeration** — `youtube-helper.sh videos @handle 200 json`.
+   Calculate average/median views, upload frequency, duration distribution, and
+   performance by publication cohort, normalized for video age where possible.
+   Do not label one current view-count snapshot a trend.
 
 3. **Outlier detection** — threshold: **3x channel median views**.
 
