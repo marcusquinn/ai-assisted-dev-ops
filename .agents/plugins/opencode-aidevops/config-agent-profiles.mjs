@@ -56,7 +56,7 @@ export function registerAgentRoutingIntent(state, name, profile, tier, routing) 
 }
 
 function registerConfiguredRoutingIntents(config, routing, state) {
-  for (const [name, profile] of Object.entries(config.agent || {})) {
+  Object.entries(config.agent || {}).forEach(([name, profile]) => {
     const model = String(profile?.model || "");
     const metadata = String(profile?.[ROUTING_TIER_METADATA] || "");
     if (
@@ -66,7 +66,7 @@ function registerConfiguredRoutingIntents(config, routing, state) {
     ) {
       registerAgentRoutingIntent(state, name, profile, metadata || model, routing);
     }
-  }
+  });
 }
 
 function registerBuiltInRoutedAgents(config, routing, state) {
@@ -75,13 +75,13 @@ function registerBuiltInRoutedAgents(config, routing, state) {
     ["general", "standard", "General-purpose delegated work"],
   ];
   let injected = 0;
-  for (const [name, tier, description] of builtIns) {
+  builtIns.forEach(([name, tier, description]) => {
     if (!config.agent[name]) {
       config.agent[name] = { description, mode: "subagent" };
       injected++;
     }
     registerAgentRoutingIntent(state, name, config.agent[name], tier, routing);
-  }
+  });
   return injected;
 }
 
@@ -90,6 +90,49 @@ const MCP_ACTIVATION_TOOL = "aidevops_mcp";
 function agentPromptFromSource(source) {
   const match = source.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
   return match?.[1]?.trim() || "";
+}
+
+function onDemandMcpPrompt(mcp, agentsDir) {
+  const source = readIfExists(join(agentsDir, ...mcp.agentSource));
+  const parsed = source ? parseAgentFrontmatter(source) : null;
+  const prompt = parsed?.prompt
+    || agentPromptFromSource(source)
+    || `Use the ${mcp.name} MCP for ${mcp.description}.`;
+  return { parsed, prompt };
+}
+
+function createOnDemandMcpProfile(mcp, agentsDir) {
+  const { parsed, prompt } = onDemandMcpPrompt(mcp, agentsDir);
+  return {
+    description: parsed?.profile.description || mcp.description,
+    mode: "subagent",
+    prompt: [
+      `Before the first ${mcp.name} operation, call ${MCP_ACTIVATION_TOOL} with action \"connect\" and name \"${mcp.name}\".`,
+      `After it succeeds, continue on the next step with ${mcp.toolPattern} tools.`,
+      `When browser work is complete, call ${MCP_ACTIVATION_TOOL} with action \"disconnect\".`,
+      "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
+      "",
+      prompt,
+    ].join("\n"),
+    tools: {
+      ...(parsed?.profile.tools || {}),
+      [MCP_ACTIVATION_TOOL]: true,
+      [mcp.toolPattern]: true,
+    },
+  };
+}
+
+function ensureOnDemandMcpAgent(config, mcp, agentsDir) {
+  if (!config.agent[mcp.agentName]) {
+    config.agent[mcp.agentName] = createOnDemandMcpProfile(mcp, agentsDir);
+    return true;
+  }
+
+  if (!config.agent[mcp.agentName].tools) config.agent[mcp.agentName].tools = {};
+  if (!(MCP_ACTIVATION_TOOL in config.agent[mcp.agentName].tools)) {
+    config.agent[mcp.agentName].tools[MCP_ACTIVATION_TOOL] = true;
+  }
+  return false;
 }
 
 /**
@@ -107,37 +150,8 @@ export function registerOnDemandMcpAgents(config, agentsDir, routing, state) {
   config.tools[MCP_ACTIVATION_TOOL] = false;
 
   let injected = 0;
-  for (const mcp of getOnDemandMcpAgents()) {
-    if (!config.agent[mcp.agentName]) {
-      const source = readIfExists(join(agentsDir, ...mcp.agentSource));
-      const parsed = source ? parseAgentFrontmatter(source) : null;
-      const prompt = parsed?.prompt
-        || agentPromptFromSource(source)
-        || `Use the ${mcp.name} MCP for ${mcp.description}.`;
-      config.agent[mcp.agentName] = {
-        description: parsed?.profile.description || mcp.description,
-        mode: "subagent",
-        prompt: [
-          `Before the first ${mcp.name} operation, call ${MCP_ACTIVATION_TOOL} with action \"connect\" and name \"${mcp.name}\".`,
-          `After it succeeds, continue on the next step with ${mcp.toolPattern} tools.`,
-          `When browser work is complete, call ${MCP_ACTIVATION_TOOL} with action \"disconnect\".`,
-          "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
-          "",
-          prompt,
-        ].join("\n"),
-        tools: {
-          ...(parsed?.profile.tools || {}),
-          [MCP_ACTIVATION_TOOL]: true,
-          [mcp.toolPattern]: true,
-        },
-      };
-      injected++;
-    } else {
-      if (!config.agent[mcp.agentName].tools) config.agent[mcp.agentName].tools = {};
-      if (!(MCP_ACTIVATION_TOOL in config.agent[mcp.agentName].tools)) {
-        config.agent[mcp.agentName].tools[MCP_ACTIVATION_TOOL] = true;
-      }
-    }
+  getOnDemandMcpAgents().forEach((mcp) => {
+    if (ensureOnDemandMcpAgent(config, mcp, agentsDir)) injected++;
     if (routing && state) {
       registerAgentRoutingIntent(
         state,
@@ -147,7 +161,7 @@ export function registerOnDemandMcpAgents(config, agentsDir, routing, state) {
         routing,
       );
     }
-  }
+  });
   return injected;
 }
 
@@ -156,7 +170,7 @@ export function registerAgents(config, agentsDir, routing, state) {
   const indexAgents = loadAgentIndex(agentsDir, readIfExists);
   let injected = 0;
 
-  for (const agent of indexAgents) {
+  indexAgents.forEach((agent) => {
     if (!config.agent[agent.name]) {
       config.agent[agent.name] = {
         description: agent.description,
@@ -165,7 +179,7 @@ export function registerAgents(config, agentsDir, routing, state) {
       injected++;
     }
     registerAgentRoutingIntent(state, agent.name, config.agent[agent.name], agent.modelTier, routing);
-  }
+  });
   return injected
     + registerOnDemandMcpAgents(config, agentsDir, routing, state)
     + registerBuiltInRoutedAgents(config, routing, state);
@@ -220,10 +234,10 @@ function parseAgentFrontmatter(source) {
 
     const profile = {};
     const stack = [{ indent: -1, value: profile }];
-    for (const line of match[1].split("\n")) {
-      const entry = parseFrontmatterEntry(line);
-      if (entry) assignFrontmatterEntry(stack, entry);
-    }
+    match[1].split("\n")
+      .map(parseFrontmatterEntry)
+      .filter(Boolean)
+      .forEach((entry) => assignFrontmatterEntry(stack, entry));
     return { profile, prompt: match[2].trim() };
   } catch {
     return null;
@@ -276,14 +290,14 @@ function addResearchStagingPermissions(profile, env) {
   if (!profile.permission || typeof profile.permission !== "object") return;
 
   const rules = { "*": "deny" };
-  for (const directory of researchStagingDirectories(env)) {
+  researchStagingDirectories(env).forEach((directory) => {
     rules[directory] = "allow";
     rules[`${directory}/**`] = "allow";
-    for (const name of RESEARCH_STAGING_DENIED_NAMES) {
+    RESEARCH_STAGING_DENIED_NAMES.forEach((name) => {
       rules[`${directory}/**/${name}`] = "deny";
       rules[`${directory}/**/${name}/**`] = "deny";
-    }
-  }
+    });
+  });
   profile.permission.external_directory = rules;
 }
 
