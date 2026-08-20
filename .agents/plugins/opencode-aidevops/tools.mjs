@@ -1,6 +1,7 @@
 import { existsSync } from "fs";
 import { join } from "path";
 import { createHookStatusTool } from "./hook-status-tool.mjs";
+import { createMcpActivationTool } from "./mcp-activation-tool.mjs";
 import { createPreEditCheckTool } from "./pre-edit-check-tool.mjs";
 
 export let tool;
@@ -175,11 +176,12 @@ function createMemoryTool(scriptsDir, run) {
 /**
  * Create all tool definitions for the plugin.
  *
- * Tools (5 total):
+ * Tools (6 total):
  *   - aidevops              — aidevops CLI runner
  *   - aidevops_memory       — unified recall/store (merged from former recall + store pair)
  *   - aidevops_pre_edit_check — git safety check before file edits
  *   - aidevops_hook_status — bounded Git hook marker inspection
+ *   - aidevops_mcp        — registry-allowlisted on-demand MCP lifecycle
  *   - model-accounts-pool   — OAuth account pool management (added in index.mjs)
  *
  * NOTE: aidevops_quality_check was removed. Quality checks run automatically
@@ -197,7 +199,7 @@ function createMemoryTool(scriptsDir, run) {
  *
  * @param {string} scriptsDir - Path to scripts directory
  * @param {function} run - Shell command runner
- * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function}} [options] - Tool-specific test/runtime overrides
+ * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function, mcpClient?: object, mcpDirectory?: string, managedMcpNames?: string[]}} [options] - Tool-specific test/runtime overrides
  * @returns {Record<string, object>}
  */
 export function createTools(scriptsDir, run, options = {}) {
@@ -211,6 +213,13 @@ export function createTools(scriptsDir, run, options = {}) {
   };
   if (typeof options.poolToolFactory === "function") {
     tools["model-accounts-pool"] = options.poolToolFactory();
+  }
+  if (options.mcpClient && options.managedMcpNames?.length) {
+    tools.aidevops_mcp = createMcpActivationTool(tool, z, {
+      client: options.mcpClient,
+      directory: options.mcpDirectory,
+      allowedNames: options.managedMcpNames,
+    });
   }
   return tools;
 }

@@ -71,7 +71,7 @@ test_mcp() {
     echo ""
     
     local result
-    result=$(opencode run "List all tools you have access to that start with '${mcp_name}_'. Format as a simple list. If none found, say 'No ${mcp_name} tools available'." --agent "$agent" 2>&1) || true
+    result=$(opencode run "Invoke the '${agent}' subagent. In that subagent, use aidevops_mcp to connect '${mcp_name}', then confirm whether '${mcp_name}_*' tools become available on the following step. Disconnect when finished. If activation or delegation is unavailable, say 'No ${mcp_name} tools available' and include the exact diagnostic." 2>&1) || true
     
     echo "$result"
     echo ""
@@ -80,7 +80,7 @@ test_mcp() {
         print_warning "MCP '$mcp_name' may not be accessible to agent '$agent'"
         print_info "Check ~/.config/opencode/opencode.json for:"
         print_info "  1. MCP server is defined in 'mcp' section"
-        print_info "  2. Tool pattern '${mcp_name}_*' is enabled for agent"
+        print_info "  2. The '$agent' activation agent has aidevops_mcp and '${mcp_name}_*' permissions"
         return 1
     else
         print_success "MCP '$mcp_name' appears accessible to agent '$agent'"

@@ -58,9 +58,11 @@ function getPkgRunner() {
  *   - command: Array of command + args for local MCPs
  *   - url: URL for remote MCPs (mutually exclusive with command)
  *   - type: "local" (default) or "remote"
- *   - eager: true = start at launch, false = lazy-load on demand
+ *   - eager: true = start at launch, false = remain disabled until explicitly connected
  *   - toolPattern: glob pattern for tool permissions (e.g. "playwriter_*")
  *   - globallyEnabled: whether tools are enabled globally (true) or per-agent (false)
+ *   - activationAgent: optional bounded agent that can connect the MCP on demand
+ *   - agentSource: source path for an activation agent profile
  *   - requiresBinary: optional binary name that must exist for local MCPs
  *   - macOnly: optional flag for macOS-only MCPs
  *   - description: human-readable description for logging
@@ -79,7 +81,10 @@ function getMcpRegistry() {
       command: [...pkgRunnerParts, "playwriter@latest"],
       eager: false,
       toolPattern: "playwriter_*",
-      globallyEnabled: true,
+      globallyEnabled: false,
+      activationAgent: "playwriter",
+      agentSource: ["tools", "browser", "playwriter.md"],
+      modelTier: "standard",
       description: "Browser automation via Chrome extension",
     },
     {
@@ -295,6 +300,25 @@ function getMcpRegistry() {
 }
 
 /**
+ * Return the bounded MCP activation-agent definitions.
+ * These are intentionally explicit so OpenCode never returns to registering
+ * hundreds of leaf agents during startup.
+ * @returns {Array<object>}
+ */
+export function getOnDemandMcpAgents() {
+  return getMcpRegistry()
+    .filter((mcp) => mcp.activationAgent && Array.isArray(mcp.agentSource))
+    .map((mcp) => ({
+      name: mcp.name,
+      agentName: mcp.activationAgent,
+      agentSource: [...mcp.agentSource],
+      toolPattern: mcp.toolPattern,
+      modelTier: mcp.modelTier || "standard",
+      description: mcp.description,
+    }));
+}
+
+/**
  * Check if an MCP entry should be skipped (wrong platform, missing binary).
  * @param {object} mcp - MCP registry entry
  * @param {object} tools - Config tools object (mutable — disables pattern if binary missing)
@@ -336,6 +360,13 @@ function registerSingleMcp(mcp, config) {
   if (!config.mcp[mcp.name] || mcp.alwaysOverwrite) {
     config.mcp[mcp.name] = buildMcpConfigEntry(mcp);
     return true;
+  }
+
+  // Runtime-activated MCPs must stay disconnected at startup, including when
+  // migrating older generated configs that marked them enabled.
+  if (mcp.activationAgent) {
+    config.mcp[mcp.name].enabled = false;
+    return false;
   }
 
   // Respect explicit enabled:false from worker configs (t221).

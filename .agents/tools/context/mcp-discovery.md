@@ -50,13 +50,13 @@ npx mcporter call context7.resolve-library-id libraryName=react
 npx mcporter generate-cli --command https://mcp.context7.com/mcp --compile
 ```
 
-**Disabled MCPs** (enabled via subagents):
+**Disabled MCPs**:
 
-| MCP | Tokens | Subagent | When to enable |
-|-----|--------|----------|----------------|
-| `playwriter` | ~3K | `@playwriter` | Browser automation needed |
-| `google-analytics-mcp` | ~800 | `@google-analytics` | Analytics reporting |
-| `context7` | ~800 | `@context7` | Library docs lookup |
+| MCP | Tokens | Activation | When to enable |
+|-----|--------|------------|----------------|
+| `playwriter` | ~3K | `@playwriter` calls `aidevops_mcp` | Browser automation needed |
+| `google-analytics-mcp` | ~800 | Disabled by default | Analytics reporting |
+| `context7` | ~800 | Disabled by default | Library docs lookup |
 
 **Not installed by aidevops** (use subagent instead):
 
@@ -122,7 +122,7 @@ mcp:
 ---
 ```
 
-The `mcp:` field is declarative -- it documents which MCP the subagent requires. Actual enabling happens in `generate-opencode-agents.sh` (per-agent tool permissions).
+The `mcp:` field is declarative -- it documents which MCP the subagent requires. Tool permission alone does not connect an OpenCode MCP configured with `enabled: false`. Explicit activation profiles, currently `@playwriter`, call `aidevops_mcp` before their first MCP operation.
 
 ### Main Agent Pattern
 
@@ -139,7 +139,7 @@ tools:
 
 ### Runtime Configuration
 
-In `opencode.json`, MCPs are disabled globally and enabled per-agent:
+In `opencode.json`, MCP tools are denied globally and granted only to an owning agent. The MCP server itself remains disconnected until an explicit activation path connects it:
 
 ```json
 {
@@ -148,15 +148,17 @@ In `opencode.json`, MCPs are disabled globally and enabled per-agent:
     "serper_*": false
   },
   "agent": {
-    "SEO": {
+    "playwriter": {
       "tools": {
-        "dataforseo_*": true,
-        "serper_*": true
+        "aidevops_mcp": true,
+        "playwriter_*": true
       }
     }
   }
 }
 ```
+
+Invoke `@playwriter` rather than enabling Playwriter globally. Its first step connects only the registry entry named `playwriter`; the next step receives `playwriter_*` tools. If the extension has no approved tab, the agent reports that consent diagnostic instead of misdiagnosing missing tools.
 
 ## Future: includeTools Filtering
 

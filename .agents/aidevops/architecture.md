@@ -117,16 +117,17 @@ Implements proven patterns from Lance Martin (LangChain), validated across Claud
 | Session frequency | Most sessions | Occasional |
 | Statefulness | Persistent connection | Stateless REST |
 
-**Two-tier MCP strategy** (all MCPs use `eager: false` — lazy-loaded on first tool call):
+**Two-tier MCP strategy** (all MCPs use `eager: false` and start disabled):
 
-1. **Globally callable** (`globallyEnabled: true`): playwriter — tools visible to all agents
-2. **Per-agent only** (`globallyEnabled: false`): all others — tools hidden globally, injected only for the agent that owns the MCP via `AGENT_MCP_TOOLS` in `agent-loader.mjs`
+1. **Explicit activation agents** (`activationAgent`): a bounded profile can use `aidevops_mcp` to connect its registry-approved MCP. Playwriter is the initial implementation.
+2. **Per-agent permission only** (`globallyEnabled: false`): tool patterns stay hidden globally and are exposed only on the owning agent profile.
 
-**How it works:** `eager: false` means the MCP process starts on the first tool call, not at OpenCode launch. No idle processes, no context bloat for sessions that don't use the MCP. The plugin (`mcp-registry.mjs` + `agent-loader.mjs`) is the authoritative source — it runs on every OpenCode startup and writes `opencode.json`. Do not edit `opencode.json` MCP entries directly; they are overwritten.
+**How it works:** OpenCode treats `enabled: false` as disconnected, not automatic lazy loading. An explicit activation agent calls the registry-allowlisted `aidevops_mcp` tool, which uses OpenCode's MCP connect API. The MCP tools appear on the following model step and can be disconnected when work is complete. There are no idle MCP processes or tool-schema cost in unrelated sessions. The plugin registry is authoritative; do not edit generated `opencode.json` MCP entries directly.
 
-**Adding a new MCP requires two files** (both in `.agents/plugins/opencode-aidevops/`):
-1. `mcp-registry.mjs` — add entry to `getMcpRegistry()` with `name`, `command`/`url`, `eager: false`, `toolPattern`, `globallyEnabled: false`
-2. `agent-loader.mjs` — add `"agent-name": ["tool-pattern_*"]` to `AGENT_MCP_TOOLS`
+**Adding runtime activation for an MCP requires:**
+1. `mcp-registry.mjs` — add the MCP plus an explicit `activationAgent`, `agentSource`, and `modelTier`.
+2. `agent-mcp-tools.mjs` — keep its tool pattern restricted to the owning agent.
+3. A focused activation test — prove registry allowlisting, global denial, and bounded agent registration without recursive leaf discovery.
 
 **Replaced by curl subagent** (removed): hetzner, serper, ahrefs, hostinger — simple REST, no persistent state needed.
 

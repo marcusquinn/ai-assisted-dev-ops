@@ -17,10 +17,10 @@ import sys
 # =============================================================================
 
 # Eager-loaded (enabled: True): Used by all main agents, start at launch
-# No eager MCPs — all lazy-load on demand to save context tokens
+# No eager MCPs — all start disabled to save context tokens
 EAGER_MCPS = set()
 
-# Lazy-loaded (enabled: False): Subagent-only, start on-demand
+# On-demand (enabled: False): remain disabled until an explicit runtime connector
 LAZY_MCPS = {
     'MCP_DOCKER', 'ahrefs', 'amazon-order-history',
     'chrome-devtools', 'claude-code-mcp', 'context7', 'dataforseo',
@@ -76,16 +76,16 @@ def _register_playwriter(config, bun_path):
             config['mcp']['playwriter'] = {
                 "type": "local",
                 "command": ["bun", "x", "playwriter@latest"],
-                "enabled": True
+                "enabled": False
             }
         else:
             config['mcp']['playwriter'] = {
                 "type": "local",
                 "command": ["npx", "playwriter@latest"],
-                "enabled": True
+                "enabled": False
             }
-        print("  Added playwriter MCP (eager load - used by all agents)")
-    config['tools']['playwriter_*'] = True
+        print("  Added playwriter MCP (on demand - @playwriter only)")
+    config['tools']['playwriter_*'] = False
 
 
 def _register_outscraper(config):

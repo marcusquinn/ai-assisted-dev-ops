@@ -7,6 +7,7 @@ import { existsSync, readFileSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { loadAgentIndex } from "./agent-loader.mjs";
+import { getOnDemandMcpAgents } from "./mcp-registry.mjs";
 import { DEFAULT_ESCALATION_ORDER, normalizeRoutingTier } from "./model-routing.mjs";
 
 const ROUTING_TIER_METADATA = "aidevops_model_tier";
@@ -84,6 +85,72 @@ function registerBuiltInRoutedAgents(config, routing, state) {
   return injected;
 }
 
+const MCP_ACTIVATION_TOOL = "aidevops_mcp";
+
+function agentPromptFromSource(source) {
+  const match = source.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
+  return match?.[1]?.trim() || "";
+}
+
+/**
+ * Register the small, explicit set of leaf agents that activate MCPs at
+ * runtime. Never replace this allowlist with recursive leaf discovery.
+ * @param {object} config
+ * @param {string} agentsDir
+ * @param {object} [routing]
+ * @param {object} [state]
+ * @returns {number}
+ */
+export function registerOnDemandMcpAgents(config, agentsDir, routing, state) {
+  if (!config.agent) config.agent = {};
+  if (!config.tools) config.tools = {};
+  config.tools[MCP_ACTIVATION_TOOL] = false;
+
+  let injected = 0;
+  for (const mcp of getOnDemandMcpAgents()) {
+    if (!config.agent[mcp.agentName]) {
+      const source = readIfExists(join(agentsDir, ...mcp.agentSource));
+      const parsed = source ? parseAgentFrontmatter(source) : null;
+      const prompt = parsed?.prompt
+        || agentPromptFromSource(source)
+        || `Use the ${mcp.name} MCP for ${mcp.description}.`;
+      config.agent[mcp.agentName] = {
+        description: parsed?.profile.description || mcp.description,
+        mode: "subagent",
+        prompt: [
+          `Before the first ${mcp.name} operation, call ${MCP_ACTIVATION_TOOL} with action \"connect\" and name \"${mcp.name}\".`,
+          `After it succeeds, continue on the next step with ${mcp.toolPattern} tools.`,
+          `When browser work is complete, call ${MCP_ACTIVATION_TOOL} with action \"disconnect\".`,
+          "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
+          "",
+          prompt,
+        ].join("\n"),
+        tools: {
+          ...(parsed?.profile.tools || {}),
+          [MCP_ACTIVATION_TOOL]: true,
+          [mcp.toolPattern]: true,
+        },
+      };
+      injected++;
+    } else {
+      if (!config.agent[mcp.agentName].tools) config.agent[mcp.agentName].tools = {};
+      if (!(MCP_ACTIVATION_TOOL in config.agent[mcp.agentName].tools)) {
+        config.agent[mcp.agentName].tools[MCP_ACTIVATION_TOOL] = true;
+      }
+    }
+    if (routing && state) {
+      registerAgentRoutingIntent(
+        state,
+        mcp.agentName,
+        config.agent[mcp.agentName],
+        mcp.modelTier,
+        routing,
+      );
+    }
+  }
+  return injected;
+}
+
 export function registerAgents(config, agentsDir, routing, state) {
   registerConfiguredRoutingIntents(config, routing, state);
   const indexAgents = loadAgentIndex(agentsDir, readIfExists);
@@ -99,7 +166,9 @@ export function registerAgents(config, agentsDir, routing, state) {
     }
     registerAgentRoutingIntent(state, agent.name, config.agent[agent.name], agent.modelTier, routing);
   }
-  return injected + registerBuiltInRoutedAgents(config, routing, state);
+  return injected
+    + registerOnDemandMcpAgents(config, agentsDir, routing, state)
+    + registerBuiltInRoutedAgents(config, routing, state);
 }
 
 const RESEARCH_ONLY_AGENT_NAME = "research-only";

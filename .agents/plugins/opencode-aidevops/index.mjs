@@ -31,6 +31,7 @@ import { execSync } from "child_process";
 
 // Extracted modules
 import { createConfigHook } from "./config-hook.mjs";
+import { getOnDemandMcpAgents } from "./mcp-registry.mjs";
 import { createQualityHooks } from "./quality-hooks.mjs";
 import {
   createSessionModelStore,
@@ -352,6 +353,9 @@ export async function AidevopsPlugin({ directory, client }) {
   const baseTools = createTools(SCRIPTS_DIR, run, {
     sessionOrigin: process.env.AIDEVOPS_SESSION_ORIGIN,
     poolToolFactory: () => createPoolTool(client),
+    mcpClient: client.mcp,
+    mcpDirectory: directory,
+    managedMcpNames: getOnDemandMcpAgents().map((mcp) => mcp.name),
   });
 
   // Create hooks from extracted modules
