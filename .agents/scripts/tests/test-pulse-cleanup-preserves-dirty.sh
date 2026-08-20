@@ -235,7 +235,37 @@ test_reachable_unpushed_commits_protected() {
 	return 0
 }
 
-# Scenario 4: pulse-cleanup must source cleanly under `set -u` — the
+# Scenario 4: an unreadable index must produce an audited skip. Cleanup cannot
+# prove that uncommitted work is absent, so it must preserve the worktree.
+test_unreadable_index_is_preserved_and_audited() {
+	local repo_dir="${TEST_ROOT}/repo-unreadable-index"
+	local wt_path="${TEST_ROOT}/wt-unreadable-index"
+	local branch_name="fix/unreadable-index"
+	setup_repo_with_worktree_aged "$repo_dir" "$wt_path" "$branch_name" 7 || return 1
+	source_pulse_cleanup_with_stubs || return 1
+
+	local git_dir=""
+	git_dir=$(git -C "$wt_path" rev-parse --absolute-git-dir) || return 1
+	: >"${git_dir}/index"
+
+	local now_epoch
+	now_epoch=$(date +%s)
+	AIDEVOPS_HEADLESS_METRICS_FILE="${TEST_ROOT}/missing-metrics.jsonl"
+	export AIDEVOPS_HEADLESS_METRICS_FILE
+
+	_cleanup_single_worktree "$repo_dir" "$wt_path" "$branch_name" "$now_epoch" "testowner/testrepo" "main" >/dev/null 2>&1
+	local cleanup_rc=$?
+
+	local rc=0
+	[[ "$cleanup_rc" -eq 1 ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	grep -q 'unreadable-git-state.*mode=skipped' "$AIDEVOPS_CLEANUP_LOG" 2>/dev/null || rc=1
+	print_result "unreadable worktree index is preserved and audited" "$rc" \
+		"cleanup_rc=$cleanup_rc dir_exists=$([[ -d "$wt_path" ]] && echo y || echo n) log=$(<"$AIDEVOPS_CLEANUP_LOG")"
+	return 0
+}
+
+# Scenario 5: pulse-cleanup must source cleanly under `set -u` — the
 # previous `unset _PULSE_CLEANUP_SCRIPT_DIR` left line ~251 with an
 # unbound variable. This test catches regression of the unset.
 test_sources_under_set_u() {
@@ -276,6 +306,7 @@ echo "=== test-pulse-cleanup-preserves-dirty.sh ==="
 test_dirty_worktree_past_grace_skips_removal
 test_dirty_worktree_past_6h_still_skips
 test_reachable_unpushed_commits_protected
+test_unreadable_index_is_preserved_and_audited
 test_sources_under_set_u
 
 echo ""

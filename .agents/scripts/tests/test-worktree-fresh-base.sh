@@ -68,6 +68,40 @@ if compgen -G "${WORKTREES}/.canonical-fetch-*" >/dev/null; then
 fi
 printf 'PASS canonical-guard bootstrap fetch worktree is removed\n'
 
+# A registered sibling can exist while its index is unreadable. The fetch
+# selector must skip that candidate and use the bootstrap path instead of
+# allowing one unhealthy worktree to block all new worktree creation.
+UNHEALTHY_FETCH_MARKER="${ROOT}/unhealthy-fetch-attempted"
+if ! (
+	cd "$CANONICAL" || exit 1
+	SCRIPT_DIR="$(cd "$(dirname "$ADD_HELPER")" && pwd)"
+	# shellcheck source=../worktree-helper-add.sh
+	source "$ADD_HELPER"
+	git() {
+		local first_arg="${1:-}"
+		local second_arg="${2:-}"
+		local third_arg="${3:-}"
+		if [[ "$first_arg" == "-C" && "$second_arg" == "$FRESH_PATH" && "$third_arg" == "status" ]]; then
+			return 128
+		fi
+		if [[ "$first_arg" == "-C" && "$second_arg" == "$FRESH_PATH" && "$third_arg" == "fetch" ]]; then
+			: >"$UNHEALTHY_FETCH_MARKER"
+			return 97
+		fi
+		"$REAL_GIT" "$@"
+		return $?
+	}
+	_worktree_refresh_origin_branch main
+); then
+	printf 'FAIL unhealthy sibling prevented bootstrap fetch fallback\n'
+	exit 1
+fi
+if [[ -e "$UNHEALTHY_FETCH_MARKER" ]]; then
+	printf 'FAIL fetch was attempted through an unhealthy sibling worktree\n'
+	exit 1
+fi
+printf 'PASS unhealthy sibling is skipped for bootstrap fetch fallback\n'
+
 "$REAL_GIT" -C "$CANONICAL" remote set-url origin "${ROOT}/missing.git"
 if (cd "$CANONICAL" && "$HELPER" add test/fetch-failure >/dev/null 2>&1); then
 	printf 'FAIL worktree creation accepted an unrefreshable remote base\n'

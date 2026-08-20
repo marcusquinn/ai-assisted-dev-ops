@@ -873,6 +873,9 @@ _worktree_refresh_origin_branch() {
 		local worktree_path=""
 		while IFS= read -r worktree_path; do
 			[[ -n "$worktree_path" && "$worktree_path" != "$current_root" && -d "$worktree_path" ]] || continue
+			# `rev-parse HEAD` does not read the index. Probe with status so a
+			# truncated/corrupt sibling index cannot poison fresh-base fetches.
+			GIT_OPTIONAL_LOCKS=0 git -C "$worktree_path" status --porcelain --untracked-files=no >/dev/null 2>&1 || continue
 			fetch_cwd="$worktree_path"
 			break
 		done < <(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
