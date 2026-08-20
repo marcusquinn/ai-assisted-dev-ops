@@ -31,6 +31,82 @@ _pulse_dependabot_existing_intake_issue() {
 	return $?
 }
 
+_pulse_dependabot_completed_intake_issue() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local marker="$3"
+	local issues_json="[]"
+
+	issues_json=$(gh_issue_list --repo "$repo_slug" --state closed \
+		--search "Dependabot PR #${pr_number} in:title" --limit 20 \
+		--json number,body,labels 2>/dev/null) || return 1
+	printf '%s' "$issues_json" | jq -r --arg marker "$marker" '
+		[.[]
+			 | select((.body // "") | contains($marker))
+			 | ([.labels[]?.name // ""] | unique) as $labels
+			 | select(($labels | index("origin:worker")) != null)
+			 | select(($labels | index("status:done")) != null)
+			 | select(($labels | index("solved:worker")) != null)]
+		| .[0].number // ""' 2>/dev/null
+	return $?
+}
+
+# Close an authentic held source PR only when its generated worker intake is
+# terminal and a different same-repository PR verifiably merged to close it.
+# Missing, truncated, stale-head, or unavailable evidence preserves the hold.
+_pulse_dependabot_close_superseded_source_pr() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head_sha="$3"
+	local marker="$4"
+	local intake_issue=""
+	local superseding_pr=""
+	local final_json=""
+	local final_state=""
+	local final_head=""
+	local final_labels=""
+	local close_comment=""
+
+	declare -F _psh_find_merged_closer_for_closed_issue >/dev/null 2>&1 || return 1
+	declare -F gh_pr_close_safe >/dev/null 2>&1 || return 1
+	intake_issue=$(_pulse_dependabot_completed_intake_issue "$pr_number" "$repo_slug" "$marker") || return 1
+	[[ "$intake_issue" =~ ^[0-9]+$ ]] || return 1
+	superseding_pr=$(_psh_find_merged_closer_for_closed_issue \
+		"$repo_slug" "$intake_issue" "$pr_number" 2>/dev/null) || return 1
+	[[ "$superseding_pr" =~ ^[0-9]+$ && "$superseding_pr" != "$pr_number" ]] || return 1
+
+	final_json=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+		--json state,headRefOid,labels 2>/dev/null) || return 1
+	final_state=$(printf '%s' "$final_json" | jq -r '.state // ""' 2>/dev/null) || return 1
+	final_head=$(printf '%s' "$final_json" | jq -r '.headRefOid // ""' 2>/dev/null) || return 1
+	final_labels=$(printf '%s' "$final_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || return 1
+	[[ "$final_state" == "OPEN" && "$final_head" == "$expected_head_sha" ]] || return 1
+	[[ ",${final_labels}," == *",needs-maintainer-review,"* ]] || return 1
+
+	_PULSE_DEPENDABOT_COMPLETED_INTAKE_ISSUE="$intake_issue"
+	_PULSE_DEPENDABOT_SUPERSEDING_PR="$superseding_pr"
+	if [[ "${DRY_RUN:-0}" == "1" ]]; then
+		echo "[pulse-dependabot-intake] DRY-RUN: PR #${pr_number} in ${repo_slug} would close as superseded by merged PR #${superseding_pr} for completed intake #${intake_issue}" >>"$LOGFILE"
+		return 0
+	fi
+
+	close_comment="<!-- aidevops:dependabot-source-superseded intake=${intake_issue} replacement=${superseding_pr} -->
+Closing this Dependabot source PR as superseded: generated worker intake #${intake_issue} is terminal and was closed by verified merged replacement PR #${superseding_pr}.
+
+The explicit maintainer hold prevented unsafe automatic merge while the replacement converged. Pulse revalidated the source head and hold immediately before this close.
+
+_Closed by deterministic Dependabot lifecycle reconciliation (GH#30478)._"
+	if ! gh_pr_close_safe "$pr_number" --repo "$repo_slug" --comment "$close_comment" >/dev/null 2>&1; then
+		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: verified replacement PR #${superseding_pr}, but source close failed" >>"$LOGFILE"
+		return 1
+	fi
+	if declare -F _pulse_merge_invalidate_pr_list_cache >/dev/null 2>&1; then
+		_pulse_merge_invalidate_pr_list_cache "$repo_slug" "closed superseded Dependabot source PR #${pr_number}"
+	fi
+	echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: closed as superseded by merged PR #${superseding_pr} for completed intake #${intake_issue}" >>"$LOGFILE"
+	return 0
+}
+
 # Return 0 when the source PR carries an explicit maintainer-review hold,
 # 1 when it does not, and 2 when the live label state cannot be verified.
 _pulse_dependabot_pr_has_maintainer_hold() {
@@ -175,6 +251,10 @@ _pulse_route_dependabot_pr_to_worker_issue() {
 	_pulse_dependabot_pr_has_maintainer_hold "$pr_number" "$repo_slug" || hold_rc=$?
 	case "$hold_rc" in
 	0)
+		if _pulse_dependabot_close_superseded_source_pr \
+			"$pr_number" "$repo_slug" "$expected_head_sha" "$marker"; then
+			return 4
+		fi
 		echo "[pulse-dependabot-intake] PR #${pr_number} in ${repo_slug}: preserving explicit needs-maintainer-review hold; no worker issue created" >>"$LOGFILE"
 		return 3
 		;;

@@ -527,6 +527,13 @@ _check_pr_merge_gates() {
 			3)
 				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR has an explicit maintainer-review hold; preserving it without worker intake (GH#30389)" >>"$LOGFILE"
 				;;
+			4)
+				if [[ "${DRY_RUN:-0}" == "1" ]]; then
+					echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — would close superseded Dependabot source after verified replacement PR #${_PULSE_DEPENDABOT_SUPERSEDING_PR:-unknown} (GH#30478)" >>"$LOGFILE"
+				else
+					echo "[pulse-wrapper] Merge pass: closed superseded Dependabot source PR #${pr_number} in ${repo_slug} after verified replacement PR #${_PULSE_DEPENDABOT_SUPERSEDING_PR:-unknown} (GH#30478)" >>"$LOGFILE"
+				fi
+				;;
 			*)
 				echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE"
 				;;

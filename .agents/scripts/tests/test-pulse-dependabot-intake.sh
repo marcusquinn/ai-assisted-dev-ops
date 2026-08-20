@@ -7,10 +7,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 INTAKE_SCRIPT="${SCRIPT_DIR}/../pulse-dependabot-intake.sh"
 TEST_ROOT=""
-ISSUES_JSON="[]"
+OPEN_ISSUES_JSON="[]"
+CLOSED_ISSUES_JSON="[]"
 AUTHENTIC=1
 PR_LABELS=""
+PR_FINAL_JSON='{"state":"OPEN","headRefOid":"head-current","labels":[{"name":"needs-maintainer-review"}]}'
 PR_VIEW_FAIL=0
+SUPERSEDING_PR=""
 
 setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
@@ -38,13 +41,37 @@ _is_authentic_dependabot_pr() {
 }
 
 gh_issue_list() {
-	printf '%s\n' "$ISSUES_JSON"
+	local args=" $* "
+	if [[ "$args" == *" --state closed "* ]]; then
+		printf '%s\n' "$CLOSED_ISSUES_JSON"
+	else
+		printf '%s\n' "$OPEN_ISSUES_JSON"
+	fi
 	return 0
 }
 
 gh_pr_view() {
 	[[ "$PR_VIEW_FAIL" -eq 0 ]] || return 1
-	printf '%s\n' "$PR_LABELS"
+	if [[ " $* " == *" --json state,headRefOid,labels "* ]]; then
+		printf '%s\n' "$PR_FINAL_JSON"
+	else
+		printf '%s\n' "$PR_LABELS"
+	fi
+	return 0
+}
+
+_psh_find_merged_closer_for_closed_issue() {
+	local repo_slug="$1"
+	local issue_number="$2"
+	local current_pr="$3"
+	[[ "$repo_slug" == "owner/repo" && "$issue_number" == "42" && "$current_pr" == "30038" ]] || return 1
+	[[ "$SUPERSEDING_PR" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$SUPERSEDING_PR"
+	return 0
+}
+
+gh_pr_close_safe() {
+	printf '%s\n' "$@" >"${TEST_ROOT}/pr-close-args"
 	return 0
 }
 
@@ -81,7 +108,8 @@ assert_file_contains() {
 
 test_creates_worker_ready_issue() {
 	rm -f "${TEST_ROOT}/create-args" "${TEST_ROOT}/created-body"
-	ISSUES_JSON="[]"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON="[]"
 	AUTHENTIC=1
 	PR_LABELS=""
 	PR_VIEW_FAIL=0
@@ -95,7 +123,7 @@ test_creates_worker_ready_issue() {
 
 test_reuses_existing_issue() {
 	rm -f "${TEST_ROOT}/create-args"
-	ISSUES_JSON='[{"number":42,"url":"https://github.com/owner/repo/issues/42","body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->"}]'
+	OPEN_ISSUES_JSON='[{"number":42,"url":"https://github.com/owner/repo/issues/42","body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->"}]'
 	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "terminal-ci-failure"
 	[[ ! -e "${TEST_ROOT}/create-args" ]]
 	return $?
@@ -103,7 +131,7 @@ test_reuses_existing_issue() {
 
 test_rejects_unverified_author() {
 	rm -f "${TEST_ROOT}/create-args"
-	ISSUES_JSON="[]"
+	OPEN_ISSUES_JSON="[]"
 	AUTHENTIC=0
 	if _pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible"; then
 		return 1
@@ -116,7 +144,8 @@ test_preserves_explicit_maintainer_hold() {
 	local route_rc=0
 
 	rm -f "${TEST_ROOT}/create-args"
-	ISSUES_JSON="[]"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON="[]"
 	AUTHENTIC=1
 	PR_LABELS="needs-maintainer-review"
 	PR_VIEW_FAIL=0
@@ -128,11 +157,108 @@ test_preserves_explicit_maintainer_hold() {
 	return 0
 }
 
+test_closes_held_source_after_verified_replacement() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/create-args" "${TEST_ROOT}/pr-close-args"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON='[{"number":42,"body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->","labels":[{"name":"origin:worker"},{"name":"status:done"},{"name":"solved:worker"}]}]'
+	AUTHENTIC=1
+	PR_LABELS="needs-maintainer-review"
+	PR_FINAL_JSON='{"state":"OPEN","headRefOid":"head-current","labels":[{"name":"needs-maintainer-review"}]}'
+	PR_VIEW_FAIL=0
+	SUPERSEDING_PR="99"
+	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 4 ]] || return 1
+	assert_file_contains "superseded source PR is closed" "${TEST_ROOT}/pr-close-args" "30038"
+	assert_file_contains "source close names verified replacement" "${TEST_ROOT}/pr-close-args" "verified merged replacement PR #99"
+	assert_file_contains "source close is diagnosed" "$LOGFILE" "closed as superseded by merged PR #99 for completed intake #42"
+	CLOSED_ISSUES_JSON="[]"
+	PR_LABELS=""
+	SUPERSEDING_PR=""
+	return 0
+}
+
+test_preserves_hold_when_terminal_issue_has_no_merged_replacement() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/pr-close-args"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON='[{"number":42,"body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->","labels":[{"name":"origin:worker"},{"name":"status:done"},{"name":"solved:worker"}]}]'
+	AUTHENTIC=1
+	PR_LABELS="needs-maintainer-review"
+	SUPERSEDING_PR=""
+	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 3 ]] || return 1
+	[[ ! -e "${TEST_ROOT}/pr-close-args" ]] || return 1
+	CLOSED_ISSUES_JSON="[]"
+	PR_LABELS=""
+	return 0
+}
+
+test_preserves_hold_without_worker_solution_attribution() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/pr-close-args"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON='[{"number":42,"body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->","labels":[{"name":"origin:worker"},{"name":"status:done"},{"name":"solved:interactive"}]}]'
+	AUTHENTIC=1
+	PR_LABELS="needs-maintainer-review"
+	SUPERSEDING_PR="99"
+	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 3 ]] || return 1
+	[[ ! -e "${TEST_ROOT}/pr-close-args" ]] || return 1
+	CLOSED_ISSUES_JSON="[]"
+	PR_LABELS=""
+	SUPERSEDING_PR=""
+	return 0
+}
+
+test_preserves_hold_when_source_head_drifted() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/pr-close-args"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON='[{"number":42,"body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->","labels":[{"name":"origin:worker"},{"name":"status:done"},{"name":"solved:worker"}]}]'
+	AUTHENTIC=1
+	PR_LABELS="needs-maintainer-review"
+	PR_FINAL_JSON='{"state":"OPEN","headRefOid":"head-changed","labels":[{"name":"needs-maintainer-review"}]}'
+	SUPERSEDING_PR="99"
+	_pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 3 ]] || return 1
+	[[ ! -e "${TEST_ROOT}/pr-close-args" ]] || return 1
+	CLOSED_ISSUES_JSON="[]"
+	PR_FINAL_JSON='{"state":"OPEN","headRefOid":"head-current","labels":[{"name":"needs-maintainer-review"}]}'
+	PR_LABELS=""
+	SUPERSEDING_PR=""
+	return 0
+}
+
+test_dry_run_reports_supersession_without_close() {
+	local route_rc=0
+
+	rm -f "${TEST_ROOT}/pr-close-args"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON='[{"number":42,"body":"<!-- aidevops:dependabot-pr-intake repo=owner/repo pr=30038 -->","labels":[{"name":"origin:worker"},{"name":"status:done"},{"name":"solved:worker"}]}]'
+	AUTHENTIC=1
+	PR_LABELS="needs-maintainer-review"
+	SUPERSEDING_PR="99"
+	DRY_RUN=1 _pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "policy-ineligible" || route_rc=$?
+	[[ "$route_rc" -eq 4 ]] || return 1
+	[[ ! -e "${TEST_ROOT}/pr-close-args" ]] || return 1
+	assert_file_contains "dry-run reports verified source supersession" "$LOGFILE" "would close as superseded by merged PR #99"
+	CLOSED_ISSUES_JSON="[]"
+	PR_LABELS=""
+	SUPERSEDING_PR=""
+	return 0
+}
+
 test_fails_closed_when_hold_state_is_unavailable() {
 	local route_rc=0
 
 	rm -f "${TEST_ROOT}/create-args"
-	ISSUES_JSON="[]"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON="[]"
 	AUTHENTIC=1
 	PR_LABELS=""
 	PR_VIEW_FAIL=1
@@ -146,7 +272,8 @@ test_fails_closed_when_hold_state_is_unavailable() {
 
 test_dry_run_has_no_write() {
 	rm -f "${TEST_ROOT}/create-args"
-	ISSUES_JSON="[]"
+	OPEN_ISSUES_JSON="[]"
+	CLOSED_ISSUES_JSON="[]"
 	AUTHENTIC=1
 	DRY_RUN=1 _pulse_route_dependabot_pr_to_worker_issue "30038" "owner/repo" "app/dependabot" "head-current" "merge-conflict"
 	[[ ! -e "${TEST_ROOT}/create-args" ]]
@@ -232,6 +359,11 @@ main() {
 	test_rejects_unverified_author
 	printf 'PASS unverified authors fail closed\n'
 	test_preserves_explicit_maintainer_hold
+	test_closes_held_source_after_verified_replacement
+	test_preserves_hold_when_terminal_issue_has_no_merged_replacement
+	test_preserves_hold_without_worker_solution_attribution
+	test_preserves_hold_when_source_head_drifted
+	test_dry_run_reports_supersession_without_close
 	test_fails_closed_when_hold_state_is_unavailable
 	test_dry_run_has_no_write
 	printf 'PASS dry-run performs no GitHub write\n'
