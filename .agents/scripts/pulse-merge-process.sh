@@ -799,8 +799,9 @@ _pr_required_checks_pass() {
 # Returns 0 if update-branch succeeded (caller should skip fix-worker
 # routing and let the next pulse cycle re-check CI on the rebased HEAD).
 # Returns 1 if the PR is already up-to-date with its base or if update-branch
-# failed. Standard callers may route a fix worker; review-repair callers must
-# preserve CHANGES_REQUESTED and return without merge or feedback routing.
+# failed. Standard callers may route a fix worker. Review-repair callers must
+# preserve CHANGES_REQUESTED; a typed caller may separately evaluate trust-gated
+# CI repair after a no-op, but must always return before merge.
 #
 # Rate-limit: one call per PR per merge cycle — same as t2116.
 #
@@ -989,6 +990,59 @@ _attempt_green_behind_update_branch() {
 	fi
 
 	echo "[pulse-merge] PR #${pr_number} in ${repo_slug}: green but BEHIND without native auto-merge — update-branch failed, falling through: ${_ub_output}" >>"$LOGFILE"
+	return 1
+}
+
+#######################################
+# Keep a converged CHANGES_REQUESTED PR on a strictly non-merge path while
+# evaluating bounded branch refresh and CI repair. All caller-side trust gates
+# have already passed for the exact PR/head; the CI router independently binds
+# actionable terminal failures to the live head before dispatch.
+#
+# Args: $1=pr_number, $2=repo_slug, $3=base_ref, $4=head_sha,
+#       $5=linked_issue, $6=pr_labels, $7=updated_at, $8=repair_mode
+# Returns: 1 always so review-blocked PRs never fall through toward merge.
+#######################################
+_handle_review_blocked_ci_repair() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local base_ref="$3"
+	local head_sha="$4"
+	local linked_issue="$5"
+	local pr_labels="$6"
+	local updated_at="$7"
+	local repair_mode="$8"
+	local ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
+	local ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
+	local route_rc=0
+
+	if [[ "${DRY_RUN:-0}" == "1" ]]; then
+		echo "[pulse-wrapper] DRY-RUN: PR #${pr_number} in ${repo_slug} remains CHANGES_REQUESTED; would evaluate ${repair_mode}" >>"$LOGFILE"
+		return 1
+	fi
+	if _attempt_pr_ci_rebase_retry "$pr_number" "$repo_slug" "$base_ref" "$head_sha" "review-repair"; then
+		return 1
+	fi
+	if [[ "$repair_mode" == "$ci_rebase_only" ]]; then
+		echo "[pulse-wrapper] Merge pass: preserving PR #${pr_number} in ${repo_slug} — CHANGES_REQUESTED remains blocking and strict CI-drift rebase was not eligible or did not succeed" >>"$LOGFILE"
+		return 1
+	fi
+	if [[ "$repair_mode" != "$ci_repair_only" ]]; then
+		echo "[pulse-wrapper] Merge pass: preserving PR #${pr_number} in ${repo_slug} — unknown review-blocked CI repair mode ${repair_mode}" >>"$LOGFILE"
+		return 1
+	fi
+	if _pr_required_checks_pass "$pr_number" "$repo_slug"; then
+		echo "[pulse-wrapper] Merge pass: preserving PR #${pr_number} in ${repo_slug} — CHANGES_REQUESTED remains blocking and required checks do not need CI repair" >>"$LOGFILE"
+		return 1
+	fi
+
+	_route_pr_to_fix_worker "$pr_number" "$repo_slug" "$linked_issue" "ci" "$pr_labels" "" "$updated_at" "$head_sha" || route_rc=$?
+	if [[ "$route_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| "$route_rc" -eq "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+		echo "[pulse-wrapper] Merge pass: CI repair-only route for PR #${pr_number} in ${repo_slug} remains partial; preserving the PR for retry or maintainer review" >>"$LOGFILE"
+	else
+		echo "[pulse-wrapper] Merge pass: preserving PR #${pr_number} in ${repo_slug} — CHANGES_REQUESTED remains blocking after trust-gated CI repair evaluation" >>"$LOGFILE"
+	fi
 	return 1
 }
 

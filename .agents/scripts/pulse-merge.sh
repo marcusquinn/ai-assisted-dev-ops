@@ -81,6 +81,7 @@ PULSE_MERGE_BOOL_TRUE="true"
 _PULSE_MERGE_REMEDIATION_OUTCOME=""
 PULSE_REVIEW_DECISION_CHANGES_REQUESTED="CHANGES_REQUESTED"
 PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY="ci-rebase-only"
+PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY="ci-repair-only"
 
 # t2863: Module-level variable defaults (set -u guards).
 # When this module is sourced standalone (e.g. pulse-merge-routine.sh, test
@@ -332,7 +333,7 @@ source "${_PULSE_MERGE_DIR}/pulse-merge-required-checks.sh"
 #
 # Returns 0 if the caller may keep evaluating merge gates.
 # Returns 1 if the PR remains review-blocked. A converged remediation may also
-# set review_gate_mode_dest_var=ci-rebase-only for an explicit repair-only path.
+# set review_gate_mode_dest_var=ci-repair-only for an explicit repair-only path.
 # Args: $1=pr_number, $2=repo_slug, $3=pr_review, $4=linked_issue, $5=pr_labels (optional),
 #       $6=dismissed_dest_var (optional), $7=review_gate_mode_dest_var (optional)
 #######################################
@@ -346,7 +347,7 @@ _handle_changes_requested_review_gate() {
 	local review_gate_mode_dest_var="${7:-}"
 	local _cr_pr_labels=""
 	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
-	local _ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
+	local _ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
 
 	if [[ -n "$dismissed_dest_var" && "$dismissed_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
 		printf -v "$dismissed_dest_var" '%s' "0"
@@ -397,9 +398,9 @@ _handle_changes_requested_review_gate() {
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; response remediation already active/deferred, preserving PR" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "converged" ]]; then
 			if [[ -n "$review_gate_mode_dest_var" && "$review_gate_mode_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-				printf -v "$review_gate_mode_dest_var" '%s' "$_ci_rebase_only"
+				printf -v "$review_gate_mode_dest_var" '%s' "$_ci_repair_only"
 			fi
-			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; no matching unresolved thread remained after refresh, preserving the review block while allowing trust-gated CI-drift repair evaluation" >>"$LOGFILE"
+			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; no matching unresolved thread remained after refresh, preserving the review block while allowing trust-gated CI repair evaluation" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "maintainer_attention" ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; terminal review-thread maintainer attention pending, preserving PR" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED" ]]; then
@@ -426,11 +427,11 @@ _handle_changes_requested_review_gate() {
 #######################################
 # Run all merge-eligibility or repair-authority gate checks for a single PR.
 # Returns 0 if all gates for the requested mode pass. Only merge mode permits
-# the caller to proceed toward merge; ci-rebase-only must return after repair.
+# the caller to proceed toward merge; repair-only modes must return after repair.
 # Returns 1 if any gate fails (PR should be skipped).
 # Args: $1=pr_number, $2=repo_slug, $3=pr_author, $4=pr_review, $5=linked_issue,
 #       $6=pr_labels (optional), $7=expected_head_sha (optional),
-#       $8=review_gate_mode (optional: merge|ci-rebase-only)
+#       $8=review_gate_mode (optional: merge|ci-rebase-only|ci-repair-only)
 #######################################
 _check_pr_merge_gates() {
 	local pr_number="$1"
@@ -443,6 +444,7 @@ _check_pr_merge_gates() {
 	local review_gate_mode="${8:-merge}"
 	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
 	local _ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
+	local _ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
 	local _dependabot_intake_rc=0
 	_PULSE_REVIEW_GATE_EVIDENCE=""
 	if [[ -n "$linked_issue" ]] &&
@@ -472,12 +474,12 @@ _check_pr_merge_gates() {
 			return 1
 		fi
 		;;
-	"$_ci_rebase_only")
+	"$_ci_rebase_only" | "$_ci_repair_only")
 		# The early review gate already proved remediation converged. Skip only
 		# repeated review routing so the normal non-review trust gates can run.
 		# The caller must remain on the repair-only path and return before merge.
 		if [[ "$pr_review" != "$_changes_requested" ]]; then
-			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — ci-rebase-only review mode requires CHANGES_REQUESTED" >>"$LOGFILE"
+			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — ${review_gate_mode} review mode requires CHANGES_REQUESTED" >>"$LOGFILE"
 			return 1
 		fi
 		;;
@@ -612,12 +614,15 @@ _check_pr_merge_gates() {
 	fi
 
 	# A converged CHANGES_REQUESTED remediation may perform a branch repair,
-	# but it cannot satisfy review. The ownership, permission, maintainer, and
-	# worker-brief trust gates above still apply; the review-bot gate remains a
-	# merge-only boundary and is re-evaluated on a later cycle after review.
+	# but it cannot satisfy review. Preserve the existing narrow rebase-only
+	# boundary; broader CI repair must also pass current-head review-bot evidence
+	# below before it receives worker-dispatch authority.
 	if [[ "$review_gate_mode" == "$_ci_rebase_only" ]]; then
-		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} passed non-review trust gates for ci-rebase-only evaluation; CHANGES_REQUESTED remains blocking" >>"$LOGFILE"
+		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} passed non-review trust gates for ${review_gate_mode} evaluation; CHANGES_REQUESTED remains blocking" >>"$LOGFILE"
 		return 0
+	fi
+	if [[ "$review_gate_mode" == "$_ci_repair_only" ]]; then
+		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} passed non-review trust gates for ${review_gate_mode} evaluation; requiring current-head review-bot evidence before CI repair" >>"$LOGFILE"
 	fi
 
 	# ── Review bot gate (GH#17490) ──
@@ -1591,6 +1596,7 @@ _process_single_ready_pr() {
 	local _review_gate_mode="merge"
 	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
 	local _ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
+	local _ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
 	if [[ "$pr_review" == "$_changes_requested" ]]; then
 		if [[ "${DRY_RUN:-0}" == "1" ]]; then
 			echo "[pulse-wrapper] DRY-RUN: PR #${pr_number} in ${repo_slug} has CHANGES_REQUESTED; would evaluate review remediation or repair routing" >>"$LOGFILE"
@@ -1600,7 +1606,7 @@ _process_single_ready_pr() {
 		local _early_review_dismissed="0"
 		_early_review_linked_issue=$(_extract_linked_issue "$pr_number" "$repo_slug" 2>/dev/null) || _early_review_linked_issue=""
 		if ! _handle_changes_requested_review_gate "$pr_number" "$repo_slug" "$pr_review" "$_early_review_linked_issue" "$pr_labels" _early_review_dismissed _review_gate_mode; then
-			if [[ "$_review_gate_mode" != "$_ci_rebase_only" ]]; then
+			if [[ "$_review_gate_mode" != "$_ci_rebase_only" && "$_review_gate_mode" != "$_ci_repair_only" ]]; then
 				[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}mergeability_s" "$_mergeability_start"
 				return 1
 			fi
@@ -1640,7 +1646,7 @@ _process_single_ready_pr() {
 
 	# Repair-only mode must reach its strict update guard without any terminal PR
 	# mutation; CHANGES_REQUESTED still owns the PR lifecycle in this cycle.
-	if [[ "$_review_gate_mode" != "$_ci_rebase_only" ]] \
+	if [[ "$_review_gate_mode" != "$_ci_rebase_only" && "$_review_gate_mode" != "$_ci_repair_only" ]] \
 		&& [[ "${DRY_RUN:-0}" != "1" ]] \
 		&& declare -F _pm_close_superseded_duplicate_pr_if_issue_solved >/dev/null 2>&1 \
 		&& _pm_close_superseded_duplicate_pr_if_issue_solved "$pr_number" "$repo_slug" "$linked_issue" "$pr_labels"; then
@@ -1648,21 +1654,13 @@ _process_single_ready_pr() {
 	fi
 
 	# A converged response-remediation cycle does not clear CHANGES_REQUESTED.
-	# It authorizes one narrowly bounded repair attempt only: all normal trust
-	# gates above must pass, the current head must have settled terminal-failure
-	# evidence, and the branch must be explicitly behind. Always return here so
-	# passing or indeterminate CI can never turn this mode into a merge bypass.
-	if [[ "$_review_gate_mode" == "$_ci_rebase_only" ]]; then
-		if [[ "${DRY_RUN:-0}" == "1" ]]; then
-			echo "[pulse-wrapper] DRY-RUN: PR #${pr_number} in ${repo_slug} remains CHANGES_REQUESTED; would evaluate strict CI-drift rebase only" >>"$LOGFILE"
-			return 1
-		fi
+	# It authorizes only the typed, non-merge repair path selected above. Always
+	# return after that evaluation so green, pending, or indeterminate CI can
+	# never turn review remediation into a merge bypass.
+	if [[ "$_review_gate_mode" == "$_ci_rebase_only" || "$_review_gate_mode" == "$_ci_repair_only" ]]; then
 		[[ -n "$timing_prefix" ]] && _branch_protection_start=$(_pmp_now_epoch)
-		if _attempt_pr_ci_rebase_retry "$pr_number" "$repo_slug" "$pr_base_ref_name" "$pr_head_ref_oid" "review-repair"; then
-			[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}branch_protection_s" "$_branch_protection_start"
-			return 1
-		fi
-		echo "[pulse-wrapper] Merge pass: preserving PR #${pr_number} in ${repo_slug} — CHANGES_REQUESTED remains blocking and strict CI-drift rebase was not eligible or did not succeed" >>"$LOGFILE"
+		_handle_review_blocked_ci_repair "$pr_number" "$repo_slug" "$pr_base_ref_name" "$pr_head_ref_oid" \
+			"$linked_issue" "$pr_labels" "$pr_updated_at" "$_review_gate_mode" || true
 		[[ -n "$timing_prefix" ]] && _pmp_add_elapsed_seconds "${timing_prefix}branch_protection_s" "$_branch_protection_start"
 		return 1
 	fi

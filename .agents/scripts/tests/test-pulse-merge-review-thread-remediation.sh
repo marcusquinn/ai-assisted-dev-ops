@@ -513,8 +513,8 @@ test_changes_requested_converged_remediation_exposes_repair_only_mode() {
 	local gate_rc=0
 
 	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" "" review_gate_mode || gate_rc=$?
-	if [[ "$gate_rc" -eq 1 && "$review_gate_mode" == "ci-rebase-only" && ! -s "$route_log" ]] &&
-		grep -q 'preserving the review block while allowing trust-gated CI-drift repair evaluation' "$LOGFILE"; then
+	if [[ "$gate_rc" -eq 1 && "$review_gate_mode" == "ci-repair-only" && ! -s "$route_log" ]] &&
+		grep -q 'preserving the review block while allowing trust-gated CI repair evaluation' "$LOGFILE"; then
 		print_result "converged response remediation exposes repair-only mode" 0
 	else
 		print_result "converged response remediation exposes repair-only mode" 1 \

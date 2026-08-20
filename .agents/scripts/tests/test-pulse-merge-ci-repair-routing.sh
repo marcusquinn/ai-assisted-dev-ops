@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
+PROCESS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-process.sh"
 FEEDBACK_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback.sh"
 FINALIZER_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback-finalizer.sh"
 
@@ -366,12 +367,16 @@ extract_function() {
 }
 
 define_process_helper() {
-	local fn_src="" review_gate_src=""
+	local fn_src="" repair_helper_src="" review_gate_src=""
 	review_gate_src=$(extract_function _handle_changes_requested_review_gate "$MERGE_SCRIPT")
+	repair_helper_src=$(extract_function _handle_review_blocked_ci_repair "$PROCESS_SCRIPT")
 	fn_src=$(extract_function _process_single_ready_pr "$MERGE_SCRIPT")
-	[[ -n "$review_gate_src" && -n "$fn_src" ]] || return 1
+	[[ -n "$review_gate_src" && -n "$repair_helper_src" && -n "$fn_src" ]] || return 1
 
 	_OW_LABEL_PAT=",origin:worker,"
+	PULSE_MERGE_BOOL_TRUE="true"
+	PULSE_REVIEW_EVIDENCE_SCHEMA="aidevops.review-gate-evidence/v1"
+	PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED="repeat_exhausted"
 	PULSE_UNKNOWN_STATE="UNKNOWN"
 	PULSE_MERGE_CLOSE_CONFLICTING=false
 	DRY_RUN=0
@@ -444,6 +449,8 @@ define_process_helper() {
 
 	# shellcheck disable=SC1090
 	eval "$review_gate_src"
+	# shellcheck disable=SC1090
+	eval "$repair_helper_src"
 	# shellcheck disable=SC1090
 	eval "$fn_src"
 	return 0
@@ -581,7 +588,7 @@ test_rebase_success_defers_ci_repair_route() {
 	return 0
 }
 
-test_converged_changes_requested_runs_strict_rebase_only() {
+test_converged_changes_requested_prefers_strict_rebase_before_ci_repair() {
 	setup_test_env
 	define_process_helper || { print_result "defines process helper for review-repair rebase" 1 "could not extract _process_single_ready_pr or review gate"; teardown_test_env; return 0; }
 	_pulse_merge_changes_requested_thread_remediation_first_enabled() { return 0; }
@@ -595,7 +602,7 @@ test_converged_changes_requested_runs_strict_rebase_only() {
 
 	if [[ "$rc" -ne 1 ]]; then
 		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "Expected skip return 1, got ${rc}"
-	elif [[ "$GATE_CALLS" -ne 1 || "$GATE_REVIEW_ARG" != "CHANGES_REQUESTED" || "$GATE_REVIEW_MODE" != "ci-rebase-only" ]]; then
+	elif [[ "$GATE_CALLS" -ne 1 || "$GATE_REVIEW_ARG" != "CHANGES_REQUESTED" || "$GATE_REVIEW_MODE" != "ci-repair-only" ]]; then
 		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "gate_calls=${GATE_CALLS}, gate_review=${GATE_REVIEW_ARG}, gate_mode=${GATE_REVIEW_MODE}"
 	elif [[ "$REBASE_RETRY_CALLS" -ne 1 || "$REBASE_RETRY_POLICY" != "review-repair" ]]; then
 		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "rebase_calls=${REBASE_RETRY_CALLS}, policy=${REBASE_RETRY_POLICY}"
@@ -604,7 +611,32 @@ test_converged_changes_requested_runs_strict_rebase_only() {
 	elif [[ "$ROUTE_CALLS" -ne 0 ]]; then
 		print_result "converged CHANGES_REQUESTED runs strict rebase only" 1 "route_calls=${ROUTE_CALLS}, route_args=${ROUTE_ARGS}"
 	else
-		print_result "converged CHANGES_REQUESTED runs trust-gated strict rebase only" 0
+		print_result "converged CHANGES_REQUESTED prefers trust-gated strict rebase before CI repair" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_converged_changes_requested_routes_terminal_ci_after_rebase_noop() {
+	setup_test_env
+	define_process_helper || { print_result "defines process helper for review-blocked CI repair" 1 "could not extract repair helpers"; teardown_test_env; return 0; }
+	_pulse_merge_changes_requested_thread_remediation_first_enabled() { return 0; }
+	_pulse_merge_dispatch_review_thread_remediation() { _PULSE_MERGE_REMEDIATION_OUTCOME="converged"; return 0; }
+
+	local pr_object rc=0
+	PR_REQUIRED_CHECKS_RC=1
+	REBASE_RETRY_RC=1
+	printf -v pr_object '%s' '{"number":561,"state":"OPEN","mergeable":"MERGEABLE","reviewDecision":"CHANGES_REQUESTED","author":{"login":"worker-bot"},"title":"GH#505: repair terminal CI","updatedAt":"2026-08-03T00:00:00Z","headRefOid":"sha561","headRefName":"fix/review-ci","baseRefName":"main","labels":[{"name":"origin:worker"},{"name":"status:in-review"}],"isDraft":false}'
+	_process_single_ready_pr "owner/repo" "$pr_object" || rc=$?
+
+	if [[ "$rc" -ne 1 ]]; then
+		print_result "converged CHANGES_REQUESTED routes terminal CI after rebase no-op" 1 "Expected skip return 1, got ${rc}"
+	elif [[ "$GATE_REVIEW_MODE" != "ci-repair-only" || "$REBASE_RETRY_CALLS" -ne 1 ]]; then
+		print_result "converged CHANGES_REQUESTED routes terminal CI after rebase no-op" 1 "gate_mode=${GATE_REVIEW_MODE}, rebase_calls=${REBASE_RETRY_CALLS}"
+	elif [[ "$ROUTE_CALLS" -ne 1 || "$ROUTE_ARGS" != "561|owner/repo|42|ci" ]]; then
+		print_result "converged CHANGES_REQUESTED routes terminal CI after rebase no-op" 1 "route_calls=${ROUTE_CALLS}, route_args=${ROUTE_ARGS}"
+	else
+		print_result "converged CHANGES_REQUESTED routes one trust-gated terminal CI repair" 0
 	fi
 	teardown_test_env
 	return 0
@@ -631,7 +663,7 @@ test_converged_changes_requested_never_falls_through_to_merge() {
 	return 0
 }
 
-test_repair_only_gate_stops_before_review_bot_boundary() {
+test_ci_rebase_only_gate_stops_before_review_bot_boundary() {
 	setup_test_env
 	define_process_helper || { print_result "defines repair-only gate helper" 1 "could not extract review gate"; teardown_test_env; return 0; }
 	local gate_src="" gate_rc=0 review_bot_calls=0
@@ -675,6 +707,60 @@ test_repair_only_gate_stops_before_review_bot_boundary() {
 		print_result "repair-only gate stops before review-bot boundary" 1 "gate_rc=${gate_rc}, review_bot_calls=${review_bot_calls}"
 	else
 		print_result "repair-only mode applies non-review trust gates without treating review as cleared" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_ci_repair_only_gate_requires_review_bot_boundary() {
+	setup_test_env
+	define_process_helper || { print_result "defines CI repair-only gate helper" 1 "could not extract review gate"; teardown_test_env; return 0; }
+	local gate_src="" gate_rc=0
+	local old_agents_dir="${AGENTS_DIR:-}"
+	local review_bot_log="${TEST_ROOT}/review-bot.log"
+	gate_src=$(extract_function _check_pr_merge_gates "$MERGE_SCRIPT")
+	if [[ -z "$gate_src" ]]; then
+		print_result "CI repair-only gate requires review-bot boundary" 1 "could not extract _check_pr_merge_gates"
+		teardown_test_env
+		return 0
+	fi
+	AGENTS_DIR="${TEST_ROOT}/agents"
+	mkdir -p "${AGENTS_DIR}/scripts"
+	: >"${AGENTS_DIR}/scripts/review-bot-gate-helper.sh"
+	_is_collaborator_author() { _PULSE_AUTHOR_PERMISSION_VALUE="write"; return 0; }
+	check_pr_modifies_workflows() { return 1; }
+	_pm_issue_api() { local repo_slug="$1" issue_number="$2"; printf 'repos/%s/issues/%s\n' "$repo_slug" "$issue_number"; return 0; }
+	gh() { return 0; }
+	gh_pr_view() {
+		if [[ "$*" == *"labels,isDraft"* ]]; then
+			printf '%s\n' '{"labels":[{"name":"origin:worker"}],"isDraft":false}'
+		else
+			printf 'origin:worker\n'
+		fi
+		return 0
+	}
+	_attempt_worker_briefed_auto_merge() { return 0; }
+	bash() {
+		printf 'called\n' >>"$review_bot_log"
+		printf '%s\n' '{"schema":"aidevops.review-gate-evidence/v1","repo":"owner/repo","pr":560,"head_sha":"sha560","status":"PASS","permitted":true,"state":"pass","merge_gate":"clear"}'
+		return 0
+	}
+	# shellcheck disable=SC1090
+	eval "$gate_src"
+
+	_check_pr_merge_gates "560" "owner/repo" "worker-bot" "CHANGES_REQUESTED" "42" "origin:worker" "sha560" "ci-repair-only" || gate_rc=$?
+	unset -f bash gh gh_pr_view _is_collaborator_author check_pr_modifies_workflows \
+		_pm_issue_api _attempt_worker_briefed_auto_merge _check_pr_merge_gates
+	if [[ -n "$old_agents_dir" ]]; then
+		AGENTS_DIR="$old_agents_dir"
+	else
+		unset AGENTS_DIR
+	fi
+
+	if [[ "$gate_rc" -ne 0 || ! -s "$review_bot_log" ]]; then
+		print_result "CI repair-only gate requires review-bot boundary" 1 "gate_rc=${gate_rc}, review_bot_calls=$(wc -l <"$review_bot_log")"
+	else
+		print_result "CI repair-only mode requires current-head review-bot evidence" 0
 	fi
 	teardown_test_env
 	return 0
@@ -1315,9 +1401,11 @@ test_ci_feedback_includes_required_and_advisory_failures_together() {
 main() {
 	test_red_pr_passes_gates_before_repair_route
 	test_rebase_success_defers_ci_repair_route
-	test_converged_changes_requested_runs_strict_rebase_only
+	test_converged_changes_requested_prefers_strict_rebase_before_ci_repair
+	test_converged_changes_requested_routes_terminal_ci_after_rebase_noop
 	test_converged_changes_requested_never_falls_through_to_merge
-	test_repair_only_gate_stops_before_review_bot_boundary
+	test_ci_rebase_only_gate_stops_before_review_bot_boundary
+	test_ci_repair_only_gate_requires_review_bot_boundary
 	test_preflight_terminal_blocker_routes_supplied_evidence
 	test_changes_requested_unknown_routes_before_mergeable_skip
 	test_rest_missing_review_decision_refreshes_before_ci_route
