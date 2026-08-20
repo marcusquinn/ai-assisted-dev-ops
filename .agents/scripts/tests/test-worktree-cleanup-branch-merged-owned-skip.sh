@@ -1042,6 +1042,36 @@ RACE_GIT
 	return 0
 }
 
+test_force_merged_preserves_unreadable_index() {
+	local repo_path="${TEST_ROOT}/repo-unreadable-index"
+	local wt_path="${TEST_ROOT}/wt-unreadable-index"
+	local log_file="${TEST_ROOT}/unreadable-index-cleanup.log"
+	local branch="feature/gh-99026-unreadable-index"
+	local git_dir=""
+	local rc=0
+	export AIDEVOPS_CLEANUP_LOG="$log_file"
+	setup_repo "$repo_path" || rc=1
+	git -C "$repo_path" branch "$branch" main || rc=1
+	git -C "$repo_path" worktree add -q "$wt_path" "$branch" || rc=1
+	git_dir=$(git -C "$wt_path" rev-parse --absolute-git-dir) || rc=1
+	: >"${git_dir}/index"
+
+	if (
+		cd "$repo_path" || exit 1
+		source_clean_lib_with_stubs || exit 1
+		_clean_remove_classified_worktree "$wt_path" "$branch" "true" "false" \
+			"test=unreadable-index" "$repo_path"
+	); then
+		rc=1
+	fi
+
+	[[ -d "$wt_path" ]] || rc=1
+	assert_file_contains "$log_file" "worktree-skipped.*unreadable-git-state.*mode=skipped" || rc=1
+	print_result "force-merged cleanup preserves unreadable index" "$rc" \
+		"Expected unreadable index to block forced merged-worktree removal"
+	return 0
+}
+
 echo "=== test-worktree-cleanup-branch-merged-owned-skip.sh ==="
 test_protected_pass_set_blocks_branch_merged_removal
 test_terminal_pr_proof_bypasses_protected_pass_skip
@@ -1069,6 +1099,7 @@ test_closed_issue_unproven_branch_removes_worktree_preserves_branch
 test_fix_numeric_closed_issue_branch_removes_worktree_preserves_branch
 test_closed_issue_dirty_unproven_branch_stashes_and_preserves_branch
 test_closed_issue_dirty_lock_race_preserves_files
+test_force_merged_preserves_unreadable_index
 
 printf '\nResults: %d/%d passed, %d failed.\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 if [[ "$TESTS_FAILED" -gt 0 ]]; then

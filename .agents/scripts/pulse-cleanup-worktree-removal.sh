@@ -647,6 +647,23 @@ _pc_permanently_remove_eligible_orphan() {
 	return 0
 }
 
+_pc_read_worktree_status_or_skip() {
+	local wt_path_age="$1"
+	local wt_branch_age="$2"
+	local wt_age_secs="$3"
+	local status_out=""
+
+	if ! status_out=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt_path_age" status --porcelain 2>/dev/null); then
+		local unreadable_context="branch=${wt_branch_age:-detached} age_secs=${wt_age_secs}"
+		echo "[pulse-wrapper] Orphan cleanup: preserving ${wt_branch_age:-detached} — Git index/state is unreadable" >>"$LOGFILE"
+		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
+			"unreadable-git-state" "$_PC_REMOVAL_SKIPPED" "$unreadable_context"
+		return 1
+	fi
+	printf '%s' "$status_out"
+	return 0
+}
+
 #######################################
 # Per-worktree age-based orphan cleanup decision and removal.
 #
@@ -688,13 +705,7 @@ _cleanup_single_worktree() {
 	local commits_ahead=0
 	commits_ahead=$(_pc_commits_ahead_from_default "$rp_age" "$wt_path_age" "$main_branch") || return 1
 	local status_out=""
-	if ! status_out=$(GIT_OPTIONAL_LOCKS=0 git -C "$wt_path_age" status --porcelain 2>/dev/null); then
-		local unreadable_context="branch=${wt_branch_age:-detached} age_secs=${wt_age_secs}"
-		echo "[pulse-wrapper] Orphan cleanup: preserving ${wt_branch_age:-detached} — Git index/state is unreadable" >>"$LOGFILE"
-		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
-			"unreadable-git-state" "$_PC_REMOVAL_SKIPPED" "$unreadable_context"
-		return 1
-	fi
+	status_out=$(_pc_read_worktree_status_or_skip "$wt_path_age" "$wt_branch_age" "$wt_age_secs") || return 1
 	local dirty_count=0
 	if [[ -n "$status_out" ]]; then
 		dirty_count=$(printf '%s\n' "$status_out" | wc -l | tr -d ' ') || return 1
