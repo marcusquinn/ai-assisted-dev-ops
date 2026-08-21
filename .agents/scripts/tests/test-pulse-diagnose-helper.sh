@@ -91,17 +91,19 @@ FIXTURE_BLOCKERS="${TMPDIR_TEST}/worker-progress-blockers.jsonl"
 FIXTURE_THREAD_STATE_DIR="${TMPDIR_TEST}/pr-review-thread-response"
 FIXTURE_DISPATCH_LEDGER="${TMPDIR_TEST}/dispatch-ledger.jsonl"
 FIXTURE_WORKTREE_REGISTRY="${TMPDIR_TEST}/worktree-registry.db"
+FIXTURE_CI_REPAIR_STATE_DIR="${TMPDIR_TEST}/ci-pr-repair"
 FIXTURE_ANCILLARY_REMOTE="${TMPDIR_TEST}/ancillary-remote.git"
 FIXTURE_ANCILLARY_WORKTREE="${TMPDIR_TEST}/ancillary-worktree"
 export PULSE_DIAGNOSE_BLOCKER_LOG="$FIXTURE_BLOCKERS"
 export PULSE_DIAGNOSE_THREAD_RESPONSE_STATE_DIR="$FIXTURE_THREAD_STATE_DIR"
 export PULSE_DIAGNOSE_DISPATCH_LEDGER_FILE="$FIXTURE_DISPATCH_LEDGER"
 export PULSE_DIAGNOSE_WORKTREE_REGISTRY_DB="$FIXTURE_WORKTREE_REGISTRY"
+export PULSE_DIAGNOSE_CI_REPAIR_STATE_DIR="$FIXTURE_CI_REPAIR_STATE_DIR"
 export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="$WRAPPER_GH_COOLDOWN"
 export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="$WRAPPER_GH_COOLDOWN_EVENTS"
 unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
 
-mkdir -p "$FIXTURE_THREAD_STATE_DIR"
+mkdir -p "$FIXTURE_THREAD_STATE_DIR" "$FIXTURE_CI_REPAIR_STATE_DIR"
 git init --bare -q "$FIXTURE_ANCILLARY_REMOTE"
 git clone -q "$FIXTURE_ANCILLARY_REMOTE" "$FIXTURE_ANCILLARY_WORKTREE" 2>/dev/null
 git -C "$FIXTURE_ANCILLARY_WORKTREE" config user.name "aidevops-test"
@@ -237,7 +239,7 @@ JSON
 fi
 if [[ "$*" == *"pr view"*"20340"* ]]; then
   cat <<'JSON'
-{"number":20340,"title":"t2711: add rate limit guard","state":"OPEN","author":{"login":"marcusquinn"},"mergedAt":null,"closedAt":null,"createdAt":"2026-04-21T18:50:00Z","labels":[{"name":"origin:worker"}],"reviewDecision":"","mergeStateStatus":"BLOCKED","headRefName":"feature/t2711","baseRefName":"main","isDraft":false}
+{"number":20340,"title":"t2711: add rate limit guard","state":"OPEN","author":{"login":"marcusquinn"},"mergedAt":null,"closedAt":null,"createdAt":"2026-04-21T18:50:00Z","labels":[{"name":"origin:worker"}],"reviewDecision":"","mergeStateStatus":"BLOCKED","headRefName":"feature/t2711","headRefOid":"abc20340remotehead","baseRefName":"main","isDraft":false}
 JSON
   exit 0
 fi
@@ -298,6 +300,18 @@ if [[ "$*" == *"api"*"issues/21860/comments"* ]]; then
   [[ "$*" == *"--paginate"*"--slurp"* ]] || exit 1
   cat <<'JSON'
 [[{"created_at":"2026-04-27T10:00:00Z","user":{"login":"alex-solovyev"},"body":"WORKER_BRANCH_ORPHAN: existing PR #21876 for branch feature/auto-20260427-gh21860 already open\n<!-- ops:start -->\nworker-orphan comment\n<!-- ops:end -->"},{"created_at":"2026-04-27T10:05:00Z","user":{"login":"alex-solovyev"},"body":"WORKER_BRANCH_ORPHAN: second re-dispatch attempt detected on same branch"},{"created_at":"2026-04-27T10:06:00Z","user":{"login":"marcusquinn"},"body":"CLAIM_RELEASED reason=worker_worktree_continuation_state_rejected runner=runner-a exit=1 session_count=0"},{"created_at":"2026-04-27T10:07:00Z","user":{"login":"marcusquinn"},"body":"CLAIM_RELEASED reason=worker_worktree_owner_concurrent_mutation runner=runner-a exit=1 session_count=0"},{"created_at":"2026-04-27T10:10:00Z","user":{"login":"marcusquinn"},"body":"Looks like the pulse is looping on this one"}]]
+JSON
+  exit 0
+fi
+if [[ "$*" == *"api"*"issues/20340/comments"* ]]; then
+  cat <<'JSON'
+[[{"created_at":"2026-04-21T19:01:00Z","author_association":"COLLABORATOR","user":{"login":"remote-runner"},"body":"## CI repair feedback routed to issue #20300\n<!-- feedback-route:start:ci:PR20340:SHAabc20340remotehead -->"}]]
+JSON
+  exit 0
+fi
+if [[ "$*" == *"api"*"issues/20300"* ]]; then
+  cat <<'JSON'
+{"state":"open","labels":[{"name":"status:available"},{"name":"source:ci-feedback"}],"body":"Repair queued.\n<!-- feedback-route:start:ci:PR20340:SHAabc20340remotehead -->\n<!-- feedback-route:complete:ci:PR20340:SHAabc20340remotehead -->"}
 JSON
   exit 0
 fi
@@ -447,6 +461,10 @@ assert_contains "shows ancillary attempts and outcome" "thread-response  attempt
 assert_contains "shows dead ancillary registry owner" "owner_status=dead" "$output"
 assert_contains "shows dirty ancillary worktree without inventing a blocker" "dirty_files=1  blocked_reason=" "$output"
 assert_contains "shows bounded dirty path evidence" "diagnostic.txt" "$output"
+assert_contains "shows durable remote CI feedback route" "remote route: kind=ci head=abc20340remotehead author=remote-runner complete=true" "$output"
+assert_contains "shows linked issue recovery state" "linked issue: #20300 state=open labels=status:available,source:ci-feedback" "$output"
+assert_contains "uses remote evidence when local repair logs are incomplete" "local repair: unavailable (remote evidence remains authoritative)" "$output"
+assert_contains "reports the remote recovery next action" "next action: reconcile_remote_route_and_linked_issue" "$output"
 
 sqlite3 "$FIXTURE_WORKTREE_REGISTRY" \
 	"UPDATE worktree_owners SET owner_session='unrelated-worker-session' WHERE worktree_path='${FIXTURE_ANCILLARY_WORKTREE}';"
@@ -456,6 +474,9 @@ output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
 	"$HELPER" pr 20340 --repo marcusquinn/aidevops --json 2>&1) || true
 assert_eq "JSON rejects mismatched ancillary registry ownership" "mismatch" "$(printf '%s' "$output" | jq -r '.ancillary.registry.owner_status')"
 assert_eq "JSON marks ancillary registry session mismatch" "false" "$(printf '%s' "$output" | jq -r '.ancillary.registry.matches_session')"
+assert_eq "JSON records remote route kind" "ci" "$(printf '%s' "$output" | jq -r '.ci_repair.remote_route.kind')"
+assert_eq "JSON records completed linked-issue recovery" "true" "$(printf '%s' "$output" | jq -r '.ci_repair.remote_route.complete')"
+assert_eq "JSON keeps missing local repair state explicit" "null" "$(printf '%s' "$output" | jq -r '.ci_repair.local_state')"
 sqlite3 "$FIXTURE_WORKTREE_REGISTRY" \
 	"UPDATE worktree_owners SET owner_session='pr-review-thread-response-marcusquinn-aidevops-20340' WHERE worktree_path='${FIXTURE_ANCILLARY_WORKTREE}';"
 

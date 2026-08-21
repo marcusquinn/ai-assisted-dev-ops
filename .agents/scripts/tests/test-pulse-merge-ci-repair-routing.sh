@@ -477,6 +477,8 @@ define_feedback_helpers() {
 		_ci_repair_result_active
 		_ci_repair_result_exhausted
 		_ci_repair_result_retryable
+		_ci_repair_next_retry
+		_ci_repair_record_terminal_outcome
 		_ci_repair_claim_next_attempt
 		_ci_repair_latest_archive
 		_ci_repair_prepare_attempt
@@ -1353,6 +1355,27 @@ test_ci_repair_waits_for_prelock_startup_before_retry() {
 	return 0
 }
 
+test_ci_repair_persists_sanitized_quota_terminal_outcome() {
+	setup_test_env
+	define_feedback_helpers || { print_result "defines terminal outcome helper" 1 "could not extract feedback helpers"; teardown_test_env; return 0; }
+
+	local state_file="${TEST_ROOT}/repair-terminal.json"
+	local metrics_file="${TEST_ROOT}/repair-metrics.jsonl"
+	_ci_repair_write_state "$state_file" "owner/repo" "100" "$TEST_PR_HEAD_SHA" "feature/repair" \
+		"fingerprint" "${TEST_ROOT}/worktrees/repair" "999999" "stale" "1" "dispatched" "ci-repair-test"
+	printf '%s\n' '{"session_key":"ci-repair-test","result":"rate_limit","failure_reason":"quota exhausted; retry later","exit_code":143,"reset_at":"2026-08-21T18:00:00Z"}' >"$metrics_file"
+	AIDEVOPS_CI_REPAIR_METRICS_FILE="$metrics_file" _ci_repair_record_terminal_outcome \
+		"$state_file" "ci-repair-test" "retry_repair"
+
+	if ! jq -e '.terminal_result == "rate_limit" and .failure_reason == "quota_exhausted__retry_later" and .exit_code == 143 and .quota_reset_at == "2026-08-21T18:00:00Z" and .next_action == "retry_repair"' "$state_file" >/dev/null; then
+		print_result "CI repair terminal outcome is durable and sanitized" 1 "state=$(<"$state_file")"
+	else
+		print_result "CI repair persists terminal result, quota reset, and next action" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_ci_feedback_skips_advisory_failure_when_required_clean() {
 	setup_test_env
 	TEST_CHECK_SCENARIO="advisory_failure"
@@ -1432,6 +1455,7 @@ main() {
 	test_ci_repair_recovers_one_stale_lease_then_exhausts
 	test_ci_repair_consumes_abandoned_append_only_claim
 	test_ci_repair_waits_for_prelock_startup_before_retry
+	test_ci_repair_persists_sanitized_quota_terminal_outcome
 	test_ci_feedback_skips_advisory_failure_when_required_clean
 	test_missing_merge_gate_dependency_fails_harness
 

@@ -26,6 +26,7 @@
 #   PULSE_DIAGNOSE_THREAD_RESPONSE_STATE_DIR — override ancillary worker state
 #   PULSE_DIAGNOSE_DISPATCH_LEDGER_FILE — override dispatch ledger path
 #   PULSE_DIAGNOSE_WORKTREE_REGISTRY_DB — override worktree registry database
+#   PULSE_DIAGNOSE_CI_REPAIR_STATE_DIR — override CI PR repair lease directory
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 # shellcheck source=shared-constants.sh
@@ -58,10 +59,15 @@ readonly DEFAULT_SYSTEMD_TIMER_FILE="${HOME}/.config/systemd/user/aidevops-super
 readonly DEFAULT_THREAD_RESPONSE_STATE_DIR="${HOME}/.aidevops/.agent-workspace/pr-review-thread-response"
 readonly DEFAULT_DISPATCH_LEDGER_FILE="${HOME}/.aidevops/.agent-workspace/tmp/dispatch-ledger.jsonl"
 readonly DEFAULT_WORKTREE_REGISTRY_DB="${HOME}/.aidevops/.agent-workspace/worktree-registry.db"
+readonly DEFAULT_CI_REPAIR_STATE_DIR="${HOME}/.aidevops/.agent-workspace/ci-pr-repair"
 readonly _UNKNOWN="unknown"
 readonly _UNCLASSIFIED="unclassified"
 readonly _PR_HEAD_REF_JSON_PATH=".headRefName"
 readonly _BOOL_TRUE="true"
+readonly _JSON_NULL="null"
+readonly _JSON_ARRAY_TYPE="array"
+readonly _CI_REPAIR_RETRY_ACTION="retry_repair"
+readonly _CI_REPAIR_NO_ACTION="not_applicable"
 # =============================================================================
 # Rule Inventory (Phase A)
 #
@@ -446,7 +452,7 @@ _fetch_pr_metadata() {
 
 	local pr_json="" gh_rc=0
 	pr_json=$(_gh_with_timeout read gh pr view "$pr_number" --repo "$repo_slug" \
-		--json number,title,state,author,mergedAt,closedAt,createdAt,labels,reviewDecision,mergeStateStatus,headRefName,baseRefName,isDraft 2>/dev/null) || gh_rc=$?
+		--json number,title,state,author,mergedAt,closedAt,createdAt,labels,reviewDecision,mergeStateStatus,headRefName,headRefOid,baseRefName,isDraft 2>/dev/null) || gh_rc=$?
 	if [[ "$gh_rc" -ne 0 ]]; then
 		if [[ "$gh_rc" -eq 124 ]]; then
 			print_warning "gh pr view timed out after ${AIDEVOPS_GH_READ_TIMEOUT:-15}s for PR #${pr_number} in ${repo_slug}"
@@ -517,6 +523,8 @@ _CMD_PR_EVENTS=()
 _CMD_PR_EVENT_COUNT=0
 _CMD_PR_ANCILLARY_EMPTY_JSON='{"present":false,"kind":"thread-response"}'
 _CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
+_CMD_PR_CI_REPAIR_EMPTY_JSON='{"present":false,"remote_route":null,"local_state":null,"next_action":"none"}'
+_CMD_PR_CI_REPAIR_JSON="$_CMD_PR_CI_REPAIR_EMPTY_JSON"
 
 # Parse cmd_pr CLI arguments into _CMD_PR_* module globals.
 # Returns 1 on validation error.
@@ -527,6 +535,7 @@ _cmd_pr_parse_args() {
 	_CMD_PR_JSON_OUTPUT=0
 	_CMD_PR_LOGFILE_OVERRIDE=""
 	_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
+	_CMD_PR_CI_REPAIR_JSON="$_CMD_PR_CI_REPAIR_EMPTY_JSON"
 
 	while [[ $# -gt 0 ]]; do
 		case "${1}" in
@@ -783,6 +792,108 @@ _render_pr_ancillary_text() {
 	return 0
 }
 
+_diagnose_pr_comments() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	if [[ "${PULSE_DIAGNOSE_GH_OFFLINE:-0}" == "1" ]]; then
+		printf '[]\n'
+		return 0
+	fi
+	gh api "repos/${repo_slug}/issues/${pr_number}/comments?per_page=100" --paginate --slurp 2>/dev/null \
+		| jq -c --arg array_type "$_JSON_ARRAY_TYPE" \
+			'if type == $array_type and ((.[0]? | type) == $array_type) then add else . end // []' \
+			2>/dev/null || printf '[]\n'
+	return 0
+}
+
+_diagnose_latest_ci_repair_state() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local state_dir="${PULSE_DIAGNOSE_CI_REPAIR_STATE_DIR:-$DEFAULT_CI_REPAIR_STATE_DIR}"
+	local state_file=""
+	local states='[]'
+
+	[[ -d "$state_dir" ]] || {
+		printf '%s\n' "$_JSON_NULL"
+		return 0
+	}
+	for state_file in "$state_dir"/*/state.json "$state_dir"/*/state-attempt-*.json; do
+		[[ -f "$state_file" ]] || continue
+		states=$(jq -c --arg repo "$repo_slug" --argjson pr "$pr_number" --argjson states "$states" \
+			'if .repo == $repo and .pr == $pr then $states + [.] else $states end' "$state_file" 2>/dev/null) || true
+	done
+	printf '%s' "$states" | jq -c 'sort_by(.terminal_at // .updated_at // 0) | last // null' 2>/dev/null || printf '%s\n' "$_JSON_NULL"
+	return 0
+}
+
+_cmd_pr_collect_ci_repair() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local expected_head="$3"
+	local comments_json='[]' route_json="$_JSON_NULL" local_state="$_JSON_NULL"
+	local linked_issue="" issue_json='{}' issue_body="" route_marker="" next_action="$_CI_REPAIR_NO_ACTION"
+	local issue_state="" issue_labels="" route_complete=false
+
+	comments_json=$(_diagnose_pr_comments "$repo_slug" "$pr_number")
+	# #aidevops:trust-boundary — remote route evidence is accepted only from a
+	# trusted collaborator and remains exact-head bound.
+	route_json=$(printf '%s' "$comments_json" | jq -c --arg pr "$pr_number" --arg head "$expected_head" '
+		[.[] | select((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a))
+		 | (.body // "") as $body
+		 | select($body | test("feedback-route:start:(ci|review|conflict):PR" + $pr + ":SHA" + $head))
+		 | {kind: ($body | capture("feedback-route:start:(?<kind>ci|review|conflict):").kind),
+		    head: $head, author: (.user.login // "unknown"), body: $body}] | last // null' 2>/dev/null) || route_json="$_JSON_NULL"
+	if [[ "$route_json" != "$_JSON_NULL" ]]; then
+		issue_body=$(printf '%s' "$route_json" | jq -r '.body // ""' 2>/dev/null || true)
+		linked_issue=$(printf '%s' "$issue_body" | sed -n 's/.*[Ii]ssue #\([0-9][0-9]*\).*/\1/p' | sed -n '1p')
+		route_marker=$(printf '%s' "$issue_body" | sed -n 's/.*\(<!-- feedback-route:start:[^>]* -->\).*/\1/p' | sed -n '1p')
+		if [[ "$linked_issue" =~ ^[0-9]+$ ]]; then
+			issue_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null || printf '{}')
+			issue_body=$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null || true)
+			issue_state=$(printf '%s' "$issue_json" | jq -r '.state // "unknown"')
+			issue_labels=$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | join(",")')
+			if [[ -n "$route_marker" ]] && printf '%s' "$issue_body" | grep -qF "${route_marker/start:/complete:}"; then
+				route_complete=true
+			fi
+			route_json=$(printf '%s' "$route_json" | jq -c --argjson issue "$linked_issue" \
+				--arg state "$issue_state" --arg labels "$issue_labels" --argjson complete "$route_complete" \
+				'del(.body) + {linked_issue:$issue,issue_state:$state,issue_labels:$labels,complete:$complete}')
+		else
+			route_json=$(printf '%s' "$route_json" | jq -c 'del(.body) + {linked_issue:null,issue_state:"unknown",issue_labels:"",complete:false}')
+		fi
+	fi
+	local_state=$(_diagnose_latest_ci_repair_state "$repo_slug" "$pr_number")
+	if [[ "$local_state" != "$_JSON_NULL" ]]; then
+		next_action=$(printf '%s' "$local_state" | jq -r --arg retry "$_CI_REPAIR_RETRY_ACTION" '
+			if ((.failure_reason // "") | test("rate_limit|quota")) then
+				if (.quota_reset_at // "") != "" then "retry_after_quota_reset:" + .quota_reset_at else "retry_after_quota_reset:unknown" end
+			elif (.next_action // "") != "" then .next_action
+			elif (.status // "") == "dispatched" then "reconcile_worker_terminal_outcome"
+			else $retry end' 2>/dev/null || printf '%s' "$_CI_REPAIR_RETRY_ACTION")
+	elif [[ "$route_json" != "$_JSON_NULL" ]]; then
+		next_action="reconcile_remote_route_and_linked_issue"
+	fi
+	jq -cn --argjson remote "$route_json" --argjson local "$local_state" --arg next "$next_action" \
+		'{present:($remote != null or $local != null),remote_route:$remote,local_state:$local,next_action:$next}'
+	return 0
+}
+
+_render_pr_ci_repair_text() {
+	local repair_json="$1"
+	[[ "$(printf '%s' "$repair_json" | jq -r '.present // false')" == "true" ]] || return 0
+	printf 'CI repair / feedback routing:\n'
+	printf '%s' "$repair_json" | jq -r '
+		if .remote_route != null then
+			"  remote route: kind=\(.remote_route.kind) head=\(.remote_route.head) author=\(.remote_route.author) complete=\(.remote_route.complete)\n  linked issue: #\(.remote_route.linked_issue // "unknown") state=\(.remote_route.issue_state) labels=\(.remote_route.issue_labels)"
+		else "  remote route: none" end,
+		if .local_state != null then
+			"  local repair: status=\(.local_state.status // "unknown") attempt=\(.local_state.attempt // "unknown") terminal=\(.local_state.terminal_result // "unknown") reason=\(.local_state.failure_reason // "") quota_reset=\(.local_state.quota_reset_at // "")"
+		else "  local repair: unavailable (remote evidence remains authoritative)" end,
+		"  next action: \(.next_action)"'
+	printf '\n\n'
+	return 0
+}
+
 # Classify log lines into the _CMD_PR_EVENTS array and set _CMD_PR_EVENT_COUNT.
 # Args: $1=log_lines  $2=verbose (0|1)
 _cmd_pr_build_events() {
@@ -908,7 +1019,7 @@ cmd_pr() {
 	local pr_json
 	pr_json=$(_fetch_pr_metadata "$_CMD_PR_NUMBER" "$_CMD_PR_REPO_SLUG")
 
-	local pr_author="" pr_state="" pr_merged_at="" pr_closed_at="" pr_created_at="" pr_title="" pr_review_decision="" pr_mss="" pr_head_ref=""
+	local pr_author="" pr_state="" pr_merged_at="" pr_closed_at="" pr_created_at="" pr_title="" pr_review_decision="" pr_mss="" pr_head_ref="" pr_head_oid=""
 	pr_author=$(_jq_field "$pr_json" ".author.login" "$_UNKNOWN")
 	pr_state=$(_jq_field "$pr_json" ".state" "$_UNKNOWN")
 	pr_merged_at=$(_jq_field "$pr_json" ".mergedAt" "")
@@ -918,6 +1029,7 @@ cmd_pr() {
 	pr_review_decision=$(_jq_field "$pr_json" ".reviewDecision" "")
 	pr_mss=$(_jq_field "$pr_json" ".mergeStateStatus" "")
 	pr_head_ref=$(_jq_field "$pr_json" "$_PR_HEAD_REF_JSON_PATH" "")
+	pr_head_oid=$(_jq_field "$pr_json" ".headRefOid" "")
 
 	local merged_flag="no"
 	[[ -n "$pr_merged_at" ]] && merged_flag="yes"
@@ -925,6 +1037,8 @@ cmd_pr() {
 	_cmd_pr_build_events "$log_lines" "$_CMD_PR_VERBOSE"
 	_CMD_PR_ANCILLARY_JSON=$(_cmd_pr_collect_ancillary "$_CMD_PR_REPO_SLUG" "$_CMD_PR_NUMBER" "$pr_head_ref") || \
 		_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
+	_CMD_PR_CI_REPAIR_JSON=$(_cmd_pr_collect_ci_repair "$_CMD_PR_REPO_SLUG" "$_CMD_PR_NUMBER" "$pr_head_oid") || \
+		_CMD_PR_CI_REPAIR_JSON="$_CMD_PR_CI_REPAIR_EMPTY_JSON"
 
 	if [[ "$_CMD_PR_JSON_OUTPUT" -eq 1 ]]; then
 		_render_json "$_CMD_PR_NUMBER" "$_CMD_PR_REPO_SLUG" "$pr_author" "$pr_state" "$merged_flag" \
@@ -939,6 +1053,7 @@ cmd_pr() {
 		"$pr_review_decision" "$pr_mss" "$_CMD_PR_EVENT_COUNT" \
 		"${_CMD_PR_EVENTS[@]+"${_CMD_PR_EVENTS[@]}"}"
 	_render_pr_ancillary_text "$_CMD_PR_ANCILLARY_JSON"
+	_render_pr_ci_repair_text "$_CMD_PR_CI_REPAIR_JSON"
 	return 0
 }
 
@@ -997,7 +1112,8 @@ _render_json() {
 	done
 
 	printf '\n  ],\n'
-	printf '  "ancillary": %s\n' "$_CMD_PR_ANCILLARY_JSON"
+	printf '  "ancillary": %s,\n' "$_CMD_PR_ANCILLARY_JSON"
+	printf '  "ci_repair": %s\n' "$_CMD_PR_CI_REPAIR_JSON"
 	printf '}\n'
 	return 0
 }
@@ -2265,6 +2381,7 @@ ENVIRONMENT:
   PULSE_DIAGNOSE_GH_API_LOG     Override gh-api-calls.log path
   PULSE_DIAGNOSE_BLOCKER_LOG    Override worker-progress-blockers.jsonl path
   PULSE_DIAGNOSE_SYSTEMD_TIMER_FILE Override systemd timer unit path
+  PULSE_DIAGNOSE_CI_REPAIR_STATE_DIR Override CI PR repair lease directory
 
 EXAMPLES:
   pulse-diagnose-helper.sh pr 20329 --repo marcusquinn/aidevops

@@ -469,7 +469,7 @@ _ci_actionable_failed_checks_markdown() {
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	[[ "$count" -gt 0 ]] || return 0
 
-	local idx=0 name="" conclusion="" link=""
+	local idx=0 name="" conclusion="" link="" context=""
 	while [[ "$idx" -lt "$count" ]]; do
 		name=$(printf '%s' "$checks_json" | jq -r --argjson i "$idx" '.[$i].name // empty' 2>/dev/null) || name=""
 		conclusion=$(printf '%s' "$checks_json" | jq -r --argjson i "$idx" '.[$i].conclusion // empty' 2>/dev/null) || conclusion=""
@@ -482,7 +482,13 @@ _ci_actionable_failed_checks_markdown() {
 				echo "[pulse-wrapper] _dispatch_ci_fix_worker: bounded infrastructure rerun unavailable for PR #${pr_number} check '${name}' — preserving PR for a later merge pass" >>"$LOGFILE"
 			fi
 		else
-			printf -- '- **%s**: %s — [check URL](%s)\n' "$name" "$conclusion" "$link"
+			context=""
+			case "$name" in
+			*"Smell Threshold"* | *"Absolute"*"Threshold"*)
+				context=" — contextual absolute baseline debt; PR-specific regression gates remain authoritative"
+				;;
+			esac
+			printf -- '- **%s**: %s — [check URL](%s)%s\n' "$name" "$conclusion" "$link" "$context"
 		fi
 		idx=$((idx + 1))
 	done
@@ -860,6 +866,47 @@ _ci_repair_result_retryable() {
 	return 0
 }
 
+_ci_repair_next_retry() {
+	printf 'retry_repair'
+	return 0
+}
+
+#######################################
+# Persist the sanitized terminal result of a repair worker before retrying it.
+# The metrics stream is append-only and may be written by another runner, so
+# only the exact session key is accepted and only bounded scalar fields survive.
+#######################################
+_ci_repair_record_terminal_outcome() {
+	local state_file="$1"
+	local session_key="$2"
+	local next_action="$3"
+	local metrics_file="${AIDEVOPS_CI_REPAIR_METRICS_FILE:-${HOME}/.aidevops/logs/headless-runtime-metrics.jsonl}"
+	local outcome='{}'
+	local tmp_file="${state_file}.terminal.$$"
+
+	[[ -f "$state_file" ]] || return 1
+	if [[ -f "$metrics_file" ]]; then
+		outcome=$(jq -Rsc --arg session "$session_key" '
+			[split("\n")[] | select(length > 0) | try fromjson catch empty
+			 | select((.session_key // "") == $session)] | last // {}
+			| {terminal_result: ((.result // "unknown") | tostring | gsub("[^A-Za-z0-9_.:-]"; "_") | .[0:80]),
+			   failure_reason: ((.failure_reason // "") | tostring | gsub("[^A-Za-z0-9_.:-]"; "_") | .[0:120]),
+			   exit_code: (if (.exit_code | type) == "number" then .exit_code else null end),
+			   quota_reset_at: ((.reset_at // .quota_reset_at // .retry_at // "") | tostring | gsub("[^A-Za-z0-9_.:+-]"; "") | .[0:80])}' \
+			"$metrics_file" 2>/dev/null) || outcome='{}'
+	fi
+	jq --argjson outcome "$outcome" --arg next_action "$next_action" --argjson terminal_at "$(date +%s 2>/dev/null || printf '0')" \
+		'. + $outcome + {terminal_at:$terminal_at,next_action:$next_action}' "$state_file" >"$tmp_file" 2>/dev/null || {
+		rm -f "$tmp_file"
+		return 1
+	}
+	mv "$tmp_file" "$state_file" 2>/dev/null || {
+		rm -f "$tmp_file"
+		return 1
+	}
+	return 0
+}
+
 #######################################
 # Atomically claim the first unconsumed bounded repair attempt.
 #######################################
@@ -1047,12 +1094,14 @@ _ci_repair_claim_lease() {
 		return 0
 	fi
 	if [[ "$claim_result" == "$exhausted_result" ]]; then
+		_ci_repair_record_terminal_outcome "$state_file" "$session_key" "route_feedback_fallback" || true
 		echo "[pulse-wrapper] _dispatch_ci_repair_session: stale repair exhausted ${max_attempts} attempts for ${repo_slug} PR #${pr_number} head ${pr_head_sha} fingerprint ${failure_fingerprint}" >>"$LOGFILE"
 		printf '%s' "$exhausted_result"
 		return 0
 	fi
 	[[ "$claim_result" =~ ^[0-9]+$ ]] || return 1
 	next_attempt="$claim_result"
+		_ci_repair_record_terminal_outcome "$state_file" "$session_key" "$(_ci_repair_next_retry)" || true
 	if ! mv "$state_file" "${lease_dir}/state-attempt-${existing_attempt}.json" 2>/dev/null; then
 		printf '%s' "$active_result"
 		return 0
@@ -1406,6 +1455,7 @@ _dispatch_ci_repair_session() {
 	if [[ -z "$worktree_path" || ! -d "$worktree_path" ]]; then
 		_ci_repair_write_state "${lease_dir}/state.json" "$repo_slug" "$pr_number" "$pr_head_sha" "$pr_head_ref" \
 			"$failure_fingerprint" "" "0" "" "$attempt" "worktree_failed" "$session_key" || true
+		_ci_repair_record_terminal_outcome "${lease_dir}/state.json" "$session_key" "$(_ci_repair_next_retry)" || true
 		return 1
 	fi
 	_ci_repair_prepare_attempt "${lease_dir}/state.json" "$repo_slug" "$pr_number" "$pr_head_sha" "$pr_head_ref" \
@@ -1416,6 +1466,7 @@ _dispatch_ci_repair_session() {
 		"$pr_head_ref" "$failure_fingerprint" "$failing_checks" || return 1
 	if ! _ci_repair_launch_worker "$lease_dir" "$helper" "$repo_slug" "$pr_number" "$linked_issue" \
 		"$pr_head_sha" "$pr_head_ref" "$failure_fingerprint" "$worktree_path" "$attempt" "$session_key" "$prompt_file"; then
+		_ci_repair_record_terminal_outcome "${lease_dir}/state.json" "$session_key" "$(_ci_repair_next_retry)" || true
 		return 1
 	fi
 	_CI_REPAIR_DISPATCH_RESULT="$dispatched_status"

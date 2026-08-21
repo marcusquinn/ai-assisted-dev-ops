@@ -1330,6 +1330,46 @@ EOF
 	return 0
 }
 
+test_system_hold_records_exact_head_provenance() {
+	reset_mock_state
+	_PULSE_FEEDBACK_ROUTE_ACTIVE_KIND="review"
+	local hold_rc=0
+	_feedback_route_hold_for_maintainer "100" "owner/repo" "42" \
+		"PR ownership labels changed during finalization" || hold_rc=$?
+
+	if [[ "$hold_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]] \
+		|| ! jq -e 'any(.[]; (.body // "") | startswith("PULSE_ROUTE_HOLD kind=review reason=") and contains("automation=pulse") and contains("feedback-route:automation-hold:review:PR100:SHAabc123repairsha"))' \
+			"${TEST_ROOT}/issue-comments.json" >/dev/null; then
+		print_result "system-created hold records exact-head route provenance" 1 \
+			"rc=${hold_rc}; comments=$(<"${TEST_ROOT}/issue-comments.json")"
+		return 0
+	fi
+	print_result "system-created hold records route kind, reason, automation, and exact head" 0
+	return 0
+}
+
+test_human_hold_is_never_claimed_or_cleared_by_automation() {
+	reset_mock_state
+	printf 'status:in-review,origin:worker,hold-for-review\n' >"${TEST_ROOT}/issue-labels.txt"
+	printf 'origin:worker,hold-for-review\n' >"${TEST_ROOT}/pr-labels.txt"
+	_PULSE_FEEDBACK_ROUTE_ACTIVE_KIND="ci"
+	_feedback_route_hold_for_maintainer "100" "owner/repo" "42" "ci route needs review" >/dev/null 2>&1 || true
+	local transition_rc=0
+	_feedback_route_transition_and_verify "42" "owner/repo" "source:ci-feedback" 1 \
+		"100" "ci" "abc123repairsha" || transition_rc=$?
+
+	if [[ "$transition_rc" -eq 0 ]] \
+		|| [[ "$(<"${TEST_ROOT}/issue-labels.txt")" != *"hold-for-review"* ]] \
+		|| [[ "$(<"${TEST_ROOT}/pr-labels.txt")" != *"hold-for-review"* ]] \
+		|| jq -e 'any(.[]; (.body // "") | contains("feedback-route:automation-hold"))' "${TEST_ROOT}/issue-comments.json" >/dev/null; then
+		print_result "human hold is never claimed or cleared by automation" 1 \
+			"transition_rc=${transition_rc}; issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); comments=$(<"${TEST_ROOT}/issue-comments.json")"
+		return 0
+	fi
+	print_result "human hold remains authoritative without automation provenance" 0
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -1369,6 +1409,8 @@ main() {
 	test_dispatch_clears_in_progress_labels_as_fallback
 	test_ci_dispatch_dedupes_by_pr_head_marker
 	test_feedback_release_reconciles_cross_runner_duplicates
+	test_system_hold_records_exact_head_provenance
+	test_human_hold_is_never_claimed_or_cleared_by_automation
 	test_dispatch_skips_body_edit_on_issue_view_failure
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
