@@ -168,9 +168,10 @@ _gh_audit_fetch_issue_state_json() {
 	fi
 	# REST-first routing can be locally unavailable while GitHub's GraphQL
 	# transport remains healthy. Audit capture must try the independent native
-	# read before declaring the state unavailable.
+	# read before declaring the state unavailable, while preserving the caller's
+	# aggregate deadline and the standard per-read timeout.
 	if [[ -z "$data" ]]; then
-		data=$(gh issue view "$issue_num" --repo "$repo" \
+		data=$(_gh_with_timeout read gh issue view "$issue_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
 	# The routed wrapper's fallback decision can itself be stale or unavailable.
@@ -220,9 +221,10 @@ _gh_audit_fetch_pr_state_json() {
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
 	# Mirror issue capture: a failed REST-capable wrapper is not proof that the
-	# native GraphQL read is unavailable.
+	# native GraphQL read is unavailable. Keep this independent transport bounded
+	# by the same timeout and aggregate-deadline path as issue capture.
 	if [[ -z "$data" ]]; then
-		data=$(gh pr view "$pr_num" --repo "$repo" \
+		data=$(_gh_with_timeout read gh pr view "$pr_num" --repo "$repo" \
 			--json title,body,labels 2>/dev/null) || data=""
 	fi
 	if [[ -z "$data" ]] && command -v _rest_pr_view >/dev/null 2>&1; then

@@ -241,7 +241,7 @@ MOCK_STATS_FUNCTIONS
 test_priority_dashboard_precedes_optional_cross_repo_work() {
 	local dashboard_script priority_line cache_line
 	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
-	priority_line=$(grep -nE "^[[:space:]]*priority_slug=[\$]\(_refresh_priority_health_issue \"[\$]repo_entries\"\)" "$dashboard_script" | head -1 | cut -d: -f1)
+	priority_line=$(grep -nE "^[[:space:]]*(if[[:space:]]+)?priority_slug=[\$]\(_refresh_priority_health_issue \"[\$]repo_entries\"\)" "$dashboard_script" | head -1 | cut -d: -f1)
 	cache_line=$(grep -nE '^[[:space:]]*_refresh_person_stats_cache \|\| true' "$dashboard_script" | head -1 | cut -d: -f1)
 	if [[ -n "$priority_line" && -n "$cache_line" && "$priority_line" -lt "$cache_line" ]]; then
 		print_result "priority dashboard refresh precedes optional cross-repo work" 0
@@ -249,6 +249,30 @@ test_priority_dashboard_precedes_optional_cross_repo_work() {
 	fi
 	print_result "priority dashboard refresh precedes optional cross-repo work" 1 \
 		"Expected priority update before person-stats refresh; priority_line=${priority_line:-<missing>} cache_line=${cache_line:-<missing>}"
+	return 0
+}
+
+test_priority_failure_continues_remaining_repos() {
+	local production_snippet
+	production_snippet=$(awk '
+		/^update_health_issues\(\) \{/ { in_production=1 }
+		in_production { print }
+		in_production && /^}$/ { exit }
+	' "$HEALTH_DASHBOARD_SCRIPT")
+	if printf '%s' "$production_snippet" | grep -qE 'priority_slug=[\$]\(_refresh_priority_health_issue "[\$]repo_entries"\)[[:space:]]*\|\|[[:space:]]*return 1'; then
+		print_result "priority dashboard failure does not abort remaining repos" 1 \
+			"Priority refresh still returns before the best-effort repository loop"
+		return 0
+	fi
+	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*priority_slug=[\$]\(_refresh_priority_health_issue "[\$]repo_entries"\)[[:space:]]*\|\|[[:space:]]*update_ec=[\$][?]' &&
+		printf '%s' "$production_snippet" | grep -qE 'update_ec" -eq 75 \|\| "[\$]update_ec" -eq 124' &&
+		printf '%s' "$production_snippet" | grep -qF "failed=\$((failed + 1))" &&
+		printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*while IFS='; then
+		print_result "priority dashboard failure does not abort remaining repos" 0
+		return 0
+	fi
+	print_result "priority dashboard failure does not abort remaining repos" 1 \
+		"Expected a counted priority failure followed by the best-effort repository loop"
 	return 0
 }
 
@@ -332,9 +356,8 @@ test_transient_dashboard_tempfail_is_deferred() {
 	return 0
 }
 
-# Test 9: the dashboard updater itself must return non-zero when the body edit
-# fails, otherwise the wrapper's direct update_health_issues call still exits 0
-# and the HEALTH-DASHBOARD-FAIL trap never fires.
+# Test 9: the dashboard updater must preserve the wrapped body-edit status so
+# callers can defer transient timeouts while propagating genuine failures.
 test_dashboard_body_edit_failure_returns_nonzero() {
 	local failure_snippet
 	failure_snippet=$(awk '
@@ -342,12 +365,12 @@ test_dashboard_body_edit_failure_returns_nonzero() {
 		in_failure { print }
 		in_failure && /^[[:space:]]*}/ { exit }
 	' "$HEALTH_DASHBOARD_SCRIPT")
-	if printf '%s' "$failure_snippet" | grep -qE '^[[:space:]]*return 1[[:space:]]*$'; then
-		print_result "dashboard body edit failures return non-zero" 0
+	if printf '%s' "$failure_snippet" | grep -qE '^[[:space:]]*return "[$]body_edit_ec"[[:space:]]*$'; then
+		print_result "dashboard body edit failures preserve non-zero status" 0
 		return 0
 	fi
-	print_result "dashboard body edit failures return non-zero" 1 \
-		"Expected _update_health_issue_for_repo body-edit failure block to return 1"
+	print_result "dashboard body edit failures preserve non-zero status" 1 \
+		"Expected the body-edit failure block to return its wrapped command status"
 	return 0
 }
 
@@ -359,6 +382,7 @@ main_test() {
 	test_health_update_precedes_quality_sweep
 	test_health_update_survives_slow_quality_sweep
 	test_priority_dashboard_precedes_optional_cross_repo_work
+	test_priority_failure_continues_remaining_repos
 	test_slow_priority_dashboard_skips_optional_cross_repo_work
 	test_dashboard_freshness_precedes_maintenance
 	test_dashboard_update_failure_not_swallowed
