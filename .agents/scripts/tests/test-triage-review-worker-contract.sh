@@ -77,7 +77,7 @@ export WORKER_GITHUB_LOGIN="wrong-runner"
 export AIDEVOPS_DISPATCH_LEASE_TOKEN="stale-lease"
 export AIDEVOPS_WORKER_ID="stale-worker-id"
 export AIDEVOPS_WORKTREE_OWNER_PID="999"
-_run_triage_review_worker "42" "owner/repo" "${TEST_TMP}/repo" "" "$prefetch_file" "$valid_output" || \
+_run_triage_review_worker "42" "owner/repo" "${TEST_TMP}/repo" "" "$prefetch_file" "$valid_output" "thinking" || \
 	fail "valid worker launch should not fail the caller"
 unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH WORKER_GITHUB_LOGIN \
 	AIDEVOPS_DISPATCH_LEASE_TOKEN AIDEVOPS_WORKER_ID AIDEVOPS_WORKTREE_OWNER_PID
@@ -95,6 +95,9 @@ if ! grep -q -- '--role triage' "$valid_output"; then
 fi
 if ! grep -q -- '--session-key triage-review-42' "$valid_output"; then
 	fail "triage launch lost issue correlation in the session key"
+fi
+if ! grep -q -- '--tier thinking' "$valid_output"; then
+	fail "triage launch lost canonical thinking-tier attribution"
 fi
 if ! grep -q -- '--prompt-file' "$valid_output"; then
 	fail "valid worker launch did not pass the prompt file flag"

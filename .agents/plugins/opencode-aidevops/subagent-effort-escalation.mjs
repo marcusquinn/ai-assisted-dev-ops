@@ -106,15 +106,36 @@ class InteractiveSubagentEscalator {
     }
   }
 
+  trackingEnabled() {
+    return this.enabled() || typeof this.context.onSubagentOutcome === "function";
+  }
+
+  recordOutcome(evidence) {
+    try {
+      const result = this.context.onSubagentOutcome?.(evidence);
+      result?.catch?.(() => {});
+    } catch {
+      // Outcome observability remains fail-open.
+    }
+  }
+
   beforeTool(input, output) {
-    if (!this.enabled()) return;
     const tool = safeToolName(input?.tool);
     const sessionID = String(input?.sessionID || "");
     const callID = String(input?.callID || "");
     if (TASK_TOOLS.has(tool)) {
+      if (!this.trackingEnabled()) return;
       this.lifecycle.beforeTask(callID, sessionID);
+      this.recordOutcome({
+        stage: "dispatch_requested",
+        callID,
+        parentSessionID: sessionID,
+        status: "requested",
+      });
       return;
     }
+
+    if (!this.enabled()) return;
 
     const effect = classifySideEffect(tool, output?.args || input?.args || {});
     if (sessionID && effect) {
@@ -124,8 +145,31 @@ class InteractiveSubagentEscalator {
   }
 
   handleEvent(input) {
-    if (!this.enabled()) return;
+    if (!this.trackingEnabled()) return;
     this.lifecycle.handleEvent(input?.event || input || {});
+  }
+
+  recordHostOutcome(input, output, identity) {
+    const terminalEvidence = identity.childID
+      ? this.lifecycle.terminalEvidence(identity.childID)
+      : "";
+    const failed = toolFailed(output) || TERMINAL_TOOL_FAILURES.has(terminalEvidence);
+    const status = String(output?.metadata?.status || output?.status || terminalEvidence || "completed")
+      .toLowerCase();
+    this.recordOutcome({
+      stage: "host_outcome",
+      callID: identity.callID,
+      parentSessionID: String(input?.sessionID || ""),
+      childSessionID: identity.childID,
+      childSessionObserved: identity.childID
+        ? this.lifecycle.observedSession(identity.childID)
+        : false,
+      identityReason: identity.reason,
+      terminalEvidence,
+      outcomeCategory: failed ? "host_failed" : "host_completed",
+      status,
+      success: !failed,
+    });
   }
 
   prepareRoute(policy, tier, model) {
@@ -254,17 +298,18 @@ class InteractiveSubagentEscalator {
   }
 
   async afterTool(input, output) {
-    if (!this.enabled() || !TASK_TOOLS.has(safeToolName(input?.tool))) return null;
+    if (!TASK_TOOLS.has(safeToolName(input?.tool)) || !this.trackingEnabled()) return null;
     const identity = this.lifecycle.takeChildIdentity(input, output);
-    if (!identity.childID) {
+    if (this.enabled() && !identity.childID) {
       output.metadata = {
         ...output.metadata,
         aidevopsRoutingIdentity: { reason: identity.reason },
       };
     }
     try {
-      return await this.escalateTask(output, identity.childID);
+      return this.enabled() ? await this.escalateTask(output, identity.childID) : null;
     } finally {
+      this.recordHostOutcome(input, output, identity);
       if (identity.childID) this.sideEffects.delete(identity.childID);
     }
   }

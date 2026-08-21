@@ -84,6 +84,22 @@ function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
+function optionalRequestColumns(dbPath) {
+  try {
+    const output = execFileSync(
+      "sqlite3",
+      ["-readonly", dbPath, "SELECT name FROM pragma_table_info('llm_requests');"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 },
+    );
+    const columns = new Set(output.trim().split("\n").filter(Boolean));
+    return ["routing_population", "pricing_version"]
+      .map((column) => columns.has(column) ? column : `NULL AS ${column}`)
+      .join(", ");
+  } catch {
+    return "NULL AS routing_population, NULL AS pricing_version";
+  }
+}
+
 function loadRequests(options, attempts) {
   if (!options.db || !existsSync(options.db)) return [];
   const sessionIDs = new Set();
@@ -94,7 +110,8 @@ function loadRequests(options, attempts) {
   }
   if (sessionIDs.size === 0) return [];
   const values = [...sessionIDs].map(sqlString).join(",");
-  const sql = `SELECT session_id, parent_session_id, provider_id, model_id, tokens_total, cost, error_type, finish_reason, variant, routing_tier, routing_candidate_index, routing_attempt, routing_reason, routing_escalated, aidevops_version FROM llm_requests WHERE session_id IN (${values}) OR parent_session_id IN (${values}) ORDER BY id;`;
+  const optionalColumns = optionalRequestColumns(options.db);
+  const sql = `SELECT session_id, parent_session_id, provider_id, model_id, tokens_total, cost, error_type, finish_reason, variant, routing_tier, routing_candidate_index, routing_attempt, routing_reason, routing_escalated, aidevops_version, ${optionalColumns} FROM llm_requests WHERE session_id IN (${values}) OR parent_session_id IN (${values}) ORDER BY id;`;
   try {
     const output = execFileSync("sqlite3", ["-readonly", "-json", options.db, sql], {
       encoding: "utf8",

@@ -93,6 +93,50 @@ test("aggregate Task metadata preserves host fields and records routing evidence
   assert.deepEqual(output.metadata.aidevopsRoutingIdentity, { reason: "child_identity_missing" });
 });
 
+test("headless task hooks record host lifecycle evidence without semantic claims", async () => {
+  const evidence = [];
+  const hooks = createSubagentEffortHooks({}, {
+    isHeadless: () => true,
+    onSubagentOutcome: (item) => evidence.push(item),
+  });
+  const input = { tool: "task", callID: "call-1", sessionID: "parent" };
+  hooks.beforeTool(input, { args: {} });
+  hooks.handleEvent({
+    event: {
+      type: "session.created",
+      properties: { info: { id: "child", parentID: "parent" } },
+    },
+  });
+  hooks.handleEvent({
+    event: {
+      type: "message.updated",
+      properties: { info: { role: "assistant", sessionID: "child", finish: "stop" } },
+    },
+  });
+  await hooks.afterTool(input, { output: "bounded result", metadata: { status: "completed" } });
+
+  assert.equal(evidence.length, 2);
+  assert.deepEqual(evidence[0], {
+    stage: "dispatch_requested",
+    callID: "call-1",
+    parentSessionID: "parent",
+    status: "requested",
+  });
+  assert.deepEqual(evidence[1], {
+    stage: "host_outcome",
+    callID: "call-1",
+    parentSessionID: "parent",
+    childSessionID: "child",
+    childSessionObserved: true,
+    identityReason: "lifecycle",
+    terminalEvidence: "stop",
+    outcomeCategory: "host_completed",
+    status: "completed",
+    success: true,
+  });
+  assert.equal(Object.hasOwn(evidence[1], "semanticAcceptance"), false);
+});
+
 test("only provider-neutral workload tiers are recognized", () => {
   assert.equal(normalizeEffortTier("simple"), "simple");
   assert.equal(normalizeEffortTier("standard"), "standard");
@@ -433,6 +477,7 @@ test("root requests matching routed profiles record telemetry without changing p
       candidateIndex: 0,
       attempt: 1,
       reason: "model_profile",
+      population: "top_level_profile",
     }]);
   } finally {
     if (previousDispatchTier === undefined) {
@@ -604,6 +649,7 @@ test("conversation turns keep one route attempt and capability escalation reuses
     attempt: 2,
     reason: "capability_escalation",
     escalated: true,
+    population: "interactive_child",
   });
   assert.match(taskOutput.output, /simple → standard/);
   assert.match(taskOutput.output, /verified standard-tier result/);

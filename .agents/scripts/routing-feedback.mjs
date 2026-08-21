@@ -32,6 +32,8 @@ function supportsLowerTierTrial(summary) {
     summary.failedAttemptCount === 0,
     summary.escalationCount === 0,
     summary.tiersUsed.length === 1,
+    summary.populationsUsed.length === 1,
+    summary.verifiedOutcomeCount >= 3,
   ].every(Boolean);
 }
 
@@ -42,7 +44,7 @@ function buildRecommendations(summary) {
   if (summary.escalationCount > 0 && finalTier) {
     if (summary.terminalAttemptSucceeded && summary.requestErrorCount === 0) {
       recommendations.push(
-        `For similar verified workloads, consider starting at \`${finalTier}\`; this sample needed capability escalation to finish.`,
+        `For similar workloads, consider starting at \`${finalTier}\`; this sample needed capability escalation to finish.`,
       );
     } else {
       recommendations.push(
@@ -65,7 +67,7 @@ function buildRecommendations(summary) {
     const trialTier = lowerTier(summary.tiersUsed[0]);
     if (trialTier) {
       recommendations.push(
-        `Trial \`${trialTier}\` on similar low-risk work; ${summary.distinctSessionCount} sessions completed without escalation, then compare verification outcomes.`,
+        `Trial \`${trialTier}\` on similar low-risk work; ${summary.verifiedOutcomeCount} objective outcomes passed without escalation, then compare independently verified outcomes.`,
       );
     }
   }
@@ -125,6 +127,9 @@ export function formatRoutingFeedbackMarkdown(summary, { headingLevel = 3 } = {}
     "",
     `- Route: ${routeLabel(summary) || "unknown"}; ${counts.join(", ")}.`,
   ];
+  if (summary.populationsUsed.length > 0) {
+    lines.push(`- Population: ${summary.populationsUsed.join(", ")}; ${summary.verifiedOutcomeCount} objective outcomes.`);
+  }
   if (summary.tokensTotal > 0 || summary.costTotal > 0) {
     lines.push(`- Usage: ${summary.tokensTotal.toLocaleString("en-US")} tokens; $${summary.costTotal.toFixed(4)} estimated cost.`);
   }
@@ -161,6 +166,8 @@ export function routingFeedbackFingerprint(summary) {
     ...TIER_ORDER.map((tier) => summary.delegationTiers?.[tier] || 0),
     summary.requestErrorCount,
     summary.failedAttemptCount,
+    summary.populationsUsed,
+    summary.verifiedOutcomeCount,
     summary.tokensTotal,
   ]);
 }

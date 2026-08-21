@@ -122,15 +122,27 @@ export function registerManagedDirectoryPermissions(config, env = process.env) {
 
 const PUBLIC_TRIAGE_AGENT_NAME = "triage-review";
 const PUBLIC_TRIAGE_SESSION_ORIGIN = "triage";
+const FOCUSED_RESEARCH_AGENT_NAME = "research-only";
+const FOCUSED_RESEARCH_SESSION_ORIGIN = "ai-research";
 const PUBLIC_TRIAGE_BUILTIN_AGENTS = ["build", "plan", "general", "explore"];
 
+// Both origins arrive through the triage-grade headless boundary. The origin
+// selects the prompt persona only; each resulting profile is inference-only.
 export function enforcePublicTriageIsolation(
   config,
   sessionOrigin = process.env.AIDEVOPS_SESSION_ORIGIN,
 ) {
-  if (sessionOrigin !== PUBLIC_TRIAGE_SESSION_ORIGIN) return 0;
-  if (!config.agent?.[PUBLIC_TRIAGE_AGENT_NAME] || config.agent[PUBLIC_TRIAGE_AGENT_NAME].disable) {
-    throw new Error("Public triage agent profile is unavailable");
+  const isolatedAgentName = sessionOrigin === PUBLIC_TRIAGE_SESSION_ORIGIN
+    ? PUBLIC_TRIAGE_AGENT_NAME
+    : sessionOrigin === FOCUSED_RESEARCH_SESSION_ORIGIN
+      ? FOCUSED_RESEARCH_AGENT_NAME
+      : "";
+  if (!isolatedAgentName) return 0;
+  if (!config.agent?.[isolatedAgentName] || config.agent[isolatedAgentName].disable) {
+    const boundary = sessionOrigin === PUBLIC_TRIAGE_SESSION_ORIGIN
+      ? "Public triage"
+      : "Focused research";
+    throw new Error(`${boundary} agent profile is unavailable`);
   }
 
   config.tools = { "*": false };
@@ -140,11 +152,11 @@ export function enforcePublicTriageIsolation(
   config.lsp = false;
   config.share = "disabled";
   config.subagent_depth = 0;
-  config.default_agent = PUBLIC_TRIAGE_AGENT_NAME;
+  config.default_agent = isolatedAgentName;
 
-  const triageProfile = config.agent[PUBLIC_TRIAGE_AGENT_NAME];
-  config.agent[PUBLIC_TRIAGE_AGENT_NAME] = {
-    ...triageProfile,
+  const isolatedProfile = config.agent[isolatedAgentName];
+  config.agent[isolatedAgentName] = {
+    ...isolatedProfile,
     mode: "primary",
     tools: { "*": false },
     permission: { "*": "deny" },
@@ -153,7 +165,7 @@ export function enforcePublicTriageIsolation(
     ...Object.keys(config.agent),
     ...PUBLIC_TRIAGE_BUILTIN_AGENTS,
   ]);
-  disabledAgentNames.delete(PUBLIC_TRIAGE_AGENT_NAME);
+  disabledAgentNames.delete(isolatedAgentName);
   for (const agentName of disabledAgentNames) {
     config.agent[agentName] = { disable: true };
   }

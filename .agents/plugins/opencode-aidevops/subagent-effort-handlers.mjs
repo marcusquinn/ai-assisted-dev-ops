@@ -118,6 +118,7 @@ async function recordRootRouting(context, sessionID, input, childModel, currentV
     candidateIndex: routingCandidateIndex(context.modelRouting, rootTier, childModel),
     attempt: 1,
     reason: "model_profile",
+    population: "top_level_profile",
   });
 }
 
@@ -157,6 +158,7 @@ async function recordChildRouting(context, {
     attempt: policy?.attempt || 1,
     reason: policy?.reason || "agent_default",
     escalated: Boolean(policy?.escalated),
+    population: "interactive_child",
   });
 }
 

@@ -876,6 +876,7 @@ test_triage_sandbox_passthrough_excludes_github_and_worker_authority() {
 		",$csv," != *",GH_TOKEN,"* && ",$csv," != *",GITHUB_TOKEN,"* &&
 		",$csv," != *",WORKER_ISSUE_NUMBER,"* && ",$csv," != *",AIDEVOPS_PERMISSION_GRANT_FILE,"* &&
 		",$csv," != *",OTEL_EXPORTER_OTLP_ENDPOINT,"* && ",$csv," == *",AIDEVOPS_HEADLESS,"* &&
+		",$csv," == *",AIDEVOPS_SESSION_ORIGIN,"* &&
 		",$csv," == *",XDG_DATA_HOME,"* && ",$csv," == *",OPENCODE_PURE,"* &&
 		",$csv," != *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* &&
 		",$csv," == *",OPENCODE_DISABLE_EXTERNAL_SKILLS,"* &&

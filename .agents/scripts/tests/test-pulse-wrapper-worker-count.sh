@@ -544,7 +544,10 @@ _setup_dispatch_stub() {
 		local issue_num="$1"
 		local repo_slug="$2"
 		local repo_path="$3"
-		printf '%s|%s|%s\n' "$issue_num" "$repo_slug" "$repo_path" \
+		local resolved_model="${6:-}"
+		local resolved_tier="${11:-}"
+		printf '%s|%s|%s|%s|%s\n' \
+			"$issue_num" "$repo_slug" "$repo_path" "$resolved_model" "$resolved_tier" \
 			>>"$DISPATCH_LOG_FILE"
 		_PAD_TRIAGE_LAST_OUTCOME="${TRIAGE_TEST_OUTCOME:-posted}"
 		return 0
@@ -612,6 +615,43 @@ test_dispatch_triage_reviews_returns_typed_outcome() {
 
 	print_result "dispatch_triage_reviews returns typed outcomes without implementation slot accounting" 1 \
 		"Unexpected outcome '${outcome}'"
+	return 0
+}
+
+test_dispatch_triage_reviews_propagates_resolved_tier() {
+	DISPATCH_LOG_FILE="${TEST_ROOT}/dispatch-tier.log"
+	: >"$DISPATCH_LOG_FILE"
+	local model_helper="${TEST_ROOT}/model-availability-helper.sh"
+	# shellcheck disable=SC2016 # Keep fixture parameter expansion for its runtime.
+	printf '%s\n' \
+		'#!/usr/bin/env bash' \
+		'if [[ "${1:-}" == "resolve" && "${2:-}" == "thinking" ]]; then' \
+		'  printf "%s\\n" "openai/gpt-5.6-sol"' \
+		'  exit 0' \
+		'fi' \
+		'exit 1' >"$model_helper"
+	chmod +x "$model_helper"
+	local MODEL_AVAILABILITY_HELPER="$model_helper"
+	local repos_json=""
+	repos_json=$(_make_repos_json "owner/repo" "/tmp/repo")
+	local state_file=""
+	state_file=$(_make_state_file "## owner/repo
+
+- Issue #150: Thinking review [status: **needs-review**] [created: 2026-01-01T00:00:00Z]
+")
+	STATE_FILE="$state_file"
+	TRIAGE_STATE_FILE="$state_file"
+
+	dispatch_triage_reviews 1 "$repos_json" >/dev/null 2>/dev/null
+	local dispatch_record=""
+	dispatch_record=$(<"$DISPATCH_LOG_FILE")
+	if [[ "$dispatch_record" == "150|owner/repo|/tmp/repo|openai/gpt-5.6-sol|thinking" ]]; then
+		print_result "dispatch_triage_reviews pairs a thinking model with tier:thinking" 0
+		return 0
+	fi
+
+	print_result "dispatch_triage_reviews pairs a thinking model with tier:thinking" 1 \
+		"Unexpected dispatch record '${dispatch_record}'"
 	return 0
 }
 
@@ -1115,6 +1155,7 @@ main() {
 	test_queue_governor_enters_pr_heavy_at_heavy_backlog
 	test_queue_governor_reports_drain_rate_telemetry
 	test_dispatch_triage_reviews_returns_typed_outcome
+	test_dispatch_triage_reviews_propagates_resolved_tier
 	test_dispatch_triage_reviews_no_stderr_errors
 	test_dispatch_triage_reviews_returns_zero_when_no_candidates
 	test_dispatch_triage_reviews_caps_at_triage_max

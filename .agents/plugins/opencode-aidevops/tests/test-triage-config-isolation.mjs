@@ -51,9 +51,48 @@ test("non-triage sessions are not changed", () => {
   assert.deepEqual(config, original);
 });
 
+test("focused research selects only the inference-only research profile", () => {
+  const config = {
+    agent: {
+      "triage-review": { tools: { read: true } },
+      "research-only": {
+        description: "restricted research",
+        mode: "subagent",
+        tools: { read: true, webfetch: true },
+        permission: { read: "allow", webfetch: "allow" },
+      },
+      arbitrary: { tools: { bash: true } },
+    },
+    tools: { "*": true },
+    permission: "allow",
+    mcp: { example: { type: "local", command: ["unsafe-command"] } },
+    subagent_depth: 2,
+  };
+
+  assert.equal(enforcePublicTriageIsolation(config, "ai-research"), 1);
+  assert.deepEqual(config.tools, { "*": false });
+  assert.deepEqual(config.permission, { "*": "deny" });
+  assert.deepEqual(config.mcp, {});
+  assert.equal(config.subagent_depth, 0);
+  assert.equal(config.default_agent, "research-only");
+  assert.equal(config.agent["research-only"].mode, "primary");
+  assert.deepEqual(config.agent["research-only"].tools, { "*": false });
+  assert.deepEqual(config.agent["research-only"].permission, { "*": "deny" });
+  for (const name of ["triage-review", "build", "plan", "general", "explore", "arbitrary"]) {
+    assert.deepEqual(config.agent[name], { disable: true }, `${name} retains an active profile`);
+  }
+});
+
 test("public triage fails closed when its trusted profile is unavailable", () => {
   assert.throws(
     () => enforcePublicTriageIsolation({ agent: {} }, "triage"),
     /Public triage agent profile is unavailable/,
+  );
+});
+
+test("focused research fails closed when its trusted profile is unavailable", () => {
+  assert.throws(
+    () => enforcePublicTriageIsolation({ agent: {} }, "ai-research"),
+    /Focused research agent profile is unavailable/,
   );
 });

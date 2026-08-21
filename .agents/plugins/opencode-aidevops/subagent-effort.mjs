@@ -213,6 +213,7 @@ export function createSubagentEffortHooks(client, options = {}) {
     modelRouting,
     agentRoutingState,
     onRoutingDecision,
+    onSubagentOutcome: options.onSubagentOutcome,
     resolveProviderState,
     clampReasoningVariant,
     extractVariant,
@@ -230,6 +231,7 @@ export function createSubagentEffortHooks(client, options = {}) {
   const escalator = createInteractiveSubagentEscalator(context, {
     isHeadless: options.isHeadless,
     qualityLog: options.qualityLog,
+    onSubagentOutcome: options.onSubagentOutcome,
   });
   return { ...handlers, ...escalator };
 }

@@ -293,6 +293,7 @@ describe("isolated OpenCode runtime adapter", () => {
         expect(invocation.command).not.toContain("anthropic")
         expect(invocation.env.AIDEVOPS_AI_RESEARCH_TOOL_CEILING).toBe("1")
         expect(invocation.env.AIDEVOPS_HEADLESS_AUTH_ISOLATION).toBe("1")
+        expect(invocation.env.AIDEVOPS_SESSION_ORIGIN).toBe("ai-research")
         for (const lifecycleKey of [
           "AIDEVOPS_DISPATCH_LEASE_TOKEN",
           "AIDEVOPS_PERMISSION_GRANT_FILE",

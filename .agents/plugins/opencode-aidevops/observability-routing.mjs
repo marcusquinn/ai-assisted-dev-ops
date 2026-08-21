@@ -6,6 +6,15 @@ import { summarizeRoutingFeedback } from "../../scripts/routing-feedback.mjs";
 const routingDecisions = new Map();
 const sessionRoutingRecords = new Map();
 
+function routingPopulation(msg, decision) {
+  if (msg?.summary === true || msg?.mode === "compaction") return "compaction";
+  if (process.env.AIDEVOPS_HEADLESS || process.env.AIDEVOPS_DISPATCH_TIER) return "headless";
+  if (decision.parentSessionID) return "interactive_child";
+  if (decision.population) return decision.population;
+  if (decision.reason === "model_profile") return "top_level_profile";
+  return "unknown";
+}
+
 /** Queue the routing choice that will be joined to the next completed response. */
 export function recordRoutingDecision(sessionID, decision = {}) {
   if (!sessionID) return;
@@ -19,6 +28,7 @@ export function recordRoutingDecision(sessionID, decision = {}) {
     attempt: Number.isInteger(decision.attempt) ? decision.attempt : 1,
     reason: decision.reason || "",
     escalated: decision.escalated ? 1 : 0,
+    population: decision.population || "",
   });
   if (queue.length > 32) queue.splice(0, queue.length - 32);
   routingDecisions.set(sessionID, queue);
@@ -33,7 +43,14 @@ export function getRoutingFeedback(sessionID) {
   return summarizeRoutingFeedback({ requests: sessionRoutingRecords.get(sessionID) || [] });
 }
 
-export function rememberRoutingFeedback(msg, routing, cost, errorType, aidevopsVersion = "") {
+export function rememberRoutingFeedback(
+  msg,
+  routing,
+  cost,
+  errorType,
+  aidevopsVersion = "",
+  pricingVersion = "",
+) {
   if (!routing.tier) return;
   const record = {
     session_id: msg.sessionID,
@@ -49,7 +66,9 @@ export function rememberRoutingFeedback(msg, routing, cost, errorType, aidevopsV
     routing_attempt: routing.attempt,
     routing_reason: routing.reason,
     routing_escalated: routing.escalated,
+    routing_population: routing.population,
     aidevops_version: aidevopsVersion,
+    pricing_version: pricingVersion,
   };
   const keys = new Set([msg.sessionID, routing.parentSessionID].filter(Boolean));
   for (const key of keys) {
@@ -68,8 +87,7 @@ export function consumeRoutingDecision(msg) {
   const decision = queue.shift();
   if (queue.length === 0) routingDecisions.delete(msg.sessionID);
   const envTier = process.env.AIDEVOPS_DISPATCH_TIER || "";
-  if (decision) return decision;
-  return {
+  const route = decision || {
     parentSessionID: "",
     tier: envTier,
     model: `${msg.providerID || ""}/${msg.modelID || ""}`,
@@ -79,4 +97,5 @@ export function consumeRoutingDecision(msg) {
     reason: process.env.AIDEVOPS_ROUTING_REASON || (envTier ? "headless_dispatch" : ""),
     escalated: process.env.AIDEVOPS_ROUTING_ESCALATED === "1" ? 1 : 0,
   };
+  return { ...route, population: routingPopulation(msg, route) };
 }

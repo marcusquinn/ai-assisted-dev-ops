@@ -1692,13 +1692,15 @@ test_cmd_run_clears_triage_worker_authority_and_skips_generic_canary() {
 	export DISPATCH_REPO_SLUG="owner/repo"
 	export AIDEVOPS_DISPATCH_LEASE_TOKEN="stale-lease"
 	export AIDEVOPS_WORKER_ID="stale-worker"
+	export AIDEVOPS_SESSION_ORIGIN="ai-research"
+	export AIDEVOPS_AI_RESEARCH_TOOL_CEILING=1
 
 	choose_model() {
-		printf 'model=%s|%s|%s|%s|%s|%s|%s\n' \
+		printf 'model=%s|%s|%s|%s|%s|%s|%s|%s\n' \
 			"${WORKER_ISSUE_NUMBER:-}" "${WORKER_REPO_SLUG:-}" \
 			"${WORKER_WORKTREE_PATH:-}" "${WORKER_GITHUB_LOGIN:-}" \
 			"${DISPATCH_REPO_SLUG:-}" "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" \
-			"${AIDEVOPS_WORKER_ID:-}" >>"$authority_log"
+			"${AIDEVOPS_WORKER_ID:-}" "${AIDEVOPS_SESSION_ORIGIN:-}" >>"$authority_log"
 		printf '%s' 'openai/gpt-5.5'
 		return 0
 	}
@@ -1729,11 +1731,12 @@ test_cmd_run_clears_triage_worker_authority_and_skips_generic_canary() {
 
 	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH \
 		WORKER_GITHUB_LOGIN DISPATCH_REPO_SLUG AIDEVOPS_DISPATCH_LEASE_TOKEN \
-		AIDEVOPS_WORKER_ID 2>/dev/null || true
+		AIDEVOPS_WORKER_ID AIDEVOPS_SESSION_ORIGIN \
+		AIDEVOPS_AI_RESEARCH_TOOL_CEILING 2>/dev/null || true
 	unset -f choose_model _enforce_opencode_version_pin _run_canary_test \
 		_prepare_triage_runtime_directory 2>/dev/null || true
 	if [[ "$status" -eq 1 ]] && \
-		grep -qx 'model=||||||' "$authority_log" && \
+		grep -qx 'model=|||||||triage' "$authority_log" && \
 		! grep -q '^canary=' "$authority_log" && \
 		grep -qx 'triage_runtime_prepare_called' "$authority_log" && \
 		[[ "$output" == *"generic_canary_skipped"* ]] && \
@@ -1744,6 +1747,52 @@ test_cmd_run_clears_triage_worker_authority_and_skips_generic_canary() {
 
 	print_result "cmd_run clears triage worker authority and skips generic canary" 1 \
 		"status=$status observations=$(<"$authority_log") output=${output:-<empty>}"
+	return 0
+}
+
+test_cmd_run_preserves_validated_ai_research_origin() {
+	local worktree_dir="${TEST_ROOT}/ai-research-origin"
+	local origin_log="${TEST_ROOT}/ai-research-origin.log"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	: >"$origin_log"
+	export AIDEVOPS_SESSION_ORIGIN="ai-research"
+	export AIDEVOPS_AI_RESEARCH_TOOL_CEILING=1
+
+	choose_model() {
+		printf '%s|%s\n' \
+			"${AIDEVOPS_SESSION_ORIGIN:-}" \
+			"${AIDEVOPS_AI_RESEARCH_TOOL_CEILING:-}" >>"$origin_log"
+		printf '%s' 'openai/gpt-5.6-luna'
+		return 0
+	}
+	_enforce_opencode_version_pin() { return 0; }
+	_prepare_triage_runtime_directory() { return 1; }
+
+	local output=""
+	local status=0
+	output=$(cmd_run \
+		--role triage \
+		--session-key ai-research-contract \
+		--dir "$worktree_dir" \
+		--title "Focused AI research" \
+		--prompt "Use attached research context" \
+		--tier simple \
+		--agent research-only 2>&1) || status=$?
+
+	unset AIDEVOPS_SESSION_ORIGIN AIDEVOPS_AI_RESEARCH_TOOL_CEILING 2>/dev/null || true
+	unset -f choose_model _enforce_opencode_version_pin \
+		_prepare_triage_runtime_directory 2>/dev/null || true
+	if [[ "$status" -eq 1 ]] && \
+		grep -qx 'ai-research|1' "$origin_log" && \
+		[[ "$output" == *"generic_canary_skipped"* ]] && \
+		[[ "$output" == *"Public triage runtime isolation setup failed"* ]]; then
+		print_result "cmd_run preserves validated inference-only ai-research origin" 0
+		return 0
+	fi
+
+	print_result "cmd_run preserves validated inference-only ai-research origin" 1 \
+		"status=$status observations=$(<"$origin_log") output=${output:-<empty>}"
 	return 0
 }
 

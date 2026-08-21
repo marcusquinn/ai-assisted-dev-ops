@@ -19,6 +19,7 @@ _PULSE_ANCILLARY_DISPATCH_REVIEW_SH_LOADED=1
 #   $4 - resolved model flag (empty or "--model ...")
 #   $5 - prompt file
 #   $6 - output file
+#   $7 - canonical workload tier (default: thinking)
 #
 # Exit code: headless runtime status; contract failures return non-zero.
 #######################################
@@ -29,6 +30,7 @@ _run_triage_review_worker() {
 	local model_flag="$4"
 	local prefetch_file="$5"
 	local review_output_file="$6"
+	local resolved_tier="${7:-thinking}"
 
 	if [[ -z "$review_output_file" ]]; then
 		printf '%s\n' '[fatal] triage worker output file missing; aborting before model launch' >&2
@@ -38,6 +40,13 @@ _run_triage_review_worker() {
 		printf '%s\n' '[fatal] triage worker env contract missing prefetch file; aborting before model launch' >"$review_output_file"
 		return 1
 	fi
+	case "$resolved_tier" in
+	simple | standard | thinking) ;;
+	*)
+		printf '%s\n' '[fatal] triage worker env contract has invalid workload tier; aborting before model launch' >"$review_output_file"
+		return 1
+		;;
+	esac
 
 	# Triage correlation lives in the session/title/prompt. WORKER_* variables
 	# grant implementation claim, worktree, and cleanup authority and therefore
@@ -59,6 +68,7 @@ _run_triage_review_worker() {
 			--session-key "triage-review-${triage_issue_num}" \
 			--dir "$triage_repo_path" \
 			$model_flag \
+			--tier "$resolved_tier" \
 			--agent triage-review \
 			--title "Sandboxed triage review: Issue #${triage_issue_num}" \
 			--prompt-file "$prefetch_file" </dev/null
@@ -101,6 +111,7 @@ _triage_review_result_fields() {
 #   $8 - expected immutable PR revision pair (empty for issues)
 #   $9 - expected mutable issue/PR text snapshot hash
 #   $10 - expected public evidence revision
+#   $11 - canonical workload tier (default: thinking)
 #
 # Exit code: always 0
 #######################################
@@ -115,6 +126,7 @@ _dispatch_triage_review_worker() {
 	local expected_pr_revision="${8:-}"
 	local expected_text_snapshot="${9:-}"
 	local expected_public_revision="${10:-}"
+	local resolved_tier="${11:-thinking}"
 	_PAD_TRIAGE_LAST_OUTCOME="$_PAD_TRIAGE_OUTCOME_INFRASTRUCTURE_FAILED"
 
 	local model_flag=""
@@ -140,7 +152,8 @@ _dispatch_triage_review_worker() {
 	local runtime_status=0
 	_run_triage_review_worker \
 		"$issue_num" "$repo_slug" "$repo_path" \
-		"$model_flag" "$prefetch_file" "$review_output_file" || runtime_status=$?
+		"$model_flag" "$prefetch_file" "$review_output_file" \
+		"$resolved_tier" || runtime_status=$?
 
 	# t2019: Extract raw metrics and text content from the JSON stream.
 	# The headless runtime emits line-delimited JSON; the model's markdown

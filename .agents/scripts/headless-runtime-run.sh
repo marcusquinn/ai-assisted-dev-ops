@@ -21,6 +21,8 @@ _HEADLESS_RUNTIME_RUN_LOADED=1
 _CMD_RUN_DISPOSITION_RETURN="return"
 _CMD_RUN_DISPOSITION_CONTINUE="continue"
 _CMD_RUN_ROLE_WORKER="worker"
+_CMD_RUN_AI_RESEARCH_ORIGIN="ai-research"
+_CMD_RUN_AI_RESEARCH_AGENT="research-only"
 
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_run_lib_path="${BASH_SOURCE[0]%/*}"
@@ -48,15 +50,38 @@ _headless_route_attempt_budget() {
 	return 0
 }
 
+# This tuple only selects a stricter no-tools profile. The triage role remains
+# authoritative for credential isolation, provider egress, and sandboxing.
+_headless_ai_research_contract_is_valid() {
+	local requested_origin="$1"
+	local requested_tool_ceiling="$2"
+	local requested_agent="$3"
+	if [[ "$requested_origin" == "$_CMD_RUN_AI_RESEARCH_ORIGIN" && \
+		"$requested_tool_ceiling" == "1" && \
+		"$requested_agent" == "$_CMD_RUN_AI_RESEARCH_AGENT" ]]; then
+		return 0
+	fi
+	return 1
+}
+
 # Establish the role/private boundary and initialize process-local workspace.
 _prepare_cmd_run_environment() {
 	_hrff_capture_external_outcome_contract
+	local requested_session_origin="${AIDEVOPS_SESSION_ORIGIN:-}"
+	local requested_ai_research_ceiling="${AIDEVOPS_AI_RESEARCH_TOOL_CEILING:-}"
 	if [[ "$role" != "$_CMD_RUN_ROLE_WORKER" ]]; then
 		_hrw_prepare_role_context "$role" "$work_dir" || return 1
 		if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]]; then
 			export AIDEVOPS_HEADLESS=1
-			export AIDEVOPS_SESSION_ORIGIN="$HEADLESS_ROLE_TRIAGE"
 			export AIDEVOPS_HEADLESS_AUTH_ISOLATION=1
+			if _headless_ai_research_contract_is_valid \
+				"$requested_session_origin" "$requested_ai_research_ceiling" \
+				"${agent_name:-}"; then
+				export AIDEVOPS_SESSION_ORIGIN="$_CMD_RUN_AI_RESEARCH_ORIGIN"
+			else
+				export AIDEVOPS_SESSION_ORIGIN="$HEADLESS_ROLE_TRIAGE"
+				unset AIDEVOPS_AI_RESEARCH_TOOL_CEILING
+			fi
 		fi
 	fi
 	if [[ "$private_workload" -eq 1 ]]; then

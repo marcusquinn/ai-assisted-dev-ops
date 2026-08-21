@@ -32,6 +32,7 @@ import {
 import {
   calculateCost,
   getPricing,
+  PRICING_VERSION,
 } from "./observability-pricing.mjs";
 import { scheduleCostBackfill } from "./observability-cost-backfill.mjs";
 import {
@@ -67,7 +68,7 @@ const DB_PATH = canonicalizeSqliteDbPath(
   process.env.AIDEVOPS_OBS_DB_OVERRIDE || join(DEFAULT_OBS_DIR, "llm-requests.db"),
 );
 const OBS_DIR = dirname(DB_PATH);
-const COST_BACKFILL_MARKER = `${DB_PATH}.cost-backfill-v1.done`;
+const COST_BACKFILL_MARKER = `${DB_PATH}.cost-backfill-v2.done`;
 
 export { getPricing };
 export { getRoutingFeedback, recordRoutingDecision };
@@ -156,7 +157,9 @@ function _runDataMigrations(options = {}) {
       ["routing_attempt", "INTEGER"],
       ["routing_reason", "TEXT"],
       ["routing_escalated", "INTEGER DEFAULT 0"],
+      ["routing_population", "TEXT"],
       ["aidevops_version", "TEXT"],
+      ["pricing_version", "TEXT"],
     ];
     for (const [column, definition] of routingColumns) {
       const exists = sqliteExecSync(
@@ -173,13 +176,13 @@ function _runDataMigrations(options = {}) {
   // cannot reference columns that ALTER TABLE has not added yet.
   sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_parent_session ON llm_requests(parent_session_id);", 5000);
   sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_routing_tier ON llm_requests(routing_tier);", 5000);
+  sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_routing_population ON llm_requests(routing_population);", 5000);
   sqliteExecSync("CREATE INDEX IF NOT EXISTS idx_llm_requests_aidevops_version ON llm_requests(aidevops_version);", 5000);
 
   // runtime-events.mjs is the sole runtime-event schema/migration authority.
   if (!initialiseRuntimeEventStore(DB_PATH)) return false;
 
-  // Migration: backfill cost for rows where cost=0 but tokens exist.
-  // OpenCode never provided msg.cost — all historical rows have cost=0.
+  // Migration: backfill zero-cost rows and version known stale estimates.
   // Non-critical historical cleanup; never block the TUI startup path on it.
   scheduleCostBackfill(COST_BACKFILL_MARKER);
 
@@ -350,7 +353,9 @@ function handleMessageUpdated(event, context = {}) {
     routing_attempt: routing.attempt,
     routing_reason: routing.reason || null,
     routing_escalated: routing.escalated === 1,
+    routing_population: routing.population,
     aidevops_version: aidevopsVersion || null,
+    pricing_version: PRICING_VERSION,
   }, context);
 
   // Prevent unbounded memory growth — prune old entries periodically
@@ -377,7 +382,7 @@ function handleMessageUpdated(event, context = {}) {
 
   // Calculate cost from tokens — OpenCode does not provide msg.cost
   const cost = calculateCost(msg.tokens, msg.modelID);
-  rememberRoutingFeedback(msg, routing, cost, errorType, aidevopsVersion);
+  rememberRoutingFeedback(msg, routing, cost, errorType, aidevopsVersion, PRICING_VERSION);
 
   const sql = `INSERT INTO llm_requests (
     session_id, message_id, provider_id, model_id, agent,
@@ -386,7 +391,7 @@ function handleMessageUpdated(event, context = {}) {
     cost, duration_ms, finish_reason, error_type, error_message,
     tool_call_count, project_path, variant, parent_session_id,
     routing_tier, routing_candidate_index, routing_attempt, routing_reason,
-    routing_escalated, aidevops_version
+    routing_escalated, routing_population, aidevops_version, pricing_version
   ) VALUES (
     ${sqlEscape(msg.sessionID)},
     ${sqlEscape(msg.id)},
@@ -413,7 +418,9 @@ function handleMessageUpdated(event, context = {}) {
     ${Number.isInteger(routing.attempt) ? routing.attempt : 1},
     ${sqlEscape(routing.reason || null)},
     ${routing.escalated === 1 ? 1 : 0},
-    ${sqlEscape(aidevopsVersion || null)}
+    ${sqlEscape(routing.population)},
+    ${sqlEscape(aidevopsVersion || null)},
+    ${sqlEscape(PRICING_VERSION)}
   );`;
 
   sqliteExec(sql);
@@ -556,6 +563,38 @@ export function recordSubagentCancellationReceipt(receipt, context = {}) {
       reason: (receipt?.incomplete_reasons || []).join(",") || "confirmed",
       status: receipt?.termination || "unconfirmed",
       success: Boolean(receipt?.complete),
+    },
+  });
+  if (envelope) projectRuntimeEvent(envelope);
+  return envelope;
+}
+
+/** Persist host-observable subagent dispatch/outcome evidence without inferring semantic success. */
+export function recordSubagentOutcome(evidence = {}) {
+  if (!dbReady) return null;
+  const isDispatch = evidence.stage === "dispatch_requested";
+  const envelope = appendRuntimeEvent({
+    eventType: isDispatch ? "subagent.dispatch.requested" : "subagent.host.outcome",
+    subjectId: evidence.childSessionID || evidence.callID || "unknown-child",
+    sessionId: evidence.parentSessionID || null,
+    correlationId: evidence.parentSessionID || evidence.callID || "subagent",
+    causationId: evidence.callID || undefined,
+    payload: {
+      call_id: evidence.callID || null,
+      classification: isDispatch ? "subagent_dispatch" : "subagent_host_outcome",
+      observation: JSON.stringify({
+        child_session_observed: Boolean(evidence.childSessionObserved),
+        identity_reason: evidence.identityReason || "pending",
+        semantic_acceptance: "unknown",
+        terminal_evidence: evidence.terminalEvidence || "unknown",
+        verification: "unknown",
+        rework: "unknown",
+      }),
+      outcome_category: evidence.outcomeCategory || (isDispatch ? "dispatch_requested" : "host_unknown"),
+      reason: evidence.identityReason || (isDispatch ? "task_tool_invoked" : "unknown"),
+      source: "opencode",
+      status: evidence.status || (isDispatch ? "requested" : "unknown"),
+      success: isDispatch ? null : Boolean(evidence.success),
     },
   });
   if (envelope) projectRuntimeEvent(envelope);

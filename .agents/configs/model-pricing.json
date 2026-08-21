@@ -1,14 +1,15 @@
 {
   "_comment": "Single source of truth for LLM model pricing (per 1M tokens). Consumed by observability.mjs and shared-constants.sh get_model_pricing(). Update this file when model pricing changes.",
   "_format": "Each key is a substring matched against model IDs. Values: input, output, cache_read, cache_write (all per 1M tokens in USD).",
+  "version": "2026-08-21.1",
   "models": {
     "opus-4":          { "input": 15.0,  "output": 75.0,  "cache_read": 1.50,   "cache_write": 18.75 },
     "sonnet-4":        { "input": 3.0,   "output": 15.0,  "cache_read": 0.30,   "cache_write": 3.75  },
     "haiku-4":         { "input": 0.80,  "output": 4.0,   "cache_read": 0.08,   "cache_write": 1.0   },
     "haiku-3":         { "input": 0.80,  "output": 4.0,   "cache_read": 0.08,   "cache_write": 1.0   },
     "gpt-5.6-sol":     { "input": 5.0,   "output": 30.0,  "cache_read": 0.50,   "cache_write": 6.25  },
-    "gpt-5.6-terra":   { "input": 2.50,  "output": 15.0,  "cache_read": 0.25,   "cache_write": 3.125 },
-    "gpt-5.6-luna":    { "input": 1.0,   "output": 6.0,   "cache_read": 0.10,   "cache_write": 1.25  },
+    "gpt-5.6-terra":   { "input": 2.0,   "output": 12.0,  "cache_read": 0.20,   "cache_write": 2.50  },
+    "gpt-5.6-luna":    { "input": 0.20,  "output": 1.20,  "cache_read": 0.02,   "cache_write": 0.25  },
     "gpt-5.3-codex":   { "input": 3.50,  "output": 28.0,  "cache_read": 0.35,   "cache_write": 3.50  },
     "gpt-5.5":         { "input": 2.50,  "output": 15.0,  "cache_read": 0.25,   "cache_write": 2.50  },
     "gpt-5.4-mini":    { "input": 0.25,  "output": 2.0,   "cache_read": 0.025,  "cache_write": 0.25  },

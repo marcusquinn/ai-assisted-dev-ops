@@ -7,6 +7,46 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  consumeRoutingDecision,
+  recordRoutingDecision as queueRoutingDecision,
+} from "../observability-routing.mjs";
+
+test("routing populations remain disjoint across execution contexts", () => {
+  const previousHeadless = process.env.AIDEVOPS_HEADLESS;
+  const previousTier = process.env.AIDEVOPS_DISPATCH_TIER;
+  delete process.env.AIDEVOPS_HEADLESS;
+  delete process.env.AIDEVOPS_DISPATCH_TIER;
+
+  try {
+    queueRoutingDecision("child-pop", {
+      parentSessionID: "root",
+      tier: "simple",
+      reason: "agent_default",
+    });
+    assert.equal(consumeRoutingDecision({ sessionID: "child-pop" }).population, "interactive_child");
+
+    queueRoutingDecision("root-pop", { tier: "standard", reason: "model_profile" });
+    assert.equal(consumeRoutingDecision({ sessionID: "root-pop" }).population, "top_level_profile");
+
+    queueRoutingDecision("compact-pop", { tier: "thinking", reason: "model_profile" });
+    assert.equal(consumeRoutingDecision({
+      sessionID: "compact-pop",
+      summary: true,
+      mode: "compaction",
+    }).population, "compaction");
+
+    process.env.AIDEVOPS_HEADLESS = "1";
+    process.env.AIDEVOPS_DISPATCH_TIER = "thinking";
+    assert.equal(consumeRoutingDecision({ sessionID: "headless-pop" }).population, "headless");
+  } finally {
+    if (previousHeadless === undefined) delete process.env.AIDEVOPS_HEADLESS;
+    else process.env.AIDEVOPS_HEADLESS = previousHeadless;
+    if (previousTier === undefined) delete process.env.AIDEVOPS_DISPATCH_TIER;
+    else process.env.AIDEVOPS_DISPATCH_TIER = previousTier;
+  }
+});
+
 test("completed child responses join queued routing decisions to parent feedback", async () => {
   const root = mkdtempSync(join(tmpdir(), "aidevops-routing-join-"));
   process.env.AIDEVOPS_OBS_DB_OVERRIDE = join(root, "llm-requests.db");
@@ -52,6 +92,47 @@ test("completed child responses join queued routing decisions to parent feedback
     assert.equal(summary.tokensTotal, 17);
     assert.equal(summary.models[0], "openai/gpt-5.6-luna");
     assert.deepEqual(summary.aidevopsVersions, ["3.32.240"]);
+    assert.deepEqual(summary.pricingVersions, ["2026-08-21.1"]);
+    assert.deepEqual(summary.populationsUsed, ["interactive_child"]);
+
+    observability.recordSubagentOutcome({
+      stage: "dispatch_requested",
+      callID: "call-1",
+      parentSessionID: "root-session",
+    });
+    observability.recordSubagentOutcome({
+      stage: "host_outcome",
+      callID: "call-1",
+      parentSessionID: "root-session",
+      childSessionID: "child-session",
+      childSessionObserved: true,
+      identityReason: "lifecycle",
+      terminalEvidence: "stop",
+      outcomeCategory: "host_completed",
+      status: "completed",
+      success: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const persisted = sqlite.sqliteExecSync(`
+SELECT routing_population || '|' || aidevops_version || '|' || pricing_version
+FROM llm_requests WHERE message_id = 'message-1';
+    `);
+    assert.equal(persisted, "interactive_child|3.32.240|2026-08-21.1");
+
+    const outcomePayload = JSON.parse(sqlite.sqliteExecSync(`
+SELECT payload_json FROM runtime_events WHERE event_type = 'subagent.host.outcome' LIMIT 1;
+    `));
+    assert.equal(outcomePayload.outcome_category, "host_completed");
+    assert.equal(outcomePayload.success, true);
+    assert.deepEqual(JSON.parse(outcomePayload.observation), {
+      child_session_observed: true,
+      identity_reason: "lifecycle",
+      rework: "unknown",
+      semantic_acceptance: "unknown",
+      terminal_evidence: "stop",
+      verification: "unknown",
+    });
   } finally {
     sqlite.shutdownSqlite();
     delete process.env.AIDEVOPS_OBS_DB_OVERRIDE;

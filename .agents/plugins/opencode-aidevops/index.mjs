@@ -78,6 +78,7 @@ import {
   handleEvent,
   recordRoutingDecision,
   recordSubagentCancellationReceipt,
+  recordSubagentOutcome,
 } from "./observability.mjs";
 import { createSessionStartGreetingGate, createTtsrHooks } from "./ttsr.mjs";
 import { createPoolAuthHook, createPoolTool, initPoolAuth, getAccounts } from "./oauth-pool.mjs";
@@ -404,6 +405,7 @@ export async function AidevopsPlugin({ directory, client }) {
     modelRouting,
     agentRoutingState,
     onRoutingDecision: recordRoutingDecision,
+    onSubagentOutcome: recordSubagentOutcome,
     isHeadless,
     qualityLog,
   });

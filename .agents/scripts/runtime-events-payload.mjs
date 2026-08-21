@@ -23,10 +23,11 @@ const FILE_URL_PATTERN = /\bfile:\/\/\/[^\s"',)}\]]+/gi;
 const ABSOLUTE_PATH_PATTERN = /(^|[\s("'=])(?:\/[^\s"',)}\]]+|[A-Za-z]:[\\/][^\s"',)}\]]+)/gm;
 const REPOSITORY_LIKE_PATTERN = /\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/g;
 const ORDINARY_PAYLOAD_KEYS = new Set([
-  "attempt_id", "call_id", "classification", "duration_ms", "error_type", "exit_code",
+  "aidevops_version", "attempt_id", "call_id", "classification", "duration_ms", "error_type", "exit_code",
   "finish_reason", "model_id", "observation", "outcome_category", "provider_id", "reason", "result",
-  "role", "run_id", "source", "status", "success", "suppressed_part_bytes",
-  "suppressed_part_events", "tool_name",
+  "pricing_version", "role", "routing_attempt", "routing_candidate_index", "routing_escalated",
+  "routing_population", "routing_reason", "routing_tier", "run_id", "source", "status", "success",
+  "suppressed_part_bytes", "suppressed_part_events", "tool_name",
 ]);
 const NOT_SCALAR = Symbol("not-scalar");
 

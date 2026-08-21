@@ -2,9 +2,15 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 const TIER_ORDER = ["simple", "standard", "thinking"];
+const ROUTING_POPULATIONS = [
+  "interactive_child", "headless", "top_level_profile", "compaction", "unknown",
+];
 const SUCCESS_RESULTS = new Set([
   "complete", "completed", "full_loop_complete", "merged", "post_merge_cleanup_deferred",
   "post_pr_handoff", "success", "succeeded",
+]);
+const VERIFIED_RESULTS = new Set([
+  "full_loop_complete", "merged", "post_merge_cleanup_deferred",
 ]);
 const TRUTHY_VALUES = new Set([true, 1, "1", "true"]);
 
@@ -57,6 +63,26 @@ function normalizedModel(record) {
 
 function normalizedAidevopsVersion(record) {
   return String(firstValue(record, "aidevops_version", "aidevopsVersion"));
+}
+
+function normalizedPricingVersion(record) {
+  return String(firstValue(record, "pricing_version", "pricingVersion"));
+}
+
+function normalizedPopulation(record) {
+  const population = String(firstValue(
+    record,
+    "routing_population",
+    "routingPopulation",
+    "population",
+  )).toLowerCase();
+  return ROUTING_POPULATIONS.includes(population) ? population : "unknown";
+}
+
+function populationCounts(records) {
+  const counts = Object.fromEntries(ROUTING_POPULATIONS.map((population) => [population, 0]));
+  for (const record of records) counts[normalizedPopulation(record)] += 1;
+  return counts;
 }
 
 function routeAttemptKey(record, index) {
@@ -127,6 +153,18 @@ function attemptFailed(record) {
   return integer(firstValue(record, "exit_code", "exitCode"), 0) !== 0;
 }
 
+function outcomeVerified(record) {
+  const verification = String(firstValue(
+    record,
+    "verification",
+    "verification_status",
+    "semantic_acceptance",
+  )).toLowerCase();
+  if (["accepted", "passed", "verified"].includes(verification)) return true;
+  const result = String(firstValue(record, "result", "outcome")).toLowerCase();
+  return VERIFIED_RESULTS.has(result);
+}
+
 function collectSessions(routedRequests, routedAttempts) {
   const attemptSessionKeys = new Map();
   for (const record of routedAttempts) {
@@ -179,6 +217,14 @@ export function summarizeRoutingMetrics({ requests = [], attempts = [] } = {}) {
   const aidevopsVersions = [...new Set(
     [...routedRequests, ...routedAttempts].map(normalizedAidevopsVersion).filter(Boolean),
   )];
+  const pricingVersions = [...new Set(
+    routedRequests.map(normalizedPricingVersion).filter(Boolean),
+  )];
+  const populations = populationCounts(routedRequests);
+  const verifiedOutcomeCount = distinctRouteAttemptCount(
+    routedAttempts.length > 0 ? routedAttempts : routedRequests,
+    outcomeVerified,
+  );
 
   return {
     hasData: routeRecords.length > 0,
@@ -193,6 +239,10 @@ export function summarizeRoutingMetrics({ requests = [], attempts = [] } = {}) {
     dominantTier,
     models,
     aidevopsVersions,
+    pricingVersions,
+    populations,
+    populationsUsed: ROUTING_POPULATIONS.filter((population) => populations[population] > 0),
+    verifiedOutcomeCount,
     candidateFallbackCount: routeRecords.filter((record) => normalizedCandidateIndex(record) > 0).length,
     retryCount: distinctRouteAttemptCount(
       routeRecords,
