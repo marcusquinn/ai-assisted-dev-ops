@@ -42,6 +42,24 @@ class Profile:
     required: frozenset[str]
 
 
+@dataclass(frozen=True)
+class NormalizationContext:
+    """Stable provenance shared by every row in one import."""
+
+    profile: Profile
+    mapping: dict[str, str]
+    source_hash: str
+    observed_at: str
+
+
+@dataclass(frozen=True)
+class ImportOptions:
+    """Optional local import outputs and observation timing."""
+
+    rejects_path: str | None = None
+    observed_at: str | None = None
+
+
 PROFILES = {
     "godaddy": Profile(
         "godaddy",
@@ -123,44 +141,66 @@ def _regular_input(path: Path) -> None:
         raise DomainOpportunityFileError("input exceeds compressed size limit")
 
 
+def _check_ratio(compressed: int, uncompressed: int, message: str) -> None:
+    if uncompressed > compressed * MAX_COMPRESSION_RATIO:
+        raise DomainOpportunityFileError(message)
+
+
+def _read_gzip(raw: bytes) -> tuple[bytes, str]:
+    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as handle:
+        content = _read_limited(handle)
+    _check_ratio(len(raw), len(content), "gzip compression ratio exceeds limit")
+    return content, "gzip"
+
+
+def _zip_entry_is_safe(entry: zipfile.ZipInfo) -> bool:
+    member = PurePosixPath(entry.filename)
+    return not (
+        member.is_absolute()
+        or ".." in member.parts
+        or entry.is_dir()
+        or entry.flag_bits & 0x1
+        or stat.S_ISLNK(entry.external_attr >> 16)
+        or member.suffix.casefold() in {".zip", ".gz", ".tgz", ".bz2", ".xz"}
+    )
+
+
+def _only_zip_entry(archive: zipfile.ZipFile) -> zipfile.ZipInfo:
+    entries = archive.infolist()
+    if not entries:
+        raise DomainOpportunityFileError("ZIP archive contains no files")
+    if not all(_zip_entry_is_safe(entry) for entry in entries):
+        raise DomainOpportunityFileError("ZIP archive contains unsafe, encrypted, linked, or nested content")
+    if len(entries) != 1:
+        raise DomainOpportunityFileError("ZIP archive must contain exactly one inventory file")
+    return entries[0]
+
+
+def _read_zip(raw: bytes) -> tuple[bytes, str]:
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        entry = _only_zip_entry(archive)
+        if entry.file_size > MAX_UNCOMPRESSED_BYTES:
+            raise DomainOpportunityFileError("archive content exceeds uncompressed size limit")
+        if entry.compress_size:
+            _check_ratio(entry.compress_size, entry.file_size, "ZIP compression ratio exceeds limit")
+        with archive.open(entry) as handle:
+            return _read_limited(handle), "zip"
+
+
+def _read_plain(raw: bytes) -> tuple[bytes, str]:
+    if len(raw) > MAX_UNCOMPRESSED_BYTES:
+        raise DomainOpportunityFileError("input exceeds uncompressed size limit")
+    return raw, "plain"
+
+
 def read_inventory(path: str | os.PathLike[str]) -> tuple[bytes, str]:
     """Read one bounded plain, gzip, or safe single-file ZIP inventory."""
     source = Path(path).expanduser()
     _regular_input(source)
     raw = source.read_bytes()
-    if raw.startswith(b"\x1f\x8b"):
-        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as handle:
-            content = _read_limited(handle)
-        if len(content) > len(raw) * MAX_COMPRESSION_RATIO:
-            raise DomainOpportunityFileError("gzip compression ratio exceeds limit")
-        return content, "gzip"
-    if raw.startswith(b"PK\x03\x04"):
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            entries = archive.infolist()
-            if not entries:
-                raise DomainOpportunityFileError("ZIP archive contains no files")
-            candidates = []
-            for entry in entries:
-                member = PurePosixPath(entry.filename)
-                if member.is_absolute() or ".." in member.parts or entry.is_dir():
-                    raise DomainOpportunityFileError("ZIP archive contains an unsafe path")
-                if entry.flag_bits & 0x1 or stat.S_ISLNK(entry.external_attr >> 16):
-                    raise DomainOpportunityFileError("ZIP archive contains encrypted or linked content")
-                if member.suffix.casefold() in {".zip", ".gz", ".tgz", ".bz2", ".xz"}:
-                    raise DomainOpportunityFileError("nested archives are not supported")
-                candidates.append(entry)
-            if len(candidates) != 1:
-                raise DomainOpportunityFileError("ZIP archive must contain exactly one inventory file")
-            entry = candidates[0]
-            if entry.file_size > MAX_UNCOMPRESSED_BYTES:
-                raise DomainOpportunityFileError("archive content exceeds uncompressed size limit")
-            if entry.compress_size and entry.file_size > entry.compress_size * MAX_COMPRESSION_RATIO:
-                raise DomainOpportunityFileError("ZIP compression ratio exceeds limit")
-            with archive.open(entry) as handle:
-                return _read_limited(handle), "zip"
-    if len(raw) > MAX_UNCOMPRESSED_BYTES:
-        raise DomainOpportunityFileError("input exceeds uncompressed size limit")
-    return raw, "plain"
+    readers = ((b"\x1f\x8b", _read_gzip), (b"PK\x03\x04", _read_zip))
+    reader = next((candidate for magic, candidate in readers if raw.startswith(magic)), _read_plain)
+    return reader(raw)
 
 
 def _mapping(profile: Profile, headers: Iterable[str]) -> tuple[dict[str, str], list[str], list[str]]:
@@ -178,28 +218,31 @@ def _mapping(profile: Profile, headers: Iterable[str]) -> tuple[dict[str, str], 
     return mapping, missing, unknown
 
 
-def _decode_rows(content: bytes, *, allow_jsonl: bool = False) -> tuple[list[str], list[dict[str, str]]]:
+def _decode_text(content: bytes) -> str:
     try:
-        text = content.decode("utf-8-sig")
+        return content.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise DomainOpportunityFileError("input must be UTF-8 text") from exc
-    if allow_jsonl and text.lstrip().startswith("{"):
-        rows: list[dict[str, str]] = []
-        headers: set[str] = set()
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise DomainOpportunityFileError(f"JSONL record {line_number} is invalid") from exc
-            if not isinstance(item, dict) or any(not isinstance(key, str) for key in item):
-                raise DomainOpportunityFileError(f"JSONL record {line_number} must be an object")
-            headers.update(item)
-            rows.append({key: "" if value is None else str(value) for key, value in item.items()})
-        if not rows:
-            raise DomainOpportunityFileError("input contains no JSONL records")
-        return sorted(headers), rows
+
+
+def _jsonl_record(line: str, line_number: int) -> dict[str, str]:
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise DomainOpportunityFileError(f"JSONL record {line_number} is invalid") from exc
+    if not isinstance(item, dict) or any(not isinstance(key, str) for key in item):
+        raise DomainOpportunityFileError(f"JSONL record {line_number} must be an object")
+    return {key: "" if value is None else str(value) for key, value in item.items()}
+
+
+def _decode_jsonl(text: str) -> tuple[list[str], list[dict[str, str]]]:
+    rows = [_jsonl_record(line, line_number) for line_number, line in enumerate(text.splitlines(), start=1) if line.strip()]
+    if not rows:
+        raise DomainOpportunityFileError("input contains no JSONL records")
+    return sorted({header for row in rows for header in row}), rows
+
+
+def _decode_csv(text: str) -> tuple[list[str], list[dict[str, str]]]:
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise DomainOpportunityFileError("input has no CSV header")
@@ -207,6 +250,13 @@ def _decode_rows(content: bytes, *, allow_jsonl: bool = False) -> tuple[list[str
     if len(headers) != len(set(headers)):
         raise DomainOpportunityFileError("input has duplicate CSV headers")
     return headers, list(reader)
+
+
+def _decode_rows(content: bytes, *, allow_jsonl: bool = False) -> tuple[list[str], list[dict[str, str]]]:
+    text = _decode_text(content)
+    if allow_jsonl and text.lstrip().startswith("{"):
+        return _decode_jsonl(text)
+    return _decode_csv(text)
 
 
 def inspect(path: str | os.PathLike[str], provider: str) -> dict[str, Any]:
@@ -249,49 +299,60 @@ def _text(row: dict[str, str], mapping: dict[str, str], field: str, default: str
     return (row.get(source, default) if source else default).strip()
 
 
-def _normalized_row(
-    row: dict[str, str], profile: Profile, mapping: dict[str, str], source_hash: str, line_number: int, observed_at: str
-) -> dict[str, Any]:
-    if profile.name == "generic":
-        record = {field: _text(row, mapping, field) for field in mapping}
-        record["provider"] = "generic"
-        record["current_price_micros"] = int(record["current_price_micros"])
-        record["bid_count"] = int(record["bid_count"])
-    else:
-        fqdn = _text(row, mapping, "fqdn").rstrip(".").lower()
-        if "." not in fqdn:
-            raise DomainOpportunityFileError("domain must contain a registrable suffix")
-        sld, tld = fqdn.split(".", 1)
-        end_time = utc_timestamp(_text(row, mapping, "end_time"), "end_time")
-        provider_listing_id = _text(row, mapping, "provider_listing_id")
-        if not provider_listing_id:
-            provider_listing_id = hashlib.sha256(f"{profile.name}\0{fqdn}\0{end_time}".encode()).hexdigest()[:32]
-        record = {
-            "provider": profile.name,
-            "provider_listing_id": provider_listing_id,
-            "fqdn": fqdn,
-            "sld": sld,
-            "tld": tld,
-            "status": _text(row, mapping, "status", "active").casefold() or "active",
-            "auction_type": "auction",
-            "current_price_micros": _price_micros(_text(row, mapping, "current_price")),
-            "current_price_currency": "USD",
-            "bid_count": int(_text(row, mapping, "bid_count", "0") or "0"),
-            "start_time": _text(row, mapping, "start_time"),
-            "end_time": end_time,
-            "source_url": _text(row, mapping, "source_url"),
-            "observed_at": observed_at,
-        }
-    fqdn = record["fqdn"].rstrip(".").lower()
+def _generic_record(row: dict[str, str], context: NormalizationContext) -> dict[str, Any]:
+    record = {field: _text(row, context.mapping, field) for field in context.mapping}
+    record["provider"] = "generic"
+    record["current_price_micros"] = int(record["current_price_micros"])
+    record["bid_count"] = int(record["bid_count"])
+    return record
+
+
+def _provider_record(row: dict[str, str], context: NormalizationContext) -> dict[str, Any]:
+    profile, mapping = context.profile, context.mapping
+    fqdn = _text(row, mapping, "fqdn").rstrip(".").lower()
     if "." not in fqdn:
         raise DomainOpportunityFileError("domain must contain a registrable suffix")
     sld, tld = fqdn.split(".", 1)
-    record["fqdn"], record["sld"], record["tld"] = fqdn, sld, tld
+    end_time = utc_timestamp(_text(row, mapping, "end_time"), "end_time")
+    provider_listing_id = _text(row, mapping, "provider_listing_id")
+    if not provider_listing_id:
+        provider_listing_id = hashlib.sha256(f"{profile.name}\0{fqdn}\0{end_time}".encode()).hexdigest()[:32]
+    return {
+        "provider": profile.name,
+        "provider_listing_id": provider_listing_id,
+        "fqdn": fqdn,
+        "sld": sld,
+        "tld": tld,
+        "status": _text(row, mapping, "status", "active").casefold() or "active",
+        "auction_type": "auction",
+        "current_price_micros": _price_micros(_text(row, mapping, "current_price")),
+        "current_price_currency": "USD",
+        "bid_count": int(_text(row, mapping, "bid_count", "0") or "0"),
+        "start_time": _text(row, mapping, "start_time"),
+        "end_time": end_time,
+        "source_url": _text(row, mapping, "source_url"),
+        "observed_at": context.observed_at,
+    }
+
+
+def _normalized_domain(record: dict[str, Any]) -> None:
+    fqdn = record["fqdn"].rstrip(".").lower()
+    if "." not in fqdn:
+        raise DomainOpportunityFileError("domain must contain a registrable suffix")
+    record["fqdn"], record["sld"], record["tld"] = (fqdn, *fqdn.split(".", 1))
+
+
+def _normalized_row(row: dict[str, str], context: NormalizationContext) -> dict[str, Any]:
+    if context.profile.name == "generic":
+        record = _generic_record(row, context)
+    else:
+        record = _provider_record(row, context)
+    _normalized_domain(record)
     if not record.get("provider_listing_id"):
         record["provider_listing_id"] = hashlib.sha256(
-            f"{record['provider']}\0{fqdn}\0{record['end_time']}".encode()
+            f"{record['provider']}\0{record['fqdn']}\0{record['end_time']}".encode()
         ).hexdigest()[:32]
-    record["source_run_id"] = f"{record['provider']}-{source_hash}"
+    record["source_run_id"] = f"{record['provider']}-{context.source_hash}"
     record["raw_json"] = {"profile": PROFILE_VERSION, "row": row}
     record["payload_hash"] = hashlib.sha256(canonical_json(record["raw_json"]).encode()).hexdigest()
     return record
@@ -320,8 +381,7 @@ def _write_rejects(path: str | os.PathLike[str], rejects: list[dict[str, Any]]) 
 
 
 def import_inventory(
-    path: str | os.PathLike[str], provider: str, database: str | os.PathLike[str], *, rejects_path: str | None = None,
-    observed_at: str | None = None,
+    path: str | os.PathLike[str], provider: str, database: str | os.PathLike[str], options: ImportOptions | None = None
 ) -> dict[str, Any]:
     """Import valid rows atomically, retaining only sanitized optional rejects."""
     profile = _profile(provider)
@@ -331,12 +391,14 @@ def import_inventory(
     mapping, missing, unknown = _mapping(profile, headers)
     if missing:
         raise DomainOpportunityFileError(f"missing required headers: {', '.join(missing)}")
-    timestamp = utc_timestamp(observed_at, "observed_at") if observed_at else utc_now()
+    settings = options or ImportOptions()
+    timestamp = utc_timestamp(settings.observed_at, "observed_at") if settings.observed_at else utc_now()
+    context = NormalizationContext(profile, mapping, source_hash, timestamp)
     records: list[dict[str, Any]] = []
     rejects: list[dict[str, Any]] = []
     for line_number, row in enumerate(rows, start=2):
         try:
-            records.append(_normalized_row(row, profile, mapping, source_hash, line_number, timestamp))
+            records.append(_normalized_row(row, context))
         except (DomainOpportunityFileError, DomainOpportunityContractError, ValueError) as exc:
             rejects.append({"line": line_number, "reason": str(exc)[:256]})
     if not records:
@@ -347,8 +409,8 @@ def import_inventory(
             store.begin_source_run(run_id, profile.name, started_at=timestamp)
             inserted = sum(store.upsert_listing_observation(record) for record in records)
             store.complete_source_run(run_id, len(records))
-    if rejects_path is not None:
-        _write_rejects(rejects_path, rejects)
+    if settings.rejects_path is not None:
+        _write_rejects(settings.rejects_path, rejects)
     return {
         "archive_format": archive_format,
         "content_sha256": source_hash,

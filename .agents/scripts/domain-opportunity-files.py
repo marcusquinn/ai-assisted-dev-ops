@@ -11,7 +11,7 @@ import sqlite3
 import sys
 
 from domain_opportunity_contract import DomainOpportunityContractError
-from domain_opportunity_files import DomainOpportunityFileError, import_inventory, inspect
+from domain_opportunity_files import DomainOpportunityFileError, ImportOptions, import_inventory, inspect
 from domain_opportunity_store import DomainOpportunityStoreError
 
 
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--observed-at")
     import_parser.set_defaults(
         handler=lambda args: import_inventory(
-            args.input, args.provider, args.db, rejects_path=args.rejects, observed_at=args.observed_at
+            args.input, args.provider, args.db, ImportOptions(rejects_path=args.rejects, observed_at=args.observed_at)
         )
     )
     return parser

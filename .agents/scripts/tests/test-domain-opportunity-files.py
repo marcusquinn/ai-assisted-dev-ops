@@ -16,7 +16,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
-from domain_opportunity_files import DomainOpportunityFileError, import_inventory, inspect  # noqa: E402
+from domain_opportunity_files import DomainOpportunityFileError, ImportOptions, import_inventory, inspect  # noqa: E402
 from domain_opportunity_store import DomainOpportunityStore  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "domain-opportunity"
@@ -46,9 +46,10 @@ class DomainOpportunityFileTests(unittest.TestCase):
         archive = self.root / "inventory.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
             output.writestr("inventory.csv", plain)
-        first = import_inventory(FIXTURES / "snapnames-inventory.csv", "snapnames", self.database, observed_at="2026-08-21T10:00:00Z")
-        second = import_inventory(compressed, "snapnames", self.database, observed_at="2026-08-21T10:00:00Z")
-        third = import_inventory(archive, "snapnames", self.database, observed_at="2026-08-21T10:00:00Z")
+        options = ImportOptions(observed_at="2026-08-21T10:00:00Z")
+        first = import_inventory(FIXTURES / "snapnames-inventory.csv", "snapnames", self.database, options)
+        second = import_inventory(compressed, "snapnames", self.database, options)
+        third = import_inventory(archive, "snapnames", self.database, options)
         self.assertEqual((first["imported"], second["imported"], third["imported"]), (1, 0, 0))
         with DomainOpportunityStore(self.database) as store:
             self.assertEqual(store.status()["counts"]["listing_observations"], 1)
@@ -61,7 +62,7 @@ class DomainOpportunityFileTests(unittest.TestCase):
             encoding="utf-8",
         )
         rejects = self.root / "rejects.jsonl"
-        result = import_inventory(source, "godaddy", self.database, rejects_path=str(rejects))
+        result = import_inventory(source, "godaddy", self.database, ImportOptions(rejects_path=str(rejects)))
         self.assertEqual((result["records"], result["rejected"]), (1, 1))
         self.assertEqual(json.loads(rejects.read_text(encoding="utf-8"))["line"], 3)
 
@@ -92,7 +93,7 @@ class DomainOpportunityFileTests(unittest.TestCase):
         archive = self.root / "unsafe.zip"
         with zipfile.ZipFile(archive, "w") as output:
             output.writestr("../escape.csv", "Domain\nexample.com\n")
-        with self.assertRaisesRegex(DomainOpportunityFileError, "unsafe path"):
+        with self.assertRaisesRegex(DomainOpportunityFileError, "unsafe"):
             import_inventory(archive, "godaddy", self.database)
         missing = self.root / "missing.csv"
         missing.write_text("Domain Name,Current Bid\nexample.com,1\n", encoding="utf-8")
