@@ -70,9 +70,9 @@ setup_test_env() {
 	printf 'origin:worker\n' >"${TEST_ROOT}/pr-labels.txt"
 	printf 'status:in-review,origin:interactive\n' >"${TEST_ROOT}/issue-labels.txt"
 	printf 'stale-owner\n' >"${TEST_ROOT}/issue-assignees.txt"
-	cat >"${TEST_ROOT}/bin/headless-runtime-helper.sh" <<'EOF'
+cat >"${TEST_ROOT}/bin/headless-runtime-helper.sh" <<'EOF'
 #!/usr/bin/env bash
-printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "${WORKER_GITHUB_LOGIN:-}" "$*" >>"${GH_LOG}"
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" "${AIDEVOPS_PR_REPAIR_FINGERPRINT:-}" "${AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE:-}" "${WORKER_WORKTREE_PATH:-}" "${WORKER_NO_EXIT_PUSH:-}" "${WORKER_GITHUB_LOGIN:-}" "$*" "${AIDEVOPS_HEADLESS_OUTCOME_FILE:-}" "${AIDEVOPS_HEADLESS_OUTCOME_ID:-}" >>"${GH_LOG}"
 if [[ "$*" == *"--detach"* ]]; then
 	sleep "${TEST_WORKER_SLEEP_SECONDS:-2}" >/dev/null 2>&1 &
 	printf 'Dispatched PID: %s\n' "$!"
@@ -461,12 +461,20 @@ define_feedback_helpers() {
 		_build_ci_feedback_section
 		_ci_check_url_has_infra_failure_log
 		_ci_actionable_failed_checks_markdown
+		_ci_check_evidence_role
 		_ci_terminal_failed_check_results
 		_ci_merge_check_sets
 		_ci_repair_required_checks_json
 		_append_feedback_to_issue
 		_transition_issue_for_redispatch
+		_ci_repair_outcome_id
 		_ci_repair_write_state
+		_ci_repair_outcome_file
+		_ci_repair_outcome_value
+		_ci_repair_sanitize_outcome_value
+		_ci_repair_project_outcome
+		_ci_repair_archive_attempt
+		_ci_repair_attempt_summary
 		_ci_repair_process_start
 		_ci_repair_pid_is_live
 		_ci_repair_publish_lock_owner
@@ -1080,6 +1088,61 @@ test_ci_feedback_skips_mixed_pending_pass_checks() {
 	return 0
 }
 
+test_ci_feedback_classifies_qlty_evidence_roles() {
+	setup_test_env
+	define_feedback_helpers || { print_result "defines feedback helpers for Qlty evidence roles" 1 "could not extract feedback helpers"; teardown_test_env; return 0; }
+
+	local checks_json='' rendered=''
+	checks_json='[{"name":"Qlty PR Regression","conclusion":"failure","link":"https://github.com/owner/repo/actions/runs/123/job/456"},{"name":"Qlty New-file Maintainability Smells","conclusion":"failure","link":"https://github.com/owner/repo/actions/runs/124/job/789"},{"name":"Qlty Absolute Threshold","conclusion":"failure","link":"https://github.com/owner/repo/actions/runs/125/job/790"}]'
+	rendered=$(_ci_actionable_failed_checks_markdown "100" "owner/repo" "$checks_json")
+
+	if [[ "$rendered" != *"Qlty PR Regression"*"primary PR-delta/new-file evidence"* \
+		|| "$rendered" != *"Qlty New-file Maintainability Smells"*"primary PR-delta/new-file evidence"* \
+		|| "$rendered" != *"Qlty Absolute Threshold"*"contextual repository-baseline evidence"* ]]; then
+		print_result "Qlty evidence distinguishes PR delta from baseline context" 1 "rendered=${rendered}"
+	else
+		print_result "Qlty evidence distinguishes PR regressions from contextual baseline debt" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_ci_repair_archives_trusted_terminal_outcome() {
+	setup_test_env
+	define_feedback_helpers || { print_result "defines feedback helpers for terminal outcomes" 1 "could not extract feedback helpers"; teardown_test_env; return 0; }
+
+	local lease_dir="${AIDEVOPS_CI_REPAIR_STATE_DIR}/outcome-contract"
+	local state_file="${lease_dir}/state.json" outcome_file="" outcome_id="" finished_at="" summary=""
+	local markdown_tick=$'\x60'
+	mkdir -p "$lease_dir"
+	_ci_repair_write_state "$state_file" "owner/repo" "100" "$TEST_PR_HEAD_SHA" "feature/repair" \
+		"fingerprint" "${TEST_ROOT}/worktrees/repair" "999999" "stale" "1" "dispatched" "ci-repair-contract"
+	outcome_file=$(_ci_repair_outcome_file "$lease_dir" "1")
+	outcome_id=$(jq -r '.outcome_id' "$state_file")
+	finished_at=$(date +%s)
+	printf 'session_key=ci-repair-contract\noutcome_id=%s\nreason=rate_limit<script>\nsession_count=0\nretry_class=infrastructure\nfinished_at=%s\n' \
+		"$outcome_id" "$finished_at" >"$outcome_file"
+
+	if ! _ci_repair_archive_attempt "$state_file" "$lease_dir" "1"; then
+		print_result "trusted terminal outcome archives atomically" 1 "archive failed"
+		teardown_test_env
+		return 0
+	fi
+	summary=$(_ci_repair_attempt_summary "$lease_dir")
+	if ! jq -e '.result == "retryable" and .failure_reason == "rate_limitscript" and .next_action == "retry_infrastructure" and .session_count == 0' \
+		"${lease_dir}/state-attempt-1.json" >/dev/null 2>&1; then
+		print_result "trusted terminal outcome projects sanitized lifecycle fields" 1 "archive=$(<"${lease_dir}/state-attempt-1.json")"
+	elif [[ -f "$state_file" || -f "$outcome_file" ]]; then
+		print_result "trusted terminal outcome consumes live state files" 1 "state or outcome file remained"
+	elif [[ "$summary" != *"result=${markdown_tick}retryable${markdown_tick}"*"failure_reason=${markdown_tick}rate_limitscript${markdown_tick}"*"next_action=${markdown_tick}retry_infrastructure${markdown_tick}"* ]]; then
+		print_result "trusted terminal outcome renders bounded fallback summary" 1 "summary=${summary}"
+	else
+		print_result "trusted terminal outcome is sanitized, archived, and summarized" 0
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_ci_feedback_emits_terminal_failure_with_conclusion_and_url() {
 	setup_test_env
 	TEST_CHECK_SCENARIO="terminal_failure"
@@ -1250,6 +1313,8 @@ test_ci_repair_preserves_pr_until_launch_retries_exhausted() {
 	define_feedback_helpers || { print_result "defines feedback helpers for retryable launch failures" 1 "could not extract feedback helpers"; teardown_test_env; return 0; }
 
 	local first_close_count=0 second_close_count=0 final_close_count=0
+	local markdown_tick=$'\x60' expected_outcome_line=""
+	expected_outcome_line="result=${markdown_tick}launch_failed${markdown_tick}; failure_reason=${markdown_tick}worktree_failed${markdown_tick}; next_action=${markdown_tick}retry_launch${markdown_tick}"
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 	first_close_count=$(grep -cF 'gh pr close 100' "$GH_LOG" || true)
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
@@ -1261,6 +1326,9 @@ test_ci_repair_preserves_pr_until_launch_retries_exhausted() {
 		print_result "retryable CI repair failures preserve the PR" 1 "close counts before exhaustion: first=${first_close_count}, second=${second_close_count}"
 	elif [[ "$final_close_count" -ne 1 ]]; then
 		print_result "exhausted CI repair failures take one durable fallback" 1 "final close count=${final_close_count}; GH log: $(cat "$GH_LOG")"
+	elif ! grep -qF '### In-place repair attempt outcomes' "${TEST_ROOT}/issue-body.txt" \
+		|| ! grep -qF "$expected_outcome_line" "${TEST_ROOT}/issue-body.txt"; then
+		print_result "exhausted CI repair fallback includes durable attempt outcomes" 1 "Body: $(cat "${TEST_ROOT}/issue-body.txt")"
 	else
 		print_result "CI repair preserves the PR until bounded launch retries exhaust" 0
 	fi
@@ -1279,11 +1347,11 @@ test_ci_repair_recovers_one_stale_lease_then_exhausts() {
 	sleep 1
 	_dispatch_ci_fix_worker "100" "owner/repo" "42"
 
-	local worktree_count=0 current_attempt=""
+	local worktree_count=0 archived_attempt=""
 	worktree_count=$(grep -c '^worktree add ' "$GH_LOG" || true)
-	current_attempt=$(find "$AIDEVOPS_CI_REPAIR_STATE_DIR" -name state.json -type f -exec jq -r '.attempt // empty' {} \;)
-	if [[ "$worktree_count" -ne 1 || "$current_attempt" != "2" ]]; then
-		print_result "stale CI repair lease resumes one worktree for a bounded retry" 1 "worktrees=${worktree_count}, attempt=${current_attempt}"
+	archived_attempt=$(find "$AIDEVOPS_CI_REPAIR_STATE_DIR" -name state-attempt-2.json -type f -exec jq -r '.attempt // empty' {} \;)
+	if [[ "$worktree_count" -ne 1 || "$archived_attempt" != "2" ]]; then
+		print_result "stale CI repair lease resumes one worktree for a bounded retry" 1 "worktrees=${worktree_count}, archived_attempt=${archived_attempt}"
 	elif ! grep -qF 'recovering stale repair' "$LOGFILE"; then
 		print_result "stale CI repair retry is observable" 1 "Log: $(cat "$LOGFILE")"
 	elif ! grep -qF 'resuming stale repair worktree' "$LOGFILE"; then
@@ -1419,6 +1487,8 @@ main() {
 	test_ci_repair_worktree_paths_are_repository_scoped
 	test_ci_feedback_skips_pending_only_checks
 	test_ci_feedback_skips_mixed_pending_pass_checks
+	test_ci_feedback_classifies_qlty_evidence_roles
+	test_ci_repair_archives_trusted_terminal_outcome
 	test_ci_feedback_emits_terminal_failure_with_conclusion_and_url
 	test_ci_feedback_uses_supplied_non_required_blocker_evidence
 	test_ci_feedback_defers_when_head_changes_during_collection
