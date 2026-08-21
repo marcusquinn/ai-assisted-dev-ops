@@ -20,7 +20,8 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 from domain_opportunity_contract import CandidateScore, KeywordMetric, TrendSeries  # noqa: E402
-from domain_opportunity_reporting import build_report, render  # noqa: E402
+from domain_opportunity_report_render import render  # noqa: E402
+from domain_opportunity_reporting import ReportOptions, build_report  # noqa: E402
 from domain_opportunity_store import DomainOpportunityStore  # noqa: E402
 
 HELPER = SCRIPTS / "domain-opportunity-helper.py"
@@ -96,9 +97,9 @@ class ReportingTests(unittest.TestCase):
         socket.socket = lambda *_args, **_kwargs: self.fail("network access attempted")  # type: ignore[assignment]
         try:
             with DomainOpportunityStore(self.database) as store:
-                first = build_report(store, as_of=AS_OF)
+                first = build_report(store, ReportOptions(as_of=AS_OF))
             with DomainOpportunityStore(self.database) as store:
-                second = build_report(store, as_of=AS_OF)
+                second = build_report(store, ReportOptions(as_of=AS_OF))
         finally:
             socket.socket = original_socket
         self.assertEqual(first, second)

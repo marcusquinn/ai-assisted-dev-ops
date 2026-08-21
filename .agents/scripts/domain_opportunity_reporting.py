@@ -5,39 +5,15 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import json
-import os
-import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from domain_opportunity_contract import SCHEMA_VERSION
 from domain_opportunity_store import DomainOpportunityStore
 
 REPORT_VERSION = "domain-opportunity-report-v1"
-COMPONENT_NAMES = (
-    "backlink_history", "commercial_intent", "current_price_fit", "demand",
-    "phrase_confidence", "provider_appraisal_comparables", "risk_quality",
-    "source_freshness", "structural_readability",
-)
-CSV_COLUMNS = (
-    "rank", "domain", "provider", "provider_listing_id", "status", "auction_type",
-    "current_price_micros", "current_price_currency", "bid_count", "deadline",
-    "listing_observed_at", "listing_source", "listing_unit", "listing_freshness",
-    "policy_version", "score_micros", "score_source", "score_unit", "score_observed_at", "score_freshness", "eligible",
-    "score_components_json", "google_ads_status", "google_ads_metrics_json",
-    "google_ads_source", "google_ads_unit", "google_ads_observed_at",
-    "google_ads_locale_json", "google_ads_retrieval_month", "google_ads_freshness",
-    "trends_status", "trends_batch_id", "trends_query", "trends_geography",
-    "trends_timeframe", "trends_direction", "trends_min", "trends_max",
-    "trends_source", "trends_unit", "trends_observed_at", "trends_freshness",
-    "missing_flags", "risk_flags",
-)
-
-
 class ReportingError(ValueError):
     """Raised when a report request or local output is unsafe."""
 
@@ -53,8 +29,14 @@ def _parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+@dataclass(frozen=True)
+class ReportOptions:
+    """Stable report filters collected without a wide function signature."""
+
+    as_of: str | None = None
+    active_only: bool = False
+    eligible_only: bool = False
+    limit: int | None = None
 
 
 def _freshness(observed_at: str | None, as_of: datetime, days: int) -> str:
@@ -145,88 +127,100 @@ def _snapshot_as_of(store: DomainOpportunityStore, requested: str | None) -> tup
     return value, _parse_time(value)
 
 
-def build_report(
-    store: DomainOpportunityStore, *, as_of: str | None = None, active_only: bool = False,
-    eligible_only: bool = False, limit: int | None = None,
-) -> dict[str, Any]:
+def _ads_projection(ads: dict[str, Any] | None, as_of: datetime) -> dict[str, Any]:
+    value = ads["value"] if ads else {}
+    return {
+        "status": value.get("status", "unavailable"), "metrics": value.get("metrics"),
+        "source": value.get("metric_source") if ads else None,
+        "unit": "provider_metric_bundle" if ads else None,
+        "observed_at": ads["observed_at"] if ads else None,
+        "locale": {key: value.get(key) for key in ("language", "geographies", "network", "account_currency") if key in value},
+        "retrieval_month": value.get("retrieval_month"),
+        "freshness": _freshness(ads["observed_at"] if ads else None, as_of, 35),
+    }
+
+
+def _trends_projection(trends: dict[str, Any] | None, as_of: datetime) -> dict[str, Any]:
+    values = trends["values"] if trends else []
+    return {
+        "status": "measured_batch_relative" if trends else "unavailable_optional",
+        "batch_id": trends["source_run_id"] if trends else None,
+        "query": trends["query"] if trends else None, "geography": trends["geography"] if trends else None,
+        "timeframe": trends["timeframe"] if trends else None, "direction": trends["direction"] if trends else None,
+        "minimum": min(values) if values else None, "maximum": max(values) if values else None,
+        "source": trends["source"] if trends else None,
+        "unit": "batch_relative_index_0_100" if trends else None,
+        "observed_at": trends["observed_at"] if trends else None,
+        "freshness": _freshness(trends["observed_at"] if trends else None, as_of, 14),
+    }
+
+
+def _missing_flags(score: dict[str, Any] | None, ads: dict[str, Any], trends: dict[str, Any], currency: str) -> list[str]:
+    flags = []
+    if score is None:
+        flags.append("score")
+    if ads["status"] == "unavailable":
+        flags.append("google_ads")
+    elif ads["status"] != "found":
+        flags.append(f"google_ads_{ads['status']}")
+    if trends["status"] == "unavailable_optional":
+        flags.append("trends_optional")
+    if not currency:
+        flags.append("price_currency")
+    return sorted(flags)
+
+
+def _candidate(store: DomainOpportunityStore, listing: Any, as_of: datetime) -> dict[str, Any]:
+    listing_id = int(listing["listing_id"])
+    score, components = _latest_score(store, listing_id)
+    ads = _ads_projection(_latest_ads(store, listing_id), as_of)
+    trends = _trends_projection(_latest_trends(store, listing_id), as_of)
+    hard_flags, risk_flags, eligible = _flags(components)
+    currency = listing["current_price_currency"]
+    return {
+        "domain": listing["fqdn"], "provider": listing["provider"],
+        "provider_listing_id": listing["provider_listing_id"], "status": listing["status"],
+        "auction_type": listing["auction_type"], "current_price_micros": listing["current_price_micros"],
+        "current_price_currency": currency, "bid_count": listing["bid_count"],
+        "deadline": listing["end_time"], "listing_observed_at": listing["observed_at"],
+        "listing_source": listing["provider"], "listing_unit": "currency_micros",
+        "listing_freshness": _freshness(listing["observed_at"], as_of, 7),
+        "policy_version": score["model"] if score else None,
+        "score_micros": score["score_micros"] if score else None,
+        "score_source": score["model"] if score else None, "score_unit": "micros" if score else None,
+        "score_observed_at": score["observed_at"] if score else None,
+        "score_freshness": _freshness(score["observed_at"] if score else None, as_of, 35),
+        "eligible": eligible, "score_components": components, "google_ads": ads, "trends": trends,
+        "missing_flags": _missing_flags(score, ads, trends, currency),
+        "risk_flags": sorted(set(hard_flags + risk_flags)),
+    }
+
+
+def build_report(store: DomainOpportunityStore, options: ReportOptions | None = None) -> dict[str, Any]:
     """Build one joined report inside a consistent SQLite read transaction."""
-    if limit is not None and limit < 1:
+    options = options or ReportOptions()
+    if options.limit is not None and options.limit < 1:
         raise ReportingError("limit must be positive")
     store.connection.execute("BEGIN")
     try:
-        as_of_text, as_of_time = _snapshot_as_of(store, as_of)
+        as_of_text, as_of_time = _snapshot_as_of(store, options.as_of)
         listings = store.connection.execute(
             """SELECT l.listing_id,l.provider,l.provider_listing_id,l.fqdn,o.status,o.auction_type,
                       o.current_price_micros,o.current_price_currency,o.bid_count,o.end_time,
                       o.observed_at,o.source_run_id
                FROM listings l JOIN listing_observations o ON o.observation_id=l.current_observation_id
                WHERE (?=0 OR o.status='active') ORDER BY l.provider,l.provider_listing_id""",
-            (int(active_only),),
+            (int(options.active_only),),
         ).fetchall()
-        candidates: list[dict[str, Any]] = []
-        for listing in listings:
-            score, components = _latest_score(store, int(listing["listing_id"]))
-            ads = _latest_ads(store, int(listing["listing_id"]))
-            trends = _latest_trends(store, int(listing["listing_id"]))
-            hard_flags, risk_flags, eligible = _flags(components)
-            if eligible_only and eligible is not True:
-                continue
-            ads_value = ads["value"] if ads else {}
-            ads_status = ads_value.get("status", "unavailable")
-            missing = []
-            if score is None:
-                missing.append("score")
-            if ads is None:
-                missing.append("google_ads")
-            elif ads_status != "found":
-                missing.append(f"google_ads_{ads_status}")
-            if trends is None:
-                missing.append("trends_optional")
-            if listing["current_price_currency"] == "":
-                missing.append("price_currency")
-            candidate = {
-                "domain": listing["fqdn"], "provider": listing["provider"],
-                "provider_listing_id": listing["provider_listing_id"], "status": listing["status"],
-                "auction_type": listing["auction_type"], "current_price_micros": listing["current_price_micros"],
-                "current_price_currency": listing["current_price_currency"], "bid_count": listing["bid_count"],
-                "deadline": listing["end_time"], "listing_observed_at": listing["observed_at"],
-                "listing_source": listing["provider"], "listing_unit": "currency_micros",
-                "listing_freshness": _freshness(listing["observed_at"], as_of_time, 7),
-                "policy_version": score["model"] if score else None,
-                "score_micros": score["score_micros"] if score else None,
-                "score_source": score["model"] if score else None,
-                "score_unit": "micros" if score else None,
-                "score_observed_at": score["observed_at"] if score else None,
-                "score_freshness": _freshness(score["observed_at"] if score else None, as_of_time, 35),
-                "eligible": eligible, "score_components": components,
-                "google_ads": {
-                    "status": ads_status, "metrics": ads_value.get("metrics"),
-                    "source": ads_value.get("metric_source") if ads else None, "unit": "provider_metric_bundle" if ads else None,
-                    "observed_at": ads["observed_at"] if ads else None,
-                    "locale": {key: ads_value.get(key) for key in ("language", "geographies", "network", "account_currency") if key in ads_value},
-                    "retrieval_month": ads_value.get("retrieval_month"),
-                    "freshness": _freshness(ads["observed_at"] if ads else None, as_of_time, 35),
-                },
-                "trends": {
-                    "status": "measured_batch_relative" if trends else "unavailable_optional",
-                    "batch_id": trends["source_run_id"] if trends else None,
-                    "query": trends["query"] if trends else None, "geography": trends["geography"] if trends else None,
-                    "timeframe": trends["timeframe"] if trends else None, "direction": trends["direction"] if trends else None,
-                    "minimum": min(trends["values"]) if trends and trends["values"] else None,
-                    "maximum": max(trends["values"]) if trends and trends["values"] else None,
-                    "source": trends["source"] if trends else None, "unit": "batch_relative_index_0_100" if trends else None,
-                    "observed_at": trends["observed_at"] if trends else None,
-                    "freshness": _freshness(trends["observed_at"] if trends else None, as_of_time, 14),
-                },
-                "missing_flags": sorted(missing), "risk_flags": sorted(set(hard_flags + risk_flags)),
-            }
-            candidates.append(candidate)
+        candidates = [_candidate(store, listing, as_of_time) for listing in listings]
+        if options.eligible_only:
+            candidates = [candidate for candidate in candidates if candidate["eligible"] is True]
         candidates.sort(key=lambda item: (
             item["score_micros"] is None, -(item["score_micros"] or 0),
             item["domain"], item["provider"], item["provider_listing_id"],
         ))
-        if limit is not None:
-            candidates = candidates[:limit]
+        if options.limit is not None:
+            candidates = candidates[:options.limit]
         for rank, candidate in enumerate(candidates, 1):
             candidate["rank"] = rank
         return {
@@ -235,77 +229,6 @@ def build_report(
         }
     finally:
         store.connection.rollback()
-
-
-def _csv_row(item: dict[str, Any]) -> dict[str, Any]:
-    ads, trends = item["google_ads"], item["trends"]
-    row = {key: item.get(key) for key in CSV_COLUMNS}
-    row.update({
-        "score_components_json": _json(item["score_components"]),
-        "google_ads_status": ads["status"], "google_ads_metrics_json": _json(ads["metrics"]),
-        "google_ads_source": ads["source"], "google_ads_unit": ads["unit"],
-        "google_ads_observed_at": ads["observed_at"], "google_ads_locale_json": _json(ads["locale"]),
-        "google_ads_retrieval_month": ads["retrieval_month"], "google_ads_freshness": ads["freshness"],
-        "trends_status": trends["status"], "trends_batch_id": trends["batch_id"],
-        "trends_query": trends["query"], "trends_geography": trends["geography"],
-        "trends_timeframe": trends["timeframe"], "trends_direction": trends["direction"],
-        "trends_min": trends["minimum"], "trends_max": trends["maximum"],
-        "trends_source": trends["source"], "trends_unit": trends["unit"],
-        "trends_observed_at": trends["observed_at"], "trends_freshness": trends["freshness"],
-        "missing_flags": ";".join(item["missing_flags"]), "risk_flags": ";".join(item["risk_flags"]),
-    })
-    return row
-
-
-def render(report: dict[str, Any], output_format: str) -> str:
-    """Render stable CSV, JSON, or concise Markdown."""
-    if output_format == "json":
-        return _json(report) + "\n"
-    if output_format == "csv":
-        target = io.StringIO(newline="")
-        writer = csv.DictWriter(target, fieldnames=CSV_COLUMNS, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(_csv_row(item) for item in report["candidates"])
-        return target.getvalue()
-    if output_format != "markdown":
-        raise ReportingError("format must be csv, json, or markdown")
-    lines = [
-        "# Domain opportunity report", "", f"As of: `{report['as_of']}`  ",
-        f"Policy evidence: persisted version per candidate  ", "Trends values are batch-relative, not absolute demand.", "",
-        "| Rank | Domain | Score | Policy | Price | Deadline | Missing | Risk |", "|---:|---|---:|---|---:|---|---|---|",
-    ]
-    for item in report["candidates"]:
-        score = "unknown" if item["score_micros"] is None else str(item["score_micros"])
-        price = f"{item['current_price_micros']} {item['current_price_currency']} micros"
-        lines.append(
-            f"| {item['rank']} | {item['domain']} | {score} | {item['policy_version'] or 'unknown'} | "
-            f"{price} | {item['deadline']} | {', '.join(item['missing_flags']) or 'none'} | "
-            f"{', '.join(item['risk_flags']) or 'none'} |"
-        )
-    lines.extend(["", "## Evidence packet", "", "```json", _json(report["candidates"]), "```", ""])
-    return "\n".join(lines)
-
-
-def publish(output: str, content: str) -> None:
-    """Publish atomically without replacing through a symlink."""
-    destination = Path(output).expanduser().absolute()
-    if destination.is_symlink():
-        raise ReportingError("output must not be a symbolic link")
-    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, destination)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
 
 
 def pipeline_status(store: DomainOpportunityStore) -> dict[str, Any]:

@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from domain_opportunity_contract import DomainOpportunityContractError, normalize_listing
-from domain_opportunity_reporting import ReportingError, build_report, pipeline_status, publish, render
+from domain_opportunity_report_render import publish, render
+from domain_opportunity_reporting import ReportOptions, ReportingError, build_report, pipeline_status
 from domain_opportunity_store import DomainOpportunityStore, DomainOpportunityStoreError
 
 
@@ -47,10 +48,10 @@ def cmd_pipeline_status(args: argparse.Namespace) -> int:
 
 def _report(args: argparse.Namespace) -> dict[str, Any]:
     with DomainOpportunityStore(args.db) as store:
-        return build_report(
-            store, as_of=args.as_of, active_only=args.active_only,
+        return build_report(store, ReportOptions(
+            as_of=args.as_of, active_only=args.active_only,
             eligible_only=args.eligible_only, limit=args.limit,
-        )
+        ))
 
 
 def cmd_candidates(args: argparse.Namespace) -> int:
