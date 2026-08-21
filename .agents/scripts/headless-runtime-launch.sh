@@ -227,6 +227,7 @@ _prepare_triage_runtime_directory() {
 	local isolated_agent_name="triage-review"
 	local agent_source="${SCRIPT_DIR}/../workflows/triage-review.md"
 	local config_dir=""
+	local permission_deny="deny"
 	local plugin_path="${SCRIPT_DIR}/../plugins/opencode-aidevops/index.mjs"
 	local plugin_url=""
 	local staged_agent=""
@@ -258,12 +259,13 @@ _prepare_triage_runtime_directory() {
 	if [[ -f "$plugin_path" ]]; then
 		plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).absolute().as_uri())' \
 			"$plugin_path" 2>/dev/null) || return 1
-		jq -n --arg plugin_url "$plugin_url" --arg agent_name "$isolated_agent_name" '{
+		jq -n --arg plugin_url "$plugin_url" --arg agent_name "$isolated_agent_name" \
+			--arg permission_deny "$permission_deny" '{
 			"$schema": "https://opencode.ai/config.json",
 			plugin: [$plugin_url],
 			default_agent: $agent_name,
-			agent: {($agent_name): {mode: "primary", permission: {"*": "deny"}, tools: {"*": false}}},
-			permission: {"*": "deny"},
+			agent: {($agent_name): {mode: "primary", permission: {"*": $permission_deny}, tools: {"*": false}}},
+			permission: {"*": $permission_deny},
 			tools: {"*": false},
 			mcp: {},
 			formatter: false,
@@ -272,11 +274,11 @@ _prepare_triage_runtime_directory() {
 			subagent_depth: 0
 		}' >"$config_file" || return 1
 	else
-		jq -n --arg agent_name "$isolated_agent_name" '{
+		jq -n --arg agent_name "$isolated_agent_name" --arg permission_deny "$permission_deny" '{
 			"$schema": "https://opencode.ai/config.json",
 			default_agent: $agent_name,
-			agent: {($agent_name): {mode: "primary", permission: {"*": "deny"}, tools: {"*": false}}},
-			permission: {"*": "deny"},
+			agent: {($agent_name): {mode: "primary", permission: {"*": $permission_deny}, tools: {"*": false}}},
+			permission: {"*": $permission_deny},
 			tools: {"*": false},
 			mcp: {},
 			formatter: false,
