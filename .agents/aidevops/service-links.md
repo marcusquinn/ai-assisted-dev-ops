@@ -24,7 +24,7 @@ tools:
 |---------|---------|------|
 | [Hostinger](https://www.hostinger.com/) | [hpanel.hostinger.com](https://hpanel.hostinger.com/) | [developers.hostinger.com](https://developers.hostinger.com/) |
 | [Hetzner Cloud](https://www.hetzner.com/cloud) | [console.hetzner.cloud](https://console.hetzner.cloud/) | [docs.hetzner.com/cloud](https://docs.hetzner.com/cloud) |
-| [Closte](https://closte.com/) | [app.closte.com](https://app.closte.com/) | [docs.closte.com](https://docs.closte.com/) |
+| [Closte (legacy)](https://closte.com/) | [app.closte.com](https://app.closte.com/) | [docs.closte.com](https://docs.closte.com/) |
 | [Coolify](https://coolify.io/) | [app.coolify.io](https://app.coolify.io/) | [coolify.io/docs](https://coolify.io/docs) |
 | [Cloudron](https://www.cloudron.io/) | [marketplace.cloudron.io](https://marketplace.cloudron.io/) | [docs.cloudron.io](https://docs.cloudron.io/) |
 | [AWS](https://aws.amazon.com/) | [console.aws.amazon.com](https://console.aws.amazon.com/) | [docs.aws.amazon.com](https://docs.aws.amazon.com/) |

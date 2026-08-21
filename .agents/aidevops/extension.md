@@ -26,7 +26,7 @@ tools:
 - **Config template**: `configs/[service]-config.json.txt`
 - **Docs**: `.agents/[service].md`
 - **Required functions**: `check_dependencies`, `load_config`, `get_account_config`, `api_request`, `list_accounts`, `show_help`, `main`
-- **Update on add**: `.gitignore`, `README.md`, `AGENTS.md`, `recommendations-opinionated.md`, `setup-wizard-helper.sh`
+- **Update on add**: `.gitignore`, `README.md`, `AGENTS.md`, `aidevops/recommendations.md`, `setup-wizard-helper.sh`
 
 <!-- AI-CONTEXT-END -->
 
@@ -150,7 +150,7 @@ echo "configs/[service]-config.json" >> .gitignore
 
 # README.md — add to service list, helper scripts list, file structure
 # AGENTS.md — add to appropriate service category
-# recommendations-opinionated.md — add with description
+# .agents/aidevops/recommendations.md — add with description
 # setup-wizard-helper.sh — add to recommendations, API keys guide, config generation
 ```
 

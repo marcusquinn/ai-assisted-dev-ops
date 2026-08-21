@@ -1,5 +1,5 @@
 ---
-description: Closte managed WordPress hosting
+description: Legacy Closte managed WordPress hosting operations and migration
 mode: subagent
 tools:
   read: true
@@ -19,6 +19,8 @@ tools:
 
 ## Quick Reference
 
+- **Status**: Legacy provider knowledge retained for existing Closte estates, migration, and offboarding
+- **New deployments**: Do not recommend Closte; select Hostinger, Hetzner, or Cloudflare according to the user's priorities via `aidevops/recommendations.md`
 - **Type**: Managed WordPress hosting with LiteSpeed, object cache, and CDN layers
 - **Authentication**: Closte supplies password-based SSH access; key authentication may not be available
 - **Credentials**: Inject the four `SITE_SSH_*` secrets only into a subprocess; never retrieve values or create plaintext password files
@@ -26,6 +28,14 @@ tools:
 - **Multisite**: Resolve the target site and pass `--url=<SITE_URL>` to every site-scoped WP-CLI command
 
 <!-- AI-CONTEXT-END -->
+
+## Legacy Scope
+
+Use this guide to operate, migrate, or retire sites that are already on Closte.
+For a renewal, expansion, or new hosting decision, reassess the workload against
+Hostinger, Hetzner, and Cloudflare rather than carrying Closte forward by default.
+Preserve the operational safeguards below while an existing Closte site remains
+in service.
 
 ## Project Context
 

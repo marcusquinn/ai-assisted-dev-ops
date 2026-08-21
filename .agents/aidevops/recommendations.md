@@ -20,7 +20,7 @@ tools:
 
 ## Quick Reference
 
-- **Hosting**: Hostinger ($, small sites), Hetzner ($$, production), Closte ($$, VPS)
+- **Hosting**: Hostinger (managed WordPress convenience/value), Hetzner (self-managed control/price-performance), Cloudflare (edge/static/headless and global delivery); Closte is legacy-only
 - **Deployment**: Coolify (self-hosted PaaS), Cloudron (easy app management)
 - **DNS**: Cloudflare (CDN/security), Spaceship (modern), 101domains (large portfolios), Route 53 (AWS)
 - **Security**: API tokens in `~/.config/aidevops/`, never in repo, rotate quarterly
@@ -33,13 +33,27 @@ tools:
 
 ## Provider Selection
 
+Select by the user's priorities rather than provider familiarity. Establish the
+desired operating burden, workload shape, budget, traffic geography, data-location
+needs, support expectations, and existing stack, then verify current plans, limits,
+regions, backups, and pricing before committing.
+
+For conventional WordPress, start with Hostinger when managed convenience and
+value lead. Prefer Hetzner when server control, custom infrastructure, or
+price-performance justify self-management. Prefer Cloudflare for edge-native,
+static, or headless delivery and as the global performance/security layer; a
+conventional PHP/MySQL WordPress site still needs an origin such as Hostinger or
+Hetzner. Retain Closte guidance only for existing estates, migrations, and
+offboarding—not as a new-deployment recommendation.
+
 ### Hosting & Cloud
 
-| Provider | Best For | Price | Key Features | Docs |
-|----------|----------|-------|--------------|------|
-| Hostinger | Small-medium sites | $ | Easy management, good value | [HOSTINGER.md](HOSTINGER.md) |
-| Hetzner Cloud | Production apps | $$ | Excellent performance, API | [HETZNER.md](HETZNER.md) |
-| Closte | VPS hosting | $$ | Competitive pricing, flexibility | [CLOSTE.md](CLOSTE.md) |
+| Provider | Best For | Operating Model | Key Trade-off | Docs |
+|----------|----------|-----------------|---------------|------|
+| Hostinger | Conventional managed WordPress | Lower-ops shared/cloud hosting | Convenience and value over low-level server control | [Hostinger guide](../services/hosting/hostinger.md) |
+| Hetzner Cloud | Self-managed WordPress and production apps | VPS/dedicated infrastructure | Strong control and price-performance; operator owns hardening, backups, updates, and monitoring | [Hetzner guide](../services/hosting/hetzner.md) |
+| Cloudflare | Edge/static/headless workloads and global delivery/security | Edge platform or layer in front of an origin | Not a drop-in PHP/MySQL WordPress origin | [Cloudflare guide](../services/hosting/cloudflare.md) |
+| Closte (legacy) | Existing Closte estates and migrations | Legacy managed WordPress operations | Do not recommend for new deployments | [Closte legacy guide](../services/hosting/closte.md) |
 
 ### Deployment Platforms
 
@@ -122,11 +136,11 @@ tools:
 - Standardize keys across all servers with passphrase protection
 - Audit and remove unused keys regularly
 
-### Password Authentication (Hostinger/Closte)
+### Password Authentication (Hostinger and legacy Closte estates)
 
-- Store passwords in separate files with 600 permissions (e.g., `hostinger_password`, `closte_web_password`)
-- Use `sshpass` for automated password authentication
-- Add password files to `.gitignore`
+- Prefer `aidevops secret set` and inject passwords only into the command subprocess.
+- Use `sshpass` only with an injected environment variable or a legacy helper's 600-permission compatibility file.
+- Never print or commit passwords; keep any required compatibility file outside Git.
 
 ## Domain & SSL Management
 

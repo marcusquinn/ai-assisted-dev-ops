@@ -54,7 +54,7 @@ wp-helper.sh --all plugin update --all       # Run on ALL sites
 |---------|-------------|----------------|
 | LocalWP | N/A | `cd ~/Local Sites/site/app/public && wp ...` |
 | Hostinger | sshpass | `sshpass -f ~/.ssh/hostinger_password ssh user@host "wp ..."` |
-| Closte | sshpass | `sshpass -f ~/.ssh/closte_password ssh user@host "wp ..."` |
+| Closte (legacy) | sshpass | `sshpass -f ~/.ssh/closte_password ssh user@host "wp ..."` |
 | Hetzner | SSH key | `ssh root@server "wp ..."` |
 | Cloudron | SSH key | Via Cloudron CLI or SSH |
 

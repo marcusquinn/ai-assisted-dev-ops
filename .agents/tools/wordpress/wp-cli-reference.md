@@ -140,8 +140,9 @@ wp post delete $(wp post list --post_type=post --post_status=auto-draft --format
 # Cache
 wp cache flush
 wp rewrite flush
-wp closte devmode enable   # Closte: before changes
-wp closte devmode disable  # Closte: after changes
+# Legacy Closte estates only: use the closte.md Mutation Guard, not these independently
+wp closte devmode enable   # Before changes
+wp closte devmode disable  # After changes
 ```
 
 ## Multisite

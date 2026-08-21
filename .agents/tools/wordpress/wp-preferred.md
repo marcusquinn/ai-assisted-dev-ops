@@ -118,7 +118,7 @@ Also see: `network-plugin-auditor` (Admin).
 
 ### Hosting-Specific
 
-Closte.com only: `closte-requirements`, `eos-deactivate-plugins` (Closte variant of Freesoul Deactivate Plugins).
+Legacy Closte estates only: `closte-requirements`, `eos-deactivate-plugins` (Closte variant of Freesoul Deactivate Plugins).
 
 ## Premium Plugin Sources
 

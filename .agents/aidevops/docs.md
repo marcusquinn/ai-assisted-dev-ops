@@ -26,7 +26,7 @@ tools:
 - **Quick-load block**: `<!-- AI-CONTEXT-START -->` for stable high-signal context
 - **Config templates**: `configs/[service]-config.json.txt`
 - **Setup docs**: `*-setup.md` for multi-step integrations
-- **Provider guidance**: `recommendations-opinionated.md`
+- **Provider guidance**: `aidevops/recommendations.md`
 - **Cross-service flows**: Domain → DNS → Hosting; Dev → Quality → Deploy
 - **Priority**: service guide → framework context → best-practices guide → setup guide → Context7 MCP for latest external docs
 
@@ -36,13 +36,13 @@ tools:
 
 | Category | Guides |
 |----------|--------|
-| Infrastructure & Hosting | hostinger.md, hetzner.md, closte.md, cloudron.md |
+| Infrastructure & Hosting | services/hosting/hostinger.md, services/hosting/hetzner.md, services/hosting/cloudflare.md, services/hosting/closte.md (legacy), services/hosting/cloudron.md |
 | Deployment & Content | coolify.md, mainwp.md |
 | Security & Quality | vaultwarden.md, code-auditing.md |
 | Version Control & Domains | git-platforms.md, domain-purchasing.md, spaceship.md, 101domains.md |
 | Email & DNS | ses.md, dns-providers.md |
 | Development & Local | localhost.md, localwp-mcp.md, mcp-servers.md, context7-mcp-setup.md |
-| Framework | recommendations-opinionated.md, cloudflare-setup.md, coolify-setup.md |
+| Framework | aidevops/recommendations.md, services/hosting/cloudflare.md, tools/deployment/coolify.md |
 
 ## Standard Guide Structure
 

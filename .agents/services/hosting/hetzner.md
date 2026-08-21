@@ -19,6 +19,8 @@ tools:
 
 ## Quick Reference
 
+- **Recommendation**: Prefer when server control, custom infrastructure, workload density, or price-performance justify self-managing hardening, updates, backups, and monitoring
+- **WordPress selection**: Hostinger is the lower-ops starting point; use `aidevops/recommendations.md` to compare priorities before provisioning
 - **Type**: Cloud VPS, dedicated servers, storage
 - **API**: REST at `https://api.hetzner.cloud/v1`
 - **Auth**: Bearer token per project (stored in `~/.config/aidevops/credentials.sh`)

@@ -82,7 +82,7 @@ find .agents/scripts/ -name "*.sh" -exec shellcheck {} \;
 
 | Category | Services | Key Capabilities |
 |----------|----------|-----------------|
-| Infrastructure & Hosting | Hostinger, Hetzner Cloud, Closte, Cloudron | Provisioning, monitoring, scaling, backup, SSL |
+| Infrastructure & Hosting | Hostinger, Hetzner Cloud, Cloudflare, Closte (legacy operations), Cloudron | Provisioning, monitoring, scaling, backup, SSL |
 | Deployment & Orchestration | Coolify | App deployment, container orchestration, CI/CD, rollback |
 | Content Management | MainWP | WordPress at scale, plugin/theme updates, security scanning |
 | Security & Secrets | Vaultwarden | Credential storage, password generation, team sharing, audit logging |

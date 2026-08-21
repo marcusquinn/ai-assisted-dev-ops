@@ -28,6 +28,8 @@ tools:
 
 ## Quick Reference
 
+- **Hosting role**: Prefer for edge/serverless/static/headless workloads and global delivery/security; conventional PHP/MySQL WordPress normally uses Cloudflare in front of a Hostinger or Hetzner origin
+- **Provider selection**: Apply `aidevops/recommendations.md` before treating Cloudflare as the hosting platform rather than the edge layer
 - **Auth**: API Tokens only (NEVER Global API Keys)
 - **Token creation**: Dashboard > My Profile > API Tokens > Create Token
 - **Permissions**: Zone:Read, DNS:Read, DNS:Edit (scope to specific zones)

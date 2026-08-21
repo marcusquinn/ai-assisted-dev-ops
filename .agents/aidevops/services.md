@@ -24,9 +24,9 @@ tools:
 
 | Category | Service | Helper | Config | Docs |
 |----------|---------|--------|--------|------|
-| Infrastructure | Hostinger (shared hosting, WordPress-optimised) | `hostinger-helper.sh` | `hostinger-config.json` | `.agents/hostinger.md` |
-| Infrastructure | Hetzner Cloud (German VPS, EU-based, REST API) | `hetzner-helper.sh` | `hetzner-config.json` | `.agents/hetzner.md` |
-| Infrastructure | Closte (VPS, multiple locations, REST API) | `closte-helper.sh` | `closte-config.json` | `.agents/closte.md` |
+| Infrastructure | Hostinger (preferred conventional WordPress hosting) | `hostinger-helper.sh` | `hostinger-config.json` | `.agents/services/hosting/hostinger.md` |
+| Infrastructure | Hetzner Cloud (self-managed VPS/dedicated infrastructure) | `hetzner-helper.sh` | `hetzner-config.json` | `.agents/services/hosting/hetzner.md` |
+| Infrastructure | Closte (legacy managed WordPress estates) | `closte-helper.sh` | `closte-config.json` | `.agents/services/hosting/closte.md` |
 | Infrastructure | Cloudron (self-hosted app platform, auto-updates, backups) | `cloudron-helper.sh` | `cloudron-config.json` | `.agents/cloudron.md` |
 | Deployment | Coolify (self-hosted PaaS, Docker, Git integration) | `coolify-helper.sh` | `coolify-config.json` | `.agents/coolify.md` |
 | Content | MainWP (centralised WordPress management, bulk ops) | `mainwp-helper.sh` | `mainwp-config.json` | `.agents/mainwp.md` |

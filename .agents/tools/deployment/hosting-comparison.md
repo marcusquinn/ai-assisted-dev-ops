@@ -31,6 +31,11 @@ tools:
 
 **Platform docs**: `fly-io.md` | `daytona.md` | `coolify.md` | `cloudron-app-packaging.md` | `vercel.md`
 
+**Scope**: This guide compares application platforms, not conventional WordPress
+hosting providers. For WordPress hosting, use `aidevops/recommendations.md`:
+Hostinger is the managed starting point, Hetzner is the self-managed option, and
+Cloudflare suits edge/static/headless aims; Closte is legacy-only.
+
 <!-- AI-CONTEXT-END -->
 
 Verify pricing before committing: [Fly.io](https://fly.io/docs/about/pricing/) · [Daytona](https://www.daytona.io/pricing) · [Coolify](https://coolify.io/pricing) · [Cloudron](https://www.cloudron.io/pricing.html) · [Vercel](https://vercel.com/pricing) · [Hetzner](https://www.hetzner.com/cloud/)
@@ -100,7 +105,7 @@ Coolify: free (AGPL). Cloudron: free for 2 apps; ~$15/mo unlimited.
 | AI agent with GPU | Daytona | -- | Fly.io, others (no GPU) |
 | Ephemeral CI/CD runners | Daytona | Fly.io (auto-stop) | Coolify, Cloudron, Vercel |
 | Next.js / JAMstack frontend | Vercel | Fly.io | Coolify, Cloudron |
-| Off-the-shelf apps (WordPress, Nextcloud) | Cloudron | Coolify | Fly.io, Daytona, Vercel |
+| Self-hosted app catalogue (WordPress, Nextcloud) | Cloudron | Coolify | Fly.io, Daytona, Vercel |
 | Production SaaS, cost-sensitive | Coolify on Hetzner | Fly.io | Daytona |
 | Production SaaS, global | Fly.io | Vercel (frontend) + Fly.io (backend) | Coolify |
 | Dev environments / previews | Daytona | Vercel (frontend) | Coolify, Cloudron |

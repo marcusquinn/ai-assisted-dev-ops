@@ -42,7 +42,7 @@ For implementation tasks (1-4, 9-10): read `workflows/git-workflow.md` first (br
 > 1. Local project (provide path)
 > 2. Remote services — which service?
 >    1. 101domains (`services/hosting/101domains.md`)
->    2. Closte (`services/hosting/closte.md`)
+>    2. Closte — legacy operations only (`services/hosting/closte.md`)
 >    3. Cloudflare (`services/hosting/cloudflare.md`)
 >    4. Cloudron (`services/hosting/cloudron.md`)
 >    5. Hetzner (`services/hosting/hetzner.md`)

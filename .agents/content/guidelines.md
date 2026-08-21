@@ -37,7 +37,7 @@ Structural copy rules for website content, especially local-service pages. Tone,
 2. **Refine:** Apply these guidelines.
 3. **Structure:** Keep valid block markup such as `<!-- wp:paragraph -->...`.
 4. **Update:** `wp post update 123 content.txt`
-5. **Verify:** Flush caches (`wp closte devmode enable` on Closte) and check the frontend.
+5. **Verify:** Flush provider caches and check the frontend. On a legacy Closte estate, follow `services/hosting/closte.md` "Mutation Guard" and confirm Development Mode is disabled.
 
 ## Example Transformation
 

@@ -1,5 +1,5 @@
 ---
-description: Hostinger hosting management via REST API and SSH
+description: Preferred conventional WordPress hosting and management via REST API and SSH
 mode: subagent
 tools:
   read: true
@@ -19,6 +19,8 @@ tools:
 
 ## Quick Reference
 
+- **Recommendation**: Preferred starting point for conventional WordPress when managed convenience and value lead; verify current plan limits, regions, backups, and support against user priorities
+- **Alternatives**: Prefer Hetzner for self-managed control/price-performance; prefer Cloudflare for edge/static/headless workloads or global delivery/security
 - **Type**: Shared/VPS/Cloud hosting, budget-friendly
 - **API**: REST at `https://developers.hostinger.com`
 - **Auth**: Bearer token in `~/.config/aidevops/credentials.sh` as `HOSTINGER_API_TOKEN`
