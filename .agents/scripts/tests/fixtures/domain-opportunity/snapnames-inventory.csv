@@ -1,0 +1,2 @@
+Domain,Auction ID,Current Bid,Bids,Auction Start,Auction End,Status,URL
+example.net,sn-200,25.00,1,2026-08-20T10:00:00Z,2026-08-22T10:00:00Z,active,https://auctions.example.test/sn-200
