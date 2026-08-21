@@ -1293,7 +1293,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18298 Import official bulk domain-auction inventory files #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30495 logged:2026-08-21 -> [todo/tasks/t18298-brief.md]
 
-- [ ] t18299 Score readable exact-match .com domain candidates #enhancement #auto-dispatch #database #priority:medium #scoring #seo #interactive ~6h tier:thinking parent:t18295 blocked-by:t18296 ref:GH#30496 logged:2026-08-21 -> [todo/tasks/t18299-brief.md]
+- [x] t18299 Score readable exact-match .com domain candidates #enhancement #auto-dispatch #database #priority:medium #scoring #seo #interactive ~6h tier:thinking parent:t18295 blocked-by:t18296 ref:GH#30496 logged:2026-08-21 -> [todo/tasks/t18299-brief.md] pr:#30522 completed:2026-08-21
 
 - [x] t18300 Enrich domain candidates with Google Ads demand metrics #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30497 logged:2026-08-21 -> [todo/tasks/t18300-brief.md] pr:#30515 completed:2026-08-21
 
@@ -1303,7 +1303,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18303 Update WordPress hosting provider recommendations #documentation #hosting #wordpress ref:GH#30503 pr:#30504 completed:2026-08-21
 
-- [ ] t18304 Improve reliability-adjusted subagent routing observability #auto-dispatch #feat #observability #priority:high #reliability #routing #interactive ~4.75h tier:thinking ref:GH#30521 logged:2026-08-21 -> [todo/tasks/t18304-brief.md]
+- [x] t18304 Improve reliability-adjusted subagent routing observability #auto-dispatch #feat #observability #priority:high #reliability #routing #interactive ~4.75h tier:thinking ref:GH#30521 logged:2026-08-21 -> [todo/tasks/t18304-brief.md] pr:#30524 completed:2026-08-21
 
 ## In Progress
 
