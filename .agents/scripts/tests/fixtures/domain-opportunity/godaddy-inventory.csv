@@ -1,0 +1,2 @@
+Domain Name,Auction ID,Current Bid,Bid Count,Start Date,End Date,Status,URL
+example.com,gd-100,$12.50,3,2026-08-20T10:00:00Z,2026-08-22T10:00:00Z,active,https://auctions.example.test/gd-100
