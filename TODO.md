@@ -1285,6 +1285,22 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18244 Make generated writing and GitHub briefs reader-first #content #documentation #feat ref:GH#30305 pr:#30306 completed:2026-08-16
 
+- [ ] t18295 Build a local domain-auction opportunity research pipeline #enhancement #architecture #database #parent-task #priority:medium #seo #interactive ~39h tier:thinking ref:GH#30492 logged:2026-08-21 -> [todo/tasks/t18295-brief.md]
+
+- [ ] t18296 Define the local domain-opportunity data contract and SQLite foundation #enhancement #architecture #auto-dispatch #cli #database #priority:medium #interactive ~5.5h tier:thinking parent:t18295 ref:GH#30493 logged:2026-08-21 -> [todo/tasks/t18296-brief.md]
+
+- [ ] t18297 Ingest Namecheap Market auctions through the official API #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~4.5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30494 logged:2026-08-21 -> [todo/tasks/t18297-brief.md]
+
+- [ ] t18298 Import official bulk domain-auction inventory files #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30495 logged:2026-08-21 -> [todo/tasks/t18298-brief.md]
+
+- [ ] t18299 Score readable exact-match .com domain candidates #enhancement #auto-dispatch #database #priority:medium #scoring #seo #interactive ~6h tier:thinking parent:t18295 blocked-by:t18296 ref:GH#30496 logged:2026-08-21 -> [todo/tasks/t18299-brief.md]
+
+- [ ] t18300 Enrich domain candidates with Google Ads demand metrics #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30497 logged:2026-08-21 -> [todo/tasks/t18300-brief.md]
+
+- [ ] t18301 Capture optional Google Trends evidence through a browser-assisted workflow #enhancement #auto-dispatch #browser #database #priority:medium #seo #interactive ~5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30498 logged:2026-08-21 -> [todo/tasks/t18301-brief.md]
+
+- [ ] t18302 Produce ranked local domain-opportunity reports and operating workflow #enhancement #auto-dispatch #cli #database #priority:medium #scoring #seo #interactive ~6.5h tier:thinking parent:t18295 blocked-by:t18297,t18298,t18299,t18300,t18301 ref:GH#30499 logged:2026-08-21 -> [todo/tasks/t18302-brief.md]
+
 ## In Progress
 
 - [x] t2744 raise GraphQL throttle defaults and reduce pulse/stats cycle pressure — circuit breaker default `0.05`→`0.30` (trips at 1500 remaining instead of 250), REST fallback default `10`→`1000` (REST takes over earlier, GraphQL kept in reserve), pulse interval default `120s`→`180s`, stats-wrapper interval `900s`→`3600s`. Also fixes macOS launchd path that ignored `supervisor.pulse_interval_seconds` from settings. Evidence: GraphQL=0/5000 vs REST=4044/5000 with 21 EXHAUSTED events in current pulse log; per-cycle cost (~400-700 pts) × 30 cycles/hr × 14 repos exceeds 5000/hr ceiling by 2-4×. All env-overridable, fully backwards-compatible. See `todo/tasks/t2744-brief.md`. #framework #pulse #interactive ~1h ref:GH#20482 started:2026-04-22 pr:#20483 completed:2026-04-22
