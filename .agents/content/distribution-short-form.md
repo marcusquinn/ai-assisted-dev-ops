@@ -35,16 +35,18 @@ model: standard
 
 ## Hook-First Structure
 
-First 1-3 seconds determine 80%+ of completion rate.
+The first 1-3 seconds strongly influence whether viewers continue.
 
 **7 Hook Formulas**:
-1. **Bold Claim** — "This AI tool made me $10k in 3 days"
-2. **Question** — "Why do 95% of AI influencers fail?"
-3. **Story** — "I spent $5k on AI video tools. Here's what worked."
-4. **Contrarian** — "Stop using ChatGPT for content creation"
-5. **Result** — "From 0 to 100k followers in 30 days"
+1. **Bold Claim** — "[Verified tool or method] produced [verified result]"
+2. **Question** — "Why do [audience] struggle with [specific outcome]?"
+3. **Story** — "I tested [verified number] AI video tools. Here's what worked."
+4. **Contrarian** — "Why we stopped using [common approach] for [task]"
+5. **Result** — "From [verified baseline] to [verified result] in [verified timeframe]"
 6. **Problem-Agitate** — "Your AI videos look fake. Here's why."
-7. **Curiosity Gap** — "The AI video secret nobody talks about"
+7. **Curiosity Gap** — "The [specific setting or decision] most teams overlook"
+
+Replace every bracketed claim with source evidence. If the author did not supply first-person experience, use a truthful subject instead of "I".
 
 **Visual Hook Patterns**: extreme close-up, unexpected action (pattern interrupt), bold text overlay, before/after split, POV shot.
 
@@ -57,23 +59,23 @@ First 1-3 seconds determine 80%+ of completion rate.
 - **Soft Sell**: Solution reveal, benefit-focused, social proof or result, subtle CTA
 - **CTA**: Follow for more / link in bio / comment keyword / save for later
 
-**Example Script (Educational, 20s)**:
+**Example skeleton (Educational, 20s)** — replace every bracketed claim with verified evidence:
 
 ```text
 [0-2s] HOOK
 Visual: Extreme close-up of shocked face
-Text: "I wasted $5k on AI tools"
-Narration: "I spent five thousand dollars on AI video tools..."
+Text: "I tested [verified number] AI tools"
+Narration: "I tested [verified number] AI video tools..."
 
 [2-10s] PROBLEM → JOURNEY
 Visual: Screen recording of failed output → montage of testing (3 x 1.5s cuts)
-Text: "95% were garbage" → "Tested 12 platforms"
-Narration: "...95% produced garbage. I tested 12 platforms until I found this."
+Text: "[Verified finding]" → "Tested [verified sample]"
+Narration: "...[verified finding]. I tested [verified sample] until I found this."
 
 [10-18s] SOLUTION → RESULT
 Visual: Side-by-side before/after → analytics screenshot
-Text: "10 videos/day now" → "+300% engagement"
-Narration: "Now I generate 10 videos per day. Engagement up 300%."
+Text: "[Verified output]" → "[Verified outcome]"
+Narration: "Now I produce [verified output]. [Verified outcome]."
 
 [18-20s] CTA
 Visual: Face to camera

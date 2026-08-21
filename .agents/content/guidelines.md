@@ -1,5 +1,5 @@
 ---
-description: Content guidelines for AI copywriting
+description: Screen marketing copy guidelines with an optional local-service website profile
 mode: subagent
 tools:
   read: true
@@ -15,23 +15,33 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Content Guidelines for AI Copywriting
+# Screen Marketing Copy Guidelines
 
-Structural copy rules for website content, especially local-service pages. Tone, vocabulary, and personality come from `context/brand-identity.toon` if present; this doc covers structure only. Brand identity maintenance: `tools/design/brand-identity.md`.
+Structural defaults for product-facing websites, blogs, and social copy. Use one sentence per paragraph to prevent walls of text; other media follow `content/production-writing.md` "Medium-aware layout". Tone, vocabulary, spelling, and personality come from `context/brand-identity.toon` or the project brief. Brand identity maintenance: `tools/design/brand-identity.md`.
 
-## Rules
+## Screen copy rules
 
-- **Tone**: Authentic, local, professional but approachable, British English
-- **Spelling**: British (`specialise`, `colour`, `moulding`, `draughty`, `centre`)
-- **Paragraphs**: One sentence per paragraph; split at 3+ lines
-- **Sentences**: Short & punchy; spaced em-dashes (` — `) instead of subordinate clauses — e.g. "We finish them with marine-grade coatings — they resist swelling." not "...coatings, which means that they are built specifically..."
-- **SEO**: Bold **keywords** naturally; use long-tail variations ("Jersey heritage properties", "granite farmhouse windows"); never stuff
+- **Paragraphs**: One sentence per paragraph by default; split any remaining wall of text
+- **Sentences**: Keep them direct and readable. Spaced em dashes (` — `) are welcome as follow-on breaks when they help — e.g. "We finish them with marine-grade coatings — they resist swelling."
+- **SEO**: Bold **keywords** naturally; use project-specific long-tail variations such as "[location] [service]"; never stuff
 - **Avoid**: "We pride ourselves...", "Our commitment to excellence...", "Elevate your home with...", repeating brand name at sentence start (prefer "We make..." over "Trinity Joinery crafts..."), empty trailing blocks (`<!-- wp:paragraph --><p></p><!-- /wp:paragraph -->`), Markdown in HTML fields
+
+## Local-service voice profile
+
+Apply these only when the project brief or brand identity selects them:
+
+- **Tone**: Authentic, local, professional but approachable
+- **Spelling**: British (`specialise`, `colour`, `moulding`, `draughty`, `centre`)
+
+## WordPress content profile
+
+Apply these when the target stores WordPress or HTML content:
+
 - **HTML fields**: `<strong>`, `<em>`, `<p>`, `<h2>`, `<ul><li>` — not Markdown (`**bold**` won't render)
 - **WP fetch**: `wp post get ID --field=content` (singular `--field`, not `--fields` — avoids `Field/Value` table artefacts)
 - **Workflow**: Fetch → Refine → Structure → Update → Verify
 
-## Content Update Workflow
+## WordPress content update workflow
 
 1. **Fetch:** `wp post get 123 --field=content > file.txt`
 2. **Refine:** Apply these guidelines.
@@ -51,6 +61,6 @@ Structural copy rules for website content, especially local-service pages. Tone,
 >
 > That's why we use high-performance, rot-resistant timbers like Accoya and Sapele.
 >
-> We finish them with marine-grade coatings — ensuring they resist swelling, warping and weathering.
+> We finish them with marine-grade coatings — they resist swelling, warping and weathering.
 
-Apply these rules to product page updates unless a project-specific brief overrides them. For social and video variants, see `content/platform-personas.md`.
+Apply the screen layout to product pages, blogs, and social copy by default. Apply the local-service profile only when project evidence supports it. For social and video variants, see `content/platform-personas.md`.

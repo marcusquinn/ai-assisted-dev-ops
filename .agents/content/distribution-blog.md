@@ -17,7 +17,7 @@ model: standard
 - **Purpose**: Turn content pipeline assets into SEO blog posts
 - **Default length**: Pillar 2,000–3,000 words; supporting 800–1,500; listicle 1,000–2,000
 - **Primary rule**: One validated primary keyword per article
-- **Voice**: Run drafts through `content/editor.md` and `content/humanise.md`
+- **Voice**: Run final channel-adapted copy through `content/humanise.md`; use `content/editor.md` only for substantial long-form analysis
 - **Links**: Add 3–5 internal links via `content/internal-linker.md`
 - **Metadata**: Generate title tag, meta description, and OG fields via `content/meta-creator.md`
 - **Style**: One sentence per paragraph per `content/guidelines.md`
@@ -61,10 +61,10 @@ keyword metrics are estimates, not universal thresholds.
 1. `content/story.md` — narrative framework
 2. `content/research.md` — data and insights
 3. `content/seo-writer.md` — keyword-optimized draft
-4. `content/editor.md` — human voice pass
-5. `content/humanise.md` — remove AI patterns
-6. `content/meta-creator.md` — title tag and meta description
-7. `content/internal-linker.md` — strategic internal links
+4. `content/meta-creator.md` — title tag and meta description
+5. `content/internal-linker.md` — strategic internal links
+6. `content/editor.md` — optional structural and evidence review for substantial long-form work
+7. `content/humanise.md` — one final pass across the article and metadata while preserving links
 
 ### On-Page Optimization
 

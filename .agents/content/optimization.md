@@ -56,7 +56,7 @@ in the experiment definition before exposure.
 
 ### What to Test (priority order)
 
-1. **Hooks** (first 3s / headline / thumbnail) — 80% of performance variance
+1. **Hooks** (first 3s / headline / thumbnail) — usually the highest-leverage early test
 2. **Angles** (pain vs aspiration, contrarian vs consensus, before/after)
 3. **Format** (long vs short, video vs text, listicle vs narrative)
 4. **Thumbnails** (faces vs text, color, composition)
@@ -64,7 +64,7 @@ in the experiment definition before exposure.
 6. **Length** (word count, duration, scene count)
 7. **Publishing time** (day, time)
 
-**Hook types** (generate 5-10 per topic): Bold Claim, Question, Story, Contrarian, Result, Problem-Agitate, Curiosity Gap. Examples: "95% of AI influencers fail — here's why" | "I spent $10K on AI video tools — here's what worked" | "Stop using Sora for UGC content"
+**Hook types** (generate 5-10 per topic): Bold Claim, Question, Story, Contrarian, Result, Problem-Agitate, Curiosity Gap. Examples: "[Verified percentage] of [audience] hit [problem]" | "We tested [verified sample] — here's what worked" | "Why we stopped using [common approach] for [task]". Publish numbers only with source evidence.
 
 **Thumbnail pipeline** (`thumbnail-helper.sh`):
 
@@ -173,14 +173,14 @@ build an aggregate report → analyze preregistered evidence → review the
 recommendation → feed validated learning into research → repeat. Do not recycle a
 recommendation as independent evidence for itself.
 
-## Proven First, Original Second
+## Proven structure, genuine twist
 
 1. Find proven content: top YouTube videos, viral TikToks, high-traffic posts (Ahrefs/SEMrush)
 2. Replicate structure (same hook type, different topic) — copy format, not content
-3. Add 3% twist: different personality, visual style, examples, or contrarian take
+3. Add a genuine product-specific twist: an evidenced angle, personality, visual style, example, or contrarian take
 4. Test 10 variants, validate the supported pattern, and prepare it for owner
-   review. Example: "I spent $10K testing every AI video tool" (1M views) →
-   twist: "free ones that beat paid" / "why I refunded 90%"
+   review. Example: "We tested [verified sample] across [category]" →
+   twist: "the free options that won documented comparisons" / "the trade-off that changed our recommendation"
 
 ## Tools & Integration
 

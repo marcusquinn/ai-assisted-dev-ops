@@ -1,7 +1,7 @@
 ---
 name: humanise
-version: 1.0.0
-description: Remove AI-generated writing patterns — inflated language, vague attributions, formulaic structure, AI vocabulary, and chatbot artifacts.
+version: 1.1.0
+description: Default product-copy edit for natural voice, specificity, and removal of generic AI writing patterns.
 upstream: https://github.com/blader/humanizer
 upstream_version: 2.1.1
 mode: subagent
@@ -19,22 +19,29 @@ tools:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Humanise: Remove AI Writing Patterns
+# Humanise Product Copy
 
-Editor that removes AI-generated text patterns, based on Wikipedia's "Signs of AI writing" (WikiProject AI Cleanup). Scan for patterns below, rewrite with natural alternatives, preserve meaning and tone, add voice.
+Default final editorial pass for product-facing copy, based on Wikipedia's "Signs of AI writing" (WikiProject AI Cleanup). Apply it after channel adaptation and batch related outputs when practical. An explicit `/humanise` request may apply it to any supplied prose.
+
+## Scope and precedence
+
+- Explicit user direction and current project brand evidence override aidevops defaults. Without either, use direct, specific, opinionated prose grounded in product evidence.
+- The patterns below diagnose mechanical habits; they are not banned tokens. Preserve precise standard terminology, verified claims, intentional typography, and the medium-aware layout in `content/production-writing.md`.
+- Never invent opinions, first-person experience, humour, quirks, mistakes, uncertainty, or facts to appear human.
 
 ## Voice
 
 Avoiding AI patterns is half the job. Sterile, voiceless writing is as obvious as slop.
 
-**Soulless signs:** uniform sentence length, no opinions, no uncertainty, no first-person, no humour, reads like a press release. **Fix:** Have opinions. Vary rhythm. Acknowledge mixed feelings. Use "I" when it fits. Be specific. Let some mess in.
+**Soulless signs:** uniform sentence length, no perspective, no uncertainty, no first-person when the author has supplied one, no humour when the brand uses it, or a press-release cadence. **Fix:** Use approved opinions and trade-offs. Vary rhythm. Acknowledge real complexity. Use "I" when truthful. Be specific. Allow natural asymmetry without manufacturing errors.
 
 ### Evidence for a known voice
 
 - Prefer explicit corrections and approved before/after edits.
 - Use current published copy as supporting evidence; treat older copy cautiously.
 - Do not infer public voice from hurried prompts, punctuation, or chat formatting.
-- Humanise the prose, not technical facts, identifiers, or verification steps.
+- If a competitor could publish a sentence unchanged, add a product-specific fact, mechanism, trade-off, consequence, or approved opinion; otherwise cut it.
+- Humanise the prose, not technical facts, identifiers, links, verification steps, or intentional layout.
 
 ## Patterns
 
@@ -46,35 +53,35 @@ Format: **#. Name** — *trigger words* — problem — fix.
 
 **3. Superficial -ing Analyses** — *highlighting/underscoring/emphasising..., ensuring..., reflecting/symbolising..., contributing to..., fostering..., showcasing...* — present participle phrases adding fake depth. Cut; state the fact.
 
-**4. Promotional Language** — *boasts a, vibrant, rich (figurative), profound, nestled, in the heart of, groundbreaking, renowned, breathtaking, stunning* — neutral tone failure. Replace with factual description.
+**4. Generic Promotional Language** — *boasts a, vibrant, rich (figurative), profound, nestled, in the heart of, groundbreaking, renowned, breathtaking, stunning* — stock praise replaces a concrete reason to care. Name the benefit, mechanism, or proof; persuasive copy can remain persuasive.
 
 **5. Vague Attributions** — *Industry reports, Observers have cited, Experts argue, Some critics argue, several sources* — opinions attributed to vague authorities. Name source, date, and claim.
 
 **6. Formulaic "Challenges" Sections** — *Despite its... faces several challenges..., Despite these challenges, Future Outlook* — formulaic structure. Replace with specific facts: what changed, when, what was done.
 
-**7. AI Vocabulary** — *Additionally, align with, crucial, delve, emphasising, enduring, enhance, fostering, garner, highlight (verb), interplay, intricate, key (adj), landscape (abstract), pivotal, showcase, tapestry (abstract), testament, underscore (verb), valuable, vibrant* — post-2023 high-frequency co-occurring words. Cut or use plain alternatives.
+**7. AI Vocabulary** — *Additionally, align with, crucial, delve, emphasising, enduring, enhance, fostering, garner, highlight (verb), interplay, intricate, key (adj), landscape (abstract), pivotal, showcase, tapestry (abstract), testament, underscore (verb), valuable, vibrant* — post-2023 high-frequency co-occurring words. Replace them when generic or imprecise; keep an accurate standard term when it is the clearest choice.
 
 **8. Copula Avoidance** — *serves as/stands as/marks/represents [a], boasts/features/offers [a]* — elaborate substitutes for "is/are/has". Use the simple form.
 
 **9. Negative Parallelisms** — *Not only...but..., It's not just about..., it's..., It's not merely...* — overused rhetorical structure. Collapse into a direct statement.
 
-**10. Rule of Three** — ideas forced into groups of three. Use as many items as actually exist.
+**10. Forced Rule of Three** — ideas padded, split, or merged to make a group of three. Three is a useful default when three real points fit; use fewer or more when the substance requires it.
 
 **11. Elegant Variation** — repetition-penalty causes excessive synonym substitution (protagonist → main character → central figure → hero). Pick one term; use it consistently.
 
 **12. False Ranges** — "From X to Y" where X and Y aren't on a meaningful scale. List the actual items.
 
-**13. Em Dash Overuse** — LLMs use em dashes more than humans. Replace with commas, parentheses, or full stops.
+**13. Mechanical Em Dash Use** — repeated or rhythmically identical em-dash breaks can feel generated. Em dashes are welcome as readable follow-on breaks; change them only when their use becomes clustered or mechanical, and preserve the author's established preference.
 
 **14. Overuse of Boldface** — phrases emphasised mechanically. Remove bold from inline terms; reserve for critical warnings.
 
 **15. Inline-Header Lists** — items starting with **Bolded Header:** text. Rewrite as prose or plain list items.
 
-**16. Title Case in Headings** — all main words capitalised. Use sentence case: first word and proper nouns only.
+**16. Mechanical Heading Case** — heading case applied without regard to the project style. Follow the brand or publication convention; otherwise prefer sentence case.
 
-**17. Emojis** — headings/bullets decorated with emojis. Remove unless explicitly casual/social context.
+**17. Decorative Emojis** — headings or bullets decorated by default. Follow the brand and platform; remove emojis that do not carry meaning.
 
-**18. Curly Quotation Marks** — ChatGPT uses curly quotes ("\u201cexample\u201d") instead of straight ("example"). Normalise to straight.
+**18. Quotation Style Drift** — mixed straight and curly quotation marks without a publishing reason. Follow the project typography consistently; do not normalise an intentional house style merely to look less AI-generated.
 
 **19. Collaborative Artifacts** — *I hope this helps, Of course!, Certainly!, You're absolutely right!, Would you like..., let me know, here is a...* — chatbot framing pasted as content. Strip; start with the information.
 
@@ -94,9 +101,9 @@ Format: **#. Name** — *trigger words* — problem — fix.
 > The new software update serves as a testament to the company's commitment to innovation. Moreover, it provides a seamless, intuitive, and powerful user experience — ensuring that users can accomplish their goals efficiently. It's not just an update, it's a revolution in how we think about productivity. Industry experts believe this will have a lasting impact on the entire sector, highlighting the company's pivotal role in the evolving technological landscape.
 
 **After:**
-> The software update adds batch processing, keyboard shortcuts, and offline mode. Early feedback from beta testers has been positive, with most reporting faster task completion.
+> The software update adds batch processing, keyboard shortcuts, and offline mode.
 
-Patterns hit: #1 "serves as a testament", #7 "Moreover"/"pivotal"/"evolving landscape", #10+#4 "seamless, intuitive, and powerful", #13+#3 em dash + "-ing", #9 "It's not just...it's...", #5 "Industry experts believe".
+Patterns hit: #1 "serves as a testament", #7 "Moreover"/"pivotal"/"evolving landscape", #10+#4 "seamless, intuitive, and powerful", #3 superficial "-ing", #9 "It's not just...it's...", #5 "Industry experts believe".
 
 ## Reference
 

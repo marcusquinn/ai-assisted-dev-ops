@@ -10,7 +10,7 @@ model: simple
 
 # Platform Persona Adaptations
 
-Base voice: `content/guidelines.md` or `context/brand-voice.md`. If `context/brand-identity.toon` exists, read it first (tone, vocabulary, imagery, personality). See `tools/design/brand-identity.md`.
+Base voice: `context/brand-identity.toon`, then `context/brand-voice.md` or the product brief. Use `content/guidelines.md` for screen layout, not as a substitute for brand evidence. See `tools/design/brand-identity.md`.
 
 **Workflow**: establish core voice → apply platform shift below → identity constant, delivery changes.
 

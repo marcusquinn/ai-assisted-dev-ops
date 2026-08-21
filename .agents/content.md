@@ -57,7 +57,7 @@ Content agent. Domain: blog, video, social, newsletters, podcasts, short-form, A
 
 ## Quick Reference
 
-- **Architecture**: Diamond pipeline -- Research -> Story -> Production fan-out -> Humanise -> Distribution fan-out
+- **Architecture**: Research -> Story -> multi-media production -> channel adaptation; final textual product copy -> batched Humanise, while non-text assets bypass it
 - **Multiplier**: One researched story -> 10+ outputs across media types and channels
 - **PR handoff**: `pr.md` owns earned-media judgment, journalist lists, and pitch critique. Content turns approved PR angles into owned-channel assets after PR validates newsworthiness and standing.
 
@@ -65,14 +65,14 @@ Content agent. Domain: blog, video, social, newsletters, podcasts, short-form, A
                     Research
                        |
                      Story
-                    /  |  \
-             Production (multi-media)
-        Writing Image Video Audio Characters
-                    \  |  /
-                  Humanise
-                    /  |  \
-        Distribution (multi-channel)
-    YouTube Short Social Blog Email Podcast
+                    /     \
+              Writing     Image / Video / Audio / Characters
+                 |                       |
+        Channel adaptation          Media distribution
+                 |
+       Humanise final copy
+                 |
+          Text distribution
 ```
 
 ## Pipeline Stages
@@ -86,7 +86,7 @@ Content agent. Domain: blog, video, social, newsletters, podcasts, short-form, A
 | Video | `production-video.md` | Model strategy, provider routing, prompting, seed bracketing |
 | Audio | `production-audio.md` | Voice pipeline, sound design, emotional cues |
 | Characters | `production-characters.md` | Facial engineering, character bibles, personas |
-| Humanise | `humanise.md` (`/humanise`) | Remove AI patterns, add natural voice |
+| Humanise | `humanise.md` (`/humanise`) | Final product-copy pass after channel adaptation; batch related text outputs |
 | YouTube | `distribution-youtube/` | Long-form (channel-intel, topic-research, script-writer, optimizer, pipeline) |
 | Short-form | `distribution-short-form.md` | TikTok, Reels, Shorts (9:16, 1-3s cuts) |
 | Social | `distribution-social.md` | X, LinkedIn, Reddit (platform-native tone) |
@@ -97,6 +97,8 @@ Content agent. Domain: blog, video, social, newsletters, podcasts, short-form, A
 | Optimization | `optimization.md` | A/B testing, variant generation, analytics loops |
 
 All subagent paths relative to `content/`.
+
+Humanise only final textual product copy: scripts, captions, articles, customer email, and social copy. Do not route image, video, audio, character, identifier, or technical-prompt payloads through it.
 
 ## Model Routing (production tasks)
 
@@ -109,7 +111,7 @@ All subagent paths relative to `content/`.
 
 ```bash
 # Full pipeline
-"Research AI video generation niche, craft a story about why 95% of creators fail, generate YouTube script + Short + blog outline + X thread"
+"Research the AI video generation niche, identify why creators struggle to turn demos into useful content, then generate a YouTube script + Short + blog outline + X thread"
 
 # Single stage
 "Use content/production-video.md to generate a 30s Sora 2 Pro UGC-style video with seed bracketing"

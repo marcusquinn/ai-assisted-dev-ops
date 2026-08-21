@@ -63,7 +63,7 @@ content-calendar-helper.sh export --format [json|csv]
 | Reddit | Mon-Fri | 09:00-11:00 |
 | Email | Tue, Thu | 10:00 |
 
-**Stagger rule**: Blog publishes first. Social adaptations follow over 5-7 days per `content/guidelines.md`.
+**Stagger rule**: Blog publishes first. Social adaptations follow over 5-7 days according to the channel plan.
 
 ## Content Gap Analysis
 
@@ -150,7 +150,7 @@ Advancing to `publish` auto-updates schedule entries and logs to cadence tracker
 | Conversational Search Intent | User jobs, query clusters, provenance, trend state | `seo/conversational-search-intent.md` |
 | Keyword Research | Topic discovery, volume data | `seo/keyword-research.md` |
 | GSC | Performance tracking, gap detection | `seo/google-search-console.md` |
-| Content Guidelines | Platform voice and format specs | `content/guidelines.md` |
+| Content Guidelines | Screen marketing layout and optional local-service profile | `content/guidelines.md` |
 | Content Optimization | A/B testing, analytics loops | `content/optimization.md` |
 | Distribution Agents | Platform-specific publishing | `content/distribution-*.md` |
 | TODO.md | Task tracking | Root `TODO.md` with `#content` tag |

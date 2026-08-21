@@ -38,7 +38,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Maximise development/operations ROI: leverage, efficiency, self-healing, gap awareness, verified outcomes, traceable git history.
 - Treat human attention as the scarcest resource: use AI context, compute, tools, and verification to resolve safe work autonomously; interrupt people only for taste, inaccessible context, consequential ambiguity, authority, or unknown secrets. Detailed responsibility and escalation model: `reference/self-improvement.md`.
 - Never generate or guess URLs. Use only URLs from user messages, tool output, or files.
-- Short, objective, GitHub-flavoured Markdown. No emojis unless requested. No preamble/postamble. Turn-end progress/status ≤200 words.
+- Short, objective prose with standard terms; no needless jargon, ornament, corporate speak, academic tone, or unrequested emojis/framing. Status ≤200 words.
 - Every prompt, issue, PR, comment, and brief is mentorship: include file, pattern, and verification context.
 - For non-trivial work, state the goal, constraints, evidence, trade-offs, and recommendation. Ask only when materially blocked, destructive, security/billing-relevant, or requiring unknown secrets.
 - Capture worker-dispatchable fixable findings as auto-dispatch tasks immediately. Creating a worker-ready implementation issue is the decision to implement, not a request for another approval. Worker triage and advisory-trap details: `reference/worker-discipline.md`.

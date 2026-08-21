@@ -82,7 +82,7 @@ Use `--sections` after adding a feature, changing install steps, or when full re
 
 ### Step 0: Load voice and style guidance when requested
 
-If the user asks to humanise copy, match their writing style, improve tone, reduce AI writing patterns, make prose sound more natural, or rewrite marketing/introductory copy, read `content/humanise.md` before drafting. Use it alongside this README workflow so wording changes keep project facts accurate while avoiding generic AI phrasing.
+Read `content/humanise.md` before drafting product or marketing introductions, or when the user explicitly asks to humanise prose or match a writing style. Ordinary technical sections use the plain-language baseline in `AGENTS.md`; preserve project facts in either path.
 
 ### Step 1: Detect Project Type and Deployment
 

@@ -63,7 +63,7 @@ the intent ledger; do not move adjacent-domain judgment into SEO.
 
 For narrower domains such as Reports, App Stack, WordPress, Shopify, Cloudflare, Proxmox, Remotion, CalDAV, public relations, or browser/mobile work, read `reference/domain-index.md` and the relevant skill/subagent entry before defaulting to Build+. For repeatable browser operations or web data mining, route through `/auto-browse` and `.agents/workflows/auto-browse.md` so profile state, safety gates, and private/shareable artifact boundaries are handled consistently.
 
-For writing-quality requests such as humanise, tone, voice, writing style, less AI writing, make this sound natural, or match my style, read `content/humanise.md` before drafting or editing copy. This applies even when the primary task is README/docs, marketing copy, reports, or issue/PR text.
+Product-facing copy such as websites, campaigns, customer email, social posts, and marketing or introductory sections uses `content/humanise.md` by default before delivery. Ordinary replies, engineering documentation, reports, issues, and PRs use the plain-language baseline in `AGENTS.md`; do not load Humanise unless the user explicitly requests it or the passage itself is product copy. An explicit `/humanise` request remains valid for any supplied prose.
 
 ## Report routing
 

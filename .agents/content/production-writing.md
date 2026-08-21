@@ -21,7 +21,7 @@ model: standard
 
 **Critical Rules**:
 
-- **Hook-first in every format** -- First line/sentence/second must hook
+- **Earn attention immediately** -- A hook, useful fact, or direct promise must suit the format
 - **8-second dialogue chunks** for AI video -- Longer blocks cause unnatural pacing
 - **Platform-native voice** -- No cross-posting smell (each platform has distinct expectations)
 - **At most one genuine CTA** -- Omit it when no action is useful
@@ -37,6 +37,19 @@ Before generating any content:
 2. Is value front-loaded -- useful from the first paragraph alone?
 3. Is every section earning its place, or padding?
 4. Does the tone match the context deliberately, not by default?
+5. Which verified product detail, decision, trade-off, or approved point of view makes this unmistakably ours?
+6. Could a competitor publish it unchanged? If so, make it product-specific or cut it.
+
+## Medium-aware layout
+
+| Medium | Adaptable default |
+|--------|-------------------|
+| Screen marketing copy — websites, blogs, social posts, customer email | One sentence per paragraph to avoid walls of text |
+| Academic or formal documents and letters | Average about three sentences per paragraph; follow argument, quotation, and document conventions |
+| Spoken scripts | Break around breath, pauses, emphasis, beats, and content-appropriate pacing rather than a sentence quota |
+| Graphical text | Balance hierarchy, canvas, surrounding elements, text as a graphical element, and whitespace; no paragraph quota |
+
+Project, brand, accessibility, and publication requirements may override these defaults.
 
 ## Output Formats
 
@@ -147,6 +160,7 @@ Body:
 ## [H2 -- Section 3]
 
 ## Key Takeaways
+[Aim for three concise takeaways; use fewer or more when the substance warrants it]
 - [Bullet 1]
 - [Bullet 2]
 - [Bullet 3]
@@ -231,11 +245,13 @@ EMAIL 5 (Day 7): Last chance + FAQ
 
 - [ ] Hook in first line/sentence
 - [ ] Voice matches platform (see table above)
+- [ ] Layout follows the medium-aware default or a documented override
 - [ ] At most one useful CTA; omitted when no action is needed
 - [ ] Platform-native language (no cross-posting smell)
 - [ ] Video: dialogue chunks under 8s, captions included, B-roll directions present
 - [ ] Blog: SEO elements present (meta title, description, keywords)
 - [ ] Email: subject line variants included
+- [ ] Final product-facing copy receives one `content/humanise.md` pass after channel adaptation
 
 ## Related
 
@@ -244,4 +260,5 @@ EMAIL 5 (Day 7): Last chance + FAQ
 - `content/production-video.md` -- Video production specs for script adaptation
 - `content/production-audio.md` -- Voice pipeline for script delivery
 - `content/distribution-*.md` -- Channel-specific conventions for final adaptation
+- `content/humanise.md` -- Final product-copy pass
 - `content.md` -- Parent orchestrator (diamond pipeline)

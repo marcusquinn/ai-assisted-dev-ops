@@ -16,8 +16,8 @@ model: standard
 
 - **Input**: Research brief (`content/research.md`) or topic + audience
 - **Output**: Story package — hook variants, narrative arc, transformation framework, angle selection
-- **Hook-first always** — 6-12 words, forces clarity and punch
-- **Proven first, original second** — 97% proven structure, 3% unique twist
+- **Earn attention early** — use a 6-12 word hook when it suits the format; direct usefulness can be the hook
+- **Proven structure, genuine twist** — use a suitable scaffold, then require a product-specific angle, insight, tension, example, or point of view
 - **One transformation per story** — before → struggle → after
 
 <!-- AI-CONTEXT-END -->
@@ -33,22 +33,25 @@ model: standard
 7. **Pain angle** — specific pain addressed?
 8. **Hook + visual alignment** — hook matches thumbnail/preview?
 9. **Test readiness** — 3+ variants for A/B?
+10. **Evidence** — every statistic, result, timeframe, comparison, and first-person claim sourced?
 
 ## 7 Hook Formulas
 
 | # | Formula | Example | Best For |
 |---|---------|---------|----------|
-| 1 | **Bold Claim** | "95% of AI influencers will fail this year" | YouTube, blog, LinkedIn |
-| 2 | **Question** | "Why do most AI creators quit in 6 months?" | Social, email, podcast |
-| 3 | **Story** | "I spent $10K on AI tools — here's what happened" | YouTube, podcast, blog |
-| 4 | **Contrarian** | "The AI tool everyone recommends is terrible" | X, Reddit, short-form |
-| 5 | **Result** | "How I got 1M views using only free AI tools" | YouTube, short-form, social |
-| 6 | **Problem-Agitate** | "You're wasting 4h/day on content nobody sees" | Email, LinkedIn, blog |
-| 7 | **Curiosity Gap** | "The one AI trick that changed everything" | Short-form, X, email |
+| 1 | **Bold Claim** | "[Verified percentage] of [audience] hit [specific problem]" | YouTube, blog, LinkedIn |
+| 2 | **Question** | "Why do [audience] stop after [verified timeframe]?" | Social, email, podcast |
+| 3 | **Story** | "I spent [verified amount] testing [category] — here's what changed" | YouTube, podcast, blog |
+| 4 | **Contrarian** | "Why we stopped recommending [common approach]" | X, Reddit, short-form |
+| 5 | **Result** | "How [subject] reached [verified result] with [constraint]" | YouTube, short-form, social |
+| 6 | **Problem-Agitate** | "You're losing [verified time or cost] to [specific problem]" | Email, LinkedIn, blog |
+| 7 | **Curiosity Gap** | "The [specific setting] most teams overlook" | Short-form, X, email |
+
+Bracketed values require source evidence before publication. If no reliable number exists, make the claim concrete without one. Never invent first-person experience.
 
 **Hook process**: Write 10 variants → score specificity/emotion/curiosity (1-5 each) → top 3 for A/B → archive rest.
 
-**Pattern interrupts**: Contrast ("$0 tool that beats $500/month software") · Extremes ("I analyzed 10,000 AI videos — found this") · Unexpected combos ("What chess taught me about AI prompting")
+**Pattern interrupts**: Contrast ("[Verified low-cost option] beat [verified comparison]") · Extremes ("We analysed [verified sample] and found [result]") · Unexpected combinations ("What [relevant outside field] taught us about [topic]")
 
 ## 4-Part Script Framework
 
@@ -59,7 +62,7 @@ model: standard
 | **Soft Sell** | 15-20% | Natural story-to-CTA transition. Frame as next step, not pitch. |
 | **Visual Cues** | throughout | B-roll directions, image suggestions, tone shifts, formatting cues |
 
-**Story frameworks**: AIDA · Three-Act · Hero's Journey · Problem-Solution-Result · Listicle with Stakes
+**Story frameworks**: AIDA · Three-Act · Hero's Journey · Problem-Solution-Result · Listicle with Stakes. Use them as internal scaffolds, not as the brand voice; adapt or discard any framework that forces the story.
 
 ## Angle Selection
 

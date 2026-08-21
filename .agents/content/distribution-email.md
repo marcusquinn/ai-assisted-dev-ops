@@ -101,16 +101,16 @@ Weekly or bi-weekly for subscribers who didn't convert. Content mix: 60% educati
 
 | Formula | Example | Why It Works |
 |---------|---------|-------------|
-| **Number + benefit** | "5 AI tools that save 10 hours/week" | Specific, scannable |
+| **Number + benefit** | "[Verified number] tools that save [verified time]" | Specific, scannable |
 | **Question** | "Are you making this AI content mistake?" | Curiosity gap |
-| **How-to** | "How to create 10 videos per day with AI" | Clear value |
+| **How-to** | "How to reach [verified output] with [method]" | Clear value |
 | **Contrarian** | "Stop using ChatGPT for content" | Pattern interrupt |
-| **Personal** | "I wasted $5k on AI tools (so you don't have to)" | Authenticity |
+| **Personal** | "I tested [verified sample] so you don't have to" | Authenticity |
 | **Urgency** | "Last chance: AI content guide (free until Friday)" | Scarcity |
 | **Curiosity** | "The AI video secret nobody talks about" | Open loop |
-| **Social proof** | "How [Name] went from 0 to 100k with AI content" | Aspirational |
+| **Social proof** | "How [Name] reached [verified result] with [method]" | Aspirational |
 
-No ALL CAPS or excessive punctuation (spam triggers). Use personalization tokens. A/B test 2-3 variants per send.
+Bracketed claims require source evidence, and personal subject lines require real first-person experience. No ALL CAPS or excessive punctuation (spam triggers). Use personalization tokens. A/B test 2-3 variants per send.
 
 ## Email Design
 

@@ -51,7 +51,7 @@ H1 with primary keyword (50-60 chars). Introduction: hook + problem + promise, k
 | Meta title | 50-60 characters with keyword |
 | Meta description | 150-160 characters with keyword |
 | H2 sections | 4-6 minimum |
-| Paragraph length | 2-4 sentences |
+| Paragraph length | 1 sentence for screen marketing copy |
 | Sentence length | 15-20 words average |
 | Reading level | Grade 8-10 |
 
@@ -71,14 +71,15 @@ Deliver: article content in markdown, meta elements block (title 50-60 chars, de
 
 - **Natural keyword integration** - if it sounds forced, rewrite
 - **Show, don't tell** - use specific examples and data
-- **One idea per paragraph** - break up walls of text
+- **One sentence per paragraph** - screen marketing default; keep one idea in each and avoid walls of text
 - **Active voice** - keep passive voice under 20%
 - **Cite sources** - link to statistics and data
 - **Answer questions** - address "People Also Ask" queries
 
 ## Integration
 
-- Uses `content/guidelines.md` for voice and style
-- Uses `content/humanise.md` for removing AI patterns
+- Uses `context/brand-identity.toon` or `context/brand-voice.md` for voice, spelling, and style
+- Uses `content/guidelines.md` for screen layout; applies its local-service profile only when the project selects it
+- Passes final product-facing copy to `content/humanise.md` after metadata and link adaptation
 - Uses `seo/keyword-research.md` for keyword data
 - Uses `seo/eeat-score.md` for quality validation

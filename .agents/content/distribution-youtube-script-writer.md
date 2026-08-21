@@ -47,13 +47,15 @@ Insert every 2-3 minutes to reset attention: curiosity gap ("But here's where it
 
 | Formula | Example |
 |---------|---------|
-| **Bold Claim** — surprising statement challenging assumptions | "This $5 tool outperforms every $500 alternative I've tested." |
-| **Question** — viewer desperately wants answered | "Why do 90% of YouTube channels never reach 1,000 subscribers?" |
-| **Story** — drop into the middle of a compelling story | "Three months ago, I made a video that got 47 views. Last week, it hit 2 million." |
-| **Contrarian** — goes against popular belief | "Everything you've been told about YouTube SEO is wrong." |
-| **Result** — show end result, then explain how | "This channel went from 0 to 100K subscribers in 6 months. Here's exactly how." |
+| **Bold Claim** — surprising statement challenging assumptions | "[Verified low-cost option] outperformed [verified comparison] in our test." |
+| **Question** — viewer desperately wants answered | "Why do [audience] stall before [verified milestone]?" |
+| **Story** — drop into the middle of a compelling story | "[Verified timeframe] ago, this reached [baseline]. Then [documented change] produced [result]." |
+| **Contrarian** — goes against popular belief | "Why the usual YouTube SEO advice failed this channel." |
+| **Result** — show end result, then explain how | "This channel moved from [verified baseline] to [verified result]. Here's how." |
 | **Problem-Agitate** — name pain point, make it worse | "Your thumbnails are costing you views. And the fix isn't what you think." |
-| **Curiosity Gap** — partial info that demands completion | "There's one setting in YouTube Studio that 95% of creators never touch. It changed everything for me." |
+| **Curiosity Gap** — partial info that demands completion | "The [specific setting] this channel overlooked until [documented result]." |
+
+Bracketed values require source evidence. Never invent channel results or first-person experience to complete a formula.
 
 ## Storytelling Frameworks
 
@@ -173,7 +175,7 @@ memory-helper.sh recall --namespace youtube "channel voice"
 | Tool | Integration |
 |------|-------------|
 | `content/seo-writer.md` | SEO-optimize the script |
-| `content/humanise.md` | Remove AI writing patterns |
+| `content/humanise.md` | Final product-copy pass after YouTube adaptation |
 | `content/platform-personas.md` | YouTube-specific voice guidelines |
 | `optimizer.md` | Generate titles, tags, descriptions from script |
 | `topic-research.md` | Feed validated topics into script generation |

@@ -54,17 +54,17 @@ capability states do not permit browser fallbacks.
 
 **Rules**: No preamble. Line breaks for scannability. 0-2 hashtags max (X penalizes spam). Best times: weekdays 9-11am, 1-3pm local.
 
-**Example adaptation**:
+**Example adaptation** — replace bracketed claims with verified evidence:
 
 ```text
-Story: "Why 95% of AI influencers fail"
+Story: "Why [audience] struggle with [specific outcome]"
 
 X Thread (7 posts):
-1/ 95% of AI influencers will fail this year. Not because the tech is bad. Because they're making the same 5 mistakes.
+1/ [Verified finding about the audience]. Not because the technology is bad. Because [evidenced cause].
 2/ Mistake 1: They chase tools, not problems. Nobody cares about your Sora 2 demo. They care about solving their video production bottleneck.
 3/ Mistake 2: They post AI-generated content without editing. Your audience can tell. They always can.
 ...
-7/ The 5% who succeed? They research first, create second, and optimize third. That's the entire playbook. Follow for the deep dive.
+7/ The ones who succeed? They research first, create second, and optimise based on evidence. Follow for the deep dive.
 ```
 
 ### LinkedIn
@@ -83,25 +83,25 @@ X Thread (7 posts):
 
 **Rules**: Liberal line breaks. 3-5 hashtags at end. Personal stories outperform corporate announcements. Avoid: corporate jargon, "excited to announce", empty self-promotion. Best times: Tue-Thu 8-10am local. Reply to every comment (algorithm boost).
 
-**Example adaptation**:
+**Example adaptation** — replace bracketed claims and personal details with verified evidence:
 
 ```text
-Story: "Why 95% of AI influencers fail"
+Story: "Why [audience] struggle with [specific outcome]"
 
 LinkedIn Post:
-Most AI influencers will fail this year.
+[Verified finding about the audience].
 
 Not because the technology isn't good enough.
 
 Because they're solving the wrong problem.
 
-I spent 6 months studying the top 50 AI content creators.
+We studied [verified sample] over [verified period].
 The pattern was clear:
 
 The ones who succeed don't talk about tools.
 They talk about outcomes.
 
-Here's what separates the 5% who make it:
+Here's what separates the creators reaching the documented outcome:
 
 1. They research their audience before creating content
 2. They edit AI output ruthlessly (your audience can always tell)
@@ -134,15 +134,15 @@ What's your biggest challenge with AI content? Drop it below.
 
 **Rules**: Never lead with self-promotion. Write like a community member. Use subreddit language/conventions. Follow self-promotion rules (typically 10:1 ratio). Respond to comments. Best times: weekday mornings US time.
 
-**Example adaptation**:
+**Example adaptation** — replace bracketed claims and first-person details with verified evidence:
 
 ```text
-Story: "Why 95% of AI influencers fail"
+Story: "Why [audience] struggle with [specific outcome]"
 
 Reddit Post (r/artificial):
-Title: After studying 50 AI content creators for 6 months, here's what separates the ones who make it
+Title: After studying [verified sample] for [verified period], here's what separated the strongest results
 
-I've been tracking AI content creators since mid-2025. Not as a fan - as someone trying to understand what actually works.
+We tracked [verified sample] over [verified period] to understand what actually worked.
 
 The short version: most of them are doing the same thing wrong.
 
@@ -211,6 +211,6 @@ Happy to share more details on the research methodology if anyone's interested.
 
 **Distribution**: `content/distribution/youtube/`, `content/distribution/short-form.md`, `content/distribution/blog.md`, `content/distribution/email.md`, `content/distribution/podcast.md`
 
-**Tools**: `content/social-xurl.md` (official X API), `content/social-bird.md` (fallback), `content/social-linkedin.md`, `content/social-reddit.md`, `content/humanise.md` (AI pattern removal)
+**Tools**: `content/social-xurl.md` (official X API), `content/social-bird.md` (fallback), `content/social-linkedin.md`, `content/social-reddit.md`, `content/humanise.md` (final product-copy pass after platform adaptation)
 
 **Approval-bound publishing**: `content/social-meta.md`, `content/social-tiktok.md`, and the outbound queue. Verify capability readiness, product identity, media rights, and an unexpired exact-intent approval before scheduling.

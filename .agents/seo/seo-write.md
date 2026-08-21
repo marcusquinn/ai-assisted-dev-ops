@@ -44,6 +44,6 @@ Topic/Keyword: $ARGUMENTS
 ## Related
 
 - `content/seo-writer.md` — Writing guidelines
-- `content/humanise.md` — Remove AI patterns after writing
+- `content/humanise.md` — Final product-copy pass after metadata and link adaptation
 - `seo/content-analyzer.md` — Analysis details
 - `seo/transcript-seo.md` — Convert video/audio transcripts into SEO-optimised articles

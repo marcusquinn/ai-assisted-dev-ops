@@ -20,7 +20,7 @@ Use `--sections` for targeted updates (adding a feature, changing install/config
 ## Workflow
 
 1. **Load guidance** — read `workflows/readme-create-update.md`
-2. **Load voice guidance when relevant** — if the request mentions humanise, writing style, tone, voice, less AI writing, or marketing/intro copy, read `content/humanise.md`
+2. **Load voice guidance when relevant** — read `content/humanise.md` for product or marketing introductions and explicit humanise or match-my-style requests; ordinary technical sections use the `AGENTS.md` prose baseline
 3. **Explore codebase** — detect project type, deployment platform, existing README, key info
 4. **Generate/update** — follow workflow section order; preserve structure for
    partial updates; use local `docs/metrics` badges for LOC/languages/dependencies
