@@ -68,36 +68,37 @@ def _tokens(phrase: Any) -> tuple[str, ...]:
     return tokens if tokens and all(_TOKEN.fullmatch(token) for token in tokens) else ()
 
 
+def _reading(item: Any, sld: str) -> dict[str, Any] | None:
+    """Normalize one explicit reading, returning none at any invalid boundary."""
+    try:
+        tokens = _tokens(item["phrase"])
+        source = item["source"].strip()
+        confidence_value = item["confidence"]
+    except (AttributeError, KeyError, TypeError):
+        return None
+    if "".join(tokens) != sld or not source or type(confidence_value) not in (int, float):
+        return None
+    confidence = float(confidence_value)
+    if not 0 <= confidence <= 1:
+        return None
+    reading: dict[str, Any] = {
+        "phrase": " ".join(tokens), "tokens": list(tokens), "source": source,
+        "confidence_micros": round(confidence * MICROS),
+    }
+    intent = item.get("commercial_intent")
+    if type(intent) in (int, float) and 0 <= float(intent) <= 1:
+        reading["commercial_intent_micros"] = round(float(intent) * MICROS)
+    flags = item.get("risk_flags", ())
+    reading_flags = sorted({flag for flag in flags if isinstance(flag, str) and flag}) if isinstance(flags, list) else []
+    if reading_flags:
+        reading["risk_flags"] = reading_flags
+    return reading
+
+
 def exact_phrase_readings(sld: str, evidence: Any) -> list[dict[str, Any]]:
     """Preserve every source-labelled reading whose tokens concatenate to SLD."""
-    if not isinstance(evidence, list):
-        return []
-    readings: list[dict[str, Any]] = []
-    for item in evidence:
-        if not isinstance(item, Mapping):
-            continue
-        tokens = _tokens(item.get("phrase"))
-        source = item.get("source")
-        confidence = item.get("confidence")
-        if "".join(tokens) != sld or not isinstance(source, str) or not source.strip():
-            continue
-        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
-            continue
-        if not 0 <= float(confidence) <= 1:
-            continue
-        reading: dict[str, Any] = {
-            "phrase": " ".join(tokens),
-            "tokens": list(tokens),
-            "source": source.strip(),
-            "confidence_micros": round(float(confidence) * MICROS),
-        }
-        intent = item.get("commercial_intent")
-        if isinstance(intent, (int, float)) and not isinstance(intent, bool) and 0 <= float(intent) <= 1:
-            reading["commercial_intent_micros"] = round(float(intent) * MICROS)
-        flags = item.get("risk_flags")
-        if isinstance(flags, list):
-            reading["risk_flags"] = sorted({flag for flag in flags if isinstance(flag, str) and flag})
-        readings.append(reading)
+    items = evidence if isinstance(evidence, list) else []
+    readings = [reading for item in items if (reading := _reading(item, sld)) is not None]
     return sorted(readings, key=lambda item: (-item["confidence_micros"], item["phrase"], item["source"]))
 
 
