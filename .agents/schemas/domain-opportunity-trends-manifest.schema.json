@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manual Google Trends comparison export manifest",
+  "type": "object",
+  "required": ["schema_version", "batch_id", "terms", "geography", "timeframe", "timezone", "granularity", "search_property", "category", "language", "share_url", "exported_at", "expected_filename"],
+  "properties": {"schema_version": {"const": 1}, "batch_id": {"type": "string", "minLength": 1}, "terms": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "object", "required": ["term", "identity_type", "provider", "provider_listing_id", "position"], "properties": {"term": {"type": "string", "minLength": 1}, "identity_type": {"type": "string", "minLength": 1}, "provider": {"type": "string", "minLength": 1}, "provider_listing_id": {"type": "string", "minLength": 1}, "position": {"type": "integer", "minimum": 0}, "anchor": {"type": "boolean"}}, "additionalProperties": true}}, "geography": {"type": "string", "minLength": 1}, "timeframe": {"type": "string", "minLength": 1}, "timezone": {"type": "string", "minLength": 1}, "granularity": {"type": "string", "minLength": 1}, "search_property": {"type": "string", "minLength": 1}, "category": {"type": "string", "minLength": 1}, "language": {"type": "string", "minLength": 1}, "share_url": {"type": "string"}, "exported_at": {"type": "string"}, "expected_filename": {"type": "string", "minLength": 1}},
+  "additionalProperties": false
+}
