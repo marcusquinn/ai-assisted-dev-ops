@@ -10,14 +10,11 @@ ships no word list and performs no model- or host-dictionary segmentation.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any, Mapping
 
-from domain_opportunity_contract import CandidateScore, canonical_json, content_hash, utc_now
-from domain_opportunity_store import DomainOpportunityStore
+from domain_opportunity_contract import content_hash
 
 POLICY_VERSION = "exact-match-com-v1"
 MICROS = 1_000_000
@@ -114,41 +111,6 @@ def _known(value: int, weight: int, evidence: Mapping[str, Any]) -> dict[str, An
     }
 
 
-def _raw_evidence(store: DomainOpportunityStore, listing: Mapping[str, Any]) -> dict[str, Any]:
-    row = store.connection.execute(
-        """SELECT o.raw_json FROM listings l JOIN listing_observations o
-             ON o.observation_id=l.current_observation_id
-           WHERE l.provider=? AND l.provider_listing_id=?""",
-        (listing["provider"], listing["provider_listing_id"]),
-    ).fetchone()
-    if row is None or row["raw_json"] is None:
-        return {}
-    try:
-        decoded = json.loads(row["raw_json"])
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
-
-
-def _keyword_evidence(store: DomainOpportunityStore, listing: Mapping[str, Any]) -> list[dict[str, Any]]:
-    rows = store.connection.execute(
-        """SELECT k.source,k.value_text,k.observed_at FROM keyword_metrics k
-             JOIN listings l ON l.listing_id=k.listing_id
-           WHERE l.provider=? AND l.provider_listing_id=?
-           ORDER BY k.observed_at DESC,k.metric_id DESC""",
-        (listing["provider"], listing["provider_listing_id"]),
-    ).fetchall()
-    evidence: list[dict[str, Any]] = []
-    for row in rows:
-        try:
-            value = json.loads(row["value_text"])
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if isinstance(value, dict):
-            evidence.append({"source": row["source"], "observed_at": row["observed_at"], **value})
-    return evidence
-
-
 def _hard_flags(listing: Mapping[str, Any], policy: ScoringPolicy) -> list[str]:
     sld = str(listing.get("sld", ""))
     flags: list[str] = []
@@ -170,12 +132,13 @@ def _hard_flags(listing: Mapping[str, Any], policy: ScoringPolicy) -> list[str]:
 
 
 def score_listing(
-    store: DomainOpportunityStore, listing: Mapping[str, Any], policy: ScoringPolicy
+    listing: Mapping[str, Any], policy: ScoringPolicy,
+    raw: Mapping[str, Any] | None = None, metrics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic explanation without mutating source evidence."""
     policy.validate()
-    raw = _raw_evidence(store, listing)
-    metrics = _keyword_evidence(store, listing)
+    raw = raw or {}
+    metrics = metrics or []
     phrase_evidence = list(raw.get("phrase_evidence", [])) if isinstance(raw.get("phrase_evidence"), list) else []
     for metric in metrics:
         phrase = metric.get("input_phrase")
@@ -255,91 +218,3 @@ def score_listing(
         "eligible": eligible, "flags": flags, "risk_flags": risk_flags, "phrase_readings": eligible_readings,
         "components": components, "score_micros": total, "input_hash": content_hash(evidence_snapshot),
     }
-
-
-def score_store(store: DomainOpportunityStore, policy: ScoringPolicy | None = None) -> dict[str, Any]:
-    """Score current listings and persist one atomic, idempotent policy run."""
-    selected = policy or ScoringPolicy()
-    selected.validate()
-    explanations = [score_listing(store, listing, selected) for listing in store.current_listings()]
-    calculated_at = utc_now()
-    for explanation in explanations:
-        explanation["calculated_at"] = calculated_at
-    run_hash = content_hash({"policy": asdict(selected), "inputs": [item["input_hash"] for item in explanations]})
-    run_id = f"domain-score-{selected.version}-{run_hash[:24]}"
-    with store.transaction():
-        store.begin_source_run(run_id, "domain-opportunity-scoring", started_at=calculated_at)
-        for explanation in explanations:
-            store.insert_candidate_score(
-                CandidateScore(
-                    provider=str(explanation["provider"]),
-                    provider_listing_id=str(explanation["provider_listing_id"]),
-                    source_run_id=run_id,
-                    model=selected.version,
-                    score_micros=int(explanation["score_micros"]),
-                    observed_at=str(explanation["calculated_at"]),
-                    components=explanation["components"],
-                    payload_hash=explanation["input_hash"],
-                )
-            )
-        store.complete_source_run(run_id, len(explanations))
-    return {"policy_version": selected.version, "run_id": run_id, "records": len(explanations), "candidates": explanations}
-
-
-def explain_domain(store: DomainOpportunityStore, domain: str, policy_version: str = POLICY_VERSION) -> dict[str, Any]:
-    """Read the newest persisted explanation for one domain and policy."""
-    row = store.connection.execute(
-        """SELECT s.score_id,s.score_micros,s.observed_at,s.payload_hash,l.fqdn
-             FROM candidate_scores s JOIN listings l ON l.listing_id=s.listing_id
-           WHERE l.fqdn=? AND s.model=? ORDER BY s.score_id DESC LIMIT 1""",
-        (domain.casefold().rstrip("."), policy_version),
-    ).fetchone()
-    if row is None:
-        raise DomainOpportunityScoringError("no persisted score matches the domain and policy")
-    components = store.connection.execute(
-        "SELECT name,value_micros,weight_micros,evidence_json FROM score_components WHERE score_id=? ORDER BY name",
-        (row["score_id"],),
-    ).fetchall()
-    return {
-        "domain": row["fqdn"], "policy_version": policy_version, "score_micros": row["score_micros"],
-        "calculated_at": row["observed_at"], "input_hash": row["payload_hash"],
-        "components": {
-            component["name"]: {
-                "value_micros": component["value_micros"], "weight_micros": component["weight_micros"],
-                "evidence": None if component["evidence_json"] is None else json.loads(component["evidence_json"]),
-            } for component in components
-        },
-    }
-
-
-def load_fixture(store: DomainOpportunityStore, path: str | Path) -> dict[str, int]:
-    """Import synthetic JSONL listings, continuing past malformed records."""
-    fixture = Path(path)
-    if fixture.is_symlink() or not fixture.is_file():
-        raise DomainOpportunityScoringError("fixture must be a regular JSONL file")
-    imported = rejected = 0
-    for line in fixture.read_text(encoding="utf-8").splitlines():
-        try:
-            record = json.loads(line)
-            if not isinstance(record, dict):
-                raise DomainOpportunityScoringError("fixture row is not an object")
-            raw = record.get("raw_json") if isinstance(record.get("raw_json"), dict) else {}
-            if "phrase_evidence" in record:
-                raw = {**raw, "phrase_evidence": record.pop("phrase_evidence")}
-            record["raw_json"] = raw
-            with store.transaction():
-                store.begin_source_run(record["source_run_id"], record["provider"], started_at=record["observed_at"])
-                imported += int(store.upsert_listing_observation(record))
-                store.complete_source_run(record["source_run_id"], 1)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-            rejected += 1
-    return {"imported": imported, "rejected": rejected}
-
-
-def export_candidates(store: DomainOpportunityStore, policy_version: str = POLICY_VERSION) -> list[dict[str, Any]]:
-    """Return one stable latest-score export row per domain."""
-    domains = store.connection.execute(
-        """SELECT DISTINCT l.fqdn FROM candidate_scores s JOIN listings l ON l.listing_id=s.listing_id
-           WHERE s.model=? ORDER BY l.fqdn""", (policy_version,)
-    ).fetchall()
-    return [explain_domain(store, row["fqdn"], policy_version) for row in domains]
