@@ -15,6 +15,7 @@ source "${SCRIPT_DIR}/shared-gh-wrappers.sh"
 
 PUBLICATION_PENDING_LABEL="publication:pending"
 PUBLICATION_AVAILABLE_LABEL="status:available"
+PUBLICATION_BLOCKED_LABEL="status:blocked"
 PUBLICATION_AUTO_LABEL="auto-dispatch"
 PUBLICATION_LIMIT="${AIDEVOPS_PUBLICATION_RECONCILE_LIMIT:-100}"
 
@@ -56,12 +57,58 @@ _publication_desired_labels() {
 	return 0
 }
 
+_publication_task_has_dependency() {
+	local task_line="$1"
+	local parsed="" blocked_by=""
+	parsed=$(parse_task_line "$task_line") || return 1
+	blocked_by=$(printf '%s\n' "$parsed" | grep '^blocked_by=' | cut -d= -f2-)
+	[[ -n "$blocked_by" ]] || return 1
+	return 0
+}
+
+_publication_issue_has_active_status() {
+	local issue_json="$1"
+	jq -e 'any(.labels[]?.name;
+		. == "status:queued" or
+		. == "status:claimed" or
+		. == "status:in-progress" or
+		. == "status:in-review" or
+		. == "status:done")' <<<"$issue_json" >/dev/null || return 1
+	return 0
+}
+
+_publication_issue_has_inactive_status() {
+	local issue_json="$1"
+	_publication_issue_has_labels "$issue_json" "$PUBLICATION_AVAILABLE_LABEL" && return 0
+	_publication_issue_has_labels "$issue_json" "$PUBLICATION_BLOCKED_LABEL" && return 0
+	return 1
+}
+
+_publication_remove_inactive_statuses() {
+	local repo="$1"
+	local issue_num="$2"
+	gh_issue_edit_safe "$issue_num" --repo "$repo" \
+		--remove-label "${PUBLICATION_AVAILABLE_LABEL},${PUBLICATION_BLOCKED_LABEL}" >/dev/null || return 1
+	return 0
+}
+
 _publication_status_label() {
 	local desired_labels="$1"
+	local has_dependency="$2"
+	local issue_json="$3"
 	local fenced=",${desired_labels},"
+	if [[ "$has_dependency" -eq 1 ]]; then
+		if ! _publication_issue_has_active_status "$issue_json"; then
+			printf '%s\n' "$PUBLICATION_BLOCKED_LABEL"
+		fi
+		return 0
+	fi
+	_publication_issue_has_active_status "$issue_json" && return 0
 	if [[ "$fenced" == *",${PUBLICATION_AUTO_LABEL},"* &&
 		"$fenced" != *",parent-task,"* && "$fenced" != *",meta,"* &&
-		"$fenced" != *",status:blocked,"* && "$fenced" != *",status:in-review,"* &&
+		"$fenced" != *",${PUBLICATION_BLOCKED_LABEL},"* && "$fenced" != *",status:queued,"* &&
+		"$fenced" != *",status:claimed,"* && "$fenced" != *",status:in-progress,"* &&
+		"$fenced" != *",status:in-review,"* && "$fenced" != *",status:done,"* &&
 		"$fenced" != *",no-auto-dispatch,"* && "$fenced" != *",hold-for-review,"* ]]; then
 		printf '%s\n' "$PUBLICATION_AVAILABLE_LABEL"
 	fi
@@ -92,13 +139,19 @@ _publication_validate_mapping() {
 
 _publication_reconcile_one() {
 	local repo="$1" task_id="$2" issue_num="$3"
-	local task_line="" desired_labels="" status_label="" projected_labels="" issue_json=""
+	local task_line="" desired_labels="" status_label="" projected_labels="" issue_json="" has_dependency=0
 	task_line=$(_publication_validate_mapping "$task_id" "$issue_num") || {
 		print_warning "${task_id}/#${issue_num}: canonical task, ref, or brief validation failed; retaining ${PUBLICATION_PENDING_LABEL}"
 		return 1
 	}
 	desired_labels=$(_publication_desired_labels "$task_line") || return 1
-	status_label=$(_publication_status_label "$desired_labels")
+	_publication_task_has_dependency "$task_line" && has_dependency=1
+	issue_json=$(gh issue view "$issue_num" --repo "$repo" --json number,title,state,labels) || return 1
+	jq -e --arg task_prefix "${task_id}:" \
+		'.state == "OPEN" and (.title | startswith($task_prefix))' \
+		<<<"$issue_json" >/dev/null || return 1
+	_publication_issue_has_labels "$issue_json" "$PUBLICATION_PENDING_LABEL" || return 1
+	status_label=$(_publication_status_label "$desired_labels" "$has_dependency" "$issue_json")
 	projected_labels="$desired_labels"
 	[[ -n "$status_label" ]] && projected_labels="${projected_labels:+${projected_labels},}${status_label}"
 
@@ -107,12 +160,32 @@ _publication_reconcile_one() {
 		gh_issue_edit_safe "$issue_num" --repo "$repo" \
 			--add-label "$projected_labels" >/dev/null || return 1
 	fi
+	# Dependency metadata is authoritative even before native relationship repair.
+	# Remove stale availability only after blocked/active state is established, so
+	# every intermediate failure remains pending or non-dispatchable.
+	if [[ "$has_dependency" -eq 1 ]] || _publication_issue_has_active_status "$issue_json"; then
+		gh_issue_edit_safe "$issue_num" --repo "$repo" \
+			--remove-label "$PUBLICATION_AVAILABLE_LABEL" >/dev/null || return 1
+	fi
 	issue_json=$(gh issue view "$issue_num" --repo "$repo" --json number,title,state,labels) || return 1
 	jq -e --arg task_prefix "${task_id}:" \
 		'.state == "OPEN" and (.title | startswith($task_prefix))' \
 		<<<"$issue_json" >/dev/null || return 1
-	_publication_issue_has_labels "$issue_json" "$projected_labels" || return 1
+	# Active lifecycle state wins if assignment races with label projection.
+	if _publication_issue_has_active_status "$issue_json"; then
+		_publication_remove_inactive_statuses "$repo" "$issue_num" || return 1
+		issue_json=$(gh issue view "$issue_num" --repo "$repo" --json number,title,state,labels) || return 1
+	fi
+	_publication_issue_has_labels "$issue_json" "$desired_labels" || return 1
 	_publication_issue_has_labels "$issue_json" "$PUBLICATION_PENDING_LABEL" || return 1
+	if [[ "$has_dependency" -eq 1 ]]; then
+		! _publication_issue_has_labels "$issue_json" "$PUBLICATION_AVAILABLE_LABEL" || return 1
+		_publication_issue_has_active_status "$issue_json" || \
+			_publication_issue_has_labels "$issue_json" "$PUBLICATION_BLOCKED_LABEL" || return 1
+	elif [[ "$status_label" == "$PUBLICATION_AVAILABLE_LABEL" ]] && \
+		! _publication_issue_has_active_status "$issue_json"; then
+		_publication_issue_has_labels "$issue_json" "$PUBLICATION_AVAILABLE_LABEL" || return 1
+	fi
 
 	# The blocker is intentionally the final mutation. Every prior failure leaves
 	# the issue undispatchable and safely retryable.
@@ -122,7 +195,22 @@ _publication_reconcile_one() {
 	if _publication_issue_has_labels "$issue_json" "$PUBLICATION_PENDING_LABEL"; then
 		return 1
 	fi
-	_publication_issue_has_labels "$issue_json" "$projected_labels" || return 1
+	if _publication_issue_has_active_status "$issue_json" && \
+		_publication_issue_has_inactive_status "$issue_json"; then
+		# A lifecycle transition raced with the final pending-label removal.
+		# Restore the dispatch fence before cleanup; a failed cleanup therefore
+		# remains safely retryable instead of leaving a conflicting live status.
+		gh_issue_edit_safe "$issue_num" --repo "$repo" \
+			--add-label "$PUBLICATION_PENDING_LABEL" >/dev/null || return 1
+		_publication_remove_inactive_statuses "$repo" "$issue_num" || return 1
+		return 1
+	fi
+	_publication_issue_has_labels "$issue_json" "$desired_labels" || return 1
+	if [[ "$has_dependency" -eq 1 ]]; then
+		! _publication_issue_has_labels "$issue_json" "$PUBLICATION_AVAILABLE_LABEL" || return 1
+		_publication_issue_has_active_status "$issue_json" || \
+			_publication_issue_has_labels "$issue_json" "$PUBLICATION_BLOCKED_LABEL" || return 1
+	fi
 	print_success "${task_id}/#${issue_num}: planning publication reconciled"
 	return 0
 }

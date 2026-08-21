@@ -280,7 +280,9 @@ jobs:
       # created above is current. Relationship and enrichment maintenance are
       # deliberately best-effort and must not queue dispatchable work.
       - name: Reconcile pending planning publication
+        id: planning-publication
         if: steps.check-author.outputs.skip != 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PUBLICATION_SHA: ${{ github.sha }}
@@ -291,7 +293,7 @@ jobs:
 
       - name: Reconcile issue relationships
         id: relationship-sync
-        if: steps.check-author.outputs.skip != 'true'
+        if: always() && steps.check-author.outputs.skip != 'true'
         run: |
           echo "=== Reconciling issue relationships ==="
           set +e
@@ -315,6 +317,12 @@ jobs:
           # Cache entries are immutable, so each run writes a new revision-keyed
           # checkpoint and the next run restores the newest matching entry.
           key: issue-sync-relationships-${{ github.repository_id }}-${{ hashFiles('TODO.md') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Report planning publication failure
+        if: steps.planning-publication.outcome == 'failure'
+        run: |
+          echo "::error::Planning publication failed; bounded relationship safety repair completed or was checkpointed for retry."
+          exit 1
 
       - name: Enrich plan-linked issues
         if: steps.check-author.outputs.skip != 'true'
