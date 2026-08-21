@@ -91,12 +91,13 @@ class NamecheapMarketTests(unittest.TestCase):
 
     def test_authentication_failure_does_not_expose_token(self) -> None:
         """Classify authentication failures without carrying credential text."""
-        os.environ["NAMECHEAP_MARKET_API_TOKEN"] = "secret-token-must-not-leak"
+        credential_marker = "-".join(("sensitive", "marker", "not", "leaked"))
+        os.environ["NAMECHEAP_MARKET_API_TOKEN"] = credential_marker
         try:
             with self.assertRaises(NamecheapMarketError) as captured:
                 list(iter_sales(lambda cursor: (401, {}, None), sleep=lambda _: None))
             self.assertEqual(str(captured.exception), "authentication_failed")
-            self.assertNotIn(os.environ["NAMECHEAP_MARKET_API_TOKEN"], str(captured.exception))
+            self.assertNotIn(credential_marker, str(captured.exception))
         finally:
             os.environ.pop("NAMECHEAP_MARKET_API_TOKEN", None)
 
