@@ -1295,9 +1295,9 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18299 Score readable exact-match .com domain candidates #enhancement #auto-dispatch #database #priority:medium #scoring #seo #interactive ~6h tier:thinking parent:t18295 blocked-by:t18296 ref:GH#30496 logged:2026-08-21 -> [todo/tasks/t18299-brief.md]
 
-- [ ] t18300 Enrich domain candidates with Google Ads demand metrics #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30497 logged:2026-08-21 -> [todo/tasks/t18300-brief.md]
+- [x] t18300 Enrich domain candidates with Google Ads demand metrics #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30497 logged:2026-08-21 -> [todo/tasks/t18300-brief.md] pr:#30515 completed:2026-08-21
 
-- [ ] t18301 Capture optional Google Trends evidence through a browser-assisted workflow #enhancement #auto-dispatch #browser #database #priority:medium #seo #interactive ~5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30498 logged:2026-08-21 -> [todo/tasks/t18301-brief.md]
+- [x] t18301 Capture optional Google Trends evidence through a browser-assisted workflow #enhancement #auto-dispatch #browser #database #priority:medium #seo #interactive ~5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30498 logged:2026-08-21 -> [todo/tasks/t18301-brief.md] pr:#30516 completed:2026-08-21
 
 - [ ] t18302 Produce ranked local domain-opportunity reports and operating workflow #enhancement #auto-dispatch #cli #database #priority:medium #scoring #seo #interactive ~6.5h tier:thinking parent:t18295 blocked-by:t18297,t18298,t18299,t18300,t18301 ref:GH#30499 logged:2026-08-21 -> [todo/tasks/t18302-brief.md]
 
