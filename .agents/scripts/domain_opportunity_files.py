@@ -15,7 +15,6 @@ import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
