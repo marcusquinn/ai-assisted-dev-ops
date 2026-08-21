@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./index.mjs",
-    "./server": "./index.mjs"
+    "./server": "./index.mjs",
+    "./v1": "./index.mjs",
+    "./v2": "./v2.mjs"
   },
   "main": "index.mjs",
   "scripts": {
@@ -15,7 +17,7 @@
   "author": "Marcus Quinn",
   "license": "MIT",
   "opencode": {
-    "tracked_version": "1.18.18",
+    "tracked_version": "1.18.21",
     "repo": "anomalyco/opencode"
   },
   "peerDependencies": {
@@ -23,6 +25,6 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.0.0",
-    "@opencode-ai/plugin": "^1.18.18"
+    "@opencode-ai/plugin": "^1.18.21"
   }
 }

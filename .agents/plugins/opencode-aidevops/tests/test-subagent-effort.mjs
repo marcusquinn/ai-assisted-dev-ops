@@ -69,6 +69,95 @@ test("only one matching scalar Task child identity is accepted", () => {
   );
 });
 
+test("native resumable task IDs win over lifecycle inference", () => {
+  const lifecycle = new SubagentLifecycleTracker();
+  lifecycle.beforeTask("native-call", "parent");
+  lifecycle.handleEvent({
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "native-call",
+        type: "tool",
+        tool: "task",
+        state: { status: "running", metadata: { sessionId: "native-child" } },
+      },
+    },
+  });
+  lifecycle.handleEvent({
+    type: "session.created",
+    properties: { info: { id: "native-child", parentID: "parent" } },
+  });
+  lifecycle.handleEvent({
+    type: "session.created",
+    properties: { info: { id: "newer-inferred-child", parentID: "parent" } },
+  });
+
+  assert.deepEqual(
+    lifecycle.takeChildIdentity(
+      { callID: "native-call", sessionID: "parent" },
+      undefined,
+    ),
+    { callID: "native-call", childID: "native-child", reason: "native_task_id" },
+  );
+
+  lifecycle.beforeTask("native-error-call", "parent");
+  lifecycle.handleEvent({
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "native-error-call",
+        type: "tool",
+        tool: "task",
+        state: {
+          status: "error",
+          error: "Tool execution failed: Subagent failed (task_id: failed-child): Network connection lost",
+        },
+      },
+    },
+  });
+  assert.deepEqual(
+    lifecycle.takeChildIdentity(
+      { callID: "native-error-call", sessionID: "parent" },
+      undefined,
+    ),
+    { callID: "native-error-call", childID: "failed-child", reason: "native_task_id" },
+  );
+
+  lifecycle.beforeTask("native-conflict-call", "parent");
+  for (const sessionId of ["first-child", "conflicting-child"]) {
+    lifecycle.handleEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "native-conflict-call",
+          type: "tool",
+          tool: "task",
+          state: { status: "running", metadata: { sessionId } },
+        },
+      },
+    });
+  }
+  assert.deepEqual(
+    lifecycle.takeChildIdentity(
+      { callID: "native-conflict-call", sessionID: "parent" },
+      { metadata: { sessionId: "first-child" } },
+    ),
+    { callID: "native-conflict-call", childID: "", reason: "child_identity_conflict" },
+  );
+
+  lifecycle.beforeTask("same-output-conflict-call", "parent");
+  assert.deepEqual(
+    lifecycle.takeChildIdentity(
+      { callID: "same-output-conflict-call", sessionID: "parent" },
+      {
+        metadata: { sessionId: "metadata-child" },
+        output: '<task id="rendered-child" state="completed">\n<task_result>done</task_result>\n</task>',
+      },
+    ),
+    { callID: "same-output-conflict-call", childID: "", reason: "child_identity_conflict" },
+  );
+});
+
 test("aggregate Task metadata preserves host fields and records routing evidence", async () => {
   const hooks = createSubagentEffortHooks({ session: { prompt: async () => ({}) } }, {
     modelRouting: { tiers: {} },

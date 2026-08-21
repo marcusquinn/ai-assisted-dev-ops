@@ -48,6 +48,9 @@ function isSafeManagedToolOutputFile(filepath, directory) {
   }
 }
 
+// OpenCode 1.18.21 normally allows its exact Truncate.GLOB without a plugin.
+// Retain this fail-closed fallback for runtimes that still emit the equivalent
+// external_directory event. It deliberately does not bridge symlinked paths.
 export function isManagedToolOutputRead(toolCalls, raw, dataHome) {
   const permission = raw?.permission || raw?.type || "";
   const callID = raw?.tool?.callID || raw?.callID || "";

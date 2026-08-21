@@ -124,11 +124,15 @@ export function checkOpenCodeVersionDriftAsync(pluginDir, onNotice) {
   const meta = getTrackedOpenCodeVersion(pluginDir);
   if (!meta) return false;
 
-  execFile("opencode", ["--version"], { timeout: 5000 }, (err, stdout) => {
-    if (err) return;
-    const notice = buildVersionDriftNotice(meta, stdout);
-    if (notice) onNotice?.(notice);
-  });
+  try {
+    execFile("opencode", ["--version"], { timeout: 5000 }, (err, stdout) => {
+      if (err) return;
+      const notice = buildVersionDriftNotice(meta, stdout);
+      if (notice) onNotice?.(notice);
+    });
+  } catch {
+    return false;
+  }
 
   return true;
 }

@@ -7,10 +7,8 @@
  */
 
 import { getAccounts, patchAccount, rotateOpenAIPoolToken } from "./oauth-pool.mjs";
-import { annotateOpenAIOverloadResponse, formatRetryDelay, isOpenAIOverloadText, overloadRetryDelaysMs, sleep, wrapOpenAIOverloadStream } from "./openai-overload-retry.mjs";
 import { handleOpenAITokenRefreshFailure, isOpenAITokenRefreshRequest, readOpenAITokenRefreshBody } from "./openai-auth-refresh-recovery.mjs";
 
-export { isOpenAIOverloadText } from "./openai-overload-retry.mjs";
 export { isOpenAITokenRefreshRequest } from "./openai-auth-refresh-recovery.mjs";
 
 const OPENAI_API_HOST = "api.openai.com";
@@ -67,13 +65,6 @@ export async function isOpenAIUsageLimitResponse(response) {
   const code = String(error?.code || error?.type || "").toLowerCase();
   const message = String(error?.message || "").toLowerCase();
   return [code, message].some((text) => USAGE_LIMIT_MARKERS.some((marker) => text.includes(marker)));
-}
-
-export async function isOpenAIOverloadResponse(response) {
-  if (![500, 502, 503, 504, 529].includes(response.status)) return false;
-  const payload = await readOpenAIErrorPayload(response);
-  const error = payload?.error || payload;
-  return isOpenAIOverloadText([error?.code, error?.type, error?.message].join(" "));
 }
 
 function headersFrom(input, init) {
@@ -134,40 +125,6 @@ async function handleOpenAIUsageLimit(ctx) {
   return originalFetch(buildRetryRequest(retryInput), retryInit);
 }
 
-async function handleOpenAIOverload(ctx) {
-  const { client, originalFetch, retryInput, init, response } = ctx;
-  const retryDelays = overloadRetryDelaysMs();
-  let lastResponse = response;
-  for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
-    const delayMs = retryDelays[attempt];
-    await notifyOpenAIOverloadRetry(client, {
-      attempt: attempt + 1,
-      totalAttempts: retryDelays.length,
-      delayMs,
-      delayLabel: formatRetryDelay(delayMs),
-    });
-    if (delayMs > 0) await sleep(delayMs);
-    lastResponse = await originalFetch(buildRetryRequest(retryInput), init);
-    if (!(await isOpenAIOverloadResponse(lastResponse))) return lastResponse;
-  }
-  return annotateOpenAIOverloadResponse(lastResponse);
-}
-
-async function notifyOpenAIOverloadRetry(client, retry) {
-  try {
-    await client?.tui?.showToast?.({
-      body: {
-        title: "aidevops",
-        message: `OpenAI overloaded. Retrying in ${retry.delayLabel} (${retry.attempt}/${retry.totalAttempts}). The session will attempt to continue automatically.`,
-        variant: "warning",
-        duration: Math.min(Math.max(retry.delayMs, 5_000), 30_000),
-      },
-    });
-  } catch {
-    // Toasts are advisory only; recovery must continue even if the TUI API is unavailable.
-  }
-}
-
 async function maybeRotateBeforeOpenAIFetch(client, input, init) {
   const current = resolveOpenAIAccount(extractBearerToken(input, init));
   if (!isUnavailableAccount(current)) return init;
@@ -196,17 +153,6 @@ async function handleOpenAIFetchRequest(ctx) {
     });
   } else if (openaiRequest && await isOpenAIUsageLimitResponse(response)) {
     result = await handleOpenAIUsageLimit({ client, originalFetch, input, init: firstInit, response, retryInput });
-  } else if (openaiRequest && await isOpenAIOverloadResponse(response)) {
-    result = await handleOpenAIOverload({ client, originalFetch, init: firstInit, response, retryInput });
-  } else if (openaiRequest && response.ok) {
-    result = wrapOpenAIOverloadStream({
-      originalFetch,
-      response,
-      retryInput,
-      init: firstInit,
-      buildRetryRequest,
-      onRetry: (retry) => notifyOpenAIOverloadRetry(client, retry),
-    });
   }
   return result;
 }
