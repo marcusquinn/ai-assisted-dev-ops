@@ -87,6 +87,7 @@ FIXTURE_GH_COOLDOWN="${TMPDIR_TEST}/gh-secondary-cooldown.json"
 FIXTURE_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/gh-cooldown-events.jsonl"
 WRAPPER_GH_COOLDOWN="${TMPDIR_TEST}/wrapper-gh-secondary-cooldown.json"
 WRAPPER_GH_COOLDOWN_EVENTS="${TMPDIR_TEST}/wrapper-gh-cooldown-events.jsonl"
+FIXTURE_GRAPHQL_CIRCUIT="${TMPDIR_TEST}/pulse-graphql-circuit-breaker.state"
 FIXTURE_BLOCKERS="${TMPDIR_TEST}/worker-progress-blockers.jsonl"
 FIXTURE_THREAD_STATE_DIR="${TMPDIR_TEST}/pr-review-thread-response"
 FIXTURE_DISPATCH_LEDGER="${TMPDIR_TEST}/dispatch-ledger.jsonl"
@@ -101,6 +102,7 @@ export PULSE_DIAGNOSE_WORKTREE_REGISTRY_DB="$FIXTURE_WORKTREE_REGISTRY"
 export PULSE_DIAGNOSE_CI_REPAIR_STATE_DIR="$FIXTURE_CI_REPAIR_STATE_DIR"
 export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="$WRAPPER_GH_COOLDOWN"
 export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="$WRAPPER_GH_COOLDOWN_EVENTS"
+export PULSE_DIAGNOSE_GRAPHQL_CIRCUIT_FILE="$FIXTURE_GRAPHQL_CIRCUIT"
 unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
 
 mkdir -p "$FIXTURE_THREAD_STATE_DIR" "$FIXTURE_CI_REPAIR_STATE_DIR"
@@ -156,6 +158,7 @@ cat > "$FIXTURE_LOGFILE" <<'FIXTURE'
 2026-04-21T20:01:01Z [pulse-mystery] first unknown observation for PR #28869
 2026-04-21T20:01:02Z [pulse-mystery] second unknown observation for PR #28869
 2026-04-21T20:02:00Z [pulse-wrapper] Merge pass: skipping PR #29285 in marcusquinn/aidevops — 1 required status check(s) failing (t2104)
+2026-08-21T02:30:00Z [pulse-wrapper] Review bot gate: PASS for PR #30532 in marcusquinn/aidevops
 FIXTURE
 
 cat >"$FIXTURE_BLOCKERS" <<'BLOCKERS'
@@ -215,6 +218,8 @@ cat > "$FIXTURE_GH_COOLDOWN_EVENTS" <<'COOLDOWNEVENTS'
 {"timestamp":1700000015,"body_message_class":"abuse-detection"}
 COOLDOWNEVENTS
 
+printf '1787279880 87 5000 0.05\n' >"$FIXTURE_GRAPHQL_CIRCUIT"
+
 # Also create a rotated log with older PR #20329 entries
 cat > "${TMPDIR_TEST}/pulse.log.1" <<'ROTATED'
 2026-04-20T10:00:00Z [pulse-wrapper] Merge pass: skipping PR #20329 in marcusquinn/aidevops — reviewDecision=CHANGES_REQUESTED
@@ -270,6 +275,12 @@ if [[ "$*" == *"pr view"*"30321"* ]]; then
   echo '{"number":30321,"title":"classifier performance fixture","state":"OPEN","author":{"login":"worker"},"mergedAt":null,"closedAt":null,"createdAt":"2026-08-16T20:00:00Z","labels":[],"reviewDecision":"","mergeStateStatus":"CLEAN","headRefName":"feature/performance-fixture","baseRefName":"main","isDraft":false}'
   exit 0
 fi
+if [[ "$*" == *"pr view"*"30532"* ]]; then
+  cat <<'JSON'
+{"number":30532,"title":"remote CI feedback fixture","state":"CLOSED","author":{"login":"worker"},"mergedAt":null,"closedAt":"2026-08-21T02:38:00Z","createdAt":"2026-08-21T01:00:00Z","labels":[{"name":"origin:worker"},{"name":"ci-feedback-routed"}],"reviewDecision":"","mergeStateStatus":"BLOCKED","headRefName":"feature/remote-route","headRefOid":"abcdef0123456789abcdef0123456789abcdef01","baseRefName":"main","isDraft":false,"body":"For #30499"}
+JSON
+  exit 0
+fi
 if [[ "$*" == *"issue view"*"21860"* ]]; then
   cat <<'JSON'
 {"number":21860,"title":"t3206: worker re-dispatch loops on same branch","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-04-26T08:00:00Z","closedAt":null,"labels":[{"name":"auto-dispatch"},{"name":"status:queued"}],"assignees":[]}
@@ -288,6 +299,32 @@ if [[ "$*" == *"issue view"*"28780"* ]]; then
 fi
 if [[ "$*" == *"issue view"*"2878"* ]]; then
   echo '{"number":2878,"title":"near match fixture","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-07-29T00:00:00Z","closedAt":null,"labels":[],"assignees":[]}'
+  exit 0
+fi
+if [[ "$*" == *"issue view"*"30499"* ]]; then
+  if [[ "${PULSE_DIAGNOSE_TEST_ROUTE_KIND_MISMATCH:-0}" == "1" ]]; then
+    cat <<'JSON'
+{"number":30499,"title":"remote routed recovery fixture","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-08-20T00:00:00Z","closedAt":null,"labels":[{"name":"status:available"},{"name":"origin:worker"},{"name":"source:ci-feedback"}],"assignees":[],"body":"Remote route evidence.\n<!-- feedback-route:start:ci:PR30532:SHAabcdef0123456789abcdef0123456789abcdef01 -->\n<!-- feedback-route:complete:review:PR30532:SHAabcdef0123456789abcdef0123456789abcdef01 -->"}
+JSON
+  else
+    cat <<'JSON'
+{"number":30499,"title":"remote routed recovery fixture","state":"OPEN","author":{"login":"marcusquinn"},"createdAt":"2026-08-20T00:00:00Z","closedAt":null,"labels":[{"name":"status:available"},{"name":"origin:worker"},{"name":"source:ci-feedback"}],"assignees":[],"body":"Remote route evidence.\n<!-- feedback-route:start:ci:PR30532:SHAabcdef0123456789abcdef0123456789abcdef01 -->\n<!-- feedback-route:complete:ci:PR30532:SHAabcdef0123456789abcdef0123456789abcdef01 -->"}
+JSON
+  fi
+  exit 0
+fi
+if [[ "$*" == *"api"*"issues/30532/comments"* ]]; then
+  [[ "$*" == *"--paginate"*"--slurp"* ]] || exit 1
+  cat <<'JSON'
+[[{"id":51,"created_at":"2026-08-21T02:38:00Z","author_association":"MEMBER","body":"Issue #99999 was discussed before CI repair feedback routed to issue #30499."}]]
+JSON
+  exit 0
+fi
+if [[ "$*" == *"api"*"issues/30499/comments"* ]]; then
+  [[ "$*" == *"--paginate"*"--slurp"* ]] || exit 1
+  cat <<'JSON'
+[[{"id":52,"created_at":"2026-08-21T02:38:02Z","author_association":"MEMBER","body":"CLAIM_RELEASED reason=feedback_route_ci runner=pulse\n<!-- feedback-route:dispatch-release:ci:PR30532:SHAabcdef0123456789abcdef0123456789abcdef01 -->"},{"id":53,"created_at":"2026-08-21T02:39:00Z","author_association":"OWNER","body":"Dispatch delayed at REST hard-floor; reset=2026-08-21T03:00:00Z."}]]
+JSON
   exit 0
 fi
 if [[ "$*" == *"api"*"issues/21860/timeline"* ]]; then
@@ -479,6 +516,37 @@ assert_eq "JSON records completed linked-issue recovery" "true" "$(printf '%s' "
 assert_eq "JSON keeps missing local repair state explicit" "null" "$(printf '%s' "$output" | jq -r '.ci_repair.local_state')"
 sqlite3 "$FIXTURE_WORKTREE_REGISTRY" \
 	"UPDATE worktree_owners SET owner_session='pr-review-thread-response-marcusquinn-aidevops-20340' WHERE worktree_path='${FIXTURE_ANCILLARY_WORKTREE}';"
+
+# --- Test 6b: remote runner route reconciles beyond incomplete local logs ---
+printf '\nTest 6b: PR #30532 — cross-runner durable route evidence\n'
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 30532 --repo marcusquinn/aidevops 2>&1) || true
+assert_contains "remote route shows durable GitHub evidence" "Durable GitHub route evidence:" "$output"
+assert_contains "remote route identifies CI terminal label" "Kind: ci  terminal_label=ci-feedback-routed" "$output"
+assert_contains "remote route identifies linked recovery issue" "Linked issue: #30499  state=OPEN" "$output"
+assert_contains "remote route reconciles exact-head start and completion" "Start evidence: true  completion evidence: true  dispatch release: true" "$output"
+assert_contains "remote route reports known quota reset blocker" "REST hard-floor; reset=2026-08-21T03:00:00Z" "$output"
+assert_contains "remote route reports active global GraphQL circuit" "graphql_circuit active=yes remaining=87" "$output"
+assert_contains "remote route accepts production decimal circuit threshold" "threshold=0.05" "$output"
+
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 30532 --repo marcusquinn/aidevops --json 2>&1) || true
+assert_eq "remote route JSON is present" "true" "$(printf '%s' "$output" | jq -r '.remote_route.present')"
+assert_eq "remote route JSON kind is CI" "ci" "$(printf '%s' "$output" | jq -r '.remote_route.kind')"
+assert_eq "remote route JSON links issue 30499" "30499" "$(printf '%s' "$output" | jq -r '.remote_route.linked_issue')"
+assert_eq "remote route JSON completion is exact-head" "true" "$(printf '%s' "$output" | jq -r '.remote_route.completion_evidence')"
+
+output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PULSE_DIAGNOSE_TEST_ROUTE_KIND_MISMATCH=1 \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" pr 30532 --repo marcusquinn/aidevops --json 2>&1) || true
+assert_eq "remote route ignores another route kind's same-head completion" "false" \
+	"$(printf '%s' "$output" | jq -r '.remote_route.completion_evidence')"
 
 # --- Test 7: PR #99999 — zero pulse entries (admin-bypass) ---
 printf '\nTest 7: PR #99999 — zero pulse entries (admin-bypass)\n'

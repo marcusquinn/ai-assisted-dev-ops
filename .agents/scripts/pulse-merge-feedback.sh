@@ -51,6 +51,8 @@ _PULSE_MERGE_FEEDBACK_LOADED=1
 : "${PULSE_REVIEW_FEEDBACK_ITEM_LIMIT:=4000}"
 : "${PULSE_REVIEW_FEEDBACK_SECTION_LIMIT:=12000}"
 
+_CI_REPAIR_OUTCOME_SUMMARY=""
+
 _feedback_finalizer_path="${BASH_SOURCE[0]%/*}/pulse-merge-feedback-finalizer.sh"
 if [[ -r "$_feedback_finalizer_path" ]]; then
 	# shellcheck source=./pulse-merge-feedback-finalizer.sh
@@ -469,7 +471,7 @@ _ci_actionable_failed_checks_markdown() {
 	[[ "$count" =~ ^[0-9]+$ ]] || count=0
 	[[ "$count" -gt 0 ]] || return 0
 
-	local idx=0 name="" conclusion="" link="" context=""
+	local idx=0 name="" conclusion="" link="" evidence_role=""
 	while [[ "$idx" -lt "$count" ]]; do
 		name=$(printf '%s' "$checks_json" | jq -r --argjson i "$idx" '.[$i].name // empty' 2>/dev/null) || name=""
 		conclusion=$(printf '%s' "$checks_json" | jq -r --argjson i "$idx" '.[$i].conclusion // empty' 2>/dev/null) || conclusion=""
@@ -482,16 +484,34 @@ _ci_actionable_failed_checks_markdown() {
 				echo "[pulse-wrapper] _dispatch_ci_fix_worker: bounded infrastructure rerun unavailable for PR #${pr_number} check '${name}' — preserving PR for a later merge pass" >>"$LOGFILE"
 			fi
 		else
-			context=""
-			case "$name" in
-			*"Smell Threshold"* | *"Absolute"*"Threshold"*)
-				context=" — contextual absolute baseline debt; PR-specific regression gates remain authoritative"
-				;;
-			esac
-			printf -- '- **%s**: %s — [check URL](%s)%s\n' "$name" "$conclusion" "$link" "$context"
+			evidence_role=$(_ci_check_evidence_role "$name")
+			printf -- '- **%s**: %s — [check URL](%s) — _%s_\n' \
+				"$name" "$conclusion" "$link" "$evidence_role"
 		fi
 		idx=$((idx + 1))
 	done
+	return 0
+}
+
+#######################################
+# Classify one failed check for feedback presentation only. This never changes
+# whether a check blocks merge or qualifies for bounded repair.
+#######################################
+_ci_check_evidence_role() {
+	local check_name="$1"
+	local normalized_name=""
+	normalized_name=$(printf '%s' "$check_name" | tr '[:upper:]' '[:lower:]')
+	case "$normalized_name" in
+	*qlty*threshold* | *qlty*absolute* | *qlty*baseline*)
+		printf '%s' 'contextual repository-baseline evidence'
+		;;
+	*qlty*regression* | *qlty*new-file* | *qlty*new\ file* | *qlty*maintainability\ smells*)
+		printf '%s' 'primary PR-delta/new-file evidence'
+		;;
+	*)
+		printf '%s' 'primary failing-check evidence'
+		;;
+	esac
 	return 0
 }
 
@@ -567,7 +587,8 @@ _dispatch_ci_fix_worker() {
 	local pr_number="$1"
 	local repo_slug="$2"
 	local linked_issue="$3"
-	local supplied_checks_json="${4:-}"
+	local supplied_checks_json="${4:-}" initial_head_sha=""
+	_CI_REPAIR_OUTCOME_SUMMARY=""
 
 	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 0
 	[[ -n "$repo_slug" ]] || return 0
@@ -576,7 +597,6 @@ _dispatch_ci_fix_worker() {
 		echo "[pulse-wrapper] feedback finalizer: deferred PR #${pr_number} and issue #${linked_issue} in ${repo_slug} — dry-run forbids CI repair dispatch and feedback finalization writes" >>"$LOGFILE"
 		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
 	fi
-	local initial_head_sha=""
 	initial_head_sha=$(gh pr view "$pr_number" --repo "$repo_slug" --json headRefOid --jq '.headRefOid // ""' 2>/dev/null) || initial_head_sha=""
 	if [[ -z "$initial_head_sha" ]]; then
 		echo "[pulse-wrapper] _dispatch_ci_fix_worker: PR #${pr_number} head snapshot unavailable before collecting CI evidence — deferring repair routing" >>"$LOGFILE"
@@ -590,8 +610,7 @@ _dispatch_ci_fix_worker() {
 	# those as code-fix feedback creates duplicate PR churn instead of retrying or
 	# escalating CI infrastructure. If required checks contain no actionable
 	# failures. Advisory failures do not justify branch ownership or repair work.
-	local terminal_failed_check_filter
-	terminal_failed_check_filter='(.bucket == "fail" or .bucket == "cancel") and (((.conclusion // .state // "") | ascii_downcase) | test("^(failure|action_required)$")) and ((.link // "") != "")'
+	local terminal_failed_check_filter='(.bucket == "fail" or .bucket == "cancel") and (((.conclusion // .state // "") | ascii_downcase) | test("^(failure|action_required)$")) and ((.link // "") != "")'
 	local checks_json="" result_marker=$'\n__AIDEVOPS_CHECK_NAMES__'
 	local check_results="" failing_checks_json="" failing_checks="" failing_names="" classification_output=""
 	checks_json=$(_ci_repair_required_checks_json "$repo_slug" "$pr_number" "$supplied_checks_json")
@@ -661,7 +680,8 @@ _dispatch_ci_fix_worker() {
 	echo "[pulse-wrapper] _dispatch_ci_fix_worker: durable fallback authorized for PR #${pr_number} in ${repo_slug}: ${fallback_reason}" >>"$LOGFILE"
 	local route_rc=0
 	_route_ci_repair_fallback "$pr_number" "$repo_slug" "$linked_issue" "$pr_head_sha" \
-		"$pr_head_ref" "$failure_fingerprint" "$fallback_reason" "$feedback_section" "$failing_checks" || route_rc=$?
+		"$pr_head_ref" "$failure_fingerprint" "$fallback_reason" "$feedback_section" "$failing_checks" \
+		"$_CI_REPAIR_OUTCOME_SUMMARY" || route_rc=$?
 	return "$route_rc"
 }
 
@@ -678,6 +698,7 @@ _route_ci_repair_fallback() {
 	local fallback_reason="$7"
 	local feedback_section="$8"
 	local failing_checks="$9"
+	local attempt_summary="${10:-}"
 	local marker_prefix="<!-- ci-feedback-fallback:PR${pr_number}:SHA${pr_head_sha:-unknown}"
 	local marker="${marker_prefix} -->"
 	local legacy_match="<!-- ci-feedback-fallback:PR${pr_number}:SHA"
@@ -703,6 +724,13 @@ _route_ci_repair_fallback() {
 
 - Reason: ${fallback_reason}
 - Retry: re-run the deterministic merge pass after restoring access to branch \`${pr_head_ref:-unknown}\`; keep PR #${pr_number} open until that retry is impossible."
+	if [[ -n "$attempt_summary" ]]; then
+		feedback_section="${feedback_section}
+
+### In-place repair attempt outcomes
+
+${attempt_summary}"
+	fi
 	local close_comment="## CI repair feedback routed to issue #${linked_issue}
 
 This worker PR had terminal failed CI checks. The check details have been appended
@@ -723,6 +751,17 @@ _Closed by deterministic merge pass (pulse-merge.sh)._"
 }
 
 #######################################
+# Return the dispatch-bound outcome identity for one bounded repair attempt.
+#######################################
+_ci_repair_outcome_id() {
+	local session_key="$1"
+	local attempt="$2"
+	[[ -n "$session_key" && "$attempt" =~ ^[0-9]+$ ]] || return 1
+	printf '%s-a%s' "$session_key" "$attempt"
+	return 0
+}
+
+#######################################
 # Write one CI repair state transition atomically.
 #######################################
 _ci_repair_write_state() {
@@ -739,16 +778,29 @@ _ci_repair_write_state() {
 	local status="${11:-preparing}"
 	local session_key="${12:-}"
 	local tmp_file="${state_file}.tmp.$$"
-	local updated_at=""
+	local updated_at="" started_at="" outcome_id=""
+	local prior_state="" prior_attempt="" prior_started_at=""
 
 	updated_at=$(date +%s 2>/dev/null) || updated_at=0
+	started_at="$updated_at"
+	if [[ -f "$state_file" ]]; then
+		prior_state=$(jq -r '[.attempt // 0, .started_at // .updated_at // 0] | @tsv' "$state_file" 2>/dev/null) || prior_state=""
+		IFS=$'\t' read -r prior_attempt prior_started_at <<<"$prior_state"
+		if [[ "$prior_attempt" == "$attempt" && "$prior_started_at" =~ ^[0-9]+$ ]]; then
+			started_at="$prior_started_at"
+		fi
+	fi
+	outcome_id=$(_ci_repair_outcome_id "$session_key" "$attempt" 2>/dev/null) || outcome_id=""
 	jq -nc \
 		--arg repo "$repo_slug" --argjson pr "$pr_number" --arg head "$pr_head_sha" \
 		--arg branch "$pr_head_ref" --arg fingerprint "$failure_fingerprint" \
 		--arg worktree "$worktree_path" --argjson pid "$worker_pid" --arg pid_start "$pid_start" \
-		--argjson attempt "$attempt" --arg status "$status" --arg session "$session_key" --argjson updated_at "$updated_at" \
+		--argjson attempt "$attempt" --arg status "$status" --arg session "$session_key" --arg outcome_id "$outcome_id" \
+		--argjson started_at "$started_at" --argjson updated_at "$updated_at" \
 		'{repo:$repo,pr:$pr,head:$head,branch:$branch,fingerprint:$fingerprint,
-		worktree:$worktree,pid:$pid,pid_start:$pid_start,attempt:$attempt,status:$status,session:$session,updated_at:$updated_at}' \
+		worktree:$worktree,pid:$pid,pid_start:$pid_start,attempt:$attempt,status:$status,session:$session,
+		outcome_id:$outcome_id,started_at:$started_at,updated_at:$updated_at,
+		result:"",failure_reason:"",next_action:""}' \
 		>"$tmp_file" 2>/dev/null || {
 		rm -f "$tmp_file"
 		return 1
@@ -757,6 +809,193 @@ _ci_repair_write_state() {
 		rm -f "$tmp_file"
 		return 1
 	fi
+	return 0
+}
+
+#######################################
+# Return the trusted headless-runtime outcome file for one bounded attempt.
+#######################################
+_ci_repair_outcome_file() {
+	local lease_dir="$1"
+	local attempt="$2"
+	printf '%s/outcome-attempt-%s.state' "$lease_dir" "$attempt"
+	return 0
+}
+
+#######################################
+# Read one exact key from a trusted headless-runtime outcome file.
+#######################################
+_ci_repair_outcome_value() {
+	local outcome_file="$1"
+	local expected_key="$2"
+	local key="" value=""
+	[[ -f "$outcome_file" && ! -L "$outcome_file" ]] || return 0
+	while IFS='=' read -r key value; do
+		if [[ "$key" == "$expected_key" ]]; then
+			printf '%s' "$value"
+			return 0
+		fi
+	done <"$outcome_file"
+	return 0
+}
+
+#######################################
+# Bound one lifecycle value to a log/Markdown-safe token.
+#######################################
+_ci_repair_sanitize_outcome_value() {
+	local raw_value="$1"
+	local safe_value=""
+	safe_value=$(printf '%s' "$raw_value" | tr -cd '[:alnum:]_.:-')
+	printf '%.160s' "$safe_value"
+	return 0
+}
+
+#######################################
+# Project a trusted headless-runtime outcome into stable CI-repair fields.
+# Output: result|failure_reason|next_action|retry_class|session_count|finished_at
+#######################################
+_ci_repair_project_outcome() {
+	local state_file="$1"
+	local outcome_file="$2"
+	local status="" reason="" retry_class="" session_count="0" finished_at="0"
+	local expected_outcome_id="" expected_session="" started_at="0" observed_outcome_id="" observed_session=""
+	local now="0" outcome_present=0 outcome_valid=0 invalid_reason=""
+	local failed_result="failed"
+	local result="$failed_result" failure_reason="" next_action="inspect_terminal_outcome"
+
+	status=$(jq -r '.status // empty' "$state_file" 2>/dev/null) || status=""
+	expected_outcome_id=$(jq -r '.outcome_id // empty' "$state_file" 2>/dev/null) || expected_outcome_id=""
+	expected_session=$(jq -r '.session // empty' "$state_file" 2>/dev/null) || expected_session=""
+	started_at=$(jq -r '.started_at // .updated_at // 0' "$state_file" 2>/dev/null) || started_at=0
+	if [[ -f "$outcome_file" && ! -L "$outcome_file" && -O "$outcome_file" ]]; then
+		outcome_present=1
+		reason=$(_ci_repair_outcome_value "$outcome_file" reason)
+		retry_class=$(_ci_repair_outcome_value "$outcome_file" retry_class)
+		session_count=$(_ci_repair_outcome_value "$outcome_file" session_count)
+		finished_at=$(_ci_repair_outcome_value "$outcome_file" finished_at)
+		observed_outcome_id=$(_ci_repair_outcome_value "$outcome_file" outcome_id)
+		observed_session=$(_ci_repair_outcome_value "$outcome_file" session_key)
+	fi
+	now=$(date +%s 2>/dev/null) || now=0
+	if [[ -n "$expected_outcome_id" && "$observed_outcome_id" == "$expected_outcome_id" \
+		&& -n "$expected_session" && "$observed_session" == "$expected_session" \
+		&& -n "$reason" && "$session_count" =~ ^[0-9]+$ \
+		&& "$started_at" =~ ^[0-9]+$ && "$finished_at" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ \
+		&& "$finished_at" -ge "$started_at" && "$finished_at" -le $((now + 5)) ]]; then
+		outcome_valid=1
+	fi
+	if [[ "$outcome_valid" -eq 1 ]]; then
+		reason=$(_ci_repair_sanitize_outcome_value "$reason")
+		retry_class=$(_ci_repair_sanitize_outcome_value "$retry_class")
+	else
+		[[ "$outcome_present" -eq 0 ]] || invalid_reason="headless_outcome_contract_mismatch"
+		reason=""
+		retry_class=""
+		session_count=0
+		finished_at=0
+	fi
+
+	if [[ -z "$reason" ]]; then
+		case "$status" in
+		worktree_failed)
+			result="launch_failed"
+			failure_reason="worktree_failed"
+			next_action="retry_launch"
+			;;
+		preparing)
+			result="launch_interrupted"
+			failure_reason="headless_launch_interrupted"
+			next_action="retry_launch"
+			;;
+		*)
+			result="process_exit"
+			failure_reason="${invalid_reason:-headless_outcome_missing}"
+			next_action="inspect_terminal_outcome"
+			;;
+		esac
+	else
+		failure_reason="$reason"
+		case "$reason" in
+		worker_complete)
+			result="success"
+			failure_reason=""
+			next_action="monitor_pr"
+			;;
+		worker_draft_checkpoint)
+			result="deferred"
+			next_action="continue_repair"
+			;;
+		*)
+			case "$retry_class" in
+			infrastructure)
+				result="retryable"
+				next_action="retry_infrastructure"
+				;;
+			maintainer_gate)
+				result="blocked"
+				next_action="await_maintainer"
+				;;
+			remediation)
+				result="$failed_result"
+				next_action="inspect_and_continue_repair"
+				;;
+			*)
+				result="$failed_result"
+				next_action="inspect_terminal_outcome"
+				;;
+			esac
+			;;
+		esac
+	fi
+	printf '%s|%s|%s|%s|%s|%s' "$result" "$failure_reason" "$next_action" \
+		"$retry_class" "$session_count" "$finished_at"
+	return 0
+}
+
+#######################################
+# Archive one completed/dead attempt with sanitized terminal lifecycle fields.
+#######################################
+_ci_repair_archive_attempt() {
+	local state_file="$1"
+	local lease_dir="$2"
+	local attempt="$3"
+	local outcome_file="" archive_file="" projection="" tmp_file=""
+	local result="" failure_reason="" next_action="" retry_class="" session_count="0" finished_at="0"
+
+	[[ -f "$state_file" && "$attempt" =~ ^[0-9]+$ ]] || return 1
+	outcome_file=$(_ci_repair_outcome_file "$lease_dir" "$attempt")
+	archive_file="${lease_dir}/state-attempt-${attempt}.json"
+	projection=$(_ci_repair_project_outcome "$state_file" "$outcome_file") || return 1
+	IFS='|' read -r result failure_reason next_action retry_class session_count finished_at <<<"$projection"
+	tmp_file="${state_file}.archive.tmp.$$"
+	jq --arg result "$result" --arg failure_reason "$failure_reason" --arg next_action "$next_action" \
+		--arg retry_class "$retry_class" --argjson session_count "$session_count" --argjson finished_at "$finished_at" \
+		'. + {result:$result,failure_reason:$failure_reason,next_action:$next_action,retry_class:$retry_class,
+		session_count:$session_count,finished_at:$finished_at}' "$state_file" >"$tmp_file" 2>/dev/null || {
+		rm -f "$tmp_file"
+		return 1
+	}
+	mv "$tmp_file" "$archive_file" 2>/dev/null || {
+		rm -f "$tmp_file"
+		return 1
+	}
+	rm -f "$state_file" "$outcome_file" 2>/dev/null || true
+	return 0
+}
+
+#######################################
+# Render bounded archived outcomes for durable fallback feedback.
+#######################################
+_ci_repair_attempt_summary() {
+	local lease_dir="$1"
+	local archived_state="" shown=0
+	for archived_state in "${lease_dir}"/state-attempt-*.json; do
+		[[ -f "$archived_state" ]] || continue
+		shown=$((shown + 1))
+		[[ "$shown" -le 10 ]] || break
+		jq -r '"- Attempt \(.attempt // "unknown"): result=`\(.result // "unknown")`; failure_reason=`\(.failure_reason // "")`; next_action=`\(.next_action // "inspect_terminal_outcome")`"' \
+			"$archived_state" 2>/dev/null || true
+	done
 	return 0
 }
 
@@ -1094,15 +1333,17 @@ _ci_repair_claim_lease() {
 		return 0
 	fi
 	if [[ "$claim_result" == "$exhausted_result" ]]; then
-		_ci_repair_record_terminal_outcome "$state_file" "$session_key" "route_feedback_fallback" || true
+		if ! _ci_repair_archive_attempt "$state_file" "$lease_dir" "$existing_attempt"; then
+			printf '%s' "$active_result"
+			return 0
+		fi
 		echo "[pulse-wrapper] _dispatch_ci_repair_session: stale repair exhausted ${max_attempts} attempts for ${repo_slug} PR #${pr_number} head ${pr_head_sha} fingerprint ${failure_fingerprint}" >>"$LOGFILE"
 		printf '%s' "$exhausted_result"
 		return 0
 	fi
 	[[ "$claim_result" =~ ^[0-9]+$ ]] || return 1
 	next_attempt="$claim_result"
-		_ci_repair_record_terminal_outcome "$state_file" "$session_key" "$(_ci_repair_next_retry)" || true
-	if ! mv "$state_file" "${lease_dir}/state-attempt-${existing_attempt}.json" 2>/dev/null; then
+	if ! _ci_repair_archive_attempt "$state_file" "$lease_dir" "$existing_attempt"; then
 		printf '%s' "$active_result"
 		return 0
 	fi
@@ -1243,8 +1484,12 @@ _ci_repair_launch_worker() {
 	local wait_count=0
 	local wait_max="${AIDEVOPS_CI_REPAIR_SESSION_LOCK_WAIT_STEPS:-200}"
 	local process_pattern="${WORKER_PROCESS_PATTERN:-opencode|claude|Claude}|headless-runtime-helper"
+	local outcome_file="" outcome_id=""
 
 	[[ "$wait_max" =~ ^[0-9]+$ ]] || wait_max=200
+	outcome_file=$(_ci_repair_outcome_file "$lease_dir" "$attempt")
+	outcome_id=$(_ci_repair_outcome_id "$session_key" "$attempt") || return 1
+	rm -f "$outcome_file" 2>/dev/null || true
 	runner_login=$(_ci_repair_resolve_runner_login) || {
 		printf '%s\n' "[pulse-wrapper] _ci_repair_launch_worker: authenticated GitHub runner identity unavailable for ${repo_slug} PR #${pr_number}; launch blocked" >>"$LOGFILE"
 		return 1
@@ -1257,6 +1502,7 @@ _ci_repair_launch_worker() {
 		AIDEVOPS_PR_REPAIR_NUMBER="$pr_number" AIDEVOPS_PR_REPAIR_HEAD_SHA="$pr_head_sha" \
 		AIDEVOPS_PR_REPAIR_HEAD_REF="$pr_head_ref" AIDEVOPS_PR_REPAIR_FINGERPRINT="$failure_fingerprint" \
 		AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE="linked-issue" \
+		AIDEVOPS_HEADLESS_OUTCOME_FILE="$outcome_file" AIDEVOPS_HEADLESS_OUTCOME_ID="$outcome_id" \
 		"$helper" run --role worker --session-key "$session_key" --dir "$worktree_path" \
 		--title "PR #${pr_number}: CI repair" --prompt-file "$prompt_file" --detach \
 		</dev/null 2>&1) || {
@@ -1430,6 +1676,7 @@ _dispatch_ci_repair_session() {
 		return 0
 		;;
 	"$exhausted_result")
+		_CI_REPAIR_OUTCOME_SUMMARY=$(_ci_repair_attempt_summary "$lease_dir")
 		_CI_REPAIR_DISPATCH_RESULT="$exhausted_result"
 		return 1
 		;;

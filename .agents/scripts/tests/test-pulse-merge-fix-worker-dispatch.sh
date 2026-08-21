@@ -56,8 +56,14 @@ reset_mock_state() {
 	unset DRY_RUN TEST_TIMEOUT_FAIL_PATTERN TEST_FAIL_TRANSITION TEST_FAIL_CLOSE \
 		TEST_FAIL_REOPEN TEST_FAIL_BODY_PHASE TEST_FAIL_TERMINAL_LABEL \
 		TEST_DRIFT_AFTER_TRANSITION_HEAD TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE \
-		TEST_ADD_NMR_DURING_TRANSITION TEST_ADD_PR_PROTECTION_DURING_TRANSITION
+		TEST_ADD_NMR_DURING_TRANSITION TEST_ADD_PR_PROTECTION_DURING_TRANSITION \
+		TEST_READD_HOLD_DURING_TRANSITION TEST_HOLD_EVENT_ACTOR TEST_AUTHENTICATED_ACTOR \
+		TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL
 	rm -f "${TEST_ROOT}/pr-close-observed" "${TEST_ROOT}/pr-snapshot-failure-consumed"
+	printf '1000\n' >"${TEST_ROOT}/pr-hold-event-id.txt"
+	printf '2000\n' >"${TEST_ROOT}/issue-hold-event-id.txt"
+	printf 'pulse-automation\n' >"${TEST_ROOT}/pr-hold-event-actor.txt"
+	printf 'pulse-automation\n' >"${TEST_ROOT}/issue-hold-event-actor.txt"
 	: >"${TEST_ROOT}/issue-body.txt"
 	printf '[]\n' >"${TEST_ROOT}/issue-comments.json"
 	: >"${TEST_ROOT}/reviews.json"
@@ -168,7 +174,7 @@ case "$_subcmd" in
 			break
 		fi
 	done
-	jq --arg body "$_body" '. + [{id: ((map(.id // 0) | max // 0) + 1), body:$body, created_at:"2026-08-21T02:38:02Z", author_association:"MEMBER"}]' "${TEST_ROOT}/issue-comments.json" \
+	jq --arg body "$_body" --arg actor "${TEST_HOLD_EVENT_ACTOR:-pulse-automation}" '. + [{id: ((map(.id // 0) | max // 0) + 1), body:$body, created_at:"2026-08-21T02:38:02Z", author_association:"MEMBER", user:{login:$actor}}]' "${TEST_ROOT}/issue-comments.json" \
 		>"${TEST_ROOT}/issue-comments.json.tmp"
 	mv "${TEST_ROOT}/issue-comments.json.tmp" "${TEST_ROOT}/issue-comments.json"
 	exit 0
@@ -204,6 +210,11 @@ append_gh_mock_pr_edit_cases() {
 			shift
 			_value="${1:-}"
 			if [[ ",${_labels}," != *",${_value},"* ]]; then
+				if [[ "$_value" == "hold-for-review" ]]; then
+					_event_id=$(<"${TEST_ROOT}/pr-hold-event-id.txt")
+					printf '%s\n' "$((_event_id + 1))" >"${TEST_ROOT}/pr-hold-event-id.txt"
+					printf '%s\n' "${TEST_HOLD_EVENT_ACTOR:-pulse-automation}" >"${TEST_ROOT}/pr-hold-event-actor.txt"
+				fi
 				_labels="${_labels:+${_labels},}${_value}"
 			fi
 			;;
@@ -217,6 +228,12 @@ append_gh_mock_pr_edit_cases() {
 				_next="${_next:+${_next},}${_part}"
 			done
 			_labels="$_next"
+			if [[ "$_value" == "hold-for-review" \
+				&& "${TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL:-0}" == "1" ]]; then
+				_event_id=$(<"${TEST_ROOT}/pr-hold-event-id.txt")
+				printf '%s\n' "$((_event_id + 1))" >"${TEST_ROOT}/pr-hold-event-id.txt"
+				printf '%s\n' 'human-maintainer' >"${TEST_ROOT}/pr-hold-event-actor.txt"
+			fi
 			;;
 		esac
 		shift || true
@@ -270,6 +287,11 @@ append_gh_mock_issue_edit_cases() {
 			shift
 			_value="${1:-}"
 			if [[ ",${_labels}," != *",${_value},"* ]]; then
+				if [[ "$_value" == "hold-for-review" ]]; then
+					_event_id=$(<"${TEST_ROOT}/issue-hold-event-id.txt")
+					printf '%s\n' "$((_event_id + 1))" >"${TEST_ROOT}/issue-hold-event-id.txt"
+					printf '%s\n' "${TEST_HOLD_EVENT_ACTOR:-pulse-automation}" >"${TEST_ROOT}/issue-hold-event-actor.txt"
+				fi
 				_labels="${_labels:+${_labels},}${_value}"
 			fi
 		elif [[ "$_action" == "--remove-label" ]]; then
@@ -292,6 +314,13 @@ append_gh_mock_issue_edit_cases() {
 	if [[ "${TEST_ADD_NMR_DURING_TRANSITION:-0}" == "1" && "$_is_transition" -eq 1 \
 		&& ",${_labels}," != *",needs-maintainer-review,"* ]]; then
 		_labels="${_labels:+${_labels},}needs-maintainer-review"
+	fi
+	if [[ "${TEST_READD_HOLD_DURING_TRANSITION:-0}" == "1" && "$_is_transition" -eq 1 \
+		&& ",${_labels}," != *",hold-for-review,"* ]]; then
+		_labels="${_labels:+${_labels},}hold-for-review"
+		_event_id=$(<"${TEST_ROOT}/issue-hold-event-id.txt")
+		printf '%s\n' "$((_event_id + 1))" >"${TEST_ROOT}/issue-hold-event-id.txt"
+		printf '%s\n' "${TEST_HOLD_EVENT_ACTOR:-human-maintainer}" >"${TEST_ROOT}/issue-hold-event-actor.txt"
 	fi
 	printf '%s\n' "$_labels" >"${TEST_ROOT}/issue-labels.txt"
 	printf '%s' "$_assignees" >"${TEST_ROOT}/issue-assignees.txt"
@@ -324,6 +353,10 @@ if [[ "${1:-}" == "api" ]]; then
 			break
 		fi
 	done
+	if [[ "${2:-}" == "user" ]]; then
+		printf '%s\n' "${TEST_AUTHENTICATED_ACTOR:-pulse-automation}"
+		exit 0
+	fi
 	if [[ "$*" == *"/pulls/"*"/files"* ]]; then
 		[[ "${AIDEVOPS_GH_ROUTE_DECISION:-}" == "pulse-pr-files-rest" ]] || exit 1
 		printf '%s\n' '.agents/scripts/pulse-merge.sh'
@@ -354,6 +387,26 @@ if [[ "${1:-}" == "api" ]]; then
 		fi
 		printf '%s\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
 			"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/pr-labels.txt")"
+		exit 0
+	fi
+	if [[ "${2:-}" == "repos/owner/repo/issues/100/timeline?per_page=100" ]]; then
+		_event_id=$(<"${TEST_ROOT}/pr-hold-event-id.txt")
+		_event_actor=$(<"${TEST_ROOT}/pr-hold-event-actor.txt")
+		if [[ "$_event_id" -gt 1000 ]]; then
+			printf '[[{"id":%s,"event":"labeled","label":{"name":"hold-for-review"},"actor":{"login":"%s"},"created_at":"2026-08-21T02:38:01Z"}]]\n' "$_event_id" "$_event_actor"
+		else
+			printf '[[]]\n'
+		fi
+		exit 0
+	fi
+	if [[ "${2:-}" == "repos/owner/repo/issues/42/timeline?per_page=100" ]]; then
+		_event_id=$(<"${TEST_ROOT}/issue-hold-event-id.txt")
+		_event_actor=$(<"${TEST_ROOT}/issue-hold-event-actor.txt")
+		if [[ "$_event_id" -gt 2000 ]]; then
+			printf '[[{"id":%s,"event":"labeled","label":{"name":"hold-for-review"},"actor":{"login":"%s"},"created_at":"2026-08-21T02:38:01Z"}]]\n' "$_event_id" "$_event_actor"
+		else
+			printf '[[]]\n'
+		fi
 		exit 0
 	fi
 	if [[ "${2:-}" == "repos/owner/repo/issues/42" ]]; then
@@ -797,17 +850,18 @@ test_dispatch_recovers_terminal_label_failure() {
 	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" \
 		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "CLOSED" \
 		|| "$(<"${TEST_ROOT}/issue-body.txt")" != *"feedback-route:complete:review:PR100:SHAabc123repairsha"* \
-		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]]; then
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* \
+		|| "$(<"${TEST_ROOT}/issue-comments.json")" != *"feedback-route:automation-hold:review:PR100:SHAabc123repairsha:REASON"* \
+		|| "$(<"${TEST_ROOT}/issue-comments.json")" != *"ISSUEEVENT2001:PREVENT1001:ACTORpulse-automation"* ]]; then
 		print_result "terminal-label failure exposes partial completion" 1 \
-			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt")"
+			"rc=${first_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt"); comments=$(<"${TEST_ROOT}/issue-comments.json")"
 		return 0
 	fi
 
-	# Production routing honors both hold labels before recovery. Simulate the
-	# maintainer releasing that explicit hold, then verify the completion marker
-	# lets the finalizer recover only the missing terminal label.
-	printf 'origin:worker,auto-dispatch\n' >"${TEST_ROOT}/pr-labels.txt"
-	printf 'status:in-review,origin:worker,source:review-feedback\n' >"${TEST_ROOT}/issue-labels.txt"
+	# Exact route/head/reason plus both current label-event IDs identify this as
+	# an automation-created hold, so the next deterministic pass may recover it.
 	local retry_rc=0
 	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
 	if [[ "$retry_rc" -ne 0 ]] || ! review_route_is_complete \
@@ -819,7 +873,167 @@ test_dispatch_recovers_terminal_label_failure() {
 			"rc=${retry_rc}; issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); pr_labels=$(<"${TEST_ROOT}/pr-labels.txt")"
 		return 0
 	fi
-	print_result "required terminal-label failure recovers after maintainer release" 0
+	print_result "required terminal-label failure recovers its exact automation hold" 0
+	return 0
+}
+
+test_dispatch_preserves_human_readded_hold_generation() {
+	reset_mock_state
+	printf 'origin:worker,auto-dispatch,hold-for-review\n' >"${TEST_ROOT}/pr-labels.txt"
+	printf 'status:in-review,origin:worker,source:review-feedback,hold-for-review\n' >"${TEST_ROOT}/issue-labels.txt"
+	printf '1002\n' >"${TEST_ROOT}/pr-hold-event-id.txt"
+	printf '2002\n' >"${TEST_ROOT}/issue-hold-event-id.txt"
+	printf 'human-maintainer\n' >"${TEST_ROOT}/pr-hold-event-actor.txt"
+	printf 'human-maintainer\n' >"${TEST_ROOT}/issue-hold-event-actor.txt"
+	cat >"${TEST_ROOT}/issue-comments.json" <<'EOF'
+[{"id":41,"created_at":"2026-08-21T02:38:02Z","author_association":"MEMBER","user":{"login":"human-maintainer"},"body":"AUTOMATION_HOLD_PROVENANCE route=review pr=100 head=abc123repairsha actor=human-maintainer\nreason=forged current generation\n<!-- feedback-route:automation-hold:review:PR100:SHAabc123repairsha:REASONforged-current-generation:ISSUEEVENT2002:PREVENT1002:ACTORhuman-maintainer -->"}]
+EOF
+	: >"$GH_LOG"
+
+	local dispatch_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* \
+		|| "$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ]] \
+		|| grep -qF -- '--remove-label hold-for-review' "$GH_LOG" \
+		|| grep -qF 'gh pr close 100' "$GH_LOG"; then
+		print_result "human re-added hold generation is never auto-cleared" 1 \
+			"rc=${dispatch_rc}; pr_labels=$(<"${TEST_ROOT}/pr-labels.txt"); issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "collaborator-authored current hold generation cannot impersonate automation" 0
+	return 0
+}
+
+test_dispatch_restores_hold_when_generation_changes_before_transition() {
+	reset_mock_state
+	export TEST_FAIL_TERMINAL_LABEL=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_TERMINAL_LABEL
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+		print_result "pre-transition hold race fixture is created" 1 "first_rc=${first_rc}"
+		return 0
+	fi
+
+	export TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL=1
+	: >"$GH_LOG"
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	unset TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL
+
+	if [[ "$retry_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]] \
+		|| ! grep -qF 'automation PR hold generation changed during removal' "$LOGFILE"; then
+		print_result "pre-transition hold generation race restores both holds" 1 \
+			"retry_rc=${retry_rc}; pr_labels=$(<"${TEST_ROOT}/pr-labels.txt"); issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	print_result "pre-transition hold generation race restores both issue and PR holds" 0
+	return 0
+}
+
+test_terminal_label_cleanup_restores_changed_hold_generation() {
+	reset_mock_state
+	printf 'CLOSED\n' >"${TEST_ROOT}/pr-state.txt"
+	printf 'origin:worker,auto-dispatch,hold-for-review\n' >"${TEST_ROOT}/pr-labels.txt"
+	printf 'status:in-review,origin:worker,source:review-feedback,hold-for-review\n' >"${TEST_ROOT}/issue-labels.txt"
+	printf '1001\n' >"${TEST_ROOT}/pr-hold-event-id.txt"
+	printf '2001\n' >"${TEST_ROOT}/issue-hold-event-id.txt"
+	cat >"${TEST_ROOT}/issue-comments.json" <<'EOF'
+[{"id":41,"created_at":"2026-08-21T02:38:02Z","author_association":"MEMBER","user":{"login":"pulse-automation"},"body":"<!-- feedback-route:automation-hold:review:PR100:SHAabc123repairsha:REASONterminal-label:ISSUEEVENT2001:PREVENT1001:ACTORpulse-automation -->"}]
+EOF
+	export TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL=1
+	: >"$GH_LOG"
+
+	local cleanup_rc=0
+	_feedback_route_apply_terminal_label "100" "owner/repo" "abc123repairsha" \
+		"review-routed-to-issue" "42" "review" || cleanup_rc=$?
+	unset TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL
+
+	if [[ "$cleanup_rc" -eq 0 \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* ]] \
+		|| ! grep -qF 'automation PR hold generation changed during removal' "$LOGFILE"; then
+		print_result "terminal-label hold cleanup restores a changed generation" 1 \
+			"cleanup_rc=${cleanup_rc}; pr_labels=$(<"${TEST_ROOT}/pr-labels.txt"); issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	print_result "terminal-label cleanup preserves a concurrent human hold generation" 0
+	return 0
+}
+
+test_dispatch_restores_hold_readded_during_clear() {
+	reset_mock_state
+	export TEST_FAIL_TERMINAL_LABEL=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_TERMINAL_LABEL
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+		print_result "automation hold race fixture is created" 1 "first_rc=${first_rc}"
+		return 0
+	fi
+
+	export TEST_READD_HOLD_DURING_TRANSITION=1
+	export TEST_HOLD_EVENT_ACTOR="human-maintainer"
+	: >"$GH_LOG"
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	unset TEST_READD_HOLD_DURING_TRANSITION TEST_HOLD_EVENT_ACTOR
+
+	if [[ "$retry_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]] \
+		|| ! grep -qF 'restored unverified hold' "$LOGFILE"; then
+		print_result "hold re-added during automation clear is restored" 1 \
+			"retry_rc=${retry_rc}; pr_labels=$(<"${TEST_ROOT}/pr-labels.txt"); issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	print_result "hold re-added during automation clear is detected and restored" 0
+	return 0
+}
+
+test_dispatch_restores_hold_after_clear_transition_failure() {
+	reset_mock_state
+	export TEST_FAIL_TERMINAL_LABEL=1
+	local first_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	unset TEST_FAIL_TERMINAL_LABEL
+	if [[ "$first_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ]]; then
+		print_result "automation hold transition-failure fixture is created" 1 "first_rc=${first_rc}"
+		return 0
+	fi
+
+	export TEST_FAIL_TRANSITION=1
+	: >"$GH_LOG"
+	local retry_rc=0
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || retry_rc=$?
+	unset TEST_FAIL_TRANSITION
+
+	if [[ "$retry_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",hold-for-review,"* \
+		|| ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]] \
+		|| ! grep -qF 'issue transition failed while clearing an automation hold' "$LOGFILE"; then
+		print_result "failed clear-hold transition restores both holds" 1 \
+			"retry_rc=${retry_rc}; pr_labels=$(<"${TEST_ROOT}/pr-labels.txt"); issue_labels=$(<"${TEST_ROOT}/issue-labels.txt"); log=$(tr '\n' ';' <"$LOGFILE")"
+		return 0
+	fi
+	print_result "failed clear-hold transition restores both issue and PR holds" 0
+	return 0
+}
+
+test_feedback_route_accepts_bot_actor_identity() {
+	if _feedback_route_actor_is_valid "github-actions[bot]" \
+		&& ! _feedback_route_actor_is_valid "invalid actor"; then
+		print_result "automation actor validation supports GitHub bot identities" 0
+	else
+		print_result "automation actor validation supports GitHub bot identities" 1
+	fi
 	return 0
 }
 
@@ -1393,6 +1607,12 @@ main() {
 	test_dispatch_reopens_when_close_verification_fails
 	test_dispatch_reopens_after_completion_write_failure
 	test_dispatch_recovers_terminal_label_failure
+	test_dispatch_preserves_human_readded_hold_generation
+	test_dispatch_restores_hold_when_generation_changes_before_transition
+	test_terminal_label_cleanup_restores_changed_hold_generation
+	test_dispatch_restores_hold_readded_during_clear
+	test_dispatch_restores_hold_after_clear_transition_failure
+	test_feedback_route_accepts_bot_actor_identity
 	test_dispatch_holds_on_head_drift
 	test_dispatch_holds_when_ownership_changes_during_transition
 	test_dispatch_holds_prior_ci_head_evidence

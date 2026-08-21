@@ -13,8 +13,11 @@ PULSE_FEEDBACK_ROUTE_CLOSED_STATE="CLOSED"
 PULSE_FEEDBACK_ROUTE_HOLD_LABEL="hold-for-review"
 PULSE_FEEDBACK_ROUTE_NMR_LABEL="needs-maintainer-review"
 PULSE_FEEDBACK_ROUTE_OPEN_STATE="OPEN"
-PULSE_FEEDBACK_ROUTE_HOLD_MARKER="feedback-route:automation-hold"
+PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL="status:available"
 PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE="array"
+
+_PULSE_FEEDBACK_ROUTE_CONTEXT_KIND=""
+_PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD=""
 
 _feedback_route_gh_write() {
 	if declare -F _gh_with_timeout >/dev/null 2>&1; then
@@ -34,11 +37,15 @@ _feedback_route_labels_include() {
 
 _feedback_route_labels_block_routing() {
 	local labels="$1"
+	local ignore_hold="${2:-0}"
 
 	if _feedback_route_labels_include "$labels" "no-takeover" \
 		|| _feedback_route_labels_include "$labels" "external-contributor" \
-		|| _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
 		|| _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_NMR_LABEL"; then
+		return 0
+	fi
+	if [[ "$ignore_hold" != "1" ]] \
+		&& _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
 		return 0
 	fi
 	if _feedback_route_labels_include "$labels" "origin:interactive" \
@@ -115,8 +122,8 @@ _feedback_route_release_comments() {
 	else
 		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	fi
-	printf '%s' "$comments_json" | jq -c --arg marker "$marker" \
-		--arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" "$filter" 2>/dev/null
+	printf '%s' "$comments_json" | jq -c --arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" \
+		--arg marker "$marker" "$filter" 2>/dev/null
 	return $?
 }
 
@@ -175,49 +182,160 @@ ${marker}"
 	return 0
 }
 
-_feedback_route_kind_from_reason() {
+_feedback_route_hold_reason_key() {
 	local reason="$1"
-	case "$reason" in
-	*review*) printf 'review' ;;
-	*conflict*) printf 'conflict' ;;
-	*ci* | *CI*) printf 'ci' ;;
-	*) printf '%s' "${_PULSE_FEEDBACK_ROUTE_ACTIVE_KIND:-unknown}" ;;
-	esac
+	local reason_key=""
+	reason_key=$(printf '%s' "$reason" | tr -cs '[:alnum:]_.:-' '-')
+	reason_key="${reason_key#-}"
+	reason_key="${reason_key%-}"
+	[[ -n "$reason_key" ]] || reason_key="unknown"
+	printf '%.120s' "$reason_key"
 	return 0
 }
 
-_feedback_route_system_hold_marker() {
+_feedback_route_actor_is_valid() {
+	local actor="$1"
+	[[ "$actor" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ \
+		|| "$actor" =~ ^[A-Za-z0-9-]+\[bot\]$ ]]
+	return $?
+}
+
+_feedback_route_authenticated_actor() {
+	local actor=""
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		actor=$(_gh_with_timeout read gh api user --jq '.login // ""' 2>/dev/null) || return 1
+	else
+		actor=$(gh api user --jq '.login // ""' 2>/dev/null) || return 1
+	fi
+	_feedback_route_actor_is_valid "$actor" || return 1
+	printf '%s' "$actor"
+	return 0
+}
+
+_feedback_route_automation_hold_marker() {
 	local kind="$1"
 	local pr_number="$2"
 	local expected_head="$3"
-	printf '<!-- %s:%s:PR%s:SHA%s -->' "$PULSE_FEEDBACK_ROUTE_HOLD_MARKER" "$kind" "$pr_number" "$expected_head"
+	local reason="$4"
+	local issue_event_id="$5"
+	local pr_event_id="$6"
+	local automation_actor="$7"
+	local reason_key=""
+	reason_key=$(_feedback_route_hold_reason_key "$reason")
+	printf '<!-- feedback-route:automation-hold:%s:PR%s:SHA%s:REASON%s:ISSUEEVENT%s:PREVENT%s:ACTOR%s -->' \
+		"$kind" "$pr_number" "$expected_head" "$reason_key" "$issue_event_id" "$pr_event_id" "$automation_actor"
 	return 0
 }
 
-_feedback_route_system_hold_exists() {
+_feedback_route_latest_hold_event() {
+	local target_number="$1"
+	local repo_slug="$2"
+	local endpoint="repos/${repo_slug}/issues/${target_number}/timeline?per_page=100"
+	local timeline_json=""
+	# shellcheck disable=SC2016 # $hold_label is a jq variable supplied below.
+	local filter='[
+		(if type == $array_type and ((.[0]? | type) == $array_type) then .[] else . end)[]?
+		| select((.event // "") == "labeled" and (.label.name // "") == $hold_label)
+		| select((.id // 0) > 0)
+		| {id, created_at, actor: (.actor.login // "")}
+	] | sort_by([.created_at, .id]) | last
+	| if . == null then empty else [(.id | tostring), .actor] | @tsv end'
+
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		timeline_json=$(_gh_with_timeout read gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
+	else
+		timeline_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
+	fi
+	printf '%s' "$timeline_json" | jq -r --arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" \
+		--arg hold_label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" "$filter" 2>/dev/null
+	return 0
+}
+
+_feedback_route_automation_hold_comments() {
 	local linked_issue="$1"
 	local repo_slug="$2"
-	local kind="$3"
-	local pr_number="$4"
-	local expected_head="$5"
-	local marker=""
+	local marker_prefix="$3"
+	local marker_suffix="${4:-}"
+	local automation_actor="${5:-}"
 	local endpoint="repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100"
 	local comments_json=""
+	# #aidevops:trust-boundary — copied hold markers from untrusted comments do
+	# not authorize automated removal of a maintainer-created hold.
+	# shellcheck disable=SC2016 # $marker_prefix is a jq variable supplied below.
+	local filter='[
+		(if type == $array_type and ((.[0]? | type) == $array_type) then .[] else . end)[]?
+		| select((.author_association // "") as $association
+			| ["OWNER", "MEMBER", "COLLABORATOR"] | index($association))
+		| select((.user.login // "") == $automation_actor)
+		| select((.body // "") | contains($marker_prefix) and contains($marker_suffix))
+		| {id, created_at}
+	] | sort_by([.created_at, .id])'
 
-	marker=$(_feedback_route_system_hold_marker "$kind" "$pr_number" "$expected_head")
 	if declare -F _gh_with_timeout >/dev/null 2>&1; then
 		comments_json=$(_gh_with_timeout read gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	else
 		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	fi
-	# #aidevops:trust-boundary — only a trusted exact-head automation marker
-	# authorizes clearing a hold; a human or copied marker never does.
-	printf '%s' "$comments_json" | jq -e --arg marker "$marker" \
-		--arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" '
-		any((if type == $array_type and ((.[0]? | type) == $array_type) then .[] else . end)[]?;
-			((.author_association // "") as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a))
-			and ((.body // "") | startswith("PULSE_ROUTE_HOLD ") and contains("automation=pulse") and contains($marker)))' \
-		>/dev/null 2>&1
+	printf '%s' "$comments_json" | jq -c --arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" \
+		--arg marker_prefix "$marker_prefix" \
+		--arg marker_suffix "$marker_suffix" --arg automation_actor "$automation_actor" "$filter" 2>/dev/null
+	return $?
+}
+
+_feedback_route_automation_hold_exists() {
+	local kind="$1"
+	local pr_number="$2"
+	local repo_slug="$3"
+	local linked_issue="$4"
+	local expected_head="$5"
+	local marker_prefix="<!-- feedback-route:automation-hold:${kind}:PR${pr_number}:SHA${expected_head}:REASON"
+	local issue_event="" pr_event="" issue_event_id="" pr_event_id=""
+	local issue_actor="" pr_actor="" authenticated_actor="" marker_suffix="" comments_json=""
+	issue_event=$(_feedback_route_latest_hold_event "$linked_issue" "$repo_slug") || return 1
+	pr_event=$(_feedback_route_latest_hold_event "$pr_number" "$repo_slug") || return 1
+	IFS=$'\t' read -r issue_event_id issue_actor <<<"$issue_event"
+	IFS=$'\t' read -r pr_event_id pr_actor <<<"$pr_event"
+	[[ "$issue_event_id" =~ ^[0-9]+$ && "$pr_event_id" =~ ^[0-9]+$ ]] || return 1
+	_feedback_route_actor_is_valid "$issue_actor" || return 1
+	[[ "$issue_actor" == "$pr_actor" ]] || return 1
+	authenticated_actor=$(_feedback_route_authenticated_actor) || return 1
+	[[ "$issue_actor" == "$authenticated_actor" ]] || return 1
+	marker_suffix=":ISSUEEVENT${issue_event_id}:PREVENT${pr_event_id}:ACTOR${issue_actor} -->"
+	comments_json=$(_feedback_route_automation_hold_comments "$linked_issue" "$repo_slug" \
+		"$marker_prefix" "$marker_suffix" "$issue_actor") || return 1
+	printf '%s' "$comments_json" | jq -e 'length > 0' >/dev/null 2>&1
+	return $?
+}
+
+_feedback_route_record_automation_hold() {
+	local kind="$1"
+	local pr_number="$2"
+	local repo_slug="$3"
+	local linked_issue="$4"
+	local expected_head="$5"
+	local reason="$6"
+	local issue_event_id="$7"
+	local pr_event_id="$8"
+	local automation_actor="$9"
+	local marker="" safe_reason="" comment_body=""
+
+	[[ "$issue_event_id" =~ ^[0-9]+$ && "$pr_event_id" =~ ^[0-9]+$ ]] || return 1
+	_feedback_route_actor_is_valid "$automation_actor" || return 1
+	marker=$(_feedback_route_automation_hold_marker "$kind" "$pr_number" "$expected_head" "$reason" \
+		"$issue_event_id" "$pr_event_id" "$automation_actor")
+	if _feedback_route_automation_hold_comments "$linked_issue" "$repo_slug" "$marker" \
+		"" "$automation_actor" \
+		| jq -e 'length > 0' >/dev/null 2>&1; then
+		return 0
+	fi
+	safe_reason="${reason//$'\r'/ }"
+	safe_reason="${safe_reason//$'\n'/ }"
+	safe_reason="${safe_reason:0:500}"
+	comment_body="AUTOMATION_HOLD_PROVENANCE route=${kind} pr=${pr_number} head=${expected_head} actor=${automation_actor}
+reason=${safe_reason}
+${marker}"
+	_feedback_route_gh_write issue comment "$linked_issue" --repo "$repo_slug" \
+		--body "$comment_body" >/dev/null 2>&1
 	return $?
 }
 
@@ -328,7 +446,7 @@ _feedback_route_issue_is_ready() {
 
 	snapshot=$(_feedback_route_issue_snapshot "$linked_issue" "$repo_slug") || return 1
 	IFS=$'\t' read -r labels assignees <<<"$snapshot"
-	_feedback_route_labels_include "$labels" "status:available" || return 1
+	_feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL" || return 1
 	_feedback_route_labels_include "$labels" "$source_label" || return 1
 	_feedback_route_labels_include "$labels" "origin:worker" || return 1
 	! _feedback_route_labels_include "$labels" "origin:interactive" || return 1
@@ -354,17 +472,32 @@ _feedback_route_hold_for_maintainer() {
 	local repo_slug="$2"
 	local linked_issue="$3"
 	local reason="$4"
+	local kind="${5:-${_PULSE_FEEDBACK_ROUTE_CONTEXT_KIND:-unknown}}"
+	local expected_head="${6:-${_PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD:-unknown}}"
 	local issue_hold_rc=0
 	local pr_hold_rc=0
-	local issue_snapshot="" issue_labels="" issue_assignees="" pr_snapshot="" pr_state="" expected_head="" pr_labels=""
-	local kind="" marker="" safe_reason="" hold_was_present=0 comment_body=""
+	local provenance_rc=0
+	local issue_snapshot="" issue_labels="" issue_assignees=""
+	local pr_snapshot="" pr_state="" pr_head="" pr_labels=""
+	local issue_hold_preexisting=1 pr_hold_preexisting=1
+	local issue_event="" pr_event="" issue_event_id="" pr_event_id=""
+	local issue_actor="" pr_actor="" authenticated_actor=""
 
 	issue_snapshot=$(_feedback_route_issue_snapshot "$linked_issue" "$repo_slug" 2>/dev/null) || issue_snapshot=""
-	IFS=$'\t' read -r issue_labels issue_assignees <<<"$issue_snapshot"
-	_feedback_route_labels_include "$issue_labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" && hold_was_present=1
+	if [[ -n "$issue_snapshot" ]]; then
+		IFS=$'\t' read -r issue_labels issue_assignees <<<"$issue_snapshot"
+		if ! _feedback_route_labels_include "$issue_labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+			issue_hold_preexisting=0
+		fi
+	fi
 	pr_snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug" 2>/dev/null) || pr_snapshot=""
-	IFS=$'\t' read -r pr_state expected_head pr_labels <<<"$pr_snapshot"
-	kind=$(_feedback_route_kind_from_reason "$reason")
+	if [[ -n "$pr_snapshot" ]]; then
+		IFS=$'\t' read -r pr_state pr_head pr_labels <<<"$pr_snapshot"
+		if ! _feedback_route_labels_include "$pr_labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+			pr_hold_preexisting=0
+		fi
+	fi
+	: "$issue_assignees" "$pr_state" "$pr_head"
 
 	if declare -F set_issue_status >/dev/null 2>&1; then
 		set_issue_status "$linked_issue" "$repo_slug" "in-review" \
@@ -372,23 +505,28 @@ _feedback_route_hold_for_maintainer() {
 	else
 		_feedback_route_gh_write issue edit "$linked_issue" --repo "$repo_slug" \
 			--add-label "status:in-review" --add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
-			--remove-label "status:available" >/dev/null 2>&1 || issue_hold_rc=$?
+			--remove-label "$PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL" >/dev/null 2>&1 || issue_hold_rc=$?
 	fi
 	_feedback_route_gh_write pr edit "$pr_number" --repo "$repo_slug" \
 		--add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || pr_hold_rc=$?
-	if [[ "$issue_hold_rc" -eq 0 && "$pr_hold_rc" -eq 0 && "$hold_was_present" -eq 0 \
-		&& "$expected_head" =~ ^[0-9A-Za-z]{7,64}$ ]]; then
-		marker=$(_feedback_route_system_hold_marker "$kind" "$pr_number" "$expected_head")
-		safe_reason=$(printf '%s' "$reason" | tr '\n\r\t' ' ' | tr -cd '[:alnum:] _.,:;()/#=-' | cut -c1-160)
-		comment_body="PULSE_ROUTE_HOLD kind=${kind} reason=${safe_reason:-unspecified} automation=pulse
-${marker}"
-		if declare -F gh_issue_comment >/dev/null 2>&1; then
-			gh_issue_comment "$linked_issue" --repo "$repo_slug" --body "$comment_body" >/dev/null 2>&1 || true
+	if [[ "$issue_hold_rc" -eq 0 && "$pr_hold_rc" -eq 0 \
+		&& "$issue_hold_preexisting" -eq 0 && "$pr_hold_preexisting" -eq 0 ]]; then
+		authenticated_actor=$(_feedback_route_authenticated_actor 2>/dev/null) || authenticated_actor=""
+		issue_event=$(_feedback_route_latest_hold_event "$linked_issue" "$repo_slug" 2>/dev/null) || issue_event=""
+		pr_event=$(_feedback_route_latest_hold_event "$pr_number" "$repo_slug" 2>/dev/null) || pr_event=""
+		IFS=$'\t' read -r issue_event_id issue_actor <<<"$issue_event"
+		IFS=$'\t' read -r pr_event_id pr_actor <<<"$pr_event"
+		if [[ "$issue_event_id" =~ ^[0-9]+$ && "$pr_event_id" =~ ^[0-9]+$ \
+			&& -n "$authenticated_actor" && "$issue_actor" == "$pr_actor" \
+			&& "$issue_actor" == "$authenticated_actor" ]]; then
+			_feedback_route_record_automation_hold "$kind" "$pr_number" "$repo_slug" \
+				"$linked_issue" "$expected_head" "$reason" "$issue_event_id" "$pr_event_id" \
+				"$issue_actor" || provenance_rc=$?
 		else
-			_feedback_route_gh_write issue comment "$linked_issue" --repo "$repo_slug" --body "$comment_body" >/dev/null 2>&1 || true
+			provenance_rc=1
 		fi
 	fi
-	echo "[pulse-wrapper] feedback finalizer: preserving PR #${pr_number} and issue #${linked_issue} in ${repo_slug} for maintainer review — ${reason} (issue_hold_rc=${issue_hold_rc}, pr_hold_rc=${pr_hold_rc})" >>"$LOGFILE"
+	echo "[pulse-wrapper] feedback finalizer: preserving PR #${pr_number} and issue #${linked_issue} in ${repo_slug} for maintainer review — ${reason} (kind=${kind}, head=${expected_head}, provenance_rc=${provenance_rc}, issue_hold_rc=${issue_hold_rc}, pr_hold_rc=${pr_hold_rc})" >>"$LOGFILE"
 	return "$PULSE_FEEDBACK_ROUTE_MAINTAINER_RC"
 }
 
@@ -401,6 +539,28 @@ _feedback_route_defer() {
 	return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 }
 
+_feedback_route_restore_unverified_hold() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local reason="$4"
+	local issue_rc=0 pr_rc=0
+
+	if declare -F set_issue_status >/dev/null 2>&1; then
+		set_issue_status "$linked_issue" "$repo_slug" "in-review" \
+			--add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || issue_rc=$?
+	else
+		_feedback_route_gh_write issue edit "$linked_issue" --repo "$repo_slug" \
+			--add-label "status:in-review" --add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
+			--remove-label "$PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL" >/dev/null 2>&1 || issue_rc=$?
+	fi
+	_feedback_route_gh_write pr edit "$pr_number" --repo "$repo_slug" \
+		--add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || pr_rc=$?
+	echo "[pulse-wrapper] feedback finalizer: restored unverified hold for PR #${pr_number} and issue #${linked_issue} in ${repo_slug} — ${reason} (issue_rc=${issue_rc}, pr_rc=${pr_rc})" >>"$LOGFILE"
+	[[ "$issue_rc" -eq 0 && "$pr_rc" -eq 0 ]]
+	return $?
+}
+
 _feedback_route_transition_and_verify() {
 	local linked_issue="$1"
 	local repo_slug="$2"
@@ -410,13 +570,37 @@ _feedback_route_transition_and_verify() {
 	local kind="${6:-}"
 	local expected_head="${7:-}"
 
-	if [[ "$clear_hold" == "1" ]] && ! _feedback_route_system_hold_exists \
-		"$linked_issue" "$repo_slug" "$kind" "$pr_number" "$expected_head"; then
+	if [[ "$clear_hold" == "1" ]]; then
+		[[ "$pr_number" =~ ^[0-9]+$ && -n "$kind" && -n "$expected_head" ]] || return 1
+		if ! _feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" \
+			"$linked_issue" "$expected_head"; then
+			_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+				"automation hold generation changed before issue transition" || true
+			return 1
+		fi
+	fi
+	if ! _transition_issue_for_redispatch "$linked_issue" "$repo_slug" "$source_label" "$clear_hold"; then
+		if [[ "$clear_hold" == "1" ]]; then
+			_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+				"issue transition failed while clearing an automation hold" || true
+		fi
 		return 1
 	fi
-	_transition_issue_for_redispatch "$linked_issue" "$repo_slug" "$source_label" "$clear_hold" || return 1
-	_feedback_route_issue_is_ready "$linked_issue" "$repo_slug" "$source_label"
-	return $?
+	if [[ "$clear_hold" == "1" ]] \
+		&& ! _feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" \
+			"$linked_issue" "$expected_head"; then
+		_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"automation hold generation changed while clearing it" || true
+		return 1
+	fi
+	if ! _feedback_route_issue_is_ready "$linked_issue" "$repo_slug" "$source_label"; then
+		if [[ "$clear_hold" == "1" ]]; then
+			_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+				"issue readiness changed while clearing an automation hold" || true
+		fi
+		return 1
+	fi
+	return 0
 }
 
 _feedback_route_apply_terminal_label() {
@@ -424,8 +608,8 @@ _feedback_route_apply_terminal_label() {
 	local repo_slug="$2"
 	local expected_head="$3"
 	local terminal_label="$4"
-	local linked_issue="${5:-}"
-	local kind="${6:-}"
+	local linked_issue="$5"
+	local kind="$6"
 	local snapshot=""
 	local pr_state=""
 	local current_head=""
@@ -436,9 +620,43 @@ _feedback_route_apply_terminal_label() {
 	IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
 	[[ "$pr_state" == "$PULSE_FEEDBACK_ROUTE_CLOSED_STATE" && "$current_head" == "$expected_head" ]] || return 1
 	_feedback_route_labels_include "$labels" "$terminal_label" || return 1
-	if [[ -n "$linked_issue" ]] && _feedback_route_system_hold_exists \
-		"$linked_issue" "$repo_slug" "$kind" "$pr_number" "$expected_head"; then
-		_feedback_route_gh_write pr edit "$pr_number" --repo "$repo_slug" --remove-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || true
+	if _feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" "$linked_issue" "$expected_head"; then
+		_feedback_route_recover_automation_pr_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"$expected_head" "$kind" || return 1
+	fi
+	return 0
+}
+
+_feedback_route_recover_automation_pr_hold() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local expected_head="$4"
+	local kind="$5"
+	local snapshot="" pr_state="" current_head="" labels=""
+
+	_feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" \
+		"$linked_issue" "$expected_head" || return 1
+	_feedback_route_gh_write pr edit "$pr_number" --repo "$repo_slug" \
+		--remove-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || return 1
+	if ! snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug"); then
+		_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"PR snapshot unavailable after automation hold removal" || true
+		return 1
+	fi
+	IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
+	: "$pr_state"
+	if [[ "$current_head" != "$expected_head" ]] \
+		|| _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+		_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"automation PR hold removal could not be verified" || true
+		return 1
+	fi
+	if ! _feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" \
+		"$linked_issue" "$expected_head"; then
+		_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"automation PR hold generation changed during removal" || true
+		return 1
 	fi
 	return 0
 }
@@ -544,7 +762,8 @@ _feedback_route_finish_closed() {
 		return $?
 	fi
 
-	if ! _feedback_route_apply_terminal_label "$pr_number" "$repo_slug" "$expected_head" "$terminal_label" "$linked_issue" "$kind"; then
+	if ! _feedback_route_apply_terminal_label "$pr_number" "$repo_slug" "$expected_head" "$terminal_label" \
+		"$linked_issue" "$kind"; then
 		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
 			"completed ${kind} route could not apply and verify terminal label ${terminal_label}"
 		return $?
@@ -563,6 +782,24 @@ _feedback_route_resume_completed() {
 	local source_label="$7"
 	local terminal_label="$8"
 	local labels="$9"
+	local issue_snapshot="" issue_labels="" issue_assignees="" clear_automation_hold=0
+
+	issue_snapshot=$(_feedback_route_issue_snapshot "$linked_issue" "$repo_slug") || {
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"completed ${kind} route could not inspect linked issue hold provenance"
+		return $?
+	}
+	IFS=$'\t' read -r issue_labels issue_assignees <<<"$issue_snapshot"
+	if _feedback_route_labels_include "$issue_labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+		if _feedback_route_automation_hold_exists "$kind" "$pr_number" "$repo_slug" "$linked_issue" "$expected_head"; then
+			clear_automation_hold=1
+		else
+			_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+				"completed ${kind} route found hold-for-review without exact automation provenance; preserving maintainer hold"
+			return $?
+		fi
+	fi
+	: "$issue_assignees"
 
 	if [[ "$pr_state" == "$PULSE_FEEDBACK_ROUTE_OPEN_STATE" ]]; then
 		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
@@ -580,8 +817,8 @@ _feedback_route_resume_completed() {
 				"$linked_issue" "$expected_head" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 			return 0
 		fi
-		if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" 1 \
-			"$pr_number" "$kind" "$expected_head"; then
+		if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" \
+			"$clear_automation_hold" "$pr_number" "$kind" "$expected_head"; then
 			_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "completed ${kind} route could not restore redispatch issue state"
 			return $?
 		fi
@@ -589,8 +826,8 @@ _feedback_route_resume_completed() {
 			"$linked_issue" "$expected_head" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 		return 0
 	fi
-	if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" 1 \
-		"$pr_number" "$kind" "$expected_head"; then
+	if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" \
+		"$clear_automation_hold" "$pr_number" "$kind" "$expected_head"; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "completed ${kind} route could not re-verify redispatch issue state"
 		return $?
 	fi
@@ -600,7 +837,8 @@ _feedback_route_resume_completed() {
 			"completed ${kind} route could not retire the prior dispatch claim"
 		return $?
 	fi
-	if ! _feedback_route_apply_terminal_label "$pr_number" "$repo_slug" "$expected_head" "$terminal_label" "$linked_issue" "$kind"; then
+	if ! _feedback_route_apply_terminal_label "$pr_number" "$repo_slug" "$expected_head" "$terminal_label" \
+		"$linked_issue" "$kind"; then
 		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
 			"completed ${kind} route could not recover terminal label ${terminal_label}"
 		return $?
@@ -724,6 +962,63 @@ _feedback_route_existing_evidence_gate() {
 	return 0
 }
 
+_feedback_route_prepare_finalization_snapshot() {
+	local kind="$1"
+	local pr_number="$2"
+	local repo_slug="$3"
+	local linked_issue="$4"
+	local expected_head="$5"
+	local snapshot=""
+	local pr_state=""
+	local current_head=""
+	local labels=""
+	local clear_automation_hold=0
+
+	snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || {
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"current PR snapshot unavailable before ${kind} finalization"
+		return $?
+	}
+	IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
+	if [[ "$current_head" != "$expected_head" ]]; then
+		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
+			"${kind} route head drifted from ${expected_head} to ${current_head:-unknown}"
+		return $?
+	fi
+	if _feedback_route_labels_block_routing "$labels" 1; then
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"current PR ownership labels prohibit ${kind} finalization"
+		return $?
+	fi
+	if _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+		if ! _feedback_route_recover_automation_pr_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"$expected_head" "$kind"; then
+			_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+				"current ${kind} hold has no exact automation generation provenance; preserving maintainer hold"
+			return $?
+		fi
+		clear_automation_hold=1
+		snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || {
+			_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+				"PR snapshot unavailable after exact automation hold recovery"
+			return $?
+		}
+		IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
+		if [[ "$current_head" != "$expected_head" ]]; then
+			_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
+				"${kind} route head changed during automation hold recovery"
+			return $?
+		fi
+	fi
+	if _feedback_route_labels_block_routing "$labels"; then
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"current PR ownership labels prohibit ${kind} finalization"
+		return $?
+	fi
+	printf '%s\t%s\t%s\t%s' "$pr_state" "$current_head" "$labels" "$clear_automation_hold"
+	return 0
+}
+
 _finalize_feedback_route() {
 	local kind="$1"
 	local pr_number="$2"
@@ -746,7 +1041,8 @@ _finalize_feedback_route() {
 	local labels=""
 	local issue_body=""
 	local evidence_gate_rc=0
-	_PULSE_FEEDBACK_ROUTE_ACTIVE_KIND="$kind"
+	local clear_automation_hold=0
+	local preflight="" preflight_rc=0
 
 	if [[ "${DRY_RUN:-0}" == "1" ]]; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "dry-run forbids ${kind} finalization writes"
@@ -763,21 +1059,12 @@ _finalize_feedback_route() {
 	fi
 	start_marker=$(_feedback_route_marker start "$kind" "$pr_number" "$expected_head" "$evidence_fingerprint")
 	completion_marker=$(_feedback_route_marker complete "$kind" "$pr_number" "$expected_head" "$evidence_fingerprint")
-	snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || {
-		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "current PR snapshot unavailable before ${kind} finalization"
-		return $?
-	}
-	IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
-	if [[ "$current_head" != "$expected_head" ]]; then
-		_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
-			"${kind} route head drifted from ${expected_head} to ${current_head:-unknown}"
-		return $?
-	fi
-	if _feedback_route_labels_block_routing "$labels"; then
-		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
-			"current PR ownership labels prohibit ${kind} finalization"
-		return $?
-	fi
+	_PULSE_FEEDBACK_ROUTE_CONTEXT_KIND="$kind"
+	_PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD="$expected_head"
+	preflight=$(_feedback_route_prepare_finalization_snapshot "$kind" "$pr_number" "$repo_slug" \
+		"$linked_issue" "$expected_head") || preflight_rc=$?
+	[[ "$preflight_rc" -eq 0 ]] || return "$preflight_rc"
+	IFS=$'\t' read -r pr_state current_head labels clear_automation_hold <<<"$preflight"
 	issue_body=$(_feedback_route_issue_body "$linked_issue" "$repo_slug") || {
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "linked issue body unavailable before ${kind} finalization"
 		return $?
@@ -798,7 +1085,8 @@ _finalize_feedback_route() {
 	_feedback_route_prepare_start "$kind" "$pr_number" "$repo_slug" "$linked_issue" \
 		"$expected_head" "$pr_state" "$issue_body" "$start_marker" "$legacy_marker" \
 		"$feedback_section" "$caller" "$legacy_match" || return $?
-	if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label"; then
+	if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" \
+		"$clear_automation_hold" "$pr_number" "$kind" "$expected_head"; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "${kind} issue transition was not fully verified"
 		return $?
 	fi
@@ -843,10 +1131,27 @@ _feedback_route_guard_existing_terminal_label() {
 		return $?
 	}
 	IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
+	_PULSE_FEEDBACK_ROUTE_CONTEXT_KIND="$kind"
+	_PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD="$current_head"
 	terminal_label=$(_feedback_route_terminal_label_for_kind "$kind") || {
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "unknown feedback route kind ${kind}"
 		return $?
 	}
+	if _feedback_route_labels_block_routing "$labels" 1; then
+		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+			"current PR ownership labels prohibit ${kind} route recovery"
+		return $?
+	fi
+	if _feedback_route_labels_include "$labels" "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL"; then
+		if ! _feedback_route_recover_automation_pr_hold "$pr_number" "$repo_slug" "$linked_issue" \
+			"$current_head" "$kind"; then
+			_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
+				"current ${kind} hold has no exact automation generation provenance; preserving maintainer hold"
+			return $?
+		fi
+		snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
+		IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
+	fi
 	if _feedback_route_labels_block_routing "$labels"; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" \
 			"current PR ownership labels prohibit ${kind} route recovery"
