@@ -1,0 +1,31 @@
+{
+  "request_metadata": {
+    "api_major": "v25",
+    "language": "languageConstants/1000",
+    "geographies": ["geoTargetConstants/2840"],
+    "network": "GOOGLE_SEARCH_AND_PARTNERS"
+  },
+  "response": {
+    "results": [
+      {
+        "text": "example",
+        "closeVariants": ["examples"],
+        "keywordMetrics": {
+          "avgMonthlySearches": "1200",
+          "monthlySearchVolumes": [
+            {"year": "2026", "month": "JANUARY", "monthlySearches": "1100"},
+            {"year": "2025", "month": "DECEMBER", "monthlySearches": "1300"}
+          ],
+          "competition": "MEDIUM",
+          "competitionIndex": "47",
+          "lowTopOfPageBidMicros": "250000",
+          "highTopOfPageBidMicros": "1200000"
+        }
+      },
+      {
+        "text": "missing metrics",
+        "closeVariants": []
+      }
+    ]
+  }
+}
