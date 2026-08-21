@@ -168,7 +168,7 @@ case "$_subcmd" in
 			break
 		fi
 	done
-	jq --arg body "$_body" '. + [{body:$body}]' "${TEST_ROOT}/issue-comments.json" \
+	jq --arg body "$_body" '. + [{id: ((map(.id // 0) | max // 0) + 1), body:$body, created_at:"2026-08-21T02:38:02Z", author_association:"MEMBER"}]' "${TEST_ROOT}/issue-comments.json" \
 		>"${TEST_ROOT}/issue-comments.json.tmp"
 	mv "${TEST_ROOT}/issue-comments.json.tmp" "${TEST_ROOT}/issue-comments.json"
 	exit 0
@@ -1311,6 +1311,25 @@ test_ci_dispatch_dedupes_by_pr_head_marker() {
 	return 0
 }
 
+test_feedback_release_reconciles_cross_runner_duplicates() {
+	reset_mock_state
+	cat >"${TEST_ROOT}/issue-comments.json" <<'EOF'
+[{"id":11,"created_at":"2026-08-21T02:38:02Z","author_association":"MEMBER","body":"CLAIM_RELEASED reason=feedback_route_ci runner=pulse ts=2026-08-21T02:37:59Z\n<!-- feedback-route:dispatch-release:ci:PR100:SHAabc123repairsha -->"},{"id":12,"created_at":"2026-08-21T02:38:04Z","author_association":"COLLABORATOR","body":"CLAIM_RELEASED reason=feedback_route_ci runner=pulse ts=2026-08-21T02:38:00Z\n<!-- feedback-route:dispatch-release:ci:PR100:SHAabc123repairsha -->"}]
+EOF
+
+	_feedback_route_release_dispatch_claim "ci" "100" "owner/repo" "42" "abc123repairsha"
+
+	if ! grep -qF 'gh api repos/owner/repo/issues/comments/12 --method DELETE' "$GH_LOG" ||
+		grep -qF 'gh api repos/owner/repo/issues/comments/11 --method DELETE' "$GH_LOG" ||
+		grep -qF 'gh issue comment 42' "$GH_LOG"; then
+		print_result "feedback release converges cross-runner duplicate comments" 1 \
+			"Expected only newer comment 12 to be deleted. Log: $(cat "$GH_LOG")"
+		return 0
+	fi
+	print_result "feedback release converges cross-runner duplicate comments" 0
+	return 0
+}
+
 main() {
 	trap teardown_test_env EXIT
 	setup_test_env
@@ -1349,6 +1368,7 @@ main() {
 	test_dispatch_noop_on_invalid_inputs
 	test_dispatch_clears_in_progress_labels_as_fallback
 	test_ci_dispatch_dedupes_by_pr_head_marker
+	test_feedback_release_reconciles_cross_runner_duplicates
 	test_dispatch_skips_body_edit_on_issue_view_failure
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"

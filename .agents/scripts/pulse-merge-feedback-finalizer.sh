@@ -91,22 +91,57 @@ _feedback_route_release_marker() {
 	return 0
 }
 
-_feedback_route_release_exists() {
+_feedback_route_release_comments() {
 	local linked_issue="$1"
 	local repo_slug="$2"
 	local marker="$3"
 	local endpoint="repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100"
 	local comments_json=""
+	# #aidevops:trust-boundary — only trusted automation comments can satisfy or
+	# win release-marker convergence; copied markers from untrusted users do not.
 	# shellcheck disable=SC2016 # $marker is a jq variable supplied below.
-	local filter='any((if type == "array" and ((.[0]? | type) == "array") then .[] else . end)[]?; (.body // "") | contains($marker))'
+	local filter='[
+		(if type == "array" and ((.[0]? | type) == "array") then .[] else . end)[]?
+		| select((.author_association // "") as $association
+			| ["OWNER", "MEMBER", "COLLABORATOR"] | index($association))
+		| select((.body // "") | startswith("CLAIM_RELEASED reason=feedback_route_") and contains($marker))
+		| {id, created_at}
+	] | sort_by([.created_at, .id])'
 
 	if declare -F _gh_with_timeout >/dev/null 2>&1; then
 		comments_json=$(_gh_with_timeout read gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	else
 		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	fi
-	printf '%s' "$comments_json" | jq -e --arg marker "$marker" "$filter" >/dev/null 2>&1
+	printf '%s' "$comments_json" | jq -c --arg marker "$marker" "$filter" 2>/dev/null
 	return $?
+}
+
+_feedback_route_release_exists() {
+	local linked_issue="$1"
+	local repo_slug="$2"
+	local marker="$3"
+	local comments_json=""
+
+	comments_json=$(_feedback_route_release_comments "$linked_issue" "$repo_slug" "$marker") || return 1
+	printf '%s' "$comments_json" | jq -e 'length > 0' >/dev/null 2>&1
+	return $?
+}
+
+_feedback_route_reconcile_release_comments() {
+	local linked_issue="$1"
+	local repo_slug="$2"
+	local marker="$3"
+	local comments_json=""
+	local duplicate_id=""
+
+	comments_json=$(_feedback_route_release_comments "$linked_issue" "$repo_slug" "$marker") || return 1
+	while IFS= read -r duplicate_id; do
+		[[ "$duplicate_id" =~ ^[0-9]+$ ]] || continue
+		_feedback_route_gh_write api "repos/${repo_slug}/issues/comments/${duplicate_id}" \
+			--method DELETE >/dev/null 2>&1 || true
+	done < <(printf '%s' "$comments_json" | jq -r '.[1:][]?.id' 2>/dev/null)
+	return 0
 }
 
 _feedback_route_release_dispatch_claim() {
@@ -117,18 +152,24 @@ _feedback_route_release_dispatch_claim() {
 	local expected_head="$5"
 	local marker=""
 	local comment_body=""
+	local comment_status=0
 
 	marker=$(_feedback_route_release_marker "$kind" "$pr_number" "$expected_head")
-	_feedback_route_release_exists "$linked_issue" "$repo_slug" "$marker" && return 0
+	if _feedback_route_release_exists "$linked_issue" "$repo_slug" "$marker"; then
+		_feedback_route_reconcile_release_comments "$linked_issue" "$repo_slug" "$marker" || true
+		return 0
+	fi
 	comment_body="CLAIM_RELEASED reason=feedback_route_${kind} runner=pulse ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ${marker}"
 	if declare -F gh_issue_comment >/dev/null 2>&1; then
-		gh_issue_comment "$linked_issue" --repo "$repo_slug" --body "$comment_body" >/dev/null 2>&1
-		return $?
+		gh_issue_comment "$linked_issue" --repo "$repo_slug" --body "$comment_body" >/dev/null 2>&1 || comment_status=$?
+	else
+		_feedback_route_gh_write issue comment "$linked_issue" --repo "$repo_slug" \
+			--body "$comment_body" >/dev/null 2>&1 || comment_status=$?
 	fi
-	_feedback_route_gh_write issue comment "$linked_issue" --repo "$repo_slug" \
-		--body "$comment_body" >/dev/null 2>&1
-	return $?
+	[[ "$comment_status" -eq 0 ]] || return "$comment_status"
+	_feedback_route_reconcile_release_comments "$linked_issue" "$repo_slug" "$marker" || true
+	return 0
 }
 
 _feedback_route_marker() {

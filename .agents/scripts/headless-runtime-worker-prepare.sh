@@ -65,8 +65,9 @@ _hrw_ownership_log() {
 #######################################
 # Verify that a worker still owns its exact dispatch target. Issue workers use
 # their live assignment, direct PR workers use the exact open head, and draft
-# checkpoints use the complete PR/linkage/assignee envelope. A legacy linked-
-# issue CI repair must explicitly request both exact-head and issue fences.
+# checkpoints use the complete PR/linkage/assignee envelope. Linked-issue CI
+# repairs use the exact PR head and closing linkage because any trusted Pulse
+# runner may repair the branch after the implementation worker hands it off.
 # This helper is read-only and fail-closed.
 #######################################
 _hrw_verify_dispatch_ownership() {
@@ -141,6 +142,7 @@ _hrw_verify_dispatch_ownership() {
 				return 1
 			fi
 			_hrw_ownership_log info "$target_output"
+			return 0
 		else
 			_hrw_ownership_log error "unclassified PR repair ownership contract issue=${issue_number} pr=${repair_pr_number} repo=${repo_slug} mode=${repair_ownership_mode:-missing}"
 			return 1

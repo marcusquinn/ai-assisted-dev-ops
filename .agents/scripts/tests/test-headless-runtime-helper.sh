@@ -221,7 +221,7 @@ run_runtime_ownership_fence_tests() {
 	test_direct_pr_runtime_target_fence_uses_exact_head_without_runner
 	test_direct_pr_runtime_target_fence_fails_closed
 	test_pr_checkpoint_runtime_fence_uses_exact_envelope
-	test_linked_issue_pr_repair_keeps_issue_ownership_fence
+	test_linked_issue_pr_repair_allows_trusted_peer_runner
 	test_mismatched_pr_repair_contract_fails_closed
 	return 0
 }

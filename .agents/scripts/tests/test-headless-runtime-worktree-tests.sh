@@ -1103,7 +1103,7 @@ EOF
 	return 0
 }
 
-test_linked_issue_pr_repair_keeps_issue_ownership_fence() {
+test_linked_issue_pr_repair_allows_trusted_peer_runner() {
 	local ownership_helper="${TEST_ROOT}/linked-issue-ownership-helper.sh"
 	local calls_file="${TEST_ROOT}/linked-issue-ownership-calls"
 	cat >"$ownership_helper" <<'EOF'
@@ -1111,7 +1111,6 @@ test_linked_issue_pr_repair_keeps_issue_ownership_fence() {
 printf '%s\n' "$*" >>"${LINKED_ISSUE_OWNERSHIP_CALLS:?}"
 case "${1:-}" in
 verify-pr-repair-target) printf 'PR_REPAIR_TARGET_VALID: exact open head\n'; exit 0 ;;
-verify-worker-ownership) printf 'WORKER_OWNERSHIP_VALID: linked issue assignment\n'; exit 0 ;;
 esac
 exit 1
 EOF
@@ -1137,12 +1136,12 @@ EOF
 
 	if [[ "$status" -eq 0 ]] &&
 		grep -Fxq 'verify-pr-repair-target 77 owner/repo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa feature/review 42' "$calls_file" &&
-		grep -Fxq 'verify-worker-ownership 42 owner/repo expected-runner' "$calls_file" &&
-		[[ "$output" == *"PR_REPAIR_TARGET_VALID"* && "$output" == *"WORKER_OWNERSHIP_VALID"* ]]; then
-		print_result "linked-issue PR repair requires exact head and live issue ownership" 0
+		! grep -q 'verify-worker-ownership' "$calls_file" &&
+		[[ "$output" == *"PR_REPAIR_TARGET_VALID"* ]]; then
+		print_result "linked-issue PR repair allows trusted peer runner after exact target fence" 0
 		return 0
 	fi
-	print_result "linked-issue PR repair requires exact head and live issue ownership" 1 \
+	print_result "linked-issue PR repair allows trusted peer runner after exact target fence" 1 \
 		"status=$status output=${output:-<empty>}"
 	return 0
 }
