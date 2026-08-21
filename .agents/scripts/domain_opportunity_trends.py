@@ -96,8 +96,20 @@ def import_export(manifest: dict[str, Any], path: str | Path, database: str | Pa
     """Persist one validated batch with its complete provenance envelope."""
     raw_hash, parsed = inspect_export(manifest, path)
     db_path = Path(database).expanduser()
-    with DomainOpportunityStore(db_path, initialize=not db_path.exists()) as store:
+    initializing = not db_path.exists()
+    with DomainOpportunityStore(db_path, initialize=initializing) as store:
         with store.transaction():
+            if initializing:
+                listings_run = f"google-trends-listings:{manifest['batch_id']}"
+                providers = {item.term["provider"] for item in parsed}
+                if len(providers) != 1 or any("listing" not in item.term for item in parsed):
+                    raise TrendsError("a new database requires manifest listing observations")
+                store.begin_source_run(listings_run, providers.pop(), started_at=manifest["exported_at"])
+                for item in parsed:
+                    listing = dict(item.term["listing"])
+                    listing["source_run_id"] = listings_run
+                    store.upsert_listing_observation(listing)
+                store.complete_source_run(listings_run, len(parsed))
             run_id = f"google-trends:{manifest['batch_id']}:{raw_hash[:12]}"
             store.begin_source_run(run_id, "google-trends", started_at=manifest["exported_at"])
             imported = 0
