@@ -1289,9 +1289,9 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18296 Define the local domain-opportunity data contract and SQLite foundation #enhancement #architecture #auto-dispatch #cli #database #priority:medium #interactive ~5.5h tier:thinking parent:t18295 ref:GH#30493 logged:2026-08-21 -> [todo/tasks/t18296-brief.md] pr:#30502 completed:2026-08-21
 
-- [ ] t18297 Ingest Namecheap Market auctions through the official API #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~4.5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30494 logged:2026-08-21 -> [todo/tasks/t18297-brief.md]
+- [x] t18297 Ingest Namecheap Market auctions through the official API #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~4.5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30494 logged:2026-08-21 -> [todo/tasks/t18297-brief.md] pr:#30509 completed:2026-08-21
 
-- [ ] t18298 Import official bulk domain-auction inventory files #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30495 logged:2026-08-21 -> [todo/tasks/t18298-brief.md]
+- [x] t18298 Import official bulk domain-auction inventory files #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~5.75h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30495 logged:2026-08-21 -> [todo/tasks/t18298-brief.md] pr:#30511 completed:2026-08-21
 
 - [x] t18299 Score readable exact-match .com domain candidates #enhancement #auto-dispatch #database #priority:medium #scoring #seo #interactive ~6h tier:thinking parent:t18295 blocked-by:t18296 ref:GH#30496 logged:2026-08-21 -> [todo/tasks/t18299-brief.md] pr:#30522 completed:2026-08-21
 
@@ -1299,7 +1299,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18301 Capture optional Google Trends evidence through a browser-assisted workflow #enhancement #auto-dispatch #browser #database #priority:medium #seo #interactive ~5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30498 logged:2026-08-21 -> [todo/tasks/t18301-brief.md] pr:#30516 completed:2026-08-21
 
-- [ ] t18302 Produce ranked local domain-opportunity reports and operating workflow #enhancement #auto-dispatch #cli #database #priority:medium #scoring #seo #interactive ~6.5h tier:thinking parent:t18295 blocked-by:t18297,t18298,t18299,t18300,t18301 ref:GH#30499 logged:2026-08-21 -> [todo/tasks/t18302-brief.md]
+- [x] t18302 Produce ranked local domain-opportunity reports and operating workflow #enhancement #auto-dispatch #cli #database #priority:medium #scoring #seo #interactive ~6.5h tier:thinking parent:t18295 blocked-by:t18297,t18298,t18299,t18300,t18301 ref:GH#30499 logged:2026-08-21 -> [todo/tasks/t18302-brief.md] pr:#30535 completed:2026-08-21
 
 - [x] t18303 Update WordPress hosting provider recommendations #documentation #hosting #wordpress ref:GH#30503 pr:#30504 completed:2026-08-21
 
