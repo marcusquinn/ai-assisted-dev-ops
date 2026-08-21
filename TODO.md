@@ -1287,7 +1287,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18295 Build a local domain-auction opportunity research pipeline #enhancement #architecture #database #parent-task #priority:medium #seo #interactive ~39h tier:thinking ref:GH#30492 logged:2026-08-21 -> [todo/tasks/t18295-brief.md]
 
-- [ ] t18296 Define the local domain-opportunity data contract and SQLite foundation #enhancement #architecture #auto-dispatch #cli #database #priority:medium #interactive ~5.5h tier:thinking parent:t18295 ref:GH#30493 logged:2026-08-21 -> [todo/tasks/t18296-brief.md]
+- [x] t18296 Define the local domain-opportunity data contract and SQLite foundation #enhancement #architecture #auto-dispatch #cli #database #priority:medium #interactive ~5.5h tier:thinking parent:t18295 ref:GH#30493 logged:2026-08-21 -> [todo/tasks/t18296-brief.md] pr:#30502 completed:2026-08-21
 
 - [ ] t18297 Ingest Namecheap Market auctions through the official API #enhancement #api #auto-dispatch #database #priority:medium #seo #interactive ~4.5h tier:standard parent:t18295 blocked-by:t18296 ref:GH#30494 logged:2026-08-21 -> [todo/tasks/t18297-brief.md]
 
@@ -1301,7 +1301,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18302 Produce ranked local domain-opportunity reports and operating workflow #enhancement #auto-dispatch #cli #database #priority:medium #scoring #seo #interactive ~6.5h tier:thinking parent:t18295 blocked-by:t18297,t18298,t18299,t18300,t18301 ref:GH#30499 logged:2026-08-21 -> [todo/tasks/t18302-brief.md]
 
-- [ ] t18303 Update WordPress hosting provider recommendations #documentation #hosting #wordpress ref:GH#30503
+- [x] t18303 Update WordPress hosting provider recommendations #documentation #hosting #wordpress ref:GH#30503 pr:#30504 completed:2026-08-21
 
 ## In Progress
 
