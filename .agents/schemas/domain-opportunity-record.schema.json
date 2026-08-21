@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Normalized domain opportunity listing observation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "provider_listing_id",
+    "fqdn",
+    "sld",
+    "tld",
+    "status",
+    "auction_type",
+    "current_price_micros",
+    "current_price_currency",
+    "bid_count",
+    "start_time",
+    "end_time",
+    "source_url",
+    "observed_at",
+    "source_run_id",
+    "payload_hash"
+  ],
+  "properties": {
+    "provider": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "provider_listing_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "fqdn": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 253
+    },
+    "sld": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tld": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": ["active", "ended", "sold", "cancelled", "unknown"]
+    },
+    "auction_type": {
+      "enum": ["auction", "buy_now", "closeout", "offer", "unknown"]
+    },
+    "current_price_micros": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "current_price_currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "bid_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "start_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "end_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "payload_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "raw_json": {
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    }
+  }
+}
