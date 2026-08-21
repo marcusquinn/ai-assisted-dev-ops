@@ -1,0 +1,80 @@
+{
+  "pages": [
+    {
+      "requestCursor": null,
+      "hasMore": true,
+      "nextCursor": "page-two",
+      "items": [
+        {
+          "id": "SALE-100",
+          "name": "fixtureone.com",
+          "tld": "com",
+          "status": "active",
+          "saleType": "auction",
+          "price": 12.5,
+          "startPrice": 10,
+          "renewPrice": null,
+          "bidCount": 2,
+          "minBid": 13,
+          "startDate": "2026-08-20T10:00:00Z",
+          "endDate": "2026-08-22T10:00:00Z",
+          "endDateExtendedMs": null,
+          "createdDate": "2026-08-19T10:00:00Z",
+          "soldDate": null,
+          "registeredDate": null,
+          "auctionType": "expired",
+          "ahrefsDomainRating": 12,
+          "alexaRanking": null,
+          "umbrellaRanking": 1000,
+          "backlinksCount": 15,
+          "cloudflareRanking": null,
+          "estibotValue": 50,
+          "goDaddyValue": null,
+          "extensionsTaken": 3,
+          "keywordSearchCount": 1200,
+          "keywordSearchQuery": "fixture one",
+          "lastSoldPrice": null,
+          "lastSoldYear": null
+        }
+      ]
+    },
+    {
+      "requestCursor": "page-two",
+      "hasMore": false,
+      "nextCursor": null,
+      "items": [
+        {
+          "id": "SALE-200",
+          "name": "fixturetwo.com",
+          "tld": "com",
+          "status": "active",
+          "saleType": "auction",
+          "price": 25,
+          "startPrice": 20,
+          "renewPrice": null,
+          "bidCount": 0,
+          "minBid": 26,
+          "startDate": "2026-08-20T11:00:00Z",
+          "endDate": "2026-08-22T11:00:00Z",
+          "endDateExtendedMs": null,
+          "createdDate": "2026-08-19T11:00:00Z",
+          "soldDate": null,
+          "registeredDate": null,
+          "auctionType": "portfolio",
+          "ahrefsDomainRating": null,
+          "alexaRanking": null,
+          "umbrellaRanking": null,
+          "backlinksCount": null,
+          "cloudflareRanking": null,
+          "estibotValue": null,
+          "goDaddyValue": null,
+          "extensionsTaken": null,
+          "keywordSearchCount": null,
+          "keywordSearchQuery": null,
+          "lastSoldPrice": null,
+          "lastSoldYear": null
+        }
+      ]
+    }
+  ]
+}
