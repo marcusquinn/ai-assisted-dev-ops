@@ -21,11 +21,11 @@ tools:
 
 ## Quick Reference
 
-- **Purpose**: Monitor backlinks, detect lost/broken links, find expired referring domains for purchase
-- **Data Sources**: Ahrefs API, DataForSEO Backlinks API, WHOIS lookups
+- **Purpose**: Monitor backlinks, detect lost/broken links, and flag expired referring domains for manual review
+- **Data Sources**: Authorized Ahrefs/DataForSEO exports and registry/registrar expiry evidence
 - **Helpers**: `scripts/seo-export-ahrefs.sh`, `scripts/seo-export-dataforseo.sh` (backlink data export)
 
-**Workflow**: Fetch backlink profile -> Identify lost/broken links -> Check domain expiry status -> Rank by DA/DR/traffic value -> Output purchase candidates
+**Workflow**: Export backlink profile -> Identify lost/broken links -> Verify expiry evidence -> Rank reclamation leads. For current auction inventory and local opportunity reports, use `seo/domain-opportunities.md`.
 
 <!-- AI-CONTEXT-END -->
 
@@ -49,7 +49,9 @@ DataForSEO endpoints:
 - `/v3/backlinks/referring_domains/live` - Referring domains
 - `/v3/backlinks/bulk_new_lost_backlinks/live` - Bulk new/lost
 
-## Expired Domain Detection
+## Backlink-expiry detection
+
+This workflow starts from a site's historical referring domains. It does not claim current marketplace availability and does not bid or purchase. Current official auction inventory is a separate evidence stream handled by `seo/domain-opportunities.md`.
 
 ### WHOIS Lookup
 
@@ -64,20 +66,7 @@ seo-helper.sh backlinks example.com --referring-domains-only | while read -r dom
 done
 ```
 
-### Domain Availability Tools
-
-| Tool | Type | Notes |
-|------|------|-------|
-| `whois` CLI | Free | Rate-limited, varies by TLD |
-| expired-domains.co | Web | Aggregates expired domain lists |
-| expireddomains.net | Web | Filters by DA, backlinks, age |
-| GoDaddy Auctions API | API | Auction/aftermarket domains |
-| Namecheap API | API | Registration availability check |
-
-### GitHub Tools for Expired Domain Discovery
-
-- [peterprototypes/expired-domains](https://github.com/peterprototypes/expired-domains) - Rust CLI for checking domain expiry
-- [Jeongseup/expired-domain-finder](https://github.com/Jeongseup/expired-domain-finder) - Python bulk checker
+WHOIS/RDAP output varies by registry and can be stale or rate-limited. Preserve source and observation time, treat ambiguity as unknown, and verify availability through an operator-authorized registrar path before any decision.
 
 ## Reclamation Workflow
 
@@ -89,11 +78,12 @@ done
    - Number of backlinks the domain had
    - Traffic estimate (Ahrefs/SimilarWeb)
    - Registration cost vs. link value
-5. **Output ranked list** of purchase candidates
+5. **Output ranked list** of manual reclamation leads with source, time, and missing/risk flags
 
 ## Related
 
 - `seo/ahrefs.md` - Ahrefs API (primary data source)
 - `seo/dataforseo.md` - DataForSEO API (alternative data source)
 - `seo/domain-research.md` - DNS reconnaissance on candidates
+- `seo/domain-opportunities.md` - current official auction inventory and deterministic local reports
 - `seo/link-building.md` - Link-building strategies
