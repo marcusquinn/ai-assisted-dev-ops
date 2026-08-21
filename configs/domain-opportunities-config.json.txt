@@ -1,0 +1,15 @@
+{
+  "database": "~/.aidevops/.agent-workspace/work/domain-opportunities/evidence.sqlite",
+  "exports_directory": "~/.aidevops/.agent-workspace/work/domain-opportunities/exports",
+  "locale": {
+    "language_resource": "languageConstants/REPLACE_ME",
+    "geography_resources": ["geoTargetConstants/REPLACE_ME"],
+    "currency": "USD"
+  },
+  "account_aliases": {"google_ads": "REPLACE_WITH_LOCAL_ALIAS"},
+  "freshness_days": {"inventory": 7, "google_ads": 35, "trends": 14},
+  "filters": {"active_only": true, "eligible_only": true, "limit": 100},
+  "scoring_policy": {"version": "exact-match-com-v1"},
+  "sources": {"google_ads": "optional_read_only", "google_trends": "optional_browser_assisted"},
+  "report_fields": ["price", "deadline", "score_components", "provenance", "freshness", "missing_flags", "risk_flags"]
+}
