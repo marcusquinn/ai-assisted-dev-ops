@@ -1301,6 +1301,8 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18302 Produce ranked local domain-opportunity reports and operating workflow #enhancement #auto-dispatch #cli #database #priority:medium #scoring #seo #interactive ~6.5h tier:thinking parent:t18295 blocked-by:t18297,t18298,t18299,t18300,t18301 ref:GH#30499 logged:2026-08-21 -> [todo/tasks/t18302-brief.md]
 
+- [ ] t18303 Update WordPress hosting provider recommendations #documentation #hosting #wordpress ref:GH#30503
+
 ## In Progress
 
 - [x] t2744 raise GraphQL throttle defaults and reduce pulse/stats cycle pressure — circuit breaker default `0.05`→`0.30` (trips at 1500 remaining instead of 250), REST fallback default `10`→`1000` (REST takes over earlier, GraphQL kept in reserve), pulse interval default `120s`→`180s`, stats-wrapper interval `900s`→`3600s`. Also fixes macOS launchd path that ignored `supervisor.pulse_interval_seconds` from settings. Evidence: GraphQL=0/5000 vs REST=4044/5000 with 21 EXHAUSTED events in current pulse log; per-cycle cost (~400-700 pts) × 30 cycles/hr × 14 repos exceeds 5000/hr ceiling by 2-4×. All env-overridable, fully backwards-compatible. See `todo/tasks/t2744-brief.md`. #framework #pulse #interactive ~1h ref:GH#20482 started:2026-04-22 pr:#20483 completed:2026-04-22
