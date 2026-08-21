@@ -218,20 +218,29 @@ _prepare_runtime_prompt_transport() {
 
 # Build an empty, trusted OpenCode project for public triage. The model receives
 # only the prefetched prompt attachment; it never starts in the target repository
-# or inherits that repository's OpenCode configuration. The restricted agent and
-# optional auth plugin are copied from framework-owned paths.
+# or inherits that repository's OpenCode configuration. The selected restricted
+# agent and optional auth plugin are copied from framework-owned paths.
 # Arguments: $1=name of caller variable receiving the directory path.
 _prepare_triage_runtime_directory() {
 	local result_var="$1"
 	local prepared_dir=""
+	local isolated_agent_name="triage-review"
 	local agent_source="${SCRIPT_DIR}/../workflows/triage-review.md"
 	local config_dir=""
 	local plugin_path="${SCRIPT_DIR}/../plugins/opencode-aidevops/index.mjs"
 	local plugin_url=""
+	local staged_agent=""
 
 	[[ "$result_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+	if declare -F _headless_ai_research_contract_is_valid >/dev/null 2>&1 &&
+		_headless_ai_research_contract_is_valid \
+			"${AIDEVOPS_SESSION_ORIGIN:-}" "${AIDEVOPS_AI_RESEARCH_TOOL_CEILING:-}" \
+			"${agent_name:-}"; then
+		isolated_agent_name="research-only"
+		agent_source="${SCRIPT_DIR}/../workflows/ai-research.md"
+	fi
 	[[ -f "$agent_source" && ! -L "$agent_source" ]] || {
-		print_error "Trusted triage-review agent definition is unavailable"
+		print_error "Trusted ${isolated_agent_name} agent definition is unavailable"
 		return 1
 	}
 	prepared_dir=$(_create_headless_runtime_temp_dir "triage") || return 1
@@ -241,17 +250,19 @@ _prepare_triage_runtime_directory() {
 	fi
 	config_dir="${prepared_dir}/.opencode"
 	mkdir -p "${config_dir}/agent" || return 1
-	cp "$agent_source" "${config_dir}/agent/triage-review.md" || return 1
-	chmod 600 "${config_dir}/agent/triage-review.md" 2>/dev/null || true
+	staged_agent="${config_dir}/agent/${isolated_agent_name}.md"
+	cp "$agent_source" "$staged_agent" || return 1
+	chmod 600 "$staged_agent" 2>/dev/null || true
 
 	local config_file="${config_dir}/opencode.json"
 	if [[ -f "$plugin_path" ]]; then
 		plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).absolute().as_uri())' \
 			"$plugin_path" 2>/dev/null) || return 1
-		jq -n --arg plugin_url "$plugin_url" '{
+		jq -n --arg plugin_url "$plugin_url" --arg agent_name "$isolated_agent_name" '{
 			"$schema": "https://opencode.ai/config.json",
 			plugin: [$plugin_url],
-			default_agent: "triage-review",
+			default_agent: $agent_name,
+			agent: {($agent_name): {mode: "primary", permission: {"*": "deny"}, tools: {"*": false}}},
 			permission: {"*": "deny"},
 			tools: {"*": false},
 			mcp: {},
@@ -261,9 +272,10 @@ _prepare_triage_runtime_directory() {
 			subagent_depth: 0
 		}' >"$config_file" || return 1
 	else
-		jq -n '{
+		jq -n --arg agent_name "$isolated_agent_name" '{
 			"$schema": "https://opencode.ai/config.json",
-			default_agent: "triage-review",
+			default_agent: $agent_name,
+			agent: {($agent_name): {mode: "primary", permission: {"*": "deny"}, tools: {"*": false}}},
 			permission: {"*": "deny"},
 			tools: {"*": false},
 			mcp: {},

@@ -938,6 +938,39 @@ test_triage_runtime_directory_is_framework_owned_and_empty() {
 	return 0
 }
 
+test_ai_research_runtime_directory_stages_inference_only_agent() {
+	local runtime_dir=""
+	local managed_root="${TEST_ROOT}/managed-ai-research-runtime"
+	local agent_name="research-only"
+	local research_agent=""
+	if ! AIDEVOPS_SESSION_ORIGIN="ai-research" \
+		AIDEVOPS_AI_RESEARCH_TOOL_CEILING=1 \
+		AIDEVOPS_SENSITIVE_TEMP_DIR="$managed_root" \
+		_prepare_triage_runtime_directory "runtime_dir"; then
+		print_result "ai-research runtime stages the inference-only agent" 1 \
+			"runtime directory preparation failed"
+		return 0
+	fi
+	managed_root=$(cd "$managed_root" && pwd -P) || return 1
+
+	local runtime_config="${runtime_dir}/.opencode/opencode.json"
+	research_agent="${runtime_dir}/.opencode/agent/research-only.md"
+	if [[ "$runtime_dir" == "$managed_root"/aidevops-headless-triage.* &&
+		-f "$research_agent" && ! -e "${runtime_dir}/.opencode/agent/triage-review.md" &&
+		-f "$runtime_config" && ! -e "${runtime_dir}/.git" &&
+		$(jq -r '(.default_agent == "research-only") and (.agent["research-only"].mode == "primary") and (.agent["research-only"].permission["*"] == "deny") and (.agent["research-only"].tools["*"] == false) and (.permission["*"] == "deny") and (.tools["*"] == false) and (.mcp == {}) and (.formatter == false) and (.lsp == false) and (.share == "disabled") and (.subagent_depth == 0)' "$runtime_config") == true ]] &&
+		grep -q '^mode: primary$' "$research_agent" &&
+		grep -q '^# Sandboxed Focused Research Agent$' "$research_agent"; then
+		print_result "ai-research runtime stages the inference-only agent" 0
+	else
+		print_result "ai-research runtime stages the inference-only agent" 1 \
+			"Unexpected runtime directory: ${runtime_dir:-<empty>}"
+	fi
+	rm -rf "$runtime_dir" 2>/dev/null || true
+	_HEADLESS_RUNTIME_TEMP_PATHS=""
+	return 0
+}
+
 test_private_sandbox_passthrough_excludes_parent_credentials() {
 	local AIDEVOPS_PRIVATE_WORKLOAD=1
 	local csv=""
