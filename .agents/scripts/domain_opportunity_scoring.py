@@ -131,6 +131,29 @@ def _hard_flags(listing: Mapping[str, Any], policy: ScoringPolicy) -> list[str]:
     return sorted(set(flags))
 
 
+def _phrase_state(
+    listing: Mapping[str, Any], raw: Mapping[str, Any],
+    metrics: list[dict[str, Any]], policy: ScoringPolicy,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Collect eligible phrase readings plus hard and review flags."""
+    phrase_evidence = list(raw.get("phrase_evidence", [])) if isinstance(raw.get("phrase_evidence"), list) else []
+    for metric in metrics:
+        phrase = metric.get("input_phrase")
+        if isinstance(phrase, str) and metric.get("status") == "found":
+            phrase_evidence.append({"phrase": phrase, "source": metric["source"], "confidence": 1.0})
+    readings = exact_phrase_readings(str(listing.get("sld", "")), phrase_evidence)
+    flags = _hard_flags(listing, policy)
+    eligible_readings = [
+        reading for reading in readings if policy.min_words <= len(reading["tokens"]) <= policy.max_words
+    ]
+    if readings and not eligible_readings:
+        flags.append("word_count_out_of_bounds")
+    if not eligible_readings:
+        flags.append("missing_exact_phrase_evidence")
+    risk_flags = sorted({flag for reading in readings for flag in reading.get("risk_flags", [])})
+    return eligible_readings, sorted(set(flags)), risk_flags
+
+
 def score_listing(
     listing: Mapping[str, Any], policy: ScoringPolicy,
     raw: Mapping[str, Any] | None = None, metrics: list[dict[str, Any]] | None = None,
@@ -139,21 +162,7 @@ def score_listing(
     policy.validate()
     raw = raw or {}
     metrics = metrics or []
-    phrase_evidence = list(raw.get("phrase_evidence", [])) if isinstance(raw.get("phrase_evidence"), list) else []
-    for metric in metrics:
-        phrase = metric.get("input_phrase")
-        if isinstance(phrase, str) and metric.get("status") == "found":
-            phrase_evidence.append({"phrase": phrase, "source": metric["source"], "confidence": 1.0})
-    readings = exact_phrase_readings(str(listing.get("sld", "")), phrase_evidence)
-    hard_flags = _hard_flags(listing, policy)
-    word_flags = []
-    if readings and not any(policy.min_words <= len(reading["tokens"]) <= policy.max_words for reading in readings):
-        word_flags.append("word_count_out_of_bounds")
-    eligible_readings = [
-        reading for reading in readings if policy.min_words <= len(reading["tokens"]) <= policy.max_words
-    ]
-    flags = sorted(set(hard_flags + word_flags + ([] if eligible_readings else ["missing_exact_phrase_evidence"])))
-    risk_flags = sorted({flag for reading in readings for flag in reading.get("risk_flags", [])})
+    eligible_readings, flags, risk_flags = _phrase_state(listing, raw, metrics, policy)
     eligible = not flags
 
     components: dict[str, dict[str, Any]] = {}
