@@ -7,12 +7,13 @@ const routingDecisions = new Map();
 const sessionRoutingRecords = new Map();
 
 function routingPopulation(msg, decision) {
-  if (msg?.summary === true || msg?.mode === "compaction") return "compaction";
-  if (process.env.AIDEVOPS_HEADLESS || process.env.AIDEVOPS_DISPATCH_TIER) return "headless";
-  if (decision.parentSessionID) return "interactive_child";
-  if (decision.population) return decision.population;
-  if (decision.reason === "model_profile") return "top_level_profile";
-  return "unknown";
+  let population = "unknown";
+  if (msg?.summary === true || msg?.mode === "compaction") population = "compaction";
+  else if (process.env.AIDEVOPS_HEADLESS || process.env.AIDEVOPS_DISPATCH_TIER) population = "headless";
+  else if (decision.parentSessionID) population = "interactive_child";
+  else if (decision.population) population = decision.population;
+  else if (decision.reason === "model_profile") population = "top_level_profile";
+  return population;
 }
 
 /** Queue the routing choice that will be joined to the next completed response. */
@@ -48,9 +49,9 @@ export function rememberRoutingFeedback(
   routing,
   cost,
   errorType,
-  aidevopsVersion = "",
-  pricingVersion = "",
+  ...versions
 ) {
+  const [aidevopsVersion = "", pricingVersion = ""] = versions;
   if (!routing.tier) return;
   const record = {
     session_id: msg.sessionID,
