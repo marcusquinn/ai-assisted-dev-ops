@@ -20,7 +20,8 @@ print_warning() {
 # shellcheck source=../setup/modules/source-access.sh
 source "$SOURCE_ACCESS_MODULE"
 production_release_signer_identity="$_SOURCE_ACCESS_RELEASE_SIGNER_IDENTITY"
-production_release_signer_key="$_SOURCE_ACCESS_RELEASE_SIGNER_KEY"
+production_current_release_signer_key="$_SOURCE_ACCESS_CURRENT_RELEASE_SIGNER_KEY"
+production_historical_release_signer_key="$_SOURCE_ACCESS_HISTORICAL_RELEASE_SIGNER_KEY"
 
 fixture_repo="$TEST_DIR/repo"
 mkdir -p "$fixture_repo/.agents/scripts/setup/modules"
@@ -41,15 +42,22 @@ git -C "$fixture_repo" add VERSION .agents/scripts/source_access_core.py \
 	.agents/scripts/source-access-helper.py .agents/scripts/setup/modules/source-access.sh
 git -C "$fixture_repo" -c commit.gpgsign=false commit -q -m "fixture release"
 git -C "$fixture_repo" tag -s v1.2.3 -m "fixture tag"
-IFS= read -r _SOURCE_ACCESS_RELEASE_SIGNER_KEY <"${release_key}.pub"
-_SOURCE_ACCESS_RELEASE_SIGNER_KEY="${_SOURCE_ACCESS_RELEASE_SIGNER_KEY% setup-test-release}"
+IFS= read -r fixture_release_signer_key <"${release_key}.pub"
+fixture_release_signer_key="${fixture_release_signer_key% setup-test-release}"
+IFS= read -r fixture_untrusted_signer_key <"${untrusted_key}.pub"
+fixture_untrusted_signer_key="${fixture_untrusted_signer_key% setup-test-untrusted}"
+_SOURCE_ACCESS_RELEASE_SIGNER_KEYS=("$fixture_untrusted_signer_key" "$fixture_release_signer_key")
 _SOURCE_ACCESS_RELEASE_SIGNER_IDENTITY="setup-test@example.invalid"
 
 if ! grep -qF "readonly TRUSTED_EMAIL=\"${production_release_signer_identity}\"" \
 	"$REPO_ROOT/.agents/scripts/signing-setup.sh" ||
-	! grep -qF "readonly TRUSTED_KEY=\"${production_release_signer_key} " \
+	! grep -qF "readonly TRUSTED_KEY=\"${production_historical_release_signer_key} " \
 		"$REPO_ROOT/.agents/scripts/signing-setup.sh"; then
-	printf 'FAIL: source-access release trust anchor drifted from signing-setup.sh\n' >&2
+	printf 'FAIL: historical source-access release trust anchor drifted from signing-setup.sh\n' >&2
+	exit 1
+fi
+if [[ "$production_current_release_signer_key" == "$production_historical_release_signer_key" ]]; then
+	printf 'FAIL: current and historical release trust anchors are not distinct\n' >&2
 	exit 1
 fi
 
@@ -126,14 +134,13 @@ if _source_access_broker_current "$fixture_repo" "$resolved_commit"; then
 	exit 1
 fi
 
-trusted_release_key="$_SOURCE_ACCESS_RELEASE_SIGNER_KEY"
-IFS= read -r _SOURCE_ACCESS_RELEASE_SIGNER_KEY <"${untrusted_key}.pub"
-_SOURCE_ACCESS_RELEASE_SIGNER_KEY="${_SOURCE_ACCESS_RELEASE_SIGNER_KEY% setup-test-untrusted}"
+trusted_release_keys=("${_SOURCE_ACCESS_RELEASE_SIGNER_KEYS[@]}")
+_SOURCE_ACCESS_RELEASE_SIGNER_KEYS=("$fixture_untrusted_signer_key")
 if _source_access_release_commit "$fixture_repo" >/dev/null 2>&1; then
 	printf 'FAIL: unverified release tag was accepted\n' >&2
 	exit 1
 fi
-_SOURCE_ACCESS_RELEASE_SIGNER_KEY="$trusted_release_key"
+_SOURCE_ACCESS_RELEASE_SIGNER_KEYS=("${trusted_release_keys[@]}")
 
 rm -rf "$_SOURCE_ACCESS_BROKER_DIR"
 INSTALL_DIR="$fixture_repo"

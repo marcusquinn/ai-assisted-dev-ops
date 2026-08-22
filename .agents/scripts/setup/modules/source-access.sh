@@ -15,7 +15,12 @@ _SOURCE_ACCESS_HELPER_SOURCE=".agents/scripts/source-access-helper.py"
 _SOURCE_ACCESS_SETUP_SOURCE=".agents/scripts/setup/modules/source-access.sh"
 _SOURCE_ACCESS_RAW_BASE="https://raw.githubusercontent.com/marcusquinn/aidevops"
 _SOURCE_ACCESS_RELEASE_SIGNER_IDENTITY="6428977+marcusquinn@users.noreply.github.com"
-_SOURCE_ACCESS_RELEASE_SIGNER_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMnXVft9/hT5P2dIICJMMmXeg6HUnKGCvR4VzkKpyJza"
+_SOURCE_ACCESS_CURRENT_RELEASE_SIGNER_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOSJYsC+NrAcX6kM/VDfwMLzoASLVzv0tdDvj4MWz1e/"
+_SOURCE_ACCESS_HISTORICAL_RELEASE_SIGNER_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMnXVft9/hT5P2dIICJMMmXeg6HUnKGCvR4VzkKpyJza"
+_SOURCE_ACCESS_RELEASE_SIGNER_KEYS=(
+	"$_SOURCE_ACCESS_CURRENT_RELEASE_SIGNER_KEY"
+	"$_SOURCE_ACCESS_HISTORICAL_RELEASE_SIGNER_KEY"
+)
 
 _source_access_git() {
 	GIT_NO_REPLACE_OBJECTS=1 /usr/bin/git "$@"
@@ -27,14 +32,18 @@ _source_access_verify_release_tag() {
 	local tag_object="$2"
 	local allowed_signers=""
 	local verification_rc=0
+	local signer_key=""
 
 	allowed_signers=$(/usr/bin/mktemp "${TMPDIR:-/tmp}/aidevops-source-access-signers.XXXXXX") || return 1
-	if ! printf '%s %s\n' \
-		"$_SOURCE_ACCESS_RELEASE_SIGNER_IDENTITY" \
-		"$_SOURCE_ACCESS_RELEASE_SIGNER_KEY" >"$allowed_signers"; then
-		/bin/rm -f "$allowed_signers"
-		return 1
-	fi
+	: >"$allowed_signers" || return 1
+	for signer_key in "${_SOURCE_ACCESS_RELEASE_SIGNER_KEYS[@]}"; do
+		if ! printf '%s %s\n' \
+			"$_SOURCE_ACCESS_RELEASE_SIGNER_IDENTITY" \
+			"$signer_key" >>"$allowed_signers"; then
+			/bin/rm -f "$allowed_signers"
+			return 1
+		fi
+	done
 	/bin/chmod 0600 "$allowed_signers" || {
 		/bin/rm -f "$allowed_signers"
 		return 1
