@@ -24,6 +24,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 HELPER_PATH="${SCRIPT_DIR}/../dispatch-single-issue-helper.sh"
+ASKPASS_PATH="${SCRIPT_DIR}/../github-auth-askpass.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -1156,6 +1157,60 @@ test_launch_worker_forwards_github_login() {
 	return 0
 }
 
+test_launch_worker_forwards_bounded_git_auth() {
+	local failed=1
+	if grep -Fq 'AIDEVOPS_GIT_AUTH_TOKEN_FILE="$_DSI_GIT_AUTH_TOKEN_FILE"' "$HELPER_PATH" &&
+		grep -Fq 'AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN="$_DSI_GIT_AUTH_EXPECTED_ORIGIN"' "$HELPER_PATH" &&
+		grep -Fq 'GIT_ASKPASS="$_DSI_ASKPASS_HELPER"' "$HELPER_PATH" &&
+		grep -Fq 'GIT_AUTHOR_NAME="$_DSI_GIT_AUTHOR_NAME"' "$HELPER_PATH" &&
+		! grep -Eq 'GH_TOKEN=.*(<|cat|read_token)' "$HELPER_PATH"; then
+		failed=0
+	fi
+	print_result "worker launch forwards bounded Git auth without token argv" "$failed"
+	return 0
+}
+
+test_askpass_rejects_changed_origin() {
+	local test_dir="" home_dir="" repo_dir="" token_dir="" token_file=""
+	test_dir=$(mktemp -d)
+	test_dir=$(cd "$test_dir" && pwd -P)
+	home_dir="${test_dir}/home"
+	repo_dir="${test_dir}/repo"
+	token_dir="${home_dir}/.aidevops/.agent-workspace/tokens"
+	token_file="${token_dir}/worker-fixture.token"
+	mkdir -p "$repo_dir" "$token_dir"
+	chmod 700 "$token_dir"
+	printf '%s' 'fixture-token-value' >"$token_file"
+	printf '%s\n' '{"token_id":"worker-fixture","repo":"owner/repo","strategy":"github-app","expires_at":"2099-01-01T00:00:00Z","created_at":"2026-01-01T00:00:00Z","pid":1,"app_slug":"fixture-app"}' >"${token_file%.token}.meta"
+	chmod 600 "$token_file" "${token_file%.token}.meta"
+	command git -C "$repo_dir" init -q
+	command git -C "$repo_dir" remote add origin https://github.com/owner/repo.git
+
+	local username="" password="" changed_output="" changed_status=0
+	username=$(HOME="$home_dir" WORKER_REPO_SLUG=owner/repo WORKER_WORKTREE_PATH="$repo_dir" \
+		AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN=https://github.com/owner/repo \
+		AIDEVOPS_GIT_AUTH_TOKEN_FILE="$token_file" \
+		"$ASKPASS_PATH" "Username for 'https://github.com':")
+	password=$(HOME="$home_dir" WORKER_REPO_SLUG=owner/repo WORKER_WORKTREE_PATH="$repo_dir" \
+		AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN=https://github.com/owner/repo \
+		AIDEVOPS_GIT_AUTH_TOKEN_FILE="$token_file" \
+		"$ASKPASS_PATH" "Password for 'https://github.com':")
+	command git -C "$repo_dir" remote set-url origin https://github.com/owner/other.git
+	changed_output=$(HOME="$home_dir" WORKER_REPO_SLUG=owner/repo WORKER_WORKTREE_PATH="$repo_dir" \
+		AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN=https://github.com/owner/repo \
+		AIDEVOPS_GIT_AUTH_TOKEN_FILE="$token_file" \
+		"$ASKPASS_PATH" "Password for 'https://github.com':" 2>/dev/null) || changed_status=$?
+
+	local failed=1
+	if [[ "$username" == "x-access-token" && "$password" == "fixture-token-value" &&
+		"$changed_status" -ne 0 && -z "$changed_output" ]]; then
+		failed=0
+	fi
+	rm -rf "$test_dir"
+	print_result "AskPass serves only the prevalidated exact repository origin" "$failed" "changed_status=$changed_status"
+	return 0
+}
+
 test_create_worktree_uses_target_repo_path() {
 	local failed=1
 	if grep -Fq "repo_path=\$(_dsi_repo_path_for_slug \"\$repo_slug\")" "$HELPER_PATH" &&
@@ -1507,6 +1562,8 @@ _run_tests() {
 	test_launch_worker_forwards_agent
 	test_launch_worker_forwards_repo_contract
 	test_launch_worker_forwards_github_login
+	test_launch_worker_forwards_bounded_git_auth
+	test_askpass_rejects_changed_origin
 	test_create_worktree_uses_target_repo_path
 	test_create_worktree_registers_dispatch_owner
 	test_dispatch_base_ref_prefers_repo_configured_pr_base

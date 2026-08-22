@@ -231,6 +231,11 @@ _invoke_opencode_run_sandboxed() {
 		printf '%s' "87" >"$exit_code_file"
 		return 87
 	fi
+	if ! prepare_headless_git_auth_sandbox_env "$runtime_role"; then
+		print_error "Repository-bound worker Git authentication could not be safely isolated for the sandbox"
+		printf '%s' "88" >"$exit_code_file"
+		return 88
+	fi
 	passthrough_csv="$(build_sandbox_passthrough_csv \
 		"${_invoke_provider:-}" "$runtime_role" "$public_triage_auth_ready")"
 	local -a sandbox_args=(run --timeout "$HEADLESS_SANDBOX_TIMEOUT_DEFAULT" --allow-secret-io)

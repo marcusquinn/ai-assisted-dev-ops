@@ -1987,6 +1987,7 @@ _hrw_finish_cleanup() {
 	_update_dispatch_ledger "$session_key" "$ledger_status"
 	_release_session_lock "$session_key"
 	_hrw_release_worker_worktree "$work_dir"
+	cleanup_headless_git_auth
 	if declare -F _cleanup_headless_runtime_temp_paths >/dev/null 2>&1; then
 		_cleanup_headless_runtime_temp_paths
 	fi

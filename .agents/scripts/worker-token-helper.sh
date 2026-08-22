@@ -22,7 +22,7 @@
 #
 # Integration:
 #   Called by dispatch.sh / cron-dispatch.sh before spawning a worker.
-#   Token is written to a temp file (600 perms) and passed via GH_TOKEN env var.
+#   Token is written to a private file and exposed to Git only through AskPass.
 #   Token file is cleaned up after worker exits.
 #
 # Part of t1412.2: Worker sandboxing — credential isolation
@@ -43,6 +43,8 @@ readonly TOKEN_LOG="${TOKEN_DIR}/token-audit.jsonl"
 readonly DEFAULT_TTL=3600 # 1 hour
 readonly MAX_TTL=7200     # 2 hours hard cap
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/aidevops"
+readonly GITHUB_ACCEPT_HEADER="Accept: application/vnd.github+json"
+readonly TOKEN_STRATEGY_DELEGATED="delegated"
 readonly APP_CONFIG="${CONFIG_DIR}/github-app.json"
 
 # Default permissions for worker tokens — minimal set for PR workflow
@@ -160,6 +162,14 @@ _build_permissions_json() {
 	return 0
 }
 
+_curl_with_bearer() {
+	local token="$1"
+	shift
+	[[ -n "$token" && "$token" != *$'\r'* && "$token" != *$'\n'* ]] || return 1
+	printf 'Authorization: Bearer %s\n' "$token" | curl "$@" -H @-
+	return $?
+}
+
 # Request a scoped installation access token from the GitHub App API.
 # Arguments:
 #   $1 - repo (owner/name)
@@ -174,6 +184,7 @@ _request_app_token() {
 	local installation_id="$3"
 	local perms_json="$4"
 	local ttl="$5"
+	local app_slug="$6"
 
 	local repo_name="${repo##*/}"
 
@@ -187,10 +198,9 @@ _request_app_token() {
 		}')
 
 	local response
-	response=$(curl -sf -X POST \
+	response=$(_curl_with_bearer "$jwt" -sf -X POST \
 		"https://api.github.com/app/installations/${installation_id}/access_tokens" \
-		-H "Authorization: Bearer ${jwt}" \
-		-H "Accept: application/vnd.github+json" \
+		-H "$GITHUB_ACCEPT_HEADER" \
 		-H "X-GitHub-Api-Version: 2022-11-28" \
 		-d "$request_body" 2>/dev/null) || {
 		log_token "WARN" "GitHub App token creation failed (API error)"
@@ -207,7 +217,7 @@ _request_app_token() {
 	fi
 
 	local token_file
-	token_file=$(create_token_file "$token" "$repo" "github-app" "$expires_at") || {
+	token_file=$(create_token_file "$token" "$repo" "github-app" "$expires_at" "$app_slug") || {
 		log_token "ERROR" "Failed to persist GitHub App token for ${repo}"
 		return 1
 	}
@@ -221,6 +231,25 @@ _request_app_token() {
 	log_audit "create" "$repo" "github-app" "$ttl" "app-${installation_id}"
 
 	printf '%s' "$token_file"
+	return 0
+}
+
+_resolve_app_slug() {
+	local jwt="$1"
+	local configured_slug=""
+	configured_slug=$(jq -r '.app_slug // .slug // empty' "$APP_CONFIG" 2>/dev/null || true)
+	if [[ -n "$configured_slug" ]]; then
+		[[ "$configured_slug" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || return 1
+		printf '%s' "$configured_slug"
+		return 0
+	fi
+	local app_json="" app_slug=""
+	app_json=$(_curl_with_bearer "$jwt" -sf "https://api.github.com/app" \
+		-H "$GITHUB_ACCEPT_HEADER" \
+		-H "X-GitHub-Api-Version: 2022-11-28" 2>/dev/null) || return 1
+	app_slug=$(printf '%s' "$app_json" | jq -r '.slug // empty')
+	[[ "$app_slug" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || return 1
+	printf '%s' "$app_slug"
 	return 0
 }
 
@@ -264,8 +293,13 @@ create_app_token() {
 	# Build permissions JSON and request the installation token
 	local perms_json
 	perms_json=$(_build_permissions_json "$permissions") || return 1
+	local app_slug=""
+	app_slug=$(_resolve_app_slug "$jwt") || {
+		log_token "ERROR" "Failed to resolve GitHub App slug"
+		return 1
+	}
 
-	_request_app_token "$repo" "$jwt" "$installation_id" "$perms_json" "$ttl"
+	_request_app_token "$repo" "$jwt" "$installation_id" "$perms_json" "$ttl" "$app_slug"
 	return $?
 }
 
@@ -296,20 +330,18 @@ create_delegated_token() {
 	fi
 
 	# Check token type and scopes
-	curl -sf \
+	_curl_with_bearer "$current_token" -sf \
 		"https://api.github.com/user" \
-		-H "Authorization: Bearer ${current_token}" \
-		-H "Accept: application/vnd.github+json" \
+		-H "$GITHUB_ACCEPT_HEADER" \
 		-D /dev/stderr >/dev/null 2>&1 || {
 		log_token "WARN" "Cannot validate current token"
 		return 1
 	}
 
 	# Check if the token has access to the target repo
-	curl -sf \
+	_curl_with_bearer "$current_token" -sf \
 		"https://api.github.com/repos/${repo}" \
-		-H "Authorization: Bearer ${current_token}" \
-		-H "Accept: application/vnd.github+json" >/dev/null 2>/dev/null || {
+		-H "$GITHUB_ACCEPT_HEADER" >/dev/null 2>/dev/null || {
 		log_token "WARN" "Current token cannot access repo ${repo}"
 		return 1
 	}
@@ -323,7 +355,7 @@ create_delegated_token() {
 		date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 	local token_file
-	token_file=$(create_token_file "$current_token" "$repo" "delegated" "$expires_at")
+	token_file=$(create_token_file "$current_token" "$repo" "$TOKEN_STRATEGY_DELEGATED" "$expires_at")
 
 	if [[ -z "$token_file" ]] || [[ ! -f "$token_file" ]]; then
 		log_token "ERROR" "Failed to create token file for delegated token (repo: ${repo})"
@@ -331,7 +363,7 @@ create_delegated_token() {
 	fi
 
 	log_token "INFO" "Created delegated token for ${repo} (advisory TTL: ${ttl}s)"
-	log_audit "create" "$repo" "delegated" "$ttl" "delegated-$$"
+	log_audit "create" "$repo" "$TOKEN_STRATEGY_DELEGATED" "$ttl" "delegated-$$"
 
 	printf '%s' "$token_file"
 	return 0
@@ -346,9 +378,15 @@ create_token_file() {
 	local repo="$2"
 	local strategy="$3"
 	local expires_at="$4"
+	local app_slug="${5:-}"
 
 	mkdir -p "$TOKEN_DIR"
+	[[ -d "$TOKEN_DIR" && ! -L "$TOKEN_DIR" ]] || return 1
 	chmod 700 "$TOKEN_DIR"
+	local token_dir_real="" token_dir_uid=""
+	token_dir_real=$(realpath "$TOKEN_DIR" 2>/dev/null) || return 1
+	token_dir_uid=$(_file_uid "$TOKEN_DIR") || return 1
+	[[ "$token_dir_real" == "$TOKEN_DIR" && "$token_dir_uid" == "$(id -u)" ]] || return 1
 
 	# Create a unique token file
 	local token_id
@@ -360,20 +398,64 @@ create_token_file() {
 	printf '%s' "$token" >"$token_file"
 	chmod 600 "$token_file"
 
-	# Write metadata (no token value — safe to log/inspect)
-	cat >"$meta_file" <<-EOF
-		{
-		  "token_id": "${token_id}",
-		  "repo": "${repo}",
-		  "strategy": "${strategy}",
-		  "expires_at": "${expires_at}",
-		  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-		  "pid": $$
-		}
-	EOF
+	# Write metadata (no token value — safe to log/inspect).
+	if ! jq -n \
+		--arg token_id "$token_id" \
+		--arg repo "$repo" \
+		--arg strategy "$strategy" \
+		--arg expires_at "$expires_at" \
+		--arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		--arg app_slug "$app_slug" \
+		--argjson pid "$$" \
+		'{token_id: $token_id, repo: $repo, strategy: $strategy,
+		  expires_at: $expires_at, created_at: $created_at, pid: $pid}
+		 + (if $app_slug == "" then {} else {app_slug: $app_slug} end)' >"$meta_file"; then
+		rm -f "$token_file" "$meta_file"
+		return 1
+	fi
 	chmod 600 "$meta_file"
 
 	printf '%s' "$token_file"
+	return 0
+}
+
+_file_uid() {
+	local path="$1"
+	stat -f '%u' "$path" 2>/dev/null || stat -c '%u' "$path" 2>/dev/null
+	return $?
+}
+
+_validate_token_artifacts() {
+	local token_file="$1"
+	local token_dir_real="" token_real="" meta_file="" meta_real=""
+	local expected_uid="" token_uid="" meta_uid="" dir_uid=""
+	local token_mode="" meta_mode="" dir_mode=""
+
+	[[ -d "$TOKEN_DIR" && ! -L "$TOKEN_DIR" ]] || return 1
+	[[ -f "$token_file" && ! -L "$token_file" && "$token_file" == *.token ]] || return 1
+	token_dir_real=$(realpath "$TOKEN_DIR" 2>/dev/null) || return 1
+	token_real=$(realpath "$token_file" 2>/dev/null) || return 1
+	[[ "$token_real" == "${token_dir_real}/"* && "$token_real" == "$token_file" ]] || return 1
+	meta_file="${token_file%.token}.meta"
+	[[ -f "$meta_file" && ! -L "$meta_file" ]] || return 1
+	meta_real=$(realpath "$meta_file" 2>/dev/null) || return 1
+	[[ "$meta_real" == "${token_dir_real}/"* && "$meta_real" == "$meta_file" ]] || return 1
+
+	expected_uid=$(id -u)
+	token_uid=$(_file_uid "$token_file") || return 1
+	meta_uid=$(_file_uid "$meta_file") || return 1
+	dir_uid=$(_file_uid "$TOKEN_DIR") || return 1
+	token_mode=$(_file_perms "$token_file")
+	meta_mode=$(_file_perms "$meta_file")
+	dir_mode=$(_file_perms "$TOKEN_DIR")
+	[[ "$token_uid" == "$expected_uid" && "$meta_uid" == "$expected_uid" && "$dir_uid" == "$expected_uid" ]] || return 1
+	[[ "$token_mode" == "600" && "$meta_mode" == "600" && "$dir_mode" == "700" ]] || return 1
+	jq -e 'type == "object" and (.repo | type == "string") and
+		(.strategy == "github-app" or .strategy == "delegated") and
+		(.expires_at | type == "string")' "$meta_file" >/dev/null 2>&1 || return 1
+
+	_WORKER_TOKEN_REAL_PATH="$token_real"
+	_WORKER_TOKEN_META_FILE="$meta_real"
 	return 0
 }
 
@@ -381,19 +463,12 @@ create_token_file() {
 read_token_file() {
 	local token_file="$1"
 
-	if [[ ! -f "$token_file" ]]; then
-		log_token "ERROR" "Token file not found: ${token_file}"
+	if ! _validate_token_artifacts "$token_file"; then
+		log_token "ERROR" "Token file or metadata failed canonical path, ownership, or mode validation"
 		return 1
 	fi
 
-	# Verify permissions
-	local perms
-	perms=$(_file_perms "$token_file")
-	if [[ "$perms" != "600" ]]; then
-		log_token "WARN" "Token file has insecure permissions (${perms}), expected 600"
-	fi
-
-	cat "$token_file"
+	cat "$_WORKER_TOKEN_REAL_PATH"
 	return 0
 }
 
@@ -471,12 +546,24 @@ cmd_create() {
 
 cmd_validate() {
 	local token_file=""
+	local expected_repo=""
+	local local_only=0
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--token-file | -f)
+			[[ $# -ge 2 ]] || return 1
 			token_file="$2"
 			shift 2
+			;;
+		--repo | -r)
+			[[ $# -ge 2 ]] || return 1
+			expected_repo="$2"
+			shift 2
+			;;
+		--local-only)
+			local_only=1
+			shift
 			;;
 		*)
 			shift
@@ -489,63 +576,51 @@ cmd_validate() {
 		return 1
 	fi
 
-	# Validate token file path is within TOKEN_DIR to prevent path traversal
-	# Canonicalize both paths with realpath to handle symlinked home directories
-	local real_path token_dir_real
-	token_dir_real=$(realpath "$TOKEN_DIR" 2>/dev/null) || {
-		log_token "ERROR" "Cannot resolve token directory: ${TOKEN_DIR}"
-		return 1
-	}
-	real_path=$(realpath "$token_file" 2>/dev/null) || {
-		log_token "ERROR" "Cannot resolve token file path: ${token_file}"
-		return 1
-	}
-	if [[ "$real_path" != "${token_dir_real}/"* ]]; then
-		log_token "ERROR" "Token file must be within ${TOKEN_DIR}: ${token_file}"
-		return 1
-	fi
-
-	if [[ ! -f "$token_file" ]]; then
-		log_token "ERROR" "Token file not found: ${token_file}"
+	if ! _validate_token_artifacts "$token_file"; then
+		log_token "ERROR" "Token file or metadata failed canonical path, ownership, or mode validation"
 		return 1
 	fi
 
 	# Check metadata for expiry
-	local meta_file="${token_file%.token}.meta"
-	if [[ -f "$meta_file" ]]; then
-		local expires_at strategy repo
-		expires_at=$(jq -r '.expires_at // empty' "$meta_file" 2>/dev/null)
-		strategy=$(jq -r '.strategy // empty' "$meta_file" 2>/dev/null)
-		repo=$(jq -r '.repo // empty' "$meta_file" 2>/dev/null)
-
-		log_token "INFO" "Token: strategy=${strategy}, repo=${repo}, expires=${expires_at}"
-
-		# Check if expired (for delegated tokens with advisory TTL)
-		if [[ -n "$expires_at" ]]; then
-			local expires_epoch now_epoch
-			expires_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
-				date -d "$expires_at" +%s 2>/dev/null || echo "0")
-			now_epoch=$(date +%s)
-
-			if [[ "$expires_epoch" -gt 0 ]] && [[ "$now_epoch" -gt "$expires_epoch" ]]; then
-				log_token "WARN" "Token has expired (expired at ${expires_at})"
-				return 1
-			fi
-		fi
+	local meta_file="$_WORKER_TOKEN_META_FILE"
+	local expires_at strategy repo
+	expires_at=$(jq -r '.expires_at // empty' "$meta_file" 2>/dev/null)
+	strategy=$(jq -r '.strategy // empty' "$meta_file" 2>/dev/null)
+	repo=$(jq -r '.repo // empty' "$meta_file" 2>/dev/null)
+	[[ "$repo" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]] || return 1
+	if [[ -n "$expected_repo" && "$repo" != "$expected_repo" ]]; then
+		log_token "ERROR" "Token repository metadata does not match the requested repository"
+		return 1
 	fi
+
+	log_token "INFO" "Token: strategy=${strategy}, repo=${repo}, expires=${expires_at}"
+
+	local expires_epoch now_epoch
+	expires_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
+		date -d "$expires_at" +%s 2>/dev/null || echo "0")
+	now_epoch=$(date +%s)
+
+	if [[ "$expires_epoch" -le 0 || "$now_epoch" -gt "$expires_epoch" ]]; then
+		log_token "WARN" "Token has expired or has invalid expiry metadata"
+		return 1
+	fi
+	[[ "$local_only" -eq 0 ]] || return 0
 
 	# Validate token against GitHub API (without exposing the value)
 	local token
-	token=$(read_token_file "$token_file") || return 1
+	token=$(cat "$_WORKER_TOKEN_REAL_PATH") || return 1
 
 	local http_code
-	http_code=$(curl -s -o /dev/null -w '%{http_code}' \
-		"https://api.github.com/user" \
-		-H "Authorization: Bearer ${token}" \
-		-H "Accept: application/vnd.github+json")
+	local validation_url="https://api.github.com/user"
+	if [[ "$strategy" == "github-app" ]]; then
+		validation_url="https://api.github.com/repos/${repo}"
+	fi
+	http_code=$(_curl_with_bearer "$token" -s -o /dev/null -w '%{http_code}' \
+		"$validation_url" \
+		-H "$GITHUB_ACCEPT_HEADER")
 
 	if [[ "$http_code" == "200" ]]; then
-		log_token "INFO" "Token is valid (HTTP ${http_code})"
+		log_token "INFO" "Token is valid for ${repo} (HTTP ${http_code})"
 		return 0
 	else
 		log_token "WARN" "Token validation failed (HTTP ${http_code})"
@@ -608,11 +683,10 @@ cmd_revoke() {
 		if [[ -n "$token" ]]; then
 			# Revoke the installation token
 			local http_code
-			http_code=$(curl -s -o /dev/null -w '%{http_code}' \
+			http_code=$(_curl_with_bearer "$token" -s -o /dev/null -w '%{http_code}' \
 				-X DELETE \
 				"https://api.github.com/installation/token" \
-				-H "Authorization: Bearer ${token}" \
-				-H "Accept: application/vnd.github+json" \
+				-H "$GITHUB_ACCEPT_HEADER" \
 				-H "X-GitHub-Api-Version: 2022-11-28")
 
 			if [[ "$http_code" == "204" ]]; then
@@ -780,7 +854,7 @@ Token strategies (tried in order):
      - Requires: GitHub App installed, config at ~/.config/aidevops/github-app.json
   2. Delegated token
      - Fallback: uses existing gh auth token with advisory scoping
-     - Token passed via env var, not filesystem
+	 - Token remains in a private file and is exposed to Git only through AskPass
      - TTL is advisory (tracked locally, not enforced by GitHub)
 
 Setup for GitHub App (recommended):
@@ -806,7 +880,7 @@ Setup for GitHub App (recommended):
 Integration with dispatch:
   # In dispatch wrapper:
   TOKEN_FILE=$(worker-token-helper.sh create --repo owner/repo --ttl 3600)
-  GH_TOKEN=$(cat "$TOKEN_FILE") opencode run "task..."
+  AIDEVOPS_GIT_AUTH_TOKEN_FILE="$TOKEN_FILE" opencode run "task..."
   worker-token-helper.sh revoke --token-file "$TOKEN_FILE"
 
 Security:

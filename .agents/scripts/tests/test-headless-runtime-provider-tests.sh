@@ -838,6 +838,31 @@ test_sandbox_passthrough_rejects_unvalidated_git_config() {
 	return 0
 }
 
+test_sandbox_passthrough_accepts_validated_git_auth_contract() {
+	local csv=""
+	csv=$(
+		export _AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED=1
+		export AIDEVOPS_GIT_AUTH_TOKEN_FILE='/tmp/worker-fixture.token'
+		export AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN='https://github.com/owner/repo'
+		export GIT_ASKPASS="${SCRIPT_DIR}/github-auth-askpass.sh"
+		export GIT_TERMINAL_PROMPT=0
+		export GIT_AUTHOR_NAME='fixture-app[bot]'
+		export GIT_AUTHOR_EMAIL='fixture-app[bot]@users.noreply.github.com'
+		export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+		export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+		build_sandbox_passthrough_csv "openai" "worker"
+	)
+	if [[ ",$csv," == *",AIDEVOPS_GIT_AUTH_TOKEN_FILE,"* &&
+		",$csv," == *",AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN,"* &&
+		",$csv," == *",GIT_ASKPASS,"* && ",$csv," == *",GIT_TERMINAL_PROMPT,"* &&
+		",$csv," == *",GIT_AUTHOR_NAME,"* && ",$csv," == *",GIT_COMMITTER_EMAIL,"* ]]; then
+		print_result "sandbox passthrough accepts only normalized worker Git auth" 0
+		return 0
+	fi
+	print_result "sandbox passthrough accepts only normalized worker Git auth" 1 "$csv"
+	return 0
+}
+
 test_triage_sandbox_passthrough_excludes_github_and_worker_authority() {
 	local csv=""
 	csv=$(

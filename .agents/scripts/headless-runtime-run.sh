@@ -96,6 +96,10 @@ _prepare_cmd_run_environment() {
 		unset DISPATCH_REPO_SLUG WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_TARGET_BRANCH
 		unset WORKER_WORKTREE_PATH _WORKER_WORKTREE_PATH
 	fi
+	if ! prepare_headless_git_auth_sandbox_env "$role"; then
+		print_error "Repository-bound worker Git authentication failed prelaunch validation"
+		return 1
+	fi
 	_ensure_valid_launch_cwd "$work_dir" || return 1
 	_validate_issue_worker_env_contract "$role" "$session_key" "$work_dir" "$title" "$prompt" || return 1
 	_recover_deleted_cwd_before_launch "$work_dir" "cmd_run" || return 1

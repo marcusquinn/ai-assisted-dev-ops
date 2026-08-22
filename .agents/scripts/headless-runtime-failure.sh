@@ -1337,6 +1337,7 @@ _exit_trap_handler() {
 	# continue from the pushed branch instead of starting over. Dirty preserved
 	# work is reported distinctly to avoid zero-output brief-rewrite holds.
 	_hrff_finalize_exit_trap "$session_key" "$reason" "$exit_status" "$session_count" "$force_nonzero_exit"
+	cleanup_headless_git_auth
 	return 0
 }
 

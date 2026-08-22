@@ -734,6 +734,62 @@ _headless_signing_sandbox_env_is_normalized() {
 	return 0
 }
 
+_normalize_headless_github_origin() {
+	local origin="$1"
+	origin="${origin%.git}"
+	[[ "$origin" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$ ]] || return 1
+	printf 'https://github.com/%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+	return 0
+}
+
+prepare_headless_git_auth_sandbox_env() {
+	local role="${1:-worker}"
+	local token_file="${AIDEVOPS_GIT_AUTH_TOKEN_FILE:-}"
+	[[ "$role" == "worker" ]] || return 0
+	[[ -n "$token_file" ]] || return 0
+	local expected_origin="${AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN:-}"
+	local repo_slug="${WORKER_REPO_SLUG:-}"
+	local askpass="${GIT_ASKPASS:-}"
+	local expected_askpass="${SCRIPT_DIR}/github-auth-askpass.sh"
+	local token_helper="${SCRIPT_DIR}/worker-token-helper.sh"
+	local normalized_origin=""
+	[[ "$repo_slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
+	normalized_origin=$(_normalize_headless_github_origin "$expected_origin") || return 1
+	[[ "$normalized_origin" == "https://github.com/${repo_slug}" ]] || return 1
+	[[ "$askpass" == "$expected_askpass" && -x "$askpass" && -x "$token_helper" ]] || return 1
+	[[ "${GIT_TERMINAL_PROMPT:-}" == "0" ]] || return 1
+	[[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]] || return 1
+	[[ "${GIT_COMMITTER_NAME:-}" == "$GIT_AUTHOR_NAME" ]] || return 1
+	[[ "${GIT_COMMITTER_EMAIL:-}" == "$GIT_AUTHOR_EMAIL" ]] || return 1
+	[[ "$GIT_AUTHOR_NAME" != *$'\n'* && "$GIT_AUTHOR_EMAIL" != *$'\n'* ]] || return 1
+	# aidevops:trust-boundary — only a locally validated, repository-bound token
+	# contract may cross the clean worker sandbox.
+	"$token_helper" validate --token-file "$token_file" --repo "$repo_slug" --local-only \
+		>/dev/null 2>&1 || return 1
+	export _AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED=1
+	return 0
+}
+
+_headless_git_auth_sandbox_env_is_normalized() {
+	[[ "${_AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED:-0}" == "1" ]] || return 1
+	[[ -n "${AIDEVOPS_GIT_AUTH_TOKEN_FILE:-}" ]] || return 1
+	[[ "${GIT_ASKPASS:-}" == "${SCRIPT_DIR}/github-auth-askpass.sh" ]] || return 1
+	[[ "${GIT_TERMINAL_PROMPT:-}" == "0" ]] || return 1
+	return 0
+}
+
+cleanup_headless_git_auth() {
+	local token_file="${AIDEVOPS_GIT_AUTH_TOKEN_FILE:-}"
+	local token_helper="${SCRIPT_DIR}/worker-token-helper.sh"
+	if [[ -n "$token_file" && -x "$token_helper" ]]; then
+		"$token_helper" revoke --token-file "$token_file" >/dev/null 2>&1 || true
+	fi
+	unset AIDEVOPS_GIT_AUTH_TOKEN_FILE AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN
+	unset GIT_ASKPASS GIT_TERMINAL_PROMPT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL
+	unset GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL _AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED
+	return 0
+}
+
 build_sandbox_passthrough_csv() {
 	local provider="${1:-}"
 	local role="${2:-worker}"
@@ -784,6 +840,9 @@ build_sandbox_passthrough_csv() {
 		# sandbox boundary; arbitrary ambient GIT_CONFIG_* remains excluded.
 		GIT_CONFIG_COUNT | GIT_CONFIG_KEY_0 | GIT_CONFIG_VALUE_0 | GIT_CONFIG_KEY_1 | GIT_CONFIG_VALUE_1 | GIT_CONFIG_KEY_2 | GIT_CONFIG_VALUE_2)
 			_headless_signing_sandbox_env_is_normalized || continue
+			;;
+		GIT_ASKPASS | GIT_TERMINAL_PROMPT | GIT_AUTHOR_NAME | GIT_AUTHOR_EMAIL | GIT_COMMITTER_NAME | GIT_COMMITTER_EMAIL)
+			_headless_git_auth_sandbox_env_is_normalized || continue
 			;;
 		# OTEL_* is passed through so headless workers under the sandbox
 		# can export OTLP traces when OTEL_EXPORTER_OTLP_ENDPOINT is set.

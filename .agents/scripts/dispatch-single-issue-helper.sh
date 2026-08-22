@@ -69,6 +69,8 @@ _DSI_DEDUP_HELPER="${_DSI_SCRIPT_DIR}/dispatch-dedup-helper.sh"
 _DSI_VALIDATOR_HELPER="${_DSI_SCRIPT_DIR}/pre-dispatch-validator-helper.sh"
 _DSI_BACKOFF_HELPER="${_DSI_SCRIPT_DIR}/dispatch-backoff-helper.sh"
 _DSI_APPROVAL_HELPER="${_DSI_SCRIPT_DIR}/approval-helper.sh"
+_DSI_TOKEN_HELPER="${_DSI_SCRIPT_DIR}/worker-token-helper.sh"
+_DSI_ASKPASS_HELPER="${_DSI_SCRIPT_DIR}/github-auth-askpass.sh"
 _DSI_DISPATCH_BASE_BRANCH=""
 _DSI_STATE_RECOVERING="recovering"
 _DSI_UNKNOWN_VALUE="<unknown>"
@@ -78,6 +80,10 @@ _DSI_READY_PREPARATION_ALLOWANCE_SECONDS=60
 _DSI_CLAIM_WON=0
 _DSI_CLAIM_COMMENT_ID=""
 _DSI_TARGET_JSON=""
+_DSI_GIT_AUTH_TOKEN_FILE=""
+_DSI_GIT_AUTH_EXPECTED_ORIGIN=""
+_DSI_GIT_AUTHOR_NAME=""
+_DSI_GIT_AUTHOR_EMAIL=""
 
 # Colors (guarded — don't collide with shared-constants)
 [[ -z "${_DSI_GREEN+x}" ]] && _DSI_GREEN='\033[0;32m'
@@ -1024,6 +1030,93 @@ _dsi_build_prompt() {
 	return 0
 }
 
+_dsi_normalize_github_https_origin() {
+	local origin="$1"
+	origin="${origin%.git}"
+	[[ "$origin" =~ ^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)$ ]] || return 1
+	printf 'https://github.com/%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+	return 0
+}
+
+_dsi_clear_worker_git_auth() {
+	_DSI_GIT_AUTH_TOKEN_FILE=""
+	_DSI_GIT_AUTH_EXPECTED_ORIGIN=""
+	_DSI_GIT_AUTHOR_NAME=""
+	_DSI_GIT_AUTHOR_EMAIL=""
+	return 0
+}
+
+_dsi_revoke_worker_git_auth() {
+	if [[ -n "$_DSI_GIT_AUTH_TOKEN_FILE" && -x "$_DSI_TOKEN_HELPER" ]]; then
+		"$_DSI_TOKEN_HELPER" revoke --token-file "$_DSI_GIT_AUTH_TOKEN_FILE" >/dev/null 2>&1 || true
+	fi
+	_dsi_clear_worker_git_auth
+	return 0
+}
+
+_dsi_prepare_worker_git_auth() {
+	local repo_slug="$1"
+	local worktree_path="$2"
+	local fallback_login="$3"
+	local origin="" normalized_origin="" token_file="" meta_file=""
+	local strategy="" app_slug=""
+	_dsi_clear_worker_git_auth
+
+	[[ "${WORKER_SCOPED_TOKENS:-true}" == "true" ]] || return 0
+	[[ -x "$_DSI_TOKEN_HELPER" && -x "$_DSI_ASKPASS_HELPER" ]] || return 0
+	origin=$(git -C "$worktree_path" remote get-url origin 2>/dev/null || true)
+	normalized_origin=$(_dsi_normalize_github_https_origin "$origin") || return 0
+	[[ "$normalized_origin" == "https://github.com/${repo_slug}" ]] || {
+		_dsi_err "Worker Git origin does not match the dispatch repository"
+		return 1
+	}
+
+	token_file=$("$_DSI_TOKEN_HELPER" create --repo "$repo_slug" 2>/dev/null) || {
+		_dsi_info "Scoped Git credential unavailable; preserving native Git/gh authentication"
+		return 0
+	}
+	[[ -n "$token_file" ]] || return 0
+	if ! "$_DSI_TOKEN_HELPER" validate --token-file "$token_file" --repo "$repo_slug" >/dev/null 2>&1; then
+		_DSI_GIT_AUTH_TOKEN_FILE="$token_file"
+		_dsi_revoke_worker_git_auth
+		_dsi_err "Scoped Git credential failed repository-bound validation"
+		return 1
+	fi
+	meta_file="${token_file%.token}.meta"
+	strategy=$(jq -r '.strategy // empty' "$meta_file" 2>/dev/null)
+	app_slug=$(jq -r '.app_slug // empty' "$meta_file" 2>/dev/null)
+	case "$strategy" in
+	github-app)
+		[[ "$app_slug" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || {
+			_DSI_GIT_AUTH_TOKEN_FILE="$token_file"
+			_dsi_revoke_worker_git_auth
+			_dsi_err "GitHub App token metadata lacks a valid App slug"
+			return 1
+		}
+		_DSI_GIT_AUTHOR_NAME="${app_slug}[bot]"
+		_DSI_GIT_AUTHOR_EMAIL="${app_slug}[bot]@users.noreply.github.com"
+		;;
+	delegated)
+		[[ "$fallback_login" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || {
+			_DSI_GIT_AUTH_TOKEN_FILE="$token_file"
+			_dsi_revoke_worker_git_auth
+			return 1
+		}
+		_DSI_GIT_AUTHOR_NAME="$fallback_login"
+		_DSI_GIT_AUTHOR_EMAIL="${fallback_login}@users.noreply.github.com"
+		;;
+	*)
+		_DSI_GIT_AUTH_TOKEN_FILE="$token_file"
+		_dsi_revoke_worker_git_auth
+		return 1
+		;;
+	esac
+	_DSI_GIT_AUTH_TOKEN_FILE="$token_file"
+	_DSI_GIT_AUTH_EXPECTED_ORIGIN="$normalized_origin"
+	_dsi_info "Prepared repository-bound process-scoped Git authentication"
+	return 0
+}
+
 #######################################
 # Launch the worker via headless-runtime-helper.sh in detached mode.
 # Args:
@@ -1065,6 +1158,20 @@ _dsi_launch_worker() {
 		WORKER_PR_BASE_BRANCH="$_DSI_DISPATCH_BASE_BRANCH"
 		GITHUB_REPOSITORY="$repo_slug"
 		AIDEVOPS_ALLOW_WORKER_WORKTREE_OWNER_TRANSFER=1
+	)
+	if [[ -n "$_DSI_GIT_AUTH_TOKEN_FILE" ]]; then
+		cmd+=(
+			AIDEVOPS_GIT_AUTH_TOKEN_FILE="$_DSI_GIT_AUTH_TOKEN_FILE"
+			AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN="$_DSI_GIT_AUTH_EXPECTED_ORIGIN"
+			GIT_ASKPASS="$_DSI_ASKPASS_HELPER"
+			GIT_TERMINAL_PROMPT=0
+			GIT_AUTHOR_NAME="$_DSI_GIT_AUTHOR_NAME"
+			GIT_AUTHOR_EMAIL="$_DSI_GIT_AUTHOR_EMAIL"
+			GIT_COMMITTER_NAME="$_DSI_GIT_AUTHOR_NAME"
+			GIT_COMMITTER_EMAIL="$_DSI_GIT_AUTHOR_EMAIL"
+		)
+	fi
+	cmd+=(
 		"$_DSI_HEADLESS" run
 		--role worker
 		--session-key "$session_key"
@@ -1574,6 +1681,12 @@ _dsi_dispatch_after_dedup_clear() {
 		_dsi_reset_after_prelaunch_failure "$issue_number" "$repo_slug" "$self_login" "existing_dispatch_after_precreate"
 		return 1
 	fi
+	# aidevops:trust-boundary — bind a short-lived credential and commit identity
+	# only after the exact worktree/repository origin is known.
+	if ! _dsi_prepare_worker_git_auth "$repo_slug" "$_DSI_WORKTREE_PATH" "$self_login"; then
+		_dsi_reset_after_prelaunch_failure "$issue_number" "$repo_slug" "$self_login" "worker_git_auth_failed"
+		return 1
+	fi
 
 	# aidevops:trust-boundary — manual dispatch has the same immutable issue
 	# instruction contract as Pulse and must fail closed before runtime launch.
@@ -1616,6 +1729,7 @@ _dsi_reset_after_prelaunch_failure() {
 	local repo_slug="$2"
 	local self_login="$3"
 	local reason="$4"
+	_dsi_revoke_worker_git_auth
 
 	_dsi_release_consensus_claim "$issue_number" "$repo_slug" "$self_login" "$reason" || true
 	if [[ "$_DSI_ARG_NO_CEREMONY" -eq 1 ]]; then
