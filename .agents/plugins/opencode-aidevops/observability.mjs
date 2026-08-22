@@ -134,23 +134,14 @@ function initDatabase() {
  */
 function _runDataMigrations(options = {}) {
   if (!options.toolCallColumnsReady) {
-    const toolCallColumns = [
+    migrateColumns("tool_calls", [
       ["intent", "TEXT"],
       ["outcome_category", "TEXT"],
-    ];
-    for (const [column, definition] of toolCallColumns) {
-      const exists = sqliteExecSync(
-        `SELECT COUNT(*) FROM pragma_table_info('tool_calls') WHERE name=${sqlEscape(column)};`,
-        5000,
-      );
-      if (exists === "0") {
-        sqliteExecSync(`ALTER TABLE tool_calls ADD COLUMN ${column} ${definition};`, 5000);
-      }
-    }
+    ]);
   }
 
   if (!options.routingColumnsReady) {
-    const routingColumns = [
+    migrateColumns("llm_requests", [
       ["parent_session_id", "TEXT"],
       ["routing_tier", "TEXT"],
       ["routing_candidate_index", "INTEGER"],
@@ -160,16 +151,7 @@ function _runDataMigrations(options = {}) {
       ["routing_population", "TEXT"],
       ["aidevops_version", "TEXT"],
       ["pricing_version", "TEXT"],
-    ];
-    for (const [column, definition] of routingColumns) {
-      const exists = sqliteExecSync(
-        `SELECT COUNT(*) FROM pragma_table_info('llm_requests') WHERE name=${sqlEscape(column)};`,
-        5000,
-      );
-      if (exists === "0") {
-        sqliteExecSync(`ALTER TABLE llm_requests ADD COLUMN ${column} ${definition};`, 5000);
-      }
-    }
+    ]);
   }
   // These indexes must be created after the migration above. On an existing
   // pre-routing database, createSchema() sees the old llm_requests table and
@@ -187,6 +169,18 @@ function _runDataMigrations(options = {}) {
   scheduleCostBackfill(COST_BACKFILL_MARKER);
 
   return true;
+}
+
+function migrateColumns(table, columns) {
+  for (const [column, definition] of columns) {
+    const exists = sqliteExecSync(
+      `SELECT COUNT(*) FROM pragma_table_info(${sqlEscape(table)}) WHERE name=${sqlEscape(column)};`,
+      5000,
+    );
+    if (exists === "0") {
+      sqliteExecSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`, 5000);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,13 +327,8 @@ function recordOpenCodeRuntimeEvent(event, eventType = event.type, additionalPay
  */
 function handleMessageUpdated(event, context = {}) {
   const msg = event.properties?.info;
-  if (!msg) return;
-
-  // Only record assistant messages (LLM responses)
-  if (msg.role !== "assistant") return;
-
-  // Only record when the message is completed (has time.completed)
-  if (!msg.time?.completed) return;
+  const isCompletedAssistant = [msg, msg?.role === "assistant", msg?.time?.completed].every(Boolean);
+  if (!isCompletedAssistant) return;
 
   // Deduplicate — event may fire multiple times for same message
   if (recordedMessages.has(msg.id)) return;
@@ -360,11 +349,7 @@ function handleMessageUpdated(event, context = {}) {
 
   // Prevent unbounded memory growth — prune old entries periodically
   if (recordedMessages.size > 10000) {
-    const entries = Array.from(recordedMessages);
-    const toRemove = entries.slice(0, 5000);
-    for (const id of toRemove) {
-      recordedMessages.delete(id);
-    }
+    Array.from(recordedMessages).slice(0, 5000).forEach((id) => recordedMessages.delete(id));
   }
 
   const durationMs = msg.time.completed && msg.time.created
@@ -573,28 +558,43 @@ export function recordSubagentCancellationReceipt(receipt, context = {}) {
 export function recordSubagentOutcome(evidence = {}) {
   if (!dbReady) return null;
   const isDispatch = evidence.stage === "dispatch_requested";
+  const stageDefaults = [{
+    classification: "subagent_host_outcome",
+    eventType: "subagent.host.outcome",
+    outcomeCategory: "host_unknown",
+    reason: "unknown",
+    status: "unknown",
+    success: Boolean(evidence.success),
+  }, {
+    classification: "subagent_dispatch",
+    eventType: "subagent.dispatch.requested",
+    outcomeCategory: "dispatch_requested",
+    reason: "task_tool_invoked",
+    status: "requested",
+    success: null,
+  }][Number(isDispatch)];
   const envelope = appendRuntimeEvent({
-    eventType: isDispatch ? "subagent.dispatch.requested" : "subagent.host.outcome",
-    subjectId: evidence.childSessionID || evidence.callID || "unknown-child",
-    sessionId: evidence.parentSessionID || null,
-    correlationId: evidence.parentSessionID || evidence.callID || "subagent",
+    eventType: stageDefaults.eventType,
+    subjectId: firstTruthy([evidence.childSessionID, evidence.callID], "unknown-child"),
+    sessionId: firstTruthy([evidence.parentSessionID]),
+    correlationId: firstTruthy([evidence.parentSessionID, evidence.callID], "subagent"),
     causationId: evidence.callID || undefined,
     payload: {
-      call_id: evidence.callID || null,
-      classification: isDispatch ? "subagent_dispatch" : "subagent_host_outcome",
+      call_id: firstTruthy([evidence.callID]),
+      classification: stageDefaults.classification,
       observation: JSON.stringify({
         child_session_observed: Boolean(evidence.childSessionObserved),
-        identity_reason: evidence.identityReason || "pending",
+        identity_reason: firstTruthy([evidence.identityReason], "pending"),
         semantic_acceptance: "unknown",
-        terminal_evidence: evidence.terminalEvidence || "unknown",
+        terminal_evidence: firstTruthy([evidence.terminalEvidence], "unknown"),
         verification: "unknown",
         rework: "unknown",
       }),
-      outcome_category: evidence.outcomeCategory || (isDispatch ? "dispatch_requested" : "host_unknown"),
-      reason: evidence.identityReason || (isDispatch ? "task_tool_invoked" : "unknown"),
+      outcome_category: firstTruthy([evidence.outcomeCategory], stageDefaults.outcomeCategory),
+      reason: firstTruthy([evidence.identityReason], stageDefaults.reason),
       source: "opencode",
-      status: evidence.status || (isDispatch ? "requested" : "unknown"),
-      success: isDispatch ? null : Boolean(evidence.success),
+      status: firstTruthy([evidence.status], stageDefaults.status),
+      success: stageDefaults.success,
     },
   });
   if (envelope) projectRuntimeEvent(envelope);
