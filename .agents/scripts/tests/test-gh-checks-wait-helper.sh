@@ -73,7 +73,18 @@ pending_count=$(printf '%s\n' "$transition_output" | grep -c '^  Complexity: pen
 empty_dir="${TMPDIR_TEST}/empty"
 write_fixture "$empty_dir" 1 '[]'
 empty_output=$(run_fixture_wait "$empty_dir")
-assert_contains "no required checks is terminal success" "PASS: required checks completed" "$empty_output"
+assert_contains "no required checks is explicit terminal success" "PASS: verified no required checks; optional checks were not evaluated (use --all to wait for all checks)" "$empty_output"
+
+all_checks_dir="${TMPDIR_TEST}/all-checks"
+write_fixture "$all_checks_dir" 1 '[{"name":"Preview","workflow":"Deploy","state":"PENDING","bucket":"pending","link":""}]'
+write_fixture "$all_checks_dir" 2 '[{"name":"Preview","workflow":"Deploy","state":"SUCCESS","bucket":"pass","link":""}]'
+all_checks_output=$(run_fixture_wait "$all_checks_dir" --all)
+assert_contains "all-check mode observes pending optional checks" "Preview: pending" "$all_checks_output"
+assert_contains "all-check mode waits for the transition" "+ Preview: pending -> pass" "$all_checks_output"
+assert_contains "all-check mode reports scoped terminal success" "PASS: all checks completed" "$all_checks_output"
+
+all_empty_output=$(run_fixture_wait "$empty_dir" --all)
+assert_contains "empty all-check selection is explicit terminal success" "PASS: verified no checks reported" "$all_empty_output"
 
 live_bin="${TMPDIR_TEST}/live-bin"
 mkdir -p "$live_bin"
@@ -101,7 +112,7 @@ chmod +x "${live_bin}/gh"
 
 live_no_required_output=$(PATH="${live_bin}:$PATH" AIDEVOPS_GH_CHECKS_TEST_NO_SLEEP=1 \
 	"$HELPER" wait 123 --repo example/repo --timeout 0 2>&1)
-assert_contains "canonical no-required message is terminal success" "PASS: required checks completed" "$live_no_required_output"
+assert_contains "canonical no-required message is explicit terminal success" "PASS: verified no required checks; optional checks were not evaluated" "$live_no_required_output"
 
 set +e
 live_api_error_output=$(PATH="${live_bin}:$PATH" GH_TEST_MODE=api-error AIDEVOPS_GH_CHECKS_TEST_NO_SLEEP=1 \

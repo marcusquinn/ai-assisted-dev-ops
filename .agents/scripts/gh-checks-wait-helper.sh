@@ -170,10 +170,15 @@ emit_transitions() {
 
 classify_state() {
 	local checks="$1"
+	local required_only="$2"
 	local count=""
 	count=$(printf '%s' "$checks" | jq 'length')
 	if [[ "$count" -eq 0 ]]; then
-		printf 'success\n'
+		if [[ "$required_only" -eq 1 ]]; then
+			printf 'no-required\n'
+		else
+			printf 'no-checks\n'
+		fi
 		return 0
 	fi
 	if printf '%s' "$checks" | jq -e --arg pass "$_GCW_BUCKET_PASS" --arg pending "$_GCW_BUCKET_PENDING" --arg skipping "$_GCW_BUCKET_SKIPPING" \
@@ -293,13 +298,13 @@ wait_for_checks() {
 			next_heartbeat=$((now_epoch + heartbeat_interval))
 		fi
 
-		classification=$(classify_state "$current")
+		classification=$(classify_state "$current" "$required_only")
 		case "$classification" in
 		failure)
 			emit_failure_details "$current"
 			return 1
 			;;
-		success)
+		success | no-required | no-checks)
 			final_head=$(read_head_sha "$pr_number" "$repo" 2>/dev/null || true)
 			if [[ -z "$final_head" ]]; then
 				printf 'INDETERMINATE: PR head could not be verified after required checks completed\n' >&2
@@ -313,7 +318,21 @@ wait_for_checks() {
 				poll_sleep "$interval"
 				continue
 			fi
-			printf 'PASS: required checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
+			case "$classification" in
+			no-required)
+				printf 'PASS: verified no required checks; optional checks were not evaluated (use --all to wait for all checks) in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
+				;;
+			no-checks)
+				printf 'PASS: verified no checks reported in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
+				;;
+			success)
+				if [[ "$required_only" -eq 1 ]]; then
+					printf 'PASS: required checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
+				else
+					printf 'PASS: all checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
+				fi
+				;;
+			esac
 			return 0
 			;;
 		pending | indeterminate) ;;
