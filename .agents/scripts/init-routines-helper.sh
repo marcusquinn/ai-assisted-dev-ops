@@ -53,6 +53,14 @@ fi
 # ---------------------------------------------------------------------------
 _write_todo_md() {
 	local repo_path="$1"
+	local existing_tail=""
+	if [[ -f "${repo_path}/TODO.md" ]]; then
+		# Preserve any existing "## User Routines" (and "## Tasks") content
+		# verbatim across re-scaffolds. Every scaffold run (setup.sh /
+		# aidevops update) used to always emit the hardcoded placeholder here,
+		# silently discarding user-added routines on every update.
+		existing_tail=$(awk "/^## User Routines$/{found=1} found{print}" "${repo_path}/TODO.md")
+	fi
 
 	# Header
 	cat >"${repo_path}/TODO.md" <<'TODOEOF'
@@ -89,8 +97,13 @@ TODOEOF
 		done < <(get_core_routine_entries)
 	fi
 
-	# User routines section + tasks
-	cat >>"${repo_path}/TODO.md" <<'TODOEOF'
+	# User routines section + tasks: reuse verbatim when this repo already
+	# had them, so a re-scaffold never discards user edits; otherwise seed
+	# the placeholder template for a brand-new repo.
+	if [[ -n "${existing_tail}" ]]; then
+		printf "\n%s\n" "${existing_tail}" >>"${repo_path}/TODO.md"
+	else
+		cat >>"${repo_path}/TODO.md" <<'TODOEOF'
 
 ## User Routines
 
@@ -104,6 +117,7 @@ TODOEOF
 
 <!-- Non-recurring tasks go here -->
 TODOEOF
+	fi
 	return 0
 }
 
