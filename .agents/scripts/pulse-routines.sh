@@ -734,7 +734,11 @@ evaluate_routines() {
 			fi
 		done <<<"$routine_section"
 
-	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || true)
+	# Routine evaluation only reads TODO.md and runs local scripts/agents;
+	# unlike code-automation dispatch it needs no GitHub remote, so
+	# local_only repos (e.g. a private routines-only repo created via
+	# init-routines-helper.sh --local) must still be evaluated here.
+	done < <(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true) | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || true)
 
 	if [[ "$routines_dispatched" -gt 0 ]]; then
 		echo "[pulse-wrapper] evaluate_routines: dispatched ${routines_dispatched} routine(s)" >>"$LOGFILE"
