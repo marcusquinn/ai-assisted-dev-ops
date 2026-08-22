@@ -43,23 +43,27 @@ export function operationFingerprint(toolName, args) {
 
 export function classifyToolOutcome(output) {
   const text = String(output?.output || "").trim();
-  if (/^BLOCKED by shared command policy\b/i.test(text)) return "policy_block";
-
   const status = String(output?.metadata?.status || output?.status || "").toLowerCase();
   const failedStatuses = [
     "aborted", "blocked", "cancelled", "canceled", "denied", "error", "failed",
     "rejected", "timed_out", "timeout",
   ];
-  if (failedStatuses.includes(status) || output?.error || output?.metadata?.error) return "tool_error";
-
   const exitCode = [output?.metadata?.exit, output?.metadata?.exitCode, output?.metadata?.exit_code]
     .find((value) => Number.isInteger(value));
-  if (exitCode !== undefined) return exitCode === 0 ? "success" : "command_failure";
-  if (["completed", "success", "succeeded"].includes(status)) return "success";
-  if (/^(?:error|failed|aborted|cancelled|canceled|tool execution aborted|operation timed out)\b/i.test(text)) {
-    return "tool_error";
+
+  let outcome = "success";
+  if (/^BLOCKED by shared command policy\b/i.test(text)) {
+    outcome = "policy_block";
+  } else if (failedStatuses.includes(status) || output?.error || output?.metadata?.error) {
+    outcome = "tool_error";
+  } else if (exitCode !== undefined) {
+    outcome = exitCode === 0 ? "success" : "command_failure";
+  } else if (["completed", "success", "succeeded"].includes(status)) {
+    outcome = "success";
+  } else if (/^(?:error|failed|aborted|cancelled|canceled|tool execution aborted|operation timed out)\b/i.test(text)) {
+    outcome = "tool_error";
   }
-  return "success";
+  return outcome;
 }
 
 export function toolOutcomeFailed(output) {
