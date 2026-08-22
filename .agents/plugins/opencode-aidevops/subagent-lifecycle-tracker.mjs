@@ -1,26 +1,36 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
+import {
+  explicitChildSessionIdentity,
+  scalarSessionID,
+  uniqueScalarSessionID,
+} from "./subagent-task-identity.mjs";
+
+export { scalarSessionID } from "./subagent-task-identity.mjs";
+
 const MAX_SESSION_STATES = 64;
 const TERMINAL_SESSION_STATES = new Set([
   "aborted", "cancelled", "canceled", "completed", "deleted", "end_turn", "error", "idle", "stop",
 ]);
 
-/** Return a non-empty scalar session ID without coercing aggregate metadata. */
-export function scalarSessionID(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function metadataChildSessionID(metadata) {
-  const values = [metadata?.sessionId, metadata?.sessionID, metadata?.session_id]
-    .filter((value) => value !== undefined && value !== null && value !== "");
-  if (values.some((value) => typeof value !== "string")) return "";
-  const ids = [...new Set(values.map(scalarSessionID).filter(Boolean))];
-  return ids.length === 1 ? ids[0] : "";
-}
-
 function capMap(map, maximum = MAX_SESSION_STATES) {
   while (map.size > maximum) map.delete(map.keys().next().value);
+}
+
+function rememberNativeTaskIdentity(taskCall, explicit) {
+  if (explicit.reason === "child_identity_conflict") {
+    taskCall.nativeChildID = "";
+    taskCall.nativeIdentityConflict = true;
+    return;
+  }
+  if (!explicit.childID || taskCall.nativeIdentityConflict) return;
+  if (taskCall.nativeChildID && taskCall.nativeChildID !== explicit.childID) {
+    taskCall.nativeChildID = "";
+    taskCall.nativeIdentityConflict = true;
+    return;
+  }
+  taskCall.nativeChildID = explicit.childID;
 }
 
 export function eventSessionID(event) {
@@ -42,8 +52,28 @@ export class SubagentLifecycleTracker {
   }
 
   beforeTask(callID, parentID) {
-    this.taskCalls.set(callID, { parentID: scalarSessionID(parentID), startSequence: ++this.sequence });
+    this.taskCalls.set(callID, {
+      nativeChildID: "",
+      nativeIdentityConflict: false,
+      parentID: scalarSessionID(parentID),
+      startSequence: ++this.sequence,
+    });
     capMap(this.taskCalls, MAX_SESSION_STATES * 2);
+  }
+
+  rememberTaskPart(part) {
+    if (part?.type !== "tool" || !["task", "mcp_task"].includes(part?.tool)) return;
+    const metadata = { ...part?.metadata, ...part?.state?.metadata };
+    const explicit = explicitChildSessionIdentity({
+      error: part?.state?.error,
+      metadata,
+      output: part?.state?.output,
+    });
+    const callIDs = [part?.id, part?.callID].map(scalarSessionID).filter(Boolean);
+    for (const callID of callIDs) {
+      const taskCall = this.taskCalls.get(callID);
+      if (taskCall) rememberNativeTaskIdentity(taskCall, explicit);
+    }
   }
 
   rememberSession(info) {
@@ -69,7 +99,9 @@ export class SubagentLifecycleTracker {
 
   routeEvent(event) {
     const sessionID = eventSessionID(event);
-    if (["session.created", "session.updated"].includes(event.type)) {
+    if (event.type === "message.part.updated") {
+      this.rememberTaskPart(event.properties?.part);
+    } else if (["session.created", "session.updated"].includes(event.type)) {
       this.rememberSession(event.properties?.info);
     } else if (event.type === "session.status") {
       this.rememberStatus(sessionID, event.properties?.status?.type);
@@ -97,15 +129,19 @@ export class SubagentLifecycleTracker {
     const callID = String(input?.callID || "");
     const taskCall = this.taskCalls.get(callID);
     this.taskCalls.delete(callID);
-    const metadata = output?.metadata || {};
-    const explicit = metadataChildSessionID(metadata);
+    const explicit = explicitChildSessionIdentity(output);
+    const nativeChildID = uniqueScalarSessionID([explicit.childID, taskCall?.nativeChildID]);
     const parentID = scalarSessionID(input?.sessionID) || taskCall?.parentID || "";
     let identity = { childID: "", reason: "child_identity_missing" };
-    if (explicit) {
-      const known = this.sessions.get(explicit);
+    if (taskCall?.nativeIdentityConflict || explicit.reason === "child_identity_conflict") {
+      identity = { childID: "", reason: "child_identity_conflict" };
+    } else if (nativeChildID) {
+      const known = this.sessions.get(nativeChildID);
       identity = known?.parentID && known.parentID !== parentID
         ? { childID: "", reason: "child_parent_mismatch" }
-        : { childID: explicit, reason: "metadata" };
+        : { childID: nativeChildID, reason: taskCall?.nativeChildID ? "native_task_id" : explicit.reason };
+    } else if (explicit.childID || taskCall?.nativeChildID) {
+      identity = { childID: "", reason: "child_identity_conflict" };
     } else {
       const candidates = [...this.sessions.entries()]
         .filter(([, state]) => state.parentID === parentID && state.sequence >= (taskCall?.startSequence || 0))

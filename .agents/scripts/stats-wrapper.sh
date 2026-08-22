@@ -235,9 +235,14 @@ _stats_wrapper_run_work() {
 }
 
 _stats_wrapper_run_with_timeout() {
-	local start_epoch="" now="" elapsed="" child_pid=""
+	local start_epoch="" now="" elapsed="" child_pid="" gh_deadline_epoch=""
 	start_epoch=$(date +%s)
-	_stats_wrapper_run_work &
+	# Leave enough time for the outer process-tree cleanup while ensuring every
+	# nested gh wrapper—including shell-function writes—shares this invocation's
+	# aggregate budget. Without a deadline, _gh_with_timeout intentionally calls
+	# shell functions directly for zsh compatibility.
+	gh_deadline_epoch=$((start_epoch + STATS_TIMEOUT - 30))
+	AIDEVOPS_GH_DEADLINE_EPOCH="$gh_deadline_epoch" _stats_wrapper_run_work &
 	child_pid=$!
 
 	while kill -0 "$child_pid" 2>/dev/null; do

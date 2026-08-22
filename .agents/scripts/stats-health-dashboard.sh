@@ -221,13 +221,13 @@ _cache_health_issue_number() {
 #   $1 - health issue number
 #   $2 - repo slug
 #   $3 - rendered issue body
-# Returns: 0 on success, 1 when the body edit fails
+# Returns: 0 on success, wrapped command status when the body edit fails
 #######################################
 _update_health_issue_body_or_fail() {
 	local health_issue_number="$1"
 	local repo_slug="$2"
 	local body="$3"
-	local body_edit_stderr sanitized_body=""
+	local body_edit_stderr sanitized_body="" body_edit_ec=0
 
 	# Health dashboards aggregate helper output from many local repositories.
 	# Sanitize that output before the public write rather than letting one local
@@ -245,11 +245,12 @@ _update_health_issue_body_or_fail() {
 	# update when the 5000/hr GraphQL budget is exhausted, leaving the
 	# dashboard stale until the budget resets (up to 1h). GH#33.
 	body_edit_stderr=$(_gh_with_timeout write gh_issue_edit_safe "$health_issue_number" --repo "$repo_slug" \
-		--body "$sanitized_body" 2>&1 >/dev/null) || {
+		--body "$sanitized_body" 2>&1 >/dev/null) || body_edit_ec=$?
+	if [[ "$body_edit_ec" -ne 0 ]]; then
 		echo "[stats] Health issue: failed to update body for #${health_issue_number}: ${body_edit_stderr}" \
 			>>"${LOGFILE:-/dev/null}"
-		return 1
-	}
+		return "$body_edit_ec"
+	fi
 	return 0
 }
 
@@ -304,7 +305,7 @@ _refresh_health_issue_title_from_body() {
 #   $3 - cross-repo activity markdown (pre-computed by update_health_issues)
 #   $4 - cross-repo session time markdown (pre-computed by update_health_issues)
 #   $5 - cross-repo person stats markdown (pre-computed by update_health_issues)
-# Returns: 0 when refreshed/skipped, 1 when an existing dashboard update fails
+# Returns: 0 when refreshed/skipped, wrapped status when an existing update fails
 #######################################
 _update_health_issue_for_repo() {
 	local repo_slug="$1"
@@ -367,7 +368,9 @@ _update_health_issue_for_repo() {
 		"$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md" \
 		"$canonical_identity" "$identity_aliases")
 
-	_update_health_issue_body_or_fail "$health_issue_number" "$repo_slug" "$body" || return 1
+	local body_update_ec=0
+	_update_health_issue_body_or_fail "$health_issue_number" "$repo_slug" "$body" || body_update_ec=$?
+	[[ "$body_update_ec" -ne 0 ]] && return "$body_update_ec"
 	_refresh_health_issue_title_from_body \
 		"$health_issue_number" "$repo_slug" "$runner_prefix" "$body" "$now_iso"
 	_record_health_issue_refresh_state "$health_issue_file" "$activity_state"
@@ -454,16 +457,19 @@ _prioritize_health_repo_entries() {
 #######################################
 _refresh_priority_health_issue() {
 	local repo_entries="$1"
-	local priority_entry="" priority_slug="" priority_path=""
+	local priority_entry="" priority_slug="" priority_path="" update_ec=0
 
 	priority_entry=$(printf '%s\n' "$repo_entries" | awk 'NR == 1 { print; exit }')
 	[[ -z "$priority_entry" ]] && return 0
 	IFS='|' read -r priority_slug priority_path <<<"$priority_entry"
-	if ! _update_health_issue_for_repo "$priority_slug" "$priority_path" "" "" ""; then
-		echo "[stats] Health issue update failed for priority ${priority_slug}" >>"$LOGFILE"
-		return 1
-	fi
+	# Emit the attempted slug even on failure so the best-effort caller can skip
+	# an immediate retry while continuing with the remaining repositories.
 	printf '%s\n' "$priority_slug"
+	_update_health_issue_for_repo "$priority_slug" "$priority_path" "" "" "" || update_ec=$?
+	if [[ "$update_ec" -ne 0 ]]; then
+		echo "[stats] Health issue update failed for priority ${priority_slug}" >>"$LOGFILE"
+		return "$update_ec"
+	fi
 	return 0
 }
 
@@ -578,10 +584,22 @@ update_health_issues() {
 
 	local refresh_start_epoch
 	refresh_start_epoch=$(date +%s)
-	local priority_slug=""
-	priority_slug=$(_refresh_priority_health_issue "$repo_entries") || return 1
+	local priority_slug="" priority_updated=0 updated=0 deferred=0 failed=0 update_ec=0
+	priority_slug=$(_refresh_priority_health_issue "$repo_entries") || update_ec=$?
+	if [[ "$update_ec" -eq 0 ]]; then
+		[[ -n "$priority_slug" ]] && priority_updated=1
+	elif [[ "$update_ec" -eq 75 || "$update_ec" -eq 124 ]]; then
+		deferred=$((deferred + 1))
+	else
+		failed=$((failed + 1))
+	fi
 	if ! _health_dashboard_optional_work_has_budget "$refresh_start_epoch"; then
 		echo "[stats] Health dashboard optional cross-repo work skipped after priority refresh exhausted its time budget" >>"$LOGFILE"
+		if [[ "$failed" -gt 0 ]]; then
+			echo "[stats] Health issues: failed $failed repo(s)" >>"$LOGFILE"
+			return 1
+		fi
+		[[ "$deferred" -gt 0 ]] && echo "[stats] Health issues: deferred $deferred repo(s)" >>"$LOGFILE"
 		return 0
 	fi
 
@@ -594,12 +612,17 @@ update_health_issues() {
 	_build_cross_repo_health_summaries "$repo_entries" \
 		cross_repo_md cross_repo_session_time_md cross_repo_person_stats_md
 
-	local updated=0
-	local failed=0
 	while IFS='|' read -r slug path; do
 		[[ -z "$slug" ]] && continue
 		[[ "$slug" == "${priority_slug:-}" ]] && continue
-		if ! _update_health_issue_for_repo "$slug" "$path" "$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md"; then
+		update_ec=0
+		_update_health_issue_for_repo "$slug" "$path" "$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md" || update_ec=$?
+		if [[ "$update_ec" -eq 75 || "$update_ec" -eq 124 ]]; then
+			echo "[stats] Health issue update deferred for ${slug} (rc=${update_ec})" >>"$LOGFILE"
+			deferred=$((deferred + 1))
+			continue
+		fi
+		if [[ "$update_ec" -ne 0 ]]; then
 			echo "[stats] Health issue update failed for ${slug}" >>"$LOGFILE"
 			failed=$((failed + 1))
 			continue
@@ -607,10 +630,11 @@ update_health_issues() {
 		updated=$((updated + 1))
 	done <<<"$repo_entries"
 
-	[[ -n "$priority_slug" ]] && updated=$((updated + 1))
+	[[ "$priority_updated" -eq 1 ]] && updated=$((updated + 1))
 	if [[ "$updated" -gt 0 ]]; then
 		echo "[stats] Health issues: updated $updated repo(s)" >>"$LOGFILE"
 	fi
+	[[ "$deferred" -gt 0 ]] && echo "[stats] Health issues: deferred $deferred repo(s)" >>"$LOGFILE"
 	if [[ "$failed" -gt 0 ]]; then
 		echo "[stats] Health issues: failed $failed repo(s)" >>"$LOGFILE"
 		return 1

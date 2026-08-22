@@ -8,7 +8,7 @@
 # next action.
 #
 # Usage:
-#   parent-status-helper.sh <issue-number> [--repo <slug>] [--json] [--verbose] [--help]
+#   aidevops parent-status <issue-number> [--repo <slug>] [--json] [--verbose] [--help]
 #
 # Environment overrides (for tests / custom deployments):
 #   PARENT_STATUS_GH_OFFLINE — set to 1 to skip gh API calls (test mode)
@@ -773,10 +773,10 @@ cmd_parent_status() {
 
 cmd_help() {
 	cat <<'USAGE'
-parent-status-helper.sh — decomposition state for a parent-task issue (t2741)
+aidevops parent-status — decomposition state for a parent-task issue (t2741)
 
 USAGE:
-  parent-status-helper.sh <issue-number> [options]
+  aidevops parent-status <issue-number> [options]
 
 OPTIONS:
   --repo <owner/repo>  GitHub repo slug (default: resolved from git remote)
@@ -785,9 +785,9 @@ OPTIONS:
   --help, -h           Show this message
 
 EXAMPLES:
-  parent-status-helper.sh 20402
-  parent-status-helper.sh 20402 --repo marcusquinn/aidevops
-  parent-status-helper.sh 20402 --json
+  aidevops parent-status 20402
+  aidevops parent-status 20402 --repo marcusquinn/aidevops
+  aidevops parent-status 20402 --json
 
 OUTPUT COLUMNS:
   Phases: <planned> planned, <filed> filed, <merged> merged, <in-flight> in-flight

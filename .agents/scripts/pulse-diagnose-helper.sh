@@ -62,6 +62,8 @@ readonly _UNKNOWN="unknown"
 readonly _UNCLASSIFIED="unclassified"
 readonly _PR_HEAD_REF_JSON_PATH=".headRefName"
 readonly _BOOL_TRUE="true"
+readonly _BOOL_FALSE="false"
+readonly _JSON_ARRAY_TYPE="array"
 # =============================================================================
 # Rule Inventory (Phase A)
 #
@@ -325,7 +327,7 @@ _issue_attempt_summary_json() {
 		return 0
 	fi
 
-	local rate_limit_count="0" last_rate_limit_ts="0" cooldown_secs="0" next_eligible="0" now_epoch="0" active="false"
+	local rate_limit_count="0" last_rate_limit_ts="0" cooldown_secs="0" next_eligible="0" now_epoch="0" active="$_BOOL_FALSE"
 	rate_limit_count=$(printf '%s' "$summary" | jq -r '.rate_limit_count // 0' 2>/dev/null || printf '0')
 	last_rate_limit_ts=$(printf '%s' "$summary" | jq -r '.last_rate_limit_ts // 0' 2>/dev/null || printf '0')
 	[[ "$rate_limit_count" =~ ^[0-9]+$ ]] || rate_limit_count=0
@@ -446,7 +448,7 @@ _fetch_pr_metadata() {
 
 	local pr_json="" gh_rc=0
 	pr_json=$(_gh_with_timeout read gh pr view "$pr_number" --repo "$repo_slug" \
-		--json number,title,state,author,mergedAt,closedAt,createdAt,labels,reviewDecision,mergeStateStatus,headRefName,baseRefName,isDraft 2>/dev/null) || gh_rc=$?
+		--json number,title,state,author,mergedAt,closedAt,createdAt,labels,reviewDecision,mergeStateStatus,headRefName,headRefOid,baseRefName,isDraft,body 2>/dev/null) || gh_rc=$?
 	if [[ "$gh_rc" -ne 0 ]]; then
 		if [[ "$gh_rc" -eq 124 ]]; then
 			print_warning "gh pr view timed out after ${AIDEVOPS_GH_READ_TIMEOUT:-15}s for PR #${pr_number} in ${repo_slug}"
@@ -457,6 +459,31 @@ _fetch_pr_metadata() {
 		return 0
 	fi
 	echo "$pr_json"
+	return 0
+}
+
+# Fetch durable PR conversation comments from the GitHub issues endpoint.
+# Args: $1 = PR number, $2 = repo slug
+# Outputs one flattened JSON array.
+_fetch_pr_comments() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local endpoint="repos/${repo_slug}/issues/${pr_number}/comments?per_page=100"
+	local comments_json="[]"
+
+	if [[ "${PULSE_DIAGNOSE_GH_OFFLINE:-0}" == "1" ]] || ! command -v gh >/dev/null 2>&1; then
+		printf '[]\n'
+		return 0
+	fi
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		comments_json=$(_gh_with_timeout read gh api "$endpoint" --paginate --slurp 2>/dev/null) || comments_json="[]"
+	else
+		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || comments_json="[]"
+	fi
+	printf '%s' "$comments_json" | jq -c --arg array_type "$_JSON_ARRAY_TYPE" '
+		if type == $array_type and ((.[0]? | type) == $array_type) then add // []
+		elif type == $array_type then . else [] end' 2>/dev/null || printf '[]'
+	printf '\n'
 	return 0
 }
 
@@ -517,6 +544,8 @@ _CMD_PR_EVENTS=()
 _CMD_PR_EVENT_COUNT=0
 _CMD_PR_ANCILLARY_EMPTY_JSON='{"present":false,"kind":"thread-response"}'
 _CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
+_CMD_PR_REMOTE_ROUTE_EMPTY_JSON='{"present":false,"kind":"","terminal_label":"","linked_issue":0,"pr_head":"","start_evidence":false,"completion_evidence":false,"dispatch_release":false,"issue_state":"","issue_labels":"","recovery_blocker_evidence":""}'
+_CMD_PR_REMOTE_ROUTE_JSON="$_CMD_PR_REMOTE_ROUTE_EMPTY_JSON"
 
 # Parse cmd_pr CLI arguments into _CMD_PR_* module globals.
 # Returns 1 on validation error.
@@ -527,6 +556,7 @@ _cmd_pr_parse_args() {
 	_CMD_PR_JSON_OUTPUT=0
 	_CMD_PR_LOGFILE_OVERRIDE=""
 	_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
+	_CMD_PR_REMOTE_ROUTE_JSON="$_CMD_PR_REMOTE_ROUTE_EMPTY_JSON"
 
 	while [[ $# -gt 0 ]]; do
 		case "${1}" in
@@ -572,6 +602,210 @@ _cmd_pr_parse_args() {
 			return 1
 		fi
 	fi
+	return 0
+}
+
+# Return a feedback-route kind from authoritative terminal PR labels.
+_diagnose_pr_route_kind() {
+	local labels="$1"
+	case ",${labels}," in
+	*,ci-feedback-routed,*) printf 'ci' ;;
+	*,review-routed-to-issue,*) printf 'review' ;;
+	*,conflict-feedback-routed,*) printf 'conflict' ;;
+	*) printf '' ;;
+	esac
+	return 0
+}
+
+# Return the terminal label for one feedback-route kind.
+_diagnose_pr_route_terminal_label() {
+	local kind="$1"
+	case "$kind" in
+	ci) printf 'ci-feedback-routed' ;;
+	review) printf 'review-routed-to-issue' ;;
+	conflict) printf 'conflict-feedback-routed' ;;
+	*) printf '' ;;
+	esac
+	return 0
+}
+
+# Extract one linked issue number from trusted route text or the PR body.
+_diagnose_linked_issue_from_text() {
+	local text="$1"
+	if [[ "$text" =~ ([Rr]esolves|[Cc]loses|[Ff]ixes|[Ff]or|[Rr]ef)[[:space:]]+\#([1-9][0-9]*) ]]; then
+		printf '%s' "${BASH_REMATCH[2]}"
+		return 0
+	fi
+	if [[ "$text" =~ [Ii]ssue[[:space:]]+\#([1-9][0-9]*) ]]; then
+		printf '%s' "${BASH_REMATCH[1]}"
+		return 0
+	fi
+	return 0
+}
+
+# Extract one exact feedback-route marker for a PR, phase, and optional kind.
+_diagnose_route_marker() {
+	local text="$1"
+	local phase="$2"
+	local pr_number="$3"
+	local expected_head="$4"
+	local expected_kind="${5:-}"
+	local kind_pattern='(review|conflict|ci)'
+	[[ "$expected_head" =~ ^[0-9A-Za-z]{7,64}$ ]] || return 0
+	case "$expected_kind" in
+	'') ;;
+	review | conflict | ci) kind_pattern="$expected_kind" ;;
+	*) return 0 ;;
+	esac
+	printf '%s\n' "$text" | grep -Eo "<!-- feedback-route:${phase}:${kind_pattern}:PR${pr_number}:SHA${expected_head}(:EVIDENCE[^[:space:]<]+)? -->" \
+		2>/dev/null | sed -n '1p' || true
+	return 0
+}
+
+# Keep only trusted automation/maintainer comment bodies for route evidence.
+_diagnose_trusted_comment_text() {
+	local comments_json="$1"
+	printf '%s' "$comments_json" | jq -r '[.[]?
+		| select((.author_association // "") as $association
+			| ["OWNER", "MEMBER", "COLLABORATOR"] | index($association))
+		| (.body // "")] | join("\n")' 2>/dev/null || true
+	return 0
+}
+
+# Return active global GraphQL circuit state when its durable state is valid.
+_diagnose_graphql_circuit_evidence() {
+	local state_file="${PULSE_DIAGNOSE_GRAPHQL_CIRCUIT_FILE:-${HOME}/.aidevops/logs/pulse-graphql-circuit-breaker.state}"
+	local observed_at="" remaining="" limit="" threshold=""
+	[[ -f "$state_file" && ! -L "$state_file" ]] || return 0
+	IFS=' ' read -r observed_at remaining limit threshold <"$state_file" || return 0
+	[[ "$observed_at" =~ ^[0-9]+$ && "$remaining" =~ ^[0-9]+$ \
+		&& "$limit" =~ ^[0-9]+$ && "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 0
+	printf 'graphql_circuit active=yes remaining=%s limit=%s threshold=%s observed_at=%s' \
+		"$remaining" "$limit" "$threshold" "$observed_at"
+	return 0
+}
+
+# Return the most recent bounded quota/fuse/backoff line known for recovery.
+_diagnose_recovery_blocker_evidence() {
+	local trusted_issue_text="$1"
+	local issue_log_lines="$2"
+	local evidence="" cooldown_summary="" graphql_circuit=""
+	evidence=$(printf '%s\n%s\n' "$trusted_issue_text" "$issue_log_lines" \
+		| grep -Ei 'REST.*hard[- ]floor|hard[- ]floor.*REST|BACKOFF_ACTIVE|rate[- _]?limit.*(reset|wait|next)|dispatch.*(fuse|circuit)|circuit.*dispatch' \
+		| sed -n '$p' 2>/dev/null || true)
+	if declare -F _api_budget_cooldown_summary_csv >/dev/null 2>&1; then
+		cooldown_summary=$(_api_budget_cooldown_summary_csv)
+		if [[ "$cooldown_summary" == *"active=yes"* ]]; then
+			evidence="${evidence:+${evidence}; }secondary_cooldown ${cooldown_summary}"
+		fi
+	fi
+	graphql_circuit=$(_diagnose_graphql_circuit_evidence)
+	if [[ -n "$graphql_circuit" ]]; then
+		evidence="${evidence:+${evidence}; }${graphql_circuit}"
+	fi
+	evidence="${evidence//$'\r'/ }"
+	evidence="${evidence//$'\t'/ }"
+	printf '%.300s' "$evidence"
+	return 0
+}
+
+# Collect durable GitHub feedback-route evidence that may have been written by
+# another runner after local pulse logs stopped.
+_cmd_pr_collect_remote_route() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local pr_json="$3"
+	local logfile="$4"
+	local logdir="$5"
+	local labels="" kind="" terminal_label="" pr_head="" pr_body=""
+	local pr_comments_json="[]" trusted_pr_text="" linked_issue=""
+	local issue_json="{}" issue_comments_json="[]" trusted_issue_text="" issue_body=""
+	local issue_state="" issue_labels="" issue_log_lines="" blocker_evidence=""
+	local combined_evidence="" start_marker="" completion_marker="" dispatch_release="$_BOOL_FALSE" present="$_BOOL_FALSE"
+
+	labels=$(printf '%s' "$pr_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null || true)
+	kind=$(_diagnose_pr_route_kind "$labels")
+	terminal_label=$(_diagnose_pr_route_terminal_label "$kind")
+	pr_head=$(_jq_field "$pr_json" '.headRefOid' '')
+	pr_body=$(_jq_field "$pr_json" '.body' '')
+	pr_comments_json=$(_fetch_pr_comments "$pr_number" "$repo_slug")
+	trusted_pr_text=$(_diagnose_trusted_comment_text "$pr_comments_json")
+	linked_issue=$(_diagnose_linked_issue_from_text "$pr_body")
+	[[ -n "$linked_issue" ]] || linked_issue=$(_diagnose_linked_issue_from_text "$trusted_pr_text")
+
+	if [[ "$linked_issue" =~ ^[1-9][0-9]*$ ]]; then
+		issue_json=$(_fetch_issue_metadata "$linked_issue" "$repo_slug")
+		issue_comments_json=$(_fetch_issue_comments "$linked_issue" "$repo_slug")
+		trusted_issue_text=$(_diagnose_trusted_comment_text "$issue_comments_json")
+		issue_body=$(_jq_field "$issue_json" '.body' '')
+		issue_state=$(_jq_field "$issue_json" '.state' '')
+		issue_labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null || true)
+		issue_log_lines=$(_collect_issue_log_lines "$linked_issue" "$logfile" "$logdir")
+		blocker_evidence=$(_diagnose_recovery_blocker_evidence "$trusted_issue_text" "$issue_log_lines")
+	fi
+
+	combined_evidence="${trusted_pr_text}
+${issue_body}
+${trusted_issue_text}"
+	if [[ -z "$kind" ]]; then
+		start_marker=$(_diagnose_route_marker "$combined_evidence" start "$pr_number" "$pr_head")
+		if [[ -n "$start_marker" ]]; then
+			kind="${start_marker#*feedback-route:start:}"
+			kind="${kind%%:*}"
+		else
+			completion_marker=$(_diagnose_route_marker "$combined_evidence" complete "$pr_number" "$pr_head")
+			if [[ -n "$completion_marker" ]]; then
+				kind="${completion_marker#*feedback-route:complete:}"
+				kind="${kind%%:*}"
+			fi
+		fi
+		terminal_label=$(_diagnose_pr_route_terminal_label "$kind")
+	fi
+	if [[ -n "$kind" ]]; then
+		start_marker=$(_diagnose_route_marker "$combined_evidence" start "$pr_number" "$pr_head" "$kind")
+		completion_marker=$(_diagnose_route_marker "$combined_evidence" complete "$pr_number" "$pr_head" "$kind")
+	fi
+	if [[ -n "$kind" && -n "$pr_head" ]] && printf '%s' "$trusted_issue_text" \
+		| grep -qF "<!-- feedback-route:dispatch-release:${kind}:PR${pr_number}:SHA${pr_head} -->"; then
+		dispatch_release="$_BOOL_TRUE"
+	fi
+	if [[ -n "$terminal_label" || -n "$start_marker" || -n "$completion_marker" ]]; then
+		present="$_BOOL_TRUE"
+	fi
+
+	jq -cn --argjson present "$present" --arg kind "$kind" --arg terminal_label "$terminal_label" \
+		--arg linked_issue "${linked_issue:-0}" --arg pr_head "$pr_head" \
+		--argjson start_evidence "$([[ -n "$start_marker" ]] && printf true || printf false)" \
+		--argjson completion_evidence "$([[ -n "$completion_marker" ]] && printf true || printf false)" \
+		--argjson dispatch_release "$dispatch_release" --arg issue_state "$issue_state" \
+		--arg issue_labels "$issue_labels" --arg recovery_blocker_evidence "$blocker_evidence" \
+		'{present:$present,kind:$kind,terminal_label:$terminal_label,linked_issue:($linked_issue | tonumber),
+		pr_head:$pr_head,start_evidence:$start_evidence,completion_evidence:$completion_evidence,
+		dispatch_release:$dispatch_release,issue_state:$issue_state,issue_labels:$issue_labels,
+		recovery_blocker_evidence:$recovery_blocker_evidence}'
+	return 0
+}
+
+_render_pr_remote_route_text() {
+	local remote_json="$1"
+	local summary="" kind="" terminal_label="" linked_issue="0" pr_head=""
+	local start_evidence="$_BOOL_FALSE" completion_evidence="$_BOOL_FALSE" dispatch_release="$_BOOL_FALSE"
+	local issue_state="" issue_labels="" blocker_evidence=""
+	[[ "$(printf '%s' "$remote_json" | jq -r '.present // false' 2>/dev/null)" == "$_BOOL_TRUE" ]] || return 0
+	summary=$(printf '%s' "$remote_json" | jq -r '[.kind,.terminal_label,(.linked_issue|tostring),.pr_head,
+		(.start_evidence|tostring),(.completion_evidence|tostring),(.dispatch_release|tostring),
+		.issue_state,.issue_labels,.recovery_blocker_evidence] | map(. // "") | join("\u001c")')
+	IFS=$'\034' read -r kind terminal_label linked_issue pr_head start_evidence completion_evidence \
+		dispatch_release issue_state issue_labels blocker_evidence <<<"$summary"
+	printf 'Durable GitHub route evidence:\n'
+	printf '  Kind: %s  terminal_label=%s  head=%s\n' "$kind" "$terminal_label" "$pr_head"
+	if [[ "$linked_issue" =~ ^[1-9][0-9]*$ ]]; then
+		printf '  Linked issue: #%s  state=%s  labels=%s\n' "$linked_issue" "$issue_state" "$issue_labels"
+	fi
+	printf '  Start evidence: %s  completion evidence: %s  dispatch release: %s\n' \
+		"$start_evidence" "$completion_evidence" "$dispatch_release"
+	[[ -n "$blocker_evidence" ]] && printf '  Recovery blocker evidence: %s\n' "$blocker_evidence"
+	printf '\n'
 	return 0
 }
 
@@ -925,6 +1159,8 @@ cmd_pr() {
 	_cmd_pr_build_events "$log_lines" "$_CMD_PR_VERBOSE"
 	_CMD_PR_ANCILLARY_JSON=$(_cmd_pr_collect_ancillary "$_CMD_PR_REPO_SLUG" "$_CMD_PR_NUMBER" "$pr_head_ref") || \
 		_CMD_PR_ANCILLARY_JSON="$_CMD_PR_ANCILLARY_EMPTY_JSON"
+	_CMD_PR_REMOTE_ROUTE_JSON=$(_cmd_pr_collect_remote_route "$_CMD_PR_REPO_SLUG" "$_CMD_PR_NUMBER" \
+		"$pr_json" "$logfile" "$logdir") || _CMD_PR_REMOTE_ROUTE_JSON="$_CMD_PR_REMOTE_ROUTE_EMPTY_JSON"
 
 	if [[ "$_CMD_PR_JSON_OUTPUT" -eq 1 ]]; then
 		_render_json "$_CMD_PR_NUMBER" "$_CMD_PR_REPO_SLUG" "$pr_author" "$pr_state" "$merged_flag" \
@@ -938,6 +1174,7 @@ cmd_pr() {
 		"$merged_flag" "$pr_merged_at" "$pr_title" "$pr_created_at" \
 		"$pr_review_decision" "$pr_mss" "$_CMD_PR_EVENT_COUNT" \
 		"${_CMD_PR_EVENTS[@]+"${_CMD_PR_EVENTS[@]}"}"
+	_render_pr_remote_route_text "$_CMD_PR_REMOTE_ROUTE_JSON"
 	_render_pr_ancillary_text "$_CMD_PR_ANCILLARY_JSON"
 	return 0
 }
@@ -961,7 +1198,7 @@ _render_json() {
 	local review_decision="$1" mss="$2" event_count="$3"
 	shift 3
 
-	local merged_bool="false"
+	local merged_bool="$_BOOL_FALSE"
 	[[ "$merged" == "yes" ]] && merged_bool="$_BOOL_TRUE"
 
 	printf '{\n'
@@ -997,6 +1234,7 @@ _render_json() {
 	done
 
 	printf '\n  ],\n'
+	printf '  "remote_route": %s,\n' "$_CMD_PR_REMOTE_ROUTE_JSON"
 	printf '  "ancillary": %s\n' "$_CMD_PR_ANCILLARY_JSON"
 	printf '}\n'
 	return 0
@@ -1163,7 +1401,7 @@ _ch_render_json() {
 	while IFS=$'\t' read -r stage runs timeouts p50 p95 last_ok degraded; do
 		[[ -z "$stage" ]] && continue
 		[[ "$last_ok" == "-" ]] && last_ok=""
-		local deg_bool="false"
+		local deg_bool="$_BOOL_FALSE"
 		[[ "$degraded" == "$_CH_DEGRADED" ]] && deg_bool="$_BOOL_TRUE"
 		[[ "$first" -eq 0 ]] && printf ',\n'
 		first=0
@@ -1302,8 +1540,13 @@ _fetch_issue_metadata() {
 		return 0
 	fi
 	local meta_json
-	meta_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
-		--json number,title,state,author,createdAt,closedAt,labels,assignees 2>/dev/null) || meta_json="{}"
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		meta_json=$(_gh_with_timeout read gh issue view "$issue_number" --repo "$repo_slug" \
+			--json number,title,state,author,createdAt,closedAt,labels,assignees,body 2>/dev/null) || meta_json="{}"
+	else
+		meta_json=$(gh issue view "$issue_number" --repo "$repo_slug" \
+			--json number,title,state,author,createdAt,closedAt,labels,assignees,body 2>/dev/null) || meta_json="{}"
+	fi
 	echo "$meta_json"
 	return 0
 }
@@ -1326,13 +1569,23 @@ _fetch_issue_comments() {
 	local owner="" repo=""
 	owner="${repo_slug%%/*}"
 	repo="${repo_slug##*/}"
-	local comments_json
+	local comments_json comments_endpoint="repos/${owner}/${repo}/issues/${issue_number}/comments?per_page=100"
 	if command -v jq >/dev/null 2>&1; then
-		comments_json=$(gh api "repos/${owner}/${repo}/issues/${issue_number}/comments?per_page=100" \
-			--paginate --slurp 2>/dev/null | jq -c 'add // []') || comments_json="[]"
+		if declare -F _gh_with_timeout >/dev/null 2>&1; then
+			comments_json=$(_gh_with_timeout read gh api "$comments_endpoint" \
+				--paginate --slurp 2>/dev/null | jq -c 'add // []') || comments_json="[]"
+		else
+			comments_json=$(gh api "$comments_endpoint" \
+				--paginate --slurp 2>/dev/null | jq -c 'add // []') || comments_json="[]"
+		fi
 	else
-		comments_json=$(gh api "repos/${owner}/${repo}/issues/${issue_number}/comments?per_page=100" \
-			2>/dev/null) || comments_json="[]"
+		if declare -F _gh_with_timeout >/dev/null 2>&1; then
+			comments_json=$(_gh_with_timeout read gh api "$comments_endpoint" \
+				2>/dev/null) || comments_json="[]"
+		else
+			comments_json=$(gh api "$comments_endpoint" \
+				2>/dev/null) || comments_json="[]"
+		fi
 	fi
 	echo "$comments_json"
 	return 0
@@ -1444,7 +1697,11 @@ _render_issue_linked_prs() {
 	while IFS= read -r pr_num; do
 		[[ -z "$pr_num" ]] && continue
 		pr_count=$((pr_count + 1))
-		local pr_json="" pr_title="" pr_state="" pr_head="" pr_merged_at=""
+		local pr_json=""
+		local pr_title=""
+		local pr_state=""
+		local pr_head=""
+		local pr_merged_at=""
 		pr_json=$(_fetch_pr_metadata "$pr_num" "$repo_slug")
 		pr_title=$(_jq_field "$pr_json" "$_IQ_TITLE" "")
 		pr_state=$(_jq_field "$pr_json" "$_IQ_STATE" "$_UNKNOWN")
@@ -1490,7 +1747,7 @@ _render_issue_attempts_text() {
 		return 0
 	fi
 
-	local attempt_count="0" rate_limit_count="0" active="false" cooldown_secs="0" next_epoch="0" prelaunch_count="0"
+	local attempt_count="0" rate_limit_count="0" active="$_BOOL_FALSE" cooldown_secs="0" next_epoch="0" prelaunch_count="0"
 	local zero_attempt_release_count="0"
 	read -r attempt_count rate_limit_count active cooldown_secs next_epoch prelaunch_count zero_attempt_release_count < <(
 		printf '%s' "$attempt_summary_json" | jq -r '[.attempt_count // 0, .rate_limit_count // 0, .backoff_active // false, .cooldown_secs // 0, .next_eligible_epoch // 0, .prelaunch_failure_count // 0, .zero_attempt_release_count // 0] | @tsv' || printf '0\t0\tfalse\t0\t0\t0\t0\n'
@@ -1681,7 +1938,11 @@ _render_issue_json() {
 	local pr_first=1
 	while IFS= read -r pr_num; do
 		[[ -z "$pr_num" ]] && continue
-		local pr_json="" pr_title="" pr_state="" pr_head="" pr_merged_at=""
+		local pr_json=""
+		local pr_title=""
+		local pr_state=""
+		local pr_head=""
+		local pr_merged_at=""
 		pr_json=$(_fetch_pr_metadata "$pr_num" "$repo_slug")
 		pr_title=$(_jq_field "$pr_json" "$_IQ_TITLE" "")
 		pr_state=$(_jq_field "$pr_json" "$_IQ_STATE" "$_UNKNOWN")

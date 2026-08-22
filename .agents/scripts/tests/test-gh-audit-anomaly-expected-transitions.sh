@@ -121,6 +121,14 @@ GH_AUDIT_LOG_FILE="$MALFORMED_LOG" GH_ANOMALY_STATE_FILE="${TEST_ROOT}/malformed
 source "$SAFE_EDIT_HELPER"
 PROOF_LOG="${TEST_ROOT}/proof-audit.log"
 export GH_AUDIT_LOG_FILE="$PROOF_LOG"
+GH_TIMEOUT_TRACE="${TEST_ROOT}/gh-timeout-calls.log"
+_gh_with_timeout() {
+	local op_class="$1"
+	shift
+	printf '%s|%s\n' "$op_class" "$*" >>"$GH_TIMEOUT_TRACE"
+	"$@"
+	return $?
+}
 cmd_verify() {
 	local target_type="${1:-}"
 	local target_number="${2:-}"
@@ -309,6 +317,10 @@ jq -e '.capture_status == "ok" and .title_len == 21 and .body_len == 14 and .lab
 	<<<"$native_fallback_issue" >/dev/null || fail "issue audit capture did not fall back after the REST-capable wrapper failed"
 jq -e '.capture_status == "ok" and .title_len == 18 and .body_len == 14 and .labels == ["monitoring"]' \
 	<<<"$native_fallback_pr" >/dev/null || fail "PR audit capture did not fall back after the REST-capable wrapper failed"
+grep -Fqx 'read|gh issue view 8 --repo example/repo --json title,body,labels' "$GH_TIMEOUT_TRACE" ||
+	fail "native issue audit fallback bypassed _gh_with_timeout"
+grep -Fqx 'read|gh pr view 9 --repo example/repo --json title,body,labels' "$GH_TIMEOUT_TRACE" ||
+	fail "native PR audit fallback bypassed _gh_with_timeout"
 
 gh() {
 	return 1
