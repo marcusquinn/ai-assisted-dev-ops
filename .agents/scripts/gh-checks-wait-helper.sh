@@ -203,6 +203,29 @@ emit_failure_details() {
 	return 0
 }
 
+emit_success_details() {
+	local classification="$1"
+	local required_only="$2"
+	local elapsed="$3"
+	local checks="$4"
+	case "$classification" in
+	no-required)
+		printf 'PASS: verified no required checks; optional checks were not evaluated (use --all to wait for all checks) in %ss (%s)\n' "$elapsed" "$(state_counts "$checks")"
+		;;
+	no-checks)
+		printf 'PASS: verified no checks reported in %ss (%s)\n' "$elapsed" "$(state_counts "$checks")"
+		;;
+	success)
+		if [[ "$required_only" -eq 1 ]]; then
+			printf 'PASS: required checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$checks")"
+		else
+			printf 'PASS: all checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$checks")"
+		fi
+		;;
+	esac
+	return 0
+}
+
 read_head_sha() {
 	local pr_number="$1"
 	local repo="$2"
@@ -318,21 +341,7 @@ wait_for_checks() {
 				poll_sleep "$interval"
 				continue
 			fi
-			case "$classification" in
-			no-required)
-				printf 'PASS: verified no required checks; optional checks were not evaluated (use --all to wait for all checks) in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
-				;;
-			no-checks)
-				printf 'PASS: verified no checks reported in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
-				;;
-			success)
-				if [[ "$required_only" -eq 1 ]]; then
-					printf 'PASS: required checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
-				else
-					printf 'PASS: all checks completed in %ss (%s)\n' "$elapsed" "$(state_counts "$current")"
-				fi
-				;;
-			esac
+			emit_success_details "$classification" "$required_only" "$elapsed" "$current"
 			return 0
 			;;
 		pending | indeterminate) ;;
