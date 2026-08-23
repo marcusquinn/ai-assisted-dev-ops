@@ -433,6 +433,53 @@ test_first_clone_initialization_remains_functional() {
 	return 0
 }
 
+test_scaffold_refresh_preserves_user_owned_sections() {
+	local tmp_dir=""
+	tmp_dir=$(mktemp -d)
+	local fixture_repo="${tmp_dir}/routines"
+	mkdir -p "$fixture_repo"
+
+	# shellcheck disable=SC1090
+	source "$INIT_ROUTINES"
+	cat >"${fixture_repo}/TODO.md" <<'TODO'
+# Routines
+
+## Core Routines (framework-managed)
+
+- [x] r999 Stale generated core entry repeat:daily(@00:00) run:scripts/stale.sh
+
+## User Routines
+
+- [x] r123 User-owned routine repeat:daily(@09:00) run:custom/scripts/user.sh
+
+## Tasks
+
+- [ ] User-owned one-off task
+TODO
+
+	_write_todo_md "$fixture_repo"
+	local user_heading_count=0 task_heading_count=0
+	user_heading_count=$(grep -c '^## User Routines$' "${fixture_repo}/TODO.md" || true)
+	task_heading_count=$(grep -c '^## Tasks$' "${fixture_repo}/TODO.md" || true)
+	local passed=1
+	if grep -Fqx -- '- [x] r123 User-owned routine repeat:daily(@09:00) run:custom/scripts/user.sh' "${fixture_repo}/TODO.md" &&
+		grep -Fqx -- '- [ ] User-owned one-off task' "${fixture_repo}/TODO.md" &&
+		grep -Fq -- '- [x] r918 Observability retention' "${fixture_repo}/TODO.md" &&
+		! grep -Fq -- 'r999 Stale generated core entry' "${fixture_repo}/TODO.md" &&
+		[[ "$user_heading_count" -eq 1 && "$task_heading_count" -eq 1 ]]; then
+		passed=0
+	fi
+	rm -rf "$tmp_dir"
+
+	if [[ "$passed" -eq 0 ]]; then
+		print_result "scaffold refresh preserves user routines/tasks and regenerates core entries (GH#30592)" 0
+		return 0
+	fi
+	print_result "scaffold refresh preserves user routines/tasks and regenerates core entries (GH#30592)" 1 \
+		"user_headings=${user_heading_count} task_headings=${task_heading_count}"
+	return 0
+}
+
 test_existing_routine_refreshes_metadata_without_metrics_mutation() {
 	local tmp_dir=""
 	tmp_dir=$(mktemp -d)
@@ -483,6 +530,7 @@ main() {
 	test_isolated_publication_retries_nonconflicting_race
 	test_isolated_publication_refuses_push_conflict
 	test_first_clone_initialization_remains_functional
+	test_scaffold_refresh_preserves_user_owned_sections
 	test_existing_routine_refreshes_metadata_without_metrics_mutation
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"

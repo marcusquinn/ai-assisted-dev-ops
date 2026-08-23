@@ -50,6 +50,7 @@
 #      later due descriptive-ID routine still executes in the same evaluator pass
 #  10. (GH#28957) The production routines scaffold exposes core and user
 #      routines while task lookalikes and malformed/mixed shapes fail closed
+#  11. (GH#30592) A pulse-enabled local-only routines repository is evaluated
 
 set -u
 
@@ -341,7 +342,7 @@ SCHEDULE_SCRIPT
 	_make_todo "$repo_dir" \
 		"- [x] r901 Supervisor pulse repeat:cron(*/2 * * * *) ~1m run:scripts/pulse-wrapper.sh" \
 		"- [x] r-downstream-monitor Downstream monitor repeat:daily(@07:10) ~1m run:scripts/downstream.sh"
-	printf '{"initialized_repos":[{"slug":"example/routines","path":"%s","pulse":true,"local_only":false}]}\n' \
+	printf '{"initialized_repos":[{"slug":"example/routines","path":"%s","pulse":true,"local_only":true}]}\n' \
 		"$repo_dir" >"$repos_json"
 
 	if (
@@ -367,9 +368,9 @@ SCHEDULE_SCRIPT
 			jq -e '."r-downstream-monitor".last_status == "success" and (.r901 | not)' "$state_file" >/dev/null &&
 			grep -q 'routine r901: skipping self-recursive supervisor target scripts/pulse-wrapper.sh (GH#28544)' "$log_file"
 	); then
-		pass "Case 9 (GH#28544): stale r901 skipped; descriptive-ID routine executes"
+		pass "Case 9/11 (GH#28544/GH#30592): local-only repo executes safe downstream routine"
 	else
-		fail "Case 9 (GH#28544): stale r901 skipped; descriptive-ID routine executes" \
+		fail "Case 9/11 (GH#28544/GH#30592): local-only repo executes safe downstream routine" \
 			"self_marker=$([[ -e "$self_marker" ]] && printf present || printf absent) downstream_marker=$([[ -e "$downstream_marker" ]] && printf present || printf absent)"
 	fi
 	return 0
