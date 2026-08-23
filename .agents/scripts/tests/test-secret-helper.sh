@@ -57,15 +57,26 @@ case "$cmd" in
 			if [[ -n "${AIDEVOPS_TEST_SECRET:-}" ]]; then
 				printf '%s\n' 'aidevops/REDACTION_KEY'
 			fi
+			if [[ "${AIDEVOPS_TEST_MULTILINE:-}" == "true" ]]; then
+				printf '%s\n' 'aidevops/MULTILINE_KEY'
+			fi
 		fi
 		exit 0
 		;;
 	show)
-		if [[ "${1:-}" == "-o" ]]; then
+		mode="${1:-}"
+		if [[ "$mode" == "-o" || "$mode" == "-n" ]]; then
 			shift
 		fi
 		case "${1:-}" in
 			aidevops/REDACTION_KEY) printf '%s' "${AIDEVOPS_TEST_SECRET:-}" ;;
+			aidevops/MULTILINE_KEY)
+				if [[ "$mode" == "-n" ]]; then
+					printf 'header-line\nbody-line\n\n'
+				else
+					printf 'header-line'
+				fi
+				;;
 			*) exit 1 ;;
 		esac
 		exit 0
@@ -147,7 +158,35 @@ teardown() {
 		rm -rf "$TEST_DIR"
 	fi
 	TEST_DIR=""
-	unset AIDEVOPS_TEST_DIR AIDEVOPS_TEST_SECRET || true
+	unset AIDEVOPS_TEST_DIR AIDEVOPS_TEST_SECRET AIDEVOPS_TEST_MULTILINE || true
+	return 0
+}
+
+test_multiline_gopass_injection_preserves_embedded_newlines() {
+	setup
+	trap 'teardown' RETURN
+	export AIDEVOPS_TEST_MULTILINE=true
+	local output=""
+	local exit_code=0
+
+	output=$(HOME="$TEST_DIR/home" bash "$HELPER" MULTILINE_KEY -- python3 -c '
+import os
+import sys
+
+value = os.environ.get("MULTILINE_KEY", "")
+if value != "header-line\nbody-line":
+    raise SystemExit(23)
+sys.stdout.write(value)
+') || exit_code=$?
+
+	local scalar=""
+	scalar=$(HOME="$TEST_DIR/home" bash "$HELPER" get MULTILINE_KEY)
+	if [[ "$exit_code" -eq 0 && "$output" == "[REDACTED]" && "$scalar" == "header-line" ]]; then
+		print_result "multiline injection preserves embedded newlines and normalizes trailing newlines" 0
+	else
+		print_result "multiline injection preserves embedded newlines and normalizes trailing newlines" 1 \
+			"Expected full redacted injection and scalar get compatibility"
+	fi
 	return 0
 }
 
@@ -280,6 +319,7 @@ main() {
 	test_set_rejects_command_literal_input
 	test_run_redacts_sed_significant_literal_values
 	test_run_fails_closed_when_redactor_cannot_start
+	test_multiline_gopass_injection_preserves_embedded_newlines
 	test_inventory_is_names_only_deterministic_json
 	test_inventory_rejects_malformed_gopass_name
 	test_inventory_requires_owner_only_credentials

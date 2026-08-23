@@ -78,9 +78,8 @@ resolve_credential_files() {
 	return 0
 }
 
-# Get a secret value from gopass.
-# Used by cmd_get (direct output) and build_secret_env (subprocess injection).
-# Callers are responsible for deciding whether to expose the value to stdout.
+# Get the scalar password value from gopass.
+# Used only by cmd_get, which preserves the historical first-line contract.
 get_secret_value() {
 	local name="$1"
 	if has_gopass; then
@@ -103,6 +102,15 @@ get_secret_value() {
 	return 0
 }
 
+# Get the complete raw gopass entry for subprocess injection.
+# Bash command substitution consistently removes trailing newlines; embedded
+# newlines are preserved byte-for-byte and encoded safely by build_secret_env.
+get_gopass_entry_value() {
+	local secret_path="$1"
+	gopass show -n "$secret_path" 2>/dev/null || true
+	return 0
+}
+
 # Collect all secret values for redaction as NUL-delimited literal data.
 collect_secret_values() {
 	local -a values=()
@@ -112,10 +120,15 @@ collect_secret_values() {
 		secrets=$(gopass ls --flat "${GOPASS_PREFIX}/" 2>/dev/null || true)
 		while IFS= read -r secret_path; do
 			[[ -z "$secret_path" ]] && continue
-			local val
-			val=$(gopass show -o "$secret_path" 2>/dev/null || true)
-			if [[ -n "$val" && ${#val} -ge 4 ]]; then
-				values+=("$val")
+			local scalar_val=""
+			local entry_val=""
+			scalar_val=$(gopass show -o "$secret_path" 2>/dev/null || true)
+			entry_val=$(get_gopass_entry_value "$secret_path")
+			if [[ -n "$scalar_val" && ${#scalar_val} -ge 4 ]]; then
+				values+=("$scalar_val")
+			fi
+			if [[ -n "$entry_val" && ${#entry_val} -ge 4 && "$entry_val" != "$scalar_val" ]]; then
+				values+=("$entry_val")
 			fi
 		done <<<"$secrets"
 	fi
@@ -226,19 +239,40 @@ redact_available(pending, final=True)
 	return "$exit_code"
 }
 
-# Build environment from gopass secrets
+# Return success when a secret name was already emitted.
+secret_env_name_emitted() {
+	local expected_name="$1"
+	shift
+	local emitted_name=""
+	for emitted_name in "$@"; do
+		[[ "$emitted_name" == "$expected_name" ]] && return 0
+	done
+	return 1
+}
+
+# Emit one NUL-delimited environment record. Environment values cannot contain
+# NUL bytes, making NUL a safe record delimiter while preserving newlines.
+emit_secret_env_record() {
+	local name="$1"
+	local value="$2"
+	printf '%s=%s\0' "$name" "$value"
+	return 0
+}
+
+# Build a NUL-delimited environment from gopass secrets.
 build_secret_env() {
 	local -a specific_names=("$@")
-	local env_vars=""
+	local -a emitted_names=()
 
 	if has_gopass; then
 		if [[ ${#specific_names[@]} -gt 0 ]]; then
 			# Inject only specific secrets
 			for name in "${specific_names[@]}"; do
 				local val
-				val=$(gopass show -o "${GOPASS_PREFIX}/${name}" 2>/dev/null || true)
+				val=$(get_gopass_entry_value "${GOPASS_PREFIX}/${name}")
 				if [[ -n "$val" ]]; then
-					env_vars="${env_vars}${name}=${val}\n"
+					emit_secret_env_record "$name" "$val"
+					emitted_names+=("$name")
 				fi
 			done
 		else
@@ -249,9 +283,10 @@ build_secret_env() {
 				[[ -z "$secret_path" ]] && continue
 				local name="${secret_path#"${GOPASS_PREFIX}"/}"
 				local val
-				val=$(gopass show -o "$secret_path" 2>/dev/null || true)
+				val=$(get_gopass_entry_value "$secret_path")
 				if [[ -n "$val" ]]; then
-					env_vars="${env_vars}${name}=${val}\n"
+					emit_secret_env_record "$name" "$val"
+					emitted_names+=("$name")
 				fi
 			done <<<"$secrets"
 		fi
@@ -268,14 +303,14 @@ build_secret_env() {
 				val="${val#\"}"
 				val="${val%\"}"
 				# Only add if not already set by gopass
-				if ! printf '%b' "$env_vars" | grep -q "^${name}="; then
-					env_vars="${env_vars}${name}=${val}\n"
+				if ! secret_env_name_emitted "$name" "${emitted_names[@]}"; then
+					emit_secret_env_record "$name" "$val"
+					emitted_names+=("$name")
 				fi
 			fi
 		done <"$cred_file"
 	done < <(resolve_credential_files)
 
-	printf '%b' "$env_vars"
 	return 0
 }
 
@@ -594,7 +629,7 @@ cmd_run() {
 	local exit_code=0
 	(
 		# Load secrets into subprocess environment
-		while IFS='=' read -r key val; do
+		while IFS='=' read -r -d '' key val; do
 			[[ -z "$key" ]] && continue
 			export "$key=$val"
 		done <"$env_file"
@@ -644,7 +679,7 @@ cmd_run_specific() {
 	# Execute command with secrets in environment, redact output
 	local exit_code=0
 	(
-		while IFS='=' read -r key val; do
+		while IFS='=' read -r -d '' key val; do
 			[[ -z "$key" ]] && continue
 			export "$key=$val"
 		done <"$env_file"
