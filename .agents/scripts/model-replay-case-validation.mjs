@@ -6,20 +6,33 @@ import {
   MODES,
   TIERS,
   assertSafeID,
+  isFullCommitSHA,
 } from "./model-replay-common.mjs";
 
-function validateCheck(check, label) {
+function validateCheckName(check, label) {
   if (!check || typeof check.name !== "string" || !check.name.trim()) {
     throw new Error(`${label} check requires a name`);
   }
+}
+
+function validateCheckArguments(check, label) {
   if (!Array.isArray(check.argv) || check.argv.length === 0
     || check.argv.some((part) => typeof part !== "string" || !part)) {
     throw new Error(`${label} check ${check.name} requires non-empty argv strings`);
   }
+}
+
+function validateCheckTimeout(check, label) {
   const timeout = Number(check.timeout_seconds ?? 120);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600) {
     throw new Error(`${label} check ${check.name} timeout must be 1..3600 seconds`);
   }
+}
+
+function validateCheck(check, label) {
+  validateCheckName(check, label);
+  validateCheckArguments(check, label);
+  validateCheckTimeout(check, label);
 }
 
 function validateCaseIdentity(definition, profiles) {
@@ -32,7 +45,7 @@ function validateCaseIdentity(definition, profiles) {
   if (!TIERS.includes(definition.expected_tier)) {
     throw new Error(`Case ${definition.case_id} has invalid expected_tier`);
   }
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(definition.base_sha || "")) {
+  if (!isFullCommitSHA(definition.base_sha)) {
     throw new Error(`Case ${definition.case_id} requires an immutable full base SHA`);
   }
 }
@@ -65,8 +78,8 @@ function validateCaseChecks(definition) {
   if (!Array.isArray(passChecks) || passChecks.length === 0) {
     throw new Error(`Case ${definition.case_id} requires pass_to_pass checks`);
   }
-  failChecks.forEach((check) => validateCheck(check, "fail_to_pass"));
-  passChecks.forEach((check) => validateCheck(check, "pass_to_pass"));
+  for (const check of failChecks) validateCheck(check, "fail_to_pass");
+  for (const check of passChecks) validateCheck(check, "pass_to_pass");
   const checkNames = [...failChecks, ...passChecks].map((check) => check.name);
   if (new Set(checkNames).size !== checkNames.length) {
     throw new Error(`Case ${definition.case_id} check names must be unique`);

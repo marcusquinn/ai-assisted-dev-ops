@@ -10,6 +10,7 @@ import {
   TIERS,
   assertSafeID,
   copyCaseInput,
+  isFullCommitSHA,
   loadCorpus,
   qualifyCase,
   readJson,
@@ -23,7 +24,9 @@ export function commandInit(options) {
   if (existsSync(join(corpusDir, "corpus.json"))) throw new Error("Corpus already exists");
   const profiles = String(options.profiles || "aidevops,wordpress-plugin,nextjs")
     .split(",").map((value) => value.trim()).filter(Boolean);
-  profiles.forEach((profile) => assertSafeID(profile, "profile"));
+  profiles.forEach((profile) => {
+    assertSafeID(profile, "profile");
+  });
   if (new Set(profiles).size !== profiles.length) throw new Error("Profiles must be unique");
   const quickSize = integerOption(options.quick_size, 9, "quick size");
   const fullSize = integerOption(options.full_size, 18, "full size");
@@ -97,7 +100,7 @@ export function commandAddCase(options) {
     throw new Error(`Case already exists: ${caseID}`);
   }
   const baseSHA = required(options, "base_sha");
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(baseSHA)) {
+  if (!isFullCommitSHA(baseSHA)) {
     throw new Error("base SHA must be an exact full immutable hash");
   }
   const checks = readJson(resolve(required(options, "checks_file")));

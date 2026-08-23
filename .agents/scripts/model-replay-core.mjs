@@ -12,6 +12,7 @@ export {
   appendJsonLine,
   assertSafeID,
   harnessIdentity,
+  isFullCommitSHA,
   pathInside,
   readJson,
   sha256,

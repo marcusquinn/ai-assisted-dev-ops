@@ -64,7 +64,7 @@ export function parseArgs(argv) {
       options._.push(value);
       continue;
     }
-    const key = value.slice(2).replaceAll("-", "_");
+    const key = value.slice(2).replace(/-/gu, "_");
     if (Object.hasOwn(options, key)) throw new Error(`Duplicate option: ${value}`);
     if (BOOLEAN_OPTIONS.has(key)) {
       options[key] = true;
@@ -85,13 +85,13 @@ export function rejectUnknownOptions(command, options) {
   const allowed = new Set(COMMAND_OPTIONS[command] || []);
   const unknown = Object.keys(options).filter((key) => key !== "_" && !allowed.has(key));
   if (unknown.length > 0) {
-    throw new Error(`Unknown option for ${command}: --${unknown[0].replaceAll("_", "-")}`);
+    throw new Error(`Unknown option for ${command}: --${unknown[0].replace(/_/gu, "-")}`);
   }
 }
 
 export function required(options, key) {
   const value = options[key];
-  if (!value) throw new Error(`--${key.replaceAll("_", "-")} is required`);
+  if (!value) throw new Error(`--${key.replace(/_/gu, "-")} is required`);
   return value;
 }
 

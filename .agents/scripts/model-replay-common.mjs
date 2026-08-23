@@ -36,10 +36,21 @@ function sortedValue(value) {
   if (Array.isArray(value)) return value.map(sortedValue);
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.keys(value).sort().map((key) => [key, sortedValue(value[key])]),
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entryValue]) => [key, sortedValue(entryValue)]),
     );
   }
   return value;
+}
+
+function charactersAreAllowed(value, characters) {
+  return [...value].every((character) => characters.includes(character));
+}
+
+export function isFullCommitSHA(value) {
+  const text = String(value || "");
+  if (text.length !== 40 && text.length !== 64) return false;
+  return charactersAreAllowed(text, "0123456789abcdef");
 }
 
 export function stableJson(value) {
@@ -115,10 +126,15 @@ export function appendJsonLine(path, value) {
 }
 
 export function assertSafeID(value, label = "identifier") {
-  if (!/^[a-z0-9][a-z0-9._-]{2,79}$/.test(String(value || ""))) {
+  const identifier = String(value || "");
+  const first = identifier[0] || "";
+  const valid = identifier.length >= 3 && identifier.length <= 80
+    && "abcdefghijklmnopqrstuvwxyz0123456789".includes(first)
+    && charactersAreAllowed(identifier, "abcdefghijklmnopqrstuvwxyz0123456789._-");
+  if (!valid) {
     throw new Error(`${label} must match ^[a-z0-9][a-z0-9._-]{2,79}$`);
   }
-  return String(value);
+  return identifier;
 }
 
 export function pathInside(root, child) {

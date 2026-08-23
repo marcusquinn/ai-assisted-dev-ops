@@ -11,7 +11,7 @@ import {
   readdirSync,
   realpathSync,
 } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { pathInside } from "./model-replay-common.mjs";
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
@@ -103,11 +103,20 @@ export function deleteWorkspaceEnvironment(workspace) {
   return 0;
 }
 
+function hasControlCharacter(value) {
+  for (const character of String(value)) {
+    const code = character.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function seatbeltLiteral(path) {
-  if (/[\u0000-\u001f\u007f]/u.test(path)) {
+  if (hasControlCharacter(path)) {
     throw new Error(`Verifier sandbox path contains control characters: ${path}`);
   }
-  return `"${path.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  const escaped = path.split("\\").join("\\\\").split('"').join('\\"');
+  return `"${escaped}"`;
 }
 
 export function verifierSandboxCommand(argv, workspace, environmentRoot) {
@@ -168,6 +177,23 @@ function commandArgumentsAreValid(argv) {
   return argv.every((part) => typeof part === "string");
 }
 
+function commandOutput(value, compact) {
+  if (compact) return compactOutput(value);
+  return String(value || "");
+}
+
+function completedCommand(result, compact, startedAt) {
+  return {
+    status: Number.isInteger(result.status) ? result.status : null,
+    signal: result.signal || "",
+    timedOut: result.error?.code === "ETIMEDOUT",
+    error: result.error?.message || "",
+    stdout: commandOutput(result.stdout, compact),
+    stderr: commandOutput(result.stderr, compact),
+    durationMs: Date.now() - startedAt,
+  };
+}
+
 export function execute(
   argv,
   { cwd, timeoutMs = 120000, env = process.env, compact = true } = {},
@@ -184,15 +210,7 @@ export function execute(
     timeout: timeoutMs,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return {
-    status: Number.isInteger(result.status) ? result.status : null,
-    signal: result.signal || "",
-    timedOut: result.error?.code === "ETIMEDOUT",
-    error: result.error?.message || "",
-    stdout: compact ? compactOutput(result.stdout) : String(result.stdout || ""),
-    stderr: compact ? compactOutput(result.stderr) : String(result.stderr || ""),
-    durationMs: Date.now() - startedAt,
-  };
+  return completedCommand(result, compact, startedAt);
 }
 
 export function executeRequired(argv, options = {}) {

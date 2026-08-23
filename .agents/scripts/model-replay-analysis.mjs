@@ -165,11 +165,16 @@ export function budgetRecommendation(plan, configurations, pairwise, completedCe
     return recommendation("complete-stage", "planned_cells_missing");
   }
   const dominant = dominantConfiguration(configurations, pairwise);
-  const stageRecommendations = {
-    canary: () => canaryRecommendation(configurations, dominant),
-    primary: () => primaryRecommendation(dominant),
-    sweep: () => sweepRecommendation(configurations, dominant),
-    confirm: () => confirmationRecommendation(plan, dominant),
-  };
-  return stageRecommendations[plan.stage]();
+  switch (plan.stage) {
+    case "canary":
+      return canaryRecommendation(configurations, dominant);
+    case "primary":
+      return primaryRecommendation(dominant);
+    case "sweep":
+      return sweepRecommendation(configurations, dominant);
+    case "confirm":
+      return confirmationRecommendation(plan, dominant);
+    default:
+      throw new Error(`Unsupported experiment stage: ${plan.stage}`);
+  }
 }

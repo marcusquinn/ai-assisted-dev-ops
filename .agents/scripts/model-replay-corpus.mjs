@@ -65,7 +65,9 @@ export function loadCorpus(corpusDir) {
   if (!Array.isArray(manifest.profiles) || manifest.profiles.length === 0) {
     throw new Error("Corpus must declare at least one profile");
   }
-  manifest.profiles.forEach((profile) => assertSafeID(profile, "profile"));
+  manifest.profiles.forEach((profile) => {
+    assertSafeID(profile, "profile");
+  });
   if (new Set(manifest.profiles).size !== manifest.profiles.length) {
     throw new Error("Corpus profiles must be unique");
   }
@@ -152,7 +154,7 @@ function promptGuardHash() {
 
 export function repositoryPathForCase(loadedCase, loadedCatalog) {
   const record = loadedCatalog.catalog.repositories[loadedCase.definition.repo_key];
-  if (!record || !record.path) {
+  if (!record?.path) {
     throw new Error(`Repository catalog has no entry for ${loadedCase.definition.repo_key}`);
   }
   const repositoryPath = resolve(record.path);

@@ -35,9 +35,17 @@ function addRequestUsage(summary, part) {
   }
 }
 
+function requestProvider(record, part) {
+  return part.providerID || part.provider_id || record.providerID || record.provider_id;
+}
+
+function requestModel(record, part) {
+  return part.modelID || part.model_id || record.modelID || record.model_id;
+}
+
 function addRequestIdentity(summary, record, part) {
-  const provider = part.providerID || part.provider_id || record.providerID || record.provider_id;
-  const model = part.modelID || part.model_id || record.modelID || record.model_id;
+  const provider = requestProvider(record, part);
+  const model = requestModel(record, part);
   if (provider && model) summary.models.add(`${provider}/${model}`);
   const variant = part.variant || record.variant;
   if (variant) summary.variants.add(String(variant));
@@ -73,14 +81,18 @@ export function csvValues(value) {
   return [...new Set(String(value || "").split(",").filter(Boolean))];
 }
 
+function positiveInteger(value) {
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
 function metricUsage(metric) {
   const requestCount = Number(metric.observed_usage_count || 0);
   const costCount = Number(metric.observed_cost_count || 0);
   return {
-    request_count: Number.isInteger(requestCount) && requestCount > 0 ? requestCount : 0,
+    request_count: positiveInteger(requestCount),
     tokens_total: Number(metric.observed_tokens_total || 0),
     cost_usd: costCount > 0 ? Number(metric.observed_cost_usd) : null,
-    cost_count: Number.isInteger(costCount) && costCount > 0 ? costCount : 0,
+    cost_count: positiveInteger(costCount),
     models: String(metric.observed_model || ""),
     variants: String(metric.observed_variant || ""),
   };

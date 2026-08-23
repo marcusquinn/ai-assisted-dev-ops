@@ -101,25 +101,15 @@ function qualificationRepetitions(value) {
   return repeatCount;
 }
 
-export function qualifyCase({
-  corpusDir,
+function runQualificationRepetitions({
+  loadedCase,
+  loadedCatalog,
   caseID,
-  catalogPath,
   workRoot,
-  repetitions = 3,
-  allowReconstructedPrompt = false,
-  allowPromptWarnings = false,
-  retainWorkspaces = false,
+  files,
+  repeatCount,
+  retainWorkspaces,
 }) {
-  const loadedCase = loadCase(corpusDir, caseID);
-  const loadedCatalog = loadCatalog(catalogPath);
-  if (loadedCase.definition.prompt_fidelity !== "exact" && !allowReconstructedPrompt) {
-    throw new Error(`Case ${caseID} has reconstructed prompt fidelity; explicit override required`);
-  }
-  const files = caseFiles(loadedCase);
-  const promptGuard = qualificationPromptGuard(files, allowPromptWarnings);
-  const repeatCount = qualificationRepetitions(repetitions);
-  mkdirSync(workRoot, { recursive: true, mode: 0o700 });
   const runs = [];
   let baseTreeHash = "";
   let rejectionReason = "";
@@ -150,6 +140,37 @@ export function qualifyCase({
   if (outcomeSignatures.size > 1 && !rejectionReason) {
     rejectionReason = "non_deterministic_verifier";
   }
+  return { baseTreeHash, rejectionReason, runs };
+}
+
+export function qualifyCase({
+  corpusDir,
+  caseID,
+  catalogPath,
+  workRoot,
+  repetitions = 3,
+  allowReconstructedPrompt = false,
+  allowPromptWarnings = false,
+  retainWorkspaces = false,
+}) {
+  const loadedCase = loadCase(corpusDir, caseID);
+  const loadedCatalog = loadCatalog(catalogPath);
+  if (loadedCase.definition.prompt_fidelity !== "exact" && !allowReconstructedPrompt) {
+    throw new Error(`Case ${caseID} has reconstructed prompt fidelity; explicit override required`);
+  }
+  const files = caseFiles(loadedCase);
+  const promptGuard = qualificationPromptGuard(files, allowPromptWarnings);
+  const repeatCount = qualificationRepetitions(repetitions);
+  mkdirSync(workRoot, { recursive: true, mode: 0o700 });
+  const { baseTreeHash, rejectionReason, runs } = runQualificationRepetitions({
+    loadedCase,
+    loadedCatalog,
+    caseID,
+    workRoot,
+    files,
+    repeatCount,
+    retainWorkspaces,
+  });
   const fingerprint = computeCaseHash(loadedCase, baseTreeHash);
   const qualification = {
     schema_version: QUALIFICATION_SCHEMA,

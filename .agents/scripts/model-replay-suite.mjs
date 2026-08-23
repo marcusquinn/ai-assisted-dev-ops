@@ -62,11 +62,9 @@ export function selectSuiteEntries(corpus, suite, stage) {
   const suiteEntries = suiteEntriesFor(corpus, suite);
   const expectedSize = assertSuiteSize(corpus, suite, suiteEntries);
   assertBalancedSuite(corpus, suite, suiteEntries, expectedSize);
-  const stageSelectors = {
-    canary: () => canaryEntries(corpus, suiteEntries),
-    sweep: () => sweepEntries(suiteEntries),
-  };
-  return stageSelectors[stage]?.() || suiteEntries;
+  if (stage === "canary") return canaryEntries(corpus, suiteEntries);
+  if (stage === "sweep") return sweepEntries(suiteEntries);
+  return suiteEntries;
 }
 
 export function effortsFor(candidate, stage) {

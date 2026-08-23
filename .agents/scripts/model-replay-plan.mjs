@@ -168,6 +168,15 @@ function validatePlanOptions({ experimentID, suite, stage, mode }) {
   if (!MODES.includes(mode)) throw new Error("Mode must be autonomous or prescriptive");
 }
 
+function persistPlan(experimentDir, plan, candidateConfig) {
+  plan.plan_sha256 = planDigest(plan);
+  mkdirSync(experimentDir, { recursive: true, mode: 0o700 });
+  chmodSync(experimentDir, 0o700);
+  writeJson(join(experimentDir, "plan.json"), plan);
+  writeJson(join(experimentDir, "prediction-template.json"), predictionTemplate(plan));
+  writeJson(join(experimentDir, "candidate-config.json"), candidateConfig);
+}
+
 export function createPlan({
   corpusDir,
   candidatePath,
@@ -214,11 +223,6 @@ export function createPlan({
       non_fresh_cells: planned.contamination,
     },
   };
-  plan.plan_sha256 = planDigest(plan);
-  mkdirSync(experimentDir, { recursive: true, mode: 0o700 });
-  chmodSync(experimentDir, 0o700);
-  writeJson(join(experimentDir, "plan.json"), plan);
-  writeJson(join(experimentDir, "prediction-template.json"), predictionTemplate(plan));
-  writeJson(join(experimentDir, "candidate-config.json"), candidateConfig);
+  persistPlan(experimentDir, plan, candidateConfig);
   return plan;
 }

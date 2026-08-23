@@ -42,9 +42,13 @@ function validatePrediction(record, cell) {
   if (typeof record.predicted_best_effort !== "string" || !record.predicted_best_effort) {
     throw new Error("Prediction best effort is required");
   }
-  ["success_probability", "confidence"].forEach((field) => validateProbability(record, field));
+  ["success_probability", "confidence"].forEach((field) => {
+    validateProbability(record, field);
+  });
   ["predicted_cost_usd", "predicted_duration_seconds"]
-    .forEach((field) => validateNonNegative(record, field));
+    .forEach((field) => {
+      validateNonNegative(record, field);
+    });
   if (typeof record.predicted_failure_mode !== "string") {
     throw new Error("Prediction failure mode and rationale are required");
   }

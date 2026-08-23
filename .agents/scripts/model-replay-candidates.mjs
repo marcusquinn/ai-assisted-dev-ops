@@ -5,7 +5,43 @@ import { resolve } from "node:path";
 import { TIERS, readJson } from "./model-replay-core.mjs";
 import { CANDIDATE_SCHEMA } from "./model-replay-contracts.mjs";
 
-const ANTHROPIC_REFERENCE = /(anthropic|claude)/iu;
+const LOWER_IDENTIFIER_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789._-";
+const MODEL_CHARACTERS = `${LOWER_IDENTIFIER_CHARACTERS}ABCDEFGHIJKLMNOPQRSTUVWXYZ:/`;
+
+function startsWithAlphanumeric(value) {
+  const first = value[0]?.toLowerCase() || "";
+  return "abcdefghijklmnopqrstuvwxyz0123456789".includes(first);
+}
+
+function charactersAreAllowed(value, characters) {
+  return [...value].every((character) => characters.includes(character));
+}
+
+function isLowerIdentifier(value) {
+  return typeof value === "string" && value === value.toLowerCase()
+    && startsWithAlphanumeric(value) && charactersAreAllowed(value, LOWER_IDENTIFIER_CHARACTERS);
+}
+
+function isModelIdentifier(value) {
+  if (typeof value !== "string") return false;
+  const separator = value.indexOf("/");
+  if (separator < 1 || separator === value.length - 1) return false;
+  const provider = value.slice(0, separator);
+  const model = value.slice(separator + 1);
+  return isLowerIdentifier(provider) && startsWithAlphanumeric(model)
+    && charactersAreAllowed(model, MODEL_CHARACTERS);
+}
+
+function referencesAnthropic(value) {
+  const normalized = String(value).toLowerCase();
+  return normalized.includes("anthropic") || normalized.includes("claude");
+}
+
+function isEffortIdentifier(value) {
+  if (value === "default") return true;
+  return typeof value === "string" && startsWithAlphanumeric(value)
+    && charactersAreAllowed(value, "abcdefghijklmnopqrstuvwxyz0123456789-");
+}
 
 function parseISODate(value, label) {
   const timestamp = Date.parse(value || "");
@@ -13,13 +49,16 @@ function parseISODate(value, label) {
   return timestamp;
 }
 
-function validateCandidateIdentity(candidate, allowedProviders) {
-  if (!candidate || typeof candidate.model !== "string"
-    || !/^[a-z0-9][a-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(candidate.model)) {
+function validateCandidateModel(candidate) {
+  if (!candidate || !isModelIdentifier(candidate.model)) {
     throw new Error("Each candidate requires provider/model");
   }
+}
+
+function validateCandidateIdentity(candidate, allowedProviders) {
+  validateCandidateModel(candidate);
   const provider = candidate.model.slice(0, candidate.model.indexOf("/"));
-  if (ANTHROPIC_REFERENCE.test(candidate.model)) {
+  if (referencesAnthropic(candidate.model)) {
     throw new Error(`Anthropic-family candidate ${candidate.model} is excluded by benchmark policy`);
   }
   if (!allowedProviders.includes(provider)) {
@@ -31,15 +70,19 @@ function validateCandidateIdentity(candidate, allowedProviders) {
   }
 }
 
-function validateCandidateEfforts(candidate) {
+function validateEffortVariants(candidate) {
   if (!Array.isArray(candidate.efforts) || candidate.efforts.length === 0) {
     throw new Error(`Candidate ${candidate.model} requires effort variants`);
   }
   for (const effort of candidate.efforts) {
-    if (typeof effort !== "string" || !/^(default|[a-z0-9][a-z0-9-]*)$/.test(effort)) {
+    if (!isEffortIdentifier(effort)) {
       throw new Error(`Invalid effort ${effort} for ${candidate.model}`);
     }
   }
+}
+
+function validateCandidateEfforts(candidate) {
+  validateEffortVariants(candidate);
   if (typeof candidate.primary_effort !== "string"
     || !candidate.efforts.includes(candidate.primary_effort)) {
     throw new Error(`Candidate ${candidate.model} primary_effort must appear in efforts`);
@@ -64,12 +107,12 @@ function validateProviderAllowlist(candidates) {
     throw new Error("Candidate configuration requires an explicit provider allowlist");
   }
   const invalidProvider = candidates.allowed_providers.find(
-    (provider) => !/^[a-z0-9][a-z0-9._-]*$/.test(provider),
+    (provider) => !isLowerIdentifier(provider),
   );
   if (invalidProvider || new Set(candidates.allowed_providers).size !== candidates.allowed_providers.length) {
     throw new Error("Allowed providers must be unique lowercase identifiers");
   }
-  if (candidates.allowed_providers.some((provider) => ANTHROPIC_REFERENCE.test(provider))) {
+  if (candidates.allowed_providers.some(referencesAnthropic)) {
     throw new Error("Anthropic-family providers are excluded by benchmark policy");
   }
 }

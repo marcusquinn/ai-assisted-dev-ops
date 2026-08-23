@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   execute,
   harnessIdentity,
+  isFullCommitSHA,
   sha256,
   sha256File,
   stableJson,
@@ -23,7 +24,6 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
 const MODEL_REPLAY_AGENT = resolve(SCRIPT_DIR, "../workflows/model-replay.md");
-const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
 function detectedRuntimeVersion(runtime) {
   const executable = runtime === "claude"
@@ -93,20 +93,32 @@ function deploymentPaths(repoRoot, scriptDirectory) {
   return { bundleID: "", stampPath: join(repoRoot, ".deployed-sha") };
 }
 
+function commitFromMissingManifest(bundleID, stamp) {
+  if (bundleID) return "unavailable";
+  return isFullCommitSHA(stamp) ? stamp : "unavailable";
+}
+
+function manifestIsValid(manifest, bundleID, manifestCommit) {
+  const checks = [
+    uniqueManifestValue(manifest, "schema") === "1",
+    uniqueManifestValue(manifest, "status") === "validated",
+    !bundleID || uniqueManifestValue(manifest, "bundle_id") === bundleID,
+    isFullCommitSHA(manifestCommit),
+  ];
+  return checks.every(Boolean);
+}
+
 function installedFrameworkCommit(repoRoot, scriptDirectory) {
   const manifestPath = join(scriptDirectory, "../.bundle-manifest");
   const { bundleID, stampPath } = deploymentPaths(repoRoot, scriptDirectory);
   const stampContents = regularFileContents(stampPath);
   const stamp = stampContents === null ? "" : stampContents.trim();
-  if (!existsSync(manifestPath)) return COMMIT_PATTERN.test(stamp) ? stamp : "unavailable";
+  if (!existsSync(manifestPath)) return commitFromMissingManifest(bundleID, stamp);
   const manifest = regularFileContents(manifestPath);
   if (manifest === null) return "unavailable";
   const manifestCommit = uniqueManifestValue(manifest, "git_sha");
-  const validManifest = uniqueManifestValue(manifest, "schema") === "1"
-    && uniqueManifestValue(manifest, "status") === "validated"
-    && (!bundleID || uniqueManifestValue(manifest, "bundle_id") === bundleID)
-    && COMMIT_PATTERN.test(manifestCommit);
-  if (!validManifest || !COMMIT_PATTERN.test(stamp) || stamp !== manifestCommit) {
+  if (!manifestIsValid(manifest, bundleID, manifestCommit)
+    || !isFullCommitSHA(stamp) || stamp !== manifestCommit) {
     return "unavailable";
   }
   return manifestCommit;
@@ -126,7 +138,7 @@ export function frameworkCommit({ repoRoot = REPO_ROOT, scriptDirectory = SCRIPT
     timeoutMs: 10000,
   });
   const gitCommit = git.status === 0 ? git.stdout.trim() : "";
-  if (COMMIT_PATTERN.test(gitCommit)) return gitCommit;
+  if (isFullCommitSHA(gitCommit)) return gitCommit;
   return installedFrameworkCommit(repoRoot, scriptDirectory);
 }
 
@@ -166,7 +178,7 @@ export function resolveExperimentDirectory(experimentDir, create = false) {
 
 function frameworkIdentityIsAvailable(current) {
   const checks = [
-    COMMIT_PATTERN.test(current.commit),
+    isFullCommitSHA(current.commit),
     current.headless_helper_sha256 !== "unavailable",
     current.model_replay_agent_sha256 !== "unavailable",
     current.runtime_contract_sha256 !== "unavailable",

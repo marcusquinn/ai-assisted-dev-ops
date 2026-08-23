@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   POLICY_VERSION,
   QUALIFICATION_SCHEMA,
+  isFullCommitSHA,
   readJson,
   sha256,
   stableJson,
@@ -19,11 +20,7 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PROMPT_GUARD = process.env.AIDEVOPS_PROMPT_GUARD_HELPER
   || join(SCRIPT_DIR, "prompt-guard-helper.sh");
 
-export function scanPrompt(promptPath, allowWarnings) {
-  if (!existsSync(PROMPT_GUARD)) {
-    throw new Error("Prompt guard is unavailable; archived prompts cannot be qualified safely");
-  }
-  const result = execute([PROMPT_GUARD, "check-file", promptPath], { timeoutMs: 30000 });
+function assertPromptGuardResult(result, allowWarnings) {
   if (result.status === 1) {
     throw new Error(`Prompt guard blocked archived prompt: ${result.stderr || result.stdout}`);
   }
@@ -32,9 +29,17 @@ export function scanPrompt(promptPath, allowWarnings) {
       "Prompt guard warned about the archived prompt; review it and use --allow-prompt-warnings explicitly",
     );
   }
-  if (result.status !== 0 && result.status !== 2) {
+  if (![0, 2].includes(result.status)) {
     throw new Error(`Prompt guard failed: ${result.stderr || result.stdout || result.error}`);
   }
+}
+
+export function scanPrompt(promptPath, allowWarnings) {
+  if (!existsSync(PROMPT_GUARD)) {
+    throw new Error("Prompt guard is unavailable; archived prompts cannot be qualified safely");
+  }
+  const result = execute([PROMPT_GUARD, "check-file", promptPath], { timeoutMs: 30000 });
+  assertPromptGuardResult(result, allowWarnings);
   return {
     status: result.status === 2 ? "warning" : "clean",
     findings: result.status === 2 ? result.stderr || result.stdout : "",
@@ -120,7 +125,7 @@ function qualificationMetadataIsValid(qualification, loadedCase, caseID) {
     qualification.status === "qualified",
     qualification.reason === "",
     qualification.case_id === caseID,
-    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(qualification.base_tree_sha || ""),
+    isFullCommitSHA(qualification.base_tree_sha),
     qualificationDigest(qualification) === qualification.qualification_sha256,
     qualificationRunsAreValid(qualification),
     promptGuardStatusIsValid(qualification.prompt_guard?.autonomous),

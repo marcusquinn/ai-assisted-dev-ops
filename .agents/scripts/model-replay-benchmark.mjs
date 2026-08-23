@@ -55,16 +55,6 @@ function commandReport(options) {
   return createReport({ experimentDir: resolve(required(options, "experiment")) });
 }
 
-const COMMAND_HANDLERS = {
-  init: commandInit,
-  "add-case": commandAddCase,
-  qualify: commandQualify,
-  plan: commandPlan,
-  seal: commandSeal,
-  run: commandRun,
-  report: commandReport,
-};
-
 const HELP_COMMANDS = new Set(["help", "--help", "-h"]);
 const LEGACY_COMMANDS = new Set(["extract", "enrich", "test", "score"]);
 const LEGACY_REPLAY_MIGRATIONS = {
@@ -93,6 +83,19 @@ function legacyReplayError(operation) {
   );
 }
 
+function executeCommand(command, options) {
+  switch (command) {
+    case "init": return commandInit(options);
+    case "add-case": return commandAddCase(options);
+    case "qualify": return commandQualify(options);
+    case "plan": return commandPlan(options);
+    case "seal": return commandSeal(options);
+    case "run": return commandRun(options);
+    case "report": return commandReport(options);
+    default: throw new Error(`Unknown command: ${command}`);
+  }
+}
+
 export function runCLI(argv = process.argv.slice(2)) {
   const command = argv[0] || "help";
   if (command === "replay") return legacyReplayError(argv[1] || "");
@@ -103,9 +106,7 @@ export function runCLI(argv = process.argv.slice(2)) {
   }
   if (LEGACY_COMMANDS.has(command)) return legacyError(command);
   rejectUnknownOptions(command, options);
-  const handler = COMMAND_HANDLERS[command];
-  if (!handler) throw new Error(`Unknown command: ${command}`);
-  return handler(options);
+  return executeCommand(command, options);
 }
 
 function printResult(result) {

@@ -175,14 +175,7 @@ function runtimeEvidenceIsValid(result) {
   return checks.every(Boolean);
 }
 
-export function validateResult(result, cell, plan, sealed, experimentDir) {
-  if (!resultIdentityMatches(result, cell, plan, sealed)) {
-    throw new Error(`Result identity mismatch for cell ${cell.cell_id}`);
-  }
-  if (!["pass", "fail", "error", "timeout"].includes(result.outcome)) {
-    throw new Error(`Invalid result outcome for cell ${cell.cell_id}`);
-  }
-  const plannedCase = plan.cases.find((record) => record.case_id === cell.case_id);
+function validateResultVerification(result, cell, plannedCase) {
   const verification = verificationState(result, plannedCase);
   if (!verification.namesMatch) {
     throw new Error(`Result check identities do not match the plan for cell ${cell.cell_id}`);
@@ -190,18 +183,44 @@ export function validateResult(result, cell, plan, sealed, experimentDir) {
   if (!verificationInvariantsHold(result, verification)) {
     throw new Error(`Result verification invariants failed for cell ${cell.cell_id}`);
   }
+  return verification;
+}
+
+function resultRoutingState(result) {
   const modelMatched = result.concrete_model === result.model;
   const tierMatched = result.routing_tier === result.candidate_tier;
   const effortSupported = result.effective_effort !== "unknown"
     && result.effective_effort === result.requested_effort;
-  if (result.model_matched !== modelMatched || result.tier_matched !== tierMatched
-    || result.effort_supported !== effortSupported) {
+  return { modelMatched, tierMatched, effortSupported };
+}
+
+function validateResultRouting(result, cell) {
+  const routing = resultRoutingState(result);
+  const checks = [
+    result.model_matched === routing.modelMatched,
+    result.tier_matched === routing.tierMatched,
+    result.effort_supported === routing.effortSupported,
+  ];
+  if (!checks.every(Boolean)) {
     throw new Error(`Result routing evidence is inconsistent for cell ${cell.cell_id}`);
   }
-  if (result.outcome === "pass"
-    && !passingEvidenceIsValid(result, verification, modelMatched, tierMatched, effortSupported)) {
+  return routing;
+}
+
+function validatePassingResult(result, cell, verification, routing) {
+  if (result.outcome !== "pass") return;
+  if (!passingEvidenceIsValid(
+    result,
+    verification,
+    routing.modelMatched,
+    routing.tierMatched,
+    routing.effortSupported,
+  )) {
     throw new Error(`Passing result lacks required evidence for cell ${cell.cell_id}`);
   }
+}
+
+function validateResultIntegrity(result, cell, experimentDir) {
   validateOptionalMeasurements(result, cell);
   if (!runtimeEvidenceIsValid(result)) {
     throw new Error(`Result runtime evidence is invalid for cell ${cell.cell_id}`);
@@ -213,6 +232,20 @@ export function validateResult(result, cell, plan, sealed, experimentDir) {
     throw new Error(`Result integrity check failed for cell ${cell.cell_id}`);
   }
   validateResultArtifacts(result, cell, experimentDir);
+}
+
+export function validateResult(result, cell, plan, sealed, experimentDir) {
+  if (!resultIdentityMatches(result, cell, plan, sealed)) {
+    throw new Error(`Result identity mismatch for cell ${cell.cell_id}`);
+  }
+  if (!["pass", "fail", "error", "timeout"].includes(result.outcome)) {
+    throw new Error(`Invalid result outcome for cell ${cell.cell_id}`);
+  }
+  const plannedCase = plan.cases.find((record) => record.case_id === cell.case_id);
+  const verification = validateResultVerification(result, cell, plannedCase);
+  const routing = validateResultRouting(result, cell);
+  validatePassingResult(result, cell, verification, routing);
+  validateResultIntegrity(result, cell, experimentDir);
 }
 
 export function validatedResultRecords(experimentDir, plan, sealed) {
