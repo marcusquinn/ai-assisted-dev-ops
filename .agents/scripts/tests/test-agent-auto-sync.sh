@@ -87,6 +87,7 @@ for sentinel_pair in \
 	"aidevops.sh|aidevops.sh" \
 	".agents/scripts/version-manager-release.sh|scripts/version-manager-release.sh" \
 	".agents/scripts/deploy-agents-on-merge.sh|scripts/deploy-agents-on-merge.sh" \
+	".agents/scripts/runtime-bundle-manifest.sh|scripts/runtime-bundle-manifest.sh" \
 	".agents/scripts/runtime-bundle-verifier.sh|scripts/runtime-bundle-verifier.sh" \
 	".agents/scripts/setup/modules/agent-deploy.sh|scripts/setup/modules/agent-deploy.sh"; do
 	source_rel="${sentinel_pair%%|*}"
@@ -137,6 +138,7 @@ create_sync_fixture_repo() {
 	printf '#!/usr/bin/env bash\nprintf \"fixture cli\\n\"\n' >"$repo_root/aidevops.sh"
 	printf '9.9.9\n' >"$repo_root/VERSION"
 	printf 'release fixture\n' >"$repo_root/.agents/scripts/version-manager-release.sh"
+	printf 'manifest fixture\n' >"$repo_root/.agents/scripts/runtime-bundle-manifest.sh"
 	printf 'verifier fixture\n' >"$repo_root/.agents/scripts/runtime-bundle-verifier.sh"
 	printf 'agent deploy fixture\n' >"$repo_root/.agents/scripts/setup/modules/agent-deploy.sh"
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git init -q "$repo_root"
@@ -271,6 +273,7 @@ create_fake_repo() {
 	printf '9.9.9\n' >"$repo_path/VERSION"
 	printf 'release fixture\n' >"$repo_path/.agents/scripts/version-manager-release.sh"
 	printf 'deploy fixture\n' >"$repo_path/.agents/scripts/deploy-agents-on-merge.sh"
+	printf 'manifest fixture\n' >"$repo_path/.agents/scripts/runtime-bundle-manifest.sh"
 	printf 'verifier fixture\n' >"$repo_path/.agents/scripts/runtime-bundle-verifier.sh"
 	printf 'agent deploy fixture\n' >"$repo_path/.agents/scripts/setup/modules/agent-deploy.sh"
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add .

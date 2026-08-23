@@ -79,6 +79,7 @@ write_revision() {
 	for path in \
 		version-manager-release.sh \
 		deploy-agents-on-merge.sh \
+		runtime-bundle-manifest.sh \
 		runtime-bundle-verifier.sh; do
 		printf '%s %s\n' "$marker" "$path" >"$FAKE_REPO/.agents/scripts/$path"
 	done
@@ -106,6 +107,7 @@ create_bundle() {
 	for source_path in \
 		.agents/scripts/version-manager-release.sh \
 		.agents/scripts/deploy-agents-on-merge.sh \
+		.agents/scripts/runtime-bundle-manifest.sh \
 		.agents/scripts/runtime-bundle-verifier.sh \
 		.agents/scripts/setup/modules/agent-deploy.sh; do
 		active_path="${source_path#.agents/}"

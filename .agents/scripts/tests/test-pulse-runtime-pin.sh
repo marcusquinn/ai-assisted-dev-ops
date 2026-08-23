@@ -52,7 +52,7 @@ SH
 exit 0
 SH
 	chmod +x "$agents_root/scripts/"*.sh
-	printf 'schema=1\nstatus=validated\nbundle_id=%s\n' "$bundle_id" >"$agents_root/.bundle-manifest"
+	printf 'schema=1\nstatus=validated\nbundle_id=%s\ngit_sha=0123456789abcdef\ncli_sha256=0123456789abcdef\n' "$bundle_id" >"$agents_root/.bundle-manifest"
 	(cd "$agents_root" && pwd -P)
 	return 0
 }
@@ -169,6 +169,33 @@ test_rejects_unsafe_and_expired_configs() {
 	return 0
 }
 
+test_rejects_duplicate_manifest_keys() {
+	local agents_root="$1"
+	local manifest_file="$agents_root/.bundle-manifest"
+	local pristine_manifest="$TEST_ROOT/pristine-bundle-manifest"
+	local duplicate_field=""
+	local duplicate_value=""
+	local now=""
+	local rc=0
+	now=$(date +%s)
+	cp "$manifest_file" "$pristine_manifest"
+	for duplicate_field in status bundle_id git_sha; do
+		case "$duplicate_field" in
+		status) duplicate_value="rejected" ;;
+		bundle_id) duplicate_value="different-bundle" ;;
+		git_sha) duplicate_value="fedcba9876543210" ;;
+		esac
+		cp "$pristine_manifest" "$manifest_file"
+		printf '%s=%s\n' "$duplicate_field" "$duplicate_value" >>"$manifest_file"
+		rc=0
+		pulse_runtime_pin_set "$agents_root" "$((now + 600))" >/dev/null 2>&1 || rc=$?
+		[[ "$rc" -eq 2 ]] || fail "duplicate $duplicate_field manifest key was accepted"
+	done
+	cp "$pristine_manifest" "$manifest_file"
+	pass "runtime pins reject duplicate required manifest keys"
+	return 0
+}
+
 test_direct_entrypoints_reexec_pinned_bundle() {
 	local agents_root="$1"
 	local now=""
@@ -227,7 +254,10 @@ test_active_pin_preserves_installed_scheduler() {
 	# shellcheck source=../setup/modules/schedulers-pulse.sh
 	source "$SCHEDULERS_PULSE"
 	(
-		pulse_runtime_pin_resolve() { printf '%s\n' '/validated/pinned/agents'; return 0; }
+		pulse_runtime_pin_resolve() {
+			printf '%s\n' '/validated/pinned/agents'
+			return 0
+		}
 		_pulse_runtime_pin_preserves_scheduler true
 	) || fail "installed scheduler was not preserved for an active pin"
 	if (
@@ -237,7 +267,10 @@ test_active_pin_preserves_installed_scheduler() {
 		fail "scheduler was preserved without an active pin"
 	fi
 	if (
-		pulse_runtime_pin_resolve() { printf '%s\n' '/validated/pinned/agents'; return 0; }
+		pulse_runtime_pin_resolve() {
+			printf '%s\n' '/validated/pinned/agents'
+			return 0
+		}
 		_pulse_runtime_pin_preserves_scheduler false
 	); then
 		fail "missing scheduler was treated as preservable"
@@ -245,7 +278,10 @@ test_active_pin_preserves_installed_scheduler() {
 	if (
 		AIDEVOPS_PULSE_RUNTIME_PIN_REFRESH_SCHEDULERS=1
 		export AIDEVOPS_PULSE_RUNTIME_PIN_REFRESH_SCHEDULERS
-		pulse_runtime_pin_resolve() { printf '%s\n' '/validated/pinned/agents'; return 0; }
+		pulse_runtime_pin_resolve() {
+			printf '%s\n' '/validated/pinned/agents'
+			return 0
+		}
 		_pulse_runtime_pin_preserves_scheduler true
 	); then
 		fail "explicit controlled scheduler refresh was ignored"
@@ -264,16 +300,40 @@ test_active_pin_preserves_merge_scheduler() {
 	source "$SCHEDULERS_PLATFORM"
 	(
 		_launchd_has_agent() { return 0; }
-		_pulse_runtime_pin_preserves_scheduler() { local installed="$1"; [[ "$installed" == "true" ]] || return 1; return 0; }
-		print_info() { local message="$1"; : "$message"; return 0; }
-		print_error() { local message="$1"; : "$message"; return 0; }
+		_pulse_runtime_pin_preserves_scheduler() {
+			local installed="$1"
+			[[ "$installed" == "true" ]] || return 1
+			return 0
+		}
+		print_info() {
+			local message="$1"
+			: "$message"
+			return 0
+		}
+		print_error() {
+			local message="$1"
+			: "$message"
+			return 0
+		}
 		setup_pulse_merge_routine
 	) || fail "active pin did not preserve the installed merge scheduler"
 	if (
 		_launchd_has_agent() { return 0; }
-		_pulse_runtime_pin_preserves_scheduler() { local installed="$1"; : "$installed"; return 2; }
-		print_info() { local message="$1"; : "$message"; return 0; }
-		print_error() { local message="$1"; : "$message"; return 0; }
+		_pulse_runtime_pin_preserves_scheduler() {
+			local installed="$1"
+			: "$installed"
+			return 2
+		}
+		print_info() {
+			local message="$1"
+			: "$message"
+			return 0
+		}
+		print_error() {
+			local message="$1"
+			: "$message"
+			return 0
+		}
 		setup_pulse_merge_routine
 	); then
 		fail "invalid pin did not block merge scheduler reconciliation"
@@ -294,6 +354,7 @@ main() {
 	test_expired_pin_clears_without_force "$agents_root"
 	test_pin_mutations_respect_live_lock "$agents_root"
 	test_rejects_unsafe_and_expired_configs "$agents_root"
+	test_rejects_duplicate_manifest_keys "$agents_root"
 	test_direct_entrypoints_reexec_pinned_bundle "$agents_root"
 	test_invalid_pin_blocks_direct_entrypoint "$agents_root"
 	test_set_current_rejects_overlong_ttl "$agents_root"

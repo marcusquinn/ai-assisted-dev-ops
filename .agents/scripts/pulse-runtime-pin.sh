@@ -11,6 +11,11 @@ if [[ "${_AIDEVOPS_PULSE_RUNTIME_PIN_LOADED:-0}" == "1" ]]; then
 fi
 _AIDEVOPS_PULSE_RUNTIME_PIN_LOADED=1
 
+_pulse_runtime_pin_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=runtime-bundle-manifest.sh
+source "$_pulse_runtime_pin_script_dir/runtime-bundle-manifest.sh"
+unset _pulse_runtime_pin_script_dir
+
 _PULSE_RUNTIME_PIN_SCHEMA=""
 _PULSE_RUNTIME_PIN_ROOT=""
 _PULSE_RUNTIME_PIN_CREATED=""
@@ -196,6 +201,7 @@ _pulse_runtime_pin_validate_root() {
 	local bundles_root=""
 	local bundle_dir=""
 	local bundle_id=""
+	local manifest_schema=""
 	local manifest_bundle_id=""
 	local manifest_status=""
 	local required_entrypoint=""
@@ -219,13 +225,10 @@ _pulse_runtime_pin_validate_root() {
 	bundle_dir="${agents_root%/agents}"
 	[[ "$bundle_dir" != "$agents_root" && "${bundle_dir%/*}" == "$bundles_root" ]] || return 2
 	bundle_id="${bundle_dir##*/}"
-	while IFS='=' read -r key value; do
-		case "$key" in
-		bundle_id) manifest_bundle_id="$value" ;;
-		status) manifest_status="$value" ;;
-		esac
-	done <"$agents_root/.bundle-manifest"
-	[[ "$manifest_status" == "validated" && "$manifest_bundle_id" == "$bundle_id" ]] || return 2
+	manifest_schema=$(runtime_bundle_manifest_value "$agents_root/.bundle-manifest" schema 2>/dev/null) || return 2
+	manifest_status=$(runtime_bundle_manifest_value "$agents_root/.bundle-manifest" status 2>/dev/null) || return 2
+	manifest_bundle_id=$(runtime_bundle_manifest_value "$agents_root/.bundle-manifest" bundle_id 2>/dev/null) || return 2
+	[[ "$manifest_schema" == "1" && "$manifest_status" == "validated" && "$manifest_bundle_id" == "$bundle_id" ]] || return 2
 	printf '%s\n' "$agents_root"
 	return 0
 }

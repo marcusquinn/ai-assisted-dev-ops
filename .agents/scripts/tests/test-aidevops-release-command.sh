@@ -18,6 +18,7 @@ printf '%s\n' "$repo_version" >"${TEST_ROOT}/agents/VERSION"
 cp "$AIDEVOPS_SH" "${TEST_ROOT}/agents/aidevops.sh"
 cp -R "${REPO_ROOT}/.agents/scripts/aidevops-cli" "${TEST_ROOT}/agents/scripts/"
 cp "${REPO_ROOT}/.agents/scripts/plugin-source-trust-lib.sh" "${TEST_ROOT}/agents/scripts/"
+cp "${REPO_ROOT}/.agents/scripts/runtime-bundle-manifest.sh" "${TEST_ROOT}/agents/scripts/"
 cp "${REPO_ROOT}/.agents/scripts/runtime-bundle-verifier.sh" "${TEST_ROOT}/agents/scripts/"
 
 run_cli() {

@@ -7,6 +7,11 @@
 # helper proves that the stable activation link selects a validated immutable
 # bundle produced from that exact revision.
 
+_runtime_bundle_verifier_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=runtime-bundle-manifest.sh
+source "$_runtime_bundle_verifier_dir/runtime-bundle-manifest.sh"
+unset _runtime_bundle_verifier_dir
+
 _runtime_bundle_verify_emit_error() {
 	local message="$1"
 	if declare -F print_error >/dev/null 2>&1; then
@@ -20,18 +25,8 @@ _runtime_bundle_verify_emit_error() {
 _runtime_bundle_verify_manifest_value() {
 	local manifest_file="$1"
 	local key="$2"
-	local line=""
-
-	[[ -r "$manifest_file" ]] || return 1
-	while IFS= read -r line || [[ -n "$line" ]]; do
-		case "$line" in
-		"${key}="*)
-			printf '%s' "${line#*=}"
-			return 0
-			;;
-		esac
-	done <"$manifest_file"
-	return 1
+	runtime_bundle_manifest_value "$manifest_file" "$key" || return 1
+	return 0
 }
 
 _runtime_bundle_verify_first_line() {
@@ -155,6 +150,7 @@ _runtime_bundle_verify_manifest() {
 	local active_bundle_dir="${active_root%/agents}"
 	local active_bundle_id=""
 	local manifest_file="$active_root/.bundle-manifest"
+	local manifest_schema=""
 	local manifest_status=""
 	local manifest_bundle_id=""
 	local manifest_version=""
@@ -167,11 +163,16 @@ _runtime_bundle_verify_manifest() {
 		_runtime_bundle_verify_emit_error "Runtime bundle convergence failed: active bundle manifest is missing"
 		return 1
 	fi
+	manifest_schema=$(_runtime_bundle_verify_manifest_value "$manifest_file" schema 2>/dev/null) || manifest_schema=""
 	manifest_status=$(_runtime_bundle_verify_manifest_value "$manifest_file" status 2>/dev/null) || manifest_status=""
 	manifest_bundle_id=$(_runtime_bundle_verify_manifest_value "$manifest_file" bundle_id 2>/dev/null) || manifest_bundle_id=""
 	manifest_version=$(_runtime_bundle_verify_manifest_value "$manifest_file" framework_version 2>/dev/null) || manifest_version=""
 	manifest_sha=$(_runtime_bundle_verify_manifest_value "$manifest_file" git_sha 2>/dev/null) || manifest_sha=""
 	manifest_cli_sha=$(_runtime_bundle_verify_manifest_value "$manifest_file" cli_sha256 2>/dev/null) || manifest_cli_sha=""
+	if [[ "$manifest_schema" != "1" ]]; then
+		_runtime_bundle_verify_emit_error "Runtime bundle convergence failed: active bundle manifest schema is ${manifest_schema:-missing}, expected 1"
+		return 1
+	fi
 	if [[ "$manifest_status" != "validated" ]]; then
 		_runtime_bundle_verify_emit_error "Runtime bundle convergence failed: active bundle manifest status is ${manifest_status:-missing}, expected validated"
 		return 1
@@ -235,6 +236,7 @@ _runtime_bundle_verify_sentinels() {
 		"aidevops.sh|aidevops.sh"
 		".agents/scripts/version-manager-release.sh|scripts/version-manager-release.sh"
 		".agents/scripts/deploy-agents-on-merge.sh|scripts/deploy-agents-on-merge.sh"
+		".agents/scripts/runtime-bundle-manifest.sh|scripts/runtime-bundle-manifest.sh"
 		".agents/scripts/runtime-bundle-verifier.sh|scripts/runtime-bundle-verifier.sh"
 		".agents/scripts/setup/modules/agent-deploy.sh|scripts/setup/modules/agent-deploy.sh"
 	)
