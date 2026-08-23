@@ -298,10 +298,8 @@ _store_headless_session_if_allowed() {
 
 _private_output_has_task_complete() {
 	local output_file="$1"
-	if [[ -f "$output_file" ]] && grep -qF '"text":"TASK_COMPLETE"' "$output_file"; then
-		return 0
-	fi
-	return 1
+	_output_has_exact_model_text_line "$output_file" "TASK_COMPLETE"
+	return $?
 }
 
 _private_workload_exit_trap() {

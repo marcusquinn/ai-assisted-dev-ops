@@ -271,6 +271,24 @@ test_post_pr_handoff_completion_signal_is_exact() {
 	return 0
 }
 
+test_private_task_complete_requires_exact_model_text_line() {
+	local summary_file="${TEST_ROOT}/task-complete-summary.jsonl"
+	local prose_file="${TEST_ROOT}/task-complete-prose.jsonl"
+	local tool_file="${TEST_ROOT}/task-complete-tool.jsonl"
+	printf '%s\n' '{"type":"text","part":{"text":"Applied the requested fix.\n\nTASK_COMPLETE"}}' >"$summary_file"
+	printf '%s\n' '{"type":"text","part":{"text":"I will emit TASK_COMPLETE after more work."}}' >"$prose_file"
+	printf '%s\n' '{"type":"tool_use","part":{"state":{"output":"TASK_COMPLETE"}}}' >"$tool_file"
+
+	local result=0
+	_private_output_has_task_complete "$summary_file" || result=1
+	if _private_output_has_task_complete "$prose_file" ||
+		_private_output_has_task_complete "$tool_file"; then
+		result=1
+	fi
+	print_result "private completion accepts only an exact model-authored TASK_COMPLETE line" "$result"
+	return 0
+}
+
 test_post_pr_handoff_records_distinct_result_label() {
 	local output_file="${TEST_ROOT}/post-pr-handoff-result.jsonl"
 	printf '%s\n' '{"type":"text","sessionID":"ses_handoff","text":"POST_PR_HANDOFF"}' >"$output_file"

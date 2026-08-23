@@ -696,16 +696,19 @@ PY
 	return $?
 }
 
-output_has_post_pr_handoff_signal() {
+_output_has_exact_model_text_line() {
 	local file_path="$1"
+	local marker="$2"
 	[[ -f "$file_path" ]] || return 1
-	python3 - "$file_path" <<'PY'
+	python3 - "$file_path" "$marker" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 raw = Path(sys.argv[1]).read_text(errors='ignore')
+marker = sys.argv[2]
 model_text_parts = []
+json_stream_seen = False
 for line in raw.splitlines():
     line = line.strip()
     if not line.startswith('{'):
@@ -714,6 +717,7 @@ for line in raw.splitlines():
         obj = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         continue
+    json_stream_seen = True
     if obj.get('type', '') != 'text':
         continue
     part = obj.get('part', {})
@@ -722,9 +726,15 @@ for line in raw.splitlines():
         model_text_parts.append(text)
 
 model_text = '\n'.join(model_text_parts)
-candidate = model_text if model_text.strip() else raw
-sys.exit(0 if any(line.strip() == 'POST_PR_HANDOFF' for line in candidate.splitlines()) else 1)
+candidate = model_text if json_stream_seen else raw
+sys.exit(0 if any(line.strip() == marker for line in candidate.splitlines()) else 1)
 PY
+	return $?
+}
+
+output_has_post_pr_handoff_signal() {
+	local file_path="$1"
+	_output_has_exact_model_text_line "$file_path" "POST_PR_HANDOFF"
 	return $?
 }
 
