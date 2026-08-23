@@ -387,6 +387,43 @@ _preflight_early_dispatch() {
 }
 
 #######################################
+# Return whether the post-label refill has enough measured wall-clock budget
+# to start. The refill retains candidate-level timeouts; this admission gate
+# prevents a second full dispatch pass from starting near the cycle ceiling.
+#######################################
+_preflight_post_label_refill_wall_clock_allows() {
+	local start_epoch="${PULSE_START_EPOCH:-}"
+	local ceiling_seconds="${PULSE_STALE_THRESHOLD:-}"
+	local required_seconds="${PULSE_POST_LABEL_REFILL_MIN_REMAINING_SECONDS:-${PRE_RUN_STAGE_TIMEOUT:-600}}"
+	local now_epoch=""
+	now_epoch=$(date +%s 2>/dev/null) || now_epoch=""
+
+	if [[ ! "$start_epoch" =~ ^[0-9]+$ || ! "$ceiling_seconds" =~ ^[1-9][0-9]*$ ||
+		! "$required_seconds" =~ ^[1-9][0-9]*$ || ! "$now_epoch" =~ ^[0-9]+$ ||
+		"$now_epoch" -lt "$start_epoch" ]]; then
+		echo "[pulse-wrapper] Post-label dispatch_max skipped: wall-clock budget unavailable (start=${start_epoch:-?}, now=${now_epoch:-?}, ceiling=${ceiling_seconds:-?}, required=${required_seconds:-?})" >>"$LOGFILE"
+		if declare -F pulse_stats_increment >/dev/null 2>&1; then
+			pulse_stats_increment "pulse_post_label_refill_wall_clock_skipped" 2>/dev/null || true
+		fi
+		_PULSE_BUDGET_STAGE_DEFERRED=1
+		return 1
+	fi
+
+	local elapsed_seconds=$((now_epoch - start_epoch))
+	local remaining_seconds=$((ceiling_seconds - elapsed_seconds))
+	[[ "$remaining_seconds" -lt 0 ]] && remaining_seconds=0
+	if [[ "$remaining_seconds" -lt "$required_seconds" ]]; then
+		echo "[pulse-wrapper] Post-label dispatch_max skipped: insufficient wall-clock budget (remaining=${remaining_seconds}s, required=${required_seconds}s, elapsed=${elapsed_seconds}s, ceiling=${ceiling_seconds}s)" >>"$LOGFILE"
+		if declare -F pulse_stats_increment >/dev/null 2>&1; then
+			pulse_stats_increment "pulse_post_label_refill_wall_clock_skipped" 2>/dev/null || true
+		fi
+		_PULSE_BUDGET_STAGE_DEFERRED=1
+		return 1
+	fi
+	return 0
+}
+
+#######################################
 # Refill after label maintenance without repeating routine-comment responses.
 # Invalidate the cycle-scoped candidate snapshot first so apply_dispatch_max
 # sees labels changed by maintenance while preserving the existing claim,
@@ -396,6 +433,7 @@ _preflight_post_label_refill() {
 	if [[ -f "$STOP_FLAG" ]]; then
 		echo "[pulse-wrapper] Stop flag present — skipping post-label dispatch_max" >>"$LOGFILE"
 	else
+		_preflight_post_label_refill_wall_clock_allows || return 0
 		if ! _dispatch_invalidate_candidate_snapshot "label_maintenance_complete"; then
 			echo "[pulse-wrapper] Post-label dispatch_max skipped: unable to invalidate candidate snapshot" >>"$LOGFILE"
 			return 0

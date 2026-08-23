@@ -108,6 +108,9 @@ assert_refill_runtime_contract() {
 			STOP_FLAG=""
 			LOGFILE="/dev/null"
 			PRE_RUN_STAGE_TIMEOUT=7
+			PULSE_START_EPOCH=$(date +%s)
+			PULSE_STALE_THRESHOLD=1800
+			PULSE_POST_LABEL_REFILL_MIN_REMAINING_SECONDS=600
 
 			_dispatch_invalidate_candidate_snapshot() {
 				local reason="$1"
@@ -147,6 +150,63 @@ assert_refill_runtime_contract() {
 			_preflight_post_label_refill
 			STOP_FLAG="$PREFLIGHT_LIB"
 			_preflight_post_label_refill
+			printf '%s\n' "$REFILL_EVENTS"
+		)
+	)
+	if [[ "$actual_events" == "$expected_events" ]]; then
+		echo "${TEST_GREEN}PASS${TEST_NC}: $label"
+	else
+		TESTS_FAILED=$((TESTS_FAILED + 1))
+		echo "${TEST_RED}FAIL${TEST_NC}: $label"
+		echo "  expected events: $expected_events"
+		echo "  actual events:   ${actual_events:-none}"
+	fi
+	return 0
+}
+
+assert_refill_wall_clock_budget_contract() {
+	local label="$1"
+	local actual_events="" expected_events="counter:pulse_post_label_refill_wall_clock_skipped;skipped:1;"
+	TESTS_RUN=$((TESTS_RUN + 1))
+	actual_events=$(
+		(
+			unset _PULSE_DISPATCH_PREFLIGHT_LIB_LOADED
+			# shellcheck source=../pulse-dispatch-preflight-lib.sh
+			source "$PREFLIGHT_LIB"
+			REFILL_EVENTS=""
+			STOP_FLAG=""
+			LOGFILE="/dev/null"
+			PRE_RUN_STAGE_TIMEOUT=600
+			PULSE_START_EPOCH=1000
+			PULSE_STALE_THRESHOLD=1800
+			PULSE_POST_LABEL_REFILL_MIN_REMAINING_SECONDS=600
+
+			date() {
+				local format="${1:-}"
+				[[ "$format" == "+%s" ]] || return 1
+				printf '2300\n'
+				return 0
+			}
+
+			pulse_stats_increment() {
+				local counter_name="$1"
+				REFILL_EVENTS="${REFILL_EVENTS}counter:${counter_name};"
+				return 0
+			}
+
+			_dispatch_invalidate_candidate_snapshot() {
+				local reason="$1"
+				REFILL_EVENTS="${REFILL_EVENTS}invalidate:${reason};"
+				return 0
+			}
+
+			apply_dispatch_max() {
+				REFILL_EVENTS="${REFILL_EVENTS}dispatch;"
+				return 0
+			}
+
+			_preflight_post_label_refill
+			REFILL_EVENTS="${REFILL_EVENTS}skipped:${_PULSE_BUDGET_STAGE_DEFERRED:-0};"
 			printf '%s\n' "$REFILL_EVENTS"
 		)
 	)
@@ -439,6 +499,8 @@ assert_match_count \
 	"$PREFLIGHT_LIB"
 assert_refill_runtime_contract \
 	"9l: trusted NMR reconciliation completes before the normalized refill"
+assert_refill_wall_clock_budget_contract \
+	"9l1: refill skips with telemetry when remaining cycle budget is insufficient"
 assert_routine_comment_rest_block_contract \
 	"9l2: blocked REST evidence suppresses the routine-comment API scan"
 assert_label_maintenance_rest_block_contract \
