@@ -15,6 +15,7 @@
 #   brief-tier-test-helper.sh test     --corpus DIR [--model MODEL] --results FILE
 #   brief-tier-test-helper.sh score    --corpus DIR --results FILE
 #   brief-tier-test-helper.sh report   --results FILE
+#   brief-tier-test-helper.sh replay   validate|qualify|dry-run|run|report ...
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -838,6 +839,9 @@ main() {
 	shift || true
 
 	case "$command" in
+	replay)
+		python3 "${SCRIPT_DIR}/historical-replay-benchmark.py" "$@"
+		;;
 	extract) cmd_extract "$@" ;;
 	enrich) cmd_enrich "$@" ;;
 	test) cmd_test "$@" ;;

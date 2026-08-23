@@ -19,6 +19,42 @@ tools:
 
 Manage the cascade tier optimisation pipeline: expand the test corpus, review telemetry, and iterate brief quality.
 
+## Historical replay benchmark
+
+Historical replay is the objective routing benchmark. Each case is an opaque,
+local-only archive containing `case.json`, `base.tar`, `prompt.md`, a hidden
+`verifier.sh`, and `gold.patch`. Case identity binds the base tree, all three
+artifacts, harness policy, and framework/runtime versions. Qualification fails
+closed unless the synthetic broken repository fails, the gold patch passes
+twice deterministically, and every pass-to-pass check remains green.
+
+Keep autonomous prompts and solution-derived prescriptive prompts as separate
+experiment classes; reports never aggregate them. Repository names and source
+paths are not case metadata, so cross-repository corpora expose only the
+`aidevops`, `wordpress-plugin`, or `nextjs` workload profile.
+
+The quick suite is exactly nine qualified cases (three per profile); the full
+corpus is exactly eighteen (six per profile). Seal predictions and inspect the
+provider-free plan before execution:
+
+```bash
+brief-tier-test-helper.sh replay qualify --case CASE_DIR
+brief-tier-test-helper.sh replay dry-run --corpus CORPUS --models models.json \
+  --budget quick --output RUN_DIR
+brief-tier-test-helper.sh replay run --corpus CORPUS --plan RUN_DIR \
+  --eligible-provider openai
+brief-tier-test-helper.sh replay report --plan RUN_DIR
+```
+
+`models.json` entries declare concrete `model`, canonical `tier`, requested
+`effort`, predicted success probability, cost, time, and failure mode. Execution
+is refused unless every provider is explicitly eligible and always uses
+`headless-runtime-helper.sh`; results retain requested/effective model and
+effort. Deterministic verification is correctness. Diff similarity and LLM
+judgment are excluded. Quick/full plans record adaptive dominance stops,
+discriminating effort sweeps, and route-changing repeats; reports include
+reliability, cost/time per verified success, calibration and integrity caveats.
+
 Topic: $ARGUMENTS
 
 ## Subcommands
