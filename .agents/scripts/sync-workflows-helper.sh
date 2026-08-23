@@ -463,11 +463,24 @@ _extract_ref_pin() {
 	return 0
 }
 
+# Return success only for reusable workflows that fetch framework helpers from
+# the configured aidevops repository. Self-contained workflows must not inherit
+# helper provenance inputs merely because they expose an aidevops_ref input for
+# API consistency.
+_workflow_fetches_framework_helpers() {
+	local _workflow_name="$1"
+	case "$_workflow_name" in
+	issue-sync | review-bot-gate | loc-badge) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 # Render the caller template with a target reusable repo/ref, writing to stdout.
 _render_template_with_target() {
 	local _template="$1"
 	local _repo="$2"
 	local _ref="$3"
+	local _workflow_name="$4"
 	# Escape sed replacement special chars (&, |) before interpolation.
 	local _repo_escaped _ref_escaped
 	_repo_escaped=$(_escape_sed_replacement "$_repo")
@@ -481,11 +494,12 @@ _render_template_with_target() {
 		-e 's|marcusquinn/aidevops(/\.github/workflows/[^[:space:]]+)|'"$_repo_escaped"'\1|g' \
 		-e 's|^(      aidevops_ref:).*$|\1 '"$_ref_escaped"'|' \
 		"$_template")
-	# Existing pinned reusable versions already accept aidevops_ref. The new
-	# repository input is emitted only for configured mirrors, which must update
-	# their reusable workflow before callers are resynced.
+	# Helper-bearing reusable workflows must bind helper checkout provenance to
+	# the configured mirror. Self-contained workflows keep their original caller
+	# contract even when they expose an aidevops_ref input for API consistency.
 	if [[ "$_repo" != "$_DEFAULT_WORKFLOW_REUSABLE_REPO" ]] && \
-		printf '%s\n' "$_rendered" | grep -qE '^      aidevops_ref:'; then
+		_workflow_fetches_framework_helpers "$_workflow_name"; then
+		printf '%s\n' "$_rendered" | grep -qE '^      aidevops_ref:' || return 1
 		_rendered=$(printf '%s\n' "$_rendered" | sed -E \
 			's|^(      aidevops_ref:.*)$|      aidevops_repository: '"$_repo_escaped"'\n\1|'
 		)
@@ -1222,14 +1236,16 @@ _sync_open_pr() {
 	return 0
 }
 
-# _render_sync_target <template> <target-repo> <effective-ref> <slug>
+# _render_sync_target <template> <target-repo> <effective-ref> <slug> <workflow-name>
 _render_sync_target() {
 	local _template="$1"
 	local _target_repo="$2"
 	local _effective_ref="$3"
 	local _slug="$4"
+	local _workflow_name="$5"
 	local _content
-	_content=$(_render_template_with_target "$_template" "$_target_repo" "$_effective_ref") || return 1
+	_content=$(_render_template_with_target \
+		"$_template" "$_target_repo" "$_effective_ref" "$_workflow_name") || return 1
 	local _runner_override
 	_runner_override=$(_read_runner_field "$_slug")
 	if [[ -n "$_runner_override" ]]; then
@@ -1369,7 +1385,7 @@ _sync_one_repo() {
 	local _effective_ref
 	_effective_ref=$(_resolve_effective_ref "$_status" "$_workflow" "$_target_ref" "$_force_ref")
 	local _target_content
-	if ! _target_content=$(_render_sync_target "$_template" "$_target_repo" "$_effective_ref" "$_slug"); then
+	if ! _target_content=$(_render_sync_target "$_template" "$_target_repo" "$_effective_ref" "$_slug" "$_workflow_name"); then
 		printf '%s\t%s\t%s\ttemplate render failed\n' "$_slug" "$_status" "$_STATUS_FAILED"
 		return 1
 	fi
@@ -1532,7 +1548,7 @@ _process_rows() {
 		_effective_ref=$(_resolve_effective_ref \
 			"$_status" "$_path/$_workflow_relpath" "$_target_ref_arg" "$_OPT_FORCE_REF")
 		if [[ "$_target_repo" != "$_DEFAULT_WORKFLOW_REUSABLE_REPO" ]] && \
-			grep -qE '^      aidevops_ref:' "$_template" && \
+			_workflow_fetches_framework_helpers "$_workflow_name" && \
 			! _mirror_supports_helper_provenance "$_target_repo" "$_workflow_name" "$_effective_ref"; then
 			_result="${_slug}"$'\t'"${_status}"$'\t'"${_STATUS_FAILED}"$'\t'"configured mirror must be registered and updated at ${_effective_ref} before caller sync"
 			_any_failed=1
