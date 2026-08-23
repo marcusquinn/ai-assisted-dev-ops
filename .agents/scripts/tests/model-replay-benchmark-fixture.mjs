@@ -62,8 +62,10 @@ fi
 export MR_WORK_DIR="$work_dir" MR_SESSION_KEY="$session_key" MR_MODEL="$model" MR_VARIANT="$variant" MR_TIER="$tier"
 "$AIDEVOPS_TEST_NODE" -e '
 const fs = require("node:fs");
-fs.writeFileSync(process.env.MR_WORK_DIR + "/value.txt", "fixed\\n");
-fs.writeFileSync(process.env.MR_WORK_DIR + "/created.txt", "x".repeat(3000) + "PATCH_END_MARKER\\n");
+if (process.env.AIDEVOPS_TEST_NO_CHANGE !== "1") {
+  fs.writeFileSync(process.env.MR_WORK_DIR + "/value.txt", "fixed\\n");
+  fs.writeFileSync(process.env.MR_WORK_DIR + "/created.txt", "x".repeat(3000) + "PATCH_END_MARKER\\n");
+}
 const now = Math.floor(Date.now() / 1000);
 const mixedEvidence = process.env.AIDEVOPS_TEST_MIXED_EVIDENCE === "1";
 const observedModel = mixedEvidence ? process.env.MR_MODEL + ",openai/replay-other" : process.env.MR_MODEL;
