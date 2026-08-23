@@ -38,6 +38,7 @@ _pulse_dep_graph_dir="${BASH_SOURCE[0]%/*}"
 source "${_pulse_dep_graph_dir}/task-identity-lib.sh"
 # shellcheck source=./issue-hold-marker-lib.sh
 source "${_pulse_dep_graph_dir}/issue-hold-marker-lib.sh"
+DEP_GRAPH_REDUCE_FILTER="${PULSE_DEP_GRAPH_REDUCE_FILTER:-${_pulse_dep_graph_dir}/pulse-dep-graph-reduce.jq}"
 unset _pulse_dep_graph_dir
 
 #######################################
@@ -202,26 +203,48 @@ _dep_graph_prune_circular_edges() {
 # _dep_graph_process_issue_json is retained for unit testing and as a
 # reference implementation.
 #
-# Arguments: $1 - repo slug (owner/repo)
-# Output:    one JSON object on stdout
+# Arguments: $1 - issue-list JSON array
+# Output:    one unpruned JSON object on stdout
 #######################################
-_dep_graph_build_repo_data() {
-	local slug="$1"
-	local issues_json
-	if ! issues_json=$(gh_issue_list --repo "$slug" --state all --limit 500 \
-		--json number,title,body,labels,state 2>/dev/null); then
-		echo "[pulse-wrapper] dep-graph-cache: failed to list open issues for ${slug}; preserving previous repo cache when available" >>"$LOGFILE"
-		return 1
-	fi
-
+_dep_graph_build_repo_data_reference() {
+	local issues_json="$1"
 	local acc='{"open_nums":[],"closed_nums":[],"known_nums":[],"task_to_issue":{},"blocked_by_map":{},"defer_flags_map":{}}'
 	local issue_json=""
 	while IFS= read -r issue_json; do
 		[[ -n "$issue_json" ]] || continue
 		acc=$(_dep_graph_process_issue_json "$issue_json" "$acc") || return 1
 	done < <(printf '%s' "$issues_json" | jq -c '.[]' 2>/dev/null)
+	printf '%s' "$acc" | jq -c '{open_issues:.open_nums,closed_issues:.closed_nums,known_issues:.known_nums,task_to_issue:.task_to_issue,blocked_by:.blocked_by_map,defer_flags:.defer_flags_map}' || return 1
+	return 0
+}
+
+#######################################
+# Reduce one bounded issue-list response without per-issue subprocesses.
+#######################################
+_dep_graph_reduce_issues_json() {
+	local issues_json="$1"
+	[[ -f "$DEP_GRAPH_REDUCE_FILTER" ]] || return 1
+	printf '%s' "$issues_json" | jq -c -f "$DEP_GRAPH_REDUCE_FILTER" 2>/dev/null || return 1
+	return 0
+}
+
+#######################################
+# Fetch and build one repository graph through the bounded jq fast path.
+# The shell-loop implementation remains available above for parity tests.
+# Arguments: $1 - repo slug (owner/repo)
+# Output:    one pruned JSON object on stdout
+#######################################
+_dep_graph_build_repo_data() {
+	local slug="$1"
+	local issues_json=""
+	if ! issues_json=$(gh_issue_list --repo "$slug" --state all --limit 500 \
+		--json number,title,body,labels,state 2>/dev/null); then
+		echo "[pulse-wrapper] dep-graph-cache: failed to list open issues for ${slug}; preserving previous repo cache when available" >>"$LOGFILE"
+		return 1
+	fi
+
 	local parsed_repo_data=""
-	parsed_repo_data=$(printf '%s' "$acc" | jq -c '{open_issues:.open_nums,closed_issues:.closed_nums,known_issues:.known_nums,task_to_issue:.task_to_issue,blocked_by:.blocked_by_map,defer_flags:.defer_flags_map}') || return 1
+	parsed_repo_data=$(_dep_graph_reduce_issues_json "$issues_json") || return 1
 	_dep_graph_prune_circular_edges "$parsed_repo_data" || return 1
 	return 0
 }
