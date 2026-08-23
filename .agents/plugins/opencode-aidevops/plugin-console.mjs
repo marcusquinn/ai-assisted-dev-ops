@@ -16,7 +16,7 @@ const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_ENTRY_LENGTH = 4000;
 const MAX_ROTATED_LOGS = 3;
 const CREDENTIAL_PATTERN =
-  /(^|[^A-Za-z0-9_-])(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
+  /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 
 function formatArgument(arg) {
   if (arg instanceof Error) return arg.stack || arg.message;

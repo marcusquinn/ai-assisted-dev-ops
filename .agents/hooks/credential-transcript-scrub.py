@@ -14,6 +14,7 @@ This is Layer 4 of t2458 credential sanitization:
 
 Token prefix families scrubbed (mirrors shared-constants.sh scrub_credentials):
   sk-       OpenAI / Anthropic API keys
+  GOCSPX-   Google OAuth client secrets
   ghp_      GitHub personal access tokens
   gho_      GitHub OAuth tokens
   ghs_      GitHub server-to-server tokens
@@ -45,7 +46,7 @@ import sys
 import time
 
 # Regex mirrors shared-constants.sh scrub_credentials sed pattern exactly.
-# Group 1: token prefix family (one of the 9 families).
+# Group 1: token prefix family (one of the 10 families).
 # Suffix: 10+ alphanumeric / dash / underscore chars (token body).
 #
 # Word-boundary anchor `(?:^|(?<=[^A-Za-z0-9_-]))` prevents false positives
@@ -55,7 +56,7 @@ import time
 # into `ta[redacted-credential]` and similar (see GH#21026 / t2892 for the
 # canonical incident on example-repo/develop).
 CREDENTIAL_PATTERN = re.compile(
-    r"(?:^|(?<=[^A-Za-z0-9_-]))(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}",
+    r"(?:^|(?<=[^A-Za-z0-9_-]))(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}",
     re.ASCII,
 )
 

@@ -12,8 +12,11 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { scrubCredentials } from "../quality-hooks.mjs";
+import { createQualityHooks, scrubCredentials } from "../quality-hooks.mjs";
 
 const REDACTION_TOKEN = "[redacted-credential]";
 
@@ -54,5 +57,35 @@ describe("credential transcript scrub boundary", () => {
 
   test("redacts credential after parenthesis boundary", () => {
     assertScrub(`(${"xoxp-"}${"e".repeat(10)})`, `(${REDACTION_TOKEN})`, 1);
+  });
+
+  test("redacts Google OAuth client secret after equals boundary", () => {
+    const secret = `GOCSPX-${"f".repeat(28)}`;
+    assertScrub(`client_secret=${secret}`, `client_secret=${REDACTION_TOKEN}`, 1);
+  });
+
+  test("does not redact Google OAuth prefix embedded mid-word", () => {
+    const embedded = `vendor-GOCSPX-${"g".repeat(28)}`;
+    assertScrub(embedded, embedded, 0);
+  });
+
+  test("toolExecuteAfter scrubs Google OAuth secrets before returning output", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "aidevops-google-oauth-scrub-"));
+    const secret = `GOCSPX-${"h".repeat(28)}`;
+    const output = {
+      output: { stdout: `client_secret=${secret}`, exitCode: 0 },
+      metadata: {},
+    };
+
+    try {
+      const hooks = createQualityHooks({ scriptsDir: tempDir, logsDir: tempDir });
+      await hooks.toolExecuteAfter({ tool: "grep", callID: "" }, output);
+      assert.deepEqual(output.output, {
+        stdout: `client_secret=${REDACTION_TOKEN}`,
+        exitCode: 0,
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

@@ -30,7 +30,7 @@ export const DEFAULT_WORKER_BLOCKER_LOG_MAX_BYTES = 5 * 1024 * 1024;
 const MIN_LOG_MAX_BYTES = 512;
 const MAX_DETAIL_LENGTH = 500;
 const MAX_FIELD_LENGTH = 200;
-const CREDENTIAL_PATTERN = /(^|[^A-Za-z0-9_-])(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
+const CREDENTIAL_PATTERN = /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 
 function cleanText(value, maxLength, options = {}) {
   if (value === null || value === undefined) return "";

@@ -581,7 +581,7 @@ readonly TASK_SIBLING_NON_ACTIVE_STATES_SQL="'verified','cancelled','deployed','
 # surface in pasted bug reports.
 #
 # Two layers:
-#   scrub_credentials  — strips known token prefixes (sk-, ghp_, gho_, ghs_,
+#   scrub_credentials  — strips known token prefixes (sk-, GOCSPX-, ghp_, gho_, ghs_,
 #                        ghu_, github_pat_, glpat-, xoxb-, xoxp-) from any
 #                        text passed to it. Pure regex, no network.
 #   sanitize_url       — strips the `user:pass@` or `token@` authority from
@@ -606,7 +606,7 @@ scrub_credentials() {
 	# but is NOT a credential. macOS BSD sed has no `\b`, so we capture the
 	# preceding boundary character and restore it via \1 in the replacement.
 	# (t2892, GH#21026)
-	printf '%s' "$text" | sed -E 's/(^|[^A-Za-z0-9_-])(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/\1[redacted-credential]/g'
+	printf '%s' "$text" | sed -E 's/(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/\1[redacted-credential]/g'
 	return 0
 }
 

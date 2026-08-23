@@ -80,7 +80,7 @@ d = json.load(sys.stdin)
 resp = d.get('tool_response', '')
 # Check that no raw token prefix family appears in the output
 import re
-pat = re.compile(r'(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}')
+pat = re.compile(r'(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}')
 if isinstance(resp, str):
     assert not pat.search(resp), f'token still present: {resp}'
 elif isinstance(resp, dict):
@@ -133,7 +133,7 @@ if ! command -v python3 &>/dev/null; then
 fi
 printf '  Hook: %s\n\n' "$HOOK_SCRIPT"
 
-# ── Token-family tests (1–9) ───────────────────────────────────────────────
+# ── Token-family tests (1–10) ──────────────────────────────────────────────
 
 printf '%s\n' "${TEST_BLUE}Token family coverage${TEST_NC}"
 
@@ -164,23 +164,27 @@ assert_redacted "8. xoxb- token" \
 assert_redacted "9. xoxp- token" \
 	'{"tool_response": "Slack user: xoxp-ABCDEFGHIJKLM-1234567890-abcdefghij"}'
 
+GOOGLE_OAUTH_SECRET="GOCSPX-$(printf 'a%.0s' {1..28})"
+assert_redacted "10. GOCSPX- token" \
+	"{\"tool_response\": \"client_secret=${GOOGLE_OAUTH_SECRET}\"}"
+
 # ── Edge cases ─────────────────────────────────────────────────────────────
 
 printf '\n%s\n' "${TEST_BLUE}Edge cases${TEST_NC}"
 
-assert_no_output "10. Clean input produces no output" \
+assert_no_output "11. Clean input produces no output" \
 	'{"tool_response": "git status: clean working tree"}'
 
-assert_no_output "11. Token body shorter than 10 chars not redacted" \
+assert_no_output "12. Token body shorter than 10 chars not redacted" \
 	'{"tool_response": "gho_SHORT123"}'
 
-assert_redacted "12. Multiple tokens all redacted" \
+assert_redacted "13. Multiple tokens all redacted" \
 	'{"tool_response": "key1=ghp_ABCDEFGHIJ1234567890 key2=gho_ABCDEFGHIJ1234567890"}'
 
-# Test 13: nested JSON object
+# Test 14: nested JSON object
 NESTED_PAYLOAD='{"tool_response": {"stdout": "token: ghs_ABCDEFGHIJ1234567890", "stderr": "", "exit_code": 0}}'
-output13=$(run_hook "$NESTED_PAYLOAD")
-if echo "$output13" | python3 -c "
+output14=$(run_hook "$NESTED_PAYLOAD")
+if echo "$output14" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 assert d.get('redacted_credential') is True, 'not redacted'
@@ -188,13 +192,13 @@ resp = d.get('tool_response', {})
 assert isinstance(resp, dict), 'tool_response not dict'
 assert '[redacted-credential]' in resp.get('stdout', ''), 'token not scrubbed in stdout'
 " 2>/dev/null; then
-	pass "13. Nested dict tool_response scrubbed recursively"
+	pass "14. Nested dict tool_response scrubbed recursively"
 else
-	fail "13. Nested dict tool_response scrubbed recursively — got: $output13"
+	fail "14. Nested dict tool_response scrubbed recursively — got: $output14"
 fi
 
-# Test 14: malformed JSON exits 0
-assert_exit_zero "14. Malformed JSON exits 0 (fail-open)" \
+# Test 15: malformed JSON exits 0
+assert_exit_zero "15. Malformed JSON exits 0 (fail-open)" \
 	"not-valid-json"
 
 # ── Word-boundary anchor regression (t2892, GH#21026) ──────────────────────
@@ -262,7 +266,7 @@ BENCH_MS=$(python3 -c "
 import re, time, json
 
 CREDENTIAL_PATTERN = re.compile(
-    r'(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}',
+    r'(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}',
     re.ASCII,
 )
 filler = 'x' * 9900
@@ -280,9 +284,9 @@ print(round(avg_ms, 4))
 printf '  In-process regex per 10KB (%d runs): %sms\n' 500 "$BENCH_MS"
 
 if python3 -c "import sys; sys.exit(0 if float('$BENCH_MS') < 5 else 1)" 2>/dev/null; then
-	pass "15. Performance: ${BENCH_MS}ms per 10KB in-process (budget: <5ms)"
+	pass "23. Performance: ${BENCH_MS}ms per 10KB in-process (budget: <5ms)"
 else
-	fail "15. Performance: ${BENCH_MS}ms per 10KB in-process exceeds 5ms budget"
+	fail "23. Performance: ${BENCH_MS}ms per 10KB in-process exceeds 5ms budget"
 fi
 printf '  Note: subprocess launch adds ~50ms Python startup; in-process cost shown above.\n'
 

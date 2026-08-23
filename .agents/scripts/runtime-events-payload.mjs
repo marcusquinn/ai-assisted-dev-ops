@@ -13,7 +13,7 @@ const MAX_STRING_LENGTH = 2048;
 const SECRET_KEY_PATTERN = /^(auth|authorization|cookie|set_cookie|credentials?|password|passwd|secret|token|[a-z0-9]+_token|api_key|client_secret|private_key|database_url|dsn)$/i;
 const PATH_KEY_PATTERN = /(^|_)(cwd|dir|directory|file|path|root|worktree)(_|$)/i;
 const REPOSITORY_KEY_PATTERN = /^(project_name|repo|repository|repo_slug|repository_slug)$/i;
-const CREDENTIAL_PATTERN = /(^|[^A-Za-z0-9_-])(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
+const CREDENTIAL_PATTERN = /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g;
 const AWS_SECRET_KEY_PATTERN = /\b[A-Za-z0-9/+=]{40}\b/g;
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;

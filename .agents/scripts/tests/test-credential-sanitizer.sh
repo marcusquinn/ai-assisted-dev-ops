@@ -101,7 +101,7 @@ _assert_notcontains "glpat- in query string scrubbed" \
 
 echo ""
 echo "[test] scrub_credentials — token prefix matrix"
-for prefix in "sk-" "ghp_" "gho_" "ghs_" "ghu_" "github_pat_" "glpat-" "xoxb-" "xoxp-"; do
+for prefix in "sk-" "GOCSPX-" "ghp_" "gho_" "ghs_" "ghu_" "github_pat_" "glpat-" "xoxb-" "xoxp-"; do
 	fake_token="${prefix}abcdefghij1234567890"
 	input="prefix: ${fake_token} suffix"
 	result=$(scrub_credentials "$input")

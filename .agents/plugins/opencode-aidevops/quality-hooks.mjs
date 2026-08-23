@@ -39,7 +39,7 @@ export { checkSecretReadGate, isReadTool } from "./quality-hooks-secret-read.mjs
 // ---------------------------------------------------------------------------
 
 const CREDENTIAL_PATTERN =
-  /(^|[^A-Za-z0-9_-])(sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
+  /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 
 const REDACTION_TOKEN = "[redacted-credential]";
 const OPERATION_TITLE_MAX_LENGTH = 500;
