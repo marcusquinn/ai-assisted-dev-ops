@@ -419,7 +419,7 @@ test_model_replay_sandbox_passthrough_is_bounded() {
 		",$csv," != *",AIDEVOPS_WORKTREE_BASE_DIR,"* &&
 		",$csv," == *",OPENCODE_CONFIG,"* &&
 		",$csv," == *",OPENCODE_CONFIG_DIR,"* &&
-		",$csv," == *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* &&
+		",$csv," != *",OPENCODE_DISABLE_DEFAULT_PLUGINS,"* &&
 		",$csv," == *",OPENCODE_DISABLE_PROJECT_CONFIG,"* &&
 		",$csv," == *",XDG_DATA_HOME,"* ]]; then
 		print_result "model replay sandbox receives only bounded runtime configuration" 0
@@ -483,7 +483,7 @@ JSON
 	local OPENCODE_DISABLE_CLAUDE_CODE=1
 	local OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1
 	local OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
-	local OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+	local OPENCODE_DISABLE_DEFAULT_PLUGINS=""
 	local OPENCODE_DISABLE_EXTERNAL_SKILLS=1
 	local OPENCODE_DISABLE_LSP_DOWNLOAD=1
 	local OPENCODE_DISABLE_MODELS_FETCH=1
@@ -491,10 +491,13 @@ JSON
 	local OPENCODE_DISABLE_SHARE=1
 	local OPENCODE_PURE=1
 	local -a extra_args=()
-	local valid_status=0 trusted_status=0 backend_status=0 mismatch_status=0 invalid_posture_status=0
+	local valid_status=0 provider_plugins_status=0 trusted_status=0 backend_status=0 mismatch_status=0 invalid_posture_status=0
 	local invalid_status=0 prewarm_status=0
 
 	_validate_model_replay_args >/dev/null 2>&1 || valid_status=$?
+	OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+	_validate_model_replay_args >/dev/null 2>&1 || provider_plugins_status=$?
+	OPENCODE_DISABLE_DEFAULT_PLUGINS=""
 	AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE="trusted-local"
 	AIDEVOPS_WORKER_EGRESS_MODE="auto"
 	_validate_model_replay_args >/dev/null 2>&1 || trusted_status=$?
@@ -513,7 +516,8 @@ JSON
 	unset AIDEVOPS_WORKER_PREWARM_DIR
 	session_key="issue-30560"
 	_validate_model_replay_args >/dev/null 2>&1 || invalid_status=$?
-	if [[ "$valid_status" -eq 0 && "$trusted_status" -eq 0 && "$backend_status" -ne 0 &&
+	if [[ "$valid_status" -eq 0 && "$provider_plugins_status" -ne 0 &&
+		"$trusted_status" -eq 0 && "$backend_status" -ne 0 &&
 		"$mismatch_status" -ne 0 &&
 		"$invalid_posture_status" -ne 0 && "$prewarm_status" -ne 0 && "$invalid_status" -ne 0 ]]; then
 		print_result "model replay requires its fresh trusted runtime profile" 0
@@ -521,7 +525,7 @@ JSON
 	fi
 
 	print_result "model replay requires its fresh trusted runtime profile" 1 \
-		"valid=$valid_status trusted=$trusted_status backend=$backend_status mismatch=$mismatch_status posture=$invalid_posture_status prewarm=$prewarm_status invalid=$invalid_status"
+		"valid=$valid_status provider_plugins=$provider_plugins_status trusted=$trusted_status backend=$backend_status mismatch=$mismatch_status posture=$invalid_posture_status prewarm=$prewarm_status invalid=$invalid_status"
 	return 0
 }
 

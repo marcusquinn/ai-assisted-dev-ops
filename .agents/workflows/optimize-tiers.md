@@ -183,6 +183,10 @@ concrete provider-request plus resource evidence. The captured patch is reapplie
 to another clean synthetic base and regraded; prompt, log, metrics, and patch
 hashes remain bound to the append-only result record.
 
+OpenCode's built-in provider-auth plugins remain available for scoped OAuth;
+`OPENCODE_PURE=1` still excludes external plugins and the restricted profile
+prevents those built-ins from expanding the model replay tool boundary.
+
 Dry runs never contact providers and do not require an egress backend. Before an
 `enforced` real run, set `AIDEVOPS_WORKER_EGRESS_BACKEND` to an absolute
 executable that implements the v1 kernel/equivalent contract documented by
