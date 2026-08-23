@@ -57,14 +57,7 @@ function completeCost(usage, requestCount) {
   return checks.every(Boolean) ? Number(usage.cost_usd) : null;
 }
 
-export function runtimeEvidence({
-  sessionKey,
-  cell,
-  startedAt,
-  finishedAt,
-  runtimeOutput,
-  runtimePaths = {},
-}) {
+function replayMetrics({ runtimePaths, sessionKey, startedAt, finishedAt }) {
   const metric = latestMetric(
     runtimePaths.metrics
       || metricsPath("headless-runtime-metrics.jsonl", "AIDEVOPS_HEADLESS_METRICS_FILE"),
@@ -79,53 +72,87 @@ export function runtimeEvidence({
     startedAt,
     finishedAt,
   );
-  const usage = combinedUsage(metric, runtimeOutput);
-  const requestModels = csvValues(usage.models);
-  const requestVariants = csvValues(usage.variants);
+  return { metric, resource };
+}
+
+function runtimeIdentity(metric, usage, cell, sessionKey) {
   const expectedProvider = cell.model.slice(0, cell.model.indexOf("/"));
   const metricObserved = metricMatchesSession(metric, sessionKey, expectedProvider);
   const routingTier = String(metric.routing_tier || "");
-  const tierMatched = metricObserved && routingTier === cell.candidate_tier;
-  const modelEvidence = [...new Set([...csvValues(metric.observed_model), ...requestModels])];
-  const observedVariants = [...new Set([
-    ...csvValues(metric.observed_variant),
-    ...requestVariants,
-  ])];
-  const concreteModel = modelEvidence.length === 1 ? modelEvidence[0] : "unknown";
-  const observedEffort = effectiveEffort(observedVariants, cell.requested_effort);
+  const modelEvidence = [
+    ...new Set([...csvValues(metric.observed_model), ...csvValues(usage.models)]),
+  ];
+  const observedVariants = [
+    ...new Set([...csvValues(metric.observed_variant), ...csvValues(usage.variants)]),
+  ];
+  return {
+    metricObserved,
+    routingTier,
+    tierMatched: metricObserved && routingTier === cell.candidate_tier,
+    concreteModel: modelEvidence.length === 1 ? modelEvidence[0] : "unknown",
+    observedEffort: effectiveEffort(observedVariants, cell.requested_effort),
+  };
+}
+
+function requestEvidence(metric, usage, metricObserved) {
   const requestCount = Number(metric.observed_request_count || 0);
   const requestObserved = metricObserved && Number.isInteger(requestCount) && requestCount > 0;
-  const usageRequestCount = Number(usage.request_count || 0);
-  const completeUsage = requestObserved && usageRequestCount === requestCount;
+  return {
+    requestCount,
+    requestObserved,
+    completeUsage: requestObserved && Number(usage.request_count || 0) === requestCount,
+  };
+}
+
+function observedDuration(metric, startedAt, finishedAt) {
+  if (Number(metric.duration_ms) > 0) return Number(metric.duration_ms) / 1000;
+  return (finishedAt - startedAt) / 1000;
+}
+
+export function runtimeEvidence({
+  sessionKey,
+  cell,
+  startedAt,
+  finishedAt,
+  runtimeOutput,
+  runtimePaths = {},
+}) {
+  const { metric, resource } = replayMetrics({
+    runtimePaths,
+    sessionKey,
+    startedAt,
+    finishedAt,
+  });
+  const usage = combinedUsage(metric, runtimeOutput);
+  const identity = runtimeIdentity(metric, usage, cell, sessionKey);
+  const requests = requestEvidence(metric, usage, identity.metricObserved);
   const resourceObserved = resourceMatchesSession(resource, sessionKey);
   const runtimeChecks = [
-    metricObserved,
+    identity.metricObserved,
     metric.result === "success",
     Number(metric.exit_code) === 0,
-    tierMatched,
-    requestObserved,
+    identity.tierMatched,
+    requests.requestObserved,
     resourceObserved,
   ];
   return {
     metric,
     usage,
     resource,
-    concreteModel,
-    modelMatched: metricObserved && concreteModel === cell.model,
-    routingTier,
-    tierMatched,
+    concreteModel: identity.concreteModel,
+    modelMatched: identity.metricObserved && identity.concreteModel === cell.model,
+    routingTier: identity.routingTier,
+    tierMatched: identity.tierMatched,
     runtimeSucceeded: runtimeChecks.every(Boolean),
-    effectiveEffort: observedEffort,
-    effortSupported: metricObserved && observedEffort !== "unknown"
-      && observedEffort === cell.requested_effort,
-    requestCount: requestObserved ? requestCount : 0,
-    requestObserved,
+    effectiveEffort: identity.observedEffort,
+    effortSupported: identity.metricObserved && identity.observedEffort !== "unknown"
+      && identity.observedEffort === cell.requested_effort,
+    requestCount: requests.requestObserved ? requests.requestCount : 0,
+    requestObserved: requests.requestObserved,
     resourceObserved,
-    durationSeconds: Number(metric.duration_ms) > 0
-      ? Number(metric.duration_ms) / 1000
-      : (finishedAt - startedAt) / 1000,
-    tokensTotal: completeUsage ? Number(usage.tokens_total || 0) : null,
-    costUsd: completeUsage ? completeCost(usage, requestCount) : null,
+    durationSeconds: observedDuration(metric, startedAt, finishedAt),
+    tokensTotal: requests.completeUsage ? Number(usage.tokens_total || 0) : null,
+    costUsd: requests.completeUsage ? completeCost(usage, requests.requestCount) : null,
   };
 }
 
