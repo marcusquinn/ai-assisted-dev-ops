@@ -1296,6 +1296,22 @@ _dispatch_skip_for_benign_block() {
 }
 
 #######################################
+# Skip a candidate covered by an unchanged durable footprint-overlap defer.
+# State errors and wake conditions fall through to the authoritative live gate.
+# Arguments: issue number, repo slug, prefetched candidate JSON
+# Returns: 0 to skip, 1 to continue
+#######################################
+_dispatch_skip_for_footprint_defer() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local candidate_json="$3"
+	declare -F _footprint_defer_should_suppress >/dev/null 2>&1 || return 1
+	_footprint_defer_should_suppress "$issue_number" "$repo_slug" "$candidate_json" || return 1
+	_dispatch_stats_increment "dispatch_candidate_footprint_defer_suppressed"
+	return 0
+}
+
+#######################################
 # Skip candidates with terminal blockers.
 #
 # Arguments:
@@ -1912,6 +1928,11 @@ _dispatch_process_candidate() {
 	fi
 
 	pulse_dispatch_debug_log "processing #${issue_number} (${repo_slug}) labels=[${labels_csv}]"
+
+	# GH#30619: suppress unchanged overlap before expensive candidate ceremony.
+	if _dispatch_skip_for_footprint_defer "$issue_number" "$repo_slug" "$candidate_json"; then
+		return 1
+	fi
 
 	if _dispatch_should_skip_candidate "$issue_number" "$repo_slug"; then
 		return 1

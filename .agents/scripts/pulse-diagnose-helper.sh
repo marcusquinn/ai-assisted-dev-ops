@@ -44,6 +44,13 @@ source "${SCRIPT_DIR}/shared-constants.sh" 2>/dev/null || {
 }
 set -euo pipefail
 
+# GH#30619: read local durable footprint-defer state for issue reports.
+# shellcheck source=dispatch-dedup-footprint.sh
+if [[ -f "${SCRIPT_DIR}/dispatch-dedup-footprint.sh" ]]; then
+	# shellcheck disable=SC1091
+	source "${SCRIPT_DIR}/dispatch-dedup-footprint.sh"
+fi
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -146,6 +153,8 @@ pmc-close-conflicting-generic|pulse-merge-conflict.sh|734|Deterministic merge: c
 pmc-false-positive-heuristic|pulse-merge-conflict.sh|656|Deterministic merge: task ID match.*no implementation file overlap.*false-positive|Task ID match with no file overlap — false-positive heuristic, PR left open for rebase
 pmc-carry-diff|pulse-merge-conflict.sh|904|_carry_forward_pr_diff: appended diff from PR #|Carried forward PR diff to linked issue before close
 pmc-carry-diff-skip|pulse-merge-conflict.sh|859|_carry_forward_pr_diff: issue.*already has diff marker|Diff carry-forward skipped — already has diff marker for this PR
+pfd-deferred|dispatch-dedup-footprint.sh|220|\[footprint-defer\] event=deferred issue=#|Footprint overlap persisted as a bounded cross-cycle defer
+pfd-wake|dispatch-dedup-footprint.sh|170|\[footprint-defer\] event=wake issue=#|Footprint overlap defer woke after lifecycle, footprint, cooldown, or operator change
 dps-classify|pulse-dirty-pr-sweep.sh|788|PR #.*decision=|Dirty PR sweep classification decision
 dps-rebase-ok|pulse-dirty-pr-sweep.sh|615|PR #.*rebased \+ pushed|Dirty PR rebased and force-pushed successfully
 dps-rebase-cooldown|pulse-dirty-pr-sweep.sh|535|PR #.*rebase skipped.*cooldown|Rebase skipped — cooldown active
@@ -1841,6 +1850,25 @@ _render_issue_blockers_text() {
 	return 0
 }
 
+# Render the current or most recent durable footprint-overlap defer.
+# Args: issue_number repo_slug
+_render_issue_footprint_defer_text() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local defer_json='{"active":false,"wake_reason":"unavailable"}'
+	if declare -F _footprint_defer_status_json >/dev/null 2>&1; then
+		defer_json=$(_footprint_defer_status_json "$issue_number" "$repo_slug")
+	fi
+	printf 'Footprint overlap defer:\n'
+	printf '  Active: %s\n' "$(printf '%s' "$defer_json" | jq -r '.active // false' 2>/dev/null || printf 'false')"
+	printf '  Blocking issue: %s\n' "$(printf '%s' "$defer_json" | jq -r 'if .blocking_issue then "#" + (.blocking_issue | tostring) else "none" end' 2>/dev/null || printf 'none')"
+	printf '  Suppressed retries: %s\n' "$(printf '%s' "$defer_json" | jq -r '.suppressed_count // 0' 2>/dev/null || printf '0')"
+	printf '  Age seconds: %s\n' "$(printf '%s' "$defer_json" | jq -r '.age_seconds // 0' 2>/dev/null || printf '0')"
+	printf '  Cooldown remaining seconds: %s\n' "$(printf '%s' "$defer_json" | jq -r '.cooldown_remaining_seconds // 0' 2>/dev/null || printf '0')"
+	printf '  Wake reason: %s\n\n' "$(printf '%s' "$defer_json" | jq -r '.wake_reason // "none"' 2>/dev/null || printf 'unavailable')"
+	return 0
+}
+
 # Render the human-readable issue correlation report.
 # Args: issue_number repo_slug issue_json comments_json pr_numbers logfile logdir verbose attempt_summary_json issue_log_lines blocker_summary_json
 _render_issue_text() {
@@ -1868,6 +1896,7 @@ _render_issue_text() {
 
 	_render_issue_lifecycle_comments "$comments_json"
 	_render_issue_blockers_text "$blocker_summary_json"
+	_render_issue_footprint_defer_text "$issue_number" "$repo_slug"
 	_render_issue_attempts_text "$attempt_summary_json" "$issue_log_lines" "$verbose"
 	_render_issue_linked_prs "$repo_slug" "$pr_numbers" "$logfile" "$logdir" "$verbose"
 	return 0
@@ -1932,6 +1961,13 @@ _render_issue_json() {
 	printf ',\n'
 	printf '  "progress_blockers": '
 	printf '%s' "$blocker_summary_json" | jq -c '.' 2>/dev/null || printf '{}'
+	printf ',\n'
+	printf '  "footprint_defer": '
+	if declare -F _footprint_defer_status_json >/dev/null 2>&1; then
+		_footprint_defer_status_json "$issue_number" "$repo_slug"
+	else
+		printf '{"active":false,"wake_reason":"unavailable"}\n'
+	fi
 	printf ',\n'
 
 	printf '  "linked_prs": [\n'

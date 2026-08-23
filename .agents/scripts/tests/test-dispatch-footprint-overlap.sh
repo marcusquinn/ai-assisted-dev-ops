@@ -249,6 +249,14 @@ TEST_BIN="${TEST_ROOT}/bin"
 mkdir -p "$TEST_BIN"
 cat >"${TEST_BIN}/gh" <<'MOCK_GH'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "issue" && "${2:-}" == "view" ]]; then
+	[[ "${MOCK_BLOCKER_FAIL:-0}" == "1" ]] && exit 1
+	printf '{"number":401,"state":"%s","body":"## Files to Modify\\n- `EDIT: %s`","labels":[{"name":"%s"}]}\n' \
+		"${MOCK_BLOCKER_STATE:-OPEN}" "${MOCK_BLOCKER_PATH:-.agents/scripts/pulse-wrapper.sh}" \
+		"${MOCK_BLOCKER_LABEL:-status:in-review}"
+	exit 0
+fi
+
 label=""
 while [[ "$#" -gt 0 ]]; do
 	case "${1:-}" in
@@ -282,6 +290,157 @@ if printf '%s' "$result" | grep -q "pulse-wrapper.sh|401" &&
 else
 	print_result "get_inflight: excludes parent-task coordination footprints" 1 "(got: ${result})"
 fi
+
+# =============================================================================
+# Test 12 — durable defer suppresses unchanged overlap across cycles
+# =============================================================================
+_FOOTPRINT_DEFER_STATE_DIR="${TEST_ROOT}/footprint-defers"
+_FOOTPRINT_DEFER_TTL_SECONDS=1800
+LOGFILE="${TEST_ROOT}/pulse.log"
+export PATH="${TEST_BIN}:$OLD_PATH"
+# shellcheck disable=SC2016 # Markdown backticks are literal fixture content.
+candidate_body='## Files to Modify
+- `EDIT: .agents/scripts/pulse-wrapper.sh:100-120` — same file'
+inflight_data='.agents/scripts/pulse-wrapper.sh|401'
+_footprint_defer_record_overlap "500" "test/repo" \
+	"$(_footprint_extract_paths "$candidate_body")" "$inflight_data" "401" ".agents/scripts/pulse-wrapper.sh"
+candidate_json=$(jq -cn --arg body "$candidate_body" '{body:$body,labels:[{"name":"auto-dispatch"}]}')
+if _footprint_defer_should_suppress "500" "test/repo" "$candidate_json"; then
+	status_json=$(_footprint_defer_status_json "500" "test/repo")
+	suppressed_count=$(printf '%s' "$status_json" | jq -r '.suppressed_count // 0')
+	if [[ "$suppressed_count" == "1" && "$(printf '%s' "$status_json" | jq -r '.active')" == "true" ]]; then
+		print_result "durable defer: suppresses unchanged active overlap" 0
+	else
+		print_result "durable defer: suppresses unchanged active overlap" 1 "(state=${status_json})"
+	fi
+else
+	print_result "durable defer: suppresses unchanged active overlap" 1 "(unexpected reconsideration)"
+fi
+
+# =============================================================================
+# Test 13 — candidate footprint changes wake the defer
+# =============================================================================
+# shellcheck disable=SC2016 # Markdown backticks are literal fixture content.
+changed_body='## Files to Modify
+- `EDIT: .agents/scripts/other.sh` — changed file'
+changed_json=$(jq -cn --arg body "$changed_body" '{body:$body,labels:[{"name":"auto-dispatch"}]}')
+if _footprint_defer_should_suppress "500" "test/repo" "$changed_json"; then
+	print_result "durable defer: candidate footprint change wakes reconsideration" 1 "(still suppressed)"
+else
+	status_json=$(_footprint_defer_status_json "500" "test/repo")
+	wake_reason=$(printf '%s' "$status_json" | jq -r '.wake_reason // ""')
+	if [[ "$wake_reason" == "candidate_footprint_changed" ]]; then
+		print_result "durable defer: candidate footprint change wakes reconsideration" 0
+	else
+		print_result "durable defer: candidate footprint change wakes reconsideration" 1 "(state=${status_json})"
+	fi
+fi
+
+# =============================================================================
+# Test 14 — blocker lifecycle changes wake the defer
+# =============================================================================
+_footprint_defer_record_overlap "501" "test/repo" \
+	"$(_footprint_extract_paths "$candidate_body")" "$inflight_data" "401" ".agents/scripts/pulse-wrapper.sh"
+MOCK_BLOCKER_STATE=CLOSED
+export MOCK_BLOCKER_STATE
+if _footprint_defer_should_suppress "501" "test/repo" "$candidate_json"; then
+	print_result "durable defer: blocker close wakes reconsideration" 1 "(still suppressed)"
+else
+	status_json=$(_footprint_defer_status_json "501" "test/repo")
+	wake_reason=$(printf '%s' "$status_json" | jq -r '.wake_reason // ""')
+	if [[ "$wake_reason" == "blocker_lifecycle_changed" ]]; then
+		print_result "durable defer: blocker close wakes reconsideration" 0
+	else
+		print_result "durable defer: blocker close wakes reconsideration" 1 "(state=${status_json})"
+	fi
+fi
+unset MOCK_BLOCKER_STATE
+
+# =============================================================================
+# Test 15 — malformed state falls through to the live overlap check
+# =============================================================================
+state_path=$(_footprint_defer_state_path "test/repo" "502")
+mkdir -p "${state_path%/*}"
+printf '{malformed\n' >"$state_path"
+if _footprint_defer_should_suppress "502" "test/repo" "$candidate_json"; then
+	print_result "durable defer: malformed state fails through to live check" 1 "(unsafe suppression)"
+else
+	print_result "durable defer: malformed state fails through to live check" 0
+fi
+
+# =============================================================================
+# Test 16 — blocker footprint changes wake the defer
+# =============================================================================
+_footprint_defer_record_overlap "503" "test/repo" \
+	"$(_footprint_extract_paths "$candidate_body")" "$inflight_data" "401" ".agents/scripts/pulse-wrapper.sh"
+MOCK_BLOCKER_PATH=.agents/scripts/changed.sh
+export MOCK_BLOCKER_PATH
+if _footprint_defer_should_suppress "503" "test/repo" "$candidate_json"; then
+	print_result "durable defer: blocker footprint change wakes reconsideration" 1 "(still suppressed)"
+else
+	status_json=$(_footprint_defer_status_json "503" "test/repo")
+	wake_reason=$(printf '%s' "$status_json" | jq -r '.wake_reason // ""')
+	if [[ "$wake_reason" == "blocker_footprint_changed" ]]; then
+		print_result "durable defer: blocker footprint change wakes reconsideration" 0
+	else
+		print_result "durable defer: blocker footprint change wakes reconsideration" 1 "(state=${status_json})"
+	fi
+fi
+unset MOCK_BLOCKER_PATH
+
+# =============================================================================
+# Test 17 — force-dispatch explicitly wakes but does not authorize overlap
+# =============================================================================
+_footprint_defer_record_overlap "504" "test/repo" \
+	"$(_footprint_extract_paths "$candidate_body")" "$inflight_data" "401" ".agents/scripts/pulse-wrapper.sh"
+force_json=$(jq -cn --arg body "$candidate_body" '{body:$body,labels:[{"name":"force-dispatch"}]}')
+if _footprint_defer_should_suppress "504" "test/repo" "$force_json"; then
+	print_result "durable defer: operator reconsideration wakes live check" 1 "(still suppressed)"
+else
+	status_json=$(_footprint_defer_status_json "504" "test/repo")
+	wake_reason=$(printf '%s' "$status_json" | jq -r '.wake_reason // ""')
+	if [[ "$wake_reason" == "operator_reconsideration" ]]; then
+		print_result "durable defer: operator reconsideration wakes live check" 0
+	else
+		print_result "durable defer: operator reconsideration wakes live check" 1 "(state=${status_json})"
+	fi
+fi
+
+# =============================================================================
+# Test 18 — bounded cooldown expiry wakes the live check
+# =============================================================================
+_footprint_defer_record_overlap "505" "test/repo" \
+	"$(_footprint_extract_paths "$candidate_body")" "$inflight_data" "401" ".agents/scripts/pulse-wrapper.sh"
+state_path=$(_footprint_defer_state_path "test/repo" "505")
+state_json=$(_footprint_defer_read_json "$state_path")
+state_json=$(printf '%s' "$state_json" | jq -c '.expires_at = 0')
+_footprint_defer_write_json "$state_path" "$state_json"
+if _footprint_defer_should_suppress "505" "test/repo" "$candidate_json"; then
+	print_result "durable defer: cooldown expiry wakes reconsideration" 1 "(still suppressed)"
+else
+	status_json=$(_footprint_defer_status_json "505" "test/repo")
+	wake_reason=$(printf '%s' "$status_json" | jq -r '.wake_reason // ""')
+	if [[ "$wake_reason" == "cooldown_expired" ]]; then
+		print_result "durable defer: cooldown expiry wakes reconsideration" 0
+	else
+		print_result "durable defer: cooldown expiry wakes reconsideration" 1 "(state=${status_json})"
+	fi
+fi
+
+# =============================================================================
+# Test 19 — blocker refresh failure remains safely suppressed
+# =============================================================================
+_footprint_defer_record_overlap "506" "test/repo" \
+	"$(_footprint_extract_paths "$candidate_body")" "$inflight_data" "401" ".agents/scripts/pulse-wrapper.sh"
+MOCK_BLOCKER_FAIL=1
+export MOCK_BLOCKER_FAIL
+if _footprint_defer_should_suppress "506" "test/repo" "$candidate_json"; then
+	print_result "durable defer: blocker refresh failure remains fail-closed" 0
+else
+	print_result "durable defer: blocker refresh failure remains fail-closed" 1 "(unsafe reconsideration)"
+fi
+unset MOCK_BLOCKER_FAIL
+PATH="$OLD_PATH"
 
 # =============================================================================
 # Summary

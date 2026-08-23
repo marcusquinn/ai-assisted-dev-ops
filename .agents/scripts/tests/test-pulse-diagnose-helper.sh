@@ -826,6 +826,35 @@ printf '\nTest 20: help output includes issue subcommand\n'
 output=$("$HELPER" help 2>&1) || true
 assert_contains "help shows issue subcommand" "issue <N>" "$output"
 
+# --- Test 20b: issue report surfaces durable footprint defer state ---
+printf '\nTest 20b: durable footprint defer diagnostics\n'
+DIAG_FOOTPRINT_STATE_DIR="${TMPDIR_TEST}/footprint-defers"
+AIDEVOPS_FOOTPRINT_DEFER_STATE_DIR="$DIAG_FOOTPRINT_STATE_DIR" bash -c '
+	source "$1"
+	_footprint_defer_record_overlap "21860" "marcusquinn/aidevops" \
+		".agents/scripts/pulse-wrapper.sh" \
+		".agents/scripts/pulse-wrapper.sh|401" \
+		"401" ".agents/scripts/pulse-wrapper.sh"
+' _ "${SCRIPT_DIR}/../dispatch-dedup-footprint.sh"
+output=$(AIDEVOPS_FOOTPRINT_DEFER_STATE_DIR="$DIAG_FOOTPRINT_STATE_DIR" \
+	PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" issue 21860 --repo marcusquinn/aidevops 2>&1) || true
+assert_contains "issue text shows footprint defer heading" "Footprint overlap defer:" "$output"
+assert_contains "issue text shows footprint blocker" "Blocking issue: #401" "$output"
+assert_contains "issue text shows active footprint defer" "Active: true" "$output"
+
+output=$(AIDEVOPS_FOOTPRINT_DEFER_STATE_DIR="$DIAG_FOOTPRINT_STATE_DIR" \
+	PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
+	PULSE_DIAGNOSE_LOGDIR="$TMPDIR_TEST" \
+	PATH="${TMPDIR_TEST}:${PATH}" \
+	"$HELPER" issue 21860 --repo marcusquinn/aidevops --json 2>&1) || true
+json_footprint_blocker=$(printf '%s' "$output" | jq -r '.footprint_defer.blocking_issue // 0' 2>/dev/null || printf '0')
+assert_eq "JSON footprint defer blocker" "401" "$json_footprint_blocker"
+json_footprint_active=$(printf '%s' "$output" | jq -r '.footprint_defer.active // false' 2>/dev/null || printf 'false')
+assert_eq "JSON footprint defer active" "true" "$json_footprint_active"
+
 # --- Test 21: api-budget compact sanitized summary ---
 printf '\nTest 21: api-budget compact sanitized summary\n'
 output=$(PULSE_DIAGNOSE_LOGFILE="$FIXTURE_LOGFILE" \
