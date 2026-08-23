@@ -69,11 +69,12 @@ unset _headless_sandbox_timeout_resolved
 readonly OPENCODE_AUTH_FILE="${HOME}/.local/share/opencode/auth.json"
 readonly LOCK_DIR="${STATE_DIR}/locks"
 readonly METRICS_DIR="${HOME}/.aidevops/logs"
-readonly METRICS_FILE="${METRICS_DIR}/headless-runtime-metrics.jsonl"
+readonly METRICS_FILE="${AIDEVOPS_HEADLESS_METRICS_FILE:-${METRICS_DIR}/headless-runtime-metrics.jsonl}"
 readonly RESOURCE_METRICS_HELPER="${SCRIPT_DIR}/resource-metrics-helper.sh"
-readonly RESOURCE_METRICS_FILE="${METRICS_DIR}/resource-metrics.jsonl"
+readonly RESOURCE_METRICS_FILE="${AIDEVOPS_RESOURCE_METRICS_FILE:-${METRICS_DIR}/resource-metrics.jsonl}"
 readonly PRIVATE_OUTPUT_FILTER="${SCRIPT_DIR}/headless-private-output-filter.py"
 readonly HEADLESS_ROLE_TRIAGE="triage"
+readonly HEADLESS_ROLE_MODEL_REPLAY="model-replay"
 readonly HEADLESS_EGRESS_MODE_AUTO="auto"
 readonly HEADLESS_EGRESS_MODE_REQUIRED="required"
 
@@ -114,7 +115,8 @@ _headless_opencode_sandbox_required() {
 	local private_workload="$2"
 	local egress_mode="$3"
 
-	if [[ "$private_workload" -eq 1 || "$runtime_role" == "$HEADLESS_ROLE_TRIAGE" || \
+	if [[ "$private_workload" -eq 1 || "$runtime_role" == "$HEADLESS_ROLE_TRIAGE" ||
+		"$runtime_role" == "$HEADLESS_ROLE_MODEL_REPLAY" ||
 		"$egress_mode" == "$HEADLESS_EGRESS_MODE_REQUIRED" ]]; then
 		return 0
 	fi
@@ -807,7 +809,8 @@ _discover_actual_worktree_dir() {
 _run_role_safe_canary() {
 	local role="$1"
 	local selected_model="$2"
-	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]] && ! _headless_private_workload_enabled; then
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" || "$role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]] &&
+		! _headless_private_workload_enabled; then
 		print_info "[lifecycle] generic_canary_skipped role=$role boundary=public-triage pid=$$"
 		return 0
 	fi
@@ -836,6 +839,7 @@ cmd_run() {
 	_parse_run_args "$@" || return 1
 	_validate_run_args || return 1
 	_validate_private_workload_args || return 1
+	_validate_model_replay_args || return 1
 	local _cmd_run_stop=0 _cmd_run_return_status=1
 	_prepare_cmd_run_environment "$@" || return $?
 	[[ "$_cmd_run_stop" -eq 0 ]] || return "$_cmd_run_return_status"
@@ -891,6 +895,10 @@ cmd_canary() {
 			;;
 		esac
 	done
+	if [[ "$role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]]; then
+		print_error "The model-replay role is supported only by the run command"
+		return 1
+	fi
 
 	local selected_model
 	selected_model=$(choose_model "$role" "$model_override") || return $?
@@ -910,7 +918,7 @@ headless-runtime-helper.sh - Model-aware headless runtime (OpenCode default, Cla
 Usage:
   headless-runtime-helper.sh select [--role pulse|worker|triage] [--model provider/model]
   headless-runtime-helper.sh canary [--role pulse|worker|triage] [--model provider/model] [--tier simple|standard|thinking]
-  headless-runtime-helper.sh run --role pulse|worker|triage --session-key KEY --dir PATH --title TITLE (--prompt TEXT | --prompt-file FILE) [--model provider/model | --initial-model provider/model] [--tier simple|standard|thinking] [--variant NAME] [--agent NAME] [--runtime opencode|claude] [--opencode-arg ARG] [--private-workload --private-profile-sha256 HASH] [--detach]
+  headless-runtime-helper.sh run --role pulse|worker|triage|model-replay --session-key KEY --dir PATH --title TITLE (--prompt TEXT | --prompt-file FILE) [--model provider/model | --initial-model provider/model] [--tier simple|standard|thinking] [--variant NAME] [--agent NAME] [--runtime opencode|claude] [--opencode-arg ARG] [--private-workload --private-profile-sha256 HASH] [--detach]
   headless-runtime-helper.sh backoff [status|set MODEL-OR-PROVIDER REASON [SECONDS]|clear MODEL-OR-PROVIDER]
   headless-runtime-helper.sh session [status|clear PROVIDER SESSION_KEY]
   headless-runtime-helper.sh metrics [--role pulse|worker|triage] [--hours N] [--model SUBSTRING] [--fast-threshold N]

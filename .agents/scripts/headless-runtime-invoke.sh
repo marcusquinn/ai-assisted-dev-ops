@@ -42,7 +42,8 @@ _invoke_opencode_validate_context() {
 			return 1
 		fi
 	fi
-	if [[ "$runtime_role" == "$HEADLESS_ROLE_TRIAGE" && "$private_workload" -ne 1 ]]; then
+	if [[ "$runtime_role" == "$HEADLESS_ROLE_TRIAGE" ||
+		"$runtime_role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]] && [[ "$private_workload" -ne 1 ]]; then
 		public_triage=1
 	fi
 	_WORKER_EXIT_CODE_FILE="$exit_code_file"
@@ -55,6 +56,12 @@ _invoke_opencode_validate_context() {
 # Create and register the isolated OpenCode data directory.
 _invoke_opencode_create_isolated_data() {
 	[[ "${AIDEVOPS_HEADLESS_AUTH_ISOLATION:-1}" == "1" ]] || return 0
+	if [[ "${runtime_role:-}" == "${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}" &&
+		-n "${AIDEVOPS_WORKER_PREWARM_DIR:-}" ]]; then
+		print_error "Model replay rejects inherited or pre-warmed runtime state"
+		printf '%s' "86" >"$exit_code_file"
+		return 1
+	fi
 	if [[ -n "${AIDEVOPS_WORKER_PREWARM_DIR:-}" && -d "${AIDEVOPS_WORKER_PREWARM_DIR:-}" ]]; then
 		isolated_data_dir="$AIDEVOPS_WORKER_PREWARM_DIR"
 		isolated_data_precreated=1
@@ -170,7 +177,8 @@ _invoke_opencode_export_isolation() {
 			print_info "[lifecycle] db_seed_failed_fresh_session pid=$$"
 		fi
 	fi
-	if [[ -f "${isolated_data_dir}/opencode/auth.json" ]]; then
+	if [[ "$runtime_role" != "${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}" &&
+		-f "${isolated_data_dir}/opencode/auth.json" ]]; then
 		_maybe_rotate_isolated_auth "${isolated_data_dir}/opencode/auth.json" "${_invoke_provider:-anthropic}"
 	fi
 	return 0
@@ -368,9 +376,130 @@ _invoke_opencode_cleanup_monitors() {
 	return 0
 }
 
-# Merge or discard isolated state and clear process-global trap context.
+_query_model_replay_runtime_evidence() {
+	local runtime_db="$1"
+	sqlite3 -separator $'\t' "$runtime_db" 2>/dev/null <<'SQL'
+WITH observed AS (
+  SELECT
+    COALESCE(json_extract(data, '$.providerID'),
+             json_extract(data, '$.model.providerID')) AS provider,
+    COALESCE(json_extract(data, '$.modelID'),
+             json_extract(data, '$.model.modelID')) AS model,
+    COALESCE(json_extract(data, '$.variant'),
+             json_extract(data, '$.model.variant'), '') AS variant,
+    data,
+    rowid AS sequence
+  FROM message
+  WHERE json_extract(data, '$.role') = 'assistant'
+    AND COALESCE(json_extract(data, '$.providerID'),
+                 json_extract(data, '$.model.providerID')) IS NOT NULL
+    AND COALESCE(json_extract(data, '$.modelID'),
+                 json_extract(data, '$.model.modelID')) IS NOT NULL
+), identities AS (
+  SELECT DISTINCT provider || '/' || model AS identity
+  FROM observed
+  ORDER BY identity
+), variants AS (
+  SELECT DISTINCT variant
+  FROM (
+    SELECT COALESCE(json_extract(data, '$.variant'),
+                    json_extract(data, '$.model.variant')) AS variant
+    FROM observed
+  )
+  WHERE variant IS NOT NULL AND variant != ''
+  ORDER BY variant
+), usage AS (
+  SELECT
+    SUM(CASE WHEN json_type(data, '$.tokens') = 'object' THEN 1 ELSE 0 END) AS usage_count,
+    SUM(CASE WHEN json_type(data, '$.tokens') = 'object' THEN
+      CAST(COALESCE(
+        json_extract(data, '$.tokens.total'),
+        COALESCE(json_extract(data, '$.tokens.input'), 0)
+          + COALESCE(json_extract(data, '$.tokens.output'), 0)
+          + COALESCE(json_extract(data, '$.tokens.reasoning'), 0)
+          + COALESCE(json_extract(data, '$.tokens.cache.read'), 0)
+          + COALESCE(json_extract(data, '$.tokens.cache.write'), 0)
+      ) AS INTEGER)
+    ELSE 0 END) AS tokens_total,
+    SUM(CASE
+      WHEN json_type(data, '$.cost') IN ('integer', 'real') THEN 1
+      WHEN json_type(data, '$.cost_usd') IN ('integer', 'real') THEN 1
+      ELSE 0
+    END) AS cost_count,
+    SUM(CASE
+      WHEN json_type(data, '$.cost') IN ('integer', 'real') THEN json_extract(data, '$.cost')
+      WHEN json_type(data, '$.cost_usd') IN ('integer', 'real') THEN json_extract(data, '$.cost_usd')
+      ELSE 0
+    END) AS cost_usd
+  FROM observed
+)
+SELECT (SELECT GROUP_CONCAT(identity, ',') FROM identities),
+       COALESCE((SELECT GROUP_CONCAT(variant, ',') FROM variants), ''),
+       (SELECT COUNT(*) FROM observed),
+       COALESCE((SELECT usage_count FROM usage), 0),
+       COALESCE((SELECT tokens_total FROM usage), 0),
+       COALESCE((SELECT cost_count FROM usage), 0),
+       COALESCE((SELECT cost_usd FROM usage), 0);
+SQL
+	return $?
+}
+
+# Capture request identity and complete usage before ephemeral state cleanup.
+_capture_model_replay_runtime_evidence() {
+	local isolated_dir="$1"
+	local runtime_db="${isolated_dir}/opencode/opencode.db"
+	local evidence=""
+	local observed_model=""
+	local observed_variant=""
+	local request_count=""
+	local usage_count=""
+	local tokens_total=""
+	local cost_count=""
+	local cost_usd=""
+	local model_list_pattern='^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]*(,[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]*)*$'
+	local variant_list_pattern='^$|^[a-z0-9][a-z0-9-]*(,[a-z0-9][a-z0-9-]*)*$'
+	local decimal_pattern='^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$'
+
+	_MODEL_REPLAY_OBSERVED_MODEL=""
+	_MODEL_REPLAY_OBSERVED_VARIANT=""
+	_MODEL_REPLAY_REQUEST_COUNT=""
+	_MODEL_REPLAY_USAGE_COUNT=""
+	_MODEL_REPLAY_TOKENS_TOTAL=""
+	_MODEL_REPLAY_COST_COUNT=""
+	_MODEL_REPLAY_COST_USD=""
+	[[ "${runtime_role:-}" == "${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}" ]] || return 0
+	[[ -f "$runtime_db" && ! -L "$runtime_db" ]] || return 1
+	command -v sqlite3 >/dev/null 2>&1 || return 1
+
+	evidence=$(_query_model_replay_runtime_evidence "$runtime_db") || return 1
+	IFS=$'\t' read -r observed_model observed_variant request_count usage_count \
+		tokens_total cost_count cost_usd <<<"$evidence"
+	if [[ ! "$observed_model" =~ $model_list_pattern ||
+		! "$observed_variant" =~ $variant_list_pattern ||
+		! "$request_count" =~ ^[1-9][0-9]*$ ||
+		! "$usage_count" =~ ^[0-9]+$ ||
+		! "$tokens_total" =~ ^[0-9]+$ ||
+		! "$cost_count" =~ ^[0-9]+$ ||
+		! "$cost_usd" =~ $decimal_pattern ||
+		"$usage_count" -gt "$request_count" || "$cost_count" -gt "$request_count" ]]; then
+		return 1
+	fi
+	_MODEL_REPLAY_OBSERVED_MODEL="$observed_model"
+	_MODEL_REPLAY_OBSERVED_VARIANT="$observed_variant"
+	_MODEL_REPLAY_REQUEST_COUNT="$request_count"
+	_MODEL_REPLAY_USAGE_COUNT="$usage_count"
+	[[ "$usage_count" -eq 0 ]] || _MODEL_REPLAY_TOKENS_TOTAL="$tokens_total"
+	_MODEL_REPLAY_COST_COUNT="$cost_count"
+	[[ "$cost_count" -eq 0 ]] || _MODEL_REPLAY_COST_USD="$cost_usd"
+	return 0
+}
+
 _invoke_opencode_finalize_data() {
 	if [[ -n "$isolated_data_dir" && -d "$isolated_data_dir" ]]; then
+		if [[ "$runtime_role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]] &&
+			! _capture_model_replay_runtime_evidence "$isolated_data_dir"; then
+			print_warning "Model replay could not capture concrete runtime request evidence"
+		fi
 		if ! _finalize_isolated_runtime_data "$isolated_data_dir" "$runtime_role"; then
 			print_error "Isolated runtime data cleanup failed for role=$runtime_role"
 			if _headless_run_is_ephemeral "$runtime_role"; then

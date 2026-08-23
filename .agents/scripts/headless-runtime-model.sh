@@ -211,13 +211,14 @@ ON CONFLICT(provider, session_key) DO UPDATE SET
 # Returns 0 on success (prints model), 1 on bad format, 75 if backed off.
 _choose_model_explicit() {
 	local explicit_model="$1"
+	local role="${2:-}"
 	local provider
 	provider=$(extract_provider "$explicit_model" 2>/dev/null || printf '%s' "")
 	if [[ -z "$provider" ]]; then
 		print_error "Model must use provider/model format: $explicit_model"
 		return 1
 	fi
-	if model_backoff_active "$explicit_model"; then
+	if [[ "$role" != "${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}" ]] && model_backoff_active "$explicit_model"; then
 		print_warning "$explicit_model is currently backed off"
 		return 75
 	fi
@@ -328,7 +329,7 @@ choose_model() {
 	local selection_mode="${4:-adaptive}"
 
 	if [[ -n "$explicit_model" ]]; then
-		_choose_model_explicit "$explicit_model"
+		_choose_model_explicit "$explicit_model" "$role"
 		return $?
 	fi
 
@@ -389,6 +390,11 @@ resolve_headless_variant() {
 	local variant="${AIDEVOPS_HEADLESS_VARIANT:-}"
 	local tier_upper=""
 	local canonical_tier=""
+	# Replay cells with requested effort "default" must not inherit ambient or
+	# routed effort. Explicit --variant values bypass this resolver.
+	if [[ "$role" == "${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}" ]]; then
+		return 0
+	fi
 
 	if [[ -n "$tier" ]]; then
 		canonical_tier=$(_normalize_headless_tier "$tier")
@@ -500,11 +506,12 @@ _build_run_cmd() {
 	if [[ -n "$variant_override" ]]; then
 		printf '%s\0' --variant "$variant_override"
 	fi
-	# GH#17829: Attach to running opencode server if one is detected.
+	# GH#17829: Attach persistent runs to an existing opencode server if one is
+	# detected. Ephemeral roles must retain their isolated runtime boundary.
 	# Without this, `opencode run` tries to start an embedded server that
 	# conflicts with the user's `opencode serve`, causing "Session not found".
 	local _server_info=""
-	if _server_info=$(_detect_opencode_server); then
+	if ! _headless_run_is_ephemeral "${role:-}" && _server_info=$(_detect_opencode_server); then
 		local _server_url _server_pass
 		_server_url=$(echo "$_server_info" | head -1)
 		_server_pass=$(echo "$_server_info" | tail -1)

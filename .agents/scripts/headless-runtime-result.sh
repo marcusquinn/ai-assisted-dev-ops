@@ -21,6 +21,7 @@ _HEADLESS_RUNTIME_RESULT_LOADED=1
 
 _RUN_RESULT_ROLE_WORKER="worker"
 _RUN_RESULT_ROLE_PULSE="pulse"
+_RUN_RESULT_ROLE_MODEL_REPLAY="${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}"
 _RUN_RESULT_RATE_LIMIT="rate_limit"
 _RUN_RESULT_BLOCKED="blocked"
 _RUN_RESULT_MODEL_BLOCKED_SIGNAL="model_blocked_signal"
@@ -92,12 +93,25 @@ _handle_run_result_no_activity() {
 	return 75
 }
 
+_run_result_requires_task_complete() {
+	if _headless_private_workload_enabled || [[ "$role" == "$_RUN_RESULT_ROLE_MODEL_REPLAY" ]]; then
+		return 0
+	fi
+	return 1
+}
+
 _handle_run_result_success_output() {
-	if _headless_private_workload_enabled && ! _private_output_has_task_complete "$output_file"; then
-		_run_result_label="private_incomplete"
+	if _run_result_requires_task_complete && ! _private_output_has_task_complete "$output_file"; then
+		local incomplete_label="private_incomplete"
+		local workload_label="private workload"
+		if [[ "$role" == "$_RUN_RESULT_ROLE_MODEL_REPLAY" ]]; then
+			incomplete_label="model_replay_incomplete"
+			workload_label="model replay"
+		fi
+		_run_result_label="$incomplete_label"
 		_run_failure_reason="$_run_result_label"
 		rm -f "$output_file" 2>/dev/null || true
-		print_warning "$selected_model private workload exited without TASK_COMPLETE"
+		print_warning "$selected_model $workload_label exited without TASK_COMPLETE"
 		return 77
 	fi
 	if [[ "$role" != "$_RUN_RESULT_ROLE_PULSE" && -n "$discovered_session" ]]; then
@@ -278,6 +292,12 @@ _handle_transient_run_result() {
 }
 
 _finish_failed_run_result() {
+	if [[ "$role" == "$_RUN_RESULT_ROLE_MODEL_REPLAY" ]]; then
+		rm -f "$output_file"
+		_run_failure_reason="$failure_reason"
+		_run_should_retry=0
+		return "$exit_code"
+	fi
 	if attempt_pool_recovery "$provider" "$failure_reason" "$output_file"; then
 		_run_should_retry=1
 		rm -f "$output_file"

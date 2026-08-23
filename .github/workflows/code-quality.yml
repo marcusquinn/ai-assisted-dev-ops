@@ -104,6 +104,10 @@ jobs:
         bash .agents/scripts/platform-detect.sh
         echo "Platform detection: OK"
 
+    - name: Model replay verifier boundary (macOS)
+      if: runner.os == 'macOS'
+      run: node .agents/scripts/tests/test-model-replay-benchmark.mjs
+
   # Bash 3.2 compatibility: catches "\n"/"\t" in double-quoted strings and other
   # bash 4+ constructs that break on macOS default bash (GH#17371).
   # t2171: per-violation regression model replaces total-count-vs-threshold

@@ -1024,6 +1024,29 @@ test_private_workload_requires_task_complete() {
 	return 0
 }
 
+test_model_replay_requires_task_complete() {
+	local incomplete_output="${TEST_ROOT}/model-replay-incomplete-output.jsonl"
+	local complete_output="${TEST_ROOT}/model-replay-complete-output.jsonl"
+	printf '%s\n' '{"type":"step_start"}' >"$incomplete_output"
+	printf '%s\n' '{"type":"step_start"}' '{"text":"TASK_COMPLETE","type":"text"}' >"$complete_output"
+
+	local incomplete_status=0
+	local complete_status=0
+	_handle_run_result 0 "$incomplete_output" "$HEADLESS_ROLE_MODEL_REPLAY" "openai" \
+		"model-replay-incomplete" "openai/replay-fixture" >/dev/null 2>&1 || incomplete_status=$?
+	_handle_run_result 0 "$complete_output" "$HEADLESS_ROLE_MODEL_REPLAY" "openai" \
+		"model-replay-complete" "openai/replay-fixture" >/dev/null 2>&1 || complete_status=$?
+
+	if [[ "$incomplete_status" -eq 77 && "$complete_status" -eq 0 &&
+		! -f "$incomplete_output" && ! -f "$complete_output" ]]; then
+		print_result "model replay requires an exact TASK_COMPLETE marker" 0
+		return 0
+	fi
+	print_result "model replay requires an exact TASK_COMPLETE marker" 1 \
+		"incomplete=${incomplete_status} complete=${complete_status}"
+	return 0
+}
+
 test_private_workload_skips_persistent_failure_output() {
 	local AIDEVOPS_PRIVATE_WORKLOAD=1
 	local output_file="${TEST_ROOT}/private-worker-output.jsonl"
