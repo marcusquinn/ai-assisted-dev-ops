@@ -145,7 +145,13 @@ export function createReport({ experimentDir }) {
     },
     configurations,
     pairwise_separation: pairwise,
-    budget_recommendation: budgetRecommendation(plan, configurations, pairwise, results.length),
+    budget_recommendation: executionPosture === "trusted-local"
+      ? {
+        action: "quarantine",
+        reason: "trusted_local_egress_unenforced",
+        dominant_configuration: "",
+      }
+      : budgetRecommendation(plan, configurations, pairwise, results.length),
     prediction_calibration: predictionCalibration(plan, sealed, results),
   };
   writeJson(join(experimentDir, "report.json"), report);

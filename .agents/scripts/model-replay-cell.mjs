@@ -162,14 +162,14 @@ function runtimeArguments({ helper, sessionKey, workspace, promptPath, cell }) {
   return args;
 }
 
-function runtimeEnvironment(
+function runtimeEnvironment({
   workRoot,
   runtimeConfig,
   candidates,
   timeoutSeconds,
   runtimePaths,
   executionPosture,
-) {
+}) {
   const environment = { ...process.env };
   for (const name of [
     "AIDEVOPS_OPENCODE_SESSION_ID",
@@ -337,14 +337,14 @@ export function executeCell({ cell, plan, sealed, corpusDir, catalog, experiment
     const startedAt = Date.now();
     const run = spawnSync(args[0], args.slice(1), {
       encoding: "utf8",
-      env: runtimeEnvironment(
+      env: runtimeEnvironment({
         workRoot,
         runtimeConfig,
         candidates,
-        cell.timeout_seconds,
+        timeoutSeconds: cell.timeout_seconds,
         runtimePaths,
         executionPosture,
-      ),
+      }),
       timeout: (cell.timeout_seconds + 60) * 1000,
       maxBuffer: 50 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],

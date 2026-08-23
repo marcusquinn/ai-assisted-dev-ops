@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
-import { modelReplayExecutionPosture } from "./model-replay-contracts.mjs";
-
 function configurationKey(result) {
   return `${result.model}@${result.requested_effort}`;
 }
@@ -160,9 +158,6 @@ function confirmationRecommendation(plan, dominant) {
 }
 
 export function budgetRecommendation(plan, configurations, pairwise, completedCells) {
-  if (modelReplayExecutionPosture(plan) === "trusted-local") {
-    return recommendation("quarantine", "trusted_local_egress_unenforced");
-  }
   if (plan.integrity.non_fresh_cells.length > 0) {
     return recommendation("quarantine", "non_fresh_cells_excluded");
   }
