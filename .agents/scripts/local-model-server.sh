@@ -93,7 +93,7 @@ _start_server_process() {
 	)
 
 	if [[ "$flash_attn" == "true" ]]; then
-		server_args+=("--flash-attn")
+		server_args+=("--flash-attn" "on")
 	fi
 
 	print_info "Starting llama-server..."
@@ -393,7 +393,7 @@ cmd_status() {
 	# Show installed binary version
 	if [[ -x "$LLAMA_SERVER_BIN" ]]; then
 		local version
-		version="$("$LLAMA_SERVER_BIN" --version 2>/dev/null | head -1 || echo "installed")"
+		version="$(_setup_read_version "$LLAMA_SERVER_BIN" "installed")"
 		echo "Binary: ${version}"
 	else
 		echo "Binary: not installed (run: local-model-helper.sh setup)"

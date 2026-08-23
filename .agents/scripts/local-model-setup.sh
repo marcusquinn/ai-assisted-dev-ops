@@ -5,7 +5,7 @@
 # Local Model Setup Library — Hardware Detection & Installation
 # =============================================================================
 # Platform/GPU/memory detection, llama.cpp release download helpers,
-# huggingface-cli installer, and the cmd_setup entry point.
+# Hugging Face CLI installer, and the cmd_setup entry point.
 #
 # Usage: source "${SCRIPT_DIR}/local-model-setup.sh"
 #
@@ -165,6 +165,83 @@ get_release_asset_pattern() {
 # Installation Helpers
 # =============================================================================
 
+# Resolve the installed Hugging Face CLI, preferring the current `hf` command.
+_local_model_hf_cli() {
+	local candidate=""
+	for candidate in hf "${LOCAL_HF_VENV_DIR}/bin/hf" huggingface-cli; do
+		if suppress_stderr command -v "$candidate" >/dev/null && "$candidate" --help >/dev/null 2>&1; then
+			printf '%s' "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Resolve stable llama.cpp pointer releases to their binary-bearing nightly tag.
+_setup_resolve_release_json() {
+	local platform="$1"
+	local release_json="$2"
+	local asset_pattern=""
+	asset_pattern="$(get_release_asset_pattern "$platform")" || return 1
+
+	if jq -e --arg pat "$asset_pattern" \
+		'.assets[]? | select(.name | test($pat))' <<<"$release_json" >/dev/null 2>&1; then
+		printf '%s' "$release_json"
+		return 0
+	fi
+
+	local pointer_url=""
+	pointer_url="$(printf '%s' "$release_json" | jq -r \
+		'.assets[]? | select(.name == "nightly-tag.txt") | .browser_download_url // empty' 2>/dev/null | head -1)"
+	if [[ -z "$pointer_url" ]]; then
+		print_error "Release contains neither a matching binary nor nightly-tag.txt" >&2
+		return 1
+	fi
+
+	local nightly_tag=""
+	nightly_tag="$(curl -fsSL "$pointer_url" 2>/dev/null | tr -d '[:space:]')" || nightly_tag=""
+	if [[ ! "$nightly_tag" =~ ^b[0-9]+$ ]]; then
+		print_error "Invalid llama.cpp nightly tag pointer" >&2
+		return 1
+	fi
+
+	local nightly_json=""
+	nightly_json="$(curl -fsSL "${LLAMA_CPP_RELEASES_API}/tags/${nightly_tag}" 2>/dev/null)" || nightly_json=""
+	if [[ -z "$nightly_json" ]] || ! jq -e --arg pat "$asset_pattern" \
+		'.assets[]? | select(.name | test($pat))' <<<"$nightly_json" >/dev/null 2>&1; then
+		print_error "Nightly release ${nightly_tag} has no matching binary for ${platform}" >&2
+		return 1
+	fi
+
+	print_info "Resolved stable release pointer to nightly ${nightly_tag}" >&2
+	printf '%s' "$nightly_json"
+	return 0
+}
+
+# Compare a llama.cpp tag with either historical or current --version output.
+_setup_version_matches_tag() {
+	local version="$1"
+	local tag="$2"
+	[[ -n "$version" && "$tag" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+	printf '%s' "$version" | grep -qF "$tag" && return 0
+	if [[ "$tag" =~ ^b([0-9]+)$ ]]; then
+		local build_number="${BASH_REMATCH[1]}"
+		printf '%s' "$version" | grep -Eq "build[[:space:]]+${build_number}([^0-9]|$)" && return 0
+	fi
+	return 1
+}
+
+# llama.cpp currently writes version details to stderr; normalize the first
+# line so setup, status, and update checks share one compatibility path.
+_setup_read_version() {
+	local binary="$1"
+	local fallback="${2:-unknown}"
+	local version=""
+	version="$("$binary" --version 2>&1 | head -1)" || version=""
+	printf '%s' "${version:-$fallback}"
+	return 0
+}
+
 # Resolve download URL for a llama.cpp release asset
 _setup_find_asset_url() {
 	local platform="$1"
@@ -201,7 +278,7 @@ _setup_extract_archive() {
 	local tmp_archive="${tmp_dir}/${asset_name}"
 
 	print_info "Downloading ${asset_name}..."
-	if ! curl -sL -o "$tmp_archive" "$download_url"; then
+	if ! curl -fsSL -o "$tmp_archive" "$download_url"; then
 		print_error "Download failed: ${download_url}"
 		return 1
 	fi
@@ -226,7 +303,8 @@ _setup_extract_archive() {
 	return 0
 }
 
-# Install llama-server (and optionally llama-cli) from extracted dir
+# Atomically install the complete binary directory so sibling shared libraries
+# remain available to executables that use an origin-relative runtime path.
 _setup_install_binaries() {
 	local extracted_dir="$1"
 
@@ -243,18 +321,38 @@ _setup_install_binaries() {
 		return 1
 	fi
 
-	cp "$server_bin" "$LLAMA_SERVER_BIN"
-	chmod +x "$LLAMA_SERVER_BIN"
+	local server_dir="${server_bin%/*}"
+	local staging_dir="${LOCAL_MODELS_DIR}/.bin-staging-$$"
+	local backup_dir="${LOCAL_MODELS_DIR}/.bin-backup-$$"
+	local had_existing=0
+	rm -rf "$staging_dir" "$backup_dir"
+	mkdir -p "$staging_dir" || return 1
+	if ! cp -R "${server_dir}/." "$staging_dir/"; then
+		print_error "Failed to stage llama.cpp release directory"
+		rm -rf "$staging_dir"
+		return 1
+	fi
+	chmod +x "${staging_dir}/llama-server"
+	[[ ! -f "${staging_dir}/llama-cli" ]] || chmod +x "${staging_dir}/llama-cli"
 
-	# Also copy llama-cli if present
-	local cli_bin
-	cli_bin="$(find "$extracted_dir" -name "llama-cli" -type f | head -1)"
-	if [[ -n "$cli_bin" ]]; then
-		cp "$cli_bin" "$LLAMA_CLI_BIN"
-		chmod +x "$LLAMA_CLI_BIN"
+	if [[ -e "$LOCAL_BIN_DIR" ]]; then
+		mv "$LOCAL_BIN_DIR" "$backup_dir" || {
+			rm -rf "$staging_dir"
+			return 1
+		}
+		had_existing=1
+	fi
+	if mv "$staging_dir" "$LOCAL_BIN_DIR" && "$LLAMA_SERVER_BIN" --version >/dev/null 2>&1; then
+		rm -rf "$backup_dir"
+		return 0
 	fi
 
-	return 0
+	print_error "Installed llama-server failed validation; restoring previous binaries"
+	rm -rf "$LOCAL_BIN_DIR" "$staging_dir"
+	if [[ "$had_existing" -eq 1 ]]; then
+		mv "$backup_dir" "$LOCAL_BIN_DIR" || print_error "Previous binary directory requires manual recovery: ${backup_dir}"
+	fi
+	return 1
 }
 
 # Download and extract llama.cpp release
@@ -299,31 +397,44 @@ _setup_download_llama() {
 	rm -rf "$tmp_dir"
 
 	local installed_version
-	installed_version="$("$LLAMA_SERVER_BIN" --version 2>/dev/null | head -1 || echo "${tag_name}")"
+	installed_version="$(_setup_read_version "$LLAMA_SERVER_BIN" "$tag_name")"
 	print_success "llama-server installed: ${installed_version}"
 	return 0
 }
 
-# Install huggingface-cli
+# Install the Hugging Face CLI (`hf`; legacy `huggingface-cli` also supported).
 _setup_install_hf_cli() {
-	if ! suppress_stderr command -v huggingface-cli; then
-		print_info "Installing huggingface-cli..."
-		if suppress_stderr command -v pip3; then
-			log_stderr "pip install" pip3 install --quiet "huggingface_hub[cli]" || {
-				print_warning "Failed to install huggingface-cli via pip3"
-				print_info "Install manually: pip3 install 'huggingface_hub[cli]'"
-			}
-		elif suppress_stderr command -v pip; then
-			log_stderr "pip install" pip install --quiet "huggingface_hub[cli]" || {
-				print_warning "Failed to install huggingface-cli via pip"
-				print_info "Install manually: pip install 'huggingface_hub[cli]'"
-			}
-		else
-			print_warning "pip not found — install huggingface-cli manually"
-			print_info "Install: pip3 install 'huggingface_hub[cli]'"
+	local hf_cli=""
+	if ! hf_cli="$(_local_model_hf_cli)"; then
+		print_info "Installing Hugging Face CLI in an isolated environment..."
+		local python_bin=""
+		local candidate=""
+		for candidate in python3 python; do
+			if suppress_stderr command -v "$candidate" >/dev/null; then
+				python_bin="$candidate"
+				break
+			fi
+		done
+		if [[ -z "$python_bin" ]]; then
+			print_warning "Python not found — cannot install the Hugging Face CLI"
+			print_info "Install manually: uv tool install huggingface_hub"
+			return 2
 		fi
+
+		rm -rf "$LOCAL_HF_VENV_DIR"
+		if ! log_stderr "Hugging Face CLI environment" "$python_bin" -m venv "$LOCAL_HF_VENV_DIR" ||
+			! log_stderr "Hugging Face CLI install" "${LOCAL_HF_VENV_DIR}/bin/python" -m pip install --quiet huggingface_hub; then
+			print_warning "Failed to install the Hugging Face CLI in an isolated environment"
+			print_info "Install manually: uv tool install huggingface_hub"
+			return 1
+		fi
+		hf_cli="$(_local_model_hf_cli)" || {
+			print_warning "Hugging Face CLI installation did not provide a working hf command"
+			return 1
+		}
+		print_success "Hugging Face CLI installed: ${hf_cli}"
 	else
-		print_info "huggingface-cli: already installed"
+		print_info "Hugging Face CLI (${hf_cli}): already installed"
 	fi
 	return 0
 }
@@ -362,7 +473,7 @@ cmd_setup() {
 	# Check if llama-server already exists
 	if [[ -f "$LLAMA_SERVER_BIN" ]] && [[ "$update_mode" == "false" ]]; then
 		local current_version
-		current_version="$("$LLAMA_SERVER_BIN" --version 2>/dev/null | head -1 || echo "unknown")"
+		current_version="$(_setup_read_version "$LLAMA_SERVER_BIN")"
 		print_info "llama-server already installed: ${current_version}"
 		print_info "Use 'local-model-helper.sh setup --update' to update"
 	else
@@ -370,16 +481,17 @@ cmd_setup() {
 		print_info "Fetching latest llama.cpp release..."
 
 		local release_json
-		release_json="$(curl -sL "$LLAMA_CPP_API")" || {
+		release_json="$(curl -fsSL "$LLAMA_CPP_API")" || {
 			print_error "Failed to fetch llama.cpp release info"
 			return 1
 		}
+		release_json="$(_setup_resolve_release_json "$platform" "$release_json")" || return $?
 
 		_setup_download_llama "$platform" "$release_json" || return $?
 	fi
 
-	# Install huggingface-cli if not present
-	_setup_install_hf_cli
+	# Install the Hugging Face CLI if not present
+	_setup_install_hf_cli || return $?
 
 	# Write default config
 	write_default_config

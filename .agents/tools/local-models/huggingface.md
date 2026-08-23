@@ -21,8 +21,8 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Find, evaluate, and download GGUF models from HuggingFace for local inference via llama.cpp
-- **CLI**: `huggingface-cli download <repo> <file> --local-dir <path>` (resume-capable)
-- **Install**: `pip install "huggingface_hub[cli]"` (or pipx). Token: `~/.cache/huggingface/token`
+- **CLI**: `hf download <repo> <file> --local-dir <path>` (resume-capable; legacy `huggingface-cli` remains supported)
+- **Install**: `local-model-helper.sh setup` (isolated environment), or `uv tool install huggingface_hub`. Token: `~/.cache/huggingface/token`
 - **Format**: GGUF — single file (weights + tokenizer + metadata), llama.cpp native. Naming: `{model}-{size}-{quant}.gguf`
 - **Helper**: `local-model-helper.sh search|download|models|recommend|setup`
 - **Browse**: `https://huggingface.co/models?library=gguf&sort=trending`
@@ -73,12 +73,12 @@ local-model-helper.sh search "qwen3 8b"
 local-model-helper.sh search "llama 3.1" --max-size 10G
 
 # Direct download
-huggingface-cli download Qwen/Qwen3-8B-GGUF qwen3-8b-q4_k_m.gguf \
+hf download Qwen/Qwen3-8B-GGUF qwen3-8b-q4_k_m.gguf \
   --local-dir ~/.aidevops/local-models/models/
 
 # Gated models (Llama, etc.) — login first, accept license on HF page
-huggingface-cli login
-huggingface-cli download meta-llama/Llama-3.1-8B-Instruct-GGUF \
+hf auth login
+hf download meta-llama/Llama-3.1-8B-Instruct-GGUF \
   llama-3.1-8b-instruct-q4_k_m.gguf --local-dir ~/.aidevops/local-models/models/
 ```
 
@@ -87,7 +87,7 @@ huggingface-cli download meta-llama/Llama-3.1-8B-Instruct-GGUF \
 | Issue | Solution |
 |-------|----------|
 | Download interrupted | Re-run same command — resumes automatically |
-| "Access denied" | `huggingface-cli login` + accept license on HF page |
+| "Access denied" | `hf auth login` + accept license on HF page |
 | Model too slow | Lower quantization or smaller model |
 | Gibberish output | Re-download (corruption), use instruct/chat variant |
 | Can't find GGUF | Search `bartowski/{model-name}-GGUF` |

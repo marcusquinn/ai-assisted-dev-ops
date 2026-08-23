@@ -89,7 +89,7 @@ load_config() {
 		LLAMA_PORT="$(jq -r '.port // 8080' "$LOCAL_CONFIG_FILE" 2>/dev/null || echo "8080")"
 		LLAMA_HOST="$(jq -r '.host // "127.0.0.1"' "$LOCAL_CONFIG_FILE" 2>/dev/null || echo "127.0.0.1")"
 		LLAMA_CTX_SIZE="$(jq -r '.ctx_size // 8192' "$LOCAL_CONFIG_FILE" 2>/dev/null || echo "8192")"
-		LLAMA_GPU_LAYERS="$(jq -r '.gpu_layers // 99' "$LOCAL_CONFIG_FILE" 2>/dev/null || echo "99")"
+		LLAMA_GPU_LAYERS="$(jq -r '.gpu_layers // "auto"' "$LOCAL_CONFIG_FILE" 2>/dev/null || echo "auto")"
 		LLAMA_FLASH_ATTN="$(jq -r '.flash_attn // true' "$LOCAL_CONFIG_FILE" 2>/dev/null || echo "true")"
 	fi
 	return 0
@@ -104,7 +104,7 @@ write_default_config() {
 			  "host": "127.0.0.1",
 			  "ctx_size": 8192,
 			  "threads": "auto",
-			  "gpu_layers": 99,
+			  "gpu_layers": "auto",
 			  "flash_attn": true
 			}
 		CONFIGEOF

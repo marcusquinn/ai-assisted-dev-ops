@@ -9,7 +9,7 @@
 # Usage: local-model-helper.sh [command] [options]
 #
 # Commands:
-#   install [--update]            Install/update llama.cpp + huggingface-cli (alias: setup)
+#   install [--update]            Install/update llama.cpp + Hugging Face CLI (alias: setup)
 #   serve [--model M] [options]   Start llama-server localhost:8080 (alias: start)
 #   stop                          Stop running llama-server
 #   status                        Show server status and loaded model
@@ -29,7 +29,7 @@
 #   --port N        Server port (default: 8080)
 #   --ctx-size N    Context window size (default: 8192)
 #   --threads N     CPU threads (default: auto-detect performance cores)
-#   --gpu-layers N  GPU layers to offload (default: 99 = all)
+#   --gpu-layers N  GPU layers to offload (default: auto)
 #   --json          Output in JSON format
 #   --quiet         Suppress informational output
 #
@@ -44,7 +44,7 @@
 # Exit codes:
 #   0 - Success
 #   1 - General error
-#   2 - Dependency missing (llama.cpp, huggingface-cli)
+#   2 - Dependency missing (llama.cpp, Hugging Face CLI)
 #   3 - Model not found
 #   4 - Server already running / not running
 #
@@ -69,6 +69,7 @@ readonly LOCAL_CONFIG_FILE="${LOCAL_MODELS_DIR}/config.json"
 readonly LOCAL_PID_FILE="${LOCAL_MODELS_DIR}/llama-server.pid"
 readonly LLAMA_SERVER_BIN="${LOCAL_BIN_DIR}/llama-server"
 readonly LLAMA_CLI_BIN="${LOCAL_BIN_DIR}/llama-cli"
+readonly LOCAL_HF_VENV_DIR="${LOCAL_MODELS_DIR}/hf-cli-env"
 
 # Usage/inventory database (t1338.5) — stored with other framework SQLite DBs
 readonly LOCAL_MODELS_DB_DIR="${HOME}/.aidevops/.agent-workspace/memory"
@@ -84,13 +85,14 @@ readonly STALE_NUDGE_THRESHOLD_BYTES=5368709120
 LLAMA_PORT=8080
 LLAMA_HOST="127.0.0.1"
 LLAMA_CTX_SIZE=8192
-LLAMA_GPU_LAYERS=99
+LLAMA_GPU_LAYERS="auto"
 LLAMA_FLASH_ATTN="true"
 STALE_THRESHOLD_DAYS=30
 
 # GitHub release API for llama.cpp
 readonly LLAMA_CPP_REPO="ggml-org/llama.cpp"
-readonly LLAMA_CPP_API="https://api.github.com/repos/${LLAMA_CPP_REPO}/releases/latest"
+readonly LLAMA_CPP_RELEASES_API="https://api.github.com/repos/${LLAMA_CPP_REPO}/releases"
+readonly LLAMA_CPP_API="${LLAMA_CPP_RELEASES_API}/latest"
 
 # HuggingFace API
 readonly HF_API="https://huggingface.co/api"
@@ -370,10 +372,13 @@ cmd_update() {
 	print_info "Checking latest llama.cpp release..."
 
 	local release_json
-	release_json="$(curl -sL "$LLAMA_CPP_API")" || {
+	release_json="$(curl -fsSL "$LLAMA_CPP_API")" || {
 		print_error "Failed to fetch llama.cpp release info from GitHub"
 		return 1
 	}
+	local platform=""
+	platform="$(detect_platform)" || return 1
+	release_json="$(_setup_resolve_release_json "$platform" "$release_json")" || return $?
 
 	local latest_tag
 	latest_tag="$(echo "$release_json" | jq -r '.tag_name // empty')"
@@ -389,9 +394,9 @@ cmd_update() {
 	local update_available=false
 
 	if [[ -x "$LLAMA_SERVER_BIN" ]]; then
-		current_version="$("$LLAMA_SERVER_BIN" --version 2>/dev/null | head -1 || echo "unknown")"
-		# Compare: if current version string does not contain the latest tag, update is available
-		if ! echo "$current_version" | grep -qF "$latest_tag"; then
+		current_version="$(_setup_read_version "$LLAMA_SERVER_BIN")"
+		# Nightly tags use bNNNN while --version reports "build NNNN".
+		if ! _setup_version_matches_tag "$current_version" "$latest_tag"; then
 			update_available=true
 		fi
 	else
@@ -428,7 +433,7 @@ cmd_help() {
 		  local-model-helper.sh <command> [options]
 
 		COMMANDS:
-		  install [--update]            Install/update llama.cpp + huggingface-cli (alias: setup)
+		  install [--update]            Install/update llama.cpp + Hugging Face CLI (alias: setup)
 		  serve [--model M] [options]   Start llama-server localhost:8080 (alias: start)
 		  stop                          Stop running llama-server
 		  status [--json]               Show server status and loaded model
@@ -449,7 +454,7 @@ cmd_help() {
 		  --port <N>         Server port (default: 8080)
 		  --host <addr>      Bind address (default: 127.0.0.1)
 		  --ctx-size <N>     Context window (default: 8192)
-		  --gpu-layers <N>   GPU layers to offload (default: 99)
+		  --gpu-layers <N>   GPU layers to offload (default: auto)
 		  --threads <N>      CPU threads (default: auto)
 		  --no-flash-attn    Disable Flash Attention
 

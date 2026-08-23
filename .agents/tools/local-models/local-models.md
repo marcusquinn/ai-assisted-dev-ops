@@ -100,10 +100,10 @@ cp build/bin/llama-server ~/.aidevops/local-models/bin/
 ## Installation
 
 ```bash
-local-model-helper.sh setup   # detects platform, downloads binary, installs huggingface-cli, initialises SQLite DB
+local-model-helper.sh setup   # detects platform, downloads binary + shared libraries, installs `hf`, initialises SQLite DB
 ```
 
-Directory layout: `~/.aidevops/local-models/{bin/llama-server,models/,config.json}` · DB: `~/.aidevops/.agent-workspace/memory/local-models.db`
+Directory layout: `~/.aidevops/local-models/{bin/,hf-cli-env/,models/,config.json}` · DB: `~/.aidevops/.agent-workspace/memory/local-models.db`
 
 ## Hardware & Model Selection
 
@@ -204,7 +204,7 @@ local-model-helper.sh search "qwen3 8b"
 local-model-helper.sh download Qwen/Qwen3-8B-GGUF --quant Q4_K_M
 
 # Start/stop
-local-model-helper.sh start --model qwen3-8b-q4_k_m.gguf [--port 8080] [--ctx-size 8192] [--threads 8] [--gpu-layers 99]
+local-model-helper.sh start --model qwen3-8b-q4_k_m.gguf [--port 8080] [--ctx-size 8192] [--threads 8] [--gpu-layers auto]
 local-model-helper.sh stop
 local-model-helper.sh status   # PID, model, API URL, uptime, requests
 
@@ -219,7 +219,7 @@ curl http://localhost:8080/v1/embeddings -H "Content-Type: application/json" \
 curl http://localhost:8080/health
 ```
 
-Server defaults (`~/.aidevops/local-models/config.json`): port 8080, host 127.0.0.1, ctx_size 8192, threads auto (perf cores), gpu_layers 99, flash_attn true.
+Server defaults (`~/.aidevops/local-models/config.json`): port 8080, host 127.0.0.1, ctx_size 8192, threads auto (perf cores), gpu_layers auto, flash_attn true.
 
 ## aidevops Integration
 
@@ -249,7 +249,7 @@ local-model-helper.sh benchmark --model <file>        # tok/s, time-to-first-tok
 |-------|----------|
 | `setup` fails on Linux | Check glibc (`ldd --version`); ROCm: ensure runtime installed; try `setup --update` |
 | Slow inference | Verify `gpu_layers` set; check Metal/CUDA detected via `status` |
-| Download interrupted | Re-run `download` — huggingface-cli resumes automatically |
+| Download interrupted | Re-run `download` — `hf` resumes automatically |
 | Out of memory | Use Q4_K_M or smaller model; check `recommend` |
 | Port in use | `start --port 8081` or `stop` existing |
 | Context crash | Reduce `--ctx-size`; larger contexts need more RAM |

@@ -5,7 +5,7 @@
 # Local Model Models Library — Listing, Download & Search
 # =============================================================================
 # List downloaded GGUF models with metadata, download models from HuggingFace
-# via huggingface-cli, and search the HuggingFace API for GGUF repos.
+# via the Hugging Face CLI, and search the HuggingFace API for GGUF repos.
 #
 # Usage: source "${SCRIPT_DIR}/local-model-models.sh"
 #
@@ -13,7 +13,7 @@
 #   - shared-constants.sh (print_error, print_info, print_success, etc.)
 #   - local-model-db.sh (sql_escape, register_model_inventory)
 #   - curl, jq (for HuggingFace API calls)
-#   - huggingface-cli (for downloads)
+#   - hf or huggingface-cli (for downloads)
 #
 # Part of aidevops framework: https://aidevops.sh
 
@@ -254,9 +254,9 @@ cmd_download() {
 
 	ensure_dirs
 
-	# Check for huggingface-cli
-	if ! suppress_stderr command -v huggingface-cli; then
-		print_error "huggingface-cli not found. Run: local-model-helper.sh setup"
+	local hf_cli=""
+	if ! hf_cli="$(_local_model_hf_cli)"; then
+		print_error "Hugging Face CLI not found. Run: local-model-helper.sh setup"
 		return 2
 	fi
 
@@ -269,10 +269,14 @@ cmd_download() {
 	print_info "Downloading ${filename} from ${repo}..."
 	print_info "Destination: ${LOCAL_MODELS_STORE}/"
 
-	# Use huggingface-cli for download (supports resume)
-	if ! huggingface-cli download "$repo" "$filename" \
-		--local-dir "$LOCAL_MODELS_STORE" \
-		--local-dir-use-symlinks False 2>&1; then
+	# Current `hf` removed --local-dir-use-symlinks; retain it only when a
+	# legacy CLI advertises support so older installations keep their behavior.
+	local download_args=(download "$repo" "$filename" --local-dir "$LOCAL_MODELS_STORE")
+	if [[ "$hf_cli" == "huggingface-cli" ]] &&
+		"$hf_cli" download --help 2>&1 | grep -q -- '--local-dir-use-symlinks'; then
+		download_args+=(--local-dir-use-symlinks False)
+	fi
+	if ! "$hf_cli" "${download_args[@]}" 2>&1; then
 		print_error "Download failed"
 		return 1
 	fi
