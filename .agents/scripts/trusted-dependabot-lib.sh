@@ -17,6 +17,16 @@ _TRUSTED_DEPENDABOT_LAST_REPO=""
 _TRUSTED_DEPENDABOT_LAST_PR=""
 _TRUSTED_DEPENDABOT_LAST_HEAD=""
 
+_td_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 _trusted_dependabot_log() {
 	local message="$1"
 	if [[ -n "${LOGFILE:-}" ]]; then
@@ -208,7 +218,7 @@ _trusted_dependabot_pr_json_graphql() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="$route_decision" \
-		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
+		_td_gh_read gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
 		query($owner: String!, $name: String!, $pr: Int!) {
 			repository(owner: $owner, name: $name) {
 				pullRequest(number: $pr) {

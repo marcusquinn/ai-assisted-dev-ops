@@ -162,6 +162,12 @@ fi
 # the direct function-dispatch path.
 
 {
+	extract_function _gh_timeout_path_from_args "$WRAPPERS_FILE"
+	printf '\n'
+	extract_function _gh_record_timeout_if_needed "$WRAPPERS_FILE"
+	printf '\n'
+	extract_function _gh_timeout_logical_id "$WRAPPERS_FILE"
+	printf '\n'
 	extract_function _gh_with_timeout "$WRAPPERS_FILE"
 	printf '\n'
 	printf '%s\n' '_gh_cooldown_context_from_args(){ return 0; }'

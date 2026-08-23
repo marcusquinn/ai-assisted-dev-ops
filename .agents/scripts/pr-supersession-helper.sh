@@ -10,6 +10,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=shared-constants.sh
 [[ -f "${SCRIPT_DIR}/shared-constants.sh" ]] && source "${SCRIPT_DIR}/shared-constants.sh"
 
+_psh_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 _psh_log() {
 	local msg="$1"
 	printf '[pr-supersession] %s\n' "$msg" >&2
@@ -320,7 +330,7 @@ _psh_find_merged_closer_for_closed_issue() {
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="pulse-supersession-closing-pr-exact-cost" \
-		gh api graphql -F owner="$owner" -F name="$name" -F number="$issue_number" -f query='
+		_psh_gh_read gh api graphql -F owner="$owner" -F name="$name" -F number="$issue_number" -f query='
 		query($owner: String!, $name: String!, $number: Int!) {
 			repository(owner: $owner, name: $name) {
 				nameWithOwner

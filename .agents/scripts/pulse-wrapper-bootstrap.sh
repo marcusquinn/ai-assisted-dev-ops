@@ -37,6 +37,16 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+_pwb_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 # ---------------------------------------------------------------------------
 # _pulse_handle_self_check
 #
@@ -448,7 +458,7 @@ _resolve_linked_pr_for_issue() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="pulse-linked-pr-exact-cost" \
-		gh api graphql -F owner="$owner" -F name="$name" -F number="$issue_num" -f query='
+		_pwb_gh_read gh api graphql -F owner="$owner" -F name="$name" -F number="$issue_num" -f query='
 			query($owner: String!, $name: String!, $number: Int!) {
 				repository(owner: $owner, name: $name) {
 					issue(number: $number) {

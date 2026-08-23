@@ -13,6 +13,16 @@
 #     Check whether an issue already has open or merged PR evidence.
 #     Exit 0 = PR evidence exists (do NOT dispatch), exit 1 = no evidence.
 
+_ddpr_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 #######################################
 # Read the current issue body from the canonical dispatch metadata bundle.
 #
@@ -101,7 +111,7 @@ _ddpr_graphql_open_siblings() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="dispatch-dedup-open-siblings-exact-cost" \
-		gh api graphql -F queryString="$search_query" -f query='
+		_ddpr_gh_read gh api graphql -F queryString="$search_query" -f query='
 		query($queryString: String!) {
 			search(type: ISSUE, query: $queryString, first: 20) {
 				nodes {
@@ -175,7 +185,7 @@ _ddpr_graphql_open_commits() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="dispatch-dedup-open-commits-exact-cost" \
-		gh api graphql -f owner="$owner" -f name="$repo" -f query='
+		_ddpr_gh_read gh api graphql -f owner="$owner" -f name="$repo" -f query='
 		query($owner: String!, $name: String!) {
 			repository(owner: $owner, name: $name) {
 				pullRequests(

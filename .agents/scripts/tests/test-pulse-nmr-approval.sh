@@ -218,7 +218,10 @@ define_helper_under_test() {
 	# shellcheck disable=SC1090
 	source "$checks_lib"
 
-	local finder_src notify_src ever_notify_src
+	local gh_read_src finder_src notify_src ever_notify_src
+	gh_read_src=$(awk '
+		/^_nmr_gh_read\(\) \{/,/^}$/ { print }
+	' "$NMR_SCRIPT")
 	finder_src=$(awk '
 		/^_find_qualifying_pr_for_stale_recovery\(\) \{/,/^}$/ { print }
 	' "$NMR_SCRIPT")
@@ -228,10 +231,12 @@ define_helper_under_test() {
 	ever_notify_src=$(awk '
 		/^notify_ever_nmr_without_approval\(\) \{/,/^}$/ { print }
 	' "$NMR_SCRIPT")
-	if [[ -z "$finder_src" || -z "$notify_src" || -z "$ever_notify_src" || ! -f "$RECONCILE_SCRIPT" ]]; then
+	if [[ -z "$gh_read_src" || -z "$finder_src" || -z "$notify_src" || -z "$ever_notify_src" || ! -f "$RECONCILE_SCRIPT" ]]; then
 		printf 'ERROR: could not extract helpers from %s and %s\n' "$NMR_SCRIPT" "$RECONCILE_SCRIPT" >&2
 		return 1
 	fi
+	# shellcheck disable=SC1090
+	eval "$gh_read_src"
 	# shellcheck disable=SC1090
 	eval "$finder_src"
 	# shellcheck disable=SC1090

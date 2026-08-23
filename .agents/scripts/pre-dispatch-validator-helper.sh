@@ -38,6 +38,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 1
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/shared-constants.sh"
 
+_pdv_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 : "${REPOS_JSON:=${HOME}/.config/aidevops/repos.json}"
 
 if [[ -f "${SCRIPT_DIR}/shared-gh-collaborator-permission.sh" ]]; then
@@ -227,7 +237,7 @@ _validator_complexity_stall_sweep() {
 		return 20
 	fi
 
-	recent_closures=$(gh api graphql \
+	recent_closures=$(_pdv_gh_read gh api graphql \
 		-f query="query { search(query:\"repo:${slug} label:function-complexity-debt is:issue is:closed closed:>${since_date}\", type:ISSUE) { issueCount } }" \
 		--jq '.data.search.issueCount' 2>/dev/null) || {
 		_log "WARN" "complexity-stall-sweep validator: recent-closure lookup failed"

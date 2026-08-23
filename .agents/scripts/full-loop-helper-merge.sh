@@ -30,6 +30,16 @@ _FULL_LOOP_MERGE_LIB_LOADED=1
 FULL_LOOP_MERGE_SUBJECT_FLAG="--subject"
 FULL_LOOP_MERGE_BODY_FILE_FLAG="--body-file"
 
+_flm_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_lib_path="${BASH_SOURCE[0]%/*}"
@@ -265,7 +275,7 @@ _merge_confirmed_closing_issue_numbers() {
 	local result=""
 	[[ "$repo" == */* && "$pr_number" =~ ^[0-9]+$ ]] || return 1
 	# shellcheck disable=SC2016
-	result=$(gh api graphql -f query='
+	result=$(_flm_gh_read gh api graphql -f query='
 query($owner:String!,$name:String!,$number:Int!) {
   repository(owner:$owner,name:$name) {
     nameWithOwner

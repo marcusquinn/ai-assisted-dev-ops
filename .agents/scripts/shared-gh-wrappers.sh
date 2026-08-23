@@ -412,12 +412,69 @@ _gh_record_cooldown_response_if_needed() {
 	return 0
 }
 
+_gh_timeout_path_from_args() {
+	local command_name="${1:-}"
+	local subcommand="${2:-}"
+	local endpoint="${3:-}"
+	case "${command_name}:${subcommand}:${endpoint}" in
+	gh:api:graphql) printf 'graphql\n' ;;
+	gh:api:*) printf 'rest\n' ;;
+	gh:search:*) printf 'search-graphql\n' ;;
+	gh:*:*) printf 'graphql\n' ;;
+	*) printf 'other\n' ;;
+	esac
+	return 0
+}
+
+_gh_record_timeout_if_needed() {
+	local rc="$1"
+	local start_ms="$2"
+	local caller="$3"
+	local path="$4"
+	local operation_class="$5"
+	local end_ms=""
+	local elapsed_ms=0
+	[[ "$rc" -eq 124 ]] || return 0
+	declare -f gh_record_timeout >/dev/null 2>&1 || return 0
+	if declare -f _gh_now_ms >/dev/null 2>&1; then
+		end_ms=$(_gh_now_ms) || end_ms=""
+	fi
+	if [[ "$start_ms" =~ ^[0-9]+$ && "$end_ms" =~ ^[0-9]+$ && "$end_ms" -ge "$start_ms" ]]; then
+		elapsed_ms=$((end_ms - start_ms))
+	fi
+	gh_record_timeout "$path" "$caller" "$elapsed_ms" "$operation_class" 2>/dev/null || true
+	return 0
+}
+
+_gh_timeout_logical_id() {
+	local logical_id="${AIDEVOPS_GH_LOGICAL_ID:-}"
+	if [[ -z "$logical_id" ]] &&
+		declare -f gh_new_logical_id >/dev/null 2>&1; then
+		logical_id=$(gh_new_logical_id) || logical_id=""
+	fi
+	printf '%s\n' "$logical_id"
+	return 0
+}
+
 _gh_with_timeout() {
 	local op_class="${1:-read}"
 	shift
+	local timeout_caller="${BASH_SOURCE[1]:-${0}}"
+	local timeout_path="" timeout_start_ms="" AIDEVOPS_GH_LOGICAL_ID=""
+	AIDEVOPS_GH_LOGICAL_ID=$(_gh_timeout_logical_id)
+	[[ -z "$AIDEVOPS_GH_LOGICAL_ID" ]] || export AIDEVOPS_GH_LOGICAL_ID
+	timeout_path=$(_gh_timeout_path_from_args "$@")
+	if declare -f _gh_now_ms >/dev/null 2>&1; then
+		timeout_start_ms=$(_gh_now_ms) || timeout_start_ms=""
+	fi
 	_gh_cooldown_context_from_args "$op_class" "$@"
 	if command -v _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
-		_gh_secondary_cooldown_preflight "$op_class" || return $?
+		local preflight_rc=0
+		_gh_secondary_cooldown_preflight "$op_class" || preflight_rc=$?
+		if [[ "$preflight_rc" -ne 0 ]]; then
+			_gh_record_timeout_if_needed "$preflight_rc" "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
+			return "$preflight_rc"
+		fi
 	fi
 	local secs
 	case "$op_class" in
@@ -428,9 +485,15 @@ _gh_with_timeout() {
 	local deadline_epoch="${AIDEVOPS_GH_DEADLINE_EPOCH:-}"
 	local now_epoch="" remaining_secs=""
 	if [[ "$deadline_epoch" =~ ^[0-9]+$ ]]; then
-		now_epoch=$(date +%s 2>/dev/null) || return 124
+		if ! now_epoch=$(date +%s 2>/dev/null); then
+			_gh_record_timeout_if_needed 124 "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
+			return 124
+		fi
 		remaining_secs=$((deadline_epoch - now_epoch))
-		[[ "$remaining_secs" -gt 0 ]] || return 124
+		if [[ "$remaining_secs" -le 0 ]]; then
+			_gh_record_timeout_if_needed 124 "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
+			return 124
+		fi
 		[[ "$remaining_secs" -ge "$secs" ]] || secs="$remaining_secs"
 	fi
 	# Invocation-scoped diagnostics may provide a pre-created counter file.
@@ -445,12 +508,14 @@ _gh_with_timeout() {
 	local rc=0
 	if [[ -n "$cmd" ]] && declare -f "$cmd" >/dev/null; then
 		err_file=$(mktemp -t aidevops-gh-secondary.XXXXXX) || {
-			"$@"
-			return $?
+			"$@" || rc=$?
+			_gh_record_timeout_if_needed "$rc" "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
+			return "$rc"
 		}
 		out_file=$(mktemp -t aidevops-gh-response.XXXXXX) || {
 			"$@" 2>"$err_file"
 			rc=$?
+			_gh_record_timeout_if_needed "$rc" "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
 			cat "$err_file" >&2 2>/dev/null || true
 			rm -f "$err_file"
 			return $rc
@@ -461,6 +526,7 @@ _gh_with_timeout() {
 			"$@" >"$out_file" 2>"$err_file"
 		fi
 		rc=$?
+		_gh_record_timeout_if_needed "$rc" "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
 		cat "$out_file" 2>/dev/null || true
 		cat "$err_file" >&2 2>/dev/null || true
 		_gh_record_cooldown_response_if_needed "$rc" "$out_file" "$err_file" "$@"
@@ -482,6 +548,7 @@ _gh_with_timeout() {
 		_gh_run_bounded_command "$secs" "$@"
 		rc=$?
 	fi
+	_gh_record_timeout_if_needed "$rc" "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
 	if [[ -n "$err_file" && -n "$out_file" ]]; then
 		cat "$out_file" 2>/dev/null || true
 		cat "$err_file" >&2 2>/dev/null || true

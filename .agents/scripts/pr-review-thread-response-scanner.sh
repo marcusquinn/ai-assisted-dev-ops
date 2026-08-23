@@ -85,6 +85,18 @@ PRRTS_WORKTREE_EXPECTED_OWNER_TASK=""
 PRRTS_WORKTREE_EXPECTED_OWNER_CREATED_AT=""
 PRRTS_WORKER_OUTCOME_ID=""
 
+_prrts_gh_call() {
+	local operation="$1"
+	shift
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout "$operation" "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 _prrts_ensure_dirs() {
 	local log_dir=""
 	log_dir="$(dirname "$LOGFILE")"
@@ -254,7 +266,7 @@ _prrts_normalise_blocked_by() {
 
 _prrts_graphql_rate_limit_ok() {
 	local remaining=""
-	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining // .resources.core.remaining // 0' 2>/dev/null) || remaining="0"
+	remaining=$(_prrts_gh_call read gh api rate_limit --jq '.resources.graphql.remaining // .resources.core.remaining // 0' 2>/dev/null) || remaining="0"
 	[[ "$remaining" =~ ^[0-9]+$ ]] || remaining=0
 	if [[ "$remaining" -lt 10 ]]; then
 		_prrts_log "write: skipped — GraphQL/API rate-limit remaining=${remaining}"
@@ -265,7 +277,7 @@ _prrts_graphql_rate_limit_ok() {
 
 _prrts_graphql_remaining() {
 	local remaining=""
-	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="$PRRTS_VALUE_UNKNOWN"
+	remaining=$(_prrts_gh_call read gh api rate_limit --jq '.resources.graphql.remaining // 0' 2>/dev/null) || remaining="$PRRTS_VALUE_UNKNOWN"
 	[[ -n "$remaining" ]] || remaining="$PRRTS_VALUE_UNKNOWN"
 	printf '%s\n' "$remaining"
 	return 0
@@ -288,7 +300,7 @@ _prrts_thread_has_marker() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-marker-exact-cost" \
-		gh api graphql \
+		_prrts_gh_call read gh api graphql \
 		-F thread="$thread_id" -f query='
 			query($thread: ID!) {
 				node(id: $thread) {
@@ -327,7 +339,7 @@ _prrts_thread_author_login() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-author-exact-cost" \
-		gh api graphql \
+		_prrts_gh_call read gh api graphql \
 		-F thread="$thread_id" -f query='
 			query($thread: ID!) {
 				node(id: $thread) {
@@ -439,7 +451,7 @@ cmd_reply() {
 	# shellcheck disable=SC2016
 	if ! response=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-reply-exact-cost" \
-		gh api graphql \
+		_prrts_gh_call write gh api graphql \
 		-F thread="$thread_id" -f body="$body" \
 		-f query='
 			mutation($thread: ID!, $body: String!) {
@@ -480,7 +492,7 @@ cmd_resolve() {
 	# shellcheck disable=SC2016
 	if ! response=$(AIDEVOPS_GH_QUOTA_COST=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-resolve-exact-cost" \
-		gh api graphql \
+		_prrts_gh_call write gh api graphql \
 		-F thread="$thread_id" \
 		-f query='
 			mutation($thread: ID!) {
@@ -505,7 +517,7 @@ _prrts_list_open_prs() {
 	local repo_slug="$1"
 	local limit=""
 	limit="$(_prrts_normalise_int "$PR_REVIEW_THREAD_RESPONSE_PR_LIMIT" "50" "1")"
-	gh pr list --repo "$repo_slug" --state open --limit "$limit" \
+	_prrts_gh_call read gh pr list --repo "$repo_slug" --state open --limit "$limit" \
 		--json number,title,isDraft,labels,headRefName,headRefOid,author \
 		--jq '.[] | [.number, (.title // "" | gsub("[\t\r\n]"; " ")), (.isDraft | tostring), ([.labels[].name] | join(",")), (.headRefName // ""), (.headRefOid // ""), (.author.login // "")] | @tsv'
 	return $?
@@ -519,7 +531,7 @@ _prrts_fetch_review_threads_json() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-scan-exact-cost" \
-		gh api graphql \
+		_prrts_gh_call read gh api graphql \
 		-F owner="$owner" -F name="$name" -F pr="$pr_number" \
 		-f query='
 			query($owner: String!, $name: String!, $pr: Int!) {
@@ -583,7 +595,7 @@ _prrts_recent_change_request_comments() {
 	local repo_slug="$1"
 	local pr_number="$2"
 	local response="" rc=0
-	response=$(gh pr view "$pr_number" --repo "$repo_slug" \
+	response=$(_prrts_gh_call read gh pr view "$pr_number" --repo "$repo_slug" \
 		--json latestReviews,comments 2>/dev/null) || rc=$?
 	if [[ "$rc" -ne 0 ]]; then
 		_prrts_log "prompt: reviewer comment fetch unavailable for ${repo_slug}#${pr_number}"
@@ -671,7 +683,7 @@ cmd_scan_pr() {
 		_prrts_usage >&2
 		return 2
 	}
-	metadata=$(gh pr view "$pr_number" --repo "$repo_slug" \
+	metadata=$(_prrts_gh_call read gh pr view "$pr_number" --repo "$repo_slug" \
 		--json title,headRefName,headRefOid,author \
 		--jq '[(.title // "" | gsub("[\t\r\n]"; " ")), (.headRefName // ""), (.headRefOid // ""), (.author.login // "")] | @tsv' \
 		2>/dev/null || true)
@@ -1834,7 +1846,7 @@ _prrts_validate_worker_head() {
 	fi
 	pr_repo_json=$(AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="review-thread-head-repository-rest" \
-		gh api "repos/${repo_slug}/pulls/${pr_number}" 2>/dev/null) || {
+		_prrts_gh_call read gh api "repos/${repo_slug}/pulls/${pr_number}" 2>/dev/null) || {
 		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not verify PR head repository"
 		PRRTS_WORKTREE_FAILURE_REASON="$PRRTS_REASON_HEAD_REPOSITORY_UNVERIFIED"
 		return 1
@@ -1970,13 +1982,13 @@ _prrts_worker_login() {
 	# #aidevops:trust-boundary — ordinary PR repair binds ownership to the
 	# authenticated gh viewer. Checkpoint continuation overrides this function
 	# with its independently verified linked-issue assignee contract.
-	worker_login=$(gh api user --jq '.login // ""' 2>/dev/null || true)
+	worker_login=$(_prrts_gh_call read gh api user --jq '.login // ""' 2>/dev/null || true)
 	if [[ "$worker_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
 		printf '%s' "$worker_login"
 		return 0
 	fi
 
-	worker_login=$(gh api graphql \
+	worker_login=$(_prrts_gh_call read gh api graphql \
 		-f 'query=query { viewer { login } }' \
 		--jq '.data.viewer.login // ""' 2>/dev/null || true)
 	if [[ "$worker_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then

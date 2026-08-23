@@ -458,7 +458,7 @@ define_process_helper() {
 
 define_feedback_helpers() {
 	local fns=(
-		_build_ci_feedback_section
+		_pmf_gh_read _build_ci_feedback_section
 		_ci_check_url_has_infra_failure_log
 		_ci_actionable_failed_checks_markdown
 		_ci_check_evidence_role

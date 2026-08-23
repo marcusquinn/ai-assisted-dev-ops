@@ -71,6 +71,16 @@ NMR_CLASS_GENUINE_AUTHORITY="genuine-authority"
 NMR_CLASS_TEMPORARY="temporary"
 NMR_SOURCE_DEFAULT="default"
 NMR_STATUS_HUMAN_AUTHORITY="human-authority-required"
+
+_nmr_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
 NMR_REASON_ACTION_CONTINUE="continue"
 NMR_REASON_ACTION_AUTO="auto"
 NMR_REASON_ACTION_DEFER="defer"
@@ -1614,7 +1624,7 @@ _find_qualifying_pr_for_stale_recovery() {
 	local response="" reported_cost="" pr_json="[]"
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 AIDEVOPS_GH_ROUTE_DECISION="pulse-nmr-pr-search-exact-cost" \
-		gh api graphql -F queryString="$query_string" -f query='
+		_nmr_gh_read gh api graphql -F queryString="$query_string" -f query='
 		query($queryString: String!) {
 			search(type: ISSUE, query: $queryString, first: 10) {
 				nodes {

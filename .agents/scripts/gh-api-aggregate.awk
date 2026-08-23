@@ -16,6 +16,9 @@ BEGIN {
 	logical_events = 0
 	cache_events = 0
 	evidence_events = 0
+	timeout_events = 0
+	timeout_elapsed_ms = 0
+	unknown_timeout_elapsed_events = 0
 	legacy_events = 0
 	attempted_requests = 0
 	opaque_paginated_attempts = 0
@@ -83,6 +86,9 @@ function emit_group(title, group,    pair, parts, values, n, i, value) {
 		printf "      \"logical_events\": %d,\n", metric_get(group, value, "logical_events")
 		printf "      \"cache_events\": %d,\n", metric_get(group, value, "cache_events")
 		printf "      \"evidence_events\": %d,\n", metric_get(group, value, "evidence_events")
+		printf "      \"timeout_events\": %d,\n", metric_get(group, value, "timeout_events")
+		printf "      \"timeout_elapsed_ms\": %d,\n", metric_get(group, value, "timeout_elapsed_ms")
+		printf "      \"unknown_timeout_elapsed_events\": %d,\n", metric_get(group, value, "unknown_timeout_elapsed_events")
 		printf "      \"legacy_events\": %d,\n", metric_get(group, value, "legacy_events")
 		printf "      \"attempted_requests\": %d,\n", metric_get(group, value, "attempted_requests")
 		printf "      \"opaque_paginated_attempts\": %d,\n", metric_get(group, value, "opaque_paginated_attempts")
@@ -216,6 +222,19 @@ $1 !~ /^[0-9]+$/ || NF < 3 {
 		metric_add_dimensions(caller, path, auth, pool, decision, "evidence_events", 1)
 		next
 	}
+	if (kind == "timeout") {
+		timeout_events++
+		metric_add_dimensions(caller, path, auth, pool, decision, "timeout_events", 1)
+		metric_add("outcome", outcome, "timeout_events", 1)
+		if (elapsed_ms ~ /^[0-9]+$/) {
+			timeout_elapsed_ms += elapsed_ms
+			metric_add_dimensions(caller, path, auth, pool, decision, "timeout_elapsed_ms", elapsed_ms)
+		} else {
+			unknown_timeout_elapsed_events++
+			metric_add_dimensions(caller, path, auth, pool, decision, "unknown_timeout_elapsed_events", 1)
+		}
+		next
+	}
 
 	if (kind != "attempt") {
 		total_calls++
@@ -329,6 +348,9 @@ END {
 	printf "    \"logical_events\": %d,\n", logical_events
 	printf "    \"cache_events\": %d,\n", cache_events
 	printf "    \"evidence_events\": %d,\n", evidence_events
+	printf "    \"timeout_events\": %d,\n", timeout_events
+	printf "    \"timeout_elapsed_ms\": %d,\n", timeout_elapsed_ms
+	printf "    \"unknown_timeout_elapsed_events\": %d,\n", unknown_timeout_elapsed_events
 	printf "    \"legacy_events\": %d,\n", legacy_events
 	printf "    \"attempted_requests\": %d,\n", attempted_requests
 	printf "    \"opaque_paginated_attempts\": %d,\n", opaque_paginated_attempts + 0

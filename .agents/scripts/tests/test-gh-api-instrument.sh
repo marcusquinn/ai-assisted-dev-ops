@@ -193,12 +193,108 @@ unset _SHARED_GH_WRAPPERS_LOADED _SHARED_GH_WRAPPERS_REST_FALLBACK_LOADED _GH_AP
 # shellcheck source=../shared-gh-wrappers.sh
 source "${PARENT_DIR}/shared-gh-wrappers.sh"
 
+# Timeout ownership tests exercise instrumentation, not host-global cooldown
+# state. Keep their preflight deterministic and isolated from operator state.
+_gh_secondary_cooldown_preflight() { return 0; }
+_gh_secondary_cooldown_record_if_needed() { return 0; }
+
 if type -t gh_record_call >/dev/null 2>&1; then
 	echo "  PASS: gh_record_call defined after sourcing shared-gh-wrappers.sh"
 	PASS=$((PASS + 1))
 else
 	echo "  FAIL: gh_record_call NOT defined after sourcing shared-gh-wrappers.sh"
 	FAIL=$((FAIL + 1))
+fi
+
+# --- Test 5b: timeout owner emits a terminal event without an attempt -----
+slow_timeout_probe() {
+	sleep 3
+	return 0
+}
+
+gh_clear_log
+set +e
+AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 1 )) \
+	_gh_with_timeout read slow_timeout_probe \
+	'private-repository' 'Authorization: bearer private-token' >/dev/null 2>&1
+timeout_status=$?
+set -e
+assert_eq "bounded function preserves timeout status" "124" "$timeout_status"
+gh_aggregate_calls
+assert_eq "timeout owner emits one terminal event" "1" "$(jq -r '._meta.timeout_events' "$AIDEVOPS_GH_API_REPORT")"
+assert_eq "timeout terminal is not a transport attempt" "0" "$(jq -r '._meta.attempted_requests' "$AIDEVOPS_GH_API_REPORT")"
+assert_eq "timeout terminal is not a logical route call" "0" "$(jq -r '._meta.total_calls' "$AIDEVOPS_GH_API_REPORT")"
+if [[ "$(jq -r '._meta.timeout_elapsed_ms >= 500' "$AIDEVOPS_GH_API_REPORT")" == "true" ]]; then
+	echo "  PASS: timeout terminal retains elapsed duration"
+	PASS=$((PASS + 1))
+else
+	echo "  FAIL: timeout terminal lost elapsed duration"
+	FAIL=$((FAIL + 1))
+fi
+if grep -Eq 'private-repository|private-token|Authorization' "$AIDEVOPS_GH_API_LOG"; then
+	echo "  FAIL: timeout telemetry exposed command arguments"
+	FAIL=$((FAIL + 1))
+else
+	echo "  PASS: timeout telemetry excludes command arguments"
+	PASS=$((PASS + 1))
+fi
+
+# --- Test 5c: parent and child share one logical operation on timeout ------
+timeout_command_bin="$TMPDIR/timeout-command-bin"
+mkdir -p "$timeout_command_bin"
+cat >"${timeout_command_bin}/gh" <<'TIMEOUT_COMMAND'
+#!/usr/bin/env bash
+source "${TEST_INSTRUMENT:?}"
+gh_record_call graphql timeout-child gh-pat graphql timeout-child-route 4999
+gh_record_attempt graphql timeout-child "${AIDEVOPS_GH_LOGICAL_ID:-}" "" 1 0 success 200 10 1 gh-pat graphql timeout-child-route 4999
+sleep 3
+TIMEOUT_COMMAND
+chmod +x "${timeout_command_bin}/gh"
+export TEST_INSTRUMENT="${PARENT_DIR}/gh-api-instrument.sh"
+unset AIDEVOPS_GH_LOGICAL_ID
+gh_clear_log
+set +e
+PATH="${timeout_command_bin}:$PATH" AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 1 )) \
+	_gh_with_timeout read gh api graphql -f 'query=private-timeout-query' >/dev/null 2>&1
+external_timeout_status=$?
+set -e
+assert_eq "bounded external command preserves timeout status" "124" "$external_timeout_status"
+gh_aggregate_calls
+assert_eq "timeout parent reuses child logical operation" "1" "$(jq -r '._meta.logical_operations' "$AIDEVOPS_GH_API_REPORT")"
+assert_eq "timeout parent does not duplicate child attempt" "1" "$(jq -r '._meta.attempted_requests' "$AIDEVOPS_GH_API_REPORT")"
+assert_eq "external timeout emits one terminal event" "1" "$(jq -r '._meta.timeout_events' "$AIDEVOPS_GH_API_REPORT")"
+if grep -q 'private-timeout-query' "$AIDEVOPS_GH_API_LOG"; then
+	echo "  FAIL: external timeout telemetry exposed command arguments"
+	FAIL=$((FAIL + 1))
+else
+	echo "  PASS: external timeout telemetry excludes command arguments"
+	PASS=$((PASS + 1))
+fi
+
+# --- Test 5d: function-backed gh calls share the parent logical ID ----------
+function_timeout_probe() {
+	gh api graphql -f 'query=private-function-timeout-query'
+	return $?
+}
+
+unset AIDEVOPS_GH_LOGICAL_ID
+gh_clear_log
+set +e
+PATH="${timeout_command_bin}:$PATH" AIDEVOPS_GH_DEADLINE_EPOCH=$(( $(date +%s) + 1 )) \
+	_gh_with_timeout read function_timeout_probe >/dev/null 2>&1
+function_timeout_status=$?
+set -e
+assert_eq "bounded gh-calling function preserves timeout status" "124" "$function_timeout_status"
+gh_aggregate_calls
+assert_eq "function timeout parent reuses child logical operation" "1" "$(jq -r '._meta.logical_operations' "$AIDEVOPS_GH_API_REPORT")"
+assert_eq "function timeout parent does not duplicate child attempt" "1" "$(jq -r '._meta.attempted_requests' "$AIDEVOPS_GH_API_REPORT")"
+assert_eq "function timeout emits one terminal event" "1" "$(jq -r '._meta.timeout_events' "$AIDEVOPS_GH_API_REPORT")"
+if grep -q 'private-function-timeout-query' "$AIDEVOPS_GH_API_LOG"; then
+	echo "  FAIL: function timeout telemetry exposed command arguments"
+	FAIL=$((FAIL + 1))
+else
+	echo "  PASS: function timeout telemetry excludes command arguments"
+	PASS=$((PASS + 1))
 fi
 
 # --- Test 6: disable env var makes record a no-op ---------------------

@@ -599,6 +599,32 @@ gh_record_attempt() {
 	return 0
 }
 
+# --- gh_record_timeout <path> <caller> <elapsed_ms> <operation_class> ----
+# Record one parent-owned timeout terminal event. This is deliberately not an
+# attempt row: the child transport may already have emitted an attempt during
+# shutdown, and the timeout-owning parent cannot prove an additional request.
+# Arguments are bounded metadata only; command argv and request values are
+# never accepted by this interface.
+gh_record_timeout() {
+	[[ "${AIDEVOPS_GH_API_INSTRUMENT_DISABLE:-0}" == "1" ]] && return 0
+	local path="$1"
+	local caller="$2"
+	local elapsed_ms="$3"
+	local operation_class="${4:-read}"
+	local api_pool="${AIDEVOPS_GH_API_POOL:-}"
+	local auth_mode="${AIDEVOPS_GH_AUTH_MODE:-}"
+	local route_decision="${AIDEVOPS_GH_ROUTE_DECISION:-bounded-${operation_class}}"
+	local budget_remaining="${AIDEVOPS_GH_BUDGET_REMAINING:-${_GH_LAST_GRAPHQL_REMAINING:-}}"
+	local logical_id="${AIDEVOPS_GH_LOGICAL_ID:-}"
+	[[ "$elapsed_ms" =~ ^[0-9]+$ ]] || elapsed_ms=0
+	[[ -n "$api_pool" ]] || api_pool=$(_gh_default_pool "$path")
+	[[ -n "$auth_mode" ]] || auth_mode=$(_gh_default_auth "$api_pool")
+	[[ -n "$logical_id" ]] || logical_id=$(gh_new_logical_id)
+	_gh_append_v2 timeout "$caller" "$path" "$auth_mode" "$api_pool" "$route_decision" \
+		"$budget_remaining" "$logical_id" "" "" "" timeout "" "$elapsed_ms" ""
+	return 0
+}
+
 # --- gh_run_transport_attempt <path> <caller> <logical> <page> <retry> -- cmd
 # Execute one native transport command with unmodified stdout and status. Normal
 # mode appends one process-level attempt; exact capture may append one record per

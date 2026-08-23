@@ -49,6 +49,16 @@ source "${_PULSE_MERGE_DIR:-${BASH_SOURCE[0]%/*}}/trusted-dependabot-lib.sh"
 
 # --- Functions ---
 
+_pmg_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 _pulse_is_trusted_issue_sync_pr() {
 	local pr_number="$1"
 	local repo_slug="$2"
@@ -172,7 +182,7 @@ _pulse_merge_admin_pr_json_graphql() {
 	# shellcheck disable=SC2016  # GraphQL variables are expanded by GitHub.
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="pulse-admin-authority-exact-cost" \
-		gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
+		_pmg_gh_read gh api graphql -F owner="$owner" -F name="$name" -F pr="$pr_number" -f query='
 		query($owner: String!, $name: String!, $pr: Int!) {
 			repository(owner: $owner, name: $name) {
 				pullRequest(number: $pr) {

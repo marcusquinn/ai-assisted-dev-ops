@@ -130,6 +130,10 @@ GH_STUB
 append_fake_gh_thread_modes() {
 	cat >>"${TEST_ROOT}/bin/gh" <<'GH_STUB'
 	case "${STUB_THREADS_MODE:-unresolved}" in
+	hang)
+		sleep "${STUB_HANG_SECONDS:-5}"
+		exit 1
+		;;
 	rate_limit|error)
 		printf 'GraphQL failure\n' >&2
 		exit 1
@@ -417,7 +421,7 @@ WORKTREE_STUB
 }
 
 setup_test_env() {
-	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD STUB_GH_LOGIN
+	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_HANG_SECONDS STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD STUB_GH_LOGIN
 	unset STUB_GH_REST_FAIL STUB_GH_GRAPHQL_FAIL STUB_GH_GRAPHQL_LOGIN
 	unset STUB_GIT_INVALID_BRANCH STUB_GIT_FETCH_FAIL STUB_GIT_CANONICAL_FETCH_FAIL
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
@@ -475,6 +479,25 @@ setup_test_env() {
 	: >"$DETACH_LAUNCH_LOG"
 	: >"$GIT_FETCH_CWD_LOG"
 	rm -f "$GIT_FETCHED_HEAD_STATE"
+	return 0
+}
+
+test_scan_pr_bounds_hanging_graphql_read() {
+	setup_test_env
+	export STUB_THREADS_MODE="hang"
+	export STUB_HANG_SECONDS=5
+	export AIDEVOPS_GH_READ_TIMEOUT=1
+	local started_at="" elapsed=0 scan_rc=0
+	started_at=$(date +%s)
+	$SCANNER scan-pr owner/repo 1 >/dev/null 2>&1 || scan_rc=$?
+	elapsed=$(( $(date +%s) - started_at ))
+	if [[ "$scan_rc" -eq 2 && "$elapsed" -le 3 ]]; then
+		print_result "scan-pr bounds a hanging GraphQL review-thread read" 0
+	else
+		print_result "scan-pr bounds a hanging GraphQL review-thread read" 1 "rc=${scan_rc}, elapsed=${elapsed}s"
+	fi
+	unset AIDEVOPS_GH_READ_TIMEOUT
+	teardown_test_env
 	return 0
 }
 
@@ -2574,6 +2597,7 @@ main() {
 	test_dispatch_pr_preserves_indeterminate_young_lock_until_age_fallback
 	test_dispatch_reports_graphql_budget_exhaustion_when_scan_blind
 	test_dispatch_reports_fetch_errors_when_scan_blind
+	test_scan_pr_bounds_hanging_graphql_read
 	test_dispatch_rotates_candidates_with_repo_cursor
 	test_dispatch_stale_cursor_falls_back_to_original_order
 	test_reply_and_resolve_use_graphql_mutations

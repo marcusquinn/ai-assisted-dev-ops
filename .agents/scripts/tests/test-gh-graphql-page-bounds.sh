@@ -180,6 +180,36 @@ else
 	fail "API retries expose final failure diagnostics" "expected 3 attempts, incomplete api_error result, and final stderr/error details"
 fi
 
+# Guard the reviewed merge/dispatch/approval inventory. These files have no
+# intentional executable bare-GraphQL exceptions: documentation mentions are
+# allowed, while command-shaped occurrences must name a bounded module adapter.
+guarded_graphql_sources=(
+	"${REPO_ROOT}/.agents/scripts/pr-review-thread-response-scanner.sh"
+	"${REPO_ROOT}/.agents/scripts/pulse-merge-gates.sh"
+	"${REPO_ROOT}/.agents/scripts/pulse-merge-feedback.sh"
+	"${REPO_ROOT}/.agents/scripts/dispatch-dedup-pr.sh"
+	"${REPO_ROOT}/.agents/scripts/dispatch-single-issue-helper.sh"
+	"${REPO_ROOT}/.agents/scripts/pulse-wrapper-bootstrap.sh"
+	"${REPO_ROOT}/.agents/scripts/pr-supersession-helper.sh"
+	"${REPO_ROOT}/.agents/scripts/pre-dispatch-validator-helper.sh"
+	"${REPO_ROOT}/.agents/scripts/trusted-dependabot-lib.sh"
+	"${REPO_ROOT}/.agents/scripts/full-loop-helper-merge.sh"
+	"${REPO_ROOT}/.agents/scripts/post-merge-review-scanner.sh"
+	"${REPO_ROOT}/.agents/scripts/pulse-nmr-approval.sh"
+)
+guard_failed=0
+for guarded_source in "${guarded_graphql_sources[@]}"; do
+	while IFS= read -r graphql_line; do
+		if [[ ! "$graphql_line" =~ _[a-z0-9_]+_gh_(read|call)([[:space:]]+(read|write))?[[:space:]]+gh[[:space:]]+api[[:space:]]+graphql ]]; then
+			fail "hot-path GraphQL calls use bounded adapters" "${guarded_source}: ${graphql_line}"
+			guard_failed=1
+		fi
+	done < <(grep -E 'gh api graphql([[:space:]]+\\|[[:space:]]+-)' "$guarded_source" || true)
+done
+if [[ "$guard_failed" -eq 0 ]]; then
+	pass "hot-path GraphQL calls use bounded adapters"
+fi
+
 printf '\nRan %s tests, %s failed.\n' "$((PASS + FAIL))" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
 	exit 1

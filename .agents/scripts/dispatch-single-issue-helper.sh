@@ -78,6 +78,16 @@ _DSI_JSON_TRUE="true"
 _DSI_DEFAULT_CANARY_TIMEOUT_SECONDS=180
 _DSI_READY_PREPARATION_ALLOWANCE_SECONDS=60
 _DSI_CLAIM_WON=0
+
+_dsi_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
 _DSI_CLAIM_COMMENT_ID=""
 _DSI_TARGET_JSON=""
 _DSI_GIT_AUTH_TOKEN_FILE=""
@@ -1545,7 +1555,7 @@ _dsi_resolve_runner_login() {
 		return 0
 	fi
 
-	runner_login=$(gh api graphql \
+	runner_login=$(_dsi_gh_read gh api graphql \
 		-f 'query=query { viewer { login } }' \
 		--jq '.data.viewer.login // ""' 2>/dev/null || true)
 	if [[ "$runner_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then

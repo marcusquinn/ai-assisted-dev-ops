@@ -72,6 +72,16 @@
 #   Under this model the worker reads the section header, greps the
 #   helper, closes with "premise falsified — no write path exists" — done
 #   in minutes, with zero human touches.
+
+_pmrsc_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
 #
 # Prior art for the false-premise risk: AGENTS.md "AI-Generated Issue Quality"
 # (AI-generated issue quality, GH#17832-17835). The AGENTS.md
@@ -268,7 +278,7 @@ fetch_review_threads_json() {
 	# shellcheck disable=SC2016
 	resp=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="post-merge-review-threads-exact-cost" \
-		gh api graphql \
+		_pmrsc_gh_read gh api graphql \
 		-F owner="$owner" -F name="$name" -F pr="$pr" \
 		-f query='
 			query($owner: String!, $name: String!, $pr: Int!) {

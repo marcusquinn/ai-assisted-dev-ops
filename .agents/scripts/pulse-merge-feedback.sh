@@ -53,6 +53,16 @@ _PULSE_MERGE_FEEDBACK_LOADED=1
 
 _CI_REPAIR_OUTCOME_SUMMARY=""
 
+_pmf_gh_read() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout read "$@" || rc=$?
+	else
+		"$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 _feedback_finalizer_path="${BASH_SOURCE[0]%/*}/pulse-merge-feedback-finalizer.sh"
 if [[ -r "$_feedback_finalizer_path" ]]; then
 	# shellcheck source=./pulse-merge-feedback-finalizer.sh
@@ -1407,7 +1417,7 @@ _ci_repair_resolve_runner_login() {
 		return 0
 	fi
 
-	runner_login=$(gh api graphql \
+	runner_login=$(_pmf_gh_read gh api graphql \
 		-f 'query=query { viewer { login } }' \
 		--jq '.data.viewer.login // ""' 2>/dev/null || true)
 	if [[ "$runner_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
