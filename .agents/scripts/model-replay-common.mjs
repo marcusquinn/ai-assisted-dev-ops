@@ -32,11 +32,15 @@ export const MODES = ["autonomous", "prescriptive"];
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "../..");
 
+function compareEntryKeys([left], [right]) {
+  return left < right ? -1 : Number(left > right);
+}
+
 function sortedValue(value) {
   if (Array.isArray(value)) return value.map(sortedValue);
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+      Object.entries(value).sort(compareEntryKeys)
         .map(([key, entryValue]) => [key, sortedValue(entryValue)]),
     );
   }
