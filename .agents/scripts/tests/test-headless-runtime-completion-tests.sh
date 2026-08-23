@@ -309,6 +309,32 @@ test_cmd_run_finish_emits_noop_for_zero_output() {
 	return 0
 }
 
+test_cmd_run_finish_preserves_terminal_blocked_outcome() {
+	local work_dir="${TEST_ROOT}/repo-finish-blocked"
+	_setup_test_git_repo "$work_dir" 0
+	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+
+	local released_reason="" fast_fail_called=0 recorded_outcome="" recorded_reason=""
+	_release_dispatch_claim() { released_reason="$2"; return 0; }
+	_report_failure_to_fast_fail() { fast_fail_called=1; return 0; }
+	_update_dispatch_ledger() { return 0; }
+	_release_session_lock() { return 0; }
+	_hrw_record_terminal_outcome() { recorded_outcome="$2"; recorded_reason="$3"; return 0; }
+
+	_run_result_label="blocked"
+	_run_failure_reason="blocked"
+	_cmd_run_finish "issue-99999" "complete" "$work_dir"
+
+	if [[ "$released_reason" == "blocked" && "$fast_fail_called" -eq 0 &&
+		"$recorded_outcome" == "deferred" && "$recorded_reason" == "blocked" ]]; then
+		print_result "_cmd_run_finish preserves terminal BLOCKED without no_work accounting" 0
+	else
+		print_result "_cmd_run_finish preserves terminal BLOCKED without no_work accounting" 1 \
+			"release=${released_reason:-<empty>} fast_fail=${fast_fail_called} outcome=${recorded_outcome:-<empty>} reason=${recorded_reason:-<empty>}"
+	fi
+	return 0
+}
+
 test_cmd_run_finish_emits_complete_for_real_output() {
 	local work_dir="${TEST_ROOT}/repo-finish-complete"
 	_setup_test_git_repo "$work_dir" 1

@@ -39,6 +39,7 @@ _HRW_TELEMETRY_SUCCESS="success"
 _HRW_TELEMETRY_FAILED="failed"
 _HRW_TELEMETRY_DEFERRED="deferred"
 _HRW_STATUS_CHECKPOINTED="checkpointed"
+_HRW_STATUS_BLOCKED="blocked"
 _HRW_REASON_DRAFT_CHECKPOINT="worker_draft_checkpoint"
 _HRW_REASON_DRAFT_ESCALATION_FAILED="worker_draft_checkpoint_escalation_failed"
 _HRW_REASON_READY_MISSING_LINKAGE="worker_ready_missing_linkage"
@@ -1889,6 +1890,17 @@ _hrw_finish_success_run() {
 	local release_needed=1
 	local finish_status=0
 	local permission_pending_file=""
+	if [[ "${_run_result_label:-}" == "$_HRW_STATUS_BLOCKED" ]]; then
+		# A structured terminal blocker is meaningful model output, even when it
+		# cannot produce a commit or PR. Preserve that classification instead of
+		# routing it through zero-output/no_work accounting.
+		_hrw_release_dispatch_claim "$session_key" "${_run_failure_reason:-$_HRW_STATUS_BLOCKED}"
+		_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
+		_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
+		_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_BLOCKED"
+		_HRW_FINAL_RUNTIME_CLASSIFICATION="${_run_failure_reason:-$_HRW_STATUS_BLOCKED}"
+		return 0
+	fi
 	if [[ "${_run_result_label:-}" == "post_pr_handoff" ]] &&
 		(! declare -F _worker_post_pr_handoff_confirmed >/dev/null 2>&1 ||
 			! _worker_post_pr_handoff_confirmed "$session_key" "$work_dir"); then
