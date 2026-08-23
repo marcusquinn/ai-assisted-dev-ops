@@ -84,16 +84,18 @@ function legacyReplayError(operation) {
 }
 
 function executeCommand(command, options) {
+  let result;
   switch (command) {
-    case "init": return commandInit(options);
-    case "add-case": return commandAddCase(options);
-    case "qualify": return commandQualify(options);
-    case "plan": return commandPlan(options);
-    case "seal": return commandSeal(options);
-    case "run": return commandRun(options);
-    case "report": return commandReport(options);
+    case "init": result = commandInit(options); break;
+    case "add-case": result = commandAddCase(options); break;
+    case "qualify": result = commandQualify(options); break;
+    case "plan": result = commandPlan(options); break;
+    case "seal": result = commandSeal(options); break;
+    case "run": result = commandRun(options); break;
+    case "report": result = commandReport(options); break;
     default: throw new Error(`Unknown command: ${command}`);
   }
+  return result;
 }
 
 export function runCLI(argv = process.argv.slice(2)) {
