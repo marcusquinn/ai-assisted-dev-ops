@@ -191,6 +191,14 @@ if [[ " $* " == *" api "*"/labels?per_page=100"* ]]; then
   printf '%s\n' "${PULSE_CHECK_EXISTING_LABELS_JSON:-[]}"
   exit "${PULSE_CHECK_LABEL_LIST_EXIT:-0}"
 fi
+if [[ " $* " == *" api repos/"*"/contents/.agents/scripts/"* ]]; then
+  if [[ " $* " == *"repos/owner/aidevops/contents/"* ]]; then
+    printf 'file\n'
+    exit 0
+  fi
+  printf 'not found\n' >&2
+  exit 1
+fi
 if [[ " $* " == *" label create "* ]]; then
   label_name="${3:-}"
   printf 'label-create=%s\n' "$label_name" >>"${PULSE_CHECK_CAPTURE}"
@@ -498,6 +506,11 @@ FAILED_LABEL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_FAIL_LABEL=source:pulse-c
 FAILED_LABEL_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
 assert_contains "required label failure is reported" "failed to ensure label source:pulse-check" "$FAILED_LABEL_OUT"
 assert_not_contains "required label failure prevents issue creation" "repo=owner/aidevops" "$FAILED_LABEL_CAPTURE"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+FOREIGN_REPO_OUT=$(env "${COMMON_ENV[@]}" "$HELPER" apply --repo owner/product 2>&1)
+assert_contains "foreign repo is rejected before issue creation" "repository does not own .agents/scripts/pulse-check-queue-scan.py" "$FOREIGN_REPO_OUT"
+assert_not_contains "foreign repo receives no remediation issue" "pulse-check: filed" "$FOREIGN_REPO_OUT"
 
 # shellcheck source=../routines/core-routines.sh
 CORE_OUTPUT=$(source "$CORE_ROUTINES" && get_core_routine_entries)

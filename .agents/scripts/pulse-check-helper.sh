@@ -228,6 +228,28 @@ _resolve_apply_repo() {
 	return 0
 }
 
+_framework_write_surface_paths() {
+	printf '%s\n' \
+		'.agents/scripts/pulse-check-queue-scan.py' \
+		'.agents/scripts/pulse-check-report.jq' \
+		'.agents/scripts/pulse-check-helper.sh' \
+		'.agents/scripts/tests/test-pulse-check-helper.sh'
+	return 0
+}
+
+_repo_owns_framework_write_surface() {
+	local slug="$1"
+	local path=""
+	while IFS= read -r path; do
+		[[ -n "$path" ]] || continue
+		if ! gh api "repos/${slug}/contents/${path}" --jq '.type' >/dev/null 2>&1; then
+			print_error "pulse-check: refusing framework remediation issue in ${slug}; repository does not own ${path}"
+			return 1
+		fi
+	done < <(_framework_write_surface_paths)
+	return 0
+}
+
 _existing_open_issue_for_finding() {
 	local slug="$1"
 	local finding_id="$2"
@@ -603,6 +625,7 @@ _apply_findings() {
 		print_warning "pulse-check: skipping issue writes while GitHub API cooldown or dispatch API block is active"
 		return 0
 	fi
+	_repo_owns_framework_write_surface "$slug" || return 1
 
 	local applied_count=0
 	while IFS= read -r finding_json; do
