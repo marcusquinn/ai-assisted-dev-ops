@@ -42,7 +42,12 @@ _dispatch_filter_repo_pr_backlog_candidates() {
 
 	filtered_json=$(jq -c '[.[] | select(
 		((.labels // []) | map(.name? // .)) as $labels |
+		# Feedback finalization verifies the source PR head and closes that PR
+		# before these candidates are redispatched. CI/conflict candidates therefore
+		# repair an existing PR lineage instead of adding ordinary backlog.
 		(($labels | index("quality-debt")) != null and ($labels | index("source:review-feedback")) != null)
+		or ($labels | index("source:ci-feedback")) != null
+		or ($labels | index("source:conflict-feedback")) != null
 	)]' <<<"$candidates_json" 2>/dev/null) || filtered_json="$candidates_json"
 	candidate_count=$(jq 'length' <<<"$candidates_json" 2>/dev/null) || candidate_count=0
 	filtered_count=$(jq 'length' <<<"$filtered_json" 2>/dev/null) || filtered_count="$candidate_count"

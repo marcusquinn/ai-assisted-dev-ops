@@ -243,8 +243,8 @@ JSON
 		local limit="$2"
 		printf '%s' "$limit" >/dev/null
 		case "$repo_slug" in
-			owner/repo-a) printf '%s\n' '[{"number":1,"labels":[{"name":"bug"}]},{"number":2,"labels":[{"name":"quality-debt"},{"name":"source:review-feedback"}]}]' ;;
-			owner/repo-b) printf '%s\n' '[{"number":3,"labels":[{"name":"bug"}]}]' ;;
+			owner/repo-a) printf '%s\n' '[{"number":1,"labels":[{"name":"bug"}]},{"number":2,"labels":[{"name":"quality-debt"},{"name":"source:review-feedback"}]},{"number":3,"labels":[{"name":"source:ci-feedback"}]},{"number":4,"labels":[{"name":"source:conflict-feedback"}]}]' ;;
+			owner/repo-b) printf '%s\n' '[{"number":5,"labels":[{"name":"bug"}]}]' ;;
 			*) printf '[]\n' ;;
 		esac
 		return 0
@@ -254,10 +254,10 @@ JSON
 	ranked=$(build_ranked_dispatch_candidates_json 10)
 	repo_a_numbers=$(jq -r '[.[] | select(.repo_slug == "owner/repo-a") | .number] | join(",")' <<<"$ranked")
 	repo_b_numbers=$(jq -r '[.[] | select(.repo_slug == "owner/repo-b") | .number] | join(",")' <<<"$ranked")
-	if [[ "$repo_a_numbers" == "2" && "$repo_b_numbers" == "3" ]]; then
-		print_result "guardrail: repo A backlog does not throttle repo B and trusted review debt is exempt" 0
+	if [[ "$repo_a_numbers" == "2,3,4" && "$repo_b_numbers" == "5" ]]; then
+		print_result "guardrail: repo backlog exempts review debt and verified CI/conflict repair lineages" 0
 	else
-		print_result "guardrail: repo A backlog does not throttle repo B and trusted review debt is exempt" 1 "repo_a=${repo_a_numbers} repo_b=${repo_b_numbers}"
+		print_result "guardrail: repo backlog exempts review debt and verified CI/conflict repair lineages" 1 "repo_a=${repo_a_numbers} repo_b=${repo_b_numbers}"
 	fi
 	return 0
 }
