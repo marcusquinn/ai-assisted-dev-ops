@@ -55,6 +55,10 @@ case "$AIDEVOPS_HEADLESS_RUNTIME_DIR" in "$AIDEVOPS_WORKTREE_BASE_DIR"/*) ;; *) 
 case "$AIDEVOPS_HEADLESS_METRICS_FILE" in "$AIDEVOPS_WORKTREE_BASE_DIR"/*) ;; *) exit 21 ;; esac
 case "$AIDEVOPS_RESOURCE_METRICS_FILE" in "$AIDEVOPS_WORKTREE_BASE_DIR"/*) ;; *) exit 22 ;; esac
 case "$AIDEVOPS_OAUTH_POOL_FILE" in "$AIDEVOPS_WORKTREE_BASE_DIR"/*) ;; *) exit 23 ;; esac
+if [ "\${AIDEVOPS_TEST_RUNTIME_FAILURE:-}" = "1" ]; then
+  printf '%s\n' 'simulated pre-provider infrastructure failure' >&2
+  exit 126
+fi
 export MR_WORK_DIR="$work_dir" MR_SESSION_KEY="$session_key" MR_MODEL="$model" MR_VARIANT="$variant" MR_TIER="$tier"
 "$AIDEVOPS_TEST_NODE" -e '
 const fs = require("node:fs");
@@ -154,6 +158,7 @@ function fixturePaths(sandbox) {
     sensitiveTemp: join(sandbox, "sensitive-temp"),
     testHome: join(sandbox, "home"),
     fakeOpenCode: join(sandbox, "fake-opencode.sh"),
+    fakeEgressBackend: join(sandbox, "fake-egress-backend.sh"),
   };
 }
 
@@ -236,6 +241,8 @@ function writeRuntimeFixtures(paths) {
   chmodSync(paths.promptGuard, 0o700);
   writeFileSync(paths.fakeOpenCode, "#!/bin/sh\nprintf '%s\\n' 'fixture-opencode 1.0'\n", { mode: 0o700 });
   chmodSync(paths.fakeOpenCode, 0o700);
+  writeFileSync(paths.fakeEgressBackend, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  chmodSync(paths.fakeEgressBackend, 0o700);
   writeFileSync(paths.fakeRuntime, FAKE_RUNTIME, { mode: 0o700 });
   chmodSync(paths.fakeRuntime, 0o700);
 }
@@ -256,6 +263,7 @@ function fixtureEnvironment(paths) {
     AIDEVOPS_TEST_NODE: process.execPath,
     AIDEVOPS_HEADLESS_VARIANT: "xhigh",
     AIDEVOPS_HEADLESS_VARIANT_SIMPLE: "high",
+    AIDEVOPS_WORKER_EGRESS_BACKEND: paths.fakeEgressBackend,
     OPENCODE_BIN: paths.fakeOpenCode,
     OPENCODE_SERVER_PASSWORD: "test-only-password",
   };

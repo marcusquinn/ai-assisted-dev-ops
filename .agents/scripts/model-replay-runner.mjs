@@ -21,7 +21,10 @@ import {
 import { loadSealedPredictions } from "./model-replay-predictions.mjs";
 import { createReport, reportHash } from "./model-replay-report.mjs";
 import { acquireRunLock, validatedResultRecords } from "./model-replay-results.mjs";
-import { createRuntimeWorkRoot } from "./model-replay-runtime.mjs";
+import {
+  assertModelReplayEgressConfigured,
+  createRuntimeWorkRoot,
+} from "./model-replay-runtime.mjs";
 
 function pendingCells(plan, results) {
   const completed = new Set(results.map((record) => record.cell_id));
@@ -115,8 +118,10 @@ export function runExperiment({ experimentDir, corpusDir, catalogPath, dryRun = 
       return record;
     }
     const lockedResults = validatedResultRecords(experimentDir, plan, sealed);
+    const executableCells = pendingCells(plan, lockedResults);
+    if (executableCells.length > 0) assertModelReplayEgressConfigured();
     const results = executePendingCells({
-      cells: pendingCells(plan, lockedResults),
+      cells: executableCells,
       plan,
       sealed,
       corpusDir,

@@ -3,7 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   assertNoSymlinks,
@@ -62,16 +62,18 @@ function gradeCapturedPatch({ loadedCase, catalog, workRoot, patchPath }) {
       verificationWorkspace,
       workRoot,
     );
-    const applied = execute(
-      ["git", "apply", "--binary", "--whitespace=nowarn", patchPath],
-      {
-        cwd: synthetic.workspace,
-        env: workspaceExecutionEnvironment(synthetic.workspace),
-        timeoutMs: 120000,
-      },
-    );
-    if (applied.status !== 0) {
-      throw new Error(`Captured benchmark patch cannot be replayed: ${applied.stderr || applied.stdout}`);
+    if (readFileSync(patchPath).length > 0) {
+      const applied = execute(
+        ["git", "apply", "--binary", "--whitespace=nowarn", patchPath],
+        {
+          cwd: synthetic.workspace,
+          env: workspaceExecutionEnvironment(synthetic.workspace),
+          timeoutMs: 120000,
+        },
+      );
+      if (applied.status !== 0) {
+        throw new Error(`Captured benchmark patch cannot be replayed: ${applied.stderr || applied.stdout}`);
+      }
     }
     assertNoSymlinks(synthetic.workspace);
     return gradeWorkspace(loadedCase, synthetic.workspace);
@@ -85,6 +87,53 @@ function artifactRecords(paths) {
     path: `artifacts/${basename(path)}`,
     sha256: sha256File(path),
   }]));
+}
+
+function writeInfrastructureAttempt({
+  cell,
+  plan,
+  sealed,
+  experimentDir,
+  runtime,
+  evidence,
+  logPath,
+  patchPath,
+  metricsSnapshotPath,
+}) {
+  const attemptID = randomUUID().replaceAll("-", "").slice(0, 12);
+  const preservedLogPath = join(
+    experimentDir,
+    "artifacts",
+    `${cell.cell_id}.infrastructure-${attemptID}.runtime.log`,
+  );
+  const attemptPath = join(
+    experimentDir,
+    "artifacts",
+    `${cell.cell_id}.infrastructure-${attemptID}.json`,
+  );
+  copyFileSync(logPath, preservedLogPath);
+  writeJson(attemptPath, {
+    schema_version: "aidevops-model-replay-infrastructure-attempt/v1",
+    experiment_id: plan.experiment_id,
+    cell_id: cell.cell_id,
+    model: cell.model,
+    candidate_tier: cell.candidate_tier,
+    requested_effort: cell.requested_effort,
+    failure_class: "provider_request_unverified",
+    runtime_status: runtime.status,
+    runtime_signal: runtime.signal,
+    timed_out: runtime.timedOut,
+    runtime_error: runtime.error,
+    provider_request_observed: evidence.requestObserved,
+    resource_metric_observed: evidence.resourceObserved,
+    runtime_result: String(evidence.metric.result || ""),
+    log: artifactRecords({ log: preservedLogPath }).log,
+    patch_sha256: sha256File(patchPath),
+    metrics_sha256: sha256File(metricsSnapshotPath),
+    prediction_seal_sha256: sealed.seal_sha256,
+    recorded_at: new Date().toISOString(),
+  });
+  return attemptPath;
 }
 
 function runtimeArguments({ helper, sessionKey, workspace, promptPath, cell }) {
@@ -273,12 +322,6 @@ export function executeCell({ cell, plan, sealed, corpusDir, catalog, experiment
     writePrivateFile(logPath, `${run.stdout || ""}${run.stderr || ""}`, 0o600);
     assertNoSymlinks(workspace);
     capturePatch(workspace, synthetic.syntheticCommit, patchPath);
-    const grade = gradeCapturedPatch({
-      loadedCase: verified.loadedCase,
-      catalog,
-      workRoot,
-      patchPath,
-    });
     const evidence = runtimeEvidence({
       sessionKey,
       cell,
@@ -292,6 +335,28 @@ export function executeCell({ cell, plan, sealed, corpusDir, catalog, experiment
       runtime_metric: evidence.metric,
       request_usage: evidence.usage,
       resource_metric: evidence.resource,
+    });
+    if (!evidence.requestObserved) {
+      const attemptPath = writeInfrastructureAttempt({
+        cell,
+        plan,
+        sealed,
+        experimentDir,
+        runtime,
+        evidence,
+        logPath,
+        patchPath,
+        metricsSnapshotPath,
+      });
+      throw new Error(
+        `Model replay infrastructure failed before a verified provider request (status=${runtime.status ?? "unavailable"}); evidence: artifacts/${basename(attemptPath)}`,
+      );
+    }
+    const grade = gradeCapturedPatch({
+      loadedCase: verified.loadedCase,
+      catalog,
+      workRoot,
+      patchPath,
     });
     const artifacts = artifactRecords({
       prompt: promptPath,

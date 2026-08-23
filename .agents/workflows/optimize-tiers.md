@@ -176,6 +176,11 @@ an isolated sandbox, and enforced provider-only whole-process egress. A pass als
 requires a concrete structured provider-request record and resource metric. The
 captured patch is reapplied to another clean synthetic base and regraded; prompt,
 log, metrics, and patch hashes remain bound to the append-only result record.
+Dry runs never contact providers and do not require an egress backend. Before a
+real run, set `AIDEVOPS_WORKER_EGRESS_BACKEND` to an absolute executable that
+implements the v1 kernel/equivalent contract documented by
+`sandbox-exec-helper.sh`; model replay fails before provider execution when this
+trusted operator prerequisite is absent. Never use a test fixture backend.
 Each deterministic check receives a disposable patch snapshot in a separate
 filesystem-deny sandbox, so check-time writes cannot affect later checks. The
 current enforcing backend is macOS Seatbelt; qualification fails closed on hosts

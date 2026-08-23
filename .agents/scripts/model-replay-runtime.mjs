@@ -3,15 +3,18 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJson, writePrivateFile } from "./model-replay-core.mjs";
 
@@ -29,6 +32,26 @@ function ensureOwnedDirectory(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   chmodSync(path, 0o700);
   return realpathSync(path);
+}
+
+function isExecutableAbsoluteFile(path) {
+  if (!path || !isAbsolute(path)) return false;
+  try {
+    accessSync(path, constants.X_OK);
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function assertModelReplayEgressConfigured() {
+  const backend = process.env.AIDEVOPS_WORKER_EGRESS_BACKEND || "";
+  if (!isExecutableAbsoluteFile(backend)) {
+    throw new Error(
+      "Real model replay requires AIDEVOPS_WORKER_EGRESS_BACKEND to be an executable absolute file",
+    );
+  }
+  return backend;
 }
 
 export function prepareModelReplayRuntime(workRoot) {
