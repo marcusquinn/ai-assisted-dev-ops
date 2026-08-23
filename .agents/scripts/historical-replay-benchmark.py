@@ -50,7 +50,9 @@ def load_json(path: Path) -> Any:
 
 
 def run(command: list[str], cwd: Path, *, capture: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, text=True, capture_output=capture, check=False)
+    # Commands are argument arrays built by this harness; case scripts execute
+    # only inside a disposable synthetic repository by explicit operator action.
+    return subprocess.run(command, cwd=cwd, text=True, capture_output=capture, check=False)  # nosec B603
 
 
 def case_identity(case_dir: Path, manifest: dict[str, Any]) -> str:
