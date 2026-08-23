@@ -58,7 +58,7 @@ PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="8"
+PRRTS_WORKER_CONTRACT_VERSION="9"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
@@ -1737,9 +1737,9 @@ Thread preview: ${safe_preview}
    you have verified the finding is addressed or no longer applies.
    Write each reply to a local temporary file and pass that path as <body_file>.
    Select <thread_id> from the assigned thread IDs listed above.
-   Review-thread read/reply/resolve operations are GraphQL-only in this helper;
-   use the scanner commands above or 'gh api graphql'. The resolveReviewThread
-   mutation has no REST endpoint, so do not try 'gh api repos/...' for resolve.
+   The scanner has no 'read' subcommand. Fetch review threads with 'gh api graphql'.
+   Only reply and resolve use the scanner commands above; thread operations are GraphQL-only.
+   The resolveReviewThread mutation has no REST endpoint; do not use 'gh api repos/...' for resolve.
 4. For each assigned review thread, classify it as actionable or praise-only:
    - Actionable means the thread requests a code, documentation, configuration,
      or follow-up change. Verify the premise in the cited file and context.
