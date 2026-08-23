@@ -3,6 +3,8 @@
 
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { executeCell } from "./model-replay-cell.mjs";
+import { modelReplayExecutionPosture } from "./model-replay-contracts.mjs";
 import {
   appendJsonLine,
   createSyntheticWorkspace,
@@ -11,8 +13,7 @@ import {
   verifyQualification,
   writeJson,
 } from "./model-replay-core.mjs";
-import { executeCell } from "./model-replay-cell.mjs";
-import { validateRuntimeContract, resolveExperimentDirectory } from "./model-replay-framework.mjs";
+import { resolveExperimentDirectory, validateRuntimeContract } from "./model-replay-framework.mjs";
 import {
   loadExperimentCandidates,
   loadVerifiedPlan,
@@ -61,6 +62,7 @@ function createDryRunRecord({ experimentDir, plan, sealed, pending }) {
   return {
     schema_version: "aidevops-model-replay-dry-run/v1",
     experiment_id: plan.experiment_id,
+    execution_posture: modelReplayExecutionPosture(plan),
     plan_sha256: plan.plan_sha256,
     prediction_seal_sha256: sealed.seal_sha256,
     pending_cells: pending.map((cell) => ({
@@ -119,7 +121,9 @@ export function runExperiment({ experimentDir, corpusDir, catalogPath, dryRun = 
     }
     const lockedResults = validatedResultRecords(experimentDir, plan, sealed);
     const executableCells = pendingCells(plan, lockedResults);
-    if (executableCells.length > 0) assertModelReplayEgressConfigured();
+    if (executableCells.length > 0 && modelReplayExecutionPosture(plan) === "enforced") {
+      assertModelReplayEgressConfigured();
+    }
     const results = executePendingCells({
       cells: executableCells,
       plan,
@@ -129,7 +133,11 @@ export function runExperiment({ experimentDir, corpusDir, catalogPath, dryRun = 
       experimentDir,
       candidates,
     });
-    return { experiment_id: plan.experiment_id, results };
+    return {
+      experiment_id: plan.experiment_id,
+      execution_posture: modelReplayExecutionPosture(plan),
+      results,
+    };
   } finally {
     releaseLock();
   }

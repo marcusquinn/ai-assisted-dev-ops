@@ -10,12 +10,16 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
+  DEFAULT_EXECUTION_POSTURE,
+  modelReplayExecutionPosture,
+  RESULT_SCHEMA,
+} from "./model-replay-contracts.mjs";
+import {
   pathInside,
   sha256,
   sha256File,
   stableJson,
 } from "./model-replay-core.mjs";
-import { RESULT_SCHEMA } from "./model-replay-contracts.mjs";
 
 export function resultRecords(experimentDir) {
   const path = join(experimentDir, "results.jsonl");
@@ -75,6 +79,22 @@ function validateResultArtifacts(result, cell, experimentDir) {
   }
 }
 
+function resultContainmentMatches(result, plan) {
+  const expectedPosture = modelReplayExecutionPosture(plan);
+  if (Object.hasOwn(plan, "execution_posture")) {
+    if (typeof result.execution_posture !== "string"
+      || typeof result.process_tree_egress_enforced !== "boolean") return false;
+  }
+  const resultPosture = Object.hasOwn(result, "execution_posture")
+    ? result.execution_posture
+    : DEFAULT_EXECUTION_POSTURE;
+  const processTreeEgressEnforced = Object.hasOwn(result, "process_tree_egress_enforced")
+    ? result.process_tree_egress_enforced
+    : true;
+  return resultPosture === expectedPosture
+    && processTreeEgressEnforced === (expectedPosture === "enforced");
+}
+
 function resultIdentityMatches(result, cell, plan, sealed) {
   const expected = {
     schema_version: RESULT_SCHEMA,
@@ -93,7 +113,8 @@ function resultIdentityMatches(result, cell, plan, sealed) {
     mode: plan.mode,
     prediction_seal_sha256: sealed.seal_sha256,
   };
-  return Object.entries(expected).every(([field, value]) => result[field] === value);
+  return Object.entries(expected).every(([field, value]) => result[field] === value)
+    && resultContainmentMatches(result, plan);
 }
 
 function verificationState(result, plannedCase) {

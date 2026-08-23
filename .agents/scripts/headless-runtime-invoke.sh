@@ -209,7 +209,11 @@ _invoke_opencode_prepare_child_command() {
 		if [[ "$requested_egress_mode" == "off" ]]; then
 			print_warning "Public triage ignores egress mode off; effective mode=${egress_mode}"
 		elif [[ "$egress_mode" == "$HEADLESS_EGRESS_MODE_AUTO" ]]; then
-			print_warning "Public triage whole-process egress backend unavailable; continuing with the no-tools isolated runtime (egress=logical-isolation)"
+			if [[ "$runtime_role" == "${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}" ]]; then
+				print_warning "Model replay is using the explicit trusted-local posture without process-tree egress enforcement"
+			else
+				print_warning "Public triage whole-process egress backend unavailable; continuing with the no-tools isolated runtime (egress=logical-isolation)"
+			fi
 		fi
 		egress_policy_profile="provider:${_invoke_provider}"
 		sandbox_home_args=(--home-dir "$isolated_home_dir")

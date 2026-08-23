@@ -3,19 +3,23 @@
 
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { contaminationFor, loadCandidates } from "./model-replay-candidates.mjs";
 import {
-  MODES,
+  EXECUTION_POSTURES,
+  modelReplayExecutionPosture,
+  PLAN_SCHEMA,
+} from "./model-replay-contracts.mjs";
+import {
   assertSafeID,
   loadCase,
   loadCorpus,
+  MODES,
   readJson,
   sha256,
   stableJson,
   verifyQualification,
   writeJson,
 } from "./model-replay-core.mjs";
-import { contaminationFor, loadCandidates } from "./model-replay-candidates.mjs";
-import { PLAN_SCHEMA } from "./model-replay-contracts.mjs";
 import {
   frameworkIdentity,
   resolveExperimentDirectory,
@@ -51,6 +55,7 @@ export function loadVerifiedPlan(experimentDir) {
   if (plan.schema_version !== PLAN_SCHEMA || planDigest(plan) !== plan.plan_sha256) {
     throw new Error("Experiment plan integrity check failed");
   }
+  modelReplayExecutionPosture(plan);
   return plan;
 }
 
@@ -159,13 +164,16 @@ function buildCells({ cases, candidateConfig, corpusDir, stage, mode, allowConta
   return { cells, contamination };
 }
 
-function validatePlanOptions({ experimentID, suite, stage, mode }) {
+function validatePlanOptions({ experimentID, suite, stage, mode, executionPosture }) {
   assertSafeID(experimentID, "experiment_id");
   if (!["quick", "full"].includes(suite)) throw new Error("Suite must be quick or full");
   if (!["canary", "primary", "sweep", "confirm"].includes(stage)) {
     throw new Error("Stage must be canary, primary, sweep, or confirm");
   }
   if (!MODES.includes(mode)) throw new Error("Mode must be autonomous or prescriptive");
+  if (!EXECUTION_POSTURES.includes(executionPosture)) {
+    throw new Error("Execution posture must be enforced or trusted-local");
+  }
 }
 
 function persistPlan(experimentDir, plan, candidateConfig) {
@@ -185,10 +193,11 @@ export function createPlan({
   suite = "quick",
   stage = "primary",
   mode = "autonomous",
+  executionPosture = "enforced",
   allowContaminated = false,
 }) {
   experimentDir = resolveExperimentDirectory(experimentDir, true);
-  validatePlanOptions({ experimentID, suite, stage, mode });
+  validatePlanOptions({ experimentID, suite, stage, mode, executionPosture });
   if (existsSync(join(experimentDir, "plan.json"))) {
     throw new Error("Experiment plan already exists; use a new experiment directory");
   }
@@ -213,6 +222,7 @@ export function createPlan({
     suite,
     stage,
     mode,
+    execution_posture: executionPosture,
     framework: frameworkIdentity(candidateConfig),
     candidate_config_sha256: sha256(stableJson(candidateConfig)),
     allowed_providers: candidateConfig.allowed_providers,

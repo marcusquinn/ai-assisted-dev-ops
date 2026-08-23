@@ -46,7 +46,11 @@ done
 [ -f "$OPENCODE_CONFIG" ] || exit 12
 case "$work_dir" in "$AIDEVOPS_WORKTREE_BASE_DIR"/*) ;; *) exit 13 ;; esac
 [ "$AIDEVOPS_HEADLESS_SANDBOX_TIMEOUT" = "60" ] || exit 14
-[ "$AIDEVOPS_WORKER_EGRESS_MODE" = "required" ] || exit 15
+case "$AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE:$AIDEVOPS_WORKER_EGRESS_MODE" in
+  enforced:required) ;;
+  trusted-local:auto) [ -z "\${AIDEVOPS_WORKER_EGRESS_BACKEND:-}" ] || exit 24 ;;
+  *) exit 15 ;;
+esac
 [ "$tier" = "simple" ] || exit 16
 [ -z "\${OPENCODE_SERVER_PASSWORD:-}" ] || exit 17
 [ -z "\${AIDEVOPS_HEADLESS_VARIANT:-}\${AIDEVOPS_HEADLESS_VARIANT_SIMPLE:-}" ] || exit 18

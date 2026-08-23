@@ -132,8 +132,14 @@ The modes must never be aggregated.
   --experiment-id quick-primary-autonomous \
   --suite quick \
   --stage primary \
-  --mode autonomous
+  --mode autonomous \
+  --execution-posture enforced
 ```
+
+The default `enforced` posture requires verified provider-only process-tree
+egress. For a curated V1 experiment on an operator-controlled machine, select
+`--execution-posture trusted-local` explicitly. The posture is sealed into the
+plan and cannot be changed later; create a new experiment to change it.
 
 Fill every field in `prediction-template.json` before any provider call, then
 seal it. The CLI will not replace or reseal an existing prediction ledger.
@@ -171,16 +177,23 @@ similarity and LLM grading are excluded. Reports compare completion, functional
 correctness, model/effort evidence, duration, cost when observed, failure class,
 pairwise separation, and sealed-prediction calibration.
 
-Model execution requires the restricted OpenCode profile, scoped provider auth,
-an isolated sandbox, and enforced provider-only whole-process egress. A pass also
-requires a concrete structured provider-request record and resource metric. The
-captured patch is reapplied to another clean synthetic base and regraded; prompt,
-log, metrics, and patch hashes remain bound to the append-only result record.
-Dry runs never contact providers and do not require an egress backend. Before a
-real run, set `AIDEVOPS_WORKER_EGRESS_BACKEND` to an absolute executable that
-implements the v1 kernel/equivalent contract documented by
-`sandbox-exec-helper.sh`; model replay fails before provider execution when this
+Every execution posture requires the restricted OpenCode profile, scoped
+provider auth, isolated sandbox, disabled MCP/subagents/shell/network tools, and
+concrete provider-request plus resource evidence. The captured patch is reapplied
+to another clean synthetic base and regraded; prompt, log, metrics, and patch
+hashes remain bound to the append-only result record.
+
+Dry runs never contact providers and do not require an egress backend. Before an
+`enforced` real run, set `AIDEVOPS_WORKER_EGRESS_BACKEND` to an absolute
+executable that implements the v1 kernel/equivalent contract documented by
+`sandbox-exec-helper.sh`; the run fails before provider execution when this
 trusted operator prerequisite is absent. Never use a test fixture backend.
+
+`trusted-local` deliberately records that process-tree egress was not enforced.
+It is only for curated local experiments on an operator-controlled machine. Its
+correctness, cost, duration, identity, and resource observations remain visible,
+but reports quarantine them from automatic routing or release recommendations.
+It never weakens public triage, worker, or other runtime roles.
 Each deterministic check receives a disposable patch snapshot in a separate
 filesystem-deny sandbox, so check-time writes cannot affect later checks. The
 current enforcing backend is macOS Seatbelt; qualification fails closed on hosts

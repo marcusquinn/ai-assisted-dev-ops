@@ -24,7 +24,7 @@ const COMMAND_OPTIONS = {
   ],
   plan: [
     "corpus", "candidates", "experiment", "experiment_id", "suite", "stage", "mode",
-    "allow_contaminated",
+    "execution_posture", "allow_contaminated",
   ],
   seal: ["experiment", "input"],
   run: ["experiment", "corpus", "catalog", "dry_run"],
@@ -46,7 +46,8 @@ Usage:
     [--repetitions N] [--allow-reconstructed] [--allow-prompt-warnings]
   brief-tier-test-helper.sh plan --corpus DIR --candidates FILE --experiment DIR \\
     --experiment-id ID [--suite quick|full] [--stage canary|primary|sweep|confirm] \\
-    [--mode autonomous|prescriptive] [--allow-contaminated]
+    [--mode autonomous|prescriptive] [--execution-posture enforced|trusted-local] \\
+    [--allow-contaminated]
   brief-tier-test-helper.sh seal --experiment DIR --input FILE
   brief-tier-test-helper.sh run --experiment DIR --corpus DIR --catalog FILE [--dry-run]
   brief-tier-test-helper.sh report --experiment DIR

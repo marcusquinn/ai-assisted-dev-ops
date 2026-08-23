@@ -4,17 +4,20 @@
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
 import {
-  sha256File,
-  writeJson,
-  writePrivateFile,
-} from "./model-replay-core.mjs";
-import {
   budgetRecommendation,
   configurationStats,
   pairwiseSeparation,
 } from "./model-replay-analysis.mjs";
 import { predictionCalibration } from "./model-replay-calibration.mjs";
-import { REPORT_SCHEMA } from "./model-replay-contracts.mjs";
+import {
+  modelReplayExecutionPosture,
+  REPORT_SCHEMA,
+} from "./model-replay-contracts.mjs";
+import {
+  sha256File,
+  writeJson,
+  writePrivateFile,
+} from "./model-replay-core.mjs";
 import { resolveExperimentDirectory } from "./model-replay-framework.mjs";
 import {
   loadExperimentCandidates,
@@ -54,6 +57,9 @@ function markdownReport(report) {
     `- Experiment: \`${report.experiment_id}\``,
     `- Suite/stage: ${report.suite} / ${report.stage}`,
     `- Replay mode: ${report.mode}`,
+    `- Execution posture: ${report.execution_posture}`,
+    `- Process-tree egress enforced: ${report.process_tree_egress_enforced === null ? "not observed" : report.process_tree_egress_enforced ? "yes" : "no"}`,
+    `- Automatic routing from this posture: ${report.execution_posture_allows_automatic_routing ? "allowed" : "excluded"}`,
     `- Completed cells: ${report.integrity.completed_cells}/${report.integrity.planned_cells}`,
     "",
     "## Integrity",
@@ -62,6 +68,7 @@ function markdownReport(report) {
     `- Non-fresh cells admitted by override: ${report.integrity.non_fresh_cells}`,
     `- Unknown effective effort: ${report.integrity.unknown_effect_cells}`,
     `- Unverified model identity: ${report.integrity.unverified_model_cells}`,
+    `- Cells without process-tree egress enforcement: ${report.integrity.unenforced_egress_cells}`,
     `- Unknown cost: ${report.integrity.unknown_cost_cells}`,
     "",
     "## Configuration results",
@@ -105,6 +112,7 @@ export function createReport({ experimentDir }) {
   const sealed = loadSealedPredictions(experimentDir, plan);
   loadExperimentCandidates(experimentDir, plan);
   const results = validatedResultRecords(experimentDir, plan, sealed);
+  const executionPosture = modelReplayExecutionPosture(plan);
   const configurations = configurationStats(results);
   const pairwise = pairwiseSeparation(results);
   const report = {
@@ -115,6 +123,11 @@ export function createReport({ experimentDir }) {
     suite: plan.suite,
     stage: plan.stage,
     mode: plan.mode,
+    execution_posture: executionPosture,
+    process_tree_egress_enforced: results.length > 0
+      ? results.every((result) => result.process_tree_egress_enforced !== false)
+      : null,
+    execution_posture_allows_automatic_routing: executionPosture === "enforced",
     plan_sha256: plan.plan_sha256,
     prediction_seal_sha256: sealed.seal_sha256,
     integrity: {
@@ -125,6 +138,9 @@ export function createReport({ experimentDir }) {
       contamination_override: plan.integrity.contamination_override,
       unknown_effect_cells: results.filter((result) => result.effective_effort === "unknown").length,
       unverified_model_cells: results.filter((result) => result.model_matched !== true).length,
+      unenforced_egress_cells: results.filter(
+        (result) => result.process_tree_egress_enforced === false,
+      ).length,
       unknown_cost_cells: results.filter((result) => !Number.isFinite(result.cost_usd)).length,
     },
     configurations,

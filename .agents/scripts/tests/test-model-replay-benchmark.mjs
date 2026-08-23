@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { modelReplayExecutionPosture } from "../model-replay-contracts.mjs";
 import {
   completedPredictions,
   createReplayFixture,
@@ -28,6 +29,11 @@ const fixture = createReplayFixture();
 const { sandbox } = fixture;
 
 try {
+  assert.equal(modelReplayExecutionPosture({}), "enforced");
+  assert.throws(
+    () => modelReplayExecutionPosture({ execution_posture: "" }),
+    /Unsupported model replay execution posture/u,
+  );
   const {
     repository,
     inputs,
@@ -253,6 +259,14 @@ try {
     "--experiment", join(sandbox, "claude-runtime-experiment"),
     "--experiment-id", "claude-runtime", "--suite", "quick",
   );
+  expectFailure(
+    environment,
+    /Execution posture must be enforced or trusted-local/u,
+    "plan", "--corpus", corpus, "--candidates", candidates,
+    "--experiment", join(sandbox, "invalid-posture-experiment"),
+    "--experiment-id", "invalid-posture", "--suite", "quick",
+    "--execution-posture", "invalid",
+  );
 
   const experiment = join(sandbox, "experiment-autonomous");
   const plan = invokeRequired(
@@ -262,6 +276,7 @@ try {
     "--suite", "quick", "--stage", "primary", "--mode", "autonomous",
   );
   assert.equal(plan.cells.length, 1);
+  assert.equal(plan.execution_posture, "enforced");
   const predictionInput = join(sandbox, "predictions-autonomous.json");
   writeJson(predictionInput, completedPredictions(experiment));
   invokeRequired(environment, "seal", "--experiment", experiment, "--input", predictionInput);
@@ -286,6 +301,7 @@ try {
     "run", "--experiment", experiment, "--corpus", corpus, "--catalog", catalog, "--dry-run",
   );
   assert.equal(dryRun.provider_calls_made, 0);
+  assert.equal(dryRun.execution_posture, "enforced");
   assert.equal(existsSync(runtimeMarker), false);
   assert.equal(existsSync(join(experiment, "report.json")), true);
   invokeRequired(environment, "report", "--experiment", experiment);
@@ -377,6 +393,32 @@ try {
     environment,
     "seal", "--experiment", noChangeExperiment, "--input", noChangePredictions,
   );
+  const trustedLocalExperiment = join(sandbox, "experiment-trusted-local");
+  const trustedLocalPlan = invokeRequired(
+    environment,
+    "plan", "--corpus", corpus, "--candidates", candidates,
+    "--experiment", trustedLocalExperiment, "--experiment-id", "fixture-trusted-local",
+    "--suite", "quick", "--stage", "primary", "--mode", "autonomous",
+    "--execution-posture", "trusted-local",
+  );
+  assert.equal(trustedLocalPlan.execution_posture, "trusted-local");
+  const trustedLocalPredictions = join(sandbox, "predictions-trusted-local.json");
+  writeJson(trustedLocalPredictions, completedPredictions(trustedLocalExperiment));
+  invokeRequired(
+    environment,
+    "seal", "--experiment", trustedLocalExperiment, "--input", trustedLocalPredictions,
+  );
+  const trustedLocalPlanPath = join(trustedLocalExperiment, "plan.json");
+  const originalTrustedLocalPlan = readFileSync(trustedLocalPlanPath, "utf8");
+  const tamperedTrustedLocalPlan = JSON.parse(originalTrustedLocalPlan);
+  tamperedTrustedLocalPlan.execution_posture = "enforced";
+  writeJson(trustedLocalPlanPath, tamperedTrustedLocalPlan);
+  expectFailure(
+    environment,
+    /plan integrity check failed/u,
+    "report", "--experiment", trustedLocalExperiment,
+  );
+  writeFileSync(trustedLocalPlanPath, originalTrustedLocalPlan, { mode: 0o600 });
 
   const runLock = join(experiment, "run.lock");
   writeFileSync(runLock, "fixture\n", { mode: 0o600 });
@@ -418,9 +460,31 @@ try {
     "utf8",
   ));
   assert.equal(infrastructureAttempt.runtime_status, 126);
+  assert.equal(infrastructureAttempt.execution_posture, "enforced");
+  assert.equal(infrastructureAttempt.process_tree_egress_enforced, null);
   assert.equal(infrastructureAttempt.provider_request_observed, false);
   assert.equal(existsSync(join(experiment, infrastructureAttempt.log.path)), true);
   assert.equal(existsSync(runtimeMarker), false);
+
+  const trustedLocalRun = invokeRequired(
+    environment,
+    "run", "--experiment", trustedLocalExperiment, "--corpus", corpus,
+    "--catalog", catalog,
+  );
+  assert.equal(trustedLocalRun.execution_posture, "trusted-local");
+  assert.equal(trustedLocalRun.results[0].outcome, "pass");
+  assert.equal(trustedLocalRun.results[0].execution_posture, "trusted-local");
+  assert.equal(trustedLocalRun.results[0].process_tree_egress_enforced, false);
+  const trustedLocalReport = invokeRequired(
+    environment,
+    "report", "--experiment", trustedLocalExperiment,
+  );
+  assert.equal(trustedLocalReport.execution_posture, "trusted-local");
+  assert.equal(trustedLocalReport.process_tree_egress_enforced, false);
+  assert.equal(trustedLocalReport.execution_posture_allows_automatic_routing, false);
+  assert.equal(trustedLocalReport.integrity.unenforced_egress_cells, 1);
+  assert.equal(trustedLocalReport.budget_recommendation.action, "quarantine");
+  assert.equal(trustedLocalReport.budget_recommendation.reason, "trusted_local_egress_unenforced");
 
   const noChangeRun = invokeRequired(
     { ...environment, AIDEVOPS_TEST_NO_CHANGE: "1" },
@@ -443,6 +507,8 @@ try {
   );
   assert.equal(run.results.length, 1);
   assert.equal(run.results[0].outcome, "pass");
+  assert.equal(run.results[0].execution_posture, "enforced");
+  assert.equal(run.results[0].process_tree_egress_enforced, true);
   assert.equal(run.results[0].concrete_model, "openai/replay-fixture");
   assert.equal(run.results[0].routing_tier, "simple");
   assert.equal(run.results[0].tier_matched, true);
@@ -469,6 +535,10 @@ try {
 
   const finalReport = invokeRequired(environment, "report", "--experiment", experiment);
   assert.equal(finalReport.integrity.completed_cells, 1);
+  assert.equal(finalReport.execution_posture, "enforced");
+  assert.equal(finalReport.process_tree_egress_enforced, true);
+  assert.equal(finalReport.execution_posture_allows_automatic_routing, true);
+  assert.equal(finalReport.integrity.unenforced_egress_cells, 0);
   assert.equal(finalReport.integrity.unknown_cost_cells, 0);
   assert.equal(finalReport.configurations[0].completed_pass_rate, 1);
 
@@ -482,6 +552,16 @@ try {
   const resultModule = await import(
     pathToFileURL(join(scriptDirectory, "model-replay-results.mjs")).href
   );
+  const forgedContainment = structuredClone(run.results[0]);
+  forgedContainment.process_tree_egress_enforced = false;
+  forgedContainment.result_sha256 = resultModule.resultDigest(forgedContainment);
+  writeFileSync(resultsPath, `${JSON.stringify(forgedContainment)}\n`, { mode: 0o600 });
+  expectFailure(
+    environment,
+    /Result identity mismatch/u,
+    "report", "--experiment", experiment,
+  );
+  writeFileSync(resultsPath, originalResults, { mode: 0o600 });
   const wrongTierResult = structuredClone(run.results[0]);
   wrongTierResult.routing_tier = "standard";
   wrongTierResult.tier_matched = false;

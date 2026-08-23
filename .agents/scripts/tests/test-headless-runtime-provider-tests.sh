@@ -472,6 +472,8 @@ JSON
 	local AIDEVOPS_HEADLESS_APPEND_CONTRACT=0
 	local AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST="openai"
 	local AIDEVOPS_HEADLESS_SANDBOX_DISABLED=0
+	local AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE=""
+	local AIDEVOPS_WORKER_EGRESS_BACKEND=""
 	local AIDEVOPS_WORKER_EGRESS_MODE="required"
 	local AIDEVOPS_WORKTREE_BASE_DIR="$replay_root"
 	local OPENCODE_CONFIG="${config_dir}/opencode.json"
@@ -489,21 +491,37 @@ JSON
 	local OPENCODE_DISABLE_SHARE=1
 	local OPENCODE_PURE=1
 	local -a extra_args=()
-	local valid_status=0 invalid_status=0 prewarm_status=0
+	local valid_status=0 trusted_status=0 backend_status=0 mismatch_status=0 invalid_posture_status=0
+	local invalid_status=0 prewarm_status=0
 
 	_validate_model_replay_args >/dev/null 2>&1 || valid_status=$?
+	AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE="trusted-local"
+	AIDEVOPS_WORKER_EGRESS_MODE="auto"
+	_validate_model_replay_args >/dev/null 2>&1 || trusted_status=$?
+	AIDEVOPS_WORKER_EGRESS_BACKEND="/configured/backend"
+	_validate_model_replay_args >/dev/null 2>&1 || backend_status=$?
+	AIDEVOPS_WORKER_EGRESS_BACKEND=""
+	AIDEVOPS_WORKER_EGRESS_MODE="required"
+	_validate_model_replay_args >/dev/null 2>&1 || mismatch_status=$?
+	AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE="invalid"
+	AIDEVOPS_WORKER_EGRESS_MODE="auto"
+	_validate_model_replay_args >/dev/null 2>&1 || invalid_posture_status=$?
+	AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE=""
+	AIDEVOPS_WORKER_EGRESS_MODE="required"
 	local AIDEVOPS_WORKER_PREWARM_DIR="${TEST_ROOT}/stale-model-replay-prewarm"
 	_validate_model_replay_args >/dev/null 2>&1 || prewarm_status=$?
 	unset AIDEVOPS_WORKER_PREWARM_DIR
 	session_key="issue-30560"
 	_validate_model_replay_args >/dev/null 2>&1 || invalid_status=$?
-	if [[ "$valid_status" -eq 0 && "$prewarm_status" -ne 0 && "$invalid_status" -ne 0 ]]; then
+	if [[ "$valid_status" -eq 0 && "$trusted_status" -eq 0 && "$backend_status" -ne 0 &&
+		"$mismatch_status" -ne 0 &&
+		"$invalid_posture_status" -ne 0 && "$prewarm_status" -ne 0 && "$invalid_status" -ne 0 ]]; then
 		print_result "model replay requires its fresh trusted runtime profile" 0
 		return 0
 	fi
 
 	print_result "model replay requires its fresh trusted runtime profile" 1 \
-		"valid_status=$valid_status prewarm_status=$prewarm_status invalid_status=$invalid_status"
+		"valid=$valid_status trusted=$trusted_status backend=$backend_status mismatch=$mismatch_status posture=$invalid_posture_status prewarm=$prewarm_status invalid=$invalid_status"
 	return 0
 }
 

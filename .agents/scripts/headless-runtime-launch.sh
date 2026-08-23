@@ -454,11 +454,38 @@ _model_replay_runtime_profile_is_valid() {
 	return 1
 }
 
+_validate_model_replay_execution_posture() {
+	local execution_posture="$1"
+	local egress_mode="$2"
+	local egress_backend="$3"
+
+	case "$execution_posture" in
+	enforced)
+		if [[ "$egress_mode" != "required" ]]; then
+			print_error "Enforced model replay requires provider-only process-tree egress"
+			return 1
+		fi
+		;;
+	trusted-local)
+		if [[ "$egress_mode" != "auto" || -n "$egress_backend" ]]; then
+			print_error "Trusted-local model replay requires auto egress mode without a process-tree backend"
+			return 1
+		fi
+		;;
+	*)
+		print_error "Model replay received an invalid execution posture"
+		return 1
+		;;
+	esac
+	return 0
+}
+
 _validate_model_replay_args() {
 	[[ "${role:-}" == "$_HEADLESS_MODEL_REPLAY_ROLE" ]] || return 0
 	local expected_provider="${model_override%%/*}"
 	local config_dir_canonical=""
 	local config_parent_canonical=""
+	local execution_posture="${AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE:-enforced}"
 	local worktree_base_canonical=""
 	local work_dir_canonical=""
 	local required_toggle=""
@@ -488,13 +515,16 @@ _validate_model_replay_args() {
 		return 1
 	fi
 	if [[ "${headless_runtime:-opencode}" != "opencode" ||
-		"${AIDEVOPS_WORKER_EGRESS_MODE:-}" != "required" ||
 		"${AIDEVOPS_HEADLESS_APPEND_CONTRACT:-}" != "0" ||
 		"${AIDEVOPS_HEADLESS_SANDBOX_DISABLED:-0}" == "1" ||
 		-n "${AIDEVOPS_WORKER_PREWARM_DIR:-}" ]]; then
-		print_error "Model replay requires OpenCode with the isolated sandbox and enforced provider-only egress"
+		print_error "Model replay requires OpenCode with its isolated sandbox contract"
 		return 1
 	fi
+	_validate_model_replay_execution_posture \
+		"$execution_posture" \
+		"${AIDEVOPS_WORKER_EGRESS_MODE:-}" \
+		"${AIDEVOPS_WORKER_EGRESS_BACKEND:-}" || return 1
 	if [[ ! -d "${work_dir:-}" || -L "${work_dir:-}" ||
 		! -d "${AIDEVOPS_WORKTREE_BASE_DIR:-}" || -L "${AIDEVOPS_WORKTREE_BASE_DIR:-}" ]]; then
 		print_error "Model replay requires real owned worktree directories"

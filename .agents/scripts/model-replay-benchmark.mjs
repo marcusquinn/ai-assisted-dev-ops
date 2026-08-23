@@ -31,6 +31,7 @@ function commandPlan(options) {
     suite: options.suite || "quick",
     stage: options.stage || "primary",
     mode: options.mode || "autonomous",
+    executionPosture: options.execution_posture || "enforced",
     allowContaminated: Boolean(options.allow_contaminated),
   });
 }

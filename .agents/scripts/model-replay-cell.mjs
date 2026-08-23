@@ -6,6 +6,10 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
+  modelReplayExecutionPosture,
+  RESULT_SCHEMA,
+} from "./model-replay-contracts.mjs";
+import {
   assertNoSymlinks,
   createSyntheticWorkspace,
   execute,
@@ -18,7 +22,6 @@ import {
   writeJson,
   writePrivateFile,
 } from "./model-replay-core.mjs";
-import { RESULT_SCHEMA } from "./model-replay-contracts.mjs";
 import { classifyFailure, runtimeEvidence } from "./model-replay-evidence.mjs";
 import { resultDigest, validateResult } from "./model-replay-results.mjs";
 import {
@@ -89,6 +92,11 @@ function artifactRecords(paths) {
   }]));
 }
 
+function processTreeEgressEnforcement(executionPosture, requestObserved) {
+  if (executionPosture === "trusted-local") return false;
+  return requestObserved ? true : null;
+}
+
 function writeInfrastructureAttempt({
   cell,
   plan,
@@ -100,6 +108,7 @@ function writeInfrastructureAttempt({
   patchPath,
   metricsSnapshotPath,
 }) {
+  const executionPosture = modelReplayExecutionPosture(plan);
   const attemptID = randomUUID().replaceAll("-", "").slice(0, 12);
   const preservedLogPath = join(
     experimentDir,
@@ -115,6 +124,11 @@ function writeInfrastructureAttempt({
   writeJson(attemptPath, {
     schema_version: "aidevops-model-replay-infrastructure-attempt/v1",
     experiment_id: plan.experiment_id,
+    execution_posture: executionPosture,
+    process_tree_egress_enforced: processTreeEgressEnforcement(
+      executionPosture,
+      evidence.requestObserved,
+    ),
     cell_id: cell.cell_id,
     model: cell.model,
     candidate_tier: cell.candidate_tier,
@@ -148,7 +162,14 @@ function runtimeArguments({ helper, sessionKey, workspace, promptPath, cell }) {
   return args;
 }
 
-function runtimeEnvironment(workRoot, runtimeConfig, candidates, timeoutSeconds, runtimePaths) {
+function runtimeEnvironment(
+  workRoot,
+  runtimeConfig,
+  candidates,
+  timeoutSeconds,
+  runtimePaths,
+  executionPosture,
+) {
   const environment = { ...process.env };
   for (const name of [
     "AIDEVOPS_OPENCODE_SESSION_ID",
@@ -172,9 +193,12 @@ function runtimeEnvironment(workRoot, runtimeConfig, candidates, timeoutSeconds,
     AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST: candidates.allowed_providers.join(","),
     AIDEVOPS_HEADLESS_RUNTIME_DIR: runtimePaths.state,
     AIDEVOPS_HEADLESS_SANDBOX_TIMEOUT: String(timeoutSeconds),
+    AIDEVOPS_MODEL_REPLAY_EXECUTION_POSTURE: executionPosture,
     AIDEVOPS_OAUTH_POOL_FILE: runtimePaths.oauthPool,
     AIDEVOPS_RESOURCE_METRICS_FILE: runtimePaths.resources,
-    AIDEVOPS_WORKER_EGRESS_MODE: "required",
+    AIDEVOPS_WORKER_EGRESS_BACKEND: executionPosture === "trusted-local"
+      ? "" : environment.AIDEVOPS_WORKER_EGRESS_BACKEND,
+    AIDEVOPS_WORKER_EGRESS_MODE: executionPosture === "trusted-local" ? "auto" : "required",
     AIDEVOPS_WORKTREE_BASE_DIR: workRoot,
     OPENCODE_CONFIG: runtimeConfig.configPath,
     OPENCODE_CONFIG_DIR: runtimeConfig.configDirectory,
@@ -211,6 +235,7 @@ function outcomeFor(runtime, functionalPass, verifiedCompletion, identityVerifie
 }
 
 function resultRecord({ cell, plan, sealed, runtime, grade, evidence, artifacts }) {
+  const executionPosture = modelReplayExecutionPosture(plan);
   const functionalPass = grade.functional_passed;
   const completed = runtime.status === 0 && !runtime.timedOut;
   const identityVerified = evidence.modelMatched && evidence.tierMatched && evidence.effortSupported;
@@ -218,6 +243,11 @@ function resultRecord({ cell, plan, sealed, runtime, grade, evidence, artifacts 
   return {
     schema_version: RESULT_SCHEMA,
     experiment_id: plan.experiment_id,
+    execution_posture: executionPosture,
+    process_tree_egress_enforced: processTreeEgressEnforcement(
+      executionPosture,
+      evidence.requestObserved,
+    ),
     cell_id: cell.cell_id,
     case_id: cell.case_id,
     case_hash: cell.case_hash,
@@ -260,6 +290,7 @@ function resultRecord({ cell, plan, sealed, runtime, grade, evidence, artifacts 
 }
 
 export function executeCell({ cell, plan, sealed, corpusDir, catalog, experimentDir, candidates }) {
+  const executionPosture = modelReplayExecutionPosture(plan);
   const verified = verifyQualification(corpusDir, cell.case_id);
   const plannedCase = plan.cases.find((candidate) => candidate.case_id === cell.case_id);
   if (verified.qualification.case_hash !== cell.case_hash
@@ -312,6 +343,7 @@ export function executeCell({ cell, plan, sealed, corpusDir, catalog, experiment
         candidates,
         cell.timeout_seconds,
         runtimePaths,
+        executionPosture,
       ),
       timeout: (cell.timeout_seconds + 60) * 1000,
       maxBuffer: 50 * 1024 * 1024,
@@ -332,6 +364,11 @@ export function executeCell({ cell, plan, sealed, corpusDir, catalog, experiment
     });
     writeJson(metricsSnapshotPath, {
       session_key: sessionKey,
+      execution_posture: executionPosture,
+      process_tree_egress_enforced: processTreeEgressEnforcement(
+        executionPosture,
+        evidence.requestObserved,
+      ),
       runtime_metric: evidence.metric,
       request_usage: evidence.usage,
       resource_metric: evidence.resource,
