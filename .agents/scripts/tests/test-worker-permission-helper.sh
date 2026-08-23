@@ -35,13 +35,29 @@ cat >"$capture_file" <<'JSON'
     "patterns": ["~/.qlty/bin/*"],
     "tool": "read",
     "intent": "Locate the Qlty executable",
-    "risk": {"level": "medium", "grantable": true, "reason": "external boundary"},
+    "risk": {"level": "high", "grantable": false, "reason": "external boundary"},
     "opencode": {"request_id": "oc-2", "session_id": "ses-1"}
   }]
 }
 JSON
 
 permission_validate_capture "$capture_file" 123 owner/repo
+capability_summary=$(permission_blocker_capability_json "$capture_file")
+jq -e 'select(
+  .permission == "external_directory×2"
+  and .tool == "read×2"
+  and .risk_level == "high"
+  and .grantable == false
+)' <<<"$capability_summary" >/dev/null
+single_capture="${test_root}/single-capture.json"
+jq '.requests = [.requests[0]]' "$capture_file" >"$single_capture"
+single_capability_summary=$(permission_blocker_capability_json "$single_capture")
+jq -e 'select(
+  .permission == "external_directory"
+  and .tool == "read"
+  and .risk_level == "medium"
+  and .grantable == true
+)' <<<"$single_capability_summary" >/dev/null
 envelope=$(permission_build_envelope "$capture_file" 123 owner/repo issue-123 "$PWD" '{"auto_dispatch":true}')
 expected_worktree_digest=$(permission_sha256_text "$PWD")
 jq -e '
@@ -142,7 +158,26 @@ if ! jq -e 'select(.issue == 123 and .session == "issue-123" and (.request_id | 
 	exit 1
 fi
 jq -e 'select(.event == "permission_awaiting_approval" and .reason == "needs_maintainer_permissions" and .blocking == true
-  and .issue_number == 123 and .repo_slug == "owner/repo" and .session_key == "issue-123")' \
+  and .issue_number == 123 and .repo_slug == "owner/repo" and .session_key == "issue-123"
+  and .permission == "external_directory×2" and .tool == "read×2"
+  and .risk_level == "high" and .grantable == false)' \
 	"$AIDEVOPS_WORKER_BLOCKER_LOG_FILE" >/dev/null
+permission_record_blocker "permission_capability_true_fixture" "blocked" "permission_required" "true" \
+	123 "owner/repo" "issue-123" "perm-true" "Boolean transport fixture" \
+	"external_directory" "read" "medium" "true"
+jq -e 'select(.event == "permission_capability_true_fixture" and .grantable == true)' \
+	"$AIDEVOPS_WORKER_BLOCKER_LOG_FILE" >/dev/null
+activity_summary=$(WAH_BLOCKER_LOG_FILE="$AIDEVOPS_WORKER_BLOCKER_LOG_FILE" \
+	WAH_METRICS_FILE="${test_root}/missing-metrics.jsonl" \
+	WAH_PULSE_STATS_FILE="${test_root}/missing-pulse-stats.json" \
+	WAH_DISPATCH_LEDGER_FILE="${test_root}/missing-dispatch-ledger.jsonl" \
+	"${SCRIPT_DIR}/worker-activity-helper.sh" summary --since 24h --json --no-pr-check)
+jq -e '.progress_blockers.active_blockers[] | select(
+  .event == "permission_awaiting_approval"
+  and .permission == "external_directory×2"
+  and .tool == "read×2"
+  and .risk_level == "high"
+  and .grantable == false
+)' <<<"$activity_summary" >/dev/null
 
 printf 'worker permission helper tests passed\n'

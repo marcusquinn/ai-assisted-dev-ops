@@ -24,20 +24,29 @@ permission_record_blocker() {
 	local session_key="$7"
 	local request_id="${8:-}"
 	local detail="${9:-}"
+	local permission="${10:-}"
+	local tool="${11:-}"
+	local risk_level="${12:-}"
+	local grantable="${13:-}"
 	local logger="${SCRIPT_DIR}/worker-blocker-log.mjs"
 	[[ -f "$logger" ]] || return 0
 	command -v node >/dev/null 2>&1 || return 0
-	node "$logger" append \
-		--event "$event" \
-		--status "$status" \
-		--reason "$reason" \
-		--blocking "$blocking" \
-		--source "worker-permission-helper" \
-		--issue-number "$issue_number" \
-		--repo-slug "$repo_slug" \
-		--session-key "$session_key" \
-		--request-id "$request_id" \
-		--detail "$detail" >/dev/null 2>&1 || true
+	local blocker_args=(append
+		--event "$event"
+		--status "$status"
+		--reason "$reason"
+		--blocking "$blocking"
+		--source "worker-permission-helper"
+		--issue-number "$issue_number"
+		--repo-slug "$repo_slug"
+		--session-key "$session_key"
+		--request-id "$request_id"
+		--permission "$permission"
+		--tool "$tool"
+		--risk-level "$risk_level"
+		--detail "$detail")
+	[[ -z "$grantable" ]] || blocker_args+=(--grantable "$grantable")
+	node "$logger" "${blocker_args[@]}" >/dev/null 2>&1 || true
 	return 0
 }
 
@@ -87,6 +96,31 @@ permission_validate_capture() {
 	return $?
 }
 
+# Summarize validated requests without exposing patterns, intent, or raw tool
+# metadata. Counts retain multiplicity while scalar fields stay schema-safe.
+permission_blocker_capability_json() {
+	local capture_file="$1"
+	jq -c '
+		def counted:
+			map(strings | select(length > 0))
+			| sort
+			| group_by(.)
+			| map(.[0] + if length > 1 then "×\(length)" else "" end)
+			| join(",")
+			| .[0:100];
+		.requests as $requests
+		| {
+			permission: ([$requests[].permission] | counted),
+			tool: ([$requests[].tool // ""] | counted),
+			risk_level: (["critical", "high", "medium", "low"]
+				| map(. as $level | select(any($requests[]; .risk.level == $level)))
+				| .[0]),
+			grantable: all($requests[]; .risk.grantable == true)
+		}
+	' "$capture_file"
+	return $?
+}
+
 permission_changed_files_json() {
 	local work_dir="$1"
 	if [[ -z "$work_dir" || ! -d "$work_dir" ]]; then
@@ -98,8 +132,8 @@ permission_changed_files_json() {
 		printf '[]\n'
 		return 0
 	fi
-	printf '%s\n' "$status_output" \
-		| jq -Rsc 'split("\n") | map(select(length >= 4) | .[3:]) | map(select(length > 0)) | .[:20]'
+	printf '%s\n' "$status_output" |
+		jq -Rsc 'split("\n") | map(select(length >= 4) | .[3:]) | map(select(length > 0)) | .[:20]'
 	return 0
 }
 
@@ -282,16 +316,34 @@ permission_apply_block() {
 
 cmd_request() {
 	local capture_file="" issue_number="" repo_slug="" session_key="" work_dir=""
-	local request_id=""
+	local request_id="" capability_json="" permission="" tool="" risk_level="" grantable=""
 	while [[ $# -gt 0 ]]; do
 		local arg="$1"
 		case "$arg" in
-		--file) capture_file="${2:-}"; shift 2 ;;
-		--issue) issue_number="${2:-}"; shift 2 ;;
-		--repo) repo_slug="${2:-}"; shift 2 ;;
-		--session) session_key="${2:-}"; shift 2 ;;
-		--work-dir) work_dir="${2:-}"; shift 2 ;;
-		*) printf 'Unknown option: %s\n' "$arg" >&2; return 1 ;;
+		--file)
+			capture_file="${2:-}"
+			shift 2
+			;;
+		--issue)
+			issue_number="${2:-}"
+			shift 2
+			;;
+		--repo)
+			repo_slug="${2:-}"
+			shift 2
+			;;
+		--session)
+			session_key="${2:-}"
+			shift 2
+			;;
+		--work-dir)
+			work_dir="${2:-}"
+			shift 2
+			;;
+		*)
+			printf 'Unknown option: %s\n' "$arg" >&2
+			return 1
+			;;
 		esac
 	done
 	[[ -f "$capture_file" && "$issue_number" =~ ^[0-9]+$ && "$repo_slug" == */* ]] || return 1
@@ -301,6 +353,11 @@ cmd_request() {
 			"Captured permission request failed validation"
 		return 1
 	fi
+	capability_json="$(permission_blocker_capability_json "$capture_file")" || return 1
+	permission="$(jq -r '.permission' <<<"$capability_json")"
+	tool="$(jq -r '.tool' <<<"$capability_json")"
+	risk_level="$(jq -r '.risk_level' <<<"$capability_json")"
+	grantable="$(jq -r '.grantable' <<<"$capability_json")"
 	if ! request_id=$(permission_post_request "$capture_file" "$issue_number" "$repo_slug" "$session_key" "$work_dir"); then
 		permission_record_blocker "$PERMISSION_PERSISTENCE_FAILED_EVENT" "$PERMISSION_BLOCKER_STATUS" \
 			"github_request_comment_failed" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "" \
@@ -332,7 +389,8 @@ cmd_request() {
 	fi
 	permission_record_blocker "permission_awaiting_approval" "$PERMISSION_BLOCKER_STATUS" \
 		"needs_maintainer_permissions" "$PERMISSION_BLOCKER_TRUE" "$issue_number" "$repo_slug" "$session_key" "$request_id" \
-		"Worker paused until the exact scoped permission request is approved"
+		"Worker paused until the exact scoped permission request is approved" \
+		"$permission" "$tool" "$risk_level" "$grantable"
 	return 0
 }
 
@@ -341,7 +399,10 @@ main() {
 	shift 2>/dev/null || true
 	case "$command" in
 	request) cmd_request "$@" ;;
-	*) printf 'Usage: worker-permission-helper.sh request --file FILE --issue N --repo OWNER/REPO --session KEY --work-dir PATH\n' >&2; return 1 ;;
+	*)
+		printf 'Usage: worker-permission-helper.sh request --file FILE --issue N --repo OWNER/REPO --session KEY --work-dir PATH\n' >&2
+		return 1
+		;;
 	esac
 	return $?
 }

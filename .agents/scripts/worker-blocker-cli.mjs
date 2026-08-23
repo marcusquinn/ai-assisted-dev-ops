@@ -17,6 +17,9 @@ function parseCliArguments(argv) {
     if (flag === "--blocking") {
       event.blocking = value !== "false";
       index++;
+    } else if (flag === "--grantable") {
+      event.grantable = value === "true" ? true : value === "false" ? false : null;
+      index++;
     } else if (flag === "--log-file") {
       options.logPath = value;
       index++;
