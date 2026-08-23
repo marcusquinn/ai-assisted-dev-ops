@@ -432,18 +432,22 @@ _detect_session_model() {
 	# Extract provider/model from the first message that has model data
 	local provider model_id
 	provider=$(sqlite3 "$db_path" "
-		SELECT json_extract(data, '\$.model.providerID')
+		SELECT COALESCE(json_extract(data, '\$.providerID'),
+		                json_extract(data, '\$.model.providerID'))
 		FROM message
 		WHERE session_id='${session_id}'
-		  AND json_extract(data, '\$.model.modelID') IS NOT NULL
+		  AND COALESCE(json_extract(data, '\$.modelID'),
+		               json_extract(data, '\$.model.modelID')) IS NOT NULL
 		LIMIT 1
 	" 2>/dev/null || echo "")
 
 	model_id=$(sqlite3 "$db_path" "
-		SELECT json_extract(data, '\$.model.modelID')
+		SELECT COALESCE(json_extract(data, '\$.modelID'),
+		                json_extract(data, '\$.model.modelID'))
 		FROM message
 		WHERE session_id='${session_id}'
-		  AND json_extract(data, '\$.model.modelID') IS NOT NULL
+		  AND COALESCE(json_extract(data, '\$.modelID'),
+		               json_extract(data, '\$.model.modelID')) IS NOT NULL
 		LIMIT 1
 	" 2>/dev/null || echo "")
 

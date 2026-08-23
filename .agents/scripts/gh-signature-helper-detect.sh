@@ -152,10 +152,16 @@ _detect_opencode_version() {
 # Returns 0 if running inside OpenCode, 1 otherwise. Gates OpenCode DB queries.
 
 _is_opencode_runtime() {
-	# Fast path: env var set by OpenCode
-	if [[ "${OPENCODE:-}" == "1" ]]; then
+	# An explicit marker is authoritative. In particular, false prevents the
+	# parent-process fallback from misclassifying tests and nested shells.
+	case "${OPENCODE:-}" in
+	1 | true | TRUE | yes | YES)
 		return 0
-	fi
+		;;
+	0 | false | FALSE | no | NO)
+		return 1
+		;;
+	esac
 
 	# Fallback: check parent process chain for "opencode"
 	local walk_pid="${PPID:-0}"

@@ -46,6 +46,9 @@ _HEADLESS_RUN_PROMPT_ARG=""
 _HEADLESS_RUN_PROMPT_FILE=""
 _HEADLESS_CLAUDE_STDIN_FILE=""
 readonly PRIVATE_WORKLOAD_PROMPT="Execute the private workload instructions configured in this directory."
+readonly _HEADLESS_MODEL_REPLAY_ROLE="${HEADLESS_ROLE_MODEL_REPLAY:-model-replay}"
+readonly _HEADLESS_AGENT_MODE_PRIMARY="primary"
+readonly _HEADLESS_CONFIG_SHARE_DISABLED="disabled"
 
 _headless_private_workload_enabled() {
 	[[ "${AIDEVOPS_PRIVATE_WORKLOAD:-0}" == "1" ]]
@@ -57,7 +60,8 @@ _headless_private_workload_enabled() {
 _headless_run_is_ephemeral() {
 	local role="$1"
 	if _headless_private_workload_enabled ||
-		[[ "$role" == "${HEADLESS_ROLE_TRIAGE:-triage}" ]]; then
+		[[ "$role" == "${HEADLESS_ROLE_TRIAGE:-triage}" ||
+			"$role" == "$_HEADLESS_MODEL_REPLAY_ROLE" ]]; then
 		return 0
 	fi
 	return 1
@@ -260,30 +264,33 @@ _prepare_triage_runtime_directory() {
 		plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).absolute().as_uri())' \
 			"$plugin_path" 2>/dev/null) || return 1
 		jq -n --arg plugin_url "$plugin_url" --arg agent_name "$isolated_agent_name" \
-			--arg permission_deny "$permission_deny" '{
+			--arg permission_deny "$permission_deny" --arg agent_mode "$_HEADLESS_AGENT_MODE_PRIMARY" \
+			--arg share_mode "$_HEADLESS_CONFIG_SHARE_DISABLED" '{
 			"$schema": "https://opencode.ai/config.json",
 			plugin: [$plugin_url],
 			default_agent: $agent_name,
-			agent: {($agent_name): {mode: "primary", permission: {"*": $permission_deny}, tools: {"*": false}}},
+			agent: {($agent_name): {mode: $agent_mode, permission: {"*": $permission_deny}, tools: {"*": false}}},
 			permission: {"*": $permission_deny},
 			tools: {"*": false},
 			mcp: {},
 			formatter: false,
 			lsp: false,
-			share: "disabled",
+			share: $share_mode,
 			subagent_depth: 0
 		}' >"$config_file" || return 1
 	else
-		jq -n --arg agent_name "$isolated_agent_name" --arg permission_deny "$permission_deny" '{
+		jq -n --arg agent_name "$isolated_agent_name" --arg permission_deny "$permission_deny" \
+			--arg agent_mode "$_HEADLESS_AGENT_MODE_PRIMARY" \
+			--arg share_mode "$_HEADLESS_CONFIG_SHARE_DISABLED" '{
 			"$schema": "https://opencode.ai/config.json",
 			default_agent: $agent_name,
-			agent: {($agent_name): {mode: "primary", permission: {"*": $permission_deny}, tools: {"*": false}}},
+			agent: {($agent_name): {mode: $agent_mode, permission: {"*": $permission_deny}, tools: {"*": false}}},
 			permission: {"*": $permission_deny},
 			tools: {"*": false},
 			mcp: {},
 			formatter: false,
 			lsp: false,
-			share: "disabled",
+			share: $share_mode,
 			subagent_depth: 0
 		}' >"$config_file" || return 1
 	fi
@@ -419,6 +426,125 @@ _private_provider_is_allowlisted() {
 		fi
 	done
 	return 1
+}
+
+_model_replay_runtime_profile_is_valid() {
+	local config_file="$1"
+	command -v jq >/dev/null 2>&1 || return 1
+	if jq -e --arg replay_role "$_HEADLESS_MODEL_REPLAY_ROLE" \
+		--arg agent_mode "$_HEADLESS_AGENT_MODE_PRIMARY" \
+		--arg share_mode "$_HEADLESS_CONFIG_SHARE_DISABLED" '
+		(keys | sort) == ["$schema","agent","default_agent","formatter","lsp","mcp","permission","share","subagent_depth","tools"]
+		and .default_agent == $replay_role and .mcp == {} and .formatter == false
+		and .lsp == false and .share == $share_mode and .subagent_depth == 0
+		and (.tools | keys | sort) == ["*","apply_patch","bash","edit","glob","grep","read","task","webfetch","websearch","write"]
+		and .tools["*"] == false and .tools.bash == false and .tools.task == false and .tools.webfetch == false
+		and .tools.websearch == false and .tools.read == true and .tools.write == true
+		and (.permission | keys | sort) == ["*","apply_patch","bash","edit","external_directory","glob","grep","read","task","write"]
+		and .permission["*"] == "deny" and .permission.bash == "deny" and .permission.external_directory == "deny"
+		and .permission.task == "deny"
+		and (.agent | keys) == [$replay_role]
+		and (.agent[$replay_role] | keys | sort) == ["mode","permission","tools"]
+		and .agent[$replay_role].mode == $agent_mode
+		and .agent[$replay_role].tools == .tools
+		and .agent[$replay_role].permission == .permission
+	' "$config_file" >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+_validate_model_replay_args() {
+	[[ "${role:-}" == "$_HEADLESS_MODEL_REPLAY_ROLE" ]] || return 0
+	local expected_provider="${model_override%%/*}"
+	local config_dir_canonical=""
+	local config_parent_canonical=""
+	local worktree_base_canonical=""
+	local work_dir_canonical=""
+	local required_toggle=""
+	local staged_agent=""
+	local trusted_agent="${SCRIPT_DIR}/../workflows/model-replay.md"
+
+	if [[ ! "${session_key:-}" =~ ^model-replay-[a-f0-9]{20}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]]; then
+		print_error "Model replay requires a fresh reserved session key"
+		return 1
+	fi
+	if [[ "${title:-}" != "Model replay" || "${agent_name:-}" != "$_HEADLESS_MODEL_REPLAY_ROLE" ||
+		"${detach:-0}" -ne 0 || -n "${initial_model:-}" || "${#extra_args[@]}" -ne 0 ]]; then
+		print_error "Model replay requires its fixed title, agent, and non-detached invocation contract"
+		return 1
+	fi
+	if [[ ! "${model_override:-}" =~ ^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] ||
+		grep -Eiq '(anthropic|claude)' <<<"${model_override:-}"; then
+		print_error "Model replay requires an explicit non-Anthropic provider/model"
+		return 1
+	fi
+	if ! _private_provider_is_allowlisted "$expected_provider"; then
+		print_error "Model replay requires its provider in AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST"
+		return 1
+	fi
+	if [[ -n "${variant_override:-}" && ! "${variant_override:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+		print_error "Model replay received an invalid effort variant"
+		return 1
+	fi
+	if [[ "${headless_runtime:-opencode}" != "opencode" ||
+		"${AIDEVOPS_WORKER_EGRESS_MODE:-}" != "required" ||
+		"${AIDEVOPS_HEADLESS_APPEND_CONTRACT:-}" != "0" ||
+		"${AIDEVOPS_HEADLESS_SANDBOX_DISABLED:-0}" == "1" ||
+		-n "${AIDEVOPS_WORKER_PREWARM_DIR:-}" ]]; then
+		print_error "Model replay requires OpenCode with the isolated sandbox and enforced provider-only egress"
+		return 1
+	fi
+	if [[ ! -d "${work_dir:-}" || -L "${work_dir:-}" ||
+		! -d "${AIDEVOPS_WORKTREE_BASE_DIR:-}" || -L "${AIDEVOPS_WORKTREE_BASE_DIR:-}" ]]; then
+		print_error "Model replay requires real owned worktree directories"
+		return 1
+	fi
+	worktree_base_canonical=$(cd "${AIDEVOPS_WORKTREE_BASE_DIR}" && pwd -P) || return 1
+	work_dir_canonical=$(cd "$work_dir" && pwd -P) || return 1
+	case "${work_dir_canonical}/" in
+	"${worktree_base_canonical}/"*) ;;
+	*)
+		print_error "Model replay worktree is outside its owned runtime root"
+		return 1
+		;;
+	esac
+	if [[ ! -f "${prompt_file:-}" || -L "${prompt_file:-}" ||
+		! -f "${OPENCODE_CONFIG:-}" || -L "${OPENCODE_CONFIG:-}" ||
+		! -d "${OPENCODE_CONFIG_DIR:-}" || -L "${OPENCODE_CONFIG_DIR:-}" ]]; then
+		print_error "Model replay requires regular prompt and runtime configuration paths"
+		return 1
+	fi
+	config_dir_canonical=$(cd "${OPENCODE_CONFIG_DIR}" && pwd -P) || return 1
+	config_parent_canonical=$(cd "${OPENCODE_CONFIG%/*}" && pwd -P) || return 1
+	if [[ "$config_parent_canonical" != "$config_dir_canonical" ||
+		"${OPENCODE_CONFIG##*/}" != "opencode.json" ]]; then
+		print_error "Model replay runtime configuration path is not canonical"
+		return 1
+	fi
+	staged_agent="${config_dir_canonical}/agent/model-replay.md"
+	if [[ ! -f "$staged_agent" || -L "$staged_agent" || ! -f "$trusted_agent" ||
+		-L "$trusted_agent" ]] || ! cmp -s "$trusted_agent" "$staged_agent"; then
+		print_error "Model replay trusted agent staging failed validation"
+		return 1
+	fi
+	for required_toggle in \
+		OPENCODE_DISABLE_AUTOCOMPACT OPENCODE_DISABLE_AUTOUPDATE \
+		OPENCODE_DISABLE_CLAUDE_CODE OPENCODE_DISABLE_CLAUDE_CODE_PROMPT \
+		OPENCODE_DISABLE_CLAUDE_CODE_SKILLS OPENCODE_DISABLE_DEFAULT_PLUGINS \
+		OPENCODE_DISABLE_EXTERNAL_SKILLS OPENCODE_DISABLE_LSP_DOWNLOAD \
+		OPENCODE_DISABLE_MODELS_FETCH OPENCODE_DISABLE_PROJECT_CONFIG \
+		OPENCODE_DISABLE_SHARE OPENCODE_PURE; do
+		if [[ "${!required_toggle:-}" != "1" ]]; then
+			print_error "Model replay runtime isolation toggles are incomplete"
+			return 1
+		fi
+	done
+	if ! _model_replay_runtime_profile_is_valid "$OPENCODE_CONFIG"; then
+		print_error "Model replay runtime configuration failed the restricted profile contract"
+		return 1
+	fi
+	return 0
 }
 
 _private_workload_session_key_is_opaque() {

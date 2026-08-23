@@ -132,13 +132,24 @@ _prepare_run_attempt_command() {
 		return "$prepare_status"
 	fi
 	runtime="${headless_runtime:-opencode}"
-	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" && "$runtime" != "opencode" ]] && ! _headless_private_workload_enabled; then
+	if [[ "$role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]]; then
+		_MODEL_REPLAY_OBSERVED_MODEL=""
+		_MODEL_REPLAY_OBSERVED_VARIANT=""
+		_MODEL_REPLAY_REQUEST_COUNT=""
+		_MODEL_REPLAY_USAGE_COUNT=""
+		_MODEL_REPLAY_TOKENS_TOTAL=""
+		_MODEL_REPLAY_COST_COUNT=""
+		_MODEL_REPLAY_COST_USD=""
+	fi
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" || "$role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]] &&
+		[[ "$runtime" != "opencode" ]] && ! _headless_private_workload_enabled; then
 		_report_run_attempt_prelaunch_failure \
 			"_prepare_run_attempt_command.validate_runtime" 126 \
 			"worker_runtime_unsupported"
 		return 126
 	fi
-	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" ]] && ! _headless_private_workload_enabled; then
+	if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" || "$role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]] &&
+		! _headless_private_workload_enabled; then
 		force_file_transport=1
 	fi
 	if ! _prepare_runtime_prompt_transport "$runtime" "$prompt" "$force_file_transport"; then
@@ -156,7 +167,9 @@ _prepare_run_attempt_command() {
 	metric_work_dir="$work_dir"
 	if _headless_run_is_ephemeral "$role"; then
 		metric_work_dir=""
-		clear_session_id "$provider" "$session_key"
+		if [[ "$role" != "$HEADLESS_ROLE_MODEL_REPLAY" ]]; then
+			clear_session_id "$provider" "$session_key"
+		fi
 	elif [[ "$role" == "pulse" ]]; then
 		clear_session_id "$provider" "$session_key"
 	else
@@ -409,7 +422,9 @@ _finish_run_attempt_rate_limit_fast() {
 	_run_result_label="rate_limit_fast"
 	local suppress_backoff_details=0
 	_headless_run_is_ephemeral "$role" && suppress_backoff_details=1
-	record_provider_backoff "$provider" "rate_limit" "$output_file" "$selected_model" "$suppress_backoff_details" || true
+	if [[ "$role" != "$HEADLESS_ROLE_MODEL_REPLAY" ]]; then
+		record_provider_backoff "$provider" "rate_limit" "$output_file" "$selected_model" "$suppress_backoff_details" || true
+	fi
 	_hrw_reconcile_session_permission_blockers "$session_key" "$_run_result_label"
 	rm -f "$_rl_fast_sentinel" "$output_file" "$permission_request_file" 2>/dev/null || true
 	_run_permission_request_file=""

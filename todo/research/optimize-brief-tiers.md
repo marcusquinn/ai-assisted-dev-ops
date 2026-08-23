@@ -2,192 +2,58 @@
 name: optimize-brief-tiers
 mode: in-repo
 target_repo: .
+status: superseded
+superseded_by: issue-30560-historical-model-replay
 ---
 
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Research: Optimize brief-writing instructions for cascade tier dispatch
+# Superseded research: optimise brief tiers
 
-## Goal
+## Status
 
-Determine the minimum brief specificity that enables Haiku (tier:simple) to successfully
-reproduce changes that were previously completed by Sonnet (tier:standard). Iterate
-brief-writing instructions to maximise the tier:simple success rate, measured against
-a corpus of real merged PRs.
+This proposal is retained only as a decision record. Do not execute its commands.
+Issue #30560 replaced the provider-branded autoresearch scaffold with the sealed,
+provider-neutral historical replay workflow in `.agents/workflows/optimize-tiers.md`.
 
-## Target
+## Why it was superseded
 
-```text
-files: .agents/templates/brief-template.md, .agents/templates/escalation-report-template.md, .agents/reference/task-taxonomy.md
-branch: experiment/optimize-brief-tiers
-```
+The original design could not support trustworthy routing decisions because it:
 
-## Metric
+- fixed the researcher and evaluator to branded model families;
+- treated reference-diff similarity as correctness evidence;
+- mixed brief generation, implementation, and evaluation;
+- lacked hidden deterministic verification and repeated case qualification;
+- had no pre-run plan or prediction seal;
+- did not isolate historical base state from later Git history;
+- did not prove the concrete model or effective reasoning effort;
+- proposed automatic template mutation before confirming route-changing results.
 
-```text
-command: .agents/scripts/brief-tier-test-helper.sh score --corpus todo/research/tier-corpus/ --results todo/research/optimize-brief-tiers-results.tsv
-name: cascade_cost_savings
-direction: higher
-baseline: null
-goal: "> 0.50"
-```
+The replacement uses exact or explicitly reconstructed historical prompts,
+immutable base commits, hidden fail-to-pass and pass-to-pass checks, synthetic
+one-commit worktrees, provider allowlists, sealed predictions, runtime evidence,
+separate autonomous and prescriptive modes, and staged confirmation.
 
-The composite metric measures overall cost efficiency of the cascade model:
+## Command migration
 
-```
-score = (0.5 × haiku_pass_rate) + (0.3 × avg_diff_similarity) + (0.2 × cost_efficiency)
+| Original command or concept | Current replacement |
+|---|---|
+| `extract` | Local curation with `init` and `add-case` |
+| `enrich` | Optional prescriptive prompt recorded by `add-case` |
+| `test` | `plan`, `seal`, then `run` |
+| `score` | Deterministic `report` output |
+| Haiku pass rate | Candidate configuration independent of provider branding |
+| Diff similarity | Hidden deterministic verification |
+| Automatic template loop | Separate reviewed change after confirmation |
 
-where:
-  haiku_pass_rate    = PRs where Haiku output passes verification / total test PRs
-  avg_diff_similarity = mean(jaccard(haiku_diff_lines, original_diff_lines))
-  cost_efficiency    = 1 - (brief_enrichment_tokens / baseline_sonnet_tokens)
-```
+The old `extract`, `enrich`, `test`, and `score` CLI commands now fail with a
+migration message. Raw corpora and all benchmark artifacts remain local-only.
 
-A score of 0.50 means: the cascade model saves at least 50% of the cost compared
-to dispatching everything at tier:standard.
+## Preserved research question
 
-## Constraints
-
-- Brief template must remain valid markdown: `markdownlint-cli2 .agents/templates/brief-template.md`
-- Escalation template must remain valid markdown: `markdownlint-cli2 .agents/templates/escalation-report-template.md`
-- Task taxonomy must remain valid markdown: `markdownlint-cli2 .agents/reference/task-taxonomy.md`
-- Existing tier:standard and tier:reasoning tasks must not regress (briefs must remain usable at higher tiers)
-
-## Models
-
-```text
-researcher: sonnet
-evaluator: haiku
-target: haiku
-```
-
-The researcher (Sonnet) modifies brief-writing instructions. The evaluator/target (Haiku)
-attempts to execute tasks using the modified instructions. This directly tests whether
-the brief changes enable cheaper execution.
-
-## Budget
-
-```text
-timeout: 28800
-max_iterations: 30
-per_experiment: 1200
-trials: 3
-```
-
-Multi-trial (3) because Haiku output has variance — same brief may succeed or fail
-depending on exploration path. Median of 3 trials reduces noise.
-
-## Concurrency
-
-```text
-mode: sequential
-population_size: 1
-convoy_id: null
-```
-
-Sequential for the initial run. Switch to population (4) after baseline is established
-to explore brief template variants in parallel.
-
-## Hints
-
-- The test corpus contains real merged PRs categorised by complexity (1-file, 2-3 files, 4+ files)
-- Start with single-file PRs — highest Haiku success probability, fastest iteration
-- The primary token waste for Haiku is codebase exploration — briefs that eliminate exploration
-  (exact file paths, line ranges, code blocks) will have the highest impact
-- Brief enrichment cost matters — a brief that costs 50K Sonnet tokens to write so Haiku
-  saves 30K tokens is a net loss. Optimise for minimum viable brief specificity
-- Escalation reports are themselves training data — reason codes tell you which brief section failed
-- Existing PR data (issue body, diff, file list) is available via `brief-tier-test-helper.sh extract`
-- The brief template has tier-aware detail levels (see the TIER-AWARE DETAIL LEVEL comment)
-- Focus on the How section and code skeletons — these determine whether Haiku can follow instructions
-  vs. needing to invent an approach
-
----
-
-## Test Corpus Structure
-
-The test corpus lives at `todo/research/tier-corpus/` with one directory per test case:
-
-```
-todo/research/tier-corpus/
-├── index.json                    # Manifest of all test cases with metadata
-├── aidevops-17617/               # One directory per PR
-│   ├── case.json                 # PR metadata (number, repo, pre_commit, files, complexity)
-│   ├── original-issue.md         # Original issue body at time of PR
-│   ├── original-diff.patch       # The actual merged diff
-│   ├── enriched-brief.md         # Gold-standard prescriptive brief (generated by Sonnet)
-│   └── verification.sh           # Commands to verify the implementation
-├── aidevops-17612/
-│   └── ...
-└── webapp-2089/
-    └── ...
-```
-
-### Corpus extraction
-
-```bash
-# Extract test corpus from merged PRs
-.agents/scripts/brief-tier-test-helper.sh extract \
-  --repo marcusquinn/aidevops \
-  --label origin:worker \
-  --max-files 3 \
-  --limit 30 \
-  --output todo/research/tier-corpus/
-
-# Generate gold-standard briefs using Sonnet
-.agents/scripts/brief-tier-test-helper.sh enrich \
-  --corpus todo/research/tier-corpus/ \
-  --model sonnet
-
-# Run Haiku against the enriched corpus
-.agents/scripts/brief-tier-test-helper.sh test \
-  --corpus todo/research/tier-corpus/ \
-  --model haiku \
-  --results todo/research/optimize-brief-tiers-results.tsv
-
-# Score the results
-.agents/scripts/brief-tier-test-helper.sh score \
-  --corpus todo/research/tier-corpus/ \
-  --results todo/research/optimize-brief-tiers-results.tsv
-```
-
-## Phases
-
-### Phase 1: Corpus extraction (one-time setup)
-
-Extract 50 merged worker PRs: 30 single-file, 15 two-to-three-file, 5 four-plus-file.
-Prefer recent PRs with clean merges and `origin:worker` label.
-
-### Phase 2: Gold-standard brief generation (one-time)
-
-Sonnet reads each PR's issue body + actual diff and writes a maximally prescriptive brief.
-This establishes the ceiling — the best possible brief for each task.
-
-### Phase 3: Baseline measurement
-
-Run Haiku with gold-standard briefs on all 50 test cases.
-Record: pass/fail, diff similarity, token usage, escalation reasons (for failures).
-This is the baseline composite score.
-
-### Phase 4: Autoresearch optimisation loop
-
-The loop modifies the brief-writing instructions (template + enrichment prompt) and
-re-tests a subset of 15 corpus cases per iteration. Each iteration:
-1. Generate hypothesis about brief structure change
-2. Modify templates
-3. Re-generate enriched briefs using modified template
-4. Run Haiku on 15-case subset
-5. Score → keep/discard
-
-### Phase 5: Boundary mapping
-
-After optimisation converges, run the full 50-case corpus at the final brief quality.
-Map which PR characteristics predict Haiku success:
-- Single-file vs multi-file
-- Lines changed
-- New file vs edit
-- Pattern-following vs novel code
-- Shell vs TypeScript vs markdown
-
-Output: updated `tier:simple` criteria in `reference/task-taxonomy.md` based on empirical data.
+The useful question remains: which task and brief characteristics permit a lower
+model tier or effort without reducing verified completion? Answer it by comparing
+sealed predictions with repeated quick/full replay and production telemetry. Any
+change to `reference/task-taxonomy.md`, model routing, or brief templates requires
+a separate reviewed implementation after the evidence is confirmed.

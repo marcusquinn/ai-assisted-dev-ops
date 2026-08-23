@@ -467,7 +467,7 @@ INSERT INTO message (id,session_id,time_created,time_updated,data) VALUES
   ('msg_stale','ses_stale_pid',${stale_pid_session_ms_19},${stale_pid_session_ms_19},
    '{\"model\":{\"providerID\":\"anthropic\",\"modelID\":\"claude-opus-4-7\"},\"tokens\":{\"input\":10,\"output\":1,\"cache\":{\"read\":0,\"write\":0}},\"role\":\"assistant\"}'),
   ('msg_current','ses_current',${recent_session_ms_19},${recent_session_ms_19},
-   '{\"model\":{\"providerID\":\"openai\",\"modelID\":\"gpt-5.5\"},\"tokens\":{\"input\":20,\"output\":2,\"cache\":{\"read\":0,\"write\":0}},\"role\":\"assistant\"}');
+   '{\"providerID\":\"openai\",\"modelID\":\"gpt-5.5\",\"tokens\":{\"input\":20,\"output\":2,\"cache\":{\"read\":0,\"write\":0}},\"role\":\"assistant\"}');
 "
 
 	result=$(env -u OPENCODE_SESSION_ID -u AIDEVOPS_SIG_SESSION_ID OPENCODE=1 OPENCODE_PID=$$ AIDEVOPS_SIG_MODEL="" XDG_DATA_HOME="${tmp_home_19}/.local/share" HOME="$tmp_home_19" "$HELPER" generate --cli "OpenCode")

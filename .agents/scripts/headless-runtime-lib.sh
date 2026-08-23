@@ -438,6 +438,10 @@ append_runtime_metric() {
 		ROUTING_TIER="${AIDEVOPS_DISPATCH_TIER:-}" ROUTING_CANDIDATE_INDEX="${AIDEVOPS_ROUTING_CANDIDATE_INDEX:-}" \
 		ROUTING_ATTEMPT="${AIDEVOPS_ROUTING_ATTEMPT:-}" ROUTING_REASON="${AIDEVOPS_ROUTING_REASON:-}" \
 		ROUTING_ESCALATED="${AIDEVOPS_ROUTING_ESCALATED:-}" ROUTING_VARIANT="${AIDEVOPS_ROUTING_VARIANT:-}" \
+		OBSERVED_MODEL="${_MODEL_REPLAY_OBSERVED_MODEL:-}" OBSERVED_VARIANT="${_MODEL_REPLAY_OBSERVED_VARIANT:-}" \
+		OBSERVED_REQUEST_COUNT="${_MODEL_REPLAY_REQUEST_COUNT:-}" OBSERVED_USAGE_COUNT="${_MODEL_REPLAY_USAGE_COUNT:-}" \
+		OBSERVED_TOKENS_TOTAL="${_MODEL_REPLAY_TOKENS_TOTAL:-}" OBSERVED_COST_COUNT="${_MODEL_REPLAY_COST_COUNT:-}" \
+		OBSERVED_COST_USD="${_MODEL_REPLAY_COST_USD:-}" \
 		METRICS_PATH="$METRICS_FILE" python3 - <<'PY' >/dev/null 2>&1 || true
 import json
 import os
@@ -481,12 +485,24 @@ optional_fields = {
     "routing_reason": os.environ.get("ROUTING_REASON", ""),
     "routing_escalated": os.environ.get("ROUTING_ESCALATED", ""),
     "variant": os.environ.get("ROUTING_VARIANT", ""),
+    "observed_model": os.environ.get("OBSERVED_MODEL", ""),
+    "observed_variant": os.environ.get("OBSERVED_VARIANT", ""),
+    "observed_request_count": os.environ.get("OBSERVED_REQUEST_COUNT", ""),
+    "observed_usage_count": os.environ.get("OBSERVED_USAGE_COUNT", ""),
+    "observed_tokens_total": os.environ.get("OBSERVED_TOKENS_TOTAL", ""),
+    "observed_cost_count": os.environ.get("OBSERVED_COST_COUNT", ""),
+    "observed_cost_usd": os.environ.get("OBSERVED_COST_USD", ""),
 }
 for key, value in optional_fields.items():
     if value != "":
-        if key in {"issue_number", "routing_candidate_index", "routing_attempt"}:
+        if key in {"issue_number", "routing_candidate_index", "routing_attempt", "observed_request_count", "observed_usage_count", "observed_tokens_total", "observed_cost_count"}:
             try:
                 record[key] = int(value)
+            except ValueError:
+                record[key] = value
+        elif key == "observed_cost_usd":
+            try:
+                record[key] = float(value)
             except ValueError:
                 record[key] = value
         elif key == "routing_escalated":
@@ -807,11 +823,11 @@ build_sandbox_passthrough_csv() {
 			esac
 			continue
 		fi
-		if [[ "$role" == "triage" ]]; then
+		if [[ "$role" == "triage" || "$role" == "model-replay" ]]; then
 			# Prefer the isolated provider entry over ambient credentials. This
 			# prevents a stale API key from overriding a copied OAuth session while
 			# preserving environment-only authentication when no entry was copied.
-			if [[ "$scoped_auth_ready" != "1" && -n "$provider" ]] && \
+			if [[ "$scoped_auth_ready" != "1" && -n "$provider" ]] &&
 				_headless_triage_provider_env_allowed "$provider" "$name"; then
 				names+=("$name")
 				continue
@@ -819,6 +835,9 @@ build_sandbox_passthrough_csv() {
 			case "$name" in
 			AIDEVOPS_HEADLESS | AIDEVOPS_HEADLESS_AUTH_ISOLATION | AIDEVOPS_SESSION_ORIGIN | OPENCODE_DISABLE_CLAUDE_CODE_SKILLS | OPENCODE_DISABLE_EXTERNAL_SKILLS | OPENCODE_PURE | XDG_CACHE_HOME | XDG_CONFIG_HOME | XDG_DATA_HOME | XDG_STATE_HOME)
 				names+=("$name")
+				;;
+			OPENCODE_CONFIG | OPENCODE_CONFIG_DIR | OPENCODE_DISABLE_AUTOCOMPACT | OPENCODE_DISABLE_AUTOUPDATE | OPENCODE_DISABLE_CLAUDE_CODE | OPENCODE_DISABLE_CLAUDE_CODE_PROMPT | OPENCODE_DISABLE_DEFAULT_PLUGINS | OPENCODE_DISABLE_LSP_DOWNLOAD | OPENCODE_DISABLE_MODELS_FETCH | OPENCODE_DISABLE_PROJECT_CONFIG | OPENCODE_DISABLE_SHARE)
+				[[ "$role" == "model-replay" ]] && names+=("$name")
 				;;
 			esac
 			continue
