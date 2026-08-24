@@ -137,6 +137,76 @@ test("waits until an asynchronously connecting MCP reports ready", async () => {
   ]);
 });
 
+test("resets and reconnects once after an MCP enters failed status", async () => {
+  const statuses = ["failed", "connected"];
+  const calls = [];
+  const client = {
+    async connect(args) { calls.push(["connect", args]); },
+    async disconnect(args) { calls.push(["disconnect", args]); },
+    async status(args) {
+      calls.push(["status", args]);
+      return { data: { playwriter: { status: statuses.shift() } } };
+    },
+  };
+  const activation = createMcpActivationTool(tool, z, {
+    client,
+    directory: "/workspace",
+    allowedNames: ["playwriter"],
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwriter" }),
+    /Connected MCP playwriter after one automatic reset/,
+  );
+  assert.deepEqual(calls, [
+    ["connect", { path: { name: "playwriter" }, query: { directory: "/workspace" } }],
+    ["status", { query: { directory: "/workspace" } }],
+    ["disconnect", { path: { name: "playwriter" }, query: { directory: "/workspace" } }],
+    ["connect", { path: { name: "playwriter" }, query: { directory: "/workspace" } }],
+    ["status", { query: { directory: "/workspace" } }],
+  ]);
+});
+
+test("does not loop when the MCP remains failed after recovery", async () => {
+  const statuses = ["error", "failed"];
+  const calls = [];
+  const client = {
+    async connect() { calls.push("connect"); },
+    async disconnect() { calls.push("disconnect"); },
+    async status() {
+      calls.push("status");
+      return { data: { playwriter: { status: statuses.shift() } } };
+    },
+  };
+  const activation = createMcpActivationTool(tool, z, {
+    client,
+    allowedNames: ["playwriter"],
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwriter" }),
+    /after one reset attempt: MCP entered failed status.*mcp-diagnose\.sh playwriter.*restart OpenCode/,
+  );
+  assert.deepEqual(calls, ["connect", "status", "disconnect", "connect", "status"]);
+});
+
+test("reports actionable recovery when MCP disconnect is unavailable", async () => {
+  let connectCalls = 0;
+  const activation = createMcpActivationTool(tool, z, {
+    client: {
+      async connect() { connectCalls += 1; },
+      async status() { return { data: { playwriter: { status: "failed" } } }; },
+    },
+    allowedNames: ["playwriter"],
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwriter" }),
+    /automatic reset is unavailable.*does not expose MCP disconnect.*mcp-diagnose\.sh playwriter/,
+  );
+  assert.equal(connectCalls, 1);
+});
+
 test("returns OpenCode MCP lifecycle failures to the agent", async () => {
   const activation = createMcpActivationTool(tool, z, {
     client: {

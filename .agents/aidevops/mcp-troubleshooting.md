@@ -18,7 +18,14 @@ tools:
 - **Scripts**: `mcp-diagnose.sh check-all`, `tool-version-check.sh`
 - **Primary cause**: version mismatch (outdated tool, changed MCP command)
 - **Config**: `~/.config/opencode/opencode.json`
+- **On-demand activation**: `failed`/`error` status gets one automatic disconnect/reconnect; a second failure is terminal
 - **Dead schemas (t1682)**: MCP tools can remain listed after startup failure; treat that server as unavailable for the session
+
+## Bounded On-Demand Recovery
+
+When the registry-approved `aidevops_mcp` activation tool observes `failed` or `error` status, it makes exactly one automatic reset: disconnect the same MCP, reconnect it, and poll for readiness again. The allowlist remains unchanged and the tool never loops.
+
+If the reset API is unavailable or the second attempt fails, run `mcp-diagnose.sh <mcp-name>` and restart OpenCode after fixing the cause. Timeouts, authentication requirements, direct API errors, and dead tool-schema errors do not trigger this reset.
 
 ## Errored Servers — Dead Tool Schemas (t1682)
 
