@@ -35,6 +35,8 @@ source "${SCRIPT_DIR}/shared-constants.sh" 2>/dev/null || {
 	printf 'ERROR: cannot source shared-constants.sh\n' >&2
 	exit 1
 }
+# shellcheck source=renovate-dependency-dashboard-helper.sh
+source "${SCRIPT_DIR}/renovate-dependency-dashboard-helper.sh"
 
 # --- Constants ----------------------------------------------------------------
 
@@ -206,7 +208,7 @@ process_repo() {
 		--state open \
 		--limit 200 \
 		--search "$search_query" \
-		--json number,title,labels 2>/dev/null) || issues_json="[]"
+		--json number,title,labels,author 2>/dev/null) || issues_json="[]"
 	issues_json=$(normalize_issues_json "$issues_json") || issues_json="[]"
 
 	local count
@@ -220,7 +222,12 @@ process_repo() {
 	# Process each candidate
 	local i=0
 	while [[ "$i" -lt "$count" ]]; do
-		local num title labels_json add_tier
+		local issue_json num title labels_json add_tier
+		issue_json=$(printf '%s' "$issues_json" | jq -c ".[$i]")
+		if _is_renovate_dependency_dashboard_issue "$issue_json"; then
+			i=$((i + 1))
+			continue
+		fi
 		num=$(printf '%s' "$issues_json" | jq -r ".[$i].number")
 		title=$(printf '%s' "$issues_json" | jq -r ".[$i].title | .[0:80]")
 		labels_json=$(printf '%s' "$issues_json" | jq -c "[.[$i].labels[].name]")

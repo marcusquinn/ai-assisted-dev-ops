@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
-CORE_SCRIPT="${SCRIPT_DIR}/../pulse-dispatch-core.sh"
+HELPER_SCRIPT="${SCRIPT_DIR}/../renovate-dependency-dashboard-helper.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -39,9 +39,9 @@ define_helper_under_test() {
 	local helper_src
 	helper_src=$(awk '
 		/^_is_renovate_dependency_dashboard_issue\(\) \{/,/^}$/ { print }
-	' "$CORE_SCRIPT")
+	' "$HELPER_SCRIPT")
 	if [[ -z "$helper_src" ]]; then
-		printf 'ERROR: could not extract _is_renovate_dependency_dashboard_issue from %s\n' "$CORE_SCRIPT" >&2
+		printf 'ERROR: could not extract _is_renovate_dependency_dashboard_issue from %s\n' "$HELPER_SCRIPT" >&2
 		return 1
 	fi
 	# shellcheck disable=SC1090

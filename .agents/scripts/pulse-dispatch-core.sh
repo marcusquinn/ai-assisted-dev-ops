@@ -73,6 +73,8 @@ _PULSE_DISPATCH_COLLABORATOR_ASSOCIATION="COLLABORATOR"
 
 # shellcheck source=disk-capacity-lib.sh
 source "${BASH_SOURCE[0]%/*}/disk-capacity-lib.sh"
+# shellcheck source=renovate-dependency-dashboard-helper.sh
+source "${BASH_SOURCE[0]%/*}/renovate-dependency-dashboard-helper.sh"
 
 # Extracted modules — sourced in load order.
 # shellcheck source=pulse-dispatch-dedup-layers.sh
@@ -1114,30 +1116,6 @@ _dispatch_target_is_pull_request() {
 		return 1
 	fi
 	return 2
-}
-
-#######################################
-# Return success when issue metadata identifies a Renovate Dependency Dashboard
-# meta-issue. These are maintenance tracking issues, not implementation work.
-#
-# Args:
-#   $1 - issue_meta_json (pre-fetched JSON with .author and .title)
-# Returns:
-#   0 - renovate[bot] Dependency Dashboard issue
-#   1 - not a Renovate Dependency Dashboard issue
-#######################################
-_is_renovate_dependency_dashboard_issue() {
-	local issue_meta_json="$1"
-	local author_login="" issue_title="" title_lower=""
-
-	[[ -n "$issue_meta_json" ]] || return 1
-	author_login=$(printf '%s' "$issue_meta_json" | jq -r '.author.login // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]') || author_login=""
-	issue_title=$(printf '%s' "$issue_meta_json" | jq -r '.title // empty' 2>/dev/null) || issue_title=""
-	title_lower=$(printf '%s' "$issue_title" | tr '[:upper:]' '[:lower:]')
-
-	[[ "$author_login" == "renovate[bot]" ]] || return 1
-	[[ "$title_lower" == *"dependency dashboard"* ]] || return 1
-	return 0
 }
 
 #######################################
