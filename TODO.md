@@ -1307,7 +1307,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18305 Fix worktree cleanup false degraded visibility for foreign /proc entries #bug ref:GH#30651 pr:#30653 completed:2026-08-24
 
-- [ ] t18306 Fix self-ignore overrides blocking Pulse worker launches #auto-dispatch #priority:high ref:GH#30659
+- [x] t18306 Fix self-ignore overrides blocking Pulse worker launches #auto-dispatch #priority:high ref:GH#30659 pr:#30663 completed:2026-08-24
 
 ## In Progress
 
