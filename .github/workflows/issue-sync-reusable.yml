@@ -782,8 +782,9 @@ jobs:
 
     steps:
       # Security: This job uses pull_request_target to get write permissions for
-      # fork PRs. It only checks out ref:main (base branch), never fork code.
-      # Event metadata (PR title, body, number) is used for issue hygiene only.
+      # fork PRs. It only checks out the trusted PR base ref, never fork head
+      # code. Event metadata (PR title, body, number) is used for issue hygiene
+      # only.
 
       # t2166 / t2696: visibility check mirroring the other three jobs.
       # Ensures the warning/notice emits unconditionally on every merged PR,
@@ -902,7 +903,7 @@ jobs:
         if: steps.extract.outputs.linked_issues != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 1
           token: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
 
