@@ -618,12 +618,15 @@ test_worker_recovery_reconciles_missing_origin_with_exact_provenance() {
 			export WORKER_SESSION_KEY="issue-99999"
 			export WORKER_ISSUE_NUMBER="99999"
 			export WORKER_GITHUB_LOGIN="worker-login"
-			local label_added=0 edit_count=0 release_reason=""
+			local label_added=0 edit_count=0 ownership_checks=0 release_reason=""
 			_pr_handoff_state_for_branch_or_issue() {
 				printf 'ready|457'
 				return 0
 			}
-			_hrw_verify_dispatch_ownership() { return 0; }
+			_hrw_verify_dispatch_ownership() {
+				ownership_checks=$((ownership_checks + 1))
+				return 0
+			}
 			gh() {
 				local args="$*"
 				if [[ "$args" == "pr view 457"* ]]; then
@@ -646,11 +649,11 @@ test_worker_recovery_reconciles_missing_origin_with_exact_provenance() {
 				return 0
 			}
 			_recover_worker_output_on_failure "issue-99999" "$work_dir"
-			printf 'classification=%s|release=%s|edits=%s\n' \
-				"$_HRW_RECOVERY_CLASSIFICATION" "$release_reason" "$edit_count"
+			printf 'classification=%s|release=%s|edits=%s|ownership=%s\n' \
+				"$_HRW_RECOVERY_CLASSIFICATION" "$release_reason" "$edit_count" "$ownership_checks"
 		)
 	)
-	if [[ "$result" == *"classification=worker_complete|release=worker_complete|edits=1"* ]]; then
+	if [[ "$result" == *"classification=worker_complete|release=worker_complete|edits=1|ownership=3"* ]]; then
 		print_result "worker recovery reconciles missing origin with exact provenance" 0
 	else
 		print_result "worker recovery reconciles missing origin with exact provenance" 1 "$result"

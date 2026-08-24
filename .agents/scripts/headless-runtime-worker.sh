@@ -1117,16 +1117,12 @@ _hrw_reconcile_worker_handoff_origin() {
 	}
 	# Recheck live issue ownership immediately before mutating trust metadata.
 	_hrw_verify_dispatch_ownership || return 1
-	origin_state=$(_hrw_worker_handoff_origin_state \
-		"$repo_slug" "$pr_number" "$branch_name" "$local_head" "$runner_login") || return 1
-	[[ "$origin_state" == "$_HRW_ORIGIN_STATE_MISSING" ]] || {
-		[[ "$origin_state" == "$_HRW_ORIGIN_STATE_VERIFIED" ]]
-		return $?
-	}
 	gh pr edit "$pr_number" --repo "$repo_slug" --add-label "$_HRW_ORIGIN_WORKER_LABEL" >/dev/null 2>&1 || return 1
 	origin_state=$(_hrw_worker_handoff_origin_state \
 		"$repo_slug" "$pr_number" "$branch_name" "$local_head" "$runner_login") || return 1
 	[[ "$origin_state" == "$_HRW_ORIGIN_STATE_VERIFIED" ]] || return 1
+	# Retain the claim if ownership changed while GitHub applied the label.
+	_hrw_verify_dispatch_ownership || return 1
 	print_info "[pulse-wrapper] Reconciled missing origin:worker label for PR #${pr_number} after worker recovery"
 	return 0
 }
