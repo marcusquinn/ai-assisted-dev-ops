@@ -315,9 +315,10 @@ assert_ruleset_review_sequence() {
 	local test_name="$1"
 	local reviews_json="$2"
 	local expected_rc="$3"
+	local pr_author="${4-author}"
 	local actual_rc=0
 	RULESET_REVIEWS_JSON="$reviews_json"
-	_check_ruleset_required_reviews_passing "owner/repo" "77" "author" || actual_rc=$?
+	_check_ruleset_required_reviews_passing "owner/repo" "77" "$pr_author" || actual_rc=$?
 	if [[ "$actual_rc" -eq "$expected_rc" ]]; then
 		print_result "$test_name" 0
 		return 0
@@ -353,6 +354,14 @@ test_ruleset_required_review_decision_sequences() {
 		'[[{"id":0,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"}]]' 1
 	assert_ruleset_review_sequence "PR author exclusion is case-insensitive" \
 		'[[{"id":14,"user":{"login":"Author"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "lowercase review state fails closed" \
+		'[[{"id":15,"user":{"login":"reviewer"},"state":"approved","submitted_at":"2026-08-23T10:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "COMMENTED without ordering fields remains non-substantive" \
+		'[[{"id":16,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"},{"state":"COMMENTED"}]]' 0
+	assert_ruleset_review_sequence "PENDING without ordering fields remains non-substantive" \
+		'[[{"id":17,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"},{"state":"PENDING"}]]' 0
+	assert_ruleset_review_sequence "missing PR author fails closed" \
+		'[[{"id":18,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"}]]' 1 ""
 
 	teardown_test_env
 	return 0
