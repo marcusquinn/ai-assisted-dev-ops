@@ -108,10 +108,8 @@ export function createMcpActivationTool(tool, z, options) {
       } catch (error) {
         if (action === "connect" && error?.mcpStatus) {
           const recoveryError = await recoverFailedConnection(name, options);
-          if (!recoveryError) {
-            return `Connected MCP ${name} after one automatic reset. Continue on the next step with its tools.`;
-          }
-          return recoveryError;
+          return recoveryError
+            || `Connected MCP ${name} after one automatic reset. Continue on the next step with its tools.`;
         }
         return `Error: MCP ${action} failed for ${name}: ${error instanceof Error ? error.message : String(error)}`;
       }
