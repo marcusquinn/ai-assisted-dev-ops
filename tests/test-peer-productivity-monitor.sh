@@ -390,6 +390,27 @@ test_hysteresis_keep_preserves_action() {
 test_hysteresis_keep_preserves_action
 
 # ============================================================================
+section "Authenticated self identity validation"
+# ============================================================================
+
+test_self_login_rejects_api_error_payload() {
+	gh() {
+		printf '{"message":"API rate limit exceeded"}\n'
+		return 0
+	}
+	local output="" rc=0
+	output=$(_self_login) || rc=$?
+	unset -f gh
+	if [[ "$rc" -ne 0 && -z "$output" ]]; then
+		pass "self login rejects API error payloads"
+	else
+		fail "self login accepted an API error payload" "rc=$rc output=$output"
+	fi
+	return 0
+}
+test_self_login_rejects_api_error_payload
+
+# ============================================================================
 section "Override config rewrite preserves manual entries"
 # ============================================================================
 
@@ -476,6 +497,60 @@ EOF
 	return 0
 }
 test_rewrite_drops_honour_entries
+
+test_rewrite_drops_authenticated_self_entry() {
+	local conf="$HOME/.config/aidevops/dispatch-override.conf"
+	cat >"$conf" <<'EOF'
+DISPATCH_OVERRIDE_ENABLED=true
+EOF
+	OVERRIDE_CONF="$conf"
+
+	local state='{"self-runner":{"current_action":"ignore","vote_history":["ignore","ignore","ignore"]},"alice":{"current_action":"ignore","vote_history":["ignore","ignore","ignore"]}}'
+	_rewrite_override_config "$state" "self-runner"
+	if ! grep -qF 'DISPATCH_OVERRIDE_SELF_RUNNER' "$conf" &&
+		grep -qF 'DISPATCH_OVERRIDE_ALICE="ignore"' "$conf"; then
+		pass "rewrite omits the authenticated runner while retaining peer overrides"
+	else
+		fail "rewrite emitted a self override or dropped a peer override"
+	fi
+	return 0
+}
+test_rewrite_drops_authenticated_self_entry
+
+# ============================================================================
+section "Observe cycle removes stale self state"
+# ============================================================================
+
+test_observe_removes_stale_self_state() {
+	STATE_FILE="$HOME/.aidevops/state/peer-productivity-state.json"
+	OVERRIDE_CONF="$HOME/.config/aidevops/dispatch-override.conf"
+	DRY_RUN=0
+	cat >"$STATE_FILE" <<'EOF'
+{
+  "self-runner": {"current_action":"ignore","vote_history":["ignore","ignore","ignore"]},
+  "alice": {"current_action":"ignore","vote_history":["ignore","ignore","ignore"]}
+}
+EOF
+	_self_login() {
+		printf 'self-runner'
+		return 0
+	}
+	discover_and_observe() {
+		printf '[]\n'
+		return 0
+	}
+
+	cmd_observe
+	if jq -e 'has("self-runner") | not' "$STATE_FILE" >/dev/null &&
+		! grep -qF 'DISPATCH_OVERRIDE_SELF_RUNNER' "$OVERRIDE_CONF" &&
+		grep -qF 'DISPATCH_OVERRIDE_ALICE="ignore"' "$OVERRIDE_CONF"; then
+		pass "observe removes stale self state even when no peers are discovered"
+	else
+		fail "observe retained stale authenticated self state"
+	fi
+	return 0
+}
+test_observe_removes_stale_self_state
 
 # ============================================================================
 section "Claim regression — broken-peer detection (GH#21135)"

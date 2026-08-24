@@ -1490,7 +1490,11 @@ cmd_transition() {
 		fi
 	fi
 	local active_claims="" current_phase="" current_expires_at="" claim_record="" claim_author="" claim_device="" claim_session="" current_login="" current_device=""
-	active_claims=$(_fetch_claims "$issue_number" "$repo_slug") || return 1
+	# Runtime overrides quarantine peer claims only. Resolve and pass this runner
+	# before filtering so a stale self-ignore entry cannot hide the lease that
+	# this same authenticated runner is authorized to transition.
+	current_login=$(_resolve_runner "") || return 1
+	active_claims=$(_fetch_claims "$issue_number" "$repo_slug" "$current_login") || return 1
 	claim_record=$(printf '%s' "$active_claims" | jq -c --arg token "$lease_token" '[.[] | select(.lease_token == $token)] | last // empty' 2>/dev/null) || claim_record=""
 	current_phase=$(printf '%s' "$claim_record" | jq -r '.lease_phase // ""' 2>/dev/null) || current_phase=""
 	[[ -n "$current_phase" ]] || return 1
@@ -1499,7 +1503,6 @@ cmd_transition() {
 	claim_author=$(printf '%s' "$claim_record" | jq -r '.claim_author // ""') || return 1
 	claim_device=$(printf '%s' "$claim_record" | jq -r '.device // ""') || return 1
 	claim_session=$(printf '%s' "$claim_record" | jq -r '.session // ""') || return 1
-	current_login=$(_resolve_runner "") || return 1
 	current_device=$(_resolve_device_id)
 	[[ -n "$claim_author" && "$current_login" == "$claim_author" ]] || return 1
 	[[ "$current_device" == "$claim_device" && "${session_key:-issue-${issue_number}}" == "$claim_session" ]] || return 1

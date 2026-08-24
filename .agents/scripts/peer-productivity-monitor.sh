@@ -121,7 +121,12 @@ _is_bot() {
 
 # Get our own GitHub login.
 _self_login() {
-	gh api user --jq '.login' 2>/dev/null || echo ""
+	local login=""
+	login=$(gh api user --jq '.login // ""' 2>/dev/null) || return 1
+	if [[ ! "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+		return 1
+	fi
+	printf '%s' "$login"
 	return 0
 }
 
@@ -273,8 +278,15 @@ _attach_repository_observations() {
 # Outputs JSON array: [{"login": ..., "active_claims": N, ...}, ...]
 # Aggregated across repos (sums active_claims, worker_prs, interactive_prs).
 discover_and_observe() {
-	local self_login since_iso
-	self_login="$(_self_login)"
+	local self_login="${1:-}"
+	local since_iso=""
+	if [[ -z "$self_login" ]]; then
+		self_login=$(_self_login) || {
+			log_msg WARN "discover_and_observe: authenticated self login unavailable — skipping peer discovery"
+			printf '[]\n'
+			return 0
+		}
+	fi
 	# Compute since timestamp
 	since_iso=$(date -u -v "-${WINDOW_HOURS}H" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
 		date -u -d "${WINDOW_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
@@ -454,6 +466,7 @@ _apply_hysteresis() {
 # between BEGIN and END markers is replaced. Anything after END is preserved.
 _rewrite_override_config() {
 	local state_json="$1"
+	local self_login="${2:-}"
 
 	# Build the managed section content
 	local managed_lines=""
@@ -470,6 +483,7 @@ _rewrite_override_config() {
 	if [[ -n "$peers" ]]; then
 		while IFS= read -r peer; do
 			[[ -z "$peer" ]] && continue
+			[[ -n "$self_login" && "$peer" == "$self_login" ]] && continue
 			local action
 			action=$(printf '%s' "$state_json" | jq -r --arg l "$peer" --arg default "$ACTION_HONOUR" '.[$l].current_action // $default')
 			action=$(_sanitize_action "$action")
@@ -546,24 +560,32 @@ cmd_observe() {
 
 	log_msg INFO "=== observe cycle start ==="
 
+	local self_login=""
+	self_login=$(_self_login) || {
+		log_msg WARN "authenticated self login unavailable — preserving peer state and override config"
+		return 0
+	}
+
 	local observations
-	observations=$(discover_and_observe)
+	observations=$(discover_and_observe "$self_login")
 	local count
 	count=$(printf '%s' "$observations" | jq 'length' 2>/dev/null || echo 0)
 
 	if [[ "$count" -eq 0 ]]; then
 		log_msg INFO "no peers found across pulse-enabled repos"
-		return 0
+	else
+		log_msg INFO "found $count peer(s) to evaluate"
 	fi
-
-	log_msg INFO "found $count peer(s) to evaluate"
 
 	# Load existing state
 	local state_json
 	state_json=$(_load_state)
 
-	# Apply hysteresis per peer, accumulating updated state
-	local updated_state="$state_json"
+	# A peer entry can survive an earlier cycle where GitHub identity lookup was
+	# unavailable. Remove this authenticated runner before applying peer votes so
+	# the managed config can never quarantine its own dispatch claims.
+	local updated_state=""
+	updated_state=$(printf '%s' "$state_json" | jq --arg self "$self_login" 'del(.[$self])') || return 1
 	while IFS= read -r obs; do
 		[[ -z "$obs" ]] && continue
 		local login active_claims worker_prs interactive_prs repositories
@@ -596,7 +618,7 @@ cmd_observe() {
 	chmod 600 "$STATE_FILE" 2>/dev/null || true
 
 	# Rewrite override config
-	_rewrite_override_config "$updated_state"
+	_rewrite_override_config "$updated_state" "$self_login"
 
 	log_msg INFO "=== observe cycle complete ==="
 	return 0

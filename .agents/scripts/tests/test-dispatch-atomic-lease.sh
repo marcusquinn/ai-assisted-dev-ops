@@ -412,16 +412,18 @@ test_prelaunch_renewal_covers_slow_startup() {
 	[[ -n "$token" ]] || fail "renewal claim token missing"
 	sleep 2
 	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		DISPATCH_OVERRIDE_SHARED_LOGIN=ignore \
 		"$CLAIM" transition prelaunch 47 owner/repo "$token" issue-47 3
 	sleep 2
 	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" AIDEVOPS_DEVICE_ID=device-a \
+		DISPATCH_OVERRIDE_SHARED_LOGIN=ignore \
 		"$CLAIM" transition ready 47 owner/repo "$token" issue-47 30 ||
-		fail "renewed prelaunch lease did not survive slow startup"
+		fail "self-preserved prelaunch lease did not survive slow startup"
 	# shellcheck disable=SC2016 # Match the literal runtime variable in the helper source.
 	renewal_call='_hrw_renew_dispatch_prelaunch_lease "$session_key"'
 	grep -Fq "$renewal_call" "${SCRIPTS_DIR}/headless-runtime-run.sh" ||
 		fail "worker does not renew its prelaunch lease before canary"
-	pass "worker prelaunch renewal covers slow startup before ready transition"
+	pass "worker prelaunch renewal preserves self claims across override filtering"
 	return 0
 }
 
