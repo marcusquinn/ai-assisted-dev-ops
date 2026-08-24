@@ -1632,6 +1632,46 @@ test_proc_snapshot_skips_foreign_uid_unreadable_entry() {
 }
 
 # =============================================================================
+# hidepid-style /proc mounts can deny both cwd and status reads for other users.
+# Directory ownership still proves those entries are foreign, so they must not
+# degrade the whole snapshot and force recoverable archival for every cleanup.
+# =============================================================================
+test_proc_snapshot_skips_foreign_uid_when_status_unreadable() {
+	local proc_root="${TEST_DIR}/fake-proc-foreign-owner"
+	local current_uid=""
+	local foreign_uid=""
+	local output=""
+	local rc=0
+	current_uid=$(id -u)
+	foreign_uid=$((current_uid + 1))
+	mkdir -p "${proc_root}/1" "${proc_root}/2"
+	ln -s /visible-cwd "${proc_root}/1/cwd"
+	ln -s /foreign-cwd "${proc_root}/2/cwd"
+
+	output=$(
+		readlink() {
+			local link_path="$1"
+			[[ "$link_path" == */1/cwd ]] || return 1
+			printf '/visible-cwd\n'
+			return 0
+		}
+		_worktree_proc_entry_owner_uid() {
+			local proc_dir="$1"
+			case "$proc_dir" in
+			*/2) printf '%s\n' "$foreign_uid" ;;
+			*) printf '%s\n' "$current_uid" ;;
+			esac
+			return 0
+		}
+		_capture_worktree_proc_cwds "$proc_root"
+	) || rc=1
+	[[ "$output" == "/visible-cwd" ]] || rc=1
+	print_result "proc_snapshot_skips_foreign_uid_when_status_unreadable" "$rc" \
+		"Expected hidepid-style foreign /proc entries to be skipped without degraded visibility"
+	return 0
+}
+
+# =============================================================================
 # Same-UID unreadability is explicitly degraded while preserving readable cwd
 # evidence for candidate-specific positive matching.
 # =============================================================================
@@ -1917,6 +1957,7 @@ test_snapshot_backend_requires_visible_target
 test_lsof_snapshot_visibility_states
 test_proc_snapshot_preserves_degraded_visibility
 test_proc_snapshot_skips_foreign_uid_unreadable_entry
+test_proc_snapshot_skips_foreign_uid_when_status_unreadable
 test_proc_snapshot_marks_same_uid_unreadable_entry_degraded
 test_degraded_visibility_preserves_positive_candidate_match
 test_proc_snapshot_requires_usable_evidence_after_foreign_skips

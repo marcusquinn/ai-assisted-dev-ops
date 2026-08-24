@@ -164,8 +164,16 @@ _worktree_proc_entry_is_provably_foreign_uid() {
 	local saved_uid=""
 	local filesystem_uid=""
 	local process_uid=""
+	local proc_owner_uid=""
 
-	[[ "$current_uid" =~ ^[0-9]+$ && -r "$proc_dir/status" ]] || return 1
+	[[ "$current_uid" =~ ^[0-9]+$ ]] || return 1
+	if [[ ! -r "$proc_dir/status" ]]; then
+		proc_owner_uid=$(_worktree_proc_entry_owner_uid "$proc_dir" 2>/dev/null || true)
+		if [[ "$proc_owner_uid" =~ ^[0-9]+$ && "$proc_owner_uid" != "$current_uid" ]]; then
+			return 0
+		fi
+		return 1
+	fi
 	while IFS=$' \t' read -r field real_uid effective_uid saved_uid filesystem_uid _; do
 		[[ "$field" == "Uid:" ]] || continue
 		for process_uid in "$real_uid" "$effective_uid" "$saved_uid" "$filesystem_uid"; do
@@ -175,6 +183,21 @@ _worktree_proc_entry_is_provably_foreign_uid() {
 		return 0
 	done <"$proc_dir/status"
 	return 1
+}
+
+_worktree_proc_entry_owner_uid() {
+	local proc_dir="$1"
+
+	python3 - "$proc_dir" <<'PY'
+import os
+import sys
+
+try:
+    print(os.stat(sys.argv[1], follow_symlinks=False).st_uid)
+except OSError:
+    raise SystemExit(1)
+PY
+	return $?
 }
 
 _capture_worktree_proc_cwds() {
@@ -551,16 +574,19 @@ _worktree_log_identity_refusal() {
 
 _worktree_path_identity() {
 	local target_path="$1"
-	local platform=""
 
 	[[ -e "$target_path" && ! -L "$target_path" ]] || return 1
-	platform=$(uname -s 2>/dev/null) || return 1
-	case "$platform" in
-	Darwin) stat -f '%d:%i' "$target_path" 2>/dev/null || return 1 ;;
-	Linux) stat -c '%d:%i' -- "$target_path" 2>/dev/null || return 1 ;;
-	*) return 1 ;;
-	esac
-	return 0
+	python3 - "$target_path" <<'PY'
+import os
+import sys
+
+try:
+    st = os.stat(sys.argv[1], follow_symlinks=False)
+except OSError:
+    raise SystemExit(1)
+print(f"{st.st_dev}:{st.st_ino}")
+PY
+	return $?
 }
 
 # Copy exactly once into a unique destination. In particular, do not retry into
