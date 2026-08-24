@@ -311,6 +311,28 @@ if [[ "$seo_agent" != "SEO" ]]; then
 	fail "bundle agent routing did not select SEO for SEO task"
 fi
 
+codegraph_scripts_dir="${TEST_TMP}/codegraph-scripts"
+codegraph_worktree="${TEST_TMP}/codegraph-worktree"
+codegraph_calls="${TEST_TMP}/codegraph-calls.log"
+codegraph_pulse_log="${TEST_TMP}/codegraph-pulse.log"
+mkdir -p "$codegraph_scripts_dir" "$codegraph_worktree" || fail "failed to create CodeGraph dispatch fixtures"
+cat >"${codegraph_scripts_dir}/codegraph-worktree-init-helper.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CODEGRAPH_STUB_CALLS}"
+exit "${CODEGRAPH_STUB_RC:-0}"
+EOF
+chmod +x "${codegraph_scripts_dir}/codegraph-worktree-init-helper.sh" || fail "failed to make CodeGraph dispatch stub executable"
+export CODEGRAPH_STUB_CALLS="$codegraph_calls"
+export CODEGRAPH_STUB_RC=7
+SCRIPT_DIR="$codegraph_scripts_dir" LOGFILE="$codegraph_pulse_log" \
+	_dlw_start_codegraph_init 30661 "$codegraph_worktree" || fail "CodeGraph submission failure propagated into worker dispatch"
+grep -Fq 'CodeGraph init submission failed open for #30661' "$codegraph_pulse_log" || fail "CodeGraph fail-open submission was not observable"
+export CODEGRAPH_STUB_RC=0
+SCRIPT_DIR="$codegraph_scripts_dir" LOGFILE="$codegraph_pulse_log" \
+	_dlw_start_codegraph_init 30661 "$codegraph_worktree" || fail "CodeGraph submission success returned failure"
+grep -Fq "launch ${codegraph_worktree} 30661" "$codegraph_calls" || fail "worker launch did not target its own worktree for CodeGraph init"
+unset CODEGRAPH_STUB_CALLS CODEGRAPH_STUB_RC
+
 printf 'PASS: stale non-empty node_modules restore lock is reclaimed\n'
 printf 'PASS: root node_modules payload is skipped by default\n'
 printf 'PASS: root Node tooling uses PATH without a cross-boundary worktree link\n'
@@ -329,4 +351,5 @@ printf 'PASS: native blockedBy lookup failure remains fail-closed with classifie
 printf 'PASS: bundle defaults route unlabeled worker model selection\n'
 printf 'PASS: explicit tier labels override bundle model defaults\n'
 printf 'PASS: bundle agent_routing selects task-specific worker agents\n'
+printf 'PASS: CodeGraph submission is worktree-local and fail-open\n'
 exit 0
