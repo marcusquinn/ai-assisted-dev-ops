@@ -104,6 +104,14 @@ describe("isGhWriteCommand", () => {
       isGhWriteCommand('TOKEN= gh issue close 1 --comment "x"'),
       true,
     );
+    assert.equal(
+      isGhWriteCommand('TOKEN=$(printf 1) gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=1 command gh issue comment 1 --body "x"'),
+      true,
+    );
   });
 
   test("leaves env-prefixed gh reads outside signature enforcement", () => {
@@ -201,6 +209,15 @@ echo done`;
   test("semicolon chain: setup; gh pr create → BLOCK", () => {
     assert.equal(
       isGhWriteCommand('git add .; gh pr create --title t --body b'),
+      true,
+    );
+  });
+
+  test("git commit followed by env-prefixed gh write → BLOCK", () => {
+    assert.equal(
+      isGhWriteCommand(
+        'git commit -m "checkpoint" && TOKEN=1 gh issue comment 1 --body "x"',
+      ),
       true,
     );
   });

@@ -46,13 +46,13 @@ function stripQuotedStrings(line) {
   return withoutDouble.replace(/'[^']*'/g, "''");
 }
 
-function isCommentOrGitCommit(trimmedLine) {
-  return trimmedLine.startsWith("#") || /\bgit\s+commit\b/.test(trimmedLine);
+function isCommentLine(trimmedLine) {
+  return trimmedLine.startsWith("#");
 }
 
 function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
   const trimmed = line.trim();
-  if (isCommentOrGitCommit(trimmed)) return false;
+  if (isCommentLine(trimmed)) return false;
   const command = stripQuotedStrings(trimmed);
   if (ghWritePattern.test(command)) return true;
   // A close without a comment is a state-only mutation and must retain native
@@ -72,9 +72,9 @@ function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
 export function isGhWriteCommand(cmd) {
   if (typeof cmd !== "string") return false;
   const ghWritePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|sudo|time|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
+    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*)|sudo|time|command|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*))*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
   const ghIssueClosePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|sudo|time|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*)\s+)*gh\s+issue\s+close\b/;
+    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*)|sudo|time|command|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*))*)\s+)*gh\s+issue\s+close\b/;
   return stripHeredocBodies(cmd)
     .split("\n")
     .some((line) => lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern));
