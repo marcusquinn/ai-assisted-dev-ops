@@ -493,8 +493,9 @@ gh_request_state_singleflight_begin() {
 		fi
 
 		if _ghrs_owner_is_stale "$key" "$owner_record"; then
-			_ghrs_reclaim_lease "$key" "$observed_generation" || true
-			continue
+			if _ghrs_reclaim_lease "$key" "$observed_generation"; then
+				continue
+			fi
 		fi
 		now="$(_ghrs_now)"
 		if [[ "$now" =~ ^[0-9]+$ && $((now - started_at)) -ge "$wait_seconds" ]]; then

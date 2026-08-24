@@ -347,6 +347,34 @@ test_live_leader_wait_is_bounded() {
 	return 0
 }
 
+test_failed_stale_reclaim_reaches_timeout() (
+	local key="" request_dir="" original_generation="" stale_checks=0
+	key=$(gh_request_state_request_key owner/repo canonical issues/v1 blocked-reclaim rest-core)
+	gh_request_state_singleflight_begin "$key"
+	assert_eq "blocked-reclaim fixture elects its initial leader" "leader" "$_GHRS_BEGIN_ROLE"
+	original_generation="$_GHRS_BEGIN_GENERATION"
+	request_dir="$(_ghrs_request_dir "$key")"
+	mkdir "${request_dir}/lease.reclaim"
+	export AIDEVOPS_GH_SINGLEFLIGHT_WAIT_SECONDS=0
+	_ghrs_owner_is_stale() {
+		local observed_key="$1"
+		local owner_record="$2"
+		: "$observed_key" "$owner_record"
+		stale_checks=$((stale_checks + 1))
+		[[ "$stale_checks" -eq 1 ]]
+		return $?
+	}
+
+	gh_request_state_singleflight_begin "$key"
+	assert_eq "failed stale reclaim reaches the configured timeout" "timeout" "$_GHRS_BEGIN_ROLE"
+	assert_eq "failed stale reclaim checks the deadline before retrying" "1" "$stale_checks"
+	assert_eq "failed stale reclaim preserves another reclaimer's lock" "true" \
+		"$([[ -d "${request_dir}/lease.reclaim" ]] && printf 'true' || printf 'false')"
+	assert_eq "failed stale reclaim preserves the observed owner generation" "$original_generation" \
+		"$(_ghrs_owner_read "$key" | cut -f1)"
+	return 0
+)
+
 test_ownerless_lease_recovery_and_disabled_mode() {
 	local key="" request_dir="" generation=""
 	key=$(gh_request_state_request_key owner/repo canonical issues/v1 ownerless rest-core)
@@ -519,6 +547,7 @@ main() {
 	test_dead_leader_is_recovered
 	test_expired_live_leader_is_fenced
 	test_live_leader_wait_is_bounded
+	test_failed_stale_reclaim_reaches_timeout
 	test_ownerless_lease_recovery_and_disabled_mode
 	test_request_invalidation_generations_are_atomic
 	test_rate_state_validation_scope_and_reset
