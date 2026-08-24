@@ -115,9 +115,16 @@ if _full_loop_recovery_validate_receipt test/repo 42 v1.2.3 '{"source_pr":42}' >
 	printf 'FAIL recovery accepted release:not-requested without matching publication intent\n'
 	exit 1
 fi
+_full_loop_recovery_validate_reserved_receipt test/repo 42
+printf 'published\n' >"${TEST_ROOT}/release.status"
+if _full_loop_recovery_validate_reserved_receipt test/repo 42 >/dev/null 2>&1; then
+	printf 'FAIL reserved authorization migration accepted a published receipt\n'
+	exit 1
+fi
 printf 'failed\n' >"${TEST_ROOT}/release.status"
 _full_loop_recovery_validate_receipt test/repo 42
-printf 'PASS recovery accepts authorized release:not-requested and rejects other terminal receipts\n'
+_full_loop_recovery_validate_reserved_receipt test/repo 42
+printf 'PASS recovery distinguishes explicit pre-tag migration from terminal aggregate recovery\n'
 
 STATE_LOG="${TEST_ROOT}/state.log"
 : >"$STATE_LOG"
@@ -848,7 +855,7 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	root_authorization_record=$(jq -cn --arg merge 2222222222222222222222222222222222222222 \
 		'{schema_version:1,repository:"test/repo",requested_pr:42,
 		  expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
-	_full_loop_recovery_validate_receipt() { return 0; }
+	printf 'not-requested\n' >"${TEST_ROOT}/release.status"
 	_full_loop_release_find_tag_for_pr() { return 2; }
 	_full_loop_recovery_prepare_aggregate() {
 		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expanded_manifest"

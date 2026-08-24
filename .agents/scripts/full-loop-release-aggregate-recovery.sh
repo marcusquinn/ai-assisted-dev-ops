@@ -250,6 +250,24 @@ _full_loop_recovery_validate_receipt() {
 	return 1
 }
 
+#aidevops:trust-boundary
+_full_loop_recovery_validate_reserved_receipt() {
+	local repo="$1"
+	local source_pr="$2"
+	local receipt_path=""
+	local status=""
+	# This path is reachable only from a fresh explicit release command. Before
+	# any tag exists, that command may replace prior not-requested evidence.
+	receipt_path=$(_full_loop_release_receipt_path "$repo" "$source_pr") || return 1
+	[[ -f "$receipt_path" ]] && IFS= read -r status <"$receipt_path" || true
+	case "$status" in
+	"" | "$_FULL_LOOP_PHASE_FAILED" | "$_FULL_LOOP_RELEASE_NOT_REQUESTED") return 0 ;;
+	esac
+	printf 'Reserved release authorization migration refused: release receipt is terminal (%s)\n' \
+		"$status" >&2
+	return 1
+}
+
 _full_loop_recovery_validate_existing_tag() {
 	local repo="$1"
 	local source_pr="$2"
@@ -515,7 +533,7 @@ _full_loop_recovery_expand_reserved_authorization() {
 	local current_auth=""
 	local observed_auth=""
 	local existing_tag_rc=0
-	_full_loop_recovery_validate_receipt "$repo" "$source_pr" || return 1
+	_full_loop_recovery_validate_reserved_receipt "$repo" "$source_pr" || return 1
 	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
 	[[ "$existing_tag_rc" -eq 2 ]] || return 1
 	_full_loop_recovery_prepare_aggregate "$repo" "$source_pr" "$expected_sources" || return 1
