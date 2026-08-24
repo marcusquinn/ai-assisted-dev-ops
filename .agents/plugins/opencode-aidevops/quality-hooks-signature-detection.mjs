@@ -42,17 +42,34 @@ function stripHeredocBodies(cmd) {
  * @returns {string}
  */
 function stripQuotedStrings(line) {
-  const withoutDouble = line.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  const withoutDouble = line.replace(/"(?:[^"\\]|\\.)*"/g, (quoted) => {
+    const substitutions = quoted.match(/\$\((?:[^()]|\([^()]*\))*\)/g) ?? [];
+    return `""${substitutions.join(" ")}`;
+  });
   return withoutDouble.replace(/'[^']*'/g, "''");
 }
 
-function isCommentOrGitCommit(trimmedLine) {
-  return trimmedLine.startsWith("#") || /\bgit\s+commit\b/.test(trimmedLine);
+function isCommentLine(trimmedLine) {
+  return trimmedLine.startsWith("#");
+}
+
+function hasExplicitShimBypassWrite(trimmedLine) {
+  const bypassPrefix =
+    /(^|[;&|(`!]|\$\()\s*AIDEVOPS_GH_SHIM_DISABLE=.*\bgh\s+/;
+  if (!bypassPrefix.test(trimmedLine)) return false;
+  return (
+    /\bgh\s+(?:pr\s+(?:create|comment)|issue\s+(?:create|comment))\b/.test(
+      trimmedLine,
+    ) ||
+    (/\bgh\s+issue\s+close\b/.test(trimmedLine) &&
+      /(?:^|\s)(?:--comment(?:=|\s)|-c(?:=|\s))/.test(trimmedLine))
+  );
 }
 
 function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
   const trimmed = line.trim();
-  if (isCommentOrGitCommit(trimmed)) return false;
+  if (isCommentLine(trimmed)) return false;
+  if (hasExplicitShimBypassWrite(trimmed)) return true;
   const command = stripQuotedStrings(trimmed);
   if (ghWritePattern.test(command)) return true;
   // A close without a comment is a state-only mutation and must retain native
@@ -71,10 +88,15 @@ function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
  */
 export function isGhWriteCommand(cmd) {
   if (typeof cmd !== "string") return false;
-  const ghWritePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:sudo|time|env(?:\s+\w+=\S+)*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
-  const ghIssueClosePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:sudo|time|env(?:\s+\w+=\S+)*)\s+)*gh\s+issue\s+close\b/;
+  const assignment = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:\$\((?:[^()]|\([^()]*\))*\)|\S*)`;
+  const prefix = String.raw`(?:(?:${assignment}|sudo|command(?:\s+-\S+)*|time(?:\s+-\S+)*|env(?:\s+(?:(?:-\S+)(?:\s+\S+)?|${assignment}))*)\s+)*`;
+  const boundary = String.raw`(^|[;&|(` + "!" + String.raw`]|\$\()`;
+  const ghWritePattern = new RegExp(
+    String.raw`${boundary}\s*${prefix}gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b`,
+  );
+  const ghIssueClosePattern = new RegExp(
+    String.raw`${boundary}\s*${prefix}gh\s+issue\s+close\b`,
+  );
   return stripHeredocBodies(cmd)
     .split("\n")
     .some((line) => lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern));

@@ -89,6 +89,74 @@ describe("isGhWriteCommand", () => {
     assert.equal(isGhWriteCommand('gh pr comment 1 --body "x"'), true);
   });
 
+  test("detects gh writes after bare environment assignments", () => {
+    assert.equal(
+      isGhWriteCommand(
+        'AIDEVOPS_GH_SHIM_DISABLE=1 gh pr create --title "t" --body "x"',
+      ),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('ONE=1 TWO="two words" gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN= gh issue close 1 --comment "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=$(printf 1) gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=$(( 1 )) gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=$(printf $(printf 1)) gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand(
+        'AIDEVOPS_GH_SHIM_DISABLE=$(printf $(printf $(printf 1))) gh issue comment 1 --body "x"',
+      ),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=1 command gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=1 command -- gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=1 time -p gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('env -i TOKEN=1 PATH="$PATH" gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand(
+        'env -u UNUSED AIDEVOPS_GH_SHIM_DISABLE=1 gh issue comment 1 --body "x"',
+      ),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('BODY="$(TOKEN=1 gh issue comment 1 --body x)"'),
+      true,
+    );
+  });
+
+  test("leaves env-prefixed gh reads outside signature enforcement", () => {
+    assert.equal(
+      isGhWriteCommand("AIDEVOPS_GH_SHIM_DISABLE=1 gh issue view 1"),
+      false,
+    );
+  });
+
   test("ignores non-string input", () => {
     assert.equal(isGhWriteCommand(undefined), false);
     assert.equal(isGhWriteCommand({ command: 'gh issue comment 1 --body "x"' }), false);
@@ -177,6 +245,15 @@ echo done`;
   test("semicolon chain: setup; gh pr create → BLOCK", () => {
     assert.equal(
       isGhWriteCommand('git add .; gh pr create --title t --body b'),
+      true,
+    );
+  });
+
+  test("git commit followed by env-prefixed gh write → BLOCK", () => {
+    assert.equal(
+      isGhWriteCommand(
+        'git commit -m "checkpoint" && TOKEN=1 gh issue comment 1 --body "x"',
+      ),
       true,
     );
   });
