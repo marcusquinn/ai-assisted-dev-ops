@@ -1197,6 +1197,43 @@ _check_required_pr_checks_passing_fallback() {
 }
 
 #######################################
+# Parse one matching ruleset detail into aggregate approval requirements.
+# #aidevops:trust-boundary — ruleset approval freshness controls whether an
+# admin merge may reuse approvals from an older PR head. Require typed policy
+# fields instead of treating unknown API evidence as policy=false.
+#
+# Args: $1=ruleset detail JSON
+# Stdout: tab-separated required approvals and current-head approvals
+# Returns: 0=valid policy, 1=invalid policy
+#######################################
+_ruleset_pull_request_policy_from_detail() {
+	local detail="$1"
+	# shellcheck disable=SC2016  # jq variables are not shell expansions.
+	printf '%s' "$detail" | aidevops_run_with_log_stderr jq -er '
+		[.rules[]? | select(.type == "pull_request") | .parameters as $parameters |
+			if ($parameters | type) != "object"
+				or ($parameters.required_approving_review_count | type) != "number"
+				or $parameters.required_approving_review_count < 0
+				or ($parameters.required_approving_review_count | floor) != $parameters.required_approving_review_count
+				or ($parameters.dismiss_stale_reviews_on_push | type) != "boolean"
+				or ($parameters.require_last_push_approval | type) != "boolean"
+			then error("invalid pull-request approval policy")
+			else {
+				required: $parameters.required_approving_review_count,
+				current_head_required: (
+					if $parameters.dismiss_stale_reviews_on_push then
+						$parameters.required_approving_review_count
+					elif $parameters.require_last_push_approval and $parameters.required_approving_review_count > 0 then
+						1
+					else 0 end
+				)
+			} end]
+		| "\([.[].required] | max // 0)\t\([.[].current_head_required] | max // 0)"
+	'
+	return $?
+}
+
+#######################################
 # Resolve the maximum approval count and current-head approval count from active
 # rulesets matching the repository default branch. This is separate from
 # required status checks: GitHub stores ruleset approval requirements under
@@ -1275,31 +1312,7 @@ _ruleset_required_review_policy_for_default_branch() {
 		done <<<"$exclude_patterns"
 		[[ "$excluded_default" -eq 0 ]] || continue
 
-		# #aidevops:trust-boundary — ruleset approval freshness controls whether
-		# an admin merge may reuse approvals from an older PR head. Require typed
-		# policy fields instead of treating unknown API evidence as policy=false.
-		# shellcheck disable=SC2016  # jq variables are not shell expansions.
-		policy=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -er '
-			[.rules[]? | select(.type == "pull_request") | .parameters as $parameters |
-				if ($parameters | type) != "object"
-					or ($parameters.required_approving_review_count | type) != "number"
-					or $parameters.required_approving_review_count < 0
-					or ($parameters.required_approving_review_count | floor) != $parameters.required_approving_review_count
-					or ($parameters.dismiss_stale_reviews_on_push | type) != "boolean"
-					or ($parameters.require_last_push_approval | type) != "boolean"
-				then error("invalid pull-request approval policy")
-				else {
-					required: $parameters.required_approving_review_count,
-					current_head_required: (
-						if $parameters.dismiss_stale_reviews_on_push then
-							$parameters.required_approving_review_count
-						elif $parameters.require_last_push_approval and $parameters.required_approving_review_count > 0 then
-							1
-						else 0 end
-					)
-				} end]
-			| "\([.[].required] | max // 0)\t\([.[].current_head_required] | max // 0)"
-		') || {
+		policy=$(_ruleset_pull_request_policy_from_detail "$detail") || {
 			aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: pull-request policy parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#30638)"
 			return 1
 		}
