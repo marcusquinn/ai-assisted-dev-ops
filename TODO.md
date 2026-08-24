@@ -1305,7 +1305,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18304 Improve reliability-adjusted subagent routing observability #auto-dispatch #feat #observability #priority:high #reliability #routing #interactive ~4.75h tier:thinking ref:GH#30521 logged:2026-08-21 -> [todo/tasks/t18304-brief.md] pr:#30524 completed:2026-08-21
 
-- [ ] t18305 Fix worktree cleanup false degraded visibility for foreign /proc entries #bug ref:GH#30651
+- [x] t18305 Fix worktree cleanup false degraded visibility for foreign /proc entries #bug ref:GH#30651 pr:#30653 completed:2026-08-24
 
 ## In Progress
 
