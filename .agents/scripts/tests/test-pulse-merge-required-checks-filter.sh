@@ -79,6 +79,10 @@ print_result() {
 #      status, and the current head's maintainer-gate CheckRun is successful
 #   pr_checks_empty_failure — PR-level required checks exits non-zero with no JSON
 #   ruleset_review_malformed_optional — ruleset detail has unexpected shapes
+#   ruleset_review_stale_head_dismiss — stale approval under dismiss-on-push
+#   ruleset_review_current_head_last_push — current-head approval under last-push policy
+#   ruleset_review_current_head_dismissed — current-head approval is later dismissed
+#   ruleset_review_unknown_freshness — matching ruleset omits freshness policy
 #   ruleset_review_latest_changes_requested — latest review revokes approval
 #   ruleset_review_paginated_approved — later REST page restores approval
 #   ruleset_review_author_only — only the PR author approved
@@ -130,13 +134,22 @@ if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets/"* ]]; then
 	branch_identity='"id":101,"target":"branch","enforcement":"active"'
 	case "${MOCK_GH_MODE:-all_pass}" in
 	ruleset_review_only_missing | ruleset_review_only_approved | ruleset_review_latest_changes_requested | ruleset_review_paginated_approved | ruleset_review_author_only | ruleset_review_malformed_response | ruleset_review_malformed_element | ruleset_review_fetch_error)
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1,\"dismiss_stale_reviews_on_push\":false,\"require_last_push_approval\":false}}]}" "$@"
+		;;
+	ruleset_review_stale_head_dismiss | ruleset_review_current_head_dismissed)
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1,\"dismiss_stale_reviews_on_push\":true,\"require_last_push_approval\":false}}]}" "$@"
+		;;
+	ruleset_review_current_head_last_push)
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":2,\"dismiss_stale_reviews_on_push\":false,\"require_last_push_approval\":true}}]}" "$@"
+		;;
+	ruleset_review_unknown_freshness)
 		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1}}]}" "$@"
 		;;
 	ruleset_mixed_review_status)
-		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1}},{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"required-a\"}]}}]}" "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1,\"dismiss_stale_reviews_on_push\":false,\"require_last_push_approval\":false}},{\"type\":\"required_status_checks\",\"parameters\":{\"required_status_checks\":[{\"context\":\"required-a\"}]}}]}" "$@"
 		;;
 	ruleset_review_zero)
-		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":0}}]}" "$@"
+		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":{\"include\":[\"refs/heads/main\"]}},\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":0,\"dismiss_stale_reviews_on_push\":false,\"require_last_push_approval\":false}}]}" "$@"
 		;;
 	ruleset_review_malformed_optional)
 		apply_jq "{${branch_identity},\"conditions\":{\"ref_name\":\"unexpected\"},\"rules\":[{\"type\":\"pull_request\",\"parameters\":\"unexpected\"}]}" "$@"
@@ -158,7 +171,7 @@ if [[ "$1" == "api" && "$2" == repos/* && "$*" == *"/rulesets"* ]]; then
 		printf '%s\n' 'gh: HTTP 403: Resource not accessible by integration' >&2
 		exit 1
 		;;
-	ruleset_review_only_missing | ruleset_review_only_approved | ruleset_mixed_review_status | ruleset_review_zero | ruleset_review_malformed_optional | ruleset_review_latest_changes_requested | ruleset_review_paginated_approved | ruleset_review_author_only | ruleset_review_malformed_response | ruleset_review_malformed_element | ruleset_review_fetch_error)
+	ruleset_review_only_missing | ruleset_review_only_approved | ruleset_mixed_review_status | ruleset_review_zero | ruleset_review_malformed_optional | ruleset_review_latest_changes_requested | ruleset_review_paginated_approved | ruleset_review_author_only | ruleset_review_malformed_response | ruleset_review_malformed_element | ruleset_review_fetch_error | ruleset_review_stale_head_dismiss | ruleset_review_current_head_last_push | ruleset_review_current_head_dismissed | ruleset_review_unknown_freshness)
 		apply_jq '[{"id":101,"enforcement":"active","target":"branch"}]' "$@"
 		;;
 	*)
@@ -178,6 +191,15 @@ if [[ "$1" == "api" && "$2" == repos/*/pulls/*/reviews* ]]; then
 		;;
 	ruleset_review_paginated_approved)
 		printf '%s\n' '[[{"id":1,"state":"CHANGES_REQUESTED","submitted_at":"2026-06-01T00:00:00Z","user":{"login":"reviewer"}}],[{"id":2,"state":"APPROVED","submitted_at":"2026-06-02T00:00:00Z","user":{"login":"reviewer"}}]]'
+		;;
+	ruleset_review_stale_head_dismiss)
+		printf '%s\n' '[[{"id":3,"state":"APPROVED","commit_id":"old-head","submitted_at":"2026-06-03T00:00:00Z","user":{"login":"reviewer"}}]]'
+		;;
+	ruleset_review_current_head_last_push)
+		printf '%s\n' '[[{"id":4,"state":"APPROVED","commit_id":"old-head","submitted_at":"2026-06-03T00:00:00Z","user":{"login":"reviewer-one"}},{"id":5,"state":"APPROVED","commit_id":"abc123def456789000000000000000000000abcd","submitted_at":"2026-06-04T00:00:00Z","user":{"login":"reviewer-two"}}]]'
+		;;
+	ruleset_review_current_head_dismissed)
+		printf '%s\n' '[[{"id":6,"state":"APPROVED","commit_id":"abc123def456789000000000000000000000abcd","submitted_at":"2026-06-03T00:00:00Z","user":{"login":"reviewer"}},{"id":7,"state":"DISMISSED","commit_id":"abc123def456789000000000000000000000abcd","submitted_at":"2026-06-04T00:00:00Z","user":{"login":"reviewer"}}]]'
 		;;
 	ruleset_review_author_only)
 		printf '%s\n' '[[{"id":1,"state":"APPROVED","submitted_at":"2026-06-01T00:00:00Z","user":{"login":"author"}}]]'
@@ -412,6 +434,7 @@ define_function_under_test() {
 	eval_function_from_file _pr_required_checks_pass "$MERGE_SCRIPT" || return 1
 	eval_function_from_file _pmrc_gh_read "$REQUIRED_CHECKS_SCRIPT" || return 1
 	eval_function_from_file _check_required_pr_checks_passing_fallback "$REQUIRED_CHECKS_SCRIPT" || return 1
+	eval_function_from_file _ruleset_required_review_policy_for_default_branch "$REQUIRED_CHECKS_SCRIPT" || return 1
 	eval_function_from_file _ruleset_required_review_count_for_default_branch "$REQUIRED_CHECKS_SCRIPT" || return 1
 	eval_function_from_file _check_ruleset_required_reviews_passing "$REQUIRED_CHECKS_SCRIPT" || return 1
 	eval_function_from_file _check_required_checks_has_terminal_failure "$REQUIRED_CHECKS_SCRIPT" || return 1
@@ -463,12 +486,26 @@ assert_pr_checks_fallback_returns() {
 assert_ruleset_review_gate_returns() {
 	local expected_rc="$1"
 	local label="$2"
+	local expected_head_sha="${3:-abc123def456789000000000000000000000abcd}"
 	local actual_rc=0
-	_check_ruleset_required_reviews_passing "marcusquinn/aidevops" "19023" "author" || actual_rc=$?
+	_check_ruleset_required_reviews_passing "marcusquinn/aidevops" "19023" "author" "$expected_head_sha" || actual_rc=$?
 	if [[ "$actual_rc" -eq "$expected_rc" ]]; then
 		print_result "$label" 0
 	else
 		print_result "$label" 1 "Expected rc=$expected_rc, got rc=$actual_rc"
+	fi
+	return 0
+}
+
+assert_ruleset_review_policy_output() {
+	local expected_output="$1"
+	local label="$2"
+	local actual_output=""
+	actual_output=$(_ruleset_required_review_policy_for_default_branch "marcusquinn/aidevops" "main") || actual_output="ERR"
+	if [[ "$actual_output" == "$expected_output" ]]; then
+		print_result "$label" 0
+	else
+		print_result "$label" 1 "Expected output='$expected_output', got output='$actual_output'"
 	fi
 	return 0
 }
@@ -792,6 +829,45 @@ test_ruleset_review_only_approved_allows_merge() {
 	return 0
 }
 
+test_ruleset_stale_head_approval_rejected_when_dismiss_on_push() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="ruleset_review_stale_head_dismiss"
+	assert_ruleset_review_policy_output $'1\t1' "dismiss-on-push policy requires all approvals on current head"
+	assert_ruleset_review_gate_returns 1 "old-head approval rejected under dismiss-on-push freshness policy"
+	assert_log_contains "including 0/1 required on expected head" \
+		"stale approval rejection records current-head evidence"
+	return 0
+}
+
+test_ruleset_current_head_approval_accepted_when_last_push_required() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="ruleset_review_current_head_last_push"
+	assert_ruleset_review_policy_output $'2\t1' "last-push policy requires one of two approvals on current head"
+	assert_ruleset_review_gate_returns 0 "current-head approval satisfies last-push freshness policy"
+	return 0
+}
+
+test_ruleset_current_head_dismissed_approval_rejected() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="ruleset_review_current_head_dismissed"
+	assert_ruleset_review_gate_returns 1 "dismissed current-head approval does not satisfy freshness policy"
+	return 0
+}
+
+test_ruleset_unknown_freshness_policy_fails_closed() {
+	: >"$GH_CALL_LOG"
+	: >"$LOGFILE"
+	export MOCK_GH_MODE="ruleset_review_unknown_freshness"
+	assert_ruleset_review_policy_output "ERR" "missing ruleset freshness fields fail policy parsing"
+	assert_ruleset_review_gate_returns 1 "unknown ruleset freshness evidence fails closed"
+	assert_log_contains "pull-request policy parse failed" \
+		"unknown freshness evidence records fail-closed policy error"
+	return 0
+}
+
 test_ruleset_latest_review_state_controls_approval() {
 	: >"$GH_CALL_LOG"
 	: >"$LOGFILE"
@@ -867,12 +943,14 @@ test_ruleset_review_zero_does_not_require_approval() {
 	return 0
 }
 
-test_ruleset_review_malformed_optional_does_not_fail_parse() {
+test_ruleset_review_malformed_optional_fails_closed() {
 	: >"$GH_CALL_LOG"
 	: >"$LOGFILE"
 	export MOCK_GH_MODE="ruleset_review_malformed_optional"
-	assert_ruleset_review_count_output "0" "malformed optional ruleset fields parse as no review gate"
-	assert_ruleset_review_gate_returns 0 "malformed optional ruleset fields do not fail closed"
+	assert_ruleset_review_count_output "ERR" "malformed ruleset detail fails approval policy parsing"
+	assert_ruleset_review_gate_returns 1 "malformed ruleset detail fails closed"
+	assert_log_contains "ruleset detail 101 parse failed" \
+		"malformed ruleset detail records fail-closed schema error"
 	return 0
 }
 
@@ -947,6 +1025,10 @@ main() {
 	test_ruleset_review_only_missing_blocks_merge
 	test_ruleset_review_count_accepts_prefetched_rulesets_json
 	test_ruleset_review_only_approved_allows_merge
+	test_ruleset_stale_head_approval_rejected_when_dismiss_on_push
+	test_ruleset_current_head_approval_accepted_when_last_push_required
+	test_ruleset_current_head_dismissed_approval_rejected
+	test_ruleset_unknown_freshness_policy_fails_closed
 	test_ruleset_latest_review_state_controls_approval
 	test_ruleset_paginated_latest_approval_allows_merge
 	test_ruleset_author_approval_does_not_count
@@ -955,7 +1037,7 @@ main() {
 	test_ruleset_review_fetch_error_fails_closed
 	test_ruleset_mixed_review_status_preserves_both_gates
 	test_ruleset_review_zero_does_not_require_approval
-	test_ruleset_review_malformed_optional_does_not_fail_parse
+	test_ruleset_review_malformed_optional_fails_closed
 	test_rulesets_empty_list_resolves_empty
 	test_rulesets_private_plan_unavailable_resolves_empty
 	test_rulesets_generic_forbidden_fails_closed
