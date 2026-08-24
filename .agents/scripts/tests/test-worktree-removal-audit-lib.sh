@@ -1657,10 +1657,11 @@ test_proc_snapshot_skips_foreign_uid_when_status_unreadable() {
 		}
 		_worktree_proc_entry_owner_uid() {
 			local proc_dir="$1"
-			case "$proc_dir" in
-			*/2) printf '%s\n' "$foreign_uid" ;;
-			*) printf '%s\n' "$current_uid" ;;
-			esac
+			if [[ "${proc_dir##*/}" == "2" ]]; then
+				printf '%s\n' "$foreign_uid"
+			else
+				printf '%s\n' "$current_uid"
+			fi
 			return 0
 		}
 		_capture_worktree_proc_cwds "$proc_root"
