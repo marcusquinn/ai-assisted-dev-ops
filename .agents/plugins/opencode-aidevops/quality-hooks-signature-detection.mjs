@@ -53,9 +53,23 @@ function isCommentLine(trimmedLine) {
   return trimmedLine.startsWith("#");
 }
 
+function hasExplicitShimBypassWrite(trimmedLine) {
+  const bypassPrefix =
+    /(^|[;&|(`!]|\$\()\s*AIDEVOPS_GH_SHIM_DISABLE=.*\bgh\s+/;
+  if (!bypassPrefix.test(trimmedLine)) return false;
+  return (
+    /\bgh\s+(?:pr\s+(?:create|comment)|issue\s+(?:create|comment))\b/.test(
+      trimmedLine,
+    ) ||
+    (/\bgh\s+issue\s+close\b/.test(trimmedLine) &&
+      /(?:^|\s)(?:--comment(?:=|\s)|-c(?:=|\s))/.test(trimmedLine))
+  );
+}
+
 function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
   const trimmed = line.trim();
   if (isCommentLine(trimmed)) return false;
+  if (hasExplicitShimBypassWrite(trimmed)) return true;
   const command = stripQuotedStrings(trimmed);
   if (ghWritePattern.test(command)) return true;
   // A close without a comment is a state-only mutation and must retain native
@@ -75,7 +89,7 @@ function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
 export function isGhWriteCommand(cmd) {
   if (typeof cmd !== "string") return false;
   const assignment = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:\$\((?:[^()]|\([^()]*\))*\)|\S*)`;
-  const prefix = String.raw`(?:(?:${assignment}|sudo|command|time(?:\s+-\S+)*|env(?:\s+(?:-\S+|${assignment}))*)\s+)*`;
+  const prefix = String.raw`(?:(?:${assignment}|sudo|command(?:\s+-\S+)*|time(?:\s+-\S+)*|env(?:\s+(?:(?:-\S+)(?:\s+\S+)?|${assignment}))*)\s+)*`;
   const boundary = String.raw`(^|[;&|(` + "!" + String.raw`]|\$\()`;
   const ghWritePattern = new RegExp(
     String.raw`${boundary}\s*${prefix}gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b`,

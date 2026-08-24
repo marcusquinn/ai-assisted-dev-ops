@@ -117,7 +117,17 @@ describe("isGhWriteCommand", () => {
       true,
     );
     assert.equal(
+      isGhWriteCommand(
+        'AIDEVOPS_GH_SHIM_DISABLE=$(printf $(printf $(printf 1))) gh issue comment 1 --body "x"',
+      ),
+      true,
+    );
+    assert.equal(
       isGhWriteCommand('TOKEN=1 command gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=1 command -- gh issue comment 1 --body "x"'),
       true,
     );
     assert.equal(
@@ -126,6 +136,12 @@ describe("isGhWriteCommand", () => {
     );
     assert.equal(
       isGhWriteCommand('env -i TOKEN=1 PATH="$PATH" gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand(
+        'env -u UNUSED AIDEVOPS_GH_SHIM_DISABLE=1 gh issue comment 1 --body "x"',
+      ),
       true,
     );
     assert.equal(
