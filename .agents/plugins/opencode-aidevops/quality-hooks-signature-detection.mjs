@@ -42,7 +42,10 @@ function stripHeredocBodies(cmd) {
  * @returns {string}
  */
 function stripQuotedStrings(line) {
-  const withoutDouble = line.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  const withoutDouble = line.replace(/"(?:[^"\\]|\\.)*"/g, (quoted) => {
+    const substitutions = quoted.match(/\$\((?:[^()]|\([^()]*\))*\)/g) ?? [];
+    return `""${substitutions.join(" ")}`;
+  });
   return withoutDouble.replace(/'[^']*'/g, "''");
 }
 
@@ -71,10 +74,15 @@ function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
  */
 export function isGhWriteCommand(cmd) {
   if (typeof cmd !== "string") return false;
-  const ghWritePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*)|sudo|time|command|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*))*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
-  const ghIssueClosePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*)|sudo|time|command|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=(?:\$\([^)]*\)|\S*))*)\s+)*gh\s+issue\s+close\b/;
+  const assignment = String.raw`[A-Za-z_][A-Za-z0-9_]*=(?:\$\((?:[^()]|\([^()]*\))*\)|\S*)`;
+  const prefix = String.raw`(?:(?:${assignment}|sudo|command|time(?:\s+-\S+)*|env(?:\s+(?:-\S+|${assignment}))*)\s+)*`;
+  const boundary = String.raw`(^|[;&|(` + "!" + String.raw`]|\$\()`;
+  const ghWritePattern = new RegExp(
+    String.raw`${boundary}\s*${prefix}gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b`,
+  );
+  const ghIssueClosePattern = new RegExp(
+    String.raw`${boundary}\s*${prefix}gh\s+issue\s+close\b`,
+  );
   return stripHeredocBodies(cmd)
     .split("\n")
     .some((line) => lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern));

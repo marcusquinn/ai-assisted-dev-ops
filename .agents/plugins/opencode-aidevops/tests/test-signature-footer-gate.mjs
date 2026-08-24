@@ -109,7 +109,27 @@ describe("isGhWriteCommand", () => {
       true,
     );
     assert.equal(
+      isGhWriteCommand('TOKEN=$(( 1 )) gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=$(printf $(printf 1)) gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
       isGhWriteCommand('TOKEN=1 command gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN=1 time -p gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('env -i TOKEN=1 PATH="$PATH" gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('BODY="$(TOKEN=1 gh issue comment 1 --body x)"'),
       true,
     );
   });
