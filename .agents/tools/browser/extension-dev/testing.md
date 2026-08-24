@@ -67,6 +67,17 @@ test('extension popup works', async () => {
 });
 ```
 
+## Persistent Manual-Test Installation
+
+Use a project-configured stable unpacked-extension directory when testing in the user's normal browser profile. Transient build output paths can change or disappear, forcing Chrome to load a new installation and losing extension-local state.
+
+1. Build the extension using the repository's existing command.
+2. Deploy the complete build to `<stable-unpacked-directory>`; do not expose a partially written build to Chrome.
+3. Select that directory once with `chrome://extensions` → **Load unpacked**.
+4. After each deployment, use the extension card's **Reload** action and reload affected application tabs.
+
+If browser automation cannot control Chrome's native directory picker, ask the user to select the stable directory once. Subsequent test cycles should reuse the same path and require only reload, not another native picker interaction.
+
 ## Debugging
 
 | Target | How |

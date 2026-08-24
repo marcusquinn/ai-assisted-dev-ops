@@ -29,6 +29,9 @@ test("registers only the explicit browser MCP activation profiles", () => {
   assert.equal(config.agent.playwriter.permission["playwriter_*"], "allow");
   assert.match(config.agent.playwriter.prompt, /connect.*playwriter/);
   assert.match(config.agent.playwriter.prompt, /no browser tab is approved/i);
+  assert.match(config.agent.playwriter.prompt, /before requesting authentication.*enumerate.*pages/i);
+  assert.match(config.agent.playwriter.prompt, /do not silently substitute isolated Playwright/i);
+  assert.match(config.agent.playwriter.prompt, /never close the browser or its contexts/i);
   assert.match(config.agent.playwriter.prompt, /# Playwriter - Browser Extension MCP/);
   assert.equal(config.agent.playwright.mode, "subagent");
   assert.equal(config.agent.playwright.tools.aidevops_mcp, true);
@@ -36,6 +39,7 @@ test("registers only the explicit browser MCP activation profiles", () => {
   assert.equal(config.agent.playwright.permission.aidevops_mcp, "allow");
   assert.equal(config.agent.playwright.permission["playwright_*"], "allow");
   assert.match(config.agent.playwright.prompt, /connect.*playwright/);
+  assert.doesNotMatch(config.agent.playwright.prompt, /do not silently substitute isolated Playwright/i);
   assert.match(config.agent.playwright.prompt, /# Playwright MCP/);
 });
 

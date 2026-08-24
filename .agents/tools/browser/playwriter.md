@@ -32,6 +32,8 @@ mcp:
 
 **Why Playwriter**: 1 tool (vs 10-17), minimal context bloat, uses your existing browser with extensions/sessions/cookies, bypasses detection (disconnect → manual action → reconnect).
 
+**Authenticated preflight**: Before requesting login, enumerate accessible pages and confirm the intended tab by URL or title. If it is absent, stop and ask the user to approve that tab. Never silently fall back to isolated Playwright, whose profile, cookies, storage, and extensions differ.
+
 **When to use alternatives**: **Stagehand** for natural language / self-healing selectors. **Playwright MCP** for isolated automation. **Crawl4AI** for scraping. **playwright-cli** for headless.
 
 **Parallel tabs**: Click extension on each tab. Shared session — not isolated. For isolated parallel work, use Playwright direct.
@@ -91,6 +93,22 @@ Use `@playwriter` for browser tasks. The agent connects Playwriter before its fi
 
 ## Usage
 
+### Authenticated Session Preflight
+
+Before asking the user to log in or relying on existing session state, inspect the pages Playwriter can actually access:
+
+```javascript
+const pages = context.pages()
+return await Promise.all(pages.map(async (candidate) => ({
+  title: await candidate.title(),
+  url: candidate.url(),
+})))
+```
+
+Confirm the intended tab by URL or title before continuing. If it is missing, relay the tab-consent diagnostic and stop; do not claim the user is logged out. If isolated Playwright is a useful alternative, explain that it has a separate profile, cookies, storage, and extensions, then obtain explicit consent before switching.
+
+The attached browser and its contexts are user-owned. On completion or cancellation, disconnect the MCP but do not call browser/context close methods or terminate the user's browser window.
+
 ### The `execute` Tool
 
 Runs Playwright code against connected tabs:
@@ -123,7 +141,7 @@ const browser = await chromium.connectOverCDP(getCdpUrl())
 const page = browser.contexts()[0].pages()[0]
 await page.goto('https://example.com')
 await page.screenshot({ path: 'screenshot.png' })
-await browser.close()
+// Do not call browser.close() on the user's attached browser.
 server.close()
 ```
 
@@ -148,6 +166,7 @@ await page.pdf({ path: 'page.pdf', format: 'A4' })
 - **User-controlled** — only tabs where you clicked the extension are accessible
 - **Explicit consent** — Chrome shows automation banner on controlled tabs
 - New tabs from automation are controlled; unconnected tabs and remote access are not possible
+- **User-owned lifecycle** — disconnect automation without closing attached browser windows or contexts
 
 ## Troubleshooting
 

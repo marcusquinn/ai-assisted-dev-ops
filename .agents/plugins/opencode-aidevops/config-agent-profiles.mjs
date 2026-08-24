@@ -103,6 +103,13 @@ function onDemandMcpPrompt(mcp, agentsDir) {
 
 function createOnDemandMcpProfile(mcp, agentsDir) {
   const { parsed, prompt } = onDemandMcpPrompt(mcp, agentsDir);
+  const playwriterSafetyPrompt = mcp.name === "playwriter"
+    ? [
+      "Before requesting authentication, enumerate the accessible pages and confirm the intended tab by URL or title; if it is unavailable, relay the consent diagnostic and stop.",
+      "Do not silently substitute isolated Playwright for Playwriter; explain the profile and storage difference and obtain explicit user consent before falling back.",
+      "Treat attached browser windows as user-owned: disconnect the MCP after work, but never close the browser or its contexts, including during cancellation cleanup.",
+    ]
+    : [];
   return {
     description: parsed?.profile.description || mcp.description,
     mode: "subagent",
@@ -111,6 +118,7 @@ function createOnDemandMcpProfile(mcp, agentsDir) {
       `After it succeeds, continue on the next step with ${mcp.toolPattern} tools.`,
       `When browser work is complete, call ${MCP_ACTIVATION_TOOL} with action \"disconnect\".`,
       "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
+      ...playwriterSafetyPrompt,
       "",
       prompt,
     ].join("\n"),
