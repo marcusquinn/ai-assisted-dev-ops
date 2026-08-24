@@ -433,6 +433,158 @@ run_reserved_aggregate_authorization_test() (
 	return 0
 )
 
+run_failed_prepublication_reopen_test() (
+	local previous='101@1111111111111111111111111111111111111111'
+	local failed_merge=2222222222222222222222222222222222222222
+	local attempted_tag=v1.2.3
+	local original_state=""
+	local state=""
+	local write_mode="ambiguous"
+	local recovered_token=""
+	original_state=$(jq -cn --arg expected "$previous" '
+		{schema_version:1,repository:"test/repo",active:true,source_pr:101,
+		 expected_sources:$expected,phase:"reconcile-required",tag:null,
+		 updated_at:"2026-08-24T02:01:43Z",owner:"process-old",
+		 operation_token:"token-owned",terminal_receipt:null}
+	') || return 1
+	state="$original_state"
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		if [[ "$write_mode" == "conflict" ]]; then
+			return 2
+		fi
+		state="$state_json"
+		[[ "$write_mode" == "success" ]] && return 0
+		return 2
+	}
+	_AIDEVOPS_RELEASE_LANE_TOKEN=token-owned
+	release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null || return 1
+	recovered_token=$(jq -er '.operation_token' <<<"$state") || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "reserved" && "$recovered_token" != "token-owned" &&
+	"$_AIDEVOPS_RELEASE_LANE_TOKEN" == "$recovered_token" &&
+	"$(jq -r '.prepublication_recovery.previous_phase' <<<"$state")" == "reconcile-required" &&
+	"$(jq -r '.prepublication_recovery.previous_updated_at' <<<"$state")" == "2026-08-24T02:01:43Z" &&
+	"$(jq -r '.prepublication_recovery.failed_source_pr' <<<"$state")" == "99" &&
+	"$(jq -r '.prepublication_recovery.failed_source_merge' <<<"$state")" == "$failed_merge" &&
+	"$(jq -r '.prepublication_recovery.attempted_tag' <<<"$state")" == "$attempted_tag" ]] || return 1
+	state="$original_state"
+	write_mode=conflict
+	_AIDEVOPS_RELEASE_LANE_TOKEN=token-owned
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	[[ "$state" == "$original_state" ]] || return 1
+	write_mode=success
+	_AIDEVOPS_RELEASE_LANE_TOKEN=stale-token
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	_AIDEVOPS_RELEASE_LANE_TOKEN=token-owned
+	state=$(jq -c '.tag="v1.2.3"' <<<"$original_state") || return 1
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	state=$(jq -c '.tag=null | .terminal_receipt="published"' <<<"$original_state") || return 1
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	state=$(jq -c '.terminal_receipt=null | .phase="preparing"' <<<"$original_state") || return 1
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	state="$original_state"
+	_AIDEVOPS_RELEASE_LANE_TOKEN=token-owned
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "" \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	if release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" v1.2 \
+		>/dev/null 2>&1; then
+		return 1
+	fi
+	return 0
+)
+
+run_failed_prepublication_resume_guard_test() (
+	local previous='101@1111111111111111111111111111111111111111'
+	local failed_merge=2222222222222222222222222222222222222222
+	local attempted_tag=v1.2.3
+	local recovered_at=2026-08-24T02:02:00Z
+	local expanded='101@1111111111111111111111111111111111111111,102@2222222222222222222222222222222222222222'
+	local state=""
+	local resumed_token=""
+	local stale_state=""
+	local write_mode=ambiguous
+	state=$(jq -cn --arg expected "$previous" --arg failed_merge "$failed_merge" \
+		--arg attempted_tag "$attempted_tag" --arg recovered_at "$recovered_at" '
+		{schema_version:1,repository:"test/repo",active:true,source_pr:101,
+		 expected_sources:$expected,phase:"reserved",tag:null,
+		 updated_at:"2026-08-24T02:02:00Z",owner:"process-recovered",
+		 operation_token:"token-recovered",terminal_receipt:null,
+			 prepublication_recovery:{previous_phase:"reconcile-required",
+		  previous_updated_at:"2026-08-24T02:01:43Z",failed_source_pr:99,
+		  failed_source_merge:$failed_merge,attempted_tag:$attempted_tag,recovered_at:$recovered_at}}
+	') || return 1
+	state=$(jq -c --arg expected "$previous" '
+		.prepublication_recovery.failed_expected_sources=$expected
+		| .prepublication_recovery.current_expected_sources=$expected
+	' <<<"$state") || return 1
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD="1111111111111111111111111111111111111111"
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		[[ "$repo" == "test/repo" && "$expected_head" == "1111111111111111111111111111111111111111" ]] || return 1
+		state="$state_json"
+		[[ "$write_mode" == "success" ]] && return 0
+		return 2
+	}
+	_AIDEVOPS_RELEASE_LANE_TOKEN=token-recovered
+	release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null || return 1
+	resumed_token=$(jq -er '.operation_token' <<<"$state") || return 1
+	[[ "$resumed_token" != "token-recovered" && "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "$resumed_token" &&
+		"$(jq -r '.prepublication_recovery.recovered_at' <<<"$state")" == "$recovered_at" &&
+		-n "$(jq -r '.prepublication_recovery.revalidated_at // ""' <<<"$state")" ]] || return 1
+	stale_state=$(jq -c '.updated_at="2020-01-01T00:00:00Z"' <<<"$state") || return 1
+	export AIDEVOPS_RELEASE_LANE_STALE_SECONDS=1
+	if _release_lane_stale_prepublication "$stale_state"; then
+		return 1
+	fi
+	release_lane_expand_reserved_authorization test/repo 101 "$previous" "$expanded" || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "reserved-authorization-refresh" &&
+	"$(jq -r '.prepublication_recovery.current_expected_sources' <<<"$state")" == "$expanded" ]] || return 1
+	resumed_token="$_AIDEVOPS_RELEASE_LANE_TOKEN"
+	release_lane_reopen_failed_prepublication test/repo 101 "$previous" 99 "$failed_merge" "$attempted_tag" \
+		>/dev/null || return 1
+	[[ "$(jq -r '.phase' <<<"$state")" == "reserved-authorization-refresh" &&
+	"$_AIDEVOPS_RELEASE_LANE_TOKEN" != "$resumed_token" ]] || return 1
+	release_lane_finish_reserved_authorization test/repo 101 "$previous" "$expanded" || return 1
+	write_mode=success
+	release_lane_update test/repo 101 preparing || return 1
+	jq -e '.phase == "preparing" and ((.prepublication_recovery // null) == null)' \
+		<<<"$state" >/dev/null || return 1
+	return 0
+)
+
 if run_competing_source_test; then assert_result 'competing source receives active lane and reconcile action' true; else assert_result 'competing source receives active lane and reconcile action' false; fi
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
@@ -446,6 +598,8 @@ if run_stale_reclamation_guard_test; then assert_result 'preparing, tagged, and 
 if run_aggregate_recovery_rotation_test; then assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' true; else assert_result 'reviewed aggregate recovery rotates and can restore its lane transaction' false; fi
 if run_aggregate_recovery_rejection_test; then assert_result 'aggregate recovery rejects competing owners and terminal lanes' true; else assert_result 'aggregate recovery rejects competing owners and terminal lanes' false; fi
 if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggregate authorization rotates through a resumable lane-first transaction' true; else assert_result 'reserved aggregate authorization rotates through a resumable lane-first transaction' false; fi
+if run_failed_prepublication_reopen_test; then assert_result 'verified failed pre-publication lane recovery rotates ownership and rejects unsafe states' true; else assert_result 'verified failed pre-publication lane recovery rotates ownership and rejects unsafe states' false; fi
+if run_failed_prepublication_resume_guard_test; then assert_result 'recovered pre-publication markers revalidate fenced refreshes and clear only at preparing' true; else assert_result 'recovered pre-publication markers revalidate fenced refreshes and clear only at preparing' false; fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

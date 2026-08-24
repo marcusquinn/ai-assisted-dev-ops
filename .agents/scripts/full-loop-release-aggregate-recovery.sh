@@ -12,10 +12,18 @@ _FULL_LOOP_AGGREGATE_RECOVERY_PREVIOUS_AUTH=""
 _FULL_LOOP_AGGREGATE_RECOVERY_LANE_SNAPSHOT=""
 _FULL_LOOP_AGGREGATE_RECOVERY_TAG_SOURCE_JSON=""
 _FULL_LOOP_AGGREGATE_RECOVERY_EXISTING_CONTEXT="none"
+_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR=""
+_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE=""
+_FULL_LOOP_FAILED_PREPUBLICATION_TAG=""
+_FULL_LOOP_RESERVED_RECOVERY_PHASE=""
+_FULL_LOOP_RESERVED_RECOVERY_LANE_SOURCES=""
+_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="false"
 _FULL_LOOP_AGGREGATE_RECOVERY_MANIFEST_JQ='sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")'
 _FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX='^[0-9a-f]{40}$'
+_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE="string"
 _FULL_LOOP_AGGREGATE_RECOVERY_PHASE="aggregation-recovery"
 _FULL_LOOP_AGGREGATE_COMMIT_PHASE="aggregate-publication-committing"
+_FULL_LOOP_FAILED_PREPUBLICATION_PHASE="reconcile-required"
 _FULL_LOOP_AGGREGATE_RECOVERY_TAG_REF_PREFIX="refs/tags/"
 
 _full_loop_recovery_http_status() {
@@ -160,10 +168,11 @@ _full_loop_recovery_validate_interrupted_publication_intent() {
 	release_authorization_subset "$previous_authorization" "$current_authorization" || return 1
 	release_lane_read "$repo" || return 1
 	jq -e --argjson source_pr "$source_pr" --arg tag "$tag_name" \
-		--arg sha40 "$_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX" '
+		--arg sha40 "$_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX" \
+		--arg string_type "$_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE" '
 		.active == true and .source_pr == $source_pr and .tag == $tag
 		and ((.terminal_receipt // null) == null)
-		and ((.phase | type) == "string") and ((.expected_sources | type) == "string")
+		and ((.phase | type) == $string_type) and ((.expected_sources | type) == $string_type)
 		and (.aggregate_recovery.provisional_tag_object | test($sha40))
 		and (.aggregate_recovery.previous_state.schema_version == 1)
 		and (.aggregate_recovery.previous_state.repository == .repository)
@@ -174,7 +183,7 @@ _full_loop_recovery_validate_interrupted_publication_intent() {
 			or (.aggregate_recovery.previous_state.phase == "reconcile-required"))
 		and ((.aggregate_recovery.previous_state.terminal_receipt // null) == null)
 		and ((.aggregate_recovery.previous_state.aggregate_recovery // null) == null)
-		and ((.aggregate_recovery.previous_state.expected_sources | type) == "string")
+		and ((.aggregate_recovery.previous_state.expected_sources | type) == $string_type)
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
 	phase=$(jq -er '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	lane_expected=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
@@ -266,6 +275,167 @@ _full_loop_recovery_validate_reserved_receipt() {
 	printf 'Reserved release authorization migration refused: release receipt is terminal (%s)\n' \
 		"$status" >&2
 	return 1
+}
+
+_full_loop_recovery_failed_prepublication_refused() {
+	local reason="$1"
+	printf 'Failed pre-publication release recovery refused: %s\n' "$reason" >&2
+	return 1
+}
+
+_full_loop_recovery_commit_trailer_values() {
+	local commit_sha="$1"
+	local trailer_key="$2"
+	local commit_message=""
+	local parsed_trailers=""
+	commit_message=$(git -C "$REPO_ROOT" log -1 --format='%B' "$commit_sha" 2>/dev/null) || return 1
+	parsed_trailers=$(printf '%s\n' "$commit_message" | git -C "$REPO_ROOT" interpret-trailers --parse) || return 1
+	awk -v prefix="${trailer_key}: " 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1) }' \
+		<<<"$parsed_trailers"
+	return $?
+}
+
+#aidevops:trust-boundary
+_full_loop_recovery_resolve_failed_prepublication_evidence() {
+	local repo="$1"
+	local source_pr="$2"
+	local requested_merge="$3"
+	local release_type="$4"
+	local evidence_path=""
+	local evidence_json=""
+	local failed_source_pr=""
+	local failed_source_merge=""
+	local evidence_attempted_tag=""
+	local evidence_release_type=""
+	local attempted_tag=""
+	[[ "$source_pr" =~ ^[0-9]+$ && "$requested_merge" =~ $_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX ]] || return 1
+	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
+	evidence_path=$(_full_loop_release_evidence_path "$repo" "$source_pr" failure) || return 1
+	[[ -f "$evidence_path" ]] || {
+		_full_loop_recovery_failed_prepublication_refused "exact failure evidence is missing"
+		return 1
+	}
+	evidence_json=$(jq -ce --arg repo "$repo" --argjson source_pr "$source_pr" \
+		--arg requested_merge "$requested_merge" --arg sha40 "$_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX" \
+		--arg string_type "$_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE" '
+		select(.schema_version == 1 and .status == "failed" and .repository == $repo
+			and .requested_pr == $source_pr and .requested_merge == $requested_merge
+			and ((.release_source_pr | type) == "number")
+			and ((.current_head | type) == $string_type) and (.current_head | test($sha40))
+			and (((.attempted_tag // null) == null and (.release_type // null) == null)
+				or (((.attempted_tag | type) == $string_type and (.attempted_tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+					and (.release_type == "patch" or .release_type == "minor" or .release_type == "major")))
+			and ((.recorded_at | type) == $string_type) and ((.recorded_at | length) > 0))
+	' "$evidence_path") || {
+		_full_loop_recovery_failed_prepublication_refused "failure evidence does not match the requested release"
+		return 1
+	}
+	failed_source_pr=$(jq -er '.release_source_pr' <<<"$evidence_json") || return 1
+	failed_source_merge=$(jq -er '.current_head' <<<"$evidence_json") || return 1
+	evidence_attempted_tag=$(jq -r '.attempted_tag // ""' <<<"$evidence_json") || return 1
+	evidence_release_type=$(jq -r '.release_type // ""' <<<"$evidence_json") || return 1
+	[[ -n "$evidence_release_type" || "$release_type" == "patch" ]] || {
+		_full_loop_recovery_failed_prepublication_refused "legacy failure evidence permits patch retries only"
+		return 1
+	}
+	[[ -z "$evidence_release_type" || "$evidence_release_type" == "$release_type" ]] || {
+		_full_loop_recovery_failed_prepublication_refused "failure evidence release type differs from the retry"
+		return 1
+	}
+	attempted_tag=$(_full_loop_release_expected_tag_at_commit "$failed_source_merge" "$release_type") || {
+		_full_loop_recovery_failed_prepublication_refused "attempted release tag cannot be reconstructed"
+		return 1
+	}
+	[[ -z "$evidence_attempted_tag" || "$evidence_attempted_tag" == "$attempted_tag" ]] || {
+		_full_loop_recovery_failed_prepublication_refused "failure evidence attempted tag differs from immutable source state"
+		return 1
+	}
+	jq -cn --argjson source_pr "$failed_source_pr" --arg source_merge "$failed_source_merge" \
+		--arg attempted_tag "$attempted_tag" \
+		'{source_pr:$source_pr,source_merge:$source_merge,attempted_tag:$attempted_tag}'
+	return $?
+}
+
+#aidevops:trust-boundary
+_full_loop_recovery_validate_failed_prepublication_intent() {
+	local repo="$1"
+	local source_pr="$2"
+	local current_authorization="$3"
+	local release_type="${4:-}"
+	local normalized_evidence=""
+	local failed_source_pr=""
+	local failed_source_merge=""
+	local attempted_tag=""
+	local failed_pr_json=""
+	local aggregate_identity=""
+	local aggregate_sources=""
+	local aggregate_manifest=""
+	local direct_manifest=""
+	_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR=""
+	_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE=""
+	_FULL_LOOP_FAILED_PREPUBLICATION_TAG=""
+	[[ "$source_pr" =~ ^[0-9]+$ && -n "$current_authorization" ]] || return 1
+	[[ "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" =~ $_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX &&
+		"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" =~ $_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX ]] || return 1
+	normalized_evidence=$(_full_loop_recovery_resolve_failed_prepublication_evidence \
+		"$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" "$release_type") || return 1
+	failed_source_pr=$(jq -er '.source_pr' <<<"$normalized_evidence") || return 1
+	failed_source_merge=$(jq -er '.source_merge' <<<"$normalized_evidence") || return 1
+	attempted_tag=$(jq -er '.attempted_tag' <<<"$normalized_evidence") || return 1
+	git -C "$REPO_ROOT" cat-file -e "${failed_source_merge}^{commit}" 2>/dev/null || {
+		_full_loop_recovery_failed_prepublication_refused "recorded release source commit is unavailable"
+		return 1
+	}
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$failed_source_merge" \
+		"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" 2>/dev/null || {
+		_full_loop_recovery_failed_prepublication_refused "recorded failed source is not an ancestor of the reviewed retry"
+		return 1
+	}
+	failed_pr_json=$(gh pr view "$failed_source_pr" --repo "$repo" \
+		--json state,mergedAt,mergeCommit,baseRefName 2>/dev/null) || {
+		_full_loop_recovery_failed_prepublication_refused "recorded release-source PR cannot be verified"
+		return 1
+	}
+	jq -e --arg merge "$failed_source_merge" '
+		.state == "MERGED" and ((.mergedAt // "") | length > 0)
+		and .baseRefName == "main" and .mergeCommit.oid == $merge
+	' <<<"$failed_pr_json" >/dev/null || {
+		_full_loop_recovery_failed_prepublication_refused "recorded release-source PR does not match its immutable merge"
+		return 1
+	}
+	direct_manifest="${source_pr}@${_FULL_LOOP_RESOLVED_REQUESTED_MERGE}"
+	if [[ "$failed_source_pr" == "$source_pr" &&
+		"$failed_source_merge" == "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" ]]; then
+		release_authorization_compare "$current_authorization" "$direct_manifest" || {
+			_full_loop_recovery_failed_prepublication_refused "direct failure evidence conflicts with persisted authorization"
+			return 1
+		}
+	else
+		aggregate_identity=$(_full_loop_recovery_commit_trailer_values "$failed_source_merge" \
+			"Aidevops-Release-Aggregator-PR") || return 1
+		aggregate_sources=$(_full_loop_recovery_commit_trailer_values "$failed_source_merge" \
+			"Aidevops-Release-Aggregates") || return 1
+		[[ "$aggregate_identity" == "$failed_source_pr" && -n "$aggregate_sources" ]] || {
+			_full_loop_recovery_failed_prepublication_refused "recorded release source is not an immutable aggregate"
+			return 1
+		}
+		aggregate_manifest=$(release_authorization_manifest_string "$aggregate_sources") || {
+			_full_loop_recovery_failed_prepublication_refused "recorded aggregate manifest is malformed"
+			return 1
+		}
+		release_authorization_compare "$current_authorization" "$aggregate_manifest" || {
+			_full_loop_recovery_failed_prepublication_refused "recorded aggregate manifest conflicts with persisted authorization"
+			return 1
+		}
+	fi
+	_full_loop_recovery_verify_channels_absent "$repo" "$attempted_tag" || {
+		_full_loop_recovery_failed_prepublication_refused "the attempted tag is not absent from every publication channel"
+		return 1
+	}
+	_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR="$failed_source_pr"
+	_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE="$failed_source_merge"
+	_FULL_LOOP_FAILED_PREPUBLICATION_TAG="$attempted_tag"
+	return 0
 }
 
 _full_loop_recovery_validate_existing_tag() {
@@ -450,6 +620,32 @@ _full_loop_recovery_prepare_aggregate() {
 	return 0
 }
 
+_full_loop_recovery_prepare_prepublication_source() {
+	local repo="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local worktree_base="${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}"
+	local resolver=""
+	local resolved_mode=""
+	local resolve_rc=0
+	local previous_preserve_evidence="${_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE:-false}"
+	[[ -d "$worktree_base" ]] || return 1
+	git -C "$REPO_ROOT" fetch origin main >/dev/null || return 1
+	_FULL_LOOP_RELEASE_PATH="${worktree_base}/aidevops-release-prepublication-recovery-${source_pr}-$$"
+	git -C "$REPO_ROOT" worktree add --detach "$_FULL_LOOP_RELEASE_PATH" origin/main >/dev/null || return 1
+	trap 'cleanup_release_worktree' EXIT
+	resolver="$_FULL_LOOP_RELEASE_PATH/.agents/scripts/release-provenance-helper.sh"
+	_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE=true
+	_full_loop_resolve_requested_release_source "$repo" "$source_pr" "$_FULL_LOOP_RELEASE_PATH" \
+		"$resolver" "$expected_sources" || resolve_rc=$?
+	_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE="$previous_preserve_evidence"
+	[[ "$resolve_rc" -eq 0 ]] || return "$resolve_rc"
+	resolved_mode=$(jq -er '.mode' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON") || return 1
+	case "$resolved_mode" in direct | aggregate) ;; *) return 1 ;; esac
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$_FULL_LOOP_RESOLVED_EXPECTED_SOURCES"
+	return 0
+}
+
 _full_loop_recovery_resolve_lane_authorization() {
 	local lane_sources="$1"
 	local reviewed_sources="$2"
@@ -494,7 +690,21 @@ _full_loop_recovery_reserved_base_authorization() {
 	return 0
 }
 
-_full_loop_recovery_reserved_lane_requires_migration() {
+_full_loop_recovery_lane_has_prepublication_marker() {
+	jq -e '((.prepublication_recovery // null) != null)' \
+		<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null
+	return $?
+}
+
+_full_loop_recovery_lane_prepublication_sources() {
+	jq -er --arg string_type "$_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE" '
+		.prepublication_recovery.failed_expected_sources
+		| select(type == $string_type and length > 0)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON"
+	return $?
+}
+
+_full_loop_recovery_lane_requires_prepublication_transaction() {
 	local repo="$1"
 	local source_pr="$2"
 	local persisted_sources="$3"
@@ -502,6 +712,7 @@ _full_loop_recovery_reserved_lane_requires_migration() {
 	local lane_sources=""
 	local lane_prs=""
 	local persisted_prs=""
+	local phase=""
 	release_lane_read "$repo" || read_rc=$?
 	case "$read_rc" in
 	2) return 1 ;;
@@ -511,39 +722,70 @@ _full_loop_recovery_reserved_lane_requires_migration() {
 	jq -e --argjson source_pr "$source_pr" '
 		.active == true and .source_pr == $source_pr and ((.terminal_receipt // null) == null)
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
-	if [[ "$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" == "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" ]]; then
+	phase=$(jq -er '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 2
+	if [[ "$phase" == "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" ]]; then
 		return 0
 	fi
-	jq -e '.phase == "reserved" and .tag == null and (.expected_sources | type) == "string"' \
+	if [[ "$phase" == "$_FULL_LOOP_FAILED_PREPUBLICATION_PHASE" ]]; then
+		jq -e --arg string_type "$_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE" \
+			'.tag == null and (.expected_sources | type) == $string_type' \
+			<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+		lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 2
+		[[ "$lane_sources" == "$persisted_sources" ]]
+		return $?
+	fi
+	jq -e --arg reserved "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" \
+		--arg string_type "$_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE" \
+		'.phase == $reserved and .tag == null and (.expected_sources | type) == $string_type' \
 		<<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
 	lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 2
+	if _full_loop_recovery_lane_has_prepublication_marker; then
+		[[ "$lane_sources" == "$persisted_sources" ]]
+		return $?
+	fi
 	lane_prs=$(release_authorization_intent_json "$lane_sources" | jq -c 'map(.pr)') || return 2
 	persisted_prs=$(release_authorization_intent_json "$persisted_sources" | jq -c 'map(.pr)') || return 2
 	[[ "$lane_prs" != "$persisted_prs" ]]
 	return $?
 }
 
-_full_loop_recovery_expand_reserved_authorization() {
+_full_loop_recovery_prepare_reserved_retry_source() {
 	local repo="$1"
 	local source_pr="$2"
 	local expected_sources="$3"
-	local previous_auth=""
-	local lane_sources=""
 	local phase=""
-	local current_auth=""
-	local observed_auth=""
-	local existing_tag_rc=0
-	_full_loop_recovery_validate_reserved_receipt "$repo" "$source_pr" || return 1
-	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
-	[[ "$existing_tag_rc" -eq 2 ]] || return 1
-	_full_loop_recovery_prepare_aggregate "$repo" "$source_pr" "$expected_sources" || return 1
-	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
-	_full_loop_release_reset_tag_worktree || return 1
-	current_auth=$(_full_loop_read_release_authorization "$repo" "$source_pr") || return 1
 	release_lane_read "$repo" || return 1
-	jq -e --argjson source_pr "$source_pr" '
+	phase=$(jq -er '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	if [[ "$phase" == "$_FULL_LOOP_FAILED_PREPUBLICATION_PHASE" ]] ||
+		_full_loop_recovery_lane_has_prepublication_marker; then
+		_full_loop_recovery_prepare_prepublication_source "$repo" "$source_pr" "$expected_sources" || {
+			_full_loop_recovery_failed_prepublication_refused "reviewed retry source is neither a valid direct source nor aggregate"
+			return 1
+		}
+	else
+		_full_loop_recovery_prepare_aggregate "$repo" "$source_pr" "$expected_sources" || return 1
+	fi
+	return 0
+}
+
+#aidevops:trust-boundary
+_full_loop_recovery_load_reserved_lane_state() {
+	local repo="$1"
+	local source_pr="$2"
+	local current_authorization="$3"
+	local release_type="$4"
+	local phase=""
+	local lane_sources=""
+	local failed_sources=""
+	_FULL_LOOP_RESERVED_RECOVERY_PHASE=""
+	_FULL_LOOP_RESERVED_RECOVERY_LANE_SOURCES=""
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_SOURCES=""
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="false"
+	release_lane_read "$repo" || return 1
+	jq -e --argjson source_pr "$source_pr" \
+		--arg string_type "$_FULL_LOOP_AGGREGATE_RECOVERY_JSON_STRING_TYPE" '
 		.active == true and .source_pr == $source_pr and .tag == null
-		and (.expected_sources | type) == "string" and (.phase | type) == "string"
+		and (.expected_sources | type) == $string_type and (.phase | type) == $string_type
 		and ((.terminal_receipt // null) == null)
 	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || {
 		printf 'Reserved release lane is not eligible for legacy authorization normalization for PR #%s\n' "$source_pr" >&2
@@ -551,23 +793,89 @@ _full_loop_recovery_expand_reserved_authorization() {
 	}
 	phase=$(jq -er '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	case "$phase" in
-	reserved)
+	"$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED")
 		lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		if _full_loop_recovery_lane_has_prepublication_marker; then
+			[[ "$lane_sources" == "$current_authorization" ]] || {
+				printf 'Failed pre-publication release recovery refused: lane and persisted authorization differ\n' >&2
+				return 1
+			}
+			failed_sources=$(_full_loop_recovery_lane_prepublication_sources) || return 1
+			_full_loop_recovery_validate_failed_prepublication_intent "$repo" "$source_pr" \
+				"$failed_sources" "$release_type" || return 1
+			_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="true"
+		fi
 		;;
 	"$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH")
 		[[ "$(jq -r '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON")" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]] || return 1
 		lane_sources=$(jq -er '.reserved_authorization_refresh.previous_expected_sources' \
 			<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		if _full_loop_recovery_lane_has_prepublication_marker; then
+			failed_sources=$(_full_loop_recovery_lane_prepublication_sources) || return 1
+			[[ "$lane_sources" == "$failed_sources" ]] || return 1
+			_full_loop_recovery_validate_failed_prepublication_intent "$repo" "$source_pr" \
+				"$failed_sources" "$release_type" || return 1
+			_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="true"
+		fi
 		;;
-	*) return 1 ;;
+	"$_FULL_LOOP_FAILED_PREPUBLICATION_PHASE")
+		lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		[[ "$lane_sources" == "$current_authorization" ]] || {
+			printf 'Failed pre-publication release recovery refused: lane and persisted authorization differ\n' >&2
+			return 1
+		}
+		failed_sources="$lane_sources"
+		_full_loop_recovery_validate_failed_prepublication_intent "$repo" "$source_pr" \
+			"$failed_sources" "$release_type" || return 1
+		_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="true"
+		;;
+	*)
+		printf 'Pre-publication release recovery refused: lane phase %s is not eligible\n' "$phase" >&2
+		return 1
+		;;
 	esac
+	_FULL_LOOP_RESERVED_RECOVERY_PHASE="$phase"
+	_FULL_LOOP_RESERVED_RECOVERY_LANE_SOURCES="$lane_sources"
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_SOURCES="$failed_sources"
+	return 0
+}
+
+_full_loop_recovery_expand_reserved_authorization() {
+	local repo="$1"
+	local source_pr="$2"
+	local expected_sources="$3"
+	local release_type="${4:-patch}"
+	local previous_auth=""
+	local lane_sources=""
+	local phase=""
+	local current_auth=""
+	local observed_auth=""
+	local existing_tag_rc=0
+	local failed_prepublication=false
+	_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR=""
+	_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE=""
+	_FULL_LOOP_FAILED_PREPUBLICATION_TAG=""
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_SOURCES=""
+	_full_loop_recovery_validate_reserved_receipt "$repo" "$source_pr" || return 1
+	_full_loop_release_find_tag_for_pr "$repo" "$source_pr" || existing_tag_rc=$?
+	[[ "$existing_tag_rc" -eq 2 ]] || return 1
+	_full_loop_recovery_prepare_reserved_retry_source "$repo" "$source_pr" "$expected_sources" || return 1
+	_full_loop_validate_release_candidates "$repo" "$_FULL_LOOP_RESOLVED_SOURCE_JSON" || return 1
+	_full_loop_release_reset_tag_worktree || return 1
+	current_auth=$(_full_loop_read_release_authorization "$repo" "$source_pr") || return 1
+	_full_loop_recovery_load_reserved_lane_state "$repo" "$source_pr" "$current_auth" \
+		"$release_type" || return 1
+	phase="$_FULL_LOOP_RESERVED_RECOVERY_PHASE"
+	lane_sources="$_FULL_LOOP_RESERVED_RECOVERY_LANE_SOURCES"
+	failed_prepublication="$_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION"
 	previous_auth=$(_full_loop_recovery_reserved_base_authorization "$repo" "$source_pr" \
 		"$current_auth" "$lane_sources" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED") || {
 		printf 'Reserved release lane authorization cannot be normalized against reviewed aggregate PR #%s\n' "$source_pr" >&2
 		return 1
 	}
 	release_authorization_subset "$previous_auth" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
-	if [[ "$phase" == "reserved" && "$lane_sources" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" &&
+	if [[ "$phase" == "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED" && "$failed_prepublication" != "true" &&
+		"$lane_sources" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" &&
 		"$current_auth" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
 		_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -er '.operation_token' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 		_AIDEVOPS_RELEASE_LANE_RESULT="adopted"
@@ -576,6 +884,19 @@ _full_loop_recovery_expand_reserved_authorization() {
 	fi
 	release_lane_acquire "$repo" "$source_pr" "$lane_sources" || return $?
 	case "$_AIDEVOPS_RELEASE_LANE_RESULT" in acquired | adopted) ;; *) return 1 ;; esac
+	if [[ "$failed_prepublication" == "true" ]]; then
+		release_lane_reopen_failed_prepublication "$repo" "$source_pr" \
+			"$_FULL_LOOP_RESERVED_RECOVERY_FAILED_SOURCES" \
+			"$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR" \
+			"$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE" \
+			"$_FULL_LOOP_FAILED_PREPUBLICATION_TAG" || return 1
+		phase="$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED"
+	fi
+	if [[ "$current_auth" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" &&
+		"$lane_sources" == "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then
+		printf 'Pre-publication release authorization already matches the reviewed retry for PR #%s\n' "$source_pr"
+		return 0
+	fi
 	release_lane_expand_reserved_authorization "$repo" "$source_pr" "$lane_sources" \
 		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
 	if [[ "$current_auth" != "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" ]]; then

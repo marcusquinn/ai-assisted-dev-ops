@@ -776,24 +776,60 @@ _full_loop_write_release_receipt() {
 	return 0
 }
 
+_full_loop_release_expected_tag_at_commit() {
+	local source_commit="$1"
+	local release_type="$2"
+	local version=""
+	local major=""
+	local minor=""
+	local patch=""
+	[[ "$source_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	case "$release_type" in patch | minor | major) ;; *) return 1 ;; esac
+	version=$(git -C "$REPO_ROOT" show "${source_commit}:VERSION" 2>/dev/null) || return 1
+	[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	IFS='.' read -r major minor patch <<<"$version"
+	case "$release_type" in
+	patch) patch=$((patch + 1)) ;;
+	minor)
+		minor=$((minor + 1))
+		patch=0
+		;;
+	major)
+		major=$((major + 1))
+		minor=0
+		patch=0
+		;;
+	esac
+	printf 'v%s.%s.%s\n' "$major" "$minor" "$patch"
+	return 0
+}
+
 _full_loop_write_release_failure_evidence() {
 	local repo="$1"
 	local requested_pr="$2"
 	local requested_merge="$3"
 	local current_head="$4"
 	local release_source_pr="${5:-}"
+	local attempted_tag="${6:-}"
+	local release_type="${7:-}"
 	local evidence_path=""
 	local now=""
 	[[ "$requested_pr" =~ ^[0-9]+$ ]] || return 1
 	[[ -z "$release_source_pr" || "$release_source_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ -z "$attempted_tag" || "$attempted_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	[[ -z "$release_type" || "$release_type" == "patch" || "$release_type" == "minor" || "$release_type" == "major" ]] || return 1
+	[[ (-z "$attempted_tag" && -z "$release_type") || (-n "$attempted_tag" && -n "$release_type") ]] || return 1
 	[[ "$requested_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$current_head" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
 	evidence_path=$(_full_loop_release_evidence_path "$repo" "$requested_pr" failure) || return 1
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	mkdir -p "${evidence_path%/*}" || return 1
 	jq -cn --arg repo "$repo" --argjson requested_pr "$requested_pr" --arg requested_merge "$requested_merge" \
-		--arg release_source_pr "$release_source_pr" --arg current_head "$current_head" --arg now "$now" \
+		--arg release_source_pr "$release_source_pr" --arg current_head "$current_head" \
+		--arg attempted_tag "$attempted_tag" --arg release_type "$release_type" --arg now "$now" \
 		'{schema_version:1,status:"failed",repository:$repo,requested_pr:$requested_pr,requested_merge:$requested_merge,
-		  release_source_pr:(if $release_source_pr == "" then null else ($release_source_pr | tonumber) end),current_head:$current_head,recorded_at:$now}' \
+		  release_source_pr:(if $release_source_pr == "" then null else ($release_source_pr | tonumber) end),current_head:$current_head,
+		  attempted_tag:(if $attempted_tag == "" then null else $attempted_tag end),
+		  release_type:(if $release_type == "" then null else $release_type end),recorded_at:$now}' \
 		>"${evidence_path}.tmp.$$" || return 1
 	mv "${evidence_path}.tmp.$$" "$evidence_path" || return 1
 	_full_loop_write_release_receipt "$repo" "$requested_pr" "$_FULL_LOOP_PHASE_FAILED"

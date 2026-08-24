@@ -61,6 +61,35 @@ then return to `reserved`. A retry must inspect this phase even when the request
 and persisted PR sets already match, because the authorization write may have
 completed before the prior process finished the lane transition.
 
+### Tagless preflight retry
+
+A normal `aidevops release` retry may also reopen a same-source
+`reconcile-required` lane after `version-manager.sh` failed before publication.
+This is narrower than signed-tag aggregate recovery: the lane must have no tag or
+terminal receipt, tag discovery must confirm no matching signed tag, and the
+local receipt must remain empty, failed, or `not-requested`. The attempted tag is
+read from new failure evidence or reconstructed from the immutable failed source
+and its recorded bump type. Legacy evidence without a recorded type is accepted
+only for the historical patch path; minor and major retries fail closed. That exact
+version must be absent from every remote, GitHub Releases, npm, and Homebrew. Exact failure
+evidence must bind the requested PR and merge to the prior direct source or
+immutable aggregate merge, whose manifest must equal the persisted and lane
+authorization and remain an ancestor of the reviewed retry. The retry may remain
+direct when main is still at that exact source, or resolve through a newer
+reviewed exact-tip aggregate after intervening merges.
+
+After those checks, a compare-and-swap lane write rotates the fencing token,
+records the failed source merge, and returns the lane to `reserved` with a durable
+`prepublication_recovery` marker. That marker binds the failed and current
+authorization manifests, blocks generic stale reservation reclaim, and forces any
+crash retry—including an interrupted authorization refresh—to repeat the evidence,
+channel-absence, and token-rotation checks. Any required authorization expansion then uses the existing
+`reserved-authorization-refresh` transaction before the ordinary release path
+starts again. The marker is cleared only when the ordinary path enters `preparing`,
+so any later failure records fresh release evidence. Missing or mismatched evidence, an ambiguous remote state, a tag,
+terminal receipt, competing owner, or any other lane phase fails closed. No
+manual lane or receipt edit is a supported recovery path.
+
 ## Failure and interruption
 
 An initial failure before authorization changes may restore the exact prior lane

@@ -20,6 +20,7 @@ cat >"$ROOT/bin/git" <<'STUB'
 printf '%s\n' "$*" >>"${GIT_CALL_LOG:?}"
 case "$*" in
 *rev-parse\ --show-toplevel*) printf '%s\n' "${FAKE_REPO_ROOT:?}" ;;
+*show\ *:VERSION*) printf '2.9.9\n' ;;
 *rev-parse\ refs/tags/v3.0.0*) printf '%040d\n' 0 ;;
 *rev-parse\ HEAD*) printf '%040d\n' 0 ;;
 *worktree\ add*)
@@ -265,7 +266,8 @@ if (
 	exit 1
 fi
 grep -qx 'failed' "$ROOT/receipts/marcusquinn_aidevops-43.status"
-jq -e '.status == "failed" and .requested_pr == 43 and .requested_merge == .current_head' \
+jq -e '.status == "failed" and .requested_pr == 43 and .requested_merge == .current_head
+	and .attempted_tag == "v2.9.10" and .release_type == "patch"' \
 	"$ROOT/receipts/marcusquinn_aidevops-43.failure.json" >/dev/null
 printf 'PASS failed release persists actionable provenance without publication evidence\n'
 rm -f "$LANE_HEAD_FILE" "$LANE_STATE_FILE"
@@ -360,5 +362,109 @@ fi
 jq -e '.repository == "wrong/repo" and .release_status == "not-requested"' \
 	"$ROOT/cleanup/marcusquinn_aidevops-45.json" >/dev/null
 printf 'PASS reviewed aggregate source publishes once and truthfully supersedes included receipts\n'
+
+(
+	cd "$ROOT/repo/linked-branch"
+	export PATH="$ROOT/bin:/usr/bin:/bin"
+	export GIT_CALL_LOG="$ROOT/git.log"
+	export FAKE_REPO_ROOT="$ROOT/repo"
+	export AIDEVOPS_WORKTREE_BASE_DIR="$ROOT/worktrees"
+	export AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$ROOT/receipts"
+	export AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops
+	source "$SCRIPT_DIR/full-loop-release-helper.sh" help >/dev/null
+	persisted_sources=48@0000000000000000000000000000000000000000
+	lane_checks=0
+	expansion_calls=0
+	_full_loop_recovery_lane_requires_prepublication_transaction() {
+		local repo="$1"
+		local source_pr="$2"
+		local observed_sources="$3"
+		[[ "$repo" == "marcusquinn/aidevops" && "$source_pr" == "48" &&
+			"$observed_sources" == "$persisted_sources" ]] || return 1
+		lane_checks=$((lane_checks + 1))
+		return 0
+	}
+	_full_loop_recovery_expand_reserved_authorization() {
+		local repo="$1"
+		local source_pr="$2"
+		local requested_sources="$3"
+		local release_type="$4"
+		[[ "$repo" == "marcusquinn/aidevops" && "$source_pr" == "48" &&
+			"$requested_sources" == "$persisted_sources" && "$release_type" == "patch" ]] || return 1
+		expansion_calls=$((expansion_calls + 1))
+		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$requested_sources"
+		return 0
+	}
+	_full_loop_release_resolve_persisted_intent marcusquinn/aidevops 48 "" "$persisted_sources" patch
+	[[ "$lane_checks" -eq 1 && "$expansion_calls" -eq 1 &&
+		"$_FULL_LOOP_RESERVED_RECOVERY_EXPECTED" == "$persisted_sources" &&
+		"$_FULL_LOOP_RESERVED_RECOVERY_COMPLETED" == "true" &&
+		"$_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION" == "false" ]]
+)
+printf 'PASS omitted expected sources still resume a persisted failed pre-publication transaction\n'
+
+(
+	cd "$ROOT/repo/linked-branch"
+	export PATH="$ROOT/bin:/usr/bin:/bin"
+	export GIT_CALL_LOG="$ROOT/git.log"
+	export FAKE_REPO_ROOT="$ROOT/repo"
+	export AIDEVOPS_WORKTREE_BASE_DIR="$ROOT/worktrees"
+	export AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops
+	export RESOLVER_MODE=blocked
+	source "$SCRIPT_DIR/full-loop-release-helper.sh" help >/dev/null
+	evidence_writes=0
+	persisted_sources=48@0000000000000000000000000000000000000000
+	fixture_blocked_merge=0000000000000000000000000000000000000001
+	fixture_blocked_head=0000000000000000000000000000000000000000
+	_full_loop_write_release_failure_evidence() {
+		local repo="$1"
+		local source_pr="$2"
+		local requested_merge="$3"
+		local current_head="$4"
+		[[ "$repo" == "marcusquinn/aidevops" && "$source_pr" == "48" &&
+			"$requested_merge" == "$fixture_blocked_merge" && "$current_head" == "$fixture_blocked_head" ]] || return 1
+		evidence_writes=$((evidence_writes + 1))
+		return 0
+	}
+	gh() {
+		local command_name="$1"
+		local object_name="$2"
+		[[ "$command_name" == "pr" && "$object_name" == "view" ]] || return 1
+		jq -cn --arg merge "$fixture_blocked_merge" \
+			'{state:"MERGED",mergedAt:"2026-08-24T02:00:00Z",baseRefName:"main",mergeCommit:{oid:$merge}}'
+		return 0
+	}
+	git() {
+		local option="$1"
+		local repo_path="$2"
+		local operation="$3"
+		[[ "$option" == "-C" && "$repo_path" == "$ROOT/repo/linked-branch" ]] || return 1
+		case "$operation" in
+		rev-parse) printf '%s\n' "$fixture_blocked_head" ;;
+		merge-base) return 0 ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=true
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION=true
+	_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE=false
+	resolve_rc=0
+	_full_loop_resolve_requested_release_source marcusquinn/aidevops 48 \
+		"$ROOT/repo/linked-branch" "$ROOT/source-resolver.sh" "$persisted_sources" || resolve_rc=$?
+	[[ "$resolve_rc" -ne 0 && "$evidence_writes" -eq 0 ]]
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION=false
+	_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE=true
+	resolve_rc=0
+	_full_loop_resolve_requested_release_source marcusquinn/aidevops 48 \
+		"$ROOT/repo/linked-branch" "$ROOT/source-resolver.sh" "$persisted_sources" || resolve_rc=$?
+	[[ "$resolve_rc" -ne 0 && "$evidence_writes" -eq 0 ]]
+	_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE=false
+	resolve_rc=0
+	_full_loop_resolve_requested_release_source marcusquinn/aidevops 48 \
+		"$ROOT/repo/linked-branch" "$ROOT/source-resolver.sh" "$persisted_sources" || resolve_rc=$?
+	[[ "$resolve_rc" -ne 0 && "$evidence_writes" -eq 1 ]]
+)
+printf 'PASS recovered retries preserve their original failure evidence until preparing\n'
 
 exit 0

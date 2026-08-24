@@ -140,7 +140,9 @@ _full_loop_resolve_requested_release_source() {
 			<<<"$blocked_pr_json" 2>/dev/null || true)
 		blocked_head=$(git -C "$release_path" rev-parse HEAD 2>/dev/null || true)
 		if [[ "$blocked_merge" =~ $_FULL_LOOP_SHA40_REGEX && "$blocked_head" =~ $_FULL_LOOP_SHA40_REGEX ]] &&
-			git -C "$release_path" merge-base --is-ancestor "$blocked_merge" "$blocked_head" 2>/dev/null; then
+			git -C "$release_path" merge-base --is-ancestor "$blocked_merge" "$blocked_head" 2>/dev/null &&
+			[[ "${_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE:-false}" != "$_FULL_LOOP_RELEASE_BOOL_TRUE" ]] &&
+			[[ "${_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION:-false}" != "$_FULL_LOOP_RELEASE_BOOL_TRUE" ]]; then
 			_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$blocked_merge" "$blocked_head" || true
 		fi
 		return 1
@@ -327,6 +329,8 @@ _full_loop_release_run_new() {
 	local resolver=""
 	local version_manager=""
 	local release_rc=0
+	local attempted_tag=""
+	local evidence_release_type=""
 	local run_started=""
 	local phase_started=""
 	run_started=$(_full_loop_release_timing_start release-run-new)
@@ -369,8 +373,12 @@ _full_loop_release_run_new() {
 	if [[ "$release_rc" -ne 0 ]]; then
 		_full_loop_release_timing_finish release-run-version-manager "$phase_started" failed
 		release_lane_update "$repo" "$source_pr" "reconcile-required" || true
+		attempted_tag=$(_full_loop_release_expected_tag_at_commit \
+			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$release_type" 2>/dev/null || true)
+		[[ -z "$attempted_tag" ]] || evidence_release_type="$release_type"
 		_full_loop_write_release_failure_evidence "$repo" "$source_pr" "$_FULL_LOOP_RESOLVED_REQUESTED_MERGE" \
-			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$_FULL_LOOP_RESOLVED_SOURCE_PR" || true
+			"$_FULL_LOOP_RESOLVED_SOURCE_MERGE" "$_FULL_LOOP_RESOLVED_SOURCE_PR" \
+			"$attempted_tag" "$evidence_release_type" || true
 		printf 'Publication may still be durable or queued. Reconcile without another version bump:\n' >&2
 		printf '  aidevops release status %s\n' "$source_pr" >&2
 		printf '  aidevops release reconcile %s\n' "$source_pr" >&2
@@ -491,27 +499,30 @@ _full_loop_release_resolve_persisted_intent() {
 	local source_pr="$2"
 	local requested_sources="$3"
 	local persisted_sources="$4"
+	local release_type="${5:-patch}"
 	local persisted_prs=""
 	local requested_prs=""
-	local migration_rc=0
+	local transaction_rc=0
 	_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$requested_sources"
 	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION=false
 	if [[ -z "$requested_sources" ]]; then
+		requested_sources="$persisted_sources"
 		_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$persisted_sources"
-		return 0
 	fi
 	requested_prs=$(release_authorization_intent_json "$requested_sources" | jq -c 'map(.pr)') || return 1
 	persisted_prs=$(release_authorization_intent_json "$persisted_sources" | jq -c 'map(.pr)') || return 1
 	if [[ "$requested_prs" == "$persisted_prs" ]]; then
-		_full_loop_recovery_reserved_lane_requires_migration "$repo" "$source_pr" \
-			"$persisted_sources" || migration_rc=$?
-		case "$migration_rc" in
+		_full_loop_recovery_lane_requires_prepublication_transaction "$repo" "$source_pr" \
+			"$persisted_sources" || transaction_rc=$?
+		case "$transaction_rc" in
 		0) ;;
 		1) return 0 ;;
 		*) return 1 ;;
 		esac
 	fi
-	_full_loop_recovery_expand_reserved_authorization "$repo" "$source_pr" "$requested_sources" || return $?
+	_full_loop_recovery_expand_reserved_authorization "$repo" "$source_pr" "$requested_sources" \
+		"$release_type" || return $?
 	_FULL_LOOP_RESERVED_RECOVERY_EXPECTED="$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"
 	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=true
 	return 0
@@ -525,10 +536,12 @@ _full_loop_release_start_new() {
 	local expected_sources="$5"
 	local existing_state_rc=0
 	local persisted_expected=""
+	_FULL_LOOP_RESERVED_RECOVERY_COMPLETED=false
+	_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION=false
 	_full_loop_release_guard_competing_lane "$repo" "$source_pr" || return $?
 	if persisted_expected=$(_full_loop_read_release_authorization "$repo" "$source_pr"); then
 		_full_loop_release_resolve_persisted_intent "$repo" "$source_pr" "$expected_sources" \
-			"$persisted_expected" || return $?
+			"$persisted_expected" "$release_type" || return $?
 		expected_sources="$_FULL_LOOP_RESERVED_RECOVERY_EXPECTED"
 	fi
 	_full_loop_release_guard_existing "$repo" "$source_pr" "${expected_sources:-$source_pr}" || existing_state_rc=$?

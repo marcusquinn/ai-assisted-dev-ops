@@ -842,6 +842,188 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
 	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
 	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	failure_fixture_path="${TEST_ROOT}/failed-prepublication.json"
+	requested_merge=2222222222222222222222222222222222222222
+	second_merge=3333333333333333333333333333333333333333
+	failed_merge=4444444444444444444444444444444444444444
+	current_merge=5555555555555555555555555555555555555555
+	old_manifest="42@${requested_merge},43@${second_merge}"
+	trailer_mode=match
+	ancestry_mode=match
+	channel_mode=absent
+	verified_pr_merge="$failed_merge"
+	_FULL_LOOP_RESOLVED_REQUESTED_MERGE="$requested_merge"
+	_FULL_LOOP_RESOLVED_SOURCE_MERGE="$current_merge"
+	_full_loop_release_evidence_path() {
+		printf '%s\n' "$failure_fixture_path"
+		return 0
+	}
+	git() {
+		if [[ " $* " == *" cat-file -e "* ]]; then
+			return 0
+		fi
+		if [[ " $* " == *" merge-base --is-ancestor "* ]]; then
+			[[ "$ancestry_mode" == "match" ]]
+			return $?
+		fi
+		return 1
+	}
+	gh() {
+		jq -cn --arg merge "$verified_pr_merge" \
+			'{state:"MERGED",mergedAt:"2026-08-24T02:00:00Z",baseRefName:"main",mergeCommit:{oid:$merge}}'
+		return 0
+	}
+	_full_loop_release_expected_tag_at_commit() {
+		local source_commit="$1"
+		local release_type="$2"
+		[[ "$source_commit" == "$failed_merge" || "$source_commit" == "$requested_merge" ]] || return 1
+		case "$release_type" in
+		patch) printf 'v1.2.3\n' ;;
+		minor) printf 'v1.3.0\n' ;;
+		major) printf 'v2.0.0\n' ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	_full_loop_recovery_verify_channels_absent() {
+		local repo="$1"
+		local tag_name="$2"
+		[[ "$repo" == "test/repo" && "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
+			"$channel_mode" == "absent" ]]
+		return $?
+	}
+	_full_loop_recovery_commit_trailer_values() {
+		local commit_sha="$1"
+		local trailer_key="$2"
+		[[ "$commit_sha" == "$failed_merge" ]] || return 1
+		case "$trailer_key" in
+		Aidevops-Release-Aggregator-PR) printf '99\n' ;;
+		Aidevops-Release-Aggregates)
+			if [[ "$trailer_mode" == "match" ]]; then
+				printf '42@%s\n43@%s\n' "$requested_merge" "$second_merge"
+			else
+				printf '42@%s\n' "$requested_merge"
+			fi
+			;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	write_failure_evidence() {
+		local merge="$1"
+		local release_source_pr="${2:-99}"
+		local current_head="${3:-$failed_merge}"
+		local attempted_tag="${4:-}"
+		local release_type="${5:-}"
+		jq -cn --arg requested_merge "$merge" --argjson release_source_pr "$release_source_pr" \
+			--arg current_head "$current_head" --arg attempted_tag "$attempted_tag" \
+			--arg release_type "$release_type" '
+			{schema_version:1,status:"failed",repository:"test/repo",requested_pr:42,
+			 requested_merge:$requested_merge,release_source_pr:$release_source_pr,current_head:$current_head,
+			 attempted_tag:(if $attempted_tag == "" then null else $attempted_tag end),
+			 release_type:(if $release_type == "" then null else $release_type end),
+			 recorded_at:"2026-08-24T02:01:47Z"}
+		' >"$failure_fixture_path"
+		return 0
+	}
+	write_failure_evidence "$requested_merge"
+	_full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch
+	[[ "$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR" == "99" &&
+		"$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE" == "$failed_merge" &&
+		"$_FULL_LOOP_FAILED_PREPUBLICATION_TAG" == "v1.2.3" ]]
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" minor \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	write_failure_evidence "$requested_merge" 99 "$failed_merge" v1.2.3 patch
+	_full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch
+	write_failure_evidence 6666666666666666666666666666666666666666
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	write_failure_evidence "$requested_merge"
+	trailer_mode=mismatch
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	trailer_mode=match
+	ancestry_mode=mismatch
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	ancestry_mode=match
+	write_failure_evidence "$requested_merge" 99 "$failed_merge" v9.9.9 patch
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	write_failure_evidence "$requested_merge" 99 "$failed_merge" v1.2.3 minor
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	write_failure_evidence "$requested_merge" 99 "$failed_merge" v1.2.3 patch
+	channel_mode=published
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+	channel_mode=absent
+	verified_pr_merge="$requested_merge"
+	write_failure_evidence "$requested_merge" 42 "$requested_merge" v1.2.3 patch
+	_full_loop_recovery_validate_failed_prepublication_intent test/repo 42 \
+		"42@${requested_merge}" patch
+	[[ "$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR" == "42" &&
+		"$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE" == "$requested_merge" &&
+		"$_FULL_LOOP_FAILED_PREPUBLICATION_TAG" == "v1.2.3" ]]
+	rm -f "$failure_fixture_path"
+	if _full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch \
+		>/dev/null 2>&1; then
+		exit 1
+	fi
+)
+printf 'PASS failed pre-publication retry binds attempted version, absent channels, and direct or aggregate evidence\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	AIDEVOPS_WORKTREE_BASE_DIR="$TEST_ROOT"
+	test_resolved_mode=direct
+	cleanup_release_worktree() { return 0; }
+	git() { return 0; }
+	_full_loop_resolve_requested_release_source() {
+		local repo="$1"
+		local source_pr="$2"
+		local release_path="$3"
+		local resolver="$4"
+		local expected_sources="$5"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" && -n "$release_path" &&
+			-n "$resolver" && "$expected_sources" == "42" &&
+			"${_FULL_LOOP_PRESERVE_PREPUBLICATION_FAILURE_EVIDENCE:-false}" == "true" ]] || return 1
+		_FULL_LOOP_RESOLVED_SOURCE_JSON=$(jq -cn --arg mode "$test_resolved_mode" '{mode:$mode}') || return 1
+		_FULL_LOOP_RESOLVED_EXPECTED_SOURCES=42@2222222222222222222222222222222222222222
+		return 0
+	}
+	_full_loop_recovery_prepare_prepublication_source test/repo 42 42
+	[[ "$(jq -r '.mode' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON")" == "direct" ]]
+	test_resolved_mode=aggregate
+	_full_loop_recovery_prepare_prepublication_source test/repo 42 42
+	[[ "$(jq -r '.mode' <<<"$_FULL_LOOP_RESOLVED_SOURCE_JSON")" == "aggregate" ]]
+	test_resolved_mode=invalid
+	if _full_loop_recovery_prepare_prepublication_source test/repo 42 42 >/dev/null 2>&1; then
+		exit 1
+	fi
+)
+printf 'PASS failed pre-publication preparation admits only reviewed direct or aggregate sources\n'
+
+(
+	unset _FULL_LOOP_RELEASE_AGGREGATE_RECOVERY_LOADED
+	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+	source "${SCRIPT_DIR}/full-loop-release-aggregate-recovery.sh"
+	_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED=reserved
 	_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH=reserved-authorization-refresh
 	RESERVED_LOG="${TEST_ROOT}/reserved.log"
 	: >"$RESERVED_LOG"
@@ -852,6 +1034,12 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	lane_phase=reserved
 	test_lane_sources="$legacy_lane_intent"
 	finish_mode=success
+	failure_mode=match
+	prepublication_mode=aggregate
+	prepublication_expected="$expanded_manifest"
+	prepublication_marker=false
+	prepublication_failed_sources="$old_manifest"
+	refresh_previous_sources="$legacy_lane_intent"
 	root_authorization_record=$(jq -cn --arg merge 2222222222222222222222222222222222222222 \
 		'{schema_version:1,repository:"test/repo",requested_pr:42,
 		  expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
@@ -860,6 +1048,16 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	_full_loop_recovery_prepare_aggregate() {
 		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expanded_manifest"
 		_FULL_LOOP_RESOLVED_SOURCE_JSON='{"mode":"aggregate"}'
+		return 0
+	}
+	_full_loop_recovery_prepare_prepublication_source() {
+		local repo="$1"
+		local source_pr="$2"
+		local expected_sources="$3"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" && -n "$expected_sources" ]] || return 1
+		_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$prepublication_expected"
+		_FULL_LOOP_RESOLVED_SOURCE_JSON="{\"mode\":\"${prepublication_mode}\"}"
+		printf 'prepare-prepublication\n' >>"$RESERVED_LOG"
 		return 0
 	}
 	_full_loop_validate_release_candidates() {
@@ -877,17 +1075,45 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	}
 	release_lane_read() {
 		if [[ "$lane_phase" == "reserved-authorization-refresh" ]]; then
-			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$legacy_lane_intent" \
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$refresh_previous_sources" \
 				--arg expected "$expanded_manifest" \
 				'{schema_version:1,active:true,source_pr:42,phase:"reserved-authorization-refresh",
 				  tag:null,expected_sources:$expected,operation_token:"lane-refresh",terminal_receipt:null,
 				  reserved_authorization_refresh:{previous_expected_sources:$previous,
 				    pending_expected_sources:$expected,previous_state:{schema_version:1}}}')
+		elif [[ "$lane_phase" == "reconcile-required" ]]; then
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$test_lane_sources" \
+				'{schema_version:1,active:true,source_pr:42,phase:"reconcile-required",tag:null,
+				  expected_sources:$expected,operation_token:"lane-failed",terminal_receipt:null}')
 		else
 			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg expected "$test_lane_sources" \
 				'{schema_version:1,active:true,source_pr:42,phase:"reserved",tag:null,
 				  expected_sources:$expected,operation_token:"lane-old",terminal_receipt:null}')
 		fi
+		if [[ "$prepublication_marker" == "true" ]]; then
+			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -c --arg failed "$prepublication_failed_sources" '
+				.prepublication_recovery={previous_phase:"reconcile-required",
+				 previous_updated_at:"2026-08-24T02:01:43Z",failed_source_pr:99,
+				 failed_source_merge:"4444444444444444444444444444444444444444",
+				 attempted_tag:"v1.2.3",failed_expected_sources:$failed,
+				 current_expected_sources:.expected_sources,recovered_at:"2026-08-24T02:02:00Z"}
+			' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		fi
+		return 0
+	}
+	_full_loop_recovery_validate_failed_prepublication_intent() {
+		local repo="$1"
+		local source_pr="$2"
+		local current_authorization="$3"
+		local release_type="$4"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" &&
+			"$current_authorization" == "$prepublication_failed_sources" &&
+			"$release_type" == "patch" ]] || return 1
+		printf 'verify-failure\n' >>"$RESERVED_LOG"
+		[[ "$failure_mode" == "match" ]] || return 1
+		_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR=99
+		_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE=4444444444444444444444444444444444444444
+		_FULL_LOOP_FAILED_PREPUBLICATION_TAG=v1.2.3
 		return 0
 	}
 	release_lane_acquire() {
@@ -903,11 +1129,34 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 		return 0
 	}
 	release_lane_expand_reserved_authorization() {
-		[[ "$3" == "$legacy_lane_intent" ]] || return 1
+		[[ "$3" == "$legacy_lane_intent" || "$3" == "$old_manifest" ]] || return 1
 		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"schema_version":1,"phase":"reserved"}'
 		printf 'fence\n' >>"$RESERVED_LOG"
+		refresh_previous_sources="$3"
 		lane_phase=reserved-authorization-refresh
 		test_lane_sources="$expanded_manifest"
+		return 0
+	}
+	release_lane_reopen_failed_prepublication() {
+		local repo="$1"
+		local source_pr="$2"
+		local failed_expected="$3"
+		local failed_source_pr="$4"
+		local failed_source_merge="$5"
+		local attempted_tag="$6"
+		[[ "$repo" == "test/repo" && "$source_pr" == "42" &&
+			"$failed_expected" == "$prepublication_failed_sources" ]] || return 1
+		[[ "$failed_source_pr" == "99" && "$failed_source_merge" == "4444444444444444444444444444444444444444" &&
+			"$attempted_tag" == "v1.2.3" ]] || return 1
+		printf 'reopen\n' >>"$RESERVED_LOG"
+		if [[ "$lane_phase" == "reconcile-required" ]]; then
+			lane_phase=reserved
+			test_lane_sources="$failed_expected"
+		fi
+		prepublication_marker=true
+		prepublication_failed_sources="$failed_expected"
+		_AIDEVOPS_RELEASE_LANE_RESULT=acquired
+		_AIDEVOPS_RELEASE_LANE_TOKEN=lane-reopened
 		return 0
 	}
 	release_lane_finish_reserved_authorization() {
@@ -926,7 +1175,8 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	}
 	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43
 	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "validate acquire fence expand-auth finish " ]]
-	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" &&
+		"$_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION" == "false" ]]
 	printf 'PASS reserved recovery fences the lane before authorization expansion\n'
 
 	: >"$RESERVED_LOG"
@@ -964,16 +1214,121 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	[[ "$lane_phase" == "reserved" ]]
 	printf 'PASS reserved recovery retains and resumes a fenced post-authorization interruption\n'
 
-	lane_phase=reserved
-	test_lane_sources="$legacy_lane_intent"
-	_full_loop_recovery_reserved_lane_requires_migration test/repo 42 "$expanded_manifest"
-	test_lane_sources="$expanded_manifest"
-	if _full_loop_recovery_reserved_lane_requires_migration test/repo 42 "$expanded_manifest"; then
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reconcile-required
+	test_lane_sources="$old_manifest"
+	prepublication_marker=false
+	prepublication_failed_sources="$old_manifest"
+	failure_mode=match
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen fence expand-auth finish " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" &&
+		"$_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION" == "true" ]]
+	printf 'PASS verified failed pre-publication recovery reopens before authorization expansion\n'
+
+	: >"$RESERVED_LOG"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" && "$prepublication_marker" == "true" ]]
+	printf 'PASS expanded pre-publication marker revalidates the original failed authorization\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reconcile-required
+	test_lane_sources="$old_manifest"
+	prepublication_marker=false
+	prepublication_failed_sources="$old_manifest"
+	finish_mode=failure
+	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null 2>&1; then
 		exit 1
 	fi
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen fence expand-auth finish " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved-authorization-refresh" &&
+		"$prepublication_marker" == "true" ]]
+	finish_mode=success
+	: >"$RESERVED_LOG"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen fence finish " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" ]]
+	printf 'PASS marked authorization-refresh recovery revalidates before resuming expansion\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$expanded_manifest"
+	lane_phase=reconcile-required
+	test_lane_sources="$expanded_manifest"
+	prepublication_marker=false
+	prepublication_failed_sources="$expanded_manifest"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen " ]]
+	[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved" ]]
+	printf 'PASS verified same-manifest retry reopens without a redundant authorization write\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reconcile-required
+	test_lane_sources="$old_manifest"
+	prepublication_marker=false
+	prepublication_failed_sources="$old_manifest"
+	prepublication_mode=direct
+	prepublication_expected="$old_manifest"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42 patch >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen " ]]
+	[[ "$authorization" == "$old_manifest" && "$lane_phase" == "reserved" ]]
+	prepublication_mode=aggregate
+	prepublication_expected="$expanded_manifest"
+	printf 'PASS verified failed pre-publication recovery reaches the direct-source retry path\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reserved
+	test_lane_sources="$old_manifest"
+	prepublication_marker=true
+	prepublication_failed_sources="$old_manifest"
+	prepublication_mode=direct
+	prepublication_expected="$old_manifest"
+	_full_loop_recovery_expand_reserved_authorization test/repo 42 42 patch >/dev/null
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen " ]]
+	[[ "$authorization" == "$old_manifest" && "$lane_phase" == "reserved" && "$prepublication_marker" == "true" ]]
+	prepublication_mode=aggregate
+	prepublication_expected="$expanded_manifest"
+	printf 'PASS crash retry revalidates a recovered reserved lane before resuming\n'
+
+	: >"$RESERVED_LOG"
+	authorization="$old_manifest"
+	lane_phase=reconcile-required
+	test_lane_sources="$old_manifest"
+	prepublication_marker=false
+	prepublication_failed_sources="$old_manifest"
+	failure_mode=mismatch
+	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null 2>&1; then
+		exit 1
+	fi
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure " && "$lane_phase" == "reconcile-required" ]]
+	failure_mode=match
+	printf 'PASS failed pre-publication recovery rejects missing or mismatched failure intent before lane mutation\n'
+
+	prepublication_marker=false
+	lane_phase=reserved
+	test_lane_sources="$legacy_lane_intent"
+	_full_loop_recovery_lane_requires_prepublication_transaction test/repo 42 "$expanded_manifest"
+	test_lane_sources="$expanded_manifest"
+	if _full_loop_recovery_lane_requires_prepublication_transaction test/repo 42 "$expanded_manifest"; then
+		exit 1
+	fi
+	prepublication_marker=true
+	_full_loop_recovery_lane_requires_prepublication_transaction test/repo 42 "$expanded_manifest"
+	prepublication_marker=false
 	lane_phase=reserved-authorization-refresh
-	_full_loop_recovery_reserved_lane_requires_migration test/repo 42 "$expanded_manifest"
-	printf 'PASS equal persisted PR sets still resume stale or fenced reserved-lane migration\n'
+	_full_loop_recovery_lane_requires_prepublication_transaction test/repo 42 "$expanded_manifest"
+	lane_phase=reconcile-required
+	test_lane_sources="$expanded_manifest"
+	_full_loop_recovery_lane_requires_prepublication_transaction test/repo 42 "$expanded_manifest"
+	test_lane_sources="$legacy_lane_intent"
+	if _full_loop_recovery_lane_requires_prepublication_transaction test/repo 42 "$expanded_manifest"; then
+		exit 1
+	fi
+	printf 'PASS equal persisted PR sets still resume stale, fenced, marked, or exact failed pre-publication transactions\n'
 )
 
 exit 0
