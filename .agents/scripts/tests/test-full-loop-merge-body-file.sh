@@ -198,6 +198,15 @@ write_hidden_aggregation_body() {
 	return 0
 }
 
+write_duplicate_aggregation_body() {
+	local body_file="$1"
+	printf '%s\n' \
+		'Aidevops-Release-Aggregator-PR: 42' \
+		'Aidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f' \
+		'Aidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f' >"$body_file"
+	return 0
+}
+
 assert_transport_preserves_body() {
 	local mode="$1"
 	local label="$2"
@@ -315,6 +324,24 @@ test_hidden_aggregation_trailers_fail_before_merge_write() {
 	return 0
 }
 
+test_duplicate_aggregation_sources_fail_before_merge_write() {
+	local body_file="${TEST_ROOT}/duplicate-aggregation-body"
+	local output=""
+	local rc=0
+	TEST_MODE="normal"
+	cmd_pre_merge_gate() { return 0; }
+	rm -f "${TEST_ROOT}/capture-count" "${TEST_ROOT}/snapshot-paths"
+	write_duplicate_aggregation_body "$body_file"
+	output=$(cmd_merge 42 testorg/testrepo --body-file "$body_file" 2>&1) || rc=$?
+	if [[ "$rc" -ne 0 && ! -e "${TEST_ROOT}/capture-count" &&
+		"$output" == *"unique immutable PR@MERGE_SHA"* ]]; then
+		print_result "duplicate aggregation sources fail before merge write" 0
+	else
+		print_result "duplicate aggregation sources fail before merge write" 1 "rc=${rc}; output=${output}"
+	fi
+	return 0
+}
+
 main() {
 	setup_subject
 	assert_transport_preserves_body normal "normal gh merge" 1
@@ -325,6 +352,7 @@ main() {
 	assert_transport_preserves_body rest "REST fallback" 1
 	test_invalid_body_files_fail_before_gate
 	test_hidden_aggregation_trailers_fail_before_merge_write
+	test_duplicate_aggregation_sources_fail_before_merge_write
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 	return $?

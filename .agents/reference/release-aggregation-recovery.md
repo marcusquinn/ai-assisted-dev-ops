@@ -3,6 +3,29 @@
 
 # Unpublished Release Aggregation Recovery
 
+## Stale reviewed aggregation successor
+
+When `main` advances after a metadata-only aggregation PR has entered review or
+CI, keep that PR immutable and create or adopt one successor at the new exact
+tip:
+
+```bash
+aidevops release refresh-aggregate <stale-aggregation-pr>
+```
+
+The command verifies the stale PR's terminal trailer block, the persisted
+release authorization, and every newly merged `main` commit. Each new commit
+must map uniquely to a merged-main PR at its immutable merge SHA. It then claims
+the repository release lane with compare-and-swap, creates an exact-tip empty
+branch commit, opens one draft PR to allocate its number, and only then appends
+one immutable terminal trailer commit bound to that number and complete source
+set. Retries adopt the same branch, PR, and lane transaction.
+
+The successor remains draft. Review, required checks, ready-for-review, guarded
+merge, signing, tagging, and publication are separate explicit operations. If
+`main` advances again, run the same command against the now-stale successor; the
+ancestry/tree fence is not bypassed.
+
 Use this path only when a protected-main release created a signed local tag but
 publication stopped before the tag reached any remote or package channel. It is
 not a remote-tag rewrite mechanism.
