@@ -983,7 +983,10 @@ _merge_run_bounded_write() {
 		write_rc=$?
 	fi
 	[[ "$write_rc" -eq 124 ]] || return "$write_rc"
-	_merge_reconcile_timed_out_write "$pr_number" "$repo" "$expected_head_sha" || return 124
+	_merge_reconcile_timed_out_write "$pr_number" "$repo" "$expected_head_sha" || {
+		_MERGE_WRITE_OUTPUT=""
+		return 1
+	}
 	return 0
 }
 

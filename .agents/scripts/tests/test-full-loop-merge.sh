@@ -121,6 +121,10 @@ if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "merge" ]]; then
 			_gh_has_admin=1
 		fi
 	done
+	if [[ "$mode" == "primary-timeout-policy-open" ]]; then
+		echo "base branch policy prohibits the merge" >&2
+		exit 124
+	fi
 
 	if [[ "$mode" == "fallback" || "$mode" == "fallback-nmr" || "$mode" == "auto-review-required" ||
 		"$mode" == "fallback-timeout-merged" || "$mode" == "fallback-timeout-open" ]]; then
@@ -152,7 +156,7 @@ fi
 if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "view" && "\$*" == *"--json state,mergedAt,mergeCommit"* ]]; then
 	case "$mode" in
 	fallback-timeout-merged) echo '{"state":"MERGED","mergedAt":"2026-08-24T00:00:00Z","mergeCommit":{"oid":"merged123sha"},"headRefOid":"abc123headsha"}'; exit 0 ;;
-	fallback-timeout-open) echo '{"state":"OPEN","mergedAt":null,"mergeCommit":null,"headRefOid":"abc123headsha"}'; exit 0 ;;
+	fallback-timeout-open | primary-timeout-policy-open) echo '{"state":"OPEN","mergedAt":null,"mergeCommit":null,"headRefOid":"abc123headsha"}'; exit 0 ;;
 	esac
 fi
 GHSTUB
@@ -531,6 +535,15 @@ test_admin_timeout_reconciles_without_replay() {
 	merge_calls=$(grep -c '^gh pr merge' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
 	print_result "admin timeout: unproven outcome fails closed" "$((exit_code == 0 ? 1 : 0))"
 	print_result "admin timeout: unproven outcome is not replayed" "$((merge_calls == 2 ? 0 : 1))" "merge_calls=$merge_calls"
+
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "primary-timeout-policy-open"
+	exit_code=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "0" "0" >/dev/null 2>&1 || exit_code=$?
+	merge_calls=0
+	merge_calls=$(grep -c '^gh pr merge' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
+	print_result "primary timeout: policy output cannot trigger admin replay" \
+		"$([[ "$exit_code" -ne 0 && "$merge_calls" -eq 1 ]] && printf '0' || printf '1')" "merge_calls=$merge_calls"
 	return 0
 }
 
