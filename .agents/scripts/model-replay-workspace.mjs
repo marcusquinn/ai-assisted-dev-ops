@@ -14,6 +14,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { pathInside } from "./model-replay-common.mjs";
 import { repositoryPathForCase } from "./model-replay-corpus.mjs";
 import {
+  assertVerifierSandboxAvailable,
   assertNoSymlinks,
   createCommandEnvironment,
   deleteWorkspaceEnvironment,
@@ -214,6 +215,7 @@ function runCheck(check, cwd) {
 }
 
 export function runCheckSet(checks, cwd) {
+  assertVerifierSandboxAvailable();
   return checks.map((check) => runCheck(check, cwd));
 }
 
