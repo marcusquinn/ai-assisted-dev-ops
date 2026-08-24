@@ -569,6 +569,7 @@ _feedback_route_transition_and_verify() {
 	local pr_number="${5:-}"
 	local kind="${6:-}"
 	local expected_head="${7:-}"
+	local companion_source_label="${8:-}"
 
 	if [[ "$clear_hold" == "1" ]]; then
 		[[ "$pr_number" =~ ^[0-9]+$ && -n "$kind" && -n "$expected_head" ]] || return 1
@@ -579,7 +580,8 @@ _feedback_route_transition_and_verify() {
 			return 1
 		fi
 	fi
-	if ! _transition_issue_for_redispatch "$linked_issue" "$repo_slug" "$source_label" "$clear_hold"; then
+	if ! _transition_issue_for_redispatch "$linked_issue" "$repo_slug" "$source_label" "$clear_hold" \
+		"$companion_source_label"; then
 		if [[ "$clear_hold" == "1" ]]; then
 			_feedback_route_restore_unverified_hold "$pr_number" "$repo_slug" "$linked_issue" \
 				"issue transition failed while clearing an automation hold" || true
@@ -1033,6 +1035,7 @@ _finalize_feedback_route() {
 	local close_comment="${11}"
 	local legacy_match="${12:-$legacy_marker}"
 	local evidence_fingerprint="${13:-}"
+	local companion_source_label="${14:-}"
 	local start_marker=""
 	local completion_marker=""
 	local snapshot=""
@@ -1086,7 +1089,7 @@ _finalize_feedback_route() {
 		"$expected_head" "$pr_state" "$issue_body" "$start_marker" "$legacy_marker" \
 		"$feedback_section" "$caller" "$legacy_match" || return $?
 	if ! _feedback_route_transition_and_verify "$linked_issue" "$repo_slug" "$source_label" \
-		"$clear_automation_hold" "$pr_number" "$kind" "$expected_head"; then
+		"$clear_automation_hold" "$pr_number" "$kind" "$expected_head" "$companion_source_label"; then
 		_feedback_route_defer "$pr_number" "$repo_slug" "$linked_issue" "${kind} issue transition was not fully verified"
 		return $?
 	fi

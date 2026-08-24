@@ -10,6 +10,87 @@
 [[ -n "${_PULSE_DISPATCH_CURRENT_STATE_GUARDRAILS_LOADED:-}" ]] && return 0
 _PULSE_DISPATCH_CURRENT_STATE_GUARDRAILS_LOADED=1
 
+_dispatch_review_repair_issue_body() {
+	local repo_slug="$1"
+	local issue_number="$2"
+	if declare -F gh_issue_view >/dev/null 2>&1; then
+		gh_issue_view "$issue_number" --repo "$repo_slug" --json body --jq '.body'
+		return $?
+	fi
+	gh issue view "$issue_number" --repo "$repo_slug" --json body --jq '.body'
+	return $?
+}
+
+_dispatch_review_repair_pr_json() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	if declare -F gh_pr_view >/dev/null 2>&1; then
+		gh_pr_view "$pr_number" --repo "$repo_slug" \
+			--json state,headRefOid,labels,closingIssuesReferences
+		return $?
+	fi
+	gh pr view "$pr_number" --repo "$repo_slug" \
+		--json state,headRefOid,labels,closingIssuesReferences
+	return $?
+}
+
+_dispatch_review_repair_live_evidence_fingerprint() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	declare -F _review_feedback_fetch_evidence >/dev/null 2>&1 || return 1
+	declare -F _review_feedback_evidence_fingerprint >/dev/null 2>&1 || return 1
+	_review_feedback_fetch_evidence "$pr_number" "$repo_slug" || return 1
+	_review_feedback_evidence_fingerprint \
+		"$_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON" "$_PULSE_REVIEW_FEEDBACK_INLINE_JSON"
+	return $?
+}
+
+#######################################
+# Verify that review-repair provenance is bound to a closed PR generation and
+# to the candidate issue. Labels or issue text alone never grant an exemption.
+#
+# Args:
+#   $1 - repository slug
+#   $2 - issue number
+# Returns: 0 only for verified head-bound review repair provenance.
+#######################################
+_dispatch_review_repair_candidate_is_verified() {
+	local repo_slug="$1"
+	local issue_number="$2"
+	local issue_body="" marker_json="" pr_number="" expected_head="" expected_evidence=""
+	local live_evidence="" pr_json=""
+	[[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
+
+	issue_body=$(_dispatch_review_repair_issue_body "$repo_slug" "$issue_number" 2>/dev/null) || return 1
+	marker_json=$(jq -Rn --arg body "$issue_body" '
+		[$body | scan("<!-- feedback-route:complete:review:PR([0-9]+):SHA([0-9A-Za-z]{7,64}):EVIDENCE([0-9a-f]{64}) -->")]
+		| last // empty
+	' 2>/dev/null) || return 1
+	pr_number=$(jq -r '.[0] // empty' <<<"$marker_json" 2>/dev/null) || return 1
+	expected_head=$(jq -r '.[1] // empty' <<<"$marker_json" 2>/dev/null) || return 1
+	expected_evidence=$(jq -r '.[2] // empty' <<<"$marker_json" 2>/dev/null) || return 1
+	[[ "$pr_number" =~ ^[0-9]+$ && "$expected_head" =~ ^[0-9A-Za-z]{7,64}$ \
+		&& "$expected_evidence" =~ ^[0-9a-f]{64}$ ]] || return 1
+	live_evidence=$(_dispatch_review_repair_live_evidence_fingerprint "$repo_slug" "$pr_number" 2>/dev/null) || return 1
+	[[ "$live_evidence" == "$expected_evidence" ]] || return 1
+
+	pr_json=$(_dispatch_review_repair_pr_json "$repo_slug" "$pr_number" 2>/dev/null) || return 1
+	jq -e --arg expected_head "$expected_head" --arg repo_slug "$repo_slug" \
+		--argjson issue_number "$issue_number" '
+		.state == "CLOSED"
+		and .headRefOid == $expected_head
+		and any(.labels[]?; (.name // .) == "review-routed-to-issue")
+		and any(.closingIssuesReferences[]?;
+			.number == $issue_number
+			and (
+				(.repository.nameWithOwner // "") == $repo_slug
+				or (((.repository.owner.login // "") + "/" + (.repository.name // "")) == $repo_slug)
+			)
+		)
+	' <<<"$pr_json" >/dev/null 2>&1
+	return $?
+}
+
 #######################################
 # Filter ordinary candidates when their repository has reached its open-PR cap.
 #
@@ -48,7 +129,26 @@ _dispatch_filter_repo_pr_backlog_candidates() {
 		(($labels | index("quality-debt")) != null and ($labels | index("source:review-feedback")) != null)
 		or ($labels | index("source:ci-feedback")) != null
 		or ($labels | index("source:conflict-feedback")) != null
-	)]' <<<"$candidates_json" 2>/dev/null) || filtered_json="$candidates_json"
+	)]' <<<"$candidates_json" 2>/dev/null) || filtered_json='[]'
+
+	local repair_candidates="" repair_candidate="" repair_issue=""
+	repair_candidates=$(jq -c '.[] |
+		((.labels // []) | map(.name? // .)) as $labels |
+		select(
+			($labels | index("source:review-repair")) != null
+			and ((($labels | index("quality-debt")) != null and ($labels | index("source:review-feedback")) != null) | not)
+			and (($labels | index("source:ci-feedback")) == null)
+			and (($labels | index("source:conflict-feedback")) == null)
+		)
+	' <<<"$candidates_json" 2>/dev/null) || repair_candidates=""
+	while IFS= read -r repair_candidate; do
+		[[ -n "$repair_candidate" ]] || continue
+		repair_issue=$(jq -r '.number // empty' <<<"$repair_candidate" 2>/dev/null) || continue
+		if _dispatch_review_repair_candidate_is_verified "$repo_slug" "$repair_issue"; then
+			filtered_json=$(jq -cn --argjson current "$filtered_json" --argjson candidate "$repair_candidate" \
+				'$current + [$candidate]' 2>/dev/null) || true
+		fi
+	done <<<"$repair_candidates"
 	candidate_count=$(jq 'length' <<<"$candidates_json" 2>/dev/null) || candidate_count=0
 	filtered_count=$(jq 'length' <<<"$filtered_json" 2>/dev/null) || filtered_count="$candidate_count"
 	echo "[pulse-wrapper] Repository PR backlog guardrail: repo=${repo_slug} open_prs=${open_prs} threshold=${pr_threshold} ordinary_candidates_suppressed=$((candidate_count - filtered_count)) exempt_candidates=${filtered_count}" >>"$LOGFILE"

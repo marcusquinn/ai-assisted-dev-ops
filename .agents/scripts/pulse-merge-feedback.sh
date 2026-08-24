@@ -50,6 +50,7 @@ _PULSE_MERGE_FEEDBACK_LOADED=1
 : "${LOGFILE:=${HOME}/.aidevops/logs/pulse.log}"
 : "${PULSE_REVIEW_FEEDBACK_ITEM_LIMIT:=4000}"
 : "${PULSE_REVIEW_FEEDBACK_SECTION_LIMIT:=12000}"
+PULSE_REVIEW_REPAIR_SOURCE_LABEL="source:review-repair"
 
 _CI_REPAIR_OUTCOME_SUMMARY=""
 
@@ -322,12 +323,14 @@ ${feedback_section}"
 #   $2 - repo_slug     (owner/repo)
 #   $3 - source_label  (e.g. "source:ci-feedback")
 #   $4 - clear_hold    (optional: 1 removes hold-for-review on recovery)
+#   $5 - companion_source_label (optional compatibility provenance)
 #######################################
 _transition_issue_for_redispatch() {
 	local linked_issue="$1"
 	local repo_slug="$2"
 	local source_label="$3"
 	local clear_hold="${4:-0}"
+	local companion_source_label="${5:-}"
 	local _assignees=""
 	_assignees=$(gh issue view "$linked_issue" --repo "$repo_slug" --json assignees --jq '.assignees[].login' 2>/dev/null) || _assignees=""
 
@@ -336,6 +339,9 @@ _transition_issue_for_redispatch() {
 		--remove-label "origin:interactive"
 		--remove-label "origin:worker-takeover"
 	)
+	if [[ -n "$companion_source_label" && "$companion_source_label" != "$source_label" ]]; then
+		_redispatch_flags+=(--add-label "$companion_source_label")
+	fi
 	local _assignee
 	while IFS= read -r _assignee; do
 		[[ -n "$_assignee" ]] && _redispatch_flags+=(--remove-assignee "$_assignee")
@@ -2398,6 +2404,9 @@ _dispatch_pr_fix_worker() {
 	_feedback_route_gh_write label create "source:review-feedback" --repo "$repo_slug" --color "C2E0C6" \
 		--description "Issue carries review feedback routed from a closed worker PR" \
 		--force >/dev/null 2>&1 || true
+	_feedback_route_gh_write label create "$PULSE_REVIEW_REPAIR_SOURCE_LABEL" --repo "$repo_slug" --color "C2E0C6" \
+		--description "Verified head-bound PR review repair" \
+		--force >/dev/null 2>&1 || true
 
 	if ! _review_feedback_fetch_evidence "$pr_number" "$repo_slug"; then
 		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
@@ -2431,9 +2440,9 @@ PR as an active claim), the deterministic merge pass has:
 1. Extracted the review feedback (top-level reviews + file:line inline comments) and
    appended it to the linked issue body as a \"Review Feedback\" section.
 2. Closed this PR so the dispatch queue can re-pick the linked issue.
-3. Transitioned issue #${linked_issue} to \`status:available\` and tagged it
-   \`source:review-feedback\` so the next pulse cycle dispatches a fresh worker with
-   the feedback in its prompt.
+3. Transitioned issue #${linked_issue} to \`status:available\` and tagged it with
+   verified \`source:review-repair\` provenance plus \`source:review-feedback\`.
+   The next pulse cycle can dispatch a fresh worker with the feedback in its prompt.
 
 The next worker will see the updated issue body, address the review findings, and
 open a fresh PR against issue #${linked_issue}.
@@ -2441,8 +2450,9 @@ open a fresh PR against issue #${linked_issue}.
 _Closed by deterministic merge pass (pulse-merge.sh, t2093)._"
 	local finalize_rc=0
 	_finalize_feedback_route "review" "$pr_number" "$repo_slug" "$linked_issue" "$expected_head" \
-		"source:review-feedback" "review-routed-to-issue" "$marker" "$feedback_section" \
-		"_dispatch_pr_fix_worker" "$close_comment" "$legacy_match" "$evidence_fingerprint" || finalize_rc=$?
+		"$PULSE_REVIEW_REPAIR_SOURCE_LABEL" "review-routed-to-issue" "$marker" "$feedback_section" \
+		"_dispatch_pr_fix_worker" "$close_comment" "$legacy_match" "$evidence_fingerprint" \
+		"source:review-feedback" || finalize_rc=$?
 	if [[ "$finalize_rc" -eq 0 ]]; then
 		echo "[pulse-wrapper] _dispatch_pr_fix_worker: routed review feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug} (t2093)" >>"$LOGFILE"
 	fi

@@ -152,6 +152,7 @@ SOURCE_LABELS=(
 	"source:health-dashboard|C2E0C6|Auto-created by stats-functions.sh health dashboard"
 	"source:quality-sweep|C2E0C6|Auto-created by stats-functions.sh quality sweep"
 	"source:review-feedback|C2E0C6|Auto-created by quality-feedback-helper.sh"
+	"source:review-repair|C2E0C6|Verified head-bound PR review repair routed by pulse"
 	"source:review-scanner|C2E0C6|Auto-created by post-merge-review-scanner"
 	"source:ci-failure-miner|C2E0C6|Auto-created by gh-failure-miner-helper.sh"
 	"source:circuit-breaker|C2E0C6|Auto-created by circuit-breaker-helper.sh"

@@ -587,6 +587,13 @@ test_dispatch_appends_to_issue_body_and_closes_pr() {
 			"Expected 'source:review-feedback' label add in call log"
 		return 0
 	fi
+	# Verify the head-bound finalizer adds dedicated trusted repair provenance.
+	if ! grep -qF 'source:review-repair' "$GH_LOG" \
+		|| [[ ",$(<"${TEST_ROOT}/issue-labels.txt")," != *",source:review-repair,"* ]]; then
+		print_result "dispatch adds trusted review-repair provenance to issue" 1 \
+			"Expected source:review-repair in issue transition"
+		return 0
+	fi
 	# Verify status transition to available (clears active claim labels).
 	if ! grep -qF 'status:available' "$GH_LOG"; then
 		print_result "dispatch transitions issue status to available" 1 \
@@ -710,6 +717,8 @@ review_route_is_complete() {
 	[[ "$start_count" -eq 1 && "$completion_count" -eq 1 ]] || return 1
 	[[ "$(<"${TEST_ROOT}/pr-state.txt")" == "CLOSED" ]] || return 1
 	[[ ",$(<"${TEST_ROOT}/pr-labels.txt")," == *",review-routed-to-issue,"* ]] || return 1
+	[[ ",$(<"${TEST_ROOT}/issue-labels.txt")," == *",source:review-feedback,"* ]] || return 1
+	[[ ",$(<"${TEST_ROOT}/issue-labels.txt")," == *",source:review-repair,"* ]] || return 1
 	return 0
 }
 

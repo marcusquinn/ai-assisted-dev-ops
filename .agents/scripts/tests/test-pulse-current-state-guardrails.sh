@@ -243,9 +243,45 @@ JSON
 		local limit="$2"
 		printf '%s' "$limit" >/dev/null
 		case "$repo_slug" in
-			owner/repo-a) printf '%s\n' '[{"number":1,"labels":[{"name":"bug"}]},{"number":2,"labels":[{"name":"quality-debt"},{"name":"source:review-feedback"}]},{"number":3,"labels":[{"name":"source:ci-feedback"}]},{"number":4,"labels":[{"name":"source:conflict-feedback"}]}]' ;;
+			owner/repo-a) printf '%s\n' '[{"number":1,"labels":[{"name":"bug"}]},{"number":2,"labels":[{"name":"quality-debt"},{"name":"source:review-feedback"}]},{"number":3,"labels":[{"name":"source:ci-feedback"}]},{"number":4,"labels":[{"name":"source:conflict-feedback"}]},{"number":6,"labels":[{"name":"source:review-feedback"}]},{"number":7,"labels":[{"name":"source:review-feedback"},{"name":"source:review-repair"}]},{"number":8,"labels":[{"name":"source:review-repair"}]},{"number":9,"labels":[{"name":"source:review-repair"}]},{"number":10,"labels":[{"name":"source:review-repair"}]}]' ;;
 			owner/repo-b) printf '%s\n' '[{"number":5,"labels":[{"name":"bug"}]}]' ;;
 			*) printf '[]\n' ;;
+		esac
+		return 0
+	}
+	_dispatch_review_repair_issue_body() {
+		local repo_slug="$1"
+		local issue_number="$2"
+		printf '%s' "$repo_slug" >/dev/null
+		case "$issue_number" in
+			7) printf '%s\n' '<!-- feedback-route:complete:review:PR107:SHAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:EVIDENCEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->' ;;
+			8) printf '%s\n' '<!-- feedback-route:complete:review:PR108:SHAbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:EVIDENCEbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->' ;;
+			10) printf '%s\n' '<!-- feedback-route:complete:review:PR110:SHAcccccccccccccccccccccccccccccccccccccccc:EVIDENCEcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc -->' ;;
+			*) printf '%s\n' 'externally supplied label without route evidence' ;;
+		esac
+		return 0
+	}
+	_dispatch_review_repair_pr_json() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		printf '%s' "$repo_slug" >/dev/null
+		case "$pr_number" in
+			107) printf '%s\n' '{"state":"CLOSED","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","labels":[{"name":"review-routed-to-issue"}],"closingIssuesReferences":[{"number":7,"repository":{"nameWithOwner":"owner/repo-a"}}]}' ;;
+			108) printf '%s\n' '{"state":"OPEN","headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","labels":[{"name":"review-routed-to-issue"}],"closingIssuesReferences":[{"number":8,"repository":{"nameWithOwner":"owner/repo-a"}}]}' ;;
+			110) printf '%s\n' '{"state":"CLOSED","headRefOid":"cccccccccccccccccccccccccccccccccccccccc","labels":[{"name":"review-routed-to-issue"}],"closingIssuesReferences":[{"number":10,"repository":{"nameWithOwner":"owner/repo-a"}}]}' ;;
+			*) return 1 ;;
+		esac
+		return 0
+	}
+	_dispatch_review_repair_live_evidence_fingerprint() {
+		local repo_slug="$1"
+		local pr_number="$2"
+		printf '%s' "$repo_slug" >/dev/null
+		case "$pr_number" in
+			107) printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+			108) printf '%s\n' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' ;;
+			110) printf '%s\n' 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' ;;
+			*) return 1 ;;
 		esac
 		return 0
 	}
@@ -254,10 +290,10 @@ JSON
 	ranked=$(build_ranked_dispatch_candidates_json 10)
 	repo_a_numbers=$(jq -r '[.[] | select(.repo_slug == "owner/repo-a") | .number] | join(",")' <<<"$ranked")
 	repo_b_numbers=$(jq -r '[.[] | select(.repo_slug == "owner/repo-b") | .number] | join(",")' <<<"$ranked")
-	if [[ "$repo_a_numbers" == "2,3,4" && "$repo_b_numbers" == "5" ]]; then
-		print_result "guardrail: repo backlog exempts review debt and verified CI/conflict repair lineages" 0
+	if [[ "$repo_a_numbers" == "2,3,4,7" && "$repo_b_numbers" == "5" ]]; then
+		print_result "guardrail: repo backlog admits only trusted review-repair provenance" 0
 	else
-		print_result "guardrail: repo backlog exempts review debt and verified CI/conflict repair lineages" 1 "repo_a=${repo_a_numbers} repo_b=${repo_b_numbers}"
+		print_result "guardrail: repo backlog admits only trusted review-repair provenance" 1 "repo_a=${repo_a_numbers} repo_b=${repo_b_numbers}"
 	fi
 	return 0
 }
