@@ -248,8 +248,7 @@ function bubblewrapSandboxCommand(argv, workspace, environmentRoot, executable) 
     { source: isolatedTemporary, destination: "/tmp" },
   ];
   if (extraExecutable) mounts.push(extraExecutable);
-  // Bubblewrap drops capabilities before exec; an explicit cap drop also
-  // removes the setup capability needed to initialise the new loopback device.
+  // Bubblewrap retains namespace setup capabilities, then drops them before exec.
   const command = [
     executable,
     "--die-with-parent",

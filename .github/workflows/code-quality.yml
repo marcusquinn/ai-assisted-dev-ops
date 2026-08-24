@@ -33,7 +33,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Ubuntu 24.04 hosted runners deny Bubblewrap's network-namespace
+        # setup through host AppArmor policy. Exercise the enforcing backend on
+        # 22.04; unsupported host policy still fails closed in production.
+        os: [ubuntu-22.04, macos-latest]
       fail-fast: false
 
     steps:
