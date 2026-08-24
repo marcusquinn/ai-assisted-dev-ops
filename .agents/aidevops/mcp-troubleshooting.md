@@ -18,7 +18,18 @@ tools:
 - **Scripts**: `mcp-diagnose.sh check-all`, `tool-version-check.sh`
 - **Primary cause**: version mismatch (outdated tool, changed MCP command)
 - **Config**: `~/.config/opencode/opencode.json`
+- **Bounded activation reset**: an on-demand MCP that reports `failed` or `error` gets one automatic disconnect/reconnect attempt
 - **Dead schemas (t1682)**: MCP tools can remain listed after startup failure; treat that server as unavailable for the session
+
+## Bounded Activation Recovery
+
+After the OpenCode connect API succeeds, an on-demand MCP can transiently report
+`failed` or `error`. The registry-allowlisted activation tool makes one bounded
+`disconnect -> connect` reset and polls again. A second failed status is terminal.
+
+Direct API errors, authentication requirements, timeouts, and dead-schema errors
+such as `Connection closed` are not reset. Report the activation diagnostic and
+treat the MCP as unavailable for the session when the bounded reset fails.
 
 ## Errored Servers — Dead Tool Schemas (t1682)
 

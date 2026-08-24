@@ -1,6 +1,31 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
+class McpFailedStatusError extends Error {
+  constructor(status) {
+    super(`MCP entered ${status} status`);
+    this.name = "McpFailedStatusError";
+  }
+}
+
+function lifecycleRequest(name, options) {
+  return {
+    path: { name },
+    ...(options.directory ? { query: { directory: options.directory } } : {}),
+  };
+}
+
+async function callLifecycle(action, name, options) {
+  const method = options.client?.[action];
+  if (typeof method !== "function") {
+    throw new Error(`OpenCode does not expose MCP ${action} in this runtime.`);
+  }
+  const result = await method.call(options.client, lifecycleRequest(name, options));
+  if (result?.error) {
+    throw new Error(result.error.message || String(result.error));
+  }
+}
+
 async function waitForConnection(name, options) {
   const statusMethod = options.client?.status;
   if (typeof statusMethod !== "function") return;
@@ -20,12 +45,41 @@ async function waitForConnection(name, options) {
     status = payload?.[name]?.status || "unknown";
     if (status === "connected") return;
     if (["error", "failed"].includes(status)) {
-      throw new Error(`MCP entered ${status} status`);
+      throw new McpFailedStatusError(status);
     }
     await pause(pollIntervalMs);
   } while (Date.now() < deadline);
 
   throw new Error(`MCP did not become ready (last status: ${status})`);
+}
+
+async function recoverFailedConnection(name, options, statusError) {
+  if (typeof options.client?.disconnect !== "function") {
+    throw new Error(
+      `${statusError.message}; bounded reset unavailable because OpenCode does not expose MCP disconnect in this runtime.`,
+    );
+  }
+
+  try {
+    await callLifecycle("disconnect", name, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${statusError.message}; bounded reset disconnect failed: ${message}`);
+  }
+
+  try {
+    await callLifecycle("connect", name, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${statusError.message}; bounded reset reconnect failed: ${message}`);
+  }
+
+  try {
+    await waitForConnection(name, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} after one bounded reset`);
+  }
 }
 
 /**
@@ -60,14 +114,15 @@ export function createMcpActivationTool(tool, z, options) {
       }
 
       try {
-        const result = await method.call(options.client, {
-          path: { name },
-          ...(options.directory ? { query: { directory: options.directory } } : {}),
-        });
-        if (result?.error) {
-          return `Error: MCP ${action} failed for ${name}: ${result.error.message || String(result.error)}`;
+        await callLifecycle(action, name, options);
+        if (action === "connect") {
+          try {
+            await waitForConnection(name, options);
+          } catch (error) {
+            if (!(error instanceof McpFailedStatusError)) throw error;
+            await recoverFailedConnection(name, options, error);
+          }
         }
-        if (action === "connect") await waitForConnection(name, options);
       } catch (error) {
         return `Error: MCP ${action} failed for ${name}: ${error instanceof Error ? error.message : String(error)}`;
       }
