@@ -32,6 +32,7 @@ _FULL_LOOP_RELEASE_RECONCILE_PUBLISHED="published-reconcile"
 _FULL_LOOP_RELEASE_RECONCILE_AUTHORIZED="authorized-published-reconcile"
 _FULL_LOOP_RELEASE_EVIDENCE_RECEIPT_CONFLICT="receipt-conflict"
 _FULL_LOOP_RELEASE_ROLE_AGGREGATED="aggregated"
+_FULL_LOOP_WORKFLOW_EVENT_RELEASE="release"
 _FULL_LOOP_SHA40_REGEX='^[0-9a-f]{40}$'
 _FULL_LOOP_VERSION_TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
 _FULL_LOOP_JSON_NUMBER_TYPE="number"
@@ -2067,20 +2068,38 @@ _full_loop_verify_published_release() {
 	local repo="$1"
 	local tag_name="$2"
 	local merge_commit="$3"
+	local workflow_file="${4:-}"
+	local workflow_event="${5:-$_FULL_LOOP_WORKFLOW_EVENT_RELEASE}"
 	local tag_commit=""
 	local release_json=""
 	local workflow_runs_json=""
+	local workflow_runs_endpoint=""
 
 	[[ "$repo" == */* && "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX && "$merge_commit" =~ $_FULL_LOOP_SHA40_REGEX ]] || return 1
+	if [[ "$workflow_event" != "$_FULL_LOOP_WORKFLOW_EVENT_RELEASE" && \
+		"$workflow_event" != "push" && "$workflow_event" != "workflow_dispatch" ]]; then
+		return 1
+	fi
+	if [[ -n "$workflow_file" ]]; then
+		if [[ ! "$workflow_file" =~ ^[1-9][0-9]*$ && ! "$workflow_file" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]; then
+			return 1
+		fi
+		workflow_runs_endpoint="repos/${repo}/actions/workflows/${workflow_file}/runs?event=${workflow_event}&status=success&per_page=100"
+	else
+		[[ "$workflow_event" == "$_FULL_LOOP_WORKFLOW_EVENT_RELEASE" ]] || return 1
+		workflow_runs_endpoint="repos/${repo}/actions/runs?event=release&status=success&per_page=100"
+	fi
 	tag_commit=$(_full_loop_resolve_remote_release_tag_commit "$repo" "$tag_name") || return 1
 	[[ "$tag_commit" == "$merge_commit" ]] || return 1
 	release_json=$(gh api "repos/${repo}/releases/tags/${tag_name}" 2>/dev/null) || return 1
 	jq -e --arg tag_name "$tag_name" '.tag_name == $tag_name and .draft == false' <<<"$release_json" >/dev/null || return 1
-	workflow_runs_json=$(gh api "repos/${repo}/actions/runs?event=release&status=success&per_page=100" 2>/dev/null) || return 1
-	jq -e --arg tag_name "$tag_name" --arg merge_commit "$merge_commit" --arg completed "$_FULL_LOOP_PHASE_COMPLETED" '
+	workflow_runs_json=$(gh api "$workflow_runs_endpoint" 2>/dev/null) || return 1
+	jq -e --arg tag_name "$tag_name" --arg merge_commit "$merge_commit" \
+		--arg completed "$_FULL_LOOP_PHASE_COMPLETED" --arg workflow_event "$workflow_event" '
 		[.workflow_runs[]? | select(
-			.event == "release" and .status == $completed and .conclusion == "success"
-			and .head_branch == $tag_name and .head_sha == $merge_commit
+			.event == $workflow_event and .status == $completed and .conclusion == "success"
+			and .head_sha == $merge_commit
+			and ($workflow_event != "release" or .head_branch == $tag_name)
 		)] | length > 0
 	' <<<"$workflow_runs_json" >/dev/null || return 1
 	return 0
@@ -2134,20 +2153,73 @@ cmd_record_no_release() {
 	return 0
 }
 
+_full_loop_parse_published_release_options() {
+	local -a args=("$@")
+	local arg_count="${#args[@]}"
+	local arg_index=0
+	local option=""
+	local option_value=""
+	_FULL_LOOP_PARSED_REPO_ARG=""
+	_FULL_LOOP_PARSED_WORKFLOW_FILE=""
+	_FULL_LOOP_PARSED_WORKFLOW_EVENT="$_FULL_LOOP_WORKFLOW_EVENT_RELEASE"
+	if [[ "$arg_index" -lt "$arg_count" ]]; then
+		option="${args[$arg_index]}"
+	fi
+	if [[ "$arg_index" -lt "$arg_count" && "$option" != --* ]]; then
+		_FULL_LOOP_PARSED_REPO_ARG="$option"
+		arg_index=$((arg_index + 1))
+	fi
+	while [[ "$arg_index" -lt "$arg_count" ]]; do
+		option="${args[$arg_index]}"
+		case "$option" in
+		--workflow | --event)
+			[[ $((arg_index + 1)) -lt "$arg_count" ]] || {
+				print_error "${option} requires a value"
+				return 1
+			}
+			option_value="${args[$((arg_index + 1))]}"
+			if [[ "$option" == "--workflow" ]]; then
+				_FULL_LOOP_PARSED_WORKFLOW_FILE="$option_value"
+			else
+				_FULL_LOOP_PARSED_WORKFLOW_EVENT="$option_value"
+			fi
+			arg_index=$((arg_index + 2))
+			;;
+		*)
+			print_error "Unknown record-published-release option: $option"
+			return 1
+			;;
+		esac
+	done
+	if [[ -z "$_FULL_LOOP_PARSED_WORKFLOW_FILE" && \
+		"$_FULL_LOOP_PARSED_WORKFLOW_EVENT" != "$_FULL_LOOP_WORKFLOW_EVENT_RELEASE" ]]; then
+		print_error "--event ${_FULL_LOOP_PARSED_WORKFLOW_EVENT} requires --workflow to bind publication evidence to an exact workflow"
+		return 1
+	fi
+	return 0
+}
+
 cmd_record_published_release() {
 	local pr_number="${1:-}"
 	local tag_name="${2:-}"
-	local repo_arg="${3:-}"
+	local repo_arg=""
 	local repo=""
 	local pr_json=""
 	local merge_commit=""
 	local receipt_path=""
 	local release_status=""
+	local workflow_file=""
+	local workflow_event="$_FULL_LOOP_WORKFLOW_EVENT_RELEASE"
 	local status=0
-	if [[ $# -lt 2 || $# -gt 3 ]] || [[ ! "$pr_number" =~ ^[0-9]+$ ]] || [[ ! "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX ]]; then
-		print_error "Usage: full-loop-helper.sh record-published-release <PR> <TAG> [REPO]"
+	if [[ $# -lt 2 ]] || [[ ! "$pr_number" =~ ^[0-9]+$ ]] || [[ ! "$tag_name" =~ $_FULL_LOOP_VERSION_TAG_REGEX ]]; then
+		print_error "Usage: full-loop-helper.sh record-published-release <PR> <TAG> [REPO] [--workflow FILE] [--event release|push|workflow_dispatch]"
 		return 1
 	fi
+	shift 2
+	_full_loop_parse_published_release_options "$@" || return 1
+	repo_arg="$_FULL_LOOP_PARSED_REPO_ARG"
+	workflow_file="$_FULL_LOOP_PARSED_WORKFLOW_FILE"
+	workflow_event="$_FULL_LOOP_PARSED_WORKFLOW_EVENT"
 	repo=$(_full_loop_resolve_repo "$repo_arg") || {
 		print_error "Cannot resolve repository for release evidence"
 		return 1
@@ -2161,7 +2233,8 @@ cmd_record_published_release() {
 		print_error "Cannot record release:published: PR #${pr_number} merge commit is invalid"
 		return 1
 	}
-	_full_loop_verify_published_release "$repo" "$tag_name" "$merge_commit" || {
+	_full_loop_verify_published_release "$repo" "$tag_name" "$merge_commit" \
+		"$workflow_file" "$workflow_event" || {
 		print_error "Cannot record release:published: release, tag, and successful release workflow evidence do not match PR #${pr_number}"
 		return 1
 	}

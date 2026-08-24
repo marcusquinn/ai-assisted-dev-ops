@@ -89,6 +89,11 @@ gh() {
 				'{workflow_runs:[{event:"release",status:"completed",conclusion:"success",head_branch:"v1.2.3",head_sha:$sha}]}'
 			return 0
 			;;
+		"repos/example/repo/actions/workflows/release.yml/runs?event=push&status=success&per_page=100")
+			jq -cn --arg sha "$GH_RELEASE_TAG_COMMIT" \
+				'{workflow_runs:[{event:"push",status:"completed",conclusion:"success",head_branch:"main",head_sha:$sha}]}'
+			return 0
+			;;
 		esac
 	fi
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
@@ -711,6 +716,13 @@ test_release_tag_commit_resolution() {
 	[[ "$resolved_commit" == "$GH_RELEASE_TAG_COMMIT" && ! -s "$stderr_file" ]] || rc=1
 	_full_loop_verify_published_release "example/repo" "v1.2.3" "$GH_RELEASE_TAG_COMMIT" 2>"$stderr_file" || rc=1
 	[[ ! -s "$stderr_file" ]] || rc=1
+	_full_loop_verify_published_release "example/repo" "v1.2.3" "$GH_RELEASE_TAG_COMMIT" \
+		"release.yml" "push" 2>"$stderr_file" || rc=1
+	[[ ! -s "$stderr_file" ]] || rc=1
+	if _full_loop_verify_published_release "example/repo" "v1.2.3" "$GH_RELEASE_TAG_COMMIT" \
+		"../release.yml" "push" 2>"$stderr_file"; then rc=1; fi
+	if _full_loop_verify_published_release "example/repo" "v1.2.3" "$GH_RELEASE_TAG_COMMIT" \
+		"" "push" 2>"$stderr_file"; then rc=1; fi
 
 	GH_RELEASE_TAG_MODE="lightweight"
 	resolved_commit=$(_full_loop_resolve_remote_release_tag_commit "example/repo" "v1.2.3" 2>"$stderr_file") || rc=1
@@ -724,7 +736,7 @@ test_release_tag_commit_resolution() {
 	if _full_loop_resolve_remote_release_tag_commit "example/repo" "v1.2.3" 2>"$stderr_file"; then rc=1; fi
 	[[ ! -s "$stderr_file" ]] || rc=1
 
-	print_result "annotated and lightweight release tags resolve while invalid tag targets fail closed" "$rc"
+	print_result "release evidence accepts exact push workflows while invalid workflow and tag targets fail closed" "$rc"
 	return 0
 }
 

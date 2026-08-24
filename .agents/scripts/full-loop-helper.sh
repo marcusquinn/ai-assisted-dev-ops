@@ -293,8 +293,10 @@ Commands:
                                  gh CLI level; if both are given, --admin wins and
                                   --auto is dropped (GH#19310).
   record-no-release <PR> [REPO]  Verify merged evidence and record release:not-requested.
-  record-published-release <PR> <TAG> [REPO]
+  record-published-release <PR> <TAG> [REPO] [--workflow FILE] [--event EVENT]
                                   Verify a GitHub release and record release:published.
+                                  Defaults to release-event evidence; repository-owned
+                                  push/dispatch workflows require an exact workflow identity.
   adopt-merged-receipt <PR> [REPO]
                                  Adopt an externally merged exact-head worktree into cleanup.
   finalize-receipt <PR> [REPO]   Finalize a direct-merge cleanup receipt without local state.

@@ -46,6 +46,23 @@ if [[ "$*" == *"repos/marcusquinn/aidevops/actions/runs?event=release"* ]]; then
 	esac
 	exit 0
 fi
+if [[ "$*" == *"repos/marcusquinn/aidevops/actions/workflows/release.yml/runs?event=push&status=success&per_page=100"* ]]; then
+	case "$release_mode" in
+	push-failed-workflow)
+		jq -cn --arg sha "$merge_sha" '{workflow_runs:[{event:"push",status:"completed",conclusion:"failure",head_branch:"main",head_sha:$sha}]}'
+		;;
+	push-wrong-event)
+		jq -cn --arg sha "$merge_sha" '{workflow_runs:[{event:"workflow_dispatch",status:"completed",conclusion:"success",head_branch:"main",head_sha:$sha}]}'
+		;;
+	push-wrong-sha)
+		printf '%s\n' '{"workflow_runs":[{"event":"push","status":"completed","conclusion":"success","head_branch":"main","head_sha":"2222222222222222222222222222222222222222"}]}'
+		;;
+	*)
+		jq -cn --arg sha "$merge_sha" '{workflow_runs:[{event:"push",status:"completed",conclusion:"success",head_branch:"main",head_sha:$sha}]}'
+		;;
+	esac
+	exit 0
+fi
 if [[ "$*" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
 	jq -cn \
 		--arg head_ref "${COMPLETION_PR_HEAD_REF:-}" \
@@ -224,6 +241,50 @@ AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$c
 	bash "$published_record_runner" 58 v3.0.0 marcusquinn/aidevops >/dev/null
 cmp -s "$published_cleanup_receipt" "${ROOT}/published-release-receipt-before.json"
 printf 'PASS verified manual release records published evidence and reconciles cleanup idempotently\n'
+
+push_published_worktree="${ROOT}/push-published-release-worktree"
+mkdir -p "$push_published_worktree"
+push_published_receipt=$(full_loop_write_cleanup_deferred marcusquinn/aidevops 61 "$push_published_worktree" \
+	feature/push-published-release "$$" push-published-release-session pending FINALIZATION_PENDING)
+AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$published_record_runner" 61 v3.0.0 marcusquinn/aidevops \
+		--workflow release.yml --event push >/dev/null
+grep -qx 'published' "${receipt_dir}/marcusquinn_aidevops-61.status"
+jq -e '.release_status == "published"' "$push_published_receipt" >/dev/null
+printf 'PASS exact repository-owned push workflow records published evidence\n'
+
+for invalid_push_mode in push-failed-workflow push-wrong-event push-wrong-sha; do
+	invalid_push_worktree="${ROOT}/invalid-${invalid_push_mode}"
+	mkdir -p "$invalid_push_worktree"
+	invalid_push_receipt=$(full_loop_write_cleanup_deferred marcusquinn/aidevops 62 "$invalid_push_worktree" \
+		feature/invalid-push "$$" invalid-push-session pending FINALIZATION_PENDING)
+	cp "$invalid_push_receipt" "${ROOT}/${invalid_push_mode}-before.json"
+	if COMPLETION_RELEASE_MODE="$invalid_push_mode" AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" \
+		AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$published_record_runner" 62 v3.0.0 marcusquinn/aidevops \
+			--workflow release.yml --event push >/dev/null 2>&1; then
+		printf 'FAIL %s evidence recorded a published release\n' "$invalid_push_mode"
+		exit 1
+	fi
+	[[ ! -e "${receipt_dir}/marcusquinn_aidevops-62.status" ]]
+	cmp -s "$invalid_push_receipt" "${ROOT}/${invalid_push_mode}-before.json"
+	rm -f "$invalid_push_receipt" "${ROOT}/${invalid_push_mode}-before.json"
+done
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$published_record_runner" 62 v3.0.0 marcusquinn/aidevops --event push >/dev/null 2>&1; then
+	printf 'FAIL unbound push event recorded a published release\n'
+	exit 1
+fi
+if AIDEVOPS_FULL_LOOP_RECEIPT_DIR="$receipt_dir" AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" \
+	PATH="${ROOT}/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+	bash "$published_record_runner" 62 v3.0.0 marcusquinn/aidevops \
+		--workflow ../release.yml --event push >/dev/null 2>&1; then
+	printf 'FAIL unsafe workflow identifier recorded a published release\n'
+	exit 1
+fi
+printf 'PASS failed, mismatched, unbound, and unsafe push workflow evidence fails closed\n'
 
 for invalid_release_mode in wrong-tag-commit draft-release failed-workflow wrong-workflow-tag; do
 	invalid_published_worktree="${ROOT}/invalid-published-${invalid_release_mode}"
