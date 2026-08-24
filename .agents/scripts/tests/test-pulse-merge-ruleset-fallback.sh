@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
 MERGE_PROCESS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-process.sh"
+REQUIRED_CHECKS_SCRIPT="${SCRIPT_DIR}/../pulse-merge-required-checks.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -222,6 +223,11 @@ _pmp_review_decision_is_unknown() {
 }
 
 PULSE_UNKNOWN_STATE="UNKNOWN"
+PULSE_MERGE_BOOL_TRUE="true"
+PMRC_JSON_ARRAY="array"
+PMRC_JSON_NUMBER="number"
+PMRC_JSON_OBJECT="object"
+PMRC_JSON_STRING="string"
 _resolve_pr_mergeable_status() { return 0; }
 _extract_linked_issue() { printf '123'; return 0; }
 _check_pr_merge_gates() { return 0; }
@@ -230,6 +236,7 @@ approve_collaborator_pr() { return 0; }
 _check_ruleset_required_reviews_passing() { return 0; }
 _extract_merge_summary() { printf 'summary'; return 0; }
 _retarget_stacked_children() { return 0; }
+_pmp_is_protected_release_pr() { return 1; }
 _pulse_merge_admin_safety_check() { return 0; }
 _pulse_merge_final_trust_gate() {
 	_PULSE_FINAL_REQUIRES_SYNCHRONOUS_MERGE=0
@@ -263,6 +270,91 @@ _handle_post_merge_actions() {
 }
 _pulse_merge_ready_pr_json_fields() {
 	printf 'number,state,mergeable,reviewDecision,author,title,updatedAt,headRefOid,headRefName,baseRefName,labels,isDraft'
+	return 0
+}
+
+RULESET_REVIEWS_JSON="[]"
+
+_pmrc_gh_read() {
+	local command_name="$1"
+	shift
+	if [[ "$command_name" == "gh" && "$*" == *"repos/owner/repo --jq .default_branch"* ]]; then
+		printf 'main\n'
+		return 0
+	fi
+	if [[ "$command_name" == "gh" && "$*" == *"repos/owner/repo/pulls/77/reviews?per_page=100"* ]]; then
+		printf '%s\n' "$RULESET_REVIEWS_JSON"
+		return 0
+	fi
+	return 1
+}
+
+_ruleset_required_review_count_for_default_branch() {
+	local repo_slug="$1"
+	local default_branch="$2"
+	[[ "$repo_slug" == "owner/repo" && "$default_branch" == "main" ]] || return 1
+	printf '1\n'
+	return 0
+}
+
+define_ruleset_review_function_under_test() {
+	local helper_src=""
+	helper_src=$(awk '
+		/^_check_ruleset_required_reviews_passing\(\) \{/,/^\}$/ { print }
+	' "$REQUIRED_CHECKS_SCRIPT")
+	if [[ -z "$helper_src" ]]; then
+		printf 'ERROR: could not extract ruleset review helper from %s\n' "$REQUIRED_CHECKS_SCRIPT" >&2
+		return 1
+	fi
+	# shellcheck disable=SC1090
+	eval "$helper_src"
+	return 0
+}
+
+assert_ruleset_review_sequence() {
+	local test_name="$1"
+	local reviews_json="$2"
+	local expected_rc="$3"
+	local actual_rc=0
+	RULESET_REVIEWS_JSON="$reviews_json"
+	_check_ruleset_required_reviews_passing "owner/repo" "77" "author" || actual_rc=$?
+	if [[ "$actual_rc" -eq "$expected_rc" ]]; then
+		print_result "$test_name" 0
+		return 0
+	fi
+	print_result "$test_name" 1 "expected rc=${expected_rc}, actual rc=${actual_rc}"
+	return 0
+}
+
+test_ruleset_required_review_decision_sequences() {
+	setup_test_env
+	define_ruleset_review_function_under_test || {
+		teardown_test_env
+		return 0
+	}
+
+	assert_ruleset_review_sequence "APPROVED then COMMENTED preserves approval" \
+		'[[{"id":1,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"},{"id":2,"user":{"login":"reviewer"},"state":"COMMENTED","submitted_at":"2026-08-23T11:00:00Z"}]]' 0
+	assert_ruleset_review_sequence "CHANGES_REQUESTED then COMMENTED remains unapproved" \
+		'[[{"id":3,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","submitted_at":"2026-08-23T10:00:00Z"},{"id":4,"user":{"login":"reviewer"},"state":"COMMENTED","submitted_at":"2026-08-23T11:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "APPROVED then CHANGES_REQUESTED remains unapproved" \
+		'[[{"id":5,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"},{"id":6,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED","submitted_at":"2026-08-23T11:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "APPROVED then DISMISSED remains unapproved" \
+		'[[{"id":7,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"},{"id":8,"user":{"login":"reviewer"},"state":"DISMISSED","submitted_at":"2026-08-23T11:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "PR author approval remains excluded" \
+		'[[{"id":9,"user":{"login":"author"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "malformed substantive review fails closed" \
+		'[[{"id":10,"user":{"login":"reviewer"},"state":"APPROVED"}]]' 1
+	assert_ruleset_review_sequence "unknown review state fails closed" \
+		'[[{"id":11,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"},{"id":12,"user":{"login":"reviewer"},"state":"CHANGES_REQUESTED ","submitted_at":"2026-08-23T11:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "malformed review timestamp fails closed" \
+		'[[{"id":13,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"not-rfc3339"}]]' 1
+	assert_ruleset_review_sequence "non-positive review id fails closed" \
+		'[[{"id":0,"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"}]]' 1
+	assert_ruleset_review_sequence "PR author exclusion is case-insensitive" \
+		'[[{"id":14,"user":{"login":"Author"},"state":"APPROVED","submitted_at":"2026-08-23T10:00:00Z"}]]' 1
+
+	teardown_test_env
 	return 0
 }
 
@@ -795,6 +887,7 @@ main() {
 	test_stale_cache_401_retries_admin_merge_once
 	test_terminal_merge_failure_refreshes_state_and_invalidates_cache
 	test_ruleset_fallback_failure_preserves_admin_conversation_context
+	test_ruleset_required_review_decision_sequences
 
 	printf '\n=================================\n'
 	printf 'Tests run: %d, failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"
