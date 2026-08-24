@@ -72,9 +72,9 @@ function lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern) {
 export function isGhWriteCommand(cmd) {
   if (typeof cmd !== "string") return false;
   const ghWritePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:sudo|time|env(?:\s+\w+=\S+)*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
+    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|sudo|time|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*)\s+)*gh\s+(pr\s+(create|comment)|issue\s+(create|comment))\b/;
   const ghIssueClosePattern =
-    /(^|[;&|(`!]|\$\()\s*(?:(?:sudo|time|env(?:\s+\w+=\S+)*)\s+)*gh\s+issue\s+close\b/;
+    /(^|[;&|(`!]|\$\()\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|sudo|time|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*)\s+)*gh\s+issue\s+close\b/;
   return stripHeredocBodies(cmd)
     .split("\n")
     .some((line) => lineHasGhWriteCommand(line, ghWritePattern, ghIssueClosePattern));

@@ -89,6 +89,30 @@ describe("isGhWriteCommand", () => {
     assert.equal(isGhWriteCommand('gh pr comment 1 --body "x"'), true);
   });
 
+  test("detects gh writes after bare environment assignments", () => {
+    assert.equal(
+      isGhWriteCommand(
+        'AIDEVOPS_GH_SHIM_DISABLE=1 gh pr create --title "t" --body "x"',
+      ),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('ONE=1 TWO="two words" gh issue comment 1 --body "x"'),
+      true,
+    );
+    assert.equal(
+      isGhWriteCommand('TOKEN= gh issue close 1 --comment "x"'),
+      true,
+    );
+  });
+
+  test("leaves env-prefixed gh reads outside signature enforcement", () => {
+    assert.equal(
+      isGhWriteCommand("AIDEVOPS_GH_SHIM_DISABLE=1 gh issue view 1"),
+      false,
+    );
+  });
+
   test("ignores non-string input", () => {
     assert.equal(isGhWriteCommand(undefined), false);
     assert.equal(isGhWriteCommand({ command: 'gh issue comment 1 --body "x"' }), false);
