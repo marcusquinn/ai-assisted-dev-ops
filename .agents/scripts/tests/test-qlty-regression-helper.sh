@@ -107,6 +107,16 @@ if [ "${QLTY_STUB_MODE:-parity}" = "second-pass-unstable" ]; then
 	fi
 	exit 0
 fi
+if [ "${QLTY_STUB_MODE:-parity}" = "never-stable" ]; then
+	run_count=0
+	if [ -f "$XDG_CACHE_HOME/run-count" ]; then
+		run_count=$(cat "$XDG_CACHE_HOME/run-count")
+	fi
+	run_count=$((run_count + 1))
+	printf '%s\n' "$run_count" >"$XDG_CACHE_HOME/run-count"
+	printf '{"runs":[{"results":[{"ruleId":"qlty:unstable","locations":[{"physicalLocation":{"artifactLocation":{"uri":"attempt-%s.sh"}}}]}]}]}\n' "$run_count"
+	exit 0
+fi
 if [ "${QLTY_STUB_MODE:-parity}" = "topology-sensitive" ]; then
 	if [ "$(basename "$PWD")" = "repo" ]; then
 		printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"direct-only.sh"}}}]}]}]}'
@@ -222,8 +232,16 @@ QLTY_STUB_MODE=base-fail
 export QLTY_STUB_MODE
 fallback_output=$(cd "$REPO" && "$HELPER" --base HEAD --head HEAD 2>&1)
 fallback_rc=$?
-assert_rc "base scan failure retains diagnostic fallback" "0" "$fallback_rc"
-assert_contains "base failure fallback is logged" "base scan failed; treating base count as equal to head" "$fallback_output"
+assert_rc "base scan failure is non-passing" "2" "$fallback_rc"
+assert_contains "base failure refuses a synthetic clean delta" "refusing a synthetic clean delta" "$fallback_output"
+
+QLTY_STUB_MODE=never-stable
+export QLTY_STUB_MODE
+never_stable_output=$(cd "$REPO" && "$HELPER" --base HEAD --head HEAD 2>&1)
+never_stable_rc=$?
+assert_rc "unstable scanner identities are non-passing" "2" "$never_stable_rc"
+assert_contains "unstable scanner reports explicit inconclusive state" "INCONCLUSIVE: unstable normalized identities" "$never_stable_output"
+assert_contains "unstable scanner reports attempt diagnostics" "attempts: 1:rc=0,count=1;2:rc=0,count=1;3:rc=0,count=1" "$never_stable_output"
 
 if [ "$TESTS_FAILED" -eq 0 ]; then
 	printf 'All %s tests passed\n' "$TESTS_RUN"

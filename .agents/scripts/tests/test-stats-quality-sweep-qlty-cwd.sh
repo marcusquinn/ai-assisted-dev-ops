@@ -22,13 +22,14 @@ TMP_CDPATH_PARENT=$(mktemp -d)
 FAKE_BIN=$(mktemp -d)
 QLTY_PWD_FILE="${TMP_HOME}/qlty-pwd.txt"
 QLTY_CREATE_CALLS="${TMP_HOME}/qlty-create-calls.txt"
+QLTY_MODE="stable"
 LOCAL_HEAD="1111111111111111111111111111111111111111"
 REMOTE_HEAD="$LOCAL_HEAD"
 WORKTREE_STATE=""
 export HOME="$TMP_HOME"
 export LOGFILE="${TMP_HOME}/test.log"
 export QUALITY_SWEEP_STATE_DIR="${TMP_HOME}/state"
-export QLTY_PWD_FILE QLTY_CREATE_CALLS LOCAL_HEAD REMOTE_HEAD WORKTREE_STATE
+export QLTY_PWD_FILE QLTY_CREATE_CALLS QLTY_MODE LOCAL_HEAD REMOTE_HEAD WORKTREE_STATE
 PATH="${FAKE_BIN}:${PATH}"
 export PATH
 
@@ -45,6 +46,20 @@ cat >"${HOME}/.qlty/bin/qlty" <<'QLTY'
 #!/usr/bin/env bash
 set -euo pipefail
 pwd >"${QLTY_PWD_FILE:?}"
+if [[ "${1:-}" == "--version" ]]; then
+	printf '%s\n' "qlty test-stub"
+	exit 0
+fi
+if [[ "${QLTY_MODE:-stable}" == "unstable" ]]; then
+	run_count=0
+	if [[ -f "${XDG_CACHE_HOME:?}/run-count" ]]; then
+		run_count=$(<"${XDG_CACHE_HOME}/run-count")
+	fi
+	run_count=$((run_count + 1))
+	printf '%s\n' "$run_count" >"${XDG_CACHE_HOME}/run-count"
+	printf '{"runs":[{"results":[{"ruleId":"function-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"scripts/attempt-%s.sh"}}}]}]}]}\n' "$run_count"
+	exit 0
+fi
 printf '%s\n' '{"runs":[{"results":[{"ruleId":"function-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"scripts/example.sh"}}}]}]}]}'
 QLTY
 chmod +x "${HOME}/.qlty/bin/qlty"
@@ -144,6 +159,26 @@ if ! grep -q 'skipping uncommitted scan' "$LOGFILE"; then
 fi
 WORKTREE_STATE=""
 export WORKTREE_STATE
+
+QLTY_MODE="unstable"
+export QLTY_MODE
+unstable_result=$(_sweep_qlty "owner/repo" "$TMP_REPO")
+unstable_remainder="${unstable_result#*|}"
+unstable_count="${unstable_remainder%%|*}"
+if [[ "$unstable_count" != "inconclusive" ]]; then
+	printf '%s\n' "FAIL unstable qlty scan became numeric telemetry: ${unstable_count}"
+	exit 1
+fi
+if [[ "$(<"$QLTY_CREATE_CALLS")" != "called" ]]; then
+	printf '%s\n' "FAIL unstable qlty scan created remediation evidence"
+	exit 1
+fi
+if ! grep -q 'Qlty telemetry INCONCLUSIVE: unstable normalized identities' "$LOGFILE"; then
+	printf '%s\n' "FAIL unstable qlty scan omitted inconclusive diagnostics"
+	exit 1
+fi
+QLTY_MODE="stable"
+export QLTY_MODE
 
 mkdir -p "${TMP_REL_PARENT}/target-repo/.qlty" "${TMP_CDPATH_PARENT}/target-repo/.qlty"
 printf '%s\n' '[plugins]' >"${TMP_REL_PARENT}/target-repo/.qlty/qlty.toml"

@@ -255,9 +255,10 @@ _sweep_qlty() {
 		return 0
 	fi
 
-	# Use SARIF output for machine-parseable smell data (structured by rule, file, location)
+	# Use a bounded identity consensus so telemetry and remediation cannot consume
+	# a transient cache result as an authoritative count.
 	local qlty_sarif
-	qlty_sarif=$(CDPATH='' cd -- "$repo_path" && "$qlty_bin" smells --all --sarif --no-snippets --quiet) || qlty_sarif=""
+	qlty_sarif=$(_qlty_consensus_sarif "$qlty_bin" "$repo_path") || qlty_sarif=""
 
 	local qlty_result
 	qlty_result=$(_build_qlty_section_from_sarif "$qlty_sarif")
@@ -272,7 +273,7 @@ _sweep_qlty() {
 	# When repository-wide debt exceeds the configured absolute threshold, create
 	# bounded, per-file remediation issues from this same SARIF scan. The pulse
 	# handles dispatch deduplication, worker capacity, and active-PR collisions.
-	if [[ -n "$qlty_sarif" && "$qlty_smell_count" -gt 0 ]] &&
+	if [[ -n "$qlty_sarif" && "$qlty_smell_count" =~ ^[0-9]+$ && "$qlty_smell_count" -gt 0 ]] &&
 		_qlty_scan_matches_remote_default "$repo_slug" "$repo_path"; then
 		local qlty_smell_threshold
 		qlty_smell_threshold=$(_repo_qlty_smell_threshold "$repo_path")
@@ -289,6 +290,102 @@ _Scheduled ${issues_created} autonomous Qlty remediation issue(s) (tier:thinking
 	return 0
 }
 
+_qlty_normalized_identities() {
+	local qlty_sarif="$1"
+	printf '%s\n' "$qlty_sarif" | jq -r '
+		.runs[0].results[] |
+		[(.ruleId // "unknown"),
+		 ([.locations[]?.physicalLocation?.artifactLocation?.uri? | select(. != null)] | sort | join("|"))]
+		| @tsv' 2>/dev/null | LC_ALL=C sort
+	return 0
+}
+
+_qlty_valid_sarif() {
+	local qlty_sarif="$1"
+	[[ -n "${qlty_sarif//[[:space:]]/}" ]] || return 1
+	printf '%s\n' "$qlty_sarif" | jq -e '.runs[0].results | type == "array"' >/dev/null 2>&1
+	return $?
+}
+
+_qlty_consensus_diagnostic() {
+	local reason="$1"
+	local repo_path="$2"
+	local qlty_bin="$3"
+	local attempts="$4"
+	local version="unknown"
+	local commit="unknown"
+	local tree="unknown"
+	local config_hash="none"
+	local ignore_hash="none"
+	version=$("$qlty_bin" --version 2>/dev/null) || version="unknown"
+	commit=$(git -C "$repo_path" rev-parse HEAD 2>/dev/null) || commit="unknown"
+	tree=$(git -C "$repo_path" rev-parse 'HEAD^{tree}' 2>/dev/null) || tree="unknown"
+	if [[ -f "${repo_path}/.qlty/qlty.toml" ]]; then
+		config_hash=$(git -C "$repo_path" hash-object '.qlty/qlty.toml' 2>/dev/null) || config_hash="unknown"
+	fi
+	if [[ -f "${repo_path}/.qltyignore" ]]; then
+		ignore_hash=$(git -C "$repo_path" hash-object '.qltyignore' 2>/dev/null) || ignore_hash="unknown"
+	fi
+	printf '[stats] Qlty telemetry INCONCLUSIVE: %s; version=%s commit=%s tree=%s mode=repository-root cwd=repository-root command="qlty smells --all --sarif --no-snippets --quiet" cache=isolated-per-run config=%s ignore=%s attempts=%s\n' \
+		"$reason" "$version" "$commit" "$tree" "$config_hash" "$ignore_hash" "$attempts" >>"${LOGFILE:-/dev/null}"
+	return 0
+}
+
+_qlty_consensus_sarif() {
+	local qlty_bin="$1"
+	local repo_path="$2"
+	local cache_dir=""
+	local first=""
+	local second=""
+	local third=""
+	local first_rc=0
+	local second_rc=0
+	local third_rc=0
+	local first_count="unknown"
+	local second_count="unknown"
+	local third_count="unknown"
+	cache_dir=$(mktemp -d "${TMPDIR:-/tmp}/qlty-sweep-cache.XXXXXX") || return 1
+	first=$(CDPATH='' cd -- "$repo_path" && XDG_CACHE_HOME="$cache_dir" "$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || first_rc=$?
+	second=$(CDPATH='' cd -- "$repo_path" && XDG_CACHE_HOME="$cache_dir" "$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || second_rc=$?
+	if _qlty_valid_sarif "$first"; then
+		first_count=$(printf '%s\n' "$first" | jq -r '.runs[0].results | length')
+	fi
+	if _qlty_valid_sarif "$second"; then
+		second_count=$(printf '%s\n' "$second" | jq -r '.runs[0].results | length')
+	fi
+	if ! _qlty_valid_sarif "$first" || ! _qlty_valid_sarif "$second"; then
+		_qlty_consensus_diagnostic "empty or invalid SARIF" "$repo_path" "$qlty_bin" \
+			"1:rc=${first_rc},count=${first_count};2:rc=${second_rc},count=${second_count}"
+		rm -rf "$cache_dir"
+		return 1
+	fi
+	if [[ "$(_qlty_normalized_identities "$first")" == "$(_qlty_normalized_identities "$second")" ]]; then
+		printf '%s' "$second"
+		rm -rf "$cache_dir"
+		return 0
+	fi
+	third=$(CDPATH='' cd -- "$repo_path" && XDG_CACHE_HOME="$cache_dir" "$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || third_rc=$?
+	if _qlty_valid_sarif "$third"; then
+		third_count=$(printf '%s\n' "$third" | jq -r '.runs[0].results | length')
+	fi
+	if ! _qlty_valid_sarif "$third"; then
+		_qlty_consensus_diagnostic "invalid third SARIF" "$repo_path" "$qlty_bin" \
+			"1:rc=${first_rc},count=${first_count};2:rc=${second_rc},count=${second_count};3:rc=${third_rc},count=${third_count}"
+		rm -rf "$cache_dir"
+		return 1
+	fi
+	if [[ "$(_qlty_normalized_identities "$first")" == "$(_qlty_normalized_identities "$third")" ||
+		"$(_qlty_normalized_identities "$second")" == "$(_qlty_normalized_identities "$third")" ]]; then
+		printf '%s' "$third"
+		rm -rf "$cache_dir"
+		return 0
+	fi
+	_qlty_consensus_diagnostic "unstable normalized identities" "$repo_path" "$qlty_bin" \
+		"1:rc=${first_rc},count=${first_count};2:rc=${second_rc},count=${second_count};3:rc=${third_rc},count=${third_count}"
+	rm -rf "$cache_dir"
+	return 1
+}
+
 _build_qlty_section_from_sarif() {
 	local qlty_sarif="$1"
 
@@ -296,7 +393,7 @@ _build_qlty_section_from_sarif() {
 		printf '%s|%s|%s' "### Qlty Maintainability
 
 _Qlty analysis returned empty or failed to parse._
-" "0" "UNKNOWN"
+" "inconclusive" "UNKNOWN"
 		return 0
 	fi
 
@@ -306,7 +403,13 @@ _Qlty analysis returned empty or failed to parse._
 	local qlty_remainder="${qlty_data#*|}"
 	local qlty_rules_breakdown="${qlty_remainder%%|*}"
 	local qlty_files_breakdown="${qlty_remainder#*|}"
-	[[ "$qlty_smell_count" =~ ^[0-9]+$ ]] || qlty_smell_count=0
+	if [[ ! "$qlty_smell_count" =~ ^[0-9]+$ ]]; then
+		printf '%s|%s|%s' "### Qlty Maintainability
+
+_Qlty analysis was inconclusive; no numeric telemetry or remediation evidence was recorded._
+" "inconclusive" "UNKNOWN"
+		return 0
+	fi
 	qlty_rules_breakdown=$(_sanitize_markdown "$qlty_rules_breakdown")
 	qlty_files_breakdown=$(_sanitize_markdown "$qlty_files_breakdown")
 
@@ -329,7 +432,7 @@ _extract_qlty_sarif_summary() {
 			group_by(.) | map({file: .[0], count: length}) | sort_by(-.count)[:10] |
 			map("  - `\(.file)`: \(.count) smells") | join("\n")) as $files |
 		"\($total)|\($rules)|\($files)"
-	' || printf '%s' "0||"
+	' || printf '%s' "inconclusive||"
 	return 0
 }
 

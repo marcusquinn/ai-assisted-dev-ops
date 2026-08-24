@@ -106,6 +106,41 @@ check_sonarcloud_status() {
 	return 0
 }
 
+check_qlty_cloud_grade() {
+	local repo_slug=""
+	local badge_svg=""
+	local grade=""
+	repo_slug=$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||') || repo_slug=""
+	if [[ -z "$repo_slug" ]]; then
+		return 0
+	fi
+	badge_svg=$(curl -sS --fail --connect-timeout 5 --max-time 10 \
+		"https://qlty.sh/gh/${repo_slug}/maintainability.svg" 2>/dev/null) || badge_svg=""
+	if [[ -z "$badge_svg" ]]; then
+		return 0
+	fi
+	grade=$(python3 -c "
+import sys, re
+svg = sys.stdin.read()
+colors = {'#22C55E':'A','#84CC16':'B','#EAB308':'C','#F97316':'D','#EF4444':'F'}
+for c in re.findall(r'fill=\"(#[A-F0-9]+)\"', svg):
+    if c in colors:
+        print(colors[c])
+        sys.exit(0)
+print('UNKNOWN')
+" <<<"$badge_svg" 2>/dev/null) || grade="UNKNOWN"
+	if [[ "$grade" == "A" || "$grade" == "B" ]]; then
+		print_success "Qlty Cloud grade: ${grade}"
+	elif [[ "$grade" == "C" ]]; then
+		print_warning "Qlty Cloud grade: ${grade} (target: A)"
+	elif [[ "$grade" == "D" || "$grade" == "F" ]]; then
+		print_error "Qlty Cloud grade: ${grade} (needs significant improvement)"
+	else
+		echo "Qlty Cloud grade: ${grade}"
+	fi
+	return 0
+}
+
 check_qlty_maintainability() {
 	echo -e "${BLUE}Checking Qlty Maintainability...${NC}"
 
@@ -120,14 +155,57 @@ check_qlty_maintainability() {
 		return 0
 	fi
 
-	# Get smell count via SARIF for accuracy
-	local sarif_output
-	sarif_output=$("$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || sarif_output=""
+	# Use a disposable cache and bounded normalized-identity consensus. Scanner
+	# uncertainty is diagnostic and must never be rendered as a clean zero.
+	local sarif_output=""
+	local first_sarif=""
+	local second_sarif=""
+	local third_sarif=""
+	local cache_dir=""
+	local first_ids=""
+	local second_ids=""
+	local third_ids=""
+	cache_dir=$(mktemp -d "${TMPDIR:-/tmp}/qlty-local-cache.XXXXXX") || {
+		print_warning "Qlty status: inconclusive (failed to create isolated cache)"
+		return 0
+	}
+	first_sarif=$(XDG_CACHE_HOME="$cache_dir" "$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || true
+	second_sarif=$(XDG_CACHE_HOME="$cache_dir" "$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || true
+	if ! printf '%s\n' "$first_sarif" | jq -e '.runs[0].results | type == "array"' >/dev/null 2>&1 ||
+		! printf '%s\n' "$second_sarif" | jq -e '.runs[0].results | type == "array"' >/dev/null 2>&1; then
+		rm -rf "$cache_dir"
+		print_warning "Qlty status: inconclusive (empty or invalid SARIF); no numeric result recorded"
+		return 0
+	fi
+	first_ids=$(printf '%s\n' "$first_sarif" | jq -r '.runs[0].results[] | [(.ruleId // "unknown"), ([.locations[]?.physicalLocation?.artifactLocation?.uri? | select(. != null)] | sort | join("|"))] | @tsv' | LC_ALL=C sort)
+	second_ids=$(printf '%s\n' "$second_sarif" | jq -r '.runs[0].results[] | [(.ruleId // "unknown"), ([.locations[]?.physicalLocation?.artifactLocation?.uri? | select(. != null)] | sort | join("|"))] | @tsv' | LC_ALL=C sort)
+	if [[ "$first_ids" == "$second_ids" ]]; then
+		sarif_output="$second_sarif"
+	else
+		third_sarif=$(XDG_CACHE_HOME="$cache_dir" "$qlty_bin" smells --all --sarif --no-snippets --quiet 2>/dev/null) || true
+		if ! printf '%s\n' "$third_sarif" | jq -e '.runs[0].results | type == "array"' >/dev/null 2>&1; then
+			rm -rf "$cache_dir"
+			print_warning "Qlty status: inconclusive (invalid third SARIF); no numeric result recorded"
+			return 0
+		fi
+		third_ids=$(printf '%s\n' "$third_sarif" | jq -r '.runs[0].results[] | [(.ruleId // "unknown"), ([.locations[]?.physicalLocation?.artifactLocation?.uri? | select(. != null)] | sort | join("|"))] | @tsv' | LC_ALL=C sort)
+		if [[ "$first_ids" == "$third_ids" || "$second_ids" == "$third_ids" ]]; then
+			sarif_output="$third_sarif"
+		else
+			rm -rf "$cache_dir"
+			print_warning "Qlty status: inconclusive (unstable normalized identities); no numeric result recorded"
+			return 0
+		fi
+	fi
+	rm -rf "$cache_dir"
 
 	if [[ -n "$sarif_output" ]]; then
 		local smell_count
-		smell_count=$(echo "$sarif_output" | jq '.runs[0].results | length' 2>/dev/null) || smell_count=0
-		[[ "$smell_count" =~ ^[0-9]+$ ]] || smell_count=0
+		smell_count=$(echo "$sarif_output" | jq '.runs[0].results | length' 2>/dev/null) || smell_count="inconclusive"
+		if [[ ! "$smell_count" =~ ^[0-9]+$ ]]; then
+			print_warning "Qlty status: inconclusive (unparseable count); no numeric result recorded"
+			return 0
+		fi
 
 		if [[ "$smell_count" -eq 0 ]]; then
 			print_success "Qlty: 0 smells (clean)"
@@ -159,36 +237,7 @@ check_qlty_maintainability() {
 		print_warning "Qlty analysis returned empty"
 	fi
 
-	# Check badge grade from Qlty Cloud
-	local repo_slug
-	repo_slug=$(git remote get-url origin 2>/dev/null | sed 's|.*github.com[:/]||;s|\.git$||') || repo_slug=""
-	if [[ -n "$repo_slug" ]]; then
-		local badge_svg
-		badge_svg=$(curl -sS --fail --connect-timeout 5 --max-time 10 \
-			"https://qlty.sh/gh/${repo_slug}/maintainability.svg" 2>/dev/null) || badge_svg=""
-		if [[ -n "$badge_svg" ]]; then
-			local grade
-			grade=$(python3 -c "
-import sys, re
-svg = sys.stdin.read()
-colors = {'#22C55E':'A','#84CC16':'B','#EAB308':'C','#F97316':'D','#EF4444':'F'}
-for c in re.findall(r'fill=\"(#[A-F0-9]+)\"', svg):
-    if c in colors:
-        print(colors[c])
-        sys.exit(0)
-print('UNKNOWN')
-" <<<"$badge_svg" 2>/dev/null) || grade="UNKNOWN"
-			if [[ "$grade" == "A" || "$grade" == "B" ]]; then
-				print_success "Qlty Cloud grade: ${grade}"
-			elif [[ "$grade" == "C" ]]; then
-				print_warning "Qlty Cloud grade: ${grade} (target: A)"
-			elif [[ "$grade" == "D" || "$grade" == "F" ]]; then
-				print_error "Qlty Cloud grade: ${grade} (needs significant improvement)"
-			else
-				echo "Qlty Cloud grade: ${grade}"
-			fi
-		fi
-	fi
+	check_qlty_cloud_grade
 
 	return 0
 }

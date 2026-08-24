@@ -107,6 +107,19 @@ case "${QLTY_STUB_MODE:-empty}" in
 		fi
 		exit 0
 		;;
+	never-stable)
+		if [ -z "${XDG_CACHE_HOME:-}" ]; then
+			exit 2
+		fi
+		run_count=0
+		if [ -f "$XDG_CACHE_HOME/run-count" ]; then
+			run_count=$(cat "$XDG_CACHE_HOME/run-count")
+		fi
+		run_count=$((run_count + 1))
+		printf '%s\n' "$run_count" >"$XDG_CACHE_HOME/run-count"
+		printf '{"runs":[{"results":[{"ruleId":"qlty:unstable","locations":[{"physicalLocation":{"artifactLocation":{"uri":"attempt-%s.py"}}}]}]}]}' "$run_count"
+		exit 0
+		;;
 	topology-sensitive)
 		if [ -d .git ]; then
 			printf '{"runs":[{"results":[{"ruleId":"file-complexity","locations":[{"physicalLocation":{"artifactLocation":{"uri":"stable.py"}}}]}]}]}'
@@ -208,6 +221,14 @@ repeated_cache_output=$($HELPER "$CONF" 2>&1)
 repeated_cache_rc=$?
 assert_rc "repeated isolated-cache scan remains stable" "0" "$repeated_cache_rc"
 assert_contains "repeated scan retains stable count" "Normalized result count: 1" "$repeated_cache_output"
+
+write_stub_qlty never-stable "$BIN_DIR"
+never_stable_output=$($HELPER "$CONF" 2>&1)
+never_stable_rc=$?
+assert_rc "unstable identities are diagnostic-only" "0" "$never_stable_rc"
+assert_contains "unstable identities return explicit inconclusive state" "Absolute threshold status: inconclusive (unstable normalized identities)" "$never_stable_output"
+assert_contains "unstable identities include attempt diagnostics" "Attempts: 1:rc=0,count=1;2:rc=0,count=1;3:rc=0,count=1" "$never_stable_output"
+assert_not_contains "unstable identities cannot emit threshold remediation" "QLTY_REMEDIATION_EVIDENCE=" "$never_stable_output"
 
 write_stub_qlty topology-sensitive "$BIN_DIR"
 topology_sensitive_output=$($HELPER "$CONF" 2>&1)
