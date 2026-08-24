@@ -171,15 +171,22 @@ export function verifierSandboxBackend({
 }
 
 function bubblewrapProbe(executable) {
-  const result = spawnSync(executable, [
+  const probeExecutable = ["/usr/bin/true", "/bin/true"].find(executableFile);
+  if (!probeExecutable) unavailableSandbox(process.platform);
+  const probeArguments = [
     "--die-with-parent",
     "--new-session",
     "--unshare-all",
-    "--ro-bind", "/usr", "/usr",
+  ];
+  for (const path of LINUX_RUNTIME_ROOTS.filter(existsSync)) {
+    probeArguments.push("--ro-bind", realpathSync(path), path);
+  }
+  probeArguments.push(
     "--proc", "/proc",
     "--dev", "/dev",
-    "/usr/bin/true",
-  ], {
+    probeExecutable,
+  );
+  const result = spawnSync(executable, probeArguments, {
     encoding: "utf8",
     timeout: 10000,
     stdio: ["ignore", "pipe", "pipe"],
