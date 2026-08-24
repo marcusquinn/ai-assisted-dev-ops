@@ -576,6 +576,16 @@ test_locked_issue_tier_backfill_continuity() {
 		assert_verify "trusted ${tier} tier backfill preserves continuously locked issue approval" issue 41 VERIFIED 0
 	done
 
+	# Production sequence from GH#30585: generic backfill selected standard,
+	# then the trusted self-hosting detector replaced it with thinking. The signed
+	# lifecycle had no tier and the final lifecycle still has exactly one tier.
+	write_locked_issue_fixture false
+	jq '.labels += [{id:11,node_id:"L_11",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":42116,"node_id":"EV_42116","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	append_issue_timeline_event '{"id":42117,"node_id":"EV_42117","event":"unlabeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:standard"}}'
+	append_issue_timeline_event '{"id":42118,"node_id":"EV_42118","event":"labeled","created_at":"2026-01-01T00:06:02Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
+	assert_verify "trusted canonical tier replacement preserves continuously locked issue approval" issue 41 VERIFIED 0
+
 	write_locked_issue_fixture
 	jq '.labels += [{id:10,node_id:"L_10",name:"tier:thinking"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
 	append_issue_timeline_event '{"id":42111,"node_id":"EV_42111","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"tier:thinking"}}'
