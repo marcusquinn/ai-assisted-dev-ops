@@ -48,6 +48,11 @@ _HRW_REASON_READY_MISSING_SUMMARY="worker_ready_missing_summary"
 _HRW_REASON_READY_HANDOFF_FAILED="worker_ready_missing_summary_transition_failed"
 _HRW_REASON_CLOSED_UNMERGED="worker_closed_unmerged_pr"
 _HRW_REASON_UNVERIFIED_HANDOFF="worker_post_pr_handoff_unverified"
+_HRW_REASON_ORIGIN_RECONCILIATION_FAILED="worker_origin_reconciliation_failed"
+_HRW_ORIGIN_WORKER_LABEL="origin:worker"
+_HRW_ORIGIN_STATE_MISSING="missing"
+_HRW_ORIGIN_STATE_VERIFIED="verified"
+_HRW_HANDOFF_READY="ready"
 _HRW_REASON_WORKTREE_CONTINUATION_STATE_REJECTED="worker_worktree_continuation_state_rejected"
 _HRW_REASON_WORKTREE_CONTINUATION_OWNER_ABSENT="worker_worktree_continuation_owner_absent"
 _HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION="worker_worktree_owner_concurrent_mutation"
@@ -1031,6 +1036,102 @@ _handle_worker_dirty_worktree() {
 }
 
 #######################################
+# Classify exact PR metadata for worker-origin reconciliation.
+#
+# Args: repo slug, PR number, branch, head SHA, expected author.
+# Stdout: verified|missing. Returns non-zero for unavailable, mismatched, or
+# conflicting provenance.
+#######################################
+_hrw_worker_handoff_origin_state() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local branch_name="$3"
+	local expected_head="$4"
+	local expected_author="$5"
+	local pr_json=""
+
+	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
+		--json number,state,isDraft,isCrossRepository,headRefName,headRefOid,author,labels 2>/dev/null) || return 1
+	printf '%s' "$pr_json" | jq -e --argjson pr "$pr_number" \
+		--arg branch "$branch_name" --arg head "$expected_head" --arg author "$expected_author" '
+		(.number == $pr) and (.state == "OPEN") and (.isDraft == false) and (.isCrossRepository == false) and
+		(.headRefName == $branch) and (.headRefOid == $head) and
+		((.author.login // "") == $author)
+	' >/dev/null 2>&1 || return 1
+	if ! printf '%s' "$pr_json" | jq -e --arg worker_origin "$_HRW_ORIGIN_WORKER_LABEL" '
+		[.labels[]?.name | select(startswith("origin:") and . != $worker_origin)] | length == 0
+	' >/dev/null 2>&1; then
+		return 1
+	fi
+	if printf '%s' "$pr_json" | jq -e --arg worker_origin "$_HRW_ORIGIN_WORKER_LABEL" \
+		'[.labels[]?.name] | index($worker_origin) != null' >/dev/null 2>&1; then
+		printf '%s' "$_HRW_ORIGIN_STATE_VERIFIED"
+	else
+		printf '%s' "$_HRW_ORIGIN_STATE_MISSING"
+	fi
+	return 0
+}
+
+#######################################
+# Restore missing worker provenance only while this exact issue worker still
+# owns the dispatch and its exact-head, linked, summarized PR. User-controlled
+# body markers are deliberately excluded from the proof chain.
+#
+# Args: session key, worktree path.
+# Returns: 0 when origin:worker was already present or was added and verified.
+#######################################
+_hrw_reconcile_worker_handoff_origin() {
+	local session_key="$1"
+	local work_dir="$2"
+	local repo_slug="${DISPATCH_REPO_SLUG:-}"
+	local runner_login="${WORKER_GITHUB_LOGIN:-${AIDEVOPS_WORKER_GITHUB_LOGIN:-}}"
+	local issue_number="${session_key#issue-}"
+	local branch_name=""
+	local local_head=""
+	local handoff_state=""
+	local pr_number=""
+	local origin_state=""
+
+	[[ "$session_key" == issue-* && "$issue_number" =~ ^[1-9][0-9]*$ ]] || return 1
+	[[ "${WORKER_SESSION_KEY:-}" == "$session_key" ]] || return 1
+	[[ "${WORKER_ISSUE_NUMBER:-}" == "$issue_number" ]] || return 1
+	[[ "$repo_slug" == */* && -n "$runner_login" ]] || return 1
+	[[ -n "$work_dir" && -d "$work_dir" ]] || return 1
+	command -v gh >/dev/null 2>&1 || return 1
+
+	branch_name=$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+	local_head=$(git -C "$work_dir" rev-parse HEAD 2>/dev/null || true)
+	[[ -n "$branch_name" && "$branch_name" != "$_HRW_GIT_HEAD" && -n "$local_head" ]] || return 1
+	handoff_state=$(_pr_handoff_state_for_branch_or_issue \
+		"$branch_name" "$issue_number" "$repo_slug" "head-only" "$local_head" "1") || return 1
+	[[ "${handoff_state%%|*}" == "$_HRW_HANDOFF_READY" ]] || return 1
+	pr_number="${handoff_state#*|}"
+	[[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || return 1
+
+	_hrw_verify_dispatch_ownership || return 1
+	origin_state=$(_hrw_worker_handoff_origin_state \
+		"$repo_slug" "$pr_number" "$branch_name" "$local_head" "$runner_login") || return 1
+	[[ "$origin_state" == "$_HRW_ORIGIN_STATE_MISSING" ]] || {
+		[[ "$origin_state" == "$_HRW_ORIGIN_STATE_VERIFIED" ]]
+		return $?
+	}
+	# Recheck live issue ownership immediately before mutating trust metadata.
+	_hrw_verify_dispatch_ownership || return 1
+	origin_state=$(_hrw_worker_handoff_origin_state \
+		"$repo_slug" "$pr_number" "$branch_name" "$local_head" "$runner_login") || return 1
+	[[ "$origin_state" == "$_HRW_ORIGIN_STATE_MISSING" ]] || {
+		[[ "$origin_state" == "$_HRW_ORIGIN_STATE_VERIFIED" ]]
+		return $?
+	}
+	gh pr edit "$pr_number" --repo "$repo_slug" --add-label "$_HRW_ORIGIN_WORKER_LABEL" >/dev/null 2>&1 || return 1
+	origin_state=$(_hrw_worker_handoff_origin_state \
+		"$repo_slug" "$pr_number" "$branch_name" "$local_head" "$runner_login") || return 1
+	[[ "$origin_state" == "$_HRW_ORIGIN_STATE_VERIFIED" ]] || return 1
+	print_info "[pulse-wrapper] Reconciled missing origin:worker label for PR #${pr_number} after worker recovery"
+	return 0
+}
+
+#######################################
 # Recover tangible worker output on failure paths.
 #
 # Watchdog/SIGKILL exits can happen after a worker has already pushed a branch
@@ -1070,7 +1171,12 @@ _recover_worker_output_on_failure() {
 		pr_handoff=$(_pr_handoff_state_for_branch_or_issue "$branch_name" "$issue_number" "$repo_slug" \
 			"branch-or-issue" "$local_head" 1)
 		local pr_state="${pr_handoff%%|*}"
-		if [[ "$pr_state" == "ready" || "$pr_state" == "merged" ]]; then
+		if [[ "$pr_state" == "$_HRW_HANDOFF_READY" || "$pr_state" == "merged" ]]; then
+			if [[ "$pr_state" == "$_HRW_HANDOFF_READY" ]] && ! _hrw_reconcile_worker_handoff_origin "$session_key" "$work_dir"; then
+				_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_ORIGIN_RECONCILIATION_FAILED"
+				print_warning "[lifecycle] ${_HRW_RECOVERY_CLASSIFICATION} session=${session_key} — provenance ambiguous or write unverified; retaining claim"
+				return 0
+			fi
 			print_info "[lifecycle] worker_failure_recovered_existing_pr session=${session_key} branch=${branch_name}"
 			_hrw_release_dispatch_claim "$session_key" "$_HRW_REASON_WORKER_COMPLETE"
 			_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_WORKER_COMPLETE"

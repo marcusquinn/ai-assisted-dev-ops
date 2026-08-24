@@ -590,6 +590,7 @@ test_failed_worker_ready_pr_remains_completed_handoff() {
 			}
 			_hrw_resolve_default_branch() { printf 'main'; return 0; }
 			_pr_handoff_state_for_branch_or_issue() { printf 'ready|457'; return 0; }
+			_hrw_reconcile_worker_handoff_origin() { return 0; }
 			_release_dispatch_claim() { printf 'release=%s\n' "$2"; return 0; }
 			_recover_worker_output_on_failure "issue-99999" "${TEST_ROOT}"
 		)
@@ -598,6 +599,111 @@ test_failed_worker_ready_pr_remains_completed_handoff() {
 		print_result "failed worker ready PR remains a completed handoff" 0
 	else
 		print_result "failed worker ready PR remains a completed handoff" 1 "$result"
+	fi
+	return 0
+}
+
+test_worker_recovery_reconciles_missing_origin_with_exact_provenance() {
+	local work_dir="${TEST_ROOT}/repo-reconcile-worker-origin"
+	mkdir -p "$work_dir"
+	init_git_worktree "$work_dir"
+	git -C "$work_dir" checkout -q -b "feature/auto-test-issue-99999"
+	local expected_head=""
+	expected_head=$(git -C "$work_dir" rev-parse HEAD)
+
+	local result=""
+	result=$(
+		(
+			export DISPATCH_REPO_SLUG="test-owner/test-repo"
+			export WORKER_SESSION_KEY="issue-99999"
+			export WORKER_ISSUE_NUMBER="99999"
+			export WORKER_GITHUB_LOGIN="worker-login"
+			local label_added=0 edit_count=0 release_reason=""
+			_pr_handoff_state_for_branch_or_issue() {
+				printf 'ready|457'
+				return 0
+			}
+			_hrw_verify_dispatch_ownership() { return 0; }
+			gh() {
+				local args="$*"
+				if [[ "$args" == "pr view 457"* ]]; then
+					if [[ "$label_added" -eq 1 ]]; then
+						printf '{"number":457,"state":"OPEN","isDraft":false,"isCrossRepository":false,"headRefName":"feature/auto-test-issue-99999","headRefOid":"%s","author":{"login":"worker-login"},"labels":[{"name":"origin:worker"}]}' "$expected_head"
+					else
+						printf '{"number":457,"state":"OPEN","isDraft":false,"isCrossRepository":false,"headRefName":"feature/auto-test-issue-99999","headRefOid":"%s","author":{"login":"worker-login"},"labels":[]}' "$expected_head"
+					fi
+					return 0
+				fi
+				if [[ "$args" == *"pr edit 457"* && "$args" == *"--add-label origin:worker"* ]]; then
+					label_added=1
+					edit_count=$((edit_count + 1))
+					return 0
+				fi
+				return 1
+			}
+			_hrw_release_dispatch_claim() {
+				release_reason="$2"
+				return 0
+			}
+			_recover_worker_output_on_failure "issue-99999" "$work_dir"
+			printf 'classification=%s|release=%s|edits=%s\n' \
+				"$_HRW_RECOVERY_CLASSIFICATION" "$release_reason" "$edit_count"
+		)
+	)
+	if [[ "$result" == *"classification=worker_complete|release=worker_complete|edits=1"* ]]; then
+		print_result "worker recovery reconciles missing origin with exact provenance" 0
+	else
+		print_result "worker recovery reconciles missing origin with exact provenance" 1 "$result"
+	fi
+	return 0
+}
+
+test_worker_recovery_rejects_conflicting_origin_and_retains_claim() {
+	local work_dir="${TEST_ROOT}/repo-conflicting-worker-origin"
+	mkdir -p "$work_dir"
+	init_git_worktree "$work_dir"
+	git -C "$work_dir" checkout -q -b "feature/auto-test-issue-99999"
+	local expected_head=""
+	expected_head=$(git -C "$work_dir" rev-parse HEAD)
+
+	local result=""
+	result=$(
+		(
+			export DISPATCH_REPO_SLUG="test-owner/test-repo"
+			export WORKER_SESSION_KEY="issue-99999"
+			export WORKER_ISSUE_NUMBER="99999"
+			export WORKER_GITHUB_LOGIN="worker-login"
+			local edit_count=0 release_count=0
+			_pr_handoff_state_for_branch_or_issue() {
+				printf 'ready|458'
+				return 0
+			}
+			_hrw_verify_dispatch_ownership() { return 0; }
+			gh() {
+				local args="$*"
+				if [[ "$args" == "pr view 458"* ]]; then
+					printf '{"number":458,"state":"OPEN","isDraft":false,"isCrossRepository":false,"headRefName":"feature/auto-test-issue-99999","headRefOid":"%s","author":{"login":"worker-login"},"labels":[{"name":"origin:interactive"}]}' "$expected_head"
+					return 0
+				fi
+				if [[ "$args" == *"pr edit 458"* ]]; then
+					edit_count=$((edit_count + 1))
+					return 0
+				fi
+				return 1
+			}
+			_hrw_release_dispatch_claim() {
+				release_count=$((release_count + 1))
+				return 0
+			}
+			_recover_worker_output_on_failure "issue-99999" "$work_dir"
+			printf 'classification=%s|releases=%s|edits=%s\n' \
+				"$_HRW_RECOVERY_CLASSIFICATION" "$release_count" "$edit_count"
+		)
+	)
+	if [[ "$result" == *"classification=worker_origin_reconciliation_failed|releases=0|edits=0"* ]]; then
+		print_result "worker recovery rejects conflicting origin and retains claim" 0
+	else
+		print_result "worker recovery rejects conflicting origin and retains claim" 1 "$result"
 	fi
 	return 0
 }
@@ -653,23 +759,35 @@ test_post_pr_handoff_overrides_watchdog_next_action() {
 	}
 
 	local evidence_fields="" launch_failure_cause="" next_action=""
+	local previous_recovery_classification="${_HRW_RECOVERY_CLASSIFICATION:-}"
 	evidence_fields=$(_derive_worker_failure_evidence "watchdog_stall_killed" "79" "1" "hard_kill_stall" "watchdog_stall_killed")
 	launch_failure_cause="${evidence_fields%%$'\t'*}"
 	next_action="${evidence_fields#*$'\t'}"
-	if _worker_post_pr_handoff_confirmed "issue-99999" "$work_dir"; then
+	_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_WORKER_COMPLETE"
+	if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_WORKER_COMPLETE" ]] && \
+		_worker_post_pr_handoff_confirmed "issue-99999" "$work_dir"; then
 		launch_failure_cause="post_pr_pending_ci_handoff"
 		next_action="monitor_open_pr"
 	fi
+	local failed_cause="unreconciled_origin" failed_next_action="retain_claim"
+	_HRW_RECOVERY_CLASSIFICATION="$_HRW_REASON_ORIGIN_RECONCILIATION_FAILED"
+	if [[ "$_HRW_RECOVERY_CLASSIFICATION" == "$_HRW_REASON_WORKER_COMPLETE" ]] && \
+		_worker_post_pr_handoff_confirmed "issue-99999" "$work_dir"; then
+		failed_cause="post_pr_pending_ci_handoff"
+		failed_next_action="monitor_open_pr"
+	fi
+	_HRW_RECOVERY_CLASSIFICATION="$previous_recovery_classification"
 
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
 	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
 
-	if [[ "$launch_failure_cause" == "post_pr_pending_ci_handoff" && "$next_action" == "monitor_open_pr" ]]; then
+	if [[ "$launch_failure_cause" == "post_pr_pending_ci_handoff" && "$next_action" == "monitor_open_pr" && \
+		"$failed_cause" == "unreconciled_origin" && "$failed_next_action" == "retain_claim" ]]; then
 		print_result "post-PR watchdog handoff suppresses redispatch next_action" 0
 	else
 		print_result "post-PR watchdog handoff suppresses redispatch next_action" 1 \
-			"Expected monitor_open_pr, got cause='${launch_failure_cause}' next='${next_action}'"
+			"recovered=${launch_failure_cause}/${next_action} unreconciled=${failed_cause}/${failed_next_action}"
 	fi
 	return 0
 }
@@ -728,6 +846,8 @@ test_pr_checkpoint_lifecycle_cases() {
 	test_failed_ci_ready_pr_is_durable_handoff
 	test_closed_unmerged_pr_is_failed_not_completed
 	test_failed_worker_ready_pr_remains_completed_handoff
+	test_worker_recovery_reconciles_missing_origin_with_exact_provenance
+	test_worker_recovery_rejects_conflicting_origin_and_retains_claim
 	test_access_denied_has_provider_failure_evidence
 	return 0
 }

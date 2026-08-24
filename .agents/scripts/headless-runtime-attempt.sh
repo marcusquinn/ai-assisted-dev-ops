@@ -529,7 +529,9 @@ _finish_run_attempt_result() {
 		"${_run_activity_detected:-0}" "${_metric_kill_reason:-}" "${_run_failure_reason:-}")
 	launch_failure_cause="${evidence_fields%%$'\t'*}"
 	next_action="${evidence_fields#*$'\t'}"
-	if [[ "$metric_result_label" == "watchdog_stall_killed" ]] && _worker_post_pr_handoff_confirmed "$session_key" "$work_dir"; then
+	if [[ "$metric_result_label" == "watchdog_stall_killed" &&
+		"${_HRW_RECOVERY_CLASSIFICATION:-}" == "$_HRW_REASON_WORKER_COMPLETE" ]] &&
+		_worker_post_pr_handoff_confirmed "$session_key" "$work_dir"; then
 		launch_failure_cause="post_pr_pending_ci_handoff"
 		next_action="monitor_open_pr"
 	fi
