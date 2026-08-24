@@ -122,8 +122,12 @@ if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "merge" ]]; then
 		fi
 	done
 
-	if [[ "$mode" == "fallback" || "$mode" == "fallback-nmr" || "$mode" == "auto-review-required" ]]; then
+	if [[ "$mode" == "fallback" || "$mode" == "fallback-nmr" || "$mode" == "auto-review-required" ||
+		"$mode" == "fallback-timeout-merged" || "$mode" == "fallback-timeout-open" ]]; then
 		if [[ "\$_gh_has_admin" -eq 1 ]]; then
+			if [[ "$mode" == "fallback-timeout-merged" || "$mode" == "fallback-timeout-open" ]]; then
+				exit 124
+			fi
 			echo "Merged PR"
 			exit 0
 		elif [[ "$mode" == "auto-review-required" ]]; then
@@ -143,6 +147,13 @@ if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "merge" ]]; then
 		echo "GraphQL: API rate limit already exceeded for user ID 12345. (rateLimitExceeded)" >&2
 		exit 1
 	fi
+fi
+
+if [[ "\$_gh_cmd" == "pr" && "\$_gh_sub" == "view" && "\$*" == *"--json state,mergedAt,mergeCommit"* ]]; then
+	case "$mode" in
+	fallback-timeout-merged) echo '{"state":"MERGED","mergedAt":"2026-08-24T00:00:00Z","mergeCommit":{"oid":"merged123sha"},"headRefOid":"abc123headsha"}'; exit 0 ;;
+	fallback-timeout-open) echo '{"state":"OPEN","mergedAt":null,"mergeCommit":null,"headRefOid":"abc123headsha"}'; exit 0 ;;
+	esac
 fi
 GHSTUB
 	return 0
@@ -498,6 +509,28 @@ test_admin_fallback_signals() {
 	fi
 	print_result "admin fallback: admin-merge label applied" "$((1 - label_applied))"
 
+	return 0
+}
+
+test_admin_timeout_reconciles_without_replay() {
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "fallback-timeout-merged"
+
+	local exit_code=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "0" "0" >/dev/null 2>&1 || exit_code=$?
+	local merge_calls=0
+	merge_calls=$(grep -c '^gh pr merge' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
+	print_result "admin timeout: exact merged head reconciles as success" "$exit_code"
+	print_result "admin timeout: merge mutation is not replayed" "$((merge_calls == 2 ? 0 : 1))" "merge_calls=$merge_calls"
+
+	rm -f "${TEST_ROOT}/logs/"*.txt
+	create_gh_stub "fallback-timeout-open"
+	exit_code=0
+	run_merge_execute "42" "testorg/testrepo" "--squash" "0" "0" >/dev/null 2>&1 || exit_code=$?
+	merge_calls=0
+	merge_calls=$(grep -c '^gh pr merge' "${TEST_ROOT}/logs/gh-calls.txt" 2>/dev/null || true)
+	print_result "admin timeout: unproven outcome fails closed" "$((exit_code == 0 ? 1 : 0))"
+	print_result "admin timeout: unproven outcome is not replayed" "$((merge_calls == 2 ? 0 : 1))" "merge_calls=$merge_calls"
 	return 0
 }
 
@@ -1465,6 +1498,7 @@ main() {
 	echo ""
 
 	test_admin_fallback_signals
+	test_admin_timeout_reconciles_without_replay
 	test_admin_fallback_blocks_needs_maintainer_review_issue
 	test_explicit_admin_no_signaling
 	test_other_error_no_fallback

@@ -40,6 +40,16 @@ _flm_gh_read() {
 	return "$rc"
 }
 
+_flm_gh_write() {
+	local rc=0
+	if declare -F _gh_with_timeout >/dev/null 2>&1; then
+		_gh_with_timeout write "$@" || rc=$?
+	else
+		timeout_sec "${AIDEVOPS_GH_WRITE_TIMEOUT:-45}" "$@" || rc=$?
+	fi
+	return "$rc"
+}
+
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	_lib_path="${BASH_SOURCE[0]%/*}"
@@ -231,8 +241,15 @@ _merge_try_interactive_admin_auto_fallback() {
 	local subject_flags=()
 	[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
 	[[ -n "$merge_body_file" ]] && subject_flags+=("$FULL_LOOP_MERGE_BODY_FILE_FLAG" "$merge_body_file")
-	if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$expected_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
+	local admin_rc=0
+	if _flm_gh_write gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$expected_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
 		print_success "PR #${pr_number} merged with interactive --admin fallback"
+		_signal_admin_merge_fallback "$pr_number" "$repo" "$merge_method" "$merge_output"
+		return 0
+	else
+		admin_rc=$?
+	fi
+	if [[ "$admin_rc" -eq 124 ]] && _merge_reconcile_timed_out_write "$pr_number" "$repo" "$expected_head_sha"; then
 		_signal_admin_merge_fallback "$pr_number" "$repo" "$merge_method" "$merge_output"
 		return 0
 	fi
@@ -924,6 +941,52 @@ _merge_revalidate_transport_authority() {
 	return 0
 }
 
+# A timed-out merge write has an unknown outcome: GitHub may have accepted the
+# mutation before the local process was killed. Re-read the exact PR/head once;
+# accept only a completed merge of the reviewed head and never replay the write.
+_merge_reconcile_timed_out_write() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head_sha="$3"
+	local pr_json=""
+
+	print_warning "Merge write timed out for PR #${pr_number}; reconciling exact remote state without retrying the mutation"
+	pr_json=$(_flm_gh_read gh pr view "$pr_number" --repo "$repo" \
+		--json state,mergedAt,mergeCommit,headRefOid 2>/dev/null) || {
+		print_error "Could not reconcile timed-out merge write for PR #${pr_number}; outcome remains unknown"
+		return 1
+	}
+	if printf '%s\n' "$pr_json" | jq -e --arg head "$expected_head_sha" '
+		(.state | ascii_downcase) == "merged"
+		and (.mergedAt // null) != null
+		and (.mergeCommit.oid // null) != null
+		and (.headRefOid // null) == $head
+	' >/dev/null 2>&1; then
+		print_success "PR #${pr_number} merge completed remotely before the local write timeout"
+		return 0
+	fi
+
+	print_error "Timed-out merge write for PR #${pr_number} is not proven merged at the reviewed head; refusing blind retry"
+	return 1
+}
+
+_merge_run_bounded_write() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head_sha="$3"
+	local write_rc=0
+	shift 3
+	_MERGE_WRITE_OUTPUT=""
+	if _MERGE_WRITE_OUTPUT=$(_flm_gh_write "$@" 2>&1); then
+		return 0
+	else
+		write_rc=$?
+	fi
+	[[ "$write_rc" -eq 124 ]] || return "$write_rc"
+	_merge_reconcile_timed_out_write "$pr_number" "$repo" "$expected_head_sha" || return 124
+	return 0
+}
+
 # Resolve one authoritative Conventional Commit type from the reviewed PR's
 # commit metadata. Every commit must be conventional and use the same type;
 # mixed, WIP, or otherwise ambiguous histories deliberately produce no type.
@@ -1083,30 +1146,27 @@ _merge_execute() {
 		print_error "Cannot bind merge to a remotely verified PR head SHA"
 		return 1
 	}
-	#aidevops:trust-boundary GH#17671/GH#28622 -- every merge mode, including
-	# --auto and the non-admin REST transport fallback, must pass the same live
-	# external/fork and exact-head cryptographic authority check.
+	#aidevops:trust-boundary GH#17671/GH#28622 -- all merge modes pass the same
+	# live external/fork and exact-head cryptographic authority check.
 	_merge_revalidate_transport_authority "$pr_number" "$repo" "$match_head_sha" || return 1
 	merge_flags+=("--match-head-commit" "$match_head_sha")
 
-	# Capture output AND exit code under set -e. A bare assignment `out=$(cmd)`
-	# triggers errexit before `rc=$?` is reached; the if-form keeps both available.
-	# (GH#18538 follow-up to PR #18748 — the bare-assignment form shipped as a bug.)
-	local _merge_out="" _merge_rc=0
-	if _merge_out=$(gh pr merge "$pr_number" --repo "$repo" "$merge_method" ${merge_flags[@]+"${merge_flags[@]}"} 2>&1); then
-		_merge_rc=0
-	else
-		_merge_rc=$?
-	fi
+	local _merge_out="" _merge_rc=0 _MERGE_WRITE_OUTPUT=""
+	_merge_run_bounded_write "$pr_number" "$repo" "$match_head_sha" \
+		gh pr merge "$pr_number" --repo "$repo" "$merge_method" ${merge_flags[@]+"${merge_flags[@]}"} || _merge_rc=$?
+	_merge_out="$_MERGE_WRITE_OUTPUT"
 	if [[ $_merge_rc -ne 0 ]] && gh_merge_remediate_stale_auth_cache "$_merge_out" "full-loop PR #${pr_number} in ${repo}" ""; then
 		local _merge_retry_out="" _merge_original_out="$_merge_out"
 		print_info "gh pr merge returned 401 while live gh auth succeeds; quarantined stale gh cache entries and retrying once..."
 		_merge_revalidate_transport_authority "$pr_number" "$repo" "$match_head_sha" || return 1
-		if _merge_retry_out=$(gh pr merge "$pr_number" --repo "$repo" "$merge_method" ${merge_flags[@]+"${merge_flags[@]}"} 2>&1); then
+		_MERGE_WRITE_OUTPUT=""
+		_merge_rc=0
+		_merge_run_bounded_write "$pr_number" "$repo" "$match_head_sha" \
+			gh pr merge "$pr_number" --repo "$repo" "$merge_method" ${merge_flags[@]+"${merge_flags[@]}"} || _merge_rc=$?
+		_merge_retry_out="$_MERGE_WRITE_OUTPUT"
+		if [[ $_merge_rc -eq 0 ]]; then
 			_merge_out="$_merge_retry_out"
-			_merge_rc=0
 		else
-			_merge_rc=$?
 			_merge_out="${_merge_original_out}
 
 [retry after stale gh cache remediation]
@@ -1137,18 +1197,21 @@ ${_merge_retry_out}"
 			local subject_flags=()
 			[[ -n "$squash_subject" ]] && subject_flags+=("$FULL_LOOP_MERGE_SUBJECT_FLAG" "$squash_subject")
 			[[ -n "$merge_body_file" ]] && subject_flags+=("$FULL_LOOP_MERGE_BODY_FILE_FLAG" "$merge_body_file")
-			if gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$match_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
+			local admin_rc=0
+			if _flm_gh_write gh pr merge "$pr_number" --repo "$repo" "$merge_method" --admin --match-head-commit "$match_head_sha" ${subject_flags[@]+"${subject_flags[@]}"} 2>&1; then
 				print_success "PR #${pr_number} merged with --admin fallback"
-				# t2247: Signal that admin-merge fallback was used — three artifacts:
-				# (a) PR comment with error context + remediation
-				# (b) Audit log entry
-				# (c) admin-merge label for cross-PR filtering
+				# t2247: Signal fallback through a PR comment, audit entry, and label.
 				_signal_admin_merge_fallback "$pr_number" "$repo" "$merge_method" "$_merge_out"
 				return 0
 			else
-				print_error "Merge failed for PR #${pr_number} (even with --admin — maintainer gate or admin rights missing)"
-				return 1
+				admin_rc=$?
 			fi
+			if [[ "$admin_rc" -eq 124 ]] && _merge_reconcile_timed_out_write "$pr_number" "$repo" "$match_head_sha"; then
+				_signal_admin_merge_fallback "$pr_number" "$repo" "$merge_method" "$_merge_out"
+				return 0
+			fi
+			print_error "Merge failed for PR #${pr_number} (even with --admin — maintainer gate or admin rights missing)"
+			return 1
 		else
 			print_error "Merge failed for PR #${pr_number}"
 			return 1
