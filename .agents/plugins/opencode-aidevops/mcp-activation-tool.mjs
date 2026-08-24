@@ -90,13 +90,12 @@ export function createMcpActivationTool(tool, z, options) {
     async execute(args) {
       const action = String(args.action || "");
       const name = String(args.name || "");
-      if (!allowed.has(name) || !["connect", "disconnect"].includes(action)) {
-        return "Error: only registry-approved MCP activation requests are allowed.";
-      }
-
       const method = options.client?.[action];
-      if (typeof method !== "function") {
-        return `Error: OpenCode does not expose MCP ${action} in this runtime.`;
+      const invalidRequest = !allowed.has(name) || !["connect", "disconnect"].includes(action);
+      if (invalidRequest || typeof method !== "function") {
+        return invalidRequest
+          ? "Error: only registry-approved MCP activation requests are allowed."
+          : `Error: OpenCode does not expose MCP ${action} in this runtime.`;
       }
 
       try {
