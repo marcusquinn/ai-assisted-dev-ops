@@ -290,7 +290,8 @@ _run_shellcheck_on_changed_files() {
 		[[ -n "$changed_file" ]] || continue
 		case "$changed_file" in
 		*.sh)
-			changed_shell_files+=("$changed_file")
+			# Diff name lists include deletions; ShellCheck only current files.
+			[[ -f "$REPO_ROOT/$changed_file" ]] && changed_shell_files+=("$changed_file")
 			;;
 		esac
 	done <<<"$changed_files"

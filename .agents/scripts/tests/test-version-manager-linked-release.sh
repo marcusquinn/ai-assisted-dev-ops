@@ -31,6 +31,8 @@ print_success() { return 0; }
 export SCRIPT_DIR REPO_ROOT="$REPO"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/version-manager-git.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/version-manager-preflight.sh"
 
 force_flag=1
 if assert_release_linked_worktree >/dev/null 2>&1; then
@@ -58,5 +60,24 @@ if (cd "$LINKED" && PRE_EDIT_OWNER_PID="$$" bash "$PRE_EDIT" >/dev/null 2>&1); t
 	printf 'PASS pre-edit accepts detached linked release worktree\n'
 else
 	printf 'FAIL pre-edit rejected detached linked release worktree\n'
+	exit 1
+fi
+
+SHELLCHECK_LOG="${ROOT}/shellcheck.log"
+shellcheck() {
+	printf '%s\n' "$*" >>"$SHELLCHECK_LOG"
+	return 0
+}
+printf '#!/usr/bin/env bash\n' >"${LINKED}/current.sh"
+if (cd "$LINKED" && _run_shellcheck_on_changed_files v1.0.0 $'current.sh\ndeleted.sh\nREADME.md'); then
+	if grep -qx -- '--severity=warning current.sh' "$SHELLCHECK_LOG" &&
+		! grep -q 'deleted.sh' "$SHELLCHECK_LOG"; then
+		printf 'PASS release preflight excludes deleted shell files from ShellCheck\n'
+	else
+		printf 'FAIL release preflight passed an unexpected changed file to ShellCheck\n'
+		exit 1
+	fi
+else
+	printf 'FAIL release preflight rejected a changed-file list containing a deletion\n'
 	exit 1
 fi
