@@ -2031,14 +2031,14 @@ process_pr() {
 }
 
 #######################################
-# Extract linked issue number from a GitHub-native closing clause in the PR body.
-# A "GH#NNN:" title may confirm that identity but may never override it.
+# Extract linked issue number from a same-repository GitHub-native closing clause
+# in the PR body. PR title metadata is not issue identity.
 #
 # Close keyword matching (GH#18098): only GitHub-native keywords trigger auto-close —
 # bare GH#NNN references in "Related" sections do NOT.  GitHub's full keyword list:
 # close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved (case-insensitive).
-# GH#NNN matching is restricted to the PR title to avoid treating informational body
-# references as closing keywords.
+# Cross-repository references use owner/repo#NNN and do not match the local #NNN
+# shape below.
 #
 # Args: $1=PR number, $2=repo slug
 # Returns: issue number on stdout, or empty if none found
@@ -2046,11 +2046,7 @@ process_pr() {
 _extract_linked_issue() {
 	local pr_number="$1"
 	local repo_slug="$2"
-	local pr_title="" pr_body=""
-	if ! pr_title=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json title --jq '.title // empty' 2>/dev/null); then
-		echo "[pulse-wrapper] _extract_linked_issue: PR #${pr_number} in ${repo_slug} title metadata unavailable — no routing target" >>"$LOGFILE"
-		return 1
-	fi
+	local pr_body=""
 	if ! pr_body=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json body --jq '.body // empty' 2>/dev/null); then
 		echo "[pulse-wrapper] _extract_linked_issue: PR #${pr_number} in ${repo_slug} body metadata unavailable — no routing target" >>"$LOGFILE"
 		return 1
@@ -2061,15 +2057,12 @@ _extract_linked_issue() {
 	# Does NOT match bare GH#NNN, "Related #NNN", "For #NNN", "Ref #NNN", or other
 	# non-closing references. (GH#18098 + t2108)
 	#
-	# The body keyword is AUTHORITATIVE. The title fallback below only fires when
-	# the body has a closing keyword AND the title also names a number — it picks
-	# WHICH issue from the body matches when there are multiple. It is NEVER an
-	# override that creates a match where the body intentionally has none. (t2108)
-	local body_issues="" body_issue="" title_issue=""
+	# The body keyword is AUTHORITATIVE. A project-specific GH#NNN title prefix
+	# must not override or contradict a single native closing target. (t2108)
+	local body_issues="" body_issue=""
 	body_issues=$(printf '%s' "$pr_body" \
 		| grep -ioE '(close[ds]?|fix(es|ed)?|resolve[ds]?)[[:space:]]+#[0-9]+' \
 		| grep -oE '[0-9]+' | sort -u) || body_issues=""
-	title_issue=$(printf '%s' "$pr_title" | grep -oE 'GH#[0-9]+' | head -1 | grep -oE '[0-9]+') || title_issue=""
 
 	# No closing keyword in the body → return empty. The PR is intentionally
 	# not closing any issue (planning-only PR, multi-PR roadmap, "For #NNN"
@@ -2084,12 +2077,6 @@ _extract_linked_issue() {
 	fi
 	body_issue="$body_issues"
 
-	# A title identity is corroborating evidence only. A mismatch means target
-	# identity is ambiguous and destructive callers must fail closed.
-	if [[ -n "$title_issue" && "$title_issue" != "$body_issue" ]]; then
-		echo "[pulse-wrapper] _extract_linked_issue: PR #${pr_number} in ${repo_slug} title issue #${title_issue} disagrees with closing issue #${body_issue} — no routing target" >>"$LOGFILE"
-		return 1
-	fi
 	printf '%s' "$body_issue"
 	return 0
 }

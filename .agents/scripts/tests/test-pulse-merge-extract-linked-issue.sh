@@ -3,9 +3,8 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
 # Tests for t2108 / GH#19051: pulse-merge.sh _extract_linked_issue
-# must treat the PR body keyword as AUTHORITATIVE. The PR-title fallback
-# (GH#NNN: prefix) may only return an issue number when the PR body ALSO
-# contains a GitHub-native closing keyword (Closes/Fixes/Resolves + #NNN).
+# must treat a single same-repository PR-body closing target as AUTHORITATIVE.
+# A project-specific GH#NNN title prefix is not GitHub issue identity.
 #
 # Root cause: every PR in this repo follows the canonical title format
 # "GH#NNN: description". _extract_linked_issue fell back to that title
@@ -25,12 +24,13 @@
 #      (regression guard for the t2105 incident)
 #   2. "Resolves #NNN" body + GH#NNN title → issue number
 #      (normal leaf close path still works)
-#   3. "Closes #99999" body + GH#19042 title → empty
-#      (mismatched identities fail closed)
+#   3. "Closes #99999" body + unrelated GH#19042 title → #99999
+#      (the single native closing target is authoritative)
 #   4. "Ref #NNN" body (no closing keyword) + tNNN title → empty
 #      (tNNN: title format has no GH# — both gates fail)
 #   5. Multiple distinct closing identities → empty
-#   6. Failed title/body metadata reads → empty
+#   6. Cross-repository closing reference → empty
+#   7. Failed body metadata read → empty; unavailable title metadata is irrelevant
 
 set -euo pipefail
 
@@ -176,14 +176,14 @@ test_closing_keyword_accepts_tab_whitespace() {
 	return 0
 }
 
-# Scenario 3: title/body mismatch is ambiguous and must not select either issue.
-test_title_mismatch_returns_empty() {
+# Scenario 3: a project-specific GH# title cannot contradict the single native target.
+test_unrelated_title_keeps_body_target() {
 	export TEST_PR_TITLE="GH#19042: cross-issue"
 	export TEST_PR_BODY="Closes #99999
 
 Also references #19042."
-	assert_returns "" \
-		"scenario3: mismatched title and closing issue return empty"
+	assert_returns "99999" \
+		"scenario3: unrelated GH# title does not override native closing target"
 	return 0
 }
 
@@ -195,13 +195,21 @@ test_multiple_closing_issues_return_empty() {
 	return 0
 }
 
+test_cross_repo_closing_reference_returns_empty() {
+	export TEST_PR_TITLE="GH#19042: external tracker identity"
+	export TEST_PR_BODY="Resolves other/repo#19042"
+	assert_returns "" \
+		"scenario6: cross-repository closing reference is not a local issue target"
+	return 0
+}
+
 test_metadata_failure_returns_empty() {
 	export TEST_PR_TITLE="GH#19042: fix bug"
 	export TEST_PR_BODY="Resolves #19042"
 	export TEST_FAIL_METADATA="title"
-	assert_returns "" "scenario6a: failed title metadata read returns empty"
+	assert_returns "19042" "scenario7a: unavailable title metadata does not block body target"
 	export TEST_FAIL_METADATA="body"
-	assert_returns "" "scenario6b: failed body metadata read returns empty"
+	assert_returns "" "scenario7b: failed body metadata read returns empty"
 	export TEST_FAIL_METADATA=""
 	return 0
 }
@@ -231,9 +239,10 @@ main() {
 	test_for_ref_body_no_close_returns_empty
 	test_resolves_body_returns_issue
 	test_closing_keyword_accepts_tab_whitespace
-	test_title_mismatch_returns_empty
+	test_unrelated_title_keeps_body_target
 	test_ref_body_tnnn_title_returns_empty
 	test_multiple_closing_issues_return_empty
+	test_cross_repo_closing_reference_returns_empty
 	test_metadata_failure_returns_empty
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
