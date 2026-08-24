@@ -1415,7 +1415,8 @@ _prrts_classify_previous_dispatch() {
 	if [[ "$repeated" == "$PRRTS_BOOL_TRUE" && "$same_head" == "$PRRTS_BOOL_TRUE" ]] &&
 		_prrts_outcome_matches_dispatch "$expected_outcome_id" "$observed_outcome_id" \
 			"$outcome_reason" "$outcome_session_count" "$outcome_finished_at" "$dispatched_at" "$now_epoch"; then
-		if [[ "$outcome_retry_class" == "$PRRTS_RETRY_CLASS_INFRASTRUCTURE" ]]; then
+		if [[ "$outcome_retry_class" == "$PRRTS_RETRY_CLASS_INFRASTRUCTURE" ||
+			("$outcome_reason" == "auth_error" && "$outcome_retry_class" == "$PRRTS_RETRY_CLASS_REMEDIATION") ]]; then
 			infrastructure="$PRRTS_BOOL_TRUE"
 		elif [[ "$outcome_retry_class" == "$PRRTS_RETRY_CLASS_MAINTAINER_GATE" ]]; then
 			maintainer="$PRRTS_BOOL_TRUE"
