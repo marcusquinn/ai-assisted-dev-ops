@@ -224,7 +224,22 @@ _resolve_apply_repo() {
 		printf '%s\n' "$APPLY_REPO"
 		return 0
 	fi
-	gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true
+
+	local framework_repo="${AIDEVOPS_FRAMEWORK_REPO:-$HOME/Git/aidevops}"
+	local remote_url=""
+	local slug=""
+	remote_url=$(git -C "$framework_repo" remote get-url origin 2>/dev/null) || return 1
+	case "$remote_url" in
+	git@github.com:*) slug="${remote_url#git@github.com:}" ;;
+	ssh://git@github.com/*) slug="${remote_url#ssh://git@github.com/}" ;;
+	https://github.com/*) slug="${remote_url#https://github.com/}" ;;
+	http://github.com/*) slug="${remote_url#http://github.com/}" ;;
+	git://github.com/*) slug="${remote_url#git://github.com/}" ;;
+	*) return 1 ;;
+	esac
+	slug="${slug%.git}"
+	[[ "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+	printf '%s\n' "$slug"
 	return 0
 }
 
@@ -616,10 +631,12 @@ _reconcile_failure_family_remediations() {
 _apply_findings() {
 	local report_json="$1"
 	local slug=""
-	slug=$(_resolve_apply_repo)
+	if ! slug=$(_resolve_apply_repo); then
+		slug=""
+	fi
 	if [[ -z "$slug" ]]; then
-		print_error "pulse-check: --apply requires --repo <owner/repo> or a gh repo context"
-		return 1
+		print_warning "pulse-check: generated report but skipped issue writes; pass --repo <owner/repo> or configure a GitHub origin at AIDEVOPS_FRAMEWORK_REPO"
+		return 0
 	fi
 	if ! _failure_family_writes_allowed "$report_json"; then
 		print_warning "pulse-check: skipping issue writes while GitHub API cooldown or dispatch API block is active"

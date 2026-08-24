@@ -90,7 +90,10 @@ fi
 
 TEST_ROOT="$(mktemp -d -t pulse-check-test-XXXXXX)"
 BIN_DIR="${TEST_ROOT}/bin"
-mkdir -p "$BIN_DIR"
+FRAMEWORK_REPO="${TEST_ROOT}/framework-repo"
+mkdir -p "$BIN_DIR" "$FRAMEWORK_REPO"
+git -C "$FRAMEWORK_REPO" init -q
+git -C "$FRAMEWORK_REPO" remote add origin git@github.com:fork-owner/aidevops.git
 
 cleanup() {
 	rm -rf "$TEST_ROOT"
@@ -192,7 +195,7 @@ if [[ " $* " == *" api "*"/labels?per_page=100"* ]]; then
   exit "${PULSE_CHECK_LABEL_LIST_EXIT:-0}"
 fi
 if [[ " $* " == *" api repos/"*"/contents/.agents/scripts/"* ]]; then
-  if [[ " $* " == *"repos/owner/aidevops/contents/"* ]]; then
+  if [[ " $* " == *"repos/owner/aidevops/contents/"* || " $* " == *"repos/fork-owner/aidevops/contents/"* ]]; then
     printf 'file\n'
     exit 0
   fi
@@ -480,19 +483,33 @@ CLASSIFIED_JSON_OUT=$(env "${COMMON_ENV[@]}" "$HELPER" json 2>&1)
 CLASSIFIED_IDS=$(printf '%s' "$CLASSIFIED_JSON_OUT" | jq -r '[.findings[].id] | sort | join(",")')
 assert_eq "classified launch failures suppress launch accounting gap" "auto-dispatch-missing-tier-labels,pulse-underfilled-auto-dispatch-queue" "$CLASSIFIED_IDS"
 
-APPLY_OUT=$(env "${COMMON_ENV[@]}" "$HELPER" apply --repo owner/aidevops 2>&1)
+APPLY_OUT=$(env "${COMMON_ENV[@]}" "AIDEVOPS_FRAMEWORK_REPO=${FRAMEWORK_REPO}" "$HELPER" apply --repo owner/aidevops 2>&1)
 assert_contains "apply reports issue filing" "pulse-check: filed" "$APPLY_OUT"
 CAPTURE=$(<"${TEST_ROOT}/capture.txt")
 for required_label in auto-dispatch tier:standard bug framework pulse self-improvement source:pulse-check; do
 	assert_contains "apply provisions ${required_label}" "label-create=${required_label}" "$CAPTURE"
 done
 assert_precedes "apply provisions labels before issue creation" "label-create=source:pulse-check" "repo=owner/aidevops" "$CAPTURE"
+assert_not_contains "explicit apply repo overrides configured framework origin" "repo=fork-owner/aidevops" "$CAPTURE"
 assert_contains "apply passes complete label contract" "labels=auto-dispatch,tier:standard,bug,framework,pulse,self-improvement,source:pulse-check" "$CAPTURE"
 BODY=$(<"${TEST_ROOT}/capture.txt.body")
 assert_contains "apply body carries marker" "aidevops:generator=pulse-check finding=" "$BODY"
 assert_contains "apply body carries verification" ".agents/scripts/tests/test-pulse-check-helper.sh" "$BODY"
 assert_not_contains "apply body omits private slug" "private/repo-one" "$BODY"
 assert_not_contains "apply body omits issue title" "secret one" "$BODY"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+CONFIGURED_OUT=$(env "${COMMON_ENV[@]}" "AIDEVOPS_FRAMEWORK_REPO=${FRAMEWORK_REPO}" "$HELPER" apply 2>&1)
+CONFIGURED_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+assert_contains "apply resolves configured framework origin" "pulse-check: filed" "$CONFIGURED_OUT"
+assert_contains "configured framework origin supports forks" "repo=fork-owner/aidevops" "$CONFIGURED_CAPTURE"
+assert_not_contains "configured framework resolution ignores ambient gh context" "repo=owner/aidevops" "$CONFIGURED_CAPTURE"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+UNRESOLVED_OUT=$(env "${COMMON_ENV[@]}" "AIDEVOPS_FRAMEWORK_REPO=${TEST_ROOT}/missing-framework" "$HELPER" apply 2>&1)
+assert_contains "unresolved framework target preserves report" "Pulse Check" "$UNRESOLVED_OUT"
+assert_contains "unresolved framework target skips writes with guidance" "generated report but skipped issue writes" "$UNRESOLVED_OUT"
+assert_not_contains "unresolved framework target does not use ambient gh context" "pulse-check: filed" "$UNRESOLVED_OUT"
 
 rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
 EXISTING_LABELS='[{"name":"auto-dispatch"},{"name":"tier:standard"},{"name":"bug"},{"name":"framework"},{"name":"pulse"},{"name":"self-improvement"},{"name":"source:pulse-check"}]'
