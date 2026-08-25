@@ -285,6 +285,7 @@ function bubblewrapSandboxCommand(argv, workspace, environmentRoot, executable) 
     "--bind", key, key,
     "--bind", canonicalEnvironment, canonicalEnvironment,
     "--bind", isolatedTemporary, "/tmp",
+    "--remount-ro", "/",
     "--chdir", key,
     "--",
     ...argv,
