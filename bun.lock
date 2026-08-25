@@ -49,7 +49,7 @@
         "@fontsource/fredoka": "5.2.10",
         "@fontsource/ibm-plex-mono": "5.2.7",
         "@fontsource/ibm-plex-sans": "5.2.8",
-        "@fontsource/ibm-plex-serif": "5.2.7",
+        "@fontsource/ibm-plex-serif": "5.3.0",
         "@fontsource/inter": "5.2.8",
         "@fontsource/mohave": "5.2.10",
         "@fontsource/playpen-sans": "5.3.0",
@@ -104,7 +104,7 @@
 
     "@fontsource/ibm-plex-sans": ["@fontsource/ibm-plex-sans@5.2.8", "", {}, "sha512-eztSXjDhPhcpxNIiGTgMebdLP9qS4rWkysuE1V7c+DjOR0qiezaiDaTwQE7bTnG5HxAY/8M43XKDvs3cYq6ZYQ=="],
 
-    "@fontsource/ibm-plex-serif": ["@fontsource/ibm-plex-serif@5.2.7", "", {}, "sha512-04owmc2OQQ/DAMjXjEMJc+7V4dBVmR01aIFOg4cuqS8pQ4HbvtlYs/u6+O0vCt21EMx5M/azIbgx43iKyisEOA=="],
+    "@fontsource/ibm-plex-serif": ["@fontsource/ibm-plex-serif@5.3.0", "", {}, "sha512-zwPfHB7EJbS5B8qnitPigJYzNdnt6PUeaoOA1gAAt//1pjpTVZN5sOU14NIAZ+C1xypL6GWsUG2VMYJW9bhJqQ=="],
 
     "@fontsource/inter": ["@fontsource/inter@5.2.8", "", {}, "sha512-P6r5WnJoKiNVV+zvW2xM13gNdFhAEpQ9dQJHt3naLvfg+LkF2ldgSLiF4T41lf1SQCM9QmkqPTn4TH568IRagg=="],
 
