@@ -78,6 +78,6 @@ jobs:
           body=$(printf '%s\n\n%s\n\n%s\n\n%s\n' \
             "$summary" \
             "Status: ${status}" "Result: ${result}" \
-            'Files: `.agents/scripts/shared-constants.sh`, `.opencode/package.json`, and `.opencode/package-lock.json`. Retain the current fail-closed pin after failed or inconclusive results; after a passing rerun, advance the tested version, dates, result, and plugin lock together. Verify with `.agents/scripts/tests/test-opencode-pin-policy.sh` and the workflow canary.')
+            'Files: `.agents/scripts/shared-constants.sh`, `.agents/plugins/opencode-aidevops/package.json`, and `.agents/plugins/opencode-aidevops/package-lock.json`. Retain the current fail-closed pin after failed or inconclusive results; after a passing rerun, advance the tested version, dates, result, and plugin lock together. Verify with `.agents/scripts/tests/test-opencode-pin-policy.sh` and the workflow canary.')
           gh api --method POST "repos/${REPO}/issues" -f title="$title" -f body="$body" \
             -f 'labels[]=origin:worker' -f 'labels[]=status:in-review' >/dev/null
