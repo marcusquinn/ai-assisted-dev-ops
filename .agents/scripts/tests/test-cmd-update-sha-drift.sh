@@ -59,6 +59,7 @@ print_result() {
 
 AIDEVOPS_SH="$WORKTREE_ROOT/aidevops.sh"
 AUTO_UPDATE_SH="$WORKTREE_ROOT/.agents/scripts/auto-update-helper.sh"
+AUTO_UPDATE_CHECK_SH="$WORKTREE_ROOT/.agents/scripts/auto-update-helper-check.sh"
 UPDATE_CHECK_SH="$WORKTREE_ROOT/.agents/scripts/aidevops-update-check.sh"
 UPDATE_LIB="$WORKTREE_ROOT/.agents/scripts/aidevops-cli/aidevops-update-lib.sh"
 
@@ -114,6 +115,14 @@ if grep -q '\.deployed-sha' "$AUTO_UPDATE_SH" &&
 else
 	print_result "auto-update-helper.sh has stamp-drift check (t2706 marker)" 1 \
 		"(expected .deployed-sha reference and t2706 marker)"
+fi
+
+if grep -q 'merge-base --is-ancestor.*head_sha.*deployed_sha' "$AUTO_UPDATE_SH" &&
+	grep -q 'merge-base --is-ancestor.*head_sha.*deployed_sha' "$AUTO_UPDATE_CHECK_SH"; then
+	print_result "auto-update preserves deployed runtimes ahead of canonical HEAD" 0
+else
+	print_result "auto-update preserves deployed runtimes ahead of canonical HEAD" 1 \
+		"(expected ancestry guard in orchestrator and check sub-library)"
 fi
 
 # Test 5: auto-update-helper.sh filters for framework code paths
@@ -198,8 +207,17 @@ printf '#!/usr/bin/env bash\necho aidevops v2\n' >"$SANDBOX_REPO/aidevops.sh"
 /usr/bin/git -C "$SANDBOX_REPO" commit -qm "update aidevops.sh" 2>/dev/null
 HEAD_WITH_AIDEVOPS_DRIFT_SHA=$(/usr/bin/git -C "$SANDBOX_REPO" rev-parse HEAD)
 
+# Add an intentional linked-worktree-style hotfix deployment ahead of the
+# canonical HEAD, then return the sandbox checkout to the canonical commit.
+printf '#!/usr/bin/env bash\necho hotfix\n' >"$SANDBOX_REPO/.agents/scripts/foo.sh"
+/usr/bin/git -C "$SANDBOX_REPO" add -A
+/usr/bin/git -C "$SANDBOX_REPO" commit -qm "active hotfix" 2>/dev/null
+DEPLOYED_AHEAD_SHA=$(/usr/bin/git -C "$SANDBOX_REPO" rev-parse HEAD)
+/usr/bin/git -C "$SANDBOX_REPO" checkout -q --detach "$HEAD_WITH_AIDEVOPS_DRIFT_SHA"
+
 if [[ -z "$DEPLOYED_SHA" || -z "$HEAD_SHA" || -z "$HEAD_WITH_DOCS_SHA" ||
-	-z "$HEAD_WITH_SETUP_DRIFT_SHA" || -z "$HEAD_WITH_AIDEVOPS_DRIFT_SHA" ]]; then
+	-z "$HEAD_WITH_SETUP_DRIFT_SHA" || -z "$HEAD_WITH_AIDEVOPS_DRIFT_SHA" ||
+	-z "$DEPLOYED_AHEAD_SHA" ]]; then
 	printf '%sSETUP FAILED%s sandbox repo SHAs empty\n' "$TEST_RED" "$TEST_RESET"
 	exit 1
 fi
@@ -263,6 +281,27 @@ count_setup_calls() {
 	return 0
 }
 
+run_auto_update_stale_check() {
+	local stamp_content="$1"
+	printf '%s\n' "$stamp_content" >"$SANDBOX_AIDEVOPS/.deployed-sha"
+	HOME="$SANDBOX_HOME" bash -c '
+		INSTALL_DIR="$1"
+		LOG_FILE="$2"
+		SCRIPT_DIR="${3%/*}"
+		setup_calls_log="$4"
+		source "$3"
+		log_info() { return 0; }
+		log_warn() { return 0; }
+		log_error() { return 0; }
+		_run_setup_ai_session_with_fallback() {
+			printf "called\n" >>"$setup_calls_log"
+			return 0
+		}
+		_cmd_check_stale_agent_redeploy v1
+	' _ "$SANDBOX_REPO" "${TEST_ROOT}/auto-update-test.log" "$AUTO_UPDATE_CHECK_SH" "$SETUP_CALLS_LOG"
+	return 0
+}
+
 # Test 6: no stamp file → no-op
 rm -f "$SETUP_CALLS_LOG"
 run_cmd_update_stamp_branch ""
@@ -320,6 +359,27 @@ if [[ "$(count_setup_calls)" -eq 1 ]]; then
 	print_result "setup.sh fires when aidevops.sh drifts" 0
 else
 	print_result "setup.sh fires when aidevops.sh drifts" 1 \
+		"(expected 1 call, got $(count_setup_calls))"
+fi
+
+# Test 12: an intentionally deployed hotfix ahead of canonical HEAD must not be
+# replaced by the unattended same-version drift reconciler.
+rm -f "$SETUP_CALLS_LOG"
+run_auto_update_stale_check "$DEPLOYED_AHEAD_SHA"
+if [[ "$(count_setup_calls)" -eq 0 ]]; then
+	print_result "auto-update preserves an ahead deployed runtime" 0
+else
+	print_result "auto-update preserves an ahead deployed runtime" 1 \
+		"(setup.sh was called for an intentional hotfix deployment)"
+fi
+
+# Test 13: the ancestry guard must retain the original stale-runtime repair.
+rm -f "$SETUP_CALLS_LOG"
+run_auto_update_stale_check "$DEPLOYED_SHA"
+if [[ "$(count_setup_calls)" -eq 1 ]]; then
+	print_result "auto-update still repairs a deployed runtime behind HEAD" 0
+else
+	print_result "auto-update still repairs a deployed runtime behind HEAD" 1 \
 		"(expected 1 call, got $(count_setup_calls))"
 fi
 

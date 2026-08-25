@@ -617,6 +617,20 @@ _cmd_check_stale_agent_redeploy() {
 		deployed_sha=$(tr -d '[:space:]' <"$stamp_file" 2>/dev/null) || deployed_sha=""
 		head_sha=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null) || head_sha=""
 		if [[ -n "$deployed_sha" && -n "$head_sha" && "$deployed_sha" != "$head_sha" ]]; then
+			# An interactive linked-worktree deployment can intentionally be ahead
+			# of canonical main. Re-deploying main in that state rolls back the
+			# active hotfix and can restart live runtimes every polling interval.
+			if git -C "$INSTALL_DIR" merge-base --is-ancestor "$head_sha" "$deployed_sha" 2>/dev/null; then
+				log_info "Preserving deployed runtime ${deployed_sha:0:7}; it includes canonical HEAD ${head_sha:0:7}"
+				return 0
+			fi
+			# Diverged history is also not safe for unattended replacement. Normal
+			# stale deployments remain eligible when deployed_sha is an ancestor of
+			# head_sha, preserving the t2706 same-version repair path.
+			if ! git -C "$INSTALL_DIR" merge-base --is-ancestor "$deployed_sha" "$head_sha" 2>/dev/null; then
+				log_warn "Skipping script-drift redeploy: deployed runtime ${deployed_sha:0:7} diverges from canonical HEAD ${head_sha:0:7}"
+				return 0
+			fi
 			local has_code_drift=0
 			# Per Gemini code-review on PR #20342: use git's path filter +
 			# `grep -q .` to detect drift across the full set of deploy-affecting
