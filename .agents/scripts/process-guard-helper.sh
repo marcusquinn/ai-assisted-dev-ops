@@ -189,10 +189,9 @@ _is_managed_worker_process() {
 }
 
 #######################################
-# Return whether a process is the OpenCode web server (or one of its
-# descendants) owned by a long-running systemd service. The service manager
-# and its health watchdog own that lifecycle; applying the generic two-hour
-# process limit restarts every web session in the middle of active work.
+# Return whether a process belongs to the OpenCode web server or its watchdog
+# service. The service manager owns both long-running lifecycles; applying the
+# generic two-hour process limit to either unit disrupts active web sessions.
 # Arguments:
 #   $1 - PID
 # Returns: 0 for managed OpenCode web-service lineage, 1 otherwise
@@ -200,7 +199,7 @@ _is_managed_worker_process() {
 _is_managed_opencode_web_process() {
 	local pid="$1"
 	local cgroup_path=""
-	local service_regex='/opencode-web(@[^/]+)?\.service(/|$)'
+	local service_regex='/opencode-web(-watchdog|@[^/]+)?\.service(/|$)'
 
 	[[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
 	cgroup_path=$(_get_process_cgroup_path "$pid")

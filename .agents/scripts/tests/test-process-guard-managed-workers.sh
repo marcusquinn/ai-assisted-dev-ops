@@ -136,6 +136,14 @@ test_opencode_web_template_service_is_delegated() {
 	return 0
 }
 
+test_opencode_web_watchdog_service_is_delegated() {
+	write_hybrid_cgroup 4107 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web-watchdog.service'
+	local actual
+	actual=$(_classify_runtime_limit 4107 7210 7200)
+	assert_eq "OpenCode web watchdog older than generic limit is delegated" "MANAGED" "$actual"
+	return 0
+}
+
 test_unmanaged_lookalike_remains_over_limit() {
 	write_cgroup 4201 '/user.slice/user-1000.slice/session-2.scope'
 	local actual
@@ -202,6 +210,20 @@ test_kill_runaways_skips_opencode_web_service() {
 	return 0
 }
 
+test_kill_runaways_skips_opencode_web_watchdog() {
+	write_hybrid_cgroup 4505 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web-watchdog.service'
+	MOCK_PROCESS_LINE='4505 1 ? 3072 2:00:10 bash /home/test/.local/bin/opencode-web-watchdog.sh'
+	MOCK_PROCESS_AGE=7210
+	CHILD_RUNTIME_LIMIT=7200
+	CHILD_RSS_LIMIT_KB=4194304
+	: >"$MOCK_KILL_LOG"
+	local output
+	output=$(cmd_kill_runaways)
+	assert_eq "kill path skips long-running OpenCode web watchdog" "No runaway processes found" "$output"
+	assert_eq "OpenCode web watchdog receives no signal" "" "$(<"$MOCK_KILL_LOG")"
+	return 0
+}
+
 test_kill_runaways_keeps_unmanaged_cleanup() {
 	write_cgroup 4502 '/user.slice/user-1000.slice/session-2.scope'
 	MOCK_PROCESS_LINE='4502 1 ? 1024 16:06 bash /usr/bin/bash stale-wrapper opencode run'
@@ -240,6 +262,7 @@ main() {
 	test_opencode_web_service_runtime_is_delegated
 	test_opencode_web_service_descendant_is_delegated
 	test_opencode_web_template_service_is_delegated
+	test_opencode_web_watchdog_service_is_delegated
 	test_unmanaged_lookalike_remains_over_limit
 	test_command_string_is_not_lineage_evidence
 	test_opencode_web_scope_lookalike_remains_over_limit
@@ -247,6 +270,7 @@ main() {
 	test_fresh_managed_worker_is_not_misreported
 	test_kill_runaways_skips_managed_worker
 	test_kill_runaways_skips_opencode_web_service
+	test_kill_runaways_skips_opencode_web_watchdog
 	test_kill_runaways_keeps_unmanaged_cleanup
 	test_status_matches_kill_exemption
 
