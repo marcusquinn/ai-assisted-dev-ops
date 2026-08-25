@@ -177,7 +177,7 @@ end) as $max_workers |
         false
       )
     else empty end,
-    if $dependency_inconsistent > 0 then
+    if ($queue_scan_complete and $dependency_inconsistent > 0) then
       finding(
         "pulse-dependency-inconsistent-availability";
         "high";

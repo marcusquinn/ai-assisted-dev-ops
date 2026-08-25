@@ -187,6 +187,10 @@ if [[ " $* " == *" repo view "* ]]; then
   exit 0
 fi
 if [[ " $* " == *" api graphql "* ]]; then
+  if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "dependency-scan-error" ]]; then
+    printf 'simulated dependency lookup failure\n' >&2
+    exit 1
+  fi
   printf '%s\n' '{"data":{"repository":{"issue":{"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
   exit 0
 fi
@@ -233,7 +237,7 @@ JSON
   fi
   exit 0
 fi
-if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "truncation" ]]; then
+if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "truncation" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "dependency-scan-error" ]]; then
   if [[ " $* " == *"private/repo-one"* ]]; then
     cat <<'JSON'
 [
@@ -486,6 +490,12 @@ SCAN_ERROR_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=scan-error" \
 assert_contains "partial scan reports GitHub error" "pulse-check-gh-scan-errors" "$SCAN_ERROR_OUT"
 assert_not_contains "partial scan suppresses queue shortfall" "pulse-eligible-queue-under-target" "$SCAN_ERROR_OUT"
 assert_not_contains "partial scan suppresses NMR inactivity" "pulse-inactive-nmr-holds" "$SCAN_ERROR_OUT"
+
+DEPENDENCY_SCAN_ERROR_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=dependency-scan-error" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
+assert_eq "dependency lookup errors remain fail-closed" "3" "$(printf '%s' "$DEPENDENCY_SCAN_ERROR_OUT" | jq -r '.queue.dependency_inconsistent_available')"
+assert_contains "dependency lookup errors report incomplete scan" "pulse-check-gh-scan-errors" "$DEPENDENCY_SCAN_ERROR_OUT"
+assert_not_contains "incomplete dependency scan suppresses unverified finding" "pulse-dependency-inconsistent-availability" "$DEPENDENCY_SCAN_ERROR_OUT"
 
 TRUNCATED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=truncation" \
 	"PULSE_CHECK_MAX_ISSUES_PER_REPO=3" \
