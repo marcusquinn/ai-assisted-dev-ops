@@ -103,6 +103,30 @@ test_managed_observer_runtime_is_delegated() {
 	return 0
 }
 
+test_opencode_web_service_runtime_is_delegated() {
+	write_cgroup 4104 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service'
+	local actual
+	actual=$(_classify_runtime_limit 4104 7210 7200)
+	assert_eq "OpenCode web server older than generic limit is delegated" "MANAGED" "$actual"
+	return 0
+}
+
+test_opencode_web_service_descendant_is_delegated() {
+	write_cgroup 4105 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service/browser.scope'
+	local actual
+	actual=$(_classify_runtime_limit 4105 9000 7200)
+	assert_eq "OpenCode web-service descendant inherits protection" "MANAGED" "$actual"
+	return 0
+}
+
+test_opencode_web_template_service_is_delegated() {
+	write_cgroup 4106 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web@4096.service'
+	local actual
+	actual=$(_classify_runtime_limit 4106 9000 7200)
+	assert_eq "OpenCode web template service inherits protection" "MANAGED" "$actual"
+	return 0
+}
+
 test_unmanaged_lookalike_remains_over_limit() {
 	write_cgroup 4201 '/user.slice/user-1000.slice/session-2.scope'
 	local actual
@@ -116,6 +140,14 @@ test_command_string_is_not_lineage_evidence() {
 	local actual
 	actual=$(_classify_runtime_limit 4202 966 600)
 	assert_eq "worker-like cgroup text without valid service identity is rejected" "OVER" "$actual"
+	return 0
+}
+
+test_opencode_web_scope_lookalike_remains_over_limit() {
+	write_cgroup 4203 '/user.slice/user-1000.slice/opencode-web.scope'
+	local actual
+	actual=$(_classify_runtime_limit 4203 7210 7200)
+	assert_eq "OpenCode-like scope without service identity is rejected" "OVER" "$actual"
 	return 0
 }
 
@@ -144,6 +176,20 @@ test_kill_runaways_skips_managed_worker() {
 	output=$(cmd_kill_runaways)
 	assert_eq "kill path skips old managed worker" "No runaway processes found" "$output"
 	assert_eq "managed worker receives no signal" "" "$(<"$MOCK_KILL_LOG")"
+	return 0
+}
+
+test_kill_runaways_skips_opencode_web_service() {
+	write_cgroup 4504 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service'
+	MOCK_PROCESS_LINE='4504 1 ? 2860032 2:00:10 /home/test/.opencode/bin/opencode serve --port 4096'
+	MOCK_PROCESS_AGE=7210
+	CHILD_RUNTIME_LIMIT=7200
+	CHILD_RSS_LIMIT_KB=4194304
+	: >"$MOCK_KILL_LOG"
+	local output
+	output=$(cmd_kill_runaways)
+	assert_eq "kill path skips long-running OpenCode web service" "No runaway processes found" "$output"
+	assert_eq "OpenCode web service receives no signal" "" "$(<"$MOCK_KILL_LOG")"
 	return 0
 }
 
@@ -182,11 +228,16 @@ main() {
 	test_managed_worker_runtime_is_delegated
 	test_managed_worker_descendant_is_delegated
 	test_managed_observer_runtime_is_delegated
+	test_opencode_web_service_runtime_is_delegated
+	test_opencode_web_service_descendant_is_delegated
+	test_opencode_web_template_service_is_delegated
 	test_unmanaged_lookalike_remains_over_limit
 	test_command_string_is_not_lineage_evidence
+	test_opencode_web_scope_lookalike_remains_over_limit
 	test_unavailable_cgroup_keeps_existing_behavior
 	test_fresh_managed_worker_is_not_misreported
 	test_kill_runaways_skips_managed_worker
+	test_kill_runaways_skips_opencode_web_service
 	test_kill_runaways_keeps_unmanaged_cleanup
 	test_status_matches_kill_exemption
 
