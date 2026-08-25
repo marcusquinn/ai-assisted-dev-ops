@@ -124,14 +124,14 @@ test_rejects_substring_grep_option() {
 test_kill_log_format_carries_timestamp_and_process_class() {
 	local helper_text
 	helper_text=$(<"$HELPER")
-	if [[ "$helper_text" == *"class=%s cmd=%s rss_mb=%s age_seconds=%s"* && \
+	if [[ "$helper_text" == *"action=kill pid=%s ppid=%s class=%s cmd=%s rss_mb=%s age_seconds=%s runtime_limit_seconds=%s cgroup=%s reason=%s"* && \
 		"$helper_text" == *"_process_guard_timestamp"* && \
 		"$helper_text" == *"process_class='playwright-list'"* ]]; then
-		print_result "kill log format carries timestamp and process class" 0
+		print_result "kill log format carries timestamp, process class, and cgroup" 0
 		return 0
 	fi
 
-	print_result "kill log format carries timestamp and process class" 1
+	print_result "kill log format carries timestamp, process class, and cgroup" 1
 	return 0
 }
 
