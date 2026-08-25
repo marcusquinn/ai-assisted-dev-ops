@@ -50,6 +50,15 @@ path.
    run its authenticated-tab preflight. A Playwright persistent context is a
    separate profile and must not be treated as the user's authenticated session.
 
+When the linked worktree is intentionally disposable but Chrome must retain one
+stable unpacked-extension path, deploy the reviewed build to an allowlisted
+non-Git directory with `deployment-copy-helper.sh`. Review its dry-run change set
+first and keep the expected commit plus generated-tree digest bound to the copy.
+Do not use manual `rsync --delete`, make the canonical checkout writable, or
+relax the pre-edit worktree gate. The deployment and recovery contract is in
+`reference/dirty-worktree-preservation.md` under “Audited deployment to a
+non-Git target”.
+
 ## Unit Tests
 
 ```bash

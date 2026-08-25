@@ -72,6 +72,55 @@ means either verified automatic rollback or an explicit successful
 `recover-clean`; never continue from partially cleaned state or bypass the
 helper with direct `git pull`, reset, or clean.
 
+## Audited deployment to a non-Git target
+
+Repository editing and runtime deployment are separate boundaries. Keep edits in
+a linked worktree, then use `deployment-copy-helper.sh` when reviewed content must
+converge into a stable directory that is intentionally outside every Git
+worktree. Never point the pre-edit tool at the runtime directory or weaken its
+worktree requirement.
+
+The destination must appear exactly in an owner-controlled, non-symlink allow
+file with mode `0600` or stricter. For committed source subtrees, the helper
+materializes the expected Git tree and refuses untracked, ignored, content or
+executable-mode changes, Git metadata, symlinks, special entries, and special
+permission bits. Generated artifacts require a separately reviewed tree digest:
+
+```bash
+deployment-copy-helper.sh manifest \
+  --source /path/to/linked-worktree/build \
+  --expected-sha <full-commit-sha> --machine
+
+deployment-copy-helper.sh deploy \
+  --source /path/to/linked-worktree/build \
+  --destination /path/to/stable-runtime \
+  --expected-sha <full-commit-sha> \
+  --allow-file ~/.config/aidevops/deployment-copy-targets \
+  --reviewed-tree-sha256 <manifest-digest> --dry-run
+```
+
+Remove `--dry-run` only after reviewing the add/change/delete set. The helper
+stages on the destination filesystem, serializes by canonical destination,
+records a private operation receipt, preserves the previous tree, activates by
+rename, and verifies the complete path/type/mode/content manifest. Output names
+the operation ID rather than private rollback paths. Recover interrupted work or
+restore the prior destination with the same allow file:
+
+```bash
+deployment-copy-helper.sh recover \
+  --operation-id <operation-id> --confirm RECOVER_DEPLOYMENT_COPY \
+  --allow-file ~/.config/aidevops/deployment-copy-targets
+
+deployment-copy-helper.sh rollback \
+  --operation-id <operation-id> --confirm ROLLBACK_DEPLOYMENT_COPY \
+  --allow-file ~/.config/aidevops/deployment-copy-targets
+```
+
+This does not make replacement of a non-empty directory continuously atomic:
+there is a bounded rename interval between preserving the old directory and
+activating the staged directory. The durable receipt and recovery command own
+that interruption case.
+
 ## Converged stale rebase recovery
 
 When a clean canonical checkout has completed an interactive rebase but stale
