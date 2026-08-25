@@ -1512,6 +1512,18 @@ _dlw_validate_worktree_for_launch() {
 	return 1
 }
 
+_dlw_start_codegraph_init() {
+	local issue_number="$1"
+	local worker_worktree_path="$2"
+	local helper="${SCRIPT_DIR}/codegraph-worktree-init-helper.sh"
+	[[ -x "$helper" && -d "$worker_worktree_path" ]] || return 0
+	if ! "$helper" launch "$worker_worktree_path" "$issue_number"; then
+		printf '[dispatch_worker_launch] CodeGraph init submission failed open for #%s\n' \
+			"$issue_number" >>"$LOGFILE"
+	fi
+	return 0
+}
+
 _dlw_append_node_tool_env() {
 	local repo_path="$1"
 	local node_tool_bin="${repo_path}/node_modules/.bin"
@@ -1786,6 +1798,7 @@ _dispatch_launch_worker() {
 	_ds_record "$issue_number" "$repo_slug" "lock_issue" "$_ds_t0"
 
 	_dlw_publish_queued_ownership "$issue_number" "$repo_slug" "$self_login" "$issue_meta_json" || return $?
+	_dlw_start_codegraph_init "$issue_number" "$worker_worktree_path"
 
 	_ds_t0=$(_ds_now_ns)
 	if ! worker_pid=$(_dlw_nohup_launch "$issue_number" "$repo_slug" "$dispatch_title" "$issue_title" \

@@ -100,6 +100,14 @@ trailer block so the repository's squash message and
 entry per source. After merge, verify the parsed squash message and run the
 source resolver against the exact `origin/main` tip before publication.
 
+If `main` advances while that PR is in review or CI, do not rewrite its branch
+or reuse its allocated identity. Run `aidevops release refresh-aggregate
+<stale-aggregation-pr>`. The release-lane compare-and-swap transaction converges
+retries on one draft successor at the new exact tip, allocates that PR number
+before writing its sole trailer commit, and leaves review and merge explicit.
+Another `main` advance repeats this successor transition rather than weakening
+the exact-tip fence.
+
 PR #28725 demonstrated the fail-closed duplicate-trailer case: its squash
 message retained an earlier separated trailer block plus the final contiguous
 block. No release was attempted from that ambiguous manifest; a new reviewed
@@ -454,13 +462,10 @@ snapshot_dir="${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}"
   --unattended
 ```
 
-`verify-github` deliberately reports two UI checks rather than claiming
-unsupported API evidence: GitHub's documented environment REST API does not
-expose the admin-bypass toggle, and npm documents Trusted Publisher management
-only through package settings on npmjs.com. Capture those UI values before and
-after mutation. npm also states that saving a publisher does not validate it;
-this issue forbids using a real publication as a test, so exact field review is
-the terminal non-publishing evidence.
+`verify-github` reports two UI checks because GitHub's environment API omits the
+admin-bypass toggle and npm exposes Trusted Publisher management only in package
+settings. Capture both values before and after mutation; exact field review is
+the terminal non-publishing evidence because test publication is forbidden.
 
 ### Mutation order
 
@@ -491,10 +496,3 @@ the terminal non-publishing evidence.
 
 Rollback restores only values captured in the pre-mutation matrix. Code changes
 are reverted normally; live settings are never guessed or broadly reset.
-
-For the unattended transition, capture a fresh snapshot after issue #28737 merges
-and before changing the environment. Add the exact `main` branch deployment
-policy, remove reviewer/wait rules, run `verify-github --unattended`, and compare
-the two UI-only controls above. On any mismatch, restore the fresh snapshot before
-dispatching recovery. The first authorized recovery is the existing newest tag;
-do not create a test tag or version bump solely to validate settings.

@@ -1331,4 +1331,38 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	printf 'PASS equal persisted PR sets still resume stale, fenced, marked, or exact failed pre-publication transactions\n'
 )
 
+(
+	real_git=$(type -P git)
+	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+	git() {
+		"$real_git" "$@"
+		return $?
+	}
+	stale_body='Release aggregation
+
+Aidevops-Release-Aggregator-PR: 99
+Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
+	manifest=$(_full_loop_successor_manifest_from_body 99 "$stale_body")
+	[[ "$manifest" == '42@2222222222222222222222222222222222222222' ]]
+	if _full_loop_successor_manifest_from_body 100 "$stale_body" >/dev/null 2>&1; then
+		exit 1
+	fi
+	gh() {
+		local endpoint="$2"
+		if [[ "$endpoint" == *'/compare/'* ]]; then
+			printf '%s\n' 3333333333333333333333333333333333333333
+			return 0
+		fi
+		if [[ "$endpoint" == *'/commits/3333333333333333333333333333333333333333/pulls' ]]; then
+			printf '%s\n' '[{"number":43,"merged_at":"2026-08-24T00:00:00Z","base":{"ref":"main"},"merge_commit_sha":"3333333333333333333333333333333333333333"}]'
+			return 0
+		fi
+		return 1
+	}
+	complete=$(_full_loop_successor_complete_manifest test/repo \
+		1111111111111111111111111111111111111111 "$manifest" "$manifest")
+	[[ "$complete" == '42@2222222222222222222222222222222222222222,43@3333333333333333333333333333333333333333' ]]
+)
+printf 'PASS successor manifest preserves stale sources and adds uniquely mapped main merges\n'
+
 exit 0

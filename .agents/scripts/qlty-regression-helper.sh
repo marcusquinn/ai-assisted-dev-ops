@@ -106,6 +106,9 @@ run_qlty_sarif() {
 	local _first=""
 	local _second=""
 	local _third=""
+	local _first_rc=0
+	local _second_rc=0
+	local _third_rc=0
 	_cache_key=$(basename "$_out" .sarif)
 	_cache_dir="$TMP_DIR/cache-${_cache_key}"
 	_first="$TMP_DIR/${_cache_key}.first.sarif"
@@ -119,15 +122,17 @@ run_qlty_sarif() {
 	# warming an empty cache. Accept the first matching identity set from up to
 	# three scans so one transient pass cannot create or hide a regression.
 	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
-		>"$_first" 2>/dev/null || true
+		>"$_first" 2>/dev/null || _first_rc=$?
 	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
-		>"$_second" 2>/dev/null || true
+		>"$_second" 2>/dev/null || _second_rc=$?
 	if [ ! -s "$_first" ] || [ ! -s "$_second" ]; then
-		log "ERROR: qlty produced no output for $_dir"
+		emit_scan_inconclusive "empty SARIF" "$_dir" "$_cache_key" \
+			"1:rc=$_first_rc,count=$(scan_result_count "$_first");2:rc=$_second_rc,count=$(scan_result_count "$_second")"
 		return 1
 	fi
-	if ! jq -e '.runs[0].results' "$_first" "$_second" >/dev/null 2>&1; then
-		log "ERROR: qlty output is not valid SARIF for $_dir"
+	if ! jq -e '.runs[0].results | type == "array"' "$_first" "$_second" >/dev/null 2>&1; then
+		emit_scan_inconclusive "invalid SARIF" "$_dir" "$_cache_key" \
+			"1:rc=$_first_rc,count=$(scan_result_count "$_first");2:rc=$_second_rc,count=$(scan_result_count "$_second")"
 		return 1
 	fi
 	if cmp -s <(normalized_identities "$_first") <(normalized_identities "$_second"); then
@@ -136,9 +141,10 @@ run_qlty_sarif() {
 		return 0
 	fi
 	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
-		>"$_third" 2>/dev/null || true
-	if [ ! -s "$_third" ] || ! jq -e '.runs[0].results' "$_third" >/dev/null 2>&1; then
-		log "ERROR: qlty third scan did not produce valid SARIF for $_dir"
+		>"$_third" 2>/dev/null || _third_rc=$?
+	if [ ! -s "$_third" ] || ! jq -e '.runs[0].results | type == "array"' "$_third" >/dev/null 2>&1; then
+		emit_scan_inconclusive "invalid third SARIF" "$_dir" "$_cache_key" \
+			"1:rc=$_first_rc,count=$(scan_result_count "$_first");2:rc=$_second_rc,count=$(scan_result_count "$_second");3:rc=$_third_rc,count=$(scan_result_count "$_third")"
 		return 1
 	fi
 	if cmp -s <(normalized_identities "$_first") <(normalized_identities "$_third") ||
@@ -147,8 +153,53 @@ run_qlty_sarif() {
 		log "qlty identities stabilized after 3 scans for $_dir"
 		return 0
 	fi
-	log "ERROR: qlty identities did not stabilize after 3 scans for $_dir"
+	emit_scan_inconclusive "unstable normalized identities" "$_dir" "$_cache_key" \
+		"1:rc=$_first_rc,count=$(scan_result_count "$_first");2:rc=$_second_rc,count=$(scan_result_count "$_second");3:rc=$_third_rc,count=$(scan_result_count "$_third")"
+	log "identity differences (attempt 1 -> 2):"
+	diff -u <(normalized_identities "$_first") <(normalized_identities "$_second") >&2 || true
+	log "identity differences (attempt 2 -> 3):"
+	diff -u <(normalized_identities "$_second") <(normalized_identities "$_third") >&2 || true
 	return 1
+}
+
+scan_result_count() {
+	local _sarif="$1"
+	if [ ! -s "$_sarif" ]; then
+		printf '%s' "$UNKNOWN_VALUE"
+		return 0
+	fi
+	jq -r 'if (.runs[0].results | type) == "array" then (.runs[0].results | length) else "unknown" end' \
+		"$_sarif" 2>/dev/null || printf '%s' "$UNKNOWN_VALUE"
+	return 0
+}
+
+scan_input_hash() {
+	local _dir="$1"
+	local _path="$2"
+	if [ ! -f "$_dir/$_path" ]; then
+		printf '%s' "none"
+		return 0
+	fi
+	"$GIT_BIN" -C "$_dir" hash-object "$_path" 2>/dev/null || printf '%s' "$UNKNOWN_VALUE"
+	return 0
+}
+
+emit_scan_inconclusive() {
+	local _reason="$1"
+	local _dir="$2"
+	local _cache_key="$3"
+	local _attempts="$4"
+	local _commit="$UNKNOWN_VALUE"
+	local _tree="$UNKNOWN_VALUE"
+	_commit=$("$GIT_BIN" -C "$_dir" rev-parse HEAD 2>/dev/null) || _commit="$UNKNOWN_VALUE"
+	_tree=$("$GIT_BIN" -C "$_dir" rev-parse 'HEAD^{tree}' 2>/dev/null) || _tree="$UNKNOWN_VALUE"
+	log "INCONCLUSIVE: $_reason"
+	log "scan identity: version=$QLTY_VERSION commit=$_commit tree=$_tree mode=isolated-clone cwd=repository-root"
+	log "command: qlty smells --all --sarif --no-snippets --quiet"
+	log "cache namespace: isolated-${_cache_key}"
+	log "input hashes: config=$(scan_input_hash "$_dir" '.qlty/qlty.toml') ignore=$(scan_input_hash "$_dir" '.qltyignore')"
+	log "attempts: $_attempts"
+	return 0
 }
 
 create_scan_clone() {
@@ -438,9 +489,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
 	TMP_DIR=$(mktemp -d)
 	QLTY_BIN=$(find_qlty) || die "qlty CLI not found"
 	QLTY_VERSION=$("$QLTY_BIN" --version 2>/dev/null) || QLTY_VERSION="$UNKNOWN_VALUE"
+	GIT_BIN=$(resolve_git) || die "native git executable not found"
 	_head_sarif="$TMP_DIR/head.sarif"
 	log "dry-run: scanning current tree"
-	run_qlty_sarif "." "$_head_sarif"
+	run_qlty_sarif "." "$_head_sarif" || die "inconclusive qlty dry-run scan"
 	emit_scan_metadata "head" "." "$_head_sarif" "current-tree"
 	_count=$(count_smells "$_head_sarif")
 	printf 'Total smells: %s\n' "$_count"
@@ -486,9 +538,7 @@ fi
 
 log "scanning base ($BASE_SHA)"
 if ! run_qlty_sarif "$BASE_WORKTREE" "$_base_sarif"; then
-	log "WARN: base scan failed; treating base count as equal to head (no regression)"
-	# Fall back: copy head result once we have it so delta is zero.
-	BASE_SCAN_FAILED=1
+	die "inconclusive base scan for $BASE_SHA; refusing a synthetic clean delta"
 else
 	BASE_SCAN_FAILED=0
 	emit_scan_metadata "base" "$BASE_WORKTREE" "$_base_sarif" "isolated-clone"
@@ -510,10 +560,6 @@ if ! run_qlty_sarif "$HEAD_SCAN_DIR" "$_head_sarif" "$HEAD_SCAN_MODE"; then
 	die "failed to scan head ($HEAD_SHA)"
 fi
 emit_scan_metadata "head" "$HEAD_SCAN_DIR" "$_head_sarif" "$HEAD_SCAN_MODE"
-
-if [ "$BASE_SCAN_FAILED" -eq 1 ]; then
-	cp "$_head_sarif" "$_base_sarif"
-fi
 
 IDENTITY_MISMATCH=0
 if [ "$BASE_SCAN_FAILED" -eq 0 ] && ! verify_same_tree_results "$BASE_TREE" "$HEAD_TREE" "$_base_sarif" "$_head_sarif"; then

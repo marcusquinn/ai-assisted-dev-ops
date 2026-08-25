@@ -33,6 +33,23 @@ Cross-browser verification?  → Chrome + Firefox + Edge (manual or CI)
 
 **Test levels**: Unit → Integration → E2E → Cross-browser → Performance
 
+## Stable Unpacked-Extension Workflow
+
+For authenticated testing in an existing Chrome profile, configure the project
+to build the unpacked extension to one stable project-relative directory. Do not
+copy builds to changing temporary directories or hardcode a developer's absolute
+path.
+
+1. Build the extension to the configured directory, such as
+   `.output/chrome-mv3/`.
+2. Open `chrome://extensions`, enable Developer mode, and use **Load unpacked**
+   once for that directory.
+3. After each rebuild, use the extension card's **Reload** action, then reload
+   the target page before testing.
+4. For existing-profile sessions, approve the intended tab with Playwriter and
+   run its authenticated-tab preflight. A Playwright persistent context is a
+   separate profile and must not be treated as the user's authenticated session.
+
 ## Unit Tests
 
 ```bash

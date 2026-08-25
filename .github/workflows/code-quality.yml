@@ -108,6 +108,25 @@ jobs:
       if: runner.os == 'macOS'
       run: node .agents/scripts/tests/test-model-replay-benchmark.mjs
 
+  model-replay-linux:
+    # Ubuntu 24.04 hosted runners deny Bubblewrap's network-namespace setup
+    # through host AppArmor policy. Exercise the enforcing backend on 22.04;
+    # unsupported host policy still fails closed in production.
+    name: Model replay verifier boundary (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Install Bubblewrap
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y bubblewrap
+
+    - name: Run model replay boundary suite
+      run: node .agents/scripts/tests/test-model-replay-benchmark.mjs
+
   # Bash 3.2 compatibility: catches "\n"/"\t" in double-quoted strings and other
   # bash 4+ constructs that break on macOS default bash (GH#17371).
   # t2171: per-violation regression model replaces total-count-vs-threshold

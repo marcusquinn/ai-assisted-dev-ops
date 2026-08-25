@@ -25,6 +25,7 @@ _FULL_LOOP_AGGREGATE_RECOVERY_PHASE="aggregation-recovery"
 _FULL_LOOP_AGGREGATE_COMMIT_PHASE="aggregate-publication-committing"
 _FULL_LOOP_FAILED_PREPUBLICATION_PHASE="reconcile-required"
 _FULL_LOOP_AGGREGATE_RECOVERY_TAG_REF_PREFIX="refs/tags/"
+_FULL_LOOP_AGGREGATE_RECOVERY_MAIN_BRANCH="main"
 
 _full_loop_recovery_http_status() {
 	local endpoint="$1"
@@ -1229,6 +1230,223 @@ _full_loop_recovery_finish_version_manager() {
 	printf 'Resume with: aidevops release status %s\n' "$source_pr"
 	printf 'Resume with: aidevops release reconcile %s\n' "$source_pr"
 	return 8
+}
+
+_full_loop_successor_manifest_from_body() {
+	local stale_pr="$1"
+	local body="$2"
+	local raw_identity=""
+	local raw_sources=""
+	local parsed=""
+	local parsed_identity=""
+	local parsed_sources=""
+	local manifest=""
+	raw_identity=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$body") || return 1
+	raw_sources=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$body") || return 1
+	parsed=$(git -C "$REPO_ROOT" interpret-trailers --parse <<<"$body") || return 1
+	parsed_identity=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$parsed") || return 1
+	parsed_sources=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$parsed") || return 1
+	[[ "$raw_identity" == "$stale_pr" && "$parsed_identity" == "$stale_pr" &&
+		"$raw_sources" == "$parsed_sources" && -n "$raw_sources" ]] || return 1
+	manifest=$(awk 'BEGIN { first=1 }
+		/^[0-9]+@[0-9a-f]{40}$/ { if (!first) printf ","; printf "%s", $0; first=0; next }
+		{ exit 2 }
+		END { if (first) exit 2 }' <<<"$raw_sources") || return 1
+	release_authorization_manifest_string "$manifest"
+	return $?
+}
+
+_full_loop_successor_source_for_commit() {
+	local repo="$1"
+	local commit_sha="$2"
+	local pulls_json=""
+	local source=""
+	[[ "$commit_sha" =~ $_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX ]] || return 1
+	pulls_json=$(gh api "repos/${repo}/commits/${commit_sha}/pulls" 2>/dev/null) || return 1
+	source=$(jq -er --arg commit "$commit_sha" --arg main "$_FULL_LOOP_AGGREGATE_RECOVERY_MAIN_BRANCH" '
+		[.[] | select(.merged_at != null and .base.ref == $main and .merge_commit_sha == $commit)]
+		| if length == 1 then "\(.[0].number)@\(.[0].merge_commit_sha)" else error("ambiguous merged PR") end
+	' <<<"$pulls_json" 2>/dev/null) || return 1
+	[[ "$source" =~ ^[0-9]+@[0-9a-f]{40}$ ]] || return 1
+	printf '%s\n' "$source"
+	return 0
+}
+
+_full_loop_successor_complete_manifest() {
+	local repo="$1"
+	local stale_head="$2"
+	local stale_manifest="$3"
+	local lane_manifest="$4"
+	local commit_sha=""
+	local source=""
+	local source_lines=""
+	local compare_commits=""
+	local normalized=""
+	[[ "$stale_head" =~ $_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX ]] || return 1
+	source_lines=$(tr ',' '\n' <<<"${stale_manifest},${lane_manifest}") || return 1
+	compare_commits=$(gh api "repos/${repo}/compare/${stale_head}...main" --jq '.commits[].sha' 2>/dev/null) || return 1
+	[[ -n "$compare_commits" ]] || {
+		printf 'Successor aggregation refused: stale aggregate already represents the current main tip\n' >&2
+		return 1
+	}
+	while IFS= read -r commit_sha; do
+		[[ -n "$commit_sha" ]] || continue
+		source=$(_full_loop_successor_source_for_commit "$repo" "$commit_sha") || {
+			printf 'Successor aggregation refused: main commit %s has no unique merged-main PR provenance\n' "$commit_sha" >&2
+			return 1
+		}
+		source_lines+=$'\n'"$source"
+	done <<<"$compare_commits"
+	normalized=$(jq -Rrsc '
+		split("\n") | map(select(length > 0)
+			| if test("^[0-9]+@[0-9a-f]{40}$") then capture("^(?<pr>[0-9]+)@(?<merge>[0-9a-f]{40})$")
+			else error("malformed source") end
+			| {pr:(.pr|tonumber),merge:.merge})
+		| group_by(.pr)
+		| if any(.[]; (map(.merge)|unique|length) != 1) then error("conflicting source") else . end
+		| map(.[0]) | sort_by(.pr) | map("\(.pr)@\(.merge)") | join(",")
+	' <<<"$source_lines") || return 1
+	[[ -n "$normalized" ]] || return 1
+	printf '%s\n' "$normalized"
+	return 0
+}
+
+_full_loop_successor_create_commit() {
+	local repo="$1"
+	local parent="$2"
+	local message="$3"
+	local tree_sha=""
+	local payload=""
+	local commit_sha=""
+	tree_sha=$(gh api "repos/${repo}/git/commits/${parent}" --jq '.tree.sha // empty' 2>/dev/null) || return 1
+	[[ "$tree_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+	payload=$(jq -cn --arg message "$message" --arg tree "$tree_sha" --arg parent "$parent" \
+		'{message:$message,tree:$tree,parents:[$parent]}') || return 1
+	commit_sha=$(gh api "repos/${repo}/git/commits" --method POST --input - --jq '.sha // empty' \
+		<<<"$payload" 2>/dev/null) || return 1
+	[[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+	printf '%s\n' "$commit_sha"
+	return 0
+}
+
+_full_loop_successor_body() {
+	local stale_pr="$1"
+	local base_sha="$2"
+	local successor_pr="$3"
+	local manifest="$4"
+	local source=""
+	printf "## Summary\n\nMetadata-only successor for stale release aggregation PR #%s at exact main tip \`%s\`.\n\n" \
+		"$stale_pr" "$base_sha"
+	printf 'Review, required checks, and guarded merge remain explicit.\n\n'
+	printf 'Aidevops-Release-Aggregator-PR: %s\n' "$successor_pr"
+	while IFS= read -r source; do
+		[[ -n "$source" ]] || continue
+		printf 'Aidevops-Release-Aggregates: %s\n' "$source"
+	done < <(tr ',' '\n' <<<"$manifest")
+	return 0
+}
+
+_full_loop_successor_final_message() {
+	local successor_pr="$1"
+	local manifest="$2"
+	local source=""
+	printf 'chore(release): bind refreshed exact-tip aggregation\n\n'
+	printf 'Aidevops-Release-Aggregator-PR: %s\n' "$successor_pr"
+	while IFS= read -r source; do
+		[[ -n "$source" ]] || continue
+		printf 'Aidevops-Release-Aggregates: %s\n' "$source"
+	done < <(tr ',' '\n' <<<"$manifest")
+	return 0
+}
+
+# Create or adopt the one draft successor for a stale metadata-only aggregate.
+# PR allocation deliberately precedes the sole terminal trailer commit.
+#aidevops:trust-boundary
+_full_loop_release_refresh_aggregate() {
+	local repo="$1"
+	local stale_pr="$2"
+	local stale_json=""
+	local stale_body=""
+	local stale_head=""
+	local stale_manifest=""
+	local lane_manifest=""
+	local base_sha=""
+	local branch_name=""
+	local owner="${repo%%/*}"
+	local branch_head=""
+	local initial_commit=""
+	local successor_json=""
+	local successor_pr=""
+	local body=""
+	local final_message=""
+	local branch_message=""
+	local final_commit=""
+	local payload=""
+	[[ "$stale_pr" =~ ^[0-9]+$ ]] || return 1
+	git -C "$REPO_ROOT" fetch origin main --quiet || return 1
+	base_sha=$(git -C "$REPO_ROOT" rev-parse origin/main) || return 1
+	stale_json=$(gh api "repos/${repo}/pulls/${stale_pr}" 2>/dev/null) || return 1
+	jq -e --argjson stale "$stale_pr" --arg main "$_FULL_LOOP_AGGREGATE_RECOVERY_MAIN_BRANCH" '
+		.number == $stale and .state == "open" and .base.ref == $main
+		and (.head.sha | test("^[0-9a-f]{40}$"))
+	' <<<"$stale_json" >/dev/null || return 1
+	stale_body=$(jq -er '.body // ""' <<<"$stale_json") || return 1
+	stale_head=$(jq -er '.head.sha' <<<"$stale_json") || return 1
+	[[ "$stale_head" != "$base_sha" ]] || return 1
+	stale_manifest=$(_full_loop_successor_manifest_from_body "$stale_pr" "$stale_body") || return 1
+	release_lane_read "$repo" || return 1
+	lane_manifest=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	lane_manifest=$(release_authorization_manifest_string "$lane_manifest") || return 1
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED=$(_full_loop_successor_complete_manifest \
+		"$repo" "$stale_head" "$stale_manifest" "$lane_manifest") || return 1
+	release_authorization_subset "$lane_manifest" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
+	branch_name="release/aggregate-successor-${stale_pr}-${base_sha:0:12}"
+	release_lane_begin_aggregate_successor "$repo" "$stale_pr" "$base_sha" \
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$branch_name" || return 1
+	branch_head=$(gh api "repos/${repo}/git/ref/heads/${branch_name}" --jq '.object.sha // empty' 2>/dev/null || true)
+	if [[ -z "$branch_head" ]]; then
+		initial_commit=$(_full_loop_successor_create_commit "$repo" "$base_sha" \
+			"chore(release): open successor aggregation for #${stale_pr}") || return 1
+		payload=$(jq -cn --arg ref "refs/heads/${branch_name}" --arg sha "$initial_commit" '{ref:$ref,sha:$sha}') || return 1
+		gh api "repos/${repo}/git/refs" --method POST --input - <<<"$payload" >/dev/null 2>&1 || return 1
+		branch_head="$initial_commit"
+	fi
+	git -C "$REPO_ROOT" fetch origin "$branch_name" --quiet || return 1
+	git -C "$REPO_ROOT" merge-base --is-ancestor "$base_sha" FETCH_HEAD || return 1
+	[[ "$(git -C "$REPO_ROOT" rev-parse "${base_sha}^{tree}")" == "$(git -C "$REPO_ROOT" rev-parse 'FETCH_HEAD^{tree}')" ]] || return 1
+	successor_json=$(gh api "repos/${repo}/pulls?state=open&head=${owner}:${branch_name}&base=main" 2>/dev/null) || return 1
+	jq -e 'length <= 1' <<<"$successor_json" >/dev/null || return 1
+	successor_pr=$(jq -er 'if length == 1 then .[0].number else empty end' <<<"$successor_json" 2>/dev/null || true)
+	if [[ -z "$successor_pr" ]]; then
+		payload=$(jq -cn --arg title "chore(release): refresh aggregation after #${stale_pr}" \
+			--arg head "$branch_name" --arg main "$_FULL_LOOP_AGGREGATE_RECOVERY_MAIN_BRANCH" \
+			'{title:$title,head:$head,base:$main,draft:true,body:"Successor allocation pending immutable trailer commit."}') || return 1
+		successor_pr=$(gh api "repos/${repo}/pulls" --method POST --input - --jq '.number // empty' \
+			<<<"$payload" 2>/dev/null) || return 1
+	else
+		jq -e --arg main "$_FULL_LOOP_AGGREGATE_RECOVERY_MAIN_BRANCH" \
+			'.[0].draft == true and .[0].base.ref == $main' <<<"$successor_json" >/dev/null || return 1
+	fi
+	[[ "$successor_pr" =~ ^[0-9]+$ ]] || return 1
+	release_lane_bind_aggregate_successor_pr "$repo" "$successor_pr" || return 1
+	body=$(_full_loop_successor_body "$stale_pr" "$base_sha" "$successor_pr" \
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED") || return 1
+	final_message=$(_full_loop_successor_final_message "$successor_pr" \
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED") || return 1
+	branch_message=$(gh api "repos/${repo}/git/commits/${branch_head}" --jq '.message // empty' 2>/dev/null) || return 1
+	if [[ "$branch_message" != "$final_message" ]]; then
+		final_commit=$(_full_loop_successor_create_commit "$repo" "$branch_head" "$final_message") || return 1
+		payload=$(jq -cn --arg sha "$final_commit" '{sha:$sha,force:false}') || return 1
+		gh api "repos/${repo}/git/refs/heads/${branch_name}" --method PATCH --input - <<<"$payload" >/dev/null 2>&1 || return 1
+		branch_head="$final_commit"
+	fi
+	payload=$(jq -cn --arg body "$body" '{body:$body}') || return 1
+	gh api "repos/${repo}/pulls/${successor_pr}" --method PATCH --input - <<<"$payload" >/dev/null 2>&1 || return 1
+	release_lane_finish_aggregate_successor "$repo" "$successor_pr" "$branch_head" || return 1
+	printf 'release:aggregate-successor draft_pr=%s stale_pr=%s exact_tip=%s\n' \
+		"$successor_pr" "$stale_pr" "$base_sha"
+	printf 'Review and guarded merge remain explicit; no release or publication was authorized.\n'
+	return 0
 }
 
 _full_loop_release_recover_aggregate() {

@@ -26,6 +26,7 @@ REMEDIATION_LOG=""
 MERGE_EVENT_LOG=""
 CACHE_INVALIDATION_LOG=""
 _OW_LABEL_PAT=",origin:worker,"
+RULESET_GATE_HEAD=""
 
 print_result() {
 	local test_name="$1"
@@ -233,7 +234,15 @@ _extract_linked_issue() { printf '123'; return 0; }
 _check_pr_merge_gates() { return 0; }
 _pr_required_checks_pass() { return 0; }
 approve_collaborator_pr() { return 0; }
-_check_ruleset_required_reviews_passing() { return 0; }
+_check_ruleset_required_reviews_passing() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local pr_author="$3"
+	local expected_head_sha="$4"
+	: "$repo_slug" "$pr_number" "$pr_author"
+	RULESET_GATE_HEAD="$expected_head_sha"
+	return 0
+}
 _extract_merge_summary() { printf 'summary'; return 0; }
 _retarget_stacked_children() { return 0; }
 _pmp_is_protected_release_pr() { return 1; }
@@ -289,11 +298,11 @@ _pmrc_gh_read() {
 	return 1
 }
 
-_ruleset_required_review_count_for_default_branch() {
+_ruleset_required_review_policy_for_default_branch() {
 	local repo_slug="$1"
 	local default_branch="$2"
 	[[ "$repo_slug" == "owner/repo" && "$default_branch" == "main" ]] || return 1
-	printf '1\n'
+	printf '1\t0\n'
 	return 0
 }
 
@@ -318,7 +327,7 @@ assert_ruleset_review_sequence() {
 	local pr_author="${4-author}"
 	local actual_rc=0
 	RULESET_REVIEWS_JSON="$reviews_json"
-	_check_ruleset_required_reviews_passing "owner/repo" "77" "$pr_author" || actual_rc=$?
+	_check_ruleset_required_reviews_passing "owner/repo" "77" "$pr_author" "head-current" || actual_rc=$?
 	if [[ "$actual_rc" -eq "$expected_rc" ]]; then
 		print_result "$test_name" 0
 		return 0
@@ -433,6 +442,11 @@ test_ruleset_violation_enables_auto_merge_without_admin() {
 	fi
 	if ! grep -qE 'gh pr merge 77 --repo owner/repo --squash --admin' "$GH_LOG"; then
 		print_result "ruleset violation fallback tries admin first" 1 "gh log: $(cat "$GH_LOG")"
+		teardown_test_env
+		return 0
+	fi
+	if [[ "$RULESET_GATE_HEAD" != "head-current" ]]; then
+		print_result "ruleset approval gate receives current PR head" 1 "expected head-current, got ${RULESET_GATE_HEAD:-empty}"
 		teardown_test_env
 		return 0
 	fi

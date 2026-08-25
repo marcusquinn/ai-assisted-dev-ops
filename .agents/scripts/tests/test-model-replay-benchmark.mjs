@@ -48,10 +48,28 @@ try {
     runtimeState,
     sharedOauthPool,
     sensitiveTemp,
+    operatorOwned,
     baseSHA,
     stableCheck,
     environment,
   } = fixture;
+  const core = await import(pathToFileURL(join(scriptDirectory, "model-replay-core.mjs")).href);
+
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "unsupported" });
+    assert.throws(
+      () => core.qualifyCase({
+        corpusDir: join(sandbox, "must-not-read-corpus"),
+        caseID: "must-not-run-checks",
+        catalogPath: join(sandbox, "must-not-read-catalog.json"),
+        workRoot: join(sandbox, "must-not-create-workspaces"),
+      }),
+      /No enforcing verifier filesystem sandbox is available on unsupported/u,
+    );
+  } finally {
+    Object.defineProperty(process, "platform", platformDescriptor);
+  }
 
   expectFailure(
     environment,
@@ -103,6 +121,7 @@ try {
   );
   assert.equal(qualification[0].status, "qualified");
   assert.equal(qualification[0].runs.length, 2);
+  assert.equal(readFileSync(operatorOwned, "utf8"), "operator-owned\n");
   assert.match(qualification[0].qualification_sha256, /^[a-f0-9]{64}$/u);
   const qualificationPath = join(corpus, "cases", "case-one", "qualification.json");
   const originalQualification = readFileSync(qualificationPath, "utf8");
@@ -123,7 +142,6 @@ try {
     "qualify", "--corpus", corpus, "--catalog", catalog, "--repetitions", "1",
   );
 
-  const core = await import(pathToFileURL(join(scriptDirectory, "model-replay-core.mjs")).href);
   const framework = await import(
     pathToFileURL(join(scriptDirectory, "model-replay-framework.mjs")).href
   );

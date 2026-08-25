@@ -24,6 +24,7 @@ _AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH="aggregation-recovery-refresh"
 _AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT="aggregate-publication-committing"
 _AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH="reserved-authorization-refresh"
 _AIDEVOPS_RELEASE_LANE_PHASE_RECONCILE_REQUIRED="reconcile-required"
+_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING="aggregation-successor-preparing"
 
 _release_lane_cache_path() {
 	local repo="$1"
@@ -229,6 +230,101 @@ release_lane_acquire() {
 	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
 	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
 	_AIDEVOPS_RELEASE_LANE_RESULT="$_AIDEVOPS_RELEASE_LANE_RESULT_ACQUIRED"
+	return 0
+}
+
+# Claim the single metadata-only successor slot before creating a branch or PR.
+# The exact main tip and immutable source manifest make retries convergent; a
+# different target cannot replace an in-flight transaction.
+#aidevops:trust-boundary
+release_lane_begin_aggregate_successor() {
+	local repo="$1"
+	local stale_pr="$2"
+	local base_sha="$3"
+	local expected_sources="$4"
+	local branch_name="$5"
+	local phase=""
+	local operation_token=""
+	local previous_state=""
+	local state_json=""
+	[[ "$stale_pr" =~ ^[0-9]+$ && "$base_sha" =~ ^[0-9a-f]{40}$ && -n "$expected_sources" && -n "$branch_name" ]] || return 1
+	release_lane_read "$repo" || return 1
+	if jq -e --argjson stale "$stale_pr" --arg base "$base_sha" --arg expected "$expected_sources" \
+		--arg branch "$branch_name" --arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" '
+		.active == true and .phase == $preparing
+		and .aggregate_successor.stale_pr == $stale
+		and .aggregate_successor.base_sha == $base
+		and .aggregate_successor.expected_sources == $expected
+		and .aggregate_successor.branch == $branch
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null; then
+		_AIDEVOPS_RELEASE_LANE_TOKEN=$(jq -er '.operation_token' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+		return 0
+	fi
+	phase=$(jq -er '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	jq -e '.active == true' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	[[ "$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" ]] || return 1
+	previous_state=$(jq -c 'del(.aggregate_successor)' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
+	state_json=$(jq -c --argjson stale "$stale_pr" --arg base "$base_sha" \
+		--arg expected "$expected_sources" --arg branch "$branch_name" --arg token "$operation_token" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" --argjson previous "$previous_state" '
+		.phase=$preparing | .operation_token=$token | .updated_at=$now
+		| .aggregate_successor={status:"preparing",stale_pr:$stale,base_sha:$base,
+			expected_sources:$expected,branch:$branch,previous_state:$previous}
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	_AIDEVOPS_RELEASE_LANE_TOKEN="$operation_token"
+	return 0
+}
+
+# Persist the allocated PR before the immutable trailer commit is written.
+#aidevops:trust-boundary
+release_lane_bind_aggregate_successor_pr() {
+	local repo="$1"
+	local successor_pr="$2"
+	local state_json=""
+	[[ "$successor_pr" =~ ^[0-9]+$ && -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" \
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" \
+		--argjson successor "$successor_pr" '
+		.active == true and .phase == $preparing and .operation_token == $token
+		and ((.aggregate_successor.pr // $successor) == $successor)
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	state_json=$(jq -c --argjson successor "$successor_pr" --arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+		.aggregate_successor.pr=$successor | .updated_at=$now
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
+	return 0
+}
+
+# Restore the exact prior lane phase while retaining a durable adoption record.
+#aidevops:trust-boundary
+release_lane_finish_aggregate_successor() {
+	local repo="$1"
+	local successor_pr="$2"
+	local head_sha="$3"
+	local state_json=""
+	local previous_state=""
+	[[ "$successor_pr" =~ ^[0-9]+$ && "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$_AIDEVOPS_RELEASE_LANE_TOKEN" ]] || return 1
+	release_lane_read "$repo" || return 1
+	jq -e --arg token "$_AIDEVOPS_RELEASE_LANE_TOKEN" --argjson successor "$successor_pr" \
+		--arg preparing "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" '
+		.active == true and .phase == $preparing and .operation_token == $token
+		and .aggregate_successor.pr == $successor
+		and .aggregate_successor.previous_state.schema_version == 1
+	' <<<"$_AIDEVOPS_RELEASE_LANE_JSON" >/dev/null || return 1
+	previous_state=$(jq -ce '.aggregate_successor.previous_state' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
+	state_json=$(jq -c --argjson successor "$successor_pr" --arg head "$head_sha" \
+		--arg now "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --argjson transaction "$_AIDEVOPS_RELEASE_LANE_JSON" '
+		. as $previous
+		| $transaction.aggregate_successor as $successor_state
+		| .operation_token=$transaction.operation_token | .updated_at=$now
+		| .aggregate_successor=($successor_state | del(.previous_state)
+			| .status="ready" | .pr=$successor | .head_sha=$head | .completed_at=$now)
+	' <<<"$previous_state") || return 1
+	_release_lane_write "$repo" "$state_json" "$_AIDEVOPS_RELEASE_LANE_HEAD" || return $?
 	return 0
 }
 
@@ -819,7 +915,7 @@ release_lane_merge_guard() {
 		return 0
 	fi
 	case "$phase" in
-	remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH") ;;
+	remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING") ;;
 	*) return 0 ;;
 	esac
 	source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
@@ -833,7 +929,8 @@ release_lane_merge_guard() {
 		esac
 	fi
 	if [[ "$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" &&
-		"$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" ]] &&
+		"$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" &&
+		"$phase" != "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING" ]] &&
 		_release_lane_pr_is_metadata_only_aggregate "$repo" "$pr_number"; then
 		return 0
 	fi

@@ -31,12 +31,27 @@ record_result() {
 
 setup_sandbox() {
 	TEST_ROOT=$(mktemp -d)
+	export TEST_ROOT
 	export HOME="${TEST_ROOT}/home"
 	mkdir -p "${HOME}/.aidevops/cache" "${TEST_ROOT}/bin"
 	unset ANTHROPIC_API_KEY || true
 	printf '#!/usr/bin/env bash\nexit 1\n' >"${TEST_ROOT}/bin/gopass"
 	chmod +x "${TEST_ROOT}/bin/gopass"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
+	return 0
+}
+
+write_curl_capture_stub() {
+	cat >"${TEST_ROOT}/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+: >"${TEST_ROOT}/curl.args"
+for arg in "$@"; do
+	printf '%s\n' "$arg" >>"${TEST_ROOT}/curl.args"
+done
+printf '{"content":[{"text":"OK"}]}\n'
+exit 0
+STUB
+	chmod +x "${TEST_ROOT}/bin/curl"
 	return 0
 }
 
@@ -123,6 +138,71 @@ test_oauth_pool_fallbacks() {
 	probe_resolver "$env_token"
 	assert_probe "env var wins over OAuth pool" 0 "$env_token"
 
+	return 0
+}
+
+probe_anthropic_request() {
+	local kind="$1"
+	local credential="$2"
+	local future_ms=$((($(date +%s) + 3600) * 1000))
+	local rc=0
+	write_curl_capture_stub
+	if [[ "$kind" == "oauth-pool" ]]; then
+		unset ANTHROPIC_API_KEY || true
+		write_pool "$credential" "$future_ms"
+	else
+		export ANTHROPIC_API_KEY="$credential"
+		rm -f "${HOME}/.aidevops/oauth-pool.json"
+	fi
+	set +e
+	(
+		# shellcheck source=/dev/null
+		source "${REPO_ROOT}/.agents/scripts/ai-research-helper.sh"
+		call_anthropic "ping" simple 5
+	) >"${TEST_ROOT}/anthropic-call.out" 2>"${TEST_ROOT}/anthropic-call.err"
+	rc=$?
+	set -e
+	unset ANTHROPIC_API_KEY || true
+	printf '%s\n' "$rc" >"${TEST_ROOT}/anthropic-call.rc"
+	return 0
+}
+
+test_anthropic_credential_header_shapes() {
+	local pool_token="[redacted-pool-token]"
+	local api_key="[redacted-api-key]"
+	local rc=""
+
+	probe_anthropic_request oauth-pool "$pool_token"
+	rc=$(<"${TEST_ROOT}/anthropic-call.rc")
+	if [[ "$rc" == "0" ]] &&
+		grep -Fxq "Authorization: Bearer ${pool_token}" "${TEST_ROOT}/curl.args" &&
+		grep -Fxq 'anthropic-beta: oauth-2025-04-20' "${TEST_ROOT}/curl.args" &&
+		! grep -Fq 'x-api-key:' "${TEST_ROOT}/curl.args"; then
+		record_result "OAuth pool credential uses Bearer and OAuth beta headers only" 0
+	else
+		record_result "OAuth pool credential uses Bearer and OAuth beta headers only" 1 "rc=${rc}"
+	fi
+	if ! grep -Fq "$pool_token" "${TEST_ROOT}/anthropic-call.out" "${TEST_ROOT}/anthropic-call.err"; then
+		record_result "OAuth pool credential is absent from helper output and diagnostics" 0
+	else
+		record_result "OAuth pool credential is absent from helper output and diagnostics" 1
+	fi
+
+	probe_anthropic_request api-key "$api_key"
+	rc=$(<"${TEST_ROOT}/anthropic-call.rc")
+	if [[ "$rc" == "0" ]] &&
+		grep -Fxq "x-api-key: ${api_key}" "${TEST_ROOT}/curl.args" &&
+		! grep -Fq 'Authorization: Bearer' "${TEST_ROOT}/curl.args" &&
+		! grep -Fq 'anthropic-beta: oauth-2025-04-20' "${TEST_ROOT}/curl.args"; then
+		record_result "static API key keeps x-api-key authentication only" 0
+	else
+		record_result "static API key keeps x-api-key authentication only" 1 "rc=${rc}"
+	fi
+	if ! grep -Fq "$api_key" "${TEST_ROOT}/anthropic-call.out" "${TEST_ROOT}/anthropic-call.err"; then
+		record_result "static API key is absent from helper output and diagnostics" 0
+	else
+		record_result "static API key is absent from helper output and diagnostics" 1
+	fi
 	return 0
 }
 
@@ -240,6 +320,7 @@ main() {
 	setup_sandbox
 	trap teardown_sandbox EXIT
 	test_oauth_pool_fallbacks
+	test_anthropic_credential_header_shapes
 	test_auto_provider_prefers_opencode
 	test_opencode_tier_models
 	test_detector_rc2_records_cooldown

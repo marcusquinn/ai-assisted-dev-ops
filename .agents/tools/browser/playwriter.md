@@ -36,6 +36,8 @@ mcp:
 
 **Parallel tabs**: Click extension on each tab. Shared session — not isolated. For isolated parallel work, use Playwright direct.
 
+**Fallback boundary**: Never silently substitute Playwright when Playwriter is unavailable. Playwright uses isolated storage; obtain explicit user consent before changing browser/profile boundaries.
+
 **Chrome DevTools MCP**: `chrome://inspect/#remote-debugging` → `npx chrome-devtools-mcp@latest --autoConnect`.
 
 <!-- AI-CONTEXT-END -->
@@ -88,6 +90,21 @@ mcp:
 ```
 
 Use `@playwriter` for browser tasks. The agent connects Playwriter before its first operation, receives `playwriter_*` tools on the next step, and disconnects after the requested browser work. The activation tool accepts only MCP names declared by the plugin registry.
+
+### Authenticated Tab Preflight
+
+Before requesting authentication, credentials, or any authenticated action:
+
+1. Connect Playwriter and enumerate the accessible pages with `context.pages()`.
+2. Match only the intended target by its expected URL and title. Confirm that the
+   controlled tab and expected Chrome profile/session are visible; do not expose
+   unrelated approved-tab details.
+3. If the bridge, approved tab, or target profile is absent or ambiguous, fail
+   closed and relay the consent/target diagnostic. Do not ask the user to log in.
+4. Never silently substitute isolated-profile Playwright. Explain the storage
+   boundary and obtain explicit user consent before any fallback.
+5. On completion or cancellation, disconnect the Playwriter MCP. Never close
+   user-owned pages, contexts, profiles, or browser windows.
 
 ## Usage
 

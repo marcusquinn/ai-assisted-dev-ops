@@ -120,10 +120,10 @@ run_merge_guard_test() (
 		release_lane_merge_guard test/repo 303 main chore/release-v1.2.3-provenance || return 1
 	AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
 		release_lane_merge_guard test/repo 404 main release/aggregate-recovery || return 1
-	for recovery_phase in aggregation-recovery aggregation-recovery-refresh aggregate-publication-committing reserved-authorization-refresh; do
+	for recovery_phase in aggregation-recovery aggregation-recovery-refresh aggregate-publication-committing reserved-authorization-refresh aggregation-successor-preparing; do
 		state=$(jq -cn --arg phase "$recovery_phase" \
 			'{schema_version:1,repository:"test/repo",active:true,source_pr:101,phase:$phase,
-			  tag:(if $phase == "reserved-authorization-refresh" then null else "v1.2.3" end),
+			  tag:(if ($phase == "reserved-authorization-refresh" or $phase == "aggregation-successor-preparing") then null else "v1.2.3" end),
 			  operation_token:"token-old"}')
 		rc=0
 		output=$(AIDEVOPS_RELEASE_LANE_COORDINATED_REPO=test/repo \
@@ -143,7 +143,8 @@ run_merge_guard_test() (
 			release_lane_merge_guard test/repo 404 main release/aggregate-recovery \
 			>/dev/null 2>&1 || rc=$?
 		if [[ "$recovery_phase" == "aggregate-publication-committing" ||
-			"$recovery_phase" == "reserved-authorization-refresh" ]]; then
+			"$recovery_phase" == "reserved-authorization-refresh" ||
+			"$recovery_phase" == "aggregation-successor-preparing" ]]; then
 			[[ "$rc" -eq 75 ]] || return 1
 		else
 			[[ "$rc" -eq 0 ]] || return 1
@@ -585,6 +586,50 @@ run_failed_prepublication_resume_guard_test() (
 	return 0
 )
 
+run_aggregate_successor_transaction_test() {
+	local state='{"schema_version":1,"repository":"test/repo","active":true,"source_pr":101,"expected_sources":"101@1111111111111111111111111111111111111111","phase":"reserved","tag":null,"operation_token":"lane-old","updated_at":"2026-08-24T00:00:00Z","terminal_receipt":null}'
+	local first_token=""
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON="$state"
+		_AIDEVOPS_RELEASE_LANE_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		return 0
+	}
+	_release_lane_write() {
+		local repo="$1"
+		local state_json="$2"
+		local expected_head="$3"
+		[[ "$repo" == "test/repo" && "$expected_head" == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]] || return 1
+		state="$state_json"
+		return 0
+	}
+	release_lane_begin_aggregate_successor test/repo 202 \
+		bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+		'101@1111111111111111111111111111111111111111,203@3333333333333333333333333333333333333333' \
+		release/aggregate-successor-202-bbbbbbbbbbbb || return 1
+	first_token="$_AIDEVOPS_RELEASE_LANE_TOKEN"
+	[[ "$(jq -r '.phase' <<<"$state")" == "aggregation-successor-preparing" ]] || return 1
+	release_lane_begin_aggregate_successor test/repo 202 \
+		bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+		'101@1111111111111111111111111111111111111111,203@3333333333333333333333333333333333333333' \
+		release/aggregate-successor-202-bbbbbbbbbbbb || return 1
+	[[ "$_AIDEVOPS_RELEASE_LANE_TOKEN" == "$first_token" ]] || return 1
+	if release_lane_begin_aggregate_successor test/repo 202 \
+		cccccccccccccccccccccccccccccccccccccccc \
+		'101@1111111111111111111111111111111111111111,203@3333333333333333333333333333333333333333' \
+		release/aggregate-successor-202-cccccccccccc; then
+		return 1
+	fi
+	release_lane_bind_aggregate_successor_pr test/repo 204 || return 1
+	release_lane_finish_aggregate_successor test/repo 204 dddddddddddddddddddddddddddddddddddddddd || return 1
+	jq -e --arg token "$first_token" '
+		.phase == "reserved" and .operation_token == $token
+		and .aggregate_successor.status == "ready" and .aggregate_successor.pr == 204
+		and .aggregate_successor.head_sha == "dddddddddddddddddddddddddddddddddddddddd"
+		and ((.aggregate_successor.previous_state // null) == null)
+	' <<<"$state" >/dev/null
+	return $?
+}
+
 if run_competing_source_test; then assert_result 'competing source receives active lane and reconcile action' true; else assert_result 'competing source receives active lane and reconcile action' false; fi
 if run_same_source_adoption_test; then assert_result 'same source adopts durable lane without another bump' true; else assert_result 'same source adopts durable lane without another bump' false; fi
 if run_terminal_lane_reacquire_test; then assert_result 'terminal lane can be atomically reserved by a later source' true; else assert_result 'terminal lane can be atomically reserved by a later source' false; fi
@@ -600,6 +645,7 @@ if run_aggregate_recovery_rejection_test; then assert_result 'aggregate recovery
 if run_reserved_aggregate_authorization_test; then assert_result 'reserved aggregate authorization rotates through a resumable lane-first transaction' true; else assert_result 'reserved aggregate authorization rotates through a resumable lane-first transaction' false; fi
 if run_failed_prepublication_reopen_test; then assert_result 'verified failed pre-publication lane recovery rotates ownership and rejects unsafe states' true; else assert_result 'verified failed pre-publication lane recovery rotates ownership and rejects unsafe states' false; fi
 if run_failed_prepublication_resume_guard_test; then assert_result 'recovered pre-publication markers revalidate fenced refreshes and clear only at preparing' true; else assert_result 'recovered pre-publication markers revalidate fenced refreshes and clear only at preparing' false; fi
+if run_aggregate_successor_transaction_test; then assert_result 'successor aggregation retries converge through one lane CAS transaction' true; else assert_result 'successor aggregation retries converge through one lane CAS transaction' false; fi
 
 printf '\nTests run: %s, Failures: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]

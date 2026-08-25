@@ -256,6 +256,7 @@ Usage:
   aidevops release [patch|minor|major] SOURCE_PR [incremental|full] [--expected-sources PR[,PR...]]
   aidevops release status SOURCE_PR
   aidevops release reconcile SOURCE_PR
+  aidevops release refresh-aggregate STALE_AGGREGATION_PR
   aidevops release recover-aggregate SOURCE_PR --tag TAG --expected-sources PR[,PR...]
   aidevops release authorization-gap SOURCE_PR --tag TAG --expected-sources PR@SHA[,PR@SHA...] --reason TEXT
 
@@ -612,6 +613,17 @@ main() {
 		}
 		_full_loop_release_bind_repo_context || return 1
 		_full_loop_release_existing_with_lane "$release_type" "$source_pr"
+		return $?
+		;;
+	refresh-aggregate)
+		[[ "$source_pr" =~ ^[0-9]+$ ]] || {
+			_full_loop_release_usage >&2
+			return 1
+		}
+		_full_loop_release_bind_repo_context || return 1
+		local successor_repo=""
+		successor_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}") || return 1
+		_full_loop_release_refresh_aggregate "$successor_repo" "$source_pr"
 		return $?
 		;;
 	recover-aggregate)

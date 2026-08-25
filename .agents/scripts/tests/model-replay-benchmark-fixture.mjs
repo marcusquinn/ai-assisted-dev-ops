@@ -165,6 +165,7 @@ function fixturePaths(sandbox) {
     testHome: join(sandbox, "home"),
     fakeOpenCode: join(sandbox, "fake-opencode.sh"),
     fakeEgressBackend: join(sandbox, "fake-egress-backend.sh"),
+    operatorOwned: join(sandbox, "operator-owned.txt"),
   };
 }
 
@@ -199,7 +200,9 @@ function writeCaseInputs(paths) {
   const fixedCheck = "const fs=require('node:fs');process.exit(fs.readFileSync('value.txt','utf8').trim()==='fixed'?0:1)";
   const stableCheck = "const fs=require('node:fs');process.exit(fs.readFileSync('stable.txt','utf8').trim()==='stable'?0:1)";
   const cleanEnvironmentCheck = "process.exit(process.env.AIDEVOPS_TEST_SECRET_SENTINEL?1:0)";
-  const filesystemBoundaryCheck = `const fs=require('node:fs');try{fs.readFileSync(${JSON.stringify(join(paths.inputs, "gold.patch"))});process.exit(1)}catch(error){process.exit(['EACCES','EPERM'].includes(error.code)?0:2)}`;
+  const filesystemBoundaryCheck = `const fs=require('node:fs');try{fs.readFileSync(${JSON.stringify(join(paths.inputs, "gold.patch"))});process.exit(1)}catch(error){process.exit(['EACCES','EPERM','ENOENT','EROFS'].includes(error.code)?0:2)}`;
+  const operatorWriteCheck = `const fs=require('node:fs');try{fs.writeFileSync(${JSON.stringify(paths.operatorOwned)},'changed');process.exit(1)}catch(error){process.exit(['EACCES','EPERM','ENOENT','EROFS'].includes(error.code)?0:2)}`;
+  const networkBoundaryCheck = "const net=require('node:net');const denied=new Set(['EACCES','EPERM','ENETUNREACH','EHOSTUNREACH','EAFNOSUPPORT']);let settled=false;function finish(ok){if(settled)return;settled=true;process.exit(ok?0:2)}try{const socket=net.connect({host:'192.0.2.1',port:9});socket.once('error',error=>finish(denied.has(error.code)));socket.once('connect',()=>finish(false));setTimeout(()=>{socket.destroy();finish(false)},1000)}catch(error){finish(denied.has(error.code))}";
   const mutationCheck = "require('node:fs').writeFileSync('verifier-marker','isolated');process.exit(0)";
   const noMutationLeakCheck = "process.exit(require('node:fs').existsSync('verifier-marker')?1:0)";
   writeJson(join(paths.inputs, "checks.json"), {
@@ -214,6 +217,8 @@ function writeCaseInputs(paths) {
       { name: "stable-value", argv: [process.execPath, "--input-type=commonjs", "-e", stableCheck], timeout_seconds: 10 },
       { name: "sanitized-environment", argv: [process.execPath, "--input-type=commonjs", "-e", cleanEnvironmentCheck], timeout_seconds: 10 },
       { name: "filesystem-boundary", argv: [process.execPath, "--input-type=commonjs", "-e", filesystemBoundaryCheck], timeout_seconds: 10 },
+      { name: "operator-write-boundary", argv: [process.execPath, "--input-type=commonjs", "-e", operatorWriteCheck], timeout_seconds: 10 },
+      { name: "network-boundary", argv: [process.execPath, "--input-type=commonjs", "-e", networkBoundaryCheck], timeout_seconds: 10 },
     ],
   });
   return stableCheck;
@@ -251,6 +256,7 @@ function writeRuntimeFixtures(paths) {
   chmodSync(paths.fakeEgressBackend, 0o700);
   writeFileSync(paths.fakeRuntime, FAKE_RUNTIME, { mode: 0o700 });
   chmodSync(paths.fakeRuntime, 0o700);
+  writeFileSync(paths.operatorOwned, "operator-owned\n", { mode: 0o600 });
 }
 
 function fixtureEnvironment(paths) {

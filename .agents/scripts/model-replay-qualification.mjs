@@ -21,6 +21,7 @@ import {
   loadCatalog,
 } from "./model-replay-corpus.mjs";
 import {
+  assertVerifierSandboxAvailable,
   assertNoSymlinks,
   execute,
   workspaceExecutionEnvironment,
@@ -153,6 +154,7 @@ export function qualifyCase({
   allowPromptWarnings = false,
   retainWorkspaces = false,
 }) {
+  assertVerifierSandboxAvailable();
   const loadedCase = loadCase(corpusDir, caseID);
   const loadedCatalog = loadCatalog(catalogPath);
   if (loadedCase.definition.prompt_fidelity !== "exact" && !allowReconstructedPrompt) {

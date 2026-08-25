@@ -29,8 +29,10 @@ export {
   loadCorpus,
 } from "./model-replay-corpus.mjs";
 export {
+  assertVerifierSandboxAvailable,
   assertNoSymlinks,
   execute,
+  verifierSandboxBackend,
   workspaceExecutionEnvironment,
 } from "./model-replay-process.mjs";
 export {

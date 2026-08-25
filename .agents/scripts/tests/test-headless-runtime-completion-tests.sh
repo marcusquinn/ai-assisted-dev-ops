@@ -189,6 +189,11 @@ test_worker_produced_output_branch_with_pr_returns_pr_exists() {
 	unset DISPATCH_REPO_SLUG 2>/dev/null || true
 	unset -f gh_pr_list 2>/dev/null || true
 	unset -f gh 2>/dev/null || true
+	# The focused stubs above replace shell functions rather than commands.
+	# Restore direct adapters for the remaining completion tests so later stubs
+	# do not fall through to missing wrapper functions.
+	gh_pr_list() { gh pr list "$@"; return $?; }
+	gh_issue_view() { gh issue view "$@"; return $?; }
 
 	if [[ "$classification" == "pr_exists" ]]; then
 		print_result "_worker_produced_output returns 'pr_exists' when PR confirmed" 0
@@ -258,12 +263,12 @@ test_session_terminal_reconciliation_preserves_null_issue_scope() {
 }
 
 test_rate_limit_fast_reconciles_session_blockers() {
-	local helper_file="$HELPER_SCRIPT"
+	local helper_file="${HELPER_SCRIPT%/*}/headless-runtime-attempt.sh"
 	local callback_count=""
 	local callback_pattern=''
 	# shellcheck disable=SC2016 # Match the literal runtime variable reference.
 	callback_pattern='_hrw_reconcile_session_permission_blockers "$session_key"'
-	callback_count=$(grep -cF "$callback_pattern" "$helper_file")
+	callback_count=$(grep -cF "$callback_pattern" "$helper_file" || true)
 	if [[ "$callback_count" == "2" ]]; then
 		print_result "rate-limit fast exit reconciles session blockers" 0
 		return 0
@@ -321,8 +326,8 @@ test_cmd_run_finish_preserves_terminal_blocked_outcome() {
 	_release_session_lock() { return 0; }
 	_hrw_record_terminal_outcome() { recorded_outcome="$2"; recorded_reason="$3"; return 0; }
 
-	_run_result_label="blocked"
-	_run_failure_reason="blocked"
+	local _run_result_label="blocked"
+	local _run_failure_reason="blocked"
 	_cmd_run_finish "issue-99999" "complete" "$work_dir"
 
 	if [[ "$released_reason" == "blocked" && "$fast_fail_called" -eq 0 &&
@@ -702,6 +707,8 @@ test_post_merge_permission_uses_cleanup_receipt_without_blocking_issue() {
 			gh() {
 				if [[ "${*}" == *"issue view 99999"* ]]; then
 					printf 'CLOSED\n'
+				elif [[ "${*}" == *"api repos/owner/repo/pulls/123"* ]]; then
+					printf '%s\n' 'Resolves #99999'
 				elif [[ "${*}" == *"api --paginate"* && "${*}" == *"/issues/123/comments"* ]]; then
 					printf '%s\n' '[[{"body":"<!-- MERGE_SUMMARY -->"}]]'
 				elif [[ "${*}" == *"pr view 123"* ]]; then

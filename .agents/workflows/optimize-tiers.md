@@ -200,9 +200,14 @@ but reports quarantine them from automatic routing or release recommendations.
 It never weakens public triage, worker, or other runtime roles.
 Each deterministic check receives a disposable patch snapshot in a separate
 filesystem-deny sandbox, so check-time writes cannot affect later checks. The
-current enforcing backend is macOS Seatbelt; qualification fails closed on hosts
-without `/usr/bin/sandbox-exec` rather than exposing hidden corpus or operator
-state.
+enforcing backends are macOS Seatbelt and Linux Bubblewrap. Linux requires an
+executable `/usr/bin/bwrap` or `/bin/bwrap`; the sandbox uses a new mount,
+process, user, and network namespace, grants write access only to the disposable
+snapshot and its isolated HOME/TMP/XDG tree, and mounts only required system
+runtime paths read-only. Qualification and grading fail before running checks
+when the platform backend is missing or cannot establish those namespaces,
+rather than exposing hidden corpus, operator state, results, runtime data, or
+sibling workspaces.
 
 Use stages in order:
 

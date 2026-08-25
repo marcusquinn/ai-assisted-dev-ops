@@ -1197,52 +1197,102 @@ _check_required_pr_checks_passing_fallback() {
 }
 
 #######################################
-# Resolve the maximum required approval count from active rulesets matching
-# the repository default branch. This is separate from required status checks:
-# GitHub stores ruleset approval requirements under pull_request rules, not as
-# CI contexts, so an empty status context list is not enough to allow a merge.
+# Parse one matching ruleset detail into aggregate approval requirements.
+# #aidevops:trust-boundary — ruleset approval freshness controls whether an
+# admin merge may reuse approvals from an older PR head. Require typed policy
+# fields instead of treating unknown API evidence as policy=false.
+#
+# Args: $1=ruleset detail JSON
+# Stdout: tab-separated required approvals and current-head approvals
+# Returns: 0=valid policy, 1=invalid policy
+#######################################
+_ruleset_pull_request_policy_from_detail() {
+	local detail="$1"
+	# shellcheck disable=SC2016  # jq variables are not shell expansions.
+	printf '%s' "$detail" | aidevops_run_with_log_stderr jq -er '
+		[.rules[]? | select(.type == "pull_request") | .parameters as $parameters |
+			if ($parameters | type) != "object"
+				or ($parameters.required_approving_review_count | type) != "number"
+				or $parameters.required_approving_review_count < 0
+				or ($parameters.required_approving_review_count | floor) != $parameters.required_approving_review_count
+				or ($parameters.dismiss_stale_reviews_on_push | type) != "boolean"
+				or ($parameters.require_last_push_approval | type) != "boolean"
+			then error("invalid pull-request approval policy")
+			else {
+				required: $parameters.required_approving_review_count,
+				current_head_required: (
+					if $parameters.dismiss_stale_reviews_on_push then
+						$parameters.required_approving_review_count
+					elif $parameters.require_last_push_approval and $parameters.required_approving_review_count > 0 then
+						1
+					else 0 end
+				)
+			} end]
+		| "\([.[].required] | max // 0)\t\([.[].current_head_required] | max // 0)"
+	'
+	return $?
+}
+
+#######################################
+# Resolve the maximum approval count and current-head approval count from active
+# rulesets matching the repository default branch. This is separate from
+# required status checks: GitHub stores ruleset approval requirements under
+# pull_request rules, not as CI contexts, so an empty status context list is not
+# enough to allow a merge.
 #
 # Args: $1=repo_slug, $2=default_branch, $3=optional pre-fetched rulesets JSON
-# Stdout: integer maximum required_approving_review_count (0 when none)
+# Stdout: tab-separated maximum required approvals and current-head approvals
 # Returns: 0=requirement resolved, 1=ruleset API/parse error
 #######################################
-_ruleset_required_review_count_for_default_branch() {
+_ruleset_required_review_policy_for_default_branch() {
 	local repo_slug="$1"
 	local default_branch="$2"
 	local rulesets_json="${3:-}"
 
 	if [[ -z "$rulesets_json" ]]; then
 		rulesets_json=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets" 2>/dev/null) || {
-			aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#24577)"
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: rulesets list failed for ${repo_slug} — caller will fail closed (GH#24577)"
 			return 1
 		}
 	fi
-	[[ -n "$rulesets_json" && "$rulesets_json" != "[]" && "$rulesets_json" != null ]] || {
-		printf '0'
+	if ! _pmrc_rulesets_list_schema_valid "$rulesets_json"; then
+		aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#30638)"
+		return 1
+	fi
+	[[ "$rulesets_json" != "[]" ]] || {
+		printf '0\t0'
 		return 0
 	}
 
 	local active_ids=""
-	active_ids=$(printf '%s' "$rulesets_json" | aidevops_run_with_log_stderr jq -r '.[]? | select(.enforcement == "active") | .id // empty') || {
-		aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#24577)"
+	# shellcheck disable=SC2016  # jq variables are not shell expansions.
+	active_ids=$(printf '%s' "$rulesets_json" | aidevops_run_with_log_stderr jq -r \
+		--arg active "$PMRC_RULESET_ACTIVE" --arg branch "$PMRC_RULESET_BRANCH" \
+		'.[] | select(.enforcement == $active and .target == $branch) | .id') || {
+		aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: rulesets list parse failed for ${repo_slug} — caller will fail closed (GH#24577)"
 		return 1
 	}
 	[[ -n "$active_ids" ]] || {
-		printf '0'
+		printf '0\t0'
 		return 0
 	}
 
 	local max_required=0
+	local max_current_head_required=0
 	local id="" detail="" include_patterns="" exclude_patterns="" pattern=""
-	local matches_default=0 excluded_default=0 approval_count=""
+	local matches_default=0 excluded_default=0 policy="" approval_count="" current_head_required=""
 	while IFS= read -r id; do
 		[[ -n "$id" ]] || continue
 		detail=$(_pmrc_gh_read gh api "repos/${repo_slug}/rulesets/${id}" 2>/dev/null) || {
-			aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#24577)"
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: ruleset detail ${id} failed for ${repo_slug} — caller will fail closed (GH#24577)"
 			return 1
 		}
-		include_patterns=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '.conditions?.ref_name?.include? // [] | .[]') || return 1
-		exclude_patterns=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '.conditions?.ref_name?.exclude? // [] | .[]') || return 1
+		if ! _pmrc_branch_ruleset_detail_schema_valid "$detail" "$id"; then
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: ruleset detail ${id} parse failed for ${repo_slug} — caller will fail closed (GH#30638)"
+			return 1
+		fi
+		include_patterns=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '.conditions.ref_name.include | .[]') || return 1
+		exclude_patterns=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '.conditions.ref_name.exclude // [] | .[]') || return 1
 
 		matches_default=0
 		while IFS= read -r pattern; do
@@ -1262,44 +1312,78 @@ _ruleset_required_review_count_for_default_branch() {
 		done <<<"$exclude_patterns"
 		[[ "$excluded_default" -eq 0 ]] || continue
 
-		approval_count=$(printf '%s' "$detail" | aidevops_run_with_log_stderr jq -r '[.rules[]? | select(.type == "pull_request") | (.parameters?.required_approving_review_count? // 0)] | max // 0') || {
-			aidevops_log_line "[pulse-merge] _ruleset_required_review_count_for_default_branch: pull-request rule parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#24577)"
+		policy=$(_ruleset_pull_request_policy_from_detail "$detail") || {
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: pull-request policy parse failed for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#30638)"
 			return 1
 		}
-		[[ "$approval_count" =~ ^[0-9]+$ ]] || approval_count=0
+		IFS=$'\t' read -r approval_count current_head_required <<<"$policy"
+		if [[ ! "$approval_count" =~ ^[0-9]+$ || ! "$current_head_required" =~ ^[0-9]+$ ]]; then
+			aidevops_log_line "[pulse-merge] _ruleset_required_review_policy_for_default_branch: invalid policy aggregate for ruleset ${id} in ${repo_slug} — caller will fail closed (GH#30638)"
+			return 1
+		fi
 		[[ "$approval_count" -gt "$max_required" ]] && max_required="$approval_count"
+		[[ "$current_head_required" -gt "$max_current_head_required" ]] && max_current_head_required="$current_head_required"
 	done <<<"$active_ids"
 
-	printf '%s' "$max_required"
+	printf '%s\t%s' "$max_required" "$max_current_head_required"
+	return 0
+}
+
+#######################################
+# Resolve only the maximum approval count for callers that do not evaluate
+# review freshness themselves.
+#
+# Args: $1=repo_slug, $2=default_branch, $3=optional pre-fetched rulesets JSON
+# Stdout: integer maximum required_approving_review_count (0 when none)
+# Returns: 0=requirement resolved, 1=ruleset API/parse error
+#######################################
+_ruleset_required_review_count_for_default_branch() {
+	local repo_slug="$1"
+	local default_branch="$2"
+	local rulesets_json="${3:-}"
+	local policy="" required_count="" current_head_required=""
+	policy=$(_ruleset_required_review_policy_for_default_branch "$repo_slug" "$default_branch" "$rulesets_json") || return 1
+	IFS=$'\t' read -r required_count current_head_required <<<"$policy"
+	[[ "$required_count" =~ ^[0-9]+$ && "$current_head_required" =~ ^[0-9]+$ ]] || return 1
+	printf '%s' "$required_count"
 	return 0
 }
 
 #######################################
 # Verify active ruleset pull_request approval requirements for one PR.
 #
-# Args: $1=repo_slug, $2=pr_number, $3=pr_author
+# Args: $1=repo_slug, $2=pr_number, $3=pr_author, $4=expected_head_sha
 # Returns: 0=passes/no ruleset approval requirement, 1=missing/unverifiable
 #######################################
 _check_ruleset_required_reviews_passing() {
 	local repo_slug="$1"
 	local pr_number="$2"
 	local pr_author="$3"
+	local expected_head_sha="${4:-}"
 
-	local default_branch="" required_count=""
+	local default_branch="" policy="" required_count="" required_current_head_count=""
 	default_branch=$(_pmrc_gh_read gh api "repos/${repo_slug}" --jq '.default_branch' 2>/dev/null) || default_branch=""
 	if [[ -z "$default_branch" ]]; then
 		echo "[pulse-merge] _check_ruleset_required_reviews_passing: failed to resolve default branch for ${repo_slug} — failing closed (GH#24577)" >>"$LOGFILE"
 		return 1
 	fi
-	required_count=$(_ruleset_required_review_count_for_default_branch "$repo_slug" "$default_branch") || return 1
-	[[ "$required_count" =~ ^[0-9]+$ ]] || required_count=0
+	policy=$(_ruleset_required_review_policy_for_default_branch "$repo_slug" "$default_branch") || return 1
+	IFS=$'\t' read -r required_count required_current_head_count <<<"$policy"
+	if [[ ! "$required_count" =~ ^[0-9]+$ || ! "$required_current_head_count" =~ ^[0-9]+$ ]]; then
+		echo "[pulse-merge] _check_ruleset_required_reviews_passing: invalid ruleset approval policy for ${repo_slug} — failing closed (GH#30638)" >>"$LOGFILE"
+		return 1
+	fi
 	[[ "$required_count" -eq 0 ]] && return 0
 	if [[ -z "$pr_author" ]]; then
 		echo "[pulse-merge] _check_ruleset_required_reviews_passing: PR #${pr_number} in ${repo_slug} has no verifiable author — failing closed (GH#30586)" >>"$LOGFILE"
 		return 1
 	fi
+	if [[ "$required_current_head_count" -gt 0 && -z "$expected_head_sha" ]]; then
+		echo "[pulse-merge] _check_ruleset_required_reviews_passing: PR #${pr_number} in ${repo_slug} requires current-head approval but has no expected head — failing closed (GH#30638)" >>"$LOGFILE"
+		return 1
+	fi
 
-	local reviews_pages="" approved_count="" empty_string=""
+	local reviews_pages="" approval_counts="" approved_count="" current_head_approved_count="" empty_string=""
 	reviews_pages=$(_pmrc_gh_read gh api "repos/${repo_slug}/pulls/${pr_number}/reviews?per_page=100" --paginate --slurp 2>/dev/null) || reviews_pages=""
 	if [[ -z "$reviews_pages" || "$reviews_pages" == null ]]; then
 		echo "[pulse-merge] _check_ruleset_required_reviews_passing: review fetch failed for PR #${pr_number} in ${repo_slug} with ruleset requiring ${required_count} approval(s) — failing closed (GH#24577)" >>"$LOGFILE"
@@ -1308,7 +1392,8 @@ _check_ruleset_required_reviews_passing() {
 	# #aidevops:trust-boundary — count only each reviewer's latest substantive
 	# decision. COMMENTED submissions do not change GitHub's approval state, while
 	# malformed state-changing reviews must keep ruleset admission fail-closed.
-	approved_count=$(jq -er --arg author "$pr_author" --arg empty "$empty_string" \
+	approval_counts=$(jq -er --arg author "$pr_author" --arg empty "$empty_string" \
+		--arg expected_head "$expected_head_sha" --argjson required_current_head "$required_current_head_count" \
 		--arg array_type "$PMRC_JSON_ARRAY" --arg object_type "$PMRC_JSON_OBJECT" \
 		--arg number_type "$PMRC_JSON_NUMBER" --arg string_type "$PMRC_JSON_STRING" '
 		def review_state:
@@ -1332,6 +1417,10 @@ _check_ruleset_required_reviews_passing() {
 				or (.id | type) != $number_type
 				or .id <= 0
 				or (.id | floor) != .id
+				or ($required_current_head > 0 and (
+					(.commit_id | type) != $string_type
+					or (.commit_id | length) == 0
+				))
 			))
 		) then
 			error("malformed state-changing review")
@@ -1340,24 +1429,27 @@ _check_ruleset_required_reviews_passing() {
 				login: ((.user.login // $empty) | ascii_downcase),
 				state: $state,
 				submitted_epoch: ((.submitted_at // $empty) | fromdateiso8601),
-				id: (.id // 0)
+				id: (.id // 0),
+				commit_id: (.commit_id // $empty)
 			} | select(.login != $empty)]
 			| group_by(.login)
 			| map(max_by([.submitted_epoch, .id]))
 			| map(select(.login != $author_login))
 			| map(select(.state == "APPROVED"))
-			| length
+			| [length, map(select(.commit_id == $expected_head)) | length]
+			| @tsv
 		end
-	' <<<"$reviews_pages" 2>/dev/null) || approved_count=""
-	if [[ ! "$approved_count" =~ ^[0-9]+$ ]]; then
+	' <<<"$reviews_pages" 2>/dev/null) || approval_counts=""
+	IFS=$'\t' read -r approved_count current_head_approved_count <<<"$approval_counts"
+	if [[ ! "$approved_count" =~ ^[0-9]+$ || ! "$current_head_approved_count" =~ ^[0-9]+$ ]]; then
 		echo "[pulse-merge] _check_ruleset_required_reviews_passing: review parse failed for PR #${pr_number} in ${repo_slug} — failing closed (GH#24577)" >>"$LOGFILE"
 		return 1
 	fi
-	if [[ "$approved_count" -lt "$required_count" ]]; then
-		echo "[pulse-merge] _check_ruleset_required_reviews_passing: PR #${pr_number} in ${repo_slug} has ${approved_count}/${required_count} ruleset-required approval(s) — deferring merge (GH#24577)" >>"$LOGFILE"
+	if [[ "$approved_count" -lt "$required_count" || "$current_head_approved_count" -lt "$required_current_head_count" ]]; then
+		echo "[pulse-merge] _check_ruleset_required_reviews_passing: PR #${pr_number} in ${repo_slug} has ${approved_count}/${required_count} ruleset-required approval(s), including ${current_head_approved_count}/${required_current_head_count} required on expected head ${expected_head_sha:0:12} — deferring merge (GH#30638)" >>"$LOGFILE"
 		return 1
 	fi
-	echo "[pulse-merge] _check_ruleset_required_reviews_passing: PR #${pr_number} in ${repo_slug} satisfies ${approved_count}/${required_count} ruleset-required approval(s) (GH#24577)" >>"$LOGFILE"
+	echo "[pulse-merge] _check_ruleset_required_reviews_passing: PR #${pr_number} in ${repo_slug} satisfies ${approved_count}/${required_count} ruleset-required approval(s), including ${current_head_approved_count}/${required_current_head_count} required on expected head ${expected_head_sha:0:12} (GH#30638)" >>"$LOGFILE"
 	return 0
 }
 

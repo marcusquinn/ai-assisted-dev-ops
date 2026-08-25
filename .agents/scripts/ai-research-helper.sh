@@ -118,23 +118,33 @@ resolve_oauth_pool_token() {
 	return 0
 }
 
-resolve_provider_credential() {
+_AI_RESEARCH_CREDENTIAL_KIND=""
+_AI_RESEARCH_CREDENTIAL_VALUE=""
+_AI_RESEARCH_CREDENTIAL_KIND_API_KEY="api-key"
+
+resolve_provider_credential_typed() {
 	local provider="${1:-anthropic}"
-	local key_var
+	local key_var=""
+	local secret_path=""
+	local credential=""
+	local oauth_token=""
+	_AI_RESEARCH_CREDENTIAL_KIND=""
+	_AI_RESEARCH_CREDENTIAL_VALUE=""
 	key_var=$(provider_key_var "$provider") || return 1
 
 	if [[ -n "${!key_var:-}" ]]; then
-		printf '%s\n' "${!key_var}"
+		_AI_RESEARCH_CREDENTIAL_KIND="$_AI_RESEARCH_CREDENTIAL_KIND_API_KEY"
+		_AI_RESEARCH_CREDENTIAL_VALUE="${!key_var}"
 		return 0
 	fi
 
 	if command -v gopass &>/dev/null; then
-		local secret_path key
 		secret_path=$(provider_gopass_secret "$provider") || secret_path=""
 		if [[ -n "$secret_path" ]]; then
-			key=$(gopass show -o "$secret_path" 2>/dev/null) || true
-			if [[ -n "$key" ]]; then
-				printf '%s\n' "$key"
+			credential=$(gopass show -o "$secret_path" 2>/dev/null) || true
+			if [[ -n "$credential" ]]; then
+				_AI_RESEARCH_CREDENTIAL_KIND="$_AI_RESEARCH_CREDENTIAL_KIND_API_KEY"
+				_AI_RESEARCH_CREDENTIAL_VALUE="$credential"
 				return 0
 			fi
 		fi
@@ -142,21 +152,32 @@ resolve_provider_credential() {
 
 	local creds_file="${HOME}/.config/aidevops/credentials.sh"
 	if [[ -f "$creds_file" ]]; then
-		local key
-		key=$(grep -E "^${key_var}=" "$creds_file" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
-		if [[ -n "$key" ]]; then
-			printf '%s\n' "$key"
+		credential=$(grep -E "^${key_var}=" "$creds_file" 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true)
+		if [[ -n "$credential" ]]; then
+			_AI_RESEARCH_CREDENTIAL_KIND="$_AI_RESEARCH_CREDENTIAL_KIND_API_KEY"
+			_AI_RESEARCH_CREDENTIAL_VALUE="$credential"
 			return 0
 		fi
 	fi
 
-	local oauth_token
 	if oauth_token=$(resolve_oauth_pool_token "$provider"); then
-		printf '%s\n' "$oauth_token"
+		_AI_RESEARCH_CREDENTIAL_KIND="oauth-pool"
+		_AI_RESEARCH_CREDENTIAL_VALUE="$oauth_token"
 		return 0
 	fi
 
 	return 1
+}
+
+resolve_provider_credential() {
+	local provider="${1:-anthropic}"
+	local credential_value=""
+	resolve_provider_credential_typed "$provider" || return 1
+	credential_value="$_AI_RESEARCH_CREDENTIAL_VALUE"
+	_AI_RESEARCH_CREDENTIAL_KIND=""
+	_AI_RESEARCH_CREDENTIAL_VALUE=""
+	printf '%s\n' "$credential_value"
+	return 0
 }
 
 # Backwards-compatible Anthropic resolver used by existing sourced tests/callers.
@@ -251,17 +272,33 @@ call_anthropic() {
 	local model_name="${2:-simple}"
 	local max_tokens="${3:-150}"
 
-	local api_key
-	api_key=$(resolve_provider_credential anthropic) || {
+	local credential_kind=""
+	local credential_value=""
+	local -a auth_headers=()
+	if ! resolve_provider_credential_typed anthropic; then
 		log_error "No Anthropic API key found (env, gopass, credentials.sh, or OAuth pool)"
 		return 2
-	}
+	fi
+	credential_kind="$_AI_RESEARCH_CREDENTIAL_KIND"
+	credential_value="$_AI_RESEARCH_CREDENTIAL_VALUE"
+	_AI_RESEARCH_CREDENTIAL_KIND=""
+	_AI_RESEARCH_CREDENTIAL_VALUE=""
+	case "$credential_kind" in
+	"$_AI_RESEARCH_CREDENTIAL_KIND_API_KEY") auth_headers=(-H "x-api-key: ${credential_value}") ;;
+	oauth-pool)
+		auth_headers=(-H "Authorization: Bearer ${credential_value}" -H "anthropic-beta: oauth-2025-04-20")
+		;;
+	*)
+		log_error "Unsupported Anthropic credential kind"
+		return 2
+		;;
+	esac
 
 	local model_id payload response text
 	model_id=$(resolve_model_id "$model_name")
 	payload=$(json_payload anthropic "$prompt" "$model_id" "$max_tokens") || return 1
 	response=$(curl -sS --max-time 30 \
-		-H "x-api-key: ${api_key}" \
+		"${auth_headers[@]}" \
 		-H "anthropic-version: 2023-06-01" \
 		-H "${CONTENT_TYPE_JSON}" \
 		-d "$payload" \

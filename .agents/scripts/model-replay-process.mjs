@@ -3,7 +3,9 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  accessSync,
   chmodSync,
+  constants,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -11,11 +13,24 @@ import {
   readdirSync,
   realpathSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathInside } from "./model-replay-common.mjs";
 
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const WORKSPACE_ENVIRONMENTS = new Map();
+const LINUX_BWRAP_CANDIDATES = ["/usr/bin/bwrap", "/bin/bwrap"];
+const LINUX_RUNTIME_ROOTS = ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
+const LINUX_RUNTIME_PATHS = [
+  "/etc/group",
+  "/etc/ld.so.cache",
+  "/etc/ld.so.conf",
+  "/etc/ld.so.conf.d",
+  "/etc/localtime",
+  "/etc/nsswitch.conf",
+  "/etc/passwd",
+  "/etc/ssl/certs",
+];
+let verifiedSandboxBackend = null;
 const SAFE_ENVIRONMENT_NAMES = [
   "COMSPEC",
   "LANG",
@@ -41,8 +56,12 @@ export function createCommandEnvironment(environmentRoot) {
   const home = join(environmentRoot, "home");
   const temporary = join(environmentRoot, "tmp");
   const config = join(environmentRoot, "config");
+  const cache = join(environmentRoot, "cache");
+  const data = join(environmentRoot, "data");
+  const runtime = join(environmentRoot, "runtime");
+  const state = join(environmentRoot, "state");
   const gitTemplate = join(environmentRoot, "git-template");
-  for (const directory of [home, temporary, config, gitTemplate]) {
+  for (const directory of [home, temporary, config, cache, data, runtime, state, gitTemplate]) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     chmodSync(directory, 0o700);
   }
@@ -57,7 +76,11 @@ export function createCommandEnvironment(environmentRoot) {
     TMPDIR: temporary,
     TMP: temporary,
     TEMP: temporary,
+    XDG_CACHE_HOME: cache,
     XDG_CONFIG_HOME: config,
+    XDG_DATA_HOME: data,
+    XDG_RUNTIME_DIR: runtime,
+    XDG_STATE_HOME: state,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
@@ -119,12 +142,161 @@ function seatbeltLiteral(path) {
   return `"${escaped}"`;
 }
 
-export function verifierSandboxCommand(argv, workspace, environmentRoot) {
-  if (process.platform !== "darwin") {
-    throw new Error(`No enforcing verifier filesystem sandbox is available on ${process.platform}`);
+function executableFile(path) {
+  try {
+    accessSync(path, constants.X_OK);
+    const metadata = lstatSync(path);
+    return metadata.isFile() && !metadata.isSymbolicLink();
+  } catch {
+    return false;
   }
-  if (!existsSync("/usr/bin/sandbox-exec")) {
-    throw new Error(`No enforcing verifier filesystem sandbox is available on ${process.platform}`);
+}
+
+function unavailableSandbox(platform) {
+  throw new Error(`No enforcing verifier filesystem sandbox is available on ${platform}`);
+}
+
+export function verifierSandboxBackend({
+  platform = process.platform,
+  linuxCandidates = LINUX_BWRAP_CANDIDATES,
+} = {}) {
+  if (platform === "darwin" && executableFile("/usr/bin/sandbox-exec")) {
+    return { kind: "seatbelt", executable: "/usr/bin/sandbox-exec" };
+  }
+  if (platform === "linux") {
+    const executable = linuxCandidates.find(executableFile);
+    if (executable) return { kind: "bubblewrap", executable };
+  }
+  return unavailableSandbox(platform);
+}
+
+function bubblewrapProbe(executable) {
+  const probeExecutable = ["/usr/bin/true", "/bin/true"].find(executableFile);
+  if (!probeExecutable) unavailableSandbox(process.platform);
+  const probeArguments = [
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-all",
+  ];
+  for (const path of LINUX_RUNTIME_ROOTS.filter(existsSync)) {
+    probeArguments.push("--ro-bind", realpathSync(path), path);
+  }
+  probeArguments.push(
+    "--proc", "/proc",
+    "--dev", "/dev",
+    probeExecutable,
+  );
+  const result = spawnSync(executable, probeArguments, {
+    encoding: "utf8",
+    timeout: 10000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    const detail = compactOutput(result.stderr || result.stdout || result.error?.message || "probe failed");
+    throw new Error(`Linux verifier filesystem sandbox is unavailable: ${detail}`);
+  }
+}
+
+export function assertVerifierSandboxAvailable() {
+  if (verifiedSandboxBackend) return { ...verifiedSandboxBackend };
+  const backend = verifierSandboxBackend();
+  if (backend.kind === "bubblewrap") bubblewrapProbe(backend.executable);
+  verifiedSandboxBackend = backend;
+  return { ...backend };
+}
+
+function mountParentDirectories(paths) {
+  const directories = new Set();
+  for (const path of paths) {
+    let parent = dirname(path);
+    while (parent !== "/" && parent !== ".") {
+      directories.add(parent);
+      parent = dirname(parent);
+    }
+  }
+  return [...directories].sort((left, right) => (
+    left.split(sep).length - right.split(sep).length || left.localeCompare(right)
+  ));
+}
+
+function linuxRuntimeExecutable(argv, workspace) {
+  const command = argv[0];
+  if (!isAbsolute(command)) return null;
+  const executable = realpathSync(command);
+  if (LINUX_RUNTIME_ROOTS.some((root) => executable === root || executable.startsWith(`${root}${sep}`))) {
+    return null;
+  }
+  const nodeExecutable = realpathSync(process.execPath);
+  if (executable !== nodeExecutable) {
+    pathInside(workspace, executable);
+    return null;
+  }
+  return { source: executable, destination: command };
+}
+
+function bubblewrapSandboxCommand(argv, workspace, environmentRoot, executable) {
+  const key = realpathSync(workspace);
+  const canonicalEnvironment = realpathSync(environmentRoot);
+  const isolatedTemporary = realpathSync(join(canonicalEnvironment, "tmp"));
+  const runtimeRoots = LINUX_RUNTIME_ROOTS.filter(existsSync).map((path) => ({
+    destination: path,
+    source: realpathSync(path),
+  }));
+  const runtimePaths = LINUX_RUNTIME_PATHS.filter(existsSync).map((path) => ({
+    destination: path,
+    source: realpathSync(path),
+  }));
+  const extraExecutable = linuxRuntimeExecutable(argv, key);
+  const mounts = [
+    ...runtimeRoots,
+    ...runtimePaths,
+    { source: key, destination: key },
+    { source: canonicalEnvironment, destination: canonicalEnvironment },
+    { source: isolatedTemporary, destination: "/tmp" },
+  ];
+  if (extraExecutable) mounts.push(extraExecutable);
+  // Bubblewrap retains namespace setup capabilities, then drops them before exec.
+  const command = [
+    executable,
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-all",
+  ];
+  for (const directory of mountParentDirectories([
+    "/dev",
+    "/proc",
+    "/tmp",
+    ...mounts.map((mount) => mount.destination),
+  ])) {
+    command.push("--dir", directory);
+  }
+  for (const mount of runtimeRoots) {
+    command.push("--ro-bind", mount.source, mount.destination);
+  }
+  for (const mount of runtimePaths) {
+    command.push("--ro-bind", mount.source, mount.destination);
+  }
+  if (extraExecutable) {
+    command.push("--ro-bind", extraExecutable.source, extraExecutable.destination);
+  }
+  command.push(
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "--bind", key, key,
+    "--bind", canonicalEnvironment, canonicalEnvironment,
+    "--bind", isolatedTemporary, "/tmp",
+    "--remount-ro", "/",
+    "--chdir", key,
+    "--",
+    ...argv,
+  );
+  return command;
+}
+
+export function verifierSandboxCommand(argv, workspace, environmentRoot) {
+  const backend = assertVerifierSandboxAvailable();
+  if (backend.kind === "bubblewrap") {
+    return bubblewrapSandboxCommand(argv, workspace, environmentRoot, backend.executable);
   }
   const key = realpathSync(workspace);
   const canonicalEnvironment = realpathSync(environmentRoot);
@@ -151,7 +323,7 @@ export function verifierSandboxCommand(argv, workspace, environmentRoot) {
     `(allow file-write* ${writeRules})`,
     "(deny network*)",
   ].join("");
-  return ["/usr/bin/sandbox-exec", "-p", profile, ...argv];
+  return [backend.executable, "-p", profile, ...argv];
 }
 
 export function assertNoSymlinks(root) {

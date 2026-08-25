@@ -199,11 +199,29 @@ fi
 # ============================================================
 PROOF_REL_LINE=$(printf '%s\n' "${JOB_BODY}" | grep -nE 'name:[[:space:]]+Update TODO\.md proof-log' | cut -d: -f1 || true)
 CALLER_CHECKOUT_COUNT=$(printf '%s\n' "${JOB_BODY}" | grep -cE 'name:[[:space:]]+Checkout repo (before closing-hygiene validation|for TODO\.md update)' || true)
+CALLER_CHECKOUT_BODY=$(printf '%s\n' "${JOB_BODY}" | awk '
+	capture && /^      - name:/ { exit }
+	/name:[[:space:]]+Checkout repo before closing-hygiene validation/ { capture=1 }
+	capture { print }
+')
 
 if [[ -z "${CALLER_CHECKOUT_REL_LINE}" ]]; then
 	check 0 "early caller checkout step present" "validated TODO snapshot checkout is missing"
 else
 	check 1 "early caller checkout step present" ""
+fi
+
+# pull_request_target has write permissions, so closing hygiene must resolve
+# TODO.md from the trusted PR base branch rather than a hard-coded default
+# branch or untrusted fork head code.
+# shellcheck disable=SC2016 # Assert the literal GitHub Actions expression.
+if printf '%s\n' "${CALLER_CHECKOUT_BODY}" | grep -qE 'ref:[[:space:]]+\$\{\{[[:space:]]*github\.event\.pull_request\.base\.ref[[:space:]]*\}\}' &&
+	! printf '%s\n' "${CALLER_CHECKOUT_BODY}" | grep -qE 'ref:[[:space:]]+main([[:space:]]|$)' &&
+	! printf '%s\n' "${CALLER_CHECKOUT_BODY}" | grep -qE 'github\.event\.pull_request\.head'; then
+	check 1 "closing-hygiene checkout uses trusted PR base ref" ""
+else
+	check 0 "closing-hygiene checkout uses trusted PR base ref" \
+		"checkout must use github.event.pull_request.base.ref, not main or fork head code"
 fi
 
 if [[ -n "$CALLER_CHECKOUT_REL_LINE" && -n "$RESTORE_REL_LINE" && -n "$RESOLVE_REL_LINE" && -n "$PROOF_REL_LINE" &&

@@ -1108,6 +1108,7 @@ _merge_remove_body_snapshot() {
 # merge transport.
 _merge_validate_release_aggregation_body() {
 	local body_file="$1"
+	local expected_pr="${2:-}"
 	local raw_aggregator=""
 	local raw_aggregates=""
 	local parsed_trailers=""
@@ -1121,8 +1122,19 @@ _merge_validate_release_aggregation_body() {
 	parsed_trailers=$(git interpret-trailers --parse <"$body_file") || return 1
 	parsed_aggregator=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$parsed_trailers") || return 1
 	parsed_aggregates=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$parsed_trailers") || return 1
+	if ! awk '
+		/^[0-9]+@[0-9a-f]{40}$/ {
+			if (seen[$0]++) exit 2
+			next
+		}
+		{ exit 2 }
+	' <<<"$raw_aggregates"; then
+		print_error "Release-aggregation source trailers must be unique immutable PR@MERGE_SHA entries."
+		return 1
+	fi
 	if [[ "$raw_aggregator" != "$parsed_aggregator" || "$raw_aggregates" != "$parsed_aggregates" ||
-		! "$parsed_aggregator" =~ ^[0-9]+$ || -z "$parsed_aggregates" ]]; then
+		! "$parsed_aggregator" =~ ^[0-9]+$ || -z "$parsed_aggregates" ||
+		(-n "$expected_pr" && "$parsed_aggregator" != "$expected_pr") ]]; then
 		print_error "Release-aggregation trailers must be a terminal parseable block; place any signature footer and --- before the Aidevops-Release trailers."
 		return 1
 	fi
@@ -1964,7 +1976,7 @@ cmd_merge() {
 	if [[ -n "$merge_body_file" ]]; then
 		_merge_body_snapshot=$(_merge_snapshot_body_file "$merge_body_file") || return 1
 		merge_body_file="$_merge_body_snapshot"
-		if ! _merge_validate_release_aggregation_body "$merge_body_file"; then
+		if ! _merge_validate_release_aggregation_body "$merge_body_file" "$pr_number"; then
 			_merge_remove_body_snapshot "$_merge_body_snapshot"
 			return 1
 		fi

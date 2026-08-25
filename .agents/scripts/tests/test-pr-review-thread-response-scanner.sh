@@ -1647,6 +1647,33 @@ test_dispatch_retries_session_bearing_typed_infrastructure_outcome() {
 	return 0
 }
 
+test_dispatch_retries_legacy_auth_error_remediation_outcome() {
+	setup_test_env
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" outcome_id=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	old_epoch="$(($(date +%s) - 120))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	write_worker_outcome "$outcome_file" "auth_error" "1" "$((old_epoch + 1))" "$outcome_id" "meaningful_remediation"
+	: >"$HEADLESS_LOG"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	wait_for_headless_log || true
+	if [[ -s "$HEADLESS_LOG" ]] &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		grep -q '^infrastructure_failure_count=1$' "$state_file" 2>/dev/null &&
+		grep -q 'outcome=auth_error retry_class=retryable_infrastructure' "$LOGFILE" 2>/dev/null; then
+		print_result "legacy session-bearing auth error does not consume remediation attempt" 0
+	else
+		print_result "legacy session-bearing auth error does not consume remediation attempt" 1 \
+			"headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), log=$(tr '\n' ';' <"$LOGFILE" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_stops_on_typed_maintainer_gate_outcome() {
 	setup_test_env
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
@@ -2570,6 +2597,7 @@ main() {
 	test_dispatch_retries_zero_session_infrastructure_failure_after_short_cooldown
 	test_dispatch_defers_zero_session_infrastructure_failure_during_short_cooldown
 	test_dispatch_retries_session_bearing_typed_infrastructure_outcome
+	test_dispatch_retries_legacy_auth_error_remediation_outcome
 	test_dispatch_stops_on_typed_maintainer_gate_outcome
 	test_dispatch_applies_bounded_infrastructure_circuit_breaker
 	test_dispatch_preserves_full_cooldown_after_model_session
