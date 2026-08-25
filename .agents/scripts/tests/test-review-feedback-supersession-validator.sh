@@ -446,10 +446,10 @@ test_current_issue_absent_from_enumeration_fails_closed() {
 
 test_pulse_blocks_duplicate_lookup_uncertainty() {
 	# shellcheck disable=SC2016 # Match literal shell source expressions.
-	if grep -qF "if [[ \"\$_validator_rc\" -eq 30 ]]" "$PULSE_CORE" \
-		&& grep -qF '$_review_followup_validator_required" -eq 1 && "$_validator_rc" -ne 0' "$PULSE_CORE" \
-		&& grep -qF 'predispatch_validator_uncertain' "$PULSE_CORE" \
-		&& grep -qF 'return 20' "$PULSE_CORE"; then
+	if grep -qF "if [[ \"\$_validator_rc\" -eq 30 ]]" "$PULSE_CORE" &&
+		grep -qF '$_review_followup_validator_required" -eq 1 && "$_validator_rc" -ne 0' "$PULSE_CORE" &&
+		grep -qF 'predispatch_validator_uncertain' "$PULSE_CORE" &&
+		grep -qF 'return 20' "$PULSE_CORE"; then
 		print_result "pulse blocks all required review-followup validator failures and releases its claim" 0
 	else
 		print_result "pulse blocks all required review-followup validator failures and releases its claim" 1
