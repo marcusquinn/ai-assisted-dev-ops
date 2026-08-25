@@ -1422,14 +1422,15 @@ _merge_fresh_adopted_worktree_cleanup_target() {
 	local current_repo=""
 
 	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
-		--json state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository 2>/dev/null) || return 1
+		--json state,mergedAt,mergeCommit,baseRepository,headRefName,headRefOid,headRepository,isCrossRepository 2>/dev/null) || return 1
 	printf '%s' "$pr_json" | jq -e --arg repo "$repo" '
 		.state == "MERGED"
 		and (.mergedAt | strings | length > 0)
 		and (.mergeCommit.oid | strings | length > 0)
 		and (.headRefName | strings | length > 0)
 		and (.headRefOid | strings | length > 0)
-		and .headRepository.nameWithOwner == $repo
+		and .baseRepository.nameWithOwner == $repo
+		and (.headRepository.nameWithOwner | strings | length > 0)
 		and (.isCrossRepository == true or .isCrossRepository == false)
 	' >/dev/null 2>&1 || return 1
 	IFS=$'\t' read -r pr_head_ref pr_head_oid pr_head_repo < <(

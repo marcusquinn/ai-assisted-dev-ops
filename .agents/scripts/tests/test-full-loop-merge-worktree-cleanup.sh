@@ -12,6 +12,8 @@ FIXTURE_GIT_BIN=""
 GH_PR_HEAD_REF=""
 GH_PR_HEAD_OID=""
 GH_PR_HEAD_REPO=""
+GH_PR_BASE_REPO=""
+GH_PR_IS_CROSS_REPOSITORY="false"
 GH_RELEASE_STATUS="not-requested"
 GH_RELEASE_TAG_MODE=""
 GH_RELEASE_TAG_COMMIT="1111111111111111111111111111111111111111"
@@ -97,11 +99,13 @@ gh() {
 		esac
 	fi
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
-		if [[ "$args" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+		if [[ "$args" == *"state,mergedAt,mergeCommit,baseRepository,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
 			jq -cn --arg head_ref "$GH_PR_HEAD_REF" --arg head_oid "$GH_PR_HEAD_OID" \
-				--arg head_repo "$GH_PR_HEAD_REPO" \
+				--arg head_repo "$GH_PR_HEAD_REPO" --arg base_repo "$GH_PR_BASE_REPO" \
+				--arg is_cross_repository "$GH_PR_IS_CROSS_REPOSITORY" \
 				'{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:"merge123"},
-				  headRefName:$head_ref,headRefOid:$head_oid,headRepository:{nameWithOwner:$head_repo},isCrossRepository:false}'
+				  baseRepository:{nameWithOwner:$base_repo},headRefName:$head_ref,headRefOid:$head_oid,
+				  headRepository:{nameWithOwner:$head_repo},isCrossRepository:($is_cross_repository == "true")}'
 			return 0
 		fi
 		if [[ "$args" == *"state,mergedAt,mergeCommit"* ]]; then
@@ -299,6 +303,8 @@ TRASH
 	GH_PR_HEAD_REF="feature/full-loop-cleanup"
 	GH_PR_HEAD_OID=$(git -C "$worktree_path" rev-parse HEAD)
 	GH_PR_HEAD_REPO="example/repo"
+	GH_PR_BASE_REPO="example/repo"
+	GH_PR_IS_CROSS_REPOSITORY="false"
 	GH_RELEASE_STATUS="not-requested"
 	git -C "$canonical_repo" checkout -q -b feature/active
 	git clone -q "$origin_repo" "$updater_repo"
@@ -331,7 +337,7 @@ configure_alias_repo_identity() {
 
 configure_managed_repo_identity() {
 	local worktree_path="${TEST_ROOT}/worktrees/repo-feature-full-loop-cleanup"
-	git -C "$worktree_path" remote add managed "https://github.com/${GH_PR_HEAD_REPO}.git"
+	git -C "$worktree_path" remote add managed "https://github.com/${GH_PR_BASE_REPO}.git"
 	return 0
 }
 
@@ -461,6 +467,25 @@ test_cmd_adopt_merged_receipt_is_idempotent() {
 	cmd_adopt_merged_receipt "123" "example/repo" || rc=1
 	cmp -s "$receipt_path" "${TEST_ROOT}/adopted-before.json" || rc=1
 	print_result "externally merged PR adoption is exact-head and idempotent" "$rc"
+	return 0
+}
+
+test_cmd_adopt_merged_receipt_accepts_verified_fork_head() {
+	setup_subject
+	GH_PR_HEAD_REPO="contributor/repo"
+	GH_PR_IS_CROSS_REPOSITORY="true"
+	configure_managed_repo_identity
+	local receipt_path="${AIDEVOPS_FULL_LOOP_CLEANUP_DIR}/example_repo-123.json"
+	local rc=0
+
+	cmd_adopt_merged_receipt "123" "example/repo" || rc=1
+	jq -e '
+		.repository == "example/repo" and .pr_number == 123
+		and .branch == "feature/full-loop-cleanup"
+		and .resource_cleanup_state == "CLEANUP_DEFERRED"
+		and .cleanup_lease.state == "pending"
+	' "$receipt_path" >/dev/null || rc=1
+	print_result "externally merged fork head adopts an exact managed worktree" "$rc"
 	return 0
 }
 
@@ -749,6 +774,7 @@ main() {
 	test_cmd_merge_defers_cleanup_for_live_process_cwd
 	test_cmd_merge_defers_exact_head_alias_worktree
 	test_cmd_adopt_merged_receipt_is_idempotent
+	test_cmd_adopt_merged_receipt_accepts_verified_fork_head
 	test_cmd_adopt_merged_receipt_rejects_unsafe_evidence
 	test_cmd_adopt_merged_receipt_rejects_receipt_conflicts
 	test_cleanup_plan_rejects_head_drift
