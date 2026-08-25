@@ -348,6 +348,7 @@ _handle_changes_requested_review_gate() {
 	local _cr_pr_labels=""
 	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
 	local _ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
+	local _route_after_converged_body_review=0
 
 	if [[ -n "$dismissed_dest_var" && "$dismissed_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
 		printf -v "$dismissed_dest_var" '%s' "0"
@@ -397,10 +398,16 @@ _handle_changes_requested_review_gate() {
 		if [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "deferred" ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; response remediation already active/deferred, preserving PR" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "converged" ]]; then
-			if [[ -n "$review_gate_mode_dest_var" && "$review_gate_mode_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-				printf -v "$review_gate_mode_dest_var" '%s' "$_ci_repair_only"
+			if declare -F _review_feedback_has_trusted_body_change_request >/dev/null 2>&1 \
+				&& _review_feedback_has_trusted_body_change_request "$pr_number" "$repo_slug"; then
+				_route_after_converged_body_review=1
+				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — review-thread remediation converged while a trusted human top-level CHANGES_REQUESTED body remains; applying the existing trust-gated fix-worker route" >>"$LOGFILE"
+			else
+				if [[ -n "$review_gate_mode_dest_var" && "$review_gate_mode_dest_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+					printf -v "$review_gate_mode_dest_var" '%s' "$_ci_repair_only"
+				fi
+				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; no matching unresolved thread or trusted human top-level review body remained after refresh, preserving the review block while allowing trust-gated CI repair evaluation" >>"$LOGFILE"
 			fi
-			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; no matching unresolved thread remained after refresh, preserving the review block while allowing trust-gated CI repair evaluation" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "maintainer_attention" ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; terminal review-thread maintainer attention pending, preserving PR" >>"$LOGFILE"
 		elif [[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED" ]]; then
@@ -408,7 +415,8 @@ _handle_changes_requested_review_gate() {
 		else
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — reviewDecision=CHANGES_REQUESTED; review-thread remediation queued" >>"$LOGFILE"
 		fi
-		[[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED" ]] || return 1
+		[[ "$_PULSE_MERGE_REMEDIATION_OUTCOME" == "$PULSE_REVIEW_REMEDIATION_REPEAT_EXHAUSTED" \
+			|| "$_route_after_converged_body_review" -eq 1 ]] || return 1
 	fi
 
 	# If remediation is unavailable or fails to dispatch, route worker-authored

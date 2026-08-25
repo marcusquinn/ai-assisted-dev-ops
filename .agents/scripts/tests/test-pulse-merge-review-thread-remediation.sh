@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 MERGE_SCRIPT="${SCRIPT_DIR}/../pulse-merge.sh"
+FEEDBACK_SCRIPT="${SCRIPT_DIR}/../pulse-merge-feedback.sh"
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -65,6 +66,14 @@ SCANNER
 	unset AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST
 	unset SCANNER_ATTENTION_REASON
 	unset DRY_RUN
+	REVIEW_PAGES_JSON='[]'
+	REVIEW_READ_RC=0
+	return 0
+}
+
+_pmf_gh_read() {
+	[[ "${REVIEW_READ_RC:-0}" -eq 0 ]] || return "$REVIEW_READ_RC"
+	printf '%s\n' "${REVIEW_PAGES_JSON:-[]}"
 	return 0
 }
 
@@ -77,7 +86,7 @@ teardown_test_env() {
 }
 
 define_helpers_under_test() {
-	local src_repo_path="" src_repeat_exhausted="" src_dispatch="" src_maybe_dispatch="" src_preflight_dispatch="" src_enabled="" src_changes_gate=""
+	local src_repo_path="" src_repeat_exhausted="" src_dispatch="" src_maybe_dispatch="" src_preflight_dispatch="" src_enabled="" src_trusted_body_review="" src_changes_gate=""
 	src_repo_path=$(awk '
 		/^_pulse_merge_repo_path_for_slug\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$MERGE_SCRIPT")
@@ -96,10 +105,13 @@ define_helpers_under_test() {
 	src_enabled=$(awk '
 		/^_pulse_merge_changes_requested_thread_remediation_first_enabled\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$MERGE_SCRIPT")
+	src_trusted_body_review=$(awk '
+		/^_review_feedback_has_trusted_body_change_request\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
+	' "$FEEDBACK_SCRIPT")
 	src_changes_gate=$(awk '
 		/^_handle_changes_requested_review_gate\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$MERGE_SCRIPT")
-	if [[ -z "$src_repo_path" || -z "$src_repeat_exhausted" || -z "$src_dispatch" || -z "$src_maybe_dispatch" || -z "$src_preflight_dispatch" || -z "$src_enabled" || -z "$src_changes_gate" ]]; then
+	if [[ -z "$src_repo_path" || -z "$src_repeat_exhausted" || -z "$src_dispatch" || -z "$src_maybe_dispatch" || -z "$src_preflight_dispatch" || -z "$src_enabled" || -z "$src_trusted_body_review" || -z "$src_changes_gate" ]]; then
 		printf 'ERROR: could not extract helpers from %s\n' "$MERGE_SCRIPT" >&2
 		return 1
 	fi
@@ -116,7 +128,48 @@ define_helpers_under_test() {
 	# shellcheck disable=SC1090
 	eval "$src_enabled"
 	# shellcheck disable=SC1090
+	eval "$src_trusted_body_review"
+	# shellcheck disable=SC1090
 	eval "$src_changes_gate"
+	return 0
+}
+
+test_trusted_body_change_request_classifier_accepts_current_human_review() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	REVIEW_PAGES_JSON='[{"id":11,"submitted_at":"2026-08-25T10:00:00Z","state":"CHANGES_REQUESTED","body":"Please preserve the fail-closed route.","author_association":"MEMBER","user":{"login":"reviewer","type":"User"}}]'
+
+	if _review_feedback_has_trusted_body_change_request 77 owner/repo; then
+		print_result "trusted human top-level change request is eligible" 0
+	else
+		print_result "trusted human top-level change request is eligible" 1 \
+			"log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_trusted_body_change_request_classifier_rejects_ineligible_reviews() {
+	setup_test_env
+	define_helpers_under_test || { teardown_test_env; return 0; }
+	local bot_rc=0 untrusted_rc=0 blank_rc=0 superseded_rc=0
+
+	REVIEW_PAGES_JSON='[{"id":11,"submitted_at":"2026-08-25T10:00:00Z","state":"CHANGES_REQUESTED","body":"Automated finding","author_association":"MEMBER","user":{"login":"review-bot","type":"Bot"}}]'
+	_review_feedback_has_trusted_body_change_request 77 owner/repo || bot_rc=$?
+	REVIEW_PAGES_JSON='[{"id":12,"submitted_at":"2026-08-25T10:00:00Z","state":"CHANGES_REQUESTED","body":"Outside finding","author_association":"CONTRIBUTOR","user":{"login":"outside-reviewer","type":"User"}}]'
+	_review_feedback_has_trusted_body_change_request 77 owner/repo || untrusted_rc=$?
+	REVIEW_PAGES_JSON='[{"id":13,"submitted_at":"2026-08-25T10:00:00Z","state":"CHANGES_REQUESTED","body":"  \n ","author_association":"OWNER","user":{"login":"maintainer","type":"User"}}]'
+	_review_feedback_has_trusted_body_change_request 77 owner/repo || blank_rc=$?
+	REVIEW_PAGES_JSON='[{"id":14,"submitted_at":"2026-08-25T10:00:00Z","state":"CHANGES_REQUESTED","body":"Old finding","author_association":"MEMBER","user":{"login":"reviewer","type":"User"}},{"id":15,"submitted_at":"2026-08-25T11:00:00Z","state":"APPROVED","body":"Resolved","author_association":"MEMBER","user":{"login":"reviewer","type":"User"}}]'
+	_review_feedback_has_trusted_body_change_request 77 owner/repo || superseded_rc=$?
+
+	if [[ "$bot_rc" -eq 1 && "$untrusted_rc" -eq 1 && "$blank_rc" -eq 1 && "$superseded_rc" -eq 1 ]]; then
+		print_result "bot untrusted blank and superseded reviews are ineligible" 0
+	else
+		print_result "bot untrusted blank and superseded reviews are ineligible" 1 \
+			"bot=${bot_rc}, untrusted=${untrusted_rc}, blank=${blank_rc}, superseded=${superseded_rc}"
+	fi
+	teardown_test_env
 	return 0
 }
 
@@ -524,6 +577,44 @@ test_changes_requested_converged_remediation_exposes_repair_only_mode() {
 	return 0
 }
 
+test_changes_requested_converged_body_only_review_routes_through_fix_worker() {
+	setup_test_env
+	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
+	export SCANNER_RC=11
+	REVIEW_PAGES_JSON='[{"id":21,"submitted_at":"2026-08-25T10:00:00Z","state":"CHANGES_REQUESTED","body":"Address the top-level review feedback.","author_association":"OWNER","user":{"login":"maintainer","type":"User"}}]'
+	define_helpers_under_test || {
+		teardown_test_env
+		return 0
+	}
+	local route_log="${TEST_ROOT}/route.log"
+	: >"$route_log"
+	_route_pr_to_fix_worker() {
+		local pr_number="$1"
+		local repo_slug="$2"
+		local linked_issue="$3"
+		local route_kind="$4"
+		printf '%s|%s|%s|%s\n' "$pr_number" "$repo_slug" "$linked_issue" "$route_kind" >>"$route_log"
+		return 0
+	}
+	_pulse_merge_dismiss_coderabbit_nits() {
+		return 1
+	}
+	local review_gate_mode="merge"
+	local gate_rc=0
+
+	_handle_changes_requested_review_gate 77 owner/repo CHANGES_REQUESTED 42 "origin:worker" "" review_gate_mode || gate_rc=$?
+	if [[ "$gate_rc" -eq 1 && "$review_gate_mode" == "merge" ]] \
+		&& grep -q '^77|owner/repo|42|review$' "$route_log" \
+		&& grep -q 'trusted human top-level CHANGES_REQUESTED body remains; applying the existing trust-gated fix-worker route' "$LOGFILE"; then
+		print_result "converged body-only trusted review routes through fix worker" 0
+	else
+		print_result "converged body-only trusted review routes through fix worker" 1 \
+			"gate_rc=${gate_rc}, mode=${review_gate_mode}, route=$(tr '\n' ';' <"$route_log"), log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_changes_requested_terminal_attention_preserves_pr_without_routing() {
 	setup_test_env
 	export AIDEVOPS_CHANGES_REQUESTED_THREAD_REMEDIATION_FIRST=1
@@ -722,6 +813,8 @@ test_changes_requested_label_read_failure_does_not_route() {
 }
 
 main() {
+	test_trusted_body_change_request_classifier_accepts_current_human_review
+	test_trusted_body_change_request_classifier_rejects_ineligible_reviews
 	test_review_bot_preflight_blocker_dispatches_and_is_consumed
 	test_required_review_thread_preflight_blocker_dispatches
 	test_unrelated_preflight_blocker_does_not_dispatch
@@ -739,6 +832,7 @@ main() {
 	test_changes_requested_routes_when_remediation_unavailable
 	test_changes_requested_active_remediation_preserves_pr_without_routing
 	test_changes_requested_converged_remediation_exposes_repair_only_mode
+	test_changes_requested_converged_body_only_review_routes_through_fix_worker
 	test_changes_requested_terminal_attention_preserves_pr_without_routing
 	test_changes_requested_repeat_exhaustion_routes_through_fix_worker
 	test_changes_requested_hard_dispatch_failure_still_routes
