@@ -33,6 +33,7 @@ end) as $max_workers |
 ($queue.aggregate.gh_errors // 0 | number_or_zero) as $gh_errors |
 ($queue.error // "") as $queue_error |
 ($queue_error == "" and $gh_errors == 0) as $queue_scan_complete |
+($current.dispatch_alive // false) as $dispatch_alive |
 ($current.worker_outcomes.spawned // 0 | number_or_zero) as $spawned |
 ($current.worker_outcomes.launch_validation_failed // $current.pulse_counter_hits.dispatch_worker_launch_failed // 0 | number_or_zero) as $launch_validation_failed |
 ($current.worker_terminal_events // 0 | number_or_zero) as $current_terminal_events |
@@ -63,7 +64,7 @@ end) as $max_workers |
     active_workers_source: (if $active_worker_processes == null then "capacity_gauge" else "process_scan" end),
     inferred_active_workers: $inferred_active_workers,
     available_slots: $effective_available_slots,
-    dispatch_alive: ($current.dispatch_alive // false),
+    dispatch_alive: $dispatch_alive,
     dispatch_stage_events: ($current.dispatch_stage_events // 0),
     worker_launches_in_window: $spawned,
     worker_terminal_events_in_window: $current_terminal_events,
@@ -186,7 +187,7 @@ end) as $max_workers |
         true
       )
     else empty end,
-    if ($queue_scan_complete and $eligible_issues >= $threshold and $active_workers == 0) then
+    if ($queue_scan_complete and $dispatch_alive and $eligible_issues >= $threshold and $active_workers == 0) then
       finding(
         "pulse-underfilled-auto-dispatch-queue";
         "high";
@@ -195,6 +196,7 @@ end) as $max_workers |
           ("active_workers=" + ($active_workers | tostring) + "/" + ($max_workers | tostring)),
           ("eligible_available_unassigned_auto_dispatch=" + ($eligible_issues | tostring)),
           ("available_older_than_threshold=" + ($old_available | tostring)),
+          "dispatch_alive=true",
           ("dispatch_stage_events=" + (($current.dispatch_stage_events // 0) | tostring))
         ];
         "Inspect why the pulse did not retain active workers for visible status:available auto-dispatch issues; start with pulse-current-state-helper, worker-activity-helper, and pulse-diagnose-helper cycle-health.";

@@ -372,6 +372,26 @@ assert_eq "json reports process-scan active workers" "2" "$ACTIVE_COUNT"
 assert_eq "json recomputes available slots from process count" "4" "$ACTIVE_AVAILABLE"
 assert_eq "process-scan active workers suppress underfill finding" "auto-dispatch-missing-tier-labels" "$ACTIVE_IDS"
 
+cat >"${TEST_ROOT}/current-state-idle.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "dispatch_alive": false,
+  "dispatch_stage_events": 0,
+  "active_worker_processes": 0,
+  "current_state_guardrails": {"available_slots_last": 6},
+  "pulse_gauges": {"dispatch_capacity_final_max_workers": 6},
+  "worker_outcomes": {"spawned": 0},
+  "worker_terminal_events": 0,
+  "graphql_budget_status": "OK fixture"
+}
+JSON
+SH
+chmod +x "${TEST_ROOT}/current-state-idle.sh"
+IDLE_JSON_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-idle.sh" "$HELPER" json 2>&1)
+assert_eq "idle dispatch is reported as inactive" "false" "$(printf '%s' "$IDLE_JSON_OUT" | jq -r '.summary.dispatch_alive')"
+assert_not_contains "idle dispatch does not claim a worker-retention underfill" "pulse-underfilled-auto-dispatch-queue" "$IDLE_JSON_OUT"
+
 cat >"${TEST_ROOT}/current-state-active-no-gauge.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<'JSON'
