@@ -104,6 +104,9 @@ get_configured_models() {
 			if ! provider_auth_available "$provider"; then
 				continue
 			fi
+			if ! provider_oauth_pool_available "$provider"; then
+				continue
+			fi
 
 			models+=("$model")
 	done < <(model_tier_candidates "$tier_name" 2>/dev/null || true)
