@@ -70,12 +70,14 @@ assert_grep() {
 
 setup() {
 	TMPDIR_TEST=$(mktemp -d)
-	# Stub print_warning/print_info so headless-runtime-failure.sh can be
+	# Stub print_warning/print_info and the outer runtime auth cleanup so
+	# headless-runtime-failure.sh can be
 	# sourced without pulling in shared-constants.sh (matches the convention
 	# used by test-worker-exit-classifier.sh).
 	print_warning() { return 0; }
 	print_info()    { return 0; }
-	export -f print_warning print_info
+	cleanup_headless_git_auth() { return 0; }
+	export -f print_warning print_info cleanup_headless_git_auth
 
 	# shellcheck source=../headless-runtime-failure.sh
 	source "${AGENTS_SCRIPTS}/headless-runtime-failure.sh"

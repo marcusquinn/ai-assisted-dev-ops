@@ -244,7 +244,7 @@ STUB
 	_claim_lease_device="test-device"
 	set +e
 	_dlw_renew_prelaunch_lease "26635" "marcusquinn/aidevops" \
-		"session-test" "$worker_log"
+		"session-test" "$worker_log" "attempt-prelaunch-26635"
 	local rc=$?
 	set -e
 	SCRIPT_DIR="$original_script_dir"
@@ -256,6 +256,7 @@ STUB
 		"$worker_log" || result=1
 	grep -q 'issue=26635 repo=marcusquinn/aidevops session=session-test helper_rc=7' \
 		"$pulse_log" || result=1
+	grep -Eq 'ts=[^ ]+ attempt_id=attempt-prelaunch-26635$' "$worker_log" || result=1
 	if grep -q 'secret-token-must-not-appear' "$worker_log" "$pulse_log"; then
 		result=1
 	fi

@@ -698,8 +698,10 @@ _execute_run_attempt() {
 	local provider="" persisted_session="" metric_work_dir=""
 	local -a cmd=()
 	local prepare_status=0
+	print_info "[lifecycle] pre_attempt_command_prepare session=$session_key pid=$$"
 	_prepare_run_attempt_command || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
+	print_info "[lifecycle] post_attempt_command_prepare session=$session_key pid=$$"
 
 	# GH#17549: Claim guard — verify a DISPATCH_CLAIM exists for this runner
 	# before launching a worker for an issue. This prevents pulse LLMs from
@@ -722,11 +724,15 @@ _execute_run_attempt() {
 	local _t3077_watcher_pid="" _normalized_exit_info=""
 	local _run_watchdog_hard_killed=0 _stall_killed_marker="" _rl_fast_sentinel=""
 	prepare_status=0
+	print_info "[lifecycle] pre_attempt_file_create session=$session_key pid=$$"
 	_create_run_attempt_files || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
+	print_info "[lifecycle] post_attempt_file_create session=$session_key pid=$$"
 	prepare_status=0
+	print_info "[lifecycle] pre_attempt_context_configure session=$session_key pid=$$"
 	_configure_run_attempt_context || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
+	print_info "[lifecycle] post_attempt_context_configure session=$session_key pid=$$"
 	if [[ "$role" == "worker" ]] && ! _hrw_verify_dispatch_ownership; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_OWNERSHIP_LOST"
 		print_error "[lifecycle] runtime ownership fence stopped session=${session_key} before model invocation"

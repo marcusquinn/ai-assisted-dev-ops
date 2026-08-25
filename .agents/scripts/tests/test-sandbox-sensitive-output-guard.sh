@@ -155,6 +155,28 @@ test_override_flag_allows_blocked_pattern() {
 	return 0
 }
 
+test_attempt_identity_correlates_sandbox_output_and_audit() {
+	local output=""
+	local exit_code=0
+	local audit_file="${HOME}/.aidevops/.agent-workspace/sandbox/executions.jsonl"
+
+	set +e
+	output="$(AIDEVOPS_ATTEMPT_ID="attempt:sandbox-test" timeout 10 \
+		"$HELPER" run -- /bin/bash -lc 'printf correlated' 2>&1)"
+	exit_code=$?
+	set -e
+
+	if [[ "$exit_code" -eq 0 && "$output" == *"[SANDBOX]"* &&
+		"$output" == *"attempt_id=attempt:sandbox-test"* ]] &&
+		jq -se '.[-1].attempt_id == "attempt:sandbox-test"' "$audit_file" >/dev/null 2>&1; then
+		print_result "sandbox output and audit carry canonical attempt identity" 0
+	else
+		print_result "sandbox output and audit carry canonical attempt identity" 1 \
+			"exit=${exit_code} output=${output}"
+	fi
+	return 0
+}
+
 main() {
 	setup_test_env
 	trap teardown_test_env EXIT
@@ -165,6 +187,7 @@ main() {
 	test_allows_public_key_file_reference
 	test_stream_stdout_returns_after_child_exit
 	test_override_flag_allows_blocked_pattern
+	test_attempt_identity_correlates_sandbox_output_and_audit
 
 	echo ""
 	printf 'Tests run: %d\n' "$TESTS_RUN"

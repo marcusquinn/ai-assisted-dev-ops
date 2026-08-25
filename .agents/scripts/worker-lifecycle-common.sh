@@ -45,6 +45,31 @@
 _WORKER_LIFECYCLE_COMMON_LOADED=1
 _WLC_STATUS_BLOCKED="blocked"
 
+_worker_attempt_observability_dir="${BASH_SOURCE[0]%/*}"
+# shellcheck source=worker-attempt-observability.sh
+source "${_worker_attempt_observability_dir}/worker-attempt-observability.sh"
+unset _worker_attempt_observability_dir
+
+# Add correlation fields and durable checkpoints to lifecycle output without
+# changing callers that use the shared print aliases for ordinary messages.
+print_error() {
+	local message="$1"
+	worker_attempt_observability_print error "$message"
+	return $?
+}
+
+print_warning() {
+	local message="$1"
+	worker_attempt_observability_print warning "$message"
+	return $?
+}
+
+print_info() {
+	local message="$1"
+	worker_attempt_observability_print info "$message"
+	return $?
+}
+
 _ensure_worker_lineage() {
 	local session_key="$1"
 	local epoch=""
