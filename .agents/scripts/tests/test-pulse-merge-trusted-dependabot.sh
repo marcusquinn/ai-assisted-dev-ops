@@ -531,6 +531,20 @@ test_repository_allows_fontsource_ibm_plex_serif() {
 	return 0
 }
 
+test_repository_allows_fontsource_source_serif_4() {
+	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	if _trusted_dependabot_dependency_allowed "bun" "@fontsource/source-serif-4"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+		print_result "repository allowlist permits @fontsource/source-serif-4 Bun updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+	print_result "repository allowlist permits @fontsource/source-serif-4 Bun updates" 1
+	return 0
+}
+
 test_repository_allows_trusted_actions() {
 	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
 	local dependency_name=""
@@ -633,6 +647,7 @@ main() {
 	test_repository_allows_elysia
 	test_repository_allows_fontsource_ubuntu
 	test_repository_allows_fontsource_ibm_plex_serif
+	test_repository_allows_fontsource_source_serif_4
 	test_repository_allows_trusted_actions
 	test_trusted_dependabot_can_be_approved
 	test_review_bot_failure_is_ignored_when_other_checks_green
