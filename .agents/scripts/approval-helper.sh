@@ -98,6 +98,10 @@ source "${SCRIPT_DIR}/approval-snapshot-v2.sh"
 # shellcheck disable=SC1091  # module resolved at runtime via SCRIPT_DIR
 source "${SCRIPT_DIR}/approval-helper-permissions.sh"
 
+# shellcheck source=./approval-helper-commands.sh
+# shellcheck disable=SC1091  # module resolved at runtime via SCRIPT_DIR
+source "${SCRIPT_DIR}/approval-helper-commands.sh"
+
 _permission_comments_endpoint() {
 	local slug="$1"
 	local target_number="$2"
@@ -1948,77 +1952,6 @@ cmd_reconcile() {
 		return 8
 	fi
 	printf 'RECONCILED\n'
-	return 0
-}
-
-# ── Status ───────────────────────────────────────────────────────────────────
-
-cmd_status() {
-	echo ""
-	echo "Approval key status"
-	echo "==================="
-	echo ""
-
-	if [[ -f "$APPROVAL_PUB" ]]; then
-		_print_ok "Public key exists: $APPROVAL_PUB"
-		echo "  Fingerprint: $(ssh-keygen -lf "$APPROVAL_PUB" 2>/dev/null || echo "unknown")"
-	else
-		_print_warn "No approval public key found"
-		echo "  Run: sudo aidevops approve setup"
-	fi
-
-	echo ""
-	if [[ -d "$APPROVAL_PRIVATE_DIR" ]]; then
-		local owner perms
-		owner=$(_file_owner "$APPROVAL_PRIVATE_DIR")
-		perms=$(_file_perms "$APPROVAL_PRIVATE_DIR")
-		if [[ "$owner" == "root" && "$perms" == "700" ]]; then
-			_print_ok "Private key directory is root-protected (owner=$owner, mode=$perms)"
-		else
-			_print_warn "Private key directory permissions may be insecure (owner=$owner, mode=$perms)"
-			echo "  Expected: owner=root, mode=700"
-			echo "  Run: sudo aidevops approve setup"
-		fi
-	else
-		_print_warn "No private key directory found"
-		echo "  Run: sudo aidevops approve setup"
-	fi
-
-	echo ""
-	return 0
-}
-
-# ── Help ─────────────────────────────────────────────────────────────────────
-
-cmd_help() {
-	echo "approval-helper.sh — Cryptographic approval gate covering external issues/PRs"
-	echo ""
-	echo "Commands (require sudo):"
-	echo "  setup                      Generate root-protected approval key pair"
-	echo "  issue <number...> [slug]   Approve one or more issues with one confirmation"
-	echo "  pr <number...> [slug]      Approve one or more PRs with one confirmation"
-	echo "  batch <kind:number...> [slug] Approve mixed issues/PRs with one confirmation"
-	echo "  permissions issue|pr <number> [slug] --request perm-<id>"
-	echo ""
-	echo "Commands (no sudo needed):"
-	echo "  verify [issue|pr] <number> [slug] [--expect-head SHA] [--require-authority]"
-	echo "  verify-permissions issue|pr <number> [slug]"
-	echo "  reconcile issue|pr <number> [slug]"
-	echo "  status                     Show approval key setup status"
-	echo "  help                       Show this help"
-	echo ""
-	echo "Examples:"
-	echo "  sudo aidevops approve setup"
-	echo "  sudo aidevops approve issue 17438 <owner/repo>"
-	echo "  sudo aidevops approve issue 17438 17440 17442 <owner/repo>"
-	echo "  sudo aidevops approve pr 17439 17441 <owner/repo>"
-	echo "  sudo aidevops approve batch issue:17438 pr:17439 pr:17441 <owner/repo>"
-	echo "  sudo aidevops approve permissions issue 17438 <owner/repo> --request perm-0123456789abcdef"
-	echo "  aidevops approve verify 17438"
-	echo "  aidevops approve verify pr 17439 <owner/repo> --expect-head <sha>"
-	echo ""
-	echo "Security: The approval signing key is stored root-only. Workers run as your"
-	echo "user account and cannot access it, even with the same GitHub credentials."
 	return 0
 }
 
