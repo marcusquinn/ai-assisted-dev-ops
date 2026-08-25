@@ -1710,6 +1710,38 @@ test_proc_snapshot_marks_same_uid_unreadable_entry_degraded() {
 }
 
 # =============================================================================
+# Same-UID hardened login daemons can deny cwd reads indefinitely. They are not
+# worktree-scoped jobs, so they must not globally degrade every cleanup scan.
+# =============================================================================
+test_proc_snapshot_skips_known_same_uid_daemon_denial() {
+	local proc_root="${TEST_DIR}/fake-proc-same-uid-daemon"
+	local current_uid=""
+	local output=""
+	local rc=0
+	current_uid=$(id -u)
+	mkdir -p "${proc_root}/1" "${proc_root}/2"
+	ln -s /visible-cwd "${proc_root}/1/cwd"
+	ln -s /daemon-hidden-cwd "${proc_root}/2/cwd"
+	printf 'Uid:\t%s\t%s\t%s\t%s\n' \
+		"$current_uid" "$current_uid" "$current_uid" "$current_uid" >"${proc_root}/2/status"
+	printf 'gpg-agent\n' >"${proc_root}/2/comm"
+
+	output=$(
+		readlink() {
+			local link_path="$1"
+			[[ "$link_path" == */1/cwd ]] || return 1
+			printf '/visible-cwd\n'
+			return 0
+		}
+		_capture_worktree_proc_cwds "$proc_root"
+	) || rc=1
+	[[ "$output" == "/visible-cwd" ]] || rc=1
+	print_result "proc_snapshot_skips_known_same_uid_daemon_denial" "$rc" \
+		"Expected hardened same-UID session daemon cwd denial to be skipped"
+	return 0
+}
+
+# =============================================================================
 # Degraded visibility is candidate-specific: unrelated readable CWDs require a
 # recoverable path, while any readable target inside the candidate hard-blocks.
 # =============================================================================
@@ -1960,6 +1992,7 @@ test_proc_snapshot_preserves_degraded_visibility
 test_proc_snapshot_skips_foreign_uid_unreadable_entry
 test_proc_snapshot_skips_foreign_uid_when_status_unreadable
 test_proc_snapshot_marks_same_uid_unreadable_entry_degraded
+test_proc_snapshot_skips_known_same_uid_daemon_denial
 test_degraded_visibility_preserves_positive_candidate_match
 test_proc_snapshot_requires_usable_evidence_after_foreign_skips
 test_proc_snapshot_ignores_vanished_entry
