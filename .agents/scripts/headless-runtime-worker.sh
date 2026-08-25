@@ -1451,6 +1451,7 @@ _hrw_transfer_worktree_owner_snapshot() {
 	local owner_batch="$6"
 	local owner_task="$7"
 	local created_at="$8"
+	local owner_process_start="$9"
 
 	transfer_worktree_ownership_if_expected "$work_dir" "$branch" \
 		--session "$session_key" \
@@ -1460,7 +1461,8 @@ _hrw_transfer_worktree_owner_snapshot() {
 		--expected-session "$owner_session" \
 		--expected-batch "$owner_batch" \
 		--expected-task "$owner_task" \
-		--expected-created-at "$created_at" || return 1
+		--expected-created-at "$created_at" \
+		--expected-process-start "$owner_process_start" || return 1
 	return 0
 }
 
@@ -1473,36 +1475,39 @@ _hrw_transfer_authorized_continuation_owner() {
 	local expected_owner_batch="${AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH:-}"
 	local expected_owner_task="${AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK:-}"
 	local expected_owner_created_at="${AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}"
+	local expected_owner_process_start="${AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START:-}"
 
 	_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_CONTINUATION_STATE_REJECTED"
 	[[ "$expected_owner_pid" =~ ^[0-9]+$ ]] || return 1
-	[[ -n "$expected_owner_session" && -n "$expected_owner_task" && -n "$expected_owner_created_at" ]] || return 1
+	[[ -n "$expected_owner_session" && -n "$expected_owner_task" && -n "$expected_owner_created_at" &&
+		-n "$expected_owner_process_start" ]] || return 1
 	if [[ -z "${WORKER_ISSUE_NUMBER:-}" || "$expected_owner_task" != "${WORKER_ISSUE_NUMBER:-}" ]]; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_task_mismatch"
 		return 1
 	fi
 
 	local owner_info=""
-	owner_info=$(check_worktree_owner "$work_dir" 2>/dev/null || true)
+	owner_info=$(check_worktree_owner_snapshot "$work_dir" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || {
 		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_CONTINUATION_OWNER_ABSENT"
 		return 1
 	}
 
-	local owner_pid="" owner_session="" owner_batch="" owner_task="" created_at=""
-	IFS='|' read -r owner_pid owner_session owner_batch owner_task created_at <<<"$owner_info"
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" created_at="" owner_process_start=""
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task created_at owner_process_start <<<"$owner_info"
 	if [[ "$owner_task" != "${WORKER_ISSUE_NUMBER:-}" ]]; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_task_mismatch"
 		return 1
 	fi
 	if [[ "$owner_pid" != "$expected_owner_pid" || "$owner_session" != "$expected_owner_session" ||
-		"$owner_batch" != "$expected_owner_batch" || "$created_at" != "$expected_owner_created_at" ]]; then
+		"$owner_batch" != "$expected_owner_batch" || "$created_at" != "$expected_owner_created_at" ||
+		"$owner_process_start" != "$expected_owner_process_start" ]]; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_owner_mismatch"
 		return 1
 	fi
 
 	if ! _hrw_transfer_worktree_owner_snapshot "$session_key" "$work_dir" "$branch" \
-		"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at"; then
+		"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at" "$owner_process_start"; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_continuation_concurrent_mutation"
 		return 1
 	fi
@@ -1531,14 +1536,20 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 	local branch="$3"
 	local owner_info=""
 
-	owner_info=$(check_worktree_owner "$work_dir" 2>/dev/null || true)
+	owner_info=$(check_worktree_owner_snapshot "$work_dir" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || return 1
 
-	local owner_pid="" owner_session="" owner_batch="" owner_task="" created_at=""
-	IFS='|' read -r owner_pid owner_session owner_batch owner_task created_at <<<"$owner_info"
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" created_at="" owner_process_start=""
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task created_at owner_process_start <<<"$owner_info"
 
 	if [[ -n "$owner_pid" ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
-		if ! unregister_worktree_if_owner_pid "$work_dir" "$owner_pid" 2>/dev/null; then
+		if ! declare -F _wt_pid_is_definitely_absent >/dev/null 2>&1 ||
+			! _wt_pid_is_definitely_absent "$owner_pid"; then
+			_WORKER_PRELAUNCH_FAILURE_REASON="worker_worktree_live_owner"
+			return 1
+		fi
+		if ! _wt_unregister_owner_if_generation_matches "$work_dir" "$owner_pid" \
+			"$owner_process_start" "$created_at" 2>/dev/null; then
 			_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION"
 			return 1
 		fi
@@ -1559,7 +1570,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 		# dispatcher's same-task placeholder owner.
 		_hrw_worktree_task_status "$work_dir" >/dev/null 2>&1 || true
 		if ! _hrw_transfer_worktree_owner_snapshot "$session_key" "$work_dir" "$branch" \
-			"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at"; then
+			"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at" "$owner_process_start"; then
 			_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION"
 			return 1
 		fi
@@ -1574,7 +1585,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 			return 1
 		fi
 		if ! _hrw_transfer_worktree_owner_snapshot "$session_key" "$work_dir" "$branch" \
-			"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at"; then
+			"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at" "$owner_process_start"; then
 			_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION"
 			return 1
 		fi
@@ -1601,7 +1612,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 	fi
 
 	if ! _hrw_transfer_worktree_owner_snapshot "$session_key" "$work_dir" "$branch" \
-		"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at"; then
+		"$owner_pid" "$owner_session" "$owner_batch" "$owner_task" "$created_at" "$owner_process_start"; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION"
 		return 1
 	fi
@@ -1695,11 +1706,13 @@ _hrw_renew_dispatch_prelaunch_lease() {
 
 _hrw_release_worker_worktree() {
 	local work_dir="$1"
+	local session_key="$2"
 
-	if [[ -z "${WORKER_ISSUE_NUMBER:-}" || -z "$work_dir" ]]; then
+	if [[ -z "${WORKER_ISSUE_NUMBER:-}" || -z "$work_dir" || -z "$session_key" ]]; then
 		return 0
 	fi
-	unregister_worktree "$work_dir" 2>/dev/null || true
+	unregister_worktree_if_owner_contract "$work_dir" "$$" "$session_key" \
+		"${WORKER_ISSUE_NUMBER:-}" 2>/dev/null || true
 	return 0
 }
 
@@ -2107,7 +2120,7 @@ _hrw_finish_cleanup() {
 
 	_update_dispatch_ledger "$session_key" "$ledger_status"
 	_release_session_lock "$session_key"
-	_hrw_release_worker_worktree "$work_dir"
+	_hrw_release_worker_worktree "$work_dir" "$session_key"
 	cleanup_headless_git_auth
 	if declare -F _cleanup_headless_runtime_temp_paths >/dev/null 2>&1; then
 		_cleanup_headless_runtime_temp_paths

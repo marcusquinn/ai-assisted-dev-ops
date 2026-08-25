@@ -198,25 +198,24 @@ test_terminal_pr_cleanup_waits_for_deferred_parent_exit() {
 
 	kill "$owner_pid" 2>/dev/null || true
 	wait "$owner_pid" 2>/dev/null || true
-	local registry_release_marker="${TEST_ROOT}/terminal-parent-registry-released"
+	local pid_only_release_marker="${TEST_ROOT}/terminal-parent-pid-only-release"
 	(
 		cd "$repo_path" || exit 1
 		unset _WORKTREE_CLEAN_LIB_LOADED 2>/dev/null || true
 		source_clean_lib_with_stubs || exit 1
-		local registry_owned=1
-		is_worktree_owned_by_others() { [[ "$registry_owned" -eq 1 ]]; return $?; }
+		# The registry's generation-aware reconciliation has retired the dead
+		# owner by this pass; cleanup must not delete by deferred-marker PID.
+		is_worktree_owned_by_others() { return 1; }
 		unregister_worktree_if_owner_pid() {
-			[[ "$2" == "$owner_pid" ]] || return 1
-			registry_owned=0
-			printf 'released\n' >"$registry_release_marker"
+			printf 'unexpected\n' >"$pid_only_release_marker"
 			return 0
 		}
 		_clean_remove_merged "main" "$repo_path" "false" "$branch" "" "true" "" >/dev/null
 	) || rc=1
 	[[ ! -d "$wt_path" ]] || rc=1
-	[[ -f "$registry_release_marker" ]] || rc=1
+	[[ ! -f "$pid_only_release_marker" ]] || rc=1
 	print_result "terminal PR cleanup waits for deferred parent exit" "$rc" \
-		"Expected first pulse to defer and second pulse after owner exit to remove worktree"
+		"Expected token-aware registry reconciliation without PID-only deletion"
 	return 0
 }
 

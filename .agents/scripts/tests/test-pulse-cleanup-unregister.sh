@@ -191,6 +191,12 @@ test_degraded_orphan_removal_is_recoverable() {
 		printf '%s\n' "$candidate_path" >>"$LEASE_RELEASE_LOG"
 		return 0
 	}
+	_worktree_recovery_process_lstart() {
+		local owner_pid="$1"
+		[[ "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+		printf '%s\n' "test-process-start-${owner_pid}"
+		return 0
+	}
 	is_worktree_owned_by_others_for_pid() {
 		return 1
 	}

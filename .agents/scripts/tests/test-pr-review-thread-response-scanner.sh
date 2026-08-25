@@ -312,6 +312,7 @@ printf 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_SESSION=%s\n' "${AIDEVOPS_WORKTREE_EXPE
 printf 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH=%s\n' "${AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK=%s\n' "${AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=%s\n' "${AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START=%s\n' "${AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_PR_REPAIR_NUMBER=%s\n' "${AIDEVOPS_PR_REPAIR_NUMBER:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_PR_REPAIR_HEAD_SHA=%s\n' "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_PR_REPAIR_HEAD_REF=%s\n' "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" >>"${HEADLESS_ENV_CAPTURE}"
@@ -525,6 +526,15 @@ read_test_worktree_owner() {
 	return 0
 }
 
+read_test_worktree_owner_snapshot() {
+	local worktree_path="$1"
+	if ! bash -c 'source "$1"; check_worktree_owner_snapshot "$2"' \
+		_ "${TEST_SCRIPT_DIR}/../shared-constants.sh" "$worktree_path"; then
+		return 1
+	fi
+	return 0
+}
+
 test_dispatch_uses_linked_pr_branch_worktree() {
 	setup_test_env
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
@@ -595,6 +605,7 @@ test_dispatch_exports_worktree_ownership_context() {
 		grep -Fxq 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_SESSION=dispatch-precreate-1' "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq 'AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK=1' "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Eq '^AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=.+$' "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -Eq '^AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START=.+$' "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq 'AIDEVOPS_PR_REPAIR_NUMBER=1' "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq "AIDEVOPS_PR_REPAIR_HEAD_SHA=${TEST_HEAD_OID_1}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq 'AIDEVOPS_PR_REPAIR_HEAD_REF=feature/review' "$HEADLESS_ENV_CAPTURE" 2>/dev/null; then
@@ -610,7 +621,7 @@ test_dispatch_registers_created_worktree_as_transferable_precreate_owner() {
 	local expected_path=""
 	local initial_owner_info="" owner_info=""
 	local initial_owner_pid="" initial_owner_session="" initial_owner_batch="" initial_owner_task="" initial_owner_created_at=""
-	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at="" owner_process_start=""
 
 	setup_test_env
 	export STUB_WORKTREE_REGISTER_OWNER="true"
@@ -621,12 +632,13 @@ test_dispatch_registers_created_worktree_as_transferable_precreate_owner() {
 	wait_for_headless_log || true
 	initial_owner_info=$(<"$WORKTREE_CREATED_OWNER_CAPTURE")
 	IFS='|' read -r initial_owner_pid initial_owner_session initial_owner_batch initial_owner_task initial_owner_created_at <<<"$initial_owner_info"
-	owner_info=$(read_test_worktree_owner "$expected_path" 2>/dev/null || true)
-	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at <<<"$owner_info"
+	owner_info=$(read_test_worktree_owner_snapshot "$expected_path" 2>/dev/null || true)
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at owner_process_start <<<"$owner_info"
 	if [[ "$initial_owner_pid" == "$$" && -z "$initial_owner_session" && "$initial_owner_task" == "1" && -n "$initial_owner_created_at" ]] &&
 		[[ "$owner_pid" =~ ^[0-9]+$ && "$owner_pid" != "$initial_owner_pid" && "$owner_session" == "dispatch-precreate-1" && "$owner_task" == "1" && -n "$owner_created_at" ]] &&
 		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_PID=${owner_pid}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
-		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=${owner_created_at}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null; then
+		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=${owner_created_at}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START=${owner_process_start}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null; then
 		print_result "dispatch atomically registers a created worktree as an exact transferable owner" 0
 	else
 		print_result "dispatch atomically registers a created worktree as an exact transferable owner" 1 \
@@ -639,18 +651,18 @@ test_dispatch_registers_created_worktree_as_transferable_precreate_owner() {
 test_dispatch_preserves_reused_same_task_owner_snapshot() {
 	local existing_path=""
 	local owner_before="" owner_after=""
-	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at="" owner_process_start=""
 
 	setup_test_env
 	existing_path="${TEST_ROOT}/existing-review-worktree"
 	mkdir -p "$existing_path"
 	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_1" >"$GIT_WORKTREE_REGISTRY"
 	register_test_worktree_owner "$existing_path" 'feature/review' '1' 'existing-review-session' 'existing-review-batch'
-	owner_before=$(read_test_worktree_owner "$existing_path")
-	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at <<<"$owner_before"
+	owner_before=$(read_test_worktree_owner_snapshot "$existing_path")
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at owner_process_start <<<"$owner_before"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	owner_after=$(read_test_worktree_owner "$existing_path")
+	owner_after=$(read_test_worktree_owner_snapshot "$existing_path")
 	if [[ "$owner_after" == "$owner_before" ]] &&
 		grep -Fxq 'AIDEVOPS_WORKTREE_OWNER_TRANSFER_MODE=continuation' "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_PID=${owner_pid}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
@@ -658,6 +670,7 @@ test_dispatch_preserves_reused_same_task_owner_snapshot() {
 		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH=${owner_batch}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK=${owner_task}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=${owner_created_at}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START=${owner_process_start}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
 		! grep -q '^add ' "$WORKTREE_HELPER_LOG" 2>/dev/null; then
 		print_result "dispatch preserves a reused same-task owner for exact continuation transfer" 0
 	else

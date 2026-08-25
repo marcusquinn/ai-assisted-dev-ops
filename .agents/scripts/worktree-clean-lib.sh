@@ -196,10 +196,6 @@ _clean_terminal_owner_blocks_cleanup() {
 		return 0
 	fi
 	if [[ "$deferred_parent_state" -eq 2 ]]; then
-		if [[ -n "$_WT_CLEAN_DEFERRED_OWNER_PID" ]] &&
-			unregister_worktree_if_owner_pid "$wt_path" "$_WT_CLEAN_DEFERRED_OWNER_PID" 2>/dev/null; then
-			return 1
-		fi
 		if is_worktree_owned_by_others "$wt_path"; then
 			log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_WH_CALLER" "$wt_path" "$_WT_CLEAN_REASON_OWNED_SKIP" "$_WT_CLEAN_MODE_SKIPPED"
 			return 0

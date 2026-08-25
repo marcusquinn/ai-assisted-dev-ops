@@ -609,16 +609,16 @@ _dlw_prepare_existing_worktree() {
 _dlw_capture_reused_worktree_owner() {
 	local issue_number="$1"
 	local worktree_path="$2"
-	declare -F check_worktree_owner >/dev/null 2>&1 || return 1
+	declare -F check_worktree_owner_snapshot >/dev/null 2>&1 || return 1
 
 	local owner_info=""
-	owner_info=$(check_worktree_owner "$worktree_path" 2>/dev/null || true)
+	owner_info=$(check_worktree_owner_snapshot "$worktree_path" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || return 1
 
-	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
-	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at <<<"$owner_info"
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at="" owner_process_start=""
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at owner_process_start <<<"$owner_info"
 	if [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" ||
-		"$owner_task" != "$issue_number" || -z "$owner_created_at" ]]; then
+		"$owner_task" != "$issue_number" || -z "$owner_created_at" || -z "$owner_process_start" ]]; then
 		echo "[dispatch_with_dedup] Rejected incomplete or mismatched registry owner for #${issue_number}; attempting an atomic same-task claim instead: ${worktree_path}" >>"$LOGFILE"
 		return 1
 	fi
@@ -628,6 +628,7 @@ _dlw_capture_reused_worktree_owner() {
 	_DLW_WORKTREE_EXPECTED_OWNER_BATCH="$owner_batch"
 	_DLW_WORKTREE_EXPECTED_OWNER_TASK="$owner_task"
 	_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT="$owner_created_at"
+	_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START="$owner_process_start"
 	_DLW_WORKTREE_TRANSFER_MODE="continuation"
 	echo "[dispatch_with_dedup] Captured expected registry owner for #${issue_number} continuation without replacing it: ${worktree_path}" >>"$LOGFILE"
 	return 0
@@ -661,6 +662,7 @@ _dlw_reset_precreated_worktree_state() {
 	_DLW_WORKTREE_EXPECTED_OWNER_BATCH=""
 	_DLW_WORKTREE_EXPECTED_OWNER_TASK=""
 	_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT=""
+	_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START=""
 	return 0
 }
 
@@ -739,10 +741,16 @@ _dlw_precreate_worktree() {
 		_DLW_WORKTREE_PATH="$_path"
 		_DLW_WORKTREE_BRANCH="$_branch"
 		if declare -F register_worktree >/dev/null 2>&1; then
-			register_worktree "$_DLW_WORKTREE_PATH" "$_DLW_WORKTREE_BRANCH" \
+			if ! register_worktree "$_DLW_WORKTREE_PATH" "$_DLW_WORKTREE_BRANCH" \
 				--task "$issue_number" \
 				--session "$_precreate_session" \
-				--owner-pid "$$" 2>/dev/null || true
+				--owner-pid "$$" 2>/dev/null; then
+				echo "[dispatch_with_dedup] Worktree ownership registration failed for #${issue_number}; dispatch will be skipped" >>"$LOGFILE"
+				return 1
+			fi
+		else
+			echo "[dispatch_with_dedup] Worktree registry helper unavailable for #${issue_number}; dispatch will be skipped" >>"$LOGFILE"
+			return 1
 		fi
 		# Restore gitignored deps (node_modules) that git doesn't track
 		_dlw_restore_worktree_deps "$_DLW_WORKTREE_PATH" "$repo_path"
@@ -1581,6 +1589,7 @@ _dlw_append_worktree_transfer_env() {
 	local expected_owner_batch="${_DLW_WORKTREE_EXPECTED_OWNER_BATCH:-}"
 	local expected_owner_task="${_DLW_WORKTREE_EXPECTED_OWNER_TASK:-}"
 	local expected_owner_created_at="${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}"
+	local expected_owner_process_start="${_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START:-}"
 	[[ "$transfer_mode" == "continuation" ]] || return 0
 
 	worker_cmd+=(
@@ -1590,6 +1599,7 @@ _dlw_append_worktree_transfer_env() {
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH="$expected_owner_batch"
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK="$expected_owner_task"
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT="$expected_owner_created_at"
+		AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START="$expected_owner_process_start"
 	)
 	return 0
 }

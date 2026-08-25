@@ -453,11 +453,15 @@ _dsi_create_worktree() {
 			_DSI_WORKTREE_BRANCH="$branch"
 			if [[ -n "$_DSI_WORKTREE_PATH" && -d "$_DSI_WORKTREE_PATH" ]]; then
 				if declare -F register_worktree >/dev/null; then
-					register_worktree "$_DSI_WORKTREE_PATH" "$_DSI_WORKTREE_BRANCH" \
+					if ! register_worktree "$_DSI_WORKTREE_PATH" "$_DSI_WORKTREE_BRANCH" \
 						--task "$issue_number" \
-						--session "dispatch-precreate-${issue_number}" || _dsi_warn "Worktree registration failed (non-fatal)"
+						--session "dispatch-precreate-${issue_number}"; then
+						_dsi_err "Worktree ownership registration failed; dispatch is unsafe"
+						return 1
+					fi
 				else
-					_dsi_warn "Worktree registry helper unavailable; ownership registration skipped"
+					_dsi_err "Worktree registry helper unavailable; dispatch is unsafe"
+					return 1
 				fi
 				return 0
 			fi

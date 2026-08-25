@@ -219,10 +219,10 @@ test_worker_worktree_claim_reclaims_stale_live_same_task_owner() {
 		[[ "$claim_calls" -gt 1 ]] && return 0
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "old-session" "" "22438" "2000-01-01T00:00:00Z"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "old-session" "" "22438" "2000-01-01T00:00:00Z" "process-start-1"
 		return 0
 	}
 	unregister_worktree() {
@@ -242,7 +242,7 @@ test_worker_worktree_claim_reclaims_stale_live_same_task_owner() {
 	local status=0
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null || status=$?
 
-	unset -f claim_worktree_ownership check_worktree_owner unregister_worktree \
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot unregister_worktree \
 		transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER AIDEVOPS_WORKER_WORKTREE_OWNER_RECLAIM_AGE_SECONDS _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
@@ -274,10 +274,10 @@ test_worker_worktree_claim_reclaims_dispatch_precreate_owner() {
 		[[ "$claim_calls" -gt 1 ]] && return 0
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-22438" "" "22438" "2099-01-01T00:00:00Z"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-22438" "" "22438" "2099-01-01T00:00:00Z" "process-start-1"
 		return 0
 	}
 	unregister_worktree() {
@@ -297,7 +297,7 @@ test_worker_worktree_claim_reclaims_dispatch_precreate_owner() {
 	local status=0
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null || status=$?
 
-	unset -f claim_worktree_ownership check_worktree_owner unregister_worktree \
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot unregister_worktree \
 		transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER AIDEVOPS_WORKER_WORKTREE_OWNER_RECLAIM_AGE_SECONDS _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
@@ -325,10 +325,10 @@ test_worker_worktree_claim_transfers_dispatch_precreate_task_state() {
 		[[ "$claim_calls" -gt 1 ]] && return 0
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-22438" "batch-7" "22438" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-22438" "batch-7" "22438" "$owner_created_at" "process-start-1"
 		return 0
 	}
 	unregister_worktree() {
@@ -386,7 +386,8 @@ test_worker_worktree_claim_transfers_dispatch_precreate_task_state() {
 			"$unregister_calls" -eq 0 && "$state_preserved" -eq 1 &&
 			"$transfer_args" == *"--expected-session dispatch-precreate-22438"* &&
 			"$transfer_args" == *"--expected-batch batch-7"* &&
-			"$transfer_args" == *"--expected-task 22438"* ]]; then
+			"$transfer_args" == *"--expected-task 22438"* &&
+			"$transfer_args" == *"--expected-process-start process-start-1"* ]]; then
 			print_result "${state_kind} dispatch-precreate state transfers atomically without data loss" 0
 		else
 			print_result "${state_kind} dispatch-precreate state transfers atomically without data loss" 1 \
@@ -394,7 +395,7 @@ test_worker_worktree_claim_transfers_dispatch_precreate_task_state() {
 		fi
 	done
 
-	unset -f claim_worktree_ownership check_worktree_owner unregister_worktree \
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot unregister_worktree \
 		transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 	return 0
@@ -409,10 +410,10 @@ test_worker_worktree_claim_rejects_dispatch_precreate_task_mismatch() {
 	claim_worktree_ownership() {
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-99999" "batch-7" "99999" "2026-07-18T00:00:10Z"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-99999" "batch-7" "99999" "2026-07-18T00:00:10Z" "process-start-1"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -423,7 +424,7 @@ test_worker_worktree_claim_rejects_dispatch_precreate_task_mismatch() {
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
-	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
 	if [[ "$status" -ne 0 && "$transfer_calls" -eq 0 && "$reason" == "worker_worktree_live_owner" ]]; then
@@ -444,10 +445,10 @@ test_worker_worktree_claim_classifies_dispatch_precreate_concurrent_mutation() {
 	claim_worktree_ownership() {
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-22438" "batch-7" "22438" "2026-07-18T00:00:11Z"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "dispatch-precreate-22438" "batch-7" "22438" "2026-07-18T00:00:11Z" "process-start-1"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -458,7 +459,7 @@ test_worker_worktree_claim_classifies_dispatch_precreate_concurrent_mutation() {
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
-	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
 	if [[ "$status" -ne 0 && "$transfer_calls" -eq 1 &&
@@ -477,12 +478,14 @@ set_continuation_transfer_env() {
 	local owner_batch="$3"
 	local owner_task="$4"
 	local owner_created_at="$5"
+	local owner_process_start="${6:-process-start-1}"
 	export AIDEVOPS_WORKTREE_OWNER_TRANSFER_MODE="continuation"
 	export AIDEVOPS_WORKTREE_EXPECTED_OWNER_PID="$owner_pid"
 	export AIDEVOPS_WORKTREE_EXPECTED_OWNER_SESSION="$owner_session"
 	export AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH="$owner_batch"
 	export AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK="$owner_task"
 	export AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT="$owner_created_at"
+	export AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START="$owner_process_start"
 	return 0
 }
 
@@ -493,6 +496,7 @@ clear_continuation_transfer_env() {
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH \
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK \
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT \
+		AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START \
 		WORKER_ISSUE_NUMBER _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 	return 0
 }
@@ -511,10 +515,10 @@ test_worker_worktree_continuation_transfers_dirty_same_task_owner() {
 		claim_calls=$((claim_calls + 1))
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "" "22438" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "" "22438" "$owner_created_at" "process-start-1"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -541,7 +545,7 @@ test_worker_worktree_continuation_transfers_dirty_same_task_owner() {
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null || status=$?
 	preserved_status=$(git -C "$worktree_dir" status --porcelain 2>/dev/null || true)
 
-	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	clear_continuation_transfer_env
 
 	if [[ "$status" -eq 0 && "$claim_calls" -eq 0 && "$transfer_calls" -eq 1 &&
@@ -572,10 +576,10 @@ test_worker_worktree_continuation_transfers_ahead_same_task_owner() {
 		claim_calls=$((claim_calls + 1))
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at" "process-start-1"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -591,7 +595,7 @@ test_worker_worktree_continuation_transfers_ahead_same_task_owner() {
 	actual_head=$(git -C "$worktree_dir" rev-parse HEAD 2>/dev/null || true)
 	ahead_count=$(git -C "$worktree_dir" rev-list --count origin/main..HEAD 2>/dev/null || true)
 
-	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	clear_continuation_transfer_env
 
 	if [[ "$status" -eq 0 && "$claim_calls" -eq 0 && "$transfer_calls" -eq 1 &&
@@ -617,7 +621,7 @@ test_worker_worktree_continuation_claims_absent_expected_owner() {
 		claim_calls=$((claim_calls + 1))
 		return 0
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
 		return 1
@@ -631,7 +635,7 @@ test_worker_worktree_continuation_claims_absent_expected_owner() {
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
 	proof_session="${AIDEVOPS_WORKTREE_OWNER_SESSION:-}"
-	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset AIDEVOPS_WORKTREE_OWNER_PID AIDEVOPS_WORKTREE_OWNER_SESSION \
 		AIDEVOPS_WORKTREE_OWNER_TASK AIDEVOPS_WORKTREE_OWNER_PATH 2>/dev/null || true
 	clear_continuation_transfer_env
@@ -659,7 +663,7 @@ test_worker_worktree_continuation_absent_owner_race_fails_closed() {
 		claim_calls=$((claim_calls + 1))
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
 		return 1
@@ -672,7 +676,7 @@ test_worker_worktree_continuation_absent_owner_race_fails_closed() {
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
-	unset -f claim_worktree_ownership check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	clear_continuation_transfer_env
 
 	if [[ "$status" -ne 0 && "$claim_calls" -eq 1 && "$transfer_calls" -eq 0 &&
@@ -691,10 +695,10 @@ test_worker_worktree_continuation_classifies_task_mismatch() {
 	export WORKER_ISSUE_NUMBER="22438"
 	local live_pid="$$" owner_created_at="2026-07-18T00:00:02Z" transfer_calls=0
 	set_continuation_transfer_env "$live_pid" "generation-7" "batch-7" "99999" "$owner_created_at"
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "99999" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "99999" "$owner_created_at" "process-start-1"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -705,7 +709,7 @@ test_worker_worktree_continuation_classifies_task_mismatch() {
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
-	unset -f check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	clear_continuation_transfer_env
 
 	if [[ "$status" -ne 0 && "$transfer_calls" -eq 0 && "$reason" == "worker_worktree_continuation_task_mismatch" ]]; then
@@ -723,10 +727,10 @@ test_worker_worktree_continuation_classifies_owner_mismatch() {
 	export WORKER_ISSUE_NUMBER="22438"
 	local live_pid="$$" owner_created_at="2026-07-18T00:00:03Z" transfer_calls=0
 	set_continuation_transfer_env "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at"
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "competing-generation" "batch-8" "22438" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at" "process-start-2"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -737,14 +741,14 @@ test_worker_worktree_continuation_classifies_owner_mismatch() {
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
-	unset -f check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	clear_continuation_transfer_env
 
 	if [[ "$status" -ne 0 && "$transfer_calls" -eq 0 && "$reason" == "worker_worktree_continuation_owner_mismatch" ]]; then
-		print_result "same-task continuation rejects expected-owner mismatch precisely" 0
+		print_result "same-task continuation rejects expected process-generation mismatch precisely" 0
 		return 0
 	fi
-	print_result "same-task continuation rejects expected-owner mismatch precisely" 1 \
+	print_result "same-task continuation rejects expected process-generation mismatch precisely" 1 \
 		"status=$status transfer_calls=$transfer_calls reason=${reason:-<empty>}"
 	return 0
 }
@@ -755,10 +759,10 @@ test_worker_worktree_continuation_classifies_concurrent_mutation() {
 	export WORKER_ISSUE_NUMBER="22438"
 	local live_pid="$$" owner_created_at="2026-07-18T00:00:04Z" transfer_calls=0
 	set_continuation_transfer_env "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at"
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "generation-7" "batch-7" "22438" "$owner_created_at" "process-start-1"
 		return 0
 	}
 	transfer_worktree_ownership_if_expected() {
@@ -769,7 +773,7 @@ test_worker_worktree_continuation_classifies_concurrent_mutation() {
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
-	unset -f check_worktree_owner transfer_worktree_ownership_if_expected 2>/dev/null || true
+	unset -f check_worktree_owner_snapshot transfer_worktree_ownership_if_expected 2>/dev/null || true
 	clear_continuation_transfer_env
 
 	if [[ "$status" -ne 0 && "$transfer_calls" -eq 1 && "$reason" == "worker_worktree_continuation_concurrent_mutation" ]]; then
@@ -788,7 +792,8 @@ test_worker_worktree_continuation_classifies_invalid_state() {
 	export AIDEVOPS_WORKTREE_OWNER_TRANSFER_MODE="continuation"
 	unset AIDEVOPS_WORKTREE_EXPECTED_OWNER_PID AIDEVOPS_WORKTREE_EXPECTED_OWNER_SESSION \
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK \
-		AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT 2>/dev/null || true
+		AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT \
+		AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START 2>/dev/null || true
 
 	local status=0 reason=""
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
@@ -838,10 +843,10 @@ test_worker_worktree_claim_classifies_unreclaimed_live_owner() {
 		[[ -n "$claim_path" && -n "$claim_branch" ]] || return 1
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|%s|%s|%s|%s\n' "$live_pid" "active-session" "" "99999" "2000-01-01T00:00:00Z"
+		printf '%s|%s|%s|%s|%s|%s\n' "$live_pid" "active-session" "" "99999" "2000-01-01T00:00:00Z" "process-start-1"
 		return 0
 	}
 	unregister_worktree() { local unregister_path="$1"; [[ -n "$unregister_path" ]] || return 1; return 0; }
@@ -850,7 +855,7 @@ test_worker_worktree_claim_classifies_unreclaimed_live_owner() {
 	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null 2>&1 || status=$?
 	local reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-}"
 
-	unset -f claim_worktree_ownership check_worktree_owner unregister_worktree 2>/dev/null || true
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot unregister_worktree 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
 	if [[ "$status" -ne 0 && "$reason" == "worker_worktree_live_owner" ]]; then
@@ -860,6 +865,34 @@ test_worker_worktree_claim_classifies_unreclaimed_live_owner() {
 
 	print_result "worker worktree claim classifies unreclaimed live owner" 1 \
 		"status=$status reason=${reason:-<empty>}"
+	return 0
+}
+
+test_worker_worktree_release_uses_generation_contract() {
+	export WORKER_ISSUE_NUMBER="22438"
+	local contract_args=""
+	local unrestricted_calls=0
+	unregister_worktree_if_owner_contract() {
+		contract_args="$*"
+		return 0
+	}
+	unregister_worktree() {
+		unrestricted_calls=$((unrestricted_calls + 1))
+		return 0
+	}
+
+	local status=0
+	_hrw_release_worker_worktree "/example/worker-worktree" "issue-22438" || status=$?
+	unset -f unregister_worktree_if_owner_contract unregister_worktree 2>/dev/null || true
+	unset WORKER_ISSUE_NUMBER 2>/dev/null || true
+
+	if [[ "$status" -eq 0 && "$contract_args" == "/example/worker-worktree $$ issue-22438 22438" &&
+		"$unrestricted_calls" -eq 0 ]]; then
+		print_result "worker worktree release uses the process-generation owner contract" 0
+		return 0
+	fi
+	print_result "worker worktree release uses the process-generation owner contract" 1 \
+		"status=$status contract=${contract_args:-<empty>} unrestricted=$unrestricted_calls"
 	return 0
 }
 
