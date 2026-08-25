@@ -69,6 +69,8 @@ _prepare_cmd_run_environment() {
 	_hrff_capture_external_outcome_contract
 	local requested_session_origin="${AIDEVOPS_SESSION_ORIGIN:-}"
 	local requested_ai_research_ceiling="${AIDEVOPS_AI_RESEARCH_TOOL_CEILING:-}"
+	local requested_attempt_state_root="${AIDEVOPS_ATTEMPT_STATE_ROOT:-}"
+	local requested_attempt_state_file="${AIDEVOPS_ATTEMPT_STATE_FILE:-}"
 	if [[ "$role" != "$_CMD_RUN_ROLE_WORKER" ]]; then
 		_hrw_prepare_role_context "$role" "$work_dir" || return 1
 		if [[ "$role" == "$HEADLESS_ROLE_TRIAGE" || "$role" == "$HEADLESS_ROLE_MODEL_REPLAY" ]]; then
@@ -90,11 +92,28 @@ _prepare_cmd_run_environment() {
 		export WORKER_NO_EXIT_PUSH=1
 		unset AIDEVOPS_WORKER_PREWARM_DIR
 		unset AIDEVOPS_ATTEMPT_ID AIDEVOPS_ATTEMPT_STARTED_AT AIDEVOPS_CORRELATION_ID
+		unset AIDEVOPS_ATTEMPT_STATE_ROOT AIDEVOPS_ATTEMPT_STATE_FILE
 		unset AIDEVOPS_DISPATCH_LEASE_DEVICE AIDEVOPS_DISPATCH_LEASE_TOKEN
 		unset AIDEVOPS_PARENT_WORKER_ID AIDEVOPS_ROOT_WORKER_ID AIDEVOPS_RUN_ID
 		unset AIDEVOPS_VERBOSE_LIFECYCLE AIDEVOPS_WORKER_ID AIDEVOPS_WORKER_PREFLIGHT_SENTINEL
 		unset DISPATCH_REPO_SLUG WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_TARGET_BRANCH
 		unset WORKER_WORKTREE_PATH _WORKER_WORKTREE_PATH
+	fi
+	# PRRTS uses its outcome generation as the canonical worker-attempt identity.
+	# Restore it after private-workload sanitization so prelaunch failures, runtime
+	# lifecycle state, and the terminal outcome retain one safe join key.
+	if [[ "$role" == "$_CMD_RUN_ROLE_WORKER" && \
+		"${_WORKER_EXTERNAL_OUTCOME_ID:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+		AIDEVOPS_ATTEMPT_ID="$_WORKER_EXTERNAL_OUTCOME_ID"
+		export AIDEVOPS_ATTEMPT_ID
+		if [[ "$private_workload" -eq 1 ]] &&
+			worker_attempt_observability_state_matches_identity \
+				"$requested_attempt_state_root" "$requested_attempt_state_file" \
+				"$AIDEVOPS_ATTEMPT_ID"; then
+			AIDEVOPS_ATTEMPT_STATE_ROOT="$requested_attempt_state_root"
+			AIDEVOPS_ATTEMPT_STATE_FILE="$requested_attempt_state_file"
+			export AIDEVOPS_ATTEMPT_STATE_ROOT AIDEVOPS_ATTEMPT_STATE_FILE
+		fi
 	fi
 	if ! prepare_headless_git_auth_sandbox_env "$role"; then
 		print_error "Repository-bound worker Git authentication failed prelaunch validation"

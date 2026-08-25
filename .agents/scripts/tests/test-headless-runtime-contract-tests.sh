@@ -517,6 +517,93 @@ test_sensitive_temp_preflight_aborts_before_worker_ownership() {
 	return 0
 }
 
+test_external_outcome_identity_survives_private_sanitization() {
+	local detail=""
+	local status=0
+	detail=$(
+		state_root="${TEST_ROOT}/private-attempt-state"
+		state_file="${state_root}/owner-repo-123-dispatch-private-123.attempt.json"
+		mkdir -p "$state_root"
+		worker_attempt_observability_initialize \
+			"$state_root" "$state_file" "dispatch-private-123" \
+			"pr-review-thread-response-owner-repo-123"
+		role="worker"
+		private_workload=1
+		work_dir="$TEST_ROOT"
+		session_key="pr-review-thread-response-owner-repo-123"
+		title="PR #123: review-thread response"
+		prompt="bounded remediation"
+		detach=0
+		_cmd_run_stop=0
+		_cmd_run_return_status=1
+		export AIDEVOPS_HEADLESS_OUTCOME_FILE="${TEST_ROOT}/private.outcome"
+		export AIDEVOPS_HEADLESS_OUTCOME_ID="dispatch-private-123"
+		export AIDEVOPS_ATTEMPT_ID="stale-parent-attempt"
+		export AIDEVOPS_ATTEMPT_STATE_ROOT="$state_root"
+		export AIDEVOPS_ATTEMPT_STATE_FILE="$state_file"
+		prepare_headless_git_auth_sandbox_env() { return 0; }
+		_ensure_valid_launch_cwd() { return 0; }
+		_validate_issue_worker_env_contract() { return 0; }
+		_recover_deleted_cwd_before_launch() { return 0; }
+		aidevops_init_temp_workspace() { return 0; }
+		_prepare_cmd_run_environment || status=$?
+		printf 'status=%s attempt=%s outcome=%s public=%s state=%s\n' \
+			"$status" "${AIDEVOPS_ATTEMPT_ID:-}" "${_WORKER_EXTERNAL_OUTCOME_ID:-}" \
+			"${AIDEVOPS_HEADLESS_OUTCOME_ID:-unset}" "${AIDEVOPS_ATTEMPT_STATE_FILE:-unset}"
+	)
+	if [[ "$detail" == \
+		"status=0 attempt=dispatch-private-123 outcome=dispatch-private-123 public=unset state=${TEST_ROOT}/private-attempt-state/owner-repo-123-dispatch-private-123.attempt.json" ]]; then
+		print_result "private worker reuses external outcome identity for lifecycle correlation" 0
+	else
+		print_result "private worker reuses external outcome identity for lifecycle correlation" 1 \
+			"detail=${detail:-<empty>}"
+	fi
+	return 0
+}
+
+test_private_sanitization_rejects_mismatched_attempt_state() {
+	local detail=""
+	local status=0
+	detail=$(
+		state_root="${TEST_ROOT}/mismatched-attempt-state"
+		state_file="${state_root}/owner-repo-123-other-attempt.attempt.json"
+		mkdir -p "$state_root"
+		worker_attempt_observability_initialize \
+			"$state_root" "$state_file" "other-attempt" \
+			"pr-review-thread-response-owner-repo-123"
+		role="worker"
+		private_workload=1
+		work_dir="$TEST_ROOT"
+		session_key="pr-review-thread-response-owner-repo-123"
+		title="PR #123: review-thread response"
+		prompt="bounded remediation"
+		detach=0
+		_cmd_run_stop=0
+		_cmd_run_return_status=1
+		export AIDEVOPS_HEADLESS_OUTCOME_FILE="${TEST_ROOT}/mismatch.outcome"
+		export AIDEVOPS_HEADLESS_OUTCOME_ID="dispatch-private-123"
+		export AIDEVOPS_ATTEMPT_STATE_ROOT="$state_root"
+		export AIDEVOPS_ATTEMPT_STATE_FILE="$state_file"
+		prepare_headless_git_auth_sandbox_env() { return 0; }
+		_ensure_valid_launch_cwd() { return 0; }
+		_validate_issue_worker_env_contract() { return 0; }
+		_recover_deleted_cwd_before_launch() { return 0; }
+		aidevops_init_temp_workspace() { return 0; }
+		_prepare_cmd_run_environment || status=$?
+		printf 'status=%s attempt=%s state_root=%s state_file=%s\n' \
+			"$status" "${AIDEVOPS_ATTEMPT_ID:-}" \
+			"${AIDEVOPS_ATTEMPT_STATE_ROOT:-unset}" "${AIDEVOPS_ATTEMPT_STATE_FILE:-unset}"
+	)
+	if [[ "$detail" == \
+		"status=0 attempt=dispatch-private-123 state_root=unset state_file=unset" ]]; then
+		print_result "private worker rejects mismatched inherited attempt state" 0
+	else
+		print_result "private worker rejects mismatched inherited attempt state" 1 \
+			"detail=${detail:-<empty>}"
+	fi
+	return 0
+}
+
 test_headless_temp_initialization_preserves_process_scratch() {
 	local TMPDIR="/host/tmpdir"
 	local TMP="/host/tmp"

@@ -29,6 +29,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=shared-constants.sh
 [[ -f "${SCRIPT_DIR}/shared-constants.sh" ]] && source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=worker-attempt-observability.sh
+[[ -f "${SCRIPT_DIR}/worker-attempt-observability.sh" ]] && source "${SCRIPT_DIR}/worker-attempt-observability.sh"
 
 LOGFILE="${LOGFILE:-${HOME}/.aidevops/logs/pr-review-thread-response-scanner.log}"
 STATE_DIR="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR:-${HOME}/.aidevops/.agent-workspace/pr-review-thread-response}"
@@ -58,7 +60,7 @@ PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="9"
+PRRTS_WORKER_CONTRACT_VERSION="10"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
@@ -814,6 +816,19 @@ _prrts_outcome_file() {
 	local safe_slug=""
 	safe_slug="$(_prrts_safe_slug "$repo_slug")"
 	printf '%s/%s-%s.outcome\n' "$STATE_DIR" "$safe_slug" "$pr_number"
+	return 0
+}
+
+_prrts_attempt_state_file() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local outcome_id="$3"
+	local safe_slug=""
+	local safe_outcome_id=""
+	safe_slug="$(_prrts_safe_slug "$repo_slug")"
+	safe_outcome_id=$(printf '%s' "$outcome_id" | tr -c '[:alnum:]_.-' '-')
+	[[ -n "$safe_outcome_id" ]] || return 1
+	printf '%s/%s-%s-%s.attempt.json\n' "$STATE_DIR" "$safe_slug" "$pr_number" "$safe_outcome_id"
 	return 0
 }
 
@@ -2376,6 +2391,49 @@ _prrts_prepare_worker_worktree() {
 	return 0
 }
 
+_prrts_initialize_attempt_state() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local outcome_id="$3"
+	local session_key="$4"
+	local output_var="$5"
+	local resolved_state_file=""
+	resolved_state_file="$(_prrts_attempt_state_file "$repo_slug" "$pr_number" "$outcome_id")" || return 1
+	if ! declare -F worker_attempt_observability_initialize >/dev/null 2>&1; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — attempt lifecycle helper unavailable"
+		return 1
+	fi
+	if ! worker_attempt_observability_initialize \
+		"$STATE_DIR" "$resolved_state_file" "$outcome_id" "$session_key"; then
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — could not initialize attempt lifecycle state"
+		return 1
+	fi
+	printf -v "$output_var" '%s' "$resolved_state_file"
+	return 0
+}
+
+_prrts_launch_detached_worker() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local pid_var="$3"
+	local mode_var="$4"
+	shift 4
+	local launched_pid=""
+	local launched_mode=""
+	if command -v setsid >/dev/null 2>&1; then
+		launched_mode="setsid+nohup"
+		setsid nohup "$@" </dev/null >>"$LOGFILE" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+	else
+		launched_mode="nohup"
+		_prrts_log "dispatch: setsid unavailable for ${repo_slug}#${pr_number}; launching with nohup-only isolation"
+		nohup "$@" </dev/null >>"$LOGFILE" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+	fi
+	launched_pid="$!"
+	printf -v "$pid_var" '%s' "$launched_pid"
+	printf -v "$mode_var" '%s' "$launched_mode"
+	return 0
+}
+
 _prrts_dispatch_worker() {
 	local repo_slug="$1"
 	local repo_path="$2"
@@ -2385,7 +2443,7 @@ _prrts_dispatch_worker() {
 	local head_ref="$8" head_oid="$9"
 	local outcome_id="${10}" now_epoch="${11}" attempt_count="${12}"
 	local maintainer_attention="${13}" infrastructure_failure_count="${14}" reservation_file="${15}"
-	local prompt_file="" session_key="" model="" worker_worktree_path="" worker_pid="" detach_mode="" outcome_file=""
+	local prompt_file="" session_key="" model="" worker_worktree_path="" worker_pid="" detach_mode="" outcome_file="" attempt_state_file=""
 	local worker_task="" repair_linked_issue="" worker_login=""
 	local batch_fingerprint="" batch_thread_count="0"
 	local -a cmd worker_cmd
@@ -2417,6 +2475,7 @@ _prrts_dispatch_worker() {
 	session_key="$(_prrts_session_key "$repo_slug" "$pr_number")"
 	outcome_file="$(_prrts_outcome_file "$repo_slug" "$pr_number")"
 	_prrts_ensure_dirs
+	_prrts_initialize_attempt_state "$repo_slug" "$pr_number" "$outcome_id" "$session_key" attempt_state_file || return 1
 	rm -f "$outcome_file"
 	cmd=("$HEADLESS_RUNTIME_HELPER" run
 		--role worker
@@ -2450,19 +2509,14 @@ _prrts_dispatch_worker() {
 		"AIDEVOPS_PR_REPAIR_HEAD_REF=${head_ref}"
 		"AIDEVOPS_HEADLESS_OUTCOME_FILE=${outcome_file}"
 		"AIDEVOPS_HEADLESS_OUTCOME_ID=${outcome_id}"
+		"AIDEVOPS_ATTEMPT_ID=${outcome_id}"
+		"AIDEVOPS_ATTEMPT_STATE_ROOT=${STATE_DIR}"
+		"AIDEVOPS_ATTEMPT_STATE_FILE=${attempt_state_file}"
 		"${cmd[@]}")
 	# Persist the generation immediately before the detached worker becomes
 	# runnable, so immediate terminal callbacks cannot be overwritten.
 	_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$maintainer_attention" "$head_oid" "$outcome_id" "$infrastructure_failure_count"
-	if command -v setsid >/dev/null 2>&1; then
-		detach_mode="setsid+nohup"
-		setsid nohup "${worker_cmd[@]}" </dev/null >>"$LOGFILE" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-	else
-		detach_mode="nohup"
-		_prrts_log "dispatch: setsid unavailable for ${repo_slug}#${pr_number}; launching with nohup-only isolation"
-		nohup "${worker_cmd[@]}" </dev/null >>"$LOGFILE" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
-	fi
-	worker_pid="$!"
+	_prrts_launch_detached_worker "$repo_slug" "$pr_number" worker_pid detach_mode "${worker_cmd[@]}"
 	if ! _prrts_activate_global_capacity "$reservation_file" "$worker_pid" "$session_key"; then
 		kill "$worker_pid" 2>/dev/null || true
 		_prrts_release_global_capacity "$reservation_file" "$$" || true
@@ -2471,7 +2525,7 @@ _prrts_dispatch_worker() {
 		return 1
 	fi
 	disown "$worker_pid" 2>/dev/null || true
-	_prrts_log "dispatch: launched response worker for ${repo_slug}#${pr_number} in ${worker_worktree_path} session_key=${session_key} pid=${worker_pid} detach=${detach_mode}"
+	_prrts_log "dispatch: launched response worker for ${repo_slug}#${pr_number} in ${worker_worktree_path} session_key=${session_key} pid=${worker_pid} detach=${detach_mode} attempt_id=${outcome_id}"
 	return 0
 }
 

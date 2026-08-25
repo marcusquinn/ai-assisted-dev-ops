@@ -244,6 +244,15 @@ run_runtime_ownership_fence_tests() {
 	return 0
 }
 
+run_private_workload_attempt_identity_tests() {
+	test_sensitive_temp_preflight_aborts_before_worker_ownership
+	test_external_outcome_identity_survives_private_sanitization
+	test_private_sanitization_rejects_mismatched_attempt_state
+	test_headless_temp_initialization_preserves_process_scratch
+	run_private_workload_security_tests
+	return 0
+}
+
 main() {
 	setup_test_env
 	test_appends_escalation_contract
@@ -257,9 +266,7 @@ main() {
 	test_execute_run_attempt_preserves_file_creation_status
 	test_run_attempt_command_reports_cwd_recovery_failure
 	run_worker_signing_contract_tests
-	test_sensitive_temp_preflight_aborts_before_worker_ownership
-	test_headless_temp_initialization_preserves_process_scratch
-	run_private_workload_security_tests
+	run_private_workload_attempt_identity_tests
 	test_startup_no_activity_timeout_returns_watchdog_continue
 	test_startup_no_activity_can_rotate_after_continuation_budget
 	test_sigkill_with_activity_attempts_continuation

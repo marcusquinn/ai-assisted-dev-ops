@@ -318,6 +318,9 @@ printf 'AIDEVOPS_PR_REPAIR_HEAD_SHA=%s\n' "${AIDEVOPS_PR_REPAIR_HEAD_SHA:-}" >>"
 printf 'AIDEVOPS_PR_REPAIR_HEAD_REF=%s\n' "${AIDEVOPS_PR_REPAIR_HEAD_REF:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_HEADLESS_OUTCOME_FILE=%s\n' "${AIDEVOPS_HEADLESS_OUTCOME_FILE:-}" >>"${HEADLESS_ENV_CAPTURE}"
 printf 'AIDEVOPS_HEADLESS_OUTCOME_ID=%s\n' "${AIDEVOPS_HEADLESS_OUTCOME_ID:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'AIDEVOPS_ATTEMPT_ID=%s\n' "${AIDEVOPS_ATTEMPT_ID:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'AIDEVOPS_ATTEMPT_STATE_ROOT=%s\n' "${AIDEVOPS_ATTEMPT_STATE_ROOT:-}" >>"${HEADLESS_ENV_CAPTURE}"
+printf 'AIDEVOPS_ATTEMPT_STATE_FILE=%s\n' "${AIDEVOPS_ATTEMPT_STATE_FILE:-}" >>"${HEADLESS_ENV_CAPTURE}"
 if [[ -n "$prompt_file" && -f "$prompt_file" ]]; then
 	cp "$prompt_file" "${HEADLESS_PROMPT_CAPTURE}"
 fi
@@ -1081,7 +1084,20 @@ test_dispatch_launches_worker_and_writes_state() {
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
-	if [[ -s "$HEADLESS_LOG" && -f "$state_file" ]] && grep -q 'Do not use blanket auto-resolution scripts' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
+	local outcome_id=""
+	local attempt_state_file=""
+	outcome_id="$(read_state_value "$state_file" outcome_id)"
+	attempt_state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1-${outcome_id}.attempt.json"
+	if [[ -s "$HEADLESS_LOG" && -f "$state_file" ]] &&
+		grep -q 'Do not use blanket auto-resolution scripts' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_ATTEMPT_ID=${outcome_id}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_ATTEMPT_STATE_ROOT=${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		grep -Fxq "AIDEVOPS_ATTEMPT_STATE_FILE=${attempt_state_file}" "$HEADLESS_ENV_CAPTURE" 2>/dev/null &&
+		jq -e --arg outcome_id "$outcome_id" '
+			.attempt_id == $outcome_id and
+			.last_lifecycle_stage == "prrts_dispatch_ready" and
+			.last_completed_stage == "prrts_dispatch_ready"
+		' "$attempt_state_file" >/dev/null 2>&1; then
 		print_result "dispatch launches bounded worker and writes state" 0
 	else
 		print_result "dispatch launches bounded worker and writes state" 1 "headless=$(wc -c <"$HEADLESS_LOG" 2>/dev/null || printf 0), state=${state_file}"
@@ -1337,6 +1353,8 @@ test_dispatch_prompt_uses_stable_deployed_scanner_path() {
 	cat >"$(dirname "$bundled_scanner")/shared-constants.sh" <<SHARED_CONSTANTS
 source "${TEST_SCRIPT_DIR}/../shared-constants.sh"
 SHARED_CONSTANTS
+	cp "${TEST_SCRIPT_DIR}/../worker-attempt-observability.sh" \
+		"$(dirname "$bundled_scanner")/worker-attempt-observability.sh"
 	chmod +x "$bundled_scanner"
 	"$bundled_scanner" dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
@@ -1388,13 +1406,13 @@ test_dispatch_prompt_requires_machine_readable_completion_state() {
 	return 0
 }
 
-test_dispatch_prompt_requires_contract_v9_remediation_role_and_praise_only_resolution() {
+test_dispatch_prompt_requires_contract_v10_remediation_role_and_praise_only_resolution() {
 	setup_test_env
 	local stable_scanner="${HOME}/.aidevops/agents/scripts/pr-review-thread-response-scanner.sh"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	if grep -q '^worker_contract_version=9$' "$state_file" 2>/dev/null &&
+	if grep -q '^worker_contract_version=10$' "$state_file" 2>/dev/null &&
 		grep -Fq 'For each assigned review thread, classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Perform one bounded remediation pass' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
@@ -1402,9 +1420,9 @@ test_dispatch_prompt_requires_contract_v9_remediation_role_and_praise_only_resol
 		grep -Fq 'fix actionable defects in the linked worktree' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -Fq 'PR-loop review model' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
-		print_result "dispatch prompt requires contract-v9 remediation role and praise-only resolution" 0
+		print_result "dispatch prompt requires contract-v10 remediation role and praise-only resolution" 0
 	else
-		print_result "dispatch prompt requires contract-v9 remediation role and praise-only resolution" 1 \
+		print_result "dispatch prompt requires contract-v10 remediation role and praise-only resolution" 1 \
 			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
@@ -1866,9 +1884,9 @@ test_dispatch_retries_escalated_previous_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=9$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=10$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 9 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 10 (stored=2)' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
 		print_result "dispatch retries escalation created under previous worker contract" 1 \
@@ -2596,7 +2614,7 @@ main() {
 	test_dispatch_prompt_uses_stable_deployed_scanner_path
 	test_dispatch_prompt_mentions_graphql_only_thread_operations
 	test_dispatch_prompt_requires_machine_readable_completion_state
-	test_dispatch_prompt_requires_contract_v9_remediation_role_and_praise_only_resolution
+	test_dispatch_prompt_requires_contract_v10_remediation_role_and_praise_only_resolution
 	test_dispatch_prompt_requires_exactly_one_terminal_call
 	test_dispatch_prompt_explains_shell_redirection_constraint
 	test_dispatch_prompt_declares_precreated_worktree_contract

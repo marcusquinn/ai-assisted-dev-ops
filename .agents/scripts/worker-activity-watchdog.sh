@@ -515,10 +515,13 @@ _kill_worker() {
 	# t3056: Emit structured lifecycle line for kill-reason telemetry.
 	# Format matches the t3056 spec so aggregation scripts can classify kills.
 	local _trigger_age=0
+	local lifecycle_event=""
 	_trigger_age=$(( $(date +%s) - _WATCHDOG_START_EPOCH ))
-	printf '[lifecycle] worker_killed pid=%s reason=%s trigger_age=%ss session=%s ts=%s\n' \
+	printf -v lifecycle_event '[lifecycle] worker_killed pid=%s reason=%s trigger_age=%ss session=%s ts=%s' \
 		"$WORKER_PID" "$reason_class" "$_trigger_age" "${SESSION_KEY:-none}" \
-		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	worker_attempt_observability_enrich lifecycle_event "$lifecycle_event"
+	printf '%s\n' "$lifecycle_event" \
 		>>"$LIFECYCLE_LOG" 2>/dev/null || true
 
 	# t2923: Push WIP commits before killing so the work is reachable on origin.
@@ -700,13 +703,16 @@ _monitor_track_output_growth() {
 _monitor_defer_stall() {
 	local reason="$1"
 	local detail="$2"
+	local lifecycle_event=""
 	# Legacy variable names for structural regression tests:
 	# deferred_stall_seconds=$((deferred_stall_seconds + stall_seconds))
 	# Expected labels: reason=ci_wait reason=network_active reason=cpu_active.
 	_MONITOR_DEFERRED_STALL_SECONDS=$((_MONITOR_DEFERRED_STALL_SECONDS + _MONITOR_STALL_SECONDS))
-	printf '[lifecycle] worker_stall_deferred pid=%s reason=%s %sstall_seconds=%ss deferred_total=%ss ts=%s\n' \
+	printf -v lifecycle_event '[lifecycle] worker_stall_deferred pid=%s reason=%s %sstall_seconds=%ss deferred_total=%ss ts=%s' \
 		"$WORKER_PID" "$reason" "$detail" "$_MONITOR_STALL_SECONDS" \
-		"$_MONITOR_DEFERRED_STALL_SECONDS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		"$_MONITOR_DEFERRED_STALL_SECONDS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	worker_attempt_observability_enrich lifecycle_event "$lifecycle_event"
+	printf '%s\n' "$lifecycle_event" \
 		>>"$LIFECYCLE_LOG" 2>/dev/null || true
 	_MONITOR_STALL_SECONDS=0
 	sleep "$POLL_INTERVAL"
