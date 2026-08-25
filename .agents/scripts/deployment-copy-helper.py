@@ -68,7 +68,7 @@ def sha256_file(path: Path) -> str:
 
 
 def run_git(git_bin: str, cwd: Path, *args: str) -> str:
-    result = subprocess.run(
+    result = subprocess.run(  # nosec B603 -- argv array; Git data is validated separately
         [git_bin, "-C", str(cwd), *args],
         check=False,
         stdout=subprocess.PIPE,
@@ -328,7 +328,9 @@ def verify_committed_source(context: dict[str, Any], source_tree: dict[str, Any]
         ]
         if context["source_relative"] != ".":
             command.extend(["--", context["source_relative"]])
-        result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(  # nosec B603 -- argv array built from validated Git provenance
+            command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
         if result.returncode != 0:
             raise DeploymentError("Committed source subtree could not be materialized")
         safe_extract_git_archive(archive_path, proof_root)
@@ -384,7 +386,7 @@ def validate_allow_file(allow_file_raw: str, destination: Path, context: dict[st
 
 def destination_is_in_git(git_bin: str, destination: Path) -> bool:
     probe = destination if destination.exists() else destination.parent
-    result = subprocess.run(
+    result = subprocess.run(  # nosec B603 -- argv array; destination is canonicalized
         [git_bin, "-C", str(probe), "rev-parse", "--git-dir"],
         check=False,
         stdout=subprocess.PIPE,
@@ -498,21 +500,15 @@ def update_receipt(receipt_path: Path, receipt: dict[str, Any], status_value: st
     atomic_write_json(receipt_path, receipt)
 
 
-def load_receipt(state_root: Path, identifier: str) -> tuple[Path, dict[str, Any]]:
-    if not OPERATION_RE.fullmatch(identifier):
-        raise DeploymentError("Operation identifier is malformed")
-    receipt_path = state_root / "operations" / f"{identifier}.json"
-    assert_no_symlink_components(receipt_path)
-    receipt_stat = receipt_path.stat()
-    if not stat.S_ISREG(receipt_stat.st_mode) or receipt_stat.st_uid != os.getuid():
-        raise DeploymentError("Operation receipt is unsafe")
-    if stat.S_IMODE(receipt_stat.st_mode) & 0o077:
-        raise DeploymentError("Operation receipt permissions are unsafe")
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+def validate_receipt_identity(receipt: Any, identifier: str) -> dict[str, Any]:
     if not isinstance(receipt, dict):
         raise DeploymentError("Operation receipt is invalid")
     if receipt.get("schema") != SCHEMA or receipt.get("operation_id") != identifier:
         raise DeploymentError("Operation receipt is invalid")
+    return receipt
+
+
+def validate_receipt_paths_and_flags(receipt: dict[str, Any]) -> None:
     required_strings = ("destination", "displaced_path", "rollback_path", "source_repo")
     if any(not isinstance(receipt.get(key), str) or not receipt[key] for key in required_strings):
         raise DeploymentError("Operation receipt is invalid")
@@ -520,6 +516,11 @@ def load_receipt(state_root: Path, identifier: str) -> tuple[Path, dict[str, Any
         raise DeploymentError("Operation receipt is invalid")
     if not isinstance(receipt.get("previous_present"), bool):
         raise DeploymentError("Operation receipt is invalid")
+    if not isinstance(receipt.get("status"), str):
+        raise DeploymentError("Operation receipt is invalid")
+
+
+def validate_receipt_digests(receipt: dict[str, Any]) -> None:
     if not isinstance(receipt.get("tree_sha256"), str) or not TREE_SHA_RE.fullmatch(
         receipt["tree_sha256"]
     ):
@@ -530,8 +531,23 @@ def load_receipt(state_root: Path, identifier: str) -> tuple[Path, dict[str, Any
             raise DeploymentError("Operation receipt is invalid")
     elif previous_digest is not None:
         raise DeploymentError("Operation receipt is invalid")
-    if not isinstance(receipt.get("status"), str):
-        raise DeploymentError("Operation receipt is invalid")
+
+
+def load_receipt(state_root: Path, identifier: str) -> tuple[Path, dict[str, Any]]:
+    if not OPERATION_RE.fullmatch(identifier):
+        raise DeploymentError("Operation identifier is malformed")
+    receipt_path = state_root / "operations" / f"{identifier}.json"
+    assert_no_symlink_components(receipt_path)
+    receipt_stat = receipt_path.stat()
+    if not stat.S_ISREG(receipt_stat.st_mode) or receipt_stat.st_uid != os.getuid():
+        raise DeploymentError("Operation receipt is unsafe")
+    if stat.S_IMODE(receipt_stat.st_mode) & 0o077:
+        raise DeploymentError("Operation receipt permissions are unsafe")
+    receipt = validate_receipt_identity(
+        json.loads(receipt_path.read_text(encoding="utf-8")), identifier
+    )
+    validate_receipt_paths_and_flags(receipt)
+    validate_receipt_digests(receipt)
     return receipt_path, receipt
 
 
@@ -693,22 +709,16 @@ def prepare_deploy(args: argparse.Namespace) -> tuple[Path, dict[str, Any], Path
     return state_root, context, destination, source_tree, destination_tree
 
 
-def deploy(args: argparse.Namespace) -> dict[str, Any]:
-    state_root, context, destination, source_tree, destination_tree = prepare_deploy(args)
-    plan = tree_plan(source_tree, destination_tree)
-    if args.dry_run:
-        return {
-            "command": "deploy",
-            "dry_run": True,
-            "plan": plan,
-            "status": "planned",
-            "tree_sha256": source_tree["exact_digest"],
-        }
-    identifier = operation_id()
-    receipt_path = state_root / "operations" / f"{identifier}.json"
-    rollback_path = destination.with_name(f".{destination.name}.aidevops-rollback-{identifier}")
-    displaced_path = destination.with_name(f".{destination.name}.aidevops-displaced-{identifier}")
-    receipt: dict[str, Any] = {
+def build_deploy_receipt(
+    identifier: str,
+    context: dict[str, Any],
+    destination: Path,
+    source_tree: dict[str, Any],
+    destination_tree: dict[str, Any] | None,
+    rollback_path: Path,
+    displaced_path: Path,
+) -> dict[str, Any]:
+    return {
         "created_at": utc_now(),
         "destination": str(destination),
         "displaced_path": str(displaced_path),
@@ -725,122 +735,217 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
         "tree_sha256": source_tree["exact_digest"],
         "updated_at": utc_now(),
     }
-    stage: Path | None = None
-    activated = False
-    with DestinationLock(destination):
-        current_context = validate_source(args.source, args.expected_sha, context["git_bin"])
-        current_source_tree = scan_tree(current_context["source"])
-        if current_source_tree["exact_digest"] != source_tree["exact_digest"]:
-            raise DeploymentError("Source changed before staging began")
-        validate_tree_proof(
-            current_context, current_source_tree, args.reviewed_tree_sha256, state_root
+
+
+def validate_locked_deploy(
+    args: argparse.Namespace,
+    state_root: Path,
+    context: dict[str, Any],
+    destination: Path,
+    source_tree: dict[str, Any],
+    rollback_path: Path,
+    displaced_path: Path,
+) -> None:
+    current_context = validate_source(args.source, args.expected_sha, context["git_bin"])
+    current_source_tree = scan_tree(current_context["source"])
+    if current_source_tree["exact_digest"] != source_tree["exact_digest"]:
+        raise DeploymentError("Source changed before staging began")
+    validate_tree_proof(
+        current_context, current_source_tree, args.reviewed_tree_sha256, state_root
+    )
+    current_destination = canonical_destination(args.destination)
+    validate_destination_safety(current_destination, context, state_root, args.allow_file)
+    if current_destination != destination:
+        raise DeploymentError("Destination identity changed before staging")
+    if os.path.lexists(rollback_path) or os.path.lexists(displaced_path):
+        raise DeploymentError("Operation path collision blocked deployment")
+
+
+def perform_deployment(
+    identifier: str,
+    context: dict[str, Any],
+    destination: Path,
+    source_tree: dict[str, Any],
+    destination_tree: dict[str, Any] | None,
+    rollback_path: Path,
+    receipt_path: Path,
+    receipt: dict[str, Any],
+    progress: dict[str, Any],
+) -> None:
+    prefix = f".{destination.name}.aidevops-stage-{identifier}-"
+    stage = Path(tempfile.mkdtemp(prefix=prefix, dir=destination.parent))
+    progress["stage"] = stage
+    receipt["stage_path"] = str(stage)
+    update_receipt(receipt_path, receipt, "staging")
+    copy_tree(context["source"], stage, source_tree)
+    if scan_tree(stage)["exact_digest"] != source_tree["exact_digest"]:
+        raise DeploymentError("Staged tree does not match the approved source")
+    if scan_tree(context["source"])["exact_digest"] != source_tree["exact_digest"]:
+        raise DeploymentError("Source changed while staging was in progress")
+    current_tree = scan_tree(destination, require_files=False) if destination.exists() else None
+    current_digest = current_tree["exact_digest"] if current_tree else None
+    previous_digest = destination_tree["exact_digest"] if destination_tree else None
+    if current_digest != previous_digest:
+        raise DeploymentError("Destination changed while staging was in progress")
+    update_receipt(receipt_path, receipt, "staged")
+    if destination.exists():
+        os.replace(destination, rollback_path)
+        update_receipt(receipt_path, receipt, "previous_moved")
+    else:
+        update_receipt(receipt_path, receipt, "activating")
+    os.replace(stage, destination)
+    progress["activated"] = True
+    progress["stage"] = None
+    receipt["stage_path"] = None
+    update_receipt(receipt_path, receipt, "active")
+    if scan_tree(destination)["exact_digest"] != source_tree["exact_digest"]:
+        raise DeploymentError("Activated destination failed exact verification")
+    update_receipt(receipt_path, receipt, "success")
+
+
+def first_deployment_activation_detected(
+    destination: Path, receipt: dict[str, Any], progress: dict[str, Any]
+) -> bool:
+    stage = progress["stage"]
+    return not receipt["previous_present"] and (
+        progress["activated"]
+        or (
+            receipt["status"] == "activating"
+            and stage is not None
+            and not stage.exists()
+            and destination.exists()
         )
-        current_destination = canonical_destination(args.destination)
-        validate_destination_safety(current_destination, context, state_root, args.allow_file)
-        if current_destination != destination:
-            raise DeploymentError("Destination identity changed before staging")
-        if os.path.lexists(rollback_path) or os.path.lexists(displaced_path):
-            raise DeploymentError("Operation path collision blocked deployment")
+    )
+
+
+def rollback_failed_deployment(
+    destination: Path,
+    rollback_path: Path,
+    displaced_path: Path,
+    receipt_path: Path,
+    receipt: dict[str, Any],
+    progress: dict[str, Any],
+) -> None:
+    stage = progress["stage"]
+    if destination.exists() and rollback_path.exists():
+        if displaced_path.exists():
+            raise DeploymentError("Automatic rollback path collision requires recovery")
+        verify_operation_tree(
+            rollback_path, receipt["previous_tree_sha256"], "Recorded rollback tree"
+        )
+        os.replace(destination, displaced_path)
+        os.replace(rollback_path, destination)
+        restored_tree = scan_tree(destination, require_files=False)
+        if restored_tree["exact_digest"] != receipt["previous_tree_sha256"]:
+            raise DeploymentError("Automatic rollback verification failed")
+        update_receipt(receipt_path, receipt, "rolled_back_after_failure")
+    elif not destination.exists() and rollback_path.exists():
+        verify_operation_tree(
+            rollback_path, receipt["previous_tree_sha256"], "Recorded rollback tree"
+        )
+        os.replace(rollback_path, destination)
+        update_receipt(receipt_path, receipt, "rolled_back_after_failure")
+    elif first_deployment_activation_detected(destination, receipt, progress):
+        if not destination.exists():
+            raise DeploymentError("Activated destination disappeared during automatic rollback")
+        os.replace(destination, displaced_path)
+        update_receipt(receipt_path, receipt, "rolled_back_after_failure")
+    else:
+        update_receipt(receipt_path, receipt, "failed_before_activation")
+    if stage and stage.exists():
+        shutil.rmtree(stage)
+
+
+def raise_deployment_failure(
+    identifier: str,
+    error: BaseException,
+    destination: Path,
+    rollback_path: Path,
+    displaced_path: Path,
+    receipt_path: Path,
+    receipt: dict[str, Any],
+    progress: dict[str, Any],
+) -> None:
+    try:
+        rollback_failed_deployment(
+            destination, rollback_path, displaced_path, receipt_path, receipt, progress
+        )
+    except BaseException as recovery_error:
+        try:
+            update_receipt(receipt_path, receipt, "recovery_required")
+        except BaseException:
+            pass
+        raise DeploymentError(
+            "Deployment failed and automatic recovery requires the recorded operation",
+            identifier,
+        ) from recovery_error
+    message = (
+        str(error)
+        if isinstance(error, DeploymentError)
+        else "Deployment was interrupted and safe recovery was recorded"
+    )
+    raise DeploymentError(message, identifier) from error
+
+
+def deploy(args: argparse.Namespace) -> dict[str, Any]:
+    state_root, context, destination, source_tree, destination_tree = prepare_deploy(args)
+    plan = tree_plan(source_tree, destination_tree)
+    if args.dry_run:
+        return {
+            "command": "deploy",
+            "dry_run": True,
+            "plan": plan,
+            "status": "planned",
+            "tree_sha256": source_tree["exact_digest"],
+        }
+    identifier = operation_id()
+    receipt_path = state_root / "operations" / f"{identifier}.json"
+    rollback_path = destination.with_name(f".{destination.name}.aidevops-rollback-{identifier}")
+    displaced_path = destination.with_name(f".{destination.name}.aidevops-displaced-{identifier}")
+    receipt = build_deploy_receipt(
+        identifier,
+        context,
+        destination,
+        source_tree,
+        destination_tree,
+        rollback_path,
+        displaced_path,
+    )
+    progress: dict[str, Any] = {"activated": False, "stage": None}
+    with DestinationLock(destination):
+        validate_locked_deploy(
+            args,
+            state_root,
+            context,
+            destination,
+            source_tree,
+            rollback_path,
+            displaced_path,
+        )
         atomic_write_json(receipt_path, receipt)
         try:
-            prefix = f".{destination.name}.aidevops-stage-{identifier}-"
-            stage = Path(tempfile.mkdtemp(prefix=prefix, dir=destination.parent))
-            receipt["stage_path"] = str(stage)
-            update_receipt(receipt_path, receipt, "staging")
-            copy_tree(context["source"], stage, source_tree)
-            staged_tree = scan_tree(stage)
-            final_source_tree = scan_tree(context["source"])
-            if staged_tree["exact_digest"] != source_tree["exact_digest"]:
-                raise DeploymentError("Staged tree does not match the approved source")
-            if final_source_tree["exact_digest"] != source_tree["exact_digest"]:
-                raise DeploymentError("Source changed while staging was in progress")
-            current_destination_tree = (
-                scan_tree(destination, require_files=False) if destination.exists() else None
+            perform_deployment(
+                identifier,
+                context,
+                destination,
+                source_tree,
+                destination_tree,
+                rollback_path,
+                receipt_path,
+                receipt,
+                progress,
             )
-            current_digest = (
-                current_destination_tree["exact_digest"] if current_destination_tree else None
-            )
-            previous_digest = destination_tree["exact_digest"] if destination_tree else None
-            if current_digest != previous_digest:
-                raise DeploymentError("Destination changed while staging was in progress")
-            update_receipt(receipt_path, receipt, "staged")
-            if destination.exists():
-                os.replace(destination, rollback_path)
-                update_receipt(receipt_path, receipt, "previous_moved")
-            else:
-                update_receipt(receipt_path, receipt, "activating")
-            os.replace(stage, destination)
-            activated = True
-            stage = None
-            receipt["stage_path"] = None
-            update_receipt(receipt_path, receipt, "active")
-            active_tree = scan_tree(destination)
-            if active_tree["exact_digest"] != source_tree["exact_digest"]:
-                raise DeploymentError("Activated destination failed exact verification")
-            update_receipt(receipt_path, receipt, "success")
         except BaseException as error:
-            recovery_error: BaseException | None = None
-            try:
-                if destination.exists() and rollback_path.exists():
-                    if displaced_path.exists():
-                        raise DeploymentError(
-                            "Automatic rollback path collision requires recovery"
-                        )
-                    verify_operation_tree(
-                        rollback_path,
-                        receipt["previous_tree_sha256"],
-                        "Recorded rollback tree",
-                    )
-                    os.replace(destination, displaced_path)
-                    os.replace(rollback_path, destination)
-                    restored_tree = scan_tree(destination, require_files=False)
-                    if restored_tree["exact_digest"] != receipt["previous_tree_sha256"]:
-                        raise DeploymentError("Automatic rollback verification failed")
-                    update_receipt(receipt_path, receipt, "rolled_back_after_failure")
-                elif not destination.exists() and rollback_path.exists():
-                    verify_operation_tree(
-                        rollback_path,
-                        receipt["previous_tree_sha256"],
-                        "Recorded rollback tree",
-                    )
-                    os.replace(rollback_path, destination)
-                    update_receipt(receipt_path, receipt, "rolled_back_after_failure")
-                elif not receipt["previous_present"] and (
-                    activated
-                    or (
-                        receipt["status"] == "activating"
-                        and stage is not None
-                        and not stage.exists()
-                        and destination.exists()
-                    )
-                ):
-                    if not destination.exists():
-                        raise DeploymentError(
-                            "Activated destination disappeared during automatic rollback"
-                        )
-                    os.replace(destination, displaced_path)
-                    update_receipt(receipt_path, receipt, "rolled_back_after_failure")
-                else:
-                    update_receipt(receipt_path, receipt, "failed_before_activation")
-                if stage and stage.exists():
-                    shutil.rmtree(stage)
-            except BaseException as candidate:
-                recovery_error = candidate
-                try:
-                    update_receipt(receipt_path, receipt, "recovery_required")
-                except BaseException:
-                    pass
-            if recovery_error is not None:
-                raise DeploymentError(
-                    "Deployment failed and automatic recovery requires the recorded operation",
-                    identifier,
-                ) from recovery_error
-            message = (
-                str(error)
-                if isinstance(error, DeploymentError)
-                else "Deployment was interrupted and safe recovery was recorded"
+            raise_deployment_failure(
+                identifier,
+                error,
+                destination,
+                rollback_path,
+                displaced_path,
+                receipt_path,
+                receipt,
+                progress,
             )
-            raise DeploymentError(message, identifier) from error
     return {
         "command": "deploy",
         "dry_run": False,
@@ -861,6 +966,70 @@ def validate_receipt_destination(
     return destination, context
 
 
+def recovery_result(
+    identifier: str, status_value: str, rollback_available: bool = False
+) -> dict[str, Any]:
+    return {
+        "command": "recover",
+        "operation_id": identifier,
+        "rollback_available": rollback_available,
+        "status": status_value,
+    }
+
+
+def remove_recorded_stage(stage_path: Path | None, receipt: dict[str, Any]) -> None:
+    if stage_path and stage_path.exists():
+        shutil.rmtree(stage_path)
+        receipt["stage_path"] = None
+
+
+def recover_existing_destination(
+    identifier: str,
+    destination: Path,
+    rollback_path: Path,
+    stage_path: Path | None,
+    receipt_path: Path,
+    receipt: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not destination.exists():
+        return None
+    destination_tree = scan_tree(destination, require_files=False)
+    if destination_tree["exact_digest"] == receipt["tree_sha256"]:
+        remove_recorded_stage(stage_path, receipt)
+        update_receipt(receipt_path, receipt, "success")
+        return recovery_result(identifier, "success", rollback_path.exists())
+    if receipt["previous_present"] and (
+        destination_tree["exact_digest"] == receipt["previous_tree_sha256"]
+    ):
+        remove_recorded_stage(stage_path, receipt)
+        update_receipt(receipt_path, receipt, "recovered_previous")
+        return recovery_result(identifier, "recovered_previous")
+    return None
+
+
+def restore_previous_for_recovery(
+    identifier: str,
+    destination: Path,
+    rollback_path: Path,
+    stage_path: Path | None,
+    receipt_path: Path,
+    receipt: dict[str, Any],
+) -> dict[str, Any] | None:
+    if destination.exists() or not rollback_path.exists():
+        return None
+    verify_operation_tree(
+        rollback_path, receipt["previous_tree_sha256"], "Recorded rollback tree"
+    )
+    os.replace(rollback_path, destination)
+    restored = scan_tree(destination, require_files=False)
+    if restored["exact_digest"] != receipt["previous_tree_sha256"]:
+        update_receipt(receipt_path, receipt, "recovery_required")
+        raise DeploymentError("Recovered destination failed exact verification")
+    remove_recorded_stage(stage_path, receipt)
+    update_receipt(receipt_path, receipt, "recovered_previous")
+    return recovery_result(identifier, "recovered_previous")
+
+
 def recover(args: argparse.Namespace) -> dict[str, Any]:
     if args.confirm != RECOVER_CONFIRMATION:
         raise DeploymentError("Exact recovery confirmation is required")
@@ -874,72 +1043,33 @@ def recover(args: argparse.Namespace) -> dict[str, Any]:
         validate_existing_operation_tree(displaced_path, "Recorded displaced tree")
         if stage_path is not None:
             validate_existing_operation_tree(stage_path, "Recorded stage tree")
-        if destination.exists():
-            destination_tree = scan_tree(destination, require_files=False)
-            if destination_tree["exact_digest"] == receipt["tree_sha256"]:
-                if stage_path and stage_path.exists():
-                    shutil.rmtree(stage_path)
-                    receipt["stage_path"] = None
-                update_receipt(receipt_path, receipt, "success")
-                return {
-                    "command": "recover",
-                    "operation_id": args.operation_id,
-                    "rollback_available": rollback_path.exists(),
-                    "status": "success",
-                }
-            if (
-                receipt.get("previous_present")
-                and destination_tree["exact_digest"] == receipt.get("previous_tree_sha256")
-            ):
-                if stage_path and stage_path.exists():
-                    shutil.rmtree(stage_path)
-                    receipt["stage_path"] = None
-                update_receipt(receipt_path, receipt, "recovered_previous")
-                return {
-                    "command": "recover",
-                    "operation_id": args.operation_id,
-                    "rollback_available": False,
-                    "status": "recovered_previous",
-                }
-        if not destination.exists() and rollback_path.exists():
-            verify_operation_tree(
-                rollback_path,
-                receipt["previous_tree_sha256"],
-                "Recorded rollback tree",
-            )
-            os.replace(rollback_path, destination)
-            restored = scan_tree(destination, require_files=False)
-            if restored["exact_digest"] != receipt["previous_tree_sha256"]:
-                update_receipt(receipt_path, receipt, "recovery_required")
-                raise DeploymentError("Recovered destination failed exact verification")
-            if stage_path and stage_path.exists():
-                shutil.rmtree(stage_path)
-                receipt["stage_path"] = None
-            update_receipt(receipt_path, receipt, "recovered_previous")
-            return {
-                "command": "recover",
-                "operation_id": args.operation_id,
-                "rollback_available": False,
-                "status": "recovered_previous",
-            }
+        existing_result = recover_existing_destination(
+            args.operation_id,
+            destination,
+            rollback_path,
+            stage_path,
+            receipt_path,
+            receipt,
+        )
+        if existing_result:
+            return existing_result
+        previous_result = restore_previous_for_recovery(
+            args.operation_id,
+            destination,
+            rollback_path,
+            stage_path,
+            receipt_path,
+            receipt,
+        )
+        if previous_result:
+            return previous_result
         if stage_path and stage_path.exists():
-            shutil.rmtree(stage_path)
-            receipt["stage_path"] = None
+            remove_recorded_stage(stage_path, receipt)
             update_receipt(receipt_path, receipt, "aborted_before_activation")
-            return {
-                "command": "recover",
-                "operation_id": args.operation_id,
-                "rollback_available": False,
-                "status": "aborted_before_activation",
-            }
+            return recovery_result(args.operation_id, "aborted_before_activation")
         if not receipt.get("previous_present") and not destination.exists():
             update_receipt(receipt_path, receipt, "recovered_absent")
-            return {
-                "command": "recover",
-                "operation_id": args.operation_id,
-                "rollback_available": False,
-                "status": "recovered_absent",
-            }
+            return recovery_result(args.operation_id, "recovered_absent")
     raise DeploymentError("Receipt state requires manual inspection; no mutation was performed")
 
 
