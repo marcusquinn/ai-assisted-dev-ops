@@ -376,7 +376,6 @@ cmd_pre_merge_gate() {
 	case "$rbg_status" in
 	PASS | PASS_ADVISORY | SKIP | PASS_RATE_LIMITED)
 		print_success "Review bot gate: ${rbg_status} — safe to merge PR #${pr_number}"
-		return 0
 		;;
 	*)
 		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="review-bot"
@@ -385,6 +384,28 @@ cmd_pre_merge_gate() {
 		return 1
 		;;
 	esac
+
+	#aidevops:trust-boundary GH#17671/GH#28622 -- resolve every authority target
+	# from the final live PR snapshot. This diagnostic never grants authority; the
+	# merge transport repeats the same evaluation immediately before its write.
+	if ! _merge_collect_external_authority_gaps "$pr_number" "$repo"; then
+		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="external-authority"
+		FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL="unable to verify external/fork authority"
+		return 1
+	fi
+	if [[ "${#FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS[@]}" -gt 0 ]]; then
+		local approval_targets=""
+		approval_targets="${FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS[*]}"
+		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="external-authority"
+		FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL="${approval_targets}"
+		print_error "External/fork PR #${pr_number} has missing cryptographic development authority"
+		print_info "After finalizing all approval-bound PR metadata, run this one command:"
+		printf 'sudo aidevops approve batch %s %s\n' "$approval_targets" "$repo"
+		return 1
+	fi
+
+	print_success "External/fork authority preflight: no approval required for PR #${pr_number}"
+	return 0
 }
 
 # --- Argument Parsing ---

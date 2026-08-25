@@ -29,6 +29,7 @@
 _FULL_LOOP_MERGE_LIB_LOADED=1
 FULL_LOOP_MERGE_SUBJECT_FLAG="--subject"
 FULL_LOOP_MERGE_BODY_FILE_FLAG="--body-file"
+FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS=()
 
 _flm_gh_read() {
 	local rc=0
@@ -435,7 +436,7 @@ _merge_author_has_write_authority() {
 	esac
 }
 
-_merge_linked_issue_authority_clear() {
+_merge_collect_linked_issue_authority_gaps() {
 	local issue_numbers="$1"
 	local repo="$2"
 	local require_crypto="$3"
@@ -455,16 +456,13 @@ _merge_linked_issue_authority_clear() {
 		fi
 		if [[ "$require_crypto" -eq 1 ]] &&
 			! _merge_target_crypto_approved issue "$issue_number" "$repo"; then
-			print_error "Merge blocked: external/fork PR linked issue #${issue_number} lacks current cryptographic development authority"
-			return 1
+			FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS+=("issue:${issue_number}")
 		fi
 	done <<<"$issue_numbers"
 	return 0
 }
 
-# Legacy name retained for sourced callers and tests. This is now the common
-# final authority guard for every full-loop merge mode, not only --admin.
-_merge_guard_admin_merge_maintainer_review() {
+_merge_collect_external_authority_gaps() {
 	local pr_number="$1"
 	local repo="$2"
 	local expected_head_sha="${3:-}"
@@ -472,6 +470,7 @@ _merge_guard_admin_merge_maintainer_review() {
 	local issue_numbers=""
 	local author_rc=0 treat_as_external=0 trusted_dependabot=0 trusted_issue_sync=0
 
+	FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS=()
 	if ! pr_json=$(gh pr view "$pr_number" --repo "$repo" \
 		--json author,labels,isCrossRepository,headRefOid,closingIssuesReferences,body 2>/dev/null); then
 		print_error "Merge blocked: unable to verify PR #${pr_number} authority metadata"
@@ -534,17 +533,8 @@ _merge_guard_admin_merge_maintainer_review() {
 		return 1
 	}
 
-	_merge_linked_issue_authority_clear "$issue_numbers" "$repo" "$treat_as_external" || return 1
-	if [[ "$trusted_dependabot" -eq 1 ]]; then
-		print_info "Trusted Dependabot authority verified for PR #${pr_number} at ${current_head_sha}"
-		return 0
-	fi
-	if [[ "$trusted_issue_sync" -eq 1 ]]; then
-		print_info "Trusted repository-generated Issue Sync authority verified for PR #${pr_number} at ${current_head_sha}"
-		return 0
-	fi
-
-	if [[ "$treat_as_external" -eq 0 ]]; then
+	_merge_collect_linked_issue_authority_gaps "$issue_numbers" "$repo" "$treat_as_external" || return 1
+	if [[ "$trusted_dependabot" -eq 1 || "$trusted_issue_sync" -eq 1 || "$treat_as_external" -eq 0 ]]; then
 		return 0
 	fi
 	if [[ -z "$issue_numbers" ]]; then
@@ -552,9 +542,49 @@ _merge_guard_admin_merge_maintainer_review() {
 		return 1
 	fi
 	if ! _merge_target_crypto_approved pr "$pr_number" "$repo" "$current_head_sha"; then
-		print_error "Merge blocked: external/fork PR #${pr_number} lacks V2 merge authority for the current head"
-		return 1
+		FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS+=("pr:${pr_number}")
 	fi
+
+	return 0
+}
+
+# Legacy name retained for sourced callers and tests. This is now the common
+# final authority guard for every full-loop merge mode, not only --admin.
+_merge_linked_issue_authority_clear() {
+	local issue_numbers="$1"
+	local repo="$2"
+	local require_crypto="$3"
+	local target=""
+
+	FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS=()
+	_merge_collect_linked_issue_authority_gaps "$issue_numbers" "$repo" "$require_crypto" || return 1
+	for target in "${FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS[@]}"; do
+		print_error "Merge blocked: external/fork PR linked issue #${target#issue:} lacks current cryptographic development authority"
+		return 1
+	done
+	return 0
+}
+
+# Legacy name retained for sourced callers and tests. This is now the common
+# final authority guard for every full-loop merge mode, not only --admin.
+_merge_guard_admin_merge_maintainer_review() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head_sha="${3:-}"
+	local target=""
+
+	_merge_collect_external_authority_gaps "$pr_number" "$repo" "$expected_head_sha" || return 1
+	for target in "${FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS[@]}"; do
+		case "$target" in
+		issue:*)
+			print_error "Merge blocked: external/fork PR linked issue #${target#issue:} lacks current cryptographic development authority"
+			;;
+		pr:*)
+			print_error "Merge blocked: external/fork PR #${target#pr:} lacks V2 merge authority for the current head"
+			;;
+		esac
+		return 1
+	done
 
 	return 0
 }
