@@ -4839,3 +4839,7 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [ ] t18220 Route output-heavy interactive work through lower-tier subagents #auto-dispatch #enhancement #framework ref:GH#29813
 - [ ] t18241 Fix legacy release lane normalization during published reconciliation #bug ref:GH#30149
 - [ ] t18227 Add provenance-preserving content metadata subagent #feature ref:GH#30062
+
+- [ ] t18308 Allow cleanup receipt adoption for merged fork PRs #auto-dispatch #bug ref:GH#30708
+
+- [ ] t18307 Preflight all external PR approval authorities before prompting #auto-dispatch #bug ref:GH#30706
