@@ -122,7 +122,7 @@ _get_process_cwd() {
 }
 
 #######################################
-# Return the process's first systemd cgroup path when available.
+# Return the process's systemd or unified cgroup path when available.
 # Arguments:
 #   $1 - PID
 # Output: cgroup path or "unknown"
@@ -132,12 +132,26 @@ _get_process_cgroup_path() {
 	local proc_root="${AIDEVOPS_PROCESS_GUARD_PROC_ROOT:-/proc}"
 	local cgroup_file="${proc_root%/}/${pid}/cgroup"
 	local cgroup_line=""
+	local cgroup_path=""
+	local fallback_path=""
 
 	if [[ -r "$cgroup_file" ]]; then
 		while IFS= read -r cgroup_line || [[ -n "$cgroup_line" ]]; do
-			printf '%s' "${cgroup_line#*:*:}"
-			return 0
+			cgroup_path="${cgroup_line#*:*:}"
+			if [[ -z "$fallback_path" && -n "$cgroup_path" ]]; then
+				fallback_path="$cgroup_path"
+			fi
+			case "$cgroup_line" in
+			0::* | *:name=systemd:*)
+				printf '%s' "$cgroup_path"
+				return 0
+				;;
+			esac
 		done <"$cgroup_file"
+	fi
+	if [[ -n "$fallback_path" ]]; then
+		printf '%s' "$fallback_path"
+		return 0
 	fi
 
 	printf '%s' "$PROCESS_CGROUP_UNKNOWN"

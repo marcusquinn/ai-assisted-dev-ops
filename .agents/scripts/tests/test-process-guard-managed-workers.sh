@@ -79,6 +79,15 @@ write_cgroup() {
 	return 0
 }
 
+write_hybrid_cgroup() {
+	local pid="$1"
+	local cgroup_path="$2"
+	mkdir -p "${AIDEVOPS_PROCESS_GUARD_PROC_ROOT}/${pid}"
+	printf '13:pids:/user.slice/user-1000.slice/user@1000.service\n1:name=systemd:%s\n0::%s\n' \
+		"$cgroup_path" "$cgroup_path" >"${AIDEVOPS_PROCESS_GUARD_PROC_ROOT}/${pid}/cgroup"
+	return 0
+}
+
 test_managed_worker_runtime_is_delegated() {
 	write_cgroup 4101 '/user.slice/user-1000.slice/user@1000.service/app.slice/aidevops-worker-27693-4001-17.service'
 	local actual
@@ -104,7 +113,7 @@ test_managed_observer_runtime_is_delegated() {
 }
 
 test_opencode_web_service_runtime_is_delegated() {
-	write_cgroup 4104 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service'
+	write_hybrid_cgroup 4104 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service'
 	local actual
 	actual=$(_classify_runtime_limit 4104 7210 7200)
 	assert_eq "OpenCode web server older than generic limit is delegated" "MANAGED" "$actual"
@@ -180,7 +189,7 @@ test_kill_runaways_skips_managed_worker() {
 }
 
 test_kill_runaways_skips_opencode_web_service() {
-	write_cgroup 4504 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service'
+	write_hybrid_cgroup 4504 '/user.slice/user-1000.slice/user@1000.service/app.slice/opencode-web.service'
 	MOCK_PROCESS_LINE='4504 1 ? 2860032 2:00:10 /home/test/.opencode/bin/opencode serve --port 4096'
 	MOCK_PROCESS_AGE=7210
 	CHILD_RUNTIME_LIMIT=7200
