@@ -112,8 +112,9 @@ _insert_assistant_part() {
 _insert_session() {
 	local db_path="$1"
 	local ts_ms="$2"
+	local session_id="${3:-test-id-$(date +%s%N)}"
 	sqlite3 "$db_path" \
-		"INSERT INTO session VALUES ('test-id-$(date +%s%N)', 'test session', ${ts_ms});" \
+		"INSERT INTO session VALUES ('${session_id}', 'test session', ${ts_ms});" \
 		2>/dev/null
 	return 0
 }
@@ -179,9 +180,8 @@ test_clean_exit_zero_sessions() {
 	return 0
 }
 
-# t3050: clean exit + sessions present after start → legacy clean path.
-# Confirms the zero-session check does not regress the genuine clean case.
-test_clean_exit_with_sessions() {
+# GH#30700: a boot-only fresh session is not model activity.
+test_clean_exit_with_boot_session_only() {
 	local db_path="${TMPDIR_TEST}/clean-with-sessions.db"
 	_make_db "$db_path"
 	local start_ms
@@ -193,7 +193,55 @@ test_clean_exit_with_sessions() {
 	result=$(classify_worker_exit 0 "$start_ms")
 	unset _WORKER_ISOLATED_DB_PATH
 
-	assert_eq "clean (clean exit, session present)" "$result" "clean"
+	assert_eq "worker_noop_zero_output (clean, boot session only)" "$result" "worker_noop_zero_output"
+	return 0
+}
+
+test_clean_exit_fresh_session_with_assistant_message() {
+	local db_path="${TMPDIR_TEST}/clean-fresh-assistant-message.db"
+	_make_db "$db_path"
+	local start_ms
+	start_ms=$(_now_ms)
+	_insert_session "$db_path" "$start_ms" "fresh-message-session"
+	_insert_assistant_message "$db_path" "fresh-message-session" "$start_ms"
+
+	_WORKER_ISOLATED_DB_PATH="$db_path"
+	_WORKER_START_EPOCH_MS="$start_ms"
+	local result count
+	result=$(classify_worker_exit 0 "$start_ms")
+	count=$(_hrff_worker_session_count)
+	unset _WORKER_ISOLATED_DB_PATH _WORKER_START_EPOCH_MS
+
+	assert_eq "clean (fresh session produced assistant message)" "$result" "clean"
+	assert_eq "fresh session assistant message activity count" "$count" "1"
+	return 0
+}
+
+test_clean_exit_fresh_session_with_assistant_part() {
+	local db_path="${TMPDIR_TEST}/clean-fresh-assistant-part.db"
+	_make_db "$db_path"
+	local start_ms
+	start_ms=$(_now_ms)
+	_insert_session "$db_path" "$start_ms" "fresh-part-session"
+	_insert_assistant_part "$db_path" "fresh-part-session" "$start_ms"
+
+	_WORKER_ISOLATED_DB_PATH="$db_path"
+	local result
+	result=$(classify_worker_exit 0 "$start_ms")
+	unset _WORKER_ISOLATED_DB_PATH
+
+	assert_eq "clean (fresh session produced assistant part)" "$result" "clean"
+	return 0
+}
+
+test_clean_retry_class_requires_typed_terminal_outcome() {
+	local clean_class=""
+	local complete_class=""
+	clean_class=$(_hrff_retry_class_for_reason "clean" "1")
+	complete_class=$(_hrff_retry_class_for_reason "worker_complete" "1")
+
+	assert_eq "bare clean outcome is not remediation proof" "$clean_class" "$_HRFF_RETRY_CLASS_UNKNOWN"
+	assert_eq "typed worker completion remains remediation proof" "$complete_class" "$_HRFF_RETRY_CLASS_REMEDIATION"
 	return 0
 }
 
@@ -591,7 +639,10 @@ main() {
 	test_signal_killed_sighup
 	test_clean_exit
 	test_clean_exit_zero_sessions
-	test_clean_exit_with_sessions
+	test_clean_exit_with_boot_session_only
+	test_clean_exit_fresh_session_with_assistant_message
+	test_clean_exit_fresh_session_with_assistant_part
+	test_clean_retry_class_requires_typed_terminal_outcome
 	test_clean_exit_session_before_start
 	test_clean_exit_continued_session_with_assistant_activity
 	test_clean_exit_continued_session_placeholder_only
