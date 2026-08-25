@@ -1636,6 +1636,37 @@ test_cmd_run_preserves_worker_origin_overrides_before_canary() {
 	return 0
 }
 
+test_worker_canary_accepts_exact_dispatcher_soft_bypass() {
+	local reason_file="${STATE_DIR}/canary-last-fail.reason"
+	local AIDEVOPS_WORKER_CANARY_SOFT_BYPASS_REASON="inconclusive"
+	local output=""
+	local status=0
+	mkdir -p "$STATE_DIR"
+	printf '%s\n' "inconclusive" >"$reason_file"
+	_run_canary_test() { return 1; }
+
+	output=$(_run_role_safe_canary "$HEADLESS_ROLE_WORKER" "openai/gpt-5.5" 2>&1) || status=$?
+	if [[ "$status" -eq 0 && "$output" == *"worker_canary_soft_bypass reason=inconclusive"* ]]; then
+		print_result "worker canary accepts the dispatcher's exact soft bypass" 0
+	else
+		print_result "worker canary accepts the dispatcher's exact soft bypass" 1 \
+			"status=$status output=${output:-<empty>}"
+	fi
+
+	status=0
+	printf '%s\n' "local_error" >"$reason_file"
+	output=$(_run_role_safe_canary "$HEADLESS_ROLE_WORKER" "openai/gpt-5.5" 2>&1) || status=$?
+	unset -f _run_canary_test 2>/dev/null || true
+	rm -f "$reason_file"
+	if [[ "$status" -ne 0 && "$output" != *"worker_canary_soft_bypass"* ]]; then
+		print_result "worker canary rejects a stale or mismatched soft bypass" 0
+	else
+		print_result "worker canary rejects a stale or mismatched soft bypass" 1 \
+			"status=$status output=${output:-<empty>}"
+	fi
+	return 0
+}
+
 test_cmd_run_aborts_before_canary_when_opencode_pin_repair_fails() {
 	local worktree_dir="${TEST_ROOT}/pin-repair-failure-worktree"
 	local canary_marker="${TEST_ROOT}/pin-repair-failure-canary"

@@ -315,6 +315,7 @@ _dlw_canary_preflight() {
 	local worker_log="$3"
 	local dispatch_model_tier="$4"
 	local selected_model="$5"
+	_DLW_CANARY_SOFT_BYPASS_REASON=""
 
 	local -a _canary_cmd=("$HEADLESS_RUNTIME_HELPER" canary --role worker --tier "$dispatch_model_tier")
 	if [[ -n "$selected_model" ]]; then
@@ -333,6 +334,10 @@ _dlw_canary_preflight() {
 	local canary_reason
 	canary_reason=$(_dlw_canary_last_failure_reason)
 	if _dlw_allow_soft_canary_failure "$canary_reason"; then
+		# The detached worker repeats the canary. Carry the exact bounded
+		# admission decision forward so that repeat does not turn this accepted
+		# soft failure back into no_worker_process (GH#30723).
+		_DLW_CANARY_SOFT_BYPASS_REASON="$canary_reason"
 		if _dlw_min_worker_floor_active; then
 			echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: soft worker canary failure reason=${canary_reason} bypassed to preserve minimum worker floor (bounded t3449/t2878)" >>"$LOGFILE"
 		else
