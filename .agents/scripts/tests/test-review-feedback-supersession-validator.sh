@@ -39,6 +39,10 @@ setup_test_env() {
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export GH_LOG
+	export AIDEVOPS_SIG_CLI="test"
+	export AIDEVOPS_SIG_CLI_VERSION="1"
+	export AIDEVOPS_SIG_MODEL="test/model"
+	export AIDEVOPS_SIG_TOKENS="0"
 	return 0
 }
 
@@ -66,7 +70,7 @@ arg_string="$*"
 endpoint=""
 for arg in "$@"; do
 	case "$arg" in
-	search/issues | repos/owner/repo/*)
+	search/issues | repos/owner/repo | repos/owner/repo/*)
 		endpoint="$arg"
 		break
 		;;
@@ -82,6 +86,12 @@ if [[ "${1:-}" == "api" && "$endpoint" == repos/owner/repo/issues/* && "$endpoin
 			;;
 		footer-path-noise)
 			printf '**Source PR**: #50\n\n**File**: `.agents/scripts/issue-sync-helper.sh`\n\nAdd an option guard before worker launch.\n\n<!-- aidevops:sig -->\n---\n[aidevops.sh](https://aidevops.sh) automated scan.\n'
+			;;
+		quoted-path)
+			printf '> > - `.agents/scripts/review-hook.sh:217`\n> above already architecture before dispatch\n'
+			;;
+		basename-only)
+			printf '## Finding\n\n`review-hook.sh` needs an event payload guard before dispatch.\n'
 			;;
 		marker-only-duplicate | duplicate-current-absent)
 			printf '<!-- aidevops:generator=review-followup source_pr=50 fingerprint=source-pr-50 -->\n\n## Files to modify\n- `.agents/scripts/review-hook.sh`\n'
@@ -123,6 +133,11 @@ if [[ "${1:-}" == "api" && "$endpoint" == repos/owner/repo/issues/* && "$endpoin
 	exit 0
 fi
 
+if [[ "${1:-}" == "api" && "$endpoint" == "repos/owner/repo" ]]; then
+	printf 'false\n'
+	exit 0
+fi
+
 if [[ "${1:-}" == "api" && "$endpoint" == "repos/owner/repo/issues/100/comments" ]]; then
 	printf '0\n'
 	exit 0
@@ -132,6 +147,7 @@ if [[ "${1:-}" == "api" && "$endpoint" == "search/issues" ]]; then
 	case "$scenario" in
 	precreation-search-failure) exit 1 ;;
 	clear) printf '200\n' ;;
+	direct-reference) printf '205\n' ;;
 	ambiguous) printf '201\n' ;;
 	source-clear) printf '200\n' ;;
 	malformed-source-clear) printf '200\n' ;;
@@ -139,6 +155,7 @@ if [[ "${1:-}" == "api" && "$endpoint" == "search/issues" ]]; then
 	source-fetch-failure) printf '200\n' ;;
 	no-file) printf '200\n' ;;
 	footer-path-noise) printf '204\n' ;;
+	quoted-path | basename-only) printf '200\n' ;;
 	none) printf '' ;;
 	before) printf '203\n' ;;
 	*) printf '' ;;
@@ -152,7 +169,10 @@ if [[ "${1:-}" == "api" && "$endpoint" == repos/owner/repo/pulls/* && "$endpoint
 		if [[ "$scenario" == "source-fetch-failure" ]]; then
 			exit 1
 		fi
-		printf '2026-05-01T09:30:00Z\n'
+		case "$arg_string" in
+		*'join("|")'*) printf 'closed|2026-05-01T09:30:00Z|2026-05-01T09:30:00Z\n' ;;
+		*) printf '2026-05-01T09:30:00Z\n' ;;
+		esac
 		exit 0
 	fi
 	case "$pr_number" in
@@ -168,6 +188,9 @@ if [[ "${1:-}" == "api" && "$endpoint" == repos/owner/repo/pulls/* && "$endpoint
 	204)
 		printf '2026-05-01T11:00:00Z\tfix worker launch guard\tAdds an option guard before worker launch.\n'
 		;;
+	205)
+		printf '2026-05-01T11:00:00Z\tGH#100: fix event payload guard\tResolves #100 with the event payload guard.\n'
+		;;
 	*)
 		printf '\t\t\n'
 		;;
@@ -181,14 +204,14 @@ if [[ "${1:-}" == "api" && "$endpoint" == repos/owner/repo/pulls/*/files ]]; the
 	case "$arg_string" in
 	*'.filename'*)
 		case "$pr_number" in
-		200 | 201 | 203) printf '.agents/scripts/review-hook.sh\n' ;;
+		200 | 201 | 203 | 205) printf '.agents/scripts/review-hook.sh\n' ;;
 		204) printf 'aidevops.sh\n' ;;
 		*) printf '' ;;
 		esac
 		;;
 	*)
 		case "$pr_number" in
-		200 | 203) printf '.agents/scripts/review-hook.sh\n+ add event payload guard before dispatch\n' ;;
+		200 | 203 | 205) printf '.agents/scripts/review-hook.sh\n+ add event payload guard before dispatch\n' ;;
 		201) printf '.agents/scripts/review-hook.sh\n+ rename log_context to context_label\n' ;;
 		204) printf 'aidevops.sh\n+ add option guard before worker launch\n' ;;
 		*) printf '' ;;
@@ -277,9 +300,16 @@ assert_log_not_contains() {
 	return 0
 }
 
-test_clear_same_file_fix() {
-	run_validator_case "clear" 10 "clear same-file supersession"
-	assert_log_contains "clear same-file supersession closes issue" "issue close 100 --repo owner/repo --reason not planned"
+test_keyword_same_file_fix_is_ambiguous() {
+	run_validator_case "clear" 0 "keyword-only same-file supersession"
+	assert_log_not_contains "keyword-only same-file supersession does not close" "issue close 100 --repo owner/repo --reason not planned"
+	assert_log_contains "keyword-only same-file supersession posts decision comment" "issue comment 100 --repo owner/repo --body"
+	return 0
+}
+
+test_direct_issue_reference_closes() {
+	run_validator_case "direct-reference" 10 "direct issue reference supersession"
+	assert_log_contains "direct issue reference closes issue" "issue close 100 --repo owner/repo --reason not planned"
 	return 0
 }
 
@@ -290,15 +320,17 @@ test_ambiguous_same_file_unrelated_change() {
 	return 0
 }
 
-test_source_pr_window_catches_pre_issue_fix() {
-	run_validator_case "source-clear" 10 "source PR window catches pre-issue supersession"
-	assert_log_contains "source PR window closes pre-issue supersession" "issue close 100 --repo owner/repo --reason not planned"
+test_source_pr_window_keyword_match_is_ambiguous() {
+	run_validator_case "source-clear" 0 "source PR window keyword-only supersession"
+	assert_log_not_contains "source PR window keyword-only match does not close" "issue close 100 --repo owner/repo --reason not planned"
+	assert_log_contains "source PR window keyword-only match posts decision comment" "issue comment 100 --repo owner/repo --body"
 	return 0
 }
 
-test_malformed_source_pr_uses_title_fallback() {
-	run_validator_case "malformed-source-clear" 10 "malformed source PR uses title fallback"
-	assert_log_contains "malformed source PR title fallback closes pre-issue supersession" "issue close 100 --repo owner/repo --reason not planned"
+test_malformed_source_pr_title_fallback_is_ambiguous() {
+	run_validator_case "malformed-source-clear" 0 "malformed source PR title fallback"
+	assert_log_not_contains "malformed source PR title fallback does not close" "issue close 100 --repo owner/repo --reason not planned"
+	assert_log_contains "malformed source PR title fallback posts decision comment" "issue comment 100 --repo owner/repo --body"
 	return 0
 }
 
@@ -324,6 +356,20 @@ test_no_file_finding_skips_supersession() {
 test_signature_footer_path_is_not_target_file() {
 	run_validator_case "footer-path-noise" 0 "signature footer path is ignored"
 	assert_log_not_contains "signature footer does not create false supersession" "issue close 100 --repo owner/repo --reason not planned"
+	return 0
+}
+
+test_blockquoted_path_is_not_target_file() {
+	run_validator_case "quoted-path" 0 "blockquoted path is ignored"
+	assert_log_not_contains "blockquoted path does not create false supersession" "issue close 100 --repo owner/repo --reason not planned"
+	assert_log_not_contains "blockquoted path does not create ambiguous candidate" "issue comment 100 --repo owner/repo --body"
+	return 0
+}
+
+test_bare_basename_is_not_file_identity() {
+	run_validator_case "basename-only" 0 "bare basename is ignored"
+	assert_log_not_contains "bare basename does not create false supersession" "issue close 100 --repo owner/repo --reason not planned"
+	assert_log_not_contains "bare basename does not create ambiguous candidate" "issue comment 100 --repo owner/repo --body"
 	return 0
 }
 
@@ -400,10 +446,10 @@ test_current_issue_absent_from_enumeration_fails_closed() {
 
 test_pulse_blocks_duplicate_lookup_uncertainty() {
 	# shellcheck disable=SC2016 # Match literal shell source expressions.
-	if grep -qF "if [[ \"\$_validator_rc\" -eq 30 ]]" "$PULSE_CORE" \
-		&& grep -qF '$_review_followup_validator_required" -eq 1 && "$_validator_rc" -ne 0' "$PULSE_CORE" \
-		&& grep -qF 'predispatch_validator_uncertain' "$PULSE_CORE" \
-		&& grep -qF 'return 20' "$PULSE_CORE"; then
+	if grep -qF "if [[ \"\$_validator_rc\" -eq 30 ]]" "$PULSE_CORE" &&
+		grep -qF '$_review_followup_validator_required" -eq 1 && "$_validator_rc" -ne 0' "$PULSE_CORE" &&
+		grep -qF 'predispatch_validator_uncertain' "$PULSE_CORE" &&
+		grep -qF 'return 20' "$PULSE_CORE"; then
 		print_result "pulse blocks all required review-followup validator failures and releases its claim" 0
 	else
 		print_result "pulse blocks all required review-followup validator failures and releases its claim" 1
@@ -421,14 +467,17 @@ main() {
 
 	setup_test_env
 	write_gh_stub
-	test_clear_same_file_fix
+	test_keyword_same_file_fix_is_ambiguous
+	test_direct_issue_reference_closes
 	test_ambiguous_same_file_unrelated_change
-	test_source_pr_window_catches_pre_issue_fix
-	test_malformed_source_pr_uses_title_fallback
+	test_source_pr_window_keyword_match_is_ambiguous
+	test_malformed_source_pr_title_fallback_is_ambiguous
 	test_source_pr_window_ambiguous_fails_open
 	test_source_pr_fetch_failure_falls_back
 	test_no_file_finding_skips_supersession
 	test_signature_footer_path_is_not_target_file
+	test_blockquoted_path_is_not_target_file
+	test_bare_basename_is_not_file_identity
 	test_no_matching_pr
 	test_merged_pr_before_issue_creation
 	test_precreation_source_pr_window

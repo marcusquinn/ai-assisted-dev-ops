@@ -317,10 +317,10 @@ mode="${mode}"
 if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/[0-9]+\$'; then
 	if printf '%s' "\$args" | grep -qF '.body // ""'; then
 		case "\$mode" in
-			extended-extension) printf 'quality debt kotlin coroutine MainActivity.kt\n' ;;
-			review-followup-label) printf 'review followup changelog fixed \`CHANGELOG.md:18\`\n' ;;
-			source-review-scanner-label) printf 'review scanner changelog fixed \`CHANGELOG.md:18\`\n' ;;
-			whole-word) printf 'quality debt rate cache worker.sh\n' ;;
+			extended-extension) printf 'quality debt kotlin coroutine app/src/MainActivity.kt\n' ;;
+			review-followup-label) printf 'review followup changelog fixed \`docs/CHANGELOG.md:18\`\n' ;;
+			source-review-scanner-label) printf 'review scanner changelog fixed \`docs/CHANGELOG.md:18\`\n' ;;
+			whole-word) printf 'quality debt rate cache .agents/scripts/worker.sh\n' ;;
 			version-directory) printf 'quality debt setup rollout v3.14.93/setup.sh\n' ;;
 			*) printf 'unsupported review-feedback mode: %s\n' "\$mode" >&2; exit 1 ;;
 		esac
@@ -343,8 +343,8 @@ if [[ "\${1:-}" == "api" ]] && printf '%s' "\$args" | grep -qE 'pulls/99/files';
 	if printf '%s' "\$args" | grep -qF '.[].filename'; then
 		case "\$mode" in
 			extended-extension) printf 'app/src/MainActivity.kt\n' ;;
-			review-followup-label|source-review-scanner-label) printf 'CHANGELOG.md\n' ;;
-			whole-word) printf 'worker.sh\n' ;;
+			review-followup-label|source-review-scanner-label) printf 'docs/CHANGELOG.md\n' ;;
+			whole-word) printf '.agents/scripts/worker.sh\n' ;;
 			version-directory) printf 'v3.14.93/setup.sh\n' ;;
 			*) printf 'unsupported review-feedback mode: %s\n' "\$mode" >&2; exit 1 ;;
 		esac
@@ -354,10 +354,10 @@ if [[ "\${1:-}" == "api" ]] && printf '%s' "\$args" | grep -qE 'pulls/99/files';
 			printf 'app/src/MainActivity.kt\nfix kotlin coroutine reliability\n'
 			;;
 		review-followup-label|source-review-scanner-label)
-			printf 'CHANGELOG.md\nmove changelog entries to fixed section\n'
+			printf 'docs/CHANGELOG.md\nmove changelog entries to fixed section\n'
 			;;
 		whole-word)
-			printf 'worker.sh\ngenerate cache output\n'
+			printf '.agents/scripts/worker.sh\ngenerate cache output\n'
 			;;
 		version-directory)
 			printf 'v3.14.93/setup.sh\nfix setup rollout quality debt\n'
@@ -374,7 +374,7 @@ fi
 if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/pulls/99\$'; then
 	case "\$mode" in
 		extended-extension)
-			printf '2026-05-08T00:00:00Z\tfix kotlin coroutine reliability\tUpdates mobile handling\n'
+			printf '2026-05-08T00:00:00Z\tGH#47: fix kotlin coroutine reliability\tUpdates mobile handling\n'
 			;;
 		review-followup-label|source-review-scanner-label)
 			printf '2026-05-08T00:00:00Z\tdocs: clean up changelog duplicates\tMoves changelog fixes under Fixed. Refs #50 #51\n'
@@ -383,7 +383,7 @@ if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/pulls/99\$'; t
 			printf '2026-05-08T00:00:00Z\tgenerate cache output\tUpdates cache handling\n'
 			;;
 		version-directory)
-			printf '2026-05-08T00:00:00Z\tfix setup rollout quality debt\tUpdates setup handling\n'
+			printf '2026-05-08T00:00:00Z\tGH#49: fix setup rollout quality debt\tUpdates setup handling\n'
 			;;
 		*)
 			printf 'unsupported review-feedback mode: %s\n' "\$mode" >&2

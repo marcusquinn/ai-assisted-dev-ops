@@ -923,12 +923,11 @@ _rf_extract_file_paths_from_text() {
 	local backtick_files=""
 	local bare_files=""
 
-	# Generated issue signatures contain a Markdown link whose visible label is
-	# `aidevops.sh`. Treating that footer as an implementation target makes every
-	# later release PR (which commonly touches aidevops.sh) look like a same-file
-	# supersession. URLs and signature metadata are evidence provenance, not files
-	# requested by the finding.
-	path_text=$(printf '%s\n' "$text" | grep -vE '^<!--[[:space:]]*aidevops:sig|^\[aidevops\.sh\]\(https?://|https?://' || true)
+	# Generated signatures and blockquoted review prose are evidence provenance,
+	# not structured target-file citations. Review producers keep their canonical
+	# inline file metadata outside blockquotes, so ignore quoted paths here while
+	# retaining the quoted prose for finding-keyword extraction.
+	path_text=$(printf '%s\n' "$text" | grep -vE '^[[:space:]]*>|^<!--[[:space:]]*aidevops:sig|^\[aidevops\.sh\]\(https?://|https?://' || true)
 
 	dir_paths=$(printf '%s' "$path_text" | grep -oE '[a-zA-Z0-9._-]+/[a-zA-Z0-9._/-]+\.[a-zA-Z]{1,10}' | sort -u || true)
 	if [[ -n "$dir_paths" ]]; then
@@ -1193,21 +1192,16 @@ _rf_find_overlapping_paths() {
 	local pr_files="$2"
 	local issue_path=""
 	local pr_path=""
-	local issue_basename=""
-	local pr_basename=""
 	local overlaps=""
 
 	while IFS= read -r issue_path; do
 		[[ -z "$issue_path" ]] && continue
-		issue_basename="${issue_path##*/}"
+		# Bare basenames are not stable file identity: unrelated directories often
+		# contain the same helper/test name. Only qualified paths can match.
+		[[ "$issue_path" == */* ]] || continue
 		while IFS= read -r pr_path; do
 			[[ -z "$pr_path" ]] && continue
-			pr_basename="${pr_path##*/}"
-			if [[ "$issue_path" == */* ]]; then
-				if [[ "$pr_path" == "$issue_path" || "$pr_path" == *"/${issue_path}" ]]; then
-					overlaps="${overlaps}${pr_path}"$'\n'
-				fi
-			elif [[ "$pr_basename" == "$issue_basename" ]]; then
+			if [[ "$pr_path" == "$issue_path" || "$pr_path" == *"/${issue_path}" ]]; then
 				overlaps="${overlaps}${pr_path}"$'\n'
 			fi
 		done <<<"$pr_files"
@@ -1452,8 +1446,17 @@ _rf_evaluate_supersession() {
 			pr_patch=""
 		fi
 		local evidence="${pr_title}"$'\n'"${pr_body}"$'\n'"${pr_patch}"
+		local clear_match=0
 		_rf_score_keywords "$keywords" "$evidence"
-		if { [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] && _rf_pr_references_issue "$issue_number" "$evidence"; } || [[ "$_RF_KEYWORD_SCORE" -ge 2 ]]; then
+		if [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] && _rf_pr_references_issue "$issue_number" "$evidence"; then
+			clear_match=1
+		elif [[ "$issue_number" == "0" && "$_RF_KEYWORD_SCORE" -ge 2 ]]; then
+			# Precreation has no issue number to reference and performs no GitHub
+			# mutation. Preserve its bounded heuristic dedup after qualified path
+			# matching, while existing issues require an explicit PR reference.
+			clear_match=1
+		fi
+		if [[ "$clear_match" -eq 1 ]]; then
 			_RF_SUPERSESSION_PR="$pr_number"
 			_RF_SUPERSESSION_MERGED_AT="$merged_at"
 			_RF_SUPERSESSION_OVERLAPS="$overlaps"
