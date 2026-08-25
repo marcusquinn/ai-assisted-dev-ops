@@ -520,7 +520,7 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 
 ## Backlog
 
-- [ ] t18309 Fix same-user daemon proc cwd cleanup degradation #bug #framework #cleanup #worktree #interactive ~1h tier:standard ref:GH#30740 logged:2026-08-25 -> [todo/tasks/t18309-brief.md]
+- [x] t18309 Fix same-user daemon proc cwd cleanup degradation #bug #framework #cleanup #worktree #interactive ~1h tier:standard ref:GH#30740 logged:2026-08-25 -> [todo/tasks/t18309-brief.md] pr:#30741 completed:2026-08-25
 
 - [x] t18294 Stop approval batches after systemic GitHub transport failure #bug #framework #reliability #interactive #auto-dispatch ~3h tier:standard blocked-by:t18293 ref:GH#30339 logged:2026-08-17 -> [todo/tasks/t18294-brief.md] pr:#30352 completed:2026-08-17
 
@@ -4842,6 +4842,6 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [ ] t18241 Fix legacy release lane normalization during published reconciliation #bug ref:GH#30149
 - [ ] t18227 Add provenance-preserving content metadata subagent #feature ref:GH#30062
 
-- [ ] t18308 Allow cleanup receipt adoption for merged fork PRs #auto-dispatch #bug ref:GH#30708
+- [x] t18308 Allow cleanup receipt adoption for merged fork PRs #auto-dispatch #bug ref:GH#30708 pr:#30754 completed:2026-08-25
 
 - [ ] t18307 Preflight all external PR approval authorities before prompting #auto-dispatch #bug ref:GH#30706
