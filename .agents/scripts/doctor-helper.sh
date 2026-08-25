@@ -322,6 +322,38 @@ report_conflict_installs() {
 	return 0
 }
 
+#######################################
+# Report whether a custom model-routing table is usable or partially ignored.
+#######################################
+diagnose_model_routing_table() {
+	local routing_table=""
+	local framework_table=""
+	local findings=""
+
+	if ! declare -F model_routing_table_path >/dev/null 2>&1 || ! declare -F model_routing_framework_table_path >/dev/null 2>&1; then
+		print_warning "Model routing override: validator unavailable"
+		CONFLICTS_FOUND=1
+		return 0
+	fi
+
+	routing_table=$(model_routing_table_path 2>/dev/null) || routing_table=""
+	framework_table=$(model_routing_framework_table_path 2>/dev/null) || framework_table=""
+	if [[ -z "$routing_table" || "$routing_table" == "$framework_table" ]]; then
+		print_info "Model routing override: not found; framework defaults active"
+		return 0
+	fi
+
+	findings=$(model_routing_custom_table_validation_findings "$routing_table" "$framework_table") || findings="document: validation failed"
+	if [[ -n "$findings" ]]; then
+		print_warning "Model routing override: found and parsed, but invalid tiers are ignored: ${findings//$'\n'/; }"
+		CONFLICTS_FOUND=1
+		return 0
+	fi
+
+	print_success "Model routing override: found and parsed; configured tiers are active"
+	return 0
+}
+
 # Diagnose a single binary (aidevops or opencode)
 diagnose_binary() {
 	local binary_name="$1"
@@ -649,6 +681,7 @@ main() {
 
 	diagnose_binary "aidevops"
 	diagnose_binary "opencode"
+	diagnose_model_routing_table
 
 	if [[ "$QUIET_MODE" != "true" ]]; then
 		echo ""

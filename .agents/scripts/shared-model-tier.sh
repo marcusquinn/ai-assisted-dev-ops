@@ -108,6 +108,59 @@ model_routing_framework_table_path() {
 }
 
 #######################################
+# Print per-tier schema findings for a custom routing table.
+#######################################
+model_routing_custom_table_validation_findings() {
+	local custom_table="$1"
+	local framework_table="$2"
+	local findings=""
+
+	[[ -n "$custom_table" && "$custom_table" != "$framework_table" ]] || return 0
+	if ! command -v jq >/dev/null 2>&1; then
+		printf '%s\n' "document: jq is required to validate custom model routing"
+		return 0
+	fi
+
+	if ! findings=$(jq -r '
+		if type != "object" then
+			["document: root must be an object"]
+		elif (.tiers | type) != "object" then
+			["tiers: must be an object"]
+		else
+			[.tiers | to_entries[] | .key as $tier | .value as $definition |
+				if (["simple", "standard", "thinking"] | index($tier) | not) then
+					"\($tier): unsupported tier (use simple, standard, or thinking)"
+				elif ($definition | type) != "object" then
+					"\($tier): must be an object containing models"
+				elif ($definition.models | type) != "array" then
+					"\($tier): models must be an array"
+				else empty end]
+		end | .[]
+	' "$custom_table" 2>/dev/null); then
+		findings="document: could not be parsed"
+	fi
+
+	[[ -z "$findings" ]] || printf '%s\n' "$findings"
+	return 0
+}
+
+#######################################
+# Warn once when a custom routing-table tier cannot supply candidates.
+#######################################
+model_routing_warn_invalid_custom_table() {
+	local custom_table="$1"
+	local framework_table="$2"
+	local findings=""
+
+	[[ "${_MODEL_ROUTING_CUSTOM_TABLE_WARNING_EMITTED:-0}" != "1" ]] || return 0
+	findings=$(model_routing_custom_table_validation_findings "$custom_table" "$framework_table") || return 0
+	[[ -n "$findings" ]] || return 0
+	_MODEL_ROUTING_CUSTOM_TABLE_WARNING_EMITTED=1
+	printf 'WARNING: custom model routing table has invalid tiers; those tiers are ignored: %s\n' "${findings//$'\n'/; }" >&2
+	return 0
+}
+
+#######################################
 # Print the ordered, same-tier model candidates, one per line.
 # A readable routing table is authoritative: a missing tier fails closed.
 #######################################
@@ -126,6 +179,7 @@ model_tier_candidates() {
 	routing_table=$(model_routing_table_path 2>/dev/null) || routing_table=""
 	framework_table=$(model_routing_framework_table_path 2>/dev/null) || framework_table=""
 	if command -v jq >/dev/null 2>&1; then
+		model_routing_warn_invalid_custom_table "$routing_table" "$framework_table"
 		local table=""
 		local previous_table=""
 		for table in "$routing_table" "$framework_table"; do

@@ -2,7 +2,7 @@
   "_comment": "Model routing table — SINGLE SOURCE OF TRUTH for tier-to-model mappings. All scripts, docs, and configs should reference this file rather than hardcoding model IDs. When a new model generation releases (e.g., gpt-5.6), update this file and its documented static fallbacks.",
   "_docs": "See .agents/tools/context/model-routing.md for routing rules, .agents/tools/ai-assistants/fallback-chains.md for integration.",
   "_agentic_note": "codex/code-completion models (gpt-5.3-codex, gpt-5.4-codex) are NOT agentic — zero tool calls observed (GH#17669). Never use them for headless worker dispatch. Only general-purpose models support agentic workflows.",
-  "_defaults": "The first model in each tier's array is primary; subsequent entries are same-tier availability fallbacks. Capability failure advances through escalation_order. GLM-5.2 is offered only through the Z.AI coding-plan provider. Use custom/configs/model-routing-table.json or AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST for local overrides.",
+  "_defaults": "The first model in each tier's array is primary; subsequent entries are same-tier availability fallbacks. Capability failure advances through escalation_order. GLM-5.2 is offered only through the Z.AI coding-plan provider. Custom overrides use custom/configs/model-routing-table.json: every configured canonical tier needs a models array of provider/model strings; omitted tiers inherit this table, and reasoning keys should use full provider/model IDs. Use AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST for local provider overrides.",
   "_tier_names": "Canonical workload tiers are simple, standard, and thinking. Provider names, model families, and reasoning variants must not be used as tier names.",
   "tiers": {
     "simple": {
