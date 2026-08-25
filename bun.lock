@@ -55,7 +55,7 @@
         "@fontsource/playpen-sans": "5.3.0",
         "@fontsource/poppins": "5.2.7",
         "@fontsource/source-sans-3": "5.3.0",
-        "@fontsource/source-serif-4": "5.2.9",
+        "@fontsource/source-serif-4": "5.3.0",
         "@fontsource/tilt-neon": "5.2.10",
         "@fontsource/ubuntu": "5.3.0",
         "@fontsource/ubuntu-mono": "5.2.8",
@@ -116,7 +116,7 @@
 
     "@fontsource/source-sans-3": ["@fontsource/source-sans-3@5.3.0", "", {}, "sha512-VrWixSgF93kOVSEkwjs9ImnAbxrBew4PgcnaJYEitG9TyJSwxjFUNJIgzB1XFP/acyAWcTDg7+sWe7JI8LTB9w=="],
 
-    "@fontsource/source-serif-4": ["@fontsource/source-serif-4@5.2.9", "", {}, "sha512-er/Pym9emsEVJNf947umJ4kXarXfsiN6CN7kTYinefKRaHLwiquiiHOZvKvxWgkV8JMCf3pV3g0NcsPFpVCH9w=="],
+    "@fontsource/source-serif-4": ["@fontsource/source-serif-4@5.3.0", "", {}, "sha512-yQz8xmIgMzks8zQbpuca3UYtjxK798XCyQAGdDXmzBgvV7sdoK6d0YvE9F9kiYxORCEMRBgGZDZsSYcXj5KvwA=="],
 
     "@fontsource/tilt-neon": ["@fontsource/tilt-neon@5.2.10", "", {}, "sha512-qBointHhyP7K/avRTmfYkHUrGoCOLt3EG0dpXKJdHua/2OjU74YrCUeVIFO9agSX6A0dM2dUUsrE2ZuxYwC1Eg=="],
 
