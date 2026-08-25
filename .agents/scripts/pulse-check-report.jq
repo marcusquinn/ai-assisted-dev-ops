@@ -239,7 +239,7 @@ end) as $max_workers |
         true
       )
     else empty end,
-    if (($spawned - ([($recent_total), ($current_terminal_events)] | max) - $launch_validation_failed) >= 3 and $active_workers == 0) then
+    if ($dispatch_alive and ($spawned - ([($recent_total), ($current_terminal_events)] | max) - $launch_validation_failed) >= 3 and $active_workers == 0) then
       finding(
         "pulse-launch-accounting-gap";
         "high";
@@ -250,7 +250,8 @@ end) as $max_workers |
           ("worker_terminal_events_in_current_window=" + ($current_terminal_events | tostring)),
           ("worker_launch_validation_failures_in_current_window=" + ($launch_validation_failed | tostring)),
           ("active_workers=" + ($active_workers | tostring)),
-          ("available_slots=" + ($available_slots | tostring))
+          ("available_slots=" + ($available_slots | tostring)),
+          "dispatch_alive=true"
         ];
         "Add or repair launch-validation evidence so every spawned worker becomes an active process, a terminal metric, or a classified launch failure.";
         true

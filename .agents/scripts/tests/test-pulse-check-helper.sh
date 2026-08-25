@@ -392,6 +392,25 @@ IDLE_JSON_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_
 assert_eq "idle dispatch is reported as inactive" "false" "$(printf '%s' "$IDLE_JSON_OUT" | jq -r '.summary.dispatch_alive')"
 assert_not_contains "idle dispatch does not claim a worker-retention underfill" "pulse-underfilled-auto-dispatch-queue" "$IDLE_JSON_OUT"
 
+cat >"${TEST_ROOT}/current-state-idle-after-launch.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "dispatch_alive": false,
+  "dispatch_stage_events": 0,
+  "active_worker_processes": 0,
+  "current_state_guardrails": {"available_slots_last": 6},
+  "pulse_gauges": {"dispatch_capacity_final_max_workers": 6},
+  "worker_outcomes": {"spawned": 4},
+  "worker_terminal_events": 0,
+  "graphql_budget_status": "OK fixture"
+}
+JSON
+SH
+chmod +x "${TEST_ROOT}/current-state-idle-after-launch.sh"
+IDLE_AFTER_LAUNCH_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-idle-after-launch.sh" "$HELPER" json 2>&1)
+assert_not_contains "idle dispatch does not claim a launch-accounting gap" "pulse-launch-accounting-gap" "$IDLE_AFTER_LAUNCH_OUT"
+
 cat >"${TEST_ROOT}/current-state-active-no-gauge.sh" <<'SH'
 #!/usr/bin/env bash
 cat <<'JSON'
