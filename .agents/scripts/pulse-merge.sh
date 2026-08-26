@@ -1183,24 +1183,13 @@ Do not close this parent until the remaining acceptance criteria are covered by 
 	return 0
 }
 
-_handle_post_merge_actions() {
+_pm_close_primary_linked_issue() {
 	local pr_number="$1"
 	local repo_slug="$2"
 	local linked_issue="$3"
-	local merge_summary="$4"
-	local pr_labels="${5:-}"
-	local pr_base_ref_name="${6:-main}"
+	local closing_comment="$4"
+	local labels_supplied="$5"
 
-	local closing_comment
-	closing_comment=$(_pm_build_closing_comment "$pr_number" "$repo_slug" \
-		"$linked_issue" "$merge_summary" "$pr_base_ref_name")
-
-	# Upsert one canonical PR closeout across concurrent runner accounts. Linked
-	# PR conversation locks are not owned by worker lifecycle cleanup (GH#30280).
-	_pm_upsert_pr_closing_comment "$pr_number" "$repo_slug" "$closing_comment"
-
-	# Close linked issue with the same closing comment
-	if [[ -n "$linked_issue" ]]; then
 		# t2099 / GH#19032: parent-task close guard. Parent roadmap issues must
 		# stay open until ALL phase children merge (t2046). The PR-body keyword
 		# guard prevents workers from writing Closes/Resolves/Fixes against a
@@ -1213,10 +1202,9 @@ _handle_post_merge_actions() {
 		#     status update on the parent).
 		#   - SKIP the `gh issue close` call.
 		#   - SKIP fast_fail_reset and unlock (both tied to closing).
-		local _parent_task_guard=0
+		_parent_task_guard=0
 		local _pm_li_api
 		_pm_li_api=$(_pm_issue_api "$repo_slug" "$linked_issue")
-		local _linked_labels
 		_linked_labels=$(gh api "${_pm_li_api}" \
 			--jq '[.labels[].name] | join(",")' 2>/dev/null) || _linked_labels=""
 		if [[ ",${_linked_labels}," == *"${_PM_PARENT_TASK_LABEL_NEEDLE}"* ]]; then
@@ -1238,7 +1226,7 @@ _handle_post_merge_actions() {
 		fi
 
 		if [[ "$_parent_task_guard" -eq 0 ]]; then
-			if [[ $# -lt 5 ]]; then
+			if [[ "$labels_supplied" -eq 0 ]]; then
 				pr_labels=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
 					--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || pr_labels=""
 			fi
@@ -1258,13 +1246,18 @@ _handle_post_merge_actions() {
 			# t1934: Unlock the issue (locked at dispatch time)
 			unlock_issue_after_worker "$linked_issue" "$repo_slug"
 		fi
+	return 0
+}
 
-		# GH#22964: if the merged PR resolved a superseded worker PR, also close
-		# the original issue that the superseded PR was created to resolve.
-		local _superseded_original_issue
-		_superseded_original_issue=$(_pm_resolve_superseded_original_issue \
-			"$pr_number" "$repo_slug" "$linked_issue") || _superseded_original_issue=""
-		if [[ -n "$_superseded_original_issue" ]]; then
+_pm_close_superseded_original_issue() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local closing_comment="$4"
+	local _superseded_original_issue
+	_superseded_original_issue=$(_pm_resolve_superseded_original_issue \
+		"$pr_number" "$repo_slug" "$linked_issue") || _superseded_original_issue=""
+	if [[ -n "$_superseded_original_issue" ]]; then
 			local _sup_api _sup_labels _sup_parent_guard=0 _sup_dedup_count
 			_sup_api=$(_pm_issue_api "$repo_slug" "$_superseded_original_issue")
 			_sup_labels=$(gh api "${_sup_api}" \
@@ -1297,7 +1290,35 @@ _handle_post_merge_actions() {
 				fast_fail_reset "$_superseded_original_issue" "$repo_slug" || true
 				unlock_issue_after_worker "$_superseded_original_issue" "$repo_slug"
 			fi
-		fi
+	fi
+	return 0
+}
+
+_handle_post_merge_actions() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local linked_issue="$3"
+	local merge_summary="$4"
+	local pr_labels="${5:-}"
+	local pr_base_ref_name="${6:-main}"
+	local labels_supplied=0
+	local _parent_task_guard=0 _linked_labels=""
+	[[ $# -ge 5 ]] && labels_supplied=1
+
+	local closing_comment
+	closing_comment=$(_pm_build_closing_comment "$pr_number" "$repo_slug" \
+		"$linked_issue" "$merge_summary" "$pr_base_ref_name")
+
+	# Upsert one canonical PR closeout across concurrent runner accounts. Linked
+	# PR conversation locks are not owned by worker lifecycle cleanup (GH#30280).
+	_pm_upsert_pr_closing_comment "$pr_number" "$repo_slug" "$closing_comment"
+
+	if [[ -n "$linked_issue" ]]; then
+		_pm_close_primary_linked_issue "$pr_number" "$repo_slug" "$linked_issue" \
+			"$closing_comment" "$labels_supplied"
+		# GH#22964: close the original issue resolved by a superseded worker PR.
+		_pm_close_superseded_original_issue "$pr_number" "$repo_slug" "$linked_issue" \
+			"$closing_comment"
 	fi
 
 	# Post partial parent closeout if a For/Ref reference exists (GH#23937).

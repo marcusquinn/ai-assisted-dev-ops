@@ -125,6 +125,8 @@ define_function_under_test() {
 		/^_pm_reconcile_pr_closeout_comments\(\) \{/,/^}$/ { print }
 		/^_pm_upsert_pr_closing_comment\(\) \{/,/^}$/ { print }
 		/^_pm_resolve_superseded_original_issue\(\) \{/,/^}$/ { print }
+		/^_pm_close_primary_linked_issue\(\) \{/,/^}$/ { print }
+		/^_pm_close_superseded_original_issue\(\) \{/,/^}$/ { print }
 		/^_handle_post_merge_actions\(\) \{/,/^}$/ { print }
 		/^_extract_linked_issue\(\) \{/,/^}$/ { print }
 	' "$MERGE_FILE")
