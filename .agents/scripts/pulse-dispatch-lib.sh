@@ -1845,17 +1845,23 @@ _dispatch_record_nonzero_dispatch_result() {
 	local recent_lines=""
 
 	echo "[pulse-wrapper] Dispatch_max: skipping #${issue_number} (${repo_slug}) — dispatch_with_dedup returned rc=${dispatch_rc}" >>"$LOGFILE"
+	if [[ -n "${LOGFILE:-}" && -f "$LOGFILE" ]]; then
+		recent_lines=$(awk -v issue="#${issue_number}" -v repo="$repo_slug" '
+			index($0, issue) && index($0, repo) { lines[++n] = $0 }
+			END {
+				start = n - 20
+				if (start < 1) { start = 1 }
+				for (i = start; i <= n; i++) { print lines[i] }
+			}
+		' "$LOGFILE" 2>/dev/null) || recent_lines=""
+	fi
+	if [[ "$recent_lines" == *"worker_launch_rc_"* ]]; then
+		echo "[pulse-wrapper] Dispatch_max: #${issue_number} (${repo_slug}) launch failed before validation" >>"$LOGFILE"
+		_dispatch_stats_increment "dispatch_worker_launch_failed"
+		_dispatch_stats_increment_candidate_failed "launch_error"
+		return 0
+	fi
 	if [[ "$dispatch_rc" -eq 2 ]]; then
-		if [[ -n "${LOGFILE:-}" && -f "$LOGFILE" ]]; then
-			recent_lines=$(awk -v issue="#${issue_number}" -v repo="$repo_slug" '
-				index($0, issue) && index($0, repo) { lines[++n] = $0 }
-				END {
-					start = n - 20
-					if (start < 1) { start = 1 }
-					for (i = start; i <= n; i++) { print lines[i] }
-				}
-			' "$LOGFILE" 2>/dev/null) || recent_lines=""
-		fi
 		if [[ "$recent_lines" == *"blocked_by_native_lookup_unavailable"* ]]; then
 			echo "[pulse-wrapper] Dispatch_max: #${issue_number} (${repo_slug}) pre-launch failure reason=blocked_by_native_lookup_unavailable" >>"$LOGFILE"
 			_dispatch_stats_increment_candidate_failed "blocked_by_native_lookup_unavailable"

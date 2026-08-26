@@ -94,4 +94,21 @@ if grep -q 'Stage failed: dispatch_candidate_123' "$LOGFILE" 2>/dev/null; then
 	exit 1
 fi
 
+DISPATCH_COUNTERS=""
+pulse_stats_increment() {
+	local counter_name="$1"
+	DISPATCH_COUNTERS="${DISPATCH_COUNTERS}${counter_name}"$'\n'
+	return 0
+}
+printf '[dispatch_with_dedup] Launch failed for #123 in owner/repo: worker_launch_rc_1\n' >>"$LOGFILE"
+_dispatch_record_nonzero_dispatch_result "123" "owner/repo" 1
+if [[ "$DISPATCH_COUNTERS" != *$'dispatch_worker_launch_failed\n'* ]]; then
+	printf 'FAIL worker launch failure did not record launch-validation evidence\n' >&2
+	exit 1
+fi
+if [[ "$DISPATCH_COUNTERS" != *$'dispatch_candidate_failed_reason_launch_error\n'* ]]; then
+	printf 'FAIL worker launch failure did not record the launch-error reason\n' >&2
+	exit 1
+fi
+
 printf 'PASS pulse-dispatch-stage-rc-adapter\n'
