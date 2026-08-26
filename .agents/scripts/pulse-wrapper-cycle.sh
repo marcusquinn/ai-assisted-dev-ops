@@ -568,6 +568,20 @@ _pulse_run_issue_sync_stage() {
 	return $?
 }
 
+_pulse_todo_sync_exact_default_snapshot() {
+	local workspace="$1"
+	local default_branch="$2"
+	local expected_sha="$3"
+	local head_sha="" remote_sha=""
+	[[ -n "$workspace" && -n "$default_branch" && -n "$expected_sha" ]] || return 1
+	head_sha=$(git -C "$workspace" rev-parse HEAD 2>/dev/null) || return 1
+	[[ "$head_sha" == "$expected_sha" ]] || return 1
+	git -C "$workspace" fetch --quiet origin "$default_branch" >/dev/null 2>&1 || return 1
+	remote_sha=$(git -C "$workspace" rev-parse "refs/remotes/origin/${default_branch}" 2>/dev/null) || return 1
+	[[ "$head_sha" == "$remote_sha" ]]
+	return $?
+}
+
 #######################################
 # sync_todo_refs_for_repo
 #
@@ -631,6 +645,11 @@ sync_todo_refs_for_repo() (
 	if [[ "$sync_failed" -ne 0 ]]; then
 		return 1
 	fi
+	if ! _pulse_todo_sync_exact_default_snapshot "$workspace" "$branch_name" "$base_sha"; then
+		printf '[pulse-wrapper] TODO ref sync status=retryable_refresh stage=snapshot repo=%s base=%s action=recreate\n' \
+			"$repo_slug" "${base_sha:0:12}" >>"$WRAPPER_LOGFILE"
+		return 2
+	fi
 
 	if ! declare -F planning_publish >/dev/null 2>&1; then
 		[[ -f "${script_dir}/planning-publisher.sh" ]] || {
@@ -689,14 +708,26 @@ _pulse_sync_todo_repo_bounded() {
 	local repo_path="$2"
 	local repo_timeout="$3"
 	local job_index="$4"
+	local sync_rc=0
 	_pulse_refresh_repo "$repo_path" || true
 	if declare -F run_stage_with_timeout >/dev/null 2>&1; then
 		run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$repo_timeout" \
-			sync_todo_refs_for_repo "$repo_slug" "$repo_path"
-		return $?
+			sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
+	else
+		sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
 	fi
-	sync_todo_refs_for_repo "$repo_slug" "$repo_path"
-	return $?
+	if [[ "$sync_rc" -eq 2 ]]; then
+		printf '[pulse-wrapper] TODO ref sync status=retrying repo=%s attempt=2 reason=retryable_snapshot\n' \
+			"$repo_slug" >>"$WRAPPER_LOGFILE"
+		sync_rc=0
+		if declare -F run_stage_with_timeout >/dev/null 2>&1; then
+			run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$repo_timeout" \
+				sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
+		else
+			sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
+		fi
+	fi
+	return "$sync_rc"
 }
 
 #######################################

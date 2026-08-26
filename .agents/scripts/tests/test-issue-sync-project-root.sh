@@ -102,6 +102,19 @@ printf '%s|%s|%s\n' "$command_name" "$repo" "$root" >>"$CALL_LOG"
 if [[ "$command_name" == "pull" ]]; then
 	printf '%s\n' "synced:${repo}" >>"${root}/TODO.md"
 fi
+if [[ "$command_name" == "pull" && -n "${ADVANCE_REMOTE_ON_PULL:-}" && ! -e "${ADVANCE_REMOTE_MARKER:-}" ]]; then
+	writer="${ADVANCE_REMOTE_WRITER:-}"
+	[[ -n "$writer" && -n "${ADVANCE_REMOTE_MARKER:-}" ]] || exit 4
+	git clone --quiet "$ADVANCE_REMOTE_ON_PULL" "$writer"
+	git -C "$writer" config user.email test@example.com
+	git -C "$writer" config user.name Test
+	git -C "$writer" config commit.gpgsign false
+	printf '%s\n' 'advanced default snapshot' >>"${writer}/TODO.md"
+	git -C "$writer" add TODO.md
+	git -C "$writer" commit --quiet -m advance-snapshot
+	git -C "$writer" push --quiet origin main
+	touch "$ADVANCE_REMOTE_MARKER"
+fi
 FIXTURE
 chmod +x "${fixture_scripts}/issue-sync-helper.sh"
 
@@ -206,6 +219,48 @@ grep -q 'status=retryable_failure stage=publication repo=owner/repo-c rc=1' "$WR
 if only_todo_sync_workspace >/dev/null 2>&1; then
 	fail "retryable publication failure left an automation workspace behind"
 fi
+
+# A remote default-branch advance after the isolated clone is created must be
+# retried from a newly cloned exact snapshot instead of failing the batch.
+repo_snapshot_retry="${TMP}/repo-snapshot-retry"
+remote_snapshot_retry="${TMP}/remote-snapshot-retry.git"
+setup_sync_repo "$repo_snapshot_retry" "$remote_snapshot_retry"
+export ADVANCE_REMOTE_ON_PULL="$remote_snapshot_retry"
+export ADVANCE_REMOTE_MARKER="${TMP}/remote-snapshot-advanced"
+export ADVANCE_REMOTE_WRITER="${TMP}/remote-snapshot-writer"
+retry_repos_json="${TMP}/snapshot-retry-repos.json"
+jq -n --arg slug owner/repo-snapshot-retry --arg path "$repo_snapshot_retry" \
+	'{initialized_repos:[{slug:$slug,path:$path,pulse:true,local_only:false}]}' >"$retry_repos_json"
+previous_repos_json="${REPOS_JSON:-}"
+export REPOS_JSON="$retry_repos_json"
+refresh_repo_definition=$(declare -f _pulse_refresh_repo)
+_pulse_refresh_repo() {
+	local repo_path="$1"
+	: "$repo_path"
+	return 0
+}
+snapshot_retry_rc=0
+sync_todo_refs_all_repos || snapshot_retry_rc=$?
+eval "$refresh_repo_definition"
+if [[ -n "$previous_repos_json" ]]; then
+	export REPOS_JSON="$previous_repos_json"
+else
+	unset REPOS_JSON
+fi
+[[ "$snapshot_retry_rc" -eq 0 ]] || fail "stale snapshot retry did not recover"
+[[ -e "$ADVANCE_REMOTE_MARKER" ]] || fail "stale snapshot fixture did not advance the remote"
+git --git-dir="$remote_snapshot_retry" show main:TODO.md | grep -q '^synced:owner/repo-snapshot-retry$' || \
+	fail "refreshed snapshot was not synced"
+grep -q 'status=retryable_refresh stage=snapshot repo=owner/repo-snapshot-retry' "$WRAPPER_LOGFILE" || \
+	fail "stale snapshot refresh evidence was not logged"
+grep -q 'status=retrying repo=owner/repo-snapshot-retry attempt=2 reason=retryable_snapshot' "$WRAPPER_LOGFILE" || \
+	fail "stale snapshot retry evidence was not logged"
+grep -q 'TODO ref sync batch completed scheduled=1 failures=0' "$WRAPPER_LOGFILE" || \
+	fail "recovered snapshot retry failed the sync batch"
+if only_todo_sync_workspace >/dev/null 2>&1; then
+	fail "stale snapshot retry left an automation workspace behind"
+fi
+unset ADVANCE_REMOTE_ON_PULL ADVANCE_REMOTE_MARKER ADVANCE_REMOTE_WRITER
 
 # Cleanup failure is observable without replacing the reconciliation result.
 # Use a retryable-conflict result (2) so a cleanup helper failure cannot be
