@@ -10,6 +10,7 @@
 #   - _complexity_llm_sweep_due: returns 1 when interval not elapsed
 #   - _complexity_llm_sweep_due: returns 1 when debt count decreased
 #   - _complexity_llm_sweep_due: returns 0 when interval elapsed and debt stalled
+#   - _complexity_llm_sweep_due: treats in-review debt as active work
 #   - _complexity_llm_sweep_due: tolerates an unset sweep interval under set -u
 #   - _complexity_recent_debt_closures: tolerates empty arithmetic inputs under set -u
 #   - _complexity_run_llm_sweep: creates meta reviews outside measured function debt
@@ -333,6 +334,26 @@ test_llm_sweep_due_when_zero_recent_closures() {
 	return 0
 }
 
+test_llm_sweep_skips_when_all_debt_is_in_review() {
+	install_fake_gh_for_sweep
+	local now_epoch
+	now_epoch=$(date +%s)
+	local old_epoch=$((now_epoch - ${COMPLEXITY_LLM_SWEEP_INTERVAL:-0} - 60))
+	printf '%s\n' "$old_epoch" >"$COMPLEXITY_LLM_SWEEP_LAST_RUN"
+	printf '1\n' >"$COMPLEXITY_DEBT_COUNT_FILE"
+	export GH_OPEN_DEBT_COUNT=1
+	export GH_RECENT_CLOSURES=0
+	export GH_ISSUE_LIST_JSON='[{"number":42,"title":"simplification: active debt","labels":[{"name":"function-complexity-debt"},{"name":"status:in-review"}]}]'
+
+	if ! _complexity_llm_sweep_due "$now_epoch" "test/repo" 2>/dev/null; then
+		print_result "_complexity_llm_sweep_due: in-review debt suppresses stall sweep" 0
+	else
+		print_result "_complexity_llm_sweep_due: in-review debt suppresses stall sweep" 1 "expected 1 (not due)"
+	fi
+	unset GH_OPEN_DEBT_COUNT GH_RECENT_CLOSURES GH_ISSUE_LIST_JSON
+	return 0
+}
+
 test_llm_sweep_meta_review_is_not_measured_debt() {
 	install_fake_gh_for_sweep
 	: >"$GH_ISSUE_LIST_LOG"
@@ -473,6 +494,7 @@ main() {
 	test_llm_sweep_check_interval_guard
 	test_llm_sweep_skips_when_recent_closures_exist
 	test_llm_sweep_due_when_zero_recent_closures
+	test_llm_sweep_skips_when_all_debt_is_in_review
 	test_llm_sweep_meta_review_is_not_measured_debt
 	test_both_stall_issue_creators_use_meta_label
 	test_recent_closures_defaults_empty_arithmetic_inputs

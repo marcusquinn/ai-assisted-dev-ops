@@ -738,6 +738,28 @@ cmd_sweep_check() {
 					echo "not-needed|debt at ${current_debt} but ${recent_closures} issues closed in ${stall_hours}h (active throughput)"
 					return 1
 				fi
+				# GH#30770: a flat debt count is also healthy when every open item
+				# is already queued, running, or awaiting PR review. Keep this
+				# standalone check aligned with the pulse inline sweep guard.
+				local debt_issues_json=""
+				debt_issues_json=$(gh issue list --repo "$repo_slug" \
+					--label "function-complexity-debt" --state open --limit 500 \
+					--json number,title,labels 2>/dev/null) || debt_issues_json=""
+				local actionable_count=""
+				local active_count=""
+				if [[ -n "$debt_issues_json" ]]; then
+					actionable_count=$(printf '%s' "$debt_issues_json" | jq '[.[] | select(.title | test("stalled|LLM sweep") | not)] | length' 2>/dev/null) || actionable_count=""
+					active_count=$(printf '%s' "$debt_issues_json" | jq '
+						[.[] | select(.title | test("stalled|LLM sweep") | not)] |
+						[.[] | select(.labels | map(.name) |
+							(index("status:queued") or index("status:in-progress") or index("status:in-review")))] |
+						length' 2>/dev/null) || active_count=""
+				fi
+				if [[ "$actionable_count" =~ ^[0-9]+$ && "$active_count" =~ ^[0-9]+$ && "$actionable_count" -gt 0 && "$active_count" -ge "$actionable_count" ]]; then
+					echo "${now_epoch}|${current_debt}" >"$SWEEP_DEBT_SNAPSHOT"
+					echo "not-needed|all ${actionable_count} debt issues are active or in review"
+					return 1
+				fi
 				# Zero throughput — genuine stall, sweep needed
 				echo "needed|debt stalled at ${current_debt} for ${stall_hours}h+ (was ${snapshot_count}, 0 closures)"
 				# Update snapshot for next check
