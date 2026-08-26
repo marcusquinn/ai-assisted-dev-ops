@@ -21,6 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 SCAN_SCRIPT="${SCRIPT_DIR}/../pulse-simplification-scan.sh"
 ORCHESTRATION_SCRIPT="${SCRIPT_DIR}/../pulse-simplification-orchestration.sh"
+COMPLEXITY_HELPER="${SCRIPT_DIR}/../complexity-scan-helper.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -133,18 +134,30 @@ case "$cmd" in
 				"${AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE:-}" \
 				"${AIDEVOPS_GH_ROUTE_DECISION:-}" "$args" >>"${GH_GRAPHQL_LOG}"
 			if [[ "$args" == *"search(query"* ]]; then
-				printf '{"data":{"search":{"issueCount":%s},"rateLimit":{"cost":1}}}\n' \
-					"${GH_RECENT_CLOSURES:-0}"
+				if [[ "$args" == *"--jq"* ]]; then
+					printf '%s\n' "${GH_RECENT_CLOSURES:-0}"
+				else
+					printf '{"data":{"search":{"issueCount":%s},"rateLimit":{"cost":1}}}\n' \
+						"${GH_RECENT_CLOSURES:-0}"
+				fi
 			else
-				printf '{"data":{"repository":{"issues":{"totalCount":%s}},"rateLimit":{"cost":1}}}\n' \
-					"${GH_OPEN_DEBT_COUNT:-0}"
+				if [[ "$args" == *"--jq"* ]]; then
+					printf '%s\n' "${GH_OPEN_DEBT_COUNT:-0}"
+				else
+					printf '{"data":{"repository":{"issues":{"totalCount":%s}},"rateLimit":{"cost":1}}}\n' \
+						"${GH_OPEN_DEBT_COUNT:-0}"
+				fi
 			fi
 			exit 0
 		fi
 		;;
 	issue)
 		if [[ "$subcmd" == "list" ]]; then
-			printf '%s\n' "${GH_ISSUE_LIST_JSON:-[]}"
+			if [[ "$args" == *'join("|")'* ]]; then
+				printf '%s\n' "${GH_ISSUE_COUNTS:-0|0}"
+			else
+				printf '%s\n' "${GH_ISSUE_LIST_JSON:-[]}"
+			fi
 			exit 0
 		fi
 		;;
@@ -313,6 +326,51 @@ test_llm_sweep_skips_when_recent_closures_exist() {
 	return 0
 }
 
+test_llm_sweep_skips_when_all_debt_is_in_review() {
+	install_fake_gh_for_sweep
+	: >"$GH_ISSUE_LIST_LOG"
+	local now_epoch
+	now_epoch=$(date +%s)
+	local old_epoch=$((now_epoch - ${COMPLEXITY_LLM_SWEEP_INTERVAL:-0} - 60))
+	printf '%s\n' "$old_epoch" >"$COMPLEXITY_LLM_SWEEP_LAST_RUN"
+	printf '10\n' >"$COMPLEXITY_DEBT_COUNT_FILE"
+	export GH_OPEN_DEBT_COUNT=10
+	export GH_RECENT_CLOSURES=0
+	# The fake gh returns the post-jq count. The logged jq expression proves
+	# status:in-review participates in that count.
+	export GH_ISSUE_LIST_JSON='1'
+
+	if ! _complexity_llm_sweep_due "$now_epoch" "test/repo" 2>/dev/null &&
+		grep -qF 'status:in-review' "$GH_ISSUE_LIST_LOG"; then
+		print_result "_complexity_llm_sweep_due: in-review debt suppresses stall sweep" 0
+	else
+		print_result "_complexity_llm_sweep_due: in-review debt suppresses stall sweep" 1 "expected 1 (not due) with in-review included in dispatched count"
+	fi
+	unset GH_OPEN_DEBT_COUNT GH_RECENT_CLOSURES GH_ISSUE_LIST_JSON
+	return 0
+}
+
+test_helper_sweep_skips_when_all_debt_is_in_review() {
+	install_fake_gh_for_sweep
+	local now_epoch helper_snapshot output="" rc=0
+	now_epoch=$(date +%s)
+	helper_snapshot="${HOME}/.aidevops/logs/complexity-debt-snapshot"
+	rm -f "$COMPLEXITY_LLM_SWEEP_LAST_RUN"
+	printf '%s|10\n' "$((now_epoch - 21660))" >"$helper_snapshot"
+	export GH_OPEN_DEBT_COUNT=10
+	export GH_RECENT_CLOSURES=0
+	export GH_ISSUE_COUNTS='1|1'
+
+	output=$("$COMPLEXITY_HELPER" sweep-check "test/repo" --stall-hours 6 2>/dev/null) || rc=$?
+	if [[ "$rc" -eq 1 && "$output" == "not-needed|all 1 debt issues are dispatched or in review" ]]; then
+		print_result "complexity-scan-helper: in-review debt suppresses stall sweep" 0
+	else
+		print_result "complexity-scan-helper: in-review debt suppresses stall sweep" 1 "expected not-needed, got rc=${rc} output='${output}'"
+	fi
+	unset GH_OPEN_DEBT_COUNT GH_RECENT_CLOSURES GH_ISSUE_COUNTS
+	return 0
+}
+
 test_llm_sweep_due_when_zero_recent_closures() {
 	install_fake_gh_for_sweep
 	local now_epoch
@@ -472,6 +530,8 @@ main() {
 	test_llm_sweep_not_due_when_interval_not_elapsed
 	test_llm_sweep_check_interval_guard
 	test_llm_sweep_skips_when_recent_closures_exist
+	test_llm_sweep_skips_when_all_debt_is_in_review
+	test_helper_sweep_skips_when_all_debt_is_in_review
 	test_llm_sweep_due_when_zero_recent_closures
 	test_llm_sweep_meta_review_is_not_measured_debt
 	test_both_stall_issue_creators_use_meta_label

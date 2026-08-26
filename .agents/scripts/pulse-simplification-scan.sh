@@ -230,19 +230,22 @@ _complexity_llm_sweep_due() {
 
 	# GH#17536: Skip sweep when all remaining debt issues are already dispatched.
 	# If every open function-complexity-debt issue (excluding sweep meta-issues) has
-	# status:queued or status:in-progress, the pipeline is working — no sweep needed.
+	# status:queued, status:in-progress, or status:in-review, the pipeline is
+	# working — no sweep needed. Review is still active delivery, not a stall.
 	local dispatched_count
 	dispatched_count=$(gh_issue_list --repo "$aidevops_slug" \
 		--label "function-complexity-debt" --state open \
+		--limit 500 \
 		--json number,title,labels --jq '
 		[.[] | select(.title | test("stalled|LLM sweep") | not)] |
 		if length == 0 then 0
 		else
-			[.[] | select(.labels | map(.name) | (index("status:queued") or index("status:in-progress")))] | length
+			[.[] | select(.labels | map(.name) | (index("status:queued") or index("status:in-progress") or index("status:in-review")))] | length
 		end' 2>/dev/null) || dispatched_count=""
 	local actionable_count
 	actionable_count=$(gh_issue_list --repo "$aidevops_slug" \
 		--label "function-complexity-debt" --state open \
+		--limit 500 \
 		--json number,title --jq '[.[] | select(.title | test("stalled|LLM sweep") | not)] | length' 2>/dev/null) || actionable_count=""
 	if [[ "$actionable_count" =~ ^[0-9]+$ && "$dispatched_count" =~ ^[0-9]+$ && "$actionable_count" -gt 0 && "$dispatched_count" -ge "$actionable_count" ]]; then
 		echo "[pulse-wrapper] Complexity LLM sweep: all ${actionable_count} debt issues are dispatched — sweep not needed" >>"$LOGFILE"

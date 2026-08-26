@@ -644,6 +644,34 @@ cmd_scan() {
 }
 
 #######################################
+# Count actionable debt issues and those already in the delivery lifecycle.
+# Arguments: $1 - repo_slug
+# Outputs globals: _SWEEP_DISPATCHED_COUNT, _SWEEP_ACTIONABLE_COUNT
+#######################################
+_sweep_load_dispatched_debt_counts() {
+	local repo_slug="$1"
+	local counts=""
+
+	# shellcheck disable=SC2016 # jq variables are evaluated by jq, not the shell.
+	counts=$(gh issue list --repo "$repo_slug" \
+		--label "function-complexity-debt" --state open \
+		--limit 500 \
+		--json number,title,labels --jq '
+		[.[] | select(.title | test("stalled|LLM sweep") | not)] as $actionable |
+		[
+			([$actionable[] | select(.labels | map(.name) |
+				(index("status:queued") or index("status:in-progress") or index("status:in-review")))] | length),
+			($actionable | length)
+		] | join("|")' 2>/dev/null) || return 1
+
+	_SWEEP_DISPATCHED_COUNT="${counts%%|*}"
+	_SWEEP_ACTIONABLE_COUNT="${counts##*|}"
+	[[ "$_SWEEP_DISPATCHED_COUNT" =~ ^[0-9]+$ ]] || return 1
+	[[ "$_SWEEP_ACTIONABLE_COUNT" =~ ^[0-9]+$ ]] || return 1
+	return 0
+}
+
+#######################################
 # Sweep check — determine if daily LLM sweep is needed.
 # Conditions for sweep:
 #   1. Last sweep was >24h ago (or never run)
@@ -736,6 +764,16 @@ cmd_sweep_check() {
 					# Active throughput — system is working, not stalled. Update snapshot.
 					echo "${now_epoch}|${current_debt}" >"$SWEEP_DEBT_SNAPSHOT"
 					echo "not-needed|debt at ${current_debt} but ${recent_closures} issues closed in ${stall_hours}h (active throughput)"
+					return 1
+				fi
+				# A debt item in PR review remains active delivery. Treat queued,
+				# in-progress, and in-review issues as dispatched so the helper path
+				# matches the inline pulse guard and avoids false stall reviews.
+				if _sweep_load_dispatched_debt_counts "$repo_slug" &&
+					[[ "$_SWEEP_ACTIONABLE_COUNT" -gt 0 ]] &&
+					[[ "$_SWEEP_DISPATCHED_COUNT" -ge "$_SWEEP_ACTIONABLE_COUNT" ]]; then
+					echo "${now_epoch}|${current_debt}" >"$SWEEP_DEBT_SNAPSHOT"
+					echo "not-needed|all ${_SWEEP_ACTIONABLE_COUNT} debt issues are dispatched or in review"
 					return 1
 				fi
 				# Zero throughput — genuine stall, sweep needed
