@@ -152,4 +152,55 @@ grep -q 'scheduled=6 failures=1 parallelism=2 per_repo_timeout=7s' "$WRAPPER_LOG
 	exit 1
 }
 
-printf 'PASS TODO reference sync uses bounded parallel jobs and preserves failures\n'
+# A retry must consume only time remaining in the aggregate stage. Simulate a
+# retryable first pass that leaves three seconds after the five-second guard;
+# the old code would incorrectly grant a fresh ten-second per-repo timeout.
+original_sync_definition=$(declare -f sync_todo_refs_for_repo)
+retry_repos_json="${TEST_ROOT}/retry-repos.json"
+jq -cn --arg slug owner/repo-retry --arg path "${TEST_ROOT}/repo-1" \
+	'{initialized_repos:[{slug:$slug,path:$path,pulse:true,local_only:false}]}' >"$retry_repos_json"
+export REPOS_JSON="$retry_repos_json"
+export PRE_RUN_STAGE_TIMEOUT=15
+export PULSE_TODO_SYNC_REPO_TIMEOUT=10
+export PULSE_TODO_SYNC_RETRY_TIMEOUT=10
+: >"$TIMEOUT_LOG"
+TEST_NOW=100
+date() {
+	local format="${1:-}"
+	if [[ "$format" == "+%s" ]]; then
+		printf '%s\n' "$TEST_NOW"
+		return 0
+	fi
+	command date "$@"
+	return $?
+}
+sync_todo_refs_for_repo() {
+	local repo_slug="$1"
+	local repo_path="$2"
+	: "$repo_slug" "$repo_path"
+	retry_attempt=$((retry_attempt + 1))
+	if [[ "$retry_attempt" -eq 1 ]]; then
+		TEST_NOW=107
+		return 2
+	fi
+	return 0
+}
+retry_attempt=0
+retry_rc=0
+sync_todo_refs_all_repos || retry_rc=$?
+eval "$original_sync_definition"
+unset -f date
+[[ "$retry_rc" -eq 0 ]] || {
+	printf 'FAIL aggregate retry did not complete within its shared budget: rc=%s\n' "$retry_rc" >&2
+	exit 1
+}
+if ! grep -qx 'sync_todo_refs_repo_1|5' "$TIMEOUT_LOG" || ! grep -qx 'sync_todo_refs_repo_1|3' "$TIMEOUT_LOG"; then
+	printf 'FAIL aggregate retry received a fresh per-repo timeout\n' >&2
+	exit 1
+fi
+grep -q 'status=retrying repo=owner/repo-retry attempt=2 reason=retryable_snapshot timeout=3s' "$WRAPPER_LOGFILE" || {
+	printf 'FAIL aggregate retry omitted remaining-budget diagnostics\n' >&2
+	exit 1
+}
+
+printf 'PASS TODO reference sync uses bounded parallel jobs and preserves aggregate retry budgets\n'

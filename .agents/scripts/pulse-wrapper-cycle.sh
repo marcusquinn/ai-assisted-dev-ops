@@ -703,25 +703,78 @@ _pulse_todo_sync_repo_timeout() {
 	return 0
 }
 
+_pulse_todo_sync_retry_timeout() {
+	local repo_timeout="$1"
+	local retry_timeout="${PULSE_TODO_SYNC_RETRY_TIMEOUT:-60}"
+	[[ "$repo_timeout" =~ ^[1-9][0-9]*$ ]] || return 1
+	[[ "$retry_timeout" =~ ^[1-9][0-9]*$ ]] || retry_timeout=60
+	if [[ "$retry_timeout" -gt "$repo_timeout" ]]; then
+		retry_timeout="$repo_timeout"
+	fi
+	printf '%s\n' "$retry_timeout"
+	return 0
+}
+
+_pulse_todo_sync_deadline_remaining() {
+	local aggregate_deadline="$1"
+	local now="" remaining=0
+	local guard_seconds=5
+	[[ "$aggregate_deadline" =~ ^[1-9][0-9]*$ ]] || return 1
+	now=$(date +%s) || return 1
+	[[ "$now" =~ ^[1-9][0-9]*$ ]] || return 1
+	remaining=$((aggregate_deadline - now - guard_seconds))
+	[[ "$remaining" -gt 0 ]] || return 1
+	printf '%s\n' "$remaining"
+	return 0
+}
+
 _pulse_sync_todo_repo_bounded() {
 	local repo_slug="$1"
 	local repo_path="$2"
 	local repo_timeout="$3"
 	local job_index="$4"
-	local sync_rc=0
+	local aggregate_deadline="${5:-}"
+	local sync_rc=0 retry_timeout="" remaining_timeout="" initial_timeout="$repo_timeout"
+	retry_timeout=$(_pulse_todo_sync_retry_timeout "$repo_timeout") || return 1
+	if [[ "$aggregate_deadline" =~ ^[1-9][0-9]*$ ]]; then
+		remaining_timeout=$(_pulse_todo_sync_deadline_remaining "$aggregate_deadline") || {
+			printf '[pulse-wrapper] TODO ref sync status=skipped reason=aggregate_budget job=%s\n' \
+				"$job_index" >>"$WRAPPER_LOGFILE"
+			return 1
+		}
+		if [[ "$remaining_timeout" -le "$retry_timeout" ]]; then
+			initial_timeout=$((remaining_timeout / 2))
+		else
+			initial_timeout=$((remaining_timeout - retry_timeout))
+		fi
+		if [[ "$initial_timeout" -gt "$repo_timeout" ]]; then
+			initial_timeout="$repo_timeout"
+		fi
+		[[ "$initial_timeout" -gt 0 ]] || return 1
+	fi
 	_pulse_refresh_repo "$repo_path" || true
 	if declare -F run_stage_with_timeout >/dev/null 2>&1; then
-		run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$repo_timeout" \
+		run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$initial_timeout" \
 			sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
 	else
 		sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
 	fi
 	if [[ "$sync_rc" -eq 2 ]]; then
-		printf '[pulse-wrapper] TODO ref sync status=retrying repo=%s attempt=2 reason=retryable_snapshot\n' \
-			"$repo_slug" >>"$WRAPPER_LOGFILE"
+		if [[ "$aggregate_deadline" =~ ^[1-9][0-9]*$ ]]; then
+			remaining_timeout=$(_pulse_todo_sync_deadline_remaining "$aggregate_deadline") || {
+				printf '[pulse-wrapper] TODO ref sync status=retry_exhausted reason=aggregate_budget job=%s\n' \
+					"$job_index" >>"$WRAPPER_LOGFILE"
+				return 1
+			}
+			if [[ "$remaining_timeout" -lt "$retry_timeout" ]]; then
+				retry_timeout="$remaining_timeout"
+			fi
+		fi
+		printf '[pulse-wrapper] TODO ref sync status=retrying repo=%s attempt=2 reason=retryable_snapshot timeout=%ss\n' \
+			"$repo_slug" "$retry_timeout" >>"$WRAPPER_LOGFILE"
 		sync_rc=0
 		if declare -F run_stage_with_timeout >/dev/null 2>&1; then
-			run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$repo_timeout" \
+			run_stage_with_timeout "sync_todo_refs_repo_${job_index}" "$retry_timeout" \
 				sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
 		else
 			sync_todo_refs_for_repo "$repo_slug" "$repo_path" || sync_rc=$?
@@ -740,18 +793,23 @@ _pulse_sync_todo_repo_bounded() {
 sync_todo_refs_all_repos() {
 	local repos_json="${REPOS_JSON:-${HOME}/.config/aidevops/repos.json}"
 	local repo_slug="" repo_path="" pid="" job_rc=0
-	local parallelism="" repo_timeout="" scheduled=0 sync_failures=0
+	local parallelism="" repo_timeout="" stage_timeout="" aggregate_started="" aggregate_deadline="" scheduled=0 sync_failures=0
 	local -a active_pids=()
 
 	[[ -f "$repos_json" ]] || return 0
 	parallelism=$(_pulse_todo_sync_parallelism)
 	repo_timeout=$(_pulse_todo_sync_repo_timeout)
+	stage_timeout="${PRE_RUN_STAGE_TIMEOUT:-600}"
+	[[ "$stage_timeout" =~ ^[1-9][0-9]*$ ]] || stage_timeout=600
+	aggregate_started=$(date +%s) || return 1
+	[[ "$aggregate_started" =~ ^[1-9][0-9]*$ ]] || return 1
+	aggregate_deadline=$((aggregate_started + stage_timeout))
 	while IFS='|' read -r repo_slug repo_path; do
 		[[ -n "$repo_slug" && -n "$repo_path" ]] || continue
 		repo_path="${repo_path/#\~/$HOME}"
 		[[ -d "$repo_path" ]] || continue
 		scheduled=$((scheduled + 1))
-		_pulse_sync_todo_repo_bounded "$repo_slug" "$repo_path" "$repo_timeout" "$scheduled" &
+		_pulse_sync_todo_repo_bounded "$repo_slug" "$repo_path" "$repo_timeout" "$scheduled" "$aggregate_deadline" &
 		active_pids+=("$!")
 		if [[ "${#active_pids[@]}" -ge "$parallelism" ]]; then
 			pid="${active_pids[0]}"
