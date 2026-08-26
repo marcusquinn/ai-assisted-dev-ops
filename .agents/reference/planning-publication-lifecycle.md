@@ -131,6 +131,9 @@ allocate ID + create issue (publication:pending)
       branch deleted before merge -> same as closed unmerged
 ```
 
+Planning PR manifest, title, receipt, and retry details are defined in
+`planning-pr-publication-contract.md`.
+
 The post-merge transition is driven by the existing default-branch push path,
 not by trusting a PR's mergeable state. A `pull_request.closed` reconciliation
 may provide faster diagnostics, but only default-branch file validation may

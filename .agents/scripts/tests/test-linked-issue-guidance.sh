@@ -39,6 +39,7 @@ assert_contains "CONTRIBUTING.md" 'not a repository owner, member, or collaborat
 assert_contains "CONTRIBUTING.md" 'Closes #NNN' "CONTRIBUTING closing keyword"
 assert_contains "CONTRIBUTING.md" 'Ref #NNN' "CONTRIBUTING reference keyword"
 assert_contains ".agents/templates/issue-first-pr-contributing.md" 'aidevops:issue-first-pr:start' "managed CONTRIBUTING block start marker"
+assert_contains ".agents/templates/issue-first-pr-contributing.md" 'aidevops:issue-first-pr:scope=external' "managed CONTRIBUTING policy scope marker"
 assert_contains ".agents/templates/issue-first-pr-contributing.md" 'aidevops:issue-first-pr:end' "managed CONTRIBUTING block end marker"
 assert_contains ".github/PULL_REQUEST_TEMPLATE.md" 'Linked issue' "PR template linked issue field"
 assert_contains ".github/PULL_REQUEST_TEMPLATE.md" 'Closes #NNN' "PR template closing keyword"

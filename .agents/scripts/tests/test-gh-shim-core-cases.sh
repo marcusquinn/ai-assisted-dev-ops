@@ -347,7 +347,7 @@ fi
 echo ""
 echo "Test 6a: issue-first repos block PR creation without linked issue"
 _reset_log
-if "$SHIM_RUN" pr create --repo marcusquinn/aidevops --title "fix: missing issue" --body "PR body" 2>"$TMP/pr-linked-issue.err"; then
+if STUB_GH_PERMISSION=none "$SHIM_RUN" pr create --repo marcusquinn/aidevops --title "fix: missing issue" --body "PR body" 2>"$TMP/pr-linked-issue.err"; then
 	_fail "missing linked issue PR guard" "write unexpectedly passed"
 else
 	argv=$(_read_argv)
@@ -356,6 +356,106 @@ else
 	else
 		_fail "missing linked issue PR guard" "argv: $argv err: $(cat "$TMP/pr-linked-issue.err" 2>/dev/null || true)"
 	fi
+fi
+
+_reset_log
+if env STUB_GH_PERMISSION=write "$SHIM_RUN" pr create --repo marcusquinn/aidevops \
+	--title "plan: verified maintainer" --body "Planning publication" \
+	2>"$TMP/pr-linked-maintainer.err"; then
+	argv=$(_read_argv)
+	if [[ "$argv" == *"Planning publication"* ]]; then
+		_pass "external-only policy exempts API-verified write actor"
+	else
+		_fail "verified maintainer issue-first exemption" "argv: $argv"
+	fi
+else
+	argv=$(_read_argv)
+	_fail "verified maintainer issue-first exemption" \
+		"argv: $argv err: $(cat "$TMP/pr-linked-maintainer.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+if env STUB_GH_USER=trusted-bot STUB_GH_PERMISSION=write "$SHIM_RUN" pr create \
+	--repo marcusquinn/aidevops --title "chore: trusted bot workflow" \
+	--body "Automated maintenance publication" 2>"$TMP/pr-linked-bot.err"; then
+	argv=$(_read_argv)
+	if [[ "$argv" == *"Automated maintenance publication"* ]]; then
+		_pass "external-only policy exempts server-verified trusted bot workflow"
+	else
+		_fail "trusted bot issue-first exemption" "argv: $argv"
+	fi
+else
+	_fail "trusted bot issue-first exemption" \
+		"err: $(cat "$TMP/pr-linked-bot.err" 2>/dev/null || true)"
+fi
+
+_reset_log
+if STUB_GH_PERMISSION=triage "$SHIM_RUN" pr create --repo marcusquinn/aidevops \
+	--title "plan: triage actor" --body "Planning publication" 2>"$TMP/pr-linked-triage.err"; then
+	_fail "external contributor linked issue guard" "triage actor unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'exemption fails closed' "$TMP/pr-linked-triage.err"; then
+	_pass "external contributor remains blocked without write permission"
+else
+	_fail "external contributor linked issue guard" "native call or diagnostic mismatch"
+fi
+
+_reset_log
+if STUB_GH_PERMISSION_FAIL=1 "$SHIM_RUN" pr create --repo marcusquinn/aidevops \
+	--title "plan: unavailable permission" --body "Planning publication" 2>"$TMP/pr-linked-api.err"; then
+	_fail "permission API failure linked issue guard" "write unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'exemption fails closed' "$TMP/pr-linked-api.err"; then
+	_pass "permission API failure preserves fail-closed external policy"
+else
+	_fail "permission API failure linked issue guard" "native call or diagnostic mismatch"
+fi
+
+policy_repo="$TMP/policy-repo"
+mkdir -p "$policy_repo"
+git -C "$policy_repo" init -q
+git -C "$policy_repo" remote add origin https://github.com/example/policy-repo.git
+printf '%s\n' '<!-- aidevops:issue-first-pr:start -->' \
+	'<!-- aidevops:issue-first-pr:scope=universal -->' \
+	'Issue-first; include For #NNN.' \
+	'<!-- aidevops:issue-first-pr:end -->' >"$policy_repo/CONTRIBUTING.md"
+_reset_log
+if (cd "$policy_repo" && env STUB_GH_PERMISSION=write "$SHIM_RUN" pr create \
+	--repo example/policy-repo --title "plan: universal" --body "Planning publication" \
+	2>"$TMP/pr-linked-universal.err"); then
+	_fail "universal linked issue policy" "verified write actor unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]]; then
+	_pass "universal policy blocks every unlinked PR"
+else
+	_fail "universal linked issue policy" "native call unexpectedly reached transport"
+fi
+
+printf '%s\n' '<!-- aidevops:issue-first-pr:start -->' \
+	'Issue-first; include For #NNN.' \
+	'<!-- aidevops:issue-first-pr:end -->' >"$policy_repo/CONTRIBUTING.md"
+_reset_log
+if (cd "$policy_repo" && env STUB_GH_PERMISSION=write "$SHIM_RUN" pr create \
+	--repo example/policy-repo --title "plan: ambiguous" --body "Planning publication" \
+	2>"$TMP/pr-linked-ambiguous.err"); then
+	_fail "ambiguous linked issue policy" "verified write actor unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'scope is universal' "$TMP/pr-linked-ambiguous.err"; then
+	_pass "ambiguous policy fails closed as universal"
+else
+	_fail "ambiguous linked issue policy" "native call or diagnostic mismatch"
+fi
+
+printf '%s\n' '<!-- aidevops:issue-first-pr:start -->' \
+	'<!-- aidevops:issue-first-pr:scope=external -->' \
+	'<!-- aidevops:issue-first-pr:scope=unknown -->' \
+	'Issue-first; include For #NNN.' \
+	'<!-- aidevops:issue-first-pr:end -->' >"$policy_repo/CONTRIBUTING.md"
+_reset_log
+if (cd "$policy_repo" && env STUB_GH_PERMISSION=write "$SHIM_RUN" pr create \
+	--repo example/policy-repo --title "plan: malformed scope" --body "Planning publication" \
+	2>"$TMP/pr-linked-malformed.err"); then
+	_fail "malformed linked issue scope" "verified write actor unexpectedly passed"
+elif [[ ! -s "$STUB_GH_LOG" ]] && grep -q 'scope is universal' "$TMP/pr-linked-malformed.err"; then
+	_pass "malformed structured scope overrides exemption and fails closed"
+else
+	_fail "malformed linked issue scope" "native call or diagnostic mismatch"
 fi
 
 _reset_log

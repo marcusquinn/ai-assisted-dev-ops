@@ -258,6 +258,87 @@ _todo_changed_planning_files() {
 	return 0
 }
 
+_todo_changed_task_ids() {
+	local repo_path="$1"
+	local changed_files="$2"
+	local rel_path=""
+	local task_id=""
+	{
+		git -C "$repo_path" diff --no-ext-diff --unified=0 HEAD -- TODO.md 2>/dev/null |
+			sed -nE 's/^\+[[:space:]]*- \[[^]]\][[:space:]]+(t[1-9][0-9]*(\.[1-9][0-9]*)*).*/\1/p'
+		while IFS= read -r rel_path; do
+			case "$rel_path" in
+			todo/tasks/t*-brief.md)
+				task_id="${rel_path##*/}"
+				task_id="${task_id%-brief.md}"
+				[[ "$task_id" =~ ^t[1-9][0-9]*(\.[1-9][0-9]*)*$ ]] && printf '%s\n' "$task_id"
+				;;
+			esac
+		done <<<"$changed_files"
+	} | sort -u
+	return 0
+}
+
+_todo_changed_task_manifest() {
+	local repo_path="$1"
+	local changed_files="$2"
+	local task_ids=""
+	local task_id=""
+	local task_line=""
+	local task_count=0
+	local issue_refs=""
+	local issue_count=0
+	local issue_num=""
+	local manifest=""
+	task_ids=$(_todo_changed_task_ids "$repo_path" "$changed_files")
+	[[ -n "$task_ids" ]] || return 0
+	while IFS= read -r task_id; do
+		[[ -n "$task_id" ]] || continue
+		task_count=$(grep -Ec "^[[:space:]]*- \[[^]]\][[:space:]]+${task_id}([[:space:]]|$)" \
+			"${repo_path}/TODO.md" 2>/dev/null || true)
+		if [[ "$task_count" -ne 1 ]]; then
+			printf '[todo_commit_push] Planning publication cannot safely map %s: expected one current TODO entry, found %s.\n' \
+				"$task_id" "$task_count" >&2
+			return 2
+		fi
+		task_line=$(grep -E "^[[:space:]]*- \[[^]]\][[:space:]]+${task_id}([[:space:]]|$)" \
+			"${repo_path}/TODO.md") || return 2
+		issue_refs=$(printf '%s\n' "$task_line" | grep -Eo '(^|[[:space:]])ref:GH#[1-9][0-9]*([[:space:]]|$)' || true)
+		issue_count=$(printf '%s\n' "$issue_refs" | grep -c 'ref:GH#' || true)
+		if [[ "$issue_count" -ne 1 ]]; then
+			printf '[todo_commit_push] Planning publication cannot safely map %s: expected one same-repository ref:GH#NNN field, found %s.\n' \
+				"$task_id" "$issue_count" >&2
+			return 2
+		fi
+		issue_num="${issue_refs#*ref:GH#}"
+		issue_num="${issue_num%%[[:space:]]*}"
+		manifest="${manifest}${manifest:+$'\n'}${task_id}"$'\t'"${issue_num}"
+	done <<<"$task_ids"
+	printf '%s\n' "$manifest" | sort -u
+	return 0
+}
+
+_todo_planning_publication_id() {
+	local repo_path="$1"
+	local changed_files="$2"
+	local rel_path=""
+	local object_id=""
+	local snapshot=""
+	while IFS= read -r rel_path; do
+		[[ -n "$rel_path" ]] || continue
+		_todo_safe_planning_path "$rel_path" || continue
+		if [[ -f "${repo_path}/${rel_path}" ]]; then
+			object_id=$(git -C "$repo_path" hash-object -- "$rel_path") || return 1
+		else
+			object_id="deleted"
+		fi
+		snapshot="${snapshot}${rel_path}"$'\t'"${object_id}"$'\n'
+	done <<<"$changed_files"
+	[[ -n "$snapshot" ]] || return 1
+	printf '%s' "$snapshot" | git -C "$repo_path" hash-object --stdin
+	return $?
+}
+
 _todo_copy_planning_changes_to_worktree() {
 	local repo_path="$1"
 	local worktree_path="$2"
@@ -300,8 +381,9 @@ _todo_remove_temp_worktree() {
 	local worktree_path="$2"
 	[[ -n "$worktree_path" ]] || return 0
 	if [[ -e "${worktree_path}/.git" ]]; then
-		git -C "$repo_path" worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+		git -C "$repo_path" worktree remove --force "$worktree_path" >/dev/null 2>&1 || return 1
 	fi
+	[[ ! -e "$worktree_path" ]] || return 1
 	return 0
 }
 
@@ -309,12 +391,36 @@ _todo_planning_pr_body() {
 	local source_branch="$1"
 	local default_branch="$2"
 	local commit_msg="$3"
+	local publication_id="$4"
+	local task_manifest="$5"
+	local task_id=""
+	local issue_num=""
+	local issue_refs=""
+	while IFS=$'\t' read -r task_id issue_num; do
+		[[ -n "$task_id" && "$issue_num" =~ ^[1-9][0-9]*$ ]] || continue
+		if ! grep -Eq "(^|[[:space:]])${issue_num}($|[[:space:]])" <<<"$issue_refs"; then
+			issue_refs="${issue_refs}${issue_refs:+ }${issue_num}"
+		fi
+	done <<<"$task_manifest"
 	cat <<EOF
 ## Planning publication
 
 - Publishes TODO.md and todo/ planning-file changes through a PR because ${default_branch} does not accept direct planning pushes.
 - Source branch at helper invocation: ${source_branch}.
 - Commit message: ${commit_msg}.
+
+## Task and issue manifest
+
+<!-- aidevops:planning-publication:v1 id=${publication_id} -->
+EOF
+	while IFS=$'\t' read -r task_id issue_num; do
+		[[ -n "$task_id" && "$issue_num" =~ ^[1-9][0-9]*$ ]] || continue
+		printf '<!-- aidevops:planning-task:v1 task=%s issue=%s -->\n' "$task_id" "$issue_num"
+	done <<<"$task_manifest"
+	for issue_num in $issue_refs; do
+		printf -- '- For #%s\n' "$issue_num"
+	done
+	cat <<EOF
 
 ## Security and architecture guardrails
 
@@ -326,6 +432,23 @@ _todo_planning_pr_body() {
 
 - Merge this planning-only PR before expecting pulse or issue-sync to see the TODO/todo changes.
 EOF
+	return 0
+}
+
+_todo_planning_pr_title() {
+	local commit_msg="$1"
+	local task_manifest="$2"
+	local manifest_count=0
+	local task_id=""
+	local subject="$commit_msg"
+	manifest_count=$(printf '%s\n' "$task_manifest" | grep -c $'^[^\t][^\t]*\t[1-9][0-9]*$' || true)
+	if [[ "$manifest_count" -eq 1 ]]; then
+		task_id="${task_manifest%%$'\t'*}"
+		subject="${commit_msg#*: }"
+		printf 'plan(%s): %s\n' "$task_id" "$subject"
+		return 0
+	fi
+	printf '%s\n' "$commit_msg"
 	return 0
 }
 
@@ -348,12 +471,15 @@ _todo_planning_pr_slug() {
 
 _TODO_PLANNING_PR_BRANCH=""
 _TODO_PLANNING_PR_WORKTREE=""
+_TODO_PLANNING_PR_COMMIT=""
+_TODO_PLANNING_PR_REUSED=0
 
 _todo_create_planning_worktree() {
 	local repo_path="$1"
 	local commit_msg="$2"
 	local default_branch="$3"
-	local log_target="$4"
+	local publication_id="$4"
+	local log_target="$5"
 
 	if git -C "$repo_path" remote get-url origin >/dev/null 2>&1; then
 		git -C "$repo_path" fetch -q origin "$default_branch" 2>>"$log_target" || {
@@ -362,26 +488,43 @@ _todo_create_planning_worktree() {
 		}
 	fi
 
-	local repo_abs parent_dir repo_name slug_part timestamp branch_name worktree_path
+	local repo_abs parent_dir repo_name slug_part branch_name worktree_path remote_commit
 	repo_abs=$(cd "$repo_path" 2>/dev/null && pwd -P) || return 1
 	parent_dir=$(dirname "$repo_abs") || return 1
 	repo_name=$(basename "$repo_abs") || return 1
 	slug_part=$(_todo_slugify_ref_fragment "$commit_msg")
-	timestamp=$(date -u +%Y%m%d%H%M%S)
-	branch_name="planning/${timestamp}-$$-${slug_part}"
-	worktree_path="${parent_dir}/${repo_name}-planning-${timestamp}-$$-${slug_part}"
+	branch_name="planning/${publication_id:0:12}-${slug_part}"
+	worktree_path="${parent_dir}/${repo_name}-planning-${publication_id:0:12}-$$-${slug_part}"
+	_TODO_PLANNING_PR_BRANCH="$branch_name"
+	_TODO_PLANNING_PR_WORKTREE=""
+	_TODO_PLANNING_PR_COMMIT=""
+	_TODO_PLANNING_PR_REUSED=0
+
+	if git -C "$repo_path" ls-remote --exit-code --heads origin "refs/heads/${branch_name}" >/dev/null 2>&1; then
+		git -C "$repo_path" fetch -q origin "+refs/heads/${branch_name}:refs/remotes/origin/${branch_name}" 2>>"$log_target" || return 1
+		remote_commit=$(git -C "$repo_path" rev-parse "refs/remotes/origin/${branch_name}" 2>/dev/null) || return 1
+		if ! git -C "$repo_path" log -1 --format=%B "$remote_commit" 2>/dev/null |
+			grep -Fqx "Planning-Publication-ID: ${publication_id}"; then
+			printf '%s\n' "[todo_commit_push] Planning publication branch collision: ${branch_name}" >>"$log_target"
+			printf '[todo_commit_push] Existing remote branch %s does not match publication %s; refusing to overwrite it.\n' \
+				"$branch_name" "$publication_id" >&2
+			return 1
+		fi
+		_TODO_PLANNING_PR_COMMIT="$remote_commit"
+		_TODO_PLANNING_PR_REUSED=1
+		return 0
+	fi
 
 	if [[ -e "$worktree_path" ]]; then
 		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: worktree path already exists" >>"$log_target"
 		return 1
 	fi
 
-	git -C "$repo_path" worktree add -b "$branch_name" "$worktree_path" "origin/${default_branch}" >/dev/null 2>>"$log_target" || {
+	git -C "$repo_path" worktree add --detach "$worktree_path" "origin/${default_branch}" >/dev/null 2>>"$log_target" || {
 		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: cannot create linked worktree" >>"$log_target"
 		return 1
 	}
 
-	_TODO_PLANNING_PR_BRANCH="$branch_name"
 	_TODO_PLANNING_PR_WORKTREE="$worktree_path"
 	return 0
 }
@@ -393,11 +536,15 @@ _todo_commit_planning_worktree() {
 	local files="$4"
 	local commit_msg="$5"
 	local branch_name="$6"
-	local log_target="$7"
+	local publication_id="$7"
+	local log_target="$8"
+	local commit_sha=""
+	if [[ "$_TODO_PLANNING_PR_REUSED" -eq 1 ]]; then
+		return 0
+	fi
 
 	if ! _todo_copy_planning_changes_to_worktree "$repo_path" "$worktree_path" "$changed_files"; then
 		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: cannot copy planning changes" >>"$log_target"
-		_todo_remove_temp_worktree "$repo_path" "$worktree_path"
 		return 1
 	fi
 
@@ -405,20 +552,21 @@ _todo_commit_planning_worktree() {
 	git -C "$worktree_path" add $files 2>>"$log_target" || true
 	if git -C "$worktree_path" diff --cached --quiet 2>/dev/null; then
 		printf '%s\n' "[todo_commit_push] No changes staged in planning PR worktree" >>"$log_target"
-		_todo_remove_temp_worktree "$repo_path" "$worktree_path"
 		TODO_COMMIT_PUSH_RESULT="$TODO_COMMIT_RESULT_NOOP"
 		return 0
 	fi
 
-	git -C "$worktree_path" commit -m "$commit_msg" --no-verify >/dev/null 2>>"$log_target" || {
+	git -C "$worktree_path" commit -m "$commit_msg" \
+		-m "Planning-Publication-ID: ${publication_id}" --no-verify >/dev/null 2>>"$log_target" || {
 		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: commit failed" >>"$log_target"
-		_todo_remove_temp_worktree "$repo_path" "$worktree_path"
 		return 1
 	}
+	commit_sha=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null) || return 1
+	_TODO_PLANNING_PR_COMMIT="$commit_sha"
+	git -C "$repo_path" update-ref "refs/aidevops/planning/${publication_id}" "$commit_sha" || return 1
 
-	git -C "$worktree_path" push -u origin "$branch_name" >/dev/null 2>>"$log_target" || {
+	git -C "$worktree_path" push origin "HEAD:refs/heads/${branch_name}" >/dev/null 2>>"$log_target" || {
 		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: branch push failed" >>"$log_target"
-		_todo_remove_temp_worktree "$repo_path" "$worktree_path"
 		return 1
 	}
 	return 0
@@ -430,22 +578,91 @@ _todo_open_planning_pr() {
 	local branch_name="$3"
 	local current_branch="$4"
 	local commit_msg="$5"
-	local log_target="$6"
+	local publication_id="$6"
+	local task_manifest="$7"
+	local log_target="$8"
 
-	local pr_title pr_body pr_url
-	pr_title="$commit_msg"
-	pr_body=$(_todo_planning_pr_body "$current_branch" "$default_branch" "$commit_msg")
+	local pr_title pr_body pr_url pr_error_file pr_error
+	pr_title=$(_todo_planning_pr_title "$commit_msg" "$task_manifest")
+	pr_body=$(_todo_planning_pr_body "$current_branch" "$default_branch" "$commit_msg" \
+		"$publication_id" "$task_manifest")
+	pr_error_file=$(mktemp -t aidevops-planning-pr-error.XXXXXX 2>/dev/null) || pr_error_file=""
+	[[ -n "$pr_error_file" ]] || {
+		printf '[todo_commit_push] Planning PR fallback failed: cannot allocate diagnostic capture.\n' >&2
+		return 1
+	}
 	pr_url=$(AIDEVOPS_PR_CREATE_READY=1 gh_create_pr \
 		--repo "$slug" \
 		--base "$default_branch" \
 		--head "$branch_name" \
 		--title "$pr_title" \
-		--body "$pr_body" 2>>"$log_target") || {
+		--body "$pr_body" 2>"$pr_error_file") || {
+		pr_error=$(<"$pr_error_file") || pr_error=""
+		rm -f "$pr_error_file"
+		[[ -z "$pr_error" ]] || printf '%s\n' "$pr_error" >&2
+		[[ "$log_target" == "/dev/null" || -z "$pr_error" ]] || printf '%s\n' "$pr_error" >>"$log_target"
 		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: PR creation failed" >>"$log_target"
 		return 1
 	}
+	rm -f "$pr_error_file"
 	printf '%s\n' "$pr_url"
 	return 0
+}
+
+_todo_existing_planning_pr_url() {
+	local slug="$1"
+	local branch_name="$2"
+	local pr_url=""
+	pr_url=$(gh pr list --repo "$slug" --head "$branch_name" --state open \
+		--json url --jq '.[0].url // empty' 2>/dev/null) || pr_url=""
+	[[ -n "$pr_url" ]] || return 1
+	printf '%s\n' "$pr_url"
+	return 0
+}
+
+_todo_finalize_planning_pr() {
+	local repo_path="$1"
+	local worktree_path="$2"
+	local publication_id="$3"
+	local terminal_rc="$4"
+	local pr_state="$5"
+	local source_state="$6"
+	local log_target="$7"
+	local cleanup_state="not-created"
+	local remote_state="not-pushed"
+	if [[ -n "$worktree_path" ]]; then
+		if _todo_remove_temp_worktree "$repo_path" "$worktree_path"; then
+			cleanup_state="removed"
+		else
+			cleanup_state="retained"
+			terminal_rc=1
+		fi
+	fi
+	if [[ -n "${_TODO_PLANNING_PR_BRANCH:-}" ]] &&
+		git -C "$repo_path" ls-remote --exit-code --heads origin \
+			"refs/heads/${_TODO_PLANNING_PR_BRANCH}" >/dev/null 2>&1; then
+		remote_state="pushed"
+		git -C "$repo_path" update-ref -d "refs/aidevops/planning/${publication_id}" 2>/dev/null || true
+	elif [[ -n "${_TODO_PLANNING_PR_COMMIT:-}" ]]; then
+		remote_state="local-recovery-ref"
+	fi
+	if [[ "$terminal_rc" -ne 0 ]]; then
+		printf '[todo_commit_push] Planning publication stopped after %s; caller planning edits are %s and the disposable worktree is %s.\n' \
+			"$remote_state" "$source_state" "$cleanup_state" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_PUBLICATION_ID=%s\n' "$publication_id" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_BRANCH=%s\n' "${_TODO_PLANNING_PR_BRANCH:-}" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_COMMIT=%s\n' "${_TODO_PLANNING_PR_COMMIT:-}" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_REMOTE_STATE=%s\n' "$remote_state" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_PR_STATE=%s\n' "$pr_state" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_SOURCE_STATE=%s\n' "$source_state" >&2
+		printf 'AIDEVOPS_PLANNING_RECOVERY_WORKTREE_STATE=%s\n' "$cleanup_state" >&2
+		printf '[todo_commit_push] Retry with the same planning snapshot; publication %s reuses branch %s instead of creating a duplicate.\n' \
+			"$publication_id" "${_TODO_PLANNING_PR_BRANCH:-unknown}" >&2
+		if [[ "$log_target" != "/dev/null" ]]; then
+			printf '%s\n' "[todo_commit_push] Recovery publication=${publication_id} branch=${_TODO_PLANNING_PR_BRANCH:-} commit=${_TODO_PLANNING_PR_COMMIT:-} remote=${remote_state} pr=${pr_state} source=${source_state} worktree=${cleanup_state}" >>"$log_target"
+		fi
+	fi
+	return "$terminal_rc"
 }
 
 _todo_create_planning_pr() {
@@ -457,6 +674,8 @@ _todo_create_planning_pr() {
 	local log_target="$6"
 
 	local slug="" changed_files="" branch_name="" worktree_path="" pr_url=""
+	local task_manifest="" publication_id="" pr_state="not-created" source_state="preserved"
+	local terminal_rc=0 manifest_rc=0
 	slug=$(_todo_planning_pr_slug "$repo_path" "$log_target") || return 1
 	changed_files=$(_todo_changed_planning_files "$repo_path" "$files")
 	if [[ -z "$changed_files" ]]; then
@@ -464,18 +683,45 @@ _todo_create_planning_pr() {
 		TODO_COMMIT_PUSH_RESULT="$TODO_COMMIT_RESULT_NOOP"
 		return 0
 	fi
-
-	_todo_create_planning_worktree "$repo_path" "$commit_msg" "$default_branch" "$log_target" || return 1
-	branch_name="$_TODO_PLANNING_PR_BRANCH"
-	worktree_path="$_TODO_PLANNING_PR_WORKTREE"
-	_todo_commit_planning_worktree "$repo_path" "$worktree_path" "$changed_files" "$files" "$commit_msg" "$branch_name" "$log_target" || return 1
-	pr_url=$(_todo_open_planning_pr "$slug" "$default_branch" "$branch_name" "$current_branch" "$commit_msg" "$log_target") || return 1
-
-	if ! _todo_clean_source_planning_changes "$repo_path" "$changed_files"; then
-		printf '%s\n' "[todo_commit_push] Planning PR created but source planning cleanup failed" >>"$log_target"
+	task_manifest=$(_todo_changed_task_manifest "$repo_path" "$changed_files") || manifest_rc=$?
+	if [[ "$manifest_rc" -ne 0 ]]; then
+		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: changed task/issue manifest is ambiguous" >>"$log_target"
 		return 1
 	fi
-	_todo_remove_temp_worktree "$repo_path" "$worktree_path"
+	publication_id=$(_todo_planning_publication_id "$repo_path" "$changed_files") || {
+		printf '%s\n' "[todo_commit_push] Planning PR fallback failed: cannot derive publication identity" >>"$log_target"
+		return 1
+	}
+
+	_todo_create_planning_worktree "$repo_path" "$commit_msg" "$default_branch" "$publication_id" "$log_target" || return 1
+	branch_name="$_TODO_PLANNING_PR_BRANCH"
+	worktree_path="$_TODO_PLANNING_PR_WORKTREE"
+	_todo_commit_planning_worktree "$repo_path" "$worktree_path" "$changed_files" "$files" \
+		"$commit_msg" "$branch_name" "$publication_id" "$log_target" || terminal_rc=$?
+	if [[ "$terminal_rc" -eq 0 && "$TODO_COMMIT_PUSH_RESULT" != "$TODO_COMMIT_RESULT_NOOP" ]]; then
+		pr_url=$(_todo_existing_planning_pr_url "$slug" "$branch_name" 2>/dev/null || true)
+		if [[ -n "$pr_url" ]]; then
+			pr_state="open-reused"
+		else
+			pr_url=$(_todo_open_planning_pr "$slug" "$default_branch" "$branch_name" "$current_branch" \
+				"$commit_msg" "$publication_id" "$task_manifest" "$log_target") || terminal_rc=$?
+			[[ "$terminal_rc" -eq 0 ]] && pr_state="open" || pr_state="missing"
+		fi
+	fi
+
+	if [[ "$terminal_rc" -eq 0 && "$TODO_COMMIT_PUSH_RESULT" != "$TODO_COMMIT_RESULT_NOOP" ]] &&
+		! _todo_clean_source_planning_changes "$repo_path" "$changed_files"; then
+		printf '%s\n' "[todo_commit_push] Planning PR created but source planning cleanup failed" >>"$log_target"
+		terminal_rc=1
+		source_state="modified"
+	elif [[ "$terminal_rc" -eq 0 ]]; then
+		source_state="cleaned"
+	fi
+	_todo_finalize_planning_pr "$repo_path" "$worktree_path" "$publication_id" "$terminal_rc" \
+		"$pr_state" "$source_state" "$log_target" || return $?
+	if [[ "$TODO_COMMIT_PUSH_RESULT" == "$TODO_COMMIT_RESULT_NOOP" ]]; then
+		return 0
+	fi
 	TODO_COMMIT_PUSH_RESULT="$TODO_COMMIT_RESULT_PR"
 	TODO_COMMIT_PUSH_PR_URL="$pr_url"
 	printf '%s\n' "[todo_commit_push] Planning PR created: ${pr_url}" >>"$log_target"

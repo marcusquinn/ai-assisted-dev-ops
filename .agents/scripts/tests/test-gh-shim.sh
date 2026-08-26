@@ -75,6 +75,11 @@ if [[ "$1" == "api" && "$2" == "user" ]]; then
 	printf '%s\n' "${STUB_GH_USER:-managed}"
 	exit 0
 fi
+if [[ "$1" == "api" && "$2" =~ ^/repos/[^/]+/[^/]+/collaborators/[^/]+/permission$ ]]; then
+	[[ "${STUB_GH_PERMISSION_FAIL:-0}" != "1" ]] || exit 44
+	printf '%s\n' "${STUB_GH_PERMISSION:-none}"
+	exit 0
+fi
 if [[ "$1" == "auth" && "$2" == "token" ]]; then
 	printf '%s\n' 'fixture-token'
 	exit 0
@@ -338,6 +343,8 @@ _reset_log() {
 	unset STUB_MANAGED_LABELS
 	unset STUB_MANAGED_LABEL_INVENTORY_FAIL
 	unset STUB_MANAGED_LABEL_CREATE_FAIL
+	unset STUB_GH_PERMISSION
+	unset STUB_GH_PERMISSION_FAIL
 	return 0
 }
 

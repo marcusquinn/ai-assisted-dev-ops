@@ -314,6 +314,7 @@ _scaffold_contributing() {
 	c="$c"$'\n'"5. Commit with conventional commits: \`git commit -m \"feat: add new feature\"\`"
 	c="$c"$'\n'"6. Push and open a PR with the issue reference in the PR body"
 	c="$c"$'\n\n'"<!-- aidevops:issue-first-pr:start -->"
+	c="$c"$'\n'"<!-- aidevops:issue-first-pr:scope=external -->"
 	c="$c"$'\n'"## Issue-first pull requests"
 	c="$c"$'\n\n'"If you are not a repository owner, member, or collaborator, create or find a GitHub issue before opening a pull request. Maintainers monitor issues more frequently than unsolicited pull requests."
 	c="$c"$'\n\n'"Include \`Closes #NNN\`, \`Fixes #NNN\`, \`Resolves #NNN\`, \`For #NNN\`, or \`Ref #NNN\` in the PR body. External human-authored PRs without an issue reference are blocked. Bot PRs and trusted maintainer task workflows are exempt."
