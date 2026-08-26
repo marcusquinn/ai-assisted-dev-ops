@@ -44,46 +44,58 @@ _approval_continuity_is_repository_status_default() {
 	return 0
 }
 
-_approval_verify_locked_issue_continuity() {
-	local payload="$1"
+_approval_continuity_ordered_mutation_rows() {
+	local timeline_pages="$1"
+	local issued_at="$2"
+	local approval_comment_id="$3"
+
+	# #aidevops:trust-boundary — the signed approval comment is the stable
+	# timeline anchor. Flatten every page, validate the complete mutation stream,
+	# and sort by GitHub's stable (created_at, id) key before authorization.
+	jq -r --arg issued "$issued_at" --argjson approval_id "$approval_comment_id" '
+		def valid_id:
+			type == "number" and . >= 0 and floor == .;
+		def valid_timestamp:
+			type == "string"
+			and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+			and ((try (fromdateiso8601 | todateiso8601) catch "") == .);
+		def lifecycle_mutation:
+			(.event // "") as $event
+			| ["assigned","unassigned","labeled","unlabeled","milestoned","demilestoned","closed","reopened","renamed","locked","unlocked","connected","disconnected","added_to_project","moved_columns_in_project","removed_from_project","transferred","converted_to_discussion","marked_as_duplicate","unmarked_as_duplicate","pinned","unpinned"]
+			| index($event) != null;
+		[.[][]?] as $events
+		| [$events[] | select((.event // "") == "commented" and (.id // null) == $approval_id)] as $anchors
+		| [$events[] | select(lifecycle_mutation)] as $mutations
+		| if (($issued | valid_timestamp) | not)
+			or ($anchors | length) != 1
+			or (($anchors[0].id | valid_id) | not)
+			or (($anchors[0].created_at | valid_timestamp) | not)
+			or $anchors[0].created_at < $issued
+			or any($mutations[]; ((.id // null) | valid_id) | not)
+			or any($mutations[]; ((.created_at // "") | valid_timestamp) | not)
+			or (($mutations + $anchors) | sort_by(.created_at, .id) | group_by([.created_at, .id]) | any(length > 1))
+		then error("timeline ordering evidence is incomplete or ambiguous")
+		else
+			$anchors[0] as $anchor
+			| $mutations
+			| map(select(.created_at > $anchor.created_at or (.created_at == $anchor.created_at and .id > $anchor.id)))
+			| sort_by(.created_at, .id)
+			| .[]
+			| [(.event // ""), (.actor.login // ""), (.label.name // .assignee.login // ""), ((.actor.id // "") | tostring), (.actor.type // "")]
+			| @tsv
+		end
+	' <<<"$timeline_pages"
+	return $?
+}
+
+_approval_continuity_lifecycle_change_allowed() {
+	local signed_lifecycle="$1"
 	local current_snapshot="$2"
-	local signed_digest="$3"
-	local slug="$4"
-	local target_number="$5"
-	local issued_at="$6"
-	local signed_lifecycle="" current_anchor="" signed_anchor="" candidate="" candidate_digest=""
-	local timeline_pages="" mutation_rows="" event="" actor="" subject="" actor_id="" actor_type="" actor_rc=0
-	local signed_has_status=0 saw_auto_dispatch=0 saw_status_mutation=0 saw_status_default=0
 
-	# #aidevops:trust-boundary — no embedded lifecycle proof means this is a
-	# legacy exact-snapshot approval, never continuity authority.
-	signed_lifecycle=$(jq -c '.issue.lifecycle // empty' <<<"$payload" 2>/dev/null) || return 1
-	[[ -n "$signed_lifecycle" ]] || return 1
-	if ! jq -e --arg object "$APPROVAL_JSON_OBJECT" '.locked == true and (.lock_anchor | type == $object)' <<<"$signed_lifecycle" >/dev/null 2>&1; then
-		return 1
-	fi
-	signed_anchor=$(jq -c '.lock_anchor' <<<"$signed_lifecycle") || return 1
-	if jq -e '[.labels[]?.name | select(startswith("status:"))] | length > 0' <<<"$signed_lifecycle" >/dev/null 2>&1; then
-		signed_has_status=1
-	fi
-	current_anchor=$(jq -c '.lifecycle.lock_anchor // empty' <<<"$current_snapshot") || return 1
-	[[ -n "$current_anchor" && "$current_anchor" == "$signed_anchor" ]] || return 1
-	if ! jq -e '.lifecycle.locked == true' <<<"$current_snapshot" >/dev/null 2>&1; then
-		return 1
-	fi
-
-	# Replacing only lifecycle metadata must recreate the signed digest. This
-	# proves title, body, comments, references, identity, and all scope-bearing
-	# bytes remain exactly as reviewed.
-	candidate=$(jq -cS --argjson lifecycle "$signed_lifecycle" '.lifecycle = $lifecycle' <<<"$current_snapshot") || return 1
-	candidate_digest=$(approval_snapshot_v2_digest "$candidate") || return 2
-	[[ "$candidate_digest" == "$signed_digest" ]] || return 1
 	# #aidevops:trust-boundary — deterministic tier backfill may only select a
-	# canonical workload tier. Core status labels are workflow metadata rather
-	# than development scope, so continuously locked issues may traverse the full
-	# set_issue_status state machine; timeline authorization below still binds
-	# every mutation to a write-authorized actor or the one narrow bot default.
-	if ! jq -e --argjson signed "$signed_lifecycle" '
+	# canonical workload tier. Status labels remain workflow metadata, but every
+	# resulting timeline mutation still requires authorization during replay.
+	jq -e --argjson signed "$signed_lifecycle" '
 		def allowed_label: . == "needs-maintainer-review" or . == "auto-dispatch" or . == "status:available" or . == "status:queued" or . == "status:claimed" or . == "status:in-progress" or . == "status:in-review" or . == "status:done" or . == "status:blocked" or . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
 		def tier_label: . == "tier:simple" or . == "tier:standard" or . == "tier:thinking";
 		.lifecycle as $current |
@@ -104,16 +116,57 @@ _approval_verify_locked_issue_continuity() {
 		and ([$added_labels[], $removed_labels[]] | unique | all(allowed_label))
 		and (if ($added_tiers + $removed_tiers) > 0 then $signed_tiers == 0 and $current_tiers == 1 and $added_tiers == 1 and $removed_tiers == 0 else true end)
 		and ($current.assignees != $signed.assignees or $current.labels != $signed.labels)
-	' <<<"$current_snapshot" >/dev/null 2>&1; then
+	' <<<"$current_snapshot" >/dev/null 2>&1
+	return $?
+}
+
+_approval_verify_locked_issue_continuity() {
+	local payload="$1"
+	local current_snapshot="$2"
+	local signed_digest="$3"
+	local slug="$4"
+	local target_number="$5"
+	local issued_at="$6"
+	local approval_comment_id="$7"
+	local signed_lifecycle="" current_anchor="" signed_anchor="" candidate="" candidate_digest=""
+	local timeline_pages="" mutation_rows="" event="" actor="" subject="" actor_id="" actor_type="" actor_rc=0
+	local signed_has_status=0 auto_dispatch_active=0 current_auto_dispatch=0 saw_status_mutation=0 saw_status_default=0
+
+	# #aidevops:trust-boundary — no embedded lifecycle proof means this is a
+	# legacy exact-snapshot approval, never continuity authority.
+	signed_lifecycle=$(jq -c '.issue.lifecycle // empty' <<<"$payload" 2>/dev/null) || return 1
+	[[ -n "$signed_lifecycle" ]] || return 1
+	if ! jq -e --arg object "$APPROVAL_JSON_OBJECT" '.locked == true and (.lock_anchor | type == $object)' <<<"$signed_lifecycle" >/dev/null 2>&1; then
+		return 1
+	fi
+	signed_anchor=$(jq -c '.lock_anchor' <<<"$signed_lifecycle") || return 1
+	if jq -e '[.labels[]?.name | select(startswith("status:"))] | length > 0' <<<"$signed_lifecycle" >/dev/null 2>&1; then
+		signed_has_status=1
+	fi
+	if jq -e --arg auto "$_APPROVAL_AUTO_DISPATCH_LABEL" 'any(.labels[]?.name; . == $auto)' <<<"$signed_lifecycle" >/dev/null 2>&1; then
+		auto_dispatch_active=1
+	fi
+	if jq -e --arg auto "$_APPROVAL_AUTO_DISPATCH_LABEL" 'any(.lifecycle.labels[]?.name; . == $auto)' <<<"$current_snapshot" >/dev/null 2>&1; then
+		current_auto_dispatch=1
+	fi
+	current_anchor=$(jq -c '.lifecycle.lock_anchor // empty' <<<"$current_snapshot") || return 1
+	[[ -n "$current_anchor" && "$current_anchor" == "$signed_anchor" ]] || return 1
+	if ! jq -e '.lifecycle.locked == true' <<<"$current_snapshot" >/dev/null 2>&1; then
+		return 1
+	fi
+
+	# Replacing only lifecycle metadata must recreate the signed digest. This
+	# proves title, body, comments, references, identity, and all scope-bearing
+	# bytes remain exactly as reviewed.
+	candidate=$(jq -cS --argjson lifecycle "$signed_lifecycle" '.lifecycle = $lifecycle' <<<"$current_snapshot") || return 1
+	candidate_digest=$(approval_snapshot_v2_digest "$candidate") || return 2
+	[[ "$candidate_digest" == "$signed_digest" ]] || return 1
+	if ! _approval_continuity_lifecycle_change_allowed "$signed_lifecycle" "$current_snapshot"; then
 		return 1
 	fi
 
 	timeline_pages=$(_approval_snapshot_v2_fetch_pages "repos/${slug}/issues/${target_number}/timeline?per_page=100") || return 2
-	mutation_rows=$(jq -r --arg issued "$issued_at" '
-		[.[][]? | select((.created_at // "") > $issued) | (.event // "") as $event |
-		select(["assigned","unassigned","labeled","unlabeled","milestoned","demilestoned","closed","reopened","renamed","locked","unlocked","connected","disconnected","added_to_project","moved_columns_in_project","removed_from_project","transferred","converted_to_discussion","marked_as_duplicate","unmarked_as_duplicate","pinned","unpinned"] | index($event)) |
-		[(.event // ""), (.actor.login // ""), (.label.name // .assignee.login // ""), ((.actor.id // "") | tostring), (.actor.type // "")] | @tsv][]
-	' <<<"$timeline_pages" 2>/dev/null) || return 2
+	mutation_rows=$(_approval_continuity_ordered_mutation_rows "$timeline_pages" "$issued_at" "$approval_comment_id" 2>/dev/null) || return 2
 	[[ -n "$mutation_rows" ]] || return 1
 
 	while IFS=$'\t' read -r event actor subject actor_id actor_type; do
@@ -128,7 +181,7 @@ _approval_verify_locked_issue_continuity() {
 		# exposed auto-dispatch and no status mutation has occurred. The immutable
 		# bot ID/type prevents lookalikes; this grants no generic workflow authority.
 		if _approval_continuity_is_repository_status_default "$event" "$subject" "$actor" "$actor_id" "$actor_type"; then
-			[[ "$signed_has_status" -eq 0 && "$saw_auto_dispatch" -eq 1 && "$saw_status_mutation" -eq 0 && "$saw_status_default" -eq 0 ]] || return 1
+			[[ "$signed_has_status" -eq 0 && "$auto_dispatch_active" -eq 1 && "$saw_status_mutation" -eq 0 && "$saw_status_default" -eq 0 ]] || return 1
 			saw_status_default=1
 			saw_status_mutation=1
 			continue
@@ -139,9 +192,11 @@ _approval_verify_locked_issue_continuity() {
 			[[ "$actor_rc" -eq 2 ]] && return 2
 			return 1
 		}
-		[[ "$event:$subject" == "labeled:$_APPROVAL_AUTO_DISPATCH_LABEL" ]] && saw_auto_dispatch=1
+		[[ "$event:$subject" == "labeled:$_APPROVAL_AUTO_DISPATCH_LABEL" ]] && auto_dispatch_active=1
+		[[ "$event:$subject" == "unlabeled:$_APPROVAL_AUTO_DISPATCH_LABEL" ]] && auto_dispatch_active=0
 		[[ "$subject" == status:* ]] && saw_status_mutation=1
 	done <<<"$mutation_rows"
+	[[ "$auto_dispatch_active" -eq "$current_auto_dispatch" ]] || return 1
 	return 0
 }
 
@@ -170,7 +225,7 @@ _approval_classify_digest_mismatch() {
 		return 0
 	fi
 	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
-		_approval_verify_locked_issue_continuity "$payload" "$snapshot_json" "$signed_digest" "$slug" "$target_number" "$issued_at" || continuity_rc=$?
+		_approval_verify_locked_issue_continuity "$payload" "$snapshot_json" "$signed_digest" "$slug" "$target_number" "$issued_at" "$comment_id" || continuity_rc=$?
 		if [[ "$continuity_rc" -eq 0 ]]; then
 			printf 'APPROVAL_REASON: proven-locked-continuity\n' >&2
 			printf 'VERIFIED\n'

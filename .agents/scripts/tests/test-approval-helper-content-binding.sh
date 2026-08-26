@@ -117,6 +117,7 @@ append_signed_comment() {
 	local comment_id="${4:-$((number * 100 + 99))}"
 	local source_timestamp_profile="${5:-stable}"
 	local comments_file="${FIXTURES}/comments-${number}.json"
+	local timeline_file="${FIXTURES}/timeline-${number}.json"
 	local payload="" signature_file="" signature="" body="" updated=""
 	payload=$(PATH="${TEST_ROOT}/bin:$PATH" FIXTURES="$FIXTURES" approval_snapshot_v2_payload "$kind" "$number" owner/repo "$issued_at" "" "$source_timestamp_profile") || return 1
 	signature_file="${TEST_ROOT}/signature-${number}.txt"
@@ -129,10 +130,14 @@ ${payload}
 \`\`\`
 ${signature}
 \`\`\`"
-	updated=$(jq -c --arg body "$body" --argjson id "$comment_id" '
-		.[0] += [{id:$id,node_id:("APPROVAL_" + ($id|tostring)),user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:"2026-01-01T00:05:00Z",updated_at:"2026-01-01T00:05:00Z",body:$body}]
+	updated=$(jq -c --arg body "$body" --arg created_at "$issued_at" --argjson id "$comment_id" '
+		.[0] += [{id:$id,node_id:("APPROVAL_" + ($id|tostring)),user:{id:1,node_id:"U_1",login:"maintainer",type:"User"},author_association:"OWNER",created_at:$created_at,updated_at:$created_at,body:$body}]
 	' "$comments_file") || return 1
 	printf '%s\n' "$updated" >"$comments_file"
+	updated=$(jq -c --arg created_at "$issued_at" --argjson id "$comment_id" '
+		.[0] += [{id:$id,node_id:("APPROVAL_" + ($id|tostring)),event:"commented",created_at:$created_at,actor:{id:1,node_id:"U_1",login:"maintainer",type:"User"}}]
+	' "$timeline_file") || return 1
+	printf '%s\n' "$updated" >"$timeline_file"
 	printf '%s\n' "$payload" >"${TEST_ROOT}/payload-${number}.json"
 	return 0
 }
@@ -631,6 +636,32 @@ test_locked_issue_tier_backfill_continuity() {
 	return 0
 }
 
+test_locked_issue_stable_ordering() {
+	write_locked_issue_fixture
+	jq '.assignees = [{id:1,node_id:"U_1",login:"maintainer",type:"User"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4200,"node_id":"EV_4200","event":"assigned","created_at":"2026-01-01T00:05:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"assignee":{"id":1,"login":"maintainer","type":"User"}}'
+	assert_verify "equal-timestamp authorized mutation after the approval anchor verifies" issue 41 VERIFIED 0
+
+	# Pre-fix, the timestamp-only cutoff omitted the unauthorized same-second
+	# assignment and the later trusted status event incorrectly yielded VERIFIED.
+	write_locked_issue_fixture
+	jq '.assignees = [{id:2,node_id:"U_2",login:"contributor",type:"User"}] | .labels += [{id:10,node_id:"L_10",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4200,"node_id":"EV_4200","event":"assigned","created_at":"2026-01-01T00:05:00Z","actor":{"id":2,"login":"contributor","type":"User"},"assignee":{"id":2,"login":"contributor","type":"User"}}'
+	append_issue_timeline_event '{"id":4201,"node_id":"EV_4201","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
+	assert_verify "unauthorized same-second mutation after the approval anchor is stale" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:10,node_id:"L_10",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"node_id":"EV_MISSING_ID","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
+	assert_verify "missing lifecycle event ID fails closed as API uncertainty" issue 41 API_ERROR 6
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:10,node_id:"L_10",name:"status:in-progress"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4202,"node_id":"EV_4202","event":"labeled","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:in-progress"}}'
+	assert_verify "missing lifecycle event timestamp fails closed as API uncertainty" issue 41 API_ERROR 6
+	return 0
+}
+
 test_locked_issue_continuity() {
 	# Production regression from the first #30153 signature: approval-helper
 	# performed the trusted handoff, then the narrowly scoped repository workflow
@@ -643,10 +674,11 @@ test_locked_issue_continuity() {
 	append_issue_timeline_event '{"id":429,"node_id":"EV_429","event":"labeled","created_at":"2026-01-01T00:06:03Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
 	assert_verify "exact repository default-status automation preserves first locked issue approval" issue 41 VERIFIED 0
 
-	# GitHub documents timeline responses in chronological order; keep that API
-	# contract executable because continuity authorization is sequence-sensitive.
+	# Pagination or API transport order is not authority. Stable keys recover one
+	# deterministic replay stream before sequence-sensitive authorization.
 	jq '.[0] |= reverse' "${FIXTURES}/timeline-41.json" >"${FIXTURES}/timeline.tmp" && mv "${FIXTURES}/timeline.tmp" "${FIXTURES}/timeline-41.json"
-	assert_verify "out-of-order timeline data fails sequence-sensitive continuity" issue 41 STALE_APPROVAL 4
+	assert_verify "out-of-order timeline data is normalized by stable ordering" issue 41 VERIFIED 0
+	test_locked_issue_stable_ordering
 
 	write_locked_issue_fixture
 	jq '.labels += [{id:11,node_id:"L_11",name:"status:available"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
@@ -659,6 +691,13 @@ test_locked_issue_continuity() {
 	append_issue_timeline_event '{"id":4293,"node_id":"EV_4293","event":"labeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"status:queued"}}'
 	append_issue_timeline_event '{"id":4294,"node_id":"EV_4294","event":"labeled","created_at":"2026-01-01T00:06:02Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
 	assert_verify "official Actions default after another status mutation fails closed" issue 41 STALE_APPROVAL 4
+
+	write_locked_issue_fixture
+	jq '.labels += [{id:11,node_id:"L_11",name:"status:available"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
+	append_issue_timeline_event '{"id":4295,"node_id":"EV_4295","event":"labeled","created_at":"2026-01-01T00:06:00Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"auto-dispatch"}}'
+	append_issue_timeline_event '{"id":4296,"node_id":"EV_4296","event":"unlabeled","created_at":"2026-01-01T00:06:01Z","actor":{"id":1,"login":"maintainer","type":"User"},"label":{"name":"auto-dispatch"}}'
+	append_issue_timeline_event '{"id":4297,"node_id":"EV_4297","event":"labeled","created_at":"2026-01-01T00:06:02Z","actor":{"id":41898282,"login":"github-actions[bot]","type":"Bot"},"label":{"name":"status:available"}}'
+	assert_verify "official Actions default after auto-dispatch removal fails closed" issue 41 STALE_APPROVAL 4
 
 	write_locked_issue_fixture
 	jq '.labels += [{id:11,node_id:"L_11",name:"status:available"}]' "${FIXTURES}/issue-41.json" >"${FIXTURES}/issue.tmp" && mv "${FIXTURES}/issue.tmp" "${FIXTURES}/issue-41.json"
