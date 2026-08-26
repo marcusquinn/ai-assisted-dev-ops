@@ -85,8 +85,12 @@ if [[ "${1:-} ${2:-}" == "pr list" ]]; then
 	exit 0
 fi
 if [[ "${1:-} ${2:-}" == "pr create" ]]; then
-	printf 'mock-pr\n'
+	printf 'https://github.com/fake/apply/pull/1\n'
 	printf 'mock benign PR diagnostic\n' >&2
+	exit 0
+fi
+if [[ "${1:-} ${2:-}" == "api /repos/fake/apply/issues/1" ]]; then
+	printf '%s\n' 'origin:interactive'
 	exit 0
 fi
 if [[ "${1:-}" != "api" ]]; then
@@ -106,7 +110,11 @@ repos/fake/read)
 	printf '%s\n' '{"archived":false,"permissions":{"admin":false,"maintain":false}}'
 	;;
 repos/fake/apply)
-	printf '%s\n' '{"archived":false,"permissions":{"admin":true,"maintain":false}}'
+	if [[ "$*" == *"--jq .private | tostring"* ]]; then
+		printf '%s\n' 'false'
+	else
+		printf '%s\n' '{"private":false,"archived":false,"permissions":{"admin":true,"maintain":false}}'
+	fi
 	;;
 *) exit 1 ;;
 esac
@@ -241,11 +249,12 @@ apply_output=$(HOME="$test_root" PATH="$safe_path" \
 	--issue 28844 --branch chore/test-issue-first 2>&1)
 apply_rc=$?
 assert_exit "apply-mode missing install succeeds" 0 "$apply_rc"
-assert_contains "apply-mode reports repository PR" "$apply_output" 'PR: mock-pr'
+assert_contains "apply-mode reports repository PR" "$apply_output" \
+	'PR: https://github.com/fake/apply/pull/1'
 assert_contains "apply-mode retains benign PR diagnostics" "$apply_output" \
 	'mock benign PR diagnostic'
 assert_not_contains "apply-mode keeps diagnostics out of PR detail" "$apply_output" \
-	$'PR: mock-pr\nmock benign PR diagnostic'
+	$'PR: https://github.com/fake/apply/pull/1\nmock benign PR diagnostic'
 
 applied_workflow=$("$real_git" --git-dir="$apply_bare" show \
 	'chore/test-issue-first:.github/workflows/linked-issue-check.yml')
