@@ -38,6 +38,7 @@ TRIAGE_LIFECYCLE_LOG=""
 POSTED_BODY_LOG=""
 EPHEMERAL_BODY_LOG=""
 MOCK_COMMENT_WRITE_FAILURE=0
+MOCK_COMMENT_WRITE_STDERR=""
 MOCK_REVIEW_LABEL_WRITE_FAILURE=0
 MOCK_PR_REVISION_PAIR=""
 MOCK_LABELS_JSON=""
@@ -75,12 +76,15 @@ print_result() {
 }
 
 setup_test_env() {
-	TEST_ROOT=$(mktemp -d)
+	# The framework may set TMPDIR inside a collaborative workspace. Test
+	# sensitive artifacts require a sticky or private ancestor, so isolate this
+	# fixture under the system temporary root instead.
+	TEST_ROOT=$(TMPDIR=/tmp mktemp -d)
 	export HOME="${TEST_ROOT}/home"
 	export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/managed-temp"
 	export AIDEVOPS_SENSITIVE_TEMP_DIR="$AIDEVOPS_TEMP_DIR"
-	mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/agents/scripts" \
-		"$AIDEVOPS_TEMP_DIR"
+	(umask 077 && mkdir -p "${HOME}/.aidevops/logs" \
+		"${HOME}/.aidevops/agents/scripts" "$AIDEVOPS_TEMP_DIR")
 	AIDEVOPS_TEMP_DIR=$(cd "$AIDEVOPS_TEMP_DIR" && pwd -P)
 	export AIDEVOPS_TEMP_DIR
 	LOGFILE="${HOME}/.aidevops/logs/pulse-wrapper.log"
@@ -108,6 +112,7 @@ exit 0
 SIG_STUB
 	chmod +x "$TRIAGE_SIGNATURE_HELPER"
 	MOCK_COMMENT_WRITE_FAILURE=0
+	MOCK_COMMENT_WRITE_STDERR=""
 	MOCK_REVIEW_LABEL_WRITE_FAILURE=0
 	MOCK_PR_REVISION_PAIR=""
 	MOCK_LABELS_JSON='[{"name":"review:approve","color":"0e8a16","description":"Advisory automated triage recommendation: approve"},{"name":"review:feedback","color":"fbca04","description":"Advisory automated triage recommendation: request changes"},{"name":"review:decline","color":"d73a4a","description":"Advisory automated triage recommendation: decline"}]'
@@ -133,7 +138,17 @@ teardown_test_env() {
 # `gh_issue_comment` / `gh_pr_comment` reaches the mock below. The real
 # wrappers live in shared-constants.sh, which this test doesn't source.
 # shellcheck disable=SC2317
-gh_issue_comment() { gh issue comment "$@" && return 0 || return 1; }
+gh_issue_comment() {
+	local gh_status=0
+	gh issue comment "$@" || gh_status=$?
+	if [[ "$gh_status" -eq 0 ]]; then
+		return 0
+	fi
+	if [[ "$gh_status" -eq 73 ]]; then
+		return 73
+	fi
+	return 1
+}
 # shellcheck disable=SC2317
 gh_pr_comment() { gh pr comment "$@" && return 0 || return 1; }
 export -f gh_issue_comment gh_pr_comment
@@ -159,7 +174,8 @@ gh() {
 	done
 	if [[ "$command_name" == "issue" && "$action" == "comment" && \
 		"$MOCK_COMMENT_WRITE_FAILURE" -eq 1 ]]; then
-		return 1
+		printf '%s\n' "$MOCK_COMMENT_WRITE_STDERR" >&2
+		return 73
 	fi
 	if [[ "$command_name" == "issue" && "$action" == "edit" && \
 		"$call_args" == *"--add-label review:"* && \
@@ -261,7 +277,8 @@ load_helpers_under_test() {
 	unset _PULSE_ANCILLARY_DISPATCH_LOADED \
 		_PULSE_ANCILLARY_DISPATCH_CORE_SH_LOADED \
 		_PULSE_ANCILLARY_DISPATCH_EVIDENCE_SH_LOADED \
-		_PULSE_ANCILLARY_DISPATCH_REVIEW_SH_LOADED
+		_PULSE_ANCILLARY_DISPATCH_REVIEW_SH_LOADED \
+		_SENSITIVE_TEMP_HELPER_LOADED
 	# shellcheck disable=SC1090  # production orchestrator path is runtime-resolved
 	source "$src"
 	_triage_current_text_snapshot_hash() {
@@ -1248,6 +1265,7 @@ test_comment_write_failure_is_infrastructure() {
 	_make_opencode_json "$payload" "$(_valid_review_text)"
 	_install_headless_stub "$payload"
 	MOCK_COMMENT_WRITE_FAILURE=1
+	MOCK_COMMENT_WRITE_STDERR="HTTP 429: API rate limit exceeded"
 
 	local prompt_file=""
 	prompt_file=$(_make_managed_prompt_file "comment-write")
@@ -1261,6 +1279,10 @@ test_comment_write_failure_is_infrastructure() {
 	if ! grep -q 'github-comment-write-failed' "$LOGFILE"; then
 		ok=1
 		detail="infrastructure classification missing"
+	fi
+	if ! grep -q 'rc=73 category=api-rate-limited status=429' "$LOGFILE"; then
+		ok=1
+		detail="${detail} concrete write failure missing"
 	fi
 	if ! grep -q -- '--remove-label triage-failed' "$GH_CALL_LOG"; then
 		ok=1

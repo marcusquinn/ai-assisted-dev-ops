@@ -697,8 +697,44 @@ _triage_review_shape_failure_reason() {
 }
 
 #######################################
-# Post a validated triage review through a body file. Returns the GitHub write
-# status so transport failures cannot be misreported as successful reviews.
+# Produce a sanitized, bounded diagnostic for a failed triage comment write.
+#
+# Arguments:
+#   $1 - gh exit status
+#   $2 - stderr artifact path
+#######################################
+_triage_comment_write_failure_detail() {
+	local post_status="$1"
+	local stderr_file="$2"
+	local stderr_text=""
+	local category="gh-command-failed"
+	local response_status=""
+
+	if [[ -s "$stderr_file" ]]; then
+		stderr_text=$(tr '\n' ' ' <"$stderr_file")
+	fi
+	if [[ "$stderr_text" =~ (HTTP[[:space:]]+|status[=:[:space:]]+)([1-5][0-9][0-9]) ]]; then
+		response_status="${BASH_REMATCH[2]}"
+	fi
+	case "$stderr_text" in
+	*"rate limit"* | *"Rate limit"* | *"rate-limit"*) category="api-rate-limited" ;;
+	*"authentication"* | *"Authentication"* | *"Bad credentials"*) category="authentication-failed" ;;
+	*"validation failed"* | *"Validation Failed"*) category="body-validation-failed" ;;
+	*"permission"* | *"Permission"* | *"Resource not accessible"*) category="permission-denied" ;;
+	*"timeout"* | *"Timeout"* | *"timed out"*) category="network-timeout" ;;
+	*"connection"* | *"Connection"* | *"resolve host"*) category="network-failed" ;;
+	esac
+	if [[ -n "$response_status" ]]; then
+		printf 'rc=%s category=%s status=%s\n' "$post_status" "$category" "$response_status"
+	else
+		printf 'rc=%s category=%s\n' "$post_status" "$category"
+	fi
+	return 0
+}
+
+#######################################
+# Post a validated triage review through a body file. On transport failure,
+# prints a sanitized diagnostic and returns the GitHub write status.
 #
 # Arguments:
 #   $1 - issue number
@@ -713,13 +749,20 @@ _post_triage_review_comment() {
 	local signature_helper="${TRIAGE_SIGNATURE_HELPER:-${HOME}/.aidevops/agents/scripts/gh-signature-helper.sh}"
 	local signature_footer=""
 	local comment_dir=""
+	local error_dir=""
 	comment_dir=$(_triage_create_sensitive_artifact_dir "comment") || return 1
+	error_dir=$(_triage_create_sensitive_artifact_dir "comment-error") || {
+		_triage_cleanup_sensitive_artifact_dir "$comment_dir" || true
+		return 1
+	}
 	local body_file="${comment_dir}/comment.md"
+	local stderr_file="${error_dir}/gh.stderr"
 	if [[ ! -x "$signature_helper" ]] || \
 		! signature_footer=$("$signature_helper" footer \
 			--model "pulse-triage" --issue "${repo_slug}#${issue_num}" 2>/dev/null) || \
 		[[ "$signature_footer" != *"<!-- aidevops:sig -->"* ]]; then
 		_triage_cleanup_sensitive_artifact_dir "$comment_dir" || true
+		_triage_cleanup_sensitive_artifact_dir "$error_dir" || true
 		return 1
 	fi
 	(umask 077 && printf '%s\n\n%s\n%s\n' \
@@ -727,10 +770,13 @@ _post_triage_review_comment() {
 		if ! _triage_cleanup_sensitive_artifact_dir "$comment_dir"; then
 			echo "[pulse-wrapper] Triage comment artifact cleanup failed for #${issue_num} in ${repo_slug}; guardian retained" >>"$LOGFILE"
 		fi
+		_triage_cleanup_sensitive_artifact_dir "$error_dir" || true
 		return 1
 	}
 	local post_status=0
 	local cleanup_status=0
+	local error_cleanup_status=0
+	local post_failure_detail=""
 	# The exact gh shim validates the signed body and privacy policy while this
 	# private pathname remains independently readable. Its explicit ephemeral
 	# mode opens the body, removes and verifies the managed directory, and only
@@ -738,11 +784,25 @@ _post_triage_review_comment() {
 	# REST retry because this transport is intentionally one-shot.
 	AIDEVOPS_GH_EPHEMERAL_BODY_FILE="$body_file" \
 		gh_issue_comment "$issue_num" --repo "$repo_slug" \
-			--body-file "$body_file" >/dev/null 2>&1 || post_status=$?
+			--body-file "$body_file" >/dev/null 2>"$stderr_file" || post_status=$?
+	if [[ "$post_status" -ne 0 ]]; then
+		post_failure_detail=$(_triage_comment_write_failure_detail \
+			"$post_status" "$stderr_file")
+	fi
 	_triage_cleanup_sensitive_artifact_dir "$comment_dir" || cleanup_status=$?
+	_triage_cleanup_sensitive_artifact_dir "$error_dir" || error_cleanup_status=$?
 	if [[ "$cleanup_status" -ne 0 ]]; then
 		echo "[pulse-wrapper] Triage comment artifact cleanup failed for #${issue_num} in ${repo_slug}; post treated as failed, guardian retained" >>"$LOGFILE"
+		printf 'rc=%s category=comment-artifact-cleanup-failed\n' "$post_status"
 		return 1
+	fi
+	if [[ "$error_cleanup_status" -ne 0 ]]; then
+		echo "[pulse-wrapper] Triage comment error artifact cleanup failed for #${issue_num} in ${repo_slug}; guardian retained" >>"$LOGFILE"
+		printf 'rc=%s category=comment-error-artifact-cleanup-failed\n' "$post_status"
+		return 1
+	fi
+	if [[ "$post_status" -ne 0 ]]; then
+		printf '%s\n' "$post_failure_detail"
 	fi
 	return "$post_status"
 }
@@ -837,8 +897,9 @@ _extract_and_post_triage_review() {
 		return 0
 	fi
 
-	if ! _post_triage_review_comment "$issue_num" "$repo_slug" "$review_text"; then
-		echo "[pulse-wrapper] Triage review comment write failed for #${issue_num} in ${repo_slug} — infrastructure failure, will retry" >>"$LOGFILE"
+	local comment_failure_detail=""
+	if ! comment_failure_detail=$(_post_triage_review_comment "$issue_num" "$repo_slug" "$review_text"); then
+		echo "[pulse-wrapper] Triage review comment write failed for #${issue_num} in ${repo_slug}: ${comment_failure_detail:-rc=unknown category=unknown} — infrastructure failure, will retry" >>"$LOGFILE"
 		printf 'FAILED:github-comment-write-failed\n'
 		return 0
 	fi
