@@ -289,42 +289,15 @@ blocker or create dispatch labels.
 
 ## Implementation decomposition
 
-The change spans creation, publication, reconciliation, dispatch, and workflow
-events; implement it as ordered child tasks rather than one high-blast-radius PR.
+Implement these ordered child tasks rather than one high-blast-radius PR.
 
 ### Child 1: Add the publication blocker and fail-closed dispatch gates
 
-**What:** Make pending publication an unconditional, defence-in-depth dispatch
-block before any creator begins emitting the label.
+**What:** Before creators emit the label, make `publication:pending` an unconditional defence-in-depth dispatch blocker. **Depends on:** nothing; merge first.
 
-**Depends on:** Nothing. Merge this child first.
+**Files:** register it in `label-sync-helper.sh`; preserve it in `issue-sync-helper-labels.sh`; block it before assignee handling in `dispatch-dedup-helper.sh` and its label module; exclude it in `pulse-wrapper-cycle-gates.sh`; reject it again before claim/launch in `pulse-dispatch-core.sh`; document it in `reference/dispatch-blockers.md`.
 
-**Files to edit**
-
-- `.agents/scripts/label-sync-helper.sh`: register `publication:pending` with a
-  dispatch-blocking description.
-- `.agents/scripts/issue-sync-helper-labels.sh`: preserve the label during
-  enrich reconciliation.
-- `.agents/scripts/dispatch-dedup-helper.sh` and its focused label module: add an
-  unconditional pre-assignee blocker.
-- `.agents/scripts/pulse-wrapper-cycle-gates.sh`: exclude pending issues from
-  fast candidate detection.
-- `.agents/scripts/pulse-dispatch-core.sh`: reject pending issues again before
-  claim/launch.
-- `.agents/reference/dispatch-blockers.md`: document the blocker and rollout.
-
-**Tests**
-
-- EDIT `.agents/scripts/tests/test-dispatch-dedup-helper-is-assigned.sh` and
-  `.agents/scripts/tests/test-dispatch-dedup-helper-enumerate-blockers.sh`.
-- EDIT `.agents/scripts/tests/test-pulse-wrapper-cycle-gates.sh`; add a focused
-  pulse-core fixture if the pre-launch check cannot be exercised there.
-- Prove that `auto-dispatch + status:available + publication:pending` never
-  launches, including direct-dispatch bypass paths.
-- Verify existing dependency, parent, NMR, credential, and claim blockers are
-  unchanged.
-
-**Acceptance and verification**
+**Tests:** update the two dispatch-dedup fixtures and `test-pulse-wrapper-cycle-gates.sh` (add a focused pulse-core fixture only when necessary). Prove `auto-dispatch + status:available + publication:pending` cannot launch, including direct bypasses, while existing dependency, parent, NMR, credential, and claim fixtures remain green.
 
 ```bash
 bash .agents/scripts/tests/test-dispatch-dedup-helper-is-assigned.sh
@@ -337,44 +310,15 @@ shellcheck .agents/scripts/label-sync-helper.sh \
   .agents/scripts/pulse-dispatch-core.sh
 ```
 
-Acceptance requires all three dispatch layers to fail closed while every
-pre-existing blocker fixture remains green. Extract a focused helper rather than
-growing an existing shell function beyond the repository complexity limit.
+All three layers must fail closed; extract a focused helper rather than growing a function beyond the complexity limit.
 
 ### Child 2: Create tasks in pending state and defer dispatch labels
 
-**What:** Ensure every unpublished online task has the new blocker and no
-positive dispatch projection, across rich, fallback, batch, and REST paths.
+**What:** Every unpublished online task gets the blocker and no positive dispatch projection across rich, fallback, batch, and REST paths. **Depends on:** Child 1.
 
-**Depends on:** Child 1, so the label is already enforced everywhere.
+**Files:** pass explicit publication state through `claim-task-id.sh` and `claim-task-id-issue.sh`; make `issue-sync-helper-push.sh` distinguish unpublished local creation from canonical creation; apply the rule per batch item in `new-task-helper.sh` while retaining intended planning-file labels; prevent defaulting in `apply-status-available-default.yml` when pending.
 
-**Files to edit**
-
-- `.agents/scripts/claim-task-id.sh` and
-  `.agents/scripts/claim-task-id-issue.sh`: pass explicit publication state to
-  both rich and fallback issue creation paths.
-- `.agents/scripts/issue-sync-helper-push.sh`: distinguish unpublished local
-  creation from canonical default-branch creation; never use
-  `status:available` as an unconditional creation default.
-- `.agents/scripts/new-task-helper.sh`: apply the same rule to every batch item
-  and retain intended labels in planning files.
-- `.github/workflows/apply-status-available-default.yml`: refuse defaulting when
-  `publication:pending` is present.
-
-**Tests**
-
-- Replace the unconditional expectation in
-  `.agents/scripts/tests/test-claim-task-id-status-default.sh` with explicit
-  pending-versus-canonical fixtures.
-- EDIT `.agents/scripts/tests/test-claim-task-id-auto-dispatch-no-assign.sh` and
-  `.agents/scripts/tests/test-claim-task-id-rest-routing.sh` for rich/fallback
-  parity.
-- NEW `.agents/scripts/tests/test-new-task-batch-publication-pending.sh` showing
-  all issues are pending before one shared publication.
-- Cover rich delegation, bare fallback, REST fallback, interactive claim,
-  parent, blocked, offline, and no-issue paths.
-
-**Acceptance and verification**
+**Tests:** replace the unconditional status-default expectation with pending/canonical fixtures; cover rich/fallback parity in the two existing claim-task tests; add `test-new-task-batch-publication-pending.sh` for a shared publication. Cover rich, bare, REST, interactive, parent, blocked, offline, and no-issue paths.
 
 ```bash
 bash .agents/scripts/tests/test-claim-task-id-status-default.sh
@@ -387,45 +331,15 @@ shellcheck .agents/scripts/claim-task-id.sh \
   .agents/scripts/new-task-helper.sh
 ```
 
-Acceptance requires a hard creation failure when the pending label cannot be
-verified, preservation of explicit interactive/blocked/parent intent, and no
-behavior change for explicit offline or `--no-issue` operation.
+Require a hard creation failure when the pending label cannot be verified, preserve explicit interactive/blocked/parent intent, and retain offline and `--no-issue` behaviour.
 
 ### Child 3: Publish a manifest and reconcile canonical tasks
 
-**What:** Add the single idempotent transition that validates an exact
-default-branch snapshot, projects desired labels, and removes the blocker last.
+**What:** Add one idempotent transition that validates the exact default-branch snapshot, projects labels, and removes the blocker last. **Depends on:** Child 2.
 
-**Depends on:** Child 2, which creates pending issues and deferred intent.
+**Files:** add a task/issue manifest and publication ID to planning PR bodies in `shared-todo-commit.sh`, and to direct pushes in `planning-publisher.sh`; have `planning-commit-helper.sh` reconcile successful direct publication and distinguish pending PRs; add `planning-publication-reconcile.sh`; call it from `issue-sync-helper-push.sh`; run it on the merged default SHA in both issue-sync workflows.
 
-**Files to edit**
-
-- `.agents/scripts/shared-todo-commit.sh`: include a machine-readable list of
-  changed task/issue mappings and the publication ID in planning PR bodies.
-- `.agents/scripts/planning-publisher.sh`: expose the same publication metadata
-  for direct pushes.
-- `.agents/scripts/planning-commit-helper.sh`: invoke focused reconciliation
-  after successful direct publication and report pending PR state distinctly.
-- NEW `.agents/scripts/planning-publication-reconcile.sh`: validate exact
-  default-branch task/brief/mapping state and project labels idempotently.
-- `.agents/scripts/issue-sync-helper-push.sh`: call the reconciler from the
-  default-branch sync path rather than duplicating projection rules.
-- `.github/workflows/issue-sync.yml` and
-  `.github/workflows/issue-sync-reusable.yml`: run reconciliation on the merged
-  default-branch SHA.
-
-**Tests**
-
-- Extend `.agents/scripts/tests/test-planning-publisher.sh` for direct-push
-  success, failed push, and publication metadata.
-- Extend
-  `.agents/scripts/tests/test-planning-commit-helper-protected-default-pr.sh`
-  for the task/issue manifest and open-PR pending state.
-- NEW `.agents/scripts/tests/test-planning-publication-reconcile.sh` for merge,
-  close-without-merge, issue mutation failure, replay, mismatched mapping,
-  invalid brief, and blocker-removal-last.
-
-**Acceptance and verification**
+**Tests:** extend planning-publisher for direct success/failure and metadata, protected-default-PR for the manifest and pending state, and add reconcile fixtures for merge, closed-unmerged, mutation failure, replay, mismatched mapping, invalid brief, and blocker-last.
 
 ```bash
 bash .agents/scripts/tests/test-planning-publisher.sh
@@ -439,41 +353,15 @@ shellcheck .agents/scripts/shared-todo-commit.sh \
   .agents/scripts/issue-sync-helper-push.sh
 ```
 
-Acceptance requires exact task/issue/default-SHA binding, no extra issue on
-retry, unchanged pending state for invalid or unmerged planning, and a verified
-postcondition after the final label mutation. Keep orchestration in the new
-reconciler rather than expanding existing publication functions past 100 lines.
+Require exact task/issue/default-SHA binding, no new issue on retry, unchanged pending state for invalid or unmerged planning, and a verified postcondition. Keep orchestration in the new reconciler, not an existing function over 100 lines.
 
 ### Child 4: Complete recovery, batch convergence, and documentation
 
-**What:** Make abandoned and partially successful publication attempts
-diagnosable and retryable, then update the user contract.
+**What:** Make abandoned and partial publications diagnosable and retryable, then update the user contract. **Depends on:** Child 3 and its reconciliation API.
 
-**Depends on:** Child 3 and its reconciliation API.
+**Files:** summarize each task and retry only failed siblings in `new-task-helper.sh`; add a bounded pending-issue repair scan to `pulse-issue-reconcile.sh`; document pending, direct-published, and planning-PR outcomes (without promising immediate queue visibility) in the new-task command/workflow; link this contract from `task-lifecycle.md`.
 
-**Files to edit**
-
-- `.agents/scripts/new-task-helper.sh`: summarize per-task publication outcome
-  and retry only failed siblings.
-- `.agents/scripts/pulse-issue-reconcile.sh`: bounded repair scan for pending
-  issues whose planning files have landed.
-- `.agents/scripts/commands/new-task.md` and
-  `.agents/workflows/new-task.md`: document pending, direct-published, and
-  planning-PR outcomes without promising immediate queue visibility.
-- `.agents/reference/task-lifecycle.md`: point task creation and dispatchability
-  to this publication contract.
-
-**Tests**
-
-- NEW `.agents/scripts/tests/test-planning-publication-lifecycle.sh` with the
-  end-to-end fixture matrix: direct push succeeds; protected branch opens a PR;
-  PR merges; PR closes unmerged; issue creation succeeds then publication fails;
-  publication succeeds then issue mutation fails; repeated reconciliation is
-  idempotent; and a mixed-success batch converges without exposing failed items.
-- Run ShellCheck on every changed shell file and the repository planning,
-  issue-sync, dispatch-dedup, and pulse candidate suites.
-
-**Acceptance and verification**
+**Tests:** add the end-to-end fixture matrix in `test-planning-publication-lifecycle.sh`: direct success, protected PR, merged PR, closed-unmerged PR, creation then publication failure, publication then mutation failure, idempotent replay, and mixed batch convergence without exposing failures. Run ShellCheck on every changed shell file plus planning, issue-sync, dispatch-dedup, and pulse-candidate suites.
 
 ```bash
 bash .agents/scripts/tests/test-planning-publication-lifecycle.sh
@@ -485,9 +373,7 @@ markdownlint .agents/scripts/commands/new-task.md \
   .agents/reference/task-lifecycle.md
 ```
 
-Acceptance requires per-item batch outcomes, safe retry after an unmerged PR,
-bounded repair scans, and documentation that never calls an open planning PR
-queued or dispatchable.
+Require per-item outcomes, safe retry after an unmerged PR, bounded repair scans, and no claim that an open planning PR is queued or dispatchable.
 
 ## Acceptance proof
 
