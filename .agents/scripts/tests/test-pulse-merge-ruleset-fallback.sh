@@ -168,7 +168,9 @@ define_function_under_test() {
 	local src_normalize_pr_state
 	local src_terminal
 	local src_process
+	local src_process_helpers=""
 	local src_webhook_process
+	local process_helper=""
 	src_invalidate=$(awk '
 		/^_pulse_merge_invalidate_pr_list_cache\(\) \{/,/^\}$/ { print }
 	' "$MERGE_SCRIPT")
@@ -181,10 +183,26 @@ define_function_under_test() {
 	src_process=$(awk '
 		/^_process_single_ready_pr\(\) \{/,/^\}$/ { print }
 	' "$MERGE_SCRIPT")
+	for process_helper in \
+		_pmsrp_handle_conflicting_pr \
+		_pmsrp_apply_review_and_trust_gates \
+		_pmsrp_apply_required_check_gate \
+		_pmsrp_prepare_merge \
+		_pmsrp_try_native_auto_merge \
+		_pmsrp_attempt_admin_merge \
+		_pmsrp_apply_ruleset_merge_fallback \
+		_pmsrp_finalize_merge; do
+		src_process_helpers="${src_process_helpers}
+$(awk -v name="$process_helper" '
+		$0 ~ "^" name "\\(\\) \\{" { capture = 1 }
+		capture { print }
+		capture && /^}$/ { exit }
+	' "$MERGE_SCRIPT")"
+	done
 	src_webhook_process=$(awk '
 		/^process_pr\(\) \{/,/^\}$/ { print }
 	' "$MERGE_SCRIPT")
-	if [[ -z "$src_invalidate" || -z "$src_normalize_pr_state" || -z "$src_terminal" || -z "$src_process" || -z "$src_webhook_process" ]]; then
+	if [[ -z "$src_invalidate" || -z "$src_normalize_pr_state" || -z "$src_terminal" || -z "$src_process_helpers" || -z "$src_process" || -z "$src_webhook_process" ]]; then
 		printf 'ERROR: could not extract merge helpers from %s and %s\n' "$MERGE_SCRIPT" "$MERGE_PROCESS_SCRIPT" >&2
 		return 1
 	fi
@@ -196,6 +214,8 @@ define_function_under_test() {
 	eval "$src_normalize_pr_state"
 	# shellcheck disable=SC1090
 	eval "$src_terminal"
+	# shellcheck disable=SC1090
+	eval "$src_process_helpers"
 	# shellcheck disable=SC1090
 	eval "$src_process"
 	# shellcheck disable=SC1090

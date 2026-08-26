@@ -312,41 +312,44 @@ test_provided_head_ref_context_skips_view() {
 }
 
 # ---------------------------------------------------------------
-# Test 7: Static check — _retarget_stacked_children called before
-#         gh pr merge in _process_single_ready_pr
+# Test 7: Static check — preparation remains before admin merge orchestration
 # ---------------------------------------------------------------
 test_retarget_called_before_merge() {
-	local func_body
-	func_body=$(awk '
+	local prepare_body admin_body process_body
+	prepare_body=$(awk '
+		/^_pmsrp_prepare_merge\(\) \{/,/^}$/ { print }
+	' "$MERGE_SCRIPT")
+	admin_body=$(awk '
+		/^_pmsrp_attempt_admin_merge\(\) \{/,/^}$/ { print }
+	' "$MERGE_SCRIPT")
+	process_body=$(awk '
 		/^_process_single_ready_pr\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 
-	if [[ -z "$func_body" ]]; then
+	if [[ -z "$prepare_body" || -z "$admin_body" || -z "$process_body" ]]; then
 		print_result "retarget called before merge in _process_single_ready_pr" 1 \
-			"Could not extract _process_single_ready_pr from pulse-merge.sh"
+			"Could not extract split merge orchestration helpers"
 		return 0
 	fi
 
-	if [[ "$func_body" != *"_retarget_stacked_children"* ]]; then
+	if [[ "$prepare_body" != *"_retarget_stacked_children"* ]]; then
 		print_result "retarget called before merge in _process_single_ready_pr" 1 \
-			"_retarget_stacked_children not found in _process_single_ready_pr"
+			"_retarget_stacked_children not found in _pmsrp_prepare_merge"
 		return 0
 	fi
 
-	# Retarget must appear before the gh pr merge call.
-	local retarget_pos merge_pos
-	retarget_pos=$(printf '%s\n' "$func_body" | grep -n '_retarget_stacked_children' | head -1 | cut -d: -f1)
-	merge_pos=$(printf '%s\n' "$func_body" | grep -n 'gh pr merge' | head -1 | cut -d: -f1)
-
-	if [[ -z "$retarget_pos" || -z "$merge_pos" ]]; then
+	if [[ "$admin_body" != *"gh pr merge"* ]]; then
 		print_result "retarget called before merge in _process_single_ready_pr" 1 \
-			"retarget_pos=${retarget_pos}, merge_pos=${merge_pos}"
+			"gh pr merge not found in _pmsrp_attempt_admin_merge"
 		return 0
 	fi
 
-	if [[ "$retarget_pos" -ge "$merge_pos" ]]; then
+	local prepare_pos admin_pos
+	prepare_pos=$(printf '%s\n' "$process_body" | awk '/_pmsrp_prepare_merge/ { print NR; exit }')
+	admin_pos=$(printf '%s\n' "$process_body" | awk '/_pmsrp_attempt_admin_merge/ { print NR; exit }')
+	if [[ -z "$prepare_pos" || -z "$admin_pos" || "$prepare_pos" -ge "$admin_pos" ]]; then
 		print_result "retarget called before merge in _process_single_ready_pr" 1 \
-			"_retarget_stacked_children must appear before gh pr merge (pos: ${retarget_pos} vs ${merge_pos})"
+			"_pmsrp_prepare_merge must precede _pmsrp_attempt_admin_merge (pos: ${prepare_pos} vs ${admin_pos})"
 		return 0
 	fi
 

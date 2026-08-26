@@ -104,11 +104,26 @@ EOF
 	fast_fail_reset() { return 0; }
 	_release_interactive_claim_on_merge() { return 0; }
 	set_solved_label() { return 0; }
+	solved_actor_from_pr_labels() { return 1; }
+	set_issue_status() { return 0; }
+	reconcile_dependants_after_verified_closure() { return 0; }
 	auto_file_next_phase() { return 0; }
 	_pm_handle_partial_parent_closeout() { return 0; }
+	_pm_routing_feedback() { return 1; }
+	_pm_upsert_pr_closing_comment() { return 0; }
+	_gh_with_timeout() {
+		local access_mode="$1"
+		shift
+		[[ -n "$access_mode" ]] || return 1
+		"$@"
+		return $?
+	}
 	clear_terminal_issue_dispatch_labels() { return 0; }
 	export -f unlock_issue_after_worker fast_fail_reset _release_interactive_claim_on_merge \
-		set_solved_label auto_file_next_phase _pm_handle_partial_parent_closeout \
+		set_solved_label solved_actor_from_pr_labels set_issue_status \
+		reconcile_dependants_after_verified_closure auto_file_next_phase \
+		_pm_handle_partial_parent_closeout _pm_routing_feedback \
+		_pm_upsert_pr_closing_comment _gh_with_timeout \
 		clear_terminal_issue_dispatch_labels 2>/dev/null || true
 
 	# Shim shared-gh-wrappers.sh wrappers → gh binary stub. The function was
@@ -151,6 +166,7 @@ define_function_under_test() {
 		/^_pm_issue_api\(\) \{/,/^}$/ { print }
 		/^_pm_build_closing_comment\(\) \{/,/^}$/ { print }
 		/^_pm_resolve_superseded_original_issue\(\) \{/,/^}$/ { print }
+		/^_pm_close_issue_after_merge\(\) \{/,/^}$/ { print }
 		/^_handle_post_merge_actions\(\) \{/,/^}$/ { print }
 		/^_unblock_circuit_breaker_meta_pr\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")

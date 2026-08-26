@@ -366,12 +366,43 @@ extract_function() {
 	return 0
 }
 
+extract_merge_gate_bundle() {
+	local fn_name=""
+	for fn_name in \
+		_pm_check_review_mode_gate \
+		_pm_check_author_merge_gate \
+		_pm_check_workflow_and_issue_holds \
+		_pm_check_external_and_origin_gates \
+		_pm_check_review_bot_gate \
+		_check_pr_merge_gates; do
+		extract_function "$fn_name" "$MERGE_SCRIPT"
+	done
+	return 0
+}
+
+extract_process_helper_bundle() {
+	local process_helper=""
+	for process_helper in \
+		_pmsrp_handle_conflicting_pr \
+		_pmsrp_apply_review_and_trust_gates \
+		_pmsrp_apply_required_check_gate \
+		_pmsrp_prepare_merge \
+		_pmsrp_try_native_auto_merge \
+		_pmsrp_attempt_admin_merge \
+		_pmsrp_apply_ruleset_merge_fallback \
+		_pmsrp_finalize_merge; do
+		extract_function "$process_helper" "$MERGE_SCRIPT"
+	done
+	return 0
+}
+
 define_process_helper() {
-	local fn_src="" repair_helper_src="" review_gate_src=""
+	local fn_src="" process_helpers_src="" repair_helper_src="" review_gate_src=""
 	review_gate_src=$(extract_function _handle_changes_requested_review_gate "$MERGE_SCRIPT")
 	repair_helper_src=$(extract_function _handle_review_blocked_ci_repair "$PROCESS_SCRIPT")
+	process_helpers_src=$(extract_process_helper_bundle)
 	fn_src=$(extract_function _process_single_ready_pr "$MERGE_SCRIPT")
-	[[ -n "$review_gate_src" && -n "$repair_helper_src" && -n "$fn_src" ]] || return 1
+	[[ -n "$review_gate_src" && -n "$repair_helper_src" && -n "$process_helpers_src" && -n "$fn_src" ]] || return 1
 
 	_OW_LABEL_PAT=",origin:worker,"
 	PULSE_MERGE_BOOL_TRUE="true"
@@ -451,6 +482,8 @@ define_process_helper() {
 	eval "$review_gate_src"
 	# shellcheck disable=SC1090
 	eval "$repair_helper_src"
+	# shellcheck disable=SC1090
+	eval "$process_helpers_src"
 	# shellcheck disable=SC1090
 	eval "$fn_src"
 	return 0
@@ -676,7 +709,7 @@ test_ci_rebase_only_gate_stops_before_review_bot_boundary() {
 	define_process_helper || { print_result "defines repair-only gate helper" 1 "could not extract review gate"; teardown_test_env; return 0; }
 	local gate_src="" gate_rc=0 review_bot_calls=0
 	local old_agents_dir="${AGENTS_DIR:-}"
-	gate_src=$(extract_function _check_pr_merge_gates "$MERGE_SCRIPT")
+	gate_src=$(extract_merge_gate_bundle)
 	if [[ -z "$gate_src" ]]; then
 		print_result "repair-only gate stops before review-bot boundary" 1 "could not extract _check_pr_merge_gates"
 		teardown_test_env
@@ -726,7 +759,7 @@ test_ci_repair_only_gate_requires_review_bot_boundary() {
 	local gate_src="" gate_rc=0
 	local old_agents_dir="${AGENTS_DIR:-}"
 	local review_bot_log="${TEST_ROOT}/review-bot.log"
-	gate_src=$(extract_function _check_pr_merge_gates "$MERGE_SCRIPT")
+	gate_src=$(extract_merge_gate_bundle)
 	if [[ -z "$gate_src" ]]; then
 		print_result "CI repair-only gate requires review-bot boundary" 1 "could not extract _check_pr_merge_gates"
 		teardown_test_env

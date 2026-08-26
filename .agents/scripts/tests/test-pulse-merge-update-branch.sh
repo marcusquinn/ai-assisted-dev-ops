@@ -124,6 +124,7 @@ gh_pr_view() {
 # pattern used by test-pulse-merge-rebase-nudge.sh.
 define_helper_under_test() {
 	local helper_src
+	_PMP_ORIGIN_INTERACTIVE_PATTERN=",origin:interactive,"
 	# shellcheck source=/dev/null
 	source "$REST_STATE_SCRIPT"
 	helper_src=$(awk '
@@ -429,19 +430,15 @@ test_refresh_unknown_mergeable_surfaces_conflicting() {
 # ---------------------------------------------------------------
 
 test_nmr_guard_exists_before_close() {
-	# Extract the CONFLICTING handling block from _process_single_ready_pr.
+	# Extract the dedicated CONFLICTING handler.
 	local block
 	block=$(awk '
-		/^_process_single_ready_pr\(\) \{/,/^}$/ {
-			if ($0 ~ /pr_mergeable.*CONFLICTING/) { capturing=1 }
-			if (capturing) print
-			if (capturing && /^	fi$/ && ++fi_count == 3) { exit }
-		}
+		/^_pmsrp_handle_conflicting_pr\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 
 	if [[ -z "$block" ]]; then
 		print_result "NMR guard + update-branch structure present" 1 \
-			"Could not extract CONFLICTING block from _process_single_ready_pr"
+			"Could not extract _pmsrp_handle_conflicting_pr"
 		return 0
 	fi
 
@@ -483,10 +480,9 @@ test_nmr_guard_exists_before_close() {
 test_stale_route_runs_before_protected_precheck() {
 	local block
 	block=$(awk '
-		/^_process_single_ready_pr\(\) \{/ { in_fn=1 }
-		in_fn && /_attempt_pr_update_branch/ { capturing=1 }
-		capturing { print }
-		capturing && /^[[:space:]]*_close_conflicting_pr "/ { exit }
+		/^_pmsrp_handle_conflicting_pr\(\) \{/ { in_fn=1 }
+		in_fn { print }
+		in_fn && /^}$/ { exit }
 	' "$MERGE_SCRIPT")
 
 	local precheck_pos close_pos route_pos
@@ -538,11 +534,11 @@ test_unknown_mergeable_refreshed_before_conflict_handler() {
 	' "$MERGE_SCRIPT")
 
 	refresh_pos=$(printf '%s\n' "$function_src" | awk '/GH#24634/ { print NR; exit }')
-	conflict_pos=$(printf '%s\n' "$function_src" | awk '/if \[\[ "\$pr_mergeable" == "CONFLICTING"/ { print NR; exit }')
+	conflict_pos=$(printf '%s\n' "$function_src" | awk '/_pmsrp_handle_conflicting_pr/ { print NR; exit }')
 
 	if [[ -z "$refresh_pos" || -z "$conflict_pos" ]]; then
 		print_result "UNKNOWN mergeable refresh precedes CONFLICTING branch" 1 \
-			"Expected GH#24634 refresh and CONFLICTING branch in _process_single_ready_pr (refresh=${refresh_pos}, conflict=${conflict_pos})"
+			"Expected GH#24634 refresh before _pmsrp_handle_conflicting_pr (refresh=${refresh_pos}, conflict=${conflict_pos})"
 		return 0
 	fi
 
