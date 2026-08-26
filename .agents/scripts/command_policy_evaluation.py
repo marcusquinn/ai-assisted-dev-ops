@@ -19,6 +19,7 @@ from command_policy_account_mutation import (
     _evaluate_account_mutation,
     account_mutation_authorization as _account_mutation_authorization,
 )
+from command_policy_approval import _evaluate_approval_freshness
 from command_policy_config import _decision
 from command_policy_matchers import _matches
 from command_policy_process_termination import (
@@ -52,6 +53,7 @@ class _EvaluationOptions:
     runtime_process_identity: str = ""
     process_table_fixture: str = ""
     account_mutation_workspace_root: str | None = None
+    approval_helper: str = ""
 
 
 def _evaluate_static(
@@ -164,6 +166,19 @@ def _network_guard_path(
     return (script_dir or Path(__file__).resolve().parent) / helper
 
 
+def _approval_guard_path(
+    policy: dict[str, Any], explicit: str, script_dir: Path | None = None
+) -> Path:
+    if explicit:
+        return Path(explicit)
+    helper = next(
+        guard["helper"]
+        for guard in policy["dynamic_guards"]
+        if guard["kind"] == "approval_freshness"
+    )
+    return (script_dir or Path(__file__).resolve().parent) / helper
+
+
 def _evaluate_worker_network(
     invocations: list[list[str]], cwd: str, helper: Path, worker_id: str
 ) -> dict[str, Any]:
@@ -216,7 +231,11 @@ def evaluate_invocations(
 ) -> dict[str, Any]:
     options = _evaluation_options(legacy_options, named_options)
     script_dir = Path(__file__).resolve().parent
-    decisions = [
+    approval_decision = _evaluate_approval_freshness(
+        invocations,
+        _approval_guard_path(policy, options.approval_helper, script_dir),
+    )
+    decisions = ([approval_decision] if approval_decision else []) + [
         _evaluate_static(invocations, cwd, policy),
         _evaluate_canonical_git(
             invocations,
@@ -270,6 +289,7 @@ def _evaluation_options(
         "runtime_process_identity",
         "process_table_fixture",
         "account_mutation_workspace_root",
+        "approval_helper",
     )
     if len(legacy_options) > len(names):
         maximum_arguments = len(names) + 3

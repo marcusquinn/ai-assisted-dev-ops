@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   mkdtempSync,
   mkdirSync,
@@ -472,6 +473,41 @@ test("blocks generic destructive commands through shared policy", () => {
     () => checkCommandSafetyGate("rm -rf ./build-output", scriptsDir, process.cwd()),
     /forbid, filesystem\.rm-recursive-force/,
   );
+});
+
+test("refreshes approval state before privileged approval commands", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-approval-policy-"));
+  const approvalHelper = join(root, "approval-helper.sh");
+  const command = "sudo aidevops approve issue 30700 owner/repo";
+  try {
+    writeFileSync(
+      approvalHelper,
+      "#!/usr/bin/env bash\nprintf 'NO_APPROVAL\\n'\nexit 1\n",
+    );
+    chmodSync(approvalHelper, 0o755);
+    assert.doesNotThrow(() => checkCommandSafetyGate(
+      command,
+      scriptsDir,
+      process.cwd(),
+      { approvalHelper },
+    ));
+
+    writeFileSync(
+      approvalHelper,
+      "#!/usr/bin/env bash\nprintf 'VERIFIED\\n'\nexit 0\n",
+    );
+    assert.throws(
+      () => checkCommandSafetyGate(
+        command,
+        scriptsDir,
+        process.cwd(),
+        { approvalHelper },
+      ),
+      /approval\.already-verified.*skip sudo and continue/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("blocks current runtime termination while allowing a detached sandbox group", () => {

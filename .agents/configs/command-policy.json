@@ -29,6 +29,12 @@
       "decision": "forbid"
     },
     {
+      "id": "approval.freshness",
+      "kind": "approval_freshness",
+      "helper": "approval-helper.sh",
+      "decision": "forbid"
+    },
+    {
       "id": "github.account-mutation",
       "kind": "trusted_account_mutation",
       "authorization_env": "AIDEVOPS_ACCOUNT_MUTATION_AUTHORIZATION",

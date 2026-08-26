@@ -156,6 +156,63 @@ PY
 	return 0
 }
 
+assert_approval_decision() {
+	local name="$1"
+	local command_text="$2"
+	local approval_helper="$3"
+	local expected_decision="$4"
+	local expected_rule="$5"
+	local expected_status="$6"
+	local expected_pattern="${7:-}"
+	local output=""
+	local status=0
+	local actual=""
+
+	output="$(python3 "$HELPER" check-command --cwd "$TEST_ROOT" \
+		--approval-helper "$approval_helper" --command "$command_text")" || status=$?
+	actual="$(
+		python3 - "$output" <<'PY'
+import json
+import sys
+result = json.loads(sys.argv[1])
+print(f"{result.get('decision', '')}/{result.get('rule_id', '')}")
+PY
+	)"
+	if [[ "$status" -eq "$expected_status" &&
+		"$actual" == "${expected_decision}/${expected_rule}" &&
+		(-z "$expected_pattern" || "$output" == *"$expected_pattern"*) ]]; then
+		pass "$name"
+	else
+		fail "$name" "status=${status} decision=${actual} output=${output}"
+	fi
+	return 0
+}
+
+create_approval_fixture_helper() {
+	local helper="${TEST_ROOT}/approval-helper-fixture.sh"
+	cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+target_type="${2:-}"
+target_number="${3:-}"
+state_name="APPROVAL_TEST_STATE_${target_type}_${target_number}"
+state="${!state_name:-API_ERROR}"
+printf '%s\n' "$state"
+case "$state" in
+VERIFIED) exit 0 ;;
+NO_APPROVAL) exit 1 ;;
+NO_KEY) exit 2 ;;
+LEGACY_APPROVAL) exit 3 ;;
+STALE_APPROVAL) exit 4 ;;
+MALFORMED_APPROVAL) exit 5 ;;
+*) exit 6 ;;
+esac
+EOF
+	chmod +x "$helper"
+	printf '%s\n' "$helper"
+	return 0
+}
+
 test_validation() {
 	if python3 "$HELPER" validate --policy "$POLICY" >/dev/null; then
 		pass "validates declarative policy and fixtures"
@@ -447,6 +504,60 @@ test_static_decisions() {
 	return 0
 }
 
+test_approval_freshness_policy() {
+	local approval_helper=""
+	approval_helper=$(create_approval_fixture_helper)
+
+	export APPROVAL_TEST_STATE_issue_30700=NO_APPROVAL
+	export APPROVAL_TEST_STATE_issue_30701=NO_APPROVAL
+	assert_approval_decision \
+		"allows a freshly unapproved batch" \
+		"sudo aidevops approve issue 30700 30701 owner/repo" \
+		"$approval_helper" allow approval.fresh-unapproved 0 "issue:30700, issue:30701"
+
+	# A fresh pass must override an earlier NO_APPROVAL result.
+	export APPROVAL_TEST_STATE_issue_30700=VERIFIED
+	export APPROVAL_TEST_STATE_issue_30701=VERIFIED
+	assert_approval_decision \
+		"suppresses a stale all-verified sudo retry" \
+		"sudo aidevops approve issue 30700 30701 owner/repo" \
+		"$approval_helper" forbid approval.already-verified 20 \
+		"skip sudo and continue the requested workflow"
+
+	export APPROVAL_TEST_STATE_issue_30701=NO_APPROVAL
+	assert_approval_decision \
+		"reduces a mixed same-kind batch to unapproved targets" \
+		"sudo aidevops approve issue 30700 30701 owner/repo" \
+		"$approval_helper" forbid approval.partially-verified 20 \
+		"sudo aidevops approve issue 30701 owner/repo"
+
+	export APPROVAL_TEST_STATE_pr_400=VERIFIED
+	export APPROVAL_TEST_STATE_issue_30701=NO_APPROVAL
+	assert_approval_decision \
+		"reduces a mixed-kind batch without dropping target kinds" \
+		"sudo aidevops approve batch pr:400 issue:30701 owner/repo" \
+		"$approval_helper" forbid approval.partially-verified 20 \
+		"sudo aidevops approve batch issue:30701 owner/repo"
+
+	export APPROVAL_TEST_STATE_issue_30701=API_ERROR
+	assert_approval_decision \
+		"fails safely when authoritative verification is indeterminate" \
+		"sudo aidevops approve issue 30700 30701 owner/repo" \
+		"$approval_helper" forbid approval.verification-indeterminate 20 \
+		"issue:30701=API_ERROR"
+
+	assert_approval_decision \
+		"rejects malformed repository-unqualified approval commands" \
+		"sudo aidevops approve issue 30700" \
+		"$approval_helper" forbid approval.preflight-malformed 20 \
+		"explicit owner/repository"
+
+	unset APPROVAL_TEST_STATE_issue_30700
+	unset APPROVAL_TEST_STATE_issue_30701
+	unset APPROVAL_TEST_STATE_pr_400
+	return 0
+}
+
 test_process_table_parser() {
 	if python3 - "$SCRIPT_DIR" <<'PY'; then
 import importlib
@@ -567,7 +678,8 @@ test_canonical_delegation() {
 	git -C "$repo" config user.email test@example.invalid
 	git -C "$repo" config commit.gpgsign false
 	printf 'seed\n' >"${repo}/README.md"
-	git -C "$repo" add README.md
+	printf '{}\n' >"${repo}/.aidevops.json"
+	git -C "$repo" add README.md .aidevops.json
 	git -C "$repo" commit -q -m seed
 	assert_decision "forbids canonical branch mutation through canonical guard" "git branch -m main renamed" forbid git.canonical-worktree 20 "$repo"
 	git -C "$repo" worktree add -q -b feature/test "$linked"
@@ -807,6 +919,7 @@ main() {
 	test_evaluate_invocations_compatibility
 	test_worker_protocol_bash_examples
 	test_static_decisions
+	test_approval_freshness_policy
 	test_process_table_parser
 	test_process_termination_policy
 	test_account_mutation_authorization
