@@ -377,12 +377,24 @@ extract_merge_gate_functions() {
 	return 0
 }
 
+extract_process_stage_functions() {
+	local source_file="$1"
+	local fn_name=""
+	for fn_name in _pmp_stage_parse_and_validate _pmp_stage_handle_conflict \
+		_pmp_stage_review_and_gates _pmp_stage_required_checks _pmp_stage_pre_merge \
+		_pmp_stage_admin_merge _pmp_stage_ruleset_fallback _pmp_stage_finalize_merge; do
+		extract_function "$fn_name" "$source_file"
+	done
+	return 0
+}
+
 define_process_helper() {
-	local fn_src="" repair_helper_src="" review_gate_src=""
+	local fn_src="" process_stage_src="" repair_helper_src="" review_gate_src=""
 	review_gate_src=$(extract_function _handle_changes_requested_review_gate "$MERGE_SCRIPT")
 	repair_helper_src=$(extract_function _handle_review_blocked_ci_repair "$PROCESS_SCRIPT")
+	process_stage_src=$(extract_process_stage_functions "$MERGE_SCRIPT")
 	fn_src=$(extract_function _process_single_ready_pr "$MERGE_SCRIPT")
-	[[ -n "$review_gate_src" && -n "$repair_helper_src" && -n "$fn_src" ]] || return 1
+	[[ -n "$review_gate_src" && -n "$repair_helper_src" && -n "$process_stage_src" && -n "$fn_src" ]] || return 1
 
 	_OW_LABEL_PAT=",origin:worker,"
 	PULSE_MERGE_BOOL_TRUE="true"
@@ -462,6 +474,8 @@ define_process_helper() {
 	eval "$review_gate_src"
 	# shellcheck disable=SC1090
 	eval "$repair_helper_src"
+	# shellcheck disable=SC1090
+	eval "$process_stage_src"
 	# shellcheck disable=SC1090
 	eval "$fn_src"
 	return 0

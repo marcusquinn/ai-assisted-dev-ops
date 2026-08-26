@@ -716,7 +716,7 @@ test_native_auto_defer_not_counted_as_completed_merge() {
 		/^_pmp_record_processed_pr_result\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$PROCESS_SCRIPT")
 	merge_src=$(awk '
-		/^_process_single_ready_pr\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
+		/^_pmp_stage_pre_merge\(\)[[:space:]]*\{[[:space:]]*$/, /^\}[[:space:]]*$/ { print }
 	' "$MERGE_SCRIPT")
 
 	if [[ -z "$process_src" || -z "$merge_src" ]]; then
@@ -727,7 +727,7 @@ test_native_auto_defer_not_counted_as_completed_merge() {
 
 	if [[ "$merge_src" != *'return 4'* ]]; then
 		print_result "Native auto defer returns distinct non-merged code" 1 \
-			"Expected _process_single_ready_pr native-auto branch to return 4"
+			"Expected _pmp_stage_pre_merge native-auto branch to return 4"
 		return 0
 	fi
 

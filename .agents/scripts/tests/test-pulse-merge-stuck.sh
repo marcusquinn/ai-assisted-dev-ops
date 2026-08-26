@@ -594,7 +594,7 @@ echo ""
 # detector can file false collapse issues while GitHub is completing the merge.
 TESTS_RUN=$((TESTS_RUN + 1))
 if grep -q "Merge already in progress" "$MERGE_SCRIPT" &&
-	grep -Fq "_handle_post_merge_actions \"\$pr_number\" \"\$repo_slug\" \"\$linked_issue\" \"\$merge_summary\" \"\$_ipr_labels\"" "$MERGE_SCRIPT" &&
+	grep -Fq "_handle_post_merge_actions \"\$pr_number\" \"\$repo_slug\" \"\$linked_issue\" \"\$merge_summary\" \"\$labels\"" "$MERGE_SCRIPT" &&
 	grep -Fq "return \$?" "$MERGE_SCRIPT"; then
 	echo "${TEST_GREEN}PASS${TEST_NC}: 6d: merge-in-progress is counted as zero-progress-breaking progress"
 else

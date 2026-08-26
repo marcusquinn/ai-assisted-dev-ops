@@ -312,24 +312,24 @@ test_provided_head_ref_context_skips_view() {
 }
 
 # ---------------------------------------------------------------
-# Test 7: Static check — _retarget_stacked_children called before
-#         gh pr merge in _process_single_ready_pr
+# Test 7: Static check — pre-merge retarget stage runs before merge stage.
 # ---------------------------------------------------------------
 test_retarget_called_before_merge() {
 	local func_body
 	func_body=$(awk '
-		/^_process_single_ready_pr\(\) \{/,/^}$/ { print }
+		/^_pmp_stage_pre_merge\(\) \{/,/^}$/ { print }
+		/^_pmp_stage_admin_merge\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 
 	if [[ -z "$func_body" ]]; then
 		print_result "retarget called before merge in _process_single_ready_pr" 1 \
-			"Could not extract _process_single_ready_pr from pulse-merge.sh"
+			"Could not extract pre-merge and admin-merge stages from pulse-merge.sh"
 		return 0
 	fi
 
 	if [[ "$func_body" != *"_retarget_stacked_children"* ]]; then
 		print_result "retarget called before merge in _process_single_ready_pr" 1 \
-			"_retarget_stacked_children not found in _process_single_ready_pr"
+			"_retarget_stacked_children not found in _pmp_stage_pre_merge"
 		return 0
 	fi
 

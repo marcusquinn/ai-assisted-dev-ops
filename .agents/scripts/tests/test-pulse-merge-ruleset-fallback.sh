@@ -179,6 +179,14 @@ define_function_under_test() {
 		/^_pulse_merge_failure_is_terminal\(\) \{/,/^\}$/ { print }
 	' "$MERGE_SCRIPT")
 	src_process=$(awk '
+		/^_pmp_stage_parse_and_validate\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_handle_conflict\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_review_and_gates\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_required_checks\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_pre_merge\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_admin_merge\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_ruleset_fallback\(\) \{/,/^\}$/ { print }
+		/^_pmp_stage_finalize_merge\(\) \{/,/^\}$/ { print }
 		/^_process_single_ready_pr\(\) \{/,/^\}$/ { print }
 	' "$MERGE_SCRIPT")
 	src_webhook_process=$(awk '
