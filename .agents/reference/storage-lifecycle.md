@@ -107,7 +107,10 @@ zero because that aggregate report grants no deletion authority. On non-macOS sy
 legacy `$HOME/.Trash/aidevops-worktree-cleanup-*` buckets. Framework-owned
 default roots remain distinct from joint OS Trash or operator-selected roots.
 Incomplete, symlinked, unrecognised, or unsized buckets are `unknown`; inventory
-never migrates, rewrites, or deletes them.
+never migrates, rewrites, or deletes them. Entry-local sizing failures are
+reported in `sizing_error` and do not become structural `error` failures. The
+aggregate byte totals remain unavailable when any entry is unsized, while
+independently exact entries retain their own evidence.
 
 Run `worktree-helper.sh recovery plan --output <absolute-path>` to persist a
 versioned `aidevops.worktree-recovery-plan/v2` JSON review artifact. The output
@@ -117,11 +120,25 @@ publishes it atomically without replacing an existing path. Plan generation is
 read-only for every recovery root and archive; it never moves, rewrites, or
 deletes a bucket.
 
+Manual planning classifies at most 100 entries per invocation by default. It
+first inventories archive structure without running an exact size probe for
+every bucket, then performs the full evidence and one final exact-size check
+only for the selected window. Use `--max-classify <1-1000>` to tune that bound
+and `--offset <non-negative-integer>` to continue from a prior plan's
+`next_classification_offset`. A 120-second between-entry deadline bounds each
+pass further; tune it with `--deadline-seconds <1-3600>`. Entries outside the
+window or beyond the deadline remain visible as `unknown` with
+`classification-deferred` or `classification-deadline-exhausted`; they gain no
+deletion authority. The plan records classification completeness,
+classified/deferred counts, deadline state, and both cursor offsets. Repeated
+bounded plans can therefore inspect or reclaim independent windows without an
+unbounded pass or an authoritative size cache.
+
 The envelope records its producer, generation time, deterministic plan ID,
 inventory completeness/error state, source roots, reconciled entry/byte totals,
 and ordered `candidate`, `protected`, and `unknown` entries. An incomplete global
-inventory produces no candidates; a partial report downgrades its reported
-entries to unknown. Each attributable entry binds the exact physical bucket and
+inventory produces no candidates; an entry-local sizing failure downgrades only
+that entry. Each attributable entry binds the exact physical bucket and
 archive paths to its format, Git HEAD/branch, source/admin/common identity,
 archive index and completion-marker digests, expected allocated bytes, observed
 local/remote evidence, disposition, and reason codes. Unchanged evidence yields
@@ -214,8 +231,13 @@ owner-validated lock and records a policy-bound `automatic-sha256:` authority in
 its plan, journal, and receipt; it never synthesizes the manual confirmation
 token. Pending transactions under the maintenance state directory resume before
 new inventory is scanned, while completed plans and receipts remain available
-for audit. A maintenance failure leaves the affected archive intact and does not
-turn a successful broader cleanup cycle into a failure.
+for audit. Each run result includes bounded diagnostics outside the signed v1
+automatic-policy object: inventory/scanned counts, cursor movement, pass
+coverage, and fixed-cardinality reason counts for unknown and protected entries.
+This makes repeated `no-candidates` outcomes distinguishable without changing
+the destructive authority key set. A maintenance failure leaves the affected
+archive intact and does not turn a successful broader cleanup cycle into a
+failure.
 
 An originating OpenCode or Claude session identifier is recovery guidance, not
 deletion proof. Session history can reconstruct text edits and intent but may be

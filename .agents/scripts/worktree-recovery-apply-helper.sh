@@ -43,7 +43,16 @@ _worktree_recovery_apply_plan_material_json() {
 	printf '%s\n' "$plan_json" | jq -c \
 		--arg object_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_OBJECT" '
 		{schema:.schema,inventory_complete:.inventory_complete,
-		inventory_error:.inventory_error,entries:.entries} +
+		inventory_error:.inventory_error} +
+		(if has("classification_complete")
+		then {classification_complete:.classification_complete,
+			classified_entry_count:.classified_entry_count,
+			deferred_entry_count:.deferred_entry_count,
+			classification_offset:.classification_offset,
+			next_classification_offset:.next_classification_offset,
+			classification_deadline_seconds:.classification_deadline_seconds,
+			classification_deadline_exhausted:.classification_deadline_exhausted}
+		else {} end) + {entries:.entries} +
 		(if (.automatic_policy | type) == $object_type
 		then {automatic_policy:.automatic_policy} else {} end)'
 	return $?

@@ -771,20 +771,102 @@ EOF
 	return 0
 }
 
-cmd_recovery() {
-	local action="${1:-status}"
+_cmd_recovery_plan() {
 	local output_path=""
+	local max_classify="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_MAX_CLASSIFY:-100}"
+	local classification_offset="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_OFFSET:-0}"
+	local deadline_seconds="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_DEADLINE_SECONDS:-120}"
+	local max_classify_set=0
+	local classification_offset_set=0
+	local deadline_seconds_set=0
+	local option=""
+
+	while [[ "$#" -gt 0 ]]; do
+		option="$1"
+		shift
+		[[ "$#" -gt 0 ]] || return 1
+		case "$option" in
+		--output)
+			[[ -z "$output_path" ]] || return 1
+			output_path="$1"
+			;;
+		--max-classify)
+			[[ "$max_classify_set" -eq 0 ]] || return 1
+			max_classify="$1"
+			max_classify_set=1
+			;;
+		--offset)
+			[[ "$classification_offset_set" -eq 0 ]] || return 1
+			classification_offset="$1"
+			classification_offset_set=1
+			;;
+		--deadline-seconds)
+			[[ "$deadline_seconds_set" -eq 0 ]] || return 1
+			deadline_seconds="$1"
+			deadline_seconds_set=1
+			;;
+		*) return 1 ;;
+		esac
+		shift
+	done
+	[[ -n "$output_path" && "$max_classify" =~ ^[0-9]+$ &&
+		"${#max_classify}" -le 4 && "$max_classify" -ge 1 && "$max_classify" -le 1000 &&
+		"$classification_offset" =~ ^[0-9]+$ && "${#classification_offset}" -le 10 &&
+		"$deadline_seconds" =~ ^[0-9]+$ && "${#deadline_seconds}" -le 4 &&
+		"$deadline_seconds" -ge 1 && "$deadline_seconds" -le 3600 ]] || {
+		printf '%s\n' "Usage: worktree-helper.sh recovery plan --output <absolute-path> [--max-classify <1-1000>] [--offset <non-negative-integer>] [--deadline-seconds <1-3600>]" >&2
+		return 1
+	}
+	declare -F worktree_recovery_plan_write >/dev/null 2>&1 || return 1
+	AIDEVOPS_WORKTREE_RECOVERY_PLAN_MAX_CLASSIFY="$max_classify" \
+		AIDEVOPS_WORKTREE_RECOVERY_PLAN_OFFSET="$classification_offset" \
+		AIDEVOPS_WORKTREE_RECOVERY_PLAN_DEADLINE_SECONDS="$deadline_seconds" \
+		worktree_recovery_plan_write "$output_path" || return 1
+	return 0
+}
+
+_cmd_recovery_apply() {
 	local plan_path=""
 	local receipt_path=""
 	local confirmation=""
 	local option=""
 
+	while [[ "$#" -gt 0 ]]; do
+		option="$1"
+		shift
+		[[ "$#" -gt 0 ]] || return 1
+		case "$option" in
+		--plan)
+			[[ -z "$plan_path" ]] || return 1
+			plan_path="$1"
+			;;
+		--receipt)
+			[[ -z "$receipt_path" ]] || return 1
+			receipt_path="$1"
+			;;
+		--confirm)
+			[[ -z "$confirmation" ]] || return 1
+			confirmation="$1"
+			;;
+		*) return 1 ;;
+		esac
+		shift
+	done
+	[[ -n "$plan_path" && -n "$receipt_path" && -n "$confirmation" ]] || {
+		printf '%s\n' "Usage: worktree-helper.sh recovery apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>" >&2
+		return 1
+	}
+	declare -F worktree_recovery_apply >/dev/null 2>&1 || return 1
+	worktree_recovery_apply "$plan_path" "$receipt_path" "$confirmation" || return 1
+	return 0
+}
+
+cmd_recovery() {
+	local action="${1:-status}"
+
 	case "$action" in
 	status)
-		[[ "$#" -eq 0 || ("$#" -eq 1 && "$1" == "status") ]] || {
-			printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>|apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>]" >&2
-			return 1
-		}
+		[[ "$#" -eq 0 || ("$#" -eq 1 && "$1" == "status") ]] || return 1
 		if declare -F worktree_recovery_lifecycle_status >/dev/null 2>&1; then
 			worktree_recovery_lifecycle_status || return 1
 		else
@@ -792,48 +874,14 @@ cmd_recovery() {
 		fi
 		;;
 	plan)
-		[[ "$#" -eq 3 && "$2" == "--output" ]] || {
-			printf '%s\n' "Usage: worktree-helper.sh recovery plan --output <absolute-path>" >&2
-			return 1
-		}
-		output_path="$3"
-		declare -F worktree_recovery_plan_write >/dev/null 2>&1 || return 1
-		worktree_recovery_plan_write "$output_path" || return 1
+		shift
+		_cmd_recovery_plan "$@" || return 1
 		;;
 	apply)
 		shift
-		while [[ "$#" -gt 0 ]]; do
-			option="$1"
-			shift
-			[[ "$#" -gt 0 ]] || return 1
-			case "$option" in
-			--plan)
-				[[ -z "$plan_path" ]] || return 1
-				plan_path="$1"
-				;;
-			--receipt)
-				[[ -z "$receipt_path" ]] || return 1
-				receipt_path="$1"
-				;;
-			--confirm)
-				[[ -z "$confirmation" ]] || return 1
-				confirmation="$1"
-				;;
-			*) return 1 ;;
-			esac
-			shift
-		done
-		[[ -n "$plan_path" && -n "$receipt_path" && -n "$confirmation" ]] || {
-			printf '%s\n' "Usage: worktree-helper.sh recovery apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>" >&2
-			return 1
-		}
-		declare -F worktree_recovery_apply >/dev/null 2>&1 || return 1
-		worktree_recovery_apply "$plan_path" "$receipt_path" "$confirmation" || return 1
+		_cmd_recovery_apply "$@" || return 1
 		;;
-	*)
-		printf '%s\n' "Usage: worktree-helper.sh recovery [plan --output <absolute-path>|apply --plan <absolute-path> --receipt <absolute-new-path> --confirm <manifest-token>]" >&2
-		return 1
-		;;
+	*) return 1 ;;
 	esac
 	return 0
 }

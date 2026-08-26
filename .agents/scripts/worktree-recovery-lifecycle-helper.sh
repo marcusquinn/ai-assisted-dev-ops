@@ -131,15 +131,20 @@ _worktree_recovery_encode_report() {
 	local total_bytes="$9"
 	local protected_bytes="${10}"
 	local unknown_bytes="${11}"
+	local sizing_error="${12:-}"
+	local sizing_complete="${13:-true}"
 	local confidence="$WORKTREE_RECOVERY_UNAVAILABLE"
 
-	[[ -n "$report_error" ]] || confidence="$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT"
+	[[ -n "$report_error" || -n "$sizing_error" || "$sizing_complete" != "true" ]] ||
+		confidence="$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT"
 	jq -sc \
 		--arg schema "$WORKTREE_RECOVERY_INVENTORY_SCHEMA" \
 		--arg producer "$WORKTREE_RECOVERY_PRODUCER" \
 		--arg path "$display_path" \
 		--arg owner "$report_owner" \
 		--arg error "$report_error" \
+		--arg sizing_error "$sizing_error" \
+		--argjson sizing_complete "$sizing_complete" \
 		--arg confidence "$confidence" \
 		--argjson root_count "$root_count" \
 		--argjson bucket_count "$bucket_count" \
@@ -148,31 +153,64 @@ _worktree_recovery_encode_report() {
 		--argjson total_bytes "$total_bytes" \
 		--argjson protected_bytes "$protected_bytes" \
 		--argjson unknown_bytes "$unknown_bytes" \
-		'{schema:$schema,store_id:"worktree-recovery",producer:$producer,path:$path,owner:$owner,safety_class:"recovery",policy:"aggregate inventory grants no deletion authority; exact manual and automatic plans are separate",total_bytes:$total_bytes,protected_bytes:$protected_bytes,reclaimable_bytes:0,unknown_bytes:$unknown_bytes,protection_reasons:["aggregate reporting conservatively protects attributable archives; incomplete, malformed, symlinked, or unrecognised archives remain unknown"],sizing_confidence:$confidence,next_action:"Use worktree-helper.sh recovery for bucket details; bounded maintenance independently revalidates exact terminal candidates",error:(if $error == "" then null else $error end),root_count:$root_count,bucket_count:$bucket_count,protected_count:$protected_count,reclaimable_count:0,unknown_count:$unknown_count,archive_formats:["aidevops-worktree-recovery-v1","aidevops-worktree-recovery-v2"],buckets:.}' \
+		'{schema:$schema,store_id:"worktree-recovery",producer:$producer,path:$path,owner:$owner,safety_class:"recovery",policy:"aggregate inventory grants no deletion authority; exact manual and automatic plans are separate",total_bytes:$total_bytes,protected_bytes:$protected_bytes,reclaimable_bytes:0,unknown_bytes:$unknown_bytes,protection_reasons:["aggregate reporting conservatively protects attributable archives; incomplete, malformed, symlinked, or unrecognised archives remain unknown"],sizing_confidence:$confidence,sizing_complete:$sizing_complete,next_action:"Use worktree-helper.sh recovery for bucket details; bounded maintenance independently revalidates exact terminal candidates",error:(if $error == "" then null else $error end),sizing_error:(if $sizing_error == "" then null else $sizing_error end),root_count:$root_count,bucket_count:$bucket_count,protected_count:$protected_count,reclaimable_count:0,unknown_count:$unknown_count,archive_formats:["aidevops-worktree-recovery-v1","aidevops-worktree-recovery-v2"],buckets:.}' \
 		"$entries_file"
 	return $?
+}
+
+_worktree_recovery_encode_bucket() {
+	local role="$1"
+	local state="$2"
+	local path="$3"
+	local confidence="$4"
+	local error="$5"
+	local bytes="$6"
+
+	jq -cn --arg role "$role" --arg state "$state" --arg path "$path" \
+		--arg confidence "$confidence" --arg error "$error" --argjson bytes "$bytes" \
+		'{role:$role,state:$state,path:$path,bytes:$bytes,sizing_confidence:$confidence,error:(if $error == "" then null else $error end)}'
+	return $?
+}
+
+_worktree_recovery_finalize_report() {
+	local entries_file="$1"
+	local display_path="$2"
+	local report_owner="$3"
+	local report_error="$4"
+	local report_sizing_error="$5"
+	local sizing_complete="$6"
+	local root_count="$7"
+	local bucket_count="$8"
+	local protected_count="$9"
+	local unknown_count="${10}"
+	local total_bytes="${11}"
+	local protected_bytes="${12}"
+	local unknown_bytes="${13}"
+	local jq_status=0
+
+	if [[ -n "$report_error" || -n "$report_sizing_error" || "$sizing_complete" != "true" ]]; then
+		total_bytes=null
+		protected_bytes=null
+		unknown_bytes=null
+	fi
+	_worktree_recovery_encode_report "$entries_file" "$display_path" "$report_owner" "$report_error" \
+		"$root_count" "$bucket_count" "$protected_count" "$unknown_count" \
+		"$total_bytes" "$protected_bytes" "$unknown_bytes" "$report_sizing_error" "$sizing_complete"
+	jq_status=$?
+	rm -f "$entries_file"
+	return "$jq_status"
 }
 
 worktree_recovery_lifecycle_json() {
 	local platform="${1:-}"
 	local display_path="" inventory="" entries_file="" raw_record=""
 	local record_type="" store_role="" owner="" state="" path=""
-	local extra_one=""
-	local extra_two=""
-	local measured=""
-	local bytes=""
-	local confidence=""
-	local measure_error=""
-	local report_owner="framework"
-	local report_error=""
-	local root_count=0
-	local bucket_count=0
-	local protected_count=0
-	local unknown_count=0
-	local protected_bytes=0
-	local unknown_bytes=0
-	local total_bytes=0
-	local jq_status=0
+	local extra_one="" extra_two="" measured="" bytes="" confidence="" measure_error=""
+	local report_owner="framework" report_error="" report_sizing_error=""
+	local plan_inventory_mode="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_INVENTORY:-0}"
+	local sizing_complete=true
+	local root_count=0 bucket_count=0 protected_count=0 unknown_count=0
+	local protected_bytes=0 unknown_bytes=0 total_bytes=0
 
 	if [[ -z "$platform" ]]; then
 		platform=$(uname -s 2>/dev/null) || platform="$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN"
@@ -214,10 +252,17 @@ worktree_recovery_lifecycle_json() {
 		bucket)
 			IFS=$'\t' read -r record_type store_role owner state path <<<"$raw_record"
 			bucket_count=$((bucket_count + 1))
-			measured=$(_worktree_recovery_measure_path "$path")
+			if [[ "$plan_inventory_mode" == "1" ]]; then
+				measured="null|deferred|"
+				sizing_complete=false
+			else
+				measured=$(_worktree_recovery_measure_path "$path")
+			fi
 			IFS='|' read -r bytes confidence measure_error <<<"$measured"
 			if [[ "$bytes" == "$WORKTREE_RECOVERY_PLAN_JSON_NULL" ]]; then
-				report_error="${measure_error:-sizing-unavailable}"
+				if [[ "$confidence" != "deferred" ]]; then
+					report_sizing_error="${measure_error:-sizing-unavailable}"
+				fi
 				unknown_count=$((unknown_count + 1))
 			else
 				total_bytes=$((total_bytes + bytes))
@@ -232,26 +277,19 @@ worktree_recovery_lifecycle_json() {
 					;;
 				esac
 			fi
-			jq -cn --arg role "$store_role" --arg state "$state" --arg path "$path" \
-				--arg confidence "$confidence" --arg error "$measure_error" --argjson bytes "$bytes" \
-				'{role:$role,state:$state,path:$path,bytes:$bytes,sizing_confidence:$confidence,error:(if $error == "" then null else $error end)}' \
-				>>"$entries_file" || report_error="entry-encoding-failed"
+			_worktree_recovery_encode_bucket "$store_role" "$state" "$path" \
+				"$confidence" "$measure_error" "$bytes" >>"$entries_file" ||
+				report_error="entry-encoding-failed"
 			;;
 		'') ;;
 		*) report_error="$WORKTREE_RECOVERY_INVALID_RECORD" ;;
 		esac
 	done <<<"$inventory"
-	if [[ -n "$report_error" ]]; then
-		total_bytes=null
-		protected_bytes=null
-		unknown_bytes=null
-	fi
-	_worktree_recovery_encode_report "$entries_file" "$display_path" "$report_owner" "$report_error" \
-		"$root_count" "$bucket_count" "$protected_count" "$unknown_count" \
-		"$total_bytes" "$protected_bytes" "$unknown_bytes"
-	jq_status=$?
-	rm -f "$entries_file"
-	return "$jq_status"
+	_worktree_recovery_finalize_report "$entries_file" "$display_path" "$report_owner" \
+		"$report_error" "$report_sizing_error" "$sizing_complete" "$root_count" \
+		"$bucket_count" "$protected_count" "$unknown_count" "$total_bytes" \
+		"$protected_bytes" "$unknown_bytes"
+	return $?
 }
 
 _worktree_recovery_format_bytes() {
@@ -753,9 +791,16 @@ _worktree_recovery_plan_attributed_entry_json() {
 	identity_after=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
 	measured_after=$(_worktree_recovery_measure_path "$bucket_path") || return 1
 	IFS='|' read -r bytes_after confidence_after measure_error_after <<<"$measured_after"
-	if [[ "$identity_before" == "$identity_after" &&
-		"$confidence_after" == "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" &&
-		"$bytes_after" == "$expected_bytes" ]]; then
+	if [[ "$confidence_after" != "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" ||
+		! "$bytes_after" =~ ^[0-9]+$ ]]; then
+		_worktree_recovery_plan_unknown_entry_json \
+			"$role" "$bucket_path" "$WORKTREE_RECOVERY_PLAN_JSON_NULL" "sizing-unavailable"
+		return $?
+	fi
+	if [[ "$expected_bytes" == "$WORKTREE_RECOVERY_PLAN_JSON_NULL" ]]; then
+		expected_bytes="$bytes_after"
+	fi
+	if [[ "$identity_before" == "$identity_after" && "$bytes_after" == "$expected_bytes" ]]; then
 		stable=true
 	fi
 	classification_json=$(_worktree_recovery_plan_classification_json \
@@ -779,14 +824,46 @@ _worktree_recovery_plan_unknown_entry_json() {
 	return $?
 }
 
+_worktree_recovery_plan_window() {
+	local row_count="$1"
+	local classification_limit="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_MAX_CLASSIFY:-100}"
+	local classification_offset="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_OFFSET:-0}"
+	local classification_deadline_seconds="${AIDEVOPS_WORKTREE_RECOVERY_PLAN_DEADLINE_SECONDS:-120}"
+
+	case "$classification_limit" in
+	'' | *[!0-9]*) classification_limit=100 ;;
+	esac
+	[[ "${#classification_limit}" -le 4 ]] || classification_limit=100
+	[[ "$classification_limit" -ge 1 ]] || classification_limit=1
+	[[ "$classification_limit" -le 1000 ]] || classification_limit=1000
+	case "$classification_offset" in
+	'' | *[!0-9]*) classification_offset=0 ;;
+	esac
+	[[ "${#classification_offset}" -le 10 ]] || classification_offset=0
+	case "$classification_deadline_seconds" in
+	'' | *[!0-9]*) classification_deadline_seconds=120 ;;
+	esac
+	[[ "${#classification_deadline_seconds}" -le 4 ]] || classification_deadline_seconds=120
+	[[ "$classification_deadline_seconds" -ge 1 ]] || classification_deadline_seconds=1
+	[[ "$classification_deadline_seconds" -le 3600 ]] || classification_deadline_seconds=3600
+	if [[ "$row_count" -gt 0 ]]; then
+		classification_offset=$((classification_offset % row_count))
+	fi
+	printf '%s|%s|%s\n' "$classification_limit" "$classification_offset" \
+		"$classification_deadline_seconds"
+	return 0
+}
+
 _worktree_recovery_plan_entries_json() {
 	local platform="$1"
 	local inventory_json="" inventory_error="" entries_file="" rows_file=""
-	local entry_json="" entries_json=""
-	local row_json="" role="" state="" bucket_path="" bytes="" confidence=""
-	local result_status=0
-
-	inventory_json=$(worktree_recovery_lifecycle_json "$platform") || return 1
+	local entry_json="" entries_json="" row_json="" role="" state="" bucket_path="" bytes=""
+	local row_count=0 row_index=0 relative_index=0
+	local classification_limit="" classification_offset="" classification_deadline_seconds="" classification_window=""
+	local classification_deadline_epoch=0 classification_now=0 classification_deadline_exhausted=false
+	local classified_count=0 next_classification_offset=0 classification_complete=false result_status=0
+	inventory_json=$(AIDEVOPS_WORKTREE_RECOVERY_PLAN_INVENTORY=1 \
+		worktree_recovery_lifecycle_json "$platform") || return 1
 	inventory_error=$(printf '%s\n' "$inventory_json" | jq -r '.error // empty') || return 1
 	entries_file=$(mktemp "${AIDEVOPS_TEMP_DIR:-${TMPDIR:-/tmp}}/aidevops-worktree-recovery-plan-entries.XXXXXX") || return 1
 	rows_file=$(mktemp "${AIDEVOPS_TEMP_DIR:-${TMPDIR:-/tmp}}/aidevops-worktree-recovery-plan-rows.XXXXXX") || {
@@ -798,42 +875,82 @@ _worktree_recovery_plan_entries_json() {
 		rm -f "$entries_file" "$rows_file"
 		return 1
 	fi
+	row_count=$(wc -l <"$rows_file" | tr -d ' ') || row_count=""
+	[[ "$row_count" =~ ^[0-9]+$ ]] || {
+		rm -f "$entries_file" "$rows_file"
+		return 1
+	}
+	classification_window=$(_worktree_recovery_plan_window "$row_count") || {
+		rm -f "$entries_file" "$rows_file"
+		return 1
+	}
+	IFS='|' read -r classification_limit classification_offset \
+		classification_deadline_seconds <<<"$classification_window"
+	classification_now=$(date +%s) || {
+		rm -f "$entries_file" "$rows_file"
+		return 1
+	}
+	classification_deadline_epoch=$((classification_now + classification_deadline_seconds))
 	while IFS= read -r row_json; do
 		role=$(printf '%s\n' "$row_json" | jq -r '.role') || result_status=1
 		state=$(printf '%s\n' "$row_json" | jq -r '.state') || result_status=1
 		bucket_path=$(printf '%s\n' "$row_json" | jq -r '.path') || result_status=1
 		bytes=$(printf '%s\n' "$row_json" | jq -r --arg null_value "$WORKTREE_RECOVERY_PLAN_JSON_NULL" '.bytes // $null_value') || result_status=1
-		confidence=$(printf '%s\n' "$row_json" | jq -r '.sizing_confidence') || result_status=1
 		[[ "$result_status" -eq 0 ]] || break
 		if [[ -n "$inventory_error" ]]; then
 			entry_json=$(_worktree_recovery_plan_unknown_entry_json \
 				"$role" "$bucket_path" "$bytes" "inventory-report-incomplete") || result_status=1
-		elif [[ "$state" == "attributed" || "$state" == "attributed-legacy" ]]; then
-			if [[ "$bytes" == "$WORKTREE_RECOVERY_PLAN_JSON_NULL" ||
-				"$confidence" != "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" ]]; then
+		elif [[ "$row_count" -gt 0 ]]; then
+			relative_index=$(((row_index - classification_offset + row_count) % row_count))
+			if [[ "$relative_index" -ge "$classification_limit" ]]; then
 				entry_json=$(_worktree_recovery_plan_unknown_entry_json \
-					"$role" "$bucket_path" "$bytes" "sizing-unavailable") || result_status=1
-			elif ! entry_json=$(_worktree_recovery_plan_attributed_entry_json \
-				"$role" "$bucket_path" "$bytes"); then
-				entry_json=$(_worktree_recovery_plan_unknown_entry_json \
-					"$role" "$bucket_path" "$bytes" "classification-unavailable") || result_status=1
+					"$role" "$bucket_path" "$bytes" "classification-deferred") || result_status=1
+			else
+				classification_now=$(date +%s) || result_status=1
+				if [[ "$result_status" -eq 0 && "$classification_now" -ge "$classification_deadline_epoch" ]]; then
+					classification_deadline_exhausted=true
+					entry_json=$(_worktree_recovery_plan_unknown_entry_json \
+						"$role" "$bucket_path" "$bytes" "classification-deadline-exhausted") || result_status=1
+				elif [[ "$result_status" -eq 0 ]]; then
+					classified_count=$((classified_count + 1))
+					if [[ "$state" == "attributed" || "$state" == "attributed-legacy" ]]; then
+						if ! entry_json=$(_worktree_recovery_plan_attributed_entry_json \
+							"$role" "$bucket_path" "$WORKTREE_RECOVERY_PLAN_JSON_NULL"); then
+							entry_json=$(_worktree_recovery_plan_unknown_entry_json \
+								"$role" "$bucket_path" "$bytes" "classification-unavailable") || result_status=1
+						fi
+					else
+						entry_json=$(_worktree_recovery_plan_unknown_entry_json \
+							"$role" "$bucket_path" "$bytes" "archive-unrecognised-or-incomplete") || result_status=1
+					fi
+				fi
 			fi
-		else
-			entry_json=$(_worktree_recovery_plan_unknown_entry_json \
-				"$role" "$bucket_path" "$bytes" "archive-unrecognised-or-incomplete") || result_status=1
 		fi
 		[[ "$result_status" -eq 0 ]] || break
 		printf '%s\n' "$entry_json" >>"$entries_file" || {
 			result_status=1
 			break
 		}
+		row_index=$((row_index + 1))
 	done <"$rows_file"
+	if [[ -z "$inventory_error" && "$classified_count" -eq "$row_count" ]]; then
+		classification_complete=true
+	fi
+	if [[ "$row_count" -gt 0 ]]; then
+		next_classification_offset=$(((classification_offset + classified_count) % row_count))
+	fi
 	if [[ "$result_status" -eq 0 ]]; then
 		entries_json=$(jq -sc 'sort_by(.path)' "$entries_file") || result_status=1
 	fi
 	if [[ "$result_status" -eq 0 ]]; then
 		printf '%s\n' "$entries_json" | jq -c --arg error "$inventory_error" \
-			'. as $entries | {inventory_complete:($error == ""),inventory_error:(if $error == "" then null else $error end),entries:$entries}' || result_status=1
+			--argjson classification_complete "$classification_complete" \
+			--argjson classified_count "$classified_count" \
+			--argjson classification_offset "$classification_offset" \
+			--argjson next_classification_offset "$next_classification_offset" \
+			--argjson classification_deadline_seconds "$classification_deadline_seconds" \
+			--argjson classification_deadline_exhausted "$classification_deadline_exhausted" \
+			'. as $entries | {inventory_complete:($error == ""),inventory_error:(if $error == "" then null else $error end),classification_complete:$classification_complete,classified_entry_count:$classified_count,deferred_entry_count:([$entries[] | select(.reasons | IN(["classification-deferred"],["classification-deadline-exhausted"]))] | length),classification_offset:$classification_offset,next_classification_offset:$next_classification_offset,classification_deadline_seconds:$classification_deadline_seconds,classification_deadline_exhausted:$classification_deadline_exhausted,entries:$entries}' || result_status=1
 	fi
 	rm -f "$entries_file" "$rows_file"
 	return "$result_status"
@@ -842,6 +959,9 @@ _worktree_recovery_plan_entries_json() {
 worktree_recovery_plan_json() {
 	local platform="${1:-}"
 	local entries_bundle="" entries_json="" inventory_complete="" inventory_error=""
+	local classification_complete="" classified_entry_count="" deferred_entry_count=""
+	local classification_offset="" next_classification_offset=""
+	local classification_deadline_seconds="" classification_deadline_exhausted=""
 	local plan_material="" plan_digest="" generated_at="" plan_json=""
 	local candidate_count="" candidate_bytes="" confirmation_token=""
 
@@ -853,9 +973,23 @@ worktree_recovery_plan_json() {
 	entries_json=$(printf '%s\n' "$entries_bundle" | jq -c '.entries') || return 1
 	inventory_complete=$(printf '%s\n' "$entries_bundle" | jq -c '.inventory_complete') || return 1
 	inventory_error=$(printf '%s\n' "$entries_bundle" | jq -r '.inventory_error // empty') || return 1
+	classification_complete=$(printf '%s\n' "$entries_bundle" | jq -c '.classification_complete') || return 1
+	classified_entry_count=$(printf '%s\n' "$entries_bundle" | jq -r '.classified_entry_count') || return 1
+	deferred_entry_count=$(printf '%s\n' "$entries_bundle" | jq -r '.deferred_entry_count') || return 1
+	classification_offset=$(printf '%s\n' "$entries_bundle" | jq -r '.classification_offset') || return 1
+	next_classification_offset=$(printf '%s\n' "$entries_bundle" | jq -r '.next_classification_offset') || return 1
+	classification_deadline_seconds=$(printf '%s\n' "$entries_bundle" | jq -r '.classification_deadline_seconds') || return 1
+	classification_deadline_exhausted=$(printf '%s\n' "$entries_bundle" | jq -c '.classification_deadline_exhausted') || return 1
 	plan_material=$(printf '%s\n' "$entries_json" | jq -c --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
 		--arg error "$inventory_error" --argjson complete "$inventory_complete" \
-		'. as $entries | {schema:$schema,inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),entries:$entries}') || return 1
+		--argjson classification_complete "$classification_complete" \
+		--argjson classified_entry_count "$classified_entry_count" \
+		--argjson deferred_entry_count "$deferred_entry_count" \
+		--argjson classification_offset "$classification_offset" \
+		--argjson next_classification_offset "$next_classification_offset" \
+		--argjson classification_deadline_seconds "$classification_deadline_seconds" \
+		--argjson classification_deadline_exhausted "$classification_deadline_exhausted" \
+		'. as $entries | {schema:$schema,inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),classification_complete:$classification_complete,classified_entry_count:$classified_entry_count,deferred_entry_count:$deferred_entry_count,classification_offset:$classification_offset,next_classification_offset:$next_classification_offset,classification_deadline_seconds:$classification_deadline_seconds,classification_deadline_exhausted:$classification_deadline_exhausted,entries:$entries}') || return 1
 	plan_digest=$(_worktree_recovery_plan_sha256_text "$plan_material") || return 1
 	generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	plan_json=$(printf '%s\n' "$entries_json" | jq -c --arg schema "$WORKTREE_RECOVERY_PLAN_SCHEMA" \
@@ -864,11 +998,23 @@ worktree_recovery_plan_json() {
 		--arg candidate "$WORKTREE_RECOVERY_PLAN_DISPOSITION_CANDIDATE" \
 		--arg protected "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" \
 		--arg unknown "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" \
-		--arg error "$inventory_error" --argjson complete "$inventory_complete" '
+		--arg error "$inventory_error" --argjson complete "$inventory_complete" \
+		--argjson classification_complete "$classification_complete" \
+		--argjson classified_entry_count "$classified_entry_count" \
+		--argjson deferred_entry_count "$deferred_entry_count" \
+		--argjson classification_offset "$classification_offset" \
+		--argjson next_classification_offset "$next_classification_offset" \
+		--argjson classification_deadline_seconds "$classification_deadline_seconds" \
+		--argjson classification_deadline_exhausted "$classification_deadline_exhausted" '
 		def parent_path: .[0:rindex("/")];
 		. as $entries |
 		{schema:$schema,producer:$producer,plan_id:$plan_id,generated_at:$generated_at,read_only:true,
 		inventory_complete:$complete,inventory_error:(if $error == "" then null else $error end),
+		classification_complete:$classification_complete,classified_entry_count:$classified_entry_count,
+		deferred_entry_count:$deferred_entry_count,classification_offset:$classification_offset,
+		next_classification_offset:$next_classification_offset,
+		classification_deadline_seconds:$classification_deadline_seconds,
+		classification_deadline_exhausted:$classification_deadline_exhausted,
 		source_roots:([$entries[].path | parent_path] | unique),
 		entry_count:($entries | length),
 		sized_entry_count:([$entries[] | select(.expected_allocated_bytes | type == "number")] | length),

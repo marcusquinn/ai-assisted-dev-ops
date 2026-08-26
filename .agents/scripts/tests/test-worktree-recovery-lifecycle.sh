@@ -409,6 +409,126 @@ test_global_inventory_failure_is_explicit() {
 	return 0
 }
 
+test_entry_sizing_failure_is_localized() {
+	local plan=""
+	local rc=0
+
+	plan=$(
+		worktree_recovery_lifecycle_json() {
+			printf '%s\n' '{"error":null,"sizing_error":"sizing-timeout","buckets":[
+			{"role":"current","state":"attributed","path":"/recovery/exact","bytes":1024,"sizing_confidence":"exact"},
+			{"role":"current","state":"attributed","path":"/recovery/slow","bytes":null,"sizing_confidence":"unavailable"}]}'
+			return 0
+		}
+		_worktree_recovery_plan_attributed_entry_json() {
+			local role="$1"
+			local bucket_path="$2"
+			local ignored_bytes="$3"
+			local bytes=1024
+			: "$ignored_bytes"
+			if [[ "$bucket_path" == "/recovery/slow" ]]; then
+				_worktree_recovery_plan_unknown_entry_json \
+					"$role" "$bucket_path" null "sizing-unavailable"
+				return $?
+			fi
+			jq -cn --arg role "$role" --arg path "$bucket_path" --argjson bytes "$bytes" \
+				'{role:$role,path:$path,archive_path:($path + "/archive"),expected_allocated_bytes:$bytes,
+				identity:{identity_digest:"sha256:fixture"},evidence:{},disposition:"candidate",
+				reasons:["all-required-evidence-clear"]}'
+			return $?
+		}
+		worktree_recovery_plan_json "Linux"
+	) || rc=1
+	printf '%s\n' "$plan" | jq -e '
+		.inventory_complete == true and .inventory_error == null and
+		.classification_complete == true and .classified_entry_count == 2 and
+		.candidate_count == 1 and .unknown_count == 1 and
+		([.entries[] | select(.path == "/recovery/slow")][0].reasons == ["sizing-unavailable"])
+	' >/dev/null || rc=1
+	print_result "entry_sizing_failure_is_localized" "$rc" \
+		"Expected one slow size probe to remain unknown without blocking an exact peer candidate"
+	return 0
+}
+
+test_manual_plan_classification_is_bounded_and_resumable() {
+	local first_output="${TEST_DIR}/bounded-plan-first.json"
+	local second_output="${TEST_DIR}/bounded-plan-second.json"
+	local rc=0
+
+	(
+		worktree_recovery_lifecycle_json() {
+			printf '%s\n' '{"error":null,"sizing_error":null,"buckets":[
+			{"role":"current","state":"unknown","path":"/recovery/bucket-0","bytes":null,"sizing_confidence":"unavailable"},
+			{"role":"current","state":"unknown","path":"/recovery/bucket-1","bytes":null,"sizing_confidence":"unavailable"},
+			{"role":"current","state":"unknown","path":"/recovery/bucket-2","bytes":null,"sizing_confidence":"unavailable"},
+			{"role":"current","state":"unknown","path":"/recovery/bucket-3","bytes":null,"sizing_confidence":"unavailable"},
+			{"role":"current","state":"unknown","path":"/recovery/bucket-4","bytes":null,"sizing_confidence":"unavailable"}]}'
+			return 0
+		}
+		cmd_recovery plan --max-classify 2 --offset 0 --output "$first_output" >/dev/null || return 1
+		cmd_recovery plan --output "$second_output" --offset 2 --max-classify 2 >/dev/null || return 1
+	) || rc=1
+	jq -e '
+		.classification_complete == false and .classified_entry_count == 2 and
+		.deferred_entry_count == 3 and .classification_offset == 0 and
+		.next_classification_offset == 2 and
+		([.entries[] | select(.reasons == ["classification-deferred"]) | .path] ==
+		 ["/recovery/bucket-2","/recovery/bucket-3","/recovery/bucket-4"])
+	' "$first_output" >/dev/null || rc=1
+	jq -e '
+		.classification_complete == false and .classified_entry_count == 2 and
+		.deferred_entry_count == 3 and .classification_offset == 2 and
+		.next_classification_offset == 4 and
+		([.entries[] | select(.reasons == ["classification-deferred"]) | .path] ==
+		 ["/recovery/bucket-0","/recovery/bucket-1","/recovery/bucket-4"])
+	' "$second_output" >/dev/null || rc=1
+	[[ "$(jq -r '.plan_id' "$first_output")" != "$(jq -r '.plan_id' "$second_output")" ]] || rc=1
+	print_result "manual_plan_classification_is_bounded_and_resumable" "$rc" \
+		"Expected bounded plan windows to expose a deterministic continuation offset"
+	return 0
+}
+
+test_manual_plan_deadline_emits_continuation() {
+	local output_path="${TEST_DIR}/deadline-plan.json"
+	local clock_path="${TEST_DIR}/deadline-clock"
+	local rc=0
+
+	printf '0\n' >"$clock_path" || rc=1
+	(
+		worktree_recovery_lifecycle_json() {
+			printf '%s\n' '{"error":null,"sizing_error":null,"buckets":[
+			{"role":"current","state":"unknown","path":"/recovery/deadline-0","bytes":null,"sizing_confidence":"unavailable"},
+			{"role":"current","state":"unknown","path":"/recovery/deadline-1","bytes":null,"sizing_confidence":"unavailable"},
+			{"role":"current","state":"unknown","path":"/recovery/deadline-2","bytes":null,"sizing_confidence":"unavailable"}]}'
+			return 0
+		}
+		date() {
+			local call_count=0
+			if [[ "${1:-}" == "+%s" ]]; then
+				IFS= read -r call_count <"$clock_path" || return 1
+				call_count=$((call_count + 1))
+				printf '%s\n' "$call_count" >"$clock_path" || return 1
+				if [[ "$call_count" -le 2 ]]; then printf '100\n'; else printf '102\n'; fi
+				return 0
+			fi
+			command date "$@"
+			return $?
+		}
+		cmd_recovery plan --output "$output_path" --max-classify 3 \
+			--deadline-seconds 1 >/dev/null || return 1
+	) || rc=1
+	jq -e '
+		.classification_complete == false and .classified_entry_count == 1 and
+		.deferred_entry_count == 2 and .classification_deadline_seconds == 1 and
+		.classification_deadline_exhausted == true and .next_classification_offset == 1 and
+		([.entries[] | select(.reasons == ["classification-deadline-exhausted"]) | .path] ==
+		 ["/recovery/deadline-1","/recovery/deadline-2"])
+	' "$output_path" >/dev/null || rc=1
+	print_result "manual_plan_deadline_emits_continuation" "$rc" \
+		"Expected deadline exhaustion to stop new classification and preserve a continuation offset"
+	return 0
+}
+
 test_apply_removes_only_candidates_and_replays_receipt() {
 	local home_path="${TEST_DIR}/apply-home"
 	local repo_path="${TEST_DIR}/apply-repo"
@@ -902,6 +1022,12 @@ test_automatic_maintenance_is_bounded_and_policy_bound() {
 	) || rc=1
 	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "removed" ]] || rc=1
 	[[ "$(printf '%s\n' "$output" | jq -r '.removed')" == "1" ]] || rc=1
+	printf '%s\n' "$output" | jq -e '
+		.diagnostics.inventory_count == 3 and .diagnostics.scanned_count == 3 and
+		.diagnostics.coverage_complete == true and .diagnostics.coverage_percent == 100 and
+		.diagnostics.reason_counts.protected_evidence == 1 and
+		.diagnostics.reason_counts.protected_limit == 1
+	' >/dev/null || rc=1
 	[[ -d "$protected_bucket" ]] || rc=1
 	[[ -d "$bucket_a" ]] && removed_count=$((removed_count + 0)) || removed_count=$((removed_count + 1))
 	[[ -d "$bucket_b" ]] && removed_count=$((removed_count + 0)) || removed_count=$((removed_count + 1))
@@ -1075,6 +1201,12 @@ test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable() {
 	) || rc=1
 	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "no-candidates" ]] || rc=1
 	[[ "$(printf '%s\n' "$output" | jq -r '.policy.unknown_count')" == "1" ]] || rc=1
+	printf '%s\n' "$output" | jq -e '
+		.diagnostics.inventory_count == 1 and .diagnostics.scanned_count == 1 and
+		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 0 and
+		.diagnostics.coverage_complete == true and
+		.diagnostics.reason_counts.unknown_sizing == 1
+	' >/dev/null || rc=1
 	[[ -d "$bucket_path" ]] || rc=1
 	print_result "automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable" "$rc" \
 		"Expected per-bucket sizing uncertainty to remain non-destructive"
@@ -1252,6 +1384,9 @@ test_classification_fails_closed
 test_plan_records_malformed_bucket_unknown
 test_size_drift_downgrades_only_entry
 test_global_inventory_failure_is_explicit
+test_entry_sizing_failure_is_localized
+test_manual_plan_classification_is_bounded_and_resumable
+test_manual_plan_deadline_emits_continuation
 test_apply_removes_only_candidates_and_replays_receipt
 test_apply_rejects_unsafe_manifest_and_cli_inputs
 test_apply_preflight_drift_stages_nothing
