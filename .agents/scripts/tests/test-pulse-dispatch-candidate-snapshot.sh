@@ -91,4 +91,43 @@ fifth=$(_dispatch_ranked_candidates_json 50)
 	exit 1
 }
 
+# A small runnable-count diagnostic sample must not limit dispatch scanning.
+# Three benignly blocked candidates must not hide a later eligible candidate.
+dispatch_log="${TEST_ROOT}/dispatch-scan.log"
+: >"$dispatch_log"
+_dispatch_compute_capacity() { printf '2 0 2\n'; return 0; }
+_dispatch_ranked_candidates_json() {
+	printf 'scan_limit=%s\n' "$1" >>"$dispatch_log"
+	printf '%s\n' '[
+		{"number":9101}, {"number":9102}, {"number":9103}, {"number":9104}
+	]'
+	return 0
+}
+_dispatch_run_prepasses() { printf '%s 0 0\n' "$1"; return 0; }
+_dispatch_order_idle_borrowing_candidates() { printf '%s\n' "$1"; return 0; }
+_dispatch_max_compute_parallel() { printf '1\n'; return 0; }
+_dispatch_graphql_budget_allows_next() { return 0; }
+_dispatch_rest_core_progress_allows_next() { return 0; }
+_dispatch_maybe_engage_throttle() { return 0; }
+_dispatch_process_candidate() {
+	printf '%s\n' "$1" >>"$dispatch_log"
+	case "$1" in
+	*'"number":9101'* | *'"number":9102'* | *'"number":9103'*) return 3 ;;
+	esac
+	return 0
+}
+gh() {
+	if [[ "${1:-}" == "api" && "${2:-}" == "user" ]]; then
+		printf 'testuser\n'
+	fi
+	return 0
+}
+PULSE_RUNNABLE_ISSUE_LIMIT=3
+dispatch_count=$(dispatch_max)
+scan_limit=$(grep -o 'scan_limit=[0-9]*' "$dispatch_log" | cut -d= -f2)
+grep -q '"number":9104' "$dispatch_log" && [[ "$dispatch_count" == "1" && "$scan_limit" == "1000" ]] || {
+	printf 'FAIL dispatch did not scan past benign head blocks: count=%s scan_limit=%s log=%s\n' "$dispatch_count" "$scan_limit" "$(tr '\n' ',' <"$dispatch_log")" >&2
+	exit 1
+}
+
 printf 'PASS dispatch candidate snapshots reuse enumeration, preserve modes, and invalidate on state mutation\n'
