@@ -850,6 +850,79 @@ _cmd_add_classify_collision_branch() {
 	return $?
 }
 
+#######################################
+# Detect a GitHub SSH remote that can be retried over authenticated HTTPS.
+# Arguments:
+#   $1 - remote URL
+# Returns: 0 for supported GitHub SSH URLs, 1 otherwise
+#######################################
+_worktree_is_github_ssh_remote() {
+	local remote_url="$1"
+	case "$remote_url" in
+	git@github.com:* | ssh://git@github.com/*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+#######################################
+# Detect a non-interactive SSH authentication failure eligible for HTTPS retry.
+# Arguments:
+#   $1 - captured git stderr
+# Returns: 0 for SSH authentication/askpass failures, 1 otherwise
+#######################################
+_worktree_is_ssh_auth_failure() {
+	local stderr_text="$1"
+	case "$stderr_text" in
+	*"ssh_askpass"* | *"Permission denied (publickey)"* | *"Could not read from remote repository"*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+#######################################
+# Refresh one origin branch, retrying eligible GitHub SSH auth failures via gh.
+# The retry rewrites the URL only for this command and never mutates the remote.
+# Arguments:
+#   $1 - clean linked/bootstrap worktree path
+#   $2 - target branch
+# Returns: git fetch exit code
+#######################################
+_worktree_fetch_origin_branch() {
+	local fetch_cwd="$1"
+	local target_branch="$2"
+	local remote_url=""
+	local fetch_stderr=""
+	local fetch_rc=1
+	local rewrite_from=""
+
+	remote_url=$(git -C "$fetch_cwd" remote get-url origin 2>/dev/null || true)
+	if fetch_stderr=$(GIT_TERMINAL_PROMPT=0 git -C "$fetch_cwd" fetch --quiet --no-tags origin \
+		"+refs/heads/${target_branch}:refs/remotes/origin/${target_branch}" 2>&1); then
+		return 0
+	else
+		fetch_rc=$?
+	fi
+
+	if _worktree_is_github_ssh_remote "$remote_url" &&
+		_worktree_is_ssh_auth_failure "$fetch_stderr" &&
+		command -v gh >/dev/null 2>&1 &&
+		gh auth status --hostname github.com >/dev/null 2>&1; then
+		case "$remote_url" in
+		git@github.com:*) rewrite_from="git@github.com:" ;;
+		ssh://git@github.com/*) rewrite_from="ssh://git@github.com/" ;;
+		esac
+		GIT_TERMINAL_PROMPT=0 git -C "$fetch_cwd" \
+			-c credential.helper= \
+			-c "credential.helper=!gh auth git-credential" \
+			-c "url.https://github.com/.insteadOf=${rewrite_from}" \
+			fetch --quiet --no-tags origin \
+			"+refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
+		return $?
+	fi
+
+	[[ -n "$fetch_stderr" ]] && printf '%s\n' "$fetch_stderr" >&2
+	return "$fetch_rc"
+}
+
 # Refresh an origin branch from linked-worktree context so the canonical Git
 # guard remains intact. If no linked worktree exists yet, create a short-lived
 # detached bootstrap worktree from HEAD, fetch from there, then remove it from
@@ -901,8 +974,7 @@ _worktree_refresh_origin_branch() {
 	fi
 
 	local fetch_rc=0
-	git -C "$fetch_cwd" fetch --no-tags --quiet origin \
-		"+refs/heads/${branch}:refs/remotes/origin/${branch}" || fetch_rc=$?
+	_worktree_fetch_origin_branch "$fetch_cwd" "$branch" || fetch_rc=$?
 	if [[ -n "$bootstrap_path" ]]; then
 		git -C "$fetch_cwd" worktree remove --force "$bootstrap_path" >/dev/null 2>&1 || true
 	fi

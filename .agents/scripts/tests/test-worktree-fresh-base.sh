@@ -68,6 +68,50 @@ if compgen -G "${WORKTREES}/.canonical-fetch-*" >/dev/null; then
 fi
 printf 'PASS canonical-guard bootstrap fetch worktree is removed\n'
 
+# A background service can retain an obsolete SSH_ASKPASS path after the
+# provider application is upgraded. The fresh-base fetch must retain its SSH
+# first attempt, then use a process-scoped HTTPS rewrite with gh credentials
+# rather than mutating the configured GitHub SSH remote.
+GITHUB_AUTH_RETRY_LOG="${ROOT}/github-auth-retry.log"
+if ! (
+	cd "$CANONICAL" || exit 1
+	SCRIPT_DIR="$(cd "$(dirname "$ADD_HELPER")" && pwd)"
+	# shellcheck source=../worktree-helper-add.sh
+	source "$ADD_HELPER"
+	git() {
+		local git_args="$*"
+		case "$git_args" in
+		*" remote get-url origin"*)
+			printf '%s\n' 'git@github.com:example/repository.git'
+			return 0
+			;;
+		*"credential.helper=!gh auth git-credential"*" fetch "*)
+			printf '%s\n' "$git_args" >"$GITHUB_AUTH_RETRY_LOG"
+			return 0
+			;;
+		*" fetch "*)
+			printf '%s\n' 'ssh_askpass: exec(/missing/ssh-askpass): No such file or directory' >&2
+			return 128
+			;;
+		esac
+		"$REAL_GIT" "$@"
+		return $?
+	}
+	gh() {
+		return 0
+	}
+	_worktree_fetch_origin_branch "$CANONICAL" main
+); then
+	printf 'FAIL GitHub SSH askpass failure did not retry through gh HTTPS auth\n'
+	exit 1
+fi
+if ! grep -qF 'credential.helper=!gh auth git-credential' "$GITHUB_AUTH_RETRY_LOG" ||
+	! grep -qF 'url.https://github.com/.insteadOf=git@github.com:' "$GITHUB_AUTH_RETRY_LOG"; then
+	printf 'FAIL GitHub SSH retry omitted the transient gh HTTPS configuration\n'
+	exit 1
+fi
+printf 'PASS GitHub SSH askpass failure retries through transient gh HTTPS auth\n'
+
 # A registered sibling can exist while its index is unreadable. The fetch
 # selector must skip that candidate and use the bootstrap path instead of
 # allowing one unhealthy worktree to block all new worktree creation.
