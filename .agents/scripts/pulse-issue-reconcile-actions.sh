@@ -949,6 +949,78 @@ _should_reconcile_external_issue_gate() {
 }
 
 #######################################
+# Recover missing legacy-cache author metadata with one bounded REST lookup.
+# The caller keeps the issue fail-closed when the lookup cannot establish an
+# association. Output is returned via _PIR_EXTERNAL_FALLBACK_* globals.
+#
+# Args: $1=slug, $2=issue number
+# Returns: 0=author metadata recovered, 1=unavailable or fallback budget spent
+#######################################
+_pir_recover_external_issue_author_metadata() {
+	local slug="$1"
+	local issue_num="$2"
+	local fallback_max="${PULSE_EXTERNAL_TRUST_FALLBACK_MAX:-25}"
+	local fallback_used="${_PIR_EXTERNAL_TRUST_FALLBACKS_USED:-0}"
+	local live_issue_json="" live_author_row=""
+
+	_PIR_EXTERNAL_FALLBACK_REASON=""
+	_PIR_EXTERNAL_FALLBACK_ASSOCIATION=""
+	_PIR_EXTERNAL_FALLBACK_LOGIN=""
+	_PIR_EXTERNAL_FALLBACK_TYPE=""
+	_PIR_EXTERNAL_FALLBACK_IS_BOT="false"
+	[[ "$slug" == */* && "$issue_num" =~ ^[1-9][0-9]*$ ]] || {
+		_PIR_EXTERNAL_FALLBACK_REASON="invalid issue identity"
+		return 1
+	}
+	[[ "$fallback_max" =~ ^[0-9]+$ ]] || fallback_max=25
+	[[ "$fallback_used" =~ ^[0-9]+$ ]] || fallback_used=0
+	if [[ "$fallback_used" -ge "$fallback_max" ]]; then
+		_PIR_EXTERNAL_FALLBACK_REASON="budget exhausted (${fallback_used}/${fallback_max})"
+		return 1
+	fi
+
+	_PIR_EXTERNAL_TRUST_FALLBACKS_USED=$((fallback_used + 1))
+	live_issue_json=$(gh api "repos/${slug}/issues/${issue_num}" 2>/dev/null) || {
+		_PIR_EXTERNAL_FALLBACK_REASON="request failed"
+		return 1
+	}
+	live_author_row=$(printf '%s' "$live_issue_json" | jq -r '[
+		(.author_association // .authorAssociation // ""),
+		(.user.login // .author.login // ""),
+		(.user.type // .author.type // ""),
+		(if ((.user.type // .author.type // "") == "Bot") then "true" else "false" end)
+	] | join("|")' 2>/dev/null) || {
+		_PIR_EXTERNAL_FALLBACK_REASON="response parse failed"
+		return 1
+	}
+	IFS='|' read -r _PIR_EXTERNAL_FALLBACK_ASSOCIATION _PIR_EXTERNAL_FALLBACK_LOGIN \
+		_PIR_EXTERNAL_FALLBACK_TYPE _PIR_EXTERNAL_FALLBACK_IS_BOT <<<"$live_author_row"
+	if [[ -z "$_PIR_EXTERNAL_FALLBACK_ASSOCIATION" ]]; then
+		_PIR_EXTERNAL_FALLBACK_REASON="response lacked author association"
+		return 1
+	fi
+	return 0
+}
+
+#######################################
+# Write at most one cache/fallback diagnostic per repository per reconcile
+# process. Repeated legacy rows are expected together and must not flood pulse.
+#
+# Args: $1=slug, $2=source reason
+#######################################
+_pir_log_external_issue_author_metadata_miss() {
+	local slug="$1"
+	local reason="$2"
+	local logged_slugs="${_PIR_EXTERNAL_TRUST_FALLBACK_DIAGNOSTIC_SLUGS:-}"
+	if [[ ",${logged_slugs}," == *",${slug},"* ]]; then
+		return 0
+	fi
+	_PIR_EXTERNAL_TRUST_FALLBACK_DIAGNOSTIC_SLUGS="${logged_slugs:+${logged_slugs},}${slug}"
+	echo "[pulse-wrapper] External issue trust reconcile: ${slug} cache author metadata missing; bounded live fallback ${reason}; failing closed (further misses this cycle suppressed)" >>"$LOGFILE"
+	return 0
+}
+
+#######################################
 # Stage 0 action: repair a missing NMR gate from cached author metadata and
 # prevent later reconciliation stages from acting on unapproved external input.
 # Verified approvals and write-authorized collaborators continue normally.
@@ -968,8 +1040,17 @@ _action_reconcile_external_issue_gate() {
 		return 0
 	fi
 	if [[ -z "$author_association" ]]; then
-		echo "[pulse-wrapper] External issue trust reconcile: blocked #${issue_num} in ${slug}; author metadata unavailable, labels unchanged" >>"$LOGFILE"
-		return 0
+		if _pir_recover_external_issue_author_metadata "$slug" "$issue_num"; then
+			author_association="$_PIR_EXTERNAL_FALLBACK_ASSOCIATION"
+			author_login="$_PIR_EXTERNAL_FALLBACK_LOGIN"
+			if ! _should_reconcile_external_issue_gate "$author_association" \
+				"$_PIR_EXTERNAL_FALLBACK_TYPE" "$_PIR_EXTERNAL_FALLBACK_IS_BOT"; then
+				return 1
+			fi
+		else
+			_pir_log_external_issue_author_metadata_miss "$slug" "${_PIR_EXTERNAL_FALLBACK_REASON:-unavailable}"
+			return 0
+		fi
 	fi
 
 	local authority_rc=0

@@ -20,10 +20,13 @@ _PIR_PERSISTENT_LABEL="persistent"
 _PIR_TRIAGE_FAILED_LABEL="triage-failed"
 AUTHORITY_RC=1
 GH_EDIT_LOG="$TEST_ROOT/edit.log"
+LIVE_ISSUE_JSON=""
+LIVE_FALLBACK_LOG="$TEST_ROOT/live-fallback.log"
 TESTS_RUN=0
 TESTS_FAILED=0
 : >"$LOGFILE"
 : >"$GH_EDIT_LOG"
+: >"$LIVE_FALLBACK_LOG"
 
 # shellcheck source=../pulse-issue-reconcile-actions.sh
 source "$ACTIONS"
@@ -40,6 +43,17 @@ _gh_actor_has_repo_write_authority() {
 gh_issue_edit_safe() {
 	printf '%s\n' "$*" >>"$GH_EDIT_LOG"
 	return 0
+}
+
+gh() {
+	local command="$1"
+	shift
+	if [[ "$command" == "api" ]]; then
+		printf '%s\n' "api" >>"$LIVE_FALLBACK_LOG"
+		printf '%s\n' "$LIVE_ISSUE_JSON"
+		return 0
+	fi
+	return 127
 }
 
 write_approval() {
@@ -59,6 +73,42 @@ record() {
 	fi
 	printf 'FAIL %s\n' "$name" >&2
 	TESTS_FAILED=$((TESTS_FAILED + 1))
+	return 0
+}
+
+test_live_author_metadata_fallback() {
+	local rc=0
+
+	write_approval NO_APPROVAL
+	: >"$GH_EDIT_LOG"
+	LIVE_ISSUE_JSON='{"author_association":"CONTRIBUTOR","user":{"login":"reporter","type":"User"}}'
+	: >"$LIVE_FALLBACK_LOG"
+	_action_reconcile_external_issue_gate owner/repo 28699 \
+		"auto-dispatch,status:available" "" "" || rc=$?
+	if [[ "$rc" -eq 0 && "$_PIR_EXTERNAL_GATE_MUTATED" -eq 1 \
+		&& "$(grep -c '^api$' "$LIVE_FALLBACK_LOG")" -eq 1 ]] \
+		&& grep -q -- '--add-label needs-maintainer-review' "$GH_EDIT_LOG"; then
+		record "missing cached metadata falls back to live external author" 0
+	else
+		record "missing cached metadata falls back to live external author" 1
+	fi
+
+	LIVE_ISSUE_JSON='{}'
+	: >"$LIVE_FALLBACK_LOG"
+	PULSE_EXTERNAL_TRUST_FALLBACK_MAX=1
+	_PIR_EXTERNAL_TRUST_FALLBACKS_USED=0
+	_PIR_EXTERNAL_TRUST_FALLBACK_DIAGNOSTIC_SLUGS=""
+	: >"$LOGFILE"
+	_action_reconcile_external_issue_gate owner/repo 28698 "status:available" "" "" || rc=$?
+	_action_reconcile_external_issue_gate owner/repo 28697 "status:available" "" "" || rc=$?
+	if [[ "$(grep -c '^api$' "$LIVE_FALLBACK_LOG")" -eq 1 ]] \
+		&& [[ "$(grep -c 'cache author metadata missing' "$LOGFILE")" -eq 1 ]] \
+		&& grep -q 'response lacked author association' "$LOGFILE"; then
+		record "missing live metadata is bounded and aggregated fail-closed" 0
+	else
+		record "missing live metadata is bounded and aggregated fail-closed" 1
+	fi
+	unset PULSE_EXTERNAL_TRUST_FALLBACK_MAX
 	return 0
 }
 
@@ -98,16 +148,7 @@ main() {
 	_should_reconcile_external_issue_gate NONE Bot true || rc=$?
 	[[ "$rc" -eq 1 ]] && record "bot metadata is skipped" 0 || record "bot metadata is skipped" 1
 
-	write_approval NO_APPROVAL
-	: >"$GH_EDIT_LOG"
-	rc=0
-	_action_reconcile_external_issue_gate owner/repo 28699 \
-		"auto-dispatch,status:available" "" "" || rc=$?
-	if [[ "$rc" -eq 0 && "$_PIR_EXTERNAL_GATE_MUTATED" -eq 0 && ! -s "$GH_EDIT_LOG" ]]; then
-		record "unknown author metadata blocks without mislabeling" 0
-	else
-		record "unknown author metadata blocks without mislabeling" 1
-	fi
+	test_live_author_metadata_fallback
 
 	AUTHORITY_RC=1
 	: >"$GH_EDIT_LOG"
