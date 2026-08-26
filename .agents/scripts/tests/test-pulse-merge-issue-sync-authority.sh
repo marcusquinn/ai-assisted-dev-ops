@@ -40,7 +40,15 @@ print_result() {
 	return 0
 }
 
-gate_src=$(awk '/^_check_pr_merge_gates\(\) \{/,/^}$/ { print }' "$MERGE_SCRIPT")
+gate_src=$(awk '
+	/^_pm_gate_review_mode\(\) \{/,/^}$/ { print }
+	/^_pm_gate_author_trust\(\) \{/,/^}$/ { print }
+	/^_pm_gate_route_ineligible_author\(\) \{/,/^}$/ { print }
+	/^_pm_gate_repository_and_issue\(\) \{/,/^}$/ { print }
+	/^_pm_gate_origin_authority\(\) \{/,/^}$/ { print }
+	/^_pm_gate_review_bot\(\) \{/,/^}$/ { print }
+	/^_check_pr_merge_gates\(\) \{/,/^}$/ { print }
+' "$MERGE_SCRIPT")
 [[ -n "$gate_src" ]] || {
 	printf 'FAIL could not extract _check_pr_merge_gates\n' >&2
 	exit 1

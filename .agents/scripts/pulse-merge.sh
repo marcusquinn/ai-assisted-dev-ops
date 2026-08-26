@@ -441,52 +441,15 @@ _handle_changes_requested_review_gate() {
 #       $6=pr_labels (optional), $7=expected_head_sha (optional),
 #       $8=review_gate_mode (optional: merge|ci-rebase-only|ci-repair-only)
 #######################################
-_check_pr_merge_gates() {
-	local pr_number="$1"
-	local repo_slug="$2"
-	local pr_author="$3"
-	local pr_review="$4"
-	local linked_issue="$5"
-	local pr_labels="${6:-}"
-	local expected_head_sha="${7:-}"
-	local review_gate_mode="${8:-merge}"
-	local _changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
-	local _ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
-	local _ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
-	local _dependabot_intake_rc=0
-	_PULSE_REVIEW_GATE_EVIDENCE=""
-	if [[ -n "$linked_issue" ]] &&
-		_interactive_claim_fence_blocks_merge "$linked_issue" "$repo_slug" "$expected_head_sha"; then
-		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — linked issue #${linked_issue} has a live interactive owner with different unmerged work (GH#30274)" >>"$LOGFILE"
-		return 1
-	fi
-
-	# Skip CHANGES_REQUESTED — needs a fix worker, not a merge.
-	#
-	# t2093: For worker-authored PRs with a linked issue, the "skip and hope"
-	# path leaks stuck PRs indefinitely — no human owns worker PRs, the
-	# dispatch-dedup guard blocks re-dispatch while the PR is open, and the
-	# review-followup pipeline only fires on *merged* PRs. Route the review
-	# feedback to the linked issue body and close the PR so the next pulse
-	# cycle picks the issue up with fresh context. Interactive PRs are
-	# always left alone (their humans own the feedback loop); external
-	# contributors go through their own crypto-approval flow.
-	#
-	# t2179: coderabbit-nits-ok override — if the maintainer applied the
-	# label and EVERY CHANGES_REQUESTED reviewer is coderabbitai[bot],
-	# auto-dismiss those reviews and fall through to the next gate. If any
-	# human reviewer is also blocking, the label is ignored.
+_pm_gate_review_mode() {
+	local pr_number="$1" repo_slug="$2" pr_review="$3" linked_issue="$4" pr_labels="$5"
+	local review_gate_mode="$6" changes_requested="$7" ci_rebase_only="$8" ci_repair_only="$9"
 	case "$review_gate_mode" in
 	merge)
-		if ! _handle_changes_requested_review_gate "$pr_number" "$repo_slug" "$pr_review" "$linked_issue" "$pr_labels"; then
-			return 1
-		fi
+		_handle_changes_requested_review_gate "$pr_number" "$repo_slug" "$pr_review" "$linked_issue" "$pr_labels" || return 1
 		;;
-	"$_ci_rebase_only" | "$_ci_repair_only")
-		# The early review gate already proved remediation converged. Skip only
-		# repeated review routing so the normal non-review trust gates can run.
-		# The caller must remain on the repair-only path and return before merge.
-		if [[ "$pr_review" != "$_changes_requested" ]]; then
+	"$ci_rebase_only" | "$ci_repair_only")
+		if [[ "$pr_review" != "$changes_requested" ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — ${review_gate_mode} review mode requires CHANGES_REQUESTED" >>"$LOGFILE"
 			return 1
 		fi
@@ -496,183 +459,166 @@ _check_pr_merge_gates() {
 		return 1
 		;;
 	esac
+	return 0
+}
 
-	# Skip external contributor PRs (non-collaborator).
-	# t3063 crypto-approval bypass: a verified maintainer signature on the PR
-	# or its linked issue is a stronger trust signal than author-association
-	# (requires root-owned SSH key that workers cannot forge). Symmetric with
-	# t3052 which extended the worker-briefed gate the same way (PR #21767).
-	local _author_collab_rc=0 _trusted_issue_sync=0
-	local _author_collab_permission=""
+_pm_gate_author_trust() {
+	local pr_number="$1" repo_slug="$2" pr_author="$3" expected_head_sha="$4"
+	local trusted_dest="$5" permission_dest="$6" author_collab_rc=0 permission="" trusted=0
 	if [[ "$pr_author" == "app/github-actions" || "$pr_author" == "github-actions[bot]" ]] &&
 		_pulse_is_trusted_issue_sync_pr "$pr_number" "$repo_slug" "$expected_head_sha"; then
-		_trusted_issue_sync=1
-		_author_collab_permission="write"
+		trusted=1
+		permission="write"
 		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted repository-generated Issue Sync automation, proceeding" >>"$LOGFILE"
 	else
 		_is_collaborator_author "$pr_author" "$repo_slug"
-		_author_collab_rc=$?
-		_author_collab_permission="${_PULSE_AUTHOR_PERMISSION_VALUE:-}"
+		author_collab_rc=$?
+		permission="${_PULSE_AUTHOR_PERMISSION_VALUE:-}"
 	fi
-	if [[ "$_trusted_issue_sync" -eq 0 && "$_author_collab_rc" -eq 2 ]]; then
-		if [[ "${DRY_RUN:-0}" != "1" ]]; then
-			check_permission_failure_pr "$pr_number" "$repo_slug" "$pr_author" "${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown}" || true
-		fi
+	printf -v "$trusted_dest" '%s' "$trusted"
+	printf -v "$permission_dest" '%s' "$permission"
+	if [[ "$trusted" -eq 0 && "$author_collab_rc" -eq 2 ]]; then
+		[[ "${DRY_RUN:-0}" == "1" ]] || check_permission_failure_pr "$pr_number" "$repo_slug" "$pr_author" "${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown}" || true
 		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — permission check failed for author ${pr_author} (HTTP ${_PULSE_AUTHOR_PERMISSION_HTTP:-unknown})" >>"$LOGFILE"
 		return 1
 	fi
-	if [[ "$_trusted_issue_sync" -eq 0 && "$_author_collab_rc" -ne 0 ]]; then
+	if [[ "$trusted" -eq 0 && "$author_collab_rc" -ne 0 ]]; then
 		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is trusted Dependabot with allowlisted dependency update, proceeding (GH#24473)" >>"$LOGFILE"
 		elif _has_maintainer_crypto_approval "$pr_number" "$repo_slug" "$expected_head_sha"; then
 			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator but has maintainer crypto-approval, proceeding (t3063)" >>"$LOGFILE"
 		else
-			_pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" "policy-ineligible" || _dependabot_intake_rc=$?
-			case "$_dependabot_intake_rc" in
-			0)
-				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR is outside automatic merge policy; routed to worker intake (GH#30351)" >>"$LOGFILE"
-				;;
-			3)
-				echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR has an explicit maintainer-review hold; preserving it without worker intake (GH#30389)" >>"$LOGFILE"
-				;;
-			4)
-				if [[ "${DRY_RUN:-0}" == "1" ]]; then
-					echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — would close superseded Dependabot source after verified replacement PR #${_PULSE_DEPENDABOT_SUPERSEDING_PR:-unknown} (GH#30478)" >>"$LOGFILE"
-				else
-					echo "[pulse-wrapper] Merge pass: closed superseded Dependabot source PR #${pr_number} in ${repo_slug} after verified replacement PR #${_PULSE_DEPENDABOT_SUPERSEDING_PR:-unknown} (GH#30478)" >>"$LOGFILE"
-				fi
-				;;
-			*)
-				echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE"
-				;;
-			esac
+			_pm_gate_route_ineligible_author "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"
 			return 1
 		fi
 	fi
+	return 0
+}
 
-	# Skip PRs modifying workflow files when we lack the scope
-	if check_pr_modifies_workflows "$pr_number" "$repo_slug" 2>/dev/null; then
-		if ! check_gh_workflow_scope 2>/dev/null; then
-			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — modifies workflow files but token lacks workflow scope" >>"$LOGFILE"
-			return 1
+_pm_gate_route_ineligible_author() {
+	local pr_number="$1" repo_slug="$2" pr_author="$3" expected_head_sha="$4" intake_rc=0
+	_pulse_route_dependabot_pr_to_worker_issue "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" "policy-ineligible" || intake_rc=$?
+	case "$intake_rc" in
+	0) echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR is outside automatic merge policy; routed to worker intake (GH#30351)" >>"$LOGFILE" ;;
+	3) echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — authentic Dependabot PR has an explicit maintainer-review hold; preserving it without worker intake (GH#30389)" >>"$LOGFILE" ;;
+	4)
+		if [[ "${DRY_RUN:-0}" == "1" ]]; then
+			echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — would close superseded Dependabot source after verified replacement PR #${_PULSE_DEPENDABOT_SUPERSEDING_PR:-unknown} (GH#30478)" >>"$LOGFILE"
+		else
+			echo "[pulse-wrapper] Merge pass: closed superseded Dependabot source PR #${pr_number} in ${repo_slug} after verified replacement PR #${_PULSE_DEPENDABOT_SUPERSEDING_PR:-unknown} (GH#30478)" >>"$LOGFILE"
 		fi
-	fi
+		;;
+	*) echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — author ${pr_author} is not a collaborator" >>"$LOGFILE" ;;
+	esac
+	return 0
+}
 
-	# Maintainer-gate: a live NMR label is an explicit hold. Approval marker
-	# presence is not authority and never overrides the current label state.
+_pm_gate_repository_and_issue() {
+	local pr_number="$1" repo_slug="$2" linked_issue="$3" expected_head_sha="$4" trusted_issue_sync="$5"
+	local issue_labels="" pr_labels_for_ext="" ext_linked_for_log="" li_api=""
+	if check_pr_modifies_workflows "$pr_number" "$repo_slug" 2>/dev/null && ! check_gh_workflow_scope 2>/dev/null; then
+		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — modifies workflow files but token lacks workflow scope" >>"$LOGFILE"
+		return 1
+	fi
 	if [[ -n "$linked_issue" ]]; then
-		local _li_api
-		_li_api=$(_pm_issue_api "$repo_slug" "$linked_issue")
-		local issue_labels
-		issue_labels=$(gh api "${_li_api}" \
-			--jq '[.labels[].name] | join(",")' 2>/dev/null) || issue_labels=""
+		li_api=$(_pm_issue_api "$repo_slug" "$linked_issue")
+		issue_labels=$(gh api "$li_api" --jq '[.labels[].name] | join(",")' 2>/dev/null) || issue_labels=""
 		if [[ "$issue_labels" == *"needs-maintainer-review"* ]]; then
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — linked issue #${linked_issue} has needs-maintainer-review" >>"$LOGFILE"
 			return 1
 		fi
 	fi
-
-	# ── External contributor gate (t1958) ──
-	# Requires linked issue + crypto approval (defence-in-depth after _is_collaborator_author).
-	local pr_labels_for_ext
-	pr_labels_for_ext=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels \
-		--jq '[.labels[].name] | join(",")' 2>/dev/null) || pr_labels_for_ext=""
-	if [[ "$_trusted_issue_sync" -eq 0 && "$pr_labels_for_ext" == *"external-contributor"* ]]; then
-		if ! _external_pr_has_linked_issue "$pr_number" "$repo_slug"; then
+	pr_labels_for_ext=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || pr_labels_for_ext=""
+	if [[ "$trusted_issue_sync" -eq 0 && "$pr_labels_for_ext" == *"external-contributor"* ]]; then
+		_external_pr_has_linked_issue "$pr_number" "$repo_slug" || {
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — external-contributor PR has no linked issue (t1958)" >>"$LOGFILE"
 			return 1
-		fi
+		}
 		if ! _external_pr_linked_issue_crypto_approved "$pr_number" "$repo_slug"; then
-			local ext_linked_for_log
 			ext_linked_for_log=$(_extract_linked_issue "$pr_number" "$repo_slug" 2>/dev/null) || ext_linked_for_log="unknown"
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — external-contributor PR linked issue #${ext_linked_for_log} lacks crypto approval (t1958)" >>"$LOGFILE"
 			return 1
 		fi
-		if ! _external_pr_current_head_crypto_approved "$pr_number" "$repo_slug" "$expected_head_sha"; then
+		_external_pr_current_head_crypto_approved "$pr_number" "$repo_slug" "$expected_head_sha" || {
 			echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — external-contributor PR lacks V2 crypto approval for current head" >>"$LOGFILE"
 			return 1
-		fi
+		}
 	fi
+	return 0
+}
 
-	# ── origin:interactive gates (t2411/GH#23238) ──
-	# Draft, hold-for-review, and throughput-preference checks for interactive PRs. Applies
-	# to all interactive PRs regardless of author role (OWNER, MEMBER, or
-	# COLLABORATOR). COLLABORATORs that pass these checks still go through the
-	# review bot gate and normal merge path without an ownership fast-path.
-	local _oi_info_json _oi_labels_str _oi_is_draft
-	_oi_info_json=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
-		--json labels,isDraft 2>/dev/null) || _oi_info_json=""
-	_oi_labels_str=$(printf '%s' "$_oi_info_json" \
-		| jq -r '[.labels[].name] | join(",")' 2>/dev/null) || _oi_labels_str=""
-	_oi_is_draft=$(printf '%s' "$_oi_info_json" \
-		| jq -r '.isDraft // false' 2>/dev/null) || _oi_is_draft="false"
-	if [[ "$_oi_labels_str" == *"origin:interactive"* ]]; then
-		if ! _check_interactive_pr_gates "$pr_number" "$repo_slug" "$_oi_labels_str" "$_oi_is_draft"; then
-			return 1
-		fi
+_pm_gate_origin_authority() {
+	local pr_number="$1" repo_slug="$2" linked_issue="$3" pr_author="$4"
+	local trusted_issue_sync="$5" author_permission="$6" info_json="" labels_str="" is_draft="false"
+	info_json=$(gh_pr_view "$pr_number" --repo "$repo_slug" --json labels,isDraft 2>/dev/null) || info_json=""
+	labels_str=$(printf '%s' "$info_json" | jq -r '[.labels[].name] | join(",")' 2>/dev/null) || labels_str=""
+	is_draft=$(printf '%s' "$info_json" | jq -r '.isDraft // false' 2>/dev/null) || is_draft="false"
+	if [[ "$labels_str" == *"origin:interactive"* ]]; then
+		_check_interactive_pr_gates "$pr_number" "$repo_slug" "$labels_str" "$is_draft" || return 1
 	fi
-
-	# ── origin:worker worker-briefed gates (t2449) ──
-	# Symmetric to the origin:interactive auto-merge gate (t2411). When a
-	# worker PR is backed by a maintainer-briefed issue (OWNER/MEMBER author),
-	# the trust chain is equivalent to an interactive session. This gate
-	# validates the additional criteria beyond the general gates.
-	#
-	# Uses comma-delimited matching: ",origin:worker," does NOT match
-	# ",origin:worker-takeover," (substring-safe).
-	if [[ -n "${_OW_LABEL_PAT:-}" && ",${_oi_labels_str}," == *"${_OW_LABEL_PAT:-}"* && "$_trusted_issue_sync" -eq 0 ]]; then
-		if ! _attempt_worker_briefed_auto_merge "$pr_number" "$repo_slug" "$_oi_labels_str" "$_oi_is_draft" "$linked_issue" "$_author_collab_permission" "$pr_author"; then
-			return 1
-		fi
-	elif [[ "$_trusted_issue_sync" -eq 1 ]]; then
+	if [[ -n "${_OW_LABEL_PAT:-}" && ",${labels_str}," == *"${_OW_LABEL_PAT:-}"* && "$trusted_issue_sync" -eq 0 ]]; then
+		_attempt_worker_briefed_auto_merge "$pr_number" "$repo_slug" "$labels_str" "$is_draft" "$linked_issue" "$author_permission" "$pr_author" || return 1
+	elif [[ "$trusted_issue_sync" -eq 1 ]]; then
 		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} — exact-head Issue Sync trust satisfies worker authority without a linked issue" >>"$LOGFILE"
 	fi
+	return 0
+}
 
-	# A converged CHANGES_REQUESTED remediation may perform a branch repair,
-	# but it cannot satisfy review. Preserve the existing narrow rebase-only
-	# boundary; broader CI repair must also pass current-head review-bot evidence
-	# below before it receives worker-dispatch authority.
-	if [[ "$review_gate_mode" == "$_ci_rebase_only" ]]; then
+_pm_gate_review_bot() {
+	local pr_number="$1" repo_slug="$2" pr_author="$3" expected_head_sha="$4"
+	local rbg_helper="${AGENTS_DIR:-$HOME/.aidevops/agents}/scripts/review-bot-gate-helper.sh"
+	local rbg_observed_at="" rbg_result="" rbg_status=""
+	[[ -f "$rbg_helper" ]] || return 0
+	if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"; then
+		rbg_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+		_PULSE_REVIEW_GATE_EVIDENCE=$(jq -nc --arg schema "$PULSE_REVIEW_EVIDENCE_SCHEMA" --arg repo "$repo_slug" --arg pr "$pr_number" --arg head "$expected_head_sha" --arg author "$pr_author" --arg observed_at "$rbg_observed_at" \
+			'{schema:$schema,repo:$repo,pr:$pr,head_sha:$head,status:"SKIP_TRUSTED_DEPENDABOT",author:{login:$author,association:"BOT",class:"trusted-bot"},permitted:true,reason:"trusted_dependabot_policy",state:"pass",merge_gate:"clear",exit_code:0,observed_at:$observed_at}')
+		echo "[pulse-wrapper] Review bot gate: SKIP for trusted Dependabot dependency update PR #${pr_number} in ${repo_slug} (GH#24473)" >>"$LOGFILE"
+		return 0
+	fi
+	rbg_result=$(bash "$rbg_helper" status-json "$pr_number" "$repo_slug" 2>/dev/null) || rbg_result=""
+	rbg_status=$(jq -r --arg unknown "$PULSE_UNKNOWN_STATE" '.status // $unknown' <<<"$rbg_result" 2>/dev/null) || rbg_status="$PULSE_UNKNOWN_STATE"
+	# #aidevops:trust-boundary — only exact-head permitted evidence can pass.
+	if jq -e --arg schema "$PULSE_REVIEW_EVIDENCE_SCHEMA" --arg repo "$repo_slug" --arg pr "$pr_number" --arg head "$expected_head_sha" '
+		.schema == $schema and .repo == $repo and (.pr | tostring) == $pr
+		and .head_sha == $head and .permitted == true
+		and .state == "pass" and .merge_gate == "clear"
+	' <<<"$rbg_result" >/dev/null 2>&1; then
+		rbg_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+		_PULSE_REVIEW_GATE_EVIDENCE=$(jq -cS --arg observed_at "$rbg_observed_at" '.observed_at = $observed_at' <<<"$rbg_result") || return 1
+		echo "[pulse-wrapper] Review bot gate: ${rbg_status} for PR #${pr_number} in ${repo_slug} (typed current-head evidence)" >>"$LOGFILE"
+		return 0
+	fi
+	echo "[pulse-wrapper] Review bot gate: ${rbg_status:-${PULSE_UNKNOWN_STATE}} for PR #${pr_number} in ${repo_slug} — missing or unpermitted current-head evidence; skipping merge" >>"$LOGFILE"
+	return 1
+}
+
+_check_pr_merge_gates() {
+	local pr_number="$1" repo_slug="$2" pr_author="$3" pr_review="$4" linked_issue="$5"
+	local pr_labels="${6:-}" expected_head_sha="${7:-}" review_gate_mode="${8:-merge}"
+	local changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
+	local ci_rebase_only="${PULSE_REVIEW_GATE_MODE_CI_REBASE_ONLY:-ci-rebase-only}"
+	local ci_repair_only="${PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY:-ci-repair-only}"
+	local trusted_issue_sync=0 author_permission=""
+	_PULSE_REVIEW_GATE_EVIDENCE=""
+	if [[ -n "$linked_issue" ]] && _interactive_claim_fence_blocks_merge "$linked_issue" "$repo_slug" "$expected_head_sha"; then
+		echo "[pulse-wrapper] Merge pass: skipping PR #${pr_number} in ${repo_slug} — linked issue #${linked_issue} has a live interactive owner with different unmerged work (GH#30274)" >>"$LOGFILE"
+		return 1
+	fi
+	_pm_gate_review_mode "$pr_number" "$repo_slug" "$pr_review" "$linked_issue" "$pr_labels" \
+		"$review_gate_mode" "$changes_requested" "$ci_rebase_only" "$ci_repair_only" || return 1
+	_pm_gate_author_trust "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha" \
+		trusted_issue_sync author_permission || return 1
+	_pm_gate_repository_and_issue "$pr_number" "$repo_slug" "$linked_issue" "$expected_head_sha" "$trusted_issue_sync" || return 1
+	_pm_gate_origin_authority "$pr_number" "$repo_slug" "$linked_issue" "$pr_author" \
+		"$trusted_issue_sync" "$author_permission" || return 1
+	if [[ "$review_gate_mode" == "$ci_rebase_only" ]]; then
 		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} passed non-review trust gates for ${review_gate_mode} evaluation; CHANGES_REQUESTED remains blocking" >>"$LOGFILE"
 		return 0
 	fi
-	if [[ "$review_gate_mode" == "$_ci_repair_only" ]]; then
-		echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} passed non-review trust gates for ${review_gate_mode} evaluation; requiring current-head review-bot evidence before CI repair" >>"$LOGFILE"
-	fi
-
-	# ── Review bot gate (GH#17490) ──
-	# --admin bypasses branch protection; enforce in code (see review-bot-gate-helper.sh).
-	local rbg_helper="${AGENTS_DIR:-$HOME/.aidevops/agents}/scripts/review-bot-gate-helper.sh"
-	local rbg_observed_at=""
-	if [[ -f "$rbg_helper" ]]; then
-		if _is_trusted_dependabot_update_pr "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"; then
-			rbg_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
-			_PULSE_REVIEW_GATE_EVIDENCE=$(jq -nc --arg schema "$PULSE_REVIEW_EVIDENCE_SCHEMA" --arg repo "$repo_slug" --arg pr "$pr_number" --arg head "$expected_head_sha" --arg author "$pr_author" --arg observed_at "$rbg_observed_at" \
-				'{schema:$schema,repo:$repo,pr:$pr,head_sha:$head,status:"SKIP_TRUSTED_DEPENDABOT",author:{login:$author,association:"BOT",class:"trusted-bot"},permitted:true,reason:"trusted_dependabot_policy",state:"pass",merge_gate:"clear",exit_code:0,observed_at:$observed_at}')
-			echo "[pulse-wrapper] Review bot gate: SKIP for trusted Dependabot dependency update PR #${pr_number} in ${repo_slug} (GH#24473)" >>"$LOGFILE"
-			return 0
-		fi
-		local rbg_result="" rbg_status=""
-		rbg_result=$(bash "$rbg_helper" status-json "$pr_number" "$repo_slug" 2>/dev/null) || rbg_result=""
-		rbg_status=$(jq -r --arg unknown "$PULSE_UNKNOWN_STATE" '.status // $unknown' <<<"$rbg_result" 2>/dev/null) || rbg_status="$PULSE_UNKNOWN_STATE"
-		# #aidevops:trust-boundary — persist only typed, permitted evidence for
-		# this exact repository, PR, and head. External SKIP/rate-limit outcomes
-		# and malformed helper output fail closed.
-		if jq -e --arg schema "$PULSE_REVIEW_EVIDENCE_SCHEMA" --arg repo "$repo_slug" --arg pr "$pr_number" --arg head "$expected_head_sha" '
-			.schema == $schema
-			and .repo == $repo and (.pr | tostring) == $pr and .head_sha == $head
-			and .permitted == true and .state == "pass" and .merge_gate == "clear"
-		' <<<"$rbg_result" >/dev/null 2>&1; then
-			rbg_observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
-			_PULSE_REVIEW_GATE_EVIDENCE=$(jq -cS --arg observed_at "$rbg_observed_at" '.observed_at = $observed_at' <<<"$rbg_result") || return 1
-			echo "[pulse-wrapper] Review bot gate: ${rbg_status} for PR #${pr_number} in ${repo_slug} (typed current-head evidence)" >>"$LOGFILE"
-		else
-			echo "[pulse-wrapper] Review bot gate: ${rbg_status:-${PULSE_UNKNOWN_STATE}} for PR #${pr_number} in ${repo_slug} — missing or unpermitted current-head evidence; skipping merge" >>"$LOGFILE"
-			return 1
-		fi
-	fi
-
-	return 0
+	[[ "$review_gate_mode" != "$ci_repair_only" ]] || echo "[pulse-wrapper] Merge pass: PR #${pr_number} in ${repo_slug} passed non-review trust gates for ${review_gate_mode} evaluation; requiring current-head review-bot evidence before CI repair" >>"$LOGFILE"
+	_pm_gate_review_bot "$pr_number" "$repo_slug" "$pr_author" "$expected_head_sha"
+	return $?
 }
 
 #######################################
