@@ -44,9 +44,9 @@ print_result() {
 }
 
 start_live_pids() {
-	sleep 30 &
+	sleep 300 &
 	OWNER_PID=$!
-	sleep 30 &
+	sleep 300 &
 	CLAIM_PID=$!
 	return 0
 }
@@ -59,6 +59,12 @@ reset_registry() {
 owner_info() {
 	local wt_path="$1"
 	check_worktree_owner "$wt_path" 2>/dev/null || true
+	return 0
+}
+
+owner_snapshot() {
+	local wt_path="$1"
+	check_worktree_owner_snapshot "$wt_path" 2>/dev/null || true
 	return 0
 }
 
@@ -237,7 +243,8 @@ test_canonical_paths_are_purged_without_signalling_live_owner() {
 		--owner-pid "$CLAIM_PID" --session continuation-worker --batch generation-8 --task 22438 \
 		--expected-owner-pid "$expected_pid" --expected-session "$expected_session" \
 		--expected-batch "$expected_batch" --expected-task "$expected_task" \
-		--expected-created-at "$expected_created_at"; then
+		--expected-created-at "$expected_created_at" \
+		--expected-process-start "legacy-canonical-owner"; then
 		rc=1
 	fi
 	canonical_rows=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT COUNT(*) FROM worktree_owners WHERE worktree_path = '$canonical_path';")
@@ -259,17 +266,26 @@ test_expected_owner_transfer_is_atomic() {
 		--session "prior-worker" --batch "generation-7" --task "22438"
 
 	local current_owner="" expected_pid="" expected_session="" expected_batch=""
-	local expected_task="" expected_created_at=""
-	current_owner=$(owner_info "$wt_path")
-	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at <<<"$current_owner"
+	local expected_task="" expected_created_at="" expected_process_start=""
+	current_owner=$(owner_snapshot "$wt_path")
+	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at expected_process_start <<<"$current_owner"
 
 	local rc=0
 	transfer_worktree_ownership_if_expected "$wt_path" "feature/expected-transfer" \
 		--owner-pid "$CLAIM_PID" --session "continuation-worker" --batch "generation-8" --task "22438" \
 		--expected-owner-pid "$expected_pid" --expected-session "$expected_session" \
 		--expected-batch "$expected_batch" --expected-task "$expected_task" \
-		--expected-created-at "$expected_created_at" || rc=1
+		--expected-created-at "$expected_created_at" \
+		--expected-process-start "$expected_process_start" || rc=1
 	[[ "$(owner_info "$wt_path")" == "${CLAIM_PID}|continuation-worker|generation-8|22438|"* ]] || rc=1
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	local transferred_process_start=""
+	transferred_process_start=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+        SELECT COALESCE(owner_process_start, '') FROM worktree_owners
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    ")
+	[[ "$transferred_process_start" == "$(_wt_process_start_token_for_pid "$CLAIM_PID")" ]] || rc=1
 	print_result "exact expected owner transfers atomically" "$rc"
 	return 0
 }
@@ -282,9 +298,9 @@ test_expected_owner_transfer_rejects_concurrent_mutation() {
 		--session "prior-worker" --batch "generation-7" --task "22438"
 
 	local captured_owner="" expected_pid="" expected_session="" expected_batch=""
-	local expected_task="" expected_created_at=""
-	captured_owner=$(owner_info "$wt_path")
-	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at <<<"$captured_owner"
+	local expected_task="" expected_created_at="" expected_process_start=""
+	captured_owner=$(owner_snapshot "$wt_path")
+	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at expected_process_start <<<"$captured_owner"
 
 	register_worktree "$wt_path" "feature/concurrent-transfer" --owner-pid "$CLAIM_PID" \
 		--session "competing-worker" --batch "generation-8" --task "22438"
@@ -293,11 +309,44 @@ test_expected_owner_transfer_rejects_concurrent_mutation() {
 		--owner-pid "$OWNER_PID" --session "late-worker" --batch "generation-9" --task "22438" \
 		--expected-owner-pid "$expected_pid" --expected-session "$expected_session" \
 		--expected-batch "$expected_batch" --expected-task "$expected_task" \
-		--expected-created-at "$expected_created_at"; then
+		--expected-created-at "$expected_created_at" \
+		--expected-process-start "$expected_process_start"; then
 		rc=1
 	fi
 	[[ "$(owner_info "$wt_path")" == "${CLAIM_PID}|competing-worker|generation-8|22438|"* ]] || rc=1
 	print_result "expected-owner transfer rejects concurrent registry mutation" "$rc"
+	return 0
+}
+
+test_expected_owner_transfer_rejects_recycled_process_generation() {
+	reset_registry
+	local wt_path="${TEST_ROOT}/recycled-transfer-owner"
+	mkdir -p "$wt_path"
+	register_worktree "$wt_path" "feature/recycled-transfer-owner" --owner-pid "$OWNER_PID" \
+		--session "prior-worker" --batch "generation-7" --task "22438"
+
+	local captured_owner="" expected_pid="" expected_session="" expected_batch=""
+	local expected_task="" expected_created_at="" expected_process_start=""
+	captured_owner=$(owner_snapshot "$wt_path")
+	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at expected_process_start <<<"$captured_owner"
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners SET owner_process_start = 'recycled-process-generation'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+
+	local rc=0
+	if transfer_worktree_ownership_if_expected "$wt_path" "feature/recycled-transfer-owner" \
+		--owner-pid "$CLAIM_PID" --session "continuation-worker" --batch "generation-8" --task "22438" \
+		--expected-owner-pid "$expected_pid" --expected-session "$expected_session" \
+		--expected-batch "$expected_batch" --expected-task "$expected_task" \
+		--expected-created-at "$expected_created_at" \
+		--expected-process-start "$expected_process_start"; then
+		rc=1
+	fi
+	[[ "$(owner_info "$wt_path")" == "${OWNER_PID}|prior-worker|generation-7|22438|"* ]] || rc=1
+	print_result "expected-owner transfer rejects recycled process generation" "$rc"
 	return 0
 }
 
@@ -313,6 +362,33 @@ test_expected_owner_transfer_rejects_missing_option_value_cleanly() {
 		rc=1
 	fi
 	print_result "expected-owner transfer rejects a missing option value cleanly" "$rc"
+	return 0
+}
+
+test_owner_contract_rejects_recycled_process_generation() {
+	reset_registry
+	local wt_path="${TEST_ROOT}/recycled-owner-contract"
+	mkdir -p "$wt_path"
+	register_worktree "$wt_path" "feature/recycled-owner-contract" --owner-pid "$OWNER_PID" \
+		--session "cleanup:${OWNER_PID}" --task "worktree-removal"
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners SET owner_process_start = 'recycled-process-generation'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+
+	local rc=0
+	if worktree_has_exact_owner_contract "$wt_path" "$OWNER_PID" \
+		"cleanup:${OWNER_PID}" "worktree-removal"; then
+		rc=1
+	fi
+	if unregister_worktree_if_owner_contract "$wt_path" "$OWNER_PID" \
+		"cleanup:${OWNER_PID}" "worktree-removal"; then
+		rc=1
+	fi
+	[[ "$(owner_info "$wt_path")" == "${OWNER_PID}|cleanup:${OWNER_PID}||worktree-removal|"* ]] || rc=1
+	print_result "owner contract rejects recycled process generation" "$rc"
 	return 0
 }
 
@@ -368,6 +444,43 @@ test_owner_contract_removal_rejects_concurrent_transfer() {
 	return 0
 }
 
+test_owner_writers_fail_when_process_generation_is_unavailable() {
+	reset_registry
+	local wt_path="${TEST_ROOT}/writer-token-unavailable"
+	local new_path="${TEST_ROOT}/register-token-unavailable"
+	mkdir -p "$wt_path" "$new_path"
+	register_worktree "$wt_path" "feature/writer-token-unavailable" --owner-pid "$OWNER_PID" \
+		--session "prior-worker" --batch "generation-7" --task "22438"
+	local owner_snapshot="" expected_pid="" expected_session="" expected_batch=""
+	local expected_task="" expected_created_at="" expected_process_start=""
+	owner_snapshot=$(check_worktree_owner_snapshot "$wt_path")
+	IFS='|' read -r expected_pid expected_session expected_batch expected_task expected_created_at expected_process_start <<<"$owner_snapshot"
+	_wt_process_start_token_for_pid() { return 1; }
+
+	local rc=0
+	if register_worktree "$new_path" "feature/register-token-unavailable" --owner-pid "$CLAIM_PID"; then
+		rc=1
+	fi
+	if check_worktree_owner "$new_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	if claim_worktree_ownership "$wt_path" "feature/writer-token-unavailable" \
+		--owner-pid "$CLAIM_PID" --session "continuation-worker" --task "22438"; then
+		rc=1
+	fi
+	if transfer_worktree_ownership_if_expected "$wt_path" "feature/writer-token-unavailable" \
+		--owner-pid "$CLAIM_PID" --session "continuation-worker" --task "22438" \
+		--expected-owner-pid "$expected_pid" --expected-session "$expected_session" \
+		--expected-batch "$expected_batch" --expected-task "$expected_task" \
+		--expected-created-at "$expected_created_at" \
+		--expected-process-start "$expected_process_start"; then
+		rc=1
+	fi
+	[[ "$(owner_snapshot "$wt_path")" == "$owner_snapshot" ]] || rc=1
+	print_result "owner writers fail when process generation is unavailable" "$rc"
+	return 0
+}
+
 main() {
 	start_live_pids
 	test_same_opencode_session_rolls_owner_pid
@@ -379,9 +492,12 @@ main() {
 	test_canonical_paths_are_purged_without_signalling_live_owner
 	test_expected_owner_transfer_is_atomic
 	test_expected_owner_transfer_rejects_concurrent_mutation
+	test_expected_owner_transfer_rejects_recycled_process_generation
 	test_expected_owner_transfer_rejects_missing_option_value_cleanly
+	test_owner_contract_rejects_recycled_process_generation
 	test_owner_contract_removal_is_atomic
 	test_owner_contract_removal_rejects_concurrent_transfer
+	test_owner_writers_fail_when_process_generation_is_unavailable
 	printf 'Results: %s/%s passed, %s failed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]] && return 0
 	return 1

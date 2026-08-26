@@ -64,9 +64,12 @@ _emit_verbose_checkpoint() {
 	ts=$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || ts=""
 
 	local extra=""
+	local lifecycle_event=""
 	[[ $# -gt 0 ]] && extra=" $*"
-	printf '[lifecycle] %s ts=%s pid=%s session=%s%s\n' \
-		"$safe_event" "$ts" "$$" "${WORKER_SESSION_KEY:-${AIDEVOPS_SESSION_KEY:-unknown}}" "$extra" >&2
+	printf -v lifecycle_event '[lifecycle] %s ts=%s pid=%s session=%s%s' \
+		"$safe_event" "$ts" "$$" "${WORKER_SESSION_KEY:-${AIDEVOPS_SESSION_KEY:-unknown}}" "$extra"
+	worker_attempt_observability_enrich lifecycle_event "$lifecycle_event"
+	printf '%s\n' "$lifecycle_event" >&2
 	return 0
 }
 

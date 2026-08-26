@@ -302,8 +302,9 @@ PCC_OWNERSHIP_TRANSFERRED=0
 if [[ "$(_prrts_worker_task_id 42)" == "123" ]] &&
 	[[ "$(_prrts_worker_login 42)" == "worker-bot" ]] &&
 	_prrts_apply_expected_worktree_owner owner/repo 42 "${TEST_ROOT}/repo" \
-		9999 issue-worker batch-1 123 2026-08-01T00:00:00Z "" &&
-	[[ "$PRRTS_WORKTREE_EXPECTED_OWNER_TASK" == "123" ]]; then
+		9999 issue-worker batch-1 123 2026-08-01T00:00:00Z process-start-1 "" &&
+	[[ "$PRRTS_WORKTREE_EXPECTED_OWNER_TASK" == "123" &&
+		"$PRRTS_WORKTREE_EXPECTED_OWNER_PROCESS_START" == "process-start-1" ]]; then
 	print_result "continuation preserves the linked issue worktree task identity" 0
 else
 	print_result "continuation preserves the linked issue worktree task identity" 1

@@ -117,6 +117,11 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/example/repo" ]]; then
 	exit 0
 fi
 
+if [[ "${1:-}" == "api" && "${2:-}" == "/repos/example/repo/issues/1" ]]; then
+	printf 'origin:interactive\n'
+	exit 0
+fi
+
 if [[ "${1:-}" == "api" ]]; then
 	exit 1
 fi
@@ -160,6 +165,11 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
 	printf '%s\n' "$head_branch" >"${GH_STUB_HEAD:?}"
 	printf '%s\n' "$title_text" >"${GH_STUB_TITLE:?}"
 	printf '%s\n' "$body_text" >"${GH_STUB_BODY:?}"
+	if [[ -n "${GH_STUB_PR_CREATE_FAIL_ONCE_FILE:-}" && ! -f "$GH_STUB_PR_CREATE_FAIL_ONCE_FILE" ]]; then
+		printf 'failed\n' >"$GH_STUB_PR_CREATE_FAIL_ONCE_FILE"
+		printf 'fixture PR creation rejected after branch push\n' >&2
+		exit 42
+	fi
 	printf 'https://github.com/example/repo/pull/1\n'
 	exit 0
 fi
@@ -173,14 +183,16 @@ GH
 append_planning_change() {
 	local work_dir="$1"
 	local task_id="$2"
-	printf -- '- [ ] %s Protected planning fallback #bug #auto-dispatch ~30m ref:GH#25292\n' "$task_id" >>"${work_dir}/TODO.md"
+	local issue_num="${3:-25292}"
+	printf -- '- [ ] %s Protected planning fallback #bug #auto-dispatch ~30m ref:GH#%s\n' \
+		"$task_id" "$issue_num" >>"${work_dir}/TODO.md"
 	printf 'What: protected planning fallback\nHow: update planning helper\n' >"${work_dir}/todo/tasks/${task_id}-brief.md"
 	return 0
 }
 
 test_protected_default_creates_planning_pr() {
 	local name="protected default branch creates planning PR and cleans source"
-	local tmpdir fake_bin work_dir body_file head_file title_file log_file output rc status head_branch remote_todo pr_body
+	local tmpdir fake_bin work_dir body_file head_file title_file log_file output rc status head_branch remote_todo pr_body pr_title
 	tmpdir=$(mktemp -d) || {
 		fail "$name" "mktemp failed"
 		return 0
@@ -250,7 +262,141 @@ test_protected_default_creates_planning_pr() {
 		fail "$name" "planning PR body contains a closing keyword"
 		return 0
 	fi
+	if [[ "$pr_body" != *"For #25292"* ||
+		"$pr_body" != *"aidevops:planning-task:v1 task=t999 issue=25292"* ||
+		"$pr_body" != *"aidevops:planning-publication:v1 id="* ]]; then
+		fail "$name" "PR body missing deterministic task/issue publication manifest"
+		return 0
+	fi
+	pr_title=$(<"$title_file")
+	if [[ "$pr_title" != "plan(t999): add t999 protected planning" ]]; then
+		fail "$name" "single-task PR title is not task-aware: $pr_title"
+		return 0
+	fi
 	pass "$name"
+	rm -rf "$tmpdir"
+	return 0
+}
+
+test_multi_task_manifest_is_deterministic() {
+	local name="multi-task planning PR links every unique issue without guessing title identity"
+	local tmpdir fake_bin work_dir output rc body title for_31_count
+	tmpdir=$(mktemp -d) || {
+		fail "$name" "mktemp failed"
+		return 0
+	}
+	fake_bin="${tmpdir}/bin"
+	write_fake_gh "$fake_bin" || {
+		fail "$name" "fake gh setup failed"
+		return 0
+	}
+	work_dir=$(setup_repo "$tmpdir" true) || {
+		fail "$name" "repo setup failed"
+		return 0
+	}
+	append_planning_change "$work_dir" "t2002" "32"
+	append_planning_change "$work_dir" "t2001" "31"
+	append_planning_change "$work_dir" "t2003" "31"
+	: >"${tmpdir}/gh.log"
+	rc=0
+	output=$(cd "$work_dir" && PATH="${fake_bin}:$PATH" \
+		GH_STUB_LOG="${tmpdir}/gh.log" GH_STUB_BODY="${tmpdir}/body" \
+		GH_STUB_HEAD="${tmpdir}/head" GH_STUB_TITLE="${tmpdir}/title" \
+		AIDEVOPS_PLANNING_FORCE_PR_FALLBACK=1 AIDEVOPS_PLANNING_PR_REPO_SLUG="example/repo" \
+		"$PLANNING_HELPER" "plan: publish planning batch" 2>&1) || rc=$?
+	body=$(<"${tmpdir}/body")
+	title=$(<"${tmpdir}/title")
+	for_31_count=$(printf '%s\n' "$body" | grep -c '^- For #31$' || true)
+	if [[ "$rc" -eq 0 && "$title" == "plan: publish planning batch" &&
+		"$body" == *"task=t2001 issue=31"* && "$body" == *"task=t2002 issue=32"* &&
+		"$body" == *"task=t2003 issue=31"* && "$for_31_count" -eq 1 &&
+		"$body" == *$'- For #31\n- For #32'* ]]; then
+		pass "$name"
+	else
+		fail "$name" "rc=$rc title=$title body=$body output=$output"
+	fi
+	rm -rf "$tmpdir"
+	return 0
+}
+
+test_ambiguous_task_mapping_fails_before_push() {
+	local name="ambiguous task mapping fails before creating a publication branch"
+	local tmpdir fake_bin work_dir output rc remote_refs status
+	tmpdir=$(mktemp -d) || {
+		fail "$name" "mktemp failed"
+		return 0
+	}
+	fake_bin="${tmpdir}/bin"
+	write_fake_gh "$fake_bin" || return 0
+	work_dir=$(setup_repo "$tmpdir" true) || return 0
+	printf -- '- [ ] t2100 Missing mapping #bug ~30m\n' >>"${work_dir}/TODO.md"
+	printf 'What: ambiguous mapping\n' >"${work_dir}/todo/tasks/t2100-brief.md"
+	: >"${tmpdir}/gh.log"
+	rc=0
+	output=$(cd "$work_dir" && PATH="${fake_bin}:$PATH" \
+		GH_STUB_LOG="${tmpdir}/gh.log" GH_STUB_BODY="${tmpdir}/body" \
+		GH_STUB_HEAD="${tmpdir}/head" GH_STUB_TITLE="${tmpdir}/title" \
+		AIDEVOPS_PLANNING_FORCE_PR_FALLBACK=1 AIDEVOPS_PLANNING_PR_REPO_SLUG="example/repo" \
+		"$PLANNING_HELPER" "plan: publish ambiguous task" 2>&1) || rc=$?
+	remote_refs=$(git --git-dir="${tmpdir}/remote.git" for-each-ref --format='%(refname)' refs/heads/planning/)
+	status=$(git -C "$work_dir" status --short)
+	if [[ "$rc" -ne 0 && -z "$remote_refs" && "$status" == *"TODO.md"* &&
+		"$output" == *"expected one same-repository ref:GH#NNN field"* ]]; then
+		pass "$name"
+	else
+		fail "$name" "rc=$rc refs=$remote_refs status=$status output=$output"
+	fi
+	rm -rf "$tmpdir"
+	return 0
+}
+
+test_post_push_failure_is_recoverable_and_idempotent() {
+	local name="post-push PR failure reports recovery, cleans worktree, and reuses branch"
+	local tmpdir fake_bin work_dir fail_once output_first output_second rc_first rc_second
+	local branch_first branch_second commit_first commit_second planning_ref_count worktree_list status
+	tmpdir=$(mktemp -d) || {
+		fail "$name" "mktemp failed"
+		return 0
+	}
+	fake_bin="${tmpdir}/bin"
+	write_fake_gh "$fake_bin" || return 0
+	work_dir=$(setup_repo "$tmpdir" true) || return 0
+	append_planning_change "$work_dir" "t2200" "2200"
+	: >"${tmpdir}/gh.log"
+	fail_once="${tmpdir}/pr-create-failed"
+	rc_first=0
+	output_first=$(cd "$work_dir" && PATH="${fake_bin}:$PATH" \
+		GH_STUB_LOG="${tmpdir}/gh.log" GH_STUB_BODY="${tmpdir}/body" \
+		GH_STUB_HEAD="${tmpdir}/head" GH_STUB_TITLE="${tmpdir}/title" \
+		GH_STUB_PR_CREATE_FAIL_ONCE_FILE="$fail_once" \
+		AIDEVOPS_PLANNING_FORCE_PR_FALLBACK=1 AIDEVOPS_PLANNING_PR_REPO_SLUG="example/repo" \
+		"$PLANNING_HELPER" "plan: publish recoverable task" 2>&1) || rc_first=$?
+	branch_first=$(printf '%s\n' "$output_first" | sed -n 's/^AIDEVOPS_PLANNING_RECOVERY_BRANCH=//p')
+	commit_first=$(printf '%s\n' "$output_first" | sed -n 's/^AIDEVOPS_PLANNING_RECOVERY_COMMIT=//p')
+	worktree_list=$(git -C "$work_dir" worktree list --porcelain)
+	status=$(git -C "$work_dir" status --short)
+
+	rc_second=0
+	output_second=$(cd "$work_dir" && PATH="${fake_bin}:$PATH" \
+		GH_STUB_LOG="${tmpdir}/gh.log" GH_STUB_BODY="${tmpdir}/body" \
+		GH_STUB_HEAD="${tmpdir}/head" GH_STUB_TITLE="${tmpdir}/title" \
+		GH_STUB_PR_CREATE_FAIL_ONCE_FILE="$fail_once" \
+		AIDEVOPS_PLANNING_FORCE_PR_FALLBACK=1 AIDEVOPS_PLANNING_PR_REPO_SLUG="example/repo" \
+		"$PLANNING_HELPER" "plan: publish recoverable task" 2>&1) || rc_second=$?
+	branch_second=$(<"${tmpdir}/head")
+	commit_second=$(git --git-dir="${tmpdir}/remote.git" rev-parse "refs/heads/${branch_second}" 2>/dev/null || true)
+	planning_ref_count=$(git --git-dir="${tmpdir}/remote.git" for-each-ref --format='%(refname)' refs/heads/planning/ | wc -l | tr -d ' ')
+	if [[ "$rc_first" -ne 0 && "$output_first" == *"fixture PR creation rejected after branch push"* &&
+		"$output_first" == *"AIDEVOPS_PLANNING_RECOVERY_REMOTE_STATE=pushed"* &&
+		"$output_first" == *"AIDEVOPS_PLANNING_RECOVERY_WORKTREE_STATE=removed"* &&
+		"$worktree_list" != *"-planning-"* && "$status" == *"TODO.md"* &&
+		"$rc_second" -eq 0 && "$branch_second" == "$branch_first" &&
+		"$commit_second" == "$commit_first" && "$planning_ref_count" -eq 1 &&
+		"$output_second" == *"AIDEVOPS_PLANNING_COMMIT_RESULT=pr"* ]]; then
+		pass "$name"
+	else
+		fail "$name" "first_rc=$rc_first second_rc=$rc_second first=$output_first second=$output_second refs=$planning_ref_count"
+	fi
 	rm -rf "$tmpdir"
 	return 0
 }
@@ -457,6 +603,9 @@ main() {
 		pass "planning helper executable"
 	fi
 	test_protected_default_creates_planning_pr
+	test_multi_task_manifest_is_deterministic
+	test_ambiguous_task_mapping_fails_before_push
+	test_post_push_failure_is_recoverable_and_idempotent
 	test_unprotected_default_keeps_direct_push
 	test_protected_default_from_linked_branch_creates_planning_pr
 	test_unprotected_default_from_linked_branch_publishes_default

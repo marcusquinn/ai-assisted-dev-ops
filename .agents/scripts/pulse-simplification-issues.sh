@@ -30,6 +30,7 @@ SIMPLIFICATION_AUTO_DISPATCH_LABEL=auto-dispatch
 SIMPLIFICATION_STATUS_AVAILABLE_LABEL=status:available
 SIMPLIFICATION_ORIGIN_WORKER_LABEL=origin:worker
 SIMPLIFICATION_TIER_STANDARD_LABEL=tier:standard
+SIMPLIFICATION_SCAN_SKIPPED=skipped
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -38,6 +39,28 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
     SCRIPT_DIR="$(cd "$_lib_path" && pwd)"
     unset _lib_path
 fi
+
+# Keep issue-body instructions aligned with the labels applied at creation.
+# Trusted-maintainer scans intentionally skip hold-for-review; telling those
+# workers to wait for a later approval creates a dispatch/BLOCKED retry loop.
+_complexity_scan_review_instruction_block() {
+	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" == true ]]; then
+		cat <<'REVIEW_EOF'
+### Dispatch authority
+
+This issue was created under verified maintainer authority and is ready for automated dispatch. No additional approval comment is required.
+REVIEW_EOF
+		return 0
+	fi
+
+	cat <<'REVIEW_EOF'
+---
+**To approve or decline**, comment on this issue:
+- `approved` — removes the review gate and queues for automated dispatch
+- `declined: <reason>` — closes this issue (include your reason after the colon)
+REVIEW_EOF
+	return 0
+}
 
 # Determine whether an agent doc qualifies for a simplification issue.
 # Not every .agents/*.md file is actionable — files below the 500-line default,
@@ -171,6 +194,8 @@ _complexity_scan_build_md_issue_body() {
 	local file_path="$1"
 	local line_count="$2"
 	local topic_label="$3"
+	local review_instructions=""
+	review_instructions=$(_complexity_scan_review_instruction_block)
 
 	cat <<ISSUE_BODY_EOF
 <!-- aidevops:generator=agent-doc-simplification-gate cited_file=${file_path} threshold=${COMPLEXITY_MD_MIN_LINES:-500} -->
@@ -222,12 +247,9 @@ Tighten and restructure this agent doc. Follow \`tools/build-agent/build-agent.m
 
 ### Confidence: medium
 
-Automated scan flagged this file for maintainer review. The best simplification strategy requires human judgment — some files are appropriately structured already. Reference corpora (SKILL.md, domain knowledge bases) need restructuring into chapters, not content reduction.
+Automated scan flagged this file for review. The best simplification strategy requires human judgment — some files are appropriately structured already. Reference corpora (SKILL.md, domain knowledge bases) need restructuring into chapters, not content reduction.
 
----
-**To approve or decline**, comment on this issue:
-- \`approved\` — removes the review gate and queues for automated dispatch
-- \`declined: <reason>\` — closes this issue (include your reason after the colon)
+${review_instructions}
 ISSUE_BODY_EOF
 	return 0
 }
@@ -366,17 +388,17 @@ _complexity_scan_process_single_md_file() {
 	case "$file_status" in
 	unchanged)
 		echo "[pulse-wrapper] Complexity scan (.md): skipping ${file_path} — already simplified (hash unchanged)" >>"$LOGFILE"
-		echo "skipped"
+		echo "$SIMPLIFICATION_SCAN_SKIPPED"
 		return 0
 		;;
 	converged)
 		echo "[pulse-wrapper] Complexity scan (.md): skipping ${file_path} — converged after ${SIMPLIFICATION_MAX_PASSES:-3} passes (t1754)" >>"$LOGFILE"
-		echo "skipped"
+		echo "$SIMPLIFICATION_SCAN_SKIPPED"
 		return 0
 		;;
 	existing)
 		echo "[pulse-wrapper] Complexity scan (.md): skipping ${file_path} — existing open issue" >>"$LOGFILE"
-		echo "skipped"
+		echo "$SIMPLIFICATION_SCAN_SKIPPED"
 		return 0
 		;;
 	esac
@@ -403,7 +425,7 @@ _complexity_scan_process_single_md_file() {
 	# Non-maintainer admins receive an explicit review hold; NMR is reserved for
 	# external-author trust gates (GH#16786/GH#29394).
 	local review_label=""
-	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != "true" ]]; then
+	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != true ]]; then
 		review_label="--label hold-for-review"
 	fi
 
@@ -503,6 +525,8 @@ _complexity_scan_sh_build_issue_body_with_sig() {
 	local file_path="$1"
 	local violation_count="$2"
 	local details="$3"
+	local review_instructions=""
+	review_instructions=$(_complexity_scan_review_instruction_block)
 
 	local issue_body
 	issue_body="<!-- aidevops:generator=function-complexity-gate cited_file=${file_path} threshold=${COMPLEXITY_FUNC_LINE_THRESHOLD} -->
@@ -539,10 +563,7 @@ Break down the listed functions into smaller, focused helper functions. Each fun
 
 This is an automated scan. The function lengths are factual, but the best decomposition strategy requires human judgment.
 
----
-**To approve or decline**, comment on this issue:
-- \`approved\` — removes the review gate and queues for automated dispatch
-- \`declined: <reason>\` — closes this issue (include your reason after the colon)"
+${review_instructions}"
 
 	# Append signature footer (--no-session + elapsed time, GH#13099)
 	local sig_footer="" _pulse_elapsed=""
@@ -585,7 +606,7 @@ _complexity_scan_sh_create_issue() {
 	local issue_title="simplification: reduce function complexity in ${file_path} (${violation_count} functions >${COMPLEXITY_FUNC_LINE_THRESHOLD} lines)"
 	# Non-maintainer admins receive an explicit review hold.
 	local review_label_sh=""
-	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != "true" ]]; then
+	if [[ "${_COMPLEXITY_SCAN_SKIP_REVIEW_GATE:-false}" != true ]]; then
 		review_label_sh="--label hold-for-review"
 	fi
 	# t1955: Don't self-assign — let dispatch_with_dedup handle assignment.

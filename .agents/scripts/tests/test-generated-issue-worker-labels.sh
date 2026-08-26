@@ -71,6 +71,30 @@ assert_create_not_contains() {
 	return 0
 }
 
+assert_text_contains() {
+	local test_name="$1"
+	local expected="$2"
+	local text="$3"
+	if [[ "$text" == *"$expected"* ]]; then
+		print_result "$test_name" 0
+		return 0
+	fi
+	print_result "$test_name" 1 "expected ${expected}; got ${text}"
+	return 0
+}
+
+assert_text_not_contains() {
+	local test_name="$1"
+	local unexpected="$2"
+	local text="$3"
+	if [[ "$text" != *"$unexpected"* ]]; then
+		print_result "$test_name" 0
+		return 0
+	fi
+	print_result "$test_name" 1 "unexpected ${unexpected}; got ${text}"
+	return 0
+}
+
 count_create_occurrences() {
 	local needle="$1"
 	local text count=0
@@ -158,6 +182,26 @@ test_simplification_shell_labels() {
 	return 0
 }
 
+test_simplification_body_authority() {
+	local trusted_body=""
+	local held_body=""
+
+	_COMPLEXITY_SCAN_SKIP_REVIEW_GATE=true
+	trusted_body=$(_complexity_scan_build_md_issue_body ".agents/reference/example.md" "501" "Example")
+	assert_text_contains "trusted simplification body records dispatch authority" \
+		"No additional approval comment is required" "$trusted_body"
+	assert_text_not_contains "trusted simplification body omits approval wait" \
+		"To approve or decline" "$trusted_body"
+
+	_COMPLEXITY_SCAN_SKIP_REVIEW_GATE=false
+	held_body=$(_complexity_scan_sh_build_issue_body_with_sig \
+		".agents/scripts/example.sh" "1" "big_function() 101 lines")
+	assert_text_contains "held simplification body retains approval instructions" \
+		"To approve or decline" "$held_body"
+	unset _COMPLEXITY_SCAN_SKIP_REVIEW_GATE
+	return 0
+}
+
 test_quality_feedback_labels() {
 	local maintainer_labels external_labels
 	maintainer_labels=$(_build_quality_debt_labels "high" "true" "")
@@ -215,6 +259,7 @@ install_test_stubs
 
 test_simplification_md_labels
 test_simplification_shell_labels
+test_simplification_body_authority
 test_quality_feedback_labels
 test_failure_miner_labels
 

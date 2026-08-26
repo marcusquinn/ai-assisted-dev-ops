@@ -62,9 +62,10 @@ readonly _HRFF_RETRY_CLASS_UNKNOWN="unknown"
 readonly _HRFF_SESSION_COUNT_QUERY_PREFIX="SELECT count(*) FROM session WHERE time_created >= "
 
 #######################################
-# Count attempt-local OpenCode activity. Fresh runs are evidenced by a new
-# session; continuations are evidenced by a completed assistant message or part
-# on the exact persisted session, whose session.time_created remains old.
+# Count attempt-local OpenCode model activity. Fresh runs are scoped to sessions
+# created during the attempt, while continuations use the exact persisted
+# session whose session.time_created remains old. A boot-only session row is not
+# activity; require a completed assistant message or assistant-owned part.
 # Args: $1 = DB path, $2 = attempt start epoch ms, $3 = persisted session ID.
 # Outputs a non-negative integer, or returns 1 when evidence is unavailable.
 #######################################
@@ -73,6 +74,7 @@ _hrff_attempt_activity_count() {
 	local start_epoch_ms="$2"
 	local persisted_session_id="${3:-}"
 	local persisted_session_sql=""
+	local session_scope=""
 	local query=""
 	local count=""
 
@@ -80,10 +82,11 @@ _hrff_attempt_activity_count() {
 	[[ -f "$db_path" && "$start_epoch_ms" =~ ^[0-9]+$ && "$start_epoch_ms" -gt 0 ]] || return 1
 	if [[ -n "$persisted_session_id" ]]; then
 		persisted_session_sql="${persisted_session_id//\'/\'\'}"
-		query="SELECT (SELECT count(*) FROM message WHERE session_id = '${persisted_session_sql}' AND time_created >= ${start_epoch_ms} AND json_valid(data) AND json_extract(data, '$.role') = 'assistant' AND json_extract(data, '$.time.completed') IS NOT NULL) + (SELECT count(*) FROM part p JOIN message m ON m.id = p.message_id WHERE p.session_id = '${persisted_session_sql}' AND p.time_created >= ${start_epoch_ms} AND json_valid(m.data) AND json_extract(m.data, '$.role') = 'assistant')"
+		session_scope="= '${persisted_session_sql}'"
 	else
-		query="${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}"
+		session_scope="IN (SELECT id FROM session WHERE time_created >= ${start_epoch_ms})"
 	fi
+	query="SELECT (SELECT count(*) FROM message m WHERE m.session_id ${session_scope} AND m.time_created >= ${start_epoch_ms} AND json_valid(m.data) AND json_extract(m.data, '$.role') = 'assistant' AND json_extract(m.data, '$.time.completed') IS NOT NULL) + (SELECT count(*) FROM part p JOIN message m ON m.id = p.message_id WHERE m.session_id ${session_scope} AND p.time_created >= ${start_epoch_ms} AND json_valid(m.data) AND json_extract(m.data, '$.role') = 'assistant')"
 	count=$(sqlite3 "$db_path" "$query" 2>/dev/null) || return 1
 	[[ "$count" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "$count"
@@ -738,7 +741,11 @@ classify_worker_exit() {
 
 	local raw_count=""
 	if [[ "$start_epoch_ms" =~ ^[0-9]+$ ]] && ((start_epoch_ms > 0)); then
-		raw_count=$(_hrff_attempt_activity_count "$active_db" "$start_epoch_ms" "$persisted_session_id") || raw_count=""
+		if [[ -n "$persisted_session_id" ]]; then
+			raw_count=$(_hrff_attempt_activity_count "$active_db" "$start_epoch_ms" "$persisted_session_id") || raw_count=""
+		else
+			raw_count=$(sqlite3 "$active_db" "${_HRFF_SESSION_COUNT_QUERY_PREFIX}${start_epoch_ms}" 2>/dev/null) || raw_count=""
+		fi
 	else
 		# No start time: count all sessions (crude fallback — may over-count)
 		raw_count=$(sqlite3 "$active_db" "SELECT count(*) FROM session" 2>/dev/null) || raw_count=""
@@ -1010,6 +1017,10 @@ _hrff_retry_class_for_reason() {
 	worker_complete | worker_draft_checkpoint)
 		printf '%s\n' "$_HRFF_RETRY_CLASS_REMEDIATION"
 		;;
+	clean)
+		# Process success without a typed terminal outcome is not remediation proof.
+		printf '%s\n' "$_HRFF_RETRY_CLASS_UNKNOWN"
+		;;
 	*)
 		if [[ "$session_count" =~ ^[1-9][0-9]*$ ]]; then
 			printf '%s\n' "$_HRFF_RETRY_CLASS_REMEDIATION"
@@ -1022,8 +1033,9 @@ _hrff_retry_class_for_reason() {
 }
 
 #######################################
-# Count model sessions created during this worker process.
-# Outputs a non-negative integer; unavailable evidence conservatively emits 0.
+# Count attempt-local model activity for the external outcome contract. The
+# function and outcome field retain their historical session_count names for
+# compatibility. Unavailable evidence conservatively emits 0.
 #######################################
 _hrff_worker_session_count() {
 	local start_epoch_ms="${_WORKER_START_EPOCH_MS:-0}"
@@ -1054,7 +1066,7 @@ _hrff_write_external_outcome() {
 	local outcome_id="${_WORKER_EXTERNAL_OUTCOME_ID:-}"
 	local outcome_dir="" tmp_file="" finished_at=""
 
-	[[ -n "$outcome_file" && "$outcome_id" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+	[[ -n "$outcome_file" && "$outcome_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 0
 	case "$outcome_file" in
 	/*) ;;
 	*) return 1 ;;
@@ -1183,8 +1195,14 @@ _hrff_finalize_exit_trap() {
 	local force_nonzero_exit="$5"
 	local checkpoint_reason="${_HRW_REASON_DRAFT_CHECKPOINT:-worker_draft_checkpoint}"
 	local claim_release_handled=0
+	local last_stage=""
+	local last_completed_stage=""
 
-	print_info "[exit-trap] session=$session_key exit=$exit_status reason=$reason session_count=$session_count"
+	if declare -F worker_attempt_observability_last_stage >/dev/null 2>&1; then
+		last_stage=$(worker_attempt_observability_last_stage)
+		last_completed_stage=$(worker_attempt_observability_last_completed_stage)
+	fi
+	print_info "[exit-trap] session=$session_key exit=$exit_status reason=$reason session_count=$session_count last_stage=${last_stage:-unknown} last_completed_stage=${last_completed_stage:-unknown}"
 	_push_wip_commits_on_exit
 	if [[ "${_WORKER_DIRTY_WORK_PRESERVED:-0}" == "1" ]]; then
 		if _recover_dirty_worker_pr "$session_key"; then
@@ -1290,13 +1308,19 @@ _exit_trap_handler() {
 	local session_count=0
 	local ledger_terminal_reason=""
 	local force_nonzero_exit=0
+	local last_stage=""
+	local last_completed_stage=""
 	if [[ -x "${DISPATCH_LEDGER_HELPER:-}" && -n "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" ]]; then
 		ledger_terminal_reason=$("$DISPATCH_LEDGER_HELPER" terminal-reason --session-key "$session_key" \
 			--lease-token "$AIDEVOPS_DISPATCH_LEASE_TOKEN" 2>/dev/null) || ledger_terminal_reason=""
 	fi
 	if [[ "${_WORKER_RUNTIME_LAUNCH_STARTED:-0}" != "1" ]]; then
 		reason="${_WORKER_PRELAUNCH_FAILURE_REASON:-$_HRFF_PRELAUNCH_NOT_INVOKED}"
-		print_warning "[exit-trap] runtime invocation never started after worker preparation; reason=${reason}"
+		if declare -F worker_attempt_observability_last_stage >/dev/null 2>&1; then
+			last_stage=$(worker_attempt_observability_last_stage)
+			last_completed_stage=$(worker_attempt_observability_last_completed_stage)
+		fi
+		print_warning "[exit-trap] runtime invocation never started after worker preparation; reason=${reason} last_stage=${last_stage:-unknown} last_completed_stage=${last_completed_stage:-unknown}"
 		if [[ ! "$exit_status" =~ ^[1-9][0-9]*$ ]]; then
 			exit_status=1
 			force_nonzero_exit=1

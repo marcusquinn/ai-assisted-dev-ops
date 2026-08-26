@@ -128,6 +128,11 @@ print_info() { return 0; }
 print_warning() { return 0; }
 print_success() { return 0; }
 source '${SCRIPTS_DIR}/full-loop-helper-commit.sh'
+FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS=()
+_merge_collect_external_authority_gaps() {
+	FULL_LOOP_EXTERNAL_AUTHORITY_TARGETS=()
+	return 0
+}
 gh_pr_checks_exact_json() {
 	local repo_slug="\$1"
 	local pr_number="\$2"

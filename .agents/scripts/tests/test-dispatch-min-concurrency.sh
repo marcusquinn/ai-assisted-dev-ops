@@ -829,8 +829,12 @@ EOF
 	AIDEVOPS_HEADLESS_RUNTIME_DIR="$state_dir"
 	TEST_ACTIVE_WORKERS=6
 	AIDEVOPS_MIN_WORKER_CONCURRENCY=6
+	_DLW_CANARY_SOFT_BYPASS_REASON="stale"
 	if _dlw_canary_preflight 103 "o/r" "$worker_log" "standard" ""; then
 		print_result "canary: hard failure blocks despite recent worker evidence" 1 "unexpected success"
+	elif [[ -n "${_DLW_CANARY_SOFT_BYPASS_REASON:-}" ]]; then
+		print_result "canary: hard failure blocks despite recent worker evidence" 1 \
+			"soft_bypass_reason=${_DLW_CANARY_SOFT_BYPASS_REASON}"
 	else
 		print_result "canary: hard failure blocks despite recent worker evidence" 0
 	fi
@@ -883,11 +887,27 @@ EOF
 	mkdir -p "$AIDEVOPS_DISPATCH_LEDGER_DIR"
 	TEST_ACTIVE_WORKERS=5
 	AIDEVOPS_MIN_WORKER_CONCURRENCY=6
-	if _dlw_canary_preflight 104 "o/r" "$worker_log" "standard" ""; then
+	if _dlw_canary_preflight 104 "o/r" "$worker_log" "standard" "" && \
+		[[ "${_DLW_CANARY_SOFT_BYPASS_REASON:-}" == "inconclusive" ]]; then
 		print_result "canary: inconclusive failure bypassed under minimum worker floor" 0
 	else
-		print_result "canary: inconclusive failure bypassed under minimum worker floor" 1
+		print_result "canary: inconclusive failure bypassed under minimum worker floor" 1 \
+			"soft_bypass_reason=${_DLW_CANARY_SOFT_BYPASS_REASON:-unset}"
 	fi
+	return 0
+}
+
+test_soft_canary_bypass_reason_propagates_to_worker_env() {
+	local -a worker_cmd=(env)
+	_DLW_CANARY_SOFT_BYPASS_REASON="inconclusive"
+	_dlw_append_canary_preflight_env
+	if [[ " ${worker_cmd[*]} " == *" AIDEVOPS_WORKER_CANARY_SOFT_BYPASS_REASON=inconclusive "* ]]; then
+		print_result "canary: accepted soft reason propagates to detached worker" 0
+	else
+		print_result "canary: accepted soft reason propagates to detached worker" 1 \
+			"worker_cmd=${worker_cmd[*]}"
+	fi
+	unset _DLW_CANARY_SOFT_BYPASS_REASON
 	return 0
 }
 
@@ -916,6 +936,7 @@ test_soft_canary_failure_bypasses_with_recent_worker_evidence
 test_hard_canary_failure_blocks_despite_recent_worker_evidence
 test_local_error_canary_failure_stays_hard_under_minimum_floor
 test_soft_canary_failure_bypasses_under_minimum_floor_without_recent_evidence
+test_soft_canary_bypass_reason_propagates_to_worker_env
 
 echo ""
 echo "===================="

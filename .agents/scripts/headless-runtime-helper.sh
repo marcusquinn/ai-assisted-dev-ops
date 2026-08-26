@@ -73,6 +73,7 @@ readonly METRICS_FILE="${AIDEVOPS_HEADLESS_METRICS_FILE:-${METRICS_DIR}/headless
 readonly RESOURCE_METRICS_HELPER="${SCRIPT_DIR}/resource-metrics-helper.sh"
 readonly RESOURCE_METRICS_FILE="${AIDEVOPS_RESOURCE_METRICS_FILE:-${METRICS_DIR}/resource-metrics.jsonl}"
 readonly PRIVATE_OUTPUT_FILTER="${SCRIPT_DIR}/headless-private-output-filter.py"
+readonly HEADLESS_ROLE_WORKER="worker"
 readonly HEADLESS_ROLE_TRIAGE="triage"
 readonly HEADLESS_ROLE_MODEL_REPLAY="model-replay"
 readonly HEADLESS_EGRESS_MODE_AUTO="auto"
@@ -698,8 +699,10 @@ _execute_run_attempt() {
 	local provider="" persisted_session="" metric_work_dir=""
 	local -a cmd=()
 	local prepare_status=0
+	print_info "[lifecycle] pre_attempt_command_prepare session=$session_key pid=$$"
 	_prepare_run_attempt_command || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
+	print_info "[lifecycle] post_attempt_command_prepare session=$session_key pid=$$"
 
 	# GH#17549: Claim guard — verify a DISPATCH_CLAIM exists for this runner
 	# before launching a worker for an issue. This prevents pulse LLMs from
@@ -722,11 +725,15 @@ _execute_run_attempt() {
 	local _t3077_watcher_pid="" _normalized_exit_info=""
 	local _run_watchdog_hard_killed=0 _stall_killed_marker="" _rl_fast_sentinel=""
 	prepare_status=0
+	print_info "[lifecycle] pre_attempt_file_create session=$session_key pid=$$"
 	_create_run_attempt_files || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
+	print_info "[lifecycle] post_attempt_file_create session=$session_key pid=$$"
 	prepare_status=0
+	print_info "[lifecycle] pre_attempt_context_configure session=$session_key pid=$$"
 	_configure_run_attempt_context || prepare_status=$?
 	[[ "$prepare_status" -eq 0 ]] || return "$prepare_status"
+	print_info "[lifecycle] post_attempt_context_configure session=$session_key pid=$$"
 	if [[ "$role" == "worker" ]] && ! _hrw_verify_dispatch_ownership; then
 		_WORKER_PRELAUNCH_FAILURE_REASON="$_HRW_REASON_OWNERSHIP_LOST"
 		print_error "[lifecycle] runtime ownership fence stopped session=${session_key} before model invocation"
@@ -804,6 +811,23 @@ _discover_actual_worktree_dir() {
 # Main run orchestrator
 # =============================================================================
 
+_worker_canary_soft_bypass_authorized() {
+	local role="$1"
+	local authorized_reason="${AIDEVOPS_WORKER_CANARY_SOFT_BYPASS_REASON:-}"
+	[[ "$role" == "$HEADLESS_ROLE_WORKER" ]] || return 1
+	case "$authorized_reason" in
+		inconclusive | overload | provider_error | rate_limit | timeout | transient) ;;
+		*) return 1 ;;
+	esac
+
+	local state_dir="${STATE_DIR:-${HOME}/.aidevops/.agent-workspace/headless-runtime}"
+	local observed_reason=""
+	observed_reason=$(cat "${state_dir}/canary-last-fail.reason" 2>/dev/null || printf '%s' "")
+	[[ "$observed_reason" == "$authorized_reason" ]] || return 1
+	print_warning "[lifecycle] worker_canary_soft_bypass reason=${observed_reason} source=dispatcher-preflight pid=$$"
+	return 0
+}
+
 _run_role_safe_canary() {
 	local role="$1"
 	local selected_model="$2"
@@ -812,7 +836,10 @@ _run_role_safe_canary() {
 		print_info "[lifecycle] generic_canary_skipped role=$role boundary=public-triage pid=$$"
 		return 0
 	fi
-	_run_canary_test "$selected_model"
+	if _run_canary_test "$selected_model"; then
+		return 0
+	fi
+	_worker_canary_soft_bypass_authorized "$role"
 	return $?
 }
 

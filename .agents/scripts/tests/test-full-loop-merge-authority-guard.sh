@@ -9,6 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MERGE_SCRIPT="${SCRIPT_DIR}/../full-loop-helper-merge.sh"
+COMMIT_SCRIPT="${SCRIPT_DIR}/../full-loop-helper-commit.sh"
 TEST_ROOT="$(mktemp -d -t full-loop-merge-authority.XXXXXX)"
 EXTRACTED="${TEST_ROOT}/functions.sh"
 CRYPTO_CALLS="${TEST_ROOT}/crypto-calls.log"
@@ -20,6 +21,10 @@ ISSUE_SYNC_HELPER="${TEST_ROOT}/review-bot-gate-helper.sh"
 export ISSUE_SYNC_TRUST_CALLS
 cat >"$ISSUE_SYNC_HELPER" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "check" ]]; then
+	printf 'PASS\n'
+	exit 0
+fi
 printf '%s\n' "$*" >>"${ISSUE_SYNC_TRUST_CALLS}"
 [[ "${1:-}" == "is-trusted-issue-sync-pr" && -n "${4:-}" && "${FIXTURE_TRUSTED_ISSUE_SYNC:-0}" == "1" ]]
 EOF
@@ -59,12 +64,24 @@ extract_function() {
 	return 0
 }
 
+extract_commit_function() {
+	local function_name="$1"
+	awk -v fn="$function_name" '
+      index($0, fn "() {") == 1 { capture = 1 }
+      capture { print }
+      capture && $0 == "}" { exit }
+    ' "$COMMIT_SCRIPT" >>"$EXTRACTED"
+	return 0
+}
+
 load_functions() {
 	: >"$EXTRACTED"
 	extract_function _merge_linked_issue_numbers
 	extract_function _merge_issue_requires_maintainer_review
 	extract_function _merge_author_has_write_authority
 	extract_function _merge_is_trusted_issue_sync_pr
+	extract_function _merge_collect_linked_issue_authority_gaps
+	extract_function _merge_collect_external_authority_gaps
 	extract_function _merge_linked_issue_authority_clear
 	extract_function _merge_guard_admin_merge_maintainer_review
 	extract_function _merge_resolve_conventional_type_from_commits
@@ -74,6 +91,7 @@ load_functions() {
 	extract_function _merge_rest_fallback
 	extract_function _merge_revalidate_transport_authority
 	extract_function _merge_execute
+	extract_commit_function cmd_pre_merge_gate
 	# shellcheck source=/dev/null
 	source "$EXTRACTED"
 	return 0
@@ -111,6 +129,23 @@ print_success() {
 	local message="$1"
 	printf 'OK %s\n' "$message" >&2
 	return 0
+}
+
+_flm_gh_write() {
+	"$@"
+	return $?
+}
+
+_merge_run_bounded_write() {
+	local pr_number="$1"
+	local repo="$2"
+	local expected_head_sha="$3"
+	local write_rc=0
+	: "$pr_number" "$repo" "$expected_head_sha"
+	shift 3
+	_MERGE_WRITE_OUTPUT=""
+	_MERGE_WRITE_OUTPUT=$(_flm_gh_write "$@" 2>&1) || write_rc=$?
+	return "$write_rc"
 }
 
 gh() {
@@ -185,6 +220,10 @@ _is_trusted_dependabot_update_pr() {
 
 _full_loop_review_bot_gate_helper_path() {
 	printf '%s\n' "$ISSUE_SYNC_HELPER"
+	return 0
+}
+
+_full_loop_verify_pr_readiness() {
 	return 0
 }
 
@@ -416,6 +455,50 @@ test_authority_guard() {
 	return 0
 }
 
+test_pre_merge_authority_preflight() {
+	local output=""
+	local actual_rc=0
+
+	reset_fixture
+	set_pr_fixture external '[]' false '[{"number":42},{"number":43}]' 'Resolves #42\nResolves #43'
+	FIXTURE_PERMISSION="none"
+	output=$(cmd_pre_merge_gate 900 owner/repo 2>&1) || actual_rc=$?
+	if [[ "$actual_rc" -eq 1 ]] &&
+		grep -qF 'sudo aidevops approve batch issue:42 issue:43 pr:900 owner/repo' <<<"$output"; then
+		print_result "preflight reports all missing issue and exact-head PR authorities in one command" 0
+	else
+		print_result "preflight reports all missing issue and exact-head PR authorities in one command" 1 \
+			"rc=$actual_rc output=$output"
+	fi
+
+	reset_fixture
+	set_pr_fixture external '[]' false '[{"number":42},{"number":43}]' 'Resolves #42\nResolves #43'
+	FIXTURE_PERMISSION="none"
+	FIXTURE_ISSUE_APPROVED=1
+	FIXTURE_PR_APPROVED=1
+	actual_rc=0
+	output=$(cmd_pre_merge_gate 900 owner/repo 2>&1) || actual_rc=$?
+	if [[ "$actual_rc" -eq 0 ]] && ! grep -qF 'aidevops approve batch' <<<"$output"; then
+		print_result "preflight passes without an approval prompt when all authority is current" 0
+	else
+		print_result "preflight passes without an approval prompt when all authority is current" 1 \
+			"rc=$actual_rc output=$output"
+	fi
+
+	reset_fixture
+	set_pr_fixture external '[]' false '[{"number":42}]' 'Resolves #42'
+	FIXTURE_PERMISSION_FAIL=1
+	actual_rc=0
+	output=$(cmd_pre_merge_gate 900 owner/repo 2>&1) || actual_rc=$?
+	if [[ "$actual_rc" -eq 1 ]] && ! grep -qF 'aidevops approve batch' <<<"$output"; then
+		print_result "API uncertainty emits no incomplete final approval command" 0
+	else
+		print_result "API uncertainty emits no incomplete final approval command" 1 \
+			"rc=$actual_rc output=$output"
+	fi
+	return 0
+}
+
 _merge_guard_admin_merge_maintainer_review_for_mode_test() {
 	local pr_number="$1"
 	local repo="$2"
@@ -500,7 +583,7 @@ test_secondary_merge_transports_refresh_authority() {
 	actual_rc=0
 	_merge_execute 900 owner/repo --squash 0 0 >/dev/null 2>&1 || actual_rc=$?
 	if [[ "$actual_rc" -eq 1 && "$(wc -l <"$GUARD_CALLS")" -eq 2 &&
-		"$(wc -l <"$MERGE_CALLS")" -eq 1 ]]; then
+	"$(wc -l <"$MERGE_CALLS")" -eq 1 ]]; then
 		print_result "stale-cache retry refreshes and honors revoked authority" 0
 	else
 		print_result "stale-cache retry refreshes and honors revoked authority" 1 \
@@ -515,7 +598,7 @@ test_secondary_merge_transports_refresh_authority() {
 	actual_rc=0
 	_merge_execute 900 owner/repo --squash 0 0 >/dev/null 2>&1 || actual_rc=$?
 	if [[ "$actual_rc" -eq 1 && "$(wc -l <"$GUARD_CALLS")" -eq 2 &&
-		"$(wc -l <"$MERGE_CALLS")" -eq 1 ]] &&
+	"$(wc -l <"$MERGE_CALLS")" -eq 1 ]] &&
 		! grep -q '^REST ' "$MERGE_CALLS"; then
 		print_result "REST fallback refreshes and honors revoked authority" 0
 	else
@@ -570,6 +653,7 @@ main() {
 	test_trusted_issue_sync_authority
 	test_trusted_dependabot_authority
 	test_authority_guard
+	test_pre_merge_authority_preflight
 	test_all_merge_modes_use_guard
 	test_secondary_merge_transports_refresh_authority
 	printf '\nTests run: %d\nTests failed: %d\n' "$TESTS_RUN" "$TESTS_FAILED"

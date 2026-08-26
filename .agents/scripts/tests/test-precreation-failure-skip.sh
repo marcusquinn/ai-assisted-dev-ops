@@ -203,7 +203,7 @@ register_worktree() {
 	return 0
 }
 STUB_OWNER_INFO=""
-check_worktree_owner() {
+check_worktree_owner_snapshot() {
 	local wt_path="$1"
 	[[ -n "$wt_path" && -n "$STUB_OWNER_INFO" ]] || return 1
 	printf '%s\n' "$STUB_OWNER_INFO"
@@ -399,7 +399,7 @@ export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTIN
 : >"$LOGFILE"
 REGISTERED_WORKTREE_ARGS=""
 CLAIMED_WORKTREE_ARGS=""
-STUB_OWNER_INFO="12345|generation-7|batch-7|66666|2026-07-18T00:00:00Z"
+STUB_OWNER_INFO="12345|generation-7|batch-7|66666|2026-07-18T00:00:00Z|process-start-1"
 _dlw_precreate_worktree "66666" "$FAKE_REPO"
 rc=$?
 unset STUB_EXISTING_WORKTREE_LINE
@@ -433,7 +433,8 @@ if [[ "${_DLW_WORKTREE_TRANSFER_MODE:-}" == "continuation" &&
 	"${_DLW_WORKTREE_EXPECTED_OWNER_SESSION:-}" == "generation-7" &&
 	"${_DLW_WORKTREE_EXPECTED_OWNER_BATCH:-}" == "batch-7" &&
 	"${_DLW_WORKTREE_EXPECTED_OWNER_TASK:-}" == "66666" &&
-	"${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}" == "2026-07-18T00:00:00Z" ]]; then
+	"${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}" == "2026-07-18T00:00:00Z" &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START:-}" == "process-start-1" ]]; then
 	pass "reused worktree captures exact continuation owner identity"
 else
 	fail "reused worktree captures exact continuation owner identity" \
@@ -453,7 +454,7 @@ fi
 export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
 REGISTERED_WORKTREE_ARGS=""
 CLAIMED_WORKTREE_ARGS=""
-STUB_OWNER_INFO="12345|generation-7|batch-7||2026-07-18T00:00:00Z"
+STUB_OWNER_INFO="12345|generation-7|batch-7||2026-07-18T00:00:00Z|process-start-1"
 STUB_CLAIM_WORKTREE_RC=0
 : >"$LOGFILE"
 _dlw_precreate_worktree "66666" "$FAKE_REPO"
@@ -476,7 +477,7 @@ unset STUB_EXISTING_WORKTREE_LINE
 export STUB_EXISTING_WORKTREE_LINE="${STUB_EXISTING_PATH} abcdef [${STUB_EXISTING_BRANCH}]"
 REGISTERED_WORKTREE_ARGS=""
 CLAIMED_WORKTREE_ARGS=""
-STUB_OWNER_INFO="12345|generation-7||66666|2026-07-18T00:00:00Z"
+STUB_OWNER_INFO="12345|generation-7||66666|2026-07-18T00:00:00Z|process-start-1"
 STUB_CLAIM_WORKTREE_RC=0
 : >"$LOGFILE"
 _dlw_precreate_worktree "66666" "$FAKE_REPO"
@@ -487,7 +488,8 @@ if [[ "$rc" -eq 0 && -z "$CLAIMED_WORKTREE_ARGS" &&
 	"${_DLW_WORKTREE_EXPECTED_OWNER_SESSION:-}" == "generation-7" &&
 	-z "${_DLW_WORKTREE_EXPECTED_OWNER_BATCH:-}" &&
 	"${_DLW_WORKTREE_EXPECTED_OWNER_TASK:-}" == "66666" &&
-	"${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}" == "2026-07-18T00:00:00Z" ]] &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}" == "2026-07-18T00:00:00Z" &&
+	"${_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START:-}" == "process-start-1" ]] &&
 	grep -Fq "Preserving reused worktree until its expected continuation owner transfers" "$LOGFILE" &&
 	! grep -Fq "Rejected incomplete or mismatched registry owner for #66666" "$LOGFILE"; then
 	pass "empty continuation batch remains an exact transferable snapshot"
@@ -570,6 +572,7 @@ _DLW_WORKTREE_EXPECTED_OWNER_SESSION="generation-7"
 _DLW_WORKTREE_EXPECTED_OWNER_BATCH="batch-7"
 _DLW_WORKTREE_EXPECTED_OWNER_TASK="66666"
 _DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT="2026-07-18T00:00:00Z"
+_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START="process-start-1"
 launch_rc=0
 _dlw_nohup_launch "66666" "owner/repo" "Dispatch" "Issue" "issue-66666" \
 	"${TMP}/worker.log" "/full-loop test" "$FAKE_REPO" "standard" "" \
@@ -582,7 +585,8 @@ for expected_arg in \
 	"AIDEVOPS_WORKTREE_EXPECTED_OWNER_SESSION=generation-7" \
 	"AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH=batch-7" \
 	"AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK=66666" \
-	"AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=2026-07-18T00:00:00Z"; do
+	"AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT=2026-07-18T00:00:00Z" \
+	"AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START=process-start-1"; do
 	grep -Fqx "$expected_arg" "${TMP}/launch-args.txt" || transfer_env_ok=0
 done
 if [[ "$launch_rc" -eq 0 && "$transfer_env_ok" -eq 1 ]] && \

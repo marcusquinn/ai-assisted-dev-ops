@@ -106,10 +106,22 @@ EOF
 	set_solved_label() { return 0; }
 	auto_file_next_phase() { return 0; }
 	_pm_handle_partial_parent_closeout() { return 0; }
+	_pm_routing_feedback() { return 1; }
 	clear_terminal_issue_dispatch_labels() { return 0; }
+	solved_actor_from_pr_labels() { return 1; }
+	set_issue_status() { return 0; }
+	reconcile_dependants_after_verified_closure() { return 0; }
+	_gh_with_timeout() {
+		local access_mode="$1"
+		shift
+		[[ -n "$access_mode" ]] || return 1
+		"$@"
+		return $?
+	}
 	export -f unlock_issue_after_worker fast_fail_reset _release_interactive_claim_on_merge \
-		set_solved_label auto_file_next_phase _pm_handle_partial_parent_closeout \
-		clear_terminal_issue_dispatch_labels 2>/dev/null || true
+		set_solved_label auto_file_next_phase _pm_handle_partial_parent_closeout _pm_routing_feedback \
+		clear_terminal_issue_dispatch_labels solved_actor_from_pr_labels set_issue_status \
+		reconcile_dependants_after_verified_closure _gh_with_timeout 2>/dev/null || true
 
 	# Shim shared-gh-wrappers.sh wrappers → gh binary stub. The function was
 	# refactored post-GH#21595 to use gh_pr_comment / gh_issue_comment instead
@@ -150,7 +162,12 @@ define_function_under_test() {
 	fn_src=$(awk '
 		/^_pm_issue_api\(\) \{/,/^}$/ { print }
 		/^_pm_build_closing_comment\(\) \{/,/^}$/ { print }
+		/^_pm_select_pr_closeout_comment_id\(\) \{/,/^}$/ { print }
+		/^_pm_reconcile_pr_closeout_comments\(\) \{/,/^}$/ { print }
+		/^_pm_upsert_pr_closing_comment\(\) \{/,/^}$/ { print }
 		/^_pm_resolve_superseded_original_issue\(\) \{/,/^}$/ { print }
+		/^_pm_close_primary_linked_issue\(\) \{/,/^}$/ { print }
+		/^_pm_close_superseded_original_issue\(\) \{/,/^}$/ { print }
 		/^_handle_post_merge_actions\(\) \{/,/^}$/ { print }
 		/^_unblock_circuit_breaker_meta_pr\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")

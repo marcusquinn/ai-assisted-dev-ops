@@ -16,7 +16,7 @@ class OwnerContractRemovalError(Exception):
 
 def remove_if_owner_contract(arguments: list[str]) -> int:
     """Remove one worktree while its exact registry row is write-locked."""
-    if len(arguments) != 10:
+    if len(arguments) != 11:
         return 1
 
     (
@@ -30,6 +30,7 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
         expected_owner_batch,
         expected_task_id,
         expected_created_at,
+        expected_process_start,
     ) = arguments
     connection = None
     try:
@@ -41,13 +42,14 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
             expected_owner_batch,
             expected_task_id,
             expected_created_at,
+            expected_process_start,
         )
         connection = sqlite3.connect(db_path, timeout=30, isolation_level=None)
         connection.execute("BEGIN IMMEDIATE")
         observed_owner = connection.execute(
             """SELECT branch, owner_pid, COALESCE(owner_session, ''),
                       COALESCE(owner_batch, ''), COALESCE(task_id, ''),
-                      COALESCE(created_at, '')
+                      COALESCE(created_at, ''), COALESCE(owner_process_start, '')
                FROM worktree_owners WHERE worktree_path = ?""",
             (worktree_path,),
         ).fetchone()
@@ -69,8 +71,9 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
                WHERE worktree_path = ? AND branch = ? AND owner_pid = ?
                  AND COALESCE(owner_session, '') = ?
                  AND COALESCE(owner_batch, '') = ?
-                 AND COALESCE(task_id, '') = ?
-                 AND COALESCE(created_at, '') = ?""",
+                  AND COALESCE(task_id, '') = ?
+                  AND COALESCE(created_at, '') = ?
+                  AND COALESCE(owner_process_start, '') = ?""",
             (
                 worktree_path,
                 expected_branch,
@@ -79,6 +82,7 @@ def remove_if_owner_contract(arguments: list[str]) -> int:
                 expected_owner_batch,
                 expected_task_id,
                 expected_created_at,
+                expected_process_start,
             ),
         )
         if deleted.rowcount != 1:

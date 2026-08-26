@@ -38,6 +38,21 @@ Follow `workflows/review-issue-pr.md`. That workflow owns problem validation,
 temporal duplicates, root cause, architecture, disposition, and durable comments.
 The legacy `/review-issue-pr` command remains an alias for this policy.
 
+### External PR authority preflight
+
+Before requesting cryptographic approval for an external or fork PR, complete
+every approval-bound body, closing-linkage, and metadata repair. Then run:
+
+```bash
+full-loop-helper.sh pre-merge-gate <PR_NUMBER> <OWNER/REPO>
+```
+
+When the read-only preflight reports missing targets, provide its one mixed
+`sudo aidevops approve batch issue:N pr:N... OWNER/REPO` command unchanged.
+Regenerate the command after any PR head, body, linkage, or metadata change;
+the final merge-time guard independently rechecks the live snapshot. Do not
+request approval when the preflight reports that no authority is required.
+
 ## Local, branch, and commit targets
 
 1. Build the exact bundle:

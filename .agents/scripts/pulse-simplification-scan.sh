@@ -228,22 +228,24 @@ _complexity_llm_sweep_due() {
 		return 1
 	fi
 
-	# GH#17536: Skip sweep when all remaining debt issues are already dispatched.
-	# If every open function-complexity-debt issue (excluding sweep meta-issues) has
-	# status:queued or status:in-progress, the pipeline is working — no sweep needed.
-	local dispatched_count
-	dispatched_count=$(gh_issue_list --repo "$aidevops_slug" \
-		--label "function-complexity-debt" --state open \
-		--json number,title,labels --jq '
-		[.[] | select(.title | test("stalled|LLM sweep") | not)] |
-		if length == 0 then 0
-		else
-			[.[] | select(.labels | map(.name) | (index("status:queued") or index("status:in-progress")))] | length
-		end' 2>/dev/null) || dispatched_count=""
-	local actionable_count
-	actionable_count=$(gh_issue_list --repo "$aidevops_slug" \
-		--label "function-complexity-debt" --state open \
-		--json number,title --jq '[.[] | select(.title | test("stalled|LLM sweep") | not)] | length' 2>/dev/null) || actionable_count=""
+	# GH#17536/GH#30770: Skip sweep when every remaining debt issue is already
+	# advancing through the worker/PR lifecycle. status:in-review is active work,
+	# not an undispatched backlog item; omitting it created false stall reviews
+	# while an exact issue-linked PR was awaiting checks or merge.
+	local debt_issues_json=""
+	debt_issues_json=$(gh_issue_list --repo "$aidevops_slug" \
+		--label "function-complexity-debt" --state open --limit 500 \
+		--json number,title,labels 2>/dev/null) || debt_issues_json=""
+	local dispatched_count=""
+	local actionable_count=""
+	if [[ -n "$debt_issues_json" ]]; then
+		actionable_count=$(printf '%s' "$debt_issues_json" | jq '[.[] | select(.title | test("stalled|LLM sweep") | not)] | length' 2>/dev/null) || actionable_count=""
+		dispatched_count=$(printf '%s' "$debt_issues_json" | jq '
+			[.[] | select(.title | test("stalled|LLM sweep") | not)] |
+			[.[] | select(.labels | map(.name) |
+				(index("status:queued") or index("status:in-progress") or index("status:in-review")))] |
+			length' 2>/dev/null) || dispatched_count=""
+	fi
 	if [[ "$actionable_count" =~ ^[0-9]+$ && "$dispatched_count" =~ ^[0-9]+$ && "$actionable_count" -gt 0 && "$dispatched_count" -ge "$actionable_count" ]]; then
 		echo "[pulse-wrapper] Complexity LLM sweep: all ${actionable_count} debt issues are dispatched — sweep not needed" >>"$LOGFILE"
 		printf '%s\n' "$now_epoch" >"$COMPLEXITY_LLM_SWEEP_LAST_RUN"

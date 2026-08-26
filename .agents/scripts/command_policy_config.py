@@ -94,6 +94,10 @@ def _validate_policy_guards(guards: Any) -> None:
         raise PolicyError(
             "command policy requires exactly one process-termination guard"
         )
+    if not _has_required_guard(guards, "approval_freshness", "approval-helper.sh"):
+        raise PolicyError(
+            "command policy requires exactly one approval-freshness guard"
+        )
     _validate_account_mutation_guard(guards)
 
 

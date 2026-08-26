@@ -39,6 +39,7 @@ TESTS_FAILED=0
 TEST_ROOT=""
 LAST_GH_ARGS_FILE=""
 LAST_GH_QUOTA_FILE=""
+_PMP_ORIGIN_INTERACTIVE_PATTERN=',origin:interactive,'
 
 print_result() {
 	local test_name="$1"
@@ -415,8 +416,8 @@ test_refresh_unknown_mergeable_surfaces_conflicting() {
 }
 
 # ---------------------------------------------------------------
-# Static analysis of the t2116 block in _process_single_ready_pr.
-# The full control-flow of _process_single_ready_pr depends on many
+# Static analysis of the extracted t2116 conflict stage.
+# The full control-flow of the orchestrator depends on many
 # helpers that are too heavy to mock reliably; instead we assert the
 # exact structural properties that must hold for the fix to work:
 #
@@ -429,19 +430,15 @@ test_refresh_unknown_mergeable_surfaces_conflicting() {
 # ---------------------------------------------------------------
 
 test_nmr_guard_exists_before_close() {
-	# Extract the CONFLICTING handling block from _process_single_ready_pr.
+	# Extract the CONFLICTING handling block from its focused stage.
 	local block
 	block=$(awk '
-		/^_process_single_ready_pr\(\) \{/,/^}$/ {
-			if ($0 ~ /pr_mergeable.*CONFLICTING/) { capturing=1 }
-			if (capturing) print
-			if (capturing && /^	fi$/ && ++fi_count == 3) { exit }
-		}
+		/^_pmp_stage_handle_conflict\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 
 	if [[ -z "$block" ]]; then
 		print_result "NMR guard + update-branch structure present" 1 \
-			"Could not extract CONFLICTING block from _process_single_ready_pr"
+			"Could not extract _pmp_stage_handle_conflict"
 		return 0
 	fi
 
@@ -483,7 +480,7 @@ test_nmr_guard_exists_before_close() {
 test_stale_route_runs_before_protected_precheck() {
 	local block
 	block=$(awk '
-		/^_process_single_ready_pr\(\) \{/ { in_fn=1 }
+		/^_pmp_stage_handle_conflict\(\) \{/ { in_fn=1 }
 		in_fn && /_attempt_pr_update_branch/ { capturing=1 }
 		capturing { print }
 		capturing && /^[[:space:]]*_close_conflicting_pr "/ { exit }
@@ -532,17 +529,16 @@ test_mergeable_refetch_after_update_branch() {
 test_unknown_mergeable_refreshed_before_conflict_handler() {
 	local function_src refresh_pos conflict_pos
 	function_src=$(awk '
-		/^_process_single_ready_pr\(\) \{/ { in_fn=1 }
-		in_fn { print }
-		in_fn && /^\}$/ { exit }
+		/^_pmp_stage_parse_and_validate\(\) \{/,/^}$/ { print }
+		/^_pmp_stage_handle_conflict\(\) \{/,/^}$/ { print }
 	' "$MERGE_SCRIPT")
 
 	refresh_pos=$(printf '%s\n' "$function_src" | awk '/GH#24634/ { print NR; exit }')
-	conflict_pos=$(printf '%s\n' "$function_src" | awk '/if \[\[ "\$pr_mergeable" == "CONFLICTING"/ { print NR; exit }')
+	conflict_pos=$(printf '%s\n' "$function_src" | awk '/\[\[ "\$pr_mergeable" == "CONFLICTING"/ { print NR; exit }')
 
 	if [[ -z "$refresh_pos" || -z "$conflict_pos" ]]; then
 		print_result "UNKNOWN mergeable refresh precedes CONFLICTING branch" 1 \
-			"Expected GH#24634 refresh and CONFLICTING branch in _process_single_ready_pr (refresh=${refresh_pos}, conflict=${conflict_pos})"
+			"Expected GH#24634 refresh before _pmp_stage_handle_conflict (refresh=${refresh_pos}, conflict=${conflict_pos})"
 		return 0
 	fi
 

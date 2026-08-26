@@ -1,4 +1,5 @@
 <!-- aidevops:issue-first-pr:start -->
+<!-- aidevops:issue-first-pr:scope=external -->
 ## Issue-first pull requests
 
 If you are not a repository owner, member, or collaborator, create or find a

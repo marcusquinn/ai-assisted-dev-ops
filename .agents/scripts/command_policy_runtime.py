@@ -56,6 +56,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-pid", type=int, default=0)
     parser.add_argument("--runtime-process-identity", default="")
     parser.add_argument("--process-table-fixture", default="")
+    parser.add_argument("--approval-helper", default="")
     parser.add_argument("--worker", action="store_true")
     parser.add_argument(
         "--worker-id", default=os.environ.get("AIDEVOPS_WORKER_ID", "unknown")

@@ -187,6 +187,9 @@ export function checkCommandSafetyGate(command, scriptsDir, cwd = process.cwd(),
   if (options.processTableFixture) {
     helperArgs.push("--process-table-fixture", options.processTableFixture);
   }
+  if (options.approvalHelper) {
+    helperArgs.push("--approval-helper", options.approvalHelper);
+  }
   const worker = options.worker ?? isWorkerContext();
   if (worker) {
     helperArgs.push(

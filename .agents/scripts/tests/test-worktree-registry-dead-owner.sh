@@ -57,6 +57,21 @@ make_worktree_dir() {
 	return 0
 }
 
+register_dead_owner_fixture() {
+	local wt_path="$1"
+	local branch="$2"
+	_init_registry_db || return 1
+	wt_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        INSERT INTO worktree_owners
+            (worktree_path, branch, owner_pid, owner_comm, owner_process_start)
+        VALUES
+            ('$(_wt_sql_escape "$wt_path")', '$(_wt_sql_escape "$branch")',
+             999999, 'test-dead-owner', 'dead-process-generation');
+    " || return 1
+	return 0
+}
+
 live_other_pid() {
 	local my_pid
 	my_pid=$(_resolve_worktree_owner_pid "")
@@ -91,7 +106,7 @@ assert_owner_missing() {
 test_dead_owner_first_pass_quarantines() {
 	local wt_path
 	wt_path=$(make_worktree_dir "dead-owner-first")
-	register_worktree "$wt_path" "feature/dead-owner-first" --owner-pid 999999
+	register_dead_owner_fixture "$wt_path" "feature/dead-owner-first"
 
 	local rc=0
 	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
@@ -106,7 +121,7 @@ test_dead_owner_first_pass_quarantines() {
 test_dead_owner_within_cooldown_keeps_skip() {
 	local wt_path
 	wt_path=$(make_worktree_dir "dead-owner-cooldown")
-	register_worktree "$wt_path" "feature/dead-owner-cooldown" --owner-pid 999999
+	register_dead_owner_fixture "$wt_path" "feature/dead-owner-cooldown"
 	is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1
 
 	local rc=0
@@ -121,7 +136,7 @@ test_dead_owner_within_cooldown_keeps_skip() {
 test_dead_owner_after_cooldown_unregisters() {
 	local wt_path
 	wt_path=$(make_worktree_dir "dead-owner-expired")
-	register_worktree "$wt_path" "feature/dead-owner-expired" --owner-pid 999999
+	register_dead_owner_fixture "$wt_path" "feature/dead-owner-expired"
 	is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1
 	local registry_path
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
@@ -161,54 +176,87 @@ test_owner_pid_override_rejects_sql_payload() {
 	return 0
 }
 
-test_stale_live_pid_comm_mismatch_unregisters() {
+test_recycled_live_pid_with_same_command_unregisters() {
 	local wt_path
-	wt_path=$(make_worktree_dir "stale-live-comm-mismatch")
+	wt_path=$(make_worktree_dir "recycled-live-same-command")
 	local owner_pid
 	owner_pid=$(live_other_pid)
-	register_worktree "$wt_path" "feature/stale-live-comm-mismatch" --owner-pid "$owner_pid"
+	register_worktree "$wt_path" "feature/recycled-live-same-command" --owner-pid "$owner_pid"
 	local registry_path
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	local owner_comm=""
+	owner_comm=$(_get_proc_comm "$owner_pid")
 	sqlite3 "$WORKTREE_REGISTRY_DB" "
         UPDATE worktree_owners
-        SET created_at = '2020-01-01T00:00:00Z',
-            owner_comm = 'opencode'
+        SET owner_comm = '$(_wt_sql_escape "$owner_comm")',
+            owner_process_start = 'recycled-process-generation'
         WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
     "
-	_get_proc_comm() { printf '%s' 'smd'; return 0; }
-	export WORKTREE_OWNER_STALE_LIVE_MAX_HOURS=1
 
 	local rc=0
 	if is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
 		rc=1
 	fi
 	assert_owner_missing "$wt_path" || rc=1
-	print_result "stale live pid command mismatch unregisters" "$rc"
+	print_result "recycled live pid with same command unregisters" "$rc"
 	return 0
 }
 
-test_recent_live_pid_without_comm_still_blocks() {
+test_matching_live_process_generation_still_blocks() {
 	local wt_path
-	wt_path=$(make_worktree_dir "recent-live-no-comm")
+	wt_path=$(make_worktree_dir "matching-live-process-generation")
 	local owner_pid
 	owner_pid=$(live_other_pid)
-	register_worktree "$wt_path" "feature/recent-live-no-comm" --owner-pid "$owner_pid"
+	register_worktree "$wt_path" "feature/matching-live-process-generation" --owner-pid "$owner_pid"
 	local registry_path
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
-	sqlite3 "$WORKTREE_REGISTRY_DB" "
-        UPDATE worktree_owners
-        SET owner_comm = ''
+	local registered_process_start=""
+	registered_process_start=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+        SELECT COALESCE(owner_process_start, '') FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
-    "
-	_get_proc_comm() { printf '%s' 'smd'; return 0; }
-	export WORKTREE_OWNER_STALE_LIVE_MAX_HOURS=168
+    ")
 
 	local rc=0
+	[[ -n "$registered_process_start" ]] || rc=1
 	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
 		rc=1
 	fi
 	assert_owner_exists "$wt_path" || rc=1
-	print_result "recent live pid without command still blocks" "$rc"
+	print_result "matching live process generation still blocks" "$rc"
+	return 0
+}
+
+test_reused_owner_delete_preserves_concurrent_replacement() {
+	local wt_path
+	wt_path=$(make_worktree_dir "reused-owner-delete-race")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/reused-owner-delete-race" --owner-pid "$owner_pid"
+	local registry_path=""
+	local original_process_start=""
+	local original_created_at=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	IFS='|' read -r original_process_start original_created_at <<<"$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
+        SELECT COALESCE(owner_process_start, ''), COALESCE(created_at, '')
+        FROM worktree_owners WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    ")"
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners SET owner_process_start = 'replacement-generation'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+
+	local rc=0
+	if _wt_unregister_owner_if_generation_matches "$registry_path" "$owner_pid" \
+		"$original_process_start" "$original_created_at"; then
+		rc=1
+	fi
+	local replacement_process_start=""
+	replacement_process_start=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+        SELECT COALESCE(owner_process_start, '') FROM worktree_owners
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    ")
+	[[ "$replacement_process_start" == "replacement-generation" ]] || rc=1
+	print_result "reused-owner deletion preserves concurrent replacement" "$rc"
 	return 0
 }
 
@@ -223,10 +271,14 @@ test_expired_legacy_dispatch_precreate_systemd_owner_unregisters() {
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
 	sqlite3 "$WORKTREE_REGISTRY_DB" "
         UPDATE worktree_owners
-        SET created_at = '2020-01-01T00:00:00Z', owner_comm = 'systemd'
+        SET created_at = '2020-01-01T00:00:00Z', owner_comm = 'systemd',
+            owner_process_start = ''
         WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
     "
-	_get_proc_comm() { printf '%s' 'systemd'; return 0; }
+	_get_proc_comm() {
+		printf '%s' 'systemd'
+		return 0
+	}
 	export WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES=15
 
 	local rc=0
@@ -248,10 +300,13 @@ test_recent_legacy_dispatch_precreate_systemd_owner_blocks() {
 	local registry_path
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
 	sqlite3 "$WORKTREE_REGISTRY_DB" "
-        UPDATE worktree_owners SET owner_comm = 'systemd'
+        UPDATE worktree_owners SET owner_comm = 'systemd', owner_process_start = ''
         WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
     "
-	_get_proc_comm() { printf '%s' 'systemd'; return 0; }
+	_get_proc_comm() {
+		printf '%s' 'systemd'
+		return 0
+	}
 	export WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES=15
 
 	local rc=0
@@ -260,6 +315,34 @@ test_recent_legacy_dispatch_precreate_systemd_owner_blocks() {
 	fi
 	assert_owner_exists "$wt_path" || rc=1
 	print_result "recent legacy systemd precreate owner keeps launch grace" "$rc"
+	return 0
+}
+
+test_tokenized_systemd_owner_ignores_legacy_expiry() {
+	local wt_path
+	wt_path=$(make_worktree_dir "tokenized-dispatch-precreate-systemd")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/tokenized-dispatch-precreate-systemd" \
+		--owner-pid "$owner_pid" --session "dispatch-precreate-28810" --task "28810"
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET created_at = '2020-01-01T00:00:00Z', owner_comm = 'systemd'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	_get_proc_comm() {
+		printf '%s' 'systemd'
+		return 0
+	}
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	print_result "tokenized systemd owner ignores legacy expiry" "$rc"
 	return 0
 }
 
@@ -274,10 +357,13 @@ test_mismatched_legacy_dispatch_precreate_identity_blocks() {
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
 	sqlite3 "$WORKTREE_REGISTRY_DB" "
         UPDATE worktree_owners
-        SET created_at = '2020-01-01T00:00:00Z', owner_comm = 'systemd'
+        SET owner_comm = 'systemd', owner_process_start = ''
         WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
     "
-	_get_proc_comm() { printf '%s' 'systemd'; return 0; }
+	_get_proc_comm() {
+		printf '%s' 'systemd'
+		return 0
+	}
 	export WORKTREE_DISPATCH_PRECREATE_LEGACY_GRACE_MINUTES=15
 
 	local rc=0
@@ -337,6 +423,27 @@ test_explicit_cleanup_lease_identity() {
 	return 0
 }
 
+test_matching_pid_requires_matching_process_generation() {
+	local wt_path
+	wt_path=$(make_worktree_dir "matching-pid-recycled-generation")
+	claim_worktree_ownership "$wt_path" "feature/matching-pid-recycled-generation" \
+		--owner-pid "$$" --session "cleanup:$$" --task "worktree-removal"
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners SET owner_process_start = 'recycled-process-generation'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+
+	local rc=0
+	if is_worktree_owned_by_others_for_pid "$wt_path" "$$" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_missing "$wt_path" || rc=1
+	print_result "matching PID still requires matching process generation" "$rc"
+	return 0
+}
+
 test_legacy_registry_schema_migrates_on_owner_check() {
 	local wt_path
 	wt_path=$(make_worktree_dir "legacy-schema-owner-check")
@@ -358,17 +465,50 @@ test_legacy_registry_schema_migrates_on_owner_check() {
         INSERT INTO worktree_owners (worktree_path, branch, owner_pid, created_at)
         VALUES ('$(_wt_sql_escape "$wt_path")', 'feature/legacy-schema-owner-check', ${owner_pid}, '2020-01-01T00:00:00Z');
     "
-	_get_proc_comm() { printf '%s' 'smd'; return 0; }
-	export WORKTREE_OWNER_STALE_LIVE_MAX_HOURS=1
-
 	local rc=0
 	if is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
 		rc=1
 	fi
 	local has_owner_comm=""
 	has_owner_comm=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'owner_comm';" 2>/dev/null || true)
+	local has_owner_process_start=""
+	has_owner_process_start=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'owner_process_start';" 2>/dev/null || true)
 	[[ "$has_owner_comm" == "1" ]] || rc=1
+	[[ "$has_owner_process_start" == "1" ]] || rc=1
 	print_result "legacy registry schema migrates during owner check" "$rc"
+	return 0
+}
+
+test_inconclusive_dead_pid_probe_fails_closed() {
+	local wt_path
+	wt_path=$(make_worktree_dir "inconclusive-dead-pid-probe")
+	register_dead_owner_fixture "$wt_path" "feature/inconclusive-dead-pid-probe"
+	_wt_pid_is_definitely_absent() { return 1; }
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	[[ -z "$(worktree_owner_dead_seen_at "$wt_path")" ]] || rc=1
+	print_result "inconclusive dead PID probe fails closed" "$rc"
+	return 0
+}
+
+test_unavailable_process_generation_fails_closed() {
+	local wt_path
+	wt_path=$(make_worktree_dir "unavailable-process-generation")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/unavailable-process-generation" --owner-pid "$owner_pid"
+	_wt_process_start_token_for_pid() { return 1; }
+
+	local rc=0
+	if ! is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_exists "$wt_path" || rc=1
+	print_result "unavailable process generation fails closed" "$rc"
 	return 0
 }
 
@@ -411,13 +551,18 @@ main() {
 	test_dead_owner_within_cooldown_keeps_skip
 	test_dead_owner_after_cooldown_unregisters
 	test_owner_pid_override_rejects_sql_payload
-	test_stale_live_pid_comm_mismatch_unregisters
-	test_recent_live_pid_without_comm_still_blocks
+	test_recycled_live_pid_with_same_command_unregisters
+	test_matching_live_process_generation_still_blocks
+	test_reused_owner_delete_preserves_concurrent_replacement
 	test_expired_legacy_dispatch_precreate_systemd_owner_unregisters
 	test_recent_legacy_dispatch_precreate_systemd_owner_blocks
+	test_tokenized_systemd_owner_ignores_legacy_expiry
 	test_mismatched_legacy_dispatch_precreate_identity_blocks
 	test_explicit_cleanup_lease_identity
+	test_matching_pid_requires_matching_process_generation
 	test_legacy_registry_schema_migrates_on_owner_check
+	test_inconclusive_dead_pid_probe_fails_closed
+	test_unavailable_process_generation_fails_closed
 	test_should_skip_cleanup_branch_merged_within_grace
 	printf 'Results: %s/%s passed, %s failed\n' "$((TESTS_RUN - TESTS_FAILED))" "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]] && return 0

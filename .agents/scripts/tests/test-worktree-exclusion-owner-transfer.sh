@@ -199,10 +199,10 @@ test_legacy_marker_allows_safe_owner_transfer() {
 		fi
 		return 1
 	}
-	check_worktree_owner() {
+	check_worktree_owner_snapshot() {
 		local check_path="$1"
 		[[ -n "$check_path" ]] || return 1
-		printf '%s|dispatch-precreate-27164||27164|2099-01-01T00:00:00Z\n' "$$"
+		printf '%s|dispatch-precreate-27164||27164|2099-01-01T00:00:00Z|process-start-1\n' "$$"
 		return 0
 	}
 	unregister_worktree() {
@@ -226,7 +226,7 @@ test_legacy_marker_allows_safe_owner_transfer() {
 	if [[ "$claim_calls" -ne 2 || "$transfer_calls" -ne 1 || "$unregister_calls" -ne 0 || -n "$status_output" ]]; then
 		result=1
 	fi
-	unset -f claim_worktree_ownership check_worktree_owner unregister_worktree \
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot unregister_worktree \
 		transfer_worktree_ownership_if_expected
 	unset WORKER_ISSUE_NUMBER
 	print_result "legacy marker is healed before dispatch ownership transfer" "$result" \

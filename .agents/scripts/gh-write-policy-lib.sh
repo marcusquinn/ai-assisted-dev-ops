@@ -12,6 +12,7 @@
 [[ -n "${_GH_WRITE_POLICY_LIB_LOADED:-}" ]] && return 0
 _GH_WRITE_POLICY_LIB_LOADED=1
 _SHIM_ORIGIN_INTERACTIVE_LABEL="origin:interactive"
+_SHIM_ISSUE_FIRST_SCOPE_EXTERNAL="external"
 _SHIM_MANAGED_LABEL_SET=""
 
 if [[ -z "${_SHIM_DIR:-}" ]]; then
@@ -870,73 +871,190 @@ _shim_target_matches_local_checkout() {
 	return $?
 }
 
-_shim_file_mentions_issue_first_policy() {
+_shim_file_issue_first_scope() {
 	local file_path="$1"
 	local content="${2:-}"
-	local policy_pattern='issue-first|linked issue|every human-authored pr'
-	local reference_pattern='closes #|fixes #|resolves #|for #|ref #'
-	if [[ -n "$content" ]]; then
-		if grep -Eiq "$policy_pattern" <<<"$content" &&
-			grep -Eiq "$reference_pattern" <<<"$content"; then
-			return 0
-		fi
-		return 1
+	local marker_lines=""
+	local marker_count=0
+	local scope=""
+	if [[ -z "$content" ]]; then
+		[[ -f "$file_path" ]] || return 1
+		content=$(<"$file_path") || return 1
 	fi
-	[[ -f "$file_path" ]] || return 1
-	content=$(<"$file_path")
-	_shim_file_mentions_issue_first_policy "$file_path" "$content"
-	return $?
-}
-
-_shim_local_policy_requires_linked_issue() {
-	local root=""
-	local tmpl=""
-	root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-	_shim_file_mentions_issue_first_policy "$root/CONTRIBUTING.md" && return 0
-	_shim_file_mentions_issue_first_policy "$root/.github/PULL_REQUEST_TEMPLATE.md" && return 0
-	_shim_file_mentions_issue_first_policy "$root/.github/pull_request_template.md" && return 0
-	for tmpl in "$root"/.github/PULL_REQUEST_TEMPLATE/*.md "$root"/.github/pull_request_template/*.md; do
-		[[ -f "$tmpl" ]] || continue
-		_shim_file_mentions_issue_first_policy "$tmpl" && return 0
-	done
+	marker_lines=$(printf '%s\n' "$content" |
+		grep -E '^[[:space:]]*<!--[[:space:]]*aidevops:issue-first-pr:scope=(external|universal)[[:space:]]*-->[[:space:]]*$' || true)
+	if [[ -n "$marker_lines" ]]; then
+		marker_count=$(printf '%s\n' "$marker_lines" | grep -c . || true)
+	fi
+	if [[ "$marker_count" -eq 1 ]]; then
+		scope=$(printf '%s\n' "$marker_lines" |
+			sed -nE 's/.*scope=(external|universal).*/\1/p')
+		case "$scope" in
+		external | universal)
+			printf '%s\n' "$scope"
+			return 0
+			;;
+		esac
+	fi
+	# Legacy prose, malformed markers, and contradictory/multiple declarations
+	# are policy-bearing but ambiguous. Preserve fail-closed behavior instead of
+	# attempting to infer exemptions from human language.
+	if [[ "$marker_count" -gt 1 ]] ||
+		grep -Eqi 'aidevops:issue-first-pr:(start|scope=)|issue-first|linked issue|every human-authored pr' <<<"$content"; then
+		printf 'universal\n'
+		return 0
+	fi
 	return 1
 }
 
-_shim_repo_requires_linked_issue_prs() {
+_shim_file_declared_issue_first_scope() {
+	local file_path="$1"
+	local all_marker_lines=""
+	local all_marker_count=0
+	local marker_lines=""
+	local marker_count=0
+	local scope=""
+	[[ -f "$file_path" ]] || return 1
+	all_marker_lines=$(grep -E 'aidevops:issue-first-pr:scope=' "$file_path" 2>/dev/null || true)
+	[[ -n "$all_marker_lines" ]] || return 1
+	all_marker_count=$(printf '%s\n' "$all_marker_lines" | grep -c . || true)
+	marker_lines=$(grep -E '^[[:space:]]*<!--[[:space:]]*aidevops:issue-first-pr:scope=(external|universal)[[:space:]]*-->[[:space:]]*$' \
+		"$file_path" 2>/dev/null || true)
+	if [[ -n "$marker_lines" ]]; then
+		marker_count=$(printf '%s\n' "$marker_lines" | grep -c . || true)
+	fi
+	if [[ "$all_marker_count" -ne 1 || "$marker_count" -ne 1 ]]; then
+		printf 'universal\n'
+		return 0
+	fi
+	scope=$(printf '%s\n' "$marker_lines" |
+		sed -nE 's/.*scope=(external|universal).*/\1/p')
+	case "$scope" in
+	external | universal)
+		printf '%s\n' "$scope"
+		return 0
+		;;
+	esac
+	printf 'universal\n'
+	return 0
+}
+
+_shim_local_issue_first_scope() {
+	local root=""
+	local tmpl=""
+	local scope=""
+	local selected_scope=""
+	local -a policy_files=()
+	root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+	policy_files+=(
+		"$root/CONTRIBUTING.md"
+		"$root/.github/PULL_REQUEST_TEMPLATE.md"
+		"$root/.github/pull_request_template.md"
+	)
+	for tmpl in "$root"/.github/PULL_REQUEST_TEMPLATE/*.md "$root"/.github/pull_request_template/*.md; do
+		[[ -f "$tmpl" ]] && policy_files+=("$tmpl")
+	done
+	# Structured declarations are authoritative. Scan them first so ordinary PR
+	# template fields cannot broaden an explicit external-only policy.
+	for tmpl in "${policy_files[@]}"; do
+		[[ -f "$tmpl" ]] || continue
+		scope=$(_shim_file_declared_issue_first_scope "$tmpl" 2>/dev/null || true)
+		[[ -n "$scope" ]] || continue
+		if [[ "$scope" == "universal" ]]; then
+			printf 'universal\n'
+			return 0
+		fi
+		selected_scope="$_SHIM_ISSUE_FIRST_SCOPE_EXTERNAL"
+	done
+	if [[ -n "$selected_scope" ]]; then
+		printf '%s\n' "$selected_scope"
+		return 0
+	fi
+
+	# Legacy policy prose has no deterministic exemption contract and therefore
+	# remains universal until a managed scope declaration is added.
+	for tmpl in "${policy_files[@]}"; do
+		[[ -f "$tmpl" ]] || continue
+		scope=$(_shim_file_issue_first_scope "$tmpl" 2>/dev/null || true)
+		[[ -n "$scope" ]] || continue
+		if [[ "$scope" == "universal" ]]; then
+			printf 'universal\n'
+			return 0
+		fi
+		selected_scope="$scope"
+	done
+	[[ -n "$selected_scope" ]] || return 1
+	printf '%s\n' "$selected_scope"
+	return 0
+}
+
+_shim_repo_issue_first_scope() {
 	local repo_slug="$1"
-	[[ "$repo_slug" == "marcusquinn/aidevops" ]] && return 0
-	_shim_target_matches_local_checkout "$repo_slug" || return 1
-	_shim_local_policy_requires_linked_issue && return 0
+	local scope=""
+	if _shim_target_matches_local_checkout "$repo_slug"; then
+		scope=$(_shim_local_issue_first_scope 2>/dev/null || true)
+		if [[ -n "$scope" ]]; then
+			printf '%s\n' "$scope"
+			return 0
+		fi
+	fi
+	# Keep the framework repository policy enforceable when the shim is invoked
+	# from another checkout. Its managed policy declaration is external-only.
+	if [[ "$repo_slug" == "marcusquinn/aidevops" ]]; then
+		printf 'external\n'
+		return 0
+	fi
+	return 1
+}
+
+_shim_authenticated_actor_has_repo_write() {
+	local repo_slug="$1"
+	local current_user=""
+	local permission=""
+	[[ -n "$repo_slug" && "$repo_slug" == */* ]] || return 1
+	#aidevops:trust-boundary -- exemption requires live GitHub identity and permission.
+	current_user=$(_shim_run_transport "$REAL_GH" rest gh_api_user 0 \
+		api user --jq '.login // empty' 2>/dev/null) || current_user=""
+	[[ -n "$current_user" && "$current_user" =~ ^[A-Za-z0-9-]+$ ]] || return 1
+	permission=$(_shim_run_transport "$REAL_GH" rest gh_api_collaborator_permission 0 \
+		api "/repos/${repo_slug}/collaborators/${current_user}/permission" \
+		--jq '.permission // .role_name // empty' 2>/dev/null) || permission=""
+	case "$permission" in
+	admin | maintain | write) return 0 ;;
+	esac
 	return 1
 }
 
 _shim_block_pr_create_without_linked_issue_if_needed() {
 	[[ "${_modified_args[0]:-}:${_modified_args[1]:-}" == "pr:create" ]] || return 0
-	if [[ "${AIDEVOPS_PR_LINKED_ISSUE_BYPASS:-0}" == "1" ]]; then
-		printf '[aidevops][pr-linked-issue][BYPASS] AIDEVOPS_PR_LINKED_ISSUE_BYPASS=1 set; allowing PR create without local linked-issue enforcement.\n' >&2
-		return 0
-	fi
 
 	local repo_slug=""
+	local policy_scope=""
 	local title=""
 	local body=""
 	repo_slug=$(_shim_target_repo_slug "${_modified_args[@]}" 2>/dev/null || true)
 	[[ -n "$repo_slug" ]] || return 0
-	_shim_repo_requires_linked_issue_prs "$repo_slug" || return 0
+	policy_scope=$(_shim_repo_issue_first_scope "$repo_slug" 2>/dev/null || true)
+	[[ -n "$policy_scope" ]] || return 0
 
 	title=$(_shim_pr_create_get_title 2>/dev/null || true)
 	body=$(_shim_pr_create_get_body 2>/dev/null || true)
 	if _shim_text_has_linked_issue_ref "${title}"$'\n'"${body}"; then
 		return 0
 	fi
+	if [[ "$policy_scope" == "$_SHIM_ISSUE_FIRST_SCOPE_EXTERNAL" ]] &&
+		_shim_authenticated_actor_has_repo_write "$repo_slug"; then
+		return 0
+	fi
 
 	printf '[aidevops][pr-linked-issue][BLOCK] PR creation for %s is missing a linked issue reference.\n' "$repo_slug" >&2
-	printf '  Target policy requires issue-first PRs. Create or find the issue first, then include one of: Closes #NNN, Fixes #NNN, Resolves #NNN, For #NNN, or Ref #NNN.\n' >&2
+	printf '  Target policy scope is %s; create or find the issue first, then include one of: Closes #NNN, Fixes #NNN, Resolves #NNN, For #NNN, or Ref #NNN.\n' "$policy_scope" >&2
+	if [[ "$policy_scope" == "$_SHIM_ISSUE_FIRST_SCOPE_EXTERNAL" ]]; then
+		printf '  GitHub could not verify admin, maintain, or write permission for the authenticated actor; the exemption fails closed.\n' >&2
+	fi
 	printf '  Task-prefixed titles such as GH#NNN: or tNNN: are also accepted when they map to the project task system.\n' >&2
 	return 1
 }
-
-
 # shellcheck disable=SC2154  # body indexes are initialized by the shim before use
 _shim_prepare_ephemeral_body_file() {
 	local requested_body_file="$_AIDEVOPS_GH_EPHEMERAL_BODY_FILE"

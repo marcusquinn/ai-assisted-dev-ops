@@ -1320,14 +1320,14 @@ test_dispatch_base_ref_prefers_explicit_env_ref() {
 	return 0
 }
 
-test_create_worktree_registration_warns_on_failure() {
+test_create_worktree_registration_fails_closed() {
 	local failed=1
 	if grep -Fq "register_worktree \"\$_DSI_WORKTREE_PATH\" \"\$_DSI_WORKTREE_BRANCH\"" "$HELPER_PATH" &&
-		grep -Fq "|| _dsi_warn \"Worktree registration failed (non-fatal)\"" "$HELPER_PATH" &&
+		grep -Fq "Worktree ownership registration failed; dispatch is unsafe" "$HELPER_PATH" &&
 		! grep -Fq -- "--session \"dispatch-precreate-\${issue_number}\" 2>/dev/null || true" "$HELPER_PATH"; then
 		failed=0
 	fi
-	print_result "worktree registration failure stays visible" "$failed"
+	print_result "worktree registration failure blocks dispatch" "$failed"
 	return 0
 }
 
@@ -1568,7 +1568,7 @@ _run_tests() {
 	test_create_worktree_registers_dispatch_owner
 	test_dispatch_base_ref_prefers_repo_configured_pr_base
 	test_dispatch_base_ref_prefers_explicit_env_ref
-	test_create_worktree_registration_warns_on_failure
+	test_create_worktree_registration_fails_closed
 	test_readiness_timeout_tracks_canary_budget
 	test_readiness_accepts_worker_started_marker
 	test_readiness_rejects_live_child_without_ready_signal

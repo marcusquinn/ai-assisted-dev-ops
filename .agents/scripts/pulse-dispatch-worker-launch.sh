@@ -27,6 +27,7 @@
 [[ -n "${_PULSE_DISPATCH_WORKER_LAUNCH_LOADED:-}" ]] && return 0
 _PULSE_DISPATCH_WORKER_LAUNCH_LOADED=1
 readonly _DLW_STANDARD_TIER="standard"
+readonly _DLW_UNKNOWN_VALUE="unknown"
 
 _DLW_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 # shellcheck source=lib/descriptor-safe-log.sh
@@ -609,16 +610,16 @@ _dlw_prepare_existing_worktree() {
 _dlw_capture_reused_worktree_owner() {
 	local issue_number="$1"
 	local worktree_path="$2"
-	declare -F check_worktree_owner >/dev/null 2>&1 || return 1
+	declare -F check_worktree_owner_snapshot >/dev/null 2>&1 || return 1
 
 	local owner_info=""
-	owner_info=$(check_worktree_owner "$worktree_path" 2>/dev/null || true)
+	owner_info=$(check_worktree_owner_snapshot "$worktree_path" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || return 1
 
-	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at=""
-	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at <<<"$owner_info"
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created_at="" owner_process_start=""
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at owner_process_start <<<"$owner_info"
 	if [[ ! "$owner_pid" =~ ^[0-9]+$ || -z "$owner_session" ||
-		"$owner_task" != "$issue_number" || -z "$owner_created_at" ]]; then
+		"$owner_task" != "$issue_number" || -z "$owner_created_at" || -z "$owner_process_start" ]]; then
 		echo "[dispatch_with_dedup] Rejected incomplete or mismatched registry owner for #${issue_number}; attempting an atomic same-task claim instead: ${worktree_path}" >>"$LOGFILE"
 		return 1
 	fi
@@ -628,6 +629,7 @@ _dlw_capture_reused_worktree_owner() {
 	_DLW_WORKTREE_EXPECTED_OWNER_BATCH="$owner_batch"
 	_DLW_WORKTREE_EXPECTED_OWNER_TASK="$owner_task"
 	_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT="$owner_created_at"
+	_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START="$owner_process_start"
 	_DLW_WORKTREE_TRANSFER_MODE="continuation"
 	echo "[dispatch_with_dedup] Captured expected registry owner for #${issue_number} continuation without replacing it: ${worktree_path}" >>"$LOGFILE"
 	return 0
@@ -661,6 +663,7 @@ _dlw_reset_precreated_worktree_state() {
 	_DLW_WORKTREE_EXPECTED_OWNER_BATCH=""
 	_DLW_WORKTREE_EXPECTED_OWNER_TASK=""
 	_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT=""
+	_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START=""
 	return 0
 }
 
@@ -739,10 +742,16 @@ _dlw_precreate_worktree() {
 		_DLW_WORKTREE_PATH="$_path"
 		_DLW_WORKTREE_BRANCH="$_branch"
 		if declare -F register_worktree >/dev/null 2>&1; then
-			register_worktree "$_DLW_WORKTREE_PATH" "$_DLW_WORKTREE_BRANCH" \
+			if ! register_worktree "$_DLW_WORKTREE_PATH" "$_DLW_WORKTREE_BRANCH" \
 				--task "$issue_number" \
 				--session "$_precreate_session" \
-				--owner-pid "$$" 2>/dev/null || true
+				--owner-pid "$$" 2>/dev/null; then
+				echo "[dispatch_with_dedup] Worktree ownership registration failed for #${issue_number}; dispatch will be skipped" >>"$LOGFILE"
+				return 1
+			fi
+		else
+			echo "[dispatch_with_dedup] Worktree registry helper unavailable for #${issue_number}; dispatch will be skipped" >>"$LOGFILE"
+			return 1
 		fi
 		# Restore gitignored deps (node_modules) that git doesn't track
 		_dlw_restore_worktree_deps "$_DLW_WORKTREE_PATH" "$repo_path"
@@ -777,6 +786,18 @@ _dlw_extract_worktree_path_from_output() {
 	return 0
 }
 
+_dlw_append_lifecycle_log() {
+	local worker_log="$1"
+	local attempt_id="$2"
+	local message="$3"
+	local timestamp=""
+	[[ "$attempt_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || attempt_id="$_DLW_UNKNOWN_VALUE"
+	timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$_DLW_UNKNOWN_VALUE")
+	printf '[lifecycle] %s ts=%s attempt_id=%s\n' \
+		"$message" "$timestamp" "$attempt_id" >>"$worker_log"
+	return 0
+}
+
 #######################################
 # Pre-warm OpenCode DB to trigger migration + skill-dedup BEFORE nohup
 # launch (t2758). Per-worker DB isolation (GH#17549) means each worker
@@ -797,6 +818,7 @@ _dlw_extract_worktree_path_from_output() {
 #######################################
 _dlw_prewarm_opencode_db() {
 	local worker_log="$1"
+	local attempt_id="${2:-$_DLW_UNKNOWN_VALUE}"
 	_DLW_PREWARM_DIR=""
 
 	command -v opencode >/dev/null 2>&1 || return 0
@@ -804,15 +826,15 @@ _dlw_prewarm_opencode_db() {
 	_DLW_PREWARM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-worker-auth.XXXXXX") || { _DLW_PREWARM_DIR=""; return 0; }
 	mkdir -p "${_DLW_PREWARM_DIR}/opencode"
 	{
-		echo "[lifecycle] opencode_warm_start pid=$$"
+		_dlw_append_lifecycle_log "$worker_log" "$attempt_id" "opencode_warm_start pid=$$"
 		if XDG_DATA_HOME="$_DLW_PREWARM_DIR" timeout "${OPENCODE_PREWARM_TIMEOUT_SECONDS:-90}" opencode --version >/dev/null 2>&1; then
-			echo "[lifecycle] opencode_warm_done pid=$$"
+			_dlw_append_lifecycle_log "$worker_log" "$attempt_id" "opencode_warm_done pid=$$"
 		else
-			echo "[lifecycle] WARN opencode warm-up failed or timed out — fallback to cold-start pid=$$"
+			_dlw_append_lifecycle_log "$worker_log" "$attempt_id" "WARN opencode warm-up failed or timed out — fallback to cold-start pid=$$"
 			rm -rf "$_DLW_PREWARM_DIR" 2>/dev/null || true
 			_DLW_PREWARM_DIR=""
 		fi
-	} >>"$worker_log" 2>&1
+	} 2>&1
 	return 0
 }
 
@@ -827,6 +849,7 @@ _dlw_renew_prelaunch_lease() {
 	local repo_slug="$2"
 	local session_key="$3"
 	local worker_log="$4"
+	local attempt_id="${5:-$_DLW_UNKNOWN_VALUE}"
 	local prewarm_timeout="${OPENCODE_PREWARM_TIMEOUT_SECONDS:-90}"
 	local lease_ttl="${AIDEVOPS_DISPATCH_PREWARM_LEASE_TTL:-}"
 	local claim_rc=0
@@ -837,20 +860,20 @@ _dlw_renew_prelaunch_lease() {
 	[[ "$prewarm_timeout" =~ ^[0-9]+$ ]] || prewarm_timeout=90
 	[[ "$lease_ttl" =~ ^[0-9]+$ ]] || lease_ttl=$((prewarm_timeout + 60))
 
-	printf '[lifecycle] dispatcher_prelaunch_lease_renew_start session=%s pid=%s\n' \
-		"$session_key" "$$" >>"$worker_log"
+	_dlw_append_lifecycle_log "$worker_log" "$attempt_id" \
+		"dispatcher_prelaunch_lease_renew_start session=${session_key} pid=$$"
 	AIDEVOPS_DEVICE_ID="${_claim_lease_device:-${AIDEVOPS_DEVICE_ID:-}}" \
 		"${SCRIPT_DIR}/dispatch-claim-helper.sh" transition prelaunch "$issue_number" \
 		"$repo_slug" "$_claim_lease_token" "$session_key" "$lease_ttl" \
 		>/dev/null 2>&1 || claim_rc=$?
 	if [[ "$claim_rc" -ne 0 ]]; then
-		printf '[lifecycle] WARN dispatcher prelaunch lease renewal failed before OpenCode warm-up issue=%s repo=%s session=%s helper_rc=%s pid=%s\n' \
-			"$issue_number" "$repo_slug" "$session_key" "$claim_rc" "$$" >>"$worker_log"
+		_dlw_append_lifecycle_log "$worker_log" "$attempt_id" \
+			"WARN dispatcher prelaunch lease renewal failed before OpenCode warm-up issue=${issue_number} repo=${repo_slug} session=${session_key} helper_rc=${claim_rc} pid=$$"
 		aidevops_log_line "[dispatch_worker_launch] WARN prelaunch lease renewal failed issue=${issue_number} repo=${repo_slug} session=${session_key} helper_rc=${claim_rc}"
 		return 1
 	fi
-	printf '[lifecycle] dispatcher_prelaunch_lease_renew_done session=%s pid=%s\n' \
-		"$session_key" "$$" >>"$worker_log"
+	_dlw_append_lifecycle_log "$worker_log" "$attempt_id" \
+		"dispatcher_prelaunch_lease_renew_done session=${session_key} pid=$$"
 	return 0
 }
 
@@ -859,9 +882,10 @@ _dlw_prepare_opencode_db() {
 	local repo_slug="$2"
 	local session_key="$3"
 	local worker_log="$4"
+	local attempt_id="${5:-$_DLW_UNKNOWN_VALUE}"
 
-	_dlw_renew_prelaunch_lease "$issue_number" "$repo_slug" "$session_key" "$worker_log" || return 1
-	_dlw_prewarm_opencode_db "$worker_log"
+	_dlw_renew_prelaunch_lease "$issue_number" "$repo_slug" "$session_key" "$worker_log" "$attempt_id" || return 1
+	_dlw_prewarm_opencode_db "$worker_log" "$attempt_id"
 	return 0
 }
 
@@ -1115,6 +1139,13 @@ _dlw_exec_detached() {
 		PULSE_PR_LIST_PROVIDER_CACHE_DISABLE=1
 		"$@"
 	)
+	local observer_attempt_id=""
+	local worker_command_part=""
+	for worker_command_part in "${worker_command[@]}"; do
+		case "$worker_command_part" in
+		AIDEVOPS_ATTEMPT_ID=*) observer_attempt_id="${worker_command_part#*=}" ;;
+		esac
+	done
 	# GH#26241: do not blanket-disable AIDEVOPS_GH_PR_VIEW_CACHE for workers.
 	# Pulse now uses a stable TTL-scoped PR view cache, and mutation-sensitive
 	# merge/update paths set AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 at the individual
@@ -1155,9 +1186,9 @@ _dlw_exec_detached() {
 		# Log the detached PGID for diagnostics (should differ from pulse PGID)
 		local worker_pgid="" pulse_pgid=""
 		worker_pgid=$(ps -o pgid= -p "$worker_pid" 2>/dev/null | tr -d ' ')
-		[[ -n "$worker_pgid" ]] || worker_pgid="unknown"
+		[[ -n "$worker_pgid" ]] || worker_pgid="$_DLW_UNKNOWN_VALUE"
 		pulse_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-		[[ -n "$pulse_pgid" ]] || pulse_pgid="unknown"
+		[[ -n "$pulse_pgid" ]] || pulse_pgid="$_DLW_UNKNOWN_VALUE"
 		echo "[dispatch_worker_launch] Issue #${issue_number}: worker PID=$worker_pid PGID=$worker_pgid (setsid detached from pulse PGID=$pulse_pgid; FDs 3-9 closed for t2814)" >>"$LOGFILE"
 	elif [[ -z "${worker_pid:-}" ]]; then
 		echo "[dispatch_worker_launch] ERROR: setsid missing — worker isolation broken; worker shares pulse PGID and will be killed on next pulse restart. Run: aidevops update (GH#21102)" >>"$LOGFILE"
@@ -1191,7 +1222,7 @@ _dlw_exec_detached() {
 	# graceful, post-`wait` exits). The observer is the safety net for
 	# every other termination mode (early exec failure, SIGKILL/OOM,
 	# setsid-detached vanishing, watchdog kill before child trap installs).
-	_dlw_spawn_lifecycle_observer "$worker_pid" "$issue_number" "$LOGFILE"
+	_dlw_spawn_lifecycle_observer "$worker_pid" "$issue_number" "$LOGFILE" "$observer_attempt_id"
 
 	printf '%s\n' "$worker_pid"
 	return 0
@@ -1319,11 +1350,13 @@ _dlw_spawn_early_exit_monitor() {
 #   $1 - worker_pid (PID returned by setsid/nohup launch)
 #   $2 - issue_number (for log message context)
 #   $3 - logfile (absolute path; line is appended here — typically pulse.log)
+#   $4 - canonical attempt_id (optional for compatibility)
 # Returns: 0 always.
 _dlw_spawn_lifecycle_observer() {
 	local worker_pid="$1"
 	local issue_number="$2"
 	local logfile="$3"
+	local attempt_id="${4:-$_DLW_UNKNOWN_VALUE}"
 	local max_seconds="${DLW_LIFECYCLE_OBSERVER_MAX_SECONDS:-21600}"
 	local poll_interval="${DLW_LIFECYCLE_OBSERVER_POLL_SECONDS:-5}"
 	local refill_configured=0
@@ -1339,16 +1372,15 @@ _dlw_spawn_lifecycle_observer() {
 		refill_wrapper="${PULSE_EVENT_REFILL_WRAPPER:-${BASH_SOURCE[0]%/*}/pulse-wrapper.sh}"
 	fi
 
-	# Defensive: skip if PID is not numeric (caller bug or test fixture)
-	if [[ ! "$worker_pid" =~ ^[0-9]+$ ]]; then
+	# Defensive: skip malformed caller values or test fixtures.
+	if [[ ! "$worker_pid" =~ ^[0-9]+$ || -z "$logfile" ]]; then
 		return 0
 	fi
-	if [[ -z "$logfile" ]]; then
-		return 0
-	fi
+	[[ "$attempt_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || attempt_id="$_DLW_UNKNOWN_VALUE"
 
 	# Inner body runs in a detached subshell and outlives the pulse cycle.
-	# Positional args: pid, issue, log, max_seconds, interval, refill settings.
+	# Positional args: pid, issue, log, max_seconds, interval, refill settings,
+	# canonical attempt identity.
 	local observer_script
 	# SC2016: variable expansion is intentional inside the inner `bash -c`
 	# body, not in the outer shell. Mirrors the pattern used in
@@ -1366,12 +1398,13 @@ _dlw_spawn_lifecycle_observer() {
 			local refill_helper="$8"
 			local refill_trigger="$9"
 			local refill_wrapper="${10}"
+			local attempt_id="${11}"
 			local elapsed=0 ts="" reason="observed"
 			while [[ "$elapsed" -lt "$max_s" ]]; do
 				if ! kill -0 "$pid" 2>/dev/null; then
 					ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "?")
-					printf "[INFO] [lifecycle] worker_exited pid=%s wait_status=unknown kill_reason=%s observer=parent issue=%s ts=%s\n" \
-						"$pid" "$reason" "$issue" "$ts" >>"$log" 2>/dev/null || true
+					printf "[INFO] [lifecycle] worker_exited pid=%s wait_status=unknown kill_reason=%s observer=parent issue=%s ts=%s attempt_id=%s\n" \
+						"$pid" "$reason" "$issue" "$ts" "$attempt_id" >>"$log" 2>/dev/null || true
 					if [[ "$refill_configured" == "1" && -x "$refill_helper" ]]; then
 						AIDEVOPS_PULSE_EVENT_REFILL_ENABLED="$refill_enabled" \
 							PULSE_EVENT_REFILL_TRIGGER_FILE="$refill_trigger" \
@@ -1387,8 +1420,8 @@ _dlw_spawn_lifecycle_observer() {
 			# emit a diagnostic so the gap surfaces in audit, but do not
 			# block. The watchdog and pulse-cleanup paths catch true zombies.
 			ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "?")
-			printf "[WARN] [lifecycle] worker_observer_timeout pid=%s elapsed=%ss issue=%s ts=%s\n" \
-				"$pid" "$elapsed" "$issue" "$ts" >>"$log" 2>/dev/null || true
+			printf "[WARN] [lifecycle] worker_observer_timeout pid=%s elapsed=%ss issue=%s ts=%s attempt_id=%s\n" \
+				"$pid" "$elapsed" "$issue" "$ts" "$attempt_id" >>"$log" 2>/dev/null || true
 			return 0
 		}
 		_dlw_observer_body "$@"
@@ -1399,7 +1432,7 @@ _dlw_spawn_lifecycle_observer() {
 			bash -c "$observer_script" _dlw_observer \
 			"$worker_pid" "$issue_number" "$logfile" \
 			"$max_seconds" "$poll_interval" "$refill_configured" "$refill_enabled" \
-			"$refill_helper" "$refill_trigger" "$refill_wrapper" \
+			"$refill_helper" "$refill_trigger" "$refill_wrapper" "$attempt_id" \
 			>/dev/null 2>&1 && return 0
 	fi
 
@@ -1407,13 +1440,13 @@ _dlw_spawn_lifecycle_observer() {
 		setsid nohup bash -c "$observer_script" _dlw_observer \
 			"$worker_pid" "$issue_number" "$logfile" \
 			"$max_seconds" "$poll_interval" "$refill_configured" "$refill_enabled" \
-			"$refill_helper" "$refill_trigger" "$refill_wrapper" \
+			"$refill_helper" "$refill_trigger" "$refill_wrapper" "$attempt_id" \
 			</dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 	else
 		nohup bash -c "$observer_script" _dlw_observer \
 			"$worker_pid" "$issue_number" "$logfile" \
 			"$max_seconds" "$poll_interval" "$refill_configured" "$refill_enabled" \
-			"$refill_helper" "$refill_trigger" "$refill_wrapper" \
+			"$refill_helper" "$refill_trigger" "$refill_wrapper" "$attempt_id" \
 			</dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 	fi
 	disown 2>/dev/null || true
@@ -1581,6 +1614,7 @@ _dlw_append_worktree_transfer_env() {
 	local expected_owner_batch="${_DLW_WORKTREE_EXPECTED_OWNER_BATCH:-}"
 	local expected_owner_task="${_DLW_WORKTREE_EXPECTED_OWNER_TASK:-}"
 	local expected_owner_created_at="${_DLW_WORKTREE_EXPECTED_OWNER_CREATED_AT:-}"
+	local expected_owner_process_start="${_DLW_WORKTREE_EXPECTED_OWNER_PROCESS_START:-}"
 	[[ "$transfer_mode" == "continuation" ]] || return 0
 
 	worker_cmd+=(
@@ -1590,7 +1624,15 @@ _dlw_append_worktree_transfer_env() {
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_BATCH="$expected_owner_batch"
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_TASK="$expected_owner_task"
 		AIDEVOPS_WORKTREE_EXPECTED_OWNER_CREATED_AT="$expected_owner_created_at"
+		AIDEVOPS_WORKTREE_EXPECTED_OWNER_PROCESS_START="$expected_owner_process_start"
 	)
+	return 0
+}
+
+_dlw_append_canary_preflight_env() {
+	local soft_bypass_reason="${_DLW_CANARY_SOFT_BYPASS_REASON:-}"
+	[[ -n "$soft_bypass_reason" ]] || return 0
+	worker_cmd+=(AIDEVOPS_WORKER_CANARY_SOFT_BYPASS_REASON="$soft_bypass_reason")
 	return 0
 }
 
@@ -1625,7 +1667,7 @@ _dlw_nohup_launch() {
 	worker_title=$(_dlw_build_worker_title "$issue_number" "$issue_title" "$dispatch_title")
 
 	# Renew the lease before pre-warm; the child renews again before canary.
-	_dlw_prepare_opencode_db "$issue_number" "$repo_slug" "$session_key" "$worker_log" || return 1
+	_dlw_prepare_opencode_db "$issue_number" "$repo_slug" "$session_key" "$worker_log" "$attempt_id" || return 1
 	local worker_prewarm_dir="$_DLW_PREWARM_DIR"
 
 	# Launch worker — headless-runtime-helper.sh handles model selection
@@ -1657,6 +1699,7 @@ _dlw_nohup_launch() {
 	_dlw_append_node_tool_env "$repo_path"
 	_dlw_append_trusted_release_env
 	_dlw_append_worktree_transfer_env
+	_dlw_append_canary_preflight_env
 	if _dlw_min_worker_floor_active; then
 		worker_cmd+=(
 			AIDEVOPS_MIN_WORKER_FLOOR_BYPASS_ACTIVE=1

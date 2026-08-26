@@ -193,6 +193,7 @@ def _check_action(
         args.runtime_process_identity,
         args.process_table_fixture,
         args.account_mutation_workspace_root,
+        args.approval_helper,
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if result["decision"] == "allow" else FORBID_EXIT

@@ -48,6 +48,7 @@ readonly SANDBOX_MAX_TIMEOUT=21600
 readonly SANDBOX_MAX_OUTPUT_BYTES=10485760 # 10MB per stream
 readonly SECRET_IO_GUARD_DEFAULT="true"
 readonly SANDBOX_ERROR_LEVEL="ERROR"
+readonly SANDBOX_ATTEMPT_UNKNOWN="unknown"
 
 # Minimal environment passthrough — only what's needed for basic operation
 readonly DEFAULT_PASSTHROUGH="PATH HOME USER LANG TERM SHELL"
@@ -60,11 +61,23 @@ readonly NETWORK_TIER_HELPER="${AIDEVOPS_NETWORK_TIER_HELPER:-${SCRIPT_DIR}/netw
 # Helpers
 # =============================================================================
 
+_sandbox_attempt_id() {
+	local raw_attempt_id="${AIDEVOPS_ATTEMPT_ID:-}"
+	if [[ "$raw_attempt_id" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]]; then
+		printf '%s' "$raw_attempt_id"
+	else
+		printf '%s' "$SANDBOX_ATTEMPT_UNKNOWN"
+	fi
+	return 0
+}
+
 log_sandbox() {
 	local level="$1"
 	local msg="$2"
-	printf '[%s] [%s] [%s] %s\n' \
-		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOG_PREFIX" "$level" "$msg" >&2
+	local attempt_id=""
+	attempt_id=$(_sandbox_attempt_id)
+	printf '[%s] [%s] [%s] %s attempt_id=%s\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOG_PREFIX" "$level" "$msg" "$attempt_id" >&2
 	return 0
 }
 
@@ -78,8 +91,10 @@ log_execution() {
 	local passthrough_vars="${6:-}"
 	local egress_state="${7:-not-evaluated}"
 	local egress_backend="${8:-none}"
-	local timestamp
+	local timestamp=""
+	local attempt_id=""
 	timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	attempt_id=$(_sandbox_attempt_id)
 
 	mkdir -p "$(dirname "$SANDBOX_LOG")"
 
@@ -99,7 +114,8 @@ log_execution() {
 		--arg passthrough "$passthrough_vars" \
 		--arg egress_state "$egress_state" \
 		--arg egress_backend "$egress_backend" \
-		'{ts: $ts, cmd: $cmd, exit: $exit, duration_s: $duration, timeout: $timeout, network_blocked: $network_blocked, passthrough: $passthrough, egress_state: $egress_state, egress_backend: $egress_backend}')
+		--arg attempt_id "$attempt_id" \
+		'{ts: $ts, cmd: $cmd, exit: $exit, duration_s: $duration, timeout: $timeout, network_blocked: $network_blocked, passthrough: $passthrough, egress_state: $egress_state, egress_backend: $egress_backend, attempt_id: $attempt_id}')
 
 	printf '%s\n' "$log_entry" >>"$SANDBOX_LOG"
 	return 0

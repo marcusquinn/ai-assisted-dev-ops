@@ -8,6 +8,8 @@ set -uo pipefail
 
 TEST_SCRIPTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CLEAN_LIB_PATH="${TEST_SCRIPTS_DIR}/worktree-clean-lib.sh"
+REGISTRY_LIB_PATH="${TEST_SCRIPTS_DIR}/shared-worktree-registry.sh"
+STATE_LIB_PATH="${TEST_SCRIPTS_DIR}/pulse-cleanup-worktree-state.sh"
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
@@ -30,6 +32,9 @@ print_result() {
 }
 
 fixture_git_mock() {
+	if [[ "${1:-}" == "-C" && "${3:-}" == "status" && "${4:-}" == "--porcelain" ]]; then
+		return 0
+	fi
 	if [[ "${1:-}" == "remote" && "${2:-}" == "get-url" && "${3:-}" == "origin" ]]; then
 		printf '%s\n' 'git@github.com:marcusquinn/aidevops.git'
 		return 0
@@ -273,6 +278,57 @@ test_remote_tracking_default_blocks_dirty_degraded_recovery() {
 	return 0
 }
 
+test_recycled_same_command_owner_reaches_cleanup_path() {
+	local output=""
+	output=$(
+		set +e
+		export WORKTREE_REGISTRY_DIR="${TEST_ROOT}/owner-registry"
+		export WORKTREE_REGISTRY_DB="${WORKTREE_REGISTRY_DIR}/worktree-registry.db"
+		LOGFILE="${TEST_ROOT}/owner-cleanup.log"
+		_WTAR_SKIPPED="skipped"
+		_WTAR_PC_CALLER="test"
+		export LOGFILE _WTAR_SKIPPED _WTAR_PC_CALLER
+		# shellcheck source=/dev/null
+		source "$REGISTRY_LIB_PATH" || exit 9
+		# shellcheck source=/dev/null
+		source "$STATE_LIB_PATH" || exit 9
+		pgrep() { return 1; }
+		log_worktree_removal_event() { return 0; }
+
+		local wt_path="${TEST_ROOT}/owner-recycled"
+		local owner_pid=""
+		mkdir -p "$wt_path"
+		sleep 30 &
+		owner_pid=$!
+		register_worktree "$wt_path" "feature/recycled-owner" --owner-pid "$owner_pid"
+		local registry_path=""
+		local owner_comm=""
+		registry_path=$(_wt_registry_lookup_path "$wt_path")
+		owner_comm=$(_get_proc_comm "$owner_pid")
+		sqlite3 "$WORKTREE_REGISTRY_DB" "
+            UPDATE worktree_owners
+            SET owner_comm = '$(_wt_sql_escape "$owner_comm")',
+                owner_process_start = 'recycled-process-generation'
+            WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+        "
+		if _worktree_owner_alive "$wt_path" ""; then
+			printf '%s\n' blocked
+		elif check_worktree_owner "$wt_path" >/dev/null 2>&1; then
+			printf '%s\n' retained
+		else
+			printf '%s\n' reclaimed
+		fi
+		kill "$owner_pid" 2>/dev/null || true
+		wait "$owner_pid" 2>/dev/null || true
+	)
+	if [[ "$output" == "reclaimed" ]]; then
+		print_result "recycled same-command owner reaches cleanup path" 0
+	else
+		print_result "recycled same-command owner reaches cleanup path" 1 "($output)"
+	fi
+	return 0
+}
+
 test_builders_pass_repo
 test_exact_merged_pr_fallback
 test_open_pr_protects_worktree
@@ -282,6 +338,7 @@ test_remote_tracking_default_classifies_clean_branch
 test_remote_tracking_default_preserves_dirty_branch
 test_remote_tracking_default_allows_degraded_recovery
 test_remote_tracking_default_blocks_dirty_degraded_recovery
+test_recycled_same_command_owner_reaches_cleanup_path
 
 printf '\nTests run: %s, failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1

@@ -26,6 +26,7 @@
 #
 # Functions in this module (in source order):
 #   - _build_review_feedback_section      (t2093)
+#   - _review_feedback_has_trusted_body_change_request (GH#30703)
 #   - _append_feedback_to_issue           (GH#20057, shared helper)
 #   - _transition_issue_for_redispatch    (GH#20057, shared helper)
 #   - _finalize_feedback_route            (GH#29288, sourced state machine)
@@ -197,6 +198,72 @@ _review_feedback_evidence_fingerprint() {
 	fingerprint=$(_ci_repair_hash_text "$canonical") || return 1
 	[[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
 	printf '%s\n' "$fingerprint"
+	return 0
+}
+
+#######################################
+# Verify that the current review generation contains a substantive top-level
+# CHANGES_REQUESTED body from a trusted human reviewer.
+#
+# This is the fail-closed bridge between a converged no-thread remediation scan
+# and the destructive t2093 route. The aggregate reviewDecision alone is not
+# enough: bot or untrusted reviews must not authorize closing a worker PR and
+# rewriting its linked issue.
+#
+# Args: $1=pr_number, $2=repo_slug
+# Returns: 0 when eligible trusted body feedback exists, 1 otherwise.
+#######################################
+_review_feedback_has_trusted_body_change_request() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local reviews_pages=""
+	local reviews_json=""
+	local changes_requested="${PULSE_REVIEW_DECISION_CHANGES_REQUESTED:-CHANGES_REQUESTED}"
+	local json_string_type="string"
+
+	if ! reviews_pages=$(_pmf_gh_read gh api \
+		"repos/${repo_slug}/pulls/${pr_number}/reviews?per_page=100" --paginate 2>/dev/null); then
+		echo "[pulse-wrapper] review feedback: trusted body-only review evidence unavailable for PR #${pr_number} in ${repo_slug}; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+		return 1
+	fi
+	reviews_json=$(printf '%s\n' "$reviews_pages" | jq -cse '
+		if all(.[]; type == "array") then [ .[][] ]
+		else error("review evidence page must be an array") end
+	') || {
+		echo "[pulse-wrapper] review feedback: malformed body-only review evidence for PR #${pr_number} in ${repo_slug}; preserving CHANGES_REQUESTED" >>"$LOGFILE"
+		return 1
+	}
+
+	printf '%s\n' "$reviews_json" | jq -e \
+		--arg changes_requested "$changes_requested" \
+		--arg json_string_type "$json_string_type" '
+		def state_changing:
+			.state == "APPROVED" or .state == $changes_requested or .state == "DISMISSED";
+		if any(.[]?; state_changing and (
+			(.id | type) != "number"
+			or (.submitted_at | type) != $json_string_type
+			or (.submitted_at | length) == 0
+			or (.user | type) != "object"
+			or (.user.login | type) != $json_string_type
+			or (.user.login | length) == 0
+			or (.user.type | type) != $json_string_type
+			or (.author_association | type) != $json_string_type
+			or (.body | type) != $json_string_type
+		)) then false
+		else
+			map(select(state_changing))
+			| group_by(.user.login)
+			| map(max_by([.submitted_at, .id]))
+			| any(.[];
+				.state == $changes_requested
+				and .user.type == "User"
+				and (.author_association == "OWNER"
+					or .author_association == "MEMBER"
+					or .author_association == "COLLABORATOR")
+				and ((.body | gsub("\\s"; "")) | length) > 0
+			)
+		end
+	' >/dev/null 2>&1 || return 1
 	return 0
 }
 

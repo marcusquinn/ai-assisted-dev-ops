@@ -147,12 +147,12 @@ test_observer_line_carries_observer_marker() {
 	export DLW_LIFECYCLE_OBSERVER_POLL_SECONDS=1
 	export DLW_LIFECYCLE_OBSERVER_MAX_SECONDS=30
 
-	_dlw_spawn_lifecycle_observer "$synth_pid" "12345" "$logfile"
+	_dlw_spawn_lifecycle_observer "$synth_pid" "12345" "$logfile" "attempt-observer-12345"
 
-	if _wait_for_line 30 "worker_exited pid=${synth_pid}.*observer=parent.*issue=12345" "$logfile"; then
-		print_result "observer line carries observer=parent marker and issue field" 0
+	if _wait_for_line 30 "worker_exited pid=${synth_pid}.*observer=parent.*issue=12345.*attempt_id=attempt-observer-12345" "$logfile"; then
+		print_result "observer line carries parent, issue, and attempt identity fields" 0
 	else
-		print_result "observer line carries observer=parent marker and issue field" 1 \
+		print_result "observer line carries parent, issue, and attempt identity fields" 1 \
 			"line shape mismatch in ${logfile}; tail:
 $(tail -20 "$logfile" 2>/dev/null || echo '(empty)')"
 	fi
@@ -229,6 +229,23 @@ HELPER
 	return 0
 }
 
+test_prelaunch_lifecycle_formatter_carries_attempt_identity() {
+	local logfile="${TMPDIR_TEST}/prelaunch-lifecycle.log"
+	local output=""
+	: >"$logfile"
+	_dlw_append_lifecycle_log "$logfile" "attempt-prelaunch-123" \
+		"dispatcher_prelaunch_lease_renew_start session=issue-123 pid=456"
+	output=$(<"$logfile")
+	if [[ "$output" == *"[lifecycle] dispatcher_prelaunch_lease_renew_start"* &&
+		"$output" == *" ts="* && "$output" == *" attempt_id=attempt-prelaunch-123"* ]]; then
+		print_result "prelaunch lifecycle formatter carries timestamp and attempt identity" 0
+	else
+		print_result "prelaunch lifecycle formatter carries timestamp and attempt identity" 1 \
+			"output=${output:-<empty>}"
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Main
 
@@ -241,6 +258,7 @@ main() {
 	test_observer_skips_invalid_pid
 	test_observer_skips_empty_logfile_arg
 	test_observer_signals_event_refill
+	test_prelaunch_lifecycle_formatter_carries_attempt_identity
 
 	echo
 	echo "Tests run: ${TESTS_RUN}, passed: ${TESTS_PASSED}, failed: ${TESTS_FAILED}"

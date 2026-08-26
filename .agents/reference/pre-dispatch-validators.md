@@ -67,15 +67,16 @@ When dispatch-path work is detected without one normalized `tier:thinking` label
 **Marker:** None required — uses labels/title plus cited file paths and finding keywords
 **Bypass:** `AIDEVOPS_SKIP_REVIEW_FEEDBACK_SUPERSESSION=1`
 
-Runs before generator-marker validators in `cmd_validate()`. It extracts cited file paths and compact finding keywords from the issue body, searches recently merged PRs after the issue creation timestamp, and inspects PR file lists plus title/body/diff text.
+Runs before generator-marker validators in `cmd_validate()`. It extracts qualified, non-blockquoted target paths and compact finding keywords from the issue body, searches recently merged PRs after the applicable issue/source-review timestamp, and inspects PR file lists plus title/body/diff text. Bare basenames and paths found only in quoted review prose are not file identity.
 
 Outcomes:
 
-1. Same-file PR merged after issue creation with strong finding signal (issue reference or 2+ keyword matches) → posts `<!-- review-feedback-superseded-by-merged-pr -->`, closes the issue as `not planned`, returns `10`, and skips worker dispatch.
-2. Same-file PR merged after issue creation but weak/unrelated finding signal → posts one `<!-- review-feedback-supersession-ambiguous -->` decision-ready comment and returns `0` so dispatch proceeds.
-3. No same-file candidate, missing metadata, or API error → fails open with return `0`.
+1. Existing issue + same-file merged PR that directly references the issue → posts `<!-- review-feedback-superseded-by-merged-pr -->`, closes the issue as `not planned`, returns `10`, and skips worker dispatch.
+2. Existing issue + same-file keyword-only match → posts one `<!-- review-feedback-supersession-ambiguous -->` decision-ready comment and returns `0` so dispatch proceeds. Heuristic prose overlap never closes an existing issue.
+3. Read-only post-merge precreation check + qualified same-file match with 2+ keywords → returns `10` so the scanner can suppress a duplicate issue. This caller passes issue number `0`, performs no GitHub write, and fails closed for API uncertainty.
+4. No qualified same-file candidate or missing dispatch metadata → returns `0`; normal dispatch proceeds.
 
-**Tests:** `tests/test-review-feedback-supersession-validator.sh` — clear same-file fix, ambiguous same-file unrelated change, no matching PR, and PR merged before issue creation.
+**Tests:** `.agents/scripts/tests/test-review-feedback-supersession-validator.sh` — direct-reference closure, keyword-only ambiguity, quoted/basename path rejection, precreation dedup, no matching PR, and PR merged before issue creation.
 
 ## Adding a validator
 
