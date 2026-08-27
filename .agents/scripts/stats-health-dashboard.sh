@@ -40,7 +40,10 @@ _STATS_HEALTH_DASHBOARD_LOADED=1
 # see existing ones.
 readonly _HEALTH_QUERY_FAILED_SENTINEL="__QUERY_FAILED__"
 readonly _HEALTH_CROSS_REPO_MAX_REPOS=30
-readonly _HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT=43200
+# An otherwise-idle Pulse still proves the supervisor is alive. Keep its
+# dashboard marker within one stats cycle so the single-glance surface does
+# not contradict a fresh local heartbeat for up to one hour.
+readonly _HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT=3600
 readonly _HEALTH_ACTIVITY_STATE_ACTIVE="active"
 readonly _HEALTH_ACTIVITY_STATE_IDLE="idle"
 # The framework dashboard is the primary operator health surface. Refresh it
@@ -106,8 +109,8 @@ _resolve_current_gh_login_or_fallback() {
 #######################################
 # Activity guard — returns 0 to proceed, 1 to skip.
 # Active repositories refresh on the hourly stats cadence. Idle repositories
-# publish their transition to idle immediately, then refresh every 12 hours by
-# default. This keeps the dashboard well inside the 48-hour freshness watchdog
+# publish their transition to idle immediately, then refresh every hour by
+# default. This keeps the dashboard closely aligned with the local heartbeat
 # while avoiding full activity scans and GitHub writes for unchanged idle repos.
 #######################################
 _check_health_issue_activity_guard() {
@@ -178,7 +181,12 @@ _check_health_issue_activity_guard() {
 		return 0
 	fi
 
-	echo "[stats] Health issue: deferring unchanged idle dashboard for ${repo_slug} (interval=${idle_interval}s)" \
+	local dashboard_issue="unknown"
+	if [[ -f "$health_issue_file" ]]; then
+		dashboard_issue=$(<"$health_issue_file") || dashboard_issue="unknown"
+		[[ "$dashboard_issue" =~ ^[0-9]+$ ]] || dashboard_issue="unknown"
+	fi
+	echo "[stats] Health issue: deferring unchanged idle dashboard for ${repo_slug} (operator=${runner_user} issue=#${dashboard_issue} reason=idle-refresh-interval interval=${idle_interval}s)" \
 		>>"${LOGFILE:-/dev/null}"
 	return 1
 }

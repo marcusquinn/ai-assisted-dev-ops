@@ -291,6 +291,26 @@ test_resolve_current_gh_login_rejects_leading_hyphen_fallback() {
 }
 
 #######################################
+# Test 2c: idle dashboards must refresh within one bounded interval and leave
+# an operator/actionable diagnostic when the activity guard defers a write.
+#######################################
+test_idle_dashboard_freshness_contract() {
+	local dashboard_script diagnostic_pattern
+	dashboard_script="${STATS_SCRIPTS_DIR}/stats-health-dashboard.sh"
+	diagnostic_pattern="operator=\${runner_user} issue=#\${dashboard_issue} reason=idle-refresh-interval"
+
+	if grep -Fq 'readonly _HEALTH_IDLE_REFRESH_INTERVAL_DEFAULT=3600' "$dashboard_script" \
+		&& grep -Fq "$diagnostic_pattern" "$dashboard_script"; then
+		print_result "idle dashboard refreshes hourly with an actionable defer diagnostic" 0
+		return 0
+	fi
+
+	print_result "idle dashboard refreshes hourly with an actionable defer diagnostic" 1 \
+		"expected one-hour default plus repo/operator/issue defer reason"
+	return 0
+}
+
+#######################################
 # Test 3: _persist_role_cache -- writes role to a deterministic file path.
 # Signature: _persist_role_cache runner_user repo_slug role
 # Verify the file is created with expected content in the sandbox.
@@ -381,6 +401,7 @@ main() {
 	test_source_and_function_existence
 	test_validate_repo_slug
 	test_resolve_current_gh_login_rejects_leading_hyphen_fallback
+	test_idle_dashboard_freshness_contract
 	test_persist_role_cache
 	test_sourcing_idempotency
 	test_sweep_state_round_trip
