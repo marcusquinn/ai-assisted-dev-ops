@@ -67,11 +67,26 @@ Reference, lease, recovery, and audit checks remain hard vetoes.
 | `~/.aidevops/recovery/worktrees` (Linux and non-macOS) | framework | recovery, unknown | Archive-first removal copies worktree and Git administrative state into an attributable bucket; exact terminal evidence supports manual plans and bounded producer-owned automatic maintenance | Preserve exact-evidence deletion, bounded scans, resumable receipts, and fail-closed handling for every protected or unknown bucket |
 | Pulse active logs and `~/.aidevops/logs/pulse-archive` | framework | active, archive | Pulse preserves active descriptors while gzip-rotating 50 MiB hot/wrapper logs and 1 MiB timing logs; cold archives converge under 1 GiB | Keep rotation producer-owned and never replace it with generic unlink-by-age cleanup |
 | OpenCode data under its application-data root | joint | active, recovery, archive, unknown | OpenCode owns session and DB formats; aidevops archive/maintenance helpers coordinate selected operations | Separate logical retention from WAL/fragmentation maintenance; report only classifications proven through OpenCode-aware queries |
-| npm and other package-manager caches | external | cache | Package manager owns lifecycle | Context-only reporting; no aidevops aggregate deletion |
+| npm and other package-manager caches | external | cache | Package manager owns lifecycle; npm cache status has a configurable 10 GiB advisory threshold | Context-only reporting; offer npm-owned verification or explicitly confirmed cleaning, never aidevops aggregate deletion |
 | OS temporary and Trash locations | external or joint | scratch, unknown | OS/runtime-specific | Reclaim only aidevops-attributable artifacts through an owner-aware migration; never broad-clean a directory |
 
 The inventory is intentionally conservative. A child implementation may split a
 row when one path contains artifacts with different owners or safety classes.
+
+### npm cache monitoring
+
+`aidevops status` gives the npm cache a bounded ten-second size probe and warns
+when an exact measurement exceeds 10 GiB. Set
+`AIDEVOPS_NPM_CACHE_WARN_BYTES` to tune that advisory threshold. A timeout stays
+visible and never becomes cleanup authority; run `npm-cache-helper.sh status`
+for an explicit longer scan after npm-heavy work.
+
+The helper keeps npm in control of every mutation. `verify` runs `npm cache
+verify`, which checks integrity and garbage-collects unneeded data. `clean` is a
+dry run unless both `--apply` and `--confirm clean-npm-cache` are present; the
+confirmed path invokes `npm cache clean --force` rather than deleting files
+directly. Neither shared inventory nor scheduled maintenance cleans external
+package-manager data automatically.
 
 ### Recoverable Worktree Archives
 

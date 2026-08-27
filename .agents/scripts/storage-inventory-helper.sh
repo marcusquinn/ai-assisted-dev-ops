@@ -44,6 +44,8 @@ STORAGE_JOINT="joint"
 STORAGE_ACTIVE="active"
 STORAGE_ARCHIVE="archive"
 STORAGE_PRODUCER_OPENCODE="opencode"
+STORAGE_NPM_CACHE_WARN_BYTES="${AIDEVOPS_NPM_CACHE_WARN_BYTES:-10737418240}"
+STORAGE_FIELD_NONE="__none__"
 
 _storage_usage() {
 	cat <<'USAGE'
@@ -710,6 +712,61 @@ _storage_worktree_recovery_record() {
 	return 0
 }
 
+_storage_npm_cache_path() {
+	local configured_path="${AIDEVOPS_NPM_CACHE_DIR:-}"
+
+	if [[ -z "$configured_path" ]] && [[ -n "${HOME:-}" ]] && command -v npm >/dev/null 2>&1; then
+		configured_path=$(npm config get cache 2>/dev/null) || configured_path=""
+	fi
+	if [[ -z "$configured_path" ]] && [[ -n "${HOME:-}" ]]; then
+		configured_path="$HOME/.npm"
+	fi
+	case "$configured_path" in
+	/*) printf '%s' "$configured_path" ;;
+	*) printf '' ;;
+	esac
+	return 0
+}
+
+_storage_npm_cache_record() {
+	local actual_path=""
+	local measured=""
+	local total_bytes="$STORAGE_JSON_NULL"
+	local confidence="unavailable"
+	local error=""
+	local warning_threshold="$STORAGE_NPM_CACHE_WARN_BYTES"
+	local advisory="unavailable"
+	local next_action="Run npm-cache-helper.sh status for an explicit size scan"
+	local original_timeout="$STORAGE_SIZE_TIMEOUT_TENTHS"
+
+	actual_path=$(_storage_npm_cache_path)
+	case "$warning_threshold" in
+	'' | *[!0-9]*) warning_threshold=10737418240 ;;
+	esac
+	STORAGE_SIZE_TIMEOUT_TENTHS="${AIDEVOPS_NPM_CACHE_SIZE_TIMEOUT_TENTHS:-$original_timeout}"
+	measured=$(_storage_measure_path "$actual_path")
+	STORAGE_SIZE_TIMEOUT_TENTHS="$original_timeout"
+	IFS='|' read -r total_bytes confidence error <<<"$measured"
+	if [[ "$total_bytes" != "$STORAGE_JSON_NULL" ]]; then
+		if [[ "$total_bytes" -ge "$warning_threshold" ]]; then
+			advisory="warning"
+			next_action="Run npm-cache-helper.sh verify; if still oversized, review npm-cache-helper.sh clean"
+		else
+			advisory="ok"
+			next_action="No cleanup suggested; npm-cache-helper.sh status can recheck after npm-heavy work"
+		fi
+	fi
+
+	_storage_emit_measured_record "npm-cache" "npm" "npm cache" "external" "cache" \
+		"configurable byte advisory threshold; package-manager owned; no automatic cleanup" "protected" \
+		"external owner" "$next_action" "$measured" |
+		jq -c \
+			--arg advisory "$advisory" \
+			--argjson warning_threshold_bytes "$warning_threshold" \
+			'. + {advisory:$advisory,warning_threshold_bytes:$warning_threshold_bytes}'
+	return 0
+}
+
 _storage_inventory_records() {
 	local home_label="~"
 	local framework_owner="$STORAGE_OWNER_FRAMEWORK"
@@ -727,7 +784,7 @@ _storage_inventory_records() {
 	_storage_emit_record "pulse-stage-timings" "$pulse_producer" "${home_label}/.aidevops/logs/pulse-stage-timings.log" "${HOME:+$HOME/.aidevops/logs/pulse-stage-timings.log}" "$framework_owner" "$active_class" "1 MiB active-file cap with gzip archive rotation" "$protected_disposition" "$active_writer_reason" "Use pulse-owned rotate_pulse_log; never unlink the active file"
 	_storage_emit_record "pulse-log-archive" "$pulse_producer" "${home_label}/.aidevops/logs/pulse-archive" "${HOME:+$HOME/.aidevops/logs/pulse-archive}" "$framework_owner" "archive" "1 GiB combined cold archive cap; oldest archives first" "$protected_disposition" "archive already converged by producer" "Use pulse-owned rotate_pulse_log for archive pruning"
 	_storage_opencode_records
-	_storage_emit_record "npm-cache" "npm" "npm cache" "${AIDEVOPS_NPM_CACHE_DIR:-${HOME:+$HOME/.npm}}" "external" "cache" "package-manager owned; no aidevops cleanup authority" "protected" "external owner" "Use npm-owned diagnostics and cleanup explicitly"
+	_storage_npm_cache_record
 	return 0
 }
 
@@ -772,16 +829,22 @@ _storage_status() {
 	local reason=""
 	local next_action=""
 	local error=""
+	local advisory=""
 	report=$(_storage_inventory_json)
 	printf 'Storage Inventory (read-only)\n'
 	printf '%-24s %-10s %-10s %12s %12s %12s %12s %-11s\n' "Store" "Owner" "Class" "Total" "Protected" "Reclaimable" "Unknown" "Confidence"
-	printf '%s\n' "$report" | jq -r '.stores[] | [.store_id,.owner,.safety_class,(.total_bytes|tostring),(.protected_bytes|tostring),(.reclaimable_bytes|tostring),(.unknown_bytes|tostring),.sizing_confidence,.protection_reasons[0],.next_action,(.error // "")] | @tsv' |
-		while IFS=$'\t' read -r store_id owner safety_class total protected reclaimable unknown confidence reason next_action error; do
+	printf '%s\n' "$report" | jq -r --arg none "$STORAGE_FIELD_NONE" '.stores[] | [.store_id,.owner,.safety_class,(.total_bytes|tostring),(.protected_bytes|tostring),(.reclaimable_bytes|tostring),(.unknown_bytes|tostring),.sizing_confidence,.protection_reasons[0],.next_action,(.error // $none),(.advisory // $none)] | @tsv' |
+		while IFS=$'\t' read -r store_id owner safety_class total protected reclaimable unknown confidence reason next_action error advisory; do
+			[[ "$error" == "$STORAGE_FIELD_NONE" ]] && error=""
+			[[ "$advisory" == "$STORAGE_FIELD_NONE" ]] && advisory=""
 			printf '%-24s %-10s %-10s %12s %12s %12s %12s %-11s\n' \
 				"$store_id" "$owner" "$safety_class" "$(_storage_format_bytes "$total")" "$(_storage_format_bytes "$protected")" "$(_storage_format_bytes "$reclaimable")" "$(_storage_format_bytes "$unknown")" "$confidence"
 			printf '  reason: %s' "$reason"
 			[[ -n "$error" ]] && printf ' (%s)' "$error"
 			printf '\n'
+			if [[ "$advisory" == "warning" ]]; then
+				printf '  WARNING: this external cache exceeds its advisory threshold\n'
+			fi
 			printf '  next: %s\n' "$next_action"
 		done
 	printf 'No cleanup was performed. Unknown or unavailable classifications are never reclaimable.\n'

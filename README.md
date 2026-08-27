@@ -295,7 +295,7 @@ git clone https://github.com/marcusquinn/aidevops.git ~/Git/aidevops
 **After installation, use the CLI:**
 
 ```bash
-aidevops status           # Check what's installed
+aidevops status           # Check installation and storage/cache health
 aidevops doctor           # Detect duplicate installs and PATH conflicts
 aidevops update           # Update framework + check registered projects
 aidevops auto-update      # Manage automatic update polling (every 10 min)

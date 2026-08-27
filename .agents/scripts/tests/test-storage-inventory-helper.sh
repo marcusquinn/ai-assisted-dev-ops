@@ -99,6 +99,7 @@ after_checksum=$(fixture_checksum)
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "observability") | .unknown_bytes > 0')" == "true" ]] || fail "unattributed observability bytes did not fail closed"
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "observability") | has("active_bytes") and has("archive_bytes") and has("candidate_bytes")')" == "true" ]] || fail "observability lifecycle byte classes missing"
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "npm-cache") | .owner')" == "external" ]] || fail "npm ownership was claimed by aidevops"
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "npm-cache") | .warning_threshold_bytes')" == "10737418240" ]] || fail "npm advisory threshold missing"
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "opencode-active-db") | .owner')" == "joint" ]] || fail "OpenCode active DB ownership was not bounded"
 [[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "opencode-active-db") | .safety_class')" == "unknown" ]] || fail "unavailable OpenCode schema did not fail closed"
 [[ "$(printf '%s' "$report" | jq '[.stores[] | select(.store_id | startswith("opencode-")) | .reclaimable_bytes] | add')" == "0" ]] || fail "OpenCode report exposed cleanup candidates"
@@ -120,6 +121,12 @@ human=$(bash "$HELPER" status)
 [[ "$human" == *"Storage Inventory (read-only)"* ]] || fail "human report heading missing"
 [[ "$human" == *"No cleanup was performed"* ]] || fail "human report omitted non-destructive guarantee"
 [[ "$human" == *"next: Use aidevops opencode-db report"* ]] || fail "human report omitted OpenCode guidance"
+
+report=$(AIDEVOPS_NPM_CACHE_WARN_BYTES=1 bash "$HELPER" json)
+[[ "$(printf '%s' "$report" | jq -r '.stores[] | select(.store_id == "npm-cache") | .advisory')" == "warning" ]] || fail "oversized npm cache warning missing"
+human=$(AIDEVOPS_NPM_CACHE_WARN_BYTES=1 bash "$HELPER" status)
+[[ "$human" == *"WARNING: this external cache exceeds its advisory threshold"* ]] || fail "human npm cache warning missing"
+[[ "$human" == *"npm-cache-helper.sh verify"* ]] || fail "human npm cache warning omitted npm-owned remediation"
 
 mv "$HOME/.aidevops/runtime-bundles" "$HOME/.aidevops/runtime-bundles-real"
 ln -s "$HOME/.aidevops/runtime-bundles-real" "$HOME/.aidevops/runtime-bundles"
@@ -168,7 +175,7 @@ AGENTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export AGENTS_DIR
 # shellcheck source=../aidevops-cli/aidevops-status-lib.sh
 source "$SCRIPT_DIR/../aidevops-cli/aidevops-status-lib.sh"
-status_output=$(AIDEVOPS_STATUS_STORAGE_TIMEOUT_TENTHS=1 _status_storage_inventory)
+status_output=$(AIDEVOPS_STATUS_STORAGE_TIMEOUT_TENTHS=1 AIDEVOPS_STATUS_NPM_CACHE_TIMEOUT_TENTHS=1 _status_storage_inventory)
 [[ "$status_output" == *"Storage Inventory (read-only)"* ]] || fail "aidevops status integration omitted storage inventory"
 
 printf 'PASS: storage inventory is read-only, portable, explicit, and fail-closed\n'

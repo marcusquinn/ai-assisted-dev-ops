@@ -148,7 +148,9 @@ _status_storage_inventory() {
 	local report=""
 
 	[[ -f "$helper" ]] || return 0
-	report=$(AIDEVOPS_STORAGE_SIZE_TIMEOUT_TENTHS="${AIDEVOPS_STATUS_STORAGE_TIMEOUT_TENTHS:-3}" bash "$helper" status 2>/dev/null) || report=""
+	report=$(AIDEVOPS_STORAGE_SIZE_TIMEOUT_TENTHS="${AIDEVOPS_STATUS_STORAGE_TIMEOUT_TENTHS:-3}" \
+		AIDEVOPS_NPM_CACHE_SIZE_TIMEOUT_TENTHS="${AIDEVOPS_STATUS_NPM_CACHE_TIMEOUT_TENTHS:-100}" \
+		bash "$helper" status 2>/dev/null) || report=""
 	if [[ -n "$report" ]]; then
 		printf '%s\n\n' "$report"
 	else
