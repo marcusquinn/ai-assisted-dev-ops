@@ -63,6 +63,13 @@ test("pre-edit tool validates the explicitly targeted Git worktree", async () =>
     assert.match(otherLinkedResult, /bugfix\/other-fixture/);
     assert.doesNotMatch(otherLinkedResult, /bugfix\/fixture[^-]/);
 
+    const multipleWorktreesResult = await preEditTool.execute({
+      workdir: linked,
+      targetPaths: [join(linked, "README.md"), join(otherLinked, "README.md")],
+    });
+    assert.match(multipleWorktreesResult, /explicit repository targets span multiple worktrees/);
+    assert.doesNotMatch(multipleWorktreesResult, /Pre-edit check PASSED/);
+
     const invalidResult = await preEditTool.execute({ workdir: nonGit, task: "fix fixture" });
     assert.match(invalidResult, /target workdir must resolve to an existing Git worktree/);
 
