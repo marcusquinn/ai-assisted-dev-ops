@@ -74,8 +74,21 @@ if [[ -n "${GH_ARGV_RECORD_FILE:-}" ]]; then
 fi
 # pr/issue create paths print a URL on stdout for caller capture
 case "$1 $2" in
-"pr create" | "issue create")
+"pr create")
+	if [[ "${MOCK_PR_CREATE_MUTATION_FAILURE:-0}" == "1" ]]; then
+		printf 'pull request update failed: GraphQL: external contributor cannot update the pull request\n' >&2
+		exit 1
+	fi
 	echo "https://example.invalid/o/r/pull/0"
+	;;
+"issue create")
+	echo "https://example.invalid/o/r/pull/0"
+	;;
+"pr list")
+	printf '%s\n' "${MOCK_RECOVERED_PR_URL:-}"
+	;;
+"pr ready")
+	exit "${MOCK_PR_READY_RC:-0}"
 	;;
 esac
 exit 0
@@ -116,7 +129,12 @@ _gh_validate_edit_args() { return 0; }
 # Privacy/write-policy and durable readback have dedicated suites. This harness
 # inspects only the exact create argv emitted by the wrapper.
 _gh_guard_public_write_args() { return 0; }
-_gh_create_pr_origin_is_exact() { return 0; }
+_gh_create_pr_origin_is_exact() {
+	if [[ "${MOCK_ORIGIN_EXACT:-1}" == "1" ]]; then
+		return 0
+	fi
+	return 1
+}
 _gh_lock_created_auto_dispatch_issue() { return 0; }
 
 # Stub _gh_should_fallback_to_rest (never fall back — REST path adds noise)
@@ -398,6 +416,27 @@ else
 	print_result "B9: gh_create_pr rejects conflicting origins before create" 1 \
 		"rc=${dual_origin_rc}; calls=$(tr '\n' ' ' <"$GH_RECORD_FILE")"
 fi
+
+# B10: recover an external-fork PR after native create fails a follow-up
+# mutation. The wrapper must not create twice and must print the durable URL.
+reset_recorder
+export MOCK_PR_CREATE_MUTATION_FAILURE=1
+export MOCK_RECOVERED_PR_URL="https://example.invalid/o/r/pull/42"
+export MOCK_PR_READY_RC=0
+export MOCK_ORIGIN_EXACT=0
+partial_output=""
+partial_rc=0
+partial_output=$(gh_create_pr --repo o/r --head contributor:feature/recovery \
+	--title "GH#30856: recover partial creation" --body "Resolves #30856" 2>/dev/null) || partial_rc=$?
+create_count=$(grep -c '^pr create ' "$GH_RECORD_FILE" || true)
+if [[ "$partial_rc" -eq 78 && "$partial_output" == "https://example.invalid/o/r/pull/42" &&
+	"$create_count" -eq 1 ]] && grep -q '^pr ready 42 --repo o/r$' "$GH_RECORD_FILE"; then
+	print_result "B10: durable external-fork PR recovery is idempotent and ready" 0
+else
+	print_result "B10: durable external-fork PR recovery is idempotent and ready" 1 \
+		"rc=$partial_rc output=$partial_output creates=$create_count calls=$(cat "$GH_RECORD_FILE")"
+fi
+unset MOCK_PR_CREATE_MUTATION_FAILURE MOCK_RECOVERED_PR_URL MOCK_PR_READY_RC MOCK_ORIGIN_EXACT
 
 # ---------------------------------------------------------------------------
 # Layer B': gh_create_issue defence-in-depth (mirrors PR tests)
