@@ -25,6 +25,7 @@
 #   6. `--body-file <path>` with `Parent: #502` inside fires method 2.
 #   7. No dot-notation and no `Parent:` line → no addSubIssue mutation.
 #   8. Dot-notation in title AND `Parent:` in body → method 1 wins.
+#   9. Native `gh -R owner/repo` repo selection reaches parent linking.
 #
 # Strategy mirrors test-backfill-sub-issues.sh: stub `gh` on PATH, record all
 # `gh api graphql` calls to a log file, inspect the log after each scenario
@@ -207,6 +208,21 @@ if saw_addsubissue; then
 	pass "dot-notation title fires addSubIssue (method 1, regression)"
 else
 	fail "dot-notation title fires addSubIssue (method 1, regression)" \
+		"no ADDSUBISSUE entry in gh log"
+fi
+
+# =============================================================================
+# Test 9 — native -R repo alias reaches parent linking
+# =============================================================================
+reset_log
+_gh_auto_link_sub_issue "https://github.com/owner/repo/issues/308" \
+	-R "owner/repo" \
+	--title "plain title" \
+	--body "Parent: #503"
+if saw_addsubissue; then
+	pass "-R repo alias reaches addSubIssue"
+else
+	fail "-R repo alias reaches addSubIssue" \
 		"no ADDSUBISSUE entry in gh log"
 fi
 

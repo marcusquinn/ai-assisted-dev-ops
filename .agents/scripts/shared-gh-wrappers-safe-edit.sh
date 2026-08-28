@@ -126,8 +126,12 @@ _gh_extract_repo_from_args() {
 	local -a args=("$@")
 	while [[ $i -lt ${#args[@]} ]]; do
 		case "${args[i]}" in
-		--repo)
-			echo "${args[i + 1]:-}"
+		--repo | -R)
+			if [[ -n "${args[i + 1]:-}" && "${args[i + 1]}" != -* ]]; then
+				echo "${args[i + 1]}"
+			else
+				echo ""
+			fi
 			return 0
 			;;
 		--repo=*)
