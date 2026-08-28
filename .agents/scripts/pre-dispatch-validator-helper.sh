@@ -695,19 +695,33 @@ _validator_upstream_watch() {
 # ---------------------------------------------------------------------------
 
 # Extract the implementation-scoped scan target from an issue body.
-# Scans ## Files to modify and ## How sections only; falls back to full body.
+# Scans Files to modify / Files Scope sections before ## How; falls back to
+# full body only for legacy bodies without a supported implementation section.
 # Outputs the scan target text to stdout.
 _sht_extract_scan_target() {
 	local issue_body="$1"
 	local files_section how_section scan_target
 
 	files_section=$(printf '%s' "$issue_body" |
-		awk '/^## Files to modify/{found=1; next} found && /^## /{found=0} found{print}')
+		awk '
+			/^## (Files to modify|Files Scope)[[:space:]]*$/ { found=1; level=2; next }
+			/^### (Files to modify|Files Scope)[[:space:]]*$/ { found=1; level=3; next }
+			found && level == 2 && /^## / { found=0 }
+			found && level == 3 && (/^# / || /^## / || /^### /) { found=0 }
+			found { print }
+		')
 	how_section=$(printf '%s' "$issue_body" |
 		awk '/^## How/{found=1; next} found && /^## /{found=0} found{print}')
-	scan_target="${files_section}${how_section}"
 
-	# Fall back to full body if neither section is present (older/manual issue format)
+	# A canonical file scope is authoritative. Retain ## How extraction for
+	# legacy issue bodies that do not declare a supported scope heading.
+	if [[ -n "$files_section" ]]; then
+		scan_target="$files_section"
+	else
+		scan_target="$how_section"
+	fi
+
+	# Fall back to full body if no implementation section is present (older/manual issue format)
 	if [[ -z "$scan_target" ]]; then
 		scan_target="$issue_body"
 	fi

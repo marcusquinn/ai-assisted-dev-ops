@@ -588,9 +588,8 @@ _dependency_sync_has_active_status() {
 }
 
 _relationship_task_line() {
-	local task_id="$1" todo_file="$2" task_id_ere=""
-	task_id_ere=$(_escape_ere "$task_id")
-	strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 || true
+	local task_id="$1" todo_file="$2"
+	_first_todo_task_line_or_empty "$task_id" "$todo_file" || return 1
 	return 0
 }
 

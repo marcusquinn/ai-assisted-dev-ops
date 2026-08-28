@@ -48,7 +48,7 @@ Prevents workers spawning only to find no ratchet-down work exists (GH#19024).
 **Bypass:** `AIDEVOPS_SKIP_SELF_HOSTING_DETECTOR=1`
 **Dry-run:** `AIDEVOPS_SELF_HOSTING_DETECTOR_DRY_RUN=1`
 
-Runs BEFORE generator-marker validators in `cmd_validate()`. Detects issues that modify the worker dispatch/spawn path by scanning the body's `## Files to modify` / `## How` sections for canonical dispatch-path file patterns (`pulse-wrapper.sh`, `pulse-dispatch-*.sh`, `headless-runtime-helper.sh`, `worker-lifecycle-common.sh`, `shared-dispatch-dedup.sh`, etc.).
+Runs BEFORE generator-marker validators in `cmd_validate()`. Detects issues that modify the worker dispatch/spawn path by scanning canonical `##` or `###` `Files to modify` / `Files Scope` sections for dispatch-path file patterns (`pulse-wrapper.sh`, `pulse-dispatch-*.sh`, `headless-runtime-helper.sh`, `worker-lifecycle-common.sh`, `shared-dispatch-dedup.sh`, etc.). A canonical file scope is authoritative; legacy bodies without one continue to scan `## How`, then fall back to the full body.
 
 When dispatch-path work is detected without one normalized `tier:thinking` label:
 
@@ -59,7 +59,7 @@ When dispatch-path work is detected without one normalized `tier:thinking` label
 
 **Rationale:** Self-hosting tasks run through the dispatch path being changed. Applying the terminal workload tier upfront avoids lower-tier attempts while leaving concrete model and reasoning selection to runtime routing.
 
-**Tests:** `tests/test-self-hosting-detector.sh` — 7 cases covering positive/negative/mixed-scope/idempotency/bypass/dry-run/tier-guard.
+**Tests:** `tests/test-self-hosting-detector.sh` — 12 cases covering positive/negative/mixed scope, canonical Files Scope headings, idempotency, bypass, dry-run, and tier-guard behavior.
 
 ### Review-feedback supersession detector (t3569)
 

@@ -120,7 +120,7 @@ cmd_pull() {
 			login=$(echo "$issue_line" | jq -r '.assignees[0].login // empty' 2>/dev/null || echo "")
 			[[ -z "$login" ]] && continue
 			local tl
-			tl=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${tid_ere} " | head -1 || echo "")
+			tl=$(_first_todo_task_line_or_empty "$tid" "$todo_file") || return 1
 			[[ -z "$tl" ]] && continue
 			echo "$tl" | grep -qE 'assignee:[A-Za-z0-9._@-]+' && continue
 			if [[ "$DRY_RUN" == "true" ]]; then
