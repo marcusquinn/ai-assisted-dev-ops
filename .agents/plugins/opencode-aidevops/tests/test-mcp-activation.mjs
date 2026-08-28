@@ -59,6 +59,64 @@ test("registers only the explicit browser MCP activation profiles", () => {
   assert.match(config.agent.playwright.prompt, /# Playwright MCP/);
 });
 
+test("pins legacy Playwriter commands while preserving custom commands", () => {
+  const config = {
+    mcp: {
+      playwriter: {
+        type: "local",
+        command: ["npx", "playwriter@latest"],
+        enabled: true,
+      },
+    },
+    tools: { "playwriter_*": true },
+  };
+
+  registerMcpServers(config);
+
+  assert.equal(config.mcp.playwriter.command.at(-1), "playwriter@0.5.0");
+  assert.ok(!config.mcp.playwriter.command.includes("playwriter@latest"));
+  assert.equal(config.mcp.playwriter.enabled, false);
+  assert.equal(config.tools["playwriter_*"], false);
+
+  const customConfig = {
+    mcp: {
+      playwriter: {
+        type: "local",
+        command: ["playwriter", "serve", "--port", "19988"],
+        enabled: true,
+      },
+    },
+    tools: { "playwriter_*": true },
+  };
+
+  registerMcpServers(customConfig);
+
+  assert.deepEqual(customConfig.mcp.playwriter.command, [
+    "playwriter", "serve", "--port", "19988",
+  ]);
+  assert.equal(customConfig.mcp.playwriter.enabled, false);
+  assert.equal(customConfig.tools["playwriter_*"], false);
+
+  const customLatestConfig = {
+    mcp: {
+      playwriter: {
+        type: "local",
+        command: ["npx", "playwriter@latest", "serve", "--port", "19988"],
+        enabled: true,
+      },
+    },
+    tools: { "playwriter_*": true },
+  };
+
+  registerMcpServers(customLatestConfig);
+
+  assert.deepEqual(customLatestConfig.mcp.playwriter.command, [
+    "npx", "playwriter@latest", "serve", "--port", "19988",
+  ]);
+  assert.equal(customLatestConfig.mcp.playwriter.enabled, false);
+  assert.equal(customLatestConfig.tools["playwriter_*"], false);
+});
+
 test("migrates browser MCPs to disconnected and globally denied", () => {
   const runtime = createMcpSessionRuntime("/managed/workspace", {
     tempRoot: "/managed/tmp",
@@ -84,6 +142,8 @@ test("migrates browser MCPs to disconnected and globally denied", () => {
   registerMcpServers(config, { runtime });
 
   assert.equal(config.mcp.playwriter.enabled, false);
+  assert.ok(config.mcp.playwriter.command.includes("playwriter@0.5.0"));
+  assert.ok(!config.mcp.playwriter.command.includes("playwriter@latest"));
   assert.equal(config.mcp.playwright.enabled, false);
   assert.equal(config.mcp.playwright.command[0], "/bin/bash");
   assert.ok(config.mcp.playwright.command.includes(runtime.workspaces.playwright.directory));

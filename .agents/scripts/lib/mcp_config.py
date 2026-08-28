@@ -31,6 +31,8 @@ LAZY_MCPS = {
 
 # Oh-My-OpenCode tool patterns to disable globally
 OMO_TOOL_PATTERNS = ['grep_app_*', 'websearch_*']
+PLAYWRITER_MCP_PACKAGE = 'playwriter@0.5.0'
+LEGACY_PLAYWRITER_MCP_PACKAGE = 'playwriter@latest'
 
 
 def apply_mcp_loading_policy(config):
@@ -75,16 +77,24 @@ def _register_playwriter(config, bun_path):
         if bun_path:
             config['mcp']['playwriter'] = {
                 "type": "local",
-                "command": ["bun", "x", "playwriter@latest"],
+                "command": ["bun", "x", PLAYWRITER_MCP_PACKAGE],
                 "enabled": False
             }
         else:
             config['mcp']['playwriter'] = {
                 "type": "local",
-                "command": ["npx", "playwriter@latest"],
+                "command": ["npx", PLAYWRITER_MCP_PACKAGE],
                 "enabled": False
             }
         print("  Added playwriter MCP (on demand - @playwriter only)")
+    elif (isinstance(config['mcp']['playwriter'], dict)
+          and config['mcp']['playwriter'].get('command') in (
+              ['npx', LEGACY_PLAYWRITER_MCP_PACKAGE],
+              ['bun', 'x', LEGACY_PLAYWRITER_MCP_PACKAGE],
+          )):
+        command = config['mcp']['playwriter']['command']
+        config['mcp']['playwriter']['command'] = command[:-1] + [PLAYWRITER_MCP_PACKAGE]
+        print("  Pinned legacy playwriter MCP command to 0.5.0")
     config['tools']['playwriter_*'] = False
 
 

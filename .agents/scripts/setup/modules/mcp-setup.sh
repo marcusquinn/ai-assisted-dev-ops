@@ -42,14 +42,16 @@ _install_mcp_packages_node() {
 	command -v bun &>/dev/null && installer="bun"
 	print_info "Using $installer to install/update Node.js MCP packages..."
 
-	# Always install latest (bun install -g is fast and idempotent)
+	# Install reviewed pins where required; keep other MCPs current.
 	local updated=0
 	local failed=0
 	local pkg
 	for pkg in "${node_mcps[@]}"; do
 		_mcp_package_supported_on_platform "$pkg" || continue
 		local short_name="${pkg##*/}" # Strip @scope/ prefix for display
-		if run_with_spinner "Installing $short_name" npm_global_install "${pkg}@latest"; then
+		local package_spec="${pkg}@latest"
+		[[ "$pkg" == "playwriter" ]] && package_spec="playwriter@0.5.0"
+		if run_with_spinner "Installing $short_name" npm_global_install "$package_spec"; then
 			((++updated))
 		else
 			((++failed))
@@ -58,7 +60,7 @@ _install_mcp_packages_node() {
 	done
 
 	if [[ $updated -gt 0 ]]; then
-		print_success "$updated Node.js MCP packages installed/updated to latest via $installer"
+		print_success "$updated Node.js MCP packages installed/updated via $installer"
 	fi
 	if [[ $failed -gt 0 ]]; then
 		print_warning "$failed packages failed (check network or package names)"
@@ -422,7 +424,7 @@ setup_browser_tools() {
 
 	# Playwriter MCP (Node.js based, runs via npx)
 	if [[ "$has_node" == "true" ]]; then
-		print_success "Playwriter MCP available (runs via npx playwriter@latest)"
+		print_success "Playwriter MCP available (runs via npx playwriter@0.5.0)"
 		print_info "Install Chrome extension: https://chromewebstore.google.com/detail/playwriter-mcp/jfeammnjpkecdekppnclgkkffahnhfhe"
 	else
 		print_warning "Node.js not found - Playwriter MCP unavailable"

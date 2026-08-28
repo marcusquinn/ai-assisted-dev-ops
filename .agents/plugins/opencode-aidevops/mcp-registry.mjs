@@ -11,6 +11,8 @@ import { delimiter, isAbsolute, join, relative, resolve } from "path";
 const IS_MACOS = platform() === "darwin";
 const MCP_WORKSPACE_MARKER = ".aidevops-mcp-workspace";
 const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.79";
+const PLAYWRITER_MCP_PACKAGE = "playwriter@0.5.0";
+const LEGACY_PLAYWRITER_MCP_PACKAGE = "playwriter@latest";
 
 /**
  * Build unique per-plugin MCP workspace metadata without creating files.
@@ -123,7 +125,7 @@ function getMcpRegistry() {
     {
       name: "playwriter",
       type: "local",
-      command: [...pkgRunnerParts, "playwriter@latest"],
+      command: [...pkgRunnerParts, PLAYWRITER_MCP_PACKAGE],
       eager: false,
       toolPattern: "playwriter_*",
       globallyEnabled: false,
@@ -445,6 +447,25 @@ function buildMcpConfigEntry(mcp, runtime) {
 }
 
 /**
+ * Identify the only Playwriter commands emitted by previous aidevops generators.
+ * @param {unknown} command
+ * @returns {boolean}
+ */
+function isLegacyGeneratedPlaywriterCommand(command) {
+  if (!Array.isArray(command)) return false;
+  const isNpx = command.length === 2
+    && typeof command[0] === "string"
+    && /(?:^|[\\/])npx$/.test(command[0])
+    && command[1] === LEGACY_PLAYWRITER_MCP_PACKAGE;
+  const isBun = command.length === 3
+    && typeof command[0] === "string"
+    && /(?:^|[\\/])bun$/.test(command[0])
+    && command[1] === "x"
+    && command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE;
+  return isNpx || isBun;
+}
+
+/**
  * Register a single MCP server in the config. Returns true if newly registered.
  * @param {object} mcp - MCP registry entry
  * @param {object} config - OpenCode Config object (mutable)
@@ -452,6 +473,14 @@ function buildMcpConfigEntry(mcp, runtime) {
  */
 function registerSingleMcp(mcp, config, runtime) {
   if (!config.mcp[mcp.name] || mcp.alwaysOverwrite) {
+    config.mcp[mcp.name] = buildMcpConfigEntry(mcp, runtime);
+    return true;
+  }
+
+  // Replace only the package argument emitted by older aidevops generators.
+  // Relay and other custom Playwriter commands remain user-owned.
+  if (mcp.name === "playwriter"
+    && isLegacyGeneratedPlaywriterCommand(config.mcp[mcp.name].command)) {
     config.mcp[mcp.name] = buildMcpConfigEntry(mcp, runtime);
     return true;
   }
