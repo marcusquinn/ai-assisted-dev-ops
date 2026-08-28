@@ -24,6 +24,7 @@ _PTSW_LEGACY_COMMAND_SNAPSHOT=""
 _PTSW_LEGACY_COMMAND_STATUS=1
 _PTSW_LEGACY_SNAPSHOTS_READY=0
 _PTSW_LEGACY_CAP_LOGGED=0
+_PTSW_CLONE_DIAGNOSTIC_MAX_CHARS=512
 _PULSE_TODO_SYNC_WORKSPACE=""
 _PULSE_TODO_SYNC_WORKSPACE_ROOT=""
 _PULSE_TODO_SYNC_OWNER_PID=""
@@ -166,12 +167,38 @@ _ptsw_read_owner_marker() {
 	return 0
 }
 
+_ptsw_sanitize_clone_diagnostic() {
+	local diagnostic="$1"
+	local sanitized=""
+
+	# Strip URL authorities first, then known credential-shaped tokens. This
+	# fallback keeps the workspace helper safe when sourced without the full
+	# shared-constants bootstrap used by Pulse.
+	sanitized=$(printf '%s' "$diagnostic" |
+		sed -E 's|([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@|\1|g') || return 1
+	if declare -F scrub_credentials >/dev/null 2>&1; then
+		sanitized=$(scrub_credentials "$sanitized") || return 1
+	else
+		sanitized=$(printf '%s' "$sanitized" |
+			sed -E 's/(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/\1[redacted-credential]/g') || return 1
+	fi
+	sanitized=$(printf '%s' "$sanitized" |
+		LC_ALL=C tr '\r\n\t' '   ' |
+		cut -c "1-${_PTSW_CLONE_DIAGNOSTIC_MAX_CHARS}") || return 1
+	[[ -n "$sanitized" ]] || sanitized="clone failed without diagnostic output"
+	printf '%s' "$sanitized"
+	return 0
+}
+
 _ptsw_create_workspace() {
 	local remote_url="$1"
 	local temp_root=""
 	local workspace_root=""
 	local marker_path=""
 	local marker_tmp=""
+	local clone_error_file=""
+	local clone_error=""
+	local clone_rc=0
 	local owner_pid="${BASHPID:-}"
 	local owner_start=""
 	local owner_created=""
@@ -214,9 +241,19 @@ _ptsw_create_workspace() {
 	_PULSE_TODO_SYNC_WORKSPACE="${workspace_root}/repo"
 	_PULSE_TODO_SYNC_OWNER_PID="$owner_pid"
 	_PULSE_TODO_SYNC_OWNER_START="$owner_start"
-	# TODO ref sync needs only the remote default branch tip; preserve clone errors
-	# on stderr so retry telemetry can be diagnosed by the pulse wrapper log.
-	git clone --quiet --no-tags --depth 1 --single-branch "$remote_url" "$_PULSE_TODO_SYNC_WORKSPACE" || return 1
+	clone_error_file="${workspace_root}/clone.stderr"
+	# TODO ref sync needs only the remote default branch tip. Capture clone
+	# errors so only a bounded, credential-scrubbed diagnostic reaches logs.
+	git clone --quiet --no-tags --depth 1 --single-branch \
+		"$remote_url" "$_PULSE_TODO_SYNC_WORKSPACE" 2>"$clone_error_file" || clone_rc=$?
+	if [[ "$clone_rc" -ne 0 ]]; then
+		clone_error=$(dd if="$clone_error_file" bs=512 count=2 2>/dev/null || true)
+		rm -f "$clone_error_file" 2>/dev/null || true
+		clone_error=$(_ptsw_sanitize_clone_diagnostic "$clone_error") || clone_error="clone diagnostic unavailable"
+		printf '[pulse-wrapper] TODO ref sync clone failed detail=%s\n' "$clone_error" >&2
+		return 1
+	fi
+	rm -f "$clone_error_file" 2>/dev/null || true
 	return 0
 }
 

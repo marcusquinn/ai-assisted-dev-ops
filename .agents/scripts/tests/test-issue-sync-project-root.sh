@@ -135,6 +135,16 @@ source "$fixture_scripts/pulse-wrapper-cycle.sh"
 # shellcheck source=/dev/null
 source "$fixture_scripts/planning-publisher.sh"
 
+# Workspace creation must clone only the remote default branch tip.
+_ptsw_create_workspace "file://${remote_a}" || fail "shallow workspace clone failed"
+[[ $(git -C "$_PULSE_TODO_SYNC_WORKSPACE" rev-parse --is-shallow-repository) == "true" ]] ||
+	fail "TODO-sync workspace clone was not shallow"
+[[ $(git -C "$_PULSE_TODO_SYNC_WORKSPACE" branch -r | grep -Evc 'origin/HEAD') -eq 1 ]] ||
+	fail "TODO-sync workspace clone fetched more than the default branch"
+_ptsw_remove_owned_workspace "$_PULSE_TODO_SYNC_WORKSPACE_ROOT" \
+	"$_PULSE_TODO_SYNC_OWNER_PID" "$_PULSE_TODO_SYNC_OWNER_START" ||
+	fail "shallow workspace fixture cleanup failed"
+
 wait_for_file() {
 	local file_path="$1"
 	local max_attempts="${2:-100}"
@@ -187,6 +197,33 @@ sync_todo_refs_for_repo owner/repo-b "$repo_b"
 git --git-dir="$remote_b" show main:TODO.md | grep -q '^synced:owner/repo-b$' || fail "repo B remote was not synced"
 if only_todo_sync_workspace >/dev/null 2>&1; then
 	fail "successful reconciliation left an automation workspace behind"
+fi
+
+# Clone failures emit bounded diagnostics without exposing URL authorities or
+# credential-shaped values, clean their workspace, and remain retryable.
+original_git_definition=$(declare -f git)
+export TEST_CLONE_TOKEN="ghp_""1234567890abcdef"
+git() {
+	if [[ "${1:-}" == "clone" ]]; then
+		printf 'fatal: unable to access https://user:%s@example.invalid/private.git\n' "$TEST_CLONE_TOKEN" >&2
+		printf 'credential %s rejected; detail=%0600d\n' "$TEST_CLONE_TOKEN" 0 >&2
+		return 128
+	fi
+	/usr/bin/git "$@"
+	return $?
+}
+clone_failure_rc=0
+clone_failure_output=$(sync_todo_refs_for_repo owner/repo-clone-failure "$repo_a" 2>&1) || clone_failure_rc=$?
+eval "$original_git_definition"
+unset TEST_CLONE_TOKEN
+[[ "$clone_failure_rc" -eq 1 ]] || fail "clone failure was not retryable"
+[[ "$clone_failure_output" != *"1234567890abcdef"* && "$clone_failure_output" != *"user:"* ]] ||
+	fail "clone failure diagnostic exposed credentials"
+[[ "$clone_failure_output" == *"[redacted-credential]"* ]] ||
+	fail "clone failure diagnostic omitted redaction evidence"
+[[ ${#clone_failure_output} -le 600 ]] || fail "clone failure diagnostic exceeded its output bound"
+if only_todo_sync_workspace >/dev/null 2>&1; then
+	fail "clone failure left an automation workspace behind"
 fi
 [[ $(trap -p EXIT) == "$parent_exit_trap_before" ]] || fail "sync scope replaced the caller EXIT trap"
 [[ $(trap -p TERM) == "$parent_term_trap_before" ]] || fail "sync scope replaced the caller TERM trap"
