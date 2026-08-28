@@ -63,7 +63,8 @@ reset_mock_state() {
 		TEST_ADD_NMR_DURING_TRANSITION TEST_ADD_PR_PROTECTION_DURING_TRANSITION \
 		TEST_READD_HOLD_DURING_TRANSITION TEST_HOLD_EVENT_ACTOR TEST_AUTHENTICATED_ACTOR \
 		TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL TEST_SCANNER_RC TEST_SCANNER_OUTPUT \
-		TEST_COMPARE_STATUS TEST_REQUIRED_CHECKS_JSON TEST_REQUIRED_CHECKS_RC TEST_FAIL_REREVIEW
+		TEST_COMPARE_STATUS TEST_REQUIRED_CHECKS_JSON TEST_REQUIRED_CHECKS_RC TEST_FAIL_REREVIEW \
+		TEST_SCANNER_UNRESOLVED_CALLS TEST_SCANNER_DRIFT_HEAD
 	rm -f "${TEST_ROOT}/pr-close-observed" "${TEST_ROOT}/pr-snapshot-failure-consumed"
 	printf '1000\n' >"${TEST_ROOT}/pr-hold-event-id.txt"
 	printf '2000\n' >"${TEST_ROOT}/issue-hold-event-id.txt"
@@ -108,7 +109,16 @@ setup_test_paths() {
 	cat >"$PULSE_REVIEW_FEEDBACK_SCANNER" <<'SCANNER_STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${SCANNER_LOG}"
-[[ -z "${TEST_SCANNER_OUTPUT:-}" ]] || printf '%s\n' "$TEST_SCANNER_OUTPUT"
+if [[ -n "${TEST_SCANNER_DRIFT_HEAD:-}" ]]; then
+	printf '%s\n' "$TEST_SCANNER_DRIFT_HEAD" >"${TEST_ROOT}/pr-head.txt"
+fi
+_scanner_call_count=$(wc -l <"${SCANNER_LOG}")
+_scanner_call_count=${_scanner_call_count//[^0-9]/}
+if [[ -n "${TEST_SCANNER_OUTPUT:-}" \
+	&& (-z "${TEST_SCANNER_UNRESOLVED_CALLS:-}" \
+		|| "$_scanner_call_count" -le "$TEST_SCANNER_UNRESOLVED_CALLS") ]]; then
+	printf '%s\n' "$TEST_SCANNER_OUTPUT"
+fi
 exit "${TEST_SCANNER_RC:-0}"
 SCANNER_STUB
 	chmod +x "$PULSE_REVIEW_FEEDBACK_SCANNER"
@@ -416,8 +426,9 @@ if [[ "${1:-}" == "api" ]]; then
 			exit 1
 		fi
 		if [[ "$_jq_filter" == *"requested_reviewers"* ]]; then
-			printf '%s\tfalse\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
-				"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/requested-reviewers.txt")"
+			printf '%s\037false\037%s\037%s\037%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
+				"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/requested-reviewers.txt")" \
+				"$(<"${TEST_ROOT}/pr-labels.txt")"
 		else
 			printf '%s\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
 				"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/pr-labels.txt")"
@@ -688,6 +699,90 @@ test_dispatch_defers_while_required_checks_are_pending() {
 		return 0
 	fi
 	print_result "pending required checks defer without destructive routing" 0
+	return 0
+}
+
+test_dispatch_defers_when_required_checks_are_cancelled() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_REQUIRED_CHECKS_JSON='[{"name":"Lint","bucket":"cancel","state":"CANCELLED","link":"https://github.com/owner/repo/actions/runs/456/job/789"}]'
+	export TEST_REQUIRED_CHECKS_RC=1
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "cancelled required checks defer without destructive routing" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "cancelled required checks defer without destructive routing" 0
+	return 0
+}
+
+test_dispatch_requests_only_missing_trusted_reviewers() {
+	reset_mock_state
+	prepare_ready_review_state
+	cat >"${TEST_ROOT}/reviews.json" <<EOF
+[{"id":2001,"user":{"login":"trusted-maintainer","type":"User"},"author_association":"MEMBER","state":"CHANGES_REQUESTED","body":"Please correct the worker path before merge.","submitted_at":"2026-08-27T10:00:00Z","commit_id":"${TEST_REVIEWED_SHA}"},{"id":2002,"user":{"login":"second-maintainer","type":"User"},"author_association":"COLLABORATOR","state":"CHANGES_REQUESTED","body":"Please add the missing guard.","submitted_at":"2026-08-27T10:01:00Z","commit_id":"${TEST_REVIEWED_SHA}"}]
+EOF
+	printf '%s\n' "trusted-maintainer" >"${TEST_ROOT}/requested-reviewers.txt"
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne 0 ||
+		$(grep -cF -- '--add-reviewer second-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 1 ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ]]; then
+		print_result "ready PR re-requests only missing trusted reviewers" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "ready PR re-requests only missing trusted reviewers" 0
+	return 0
+}
+
+test_dispatch_defers_head_drift_before_reviewer_mutation() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_SCANNER_DRIFT_HEAD="3333333333333333333333333333333333333333"
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "head drift before reviewer mutation defers safely" 1 \
+			"rc=${dispatch_rc}; head=$(<"${TEST_ROOT}/pr-head.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "head drift before reviewer mutation defers safely" 0
+	return 0
+}
+
+test_dispatch_preserves_when_threads_converge_at_preclose() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_SCANNER_OUTPUT=$'RVW_2001\ttrusted-maintainer\tPlease correct the worker path before merge.'
+	export TEST_SCANNER_UNRESOLVED_CALLS=2
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_MAINTAINER_RC:-76}" ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 1 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ||
+		",$(<"${TEST_ROOT}/pr-labels.txt")," != *",hold-for-review,"* ]]; then
+		print_result "late thread convergence preserves PR at pre-close boundary" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); labels=$(<"${TEST_ROOT}/pr-labels.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "late thread convergence preserves PR at pre-close boundary" 0
 	return 0
 }
 
@@ -1707,6 +1802,10 @@ main() {
 	test_dispatch_routes_when_review_threads_remain_unresolved
 	test_dispatch_routes_when_required_checks_fail
 	test_dispatch_defers_while_required_checks_are_pending
+	test_dispatch_defers_when_required_checks_are_cancelled
+	test_dispatch_requests_only_missing_trusted_reviewers
+	test_dispatch_defers_head_drift_before_reviewer_mutation
+	test_dispatch_preserves_when_threads_converge_at_preclose
 	test_dispatch_appends_to_issue_body_and_closes_pr
 	test_dispatch_wraps_paginated_feedback_reads
 	test_paginated_feedback_pages_are_merged

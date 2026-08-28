@@ -54,6 +54,7 @@ _PULSE_MERGE_FEEDBACK_LOADED=1
 : "${PULSE_REVIEW_FEEDBACK_SECTION_LIMIT:=12000}"
 PULSE_REVIEW_REPAIR_SOURCE_LABEL="source:review-repair"
 PULSE_FEEDBACK_JSON_STRING_TYPE="string"
+PULSE_REVIEW_FEEDBACK_NO_TRUSTED_REVIEW_RC=2
 
 _CI_REPAIR_OUTCOME_SUMMARY=""
 
@@ -355,7 +356,8 @@ _review_feedback_required_checks_green() {
 	esac
 	[[ -n "$checks_json" ]] || checks_json="[]"
 	printf '%s' "$checks_json" | jq -e 'type == ([] | type)' >/dev/null 2>&1 || return 75
-	printf '%s' "$checks_json" | jq -e 'any(.[]?; .bucket == "fail" or .bucket == "cancel")' >/dev/null 2>&1 && return 1
+	printf '%s' "$checks_json" | jq -e 'any(.[]?; .bucket == "fail")' >/dev/null 2>&1 && return 1
+	printf '%s' "$checks_json" | jq -e 'any(.[]?; .bucket == "cancel")' >/dev/null 2>&1 && return 75
 	[[ "$checks_rc" -eq 0 ]] || return 75
 	printf '%s' "$checks_json" | jq -e 'any(.[]?; .bucket == "pending")' >/dev/null 2>&1 && return 75
 	return 0
@@ -367,9 +369,40 @@ _review_feedback_pending_reviewers() {
 
 	jq -nr --argjson reviewers "$reviewers_json" --arg requested "$requested_reviewers_csv" '
 		($requested | split("|") | map(select(length > 0))) as $already
-		| [$reviewers[] | select(($already | index(.)) == null)] | unique | join(",")
+		| [$reviewers[] as $reviewer | select(($already | index($reviewer)) == null) | $reviewer]
+		| unique | join(",")
 	' 2>/dev/null
 	return $?
+}
+
+_review_feedback_ready_snapshot() {
+	local pr_number="$1"
+	local repo_slug="$2"
+
+	_pmf_gh_read gh api "repos/${repo_slug}/pulls/${pr_number}" --jq '
+		[
+			(if .merged_at != null then "MERGED" else ((.state // "") | ascii_upcase) end),
+			(.draft | tostring),
+			(.head.sha // ""),
+			([.requested_reviewers[].login] | join("|")),
+			([.labels[].name] | join("|"))
+		] | join("\u001f")
+	' 2>/dev/null
+	return $?
+}
+
+_review_feedback_ready_snapshot_matches() {
+	local snapshot="$1"
+	local expected_head="$2"
+	local requested_var="$3"
+	local pr_state="" is_draft="" current_head="" observed_reviewers="" labels=""
+
+	IFS=$'\x1f' read -r pr_state is_draft current_head observed_reviewers labels <<<"$snapshot"
+	[[ "$pr_state" == "OPEN" && "$is_draft" == "false" && "$current_head" == "$expected_head" ]] || return 1
+	declare -F _feedback_route_labels_block_routing >/dev/null 2>&1 || return 1
+	_feedback_route_labels_block_routing "$labels" && return 1
+	printf -v "$requested_var" '%s' "$observed_reviewers"
+	return 0
 }
 
 _review_feedback_preserve_ready_pr() {
@@ -380,24 +413,18 @@ _review_feedback_preserve_ready_pr() {
 	local reviewers_json="[]"
 	local reviewed_heads_json="[]"
 	local snapshot=""
-	local pr_state="" is_draft="" current_head="" requested_reviewers=""
+	local current_head="" requested_reviewers=""
 	local pending_reviewers=""
 	local readiness_rc=0
 
 	evidence=$(_review_feedback_ready_reviewer_evidence "$pr_number" "$repo_slug") || return 75
 	reviewers_json=$(printf '%s' "$evidence" | jq -c '.reviewers' 2>/dev/null) || return 75
 	reviewed_heads_json=$(printf '%s' "$evidence" | jq -c '.reviewed_heads' 2>/dev/null) || return 75
-	[[ "$(printf '%s' "$reviewers_json" | jq 'length' 2>/dev/null)" =~ ^[1-9][0-9]*$ ]] || return 1
+	[[ "$(printf '%s' "$reviewers_json" | jq 'length' 2>/dev/null)" =~ ^[1-9][0-9]*$ ]] || return "$PULSE_REVIEW_FEEDBACK_NO_TRUSTED_REVIEW_RC"
 	[[ "$expected_head" =~ ^[0-9a-fA-F]{40}$ ]] || return 75
-	snapshot=$(_pmf_gh_read gh api "repos/${repo_slug}/pulls/${pr_number}" --jq \
-		'[
-			(if .merged_at != null then "MERGED" else ((.state // "") | ascii_upcase) end),
-			(.draft | tostring),
-			(.head.sha // ""),
-			([.requested_reviewers[].login] | join("|"))
-		] | @tsv' 2>/dev/null) || return 75
-	IFS=$'\t' read -r pr_state is_draft current_head requested_reviewers <<<"$snapshot"
-	[[ "$pr_state" == "OPEN" && "$is_draft" == "false" && "$current_head" == "$expected_head" ]] || return 75
+	snapshot=$(_review_feedback_ready_snapshot "$pr_number" "$repo_slug") || return 75
+	_review_feedback_ready_snapshot_matches "$snapshot" "$expected_head" requested_reviewers || return 75
+	current_head="$expected_head"
 
 	_review_feedback_head_advances_reviews "$repo_slug" "$current_head" "$reviewed_heads_json" || readiness_rc=$?
 	[[ "$readiness_rc" -eq 0 ]] || return "$readiness_rc"
@@ -405,6 +432,8 @@ _review_feedback_preserve_ready_pr() {
 	[[ "$readiness_rc" -eq 0 ]] || return "$readiness_rc"
 	_review_feedback_required_checks_green "$pr_number" "$repo_slug" || readiness_rc=$?
 	[[ "$readiness_rc" -eq 0 ]] || return "$readiness_rc"
+	snapshot=$(_review_feedback_ready_snapshot "$pr_number" "$repo_slug") || return 75
+	_review_feedback_ready_snapshot_matches "$snapshot" "$expected_head" requested_reviewers || return 75
 	pending_reviewers=$(_review_feedback_pending_reviewers "$reviewers_json" "$requested_reviewers") || return 75
 	if [[ -n "$pending_reviewers" ]]; then
 		if ! declare -F _feedback_route_gh_write >/dev/null 2>&1 ||
@@ -417,7 +446,48 @@ _review_feedback_preserve_ready_pr() {
 	else
 		echo "[pulse-wrapper] review feedback: ready PR #${pr_number} in ${repo_slug} already awaits its trusted reviewer(s) on changed head ${current_head}; preserving PR" >>"$LOGFILE"
 	fi
+	snapshot=$(_review_feedback_ready_snapshot "$pr_number" "$repo_slug") || return 75
+	_review_feedback_ready_snapshot_matches "$snapshot" "$expected_head" requested_reviewers || return 75
 	return 0
+}
+
+_review_feedback_route_preclose_allows() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head="$3"
+	local readiness_rc=0
+
+	_review_feedback_preserve_ready_pr "$pr_number" "$repo_slug" "$expected_head" || readiness_rc=$?
+	[[ "$readiness_rc" -eq 1 ]] || return 75
+	return 0
+}
+
+_review_feedback_route_initial_gate() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head="$3"
+	local readiness_rc=0
+
+	_PULSE_FEEDBACK_ROUTE_REVIEW_PRECLOSE_GUARD=0
+	_review_feedback_preserve_ready_pr "$pr_number" "$repo_slug" "$expected_head" || readiness_rc=$?
+	[[ "$readiness_rc" -ne 0 ]] || return 0
+	if [[ "$readiness_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ]]; then
+		echo "[pulse-wrapper] _dispatch_pr_fix_worker: ready-review evidence unavailable for PR #${pr_number} in ${repo_slug} — deferring without destructive routing" >>"$LOGFILE"
+		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+	fi
+	[[ "$readiness_rc" -eq "$PULSE_REVIEW_FEEDBACK_NO_TRUSTED_REVIEW_RC" ]] || _PULSE_FEEDBACK_ROUTE_REVIEW_PRECLOSE_GUARD=1
+	return 1
+}
+
+_review_feedback_route_before_finalization() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local expected_head="$3"
+
+	[[ "${_PULSE_FEEDBACK_ROUTE_REVIEW_PRECLOSE_GUARD:-0}" == "1" ]] || return 0
+	_review_feedback_route_preclose_allows "$pr_number" "$repo_slug" "$expected_head" && return 0
+	echo "[pulse-wrapper] _dispatch_pr_fix_worker: review readiness changed before finalization for PR #${pr_number} in ${repo_slug} — deferring without destructive routing" >>"$LOGFILE"
+	return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
 }
 
 _PULSE_REVIEW_FEEDBACK_REVIEWS_JSON="[]"
@@ -2634,14 +2704,11 @@ _dispatch_pr_fix_worker() {
 	local reviews_json="$_PULSE_REVIEW_FEEDBACK_REVIEWS_JSON"
 	local inline_json="$_PULSE_REVIEW_FEEDBACK_INLINE_JSON"
 	local readiness_rc=0
-	_review_feedback_preserve_ready_pr "$pr_number" "$repo_slug" "$expected_head" || readiness_rc=$?
+	_review_feedback_route_initial_gate "$pr_number" "$repo_slug" "$expected_head" || readiness_rc=$?
 	if [[ "$readiness_rc" -eq 0 ]]; then
 		return 0
 	fi
-	if [[ "$readiness_rc" -eq "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ]]; then
-		echo "[pulse-wrapper] _dispatch_pr_fix_worker: ready-review evidence unavailable for PR #${pr_number} in ${repo_slug} — deferring without destructive routing" >>"$LOGFILE"
-		return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
-	fi
+	[[ "$readiness_rc" -eq 1 ]] || return "$readiness_rc"
 
 	# --- Build the Review Feedback markdown section ---
 	local feedback_section=""
@@ -2678,10 +2745,12 @@ open a fresh PR against issue #${linked_issue}.
 
 _Closed by deterministic merge pass (pulse-merge.sh, t2093)._"
 	local finalize_rc=0
+	_review_feedback_route_before_finalization "$pr_number" "$repo_slug" "$expected_head" || return $?
 	_finalize_feedback_route "review" "$pr_number" "$repo_slug" "$linked_issue" "$expected_head" \
 		"$PULSE_REVIEW_REPAIR_SOURCE_LABEL" "review-routed-to-issue" "$marker" "$feedback_section" \
 		"_dispatch_pr_fix_worker" "$close_comment" "$legacy_match" "$evidence_fingerprint" \
 		"source:review-feedback" || finalize_rc=$?
+	_PULSE_FEEDBACK_ROUTE_REVIEW_PRECLOSE_GUARD=0
 	if [[ "$finalize_rc" -eq 0 ]]; then
 		echo "[pulse-wrapper] _dispatch_pr_fix_worker: routed review feedback from PR #${pr_number} to issue #${linked_issue} in ${repo_slug} (t2093)" >>"$LOGFILE"
 	fi

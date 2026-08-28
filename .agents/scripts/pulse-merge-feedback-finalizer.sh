@@ -866,8 +866,21 @@ _feedback_route_close_and_finish() {
 	local close_rc=0
 	local close_snapshot_rc=0
 	local closed_by_this_call=0
+	local preclose_guard_rc=0
 
 	if [[ "$pr_state" == "$PULSE_FEEDBACK_ROUTE_OPEN_STATE" ]]; then
+		if [[ "$kind" == "review" && "${_PULSE_FEEDBACK_ROUTE_REVIEW_PRECLOSE_GUARD:-0}" == "1" ]]; then
+			if ! declare -F _review_feedback_route_preclose_allows >/dev/null 2>&1; then
+				preclose_guard_rc="${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
+			else
+				_review_feedback_route_preclose_allows "$pr_number" "$repo_slug" "$expected_head" || preclose_guard_rc=$?
+			fi
+			if [[ "$preclose_guard_rc" -ne 0 ]]; then
+				_feedback_route_hold_for_maintainer "$pr_number" "$repo_slug" "$linked_issue" \
+					"review readiness changed immediately before close; preserving remediated PR"
+				return $?
+			fi
+		fi
 		_feedback_route_gh_write pr close "$pr_number" --repo "$repo_slug" \
 			--comment "${close_comment}
 
