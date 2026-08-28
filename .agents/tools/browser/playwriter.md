@@ -171,6 +171,7 @@ await page.pdf({ path: 'page.pdf', format: 'A4' })
 - **Extension not connecting**: Installed and pinned? Click icon on tab (should turn green). Red badge = error. Reload tab.
 - **MCP not finding tabs**: Green icon? Restart MCP client. Verify WebSocket on port 19988.
 - **No approved tab**: Click the Playwriter extension on the intended tab and wait for the icon to turn green; this consent requirement is distinct from missing MCP tools.
+- **Terminal OpenCode activation failure**: After the one bounded reset, treat Playwriter as unavailable for the session and use the documented secure CLI diagnostic path only to isolate the cause. Do not retry through another child or treat direct CLI initialization as successful OpenCode activation.
 - **Automation detection**: Disconnect (click icon → gray) → complete manual action (login, captcha) → reconnect (click → green) → resume.
 
 ## Resources
