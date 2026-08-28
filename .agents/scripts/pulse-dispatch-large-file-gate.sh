@@ -530,7 +530,9 @@ _large_file_gate_normalize_debt_issue() {
 	local _labels="" _stale_label
 	_labels=$(gh_issue_view "$issue_number" --repo "$repo_slug" \
 		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || return 1
-	for _stale_label in status:done not-planned simplification-incomplete; do
+	# A reopened canonical issue must not retain any terminal exclusion labels:
+	# dispatch candidate enumeration rejects these even when auto-dispatch exists.
+	for _stale_label in status:done not-planned simplification-incomplete duplicate already-fixed wontfix; do
 		if [[ ",$_labels," == *",$_stale_label,"* ]]; then
 			if ! gh issue edit "$issue_number" --repo "$repo_slug" \
 				--remove-label "$_stale_label" >/dev/null 2>&1; then

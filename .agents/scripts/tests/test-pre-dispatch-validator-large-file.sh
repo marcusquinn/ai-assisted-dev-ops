@@ -417,7 +417,6 @@ test_function_marker_markdown_uses_file_lines() {
 	else
 		print_result "function_marker_markdown_uses_file_line_rationale" 1 "Expected file-line rationale without function wording"
 	fi
-
 	teardown_test_env
 	return 0
 }

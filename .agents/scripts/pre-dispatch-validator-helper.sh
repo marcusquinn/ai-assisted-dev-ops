@@ -1773,7 +1773,7 @@ _close_with_rationale() {
 		cat <<EOF
 > Premise falsified. Pre-dispatch validator for generator \`${generator}\` determined the issue premise is no longer true. ${rationale_detail} Not dispatching a worker.
 
-The issue was closed automatically by the pre-dispatch validator (GH#19118, t2367). If conditions change, a new issue will be created by the next pulse cycle.
+The issue was closed automatically by the pre-dispatch validator (GH#19118, t2367). If conditions change, the next pulse cycle may reopen the canonical issue.
 
 ${sig_footer}
 EOF

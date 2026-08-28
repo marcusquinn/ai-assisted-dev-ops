@@ -94,6 +94,7 @@ GH_CALLS_LOG="${TMP}/gh_calls.log"
 GH_CREATE_RESPONSE_URL=""
 GH_REMOTE_CONTENT_RESPONSE=""
 GH_REMOTE_CONTENT_FAIL=""
+GH_LABELS_RESPONSE=""
 : >"$GH_CALLS_LOG"
 
 # =============================================================================
@@ -113,7 +114,7 @@ gh_issue_list() {
 }
 
 gh_issue_view() {
-	printf ''
+	printf '%s' "$GH_LABELS_RESPONSE"
 	return 0
 }
 
@@ -267,6 +268,7 @@ GH_CLOSED_RESPONSE="18706"
 GH_CREATE_RESPONSE_URL=""
 GH_REMOTE_CONTENT_RESPONSE=$(_remote_content_json "$OVER_FILE")
 GH_REMOTE_CONTENT_FAIL=""
+GH_LABELS_RESPONSE=""
 out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo" "$TMP")
 assert_eq \
 	"closed + file over threshold → reopen canonical issue" \
@@ -281,11 +283,34 @@ assert_contains \
 	"gh issue reopen 18706 --repo owner/repo" \
 	"$(cat "$GH_CALLS_LOG")"
 
+# A prior terminal closure must not leave the reopened canonical issue
+# ineligible for candidate enumeration.
+: >"$GH_CALLS_LOG"
+GH_LABELS_RESPONSE="duplicate,already-fixed,status:done,not-planned,simplification-incomplete,wontfix"
+out=$(_large_file_gate_reopen_debt_issue "18706" "over.sh" "owner/repo")
+assert_eq \
+	"terminal-labelled canonical issue reopens" \
+	"#18706 (reopened)" \
+	"$out"
+assert_contains \
+	"reopened canonical issue removes terminal exclusion labels" \
+	"--remove-label duplicate" \
+	"$(cat "$GH_CALLS_LOG")"
+assert_contains \
+	"reopened canonical issue removes already-fixed label" \
+	"--remove-label already-fixed" \
+	"$(cat "$GH_CALLS_LOG")"
+assert_contains \
+	"reopened canonical issue restores active lifecycle labels" \
+	"--add-label file-size-debt,auto-dispatch" \
+	"$(cat "$GH_CALLS_LOG")"
+
 # ---- Test 3 — stale local OVER, remote UNDER → keep solved issue closed ----
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_REMOTE_CONTENT_RESPONSE=$(_remote_content_json "$UNDER_FILE")
 GH_REMOTE_CONTENT_FAIL=""
+GH_LABELS_RESPONSE=""
 out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo" "$TMP")
 assert_eq \
 	"stale local over + remote under → continuation" \
@@ -301,6 +326,7 @@ GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_REMOTE_CONTENT_RESPONSE=""
 GH_REMOTE_CONTENT_FAIL="1"
+GH_LABELS_RESPONSE=""
 out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo" "$TMP")
 assert_eq \
 	"local over + remote unavailable → defer reopen" \
@@ -316,6 +342,7 @@ GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_CREATE_RESPONSE_URL=""
 GH_REMOTE_CONTENT_FAIL=""
+GH_LABELS_RESPONSE=""
 out=$(_large_file_gate_create_debt_issue "over.sh" "9999" "owner/repo")
 assert_eq \
 	"closed + no repo_path → continuation (backward-compat fallback)" \
@@ -326,6 +353,7 @@ assert_eq \
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_CREATE_RESPONSE_URL=""
+GH_LABELS_RESPONSE=""
 out=$(_large_file_gate_create_debt_issue "missing.sh" "9999" "owner/repo" "$TMP")
 assert_eq \
 	"closed + file missing on disk → continuation (measurement unavailable)" \
