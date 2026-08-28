@@ -59,7 +59,10 @@ _gh_guard_public_write_args() {
 	for arg in "$@"; do
 		if [[ -n "$expect" ]]; then
 			case "$expect" in
-			repo) repo="$arg" ;;
+			repo)
+				[[ "$arg" != -* ]] || return 1
+				repo="$arg"
+				;;
 			text) text+=$'\n'"$arg" ;;
 			body-file)
 				body_file="$arg"
@@ -71,7 +74,7 @@ _gh_guard_public_write_args() {
 			continue
 		fi
 		case "$arg" in
-		--repo) expect="repo" ;;
+		--repo | -R) expect="repo" ;;
 		--repo=*) repo="${arg#--repo=}" ;;
 		--title | --body | --comment | -c) expect="text" ;;
 		--title=* | --body=* | --comment=* | -c=*) text+=$'\n'"${arg#*=}" ;;
@@ -83,6 +86,7 @@ _gh_guard_public_write_args() {
 			;;
 		esac
 	done
+	[[ "$expect" != "repo" ]] || return 1
 	privacy_guard_public_write "$repo" "$text"
 	return $?
 }
@@ -717,7 +721,7 @@ _gh_auto_link_sub_issue() {
 		--title=*)
 			title="${_a#--title=}"; shift
 			;;
-		--repo)
+		--repo | -R)
 			if [[ $# -gt 1 ]]; then repo="$_v"; shift 2; else shift; fi
 			;;
 		--repo=*)
