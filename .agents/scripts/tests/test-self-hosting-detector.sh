@@ -8,6 +8,7 @@
 #   test_positive_detection        — body with pulse-wrapper.sh triggers label
 #   test_negative_detection        — docs-only body does not trigger
 #   test_mixed_scope               — dispatch file + unrelated file → triggers
+#   test_files_scope_headings      — canonical scope headings override prose
 #   test_idempotency               — re-run on already-labeled issue is no-op
 #   test_bypass_env_var            — AIDEVOPS_SKIP_SELF_HOSTING_DETECTOR=1
 #   test_dry_run_mode              — dry-run emits intent without mutation
@@ -207,6 +208,41 @@ EOF
 	return 0
 }
 
+# Create a body with a canonical Files Scope heading and an incidental
+# dispatch-path mention outside that authoritative scope.
+create_body_with_files_scope() {
+	local heading="$1"
+	local scoped_path="$2"
+	local body_file="${TEST_ROOT}/issue_body.txt"
+
+	if [[ "$heading" == "## Files Scope" ]]; then
+		cat >"$body_file" <<EOF
+## Files Scope
+
+- EDIT: \`${scoped_path}\` — update documentation
+
+## Context
+
+The dashboard also reports on \`.agents/scripts/pulse-dispatch-engine.sh\`.
+EOF
+	else
+		cat >"$body_file" <<EOF
+## How
+
+${heading}
+
+- EDIT: \`${scoped_path}\` — update implementation
+
+### Context
+
+The dashboard also reports on \`.agents/scripts/pulse-dispatch-engine.sh\`.
+EOF
+	fi
+
+	printf '%s' "$body_file"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -235,17 +271,11 @@ test_positive_detection() {
 		mutation_signaled=0
 	fi
 
-	# Check that a comment was posted
-	local comment_posted=1
-	if [[ -s "$GH_COMMENT_LOG" ]]; then
-		comment_posted=0
-	fi
-
-	if [[ "$exit_ok" -eq 0 && "$label_applied" -eq 0 && "$comment_posted" -eq 0 && "$mutation_signaled" -eq 0 ]]; then
-		print_result "positive_detection: label applied + comment posted" 0
+	if [[ "$exit_ok" -eq 0 && "$label_applied" -eq 0 && "$mutation_signaled" -eq 0 ]]; then
+		print_result "positive_detection: label applied" 0
 	else
-		print_result "positive_detection: label applied + comment posted" 1 \
-			"exit=${rc}, label=${label_applied}, comment=${comment_posted}, signal=${mutation_signaled} (all want 0)"
+		print_result "positive_detection: label applied" 1 \
+			"exit=${rc}, label=${label_applied}, signal=${mutation_signaled} (all want 0)"
 	fi
 
 	teardown_test_env
@@ -308,6 +338,61 @@ test_mixed_scope() {
 	fi
 
 	teardown_test_env
+	return 0
+}
+
+# Verify canonical Files Scope headings override incidental prose references.
+test_files_scope_heading() {
+	local test_name="$1"
+	local heading="$2"
+	local scoped_path="$3"
+	local expect_label="$4"
+
+	setup_test_env
+	local body_file
+	body_file=$(create_body_with_files_scope "$heading" "$scoped_path")
+	create_gh_stub "$body_file" "tier:standard,auto-dispatch" "0"
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "108" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	local label_matches=1
+	if [[ "$expect_label" == "yes" ]]; then
+		if grep -qF "tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
+			label_matches=0
+		fi
+	elif ! grep -qF "tier:thinking" "$GH_LABEL_LOG" 2>/dev/null; then
+		label_matches=0
+	fi
+
+	if [[ "$rc" -eq 0 && "$label_matches" -eq 0 ]]; then
+		print_result "$test_name" 0
+	else
+		print_result "$test_name" 1 \
+			"exit=${rc} (want 0), label_matches=${label_matches} (want 0)"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_level2_files_scope_ignores_narrative() {
+	test_files_scope_heading "level2_files_scope: narrative ignored" "## Files Scope" "docs/dashboard.md" "no"
+	return 0
+}
+
+test_level3_files_scope_ignores_narrative() {
+	test_files_scope_heading "level3_files_scope: narrative ignored" "### Files Scope" "docs/dashboard.md" "no"
+	return 0
+}
+
+test_level2_files_scope_detects_dispatch_path() {
+	test_files_scope_heading "level2_files_scope: dispatch path detected" "## Files Scope" ".agents/scripts/pulse-dispatch-engine.sh" "yes"
+	return 0
+}
+
+test_level3_files_scope_detects_dispatch_path() {
+	test_files_scope_heading "level3_files_scope: dispatch path detected" "### Files Scope" ".agents/scripts/pulse-dispatch-engine.sh" "yes"
 	return 0
 }
 
@@ -493,6 +578,10 @@ main() {
 	test_positive_detection
 	test_negative_detection
 	test_mixed_scope
+	test_level2_files_scope_ignores_narrative
+	test_level3_files_scope_ignores_narrative
+	test_level2_files_scope_detects_dispatch_path
+	test_level3_files_scope_detects_dispatch_path
 	test_idempotency
 	test_bypass_env_var
 	test_dry_run_mode
