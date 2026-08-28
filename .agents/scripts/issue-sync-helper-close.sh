@@ -464,7 +464,8 @@ cmd_close() {
 		return 0
 	fi
 
-	# Bulk mode: fetch all open issues, build task->issue map
+	# Bulk mode: fetch all open issues, build task->issue map. The TODO loop below
+	# consumes the complete stripped stream, so its grep consumer cannot SIGPIPE.
 	local open_json
 	open_json=$(gh_list_issues "$repo" "open" 500)
 	local map=""
