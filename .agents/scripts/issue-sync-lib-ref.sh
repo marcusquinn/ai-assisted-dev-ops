@@ -164,15 +164,17 @@ add_pr_ref_to_todo() {
 	local pr_number="$2"
 	local todo_file="$3"
 	local task_id_ere
+	local task_line=""
 	task_id_ere=$(_escape_ere "$task_id")
+	task_line=$(_first_todo_task_line_or_empty "$task_id" "$todo_file") || return 1
 
-	# Check if pr: ref already exists outside code fences
-	if strip_code_fences <"$todo_file" | grep -qE "^\s*- \[.\] ${task_id_ere} .*pr:#${pr_number}"; then
+	# The selector consumes the parser's complete output before checking refs.
+	if [[ "$task_line" == *"pr:#${pr_number}"* ]]; then
 		return 0
 	fi
 
-	# Check if any pr: ref already exists outside code fences (don't duplicate)
-	if strip_code_fences <"$todo_file" | grep -qE "^\s*- \[.\] ${task_id_ere} .*pr:#"; then
+	# Do not duplicate a different existing PR reference.
+	if [[ "$task_line" == *"pr:#"* ]]; then
 		log_verbose "$task_id already has a pr: ref, skipping"
 		return 0
 	fi
@@ -356,12 +358,11 @@ resolve_task_gh_number() {
 			return 0
 		fi
 	fi
-	local task_id_ere
-	task_id_ere=$(_escape_ere "$task_id")
-
-	local ref="" issue_json="" issue_id="" issue_number="" issue_state="" issue_cursor=""
-	ref=$(strip_code_fences <"$todo_file" | grep -E "^\s*- \[.\] ${task_id_ere} " | head -1 |
-		grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || echo "")
+	local ref="" issue_json="" issue_id="" issue_number="" issue_state="" issue_cursor="" task_line=""
+	task_line=$(_first_todo_task_line_or_empty "$task_id" "$todo_file") || return 1
+	if [[ "$task_line" =~ ref:GH#([0-9]+) ]]; then
+		ref="${BASH_REMATCH[1]}"
+	fi
 	[[ "$ref" =~ ^[1-9][0-9]*$ ]] || return 1
 	issue_json=$(_gh_with_timeout read gh issue view "$ref" --repo "$repo" --json id,number,state,updatedAt 2>/dev/null || true)
 	[[ -n "$issue_json" ]] || return 1
@@ -685,10 +686,10 @@ _seed_orphan_todo_line() {
 	# Guard: empty task_id cannot produce a valid TODO line
 	task_identity_validate "$task_id" || return 1
 
-	# Idempotency check: skip if any entry for this task_id already exists
-	local task_id_ere
-	task_id_ere=$(_escape_ere "$task_id")
-	if strip_code_fences <"$todo_file" | grep -qE "^\s*- \[.\] ${task_id_ere} "; then
+	# Idempotency check: the full-stream selector avoids stopping the parser early.
+	local task_line=""
+	task_line=$(_first_todo_task_line_or_empty "$task_id" "$todo_file") || return 1
+	if [[ -n "$task_line" ]]; then
 		_dedupe_todo_task_lines "$task_id" "$todo_file" || true
 		{ log_verbose "ORPHAN already seeded: $task_id (ref:GH#$num) — skipping" || true; }
 		return 1

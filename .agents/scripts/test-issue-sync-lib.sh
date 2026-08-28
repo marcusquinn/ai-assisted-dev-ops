@@ -597,6 +597,34 @@ else
 	fail "first TODO task selector: caller wrapper hid parser failure (status=$selector_status output=$selector_output)"
 fi
 
+# Migrated library callers must retain their positive-match behavior without
+# allowing the large parser stream to terminate at a downstream grep/head.
+caller_todo="$TMP/todo-migrated-callers.md"
+{
+	printf '%s\n' '- [ ] t13000 migrated caller target ref:GH#13000'
+	caller_i=2
+	while [[ "$caller_i" -le 12000 ]]; do
+		printf -- '- [ ] t%s migrated caller filler ref:GH#%s\n' "$caller_i" "$caller_i"
+		caller_i=$((caller_i + 1))
+	done
+} >"$caller_todo"
+
+add_pr_ref_to_todo "t13000" "2007" "$caller_todo" 2>"$TMP/add-pr-caller.err"
+if grep -q 'pr:#2007' "$caller_todo" && [[ ! -s "$TMP/add-pr-caller.err" ]]; then
+	pass "migrated add_pr_ref_to_todo: large early match remains quiet"
+else
+	fail "migrated add_pr_ref_to_todo: large early match emitted an error or missed the ref"
+fi
+
+if _seed_orphan_todo_line "13000" "t13000" "t13000: duplicate candidate" '[]' "$caller_todo" \
+	2>"$TMP/orphan-caller.err"; then
+	fail "migrated orphan selector: duplicate task was seeded"
+elif [[ ! -s "$TMP/orphan-caller.err" ]]; then
+	pass "migrated orphan selector: large early duplicate remains quiet"
+else
+	fail "migrated orphan selector: large early duplicate emitted an error"
+fi
+
 selector_calls=$(grep -c '_first_todo_task_line' \
 	"$SCRIPT_DIR/issue-sync-helper.sh" "$SCRIPT_DIR/issue-sync-helper-close.sh" | \
 	awk -F: '{ total += $2 } END { print total + 0 }')
@@ -606,6 +634,14 @@ if [[ "$selector_calls" -eq 5 ]] &&
 	pass "first TODO task selector: all enumerated issue-sync call sites migrated"
 else
 	fail "first TODO task selector: enumerated call-site migration incomplete (calls=$selector_calls)"
+fi
+
+if ! rg -U 'strip_code_fences[[:space:]]*<[^\n]+\|[[:space:]]*(grep -qE|grep -E[^\n]*\|[[:space:]]*head)' \
+	"$SCRIPT_DIR/issue-sync-lib-ref.sh" "$SCRIPT_DIR/issue-sync-helper-commands.sh" \
+	"$SCRIPT_DIR/issue-sync-relationships.sh" "$SCRIPT_DIR/issue-sync-helper-close.sh" >/dev/null; then
+	pass "first TODO task selector: residual first-match callers are pipe-safe"
+else
+	fail "first TODO task selector: residual early-closing parser pipeline remains"
 fi
 
 # -----------------------------------------------------------------------------
