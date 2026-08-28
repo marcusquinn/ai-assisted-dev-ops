@@ -79,10 +79,10 @@ case "$1 $2" in
 		printf 'pull request update failed: GraphQL: external contributor cannot update the pull request\n' >&2
 		exit 1
 	fi
-	echo "https://example.invalid/o/r/pull/0"
+	echo "https://github.com/o/r/pull/0"
 	;;
 "issue create")
-	echo "https://example.invalid/o/r/pull/0"
+	echo "https://github.com/o/r/pull/0"
 	;;
 "pr list")
 	printf '%s\n' "${MOCK_RECOVERED_PR_URL:-}"
@@ -421,7 +421,7 @@ fi
 # mutation. The wrapper must not create twice and must print the durable URL.
 reset_recorder
 export MOCK_PR_CREATE_MUTATION_FAILURE=1
-export MOCK_RECOVERED_PR_URL="https://example.invalid/o/r/pull/42"
+export MOCK_RECOVERED_PR_URL="https://github.com/o/r/pull/42"
 export MOCK_PR_READY_RC=0
 export MOCK_ORIGIN_EXACT=0
 partial_output=""
@@ -435,7 +435,7 @@ partial_output_file="${TEST_ROOT}/partial-output.txt"
 ) || partial_rc=$?
 partial_output=$(<"$partial_output_file")
 create_count=$(grep -c '^pr create ' "$GH_RECORD_FILE" || true)
-if [[ "$partial_rc" -eq 78 && "$partial_output" == "https://example.invalid/o/r/pull/42" &&
+if [[ "$partial_rc" -eq 78 && "$partial_output" == "https://github.com/o/r/pull/42" &&
 	"$create_count" -eq 1 ]] && grep -q '^pr ready 42 --repo o/r$' "$GH_RECORD_FILE"; then
 	print_result "B10: durable external-fork PR recovery is idempotent and ready" 0
 else
