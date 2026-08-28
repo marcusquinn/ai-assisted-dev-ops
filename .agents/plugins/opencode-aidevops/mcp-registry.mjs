@@ -451,19 +451,28 @@ function buildMcpConfigEntry(mcp, runtime) {
  * @param {unknown} command
  * @returns {boolean}
  */
+function isPackageRunner(runner, name) {
+  if (runner === name) return true;
+  if (typeof runner !== "string" || !isAbsolute(runner)) return false;
+  return new RegExp(`[\\\\/]${name}$`).test(runner);
+}
+
+function isLegacyNpxPlaywriterCommand(command) {
+  if (!isPackageRunner(command[0], "npx")) return false;
+  if (command.length === 2) return command[1] === LEGACY_PLAYWRITER_MCP_PACKAGE;
+  if (command.length !== 3 || command[1] !== "-y") return false;
+  return command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE;
+}
+
+function isLegacyBunPlaywriterCommand(command) {
+  if (command.length !== 3 || !isPackageRunner(command[0], "bun")) return false;
+  if (command[1] !== "x") return false;
+  return command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE;
+}
+
 function isLegacyGeneratedPlaywriterCommand(command) {
   if (!Array.isArray(command)) return false;
-  const isRunner = (runner, name) => runner === name
-    || (typeof runner === "string" && isAbsolute(runner) && new RegExp(`[\\\\/]${name}$`).test(runner));
-  const isNpx = isRunner(command[0], "npx")
-    && ((command.length === 2 && command[1] === LEGACY_PLAYWRITER_MCP_PACKAGE)
-      || (command.length === 3 && command[1] === "-y"
-        && command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE));
-  const isBun = command.length === 3
-    && isRunner(command[0], "bun")
-    && command[1] === "x"
-    && command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE;
-  return isNpx || isBun;
+  return isLegacyNpxPlaywriterCommand(command) || isLegacyBunPlaywriterCommand(command);
 }
 
 /**
