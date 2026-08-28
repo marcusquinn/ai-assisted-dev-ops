@@ -60,23 +60,38 @@ test("registers only the explicit browser MCP activation profiles", () => {
 });
 
 test("pins legacy Playwriter commands while preserving custom commands", () => {
-  const config = {
-    mcp: {
-      playwriter: {
-        type: "local",
-        command: ["npx", "playwriter@latest"],
-        enabled: true,
-      },
-    },
-    tools: { "playwriter_*": true },
-  };
+  const legacyCommands = [
+    ["npx", "playwriter@latest"],
+    ["/opt/aidevops/bin/npx", "playwriter@latest"],
+    ["npx", "-y", "playwriter@latest"],
+    ["bun", "x", "playwriter@latest"],
+  ];
 
-  registerMcpServers(config);
+  for (const command of legacyCommands) {
+    const playwriter = {
+      type: "local",
+      command: [...command],
+      enabled: true,
+      environment: { PLAYWRITER_RELAY: "local" },
+      timeout: 5_000,
+      customMetadata: { owner: "user" },
+    };
+    const config = {
+      mcp: { playwriter },
+      tools: { "playwriter_*": true },
+    };
 
-  assert.equal(config.mcp.playwriter.command.at(-1), "playwriter@0.5.0");
-  assert.ok(!config.mcp.playwriter.command.includes("playwriter@latest"));
-  assert.equal(config.mcp.playwriter.enabled, false);
-  assert.equal(config.tools["playwriter_*"], false);
+    registerMcpServers(config);
+
+    assert.strictEqual(config.mcp.playwriter, playwriter);
+    assert.equal(playwriter.command.at(-1), "playwriter@0.5.0");
+    assert.ok(!playwriter.command.includes("playwriter@latest"));
+    assert.equal(playwriter.enabled, false);
+    assert.deepEqual(playwriter.environment, { PLAYWRITER_RELAY: "local" });
+    assert.equal(playwriter.timeout, 5_000);
+    assert.deepEqual(playwriter.customMetadata, { owner: "user" });
+    assert.equal(config.tools["playwriter_*"], false);
+  }
 
   const customConfig = {
     mcp: {
@@ -115,6 +130,25 @@ test("pins legacy Playwriter commands while preserving custom commands", () => {
   ]);
   assert.equal(customLatestConfig.mcp.playwriter.enabled, false);
   assert.equal(customLatestConfig.tools["playwriter_*"], false);
+
+  const customLatestWithYesConfig = {
+    mcp: {
+      playwriter: {
+        type: "local",
+        command: ["npx", "-y", "playwriter@latest", "serve", "--port", "19988"],
+        enabled: true,
+      },
+    },
+    tools: { "playwriter_*": true },
+  };
+
+  registerMcpServers(customLatestWithYesConfig);
+
+  assert.deepEqual(customLatestWithYesConfig.mcp.playwriter.command, [
+    "npx", "-y", "playwriter@latest", "serve", "--port", "19988",
+  ]);
+  assert.equal(customLatestWithYesConfig.mcp.playwriter.enabled, false);
+  assert.equal(customLatestWithYesConfig.tools["playwriter_*"], false);
 });
 
 test("migrates browser MCPs to disconnected and globally denied", () => {

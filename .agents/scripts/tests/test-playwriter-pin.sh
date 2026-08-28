@@ -20,19 +20,34 @@ spec = importlib.util.spec_from_file_location("mcp_config", module_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-legacy_config = {
-    "mcp": {
-        "playwriter": {
-            "type": "local",
-            "command": ["npx", "playwriter@latest"],
-            "enabled": True,
-        },
-    },
-    "tools": {},
-}
-module.register_standard_mcps(legacy_config, None, "npx")
-assert legacy_config["mcp"]["playwriter"]["command"] == ["npx", "playwriter@0.5.0"]
-assert legacy_config["tools"]["playwriter_*"] is False
+legacy_commands = [
+    ["npx", "playwriter@latest"],
+    ["/opt/aidevops/bin/npx", "playwriter@latest"],
+    ["npx", "-y", "playwriter@latest"],
+    ["bun", "x", "playwriter@latest"],
+]
+for command in legacy_commands:
+    playwriter = {
+        "type": "local",
+        "command": command.copy(),
+        "enabled": True,
+        "environment": {"PLAYWRITER_RELAY": "local"},
+        "timeout": 5000,
+        "custom_metadata": {"owner": "user"},
+    }
+    legacy_config = {
+        "mcp": {"playwriter": playwriter},
+        "tools": {},
+    }
+    module.register_standard_mcps(legacy_config, None, "npx")
+    assert legacy_config["mcp"]["playwriter"] is playwriter
+    assert playwriter["command"][-1] == "playwriter@0.5.0"
+    assert "playwriter@latest" not in playwriter["command"]
+    assert playwriter["enabled"] is False
+    assert playwriter["environment"] == {"PLAYWRITER_RELAY": "local"}
+    assert playwriter["timeout"] == 5000
+    assert playwriter["custom_metadata"] == {"owner": "user"}
+    assert legacy_config["tools"]["playwriter_*"] is False
 
 custom_config = {
     "mcp": {
@@ -48,6 +63,7 @@ module.register_standard_mcps(custom_config, None, "npx")
 assert custom_config["mcp"]["playwriter"]["command"] == [
     "playwriter", "serve", "--port", "19988",
 ]
+assert custom_config["mcp"]["playwriter"]["enabled"] is False
 assert custom_config["tools"]["playwriter_*"] is False
 
 custom_latest_config = {
@@ -64,7 +80,25 @@ module.register_standard_mcps(custom_latest_config, None, "npx")
 assert custom_latest_config["mcp"]["playwriter"]["command"] == [
     "npx", "playwriter@latest", "serve", "--port", "19988",
 ]
+assert custom_latest_config["mcp"]["playwriter"]["enabled"] is False
 assert custom_latest_config["tools"]["playwriter_*"] is False
+
+custom_latest_with_yes_config = {
+    "mcp": {
+        "playwriter": {
+            "type": "local",
+            "command": ["npx", "-y", "playwriter@latest", "serve", "--port", "19988"],
+            "enabled": True,
+        },
+    },
+    "tools": {},
+}
+module.register_standard_mcps(custom_latest_with_yes_config, None, "npx")
+assert custom_latest_with_yes_config["mcp"]["playwriter"]["command"] == [
+    "npx", "-y", "playwriter@latest", "serve", "--port", "19988",
+]
+assert custom_latest_with_yes_config["mcp"]["playwriter"]["enabled"] is False
+assert custom_latest_with_yes_config["tools"]["playwriter_*"] is False
 
 generated_config = {"mcp": {}, "tools": {}}
 module.register_standard_mcps(generated_config, None, "npx")
