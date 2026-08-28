@@ -31,6 +31,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 [[ -f "${SCRIPT_DIR}/shared-constants.sh" ]] && source "${SCRIPT_DIR}/shared-constants.sh"
 # shellcheck source=worker-attempt-observability.sh
 [[ -f "${SCRIPT_DIR}/worker-attempt-observability.sh" ]] && source "${SCRIPT_DIR}/worker-attempt-observability.sh"
+# shellcheck source=pr-review-thread-response-rereview.sh
+[[ -f "${SCRIPT_DIR}/pr-review-thread-response-rereview.sh" ]] && source "${SCRIPT_DIR}/pr-review-thread-response-rereview.sh"
 
 LOGFILE="${LOGFILE:-${HOME}/.aidevops/logs/pr-review-thread-response-scanner.log}"
 STATE_DIR="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR:-${HOME}/.aidevops/.agent-workspace/pr-review-thread-response}"
@@ -1731,6 +1733,10 @@ cmd_mark_complete() {
 	if [[ -z "$repo_slug" || ! "$pr_number" =~ ^[0-9]+$ ]]; then
 		_prrts_usage >&2
 		return 2
+	fi
+	if ! _prrts_finalize_rereview_request "$repo_slug" "$pr_number"; then
+		_prrts_log "rereview: ${repo_slug}#${pr_number} finalization failed closed"
+		return 1
 	fi
 	_prrts_write_analysis_state "$repo_slug" "$pr_number" "$PRRTS_BOOL_TRUE" "none" "$PRRTS_BOOL_FALSE" "$reason" "$details_file"
 	return 0

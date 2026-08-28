@@ -56,12 +56,16 @@ if [[ "$1" == "api" && "${2:-}" == "rate_limit" ]]; then
 	exit 0
 fi
 if [[ "$1" == "api" && "${2:-}" == "user" ]]; then printf '%s\n' "${STUB_GH_LOGIN:-worker-login}"; exit 0; fi
+if [[ "$1" == "api" && "${2:-}" =~ ^repos/owner/repo/pulls/[0-9]+/reviews\?per_page=100$ ]]; then
+	printf '%s\n' "${STUB_REVIEWS_RESPONSE:-[[]]}"
+	exit 0
+fi
 if [[ "$1" == "api" && "${2:-}" =~ ^repos/owner/repo/pulls/[0-9]+$ ]]; then
 	[[ "${AIDEVOPS_GH_QUOTA_COST_ON_SUCCESS:-}" == "1" ]] || exit 1
 	case "${STUB_PR_REPOSITORY_MODE:-same}" in
-	missing) printf '%s\n' '{"head":{"repo":null},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
-	cross) printf '%s\n' '{"head":{"repo":{"full_name":"contributor/repo"}},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
-	*) printf '%s\n' '{"head":{"repo":{"full_name":"owner/repo"}},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
+	missing) printf '%s\n' '{"state":"open","draft":false,"head":{"sha":"'"${STUB_PULL_HEAD_OID:-$TEST_HEAD_OID_1}"'","repo":null},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
+	cross) printf '%s\n' '{"state":"open","draft":false,"head":{"sha":"'"${STUB_PULL_HEAD_OID:-$TEST_HEAD_OID_1}"'","repo":{"full_name":"contributor/repo"}},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
+	*) printf '%s\n' '{"state":"'"${STUB_PULL_STATE:-open}"'","draft":'"${STUB_PULL_DRAFT:-false}"',"head":{"sha":"'"${STUB_PULL_HEAD_OID:-$TEST_HEAD_OID_1}"'","repo":{"full_name":"owner/repo"}},"base":{"repo":{"full_name":"owner/repo"}}}' ;;
 	esac
 	exit 0
 fi
@@ -73,6 +77,11 @@ if [[ "$1" == "pr" && "${2:-}" == "view" ]]; then
 	elif [[ "$*" == *"--json isCrossRepository"* ]]; then exit 1
 	else printf '%s\n' "${STUB_PR_VIEW:-Fix active PR	feature/review	${TEST_HEAD_OID_1}	worker-bot}"
 	fi
+	exit 0
+fi
+if [[ "$1" == "pr" && "${2:-}" == "edit" && "$*" == *"--add-reviewer"* ]]; then
+	printf '%s\n' "$*" >>"${PR_EDIT_LOG:-/dev/null}"
+	[[ "${STUB_REREVIEW_REQUEST_FAIL:-false}" == "true" ]] && exit 1
 	exit 0
 fi
 if [[ "$1" == "api" && "${2:-}" == "graphql" ]]; then
@@ -427,6 +436,7 @@ WORKTREE_STUB
 setup_test_env() {
 	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_HANG_SECONDS STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD STUB_GH_LOGIN
 	unset STUB_GH_REST_FAIL STUB_GH_GRAPHQL_FAIL STUB_GH_GRAPHQL_LOGIN
+	unset STUB_PULL_HEAD_OID STUB_PULL_STATE STUB_PULL_DRAFT STUB_REVIEWS_RESPONSE STUB_REREVIEW_REQUEST_FAIL
 	unset STUB_GIT_INVALID_BRANCH STUB_GIT_FETCH_FAIL STUB_GIT_CANONICAL_FETCH_FAIL
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
 	unset STUB_GIT_WORKTREE_DIRTY STUB_GIT_DIVERGED STUB_GIT_FAST_FORWARD_FAIL
@@ -472,12 +482,14 @@ setup_test_env() {
 	export GRAPHQL_MUTATIONS_LOG="${TEST_ROOT}/graphql-mutations.log"
 	export GRAPHQL_BODY_CAPTURE="${TEST_ROOT}/graphql-body.txt"
 	export GRAPHQL_BODY_FLAG_CAPTURE="${TEST_ROOT}/graphql-body-flag.txt"
+	export PR_EDIT_LOG="${TEST_ROOT}/pr-edit.log"
 	export PR_REVIEW_THREAD_RESPONSE_COOLDOWN=3600
 	export PR_REVIEW_THREAD_RESPONSE_INFRASTRUCTURE_FAILURE_COOLDOWN=90
 	export PRRTS_SCANNER_UNDER_TEST="$SCANNER"
 	: >"$GRAPHQL_MUTATIONS_LOG"
 	: >"$GRAPHQL_BODY_CAPTURE"
 	: >"$GRAPHQL_BODY_FLAG_CAPTURE"
+	: >"$PR_EDIT_LOG"
 	: >"$HEADLESS_LOG"
 	: >"$HEADLESS_COMPLETE_LOG"
 	: >"$DETACH_LAUNCH_LOG"
@@ -1042,6 +1054,23 @@ read_state_value() {
 		fi
 	done <"$state_file"
 	return 1
+}
+
+write_rereview_dispatch_state() {
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	{
+		printf 'fingerprint=THREAD1:https://example.invalid/thread\n'
+		printf 'dispatched_at=%s\n' "$(date +%s)"
+		printf 'thread_count=1\n'
+		printf 'attempt_count=1\n'
+		printf 'last_head_sha=%s\n' "$TEST_HEAD_OID_1"
+	} >"$state_file"
+	return 0
+}
+
+set_trusted_change_request_review() {
+	export STUB_REVIEWS_RESPONSE='[[{"id":11,"submitted_at":"2026-08-28T01:00:00Z","state":"CHANGES_REQUESTED","commit_id":"'"$TEST_HEAD_OID_1"'","author_association":"MEMBER","user":{"login":"trusted-reviewer","type":"User"}}]]'
+	return 0
 }
 
 test_scan_finds_unresolved_bot_thread() {
@@ -2229,6 +2258,112 @@ test_mark_blocked_sanitizes_reason_and_details() {
 	return 0
 }
 
+test_mark_complete_requests_trusted_rereview_once_per_changed_head() {
+	setup_test_env
+	write_rereview_dispatch_state
+	set_trusted_change_request_review
+	export STUB_PULL_HEAD_OID="$TEST_HEAD_OID_2"
+	export STUB_THREADS_MODE="none"
+	$SCANNER mark-complete owner/repo 1 repaired_head
+	$SCANNER mark-complete owner/repo 1 repaired_head
+	local rereview_state="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.rereview"
+	if [[ "$(wc -l <"$PR_EDIT_LOG")" -eq 1 ]] &&
+		grep -Fq -- '--add-reviewer trusted-reviewer' "$PR_EDIT_LOG" &&
+		grep -Fxq "head_sha=${TEST_HEAD_OID_2}" "$rereview_state" &&
+		grep -Fxq 'reviewers=trusted-reviewer' "$rereview_state"; then
+		print_result "mark-complete requests one trusted re-review per changed head" 0
+	else
+		print_result "mark-complete requests one trusted re-review per changed head" 1 \
+			"edits=$(tr '\n' ';' <"$PR_EDIT_LOG" 2>/dev/null || printf ''), state=$(tr '\n' ';' <"$rereview_state" 2>/dev/null || printf '')"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_mark_complete_skips_rereview_without_changed_head() {
+	setup_test_env
+	write_rereview_dispatch_state
+	set_trusted_change_request_review
+	export STUB_PULL_HEAD_OID="$TEST_HEAD_OID_1"
+	$SCANNER mark-complete owner/repo 1 no_push
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	if [[ ! -s "$PR_EDIT_LOG" ]] && grep -Fxq 'analysis_complete=true' "$state_file"; then
+		print_result "mark-complete does not request re-review without a changed head" 0
+	else
+		print_result "mark-complete does not request re-review without a changed head" 1
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_mark_complete_fails_closed_on_unknown_reviewer_identity() {
+	setup_test_env
+	write_rereview_dispatch_state
+	export STUB_PULL_HEAD_OID="$TEST_HEAD_OID_2"
+	export STUB_THREADS_MODE="none"
+	export STUB_REVIEWS_RESPONSE='[[{"id":12,"submitted_at":"2026-08-28T01:00:00Z","state":"CHANGES_REQUESTED","commit_id":"'"$TEST_HEAD_OID_1"'","author_association":"OWNER","user":{"login":"unknown reviewer","type":"User"}}]]'
+	$SCANNER mark-complete owner/repo 1 unknown_reviewer
+	if [[ ! -s "$PR_EDIT_LOG" ]]; then
+		print_result "mark-complete never requests an unvalidated reviewer identity" 0
+	else
+		print_result "mark-complete never requests an unvalidated reviewer identity" 1
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_mark_complete_defers_rereview_until_all_threads_converge() {
+	setup_test_env
+	write_rereview_dispatch_state
+	set_trusted_change_request_review
+	export STUB_PULL_HEAD_OID="$TEST_HEAD_OID_2"
+	export STUB_THREADS_MODE="human"
+	$SCANNER mark-complete owner/repo 1 partial_batch
+	if [[ ! -s "$PR_EDIT_LOG" ]] && grep -Fq 'unresolved review threads remain' "$LOGFILE"; then
+		print_result "mark-complete defers re-review while unresolved threads remain" 0
+	else
+		print_result "mark-complete defers re-review while unresolved threads remain" 1
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_mark_complete_preserves_incomplete_state_when_rereview_write_fails() {
+	setup_test_env
+	write_rereview_dispatch_state
+	set_trusted_change_request_review
+	export STUB_PULL_HEAD_OID="$TEST_HEAD_OID_2"
+	export STUB_THREADS_MODE="none"
+	export STUB_REREVIEW_REQUEST_FAIL="true"
+	local mark_rc=0
+	$SCANNER mark-complete owner/repo 1 request_failed || mark_rc=$?
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local rereview_state="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.rereview"
+	if [[ "$mark_rc" -eq 1 && ! -f "$rereview_state" ]] &&
+		! grep -Fxq 'analysis_complete=true' "$state_file"; then
+		print_result "mark-complete fails closed when the re-review request fails" 0
+	else
+		print_result "mark-complete fails closed when the re-review request fails" 1 "rc=${mark_rc}"
+	fi
+	teardown_test_env
+	return 0
+}
+
+test_mark_blocked_never_requests_rereview() {
+	setup_test_env
+	write_rereview_dispatch_state
+	set_trusted_change_request_review
+	export STUB_PULL_HEAD_OID="$TEST_HEAD_OID_2"
+	$SCANNER mark-blocked owner/repo 1 code remediation_failed
+	if [[ ! -s "$PR_EDIT_LOG" ]]; then
+		print_result "mark-blocked never requests re-review" 0
+	else
+		print_result "mark-blocked never requests re-review" 1
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_dispatch_pr_skips_when_pr_lock_held() {
 	setup_test_env
 	local lock_dir="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.lock"
@@ -2634,6 +2769,16 @@ main_mutations() {
 	return 0
 }
 
+main_rereview() {
+	test_mark_complete_requests_trusted_rereview_once_per_changed_head
+	test_mark_complete_skips_rereview_without_changed_head
+	test_mark_complete_fails_closed_on_unknown_reviewer_identity
+	test_mark_complete_defers_rereview_until_all_threads_converge
+	test_mark_complete_preserves_incomplete_state_when_rereview_write_fails
+	test_mark_blocked_never_requests_rereview
+	return 0
+}
+
 main() {
 	test_scan_finds_unresolved_bot_thread
 	test_scan_skips_draft_prs
@@ -2705,6 +2850,7 @@ main() {
 	test_no_marker_retry_behavior_is_preserved
 	test_old_state_file_without_completion_fields_still_retries
 	test_mark_blocked_sanitizes_reason_and_details
+	main_rereview
 	test_dispatch_pr_skips_when_pr_lock_held
 	test_dispatch_pr_reports_deduplicated_dispatch
 	test_dispatch_pr_reports_active_worker_as_deferred
