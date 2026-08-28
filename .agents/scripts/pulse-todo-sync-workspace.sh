@@ -214,7 +214,9 @@ _ptsw_create_workspace() {
 	_PULSE_TODO_SYNC_WORKSPACE="${workspace_root}/repo"
 	_PULSE_TODO_SYNC_OWNER_PID="$owner_pid"
 	_PULSE_TODO_SYNC_OWNER_START="$owner_start"
-	git clone --quiet --no-tags "$remote_url" "$_PULSE_TODO_SYNC_WORKSPACE" >/dev/null 2>&1 || return 1
+	# TODO ref sync needs only the remote default branch tip; preserve clone errors
+	# on stderr so retry telemetry can be diagnosed by the pulse wrapper log.
+	git clone --quiet --no-tags --depth 1 --single-branch "$remote_url" "$_PULSE_TODO_SYNC_WORKSPACE" || return 1
 	return 0
 }
 
