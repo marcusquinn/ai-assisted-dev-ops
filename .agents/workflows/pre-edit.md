@@ -18,6 +18,15 @@ Run before any file edits:
 
 Pass `--file <path>` when the target file is known — this enables path-based enforcement (t1712). `--task` description heuristics are a fallback for callers that don't know the target path.
 
+OpenCode callers may pass `targetPaths` to `aidevops_pre_edit_check`. Paths are
+resolved relative to `workdir`. If every verified target is outside Git
+worktrees, the tool reports **Git isolation not applicable** and does not create
+an unrelated repository worktree. This result covers only Git isolation: it
+does not authorize the external writes or bypass runtime path, secret,
+destructive-operation, or managed-directory policy. Repository-local, mixed,
+ambiguous, traversal, and symlinked scopes retain the stricter worktree gate or
+fail closed. Callers without target paths retain the task-only fallback.
+
 ## Mode-Scoped Main-Branch Write Allowlist (t1712, t1990)
 
 Interactive sessions have no `main`/`master` exception: every edit uses a linked worktree. For headless supervisor/routine/issue-sync bookkeeping and explicitly planning-only worker tasks, `pre-edit-check.sh` may allow these paths without a linked worktree:

@@ -30,6 +30,7 @@ describe("aidevops plugin tool schemas", () => {
     assert.ok(tools.aidevops.args.command?._zod, "aidevops.command must be Zod");
     assert.ok(tools.aidevops_pre_edit_check.args.task?._zod, "pre-edit task must be Zod");
     assert.ok(tools.aidevops_pre_edit_check.args.workdir?._zod, "pre-edit workdir must be Zod");
+    assert.ok(tools.aidevops_pre_edit_check.args.targetPaths?._zod, "pre-edit targetPaths must be Zod");
     assert.ok(tools.aidevops_hook_status.args.workdir?._zod, "hook-status workdir must be Zod");
     assert.ok(pool.args.action?._zod, "pool action must be Zod");
     assert.ok(pool.args.provider?._zod, "pool provider must be Zod");

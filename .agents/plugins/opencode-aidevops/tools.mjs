@@ -14,6 +14,7 @@ const FALLBACK_SCHEMA_NODE = {
   },
 };
 const FALLBACK_TOOL_SCHEMA = {
+  array: () => FALLBACK_SCHEMA_NODE,
   enum: () => FALLBACK_SCHEMA_NODE,
   string: () => FALLBACK_SCHEMA_NODE,
   number: () => FALLBACK_SCHEMA_NODE,

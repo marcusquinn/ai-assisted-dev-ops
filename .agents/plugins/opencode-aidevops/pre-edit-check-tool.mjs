@@ -3,13 +3,64 @@
 
 import { execFileSync, spawn } from "child_process";
 import { existsSync, realpathSync, statSync } from "fs";
-import { join } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 
 const PRE_EDIT_GUIDANCE = {
   1: "STOP — you are on main/master branch. Create a worktree first.",
   2: "Create a worktree before proceeding with edits.",
   3: "WARNING — proceed with caution.",
 };
+const MAX_TARGET_PATHS = 32;
+
+function pathIsWithin(candidate, parent) {
+  const relation = relative(parent, candidate);
+  return relation === "" || (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation));
+}
+
+function parsePolicyPayload(raw) {
+  const payload = JSON.parse(raw);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new TypeError("policy returned a non-object payload");
+  }
+  return payload;
+}
+
+function classifyExplicitTargets(targetPaths, scriptsDir, workdir) {
+  if (!Array.isArray(targetPaths) || targetPaths.length > MAX_TARGET_PATHS
+    || targetPaths.some((targetPath) => typeof targetPath !== "string" || !targetPath.trim())) {
+    throw new TypeError(`targetPaths must contain 1-${MAX_TARGET_PATHS} non-empty strings`);
+  }
+  if (targetPaths.some((targetPath) => targetPath.split(/[\\/]+/).includes(".."))) {
+    throw new TypeError("targetPaths containing parent traversal are ambiguous and must be normalized by the caller");
+  }
+  const helper = join(scriptsDir, "canonical-write-policy-helper.py");
+  if (!existsSync(helper)) {
+    throw new Error("required canonical-write policy helper is missing");
+  }
+  return targetPaths.map((targetPath) => {
+    const raw = execFileSync(
+      "python3",
+      [helper, "check-write", "--cwd", workdir, "--path", targetPath],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 10000,
+      },
+    );
+    const policy = parsePolicyPayload(raw);
+    const repoRoot = policy.context?.repo_root;
+    const lexicalTarget = resolve(workdir, targetPath);
+    const lexicallyRepositoryLocal = typeof repoRoot === "string"
+      && repoRoot !== ""
+      && pathIsWithin(lexicalTarget, repoRoot);
+    return { policy, targetPath, lexicallyRepositoryLocal };
+  });
+}
+
+function explicitTargetFailure(error) {
+  const detail = error?.stderr?.toString().trim() || error?.message || "target classification failed";
+  return `Pre-edit check exit 1: explicit target path classification failed closed\n${detail}`;
+}
 
 /**
  * Resolve and validate a requested Git worktree path.
@@ -71,10 +122,11 @@ function formatPreEditCheckResult(result, timeoutMs) {
 export function createPreEditCheckTool(tool, z, scriptsDir, timeoutMs = 120000) {
   return tool({
     description:
-      'Run the pre-edit git safety check before modifying files. Returns exit code and guidance. Args: task (optional string for loop mode), workdir (optional target Git worktree)',
+      'Run the pre-edit git safety check before modifying files. Returns exit code and guidance. Args: task (optional string for loop mode), workdir (optional target Git worktree), targetPaths (optional intended write paths)',
     args: {
       task: z.string().optional().describe('Optional task description for loop-mode worktree guidance'),
       workdir: z.string().optional().describe('Optional target Git worktree to validate'),
+      targetPaths: z.array(z.string()).optional().describe('Optional intended write paths, resolved relative to workdir'),
     },
     async execute(args) {
       args = args && typeof args === "object" ? args : {};
@@ -87,7 +139,45 @@ export function createPreEditCheckTool(tool, z, scriptsDir, timeoutMs = 120000) 
       if (!targetWorkdir) {
         return `Pre-edit check exit 1: target workdir must resolve to an existing Git worktree\n${requestedWorkdir}`;
       }
-      const taskArgs = args.task ? ["--loop-mode", "--task", args.task] : [];
+      const targetPaths = args.targetPaths === undefined ? [] : args.targetPaths;
+      if (!Array.isArray(targetPaths)) {
+        return explicitTargetFailure(new TypeError("targetPaths must be an array"));
+      }
+      let repositoryTarget = "";
+      if (targetPaths.length > 0) {
+        let classifications;
+        try {
+          classifications = classifyExplicitTargets(targetPaths, scriptsDir, targetWorkdir);
+        } catch (error) {
+          return explicitTargetFailure(error);
+        }
+        const deniedTarget = classifications.find(({ policy, lexicallyRepositoryLocal }) => {
+          if (policy.decision === "allow") return false;
+          return !(policy.context?.classification === "canonical"
+            && policy.target?.classification === "canonical"
+            && policy.context?.common_dir === policy.target?.common_dir
+            && lexicallyRepositoryLocal);
+        });
+        if (deniedTarget) {
+          return explicitTargetFailure(new Error(deniedTarget.policy.reason || "unsafe explicit target"));
+        }
+        const allExternal = classifications.every(({ policy, lexicallyRepositoryLocal }) =>
+          policy.decision === "allow"
+          && policy.target?.classification === "outside"
+          && !lexicallyRepositoryLocal);
+        if (allExternal) {
+          return "Git isolation not applicable: all explicit targetPaths resolve outside Git worktrees.\n"
+            + "This result does not authorize file writes; runtime path, secret, destructive-operation, and managed-directory policies still apply.";
+        }
+        repositoryTarget = classifications.find(({ policy, lexicallyRepositoryLocal }) =>
+          lexicallyRepositoryLocal || ["canonical", "linked"].includes(policy.target?.classification))?.targetPath || "";
+        if (!repositoryTarget) {
+          return explicitTargetFailure(new Error("target scope is mixed or indeterminate"));
+        }
+      }
+      const taskArgs = repositoryTarget
+        ? [...(args.task ? ["--loop-mode"] : []), "--file", repositoryTarget]
+        : (args.task ? ["--loop-mode", "--task", args.task] : []);
       const result = await runPreEditCheck(script, taskArgs, targetWorkdir, timeoutMs);
       return formatPreEditCheckResult(result, timeoutMs);
     },

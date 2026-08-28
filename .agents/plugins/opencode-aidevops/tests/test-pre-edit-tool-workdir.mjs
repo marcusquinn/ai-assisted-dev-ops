@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,67 @@ test("pre-edit tool validates the explicitly targeted Git worktree", async () =>
 
     const invalidResult = await preEditTool.execute({ workdir: nonGit, task: "fix fixture" });
     assert.match(invalidResult, /target workdir must resolve to an existing Git worktree/);
+
+    const worktreesBefore = git(repo, ["worktree", "list", "--porcelain"]);
+    const externalResult = await preEditTool.execute({
+      workdir: repo,
+      task: "update personal configuration",
+      targetPaths: [join(nonGit, "custom.sh"), join(root, "LaunchAgents", "fixture.plist")],
+    });
+    assert.match(externalResult, /Git isolation not applicable/);
+    assert.match(externalResult, /does not authorize file writes/);
+    assert.equal(git(repo, ["worktree", "list", "--porcelain"]), worktreesBefore);
+
+    const repositoryResult = await preEditTool.execute({
+      workdir: repo,
+      targetPaths: [join(repo, "nested", "..", "README.md")],
+    });
+    assert.match(repositoryResult, /Pre-edit check exit [12]:/);
+    assert.doesNotMatch(repositoryResult, /Git isolation not applicable/);
+
+    const mixedResult = await preEditTool.execute({
+      workdir: repo,
+      targetPaths: [join(nonGit, "custom.sh"), join(repo, "README.md")],
+    });
+    assert.match(mixedResult, /Pre-edit check exit [12]:/);
+    assert.doesNotMatch(mixedResult, /Git isolation not applicable/);
+
+    const linkedToCanonicalResult = await preEditTool.execute({
+      workdir: linked,
+      targetPaths: [join(repo, "README.md")],
+    });
+    assert.match(linkedToCanonicalResult, /failed closed/);
+    assert.doesNotMatch(linkedToCanonicalResult, /Pre-edit check PASSED/);
+
+    const symlinkEscape = join(repo, "external-link");
+    symlinkSync(nonGit, symlinkEscape);
+    const symlinkResult = await preEditTool.execute({
+      workdir: repo,
+      targetPaths: [join(symlinkEscape, "custom.sh")],
+    });
+    assert.match(symlinkResult, /failed closed/);
+    assert.doesNotMatch(symlinkResult, /Git isolation not applicable/);
+
+    const traversalResult = await preEditTool.execute({
+      workdir: repo,
+      targetPaths: ["../not-git/custom.sh"],
+    });
+    assert.match(traversalResult, /parent traversal.*ambiguous/);
+    assert.doesNotMatch(traversalResult, /Git isolation not applicable/);
+
+    const repositoryLink = join(nonGit, "repository-link");
+    symlinkSync(repo, repositoryLink);
+    const repositorySymlinkResult = await preEditTool.execute({
+      workdir: repo,
+      targetPaths: [join(repositoryLink, "README.md")],
+    });
+    assert.match(repositorySymlinkResult, /Pre-edit check exit [12]:/);
+    assert.doesNotMatch(repositorySymlinkResult, /Git isolation not applicable/);
+
+    const malformedResult = await preEditTool.execute({ workdir: repo, targetPaths: [""] });
+    assert.match(malformedResult, /failed closed/);
+    const malformedArrayResult = await preEditTool.execute({ workdir: repo, targetPaths: {} });
+    assert.match(malformedArrayResult, /targetPaths must be an array/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
