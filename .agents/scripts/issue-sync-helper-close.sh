@@ -221,6 +221,30 @@ _mark_todo_done() {
 	return 0
 }
 
+# Mark an incomplete live TODO entry as declined after its linked issue was
+# deliberately closed as not planned. The line-number lookup excludes fenced
+# examples and comments, while preserving its existing GitHub reference.
+_mark_todo_not_planned() {
+	local task_id="$1" todo_file="$2" ref_num="$3"
+	local line_num target_line new_line new_line_escaped today
+
+	line_num=$(_todo_task_line_num "$task_id" "$todo_file")
+	[[ -n "$line_num" ]] || return 1
+	target_line=$(sed -n "${line_num}p" "$todo_file")
+	printf '%s\n' "$target_line" | grep -qE "ref:GH#${ref_num}([[:space:]]|$)" || return 1
+	printf '%s\n' "$target_line" | grep -qE '^[[:space:]]*- \[[ >]\] ' || return 0
+
+	new_line=$(printf '%s\n' "$target_line" | sed -E 's/^([[:space:]]*- )\[[ >]\]/\1[-]/')
+	if ! printf '%s\n' "$new_line" | grep -qE '(cancelled|deferred|declined):[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
+		today=$(date -u +%Y-%m-%d)
+		new_line="${new_line} declined:${today}"
+	fi
+	new_line_escaped=$(printf '%s' "$new_line" | sed 's/[|&\\]/\\&/g')
+	sed_inplace "${line_num}s|.*|${new_line_escaped}|" "$todo_file" || return 1
+	log_verbose "Marked $task_id as [-] in TODO.md after #$ref_num was not planned"
+	return 0
+}
+
 _closed_issue_worker_complete_date() {
 	local repo="$1" issue_number="$2"
 	local completed_at
@@ -269,6 +293,17 @@ _mark_reopen_completed_task() {
 	fi
 	_mark_todo_done "$tid" "$todo_file" "verified:${proof_date}" || return 1
 	log_verbose "#$ref_num ($tid) has $reason — marked TODO [x]"
+	return 0
+}
+
+_mark_reopen_not_planned_task() {
+	local tid="$1" todo_file="$2" ref_num="$3"
+	if [[ "$DRY_RUN" == "true" ]]; then
+		print_info "[DRY-RUN] Would mark $tid [-] (not planned on #$ref_num)"
+		return 0
+	fi
+	_mark_todo_not_planned "$tid" "$todo_file" "$ref_num" || return 1
+	log_verbose "#$ref_num ($tid) is not planned — marked TODO [-]"
 	return 0
 }
 
@@ -515,7 +550,7 @@ cmd_close() {
 # regardless of whether a commit message prematurely closed the issue.
 #
 # Decision tree per closed issue:
-#   NOT_PLANNED         -> skip (deliberately declined)
+#   NOT_PLANNED         -> mark TODO cancelled (deliberately declined)
 #   COMPLETED + has PR  -> skip (work done, TODO needs marking [x] separately)
 #   COMPLETED + no PR   -> reopen (premature closure from commit keyword)
 _reopen_incomplete_task_line() {
@@ -544,7 +579,7 @@ _reopen_incomplete_task_line() {
 	tid=$(echo "$line" | grep -oE 't[0-9]+(\.[0-9]+)*' | head -1 || echo "")
 	reason=$(printf '%s\n' "$issue_json" | jq -r 'select(type == "object") | .state_reason // .stateReason // ""' 2>/dev/null || printf '')
 	if _is_not_planned_state_reason "$reason"; then
-		log_verbose "#$ref_num ($tid) closed as not_planned — skipping"
+		_mark_reopen_not_planned_task "$tid" "$todo_file" "$ref_num" || return 11
 		return 12
 	fi
 	if _reopen_mark_if_completed "$repo" "$tid" "$ref_num" "$todo_file"; then
@@ -608,6 +643,6 @@ cmd_reopen() {
 		esac
 	done <<<"$unique_lines"
 
-	print_info "Reopen: $reopened reopened, $skipped failed, $not_planned not-planned, $has_pr have-merged-pr, $pr_refs pr-refs-skipped, $duplicate_comments duplicate-comments-skipped"
+	print_info "Reopen: $reopened reopened, $skipped failed, $not_planned not-planned-terminalized, $has_pr have-merged-pr, $pr_refs pr-refs-skipped, $duplicate_comments duplicate-comments-skipped"
 	return 0
 }
