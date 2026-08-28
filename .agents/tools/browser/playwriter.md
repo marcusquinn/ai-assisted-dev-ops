@@ -25,7 +25,7 @@ mcp:
 
 - **Purpose**: Browser automation via Chrome extension — full Playwright API
 - **Extension**: [Chrome Web Store](https://chromewebstore.google.com/detail/playwriter-mcp/jfeammnjpkecdekppnclgkkffahnhfhe) (Chrome, Brave, Edge)
-- **MCP**: `npx playwriter@latest` — single `execute` tool runs Playwright code snippets
+- **MCP**: `npx playwriter@0.5.0` — single `execute` tool runs Playwright code snippets
 - **OpenCode activation**: Invoke `@playwriter`; it connects the disabled MCP on demand through the registry-allowlisted `aidevops_mcp` tool
 - **Icon**: Gray/Black = disconnected · Green = ready · Orange = connecting · Red = error
 - **Performance**: Navigate 2.95s, form fill 2.24s, reliability 1.96s avg. Always headed.
@@ -55,20 +55,20 @@ mcp:
   "mcpServers": {
     "playwriter": {
       "command": "npx",
-      "args": ["-y", "playwriter@latest"]
+      "args": ["-y", "playwriter@0.5.0"]
     }
   }
 }
 ```
 
-**OpenCode**: aidevops generates this entry as disabled and exposes it only through `@playwriter`. Use a full path to `npx` if the app runs with a restricted PATH:
+**OpenCode**: aidevops generates this entry as disabled and exposes it only through `@playwriter`. Ensure `npx` is available in the app's PATH if it is restricted:
 
 ```json
 {
   "mcp": {
     "playwriter": {
       "type": "local",
-      "command": ["/opt/homebrew/bin/npx", "-y", "playwriter@latest"],
+      "command": ["npx", "playwriter@0.5.0"],
       "enabled": false
     }
   }
@@ -94,6 +94,13 @@ Use `@playwriter` for browser tasks. The agent connects Playwriter before its fi
 ### Authenticated Tab Preflight
 
 Before requesting authentication, credentials, or any authenticated action:
+
+Pinning to `0.5.0` does not complete the secure authenticated-tab lifecycle.
+Until upstream issue `remorses/playwriter#119` is released in this reviewed pin,
+hardened authenticated-tab use requires a separately tokenized, explicit
+`playwriter serve` relay and a client launched through
+`aidevops secret PLAYWRITER_TOKEN -- ...`. Do not place token values in MCP
+configuration, commands, logs, or prompts.
 
 1. Connect Playwriter and enumerate the accessible pages with `context.pages()`.
 2. Match only the intended target by its expected URL and title. Confirm that the

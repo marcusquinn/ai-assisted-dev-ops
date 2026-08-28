@@ -8,8 +8,8 @@
     "_merge_into": "mcp",
     "playwriter": {
       "type": "local",
-      "command": ["npx", "playwriter@latest"],
-      "enabled": true
+      "command": ["npx", "playwriter@0.5.0"],
+      "enabled": false
     }
   },
   
@@ -18,7 +18,7 @@
     "_merge_into": "mcpServers",
     "playwriter": {
       "command": "npx",
-      "args": ["playwriter@latest"]
+      "args": ["playwriter@0.5.0"]
     }
   },
   
@@ -27,7 +27,7 @@
     "_merge_into": "mcpServers",
     "playwriter": {
       "command": "npx",
-      "args": ["playwriter@latest"]
+      "args": ["playwriter@0.5.0"]
     }
   },
 

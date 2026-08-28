@@ -120,7 +120,7 @@ record_result "Linux setup skips macOS Automator MCP" "0" "$(grep -c 'macos-auto
 record_result "Darwin setup retains macOS Automator MCP" "1" "$(grep -c 'macos-automator-mcp' "$darwin_setup_log" || true)"
 record_result "Linux freshness skips macOS Automator MCP" "0" "$(grep -c 'macos-automator-mcp' "$linux_tool_log" || true)"
 record_result "Darwin freshness retains macOS Automator MCP" "1" "$(grep -c 'macos-automator-mcp' "$darwin_tool_log" || true)"
-record_result "Linux setup retains cross-platform MCPs" "1" "$(grep -c 'playwriter@latest' "$linux_setup_log" || true)"
+record_result "Linux setup retains pinned cross-platform MCPs" "1" "$(grep -c 'playwriter@0.5.0' "$linux_setup_log" || true)"
 record_result "Linux freshness retains cross-platform MCPs" "1" "$(grep -c '|playwriter|' "$linux_tool_log" || true)"
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
