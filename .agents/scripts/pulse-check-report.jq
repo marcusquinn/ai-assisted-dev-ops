@@ -203,7 +203,7 @@ end) as $max_workers |
         true
       )
     else empty end,
-    if ($queue_scan_complete and $effective_available_slots >= $threshold and $eligible_issues < $threshold) then
+    if ($queue_scan_complete and $dispatch_alive and $effective_available_slots >= $threshold and $eligible_issues < $threshold) then
       finding(
         "pulse-eligible-queue-under-target";
         "high";
@@ -212,6 +212,7 @@ end) as $max_workers |
           ("available_slots=" + ($effective_available_slots | tostring)),
           ("eligible_available_unassigned=" + ($eligible_issues | tostring)),
           ("eligible_depth_target=" + ($threshold | tostring)),
+          "dispatch_alive=true",
           ("auto_dispatch_open=" + (($queue.aggregate.auto_dispatch_open // 0) | tostring)),
           ("assigned_in_flight=" + (($queue.aggregate.assigned_in_flight // $queue.aggregate.assigned // 0) | tostring)),
           ("blocked_explicit_hold=" + (($queue.aggregate.blocked_explicit_hold // $queue.aggregate.blocked_labels // 0) | tostring)),

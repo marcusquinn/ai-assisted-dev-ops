@@ -485,6 +485,10 @@ assert_eq "shortfall fixture distinguishes held work" "1" "$(printf '%s' "$SHORT
 assert_contains "NMR advisory names updatedAt inactivity basis" "issue_updatedAt_not_label_application_time" "$SHORTFALL_OUT"
 assert_not_contains "shortfall JSON omits private issue title" "private nmr" "$SHORTFALL_OUT"
 
+IDLE_SHORTFALL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=shortfall" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-idle.sh" "$HELPER" json 2>&1)
+assert_not_contains "inactive dispatch does not claim an eligible queue shortfall" "pulse-eligible-queue-under-target" "$IDLE_SHORTFALL_OUT"
+
 SCAN_ERROR_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=scan-error" \
 	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
 assert_contains "partial scan reports GitHub error" "pulse-check-gh-scan-errors" "$SCAN_ERROR_OUT"
