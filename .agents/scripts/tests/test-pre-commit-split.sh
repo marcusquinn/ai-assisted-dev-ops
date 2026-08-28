@@ -271,8 +271,8 @@ test_eslint_flat_config_root_allowlist() {
 	return 0
 }
 
-# --- Test 14: npm lockfiles pass staged root validation ---
-test_npm_lockfile_root_validation() {
+# --- Test 14: Node package metadata files pass staged root validation ---
+test_node_package_root_validation() {
 	local fixture_dir
 	fixture_dir=$(mktemp -d)
 	local hook_dir="${fixture_dir}/.agents/scripts"
@@ -289,13 +289,14 @@ test_npm_lockfile_root_validation() {
 	git -C "$fixture_dir" init --quiet
 	printf '%s\n' '{"name":"root-allowlist-fixture"}' >"${fixture_dir}/package.json"
 	printf '%s\n' '{"name":"root-allowlist-fixture","lockfileVersion":3,"packages":{}}' >"${fixture_dir}/package-lock.json"
-	git -C "$fixture_dir" add package.json package-lock.json
+	printf '%s\n' '22' >"${fixture_dir}/.nvmrc"
+	git -C "$fixture_dir" add .nvmrc package.json package-lock.json
 
 	hook_output=$(cd "$fixture_dir" && HOOK_MODE=pre-commit bash "$hook_dir/pre-commit-hook.sh" 2>&1) || hook_rc=$?
 	if [[ "$hook_rc" -eq 0 ]]; then
-		print_result "root validation permits package.json with package-lock.json" 0
+		print_result "root validation permits .nvmrc with npm package metadata" 0
 	else
-		print_result "root validation permits package.json with package-lock.json" 1 "$hook_output"
+		print_result "root validation permits .nvmrc with npm package metadata" 1 "$hook_output"
 	fi
 
 	printf '%s\n' 'fixture artifact' >"${fixture_dir}/VERIFY-ROOT-ARTIFACT.md"
@@ -342,7 +343,7 @@ test_status_reports_pre_push
 test_pre_commit_dispatcher_sets_mode
 test_pre_push_dispatcher_sets_mode
 test_eslint_flat_config_root_allowlist
-test_npm_lockfile_root_validation
+test_node_package_root_validation
 test_arbitrary_root_artifact_not_allowlisted
 
 echo ""
