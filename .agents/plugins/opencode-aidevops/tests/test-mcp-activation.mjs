@@ -611,7 +611,15 @@ test("limits failed-status recovery to one reset", async () => {
       async disconnect() { calls.push("disconnect"); },
       async status() {
         calls.push("status");
-        return { data: { playwriter: { status: "failed" } } };
+        const phase = calls.filter((call) => call === "status").length;
+        return {
+          data: {
+            playwriter: {
+              status: "failed",
+              error: phase === 1 ? "relay launch failed" : "protocol handshake failed",
+            },
+          },
+        };
       },
     },
     allowedNames: ["playwriter"],
@@ -620,7 +628,7 @@ test("limits failed-status recovery to one reset", async () => {
 
   assert.equal(
     await activation.execute({ action: "connect", name: "playwriter" }),
-    "Error: MCP connect failed for playwriter: MCP entered failed status after one bounded reset",
+    "Error: MCP connect failed for playwriter: MCP entered failed status during initial activation; diagnostic: relay launch failed; MCP entered failed status during post-reset activation; diagnostic: protocol handshake failed after one bounded reset",
   );
   assert.deepEqual(calls, ["connect", "status", "disconnect", "connect", "status"]);
 });
@@ -636,7 +644,7 @@ test("reports when failed-status reset is unavailable", async () => {
 
   assert.equal(
     await activation.execute({ action: "connect", name: "playwriter" }),
-    "Error: MCP connect failed for playwriter: MCP entered error status; bounded reset unavailable because OpenCode does not expose MCP disconnect in this runtime.",
+    "Error: MCP connect failed for playwriter: MCP entered error status during initial activation; diagnostic unavailable; use the documented secure CLI diagnostic path; bounded reset unavailable because OpenCode does not expose MCP disconnect in this runtime.",
   );
 });
 
@@ -659,9 +667,34 @@ test("reports failed-status reset errors without reconnecting", async () => {
 
   assert.equal(
     await activation.execute({ action: "connect", name: "playwriter" }),
-    "Error: MCP connect failed for playwriter: MCP entered failed status; bounded reset disconnect failed: reset unavailable",
+    "Error: MCP connect failed for playwriter: MCP entered failed status during initial activation; diagnostic unavailable; use the documented secure CLI diagnostic path; bounded reset disconnect failed: reset unavailable",
   );
   assert.deepEqual(calls, ["connect", "status", "disconnect"]);
+});
+
+test("bounds and redacts failed-status diagnostics", async () => {
+  const activation = createMcpActivationTool(tool, z, {
+    client: {
+      async connect() {},
+      async status() {
+        return {
+          data: {
+            playwriter: {
+              status: "failed",
+              error: `PLAYWRITER_TOKEN=private-value Authorization: Bearer private-bearer ${"x".repeat(400)}`,
+              token: "must-not-be-serialized",
+            },
+          },
+        };
+      },
+    },
+    allowedNames: ["playwriter"],
+  });
+
+  const result = await activation.execute({ action: "connect", name: "playwriter" });
+  assert.match(result, /PLAYWRITER_TOKEN=\[redacted\]/);
+  assert.doesNotMatch(result, /private-value|private-bearer|must-not-be-serialized/);
+  assert.match(result, /…; bounded reset unavailable/);
 });
 
 test("does not reset status API errors or timeouts", async () => {

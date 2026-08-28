@@ -30,6 +30,10 @@ After the OpenCode connect API succeeds, an on-demand MCP can transiently report
 Direct API errors, authentication requirements, timeouts, and dead-schema errors
 such as `Connection closed` are not reset. Report the activation diagnostic and
 treat the MCP as unavailable for the session when the bounded reset fails.
+The terminal result reports the initial and post-reset phases with only the
+bounded, sanitized SDK error string when OpenCode supplies one. If it reports
+`diagnostic unavailable`, use the secure CLI checks below. Do not retry through
+another child or treat direct CLI initialization as successful OpenCode activation.
 
 ## Errored Servers — Dead Tool Schemas (t1682)
 

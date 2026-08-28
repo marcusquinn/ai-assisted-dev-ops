@@ -27,9 +27,30 @@ const PLAYWRIGHT_OUTPUT_TOOLS = new Set([
   "playwright_browser_take_screenshot",
 ]);
 
+const MCP_DIAGNOSTIC_MAX_LENGTH = 240;
+
+function sanitizeMcpStatusDiagnostic(statusEntry) {
+  if (!statusEntry || typeof statusEntry.error !== "string" || !statusEntry.error.trim()) {
+    return "diagnostic unavailable; use the documented secure CLI diagnostic path";
+  }
+
+  let detail = statusEntry.error
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\b([A-Z][A-Z0-9_]{1,63})=(?:"[^"]*"|'[^']*'|[^\s]+)/g, "$1=[redacted]")
+    .replace(/\bAuthorization\s*:\s*Bearer\s+[^\s,;]+/gi, "Authorization: Bearer [redacted]")
+    .replace(/\b(api[_-]?key|authorization|password|secret|token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[redacted]")
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/([?&](?:api[_-]?key|password|secret|token)=)[^&\s]+/gi, "$1[redacted]")
+    .trim();
+  if (detail.length > MCP_DIAGNOSTIC_MAX_LENGTH) {
+    detail = `${detail.slice(0, MCP_DIAGNOSTIC_MAX_LENGTH - 1)}…`;
+  }
+  return `diagnostic: ${detail}`;
+}
+
 class McpFailedStatusError extends Error {
-  constructor(status) {
-    super(`MCP entered ${status} status`);
+  constructor(status, phase, statusEntry) {
+    super(`MCP entered ${status} status during ${phase}; ${sanitizeMcpStatusDiagnostic(statusEntry)}`);
     this.name = "McpFailedStatusError";
   }
 }
@@ -52,7 +73,7 @@ async function callLifecycle(action, name, options) {
   }
 }
 
-async function waitForConnection(name, options) {
+async function waitForConnection(name, options, phase) {
   const statusMethod = options.client?.status;
   if (typeof statusMethod !== "function") return;
 
@@ -68,10 +89,11 @@ async function waitForConnection(name, options) {
       throw new Error(result.error.message || String(result.error));
     }
     const payload = result?.data ?? result;
-    status = payload?.[name]?.status || "unknown";
+    const statusEntry = payload?.[name];
+    status = statusEntry?.status || "unknown";
     if (status === "connected") return;
     if (["error", "failed"].includes(status)) {
-      throw new McpFailedStatusError(status);
+      throw new McpFailedStatusError(status, phase, statusEntry);
     }
     await pause(pollIntervalMs);
   } while (Date.now() < deadline);
@@ -101,10 +123,10 @@ async function recoverFailedConnection(name, options, statusError) {
   }
 
   try {
-    await waitForConnection(name, options);
+    await waitForConnection(name, options, "post-reset activation");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message} after one bounded reset`);
+    throw new Error(`${statusError.message}; ${message} after one bounded reset`);
   }
 }
 
@@ -265,7 +287,7 @@ export function createMcpActivationTool(tool, z, options) {
         await callLifecycle(action, name, options);
         if (action === "connect") {
           try {
-            await waitForConnection(name, options);
+            await waitForConnection(name, options, "initial activation");
           } catch (error) {
             if (!(error instanceof McpFailedStatusError)) throw error;
             await recoverFailedConnection(name, options, error);
