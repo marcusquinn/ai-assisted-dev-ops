@@ -28,6 +28,9 @@ TEST_ROOT=""
 GH_LOG=""
 TIMEOUT_CALL_LOG=""
 EVENT_LOG=""
+SCANNER_LOG=""
+readonly TEST_REVIEWED_SHA="1111111111111111111111111111111111111111"
+readonly TEST_READY_SHA="2222222222222222222222222222222222222222"
 
 print_result() {
 	local test_name="$1"
@@ -53,12 +56,14 @@ reset_mock_state() {
 	: >"$GH_LOG"
 	: >"$TIMEOUT_CALL_LOG"
 	: >"$EVENT_LOG"
+	: >"$SCANNER_LOG"
 	unset DRY_RUN TEST_TIMEOUT_FAIL_PATTERN TEST_FAIL_TRANSITION TEST_FAIL_CLOSE \
 		TEST_FAIL_REOPEN TEST_FAIL_BODY_PHASE TEST_FAIL_TERMINAL_LABEL \
 		TEST_DRIFT_AFTER_TRANSITION_HEAD TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE \
 		TEST_ADD_NMR_DURING_TRANSITION TEST_ADD_PR_PROTECTION_DURING_TRANSITION \
 		TEST_READD_HOLD_DURING_TRANSITION TEST_HOLD_EVENT_ACTOR TEST_AUTHENTICATED_ACTOR \
-		TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL
+		TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL TEST_SCANNER_RC TEST_SCANNER_OUTPUT \
+		TEST_COMPARE_STATUS TEST_REQUIRED_CHECKS_JSON TEST_REQUIRED_CHECKS_RC TEST_FAIL_REREVIEW
 	rm -f "${TEST_ROOT}/pr-close-observed" "${TEST_ROOT}/pr-snapshot-failure-consumed"
 	printf '1000\n' >"${TEST_ROOT}/pr-hold-event-id.txt"
 	printf '2000\n' >"${TEST_ROOT}/issue-hold-event-id.txt"
@@ -71,11 +76,12 @@ reset_mock_state() {
 	printf 'OPEN\n' >"${TEST_ROOT}/pr-state.txt"
 	printf 'abc123repairsha\n' >"${TEST_ROOT}/pr-head.txt"
 	printf 'origin:worker,auto-dispatch\n' >"${TEST_ROOT}/pr-labels.txt"
+	: >"${TEST_ROOT}/requested-reviewers.txt"
 	printf 'status:in-review,origin:interactive\n' >"${TEST_ROOT}/issue-labels.txt"
 	printf 'stale-owner\n' >"${TEST_ROOT}/issue-assignees.txt"
 	# Defaults: populated reviews + comments, empty issue body.
 	cat >"${TEST_ROOT}/reviews.json" <<'EOF'
-[{"id":1001,"user":{"login":"coderabbitai[bot]"},"state":"CHANGES_REQUESTED","body":"## Senior review\n\nBLOCK: missing import.\nFix the worker entry point before merge.","html_url":"https://github.com/owner/repo/pull/100#pullrequestreview-1","submitted_at":"2026-08-03T10:00:00Z","commit_id":"abc123repairsha"}]
+	[{"id":1001,"user":{"login":"coderabbitai[bot]","type":"Bot"},"author_association":"NONE","state":"CHANGES_REQUESTED","body":"## Senior review\n\nBLOCK: missing import.\nFix the worker entry point before merge.","html_url":"https://github.com/owner/repo/pull/100#pullrequestreview-1","submitted_at":"2026-08-03T10:00:00Z","commit_id":"abc123repairsha"}]
 EOF
 	cat >"${TEST_ROOT}/comments.json" <<'EOF'
 [{"id":2001,"user":{"login":"coderabbitai[bot]"},"path":".agents/scripts/pulse-merge.sh","line":650,"original_line":650,"body":"This check has an off-by-one.\nSecond actionable line.","html_url":"https://github.com/owner/repo/pull/100#discussion_r1","updated_at":"2026-08-03T10:01:00Z","commit_id":"abc123repairsha"}]
@@ -88,14 +94,24 @@ setup_test_paths() {
 	mkdir -p "${TEST_ROOT}/bin"
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export LOGFILE="${TEST_ROOT}/pulse.log"
+	export PULSE_REVIEW_FEEDBACK_SCANNER="${TEST_ROOT}/scanner.sh"
 	: >"$LOGFILE"
 	GH_LOG="${TEST_ROOT}/gh-calls.log"
 	TIMEOUT_CALL_LOG="${TEST_ROOT}/timeout-calls.log"
 	EVENT_LOG="${TEST_ROOT}/route-events.log"
+	SCANNER_LOG="${TEST_ROOT}/scanner.log"
 	: >"$GH_LOG"
 	: >"$TIMEOUT_CALL_LOG"
 	: >"$EVENT_LOG"
-	export TEST_ROOT GH_LOG TIMEOUT_CALL_LOG EVENT_LOG
+	: >"$SCANNER_LOG"
+	export TEST_ROOT GH_LOG TIMEOUT_CALL_LOG EVENT_LOG SCANNER_LOG
+	cat >"$PULSE_REVIEW_FEEDBACK_SCANNER" <<'SCANNER_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SCANNER_LOG}"
+[[ -z "${TEST_SCANNER_OUTPUT:-}" ]] || printf '%s\n' "$TEST_SCANNER_OUTPUT"
+exit "${TEST_SCANNER_RC:-0}"
+SCANNER_STUB
+	chmod +x "$PULSE_REVIEW_FEEDBACK_SCANNER"
 	return 0
 }
 
@@ -194,6 +210,16 @@ GHEOF
 append_gh_mock_pr_edit_cases() {
 	cat >>"${TEST_ROOT}/bin/gh" <<'GHEOF'
 "pr edit")
+	if [[ "$*" == *"--add-reviewer"* ]]; then
+		[[ "${TEST_FAIL_REREVIEW:-0}" == "1" ]] && exit 1
+		for _i in "${!_all_args[@]}"; do
+			if [[ "${_all_args[$_i]}" == "--add-reviewer" ]]; then
+				printf '%s\n' "${_all_args[$((_i + 1))]:-}" >"${TEST_ROOT}/requested-reviewers.txt"
+				break
+			fi
+		done
+		exit 0
+	fi
 	if [[ "$*" == *"--add-label review-routed-to-issue"* \
 		|| "$*" == *"--add-label conflict-feedback-routed"* \
 		|| "$*" == *"--add-label ci-feedback-routed"* ]]; then
@@ -378,6 +404,10 @@ if [[ "${1:-}" == "api" ]]; then
 		fi
 		exit 0
 	fi
+	if [[ "${2:-}" == repos/owner/repo/compare/* ]]; then
+		printf '%s\n' "${TEST_COMPARE_STATUS:-behind}"
+		exit 0
+	fi
 	if [[ "${2:-}" == "repos/owner/repo/pulls/100" ]]; then
 		if [[ "${TEST_FAIL_PR_SNAPSHOT_AFTER_CLOSE:-0}" == "1" \
 			&& -f "${TEST_ROOT}/pr-close-observed" \
@@ -385,8 +415,13 @@ if [[ "${1:-}" == "api" ]]; then
 			: >"${TEST_ROOT}/pr-snapshot-failure-consumed"
 			exit 1
 		fi
-		printf '%s\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
-			"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/pr-labels.txt")"
+		if [[ "$_jq_filter" == *"requested_reviewers"* ]]; then
+			printf '%s\tfalse\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
+				"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/requested-reviewers.txt")"
+		else
+			printf '%s\t%s\t%s\n' "$(<"${TEST_ROOT}/pr-state.txt")" \
+				"$(<"${TEST_ROOT}/pr-head.txt")" "$(<"${TEST_ROOT}/pr-labels.txt")"
+		fi
 		exit 0
 	fi
 	if [[ "${2:-}" == "repos/owner/repo/issues/100/timeline?per_page=100" ]]; then
@@ -464,8 +499,12 @@ define_helpers_under_test() {
 		local pr_number="$2"
 		local selection_mode="$3"
 		printf 'exact-checks %s %s %s\n' "$repo_slug" "$pr_number" "$selection_mode" >>"$GH_LOG"
-		printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
-		return 1
+		if [[ -n "${TEST_REQUIRED_CHECKS_JSON:-}" ]]; then
+			printf '%s\n' "$TEST_REQUIRED_CHECKS_JSON"
+		else
+			printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
+		fi
+		return "${TEST_REQUIRED_CHECKS_RC:-1}"
 	}
 	unset _PULSE_MERGE_FEEDBACK_LOADED _PULSE_MERGE_FEEDBACK_FINALIZER_LOADED
 	# shellcheck disable=SC1090
@@ -550,6 +589,105 @@ test_build_section_empty_when_no_content() {
 		return 0
 	fi
 	print_result "build section returns empty when no reviews or comments" 0
+	return 0
+}
+
+prepare_ready_review_state() {
+	printf '%s\n' "$TEST_READY_SHA" >"${TEST_ROOT}/pr-head.txt"
+	cat >"${TEST_ROOT}/reviews.json" <<EOF
+[{"id":2001,"user":{"login":"trusted-maintainer","type":"User"},"author_association":"MEMBER","state":"CHANGES_REQUESTED","body":"Please correct the worker path before merge.","html_url":"https://github.com/owner/repo/pull/100#pullrequestreview-2","submitted_at":"2026-08-27T10:00:00Z","commit_id":"${TEST_REVIEWED_SHA}"}]
+EOF
+	export TEST_COMPARE_STATUS="ahead"
+	export TEST_REQUIRED_CHECKS_JSON='[{"name":"Lint","bucket":"pass","state":"SUCCESS","link":"https://github.com/owner/repo/actions/runs/456/job/789"}]'
+	export TEST_REQUIRED_CHECKS_RC=0
+	return 0
+}
+
+test_dispatch_preserves_ready_changed_head_and_rerequests_reviewer() {
+	reset_mock_state
+	prepare_ready_review_state
+	local first_rc=0
+	local second_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || first_rc=$?
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || second_rc=$?
+
+	local rerequest_count=0
+	rerequest_count=$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true)
+	if [[ "$first_rc" -ne 0 || "$second_rc" -ne 0 ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ||
+		"$(<"${TEST_ROOT}/issue-body.txt")" != "Original issue body." ||
+		"$rerequest_count" -ne 1 ||
+		"$(<"${TEST_ROOT}/requested-reviewers.txt")" != "trusted-maintainer" ||
+		"$(grep -cF 'scan-pr owner/repo 100' "$SCANNER_LOG" 2>/dev/null || true)" -ne 2 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "ready changed-head PR is preserved and trusted review is re-requested once" 1 \
+			"first_rc=${first_rc}; second_rc=${second_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); rerequests=${rerequest_count}; gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "ready changed-head PR is preserved and trusted review is re-requested once" 0
+	return 0
+}
+
+test_dispatch_routes_when_review_threads_remain_unresolved() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_SCANNER_OUTPUT=$'RVW_2001\ttrusted-maintainer\tPlease correct the worker path before merge.'
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne 0 ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "CLOSED" ||
+		"$(<"${TEST_ROOT}/issue-body.txt")" != *"t2093:review-feedback:PR100"* ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "unresolved review threads retain destructive reroute behavior" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "unresolved review threads retain destructive reroute behavior" 0
+	return 0
+}
+
+test_dispatch_routes_when_required_checks_fail() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_REQUIRED_CHECKS_JSON='[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/456/job/789"}]'
+	export TEST_REQUIRED_CHECKS_RC=1
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne 0 ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "CLOSED" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "failed required checks retain destructive reroute behavior" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "failed required checks retain destructive reroute behavior" 0
+	return 0
+}
+
+test_dispatch_defers_while_required_checks_are_pending() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_REQUIRED_CHECKS_JSON='[{"name":"Lint","bucket":"pending","state":"IN_PROGRESS","link":"https://github.com/owner/repo/actions/runs/456/job/789"}]'
+	export TEST_REQUIRED_CHECKS_RC=8
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ||
+		"$(<"${TEST_ROOT}/issue-body.txt")" != "Original issue body." ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "pending required checks defer without destructive routing" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "pending required checks defer without destructive routing" 0
 	return 0
 }
 
@@ -1565,6 +1703,10 @@ main() {
 	test_build_section_includes_marker_and_citations
 	test_build_section_bounds_total_output
 	test_build_section_empty_when_no_content
+	test_dispatch_preserves_ready_changed_head_and_rerequests_reviewer
+	test_dispatch_routes_when_review_threads_remain_unresolved
+	test_dispatch_routes_when_required_checks_fail
+	test_dispatch_defers_while_required_checks_are_pending
 	test_dispatch_appends_to_issue_body_and_closes_pr
 	test_dispatch_wraps_paginated_feedback_reads
 	test_paginated_feedback_pages_are_merged
