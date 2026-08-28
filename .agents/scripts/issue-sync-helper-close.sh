@@ -221,27 +221,42 @@ _mark_todo_done() {
 	return 0
 }
 
-# Mark an incomplete live TODO entry as declined after its linked issue was
-# deliberately closed as not planned. The line-number lookup excludes fenced
-# examples and comments, while preserving its existing GitHub reference.
+# Converge a live TODO row with a linked issue deliberately closed as not
+# planned. The immutable GitHub closure timestamp is the evidence marker, so
+# repeated reconciliation is byte-stable and never uses the current clock.
 _mark_todo_not_planned() {
-	local task_id="$1" todo_file="$2" ref_num="$3"
-	local line_num target_line new_line new_line_escaped today
+	local task_id="$1"
+	local issue_number="$2"
+	local todo_file="$3"
+	local closed_date="$4"
+	local task_id_ere=""
+	local line_num=""
+	local target_line=""
+	local new_line=""
+	local new_line_escaped=""
 
-	line_num=$(_todo_task_line_num "$task_id" "$todo_file")
+	[[ "$task_id" =~ ^t[0-9]+(\.[0-9]+)*$ ]] || return 1
+	[[ "$issue_number" =~ ^[0-9]+$ ]] || return 1
+	[[ "$closed_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+	task_id_ere=$(_escape_ere "$task_id")
+	if ! line_num=$(_todo_task_line_num "$task_id" "$todo_file"); then
+		return 1
+	fi
 	[[ -n "$line_num" ]] || return 1
 	target_line=$(sed -n "${line_num}p" "$todo_file")
-	printf '%s\n' "$target_line" | grep -qE "ref:GH#${ref_num}([[:space:]]|$)" || return 1
-	printf '%s\n' "$target_line" | grep -qE '^[[:space:]]*- \[[ >]\] ' || return 0
+	if printf '%s\n' "$target_line" | grep -qE \
+		"^[[:space:]]*- \[-\] ${task_id_ere} .*ref:GH#${issue_number}([[:space:]]|$).*declined:${closed_date}([[:space:]]|$)"; then
+		return 0
+	fi
+	printf '%s\n' "$target_line" | grep -qE "^[[:space:]]*- \[[ >]\] ${task_id_ere} .*ref:GH#${issue_number}([[:space:]]|$)" || return 1
 
 	new_line=$(printf '%s\n' "$target_line" | sed -E 's/^([[:space:]]*- )\[[ >]\]/\1[-]/')
-	if ! printf '%s\n' "$new_line" | grep -qE '(cancelled|deferred|declined):[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
-		today=$(date -u +%Y-%m-%d)
-		new_line="${new_line} declined:${today}"
+	if ! printf '%s\n' "$new_line" | grep -qE '(^|[[:space:]])(declined|cancelled):[0-9]{4}-[0-9]{2}-[0-9]{2}([[:space:]]|$)'; then
+		new_line="${new_line} declined:${closed_date}"
 	fi
 	new_line_escaped=$(printf '%s' "$new_line" | sed 's/[|&\\]/\\&/g')
 	sed_inplace "${line_num}s|.*|${new_line_escaped}|" "$todo_file" || return 1
-	log_verbose "Marked $task_id as [-] in TODO.md after #$ref_num was not planned"
+	log_verbose "#$issue_number ($task_id) closed as not_planned — marked TODO [-]"
 	return 0
 }
 
@@ -293,17 +308,6 @@ _mark_reopen_completed_task() {
 	fi
 	_mark_todo_done "$tid" "$todo_file" "verified:${proof_date}" || return 1
 	log_verbose "#$ref_num ($tid) has $reason — marked TODO [x]"
-	return 0
-}
-
-_mark_reopen_not_planned_task() {
-	local tid="$1" todo_file="$2" ref_num="$3"
-	if [[ "$DRY_RUN" == "true" ]]; then
-		print_info "[DRY-RUN] Would mark $tid [-] (not planned on #$ref_num)"
-		return 0
-	fi
-	_mark_todo_not_planned "$tid" "$todo_file" "$ref_num" || return 1
-	log_verbose "#$ref_num ($tid) is not planned — marked TODO [-]"
 	return 0
 }
 
@@ -551,7 +555,7 @@ cmd_close() {
 # regardless of whether a commit message prematurely closed the issue.
 #
 # Decision tree per closed issue:
-#   NOT_PLANNED         -> mark TODO cancelled (deliberately declined)
+#   NOT_PLANNED         -> mark the linked live TODO row [-] once
 #   COMPLETED + has PR  -> skip (work done, TODO needs marking [x] separately)
 #   COMPLETED + no PR   -> reopen (premature closure from commit keyword)
 _reopen_incomplete_task_line() {
@@ -563,6 +567,9 @@ _reopen_incomplete_task_line() {
 	local issue_json=""
 	local tid=""
 	local reason=""
+	local closed_at=""
+	local issue_close_fields=""
+	local closed_date=""
 	local reopen_comment_body=""
 
 	ref_num=$(echo "$line" | grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || echo "")
@@ -578,9 +585,17 @@ _reopen_incomplete_task_line() {
 	fi
 
 	tid=$(echo "$line" | grep -oE 't[0-9]+(\.[0-9]+)*' | head -1 || echo "")
-	reason=$(printf '%s\n' "$issue_json" | jq -r 'select(type == "object") | .state_reason // .stateReason // ""' 2>/dev/null || printf '')
+	issue_close_fields=$(printf '%s\n' "$issue_json" | jq -r 'select(type == "object") | [(.state_reason // .stateReason // ""), (.closed_at // .closedAt // "")] | @tsv' 2>/dev/null || printf '')
+	reason=${issue_close_fields%%$'\t'*}
 	if _is_not_planned_state_reason "$reason"; then
-		_mark_reopen_not_planned_task "$tid" "$todo_file" "$ref_num" || return 11
+		closed_at=${issue_close_fields#*$'\t'}
+		[[ "$closed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 11
+		closed_date="${closed_at%%T*}"
+		if [[ "$DRY_RUN" == "true" ]]; then
+			print_info "[DRY-RUN] Would mark $tid [-] (not_planned on #$ref_num)"
+		elif ! _mark_todo_not_planned "$tid" "$ref_num" "$todo_file" "$closed_date"; then
+			return 11
+		fi
 		return 12
 	fi
 	if _reopen_mark_if_completed "$repo" "$tid" "$ref_num" "$todo_file"; then

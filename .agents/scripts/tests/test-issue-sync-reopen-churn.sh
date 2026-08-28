@@ -21,8 +21,12 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/201" ]]; then
 	printf '{"number":201,"title":"plain issue"}\n'
 	exit 0
 fi
-if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/301" ]]; then
-	printf '{"number":301,"state":"closed","state_reason":"not_planned"}\n'
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/208" ]]; then
+	printf '{"number":208,"title":"declined issue","state_reason":"NOT_PLANNED","closed_at":"2026-08-20T14:15:16Z"}\n'
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/209" ]]; then
+	printf '{"number":209,"title":"declined issue without closure time","state_reason":"NOT_PLANNED"}\n'
 	exit 0
 fi
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/202/comments" ]]; then
@@ -70,6 +74,10 @@ export PATH="$TMPDIR:$PATH"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER_PATH="${TEST_DIR}/../issue-sync-helper-close.sh"
 
+log_verbose() { return 0; }
+
+# shellcheck source=../issue-sync-lib.sh
+source "${TEST_DIR}/../issue-sync-lib.sh"
 # shellcheck source=../issue-sync-helper-close.sh
 source "$HELPER_PATH"
 
@@ -128,67 +136,54 @@ check_success "hyphenated not-planned reason is skipped" _is_not_planned_state_r
 check_failure "completed reason is not treated as not planned" _is_not_planned_state_reason "COMPLETED"
 check_failure "missing close reason is not treated as not planned" _is_not_planned_state_reason
 
-NOT_PLANNED_TODO="$TMPDIR/not-planned-todo.md"
-DRY_RUN="false"
-cat >"$NOT_PLANNED_TODO" <<'TODO'
+todo_file="$TMPDIR/TODO.md"
+cat >"$todo_file" <<'EOF'
+# TODO
+
 ```markdown
-- [ ] t303 fenced example ref:GH#303
+- [ ] t208 example row ref:GH#208
 ```
-- [ ] t301 first live task ref:GH#301
-- [>] t302 active live task ref:GH#302
-TODO
 
-_todo_task_line_num() {
-	local task_id="$1"
-	local todo_file="$2"
-	awk -v wanted="$task_id" '
-		/^[[:space:]]*```/ { in_fence = !in_fence; next }
-		!in_fence && $0 ~ /^[[:space:]]*- \[[ >-]\] / {
-			remaining = $0
-			sub(/^[[:space:]]*- \[[ >-]\] /, "", remaining)
-			split(remaining, fields, /[[:space:]]+/)
-			if (fields[1] == wanted) { print NR; exit }
-		}
-	' "$todo_file"
-	return 0
-}
+- [ ] t208 live declined row ref:GH#208 logged:2026-08-01
+- [>] t210 claimed declined row ref:GH#210 logged:2026-08-02
+- [x] t211 completed row ref:GH#211 completed:2026-08-03
+- [ ] t209 incomplete closure evidence ref:GH#209 logged:2026-08-04
+EOF
 
-sed_inplace() {
-	local expression="$1"
-	local todo_file="$2"
-	sed -i.bak -E "$expression" "$todo_file" || return 1
-	rm -f "${todo_file}.bak"
-	return 0
-}
-
-log_verbose() {
-	return 0
-}
-
-reopen_status=0
-_reopen_incomplete_task_line "owner/repo" "$NOT_PLANNED_TODO" "" \
-	"- [ ] t301 first live task ref:GH#301" || reopen_status=$?
-if [[ "$reopen_status" -eq 12 ]]; then
-	PASS=$((PASS + 1))
-	printf 'PASS: not-planned issue terminalizes unchecked task through reopen lifecycle\n'
+export DRY_RUN=false
+reopen_rc=0
+if _reopen_incomplete_task_line "owner/repo" "$todo_file" "" \
+	'- [ ] t208 live declined row ref:GH#208 logged:2026-08-01'; then
+	reopen_rc=0
 else
-	FAIL=$((FAIL + 1))
-	printf 'FAIL: not-planned issue terminalizes unchecked task through reopen lifecycle\n'
+	reopen_rc=$?
 fi
-check_success "not-planned rows terminalize active tasks" \
-	_mark_reopen_not_planned_task "t302" "$NOT_PLANNED_TODO" "302"
-check_success "not-planned terminalization is idempotent" \
-	_mark_reopen_not_planned_task "t301" "$NOT_PLANNED_TODO" "301"
-if grep -qE '^\- \[-\] t301 first live task ref:GH#301 declined:[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$NOT_PLANNED_TODO" &&
-	grep -qE '^\- \[-\] t302 active live task ref:GH#302 declined:[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$NOT_PLANNED_TODO" &&
-	grep -q '^\- \[ \] t303 fenced example ref:GH#303$' "$NOT_PLANNED_TODO" &&
-	[[ "$(grep -Ec '^\- \[-\] t301 .*declined:' "$NOT_PLANNED_TODO")" -eq 1 ]]; then
-	PASS=$((PASS + 1))
-	printf 'PASS: not-planned terminalization preserves refs, skips fenced examples, and adds one proof\n'
+check_output "NOT_PLANNED reconciliation reports the terminal skip class" "12" printf '%s' "$reopen_rc"
+check_success "NOT_PLANNED reconciliation marks only the live row declined" \
+	grep -Fqx -- '- [-] t208 live declined row ref:GH#208 logged:2026-08-01 declined:2026-08-20' "$todo_file"
+check_success "NOT_PLANNED reconciliation preserves the code-fenced example" \
+	grep -Fqx -- '- [ ] t208 example row ref:GH#208' "$todo_file"
+
+check_success "claimed TODO rows converge to the same declined state" \
+	_mark_todo_not_planned "t210" "210" "$todo_file" "2026-08-21"
+before_repeat=$(grep -F -- 't210 claimed declined row' "$todo_file")
+check_success "repeated declined-row reconciliation is idempotent" \
+	_mark_todo_not_planned "t210" "210" "$todo_file" "2026-08-21"
+after_repeat=$(grep -F -- 't210 claimed declined row' "$todo_file")
+check_output "repeated reconciliation remains byte-stable" "$before_repeat" printf '%s' "$after_repeat"
+check_failure "completed TODO rows are never rewritten as declined" \
+	_mark_todo_not_planned "t211" "211" "$todo_file" "2026-08-21"
+
+missing_time_rc=0
+if _reopen_incomplete_task_line "owner/repo" "$todo_file" "" \
+	'- [ ] t209 incomplete closure evidence ref:GH#209 logged:2026-08-04'; then
+	missing_time_rc=0
 else
-	FAIL=$((FAIL + 1))
-	printf 'FAIL: not-planned terminalization preserves refs, skips fenced examples, and adds one proof\n'
+	missing_time_rc=$?
 fi
+check_output "NOT_PLANNED without deterministic closure evidence fails closed" "11" printf '%s' "$missing_time_rc"
+check_success "failed closure evidence leaves the live row unchanged" \
+	grep -Fqx -- '- [ ] t209 incomplete closure evidence ref:GH#209 logged:2026-08-04' "$todo_file"
 
 gh_find_merged_pr() {
 	local repo="$1"
