@@ -453,13 +453,14 @@ function buildMcpConfigEntry(mcp, runtime) {
  */
 function isLegacyGeneratedPlaywriterCommand(command) {
   if (!Array.isArray(command)) return false;
-  const isNpx = command.length === 2
-    && typeof command[0] === "string"
-    && /(?:^|[\\/])npx$/.test(command[0])
-    && command[1] === LEGACY_PLAYWRITER_MCP_PACKAGE;
+  const isRunner = (runner, name) => runner === name
+    || (typeof runner === "string" && isAbsolute(runner) && new RegExp(`[\\\\/]${name}$`).test(runner));
+  const isNpx = isRunner(command[0], "npx")
+    && ((command.length === 2 && command[1] === LEGACY_PLAYWRITER_MCP_PACKAGE)
+      || (command.length === 3 && command[1] === "-y"
+        && command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE));
   const isBun = command.length === 3
-    && typeof command[0] === "string"
-    && /(?:^|[\\/])bun$/.test(command[0])
+    && isRunner(command[0], "bun")
     && command[1] === "x"
     && command[2] === LEGACY_PLAYWRITER_MCP_PACKAGE;
   return isNpx || isBun;
@@ -481,8 +482,8 @@ function registerSingleMcp(mcp, config, runtime) {
   // Relay and other custom Playwriter commands remain user-owned.
   if (mcp.name === "playwriter"
     && isLegacyGeneratedPlaywriterCommand(config.mcp[mcp.name].command)) {
-    config.mcp[mcp.name] = buildMcpConfigEntry(mcp, runtime);
-    return true;
+    const command = config.mcp[mcp.name].command;
+    command[command.indexOf(LEGACY_PLAYWRITER_MCP_PACKAGE)] = PLAYWRITER_MCP_PACKAGE;
   }
 
   // Runtime-activated MCPs must stay disconnected at startup, including when
