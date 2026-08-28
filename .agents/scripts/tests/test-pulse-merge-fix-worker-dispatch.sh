@@ -64,7 +64,8 @@ reset_mock_state() {
 		TEST_READD_HOLD_DURING_TRANSITION TEST_HOLD_EVENT_ACTOR TEST_AUTHENTICATED_ACTOR \
 		TEST_HUMAN_PR_HOLD_EVENT_DURING_REMOVAL TEST_SCANNER_RC TEST_SCANNER_OUTPUT \
 		TEST_COMPARE_STATUS TEST_REQUIRED_CHECKS_JSON TEST_REQUIRED_CHECKS_RC TEST_FAIL_REREVIEW \
-		TEST_SCANNER_UNRESOLVED_CALLS TEST_SCANNER_DRIFT_HEAD
+		TEST_SCANNER_UNRESOLVED_CALLS TEST_SCANNER_DRIFT_HEAD TEST_SCANNER_PR_LABELS \
+		TEST_REQUIRED_CHECKS_EMPTY TEST_REREVIEW_NOOP
 	rm -f "${TEST_ROOT}/pr-close-observed" "${TEST_ROOT}/pr-snapshot-failure-consumed"
 	printf '1000\n' >"${TEST_ROOT}/pr-hold-event-id.txt"
 	printf '2000\n' >"${TEST_ROOT}/issue-hold-event-id.txt"
@@ -111,6 +112,9 @@ setup_test_paths() {
 printf '%s\n' "$*" >>"${SCANNER_LOG}"
 if [[ -n "${TEST_SCANNER_DRIFT_HEAD:-}" ]]; then
 	printf '%s\n' "$TEST_SCANNER_DRIFT_HEAD" >"${TEST_ROOT}/pr-head.txt"
+fi
+if [[ -n "${TEST_SCANNER_PR_LABELS:-}" ]]; then
+	printf '%s\n' "$TEST_SCANNER_PR_LABELS" >"${TEST_ROOT}/pr-labels.txt"
 fi
 _scanner_call_count=$(wc -l <"${SCANNER_LOG}")
 _scanner_call_count=${_scanner_call_count//[^0-9]/}
@@ -222,9 +226,16 @@ append_gh_mock_pr_edit_cases() {
 "pr edit")
 	if [[ "$*" == *"--add-reviewer"* ]]; then
 		[[ "${TEST_FAIL_REREVIEW:-0}" == "1" ]] && exit 1
+		[[ "${TEST_REREVIEW_NOOP:-0}" == "1" ]] && exit 0
 		for _i in "${!_all_args[@]}"; do
 			if [[ "${_all_args[$_i]}" == "--add-reviewer" ]]; then
-				printf '%s\n' "${_all_args[$((_i + 1))]:-}" >"${TEST_ROOT}/requested-reviewers.txt"
+				_new_reviewers="${_all_args[$((_i + 1))]:-}"
+				_existing_reviewers=$(<"${TEST_ROOT}/requested-reviewers.txt")
+				if [[ -n "$_existing_reviewers" ]]; then
+					printf '%s|%s\n' "$_existing_reviewers" "$_new_reviewers" >"${TEST_ROOT}/requested-reviewers.txt"
+				else
+					printf '%s\n' "$_new_reviewers" >"${TEST_ROOT}/requested-reviewers.txt"
+				fi
 				break
 			fi
 		done
@@ -510,7 +521,9 @@ define_helpers_under_test() {
 		local pr_number="$2"
 		local selection_mode="$3"
 		printf 'exact-checks %s %s %s\n' "$repo_slug" "$pr_number" "$selection_mode" >>"$GH_LOG"
-		if [[ -n "${TEST_REQUIRED_CHECKS_JSON:-}" ]]; then
+		if [[ "${TEST_REQUIRED_CHECKS_EMPTY:-0}" == "1" ]]; then
+			:
+		elif [[ -n "${TEST_REQUIRED_CHECKS_JSON:-}" ]]; then
 			printf '%s\n' "$TEST_REQUIRED_CHECKS_JSON"
 		else
 			printf '%s\n' '[{"name":"Lint","bucket":"fail","state":"FAILURE","link":"https://github.com/owner/repo/actions/runs/123/job/456"}]'
@@ -783,6 +796,85 @@ test_dispatch_preserves_when_threads_converge_at_preclose() {
 		return 0
 	fi
 	print_result "late thread convergence preserves PR at pre-close boundary" 0
+	return 0
+}
+
+test_dispatch_preserves_ready_pr_without_required_checks() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_REQUIRED_CHECKS_EMPTY=1
+	export TEST_REQUIRED_CHECKS_RC=1
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne 0 ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 1 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "empty required-check set preserves ready PR" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "empty required-check set preserves ready PR" 0
+	return 0
+}
+
+test_dispatch_defers_unverified_reviewer_mutation() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_REREVIEW_NOOP=1
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ||
+		"$(<"${TEST_ROOT}/pr-state.txt")" != "OPEN" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 1 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "successful reviewer no-op defers after postcondition failure" 1 \
+			"rc=${dispatch_rc}; state=$(<"${TEST_ROOT}/pr-state.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "successful reviewer no-op defers after postcondition failure" 0
+	return 0
+}
+
+test_dispatch_defers_multilabel_ownership_blocker() {
+	reset_mock_state
+	prepare_ready_review_state
+	printf '%s\n' "origin:worker,auto-dispatch,no-takeover" >"${TEST_ROOT}/pr-labels.txt"
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "comma-delimited ownership blocker prevents reviewer mutation" 1 \
+			"rc=${dispatch_rc}; labels=$(<"${TEST_ROOT}/pr-labels.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "comma-delimited ownership blocker prevents reviewer mutation" 0
+	return 0
+}
+
+test_dispatch_defers_when_worker_origin_disappears() {
+	reset_mock_state
+	prepare_ready_review_state
+	export TEST_SCANNER_PR_LABELS="auto-dispatch"
+	local dispatch_rc=0
+
+	_dispatch_pr_fix_worker "100" "owner/repo" "42" || dispatch_rc=$?
+
+	if [[ "$dispatch_rc" -ne "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}" ||
+		$(grep -cF -- '--add-reviewer trusted-maintainer' "$GH_LOG" 2>/dev/null || true) -ne 0 ||
+		$(grep -cF 'gh pr close 100' "$GH_LOG" 2>/dev/null || true) -ne 0 ]]; then
+		print_result "lost worker origin defers before reviewer mutation" 1 \
+			"rc=${dispatch_rc}; labels=$(<"${TEST_ROOT}/pr-labels.txt"); gh=$(tr '\n' ';' <"$GH_LOG")"
+		return 0
+	fi
+	print_result "lost worker origin defers before reviewer mutation" 0
 	return 0
 }
 
@@ -1668,7 +1760,7 @@ if [[ "${1:-}" == "api" ]]; then
 		fi
 	done
 	if [[ "$*" == *"/pulls/100"* && "$*" != *"/reviews"* && "$*" != *"/comments"* ]]; then
-		printf 'OPEN\tabc123head\t\n'
+		printf 'OPEN\tabc123head\torigin:worker\n'
 		exit 0
 	fi
 	if [[ "$*" == *"/pulls/"*"/reviews"* ]]; then
@@ -1806,6 +1898,10 @@ main() {
 	test_dispatch_requests_only_missing_trusted_reviewers
 	test_dispatch_defers_head_drift_before_reviewer_mutation
 	test_dispatch_preserves_when_threads_converge_at_preclose
+	test_dispatch_preserves_ready_pr_without_required_checks
+	test_dispatch_defers_unverified_reviewer_mutation
+	test_dispatch_defers_multilabel_ownership_blocker
+	test_dispatch_defers_when_worker_origin_disappears
 	test_dispatch_appends_to_issue_body_and_closes_pr
 	test_dispatch_wraps_paginated_feedback_reads
 	test_paginated_feedback_pages_are_merged

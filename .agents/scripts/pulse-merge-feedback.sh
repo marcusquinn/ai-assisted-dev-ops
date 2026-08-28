@@ -356,6 +356,9 @@ _review_feedback_required_checks_green() {
 	esac
 	[[ -n "$checks_json" ]] || checks_json="[]"
 	printf '%s' "$checks_json" | jq -e 'type == ([] | type)' >/dev/null 2>&1 || return 75
+	if [[ "$checks_rc" -eq 1 && "$checks_json" == "[]" ]]; then
+		return 0
+	fi
 	printf '%s' "$checks_json" | jq -e 'any(.[]?; .bucket == "fail")' >/dev/null 2>&1 && return 1
 	printf '%s' "$checks_json" | jq -e 'any(.[]?; .bucket == "cancel")' >/dev/null 2>&1 && return 75
 	[[ "$checks_rc" -eq 0 ]] || return 75
@@ -385,7 +388,7 @@ _review_feedback_ready_snapshot() {
 			(.draft | tostring),
 			(.head.sha // ""),
 			([.requested_reviewers[].login] | join("|")),
-			([.labels[].name] | join("|"))
+			([.labels[].name] | join(","))
 		] | join("\u001f")
 	' 2>/dev/null
 	return $?
@@ -399,8 +402,8 @@ _review_feedback_ready_snapshot_matches() {
 
 	IFS=$'\x1f' read -r pr_state is_draft current_head observed_reviewers labels <<<"$snapshot"
 	[[ "$pr_state" == "OPEN" && "$is_draft" == "false" && "$current_head" == "$expected_head" ]] || return 1
-	declare -F _feedback_route_labels_block_routing >/dev/null 2>&1 || return 1
-	_feedback_route_labels_block_routing "$labels" && return 1
+	declare -F _feedback_route_labels_allow_worker_route >/dev/null 2>&1 || return 1
+	_feedback_route_labels_allow_worker_route "$labels" || return 1
 	printf -v "$requested_var" '%s' "$observed_reviewers"
 	return 0
 }
@@ -448,6 +451,8 @@ _review_feedback_preserve_ready_pr() {
 	fi
 	snapshot=$(_review_feedback_ready_snapshot "$pr_number" "$repo_slug") || return 75
 	_review_feedback_ready_snapshot_matches "$snapshot" "$expected_head" requested_reviewers || return 75
+	pending_reviewers=$(_review_feedback_pending_reviewers "$reviewers_json" "$requested_reviewers") || return 75
+	[[ -z "$pending_reviewers" ]] || return 75
 	return 0
 }
 
