@@ -63,6 +63,22 @@ teardown_test_env() {
 	return 0
 }
 
+write_attempt_state() {
+	local state_file="$1"
+	local attempt_id="$2"
+	local session_key="$3"
+	local exit_path="${4:-running}"
+	local reason="${5:-unknown}"
+	mkdir -p "${state_file%/*}"
+	jq -nc \
+		--arg attempt_id "$attempt_id" \
+		--arg session_key "$session_key" \
+		--arg exit_path "$exit_path" \
+		--arg reason "$reason" \
+		'{schema:"aidevops-worker-attempt/v1",attempt_id:$attempt_id,run_id:"unknown",attempt_started_at:"1",updated_at:"2026-01-01T00:00:00Z",last_event_category:"lifecycle",last_event:"waiting_for_worker",last_lifecycle_stage:"waiting_for_worker",last_completed_stage:"prrts_dispatch_ready",emitter_pid:"1",logged_pid:"1",status:"unknown",session_key:$session_key,exit_path:$exit_path,reason:$reason}' >"$state_file"
+	return 0
+}
+
 #######################################
 # Test: register creates a ledger entry
 #######################################
@@ -579,6 +595,186 @@ test_expire_dead_pid() {
 	return 0
 }
 
+test_expire_dead_pid_finalizes_exact_attempt() {
+	setup_test_env
+	local state_root="${TEST_ROOT}/attempts"
+	local state_file="${state_root}/owner-repo-1-attempt-dead.attempt.json"
+	local outcome_file="${state_root}/owner-repo-1.outcome"
+	local session_key="pr-review-thread-response-owner-repo-1"
+	write_attempt_state "$state_file" "attempt-dead" "$session_key"
+
+	run_helper "$LEDGER_HELPER" register --session-key "$session_key" --pid 99999999 \
+		--attempt-id "attempt-dead" --attempt-state-root "$state_root" \
+		--attempt-state-file "$state_file" --outcome-file "$outcome_file"
+	local expired_count=""
+	expired_count=$("$LEDGER_HELPER" expire --ttl 99999)
+
+	local result=0 ledger_finalization="" state_exit="" outcome_id="" retry_class=""
+	ledger_finalization=$(jq -r '.attempt_finalization_status' "${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl")
+	state_exit=$(jq -r '.exit_path' "$state_file")
+	outcome_id=$(awk -F= '$1 == "outcome_id" { print $2 }' "$outcome_file")
+	retry_class=$(awk -F= '$1 == "retry_class" { print $2 }' "$outcome_file")
+	[[ "$expired_count" == "1" && "$ledger_finalization" == "finalized" ]] || result=1
+	[[ "$state_exit" == "supervisor_finalized" && "$outcome_id" == "attempt-dead" ]] || result=1
+	[[ "$retry_class" == "retryable_infrastructure" ]] || result=1
+	print_result "expire finalizes the exact dead-PID attempt and typed outcome" "$result" \
+		"expired=${expired_count}, ledger=${ledger_finalization}, state=${state_exit}, outcome=${outcome_id}"
+	teardown_test_env
+	return 0
+}
+
+test_expire_honours_prelaunch_lease_deadline() {
+	setup_test_env
+	local state_root="${TEST_ROOT}/attempts"
+	local state_file="${state_root}/owner-repo-1-attempt-lease.attempt.json"
+	local outcome_file="${state_root}/owner-repo-1.outcome"
+	local session_key="pr-review-thread-response-owner-repo-1"
+	local ledger_file="${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl"
+	local ledger_tmp="${ledger_file}.tmp"
+	write_attempt_state "$state_file" "attempt-lease" "$session_key"
+	run_helper "$LEDGER_HELPER" register --session-key "$session_key" --pid $$ \
+		--attempt-id "attempt-lease" --attempt-state-root "$state_root" \
+		--attempt-state-file "$state_file" --outcome-file "$outcome_file" --lease-ttl 99999
+	jq -c '.lease_expires_at = 1' "$ledger_file" >"$ledger_tmp"
+	mv "$ledger_tmp" "$ledger_file"
+
+	local expired_count="" result=0 reason=""
+	expired_count=$("$LEDGER_HELPER" expire --ttl 99999)
+	reason=$(awk -F= '$1 == "reason" { print $2 }' "$outcome_file")
+	[[ "$expired_count" == "1" && "$reason" == "prelaunch_lease_expired" ]] || result=1
+	print_result "expire honours the prelaunch lease deadline even while the owner PID exists" "$result" \
+		"expired=${expired_count}, reason=${reason}"
+	teardown_test_env
+	return 0
+}
+
+test_expire_preserves_live_unexpired_lease() {
+	setup_test_env
+	local ledger_file="${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl"
+	local ledger_tmp="${ledger_file}.tmp"
+	run_helper "$LEDGER_HELPER" register --session-key "issue-live-lease" --pid $$ --lease-ttl 99999
+	jq -c '.dispatched_at = "2020-01-01T00:00:00Z"' "$ledger_file" >"$ledger_tmp"
+	mv "$ledger_tmp" "$ledger_file"
+
+	local expired_count="" result=0 status=""
+	expired_count=$("$LEDGER_HELPER" expire --ttl 1)
+	status=$(jq -r '.status' "$ledger_file")
+	[[ "$expired_count" == "0" && "$status" == "in-flight" ]] || result=1
+	print_result "expire does not apply the legacy TTL while a verified lease is live" "$result" \
+		"expired=${expired_count}, status=${status}"
+	teardown_test_env
+	return 0
+}
+
+test_expire_uses_latest_lease_transition() {
+	setup_test_env
+	local ledger_file="${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl"
+	local ledger_tmp="${ledger_file}.tmp"
+	run_helper "$LEDGER_HELPER" register --session-key "issue-ready-lease" --pid $$ \
+		--lease-token "lease-ready" --attempt-id "attempt-ready" --lease-ttl 120
+	run_helper "$LEDGER_HELPER" ready --session-key "issue-ready-lease" \
+		--lease-token "lease-ready" --lease-ttl 99999
+	jq -c 'if .lease_phase == "prelaunch" then .lease_expires_at = 1 else . end' \
+		"$ledger_file" >"$ledger_tmp"
+	mv "$ledger_tmp" "$ledger_file"
+
+	local expired_count="" result=0 latest_phase="" latest_status=""
+	expired_count=$("$LEDGER_HELPER" expire --ttl 1)
+	latest_phase=$(jq -sr 'last | .lease_phase' "$ledger_file")
+	latest_status=$(jq -sr 'last | .status' "$ledger_file")
+	[[ "$expired_count" == "0" && "$latest_phase" == "ready" && "$latest_status" == "in-flight" ]] || result=1
+	print_result "expire ignores a superseded prelaunch deadline after the ready transition" "$result" \
+		"expired=${expired_count}, phase=${latest_phase}, status=${latest_status}"
+	teardown_test_env
+	return 0
+}
+
+test_register_rejects_unsafe_attempt_binding() {
+	setup_test_env
+	local state_root="${TEST_ROOT}/attempts"
+	local state_file="${state_root}/owner-repo-1-attempt-safe.attempt.json"
+	local outcome_file="${state_root}/owner-repo-1.outcome"
+	local session_key="pr-review-thread-response-owner-repo-1"
+	write_attempt_state "$state_file" "attempt-safe" "$session_key"
+
+	run_helper "$LEDGER_HELPER" register --session-key "$session_key" --pid $$ \
+		--attempt-id "attempt-mismatch" --attempt-state-root "$state_root" \
+		--attempt-state-file "$state_file" --outcome-file "$outcome_file"
+	local mismatch_exit="$LAST_EXIT"
+	run_helper "$LEDGER_HELPER" register --session-key "$session_key" --pid $$ \
+		--attempt-id "attempt-safe" --attempt-state-root "$state_root" \
+		--attempt-state-file "$state_file" --outcome-file "${TEST_ROOT}/escaped.outcome"
+	local escape_exit="$LAST_EXIT"
+	local result=0
+	[[ "$mismatch_exit" -ne 0 && "$escape_exit" -ne 0 ]] || result=1
+	print_result "register rejects mismatched identities and outcome path escape" "$result" \
+		"mismatch_exit=${mismatch_exit}, escape_exit=${escape_exit}"
+	teardown_test_env
+	return 0
+}
+
+test_expire_preserves_existing_terminal_attempt() {
+	setup_test_env
+	local state_root="${TEST_ROOT}/attempts"
+	local state_file="${state_root}/owner-repo-1-attempt-complete.attempt.json"
+	local outcome_file="${state_root}/owner-repo-1.outcome"
+	local session_key="pr-review-thread-response-owner-repo-1"
+	write_attempt_state "$state_file" "attempt-complete" "$session_key" "worker_complete" "worker_complete"
+	{
+		printf 'session_key=%s\n' "$session_key"
+		printf 'outcome_id=attempt-complete\n'
+		printf 'reason=worker_complete\n'
+		printf 'session_count=1\n'
+		printf 'retry_class=meaningful_remediation\n'
+		printf 'finished_at=1\n'
+	} >"$outcome_file"
+	run_helper "$LEDGER_HELPER" register --session-key "$session_key" --pid 99999999 \
+		--attempt-id "attempt-complete" --attempt-state-root "$state_root" \
+		--attempt-state-file "$state_file" --outcome-file "$outcome_file"
+	"$LEDGER_HELPER" expire --ttl 99999 >/dev/null
+
+	local result=0 state_reason="" outcome_reason="" finalization=""
+	state_reason=$(jq -r '.reason' "$state_file")
+	outcome_reason=$(awk -F= '$1 == "reason" { print $2 }' "$outcome_file")
+	finalization=$(jq -r '.attempt_finalization_status' "${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl")
+	[[ "$state_reason" == "worker_complete" && "$outcome_reason" == "worker_complete" && "$finalization" == "finalized" ]] || result=1
+	print_result "expire never overwrites an existing terminal attempt outcome" "$result" \
+		"state=${state_reason}, outcome=${outcome_reason}, finalization=${finalization}"
+	teardown_test_env
+	return 0
+}
+
+test_expire_retries_deferred_attempt_finalization() {
+	setup_test_env
+	local state_root="${TEST_ROOT}/attempts"
+	local state_file="${state_root}/owner-repo-1-attempt-retry.attempt.json"
+	local outcome_file="${state_root}/owner-repo-1.outcome"
+	local session_key="pr-review-thread-response-owner-repo-1"
+	local ledger_file="${AIDEVOPS_DISPATCH_LEDGER_DIR}/dispatch-ledger.jsonl"
+	write_attempt_state "$state_file" "attempt-retry" "$session_key"
+	run_helper "$LEDGER_HELPER" register --session-key "$session_key" --pid 99999999 \
+		--attempt-id "attempt-retry" --attempt-state-root "$state_root" \
+		--attempt-state-file "$state_file" --outcome-file "$outcome_file"
+	rm -f "$state_file"
+	local first_expired=""
+	first_expired=$("$LEDGER_HELPER" expire --ttl 99999 2>/dev/null)
+	local first_finalization=""
+	first_finalization=$(jq -r '.attempt_finalization_status' "$ledger_file")
+	write_attempt_state "$state_file" "attempt-retry" "$session_key"
+	local second_expired=""
+	second_expired=$("$LEDGER_HELPER" expire --ttl 99999)
+
+	local result=0 second_finalization="" outcome_id=""
+	second_finalization=$(jq -r '.attempt_finalization_status' "$ledger_file")
+	outcome_id=$(awk -F= '$1 == "outcome_id" { print $2 }' "$outcome_file")
+	[[ "$first_expired" == "1" && "$first_finalization" == "awaiting-finalization" ]] || result=1
+	[[ "$second_expired" == "0" && "$second_finalization" == "finalized" && "$outcome_id" == "attempt-retry" ]] || result=1
+	print_result "expire retries deferred secondary finalization without reopening ledger truth" "$result" \
+		"first=${first_expired}/${first_finalization}, second=${second_expired}/${second_finalization}, outcome=${outcome_id}"
+	teardown_test_env
+	return 0
+}
+
 #######################################
 # Test: expire rejects --ttl without a value
 #######################################
@@ -975,6 +1171,13 @@ main() {
 	test_count_inflight
 	test_expire_by_ttl
 	test_expire_dead_pid
+	test_expire_dead_pid_finalizes_exact_attempt
+	test_expire_honours_prelaunch_lease_deadline
+	test_expire_preserves_live_unexpired_lease
+	test_expire_uses_latest_lease_transition
+	test_register_rejects_unsafe_attempt_binding
+	test_expire_preserves_existing_terminal_attempt
+	test_expire_retries_deferred_attempt_finalization
 	test_expire_missing_ttl_value
 	test_check_dead_pid_marks_failed
 	test_prune_old_entries

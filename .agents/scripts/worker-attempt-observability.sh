@@ -15,6 +15,7 @@ _WAO_LIFECYCLE_MARKER='[lifecycle]'
 _WAO_EXIT_MARKER='[exit-trap]'
 _WAO_FIELD_SEPARATOR=$'\034'
 _WAO_UNKNOWN='unknown'
+_WAO_EXIT_PATH_RUNNING='running'
 _WAO_STATE_SCHEMA='aidevops-worker-attempt/v1'
 _WAO_LOCK_RETRIES=20
 _WAO_LOCK_STALE_SECONDS=30
@@ -140,18 +141,18 @@ _wao_read_previous_state() {
 	_WAO_PREVIOUS_LIFECYCLE="$_WAO_UNKNOWN"
 	_WAO_PREVIOUS_COMPLETED="$_WAO_UNKNOWN"
 	_WAO_PREVIOUS_SESSION="$_WAO_UNKNOWN"
-	_WAO_PREVIOUS_EXIT_PATH='running'
+	_WAO_PREVIOUS_EXIT_PATH="$_WAO_EXIT_PATH_RUNNING"
 	_WAO_PREVIOUS_REASON="$_WAO_UNKNOWN"
 	_WAO_PREVIOUS_LOGGED_PID="$_WAO_UNKNOWN"
 	_WAO_PREVIOUS_STATUS="$_WAO_UNKNOWN"
 	_WAO_PREVIOUS_ATTEMPT_ID="$_WAO_UNKNOWN"
 	[[ -s "$state_file" ]] || return 0
-	previous_line=$(jq -r --arg unknown "$_WAO_UNKNOWN" '
+	previous_line=$(jq -r --arg unknown "$_WAO_UNKNOWN" --arg running "$_WAO_EXIT_PATH_RUNNING" '
 		[
 			(.last_lifecycle_stage // $unknown),
 			(.last_completed_stage // $unknown),
 			(.session_key // $unknown),
-			(.exit_path // "running"),
+			(.exit_path // $running),
 			(.reason // $unknown),
 			(.logged_pid // $unknown),
 			(.status // $unknown),
@@ -390,6 +391,166 @@ worker_attempt_observability_state_matches_identity() (
 	jq -e --arg schema "$_WAO_STATE_SCHEMA" --arg attempt_id "$attempt_id" \
 		'.schema == $schema and .attempt_id == $attempt_id' \
 		"$resolved_state" >/dev/null 2>&1 || return 1
+	return 0
+)
+
+worker_attempt_observability_binding_is_safe() (
+	local state_root="$1"
+	local state_file="$2"
+	local outcome_file="$3"
+	local attempt_id="$4"
+	local session_key="$5"
+	local outcome_parent=""
+	local resolved_root=""
+	local resolved_parent=""
+	local value=""
+
+	for value in "$state_root" "$state_file" "$outcome_file" "$attempt_id" "$session_key"; do
+		[[ -n "$value" && "$value" != *$'\n'* && "$value" != *$'\r'* && \
+			"$value" != *$'\t'* && "$value" != *"$_WAO_FIELD_SEPARATOR"* ]] || return 1
+	done
+	[[ "$state_root" == /* && "$outcome_file" == /* && ! -L "$state_root" && ! -L "$outcome_file" ]] || return 1
+	[[ -O "$state_root" && -O "$state_file" ]] || return 1
+	case "${outcome_file##*/}" in
+	*.outcome) ;;
+	*) return 1 ;;
+	esac
+	case "$outcome_file" in
+	"$state_root"/*) ;;
+	*) return 1 ;;
+	esac
+	outcome_parent="${outcome_file%/*}"
+	[[ -d "$outcome_parent" && ! -L "$outcome_parent" && -O "$outcome_parent" ]] || return 1
+	resolved_root=$(cd "$state_root" 2>/dev/null && pwd -P) || return 1
+	resolved_parent=$(cd "$outcome_parent" 2>/dev/null && pwd -P) || return 1
+	case "$resolved_parent" in
+	"$resolved_root" | "$resolved_root"/*) ;;
+	*) return 1 ;;
+	esac
+	if [[ -e "$outcome_file" && (! -f "$outcome_file" || ! -O "$outcome_file") ]]; then
+		return 1
+	fi
+	worker_attempt_observability_state_matches_identity \
+		"$state_root" "$state_file" "$attempt_id" || return 1
+	jq -e --arg session_key "$session_key" \
+		'(.session_key // "") == $session_key' "$state_file" >/dev/null 2>&1 || return 1
+	return 0
+)
+
+_wao_outcome_value() {
+	local outcome_file="$1"
+	local expected_key="$2"
+	local key=""
+	local value=""
+	[[ -f "$outcome_file" ]] || return 0
+	while IFS='=' read -r key value; do
+		if [[ "$key" == "$expected_key" ]]; then
+			printf '%s' "$value"
+			return 0
+		fi
+	done <"$outcome_file"
+	return 0
+}
+
+worker_attempt_observability_finalize_abandoned() (
+	local state_root="$1"
+	local state_file="$2"
+	local outcome_file="$3"
+	local attempt_id="$4"
+	local session_key="$5"
+	local reason="$6"
+	local lock_dir=""
+	local exit_path=""
+	local observed_outcome_id=""
+	local observed_reason=""
+	local timestamp=""
+	local finished_at=""
+	local state_tmp=""
+	local outcome_tmp=""
+	local previous_umask=""
+
+	worker_attempt_observability_binding_is_safe \
+		"$state_root" "$state_file" "$outcome_file" "$attempt_id" "$session_key" || return 1
+	reason=$(_wao_safe_token "$reason" "dispatch_process_unavailable")
+	_wao_acquire_state_lock lock_dir "$state_file" || return 1
+	worker_attempt_observability_state_matches_identity \
+		"$state_root" "$state_file" "$attempt_id" || {
+		_wao_release_state_lock "$lock_dir"
+		return 1
+	}
+	exit_path=$(jq -r --arg running "$_WAO_EXIT_PATH_RUNNING" '.exit_path // $running' "$state_file" 2>/dev/null) || exit_path=""
+	if [[ -z "$exit_path" || "$exit_path" != "$_WAO_EXIT_PATH_RUNNING" ]]; then
+		_wao_release_state_lock "$lock_dir"
+		return 0
+	fi
+
+	if [[ -s "$outcome_file" ]]; then
+		observed_outcome_id=$(_wao_outcome_value "$outcome_file" "outcome_id")
+		[[ "$observed_outcome_id" == "$attempt_id" ]] || {
+			_wao_release_state_lock "$lock_dir"
+			return 1
+		}
+		observed_reason=$(_wao_outcome_value "$outcome_file" "reason")
+		[[ -n "$observed_reason" ]] && reason=$(_wao_safe_token "$observed_reason" "$reason")
+	else
+		finished_at=$(date +%s 2>/dev/null || printf '0')
+		[[ "$finished_at" =~ ^[0-9]+$ ]] || finished_at=0
+		previous_umask=$(umask)
+		umask 077
+		outcome_tmp=$(mktemp "${outcome_file}.tmp.XXXXXX" 2>/dev/null) || outcome_tmp=""
+		umask "$previous_umask"
+		if [[ -z "$outcome_tmp" ]] || ! {
+			printf 'session_key=%s\n' "$session_key"
+			printf 'outcome_id=%s\n' "$attempt_id"
+			printf 'reason=%s\n' "$reason"
+			printf 'session_count=0\n'
+			printf 'retry_class=retryable_infrastructure\n'
+			printf 'finished_at=%s\n' "$finished_at"
+		} >"$outcome_tmp"; then
+			rm -f "$outcome_tmp" 2>/dev/null || true
+			_wao_release_state_lock "$lock_dir"
+			return 1
+		fi
+		if ! ln "$outcome_tmp" "$outcome_file" 2>/dev/null; then
+			rm -f "$outcome_tmp" 2>/dev/null || true
+			observed_outcome_id=$(_wao_outcome_value "$outcome_file" "outcome_id")
+			[[ "$observed_outcome_id" == "$attempt_id" ]] || {
+				_wao_release_state_lock "$lock_dir"
+				return 1
+			}
+		else
+			rm -f "$outcome_tmp" 2>/dev/null || true
+			chmod 600 "$outcome_file" 2>/dev/null || true
+		fi
+	fi
+
+	timestamp=$(_wao_timestamp)
+	previous_umask=$(umask)
+	umask 077
+	state_tmp=$(mktemp "${state_file}.tmp.XXXXXX" 2>/dev/null) || state_tmp=""
+	umask "$previous_umask"
+	if [[ -z "$state_tmp" ]] || ! jq \
+		--arg updated_at "$timestamp" \
+		--arg emitter_pid "$$" \
+		--arg reason "$reason" \
+		'.updated_at = $updated_at |
+		 .last_event_category = "supervisor" |
+		 .last_event = "dispatch_reaper_finalized" |
+		 .emitter_pid = $emitter_pid |
+		 .status = "1" |
+		 .exit_path = "supervisor_finalized" |
+		 .reason = $reason' "$state_file" >"$state_tmp" 2>/dev/null; then
+		rm -f "$state_tmp" 2>/dev/null || true
+		_wao_release_state_lock "$lock_dir"
+		return 1
+	fi
+	if ! mv -f "$state_tmp" "$state_file" 2>/dev/null; then
+		rm -f "$state_tmp" 2>/dev/null || true
+		_wao_release_state_lock "$lock_dir"
+		return 1
+	fi
+	chmod 600 "$state_file" 2>/dev/null || true
+	_wao_release_state_lock "$lock_dir"
 	return 0
 )
 

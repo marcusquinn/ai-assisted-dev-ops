@@ -1315,6 +1315,14 @@ _register_dispatch_ledger() {
 	[[ -n "${AIDEVOPS_DISPATCH_TIER:-}" ]] && ledger_args+=(--tier "$AIDEVOPS_DISPATCH_TIER")
 	[[ -n "${AIDEVOPS_DISPATCH_MODEL:-}" ]] && ledger_args+=(--model "$AIDEVOPS_DISPATCH_MODEL")
 	[[ -n "${AIDEVOPS_ATTEMPT_ID:-}" ]] && ledger_args+=(--attempt-id "$AIDEVOPS_ATTEMPT_ID")
+	if [[ -n "${AIDEVOPS_ATTEMPT_STATE_ROOT:-}" && -n "${AIDEVOPS_ATTEMPT_STATE_FILE:-}" &&
+		-n "${AIDEVOPS_HEADLESS_OUTCOME_FILE:-}" ]]; then
+		ledger_args+=(
+			--attempt-state-root "$AIDEVOPS_ATTEMPT_STATE_ROOT"
+			--attempt-state-file "$AIDEVOPS_ATTEMPT_STATE_FILE"
+			--outcome-file "$AIDEVOPS_HEADLESS_OUTCOME_FILE"
+		)
+	fi
 
 	"$DISPATCH_LEDGER_HELPER" "${ledger_args[@]}" 2>/dev/null || true
 	return 0

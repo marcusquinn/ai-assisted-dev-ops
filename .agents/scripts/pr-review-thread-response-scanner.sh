@@ -60,7 +60,7 @@ PRRTS_VALUE_UNKNOWN="unknown"
 PRRTS_TSV_FIELD_SEPARATOR=$'\034'
 # Increment when the worker prompt or launch contract changes so escalated
 # same-fingerprint state receives one fresh bounded remediation pass.
-PRRTS_WORKER_CONTRACT_VERSION="10"
+PRRTS_WORKER_CONTRACT_VERSION="11"
 # Targeted callers distinguish productive dispatch deduplication from a hard
 # launch failure so an already-remediating PR is preserved.
 PRRTS_RC_DISPATCH_DEFERRED=10
@@ -1327,6 +1327,42 @@ _prrts_read_outcome() {
 	return 0
 }
 
+_prrts_write_infrastructure_outcome() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local outcome_id="$3"
+	local session_key="$4"
+	local reason="$5"
+	local outcome_file=""
+	local outcome_tmp=""
+	local finished_at=""
+	[[ "$outcome_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || return 1
+	[[ "$session_key" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$ ]] || return 1
+	[[ "$reason" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$ ]] || reason="review_worker_launch_failed"
+	_prrts_ensure_dirs
+	outcome_file="$(_prrts_outcome_file "$repo_slug" "$pr_number")"
+	[[ "$outcome_file" == "${STATE_DIR}/"*.outcome && ! -L "$outcome_file" ]] || return 1
+	finished_at=$(date +%s)
+	outcome_tmp="${outcome_file}.tmp.$$"
+	if ! {
+		printf 'session_key=%s\n' "$session_key"
+		printf 'outcome_id=%s\n' "$outcome_id"
+		printf 'reason=%s\n' "$reason"
+		printf 'session_count=0\n'
+		printf 'retry_class=%s\n' "$PRRTS_RETRY_CLASS_INFRASTRUCTURE"
+		printf 'finished_at=%s\n' "$finished_at"
+	} >"$outcome_tmp"; then
+		rm -f "$outcome_tmp"
+		return 1
+	fi
+	if ! mv -f "$outcome_tmp" "$outcome_file"; then
+		rm -f "$outcome_tmp"
+		return 1
+	fi
+	chmod 600 "$outcome_file" 2>/dev/null || true
+	return 0
+}
+
 _prrts_outcome_matches_dispatch() {
 	local expected_outcome_id="$1"
 	local observed_outcome_id="$2"
@@ -2547,6 +2583,7 @@ _prrts_dispatch_guarded() {
 	local attempt_count="1" repeated_same_fingerprint="$PRRTS_BOOL_FALSE" same_head_sha="$PRRTS_BOOL_FALSE" maintainer_attention="$PRRTS_BOOL_FALSE"
 	local infrastructure_failure_count="0"
 	local failure_maintainer_attention="$PRRTS_BOOL_FALSE"
+	local failure_outcome_id=""
 	local dispatch_guard_rc=0
 	_prrts_acquire_dispatch_lock "$repo_slug" "$pr_number" lock_dir || dispatch_guard_rc=$?
 	if [[ "$dispatch_guard_rc" -ne 0 ]]; then
@@ -2595,7 +2632,12 @@ _prrts_dispatch_guarded() {
 		if _prrts_prelaunch_failure_needs_maintainer_attention "$PRRTS_WORKTREE_FAILURE_BLOCKED_BY"; then
 			failure_maintainer_attention="$PRRTS_BOOL_TRUE"
 		fi
-		_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$PRRTS_BOOL_FALSE" "$head_oid" "" "$infrastructure_failure_count"
+		if [[ "$PRRTS_WORKTREE_FAILURE_BLOCKED_BY" == "$PRRTS_BLOCKED_BY_INFRASTRUCTURE" ]] &&
+			_prrts_write_infrastructure_outcome "$repo_slug" "$pr_number" "$PRRTS_WORKER_OUTCOME_ID" \
+				"$session_key" "$PRRTS_WORKTREE_FAILURE_REASON"; then
+			failure_outcome_id="$PRRTS_WORKER_OUTCOME_ID"
+		fi
+		_prrts_write_state "$repo_slug" "$pr_number" "$fingerprint" "$thread_count" "$now_epoch" "$attempt_count" "$PRRTS_BOOL_FALSE" "$head_oid" "$failure_outcome_id" "$infrastructure_failure_count"
 		_prrts_write_analysis_state "$repo_slug" "$pr_number" "$PRRTS_BOOL_TRUE" \
 			"$PRRTS_WORKTREE_FAILURE_BLOCKED_BY" "$failure_maintainer_attention" "$PRRTS_WORKTREE_FAILURE_REASON"
 		_prrts_remove_lock_dir "$lock_dir"

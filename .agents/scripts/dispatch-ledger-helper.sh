@@ -34,6 +34,7 @@
 #
 # Usage:
 #   dispatch-ledger-helper.sh register --session-key KEY [--issue NUM] [--repo SLUG] [--pid PID] [--worktree PATH]
+#     [--attempt-id ID --attempt-state-root DIR --attempt-state-file FILE --outcome-file FILE]
 #   dispatch-ledger-helper.sh check --session-key KEY
 #   dispatch-ledger-helper.sh check-issue --issue NUM [--repo SLUG]
 #   dispatch-ledger-helper.sh check-issue NUM [SLUG]
@@ -50,6 +51,8 @@ set -euo pipefail
 # shellcheck source=shared-constants.sh
 _dlh_dir="${BASH_SOURCE[0]%/*}"
 [[ -f "${_dlh_dir}/shared-constants.sh" ]] && source "${_dlh_dir}/shared-constants.sh"
+# shellcheck source=worker-attempt-observability.sh
+[[ -f "${_dlh_dir}/worker-attempt-observability.sh" ]] && source "${_dlh_dir}/worker-attempt-observability.sh"
 
 LEDGER_DIR="${AIDEVOPS_DISPATCH_LEDGER_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 LEDGER_FILE="${LEDGER_DIR}/dispatch-ledger.jsonl"
@@ -61,6 +64,7 @@ READY_TTL="${AIDEVOPS_DISPATCH_READY_LEASE_TTL:-7200}"
 LEDGER_STATUS_ACTIVE="in-flight"
 LEDGER_STATUS_COMPLETED="completed"
 LEDGER_STATUS_FAILED="failed"
+ATTEMPT_FINALIZATION_PENDING="awaiting-finalization"
 
 _lease_device_id() {
 	local id_file="${AIDEVOPS_DEVICE_ID_FILE:-${HOME}/.aidevops/state/device-id}"
@@ -368,6 +372,36 @@ _lease_terminal_registration_exists() {
 	return 0
 }
 
+_register_append_entry() {
+	local session_key="$1"
+	local attempt_id="$2"
+	local attempt_state_root="$3"
+	local attempt_state_file="$4"
+	local outcome_file="$5"
+	local issue_number="$6"
+	local repo_slug="$7"
+	local dispatch_pid="$8"
+	local owner_process_start="$9"
+	local now="${10}"
+	local dispatch_tier="${11}"
+	local dispatch_model="${12}"
+	local worktree_path="${13}"
+	local lease_token="${14}"
+	local runner_device="${15}"
+	local lease_expires_at="${16}"
+	jq -cn \
+		--arg sk "$session_key" --arg attempt "$attempt_id" \
+		--arg attempt_state_root "$attempt_state_root" --arg attempt_state_file "$attempt_state_file" \
+		--arg outcome_file "$outcome_file" --arg inum "$issue_number" --arg slug "$repo_slug" \
+		--argjson pid "$dispatch_pid" --arg owner_process_start "$owner_process_start" --arg ts "$now" \
+		--arg tier "$dispatch_tier" --arg model "$dispatch_model" --arg worktree "$worktree_path" \
+		--arg token "$lease_token" --arg device "$runner_device" --argjson expires "$lease_expires_at" \
+		--arg status "$LEDGER_STATUS_ACTIVE" \
+		'{session_key: $sk, attempt_id: $attempt, attempt_state_root: $attempt_state_root, attempt_state_file: $attempt_state_file, outcome_file: $outcome_file, issue_number: $inum, repo_slug: $slug, pid: $pid, owner_process_start: $owner_process_start, dispatched_at: $ts, status: $status, updated_at: $ts, tier: $tier, model: $model, worktree_path: $worktree, lease_token:$token, runner_device:$device, lease_phase:"prelaunch", lease_expires_at:$expires}' \
+		>>"$LEDGER_FILE"
+	return $?
+}
+
 #######################################
 # Register a new dispatch in the ledger
 #
@@ -391,7 +425,7 @@ cmd_register() {
 	local dispatch_model=""
 	local worktree_path=""
 	local owner_process_start=""
-	local lease_token="" attempt_id=""
+	local lease_token="" attempt_id="" attempt_state_root="" attempt_state_file="" outcome_file=""
 	local runner_device=""
 	local lease_ttl="$PRELAUNCH_TTL"
 
@@ -421,6 +455,9 @@ cmd_register() {
 			shift 2
 			;;
 		--attempt-id) attempt_id="${2:-}"; shift 2 ;;
+		--attempt-state-root) attempt_state_root="${2:-}"; shift 2 ;;
+		--attempt-state-file) attempt_state_file="${2:-}"; shift 2 ;;
+		--outcome-file) outcome_file="${2:-}"; shift 2 ;;
 		--device-id)
 			runner_device="${2:-}"
 			shift 2
@@ -439,6 +476,15 @@ cmd_register() {
 	if [[ -z "$session_key" ]]; then
 		echo "Error: register requires --session-key" >&2
 		return 1
+	fi
+	if [[ -n "$attempt_state_root" || -n "$attempt_state_file" || -n "$outcome_file" ]]; then
+		if [[ -z "$attempt_state_root" || -z "$attempt_state_file" || -z "$outcome_file" || -z "$attempt_id" ]] ||
+			! declare -F worker_attempt_observability_binding_is_safe >/dev/null 2>&1 ||
+			! worker_attempt_observability_binding_is_safe \
+				"$attempt_state_root" "$attempt_state_file" "$outcome_file" "$attempt_id" "$session_key"; then
+			echo "Error: register rejected unsafe or mismatched attempt-state binding" >&2
+			return 1
+		fi
 	fi
 	_ensure_ledger
 	if ! _acquire_lock; then
@@ -461,23 +507,12 @@ cmd_register() {
 	lease_expires_at=$(_lease_expiry "$lease_ttl")
 	[[ -n "$attempt_id" ]] || attempt_id=$(aidevops_generate_execution_id "attempt")
 
-	jq -cn \
-		--arg sk "$session_key" \
-		--arg inum "$issue_number" \
-		--arg slug "$repo_slug" \
-		--argjson pid "$dispatch_pid" \
-		--arg ts "$now" \
-		--arg tier "$dispatch_tier" \
-		--arg model "$dispatch_model" \
-		--arg worktree "$worktree_path" \
-		--arg owner_process_start "$owner_process_start" \
-		--arg token "$lease_token" \
-		--arg attempt "$attempt_id" \
-		--arg device "$runner_device" \
-		--argjson expires "$lease_expires_at" \
-		--arg status "$LEDGER_STATUS_ACTIVE" \
-		'{session_key: $sk, attempt_id: $attempt, issue_number: $inum, repo_slug: $slug, pid: $pid, owner_process_start: $owner_process_start, dispatched_at: $ts, status: $status, updated_at: $ts, tier: $tier, model: $model, worktree_path: $worktree, lease_token:$token, runner_device:$device, lease_phase:"prelaunch", lease_expires_at:$expires}' \
-		>>"$LEDGER_FILE"
+	if ! _register_append_entry "$session_key" "$attempt_id" "$attempt_state_root" "$attempt_state_file" \
+		"$outcome_file" "$issue_number" "$repo_slug" "$dispatch_pid" "$owner_process_start" "$now" \
+		"$dispatch_tier" "$dispatch_model" "$worktree_path" "$lease_token" "$runner_device" "$lease_expires_at"; then
+		_release_lock
+		return 1
+	fi
 	_append_tier_telemetry "$issue_number" "$repo_slug" "$dispatch_tier" "$dispatch_model" "$now" "$session_key" "$attempt_id"
 	_release_lock
 	return 0
@@ -1206,6 +1241,9 @@ _cmd_expire_collect_indices() {
 	local status=""
 	local dispatched_at=""
 	local entry_pid=""
+	local owner_process_start=""
+	local current_process_start=""
+	local lease_expires_at=""
 	local dispatch_epoch=""
 	local age=""
 	local -i should_expire=0
@@ -1216,26 +1254,34 @@ _cmd_expire_collect_indices() {
 	# bash then performs the kill -0 liveness checks (which jq cannot do) and
 	# decides which entries to expire. Final rewrite uses a single jq pass too.
 	tsv_data=$(jq -nr '
-		[inputs] | to_entries[]
+		[inputs] | to_entries
+		| group_by([.value.session_key, .value.lease_token, .value.attempt_id] | map(. // ""))[]
+		| max_by(.key)
 		| .key as $idx | .value as $v
-		| "\($idx)\t\($v.status // "")\t\($v.dispatched_at // "")\t\($v.pid // 0)"
+		| [$idx, $v.status, $v.dispatched_at, $v.pid, $v.owner_process_start, $v.lease_expires_at]
+		| map(. // "") | join("\u001c")
 	' "$LEDGER_FILE" 2>/dev/null) || tsv_data=""
 
-	while IFS=$'\t' read -r idx status dispatched_at entry_pid; do
+	while IFS=$'\034' read -r idx status dispatched_at entry_pid owner_process_start lease_expires_at; do
 		[[ -z "$idx" ]] && continue
 		[[ "$status" != "$LEDGER_STATUS_ACTIVE" ]] && continue
 
 		should_expire=0
-		if [[ -n "$dispatched_at" ]]; then
+		if [[ "$entry_pid" =~ ^[0-9]+$ ]] && [[ "$entry_pid" -gt 0 ]]; then
+			if ! kill -0 "$entry_pid" 2>/dev/null; then
+				should_expire=1
+			elif [[ -n "$owner_process_start" ]]; then
+				current_process_start=$(_process_start_token "$entry_pid" 2>/dev/null || true)
+				[[ -n "$current_process_start" && "$current_process_start" != "$owner_process_start" ]] && should_expire=1
+			fi
+		fi
+		if ((!should_expire)) && [[ "$lease_expires_at" =~ ^[0-9]+$ ]] && [[ "$lease_expires_at" -gt 0 ]]; then
+			[[ "$lease_expires_at" -lt "$now_epoch" ]] && should_expire=1
+		elif ((!should_expire)) && [[ -n "$dispatched_at" ]]; then
 			dispatch_epoch=$(_iso_to_epoch "$dispatched_at")
 			if [[ "$dispatch_epoch" =~ ^[0-9]+$ ]] && [[ "$dispatch_epoch" -gt 0 ]]; then
 				age=$((now_epoch - dispatch_epoch))
 				[[ "$age" -gt "$ttl" ]] && should_expire=1
-			fi
-		fi
-		if ((!should_expire)) && [[ "$entry_pid" =~ ^[0-9]+$ ]] && [[ "$entry_pid" -gt 0 ]]; then
-			if ! kill -0 "$entry_pid" 2>/dev/null; then
-				should_expire=1
 			fi
 		fi
 
@@ -1249,12 +1295,14 @@ _cmd_expire_collect_indices() {
 
 #######################################
 # Rewrite the ledger, marking selected indices failed.
-# Args: $1 = comma-separated indices, $2 = updated_at timestamp, $3 = tmp file
+# Args: $1 = comma-separated indices, $2 = updated_at timestamp,
+#       $3 = current epoch seconds, $4 = tmp file
 #######################################
 _cmd_expire_rewrite_failed() {
 	local indices_csv="$1"
 	local now_ts="$2"
-	local tmp_file="$3"
+	local now_epoch="$3"
+	local tmp_file="$4"
 
 	# Two subtleties learned the hard way during GH#21105:
 	#   1. -n is REQUIRED: without it, jq consumes the first JSON line as
@@ -1266,15 +1314,98 @@ _cmd_expire_rewrite_failed() {
 	#      `$exp | index(.key)` evaluates `.key` against $exp (an array)
 	#      and jq raises "Cannot index array with string 'key'", which
 	#      `2>/dev/null` would swallow into the cp fallback path.
-	jq -nc --arg ts "$now_ts" --arg failed "$LEDGER_STATUS_FAILED" --argjson exp "[${indices_csv}]" '
+	jq -nc --arg ts "$now_ts" --arg failed "$LEDGER_STATUS_FAILED" --arg finalization_pending "$ATTEMPT_FINALIZATION_PENDING" --argjson now "$now_epoch" --argjson exp "[${indices_csv}]" '
+		def present: . != null and . != "";
 		[inputs] | to_entries[]
 		| .key as $k
 		| if (($exp | index($k)) != null)
-		  then .value | .status = $failed | .updated_at = $ts
+		  then .value |
+			.status = $failed |
+			.updated_at = $ts |
+			.terminal_reason = (
+				if ((.lease_expires_at // 0) < $now and (.lease_phase // "") == "prelaunch")
+				then "prelaunch_lease_expired"
+				elif ((.lease_expires_at // 0) < $now and (.lease_phase // "") == "ready")
+				then "ready_lease_expired"
+				else "dispatch_process_unavailable_or_ttl"
+				end
+			) |
+			.attempt_finalization_status = (
+				if ([.attempt_id, .attempt_state_root, .attempt_state_file, .outcome_file] | all(present))
+				then $finalization_pending else "not-required" end
+			)
 		  else .value
 		  end
 	' "$LEDGER_FILE" >"$tmp_file" 2>/dev/null
 	return $?
+}
+
+_cmd_expire_collect_pending_finalizations() {
+	local limit="${AIDEVOPS_DISPATCH_FINALIZATION_RETRY_LIMIT:-20}"
+	[[ "$limit" =~ ^[0-9]+$ ]] || limit=20
+	jq -nr --argjson limit "$limit" --arg finalization_pending "$ATTEMPT_FINALIZATION_PENDING" '
+		[inputs]
+		| group_by([.session_key, .lease_token, .attempt_id] | map(. // ""))
+		| map(last)
+		| map(select(.attempt_finalization_status == $finalization_pending))
+		| .[0:$limit][]
+		| [.attempt_state_root, .attempt_state_file, .outcome_file, .attempt_id, .session_key]
+		  + [(.terminal_reason // "dispatch_process_unavailable")]
+		| map(. // "")
+		| join("\u001c")
+	' "$LEDGER_FILE" 2>/dev/null
+	return $?
+}
+
+_cmd_expire_mark_finalization_completed() {
+	local attempt_id="$1"
+	local attempt_state_file="$2"
+	local now_ts=""
+	local tmp_file=""
+	_ensure_ledger
+	_acquire_lock || return 1
+	now_ts=$(_now_utc)
+	tmp_file=$(mktemp "${LEDGER_DIR}/dispatch-ledger.XXXXXX") || {
+		_release_lock
+		return 1
+	}
+	if ! jq -c --arg attempt "$attempt_id" --arg state_file "$attempt_state_file" --arg ts "$now_ts" --arg finalization_pending "$ATTEMPT_FINALIZATION_PENDING" '
+		if .attempt_id == $attempt and
+			.attempt_state_file == $state_file and
+			.attempt_finalization_status == $finalization_pending
+		then .attempt_finalization_status = "finalized" | .attempt_finalized_at = $ts
+		else . end
+	' "$LEDGER_FILE" >"$tmp_file" 2>/dev/null; then
+		rm -f "$tmp_file"
+		_release_lock
+		return 1
+	fi
+	mv "$tmp_file" "$LEDGER_FILE"
+	_release_lock
+	return 0
+}
+
+_cmd_expire_reconcile_pending() {
+	local pending_records=""
+	local state_root=""
+	local state_file=""
+	local outcome_file=""
+	local attempt_id=""
+	local session_key=""
+	local reason=""
+	declare -F worker_attempt_observability_finalize_abandoned >/dev/null 2>&1 || return 0
+	pending_records=$(_cmd_expire_collect_pending_finalizations) || pending_records=""
+	while IFS=$'\034' read -r state_root state_file outcome_file attempt_id session_key reason; do
+		[[ -n "$state_root" ]] || continue
+		if worker_attempt_observability_finalize_abandoned \
+			"$state_root" "$state_file" "$outcome_file" "$attempt_id" "$session_key" "$reason"; then
+			_cmd_expire_mark_finalization_completed "$attempt_id" "$state_file" ||
+				printf 'Warning: attempt finalization succeeded but ledger acknowledgement failed for attempt=%s\n' "$attempt_id" >&2
+		else
+			printf 'Warning: deferred unsafe or unavailable attempt finalization for attempt=%s\n' "$attempt_id" >&2
+		fi
+	done <<<"$pending_records"
+	return 0
 }
 
 #######################################
@@ -1330,7 +1461,7 @@ cmd_expire() {
 		done <<<"$expire_indices"
 		# Single jq pass rewrites the file: entries at the listed indices have
 		# their status flipped to "failed" with a fresh updated_at timestamp.
-		if ! _cmd_expire_rewrite_failed "$indices_csv" "$now_ts" "$tmp_file"; then
+		if ! _cmd_expire_rewrite_failed "$indices_csv" "$now_ts" "$now_epoch" "$tmp_file"; then
 			# jq failure: preserve original file rather than risk corruption.
 			cp "$LEDGER_FILE" "$tmp_file"
 			expired_count=0
@@ -1341,6 +1472,7 @@ cmd_expire() {
 	fi
 
 	_release_lock
+	_cmd_expire_reconcile_pending
 
 	printf '%s\n' "$expired_count"
 	return 0
@@ -1523,7 +1655,9 @@ dispatches during the 10-15 minute window before a worker creates its PR.
 
 Usage:
   dispatch-ledger-helper.sh register --session-key KEY [--issue NUM] [--repo SLUG] [--pid PID]
-    Register a new dispatch. Idempotent — re-registering overwrites.
+    [--attempt-id ID --attempt-state-root DIR --attempt-state-file FILE --outcome-file FILE]
+    Register a new dispatch. Optional attempt bindings let verified expiry
+    finalize the exact durable attempt and typed outcome.
 
   dispatch-ledger-helper.sh check --session-key KEY
     Check if session key has an in-flight entry. Exit 0=in-flight, 1=safe.
@@ -1548,7 +1682,8 @@ Usage:
 
   dispatch-ledger-helper.sh expire [--ttl SECONDS]
     Expire stale in-flight entries (default TTL: 3600s / 60 min).
-    Also expires entries with dead PIDs regardless of age.
+    Also expires entries with dead PIDs or expired generation leases and
+    retries bounded pending attempt finalization.
 
   dispatch-ledger-helper.sh count
     Count live in-flight entries (with PID liveness check).
@@ -1565,6 +1700,7 @@ Usage:
 Environment:
   AIDEVOPS_DISPATCH_LEDGER_DIR   Override ledger directory
   AIDEVOPS_DISPATCH_LEDGER_TTL   Override default TTL in seconds (default: 3600)
+  AIDEVOPS_DISPATCH_FINALIZATION_RETRY_LIMIT  Bound pending finalizers per expiry (default: 20)
 
 Examples:
   # Register before dispatching a worker

@@ -739,6 +739,7 @@ test_dispatch_blocks_cross_repository_head() {
 	export STUB_PR_REPOSITORY_MODE="cross"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
 	local old_epoch=""
 	old_epoch="$(($(date +%s) - 4000))"
 	expire_state_dispatch_time "$state_file" "$old_epoch"
@@ -748,6 +749,7 @@ test_dispatch_blocks_cross_repository_head() {
 		grep -q '^blocked_by=code$' "$state_file" 2>/dev/null &&
 		grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
 		grep -q '^blocker_reason=cross_repository_head_unwritable$' "$state_file" 2>/dev/null &&
+		[[ ! -f "$outcome_file" ]] &&
 		grep -q 'analysis complete and blocked by code' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch blocks an unwritable fork head without retrying" 0
 	else
@@ -801,13 +803,59 @@ test_dispatch_rejects_dirty_existing_worktree_reconcile() {
 	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local outcome_id="" outcome_reason="" retry_class=""
+	outcome_id=$(read_state_value "$state_file" outcome_id)
+	outcome_reason=$(awk -F= '$1 == "reason" { print $2 }' "$outcome_file" 2>/dev/null || true)
+	retry_class=$(awk -F= '$1 == "retry_class" { print $2 }' "$outcome_file" 2>/dev/null || true)
 	if [[ ! -s "$HEADLESS_LOG" ]] &&
-		grep -q '^blocker_reason=existing_review_worktree_dirty$' "$state_file" 2>/dev/null; then
-		print_result "dispatch never fast-forwards a dirty existing review worktree" 0
+		grep -q '^blocker_reason=existing_review_worktree_dirty$' "$state_file" 2>/dev/null &&
+		[[ -n "$outcome_id" ]] &&
+		grep -Fxq "outcome_id=${outcome_id}" "$outcome_file" 2>/dev/null &&
+		[[ "$outcome_reason" == "existing_review_worktree_dirty" && "$retry_class" == "retryable_infrastructure" ]]; then
+		print_result "dirty worktree preparation emits an exact typed infrastructure outcome" 0
 	else
-		print_result "dispatch never fast-forwards a dirty existing review worktree" 1 \
-			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+		print_result "dirty worktree preparation emits an exact typed infrastructure outcome" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), outcome=$(tr '\n' ';' <"$outcome_file" 2>/dev/null || printf '')"
 	fi
+	teardown_test_env
+	return 0
+}
+
+test_dispatch_retries_dirty_worktree_failure_after_short_cooldown() {
+	setup_test_env
+	export STUB_GIT_WORKTREE_DIRTY=true
+	local existing_path="${TEST_ROOT}/existing-review-worktree-dirty-retry"
+	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
+	local old_epoch="" first_outcome_id="" second_outcome_id=""
+	mkdir -p "$existing_path"
+	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	first_outcome_id=$(read_state_value "$state_file" outcome_id)
+	: >"$LOGFILE"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	local short_cooldown_observed=0
+	grep -q 'infrastructure-failure short cooldown active' "$LOGFILE" 2>/dev/null || short_cooldown_observed=1
+
+	old_epoch="$(($(date +%s) - 120))"
+	expire_state_dispatch_time "$state_file" "$old_epoch"
+	awk -F= -v finished_at="$((old_epoch + 1))" \
+		'{ if ($1 == "finished_at") print "finished_at=" finished_at; else print }' \
+		"$outcome_file" >"${outcome_file}.tmp"
+	mv "${outcome_file}.tmp" "$outcome_file"
+	: >"$LOGFILE"
+	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
+	second_outcome_id=$(read_state_value "$state_file" outcome_id)
+
+	local result=0
+	[[ "$short_cooldown_observed" -eq 0 ]] || result=1
+	[[ -n "$first_outcome_id" && -n "$second_outcome_id" && "$second_outcome_id" != "$first_outcome_id" ]] || result=1
+	grep -q '^attempt_count=1$' "$state_file" 2>/dev/null || result=1
+	grep -q '^infrastructure_failure_count=1$' "$state_file" 2>/dev/null || result=1
+	grep -q 'retrying after infrastructure-failure short cooldown' "$LOGFILE" 2>/dev/null || result=1
+	print_result "dirty worktree infrastructure failure retries once after the short cooldown" "$result" \
+		"first=${first_outcome_id}, second=${second_outcome_id}, state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
 	teardown_test_env
 	return 0
 }
@@ -1406,13 +1454,13 @@ test_dispatch_prompt_requires_machine_readable_completion_state() {
 	return 0
 }
 
-test_dispatch_prompt_requires_contract_v10_remediation_role_and_praise_only_resolution() {
+test_dispatch_prompt_requires_contract_v11_remediation_role_and_praise_only_resolution() {
 	setup_test_env
 	local stable_scanner="${HOME}/.aidevops/agents/scripts/pr-review-thread-response-scanner.sh"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
-	if grep -q '^worker_contract_version=10$' "$state_file" 2>/dev/null &&
+	if grep -q '^worker_contract_version=11$' "$state_file" 2>/dev/null &&
 		grep -Fq 'For each assigned review thread, classify it as actionable or praise-only' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Praise-only means positive feedback or an observation with no requested' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq 'Perform one bounded remediation pass' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
@@ -1420,9 +1468,9 @@ test_dispatch_prompt_requires_contract_v10_remediation_role_and_praise_only_reso
 		grep -Fq 'fix actionable defects in the linked worktree' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		! grep -Fq 'PR-loop review model' "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null &&
 		grep -Fq "${stable_scanner} resolve owner/repo <thread_id>" "$HEADLESS_PROMPT_CAPTURE" 2>/dev/null; then
-		print_result "dispatch prompt requires contract-v10 remediation role and praise-only resolution" 0
+		print_result "dispatch prompt requires contract-v11 remediation role and praise-only resolution" 0
 	else
-		print_result "dispatch prompt requires contract-v10 remediation role and praise-only resolution" 1 \
+		print_result "dispatch prompt requires contract-v11 remediation role and praise-only resolution" 1 \
 			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), prompt=$(tr '\n' ' ' <"$HEADLESS_PROMPT_CAPTURE" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
@@ -1884,9 +1932,9 @@ test_dispatch_retries_escalated_previous_worker_contract() {
 	wait_for_headless_log || true
 	if [[ -s "$HEADLESS_LOG" ]] &&
 		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
-		grep -q '^worker_contract_version=10$' "$state_file" 2>/dev/null &&
+		grep -q '^worker_contract_version=11$' "$state_file" 2>/dev/null &&
 		! grep -q '^maintainer_attention=true$' "$state_file" 2>/dev/null &&
-		grep -q 'retrying stale same-fingerprint escalation under worker contract 10 (stored=2)' "$LOGFILE" 2>/dev/null; then
+		grep -q 'retrying stale same-fingerprint escalation under worker contract 11 (stored=2)' "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch retries escalation created under previous worker contract" 0
 	else
 		print_result "dispatch retries escalation created under previous worker contract" 1 \
@@ -2025,20 +2073,25 @@ test_dispatch_retries_transient_head_fetch_failure_once() {
 	export STUB_GIT_FETCH_FAIL="true"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
 	local first_failure_ok="false"
 	if grep -q '^blocked_by=infrastructure$' "$state_file" 2>/dev/null &&
 		grep -q '^blocker_reason=pr_head_fetch_failed$' "$state_file" 2>/dev/null; then
 		first_failure_ok="true"
 	fi
 	local old_epoch=""
+	local outcome_id=""
 	old_epoch="$(($(date +%s) - 4000))"
 	expire_state_dispatch_time "$state_file" "$old_epoch"
+	outcome_id=$(read_state_value "$state_file" outcome_id)
+	write_worker_outcome "$outcome_file" "pr_head_fetch_failed" "0" "$((old_epoch + 1))" "$outcome_id" "retryable_infrastructure"
 	unset STUB_GIT_FETCH_FAIL
 	: >"$HEADLESS_LOG"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
 	wait_for_headless_log || true
 	if [[ "$first_failure_ok" == "true" && -s "$HEADLESS_LOG" ]] &&
-		grep -q '^attempt_count=2$' "$state_file" 2>/dev/null &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		grep -q '^infrastructure_failure_count=1$' "$state_file" 2>/dev/null &&
 		! grep -q '^analysis_complete=' "$state_file" 2>/dev/null; then
 		print_result "dispatch retries a transient linked-worktree fetch failure once" 0
 	else
@@ -2055,6 +2108,7 @@ test_dispatch_retries_generic_infrastructure_launch_failure() {
 	local first_dispatch_rc=0
 	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1 || first_dispatch_rc=$?
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
+	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
 	local first_failure_ok="false"
 	if [[ "$first_dispatch_rc" -eq 13 ]] &&
 		grep -q '^analysis_complete=true$' "$state_file" 2>/dev/null &&
@@ -2064,13 +2118,17 @@ test_dispatch_retries_generic_infrastructure_launch_failure() {
 		first_failure_ok="true"
 	fi
 	local old_epoch=""
+	local outcome_id=""
 	old_epoch="$(($(date +%s) - 4000))"
 	expire_state_dispatch_time "$state_file" "$old_epoch"
+	outcome_id=$(read_state_value "$state_file" outcome_id)
+	write_worker_outcome "$outcome_file" "review_worker_launch_failed" "0" "$((old_epoch + 1))" "$outcome_id" "retryable_infrastructure"
 	chmod +x "$HEADLESS_RUNTIME_HELPER"
 	$SCANNER dispatch-pr owner/repo "${TEST_ROOT}/repo" 1
 	wait_for_headless_log || true
 	if [[ "$first_failure_ok" == "true" && -s "$HEADLESS_LOG" ]] &&
-		grep -q '^attempt_count=2$' "$state_file" 2>/dev/null &&
+		grep -q '^attempt_count=1$' "$state_file" 2>/dev/null &&
+		grep -q '^infrastructure_failure_count=1$' "$state_file" 2>/dev/null &&
 		! grep -q '^analysis_complete=' "$state_file" 2>/dev/null; then
 		print_result "dispatch retries a generic infrastructure launch failure" 0
 	else
@@ -2607,6 +2665,7 @@ main() {
 	test_dispatch_blocks_remote_head_drift
 	test_dispatch_fast_forwards_clean_behind_existing_worktree
 	test_dispatch_rejects_dirty_existing_worktree_reconcile
+	test_dispatch_retries_dirty_worktree_failure_after_short_cooldown
 	test_dispatch_rejects_diverged_existing_worktree_reconcile
 	test_dispatch_rejects_live_owned_existing_worktree_reconcile
 	test_dispatch_cleans_up_failed_exact_head_worktree
@@ -2614,7 +2673,7 @@ main() {
 	test_dispatch_prompt_uses_stable_deployed_scanner_path
 	test_dispatch_prompt_mentions_graphql_only_thread_operations
 	test_dispatch_prompt_requires_machine_readable_completion_state
-	test_dispatch_prompt_requires_contract_v10_remediation_role_and_praise_only_resolution
+	test_dispatch_prompt_requires_contract_v11_remediation_role_and_praise_only_resolution
 	test_dispatch_prompt_requires_exactly_one_terminal_call
 	test_dispatch_prompt_explains_shell_redirection_constraint
 	test_dispatch_prompt_declares_precreated_worktree_contract
