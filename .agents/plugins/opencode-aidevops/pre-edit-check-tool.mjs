@@ -11,6 +11,11 @@ const PRE_EDIT_GUIDANCE = {
   3: "WARNING — proceed with caution.",
 };
 const MAX_TARGET_PATHS = 32;
+const EXTERNAL_TARGET_RESPONSE =
+  "Git isolation not applicable: all explicit targetPaths resolve outside Git worktrees.\n"
+  + "This result does not authorize file writes; runtime path, secret, destructive-operation, and managed-directory policies still apply.";
+
+class PreEditRequestError extends Error {}
 
 function pathIsWithin(candidate, parent) {
   const relation = relative(parent, candidate);
@@ -25,41 +30,125 @@ function parsePolicyPayload(raw) {
   return payload;
 }
 
-function classifyExplicitTargets(targetPaths, scriptsDir, workdir) {
-  if (!Array.isArray(targetPaths) || targetPaths.length > MAX_TARGET_PATHS
-    || targetPaths.some((targetPath) => typeof targetPath !== "string" || !targetPath.trim())) {
+function validateTargetPaths(targetPaths) {
+  if (!Array.isArray(targetPaths) || targetPaths.length > MAX_TARGET_PATHS) {
+    throw new TypeError(`targetPaths must contain 1-${MAX_TARGET_PATHS} non-empty strings`);
+  }
+  if (targetPaths.some((targetPath) => typeof targetPath !== "string" || !targetPath.trim())) {
     throw new TypeError(`targetPaths must contain 1-${MAX_TARGET_PATHS} non-empty strings`);
   }
   if (targetPaths.some((targetPath) => targetPath.split(/[\\/]+/).includes(".."))) {
     throw new TypeError("targetPaths containing parent traversal are ambiguous and must be normalized by the caller");
   }
+}
+
+function classifyExplicitTarget(helper, targetPath, workdir) {
+  const raw = execFileSync(
+    "python3",
+    [helper, "check-write", "--cwd", workdir, "--path", targetPath],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10000,
+    },
+  );
+  const policy = parsePolicyPayload(raw);
+  const repoRoot = policy.context?.repo_root;
+  const lexicalTarget = resolve(workdir, targetPath);
+  const lexicallyRepositoryLocal = typeof repoRoot === "string"
+    && repoRoot !== ""
+    && pathIsWithin(lexicalTarget, repoRoot);
+  return { policy, targetPath, lexicallyRepositoryLocal };
+}
+
+function classifyExplicitTargets(targetPaths, scriptsDir, workdir) {
+  validateTargetPaths(targetPaths);
   const helper = join(scriptsDir, "canonical-write-policy-helper.py");
   if (!existsSync(helper)) {
     throw new Error("required canonical-write policy helper is missing");
   }
-  return targetPaths.map((targetPath) => {
-    const raw = execFileSync(
-      "python3",
-      [helper, "check-write", "--cwd", workdir, "--path", targetPath],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 10000,
-      },
-    );
-    const policy = parsePolicyPayload(raw);
-    const repoRoot = policy.context?.repo_root;
-    const lexicalTarget = resolve(workdir, targetPath);
-    const lexicallyRepositoryLocal = typeof repoRoot === "string"
-      && repoRoot !== ""
-      && pathIsWithin(lexicalTarget, repoRoot);
-    return { policy, targetPath, lexicallyRepositoryLocal };
-  });
+  return targetPaths.map((targetPath) => classifyExplicitTarget(helper, targetPath, workdir));
 }
 
 function explicitTargetFailure(error) {
   const detail = error?.stderr?.toString().trim() || error?.message || "target classification failed";
   return `Pre-edit check exit 1: explicit target path classification failed closed\n${detail}`;
+}
+
+function targetIsUnsafe({ policy, lexicallyRepositoryLocal }) {
+  if (policy.decision === "allow") return false;
+  const sameCanonicalRepository = policy.context?.classification === "canonical"
+    && policy.target?.classification === "canonical"
+    && policy.context?.common_dir === policy.target?.common_dir
+    && lexicallyRepositoryLocal;
+  return !sameCanonicalRepository;
+}
+
+function targetIsExternal({ policy, lexicallyRepositoryLocal }) {
+  return policy.decision === "allow"
+    && policy.target?.classification === "outside"
+    && !lexicallyRepositoryLocal;
+}
+
+function targetIsRepositoryLocal({ policy, lexicallyRepositoryLocal }) {
+  return lexicallyRepositoryLocal || ["canonical", "linked"].includes(policy.target?.classification);
+}
+
+function resolveExplicitTargetScope(targetPaths, scriptsDir, targetWorkdir) {
+  const classifications = classifyExplicitTargets(targetPaths, scriptsDir, targetWorkdir);
+  const deniedTarget = classifications.find(targetIsUnsafe);
+  if (deniedTarget) {
+    throw new Error(deniedTarget.policy.reason || "unsafe explicit target");
+  }
+  if (classifications.every(targetIsExternal)) {
+    return { repositoryTarget: "", terminalResponse: EXTERNAL_TARGET_RESPONSE };
+  }
+  const repositoryTarget = classifications.find(targetIsRepositoryLocal)?.targetPath || "";
+  if (!repositoryTarget) {
+    throw new Error("target scope is mixed or indeterminate");
+  }
+  return { repositoryTarget, terminalResponse: "" };
+}
+
+function requirePreEditScript(scriptsDir) {
+  const script = join(scriptsDir, "pre-edit-check.sh");
+  if (!existsSync(script)) {
+    throw new PreEditRequestError("pre-edit-check.sh not found — cannot verify git safety");
+  }
+  return script;
+}
+
+function requireTargetWorktree(requestedWorkdir) {
+  const targetWorkdir = resolveGitWorktree(requestedWorkdir);
+  if (!targetWorkdir) {
+    throw new PreEditRequestError(
+      `Pre-edit check exit 1: target workdir must resolve to an existing Git worktree\n${requestedWorkdir}`,
+    );
+  }
+  return targetWorkdir;
+}
+
+function normalizeTargetPaths(targetPaths) {
+  if (!Array.isArray(targetPaths)) {
+    throw new PreEditRequestError(explicitTargetFailure(new TypeError("targetPaths must be an array")));
+  }
+  return targetPaths;
+}
+
+function preparePreEditInvocation(args, scriptsDir) {
+  const script = requirePreEditScript(scriptsDir);
+  const requestedWorkdir = args.workdir || process.cwd();
+  const targetWorkdir = requireTargetWorktree(requestedWorkdir);
+  const targetPaths = normalizeTargetPaths(args.targetPaths === undefined ? [] : args.targetPaths);
+  let targetScope = { repositoryTarget: "", terminalResponse: "" };
+  try {
+    if (targetPaths.length > 0) {
+      targetScope = resolveExplicitTargetScope(targetPaths, scriptsDir, targetWorkdir);
+    }
+  } catch (error) {
+    throw new PreEditRequestError(explicitTargetFailure(error));
+  }
+  return { script, targetWorkdir, ...targetScope };
 }
 
 /**
@@ -129,55 +218,18 @@ export function createPreEditCheckTool(tool, z, scriptsDir, timeoutMs = 120000) 
       targetPaths: z.array(z.string()).optional().describe('Optional intended write paths, resolved relative to workdir'),
     },
     async execute(args) {
-      args = args && typeof args === "object" ? args : {};
-      const script = join(scriptsDir, "pre-edit-check.sh");
-      if (!existsSync(script)) {
-        return "pre-edit-check.sh not found — cannot verify git safety";
+      const normalizedArgs = args && typeof args === "object" ? args : {};
+      let invocation;
+      try {
+        invocation = preparePreEditInvocation(normalizedArgs, scriptsDir);
+      } catch (error) {
+        return error instanceof PreEditRequestError ? error.message : explicitTargetFailure(error);
       }
-      const requestedWorkdir = args.workdir || process.cwd();
-      const targetWorkdir = resolveGitWorktree(requestedWorkdir);
-      if (!targetWorkdir) {
-        return `Pre-edit check exit 1: target workdir must resolve to an existing Git worktree\n${requestedWorkdir}`;
-      }
-      const targetPaths = args.targetPaths === undefined ? [] : args.targetPaths;
-      if (!Array.isArray(targetPaths)) {
-        return explicitTargetFailure(new TypeError("targetPaths must be an array"));
-      }
-      let repositoryTarget = "";
-      if (targetPaths.length > 0) {
-        let classifications;
-        try {
-          classifications = classifyExplicitTargets(targetPaths, scriptsDir, targetWorkdir);
-        } catch (error) {
-          return explicitTargetFailure(error);
-        }
-        const deniedTarget = classifications.find(({ policy, lexicallyRepositoryLocal }) => {
-          if (policy.decision === "allow") return false;
-          return !(policy.context?.classification === "canonical"
-            && policy.target?.classification === "canonical"
-            && policy.context?.common_dir === policy.target?.common_dir
-            && lexicallyRepositoryLocal);
-        });
-        if (deniedTarget) {
-          return explicitTargetFailure(new Error(deniedTarget.policy.reason || "unsafe explicit target"));
-        }
-        const allExternal = classifications.every(({ policy, lexicallyRepositoryLocal }) =>
-          policy.decision === "allow"
-          && policy.target?.classification === "outside"
-          && !lexicallyRepositoryLocal);
-        if (allExternal) {
-          return "Git isolation not applicable: all explicit targetPaths resolve outside Git worktrees.\n"
-            + "This result does not authorize file writes; runtime path, secret, destructive-operation, and managed-directory policies still apply.";
-        }
-        repositoryTarget = classifications.find(({ policy, lexicallyRepositoryLocal }) =>
-          lexicallyRepositoryLocal || ["canonical", "linked"].includes(policy.target?.classification))?.targetPath || "";
-        if (!repositoryTarget) {
-          return explicitTargetFailure(new Error("target scope is mixed or indeterminate"));
-        }
-      }
+      if (invocation.terminalResponse) return invocation.terminalResponse;
+      const { script, targetWorkdir, repositoryTarget } = invocation;
       const taskArgs = repositoryTarget
-        ? [...(args.task ? ["--loop-mode"] : []), "--file", repositoryTarget]
-        : (args.task ? ["--loop-mode", "--task", args.task] : []);
+        ? [...(normalizedArgs.task ? ["--loop-mode"] : []), "--file", repositoryTarget]
+        : (normalizedArgs.task ? ["--loop-mode", "--task", normalizedArgs.task] : []);
       const result = await runPreEditCheck(script, taskArgs, targetWorkdir, timeoutMs);
       return formatPreEditCheckResult(result, timeoutMs);
     },
