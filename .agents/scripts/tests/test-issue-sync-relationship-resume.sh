@@ -16,6 +16,10 @@ trap cleanup EXIT
 
 HOSTED_ARTIFACT_DIR="${TMP_DIR}/hosted-artifact"
 export AIDEVOPS_RELATIONSHIP_STATE_DIR="${TMP_DIR}/hosted-runner-one/state"
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${TMP_DIR}/gh-secondary-cooldown.json"
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="${TMP_DIR}/gh-cooldown-events.jsonl"
+export AIDEVOPS_GH_READ_RAMP_STATE_FILE="${TMP_DIR}/gh-read-ramp-state.tsv"
+export AIDEVOPS_GH_READ_RAMP_ENABLED=0
 TODO_FILE="${TMP_DIR}/TODO.md"
 ATTEMPT_LOG="${TMP_DIR}/attempts.log"
 DEADLINE_FLAG="${TMP_DIR}/deadline"
@@ -95,6 +99,14 @@ for ((task_number = 1001; task_number <= 1141; task_number++)); do
 	printf -- '- [x] t%d Completed task %d blocked-by:t900 ref:GH#%d\n' \
 		"$task_number" "$task_number" "$task_number" >>"$TODO_FILE"
 done
+# Cancelled rows are terminal too. Broad reconciliation excludes them, while an
+# explicit repair request still accepts their task ID.
+for ((task_number = 1201; task_number <= 1225; task_number++)); do
+	printf -- '- [-] t%d Cancelled task %d blocked-by:t900 ref:GH#%d\n' \
+		"$task_number" "$task_number" "$task_number" >>"$TODO_FILE"
+done
+_relationship_prepare_workset "t1201" "$TODO_FILE" "example/repo" || fail "explicit cancelled-task repair was rejected"
+[[ "${_RELATIONSHIP_WORK_TASKS[*]}" == "t1201" ]] || fail "explicit cancelled-task repair changed its target"
 : >"$ATTEMPT_LOG"
 
 first_rc=0
@@ -110,6 +122,8 @@ if [[ "${AIDEVOPS_BENCHMARK_OUTPUT:-0}" == "1" ]]; then
 	printf '%s\n' "$first_output"
 fi
 pass "800 active-task reconciliation persists bounded first-pass progress"
+[[ "$first_output" != *"t1201"* ]] || fail "broad reconciliation included a cancelled task"
+pass "broad reconciliation excludes cancelled relationship rows"
 
 # Hosted runners are ephemeral. Simulate the workflow handoff by copying only
 # the persisted state into a fresh runner state directory before the next pass.

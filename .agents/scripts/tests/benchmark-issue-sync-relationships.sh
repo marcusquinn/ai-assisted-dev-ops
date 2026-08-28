@@ -9,6 +9,9 @@ TEMP_PARENT="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 mkdir -p "$TEMP_PARENT"
 BENCHMARK_DIR=$(mktemp -d "${TEMP_PARENT}/relationship-benchmark.XXXXXX")
 
+# shellcheck source=../issue-sync-helper.sh
+source "${TEST_DIR}/../issue-sync-helper.sh"
+
 cleanup() {
 	rm -rf "$BENCHMARK_DIR"
 	return 0
@@ -49,4 +52,36 @@ grep -m1 '^Edges:' "$stdout_file"
 grep -m1 '^Tasks:' "$stdout_file"
 grep -m1 '^Workset:' "$stdout_file"
 grep -m1 '^Timing:' "$stdout_file"
+
+graph_edges=""
+for ((node = 1; node <= 18; node++)); do
+	graph_edges="${graph_edges}t${node}|t$((node + 1))"$'\n'
+	graph_edges="${graph_edges}t${node}|t$((node + 1))"$'\n'
+done
+for ((node = 1; node <= 9; node++)); do
+	graph_edges="${graph_edges}t${node}|t$((node + 10))"$'\n'
+done
+metrics_file="${BENCHMARK_DIR}/traversal-metrics.log"
+if _declared_dependency_path_exists "t1" "t999" "$graph_edges" "" "$metrics_file"; then
+	printf 'FAIL: unreachable branching-graph target was reported reachable\n' >&2
+	exit 1
+fi
+traversal_metrics=$(<"$metrics_file")
+[[ "$traversal_metrics" == "nodes=19 edges=27 traversed=27" ]] || {
+	printf 'FAIL: branching traversal was not bounded to unique graph elements: %s\n' "$traversal_metrics" >&2
+	exit 1
+}
+if _declared_dependency_path_exists "t1" "t999" "$graph_edges" $'t1\n'; then
+	printf 'FAIL: a pre-seen traversal start was revisited\n' >&2
+	exit 1
+fi
+if ! _declared_dependency_path_exists "t1" "t19" "$graph_edges" $'t19\n'; then
+	printf 'FAIL: a reachable pre-seen target lost target-before-seen semantics\n' >&2
+	exit 1
+fi
+if ! _declared_dependency_path_exists "t5" "t5" "$graph_edges" $'t5\n'; then
+	printf 'FAIL: identical start and target lost target-before-seen semantics\n' >&2
+	exit 1
+fi
+printf 'Traversal: %s\n' "$traversal_metrics"
 printf 'PASS: 800-task relationship benchmark captured resources and progress\n'

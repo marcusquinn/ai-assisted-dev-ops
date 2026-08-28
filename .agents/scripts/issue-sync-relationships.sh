@@ -707,7 +707,7 @@ _relationship_declared_edges() {
 _relationship_edges_for_file() {
 	local todo_file="$1"
 	if [[ "$_RELATIONSHIP_EDGE_CACHE_FILE" != "$todo_file" ]]; then
-		_RELATIONSHIP_EDGE_CACHE=$(_relationship_declared_edges "$todo_file")
+		_RELATIONSHIP_EDGE_CACHE=$(_relationship_declared_edges "$todo_file" | LC_ALL=C sort -u)
 		_RELATIONSHIP_EDGE_CACHE_FILE="$todo_file"
 	fi
 	printf '%s\n' "$_RELATIONSHIP_EDGE_CACHE"
@@ -719,14 +719,56 @@ _declared_dependency_path_exists() {
 	local target_task="$2"
 	local edges="$3"
 	local seen_tasks="$4"
-	local edge_from="" edge_to=""
-	[[ "$current_task" == "$target_task" ]] && return 0
-	printf '%s\n' "$seen_tasks" | grep -Fxq -- "$current_task" && return 1
-	seen_tasks="${seen_tasks}${current_task}"$'\n'
-	while IFS='|' read -r edge_from edge_to; do
-		[[ "$edge_from" == "$current_task" && -n "$edge_to" ]] || continue
-		_declared_dependency_path_exists "$edge_to" "$target_task" "$edges" "$seen_tasks" && return 0
-	done <<<"$edges"
+	local metrics_file="${5:-}"
+	local seen_csv="${seen_tasks//$'\n'/,}"
+	# Build a deduplicated adjacency table once, then traverse iteratively. The
+	# legacy seen_tasks argument remains accepted for source-compatible callers.
+	if printf '%s\n' "$edges" | awk -F'|' \
+		-v start="$current_task" -v target="$target_task" \
+		-v initial_seen="$seen_csv" -v metrics_file="$metrics_file" '
+		function mark_initial_seen(raw, parts, count, idx) {
+			count = split(raw, parts, ",")
+			for (idx = 1; idx <= count; idx++) {
+				if (parts[idx] != "") visited[parts[idx]] = 1
+			}
+		}
+		NF == 2 && $1 != "" && $2 != "" {
+			edge_key = $1 SUBSEP $2
+			if (!(edge_key in unique_edge)) {
+				unique_edge[edge_key] = 1
+				degree[$1]++
+				adjacent[$1, degree[$1]] = $2
+				edge_count++
+			}
+		}
+		END {
+			mark_initial_seen(initial_seen)
+			found = (start == target)
+			stack[++stack_size] = start
+			while (!found && stack_size > 0) {
+				current = stack[stack_size--]
+				if (current in visited) continue
+				visited[current] = 1
+				visited_count++
+				for (idx = 1; idx <= degree[current]; idx++) {
+					next_task = adjacent[current, idx]
+					traversed_count++
+					if (next_task == target) {
+						found = 1
+						break
+					}
+					if (!(next_task in visited)) stack[++stack_size] = next_task
+				}
+			}
+			if (metrics_file != "") {
+				printf "nodes=%d edges=%d traversed=%d\n", visited_count, edge_count, traversed_count > metrics_file
+				close(metrics_file)
+			}
+			exit(found ? 0 : 1)
+		}'
+	then
+		return 0
+	fi
 	return 1
 }
 
@@ -1206,7 +1248,7 @@ _relationship_prepare_workset() {
 	# Broad reconciliation only needs active work. Explicit single-task sync still
 	# repairs completed tasks after publication, but unchanged historical rows do
 	# not consume every hosted default-branch pass.
-	local todo_line_re='^[[:space:]]*-[[:space:]]+\[[[:space:]>-]\][[:space:]]+(t[0-9]+(\.[0-9]+)*)[[:space:]]'
+	local todo_line_re='^[[:space:]]*-[[:space:]]+\[[[:space:]>]\][[:space:]]+(t[0-9]+(\.[0-9]+)*)[[:space:]]'
 	local tasks=() unique_tasks=()
 	_RELATIONSHIP_WORK_TASKS=()
 	_RELATIONSHIP_CANDIDATE_TOTAL=0
