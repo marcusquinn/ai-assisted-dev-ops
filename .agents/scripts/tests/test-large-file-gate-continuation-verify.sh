@@ -118,6 +118,11 @@ gh_issue_view() {
 	return 0
 }
 
+set_issue_status() {
+	printf '%s\n' "set_issue_status $*" >>"$GH_CALLS_LOG"
+	return 0
+}
+
 # t2995: no-op the 2-second retry sleep introduced for search-index lag
 # so the test doesn't actually pause.
 sleep() { return 0; }
@@ -293,6 +298,10 @@ assert_eq \
 	"#18706 (reopened)" \
 	"$out"
 assert_contains \
+	"reopened canonical issue uses canonical lifecycle normalization" \
+	"set_issue_status 18706 owner/repo available" \
+	"$(cat "$GH_CALLS_LOG")"
+assert_contains \
 	"reopened canonical issue removes terminal exclusion labels" \
 	"--remove-label duplicate" \
 	"$(cat "$GH_CALLS_LOG")"
@@ -302,8 +311,23 @@ assert_contains \
 	"$(cat "$GH_CALLS_LOG")"
 assert_contains \
 	"reopened canonical issue restores active lifecycle labels" \
-	"--add-label file-size-debt,auto-dispatch" \
+	"--add-label file-size-debt --add-label auto-dispatch" \
 	"$(cat "$GH_CALLS_LOG")"
+first_normalization=$(grep -F 'set_issue_status 18706 owner/repo available' "$GH_CALLS_LOG" | tail -1)
+_large_file_gate_normalize_debt_issue "18706" "owner/repo"
+second_normalization=$(grep -F 'set_issue_status 18706 owner/repo available' "$GH_CALLS_LOG" | tail -1)
+assert_eq \
+	"repeated normalization converges through the same idempotent lifecycle contract" \
+	"$first_normalization" \
+	"$second_normalization"
+assert_eq \
+	"normalization avoids ad hoc issue-edit mutations" \
+	"0" \
+	"$(grep -cF 'gh issue edit' "$GH_CALLS_LOG" || true)"
+assert_contains \
+	"validator closure text describes durable canonical issue reuse" \
+	"next pulse cycle may reopen the canonical issue" \
+	"$(<"${SCRIPT_DIR_TEST}/../pre-dispatch-validator-helper.sh")"
 
 # ---- Test 3 — stale local OVER, remote UNDER → keep solved issue closed ----
 GH_OPEN_RESPONSE=""

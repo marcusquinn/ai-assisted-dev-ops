@@ -523,24 +523,17 @@ _large_file_gate_normalize_debt_issue() {
 	local issue_number="$1"
 	local repo_slug="$2"
 
-	if ! gh issue edit "$issue_number" --repo "$repo_slug" \
-		--add-label "file-size-debt,auto-dispatch" >/dev/null 2>&1; then
-		return 1
-	fi
-	local _labels="" _stale_label
-	_labels=$(gh_issue_view "$issue_number" --repo "$repo_slug" \
-		--json labels --jq '[.labels[].name] | join(",")' 2>/dev/null) || return 1
-	# A reopened canonical issue must not retain any terminal exclusion labels:
-	# dispatch candidate enumeration rejects these even when auto-dispatch exists.
-	for _stale_label in status:done not-planned simplification-incomplete duplicate already-fixed wontfix; do
-		if [[ ",$_labels," == *",$_stale_label,"* ]]; then
-			if ! gh issue edit "$issue_number" --repo "$repo_slug" \
-				--remove-label "$_stale_label" >/dev/null 2>&1; then
-				return 1
-			fi
-		fi
-	done
-	return 0
+	# Route the complete transition through the canonical lifecycle helper so
+	# sibling status labels converge atomically and repeated calls are no-ops.
+	set_issue_status "$issue_number" "$repo_slug" "available" \
+		--add-label "file-size-debt" \
+		--add-label "auto-dispatch" \
+		--remove-label "not-planned" \
+		--remove-label "simplification-incomplete" \
+		--remove-label "duplicate" \
+		--remove-label "already-fixed" \
+		--remove-label "wontfix" >/dev/null 2>&1
+	return $?
 }
 
 #######################################
