@@ -26,6 +26,7 @@ test("pre-edit tool validates the explicitly targeted Git worktree", async () =>
   const root = mkdtempSync(join(tmpdir(), "t27909-pre-edit-tool-"));
   const repo = join(root, "repo");
   const linked = join(root, "linked");
+  const otherLinked = join(root, "other-linked");
   const nonGit = join(root, "not-git");
   const injectionMarker = join(root, "injected");
 
@@ -40,6 +41,7 @@ test("pre-edit tool validates the explicitly targeted Git worktree", async () =>
     git(repo, ["add", "README.md"]);
     git(repo, ["commit", "--no-gpg-sign", "-m", "init"]);
     git(repo, ["worktree", "add", "-b", "bugfix/fixture", linked]);
+    git(repo, ["worktree", "add", "-b", "bugfix/other-fixture", otherLinked]);
 
     const preEditTool = createTools(scriptsDir, () => "").aidevops_pre_edit_check;
     const canonicalResult = await preEditTool.execute({ workdir: repo });
@@ -52,6 +54,14 @@ test("pre-edit tool validates the explicitly targeted Git worktree", async () =>
     });
     assert.match(linkedResult, /Pre-edit check PASSED \(exit 0\)/);
     assert.equal(existsSync(injectionMarker), false, "task text must remain one argv value");
+
+    const otherLinkedResult = await preEditTool.execute({
+      workdir: linked,
+      targetPaths: [join(otherLinked, "README.md")],
+    });
+    assert.match(otherLinkedResult, /Pre-edit check PASSED \(exit 0\)/);
+    assert.match(otherLinkedResult, /bugfix\/other-fixture/);
+    assert.doesNotMatch(otherLinkedResult, /bugfix\/fixture[^-]/);
 
     const invalidResult = await preEditTool.execute({ workdir: nonGit, task: "fix fixture" });
     assert.match(invalidResult, /target workdir must resolve to an existing Git worktree/);

@@ -94,6 +94,22 @@ function targetIsRepositoryLocal({ policy, lexicallyRepositoryLocal }) {
   return lexicallyRepositoryLocal || ["canonical", "linked"].includes(policy.target?.classification);
 }
 
+function resolveRepositoryTargetScope(classifications) {
+  const repositoryTargets = classifications.filter(targetIsRepositoryLocal);
+  const targetWorkdir = repositoryTargets[0]?.policy.target?.repo_root;
+  if (typeof targetWorkdir !== "string" || !targetWorkdir) {
+    throw new Error("target repository root is missing or indeterminate");
+  }
+  if (repositoryTargets.some(({ policy }) => policy.target?.repo_root !== targetWorkdir)) {
+    throw new Error("explicit repository targets span multiple worktrees");
+  }
+  return {
+    repositoryTarget: repositoryTargets[0].targetPath,
+    targetWorkdir,
+    terminalResponse: "",
+  };
+}
+
 function resolveExplicitTargetScope(targetPaths, scriptsDir, targetWorkdir) {
   const classifications = classifyExplicitTargets(targetPaths, scriptsDir, targetWorkdir);
   const deniedTarget = classifications.find(targetIsUnsafe);
@@ -101,13 +117,12 @@ function resolveExplicitTargetScope(targetPaths, scriptsDir, targetWorkdir) {
     throw new Error(deniedTarget.policy.reason || "unsafe explicit target");
   }
   if (classifications.every(targetIsExternal)) {
-    return { repositoryTarget: "", terminalResponse: EXTERNAL_TARGET_RESPONSE };
+    return { repositoryTarget: "", targetWorkdir, terminalResponse: EXTERNAL_TARGET_RESPONSE };
   }
-  const repositoryTarget = classifications.find(targetIsRepositoryLocal)?.targetPath || "";
-  if (!repositoryTarget) {
+  if (!classifications.some(targetIsRepositoryLocal)) {
     throw new Error("target scope is mixed or indeterminate");
   }
-  return { repositoryTarget, terminalResponse: "" };
+  return resolveRepositoryTargetScope(classifications);
 }
 
 function requirePreEditScript(scriptsDir) {
@@ -140,7 +155,7 @@ function preparePreEditInvocation(args, scriptsDir) {
   const requestedWorkdir = args.workdir || process.cwd();
   const targetWorkdir = requireTargetWorktree(requestedWorkdir);
   const targetPaths = normalizeTargetPaths(args.targetPaths === undefined ? [] : args.targetPaths);
-  let targetScope = { repositoryTarget: "", terminalResponse: "" };
+  let targetScope = { repositoryTarget: "", targetWorkdir, terminalResponse: "" };
   try {
     if (targetPaths.length > 0) {
       targetScope = resolveExplicitTargetScope(targetPaths, scriptsDir, targetWorkdir);
@@ -148,7 +163,7 @@ function preparePreEditInvocation(args, scriptsDir) {
   } catch (error) {
     throw new PreEditRequestError(explicitTargetFailure(error));
   }
-  return { script, targetWorkdir, ...targetScope };
+  return { script, ...targetScope };
 }
 
 /**
