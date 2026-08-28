@@ -4,10 +4,55 @@
 // ---------------------------------------------------------------------------
 
 import { accessSync, constants } from "fs";
+import { randomUUID } from "node:crypto";
 import { homedir, platform } from "os";
-import { delimiter, join } from "path";
+import { delimiter, isAbsolute, join, relative, resolve } from "path";
 
 const IS_MACOS = platform() === "darwin";
+const MCP_WORKSPACE_MARKER = ".aidevops-mcp-workspace";
+const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.79";
+
+/**
+ * Build unique per-plugin MCP workspace metadata without creating files.
+ * The activation tool creates and owns the directory only when connected.
+ * @param {string} workspaceDir
+ * @param {{tempRoot?: string, repositoryDir?: string, nonce?: string, markerToken?: string}} [options]
+ * @returns {{workspaces: Record<string, {directory: string, markerPath: string, markerToken: string}>}}
+ */
+export function createMcpSessionRuntime(workspaceDir, options = {}) {
+  if (!workspaceDir) return { workspaces: {} };
+  const fallbackTempRoot = resolve(workspaceDir, "tmp");
+  const configuredTempRoot = options.tempRoot || process.env.AIDEVOPS_TEMP_DIR || "";
+  let tempRoot = configuredTempRoot && isAbsolute(configuredTempRoot)
+    ? resolve(configuredTempRoot)
+    : fallbackTempRoot;
+  if (options.repositoryDir) {
+    const repositoryDir = resolve(options.repositoryDir);
+    const relativeToRepository = relative(repositoryDir, tempRoot);
+    const tempInsideRepository = relativeToRepository === ""
+      || (!relativeToRepository.startsWith("..") && !isAbsolute(relativeToRepository));
+    if (tempInsideRepository) tempRoot = fallbackTempRoot;
+    const fallbackRelative = relative(repositoryDir, tempRoot);
+    if (fallbackRelative === ""
+      || (!fallbackRelative.startsWith("..") && !isAbsolute(fallbackRelative))) {
+      return { workspaces: {} };
+    }
+  }
+  const nonce = String(options.nonce || randomUUID()).replace(/[^a-zA-Z0-9._-]/g, "-");
+  const markerToken = String(options.markerToken || randomUUID());
+  const directory = join(tempRoot, "mcp", "playwright", `session-${nonce}`);
+  return {
+    workspaces: {
+      playwright: {
+        directory,
+        markerPath: join(directory, MCP_WORKSPACE_MARKER),
+        markerToken,
+        tempRoot,
+        repositoryDir: options.repositoryDir ? resolve(options.repositoryDir) : "",
+      },
+    },
+  };
+}
 
 /**
  * Resolve an executable from PATH without spawning `which` during startup.
@@ -212,13 +257,17 @@ function getMcpRegistry() {
     {
       name: "playwright",
       type: "local",
-      command: ["npx", "-y", "@playwright/mcp@latest"],
+      // Pin the verified CLI contract: --output-dir support and explicit
+      // relative output filenames remaining within that directory.
+      command: ["npx", "-y", PLAYWRIGHT_MCP_PACKAGE],
       eager: false,
       toolPattern: "playwright_*",
       globallyEnabled: false,
       activationAgent: "playwright",
       agentSource: ["tools", "browser", "playwright.md"],
       modelTier: "standard",
+      requiresManagedWorkspace: true,
+      alwaysOverwrite: true,
       description: "Cross-browser test automation",
     },
     {
@@ -324,16 +373,23 @@ export function getOnDemandMcpAgents() {
 /**
  * Check if an MCP entry should be skipped (wrong platform, missing binary).
  * @param {object} mcp - MCP registry entry
- * @param {object} tools - Config tools object (mutable — disables pattern if binary missing)
+ * @param {object} config - OpenCode Config object (mutable)
+ * @param {object} runtime - Per-plugin MCP runtime metadata
  * @returns {boolean} true if the MCP should be skipped
  */
-function shouldSkipMcp(mcp, tools) {
+function shouldSkipMcp(mcp, config, runtime) {
   if (mcp.macOnly && !IS_MACOS) return true;
+
+  if (mcp.requiresManagedWorkspace && !runtime?.workspaces?.[mcp.name]) {
+    if (mcp.toolPattern) config.tools[mcp.toolPattern] = false;
+    if (config.mcp[mcp.name]) config.mcp[mcp.name].enabled = false;
+    return true;
+  }
 
   if (mcp.requiresBinary) {
     const binaryPath = findExecutable(mcp.requiresBinary);
     if (!binaryPath) {
-      if (mcp.toolPattern) tools[mcp.toolPattern] = false;
+      if (mcp.toolPattern) config.tools[mcp.toolPattern] = false;
       return true;
     }
   }
@@ -346,11 +402,46 @@ function shouldSkipMcp(mcp, tools) {
  * @param {object} mcp - MCP registry entry
  * @returns {object} Config entry for config.mcp[name]
  */
-function buildMcpConfigEntry(mcp) {
+function buildMcpConfigEntry(mcp, runtime) {
   if (mcp.type === "remote" && mcp.url) {
     return { type: "remote", url: mcp.url, enabled: mcp.eager };
   }
-  return { type: "local", command: mcp.command, enabled: mcp.eager };
+  const workspace = runtime?.workspaces?.[mcp.name];
+  if (!workspace) {
+    return { type: "local", command: mcp.command, enabled: mcp.eager };
+  }
+
+  const outputDir = join(workspace.directory, ".playwright-mcp");
+  const launcher = [
+    "set -eu",
+    'workspace="$1"',
+    'output_dir="$2"',
+    'marker_token="$3"',
+    "shift 3",
+    'marker="$workspace/.aidevops-mcp-workspace"',
+    '[[ -d "$workspace" && ! -L "$workspace" ]]',
+    '[[ -f "$marker" && ! -L "$marker" ]]',
+    '[[ "$(<"$marker")" == "$marker_token" ]]',
+    "umask 077",
+    'mkdir -p -- "$output_dir"',
+    '[[ -d "$output_dir" && ! -L "$output_dir" ]]',
+    'cd -- "$workspace"',
+    'exec "$@" --output-dir "$output_dir"',
+  ].join("; ");
+  return {
+    type: "local",
+    command: [
+      "/bin/bash",
+      "-c",
+      launcher,
+      "aidevops-playwright-mcp",
+      workspace.directory,
+      outputDir,
+      workspace.markerToken,
+      ...mcp.command,
+    ],
+    enabled: mcp.eager,
+  };
 }
 
 /**
@@ -359,9 +450,9 @@ function buildMcpConfigEntry(mcp) {
  * @param {object} config - OpenCode Config object (mutable)
  * @returns {boolean} Whether a new registration was made
  */
-function registerSingleMcp(mcp, config) {
+function registerSingleMcp(mcp, config, runtime) {
   if (!config.mcp[mcp.name] || mcp.alwaysOverwrite) {
-    config.mcp[mcp.name] = buildMcpConfigEntry(mcp);
+    config.mcp[mcp.name] = buildMcpConfigEntry(mcp, runtime);
     return true;
   }
 
@@ -430,9 +521,10 @@ function removeDeprecatedMcps(config) {
  * registered even without re-running setup.sh.
  *
  * @param {object} config - OpenCode Config object (mutable)
+ * @param {{runtime?: object}} [options]
  * @returns {number} Number of MCPs registered
  */
-export function registerMcpServers(config) {
+export function registerMcpServers(config, options = {}) {
   if (!config.mcp) config.mcp = {};
   if (!config.tools) config.tools = {};
 
@@ -442,9 +534,9 @@ export function registerMcpServers(config) {
   let registered = 0;
 
   for (const mcp of registry) {
-    if (shouldSkipMcp(mcp, config.tools)) continue;
+    if (shouldSkipMcp(mcp, config, options.runtime)) continue;
 
-    if (registerSingleMcp(mcp, config)) registered++;
+    if (registerSingleMcp(mcp, config, options.runtime)) registered++;
     applyMcpToolPermissions(mcp, config.tools);
   }
 

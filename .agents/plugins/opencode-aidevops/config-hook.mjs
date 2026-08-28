@@ -300,7 +300,7 @@ function logVersionDriftAsync(pluginDir) {
 
 /**
  * Create the config hook function.
- * @param {object} deps - { agentsDir, workspaceDir, pluginDir, repositoryDir }
+ * @param {object} deps - { agentsDir, workspaceDir, pluginDir, repositoryDir, mcpRuntime? }
  * @returns {Function} Config hook
  */
 export function createConfigHook(deps) {
@@ -309,6 +309,7 @@ export function createConfigHook(deps) {
     workspaceDir,
     pluginDir,
     repositoryDir,
+    mcpRuntime,
     conversation,
     modelRouting,
     agentRoutingState = { tiers: new Map(), pinned: new Set() },
@@ -345,7 +346,7 @@ export function createConfigHook(deps) {
     let agents = registerAgents(config, agentsDir, modelRouting, agentRoutingState);
     ensureAgentGuard(config, workspaceDir);
 
-    const mcps = registerMcpServers(config);
+    const mcps = registerMcpServers(config, { runtime: mcpRuntime });
     const agentTools = applyAgentMcpTools(config);
     const directories = registerManagedDirectoryPermissions(config);
     const permissionGrants = registerApprovedWorkerPermissions(config, { repositoryDir });

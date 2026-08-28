@@ -2,12 +2,28 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import assert from "node:assert/strict";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { registerOnDemandMcpAgents } from "../config-agent-profiles.mjs";
-import { createMcpActivationTool } from "../mcp-activation-tool.mjs";
-import { registerMcpServers } from "../mcp-registry.mjs";
+import {
+  createMcpActivationTool,
+  enforceManagedMcpArtifactPath,
+} from "../mcp-activation-tool.mjs";
+import { createMcpSessionRuntime, registerMcpServers } from "../mcp-registry.mjs";
 
 const TEST_DIR = fileURLToPath(new URL(".", import.meta.url));
 const AGENTS_DIR = join(TEST_DIR, "../../..");
@@ -44,6 +60,11 @@ test("registers only the explicit browser MCP activation profiles", () => {
 });
 
 test("migrates browser MCPs to disconnected and globally denied", () => {
+  const runtime = createMcpSessionRuntime("/managed/workspace", {
+    tempRoot: "/managed/tmp",
+    nonce: "migration",
+    markerToken: "migration-token",
+  });
   const config = {
     mcp: {
       playwriter: {
@@ -60,12 +81,329 @@ test("migrates browser MCPs to disconnected and globally denied", () => {
     tools: { "playwriter_*": true, "playwright_*": true },
   };
 
-  registerMcpServers(config);
+  registerMcpServers(config, { runtime });
 
   assert.equal(config.mcp.playwriter.enabled, false);
   assert.equal(config.mcp.playwright.enabled, false);
+  assert.equal(config.mcp.playwright.command[0], "/bin/bash");
+  assert.ok(config.mcp.playwright.command.includes(runtime.workspaces.playwright.directory));
+  assert.ok(config.mcp.playwright.command.includes(
+    join(runtime.workspaces.playwright.directory, ".playwright-mcp"),
+  ));
+  assert.match(config.mcp.playwright.command[2], /--output-dir/);
+  assert.ok(config.mcp.playwright.command.includes("@playwright/mcp@0.0.79"));
   assert.equal(config.tools["playwriter_*"], false);
   assert.equal(config.tools["playwright_*"], false);
+});
+
+test("disables an inherited Playwright MCP when no safe runtime is available", () => {
+  const config = {
+    mcp: {
+      playwright: {
+        type: "local",
+        command: ["npx", "-y", "@playwright/mcp@latest"],
+        enabled: true,
+      },
+    },
+    tools: { "playwright_*": true },
+  };
+
+  registerMcpServers(config);
+
+  assert.equal(config.mcp.playwright.enabled, false);
+  assert.equal(config.tools["playwright_*"], false);
+});
+
+test("rejects repository-local and relative Playwright temp roots", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-temp-root-"));
+  const repositoryDir = join(root, "repository");
+  const workspaceDir = join(root, "managed-workspace");
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repositoryLocal = createMcpSessionRuntime(workspaceDir, {
+    tempRoot: join(repositoryDir, "tmp"),
+    repositoryDir,
+    nonce: "repo-local",
+    markerToken: "repo-local-token",
+  });
+  const relativeTemp = createMcpSessionRuntime(workspaceDir, {
+    tempRoot: "relative-temp",
+    repositoryDir,
+    nonce: "relative",
+    markerToken: "relative-token",
+  });
+
+  assert.ok(repositoryLocal.workspaces.playwright.directory.startsWith(join(workspaceDir, "tmp")));
+  assert.ok(relativeTemp.workspaces.playwright.directory.startsWith(join(workspaceDir, "tmp")));
+});
+
+test("confines Playwright outputs from a canonical-start context and cleans on disconnect", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-confinement-"));
+  const canonical = join(root, "canonical");
+  const binDir = join(root, "bin");
+  mkdirSync(canonical);
+  mkdirSync(binDir);
+  const runtime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot: join(root, "managed-tmp"),
+    nonce: "session-one",
+    markerToken: "owned-session-one",
+  });
+  const secondRuntime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot: join(root, "managed-tmp"),
+    nonce: "session-two",
+    markerToken: "owned-session-two",
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const npxStub = join(binDir, "npx");
+  writeFileSync(npxStub, `#!/usr/bin/env bash
+set -eu
+output_dir=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output-dir" ]]; then
+    output_dir="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+mkdir -p -- "$output_dir"
+printf 'snapshot' >"$output_dir/page.yml"
+printf 'console' >"$output_dir/console.log"
+printf 'named screenshot' >"$output_dir/review-home-desktop.png"
+`, { mode: 0o755 });
+
+  const config = {};
+  registerMcpServers(config, { runtime });
+  assert.notEqual(
+    runtime.workspaces.playwright.directory,
+    secondRuntime.workspaces.playwright.directory,
+  );
+
+  const calls = [];
+  const client = {
+    async connect(args) {
+      calls.push(["connect", args]);
+      const command = config.mcp.playwright.command;
+      const result = spawnSync(command[0], command.slice(1), {
+        cwd: canonical,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${binDir}:${process.env.PATH || ""}` },
+      });
+      assert.equal(result.status, 0, result.stderr);
+    },
+    async disconnect(args) { calls.push(["disconnect", args]); },
+  };
+  const activation = createMcpActivationTool(tool, z, {
+    client,
+    directory: canonical,
+    allowedNames: ["playwright"],
+    managedWorkspaces: runtime.workspaces,
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /Connected MCP playwright/,
+  );
+  const managedDir = runtime.workspaces.playwright.directory;
+  assert.deepEqual(readdirSync(canonical), []);
+  assert.equal(readFileSync(join(managedDir, ".playwright-mcp", "page.yml"), "utf8"), "snapshot");
+  assert.equal(readFileSync(join(managedDir, ".playwright-mcp", "console.log"), "utf8"), "console");
+  assert.equal(
+    readFileSync(join(managedDir, ".playwright-mcp", "review-home-desktop.png"), "utf8"),
+    "named screenshot",
+  );
+
+  assert.match(
+    await activation.execute({ action: "disconnect", name: "playwright" }),
+    /Disconnected MCP playwright/,
+  );
+  assert.equal(existsSync(managedDir), false);
+  assert.deepEqual(calls, [
+    ["connect", { path: { name: "playwright" }, query: { directory: canonical } }],
+    ["disconnect", { path: { name: "playwright" }, query: { directory: canonical } }],
+  ]);
+});
+
+test("removes an owned Playwright workspace after a failed connection", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-connect-failure-"));
+  const runtime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot: join(root, "managed-tmp"),
+    nonce: "failed-session",
+    markerToken: "owned-failed-session",
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const activation = createMcpActivationTool(tool, z, {
+    client: { async connect() { return { error: { message: "unavailable" } }; } },
+    allowedNames: ["playwright"],
+    managedWorkspaces: runtime.workspaces,
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /unavailable/,
+  );
+  assert.equal(existsSync(runtime.workspaces.playwright.directory), false);
+});
+
+test("keeps an existing owned workspace when a repeated connection fails", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-reconnect-"));
+  const runtime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot: join(root, "managed-tmp"),
+    nonce: "reconnect-session",
+    markerToken: "owned-reconnect-session",
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let connectCalls = 0;
+  const activation = createMcpActivationTool(tool, z, {
+    client: {
+      async connect() {
+        connectCalls++;
+        if (connectCalls > 1) return { error: { message: "already connected" } };
+      },
+      async disconnect() {},
+    },
+    allowedNames: ["playwright"],
+    managedWorkspaces: runtime.workspaces,
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /Connected MCP playwright/,
+  );
+  const artifact = join(runtime.workspaces.playwright.directory, "active-artifact.png");
+  writeFileSync(artifact, "active");
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /already connected/,
+  );
+  assert.equal(readFileSync(artifact, "utf8"), "active");
+  await activation.execute({ action: "disconnect", name: "playwright" });
+});
+
+test("rejects a temp-root ancestor symlink into the repository", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-ancestor-symlink-"));
+  const canonical = join(root, "canonical");
+  const tempRootLink = join(root, "managed-link");
+  mkdirSync(canonical);
+  symlinkSync(canonical, tempRootLink);
+  const runtime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot: join(tempRootLink, "tmp"),
+    repositoryDir: canonical,
+    nonce: "ancestor-symlink",
+    markerToken: "owned-ancestor-symlink",
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let connectCalls = 0;
+  const activation = createMcpActivationTool(tool, z, {
+    client: { async connect() { connectCalls++; } },
+    allowedNames: ["playwright"],
+    managedWorkspaces: runtime.workspaces,
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /resolves inside the repository/,
+  );
+  assert.equal(connectCalls, 0);
+  assert.deepEqual(readdirSync(canonical), []);
+});
+
+test("refuses cleanup after an ancestor symlink swap", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-cleanup-symlink-"));
+  const canonical = join(root, "canonical");
+  const tempRoot = join(root, "managed-tmp");
+  mkdirSync(canonical);
+  const runtime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot,
+    repositoryDir: canonical,
+    nonce: "cleanup-symlink",
+    markerToken: "owned-cleanup-symlink",
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const activation = createMcpActivationTool(tool, z, {
+    client: { async connect() {}, async disconnect() {} },
+    allowedNames: ["playwright"],
+    managedWorkspaces: runtime.workspaces,
+  });
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /Connected MCP playwright/,
+  );
+
+  const mcpParent = join(tempRoot, "mcp");
+  renameSync(mcpParent, join(tempRoot, "mcp-owned"));
+  const redirectedWorkspace = join(canonical, "playwright", "session-cleanup-symlink");
+  mkdirSync(redirectedWorkspace, { recursive: true });
+  writeFileSync(
+    join(redirectedWorkspace, ".aidevops-mcp-workspace"),
+    runtime.workspaces.playwright.markerToken,
+  );
+  writeFileSync(join(redirectedWorkspace, "must-survive.txt"), "preserved");
+  symlinkSync(canonical, mcpParent);
+
+  assert.match(
+    await activation.execute({ action: "disconnect", name: "playwright" }),
+    /workspace escapes its temporary root|workspace resolves inside the repository/,
+  );
+  assert.equal(readFileSync(join(redirectedWorkspace, "must-survive.txt"), "utf8"), "preserved");
+});
+
+test("rejects a symlinked Playwright workspace without touching its target", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-mcp-symlink-"));
+  const canonical = join(root, "canonical");
+  const runtime = createMcpSessionRuntime(join(root, "workspace"), {
+    tempRoot: join(root, "managed-tmp"),
+    nonce: "symlink-session",
+    markerToken: "owned-symlink-session",
+  });
+  mkdirSync(canonical);
+  mkdirSync(join(root, "managed-tmp", "mcp", "playwright"), { recursive: true });
+  symlinkSync(canonical, runtime.workspaces.playwright.directory);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let connectCalls = 0;
+  const activation = createMcpActivationTool(tool, z, {
+    client: { async connect() { connectCalls++; } },
+    allowedNames: ["playwright"],
+    managedWorkspaces: runtime.workspaces,
+  });
+
+  assert.match(
+    await activation.execute({ action: "connect", name: "playwright" }),
+    /workspace (escapes its temporary root|is not a regular directory)/,
+  );
+  assert.equal(connectCalls, 0);
+  assert.deepEqual(readdirSync(canonical), []);
+});
+
+test("blocks Playwright screenshot paths that escape managed storage", () => {
+  const managedWorkspaces = { playwright: { directory: "/managed/playwright" } };
+  const valid = { args: { filename: "screenshots/review.png" } };
+  enforceManagedMcpArtifactPath(
+    { tool: "playwright_browser_take_screenshot" },
+    valid,
+    managedWorkspaces,
+  );
+  assert.equal(valid.args.filename, "screenshots/review.png");
+
+  for (const filename of ["../review.png", "shots/../../review.png", "/tmp/review.png", "C:\\review.png"]) {
+    assert.throws(
+      () => enforceManagedMcpArtifactPath(
+        { tool: "playwright_browser_take_screenshot" },
+        { args: { filename } },
+        managedWorkspaces,
+      ),
+      /must not be absolute or contain '\.\.' traversal/,
+    );
+  }
+
+  assert.throws(
+    () => enforceManagedMcpArtifactPath(
+      { tool: "playwright_browser_console_messages" },
+      { args: { filename: "../console.log" } },
+      managedWorkspaces,
+    ),
+    /must not be absolute or contain '\.\.' traversal/,
+  );
 });
 
 test("connects and disconnects only registry-approved MCP names", async () => {

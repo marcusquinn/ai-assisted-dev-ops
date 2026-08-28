@@ -31,7 +31,8 @@ import { execSync } from "child_process";
 
 // Extracted modules
 import { createConfigHook } from "./config-hook.mjs";
-import { getOnDemandMcpAgents } from "./mcp-registry.mjs";
+import { createMcpSessionRuntime, getOnDemandMcpAgents } from "./mcp-registry.mjs";
+import { enforceManagedMcpArtifactPath } from "./mcp-activation-tool.mjs";
 import { createQualityHooks } from "./quality-hooks.mjs";
 import {
   createSessionModelStore,
@@ -297,6 +298,8 @@ export async function AidevopsPlugin({ directory, client }) {
     return createConversationHooks({client, conversation, directory});
   }
 
+  const mcpRuntime = createMcpSessionRuntime(WORKSPACE_DIR, { repositoryDir: directory });
+
   if (pluginHealthProbeRequested()) {
     const modelRouting = loadModelRouting([
       process.env.AIDEVOPS_MODEL_ROUTING_TABLE,
@@ -309,6 +312,7 @@ export async function AidevopsPlugin({ directory, client }) {
       pluginDir: PLUGIN_DIR,
       repositoryDir: directory,
       conversation,
+      mcpRuntime,
       modelRouting,
       agentRoutingState: { tiers: new Map(), pinned: new Set() },
     });
@@ -357,6 +361,7 @@ export async function AidevopsPlugin({ directory, client }) {
     mcpClient: client.mcp,
     mcpDirectory: directory,
     managedMcpNames: getOnDemandMcpAgents().map((mcp) => mcp.name),
+    managedMcpWorkspaces: mcpRuntime.workspaces,
   });
 
   // Create hooks from extracted modules
@@ -372,6 +377,7 @@ export async function AidevopsPlugin({ directory, client }) {
     pluginDir: PLUGIN_DIR,
     repositoryDir: directory,
     conversation,
+    mcpRuntime,
     modelRouting,
     agentRoutingState,
   });
@@ -572,6 +578,7 @@ export async function AidevopsPlugin({ directory, client }) {
 
     // Quality hooks
     "tool.execute.before": async (input, output) => {
+      enforceManagedMcpArtifactPath(input, output, mcpRuntime.workspaces);
       permissionBroker.recordToolCall(input, output);
       cancellationReceipt.beforeTool(input, output);
       subagentEffortHooks.beforeTool(input, output);

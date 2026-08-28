@@ -211,7 +211,7 @@ function createMemoryTool(scriptsDir, run) {
  *
  * @param {string} scriptsDir - Path to scripts directory
  * @param {function} run - Shell command runner
- * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function, mcpClient?: object, mcpDirectory?: string, managedMcpNames?: string[]}} [options] - Tool-specific test/runtime overrides
+ * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function, mcpClient?: object, mcpDirectory?: string, managedMcpNames?: string[], managedMcpWorkspaces?: object}} [options] - Tool-specific test/runtime overrides
  * @returns {Record<string, object>}
  */
 export function createTools(scriptsDir, run, options = {}) {
@@ -231,6 +231,7 @@ export function createTools(scriptsDir, run, options = {}) {
       client: options.mcpClient,
       directory: options.mcpDirectory,
       allowedNames: options.managedMcpNames,
+      managedWorkspaces: options.managedMcpWorkspaces,
     });
   }
   return tools;
