@@ -11,7 +11,8 @@
 # Exports:
 #   has_open_pr <issue> <slug> [issue-title]
 #     Check whether an issue already has open or merged PR evidence.
-#     Exit 0 = PR evidence exists (do NOT dispatch), exit 1 = no evidence.
+#     Exit 0 = PR evidence exists or lookup is uncertain (do NOT dispatch).
+#     Exit 1 = complete lookup with no evidence.
 
 _ddpr_gh_read() {
 	local rc=0
@@ -21,6 +22,71 @@ _ddpr_gh_read() {
 		"$@" || rc=$?
 	fi
 	return "$rc"
+}
+
+_DDPR_LOOKUP_RC_RESPONSE_INVALID=13
+_DDPR_LOOKUP_RESULT_UNCERTAIN="PR_LOOKUP_RESULT=uncertain"
+_DDPR_LOOKUP_SCOPE_TASK_ID_TITLE="task_id_title"
+
+_ddpr_bounded_gh_read() {
+	local max_attempts="${AIDEVOPS_DDPR_LOOKUP_ATTEMPTS:-2}"
+	local retry_delay="${AIDEVOPS_DDPR_LOOKUP_RETRY_DELAY:-1}"
+	local attempt=1
+	local rc=1
+
+	[[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || max_attempts=2
+	[[ "$max_attempts" -le 2 ]] || max_attempts=2
+	[[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=1
+	[[ "$retry_delay" -le 5 ]] || retry_delay=1
+
+	while [[ "$attempt" -le "$max_attempts" ]]; do
+		if _ddpr_gh_read "$@"; then
+			return 0
+		else
+			rc=$?
+		fi
+		# Exit 75 is a local budget/cooldown refusal. Retrying it would add
+		# pressure without obtaining new evidence.
+		[[ "$rc" -eq 75 ]] && return "$rc"
+		if [[ "$attempt" -lt "$max_attempts" && "$retry_delay" -gt 0 ]]; then
+			sleep "$retry_delay"
+		fi
+		attempt=$((attempt + 1))
+	done
+	return "$rc"
+}
+
+_ddpr_lookup_failure_reason() {
+	local rc="$1"
+	case "$rc" in
+	75) printf 'local_budget_or_cooldown' ;;
+	124) printf 'timeout' ;;
+	"$_DDPR_LOOKUP_RC_RESPONSE_INVALID") printf 'response_validation_failed' ;;
+	*) printf 'api_request_failed' ;;
+	esac
+	return 0
+}
+
+_ddpr_emit_lookup_uncertain() {
+	local scope="$1"
+	local issue_number="$2"
+	local repo_slug="$3"
+	local rc="$4"
+	local reason=""
+	reason=$(_ddpr_lookup_failure_reason "$rc")
+	printf 'PR_LOOKUP_UNCERTAIN: %s lookup failed for issue #%s in %s (reason=%s); dispatch is blocked\n' \
+		"$scope" "$issue_number" "$repo_slug" "$reason"
+	printf '%s reason=%s scope=%s\n' "$_DDPR_LOOKUP_RESULT_UNCERTAIN" "$reason" "$scope"
+	return 0
+}
+
+_ddpr_read_json_array() {
+	local response=""
+	local rc=0
+	response=$(_ddpr_bounded_gh_read "$@") || rc=$?
+	[[ "$rc" -eq 0 ]] || return "$rc"
+	printf '%s' "$response" | jq -ce 'select(type == "array")' 2>/dev/null || return "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
+	return 0
 }
 
 #######################################
@@ -111,7 +177,7 @@ _ddpr_graphql_open_siblings() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="dispatch-dedup-open-siblings-exact-cost" \
-		_ddpr_gh_read gh api graphql -F queryString="$search_query" -f query='
+		_ddpr_bounded_gh_read gh api graphql -F queryString="$search_query" -f query='
 		query($queryString: String!) {
 			search(type: ISSUE, query: $queryString, first: 20) {
 				nodes {
@@ -132,7 +198,7 @@ _ddpr_graphql_open_siblings() {
 			}
 			rateLimit { cost }
 		}
-	' 2>/dev/null) || return 1
+	' 2>/dev/null) || return $?
 
 	pr_json=$(printf '%s' "$response" | jq -ce \
 		--arg array_type "$_DDPR_JSON_ARRAY_TYPE" --arg number_type "$_DDPR_JSON_NUMBER_TYPE" '
@@ -163,7 +229,7 @@ _ddpr_graphql_open_siblings() {
 			files: (.files.nodes // []),
 			labels: (.labels.nodes // [])
 		})
-	' 2>/dev/null) || return 1
+	' 2>/dev/null) || return "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
 	printf '%s' "$pr_json"
 	return 0
 }
@@ -185,7 +251,7 @@ _ddpr_graphql_open_commits() {
 	# shellcheck disable=SC2016
 	response=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="dispatch-dedup-open-commits-exact-cost" \
-		_ddpr_gh_read gh api graphql -f owner="$owner" -f name="$repo" -f query='
+		_ddpr_bounded_gh_read gh api graphql -f owner="$owner" -f name="$repo" -f query='
 		query($owner: String!, $name: String!) {
 			repository(owner: $owner, name: $name) {
 				pullRequests(
@@ -204,7 +270,7 @@ _ddpr_graphql_open_commits() {
 			}
 			rateLimit { cost }
 		}
-	' 2>/dev/null) || return 1
+	' 2>/dev/null) || return $?
 
 	pr_json=$(printf '%s' "$response" | jq -ce \
 		--arg array_type "$_DDPR_JSON_ARRAY_TYPE" --arg number_type "$_DDPR_JSON_NUMBER_TYPE" '
@@ -227,7 +293,7 @@ _ddpr_graphql_open_commits() {
 			isDraft,
 			commits: [.commits.nodes[].commit | {messageHeadline}]
 		})
-	' 2>/dev/null) || return 1
+	' 2>/dev/null) || return "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
 	printf '%s' "$pr_json"
 	return 0
 }
@@ -250,11 +316,12 @@ _has_open_pr_check_healthy_sibling() {
 	local repo_slug="$2"
 
 	local pr_json match_pr draft_pr draft_pr_number draft_pr_kind
-	pr_json=$(_ddpr_graphql_open_siblings "$issue_number" "$repo_slug") || {
-		printf 'PR_LOOKUP_UNCERTAIN: open PR lookup failed for issue #%s in %s; dispatch is blocked\n' \
-			"$issue_number" "$repo_slug"
+	local lookup_rc=0
+	pr_json=$(_ddpr_graphql_open_siblings "$issue_number" "$repo_slug") || lookup_rc=$?
+	if [[ "$lookup_rc" -ne 0 ]]; then
+		_ddpr_emit_lookup_uncertain "open_siblings" "$issue_number" "$repo_slug" "$lookup_rc"
 		return 0
-	}
+	fi
 
 	local issue_ref_pattern healthy_state_pattern blocked_state_pattern
 	issue_ref_pattern="([^[:alnum:]_]|^)((close[sd]?|fix(e[sd])?|resolve[sd]?|for|refs?):?[[:space:]]+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)?#${issue_number}|GH#${issue_number}|#${issue_number})([^[:alnum:]_]|$)"
@@ -341,11 +408,12 @@ _has_open_pr_check_open_commits() {
 	local repo_slug="$2"
 
 	local open_pr_json open_pr_count
-	open_pr_json=$(_ddpr_graphql_open_commits "$repo_slug") || {
-		printf 'PR_LOOKUP_UNCERTAIN: open PR commit lookup failed for issue #%s in %s; dispatch is blocked\n' \
-			"$issue_number" "$repo_slug"
+	local lookup_rc=0
+	open_pr_json=$(_ddpr_graphql_open_commits "$repo_slug") || lookup_rc=$?
+	if [[ "$lookup_rc" -ne 0 ]]; then
+		_ddpr_emit_lookup_uncertain "open_commits" "$issue_number" "$repo_slug" "$lookup_rc"
 		return 0
-	}
+	fi
 	open_pr_count=$(printf '%s' "$open_pr_json" | jq 'length' 2>/dev/null) || open_pr_count=0
 	[[ "$open_pr_count" =~ ^[0-9]+$ ]] || open_pr_count=0
 	[[ "$open_pr_count" -eq 0 ]] && return 1
@@ -401,11 +469,16 @@ _has_open_pr_check_open_body_keyword() {
 	local repo_slug="$2"
 
 	local pr_json match_pr
+	local lookup_rc=0
 	# Fetch up to 20 open PRs mentioning the issue in the body; body is
 	# included in this single request to avoid separate gh pr view calls.
-	pr_json=$(gh pr list --repo "$repo_slug" --state open \
+	pr_json=$(_ddpr_read_json_array gh pr list --repo "$repo_slug" --state open \
 		--search "#${issue_number} in:body" --limit 20 \
-		--json number,body,isDraft 2>/dev/null) || pr_json="[]"
+		--json number,body,isDraft 2>/dev/null) || lookup_rc=$?
+	if [[ "$lookup_rc" -ne 0 ]]; then
+		_ddpr_emit_lookup_uncertain "open_body" "$issue_number" "$repo_slug" "$lookup_rc"
+		return 0
+	fi
 
 	# Match: closing keyword + optional whitespace + #NNN or owner/repo#NNN
 	# followed by a non-word char or end-of-string (GH#18641 semantics).
@@ -414,7 +487,10 @@ _has_open_pr_check_open_body_keyword() {
 
 	match_pr=$(printf '%s' "$pr_json" | jq -r --arg pattern "$close_pattern" \
 		'[.[] | select((.isDraft // false | not) and (.body // "" | test($pattern; "i")))] | .[0].number // empty' \
-		2>/dev/null) || match_pr=""
+		2>/dev/null) || {
+		_ddpr_emit_lookup_uncertain "open_body" "$issue_number" "$repo_slug" "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
+		return 0
+	}
 
 	if [[ -n "$match_pr" ]]; then
 		printf 'open PR #%s closes issue #%s via keyword in body\n' "$match_pr" "$issue_number"
@@ -442,11 +518,16 @@ _has_open_pr_check_merged_keywords() {
 	local repo_slug="$2"
 
 	local pr_json match_pr
+	local lookup_rc=0
 	# Fetch up to 20 merged PRs mentioning the issue in the body; body is
 	# included in this single request to avoid separate gh pr view calls.
-	pr_json=$(gh pr list --repo "$repo_slug" --state merged \
+	pr_json=$(_ddpr_read_json_array gh pr list --repo "$repo_slug" --state merged \
 		--search "#${issue_number} in:body" --limit 20 \
-		--json number,body 2>/dev/null) || pr_json="[]"
+		--json number,body 2>/dev/null) || lookup_rc=$?
+	if [[ "$lookup_rc" -ne 0 ]]; then
+		_ddpr_emit_lookup_uncertain "merged_body" "$issue_number" "$repo_slug" "$lookup_rc"
+		return 0
+	fi
 
 	# Match: closing keyword + optional whitespace + #NNN or owner/repo#NNN
 	# followed by a non-word char or end-of-string (GH#18641 semantics).
@@ -455,7 +536,10 @@ _has_open_pr_check_merged_keywords() {
 
 	match_pr=$(printf '%s' "$pr_json" | jq -r --arg pattern "$close_pattern" \
 		'[.[] | select(.body // "" | test($pattern; "i"))] | .[0].number // empty' \
-		2>/dev/null) || match_pr=""
+		2>/dev/null) || {
+		_ddpr_emit_lookup_uncertain "merged_body" "$issue_number" "$repo_slug" "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
+		return 0
+	}
 
 	if [[ -n "$match_pr" ]]; then
 		printf 'merged PR #%s references issue #%s via keyword\n' "$match_pr" "$issue_number"
@@ -497,11 +581,22 @@ _has_open_pr_check_task_id_title() {
 	[[ -z "$task_id" ]] && return 1
 
 	local query pr_json pr_count pr_number
+	local lookup_rc=0
 	query="${task_id} in:title"
 	# Fetch number+body in one request to avoid a separate gh pr view call (GH#19124)
-	pr_json=$(gh pr list --repo "$repo_slug" --state merged --search "$query" --limit 1 --json number,body 2>/dev/null) || pr_json="[]"
-	pr_count=$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null) || pr_count=0
-	[[ "$pr_count" =~ ^[0-9]+$ ]] || pr_count=0
+	pr_json=$(_ddpr_read_json_array gh pr list --repo "$repo_slug" --state merged --search "$query" --limit 1 --json number,body 2>/dev/null) || lookup_rc=$?
+	if [[ "$lookup_rc" -ne 0 ]]; then
+		_ddpr_emit_lookup_uncertain "$_DDPR_LOOKUP_SCOPE_TASK_ID_TITLE" "$issue_number" "$repo_slug" "$lookup_rc"
+		return 0
+	fi
+	pr_count=$(printf '%s' "$pr_json" | jq 'length' 2>/dev/null) || {
+		_ddpr_emit_lookup_uncertain "$_DDPR_LOOKUP_SCOPE_TASK_ID_TITLE" "$issue_number" "$repo_slug" "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
+		return 0
+	}
+	if [[ ! "$pr_count" =~ ^[0-9]+$ ]]; then
+		_ddpr_emit_lookup_uncertain "$_DDPR_LOOKUP_SCOPE_TASK_ID_TITLE" "$issue_number" "$repo_slug" "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
+		return 0
+	fi
 	[[ "$pr_count" -eq 0 ]] && return 1
 
 	pr_number=$(printf '%s' "$pr_json" | jq -r '.[0].number // empty' 2>/dev/null)
@@ -559,13 +654,19 @@ _has_open_pr_check_superseded_issue_pr() {
 	[[ -n "$issue_body" ]] || return 1
 
 	local related_issue="" pr_json="" match_pr=""
+	local lookup_rc=0
 	while IFS= read -r related_issue; do
 		[[ "$related_issue" =~ ^[0-9]+$ ]] || continue
 		[[ "$related_issue" != "$issue_number" ]] || continue
 
-		pr_json=$(gh pr list --repo "$repo_slug" --state merged \
+		lookup_rc=0
+		pr_json=$(_ddpr_read_json_array gh pr list --repo "$repo_slug" --state merged \
 			--search "#${related_issue}" --limit 20 \
-			--json number,title,body,author 2>/dev/null) || pr_json="[]"
+			--json number,title,body,author 2>/dev/null) || lookup_rc=$?
+		if [[ "$lookup_rc" -ne 0 ]]; then
+			_ddpr_emit_lookup_uncertain "superseded_issue" "$issue_number" "$repo_slug" "$lookup_rc"
+			return 0
+		fi
 
 		local ref_pattern="(^|[^0-9])#${related_issue}([^0-9]|$)|GH#${related_issue}([^0-9]|$)"
 		local planning_pattern="planning-only|pure planning|brief-only|brief for|files the brief|no code changes"
@@ -586,7 +687,10 @@ _has_open_pr_check_superseded_issue_pr() {
 						(($author == "dependabot[bot]") or ($author == "renovate[bot]")) and
 						($title | test($bump_title_pattern; "i"))
 					) | not))
-			] | .[0].number // empty' 2>/dev/null) || match_pr=""
+			] | .[0].number // empty' 2>/dev/null) || {
+			_ddpr_emit_lookup_uncertain "superseded_issue" "$issue_number" "$repo_slug" "$_DDPR_LOOKUP_RC_RESPONSE_INVALID"
+			return 0
+		}
 
 		if [[ -n "$match_pr" ]]; then
 			printf 'merged PR #%s references superseded issue #%s for consolidated issue #%s\n' \
@@ -612,10 +716,10 @@ _has_open_pr_check_superseded_issue_pr() {
 #   $2 = repo slug (owner/repo)
 #   $3 = issue title (optional; used for task-id fallback)
 # Returns:
-#   exit 0 if PR evidence exists — open OR merged (do NOT dispatch)
-#   exit 1 if no PR evidence (safe to dispatch)
+#   exit 0 if PR evidence exists or any lookup is uncertain (do NOT dispatch)
+#   exit 1 if every lookup completed and no PR evidence exists (safe to dispatch)
 # Outputs:
-#   single-line reason when evidence is found
+#   evidence reason, or sanitized PR_LOOKUP_RESULT=uncertain diagnostics
 # CALLERS: For issue closing, verify mergedAt after this returns 0.
 #######################################
 has_open_pr() {
@@ -682,12 +786,27 @@ has_open_pr() {
 	wait "$_pr_pid4" 2>/dev/null || true
 	wait "$_pr_pid5" 2>/dev/null || true
 
-	# Check results — any hit means PR evidence exists
+	# Uncertainty takes precedence over positive evidence. A partial API view is
+	# not sufficient to classify the block as an active claim or known PR.
 	local _check_file _check_output
 	for _check_file in "${_pr_tmpdir}/check0.out" "${_pr_tmpdir}/check1.out" "${_pr_tmpdir}/check1b.out" \
 		"${_pr_tmpdir}/check2.out" "${_pr_tmpdir}/check3.out" "${_pr_tmpdir}/check4.out"; do
 		if [[ -f "$_check_file" ]]; then
-			_check_output=$(cat "$_check_file" 2>/dev/null) || _check_output=""
+			_check_output=$(<"$_check_file") || _check_output=""
+			if [[ "$_check_output" == *"$_DDPR_LOOKUP_RESULT_UNCERTAIN"* ]]; then
+				printf '%s\n' "$_check_output"
+				rm -rf "$_pr_tmpdir" 2>/dev/null || true
+				return 0
+			fi
+		fi
+	done
+
+	# No lookup was uncertain; any remaining non-empty result is known PR
+	# evidence and keeps the existing dispatch-block contract.
+	for _check_file in "${_pr_tmpdir}/check0.out" "${_pr_tmpdir}/check1.out" "${_pr_tmpdir}/check1b.out" \
+		"${_pr_tmpdir}/check2.out" "${_pr_tmpdir}/check3.out" "${_pr_tmpdir}/check4.out"; do
+		if [[ -f "$_check_file" ]]; then
+			_check_output=$(<"$_check_file") || _check_output=""
 			if [[ -n "$_check_output" ]]; then
 				printf '%s\n' "$_check_output"
 				rm -rf "$_pr_tmpdir" 2>/dev/null || true

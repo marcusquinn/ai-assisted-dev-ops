@@ -283,7 +283,7 @@ _dispatch_stats_increment() {
 _dispatch_stats_increment_candidate_failed() {
 	local reason="$1"
 	case "$reason" in
-		blocked_by_native_lookup_unavailable | blocked_by_unresolved | canary_failed | consolidated | cooldown_no_worker_process | cost_budget_exceeded | dedup_active_claim | dirty_worktree_recovery | ever_nmr_without_approval | footprint_overlap | graphql_circuit_breaker | healthy_pr_backlog | interactive_review_hold | issue_closed | launch_error | local_capacity_gate | missing_worker_context | no_auto_dispatch | no_dispatchable_evidence | no_recent_log_evidence | parent_task | policy_gate | pr_target_not_dispatchable | provider_rate_limit_pressure | renovate_dependency_dashboard | repeated_failure_pressure | runner_health_circuit_breaker | unclassified_signal)
+		blocked_by_native_lookup_unavailable | blocked_by_unresolved | canary_failed | consolidated | cooldown_no_worker_process | cost_budget_exceeded | dedup_active_claim | dirty_worktree_recovery | ever_nmr_without_approval | footprint_overlap | graphql_circuit_breaker | healthy_pr_backlog | interactive_review_hold | issue_closed | launch_error | local_capacity_gate | missing_worker_context | no_auto_dispatch | no_dispatchable_evidence | no_recent_log_evidence | parent_task | policy_gate | pr_lookup_uncertain | pr_target_not_dispatchable | provider_rate_limit_pressure | renovate_dependency_dashboard | repeated_failure_pressure | runner_health_circuit_breaker | unclassified_signal)
 			;;
 		*)
 			reason="unclassified_signal"

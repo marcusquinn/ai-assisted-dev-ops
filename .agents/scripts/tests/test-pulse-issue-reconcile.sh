@@ -1286,6 +1286,53 @@ test_feedback_backfill_uses_label_constants() {
 	return 0
 }
 
+test_pr_lookup_uncertainty_preserves_issue_state() {
+	local tmp_dir=""
+	local dedup_helper=""
+	local mutation_log=""
+	local action_log=""
+	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
+	local result=""
+	tmp_dir=$(mktemp -d)
+	dedup_helper="${tmp_dir}/dedup-helper.sh"
+	mutation_log="${tmp_dir}/mutations.log"
+	action_log="${tmp_dir}/actions.log"
+	cat >"$dedup_helper" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'PR_LOOKUP_UNCERTAIN: unable to verify PR state for issue #42 (open_siblings; reason=timeout)'
+printf '%s\n' 'PR_LOOKUP_RESULT=uncertain reason=timeout scope=open_siblings'
+exit 0
+EOF
+	chmod +x "$dedup_helper"
+
+	result=$(bash -c '
+		actions_sh="$1"
+		dedup_helper="$2"
+		mutation_log="$3"
+		LOGFILE="$4"
+		# shellcheck source=/dev/null
+		source "$actions_sh"
+		gh() { printf "gh:%s\n" "$*" >>"$mutation_log"; return 0; }
+		set_issue_status() { printf "status:%s\n" "$*" >>"$mutation_log"; return 0; }
+		_pir_pr_merged_at() { return 1; }
+		ciw_rc=0
+		rsd_rc=0
+		_action_ciw_single owner/repo 42 title "$dedup_helper" /nonexistent || ciw_rc=$?
+		_action_rsd_single owner/repo 42 title "$dedup_helper" /nonexistent || rsd_rc=$?
+		printf "ciw_rc=%s rsd_rc=%s\n" "$ciw_rc" "$rsd_rc"
+		[[ ! -s "$mutation_log" ]] && printf "mutations=none\n"
+	' _ "$actions_sh" "$dedup_helper" "$mutation_log" "$action_log" 2>/dev/null)
+	rm -rf "$tmp_dir"
+
+	if [[ "$result" == *"ciw_rc=1 rsd_rc=1"* && "$result" == *"mutations=none"* ]]; then
+		_pass "PR lookup uncertainty preserves issue state in reconcile actions"
+		return 0
+	fi
+
+	_fail "PR lookup uncertainty mutated reconciliation state or returned the wrong status: ${result}"
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
@@ -1314,6 +1361,7 @@ test_gh25896_oimp_closes_consolidated_successor
 test_gh27444_recurrent_file_size_debt_current_outcome
 test_available_feedback_worker_issue_not_assigned
 test_feedback_backfill_uses_label_constants
+test_pr_lookup_uncertainty_preserves_issue_state
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

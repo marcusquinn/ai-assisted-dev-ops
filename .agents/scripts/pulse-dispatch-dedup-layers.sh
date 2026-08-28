@@ -211,8 +211,15 @@ _dedup_layer4_pr_evidence() {
 	local issue_title="$3"
 	local dedup_helper="${SCRIPT_DIR}/dispatch-dedup-helper.sh"
 	local dedup_helper_output=""
+	local dedup_helper_rc=0
 	if [[ -x "$dedup_helper" ]]; then
-		if dedup_helper_output=$("$dedup_helper" has-open-pr "$issue_number" "$repo_slug" "$issue_title" 2>>"$LOGFILE"); then
+		dedup_helper_output=$("$dedup_helper" has-open-pr "$issue_number" "$repo_slug" "$issue_title" 2>>"$LOGFILE") || dedup_helper_rc=$?
+		if [[ "$dedup_helper_output" == *"PR_LOOKUP_RESULT=uncertain"* ]]; then
+			echo "[pulse-wrapper] Dedup: ${dedup_helper_output}" >>"$LOGFILE"
+			printf 'pr_lookup_uncertain\n'
+			return 0
+		fi
+		if [[ "$dedup_helper_rc" -eq 0 ]]; then
 			if [[ -n "$dedup_helper_output" ]]; then
 				echo "[pulse-wrapper] Dedup: ${dedup_helper_output}" >>"$LOGFILE"
 			else
@@ -221,6 +228,11 @@ _dedup_layer4_pr_evidence() {
 			if [[ "$dedup_helper_output" == WORKER_DRAFT_CHECKPOINT:* ]]; then
 				return 2
 			fi
+			return 0
+		fi
+		if [[ "$dedup_helper_rc" -ne 1 ]]; then
+			echo "[pulse-wrapper] Dedup: PR_LOOKUP_RESULT=uncertain reason=helper_exit_${dedup_helper_rc} scope=aggregate" >>"$LOGFILE"
+			printf 'pr_lookup_uncertain\n'
 			return 0
 		fi
 	fi

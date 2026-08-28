@@ -2647,6 +2647,10 @@ classify_dispatch_blocker_reason() {
 			printf 'blocked_by_native_lookup_unavailable\n'
 			return 0
 			;;
+		*pr_lookup_uncertain* | *pr_lookup_result=uncertain*)
+			printf 'pr_lookup_uncertain\n'
+			return 0
+			;;
 		*canary*failed*)
 			printf 'canary_failed\n'
 			return 0

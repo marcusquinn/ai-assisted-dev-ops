@@ -43,6 +43,30 @@ exit 1
 DEDUP_STUB
 chmod +x "${SCRIPT_DIR}/dispatch-dedup-helper.sh"
 
+export STUB_OPEN_PR_OUTPUT='PR_LOOKUP_RESULT=uncertain reason=timeout scope=open_siblings
+PR_LOOKUP_UNCERTAIN: open_siblings lookup failed; dispatch is blocked'
+export STUB_OPEN_PR_RC=0
+LAYER4_OUTPUT=""
+LAYER4_RC=0
+LAYER4_OUTPUT=$(_dedup_layer4_pr_evidence "123" "owner/repo" "Fixture") || LAYER4_RC=$?
+if [[ "$LAYER4_RC" -eq 0 && "$LAYER4_OUTPUT" == "pr_lookup_uncertain" ]] &&
+	grep -q 'PR_LOOKUP_RESULT=uncertain reason=timeout' "$LOGFILE"; then
+	print_result "Layer 4 preserves PR lookup uncertainty as a distinct block" 0
+else
+	print_result "Layer 4 preserves PR lookup uncertainty as a distinct block" 1
+fi
+
+export STUB_OPEN_PR_OUTPUT=''
+export STUB_OPEN_PR_RC=1
+LAYER4_OUTPUT=""
+LAYER4_RC=0
+LAYER4_OUTPUT=$(_dedup_layer4_pr_evidence "123" "owner/repo" "Fixture") || LAYER4_RC=$?
+if [[ "$LAYER4_RC" -eq 1 && -z "$LAYER4_OUTPUT" ]]; then
+	print_result "Layer 4 allows dispatch after a subsequent valid empty lookup" 0
+else
+	print_result "Layer 4 allows dispatch after a subsequent valid empty lookup" 1
+fi
+
 # Exercise the production router's event parsing/argument fence before replacing
 # it with a counter stub for the Layer 6 return-semantics tests below.
 ROUTE_ARGS_FILE="${TEST_ROOT}/route-args"

@@ -1226,6 +1226,12 @@ _pir_lookup_oimp_pr_for_issue() {
 #   2 = reset action taken (used by _action_rsd_single: reset to available)
 ##############################################
 
+_pir_pr_lookup_uncertain() {
+	local dedup_output="$1"
+	[[ "$dedup_output" == *"PR_LOOKUP_RESULT=uncertain"* ]] || return 1
+	return 0
+}
+
 #######################################
 # Stage 1 action: close an issue whose work is done via a merged PR.
 # (Per-issue body of close_issues_with_merged_prs — no slug loop.)
@@ -1239,6 +1245,10 @@ _action_ciw_single() {
 
 	local dedup_output=""
 	dedup_output=$("$dedup_helper" has-open-pr "$issue_num" "$slug" "$issue_title" 2>/dev/null) || return 1
+	if _pir_pr_lookup_uncertain "$dedup_output"; then
+		echo "[pulse-wrapper] Deferred auto-close #${issue_num} in ${slug} — PR lookup uncertain" >>"$LOGFILE"
+		return 1
+	fi
 
 	local pr_ref="" pr_num="" merged_at=""
 	pr_ref=$(printf '%s' "$dedup_output" | grep -o '#[0-9]*' | head -1) || pr_ref=""
@@ -1285,6 +1295,10 @@ _action_rsd_single() {
 
 	local dedup_output=""
 	if dedup_output=$("$dedup_helper" has-open-pr "$issue_num" "$slug" "$issue_title" 2>/dev/null); then
+		if _pir_pr_lookup_uncertain "$dedup_output"; then
+			echo "[pulse-wrapper] Reconcile done: deferred #${issue_num} in ${slug} — PR lookup uncertain" >>"$LOGFILE"
+			return 1
+		fi
 		local pr_ref="" pr_num="" merged_at=""
 		pr_ref=$(printf '%s' "$dedup_output" | grep -o '#[0-9]*' | head -1) || pr_ref=""
 		pr_num=$(printf '%s' "$pr_ref" | tr -d '#')

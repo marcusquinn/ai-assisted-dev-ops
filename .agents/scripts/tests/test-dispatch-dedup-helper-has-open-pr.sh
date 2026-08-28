@@ -47,10 +47,10 @@ _write_gh_stub() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Response-metered GraphQL replacements for the two rich native PR-list shapes.
+	# Response-metered GraphQL replacements for the two rich native PR-list shapes.
 if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
 	if [[ "${GH_PR_LIST_FAIL:-0}" == "1" ]]; then
-		exit 1
+		exit "${GH_PR_LIST_FAIL_RC:-1}"
 	fi
 	query_text=""
 	query_string=""
@@ -168,7 +168,7 @@ _append_gh_stub_native_reads() {
 # gh pr list — returns fixture JSON for (repo, state, search) lookup.
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
 	if [[ "${GH_PR_LIST_FAIL:-0}" == "1" ]]; then
-		exit 1
+		exit "${GH_PR_LIST_FAIL_RC:-1}"
 	fi
 	local_repo=""
 	local_state=""
@@ -250,6 +250,10 @@ setup_test_env() {
 	export GH_FIXTURE_FILE
 	export GH_PR_VIEW_FIXTURE_FILE
 	export GH_GRAPHQL_CALL_LOG
+	export AIDEVOPS_DDPR_LOOKUP_RETRY_DELAY=0
+	export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${TEST_ROOT}/gh-secondary-cooldown.json"
+	export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="${TEST_ROOT}/gh-cooldown-events.jsonl"
+	export AIDEVOPS_GH_READ_RAMP_STATE_FILE="${TEST_ROOT}/gh-read-ramp-state.tsv"
 
 	_write_gh_stub "${TEST_ROOT}/bin/gh"
 
@@ -263,6 +267,8 @@ teardown_test_env() {
 	if [[ -n "$TEST_ROOT" && -d "$TEST_ROOT" ]]; then
 		rm -rf "$TEST_ROOT"
 	fi
+	unset AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE \
+		AIDEVOPS_GH_READ_RAMP_STATE_FILE
 	return 0
 }
 
@@ -520,13 +526,59 @@ test_has_open_pr_fails_closed_when_sibling_lookup_fails() {
 	output=$("$HELPER_SCRIPT" has-open-pr 18782 marcusquinn/aidevops 'lookup uncertainty') || rc=$?
 	unset GH_PR_LIST_FAIL
 
-	if [[ "$rc" -eq 0 && "$output" == PR_LOOKUP_UNCERTAIN:* ]]; then
+	if [[ "$rc" -eq 0 && "$output" == *"PR_LOOKUP_RESULT=uncertain reason=api_request_failed scope=open_siblings"* &&
+		"$output" == *"PR_LOOKUP_UNCERTAIN:"* ]]; then
 		print_result "has-open-pr fails closed when sibling lookup is uncertain" 0
 		return 0
 	fi
 
 	print_result "has-open-pr fails closed when sibling lookup is uncertain" 1 \
 		"rc=${rc} output=${output}"
+	return 0
+}
+
+test_has_open_pr_recovers_after_lookup_uncertainty() {
+	export GH_PR_LIST_FAIL=1
+	local uncertain_output=""
+	local recovered_output=""
+	local uncertain_rc=0
+	local recovered_rc=0
+	uncertain_output=$("$HELPER_SCRIPT" has-open-pr 18786 marcusquinn/aidevops 'lookup recovery') || uncertain_rc=$?
+	unset GH_PR_LIST_FAIL
+	set_gh_fixtures ''
+	recovered_output=$("$HELPER_SCRIPT" has-open-pr 18786 marcusquinn/aidevops 'lookup recovery') || recovered_rc=$?
+
+	if [[ "$uncertain_rc" -eq 0 && "$uncertain_output" == *"PR_LOOKUP_RESULT=uncertain"* &&
+		"$recovered_rc" -eq 1 && -z "$recovered_output" ]]; then
+		print_result "has-open-pr becomes dispatchable after a valid empty lookup" 0
+		return 0
+	fi
+
+	print_result "has-open-pr becomes dispatchable after a valid empty lookup" 1 \
+		"uncertain_rc=${uncertain_rc} uncertain=${uncertain_output} recovered_rc=${recovered_rc} recovered=${recovered_output}"
+	return 0
+}
+
+test_has_open_pr_classifies_sanitized_lookup_failures() {
+	local timeout_output=""
+	local cooldown_output=""
+	local timeout_rc=0
+	local cooldown_rc=0
+	export GH_PR_LIST_FAIL=1
+	export GH_PR_LIST_FAIL_RC=124
+	timeout_output=$("$HELPER_SCRIPT" has-open-pr 18787 marcusquinn/aidevops 'timeout classification') || timeout_rc=$?
+	export GH_PR_LIST_FAIL_RC=75
+	cooldown_output=$("$HELPER_SCRIPT" has-open-pr 18788 marcusquinn/aidevops 'cooldown classification') || cooldown_rc=$?
+	unset GH_PR_LIST_FAIL GH_PR_LIST_FAIL_RC
+
+	if [[ "$timeout_rc" -eq 0 && "$timeout_output" == *"reason=timeout scope=open_siblings"* &&
+		"$cooldown_rc" -eq 0 && "$cooldown_output" == *"reason=local_budget_or_cooldown scope=open_siblings"* ]]; then
+		print_result "has-open-pr emits sanitized timeout and local-budget diagnostics" 0
+		return 0
+	fi
+
+	print_result "has-open-pr emits sanitized timeout and local-budget diagnostics" 1 \
+		"timeout_rc=${timeout_rc} timeout=${timeout_output} cooldown_rc=${cooldown_rc} cooldown=${cooldown_output}"
 	return 0
 }
 
@@ -976,6 +1028,8 @@ main() {
 	test_has_open_pr_marks_worker_draft_for_stale_routing
 	test_has_open_pr_keeps_protected_draft_unroutable
 	test_has_open_pr_fails_closed_when_sibling_lookup_fails
+	test_has_open_pr_recovers_after_lookup_uncertainty
+	test_has_open_pr_classifies_sanitized_lookup_failures
 	test_has_open_pr_fails_closed_without_response_owned_cost
 	test_has_open_pr_fails_closed_on_partial_sibling_connections
 	test_has_open_pr_ignores_open_body_planning_for_reference
