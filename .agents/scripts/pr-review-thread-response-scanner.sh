@@ -38,6 +38,7 @@ LOGFILE="${LOGFILE:-${HOME}/.aidevops/logs/pr-review-thread-response-scanner.log
 STATE_DIR="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR:-${HOME}/.aidevops/.agent-workspace/pr-review-thread-response}"
 HEADLESS_RUNTIME_HELPER="${HEADLESS_RUNTIME_HELPER:-${SCRIPT_DIR}/headless-runtime-helper.sh}"
 PR_REVIEW_THREAD_RESPONSE_WORKTREE_HELPER="${PR_REVIEW_THREAD_RESPONSE_WORKTREE_HELPER:-${SCRIPT_DIR}/worktree-helper.sh}"
+PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER="${PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER:-${SCRIPT_DIR}/dirty-worktree-backup-helper.sh}"
 PR_REVIEW_THREAD_RESPONSE_WORKTREE_BASE_DIR="${PR_REVIEW_THREAD_RESPONSE_WORKTREE_BASE_DIR:-${AIDEVOPS_WORKTREE_BASE_DIR:-${HOME}/Git/_worktrees}}"
 
 PR_REVIEW_THREAD_RESPONSE_PR_LIMIT="${PR_REVIEW_THREAD_RESPONSE_PR_LIMIT:-50}"
@@ -2309,6 +2310,72 @@ _prrts_claim_existing_worktree_for_reconcile() {
 	return 0
 }
 
+_prrts_preserve_dirty_existing_worktree() {
+	local repo_slug="$1"
+	local pr_number="$2"
+	local worktree_path="$3"
+	local initial_head="$4"
+	local worker_task=""
+	local backup_output=""
+	local backup_id=""
+	local backup_dir=""
+	local status_output=""
+	local operation_id="pr-review-reconcile-${pr_number}-${initial_head:-unknown}"
+
+	if [[ ! -x "$PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_backup_helper_unavailable"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dirty-worktree backup helper is unavailable"
+		return 1
+	fi
+	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
+	[[ -n "$worker_task" ]] || return 1
+	if ! backup_output=$("$PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER" backup \
+		--repo "$worktree_path" \
+		--reason "preserve dirty PR review worktree before head reconciliation" \
+		--pr "$pr_number" --task "$worker_task" \
+		--operation-id "$operation_id" --machine 2>>"$LOGFILE"); then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_backup_failed"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dirty review worktree backup failed"
+		return 1
+	fi
+	IFS='|' read -r backup_id backup_dir <<<"$backup_output"
+	if [[ ! "$backup_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || -z "$backup_dir" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_backup_output_invalid"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dirty review worktree backup returned invalid evidence"
+		return 1
+	fi
+	if ! "$PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER" verify \
+		--repo "$worktree_path" --backup "$backup_id" >>"$LOGFILE" 2>&1; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_backup_unverified"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dirty review worktree backup could not be verified (backup=${backup_id})"
+		return 1
+	fi
+	if ! "$PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER" matches \
+		--repo "$worktree_path" --backup "$backup_id" >>"$LOGFILE" 2>&1; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_backup_mismatch"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — dirty review worktree changed after backup (backup=${backup_id})"
+		return 1
+	fi
+	if ! "$PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER" clean \
+		--repo "$worktree_path" --backup "$backup_id" \
+		--confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP >>"$LOGFILE" 2>&1; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_clean_failed"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — verified dirty review worktree cleanup failed (backup=${backup_id})"
+		return 1
+	fi
+	status_output=$(git -C "$worktree_path" status --porcelain 2>/dev/null) || {
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_clean_unverified"
+		return 1
+	}
+	if [[ -n "$status_output" ]]; then
+		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_clean_unverified"
+		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — preserved review worktree is still dirty after guarded cleanup (backup=${backup_id})"
+		return 1
+	fi
+	_prrts_log "dispatch: ${repo_slug}#${pr_number} preserved and cleaned exclusively claimed dirty review worktree (backup=${backup_id})"
+	return 0
+}
+
 _prrts_reconcile_existing_worktree_head() {
 	local repo_slug="$1"
 	local repo_path="$2"
@@ -2331,12 +2398,10 @@ _prrts_reconcile_existing_worktree_head() {
 		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_status_unavailable"
 		return 1
 	}
-	if [[ -n "$status_output" ]]; then
-		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_dirty"
-		_prrts_log "dispatch: ${repo_slug}#${pr_number} skipped — existing review worktree head mismatch is dirty"
-		return 1
-	fi
 	_prrts_claim_existing_worktree_for_reconcile "$repo_slug" "$pr_number" "$worktree_path" "$head_ref" || return 1
+	if [[ -n "$status_output" ]]; then
+		_prrts_preserve_dirty_existing_worktree "$repo_slug" "$pr_number" "$worktree_path" "$initial_head" || return 1
+	fi
 	_prrts_fetch_exact_worker_head "$repo_slug" "$repo_path" "$pr_number" "$head_ref" "$head_oid" || return 1
 
 	status_output=$(git -C "$worktree_path" status --porcelain 2>/dev/null) || {
@@ -2363,7 +2428,7 @@ _prrts_reconcile_existing_worktree_head() {
 		PRRTS_WORKTREE_FAILURE_REASON="existing_review_worktree_fast_forward_unverified"
 		return 1
 	fi
-	_prrts_log "dispatch: ${repo_slug}#${pr_number} fast-forwarded clean exclusively claimed review worktree from ${initial_head} to verified PR head ${head_oid}"
+	_prrts_log "dispatch: ${repo_slug}#${pr_number} fast-forwarded exclusively claimed review worktree from ${initial_head} to verified PR head ${head_oid}"
 	return 0
 }
 

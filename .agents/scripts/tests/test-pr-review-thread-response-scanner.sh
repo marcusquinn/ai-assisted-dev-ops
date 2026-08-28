@@ -262,7 +262,7 @@ if [[ "${1:-}" == "-C" && "${3:-}" == "symbolic-ref" && "$*" == *"--short HEAD"*
 	exit 1
 fi
 if [[ "${1:-}" == "-C" && "${3:-}" == "status" && "${4:-}" == "--porcelain" ]]; then
-	if [[ "${STUB_GIT_WORKTREE_DIRTY:-false}" == "true" ]]; then
+	if [[ "${STUB_GIT_WORKTREE_DIRTY:-false}" == "true" && ! -f "${DIRTY_BACKUP_CLEANED:-/nonexistent}" ]]; then
 		printf ' M diagnostic.txt\n'
 	fi
 	exit 0
@@ -433,6 +433,44 @@ WORKTREE_STUB
 	return 0
 }
 
+write_fake_dirty_backup_stub() {
+	cat >"${TEST_ROOT}/dirty-worktree-backup-helper.sh" <<'DIRTY_BACKUP_STUB'
+#!/usr/bin/env bash
+command_name="${1:-}"
+shift || true
+printf '%s %s\n' "$command_name" "$*" >>"${DIRTY_BACKUP_LOG}"
+case "$command_name" in
+backup)
+	[[ "${STUB_DIRTY_BACKUP_FAIL:-false}" == "true" ]] && exit 1
+	owner_snapshot=$(bash -c 'source "$1"; check_worktree_owner "$2"' _ "${SHARED_CONSTANTS_PATH}" "${STUB_DIRTY_BACKUP_REPO}") || exit 1
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created_at owner_process_start <<EOF
+${owner_snapshot}
+EOF
+	printf 'OWNER_PID=%s\nOWNER_SESSION=%s\nOWNER_TASK=%s\n' "$owner_pid" "$owner_session" "$owner_task" >>"${DIRTY_BACKUP_OWNER_LOG}"
+	[[ "$owner_pid" =~ ^[0-9]+$ && "$owner_task" == "1" && "$owner_session" == "dispatch-precreate-1" && -n "$owner_created_at" ]] || exit 1
+	printf 'test-dirty-backup|%s/backups/test-dirty-backup\n' "${TEST_ROOT}"
+	;;
+verify)
+	[[ "${STUB_DIRTY_BACKUP_VERIFY_FAIL:-false}" == "true" ]] && exit 1
+	printf 'VERIFIED_BACKUP_ID=test-dirty-backup\n'
+	;;
+matches)
+	[[ "${STUB_DIRTY_BACKUP_MATCH_FAIL:-false}" == "true" ]] && exit 1
+	printf 'BACKUP_MATCH=true\n'
+	;;
+clean)
+	[[ "${STUB_DIRTY_BACKUP_CLEAN_FAIL:-false}" == "true" ]] && exit 1
+	: >"${DIRTY_BACKUP_CLEANED}"
+	printf 'CLEANED_BACKUP_ID=test-dirty-backup\n'
+	;;
+*) exit 1 ;;
+esac
+exit 0
+DIRTY_BACKUP_STUB
+	chmod +x "${TEST_ROOT}/dirty-worktree-backup-helper.sh"
+	return 0
+}
+
 setup_test_env() {
 	unset STUB_PR_LIST STUB_PR_VIEW STUB_THREADS_MODE STUB_HANG_SECONDS STUB_GRAPHQL_COST_MODE STUB_PR_REPOSITORY_MODE STUB_REMOTE_HEAD STUB_GH_LOGIN
 	unset STUB_GH_REST_FAIL STUB_GH_GRAPHQL_FAIL STUB_GH_GRAPHQL_LOGIN
@@ -440,6 +478,7 @@ setup_test_env() {
 	unset STUB_GIT_INVALID_BRANCH STUB_GIT_FETCH_FAIL STUB_GIT_CANONICAL_FETCH_FAIL
 	unset STUB_REMOTE_HEAD_INITIAL STUB_REMOTE_HEAD_AFTER_FETCH STUB_WORKTREE_ACTUAL_HEAD STUB_WORKTREE_HELPER_FAIL
 	unset STUB_GIT_WORKTREE_DIRTY STUB_GIT_DIVERGED STUB_GIT_FAST_FORWARD_FAIL
+	unset STUB_DIRTY_BACKUP_FAIL STUB_DIRTY_BACKUP_VERIFY_FAIL STUB_DIRTY_BACKUP_MATCH_FAIL STUB_DIRTY_BACKUP_CLEAN_FAIL
 	unset STUB_WORKTREE_REGISTER_OWNER STUB_WORKTREE_OWNER_PID STUB_WORKTREE_OWNER_SESSION
 	unset STUB_ACTIVE_RESPONSE_WORKER
 	unset STUB_HEADLESS_MARK_COMPLETE
@@ -459,6 +498,9 @@ setup_test_env() {
 	export DETACH_LAUNCH_LOG="${TEST_ROOT}/detach-launch.log"
 	export WORKTREE_HELPER_LOG="${TEST_ROOT}/worktree-helper.log"
 	export WORKTREE_CREATED_OWNER_CAPTURE="${TEST_ROOT}/worktree-created-owner.txt"
+	export DIRTY_BACKUP_LOG="${TEST_ROOT}/dirty-backup.log"
+	export DIRTY_BACKUP_OWNER_LOG="${TEST_ROOT}/dirty-backup-owner.log"
+	export DIRTY_BACKUP_CLEANED="${TEST_ROOT}/dirty-backup-cleaned"
 	export GIT_WORKTREE_REGISTRY="${TEST_ROOT}/git-worktrees.tsv"
 	export GIT_FETCH_CWD_LOG="${TEST_ROOT}/git-fetch-cwd.log"
 	export GIT_FETCHED_HEAD_STATE="${TEST_ROOT}/git-fetched-head.state"
@@ -475,9 +517,11 @@ setup_test_env() {
 	write_fake_headless_stub
 	write_fake_detach_stubs
 	write_fake_worktree_stub
+	write_fake_dirty_backup_stub
 	export PATH="${TEST_ROOT}/bin:${PATH}"
 	export HEADLESS_RUNTIME_HELPER="${TEST_ROOT}/headless-runtime-helper.sh"
 	export PR_REVIEW_THREAD_RESPONSE_WORKTREE_HELPER="${TEST_ROOT}/worktree-helper.sh"
+	export PR_REVIEW_THREAD_RESPONSE_DIRTY_BACKUP_HELPER="${TEST_ROOT}/dirty-worktree-backup-helper.sh"
 	export PR_REVIEW_THREAD_RESPONSE_WORKTREE_BASE_DIR="${TEST_ROOT}/worktrees"
 	export GRAPHQL_MUTATIONS_LOG="${TEST_ROOT}/graphql-mutations.log"
 	export GRAPHQL_BODY_CAPTURE="${TEST_ROOT}/graphql-body.txt"
@@ -494,7 +538,10 @@ setup_test_env() {
 	: >"$HEADLESS_COMPLETE_LOG"
 	: >"$DETACH_LAUNCH_LOG"
 	: >"$GIT_FETCH_CWD_LOG"
+	: >"$DIRTY_BACKUP_LOG"
+	: >"$DIRTY_BACKUP_OWNER_LOG"
 	rm -f "$GIT_FETCHED_HEAD_STATE"
+	rm -f "$DIRTY_BACKUP_CLEANED"
 	return 0
 }
 
@@ -797,7 +844,7 @@ test_dispatch_fast_forwards_clean_behind_existing_worktree() {
 	local reconciled_head=""
 	reconciled_head=$(while IFS=$'\t' read -r path branch oid; do [[ "$path" == "$existing_path" ]] && printf '%s' "$oid"; done <"$GIT_WORKTREE_REGISTRY")
 	if [[ -s "$HEADLESS_LOG" && "$reconciled_head" == "$TEST_HEAD_OID_1" ]] &&
-		grep -Fq "fast-forwarded clean exclusively claimed review worktree from ${TEST_HEAD_OID_2} to verified PR head ${TEST_HEAD_OID_1}" "$LOGFILE" 2>/dev/null; then
+		grep -Fq "fast-forwarded exclusively claimed review worktree from ${TEST_HEAD_OID_2} to verified PR head ${TEST_HEAD_OID_1}" "$LOGFILE" 2>/dev/null; then
 		print_result "dispatch fast-forwards a clean behind existing review worktree" 0
 	else
 		print_result "dispatch fast-forwards a clean behind existing review worktree" 1 \
@@ -807,67 +854,60 @@ test_dispatch_fast_forwards_clean_behind_existing_worktree() {
 	return 0
 }
 
-test_dispatch_rejects_dirty_existing_worktree_reconcile() {
+test_dispatch_preserves_and_recovers_dirty_existing_worktree_reconcile() {
 	setup_test_env
 	export STUB_GIT_WORKTREE_DIRTY=true
 	local existing_path="${TEST_ROOT}/existing-review-worktree-dirty"
+	export STUB_DIRTY_BACKUP_REPO="$existing_path"
 	mkdir -p "$existing_path"
 	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
-	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
-	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
-	local outcome_id="" outcome_reason="" retry_class=""
-	outcome_id=$(read_state_value "$state_file" outcome_id)
-	outcome_reason=$(awk -F= '$1 == "reason" { print $2 }' "$outcome_file" 2>/dev/null || true)
-	retry_class=$(awk -F= '$1 == "retry_class" { print $2 }' "$outcome_file" 2>/dev/null || true)
-	if [[ ! -s "$HEADLESS_LOG" ]] &&
-		grep -q '^blocker_reason=existing_review_worktree_dirty$' "$state_file" 2>/dev/null &&
-		[[ -n "$outcome_id" ]] &&
-		grep -Fxq "outcome_id=${outcome_id}" "$outcome_file" 2>/dev/null &&
-		[[ "$outcome_reason" == "existing_review_worktree_dirty" && "$retry_class" == "retryable_infrastructure" ]]; then
-		print_result "dirty worktree preparation emits an exact typed infrastructure outcome" 0
+	wait_for_headless_log || true
+	local reconciled_head=""
+	reconciled_head=$(while IFS=$'\t' read -r path branch oid; do [[ "$path" == "$existing_path" ]] && printf '%s' "$oid"; done <"$GIT_WORKTREE_REGISTRY")
+	if [[ -s "$HEADLESS_LOG" && "$reconciled_head" == "$TEST_HEAD_OID_1" && -f "$DIRTY_BACKUP_CLEANED" ]] &&
+		grep -q '^OWNER_TASK=1$' "$DIRTY_BACKUP_OWNER_LOG" 2>/dev/null &&
+		grep -q '^OWNER_SESSION=dispatch-precreate-1$' "$DIRTY_BACKUP_OWNER_LOG" 2>/dev/null &&
+		grep -q '^backup .*--machine$' "$DIRTY_BACKUP_LOG" 2>/dev/null &&
+		grep -q '^verify ' "$DIRTY_BACKUP_LOG" 2>/dev/null &&
+		grep -q '^matches ' "$DIRTY_BACKUP_LOG" 2>/dev/null &&
+		grep -q '^clean .*--confirm CLEAN_VERIFIED_DIRTY_WORKTREE_BACKUP$' "$DIRTY_BACKUP_LOG" 2>/dev/null &&
+		grep -q 'preserved and cleaned exclusively claimed dirty review worktree (backup=test-dirty-backup)' "$LOGFILE" 2>/dev/null; then
+		print_result "dispatch preserves and recovers an exclusively claimed dirty review worktree" 0
 	else
-		print_result "dirty worktree preparation emits an exact typed infrastructure outcome" 1 \
-			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), outcome=$(tr '\n' ';' <"$outcome_file" 2>/dev/null || printf '')"
+		print_result "dispatch preserves and recovers an exclusively claimed dirty review worktree" 1 \
+			"head=${reconciled_head:-<empty>} backup=$(tr '\n' ';' <"$DIRTY_BACKUP_LOG" 2>/dev/null || printf '') owner=$(tr '\n' ';' <"$DIRTY_BACKUP_OWNER_LOG" 2>/dev/null || printf '')"
 	fi
 	teardown_test_env
 	return 0
 }
 
-test_dispatch_retries_dirty_worktree_failure_after_short_cooldown() {
+test_dispatch_fails_closed_when_dirty_backup_no_longer_matches() {
 	setup_test_env
 	export STUB_GIT_WORKTREE_DIRTY=true
-	local existing_path="${TEST_ROOT}/existing-review-worktree-dirty-retry"
+	export STUB_DIRTY_BACKUP_MATCH_FAIL=true
+	local existing_path="${TEST_ROOT}/existing-review-worktree-dirty-mismatch"
+	export STUB_DIRTY_BACKUP_REPO="$existing_path"
 	local state_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.state"
 	local outcome_file="${AIDEVOPS_PR_REVIEW_THREAD_RESPONSE_STATE_DIR}/owner-repo-1.outcome"
-	local old_epoch="" first_outcome_id="" second_outcome_id=""
+	local outcome_id="" outcome_reason="" retry_class=""
 	mkdir -p "$existing_path"
 	printf '%s\t%s\t%s\n' "$existing_path" 'feature/review' "$TEST_HEAD_OID_2" >"$GIT_WORKTREE_REGISTRY"
 	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
-	first_outcome_id=$(read_state_value "$state_file" outcome_id)
-	: >"$LOGFILE"
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
-	local short_cooldown_observed=0
-	grep -q 'infrastructure-failure short cooldown active' "$LOGFILE" 2>/dev/null || short_cooldown_observed=1
-
-	old_epoch="$(($(date +%s) - 120))"
-	expire_state_dispatch_time "$state_file" "$old_epoch"
-	awk -F= -v finished_at="$((old_epoch + 1))" \
-		'{ if ($1 == "finished_at") print "finished_at=" finished_at; else print }' \
-		"$outcome_file" >"${outcome_file}.tmp"
-	mv "${outcome_file}.tmp" "$outcome_file"
-	: >"$LOGFILE"
-	$SCANNER dispatch owner/repo "${TEST_ROOT}/repo"
-	second_outcome_id=$(read_state_value "$state_file" outcome_id)
-
-	local result=0
-	[[ "$short_cooldown_observed" -eq 0 ]] || result=1
-	[[ -n "$first_outcome_id" && -n "$second_outcome_id" && "$second_outcome_id" != "$first_outcome_id" ]] || result=1
-	grep -q '^attempt_count=1$' "$state_file" 2>/dev/null || result=1
-	grep -q '^infrastructure_failure_count=1$' "$state_file" 2>/dev/null || result=1
-	grep -q 'retrying after infrastructure-failure short cooldown' "$LOGFILE" 2>/dev/null || result=1
-	print_result "dirty worktree infrastructure failure retries once after the short cooldown" "$result" \
-		"first=${first_outcome_id}, second=${second_outcome_id}, state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf '')"
+	outcome_id=$(read_state_value "$state_file" outcome_id)
+	outcome_reason=$(awk -F= '$1 == "reason" { print $2 }' "$outcome_file" 2>/dev/null || true)
+	retry_class=$(awk -F= '$1 == "retry_class" { print $2 }' "$outcome_file" 2>/dev/null || true)
+	if [[ ! -s "$HEADLESS_LOG" && ! -f "$DIRTY_BACKUP_CLEANED" ]] &&
+		grep -q '^blocker_reason=existing_review_worktree_backup_mismatch$' "$state_file" 2>/dev/null &&
+		[[ -n "$outcome_id" ]] &&
+		grep -Fxq "outcome_id=${outcome_id}" "$outcome_file" 2>/dev/null &&
+		[[ "$outcome_reason" == "existing_review_worktree_backup_mismatch" && "$retry_class" == "retryable_infrastructure" ]] &&
+		! grep -q '^clean ' "$DIRTY_BACKUP_LOG" 2>/dev/null; then
+		print_result "dispatch fails closed when preserved dirty state no longer matches" 0
+	else
+		print_result "dispatch fails closed when preserved dirty state no longer matches" 1 \
+			"state=$(tr '\n' ';' <"$state_file" 2>/dev/null || printf ''), outcome=$(tr '\n' ';' <"$outcome_file" 2>/dev/null || printf ''), backup=$(tr '\n' ';' <"$DIRTY_BACKUP_LOG" 2>/dev/null || printf '')"
+	fi
 	teardown_test_env
 	return 0
 }
@@ -2809,8 +2849,8 @@ main() {
 	test_dispatch_blocks_cross_repository_head
 	test_dispatch_blocks_remote_head_drift
 	test_dispatch_fast_forwards_clean_behind_existing_worktree
-	test_dispatch_rejects_dirty_existing_worktree_reconcile
-	test_dispatch_retries_dirty_worktree_failure_after_short_cooldown
+	test_dispatch_preserves_and_recovers_dirty_existing_worktree_reconcile
+	test_dispatch_fails_closed_when_dirty_backup_no_longer_matches
 	test_dispatch_rejects_diverged_existing_worktree_reconcile
 	test_dispatch_rejects_live_owned_existing_worktree_reconcile
 	test_dispatch_cleans_up_failed_exact_head_worktree
