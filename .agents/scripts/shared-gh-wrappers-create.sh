@@ -1065,8 +1065,11 @@ gh_create_pr() {
 	fi
 
 	local pr_output rc
-	pr_output=$("${pr_cmd[@]}") # aidevops-allow: raw-gh-wrapper
-	rc=$?
+	if pr_output=$("${pr_cmd[@]}"); then # aidevops-allow: raw-gh-wrapper
+		rc=0
+	else
+		rc=$?
+	fi
 	if [[ $rc -ne 0 ]] && _gh_create_pr_resolve_durable_identity "$pr_output" "$@"; then
 		# Native gh can create the PR and fail during a follow-up mutation. The URL
 		# proves creation; never invoke another create transport for this result.

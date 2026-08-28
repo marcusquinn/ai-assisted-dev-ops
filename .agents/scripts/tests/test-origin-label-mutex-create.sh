@@ -426,8 +426,14 @@ export MOCK_PR_READY_RC=0
 export MOCK_ORIGIN_EXACT=0
 partial_output=""
 partial_rc=0
-partial_output=$(gh_create_pr --repo o/r --head contributor:feature/recovery \
-	--title "GH#30856: recover partial creation" --body "Resolves #30856" 2>/dev/null) || partial_rc=$?
+partial_output_file="${TEST_ROOT}/partial-output.txt"
+(
+	set -e
+	gh_create_pr --repo o/r --head contributor:feature/recovery \
+		--title "GH#30856: recover partial creation" --body "Resolves #30856" \
+		>"$partial_output_file" 2>/dev/null
+) || partial_rc=$?
+partial_output=$(<"$partial_output_file")
 create_count=$(grep -c '^pr create ' "$GH_RECORD_FILE" || true)
 if [[ "$partial_rc" -eq 78 && "$partial_output" == "https://example.invalid/o/r/pull/42" &&
 	"$create_count" -eq 1 ]] && grep -q '^pr ready 42 --repo o/r$' "$GH_RECORD_FILE"; then
