@@ -905,6 +905,67 @@ _gh_create_pr_resolve_durable_identity() {
 }
 
 #######################################
+# Extract the exact --head value used for PR creation recovery.
+# Args: PR create argv
+# Output: head ref, or empty when unavailable
+#######################################
+_gh_create_pr_extract_head() {
+	while [[ $# -gt 0 ]]; do
+		local cur="$1"
+		case "$cur" in
+		--head)
+			local head_value="${2:-}"
+			[[ $# -gt 1 && "$head_value" != -* ]] && printf '%s\n' "$head_value"
+			return 0
+			;;
+		--head=*)
+			printf '%s\n' "${cur#--head=}"
+			return 0
+			;;
+		esac
+		shift
+	done
+	return 0
+}
+
+#######################################
+# Recover a PR created before native gh failed a follow-up mutation.
+# Sets the durable identity globals.
+# Args: PR create argv
+# Returns: 0=recovered, 1=no exact durable PR found
+#######################################
+_gh_create_pr_recover_after_mutation_failure() {
+	local repo=""
+	local head_ref=""
+	local recovered_url=""
+	repo=$(_gh_extract_repo_from_args "$@")
+	head_ref=$(_gh_create_pr_extract_head "$@")
+	[[ -n "$repo" && -n "$head_ref" ]] || return 1
+	recovered_url=$(_gh_recover_pr_if_exists "$head_ref" "$repo")
+	[[ -n "$recovered_url" ]] || return 1
+	_gh_create_pr_resolve_durable_identity "$recovered_url" "$@" || return 1
+	return 0
+}
+
+#######################################
+# Complete the wrapper-added draft transition after durable recovery.
+# Args: $1=repo $2=PR number
+# Returns: 0=ready, 1=still draft
+#######################################
+_gh_create_pr_ready_recovered_draft() {
+	local repo="$1"
+	local pr_number="$2"
+	if _gh_with_timeout write gh pr ready "$pr_number" --repo "$repo" >/dev/null 2>&1; then # aidevops-allow: raw-gh-wrapper
+		printf '[aidevops][gh-wrapper][PARTIAL] recovered PR #%s and marked it ready for review\n' \
+			"$pr_number" >&2
+		return 0
+	fi
+	printf '[aidevops][gh-wrapper][PARTIAL] recovered PR #%s remains draft; run gh pr ready %s --repo %s\n' \
+		"$pr_number" "$pr_number" "$repo" >&2
+	return 1
+}
+
+#######################################
 # Verify that a PR has exactly the expected origin label.
 # Args: $1=repo $2=PR number $3=expected origin label
 # Returns: 0=exact postcondition, 1=missing/wrong/dual/unavailable
@@ -1010,7 +1071,19 @@ gh_create_pr() {
 		# Native gh can create the PR and fail during a follow-up mutation. The URL
 		# proves creation; never invoke another create transport for this result.
 		rc="$_GH_PR_CREATE_PARTIAL_RC"
-	elif [[ $rc -ne 0 ]] && _rest_should_fallback_write; then
+	elif [[ $rc -ne 0 ]]; then
+		if _gh_create_pr_recover_after_mutation_failure "$@"; then
+			pr_output="$_GH_CREATE_PR_DURABLE_URL"
+			printf '[aidevops][gh-wrapper][PARTIAL] recovered durable PR #%s after a create-time mutation failure; not retrying creation\n' \
+				"$_GH_CREATE_PR_DURABLE_NUMBER" >&2
+			if [[ ${#_draft_args[@]} -gt 0 ]]; then
+				_gh_create_pr_ready_recovered_draft "$_GH_CREATE_PR_DURABLE_REPO" \
+					"$_GH_CREATE_PR_DURABLE_NUMBER" || true
+			fi
+			rc="$_GH_PR_CREATE_PARTIAL_RC"
+		fi
+	fi
+	if [[ $rc -ne 0 && "$rc" -ne "$_GH_PR_CREATE_PARTIAL_RC" ]] && _rest_should_fallback_write; then
 		print_info "[INFO] gh-wrapper: GraphQL exhausted, falling back to REST for pr create"
 		if [[ ${#_origin_label_args[@]} -gt 0 || ${#_draft_args[@]} -gt 0 ]]; then
 			pr_output=$(_rest_pr_create "$@" "${_draft_args[@]}" "${_origin_label_args[@]}")
