@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any
+from typing import Any, NamedTuple
 
 
 SCHEMA = "aidevops.deployment-copy/v1"
@@ -38,6 +38,39 @@ class DeploymentError(RuntimeError):
     def __init__(self, message: str, operation_id_value: str | None = None) -> None:
         super().__init__(message)
         self.operation_id = operation_id_value
+
+
+class PreparedDeployment(NamedTuple):
+    """Validated inputs shared by deployment phases."""
+
+    state_root: Path
+    source_context: dict[str, Any]
+    destination: Path
+    source_tree: dict[str, Any]
+    destination_tree: dict[str, Any] | None
+
+
+class DeploymentOperation(NamedTuple):
+    """Mutable state for one deployment attempt."""
+
+    identifier: str
+    prepared: PreparedDeployment
+    rollback_path: Path
+    displaced_path: Path
+    receipt_path: Path
+    receipt: dict[str, Any]
+    progress: dict[str, Any]
+
+
+class RecoveryOperation(NamedTuple):
+    """Validated paths and receipt state shared by recovery phases."""
+
+    identifier: str
+    destination: Path
+    rollback_path: Path
+    stage_path: Path | None
+    receipt_path: Path
+    receipt: dict[str, Any]
 
 
 def utc_now() -> str:
@@ -67,6 +100,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def require(condition: bool, message: str) -> None:
+    """Raise a user-facing refusal when a required invariant is false."""
+    if not condition:
+        raise DeploymentError(message)
+
+
 def run_git(git_bin: str, cwd: Path, *args: str) -> str:
     result = subprocess.run(  # nosec B603 -- argv array; Git data is validated separately
         [git_bin, "-C", str(cwd), *args],
@@ -75,8 +114,7 @@ def run_git(git_bin: str, cwd: Path, *args: str) -> str:
         stderr=subprocess.PIPE,
         text=True,
     )
-    if result.returncode != 0:
-        raise DeploymentError("Git provenance could not be verified")
+    require(result.returncode == 0, "Git provenance could not be verified")
     return result.stdout.strip()
 
 
@@ -116,30 +154,27 @@ def assert_existing_components_not_symlinks(path: Path) -> None:
 
 def canonical_existing_directory(raw_path: str, purpose: str) -> Path:
     candidate = Path(raw_path)
-    if not candidate.is_absolute():
-        raise DeploymentError(f"{purpose} must be an absolute path")
+    require(candidate.is_absolute(), f"{purpose} must be an absolute path")
     assert_no_symlink_components(candidate)
-    if not candidate.is_dir():
-        raise DeploymentError(f"{purpose} must be an existing directory")
+    require(candidate.is_dir(), f"{purpose} must be an existing directory")
     resolved = candidate.resolve(strict=True)
-    if stat.S_ISLNK(os.lstat(candidate).st_mode):
-        raise DeploymentError("Symlinked paths are not accepted")
+    require(
+        not stat.S_ISLNK(os.lstat(candidate).st_mode),
+        "Symlinked paths are not accepted",
+    )
     return resolved
 
 
 def canonical_destination(raw_path: str) -> Path:
     candidate = Path(raw_path)
-    if not candidate.is_absolute():
-        raise DeploymentError("Destination must be an absolute path")
+    require(candidate.is_absolute(), "Destination must be an absolute path")
     normalized = Path(os.path.normpath(str(candidate)))
     parent = normalized.parent
     assert_no_symlink_components(parent)
-    if not parent.is_dir():
-        raise DeploymentError("Destination parent must be an existing directory")
+    require(parent.is_dir(), "Destination parent must be an existing directory")
     if os.path.lexists(normalized):
         assert_no_symlink_components(normalized)
-        if not normalized.is_dir():
-            raise DeploymentError("Destination must be a directory or absent")
+        require(normalized.is_dir(), "Destination must be a directory or absent")
         return normalized.resolve(strict=True)
     assert_no_symlink_components(normalized, require_leaf=False)
     return parent.resolve(strict=True) / normalized.name
@@ -151,8 +186,7 @@ def secure_state_root() -> Path:
         str(Path.home() / ".aidevops" / ".agent-workspace" / "deployment-copy"),
     )
     root = Path(configured)
-    if not root.is_absolute():
-        raise DeploymentError("Deployment-copy state root must be absolute")
+    require(root.is_absolute(), "Deployment-copy state root must be absolute")
     normalized = Path(os.path.normpath(str(root)))
     if normalized == Path(normalized.anchor) or normalized == Path.home().resolve(strict=True):
         raise DeploymentError("Root and home directories cannot store deployment-copy state")
@@ -162,8 +196,10 @@ def secure_state_root() -> Path:
     assert_no_symlink_components(root)
     resolved = root.resolve(strict=True)
     current = resolved.stat()
-    if current.st_uid != os.getuid():
-        raise DeploymentError("Deployment-copy state root has an unsafe owner")
+    require(
+        current.st_uid == os.getuid(),
+        "Deployment-copy state root has an unsafe owner",
+    )
     if root_existed and stat.S_IMODE(current.st_mode) & 0o077:
         raise DeploymentError("Deployment-copy state root permissions are unsafe")
     if not root_existed:
@@ -172,8 +208,10 @@ def secure_state_root() -> Path:
         child_path = resolved / child
         child_existed = os.path.lexists(child_path)
         child_path.mkdir(mode=0o700, exist_ok=True)
-        if child_path.is_symlink() or child_path.stat().st_uid != os.getuid():
-            raise DeploymentError("Deployment-copy state storage is unsafe")
+        require(
+            not child_path.is_symlink() and child_path.stat().st_uid == os.getuid(),
+            "Deployment-copy state storage is unsafe",
+        )
         if child_existed and stat.S_IMODE(child_path.stat().st_mode) & 0o077:
             raise DeploymentError("Deployment-copy state storage permissions are unsafe")
         if not child_existed:
@@ -223,50 +261,52 @@ def validate_source(raw_source: str, expected_sha: str, git_bin: str) -> dict[st
     }
 
 
+def visit_tree(
+    directory: Path, relative: PurePosixPath, entries: list[dict[str, Any]]
+) -> None:
+    directory_stat = os.lstat(directory)
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        raise DeploymentError("Tree changed while it was being inspected")
+    if stat.S_IMODE(directory_stat.st_mode) & 0o7000:
+        raise DeploymentError("Tree entries must not use special permission bits")
+    entries.append(
+        {
+            "mode": f"{stat.S_IMODE(directory_stat.st_mode):04o}",
+            "path": str(relative),
+            "type": "directory",
+        }
+    )
+    for item in sorted(os.scandir(directory), key=lambda value: value.name):
+        if item.name.lower() == ".git":
+            raise DeploymentError("Git metadata cannot be deployed")
+        item_path = Path(item.path)
+        item_relative = relative / item.name if str(relative) != "." else PurePosixPath(item.name)
+        item_stat = item.stat(follow_symlinks=False)
+        if stat.S_ISLNK(item_stat.st_mode):
+            raise DeploymentError("Source and destination trees must not contain symlinks")
+        if stat.S_ISDIR(item_stat.st_mode):
+            visit_tree(item_path, item_relative, entries)
+            continue
+        if not stat.S_ISREG(item_stat.st_mode):
+            raise DeploymentError("Source and destination trees must contain only regular files")
+        if stat.S_IMODE(item_stat.st_mode) & 0o7000:
+            raise DeploymentError("Tree entries must not use special permission bits")
+        entries.append(
+            {
+                "mode": f"{stat.S_IMODE(item_stat.st_mode):04o}",
+                "path": str(item_relative),
+                "sha256": sha256_file(item_path),
+                "size": item_stat.st_size,
+                "type": "file",
+            }
+        )
+
+
 def scan_tree(root: Path, require_files: bool = True) -> dict[str, Any]:
     if not root.is_dir() or root.is_symlink():
         raise DeploymentError("Tree root must be a non-symlink directory")
     entries: list[dict[str, Any]] = []
-
-    def visit(directory: Path, relative: PurePosixPath) -> None:
-        directory_stat = os.lstat(directory)
-        if not stat.S_ISDIR(directory_stat.st_mode):
-            raise DeploymentError("Tree changed while it was being inspected")
-        if stat.S_IMODE(directory_stat.st_mode) & 0o7000:
-            raise DeploymentError("Tree entries must not use special permission bits")
-        entries.append(
-            {
-                "mode": f"{stat.S_IMODE(directory_stat.st_mode):04o}",
-                "path": str(relative),
-                "type": "directory",
-            }
-        )
-        for item in sorted(os.scandir(directory), key=lambda value: value.name):
-            if item.name.lower() == ".git":
-                raise DeploymentError("Git metadata cannot be deployed")
-            item_path = Path(item.path)
-            item_relative = relative / item.name if str(relative) != "." else PurePosixPath(item.name)
-            item_stat = item.stat(follow_symlinks=False)
-            if stat.S_ISLNK(item_stat.st_mode):
-                raise DeploymentError("Source and destination trees must not contain symlinks")
-            if stat.S_ISDIR(item_stat.st_mode):
-                visit(item_path, item_relative)
-                continue
-            if not stat.S_ISREG(item_stat.st_mode):
-                raise DeploymentError("Source and destination trees must contain only regular files")
-            if stat.S_IMODE(item_stat.st_mode) & 0o7000:
-                raise DeploymentError("Tree entries must not use special permission bits")
-            entries.append(
-                {
-                    "mode": f"{stat.S_IMODE(item_stat.st_mode):04o}",
-                    "path": str(item_relative),
-                    "sha256": sha256_file(item_path),
-                    "size": item_stat.st_size,
-                    "type": "file",
-                }
-            )
-
-    visit(root, PurePosixPath("."))
+    visit_tree(root, PurePosixPath("."), entries)
     file_count = sum(1 for entry in entries if entry["type"] == "file")
     if require_files and file_count == 0:
         raise DeploymentError("Source tree must contain at least one regular file")
@@ -697,7 +737,7 @@ def receipt_context(receipt: dict[str, Any], git_bin: str) -> dict[str, Any]:
     return {"git_bin": git_bin, "repo_root": repo_root}
 
 
-def prepare_deploy(args: argparse.Namespace) -> tuple[Path, dict[str, Any], Path, dict[str, Any], dict[str, Any] | None]:
+def prepare_deploy(args: argparse.Namespace) -> PreparedDeployment:
     state_root = secure_state_root()
     git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
     context = validate_source(args.source, args.expected_sha, git_bin)
@@ -706,254 +746,220 @@ def prepare_deploy(args: argparse.Namespace) -> tuple[Path, dict[str, Any], Path
     destination = canonical_destination(args.destination)
     validate_destination_safety(destination, context, state_root, args.allow_file)
     destination_tree = scan_tree(destination, require_files=False) if destination.exists() else None
-    return state_root, context, destination, source_tree, destination_tree
+    return PreparedDeployment(state_root, context, destination, source_tree, destination_tree)
 
 
 def build_deploy_receipt(
     identifier: str,
-    context: dict[str, Any],
-    destination: Path,
-    source_tree: dict[str, Any],
-    destination_tree: dict[str, Any] | None,
+    prepared: PreparedDeployment,
     rollback_path: Path,
     displaced_path: Path,
 ) -> dict[str, Any]:
     return {
         "created_at": utc_now(),
-        "destination": str(destination),
+        "destination": str(prepared.destination),
         "displaced_path": str(displaced_path),
-        "expected_sha": context["expected_sha"],
+        "expected_sha": prepared.source_context["expected_sha"],
         "operation_id": identifier,
-        "previous_present": destination_tree is not None,
-        "previous_tree_sha256": destination_tree["exact_digest"] if destination_tree else None,
+        "previous_present": prepared.destination_tree is not None,
+        "previous_tree_sha256": (
+            prepared.destination_tree["exact_digest"] if prepared.destination_tree else None
+        ),
         "rollback_path": str(rollback_path),
         "schema": SCHEMA,
-        "source": str(context["source"]),
-        "source_repo": str(context["repo_root"]),
+        "source": str(prepared.source_context["source"]),
+        "source_repo": str(prepared.source_context["repo_root"]),
         "stage_path": None,
         "status": "preparing",
-        "tree_sha256": source_tree["exact_digest"],
+        "tree_sha256": prepared.source_tree["exact_digest"],
         "updated_at": utc_now(),
     }
 
 
 def validate_locked_deploy(
     args: argparse.Namespace,
-    state_root: Path,
-    context: dict[str, Any],
-    destination: Path,
-    source_tree: dict[str, Any],
+    prepared: PreparedDeployment,
     rollback_path: Path,
     displaced_path: Path,
 ) -> None:
-    current_context = validate_source(args.source, args.expected_sha, context["git_bin"])
+    current_context = validate_source(
+        args.source, args.expected_sha, prepared.source_context["git_bin"]
+    )
     current_source_tree = scan_tree(current_context["source"])
-    if current_source_tree["exact_digest"] != source_tree["exact_digest"]:
+    if current_source_tree["exact_digest"] != prepared.source_tree["exact_digest"]:
         raise DeploymentError("Source changed before staging began")
     validate_tree_proof(
-        current_context, current_source_tree, args.reviewed_tree_sha256, state_root
+        current_context, current_source_tree, args.reviewed_tree_sha256, prepared.state_root
     )
     current_destination = canonical_destination(args.destination)
-    validate_destination_safety(current_destination, context, state_root, args.allow_file)
-    if current_destination != destination:
+    validate_destination_safety(
+        current_destination, prepared.source_context, prepared.state_root, args.allow_file
+    )
+    if current_destination != prepared.destination:
         raise DeploymentError("Destination identity changed before staging")
     if os.path.lexists(rollback_path) or os.path.lexists(displaced_path):
         raise DeploymentError("Operation path collision blocked deployment")
 
 
-def perform_deployment(
-    identifier: str,
-    context: dict[str, Any],
-    destination: Path,
-    source_tree: dict[str, Any],
-    destination_tree: dict[str, Any] | None,
-    rollback_path: Path,
-    receipt_path: Path,
-    receipt: dict[str, Any],
-    progress: dict[str, Any],
-) -> None:
-    prefix = f".{destination.name}.aidevops-stage-{identifier}-"
-    stage = Path(tempfile.mkdtemp(prefix=prefix, dir=destination.parent))
-    progress["stage"] = stage
-    receipt["stage_path"] = str(stage)
-    update_receipt(receipt_path, receipt, "staging")
-    copy_tree(context["source"], stage, source_tree)
-    if scan_tree(stage)["exact_digest"] != source_tree["exact_digest"]:
+def perform_deployment(operation: DeploymentOperation) -> None:
+    prepared = operation.prepared
+    prefix = f".{prepared.destination.name}.aidevops-stage-{operation.identifier}-"
+    stage = Path(tempfile.mkdtemp(prefix=prefix, dir=prepared.destination.parent))
+    operation.progress["stage"] = stage
+    operation.receipt["stage_path"] = str(stage)
+    update_receipt(operation.receipt_path, operation.receipt, "staging")
+    copy_tree(prepared.source_context["source"], stage, prepared.source_tree)
+    if scan_tree(stage)["exact_digest"] != prepared.source_tree["exact_digest"]:
         raise DeploymentError("Staged tree does not match the approved source")
-    if scan_tree(context["source"])["exact_digest"] != source_tree["exact_digest"]:
+    if (
+        scan_tree(prepared.source_context["source"])["exact_digest"]
+        != prepared.source_tree["exact_digest"]
+    ):
         raise DeploymentError("Source changed while staging was in progress")
-    current_tree = scan_tree(destination, require_files=False) if destination.exists() else None
+    current_tree = (
+        scan_tree(prepared.destination, require_files=False)
+        if prepared.destination.exists()
+        else None
+    )
     current_digest = current_tree["exact_digest"] if current_tree else None
-    previous_digest = destination_tree["exact_digest"] if destination_tree else None
+    previous_digest = (
+        prepared.destination_tree["exact_digest"] if prepared.destination_tree else None
+    )
     if current_digest != previous_digest:
         raise DeploymentError("Destination changed while staging was in progress")
-    update_receipt(receipt_path, receipt, "staged")
-    if destination.exists():
-        os.replace(destination, rollback_path)
-        update_receipt(receipt_path, receipt, "previous_moved")
+    update_receipt(operation.receipt_path, operation.receipt, "staged")
+    if prepared.destination.exists():
+        os.replace(prepared.destination, operation.rollback_path)
+        update_receipt(operation.receipt_path, operation.receipt, "previous_moved")
     else:
-        update_receipt(receipt_path, receipt, "activating")
-    os.replace(stage, destination)
-    progress["activated"] = True
-    progress["stage"] = None
-    receipt["stage_path"] = None
-    update_receipt(receipt_path, receipt, "active")
-    if scan_tree(destination)["exact_digest"] != source_tree["exact_digest"]:
+        update_receipt(operation.receipt_path, operation.receipt, "activating")
+    os.replace(stage, prepared.destination)
+    operation.progress["activated"] = True
+    operation.progress["stage"] = None
+    operation.receipt["stage_path"] = None
+    update_receipt(operation.receipt_path, operation.receipt, "active")
+    if scan_tree(prepared.destination)["exact_digest"] != prepared.source_tree["exact_digest"]:
         raise DeploymentError("Activated destination failed exact verification")
-    update_receipt(receipt_path, receipt, "success")
+    update_receipt(operation.receipt_path, operation.receipt, "success")
 
 
 def first_deployment_activation_detected(
     destination: Path, receipt: dict[str, Any], progress: dict[str, Any]
 ) -> bool:
+    if receipt["previous_present"]:
+        return False
+    if progress["activated"]:
+        return True
     stage = progress["stage"]
-    return not receipt["previous_present"] and (
-        progress["activated"]
-        or (
-            receipt["status"] == "activating"
-            and stage is not None
-            and not stage.exists()
-            and destination.exists()
-        )
-    )
+    if receipt["status"] != "activating" or stage is None:
+        return False
+    return not stage.exists() and destination.exists()
 
 
-def rollback_failed_deployment(
-    destination: Path,
-    rollback_path: Path,
-    displaced_path: Path,
-    receipt_path: Path,
-    receipt: dict[str, Any],
-    progress: dict[str, Any],
-) -> None:
-    stage = progress["stage"]
-    if destination.exists() and rollback_path.exists():
-        if displaced_path.exists():
+def rollback_failed_deployment(operation: DeploymentOperation) -> None:
+    destination = operation.prepared.destination
+    stage = operation.progress["stage"]
+    if destination.exists() and operation.rollback_path.exists():
+        if operation.displaced_path.exists():
             raise DeploymentError("Automatic rollback path collision requires recovery")
         verify_operation_tree(
-            rollback_path, receipt["previous_tree_sha256"], "Recorded rollback tree"
+            operation.rollback_path,
+            operation.receipt["previous_tree_sha256"],
+            "Recorded rollback tree",
         )
-        os.replace(destination, displaced_path)
-        os.replace(rollback_path, destination)
+        os.replace(destination, operation.displaced_path)
+        os.replace(operation.rollback_path, destination)
         restored_tree = scan_tree(destination, require_files=False)
-        if restored_tree["exact_digest"] != receipt["previous_tree_sha256"]:
+        if restored_tree["exact_digest"] != operation.receipt["previous_tree_sha256"]:
             raise DeploymentError("Automatic rollback verification failed")
-        update_receipt(receipt_path, receipt, "rolled_back_after_failure")
-    elif not destination.exists() and rollback_path.exists():
+        update_receipt(operation.receipt_path, operation.receipt, "rolled_back_after_failure")
+    elif not destination.exists() and operation.rollback_path.exists():
         verify_operation_tree(
-            rollback_path, receipt["previous_tree_sha256"], "Recorded rollback tree"
+            operation.rollback_path,
+            operation.receipt["previous_tree_sha256"],
+            "Recorded rollback tree",
         )
-        os.replace(rollback_path, destination)
-        update_receipt(receipt_path, receipt, "rolled_back_after_failure")
-    elif first_deployment_activation_detected(destination, receipt, progress):
+        os.replace(operation.rollback_path, destination)
+        update_receipt(operation.receipt_path, operation.receipt, "rolled_back_after_failure")
+    elif first_deployment_activation_detected(destination, operation.receipt, operation.progress):
         if not destination.exists():
             raise DeploymentError("Activated destination disappeared during automatic rollback")
-        os.replace(destination, displaced_path)
-        update_receipt(receipt_path, receipt, "rolled_back_after_failure")
+        os.replace(destination, operation.displaced_path)
+        update_receipt(operation.receipt_path, operation.receipt, "rolled_back_after_failure")
     else:
-        update_receipt(receipt_path, receipt, "failed_before_activation")
+        update_receipt(operation.receipt_path, operation.receipt, "failed_before_activation")
     if stage and stage.exists():
         shutil.rmtree(stage)
 
 
 def raise_deployment_failure(
-    identifier: str,
+    operation: DeploymentOperation,
     error: BaseException,
-    destination: Path,
-    rollback_path: Path,
-    displaced_path: Path,
-    receipt_path: Path,
-    receipt: dict[str, Any],
-    progress: dict[str, Any],
 ) -> None:
     try:
-        rollback_failed_deployment(
-            destination, rollback_path, displaced_path, receipt_path, receipt, progress
-        )
+        rollback_failed_deployment(operation)
     except BaseException as recovery_error:
         try:
-            update_receipt(receipt_path, receipt, "recovery_required")
+            update_receipt(operation.receipt_path, operation.receipt, "recovery_required")
         except BaseException:
             pass
         raise DeploymentError(
             "Deployment failed and automatic recovery requires the recorded operation",
-            identifier,
+            operation.identifier,
         ) from recovery_error
     message = (
         str(error)
         if isinstance(error, DeploymentError)
         else "Deployment was interrupted and safe recovery was recorded"
     )
-    raise DeploymentError(message, identifier) from error
+    raise DeploymentError(message, operation.identifier) from error
 
 
 def deploy(args: argparse.Namespace) -> dict[str, Any]:
-    state_root, context, destination, source_tree, destination_tree = prepare_deploy(args)
-    plan = tree_plan(source_tree, destination_tree)
+    prepared = prepare_deploy(args)
+    plan = tree_plan(prepared.source_tree, prepared.destination_tree)
     if args.dry_run:
         return {
             "command": "deploy",
             "dry_run": True,
             "plan": plan,
             "status": "planned",
-            "tree_sha256": source_tree["exact_digest"],
+            "tree_sha256": prepared.source_tree["exact_digest"],
         }
     identifier = operation_id()
-    receipt_path = state_root / "operations" / f"{identifier}.json"
-    rollback_path = destination.with_name(f".{destination.name}.aidevops-rollback-{identifier}")
-    displaced_path = destination.with_name(f".{destination.name}.aidevops-displaced-{identifier}")
-    receipt = build_deploy_receipt(
+    receipt_path = prepared.state_root / "operations" / f"{identifier}.json"
+    rollback_path = prepared.destination.with_name(
+        f".{prepared.destination.name}.aidevops-rollback-{identifier}"
+    )
+    displaced_path = prepared.destination.with_name(
+        f".{prepared.destination.name}.aidevops-displaced-{identifier}"
+    )
+    receipt = build_deploy_receipt(identifier, prepared, rollback_path, displaced_path)
+    progress: dict[str, Any] = {"activated": False, "stage": None}
+    operation = DeploymentOperation(
         identifier,
-        context,
-        destination,
-        source_tree,
-        destination_tree,
+        prepared,
         rollback_path,
         displaced_path,
+        receipt_path,
+        receipt,
+        progress,
     )
-    progress: dict[str, Any] = {"activated": False, "stage": None}
-    with DestinationLock(destination):
-        validate_locked_deploy(
-            args,
-            state_root,
-            context,
-            destination,
-            source_tree,
-            rollback_path,
-            displaced_path,
-        )
-        atomic_write_json(receipt_path, receipt)
+    with DestinationLock(prepared.destination):
+        validate_locked_deploy(args, prepared, rollback_path, displaced_path)
+        atomic_write_json(operation.receipt_path, operation.receipt)
         try:
-            perform_deployment(
-                identifier,
-                context,
-                destination,
-                source_tree,
-                destination_tree,
-                rollback_path,
-                receipt_path,
-                receipt,
-                progress,
-            )
+            perform_deployment(operation)
         except BaseException as error:
-            raise_deployment_failure(
-                identifier,
-                error,
-                destination,
-                rollback_path,
-                displaced_path,
-                receipt_path,
-                receipt,
-                progress,
-            )
+            raise_deployment_failure(operation, error)
     return {
         "command": "deploy",
         "dry_run": False,
         "operation_id": identifier,
         "plan": plan,
-        "rollback_available": bool(destination_tree),
+        "rollback_available": bool(prepared.destination_tree),
         "status": "success",
-        "tree_sha256": source_tree["exact_digest"],
+        "tree_sha256": prepared.source_tree["exact_digest"],
     }
 
 
@@ -983,51 +989,41 @@ def remove_recorded_stage(stage_path: Path | None, receipt: dict[str, Any]) -> N
         receipt["stage_path"] = None
 
 
-def recover_existing_destination(
-    identifier: str,
-    destination: Path,
-    rollback_path: Path,
-    stage_path: Path | None,
-    receipt_path: Path,
-    receipt: dict[str, Any],
-) -> dict[str, Any] | None:
-    if not destination.exists():
+def recover_existing_destination(operation: RecoveryOperation) -> dict[str, Any] | None:
+    if not operation.destination.exists():
         return None
-    destination_tree = scan_tree(destination, require_files=False)
-    if destination_tree["exact_digest"] == receipt["tree_sha256"]:
-        remove_recorded_stage(stage_path, receipt)
-        update_receipt(receipt_path, receipt, "success")
-        return recovery_result(identifier, "success", rollback_path.exists())
-    if receipt["previous_present"] and (
-        destination_tree["exact_digest"] == receipt["previous_tree_sha256"]
+    destination_tree = scan_tree(operation.destination, require_files=False)
+    if destination_tree["exact_digest"] == operation.receipt["tree_sha256"]:
+        remove_recorded_stage(operation.stage_path, operation.receipt)
+        update_receipt(operation.receipt_path, operation.receipt, "success")
+        return recovery_result(
+            operation.identifier, "success", operation.rollback_path.exists()
+        )
+    if operation.receipt["previous_present"] and (
+        destination_tree["exact_digest"] == operation.receipt["previous_tree_sha256"]
     ):
-        remove_recorded_stage(stage_path, receipt)
-        update_receipt(receipt_path, receipt, "recovered_previous")
-        return recovery_result(identifier, "recovered_previous")
+        remove_recorded_stage(operation.stage_path, operation.receipt)
+        update_receipt(operation.receipt_path, operation.receipt, "recovered_previous")
+        return recovery_result(operation.identifier, "recovered_previous")
     return None
 
 
-def restore_previous_for_recovery(
-    identifier: str,
-    destination: Path,
-    rollback_path: Path,
-    stage_path: Path | None,
-    receipt_path: Path,
-    receipt: dict[str, Any],
-) -> dict[str, Any] | None:
-    if destination.exists() or not rollback_path.exists():
+def restore_previous_for_recovery(operation: RecoveryOperation) -> dict[str, Any] | None:
+    if operation.destination.exists() or not operation.rollback_path.exists():
         return None
     verify_operation_tree(
-        rollback_path, receipt["previous_tree_sha256"], "Recorded rollback tree"
+        operation.rollback_path,
+        operation.receipt["previous_tree_sha256"],
+        "Recorded rollback tree",
     )
-    os.replace(rollback_path, destination)
-    restored = scan_tree(destination, require_files=False)
-    if restored["exact_digest"] != receipt["previous_tree_sha256"]:
-        update_receipt(receipt_path, receipt, "recovery_required")
+    os.replace(operation.rollback_path, operation.destination)
+    restored = scan_tree(operation.destination, require_files=False)
+    if restored["exact_digest"] != operation.receipt["previous_tree_sha256"]:
+        update_receipt(operation.receipt_path, operation.receipt, "recovery_required")
         raise DeploymentError("Recovered destination failed exact verification")
-    remove_recorded_stage(stage_path, receipt)
-    update_receipt(receipt_path, receipt, "recovered_previous")
-    return recovery_result(identifier, "recovered_previous")
+    remove_recorded_stage(operation.stage_path, operation.receipt)
+    update_receipt(operation.receipt_path, operation.receipt, "recovered_previous")
+    return recovery_result(operation.identifier, "recovered_previous")
 
 
 def recover(args: argparse.Namespace) -> dict[str, Any]:
@@ -1043,7 +1039,7 @@ def recover(args: argparse.Namespace) -> dict[str, Any]:
         validate_existing_operation_tree(displaced_path, "Recorded displaced tree")
         if stage_path is not None:
             validate_existing_operation_tree(stage_path, "Recorded stage tree")
-        existing_result = recover_existing_destination(
+        operation = RecoveryOperation(
             args.operation_id,
             destination,
             rollback_path,
@@ -1051,16 +1047,10 @@ def recover(args: argparse.Namespace) -> dict[str, Any]:
             receipt_path,
             receipt,
         )
+        existing_result = recover_existing_destination(operation)
         if existing_result:
             return existing_result
-        previous_result = restore_previous_for_recovery(
-            args.operation_id,
-            destination,
-            rollback_path,
-            stage_path,
-            receipt_path,
-            receipt,
-        )
+        previous_result = restore_previous_for_recovery(operation)
         if previous_result:
             return previous_result
         if stage_path and stage_path.exists():
@@ -1169,19 +1159,13 @@ def main() -> int:
     args = parser.parse_args()
     machine = bool(getattr(args, "machine", False))
     try:
-        if args.command == "manifest":
-            state_root = secure_state_root()
-            git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
-            context = validate_source(args.source, args.expected_sha, git_bin)
-            result = manifest_result(scan_tree(context["source"]))
-        elif args.command == "deploy":
-            result = deploy(args)
-        elif args.command == "recover":
-            result = recover(args)
-        elif args.command == "rollback":
-            result = rollback(args)
-        else:
-            raise DeploymentError("Unsupported deployment-copy command")
+        handlers = {
+            "manifest": manifest,
+            "deploy": deploy,
+            "recover": recover,
+            "rollback": rollback,
+        }
+        result = handlers[args.command](args)
         emit_result(result, machine)
         return 0
     except (
@@ -1214,6 +1198,13 @@ def main() -> int:
             if operation_id_value:
                 print(f"OPERATION_ID={operation_id_value}", file=sys.stderr)
         return 1
+
+
+def manifest(args: argparse.Namespace) -> dict[str, Any]:
+    state_root = secure_state_root()
+    git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
+    context = validate_source(args.source, args.expected_sha, git_bin)
+    return manifest_result(scan_tree(context["source"]))
 
 
 def _interrupt(_signal_number: int, _frame: Any) -> None:
