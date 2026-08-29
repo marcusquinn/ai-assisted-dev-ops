@@ -237,7 +237,7 @@ end) as $max_workers |
           "nmr_inactivity_basis=issue_updatedAt_not_label_application_time"
         ];
         "Request authority-aware maintainer review of inactive NMR holds without removing needs-maintainer-review, adding auto-dispatch, posting approval markers, or commenting on individual held issues.";
-        true
+        false
       )
     else empty end,
     if ($dispatch_alive and ($spawned - ([($recent_total), ($current_terminal_events)] | max) - $launch_validation_failed) >= 3 and $active_workers == 0) then

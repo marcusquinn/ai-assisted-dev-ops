@@ -485,6 +485,9 @@ assert_eq "shortfall fixture has one eligible issue" "1" "$(printf '%s' "$SHORTF
 assert_eq "shortfall fixture distinguishes assigned work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.assigned_in_flight')"
 assert_eq "shortfall fixture distinguishes held work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_explicit_hold')"
 assert_contains "NMR advisory names updatedAt inactivity basis" "issue_updatedAt_not_label_application_time" "$SHORTFALL_OUT"
+assert_eq "inactive NMR holds remain visible" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '[.findings[] | select(.id == "pulse-inactive-nmr-holds")] | length')"
+assert_eq "inactive NMR holds remain medium severity" "medium" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-inactive-nmr-holds") | .severity')"
+assert_eq "inactive NMR holds do not auto-file" "false" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-inactive-nmr-holds") | .autofile')"
 assert_not_contains "shortfall JSON omits private issue title" "private nmr" "$SHORTFALL_OUT"
 
 IDLE_SHORTFALL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=shortfall" \
