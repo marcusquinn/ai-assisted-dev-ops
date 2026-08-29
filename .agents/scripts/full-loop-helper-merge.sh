@@ -1452,17 +1452,16 @@ _merge_fresh_adopted_worktree_cleanup_target() {
 	local current_repo=""
 
 	pr_json=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 gh pr view "$pr_number" --repo "$repo" \
-		--json state,mergedAt,mergeCommit,baseRepository,headRefName,headRefOid,headRepository,isCrossRepository 2>/dev/null) || return 1
-	printf '%s' "$pr_json" | jq -e --arg repo "$repo" '
+		--json state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository 2>/dev/null) || return 2
+	printf '%s' "$pr_json" | jq -e '
 		.state == "MERGED"
 		and (.mergedAt | strings | length > 0)
 		and (.mergeCommit.oid | strings | length > 0)
 		and (.headRefName | strings | length > 0)
 		and (.headRefOid | strings | length > 0)
-		and .baseRepository.nameWithOwner == $repo
 		and (.headRepository.nameWithOwner | strings | length > 0)
 		and (.isCrossRepository == true or .isCrossRepository == false)
-	' >/dev/null 2>&1 || return 1
+	' >/dev/null 2>&1 || return 3
 	IFS=$'\t' read -r pr_head_ref pr_head_oid pr_head_repo < <(
 		printf '%s' "$pr_json" | jq -r '[.headRefName, .headRefOid, .headRepository.nameWithOwner] | @tsv'
 	)
@@ -1630,6 +1629,7 @@ cmd_adopt_merged_receipt() {
 	local pr_number="${1:-}"
 	local repo=""
 	local cleanup_target=""
+	local cleanup_target_rc=0
 	local release_status=""
 
 	if [[ $# -lt 1 || $# -gt 2 || ! "$pr_number" =~ ^[0-9]+$ ]]; then
@@ -1640,10 +1640,22 @@ cmd_adopt_merged_receipt() {
 		print_error "Adoption blocked: repository identity is unavailable"
 		return 1
 	}
-	cleanup_target=$(_merge_fresh_adopted_worktree_cleanup_target "$pr_number" "$repo") || {
+	cleanup_target=$(_merge_fresh_adopted_worktree_cleanup_target "$pr_number" "$repo") || cleanup_target_rc=$?
+	case "$cleanup_target_rc" in
+	0) ;;
+	2)
+		print_error "Adoption blocked: unable to query merged PR metadata with the supported GitHub CLI field set"
+		return 1
+		;;
+	3)
+		print_error "Adoption blocked: merged PR metadata is incomplete or invalid"
+		return 1
+		;;
+	*)
 		print_error "Adoption blocked: merged PR head does not match this registered linked worktree and repository"
 		return 1
-	}
+		;;
+	esac
 	if ! declare -F _full_loop_terminal_release_status >/dev/null 2>&1; then
 		print_error "Adoption blocked: terminal release verifier is unavailable"
 		return 1

@@ -14,6 +14,7 @@ GH_PR_HEAD_OID=""
 GH_PR_HEAD_REPO=""
 GH_PR_BASE_REPO=""
 GH_PR_IS_CROSS_REPOSITORY="false"
+GH_PR_VIEW_FAIL="false"
 GH_RELEASE_STATUS="not-requested"
 GH_RELEASE_TAG_MODE=""
 GH_RELEASE_TAG_COMMIT="1111111111111111111111111111111111111111"
@@ -99,12 +100,13 @@ gh() {
 		esac
 	fi
 	if [[ "$command" == "pr" && "$subcommand" == "view" ]]; then
-		if [[ "$args" == *"state,mergedAt,mergeCommit,baseRepository,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+		if [[ "$args" == *"state,mergedAt,mergeCommit,headRefName,headRefOid,headRepository,isCrossRepository"* ]]; then
+			[[ "$GH_PR_VIEW_FAIL" == "false" ]] || return 1
 			jq -cn --arg head_ref "$GH_PR_HEAD_REF" --arg head_oid "$GH_PR_HEAD_OID" \
-				--arg head_repo "$GH_PR_HEAD_REPO" --arg base_repo "$GH_PR_BASE_REPO" \
+				--arg head_repo "$GH_PR_HEAD_REPO" \
 				--arg is_cross_repository "$GH_PR_IS_CROSS_REPOSITORY" \
 				'{state:"MERGED",mergedAt:"2026-07-11T00:00:00Z",mergeCommit:{oid:"merge123"},
-				  baseRepository:{nameWithOwner:$base_repo},headRefName:$head_ref,headRefOid:$head_oid,
+				  headRefName:$head_ref,headRefOid:$head_oid,
 				  headRepository:{nameWithOwner:$head_repo},isCrossRepository:($is_cross_repository == "true")}'
 			return 0
 		fi
@@ -305,6 +307,7 @@ TRASH
 	GH_PR_HEAD_REPO="example/repo"
 	GH_PR_BASE_REPO="example/repo"
 	GH_PR_IS_CROSS_REPOSITORY="false"
+	GH_PR_VIEW_FAIL="false"
 	GH_RELEASE_STATUS="not-requested"
 	git -C "$canonical_repo" checkout -q -b feature/active
 	git clone -q "$origin_repo" "$updater_repo"
@@ -486,6 +489,23 @@ test_cmd_adopt_merged_receipt_accepts_verified_fork_head() {
 		and .cleanup_lease.state == "pending"
 	' "$receipt_path" >/dev/null || rc=1
 	print_result "externally merged fork head adopts an exact managed worktree" "$rc"
+	return 0
+}
+
+test_cmd_adopt_merged_receipt_reports_query_failure() {
+	setup_subject
+	configure_managed_repo_identity
+	local stderr_file="${TEST_ROOT}/adopt-query.stderr"
+	local rc=0
+	GH_PR_VIEW_FAIL="true"
+
+	if cmd_adopt_merged_receipt "123" "example/repo" 2>"$stderr_file"; then
+		rc=1
+	fi
+	grep -q "unable to query merged PR metadata with the supported GitHub CLI field set" \
+		"$stderr_file" || rc=1
+	grep -q "merged PR head does not match" "$stderr_file" && rc=1
+	print_result "merged-receipt adoption distinguishes PR query failures from head mismatches" "$rc"
 	return 0
 }
 
@@ -775,6 +795,7 @@ main() {
 	test_cmd_merge_defers_exact_head_alias_worktree
 	test_cmd_adopt_merged_receipt_is_idempotent
 	test_cmd_adopt_merged_receipt_accepts_verified_fork_head
+	test_cmd_adopt_merged_receipt_reports_query_failure
 	test_cmd_adopt_merged_receipt_rejects_unsafe_evidence
 	test_cmd_adopt_merged_receipt_rejects_receipt_conflicts
 	test_cleanup_plan_rejects_head_drift
