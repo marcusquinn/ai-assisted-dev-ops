@@ -29,6 +29,10 @@ issue_json='{"labels":[{"name":"publication:pending"}]}'
 issue_json='{"labels":[{"name":"auto-dispatch"},{"name":"bug"},{"name":"status:available"}]}'
 _publication_issue_has_labels "$issue_json" 'auto-dispatch,bug,status:available'
 [[ -z "$(_publication_desired_labels '- [ ] t9001 Manual task ~1h ref:GH#78 logged:2026-08-11')" ]]
+held_task_line='- [ ] t9003 Held foundation #no-auto-dispatch #bug ~1h ref:GH#80 logged:2026-08-11'
+held_labels=$(_publication_desired_labels "$held_task_line")
+[[ ",${held_labels}," == *",no-auto-dispatch,"* ]]
+[[ "$(_publication_status_label "$held_labels" 0 '{"labels":[{"name":"publication:pending"}]}')" == "status:available" ]]
 blocked_task_line='- [ ] t9002 Blocked publication #auto-dispatch #bug ~1h blocked-by:t9000 ref:GH#79 logged:2026-08-11'
 _publication_task_has_dependency "$blocked_task_line"
 [[ "$(_publication_status_label "$desired_labels" 1 '{"labels":[{"name":"publication:pending"}]}')" == "status:blocked" ]]

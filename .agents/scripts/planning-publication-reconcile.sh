@@ -104,12 +104,12 @@ _publication_status_label() {
 		return 0
 	fi
 	_publication_issue_has_active_status "$issue_json" && return 0
-	if [[ "$fenced" == *",${PUBLICATION_AUTO_LABEL},"* &&
+	if [[ ("$fenced" == *",${PUBLICATION_AUTO_LABEL},"* || "$fenced" == *",no-auto-dispatch,") &&
 		"$fenced" != *",parent-task,"* && "$fenced" != *",meta,"* &&
 		"$fenced" != *",${PUBLICATION_BLOCKED_LABEL},"* && "$fenced" != *",status:queued,"* &&
 		"$fenced" != *",status:claimed,"* && "$fenced" != *",status:in-progress,"* &&
 		"$fenced" != *",status:in-review,"* && "$fenced" != *",status:done,"* &&
-		"$fenced" != *",no-auto-dispatch,"* && "$fenced" != *",hold-for-review,"* ]]; then
+		"$fenced" != *",hold-for-review,"* ]]; then
 		printf '%s\n' "$PUBLICATION_AVAILABLE_LABEL"
 	fi
 	return 0
