@@ -220,11 +220,15 @@ def secure_state_root() -> Path:
 
 
 def validate_source(raw_source: str, expected_sha: str, git_bin: str) -> dict[str, Any]:
-    if not SHA_RE.fullmatch(expected_sha):
-        raise DeploymentError("Expected source SHA must be a full commit identifier")
+    require(
+        bool(SHA_RE.fullmatch(expected_sha)),
+        "Expected source SHA must be a full commit identifier",
+    )
     source = canonical_existing_directory(raw_source, "Source")
-    if any(part.lower() == ".git" for part in source.parts):
-        raise DeploymentError("Git metadata cannot be deployed")
+    require(
+        not any(part.lower() == ".git" for part in source.parts),
+        "Git metadata cannot be deployed",
+    )
     repo_root = Path(run_git(git_bin, source, "rev-parse", "--show-toplevel")).resolve()
     git_dir = Path(
         run_git(git_bin, source, "rev-parse", "--path-format=absolute", "--git-dir")
@@ -234,21 +238,23 @@ def validate_source(raw_source: str, expected_sha: str, git_bin: str) -> dict[st
             git_bin, source, "rev-parse", "--path-format=absolute", "--git-common-dir"
         )
     ).resolve()
-    if git_dir == common_dir:
-        raise DeploymentError("Source must be inside a registered linked worktree")
-    if not path_is_within(source, repo_root):
-        raise DeploymentError("Source escapes its linked worktree")
+    require(git_dir != common_dir, "Source must be inside a registered linked worktree")
+    require(path_is_within(source, repo_root), "Source escapes its linked worktree")
     registered_worktrees = {
         Path(line.removeprefix("worktree ")).resolve()
         for line in run_git(git_bin, repo_root, "worktree", "list", "--porcelain").splitlines()
         if line.startswith("worktree ")
     }
-    if repo_root not in registered_worktrees:
-        raise DeploymentError("Source worktree is not registered in its Git repository")
+    require(
+        repo_root in registered_worktrees,
+        "Source worktree is not registered in its Git repository",
+    )
     resolved_sha = run_git(git_bin, repo_root, "rev-parse", "--verify", f"{expected_sha}^{{commit}}")
     head_sha = run_git(git_bin, repo_root, "rev-parse", "HEAD")
-    if resolved_sha != expected_sha or head_sha != expected_sha:
-        raise DeploymentError("Source worktree does not match the expected commit")
+    require(
+        resolved_sha == expected_sha and head_sha == expected_sha,
+        "Source worktree does not match the expected commit",
+    )
     source_relative = os.path.relpath(source, repo_root)
     return {
         "source": source,
@@ -265,10 +271,14 @@ def visit_tree(
     directory: Path, relative: PurePosixPath, entries: list[dict[str, Any]]
 ) -> None:
     directory_stat = os.lstat(directory)
-    if not stat.S_ISDIR(directory_stat.st_mode):
-        raise DeploymentError("Tree changed while it was being inspected")
-    if stat.S_IMODE(directory_stat.st_mode) & 0o7000:
-        raise DeploymentError("Tree entries must not use special permission bits")
+    require(
+        stat.S_ISDIR(directory_stat.st_mode),
+        "Tree changed while it was being inspected",
+    )
+    require(
+        not stat.S_IMODE(directory_stat.st_mode) & 0o7000,
+        "Tree entries must not use special permission bits",
+    )
     entries.append(
         {
             "mode": f"{stat.S_IMODE(directory_stat.st_mode):04o}",
@@ -277,20 +287,25 @@ def visit_tree(
         }
     )
     for item in sorted(os.scandir(directory), key=lambda value: value.name):
-        if item.name.lower() == ".git":
-            raise DeploymentError("Git metadata cannot be deployed")
+        require(item.name.lower() != ".git", "Git metadata cannot be deployed")
         item_path = Path(item.path)
         item_relative = relative / item.name if str(relative) != "." else PurePosixPath(item.name)
         item_stat = item.stat(follow_symlinks=False)
-        if stat.S_ISLNK(item_stat.st_mode):
-            raise DeploymentError("Source and destination trees must not contain symlinks")
+        require(
+            not stat.S_ISLNK(item_stat.st_mode),
+            "Source and destination trees must not contain symlinks",
+        )
         if stat.S_ISDIR(item_stat.st_mode):
             visit_tree(item_path, item_relative, entries)
             continue
-        if not stat.S_ISREG(item_stat.st_mode):
-            raise DeploymentError("Source and destination trees must contain only regular files")
-        if stat.S_IMODE(item_stat.st_mode) & 0o7000:
-            raise DeploymentError("Tree entries must not use special permission bits")
+        require(
+            stat.S_ISREG(item_stat.st_mode),
+            "Source and destination trees must contain only regular files",
+        )
+        require(
+            not stat.S_IMODE(item_stat.st_mode) & 0o7000,
+            "Tree entries must not use special permission bits",
+        )
         entries.append(
             {
                 "mode": f"{stat.S_IMODE(item_stat.st_mode):04o}",
@@ -303,13 +318,17 @@ def visit_tree(
 
 
 def scan_tree(root: Path, require_files: bool = True) -> dict[str, Any]:
-    if not root.is_dir() or root.is_symlink():
-        raise DeploymentError("Tree root must be a non-symlink directory")
+    require(
+        root.is_dir() and not root.is_symlink(),
+        "Tree root must be a non-symlink directory",
+    )
     entries: list[dict[str, Any]] = []
     visit_tree(root, PurePosixPath("."), entries)
     file_count = sum(1 for entry in entries if entry["type"] == "file")
-    if require_files and file_count == 0:
-        raise DeploymentError("Source tree must contain at least one regular file")
+    require(
+        not require_files or file_count > 0,
+        "Source tree must contain at least one regular file",
+    )
     exact_digest = sha256_bytes(canonical_json(entries))
     normalized_entries = []
     for entry in entries:
@@ -334,18 +353,24 @@ def safe_extract_git_archive(archive_path: Path, destination: Path) -> None:
     with tarfile.open(archive_path, "r") as archive:
         for member in archive.getmembers():
             relative = PurePosixPath(member.name)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise DeploymentError("Git archive contains an unsafe path")
+            require(
+                not relative.is_absolute() and ".." not in relative.parts,
+                "Git archive contains an unsafe path",
+            )
             target = destination.joinpath(*relative.parts)
             if member.isdir():
                 target.mkdir(mode=member.mode & 0o777, parents=True, exist_ok=True)
                 continue
-            if not member.isfile():
-                raise DeploymentError("Committed source contains an unsupported file type")
+            require(
+                member.isfile(),
+                "Committed source contains an unsupported file type",
+            )
             target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
             source_handle = archive.extractfile(member)
-            if source_handle is None:
-                raise DeploymentError("Committed source could not be materialized")
+            require(
+                source_handle is not None,
+                "Committed source could not be materialized",
+            )
             with source_handle, target.open("xb") as target_handle:
                 shutil.copyfileobj(source_handle, target_handle, 1024 * 1024)
             os.chmod(target, member.mode & 0o777)
@@ -371,56 +396,72 @@ def verify_committed_source(context: dict[str, Any], source_tree: dict[str, Any]
         result = subprocess.run(  # nosec B603 -- argv array built from validated Git provenance
             command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
-        if result.returncode != 0:
-            raise DeploymentError("Committed source subtree could not be materialized")
+        require(
+            result.returncode == 0,
+            "Committed source subtree could not be materialized",
+        )
         safe_extract_git_archive(archive_path, proof_root)
         committed_root = (
             proof_root
             if context["source_relative"] == "."
             else proof_root / context["source_relative"]
         )
-        if not committed_root.is_dir():
-            raise DeploymentError("Source subtree is not present in the expected commit")
+        require(
+            committed_root.is_dir(),
+            "Source subtree is not present in the expected commit",
+        )
         committed_tree = scan_tree(committed_root)
-        if committed_tree["normalized_digest"] != source_tree["normalized_digest"]:
-            raise DeploymentError(
-                "Source differs from the expected committed subtree; provide a reviewed tree digest for generated artifacts"
-            )
+        require(
+            committed_tree["normalized_digest"] == source_tree["normalized_digest"],
+            "Source differs from the expected committed subtree; provide a reviewed tree digest for generated artifacts",
+        )
 
 
 def validate_tree_proof(
     context: dict[str, Any], source_tree: dict[str, Any], reviewed_digest: str | None, state_root: Path
 ) -> None:
     if reviewed_digest:
-        if not TREE_SHA_RE.fullmatch(reviewed_digest):
-            raise DeploymentError("Reviewed tree digest must be a SHA-256 value")
-        if source_tree["exact_digest"] != reviewed_digest:
-            raise DeploymentError("Source does not match the reviewed tree digest")
+        require(
+            bool(TREE_SHA_RE.fullmatch(reviewed_digest)),
+            "Reviewed tree digest must be a SHA-256 value",
+        )
+        require(
+            source_tree["exact_digest"] == reviewed_digest,
+            "Source does not match the reviewed tree digest",
+        )
         return
     verify_committed_source(context, source_tree, state_root)
 
 
 def validate_allow_file(allow_file_raw: str, destination: Path, context: dict[str, Any]) -> Path:
     allow_file = Path(allow_file_raw)
-    if not allow_file.is_absolute():
-        raise DeploymentError("Destination allow file must be absolute")
+    require(allow_file.is_absolute(), "Destination allow file must be absolute")
     assert_no_symlink_components(allow_file)
-    if not allow_file.is_file() or allow_file.is_symlink():
-        raise DeploymentError("Destination allow file must be a regular non-symlink file")
+    require(
+        allow_file.is_file() and not allow_file.is_symlink(),
+        "Destination allow file must be a regular non-symlink file",
+    )
     allow_file = allow_file.resolve(strict=True)
     file_stat = allow_file.stat()
-    if file_stat.st_uid != os.getuid() or stat.S_IMODE(file_stat.st_mode) & 0o077:
-        raise DeploymentError("Destination allow file must be owner-controlled with mode 0600 or stricter")
-    if path_is_within(allow_file, context["repo_root"]) or path_is_within(allow_file, destination):
-        raise DeploymentError("Destination authority must be stored outside source and destination trees")
+    require(
+        file_stat.st_uid == os.getuid() and not stat.S_IMODE(file_stat.st_mode) & 0o077,
+        "Destination allow file must be owner-controlled with mode 0600 or stricter",
+    )
+    require(
+        not path_is_within(allow_file, context["repo_root"])
+        and not path_is_within(allow_file, destination),
+        "Destination authority must be stored outside source and destination trees",
+    )
     allowed: set[Path] = set()
     for raw_line in allow_file.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         allowed.add(canonical_destination(line))
-    if destination not in allowed:
-        raise DeploymentError("Destination is not present in the owner-controlled allow file")
+    require(
+        destination in allowed,
+        "Destination is not present in the owner-controlled allow file",
+    )
     return allow_file
 
 
@@ -440,17 +481,29 @@ def validate_destination_safety(
     destination: Path, context: dict[str, Any], state_root: Path, allow_file_raw: str
 ) -> Path:
     home = Path.home().resolve(strict=True)
-    if destination == Path(destination.anchor) or destination == home:
-        raise DeploymentError("Root and home directories cannot be deployment targets")
-    if any(part.lower() == ".git" for part in destination.parts):
-        raise DeploymentError("Git metadata cannot be a deployment target")
+    require(
+        destination != Path(destination.anchor) and destination != home,
+        "Root and home directories cannot be deployment targets",
+    )
+    require(
+        not any(part.lower() == ".git" for part in destination.parts),
+        "Git metadata cannot be a deployment target",
+    )
     repo_root = context["repo_root"]
-    if path_is_within(destination, repo_root) or path_is_within(repo_root, destination):
-        raise DeploymentError("Destination must not overlap the source Git worktree")
-    if path_is_within(destination, state_root) or path_is_within(state_root, destination):
-        raise DeploymentError("Destination must not overlap deployment-copy state storage")
-    if destination_is_in_git(context["git_bin"], destination):
-        raise DeploymentError("Destination must be outside every Git worktree")
+    require(
+        not path_is_within(destination, repo_root)
+        and not path_is_within(repo_root, destination),
+        "Destination must not overlap the source Git worktree",
+    )
+    require(
+        not path_is_within(destination, state_root)
+        and not path_is_within(state_root, destination),
+        "Destination must not overlap deployment-copy state storage",
+    )
+    require(
+        not destination_is_in_git(context["git_bin"], destination),
+        "Destination must be outside every Git worktree",
+    )
     validate_allow_file(allow_file_raw, destination, context)
     return destination
 
@@ -469,8 +522,10 @@ def copy_tree(source: Path, stage: Path, source_tree: dict[str, Any]) -> None:
         source_path = source.joinpath(*relative.parts)
         target_path = stage.joinpath(*relative.parts)
         source_stat = os.lstat(source_path)
-        if not stat.S_ISREG(source_stat.st_mode):
-            raise DeploymentError("Source changed while it was being staged")
+        require(
+            stat.S_ISREG(source_stat.st_mode),
+            "Source changed while it was being staged",
+        )
         descriptor = os.open(source_path, os.O_RDONLY | no_follow)
         try:
             with os.fdopen(descriptor, "rb", closefd=False) as source_handle, target_path.open(
@@ -543,46 +598,63 @@ def update_receipt(receipt_path: Path, receipt: dict[str, Any], status_value: st
 def validate_receipt_identity(receipt: Any, identifier: str) -> dict[str, Any]:
     if not isinstance(receipt, dict):
         raise DeploymentError("Operation receipt is invalid")
-    if receipt.get("schema") != SCHEMA or receipt.get("operation_id") != identifier:
-        raise DeploymentError("Operation receipt is invalid")
+    require(
+        receipt.get("schema") == SCHEMA and receipt.get("operation_id") == identifier,
+        "Operation receipt is invalid",
+    )
     return receipt
 
 
 def validate_receipt_paths_and_flags(receipt: dict[str, Any]) -> None:
     required_strings = ("destination", "displaced_path", "rollback_path", "source_repo")
-    if any(not isinstance(receipt.get(key), str) or not receipt[key] for key in required_strings):
-        raise DeploymentError("Operation receipt is invalid")
-    if receipt.get("stage_path") is not None and not isinstance(receipt["stage_path"], str):
-        raise DeploymentError("Operation receipt is invalid")
-    if not isinstance(receipt.get("previous_present"), bool):
-        raise DeploymentError("Operation receipt is invalid")
-    if not isinstance(receipt.get("status"), str):
-        raise DeploymentError("Operation receipt is invalid")
+    require(
+        all(isinstance(receipt.get(key), str) and bool(receipt[key]) for key in required_strings),
+        "Operation receipt is invalid",
+    )
+    require(
+        receipt.get("stage_path") is None or isinstance(receipt["stage_path"], str),
+        "Operation receipt is invalid",
+    )
+    require(
+        isinstance(receipt.get("previous_present"), bool),
+        "Operation receipt is invalid",
+    )
+    require(isinstance(receipt.get("status"), str), "Operation receipt is invalid")
 
 
 def validate_receipt_digests(receipt: dict[str, Any]) -> None:
-    if not isinstance(receipt.get("tree_sha256"), str) or not TREE_SHA_RE.fullmatch(
-        receipt["tree_sha256"]
-    ):
-        raise DeploymentError("Operation receipt is invalid")
+    require(
+        isinstance(receipt.get("tree_sha256"), str)
+        and bool(TREE_SHA_RE.fullmatch(receipt["tree_sha256"])),
+        "Operation receipt is invalid",
+    )
     previous_digest = receipt.get("previous_tree_sha256")
     if receipt["previous_present"]:
-        if not isinstance(previous_digest, str) or not TREE_SHA_RE.fullmatch(previous_digest):
-            raise DeploymentError("Operation receipt is invalid")
-    elif previous_digest is not None:
-        raise DeploymentError("Operation receipt is invalid")
+        require(
+            isinstance(previous_digest, str)
+            and bool(TREE_SHA_RE.fullmatch(previous_digest)),
+            "Operation receipt is invalid",
+        )
+    else:
+        require(previous_digest is None, "Operation receipt is invalid")
 
 
 def load_receipt(state_root: Path, identifier: str) -> tuple[Path, dict[str, Any]]:
-    if not OPERATION_RE.fullmatch(identifier):
-        raise DeploymentError("Operation identifier is malformed")
+    require(
+        bool(OPERATION_RE.fullmatch(identifier)),
+        "Operation identifier is malformed",
+    )
     receipt_path = state_root / "operations" / f"{identifier}.json"
     assert_no_symlink_components(receipt_path)
     receipt_stat = receipt_path.stat()
-    if not stat.S_ISREG(receipt_stat.st_mode) or receipt_stat.st_uid != os.getuid():
-        raise DeploymentError("Operation receipt is unsafe")
-    if stat.S_IMODE(receipt_stat.st_mode) & 0o077:
-        raise DeploymentError("Operation receipt permissions are unsafe")
+    require(
+        stat.S_ISREG(receipt_stat.st_mode) and receipt_stat.st_uid == os.getuid(),
+        "Operation receipt is unsafe",
+    )
+    require(
+        not stat.S_IMODE(receipt_stat.st_mode) & 0o077,
+        "Operation receipt permissions are unsafe",
+    )
     receipt = validate_receipt_identity(
         json.loads(receipt_path.read_text(encoding="utf-8")), identifier
     )
@@ -599,18 +671,23 @@ def receipt_paths(receipt: dict[str, Any], destination: Path) -> tuple[Path, Pat
     displaced_path = destination.with_name(
         f".{destination.name}.aidevops-displaced-{identifier}"
     )
-    if receipt.get("rollback_path") != str(rollback_path):
-        raise DeploymentError("Operation receipt rollback path is invalid")
-    if receipt.get("displaced_path") != str(displaced_path):
-        raise DeploymentError("Operation receipt displaced path is invalid")
+    require(
+        receipt.get("rollback_path") == str(rollback_path),
+        "Operation receipt rollback path is invalid",
+    )
+    require(
+        receipt.get("displaced_path") == str(displaced_path),
+        "Operation receipt displaced path is invalid",
+    )
     stage_path = None
     if receipt.get("stage_path") is not None:
         stage_path = Path(receipt["stage_path"])
         expected_prefix = f".{destination.name}.aidevops-stage-{identifier}-"
-        if stage_path.parent != destination.parent or not stage_path.name.startswith(
-            expected_prefix
-        ):
-            raise DeploymentError("Operation receipt stage path is invalid")
+        require(
+            stage_path.parent == destination.parent
+            and stage_path.name.startswith(expected_prefix),
+            "Operation receipt stage path is invalid",
+        )
     return rollback_path, displaced_path, stage_path
 
 
@@ -618,17 +695,17 @@ def validate_existing_operation_tree(path: Path, purpose: str) -> None:
     if not os.path.lexists(path):
         return
     assert_no_symlink_components(path)
-    if not path.is_dir():
-        raise DeploymentError(f"{purpose} must be a non-symlink directory")
+    require(path.is_dir(), f"{purpose} must be a non-symlink directory")
 
 
 def verify_operation_tree(path: Path, expected_digest: str, purpose: str) -> None:
     validate_existing_operation_tree(path, purpose)
-    if not path.exists():
-        raise DeploymentError(f"{purpose} is unavailable")
+    require(path.exists(), f"{purpose} is unavailable")
     measured = scan_tree(path, require_files=False)
-    if measured["exact_digest"] != expected_digest:
-        raise DeploymentError(f"{purpose} failed exact verification")
+    require(
+        measured["exact_digest"] == expected_digest,
+        f"{purpose} failed exact verification",
+    )
 
 
 def pid_is_alive(pid: int) -> bool:
