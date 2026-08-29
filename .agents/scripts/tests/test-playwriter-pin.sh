@@ -8,6 +8,46 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)" || exit 1
+PLAYWRITER_MCP_PACKAGE="playwriter@0.5.0"
+
+assert_policy_surface() {
+	local relative_path="$1"
+	local expected_fragment="$2"
+	local target_path="${REPO_ROOT}/${relative_path}"
+	if ! grep -Fq "$expected_fragment" "$target_path"; then
+		printf 'FAIL: %s does not consume reviewed Playwriter policy %s\n' \
+			"$relative_path" "$expected_fragment" >&2
+		return 1
+	fi
+	return 0
+}
+
+# Keep every generated, installed, updated, documented, and templated launcher
+# on the same reviewed package. Legacy @latest literals remain only in the
+# bounded migration matchers and their regression fixtures below.
+assert_policy_surface ".agents/plugins/opencode-aidevops/mcp-registry.mjs" \
+	"const PLAYWRITER_MCP_PACKAGE = \"${PLAYWRITER_MCP_PACKAGE}\";"
+assert_policy_surface ".agents/scripts/lib/mcp_config.py" \
+	"PLAYWRITER_MCP_PACKAGE = '${PLAYWRITER_MCP_PACKAGE}'"
+assert_policy_surface ".agents/scripts/setup/modules/mcp-setup.sh" \
+	"package_spec=\"${PLAYWRITER_MCP_PACKAGE}\""
+assert_policy_surface ".agents/scripts/tool-version-check.sh" \
+	"npm install -g ${PLAYWRITER_MCP_PACKAGE}"
+assert_policy_surface "configs/playwriter-config.json.txt" \
+	"\"command\": [\"npx\", \"${PLAYWRITER_MCP_PACKAGE}\"]"
+assert_policy_surface ".agents/tools/browser/playwriter.md" \
+	"npx ${PLAYWRITER_MCP_PACKAGE}"
+
+for policy_path in \
+	".agents/scripts/setup/modules/mcp-setup.sh" \
+	".agents/scripts/tool-version-check.sh" \
+	"configs/playwriter-config.json.txt" \
+	".agents/tools/browser/playwriter.md"; do
+	if grep -Fq 'playwriter@latest' "${REPO_ROOT}/${policy_path}"; then
+		printf 'FAIL: %s can restore unreviewed playwriter@latest\n' "$policy_path" >&2
+		exit 1
+	fi
+done
 
 python3 - "$REPO_ROOT" <<'PY'
 import importlib.util
