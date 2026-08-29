@@ -955,6 +955,7 @@ export STUB_RATE_LIMIT_REMAINING=5000
 : >"$GH_INFO_OUTPUT"
 export STUB_PRIMARY_FAIL=1
 export STUB_RATE_LIMIT_REMAINING=0
+export STUB_PR_LIST_FIXTURE='[]'
 
 gh_create_pr \
 	--repo "owner/repo" \
@@ -980,7 +981,7 @@ else
 		"INFO log: $(cat "$GH_INFO_OUTPUT")"
 fi
 
-unset STUB_PRIMARY_FAIL
+unset STUB_PRIMARY_FAIL STUB_PR_LIST_FIXTURE
 export STUB_RATE_LIMIT_REMAINING=5000
 
 # =============================================================================

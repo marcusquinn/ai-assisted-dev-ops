@@ -1204,7 +1204,7 @@ _ensure_origin_labels_for_args() {
 	local repo=""
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		--repo)
+		--repo | -R)
 			repo="${2:-}"
 			break
 			;;

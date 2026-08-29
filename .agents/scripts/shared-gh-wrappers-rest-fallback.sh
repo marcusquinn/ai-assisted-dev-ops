@@ -459,7 +459,7 @@ _rest_issue_create() {
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
-		--repo) repo="${2:-}"; shift 2 ;;
+		--repo | -R) [[ $# -ge 2 ]] || return 2; repo="${2:-}"; shift 2 ;;
 		--repo=*) repo="${_arg#--repo=}"; shift ;;
 		--title) title="${2:-}"; shift 2 ;;
 		--title=*) title="${_arg#--title=}"; shift ;;
@@ -538,7 +538,7 @@ _rest_issue_comment() {
 	local has_body=0
 
 	local _first="${1:-}"
-	if [[ $# -gt 0 && "$_first" != --* ]]; then
+	if [[ $# -gt 0 && "$_first" != -* ]]; then
 		num_or_url="$_first"
 		shift
 	fi
@@ -546,7 +546,7 @@ _rest_issue_comment() {
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
-		--repo) repo="${2:-}"; shift 2 ;;
+		--repo | -R) [[ $# -ge 2 ]] || return 2; repo="${2:-}"; shift 2 ;;
 		--repo=*) repo="${_arg#--repo=}"; shift ;;
 		--body) body="${2:-}"; has_body=1; shift 2 ;;
 		--body=*) body="${_arg#--body=}"; has_body=1; shift ;;
@@ -749,7 +749,7 @@ _rest_issue_edit_preserving_deltas() {
 		arg="$1"
 		[[ "$arg" == *=* ]] && { value="${arg#*=}"; arg="${arg%%=*}"; shift; } || { value="${2:-}"; shift 2; }
 		case "$arg" in
-		--repo) repo="$value" ;;
+		--repo | -R) repo="$value" ;;
 		--require-label) required_label="$value" ;;
 		--require-assignee) required_assignee="$value" ;;
 		--delta-order)
@@ -895,7 +895,7 @@ _rest_issue_edit() {
 	add_assignees=()
 	rm_assignees=()
 	local _first="${1:-}"
-	if [[ $# -gt 0 && "$_first" != --* ]]; then
+	if [[ $# -gt 0 && "$_first" != -* ]]; then
 		num_or_url="$_first"
 		shift
 	fi
@@ -904,7 +904,7 @@ _rest_issue_edit() {
 		local _arg="$1" _v=""
 		[[ "$_arg" == *=* ]] && { _v="${_arg#*=}"; _arg="${_arg%%=*}"; shift; } || { _v="${2:-}"; shift 2; }
 		case "$_arg" in
-		--repo)            repo="$_v" ;;
+		--repo | -R)       repo="$_v" ;;
 		--title)           title="$_v"; has_title=1 ;;
 		--body)            body="$_v"; has_body=1 ;;
 		--body-file)       body_file="$_v"; has_body=1 ;;
@@ -1135,7 +1135,7 @@ _rest_pr_create() {
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
-		--repo) repo="${2:-}"; shift 2 ;;
+		--repo | -R) [[ $# -ge 2 ]] || return 2; repo="${2:-}"; shift 2 ;;
 		--repo=*) repo="${_arg#--repo=}"; shift ;;
 		--title) title="${2:-}"; shift 2 ;;
 		--title=*) title="${_arg#--title=}"; shift ;;
@@ -1232,7 +1232,7 @@ _rest_issue_view() {
 	local json_fields=""
 
 	local _first="${1:-}"
-	if [[ $# -gt 0 && "$_first" != --* ]]; then
+	if [[ $# -gt 0 && "$_first" != -* ]]; then
 		num_or_url="$_first"
 		shift
 	fi
@@ -1334,7 +1334,7 @@ _rest_pr_view() {
 	local json_fields=""
 
 	local _first="${1:-}"
-	if [[ $# -gt 0 && "$_first" != --* ]]; then
+	if [[ $# -gt 0 && "$_first" != -* ]]; then
 		num_or_url="$_first"
 		shift
 	fi
