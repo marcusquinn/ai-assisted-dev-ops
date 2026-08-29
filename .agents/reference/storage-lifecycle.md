@@ -249,10 +249,21 @@ new inventory is scanned, while completed plans and receipts remain available
 for audit. Each run result includes bounded diagnostics outside the signed v1
 automatic-policy object: inventory/scanned counts, cursor movement, pass
 coverage, and fixed-cardinality reason counts for unknown and protected entries.
-This makes repeated `no-candidates` outcomes distinguishable without changing
-the destructive authority key set. A maintenance failure leaves the affected
-archive intact and does not turn a successful broader cleanup cycle into a
-failure.
+Exact safe reason buckets distinguish sizing, identity drift, unavailable
+evidence, live references, unfinished tasks, retention policy, and selection
+limits without exposing archive paths. A private state record accumulates those
+counts across bounded cursor windows and resets if the inventory or pressure
+state changes.
+
+When a stable inventory completes a full pressure-active scan cycle with zero
+candidates, the result retains `outcome:"no-candidates"` and sets
+`escalation.required:true`. Its fixed command array directs the operator to run
+`worktree-helper.sh recovery plan --output <absolute-new-path>`. Planning is the
+bounded, read-only remediation path described above; it grants no deletion
+authority. Protected and uncertain buckets remain untouched, and only a
+separately reviewed manual plan can proceed to the existing confirmation-bound
+apply path. A maintenance failure leaves the affected archive intact and does
+not turn a successful broader cleanup cycle into a failure.
 
 An originating OpenCode or Claude session identifier is recovery guidance, not
 deletion proof. Session history can reconstruct text edits and intent but may be

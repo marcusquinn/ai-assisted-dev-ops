@@ -1026,7 +1026,9 @@ test_automatic_maintenance_is_bounded_and_policy_bound() {
 		.diagnostics.inventory_count == 3 and .diagnostics.scanned_count == 3 and
 		.diagnostics.coverage_complete == true and .diagnostics.coverage_percent == 100 and
 		.diagnostics.reason_counts.protected_evidence == 1 and
-		.diagnostics.reason_counts.protected_limit == 1
+		.diagnostics.reason_counts.protected_limit == 1 and
+		.diagnostics.classification_reason_counts.source_removal_not_complete == 1 and
+		.diagnostics.classification_reason_counts.selection_limit == 1
 	' >/dev/null || rc=1
 	[[ -d "$protected_bucket" ]] || rc=1
 	[[ -d "$bucket_a" ]] && removed_count=$((removed_count + 0)) || removed_count=$((removed_count + 1))
@@ -1205,11 +1207,123 @@ test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable() {
 		.diagnostics.inventory_count == 1 and .diagnostics.scanned_count == 1 and
 		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 0 and
 		.diagnostics.coverage_complete == true and
-		.diagnostics.reason_counts.unknown_sizing == 1
+		.diagnostics.reason_counts.unknown_sizing == 1 and
+		.diagnostics.classification_reason_counts.sizing_unavailable == 1
 	' >/dev/null || rc=1
 	[[ -d "$bucket_path" ]] || rc=1
 	print_result "automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable" "$rc" \
 		"Expected per-bucket sizing uncertainty to remain non-destructive"
+	return 0
+}
+
+run_zero_candidate_cycle_fixture() {
+	local home_path="$1"
+	local recovery_root="$2"
+	local state_dir="$3"
+
+	uname() {
+		printf 'Linux\n'
+		return 0
+	}
+	aidevops_disk_capacity_snapshot() {
+		local ignored_path="$1"
+		: "$ignored_path"
+		AIDEVOPS_DISK_CAPACITY_TOTAL_KB=100000
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=1
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=0
+		return 0
+	}
+	_worktree_recovery_maintenance_inventory_file() {
+		local output_path="$1"
+		local ignored_platform="$2"
+		: "$ignored_platform"
+		printf 'legacy\t%s/unknown-a\nattributed\t%s/protected\nlegacy\t%s/unknown-b\n' \
+			"$recovery_root" "$recovery_root" "$recovery_root" >"$output_path"
+		return $?
+	}
+	_worktree_recovery_measure_path() {
+		local ignored_path="$1"
+		: "$ignored_path"
+		printf '1024|exact|\n'
+		return 0
+	}
+	_worktree_recovery_plan_attributed_entry_json() {
+		local ignored_role="$1"
+		local ignored_path="$2"
+		local ignored_bytes="$3"
+		: "$ignored_role" "$ignored_path" "$ignored_bytes"
+		jq -cn --arg disposition "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" \
+			'{disposition:$disposition,reasons:["source-removal-not-complete"]}'
+		return $?
+	}
+	HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+		AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN=2 \
+		AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
+		AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+		worktree_recovery_maintenance_run
+	return $?
+}
+
+test_automatic_maintenance_escalates_completed_zero_candidate_cycle() {
+	local home_path="${TEST_DIR}/automatic-cycle-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local first_output="" second_output=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	first_output=$(run_zero_candidate_cycle_fixture "$home_path" "$recovery_root" "$state_dir") || rc=1
+	second_output=$(run_zero_candidate_cycle_fixture "$home_path" "$recovery_root" "$state_dir") || rc=1
+	printf '%s\n' "$first_output" | jq -e '
+		.outcome == "no-candidates" and .policy.pressure_active == true and
+		.policy.store_bytes == null and .diagnostics.scanned_count == 2 and
+		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 2 and
+		.diagnostics.classification_reason_counts.unknown_archive == 1 and
+		.diagnostics.classification_reason_counts.source_removal_not_complete == 1 and
+		.diagnostics.zero_candidate_cycle.scanned_count == 2 and
+		.diagnostics.zero_candidate_cycle.completed_this_run == false and
+		.escalation.required == false
+	' >/dev/null || rc=1
+	printf '%s\n' "$second_output" | jq -e '
+		.outcome == "no-candidates" and .diagnostics.scanned_count == 1 and
+		.diagnostics.cursor_before == 2 and .diagnostics.cursor_after == 0 and
+		.diagnostics.classification_reason_counts.unknown_archive == 1 and
+		.diagnostics.zero_candidate_cycle.scanned_count == 3 and
+		.diagnostics.zero_candidate_cycle.completed_this_run == true and
+		.diagnostics.zero_candidate_cycle.reason_counts.unknown_archive == 2 and
+		.diagnostics.zero_candidate_cycle.reason_counts.source_removal_not_complete == 1 and
+		.escalation.required == true and .escalation.authority == "read-only" and
+		.escalation.command == ["worktree-helper.sh","recovery","plan","--output","<absolute-new-path>"]
+	' >/dev/null || rc=1
+	[[ ! -e "$state_dir/pending" ]] || rc=1
+	print_result "automatic_maintenance_escalates_completed_zero_candidate_cycle" "$rc" \
+		"Expected bounded rotation to preserve mixed reasons and request a read-only manual plan"
+	return 0
+}
+
+test_automatic_maintenance_rejects_symlink_cycle_state() {
+	local home_path="${TEST_DIR}/automatic-cycle-symlink-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local cycle_target="${home_path}/cycle-target"
+	local rc=0
+
+	mkdir -p "$recovery_root" "$state_dir" || rc=1
+	printf 'preserve\n' >"$cycle_target" || rc=1
+	ln -s "$cycle_target" "${state_dir}/zero-candidate-cycle.json" || rc=1
+	if (
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=0 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			worktree_recovery_maintenance_run >/dev/null 2>&1
+	); then rc=1; fi
+	[[ "$(<"$cycle_target")" == "preserve" && -L "${state_dir}/zero-candidate-cycle.json" ]] || rc=1
+	print_result "automatic_maintenance_rejects_symlink_cycle_state" "$rc" \
+		"Expected completed-cycle diagnostics to fail closed without following a state symlink"
 	return 0
 }
 
@@ -1400,8 +1514,10 @@ test_automatic_maintenance_is_bounded_and_policy_bound
 test_automatic_maintenance_checks_capacity_before_aggregate_size
 test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out
 test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable
+test_automatic_maintenance_escalates_completed_zero_candidate_cycle
 test_automatic_maintenance_resumes_interrupted_apply
 test_automatic_maintenance_rejects_symlink_cursor
+test_automatic_maintenance_rejects_symlink_cycle_state
 test_large_plan_avoids_json_argv_limits
 printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]]
