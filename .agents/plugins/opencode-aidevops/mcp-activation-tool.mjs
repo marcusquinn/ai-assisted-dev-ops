@@ -27,30 +27,20 @@ const PLAYWRIGHT_OUTPUT_TOOLS = new Set([
   "playwright_browser_take_screenshot",
 ]);
 
-const MCP_DIAGNOSTIC_MAX_LENGTH = 240;
+const MCP_DIAGNOSTIC_UNAVAILABLE =
+  "diagnostic unavailable; use the documented secure CLI diagnostic path";
+const MCP_STATUS_VALUES = new Set(["connected", "connecting", "disabled", "error", "failed"]);
 
-function sanitizeMcpStatusDiagnostic(statusEntry) {
-  if (!statusEntry || typeof statusEntry.error !== "string" || !statusEntry.error.trim()) {
-    return "diagnostic unavailable; use the documented secure CLI diagnostic path";
-  }
-
-  let detail = statusEntry.error
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\b([A-Z][A-Z0-9_]{1,63})=(?:"[^"]*"|'[^']*'|[^\s]+)/g, "$1=[redacted]")
-    .replace(/\bAuthorization\s*:\s*Bearer\s+[^\s,;]+/gi, "Authorization: Bearer [redacted]")
-    .replace(/\b(api[_-]?key|authorization|password|secret|token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, "$1=[redacted]")
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
-    .replace(/([?&](?:api[_-]?key|password|secret|token)=)[^&\s]+/gi, "$1[redacted]")
-    .trim();
-  if (detail.length > MCP_DIAGNOSTIC_MAX_LENGTH) {
-    detail = `${detail.slice(0, MCP_DIAGNOSTIC_MAX_LENGTH - 1)}…`;
-  }
-  return `diagnostic: ${detail}`;
+function safeMcpStatusDiagnostic() {
+  // The OpenCode SDK currently types the /mcp response as unknown. Until it
+  // exposes a finite structured error code, every status-entry detail remains
+  // untrusted and must stay out of user-visible activation results.
+  return MCP_DIAGNOSTIC_UNAVAILABLE;
 }
 
 class McpFailedStatusError extends Error {
-  constructor(status, phase, statusEntry) {
-    super(`MCP entered ${status} status during ${phase}; ${sanitizeMcpStatusDiagnostic(statusEntry)}`);
+  constructor(status, phase) {
+    super(`MCP entered ${status} status during ${phase}; ${safeMcpStatusDiagnostic()}`);
     this.name = "McpFailedStatusError";
   }
 }
@@ -90,10 +80,10 @@ async function waitForConnection(name, options, phase) {
     }
     const payload = result?.data ?? result;
     const statusEntry = payload?.[name];
-    status = statusEntry?.status || "unknown";
+    status = MCP_STATUS_VALUES.has(statusEntry?.status) ? statusEntry.status : "unknown";
     if (status === "connected") return;
     if (["error", "failed"].includes(status)) {
-      throw new McpFailedStatusError(status, phase, statusEntry);
+      throw new McpFailedStatusError(status, phase);
     }
     await pause(pollIntervalMs);
   } while (Date.now() < deadline);

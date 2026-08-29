@@ -106,3 +106,11 @@ assert generated_config["mcp"]["playwriter"]["command"] == ["npx", "playwriter@0
 assert generated_config["mcp"]["playwriter"]["enabled"] is False
 print("PASS Playwriter Python generator pins legacy and generated commands")
 PY
+
+if grep -Fq 'npm install -g playwriter@0.5.0' "${REPO_ROOT}/.agents/scripts/tool-version-check.sh" &&
+	! grep -Fq 'npm install -g playwriter@latest' "${REPO_ROOT}/.agents/scripts/tool-version-check.sh"; then
+	printf 'PASS Playwriter updater preserves the reviewed pin\n'
+else
+	printf 'FAIL Playwriter updater can restore an unreviewed version\n' >&2
+	exit 1
+fi

@@ -628,7 +628,7 @@ test("limits failed-status recovery to one reset", async () => {
 
   assert.equal(
     await activation.execute({ action: "connect", name: "playwriter" }),
-    "Error: MCP connect failed for playwriter: MCP entered failed status during initial activation; diagnostic: relay launch failed; MCP entered failed status during post-reset activation; diagnostic: protocol handshake failed after one bounded reset",
+    "Error: MCP connect failed for playwriter: MCP entered failed status during initial activation; diagnostic unavailable; use the documented secure CLI diagnostic path; MCP entered failed status during post-reset activation; diagnostic unavailable; use the documented secure CLI diagnostic path after one bounded reset",
   );
   assert.deepEqual(calls, ["connect", "status", "disconnect", "connect", "status"]);
 });
@@ -672,7 +672,7 @@ test("reports failed-status reset errors without reconnecting", async () => {
   assert.deepEqual(calls, ["connect", "status", "disconnect"]);
 });
 
-test("bounds and redacts failed-status diagnostics", async () => {
+test("never renders free-form failed-status diagnostics", async () => {
   const activation = createMcpActivationTool(tool, z, {
     client: {
       async connect() {},
@@ -681,7 +681,7 @@ test("bounds and redacts failed-status diagnostics", async () => {
           data: {
             playwriter: {
               status: "failed",
-              error: `PLAYWRITER_TOKEN=private-value Authorization: Bearer private-bearer ${"x".repeat(400)}`,
+              error: `PLAYWRITER_TOKEN=private-value Authorization: Bearer private-bearer {"cookie":"private-cookie","url":"https://example.invalid/?token=private-query"} ${"x".repeat(400)}`,
               token: "must-not-be-serialized",
             },
           },
@@ -692,9 +692,31 @@ test("bounds and redacts failed-status diagnostics", async () => {
   });
 
   const result = await activation.execute({ action: "connect", name: "playwriter" });
-  assert.match(result, /PLAYWRITER_TOKEN=\[redacted\]/);
-  assert.doesNotMatch(result, /private-value|private-bearer|must-not-be-serialized/);
-  assert.match(result, /…; bounded reset unavailable/);
+  assert.match(result, /diagnostic unavailable; use the documented secure CLI diagnostic path/);
+  assert.doesNotMatch(
+    result,
+    /PLAYWRITER_TOKEN|private-value|private-bearer|private-cookie|private-query|must-not-be-serialized|example\.invalid/,
+  );
+  assert.match(result, /bounded reset unavailable/);
+});
+
+test("normalizes unknown status values before reporting a timeout", async () => {
+  const activation = createMcpActivationTool(tool, z, {
+    client: {
+      async connect() {},
+      async status() {
+        return { data: { playwriter: { status: "PLAYWRITER_TOKEN=private-value" } } };
+      },
+    },
+    allowedNames: ["playwriter"],
+    connectTimeoutMs: 1,
+    pollIntervalMs: 1,
+    pause: async () => new Promise((resolve) => setTimeout(resolve, 2)),
+  });
+
+  const result = await activation.execute({ action: "connect", name: "playwriter" });
+  assert.match(result, /last status: unknown/);
+  assert.doesNotMatch(result, /PLAYWRITER_TOKEN|private-value/);
 });
 
 test("does not reset status API errors or timeouts", async () => {

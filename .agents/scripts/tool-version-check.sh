@@ -128,7 +128,7 @@ NPM_TOOLS=(
 	"npm|BDUI|bdui|--version|bdui|npm install -g bdui@latest"
 	"npm|Chrome DevTools MCP|chrome-devtools-mcp|--version|chrome-devtools-mcp|npm install -g chrome-devtools-mcp@latest"
 	"npm|GSC MCP|mcp-server-gsc|--version|mcp-server-gsc|npm install -g mcp-server-gsc@latest"
-	"npm|Playwriter MCP|playwriter|--version|playwriter|npm install -g playwriter@latest"
+	"npm|Playwriter MCP|playwriter|--version|playwriter|npm install -g playwriter@0.5.0"
 	"npm|macOS Automator MCP|macos-automator-mcp|--version|@steipete/macos-automator-mcp|npm install -g @steipete/macos-automator-mcp@latest"
 	"npm|Claude Code MCP|claude-code-mcp|--version|@steipete/claude-code-mcp|npm install -g @steipete/claude-code-mcp@latest"
 	"npm|Google Workspace CLI|gws|--version|@googleworkspace/cli|npm install -g @googleworkspace/cli@latest"
