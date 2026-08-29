@@ -151,6 +151,54 @@ test("pins legacy Playwriter commands while preserving custom commands", () => {
   assert.equal(customLatestWithYesConfig.tools["playwriter_*"], false);
 });
 
+test("opts framework-generated Playwriter commands into the authenticated relay launcher", () => {
+  const previous = process.env.AIDEVOPS_PLAYWRITER_AUTHENTICATED_RELAY;
+  process.env.AIDEVOPS_PLAYWRITER_AUTHENTICATED_RELAY = "1";
+  try {
+    const generated = { mcp: {}, tools: {} };
+    registerMcpServers(generated);
+    assert.match(generated.mcp.playwriter.command[0], /node$/);
+    assert.match(generated.mcp.playwriter.command[1], /playwriter-authenticated-relay\.mjs$/);
+    assert.equal(generated.mcp.playwriter.command.at(-1), "playwriter@0.5.0");
+    assert.ok(!generated.mcp.playwriter.command.some((part) => part.includes("TOKEN")));
+
+    const previousGenerated = {
+      mcp: {
+        playwriter: {
+          type: "local",
+          command: ["npx", "playwriter@0.5.0"],
+          enabled: true,
+        },
+      },
+      tools: {},
+    };
+    registerMcpServers(previousGenerated);
+    assert.match(
+      previousGenerated.mcp.playwriter.command[1],
+      /playwriter-authenticated-relay\.mjs$/,
+    );
+    assert.equal(previousGenerated.mcp.playwriter.enabled, false);
+
+    const custom = {
+      mcp: {
+        playwriter: {
+          type: "local",
+          command: ["playwriter", "serve", "--host", "127.0.0.1"],
+          enabled: true,
+        },
+      },
+      tools: {},
+    };
+    registerMcpServers(custom);
+    assert.deepEqual(custom.mcp.playwriter.command, [
+      "playwriter", "serve", "--host", "127.0.0.1",
+    ]);
+  } finally {
+    if (previous === undefined) delete process.env.AIDEVOPS_PLAYWRITER_AUTHENTICATED_RELAY;
+    else process.env.AIDEVOPS_PLAYWRITER_AUTHENTICATED_RELAY = previous;
+  }
+});
+
 test("migrates browser MCPs to disconnected and globally denied", () => {
   const runtime = createMcpSessionRuntime("/managed/workspace", {
     tempRoot: "/managed/tmp",

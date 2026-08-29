@@ -91,16 +91,19 @@ mcp:
 
 Use `@playwriter` for browser tasks. The agent connects Playwriter before its first operation, receives `playwriter_*` tools on the next step, and disconnects after the requested browser work. The activation tool accepts only MCP names declared by the plugin registry.
 
-### Authenticated Tab Preflight
+### Authenticated Relay and Tab Preflight
 
 Before requesting authentication, credentials, or any authenticated action:
 
-Pinning to `0.5.0` does not complete the secure authenticated-tab lifecycle.
-Until upstream issue `remorses/playwriter#119` is released in this reviewed pin,
-hardened authenticated-tab use requires a separately tokenized, explicit
-`playwriter serve` relay and a client launched through
-`aidevops secret PLAYWRITER_TOKEN -- ...`. Do not place token values in MCP
-configuration, commands, logs, or prompts.
+OpenCode can opt into the framework-owned authenticated localhost relay by
+starting the app with `AIDEVOPS_PLAYWRITER_AUTHENTICATED_RELAY=1` and injecting
+`PLAYWRITER_TOKEN` through `aidevops secret PLAYWRITER_TOKEN -- opencode`. Store
+the value first with `aidevops secret set PLAYWRITER_TOKEN`; never place it in
+MCP configuration, commands, logs, or prompts. The launcher accepts only the
+reviewed `playwriter@0.5.0` command, requires a 32-character token, verifies the
+relay version and token challenge, records private ownership state, and stops
+only a relay process it started. A conflicting or unverifiable relay fails
+closed without `--replace` or port-owner termination.
 
 1. Connect Playwriter and enumerate the accessible pages with `context.pages()`.
 2. Match only the intended target by its expected URL and title. Confirm that the

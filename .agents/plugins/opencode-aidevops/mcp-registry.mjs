@@ -7,12 +7,16 @@ import { accessSync, constants } from "fs";
 import { randomUUID } from "node:crypto";
 import { homedir, platform } from "os";
 import { delimiter, isAbsolute, join, relative, resolve } from "path";
+import { fileURLToPath } from "url";
 
 const IS_MACOS = platform() === "darwin";
 const MCP_WORKSPACE_MARKER = ".aidevops-mcp-workspace";
 const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.79";
 const PLAYWRITER_MCP_PACKAGE = "playwriter@0.5.0";
 const LEGACY_PLAYWRITER_MCP_PACKAGE = "playwriter@latest";
+const PLAYWRITER_AUTHENTICATED_RELAY_LAUNCHER = fileURLToPath(
+  new URL("../../scripts/playwriter-authenticated-relay.mjs", import.meta.url),
+);
 
 /**
  * Build unique per-plugin MCP workspace metadata without creating files.
@@ -410,7 +414,10 @@ function buildMcpConfigEntry(mcp, runtime) {
   }
   const workspace = runtime?.workspaces?.[mcp.name];
   if (!workspace) {
-    return { type: "local", command: mcp.command, enabled: mcp.eager };
+    const command = mcp.name === "playwriter" && authenticatedPlaywriterRelayEnabled()
+      ? authenticatedPlaywriterRelayCommand(mcp.command)
+      : mcp.command;
+    return { type: "local", command, enabled: mcp.eager };
   }
 
   const outputDir = join(workspace.directory, ".playwright-mcp");
@@ -475,6 +482,23 @@ function isLegacyGeneratedPlaywriterCommand(command) {
   return isLegacyNpxPlaywriterCommand(command) || isLegacyBunPlaywriterCommand(command);
 }
 
+function authenticatedPlaywriterRelayEnabled() {
+  return process.env.AIDEVOPS_PLAYWRITER_AUTHENTICATED_RELAY === "1";
+}
+
+function authenticatedPlaywriterRelayCommand(command) {
+  const node = findExecutable("node") || "node";
+  return [node, PLAYWRITER_AUTHENTICATED_RELAY_LAUNCHER, ...command];
+}
+
+function isCurrentGeneratedPlaywriterCommand(command) {
+  if (!Array.isArray(command)) return false;
+  const current = command.map((part) => (
+    part === PLAYWRITER_MCP_PACKAGE ? LEGACY_PLAYWRITER_MCP_PACKAGE : part
+  ));
+  return isLegacyGeneratedPlaywriterCommand(current);
+}
+
 /**
  * Register a single MCP server in the config. Returns true if newly registered.
  * @param {object} mcp - MCP registry entry
@@ -493,6 +517,13 @@ function registerSingleMcp(mcp, config, runtime) {
     && isLegacyGeneratedPlaywriterCommand(config.mcp[mcp.name].command)) {
     const command = config.mcp[mcp.name].command;
     command[command.indexOf(LEGACY_PLAYWRITER_MCP_PACKAGE)] = PLAYWRITER_MCP_PACKAGE;
+  }
+  if (mcp.name === "playwriter"
+    && authenticatedPlaywriterRelayEnabled()
+    && isCurrentGeneratedPlaywriterCommand(config.mcp[mcp.name].command)) {
+    config.mcp[mcp.name].command = authenticatedPlaywriterRelayCommand(
+      config.mcp[mcp.name].command,
+    );
   }
 
   // Runtime-activated MCPs must stay disconnected at startup, including when
