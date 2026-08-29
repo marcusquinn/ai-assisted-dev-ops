@@ -114,3 +114,39 @@ else
 	printf 'FAIL Playwriter updater can restore an unreviewed version\n' >&2
 	exit 1
 fi
+
+python3 - "$REPO_ROOT" <<'PY'
+import pathlib
+import sys
+
+playwriter_doc = (pathlib.Path(sys.argv[1]) / ".agents/tools/browser/playwriter.md").read_text()
+required_contract = (
+    "verify\nthe author of **each newly observed message**",
+    "do not infer its author from timing, bubble order,\nalignment, colour, or a generic chat header",
+    "Treat a message verified as operator-authored as local context",
+    "Treat a message verified as support-authored as eligible",
+    "Ambiguous attribution must never\n   trigger an external reply",
+)
+for requirement in required_contract:
+    assert requirement in playwriter_doc, requirement
+
+
+def reply_disposition(message):
+    """Bounded fixture model for the documented attribution contract."""
+    if message["accessible_sender"] == "Support":
+        return "reply-eligible"
+    if message["accessible_sender"] == "Operator":
+        return "local-context"
+    return "pause"
+
+
+fixture = (
+    {"accessible_sender": "Support", "text": "How can I help?"},
+    {"accessible_sender": "Operator", "text": "I have replied."},
+    {"accessible_sender": None, "text": "Please confirm."},
+)
+assert [reply_disposition(message) for message in fixture] == [
+    "reply-eligible", "local-context", "pause",
+]
+print("PASS Playwriter chat attribution contract recognizes support, operator, and ambiguous messages")
+PY

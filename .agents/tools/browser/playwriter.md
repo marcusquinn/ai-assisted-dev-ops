@@ -169,6 +169,31 @@ await page.locator('.chart').screenshot({ path: 'chart.png' })
 await page.pdf({ path: 'page.pdf', format: 'A4' })
 ```
 
+### Two-Sided Messaging and Live Chat
+
+For support chat, social messaging, webmail, and any other two-sided UI, verify
+the author of **each newly observed message** before interpreting it as a reply
+or composing an external response. A new bubble is not evidence of a
+third-party response: do not infer its author from timing, bubble order,
+alignment, colour, or a generic chat header.
+
+1. Use explicit DOM or accessibility evidence: an accessible sender label,
+   stable participant metadata, or a verified mapping between the chat side and
+   a named participant.
+2. Record only the attributed author and the bounded message text needed for
+   the current reply; do not expose unrelated participants or full history.
+3. Treat a message verified as operator-authored as local context, not a reply
+   to answer. Treat a message verified as support-authored as eligible for the
+   already authorized response flow.
+4. If the bubble is unlabeled, its sender evidence conflicts, or the mapping is
+   ambiguous, pause and ask the operator. Ambiguous attribution must never
+   trigger an external reply.
+
+Example classification: an accessible label of “Operator” is local context; a
+verified “Support” label may be answered within the approved scope; an
+unlabeled bubble pauses the workflow. Preserve all existing consent,
+approved-tab, privacy, and mutation boundaries.
+
 ## Security
 
 - **Local WebSocket** on `localhost:19988` — no CORS, only local processes connect
