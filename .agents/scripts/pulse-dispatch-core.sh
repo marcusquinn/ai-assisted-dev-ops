@@ -35,6 +35,8 @@
 #   - _dispatch_run_guarded_worktree_cleanup
 #   - _dispatch_cleanup_worktree_capacity
 #   - _dispatch_worktree_capacity_gate
+#   - _dispatch_run_guarded_disk_cleanup
+#   - _dispatch_cleanup_disk_pressure
 #   - _dispatch_dedup_check_layers  (t1999: extracted from dispatch_with_dedup)
 #   - dispatch_with_dedup           (t1999: thin orchestrator, <80 lines)
 #   - _ensure_issue_body_has_brief
@@ -65,6 +67,9 @@ _PULSE_DISPATCH_FALSE="false"
 _PULSE_DISPATCH_ELIGIBILITY_STAGE="eligibility_gate"
 _PULSE_DISPATCH_NMR_LABEL="needs-maintainer-review"
 _PULSE_DISPATCH_COLLABORATOR_ASSOCIATION="COLLABORATOR"
+# One Pulse invocation sources this module once. This guard therefore bounds
+# synchronous global disk-pressure recovery to one guarded cleanup per cycle.
+AIDEVOPS_DISPATCH_DISK_PRESSURE_CLEANUP_ATTEMPTED=0
 
 # t2863: Module-level variable defaults (set -u guards).
 # Ensures LOGFILE is safe to dereference in all functions when this module
@@ -1409,6 +1414,54 @@ _dispatch_worktree_capacity_gate() {
 	return $?
 }
 
+_dispatch_run_guarded_disk_cleanup() {
+	cleanup_worktrees
+	return $?
+}
+
+# At the global worktree-filesystem capacity gate, synchronously run the
+# existing all-repository guarded cleanup once per Pulse cycle, then recheck
+# both capacity thresholds. The cleanup owns all destructive safety guards.
+_dispatch_cleanup_disk_pressure() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local target_path="$3"
+	local before_reason="$4"
+	local before_kb="$5"
+	local before_percent="$6"
+	local cleanup_timeout="${AIDEVOPS_DISPATCH_DISK_CLEANUP_TIMEOUT:-60}"
+	local cleanup_rc=0
+	local after_rc=0
+
+	if [[ "${AIDEVOPS_DISPATCH_DISK_PRESSURE_CLEANUP_ATTEMPTED:-0}" == "1" ]]; then
+		echo "[dispatch_with_dedup] Disk-pressure cleanup already attempted this Pulse cycle; dispatch remains fail-closed for #${issue_number} in ${repo_slug} (reason=${before_reason}, available=${before_kb}KB/${before_percent}%)" >>"$LOGFILE"
+		return 1
+	fi
+	AIDEVOPS_DISPATCH_DISK_PRESSURE_CLEANUP_ATTEMPTED=1
+	[[ "$cleanup_timeout" =~ ^[0-9]+$ ]] || cleanup_timeout=60
+	[[ "$cleanup_timeout" -ge 1 ]] || cleanup_timeout=1
+	if ! declare -F cleanup_worktrees >/dev/null 2>&1; then
+		echo "[dispatch_with_dedup] Disk-pressure cleanup unavailable for #${issue_number} in ${repo_slug}: guarded all-repository cleanup missing (before reason=${before_reason}, available=${before_kb}KB/${before_percent}%); dispatch remains fail-closed" >>"$LOGFILE"
+		return 1
+	fi
+	if ! declare -F run_stage_with_timeout >/dev/null 2>&1; then
+		echo "[dispatch_with_dedup] Disk-pressure cleanup unavailable for #${issue_number} in ${repo_slug}: bounded stage runner missing (before reason=${before_reason}, available=${before_kb}KB/${before_percent}%); dispatch remains fail-closed" >>"$LOGFILE"
+		return 1
+	fi
+
+	echo "[dispatch_with_dedup] Disk pressure for #${issue_number} in ${repo_slug}: reason=${before_reason}, available=${before_kb}KB/${before_percent}%; attempting guarded all-repository cleanup once this Pulse cycle (timeout ${cleanup_timeout}s)" >>"$LOGFILE"
+	run_stage_with_timeout "dispatch_disk_pressure_cleanup" "$cleanup_timeout" \
+		_dispatch_run_guarded_disk_cleanup || cleanup_rc=$?
+	aidevops_worktree_capacity_check "$target_path" || after_rc=$?
+	if [[ "$after_rc" -eq 0 ]]; then
+		echo "[dispatch_with_dedup] Guarded disk-pressure cleanup recovered dispatch capacity for #${issue_number} in ${repo_slug}: ${before_kb}KB/${before_percent}% -> ${AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB}KB/${AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT}% (cleanup_rc=${cleanup_rc})" >>"$LOGFILE"
+		return 0
+	fi
+
+	echo "[dispatch_with_dedup] Guarded disk-pressure cleanup could not recover dispatch capacity for #${issue_number} in ${repo_slug}: before reason=${before_reason}, available=${before_kb}KB/${before_percent}%; after reason=${AIDEVOPS_DISK_CAPACITY_REASON}, available=${AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB}KB/${AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT}% (cleanup_rc=${cleanup_rc}, capacity_rc=${after_rc}); existing cleanup safety gates preserved remaining worktrees" >>"$LOGFILE"
+	return 1
+}
+
 _dispatch_dedup_check_layers() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -1447,11 +1500,18 @@ _dispatch_dedup_check_layers() {
 	# worktree creation boundary, covering interactive and non-Pulse callers.
 	_dss_t0=$(_ds_now_ns)
 	local _capacity_rc=0
-	aidevops_worktree_capacity_check "${AIDEVOPS_WORKTREE_BASE_DIR:-$HOME}" || _capacity_rc=$?
+	local _capacity_path="${AIDEVOPS_WORKTREE_BASE_DIR:-$HOME}"
+	aidevops_worktree_capacity_check "$_capacity_path" || _capacity_rc=$?
 	if [[ "$_capacity_rc" -ne 0 ]]; then
-		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: disk space critical (reason=${AIDEVOPS_DISK_CAPACITY_REASON}, available=${AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB}KB/${AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT}%, require at least ${AIDEVOPS_MIN_WORKTREE_FREE_KB:-5242880}KB and ${AIDEVOPS_MIN_WORKTREE_FREE_PERCENT:-5}%). Run: worktree-helper.sh clean --auto --force-merged" >>"$LOGFILE"
-		_ds_record "$issue_number" "$repo_slug" "dedup.disk_space" "$_dss_t0"
-		return 1
+		if _dispatch_cleanup_disk_pressure "$issue_number" "$repo_slug" "$_capacity_path" \
+			"${AIDEVOPS_DISK_CAPACITY_REASON}" "${AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB}" \
+			"${AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT}"; then
+			_ds_record "$issue_number" "$repo_slug" "dedup.disk_space" "$_dss_t0"
+		else
+			echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: disk space critical (reason=${AIDEVOPS_DISK_CAPACITY_REASON}, available=${AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB}KB/${AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT}%, require at least ${AIDEVOPS_MIN_WORKTREE_FREE_KB:-5242880}KB and ${AIDEVOPS_MIN_WORKTREE_FREE_PERCENT:-5}%). Run: worktree-helper.sh clean --auto --force-merged" >>"$LOGFILE"
+			_ds_record "$issue_number" "$repo_slug" "dedup.disk_space" "$_dss_t0"
+			return 1
+		fi
 	fi
 	_ds_record "$issue_number" "$repo_slug" "dedup.disk_space" "$_dss_t0"
 

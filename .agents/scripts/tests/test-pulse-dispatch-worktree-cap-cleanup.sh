@@ -24,6 +24,8 @@ COUNT_FAIL=0
 GIT_MODE="valid"
 STAGE_TIMEOUT=""
 STAGE_RC=0
+DISK_MODE="blocked"
+CLEANUP_RUNS=0
 
 print_result() {
 	local name="$1"
@@ -54,6 +56,8 @@ eval "${PRODUCTION_COUNT_HELPER/_dispatch_registered_worktree_count/_production_
 eval "$(extract_helper _dispatch_run_guarded_worktree_cleanup)"
 eval "$(extract_helper _dispatch_cleanup_worktree_capacity)"
 eval "$(extract_helper _dispatch_worktree_capacity_gate)"
+eval "$(extract_helper _dispatch_run_guarded_disk_cleanup)"
+eval "$(extract_helper _dispatch_cleanup_disk_pressure)"
 
 git() {
 	case "$GIT_MODE" in
@@ -78,10 +82,41 @@ run_stage_with_timeout() {
 	local rc=0
 	STAGE_TIMEOUT="$2"
 	shift 2
-	[[ "$stage_name" == "dispatch_worktree_capacity_cleanup" ]] || return 2
+	[[ "$stage_name" == "dispatch_worktree_capacity_cleanup" || "$stage_name" == "dispatch_disk_pressure_cleanup" ]] || return 2
 	[[ "$STAGE_RC" -eq 0 ]] || return "$STAGE_RC"
 	"$@" || rc=$?
 	return "$rc"
+}
+
+cleanup_worktrees() {
+	CLEANUP_RUNS=$((CLEANUP_RUNS + 1))
+	if [[ "$DISK_MODE" == "recover" ]]; then
+		DISK_MODE="available"
+	fi
+	return 0
+}
+
+aidevops_worktree_capacity_check() {
+	case "$DISK_MODE" in
+	available)
+		AIDEVOPS_DISK_CAPACITY_REASON="available"
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=6291456
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=6
+		return 0
+		;;
+	unknown)
+		AIDEVOPS_DISK_CAPACITY_REASON="capacity-unknown"
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=0
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=0
+		return 2
+		;;
+	*)
+		AIDEVOPS_DISK_CAPACITY_REASON="below-minimum-percent"
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=4194304
+		AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=4
+		return 1
+		;;
+	esac
 }
 
 test_cleanup_recovers_capacity() {
@@ -214,6 +249,44 @@ test_missing_bounded_runner_fails_closed() {
 	return 0
 }
 
+test_disk_cleanup_recovers_capacity_once() {
+	AIDEVOPS_DISPATCH_DISK_PRESSURE_CLEANUP_ATTEMPTED=0
+	AIDEVOPS_DISPATCH_DISK_CLEANUP_TIMEOUT=19
+	DISK_MODE="recover"
+	CLEANUP_RUNS=0
+	STAGE_TIMEOUT=""
+	STAGE_RC=0
+	if _dispatch_cleanup_disk_pressure 30886 "owner/repo" "$TEST_ROOT" "below-minimum-percent" 4194304 4 &&
+		[[ "$CLEANUP_RUNS" -eq 1 ]] &&
+		[[ "$STAGE_TIMEOUT" == "19" ]] &&
+		grep -q "recovered dispatch capacity.*4194304KB/4% -> 6291456KB/6%" "$LOGFILE"; then
+		print_result "disk gate invokes one guarded cleanup and proceeds after capacity recheck" 0
+	else
+		print_result "disk gate invokes one guarded cleanup and proceeds after capacity recheck" 1
+	fi
+	return 0
+}
+
+test_disk_cleanup_remains_fail_closed_and_is_cycle_scoped() {
+	AIDEVOPS_DISPATCH_DISK_PRESSURE_CLEANUP_ATTEMPTED=0
+	DISK_MODE="blocked"
+	CLEANUP_RUNS=0
+	STAGE_RC=0
+	if _dispatch_cleanup_disk_pressure 30886 "owner/repo" "$TEST_ROOT" "below-minimum-percent" 4194304 4; then
+		print_result "disk cleanup remains fail-closed when capacity stays blocked" 1
+	elif _dispatch_cleanup_disk_pressure 30887 "owner/repo" "$TEST_ROOT" "below-minimum-percent" 4194304 4; then
+		print_result "disk cleanup runs only once per Pulse cycle" 1
+	elif [[ "$CLEANUP_RUNS" -eq 1 ]] &&
+		grep -q "cleanup_rc=0, capacity_rc=1" "$LOGFILE" &&
+		grep -q "already attempted this Pulse cycle" "$LOGFILE"; then
+		print_result "disk cleanup remains fail-closed and runs only once per Pulse cycle" 0
+	else
+		print_result "disk cleanup remains fail-closed and runs only once per Pulse cycle" 1
+	fi
+	STAGE_RC=0
+	return 0
+}
+
 main() {
 	test_cleanup_recovers_capacity
 	test_cleanup_fails_closed_without_reduction
@@ -222,6 +295,8 @@ main() {
 	test_post_cleanup_recount_failure_remains_fail_closed
 	test_count_probe_failure_remains_fail_closed
 	test_missing_bounded_runner_fails_closed
+	test_disk_cleanup_recovers_capacity_once
+	test_disk_cleanup_remains_fail_closed_and_is_cycle_scoped
 
 	printf 'Ran %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -eq 0 ]]; then
