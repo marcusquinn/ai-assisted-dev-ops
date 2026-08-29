@@ -13,14 +13,15 @@
 #
 # Functions:
 #   platform_detect <repo_path>                           — detect platform, prints github|gitea|gitlab|local
-#   platform_create_issue <slug> <title> <body_file> <labels>   — create an issue
+#   platform_create_issue <slug> <title> <body_file|-> <labels> — create an issue
 #   platform_get_issue <slug> <num>                       — view an issue (JSON)
-#   platform_comment_issue <slug> <num> <body_file>       — post a comment
-#   platform_create_pr <slug> <title> <body_file> <base> <head> — create a pull request
+#   platform_comment_issue <slug> <num> <body_file|->      — post a comment
+#   platform_create_pr <slug> <title> <body_file|-> <base> <head> — create a pull request
+#   Exact body path "-" forwards piped stdin to the managed GitHub wrapper.
 #
 # Local platform (no remote):
 #   Operations are logged to ~/.aidevops/logs/platform-local-ops.log and exit 0.
-#   No remote calls are made.
+#   No remote calls are made. Body stdin is consumed once and discarded.
 #
 # Gitea/GitLab platforms:
 #   All operations exit 1 with "P9 task — adapter not implemented".
@@ -72,11 +73,25 @@ _platform_require_gh() {
 	return 0
 }
 
-_platform_require_file() {
+_platform_require_body_input() {
 	local body_file="$1"
+	if [[ "$body_file" == "-" ]]; then
+		return 0
+	fi
 	if [[ ! -f "$body_file" ]]; then
 		print_error "Body file not found: $body_file"
 		return 1
+	fi
+	return 0
+}
+
+_platform_consume_local_stdin_body() {
+	local body_file="$1"
+	if [[ "$body_file" == "-" ]]; then
+		command cat >/dev/null || {
+			print_error "Failed to consume local platform body from stdin"
+			return 1
+		}
 	fi
 	return 0
 }
@@ -157,7 +172,7 @@ platform_detect() {
 
 # ---------------------------------------------------------------------------
 # platform_create_issue: create an issue on the detected platform
-# Args: <slug> <title> <body_file> <labels>
+# Args: <slug> <title> <body_file|-> <labels>
 # labels: comma-separated label list (may be empty)
 # ---------------------------------------------------------------------------
 platform_create_issue() {
@@ -166,7 +181,7 @@ platform_create_issue() {
 	local body_file="$3"
 	local labels="${4:-}"
 
-	_platform_require_file "$body_file" || return 1
+	_platform_require_body_input "$body_file" || return 1
 
 	local platform
 	platform=$(platform_detect "$(pwd)")
@@ -176,9 +191,10 @@ platform_create_issue() {
 		_platform_require_gh || return 1
 		local label_args=()
 		[[ -n "$labels" ]] && label_args=("--label" "$labels")
-		gh issue create --repo "$slug" --title "$title" --body-file "$body_file" "${label_args[@]}" # aidevops-allow: raw-gh-wrapper
+		gh issue create --repo "$slug" --title "$title" --body-file "$body_file" "${label_args[@]}" || return 1 # aidevops-allow: raw-gh-wrapper
 		;;
 	local)
+		_platform_consume_local_stdin_body "$body_file" || return 1
 		_platform_local_log "create_issue" "slug=${slug} title=${title}"
 		;;
 	*)
@@ -219,14 +235,14 @@ platform_get_issue() {
 
 # ---------------------------------------------------------------------------
 # platform_comment_issue: post a comment on an issue
-# Args: <slug> <num> <body_file>
+# Args: <slug> <num> <body_file|->
 # ---------------------------------------------------------------------------
 platform_comment_issue() {
 	local slug="$1"
 	local num="$2"
 	local body_file="$3"
 
-	_platform_require_file "$body_file" || return 1
+	_platform_require_body_input "$body_file" || return 1
 
 	local platform
 	platform=$(platform_detect "$(pwd)")
@@ -234,9 +250,10 @@ platform_comment_issue() {
 	case "$platform" in
 	github)
 		_platform_require_gh || return 1
-		gh issue comment "$num" --repo "$slug" --body-file "$body_file"
+		gh issue comment "$num" --repo "$slug" --body-file "$body_file" || return 1
 		;;
 	local)
+		_platform_consume_local_stdin_body "$body_file" || return 1
 		_platform_local_log "comment_issue" "slug=${slug} num=${num}"
 		;;
 	*)
@@ -249,7 +266,7 @@ platform_comment_issue() {
 
 # ---------------------------------------------------------------------------
 # platform_create_pr: create a pull request
-# Args: <slug> <title> <body_file> <base> <head>
+# Args: <slug> <title> <body_file|-> <base> <head>
 # ---------------------------------------------------------------------------
 platform_create_pr() {
 	local slug="$1"
@@ -258,7 +275,7 @@ platform_create_pr() {
 	local base="$4"
 	local head="$5"
 
-	_platform_require_file "$body_file" || return 1
+	_platform_require_body_input "$body_file" || return 1
 
 	local platform
 	platform=$(platform_detect "$(pwd)")
@@ -266,9 +283,10 @@ platform_create_pr() {
 	case "$platform" in
 	github)
 		_platform_require_gh || return 1
-		gh pr create --repo "$slug" --title "$title" --body-file "$body_file" --base "$base" --head "$head" # aidevops-allow: raw-gh-wrapper
+		gh pr create --repo "$slug" --title "$title" --body-file "$body_file" --base "$base" --head "$head" || return 1 # aidevops-allow: raw-gh-wrapper
 		;;
 	local)
+		_platform_consume_local_stdin_body "$body_file" || return 1
 		_platform_local_log "create_pr" "slug=${slug} title=${title} base=${base} head=${head}"
 		;;
 	*)
