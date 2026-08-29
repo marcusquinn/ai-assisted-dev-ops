@@ -186,6 +186,22 @@ if [[ " $* " == *" repo view "* ]]; then
   printf 'owner/aidevops\n'
   exit 0
 fi
+if [[ " $* " == *" api user "* ]]; then
+  if [[ "${PULSE_CHECK_PERMISSION_FIXTURE:-write}" == "unknown-user" ]]; then
+    printf '\n'
+  else
+    printf 'fixture-user\n'
+  fi
+  exit 0
+fi
+if [[ " $* " == *" api -i /repos/"*"/collaborators/fixture-user/permission "* || " $* " == *" api -i repos/"*"/collaborators/fixture-user/permission "* ]]; then
+  if [[ "${PULSE_CHECK_PERMISSION_FIXTURE:-write}" == "lookup-failure" ]]; then
+    printf 'simulated permission lookup failure\n' >&2
+    exit 1
+  fi
+  printf 'HTTP/2 200\n\n{"permission":"%s"}\n' "${PULSE_CHECK_PERMISSION_FIXTURE:-write}"
+  exit 0
+fi
 if [[ " $* " == *" api graphql "* ]]; then
   if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "dependency-scan-error" ]]; then
     printf 'simulated dependency lookup failure\n' >&2
@@ -552,6 +568,30 @@ assert_contains "apply body carries marker" "aidevops:generator=pulse-check find
 assert_contains "apply body carries verification" ".agents/scripts/tests/test-pulse-check-helper.sh" "$BODY"
 assert_not_contains "apply body omits private slug" "private/repo-one" "$BODY"
 assert_not_contains "apply body omits issue title" "secret one" "$BODY"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+READ_APPLY_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_PERMISSION_FIXTURE=read" "$HELPER" apply --repo owner/aidevops 2>&1)
+READ_CAPTURE=""
+[[ -f "${TEST_ROOT}/capture.txt" ]] && READ_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+assert_contains "read actor receives bounded authority warning" "insufficient-permission:read" "$READ_APPLY_OUT"
+assert_contains "read actor still receives report" "Pulse Check" "$READ_APPLY_OUT"
+assert_eq "read actor creates no GitHub writes" "" "$READ_CAPTURE"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+UNKNOWN_APPLY_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_PERMISSION_FIXTURE=unknown-user" "$HELPER" apply --repo owner/aidevops 2>&1)
+UNKNOWN_CAPTURE=""
+[[ -f "${TEST_ROOT}/capture.txt" ]] && UNKNOWN_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+assert_contains "unknown actor fails closed" "current-user-lookup-failed" "$UNKNOWN_APPLY_OUT"
+assert_contains "unknown actor still receives report" "Pulse Check" "$UNKNOWN_APPLY_OUT"
+assert_eq "unknown actor creates no GitHub writes" "" "$UNKNOWN_CAPTURE"
+
+rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
+LOOKUP_FAILURE_APPLY_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_PERMISSION_FIXTURE=lookup-failure" "$HELPER" apply --repo owner/aidevops 2>&1)
+LOOKUP_FAILURE_CAPTURE=""
+[[ -f "${TEST_ROOT}/capture.txt" ]] && LOOKUP_FAILURE_CAPTURE=$(<"${TEST_ROOT}/capture.txt")
+assert_contains "permission lookup failure fails closed" "permission-lookup-failed:api-failure" "$LOOKUP_FAILURE_APPLY_OUT"
+assert_contains "permission lookup failure still receives report" "Pulse Check" "$LOOKUP_FAILURE_APPLY_OUT"
+assert_eq "permission lookup failure creates no GitHub writes" "" "$LOOKUP_FAILURE_CAPTURE"
 
 rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
 CONFIGURED_OUT=$(env "${COMMON_ENV[@]}" "AIDEVOPS_FRAMEWORK_REPO=${FRAMEWORK_REPO}" "$HELPER" apply 2>&1)

@@ -642,6 +642,13 @@ _apply_findings() {
 		print_warning "pulse-check: skipping issue writes while GitHub API cooldown or dispatch API block is active"
 		return 0
 	fi
+	_load_gh_wrappers || return 1
+	#aidevops:trust-boundary — public issue creation can succeed for read actors;
+	# require a fresh collaborator-permission lookup before every apply write path.
+	if ! _gh_current_user_allows_repo_write "$slug"; then
+		print_warning "pulse-check: generated report but skipped issue writes; GitHub actor lacks repository write authority (${AIDEVOPS_GH_WRITE_PERMISSION_REASON:-unknown})"
+		return 0
+	fi
 	_repo_owns_framework_write_surface "$slug" || return 1
 
 	local applied_count=0
