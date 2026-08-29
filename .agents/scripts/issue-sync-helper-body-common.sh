@@ -119,16 +119,27 @@ _body_sync_scan_file() {
 	local body_file="$1"
 	local body_role="${2:-body}"
 	local scanner="${BODY_SYNC_PROMPT_SCANNER:-${SCRIPT_DIR}/prompt-guard-helper.sh}"
+	local scan_status=0
 	[[ -x "$scanner" ]] || {
 		print_error "Held body sync cannot verify the ${body_role} body in ${body_file}: prompt scanner unavailable"
 		return 1
 	}
 	PROMPT_GUARD_POLICY="${BODY_SYNC_PROMPT_SCANNER_POLICY:-moderate}" \
-		PROMPT_GUARD_QUIET=true "$scanner" check-file "$body_file" >/dev/null || {
+		PROMPT_GUARD_QUIET=true "$scanner" check-file "$body_file" >/dev/null || scan_status=$?
+	#aidevops:trust-boundary -- only the scanner's documented below-threshold
+	# warning status is non-blocking; blocks, matcher errors, and unknown statuses
+	# continue to fail closed before any issue-body mutation.
+	case "$scan_status" in
+	0) return 0 ;;
+	2)
+		print_info "Held body sync observed a below-threshold ${body_role}-body prompt warning under ${BODY_SYNC_PROMPT_SCANNER_POLICY:-moderate} policy"
+		return 0
+		;;
+	*)
 		print_error "Held body sync blocked by ${body_role}-body prompt-injection scan for ${body_file}"
 		return 1
-	}
-	return 0
+		;;
+	esac
 }
 
 _body_sync_validate_authoritative_body() {
