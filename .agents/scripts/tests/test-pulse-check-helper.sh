@@ -479,6 +479,8 @@ SHORTFALL_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=shortfall" \
 	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-shortfall.sh" "$HELPER" json 2>&1)
 SHORTFALL_IDS=$(printf '%s' "$SHORTFALL_OUT" | jq -r '[.findings[].id] | sort | join(",")')
 assert_eq "active workers do not hide eligible queue shortfall" "auto-dispatch-missing-tier-labels,pulse-eligible-queue-under-target,pulse-inactive-nmr-holds" "$SHORTFALL_IDS"
+assert_eq "queue shortfall remains a maintainer advisory" "medium" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-eligible-queue-under-target") | .severity')"
+assert_eq "queue shortfall does not auto-file a non-actionable issue" "false" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.findings[] | select(.id == "pulse-eligible-queue-under-target") | .autofile')"
 assert_eq "shortfall fixture has one eligible issue" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.eligible_available_unassigned')"
 assert_eq "shortfall fixture distinguishes assigned work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.assigned_in_flight')"
 assert_eq "shortfall fixture distinguishes held work" "1" "$(printf '%s' "$SHORTFALL_OUT" | jq -r '.queue.blocked_explicit_hold')"

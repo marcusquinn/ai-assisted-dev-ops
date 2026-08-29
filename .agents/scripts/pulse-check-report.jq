@@ -206,7 +206,7 @@ end) as $max_workers |
     if ($queue_scan_complete and $dispatch_alive and $effective_available_slots >= $threshold and $eligible_issues < $threshold) then
       finding(
         "pulse-eligible-queue-under-target";
-        "high";
+        "medium";
         "Dispatch-eligible queue depth is below the bounded capacity target";
         [
           ("available_slots=" + ($effective_available_slots | tostring)),
@@ -221,7 +221,7 @@ end) as $max_workers |
           ("missing_status=" + ($needs_status | tostring))
         ];
         "Run existing task generators and metadata normalisers for already-authorized work; if no eligible issues remain, request maintainer authorization decisions. Do not add auto-dispatch, clear needs-maintainer-review, or infer dispatch consent from status/origin labels.";
-        true
+        false
       )
     else empty end,
     if ($queue_scan_complete and $nmr_inactive > 0) then
