@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.294] - 2026-08-29
+
+### Added
+
+- add authenticated Playwriter relay lifecycle
+
+### Fixed
+
+- classify and escalate zero-candidate recovery cycles
+- allow .nvmrc in root-file validation
+- harden MCP diagnostics and pin Playwriter 0.5.0
+- normalize repository routing in GitHub create wrappers
+- gate eligible queue shortfall on live dispatch (#30852)
+
 ## [3.32.293] - 2026-08-28
 
 ### Fixed
