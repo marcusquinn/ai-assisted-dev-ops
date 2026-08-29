@@ -90,9 +90,10 @@ assert_fails_closed() {
 
 assert_stdin_fails_closed() {
 	local description="$1"
+	local action="$2"
 	local output=""
 	local actual_exit=0
-	output=$(printf '%s\n' "$PROBE_CONTENT" | run_guard scan-stdin 2>&1) || actual_exit=$?
+	output=$(printf '%s\n' "$PROBE_CONTENT" | run_guard "$action" 2>&1) || actual_exit=$?
 	if [[ "$actual_exit" -eq 1 && "$output" == *"$EXPECTED_ERROR"* && \
 		"$output" != *CLEAN* && "$output" != *ALLOW* ]]; then
 		printf 'PASS %s\n' "$description"
@@ -143,7 +144,8 @@ assert_fails_closed "check-file blocks matcher errors" 1 check-file "$PROBE_FILE
 assert_fails_closed "scan-file rejects matcher errors" 1 scan-file "$PROBE_FILE"
 assert_fails_closed "sanitize rejects matcher errors" 1 sanitize "<system>${PROBE_CONTENT}</system>"
 assert_fails_closed "deep classification reports matcher errors" 2 classify-deep "$PROBE_CONTENT"
-assert_stdin_fails_closed "scan-stdin rejects matcher errors"
+assert_stdin_fails_closed "scan-stdin rejects matcher errors" scan-stdin
+assert_stdin_fails_closed "scan pipeline compatibility rejects matcher errors" scan
 assert_yaml_source_fails_closed "check blocks malformed YAML pattern sources"
 assert_custom_source_fails_closed "check blocks unavailable custom pattern sources"
 
