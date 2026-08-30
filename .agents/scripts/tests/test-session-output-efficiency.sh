@@ -53,18 +53,19 @@ assert_omits() {
 }
 
 normalized_fixture="${TMPDIR_TEST}/normalized.jsonl"
+starvation_fixture="${TMPDIR_TEST}/starvation.jsonl"
 claude_fixture="${TMPDIR_TEST}/claude.jsonl"
 opencode_db="${TMPDIR_TEST}/opencode history?#.db"
 active_data_home="${TMPDIR_TEST}/active-data"
 active_opencode_db="${active_data_home}/opencode/opencode.db"
 mkdir -p "${active_data_home}/opencode"
 
-python3 - "$normalized_fixture" "$claude_fixture" "$opencode_db" "$active_opencode_db" <<'PY'
+python3 - "$normalized_fixture" "$starvation_fixture" "$claude_fixture" "$opencode_db" "$active_opencode_db" <<'PY'
 import json
 import sqlite3
 import sys
 
-normalized_path, claude_path, database_path, active_database_path = sys.argv[1:]
+normalized_path, starvation_path, claude_path, database_path, active_database_path = sys.argv[1:]
 repeated = "unchanged status snapshot SECRET-MARKER " + ("x" * 100)
 oversized = "large setup output " + ("y" * 9000)
 duplicate = "duplicate tool result " + ("d" * 100)
@@ -101,6 +102,19 @@ with open(normalized_path, "w", encoding="utf-8") as handle:
     handle.write(json.dumps({"tool": "bash", "input": {"command": "json-receipt"}, "output": json_receipt, "success": True}) + "\n")
     handle.write(json.dumps({"tool": "bash", "input": {"command": "fallback"}, "output": "output_sandbox: evidence store unavailable; running with native output\nnative output", "success": True}) + "\n")
     handle.write(json.dumps({"tool": "bash", "input": {"command": "exact"}, "output": "output_sandbox: bypass exact/verbatim command\nexact output", "success": True}) + "\n")
+
+with open(starvation_path, "w", encoding="utf-8") as handle:
+    for group_index in range(6):
+        duplicate_output = f"duplicate group {group_index} " + ("d" * 100)
+        for input_index in range(2):
+            handle.write(json.dumps({
+                "tool": "bash",
+                "input": {"command": f"PRIVATE-STARVATION-{group_index}-{input_index}"},
+                "output": duplicate_output,
+                "success": True,
+            }) + "\n")
+    handle.write(json.dumps({"tool": "bash", "input": {}, "output": "b" * 9000, "success": True}) + "\n")
+    handle.write(json.dumps({"tool": "read", "input": {}, "output": "r" * 10000, "success": True}) + "\n")
 
 with open(claude_path, "w", encoding="utf-8") as handle:
     for call_id in ("call-1", "call-2"):
@@ -165,11 +179,22 @@ assert_contains "text reports raw fallback and exact bypass" "Raw fallback / exa
 assert_omits "text omits raw output" "SECRET-MARKER" "$text_output"
 
 json_output=$(OPENCODE_SESSION_ID='' CLAUDE_SESSION_ID='' "$HELPER" --input "$normalized_fixture" --json)
-if python3 -c 'import json,sys; report=json.load(sys.stdin); stats=report["stats"]; visibility=report["visibility"]; assert report["schema"] == "aidevops.session-output-efficiency/v1"; assert stats["redundant_tool_results"] == 2; assert stats["duplicate_output_groups"] == 1; assert stats["repeated_line_groups"] == 2; assert stats["repeated_block_groups"] >= 1; assert stats["oversized_tool_results"] == 2; assert stats["successful_oversized_results"] == 2; assert stats["raw_fallback_results"] == 1; assert stats["exact_output_bypass_results"] == 1; assert visibility["receipt_results"] == 2; assert visibility["declared_background_evidence_bytes"] == 27163; assert visibility["background_content_scanned"] is False' <<<"$json_output"; then
+if python3 -c 'import json,sys; report=json.load(sys.stdin); stats=report["stats"]; visibility=report["visibility"]; assert report["schema"] == "aidevops.session-output-efficiency/v1"; assert stats["redundant_tool_results"] == 2; assert stats["duplicate_output_groups"] == 1; assert stats["repeated_line_groups"] == 2; assert stats["repeated_block_groups"] >= 1; assert stats["oversized_tool_results"] == 2; assert stats["successful_oversized_results"] == 2; assert stats["raw_fallback_results"] == 1; assert stats["exact_output_bypass_results"] == 1; assert visibility["receipt_results"] == 2; assert visibility["declared_background_evidence_bytes"] == 27163; assert visibility["background_content_scanned"] is False; assert report["category_summary"]' <<<"$json_output"; then
 	pass "JSON contract exposes aggregate metrics"
 else
 	fail "JSON contract exposes aggregate metrics"
 fi
+
+starvation_json=$(OPENCODE_SESSION_ID='' CLAUDE_SESSION_ID='' "$HELPER" --input "$starvation_fixture" --max-findings 5 --json)
+if python3 -c 'import json,sys; report=json.load(sys.stdin); assert len(report["findings"]) == 5; assert {item["kind"] for item in report["findings"]} == {"duplicate-output"}; summary={item["kind"]: item for item in report["category_summary"]}; assert list(summary) == ["duplicate-output", "success-verbosity", "oversized-output"]; assert summary["oversized-output"] == {"kind": "oversized-output", "finding_count": 2, "occurrences": 2, "aggregate_bytes": 19000, "leading_tool": "read"}' <<<"$starvation_json"; then
+	pass "category summary prevents detailed-finding starvation"
+else
+	fail "category summary prevents detailed-finding starvation"
+fi
+assert_omits "category summary omits private inputs" "PRIVATE-STARVATION" "$starvation_json"
+
+starvation_text=$(OPENCODE_SESSION_ID='' CLAUDE_SESSION_ID='' "$HELPER" --input "$starvation_fixture" --max-findings 5)
+assert_contains "text renders oversized category coverage" "oversized-output: groups=2, occurrences=2, aggregate_bytes=19000, leading_tool=read" "$starvation_text"
 
 claude_output=$(OPENCODE_SESSION_ID='' CLAUDE_SESSION_ID='' "$HELPER" --runtime claude-code --input "$claude_fixture")
 assert_contains "Claude JSONL tool results are correlated" "Repeated unchanged snapshots: 1 groups, 1 redundant results" "$claude_output"

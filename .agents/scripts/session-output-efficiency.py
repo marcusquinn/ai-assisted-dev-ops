@@ -54,6 +54,16 @@ def print_text(report: dict[str, Any]) -> None:
     )
     if stats["parse_errors"]:
         print(f"Unparsed transcript records: {stats['parse_errors']}")
+    print("Category coverage:")
+    if not report["category_summary"]:
+        print("- None above deterministic thresholds")
+    for category in report["category_summary"]:
+        print(
+            f"- {category['kind']}: groups={category['finding_count']}, "
+            f"occurrences={category['occurrences']}, "
+            f"aggregate_bytes={category['aggregate_bytes']}, "
+            f"leading_tool={category['leading_tool']}"
+        )
     print("Candidates:")
     if not report["findings"]:
         print("- None above deterministic thresholds")

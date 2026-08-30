@@ -216,6 +216,24 @@ def _visibility_metrics(
     return visibility, stats, _size_findings(fallback_groups, "raw-fallback"), _size_findings(success_groups, "success-verbosity")
 
 
+def _finding_bytes(finding: dict[str, Any]) -> int:
+    return int(finding.get("redundant_bytes", finding.get("total_bytes", finding.get("largest_bytes", 0))))
+
+
+def _category_summary(kind: str, findings: list[dict[str, Any]]) -> dict[str, Any]:
+    leading = min(
+        findings,
+        key=lambda item: (-_finding_bytes(item), -int(item["occurrences"]), str(item["tool"])),
+    )
+    return {
+        "kind": kind,
+        "finding_count": len(findings),
+        "occurrences": sum(int(item["occurrences"]) for item in findings),
+        "aggregate_bytes": sum(_finding_bytes(item) for item in findings),
+        "leading_tool": leading["tool"],
+    }
+
+
 def analyse(results: Iterable[ToolResult], config: AnalysisConfig) -> dict[str, Any]:
     materialized = list(results)
     total_bytes = sum(byte_length(result.output) for result in materialized)
@@ -229,7 +247,21 @@ def analyse(results: Iterable[ToolResult], config: AnalysisConfig) -> dict[str, 
     visibility, visibility_stats, fallbacks, success_verbosity = _visibility_metrics(
         materialized, config.oversized_bytes
     )
-    findings = unchanged + duplicates + repeated_blocks + repeated_lines + fallbacks + success_verbosity + oversized
+    categories = (
+        ("unchanged-snapshot", unchanged),
+        ("duplicate-output", duplicates),
+        ("repeated-block", repeated_blocks),
+        ("repeated-line", repeated_lines),
+        ("raw-fallback", fallbacks),
+        ("success-verbosity", success_verbosity),
+        ("oversized-output", oversized),
+    )
+    findings = [finding for _, category_findings in categories for finding in category_findings]
+    category_summary = [
+        _category_summary(kind, category_findings)
+        for kind, category_findings in categories
+        if category_findings
+    ]
     stats = {
         "completed_tool_results": len(materialized),
         "tool_output_bytes": total_bytes,
@@ -256,6 +288,7 @@ def analyse(results: Iterable[ToolResult], config: AnalysisConfig) -> dict[str, 
         },
         "stats": stats,
         "visibility": visibility,
+        "category_summary": category_summary,
         "findings": findings[: config.max_findings],
         "privacy": "Raw tool inputs, outputs, commands, and paths are omitted.",
     }

@@ -65,6 +65,11 @@ duplicate results, repeated lines/blocks, successful oversized results, raw
 fallbacks, and exact-output bypasses, then estimates avoidable context from byte
 counts. It emits only tool names, metrics, and opaque fingerprints; tool inputs,
 commands, outputs, transcript paths, and background content remain omitted.
+The additive `category_summary` covers every non-zero finding kind independently
+of `max_findings`, with a finding count, occurrence count, aggregate bytes, and
+leading tool class in stable category order. Aggregate bytes use redundant bytes
+for repetition categories and total bytes for size categories; categories can
+overlap and must not be summed into a session-wide total.
 Findings are deterministic candidates for session-analysis judgment, not
 automatic proof that a safeguard or exact evidence should be removed.
 
