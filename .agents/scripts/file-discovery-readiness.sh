@@ -22,6 +22,7 @@ aidevops_ensure_fd_command() {
 	local shim_dir="${AIDEVOPS_FD_SHIM_DIR:-${HOME}/.local/bin}"
 	local shim_path="${shim_dir}/fd"
 
+	hash -r 2>/dev/null || true
 	if command -v fd >/dev/null 2>&1; then
 		return 0
 	fi
@@ -30,6 +31,14 @@ aidevops_ensure_fd_command() {
 		return 1
 	fi
 	mkdir -p "$shim_dir" || return 1
+	if [[ -e "$shim_path" || -L "$shim_path" ]]; then
+		[[ -x "$shim_path" ]] || return 1
+		if [[ ":${PATH}:" != *":${shim_dir}:"* ]]; then
+			export PATH="${shim_dir}:${PATH}"
+		fi
+		command -v fd >/dev/null 2>&1 || return 1
+		return 0
+	fi
 	ln -sfn "$fdfind_path" "$shim_path" || return 1
 	if [[ ":${PATH}:" != *":${shim_dir}:"* ]]; then
 		export PATH="${shim_dir}:${PATH}"

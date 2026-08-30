@@ -63,6 +63,17 @@ aidevops_ensure_fd_command
 assert_equal "$TEST_ROOT/shims/fd" "$(command -v fd)" "fdfind compatibility command is executable"
 assert_equal "fd 10.0.0" "$(fd --version)" "compatibility command delegates to fdfind"
 
+mkdir -p "$TEST_ROOT/occupied"
+printf 'preserve-user-file\n' >"$TEST_ROOT/occupied/fd"
+PATH="$TEST_ROOT/fdfind-only:/usr/bin:/bin"
+AIDEVOPS_FD_SHIM_DIR="$TEST_ROOT/occupied"
+export PATH AIDEVOPS_FD_SHIM_DIR
+if aidevops_ensure_fd_command; then
+	printf 'FAIL: existing non-executable fd path was replaced or accepted\n' >&2
+	exit 1
+fi
+assert_equal "preserve-user-file" "$(<"$TEST_ROOT/occupied/fd")" "existing fd path is preserved"
+
 print_success() {
 	local text="$1"
 	printf 'SUCCESS: %s\n' "$text"
