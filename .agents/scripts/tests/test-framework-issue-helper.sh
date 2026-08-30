@@ -8,6 +8,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 HELPER="${SCRIPT_DIR}/../framework-issue-helper.sh"
+LOG_ISSUE_HELPER="${SCRIPT_DIR}/../log-issue-helper.sh"
+PRIVACY_HELPER="${SCRIPT_DIR}/../privacy-guard-helper.sh"
 
 PASS=0
 FAIL=0
@@ -77,8 +79,30 @@ if [[ "${1:-}" == "issue" && "${2:-}" == "list" ]]; then
 	exit 0
 fi
 
+if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
+	printf 'PUBLIC\n'
+	exit 0
+fi
+
 if [[ "${1:-}" == "issue" && "${2:-}" == "create" ]]; then
+	if [[ -n "${TEST_GH_BODY_FILE:-}" ]]; then
+		previous=""
+		for argument in "$@"; do
+			if [[ "$previous" == "--body" ]]; then
+				printf '%s' "$argument" >"$TEST_GH_BODY_FILE"
+			elif [[ "$previous" == "--body-file" && "$argument" != "-" ]]; then
+				body_from_file=$(<"$argument")
+				printf '%s' "$body_from_file" >"$TEST_GH_BODY_FILE"
+			fi
+			previous="$argument"
+		done
+	fi
 	printf '%s\n' "${TEST_CREATED_URL:-https://github.com/marcusquinn/aidevops/issues/9001}"
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == repos/* ]]; then
+	printf 'false\n'
 	exit 0
 fi
 
@@ -198,6 +222,9 @@ run_missing_value_case() {
 
 TMP_DIR=$(mktemp -d -t framework-issue-helper-test.XXXXXX)
 trap 'rm -rf "$TMP_DIR"' EXIT
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${TMP_DIR}/gh-secondary-cooldown.json"
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE="${TMP_DIR}/gh-cooldown-events.jsonl"
+export AIDEVOPS_GH_READ_RAMP_STATE_FILE="${TMP_DIR}/gh-read-ramp-state.tsv"
 
 empty_output="${TMP_DIR}/empty.out"
 run_case "[]" "https://github.com/marcusquinn/aidevops/issues/9001" "${TMP_DIR}" "$empty_output"
@@ -330,6 +357,104 @@ else
 	missing_value_text=$(<"$missing_value_output")
 	assert_contains "$missing_value_text" "--title requires a value" "missing option value explains the failing flag"
 fi
+
+public_diagnostics=$(
+	AIDEVOPS_SIG_MODEL="Private model at /Users/example/Git/ConfidentialCustomerPortal" \
+		"$LOG_ISSUE_HELPER" diagnostics --public-safe
+)
+assert_contains "$public_diagnostics" "**aidevops version**" "public diagnostics retain version"
+assert_contains "$public_diagnostics" "**AI Assistant**" "public diagnostics retain assistant"
+assert_contains "$public_diagnostics" "**OS**" "public diagnostics retain OS"
+assert_contains "$public_diagnostics" "**Shell**" "public diagnostics retain shell"
+assert_contains "$public_diagnostics" "**gh CLI**" "public diagnostics retain GitHub CLI"
+assert_not_contains "$public_diagnostics" "**Working repo**" "public diagnostics omit repository identity"
+assert_not_contains "$public_diagnostics" "**Install method**" "public diagnostics omit install paths"
+assert_not_contains "$public_diagnostics" "Private model" "public diagnostics omit unverified model identity"
+
+generated_stub_dir="${TMP_DIR}/ConfidentialCustomerPortal"
+mkdir -p "$generated_stub_dir"
+cp "${TMP_DIR}/gh" "${generated_stub_dir}/gh"
+cat >"${generated_stub_dir}/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "rev-parse" && "${2:-}" == "--show-toplevel" ]]; then
+	printf '/Users/example/Git/ConfidentialCustomerPortal\n'
+	exit 0
+fi
+if [[ "${1:-}" == "branch" && "${2:-}" == "--show-current" ]]; then
+	printf 'private-client-branch\n'
+	exit 0
+fi
+exit 1
+EOF
+chmod +x "${generated_stub_dir}/gh" "${generated_stub_dir}/git"
+
+generated_body_file="${TMP_DIR}/generated-body.md"
+generated_output="${TMP_DIR}/generated.out"
+if TEST_DUPLICATE_VALUE="" \
+	TEST_CREATED_URL="https://github.com/marcusquinn/aidevops/issues/9106" \
+	TEST_GH_BODY_FILE="$generated_body_file" \
+	PATH="${generated_stub_dir}:$PATH" \
+	"$HELPER" log --title "fix: generated public body" >"$generated_output" 2>&1; then
+	generated_text=$(<"$generated_output")
+	generated_body=$(<"$generated_body_file")
+	assert_contains "$generated_text" "status=created" "generated public body reaches managed issue creation"
+	assert_not_contains "$generated_body" "/Users/example/Git/ConfidentialCustomerPortal" "generated body omits checkout path"
+	assert_not_contains "$generated_body" "ConfidentialCustomerPortal" "generated body omits private repository basename"
+	assert_not_contains "$generated_body" "Filed from:" "generated body omits local provenance field"
+	assert_contains "$generated_body" "**aidevops version**" "generated body retains public-safe diagnostics"
+	entities_file="${TMP_DIR}/private-entities.tsv"
+	printf 'repo\tConfidentialCustomerPortal\n' >"$entities_file"
+	# shellcheck source=../privacy-guard-helper.sh
+	source "$PRIVACY_HELPER"
+	set +e
+	privacy_hits=$(privacy_scan_public_text "$generated_body" "$entities_file")
+	privacy_rc=$?
+	set -e
+	if [[ "$privacy_rc" -eq 0 && -z "$privacy_hits" ]]; then
+		pass "generated body passes the public privacy scanner"
+	else
+		fail "generated body passes the public privacy scanner" "rc=${privacy_rc}; hits=${privacy_hits}"
+	fi
+else
+	generated_text=$(<"$generated_output")
+	fail "generated public body reaches managed issue creation" "$generated_text"
+fi
+
+explicit_body_file="${TMP_DIR}/explicit-body.md"
+explicit_output="${TMP_DIR}/explicit.out"
+if TEST_DUPLICATE_VALUE="" \
+	TEST_CREATED_URL="https://github.com/marcusquinn/aidevops/issues/9107" \
+	TEST_GH_BODY_FILE="$explicit_body_file" \
+	PATH="${generated_stub_dir}:$PATH" \
+	"$HELPER" log --title "fix: explicit body contract" --body "EXPLICIT-CALLER-BODY" >"$explicit_output" 2>&1; then
+	explicit_body=$(<"$explicit_body_file")
+	assert_contains "$explicit_body" "EXPLICIT-CALLER-BODY" "explicit caller body is preserved"
+	assert_not_contains "$explicit_body" "## Environment" "explicit caller body is not replaced by generated content"
+else
+	explicit_text=$(<"$explicit_output")
+	fail "explicit caller body is preserved" "$explicit_text"
+fi
+
+unsafe_output="${TMP_DIR}/unsafe-explicit.out"
+unsafe_trace="${TMP_DIR}/unsafe-explicit.trace"
+set +e
+TEST_DUPLICATE_VALUE="" \
+	TEST_GH_TRACE="$unsafe_trace" \
+	PATH="${generated_stub_dir}:$PATH" \
+	"$HELPER" log --title "fix: unsafe explicit body" \
+	--body "Unsafe local path /Users/example/Git/ConfidentialCustomerPortal" >"$unsafe_output" 2>&1
+unsafe_rc=$?
+set -e
+unsafe_text=$(<"$unsafe_output")
+unsafe_calls=$(<"$unsafe_trace")
+if [[ "$unsafe_rc" -ne 0 ]]; then
+	pass "unsafe explicit caller body remains fail-closed"
+else
+	fail "unsafe explicit caller body remains fail-closed" "helper unexpectedly succeeded"
+fi
+assert_contains "$unsafe_text" "[privacy-guard][BLOCK]" "unsafe explicit body reports privacy block"
+assert_not_contains "$unsafe_calls" "issue create" "unsafe explicit body never reaches issue creation"
 
 help_output="${TMP_DIR}/help.out"
 "$HELPER" help >"$help_output" 2>&1

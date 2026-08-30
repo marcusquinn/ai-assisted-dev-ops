@@ -5,7 +5,7 @@
 # aidevops Issue Logger Helper
 # =============================================================================
 # Gathers diagnostic information for issue reporting
-# Usage: log-issue-helper.sh [diagnostics|check-auth|search "query"]
+# Usage: log-issue-helper.sh [diagnostics [--public-safe]|check-auth|search "query"]
 
 set -euo pipefail
 
@@ -104,15 +104,13 @@ get_git_context() {
 }
 
 gather_diagnostics() {
-	local current_version latest_version ai_assistant install_method
-	local os_info shell_info git_context ai_model_line=""
+	local mode="${1:-local}"
+	local current_version ai_assistant
+	local os_info shell_info ai_model_line=""
 
 	current_version=$(get_aidevops_version)
-	latest_version=$(get_latest_version)
 	ai_assistant=$(detect_ai_assistant)
-	install_method=$(get_install_method)
-	git_context=$(get_git_context)
-	if [[ -n "${AIDEVOPS_SIG_MODEL:-}" ]]; then
+	if [[ "$mode" != "public-safe" && -n "${AIDEVOPS_SIG_MODEL:-}" ]]; then
 		ai_model_line=$'\n- **AI Model**: '"${AIDEVOPS_SIG_MODEL//$'\n'/}"
 	fi
 
@@ -136,7 +134,23 @@ gather_diagnostics() {
 		shell_info="bash $BASH_VERSION"
 	fi
 
-	# Output in markdown format
+	if [[ "$mode" == "public-safe" ]]; then
+		cat <<EOF
+- **aidevops version**: $current_version
+- **AI Assistant**: $ai_assistant
+- **OS**: $os_info
+- **Shell**: $shell_info
+- **gh CLI**: $(gh --version 2>/dev/null | head -1 || echo "not installed")
+EOF
+		return 0
+	fi
+
+	local latest_version install_method git_context
+	latest_version=$(get_latest_version)
+	install_method=$(get_install_method)
+	git_context=$(get_git_context)
+
+	# Output in markdown format for local diagnostics.
 	cat <<EOF
 - **aidevops version**: $current_version
 - **Latest version**: $latest_version
@@ -474,7 +488,15 @@ main() {
 
 	case "$command" in
 	diagnostics)
-		gather_diagnostics
+		local diagnostics_mode="${2:-}"
+		if [[ -z "$diagnostics_mode" ]]; then
+			gather_diagnostics
+		elif [[ "$diagnostics_mode" == "--public-safe" ]]; then
+			gather_diagnostics public-safe
+		else
+			echo "Usage: log-issue-helper.sh diagnostics [--public-safe]" >&2
+			return 1
+		fi
 		;;
 	check-auth)
 		check_gh_auth
@@ -530,7 +552,7 @@ aidevops Issue Logger Helper
 Usage: log-issue-helper.sh [command]
 
 Commands:
-  diagnostics                          Gather system and aidevops diagnostic info (default)
+  diagnostics [--public-safe]          Gather diagnostics; public mode omits local identity
   check-auth                           Verify GitHub CLI authentication
   search "query"                       Search existing issues for duplicates
   prompt-reproducer                    Output the reproducer section template for framework bugs
@@ -541,6 +563,7 @@ Commands:
 
 Examples:
   log-issue-helper.sh diagnostics
+  log-issue-helper.sh diagnostics --public-safe
   log-issue-helper.sh check-auth
   log-issue-helper.sh search "update check"
   log-issue-helper.sh prompt-reproducer

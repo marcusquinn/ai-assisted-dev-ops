@@ -266,7 +266,7 @@ get_aidevops_repo_path() {
 gather_diagnostics() {
 	local log_issue_helper="${SCRIPT_DIR}/log-issue-helper.sh"
 	if [[ -x "$log_issue_helper" ]]; then
-		"$log_issue_helper" diagnostics 2>/dev/null || true
+		"$log_issue_helper" diagnostics --public-safe 2>/dev/null || true
 		return 0
 	fi
 
@@ -279,7 +279,7 @@ gather_diagnostics() {
 	cat <<EOF
 - **aidevops version**: $version
 - **OS**: $(uname -s) $(uname -r)
-- **Working repo**: $(basename "$(git rev-parse --show-toplevel 2>/dev/null || echo 'none')")
+- **Shell**: bash ${BASH_VERSION:-unknown}
 - **gh CLI**: $(gh --version 2>/dev/null | head -1 || echo "not installed")
 EOF
 	return 0
@@ -426,8 +426,6 @@ ${diagnostics}
 ## Context
 
 This issue was automatically routed to the aidevops framework repo by \`framework-issue-helper.sh\` because it contains framework-level indicators (references to ~/.aidevops/ files, framework scripts, or supervisor/pulse concepts).
-
-Filed from: $(git rev-parse --show-toplevel 2>/dev/null || echo 'unknown repo')
 EOF
 	return 0
 }
