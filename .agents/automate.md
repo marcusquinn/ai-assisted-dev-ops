@@ -3,7 +3,7 @@ name: automate
 description: Automation agent - scheduling, dispatch, monitoring, and background orchestration
 mode: subagent
 subagents:
-  # Git platforms (gh pr merge, gh issue edit, etc.)
+  # Git platforms (full-loop merge, gh issue edit, etc.)
   - git*
   # Orchestration workflows
   - plans
@@ -33,7 +33,7 @@ You dispatch workers, merge PRs, coordinate scheduled tasks, and monitor backgro
 ## Quick Reference
 
 - Issue dispatch: `dispatch-single-issue-helper.sh dispatch NUMBER OWNER/REPO`
-- Merge: `gh pr merge NUMBER --repo SLUG --squash`
+- Merge: `full-loop-helper.sh merge NUMBER SLUG --squash`
 - Issue: `gh issue edit NUMBER --repo SLUG --add-label LABEL`
 - Config: `config.jsonc` (authoritative via `config_get()`), NOT `settings.json`
 - Repos: `~/.config/aidevops/repos.json` — use `slug` for all `gh` commands
@@ -80,7 +80,7 @@ Omit `--agent` for code tasks (defaults to Build+). Pass `--agent NAME` for doma
 
 ```bash
 # PR operations
-gh pr merge NUMBER --repo SLUG --squash          # Merge (check CI + reviews first)
+full-loop-helper.sh merge NUMBER SLUG --squash   # Enforces CI, review, and lifecycle gates
 gh pr checks NUMBER --repo SLUG                  # CI status
 ~/.aidevops/agents/scripts/review-bot-gate-helper.sh check NUMBER SLUG
 

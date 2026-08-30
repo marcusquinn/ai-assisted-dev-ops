@@ -85,7 +85,7 @@ Distinguish safe mechanical actions (do directly) from state changes needing ver
 ### Act directly (mechanical, reversible):
 
 1. **`git worktree prune`** — safe, only removes worktrees whose directories are already gone.
-2. **Merge CI-green PRs with approved reviews** — `gh pr merge <PR_NUMBER> --squash --repo <owner/repo>`. Always supply PR number and `--repo` explicitly.
+2. **Merge CI-green PRs with approved reviews** — `full-loop-helper.sh merge <PR_NUMBER> <owner/repo> --squash`. Always supply the PR number and repository explicitly.
 3. **File GitHub issues for systemic problems** — patterns (same CI failure, same worker failure type, same blocked chain).
 4. **Record observations** — the report itself is the primary output.
 

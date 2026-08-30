@@ -197,13 +197,13 @@ print_next_commands() {
 	printf '    bot gate: review-bot-gate-helper.sh check %s %s\n' "$number" "$repo"
 	case "$category" in
 	"$CATEGORY_MERGEABLE")
-		printf '    merge:    gh pr merge %s --repo %s --admin --squash --delete-branch\n' "$number" "$repo"
+		printf '    merge:    full-loop-helper.sh merge %s %s --admin --squash\n' "$number" "$repo"
 		;;
 	"$CATEGORY_CONFLICT_ONLY")
 		printf '    worktree: worktree-helper.sh add feature/pr-drain-%s-%s --base origin/main\n' "$number" "$(basename "$repo")"
 		printf '    checkout: gh pr checkout %s --repo %s\n' "$number" "$repo"
 		printf '    push:     git push\n'
-		printf '    merge:    gh pr merge %s --repo %s --admin --squash --delete-branch\n' "$number" "$repo"
+		printf '    merge:    full-loop-helper.sh merge %s %s --admin --squash\n' "$number" "$repo"
 		;;
 	*)
 		printf '    inspect:  gh pr view %s --repo %s --json isCrossRepository,isDraft,mergeStateStatus,files,statusCheckRollup\n' "$number" "$repo"

@@ -475,6 +475,45 @@ test("blocks generic destructive commands through shared policy", () => {
   );
 });
 
+test("blocks direct pull request merge outside lifecycle helpers", () => {
+  const cwd = process.cwd();
+  for (const command of [
+    "gh pr merge 123 --repo owner/repo --squash",
+    "/usr/local/bin/gh pr merge 123 --repo owner/repo --admin --squash",
+    "gh --repo owner/repo pr merge 123 --squash",
+    "gh pr --repo owner/repo merge 123 --squash",
+    "env GH_PAGER=cat gh pr merge 123 --repo owner/repo --auto --squash",
+    "gh pr view 123 --repo owner/repo && gh pr merge 123 --repo owner/repo --squash",
+  ]) {
+    assert.throws(
+      () => checkCommandSafetyGate(command, scriptsDir, cwd),
+      /github\.pr-merge-direct.*full-loop-helper\.sh merge/,
+    );
+  }
+  for (const command of [
+    "gh pr merge 123 --repo owner/repo --disable-auto",
+    "gh pr merge 123 --repo owner/repo --disable-auto=true",
+  ]) {
+    assert.throws(
+      () => checkCommandSafetyGate(command, scriptsDir, cwd),
+      /github\.pr-disable-auto-direct.*Do not substitute full-loop-helper\.sh merge/,
+    );
+  }
+  assert.doesNotThrow(() => checkCommandSafetyGate(
+    "full-loop-helper.sh merge 123 owner/repo --squash",
+    scriptsDir,
+    cwd,
+  ));
+  assert.doesNotThrow(() => checkCommandSafetyGate("gh pr checks 123 --repo owner/repo", scriptsDir, cwd));
+  assert.doesNotThrow(() => checkCommandSafetyGate("gh pr merge --help", scriptsDir, cwd));
+  assert.doesNotThrow(() => checkCommandSafetyGate("gh pr merge 123 --help", scriptsDir, cwd));
+  assert.doesNotThrow(() => checkCommandSafetyGate(
+    "printf '%s' 'gh pr merge 123 --repo owner/repo --squash'",
+    scriptsDir,
+    cwd,
+  ));
+});
+
 test("refreshes approval state before privileged approval commands", () => {
   const root = mkdtempSync(join(tmpdir(), "aidevops-approval-policy-"));
   const approvalHelper = join(root, "approval-helper.sh");

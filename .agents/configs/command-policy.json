@@ -49,6 +49,18 @@
   ],
   "rules": [
     {
+      "id": "github.pr-disable-auto-direct",
+      "matcher": "gh_pr_disable_auto_direct",
+      "decision": "forbid",
+      "reason": "Direct gh pr merge --disable-auto mutates merge state outside lifecycle recovery. Do not substitute full-loop-helper.sh merge because that could merge the PR; cancel in the GitHub UI or use the pulse merge-state recovery path"
+    },
+    {
+      "id": "github.pr-merge-direct",
+      "matcher": "gh_pr_merge_direct",
+      "decision": "forbid",
+      "reason": "Direct gh pr merge bypasses lifecycle gates; use full-loop-helper.sh merge <PR> <REPO>"
+    },
+    {
       "id": "filesystem.rm-recursive-force-root",
       "matcher": "rm_recursive_force_root",
       "decision": "forbid",
@@ -107,6 +119,30 @@
     {
       "name": "safe status",
       "command": "git status --short",
+      "decision": "allow",
+      "rule_id": "command.default-allow"
+    },
+    {
+      "name": "direct pull request merge",
+      "command": "gh --repo owner/repo pr merge 123 --squash",
+      "decision": "forbid",
+      "rule_id": "github.pr-merge-direct"
+    },
+    {
+      "name": "direct auto-merge cancellation",
+      "command": "gh pr merge 123 --repo owner/repo --disable-auto",
+      "decision": "forbid",
+      "rule_id": "github.pr-disable-auto-direct"
+    },
+    {
+      "name": "pull request merge help",
+      "command": "gh pr merge --help",
+      "decision": "allow",
+      "rule_id": "command.default-allow"
+    },
+    {
+      "name": "full-loop pull request merge",
+      "command": "full-loop-helper.sh merge 123 owner/repo --squash",
       "decision": "allow",
       "rule_id": "command.default-allow"
     },

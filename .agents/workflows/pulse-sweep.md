@@ -61,7 +61,7 @@ Most merging is handled by `merge_ready_prs_all_repos()` before the LLM session 
 ```bash
 source ~/.aidevops/agents/scripts/pulse-wrapper.sh
 approve_collaborator_pr NUMBER SLUG AUTHOR
-gh pr merge NUMBER --repo SLUG --squash
+full-loop-helper.sh merge NUMBER SLUG --squash
 ```
 
 **Merge criteria:** CI all PASS (or NONE/PENDING) + collaborator → approve and merge. `CHANGES_REQUESTED` → dispatch fix worker. `APPROVED` → merge directly. Check external contributor gate before ANY approve/merge.
@@ -178,7 +178,7 @@ Output a brief summary of total actions taken across all cycles (past tense).
 
 ### PR triage
 
-- **Green CI + collaborator** → `approve_collaborator_pr` then `gh pr merge --squash`
+- **Green CI + collaborator** → `approve_collaborator_pr` then `full-loop-helper.sh merge NUMBER SLUG --squash`
 - **Green CI + strict-policy `WAITING` on bots** → skip; run `request-retry` only when a true rate-limit notice makes a retry useful
 - **Failing CI** → check if systemic (same check fails on 3+ PRs → file workflow issue). If per-PR, dispatch fix worker.
 - **Open 6+ hours with no recent commits** → comment, consider closing and re-filing

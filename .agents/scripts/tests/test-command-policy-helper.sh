@@ -296,6 +296,45 @@ PY
 	return 0
 }
 
+test_direct_pr_merge_policy() {
+	local output=""
+	local status=0
+
+	assert_decision "blocks direct pull request merge" "gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks direct auto-merge queue" "gh pr merge 123 --repo owner/repo --auto --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks direct auto-merge cancellation" "gh pr merge 123 --repo owner/repo --disable-auto" forbid github.pr-disable-auto-direct 20 "/work"
+	assert_decision "blocks attached direct auto-merge cancellation" "gh pr merge 123 --repo owner/repo --disable-auto=true" forbid github.pr-disable-auto-direct 20 "/work"
+	assert_argv_decision "blocks path-qualified pull request merge" forbid github.pr-merge-direct 20 "/work" /usr/local/bin/gh pr merge 123 --repo owner/repo --squash
+	assert_decision "blocks repository option before command path" "gh --repo owner/repo pr merge 123 --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks short repository option before command path" "gh -Rowner/repo pr merge 123 --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks repository option inside command path" "gh pr --repo owner/repo merge 123 --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks environment-wrapped pull request merge" "env GH_PAGER=cat gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks shell-launched pull request merge" "bash -lc 'gh pr merge 123 --repo owner/repo --squash'" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "blocks pull request merge in a command chain" "gh pr view 123 --repo owner/repo && gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-direct 20 "/work"
+	assert_decision "allows full-loop pull request merge" "full-loop-helper.sh merge 123 owner/repo --squash" allow command.default-allow 0 "/work"
+	assert_decision "allows read-only pull request checks" "gh pr checks 123 --repo owner/repo" allow command.default-allow 0 "/work"
+	assert_decision "allows pull request merge help" "gh pr merge --help" allow command.default-allow 0 "/work"
+	assert_decision "allows short pull request merge help" "gh pr merge -h" allow command.default-allow 0 "/work"
+	assert_decision "allows targeted pull request merge help" "gh pr merge 123 --help" allow command.default-allow 0 "/work"
+	assert_decision "allows repository-qualified pull request merge help" "gh --repo owner/repo pr merge 123 --help" allow command.default-allow 0 "/work"
+	assert_decision "does not execute pull request merge prose" "printf '%s' 'gh pr merge 123 --repo owner/repo --squash'" allow command.default-allow 0 "/work"
+
+	output="$(python3 "$HELPER" check-command --cwd /work --command "gh pr merge 123 --repo owner/repo --squash")" || status=$?
+	if [[ "$status" -eq 20 && "$output" == *"full-loop-helper.sh merge <PR> <REPO>"* ]]; then
+		pass "direct merge denial names the lifecycle replacement"
+	else
+		fail "direct merge denial names the lifecycle replacement" "status=${status} output=${output}"
+	fi
+	status=0
+	output="$(python3 "$HELPER" check-command --cwd /work --command "gh pr merge 123 --repo owner/repo --disable-auto")" || status=$?
+	if [[ "$status" -eq 20 && "$output" == *"Do not substitute full-loop-helper.sh merge"* ]]; then
+		pass "auto-merge cancellation denial avoids a merge replacement"
+	else
+		fail "auto-merge cancellation denial avoids a merge replacement" "status=${status} output=${output}"
+	fi
+	return 0
+}
+
 test_account_mutation_authorization() {
 	local command_text="gh repo fork owner/source --clone=false"
 	local authorization=""
@@ -922,6 +961,7 @@ main() {
 	test_approval_freshness_policy
 	test_process_table_parser
 	test_process_termination_policy
+	test_direct_pr_merge_policy
 	test_account_mutation_authorization
 	test_account_mutation_workspace_authorization
 	test_account_mutation_guard_validation

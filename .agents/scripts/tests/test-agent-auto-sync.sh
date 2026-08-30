@@ -331,9 +331,11 @@ test_merge_sync_triggers_for_aidevops() {
 
 test_merge_pr_resolves_and_propagates_merge_sha() {
 	local propagation_log="$TEST_DIR/merge-propagation.log"
+	local full_loop_log="$TEST_DIR/full-loop-merge.log"
 	local output=""
 	: >"$propagation_log"
 	if ! output=$(MERGE_PROPAGATION_LOG="$propagation_log" MERGED_SHA="$TEST_REPO_SHA" \
+		FULL_LOOP_LOG="$full_loop_log" \
 		bash -c '
 			source "$1"
 			get_account_config() {
@@ -345,14 +347,18 @@ test_merge_pr_resolves_and_propagates_merge_sha() {
 			gh() {
 				local command_name="$1"
 				local subcommand_name="$2"
-				if [[ "$command_name" == "pr" && "$subcommand_name" == "merge" ]]; then
-					return 0
-				fi
 				if [[ "$command_name" == "pr" && "$subcommand_name" == "view" ]]; then
 					printf "{\"state\":\"MERGED\",\"mergedAt\":\"2026-07-27T00:00:00Z\",\"mergeCommit\":{\"oid\":\"%s\"}}\n" "$MERGED_SHA"
 					return 0
 				fi
 				return 1
+			}
+			_run_full_loop_merge() {
+				local pr_number="$1"
+				local repo_slug="$2"
+				local merge_method="$3"
+				printf "merge %s %s --%s\n" "$pr_number" "$repo_slug" "$merge_method" >"$FULL_LOOP_LOG"
+				return 0
 			}
 			trigger_aidevops_post_merge_sync() {
 				local repo_slug="$1"
@@ -368,11 +374,44 @@ test_merge_pr_resolves_and_propagates_merge_sha() {
 	fi
 
 	local propagated=""
+	local lifecycle_call=""
 	propagated=$(<"$propagation_log")
-	if [[ "$propagated" == "marcusquinn/aidevops|$TEST_REPO_SHA|77" ]]; then
+	lifecycle_call=$(<"$full_loop_log")
+	if [[ "$propagated" == "marcusquinn/aidevops|$TEST_REPO_SHA|77" &&
+		"$lifecycle_call" == "merge 77 marcusquinn/aidevops --squash" ]]; then
 		print_result "merge helper resolves the observed merge commit before post-merge sync" 0
 	else
-		print_result "merge helper resolves the observed merge commit before post-merge sync" 1 "Propagated: $propagated"
+		print_result "merge helper resolves the observed merge commit before post-merge sync" 1 "Lifecycle: $lifecycle_call; propagated: $propagated"
+	fi
+	return 0
+}
+
+test_merge_pr_preserves_workflow_scope_guidance() {
+	local output=""
+	local status=0
+
+	output=$(bash -c '
+		source "$1"
+		get_account_config() {
+			local account_name="$1"
+			[[ -n "$account_name" ]] || return 1
+			printf "%s\n" "{\"owner\":\"marcusquinn\"}"
+			return 0
+		}
+		_run_full_loop_merge() {
+			local pr_number="$1"
+			local repo_slug="$2"
+			local merge_method="$3"
+			[[ -n "$pr_number" && -n "$repo_slug" && -n "$merge_method" ]] || return 1
+			printf "%s\n" "workflow scope is required"
+			return 1
+		}
+		merge_pr fixture aidevops 77 squash
+	' _ "$GITHUB_HELPER" 2>&1) || status=$?
+	if [[ "$status" -ne 0 && "$output" == *"gh auth refresh -s workflow"* ]]; then
+		print_result "lifecycle merge preserves workflow-scope remediation" 0
+	else
+		print_result "lifecycle merge preserves workflow-scope remediation" 1 "Status: $status; output: $output"
 	fi
 	return 0
 }
@@ -764,6 +803,7 @@ main() {
 	setup
 
 	test_merge_pr_resolves_and_propagates_merge_sha
+	test_merge_pr_preserves_workflow_scope_guidance
 	test_merge_sync_triggers_for_aidevops
 	test_merge_sync_accepts_verified_noop
 	test_merge_sync_skips_after_failed_recovery

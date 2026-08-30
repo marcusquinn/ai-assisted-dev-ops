@@ -5,14 +5,14 @@
 
 After a PR merges, clean up the linked worktree and return the canonical repo to a clean state.
 
-**Key constraint:** Never pass `--delete-branch` to `gh pr merge` from inside a worktree — the branch is checked out there, not in the canonical repo.
+**Key constraint:** Merge through `full-loop-helper.sh merge`; it records cleanup ownership and avoids deleting the branch while its worktree is active.
 
 ## Automated Cleanup (workers — GH#6740)
 
 Workers dispatched via `/full-loop` defer current-worktree cleanup after successful immediate merges through `full-loop-helper.sh merge` (Step 4.9). The parent runtime may still use the worktree as a logical project `--dir` even when no OS process cwd points there. The pulse `cleanup_worktrees()` stage removes the deferred worktree after the owner exits. `--auto` only queues the merge, so scheduled cleanup also handles that later after the PR actually merges.
 
 ```bash
-# Fallback/manual sequence after gh pr merge --squash succeeds:
+# Fallback/manual sequence after a lifecycle-helper merge succeeds:
 WORKTREE_PATH="$(pwd)"
 BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
 CANONICAL_DIR="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"
@@ -53,8 +53,8 @@ creation or verification failures.
 ## Manual Cleanup (interactive sessions)
 
 ```bash
-# Merge without --delete-branch (required from inside a worktree)
-gh pr merge --squash
+# Merge through the lifecycle helper (required from inside a worktree)
+full-loop-helper.sh merge PR_NUMBER OWNER/REPO --squash
 
 # Return to canonical repo and pull
 CANONICAL_DIR="$(git worktree list --porcelain | sed -n '1s/^worktree //p')"

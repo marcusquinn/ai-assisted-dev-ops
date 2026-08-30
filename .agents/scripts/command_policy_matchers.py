@@ -23,6 +23,7 @@ __all__ = [
     "_is_temp_operand",
     "_matches",
     "_matches_gh_command_path",
+    "_matches_gh_pr_merge",
     "_matches_git",
     "_matches_rm",
     "_rm_operands",
@@ -34,6 +35,40 @@ def _matches_gh_command_path(argv: list[str], command_paths: list[list[str]]) ->
     if len(argv) < 3 or os.path.basename(argv[0]) != "gh":
         return False
     return argv[1:3] in command_paths
+
+
+def _gh_pr_merge_remainder(argv: list[str]) -> list[str] | None:
+    if not argv or os.path.basename(argv[0]) != "gh":
+        return None
+    args = argv[1:]
+    index = 0
+    for expected in ("pr", "merge"):
+        while index < len(args):
+            arg = args[index]
+            if arg in {"-R", "--repo"}:
+                if index + 1 >= len(args):
+                    return None
+                index += 2
+                continue
+            if arg.startswith("--repo=") or (arg.startswith("-R") and arg != "-R"):
+                index += 1
+                continue
+            break
+        if index >= len(args) or args[index] != expected:
+            return None
+        index += 1
+    return args[index:]
+
+
+def _matches_gh_pr_merge(argv: list[str]) -> bool:
+    remainder = _gh_pr_merge_remainder(argv)
+    return remainder is not None and not any(arg in {"--help", "-h"} for arg in argv[1:])
+
+
+def _matches_gh_pr_disable_auto(argv: list[str]) -> bool:
+    return _matches_gh_pr_merge(argv) and any(
+        arg == "--disable-auto" or arg.startswith("--disable-auto=") for arg in argv
+    )
 
 
 def _rm_operands(args: list[str]) -> list[str]:
@@ -89,6 +124,10 @@ def _is_root_or_home_operand(path: str, cwd: str) -> bool:
 def _matches(matcher: str, argv: list[str], cwd: str) -> bool:
     if matcher in {"rm_recursive_force_root", "rm_recursive_force"}:
         return _matches_rm(matcher, argv, cwd)
+    if matcher == "gh_pr_disable_auto_direct":
+        return _matches_gh_pr_disable_auto(argv)
+    if matcher == "gh_pr_merge_direct":
+        return _matches_gh_pr_merge(argv)
     subcommand, git_args = _git_parts(argv)
     if not subcommand:
         return False

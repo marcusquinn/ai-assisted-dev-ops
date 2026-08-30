@@ -33,7 +33,7 @@ tools:
 
 | Platform | Create | Review | Merge |
 |----------|--------|--------|-------|
-| GitHub | `gh pr create --fill` | `/pr review` | `gh pr merge --squash` |
+| GitHub | `gh pr create --fill` | `/pr review` | `full-loop-helper.sh merge NUMBER OWNER/REPO --squash` |
 | GitLab | `glab mr create --fill` | `/pr review` | `glab mr merge --squash` |
 | Gitea | `tea pulls create` | `/pr review` | `tea pulls merge` |
 
@@ -66,7 +66,7 @@ command-substitution `--body` patterns are blocked by the signature gate.
 Interactive aidevops PRs default to draft until the user explicitly asks to finalise/ready the PR or invokes `/pr-loop`. To permit pulse merge throughput after finalisation, also opt in with `allow-auto-merge`, `AIDEVOPS_INTERACTIVE_PR_AUTO_MERGE=1`, global `orchestration.interactive_pr_auto_merge=true`, or per-repo `repos.json` `interactive_pr_auto_merge=true`.
 
 When a PR is approved, mergeable, non-draft, and not blocked by review/security/
-maintainer labels, prefer `gh pr merge --auto` or the host platform's merge queue
+maintainer labels, prefer `full-loop-helper.sh merge NUMBER OWNER/REPO --auto` or the host platform's merge queue
 over refreshing the PR branch while required checks are queued or running.
 Updating the branch creates a new head SHA and restarts checks; only do it when
 the PR is conflicted, a ruleset requires an up-to-date branch, or the current
@@ -94,7 +94,7 @@ only for repositories that explicitly require review-before-merge. The
 `skip-review-gate` label is a trusted-internal exception and is denied for
 external or unknown authors.
 
-**Merge**: `gh pr merge 123 --squash [--auto] [--delete-branch]` | GitLab: `glab mr merge 123 --squash [--when-pipeline-succeeds]`
+**Merge**: `full-loop-helper.sh merge 123 OWNER/REPO --squash [--auto]` | GitLab: `glab mr merge 123 --squash [--when-pipeline-succeeds]`
 
 ## Orchestrated Checks
 

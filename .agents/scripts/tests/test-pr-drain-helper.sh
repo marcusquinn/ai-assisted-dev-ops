@@ -107,7 +107,7 @@ category_for() {
 }
 
 run_tests() {
-	local output category result
+	local output category result human_output
 	output=$("$HELPER_SCRIPT" owner/repo --json)
 
 	category=$(category_for "$output" 1)
@@ -134,6 +134,14 @@ run_tests() {
 	result=1
 	[[ "$category" == "mergeable" ]] && result=0
 	print_result "baseline-red configured failure is mergeable" "$result" "category=${category}"
+
+	human_output=$("$HELPER_SCRIPT" owner/repo)
+	result=1
+	if [[ "$human_output" == *"full-loop-helper.sh merge 1 owner/repo --admin --squash"* &&
+		"$human_output" != *"gh pr merge"* ]]; then
+		result=0
+	fi
+	print_result "human output routes merges through lifecycle helper" "$result" "$human_output"
 
 	return 0
 }

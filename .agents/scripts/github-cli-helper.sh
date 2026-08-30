@@ -443,6 +443,22 @@ create_pr() {
 	return 0
 }
 
+_run_full_loop_merge() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local merge_method="$3"
+	local full_loop_helper="$SCRIPT_DIR/full-loop-helper.sh"
+
+	if [[ ! -x "$full_loop_helper" ]]; then
+		print_error "Full-loop merge helper is unavailable or not executable: $full_loop_helper"
+		return 1
+	fi
+	if "$full_loop_helper" merge "$pr_number" "$repo_slug" --"$merge_method"; then
+		return 0
+	fi
+	return 1
+}
+
 merge_pr() {
 	local account_name="$1"
 	local repo_name="$2"
@@ -466,9 +482,9 @@ merge_pr() {
 
 	print_info "Merging pull request #$pr_number in $owner/$repo_name"
 
-	local merge_output
-	merge_output=$(gh pr merge --repo "$owner/$repo_name" "$pr_number" --"$merge_method" 2>&1)
-	local merge_exit=$?
+	local merge_output=""
+	local merge_exit=0
+	merge_output=$(_run_full_loop_merge "$pr_number" "$owner/$repo_name" "$merge_method" 2>&1) || merge_exit=$?
 
 	if [[ $merge_exit -eq 0 ]]; then
 		print_success "$SUCCESS_PR_MERGED"
@@ -481,14 +497,12 @@ merge_pr() {
 		return 0
 	fi
 
-	# Check for workflow scope error (t3934)
-	if echo "$merge_output" | grep -qiF 'workflow scope'; then
+	if [[ "$merge_output" == *"workflow scope"* ]]; then
 		print_error "Merge failed: PR modifies workflow files but token lacks 'workflow' scope"
 		print_info "Fix: run 'gh auth refresh -s workflow' to add the workflow scope"
 		return 1
 	fi
-
-	print_error "Failed to merge pull request: $merge_output"
+	print_error "Lifecycle merge failed: $merge_output"
 	return 1
 }
 

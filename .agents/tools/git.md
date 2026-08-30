@@ -41,7 +41,7 @@ tools:
 | Fork | `gh repo fork owner/repo` | — | — |
 | Create PR/MR | `gh pr create --fill` | `glab mr create --fill` | `tea pulls create` |
 | List PRs/MRs | `gh pr list` | `glab mr list` | — |
-| Merge | `gh pr merge 123 --squash` | `glab mr merge 123 --squash` | — |
+| Merge | `full-loop-helper.sh merge 123 owner/repo --squash` | `glab mr merge 123 --squash` | — |
 | Create release | `gh release create v1.0.0 --generate-notes` | `glab release create v1.0.0 --notes "Notes"` | `tea releases create v1.0.0` |
 | List releases | `gh release list` | `glab release list` | — |
 

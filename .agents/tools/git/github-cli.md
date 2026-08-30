@@ -44,7 +44,7 @@ gh issue view 123 && gh issue close 123
 # PRs
 gh pr create --title "Feature X" --body-file /absolute/path/to/body.md
 gh pr create --fill          # Auto-fill from commits
-gh pr view 123 && gh pr merge 123 --squash  # Also: --merge, --rebase
+gh pr view 123 && full-loop-helper.sh merge 123 owner/repo --squash
 
 # Releases
 gh release create v1.2.3 --generate-notes [--draft]
@@ -61,6 +61,10 @@ For aidevops-managed GitHub writes, create the body file and append
 `gh-signature-helper.sh footer` before the `gh ... --body-file` command. Do not
 use same-command heredoc or command-substitution bodies; the signature gate
 blocks patterns it cannot inspect safely.
+
+Direct `gh pr merge` is blocked in aidevops sessions. Use
+`full-loop-helper.sh merge NUMBER OWNER/REPO`; trusted lifecycle helpers retain
+their internal GitHub merge transport.
 
 <!-- AI-CONTEXT-END -->
 

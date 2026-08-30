@@ -68,7 +68,7 @@ For remaining collaborator PRs where CI passes: `REVIEW_REQUIRED` is NOT a merge
 ```bash
 source ~/.aidevops/agents/scripts/pulse-wrapper.sh
 approve_collaborator_pr NUMBER SLUG AUTHOR
-gh pr merge NUMBER --repo SLUG --squash
+full-loop-helper.sh merge NUMBER SLUG --squash
 ```
 
 **Merge criteria:** CI all PASS (or NONE/PENDING) + author is collaborator → approve and merge.
@@ -234,7 +234,7 @@ For repos where `repo_allows_pulse_write_actions SLUG` fails (role=`contributor`
 
 ### PR triage
 
-- **Green CI + collaborator** → `approve_collaborator_pr` then `gh pr merge --squash`
+- **Green CI + collaborator** → `approve_collaborator_pr` then `full-loop-helper.sh merge NUMBER SLUG --squash`
 - **Green CI + strict-policy `WAITING` on bots** → skip; run `request-retry` only when a true rate-limit notice makes a retry useful
 - **Failing CI** → check if systemic (same check fails on 3+ PRs → file workflow issue). If per-PR, dispatch fix worker.
 - **Open 6+ hours with no recent commits** → comment, consider closing and re-filing
