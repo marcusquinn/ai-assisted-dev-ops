@@ -24,6 +24,27 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+_file_discovery_readiness_lib="${SCRIPT_DIR%/aidevops-cli}/file-discovery-readiness.sh"
+if [[ -f "$_file_discovery_readiness_lib" ]]; then
+	# shellcheck source=../file-discovery-readiness.sh
+	source "$_file_discovery_readiness_lib"
+fi
+unset _file_discovery_readiness_lib
+
+_status_file_discovery_readiness() {
+	local fd_state="unavailable"
+	if declare -F aidevops_fd_state >/dev/null 2>&1; then
+		fd_state=$(aidevops_fd_state || true)
+	fi
+	case "$fd_state" in
+	ready) print_success "fd" ;;
+	compatibility) print_error "fd - fdfind is installed but the required fd command is unavailable; run: aidevops setup" ;;
+	*) print_error "fd - not installed; run: aidevops setup" ;;
+	esac
+	check_cmd rg && print_success "rg" || print_error "rg - not installed; run: aidevops setup"
+	return 0
+}
+
 _status_recommended_tools() {
 	print_header "Recommended Tools"
 	if [[ "$(uname)" == "Darwin" ]]; then
@@ -247,6 +268,7 @@ cmd_status() {
 	echo ""
 	print_header "Required Dependencies"
 	for cmd in git curl jq ssh; do check_cmd "$cmd" && print_success "$cmd" || print_error "$cmd - not installed"; done
+	_status_file_discovery_readiness
 	echo ""
 	print_header "Optional Dependencies"
 	check_cmd sshpass && print_success "sshpass" || print_warning "sshpass - not installed (needed for password SSH)"

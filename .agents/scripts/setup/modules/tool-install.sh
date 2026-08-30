@@ -11,6 +11,14 @@ IFS=$'\n\t'
 trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO} exit $rc" >&2' ERR
 shopt -s inherit_errexit 2>/dev/null || true
 
+_tool_install_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+_file_discovery_readiness_lib="${_tool_install_dir}/../../file-discovery-readiness.sh"
+if [[ -f "$_file_discovery_readiness_lib" ]]; then
+	# shellcheck source=../../file-discovery-readiness.sh
+	source "$_file_discovery_readiness_lib"
+fi
+unset _tool_install_dir _file_discovery_readiness_lib
+
 _print_gh_slurp_manual_upgrade() {
 	echo ""
 	echo "📋 GitHub CLI upgrade guidance:"
@@ -170,33 +178,6 @@ _print_file_discovery_manual_install() {
 	return 0
 }
 
-# Add fd=fdfind alias to shell rc files on Debian/Ubuntu after apt install.
-_add_fd_alias_debian() {
-	local rc_files=("$HOME/.bashrc" "$HOME/.zshrc")
-	local added_to=""
-	local rc_file
-
-	for rc_file in "${rc_files[@]}"; do
-		[[ ! -f "$rc_file" ]] && continue
-
-		if ! grep -q 'alias fd="fdfind"' "$rc_file" 2>/dev/null; then
-			if { echo '' >>"$rc_file" &&
-				echo '# fd-find alias for Debian/Ubuntu (added by aidevops)' >>"$rc_file" &&
-				echo 'alias fd="fdfind"' >>"$rc_file"; }; then
-				added_to="${added_to:+$added_to, }$rc_file"
-			fi
-		fi
-	done
-
-	if [[ -n "$added_to" ]]; then
-		print_success "Added alias fd=fdfind to: $added_to"
-		echo "  Restart your shell to activate"
-	else
-		print_success "fd alias already configured"
-	fi
-	return 0
-}
-
 # Resolve apt package names (fd→fd-find on Debian/Ubuntu) and install.
 _install_file_discovery_packages() {
 	local pkg_manager="$1"
@@ -225,9 +206,13 @@ _install_file_discovery_packages() {
 
 	if install_packages "$pkg_manager" "${actual_packages[@]}"; then
 		print_success "File discovery tools installed"
-		# On Debian/Ubuntu, fd is installed as fdfind — create alias in shell rc files
+		# Debian/Ubuntu installs fdfind; expose the fd command to non-interactive agents.
 		if [[ "$pkg_manager" == "apt" ]] && command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; then
-			_add_fd_alias_debian
+			if aidevops_ensure_fd_command; then
+				print_success "Installed fd compatibility command in ~/.local/bin"
+			else
+				print_warning "fdfind is installed but the required fd command could not be exposed"
+			fi
 		fi
 	else
 		print_warning "Failed to install some file discovery tools (non-critical)"
@@ -248,8 +233,13 @@ setup_file_discovery_tools() {
 		print_success "fd found: $fd_version"
 	elif command -v fdfind >/dev/null 2>&1; then
 		fd_version=$(fdfind --version 2>/dev/null | head -1 || echo "unknown")
-		print_success "fd found (as fdfind): $fd_version"
-		print_warning "Note: 'fd' alias not active in current shell. Restart shell or run: alias fd=fdfind"
+		if aidevops_ensure_fd_command; then
+			print_success "fd compatibility command installed for fdfind: $fd_version"
+		else
+			missing_tools+=("fd")
+			missing_packages+=("fd")
+			missing_names+=("fd command (fdfind exists but is not exposed as fd)")
+		fi
 	else
 		missing_tools+=("fd")
 		missing_packages+=("fd")
