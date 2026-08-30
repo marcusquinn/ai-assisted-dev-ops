@@ -468,6 +468,12 @@ test_cli_subcommand() {
 
 	"$HELPER_PATH" branch-has-active-claim "feature/gh-${issue}-test" --worktree "$FAKE_REPO" >/dev/null 2>&1
 	local rc_alive=$?
+	local rc_missing_path=0
+	(
+		cd "$FAKE_REPO" || exit 9
+		"$HELPER_PATH" branch-has-active-claim "feature/gh-${issue}-test" \
+			--worktree "${TEST_ROOT}/removed-worktree" >/dev/null 2>&1
+	) || rc_missing_path=$?
 
 	rm -f "$stamp"
 	"$HELPER_PATH" branch-has-active-claim "feature/gh-${issue}-test" --worktree "$FAKE_REPO" >/dev/null 2>&1
@@ -477,11 +483,11 @@ test_cli_subcommand() {
 	"$HELPER_PATH" branch-has-active-claim >/dev/null 2>&1
 	local rc_usage=$?
 
-	if [[ $rc_alive -eq 0 && $rc_no_stamp -eq 1 && $rc_usage -eq 2 ]]; then
+	if [[ $rc_alive -eq 0 && $rc_missing_path -eq 1 && $rc_no_stamp -eq 1 && $rc_usage -eq 2 ]]; then
 		print_result "CLI subcommand round-trips" 0
 	else
 		print_result "CLI subcommand round-trips" 1 \
-			"(alive=$rc_alive, no_stamp=$rc_no_stamp, usage=$rc_usage)"
+			"(alive=$rc_alive, missing_path=$rc_missing_path, no_stamp=$rc_no_stamp, usage=$rc_usage)"
 	fi
 }
 test_cli_subcommand

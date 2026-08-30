@@ -584,15 +584,19 @@ _worktree_recovery_plan_registry_state() {
 
 _worktree_recovery_plan_claim_state() {
 	local identity_json="$1"
-	local source_path="" helper="" claim_rc=0
+	local archive_path="" helper="" claim_rc=0
 	local branch=""
 
-	source_path=$(printf '%s\n' "$identity_json" | jq -r '.source_path') || return 1
+	archive_path=$(printf '%s\n' "$identity_json" | jq -r '.archive_path') || return 1
 	branch=$(printf '%s\n' "$identity_json" | jq -r '.branch') || return 1
 	[[ "$branch" == refs/heads/* ]] || {
 		printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_ACTIVE"
 		return 0
 	}
+	if ! _worktree_recovery_plan_repo_slug "$archive_path" >/dev/null; then
+		printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE"
+		return 0
+	fi
 	if [[ -x "$WORKTREE_RECOVERY_LIFECYCLE_DIR/interactive-session-helper.sh" ]]; then
 		helper="$WORKTREE_RECOVERY_LIFECYCLE_DIR/interactive-session-helper.sh"
 	elif [[ -x "${HOME:-}/.aidevops/agents/scripts/interactive-session-helper.sh" ]]; then
@@ -601,7 +605,7 @@ _worktree_recovery_plan_claim_state() {
 		printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE"
 		return 0
 	fi
-	"$helper" branch-has-active-claim "${branch#refs/heads/}" --worktree "$source_path" \
+	"$helper" branch-has-active-claim "${branch#refs/heads/}" --worktree "$archive_path" \
 		>/dev/null 2>&1 || claim_rc=$?
 	case "$claim_rc" in
 	0) printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_ACTIVE" ;;

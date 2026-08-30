@@ -200,6 +200,8 @@ test_exact_plan_writes_candidate_without_mutation() {
 	mkdir -p "$home_path" "$recovery_root" || rc=1
 	archive_path=$(create_archived_fixture "$repo_path" "$worktree_path" "$recovery_root" \
 		"bugfix/gh29388-recovery-plan") || rc=1
+	"$GIT_BIN" -C "$archive_path" remote add origin \
+		"https://github.com/example/repo.git" || rc=1
 	marker_path="${archive_path%/*}/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}"
 	bucket_path="${archive_path%/*}"
 	marker_digest_before=$(_worktree_recovery_plan_sha256_file "$marker_path") || rc=1
@@ -262,6 +264,52 @@ test_git_state_detects_recovery_data() {
 	[[ "$state" == "dirty" ]] || rc=1
 	print_result "git_state_detects_recovery_data" "$rc" \
 		"Expected tracked, untracked, and ignored recovery data to veto candidates"
+	return 0
+}
+
+test_claim_state_uses_archive_repository() {
+	local home_path="${TEST_DIR}/claim-home"
+	local repo_path="${TEST_DIR}/claim-repo"
+	local worktree_path="${TEST_DIR}/claim-worktree"
+	local unrelated_repo="${TEST_DIR}/claim-unrelated-repo"
+	local recovery_root="${home_path}/recovery"
+	local claim_dir="${home_path}/.aidevops/.agent-workspace/interactive-claims"
+	local archive_path="" identity="" unavailable_identity="" state=""
+	local rc=0
+
+	mkdir -p "$home_path" "$recovery_root" "$claim_dir" || rc=1
+	archive_path=$(create_archived_fixture "$repo_path" "$worktree_path" "$recovery_root" \
+		"bugfix/gh30902-archive-claim") || rc=1
+	"$GIT_BIN" -C "$archive_path" remote add origin \
+		"https://github.com/archive/repo.git" || rc=1
+	identity=$(_worktree_recovery_plan_identity_json "${archive_path%/*}") || rc=1
+	"$GIT_BIN" init -q -b main "$unrelated_repo" || rc=1
+	"$GIT_BIN" -C "$unrelated_repo" remote add origin \
+		"https://github.com/unrelated/repo.git" || rc=1
+	jq -n '{issue:30902,slug:"unrelated/repo",pid:1,
+		hostname:"aidevops-remote-fixture.invalid"}' \
+		>"${claim_dir}/unrelated-repo-30902.json" || rc=1
+	state=$(
+		cd "$unrelated_repo" || exit 1
+		export HOME="$home_path"
+		_worktree_recovery_plan_claim_state "$identity"
+	) || rc=1
+	[[ "$state" == "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]] || rc=1
+	jq -n '{issue:30902,slug:"archive/repo",pid:1,
+		hostname:"aidevops-remote-fixture.invalid"}' \
+		>"${claim_dir}/archive-repo-30902.json" || rc=1
+	state=$(
+		cd "$unrelated_repo" || exit 1
+		export HOME="$home_path"
+		_worktree_recovery_plan_claim_state "$identity"
+	) || rc=1
+	[[ "$state" == "$WORKTREE_RECOVERY_PLAN_STATE_ACTIVE" ]] || rc=1
+	unavailable_identity=$(printf '%s\n' "$identity" | jq -c \
+		--arg archive "${TEST_DIR}/missing-archive" '.archive_path = $archive') || rc=1
+	state=$(_worktree_recovery_plan_claim_state "$unavailable_identity") || rc=1
+	[[ "$state" == "$WORKTREE_RECOVERY_UNAVAILABLE" ]] || rc=1
+	print_result "claim_state_uses_archive_repository" "$rc" \
+		"Expected archive-bound claims, no unrelated CWD fallback, and unavailable invalid identity"
 	return 0
 }
 
@@ -1492,6 +1540,7 @@ source "${SCRIPTS_DIR}/worktree-helper-cmds.sh"
 setup
 printf '=== test-worktree-recovery-lifecycle.sh ===\n'
 test_git_state_detects_recovery_data
+test_claim_state_uses_archive_repository
 test_exact_plan_writes_candidate_without_mutation
 test_plan_output_refuses_unsafe_targets
 test_classification_fails_closed

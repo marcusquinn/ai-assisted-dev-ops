@@ -253,15 +253,18 @@ _isc_extract_issue_from_branch() {
 _isc_branch_has_active_claim() {
 	local branch=""
 	local worktree_path=""
+	local worktree_supplied=0
 
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
 		case "$_arg" in
 			--worktree)
+				worktree_supplied=1
 				worktree_path="${2:-}"
 				shift 2
 				;;
 			--worktree=*)
+				worktree_supplied=1
 				worktree_path="${_arg#--worktree=}"
 				shift
 				;;
@@ -284,13 +287,14 @@ _isc_branch_has_active_claim() {
 	issue=$(_isc_extract_issue_from_branch "$branch") || return 1
 	[[ -z "$issue" ]] && return 1
 
-	# Derive slug from worktree-path remote when supplied, else from CWD.
+	# An explicit worktree binds repository identity to that path. Only callers
+	# that omit the option may derive identity from their current directory.
 	local slug=""
-	if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+	if [[ "$worktree_supplied" -eq 1 ]]; then
+		[[ -n "$worktree_path" && -d "$worktree_path" ]] || return 1
 		slug=$(git -C "$worktree_path" remote get-url origin 2>/dev/null \
 			| sed 's|.*github\.com[:/]||;s|\.git$||' || echo "")
-	fi
-	if [[ -z "$slug" ]]; then
+	else
 		slug=$(git remote get-url origin 2>/dev/null \
 			| sed 's|.*github\.com[:/]||;s|\.git$||' || echo "")
 	fi
