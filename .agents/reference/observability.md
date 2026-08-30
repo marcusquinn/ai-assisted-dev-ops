@@ -249,8 +249,15 @@ session-introspect-helper.sh sessions 5
 
 The `patterns` subcommand flags files read/edited more than 3× in the
 current session — a common stuck-worker signature when file comprehension
-isn't landing. When this fires, break out of the loop: `git diff`,
-`git status`, or step back to re-read the brief.
+isn't landing. It also reports exact `calls.intent_present`,
+`calls.intent_missing`, and `calls.intent_coverage_percent` fields in JSON
+(with matching text totals). Null, empty, and whitespace-only legacy values
+count as missing. When intent is missing, `errors` renders `<missing>` and
+retains only the tool, duration, and outcome category as fallback context;
+it never reads or displays tool arguments, paths, prompts, commands, or
+credentials. A missing-intent notice means root-cause clustering is limited.
+When repeated access fires, break out of the loop: `git diff`, `git status`,
+or step back to re-read the brief.
 
 Stuck-worker thresholds (informational):
 

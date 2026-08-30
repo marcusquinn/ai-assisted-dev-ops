@@ -80,9 +80,9 @@ INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, durat
  ('2026-04-18T04:00:10Z', 'sess-A', 'Read',   'rechecking auth handler',       1,  88, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
  ('2026-04-18T04:00:15Z', 'sess-A', 'Read',   're-reading auth handler',       1,  95, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
  ('2026-04-18T04:00:20Z', 'sess-A', 'Read',   'reading auth handler AGAIN',    1,  80, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
- ('2026-04-18T04:00:25Z', 'sess-A', 'Edit',   'patching auth handler',         1, 240, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
+ ('2026-04-18T04:00:25Z', 'sess-A', 'Edit',   '',                              1, 240, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
  ('2026-04-18T04:00:30Z', 'sess-A', 'Bash',   'running shellcheck',            0, 850, '{}', 'command_failure'),
- ('2026-04-18T04:00:35Z', 'sess-A', 'Bash',   'running blocked retry',         0, 910, '{}', 'policy_block'),
+ ('2026-04-18T04:00:35Z', 'sess-A', 'Bash',   NULL,                            0, 910, '{"args":{"redaction_probe":"never-expose"}}', 'policy_block'),
  ('2026-04-18T04:00:40Z', 'sess-A', 'Bash',   'running shellcheck final',      1, 780, '{}', 'success'),
  ('2026-04-18T04:00:45Z', 'sess-A', 'Task',   'handling runtime error',        0,  50, '{}', 'tool_error');
 
@@ -96,6 +96,14 @@ INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, durat
 
 INSERT INTO session_summaries (session_id, first_seen, last_seen, request_count, total_tool_calls, total_errors, total_cost, models_used)
 VALUES ('sess-B', '2026-04-17T10:00:00Z', '2026-04-17T10:00:05Z', 2, 2, 0, 0.0041, 'claude-sonnet-4');
+
+-- Session C (legacy missing intents)
+INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, duration_ms, metadata, outcome_category) VALUES
+ ('2026-04-16T10:00:00Z', 'sess-C', 'Read',  NULL, 1, 100, '{"args":{"filePath":"/repo/legacy.sh"}}', 'success'),
+ ('2026-04-16T10:00:05Z', 'sess-C', 'Bash',  '',   0, 200, '{}', 'command_failure');
+
+INSERT INTO session_summaries (session_id, first_seen, last_seen, request_count, total_tool_calls, total_errors, total_cost, models_used)
+VALUES ('sess-C', '2026-04-16T10:00:00Z', '2026-04-16T10:00:05Z', 2, 2, 1, 0.0041, 'claude-sonnet-4');
 SQL
 
 # ----------------------------------------------------------------------------
@@ -137,12 +145,26 @@ assert_contains "patterns: separates tool errors"    "$out" "tool_error"
 assert_contains "patterns: preserves unknown legacy outcomes" "$out" "legacy_unknown"
 assert_contains "patterns: reports repeated-path evidence" "$out" "/repo/b.sh"
 assert_contains "patterns: requires contextual interpretation" "$out" "Interpret in context"
+assert_contains "patterns: reports mixed intent coverage" "$out" "8 present, 2 missing, 80.00% coverage"
+assert_contains "patterns: warns about missing intents" "$out" "missing intents limit root-cause clustering"
+
+out=$("$HELPER" patterns --session sess-B 2>&1) || true
+assert_contains "patterns: reports complete intent coverage" "$out" "2 present, 0 missing, 100.00% coverage"
+
+out=$("$HELPER" patterns --session sess-C 2>&1) || true
+assert_contains "patterns: reports zero intent coverage" "$out" "0 present, 2 missing, 0.00% coverage"
 
 printf '\n%s=== errors ===%s\n' "$GREEN" "$NC"
 out=$("$HELPER" errors 2>&1) || true
 assert_contains "errors: shows failed Bash call"     "$out" "shellcheck"
 assert_contains "errors: shows outcome category"     "$out" "command_failure"
 assert_contains "errors: excludes succeeded calls"   "$out" "3 error"
+assert_contains "errors: marks missing intent"       "$out" "<missing>"
+if ! printf '%s' "$out" | grep -qF "redaction_probe"; then
+	pass "errors: excludes raw metadata arguments"
+else
+	fail "errors: exposed raw metadata arguments" "$out"
+fi
 
 printf '\n%s=== sessions ===%s\n' "$GREEN" "$NC"
 out=$("$HELPER" sessions 2>&1) || true
@@ -184,6 +206,29 @@ if command -v jq >/dev/null 2>&1; then
 	else
 		fail "patterns --json: missing outcome category counters" "$out"
 	fi
+	if printf '%s' "$out" | jq -e '
+		.calls.intent_present == 8 and
+		.calls.intent_missing == 2 and
+		.calls.intent_coverage_percent == 80
+	' >/dev/null 2>&1; then
+		pass "patterns --json: reports mixed intent coverage"
+	else
+		fail "patterns --json: missing mixed intent coverage" "$out"
+	fi
+
+	out=$("$HELPER" patterns --session sess-B --json 2>&1) || true
+	if printf '%s' "$out" | jq -e '.calls.intent_present == 2 and .calls.intent_missing == 0 and .calls.intent_coverage_percent == 100' >/dev/null 2>&1; then
+		pass "patterns --json: reports complete intent coverage"
+	else
+		fail "patterns --json: missing complete intent coverage" "$out"
+	fi
+
+	out=$("$HELPER" patterns --session sess-C --json 2>&1) || true
+	if printf '%s' "$out" | jq -e '.calls.intent_present == 0 and .calls.intent_missing == 2 and .calls.intent_coverage_percent == 0' >/dev/null 2>&1; then
+		pass "patterns --json: reports zero intent coverage"
+	else
+		fail "patterns --json: missing zero intent coverage" "$out"
+	fi
 
 	out=$("$HELPER" errors --json 2>&1) || true
 	if printf '%s' "$out" | jq -e '.errors | map(.category) | index("policy_block") != null' >/dev/null 2>&1; then
@@ -191,10 +236,20 @@ if command -v jq >/dev/null 2>&1; then
 	else
 		fail "errors --json: missing outcome categories" "$out"
 	fi
+	if printf '%s' "$out" | jq -e '.errors | map(select(.intent == "<missing>" and .intent_present == false)) | length == 1' >/dev/null 2>&1; then
+		pass "errors --json: marks missing intent safely"
+	else
+		fail "errors --json: missing intent marker absent" "$out"
+	fi
+	if ! printf '%s' "$out" | grep -qF "redaction_probe"; then
+		pass "errors --json: excludes raw metadata arguments"
+	else
+		fail "errors --json: exposed raw metadata arguments" "$out"
+	fi
 
 	out=$("$HELPER" sessions --json 2>&1) || true
-	if printf '%s' "$out" | jq -e 'length == 2' >/dev/null 2>&1; then
-		pass "sessions --json: returns 2 sessions"
+	if printf '%s' "$out" | jq -e 'length == 3' >/dev/null 2>&1; then
+		pass "sessions --json: returns 3 sessions"
 	else
 		fail "sessions --json: wrong length" "$out"
 	fi
