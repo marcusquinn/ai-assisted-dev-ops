@@ -252,6 +252,12 @@ current session — a common stuck-worker signature when file comprehension
 isn't landing. When this fires, break out of the loop: `git diff`,
 `git status`, or step back to re-read the brief.
 
+`patterns` also reports populated and missing `agent__intent` totals plus a
+coverage percentage in text and JSON. Null, empty, and whitespace-only legacy
+values count as missing. `errors` renders missing values as `<missing>` rather
+than exposing commands, arguments, prompts, paths, or other transcript content;
+the helper never infers intent from those private inputs.
+
 Stuck-worker thresholds (informational):
 
 | Signal                  | Value         | Interpretation                      |

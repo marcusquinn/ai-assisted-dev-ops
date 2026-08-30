@@ -243,14 +243,20 @@ cmd_patterns() {
 			SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS errors,
 			MIN(timestamp) AS first_ts,
 			MAX(timestamp) AS last_ts,
-			COALESCE(AVG(duration_ms),0) AS avg_dur
+			COALESCE(AVG(duration_ms),0) AS avg_dur,
+			SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 THEN 1 ELSE 0 END) AS intent_present,
+			SUM(CASE WHEN intent IS NULL OR LENGTH(TRIM(intent)) = 0 THEN 1 ELSE 0 END) AS intent_missing,
+			printf('%.1f', 100.0 * SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 THEN 1 ELSE 0 END) / MAX(1, COUNT(*))) AS intent_coverage
 		FROM tool_calls
 		WHERE session_id='${sid_esc}' ${since};
 	")
-	local total errors first_ts last_ts avg_dur
-	IFS='|' read -r total errors first_ts last_ts avg_dur <<<"$stats"
+	local total errors first_ts last_ts avg_dur intent_present intent_missing intent_coverage
+	IFS='|' read -r total errors first_ts last_ts avg_dur intent_present intent_missing intent_coverage <<<"$stats"
 	total="${total:-0}"
 	errors="${errors:-0}"
+	intent_present="${intent_present:-0}"
+	intent_missing="${intent_missing:-0}"
+	intent_coverage="${intent_coverage:-0.0}"
 
 	# Per-tool counts.
 	local by_tool
@@ -303,10 +309,12 @@ cmd_patterns() {
 
 	if [[ "$json_flag" == "true" ]]; then
 		_patterns_json "$sid" "$total" "$errors" "$first_ts" "$last_ts" \
-			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes"
+			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes" \
+			"$intent_present" "$intent_missing" "$intent_coverage"
 	else
 		_patterns_table "$sid" "$total" "$errors" "$first_ts" "$last_ts" \
-			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes"
+			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes" \
+			"$intent_present" "$intent_missing" "$intent_coverage"
 	fi
 	return 0
 }
@@ -315,10 +323,17 @@ _patterns_table() {
 	local sid="$1" total="$2" errors="$3" first_ts="$4" last_ts="$5"
 	local avg_dur="$6" rate="$7" by_tool="$8" rereads="$9"
 	local outcomes="${10}"
+	local intent_present="${11}" intent_missing="${12}" intent_coverage="${13}"
 	printf 'Session: %s\n' "$sid"
 	printf 'Window:  %s → %s\n' "${first_ts:-?}" "${last_ts:-?}"
-	printf 'Calls:   %s total, %s error(s), %s calls/min, avg %sms\n\n' \
+	printf 'Calls:   %s total, %s error(s), %s calls/min, avg %sms\n' \
 		"$total" "$errors" "$rate" "${avg_dur%.*}"
+	printf 'Intent:  %s populated, %s missing (%s%% coverage)\n' \
+		"$intent_present" "$intent_missing" "$intent_coverage"
+	if [[ "$intent_missing" -gt 0 ]]; then
+		printf 'Notice: missing intents limit reliable root-cause clustering.\n'
+	fi
+	printf '\n'
 
 	printf 'Per-tool:\n'
 	if [[ -n "$by_tool" ]]; then
@@ -357,6 +372,7 @@ _patterns_json() {
 	local sid="$1" total="$2" errors="$3" first_ts="$4" last_ts="$5"
 	local avg_dur="$6" rate="$7" by_tool="$8" rereads="$9"
 	local outcomes="${10}"
+	local intent_present="${11}" intent_missing="${12}" intent_coverage="${13}"
 	command -v jq >/dev/null 2>&1 || { print_error "jq required with --json"; return 1; }
 	local by_tool_json
 	by_tool_json=$(printf '%s' "$by_tool" | jq -R -s '
@@ -386,6 +402,8 @@ _patterns_json() {
 		--argjson avg_dur "${avg_dur:-0}" --arg rate "$rate" \
 		--argjson by_tool "$by_tool_json" --argjson outcomes "$outcomes_json" \
 		--argjson rereads "$rereads_json" \
+		--argjson intent_present "$intent_present" --argjson intent_missing "$intent_missing" \
+		--arg intent_coverage "$intent_coverage" \
 		--argjson minimum_repeat_count "$REPEATED_PATH_MIN_COUNT" '
 		{
 			session: $sid,
@@ -395,7 +413,12 @@ _patterns_json() {
 				errors: $errors,
 				rate_per_min: ($rate|tonumber),
 				avg_ms: $avg_dur,
-				outcomes: $outcomes
+				outcomes: $outcomes,
+				intent_coverage: {
+					populated: $intent_present,
+					missing: $intent_missing,
+					percentage: ($intent_coverage | tonumber)
+				}
 			},
 			by_tool: $by_tool,
 			repeated_file_access: {
@@ -429,7 +452,9 @@ cmd_errors() {
 	outcome_expr=$(_outcome_category_sql "$db")
 
 	local query="
-		SELECT timestamp, tool_name, COALESCE(intent,''), COALESCE(duration_ms,0), ${outcome_expr}
+		SELECT timestamp, tool_name,
+			CASE WHEN intent IS NULL OR LENGTH(TRIM(intent)) = 0 THEN '<missing>' ELSE intent END,
+			COALESCE(duration_ms,0), ${outcome_expr}
 		FROM tool_calls
 		WHERE session_id='${sid_esc}' AND success=0 ${since}
 		ORDER BY timestamp DESC
