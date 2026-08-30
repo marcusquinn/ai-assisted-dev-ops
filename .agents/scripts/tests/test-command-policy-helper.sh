@@ -464,6 +464,16 @@ PY
 
 test_static_decisions() {
 	assert_decision "allows unmatched command" "printf safe" allow command.default-allow 0
+	assert_decision "forbids direct pull request merge" "gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-lifecycle 20 "/work"
+	assert_decision "forbids absolute-path pull request merge" "/usr/local/bin/gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-lifecycle 20 "/work"
+	assert_decision "forbids environment-wrapped pull request merge" "env GH_PAGER=cat gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-lifecycle 20 "/work"
+	assert_decision "forbids shell-launched pull request merge" "bash -lc 'gh pr merge 123 --repo owner/repo --squash'" forbid github.pr-merge-lifecycle 20 "/work"
+	assert_decision "forbids chained pull request merge" "printf safe && gh pr merge 123 --repo owner/repo --squash" forbid github.pr-merge-lifecycle 20 "/work"
+	assert_decision "forbids disabling pull request auto-merge directly" "gh pr merge 123 --repo owner/repo --disable-auto" forbid github.pr-merge-lifecycle 20 "/work"
+	assert_decision "allows lifecycle helper merge" "full-loop-helper.sh merge 123 owner/repo --squash" allow command.default-allow 0 "/work"
+	assert_decision "allows read-only pull request view" "gh pr view 123 --repo owner/repo" allow command.default-allow 0 "/work"
+	assert_decision "allows quoted merge prose" "printf '%s' 'gh pr merge 123'" allow command.default-allow 0 "/work"
+	assert_decision "allows pull request merge help" "gh pr merge --help" allow command.default-allow 0 "/work"
 	assert_decision "forbids recursive forced removal" "rm -rf ./build-output" forbid filesystem.rm-recursive-force 20 "/work"
 	assert_decision "forbids recursive root removal" "rm --recursive --force /" forbid filesystem.rm-recursive-force-root 20
 	assert_decision "allows temporary cleanup" "rm -rf /tmp/aidevops-example" allow command.default-allow 0

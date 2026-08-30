@@ -23,6 +23,7 @@ __all__ = [
     "_is_temp_operand",
     "_matches",
     "_matches_gh_command_path",
+    "_matches_gh_pr_merge",
     "_matches_git",
     "_matches_rm",
     "_rm_operands",
@@ -34,6 +35,36 @@ def _matches_gh_command_path(argv: list[str], command_paths: list[list[str]]) ->
     if len(argv) < 3 or os.path.basename(argv[0]) != "gh":
         return False
     return argv[1:3] in command_paths
+
+
+def _matches_gh_pr_merge(argv: list[str]) -> bool:
+    if len(argv) < 3 or os.path.basename(argv[0]) != "gh":
+        return False
+    command_index = _gh_command_index(argv[1:])
+    if command_index is None or argv[command_index : command_index + 2] != ["pr", "merge"]:
+        return False
+    merge_args = argv[command_index + 2 :]
+    return not (len(merge_args) == 1 and merge_args[0] in {"--help", "-h"})
+
+
+def _gh_command_index(args: list[str]) -> int | None:
+    index = 1
+    while index < len(args):
+        arg = args[index - 1]
+        if arg in {"--help", "-h", "--version"}:
+            return None
+        if arg == "--hostname":
+            index += 1
+            if index > len(args):
+                return None
+        elif arg.startswith("--hostname="):
+            pass
+        elif arg.startswith("-"):
+            return None
+        else:
+            return index
+        index += 1
+    return None
 
 
 def _rm_operands(args: list[str]) -> list[str]:
@@ -89,6 +120,8 @@ def _is_root_or_home_operand(path: str, cwd: str) -> bool:
 def _matches(matcher: str, argv: list[str], cwd: str) -> bool:
     if matcher in {"rm_recursive_force_root", "rm_recursive_force"}:
         return _matches_rm(matcher, argv, cwd)
+    if matcher == "gh_pr_merge":
+        return _matches_gh_pr_merge(argv)
     subcommand, git_args = _git_parts(argv)
     if not subcommand:
         return False

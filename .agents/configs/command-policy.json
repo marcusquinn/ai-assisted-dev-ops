@@ -101,6 +101,12 @@
       "matcher": "git_stash_delete",
       "decision": "forbid",
       "reason": "Permanent deletion of stashed changes is forbidden"
+    },
+    {
+      "id": "github.pr-merge-lifecycle",
+      "matcher": "gh_pr_merge",
+      "decision": "forbid",
+      "reason": "Direct GitHub pull request merges bypass lifecycle receipts; use full-loop-helper.sh merge <PR> <REPO> instead"
     }
   ],
   "fixtures": [
@@ -235,6 +241,18 @@
       "command": "printf '%s' 'rm -rf ./generated' | xargs sh -c",
       "decision": "forbid",
       "rule_id": "command.parse-error"
+    },
+    {
+      "name": "direct pull request merge requires lifecycle helper",
+      "command": "gh pr merge 123 --repo owner/repo --squash",
+      "decision": "forbid",
+      "rule_id": "github.pr-merge-lifecycle"
+    },
+    {
+      "name": "lifecycle helper merge remains allowed",
+      "command": "full-loop-helper.sh merge 123 owner/repo --squash",
+      "decision": "allow",
+      "rule_id": "command.default-allow"
     }
   ]
 }
