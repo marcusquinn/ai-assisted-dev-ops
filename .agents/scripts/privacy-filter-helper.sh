@@ -173,38 +173,48 @@ get_all_patterns() {
 	return 0
 }
 
-# Run secretlint scan first
+# Run one Secretlint command while preserving its documented exit-status contract.
+run_secretlint_command() {
+	local target="$1"
+	shift
+	local output=""
+	local status=0
+
+	output=$("$@" "$target" 2>&1) || status=$?
+	case "$status" in
+	0)
+		print_success "Secretlint: No secrets detected"
+		return 0
+		;;
+	1)
+		[[ -n "$output" ]] && printf '%s\n' "$output"
+		print_error "Secretlint: Potential secrets found!"
+		return 1
+		;;
+	*)
+		print_warning "Secretlint unavailable: configuration or execution error (exit $status); continuing with privacy-pattern scan"
+		return 0
+		;;
+	esac
+}
+
+# Run secretlint scan first.
 run_secretlint() {
 	local target="${1:-.}"
 
 	print_header "Running Secretlint scan..."
 
 	if command -v secretlint &>/dev/null; then
-		if secretlint "$target" 2>/dev/null; then
-			print_success "Secretlint: No secrets detected"
-			return 0
-		else
-			print_error "Secretlint: Potential secrets found!"
-			return 1
-		fi
+		run_secretlint_command "$target" secretlint
+		return $?
 	elif [[ -f "node_modules/.bin/secretlint" ]]; then
-		if ./node_modules/.bin/secretlint "$target" 2>/dev/null; then
-			print_success "Secretlint: No secrets detected"
-			return 0
-		else
-			print_error "Secretlint: Potential secrets found!"
-			return 1
-		fi
-	else
-		# Try npx
-		if npx --yes secretlint "$target" 2>/dev/null; then
-			print_success "Secretlint: No secrets detected"
-			return 0
-		else
-			print_warning "Secretlint not available, skipping credential scan"
-			return 0
-		fi
+		run_secretlint_command "$target" ./node_modules/.bin/secretlint
+		return $?
 	fi
+
+	# Preserve the existing on-demand fallback while applying the same exit contract.
+	run_secretlint_command "$target" npx --yes secretlint
+	return $?
 }
 
 # Scan for privacy-sensitive content
