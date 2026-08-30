@@ -791,7 +791,7 @@ find_related_files() {
 	local project_root="$2"
 	local tasks_dir="$project_root/todo/tasks"
 	local todo_file="$project_root/TODO.md"
-	local all_files=""
+	local -a all_files=()
 
 	# 1. Follow explicit ref:todo/tasks/ from the task line
 	if [[ -f "$todo_file" ]]; then
@@ -801,7 +801,7 @@ find_related_files() {
 		explicit_refs=$(echo "$task_line" | grep -oE 'ref:todo/tasks/[^ ]+' | sed 's/ref://' || true)
 		while IFS= read -r ref; do
 			if [[ -n "$ref" && -f "$project_root/$ref" ]]; then
-				all_files="${all_files:+$all_files"$'\n'"}$project_root/$ref"
+				all_files+=("$project_root/$ref")
 			fi
 		done <<<"$explicit_refs"
 	fi
@@ -815,13 +815,15 @@ find_related_files() {
 			grep_files=$(grep -rlF -- "$task_id" "$tasks_dir" 2>/dev/null || true)
 		fi
 		if [[ -n "$grep_files" ]]; then
-			all_files="${all_files:+$all_files"$'\n'"}$grep_files"
+			while IFS= read -r file; do
+				[[ -n "$file" ]] && all_files+=("$file")
+			done <<<"$grep_files"
 		fi
 	fi
 
 	# Deduplicate and exclude brief files (handled separately by compose_issue_body)
-	if [[ -n "$all_files" ]]; then
-		echo "$all_files" | sort -u | grep -v -- '-brief\.md$'
+	if [[ ${#all_files[@]} -gt 0 ]]; then
+		printf '%s\n' "${all_files[@]}" | sort -u | grep -v -- '-brief\.md$'
 	fi
 	return 0
 }

@@ -11,6 +11,7 @@ WORKFLOW_FILE="${REPO_ROOT}/.github/workflows/issue-sync-reusable.yml"
 
 TESTS_RUN=0
 TESTS_FAILED=0
+ENRICH_TEST_FAIL_TASK=""
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP:-}"' EXIT
 
@@ -51,6 +52,9 @@ _init_cmd() {
 _enrich_process_task() {
 	local task_id="$1" repo="$2" todo_file="$3" project_root="$4"
 	: "$repo" "$todo_file" "$project_root"
+	if [[ -n "$ENRICH_TEST_FAIL_TASK" && "$task_id" == "$ENRICH_TEST_FAIL_TASK" ]]; then
+		return 1
+	fi
 	printf '%s\n' "$task_id" >>"$TMP/processed.log"
 	printf 'ENRICHED\n'
 	return 0
@@ -179,6 +183,25 @@ test_elapsed_bound_tolerates_date_failure() {
 	return 0
 }
 
+test_task_failure_propagates() {
+	write_todo_fixture
+	: >"$TMP/processed.log"
+	ENRICH_TEST_FAIL_TASK="t9002"
+	local output status=0
+	set +e
+	output=$(AIDEVOPS_ENRICH_MAX_ISSUES=0 AIDEVOPS_ENRICH_MAX_SECONDS=0 cmd_enrich t9002 2>&1)
+	status=$?
+	set -e
+	ENRICH_TEST_FAIL_TASK=""
+	if [[ "$status" -eq 1 && "$output" == *"Enrich failed: 1 task(s)"* && ! -s "$TMP/processed.log" ]]; then
+		print_result "task composition failure makes enrich fail closed" 0
+	else
+		printf '%s\n' "$output"
+		print_result "task composition failure makes enrich fail closed" 1
+	fi
+	return 0
+}
+
 main() {
 	test_workflow_push_sets_bounded_enrich
 	test_workflow_manual_enrich_has_full_pass_headroom
@@ -187,6 +210,7 @@ main() {
 	test_invalid_bounds_are_ignored
 	test_bounds_helpers_tolerate_missing_values
 	test_elapsed_bound_tolerates_date_failure
+	test_task_failure_propagates
 	printf 'Tests run: %s\n' "$TESTS_RUN"
 	printf 'Tests failed: %s\n' "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

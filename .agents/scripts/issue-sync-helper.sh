@@ -292,8 +292,15 @@ _push_process_task() {
 		tier_label=$(_validate_tier_checklist "$brief_path" "$tier_label")
 	fi
 
-	local body
-	body=$(compose_issue_body "$task_id" "$project_root")
+	local body=""
+	if ! body=$(compose_issue_body "$task_id" "$project_root"); then
+		print_error "Refusing push for $task_id — issue body composition failed"
+		return 1
+	fi
+	if [[ -z "$body" ]]; then
+		print_error "Refusing push for $task_id — issue body composition returned empty output"
+		return 1
+	fi
 
 	_push_warn_if_task_id_collides "$repo" "$task_id"
 
@@ -406,8 +413,8 @@ _enrich_process_task() {
 	local _compose_rc=0
 	body=$(compose_issue_body "$task_id" "$project_root") || _compose_rc=$?
 	if [[ $_compose_rc -ne 0 || -z "$body" ]]; then
-		print_error "Skipping enrich for $task_id — compose_issue_body failed (rc=$_compose_rc). Task ID is not in TODO.md; fix the TODO entry or remove the brief file (t2377)."
-		return 0
+		print_error "Refusing enrich for $task_id — issue body composition failed (rc=$_compose_rc)"
+		return 1
 	fi
 
 	_enrich_apply_labels "$repo" "$num" "$labels" "$tier_label" "$current_labels_csv"

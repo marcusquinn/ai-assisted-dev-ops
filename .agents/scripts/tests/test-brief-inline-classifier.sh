@@ -279,10 +279,12 @@ else
 fi
 
 # Test A6: composed related-file HTML remains schema-v2 worker-ready
+mkdir -p "$TMP/todo/tasks"
+printf '%s\n' 'Related architecture context remains available to the worker.' >"$TMP/todo/tasks/related-plan.md"
 composed_body=$(
 	(
 		find_related_files() {
-			printf '%s\n' "$TMP/related-plan.md"
+			printf '%s\n' "$TMP/todo/tasks/related-plan.md"
 			return 0
 		}
 		extract_file_summary() {
@@ -294,18 +296,36 @@ composed_body=$(
 )
 readiness_output=$("$READINESS_HELPER" check --body "$composed_body" 2>/dev/null)
 readiness_rc=$?
-if [[ $readiness_rc -eq 0 && "$composed_body" == *"<details><summary><code>related-plan.md</code></summary>"* && "$readiness_output" == *"WORKER_READY=true"* && "$readiness_output" == *"VALIDATION_ERRORS=none"* ]]; then
+if [[ $readiness_rc -eq 0 && "$composed_body" == *"<details><summary><code>todo/tasks/related-plan.md</code></summary>"* && "$readiness_output" == *"WORKER_READY=true"* && "$readiness_output" == *"VALIDATION_ERRORS=none"* ]]; then
 	pass "A6 composed related-file HTML round trip remains worker-ready"
 else
 	fail "A6 composed schema-v2 readiness round trip" "exit=$readiness_rc output=$readiness_output"
 fi
 
-# Test A7: no brief file → returns input unchanged
+# Test A7: related files outside todo/tasks fail closed before body rendering
+printf '%s\n' 'Outside context must not be rendered.' >"$TMP/outside-related.md"
+invalid_related_status=0
+invalid_related_output=$(
+	(
+		find_related_files() {
+			printf '%s\n' "$TMP/outside-related.md"
+			return 0
+		}
+		_compose_issue_related_files "base body" "t9005" "$TMP"
+	) 2>/dev/null
+) || invalid_related_status=$?
+if [[ $invalid_related_status -ne 0 && -z "$invalid_related_output" ]]; then
+	pass "A7 out-of-bound related file fails closed without rendering a body"
+else
+	fail "A7 related-file boundary" "expected non-zero with empty output, got exit=$invalid_related_status output=$invalid_related_output"
+fi
+
+# Test A8: no brief file → returns input unchanged
 result=$(_compose_issue_worker_guidance "base body" "$TMP/nonexistent.md")
 if [[ "$result" == "base body" ]]; then
-	pass "A7 no brief file returns input body unchanged"
+	pass "A8 no brief file returns input body unchanged"
 else
-	fail "A7 no brief file" "expected 'base body', got '$result'"
+	fail "A8 no brief file" "expected 'base body', got '$result'"
 fi
 
 # =============================================================================

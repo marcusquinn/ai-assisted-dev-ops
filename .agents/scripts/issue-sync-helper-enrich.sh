@@ -490,6 +490,7 @@ cmd_enrich() {
 	fi
 
 	local enriched=0
+	local failed=0
 	local processed=0
 	local started_at
 	started_at=$(date +%s || echo "0")
@@ -498,16 +499,24 @@ cmd_enrich() {
 			break
 		fi
 		local result
-		result=$(_enrich_process_task "$task_id" "$repo" "$todo_file" "$project_root")
+		if ! result=$(_enrich_process_task "$task_id" "$repo" "$todo_file" "$project_root"); then
+			failed=$((failed + 1))
+			processed=$((processed + 1))
+			continue
+		fi
 		processed=$((processed + 1))
 		[[ "$result" == *"ENRICHED"* ]] && enriched=$((enriched + 1))
 	done
-	print_info "Enrich complete: $enriched updated (${processed}/${#tasks[@]} processed)"
 
 	# Clean up prefetch temp file
 	if [[ "$_prefetch_ok" == "true" && -n "${ENRICH_PREFETCH_FILE:-}" && -f "$ENRICH_PREFETCH_FILE" ]]; then
 		rm -f "$ENRICH_PREFETCH_FILE" 2>/dev/null || true
 		ENRICH_PREFETCH_FILE=""
 	fi
+	if [[ "$failed" -gt 0 ]]; then
+		print_error "Enrich failed: $failed task(s); $enriched updated (${processed}/${#tasks[@]} processed)"
+		return 1
+	fi
+	print_info "Enrich complete: $enriched updated (${processed}/${#tasks[@]} processed)"
 	return 0
 }

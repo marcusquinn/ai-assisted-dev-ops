@@ -318,13 +318,47 @@ _compose_issue_plan_sections() {
 #   $1 - current body text
 #   $2 - task_id
 #   $3 - project_root
+_COMPOSE_RELATED_FILE_ABS=""
+_COMPOSE_RELATED_FILE_REL=""
+
+_compose_validate_related_file() {
+	local file="$1"
+	local project_root="$2"
+	local tasks_dir="$project_root/todo/tasks"
+	local tasks_root="" file_parent="" file_name="" resolved_parent="" resolved_file=""
+	_COMPOSE_RELATED_FILE_ABS=""
+	_COMPOSE_RELATED_FILE_REL=""
+
+	[[ -n "$file" && "$file" == /* && -f "$file" && ! -L "$file" ]] || return 1
+	[[ "$file" != *$'\n'* && "$file" != *$'\r'* && "$file" != *$'\t'* ]] || return 1
+	[[ "$file" != *"\$'\\n'"* ]] || return 1
+	tasks_root=$(cd "$tasks_dir" 2>/dev/null && pwd -P) || return 1
+	file_parent="${file%/*}"
+	file_name="${file##*/}"
+	[[ -n "$file_parent" && -n "$file_name" && "$file_name" != "." && "$file_name" != ".." ]] || return 1
+	resolved_parent=$(cd "$file_parent" 2>/dev/null && pwd -P) || return 1
+	resolved_file="${resolved_parent}/${file_name}"
+	[[ -f "$resolved_file" && ! -L "$resolved_file" ]] || return 1
+	case "$resolved_file" in
+	"$tasks_root"/*) ;;
+	*) return 1 ;;
+	esac
+
+	_COMPOSE_RELATED_FILE_ABS="$resolved_file"
+	_COMPOSE_RELATED_FILE_REL="todo/tasks/${resolved_file#"$tasks_root"/}"
+	return 0
+}
+
 _compose_issue_related_files() {
 	local body="$1"
 	local task_id="$2"
 	local project_root="$3"
 
-	local related_files
-	related_files=$(find_related_files "$task_id" "$project_root")
+	local related_files="" file="" rel_path="" file_summary=""
+	if ! related_files=$(find_related_files "$task_id" "$project_root"); then
+		print_error "Refusing Related Files for $task_id: related-file discovery failed"
+		return 1
+	fi
 	if [[ -z "$related_files" ]]; then
 		echo "$body"
 		return 0
@@ -333,9 +367,12 @@ _compose_issue_related_files() {
 	body="$body"$'\n\n'"## Related Files"
 	while IFS= read -r file; do
 		if [[ -n "$file" ]]; then
-			local rel_path file_summary
-			rel_path="${file#"$project_root"/}"
-			file_summary=$(extract_file_summary "$file" 30)
+			if ! _compose_validate_related_file "$file" "$project_root"; then
+				print_error "Refusing Related Files for $task_id: a path is not a regular repository-relative todo/tasks file"
+				return 1
+			fi
+			rel_path="$_COMPOSE_RELATED_FILE_REL"
+			file_summary=$(extract_file_summary "$_COMPOSE_RELATED_FILE_ABS" 30)
 			if [[ -n "$file_summary" ]]; then
 				body="$body"$'\n\n'"${ISSUE_SYNC_DETAILS_OPEN}<summary><code>$rel_path</code></summary>"$'\n\n'"$file_summary"$'\n\n'"$ISSUE_SYNC_DETAILS_CLOSE"
 			else
@@ -508,7 +545,7 @@ _compose_issue_sections() {
 		body=$(_compose_issue_plan_sections "$body" "$plan_section")
 	fi
 
-	body=$(_compose_issue_related_files "$body" "$task_id" "$project_root")
+	body=$(_compose_issue_related_files "$body" "$task_id" "$project_root") || return 1
 	body=$(_compose_issue_worker_guidance "$body" "$project_root/todo/tasks/${task_id}-brief.md")
 	body=$(_compose_issue_brief "$body" "$project_root/todo/tasks/${task_id}-brief.md")
 	body=$(_compose_issue_brief_workflow_reference "$body")
@@ -684,7 +721,7 @@ compose_issue_body() {
 		"$assignee" "$logged" "$started" "$completed" "$verified" "$tags")
 
 	# All body sections: description, subtasks, plan, related files, brief
-	body=$(_compose_issue_sections "$body" "$block" "$description" "$blocked_by" "$blocks" "$plan_section" "$task_id" "$project_root")
+	body=$(_compose_issue_sections "$body" "$block" "$description" "$blocked_by" "$blocks" "$plan_section" "$task_id" "$project_root") || return 1
 
 	# HTML implementation notes and footer
 	body=$(_compose_issue_html_notes_and_footer "$body" "$first_line")

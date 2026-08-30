@@ -303,11 +303,13 @@ fi
 # ----------------------------------------------------------------------------
 section "Layer 1: _enrich_process_task compose_issue_body exit code"
 
-# Structural check — the exit-code handling pattern should be present.
-if grep -qE "compose_issue_body .*\\|\\| _compose_rc" "$HELPER" && grep -q "Skipping enrich.*compose_issue_body failed" "$HELPER"; then
-	pass "_enrich_process_task checks compose_issue_body exit code"
+# Structural check — composition failure must propagate instead of reporting a
+# successful skip after refusing the write.
+if grep -qE "compose_issue_body .*\\|\\| _compose_rc" "$HELPER" &&
+	grep -q "Refusing enrich.*issue body composition failed" "$HELPER"; then
+	pass "_enrich_process_task fails closed on compose_issue_body errors"
 else
-	fail "_enrich_process_task missing compose_issue_body exit-code check"
+	fail "_enrich_process_task missing fail-closed compose_issue_body handling"
 fi
 
 # ----------------------------------------------------------------------------
