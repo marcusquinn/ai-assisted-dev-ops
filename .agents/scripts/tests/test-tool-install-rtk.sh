@@ -32,6 +32,7 @@ assert_eq() {
 extract_functions() {
 	awk '
 		/^_setup_rtk_installed_version\(\)/, /^}$/ { print; next }
+		/^_setup_rtk_version_relation\(\)/, /^}$/ { print; next }
 		/^_setup_rtk_install_supported_version\(\)/, /^}$/ { print; next }
 		/^_setup_rtk_print_manual_install\(\)/, /^}$/ { print; next }
 		/^_setup_rtk_offer_supported_upgrade\(\)/, /^}$/ { print; next }
@@ -39,6 +40,10 @@ extract_functions() {
 	' "$TOOL_INSTALL" >"$SANDBOX/extract.sh"
 	if ! grep -q '^_setup_rtk_offer_supported_upgrade()' "$SANDBOX/extract.sh"; then
 		echo "FAIL: extraction did not capture rtk upgrade helpers" >&2
+		exit 1
+	fi
+	if ! grep -q '^_setup_rtk_version_relation()' "$SANDBOX/extract.sh"; then
+		echo "FAIL: extraction did not capture rtk version relation helper" >&2
 		exit 1
 	fi
 	return 0
@@ -99,6 +104,23 @@ chmod +x "$SANDBOX/bin/brew"
 
 assert_eq "existing mismatched rtk is upgraded" "rtk 0.41.0" "$(rtk --version)"
 assert_eq "setup reports matching version" "1" "$(grep -c 'rtk now matches the aidevops-tested version' "$SANDBOX/out")"
+
+cat >"$SANDBOX/bin/rtk" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && echo "rtk 0.46.0"
+EOF
+chmod +x "$SANDBOX/bin/rtk"
+(
+	source_extracted
+	setup_rtk
+) >"$SANDBOX/newer.out" 2>&1
+
+assert_eq "newer rtk is accepted without an upgrade" "1" "$(grep -c 'accepted without an automatic downgrade' "$SANDBOX/newer.out")"
+assert_eq "newer rtk does not prompt for an upgrade" "0" "$(grep -c 'version mismatch' "$SANDBOX/newer.out" || true)"
+assert_eq "tested relation is reported" "tested" "$(source_extracted; _setup_rtk_version_relation "0.41.0" "0.41.0")"
+assert_eq "older relation is reported" "older" "$(source_extracted; _setup_rtk_version_relation "0.40.0" "0.41.0")"
+assert_eq "newer relation is reported" "newer-untested" "$(source_extracted; _setup_rtk_version_relation "0.46.0" "0.41.0")"
+assert_eq "malformed relation is reported" "unknown" "$(source_extracted; _setup_rtk_version_relation "development" "0.41.0")"
 
 manual_upgrade_hint=$(
 	source_extracted

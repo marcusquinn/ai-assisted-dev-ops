@@ -310,6 +310,38 @@ _setup_rtk_installed_version() {
 	return 0
 }
 
+_setup_rtk_version_relation() {
+	local installed_version="$1"
+	local supported_version="$2"
+	local installed_major="" installed_minor="" installed_patch=""
+	local supported_major="" supported_minor="" supported_patch=""
+	local installed_part="" supported_part="" index=""
+	local installed_parts=() supported_parts=()
+
+	if [[ ! "$installed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+		[[ ! "$supported_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		printf '%s\n' "unknown"
+		return 0
+	fi
+	IFS='.' read -r installed_major installed_minor installed_patch <<<"$installed_version"
+	IFS='.' read -r supported_major supported_minor supported_patch <<<"$supported_version"
+	installed_parts=("$installed_major" "$installed_minor" "$installed_patch")
+	supported_parts=("$supported_major" "$supported_minor" "$supported_patch")
+	for index in 0 1 2; do
+		installed_part="${installed_parts[$index]}"
+		supported_part="${supported_parts[$index]}"
+		[[ "$installed_part" == "$supported_part" ]] && continue
+		if ((10#$installed_part < 10#$supported_part)); then
+			printf '%s\n' "older"
+		else
+			printf '%s\n' "newer-untested"
+		fi
+		return 0
+	done
+	printf '%s\n' "tested"
+	return 0
+}
+
 _setup_rtk_install_supported_version() {
 	local rtk_installer_url="$1"
 	local rtk_supported_version="$2"
@@ -371,18 +403,27 @@ setup_rtk() {
 
 	if command -v rtk >/dev/null 2>&1; then
 		local rtk_version
+		local rtk_relation
 		rtk_version=$(_setup_rtk_installed_version)
 		print_success "rtk found: v$rtk_version (token optimization proxy)"
-		if [[ "$rtk_version" != "$rtk_supported_version" ]]; then
+		rtk_relation=$(_setup_rtk_version_relation "$rtk_version" "$rtk_supported_version")
+		if [[ "$rtk_relation" == "older" ]]; then
 			if _setup_rtk_offer_supported_upgrade "$rtk_version" "$rtk_supported_version" "$rtk_installer_url"; then
 				rtk_version=$(_setup_rtk_installed_version)
-				if [[ "$rtk_version" == "$rtk_supported_version" ]]; then
+				rtk_relation=$(_setup_rtk_version_relation "$rtk_version" "$rtk_supported_version")
+				if [[ "$rtk_relation" == "tested" ]]; then
 					print_success "rtk now matches the aidevops-tested version"
+				elif [[ "$rtk_relation" == "newer-untested" ]]; then
+					print_info "rtk v${rtk_version} is newer than the aidevops-tested v${rtk_supported_version}; accepted without an automatic downgrade"
 				else
 					print_warning "rtk still reports v${rtk_version}; aidevops supports v${rtk_supported_version}"
 					_setup_rtk_print_manual_install "$rtk_installer_url"
 				fi
 			fi
+		elif [[ "$rtk_relation" == "newer-untested" ]]; then
+			print_info "rtk v${rtk_version} is newer than the aidevops-tested v${rtk_supported_version}; accepted without an automatic downgrade"
+		elif [[ "$rtk_relation" == "unknown" ]]; then
+			print_warning "rtk version output is unrecognized; availability detected but compatibility with v${rtk_supported_version} is unknown"
 		fi
 		# Fall through to ensure config is applied (telemetry, tee)
 	else

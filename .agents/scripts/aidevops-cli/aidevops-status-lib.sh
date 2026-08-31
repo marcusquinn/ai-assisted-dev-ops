@@ -45,6 +45,58 @@ _status_file_discovery_readiness() {
 	return 0
 }
 
+_status_rtk_version_relation() {
+	local installed_version="$1"
+	local supported_version="$2"
+	local installed_major="" installed_minor="" installed_patch=""
+	local supported_major="" supported_minor="" supported_patch=""
+	local installed_part="" supported_part="" index=""
+	local installed_parts=() supported_parts=()
+
+	if [[ ! "$installed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+		[[ ! "$supported_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		printf '%s\n' "unknown"
+		return 0
+	fi
+	IFS='.' read -r installed_major installed_minor installed_patch <<<"$installed_version"
+	IFS='.' read -r supported_major supported_minor supported_patch <<<"$supported_version"
+	installed_parts=("$installed_major" "$installed_minor" "$installed_patch")
+	supported_parts=("$supported_major" "$supported_minor" "$supported_patch")
+	for index in 0 1 2; do
+		installed_part="${installed_parts[$index]}"
+		supported_part="${supported_parts[$index]}"
+		[[ "$installed_part" == "$supported_part" ]] && continue
+		if ((10#$installed_part < 10#$supported_part)); then
+			printf '%s\n' "older"
+		else
+			printf '%s\n' "newer-untested"
+		fi
+		return 0
+	done
+	printf '%s\n' "tested"
+	return 0
+}
+
+_status_rtk_readiness() {
+	local rtk_supported_version="0.41.0"
+	local rtk_version="unknown"
+	local rtk_relation="unknown"
+
+	if ! check_cmd rtk; then
+		print_warning "rtk - not installed (optional token optimization proxy)"
+		return 0
+	fi
+	rtk_version=$(rtk --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || printf 'unknown')
+	rtk_relation=$(_status_rtk_version_relation "$rtk_version" "$rtk_supported_version")
+	case "$rtk_relation" in
+	tested) print_success "rtk v${rtk_version} (aidevops-tested token optimization proxy)" ;;
+	older) print_warning "rtk v${rtk_version} is older than aidevops-tested v${rtk_supported_version}; run: aidevops setup" ;;
+	newer-untested) print_info "rtk v${rtk_version} is newer than aidevops-tested v${rtk_supported_version}; available without an automatic downgrade" ;;
+	*) print_warning "rtk version output is unrecognized; availability detected but compatibility with v${rtk_supported_version} is unknown" ;;
+	esac
+	return 0
+}
+
 _status_recommended_tools() {
 	print_header "Recommended Tools"
 	if [[ "$(uname)" == "Darwin" ]]; then
@@ -272,6 +324,7 @@ cmd_status() {
 	echo ""
 	print_header "Optional Dependencies"
 	check_cmd sshpass && print_success "sshpass" || print_warning "sshpass - not installed (needed for password SSH)"
+	_status_rtk_readiness
 	echo ""
 	_status_recommended_tools
 	print_header "Git CLI Tools"
