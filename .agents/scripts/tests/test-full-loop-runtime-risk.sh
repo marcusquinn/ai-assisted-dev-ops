@@ -323,17 +323,32 @@ exit 0
 EOF
 chmod +x "${MUTATION_BIN}/git" "${MUTATION_BIN}/gh"
 : >"$MUTATION_TRACE"
+mutation_head_before=$(/usr/bin/git -C "$MUTATION_REPO" rev-parse HEAD)
 if (cd "$MUTATION_REPO" && PATH="${MUTATION_BIN}:$PATH" MUTATION_TRACE="$MUTATION_TRACE" \
 	"${SCRIPT_DIR_TEST}/full-loop-helper.sh" commit-and-pr --issue 9 --message "fix: update runtime behavior" \
 	--summary "Adjust helper behavior" --testing "unit tests pass" >/dev/null 2>&1); then
 	printf 'FAIL commit-and-pr accepted invalid derived runtime evidence\n'
 	TESTS_FAILED=$((TESTS_FAILED + 1))
-elif grep -Eq '^git push|^gh (pr|api .*POST)' "$MUTATION_TRACE" ||
+elif grep -Eq '^git (add|commit|rebase|reset|push)|^gh (pr|api .*POST)' "$MUTATION_TRACE" ||
+	[[ "$(/usr/bin/git -C "$MUTATION_REPO" rev-parse HEAD)" != "$mutation_head_before" ]] ||
 	/usr/bin/git --git-dir="$MUTATION_REMOTE" show-ref --verify --quiet refs/heads/feature/risk-order; then
-	printf 'FAIL invalid derived evidence allowed remote mutations\n'
+	printf 'FAIL invalid derived evidence allowed local or remote mutations\n'
 	TESTS_FAILED=$((TESTS_FAILED + 1))
 else
-	printf 'PASS invalid derived evidence avoids remote mutations\n'
+	printf 'PASS invalid derived evidence avoids local and remote mutations\n'
+fi
+TESTS_RUN=$((TESTS_RUN + 1))
+
+prevalidation_line=$(grep -n '^[[:space:]]*_validate_pending_runtime_metadata ' \
+	"${SCRIPT_DIR_TEST}/full-loop-helper.sh" | cut -d: -f1)
+stage_line=$(grep -n '^[[:space:]]*_stage_and_commit ' \
+	"${SCRIPT_DIR_TEST}/full-loop-helper.sh" | cut -d: -f1)
+if [[ "$prevalidation_line" =~ ^[0-9]+$ && "$stage_line" =~ ^[0-9]+$ &&
+	"$prevalidation_line" -lt "$stage_line" ]]; then
+	printf 'PASS pending runtime evidence validation precedes staging\n'
+else
+	printf 'FAIL pending runtime evidence validation must precede staging\n'
+	TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 TESTS_RUN=$((TESTS_RUN + 1))
 

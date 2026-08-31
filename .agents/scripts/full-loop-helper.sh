@@ -97,12 +97,16 @@ cmd_commit_and_pr() {
 	_parse_commit_and_pr_args "$@" || return 1
 
 	# Validate inputs and detect repo/branch (sets $repo and $branch in this scope)
-	local repo="" branch=""
+	local repo="" branch="" base_branch="" base_ref=""
 	_validate_commit_and_pr_inputs "$issue_number" "$commit_message" || return 1
 	_validate_explicit_pr_metadata "$runtime_risk" "$testing_level" || return 1
 	_validate_completion_bookkeeping_request "$completion_bookkeeping" "$bookkeeping_proof_pr" \
 		"$bookkeeping_task_id" "$allow_parent_close" "$repo" \
 		"${extra_labels[@]+"${extra_labels[@]}"}" || return 1
+	base_branch=$(_resolve_remote_default_branch origin) || return 1
+	base_ref="origin/${base_branch}"
+	_validate_pending_runtime_metadata "$runtime_risk" "$testing_level" \
+		"$summary_testing" "$summary_what" "$base_ref" || return 1
 
 	_stage_and_commit "$commit_message" || return 1
 	# GH#27902: WIP commits are durable checkpoints, not publishable history.
@@ -118,7 +122,6 @@ cmd_commit_and_pr() {
 	# Derive final-diff metadata after rebase but before any remote mutation.
 	# Invalid risk/testing evidence must not leave a pushed orphan branch.
 	local files_changed=""
-	local base_branch="" base_ref=""
 	local closing_keyword="Resolves"
 	if [[ "$completion_bookkeeping" -eq 1 ]]; then
 		closing_keyword="For"

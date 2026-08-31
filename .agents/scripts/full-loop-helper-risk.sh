@@ -7,6 +7,7 @@
 [[ -n "${_FULL_LOOP_RISK_LIB_LOADED:-}" ]] && return 0
 _FULL_LOOP_RISK_LIB_LOADED=1
 _full_loop_runtime_verified_marker="runtime-verified"
+_full_loop_pending_diff_target="WORKTREE"
 
 # Normalize a caller-supplied risk level to the spelling used in PR bodies.
 _normalize_runtime_risk() {
@@ -115,19 +116,52 @@ _runtime_paths_keyword_context() {
 	return 0
 }
 
+# Print diff hunks for the requested files without mutating the real index.
+# WORKTREE includes tracked branch/index/worktree changes plus untracked files.
+_runtime_diff_output() {
+	local base_ref="$1"
+	local diff_target="${2:-HEAD}"
+	local files_changed="${3:-}"
+	local path="" untracked="" diff_rc=0
+
+	git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || return 1
+	while IFS= read -r path; do
+		path="${path#"${path%%[![:space:]]*}"}"
+		[[ -z "$path" ]] && continue
+		if [[ "$diff_target" == "$_full_loop_pending_diff_target" ]]; then
+			git diff --unified=0 --no-color --no-ext-diff "$base_ref" -- "$path" 2>/dev/null || return 1
+			untracked=$(git ls-files --others --exclude-standard -- "$path") || return 1
+			if [[ "$untracked" == "$path" ]]; then
+				diff_rc=0
+				git diff --unified=0 --no-color --no-ext-diff --no-index \
+					/dev/null "$path" 2>/dev/null || diff_rc=$?
+				if [[ "$diff_rc" -ne 0 && "$diff_rc" -ne 1 ]]; then
+					return "$diff_rc"
+				fi
+			fi
+		else
+			git diff --unified=0 --no-color --no-ext-diff \
+				"${base_ref}..${diff_target}" -- "$path" 2>/dev/null || return 1
+		fi
+	done < <(printf '%s\n' "$files_changed" | tr ',' '\n')
+	return 0
+}
+
 # Print diff hunks only for runtime-relevant files. Documentation, tests,
 # fixtures, and linter configuration remain evidence that the branch changed,
 # but their prose must not raise the risk of unrelated runtime code.
 _runtime_diff_keyword_context() {
 	local base_ref="$1"
+	local diff_target="${2:-HEAD}"
+	local files_changed="${3:-}"
 	local path=""
-	git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || return 1
 	while IFS= read -r path; do
+		path="${path#"${path%%[![:space:]]*}"}"
 		[[ -z "$path" ]] && continue
 		if ! _runtime_path_is_low "$path"; then
-			git diff --unified=0 --no-color --no-ext-diff "${base_ref}..HEAD" -- "$path" 2>/dev/null || true
+			_runtime_diff_output "$base_ref" "$diff_target" "$path" || return 1
 		fi
-	done < <(git diff --name-only "${base_ref}..HEAD" 2>/dev/null)
+	done < <(printf '%s\n' "$files_changed" | tr ',' '\n')
 	return 0
 }
 
@@ -135,10 +169,11 @@ _runtime_diff_keyword_context() {
 # whitespace. Ambiguous block-comment edits fail upward to Medium.
 _runtime_diff_is_comments_only() {
 	local base_ref="$1"
+	local diff_target="${2:-HEAD}"
+	local files_changed="${3:-}"
 	local line="" content="" trimmed="" trailing="" current_path=""
 	local block_kind="" c_block_end="*/" html_block_end="-->"
 	local saw_change=0
-	git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || return 1
 
 	while IFS= read -r line; do
 		case "$line" in
@@ -205,7 +240,7 @@ _runtime_diff_is_comments_only() {
 			;;
 		*) return 1 ;;
 		esac
-	done < <(git diff --unified=0 --no-color --no-ext-diff "${base_ref}..HEAD" -- 2>/dev/null)
+	done < <(_runtime_diff_output "$base_ref" "$diff_target" "$files_changed")
 
 	[[ "$saw_change" -eq 1 && -z "$block_kind" ]] && return 0
 	return 1
@@ -367,12 +402,14 @@ _select_conservative_runtime_risk() {
 # metadata and branch diff. Explicit levels can raise ambiguous classifications
 # but cannot downgrade policy patterns. Unmatched runtime changes fail upward to
 # Medium; policy-listed non-runtime and comment-only changes remain Low.
-# Arguments: requested_risk, files_changed, summary_what, base_ref (optional)
+# Arguments: requested_risk, files_changed, summary_what, base_ref (optional),
+#            diff_target (optional; HEAD or WORKTREE)
 _derive_runtime_risk() {
 	local requested_risk="${1:-}"
 	local files_changed="${2:-}"
 	local summary_what="${3:-}"
 	local base_ref="${4:-}"
+	local diff_target="${5:-HEAD}"
 	local runtime_paths=""
 	local context="${summary_what}"
 	local diff_context=""
@@ -381,13 +418,14 @@ _derive_runtime_risk() {
 
 	if _runtime_paths_are_low "$files_changed"; then
 		detected_risk="Low"
-	elif [[ -n "$base_ref" ]] && _runtime_diff_is_comments_only "$base_ref"; then
+	elif [[ -n "$base_ref" ]] &&
+		_runtime_diff_is_comments_only "$base_ref" "$diff_target" "$files_changed"; then
 		detected_risk="Low"
 	else
 		runtime_paths=$(_runtime_paths_keyword_context "$files_changed") || return 1
 		runtime_context="${context} ${runtime_paths}"
 		if [[ -n "$base_ref" ]]; then
-			if ! diff_context=$(_runtime_diff_keyword_context "$base_ref"); then
+			if ! diff_context=$(_runtime_diff_keyword_context "$base_ref" "$diff_target" "$files_changed"); then
 				return 1
 			fi
 		fi
@@ -472,5 +510,38 @@ _resolve_runtime_testing_level() {
 	fi
 
 	printf '%s\n' "$testing_level"
+	return 0
+}
+
+# Collect the complete prospective PR file list without staging pending files.
+_pending_runtime_files_changed() {
+	local base_ref="$1"
+	local files_changed=""
+	git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || return 1
+	files_changed=$(
+		{
+			git diff --name-only "$base_ref" --
+			git ls-files --others --exclude-standard
+		} | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//; s/,/, /g'
+	) || return 1
+	printf '%s\n' "$files_changed"
+	return 0
+}
+
+# Reject missing High/Critical runtime evidence before staging or committing.
+# Final-diff validation still runs after validators/rebase to catch later drift.
+_validate_pending_runtime_metadata() {
+	local requested_risk="${1:-}"
+	local requested_testing_level="${2:-}"
+	local summary_testing="${3:-}"
+	local summary_what="${4:-}"
+	local base_ref="$5"
+	local files_changed="" runtime_risk=""
+
+	files_changed=$(_pending_runtime_files_changed "$base_ref") || return 1
+	runtime_risk=$(_derive_runtime_risk "$requested_risk" "$files_changed" \
+		"$summary_what" "$base_ref" "$_full_loop_pending_diff_target") || return 1
+	_resolve_runtime_testing_level "$runtime_risk" "$requested_testing_level" \
+		"$summary_testing" >/dev/null || return 1
 	return 0
 }
