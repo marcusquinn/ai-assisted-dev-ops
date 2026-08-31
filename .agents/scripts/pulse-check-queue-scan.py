@@ -37,6 +37,9 @@ BLOCKING_LABELS = frozenset({
     "status:blocked",
     "status:in-review",
 })
+PERSISTENT_DASHBOARD_LABELS = frozenset({"persistent", "quality-review"})
+
+
 def _int_from_env(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
@@ -50,6 +53,7 @@ def _empty_aggregate() -> dict[str, int]:
         "auto_dispatch_open": 0,
         "available_unassigned": 0,
         "eligible_available_unassigned": 0,
+        "excluded_persistent_dashboard": 0,
         "available_old": 0,
         "oldest_available_age_min": 0,
         "repos_with_available": 0,
@@ -209,7 +213,17 @@ def _count_issue(
         )
     aggregate["no_auto_dispatch"] += int("no-auto-dispatch" in labels)
     aggregate["infrastructure"] += int("infrastructure" in labels)
-    available = "status:available" in labels and not assigned and not blocked and not dependency_inconsistent
+    available_candidate = (
+        "status:available" in labels
+        and not assigned
+        and not blocked
+        and not dependency_inconsistent
+    )
+    excluded_persistent_dashboard = bool(labels & PERSISTENT_DASHBOARD_LABELS)
+    aggregate["excluded_persistent_dashboard"] += int(
+        available_candidate and excluded_persistent_dashboard
+    )
+    available = available_candidate and not excluded_persistent_dashboard
     if available:
         aggregate["available_unassigned"] += 1
         aggregate["eligible_available_unassigned"] += int(has_tier and has_status)

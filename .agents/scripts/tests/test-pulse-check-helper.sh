@@ -253,6 +253,18 @@ JSON
   fi
   exit 0
 fi
+if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "persistent-dashboard" ]]; then
+  if [[ " $* " == *"private/repo-one"* ]]; then
+    cat <<'JSON'
+[
+  {"number":31,"title":"private quality dashboard","updatedAt":"2000-01-01T00:00:00Z","assignees":[],"labels":[{"name":"auto-dispatch"},{"name":"status:available"},{"name":"tier:standard"},{"name":"persistent"},{"name":"quality-review"},{"name":"source:quality-sweep"}]}
+]
+JSON
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
 if [[ "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "shortfall" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "scan-error" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "truncation" || "${PULSE_CHECK_QUEUE_FIXTURE:-}" == "dependency-scan-error" ]]; then
   if [[ " $* " == *"private/repo-one"* ]]; then
     cat <<'JSON'
@@ -367,6 +379,13 @@ MALFORMED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=malformed" "$H
 assert_contains "malformed queue emits normalization shortfall" "pulse-eligible-queue-under-target" "$MALFORMED_OUT"
 assert_contains "malformed queue reports missing tiers" "auto-dispatch-missing-tier-labels" "$MALFORMED_OUT"
 assert_not_contains "malformed queue cannot trigger worker-retention underfill" "pulse-underfilled-auto-dispatch-queue" "$MALFORMED_OUT"
+
+PERSISTENT_DASHBOARD_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=persistent-dashboard" "$HELPER" json 2>&1)
+assert_eq "persistent quality dashboard is excluded from runnable availability" "0" "$(printf '%s' "$PERSISTENT_DASHBOARD_OUT" | jq -r '.queue.available_unassigned')"
+assert_eq "persistent quality dashboard is excluded from eligible queue depth" "0" "$(printf '%s' "$PERSISTENT_DASHBOARD_OUT" | jq -r '.queue.eligible_available_unassigned')"
+assert_eq "persistent quality dashboard exclusion is reported separately" "1" "$(printf '%s' "$PERSISTENT_DASHBOARD_OUT" | jq -r '.summary.auto_dispatch_excluded_persistent_dashboard')"
+assert_not_contains "persistent quality dashboard cannot trigger worker-retention underfill" "pulse-underfilled-auto-dispatch-queue" "$PERSISTENT_DASHBOARD_OUT"
+assert_not_contains "persistent quality dashboard JSON omits private issue title" "private quality dashboard" "$PERSISTENT_DASHBOARD_OUT"
 
 cat >"${TEST_ROOT}/current-state-active.sh" <<'SH'
 #!/usr/bin/env bash

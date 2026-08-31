@@ -23,6 +23,7 @@ end) as $max_workers |
 (if $active_worker_processes == null then $available_slots else ([$max_workers - $active_worker_processes, 0] | max) end) as $effective_available_slots |
 ($queue.aggregate.available_unassigned // 0 | number_or_zero) as $available_issues |
 ($queue.aggregate.eligible_available_unassigned // $queue.aggregate.available_unassigned // 0 | number_or_zero) as $eligible_issues |
+($queue.aggregate.excluded_persistent_dashboard // 0 | number_or_zero) as $excluded_persistent_dashboard |
 ($queue.aggregate.available_old // 0 | number_or_zero) as $old_available |
 ($queue.aggregate.dependency_inconsistent_available // 0 | number_or_zero) as $dependency_inconsistent |
 ($queue.aggregate.needs_tier // 0 | number_or_zero) as $needs_tier |
@@ -80,6 +81,7 @@ end) as $max_workers |
     auto_dispatch_open: ($queue.aggregate.auto_dispatch_open // 0),
     auto_dispatch_available_unassigned: $available_issues,
     auto_dispatch_eligible_available_unassigned: $eligible_issues,
+    auto_dispatch_excluded_persistent_dashboard: $excluded_persistent_dashboard,
     auto_dispatch_available_old: $old_available,
     auto_dispatch_dependency_inconsistent_available: $dependency_inconsistent,
     auto_dispatch_repos_with_available: ($queue.aggregate.repos_with_available // 0),
@@ -195,6 +197,7 @@ end) as $max_workers |
         [
           ("active_workers=" + ($active_workers | tostring) + "/" + ($max_workers | tostring)),
           ("eligible_available_unassigned_auto_dispatch=" + ($eligible_issues | tostring)),
+          ("excluded_persistent_dashboard=" + ($excluded_persistent_dashboard | tostring)),
           ("available_older_than_threshold=" + ($old_available | tostring)),
           "dispatch_alive=true",
           ("dispatch_stage_events=" + (($current.dispatch_stage_events // 0) | tostring))
@@ -216,6 +219,7 @@ end) as $max_workers |
           ("auto_dispatch_open=" + (($queue.aggregate.auto_dispatch_open // 0) | tostring)),
           ("assigned_in_flight=" + (($queue.aggregate.assigned_in_flight // $queue.aggregate.assigned // 0) | tostring)),
           ("blocked_explicit_hold=" + (($queue.aggregate.blocked_explicit_hold // $queue.aggregate.blocked_labels // 0) | tostring)),
+          ("excluded_persistent_dashboard=" + ($excluded_persistent_dashboard | tostring)),
           ("needs_maintainer_review=" + (($queue.aggregate.nmr // 0) | tostring)),
           ("missing_tier=" + ($needs_tier | tostring)),
           ("missing_status=" + ($needs_status | tostring))
