@@ -184,6 +184,17 @@ assert_contains \
 	"$sweep_body_section" \
 	"headless-runtime-lib.sh"
 
+# Test 2.9: autonomous brief declares the exact editable path
+assert_contains \
+	"complexity-sweep: canonical Files Scope heading" \
+	"$sweep_body_section" \
+	"### Files Scope"
+# shellcheck disable=SC2016 # literal generator template expression
+assert_contains \
+	"complexity-sweep: cited file is editable" \
+	"$sweep_body_section" \
+	'- EDIT: \`${file_path}\`'
+
 ######################################################################
 # Part 3: SH complexity scanner body (pulse-simplification.sh)
 #

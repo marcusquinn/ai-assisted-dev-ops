@@ -144,6 +144,12 @@ if grep -q -- '--label auto-dispatch' "$CREATE_CALLS" 2>/dev/null &&
 else
 	fail "trusted-writer-autonomous-quality-labels" "missing auto-dispatch or quality-debt: $(<"$CREATE_CALLS")"
 fi
+if grep -Fq -- '### Files Scope' "$CREATE_CALLS" 2>/dev/null &&
+	grep -Fq -- "- EDIT: \`src/foo.py\`" "$CREATE_CALLS" 2>/dev/null; then
+	pass "trusted-writer-autonomous-body-has-files-scope"
+else
+	fail "trusted-writer-autonomous-body-has-files-scope" "missing canonical Files Scope: $(<"$CREATE_CALLS")"
+fi
 if [[ "$(<"$COUNT_FILE")" == "1" ]]; then
 	pass "simplification-count-stdout"
 else

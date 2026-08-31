@@ -532,6 +532,10 @@ _build_simplification_issue_body() {
 **Smells detected**: ${smell_count}
 **Repository evidence**: actual ${actual_count}, threshold ${smell_threshold}, deficit ${smell_deficit}
 
+### Files Scope
+
+- EDIT: \`${file_path}\`
+
 ### Rule breakdown
 
 ${rule_breakdown_list}
