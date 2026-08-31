@@ -8,6 +8,7 @@
 
 import { getAccounts, patchAccount, rotateOpenAIPoolToken } from "./oauth-pool.mjs";
 import { handleOpenAITokenRefreshFailure, isOpenAITokenRefreshRequest, readOpenAITokenRefreshBody } from "./openai-auth-refresh-recovery.mjs";
+import { injectIntentSchemaProperty } from "./provider-auth-body.mjs";
 
 export { isOpenAITokenRefreshRequest } from "./openai-auth-refresh-recovery.mjs";
 
@@ -24,6 +25,39 @@ const USAGE_LIMIT_MARKERS = [
 ];
 
 let installed = false;
+
+function transformOpenAITool(tool) {
+  if (tool?.type !== "function") return tool;
+  if (tool.function?.parameters) {
+    const parameters = injectIntentSchemaProperty(tool.function.parameters);
+    if (parameters === tool.function.parameters) return tool;
+    return { ...tool, function: { ...tool.function, parameters } };
+  }
+  if (tool.parameters) {
+    const parameters = injectIntentSchemaProperty(tool.parameters);
+    if (parameters === tool.parameters) return tool;
+    return { ...tool, parameters };
+  }
+  return tool;
+}
+
+/** Inject intent into OpenAI Responses and Chat Completions function schemas. */
+export function injectOpenAIIntentParameter(tools) {
+  return tools.map(transformOpenAITool);
+}
+
+/** Transform a serialized OpenAI request body without retaining its contents. */
+export function transformOpenAIRequestBody(body) {
+  if (!body || typeof body !== "string") return body;
+  try {
+    const parsed = JSON.parse(body);
+    if (!Array.isArray(parsed.tools)) return body;
+    parsed.tools = injectOpenAIIntentParameter(parsed.tools);
+    return JSON.stringify(parsed);
+  } catch {
+    return body;
+  }
+}
 
 export function parseRetryAfterMs(response) {
   const raw = response.headers?.get?.("retry-after");
@@ -99,12 +133,31 @@ function buildRetryRequest(input) {
   return input;
 }
 
+function extendRequestInit(init, overrides) {
+  if (init == null) return { ...overrides };
+  return Object.assign(Object.create(Object(init)), overrides);
+}
+
+async function prepareOpenAIRequest(input, init) {
+  const initHasBody = init != null && "body" in Object(init);
+  if (initHasBody && typeof init.body !== "string") return { input, init };
+  let body = initHasBody ? init.body : "";
+  if (!initHasBody && typeof Request !== "undefined" && input instanceof Request) {
+    try {
+      body = await input.clone().text();
+    } catch {
+      return { input, init };
+    }
+  }
+  const transformedBody = transformOpenAIRequestBody(body);
+  if (!body || transformedBody === body) return { input, init };
+  return { input, init: extendRequestInit(init, { body: transformedBody }) };
+}
+
 function buildRetryInit(input, init, accessToken) {
-  const retryInit = { ...(init || {}) };
   const retryHeaders = headersFrom(input, init);
   retryHeaders.set("authorization", `Bearer ${accessToken}`);
-  retryInit.headers = retryHeaders;
-  return retryInit;
+  return extendRequestInit(init, { headers: retryHeaders });
 }
 
 async function handleOpenAIUsageLimit(ctx) {
@@ -140,9 +193,12 @@ async function handleOpenAIFetchRequest(ctx) {
   const openaiRequest = isOpenAIProviderRequest(input);
   const tokenRefreshRequest = isOpenAITokenRefreshRequest(input);
   const tokenRefreshBody = tokenRefreshRequest ? await readOpenAITokenRefreshBody(input, init) : "";
-  const retryInput = openaiRequest ? buildRetryRequest(input) : input;
-  const firstInit = openaiRequest ? await maybeRotateBeforeOpenAIFetch(client, input, init) : init;
-  const response = await originalFetch(input, firstInit);
+  const prepared = openaiRequest ? await prepareOpenAIRequest(input, init) : { input, init };
+  const retryInput = openaiRequest ? buildRetryRequest(prepared.input) : prepared.input;
+  const firstInit = openaiRequest
+    ? await maybeRotateBeforeOpenAIFetch(client, prepared.input, prepared.init)
+    : prepared.init;
+  const response = await originalFetch(prepared.input, firstInit);
   let result = response;
 
   if (tokenRefreshRequest) {
@@ -152,7 +208,14 @@ async function handleOpenAIFetchRequest(ctx) {
       bodyText: tokenRefreshBody,
     });
   } else if (openaiRequest && await isOpenAIUsageLimitResponse(response)) {
-    result = await handleOpenAIUsageLimit({ client, originalFetch, input, init: firstInit, response, retryInput });
+    result = await handleOpenAIUsageLimit({
+      client,
+      originalFetch,
+      input: prepared.input,
+      init: firstInit,
+      response,
+      retryInput,
+    });
   }
   return result;
 }

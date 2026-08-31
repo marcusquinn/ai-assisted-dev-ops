@@ -63,32 +63,37 @@ function redistributeSystemToMessages(parsed) {
   console.error(`[aidevops] provider-auth: redistributed ${overflow.length} system blocks (${overflowText.length} chars) to user message to stay under third-party detection threshold`);
 }
 
-const INTENT_PARAM_NAME = "agent__intent";
+export const INTENT_PARAM_NAME = "agent__intent";
 
-const INTENT_PARAM_SCHEMA = Object.freeze({
+export const INTENT_PARAM_SCHEMA = Object.freeze({
   type: "string",
   description:
     "Intent tracing: one sentence in present participle form describing your intent for this tool call (no trailing period).",
 });
 
+/** Inject agent__intent into one object-typed JSON schema without mutation. */
+export function injectIntentSchemaProperty(schema) {
+  if (!schema || schema.type !== "object") return schema;
+  const properties = schema.properties ?? {};
+  if (Object.prototype.hasOwnProperty.call(properties, INTENT_PARAM_NAME)) return schema;
+  return {
+    ...schema,
+    properties: {
+      ...properties,
+      [INTENT_PARAM_NAME]: INTENT_PARAM_SCHEMA,
+    },
+  };
+}
+
 /** Inject agent__intent as an optional property on object-typed tool schemas. */
 export function injectIntentParameter(tools) {
   return tools.map((tool) => {
     const schema = tool?.input_schema;
-    if (!schema || schema.type !== "object") return tool;
-    const properties = schema.properties ?? {};
-    if (Object.prototype.hasOwnProperty.call(properties, INTENT_PARAM_NAME)) {
-      return tool;
-    }
+    const transformed = injectIntentSchemaProperty(schema);
+    if (transformed === schema) return tool;
     return {
       ...tool,
-      input_schema: {
-        ...schema,
-        properties: {
-          ...properties,
-          [INTENT_PARAM_NAME]: INTENT_PARAM_SCHEMA,
-        },
-      },
+      input_schema: transformed,
     };
   });
 }

@@ -37,6 +37,35 @@ test("detects OpenAI usage-limit responses", async () => {
   assert.equal(await isOpenAIUsageLimitResponse(new Response("ok", { status: 200 })), false);
 });
 
+test("injects optional intent into OpenAI provider tool-schema variants", async () => {
+  const { transformOpenAIRequestBody } = await loadModule();
+  const source = JSON.stringify({
+    tools: [
+      {
+        type: "function",
+        name: "read_file",
+        parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+      },
+      {
+        type: "function",
+        function: {
+          name: "run_command",
+          parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        },
+      },
+      { type: "web_search_preview" },
+    ],
+  });
+
+  const transformed = JSON.parse(transformOpenAIRequestBody(source));
+  assert.equal(transformed.tools[0].parameters.properties.agent__intent.type, "string");
+  assert.deepEqual(transformed.tools[0].parameters.required, ["path"]);
+  assert.equal(transformed.tools[1].function.parameters.properties.agent__intent.type, "string");
+  assert.deepEqual(transformed.tools[1].function.parameters.required, ["command"]);
+  assert.deepEqual(transformed.tools[2], { type: "web_search_preview" });
+  assert.equal(transformOpenAIRequestBody("not-json"), "not-json");
+});
+
 test("installed fetch guard rotates on response failures and pre-request cooldowns", async () => {
   const script = String.raw`
     import assert from "node:assert/strict";
@@ -57,7 +86,7 @@ test("installed fetch guard rotates on response failures and pre-request cooldow
       installOpenAIProviderFetchRotation({
         auth: { set: async (entry) => authWrites.push(entry) },
       });
-      const response = await fetch(request.url, request.init);
+      const response = await fetch(request.input ?? request.url, request.init);
       return { response, calls, authWrites, pool: JSON.parse(readFileSync(poolPath, "utf-8")) };
     }
 
@@ -67,7 +96,10 @@ test("installed fetch guard rotates on response failures and pre-request cooldow
         { email: "healthy@example.com", access: "healthy-token", refresh: "healthy-refresh", expires: Date.now() + 3600_000, status: "idle", cooldownUntil: 0, lastUsed: "2026-01-01T00:00:00Z", accountId: "acct_healthy" },
       ],
     }, async (input, init, calls) => {
-      calls.push(new Headers(init?.headers).get("authorization"));
+      calls.push({
+        authorization: new Headers(init?.headers).get("authorization"),
+        body: JSON.parse(String(init?.body || "{}")),
+      });
       if (calls.length === 1) {
         return new Response(JSON.stringify({ error: { code: "insufficient_quota", message: "usage limit" } }), {
           status: 403,
@@ -77,15 +109,91 @@ test("installed fetch guard rotates on response failures and pre-request cooldow
       return new Response("ok", { status: 200 });
     }, {
       url: "https://api.openai.com/v1/chat/completions",
-      init: { method: "POST", headers: { authorization: "Bearer limited-token" }, body: "{}" },
+      init: {
+        method: "POST",
+        headers: { authorization: "Bearer limited-token" },
+        body: JSON.stringify({ tools: [{
+          type: "function",
+          function: {
+            name: "read_file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          },
+        }] }),
+      },
     });
 
     assert.equal(responseRotation.response.status, 200);
-    assert.deepEqual(responseRotation.calls, ["Bearer limited-token", "Bearer healthy-token"]);
+    assert.deepEqual(responseRotation.calls.map((call) => call.authorization), ["Bearer limited-token", "Bearer healthy-token"]);
+    for (const call of responseRotation.calls) {
+      const parameters = call.body.tools[0].function.parameters;
+      assert.equal(parameters.properties.agent__intent.type, "string");
+      assert.deepEqual(parameters.required, ["path"]);
+    }
     assert.equal(responseRotation.pool.openai[0].status, "rate-limited");
     assert.equal(responseRotation.pool.openai[1].status, "active");
     assert.equal(responseRotation.authWrites[0].path.id, "openai");
     assert.equal(responseRotation.authWrites[0].body.accountId, "acct_healthy");
+
+    const requestSource = JSON.stringify({ tools: [{
+      type: "function",
+      name: "read_file",
+      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    }] });
+    const requestInput = new Request("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { authorization: "Bearer healthy-token" },
+      body: requestSource,
+    });
+    const requestTransform = await withInstalledGuard({
+      openai: [{ email: "healthy@example.com", access: "healthy-token", expires: Date.now() + 3600_000, status: "active", cooldownUntil: 0 }],
+    }, async (input, init, calls) => {
+      calls.push(await new Request(input, init).text());
+      return new Response("ok", { status: 200 });
+    }, { input: requestInput });
+    assert.equal(JSON.parse(requestTransform.calls[0]).tools[0].parameters.properties.agent__intent.type, "string");
+
+    const transformedInheritedInit = Object.create({
+      body: requestSource,
+      method: "PUT",
+      headers: { authorization: "Bearer inherited-token", "x-request-source": "inherited" },
+    });
+    const inheritedTransform = await withInstalledGuard({
+      openai: [{ email: "inherited@example.com", access: "inherited-token", expires: Date.now() + 3600_000, status: "active", cooldownUntil: 0 }],
+    }, async (input, init, calls) => {
+      const normalized = new Request(input, init);
+      calls.push({
+        method: normalized.method,
+        authorization: normalized.headers.get("authorization"),
+        source: normalized.headers.get("x-request-source"),
+        body: await normalized.text(),
+      });
+      return new Response("ok", { status: 200 });
+    }, { input: requestInput, init: transformedInheritedInit });
+    assert.equal(inheritedTransform.calls[0].method, "PUT");
+    assert.equal(inheritedTransform.calls[0].authorization, "Bearer inherited-token");
+    assert.equal(inheritedTransform.calls[0].source, "inherited");
+    assert.equal(JSON.parse(inheritedTransform.calls[0].body).tools[0].parameters.properties.agent__intent.type, "string");
+
+    const inheritedInit = Object.create({ body: "inherited-override" });
+    const overrideCases = [
+      { init: { body: "" }, expected: "" },
+      { init: { body: new URLSearchParams({ payload: "replacement" }) }, expected: "payload=replacement" },
+      { init: inheritedInit, expected: "inherited-override" },
+    ];
+    for (const overrideCase of overrideCases) {
+      const overrideInput = new Request("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { authorization: "Bearer healthy-token" },
+        body: requestSource,
+      });
+      const overrideResult = await withInstalledGuard({
+        openai: [{ email: "healthy@example.com", access: "healthy-token", expires: Date.now() + 3600_000, status: "active", cooldownUntil: 0 }],
+      }, async (input, init, calls) => {
+        calls.push(await new Request(input, init).text());
+        return new Response("ok", { status: 200 });
+      }, { input: overrideInput, init: overrideCase.init });
+      assert.equal(overrideResult.calls[0], overrideCase.expected);
+    }
 
     const tokenRefreshRecovery = await withInstalledGuard({
       openai: [
