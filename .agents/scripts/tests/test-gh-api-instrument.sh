@@ -472,6 +472,35 @@ export AIDEVOPS_GH_API_LOG="$TMPDIR/gh-api-calls.log"
 export AIDEVOPS_GH_API_REPORT="$TMPDIR/report.json"
 unset AIDEVOPS_GH_API_EMPTY_LOCK_GRACE_TRIES
 
+# --- Test 10b: request-local attempt state ignores historical log size -----
+unset _GH_API_INSTRUMENT_LOADED
+# shellcheck source=../gh-api-instrument.sh
+source "${PARENT_DIR}/gh-api-instrument.sh"
+gh_clear_log
+now=$(date +%s)
+printf '%s\thistorical\trest\tgh-pat\trest-core\trest-selected\t4999\tv2\tattempt\tlogical-request\told-attempt\t1\t0\terror\t503\t1\t1\n' \
+	"$now" >>"$AIDEVOPS_GH_API_LOG"
+gh_request_attempt_state_begin logical-request
+assert_eq "request attempt count starts independently of historical log" "0" \
+	"$(gh_attempt_count_for_logical logical-request)"
+(gh_record_attempt rest request-caller logical-unrelated unrelated-attempt 1 0 error 500 1 1 gh-pat rest-core rest-selected 4999)
+(gh_record_attempt rest request-caller logical-request request-attempt-1 1 0 success 200 1 1 gh-pat rest-core rest-selected 4999)
+(gh_record_attempt rest request-caller logical-request request-attempt-2 1 1 error 503 1 1 gh-pat rest-core rest-selected 4998)
+assert_eq "request attempt count includes only current logical operation" "2" \
+	"$(gh_attempt_count_for_logical logical-request)"
+assert_eq "untracked logical operation has no request-local count" "0" \
+	"$(gh_attempt_count_for_logical logical-unrelated)"
+if gh_request_has_http_failure logical-request && ! gh_request_has_http_failure logical-unrelated; then
+	echo "  PASS: request-local HTTP failure state ignores unrelated and historical attempts"
+	PASS=$((PASS + 1))
+else
+	echo "  FAIL: request-local HTTP failure state was not isolated"
+	FAIL=$((FAIL + 1))
+fi
+request_attempt_state_file="$AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE"
+gh_request_attempt_state_cleanup
+assert_path_absent "request-local attempt state is removed by its owner" "$request_attempt_state_file"
+
 # --- Test 11: exact replay separates events, attempts, pages, and retries --
 unset _GH_API_INSTRUMENT_LOADED
 # shellcheck source=../gh-api-instrument.sh
@@ -839,6 +868,7 @@ mkdir -p "$SHIM_FIXTURE" "$NATIVE_FIXTURE"
 cp "${PARENT_DIR}/gh" "$SHIM_FIXTURE/gh"
 cp "${PARENT_DIR}/gh-native-transport-lib.sh" "$SHIM_FIXTURE/gh-native-transport-lib.sh"
 cp "${PARENT_DIR}/gh-api-guards-lib.sh" "$SHIM_FIXTURE/gh-api-guards-lib.sh"
+cp "${PARENT_DIR}/managed-label-provisioning-lib.sh" "$SHIM_FIXTURE/managed-label-provisioning-lib.sh"
 cp "${PARENT_DIR}/gh-write-policy-lib.sh" "$SHIM_FIXTURE/gh-write-policy-lib.sh"
 cp "${PARENT_DIR}/gh-api-instrument.sh" "$SHIM_FIXTURE/gh-api-instrument.sh"
 cp "${PARENT_DIR}/gh-rest-pagination-lib.sh" "$SHIM_FIXTURE/gh-rest-pagination-lib.sh"

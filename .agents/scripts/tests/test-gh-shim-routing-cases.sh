@@ -204,6 +204,25 @@ else
 		"rc: $rest_failure_rc REST calls: $rest_api_calls native calls: $native_issue_calls log: $(cat "$default_api_log" 2>/dev/null || true)"
 fi
 
+_reset_log
+rest_failure_without_log_rc=0
+AIDEVOPS_GH_API_INSTRUMENT_DISABLE=1 AIDEVOPS_GH_API_LOG=/dev/null \
+	AIDEVOPS_GH_REST_FIRST_READS=1 AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 \
+	AIDEVOPS_GH_QUOTA_STATE_DIR="$TMP/rest-rewrite-no-log-state" AIDEVOPS_TEMP_DIR="$TMP" \
+	STUB_REST_READ_FAIL=1 STUB_REST_READ_EXIT_CODE=42 STUB_GH_DEBUG_RESPONSE=1 \
+	STUB_BOOTSTRAP_CORE_USED=100 STUB_GH_DEBUG_RESOURCE=core STUB_GH_DEBUG_STATUS=403 \
+	STUB_GH_DEBUG_USED=101 STUB_GH_DEBUG_REMAINING=4899 STUB_GH_DEBUG_RESET=2000 \
+	"$SHIM_RUN" issue list --repo owner/repo --state open --json number,title \
+	>/dev/null 2>/dev/null || rest_failure_without_log_rc=$?
+rest_api_calls=$(awk -F '\t' '$1 == "api" && $2 ~ /^\/repos\// { count++ } END { print count + 0 }' "$STUB_GH_CALL_LOG")
+native_issue_calls=$(awk -F '\t' '$1 == "issue" && $2 == "list" { count++ } END { print count + 0 }' "$STUB_GH_CALL_LOG")
+if [[ "$rest_failure_without_log_rc" -ne 0 && "$rest_api_calls" -eq 1 && "$native_issue_calls" -eq 0 ]]; then
+	_pass "attempted REST failure remains authoritative without a historical API log"
+else
+	_fail "request-local REST failure propagation" \
+		"rc: $rest_failure_without_log_rc REST calls: $rest_api_calls native calls: $native_issue_calls"
+fi
+
 echo ""
 echo "Test 15a: issue --author @me maps to REST creator"
 _reset_log

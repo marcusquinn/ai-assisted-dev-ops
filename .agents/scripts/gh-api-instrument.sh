@@ -408,16 +408,134 @@ gh_new_attempt_id() {
 	return 0
 }
 
+_GH_API_REQUEST_LOGICAL_ID=""
+_GH_API_REQUEST_ATTEMPT_COUNT=0
+_GH_API_REQUEST_HTTP_FAILURE=0
+_GH_API_REQUEST_ATTEMPT_STATE_OWNER=0
+
+_gh_request_attempt_state_temp_dir() {
+	local temp_dir="${AIDEVOPS_TEMP_DIR:-${_GH_API_HOME}/.aidevops/.agent-workspace/tmp}"
+	if [[ ! -e "$temp_dir" ]]; then
+		(umask 077 && mkdir -p "$temp_dir") 2>/dev/null || return 1
+	fi
+	[[ -d "$temp_dir" && ! -L "$temp_dir" && -O "$temp_dir" ]] || return 1
+	printf '%s\n' "${temp_dir%/}"
+	return 0
+}
+
+_gh_request_attempt_state_file_valid() {
+	local state_file="$1"
+	local temp_dir=""
+	local basename=""
+	temp_dir=$(_gh_request_attempt_state_temp_dir) || return 1
+	case "$state_file" in
+	"${temp_dir}"/gh-request-attempts.*) ;;
+	*) return 1 ;;
+	esac
+	basename="${state_file##*/}"
+	[[ "$basename" =~ ^gh-request-attempts\.[[:alnum:]]{6}$ ]] || return 1
+	[[ -f "$state_file" && ! -L "$state_file" && -O "$state_file" ]] || return 1
+	return 0
+}
+
+gh_request_attempt_state_begin() {
+	local logical_id="$1"
+	local state_file="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE:-}"
+	local state_logical_id="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID:-}"
+	local temp_dir=""
+	[[ -n "$logical_id" ]] || return 1
+	_GH_API_REQUEST_LOGICAL_ID="$logical_id"
+	_GH_API_REQUEST_ATTEMPT_COUNT=0
+	_GH_API_REQUEST_HTTP_FAILURE=0
+	_GH_API_REQUEST_ATTEMPT_STATE_OWNER=0
+	if [[ "$state_logical_id" == "$logical_id" ]] &&
+		_gh_request_attempt_state_file_valid "$state_file"; then
+		return 0
+	fi
+	unset AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE
+	unset AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID
+	temp_dir=$(_gh_request_attempt_state_temp_dir) || return 1
+	state_file=$(mktemp "${temp_dir}/gh-request-attempts.XXXXXX" 2>/dev/null) || return 1
+	chmod 0600 "$state_file" 2>/dev/null || {
+		rm -f "$state_file" 2>/dev/null || true
+		return 1
+	}
+	AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE="$state_file"
+	AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID="$logical_id"
+	export AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE
+	export AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID
+	_GH_API_REQUEST_ATTEMPT_STATE_OWNER=1
+	return 0
+}
+
+gh_request_attempt_state_cleanup() {
+	local state_file="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE:-}"
+	if [[ "${_GH_API_REQUEST_ATTEMPT_STATE_OWNER:-0}" == "1" ]] &&
+		_gh_request_attempt_state_file_valid "$state_file"; then
+		rm -f "$state_file" 2>/dev/null || true
+	fi
+	_GH_API_REQUEST_ATTEMPT_STATE_OWNER=0
+	unset AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE
+	unset AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID
+	return 0
+}
+
+_gh_request_attempt_state_record() {
+	local logical_id="$1"
+	local http_status="$2"
+	local state_file="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE:-}"
+	[[ -n "${_GH_API_REQUEST_LOGICAL_ID:-}" &&
+		"$logical_id" == "$_GH_API_REQUEST_LOGICAL_ID" ]] || return 0
+	[[ "${_GH_API_REQUEST_ATTEMPT_COUNT:-}" =~ ^[0-9]+$ ]] || _GH_API_REQUEST_ATTEMPT_COUNT=0
+	_GH_API_REQUEST_ATTEMPT_COUNT=$((_GH_API_REQUEST_ATTEMPT_COUNT + 1))
+	if [[ "$http_status" =~ ^[45][0-9][0-9]$ ]]; then
+		_GH_API_REQUEST_HTTP_FAILURE=1
+	fi
+	if _gh_request_attempt_state_file_valid "$state_file"; then
+		printf '%s\t%s\n' "$logical_id" "$http_status" >>"$state_file" 2>/dev/null || true
+	fi
+	return 0
+}
+
 gh_attempt_count_for_logical() {
 	local logical_id="$1"
-	[[ -f "$GH_API_LOG" ]] || {
-		printf '0\n'
-		return 0
-	}
-	awk -F'\t' -v logical_id="$logical_id" \
-		'$8 == "v2" && $9 == "attempt" && $10 == logical_id { count++ } END { print count + 0 }' \
-		"$GH_API_LOG" 2>/dev/null || printf '0\n'
+	local state_file="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE:-}"
+	local recorded_logical_id=""
+	local ignored_http_status=""
+	local count=0
+	if [[ "$logical_id" == "${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID:-}" ]] &&
+		_gh_request_attempt_state_file_valid "$state_file"; then
+		while IFS=$'\t' read -r recorded_logical_id ignored_http_status; do
+			[[ "$recorded_logical_id" == "$logical_id" ]] || continue
+			count=$((count + 1))
+		done <"$state_file"
+	elif [[ -n "${_GH_API_REQUEST_LOGICAL_ID:-}" &&
+		"$logical_id" == "$_GH_API_REQUEST_LOGICAL_ID" &&
+		"${_GH_API_REQUEST_ATTEMPT_COUNT:-}" =~ ^[0-9]+$ ]]; then
+		count="$_GH_API_REQUEST_ATTEMPT_COUNT"
+	fi
+	printf '%s\n' "$count"
 	return 0
+}
+
+gh_request_has_http_failure() {
+	local logical_id="$1"
+	local state_file="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE:-}"
+	local recorded_logical_id=""
+	local http_status=""
+	if [[ "$logical_id" == "${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID:-}" ]] &&
+		_gh_request_attempt_state_file_valid "$state_file"; then
+		while IFS=$'\t' read -r recorded_logical_id http_status; do
+			if [[ "$recorded_logical_id" == "$logical_id" && "$http_status" =~ ^[45][0-9][0-9]$ ]]; then
+				return 0
+			fi
+		done <"$state_file"
+	elif [[ -n "${_GH_API_REQUEST_LOGICAL_ID:-}" &&
+		"$logical_id" == "$_GH_API_REQUEST_LOGICAL_ID" &&
+		"${_GH_API_REQUEST_HTTP_FAILURE:-0}" == "1" ]]; then
+		return 0
+	fi
+	return 1
 }
 
 _gh_append_v2() {
@@ -558,7 +676,6 @@ gh_record_efficiency_evidence() {
 # Record one completed native transport try/page. Arguments are metadata only;
 # command argv never enters the record.
 gh_record_attempt() {
-	[[ "${AIDEVOPS_GH_API_INSTRUMENT_DISABLE:-0}" == "1" ]] && return 0
 	local path="$1"
 	shift
 	local caller="$1"
@@ -593,6 +710,8 @@ gh_record_attempt() {
 	[[ -n "$api_pool" ]] || api_pool=$(_gh_default_pool "$path")
 	[[ -n "$auth_mode" ]] || auth_mode="${AIDEVOPS_GH_AUTH_MODE:-$(_gh_default_auth "$api_pool")}"
 	[[ -n "$route_decision" ]] || route_decision="${AIDEVOPS_GH_ROUTE_DECISION:-${api_pool}-selected}"
+	_gh_request_attempt_state_record "$logical_id" "$http_status" || true
+	[[ "${AIDEVOPS_GH_API_INSTRUMENT_DISABLE:-0}" == "1" ]] && return 0
 	_gh_append_v2 attempt "$caller" "$path" "$auth_mode" "$api_pool" "$route_decision" \
 		"$budget_remaining" "$logical_id" "$attempt_id" "$page" "$retry" "$outcome" \
 		"$http_status" "$elapsed_ms" "$quota_cost"

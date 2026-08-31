@@ -164,6 +164,23 @@ if ! type gh_attempt_count_for_logical >/dev/null 2>&1; then
 		return 0
 	}
 fi
+if ! type gh_request_attempt_state_begin >/dev/null 2>&1; then
+	gh_request_attempt_state_begin() {
+		local ignored_logical_id="$1"
+		: "$ignored_logical_id"
+		return 1
+	}
+fi
+if ! type gh_request_attempt_state_cleanup >/dev/null 2>&1; then
+	gh_request_attempt_state_cleanup() { return 0; }
+fi
+if ! type gh_request_has_http_failure >/dev/null 2>&1; then
+	gh_request_has_http_failure() {
+		local ignored_logical_id="$1"
+		: "$ignored_logical_id"
+		return 1
+	}
+fi
 if ! type gh_run_transport_attempt >/dev/null 2>&1; then
 	gh_run_transport_attempt() {
 		local ignored_path="$1"; shift
@@ -201,6 +218,11 @@ unset _cand _GHQA_LOADED
 # each explicit page, and any GraphQL fallback retry.
 AIDEVOPS_GH_LOGICAL_ID="${AIDEVOPS_GH_LOGICAL_ID:-$(gh_new_logical_id)}"
 export AIDEVOPS_GH_LOGICAL_ID
+_GH_REQUEST_ATTEMPT_STATE_READY=0
+if gh_request_attempt_state_begin "$AIDEVOPS_GH_LOGICAL_ID"; then
+	_GH_REQUEST_ATTEMPT_STATE_READY=1
+	trap 'gh_request_attempt_state_cleanup' EXIT
+fi
 
 # _shim_classify_endpoint <sub1> [<sub2>]
 # Classify a gh invocation for instrumentation. Returns one of:
@@ -398,13 +420,7 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 
 	_SHIM_REST_REWRITE_ATTEMPTED=0
 	_shim_rest_rewrite_has_http_failure() {
-		local log_file="${AIDEVOPS_GH_API_LOG:-${GH_API_LOG:-}}"
-		[[ -n "$log_file" && -r "$log_file" ]] || return 1
-		awk -F '\t' -v logical_id="$AIDEVOPS_GH_LOGICAL_ID" '
-			$8 == "v2" && $9 == "attempt" && $10 == logical_id &&
-			$15 ~ /^[45][0-9][0-9]$/ { found = 1 }
-			END { exit found ? 0 : 1 }
-		' "$log_file"
+		gh_request_has_http_failure "$AIDEVOPS_GH_LOGICAL_ID"
 		return $?
 	}
 
@@ -452,6 +468,7 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		# low-GraphQL-budget fallback. This shares native GitHub quota pools instead
 		# of imposing a synthetic lower GraphQL budget.
 		_rest_read_first_enabled || _rest_should_fallback || return 1
+		[[ "$_GH_REQUEST_ATTEMPT_STATE_READY" -eq 1 ]] || return 1
 
 		# Extract repo and build stripped args.
 		_shim_extract_repo_and_args "$@" || return 1
