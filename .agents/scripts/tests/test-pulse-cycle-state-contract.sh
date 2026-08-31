@@ -40,6 +40,7 @@ assert_health() {
 
 export HOME="${TMP_DIR}/home"
 export SCRIPT_DIR="$SOURCE_DIR"
+export AIDEVOPS_DISPATCH_LEDGER_DIR="$TMP_DIR"
 export AIDEVOPS_DISPATCH_LEDGER_FILE="${TMP_DIR}/dispatch-ledger.jsonl"
 mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/.agent-workspace/tmp"
 
@@ -264,6 +265,53 @@ if cmp -s "$PULSE_HEALTH_FILE" "${TMP_DIR}/health-before-stale-terminal.json" \
 else
 	fail "older terminal publication cannot overwrite newer cycle health"
 fi
+
+: >"$AIDEVOPS_DISPATCH_LEDGER_FILE"
+_PULSE_HEALTH_PRS_MERGED=0
+_pulse_cycle_state_start
+write_pulse_health_file
+child_cleanup_cycle_id="$_PULSE_CYCLE_ID"
+cp "$PULSE_HEALTH_FILE" "${TMP_DIR}/health-before-child-cleanup.json"
+_LOCK_OWNED=true
+(
+	trap '_pulse_cycle_state_finish_interrupted' EXIT
+)
+if cmp -s "$PULSE_HEALTH_FILE" "${TMP_DIR}/health-before-child-cleanup.json" \
+	&& [[ "$_PULSE_CYCLE_STATE_TERMINAL" -eq 0 ]] \
+	&& jq -e --arg cycle_id "$child_cleanup_cycle_id" '
+		.cycle_state.cycle_id == $cycle_id
+		and .cycle_state.phase == "admitted"
+		and .cycle_state.outcome == "running"
+	' "$PULSE_HEALTH_FILE" >/dev/null; then
+	pass "child EXIT cleanup cannot publish terminal state for the live owner"
+else
+	fail "child EXIT cleanup cannot publish terminal state for the live owner"
+fi
+
+cp "$PULSE_HEALTH_FILE" "${TMP_DIR}/health-before-child-terminal-write.json"
+(
+	_PULSE_CYCLE_STATE_TERMINAL=1
+	_PULSE_CYCLE_PHASE="completed"
+	_PULSE_CYCLE_OUTCOME="interrupted"
+	write_pulse_health_file
+)
+if cmp -s "$PULSE_HEALTH_FILE" "${TMP_DIR}/health-before-child-terminal-write.json"; then
+	pass "child executor cannot directly publish inherited terminal health"
+else
+	fail "child executor cannot directly publish inherited terminal health"
+fi
+
+post_label_dispatch_before=$(_pulse_capture_dispatch_total)
+printf '{"session_key":"post-label-test","status":"in-flight","pid":%s,"lease_phase":"prelaunch","dispatched_at":"2026-01-01T00:00:00Z"}\n' \
+	"$$" >"$AIDEVOPS_DISPATCH_LEDGER_FILE"
+_pulse_record_cycle_outcome "$post_label_dispatch_before"
+_pulse_cycle_state_write_terminal_if_current
+assert_health "owner finalization records successful post-label dispatch" '
+	.issues_dispatched == 1
+	and .cycle_state.phase == "completed"
+	and .cycle_state.outcome == "progressed"
+	and .cycle_state.progress.kinds == ["worker-dispatched"]
+'
 
 printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1

@@ -34,6 +34,7 @@ PULSE_CYCLE_STATE_OBJECT_TYPE="object"
 _PULSE_CYCLE_STATE_INITIALIZED=0
 _PULSE_CYCLE_STATE_TERMINAL=0
 _PULSE_CYCLE_ID=""
+_PULSE_CYCLE_OWNER_EXECUTOR_PID=""
 _PULSE_CYCLE_PHASE=""
 _PULSE_CYCLE_OUTCOME=""
 _PULSE_CYCLE_HEARTBEAT_AT=""
@@ -86,8 +87,29 @@ _pulse_cycle_state_hash() {
 	return 0
 }
 
+_pulse_cycle_state_resolve_executor_pid() {
+	local executor_pid="${BASHPID:-}"
+	if [[ -z "$executor_pid" ]]; then
+		# Bash 3.2 has no BASHPID and $$ remains the parent PID in subshells.
+		# This command-substitution child reports the actual calling shell as PPID.
+		executor_pid="$(exec sh -c 'printf "%s" "$PPID"')" || return 1
+	fi
+	[[ "$executor_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+	_PULSE_CYCLE_STATE_EXECUTOR_PID="$executor_pid"
+	return 0
+}
+
+_pulse_cycle_state_executor_is_owner() {
+	local owner_pid="${_PULSE_CYCLE_OWNER_EXECUTOR_PID:-}"
+	[[ "$owner_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+	_pulse_cycle_state_resolve_executor_pid || return 1
+	[[ "$_PULSE_CYCLE_STATE_EXECUTOR_PID" == "$owner_pid" ]]
+	return $?
+}
+
 _pulse_cycle_state_start() {
 	local now=""
+	local owner_pid=""
 	local previous_fields=""
 	local prior_progress_last_at=""
 	local prior_progress_kinds_json="[]"
@@ -95,6 +117,10 @@ _pulse_cycle_state_start() {
 	local prior_blocker_kind="$PULSE_CYCLE_STATE_BLOCKER_NONE"
 	local prior_blocker_fingerprint=""
 	local prior_same_blocker="0"
+	_PULSE_CYCLE_STATE_INITIALIZED=0
+	_PULSE_CYCLE_OWNER_EXECUTOR_PID=""
+	_pulse_cycle_state_resolve_executor_pid || return 1
+	owner_pid="$_PULSE_CYCLE_STATE_EXECUTOR_PID"
 	now=$(_pulse_cycle_state_now)
 	if [[ -f "${PULSE_HEALTH_FILE:-}" ]]; then
 		previous_fields=$(jq -r --arg schema "$PULSE_CYCLE_STATE_SCHEMA" \
@@ -152,6 +178,7 @@ _pulse_cycle_state_start() {
 	_PULSE_CYCLE_STATE_INITIALIZED=1
 	_PULSE_CYCLE_STATE_TERMINAL=0
 	_PULSE_CYCLE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+	_PULSE_CYCLE_OWNER_EXECUTOR_PID="$owner_pid"
 	_PULSE_CYCLE_PHASE="admitted"
 	_PULSE_CYCLE_OUTCOME="running"
 	_PULSE_CYCLE_HEARTBEAT_AT="$now"
@@ -222,6 +249,7 @@ _pulse_cycle_state_finalize() {
 	local now=""
 	local same_blocker=0
 	[[ "${_PULSE_CYCLE_STATE_INITIALIZED:-0}" == "1" ]] || return 1
+	_pulse_cycle_state_executor_is_owner || return 1
 	case "$outcome" in
 	progressed | idle | blocked | interrupted) ;;
 	*) return 1 ;;
@@ -337,6 +365,11 @@ _pulse_cycle_state_commit_legacy_outcome() {
 
 _pulse_cycle_state_write_terminal_if_current() {
 	[[ "${_PULSE_CYCLE_STATE_TERMINAL:-0}" == "1" ]] || return 1
+	if ! _pulse_cycle_state_executor_is_owner; then
+		printf '[pulse-wrapper] Cycle state: skipped terminal publish for cycle %s because executor does not own the cycle\n' \
+			"${_PULSE_CYCLE_ID:-unknown}" >>"${WRAPPER_LOGFILE:-/dev/null}"
+		return 0
+	fi
 	if [[ "${_LOCK_OWNED:-false}" == "true" ]]; then
 		_pulse_cycle_state_commit_legacy_outcome
 		write_pulse_health_file
@@ -367,6 +400,7 @@ _pulse_cycle_state_write_terminal_if_current() {
 _pulse_cycle_state_finish_if_needed() {
 	local outcome="${1:-interrupted}"
 	[[ "${_PULSE_CYCLE_STATE_INITIALIZED:-0}" == "1" ]] || return 0
+	_pulse_cycle_state_executor_is_owner || return 0
 	[[ "${_PULSE_CYCLE_STATE_TERMINAL:-0}" != "1" ]] || return 0
 	if [[ "$outcome" == "interrupted" \
 		&& "${_PULSE_CYCLE_BLOCKER_KIND:-$PULSE_CYCLE_STATE_BLOCKER_NONE}" == "$PULSE_CYCLE_STATE_BLOCKER_NONE" ]]; then
@@ -620,6 +654,13 @@ append_cycle_index() {
 # Non-fatal: any failure is logged and silently ignored.
 #######################################
 write_pulse_health_file() {
+	if [[ "${_PULSE_CYCLE_STATE_INITIALIZED:-0}" == "1" &&
+		"${_PULSE_CYCLE_STATE_TERMINAL:-0}" == "1" ]] &&
+		! _pulse_cycle_state_executor_is_owner; then
+		printf '[pulse-wrapper] Cycle state: skipped terminal health write for cycle %s because executor does not own the cycle\n' \
+			"${_PULSE_CYCLE_ID:-unknown}" >>"${WRAPPER_LOGFILE:-/dev/null}"
+		return 0
+	fi
 	local ts
 	ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	local cycle_state_json=null

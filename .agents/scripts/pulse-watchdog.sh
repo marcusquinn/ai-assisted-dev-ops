@@ -219,7 +219,12 @@ run_stage_with_timeout() {
 	stage_start=$(date +%s)
 	echo "[pulse-wrapper] Stage start: ${stage_name} (timeout ${timeout_seconds}s)" >>"$LOGFILE"
 
-	"$@" &
+	(
+		# Background stages inherit the parent's shell state but must never run
+		# process-owner EXIT cleanup such as terminal Pulse cycle publication.
+		trap - EXIT
+		"$@"
+	) &
 	local stage_pid=$!
 
 	while kill -0 "$stage_pid" 2>/dev/null; do
