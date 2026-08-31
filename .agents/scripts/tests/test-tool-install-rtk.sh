@@ -6,6 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TOOL_INSTALL="$REPO_ROOT/.agents/scripts/setup/modules/tool-install.sh"
+RTK_READINESS="$REPO_ROOT/.agents/scripts/rtk-readiness.sh"
 
 SANDBOX="$(mktemp -d -t tool-install-rtk-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -35,6 +36,7 @@ extract_functions() {
 		/^_setup_rtk_install_supported_version\(\)/, /^}$/ { print; next }
 		/^_setup_rtk_print_manual_install\(\)/, /^}$/ { print; next }
 		/^_setup_rtk_offer_supported_upgrade\(\)/, /^}$/ { print; next }
+		/^_setup_rtk_report_upgrade_result\(\)/, /^}$/ { print; next }
 		/^setup_rtk\(\)/, /^}$/ { print; next }
 	' "$TOOL_INSTALL" >"$SANDBOX/extract.sh"
 	if ! grep -q '^_setup_rtk_offer_supported_upgrade()' "$SANDBOX/extract.sh"; then
@@ -46,11 +48,20 @@ extract_functions() {
 
 source_extracted() {
 	# shellcheck disable=SC2317
-	print_info() { echo "INFO: $*"; return 0; }
+	print_info() {
+		echo "INFO: $*"
+		return 0
+	}
 	# shellcheck disable=SC2317
-	print_success() { echo "OK: $*"; return 0; }
+	print_success() {
+		echo "OK: $*"
+		return 0
+	}
 	# shellcheck disable=SC2317
-	print_warning() { echo "WARN: $*"; return 0; }
+	print_warning() {
+		echo "WARN: $*"
+		return 0
+	}
 	# shellcheck disable=SC2317
 	setup_prompt() {
 		local var_name="$1"
@@ -61,7 +72,11 @@ source_extracted() {
 		return 0
 	}
 	# shellcheck disable=SC2317
-	run_with_spinner() { shift; "$@"; return $?; }
+	run_with_spinner() {
+		shift
+		"$@"
+		return $?
+	}
 	# shellcheck disable=SC2317
 	verified_install() {
 		local tool_name="$1"
@@ -74,18 +89,26 @@ INNER_EOF
 		chmod +x "$SANDBOX/bin/rtk"
 		return 0
 	}
+	# shellcheck source=../rtk-readiness.sh
+	source "$RTK_READINESS"
 	# shellcheck disable=SC1090
 	source "$SANDBOX/extract.sh"
 	return 0
 }
 
+write_mock_rtk() {
+	cat >"$SANDBOX/bin/rtk" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && printf '%s\n' "${MOCK_RTK_VERSION_OUTPUT:-rtk 0.41.0}"
+EOF
+	chmod +x "$SANDBOX/bin/rtk"
+	return 0
+}
+
 extract_functions
 
-cat >"$SANDBOX/bin/rtk" <<'EOF'
-#!/usr/bin/env bash
-[[ "${1:-}" == "--version" ]] && echo "rtk 0.40.0"
-EOF
-chmod +x "$SANDBOX/bin/rtk"
+export MOCK_RTK_VERSION_OUTPUT="rtk 0.40.0"
+write_mock_rtk
 cat >"$SANDBOX/bin/brew" <<'EOF'
 #!/usr/bin/env bash
 exit 1
@@ -99,6 +122,24 @@ chmod +x "$SANDBOX/bin/brew"
 
 assert_eq "existing mismatched rtk is upgraded" "rtk 0.41.0" "$(rtk --version)"
 assert_eq "setup reports matching version" "1" "$(grep -c 'rtk now matches the aidevops-tested version' "$SANDBOX/out")"
+
+export MOCK_RTK_VERSION_OUTPUT="rtk 0.46.0"
+write_mock_rtk
+(
+	source_extracted
+	setup_rtk
+) >"$SANDBOX/newer-out" 2>&1
+assert_eq "newer rtk is retained" "rtk 0.46.0" "$(rtk --version)"
+assert_eq "newer rtk is reported without an upgrade loop" "1" "$(grep -c 'newer than the aidevops-tested baseline v0.41.0; leaving the installed version unchanged' "$SANDBOX/newer-out")"
+
+export MOCK_RTK_VERSION_OUTPUT="rtk development build"
+write_mock_rtk
+(
+	source_extracted
+	setup_rtk
+) >"$SANDBOX/unknown-out" 2>&1
+assert_eq "malformed rtk output is retained" "rtk development build" "$(rtk --version)"
+assert_eq "malformed rtk output reports unknown readiness" "1" "$(grep -c 'version could not be determined; leaving the optional tool unchanged' "$SANDBOX/unknown-out")"
 
 manual_upgrade_hint=$(
 	source_extracted

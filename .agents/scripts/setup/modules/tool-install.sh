@@ -13,11 +13,16 @@ shopt -s inherit_errexit 2>/dev/null || true
 
 _tool_install_dir="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 _file_discovery_readiness_lib="${_tool_install_dir}/../../file-discovery-readiness.sh"
+_rtk_readiness_lib="${_tool_install_dir}/../../rtk-readiness.sh"
 if [[ -f "$_file_discovery_readiness_lib" ]]; then
 	# shellcheck source=../../file-discovery-readiness.sh
 	source "$_file_discovery_readiness_lib"
 fi
-unset _tool_install_dir _file_discovery_readiness_lib
+if [[ -f "$_rtk_readiness_lib" ]]; then
+	# shellcheck source=../../rtk-readiness.sh
+	source "$_rtk_readiness_lib"
+fi
+unset _tool_install_dir _file_discovery_readiness_lib _rtk_readiness_lib
 
 _print_gh_slurp_manual_upgrade() {
 	echo ""
@@ -304,9 +309,11 @@ setup_file_discovery_tools() {
 }
 
 _setup_rtk_installed_version() {
-	local rtk_version="unknown"
-	rtk_version=$(rtk --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || printf 'unknown')
-	printf '%s\n' "$rtk_version"
+	if declare -F aidevops_rtk_installed_version >/dev/null 2>&1; then
+		aidevops_rtk_installed_version
+	else
+		printf 'unknown\n'
+	fi
 	return 0
 }
 
@@ -345,7 +352,7 @@ _setup_rtk_offer_supported_upgrade() {
 	local rtk_supported_version="$2"
 	local rtk_installer_url="$3"
 
-	print_warning "rtk version mismatch: found v${rtk_version}, aidevops supports v${rtk_supported_version}"
+	print_warning "rtk v${rtk_version} is older than the aidevops-tested baseline v${rtk_supported_version}"
 	setup_prompt upgrade_rtk "Upgrade rtk to the aidevops-tested v${rtk_supported_version}? [Y/n]: " "Y"
 	# shellcheck disable=SC2154  # set indirectly by setup_prompt via read
 	if [[ "$upgrade_rtk" =~ ^[Yy]?$ ]]; then
@@ -358,6 +365,22 @@ _setup_rtk_offer_supported_upgrade() {
 	return 1
 }
 
+_setup_rtk_report_upgrade_result() {
+	local rtk_state="$1"
+	local rtk_version="$2"
+	local rtk_supported_version="$3"
+	local rtk_installer_url="$4"
+	case "$rtk_state" in
+	tested) print_success "rtk now matches the aidevops-tested version" ;;
+	newer-untested) print_warning "rtk now reports v${rtk_version}, newer than the aidevops-tested baseline v${rtk_supported_version}; compatibility is not yet verified" ;;
+	*)
+		print_warning "rtk still reports v${rtk_version}; aidevops tested baseline is v${rtk_supported_version}"
+		_setup_rtk_print_manual_install "$rtk_installer_url"
+		;;
+	esac
+	return 0
+}
+
 setup_rtk() {
 	# rtk — CLI proxy that reduces LLM token consumption by 60-90% (t1430)
 	# Opinionated default optimization: compresses git/gh/test outputs before they reach LLM context
@@ -366,23 +389,33 @@ setup_rtk() {
 
 	# Pin to a tagged release for stability and auditability (Gemini review feedback).
 	# Update the tag when upstream-watch detects a new release.
-	local rtk_supported_version="0.41.0"
+	local rtk_supported_version=""
+	if ! declare -F aidevops_rtk_tested_version >/dev/null 2>&1 ||
+		! declare -F aidevops_rtk_installed_version >/dev/null 2>&1 ||
+		! declare -F aidevops_rtk_version_state >/dev/null 2>&1; then
+		print_warning "rtk readiness helper unavailable; leaving the optional tool unchanged"
+		return 0
+	fi
+	rtk_supported_version=$(aidevops_rtk_tested_version)
 	local rtk_installer_url="https://raw.githubusercontent.com/rtk-ai/rtk/v${rtk_supported_version}/install.sh"
 
 	if command -v rtk >/dev/null 2>&1; then
-		local rtk_version
+		local rtk_version rtk_state="unknown"
 		rtk_version=$(_setup_rtk_installed_version)
+		rtk_state=$(aidevops_rtk_version_state "$rtk_version" "$rtk_supported_version")
 		print_success "rtk found: v$rtk_version (token optimization proxy)"
-		if [[ "$rtk_version" != "$rtk_supported_version" ]]; then
+		if [[ "$rtk_state" == "older" ]]; then
 			if _setup_rtk_offer_supported_upgrade "$rtk_version" "$rtk_supported_version" "$rtk_installer_url"; then
 				rtk_version=$(_setup_rtk_installed_version)
-				if [[ "$rtk_version" == "$rtk_supported_version" ]]; then
-					print_success "rtk now matches the aidevops-tested version"
-				else
-					print_warning "rtk still reports v${rtk_version}; aidevops supports v${rtk_supported_version}"
-					_setup_rtk_print_manual_install "$rtk_installer_url"
-				fi
+				rtk_state=$(aidevops_rtk_version_state "$rtk_version" "$rtk_supported_version")
+				_setup_rtk_report_upgrade_result "$rtk_state" "$rtk_version" "$rtk_supported_version" "$rtk_installer_url"
 			fi
+		elif [[ "$rtk_state" == "newer-untested" ]]; then
+			print_warning "rtk v${rtk_version} is newer than the aidevops-tested baseline v${rtk_supported_version}; leaving the installed version unchanged"
+		elif [[ "$rtk_state" == "unknown" ]]; then
+			print_warning "rtk is available but its version could not be determined; leaving the optional tool unchanged"
+		else
+			print_success "rtk matches the aidevops-tested baseline"
 		fi
 		# Fall through to ensure config is applied (telemetry, tee)
 	else

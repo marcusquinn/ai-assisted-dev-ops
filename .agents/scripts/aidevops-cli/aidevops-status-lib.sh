@@ -25,11 +25,16 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 fi
 
 _file_discovery_readiness_lib="${SCRIPT_DIR%/aidevops-cli}/file-discovery-readiness.sh"
+_rtk_readiness_lib="${SCRIPT_DIR%/aidevops-cli}/rtk-readiness.sh"
 if [[ -f "$_file_discovery_readiness_lib" ]]; then
 	# shellcheck source=../file-discovery-readiness.sh
 	source "$_file_discovery_readiness_lib"
 fi
-unset _file_discovery_readiness_lib
+if [[ -f "$_rtk_readiness_lib" ]]; then
+	# shellcheck source=../rtk-readiness.sh
+	source "$_rtk_readiness_lib"
+fi
+unset _file_discovery_readiness_lib _rtk_readiness_lib
 
 _status_file_discovery_readiness() {
 	local fd_state="unavailable"
@@ -42,6 +47,26 @@ _status_file_discovery_readiness() {
 	*) print_error "fd - not installed; run: aidevops setup" ;;
 	esac
 	check_cmd rg && print_success "rg" || print_error "rg - not installed; run: aidevops setup"
+	return 0
+}
+
+_status_rtk_readiness() {
+	local rtk_version="" rtk_tested_version="" rtk_state="unavailable"
+	if declare -F aidevops_rtk_tested_version >/dev/null 2>&1 &&
+		declare -F aidevops_rtk_installed_version >/dev/null 2>&1 &&
+		declare -F aidevops_rtk_version_state >/dev/null 2>&1; then
+		rtk_tested_version=$(aidevops_rtk_tested_version)
+		rtk_version=$(aidevops_rtk_installed_version)
+		rtk_state=$(aidevops_rtk_version_state "$rtk_version" "$rtk_tested_version")
+	fi
+	case "$rtk_state" in
+	missing) print_warning "RTK - not installed (optional; run: aidevops setup)" ;;
+	unknown) print_warning "RTK - available, version unknown (tested baseline v${rtk_tested_version})" ;;
+	older) print_warning "RTK v${rtk_version} - older than tested baseline v${rtk_tested_version}; run: aidevops setup" ;;
+	tested) print_success "RTK v${rtk_version} (tested baseline)" ;;
+	newer-untested) print_warning "RTK v${rtk_version} - available, newer than tested baseline v${rtk_tested_version}; compatibility unverified" ;;
+	*) print_warning "RTK - readiness unavailable (optional tool)" ;;
+	esac
 	return 0
 }
 
@@ -272,6 +297,7 @@ cmd_status() {
 	echo ""
 	print_header "Optional Dependencies"
 	check_cmd sshpass && print_success "sshpass" || print_warning "sshpass - not installed (needed for password SSH)"
+	_status_rtk_readiness
 	echo ""
 	_status_recommended_tools
 	print_header "Git CLI Tools"
