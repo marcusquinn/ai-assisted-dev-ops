@@ -84,7 +84,7 @@ assert_eq 'hold without for' 'false' "$(issue_body_has_defer_marker 'please hold
 # pulse-dep-graph.sh:212. Keep byte-identical.
 ###############################################################################
 
-_PULSE_DEP_GRAPH_NON_DEP_BLOCK_MARKERS='\*\*BLOCKED\*\*.*cannot proceed|Worker Watchdog Kill|Terminal blocker detected|ACTION REQUIRED|HUMAN_UNBLOCK_REQUIRED'
+_PULSE_DEP_GRAPH_NON_DEP_BLOCK_MARKERS='\*\*BLOCKED\*\*.*cannot proceed|Worker Watchdog Kill|Terminal blocker detected|ACTION REQUIRED|HUMAN_UNBLOCK_REQUIRED|CLAIM_RELEASED reason=blocked([[:space:]]|$)'
 
 comment_has_marker() {
 	local body="$1"
@@ -114,6 +114,12 @@ assert_eq 'ACTION REQUIRED escalation' 'true' \
 
 assert_eq 'HUMAN_UNBLOCK_REQUIRED tag' 'true' \
 	"$(comment_has_marker 'Setting HUMAN_UNBLOCK_REQUIRED until owner reviews.')"
+
+assert_eq 'blocked claim release' 'true' \
+	"$(comment_has_marker 'CLAIM_RELEASED reason=blocked runner=maintainer ts=2026-08-30T00:00:00Z')"
+
+assert_eq 'non-blocked claim release' 'false' \
+	"$(comment_has_marker 'CLAIM_RELEASED reason=worker_complete runner=maintainer ts=2026-08-30T00:00:00Z')"
 
 # Dedup operational comments like dispatch claims must NOT trip the gate.
 assert_eq 'dispatch claim' 'false' \
@@ -181,7 +187,8 @@ assert_eq 'clean body and empty comments → unblock' '__no_defer__' "$got"
 
 # Scenario 3: body defer flag false, comment contains **BLOCKED** → defer
 export GH_STUB_COMMENTS="$STUB_DIR/blocked-comment.json"
-jq -cn --arg body '**BLOCKED** — cannot proceed autonomously. Evidence: ...' '[{body:$body}]' >"$GH_STUB_COMMENTS"
+jq -cn --arg body '**BLOCKED** — cannot proceed autonomously. Evidence: ...' \
+	'[{author_association:"OWNER",body:$body}]' >"$GH_STUB_COMMENTS"
 : >"$GH_STUB_CALLS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'worker BLOCKED comment triggers defer' 'comment-marker' "$got"
@@ -189,24 +196,46 @@ rest_comment_calls=$(grep -cF 'api repos/owner/repo/issues/123/comments?per_page
 assert_eq 'comment marker read uses paginated REST' '1' "$rest_comment_calls"
 
 # Scenario 4: Worker Watchdog Kill comment → defer
-jq -cn --arg body $'## Worker Watchdog Kill\n\n**Reason:** idle' '[{body:$body}]' >"$GH_STUB_COMMENTS"
+jq -cn --arg body $'## Worker Watchdog Kill\n\n**Reason:** idle' \
+	'[{author_association:"MEMBER",body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'watchdog kill comment triggers defer' 'comment-marker' "$got"
 
 # Scenario 5: Terminal blocker comment → defer
-jq -cn --arg body '**Terminal blocker detected** (GH#5141) — skipping dispatch.' '[{body:$body}]' >"$GH_STUB_COMMENTS"
+jq -cn --arg body '**Terminal blocker detected** (GH#5141) — skipping dispatch.' \
+	'[{author_association:"COLLABORATOR",body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'terminal blocker comment triggers defer' 'comment-marker' "$got"
 
 # Scenario 6: clean comment (dispatch claim, merge summary) → unblock
-jq -cn --arg body $'DISPATCH_CLAIM nonce=abc123 runner=maintainer\n---\nPR #1234 merged.' '[{body:$body}]' >"$GH_STUB_COMMENTS"
+jq -cn --arg body $'DISPATCH_CLAIM nonce=abc123 runner=maintainer\n---\nPR #1234 merged.' \
+	'[{author_association:"OWNER",body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
 assert_eq 'clean operational comments → unblock' '__no_defer__' "$got"
 
 # Scenario 7: body defer takes precedence even with clean comments
-jq -cn --arg body 'DISPATCH_CLAIM nonce=abc123' '[{body:$body}]' >"$GH_STUB_COMMENTS"
+jq -cn --arg body 'DISPATCH_CLAIM nonce=abc123' \
+	'[{author_association:"OWNER",body:$body}]' >"$GH_STUB_COMMENTS"
 got=$(_should_defer_auto_unblock 'owner/repo' '123' 'true' || echo "__no_defer__")
 assert_eq 'body defer precedence over clean comments' 'body-defer' "$got"
+
+# Scenario 8: trusted structured blocked release → defer
+jq -cn --arg body 'CLAIM_RELEASED reason=blocked runner=maintainer ts=2026-08-30T00:00:00Z' \
+	'[{author_association:"OWNER",body:$body}]' >"$GH_STUB_COMMENTS"
+got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
+assert_eq 'trusted blocked claim release triggers defer' 'comment-marker' "$got"
+
+# Scenario 9: untrusted lookalike cannot create a durable hold
+jq -cn --arg body 'CLAIM_RELEASED reason=blocked runner=attacker ts=2026-08-30T00:00:00Z' \
+	'[{author_association:"NONE",body:$body}]' >"$GH_STUB_COMMENTS"
+got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
+assert_eq 'untrusted blocked claim release does not defer' '__no_defer__' "$got"
+
+# Scenario 10: other trusted release reasons remain eligible to unblock
+jq -cn --arg body 'CLAIM_RELEASED reason=worker_complete runner=maintainer ts=2026-08-30T00:00:00Z' \
+	'[{author_association:"OWNER",body:$body}]' >"$GH_STUB_COMMENTS"
+got=$(_should_defer_auto_unblock 'owner/repo' '123' 'false' || echo "__no_defer__")
+assert_eq 'trusted non-blocked claim release does not defer' '__no_defer__' "$got"
 
 printf '\n'
 printf 'Results: %d passed, %d failed\n' "$pass_count" "$fail_count"

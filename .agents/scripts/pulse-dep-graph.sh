@@ -372,8 +372,9 @@ build_dependency_graph_cache() {
 #   - `Terminal blocker detected`   — pulse-dispatch-core._apply_terminal_blocker
 #   - `ACTION REQUIRED`             — supervisor-posted human-action escalation
 #   - `HUMAN_UNBLOCK_REQUIRED`      — explicit machine-readable hold marker
+#   - `CLAIM_RELEASED reason=blocked` — terminal worker blocker lifecycle event
 #######################################
-_PULSE_DEP_GRAPH_NON_DEP_BLOCK_MARKERS='\*\*BLOCKED\*\*.*cannot proceed|Worker Watchdog Kill|Terminal blocker detected|ACTION REQUIRED|HUMAN_UNBLOCK_REQUIRED'
+_PULSE_DEP_GRAPH_NON_DEP_BLOCK_MARKERS='\*\*BLOCKED\*\*.*cannot proceed|Worker Watchdog Kill|Terminal blocker detected|ACTION REQUIRED|HUMAN_UNBLOCK_REQUIRED|CLAIM_RELEASED reason=blocked([[:space:]]|$)'
 
 #######################################
 # Decide whether to defer auto-unblock for an issue (t2031)
@@ -387,7 +388,7 @@ _PULSE_DEP_GRAPH_NON_DEP_BLOCK_MARKERS='\*\*BLOCKED\*\*.*cannot proceed|Worker W
 #
 # Two signals:
 #   (a) Defer/hold marker in the issue body (cached, zero API cost).
-#   (b) Non-dep BLOCKED markers in the 10 most recent comments (one API
+#   (b) Non-dep BLOCKED markers in trusted comments among the 10 most recent (one API
 #       call per unblock candidate — candidates are rare, cost is fine).
 #
 # Arguments:
@@ -414,7 +415,7 @@ _should_defer_auto_unblock() {
 		return 0
 	fi
 
-	# (b) Non-dep BLOCKED markers in recent comments. Use the paginated REST
+	# (b) Non-dep BLOCKED markers in recent trusted comments. Use the paginated REST
 	# issue-comments endpoint because only comment bodies are needed; native
 	# `gh issue view --json comments` is GraphQL-only and cannot expose
 	# response-owned cost. Unblock candidates are rare (typical cycle: 0-5
@@ -425,8 +426,12 @@ _should_defer_auto_unblock() {
 	recent_bodies=$(set -o pipefail; gh api \
 		"repos/${repo_slug}/issues/${issue_num}/comments?per_page=100" --paginate --slurp 2>/dev/null |
 		jq -r '
+			def trusted_association:
+				. == "OWNER" or . == "MEMBER" or . == "COLLABORATOR";
 			(if (type == "array" and ((.[0]? | type) == "array")) then add else . end)
-			| .[-10:] | map(.body // "") | join("\n---\n")
+			| .[-10:]
+			| map(select((.author_association // "") | trusted_association) | (.body // ""))
+			| join("\n---\n")
 		') || recent_bodies=""
 
 	if [[ -n "$recent_bodies" ]]; then
