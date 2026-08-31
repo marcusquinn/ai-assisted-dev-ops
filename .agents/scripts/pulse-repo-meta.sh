@@ -32,6 +32,10 @@ _PULSE_REPO_META_LOADED=1
 _PULSE_REPO_ROLE_MAINTAINER="maintainer"
 _PULSE_REPO_ROLE_CONTRIBUTOR="contributor"
 
+# shellcheck source=./infrastructure-advisory-lib.sh
+# shellcheck disable=SC1091  # sibling library resolved by the orchestrator
+source "${SCRIPT_DIR}/infrastructure-advisory-lib.sh"
+
 #######################################
 # Resolve managed repo path from slug
 # Arguments:
@@ -211,7 +215,8 @@ repo_allows_pulse_write_actions() {
 # The jq filter excludes only deterministic blockers:
 #   - status:blocked (explicit hold)
 #   - needs-* (waiting for maintainer action)
-#   - supervisor/persistent/routine-tracking/infrastructure (non-work telemetry/advisories)
+#   - supervisor/persistent/routine-tracking (non-work telemetry)
+#   - infrastructure + source:ci-failure-miner (operational advisories)
 #   - parent-task (decomposition tracker, never directly dispatchable; t2924)
 #   - no-auto-dispatch (explicit dispatch opt-out; t2924)
 #   - status:in-progress, status:in-review, status:claimed without auto-dispatch
@@ -345,7 +350,13 @@ list_dispatchable_issue_candidates_json() {
 
 _filter_dispatchable_issue_candidates_json() {
 	local issue_json="$1"
-	printf '%s' "$issue_json" | jq -c --arg auto_dispatch_label 'auto-dispatch' '
+	local infrastructure_advisory_jq="" jq_program=""
+	infrastructure_advisory_jq=$(infrastructure_advisory_jq_definition) || {
+		printf '[]\n'
+		return 0
+	}
+	# shellcheck disable=SC2016  # jq variables are literal program syntax
+	jq_program="${infrastructure_advisory_jq}"$'\n''
 		[
 			.[] |
 			(.labels | map(.name? // .)) as $labels |
@@ -360,11 +371,10 @@ _filter_dispatchable_issue_candidates_json() {
 			select(($labels | index("supervisor")) == null) |
 			select(($labels | index("persistent")) == null) |
 			select(($labels | index("routine-tracking")) == null) |
-			# GH#24152: infrastructure outage advisories are operational alerts, not
-			# implementation tasks. They may carry status:available after generic label
-			# normalization, but dispatching /full-loop workers would chase external
-			# billing/runner incidents with code changes.
-			select(($labels | index("infrastructure")) == null) |
+			# GH#24152/GH#30928: only CI failure-miner infrastructure advisories are
+			# operational alerts. A generic infrastructure label may describe valid
+			# implementation work and must remain dispatchable.
+			select(($labels | aidevops_infrastructure_advisory) | not) |
 			# t2924: filter non-dispatchable management labels at candidate-build
 			# time, not dispatch time. Reduces wasted GraphQL+CPU on every pulse cycle
 			# re-evaluating issues the dispatcher would always block.
@@ -388,7 +398,9 @@ _filter_dispatchable_issue_candidates_json() {
 				assignees: $assignees
 			}
 		]
-	' 2>/dev/null || printf '[]\n'
+	'
+	printf '%s' "$issue_json" | jq -c --arg auto_dispatch_label 'auto-dispatch' \
+		"$jq_program" 2>/dev/null || printf '[]\n'
 	return 0
 }
 

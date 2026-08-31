@@ -6,7 +6,7 @@
 # Verifies that enumerate_blockers() in dispatch-dedup-helper.sh:
 #   - Reports ALL structural label blockers, not just the first
 #   - Emits newline-separated tokens for each matched signal
-#   - Blocks infrastructure labels even when they appear at dispatch time
+#   - Blocks only CI failure-miner infrastructure advisories at dispatch time
 #   - Returns exit 0 when at least one blocker is found, exit 1 when none
 #   - Is backward-compatible with the is-assigned API (that contract unchanged)
 #
@@ -249,7 +249,7 @@ test_hold_for_review_only() {
 }
 
 # -------------------------------------------------------------------
-# Test: only infrastructure → exit 0, INFRASTRUCTURE_BLOCKED emitted
+# Test: generic infrastructure work remains safe to dispatch
 # -------------------------------------------------------------------
 test_infrastructure_only() {
 	create_gh_stub "infrastructure,tier:standard"
@@ -257,15 +257,37 @@ test_infrastructure_only() {
 	local output exit_code=0
 	output=$("$HELPER_SCRIPT" enumerate-blockers 100 marcusquinn/aidevops 2>/dev/null) || exit_code=$?
 
-	if [[ "$exit_code" -ne 0 ]]; then
-		print_result "infrastructure only → exit 0 (blocked)" 1 "Expected exit 0 but got exit ${exit_code}"
+	if [[ "$exit_code" -ne 1 ]]; then
+		print_result "infrastructure only → exit 1 (safe)" 1 "Expected exit 1 but got exit ${exit_code}"
 		return 0
 	fi
 
-	if printf '%s\n' "$output" | grep -q 'INFRASTRUCTURE_BLOCKED'; then
-		print_result "infrastructure only → emits INFRASTRUCTURE_BLOCKED" 0
+	if [[ -z "$output" ]]; then
+		print_result "infrastructure only → no structural blocker" 0
 	else
-		print_result "infrastructure only → emits INFRASTRUCTURE_BLOCKED" 1 "Signal not in output: '${output}'"
+		print_result "infrastructure only → no structural blocker" 1 "Unexpected output: '${output}'"
+	fi
+	return 0
+}
+
+# -------------------------------------------------------------------
+# Test: CI failure-miner infrastructure advisory remains blocked
+# -------------------------------------------------------------------
+test_infrastructure_advisory() {
+	create_gh_stub "infrastructure,source:ci-failure-miner,tier:standard"
+
+	local output exit_code=0
+	output=$("$HELPER_SCRIPT" enumerate-blockers 100 marcusquinn/aidevops 2>/dev/null) || exit_code=$?
+
+	if [[ "$exit_code" -ne 0 ]]; then
+		print_result "infrastructure advisory → exit 0 (blocked)" 1 "Expected exit 0 but got exit ${exit_code}"
+		return 0
+	fi
+
+	if [[ "$output" == *'INFRASTRUCTURE_BLOCKED'* && "$output" == *'source=source:ci-failure-miner'* ]]; then
+		print_result "infrastructure advisory → stable blocker reason" 0
+	else
+		print_result "infrastructure advisory → stable blocker reason" 1 "Signal not in output: '${output}'"
 	fi
 	return 0
 }
@@ -275,7 +297,7 @@ test_infrastructure_only() {
 # This is the core multi-blocker regression guard (t2894).
 # -------------------------------------------------------------------
 test_multi_blocker_both_signals_emitted() {
-	create_gh_stub "parent-task,publication:pending,no-auto-dispatch,infrastructure,hold-for-review,tier:standard"
+	create_gh_stub "parent-task,publication:pending,no-auto-dispatch,infrastructure,source:ci-failure-miner,hold-for-review,tier:standard"
 
 	local output exit_code=0
 	output=$("$HELPER_SCRIPT" enumerate-blockers 100 marcusquinn/aidevops 2>/dev/null) || exit_code=$?
@@ -410,6 +432,7 @@ main() {
 	test_no_auto_dispatch_only
 	test_hold_for_review_only
 	test_infrastructure_only
+	test_infrastructure_advisory
 	test_multi_blocker_both_signals_emitted
 	test_api_failure_emits_guard_uncertain
 	test_meta_label_caught

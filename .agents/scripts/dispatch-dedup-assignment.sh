@@ -38,6 +38,10 @@ fi
 # shellcheck disable=SC1091  # sibling library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/shared-constants.sh"
 
+# shellcheck source=./infrastructure-advisory-lib.sh
+# shellcheck disable=SC1091  # sibling library resolved at runtime via $SCRIPT_DIR
+source "${SCRIPT_DIR}/infrastructure-advisory-lib.sh"
+
 # --- Functions ---
 #######################################
 # Get the repo owner from the slug.
@@ -368,27 +372,44 @@ _is_assigned_check_maintainer_permissions() {
 }
 
 #######################################
-# is_assigned helper: check the infrastructure unconditional block.
+# is_assigned helper: check the infrastructure advisory block.
 #
-# Infrastructure issues often describe billing, runner, hosting, or platform
-# advisories that must remain visible for human operations rather than consume
-# worker dispatch capacity. Candidate enumeration filters this label, but the
-# dispatch path also checks it to close the race where a label is added after
-# candidate build and before worker launch.
+# CI failure-miner infrastructure advisories must remain visible for human
+# operations rather than consume worker dispatch capacity. The generic
+# infrastructure label alone describes valid code work in some repositories.
+# Candidate enumeration and this race-window guard source one jq predicate.
 #
 # Args:
 #   $1 = issue metadata JSON (from `gh issue view --json ...,labels`)
 #   $2 = (optional) issue number — included in GUARD_UNCERTAIN output
 #   $3 = (optional) repo slug — included in GUARD_UNCERTAIN output
-# Returns: exit 0 if infrastructure label found or jq fails (prints signal),
-#          exit 1 if label absent and jq succeeds
+# Returns: exit 0 if the advisory label pair is found or jq fails (prints signal),
+#          exit 1 if the advisory label pair is absent and jq succeeds
 #######################################
 _is_assigned_check_infrastructure() {
 	local meta_json="$1"
 	local issue_number="${2:-unknown}"
 	local repo_slug="${3:-unknown}"
-	_is_assigned_check_label_block "$meta_json" "$issue_number" "$repo_slug" \
-		"infrastructure" "INFRASTRUCTURE_BLOCKED" "infrastructure-check"
+	local infrastructure_advisory_jq="" advisory_hit="" jq_rc=0
+
+	infrastructure_advisory_jq=$(infrastructure_advisory_jq_definition) || jq_rc=$?
+	if [[ "$jq_rc" -eq 0 ]]; then
+		advisory_hit=$(printf '%s' "$meta_json" | jq -r "
+			${infrastructure_advisory_jq}
+			if ((.labels // []) | aidevops_infrastructure_advisory)
+			then \"source:ci-failure-miner\" else empty end
+		" 2>/dev/null) || jq_rc=$?
+	fi
+	if [[ "$jq_rc" -ne 0 ]]; then
+		printf 'GUARD_UNCERTAIN (reason=jq-failure call=infrastructure-advisory-check issue=%s repo=%s)\n' \
+			"$issue_number" "$repo_slug"
+		return 0
+	fi
+	if [[ -n "$advisory_hit" ]]; then
+		printf 'INFRASTRUCTURE_BLOCKED (label=infrastructure source=%s)\n' "$advisory_hit"
+		return 0
+	fi
+	return 1
 }
 
 #######################################
