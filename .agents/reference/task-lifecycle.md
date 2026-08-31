@@ -60,6 +60,33 @@ durable checkpoint, and create the next safer action before yielding. Never use
 recovery ladder, terminal exceptions, and completion review:
 `reference/safety-stop-recovery.md`.
 
+### Bounded Recovery Plans
+
+When recovery cannot finish in the current attempt, create a durable plan from
+`templates/recovery-plan.md`. A recovery plan is an execution contract, not an
+open-ended retry note:
+
+- Set an absolute UTC deadline. Default: **24 hours from plan creation**, or the
+  earlier deadline imposed by the originating incident, lease, or safety fuse.
+- Set a retry budget. Default: **3 attempts total**. Lower the budget when an
+  attempt is costly, destructive, rate-limited, or likely to repeat unchanged.
+- Append one observable checkpoint per attempt with timestamp, action, command
+  or product path, result, evidence location, remaining attempts, and exact next
+  action. Never overwrite earlier checkpoints.
+- Stop automatic retries when the deadline or attempt budget is exhausted.
+  Preserve the latest checkpoint and route the unresolved objective through the
+  safety-stop escalation path; expiry does not complete or cancel the task.
+- Classify every follower task as `worker-available` or `human-only`.
+  `worker-available` requires worker-ready scope, accessible inputs, automatable
+  verification, and no unresolved authority/secret/destructive decision.
+  `human-only` requires the concrete human action or authority blocker, owner,
+  and unblock evidence. Reclassify it to `worker-available` immediately after
+  that evidence exists rather than leaving a generic manual hold.
+
+The plan must retain the parent objective and dependencies. A follower task may
+advance one recovery action, but it must not silently replace, close, or satisfy
+the parent objective.
+
 ## Briefs, Tiers, and Dispatchability
 
 - **Task briefs:** Every task must have `todo/tasks/{task_id}-brief.md` (via `/define` or `/new-task`). A task without a brief is undevelopable because it loses the implementation context needed for autonomous execution. See `workflows/plans.md` and `scripts/commands/new-task.md`.
