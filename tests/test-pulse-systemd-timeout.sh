@@ -101,8 +101,8 @@ setup_supervisor_pulse "Linux"
 
 SERVICE_FILE="$HOME/.config/systemd/user/aidevops-supervisor-pulse.service"
 
-if ! grep -q '^TimeoutStartSec=1860$' "$SERVICE_FILE"; then
-	echo "expected TimeoutStartSec=1860 in ${SERVICE_FILE}" >&2
+if ! grep -q '^TimeoutStartSec=3660$' "$SERVICE_FILE"; then
+	echo "expected TimeoutStartSec=3660 in ${SERVICE_FILE}" >&2
 	exit 1
 fi
 
@@ -116,7 +116,19 @@ if ! grep -q '^Environment=AIDEVOPS_PULSE_ASYNC_POST_DISPATCH_HOUSEKEEPING="0"$'
 	exit 1
 fi
 
-printf 'PASS %s\n' "pulse systemd service timeout exceeds watchdog threshold"
+if [[ "$(_pulse_supervisor_runtime_budget_seconds 1800)" != "3600" ]]; then
+	echo "expected canonical Pulse runtime budget to include the 3600s underfilled recovery ceiling" >&2
+	exit 1
+fi
+
+PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT=4200
+if [[ "$(_pulse_supervisor_service_timeout_seconds 1800)" != "4260" ]]; then
+	echo "expected Pulse service timeout to track a longer internal ceiling plus margin" >&2
+	exit 1
+fi
+unset PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT
+
+printf 'PASS %s\n' "pulse systemd service timeout exceeds the longest internal runtime ceiling"
 
 # GH#18439 Bug 1 regression: _scheduler_systemd_env_lines() emits a trailing
 # newline, but $() strips it. The caller MUST re-add the separator or

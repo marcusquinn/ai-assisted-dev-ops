@@ -547,6 +547,42 @@ _seconds_to_cron_schedule() {
 	return 0
 }
 
+# Return the longest internal supervisor Pulse watchdog/stage ceiling. Keep this
+# list aligned with pulse-wrapper-config.sh defaults so the outer service manager
+# cannot terminate a healthy cycle before its own watchdog does.
+_pulse_supervisor_runtime_budget_seconds() {
+	local scheduler_stale_threshold="${1:-${PULSE_STALE_THRESHOLD_SECONDS:-1800}}"
+	local longest_budget=0 candidate=""
+	while IFS= read -r candidate; do
+		[[ "$candidate" =~ ^[1-9][0-9]*$ ]] || continue
+		if [[ "$candidate" -gt "$longest_budget" ]]; then
+			longest_budget="$candidate"
+		fi
+	done <<EOF
+${scheduler_stale_threshold}
+${PULSE_IDLE_TIMEOUT:-1800}
+${PULSE_PROGRESS_TIMEOUT:-1800}
+${PULSE_COLD_START_TIMEOUT:-1800}
+${PULSE_COLD_START_TIMEOUT_UNDERFILLED:-1200}
+${PULSE_UNDERFILLED_STALE_RECOVERY_TIMEOUT:-3600}
+${PRE_RUN_STAGE_TIMEOUT:-600}
+EOF
+
+	[[ "$longest_budget" -gt 0 ]] || longest_budget=3600
+	printf '%s\n' "$longest_budget"
+	return 0
+}
+
+# Add shutdown/reaping headroom beyond the longest internal runtime ceiling.
+_pulse_supervisor_service_timeout_seconds() {
+	local scheduler_stale_threshold="${1:-${PULSE_STALE_THRESHOLD_SECONDS:-1800}}"
+	local runtime_budget="" margin="${PULSE_SYSTEMD_TIMEOUT_MARGIN_SECONDS:-60}"
+	runtime_budget=$(_pulse_supervisor_runtime_budget_seconds "$scheduler_stale_threshold") || return 1
+	[[ "$margin" =~ ^[1-9][0-9]*$ ]] || margin=60
+	printf '%s\n' "$((runtime_budget + margin))"
+	return 0
+}
+
 _install_supervisor_pulse() {
 	local _os="$1"
 	local pulse_label="$2"
@@ -574,7 +610,8 @@ _install_supervisor_pulse() {
 		_pulse_interval_label="${_pulse_interval_sec}s"
 	fi
 
-	local _pulse_timeout_sec=$((PULSE_STALE_THRESHOLD_SECONDS + 60))
+	local _pulse_timeout_sec=""
+	_pulse_timeout_sec=$(_pulse_supervisor_service_timeout_seconds "$PULSE_STALE_THRESHOLD_SECONDS") || return 1
 	local _pulse_env=""
 	# GH#18439 Bug 2: thread resolved runtime binary path through to the
 	# Linux env builder so OPENCODE_BIN is embedded in the systemd service
