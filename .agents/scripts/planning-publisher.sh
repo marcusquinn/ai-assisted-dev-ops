@@ -622,16 +622,29 @@ _planning_publish_push() {
 	local expected_sha="$4"
 	local candidate_sha="$5"
 	local branch_ref="${PLANNING_BRANCH_REF_PREFIX}${branch_name}"
+	local push_output_file=""
+	local push_output=""
+	local push_rc=0
+	push_output_file=$(mktemp "${TMPDIR:-/tmp}/planning-push.XXXXXX") || return 1
 	if [[ -n "${AIDEVOPS_PLANNING_FENCE_REF:-}" && -n "${AIDEVOPS_PLANNING_FENCE_SHA:-}" ]]; then
 		_planning_git -C "$repo_path" push -q --atomic \
 			--force-with-lease="${branch_ref}:${expected_sha}" \
 			--force-with-lease="${AIDEVOPS_PLANNING_FENCE_REF}:${AIDEVOPS_PLANNING_FENCE_SHA}" \
 			"$remote_name" "${candidate_sha}:${branch_ref}" \
-			"${AIDEVOPS_PLANNING_FENCE_SHA}:${AIDEVOPS_PLANNING_FENCE_REF}"
-		return $?
+			"${AIDEVOPS_PLANNING_FENCE_SHA}:${AIDEVOPS_PLANNING_FENCE_REF}" 2>"$push_output_file" || push_rc=$?
+	else
+		_planning_git -C "$repo_path" push -q --force-with-lease="${branch_ref}:${expected_sha}" \
+			"$remote_name" "${candidate_sha}:${branch_ref}" 2>"$push_output_file" || push_rc=$?
 	fi
-	_planning_git -C "$repo_path" push -q --force-with-lease="${branch_ref}:${expected_sha}" "$remote_name" "${candidate_sha}:${branch_ref}"
-	return $?
+	push_output=$(<"$push_output_file")
+	rm -f "$push_output_file"
+	if [[ "$push_rc" -ne 0 && "$push_output" == *"GH006: Protected branch update failed"* ]]; then
+		PLANNING_PUBLISH_RESULT="protected_branch_publication_deferred"
+		_planning_publish_log warning "Protected default-branch publication deferred; no retry will be attempted"
+		return 4
+	fi
+	[[ -z "$push_output" ]] || printf '%s\n' "$push_output" >&2
+	return "$push_rc"
 }
 
 _planning_publish_reset_result() {
@@ -824,8 +837,7 @@ _planning_publish_finish_noop_if_current() {
 }
 
 planning_publish() {
-	local repo_path="$1"
-	local commit_msg="$2"
+	local repo_path="$1" commit_msg="$2"
 	local remote_name="${3:-origin}"
 	local branch_name="${4:-}"
 	local paths="${5:-}"
@@ -919,6 +931,7 @@ planning_publish() {
 			rm -rf "$temp_dir"
 			return 0
 		fi
+		[[ "$push_rc" -ne 4 ]] || { rm -rf "$temp_dir"; return 4; }
 	done
 	_planning_publish_log_retryable_conflict "$publication_id"
 	rm -rf "$temp_dir"

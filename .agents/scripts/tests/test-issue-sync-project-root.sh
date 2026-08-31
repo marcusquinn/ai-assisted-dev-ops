@@ -257,6 +257,47 @@ if only_todo_sync_workspace >/dev/null 2>&1; then
 	fail "retryable publication failure left an automation workspace behind"
 fi
 
+# A protected default branch is a deterministic publication mode mismatch, not
+# a snapshot conflict. Its GH006 rejection must be classified after one push
+# and must not consume the bounded retry slot.
+repo_protected="${TMP}/repo-protected"
+remote_protected="${TMP}/remote-protected.git"
+setup_sync_repo "$repo_protected" "$remote_protected"
+protected_git="${TMP}/protected-push-git.sh"
+cat >"$protected_git" <<'FIXTURE'
+#!/usr/bin/env bash
+if [[ "${3:-}" == "push" ]]; then
+	printf '%s\n' 'remote: error: GH006: Protected branch update failed for refs/heads/main.' >&2
+	printf '%s\n' 'remote: - Changes must be made through a pull request.' >&2
+	exit 1
+fi
+exec /usr/bin/git "$@"
+FIXTURE
+chmod +x "$protected_git"
+protected_refresh_repo_definition=$(declare -f _pulse_refresh_repo)
+_pulse_refresh_repo() {
+	local repo_path="$1"
+	: "$repo_path"
+	return 0
+}
+protected_rc=0
+AIDEVOPS_PLANNING_GIT_BIN="$protected_git" \
+	_pulse_sync_todo_repo_bounded owner/repo-protected "$repo_protected" 30 1 || protected_rc=$?
+eval "$protected_refresh_repo_definition"
+[[ "$protected_rc" -eq 4 ]] || fail "protected-branch publication was not classified as a bounded deferral"
+grep -q 'status=protected_branch_publication_deferred repo=owner/repo-protected' "$WRAPPER_LOGFILE" || \
+	fail "protected-branch deferral was not logged"
+[[ $(grep -c 'status=protected_branch_publication_deferred repo=owner/repo-protected' "$WRAPPER_LOGFILE") -eq 1 ]] || \
+	fail "protected-branch publication was deferred more than once"
+if grep -q 'status=retrying repo=owner/repo-protected' "$WRAPPER_LOGFILE"; then
+	fail "protected-branch publication consumed the snapshot retry slot"
+fi
+git --git-dir="$remote_protected" show main:TODO.md | grep -q '^synced:owner/repo-protected$' && \
+	fail "protected-branch fixture unexpectedly published directly"
+if only_todo_sync_workspace >/dev/null 2>&1; then
+	fail "protected-branch deferral left an automation workspace behind"
+fi
+
 # A remote default-branch advance after the isolated clone is created must be
 # retried from a newly cloned exact snapshot instead of failing the batch.
 repo_snapshot_retry="${TMP}/repo-snapshot-retry"

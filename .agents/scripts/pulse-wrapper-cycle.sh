@@ -672,6 +672,8 @@ sync_todo_refs_for_repo() (
 		"${PLANNING_PUBLISH_RESULT:-noop}" "$repo_slug" "${PLANNING_PUBLISHED_COMMIT:0:12}" >>"$WRAPPER_LOGFILE" ;;
 	2) printf '[pulse-wrapper] TODO ref sync status=retryable_conflict repo=%s base=%s\n' \
 		"$repo_slug" "${base_sha:0:12}" >>"$WRAPPER_LOGFILE" ;;
+	4) printf '[pulse-wrapper] TODO ref sync status=protected_branch_publication_deferred repo=%s\n' \
+		"$repo_slug" >>"$WRAPPER_LOGFILE" ;;
 	*) printf '[pulse-wrapper] TODO ref sync status=retryable_failure stage=publication repo=%s rc=%s\n' \
 		"$repo_slug" "$publication_rc" >>"$WRAPPER_LOGFILE" ;;
 	esac
