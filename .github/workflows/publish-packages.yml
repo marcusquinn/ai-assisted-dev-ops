@@ -127,26 +127,6 @@ jobs:
           fi
           printf '%s\n' "$BODY" > "$RUNNER_TEMP/release-notes.md"
 
-      - name: Create or reconcile GitHub release
-        id: github-release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASE_RC=0
-          bash .agents/scripts/github-release-helper.sh create "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --tag "$RELEASE_TAG" \
-            --title "$RELEASE_TAG" \
-            --notes-file "$RUNNER_TEMP/release-notes.md" \
-            --reconcile-existing || RELEASE_RC=$?
-          if [[ "$RELEASE_RC" -eq 75 ]]; then
-            echo "deferred=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::GitHub release creation is deferred until the installation API rate limit resets; re-run this workflow with the same verified tag and correlation"
-            exit 0
-          fi
-          [[ "$RELEASE_RC" -eq 0 ]] || exit "$RELEASE_RC"
-          echo "deferred=false" >> "$GITHUB_OUTPUT"
-
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -174,24 +154,44 @@ jobs:
           }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build expected npm package identity
+      - name: Build and verify npm package
         id: npm-package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          PACKAGE_JSON=$(npm pack --dry-run --json)
-          EXPECTED_VERSION=$(jq -er 'if type == "array" and length == 1 then .[0].version else empty end' \
-            <<<"$PACKAGE_JSON")
-          EXPECTED_INTEGRITY=$(jq -er 'if type == "array" and length == 1 then .[0].integrity else empty end' \
-            <<<"$PACKAGE_JSON")
-          EXPECTED_SHASUM=$(jq -er 'if type == "array" and length == 1 then .[0].shasum else empty end' \
-            <<<"$PACKAGE_JSON")
-          [[ "$EXPECTED_VERSION" == "${{ steps.version.outputs.version }}" \
-            && "$EXPECTED_INTEGRITY" =~ ^sha512-[A-Za-z0-9+/]+={0,2}$ \
-            && "$EXPECTED_SHASUM" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::Unable to derive the exact npm package identity"
-            exit 1
-          }
+          PACKAGE_MANIFEST="$RUNNER_TEMP/npm-package-manifest.json"
+          PACKAGE_ARCHIVE="$RUNNER_TEMP/aidevops-${RELEASE_VERSION}.tgz"
+          bash .agents/scripts/release-candidate-helper.sh verify \
+            --repo "$GITHUB_WORKSPACE" \
+            --expected-commit "$(git rev-parse HEAD)" \
+            --expected-version "$RELEASE_VERSION" \
+            --manifest "$PACKAGE_MANIFEST" \
+            --archive "$PACKAGE_ARCHIVE"
+          EXPECTED_INTEGRITY=$(jq -er '.integrity' "$PACKAGE_MANIFEST")
+          EXPECTED_SHASUM=$(jq -er '.shasum' "$PACKAGE_MANIFEST")
           echo "integrity=$EXPECTED_INTEGRITY" >> "$GITHUB_OUTPUT"
           echo "shasum=$EXPECTED_SHASUM" >> "$GITHUB_OUTPUT"
+          echo "archive=$PACKAGE_ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reconcile GitHub release
+        id: github-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_RC=0
+          bash .agents/scripts/github-release-helper.sh create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --reconcile-existing || RELEASE_RC=$?
+          if [[ "$RELEASE_RC" -eq 75 ]]; then
+            echo "deferred=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::GitHub release creation is deferred until the installation API rate limit resets; re-run this workflow with the same verified tag and correlation"
+            exit 0
+          fi
+          [[ "$RELEASE_RC" -eq 0 ]] || exit "$RELEASE_RC"
+          echo "deferred=false" >> "$GITHUB_OUTPUT"
 
       - name: Check npm publication state
         id: npm-state
@@ -223,7 +223,9 @@ jobs:
       # No token needed: npm verifies this workflow and environment through OIDC.
       - name: Publish to npm
         if: steps.npm-state.outputs.published != 'true'
-        run: npm publish --provenance --access public
+        env:
+          NPM_PACKAGE_ARCHIVE: ${{ steps.npm-package.outputs.archive }}
+        run: npm publish "$NPM_PACKAGE_ARCHIVE" --ignore-scripts --provenance --access public
 
       - name: Verify npm publication
         env:

@@ -1,0 +1,85 @@
+name: Verify Release Candidate
+run-name: Verify candidate ${{ inputs.candidate_commit }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_commit:
+        description: Exact reviewed commit to package
+        required: true
+        type: string
+      expected_version:
+        description: Exact VERSION and package.json version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build and verify npm candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout reviewed verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          path: verifier
+          persist-credentials: false
+
+      - name: Require reviewed workflow and exact candidate commit
+        env:
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || {
+            echo "::error::Release-candidate verification must run from reviewed main"
+            exit 1
+          }
+          [[ "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Candidate commit must be one full lowercase SHA"
+            exit 1
+          }
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.candidate_commit }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Build and verify candidate package
+        env:
+          CANDIDATE_COMMIT: ${{ inputs.candidate_commit }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          ACTUAL_COMMIT=$(git -C candidate rev-parse HEAD)
+          [[ "$ACTUAL_COMMIT" == "$CANDIDATE_COMMIT" ]] || {
+            echo "::error::Candidate checkout does not match the requested commit"
+            exit 1
+          }
+          bash verifier/.agents/scripts/release-candidate-helper.sh verify \
+            --repo "$GITHUB_WORKSPACE/candidate" \
+            --expected-commit "$CANDIDATE_COMMIT" \
+            --expected-version "$EXPECTED_VERSION" \
+            --manifest "$RUNNER_TEMP/release-candidate-manifest.json" \
+            --archive "$RUNNER_TEMP/aidevops-${EXPECTED_VERSION}.tgz"
+
+      - name: Upload verified candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate-${{ inputs.candidate_commit }}
+          path: |
+            ${{ runner.temp }}/release-candidate-manifest.json
+            ${{ runner.temp }}/aidevops-${{ inputs.expected_version }}.tgz
+          if-no-files-found: error
+          retention-days: 7

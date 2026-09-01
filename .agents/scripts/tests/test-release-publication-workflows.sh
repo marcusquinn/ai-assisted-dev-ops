@@ -6,6 +6,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" || exit 1
 PACKAGE_WORKFLOW="${REPO_ROOT}/.github/workflows/publish-packages.yml"
+CANDIDATE_WORKFLOW="${REPO_ROOT}/.github/workflows/release-candidate.yml"
 POSTFLIGHT_WORKFLOW="${REPO_ROOT}/.github/workflows/postflight.yml"
 SETTINGS_HELPER="${REPO_ROOT}/.agents/scripts/release-publication-settings-helper.sh"
 readonly SNAPSHOT_MODE="snapshot-empty"
@@ -119,6 +120,11 @@ assert_contains "npm publication skips an existing exact version" \
 	"if: steps.npm-state.outputs.published != 'true'" "$PACKAGE_WORKFLOW"
 assert_contains "npm state binds the locally packed artifact integrity" \
 	"Existing npm package does not match the verified tag artifact" "$PACKAGE_WORKFLOW"
+assert_contains "publication reuses the non-publishing package verifier" \
+	"release-candidate-helper.sh verify" "$PACKAGE_WORKFLOW"
+# shellcheck disable=SC2016 # Match the literal workflow shell variable.
+assert_contains "publication publishes the exact verified archive" \
+	'npm publish "$NPM_PACKAGE_ARCHIVE" --ignore-scripts' "$PACKAGE_WORKFLOW"
 assert_contains "npm provenance signatures are cryptographically audited" \
 	"audit signatures --json --include-attestations" "$PACKAGE_WORKFLOW"
 assert_contains "npm provenance binds the canonical workflow path" \
@@ -175,10 +181,27 @@ assert_order "postflight verifies reviewed main before exposing the PAT fallback
 assert_order "release provenance precedes release creation" \
 	'bash "$VERIFIER" verify' "github-release-helper.sh create" "$PACKAGE_WORKFLOW"
 assert_order "GitHub release precedes npm publication" \
-	"github-release-helper.sh create" "npm publish --provenance" "$PACKAGE_WORKFLOW"
+	"github-release-helper.sh create" "npm publish \"\$NPM_PACKAGE_ARCHIVE\"" "$PACKAGE_WORKFLOW"
 # shellcheck disable=SC2016 # Match the literal verifier command.
 assert_order "package provenance precedes npm publication" \
-	'bash "$VERIFIER" verify' "npm publish --provenance" "$PACKAGE_WORKFLOW"
+	'bash "$VERIFIER" verify' "npm publish \"\$NPM_PACKAGE_ARCHIVE\"" "$PACKAGE_WORKFLOW"
+assert_order "package build precedes the first release side effect" \
+	"release-candidate-helper.sh verify" "github-release-helper.sh create" "$PACKAGE_WORKFLOW"
+assert_contains "candidate workflow is manually dispatched" "workflow_dispatch:" "$CANDIDATE_WORKFLOW"
+assert_contains "candidate workflow has read-only repository permission" \
+	"contents: read" "$CANDIDATE_WORKFLOW"
+assert_contains "candidate workflow requires reviewed main" \
+	"[[ \"\$GITHUB_REF\" == \"refs/heads/main\" ]]" "$CANDIDATE_WORKFLOW"
+assert_contains "candidate workflow pins an exact commit" \
+	"Candidate commit must be one full lowercase SHA" "$CANDIDATE_WORKFLOW"
+assert_contains "candidate workflow uses the reviewed verifier checkout" \
+	"bash verifier/.agents/scripts/release-candidate-helper.sh verify" "$CANDIDATE_WORKFLOW"
+assert_contains "candidate workflow emits a short-lived artifact" \
+	"retention-days: 7" "$CANDIDATE_WORKFLOW"
+assert_absent "candidate workflow cannot publish npm packages" "npm publish" "$CANDIDATE_WORKFLOW"
+assert_absent "candidate workflow cannot create GitHub releases" "gh release" "$CANDIDATE_WORKFLOW"
+assert_absent "candidate workflow cannot create tags" "git tag" "$CANDIDATE_WORKFLOW"
+assert_absent "candidate workflow cannot push refs" "git push" "$CANDIDATE_WORKFLOW"
 
 package_environment_count=$(grep -cE \
 	'^[[:space:]]*environment:[[:space:]]*release[[:space:]]*$' "$PACKAGE_WORKFLOW" || true)
@@ -220,7 +243,7 @@ mkdir -p "$TEST_BIN"
 NOTES_SCRIPT="${TEST_ROOT}/extract-release-notes.sh"
 awk '
 	$0 == "      - name: Extract CHANGELOG section" { inside_step = 1; next }
-	inside_step && $0 == "      - name: Create or reconcile GitHub release" { exit }
+	inside_step && $0 == "      - name: Setup Node.js" { exit }
 	inside_step && $0 == "        run: |" { inside_script = 1; next }
 	inside_script { sub(/^          /, ""); print }
 ' "$PACKAGE_WORKFLOW" >"$NOTES_SCRIPT"

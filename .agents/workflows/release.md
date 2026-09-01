@@ -164,6 +164,32 @@ or `release:superseded`; other terminal receipts remain immutable.
 
 **Related**: `workflows/version-bump.md` · `workflows/changelog.md` · `workflows/postflight.md` · `reference/release-artifact-provenance.md` · `.agents/scripts/validate-version-consistency.sh`
 
+## Non-publishing release candidate
+
+Use the read-only candidate verifier when package contents need validation before
+release authorization. It builds the exact npm archive with lifecycle scripts
+disabled, verifies the archive against npm's file manifest, and emits commit,
+version, integrity, shasum, SHA-256, size, and sorted file evidence. It never
+creates commits, tags, releases, workflow dispatches, or uploads by itself.
+
+```bash
+.agents/scripts/release-candidate-helper.sh verify \
+  --repo "$PWD" \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --expected-version "$(<VERSION)" \
+  --manifest "${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}/release-candidate.json" \
+  --archive "${AIDEVOPS_TEMP_DIR:-$HOME/.aidevops/.agent-workspace/tmp}/aidevops-candidate.tgz"
+```
+
+For auditable remote verification, dispatch `.github/workflows/release-candidate.yml`
+from reviewed `main` with one full candidate commit SHA and the exact expected
+version. Its job has only `contents: read`, checks out the reviewed verifier
+separately from the candidate, and uploads the package plus manifest as a
+short-lived workflow artifact. The production publication workflow invokes the
+same verifier before its first release side effect and publishes that exact
+verified archive. Candidate verification is evidence only; it grants no release
+or publication authority.
+
 ## Manual Release (Non-aidevops Repos)
 
 Reuse terminal-success CI and lint evidence for the exact release SHA. Do not
