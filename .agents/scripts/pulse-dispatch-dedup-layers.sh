@@ -254,7 +254,9 @@ _dedup_layer5_dispatch_comment() {
 	local dedup_helper="${SCRIPT_DIR}/dispatch-dedup-helper.sh"
 	if [[ -x "$dedup_helper" ]] && [[ "$issue_number" =~ ^[0-9]+$ ]]; then
 		local dispatch_comment_output=""
-		if dispatch_comment_output=$("$dedup_helper" has-dispatch-comment "$issue_number" "$repo_slug" "$self_login" 2>>"$LOGFILE"); then
+		if dispatch_comment_output=$(ISSUE_META_JSON="${ISSUE_META_JSON:-}" \
+			DISPATCH_REPO_PATH="${DISPATCH_REPO_PATH:-}" \
+			"$dedup_helper" has-dispatch-comment "$issue_number" "$repo_slug" "$self_login" 2>>"$LOGFILE"); then
 			echo "[pulse-wrapper] Dedup: #${issue_number} in ${repo_slug} has active dispatch comment — ${dispatch_comment_output}" >>"$LOGFILE"
 			printf '%s\n' "$dispatch_comment_output"
 			return 0

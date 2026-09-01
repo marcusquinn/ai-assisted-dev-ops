@@ -2001,11 +2001,13 @@ _hrw_preserve_draft_checkpoint_handoff() {
 
 _hrw_preserve_blocked_outcome() {
 	local session_key="$1"
+	local work_dir="$2"
 
 	# A structured terminal blocker is meaningful model output, even when it
 	# cannot produce a commit or PR. Preserve that classification instead of
 	# routing it through zero-output/no_work accounting.
-	_hrw_release_dispatch_claim "$session_key" "${_run_failure_reason:-$_HRW_STATUS_BLOCKED}"
+	AIDEVOPS_TERMINAL_BLOCKER_REPO_PATH="$work_dir" \
+		_hrw_release_dispatch_claim "$session_key" "${_run_failure_reason:-$_HRW_STATUS_BLOCKED}"
 	_HRW_TERMINAL_OUTCOME="$_HRW_TELEMETRY_DEFERRED"
 	_HRW_FINAL_RUNTIME_EVENT="$_HRW_EVENT_DEFERRED"
 	_HRW_FINAL_RUNTIME_STATUS="$_HRW_STATUS_BLOCKED"
@@ -2020,7 +2022,7 @@ _hrw_finish_success_run() {
 	local finish_status=0
 	local permission_pending_file=""
 	if [[ "${_run_result_label:-}" == "$_HRW_STATUS_BLOCKED" ]]; then
-		_hrw_preserve_blocked_outcome "$session_key"
+		_hrw_preserve_blocked_outcome "$session_key" "$work_dir"
 		return 0
 	fi
 	if [[ "${_run_result_label:-}" == "post_pr_handoff" ]] &&

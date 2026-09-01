@@ -1676,7 +1676,7 @@ _dispatch_dedup_check_layers() {
 	_dss_t0=$(_ds_now_ns)
 	local _dedup_rc=0
 	local _dedup_signal=""
-	_dedup_signal=$(ISSUE_META_JSON="$issue_meta_json" \
+	_dedup_signal=$(ISSUE_META_JSON="$issue_meta_json" DISPATCH_REPO_PATH="$repo_path" \
 		check_dispatch_dedup "$issue_number" "$repo_slug" "$dispatch_title" "$issue_title" "$self_login") || _dedup_rc=$?
 	if [[ "$_dedup_rc" -eq 0 || "$_dedup_rc" -eq 3 ]]; then
 		local _dedup_block_signal="dedup_guard_blocked"

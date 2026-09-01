@@ -188,7 +188,7 @@ test_blocked_completion_records_blocked_label() {
 	printf '%s\n' '{"type":"text","sessionID":"ses_blocked","text":"BLOCKED: missing dependency credentials"}' >"$output_file"
 	local rc=0
 	_handle_run_result 0 "$output_file" "worker" "openai" "issue-456" "openai/gpt-5.5" || rc=$?
-	[[ "$rc" -eq 83 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" && "${_run_classification_pattern:-}" == "terminal_blocked" ]] && {
+	[[ "$rc" -eq 83 && "${_run_result_label:-}" == "blocked" && "${_run_failure_reason:-}" == "blocked" && "${_run_classification_source:-}" == "model_blocked_signal" && "${_run_classification_pattern:-}" == "terminal_blocked" && "${AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT:-}" =~ ^[a-f0-9]{24}$ && ! -f "$output_file" ]] && {
 		print_result "generic BLOCKED signal remains terminal without capability escalation" 0
 		return 0
 	}

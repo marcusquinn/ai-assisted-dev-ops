@@ -101,6 +101,10 @@ source "${SCRIPT_DIR}/dispatch-dedup-pr.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/dispatch-dedup-recovery-loop.sh"
 
+# Cross-runner hold for repeated unchanged terminal worker blockers.
+# shellcheck source=terminal-blocker-circuit.sh
+source "${SCRIPT_DIR}/terminal-blocker-circuit.sh"
+
 _DDH_ORPHAN_PR_HINT_NONE="none found"
 
 #######################################
@@ -985,6 +989,10 @@ has_dispatch_comment() {
 	if [[ -z "$comments_json" || "$comments_json" == "null" || "$comments_json" == "[]" ]]; then
 		return 1
 	fi
+	if terminal_blocker_circuit_active "$comments_json" "${ISSUE_META_JSON:-}" \
+		"$repo_slug" "$issue_number" "${DISPATCH_REPO_PATH:-}"; then
+		return 0
+	fi
 
 	# t3194: Opportunistic peer-quarantine event detection — extracted to
 	# _dd_opportunistic_peer_scan to keep this function below the
@@ -1191,6 +1199,10 @@ classify_dispatch_blocker_reason() {
 			;;
 		*runner-health*circuit* | *runner_health*circuit*)
 			printf 'runner_health_circuit_breaker\n'
+			return 0
+			;;
+		*terminal_blocker_circuit*)
+			printf 'terminal_blocker_circuit\n'
 			return 0
 			;;
 		*dispatch_block_reason*ever_nmr_without_approval* | *blocked*ever*nmr*lacks*approval* | *requires*cryptographic*approval*)

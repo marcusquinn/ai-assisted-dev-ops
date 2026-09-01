@@ -42,6 +42,8 @@ if [[ -r "${_HRFF_SCRIPT_DIR}/shared-repo-state-guard.sh" ]]; then
 	# shellcheck source=shared-repo-state-guard.sh
 	source "${_HRFF_SCRIPT_DIR}/shared-repo-state-guard.sh"
 fi
+# shellcheck source=terminal-blocker-circuit.sh
+source "${_HRFF_SCRIPT_DIR}/terminal-blocker-circuit.sh"
 # shellcheck source=fast-fail-release-policy.sh
 source "${_HRFF_SCRIPT_DIR}/fast-fail-release-policy.sh"
 unset _HRFF_SCRIPT_DIR
@@ -522,6 +524,69 @@ _hrff_post_claim_released_comment() {
 	return 1
 }
 
+_hrff_prepare_terminal_blocker_release() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local machine_readable_part="$3"
+	local repo_path="${AIDEVOPS_TERMINAL_BLOCKER_REPO_PATH:-}"
+	local blocker_fingerprint="${AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT:-}"
+	local issue_json="" comments_json="" task_revision="" mode=""
+	_HRFF_TERMINAL_BLOCKER_MODE="normal"
+	_HRFF_TERMINAL_BLOCKER_FRAGMENT=""
+	_HRFF_TERMINAL_BLOCKER_CIRCUIT_BODY=""
+	[[ -n "$repo_path" && "$blocker_fingerprint" =~ ^[a-f0-9]{24}$ ]] || return 0
+	issue_json=$(gh api "repos/${repo_slug}/issues/${issue_number}" \
+		--jq '{title: (.title // ""), body: (.body // "")}' 2>/dev/null) || return 0
+	comments_json=$(terminal_blocker_fetch_trusted_comments "$issue_number" "$repo_slug") || return 0
+	task_revision=$(terminal_blocker_task_revision \
+		"$issue_json" "$repo_slug" "$issue_number" "$repo_path") || return 0
+	mode=$(terminal_blocker_release_mode \
+		"$comments_json" "$task_revision" "$blocker_fingerprint") || return 0
+	case "$mode" in
+	first)
+		_HRFF_TERMINAL_BLOCKER_FRAGMENT=$(terminal_blocker_observation_fragment \
+			"$task_revision" "$blocker_fingerprint") || _HRFF_TERMINAL_BLOCKER_FRAGMENT=""
+		;;
+	circuit)
+		_HRFF_TERMINAL_BLOCKER_MODE="circuit"
+		_HRFF_TERMINAL_BLOCKER_CIRCUIT_BODY=$(terminal_blocker_circuit_comment \
+			"$machine_readable_part" "$task_revision" "$blocker_fingerprint") || {
+			_HRFF_TERMINAL_BLOCKER_MODE="normal"
+			_HRFF_TERMINAL_BLOCKER_CIRCUIT_BODY=""
+		}
+		;;
+	open)
+		_HRFF_TERMINAL_BLOCKER_MODE="open"
+		;;
+	esac
+	return 0
+}
+
+_hrff_handle_terminal_blocker_release() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local machine_readable_part="$3"
+	_hrff_prepare_terminal_blocker_release "$issue_number" "$repo_slug" "$machine_readable_part"
+	case "${_HRFF_TERMINAL_BLOCKER_MODE:-normal}" in
+	circuit)
+		if ! _hrff_post_claim_released_comment "$issue_number" "$repo_slug" \
+			"$_HRFF_TERMINAL_BLOCKER_CIRCUIT_BODY"; then
+			print_warning "Terminal blocker circuit for #${issue_number} remains unpersisted and retryable; retaining issue lifecycle state"
+			return 11
+		fi
+		print_info "Opened unchanged terminal-blocker circuit on #${issue_number}"
+		_hrff_release_rate_limit_circuit_cleanup "$issue_number" "$repo_slug"
+		return 10
+		;;
+	open)
+		print_info "Unchanged terminal-blocker circuit already active on #${issue_number}; suppressing duplicate release diagnostics"
+		_hrff_release_rate_limit_circuit_cleanup "$issue_number" "$repo_slug"
+		return 10
+		;;
+	esac
+	return 0
+}
+
 #######################################
 # Release a dispatch claim by posting a CLAIM_RELEASED comment.
 # The dedup guard recognises this and allows immediate re-dispatch
@@ -581,8 +646,16 @@ _release_dispatch_claim() {
 
 	runner_name=$(_hrff_resolve_release_runner_login)
 	machine_readable_part=$(_hrff_build_claim_released_line "$reason" "$runner_name" "$exit_code_arg" "$session_count_arg")
+	local terminal_blocker_fragment=""
+	if [[ "$reason" == "blocked" ]]; then
+		local terminal_blocker_rc=0
+		_hrff_handle_terminal_blocker_release "$issue_number" "$repo_slug" "$machine_readable_part" || terminal_blocker_rc=$?
+		[[ "$terminal_blocker_rc" -eq 10 ]] && return 0
+		[[ "$terminal_blocker_rc" -eq 11 ]] && return 1
+		terminal_blocker_fragment="${_HRFF_TERMINAL_BLOCKER_FRAGMENT:-}"
+	fi
 	comment_body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
-${machine_readable_part}
+${machine_readable_part}${terminal_blocker_fragment}
 <!-- ops:end -->"
 
 	if ! _hrff_post_claim_released_comment "$issue_number" "$repo_slug" "$comment_body"; then

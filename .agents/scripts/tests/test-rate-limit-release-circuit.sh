@@ -113,6 +113,14 @@ gh() {
 # shellcheck source=../headless-runtime-failure.sh
 source "${SCRIPT_DIR}/headless-runtime-failure.sh"
 
+# This focused test exercises release-circuit behavior, not repository
+# authority discovery. Keep the managed-repository precondition deterministic.
+aidevops_can_manage_repo_issue_state() {
+	local repo_slug="$1"
+	[[ -n "$repo_slug" ]]
+	return $?
+}
+
 export DISPATCH_REPO_SLUG="owner/repo"
 
 iso_offset() {

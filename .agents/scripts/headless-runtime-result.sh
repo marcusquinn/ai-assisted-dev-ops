@@ -153,6 +153,9 @@ _handle_run_result_success_output() {
 			_run_failure_reason="$_RUN_RESULT_BLOCKED"
 			_run_classification_source="$_RUN_RESULT_MODEL_BLOCKED_SIGNAL"
 			_run_classification_pattern="terminal_blocked"
+			if declare -F terminal_blocker_capture_output >/dev/null 2>&1; then
+				terminal_blocker_capture_output "$output_file" || true
+			fi
 			rm -f "$output_file"
 			print_warning "$selected_model worker reported a terminal BLOCKED state"
 			return 83
