@@ -517,6 +517,20 @@ test_repository_allows_fontsource_ubuntu() {
 	return 0
 }
 
+test_repository_allows_fontsource_courier_prime() {
+	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
+
+	unset AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF
+	if _trusted_dependabot_dependency_allowed "bun" "@fontsource/courier-prime"; then
+		export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+		print_result "repository allowlist permits @fontsource/courier-prime Bun updates" 0
+		return 0
+	fi
+	export AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF="$fixture_allowlist"
+	print_result "repository allowlist permits @fontsource/courier-prime Bun updates" 1
+	return 0
+}
+
 test_repository_allows_fontsource_ibm_plex_serif() {
 	local fixture_allowlist="$AIDEVOPS_TRUSTED_DEPENDABOT_UPDATES_CONF"
 
@@ -674,6 +688,7 @@ main() {
 	test_repository_allows_vite_react_plugin
 	test_repository_allows_elysia
 	test_repository_allows_fontsource_ubuntu
+	test_repository_allows_fontsource_courier_prime
 	test_repository_allows_fontsource_ibm_plex_serif
 	test_repository_allows_fontsource_inter
 	test_repository_allows_fontsource_source_serif_4
