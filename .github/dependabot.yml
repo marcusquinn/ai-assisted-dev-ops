@@ -11,6 +11,12 @@ updates:
       semver-major-days: 14
       semver-minor-days: 7
       semver-patch-days: 7
+    # file-type 22 requires Node 22, while this package supports Node 20.
+    # Revisit major updates when the project's supported Node baseline changes.
+    ignore:
+      - dependency-name: "file-type"
+        update-types:
+          - "version-update:semver-major"
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
