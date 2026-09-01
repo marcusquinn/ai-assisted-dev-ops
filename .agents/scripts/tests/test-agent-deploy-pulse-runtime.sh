@@ -264,6 +264,43 @@ runtime_freshness_output() {
 	return 0
 }
 
+test_protected_release_merge_freshness() {
+	local remote_repo="$TEST_ROOT/protected-release-origin.git"
+	local canonical_repo="$TEST_ROOT/protected-release-canonical"
+	local log_dir="$TEST_ROOT/protected-release-logs"
+	local manifest_file="$TEST_ROOT/protected-release-manifest"
+	local update_state_file="$TEST_ROOT/protected-release-update-state.json"
+	local base_sha="" release_sha="" release_tree="" merge_sha="" output=""
+
+	git init -q --bare -b main "$remote_repo"
+	git init -q -b main "$canonical_repo"
+	git -C "$canonical_repo" config user.name Test
+	git -C "$canonical_repo" config user.email test@example.invalid
+	printf 'base\n' >"$canonical_repo/runtime.txt"
+	git -C "$canonical_repo" add runtime.txt
+	git -C "$canonical_repo" commit -qm base
+	git -C "$canonical_repo" remote add origin "$remote_repo"
+	git -C "$canonical_repo" push -qu origin main
+	base_sha=$(git -C "$canonical_repo" rev-parse HEAD)
+	printf 'release\n' >>"$canonical_repo/runtime.txt"
+	git -C "$canonical_repo" commit -am release -q
+	release_sha=$(git -C "$canonical_repo" rev-parse HEAD)
+	release_tree=$(git -C "$canonical_repo" rev-parse 'HEAD^{tree}')
+	merge_sha=$(printf 'protected release merge\n' | git -C "$canonical_repo" commit-tree "$release_tree" -p "$base_sha" -p "$release_sha")
+	git -C "$canonical_repo" update-ref refs/heads/main "$merge_sha"
+	git -C "$canonical_repo" push -q origin main
+	mkdir -p "$log_dir"
+	printf 'schema=1\nstatus=validated\ngit_sha=%s\n' "$release_sha" >"$manifest_file"
+	printf '%s\n' '{"last_status":"up_to_date","last_timestamp":"2026-09-01T00:00:00Z"}' >"$update_state_file"
+
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "current" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"signed release parent with protected-merge tree reports current"
+	assert_eq "false" "$(printf '%s' "$output" | jq -r '.runtime_freshness.deployed_behind_upstream')" \
+		"tree-equivalent signed release is not reported behind upstream"
+	return 0
+}
+
 test_runtime_freshness_diagnostics() {
 	local remote_repo="$TEST_ROOT/runtime-origin.git"
 	local canonical_repo="$TEST_ROOT/runtime-canonical"
@@ -379,6 +416,7 @@ main() {
 	test_concurrent_transition_converges_on_active_bundle "$stale_root" "$active_root" "$active_link"
 	test_launchd_disabled_service_stays_stopped "$active_root" "$active_link"
 	test_launchd_enabled_service_owns_restart "$active_root" "$active_link"
+	test_protected_release_merge_freshness
 	test_runtime_freshness_diagnostics
 
 	printf 'Results: %s checks passed\n' "$TESTS_RUN"

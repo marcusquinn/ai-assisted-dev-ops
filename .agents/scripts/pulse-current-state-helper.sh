@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 UNKNOWN_STATUS="unknown"
+CURRENT_STATUS="current"
 
 _usage() {
 	cat <<'EOF'
@@ -56,6 +57,37 @@ _runtime_manifest_value() {
 	return 1
 }
 
+_runtime_commits_share_tree() {
+	local repo_path="$1"
+	local left_sha="$2"
+	local right_sha="$3"
+	local left_tree="" right_tree=""
+	left_tree=$(git -C "$repo_path" rev-parse "${left_sha}^{tree}" 2>/dev/null) || return 1
+	right_tree=$(git -C "$repo_path" rev-parse "${right_sha}^{tree}" 2>/dev/null) || return 1
+	[[ -n "$left_tree" && "$left_tree" == "$right_tree" ]]
+	return $?
+}
+
+_runtime_deployment_relation() {
+	local repo_path="$1"
+	local deployed_sha="$2"
+	local upstream_sha="$3"
+	if [[ -z "$deployed_sha" ]]; then
+		printf '%s' "$UNKNOWN_STATUS"
+	elif [[ "$deployed_sha" == "$upstream_sha" ]]; then
+		printf '%s' "$CURRENT_STATUS"
+	elif git -C "$repo_path" merge-base --is-ancestor "$deployed_sha" "$upstream_sha" 2>/dev/null; then
+		if _runtime_commits_share_tree "$repo_path" "$deployed_sha" "$upstream_sha"; then
+			printf '%s' "$CURRENT_STATUS"
+		else
+			printf '%s' "behind"
+		fi
+	else
+		printf '%s' "$UNKNOWN_STATUS"
+	fi
+	return 0
+}
+
 _runtime_freshness_json() {
 	local repo_path="$1"
 	local agents_path="${AIDEVOPS_RUNTIME_AGENTS_PATH:-${AIDEVOPS_AGENTS_DIR:-${HOME}/.aidevops/agents}}"
@@ -64,10 +96,10 @@ _runtime_freshness_json() {
 	local update_state_file="${AIDEVOPS_AUTO_UPDATE_STATE_FILE:-${HOME}/.aidevops/cache/auto-update-state.json}"
 	local upstream_ref="${AIDEVOPS_RUNTIME_UPSTREAM_REF:-}"
 	local canonical_sha="" upstream_sha="" deployed_sha="" manifest_sha="" stamp_sha=""
-	local auto_update_status="$UNKNOWN_STATUS" auto_update_at=""
+	local auto_update_status="$UNKNOWN_STATUS" auto_update_at="" deployment_relation=""
 	local status="$UNKNOWN_STATUS" action="Verify the canonical checkout and active runtime bundle"
 	local canonical_dirty=false canonical_on_main=false canonical_behind=false
-	local canonical_ahead=false canonical_diverged=false deployed_behind=false stale=false
+	local canonical_ahead=false canonical_diverged=false deployed_current=false deployed_behind=false stale=false
 
 	if [[ -z "$upstream_ref" ]]; then
 		upstream_ref=$(git -C "$repo_path" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -106,9 +138,9 @@ _runtime_freshness_json() {
 				canonical_diverged=true
 			fi
 		fi
-		if [[ -n "$deployed_sha" && "$deployed_sha" != "$upstream_sha" ]] && git -C "$repo_path" merge-base --is-ancestor "$deployed_sha" "$upstream_sha" 2>/dev/null; then
-			deployed_behind=true
-		fi
+		deployment_relation=$(_runtime_deployment_relation "$repo_path" "$deployed_sha" "$upstream_sha")
+		[[ "$deployment_relation" == "$CURRENT_STATUS" ]] && deployed_current=true
+		[[ "$deployment_relation" == "behind" ]] && deployed_behind=true
 	fi
 
 	if [[ "$canonical_dirty" == true ]]; then
@@ -126,17 +158,17 @@ _runtime_freshness_json() {
 	elif [[ "$canonical_diverged" == true ]]; then
 		status="canonical_diverged_upstream"
 		action="Preserve and reconcile the divergent canonical history before updating the runtime"
+	elif [[ "$deployed_current" == true && "$canonical_sha" == "$upstream_sha" ]]; then
+		status="$CURRENT_STATUS"
+		action="No action required"
 	elif [[ -n "$deployed_sha" && -n "$canonical_sha" && "$deployed_sha" != "$canonical_sha" ]]; then
 		status="deployed_behind_canonical"
 		action="Run setup.sh --stage ai-session from the canonical checkout"
-	elif [[ -n "$deployed_sha" && -n "$upstream_sha" && "$deployed_sha" == "$upstream_sha" && "$canonical_sha" == "$upstream_sha" ]]; then
-		status="current"
-		action="No action required"
 	elif [[ "$deployed_behind" == true ]]; then
 		status="deployed_behind_upstream"
 		action="Run aidevops update in an attached terminal"
 	fi
-	[[ "$status" == "current" || "$status" == "$UNKNOWN_STATUS" ]] || stale=true
+	[[ "$status" == "$CURRENT_STATUS" || "$status" == "$UNKNOWN_STATUS" ]] || stale=true
 
 	jq -n \
 		--arg status "$status" --arg action "$action" --arg upstream_ref "$upstream_ref" \
