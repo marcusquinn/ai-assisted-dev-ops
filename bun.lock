@@ -43,7 +43,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@aidevops/gui-shared": "workspace:*",
-        "@fontsource/courier-prime": "5.2.8",
+        "@fontsource/courier-prime": "5.3.0",
         "@fontsource/dm-mono": "5.3.0",
         "@fontsource/dm-sans": "5.3.0",
         "@fontsource/fredoka": "5.2.10",
@@ -92,7 +92,7 @@
 
     "@borewit/text-codec": ["@borewit/text-codec@0.1.1", "", {}, "sha512-5L/uBxmjaCIX5h8Z+uu+kA9BQLkc/Wl06UGR5ajNRxu+/XjonB5i8JpgFMrPj3LXTCPA0pv8yxUvbUi+QthGGA=="],
 
-    "@fontsource/courier-prime": ["@fontsource/courier-prime@5.2.8", "", {}, "sha512-M3xOCcXnGuFi9TcGCrz4hm5yeWg4Sn35MALRLPnqNoHhawTFvhyi2KSI2+5RyFtDNJrb58bPh8LLipgiI9KA0w=="],
+    "@fontsource/courier-prime": ["@fontsource/courier-prime@5.3.0", "", {}, "sha512-KIi1k4VG1Wv+/CGpb1AUpLkUuOAQA6zmvthqxOZGN0AV8BEgQgbK7qAtquv14zsBJAY1bb5BHIEbWVFLgENh0w=="],
 
     "@fontsource/dm-mono": ["@fontsource/dm-mono@5.3.0", "", {}, "sha512-OINjI8C1S/wpchhQxl7njZdMn4+hnDCpQ4YtvvOpKNARo+0J8O1x1IcrChxNjHOhfVv1by8C/FQoy3hXK+C1Ug=="],
 
