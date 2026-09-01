@@ -18,6 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 SOURCE_HELPER="${SCRIPT_DIR}/../profile-readme-helper.sh"
 SOURCE_DATA_LIB="${SCRIPT_DIR}/../profile-readme-data-lib.sh"
 SOURCE_RENDER_LIB="${SCRIPT_DIR}/../profile-readme-render-lib.sh"
+# shellcheck source=./lib/test-helpers.sh
+source "${SCRIPT_DIR}/lib/test-helpers.sh"
 
 readonly TEST_RED='\033[0;31m'
 readonly TEST_GREEN='\033[0;32m'
@@ -79,8 +81,8 @@ install_helper_with_libs() {
 	chmod +x "${helper_path}"
 	cp "${SOURCE_DATA_LIB}" "${helper_dir}/profile-readme-data-lib.sh"
 	cp "${SOURCE_RENDER_LIB}" "${helper_dir}/profile-readme-render-lib.sh"
+	_test_copy_shared_deps "${SOURCE_HELPER%/*}" "${helper_dir}" || return 1
 	cp "${SOURCE_HELPER%/*}/audit-worktree-removal-helper.sh" \
-		"${SOURCE_HELPER%/*}/shared-constants.sh" \
 		"${SOURCE_HELPER%/*}/shared-sqlite-backup.sh" \
 		"${SOURCE_HELPER%/*}/shared-worktree-registry.sh" \
 		"${SOURCE_HELPER%/*}/portable-stat.sh" \
@@ -91,7 +93,8 @@ install_helper_with_libs() {
 		"${SOURCE_HELPER%/*}/screen_time_linux.py" \
 		"${SOURCE_HELPER%/*}/screen_time_linux_logind.py" \
 		"${SOURCE_HELPER%/*}/screen_time_linux_wtmp.py" \
-		"${SOURCE_HELPER%/*}/screen_time_history.py" "$helper_dir/"
+		"${SOURCE_HELPER%/*}/screen_time_history.py" \
+		"${SOURCE_HELPER%/*}/worktree-recovery-cache-policy.py" "$helper_dir/"
 	# Keep this profile-boundary fixture independent of host /proc visibility.
 	# Shared worktree-removal guard behaviour has dedicated tests; this stub proves
 	# the profile helper invokes cleanup from the canonical checkout after its
