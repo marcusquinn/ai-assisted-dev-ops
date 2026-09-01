@@ -1225,12 +1225,28 @@ classify_dispatch_blocker_reason() {
 			printf 'local_capacity_gate\n'
 			return 0
 			;;
-		*dedup*guard*blocked*)
-			printf 'dedup_active_claim\n'
+		*worker*already*running* | *live_worker=true* | *process_evidence=live*)
+			printf 'dedup_active_claim_live_owner\n'
 			return 0
 			;;
-		*assigned* | *claim* | *ledger* | *has-open-pr* | *pr*evidence* | *duplicate* | *stale_recovered*)
-			printf 'dedup_active_claim\n'
+		*stale_recovered* | *stale_owner=true*)
+			printf 'dedup_active_claim_stale_owner\n'
+			return 0
+			;;
+		*no*dispatch*claim* | *attempt_count=0* | *zero_attempt*)
+			printf 'dedup_active_claim_zero_attempt\n'
+			return 0
+			;;
+		*current*pulse*cycle* | *current_cycle=true*)
+			printf 'dedup_active_claim_current_cycle\n'
+			return 0
+			;;
+		*in-flight*ledger* | *has-open-pr* | *pr*evidence* | *dispatch*comment*)
+			printf 'dedup_active_claim_durable_launch\n'
+			return 0
+			;;
+		*dedup*guard*blocked* | *assigned* | *claim* | *ledger* | *duplicate*)
+			printf 'dedup_active_claim_unverified\n'
 			return 0
 			;;
 		"")

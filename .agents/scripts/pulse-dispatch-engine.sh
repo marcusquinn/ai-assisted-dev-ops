@@ -483,6 +483,61 @@ _dispatch_order_idle_borrowing_candidates() {
 }
 
 #######################################
+# Re-open a candidate that was suppressed only by this Pulse cycle's local
+# benign-block ledger while the worker pool is empty. The authoritative dedup
+# layers run again before any launch, so a live owner or durable launch remains
+# a hard block. The original claim and its log evidence are not mutated.
+#
+# Arguments:
+#   $1 - active worker count
+# Returns: 0 always
+#######################################
+_dispatch_recheck_zero_worker_active_claims() {
+	local active_workers="$1"
+	local ledger_file="${_DISPATCH_BENIGN_BLOCKS_FILE:-}"
+	[[ "$active_workers" == "0" && -n "$ledger_file" && -f "$ledger_file" ]] || return 0
+
+	local recheck_count="0"
+	recheck_count=$(awk -F '\t' '$3 == "dedup_active_claim" { count++ } END { print count + 0 }' "$ledger_file" 2>/dev/null) || recheck_count="0"
+	[[ "$recheck_count" =~ ^[0-9]+$ && "$recheck_count" -gt 0 ]] || return 0
+
+	local filtered_file=""
+	filtered_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-active-claim-ledger.XXXXXX") || return 0
+	if awk -F '\t' '$3 != "dedup_active_claim"' "$ledger_file" >"$filtered_file" 2>/dev/null; then
+		mv "$filtered_file" "$ledger_file"
+		echo "[pulse-wrapper] ACTIVE_CLAIM_STATE classification=current_cycle_duplicate active_workers=0 durable_launch=false attempt_count=unknown recovery=authoritative_recheck claims=${recheck_count}" >>"$LOGFILE"
+		_dispatch_stats_increment "dispatch_active_claim_current_cycle_recheck"
+	else
+		rm -f "$filtered_file"
+	fi
+	return 0
+}
+
+#######################################
+# Emit an actionable state when an empty worker pool remains blocked after the
+# authoritative recheck. This is deliberately non-benign diagnostic evidence;
+# it does not relax the claim guard or mutate remote assignment state.
+#
+# Arguments:
+#   $1 - active worker count
+#   $2 - dispatched worker count
+# Returns: 0 always
+#######################################
+_dispatch_record_zero_worker_active_claim_hold() {
+	local active_workers="$1"
+	local dispatched_count="$2"
+	local ledger_file="${_DISPATCH_BENIGN_BLOCKS_FILE:-}"
+	[[ "$active_workers" == "0" && "$dispatched_count" == "0" && -n "$ledger_file" && -f "$ledger_file" ]] || return 0
+
+	local hold_count="0"
+	hold_count=$(awk -F '\t' '$3 == "dedup_active_claim" { count++ } END { print count + 0 }' "$ledger_file" 2>/dev/null) || hold_count="0"
+	[[ "$hold_count" =~ ^[0-9]+$ && "$hold_count" -gt 0 ]] || return 0
+	echo "[pulse-wrapper] ACTIVE_CLAIM_STATE classification=zero_worker_infrastructure_hold active_workers=0 durable_launch=false attempt_count=unknown recovery=blocked_actionable claims=${hold_count}" >>"$LOGFILE"
+	_dispatch_stats_increment "dispatch_active_claim_zero_worker_infrastructure_hold"
+	return 0
+}
+
+#######################################
 # Dispatch_max for obvious backlog.
 #
 # This is intentionally narrow: it only materializes already-eligible issues
@@ -577,6 +632,7 @@ dispatch_max() {
 		_dispatch_owns_benign_blocks_cycle=1
 	fi
 	export _DISPATCH_BENIGN_BLOCKS_FILE
+	_dispatch_recheck_zero_worker_active_claims "$active_workers"
 
 	# t3015: branch on dispatch path (max = parallel, floor = forced-serial).
 	# t3418/t3558: if the minimum worker floor is active, runtime launch
@@ -643,6 +699,7 @@ dispatch_max() {
 	read -r dispatched_count processed_count <<<"$loop_output"
 	[[ "$dispatched_count" =~ ^[0-9]+$ ]] || dispatched_count=0
 	[[ "$processed_count" =~ ^[0-9]+$ ]] || processed_count=0
+	_dispatch_record_zero_worker_active_claim_hold "$active_workers" "$dispatched_count"
 	rm -f "$_dispatch_candidate_file"
 	if [[ "$_dispatch_owns_benign_blocks_cycle" == "1" ]]; then
 		_dispatch_cleanup_benign_blocks_cycle

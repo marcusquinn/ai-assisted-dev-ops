@@ -15,6 +15,7 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 SCRIPTS_DIR="$(cd "${TEST_DIR}/.." && pwd)" || exit 1
+REAL_HELPER="${SCRIPTS_DIR}/dispatch-dedup-helper.sh"
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -64,6 +65,10 @@ if [[ "$cmd" == "is-assigned" ]]; then
 		printf '%s\n' 'STALE_RECOVERED: issue #2905 in exampleorg/examplerepo - unassigned runner (dispatch claim 900s old, last activity 900s old (threshold=600s, interactive=false))'
 		exit 1
 		;;
+	live_owner)
+		printf '%s\n' 'ASSIGNED: issue #2905 in exampleorg/examplerepo is assigned to runner live_worker=true durable_launch=true attempt_count=1'
+		exit 0
+		;;
 	blocked_by)
 		printf '%s\n' 'STALE_BLOCKED_BY_DEPENDENCY: issue #2905 in exampleorg/examplerepo - unassigned runner but kept status:blocked due to unresolved blocked-by (no_work)'
 		exit 1
@@ -84,7 +89,12 @@ if [[ "$cmd" == "is-assigned" ]]; then
 fi
 
 if [[ "$cmd" == "classify-blocker" ]]; then
-	printf 'assigned\n'
+	signal="${1:-}"
+	if [[ "$signal" == *"live_worker=true"* ]]; then
+		printf 'dedup_active_claim_live_owner\n'
+	else
+		printf 'dedup_active_claim_unverified\n'
+	fi
 	exit 0
 fi
 
@@ -113,6 +123,50 @@ reset_observations() {
 	LAST_CONSOLIDATION=""
 	: >"$LOGFILE"
 	: >"$CLASSIFY_LOG"
+	return 0
+}
+
+test_active_claim_classifier_preserves_evidence() {
+	local actual=""
+	actual=$("$REAL_HELPER" classify-blocker 'ASSIGNED: live_worker=true durable_launch=true attempt_count=1')
+	if [[ "$actual" != "dedup_active_claim_live_owner" ]]; then
+		fail "active claim classifier identifies live owner" "actual=${actual}"
+		return 0
+	fi
+	actual=$("$REAL_HELPER" classify-blocker 'STALE_RECOVERED stale_owner=true')
+	if [[ "$actual" != "dedup_active_claim_stale_owner" ]]; then
+		fail "active claim classifier identifies stale owner" "actual=${actual}"
+		return 0
+	fi
+	actual=$("$REAL_HELPER" classify-blocker 'ASSIGNED: attempt_count=0 no dispatch claim comment found')
+	if [[ "$actual" != "dedup_active_claim_zero_attempt" ]]; then
+		fail "active claim classifier identifies zero-attempt claim" "actual=${actual}"
+		return 0
+	fi
+	actual=$("$REAL_HELPER" classify-blocker 'skip from current pulse cycle current_cycle=true')
+	if [[ "$actual" != "dedup_active_claim_current_cycle" ]]; then
+		fail "active claim classifier identifies current-cycle suppression" "actual=${actual}"
+		return 0
+	fi
+	pass "active claim classifier preserves live, stale, zero-attempt, and current-cycle evidence"
+	return 0
+}
+
+test_live_owner_remains_blocked() {
+	export TEST_STALE_MODE="live_owner"
+	reset_observations
+	local rc=0
+	local output=""
+	output=$(_dedup_layer6_assignee_and_stale "2905" "exampleorg/examplerepo" "runner") || rc=$?
+	if [[ "$rc" -ne 0 || "$output" != *"live_worker=true"* ]]; then
+		fail "live-owner active claim remains blocked" "rc=${rc} output=${output}"
+		return 0
+	fi
+	if ! grep -q 'reason=dedup_active_claim_live_owner' "$LOGFILE" 2>/dev/null; then
+		fail "live-owner active claim logs named evidence" "log: $(tr '\n' ' ' <"$LOGFILE")"
+		return 0
+	fi
+	pass "live-owner active claim remains safely blocked"
 	return 0
 }
 
@@ -336,6 +390,8 @@ test_protected_draft_remains_immediate_pr_block() {
 	return 0
 }
 
+test_active_claim_classifier_preserves_evidence
+test_live_owner_remains_blocked
 test_stale_recovery_without_claim_skips_fast_fail
 test_prelaunch_canary_stale_recovery_skips_fast_fail
 test_stale_recovery_with_dispatch_claim_records_fast_fail

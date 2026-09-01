@@ -70,6 +70,57 @@ _observability_overlay_json() {
 	return 0
 }
 
+_active_claim_state_json() {
+	local log_dir="$1"
+	local active_workers="$2"
+	local pulse_log="${log_dir}/pulse-wrapper.log"
+	[[ "$active_workers" =~ ^[0-9]+$ ]] || active_workers=0
+	if [[ ! -f "$pulse_log" ]]; then
+		jq -n --argjson active "$active_workers" '{active_workers:$active, classification_counts:{}, zero_worker_actionable:false}'
+		return 0
+	fi
+
+	local counts="{}"
+	counts=$(awk '
+		/Instance lock acquired/ {
+			delete count
+			next
+		}
+		/ACTIVE_CLAIM_STATE classification=/ || /DISPATCH_BLOCK_REASON reason=dedup_active_claim_/ {
+			line = $0
+			if (match(line, /classification=[a-z_]+/)) {
+				key = substr(line, RSTART + 15, RLENGTH - 15)
+			} else if (match(line, /reason=dedup_active_claim_[a-z_]+/)) {
+				key = substr(line, RSTART + 26, RLENGTH - 26)
+			} else {
+				next
+			}
+			count[key]++
+		}
+		END {
+			printf "{"
+			separator = ""
+			for (key in count) {
+				printf "%s\"%s\":%d", separator, key, count[key]
+				separator = ","
+			}
+			printf "}"
+		}
+	' "$pulse_log" 2>/dev/null) || counts="{}"
+	printf '%s' "$counts" | jq --argjson active "$active_workers" '
+		. as $counts
+		| (["stale_owner", "zero_attempt", "current_cycle", "current_cycle_duplicate", "zero_worker_infrastructure_hold", "unverified"]
+			| map($counts[.] // 0) | add) as $actionable
+		| {
+			active_workers: $active,
+			classification_counts: $counts,
+			zero_worker_actionable: ($active == 0 and $actionable > 0),
+			live_owner_count: ($counts.live_owner // 0),
+			durable_launch_count: ($counts.durable_launch // 0)
+		}'
+	return 0
+}
+
 main() {
 	local window="15m"
 	local repo_path="${AIDEVOPS_REPO_PATH:-$HOME/Git/aidevops}"
@@ -127,13 +178,23 @@ main() {
 	) || projection_status=$?
 	local overlay_json="{}"
 	overlay_json=$(_observability_overlay_json)
+	local active_claim_json="{}"
+	active_claim_json=$(_active_claim_state_json "$log_dir" "$active_worker_processes")
 	if [[ "$projection_status" -eq 0 && "$as_json" -eq 1 ]] && printf '%s' "$projection_output" | jq empty >/dev/null 2>&1; then
-		projection_output=$(jq -n --argjson base "$projection_output" --argjson overlay "$overlay_json" '$base + $overlay')
+		projection_output=$(jq -n --argjson base "$projection_output" --argjson overlay "$overlay_json" --argjson claims "$active_claim_json" '
+			($base.pre_launch_blockers.dedup_active_claim // 0) as $legacy_claims
+			| ($claims.classification_counts.unverified // 0) as $classified_unverified
+			| ($claims
+				| .classification_counts.unverified = ([$legacy_claims, $classified_unverified] | max)
+				| .zero_worker_actionable = (.zero_worker_actionable or (.active_workers == 0 and $legacy_claims > 0))) as $enriched_claims
+			| $base + $overlay + {active_claim_state:$enriched_claims}')
 	elif [[ "$projection_status" -eq 0 ]]; then
 		projection_output+=$'\n'
 		projection_output+="NMR revalidation: $(printf '%s' "$overlay_json" | jq -c '.nmr_revalidation')"
 		projection_output+=$'\n'
 		projection_output+="Failure-family remediation: $(printf '%s' "$overlay_json" | jq -c '.failure_family_remediation')"
+		projection_output+=$'\n'
+		projection_output+="Active claim state: $(printf '%s' "$active_claim_json" | jq -c '.')"
 	fi
 	printf '%s\n' "$projection_output"
 	if [[ "$projection_status" -eq 0 && -s "$runtime_state_file" ]] && command -v node >/dev/null 2>&1; then

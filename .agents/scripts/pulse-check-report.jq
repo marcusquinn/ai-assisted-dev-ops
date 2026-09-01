@@ -50,6 +50,8 @@ end) as $max_workers |
 ($current.canonical_reconciliation.refusal_count // 0 | number_or_zero) as $canonical_reconciliation_refusal_count |
 ($current.canonical_reconciliation.classification // "none") as $canonical_reconciliation_classification |
 ($current.canonical_reconciliation.canonical_recovery_advisory_observed // false) as $canonical_recovery_advisory_observed |
+($current.active_claim_state // {}) as $active_claim_state |
+($active_claim_state.zero_worker_actionable // false) as $zero_worker_active_claim_actionable |
 ([$progress_blockers.retained_unverified[]?
   | select(((.reason // "") | contains("permission"))
     and ((((.session_key // "") | startswith("supervisor-pulse")))
@@ -91,6 +93,7 @@ end) as $max_workers |
     runner_health: ($runner.finding // "unknown"),
     retained_supervisor_permission_blockers: $retained_supervisor_permission_blockers,
     canonical_reconciliation_refusals: $canonical_reconciliation_refusal_count,
+    zero_worker_active_claim_actionable: $zero_worker_active_claim_actionable,
     recurrent_failure_families: ([$failure_families[] | select((.count // 0) >= $failure_threshold and (.confidence // "low") == "high" and (.family // "") != "other-failure")] | length)
   },
   queue: ($queue.aggregate // {}),
@@ -107,6 +110,7 @@ end) as $max_workers |
       canonical_recovery_advisory_observed: $canonical_recovery_advisory_observed
     },
     active_worker_processes: ($current.active_worker_processes // null),
+    active_claim_state: $active_claim_state,
     top_pre_launch_blockers: ($current.top_pre_launch_blockers // [])
   },
   worker_activity: {
@@ -200,9 +204,15 @@ end) as $max_workers |
           ("excluded_persistent_dashboard=" + ($excluded_persistent_dashboard | tostring)),
           ("available_older_than_threshold=" + ($old_available | tostring)),
           "dispatch_alive=true",
-          ("dispatch_stage_events=" + (($current.dispatch_stage_events // 0) | tostring))
+          ("dispatch_stage_events=" + (($current.dispatch_stage_events // 0) | tostring)),
+          ("zero_worker_active_claim_actionable=" + ($zero_worker_active_claim_actionable | tostring)),
+          ("active_claim_classifications=" + (($active_claim_state.classification_counts // {}) | to_entries | map(.key + ":" + (.value | tostring)) | sort | join(",")))
         ];
-        "Inspect why the pulse did not retain active workers for visible status:available auto-dispatch issues; start with pulse-current-state-helper, worker-activity-helper, and pulse-diagnose-helper cycle-health.";
+        (if $zero_worker_active_claim_actionable then
+          "Inspect the named zero-worker active-claim state. Preserve live-owner and durable-launch claims; recheck current-cycle suppression or repair the reported infrastructure hold before the next floor refill."
+        else
+          "Inspect why the pulse did not retain active workers for visible status:available auto-dispatch issues; start with pulse-current-state-helper, worker-activity-helper, and pulse-diagnose-helper cycle-health."
+        end);
         true
       )
     else empty end,

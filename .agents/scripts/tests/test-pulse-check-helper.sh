@@ -122,6 +122,7 @@ cat <<'JSON'
   "pulse_gauges": {"dispatch_capacity_final_max_workers": 6},
   "worker_outcomes": {"spawned": 4},
   "worker_terminal_events": 0,
+  "active_claim_state": {"active_workers": 0, "classification_counts": {"zero_worker_infrastructure_hold": 1}, "zero_worker_actionable": true, "live_owner_count": 0, "durable_launch_count": 0},
   "canonical_reconciliation": {"refusal_count": 2, "classification": "dirty_or_uncommitted", "canonical_recovery_advisory_observed": true},
   "graphql_budget_status": "OK fixture"
 }
@@ -373,6 +374,8 @@ SUCCESS_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_success_rate
 assert_eq "json delivered success rate is unknown without GitHub delivery check" "null" "$SUCCESS_RATE"
 assert_eq "json reports canonical reconciliation refusal aggregate" "2" "$(printf '%s' "$JSON_OUT" | jq -r '.current_state.canonical_reconciliation.refusal_count')"
 assert_eq "json reports canonical reconciliation classification" "dirty_or_uncommitted" "$(printf '%s' "$JSON_OUT" | jq -r '.current_state.canonical_reconciliation.classification')"
+assert_eq "zero-worker active claim is actionable" "true" "$(printf '%s' "$JSON_OUT" | jq -r '.summary.zero_worker_active_claim_actionable')"
+assert_contains "underfill preserves named active-claim evidence" "zero_worker_infrastructure_hold:1" "$JSON_OUT"
 assert_not_contains "json omits canonical branch detail" "origin/develop" "$JSON_OUT"
 
 MALFORMED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=malformed" "$HELPER" json 2>&1)
@@ -398,6 +401,7 @@ cat <<'JSON'
   "pulse_gauges": {"dispatch_capacity_final_max_workers": 6},
   "worker_outcomes": {"spawned": 0},
   "worker_terminal_events": 0,
+  "active_claim_state": {"active_workers": 2, "classification_counts": {"live_owner": 1}, "zero_worker_actionable": false, "live_owner_count": 1, "durable_launch_count": 1},
   "graphql_budget_status": "OK fixture"
 }
 JSON
@@ -410,6 +414,8 @@ ACTIVE_IDS=$(printf '%s' "$JSON_ACTIVE_OUT" | jq -r '[.findings[].id] | sort | j
 assert_eq "json reports process-scan active workers" "2" "$ACTIVE_COUNT"
 assert_eq "json recomputes available slots from process count" "4" "$ACTIVE_AVAILABLE"
 assert_eq "process-scan active workers suppress underfill finding" "auto-dispatch-missing-tier-labels" "$ACTIVE_IDS"
+assert_eq "live-owner active claim remains non-actionable" "false" "$(printf '%s' "$JSON_ACTIVE_OUT" | jq -r '.summary.zero_worker_active_claim_actionable')"
+assert_eq "live-owner evidence remains visible" "1" "$(printf '%s' "$JSON_ACTIVE_OUT" | jq -r '.current_state.active_claim_state.live_owner_count')"
 
 cat >"${TEST_ROOT}/current-state-idle.sh" <<'SH'
 #!/usr/bin/env bash
