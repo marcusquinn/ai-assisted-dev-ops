@@ -91,7 +91,7 @@ extract_function
 printf 'Test 0: OpenCode remains pinned to the last verified headless release\n'
 # shellcheck source=../shared-constants.sh
 source "$SHARED_CONSTANTS"
-assert_eq "OpenCode headless regression pin" "1.18.23" "$OPENCODE_PINNED_VERSION"
+assert_eq "OpenCode headless regression pin" "1.18.25" "$OPENCODE_PINNED_VERSION"
 
 printf 'Test 0a: routine freshness tracks registry outside Linux headless dispatch\n'
 mkdir -p "$SANDBOX/routine-freshness/bin"
@@ -212,7 +212,7 @@ assert_eq "npm OpenCode upgrade command" "npm install -g opencode-ai@1.15.10" "$
 printf 'Test 4: headless guard provisions an isolated pin without changing newer general install\n'
 mkdir -p "$SANDBOX/version-guard/runtime" "$SANDBOX/version-guard/bin" "$SANDBOX/version-guard/state"
 write_executable "$SANDBOX/version-guard/runtime/opencode" '#!/usr/bin/env bash
-printf "1.18.24\n"'
+printf "1.18.26\n"'
 # shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
 write_executable "$SANDBOX/version-guard/bin/npm" '#!/usr/bin/env bash
 printf "%s\n" "$*" >>"'"$SANDBOX"'/version-guard/calls"
@@ -224,7 +224,7 @@ done
 mkdir -p "$prefix/node_modules/opencode-linux-x64/bin"
 cat >"$prefix/node_modules/opencode-linux-x64/bin/opencode" <<"BIN"
 #!/usr/bin/env bash
-printf "1.18.23\n"
+printf "1.18.25\n"
 BIN
 chmod +x "$prefix/node_modules/opencode-linux-x64/bin/opencode"'
 guard_rc=0
@@ -244,10 +244,10 @@ headless_bin=""
 ) || guard_rc=$?
 assert_eq "headless pin repair status" "0" "$guard_rc"
 headless_bin=$(<"$SANDBOX/version-guard/headless-bin")
-assert_eq "general install remains newer" "1.18.24" "$("$SANDBOX/version-guard/runtime/opencode")"
-assert_eq "isolated headless runtime is pinned" "1.18.23" "$("$headless_bin")"
+assert_eq "general install remains newer" "1.18.26" "$("$SANDBOX/version-guard/runtime/opencode")"
+assert_eq "isolated headless runtime is pinned" "1.18.25" "$("$headless_bin")"
 install_call=$(<"$SANDBOX/version-guard/calls")
-[[ "$install_call" == "install --ignore-scripts --no-audit --no-fund --prefix "*"/opencode-runtimes/.1.18.23.install."*"/prefix opencode-ai@1.18.23" ]] && install_shape="valid" || install_shape="invalid"
+[[ "$install_call" == "install --ignore-scripts --no-audit --no-fund --prefix "*"/opencode-runtimes/.1.18.25.install."*"/prefix opencode-ai@1.18.25" ]] && install_shape="valid" || install_shape="invalid"
 assert_eq "isolated install requests exact pin" "valid" "$install_shape"
 
 printf 'Test 4b: existing isolated pin is reused without package-manager mutation\n'
@@ -270,7 +270,7 @@ assert_eq "existing isolated runtime avoids second install" "1" "$(wc -l <"$SAND
 printf 'Test 4c: stale pin repair locks are cleared after the bounded wait\n'
 mkdir -p "$SANDBOX/version-stale-lock/state/opencode-runtimes" "$SANDBOX/version-stale-lock/bin"
 write_executable "$SANDBOX/version-stale-lock/runtime-opencode" '#!/usr/bin/env bash
-printf "1.18.24\n"'
+printf "1.18.26\n"'
 # shellcheck disable=SC2016 # Literal stub body; quoted SANDBOX segments are expanded by the outer script.
 write_executable "$SANDBOX/version-stale-lock/bin/npm" '#!/usr/bin/env bash
 prefix=""
@@ -281,14 +281,14 @@ done
 mkdir -p "$prefix/node_modules/opencode-linux-x64/bin"
 cat >"$prefix/node_modules/opencode-linux-x64/bin/opencode" <<"BIN"
 #!/usr/bin/env bash
-printf "1.18.23\n"
+printf "1.18.25\n"
 BIN
 chmod +x "$prefix/node_modules/opencode-linux-x64/bin/opencode"'
 (:) &
 dead_installer_pid=$!
 wait "$dead_installer_pid" || true
 mkdir -p "$SANDBOX/version-stale-lock/state/opencode-pin-repair.lock"
-mkdir -p "$SANDBOX/version-stale-lock/state/opencode-runtimes/.1.18.23.install.$dead_installer_pid"
+mkdir -p "$SANDBOX/version-stale-lock/state/opencode-runtimes/.1.18.25.install.$dead_installer_pid"
 stale_lock_rc=0
 (
 	source_extracted
@@ -306,14 +306,14 @@ stale_lock_rc=0
 ) || stale_lock_rc=$?
 assert_eq "stale lock repair status" "0" "$stale_lock_rc"
 assert_eq "stale lock is removed" "0" "$([[ -e "$SANDBOX/version-stale-lock/state/opencode-pin-repair.lock" ]] && printf '1\n' || printf '0\n')"
-assert_eq "dead install temp is removed" "0" "$([[ -e "$SANDBOX/version-stale-lock/state/opencode-runtimes/.1.18.23.install.$dead_installer_pid" ]] && printf '1\n' || printf '0\n')"
+assert_eq "dead install temp is removed" "0" "$([[ -e "$SANDBOX/version-stale-lock/state/opencode-runtimes/.1.18.25.install.$dead_installer_pid" ]] && printf '1\n' || printf '0\n')"
 stale_headless_bin=$(<"$SANDBOX/version-stale-lock/headless-bin")
-assert_eq "stale lock path provisions pinned runtime" "1.18.23" "$("$stale_headless_bin")"
+assert_eq "stale lock path provisions pinned runtime" "1.18.25" "$("$stale_headless_bin")"
 
 printf 'Test 5: headless version guard fails closed when isolated provisioning fails\n'
 mkdir -p "$SANDBOX/version-install-failure/state"
 write_executable "$SANDBOX/version-install-failure/opencode" '#!/usr/bin/env bash
-printf "1.18.24\n"'
+printf "1.18.26\n"'
 write_executable "$SANDBOX/version-install-failure/npm" '#!/usr/bin/env bash
 exit 42'
 guard_rc=0
