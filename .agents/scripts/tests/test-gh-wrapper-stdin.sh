@@ -183,10 +183,58 @@ printf '%s\n' "$*" >>"$GH_CALLS"
 case "${1:-} ${2:-}" in
 "issue view" | "pr view") printf '%s\n' '{"title":"Existing","body":"Existing","labels":[]}' ;;
 "api repos/test/repo" | "api graphql") printf '%s\n' 'false' ;;
+"api /repos/test/repo/issues/999") printf '%s\n' 'origin:interactive' ;;
+"issue create") printf '%s\n' 'https://github.com/test/repo/issues/999' ;;
+"pr create") printf '%s\n' 'https://github.com/test/repo/pull/999' ;;
 esac
 exit 0
 STUB
 chmod +x "${STUB_BIN}/gh"
+
+EXECUTABLE_CREATE_BODY="${TMP}/executable-create-body.md"
+printf 'Executable path-backed issue body\n' >"$EXECUTABLE_CREATE_BODY"
+: >"$GH_CALLS"
+PATH="${STUB_BIN}:$PATH" "${SCRIPTS_DIR}/gh-write-helper.sh" issue create \
+	--repo test/repo --title "Executable issue create" \
+	--body-file "$EXECUTABLE_CREATE_BODY" >/dev/null 2>&1
+issue_create_rc=$?
+if [[ $issue_create_rc -eq 0 ]] && [[ "$(grep -c '^issue create ' "$GH_CALLS")" -eq 1 ]]; then
+	pass "standalone helper routes path-backed issue creation exactly once"
+else
+	fail "standalone helper routes path-backed issue creation exactly once" "rc=${issue_create_rc}"
+fi
+
+: >"$GH_CALLS"
+printf 'Executable streamed PR body\n' | PATH="${STUB_BIN}:$PATH" \
+	"${SCRIPTS_DIR}/gh-write-helper.sh" pr create --repo test/repo \
+	--title "Executable PR create" --body-file - >/dev/null 2>&1
+pr_create_helper_rc=$?
+if [[ $pr_create_helper_rc -eq 0 ]] && [[ "$(grep -c '^pr create ' "$GH_CALLS")" -eq 1 ]]; then
+	pass "standalone helper routes streamed PR creation exactly once"
+else
+	fail "standalone helper routes streamed PR creation exactly once" "rc=${pr_create_helper_rc}"
+fi
+
+: >"$GH_CALLS"
+printf '' | PATH="${STUB_BIN}:$PATH" "${SCRIPTS_DIR}/gh-write-helper.sh" issue create \
+	--repo test/repo --title "Rejected empty issue" --body-file - >/dev/null 2>&1
+empty_helper_rc=$?
+if [[ $empty_helper_rc -eq 1 && ! -s "$GH_CALLS" ]]; then
+	pass "standalone helper rejects an empty create body before a GitHub write"
+else
+	fail "standalone helper rejects an empty create body before a GitHub write" "rc=${empty_helper_rc}"
+fi
+
+: >"$GH_CALLS"
+PATH="${STUB_BIN}:$PATH" "${SCRIPTS_DIR}/gh-write-helper.sh" issue delete 123 \
+	--repo test/repo >/dev/null 2>&1
+unsupported_helper_rc=$?
+if [[ $unsupported_helper_rc -eq 2 && ! -s "$GH_CALLS" ]]; then
+	pass "standalone helper rejects unsupported actions before a GitHub write"
+else
+	fail "standalone helper rejects unsupported actions before a GitHub write" "rc=${unsupported_helper_rc}"
+fi
+
 : >"$GH_CALLS"
 printf 'Edited body\n' | PATH="${STUB_BIN}:$PATH" \
 	"${SCRIPTS_DIR}/gh-write-helper.sh" issue edit 123 --repo test/repo --body-file - >/dev/null 2>&1

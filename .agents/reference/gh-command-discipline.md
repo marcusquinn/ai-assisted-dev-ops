@@ -72,9 +72,11 @@ their existing behavior.
   `gh_create_issue`, `gh_pr_comment`, or `gh_create_pr` with `--body-file`;
   wrappers sign at execution time. Create wrappers also accept `--body-file -`,
   securely buffer stdin once, and reuse that body for validation and fallback.
-- Safe edit pattern: run `gh-write-helper.sh issue edit` or
+- Executable managed-write pattern: run `gh-write-helper.sh issue create`,
+  `gh-write-helper.sh pr create`, `gh-write-helper.sh issue edit`, or
   `gh-write-helper.sh pr edit`. Use `--body-file -` for streamed bodies; the
-  executable loads the audited wrappers internally without caller-side `source`.
+  executable loads the audited create/edit wrappers internally without
+  caller-side `source`.
 - ANTI-PATTERN (blocked by t2893 enforcement): same-command heredoc, process
   substitution, command substitution, or shell-variable body construction such
   as passing a heredoc through command substitution to `--body`, passing
