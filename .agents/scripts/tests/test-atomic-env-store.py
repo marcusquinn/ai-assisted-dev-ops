@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -120,6 +121,22 @@ class CredentialStoreTests(unittest.TestCase):
         for index in range(30):
             self.assertEqual(content.count(f"export MIGRATION_RACE_KEY_{index}="), 1)
         self.assertIn("AIDEVOPS_ACTIVE_TENANT", root.read_text(encoding="utf-8"))
+
+    def test_multi_value_upsert_replaces_oauth_pair_atomically(self) -> None:
+        target = self.config / "credentials.sh"
+        target.write_text('export TOKEN="old"\nexport REFRESH="old"\n', encoding="utf-8")
+        os.chmod(target, 0o600)
+
+        result = self.run_helper(
+            "upsert-many-active",
+            value=json.dumps({"TOKEN": "new-access", "REFRESH": "new-refresh"}),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        content = target.read_text(encoding="utf-8")
+        self.assertEqual(content.count('export TOKEN="new-access"'), 1)
+        self.assertEqual(content.count('export REFRESH="new-refresh"'), 1)
+        self.assertNotIn('="old"', content)
 
 
 if __name__ == "__main__":

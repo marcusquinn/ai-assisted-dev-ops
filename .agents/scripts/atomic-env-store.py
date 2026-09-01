@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import json
 import os
 from pathlib import Path
 import re
@@ -192,6 +193,29 @@ def upsert(
     return action
 
 
+def upsert_many_active(config_dir: Path, values: dict[str, str]) -> int:
+    if not values:
+        raise StoreError("upsert-many-active requires at least one value")
+    for name, value in values.items():
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name) or not isinstance(value, str):
+            raise StoreError("multi-value credential input is invalid")
+        serialize_value(value)
+    with store_lock(config_dir):
+        target = resolve_target(config_dir)
+        lines = read_lines(target)
+        output = [
+            line
+            for line in lines
+            if not (EXPORT_RE.match(line) and EXPORT_RE.match(line).group(1) in values)
+        ]
+        if output and output[-1] != "":
+            output.append("")
+        output.extend(f'export {name}="{serialize_value(values[name])}"' for name in sorted(values))
+        backup(config_dir, target)
+        atomic_write(target, "\n".join(output) + "\n")
+    return len(values)
+
+
 def remove(
     config_dir: Path,
     target: Path | None,
@@ -291,6 +315,7 @@ def parse_args() -> argparse.Namespace:
             "ensure",
             "upsert",
             "upsert-active",
+            "upsert-many-active",
             "add-if-missing",
             "add-active-if-missing",
             "remove",
@@ -328,6 +353,11 @@ def main() -> int:
             if args.name is None:
                 raise StoreError("upsert-active requires name")
             print(upsert(config_dir, None, args.name, os.sys.stdin.read(), active=True))
+        elif args.command == "upsert-many-active":
+            values = json.load(os.sys.stdin)
+            if not isinstance(values, dict):
+                raise StoreError("upsert-many-active input must be a JSON object")
+            print(upsert_many_active(config_dir, values))
         elif args.command == "add-if-missing":
             if args.target is None or args.name is None:
                 raise StoreError("add-if-missing requires target and name")
@@ -358,7 +388,7 @@ def main() -> int:
             if args.tenant is None:
                 raise StoreError("write-loader requires tenant")
             write_loader(config_dir, args.tenant)
-    except (OSError, UnicodeError, StoreError) as error:
+    except (json.JSONDecodeError, OSError, UnicodeError, StoreError) as error:
         print(f"credential store error: {error}", file=os.sys.stderr)
         return 1
     return 0
