@@ -30,6 +30,7 @@ fail() {
 }
 
 export AIDEVOPS_TEMP_DIR="${TMP}/bodies"
+export AIDEVOPS_GH_SECONDARY_COOLDOWN_OVERRIDE=1
 mkdir -p "$AIDEVOPS_TEMP_DIR"
 CAPTURED_BODY="${TMP}/captured-body.md"
 CAPTURED_MODE="${TMP}/captured-mode.txt"
@@ -71,6 +72,10 @@ gh() {
 		return 0
 	fi
 	if [[ "${STUB_CREATE_FAIL:-0}" == "1" && "${1:-} ${2:-}" == "issue create" ]]; then
+		cp "$CAPTURED_BODY" "$NATIVE_BODY"
+		return 1
+	fi
+	if [[ "${STUB_COMMENT_FAIL:-0}" == "1" && "${1:-} ${2:-}" == "pr comment" ]]; then
 		cp "$CAPTURED_BODY" "$NATIVE_BODY"
 		return 1
 	fi
@@ -145,6 +150,42 @@ else
 	fail "native and REST fallback reuse the same once-signed stdin body" "rc=${fallback_rc}"
 fi
 
+_rest_pr_comment() {
+	local previous=""
+	local argument body_file=""
+	for argument in "$@"; do
+		if [[ "$previous" == "--body-file" ]]; then
+			body_file="$argument"
+			break
+		fi
+		case "$argument" in
+		--body-file=*)
+			body_file="${argument#--body-file=}"
+			break
+			;;
+		esac
+		previous="$argument"
+	done
+	cp "$body_file" "$REST_BODY"
+	printf 'https://github.com/test/repo/pull/1001#issuecomment-3\n'
+	return 0
+}
+: >"$NATIVE_BODY"
+: >"$REST_BODY"
+export STUB_COMMENT_FAIL=1
+printf 'Comment fallback body\n' | gh_pr_comment 456 --repo test/repo \
+	--body-file - >/dev/null 2>&1
+comment_fallback_rc=$?
+unset STUB_COMMENT_FAIL
+if [[ $comment_fallback_rc -eq 0 && -s "$NATIVE_BODY" && -s "$REST_BODY" ]] &&
+	cmp -s "$NATIVE_BODY" "$REST_BODY" &&
+	[[ "$(grep -c '<!-- aidevops:sig -->' "$REST_BODY")" -eq 1 ]]; then
+	pass "native and REST comment fallback reuse the same once-signed stdin body"
+else
+	fail "native and REST comment fallback reuse the same once-signed stdin body" \
+		"rc=${comment_fallback_rc}"
+fi
+
 : >"$GH_CALLS"
 printf 'Pull request body\n' |
 	gh_create_pr --repo test/repo --title "A substantive PR" --body-file=- >/dev/null 2>&1
@@ -185,7 +226,9 @@ case "${1:-} ${2:-}" in
 "api repos/test/repo" | "api graphql") printf '%s\n' 'false' ;;
 "api /repos/test/repo/issues/999") printf '%s\n' 'origin:interactive' ;;
 "issue create") printf '%s\n' 'https://github.com/test/repo/issues/999' ;;
+"issue comment") printf '%s\n' 'https://github.com/test/repo/issues/999#issuecomment-1' ;;
 "pr create") printf '%s\n' 'https://github.com/test/repo/pull/999' ;;
+"pr comment") printf '%s\n' 'https://github.com/test/repo/pull/999#issuecomment-2' ;;
 esac
 exit 0
 STUB
@@ -213,6 +256,56 @@ if [[ $pr_create_helper_rc -eq 0 ]] && [[ "$(grep -c '^pr create ' "$GH_CALLS")"
 	pass "standalone helper routes streamed PR creation exactly once"
 else
 	fail "standalone helper routes streamed PR creation exactly once" "rc=${pr_create_helper_rc}"
+fi
+
+EXECUTABLE_COMMENT_BODY="${TMP}/executable-comment-body.md"
+printf 'Executable path-backed issue comment\n' >"$EXECUTABLE_COMMENT_BODY"
+: >"$GH_CALLS"
+PATH="${STUB_BIN}:$PATH" "${SCRIPTS_DIR}/gh-write-helper.sh" issue comment 123 \
+	--repo test/repo --body-file "$EXECUTABLE_COMMENT_BODY" >/dev/null 2>&1
+issue_comment_rc=$?
+if [[ $issue_comment_rc -eq 0 ]] && [[ "$(grep -c '^issue comment 123 ' "$GH_CALLS")" -eq 1 ]] &&
+	grep -q 'Executable path-backed issue comment' "$CAPTURED_BODY" &&
+	[[ "$(grep -c '<!-- aidevops:sig -->' "$CAPTURED_BODY")" -eq 1 ]]; then
+	pass "standalone helper routes a path-backed issue comment with one signature"
+else
+	fail "standalone helper routes a path-backed issue comment with one signature" \
+		"rc=${issue_comment_rc}"
+fi
+
+: >"$GH_CALLS"
+printf 'Executable streamed PR comment\n' | PATH="${STUB_BIN}:$PATH" \
+	"${SCRIPTS_DIR}/gh-write-helper.sh" pr comment 456 --repo test/repo \
+	--body-file - >/dev/null 2>&1
+pr_comment_rc=$?
+if [[ $pr_comment_rc -eq 0 ]] && [[ "$(grep -c '^pr comment 456 ' "$GH_CALLS")" -eq 1 ]] &&
+	grep -q 'Executable streamed PR comment' "$CAPTURED_BODY" &&
+	[[ "$(grep -c '<!-- aidevops:sig -->' "$CAPTURED_BODY")" -eq 1 ]]; then
+	pass "standalone helper routes a streamed PR comment with one signature"
+else
+	fail "standalone helper routes a streamed PR comment with one signature" "rc=${pr_comment_rc}"
+fi
+
+: >"$GH_CALLS"
+printf '' | PATH="${STUB_BIN}:$PATH" "${SCRIPTS_DIR}/gh-write-helper.sh" issue comment 123 \
+	--repo test/repo --body-file - >/dev/null 2>&1
+empty_comment_rc=$?
+if [[ $empty_comment_rc -eq 1 && ! -s "$GH_CALLS" ]]; then
+	pass "standalone helper rejects an empty comment before a GitHub write"
+else
+	fail "standalone helper rejects an empty comment before a GitHub write" "rc=${empty_comment_rc}"
+fi
+
+: >"$GH_CALLS"
+printf '%s\n' '<!-- aidevops:sig -->' | PATH="${STUB_BIN}:$PATH" \
+	"${SCRIPTS_DIR}/gh-write-helper.sh" pr comment 456 --repo test/repo \
+	--body-file - >/dev/null 2>&1
+signature_only_comment_rc=$?
+if [[ $signature_only_comment_rc -eq 1 && ! -s "$GH_CALLS" ]]; then
+	pass "standalone helper rejects a signature-only comment before a GitHub write"
+else
+	fail "standalone helper rejects a signature-only comment before a GitHub write" \
+		"rc=${signature_only_comment_rc}"
 fi
 
 : >"$GH_CALLS"

@@ -74,9 +74,10 @@ their existing behavior.
   securely buffer stdin once, and reuse that body for validation and fallback.
 - Executable managed-write pattern: run `gh-write-helper.sh issue create`,
   `gh-write-helper.sh pr create`, `gh-write-helper.sh issue edit`, or
-  `gh-write-helper.sh pr edit`. Use `--body-file -` for streamed bodies; the
-  executable loads the audited create/edit wrappers internally without
-  caller-side `source`.
+  `gh-write-helper.sh pr edit`. Managed comments use `gh-write-helper.sh issue
+  comment` or `gh-write-helper.sh pr comment`. Use `--body-file -` for streamed
+  bodies; the executable loads the audited create/edit/comment wrappers
+  internally without caller-side `source`.
 - ANTI-PATTERN (blocked by t2893 enforcement): same-command heredoc, process
   substitution, command substitution, or shell-variable body construction such
   as passing a heredoc through command substitution to `--body`, passing
