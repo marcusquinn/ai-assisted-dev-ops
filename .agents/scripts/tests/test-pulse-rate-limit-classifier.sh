@@ -197,6 +197,29 @@ else
 	FAIL=$((FAIL + 1))
 fi
 
+# ----- Active secondary cooldown suppresses the corroboration read -----
+_gh_secondary_cooldown_preflight() {
+	local op_class="$1"
+	: "$op_class"
+	return 1
+}
+: >"$GH_CALL_LOG"
+_pulse_mark_rate_limited "secondary_cooldown:owner/repo"
+if [[ ! -s "$GH_CALL_LOG" ]]; then
+	echo "PASS: secondary-cooldown-suppresses-live-probe"
+	PASS=$((PASS + 1))
+else
+	echo "FAIL: secondary-cooldown-suppresses-live-probe — calls: $(tr '\n' ';' <"$GH_CALL_LOG")" >&2
+	FAIL=$((FAIL + 1))
+fi
+if grep -q "secondary_cooldown:owner/repo" "$PULSE_RATE_LIMIT_FLAG" 2>/dev/null; then
+	echo "PASS: secondary-cooldown-preserves-classified-suppression"
+	PASS=$((PASS + 1))
+else
+	echo "FAIL: secondary-cooldown-preserves-classified-suppression" >&2
+	FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed"
 [[ "$FAIL" == "0" ]] || exit 1

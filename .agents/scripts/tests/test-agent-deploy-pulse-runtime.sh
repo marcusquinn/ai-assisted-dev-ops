@@ -43,6 +43,18 @@ pass() {
 	return 0
 }
 
+assert_eq() {
+	local expected="$1"
+	local actual="$2"
+	local message="$3"
+	if [[ "$expected" != "$actual" ]]; then
+		fail "$message (expected=$expected actual=$actual)"
+		return 1
+	fi
+	pass "$message"
+	return 0
+}
+
 write_runtime_bundle() {
 	local bundle_root="$1"
 	local bundle_id="$2"
@@ -239,6 +251,99 @@ SH
 	return 0
 }
 
+runtime_freshness_output() {
+	local manifest_file="$1"
+	local update_state_file="$2"
+	local canonical_repo="$3"
+	local log_dir="$4"
+	AIDEVOPS_RUNTIME_MANIFEST_FILE="$manifest_file" \
+		AIDEVOPS_DEPLOYED_SHA_FILE="$TEST_ROOT/missing-deployed-sha" \
+		AIDEVOPS_AUTO_UPDATE_STATE_FILE="$update_state_file" \
+		"$REPO_ROOT/.agents/scripts/pulse-current-state-helper.sh" \
+		--repo-path "$canonical_repo" --log-dir "$log_dir" --json
+	return 0
+}
+
+test_runtime_freshness_diagnostics() {
+	local remote_repo="$TEST_ROOT/runtime-origin.git"
+	local canonical_repo="$TEST_ROOT/runtime-canonical"
+	local peer_repo="$TEST_ROOT/runtime-peer"
+	local log_dir="$TEST_ROOT/runtime-logs"
+	local manifest_file="$TEST_ROOT/runtime-manifest"
+	local update_state_file="$TEST_ROOT/auto-update-state.json"
+	local base_sha="" upstream_sha="" second_upstream_sha="" output=""
+
+	git init -q --bare -b main "$remote_repo"
+	git init -q -b main "$canonical_repo"
+	git -C "$canonical_repo" config user.name Test
+	git -C "$canonical_repo" config user.email test@example.invalid
+	printf 'base\n' >"$canonical_repo/runtime.txt"
+	git -C "$canonical_repo" add runtime.txt
+	git -C "$canonical_repo" commit -qm base
+	git -C "$canonical_repo" remote add origin "$remote_repo"
+	git -C "$canonical_repo" push -qu origin main
+	base_sha=$(git -C "$canonical_repo" rev-parse HEAD)
+	git clone -q "$remote_repo" "$peer_repo"
+	git -C "$peer_repo" config user.name Test
+	git -C "$peer_repo" config user.email test@example.invalid
+	printf 'upstream\n' >>"$peer_repo/runtime.txt"
+	git -C "$peer_repo" commit -am upstream -q
+	git -C "$peer_repo" push -q origin main
+	upstream_sha=$(git -C "$peer_repo" rev-parse HEAD)
+	git -C "$canonical_repo" fetch -q origin main
+	mkdir -p "$log_dir"
+	printf 'schema=1\nstatus=validated\ngit_sha=%s\n' "$base_sha" >"$manifest_file"
+	printf '%s\n' '{"last_status":"up_to_date","last_timestamp":"2026-09-01T00:00:00Z"}' >"$update_state_file"
+
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "canonical_behind_upstream" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"current-state reports a stale canonical checkout"
+
+	printf 'local diagnostic\n' >>"$canonical_repo/runtime.txt"
+	printf '%s\n' '{"last_status":"runtime_stale_local_changes","last_timestamp":"2026-09-01T00:01:00Z"}' >"$update_state_file"
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "blocked_dirty_canonical" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"dirty canonical state is preserved and classified"
+	git -C "$canonical_repo" checkout -q -- runtime.txt
+	git -C "$canonical_repo" merge -q --ff-only "$upstream_sha"
+
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "deployed_behind_canonical" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"current-state distinguishes a stale deployed bundle"
+	printf 'schema=1\nstatus=validated\ngit_sha=%s\n' "$upstream_sha" >"$manifest_file"
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "current" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"clean fast-forward and deployment report current runtime"
+
+	printf 'dirty at upstream tip\n' >>"$canonical_repo/runtime.txt"
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "blocked_dirty_canonical" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"dirty upstream-tip canonical state remains blocked"
+	git -C "$canonical_repo" checkout -q -- runtime.txt
+
+	printf 'local ahead\n' >>"$canonical_repo/runtime.txt"
+	git -C "$canonical_repo" commit -am local-ahead -q
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "canonical_ahead_upstream" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"local-ahead canonical history remains stale"
+
+	printf 'second upstream\n' >>"$peer_repo/runtime.txt"
+	git -C "$peer_repo" commit -am second-upstream -q
+	git -C "$peer_repo" push -q origin main
+	second_upstream_sha=$(git -C "$peer_repo" rev-parse HEAD)
+	git -C "$canonical_repo" fetch -q origin main
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "canonical_diverged_upstream" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"divergent canonical history remains stale"
+
+	git -C "$canonical_repo" checkout -q --detach "$second_upstream_sha"
+	printf 'schema=1\nstatus=validated\ngit_sha=%s\n' "$second_upstream_sha" >"$manifest_file"
+	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
+	assert_eq "canonical_non_main" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"detached exact-SHA canonical checkout remains stale"
+	return 0
+}
+
 main() {
 	local stale_root=""
 	local active_root=""
@@ -274,6 +379,7 @@ main() {
 	test_concurrent_transition_converges_on_active_bundle "$stale_root" "$active_root" "$active_link"
 	test_launchd_disabled_service_stays_stopped "$active_root" "$active_link"
 	test_launchd_enabled_service_owns_restart "$active_root" "$active_link"
+	test_runtime_freshness_diagnostics
 
 	printf 'Results: %s checks passed\n' "$TESTS_RUN"
 	return 0

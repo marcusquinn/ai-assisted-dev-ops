@@ -7,6 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+UNKNOWN_STATUS="unknown"
 
 _usage() {
 	cat <<'EOF'
@@ -42,6 +43,120 @@ _state_file_json() {
 	return 0
 }
 
+_runtime_manifest_value() {
+	local manifest_file="$1"
+	local key="$2"
+	local line=""
+	[[ -r "$manifest_file" ]] || return 1
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		case "$line" in
+		"${key}="*) printf '%s' "${line#*=}"; return 0 ;;
+		esac
+	done <"$manifest_file"
+	return 1
+}
+
+_runtime_freshness_json() {
+	local repo_path="$1"
+	local agents_path="${AIDEVOPS_RUNTIME_AGENTS_PATH:-${AIDEVOPS_AGENTS_DIR:-${HOME}/.aidevops/agents}}"
+	local manifest_file="${AIDEVOPS_RUNTIME_MANIFEST_FILE:-${agents_path}/.bundle-manifest}"
+	local stamp_file="${AIDEVOPS_DEPLOYED_SHA_FILE:-${HOME}/.aidevops/.deployed-sha}"
+	local update_state_file="${AIDEVOPS_AUTO_UPDATE_STATE_FILE:-${HOME}/.aidevops/cache/auto-update-state.json}"
+	local upstream_ref="${AIDEVOPS_RUNTIME_UPSTREAM_REF:-}"
+	local canonical_sha="" upstream_sha="" deployed_sha="" manifest_sha="" stamp_sha=""
+	local auto_update_status="$UNKNOWN_STATUS" auto_update_at=""
+	local status="$UNKNOWN_STATUS" action="Verify the canonical checkout and active runtime bundle"
+	local canonical_dirty=false canonical_on_main=false canonical_behind=false
+	local canonical_ahead=false canonical_diverged=false deployed_behind=false stale=false
+
+	if [[ -z "$upstream_ref" ]]; then
+		upstream_ref=$(git -C "$repo_path" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+		[[ -n "$upstream_ref" ]] || upstream_ref="origin/main"
+	fi
+	canonical_sha=$(git -C "$repo_path" rev-parse HEAD 2>/dev/null || true)
+	upstream_sha=$(git -C "$repo_path" rev-parse "$upstream_ref" 2>/dev/null || true)
+	if [[ "$(git -C "$repo_path" symbolic-ref --quiet HEAD 2>/dev/null || true)" == "refs/heads/main" ]]; then
+		canonical_on_main=true
+	fi
+	manifest_sha=$(_runtime_manifest_value "$manifest_file" git_sha 2>/dev/null || true)
+	if [[ -r "$stamp_file" ]]; then
+		IFS= read -r stamp_sha <"$stamp_file" || stamp_sha=""
+		stamp_sha="${stamp_sha//[[:space:]]/}"
+	fi
+	if [[ "$manifest_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+		deployed_sha="$manifest_sha"
+	elif [[ "$stamp_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+		deployed_sha="$stamp_sha"
+	fi
+	if [[ -r "$update_state_file" ]]; then
+		auto_update_status=$(jq -r --arg unknown "$UNKNOWN_STATUS" '.last_status // $unknown' "$update_state_file" 2>/dev/null || printf '%s' "$UNKNOWN_STATUS")
+		auto_update_at=$(jq -r '.last_timestamp // ""' "$update_state_file" 2>/dev/null || true)
+	fi
+	if ! git -C "$repo_path" diff --quiet 2>/dev/null || ! git -C "$repo_path" diff --cached --quiet 2>/dev/null; then
+		canonical_dirty=true
+	fi
+
+	if [[ "$canonical_sha" =~ ^[0-9a-fA-F]{7,64}$ && "$upstream_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+		if [[ "$canonical_sha" != "$upstream_sha" ]]; then
+			if git -C "$repo_path" merge-base --is-ancestor "$canonical_sha" "$upstream_sha" 2>/dev/null; then
+				canonical_behind=true
+			elif git -C "$repo_path" merge-base --is-ancestor "$upstream_sha" "$canonical_sha" 2>/dev/null; then
+				canonical_ahead=true
+			else
+				canonical_diverged=true
+			fi
+		fi
+		if [[ -n "$deployed_sha" && "$deployed_sha" != "$upstream_sha" ]] && git -C "$repo_path" merge-base --is-ancestor "$deployed_sha" "$upstream_sha" 2>/dev/null; then
+			deployed_behind=true
+		fi
+	fi
+
+	if [[ "$canonical_dirty" == true ]]; then
+		status="blocked_dirty_canonical"
+		action="Preserve the local changes, reconcile the canonical checkout, then run aidevops update in an attached terminal"
+	elif [[ -n "$canonical_sha" && "$canonical_on_main" != true ]]; then
+		status="canonical_non_main"
+		action="Restore the canonical checkout to main without discarding local history, then run aidevops update in an attached terminal"
+	elif [[ "$canonical_behind" == true ]]; then
+		status="canonical_behind_upstream"
+		action="Wait for auto-update or run aidevops update in an attached terminal"
+	elif [[ "$canonical_ahead" == true ]]; then
+		status="canonical_ahead_upstream"
+		action="Preserve and reconcile the local canonical commits before updating the runtime"
+	elif [[ "$canonical_diverged" == true ]]; then
+		status="canonical_diverged_upstream"
+		action="Preserve and reconcile the divergent canonical history before updating the runtime"
+	elif [[ -n "$deployed_sha" && -n "$canonical_sha" && "$deployed_sha" != "$canonical_sha" ]]; then
+		status="deployed_behind_canonical"
+		action="Run setup.sh --stage ai-session from the canonical checkout"
+	elif [[ -n "$deployed_sha" && -n "$upstream_sha" && "$deployed_sha" == "$upstream_sha" && "$canonical_sha" == "$upstream_sha" ]]; then
+		status="current"
+		action="No action required"
+	elif [[ "$deployed_behind" == true ]]; then
+		status="deployed_behind_upstream"
+		action="Run aidevops update in an attached terminal"
+	fi
+	[[ "$status" == "current" || "$status" == "$UNKNOWN_STATUS" ]] || stale=true
+
+	jq -n \
+		--arg status "$status" --arg action "$action" --arg upstream_ref "$upstream_ref" \
+		--arg canonical_sha "$canonical_sha" --arg upstream_sha "$upstream_sha" --arg deployed_sha "$deployed_sha" \
+		--arg auto_status "$auto_update_status" --arg auto_at "$auto_update_at" \
+		--argjson stale "$stale" --argjson dirty "$canonical_dirty" \
+		--argjson canonical_on_main "$canonical_on_main" --argjson canonical_behind "$canonical_behind" \
+		--argjson canonical_ahead "$canonical_ahead" --argjson canonical_diverged "$canonical_diverged" \
+		--argjson deployed_behind "$deployed_behind" '{
+			status:$status, stale:$stale, canonical_dirty:$dirty, canonical_on_main:$canonical_on_main,
+			canonical_behind_upstream:$canonical_behind, deployed_behind_upstream:$deployed_behind,
+			canonical_ahead_upstream:$canonical_ahead, canonical_diverged_upstream:$canonical_diverged,
+			upstream_ref:$upstream_ref, canonical_sha:$canonical_sha,
+			upstream_sha:$upstream_sha, deployed_sha:$deployed_sha,
+			auto_update_status:$auto_status, auto_update_at:$auto_at,
+			operator_action:$action
+		}'
+	return 0
+}
+
 _observability_overlay_json() {
 	local nmr_state_file="${AIDEVOPS_NMR_REVALIDATION_STATE_FILE:-${HOME}/.aidevops/cache/nmr-revalidation-state.json}"
 	local family_state_file="${PULSE_CHECK_FAILURE_FAMILY_STATE_FILE:-${HOME}/.aidevops/cache/failure-family-remediation.json}"
@@ -49,13 +164,13 @@ _observability_overlay_json() {
 	local family_state="{}"
 	nmr_state=$(_state_file_json "$nmr_state_file")
 	family_state=$(_state_file_json "$family_state_file")
-	jq -n --argjson nmr "$nmr_state" --argjson families "$family_state" '
+	jq -n --arg unknown "$UNKNOWN_STATUS" --argjson nmr "$nmr_state" --argjson families "$family_state" '
 		($nmr.entries // {} | [.[]]) as $entries
 		| {
 			nmr_revalidation: {
 				total: ($entries | length),
 				reason_counts: (reduce $entries[] as $entry ({}; .[$entry.code // "authority"] += 1)),
-				status_counts: (reduce $entries[] as $entry ({}; .[$entry.status // "unknown"] += 1)),
+				status_counts: (reduce $entries[] as $entry ({}; .[$entry.status // $unknown] += 1)),
 				temporary_count: ([$entries[] | select(.class == "temporary")] | length),
 				genuine_authority_count: ([$entries[] | select(.class == "genuine-authority")] | length),
 				oldest_age_seconds: ([$entries[] | try (now - (.label_at | fromdateiso8601) | floor) catch empty] | if length > 0 then max else 0 end)
@@ -130,6 +245,7 @@ main() {
 	local worker_worktree_count="0"
 	local graphql_budget_status=""
 	local runtime_state_file=""
+	local runtime_freshness="{}"
 	local objective_state_file="${AIDEVOPS_OBJECTIVE_STATE_FILE:-$HOME/.aidevops/state/objective-reconciliation.json}"
 	local as_json=0
 	while [[ $# -gt 0 ]]; do
@@ -163,6 +279,7 @@ main() {
 		graphql_budget_status="$("${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh" \
 			status --cached 2>/dev/null || true)"
 	fi
+	runtime_freshness=$(_runtime_freshness_json "$repo_path")
 	runtime_state_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-pulse-runtime-state.XXXXXX") || runtime_state_file=""
 	local projection_status=0
 	local projection_output=""
@@ -181,13 +298,13 @@ main() {
 	local active_claim_json="{}"
 	active_claim_json=$(_active_claim_state_json "$log_dir" "$active_worker_processes")
 	if [[ "$projection_status" -eq 0 && "$as_json" -eq 1 ]] && printf '%s' "$projection_output" | jq empty >/dev/null 2>&1; then
-		projection_output=$(jq -n --argjson base "$projection_output" --argjson overlay "$overlay_json" --argjson claims "$active_claim_json" '
+		projection_output=$(jq -n --argjson base "$projection_output" --argjson overlay "$overlay_json" --argjson claims "$active_claim_json" --argjson freshness "$runtime_freshness" '
 			($base.pre_launch_blockers.dedup_active_claim // 0) as $legacy_claims
 			| ($claims.classification_counts.unverified // 0) as $classified_unverified
 			| ($claims
 				| .classification_counts.unverified = ([$legacy_claims, $classified_unverified] | max)
 				| .zero_worker_actionable = (.zero_worker_actionable or (.active_workers == 0 and $legacy_claims > 0))) as $enriched_claims
-			| $base + $overlay + {active_claim_state:$enriched_claims}')
+			| $base + $overlay + {active_claim_state:$enriched_claims, runtime_freshness:$freshness}')
 	elif [[ "$projection_status" -eq 0 ]]; then
 		projection_output+=$'\n'
 		projection_output+="NMR revalidation: $(printf '%s' "$overlay_json" | jq -c '.nmr_revalidation')"
@@ -195,13 +312,16 @@ main() {
 		projection_output+="Failure-family remediation: $(printf '%s' "$overlay_json" | jq -c '.failure_family_remediation')"
 		projection_output+=$'\n'
 		projection_output+="Active claim state: $(printf '%s' "$active_claim_json" | jq -c '.')"
+		projection_output+=$'\n'
+		projection_output+="Runtime freshness: $(printf '%s' "$runtime_freshness" | jq -c '.')"
 	fi
 	printf '%s\n' "$projection_output"
 	if [[ "$projection_status" -eq 0 && -s "$runtime_state_file" ]] && command -v node >/dev/null 2>&1; then
 		local runtime_tmp=""
 		runtime_tmp=$(mktemp "${TMPDIR:-/tmp}/aidevops-pulse-runtime-overlay.XXXXXX") || runtime_tmp=""
-		if [[ -n "$runtime_tmp" ]] && jq --argjson overlay "$overlay_json" '. + {
+		if [[ -n "$runtime_tmp" ]] && jq --argjson overlay "$overlay_json" --argjson freshness "$runtime_freshness" '. + {
 			nmr_revalidation: $overlay.nmr_revalidation,
+			runtime_freshness: $freshness,
 			failure_family_remediation: {
 				recurrent_count: $overlay.failure_family_remediation.recurrent_count,
 				recovery_candidate_count: $overlay.failure_family_remediation.recovery_candidate_count

@@ -56,6 +56,16 @@ setup_repo() {
 	return 0
 }
 
+setup_synced_repo() {
+	local repo="$1"
+	local remote="$2"
+	git init -q --bare -b main "$remote"
+	setup_repo "$repo"
+	git -C "$repo" remote add origin "$remote"
+	git -C "$repo" push -qu origin main
+	return 0
+}
+
 setup_ahead_repo() {
 	local repo="$1"
 	local remote="$2"
@@ -131,7 +141,15 @@ _migrate_settings_supervisor_to_orchestration() { :; }
 log_info() { :; }
 log_warn() { :; }
 log_error() { :; }
-update_state() { :; }
+LAST_UPDATE_STATUS=""
+update_state() {
+	local action="$1"
+	local version="${2:-}"
+	local status="${3:-success}"
+	: "$action" "$version"
+	LAST_UPDATE_STATUS="$status"
+	return 0
+}
 AGENTS_DIR="$TEST_ROOT/no-agents"
 AIDEVOPS_SKIP_PULSE_RESTART=1
 _AIDEVOPS_UPDATE_TRUE=true
@@ -189,6 +207,45 @@ elif [[ "$(git -C "$auto_behind_repo" rev-parse HEAD)" != "$auto_remote_commit" 
 	fail 'auto update fast-forwards after fetch' 'HEAD does not match fetched commit'
 else
 	pass 'auto update fast-forwards after fetch'
+fi
+
+auto_dirty_behind_repo="$TEST_ROOT/auto-update-dirty-behind"
+auto_dirty_behind_remote="$TEST_ROOT/auto-update-dirty-behind.git"
+auto_dirty_behind_peer="$TEST_ROOT/auto-update-dirty-behind-peer"
+setup_behind_repo "$auto_dirty_behind_repo" "$auto_dirty_behind_remote" "$auto_dirty_behind_peer"
+auto_dirty_behind_commit="$(git -C "$auto_dirty_behind_repo" rev-parse HEAD)"
+printf 'preserved local diagnostic\n' >>"$auto_dirty_behind_repo/VERSION"
+INSTALL_DIR="$auto_dirty_behind_repo"
+LOG_FILE="$TEST_ROOT/auto-update-dirty-behind.log"
+LAST_UPDATE_STATUS=""
+if _cmd_check_git_update 1.0.1 >/dev/null 2>&1; then
+	fail 'auto update reports stale dirty canonical checkout' 'unexpected success'
+elif [[ "$(git -C "$auto_dirty_behind_repo" rev-parse HEAD)" != "$auto_dirty_behind_commit" ]]; then
+	fail 'auto update reports stale dirty canonical checkout' 'HEAD changed'
+elif [[ "$LAST_UPDATE_STATUS" != "runtime_stale_local_changes" ]]; then
+	fail 'auto update reports stale dirty canonical checkout' "status=$LAST_UPDATE_STATUS"
+elif [[ "$(<"$auto_dirty_behind_repo/VERSION")" != *"preserved local diagnostic"* ]]; then
+	fail 'auto update reports stale dirty canonical checkout' 'local diagnostic content changed'
+else
+	pass 'auto update reports stale dirty canonical checkout'
+fi
+
+auto_detached_repo="$TEST_ROOT/auto-update-detached"
+auto_detached_remote="$TEST_ROOT/auto-update-detached.git"
+setup_synced_repo "$auto_detached_repo" "$auto_detached_remote"
+auto_detached_commit="$(git -C "$auto_detached_repo" rev-parse HEAD)"
+git -C "$auto_detached_repo" checkout -q --detach
+INSTALL_DIR="$auto_detached_repo"
+LOG_FILE="$TEST_ROOT/auto-update-detached.log"
+LAST_UPDATE_STATUS=""
+if _cmd_check_git_update 1.0.1 >/dev/null 2>&1; then
+	fail 'auto update rejects detached exact-SHA checkout' 'unexpected success'
+elif [[ "$(git -C "$auto_detached_repo" rev-parse HEAD)" != "$auto_detached_commit" ]]; then
+	fail 'auto update rejects detached exact-SHA checkout' 'HEAD changed'
+elif [[ "$LAST_UPDATE_STATUS" != "runtime_stale_branch" ]]; then
+	fail 'auto update rejects detached exact-SHA checkout' "status=$LAST_UPDATE_STATUS"
+else
+	pass 'auto update rejects detached exact-SHA checkout'
 fi
 
 interactive_repo="$TEST_ROOT/cmd-update-diverged"
@@ -278,6 +335,24 @@ elif [[ "$(git -C "$check_lib_behind_repo" rev-parse HEAD)" != "$check_lib_remot
 	fail 'check library fast-forwards after fetch' 'HEAD does not match fetched commit'
 else
 	pass 'check library fast-forwards after fetch'
+fi
+
+check_lib_detached_repo="$TEST_ROOT/check-lib-detached"
+check_lib_detached_remote="$TEST_ROOT/check-lib-detached.git"
+setup_synced_repo "$check_lib_detached_repo" "$check_lib_detached_remote"
+check_lib_detached_commit="$(git -C "$check_lib_detached_repo" rev-parse HEAD)"
+git -C "$check_lib_detached_repo" checkout -q --detach
+INSTALL_DIR="$check_lib_detached_repo"
+LOG_FILE="$TEST_ROOT/check-lib-detached.log"
+LAST_UPDATE_STATUS=""
+if _cmd_check_git_update 1.0.1 >/dev/null 2>&1; then
+	fail 'check library rejects detached exact-SHA checkout' 'unexpected success'
+elif [[ "$(git -C "$check_lib_detached_repo" rev-parse HEAD)" != "$check_lib_detached_commit" ]]; then
+	fail 'check library rejects detached exact-SHA checkout' 'HEAD changed'
+elif [[ "$LAST_UPDATE_STATUS" != "runtime_stale_branch" ]]; then
+	fail 'check library rejects detached exact-SHA checkout' "status=$LAST_UPDATE_STATUS"
+else
+	pass 'check library rejects detached exact-SHA checkout'
 fi
 
 check_lib_diverged_repo="$TEST_ROOT/check-lib-diverged"

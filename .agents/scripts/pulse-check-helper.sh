@@ -192,6 +192,7 @@ _render_text_report() {
 	local report_json="$1"
 	printf '%s' "$report_json" | jq -r '
 		def percent_text: if . == null then "n/a" else (. | tostring) + "%" end;
+		def unknown: "unknown";
 		"Pulse Check — " + .generated_at,
 		"",
 		"## Current utilisation",
@@ -200,8 +201,10 @@ _render_text_report() {
 		"- Queue scan state: " + (.summary.auto_dispatch_scan_state // "scanned"),
 		"- Current window launches: " + (.summary.worker_launches_in_window | tostring) + "; terminal worker events: " + (.summary.worker_terminal_events_in_window | tostring),
 		"- Recent worker metric events: " + (.summary.recent_worker_events | tostring) + "; " + .inputs.historical_window + " runtime handoff rate: " + (.summary.historical_runtime_handoff_rate | percent_text) + "; delivered success rate: " + (.summary.historical_delivery_success_rate | percent_text),
-		"- GraphQL/API: " + (.summary.graphql_budget_status // "unknown"),
-		"- Runner health: " + (.summary.runner_health // "unknown"),
+		"- GraphQL/API: " + (.summary.graphql_budget_status // unknown),
+		"- Secondary cooldown: " + (.summary.secondary_cooldown_state // unknown),
+		"- Runtime freshness: " + (.summary.runtime_freshness_status // unknown),
+		"- Runner health: " + (.summary.runner_health // unknown),
 		"- Retained supervisor permission blockers: " + (.summary.retained_supervisor_permission_blockers | tostring) + " (advisory only; does not change runner health)",
 		"",
 		"## Findings",

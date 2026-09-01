@@ -175,6 +175,12 @@ chmod +x "${TEST_ROOT}/runner-health.sh"
 
 cat >"${TEST_ROOT}/pulse-diagnose.sh" <<'SH'
 #!/usr/bin/env bash
+if [[ "${PULSE_CHECK_SECONDARY_COOLDOWN_FIXTURE:-}" == "active" ]]; then
+  cat <<'JSON'
+{"graphql_circuit_breaker_trips":0,"reserve_mode_cycles":0,"deferred_optional_stages":1,"secondary_cooldown_state":"active=yes expires_in_s=240 reason=secondary-rate-limit endpoint_family=issues body=secondary recent_secondary_5m=3 cooldown_events=1","cadence_api_risk":"risk=secondary-cooldown"}
+JSON
+  exit 0
+fi
 cat <<'JSON'
 {"graphql_circuit_breaker_trips":0,"reserve_mode_cycles":0,"deferred_optional_stages":0,"secondary_cooldown_state":"active=no","cadence_api_risk":"risk=ok"}
 JSON
@@ -183,6 +189,9 @@ chmod +x "${TEST_ROOT}/pulse-diagnose.sh"
 
 cat >"${BIN_DIR}/gh" <<'SH'
 #!/usr/bin/env bash
+if [[ -n "${PULSE_CHECK_GH_CALL_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"$PULSE_CHECK_GH_CALL_LOG"
+fi
 if [[ " $* " == *" repo view "* ]]; then
   printf 'owner/aidevops\n'
   exit 0
@@ -377,6 +386,55 @@ assert_eq "json reports canonical reconciliation classification" "dirty_or_uncom
 assert_eq "zero-worker active claim is actionable" "true" "$(printf '%s' "$JSON_OUT" | jq -r '.summary.zero_worker_active_claim_actionable')"
 assert_contains "underfill preserves named active-claim evidence" "zero_worker_infrastructure_hold:1" "$JSON_OUT"
 assert_not_contains "json omits canonical branch detail" "origin/develop" "$JSON_OUT"
+
+cat >"${TEST_ROOT}/current-state-stale-runtime.sh" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "dispatch_alive": true,
+  "active_worker_processes": 1,
+  "current_state_guardrails": {"available_slots_last": 5},
+  "pulse_gauges": {"dispatch_capacity_final_max_workers": 6},
+  "worker_outcomes": {"spawned": 0},
+  "runtime_freshness": {
+    "status": "blocked_dirty_canonical",
+    "stale": true,
+    "canonical_dirty": true,
+    "canonical_behind_upstream": true,
+    "deployed_behind_upstream": true,
+    "auto_update_status": "runtime_stale_local_changes",
+    "operator_action": "Preserve the local changes, reconcile the canonical checkout, then run aidevops update in an attached terminal"
+  },
+  "graphql_budget_status": "OK fixture"
+}
+JSON
+SH
+chmod +x "${TEST_ROOT}/current-state-stale-runtime.sh"
+STALE_RUNTIME_JSON=$(env "${COMMON_ENV[@]}" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-stale-runtime.sh" "$HELPER" json 2>&1)
+assert_eq "stale runtime is a first-class finding" "1" "$(printf '%s' "$STALE_RUNTIME_JSON" | jq -r '[.findings[] | select(.id == "pulse-runtime-stale")] | length')"
+assert_eq "stale runtime status is summarized" "blocked_dirty_canonical" "$(printf '%s' "$STALE_RUNTIME_JSON" | jq -r '.summary.runtime_freshness_status')"
+assert_contains "stale runtime preserves safe operator action" "Preserve the local changes" "$STALE_RUNTIME_JSON"
+STALE_RUNTIME_TEXT=$(env "${COMMON_ENV[@]}" \
+	"PULSE_CHECK_CURRENT_STATE_HELPER=${TEST_ROOT}/current-state-stale-runtime.sh" "$HELPER" report 2>&1)
+assert_contains "text report shows runtime freshness" "Runtime freshness: blocked_dirty_canonical" "$STALE_RUNTIME_TEXT"
+
+SECONDARY_GH_CALL_LOG="${TEST_ROOT}/secondary-gh-calls.log"
+rm -f "$SECONDARY_GH_CALL_LOG"
+SECONDARY_JSON=$(env "${COMMON_ENV[@]}" \
+	"PULSE_CHECK_SECONDARY_COOLDOWN_FIXTURE=active" \
+	"PULSE_CHECK_GH_CALL_LOG=${SECONDARY_GH_CALL_LOG}" "$HELPER" json 2>&1)
+assert_eq "secondary cooldown stays distinct from healthy GraphQL budget" "OK fixture" "$(printf '%s' "$SECONDARY_JSON" | jq -r '.summary.graphql_budget_status')"
+assert_eq "secondary cooldown is active in summary" "true" "$(printf '%s' "$SECONDARY_JSON" | jq -r '.summary.secondary_cooldown_active')"
+assert_contains "secondary cooldown emits a dedicated finding" "github-secondary-cooldown-active" "$SECONDARY_JSON"
+assert_contains "secondary cooldown skips the queue scan" "pulse-check-queue-scan-skipped" "$SECONDARY_JSON"
+if [[ -s "$SECONDARY_GH_CALL_LOG" ]]; then
+	assert_eq "secondary cooldown suppresses nonessential GitHub reads" "" "$(<"$SECONDARY_GH_CALL_LOG")"
+else
+	assert_eq "secondary cooldown suppresses nonessential GitHub reads" "" ""
+fi
+SECONDARY_TEXT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_SECONDARY_COOLDOWN_FIXTURE=active" "$HELPER" report 2>&1)
+assert_contains "text report exposes active secondary cooldown" "Secondary cooldown: active=yes" "$SECONDARY_TEXT"
 
 MALFORMED_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_QUEUE_FIXTURE=malformed" "$HELPER" json 2>&1)
 assert_contains "malformed queue emits normalization shortfall" "pulse-eligible-queue-under-target" "$MALFORMED_OUT"

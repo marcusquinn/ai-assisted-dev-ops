@@ -95,6 +95,12 @@ _pulse_gh_err_is_rate_limit() {
 _pulse_verify_rate_limit_live() {
 	local threshold="${1:-100}"
 	local remaining
+	# Once a shared secondary cooldown is active, the corroboration probe is
+	# itself nonessential read pressure. Trust the observed classifier signal
+	# until the cooldown expires instead of producing another HTTP 403.
+	if declare -F _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
+		_gh_secondary_cooldown_preflight read >/dev/null 2>&1 || return 0
+	fi
 	# The REST rate_limit resource does not hit the --label/--search cache.
 	# Failure modes: network error, auth error — treat as "can't verify, trust classifier".
 	remaining=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null) || return 0

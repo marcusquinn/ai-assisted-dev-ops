@@ -58,6 +58,10 @@ end) as $max_workers |
       or (((.source // "") | contains("supervisor-pulse")))))] | length) as $bounded_retained_supervisor_permission_blockers |
 ($progress_blockers.retained_supervisor_permission_total // $bounded_retained_supervisor_permission_blockers | number_or_zero) as $retained_supervisor_permission_blockers |
 ($api.graphql_circuit_breaker_trips // 0 | number_or_zero) as $graphql_trips |
+($api.secondary_cooldown_state // "unknown") as $secondary_cooldown_state |
+($secondary_cooldown_state | contains("active=yes")) as $secondary_cooldown_active |
+($current.runtime_freshness // {}) as $runtime_freshness |
+($runtime_freshness.stale // false) as $runtime_stale |
 {
   generated_at: (now | todateiso8601),
   inputs: {current_window: $window, historical_window: $since, recent_window: $recent},
@@ -90,9 +94,13 @@ end) as $max_workers |
     auto_dispatch_scan_errors: $gh_errors,
     auto_dispatch_scan_state: (if $queue_error == "" then "scanned" else $queue_error end),
     graphql_budget_status: ($current.graphql_budget_status // "unknown"),
+    secondary_cooldown_state: $secondary_cooldown_state,
+    secondary_cooldown_active: $secondary_cooldown_active,
     runner_health: ($runner.finding // "unknown"),
     retained_supervisor_permission_blockers: $retained_supervisor_permission_blockers,
     canonical_reconciliation_refusals: $canonical_reconciliation_refusal_count,
+    runtime_freshness_status: ($runtime_freshness.status // "unknown"),
+    runtime_stale: $runtime_stale,
     zero_worker_active_claim_actionable: $zero_worker_active_claim_actionable,
     recurrent_failure_families: ([$failure_families[] | select((.count // 0) >= $failure_threshold and (.confidence // "low") == "high" and (.family // "") != "other-failure")] | length)
   },
@@ -109,6 +117,7 @@ end) as $max_workers |
       classification: $canonical_reconciliation_classification,
       canonical_recovery_advisory_observed: $canonical_recovery_advisory_observed
     },
+    runtime_freshness: $runtime_freshness,
     active_worker_processes: ($current.active_worker_processes // null),
     active_claim_state: $active_claim_state,
     top_pre_launch_blockers: ($current.top_pre_launch_blockers // [])
@@ -151,10 +160,40 @@ end) as $max_workers |
     graphql_circuit_breaker_trips: ($api.graphql_circuit_breaker_trips // 0),
     reserve_mode_cycles: ($api.reserve_mode_cycles // 0),
     deferred_optional_stages: ($api.deferred_optional_stages // 0),
-    secondary_cooldown_state: ($api.secondary_cooldown_state // "unknown"),
+    secondary_cooldown_state: $secondary_cooldown_state,
     cadence_api_risk: ($api.cadence_api_risk // "unknown")
   },
   findings: ([
+    if $secondary_cooldown_active then
+      finding(
+        "github-secondary-cooldown-active";
+        "high";
+        "GitHub secondary cooldown is active despite available GraphQL budget";
+        [
+          ("graphql_budget_status=" + ($current.graphql_budget_status // "unknown")),
+          ("secondary_cooldown_state=" + $secondary_cooldown_state),
+          ("queue_scan_state=" + (if $queue_error == "" then "scanned" else $queue_error end))
+        ];
+        "Defer nonessential GitHub reads and writes until the shared secondary cooldown expires; preserve only essential safety reads.";
+        false
+      )
+    else empty end,
+    if $runtime_stale then
+      finding(
+        "pulse-runtime-stale";
+        "high";
+        "Merged Pulse fixes are not active in the local runtime";
+        [
+          ("runtime_freshness_status=" + ($runtime_freshness.status // "unknown")),
+          ("canonical_dirty=" + (($runtime_freshness.canonical_dirty // false) | tostring)),
+          ("canonical_behind_upstream=" + (($runtime_freshness.canonical_behind_upstream // false) | tostring)),
+          ("deployed_behind_upstream=" + (($runtime_freshness.deployed_behind_upstream // false) | tostring)),
+          ("auto_update_status=" + ($runtime_freshness.auto_update_status // "unknown"))
+        ];
+        ($runtime_freshness.operator_action // "Verify the canonical checkout and active runtime bundle before attributing live Pulse behaviour to merged source");
+        false
+      )
+    else empty end,
     if $canonical_reconciliation_refusal_count > 0 then
       finding(
         "pulse-canonical-reconciliation-stops";

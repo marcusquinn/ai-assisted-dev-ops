@@ -649,33 +649,8 @@ _cmd_check_stale_agent_redeploy() {
 _cmd_check_git_update() {
 	local remote="$1"
 
-	# The install checkout may contain deliberate local fixes or diagnostics.
-	# Generated setup output belongs outside the source checkout, so unknown
-	# tracked changes are never safe for an unattended updater to discard.
-	if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null || ! git -C "$INSTALL_DIR" diff --cached --quiet 2>/dev/null; then
-		log_warn "Skipping update because tracked local changes exist in $INSTALL_DIR"
-		git -C "$INSTALL_DIR" status --short >>"$LOG_FILE" 2>&1 || true
-		update_state "update" "$remote" "local_changes"
-		return 1
-	fi
-
-	# Ensure we're on the main branch (detached HEAD or stale branch blocks pull)
-	# Mirrors recovery logic from aidevops.sh cmd_update()
-	# See: https://github.com/marcusquinn/aidevops/issues/4142
-	local current_branch
-	current_branch=$(git -C "$INSTALL_DIR" branch --show-current 2>/dev/null || echo "")
-	if [[ "$current_branch" != "main" ]]; then
-		log_info "Not on main branch ($current_branch), switching..."
-		if ! git -C "$INSTALL_DIR" checkout main --quiet 2>>"$LOG_FILE" &&
-			! git -C "$INSTALL_DIR" checkout -b main origin/main --quiet 2>>"$LOG_FILE"; then
-			log_error "Failed to switch to main branch from '$current_branch' in $INSTALL_DIR"
-			update_state "update" "$remote" "branch_switch_failed"
-			return 1
-		fi
-	fi
-
-	# Fetch once, then merge the exact fetched commit. Refuse local-ahead
-	# history so unattended setup never executes unreviewed local commits.
+	# Fetch before evaluating local blockers. A same-version release can still
+	# contain merged script fixes, so VERSION equality is not freshness proof.
 	if ! git -C "$INSTALL_DIR" fetch origin main --quiet 2>>"$LOG_FILE"; then
 		log_error "git fetch failed"
 		update_state "update" "$remote" "fetch_failed"
@@ -685,9 +660,37 @@ _cmd_check_git_update() {
 	local remote_hash=""
 	local_hash=$(git -C "$INSTALL_DIR" rev-parse HEAD 2>>"$LOG_FILE") || return 1
 	remote_hash=$(git -C "$INSTALL_DIR" rev-parse origin/main 2>>"$LOG_FILE") || return 1
-	if [[ "$local_hash" != "$remote_hash" ]] && git -C "$INSTALL_DIR" merge-base --is-ancestor "$remote_hash" "$local_hash" 2>/dev/null; then
+	# The install checkout may contain deliberate local fixes or diagnostics.
+	# Preserve them and record that they are blocking activation of upstream.
+	if ! git -C "$INSTALL_DIR" diff --quiet 2>/dev/null || ! git -C "$INSTALL_DIR" diff --cached --quiet 2>/dev/null; then
+		local dirty_status="local_changes"
+		if [[ "$local_hash" != "$remote_hash" ]]; then
+			dirty_status="runtime_stale_local_changes"
+		fi
+		log_warn "Skipping update because tracked local changes exist in the canonical checkout"
+		git -C "$INSTALL_DIR" status --short >>"$LOG_FILE" 2>&1 || true
+		update_state "update" "$remote" "$dirty_status"
+		return 1
+	fi
+	local current_branch=""
+	current_branch=$(git -C "$INSTALL_DIR" branch --show-current 2>/dev/null || true)
+	if [[ "$current_branch" != "main" ]]; then
+		log_error "Runtime is stale because the canonical checkout is not on main"
+		update_state "update" "$remote" "runtime_stale_branch"
+		return 1
+	fi
+	if [[ "$local_hash" == "$remote_hash" ]]; then
+		return 0
+	fi
+
+	if git -C "$INSTALL_DIR" merge-base --is-ancestor "$remote_hash" "$local_hash" 2>/dev/null; then
 		log_error "Local commits exist on main; refusing unattended update"
-		update_state "update" "$remote" "local_commits"
+		update_state "update" "$remote" "runtime_stale_local_commits"
+		return 1
+	fi
+	if ! git -C "$INSTALL_DIR" merge-base --is-ancestor "$local_hash" "$remote_hash" 2>/dev/null; then
+		log_error "Canonical main has diverged from origin/main; refusing unattended update"
+		update_state "update" "$remote" "runtime_stale_diverged"
 		return 1
 	fi
 
@@ -856,7 +859,11 @@ cmd_check() {
 	fi
 
 	if [[ "$current" == "$remote" ]]; then
-		log_info "Already up to date (v$current)"
+		log_info "Version matches upstream (v$current); verifying commit freshness"
+		if ! _cmd_check_git_update "$remote"; then
+			run_freshness_checks
+			return 1
+		fi
 		update_state "check" "$current" "up_to_date"
 		_cmd_check_stale_agent_redeploy "$current"
 		run_freshness_checks
