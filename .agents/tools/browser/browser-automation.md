@@ -42,6 +42,11 @@ AUTOMATE?
   AI agent CLI-first → playwright-cli (Microsoft) or agent-browser (Vercel, Rust)
   Just fast → Playwright direct (0.9s form fill)
 
+EXTENSION UI QA?
+  chrome://extensions or arbitrary installed user extension → Stop before browser actions; unsupported by Playwriter
+  Project-owned unpacked extension with existing runner → Headed Chromium persistent-context runner → extension-dev/testing.md
+  No existing extension runner → Manual verification; do not create one or launch a replacement profile
+
 DEBUG/INSPECT → Chrome DevTools MCP (dev-browser :9222 or any Playwright instance)
 
 ANTI-DETECT?

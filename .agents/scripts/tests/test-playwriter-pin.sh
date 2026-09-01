@@ -150,3 +150,29 @@ assert [reply_disposition(message) for message in fixture] == [
 ]
 print("PASS Playwriter chat attribution contract recognizes support, operator, and ambiguous messages")
 PY
+
+python3 - "$REPO_ROOT" <<'PY'
+import pathlib
+import sys
+
+docs_root = pathlib.Path(sys.argv[1]) / ".agents/tools/browser"
+playwriter_doc = (docs_root / "playwriter.md").read_text()
+automation_doc = (docs_root / "browser-automation.md").read_text()
+extension_testing_doc = (docs_root / "extension-dev/testing.md").read_text()
+
+required_playwriter_contract = (
+    "Classify an extension UI target before activating Playwriter",
+    "`chrome://extensions` and arbitrary installed user-extension pages are not\n   supported Playwriter QA targets",
+    "do not activate Playwriter, enumerate tabs, or navigate",
+    "project-owned unpacked extension with an existing runner",
+    "Do not create test infrastructure or launch a replacement browser/profile",
+)
+for requirement in required_playwriter_contract:
+    assert requirement in playwriter_doc, requirement
+
+assert "EXTENSION UI QA?" in automation_doc
+assert "unsupported by Playwriter" in automation_doc
+assert "Project-owned unpacked extension with existing runner" in extension_testing_doc
+assert "have no supported Playwriter route" in extension_testing_doc
+print("PASS extension QA docs refuse unsupported pages and retain the existing-runner route")
+PY
