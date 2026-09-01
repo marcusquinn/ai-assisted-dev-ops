@@ -235,11 +235,13 @@ the store exceeds 5 GiB, filesystem free space is below 10 GiB, or filesystem
 free space is below 10 percent. If bounded aggregate sizing times out, the pass
 enters conservative pressure mode with `aggregate-size-unavailable` rather than
 silently disabling the store limit; exact per-bucket sizing and all terminal
-evidence remain mandatory before deletion. One pass scans at most 50 rotating
-inventory entries, stops after a 120-second classification deadline, and applies
-at most 20 candidates or 5 GiB. A persistent cursor advances after a deadline
-stop so large inventories cannot starve later entries. Operators may tune these
-soft limits with:
+evidence remain mandatory before deletion. One pass cheaply enumerates paths,
+then validates and classifies at most 50 rotating inventory entries inside a
+120-second deadline, and applies at most 20 candidates or 5 GiB. Expensive
+per-archive Git validation is limited to that cursor window and bounded by the
+same deadline. A persistent cursor advances after a deadline stop so large
+inventories cannot starve later entries. Operators may tune these soft limits
+with:
 
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS`
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN`

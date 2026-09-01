@@ -79,7 +79,9 @@ _WT_RECOVERY_FORMAT="$_WT_RECOVERY_FORMAT_V2"
 _WT_RECOVERY_DIR_NAME=".aidevops-worktree-recovery"
 _WT_RECOVERY_COMPLETE_MARKER="archive-complete"
 _WT_RECOVERY_STORAGE_OWNER="framework"
+_WT_RECOVERY_STORAGE_OWNER_JOINT="joint"
 _WT_RECOVERY_ROOT_UNAVAILABLE="$_WT_STATE_UNAVAILABLE"
+_WT_PLATFORM_DARWIN="Darwin"
 _WT_RECOVERY_BRANCH_DETACHED="detached"
 _WT_RECOVERY_OUTCOME_PENDING="pending"
 _WT_RECOVERY_OUTCOME_REMOVED="removed"
@@ -816,8 +818,27 @@ _worktree_write_recovery_identity() {
 	return 0
 }
 
+_worktree_recovery_run_before_epoch() {
+	local deadline_epoch="$1"
+	shift
+	local current_epoch=0
+	local remaining_seconds=0
+
+	if [[ "$deadline_epoch" -eq 0 ]]; then
+		"$@"
+		return $?
+	fi
+	current_epoch=$(date +%s) || return 1
+	remaining_seconds=$((deadline_epoch - current_epoch))
+	[[ "$remaining_seconds" -gt 0 ]] || return 124
+	declare -F timeout_sec >/dev/null 2>&1 || return 124
+	timeout_sec "$remaining_seconds" "$@"
+	return $?
+}
+
 _worktree_recovery_archive_is_valid() {
 	local archive_path="$1"
+	local deadline_epoch="${2:-0}"
 	local recovery_dir=""
 	local recovery_admin=""
 	local recovery_admin_real=""
@@ -845,12 +866,16 @@ _worktree_recovery_archive_is_valid() {
 	fi
 	real_git=$(_worktree_cleanup_real_git) || return 1
 	recovery_admin_real=$(cd "$recovery_admin" 2>/dev/null && pwd -P) || return 1
-	actual_admin=$("$real_git" -C "$archive_path" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+	actual_admin=$(_worktree_recovery_run_before_epoch "$deadline_epoch" \
+		"$real_git" -C "$archive_path" rev-parse --absolute-git-dir 2>/dev/null) || return $?
 	actual_admin=$(cd "$actual_admin" 2>/dev/null && pwd -P) || return 1
 	[[ "$actual_admin" == "$recovery_admin_real" ]] || return 1
-	actual_head=$("$real_git" -C "$archive_path" rev-parse --verify HEAD 2>/dev/null) || return 1
+	actual_head=$(_worktree_recovery_run_before_epoch "$deadline_epoch" \
+		"$real_git" -C "$archive_path" rev-parse --verify HEAD 2>/dev/null) || return $?
 	[[ "$actual_head" == "$expected_head" ]] || return 1
-	"$real_git" -C "$archive_path" status --porcelain=v1 -z --untracked-files=all >/dev/null 2>&1 || return 1
+	_worktree_recovery_run_before_epoch "$deadline_epoch" \
+		"$real_git" -C "$archive_path" status --porcelain=v1 -z --untracked-files=all \
+		>/dev/null 2>&1 || return $?
 	return 0
 }
 
@@ -916,13 +941,14 @@ _worktree_legacy_recovery_root() {
 	if [[ -z "$platform" ]]; then
 		platform=$(uname -s 2>/dev/null) || return 1
 	fi
-	[[ "$platform" != "Darwin" ]] || return 1
+	[[ "$platform" != "$_WT_PLATFORM_DARWIN" ]] || return 1
 	printf '%s/.Trash\n' "$HOME"
 	return 0
 }
 
 _worktree_legacy_recovery_bucket_is_valid() {
 	local bucket="$1"
+	local deadline_epoch="${2:-0}"
 	local recovery_dir="${bucket}/${_WT_RECOVERY_DIR_NAME}"
 	local recorded_gitdir=""
 	local archive_path=""
@@ -934,7 +960,7 @@ _worktree_legacy_recovery_bucket_is_valid() {
 	*) return 1 ;;
 	esac
 	[[ "${archive_path%/*}" == "$bucket" ]] || return 1
-	_worktree_recovery_archive_is_valid "$archive_path" || return 1
+	_worktree_recovery_archive_is_valid "$archive_path" "$deadline_epoch" || return $?
 	return 0
 }
 
@@ -976,6 +1002,67 @@ _worktree_recovery_storage_contract_is_valid() {
 	return 0
 }
 
+_worktree_recovery_inventory_bucket_state() {
+	local bucket="$1"
+	local root_real="$2"
+	local deadline_epoch="${3:-0}"
+	local completion=""
+	local format=""
+	local state="unknown"
+	local validation_status=1
+
+	if [[ -d "$bucket" && ! -L "$bucket" &&
+		-d "$bucket/${_WT_RECOVERY_DIR_NAME}" &&
+		! -L "$bucket/${_WT_RECOVERY_DIR_NAME}" &&
+		-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
+		! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
+		-f "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" &&
+		! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" ]]; then
+		IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
+		IFS= read -r completion < \
+			"$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || completion=""
+		validation_status=1
+		if _worktree_recovery_format_is_supported "$format" &&
+			[[ "$completion" == "$format" ]] &&
+			_worktree_recovery_storage_contract_is_valid "$bucket" "$root_real"; then
+			validation_status=0
+			_worktree_legacy_recovery_bucket_is_valid "$bucket" "$deadline_epoch" || validation_status=$?
+			[[ "$validation_status" -ne 0 ]] || state="attributed"
+		fi
+	elif [[ -d "$bucket" && ! -L "$bucket" &&
+		-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
+		! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" ]]; then
+		IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
+		validation_status=1
+		if [[ "$format" == "$_WT_RECOVERY_FORMAT_V1" ]] &&
+			! _worktree_recovery_extended_metadata_is_present "$bucket"; then
+			validation_status=0
+			_worktree_legacy_recovery_bucket_is_valid "$bucket" "$deadline_epoch" || validation_status=$?
+			[[ "$validation_status" -ne 0 ]] || state="attributed-legacy"
+		fi
+	fi
+	[[ "$validation_status" -ne 124 ]] || return 124
+	printf '%s\n' "$state"
+	return 0
+}
+
+_worktree_recovery_inventory_paths_root() {
+	local root_path="$1"
+	local store_role="$2"
+	local root_owner="$3"
+	local root_real="$root_path"
+	local bucket=""
+
+	[[ -d "$root_path" && ! -L "$root_path" ]] || return 0
+	root_real=$(cd "$root_path" 2>/dev/null && pwd -P) || return 1
+	for bucket in "$root_real"/aidevops-worktree-cleanup-*; do
+		[[ -e "$bucket" || -L "$bucket" ]] || continue
+		printf 'bucket\t%s\t%s\t%s\n' \
+			"$store_role" "$root_owner" "$bucket"
+	done
+	return 0
+}
+
 _worktree_recovery_inventory_root() {
 	local root_path="$1"
 	local store_role="$2"
@@ -983,8 +1070,6 @@ _worktree_recovery_inventory_root() {
 	local root_real="$root_path"
 	local root_state="missing"
 	local bucket=""
-	local completion=""
-	local format=""
 	local state="unknown"
 
 	if [[ -d "$root_path" ]]; then
@@ -998,33 +1083,7 @@ _worktree_recovery_inventory_root() {
 	[[ "$root_state" == "present" ]] || return 0
 	for bucket in "$root_real"/aidevops-worktree-cleanup-*; do
 		[[ -e "$bucket" || -L "$bucket" ]] || continue
-		state="unknown"
-		if [[ -d "$bucket" && ! -L "$bucket" &&
-			-d "$bucket/${_WT_RECOVERY_DIR_NAME}" &&
-			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}" &&
-			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
-			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
-			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" &&
-			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" ]]; then
-			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
-			IFS= read -r completion < \
-				"$bucket/${_WT_RECOVERY_DIR_NAME}/${_WT_RECOVERY_COMPLETE_MARKER}" || completion=""
-			if _worktree_recovery_format_is_supported "$format" &&
-				[[ "$completion" == "$format" ]] &&
-				_worktree_recovery_storage_contract_is_valid "$bucket" "$root_real" &&
-				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
-				state="attributed"
-			fi
-		elif [[ -d "$bucket" && ! -L "$bucket" &&
-			-f "$bucket/${_WT_RECOVERY_DIR_NAME}/format" &&
-			! -L "$bucket/${_WT_RECOVERY_DIR_NAME}/format" ]]; then
-			IFS= read -r format <"$bucket/${_WT_RECOVERY_DIR_NAME}/format" || format=""
-			if [[ "$format" == "$_WT_RECOVERY_FORMAT_V1" ]] &&
-				! _worktree_recovery_extended_metadata_is_present "$bucket" &&
-				_worktree_legacy_recovery_bucket_is_valid "$bucket"; then
-				state="attributed-legacy"
-			fi
-		fi
+		state=$(_worktree_recovery_inventory_bucket_state "$bucket" "$root_real") || return 1
 		printf 'bucket\t%s\t%s\t%s\t%s\n' \
 			"$store_role" "$_WT_RECOVERY_STORAGE_OWNER" "$state" "$bucket"
 	done
@@ -1037,16 +1096,16 @@ worktree_recovery_inventory() {
 	local platform="${1:-}"
 	local current_root=""
 	local current_root_compare=""
-	local current_owner="framework"
+	local current_owner="$_WT_RECOVERY_STORAGE_OWNER"
 	local legacy_root=""
 	local legacy_root_compare=""
 
 	if [[ -z "$platform" ]]; then
 		platform=$(uname -s 2>/dev/null) || return 1
 	fi
-	if [[ "$platform" == "Darwin" ||
+	if [[ "$platform" == "$_WT_PLATFORM_DARWIN" ||
 		-n "${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}" ]]; then
-		current_owner="joint"
+		current_owner="$_WT_RECOVERY_STORAGE_OWNER_JOINT"
 	fi
 	current_root=$(_worktree_recovery_store_root "$platform") || return 1
 	current_root_compare="$current_root"
@@ -1060,7 +1119,44 @@ worktree_recovery_inventory() {
 			legacy_root_compare=$(cd "$legacy_root" 2>/dev/null && pwd -P) || return 1
 		fi
 		if [[ "$legacy_root_compare" != "$current_root_compare" ]]; then
-			_worktree_recovery_inventory_root "$legacy_root" "legacy" "joint" || return 1
+			_worktree_recovery_inventory_root "$legacy_root" "legacy" \
+				"$_WT_RECOVERY_STORAGE_OWNER_JOINT" || return 1
+		fi
+	fi
+	return 0
+}
+
+# Cheap path-only enumeration for bounded consumers. Bucket attribution remains
+# fail-closed and must be performed separately inside the consumer's work window.
+worktree_recovery_inventory_paths() {
+	local platform="${1:-}"
+	local current_root=""
+	local current_root_compare=""
+	local current_owner="$_WT_RECOVERY_STORAGE_OWNER"
+	local legacy_root=""
+	local legacy_root_compare=""
+
+	if [[ -z "$platform" ]]; then
+		platform=$(uname -s 2>/dev/null) || return 1
+	fi
+	if [[ "$platform" == "$_WT_PLATFORM_DARWIN" ||
+		-n "${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}" ]]; then
+		current_owner="$_WT_RECOVERY_STORAGE_OWNER_JOINT"
+	fi
+	current_root=$(_worktree_recovery_store_root "$platform") || return 1
+	current_root_compare="$current_root"
+	if [[ -d "$current_root" ]]; then
+		current_root_compare=$(cd "$current_root" 2>/dev/null && pwd -P) || return 1
+	fi
+	_worktree_recovery_inventory_paths_root "$current_root" "current" "$current_owner" || return 1
+	if legacy_root=$(_worktree_legacy_recovery_root "$platform"); then
+		legacy_root_compare="$legacy_root"
+		if [[ -d "$legacy_root" ]]; then
+			legacy_root_compare=$(cd "$legacy_root" 2>/dev/null && pwd -P) || return 1
+		fi
+		if [[ "$legacy_root_compare" != "$current_root_compare" ]]; then
+			_worktree_recovery_inventory_paths_root "$legacy_root" "legacy" \
+				"$_WT_RECOVERY_STORAGE_OWNER_JOINT" || return 1
 		fi
 	fi
 	return 0

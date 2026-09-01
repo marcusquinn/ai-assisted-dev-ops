@@ -25,7 +25,11 @@ WORKTREE_RECOVERY_MAINTENANCE_BUCKET_COUNT=0
 WORKTREE_RECOVERY_MAINTENANCE_CURSOR_BEFORE=0
 WORKTREE_RECOVERY_MAINTENANCE_CURSOR_AFTER=0
 WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS=0
+WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EPOCH=0
 WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=false
+WORKTREE_RECOVERY_MAINTENANCE_REASON_UNKNOWN_ARCHIVE="unknown-archive"
+WORKTREE_RECOVERY_MAINTENANCE_REASON_SIZING_UNAVAILABLE="sizing-unavailable"
+WORKTREE_RECOVERY_MAINTENANCE_REASON_CLASSIFICATION_UNAVAILABLE="classification-unavailable"
 WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE=0
 WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING=0
 WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION=0
@@ -220,17 +224,16 @@ _worktree_recovery_maintenance_inventory_file() {
 	local record_type=""
 	local role=""
 	local owner=""
-	local state=""
 	local path=""
 
 	: >"$output_path" || return 1
-	inventory=$(GIT_OPTIONAL_LOCKS=0 worktree_recovery_inventory "$platform") || return 1
+	inventory=$(GIT_OPTIONAL_LOCKS=0 worktree_recovery_inventory_paths "$platform") || return 1
 	while IFS= read -r raw_record; do
 		record_type="${raw_record%%$'\t'*}"
 		[[ "$record_type" == "bucket" ]] || continue
-		IFS=$'\t' read -r record_type role owner state path <<<"$raw_record"
-		[[ "$role" == "current" && "$owner" == "framework" ]] || continue
-		printf '%s\t%s\n' "$state" "$path" >>"$output_path" || return 1
+		IFS=$'\t' read -r record_type role owner path <<<"$raw_record"
+		[[ "$role" == "current" && "$owner" == "$_WT_RECOVERY_STORAGE_OWNER" ]] || continue
+		printf '%s\n' "$path" >>"$output_path" || return 1
 	done <<<"$inventory"
 	return 0
 }
@@ -273,32 +276,32 @@ _worktree_recovery_maintenance_record_reason() {
 	local safe_reason=""
 
 	case "$reason" in
-		unknown-archive) safe_reason="unknown_archive" ;;
-		sizing-unavailable) safe_reason="sizing_unavailable" ;;
-		classification-unavailable) safe_reason="classification_unavailable" ;;
-		identity-or-size-changed) safe_reason="identity_or_size_changed" ;;
-		required-evidence-unavailable) safe_reason="required_evidence_unavailable" ;;
-		unrecognised-evidence-state) safe_reason="unrecognised_evidence_state" ;;
-		age-unavailable) safe_reason="age_unavailable" ;;
-		archive-worktree-dirty) safe_reason="archive_worktree_dirty" ;;
-		active-git-worktree-reference) safe_reason="active_git_worktree_reference" ;;
-		active-registry-owner) safe_reason="active_registry_owner" ;;
-		active-session-claim) safe_reason="active_session_claim" ;;
-		active-process-reference) safe_reason="active_process_reference" ;;
-		open-pull-request) safe_reason="open_pull_request" ;;
-		source-removal-not-complete) safe_reason="source_removal_not_complete" ;;
-		detached-or-unresolved-branch) safe_reason="detached_or_unresolved_branch" ;;
-		exact-commit-not-merged) safe_reason="exact_commit_not_merged" ;;
-		linked-task-not-closed) safe_reason="linked_task_not_closed" ;;
-		retention-policy) safe_reason="retention_policy" ;;
-		selection-limit) safe_reason="selection_limit" ;;
-		*)
-			if [[ "$disposition" == "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" ]]; then
-				safe_reason="protected_other"
-			else
-				safe_reason="classification_unavailable"
-			fi
-			;;
+	unknown-archive) safe_reason="unknown_archive" ;;
+	sizing-unavailable) safe_reason="sizing_unavailable" ;;
+	classification-unavailable) safe_reason="classification_unavailable" ;;
+	identity-or-size-changed) safe_reason="identity_or_size_changed" ;;
+	required-evidence-unavailable) safe_reason="required_evidence_unavailable" ;;
+	unrecognised-evidence-state) safe_reason="unrecognised_evidence_state" ;;
+	age-unavailable) safe_reason="age_unavailable" ;;
+	archive-worktree-dirty) safe_reason="archive_worktree_dirty" ;;
+	active-git-worktree-reference) safe_reason="active_git_worktree_reference" ;;
+	active-registry-owner) safe_reason="active_registry_owner" ;;
+	active-session-claim) safe_reason="active_session_claim" ;;
+	active-process-reference) safe_reason="active_process_reference" ;;
+	open-pull-request) safe_reason="open_pull_request" ;;
+	source-removal-not-complete) safe_reason="source_removal_not_complete" ;;
+	detached-or-unresolved-branch) safe_reason="detached_or_unresolved_branch" ;;
+	exact-commit-not-merged) safe_reason="exact_commit_not_merged" ;;
+	linked-task-not-closed) safe_reason="linked_task_not_closed" ;;
+	retention-policy) safe_reason="retention_policy" ;;
+	selection-limit) safe_reason="selection_limit" ;;
+	*)
+		if [[ "$disposition" == "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" ]]; then
+			safe_reason="protected_other"
+		else
+			safe_reason="classification_unavailable"
+		fi
+		;;
 	esac
 	printf '%s\n' "$safe_reason" >>"$output_path"
 	return $?
@@ -511,6 +514,89 @@ _worktree_recovery_maintenance_select_candidate() {
 	return 0
 }
 
+_worktree_recovery_maintenance_start_deadline() {
+	local deadline_seconds="$1"
+	local started_epoch=0
+
+	started_epoch=$(date +%s) || return 1
+	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS="$deadline_seconds"
+	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EPOCH=$((started_epoch + deadline_seconds))
+	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=false
+	return 0
+}
+
+_worktree_recovery_maintenance_run_function_before_epoch() {
+	local deadline_epoch="$1"
+	shift
+	local current_epoch=0
+	local command_pid=0
+	local command_pgid=0
+	local command_group=""
+	local monitor_was_enabled=false
+
+	if [[ "$deadline_epoch" -eq 0 ]]; then
+		"$@"
+		return $?
+	fi
+	current_epoch=$(date +%s) || return 1
+	[[ "$current_epoch" -lt "$deadline_epoch" ]] || return 124
+	[[ $- == *m* ]] && monitor_was_enabled=true
+	set -m
+	"$@" &
+	command_pid=$!
+	$monitor_was_enabled && set -m || set +m
+	command_pgid="$command_pid"
+	command_group="-${command_pgid}"
+	while kill -0 "$command_pid" 2>/dev/null; do
+		current_epoch=$(date +%s) || current_epoch="$deadline_epoch"
+		if [[ "$current_epoch" -ge "$deadline_epoch" ]]; then
+			kill -TERM -- "$command_group" 2>/dev/null || true
+			sleep 0.2
+			if kill -0 -- "$command_group" 2>/dev/null; then
+				kill -KILL -- "$command_group" 2>/dev/null || true
+			fi
+			wait "$command_pid" 2>/dev/null || true
+			return 124
+		fi
+		sleep 0.1
+	done
+	wait "$command_pid"
+	return $?
+}
+
+_worktree_recovery_maintenance_mark_unknown_archive() {
+	local reasons_path="$1"
+
+	WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
+	WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE + 1))
+	_worktree_recovery_maintenance_record_reason "$reasons_path" \
+		"$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" \
+		"$WORKTREE_RECOVERY_MAINTENANCE_REASON_UNKNOWN_ARCHIVE"
+	return $?
+}
+
+_worktree_recovery_maintenance_mark_unknown_sizing() {
+	local reasons_path="$1"
+
+	WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
+	WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING + 1))
+	_worktree_recovery_maintenance_record_reason "$reasons_path" \
+		"$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" \
+		"$WORKTREE_RECOVERY_MAINTENANCE_REASON_SIZING_UNAVAILABLE"
+	return $?
+}
+
+_worktree_recovery_maintenance_mark_unknown_classification() {
+	local reasons_path="$1"
+
+	WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
+	WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION + 1))
+	_worktree_recovery_maintenance_record_reason "$reasons_path" \
+		"$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" \
+		"$WORKTREE_RECOVERY_MAINTENANCE_REASON_CLASSIFICATION_UNAVAILABLE"
+	return $?
+}
+
 _worktree_recovery_maintenance_scan() {
 	local ordered_path="$1"
 	local selected_path="$2"
@@ -521,61 +607,76 @@ _worktree_recovery_maintenance_scan() {
 	local pressure_active="$7"
 	local reasons_path="$8"
 	local deadline_seconds="$9"
-	local raw_record=""
-	local state=""
-	local bucket_path=""
-	local measured=""
-	local bytes=""
-	local confidence=""
-	local entry_json=""
-	local disposition=""
-	local primary_reason=""
-	local started_epoch=0
-	local deadline_epoch=0
+	local deadline_epoch="${10}"
+	local raw_record="" state="" bucket_path="" measured=""
+	local bytes="" confidence="" entry_json="" disposition="" primary_reason=""
 	local current_epoch=0
+	local remaining_seconds=0
+	local state_status=0
+	local entry_status=0
 
 	_worktree_recovery_maintenance_reset_scan_counters || return 1
-	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS="$deadline_seconds"
-	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=false
-	started_epoch=$(date +%s) || return 1
-	deadline_epoch=$((started_epoch + deadline_seconds))
+	[[ "$deadline_seconds" -eq "$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS" ]] || return 1
 	: >"$selected_path" || return 1
 	while IFS= read -r raw_record; do
 		[[ "$WORKTREE_RECOVERY_MAINTENANCE_SCANNED" -lt "$max_scan" ]] || break
-		if [[ "$WORKTREE_RECOVERY_MAINTENANCE_SCANNED" -gt 0 ]]; then
-			current_epoch=$(date +%s) || return 1
-			if [[ "$current_epoch" -ge "$deadline_epoch" ]]; then
-				WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
-				break
-			fi
+		current_epoch=$(date +%s) || return 1
+		if [[ "$current_epoch" -ge "$deadline_epoch" ]]; then
+			WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+			break
 		fi
-		IFS=$'\t' read -r state bucket_path <<<"$raw_record"
+		bucket_path="$raw_record"
 		WORKTREE_RECOVERY_MAINTENANCE_SCANNED=$((WORKTREE_RECOVERY_MAINTENANCE_SCANNED + 1))
+		state_status=0
+		state=$(_worktree_recovery_inventory_bucket_state "$bucket_path" \
+			"${bucket_path%/*}" "$deadline_epoch") || state_status=$?
+		if [[ "$state_status" -eq 124 ]]; then
+			WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+			_worktree_recovery_maintenance_mark_unknown_archive "$reasons_path" || return 1
+			break
+		elif [[ "$state_status" -ne 0 ]]; then
+			return 1
+		fi
 		if [[ "$state" != "attributed" ]]; then
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE + 1))
-			_worktree_recovery_maintenance_record_reason "$reasons_path" "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" "unknown-archive" || return 1
+			_worktree_recovery_maintenance_mark_unknown_archive "$reasons_path" || return 1
 			continue
 		fi
-		measured=$(_worktree_recovery_measure_path "$bucket_path") || return 1
+		current_epoch=$(date +%s) || return 1
+		remaining_seconds=$((deadline_epoch - current_epoch))
+		if [[ "$remaining_seconds" -le 0 ]]; then
+			WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+			_worktree_recovery_maintenance_mark_unknown_sizing "$reasons_path" || return 1
+			break
+		fi
+		measured=$(_worktree_recovery_measure_path "$bucket_path" \
+			"$((remaining_seconds * 10))") || return 1
 		IFS='|' read -r bytes confidence _ <<<"$measured"
 		if [[ "$confidence" != "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" || ! "$bytes" =~ ^[0-9]+$ ]]; then
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING + 1))
-			_worktree_recovery_maintenance_record_reason "$reasons_path" "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" "sizing-unavailable" || return 1
+			_worktree_recovery_maintenance_mark_unknown_sizing "$reasons_path" || return 1
 			continue
 		fi
-		if ! entry_json=$(_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" "$bytes"); then
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION + 1))
-			_worktree_recovery_maintenance_record_reason "$reasons_path" "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" "classification-unavailable" || return 1
+		entry_status=0
+		entry_json=$(_worktree_recovery_maintenance_run_function_before_epoch "$deadline_epoch" \
+			_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" "$bytes") || entry_status=$?
+		if [[ "$entry_status" -eq 124 ]]; then
+			WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+			_worktree_recovery_maintenance_mark_unknown_classification "$reasons_path" || return 1
+			break
+		elif [[ "$entry_status" -ne 0 ]]; then
+			_worktree_recovery_maintenance_mark_unknown_classification "$reasons_path" || return 1
 			continue
+		fi
+		current_epoch=$(date +%s) || return 1
+		if [[ "$current_epoch" -ge "$deadline_epoch" ]]; then
+			WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+			_worktree_recovery_maintenance_mark_unknown_classification "$reasons_path" || return 1
+			break
 		fi
 		disposition=$(printf '%s\n' "$entry_json" | jq -r '.disposition') || return 1
 		if [[ "$disposition" == "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" ]]; then
 			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
 			primary_reason=$(printf '%s\n' "$entry_json" | jq -r '.reasons[0] // empty') || return 1
-			if [[ "$primary_reason" == "sizing-unavailable" ]]; then
+			if [[ "$primary_reason" == "$WORKTREE_RECOVERY_MAINTENANCE_REASON_SIZING_UNAVAILABLE" ]]; then
 				WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING + 1))
 			else
 				WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION + 1))
@@ -744,6 +845,7 @@ _worktree_recovery_maintenance_prepare_selection() {
 	retention_seconds=$((retention_days * 86400))
 	pressure_active=$(printf '%s\n' "$limits_json" | jq -r '.pressure.active') || return 1
 	deadline_seconds=$(printf '%s\n' "$limits_json" | jq -r '.deadline_seconds') || return 1
+	_worktree_recovery_maintenance_start_deadline "$deadline_seconds" || return 1
 	_worktree_recovery_maintenance_create_selection_temp_files || return 1
 	inventory_path="$WORKTREE_RECOVERY_MAINTENANCE_TEMP_INVENTORY"
 	ordered_path="$WORKTREE_RECOVERY_MAINTENANCE_TEMP_ORDERED"
@@ -789,7 +891,7 @@ _worktree_recovery_maintenance_prepare_selection() {
 	if ! _worktree_recovery_maintenance_order_inventory "$inventory_path" "$ordered_path" "$offset" ||
 		! _worktree_recovery_maintenance_scan "$ordered_path" "$selected_path" "$scan_limit" \
 			"$max_candidates" "$max_bytes" "$retention_seconds" "$pressure_active" "$reasons_path" \
-			"$deadline_seconds"; then
+			"$deadline_seconds" "$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EPOCH"; then
 		rm -f "$inventory_path" "$ordered_path" "$selected_path" "$reasons_path"
 		return 1
 	fi
@@ -980,7 +1082,7 @@ worktree_recovery_maintenance_run() {
 	fi
 	command -v jq >/dev/null 2>&1 || return 1
 	platform=$(uname -s 2>/dev/null) || return 1
-	if [[ "$platform" == "Darwin" || -n "${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}" ]]; then
+	if [[ "$platform" == "$_WT_PLATFORM_DARWIN" || -n "${AIDEVOPS_WORKTREE_TRASH_ROOT:-${AIDEVOPS_ORPHAN_TRASH_ROOT:-}}" ]]; then
 		jq -cn --arg schema "$WORKTREE_RECOVERY_MAINTENANCE_RUN_SCHEMA" \
 			'{schema:$schema,outcome:"joint-store-skipped",reclaimed_bytes:0}'
 		return 0
