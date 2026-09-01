@@ -92,10 +92,11 @@ _runtime_freshness_json() {
 	local repo_path="$1"
 	local agents_path="${AIDEVOPS_RUNTIME_AGENTS_PATH:-${AIDEVOPS_AGENTS_DIR:-${HOME}/.aidevops/agents}}"
 	local manifest_file="${AIDEVOPS_RUNTIME_MANIFEST_FILE:-${agents_path}/.bundle-manifest}"
+	local active_manifest_file="${AIDEVOPS_ACTIVE_RUNTIME_MANIFEST_FILE:-${HOME}/.aidevops/agents/.bundle-manifest}"
 	local stamp_file="${AIDEVOPS_DEPLOYED_SHA_FILE:-${HOME}/.aidevops/.deployed-sha}"
 	local update_state_file="${AIDEVOPS_AUTO_UPDATE_STATE_FILE:-${HOME}/.aidevops/cache/auto-update-state.json}"
 	local upstream_ref="${AIDEVOPS_RUNTIME_UPSTREAM_REF:-}"
-	local canonical_sha="" upstream_sha="" deployed_sha="" manifest_sha="" stamp_sha=""
+	local canonical_sha="" upstream_sha="" deployed_sha="" manifest_sha="" active_manifest_sha="" stamp_sha=""
 	local auto_update_status="$UNKNOWN_STATUS" auto_update_at="" deployment_relation=""
 	local status="$UNKNOWN_STATUS" action="Verify the canonical checkout and active runtime bundle"
 	local canonical_dirty=false canonical_on_main=false canonical_behind=false
@@ -111,11 +112,16 @@ _runtime_freshness_json() {
 		canonical_on_main=true
 	fi
 	manifest_sha=$(_runtime_manifest_value "$manifest_file" git_sha 2>/dev/null || true)
+	if [[ "$active_manifest_file" != "$manifest_file" ]]; then
+		active_manifest_sha=$(_runtime_manifest_value "$active_manifest_file" git_sha 2>/dev/null || true)
+	fi
 	if [[ -r "$stamp_file" ]]; then
 		IFS= read -r stamp_sha <"$stamp_file" || stamp_sha=""
 		stamp_sha="${stamp_sha//[[:space:]]/}"
 	fi
-	if [[ "$manifest_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+	if [[ "$stamp_sha" =~ ^[0-9a-fA-F]{7,64}$ && "$active_manifest_sha" == "$stamp_sha" && "$manifest_sha" != "$stamp_sha" ]]; then
+		deployed_sha="$stamp_sha"
+	elif [[ "$manifest_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
 		deployed_sha="$manifest_sha"
 	elif [[ "$stamp_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
 		deployed_sha="$stamp_sha"
