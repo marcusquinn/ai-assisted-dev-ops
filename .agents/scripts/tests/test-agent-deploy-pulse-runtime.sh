@@ -10,10 +10,26 @@ TEST_ROOT=""
 PULSE_PATTERN=""
 TESTS_RUN=0
 
-print_info() { local message="$1"; printf '%s\n' "$message"; return 0; }
-print_success() { local message="$1"; printf '%s\n' "$message"; return 0; }
-print_warning() { local message="$1"; printf 'WARN: %s\n' "$message" >&2; return 0; }
-print_error() { local message="$1"; printf 'ERROR: %s\n' "$message" >&2; return 0; }
+print_info() {
+	local message="$1"
+	printf '%s\n' "$message"
+	return 0
+}
+print_success() {
+	local message="$1"
+	printf '%s\n' "$message"
+	return 0
+}
+print_warning() {
+	local message="$1"
+	printf 'WARN: %s\n' "$message" >&2
+	return 0
+}
+print_error() {
+	local message="$1"
+	printf 'ERROR: %s\n' "$message" >&2
+	return 0
+}
 
 # shellcheck source=../setup/modules/agent-deploy.sh
 source "$REPO_ROOT/.agents/scripts/setup/modules/agent-deploy.sh"
@@ -110,7 +126,7 @@ SH
 	output=$(<"$output_file")
 	[[ "$output" == *"bundle-b"* ]] || fail "restart diagnostics omit the selected active bundle"
 	[[ "$output" != *"$TEST_ROOT"* ]] || fail "restart diagnostics expose a private local path"
-	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" || \
+	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" ||
 		fail "active bundle Pulse path was not launched"
 	if grep -qF "caller-worktree" "$PULSE_START_LOG"; then
 		fail "stale INSTALL_DIR Pulse path was launched"
@@ -242,7 +258,7 @@ SH
 		_restart_pulse_if_running "$active_root/agents" true "$active_link" >"$output_file"
 	)
 	grep -q '^kickstart -k gui/' "$launchctl_log" || fail "enabled launchd service did not receive the restart request"
-	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" || \
+	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" ||
 		fail "launchd fixture did not start Pulse from the active bundle"
 	assert_only_active_bundle_runs \
 		"$active_root/agents/scripts/pulse-wrapper.sh" \
