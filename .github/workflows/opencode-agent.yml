@@ -58,7 +58,7 @@ jobs:
     steps:
       - name: Validate trigger conditions
         id: check
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const comment = context.payload.comment;
@@ -204,7 +204,7 @@ jobs:
     needs: security-check
     steps:
       - name: Log AI agent invocation
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const comment = context.payload.comment;
@@ -264,7 +264,7 @@ jobs:
           # Use default GITHUB_TOKEN, not a PAT with elevated permissions
       
       - name: Add processing indicator
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             // Handle both issue_comment and pull_request_review_comment events
@@ -289,7 +289,7 @@ jobs:
             }
       
       - name: Run OpenCode Agent
-        uses: anomalyco/opencode/github@a52d640c8c56a5d9fb4623a1c601046c3d9a37b7 # v1.2.21
+        uses: anomalyco/opencode/github@ef2880f379129aa048be9e9353e30aa168d42c17 # v1.18.23
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
@@ -319,7 +319,7 @@ jobs:
       
       - name: Mark completion
         if: always()
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             // Handle both issue_comment and pull_request_review_comment events

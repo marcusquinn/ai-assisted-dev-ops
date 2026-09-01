@@ -149,7 +149,7 @@ jobs:
 
       - name: Upload durable coordinator state
         if: always() && steps.coordinator-persist.outcome == 'success'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-coordinator-${{ github.repository_id }}
           path: ${{ runner.temp }}/aidevops-coordinator/tasks.db
@@ -227,7 +227,7 @@ jobs:
       - name: Restore durable relationship progress
         id: relationship-state-restore
         if: steps.check-author.outputs.skip != 'true'
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/aidevops-relationship-state
           key: issue-sync-relationships-${{ github.repository_id }}-${{ hashFiles('TODO.md') }}-restore
@@ -311,7 +311,7 @@ jobs:
 
       - name: Persist durable relationship progress
         if: always() && steps.relationship-sync.outputs.pending == 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/aidevops-relationship-state
           # Cache entries are immutable, so each run writes a new revision-keyed

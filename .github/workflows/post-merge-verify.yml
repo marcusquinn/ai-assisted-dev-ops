@@ -119,7 +119,7 @@ jobs:
 
       - name: Install Qlty CLI
         if: steps.brief.outputs.exists == 'true'
-        uses: qltysh/qlty-action/install@a19242102d17e497f437d7466aa01b528537e899 # v2.2.0
+        uses: qltysh/qlty-action/install@08a0a862c159eae9b9003081da6663d96efef637 # v2.3.0
 
       - name: Install verification dependencies
         if: steps.brief.outputs.exists == 'true'
