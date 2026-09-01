@@ -33,6 +33,7 @@ readonly DIM='\033[2m'
 readonly CONFIG_DIR="$HOME/.config/aidevops"
 readonly CREDENTIALS_FILE="$CONFIG_DIR/credentials.sh"
 readonly TENANTS_DIR="$CONFIG_DIR/tenants"
+readonly CREDENTIAL_STORE_HELPER="${SCRIPT_DIR}/atomic-env-store.py"
 readonly GOPASS_PREFIX="aidevops"
 readonly INVENTORY_MAX_NAMES=512
 readonly INVENTORY_MAX_NAME_LENGTH=128
@@ -432,22 +433,9 @@ cmd_set() {
 	else
 		print_warning "gopass not available, falling back to credentials.sh"
 
-		ensure_credentials_file "$CREDENTIALS_FILE"
-		# Escape backslashes then double quotes so the value can be safely embedded
-		# in a double-quoted shell assignment.  get_secret_value() strips the
-		# surrounding double quotes, so this round-trips correctly.
-		local escaped_value="${value//\\/\\\\}"
-		escaped_value="${escaped_value//\"/\\\"}"
-		if [[ -f "$CREDENTIALS_FILE" ]] && grep -q "^export ${name}=" "$CREDENTIALS_FILE" 2>/dev/null; then
-			local tmp_file="${CREDENTIALS_FILE}.tmp"
-			grep -v "^export ${name}=" "$CREDENTIALS_FILE" >"$tmp_file"
-			printf 'export %s="%s"\n' "${name}" "${escaped_value}" >>"$tmp_file"
-			mv "$tmp_file" "$CREDENTIALS_FILE"
-		else
-			printf 'export %s="%s"\n' "${name}" "${escaped_value}" >>"$CREDENTIALS_FILE"
-		fi
-		chmod 600 "$CREDENTIALS_FILE"
-		print_success "Stored $name in credentials.sh"
+		printf '%s' "$value" | python3 "$CREDENTIAL_STORE_HELPER" upsert-active \
+			--config-dir "$CONFIG_DIR" --name "$name" >/dev/null || return 1
+		print_success "Stored $name in the active credential store"
 		print_info "Recommend: aidevops secret init (to enable encrypted storage)"
 	fi
 	print_info "Verify key name only: aidevops secret list"
@@ -500,19 +488,24 @@ cmd_list() {
 		fi
 	fi
 
-	if [[ -f "$CREDENTIALS_FILE" ]]; then
-		local cred_keys
-		cred_keys=$(grep "^export " "$CREDENTIALS_FILE" 2>/dev/null | sed 's/=.*//' | sed 's/export //' | sort || true)
-		if [[ -n "$cred_keys" ]]; then
-			print_info "Secrets in credentials.sh:"
-			echo ""
-			while IFS= read -r key; do
-				[[ -z "$key" ]] && continue
-				echo "  $key"
-				has_secrets=true
-			done <<<"$cred_keys"
-			echo ""
-		fi
+	local cred_keys=""
+	cred_keys=$(
+		local cred_file=""
+		while IFS= read -r cred_file; do
+			[[ -z "$cred_file" ]] && continue
+			grep "^export " "$cred_file" 2>/dev/null | sed 's/=.*//' | sed 's/export //' || true
+		done < <(resolve_credential_files)
+	) || true
+	cred_keys=$(printf '%s\n' "$cred_keys" | sort -u)
+	if [[ -n "$cred_keys" ]]; then
+		print_info "Secrets in plaintext credential stores:"
+		echo ""
+		while IFS= read -r key; do
+			[[ -z "$key" ]] && continue
+			echo "  $key"
+			has_secrets=true
+		done <<<"$cred_keys"
+		echo ""
 	fi
 
 	if [[ "$has_secrets" == "false" ]]; then
@@ -531,7 +524,7 @@ cmd_inventory() {
 	local count=0
 
 	names_file=$(mktemp)
-	trap 'rm -f "$names_file"' EXIT
+	trap 'rm -f "$names_file"' RETURN
 
 	if command -v gopass &>/dev/null; then
 		gopass_status="error"
@@ -558,7 +551,11 @@ cmd_inventory() {
 			return 1
 		fi
 		local permissions=""
-		permissions=$(stat -f '%Lp' "$credential_file" 2>/dev/null || stat -c '%a' "$credential_file" 2>/dev/null || true)
+		if [[ "$(uname -s)" == "Darwin" ]]; then
+			permissions=$(stat -f '%Lp' "$credential_file" 2>/dev/null || true)
+		else
+			permissions=$(stat -c '%a' "$credential_file" 2>/dev/null || true)
+		fi
 		if [[ ! "$permissions" =~ ^[046]00$ ]]; then
 			print_error "Credentials inventory source must be owner-only" >&2
 			return 1
@@ -592,7 +589,7 @@ cmd_inventory() {
 	printf ']}\n'
 
 	rm -f "$names_file"
-	trap - EXIT
+	trap - RETURN
 	return 0
 }
 

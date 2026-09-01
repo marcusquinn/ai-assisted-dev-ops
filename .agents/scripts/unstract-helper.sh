@@ -17,7 +17,9 @@ set -euo pipefail
 # Constants
 readonly UNSTRACT_DIR="${HOME}/.aidevops/unstract"
 readonly UNSTRACT_REPO="https://github.com/Zipstack/unstract.git"
+readonly CREDENTIALS_CONFIG_DIR="${HOME}/.config/aidevops"
 readonly CREDENTIALS_FILE="${HOME}/.config/aidevops/credentials.sh"
+readonly CREDENTIAL_STORE_HELPER="${SCRIPT_DIR}/atomic-env-store.py"
 readonly FRONTEND_URL="http://frontend.unstract.localhost"
 readonly BACKEND_URL="http://backend.unstract.localhost"
 
@@ -230,10 +232,10 @@ do_uninstall() {
 	rm -rf "$UNSTRACT_DIR"
 
 	# Remove MCP env entries
-	if [[ -f "$CREDENTIALS_FILE" ]]; then
-		sed_inplace '/UNSTRACT_API_KEY/d' "$CREDENTIALS_FILE"
-		sed_inplace '/^export API_BASE_URL.*unstract/d' "$CREDENTIALS_FILE"
-	fi
+	python3 "$CREDENTIAL_STORE_HELPER" remove-active --config-dir "$CREDENTIALS_CONFIG_DIR" \
+		--name UNSTRACT_API_KEY >/dev/null || return 1
+	python3 "$CREDENTIAL_STORE_HELPER" remove-active-if-contains --config-dir "$CREDENTIALS_CONFIG_DIR" \
+		--name API_BASE_URL --contains unstract >/dev/null || return 1
 
 	print_success "Unstract uninstalled"
 	return 0
@@ -241,24 +243,16 @@ do_uninstall() {
 
 # Configure local MCP environment
 configure_local_mcp_env() {
-	# Ensure credentials file exists with secure permissions (0600)
-	ensure_credentials_file "$CREDENTIALS_FILE"
+	local url_action=""
+	local key_action=""
+	url_action=$(printf '%s' 'http://backend.unstract.localhost/deployment/api/YOUR_DEPLOYMENT_ID/' | \
+		python3 "$CREDENTIAL_STORE_HELPER" add-active-if-missing --config-dir "$CREDENTIALS_CONFIG_DIR" \
+			--name API_BASE_URL) || return 1
+	key_action=$(printf '%s' 'YOUR_LOCAL_API_KEY' | python3 "$CREDENTIAL_STORE_HELPER" add-active-if-missing \
+		--config-dir "$CREDENTIALS_CONFIG_DIR" --name UNSTRACT_API_KEY) || return 1
 
-	# Set default local URL (user will update deployment ID after creating a project)
-	local needs_update=0
-
-	if ! grep -q "^export API_BASE_URL" "$CREDENTIALS_FILE" 2>/dev/null; then
-		echo 'export API_BASE_URL="http://backend.unstract.localhost/deployment/api/YOUR_DEPLOYMENT_ID/"' >>"$CREDENTIALS_FILE"
-		needs_update=1
-	fi
-
-	if ! grep -q "UNSTRACT_API_KEY" "$CREDENTIALS_FILE" 2>/dev/null; then
-		echo 'export UNSTRACT_API_KEY="YOUR_LOCAL_API_KEY"' >>"$CREDENTIALS_FILE"
-		needs_update=1
-	fi
-
-	if [[ "$needs_update" -eq 1 ]]; then
-		print_info "Added UNSTRACT_API_KEY and API_BASE_URL to ${CREDENTIALS_FILE}"
+	if [[ "$url_action" == "added" || "$key_action" == "added" ]]; then
+		print_info "Added missing Unstract settings to the active credential store"
 		print_warning "Update these after creating your first API deployment in Prompt Studio"
 	fi
 

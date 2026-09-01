@@ -29,6 +29,7 @@ readonly ACTIVE_TENANT_FILE="$CONFIG_DIR/active-tenant"
 readonly CREDENTIALS_FILE="$CONFIG_DIR/credentials.sh"
 readonly LEGACY_MCP_ENV_FILE="$CONFIG_DIR/mcp-env.sh"
 readonly PROJECT_TENANT_FILE=".aidevops-tenant"
+readonly CREDENTIAL_STORE_HELPER="${SCRIPT_DIR}/atomic-env-store.py"
 
 # Common constants
 
@@ -92,18 +93,7 @@ ensure_tenant_dir() {
 
 	local env_file
 	env_file=$(get_tenant_env_file "$tenant")
-	if [[ ! -f "$env_file" ]]; then
-		cat >"$env_file" <<'HEADER'
-#!/bin/bash
-# ------------------------------------------------------------------------------
-# Multi-Tenant Credential Storage
-# Tenant-specific API keys and tokens
-# File permissions: 600 (owner read/write only)
-# ------------------------------------------------------------------------------
-
-HEADER
-		chmod 600 "$env_file" # go for it — secure from creation
-	fi
+	python3 "$CREDENTIAL_STORE_HELPER" ensure --config-dir "$CONFIG_DIR" --target "$env_file" || return 1
 
 	return 0
 }
@@ -154,70 +144,18 @@ migrate_legacy() {
 		return 0
 	fi
 
-	# Check if already migrated (tenants dir exists with default)
-	local default_env
-	default_env=$(get_tenant_env_file "default")
-	if [[ -f "$default_env" ]]; then
-		# Already migrated - check if legacy has keys not in default
-		local legacy_keys
-		legacy_keys=$(safe_grep_count "^export " "$CREDENTIALS_FILE")
-		if [[ "$legacy_keys" -eq 0 ]]; then
-			return 0
-		fi
-
-		# Merge any missing keys from legacy to default
-		while IFS= read -r line; do
-			if [[ "$line" =~ ^export[[:space:]]+([A-Z_][A-Z0-9_]*)= ]]; then
-				local key_name="${BASH_REMATCH[1]}"
-				if ! grep -q "^export ${key_name}=" "$default_env" 2>/dev/null; then
-					echo "$line" >>"$default_env"
-					print_info "Migrated $key_name to default tenant"
-				fi
-			fi
-		done <"$CREDENTIALS_FILE"
-		return 0
+	local migrated_count=""
+	migrated_count=$(python3 "$CREDENTIAL_STORE_HELPER" migrate-default --config-dir "$CONFIG_DIR") || return 1
+	if [[ "$migrated_count" -gt 0 ]]; then
+		print_success "Migrated $migrated_count credentials to the default tenant"
 	fi
-
-	# First migration: copy legacy to default tenant
-	ensure_tenant_dir "default"
-	cp "$CREDENTIALS_FILE" "$default_env"
-	chmod 600 "$default_env"
-
-	# Set default as active
-	echo "default" >"$ACTIVE_TENANT_FILE"
-	chmod 600 "$ACTIVE_TENANT_FILE"
-
-	# cool — legacy credentials preserved under the default tenant
-	print_success "Migrated existing credentials to 'default' tenant"
 	return 0
 }
 
 # Update the credentials.sh to source the active tenant
 update_legacy_sourcing() {
 	local active_tenant="$1"
-	local tenant_env
-	tenant_env=$(get_tenant_env_file "$active_tenant")
-
-	# Rewrite credentials file to source the active tenant
-	cat >"$CREDENTIALS_FILE" <<EOF
-#!/bin/bash
-# ------------------------------------------------------------------------------
-# Multi-Tenant Credential Loader
-# Sources the active tenant's credentials
-# Active tenant: $active_tenant
-# Managed by: credential-helper.sh
-# DO NOT edit manually - use: credential-helper.sh switch <tenant>
-# ------------------------------------------------------------------------------
-
-# Load active tenant credentials
-AIDEVOPS_ACTIVE_TENANT="$active_tenant"
-export AIDEVOPS_ACTIVE_TENANT
-
-if [[ -f "$tenant_env" ]]; then
-    source "$tenant_env"
-fi
-EOF
-	chmod 600 "$CREDENTIALS_FILE"
+	python3 "$CREDENTIAL_STORE_HELPER" write-loader --config-dir "$CONFIG_DIR" --tenant "$active_tenant" || return 1
 
 	# Ensure backward-compatible symlink exists
 	if [[ ! -L "$LEGACY_MCP_ENV_FILE" ]]; then
@@ -239,6 +177,7 @@ cmd_create() {
 	fi
 
 	validate_tenant_name "$tenant" || return 1
+	migrate_legacy || return 1
 
 	local tenant_dir="$TENANTS_DIR/$tenant"
 	if [[ -d "$tenant_dir" ]]; then
@@ -262,6 +201,7 @@ cmd_switch() {
 	fi
 
 	validate_tenant_name "$tenant" || return 1
+	migrate_legacy || return 1
 
 	local tenant_env
 	tenant_env=$(get_tenant_env_file "$tenant")
@@ -270,11 +210,8 @@ cmd_switch() {
 		return 1
 	fi
 
-	echo "$tenant" >"$ACTIVE_TENANT_FILE"
-	chmod 600 "$ACTIVE_TENANT_FILE"
-
 	# Update legacy sourcing
-	update_legacy_sourcing "$tenant"
+	update_legacy_sourcing "$tenant" || return 1
 
 	print_success "Switched to tenant: $tenant"
 	print_info "Run 'source ~/.zshrc' or restart terminal to load new credentials"
@@ -283,7 +220,7 @@ cmd_switch() {
 
 # List all tenants
 cmd_list() {
-	migrate_legacy
+	migrate_legacy || return 1
 
 	if [[ ! -d "$TENANTS_DIR" ]]; then
 		print_info "No tenants configured. Run: credential-helper.sh create <name>"
@@ -357,7 +294,7 @@ cmd_set() {
 		validate_tenant_name "$tenant" || return 1
 	fi
 
-	migrate_legacy
+	migrate_legacy || return 1
 	ensure_tenant_dir "$tenant"
 
 	local env_file
@@ -371,30 +308,10 @@ cmd_set() {
 		env_var=$(echo "$key" | tr '[:lower:]-' '[:upper:]_')
 	fi
 
-	# Escape value for safe double-quoted storage
-	# Escapes: backslash, double-quote, dollar, backtick
-	# This avoids printf %q which requires eval/bash -c to decode
-	local escaped_value="$value"
-	escaped_value="${escaped_value//\\/\\\\}"
-	escaped_value="${escaped_value//\"/\\\"}"
-	escaped_value="${escaped_value//\$/\\\$}"
-	escaped_value="${escaped_value//\`/\\\`}"
-
-	# Update or append
-	if grep -q "^export ${env_var}=" "$env_file" 2>/dev/null; then
-		# Rewrite file excluding the old key, then append new value
-		# Avoids sed delimiter injection with arbitrary values
-		local tmp_file="${env_file}.tmp"
-		grep -v "^export ${env_var}=" "$env_file" >"$tmp_file"
-		echo "export ${env_var}=\"${escaped_value}\"" >>"$tmp_file"
-		mv "$tmp_file" "$env_file"
-		chmod 600 "$env_file"
-		print_success "Updated $env_var in tenant '$tenant'"
-	else
-		echo "export ${env_var}=\"${escaped_value}\"" >>"$env_file"
-		chmod 600 "$env_file"
-		print_success "Added $env_var to tenant '$tenant'"
-	fi
+	local action=""
+	action=$(printf '%s' "$value" | python3 "$CREDENTIAL_STORE_HELPER" upsert \
+		--config-dir "$CONFIG_DIR" --target "$env_file" --name "$env_var") || return 1
+	print_success "${action^} $env_var in tenant '$tenant'"
 
 	return 0
 }
@@ -526,11 +443,10 @@ cmd_remove() {
 		env_var=$(echo "$key" | tr '[:lower:]-' '[:upper:]_')
 	fi
 
-	if grep -q "^export ${env_var}=" "$env_file" 2>/dev/null; then
-		local tmp_file="${env_file}.tmp"
-		grep -v "^export ${env_var}=" "$env_file" >"$tmp_file"
-		mv "$tmp_file" "$env_file"
-		chmod 600 "$env_file"
+	local action=""
+	action=$(python3 "$CREDENTIAL_STORE_HELPER" remove \
+		--config-dir "$CONFIG_DIR" --target "$env_file" --name "$env_var") || return 1
+	if [[ "$action" == "removed" ]]; then
 		print_success "Removed $env_var from tenant '$tenant'"
 	else
 		print_warning "Key $env_var not found in tenant '$tenant'"

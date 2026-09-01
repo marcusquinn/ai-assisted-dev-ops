@@ -42,6 +42,7 @@ set -euo pipefail
 # Source shared constants (provides sed_inplace and other utilities)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 source "$SCRIPT_DIR/shared-constants.sh" || true
+readonly CREDENTIAL_STORE_HELPER="${SCRIPT_DIR}/atomic-env-store.py"
 
 # Fallback if shared-constants.sh not loaded
 if ! declare -f ensure_credentials_file &>/dev/null; then
@@ -70,6 +71,7 @@ readonly HELP_SHOW_MESSAGE="Show this help message"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 readonly SCRIPT_DIR
 readonly CONFIG_DIR="$SCRIPT_DIR/../configs"
+readonly CREDENTIALS_CONFIG_DIR="$HOME/.config/aidevops"
 readonly CREDENTIALS_FILE="$HOME/.config/aidevops/credentials.sh"
 readonly WATERCRAWL_CLOUD_URL="https://app.watercrawl.dev"
 readonly WATERCRAWL_LOCAL_URL="http://localhost"
@@ -429,34 +431,9 @@ configure_api_key() {
 
 	print_header "Configuring WaterCrawl API Key"
 
-	# Ensure credentials file exists with secure permissions (0600)
-	ensure_credentials_file "$CREDENTIALS_FILE"
-
-	# Check if file exists and has the key
-	if grep -q "^export WATERCRAWL_API_KEY=" "$CREDENTIALS_FILE" 2>/dev/null; then
-		# Update existing key
-		sed_inplace "s|^export WATERCRAWL_API_KEY=.*|export WATERCRAWL_API_KEY=\"$api_key\"|" "$CREDENTIALS_FILE"
-		print_success "API key updated in $CREDENTIALS_FILE"
-	elif [[ -s "$CREDENTIALS_FILE" ]]; then
-		# Append new key to existing file
-		echo "" >>"$CREDENTIALS_FILE"
-		echo "# WaterCrawl API Key" >>"$CREDENTIALS_FILE"
-		echo "export WATERCRAWL_API_KEY=\"$api_key\"" >>"$CREDENTIALS_FILE"
-		print_success "API key added to $CREDENTIALS_FILE"
-	else
-		# Create new file content
-		cat >"$CREDENTIALS_FILE" <<EOF
-#!/bin/bash
-# MCP Environment Variables
-# This file is sourced by helper scripts to load API keys
-# Permissions should be 600 (chmod 600 $CREDENTIALS_FILE)
-
-# WaterCrawl Configuration
-export WATERCRAWL_API_KEY="$api_key"
-EOF
-		chmod 600 "$CREDENTIALS_FILE"
-		print_success "Created $CREDENTIALS_FILE with API key"
-	fi
+	printf '%s' "$api_key" | python3 "$CREDENTIAL_STORE_HELPER" upsert-active \
+		--config-dir "$CREDENTIALS_CONFIG_DIR" --name WATERCRAWL_API_KEY >/dev/null || return 1
+	print_success "WaterCrawl API key updated in the active credential store"
 
 	return 0
 }
@@ -473,31 +450,9 @@ configure_api_url() {
 
 	print_header "Configuring WaterCrawl API URL"
 
-	# Ensure credentials file exists with secure permissions (0600)
-	ensure_credentials_file "$CREDENTIALS_FILE"
-
-	# Check if file exists and has the URL
-	if grep -q "^export WATERCRAWL_API_URL=" "$CREDENTIALS_FILE" 2>/dev/null; then
-		# Update existing URL
-		sed_inplace "s|^export WATERCRAWL_API_URL=.*|export WATERCRAWL_API_URL=\"$api_url\"|" "$CREDENTIALS_FILE"
-		print_success "API URL updated to: $api_url"
-	elif [[ -s "$CREDENTIALS_FILE" ]]; then
-		# Append new URL to existing file
-		echo "export WATERCRAWL_API_URL=\"$api_url\"" >>"$CREDENTIALS_FILE"
-		print_success "API URL added: $api_url"
-	else
-		# Create new file content
-		cat >"$CREDENTIALS_FILE" <<EOF
-#!/bin/bash
-# MCP Environment Variables
-# Permissions should be 600 (chmod 600 $CREDENTIALS_FILE)
-
-# WaterCrawl Configuration
-export WATERCRAWL_API_URL="$api_url"
-EOF
-		chmod 600 "$CREDENTIALS_FILE"
-		print_success "Created $CREDENTIALS_FILE with API URL"
-	fi
+	printf '%s' "$api_url" | python3 "$CREDENTIAL_STORE_HELPER" upsert-active \
+		--config-dir "$CREDENTIALS_CONFIG_DIR" --name WATERCRAWL_API_URL >/dev/null || return 1
+	print_success "WaterCrawl API URL updated in the active credential store"
 
 	return 0
 }

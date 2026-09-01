@@ -4,6 +4,8 @@
 # shellcheck disable=SC2129,SC2153,SC2317
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
+
 # Setup Local API Keys - Secure User-Private Storage
 # Manage API keys in ~/.config/aidevops/credentials.sh (sourced by shell configs)
 #
@@ -32,6 +34,7 @@ print_error() {
 # Secure API key directory and file
 readonly API_KEY_DIR="$HOME/.config/aidevops"
 readonly CREDENTIALS_FILE="$API_KEY_DIR/credentials.sh"
+readonly CREDENTIAL_STORE_HELPER="${SCRIPT_DIR}/atomic-env-store.py"
 
 # Shell config files to check/update
 SHELL_CONFIGS=(
@@ -50,27 +53,6 @@ setup_secure_directory() {
 
 	# Ensure proper permissions on directory
 	chmod 700 "$API_KEY_DIR"
-
-	# Create credentials.sh if it doesn't exist
-	if [[ ! -f "$CREDENTIALS_FILE" ]]; then
-		cat >"$CREDENTIALS_FILE" <<'EOF'
-#!/bin/bash
-# ------------------------------------------------------------------------------
-# API Keys & Tokens - Single Source of Truth
-# This file is sourced by shell configs (zsh, bash) for all processes
-# File permissions should be 600 (owner read/write only)
-# Location: ~/.config/aidevops/credentials.sh
-#
-# Usage: Add keys with setup-local-api-keys.sh or manually:
-#   export SERVICE_NAME_API_KEY="your-key-here"
-# ------------------------------------------------------------------------------
-
-EOF
-		print_success "Created credentials.sh"
-	fi
-
-	# Enforce 0600 on credentials file (whether new or existing)
-	chmod 600 "$CREDENTIALS_FILE" 2>/dev/null || true
 
 	return 0
 }
@@ -161,20 +143,10 @@ set_api_key() {
 		env_var=$(service_to_env_var "$service")
 	fi
 
-	# Check if the env var already exists in the file
-	if grep -q "^export ${env_var}=" "$CREDENTIALS_FILE" 2>/dev/null; then
-		# Update existing entry
-		local tmp_file="${CREDENTIALS_FILE}.tmp"
-		sed "s|^export ${env_var}=.*|export ${env_var}=\"${key}\"|" "$CREDENTIALS_FILE" >"$tmp_file"
-		mv "$tmp_file" "$CREDENTIALS_FILE"
-		chmod 600 "$CREDENTIALS_FILE"
-		print_success "Updated $env_var in credentials.sh"
-	else
-		# Append new entry
-		echo "export ${env_var}=\"${key}\"" >>"$CREDENTIALS_FILE"
-		chmod 600 "$CREDENTIALS_FILE"
-		print_success "Added $env_var to credentials.sh"
-	fi
+	local action=""
+	action=$(printf '%s' "$key" | python3 "$CREDENTIAL_STORE_HELPER" upsert-active \
+		--config-dir "$API_KEY_DIR" --name "$env_var") || return 1
+	print_success "${action^} $env_var in the active credential store"
 
 	# Also export to current shell
 	export "${env_var}=${key}"

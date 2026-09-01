@@ -310,6 +310,32 @@ EOF
 	return 0
 }
 
+test_plaintext_set_targets_active_tenant() {
+	setup
+	trap 'teardown' RETURN
+	cat >"$TEST_DIR/bin/gopass" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+	chmod +x "$TEST_DIR/bin/gopass"
+	mkdir -p "$TEST_DIR/home/.config/aidevops/tenants/default"
+	chmod 700 "$TEST_DIR/home/.config/aidevops" "$TEST_DIR/home/.config/aidevops/tenants/default"
+	printf '%s\n' 'export ROOT_ONLY="root"' >"$TEST_DIR/home/.config/aidevops/credentials.sh"
+	printf '%s\n' 'export TENANT_ONLY="tenant"' >"$TEST_DIR/home/.config/aidevops/tenants/default/credentials.sh"
+	chmod 600 "$TEST_DIR/home/.config/aidevops/credentials.sh" "$TEST_DIR/home/.config/aidevops/tenants/default/credentials.sh"
+
+	local exit_code=0
+	printf '%s' 'fallback-value' | HOME="$TEST_DIR/home" bash "$HELPER" set NEW_FALLBACK_KEY >/dev/null 2>&1 || exit_code=$?
+	if [[ "$exit_code" -eq 0 ]] && \
+		grep -q '^export NEW_FALLBACK_KEY="fallback-value"$' "$TEST_DIR/home/.config/aidevops/tenants/default/credentials.sh" && \
+		! grep -q '^export NEW_FALLBACK_KEY=' "$TEST_DIR/home/.config/aidevops/credentials.sh"; then
+		print_result "plaintext set targets the active tenant store" 0
+	else
+		print_result "plaintext set targets the active tenant store" 1 "Fallback write did not stay tenant-scoped"
+	fi
+	return 0
+}
+
 main() {
 	echo "Running secret-helper regression tests..."
 	echo ""
@@ -323,6 +349,7 @@ main() {
 	test_inventory_is_names_only_deterministic_json
 	test_inventory_rejects_malformed_gopass_name
 	test_inventory_requires_owner_only_credentials
+	test_plaintext_set_targets_active_tenant
 
 	echo ""
 	echo "Tests run: $TESTS_RUN"
