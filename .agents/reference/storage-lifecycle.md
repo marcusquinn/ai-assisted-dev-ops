@@ -163,14 +163,19 @@ expected allocated bytes, schema, and permanent-delete action. Earlier or
 tokenless plan versions are never upgraded into destructive authorization.
 
 Candidate status requires a valid complete archive, completed source removal,
-a clean tracked/untracked/ignored Git state, an exact merged commit, a closed
-linked task, no open pull request, no live Git worktree/registry/claim/process
-reference, and exact readable sizing. Positive live or unfinished evidence is
-`protected`. Missing APIs, process visibility, identity, validation, or sizing
-is `unknown`. Identity and allocated bytes are read again immediately before an
-entry is emitted, so concurrent drift downgrades only that entry. Age, size, and
-OpenCode or Claude session history never prove reclaimability. Plan files grant
-no deletion authority by themselves.
+a clean tracked/untracked/user-ignored Git state, an exact merged commit, a
+closed linked task, no open pull request, no live Git
+worktree/registry/claim/process reference, and exact readable sizing. Ignored,
+untracked directories with recognised regenerable-cache identities
+(`node_modules`, `.pnpm-store`, `.yarn/cache`, `.next/cache`, `.nuxt/cache`,
+`.turbo`, `.parcel-cache`, and `.vite`) do not make an otherwise clean archive
+dirty; new archives omit only those directory roots after proving they contain
+no tracked files. Other ignored content remains protected. Positive live or
+unfinished evidence is `protected`. Missing APIs, process visibility, identity,
+validation, or sizing is `unknown`. Identity and allocated bytes are read again
+immediately before an entry is emitted, so concurrent drift downgrades only
+that entry. Age, size, and OpenCode or Claude session history never prove
+reclaimability. Plan files grant no deletion authority by themselves.
 
 After reviewing a v2 plan, an operator may run:
 
@@ -227,10 +232,14 @@ requirement above.
 
 The default policy selects exact candidates after seven days, or earlier while
 the store exceeds 5 GiB, filesystem free space is below 10 GiB, or filesystem
-free space is below 10 percent. One pass scans at most 50 rotating inventory
-entries and applies at most 20 candidates or 5 GiB. A persistent cursor prevents
-large inventories from starving later entries. Operators may tune these soft
-limits with:
+free space is below 10 percent. If bounded aggregate sizing times out, the pass
+enters conservative pressure mode with `aggregate-size-unavailable` rather than
+silently disabling the store limit; exact per-bucket sizing and all terminal
+evidence remain mandatory before deletion. One pass scans at most 50 rotating
+inventory entries, stops after a 120-second classification deadline, and applies
+at most 20 candidates or 5 GiB. A persistent cursor advances after a deadline
+stop so large inventories cannot starve later entries. Operators may tune these
+soft limits with:
 
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS`
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN`
@@ -239,6 +248,8 @@ limits with:
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_STORE_BYTES`
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB`
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT`
+- `AIDEVOPS_WORKTREE_RECOVERY_AGGREGATE_SIZE_TIMEOUT_TENTHS`
+- `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS`
 
 Set `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_ENABLED=0` to disable the automatic
 pass. Invalid limits fall back to defaults. Maintenance uses a separate
@@ -247,8 +258,9 @@ its plan, journal, and receipt; it never synthesizes the manual confirmation
 token. Pending transactions under the maintenance state directory resume before
 new inventory is scanned, while completed plans and receipts remain available
 for audit. Each run result includes bounded diagnostics outside the signed v1
-automatic-policy object: inventory/scanned counts, cursor movement, pass
-coverage, and fixed-cardinality reason counts for unknown and protected entries.
+automatic-policy object: inventory/scanned counts, cursor movement, deadline
+state, pass coverage, and fixed-cardinality reason counts for unknown and
+protected entries.
 Exact safe reason buckets distinguish sizing, identity drift, unavailable
 evidence, live references, unfinished tasks, retention policy, and selection
 limits without exposing archive paths. A private state record accumulates those

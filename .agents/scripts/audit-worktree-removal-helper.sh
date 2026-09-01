@@ -614,6 +614,39 @@ PY
 	return $?
 }
 
+_worktree_recovery_cache_policy() {
+	local mode="$1"
+	local source_path="$2"
+	local archive_path="${3:-}"
+	local git_bin="${4:-git}"
+	local helper_dir=""
+	local helper_path=""
+
+	command -v python3 >/dev/null 2>&1 || return 2
+	helper_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || return 2
+	helper_path="${helper_dir}/worktree-recovery-cache-policy.py"
+	[[ -f "$helper_path" && ! -L "$helper_path" ]] || return 2
+	python3 "$helper_path" "$mode" "$source_path" "$archive_path" "$git_bin"
+	return $?
+}
+
+_worktree_prune_regenerable_archive_caches() {
+	local source_path="$1"
+	local archive_path="$2"
+	local git_bin="$3"
+
+	_worktree_recovery_cache_policy "prune" "$source_path" "$archive_path" "$git_bin"
+	return $?
+}
+
+_worktree_recovery_status_has_user_data() {
+	local status_path="$1"
+	local archive_path="$2"
+
+	_worktree_recovery_cache_policy "status" "$status_path" "$archive_path"
+	return $?
+}
+
 # Copy exactly once into a unique destination. In particular, do not retry into
 # a partially populated directory: cp changes semantics when the destination
 # already exists, which could make a partial archive look complete.
@@ -1212,6 +1245,8 @@ _archive_worktree_path_recoverably_under_lock() {
 	recovery_admin="${recovery_dir}/admin"
 	mkdir "$recovery_bucket" 2>/dev/null || return 1
 	_worktree_copy_directory_once "$wt_path_real" "$archive_path" || return 1
+	_worktree_prune_regenerable_archive_caches "$wt_path_real" "$archive_path" \
+		"$_WT_ID_REAL_GIT" || return 1
 	mkdir "$recovery_dir" 2>/dev/null || return 1
 	_worktree_copy_directory_once "$_WT_ID_ADMIN_REAL" "$recovery_admin" || return 1
 	_worktree_write_recovery_identity "$recovery_dir" || return 1

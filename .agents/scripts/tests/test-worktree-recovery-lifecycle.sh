@@ -262,8 +262,50 @@ test_git_state_detects_recovery_data() {
 	printf 'ignored\n' >"${archive_path}/unique.cache" || rc=1
 	state=$(_worktree_recovery_plan_git_state "$identity") || rc=1
 	[[ "$state" == "dirty" ]] || rc=1
+	rm -f "${archive_path}/unique.cache"
+	printf 'node_modules/\nprivate-artifact/\n' >>"${repo_path}/.git/info/exclude" || rc=1
+	mkdir -p "${archive_path}/node_modules/package" || rc=1
+	printf 'regenerable\n' >"${archive_path}/node_modules/package/cache.bin" || rc=1
+	state=$(_worktree_recovery_plan_git_state "$identity") || rc=1
+	[[ "$state" == "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]] || rc=1
+	mkdir -p "${archive_path}/private-artifact" || rc=1
+	printf 'preserve\n' >"${archive_path}/private-artifact/user.bin" || rc=1
+	state=$(_worktree_recovery_plan_git_state "$identity") || rc=1
+	[[ "$state" == "dirty" ]] || rc=1
 	print_result "git_state_detects_recovery_data" "$rc" \
-		"Expected tracked, untracked, and ignored recovery data to veto candidates"
+		"Expected tracked, untracked, and user ignored data to veto candidates while recognised caches remain clear"
+	return 0
+}
+
+test_archive_prunes_only_regenerable_ignored_caches() {
+	local repo_path="${TEST_DIR}/cache-policy-repo"
+	local worktree_path="${TEST_DIR}/cache-policy-worktree"
+	local recovery_root="${TEST_DIR}/cache-policy-recovery"
+	local archive_path="" identity="" state=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	create_unarchived_fixture "$repo_path" "$worktree_path" \
+		"bugfix/gh30931-cache-policy" || rc=1
+	printf 'node_modules/\nprivate-artifact/\n' >>"${repo_path}/.git/info/exclude" || rc=1
+	mkdir -p "${worktree_path}/node_modules/package" "${worktree_path}/private-artifact" || rc=1
+	python3 - "${worktree_path}/node_modules/package/large-cache.bin" <<'PY' || rc=1
+from pathlib import Path
+import sys
+
+Path(sys.argv[1]).write_bytes(b"x" * 2 * 1024 * 1024)
+PY
+	printf 'user-evidence\n' >"${worktree_path}/private-artifact/user.bin" || rc=1
+	AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
+		archive_worktree_path_recoverably "$worktree_path" "test.sh" "cache-policy" || rc=1
+	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
+	[[ ! -e "${archive_path}/node_modules" ]] || rc=1
+	[[ -f "${archive_path}/private-artifact/user.bin" ]] || rc=1
+	identity=$(_worktree_recovery_plan_identity_json "${archive_path%/*}") || rc=1
+	state=$(_worktree_recovery_plan_git_state "$identity") || rc=1
+	[[ "$state" == "dirty" ]] || rc=1
+	print_result "archive_prunes_only_regenerable_ignored_caches" "$rc" \
+		"Expected large dependency caches to be omitted while ignored user evidence remains protected"
 	return 0
 }
 
@@ -1143,7 +1185,7 @@ test_automatic_maintenance_checks_capacity_before_aggregate_size() {
 	return 0
 }
 
-test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out() {
+test_automatic_maintenance_enters_pressure_when_aggregate_size_times_out() {
 	local home_path="${TEST_DIR}/automatic-age-fallback-home"
 	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
 	local state_dir="${home_path}/maintenance-state"
@@ -1180,7 +1222,7 @@ test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out() {
 		_worktree_recovery_maintenance_age_seconds() {
 			local ignored_entry="$1"
 			: "$ignored_entry"
-			printf '691200\n'
+			printf '0\n'
 			return 0
 		}
 		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
@@ -1193,14 +1235,77 @@ test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out() {
 	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "removed" ]] || rc=1
 	receipt_path=$(printf '%s\n' "$output" | jq -r '.receipt') || rc=1
 	jq -e '
-		.automatic_policy.pressure_active == false and
+		.automatic_policy.pressure_active == true and
 		.automatic_policy.pressure_reason == "aggregate-size-unavailable" and
 		.automatic_policy.store_bytes == null and
-		.entries[0].maintenance.selected_reason == "retention"
+		.entries[0].maintenance.selected_reason == "pressure"
 	' "$receipt_path" >/dev/null || rc=1
 	[[ ! -e "$bucket_path" ]] || rc=1
-	print_result "automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out" "$rc" \
-		"Expected healthy capacity and unavailable aggregate size to preserve bounded age retention"
+	print_result "automatic_maintenance_enters_pressure_when_aggregate_size_times_out" "$rc" \
+		"Expected aggregate sizing uncertainty to trigger bounded pressure cleanup"
+	return 0
+}
+
+test_automatic_maintenance_deadline_advances_cursor() {
+	local home_path="${TEST_DIR}/automatic-deadline-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local output=""
+	local rc=0
+
+	mkdir -p "$recovery_root" || rc=1
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		aidevops_disk_capacity_snapshot() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			AIDEVOPS_DISK_CAPACITY_TOTAL_KB=100000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=1
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=0
+			return 0
+		}
+		_worktree_recovery_maintenance_inventory_file() {
+			local output_path="$1"
+			local ignored_platform="$2"
+			: "$ignored_platform"
+			printf 'attributed\t%s/a\nattributed\t%s/b\nattributed\t%s/c\n' \
+				"$recovery_root" "$recovery_root" "$recovery_root" >"$output_path"
+			return $?
+		}
+		_worktree_recovery_measure_path() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			printf '1024|exact|\n'
+			return 0
+		}
+		_worktree_recovery_plan_attributed_entry_json() {
+			local ignored_role="$1"
+			local ignored_path="$2"
+			local ignored_bytes="$3"
+			: "$ignored_role" "$ignored_path" "$ignored_bytes"
+			sleep 2
+			jq -cn --arg disposition "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" \
+				'{disposition:$disposition,reasons:["source-removal-not-complete"]}'
+			return $?
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN=3 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS=1 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	printf '%s\n' "$output" | jq -e '
+		.outcome == "no-candidates" and .policy.pressure_active == true and
+		.diagnostics.inventory_count == 3 and .diagnostics.scanned_count == 1 and
+		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 1 and
+		.diagnostics.deadline_seconds == 1 and .diagnostics.deadline_exhausted == true
+	' >/dev/null || rc=1
+	print_result "automatic_maintenance_deadline_advances_cursor" "$rc" \
+		"Expected a bounded pass to stop at its deadline and advance the durable cursor"
 	return 0
 }
 
@@ -1540,6 +1645,7 @@ source "${SCRIPTS_DIR}/worktree-helper-cmds.sh"
 setup
 printf '=== test-worktree-recovery-lifecycle.sh ===\n'
 test_git_state_detects_recovery_data
+test_archive_prunes_only_regenerable_ignored_caches
 test_claim_state_uses_archive_repository
 test_exact_plan_writes_candidate_without_mutation
 test_plan_output_refuses_unsafe_targets
@@ -1561,7 +1667,8 @@ test_shared_producer_lock_fails_closed_and_reclaims_stale
 test_apply_handles_attributable_legacy_root_transaction
 test_automatic_maintenance_is_bounded_and_policy_bound
 test_automatic_maintenance_checks_capacity_before_aggregate_size
-test_automatic_maintenance_keeps_age_retention_when_aggregate_size_times_out
+test_automatic_maintenance_enters_pressure_when_aggregate_size_times_out
+test_automatic_maintenance_deadline_advances_cursor
 test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable
 test_automatic_maintenance_escalates_completed_zero_candidate_cycle
 test_automatic_maintenance_resumes_interrupted_apply

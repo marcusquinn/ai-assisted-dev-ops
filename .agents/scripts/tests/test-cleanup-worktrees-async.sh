@@ -89,6 +89,7 @@ STUB
 	# return-statement ratchet doesn't flag the heredoc-embedded function.
 	local mock_ran_file="${TEST_DIR}/mock-ran"
 	local maintenance_ran_file="${TEST_DIR}/maintenance-ran"
+	local maintenance_result="${MOCK_MAINTENANCE_RESULT:-{\"schema\":\"test\",\"outcome\":\"no-candidates\"}}"
 	if [[ "${MOCK_CLEANUP_SKIPPED:-0}" -eq 1 ]]; then
 		cat >"${stub_dir}/pulse-cleanup.sh" <<STUB
 # stub pulse-cleanup.sh
@@ -133,7 +134,7 @@ STUB
 	cat >"${stub_dir}/worktree-recovery-maintenance-helper.sh" <<STUB
 #!/usr/bin/env bash
 printf 'MAINTENANCE_RAN\\n' >>"${maintenance_ran_file}"
-printf '{"schema":"test","outcome":"no-candidates"}\\n'
+printf '%s\\n' '${maintenance_result}'
 STUB
 	chmod +x "${stub_dir}/worktree-recovery-maintenance-helper.sh"
 
@@ -466,6 +467,23 @@ test_recovery_maintenance_runs_once_per_cleanup() {
 	return 0
 }
 
+test_recovery_maintenance_preserves_deadline_diagnostics() {
+	local cleanup_log="${TEST_DIR}/.aidevops/logs/cleanup_worktrees.log"
+	local result='{"schema":"test","outcome":"no-candidates","policy":{"pressure_reason":"aggregate-size-unavailable"},"diagnostics":{"deadline_exhausted":true,"cursor_after":1}}'
+	rm -f "$cleanup_log"
+
+	MOCK_CLEANUP_EXIT=0 MOCK_MAINTENANCE_RESULT="$result" run_helper_in_isolation || true
+	if grep -q '"pressure_reason":"aggregate-size-unavailable"' "$cleanup_log" 2>/dev/null &&
+		grep -q '"deadline_exhausted":true' "$cleanup_log" 2>/dev/null &&
+		grep -q '"cursor_after":1' "$cleanup_log" 2>/dev/null; then
+		print_result "recovery-maintenance: logs pressure, deadline, and cursor diagnostics" 0
+	else
+		print_result "recovery-maintenance: logs pressure, deadline, and cursor diagnostics" 1 \
+			"bounded maintenance diagnostics were not preserved in the async log"
+	fi
+	return 0
+}
+
 test_archive_outcome_summary_is_logged() {
 	local cleanup_log="${TEST_DIR}/.aidevops/logs/cleanup_worktrees.log"
 	rm -f "$cleanup_log"
@@ -539,6 +557,10 @@ main() {
 	teardown
 	setup
 	test_recovery_maintenance_runs_once_per_cleanup
+
+	teardown
+	setup
+	test_recovery_maintenance_preserves_deadline_diagnostics
 
 	teardown
 	setup

@@ -24,6 +24,8 @@ WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES=0
 WORKTREE_RECOVERY_MAINTENANCE_BUCKET_COUNT=0
 WORKTREE_RECOVERY_MAINTENANCE_CURSOR_BEFORE=0
 WORKTREE_RECOVERY_MAINTENANCE_CURSOR_AFTER=0
+WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS=0
+WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=false
 WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE=0
 WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_SIZING=0
 WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_CLASSIFICATION=0
@@ -197,6 +199,7 @@ _worktree_recovery_maintenance_pressure_json() {
 			fi
 		else
 			store_bytes="$WORKTREE_RECOVERY_PLAN_JSON_NULL"
+			pressure=true
 			reason="aggregate-size-unavailable"
 		fi
 	fi
@@ -462,6 +465,52 @@ _worktree_recovery_maintenance_reset_scan_counters() {
 	return 0
 }
 
+_worktree_recovery_maintenance_select_candidate() {
+	local entry_json="$1"
+	local bytes="$2"
+	local selected_path="$3"
+	local max_candidates="$4"
+	local max_bytes="$5"
+	local retention_seconds="$6"
+	local pressure_active="$7"
+	local reasons_path="$8"
+	local age_seconds=""
+	local selected_reason=""
+
+	if ! age_seconds=$(_worktree_recovery_maintenance_age_seconds "$entry_json"); then
+		WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
+		WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_AGE=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_AGE + 1))
+		_worktree_recovery_maintenance_record_reason "$reasons_path" \
+			"$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" "age-unavailable"
+		return $?
+	fi
+	if [[ "$age_seconds" -ge "$retention_seconds" ]]; then
+		selected_reason="retention"
+	elif [[ "$pressure_active" == "true" ]]; then
+		selected_reason="pressure"
+	fi
+	if [[ -z "$selected_reason" ]]; then
+		WORKTREE_RECOVERY_MAINTENANCE_PROTECTED=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED + 1))
+		WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_POLICY=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_POLICY + 1))
+		_worktree_recovery_maintenance_record_reason "$reasons_path" "protected" "retention-policy"
+		return $?
+	fi
+	if [[ "$WORKTREE_RECOVERY_MAINTENANCE_SELECTED" -ge "$max_candidates" ||
+		$((WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES + bytes)) -gt "$max_bytes" ]]; then
+		WORKTREE_RECOVERY_MAINTENANCE_PROTECTED=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED + 1))
+		WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_LIMIT=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_LIMIT + 1))
+		_worktree_recovery_maintenance_record_reason "$reasons_path" "protected" "selection-limit"
+		return $?
+	fi
+	printf '%s\n' "$entry_json" | jq -c --arg reason "$selected_reason" \
+		--argjson age_seconds "$age_seconds" \
+		'. + {maintenance:{selected_reason:$reason,age_seconds:$age_seconds}}' \
+		>>"$selected_path" || return 1
+	WORKTREE_RECOVERY_MAINTENANCE_SELECTED=$((WORKTREE_RECOVERY_MAINTENANCE_SELECTED + 1))
+	WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES=$((WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES + bytes))
+	return 0
+}
+
 _worktree_recovery_maintenance_scan() {
 	local ordered_path="$1"
 	local selected_path="$2"
@@ -471,6 +520,7 @@ _worktree_recovery_maintenance_scan() {
 	local retention_seconds="$6"
 	local pressure_active="$7"
 	local reasons_path="$8"
+	local deadline_seconds="$9"
 	local raw_record=""
 	local state=""
 	local bucket_path=""
@@ -480,13 +530,25 @@ _worktree_recovery_maintenance_scan() {
 	local entry_json=""
 	local disposition=""
 	local primary_reason=""
-	local age_seconds=""
-	local selected_reason=""
+	local started_epoch=0
+	local deadline_epoch=0
+	local current_epoch=0
 
 	_worktree_recovery_maintenance_reset_scan_counters || return 1
+	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS="$deadline_seconds"
+	WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=false
+	started_epoch=$(date +%s) || return 1
+	deadline_epoch=$((started_epoch + deadline_seconds))
 	: >"$selected_path" || return 1
 	while IFS= read -r raw_record; do
 		[[ "$WORKTREE_RECOVERY_MAINTENANCE_SCANNED" -lt "$max_scan" ]] || break
+		if [[ "$WORKTREE_RECOVERY_MAINTENANCE_SCANNED" -gt 0 ]]; then
+			current_epoch=$(date +%s) || return 1
+			if [[ "$current_epoch" -ge "$deadline_epoch" ]]; then
+				WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+				break
+			fi
+		fi
 		IFS=$'\t' read -r state bucket_path <<<"$raw_record"
 		WORKTREE_RECOVERY_MAINTENANCE_SCANNED=$((WORKTREE_RECOVERY_MAINTENANCE_SCANNED + 1))
 		if [[ "$state" != "attributed" ]]; then
@@ -527,37 +589,8 @@ _worktree_recovery_maintenance_scan() {
 			_worktree_recovery_maintenance_record_reason "$reasons_path" "$disposition" "$primary_reason" || return 1
 			continue
 		fi
-		if ! age_seconds=$(_worktree_recovery_maintenance_age_seconds "$entry_json"); then
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN + 1))
-			WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_AGE=$((WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_AGE + 1))
-			_worktree_recovery_maintenance_record_reason "$reasons_path" "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" "age-unavailable" || return 1
-			continue
-		fi
-		selected_reason=""
-		if [[ "$age_seconds" -ge "$retention_seconds" ]]; then
-			selected_reason="retention"
-		elif [[ "$pressure_active" == "true" ]]; then
-			selected_reason="pressure"
-		fi
-		if [[ -z "$selected_reason" ]]; then
-			WORKTREE_RECOVERY_MAINTENANCE_PROTECTED=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED + 1))
-			WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_POLICY=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_POLICY + 1))
-			_worktree_recovery_maintenance_record_reason "$reasons_path" "protected" "retention-policy" || return 1
-			continue
-		fi
-		if [[ "$WORKTREE_RECOVERY_MAINTENANCE_SELECTED" -ge "$max_candidates" ||
-			$((WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES + bytes)) -gt "$max_bytes" ]]; then
-			WORKTREE_RECOVERY_MAINTENANCE_PROTECTED=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED + 1))
-			WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_LIMIT=$((WORKTREE_RECOVERY_MAINTENANCE_PROTECTED_LIMIT + 1))
-			_worktree_recovery_maintenance_record_reason "$reasons_path" "protected" "selection-limit" || return 1
-			continue
-		fi
-		printf '%s\n' "$entry_json" | jq -c --arg reason "$selected_reason" \
-			--argjson age_seconds "$age_seconds" \
-			'. + {maintenance:{selected_reason:$reason,age_seconds:$age_seconds}}' \
-			>>"$selected_path" || return 1
-		WORKTREE_RECOVERY_MAINTENANCE_SELECTED=$((WORKTREE_RECOVERY_MAINTENANCE_SELECTED + 1))
-		WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES=$((WORKTREE_RECOVERY_MAINTENANCE_SELECTED_BYTES + bytes))
+		_worktree_recovery_maintenance_select_candidate "$entry_json" "$bytes" "$selected_path" \
+			"$max_candidates" "$max_bytes" "$retention_seconds" "$pressure_active" "$reasons_path" || return 1
 	done <"$ordered_path"
 	return 0
 }
@@ -610,6 +643,7 @@ _worktree_recovery_maintenance_limits_json() {
 	local minimum_free_kb=""
 	local minimum_free_percent=""
 	local aggregate_timeout_tenths=""
+	local deadline_seconds=""
 	local pressure_json=""
 
 	max_scan=$(_worktree_recovery_maintenance_uint "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN:-50}" 50 1 500)
@@ -622,16 +656,19 @@ _worktree_recovery_maintenance_limits_json() {
 	minimum_free_percent=$(_worktree_recovery_maintenance_uint "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT:-10}" 10 0 100)
 	aggregate_timeout_tenths=$(_worktree_recovery_maintenance_uint \
 		"${AIDEVOPS_WORKTREE_RECOVERY_AGGREGATE_SIZE_TIMEOUT_TENTHS:-20}" 20 1 36000)
+	deadline_seconds=$(_worktree_recovery_maintenance_uint \
+		"${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS:-120}" 120 1 3600)
 	pressure_json=$(_worktree_recovery_maintenance_pressure_json "$recovery_root" "$max_store_bytes" \
 		"$minimum_free_kb" "$minimum_free_percent" "$aggregate_timeout_tenths") || return 1
 	jq -cn --argjson max_scan "$max_scan" --argjson max_candidates "$max_candidates" \
 		--argjson max_bytes "$max_bytes" --argjson retention_days "$retention_days" \
 		--argjson max_store_bytes "$max_store_bytes" --argjson minimum_free_kb "$minimum_free_kb" \
-		--argjson minimum_free_percent "$minimum_free_percent" --argjson pressure "$pressure_json" \
+		--argjson minimum_free_percent "$minimum_free_percent" --argjson deadline_seconds "$deadline_seconds" \
+		--argjson pressure "$pressure_json" \
 		'{max_scan:$max_scan,max_candidates:$max_candidates,max_bytes:$max_bytes,
 		retention_days:$retention_days,max_store_bytes:$max_store_bytes,
 		minimum_free_kb:$minimum_free_kb,minimum_free_percent:$minimum_free_percent,
-		pressure:$pressure}'
+		deadline_seconds:$deadline_seconds,pressure:$pressure}'
 	return $?
 }
 
@@ -685,10 +722,7 @@ _worktree_recovery_maintenance_prepare_selection() {
 	local state_dir="$1"
 	local platform="$2"
 	local limits_json="$3"
-	local inventory_path=""
-	local ordered_path=""
-	local selected_path=""
-	local reasons_path=""
+	local inventory_path="" ordered_path="" selected_path="" reasons_path=""
 	local cursor_path="${state_dir}/cursor"
 	local offset=0
 	local bucket_count=0
@@ -700,6 +734,7 @@ _worktree_recovery_maintenance_prepare_selection() {
 	local retention_days=""
 	local retention_seconds=""
 	local pressure_active=""
+	local deadline_seconds=""
 	WORKTREE_RECOVERY_MAINTENANCE_POLICY_JSON=""
 	WORKTREE_RECOVERY_MAINTENANCE_PLAN_JSON=""
 	max_scan=$(printf '%s\n' "$limits_json" | jq -r '.max_scan') || return 1
@@ -708,6 +743,7 @@ _worktree_recovery_maintenance_prepare_selection() {
 	retention_days=$(printf '%s\n' "$limits_json" | jq -r '.retention_days') || return 1
 	retention_seconds=$((retention_days * 86400))
 	pressure_active=$(printf '%s\n' "$limits_json" | jq -r '.pressure.active') || return 1
+	deadline_seconds=$(printf '%s\n' "$limits_json" | jq -r '.deadline_seconds') || return 1
 	_worktree_recovery_maintenance_create_selection_temp_files || return 1
 	inventory_path="$WORKTREE_RECOVERY_MAINTENANCE_TEMP_INVENTORY"
 	ordered_path="$WORKTREE_RECOVERY_MAINTENANCE_TEMP_ORDERED"
@@ -752,7 +788,8 @@ _worktree_recovery_maintenance_prepare_selection() {
 	fi
 	if ! _worktree_recovery_maintenance_order_inventory "$inventory_path" "$ordered_path" "$offset" ||
 		! _worktree_recovery_maintenance_scan "$ordered_path" "$selected_path" "$scan_limit" \
-			"$max_candidates" "$max_bytes" "$retention_seconds" "$pressure_active" "$reasons_path"; then
+			"$max_candidates" "$max_bytes" "$retention_seconds" "$pressure_active" "$reasons_path" \
+			"$deadline_seconds"; then
 		rm -f "$inventory_path" "$ordered_path" "$selected_path" "$reasons_path"
 		return 1
 	fi
@@ -797,6 +834,8 @@ _worktree_recovery_maintenance_diagnostics_json() {
 		--argjson scanned_count "$WORKTREE_RECOVERY_MAINTENANCE_SCANNED" \
 		--argjson cursor_before "$WORKTREE_RECOVERY_MAINTENANCE_CURSOR_BEFORE" \
 		--argjson cursor_after "$WORKTREE_RECOVERY_MAINTENANCE_CURSOR_AFTER" \
+		--argjson deadline_seconds "$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS" \
+		--argjson deadline_exhausted "$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED" \
 		--argjson coverage_complete "$coverage_complete" \
 		--argjson coverage_percent "$coverage_percent" \
 		--argjson unknown_archive "$WORKTREE_RECOVERY_MAINTENANCE_UNKNOWN_ARCHIVE" \
@@ -813,6 +852,7 @@ _worktree_recovery_maintenance_diagnostics_json() {
 		--argjson completed_cycles "$WORKTREE_RECOVERY_MAINTENANCE_COMPLETED_CYCLES" \
 		'{inventory_count:$inventory_count,scanned_count:$scanned_count,
 		cursor_before:$cursor_before,cursor_after:$cursor_after,
+		deadline_seconds:$deadline_seconds,deadline_exhausted:$deadline_exhausted,
 		coverage_complete:$coverage_complete,coverage_percent:$coverage_percent,
 		reason_counts:{unknown_archive:$unknown_archive,unknown_sizing:$unknown_sizing,
 		unknown_classification:$unknown_classification,unknown_age:$unknown_age,

@@ -511,6 +511,7 @@ _worktree_recovery_plan_git_state() {
 	local archive_path=""
 	local status_file=""
 	local status_rc=0
+	local cache_policy_rc=0
 
 	archive_path=$(printf '%s\n' "$identity_json" | jq -r '.archive_path') || return 1
 	status_file=$(mktemp "${AIDEVOPS_TEMP_DIR:-${TMPDIR:-/tmp}}/aidevops-worktree-recovery-status.XXXXXX") || {
@@ -521,10 +522,13 @@ _worktree_recovery_plan_git_state() {
 		--untracked-files=all --ignored=matching >"$status_file" 2>/dev/null || status_rc=$?
 	if [[ "$status_rc" -ne 0 ]]; then
 		printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE"
-	elif [[ -s "$status_file" ]]; then
-		printf '%s\n' "dirty"
 	else
-		printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR"
+		_worktree_recovery_status_has_user_data "$status_file" "$archive_path" || cache_policy_rc=$?
+		case "$cache_policy_rc" in
+		0) printf '%s\n' "dirty" ;;
+		1) printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ;;
+		*) printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE" ;;
+		esac
 	fi
 	rm -f "$status_file"
 	return 0

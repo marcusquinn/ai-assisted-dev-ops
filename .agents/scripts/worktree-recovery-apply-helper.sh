@@ -215,7 +215,8 @@ _worktree_recovery_apply_validate_automatic_plan_shape() {
 		(($policy.store_bytes | type == $number_type and . >= 0 and . == floor) or
 			($policy.store_bytes == null and
 				(if $policy.pressure_active
-				then $policy.pressure_reason | IN($reason_filesystem_kb,$reason_filesystem_percent)
+				then $policy.pressure_reason | IN($reason_aggregate_unavailable,
+					$reason_filesystem_kb,$reason_filesystem_percent)
 				else $policy.pressure_reason == $reason_aggregate_unavailable end))) and
 		$policy.retention_days > 0 and $policy.max_scan > 0 and
 		$policy.max_candidates > 0 and $policy.max_bytes > 0 and
