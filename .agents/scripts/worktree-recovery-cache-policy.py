@@ -6,7 +6,9 @@
 import json
 import os
 from pathlib import Path, PurePosixPath
+import selectors
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -14,6 +16,8 @@ import time
 from typing import List, Optional, Set, Tuple
 
 CACHE_MANIFEST_SCHEMA = "aidevops.worktree-recovery-cache-manifest/v1"
+GIT_OUTPUT_MAX_BYTES = 1024 * 1024
+GIT_OUTPUT_LIMIT_RC = 125
 
 SAFE_COMPONENTS = {
     "node_modules",
@@ -65,12 +69,13 @@ def status_records(raw: bytes):
         yield record[:2], os.fsdecode(record[3:])
 
 
-def status_has_user_data(status_path: Path, archive_root: Path, git_bin: str) -> int:
+def status_bytes_have_user_data(
+    raw_status: bytes,
+    archive_root: Path,
+    git_bin: str,
+    deadline_epoch: Optional[int] = None,
+) -> int:
     """Return 0 for protected data, 1 for recognised caches only, 2 on uncertainty."""
-    try:
-        raw_status = status_path.read_bytes()
-    except OSError:
-        return 2
     checked: Set[Tuple[str, ...]] = set()
     for state, relative_path in status_records(raw_status):
         root_parts = safe_root(relative_path) if state == b"!!" else None
@@ -79,7 +84,10 @@ def status_has_user_data(status_path: Path, archive_root: Path, git_bin: str) ->
         if root_parts in checked:
             continue
         tracked_rc, tracked = git_output(
-            git_bin, archive_root, ["ls-files", "-z", "--", "/".join(root_parts)]
+            git_bin,
+            archive_root,
+            ["ls-files", "-z", "--", "/".join(root_parts)],
+            deadline_epoch,
         )
         if tracked_rc != 0:
             return 2
@@ -89,6 +97,30 @@ def status_has_user_data(status_path: Path, archive_root: Path, git_bin: str) ->
     return 1
 
 
+def status_has_user_data(status_path: Path, archive_root: Path, git_bin: str) -> int:
+    """Classify a previously captured status file."""
+    try:
+        raw_status = status_path.read_bytes()
+    except OSError:
+        return 2
+    return status_bytes_have_user_data(raw_status, archive_root, git_bin)
+
+
+def bounded_git_state(
+    archive_root: Path, git_bin: str, deadline_epoch: Optional[int]
+) -> int:
+    """Classify current Git state without an unbounded status capture."""
+    status_rc, raw_status = git_output(
+        git_bin,
+        archive_root,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"],
+        deadline_epoch,
+    )
+    if status_rc != 0:
+        return 2
+    return status_bytes_have_user_data(raw_status, archive_root, git_bin, deadline_epoch)
+
+
 def git_output(
     git_bin: str,
     source_root: Path,
@@ -96,22 +128,77 @@ def git_output(
     deadline_epoch: Optional[int] = None,
 ) -> Tuple[int, bytes]:
     """Run one read-only Git query with bounded captured output."""
-    timeout = None
-    if deadline_epoch is not None:
-        timeout = deadline_epoch - time.time()
-        if timeout <= 0:
-            return 124, b""
+    def stop_process(process: subprocess.Popen) -> None:
+        """Stop the Git process group after a resource limit is reached."""
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            process.wait(timeout=0.2)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            process.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            pass
+
+    if deadline_epoch is not None and deadline_epoch <= time.time():
+        return 124, b""
+    git_environment = os.environ.copy()
+    git_environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [git_bin, "-C", str(source_root), *arguments],
-            check=False,
+            env=git_environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=timeout,
+            start_new_session=True,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return 2, b""
-    return result.returncode, result.stdout
+    if process.stdout is None:
+        stop_process(process)
+        return 2, b""
+    output = bytearray()
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            if deadline_epoch is not None:
+                remaining = deadline_epoch - time.time()
+                if remaining <= 0:
+                    stop_process(process)
+                    return 124, b""
+                wait_seconds = min(0.1, remaining)
+            else:
+                wait_seconds = 0.1
+            events = selector.select(wait_seconds)
+            if not events:
+                continue
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > GIT_OUTPUT_MAX_BYTES:
+                stop_process(process)
+                return GIT_OUTPUT_LIMIT_RC, b""
+        wait_timeout = None
+        if deadline_epoch is not None:
+            wait_timeout = max(0.0, deadline_epoch - time.time())
+        try:
+            return process.wait(timeout=wait_timeout), bytes(output)
+        except subprocess.TimeoutExpired:
+            stop_process(process)
+            return 124, b""
+    finally:
+        selector.close()
+        process.stdout.close()
 
 
 def allocated_bytes(root: Path, deadline_epoch: int) -> Optional[int]:
@@ -288,6 +375,49 @@ def validate_staged_root(
     return 0
 
 
+def measure_staged_root(
+    staged_path: Path,
+    expected_identity: str,
+    expected_bytes: int,
+    deadline_epoch: int,
+) -> Optional[int]:
+    """Return the exact current allocation for one validated staged root."""
+    if not staged_path.is_absolute() or time.time() >= deadline_epoch:
+        return None
+    measured_bytes = allocated_bytes(staged_path, deadline_epoch)
+    if root_identity(staged_path) != expected_identity or measured_bytes != expected_bytes:
+        return None
+    return measured_bytes
+
+
+def validate_removing_root(
+    staged_path: Path,
+    expected_identity: str,
+    expected_bytes: int,
+    deadline_epoch: int,
+) -> int:
+    """Validate an isolated cache root that may be partly removed on retry."""
+    if not staged_path.is_absolute() or time.time() >= deadline_epoch:
+        return 2
+    if not staged_path.exists() and not staged_path.is_symlink():
+        return 0
+    measured_bytes = allocated_bytes(staged_path, deadline_epoch)
+    if (
+        root_identity(staged_path) != expected_identity
+        or measured_bytes is None
+        or measured_bytes > expected_bytes
+    ):
+        return 2
+    return 0
+
+
+def validate_removed_root(staged_path: Path, deadline_epoch: int) -> int:
+    """Prove the staged namespace has zero remaining allocated bytes."""
+    if not staged_path.is_absolute() or time.time() >= deadline_epoch:
+        return 2
+    return 0 if not staged_path.exists() and not staged_path.is_symlink() else 2
+
+
 def prune_caches(source_root: Path, archive_root: Path, git_bin: str) -> int:
     """Remove only ignored, untracked, recognised cache roots from an archive copy."""
     status_rc, raw_status = git_output(
@@ -335,6 +465,17 @@ def main() -> int:
         if not source_root.is_dir() or source_root.is_symlink():
             return 2
         return prune_caches(source_root, archive_root, git_bin)
+    if mode == "git-state" and len(sys.argv) == 5:
+        _, archive_raw, git_bin, deadline_raw = sys.argv[1:]
+        archive_root = Path(archive_raw)
+        if not archive_root.is_dir() or archive_root.is_symlink():
+            return 2
+        try:
+            deadline_value = int(deadline_raw)
+        except ValueError:
+            return 2
+        deadline_epoch = deadline_value if deadline_value > 0 else None
+        return bounded_git_state(archive_root, git_bin, deadline_epoch)
     if mode == "manifest" and len(sys.argv) == 7:
         _, archive_raw, git_bin, max_roots_raw, max_bytes_raw, deadline_raw = sys.argv[
             1:
@@ -370,6 +511,32 @@ def main() -> int:
         _, staged_raw, identity, bytes_raw, deadline_raw = sys.argv[1:]
         try:
             return validate_staged_root(Path(staged_raw), identity, int(bytes_raw), int(deadline_raw))
+        except ValueError:
+            return 2
+    if mode == "measure-staged" and len(sys.argv) == 6:
+        _, staged_raw, identity, bytes_raw, deadline_raw = sys.argv[1:]
+        try:
+            measured_bytes = measure_staged_root(
+                Path(staged_raw), identity, int(bytes_raw), int(deadline_raw)
+            )
+        except ValueError:
+            return 2
+        if measured_bytes is None:
+            return 2
+        print(measured_bytes)
+        return 0
+    if mode == "validate-removing" and len(sys.argv) == 6:
+        _, staged_raw, identity, bytes_raw, deadline_raw = sys.argv[1:]
+        try:
+            return validate_removing_root(
+                Path(staged_raw), identity, int(bytes_raw), int(deadline_raw)
+            )
+        except ValueError:
+            return 2
+    if mode == "validate-removed" and len(sys.argv) == 4:
+        _, staged_raw, deadline_raw = sys.argv[1:]
+        try:
+            return validate_removed_root(Path(staged_raw), int(deadline_raw))
         except ValueError:
             return 2
     return 2

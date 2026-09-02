@@ -186,7 +186,7 @@ claim, and process evidence is terminal and clear. Each selected root must be
 an exact ignored and untracked approved directory with no symlink component,
 tracked path, or hard-linked regular file. A bounded manifest records its
 device/inode identity and allocated bytes; uncertainty, deadline exhaustion,
-or drift preserves the root.
+Git output beyond the fixed capture ceiling, or drift preserves the root.
 
 After reviewing a v2 plan, an operator may run:
 
@@ -290,12 +290,22 @@ Cache pruning takes precedence over whole-bucket deletion for that pass and uses
 its own `aidevops.worktree-recovery-cache-prune-plan/v1` plan and
 `cache-automatic-sha256:` authority. Apply revalidates archive and root
 identities, ignored/untracked state, allocated bytes, symlink and hard-link
-safety, then stages only the exact root into an archive-local
+safety, and all terminal claim, process, task, pull-request, and commit evidence
+both before the transaction and immediately before each rename. The initial
+apply receives the scan's absolute deadline rather than starting a new budget;
+an exhausted pass defers every selected cache root without mutation. A pending
+transaction receives one fresh bounded deadline only when a later maintenance
+pass resumes it. Apply stages only the exact root into an archive-local
 `.retention-trash` transaction. Its journal survives interruption before or
-after rename or removal; pending cache plans resume before new inventory.
-Receipts retain exact expected and observed allocated bytes, while run outcomes
-report `cache-pruned` or `resumed-and-pruned`. User files and the protected
-archive remain untouched.
+after rename or bounded removal. A `removing` journal state permits a timed-out
+delete to continue only while the isolated root identity and remaining
+allocation stay within the original bound. Pending cache plans resume before
+new inventory. Receipts retain the expected allocation, an independent exact
+staged-root measurement, and a zero post-delete allocation observation before
+reporting those namespace bytes as reclaimed; they do not infer global
+filesystem free-space changes from concurrent `df` activity. Run outcomes report
+`cache-pruned` or `resumed-and-pruned`. User files and the protected archive
+remain untouched.
 
 When a stable inventory completes a full pressure-active scan cycle with zero
 candidates, the result retains `outcome:"no-candidates"` and sets

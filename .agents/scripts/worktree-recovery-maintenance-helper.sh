@@ -700,7 +700,11 @@ _worktree_recovery_maintenance_collect_cache_roots() {
 	selected_bytes=$(printf '%s\n' "$manifest_json" | jq -r '.candidate_bytes') || return 1
 	deadline_exhausted=$(printf '%s\n' "$manifest_json" | jq -r '.deadline_exhausted') || return 1
 	[[ "$selected" -le "$remaining_roots" && "$selected_bytes" -le "$remaining_bytes" ]] || return 1
-	if [[ "$selected" -gt 0 ]]; then
+	if [[ "$deadline_exhausted" == true ]]; then
+		deferred=$((deferred + selected))
+		selected=0
+		selected_bytes=0
+	elif [[ "$selected" -gt 0 ]]; then
 		printf '%s\n' "$manifest_json" | jq -c \
 			--arg role "$role" --arg bucket_path "$bucket_path" --arg archive_path "$archive_path" \
 			--argjson recovery_identity "$identity_json" --argjson evidence "$evidence_json" '
@@ -1228,6 +1232,7 @@ _worktree_recovery_maintenance_resume_pending() {
 	local reclaimed_bytes=""
 	local plan_schema=""
 	local outcome=""
+	local deadline_seconds=""
 
 	[[ -e "$pending_dir" || -L "$pending_dir" ]] || return 2
 	[[ -d "$pending_dir" && ! -L "$pending_dir" && -f "$plan_path" && ! -L "$plan_path" ]] || return 1
@@ -1238,7 +1243,10 @@ _worktree_recovery_maintenance_resume_pending() {
 		outcome="resumed-and-removed"
 		;;
 	"$WORKTREE_RECOVERY_CACHE_PLAN_SCHEMA")
-		worktree_recovery_cache_prune_apply_automatic "$plan_path" "$receipt_path" >/dev/null || return 1
+		deadline_seconds=$(jq -r '.automatic_policy.deadline_seconds' "$plan_path") || return 1
+		_worktree_recovery_maintenance_start_deadline "$deadline_seconds" || return 1
+		worktree_recovery_cache_prune_apply_automatic "$plan_path" "$receipt_path" \
+			"$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EPOCH" >/dev/null || return 1
 		outcome="resumed-and-pruned"
 		;;
 	*) return 1 ;;
@@ -1321,13 +1329,26 @@ _worktree_recovery_maintenance_success_json() {
 	return $?
 }
 
+_worktree_recovery_maintenance_defer_expired_cache_selection() {
+	local current_epoch=0
+
+	current_epoch=$(date +%s) || return 1
+	if [[ "$WORKTREE_RECOVERY_MAINTENANCE_CACHE_SELECTED" -gt 0 &&
+		"$current_epoch" -ge "$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EPOCH" ]]; then
+		WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EXHAUSTED=true
+		WORKTREE_RECOVERY_MAINTENANCE_CACHE_DEFERRED=$((WORKTREE_RECOVERY_MAINTENANCE_CACHE_DEFERRED + WORKTREE_RECOVERY_MAINTENANCE_CACHE_SELECTED))
+		WORKTREE_RECOVERY_MAINTENANCE_CACHE_SELECTED=0
+		WORKTREE_RECOVERY_MAINTENANCE_CACHE_SELECTED_BYTES=0
+		WORKTREE_RECOVERY_MAINTENANCE_CACHE_PLAN_JSON=""
+	fi
+	return 0
+}
+
 worktree_recovery_maintenance_run() {
 	local platform="" state_dir="" recovery_root="" limits_json="" policy_json=""
 	local plan_json="" pending_dir="" pending_init_dir="" plan_path="" receipt_path=""
-	local completed_dir="" reclaimed_bytes="" diagnostics_json=""
-	local operation="archive-remove"
+	local completed_dir="" reclaimed_bytes="" diagnostics_json="" operation="archive-remove"
 	local resume_status=0 run_status=0
-
 	if [[ "${AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_ENABLED:-1}" != "1" ]]; then
 		jq -cn --arg schema "$WORKTREE_RECOVERY_MAINTENANCE_RUN_SCHEMA" \
 			'{schema:$schema,outcome:"disabled",reclaimed_bytes:0}'
@@ -1372,6 +1393,10 @@ worktree_recovery_maintenance_run() {
 		return 1
 	fi
 	policy_json="$WORKTREE_RECOVERY_MAINTENANCE_POLICY_JSON"
+	_worktree_recovery_maintenance_defer_expired_cache_selection || {
+		_worktree_recovery_maintenance_release_lock || true
+		return 1
+	}
 	diagnostics_json=$(_worktree_recovery_maintenance_diagnostics_json) || {
 		_worktree_recovery_maintenance_release_lock || true
 		return 1
@@ -1400,7 +1425,8 @@ worktree_recovery_maintenance_run() {
 	if [[ "$run_status" -eq 0 ]]; then
 		if [[ "$operation" == "$WORKTREE_RECOVERY_MAINTENANCE_OPERATION_CACHE_PRUNE" ]]; then
 			worktree_recovery_cache_prune_apply_automatic \
-				"$plan_path" "$receipt_path" >/dev/null || run_status=1
+				"$plan_path" "$receipt_path" "$WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_EPOCH" \
+				>/dev/null || run_status=1
 		else
 			worktree_recovery_apply_automatic "$plan_path" "$receipt_path" >/dev/null || run_status=1
 		fi

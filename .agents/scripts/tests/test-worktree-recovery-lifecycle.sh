@@ -1378,6 +1378,7 @@ test_cache_retrofit_prunes_mixed_archive_and_accounts_bytes() {
 test_cache_retrofit_policy_preserves_unsafe_roots() {
 	local repo_path="${TEST_DIR}/cache-retrofit-unsafe"
 	local symlink_target="${TEST_DIR}/cache-retrofit-symlink-target"
+	local noisy_git="${TEST_DIR}/cache-retrofit-noisy-git"
 	local deadline_epoch=0
 	local manifest=""
 	local rc=0
@@ -1402,11 +1403,114 @@ test_cache_retrofit_policy_preserves_unsafe_roots() {
 	[[ "$(printf '%s\n' "$manifest" | jq -r '.candidate_count')" == "0" ]] || rc=1
 	if _worktree_recovery_cache_policy_helper manifest "$repo_path" \
 		"${TEST_DIR}/missing-git" 10 10485760 "$deadline_epoch" >/dev/null 2>&1; then rc=1; fi
+	cat >"$noisy_git" <<'SH' || rc=1
+#!/usr/bin/env bash
+python3 - <<'PY'
+import sys
+
+sys.stdout.buffer.write(b"!! .codegraph/cache-file\0" * 50000)
+PY
+SH
+	chmod +x "$noisy_git" || rc=1
+	if _worktree_recovery_cache_policy_helper manifest "$repo_path" \
+		"$noisy_git" 10 10485760 "$deadline_epoch" >/dev/null 2>&1; then rc=1; fi
 	[[ -f "${repo_path}/.codegraph/config.json" &&
 		-f "${repo_path}/nested/.codegraph/codegraph.db" &&
 		-L "${repo_path}/backend/__pycache__" ]] || rc=1
 	print_result "cache_retrofit_policy_preserves_unsafe_roots" "$rc" \
 		"Expected tracked, nested CodeGraph, symlink roots, and failed Git queries to retain all content"
+	return 0
+}
+
+test_cache_retrofit_rejects_mutable_evidence_drift_before_mutation() {
+	local home_path="${TEST_DIR}/cache-retrofit-evidence-home"
+	local state_dir="${home_path}/maintenance-state"
+	local plan_path="${TEST_DIR}/cache-retrofit-evidence-plan.json"
+	local receipt_path="${TEST_DIR}/cache-retrofit-evidence-receipt.json"
+	local archive_path=""
+	local rc=0
+
+	archive_path=$(create_mixed_cache_archive "$home_path" "evidence-drift") || rc=1
+	install_cache_retrofit_evidence_stubs
+	if (
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		limits_json=$(_worktree_recovery_maintenance_limits_json \
+			"${home_path}/.aidevops/recovery/worktrees")
+		_worktree_recovery_maintenance_prepare_selection "$state_dir" "Linux" "$limits_json"
+		printf '%s\n' "$WORKTREE_RECOVERY_MAINTENANCE_CACHE_PLAN_JSON" >"$plan_path"
+		_worktree_recovery_plan_claim_state() {
+			local ignored_identity="$1"
+			: "$ignored_identity"
+			printf 'active\n'
+			return 0
+		}
+		HOME="$home_path" worktree_recovery_cache_prune_apply_automatic \
+			"$plan_path" "$receipt_path" >/dev/null 2>&1
+	); then rc=1; fi
+	[[ -d "${archive_path}/.codegraph" && -f "${archive_path}/logs/diagnostic.log" &&
+		! -e "$receipt_path" ]] || rc=1
+	print_result "cache_retrofit_rejects_mutable_evidence_drift_before_mutation" "$rc" \
+		"Expected a newly active claim to block cache-root staging before any archive mutation"
+	return 0
+}
+
+test_cache_retrofit_honors_shared_deadline_before_mutation() {
+	local home_path="${TEST_DIR}/cache-retrofit-deadline-home"
+	local state_dir="${home_path}/maintenance-state"
+	local plan_path="${TEST_DIR}/cache-retrofit-deadline-plan.json"
+	local receipt_path="${TEST_DIR}/cache-retrofit-deadline-receipt.json"
+	local archive_path=""
+	local expired_epoch=0
+	local rc=0
+
+	archive_path=$(create_mixed_cache_archive "$home_path" "shared-deadline") || rc=1
+	install_cache_retrofit_evidence_stubs
+	(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		limits_json=$(_worktree_recovery_maintenance_limits_json \
+			"${home_path}/.aidevops/recovery/worktrees")
+		_worktree_recovery_maintenance_prepare_selection "$state_dir" "Linux" "$limits_json"
+		printf '%s\n' "$WORKTREE_RECOVERY_MAINTENANCE_CACHE_PLAN_JSON" >"$plan_path"
+	) || rc=1
+	expired_epoch=$(($(date +%s) - 1)) || rc=1
+	if HOME="$home_path" worktree_recovery_cache_prune_apply_automatic \
+		"$plan_path" "$receipt_path" "$expired_epoch" >/dev/null 2>&1; then rc=1; fi
+	[[ -d "${archive_path}/.codegraph" && -f "${archive_path}/logs/diagnostic.log" &&
+		! -e "$receipt_path" ]] || rc=1
+	print_result "cache_retrofit_honors_shared_deadline_before_mutation" "$rc" \
+		"Expected an exhausted maintenance deadline to block a fresh cache apply budget"
+	return 0
+}
+
+test_cache_retrofit_resumes_interrupted_delete() {
+	local home_path="${TEST_DIR}/cache-retrofit-delete-home"
+	local state_dir="${home_path}/maintenance-state"
+	local archive_path="" output="" receipt_path=""
+	local rc=0
+
+	archive_path=$(create_mixed_cache_archive "$home_path" "delete-resume") || rc=1
+	install_cache_retrofit_evidence_stubs
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_DELETE=1 \
+		run_cache_retrofit_maintenance "$home_path" "$state_dir" >/dev/null 2>&1; then rc=1; fi
+	[[ -d "$state_dir/pending" && ! -e "${archive_path}/.codegraph" &&
+		-f "${archive_path}/logs/diagnostic.log" ]] || rc=1
+	output=$(run_cache_retrofit_maintenance "$home_path" "$state_dir") || rc=1
+	receipt_path=$(printf '%s\n' "$output" | jq -r '.receipt') || rc=1
+	[[ "$(printf '%s\n' "$output" | jq -r '.outcome')" == "resumed-and-pruned" ]] || rc=1
+	jq -e '
+		.observed_allocated_bytes == .expected_allocated_bytes and
+		([.entries[].post_delete_allocated_bytes] | all(. == 0))
+	' "$receipt_path" >/dev/null || rc=1
+	[[ ! -d "$state_dir/pending" && ! -e "${archive_path}/.codegraph" &&
+		-f "${archive_path}/logs/diagnostic.log" ]] || rc=1
+	print_result "cache_retrofit_resumes_interrupted_delete" "$rc" \
+		"Expected a post-delete crash to resume from the removing journal with zero residual bytes"
 	return 0
 }
 
@@ -2147,7 +2251,10 @@ run_all_tests() {
 	test_cache_retrofit_prunes_mixed_archive_and_accounts_bytes
 	test_cache_retrofit_policy_preserves_unsafe_roots
 	test_cache_retrofit_rejects_identity_drift_before_mutation
+	test_cache_retrofit_rejects_mutable_evidence_drift_before_mutation
+	test_cache_retrofit_honors_shared_deadline_before_mutation
 	test_cache_retrofit_resumes_interrupted_move
+	test_cache_retrofit_resumes_interrupted_delete
 	test_automatic_maintenance_is_bounded_and_policy_bound
 	test_automatic_maintenance_checks_capacity_before_aggregate_size
 	test_automatic_maintenance_enters_pressure_when_aggregate_size_times_out
@@ -2170,7 +2277,10 @@ run_cache_retrofit_tests() {
 	test_cache_retrofit_prunes_mixed_archive_and_accounts_bytes
 	test_cache_retrofit_policy_preserves_unsafe_roots
 	test_cache_retrofit_rejects_identity_drift_before_mutation
+	test_cache_retrofit_rejects_mutable_evidence_drift_before_mutation
+	test_cache_retrofit_honors_shared_deadline_before_mutation
 	test_cache_retrofit_resumes_interrupted_move
+	test_cache_retrofit_resumes_interrupted_delete
 	printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 	return $?

@@ -11,6 +11,7 @@ WORKTREE_RECOVERY_APPLY_RESERVATION_SCHEMA="aidevops.worktree-recovery-apply-res
 WORKTREE_RECOVERY_APPLY_TRANSACTION_SCHEMA="aidevops.worktree-recovery-apply-transaction/v1"
 WORKTREE_RECOVERY_APPLY_STATE_PLANNED="planned"
 WORKTREE_RECOVERY_APPLY_STATE_STAGED="staged"
+WORKTREE_RECOVERY_APPLY_STATE_REMOVING="removing"
 WORKTREE_RECOVERY_APPLY_STATE_REMOVED="removed"
 WORKTREE_RECOVERY_APPLY_OUTCOME_PENDING="pending"
 WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED="$WORKTREE_RECOVERY_APPLY_STATE_REMOVED"
@@ -384,12 +385,15 @@ _worktree_recovery_apply_validate_receipt_replay() {
 		--arg plan_id "$plan_id" --arg plan_digest "$plan_digest" \
 		--arg confirmation "$confirmation" --argjson candidate_count "$candidate_count" \
 		--argjson candidate_bytes "$candidate_bytes" --argjson automatic_policy "$automatic_policy" \
-		--arg removed "$WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED" '
+		--arg removed "$WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED" \
+		--arg cache_policy_id "$WORKTREE_RECOVERY_CACHE_POLICY_ID" '
 		.schema == $schema and .complete == true and .plan_id == $plan_id and
 		.plan_digest == $plan_digest and .confirmation == $confirmation and
 		.candidate_count == $candidate_count and .expected_allocated_bytes == $candidate_bytes and
 		.observed_allocated_bytes == $candidate_bytes and
 		(.automatic_policy // null) == $automatic_policy and (.entries | length == $candidate_count) and
+		(if .automatic_policy.policy_id == $cache_policy_id
+		then ([.entries[].post_delete_allocated_bytes] | all(. == 0)) else true end) and
 		([.entries[] | select(.outcome != $removed)] | length == 0)
 	' "$receipt_path" >/dev/null 2>&1
 	return $?
@@ -709,14 +713,17 @@ _worktree_recovery_apply_validate_existing_journal() {
 	printf '%s\n' "$expected_journal" | jq -e --slurpfile actual "$journal_path" \
 		--arg planned "$WORKTREE_RECOVERY_APPLY_STATE_PLANNED" \
 		--arg staged "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" \
+		--arg removing "$WORKTREE_RECOVERY_APPLY_STATE_REMOVING" \
 		--arg removed "$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" \
+		--arg cache_schema "$WORKTREE_RECOVERY_CACHE_TRANSACTION_SCHEMA" \
 		--arg string_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_STRING" '
 		. as $expected | $actual[0] |
 		.schema == $expected.schema and .transaction_id == $expected.transaction_id and
 		.plan_id == $expected.plan_id and .plan_digest == $expected.plan_digest and
 		.confirmation == $expected.confirmation and (.started_at | type == $string_type) and
 		(.automatic_policy // null) == ($expected.automatic_policy // null) and
-		([.entries[] | .state] | all(. == $planned or . == $staged or . == $removed)) and
+		([.entries[] | .state] | all(. == $planned or . == $staged or . == $removed or
+			($expected.schema == $cache_schema and . == $removing))) and
 		([.entries[] | {index,role,original_path,staged_path,archive_name,
 			expected_allocated_bytes,identity,evidence,reasons,maintenance}] ==
 			 [$expected.entries[] | {index,role,original_path,staged_path,archive_name,
@@ -883,12 +890,17 @@ _worktree_recovery_apply_update_entry() {
 	updated=$(jq -c --argjson index "$index" --arg state "$state" \
 		--argjson observed_bytes "$observed_bytes" --arg timestamp "$timestamp" \
 		--arg outcome "$outcome" --arg staged "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" \
+		--arg removing "$WORKTREE_RECOVERY_APPLY_STATE_REMOVING" \
 		--arg removed "$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" '
 		.entries[$index].state = $state |
 		.entries[$index].observed_allocated_bytes = $observed_bytes |
 		.entries[$index].outcome = $outcome |
 		if $state == $staged then .entries[$index].staged_at = $timestamp
-		elif $state == $removed then .entries[$index].removed_at = $timestamp
+		elif $state == $removing then .entries[$index].removal_started_at = $timestamp
+		elif $state == $removed then
+			.entries[$index].removed_at = $timestamp |
+			if .entries[$index].maintenance.operation == "cache-prune"
+			then .entries[$index].post_delete_allocated_bytes = 0 else . end
 		else . end
 	' "$journal_path") || return 1
 	_worktree_recovery_apply_atomic_replace "$journal_path" "$updated"
@@ -1024,21 +1036,27 @@ _worktree_recovery_apply_receipt_json() {
 		--arg completed_at "$completed_at" \
 		--argjson metadata "$apply_metadata" \
 		--arg removed "$WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED" \
+		--arg cache_transaction "$WORKTREE_RECOVERY_CACHE_TRANSACTION_SCHEMA" \
 		--arg object_type "$WORKTREE_RECOVERY_APPLY_JSON_TYPE_OBJECT" '
+		. as $journal |
 		({schema:$schema,complete:true,plan_id:.plan_id,plan_digest:.plan_digest,
 		confirmation:.confirmation,transaction_id:.transaction_id,
 		started_at:.started_at,completed_at:$completed_at,
 		candidate_count:(.entries | length),
 		expected_allocated_bytes:([.entries[].expected_allocated_bytes] | add // 0),
 		observed_allocated_bytes:([.entries[].observed_allocated_bytes] | add // 0),
-		entries:[.entries[] | {original_path,staged_path,identity,maintenance,
-			expected_allocated_bytes,observed_allocated_bytes,outcome,staged_at,removed_at}]} +
+		entries:[.entries[] | ({original_path,staged_path,identity,maintenance,
+			expected_allocated_bytes,observed_allocated_bytes,outcome,staged_at,removed_at} +
+			(if $journal.schema == $cache_transaction
+			then {post_delete_allocated_bytes,removal_started_at} else {} end))]} +
 		(if (.automatic_policy | type) == $object_type
 		then {automatic_policy:.automatic_policy} else {} end)) |
 		select(.plan_id == $metadata.plan_id and .plan_digest == $metadata.plan_digest and
 			.confirmation == $metadata.confirmation and .candidate_count == $metadata.candidate_count and
 			.expected_allocated_bytes == $metadata.candidate_bytes and
 			.observed_allocated_bytes == $metadata.candidate_bytes and
+			(if $journal.schema == $cache_transaction
+			then ([.entries[].post_delete_allocated_bytes] | all(. == 0)) else true end) and
 			([.entries[] | select(.outcome != $removed)] | length == 0))
 	' "$journal_path"
 	return $?
@@ -1367,6 +1385,7 @@ _worktree_recovery_cache_validate_plan() {
 
 _worktree_recovery_cache_validate_recovery_identities() {
 	local plan_json="$1"
+	local deadline_epoch="$2"
 	local row_json=""
 	local bucket_path=""
 	local expected_identity=""
@@ -1375,7 +1394,8 @@ _worktree_recovery_cache_validate_recovery_identities() {
 	while IFS= read -r row_json; do
 		bucket_path=$(printf '%s\n' "$row_json" | jq -r '.bucket_path') || return 1
 		expected_identity=$(printf '%s\n' "$row_json" | jq -cS '.recovery_identity') || return 1
-		current_identity=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
+		current_identity=$(_worktree_recovery_apply_run_function_before_epoch "$deadline_epoch" \
+			_worktree_recovery_plan_identity_json "$bucket_path") || return 1
 		current_identity=$(printf '%s\n' "$current_identity" | jq -cS '.') || return 1
 		[[ "$current_identity" == "$expected_identity" ]] || return 1
 	done < <(printf '%s\n' "$plan_json" | jq -c \
@@ -1405,7 +1425,8 @@ _worktree_recovery_cache_transaction_entries() {
 				relative_path:$entry.relative_path,archive_path:$entry.archive_path},
 			evidence:$entry.evidence,reasons:$entry.reasons,
 			maintenance:{operation:"cache-prune",relative_path:$entry.relative_path},
-			state:$planned,observed_allocated_bytes:null,staged_at:null,removed_at:null,outcome:$pending})
+			state:$planned,observed_allocated_bytes:null,post_delete_allocated_bytes:null,
+			staged_at:null,removal_started_at:null,removed_at:null,outcome:$pending})
 	'
 	return $?
 }
@@ -1419,6 +1440,78 @@ _worktree_recovery_cache_policy_helper() {
 	[[ -f "$helper_path" && ! -L "$helper_path" ]] || return 1
 	python3 "$helper_path" "$mode" "$@"
 	return $?
+}
+
+_worktree_recovery_apply_run_function_before_epoch() {
+	local deadline_epoch="$1"
+	shift
+	local current_epoch=0
+	local command_pid=0
+	local command_pgid=0
+	local command_group=""
+	local monitor_was_enabled=false
+
+	current_epoch=$(date +%s) || return 1
+	[[ "$current_epoch" -lt "$deadline_epoch" ]] || return 124
+	[[ $- == *m* ]] && monitor_was_enabled=true
+	set -m
+	"$@" &
+	command_pid=$!
+	$monitor_was_enabled && set -m || set +m
+	command_pgid="$command_pid"
+	command_group="-${command_pgid}"
+	while kill -0 "$command_pid" 2>/dev/null; do
+		current_epoch=$(date +%s) || current_epoch="$deadline_epoch"
+		if [[ "$current_epoch" -ge "$deadline_epoch" ]]; then
+			kill -TERM -- "$command_group" 2>/dev/null || true
+			sleep 0.2
+			if kill -0 -- "$command_group" 2>/dev/null; then
+				kill -KILL -- "$command_group" 2>/dev/null || true
+			fi
+			wait "$command_pid" 2>/dev/null || true
+			return 124
+		fi
+		sleep 0.1
+	done
+	wait "$command_pid"
+	return $?
+}
+
+_worktree_recovery_cache_validate_mutable_evidence() {
+	local row_json="$1"
+	local deadline_epoch="$2"
+	local expected_identity=""
+	local expected_evidence=""
+	local current_identity=""
+	local current_evidence=""
+	local bucket_path=""
+
+	bucket_path=$(printf '%s\n' "$row_json" | jq -r '.bucket_path // .identity.recovery.bucket_path') || return 1
+	expected_identity=$(printf '%s\n' "$row_json" | jq -cS '.recovery_identity // .identity.recovery') || return 1
+	expected_evidence=$(printf '%s\n' "$row_json" | jq -cS '.evidence') || return 1
+	current_identity=$(_worktree_recovery_apply_run_function_before_epoch "$deadline_epoch" \
+		_worktree_recovery_plan_identity_json "$bucket_path") || return 1
+	current_identity=$(printf '%s\n' "$current_identity" | jq -cS '.') || return 1
+	[[ "$current_identity" == "$expected_identity" ]] || return 1
+	current_evidence=$(AIDEVOPS_WORKTREE_RECOVERY_EVIDENCE_DEADLINE_EPOCH="$deadline_epoch" \
+		_worktree_recovery_apply_run_function_before_epoch "$deadline_epoch" \
+		_worktree_recovery_plan_evidence_json "$current_identity") || return 1
+	current_evidence=$(printf '%s\n' "$current_evidence" | jq -cS '.') || return 1
+	[[ "$current_evidence" == "$expected_evidence" ]] || return 1
+	return 0
+}
+
+_worktree_recovery_cache_validate_plan_evidence() {
+	local plan_json="$1"
+	local deadline_epoch="$2"
+	local row_json=""
+
+	while IFS= read -r row_json; do
+		_worktree_recovery_cache_validate_mutable_evidence \
+			"$row_json" "$deadline_epoch" || return 1
+	done < <(printf '%s\n' "$plan_json" | jq -c \
+		'[.entries[] | {bucket_path,recovery_identity,evidence}] | unique_by(.bucket_path)[]')
+	return 0
 }
 
 _worktree_recovery_cache_validate_original_entry() {
@@ -1458,10 +1551,50 @@ _worktree_recovery_cache_validate_staged_entry() {
 	return $?
 }
 
+_worktree_recovery_cache_measure_staged_entry() {
+	local row_json="$1"
+	local deadline_epoch="$2"
+	local staged_path=""
+	local expected_identity=""
+	local expected_bytes=""
+
+	staged_path=$(printf '%s\n' "$row_json" | jq -r '.staged_path') || return 1
+	expected_identity=$(printf '%s\n' "$row_json" | jq -r '.identity.path_identity') || return 1
+	expected_bytes=$(printf '%s\n' "$row_json" | jq -r '.expected_allocated_bytes') || return 1
+	_worktree_recovery_cache_policy_helper measure-staged "$staged_path" \
+		"$expected_identity" "$expected_bytes" "$deadline_epoch"
+	return $?
+}
+
+_worktree_recovery_cache_validate_removing_entry() {
+	local row_json="$1"
+	local deadline_epoch="$2"
+	local staged_path=""
+	local expected_identity=""
+	local expected_bytes=""
+
+	staged_path=$(printf '%s\n' "$row_json" | jq -r '.staged_path') || return 1
+	expected_identity=$(printf '%s\n' "$row_json" | jq -r '.identity.path_identity') || return 1
+	expected_bytes=$(printf '%s\n' "$row_json" | jq -r '.expected_allocated_bytes') || return 1
+	_worktree_recovery_cache_policy_helper validate-removing "$staged_path" \
+		"$expected_identity" "$expected_bytes" "$deadline_epoch"
+	return $?
+}
+
+_worktree_recovery_cache_validate_removed_entry() {
+	local row_json="$1"
+	local deadline_epoch="$2"
+	local staged_path=""
+
+	staged_path=$(printf '%s\n' "$row_json" | jq -r '.staged_path') || return 1
+	_worktree_recovery_cache_policy_helper validate-removed "$staged_path" "$deadline_epoch"
+	return $?
+}
+
 _worktree_recovery_cache_reconcile_entries() {
 	local journal_path="$1"
 	local deadline_epoch="$2"
-	local row_json='' state='' index='' original_path='' staged_path='' expected_bytes='' timestamp=''
+	local row_json='' state='' index='' original_path='' staged_path='' expected_bytes='' observed_bytes='' timestamp=''
 
 	while IFS= read -r row_json; do
 		state=$(printf '%s\n' "$row_json" | jq -r '.state') || return 1
@@ -1469,6 +1602,7 @@ _worktree_recovery_cache_reconcile_entries() {
 		original_path=$(printf '%s\n' "$row_json" | jq -r '.original_path') || return 1
 		staged_path=$(printf '%s\n' "$row_json" | jq -r '.staged_path') || return 1
 		expected_bytes=$(printf '%s\n' "$row_json" | jq -r '.expected_allocated_bytes') || return 1
+		observed_bytes=$(printf '%s\n' "$row_json" | jq -r '.observed_allocated_bytes // empty') || return 1
 		if [[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_PLANNED" &&
 			! -e "$original_path" && ! -L "$original_path" && -d "$staged_path" && ! -L "$staged_path" ]]; then
 			_worktree_recovery_cache_validate_staged_entry "$row_json" "$deadline_epoch" || return 1
@@ -1476,11 +1610,17 @@ _worktree_recovery_cache_reconcile_entries() {
 			_worktree_recovery_apply_update_entry "$journal_path" "$index" \
 				"$WORKTREE_RECOVERY_APPLY_STATE_STAGED" "$expected_bytes" "$timestamp" \
 				"$WORKTREE_RECOVERY_APPLY_OUTCOME_PENDING" || return 1
-		elif [[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" &&
+		elif [[ ("$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ||
+			"$state" == "$WORKTREE_RECOVERY_APPLY_STATE_REMOVING") &&
 			! -e "$original_path" && ! -L "$original_path" && ! -e "$staged_path" && ! -L "$staged_path" ]]; then
+			_worktree_recovery_cache_validate_removed_entry "$row_json" "$deadline_epoch" || return 1
+			if [[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ]]; then
+				observed_bytes="$expected_bytes"
+			fi
+			[[ "$observed_bytes" =~ ^[1-9][0-9]*$ && "$observed_bytes" -eq "$expected_bytes" ]] || return 1
 			timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 			_worktree_recovery_apply_update_entry "$journal_path" "$index" \
-				"$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" "$expected_bytes" "$timestamp" \
+				"$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" "$observed_bytes" "$timestamp" \
 				"$WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED" || return 1
 		fi
 	done < <(jq -c '.entries[]' "$journal_path")
@@ -1503,6 +1643,10 @@ _worktree_recovery_cache_preflight_journal() {
 		"$WORKTREE_RECOVERY_APPLY_STATE_STAGED")
 			_worktree_recovery_cache_validate_staged_entry "$row_json" "$deadline_epoch" || return 1
 			;;
+		"$WORKTREE_RECOVERY_APPLY_STATE_REMOVING")
+			[[ ! -e "$original_path" && ! -L "$original_path" ]] || return 1
+			_worktree_recovery_cache_validate_removing_entry "$row_json" "$deadline_epoch" || return 1
+			;;
 		"$WORKTREE_RECOVERY_APPLY_STATE_REMOVED")
 			[[ ! -e "$original_path" && ! -L "$original_path" &&
 				! -e "$staged_path" && ! -L "$staged_path" ]] || return 1
@@ -1517,6 +1661,7 @@ _worktree_recovery_cache_stage_entries() {
 	local journal_path="$1"
 	local deadline_epoch="$2"
 	local row_json='' state='' index='' original_path='' staged_path='' expected_bytes='' timestamp=''
+	local current_epoch=0
 
 	while IFS= read -r row_json; do
 		state=$(printf '%s\n' "$row_json" | jq -r '.state') || return 1
@@ -1525,7 +1670,10 @@ _worktree_recovery_cache_stage_entries() {
 		original_path=$(printf '%s\n' "$row_json" | jq -r '.original_path') || return 1
 		staged_path=$(printf '%s\n' "$row_json" | jq -r '.staged_path') || return 1
 		expected_bytes=$(printf '%s\n' "$row_json" | jq -r '.expected_allocated_bytes') || return 1
+		_worktree_recovery_cache_validate_mutable_evidence "$row_json" "$deadline_epoch" || return 1
 		_worktree_recovery_cache_validate_original_entry "$row_json" "$deadline_epoch" || return 1
+		current_epoch=$(date +%s) || return 1
+		[[ "$current_epoch" -lt "$deadline_epoch" ]] || return 1
 		mv "$original_path" "$staged_path" || return 1
 		[[ "${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_MOVE:-0}" != "1" ]] || return 1
 		timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
@@ -1547,6 +1695,9 @@ _worktree_recovery_cache_validate_all_staged() {
 		"$WORKTREE_RECOVERY_APPLY_STATE_STAGED")
 			_worktree_recovery_cache_validate_staged_entry "$row_json" "$deadline_epoch" || return 1
 			;;
+		"$WORKTREE_RECOVERY_APPLY_STATE_REMOVING")
+			_worktree_recovery_cache_validate_removing_entry "$row_json" "$deadline_epoch" || return 1
+			;;
 		"$WORKTREE_RECOVERY_APPLY_STATE_REMOVED") ;;
 		*) return 1 ;;
 		esac
@@ -1557,22 +1708,35 @@ _worktree_recovery_cache_validate_all_staged() {
 _worktree_recovery_cache_remove_staged() {
 	local journal_path="$1"
 	local deadline_epoch="$2"
-	local row_json='' state='' index='' staged_path='' expected_bytes='' timestamp=''
+	local row_json='' state='' index='' staged_path='' expected_bytes='' observed_bytes='' timestamp=''
 	local removed_this_run=0
 
 	while IFS= read -r row_json; do
 		state=$(printf '%s\n' "$row_json" | jq -r '.state') || return 1
-		[[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ]] || continue
+		[[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ||
+			"$state" == "$WORKTREE_RECOVERY_APPLY_STATE_REMOVING" ]] || continue
 		index=$(printf '%s\n' "$row_json" | jq -r '.index') || return 1
 		staged_path=$(printf '%s\n' "$row_json" | jq -r '.staged_path') || return 1
 		expected_bytes=$(printf '%s\n' "$row_json" | jq -r '.expected_allocated_bytes') || return 1
-		_worktree_recovery_cache_validate_staged_entry "$row_json" "$deadline_epoch" || return 1
-		rm -rf -- "$staged_path" || return 1
-		[[ ! -e "$staged_path" && ! -L "$staged_path" ]] || return 1
+		observed_bytes=$(printf '%s\n' "$row_json" | jq -r '.observed_allocated_bytes // empty') || return 1
+		if [[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ]]; then
+			observed_bytes=$(_worktree_recovery_cache_measure_staged_entry \
+				"$row_json" "$deadline_epoch") || return 1
+			[[ "$observed_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
+			timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+			_worktree_recovery_apply_update_entry "$journal_path" "$index" \
+				"$WORKTREE_RECOVERY_APPLY_STATE_REMOVING" "$observed_bytes" "$timestamp" \
+				"$WORKTREE_RECOVERY_APPLY_OUTCOME_PENDING" || return 1
+		else
+			[[ "$observed_bytes" =~ ^[1-9][0-9]*$ && "$observed_bytes" -eq "$expected_bytes" ]] || return 1
+			_worktree_recovery_cache_validate_removing_entry "$row_json" "$deadline_epoch" || return 1
+		fi
+		_worktree_recovery_run_before_epoch "$deadline_epoch" rm -rf -- "$staged_path" || return 1
+		_worktree_recovery_cache_validate_removed_entry "$row_json" "$deadline_epoch" || return 1
 		[[ "${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_DELETE:-0}" != "1" ]] || return 1
 		timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 		_worktree_recovery_apply_update_entry "$journal_path" "$index" \
-			"$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" "$expected_bytes" "$timestamp" \
+			"$WORKTREE_RECOVERY_APPLY_STATE_REMOVED" "$observed_bytes" "$timestamp" \
 			"$WORKTREE_RECOVERY_APPLY_OUTCOME_REMOVED" || return 1
 		removed_this_run=$((removed_this_run + 1))
 		if [[ "${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_REMOVE:-0}" == "1" &&
@@ -1587,14 +1751,19 @@ _worktree_recovery_cache_apply_under_lock() {
 	local plan_path="$1"
 	local receipt_path="$2"
 	local recovery_root="$3"
+	local deadline_epoch="$4"
 	local apply_metadata="" plan_json="" plan_digest="" transaction_id="" entries_json=""
 	local transaction_dir="" journal_path="" expected_journal="" started_at="" journal_json=""
-	local source_root="" receipt_json="" deadline_seconds="" deadline_epoch=0 receipt_status=0
+	local source_root="" receipt_json="" receipt_status=0
+	local current_epoch=0
 
+	current_epoch=$(date +%s) || return 1
+	[[ "$deadline_epoch" =~ ^[1-9][0-9]*$ && "$current_epoch" -lt "$deadline_epoch" ]] || return 1
 	_worktree_recovery_cache_validate_plan "$plan_path" || return 1
 	apply_metadata="$WORKTREE_RECOVERY_APPLY_VALIDATED_METADATA"
 	plan_json="$WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON"
-	_worktree_recovery_cache_validate_recovery_identities "$plan_json" || return 1
+	_worktree_recovery_cache_validate_recovery_identities "$plan_json" "$deadline_epoch" || return 1
+	_worktree_recovery_cache_validate_plan_evidence "$plan_json" "$deadline_epoch" || return 1
 	printf '%s\n' "$plan_json" | jq -e --arg receipt "$receipt_path" '
 		all(.entries[]; . as $entry | ($receipt | startswith($entry.bucket_path + "/") | not))
 	' >/dev/null 2>&1 || return 1
@@ -1608,8 +1777,6 @@ _worktree_recovery_cache_apply_under_lock() {
 	[[ "$receipt_status" -ne 2 ]] || return 0
 	[[ "$receipt_status" -eq 0 ]] || return "$receipt_status"
 	[[ "${AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_RECEIPT_RESERVATION:-0}" != "1" ]] || return 1
-	deadline_seconds=$(printf '%s\n' "$plan_json" | jq -r '.automatic_policy.deadline_seconds') || return 1
-	deadline_epoch=$(($(date +%s) + deadline_seconds)) || return 1
 	if [[ -f "$journal_path" && ! -L "$journal_path" ]]; then
 		started_at=$(jq -r '.started_at // empty' "$journal_path") || return 1
 	else
@@ -1652,12 +1819,22 @@ _worktree_recovery_cache_apply_under_lock() {
 worktree_recovery_cache_prune_apply_automatic() {
 	local plan_path="$1"
 	local receipt_path="$2"
+	local deadline_epoch="${3:-0}"
 	local plan_json="" recovery_root="" recovery_root_real="" apply_status=0
-	local platform=""
+	local platform="" deadline_seconds="" current_epoch=0
 
 	command -v jq >/dev/null 2>&1 || return 1
+	case "$deadline_epoch" in
+	*[!0-9]* | '') return 1 ;;
+	esac
+	current_epoch=$(date +%s) || return 1
+	[[ "$deadline_epoch" -eq 0 || "$current_epoch" -lt "$deadline_epoch" ]] || return 1
 	_worktree_recovery_cache_validate_plan "$plan_path" || return 1
 	plan_json="$WORKTREE_RECOVERY_APPLY_VALIDATED_PLAN_JSON"
+	if [[ "$deadline_epoch" -eq 0 ]]; then
+		deadline_seconds=$(printf '%s\n' "$plan_json" | jq -r '.automatic_policy.deadline_seconds') || return 1
+		deadline_epoch=$((current_epoch + deadline_seconds))
+	fi
 	receipt_path=$(_worktree_recovery_apply_canonical_path "$receipt_path") || return 1
 	printf '%s\n' "$plan_json" | jq -e --arg receipt "$receipt_path" '
 		all(.entries[]; . as $entry | ($receipt | startswith($entry.bucket_path + "/") | not))
@@ -1668,7 +1845,7 @@ worktree_recovery_cache_prune_apply_automatic() {
 	recovery_root_real=$(cd "$recovery_root" 2>/dev/null && pwd -P) || return 1
 	_worktree_recovery_acquire_producer_lock "$recovery_root_real" || return 1
 	_worktree_recovery_cache_apply_under_lock \
-		"$plan_path" "$receipt_path" "$recovery_root_real" || apply_status=$?
+		"$plan_path" "$receipt_path" "$recovery_root_real" "$deadline_epoch" || apply_status=$?
 	_worktree_recovery_release_producer_lock || apply_status=1
 	[[ "$apply_status" -eq 0 ]] || return "$apply_status"
 	printf '%s\n' "$receipt_path"

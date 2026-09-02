@@ -509,28 +509,24 @@ _worktree_recovery_plan_identity_json() {
 _worktree_recovery_plan_git_state() {
 	local identity_json="$1"
 	local archive_path=""
-	local status_file=""
-	local status_rc=0
+	local helper_path="${WORKTREE_RECOVERY_LIFECYCLE_DIR}/worktree-recovery-cache-policy.py"
+	local git_bin=""
+	local deadline_epoch="${AIDEVOPS_WORKTREE_RECOVERY_EVIDENCE_DEADLINE_EPOCH:-0}"
 	local cache_policy_rc=0
 
 	archive_path=$(printf '%s\n' "$identity_json" | jq -r '.archive_path') || return 1
-	status_file=$(mktemp "${AIDEVOPS_TEMP_DIR:-${TMPDIR:-/tmp}}/aidevops-worktree-recovery-status.XXXXXX") || {
-		printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE"
-		return 0
-	}
-	GIT_OPTIONAL_LOCKS=0 git -C "$archive_path" status --porcelain=v1 -z \
-		--untracked-files=all --ignored=matching >"$status_file" 2>/dev/null || status_rc=$?
-	if [[ "$status_rc" -ne 0 ]]; then
-		printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE"
-	else
-		_worktree_recovery_status_has_user_data "$status_file" "$archive_path" || cache_policy_rc=$?
-		case "$cache_policy_rc" in
-		0) printf '%s\n' "dirty" ;;
-		1) printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ;;
-		*) printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE" ;;
-		esac
-	fi
-	rm -f "$status_file"
+	case "$deadline_epoch" in
+	*[!0-9]* | '') deadline_epoch=0 ;;
+	esac
+	git_bin=$(_worktree_cleanup_real_git) || cache_policy_rc=2
+	[[ "$cache_policy_rc" -ne 0 ]] || [[ -f "$helper_path" && ! -L "$helper_path" ]] || cache_policy_rc=2
+	[[ "$cache_policy_rc" -ne 0 ]] || python3 "$helper_path" git-state "$archive_path" \
+		"$git_bin" "$deadline_epoch" >/dev/null 2>&1 || cache_policy_rc=$?
+	case "$cache_policy_rc" in
+	0) printf '%s\n' "dirty" ;;
+	1) printf '%s\n' "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ;;
+	*) printf '%s\n' "$WORKTREE_RECOVERY_UNAVAILABLE" ;;
+	esac
 	return 0
 }
 
