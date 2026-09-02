@@ -1514,6 +1514,40 @@ test_cache_retrofit_resumes_interrupted_delete() {
 	return 0
 }
 
+test_cache_retrofit_rejects_unmeasured_legacy_delete_replay() {
+	local home_path="${TEST_DIR}/cache-retrofit-legacy-delete-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local plan_path="${state_dir}/pending/plan.json"
+	local receipt_path="${state_dir}/pending/receipt.json"
+	local archive_path="" plan_json="" plan_digest="" journal_path="" journal_next=""
+	local rc=0
+
+	archive_path=$(create_mixed_cache_archive "$home_path" "legacy-delete-replay") || rc=1
+	install_cache_retrofit_evidence_stubs
+	if AIDEVOPS_WORKTREE_RECOVERY_TEST_INTERRUPT_AFTER_DELETE=1 \
+		run_cache_retrofit_maintenance "$home_path" "$state_dir" >/dev/null 2>&1; then rc=1; fi
+	plan_json=$(<"$plan_path") || rc=1
+	plan_digest=$(_worktree_recovery_plan_sha256_text "$plan_json") || rc=1
+	journal_path="${recovery_root}/.retention-trash/cache-${plan_digest}/journal.json"
+	journal_next="${journal_path}.legacy"
+	jq -c '.entries[0].state = "staged" | .entries[0].removal_started_at = null' \
+		"$journal_path" >"$journal_next" || rc=1
+	mv "$journal_next" "$journal_path" || rc=1
+	if run_cache_retrofit_maintenance "$home_path" "$state_dir" >/dev/null 2>&1; then rc=1; fi
+	jq -e '
+		.schema == "aidevops.worktree-recovery-apply-reservation/v1" and
+		(.complete | not)
+	' "$receipt_path" >/dev/null || rc=1
+	jq -e '.entries[0].state == "staged" and .entries[0].removed_at == null' \
+		"$journal_path" >/dev/null || rc=1
+	[[ -d "$state_dir/pending" && ! -e "${archive_path}/.codegraph" &&
+		-f "${archive_path}/logs/diagnostic.log" ]] || rc=1
+	print_result "cache_retrofit_rejects_unmeasured_legacy_delete_replay" "$rc" \
+		"Expected staged-and-absent legacy journals to fail closed without a reclaimed-byte receipt"
+	return 0
+}
+
 test_cache_retrofit_rejects_identity_drift_before_mutation() {
 	local home_path="${TEST_DIR}/cache-retrofit-drift-home"
 	local state_dir="${home_path}/maintenance-state"
@@ -2255,6 +2289,7 @@ run_all_tests() {
 	test_cache_retrofit_honors_shared_deadline_before_mutation
 	test_cache_retrofit_resumes_interrupted_move
 	test_cache_retrofit_resumes_interrupted_delete
+	test_cache_retrofit_rejects_unmeasured_legacy_delete_replay
 	test_automatic_maintenance_is_bounded_and_policy_bound
 	test_automatic_maintenance_checks_capacity_before_aggregate_size
 	test_automatic_maintenance_enters_pressure_when_aggregate_size_times_out
@@ -2281,6 +2316,7 @@ run_cache_retrofit_tests() {
 	test_cache_retrofit_honors_shared_deadline_before_mutation
 	test_cache_retrofit_resumes_interrupted_move
 	test_cache_retrofit_resumes_interrupted_delete
+	test_cache_retrofit_rejects_unmeasured_legacy_delete_replay
 	printf '\nResults: %s run, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 	return $?

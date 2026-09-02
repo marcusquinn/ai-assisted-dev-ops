@@ -1610,13 +1610,9 @@ _worktree_recovery_cache_reconcile_entries() {
 			_worktree_recovery_apply_update_entry "$journal_path" "$index" \
 				"$WORKTREE_RECOVERY_APPLY_STATE_STAGED" "$expected_bytes" "$timestamp" \
 				"$WORKTREE_RECOVERY_APPLY_OUTCOME_PENDING" || return 1
-		elif [[ ("$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ||
-			"$state" == "$WORKTREE_RECOVERY_APPLY_STATE_REMOVING") &&
+		elif [[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_REMOVING" &&
 			! -e "$original_path" && ! -L "$original_path" && ! -e "$staged_path" && ! -L "$staged_path" ]]; then
 			_worktree_recovery_cache_validate_removed_entry "$row_json" "$deadline_epoch" || return 1
-			if [[ "$state" == "$WORKTREE_RECOVERY_APPLY_STATE_STAGED" ]]; then
-				observed_bytes="$expected_bytes"
-			fi
 			[[ "$observed_bytes" =~ ^[1-9][0-9]*$ && "$observed_bytes" -eq "$expected_bytes" ]] || return 1
 			timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 			_worktree_recovery_apply_update_entry "$journal_path" "$index" \
