@@ -120,3 +120,28 @@ test("pre-tool bash handling tolerates a missing args payload", async () => {
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("pre-tool handling replaces args when intent cannot be deleted in place", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "aidevops-immutable-tool-args-"));
+  const args = { todos: [] };
+  Object.defineProperty(args, "agent__intent", {
+    configurable: false,
+    enumerable: true,
+    value: "Inspecting repository status",
+  });
+  const output = { args };
+
+  try {
+    const hooks = createQualityHooks({ scriptsDir: tempDir, logsDir: tempDir });
+    await hooks.toolExecuteBefore(
+      { tool: "todowrite", callID: "call-immutable-intent" },
+      output,
+    );
+
+    assert.notEqual(output.args, args);
+    assert.deepEqual(output.args, { todos: [] });
+    assert.ok(!Object.prototype.hasOwnProperty.call(output.args, "agent__intent"));
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});

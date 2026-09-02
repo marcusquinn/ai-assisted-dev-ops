@@ -8,7 +8,11 @@ import { existsSync } from "fs";
 import { execFileSync, execFile } from "child_process";
 import { join } from "path";
 import { recordToolCall } from "./observability.mjs";
-import { extractAndStoreIntent, consumeIntent } from "./intent-tracing.mjs";
+import {
+  consumeIntentRecord,
+  peekIntentSource,
+  prepareIntent,
+} from "./intent-tracing.mjs";
 import { recordToolStart, consumeToolDuration } from "./timing-tracing.mjs";
 import { qualityLog, runFileQualityGate } from "./quality-logging.mjs";
 import { enrichActiveSpan, detectTaskId, detectSessionOrigin } from "./otel-enrichment.mjs";
@@ -270,10 +274,12 @@ function handleToolBefore(ctx, log, input, output) {
 
   const callID = input.callID || "";
   let intent = "";
-  if (callID && output.args) {
-    intent = extractAndStoreIntent(callID, output.args) || "";
+  if (callID) {
+    const prepared = prepareIntent(callID, output.args, input.tool);
+    output.args = prepared.args;
+    intent = prepared.intent || "";
     if (intent) {
-      log("INFO", `Intent [${input.tool}] callID=${callID}: ${intent}`);
+      log("INFO", `Intent [${input.tool}] callID=${callID} source=${peekIntentSource(callID)}: ${intent}`);
     }
   }
 
@@ -376,11 +382,11 @@ function handleToolAfter(ctx, log, scriptsDir, input, output) {
     }
   }
 
-  const intent = consumeIntent(input.callID || "");
+  const intentRecord = consumeIntentRecord(input.callID || "");
   // t2184: consumeToolDuration returns null when the callID wasn't paired
   // (e.g., hook race on plugin reload) — recordToolCall emits SQL NULL.
   const durationMs = consumeToolDuration(input.callID || "");
-  recordToolCall(input, output, intent, durationMs);
+  recordToolCall(input, output, intentRecord?.intent, durationMs, intentRecord?.source);
 
   if (toolName === "mcp_task" || toolName === "task") {
     recordChildSubagent(output?.metadata?.task_id || "", scriptsDir, log);

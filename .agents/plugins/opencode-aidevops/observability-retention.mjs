@@ -49,8 +49,11 @@ function firstTruthy(values, fallback) {
  * Replace raw host-tool metadata with a small outcome envelope. Raw values,
  * paths, output fragments, and unknown keys never cross the storage boundary.
  */
-export function summarizeToolMetadata(metadata) {
-  if (metadata === null || metadata === undefined) return null;
+export function summarizeToolMetadata(metadata, { intentSource } = {}) {
+  const retainedIntentSource = ["explicit", "fallback"].includes(intentSource)
+    ? intentSource
+    : undefined;
+  if ((metadata === null || metadata === undefined) && !retainedIntentSource) return null;
   const source = metadata && typeof metadata === "object" && !Array.isArray(metadata)
     ? metadata
     : {};
@@ -73,6 +76,7 @@ export function summarizeToolMetadata(metadata) {
   if (typeof truncated === "boolean") summary.truncated = truncated;
   if (typeof timedOut === "boolean") summary.timed_out = timedOut;
   if (source.error !== undefined) summary.has_error = Boolean(source.error);
+  if (retainedIntentSource) summary.intent_source = retainedIntentSource;
 
   const retainedSourceKeys = [
     "status", "state", "outcome", "exit", "exitCode", "exit_code", "outputBytes",
