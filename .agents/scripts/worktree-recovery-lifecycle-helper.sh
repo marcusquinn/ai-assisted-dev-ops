@@ -790,19 +790,26 @@ _worktree_recovery_plan_attributed_entry_json() {
 	local role="$1"
 	local bucket_path="$2"
 	local expected_bytes="$3"
+	local measurement_timeout_tenths="${4:-}"
 	local identity_before="" identity_after="" evidence_json="" measured_after=""
 	local bytes_after="" confidence_after="" measure_error_after="" stable=false
-	local classification_json=""
+	local classification_json="" sizing_reason="sizing-unavailable"
 
 	identity_before=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
 	evidence_json=$(_worktree_recovery_plan_evidence_json "$identity_before") || return 1
 	identity_after=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
-	measured_after=$(_worktree_recovery_measure_path "$bucket_path") || return 1
+	if [[ -n "$measurement_timeout_tenths" ]]; then
+		measured_after=$(_worktree_recovery_measure_path \
+			"$bucket_path" "$measurement_timeout_tenths") || return 1
+	else
+		measured_after=$(_worktree_recovery_measure_path "$bucket_path") || return 1
+	fi
 	IFS='|' read -r bytes_after confidence_after measure_error_after <<<"$measured_after"
 	if [[ "$confidence_after" != "$WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT" ||
 		! "$bytes_after" =~ ^[0-9]+$ ]]; then
+		[[ "$measure_error_after" != "sizing-timeout" ]] || sizing_reason="sizing-timeout"
 		_worktree_recovery_plan_unknown_entry_json \
-			"$role" "$bucket_path" "$WORKTREE_RECOVERY_PLAN_JSON_NULL" "sizing-unavailable"
+			"$role" "$bucket_path" "$WORKTREE_RECOVERY_PLAN_JSON_NULL" "$sizing_reason"
 		return $?
 	fi
 	if [[ "$expected_bytes" == "$WORKTREE_RECOVERY_PLAN_JSON_NULL" ]]; then

@@ -168,9 +168,10 @@ closed linked task, no open pull request, no live Git
 worktree/registry/claim/process reference, and exact readable sizing. Ignored,
 untracked directories with recognised regenerable-cache identities
 (`node_modules`, `.pnpm-store`, `.yarn/cache`, `.next/cache`, `.nuxt/cache`,
-`.turbo`, `.parcel-cache`, and `.vite`) do not make an otherwise clean archive
-dirty; new archives omit only those directory roots after proving they contain
-no tracked files. Other ignored content remains protected. Positive live or
+`.turbo`, `.parcel-cache`, `.vite`, `__pycache__`, and `.pytest_cache` at any
+depth, plus `.codegraph` only at the repository root) do not make an otherwise
+clean archive dirty; new archives omit only those directory roots after proving
+they contain no tracked files. Other ignored content remains protected. Positive live or
 unfinished evidence is `protected`. Missing APIs, process visibility, identity,
 validation, or sizing is `unknown`. Identity and allocated bytes are read again
 immediately before an entry is emitted, so concurrent drift downgrades only
@@ -239,7 +240,9 @@ evidence remain mandatory before deletion. One pass cheaply enumerates paths,
 then validates and classifies at most 50 rotating inventory entries inside a
 120-second deadline, and applies at most 20 candidates or 5 GiB. Expensive
 per-archive Git validation is limited to that cursor window and bounded by the
-same deadline. A persistent cursor advances after a deadline stop so large
+same deadline. Both the initial size probe and its mandatory drift-detection
+remeasurement use the remaining pass budget rather than the shorter global
+reporting timeout. A persistent cursor advances after a deadline stop so large
 inventories cannot starve later entries. Operators may tune these soft limits
 with:
 

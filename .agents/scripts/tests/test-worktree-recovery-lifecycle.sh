@@ -277,6 +277,70 @@ test_git_state_detects_recovery_data() {
 	return 0
 }
 
+test_cache_policy_recognises_python_and_root_codegraph_only() {
+	local archive_path="${TEST_DIR}/cache-status-archive"
+	local status_path="${TEST_DIR}/cache-status.bin"
+	local symlink_target="${TEST_DIR}/cache-status-symlink-target"
+	local policy_status=0
+	local rc=0
+
+	"$GIT_BIN" init -q -b main "$archive_path" || rc=1
+	mkdir -p "${archive_path}/backend/__pycache__" \
+		"${archive_path}/backend/.pytest_cache" "${archive_path}/.codegraph" \
+		"${archive_path}/nested/.codegraph" "$symlink_target" || rc=1
+	printf '!! backend/__pycache__/module.pyc\0!! backend/.pytest_cache/state\0!! .codegraph/codegraph.db\0' \
+		>"$status_path" || rc=1
+	policy_status=0
+	_worktree_recovery_status_has_user_data "$status_path" "$archive_path" || policy_status=$?
+	[[ "$policy_status" -eq 1 ]] || rc=1
+	policy_status=0
+	_worktree_recovery_cache_policy "status" "$status_path" "$archive_path" \
+		"${TEST_DIR}/missing-git" || policy_status=$?
+	[[ "$policy_status" -eq 2 ]] || rc=1
+	printf '!! nested/.codegraph/codegraph.db\0' >"$status_path" || rc=1
+	policy_status=0
+	_worktree_recovery_status_has_user_data "$status_path" "$archive_path" || policy_status=$?
+	[[ "$policy_status" -eq 0 ]] || rc=1
+	rm -rf "${archive_path}/.codegraph" || rc=1
+	ln -s "$symlink_target" "${archive_path}/.codegraph" || rc=1
+	printf '!! .codegraph/codegraph.db\0' >"$status_path" || rc=1
+	policy_status=0
+	_worktree_recovery_status_has_user_data "$status_path" "$archive_path" || policy_status=$?
+	[[ "$policy_status" -eq 0 ]] || rc=1
+	printf '!! logs/diagnostic.log\0' >"$status_path" || rc=1
+	policy_status=0
+	_worktree_recovery_status_has_user_data "$status_path" "$archive_path" || policy_status=$?
+	[[ "$policy_status" -eq 0 ]] || rc=1
+	print_result "cache_policy_recognises_python_and_root_codegraph_only" "$rc" \
+		"Expected Python and root CodeGraph caches to be regenerable while nested CodeGraph, symlinks, and logs remain protected"
+	return 0
+}
+
+test_git_state_protects_tracked_regenerable_cache_roots() {
+	local cache_path="" repo_path="" identity="" state=""
+	local rc=0
+
+	for cache_path in ".codegraph" "backend/__pycache__" "backend/.pytest_cache"; do
+		repo_path="${TEST_DIR}/tracked-status-${cache_path//\//-}"
+		"$GIT_BIN" init -q -b main "$repo_path" || rc=1
+		"$GIT_BIN" -C "$repo_path" config user.email test@example.invalid || rc=1
+		"$GIT_BIN" -C "$repo_path" config user.name 'Aidevops Test' || rc=1
+		"$GIT_BIN" -C "$repo_path" config commit.gpgsign false || rc=1
+		printf '%s/\n' "$cache_path" >>"${repo_path}/.git/info/exclude" || rc=1
+		mkdir -p "${repo_path}/${cache_path}" || rc=1
+		printf 'tracked configuration\n' >"${repo_path}/${cache_path}/config.json" || rc=1
+		"$GIT_BIN" -C "$repo_path" add -f "${cache_path}/config.json" || rc=1
+		"$GIT_BIN" -C "$repo_path" commit -q -m init || rc=1
+		printf 'generated cache\n' >"${repo_path}/${cache_path}/generated.bin" || rc=1
+		identity=$(jq -cn --arg archive_path "$repo_path" '{archive_path:$archive_path}') || rc=1
+		state=$(_worktree_recovery_plan_git_state "$identity") || rc=1
+		[[ "$state" == "dirty" ]] || rc=1
+	done
+	print_result "git_state_protects_tracked_regenerable_cache_roots" "$rc" \
+		"Expected tracked content to keep every newly recognised cache identity protected"
+	return 0
+}
+
 test_archive_prunes_only_regenerable_ignored_caches() {
 	local repo_path="${TEST_DIR}/cache-policy-repo"
 	local worktree_path="${TEST_DIR}/cache-policy-worktree"
@@ -287,25 +351,62 @@ test_archive_prunes_only_regenerable_ignored_caches() {
 	mkdir -p "$recovery_root" || rc=1
 	create_unarchived_fixture "$repo_path" "$worktree_path" \
 		"bugfix/gh30931-cache-policy" || rc=1
-	printf 'node_modules/\nprivate-artifact/\n' >>"${repo_path}/.git/info/exclude" || rc=1
-	mkdir -p "${worktree_path}/node_modules/package" "${worktree_path}/private-artifact" || rc=1
+	printf 'node_modules/\n__pycache__/\n.pytest_cache/\n/.codegraph/\nnested/.codegraph/\nprivate-artifact/\n' \
+		>>"${repo_path}/.git/info/exclude" || rc=1
+	mkdir -p "${worktree_path}/node_modules/package" \
+		"${worktree_path}/backend/__pycache__" "${worktree_path}/backend/.pytest_cache" \
+		"${worktree_path}/.codegraph" "${worktree_path}/nested/.codegraph" \
+		"${worktree_path}/private-artifact" || rc=1
 	python3 - "${worktree_path}/node_modules/package/large-cache.bin" <<'PY' || rc=1
 from pathlib import Path
 import sys
 
 Path(sys.argv[1]).write_bytes(b"x" * 2 * 1024 * 1024)
 PY
+	printf 'bytecode\n' >"${worktree_path}/backend/__pycache__/module.pyc" || rc=1
+	printf 'pytest\n' >"${worktree_path}/backend/.pytest_cache/state" || rc=1
+	printf 'graph\n' >"${worktree_path}/.codegraph/codegraph.db" || rc=1
+	printf 'nested graph\n' >"${worktree_path}/nested/.codegraph/codegraph.db" || rc=1
 	printf 'user-evidence\n' >"${worktree_path}/private-artifact/user.bin" || rc=1
 	AIDEVOPS_WORKTREE_TRASH_ROOT="$recovery_root" AIDEVOPS_REAL_GIT_BIN="$GIT_BIN" \
 		archive_worktree_path_recoverably "$worktree_path" "test.sh" "cache-policy" || rc=1
 	archive_path="$WORKTREE_RECOVERABLE_ARCHIVE_PATH"
 	[[ ! -e "${archive_path}/node_modules" ]] || rc=1
+	[[ ! -e "${archive_path}/backend/__pycache__" ]] || rc=1
+	[[ ! -e "${archive_path}/backend/.pytest_cache" ]] || rc=1
+	[[ ! -e "${archive_path}/.codegraph" ]] || rc=1
+	[[ -f "${archive_path}/nested/.codegraph/codegraph.db" ]] || rc=1
 	[[ -f "${archive_path}/private-artifact/user.bin" ]] || rc=1
 	identity=$(_worktree_recovery_plan_identity_json "${archive_path%/*}") || rc=1
 	state=$(_worktree_recovery_plan_git_state "$identity") || rc=1
 	[[ "$state" == "dirty" ]] || rc=1
 	print_result "archive_prunes_only_regenerable_ignored_caches" "$rc" \
 		"Expected large dependency caches to be omitted while ignored user evidence remains protected"
+	return 0
+}
+
+test_archive_pruning_preserves_tracked_codegraph_root() {
+	local source_path="${TEST_DIR}/tracked-codegraph-source"
+	local archive_path="${TEST_DIR}/tracked-codegraph-archive"
+	local rc=0
+
+	"$GIT_BIN" init -q -b main "$source_path" || rc=1
+	"$GIT_BIN" -C "$source_path" config user.email test@example.invalid || rc=1
+	"$GIT_BIN" -C "$source_path" config user.name 'Aidevops Test' || rc=1
+	"$GIT_BIN" -C "$source_path" config commit.gpgsign false || rc=1
+	printf '/.codegraph/\n' >>"${source_path}/.git/info/exclude" || rc=1
+	mkdir -p "${source_path}/.codegraph" || rc=1
+	printf 'tracked configuration\n' >"${source_path}/.codegraph/config.json" || rc=1
+	"$GIT_BIN" -C "$source_path" add -f .codegraph/config.json || rc=1
+	"$GIT_BIN" -C "$source_path" commit -q -m init || rc=1
+	printf 'generated graph\n' >"${source_path}/.codegraph/codegraph.db" || rc=1
+	cp -R "$source_path" "$archive_path" || rc=1
+	_worktree_prune_regenerable_archive_caches \
+		"$source_path" "$archive_path" "$GIT_BIN" || rc=1
+	[[ -f "${archive_path}/.codegraph/config.json" &&
+		-f "${archive_path}/.codegraph/codegraph.db" ]] || rc=1
+	print_result "archive_pruning_preserves_tracked_codegraph_root" "$rc" \
+		"Expected any tracked file to veto pruning the repository-root CodeGraph cache"
 	return 0
 }
 
@@ -476,6 +577,66 @@ test_size_drift_downgrades_only_entry() {
 	[[ "$(printf '%s\n' "$entry" | jq -r '.reasons[0]')" == "identity-or-size-changed" ]] || rc=1
 	print_result "size_drift_downgrades_only_entry" "$rc" \
 		"Expected a late byte change to downgrade the affected entry"
+	return 0
+}
+
+test_attributed_remeasurement_uses_explicit_budget() {
+	local bucket_path="${TEST_DIR}/remeasure-budget-bucket"
+	local du_script="${TEST_DIR}/remeasure-budget-du.sh"
+	local reasons_path="${TEST_DIR}/remeasure-budget-reasons"
+	local entry="" timed_out="" counts=""
+	local rc=0
+
+	mkdir -p "$bucket_path" || rc=1
+	cat >"$du_script" <<'SH'
+#!/usr/bin/env bash
+sleep 0.3
+printf '1\t%s\n' "$2"
+SH
+	chmod 700 "$du_script" || rc=1
+	entry=$(
+		_worktree_recovery_plan_identity_json() {
+			jq -cn --arg bucket "$bucket_path" \
+				'{bucket_path:$bucket,archive_path:($bucket + "/archive"),
+				source_removal_outcome:"removed",branch:"refs/heads/bugfix/gh31009"}'
+			return $?
+		}
+		_worktree_recovery_plan_evidence_json() {
+			jq -cn '{git:"clear",worktree:"clear",registry:"clear",claim:"clear",process:"clear",
+				external:{commit:"merged",open_pr:"clear",task:"closed"}}'
+			return $?
+		}
+		AIDEVOPS_WORKTREE_RECOVERY_DU_COMMAND="$du_script" \
+			AIDEVOPS_WORKTREE_RECOVERY_SIZE_TIMEOUT_TENTHS=2 \
+			_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" 1024 10
+	) || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.disposition')" == "candidate" ]] || rc=1
+	timed_out=$(
+		_worktree_recovery_plan_identity_json() {
+			jq -cn --arg bucket "$bucket_path" \
+				'{bucket_path:$bucket,archive_path:($bucket + "/archive"),
+				source_removal_outcome:"removed",branch:"refs/heads/bugfix/gh31009"}'
+			return $?
+		}
+		_worktree_recovery_plan_evidence_json() {
+			jq -cn '{git:"clear",worktree:"clear",registry:"clear",claim:"clear",process:"clear",
+				external:{commit:"merged",open_pr:"clear",task:"closed"}}'
+			return $?
+		}
+		AIDEVOPS_WORKTREE_RECOVERY_DU_COMMAND="$du_script" \
+			AIDEVOPS_WORKTREE_RECOVERY_SIZE_TIMEOUT_TENTHS=2 \
+			_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" 1024
+	) || rc=1
+	[[ "$(printf '%s\n' "$timed_out" | jq -r '.reasons[0]')" == "sizing-timeout" ]] || rc=1
+	: >"$reasons_path" || rc=1
+	_worktree_recovery_maintenance_record_reason "$reasons_path" \
+		"$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" "sizing-timeout" || rc=1
+	counts=$(_worktree_recovery_maintenance_reason_counts_json "$reasons_path") || rc=1
+	printf '%s\n' "$counts" | jq -e \
+		'.sizing_timeout == 1 and .sizing_unavailable == 0 and .classification_unavailable == 0' \
+		>/dev/null || rc=1
+	print_result "attributed_remeasurement_uses_explicit_budget" "$rc" \
+		"Expected a slow exact remeasurement to use its supplied budget and distinguish timeout from overall deadline exhaustion"
 	return 0
 }
 
@@ -1730,13 +1891,17 @@ source "${SCRIPTS_DIR}/worktree-helper-cmds.sh"
 setup
 printf '=== test-worktree-recovery-lifecycle.sh ===\n'
 test_git_state_detects_recovery_data
+test_cache_policy_recognises_python_and_root_codegraph_only
+test_git_state_protects_tracked_regenerable_cache_roots
 test_archive_prunes_only_regenerable_ignored_caches
+test_archive_pruning_preserves_tracked_codegraph_root
 test_claim_state_uses_archive_repository
 test_exact_plan_writes_candidate_without_mutation
 test_plan_output_refuses_unsafe_targets
 test_classification_fails_closed
 test_plan_records_malformed_bucket_unknown
 test_size_drift_downgrades_only_entry
+test_attributed_remeasurement_uses_explicit_budget
 test_global_inventory_failure_is_explicit
 test_entry_sizing_failure_is_localized
 test_manual_plan_classification_is_bounded_and_resumable

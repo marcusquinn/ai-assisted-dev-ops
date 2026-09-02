@@ -10,8 +10,17 @@ import subprocess
 import sys
 from typing import List, Optional, Set, Tuple
 
-SAFE_COMPONENTS = {"node_modules", ".pnpm-store", ".turbo", ".parcel-cache", ".vite"}
+SAFE_COMPONENTS = {
+    "node_modules",
+    ".pnpm-store",
+    ".turbo",
+    ".parcel-cache",
+    ".vite",
+    "__pycache__",
+    ".pytest_cache",
+}
 SAFE_CHAINS = {(".yarn", "cache"), (".next", "cache"), (".nuxt", "cache")}
+SAFE_REPOSITORY_ROOTS = {".codegraph"}
 
 
 def safe_root(raw_path: str) -> Optional[Tuple[str, ...]]:
@@ -19,6 +28,8 @@ def safe_root(raw_path: str) -> Optional[Tuple[str, ...]]:
     parts = PurePosixPath(raw_path.rstrip("/")).parts
     if not parts or parts[0] in {"/", ".", ".."} or ".." in parts:
         return None
+    if parts[0] in SAFE_REPOSITORY_ROOTS:
+        return parts[:1]
     for index, part in enumerate(parts):
         if part in SAFE_COMPONENTS:
             return parts[: index + 1]
@@ -49,16 +60,27 @@ def status_records(raw: bytes):
         yield record[:2], os.fsdecode(record[3:])
 
 
-def status_has_user_data(status_path: Path, archive_root: Path) -> int:
+def status_has_user_data(status_path: Path, archive_root: Path, git_bin: str) -> int:
     """Return 0 for protected data, 1 for recognised caches only, 2 on uncertainty."""
     try:
         raw_status = status_path.read_bytes()
     except OSError:
         return 2
+    checked: Set[Tuple[str, ...]] = set()
     for state, relative_path in status_records(raw_status):
         root_parts = safe_root(relative_path) if state == b"!!" else None
         if root_parts is None or ordinary_directory(archive_root, root_parts) is None:
             return 0
+        if root_parts in checked:
+            continue
+        tracked_rc, tracked = git_output(
+            git_bin, archive_root, ["ls-files", "-z", "--", "/".join(root_parts)]
+        )
+        if tracked_rc != 0:
+            return 2
+        if tracked:
+            return 0
+        checked.add(root_parts)
     return 1
 
 
@@ -66,12 +88,15 @@ def git_output(
     git_bin: str, source_root: Path, arguments: List[str]
 ) -> Tuple[int, bytes]:
     """Run one read-only Git query with bounded captured output."""
-    result = subprocess.run(
-        [git_bin, "-C", str(source_root), *arguments],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        result = subprocess.run(
+            [git_bin, "-C", str(source_root), *arguments],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return 2, b""
     return result.returncode, result.stdout
 
 
@@ -117,7 +142,7 @@ def main() -> int:
     if not archive_root.is_dir() or archive_root.is_symlink():
         return 2
     if mode == "status":
-        return status_has_user_data(Path(source_raw), archive_root)
+        return status_has_user_data(Path(source_raw), archive_root, git_bin)
     source_root = Path(source_raw)
     if mode != "prune" or not source_root.is_dir() or source_root.is_symlink():
         return 2
