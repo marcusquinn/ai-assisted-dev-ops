@@ -33,19 +33,27 @@ const FALLBACK_INTENT_BY_OPERATION = new Map([
   ["use", "Using the requested tool"],
 ]);
 
+const TOOL_OPERATION_BY_NAME = new Map([
+  ["read", "read"],
+  ["grep", "search"],
+  ["glob", "search"],
+  ["osgrep", "search"],
+  ["bash", "execute"],
+  ["apply_patch", "write"],
+  ["edit", "write"],
+  ["write", "write"],
+  ["task", "research"],
+  ["ai_research", "research"],
+  ["webfetch", "fetch"],
+  ["todowrite", "track"],
+  ["skill", "load"],
+]);
+
 function operationClass(toolName) {
   const normalized = typeof toolName === "string"
     ? toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 64)
     : "";
-  if (["read"].includes(normalized)) return "read";
-  if (["grep", "glob", "osgrep"].includes(normalized)) return "search";
-  if (["bash"].includes(normalized)) return "execute";
-  if (["apply_patch", "edit", "write"].includes(normalized)) return "write";
-  if (["task", "ai_research"].includes(normalized)) return "research";
-  if (["webfetch"].includes(normalized)) return "fetch";
-  if (["todowrite"].includes(normalized)) return "track";
-  if (["skill"].includes(normalized)) return "load";
-  return normalized ? "use" : "";
+  return normalized ? (TOOL_OPERATION_BY_NAME.get(normalized) || "use") : "";
 }
 
 /** Derive a privacy-safe fallback from tool identity alone. */
@@ -78,33 +86,41 @@ function cloneArgsWithoutIntent(args) {
   return clone;
 }
 
-/**
- * Prepare tool args and intent metadata as one fail-closed boundary operation.
- * A non-configurable intent field is removed through a replacement plain object.
- */
-export function prepareIntent(callID, args, toolName = "") {
-  let raw;
-  let sanitizedArgs = args;
+function ownIntentDescriptor(args) {
+  let descriptor;
   if (args && typeof args === "object") {
-    let descriptor;
     try {
       descriptor = Object.getOwnPropertyDescriptor(args, INTENT_FIELD);
     } catch {
       descriptor = undefined;
     }
-    if (descriptor && "value" in descriptor) raw = descriptor.value;
-    if (descriptor) {
-      try {
-        delete args[INTENT_FIELD];
-      } catch {
-        // Fall through to a replacement object below.
-      }
-      if (Object.prototype.hasOwnProperty.call(args, INTENT_FIELD)) {
-        sanitizedArgs = cloneArgsWithoutIntent(args);
-      }
+  }
+  return descriptor;
+}
+
+function stripOwnIntent(args, descriptor) {
+  let sanitizedArgs = args;
+  if (descriptor) {
+    try {
+      delete args[INTENT_FIELD];
+    } catch {
+      // Fall through to a replacement object below.
+    }
+    if (Object.prototype.hasOwnProperty.call(args, INTENT_FIELD)) {
+      sanitizedArgs = cloneArgsWithoutIntent(args);
     }
   }
+  return sanitizedArgs;
+}
 
+/**
+ * Prepare tool args and intent metadata as one fail-closed boundary operation.
+ * A non-configurable intent field is removed through a replacement plain object.
+ */
+export function prepareIntent(callID, args, toolName = "") {
+  const descriptor = ownIntentDescriptor(args);
+  const raw = descriptor && "value" in descriptor ? descriptor.value : undefined;
+  const sanitizedArgs = stripOwnIntent(args, descriptor);
   const explicitIntent = typeof raw === "string" ? raw.trim() : "";
   const intent = explicitIntent || deriveFallbackIntent(toolName);
   const source = intent ? (explicitIntent ? "explicit" : "fallback") : undefined;
