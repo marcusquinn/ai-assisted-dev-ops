@@ -99,6 +99,10 @@ assert_not_contains "compact presentation hides private command path" "/private/
 assert_not_contains "compact presentation redacts private diagnostic paths" "/Users/private" "$compact_output"
 assert_contains "compact presentation marks truncated diagnostics" "[truncated]" "$compact_output"
 
+redacted_compact=$(python3 -c 'print("api_key=" + "x" * 10000)' | "$HELPER" compact --command bash --duration-ms 1)
+assert_contains "redaction cannot downgrade compact output to raw" "full_log: output-sandbox-helper.sh show out_" "$redacted_compact"
+assert_not_contains "redaction does not expose raw secret marker" "api_key=" "$redacted_compact"
+
 set +e
 failure_output=$("$HELPER" run --diagnostic-lines 4 -- bash -c 'printf "routine line\n"; printf "fatal: fixture failed\n" >&2; exit 7')
 failure_rc=$?

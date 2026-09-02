@@ -20,6 +20,7 @@ test("live Bash after-hook replaces verbose success with retained receipt", asyn
   const output = { output: "asset line\n".repeat(1000), metadata: { exitCode: 0 }, title: "build" };
   try {
     const hooks = createQualityHooks({ scriptsDir: root, logsDir: root });
+    rememberBashOutputPolicy("call-verbose", { command: "npm test" });
     await hooks.toolExecuteAfter({ tool: "bash", callID: "call-verbose" }, output);
     assert.match(output.output, /^bounded receipt/);
     assert.equal(readFileSync(capture, "utf8"), "asset line\n".repeat(1000));
@@ -37,6 +38,7 @@ test("live hook preserves failures, short output, and exact-output calls", async
     assert.match(failure.output, /^fatal: failed/);
 
     const short = { output: "short output", metadata: { exitCode: 0 } };
+    rememberBashOutputPolicy("call-short", { command: "npm test" });
     await hooks.toolExecuteAfter({ tool: "bash", callID: "call-short" }, short);
     assert.equal(short.output, "short output");
 
@@ -44,6 +46,10 @@ test("live hook preserves failures, short output, and exact-output calls", async
     rememberBashOutputPolicy("call-exact", { command: "git diff --stat" });
     await hooks.toolExecuteAfter({ tool: "bash", callID: "call-exact" }, exact);
     assert.match(exact.output, /^diff line/);
+
+    const unpaired = { output: "unpaired line\n".repeat(1000), metadata: { exitCode: 0 } };
+    await hooks.toolExecuteAfter({ tool: "bash", callID: "call-unpaired" }, unpaired);
+    assert.match(unpaired.output, /^unpaired line/);
 
     const structured = { output: { result: "x".repeat(10000) }, metadata: { exitCode: 0 } };
     await hooks.toolExecuteAfter({ tool: "bash", callID: "call-structured" }, structured);
@@ -62,6 +68,7 @@ test("live hook returns native output when retention fails", async () => {
   const output = { output: native, metadata: { exitCode: 0 } };
   try {
     const hooks = createQualityHooks({ scriptsDir: root, logsDir: root });
+    rememberBashOutputPolicy("call-retention-failure", { command: "npm test" });
     await hooks.toolExecuteAfter({ tool: "bash", callID: "call-retention-failure" }, output);
     assert.equal(output.output, native);
   } finally {

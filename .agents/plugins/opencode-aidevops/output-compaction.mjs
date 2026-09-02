@@ -12,9 +12,11 @@ function positiveThreshold(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function requiresExactOutput(command) {
+function commandIsEligible(command) {
   if (typeof command !== "string") return false;
-  return /^(?:cat|head|tail|less|more)\s|^git\s+diff\b|\s--json(?:\s|$)|\ssecurity\s|secret|credential/i.test(command.trim());
+  const normalized = command.trim();
+  if (/secret|credential|password|authorization|token|--json/i.test(normalized)) return false;
+  return /^(?:(?:npm|pnpm|yarn|bun)\s+(?:test|run|exec|build|lint|check|typecheck|ci)\b|(?:python3?\s+-m\s+)?pytest\b|go\s+test\b|cargo\s+(?:test|build|check|clippy)\b|make(?:\s|$)|cmake\s+--build\b|(?:gradle|\.\/gradlew|mvn)\b|dotnet\s+(?:test|build)\b|shellcheck\b|bash\s+\S*(?:test|lint)[^\s]*\.sh\b)/i.test(normalized);
 }
 
 function pruneOutputPolicies() {
@@ -27,7 +29,7 @@ function pruneOutputPolicies() {
 export function rememberBashOutputPolicy(callID, args) {
   if (!callID) return;
   outputPolicyByCallId.set(callID, {
-    exact: requiresExactOutput(args?.command),
+    compact: commandIsEligible(args?.command),
   });
   pruneOutputPolicies();
 }
@@ -43,7 +45,7 @@ export function compactSuccessfulBashOutput({ callID, output, scriptsDir, durati
   const policy = outputPolicyByCallId.get(callID);
   outputPolicyByCallId.delete(callID);
   const text = output?.output;
-  if (policy?.exact || typeof text !== "string" || !toolCallSucceeded(output) || !isVerboseOutput(text)) {
+  if (policy?.compact !== true || typeof text !== "string" || !toolCallSucceeded(output) || !isVerboseOutput(text)) {
     return false;
   }
 

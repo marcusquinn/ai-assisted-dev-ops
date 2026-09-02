@@ -508,11 +508,7 @@ cmd_compact() {
 	line_count=$(wc -l <"$raw_path" | tr -d ' ')
 	summarize_file "$raw_path" "$DEFAULT_SUMMARY_LINES" "$sensitive" >"$summary_file" || return 1
 	record_output "$output_id" "$command_text" "$PWD" "0" "$tag" "$raw_path" "$byte_count" "$line_count" "$sensitive" "$summary_file" || return 1
-	if is_verbose_success "$byte_count" "$line_count"; then
-		print_verbose_success_summary "$output_id" "$command_text" "0" "$duration_ms" "$byte_count" "$line_count" "$sensitive" "$raw_path" "duration_ms" || return 1
-	else
-		cat "$raw_path"
-	fi
+	print_verbose_success_summary "$output_id" "$command_text" "0" "$duration_ms" "$byte_count" "$line_count" "$sensitive" "$raw_path" "duration_ms" || return 1
 	return 0
 }
 
