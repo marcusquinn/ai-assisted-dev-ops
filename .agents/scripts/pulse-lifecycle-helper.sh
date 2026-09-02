@@ -265,13 +265,8 @@ _pulse_start_managed() {
 		_pl_err "launchd accepted the Pulse restart but no new activated-bundle process appeared"
 		return 1
 	fi
-	_start || return $?
-	if active_pid=$(_pulse_find_active_runtime_pid_since ""); then
-		_pl_ok "Pulse is running from the activated bundle (PID ${active_pid})"
-		return 0
-	fi
-	_pl_err "Pulse started but its activated runtime bundle could not be verified"
-	return 1
+	_start_activated_runtime
+	return $?
 }
 
 # _pulse_pids_raw: print ALL matching pulse PIDs including subshells of the
@@ -715,18 +710,8 @@ _stop_reconciliation_processes() {
 	return 0
 }
 
-# _start: launch pulse in background via nohup. No-op if already running.
-_start() {
-	if _is_running; then
-		_pl_info "Pulse already running (PIDs: $(_pulse_pids | tr '\n' ' '))"
-		return 0
-	fi
-
-	if [[ ! -x "$_PULSE_SCRIPT" ]]; then
-		_pl_err "pulse-wrapper.sh not found or not executable: $_PULSE_SCRIPT"
-		return 2
-	fi
-
+# _pulse_launch_unmanaged: launch pulse in background via nohup.
+_pulse_launch_unmanaged() {
 	mkdir -p "${_PULSE_LOG%/*}"
 
 	# t2994: cache priming moved into pulse-wrapper.sh::main() with a
@@ -744,12 +729,48 @@ _start() {
 
 	# Give nohup a moment to fork and let pulse-wrapper emit its startup banner.
 	sleep 1
+	return 0
+}
+
+_pulse_require_script() {
+	if [[ ! -x "$_PULSE_SCRIPT" ]]; then
+		_pl_err "pulse-wrapper.sh not found or not executable: $_PULSE_SCRIPT"
+		return 2
+	fi
+	return 0
+}
+
+# _start: launch pulse in background via nohup. No-op if already running.
+_start() {
+	if _is_running; then
+		_pl_info "Pulse already running (PIDs: $(_pulse_pids | tr '\n' ' '))"
+		return 0
+	fi
+
+	_pulse_require_script || return $?
+	_pulse_launch_unmanaged
 
 	if _is_running; then
 		_pl_ok "Pulse started (PID: $(_pulse_pids | head -1))"
 		return 0
 	fi
 	_pl_err "Pulse failed to start — check $_PULSE_LOG"
+	return 1
+}
+
+_start_activated_runtime() {
+	local active_pid=""
+	if active_pid=$(_pulse_find_active_runtime_pid_since ""); then
+		_pl_info "Pulse already running from the activated bundle (PID ${active_pid})"
+		return 0
+	fi
+	_pulse_require_script || return $?
+	_pulse_launch_unmanaged
+	if active_pid=$(_pulse_find_active_runtime_pid_since ""); then
+		_pl_ok "Pulse is running from the activated bundle (PID ${active_pid})"
+		return 0
+	fi
+	_pl_err "Pulse started but its activated runtime bundle could not be verified"
 	return 1
 }
 
