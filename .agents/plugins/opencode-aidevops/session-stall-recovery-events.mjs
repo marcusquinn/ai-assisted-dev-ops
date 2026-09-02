@@ -14,8 +14,8 @@ const FINISHED_TOOL_STATES = new Set([
 function sessionIDFromEvent(event) {
   const candidates = [
     event?.properties?.sessionID,
-    event?.properties?.info?.id,
     event?.properties?.info?.sessionID,
+    event?.properties?.info?.id,
     event?.properties?.part?.sessionID,
   ];
   return String(candidates.find(Boolean) || "");

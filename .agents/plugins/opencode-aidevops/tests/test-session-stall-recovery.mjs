@@ -197,7 +197,7 @@ assert.equal(safeToolCall("apply_patch"), false);
   const test = fixture();
   test.onAbort(async () => {
     test.recovery.handleEvent(event("message.updated", {
-      info: { sessionID: "ses_primary", role: "user" },
+      info: { id: "msg_user", sessionID: "ses_primary", role: "user" },
     }));
   });
   test.advance(101);
