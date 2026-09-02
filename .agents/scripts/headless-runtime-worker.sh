@@ -56,6 +56,9 @@ _HRW_HANDOFF_READY="ready"
 _HRW_REASON_WORKTREE_CONTINUATION_STATE_REJECTED="worker_worktree_continuation_state_rejected"
 _HRW_REASON_WORKTREE_CONTINUATION_OWNER_ABSENT="worker_worktree_continuation_owner_absent"
 _HRW_REASON_WORKTREE_OWNER_CONCURRENT_MUTATION="worker_worktree_owner_concurrent_mutation"
+_HRW_WORKTREE_RECLAIM_TRANSFERRED="transferred"
+_HRW_WORKTREE_RECLAIM_VACATED="vacated"
+_HRW_WORKTREE_RECLAIM_OUTCOME=""
 _HRW_REASON_OWNERSHIP_LOST="worker_ownership_lost"
 _HRW_REASON_SENSITIVE_TEMP_PREFLIGHT="worker_sensitive_temp_preflight_failed"
 _HRW_EVENT_FAILED="worker.failed"
@@ -1535,6 +1538,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 	local work_dir="$2"
 	local branch="$3"
 	local owner_info=""
+	_HRW_WORKTREE_RECLAIM_OUTCOME=""
 
 	owner_info=$(check_worktree_owner_snapshot "$work_dir" 2>/dev/null || true)
 	[[ -n "$owner_info" ]] || return 1
@@ -1554,6 +1558,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 			return 1
 		fi
 		print_info "[lifecycle] worker_worktree_reclaimed_dead_owner session=${session_key} branch=${branch} path=${work_dir} previous_pid=${owner_pid}"
+		_HRW_WORKTREE_RECLAIM_OUTCOME="$_HRW_WORKTREE_RECLAIM_VACATED"
 		return 0
 	fi
 
@@ -1575,6 +1580,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 			return 1
 		fi
 		print_info "[lifecycle] worker_worktree_reclaimed_dispatch_precreate_owner session=${session_key} branch=${branch} path=${work_dir} previous_pid=${owner_pid} previous_session=${owner_session}"
+		_HRW_WORKTREE_RECLAIM_OUTCOME="$_HRW_WORKTREE_RECLAIM_TRANSFERRED"
 		unset _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 		return 0
 	fi
@@ -1590,6 +1596,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 			return 1
 		fi
 		print_info "[lifecycle] worker_worktree_reclaimed_authorized_owner session=${session_key} branch=${branch} path=${work_dir} previous_pid=${owner_pid} previous_session=${owner_session}"
+		_HRW_WORKTREE_RECLAIM_OUTCOME="$_HRW_WORKTREE_RECLAIM_TRANSFERRED"
 		unset _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 		return 0
 	fi
@@ -1617,6 +1624,7 @@ _hrw_reclaim_stale_worker_worktree_owner() {
 		return 1
 	fi
 	print_warning "[lifecycle] worker_worktree_reclaimed_stale_live_owner session=${session_key} branch=${branch} path=${work_dir} previous_pid=${owner_pid} age_s=${owner_age_s}"
+	_HRW_WORKTREE_RECLAIM_OUTCOME="$_HRW_WORKTREE_RECLAIM_TRANSFERRED"
 	unset _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 	return 0
 }
@@ -1674,14 +1682,21 @@ _hrw_claim_worker_worktree() {
 		--session "$session_key" \
 		--task "${WORKER_ISSUE_NUMBER:-}" \
 		--owner-pid "$$"; then
-		if _hrw_reclaim_stale_worker_worktree_owner "$session_key" "$work_dir" "$branch" && \
-			claim_worktree_ownership "$work_dir" "$branch" \
-				--session "$session_key" \
-				--task "${WORKER_ISSUE_NUMBER:-}" \
-				--owner-pid "$$"; then
-			_hrw_export_worker_worktree_owner_proof "$session_key" "$work_dir" || return 1
-			print_info "[lifecycle] worker_worktree_claimed session=${session_key} branch=${branch} path=${work_dir} pid=$$"
-			return 0
+		if _hrw_reclaim_stale_worker_worktree_owner "$session_key" "$work_dir" "$branch"; then
+			if [[ "$_HRW_WORKTREE_RECLAIM_OUTCOME" == "$_HRW_WORKTREE_RECLAIM_TRANSFERRED" ]]; then
+				_hrw_export_worker_worktree_owner_proof "$session_key" "$work_dir" || return 1
+				print_info "[lifecycle] worker_worktree_claimed session=${session_key} branch=${branch} path=${work_dir} pid=$$ mode=owner-transfer"
+				return 0
+			fi
+			if [[ "$_HRW_WORKTREE_RECLAIM_OUTCOME" == "$_HRW_WORKTREE_RECLAIM_VACATED" ]] && \
+				claim_worktree_ownership "$work_dir" "$branch" \
+					--session "$session_key" \
+					--task "${WORKER_ISSUE_NUMBER:-}" \
+					--owner-pid "$$"; then
+				_hrw_export_worker_worktree_owner_proof "$session_key" "$work_dir" || return 1
+				print_info "[lifecycle] worker_worktree_claimed session=${session_key} branch=${branch} path=${work_dir} pid=$$ mode=vacated-owner"
+				return 0
+			fi
 		fi
 		print_error "[fatal] worker worktree already has a live owner: $work_dir"
 		return 1
