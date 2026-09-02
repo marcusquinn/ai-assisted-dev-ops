@@ -7,9 +7,12 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -20,6 +23,7 @@ import {
   SOURCE_ACCESS_REASON,
   canonicalReceiptPayload,
   checkSecretReadWithApproval,
+  createSourceAccessMutationProvenance,
   sourceAccessBrokerMatches,
   verifySourceAccessReceipt,
 } from "../source-access-approval.mjs";
@@ -38,6 +42,59 @@ const BASE = {
     throw new Error("[secret-read-guard] blocked read: secret-bearing basename");
   },
 };
+
+function mutationFixture() {
+  const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
+  mkdirSync(tempParent, { recursive: true });
+  const root = mkdtempSync(join(tempParent, "source-access-mutation-test-"));
+  const repo = join(root, "repo");
+  const source = join(repo, "secret-helper.sh");
+  const snapshot = join(root, "approved.source");
+  const sessionId = "ses_mutation_123456";
+  mkdirSync(repo);
+  execFileSync("git", ["-C", repo, "init", "--quiet"]);
+  writeFileSync(source, "one\n");
+  writeFileSync(snapshot, "one\n");
+  execFileSync("git", ["-C", repo, "add", "secret-helper.sh"]);
+  const approval = {
+    approvalId: "a".repeat(64),
+    approvedPath: snapshot,
+    canonicalPath: realpathSync(source),
+    contentSha256: createHash("sha256").update("one\n").digest("hex"),
+    expiresAt: 2_000_000_000,
+    repoRoot: realpathSync(repo),
+    relativePath: "secret-helper.sh",
+  };
+  const verify = ({ sessionId: requestedSession, filePath, authorizedApprovalId }) => {
+    if (requestedSession !== sessionId || realpathSync(filePath) !== approval.canonicalPath) return false;
+    if (authorizedApprovalId && authorizedApprovalId !== approval.approvalId) return false;
+    if (!authorizedApprovalId && readFileSync(filePath, "utf8") !== "one\n") return false;
+    return approval;
+  };
+  const provenance = createSourceAccessMutationProvenance({
+    repositoryDir: repo,
+    verify,
+    now: () => 1_900_000_000,
+  });
+  provenance.rememberApproval({ sessionId, filePath: source, approval });
+  return { approval, provenance, repo, root, sessionId, snapshot, source, verify };
+}
+
+function approvedMutationRead(fixture, callId, expected) {
+  const args = { filePath: fixture.source };
+  const approval = fixture.provenance.authorizeRead({
+    sessionId: fixture.sessionId,
+    callId,
+    filePath: fixture.source,
+    reason: SOURCE_ACCESS_REASON,
+    args,
+  });
+  assert.ok(approval);
+  const output = { output: "immutable approval snapshot" };
+  fixture.provenance.finishRead(fixture.sessionId, callId, output, true);
+  assert.equal(output.output, expected);
+  assert.equal(output.metadata.sourceAccessContinuation, true);
+}
 
 test("a valid verifier result bypasses only the exact basename reason", () => {
   let gateCalls = 0;
@@ -508,5 +565,242 @@ test("one signed manifest authorizes only three exact repository-bound paths", (
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0] }), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("one approval survives verified Write, Edit, and apply_patch cycles", () => {
+  const fixture = mutationFixture();
+  try {
+    fixture.provenance.beginMutation({
+      sessionId: fixture.sessionId,
+      callId: "write-1",
+      mutations: [{ filePath: fixture.source, kind: "write", content: "two\n" }],
+    });
+    writeFileSync(fixture.source, "two\n");
+    fixture.provenance.finishMutation({
+      sessionId: fixture.sessionId,
+      callId: "write-1",
+      succeeded: true,
+    });
+    approvedMutationRead(fixture, "read-2", "two\n");
+
+    fixture.provenance.beginMutation({
+      sessionId: fixture.sessionId,
+      callId: "edit-2",
+      mutations: [{
+        filePath: fixture.source,
+        kind: "edit",
+        oldString: "two",
+        newString: "three",
+        replaceAll: false,
+      }],
+    });
+    writeFileSync(fixture.source, "three\n");
+    fixture.provenance.finishMutation({
+      sessionId: fixture.sessionId,
+      callId: "edit-2",
+      succeeded: true,
+    });
+    approvedMutationRead(fixture, "read-3", "three\n");
+
+    fixture.provenance.beginMutation({
+      sessionId: fixture.sessionId,
+      callId: "patch-3",
+      mutations: [{
+        filePath: fixture.source,
+        kind: "apply_patch",
+        patchText: "\n@@\n-three\n+four\n",
+      }],
+    });
+    writeFileSync(fixture.source, "four\n");
+    fixture.provenance.finishMutation({
+      sessionId: fixture.sessionId,
+      callId: "patch-3",
+      succeeded: true,
+    });
+    approvedMutationRead(fixture, "read-4", "four\n");
+
+    const approval = fixture.provenance.authorizeRead({
+      sessionId: fixture.sessionId,
+      callId: "read-race",
+      filePath: fixture.source,
+      reason: SOURCE_ACCESS_REASON,
+      args: { filePath: fixture.source },
+    });
+    assert.ok(approval);
+    writeFileSync(fixture.source, "unobserved-after-verification\n");
+    const output = { output: "stale snapshot" };
+    fixture.provenance.finishRead(fixture.sessionId, "read-race", output, true);
+    assert.equal(output.output, "four\n", "the returned bytes cannot race the live path");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("failed, ambiguous, or mismatched mutations never advance authority", () => {
+  for (const scenario of ["failed", "ambiguous", "mismatch"]) {
+    const fixture = mutationFixture();
+    try {
+      fixture.provenance.beginMutation({
+        sessionId: fixture.sessionId,
+        callId: scenario,
+        mutations: [{ filePath: fixture.source, kind: "write", content: "expected\n" }],
+      });
+      writeFileSync(fixture.source, scenario === "mismatch" ? "concurrent\n" : "expected\n");
+      fixture.provenance.finishMutation({
+        sessionId: fixture.sessionId,
+        callId: scenario,
+        succeeded: scenario === "mismatch",
+      });
+      assert.equal(
+        fixture.provenance.authorizeRead({
+          sessionId: fixture.sessionId,
+          callId: `read-${scenario}`,
+          filePath: fixture.source,
+          reason: SOURCE_ACCESS_REASON,
+          args: { filePath: fixture.source },
+        }),
+        false,
+      );
+      assert.equal(fixture.provenance.denialReason(fixture.sessionId, fixture.source), "drift");
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("unobserved filesystem and identity transitions fail closed", () => {
+  for (const scenario of ["external", "untracked", "hardlink", "symlink"]) {
+    const fixture = mutationFixture();
+    try {
+      if (scenario === "external") writeFileSync(fixture.source, "external\n");
+      if (scenario === "untracked") {
+        execFileSync("git", ["-C", fixture.repo, "rm", "--cached", "--quiet", "secret-helper.sh"]);
+      }
+      if (scenario === "hardlink") linkSync(fixture.source, join(fixture.root, "linked.source"));
+      if (scenario === "symlink") {
+        rmSync(fixture.source);
+        symlinkSync(fixture.snapshot, fixture.source);
+      }
+      assert.equal(
+        fixture.provenance.authorizeRead({
+          sessionId: fixture.sessionId,
+          callId: `read-${scenario}`,
+          filePath: fixture.source,
+          reason: SOURCE_ACCESS_REASON,
+          args: { filePath: fixture.source },
+        }),
+        false,
+      );
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("expiry, session changes, and plugin restart do not preserve mutation authority", () => {
+  const fixture = mutationFixture();
+  try {
+    assert.equal(
+      fixture.provenance.authorizeRead({
+        sessionId: "ses_other_123456",
+        callId: "wrong-session",
+        filePath: fixture.source,
+        reason: SOURCE_ACCESS_REASON,
+        args: { filePath: fixture.source },
+      }),
+      false,
+    );
+    const restarted = createSourceAccessMutationProvenance({
+      repositoryDir: fixture.repo,
+      verify: fixture.verify,
+      now: () => 1_900_000_000,
+    });
+    assert.equal(
+      restarted.authorizeRead({
+        sessionId: fixture.sessionId,
+        callId: "restart",
+        filePath: fixture.source,
+        reason: SOURCE_ACCESS_REASON,
+        args: { filePath: fixture.source },
+      }),
+      false,
+    );
+    const expired = createSourceAccessMutationProvenance({
+      repositoryDir: fixture.repo,
+      verify: fixture.verify,
+      now: () => fixture.approval.expiresAt,
+    });
+    expired.rememberApproval({
+      sessionId: fixture.sessionId,
+      filePath: fixture.source,
+      approval: fixture.approval,
+    });
+    assert.equal(
+      expired.authorizeRead({
+        sessionId: fixture.sessionId,
+        callId: "expired",
+        filePath: fixture.source,
+        reason: SOURCE_ACCESS_REASON,
+        args: { filePath: fixture.source },
+      }),
+      false,
+    );
+    assert.equal(expired.denialReason(fixture.sessionId, fixture.source), "expired");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("denial guidance distinguishes missing approval from unobserved drift", () => {
+  assert.throws(
+    () => checkSecretReadWithApproval({
+      ...BASE,
+      verify: () => false,
+      requestRun: () => "0123456789abcdef0123456789abcdef",
+    }),
+    /No source-access approval exists for this exact path and session/,
+  );
+  assert.throws(
+    () => checkSecretReadWithApproval({
+      ...BASE,
+      verify: () => false,
+      provenance: { authorizeRead: () => false, denialReason: () => "drift" },
+      requestRun: () => "0123456789abcdef0123456789abcdef",
+    }),
+    /invalidated by an unobserved content transition/,
+  );
+});
+
+test("pending reads are session-bound, success-bound, and preserve numbered output", () => {
+  const fixture = mutationFixture();
+  try {
+    const args = { filePath: fixture.source, offset: 1, limit: 1 };
+    assert.ok(fixture.provenance.authorizeRead({
+      sessionId: fixture.sessionId,
+      callId: "shared-call",
+      filePath: fixture.source,
+      reason: SOURCE_ACCESS_REASON,
+      args,
+    }));
+    const wrongSession = { output: "<content>\n1: wrong\n</content>" };
+    fixture.provenance.finishRead("ses_other_123456", "shared-call", wrongSession, true);
+    assert.equal(wrongSession.output, "<content>\n1: wrong\n</content>");
+    const failedRead = { output: "failed to read snapshot" };
+    fixture.provenance.finishRead(fixture.sessionId, "shared-call", failedRead, false);
+    assert.equal(failedRead.output, "failed to read snapshot");
+
+    assert.ok(fixture.provenance.authorizeRead({
+      sessionId: fixture.sessionId,
+      callId: "numbered-call",
+      filePath: fixture.source,
+      reason: SOURCE_ACCESS_REASON,
+      args,
+    }));
+    const numbered = { output: "<content>\n1: stale\n</content>" };
+    fixture.provenance.finishRead(fixture.sessionId, "numbered-call", numbered, true);
+    assert.equal(numbered.output, "<content>\n1: one\n</content>");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
