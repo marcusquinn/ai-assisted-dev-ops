@@ -8,7 +8,13 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractAndStoreIntent, consumeIntent } from "../intent-tracing.mjs";
+import {
+  consumeIntent,
+  consumeIntentRecord,
+  deriveFallbackIntent,
+  extractAndStoreIntent,
+  prepareIntent,
+} from "../intent-tracing.mjs";
 
 describe("extractAndStoreIntent", () => {
   test("stores and strips agent__intent while preserving Bash workdir", () => {
@@ -54,7 +60,7 @@ describe("extractAndStoreIntent", () => {
     assert.deepEqual(args, { target: "custom-tool" });
   });
 
-  test("stores intent without throwing for non-configurable args", () => {
+  test("replaces non-configurable args so intent cannot reach execution", () => {
     const callID = "call-gh-25992-nonconfigurable";
     const args = { target: "custom-tool" };
     Object.defineProperty(args, "agent__intent", {
@@ -63,10 +69,77 @@ describe("extractAndStoreIntent", () => {
       enumerable: true,
     });
 
-    const intent = extractAndStoreIntent(callID, args);
+    const prepared = prepareIntent(callID, args, "custom-tool");
 
-    assert.equal(intent, "Recording intent from immutable host args");
+    assert.equal(prepared.intent, "Recording intent from immutable host args");
     assert.equal(consumeIntent(callID), "Recording intent from immutable host args");
     assert.equal(args.agent__intent, "Recording intent from immutable host args");
+    assert.deepEqual(prepared.args, { target: "custom-tool" });
+    assert.ok(!Object.prototype.hasOwnProperty.call(prepared.args, "agent__intent"));
+  });
+
+  test("records explicit provenance without changing the intent text", () => {
+    const callID = "call-gh-31025-explicit";
+    const args = { agent__intent: "Reading explicit context" };
+
+    extractAndStoreIntent(callID, args, "read");
+
+    assert.deepEqual(consumeIntentRecord(callID), {
+      intent: "Reading explicit context",
+      source: "explicit",
+    });
+  });
+
+  test("derives fallback only from normalized tool identity", () => {
+    const callID = "call-gh-31025-fallback";
+    const args = {
+      command: "secret-command-canary",
+      filePath: "/private/path-canary",
+      prompt: "private-prompt-canary",
+    };
+
+    const intent = extractAndStoreIntent(callID, args, "Bash");
+    const record = consumeIntentRecord(callID);
+
+    assert.equal(intent, "Running the requested operation");
+    assert.deepEqual(record, { intent, source: "fallback" });
+    assert.doesNotMatch(intent, /secret-command|private|canary/i);
+    assert.deepEqual(args, {
+      command: "secret-command-canary",
+      filePath: "/private/path-canary",
+      prompt: "private-prompt-canary",
+    });
+  });
+
+  test("strips blank metadata and uses fallback provenance", () => {
+    const callID = "call-gh-31025-blank";
+    const args = { agent__intent: "   ", filePath: "/private/canary" };
+
+    extractAndStoreIntent(callID, args, "READ");
+
+    assert.deepEqual(consumeIntentRecord(callID), {
+      intent: "Reading requested context",
+      source: "fallback",
+    });
+    assert.deepEqual(args, { filePath: "/private/canary" });
+  });
+
+  test("uses a generic fallback for bounded unknown tool identities", () => {
+    assert.equal(deriveFallbackIntent("custom.vendor/tool"), "Using the requested tool");
+    assert.equal(deriveFallbackIntent(""), undefined);
+  });
+
+  test("ignores inherited intent and records fallback provenance", () => {
+    const callID = "call-gh-31025-prototype";
+    const args = Object.create({ agent__intent: "Inherited private canary" });
+    args.target = "safe-value";
+
+    const prepared = prepareIntent(callID, args, "read");
+
+    assert.equal(prepared.args, args);
+    assert.deepEqual(consumeIntentRecord(callID), {
+      intent: "Reading requested context",
+      source: "fallback",
+    });
   });
 });

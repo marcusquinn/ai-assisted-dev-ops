@@ -471,8 +471,9 @@ ON CONFLICT(session_id) DO UPDATE SET
  * @param {object} output - { title, output, metadata }
  * @param {string | undefined} intent - LLM-provided intent string (from agent__intent field)
  * @param {number | null | undefined} [durationMs] - Elapsed milliseconds from tool.execute.before (t2184)
+ * @param {"explicit" | "fallback" | undefined} [intentSource] - Intent provenance
  */
-export function recordToolCall(input, output, intent, durationMs) {
+export function recordToolCall(input, output, intent, durationMs, intentSource) {
   if (!dbReady) return;
 
   const toolName = input.tool || "";
@@ -508,6 +509,7 @@ export function recordToolCall(input, output, intent, durationMs) {
     isSuccess,
     durationMs,
     metadata: output?.metadata,
+    intentSource,
     outcomeCategory,
   });
 

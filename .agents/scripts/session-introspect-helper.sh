@@ -219,6 +219,35 @@ _recent_json() {
 	return 0
 }
 
+_pattern_stats() {
+	local db="$1"
+	local sid_esc="$2"
+	local since="$3"
+	sqlite3 -separator '|' "$db" "
+		SELECT
+			COUNT(*) AS total,
+			SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS errors,
+			MIN(timestamp) AS first_ts,
+			MAX(timestamp) AS last_ts,
+			COALESCE(AVG(duration_ms),0) AS avg_dur,
+			SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 THEN 1 ELSE 0 END) AS intent_present,
+			SUM(CASE WHEN intent IS NULL OR LENGTH(TRIM(intent)) = 0 THEN 1 ELSE 0 END) AS intent_missing,
+			printf('%.1f', 100.0 * SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 THEN 1 ELSE 0 END) / MAX(1, COUNT(*))) AS intent_coverage,
+			SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 AND
+				COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'\$.intent_source') END,'explicit') <> 'fallback'
+				THEN 1 ELSE 0 END) AS intent_explicit,
+			SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 AND
+				COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'\$.intent_source') END,'') = 'fallback'
+				THEN 1 ELSE 0 END) AS intent_fallback,
+			printf('%.1f', 100.0 * SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 AND
+				COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata,'\$.intent_source') END,'explicit') <> 'fallback'
+				THEN 1 ELSE 0 END) / MAX(1, COUNT(*))) AS intent_explicit_coverage
+		FROM tool_calls
+		WHERE session_id='${sid_esc}' ${since};
+	"
+	return $?
+}
+
 cmd_patterns() {
 	local parsed; parsed=$(_parse_common_flags "$@")
 	local session_id db_override json_flag since_min
@@ -237,26 +266,19 @@ cmd_patterns() {
 
 	# Aggregate stats for the session.
 	local stats
-	stats=$(sqlite3 -separator '|' "$db" "
-		SELECT
-			COUNT(*) AS total,
-			SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS errors,
-			MIN(timestamp) AS first_ts,
-			MAX(timestamp) AS last_ts,
-			COALESCE(AVG(duration_ms),0) AS avg_dur,
-			SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 THEN 1 ELSE 0 END) AS intent_present,
-			SUM(CASE WHEN intent IS NULL OR LENGTH(TRIM(intent)) = 0 THEN 1 ELSE 0 END) AS intent_missing,
-			printf('%.1f', 100.0 * SUM(CASE WHEN intent IS NOT NULL AND LENGTH(TRIM(intent)) > 0 THEN 1 ELSE 0 END) / MAX(1, COUNT(*))) AS intent_coverage
-		FROM tool_calls
-		WHERE session_id='${sid_esc}' ${since};
-	")
+	stats=$(_pattern_stats "$db" "$sid_esc" "$since") || return 1
 	local total errors first_ts last_ts avg_dur intent_present intent_missing intent_coverage
-	IFS='|' read -r total errors first_ts last_ts avg_dur intent_present intent_missing intent_coverage <<<"$stats"
+	local intent_explicit intent_fallback intent_explicit_coverage
+	IFS='|' read -r total errors first_ts last_ts avg_dur intent_present intent_missing intent_coverage \
+		intent_explicit intent_fallback intent_explicit_coverage <<<"$stats"
 	total="${total:-0}"
 	errors="${errors:-0}"
 	intent_present="${intent_present:-0}"
 	intent_missing="${intent_missing:-0}"
 	intent_coverage="${intent_coverage:-0.0}"
+	intent_explicit="${intent_explicit:-0}"
+	intent_fallback="${intent_fallback:-0}"
+	intent_explicit_coverage="${intent_explicit_coverage:-0.0}"
 
 	# Per-tool counts.
 	local by_tool
@@ -310,11 +332,13 @@ cmd_patterns() {
 	if [[ "$json_flag" == "true" ]]; then
 		_patterns_json "$sid" "$total" "$errors" "$first_ts" "$last_ts" \
 			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes" \
-			"$intent_present" "$intent_missing" "$intent_coverage"
+			"$intent_present" "$intent_missing" "$intent_coverage" \
+			"$intent_explicit" "$intent_fallback" "$intent_explicit_coverage"
 	else
 		_patterns_table "$sid" "$total" "$errors" "$first_ts" "$last_ts" \
 			"$avg_dur" "$rate_per_min" "$by_tool" "$rereads" "$outcomes" \
-			"$intent_present" "$intent_missing" "$intent_coverage"
+			"$intent_present" "$intent_missing" "$intent_coverage" \
+			"$intent_explicit" "$intent_fallback" "$intent_explicit_coverage"
 	fi
 	return 0
 }
@@ -324,12 +348,15 @@ _patterns_table() {
 	local avg_dur="$6" rate="$7" by_tool="$8" rereads="$9"
 	local outcomes="${10}"
 	local intent_present="${11}" intent_missing="${12}" intent_coverage="${13}"
+	local intent_explicit="${14}" intent_fallback="${15}" intent_explicit_coverage="${16}"
 	printf 'Session: %s\n' "$sid"
 	printf 'Window:  %s → %s\n' "${first_ts:-?}" "${last_ts:-?}"
 	printf 'Calls:   %s total, %s error(s), %s calls/min, avg %sms\n' \
 		"$total" "$errors" "$rate" "${avg_dur%.*}"
 	printf 'Intent:  %s populated, %s missing (%s%% coverage)\n' \
 		"$intent_present" "$intent_missing" "$intent_coverage"
+	printf 'Source:  %s explicit, %s fallback (%s%% explicit coverage)\n' \
+		"$intent_explicit" "$intent_fallback" "$intent_explicit_coverage"
 	if [[ "$intent_missing" -gt 0 ]]; then
 		printf 'Notice: missing intents limit reliable root-cause clustering.\n'
 	fi
@@ -373,6 +400,7 @@ _patterns_json() {
 	local avg_dur="$6" rate="$7" by_tool="$8" rereads="$9"
 	local outcomes="${10}"
 	local intent_present="${11}" intent_missing="${12}" intent_coverage="${13}"
+	local intent_explicit="${14}" intent_fallback="${15}" intent_explicit_coverage="${16}"
 	command -v jq >/dev/null 2>&1 || { print_error "jq required with --json"; return 1; }
 	local by_tool_json
 	by_tool_json=$(printf '%s' "$by_tool" | jq -R -s '
@@ -403,7 +431,8 @@ _patterns_json() {
 		--argjson by_tool "$by_tool_json" --argjson outcomes "$outcomes_json" \
 		--argjson rereads "$rereads_json" \
 		--argjson intent_present "$intent_present" --argjson intent_missing "$intent_missing" \
-		--arg intent_coverage "$intent_coverage" \
+		--arg intent_coverage "$intent_coverage" --argjson intent_explicit "$intent_explicit" \
+		--argjson intent_fallback "$intent_fallback" --arg intent_explicit_coverage "$intent_explicit_coverage" \
 		--argjson minimum_repeat_count "$REPEATED_PATH_MIN_COUNT" '
 		{
 			session: $sid,
@@ -417,7 +446,10 @@ _patterns_json() {
 				intent_coverage: {
 					populated: $intent_present,
 					missing: $intent_missing,
-					percentage: ($intent_coverage | tonumber)
+					percentage: ($intent_coverage | tonumber),
+					explicit: $intent_explicit,
+					fallback: $intent_fallback,
+					explicit_percentage: ($intent_explicit_coverage | tonumber)
 				}
 			},
 			by_tool: $by_tool,

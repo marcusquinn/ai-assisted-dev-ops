@@ -83,7 +83,7 @@ INSERT INTO tool_calls (timestamp, session_id, tool_name, intent, success, durat
  ('2026-04-18T04:00:25Z', 'sess-A', 'Edit',   'patching auth handler',         1, 240, '{"args":{"filePath":"/repo/b.sh"}}', 'success'),
  ('2026-04-18T04:00:30Z', 'sess-A', 'Bash',   'running shellcheck',            0, 850, '{}', 'command_failure'),
  ('2026-04-18T04:00:35Z', 'sess-A', 'Bash',   NULL,                            0, 910, '{}', 'policy_block'),
- ('2026-04-18T04:00:40Z', 'sess-A', 'Bash',   'running shellcheck final',      1, 780, '{}', 'success'),
+ ('2026-04-18T04:00:40Z', 'sess-A', 'Bash',   'running shellcheck final',      1, 780, '{"intent_source":"fallback"}', 'success'),
  ('2026-04-18T04:00:45Z', 'sess-A', 'Task',   '',                              0,  50, '{}', 'tool_error');
 
 INSERT INTO session_summaries (session_id, first_seen, last_seen, request_count, total_tool_calls, total_errors, total_cost, models_used)
@@ -146,6 +146,7 @@ assert_contains "patterns: preserves unknown legacy outcomes" "$out" "legacy_unk
 assert_contains "patterns: reports repeated-path evidence" "$out" "/repo/b.sh"
 assert_contains "patterns: requires contextual interpretation" "$out" "Interpret in context"
 assert_contains "patterns: reports mixed intent coverage" "$out" "8 populated, 2 missing (80.0% coverage)"
+assert_contains "patterns: distinguishes intent provenance" "$out" "7 explicit, 1 fallback (70.0% explicit coverage)"
 assert_contains "patterns: warns when intent is missing" "$out" "missing intents limit reliable root-cause clustering"
 
 out=$($HELPER patterns --session sess-B 2>&1) || true
@@ -197,7 +198,10 @@ if command -v jq >/dev/null 2>&1; then
 		.calls.outcomes.legacy_unknown == 1 and
 		.calls.intent_coverage.populated == 8 and
 		.calls.intent_coverage.missing == 2 and
-		.calls.intent_coverage.percentage == 80
+		.calls.intent_coverage.percentage == 80 and
+		.calls.intent_coverage.explicit == 7 and
+		.calls.intent_coverage.fallback == 1 and
+		.calls.intent_coverage.explicit_percentage == 70
 	' >/dev/null 2>&1; then
 		pass "patterns --json: separates outcomes and reports intent coverage"
 	else
