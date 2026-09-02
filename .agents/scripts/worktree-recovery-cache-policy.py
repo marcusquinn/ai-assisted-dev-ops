@@ -171,40 +171,59 @@ def start_git_process(
     return process
 
 
+def stream_wait_seconds(deadline_epoch: Optional[int]) -> Optional[float]:
+    """Return a short stream wait or None once the shared deadline expires."""
+    if deadline_epoch is None:
+        return 0.1
+    remaining = deadline_epoch - time.time()
+    return min(0.1, remaining) if remaining > 0 else None
+
+
+def bounded_stream_output(
+    process: subprocess.Popen,
+    selector: selectors.BaseSelector,
+    deadline_epoch: Optional[int],
+) -> Tuple[Optional[int], bytearray]:
+    """Read bounded stdout, returning a terminal limit code or EOF marker."""
+    output = bytearray()
+    while True:
+        wait_seconds = stream_wait_seconds(deadline_epoch)
+        if wait_seconds is None:
+            return 124, bytearray()
+        events = selector.select(wait_seconds)
+        if not events:
+            continue
+        chunk = os.read(process.stdout.fileno(), 65536)
+        if not chunk:
+            return None, output
+        output.extend(chunk)
+        if len(output) > GIT_OUTPUT_MAX_BYTES:
+            return GIT_OUTPUT_LIMIT_RC, bytearray()
+
+
+def wait_for_process(
+    process: subprocess.Popen, deadline_epoch: Optional[int]
+) -> int:
+    """Wait for process completion without extending the shared deadline."""
+    wait_timeout = None
+    if deadline_epoch is not None:
+        wait_timeout = max(0.0, deadline_epoch - time.time())
+    try:
+        return process.wait(timeout=wait_timeout)
+    except subprocess.TimeoutExpired:
+        return 124
+
+
 def read_process_output(
     process: subprocess.Popen, deadline_epoch: Optional[int]
 ) -> Tuple[int, bytes]:
     """Capture bounded process output until EOF or the shared deadline."""
-    output = bytearray()
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
-    terminal_rc: Optional[int] = None
     try:
-        while terminal_rc is None:
-            remaining = None
-            if deadline_epoch is not None:
-                remaining = deadline_epoch - time.time()
-            if remaining is not None and remaining <= 0:
-                terminal_rc = 124
-                continue
-            wait_seconds = 0.1 if remaining is None else min(0.1, remaining)
-            events = selector.select(wait_seconds)
-            if not events:
-                continue
-            chunk = os.read(process.stdout.fileno(), 65536)
-            if not chunk:
-                break
-            output.extend(chunk)
-            if len(output) > GIT_OUTPUT_MAX_BYTES:
-                terminal_rc = GIT_OUTPUT_LIMIT_RC
+        terminal_rc, output = bounded_stream_output(process, selector, deadline_epoch)
         if terminal_rc is None:
-            wait_timeout = None
-            if deadline_epoch is not None:
-                wait_timeout = max(0.0, deadline_epoch - time.time())
-            try:
-                terminal_rc = process.wait(timeout=wait_timeout)
-            except subprocess.TimeoutExpired:
-                terminal_rc = 124
+            terminal_rc = wait_for_process(process, deadline_epoch)
         if terminal_rc in {124, GIT_OUTPUT_LIMIT_RC}:
             stop_process(process)
             output.clear()
