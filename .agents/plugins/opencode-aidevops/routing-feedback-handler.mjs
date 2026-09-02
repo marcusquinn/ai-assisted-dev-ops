@@ -18,7 +18,13 @@ function sessionIDFrom(event) {
 export function createRoutingFeedbackHandler({ client, isHeadless, getFeedback }) {
   const emitted = new Map();
 
-  return async function routingFeedbackHandler(input) {
+  const hasPending = (sessionID) => {
+    const summary = getFeedback(sessionID);
+    const fingerprint = routingFeedbackFingerprint(summary);
+    return Boolean(fingerprint && emitted.get(sessionID) !== fingerprint && formatRoutingFeedbackToast(summary));
+  };
+
+  const routingFeedbackHandler = async (input) => {
     if (isHeadless()) return;
     const event = eventFrom(input);
     const sessionID = sessionIDFrom(event);
@@ -44,4 +50,7 @@ export function createRoutingFeedbackHandler({ client, isHeadless, getFeedback }
     });
     emitted.set(sessionID, fingerprint);
   };
+
+  routingFeedbackHandler.hasPending = hasPending;
+  return routingFeedbackHandler;
 }

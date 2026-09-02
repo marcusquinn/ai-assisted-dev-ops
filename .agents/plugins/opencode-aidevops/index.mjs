@@ -59,6 +59,7 @@ import { createSessionRecoveryMarkerHandler } from "./session-recovery-marker.mj
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
 import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
+import { createSessionBoundaryAdvisory } from "./session-boundary-advisory.mjs";
 import { createProviderErrorHandler } from "./provider-error-diagnostics.mjs";
 import {
   appendConversationSystemContext,
@@ -514,6 +515,11 @@ export async function AidevopsPlugin({ directory, client }) {
   });
   const sessionTitleStatusHandler = createSessionTitleStatusHandler({ isHeadless });
   const routingFeedbackHandler = createRoutingFeedbackHandler({ client, isHeadless, getFeedback: getRoutingFeedback });
+  const sessionBoundaryAdvisory = createSessionBoundaryAdvisory({
+    client,
+    isHeadless,
+    hasCompetingToast: (sessionID) => routingFeedbackHandler.hasPending(sessionID),
+  });
   const providerErrorHandler = createProviderErrorHandler({
     client,
     isHeadless,
@@ -537,6 +543,7 @@ export async function AidevopsPlugin({ directory, client }) {
 
   recordPluginHealthStage("factory_initialized", {
     config_hook: true,
+    session_boundary_advisory: true,
     terminal_title_status: true,
   });
 
@@ -610,6 +617,7 @@ export async function AidevopsPlugin({ directory, client }) {
         permissionBroker.handleEvent(input).catch((err) => debugEventError("permission broker", err)),
         sessionTitleStatusHandler(input).catch((err) => debugEventError("title status handler", err)),
         routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),
+        sessionBoundaryAdvisory(input).catch((err) => debugEventError("session boundary advisory", err)),
         providerErrorHandler(input).catch((err) => debugEventError("provider error handler", err)),
         sessionTitleSuffixHandler(input).catch((err) => debugEventError("title suffix handler", err)),
         sessionTitleFallbackHandler(input).catch((err) => debugEventError("title fallback handler", err)),
