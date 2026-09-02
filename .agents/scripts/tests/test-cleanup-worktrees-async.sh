@@ -88,6 +88,7 @@ STUB
 	# Use literal return 0 / return 1 (not a variable) so the pre-commit
 	# return-statement ratchet doesn't flag the heredoc-embedded function.
 	local mock_ran_file="${TEST_DIR}/mock-ran"
+	local registry_reconcile_file="${TEST_DIR}/registry-reconcile-ran"
 	local maintenance_ran_file="${TEST_DIR}/maintenance-ran"
 	local maintenance_result="${MOCK_MAINTENANCE_RESULT:-{\"schema\":\"test\",\"outcome\":\"no-candidates\"}}"
 	if [[ "${MOCK_CLEANUP_SKIPPED:-0}" -eq 1 ]]; then
@@ -122,6 +123,10 @@ STUB
 CLEANUP_WORKTREES_REMOVED_COUNT="${MOCK_REMOVED_COUNT:-0}"
 CLEANUP_WORKTREES_ARCHIVED_COUNT="${MOCK_ARCHIVED_COUNT:-0}"
 CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT="${MOCK_ARCHIVE_FAILED_COUNT:-0}"
+prune_worktree_registry() {
+	printf 'REGISTRY_RECONCILE_RAN\n' >>"${registry_reconcile_file}"
+	return 0
+}
 STUB
 
 	# Copy the helper into stub_dir so that when it runs, BASH_SOURCE[0] points
@@ -156,7 +161,9 @@ STUB
 # ============================================================
 test_cold_start() {
 	local mock_ran="${TEST_DIR}/mock-ran"
+	local registry_reconcile_ran="${TEST_DIR}/registry-reconcile-ran"
 	rm -f "$mock_ran"
+	rm -f "$registry_reconcile_ran"
 
 	MOCK_CLEANUP_EXIT=0 run_helper_in_isolation || true
 
@@ -165,6 +172,12 @@ test_cold_start() {
 	else
 		print_result "cold-start: cleanup_worktrees runs on first invocation" 1 \
 			"mock-ran marker not created; cleanup_worktrees was not called"
+	fi
+	if [[ -f "$registry_reconcile_ran" ]] && grep -q "REGISTRY_RECONCILE_RAN" "$registry_reconcile_ran"; then
+		print_result "cold-start: registry ownership reconciles before cleanup" 0
+	else
+		print_result "cold-start: registry ownership reconciles before cleanup" 1 \
+			"registry reconciliation marker not created"
 	fi
 	return 0
 }

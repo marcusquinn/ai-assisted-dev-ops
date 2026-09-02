@@ -156,6 +156,28 @@ test_dead_owner_after_cooldown_unregisters() {
 	return 0
 }
 
+test_registry_prune_reconciles_expired_existing_owner() {
+	local wt_path
+	wt_path=$(make_worktree_dir "prune-expired-existing-owner")
+	register_dead_owner_fixture "$wt_path" "feature/prune-expired-existing-owner"
+	is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1
+	local registry_path
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET owner_dead_seen_at = '2020-01-01T00:00:00Z'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	export WORKTREE_OWNER_DEAD_COOLDOWN_MINUTES=1
+
+	local rc=0
+	prune_worktree_registry >/dev/null 2>&1 || rc=1
+	assert_owner_missing "$wt_path" || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	print_result "registry prune reconciles expired owner without deleting worktree" "$rc"
+	return 0
+}
+
 test_owner_pid_override_rejects_sql_payload() {
 	local wt_path
 	wt_path=$(make_worktree_dir "owner-pid-sql-payload")
@@ -234,10 +256,11 @@ test_reused_owner_delete_preserves_concurrent_replacement() {
 	register_worktree "$wt_path" "feature/reused-owner-delete-race" --owner-pid "$owner_pid"
 	local registry_path=""
 	local original_process_start=""
+	local original_boot_id=""
 	local original_created_at=""
 	registry_path=$(_wt_registry_lookup_path "$wt_path")
-	IFS='|' read -r original_process_start original_created_at <<<"$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
-        SELECT COALESCE(owner_process_start, ''), COALESCE(created_at, '')
+	IFS='|' read -r original_process_start original_boot_id original_created_at <<<"$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
+		SELECT COALESCE(owner_process_start, ''), COALESCE(owner_boot_id, ''), COALESCE(created_at, '')
         FROM worktree_owners WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
     ")"
 	sqlite3 "$WORKTREE_REGISTRY_DB" "
@@ -247,7 +270,7 @@ test_reused_owner_delete_preserves_concurrent_replacement() {
 
 	local rc=0
 	if _wt_unregister_owner_if_generation_matches "$registry_path" "$owner_pid" \
-		"$original_process_start" "$original_created_at"; then
+		"$original_process_start" "$original_boot_id" "$original_created_at"; then
 		rc=1
 	fi
 	local replacement_process_start=""
@@ -398,6 +421,12 @@ test_explicit_cleanup_lease_identity() {
 		"worktree-removal"; then
 		rc=1
 	fi
+	local lease_kind=""
+	lease_kind=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+		SELECT lease_kind FROM worktree_owners
+		WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
+	")
+	[[ "$lease_kind" == "cleanup" ]] || rc=1
 	if worktree_has_exact_owner_contract "$wt_path" "$$" "cleanup-replaced" \
 		"worktree-removal"; then
 		rc=1
@@ -473,9 +502,79 @@ test_legacy_registry_schema_migrates_on_owner_check() {
 	has_owner_comm=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'owner_comm';" 2>/dev/null || true)
 	local has_owner_process_start=""
 	has_owner_process_start=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'owner_process_start';" 2>/dev/null || true)
+	local has_owner_boot_id=""
+	has_owner_boot_id=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'owner_boot_id';" 2>/dev/null || true)
+	local has_lease_kind=""
+	has_lease_kind=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'lease_kind';" 2>/dev/null || true)
+	local has_heartbeat_at=""
+	has_heartbeat_at=$(sqlite3 "$WORKTREE_REGISTRY_DB" "SELECT 1 FROM pragma_table_info('worktree_owners') WHERE name = 'heartbeat_at';" 2>/dev/null || true)
 	[[ "$has_owner_comm" == "1" ]] || rc=1
 	[[ "$has_owner_process_start" == "1" ]] || rc=1
+	[[ "$has_owner_boot_id" == "1" ]] || rc=1
+	[[ "$has_lease_kind" == "1" ]] || rc=1
+	[[ "$has_heartbeat_at" == "1" ]] || rc=1
 	print_result "legacy registry schema migrates during owner check" "$rc"
+	return 0
+}
+
+test_registration_metadata_and_exact_heartbeat_renewal() {
+	local wt_path
+	wt_path=$(make_worktree_dir "registry-heartbeat-metadata")
+	register_worktree "$wt_path" "feature/registry-heartbeat-metadata" \
+		--owner-pid "$$" --session "test-session-identity" --lease-kind "interactive"
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	local metadata=""
+	metadata=$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
+		SELECT owner_session, lease_kind, COALESCE(owner_boot_id, ''), COALESCE(heartbeat_at, '')
+		FROM worktree_owners WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+	")
+	local owner_session="" lease_kind="" owner_boot_id="" heartbeat_at=""
+	IFS='|' read -r owner_session lease_kind owner_boot_id heartbeat_at <<<"$metadata"
+	local rc=0
+	[[ "$owner_session" == "test-session-identity" ]] || rc=1
+	[[ "$lease_kind" == "interactive" ]] || rc=1
+	[[ -n "$owner_boot_id" && -n "$heartbeat_at" ]] || rc=1
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+		UPDATE worktree_owners SET heartbeat_at = '2020-01-01T00:00:00Z'
+		WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+	"
+	renew_worktree_ownership "$wt_path" --owner-pid "$$" --session "test-session-identity" || rc=1
+	heartbeat_at=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+		SELECT heartbeat_at FROM worktree_owners WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+	")
+	[[ "$heartbeat_at" != "2020-01-01T00:00:00Z" ]] || rc=1
+	if renew_worktree_ownership "$wt_path" --owner-pid "$$" --session "wrong-session"; then
+		rc=1
+	fi
+	print_result "registration stores identity metadata and renews exact heartbeat" "$rc"
+	return 0
+}
+
+test_boot_identity_mismatch_unregisters_recycled_owner() {
+	local current_boot_id=""
+	current_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
+	if [[ -z "$current_boot_id" ]]; then
+		print_result "boot identity mismatch unregisters recycled owner" 0 "(boot identity unavailable)"
+		return 0
+	fi
+	local wt_path
+	wt_path=$(make_worktree_dir "boot-identity-mismatch")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/boot-identity-mismatch" --owner-pid "$owner_pid"
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+		UPDATE worktree_owners SET owner_boot_id = 'different-boot-identity'
+		WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+	"
+	local rc=0
+	if is_worktree_owned_by_others "$wt_path" >/dev/null 2>&1; then
+		rc=1
+	fi
+	assert_owner_missing "$wt_path" || rc=1
+	print_result "boot identity mismatch unregisters recycled owner" "$rc"
 	return 0
 }
 
@@ -550,6 +649,7 @@ main() {
 	test_dead_owner_first_pass_quarantines
 	test_dead_owner_within_cooldown_keeps_skip
 	test_dead_owner_after_cooldown_unregisters
+	test_registry_prune_reconciles_expired_existing_owner
 	test_owner_pid_override_rejects_sql_payload
 	test_recycled_live_pid_with_same_command_unregisters
 	test_matching_live_process_generation_still_blocks
@@ -561,6 +661,8 @@ main() {
 	test_explicit_cleanup_lease_identity
 	test_matching_pid_requires_matching_process_generation
 	test_legacy_registry_schema_migrates_on_owner_check
+	test_registration_metadata_and_exact_heartbeat_renewal
+	test_boot_identity_mismatch_unregisters_recycled_owner
 	test_inconclusive_dead_pid_probe_fails_closed
 	test_unavailable_process_generation_fails_closed
 	test_should_skip_cleanup_branch_merged_within_grace

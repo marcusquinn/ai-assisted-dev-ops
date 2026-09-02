@@ -115,6 +115,42 @@ _wt_process_start_token_for_pid() {
 	return 0
 }
 
+# Return a stable identity for the current operating-system boot. Linux exposes
+# a UUID directly; macOS/BSD expose the boot timestamp. An unavailable identity
+# remains empty so legacy/portable environments fail closed on PID evidence.
+_wt_current_boot_id() {
+	local boot_id=""
+	if [[ -r "/proc/sys/kernel/random/boot_id" ]]; then
+		boot_id=$(<"/proc/sys/kernel/random/boot_id") || boot_id=""
+	elif command -v sysctl >/dev/null 2>&1; then
+		boot_id=$(sysctl -n kern.boottime 2>/dev/null || true)
+	fi
+	[[ -n "$boot_id" ]] || return 1
+	printf '%s' "$boot_id"
+	return 0
+}
+
+_wt_default_lease_kind() {
+	local session_id="$1"
+	local batch_id="$2"
+	local task_id="$3"
+	case "$session_id" in
+	cleanup:*) printf '%s' "cleanup" ;;
+	dispatch-precreate-*) printf '%s' "dispatch-precreate" ;;
+	ses_*) printf '%s' "interactive" ;;
+	*)
+		if [[ -n "$batch_id" ]]; then
+			printf '%s' "worker"
+		elif [[ -n "$task_id" ]]; then
+			printf '%s' "task"
+		else
+			printf '%s' "owner"
+		fi
+		;;
+	esac
+	return 0
+}
+
 # Get the parent PID for a given PID.
 # Returns empty string if the PID does not exist or info is unavailable.
 # Arguments:
@@ -380,6 +416,9 @@ _init_registry_db() {
             task_id       TEXT DEFAULT '',
             owner_comm    TEXT DEFAULT '',
             owner_process_start TEXT DEFAULT '',
+            owner_boot_id TEXT DEFAULT '',
+            lease_kind TEXT DEFAULT 'owner',
+            heartbeat_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             owner_dead_seen_at TEXT DEFAULT '',
             created_at    TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
@@ -425,6 +464,37 @@ _init_registry_db() {
         WHERE name = 'owner_process_start';
     " 2>/dev/null) || return 1
 	[[ "$has_owner_process_start_column" == "1" ]] || return 1
+
+	local column_name=""
+	local column_default=""
+	for column_name in owner_boot_id lease_kind heartbeat_at; do
+		column_default=""
+		[[ "$column_name" == "lease_kind" ]] && column_default="owner"
+		local has_column=""
+		has_column=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+            SELECT 1 FROM pragma_table_info('worktree_owners')
+            WHERE name = '$column_name';
+        " 2>/dev/null || echo "")
+		if [[ -z "$has_column" ]]; then
+			sqlite3 "$WORKTREE_REGISTRY_DB" "
+                ALTER TABLE worktree_owners
+                ADD COLUMN $column_name TEXT DEFAULT '$column_default';
+            " 2>/dev/null || return 1
+		fi
+	done
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+		SET lease_kind = CASE
+				WHEN COALESCE(lease_kind, '') NOT IN ('', 'owner') THEN lease_kind
+				WHEN COALESCE(owner_session, '') GLOB 'cleanup:*' THEN 'cleanup'
+				WHEN COALESCE(owner_session, '') GLOB 'dispatch-precreate-*' THEN 'dispatch-precreate'
+				WHEN COALESCE(owner_session, '') GLOB 'ses_*' THEN 'interactive'
+				WHEN COALESCE(owner_batch, '') != '' THEN 'worker'
+				WHEN COALESCE(task_id, '') != '' THEN 'task'
+				ELSE 'owner'
+			END,
+            heartbeat_at = CASE WHEN COALESCE(heartbeat_at, '') = '' THEN COALESCE(created_at, '') ELSE heartbeat_at END;
+    " 2>/dev/null || return 1
 	return 0
 }
 
@@ -442,38 +512,55 @@ remove_canonical_worktree_owner() {
 # Arguments:
 #   $1 - worktree path (required)
 #   $2 - branch name (required)
-#   Flags: --task <id>, --batch <id>, --session <id>
+#   Flags: --task <id>, --batch <id>, --session <id>, --lease-kind <kind>
 register_worktree() {
 	local wt_path="$1"
 	local branch="$2"
 	shift 2
 
-	local task_id="" batch_id="" session_id="" owner_pid_override=""
+	local task_id="" batch_id="" session_id="" owner_pid_override="" lease_kind=""
 	while [[ $# -gt 0 ]]; do
-		case "$1" in
+		local option="$1"
+		shift
+		case "$option" in
 		--task)
-			task_id="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			task_id="$option_value"
+			shift
 			;;
 		--batch)
-			batch_id="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			batch_id="$option_value"
+			shift
 			;;
 		--session)
-			session_id="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			session_id="$option_value"
+			shift
 			;;
 		--owner-pid)
-			owner_pid_override="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			owner_pid_override="$option_value"
+			shift
 			;;
-		*) shift ;;
+		--lease-kind)
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			lease_kind="$option_value"
+			shift
+			;;
+		*) ;;
 		esac
 	done
 
 	if [[ -z "$session_id" ]]; then
 		session_id="${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
 	fi
+	[[ -n "$lease_kind" ]] || lease_kind=$(_wt_default_lease_kind "$session_id" "$batch_id" "$task_id")
 
 	local owner_pid
 	owner_pid=$(_resolve_worktree_owner_pid "$owner_pid_override")
@@ -481,6 +568,8 @@ register_worktree() {
 	owner_comm=$(_get_proc_comm "$owner_pid")
 	local owner_process_start=""
 	owner_process_start=$(_wt_process_start_token_for_pid "$owner_pid") || return 1
+	local owner_boot_id=""
+	owner_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
 
 	_init_registry_db || return 1
 	wt_path=$(_wt_registry_lookup_path "$wt_path")
@@ -493,7 +582,7 @@ register_worktree() {
 		_wt_sqlite_set_owner_pid_param "$owner_pid"
 		printf '%s\n' "
         INSERT OR REPLACE INTO worktree_owners
-			(worktree_path, branch, owner_pid, owner_session, owner_batch, task_id, owner_comm, owner_process_start, owner_dead_seen_at)
+			(worktree_path, branch, owner_pid, owner_session, owner_batch, task_id, owner_comm, owner_process_start, owner_boot_id, lease_kind, heartbeat_at, owner_dead_seen_at)
         VALUES
 		 ('$(_wt_sql_escape "$wt_path")',
 		  '$(_wt_sql_escape "$branch")',
@@ -503,6 +592,9 @@ register_worktree() {
 		  '$(_wt_sql_escape "$task_id")',
 		  '$(_wt_sql_escape "$owner_comm")',
 		  '$(_wt_sql_escape "$owner_process_start")',
+		  '$(_wt_sql_escape "$owner_boot_id")',
+		  '$(_wt_sql_escape "$lease_kind")',
+		  strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
 		  '');
     "
 	} | sqlite3 "$WORKTREE_REGISTRY_DB" 2>/dev/null || return 1
@@ -524,10 +616,12 @@ _wt_claim_owner_record() {
 	local session_id="$4"
 	local batch_id="$5"
 	local task_id="$6"
-	local owner_comm="$7" owner_process_start="$8" trusted_opencode_session="$9"
+	local owner_comm="$7" owner_process_start="$8" owner_boot_id="$9"
+	local lease_kind="${10}" trusted_opencode_session="${11}"
 
 	python3 - "$WORKTREE_REGISTRY_DB" "$wt_path" "$branch" "$owner_pid" "$session_id" \
-		"$batch_id" "$task_id" "$owner_comm" "$owner_process_start" "$trusted_opencode_session" <<'PY' || return 1
+		"$batch_id" "$task_id" "$owner_comm" "$owner_process_start" "$owner_boot_id" \
+		"$lease_kind" "$trusted_opencode_session" <<'PY' || return 1
 import os
 import sqlite3
 import sys
@@ -542,6 +636,8 @@ import sys
     task_id,
     owner_comm,
     owner_process_start,
+    owner_boot_id,
+    lease_kind,
     trusted_session_text,
 ) = sys.argv[1:]
 owner_pid = int(owner_pid_text)
@@ -575,7 +671,9 @@ try:
     connection.execute(
         """UPDATE worktree_owners
            SET branch = ?, owner_pid = ?, owner_session = ?, owner_batch = ?,
-               task_id = ?, owner_comm = ?, owner_process_start = ?, owner_dead_seen_at = ''
+               task_id = ?, owner_comm = ?, owner_process_start = ?, owner_boot_id = ?,
+               lease_kind = ?, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+               owner_dead_seen_at = ''
            WHERE worktree_path = ?
              AND (owner_pid = ? OR (? AND owner_session = ?))""",
         (
@@ -586,6 +684,8 @@ try:
             task_id,
             owner_comm,
             owner_process_start,
+            owner_boot_id,
+            lease_kind,
             worktree_path,
             owner_pid,
             trusted_session,
@@ -595,9 +695,11 @@ try:
     connection.execute(
         """INSERT OR IGNORE INTO worktree_owners
            (worktree_path, branch, owner_pid, owner_session, owner_batch,
-            task_id, owner_comm, owner_process_start, owner_dead_seen_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')""",
-        (worktree_path, branch, owner_pid, session_id, batch_id, task_id, owner_comm, owner_process_start),
+             task_id, owner_comm, owner_process_start, owner_boot_id, lease_kind,
+             heartbeat_at, owner_dead_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), '')""",
+        (worktree_path, branch, owner_pid, session_id, batch_id, task_id, owner_comm,
+         owner_process_start, owner_boot_id, lease_kind),
     )
     final_owner = connection.execute(
         """SELECT owner_pid, COALESCE(owner_session, '')
@@ -622,7 +724,8 @@ PY
 # Arguments:
 #   $1 - worktree path (required)
 #   $2 - branch name (required)
-#   Flags: --task <id>, --batch <id>, --session <id>, --owner-pid <pid>
+#   Flags: --task <id>, --batch <id>, --session <id>, --owner-pid <pid>,
+#          --lease-kind <kind>
 # Returns:
 #   0 - ownership acquired or already held by this owner_pid or OpenCode session
 #   1 - another live owner currently holds the worktree
@@ -631,32 +734,49 @@ claim_worktree_ownership() {
 	local branch="$2"
 	shift 2
 
-	local task_id="" batch_id="" session_id="" owner_pid_override=""
+	local task_id="" batch_id="" session_id="" owner_pid_override="" lease_kind=""
 	while [[ $# -gt 0 ]]; do
-		case "$1" in
+		local option="$1"
+		shift
+		case "$option" in
 		--task)
-			task_id="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			task_id="$option_value"
+			shift
 			;;
 		--batch)
-			batch_id="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			batch_id="$option_value"
+			shift
 			;;
 		--session)
-			session_id="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			session_id="$option_value"
+			shift
 			;;
 		--owner-pid)
-			owner_pid_override="${2:-}"
-			shift 2
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			owner_pid_override="$option_value"
+			shift
 			;;
-		*) shift ;;
+		--lease-kind)
+			[[ $# -ge 1 ]] || return 1
+			local option_value="$1"
+			lease_kind="$option_value"
+			shift
+			;;
+		*) ;;
 		esac
 	done
 
 	if [[ -z "$session_id" ]]; then
 		session_id="${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
 	fi
+	[[ -n "$lease_kind" ]] || lease_kind=$(_wt_default_lease_kind "$session_id" "$batch_id" "$task_id")
 
 	local owner_pid
 	owner_pid=$(_resolve_worktree_owner_pid "$owner_pid_override")
@@ -664,6 +784,8 @@ claim_worktree_ownership() {
 	owner_comm=$(_get_proc_comm "$owner_pid")
 	local owner_process_start=""
 	owner_process_start=$(_wt_process_start_token_for_pid "$owner_pid") || return 1
+	local owner_boot_id=""
+	owner_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
 	local trusted_opencode_session=0
 	_wt_is_trusted_opencode_session "$session_id" && trusted_opencode_session=1
 
@@ -676,7 +798,8 @@ claim_worktree_ownership() {
 
 	local final_owner_info=""
 	final_owner_info=$(_wt_claim_owner_record "$wt_path" "$branch" "$owner_pid" "$session_id" \
-		"$batch_id" "$task_id" "$owner_comm" "$owner_process_start" "$trusted_opencode_session") || return 1
+		"$batch_id" "$task_id" "$owner_comm" "$owner_process_start" "$owner_boot_id" \
+		"$lease_kind" "$trusted_opencode_session") || return 1
 
 	if [[ "${final_owner_info%%|*}" == "$owner_pid" ]]; then
 		return 0
@@ -702,6 +825,10 @@ _wt_compare_and_swap_owner_record() {
 	shift
 	local owner_process_start="$1"
 	shift
+	local owner_boot_id="$1"
+	shift
+	local lease_kind="$1"
+	shift
 	local expected_owner_pid="$1"
 	shift
 	local expected_session_id="$1"
@@ -716,6 +843,7 @@ _wt_compare_and_swap_owner_record() {
 
 	python3 - "$WORKTREE_REGISTRY_DB" "$wt_path" "$branch" "$owner_pid" \
 		"$session_id" "$batch_id" "$task_id" "$owner_comm" "$owner_process_start" \
+		"$owner_boot_id" "$lease_kind" \
 		"$expected_owner_pid" "$expected_session_id" "$expected_batch_id" \
 		"$expected_task_id" "$expected_created_at" "$expected_process_start" <<'PY' || return 1
 import sqlite3
@@ -731,6 +859,8 @@ import sys
     task_id,
     owner_comm,
     owner_process_start,
+    owner_boot_id,
+    lease_kind,
     expected_owner_pid_text,
     expected_session_id,
     expected_batch_id,
@@ -745,8 +875,9 @@ try:
     cursor = connection.execute(
         """UPDATE worktree_owners
            SET branch = ?, owner_pid = ?, owner_session = ?, owner_batch = ?,
-               task_id = ?, owner_comm = ?, owner_process_start = ?, owner_dead_seen_at = '',
-               created_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+               task_id = ?, owner_comm = ?, owner_process_start = ?, owner_boot_id = ?,
+               lease_kind = ?, heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+               owner_dead_seen_at = '', created_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
            WHERE worktree_path = ?
              AND owner_pid = ?
              AND COALESCE(owner_session, '') = ?
@@ -762,6 +893,8 @@ try:
             task_id,
             owner_comm,
             owner_process_start,
+            owner_boot_id,
+            lease_kind,
             worktree_path,
             int(expected_owner_pid_text),
             expected_session_id,
@@ -792,6 +925,7 @@ PY
 #   $1 - worktree path (required)
 #   $2 - branch name (required)
 #   Flags: --task <id>, --batch <id>, --session <id>, --owner-pid <pid>,
+#          --lease-kind <kind>,
 #          --expected-task <id>, --expected-batch <id>,
 #          --expected-session <id>, --expected-owner-pid <pid>,
 #          --expected-created-at <timestamp>, --expected-process-start <token>
@@ -808,6 +942,7 @@ transfer_worktree_ownership_if_expected() {
 	local batch_id=""
 	local session_id=""
 	local owner_pid_override=""
+	local lease_kind=""
 	local expected_task_id=""
 	local expected_batch_id=""
 	local expected_session_id=""
@@ -816,22 +951,25 @@ transfer_worktree_ownership_if_expected() {
 	local expected_process_start=""
 	while [[ $# -gt 0 ]]; do
 		local option="$1"
+		shift
 		case "$option" in
-		--task | --batch | --session | --owner-pid | --expected-task | --expected-batch | --expected-session | --expected-owner-pid | --expected-created-at | --expected-process-start)
-			[[ $# -ge 2 ]] || return 1
+		--task | --batch | --session | --owner-pid | --lease-kind | --expected-task | --expected-batch | --expected-session | --expected-owner-pid | --expected-created-at | --expected-process-start)
+			[[ $# -ge 1 ]] || return 1
 			;;
 		esac
+		local option_value="${1:-}"
 		case "$option" in
-		--task) task_id="$2"; shift 2 ;;
-		--batch) batch_id="$2"; shift 2 ;;
-		--session) session_id="$2"; shift 2 ;;
-		--owner-pid) owner_pid_override="$2"; shift 2 ;;
-		--expected-task) expected_task_id="$2"; shift 2 ;;
-		--expected-batch) expected_batch_id="$2"; shift 2 ;;
-		--expected-session) expected_session_id="$2"; shift 2 ;;
-		--expected-owner-pid) expected_owner_pid="$2"; shift 2 ;;
-		--expected-created-at) expected_created_at="$2"; shift 2 ;;
-		--expected-process-start) expected_process_start="$2"; shift 2 ;;
+		--task) task_id="$option_value"; shift ;;
+		--batch) batch_id="$option_value"; shift ;;
+		--session) session_id="$option_value"; shift ;;
+		--owner-pid) owner_pid_override="$option_value"; shift ;;
+		--lease-kind) lease_kind="$option_value"; shift ;;
+		--expected-task) expected_task_id="$option_value"; shift ;;
+		--expected-batch) expected_batch_id="$option_value"; shift ;;
+		--expected-session) expected_session_id="$option_value"; shift ;;
+		--expected-owner-pid) expected_owner_pid="$option_value"; shift ;;
+		--expected-created-at) expected_created_at="$option_value"; shift ;;
+		--expected-process-start) expected_process_start="$option_value"; shift ;;
 		*) return 1 ;;
 		esac
 	done
@@ -841,6 +979,7 @@ transfer_worktree_ownership_if_expected() {
 	if [[ -z "$session_id" ]]; then
 		session_id="${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
 	fi
+	[[ -n "$lease_kind" ]] || lease_kind=$(_wt_default_lease_kind "$session_id" "$batch_id" "$task_id")
 
 	local owner_pid=""
 	owner_pid=$(_resolve_worktree_owner_pid "$owner_pid_override")
@@ -849,6 +988,8 @@ transfer_worktree_ownership_if_expected() {
 	owner_comm=$(_get_proc_comm "$owner_pid")
 	local owner_process_start=""
 	owner_process_start=$(_wt_process_start_token_for_pid "$owner_pid") || return 1
+	local owner_boot_id=""
+	owner_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
 
 	_init_registry_db || return 1
 	wt_path=$(_wt_registry_lookup_path "$wt_path")
@@ -858,8 +999,53 @@ transfer_worktree_ownership_if_expected() {
 	fi
 	_wt_compare_and_swap_owner_record "$wt_path" "$branch" "$owner_pid" \
 		"$session_id" "$batch_id" "$task_id" "$owner_comm" "$owner_process_start" \
+		"$owner_boot_id" "$lease_kind" \
 		"$expected_owner_pid" "$expected_session_id" "$expected_batch_id" \
 		"$expected_task_id" "$expected_created_at" "$expected_process_start" || return 1
+	return 0
+}
+
+# Refresh liveness only for the exact current owner generation and session.
+# This never acquires or transfers ownership.
+renew_worktree_ownership() {
+	[[ $# -ge 1 ]] || return 1
+	local wt_path="$1"
+	shift
+	local owner_pid_override=""
+	local session_id=""
+	while [[ $# -gt 0 ]]; do
+		local option="$1"
+		shift
+		[[ $# -ge 1 ]] || return 1
+		local option_value="$1"
+		case "$option" in
+		--owner-pid) owner_pid_override="$option_value"; shift ;;
+		--session) session_id="$option_value"; shift ;;
+		*) return 1 ;;
+		esac
+	done
+	[[ -n "$session_id" ]] || session_id="${OPENCODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+	local owner_pid=""
+	owner_pid=$(_resolve_worktree_owner_pid "$owner_pid_override")
+	[[ "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+	local owner_process_start=""
+	owner_process_start=$(_wt_process_start_token_for_pid "$owner_pid") || return 1
+	local owner_boot_id=""
+	owner_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
+	_init_registry_db || return 1
+	wt_path=$(_wt_registry_lookup_path "$wt_path") || return 1
+	local changed="0"
+	changed=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET heartbeat_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), owner_dead_seen_at = ''
+        WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
+          AND owner_pid = ${owner_pid}
+          AND COALESCE(owner_session, '') = '$(_wt_sql_escape "$session_id")'
+          AND COALESCE(owner_process_start, '') = '$(_wt_sql_escape "$owner_process_start")'
+          AND COALESCE(owner_boot_id, '') = '$(_wt_sql_escape "$owner_boot_id")';
+        SELECT changes();
+    " 2>/dev/null) || return 1
+	[[ "$changed" == "1" ]] || return 1
 	return 0
 }
 
@@ -1139,14 +1325,16 @@ _wt_owner_comm_for_path() {
 	return 0
 }
 
-# Return the PID, process-generation token, and creation timestamp from one
+# Return the PID, process-generation token, boot identity, and creation timestamp
+# from one
 # registry snapshot. Read failures are ownership-unknown and fail closed.
 _wt_owner_generation_contract_for_path() {
 	local wt_path="$1"
 	local separator=$'\x1f'
 	local owner_contract=""
 	owner_contract=$(sqlite3 -separator "$separator" "$WORKTREE_REGISTRY_DB" "
-        SELECT owner_pid, COALESCE(owner_process_start, ''), COALESCE(created_at, '')
+        SELECT owner_pid, COALESCE(owner_process_start, ''),
+               COALESCE(owner_boot_id, ''), COALESCE(created_at, '')
         FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")';
 	" 2>/dev/null) || return 1
@@ -1157,18 +1345,35 @@ _wt_owner_generation_contract_for_path() {
 # Delete only the exact owner generation that was inspected. A concurrent
 # registration or transfer changes the token or timestamp and remains intact.
 _wt_unregister_owner_if_generation_matches() {
+	[[ $# -eq 4 || $# -eq 5 ]] || return 1
 	local wt_path="$1"
 	local expected_owner_pid="$2"
 	local expected_process_start="$3"
-	local expected_created_at="$4"
+	local expected_boot_id=""
+	local expected_created_at=""
+	[[ "$expected_owner_pid" =~ ^[0-9]+$ ]] || return 1
+	if [[ $# -eq 5 ]]; then
+		expected_boot_id="$4"
+		expected_created_at="$5"
+	else
+		expected_created_at="$4"
+		expected_boot_id=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
+			SELECT COALESCE(owner_boot_id, '') FROM worktree_owners
+			WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
+			  AND owner_pid = ${expected_owner_pid}
+			  AND COALESCE(owner_process_start, '') = '$(_wt_sql_escape "$expected_process_start")'
+			  AND COALESCE(created_at, '') = '$(_wt_sql_escape "$expected_created_at")';
+		" 2>/dev/null) || return 1
+	fi
 	local changed="0"
 
-	[[ "$expected_owner_pid" =~ ^[0-9]+$ && -n "$expected_created_at" ]] || return 1
+	[[ -n "$expected_created_at" ]] || return 1
 	changed=$(sqlite3 "$WORKTREE_REGISTRY_DB" "
         DELETE FROM worktree_owners
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
           AND owner_pid = ${expected_owner_pid}
           AND COALESCE(owner_process_start, '') = '$(_wt_sql_escape "$expected_process_start")'
+          AND COALESCE(owner_boot_id, '') = '$(_wt_sql_escape "$expected_boot_id")'
           AND COALESCE(created_at, '') = '$(_wt_sql_escape "$expected_created_at")';
         SELECT changes();
 	" 2>/dev/null) || return 1
@@ -1207,10 +1412,16 @@ PY
 _wt_owner_live_pid_reused_or_untrusted() {
 	local owner_pid="$1"
 	local registered_process_start="$2"
-	local registered_created_at="$3"
+	local registered_boot_id="$3"
+	local registered_created_at="$4"
 	local current_process_start=""
+	local current_boot_id=""
 
 	current_process_start=$(_wt_process_start_token_for_pid "$owner_pid") || return 1
+	current_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
+	if [[ -n "$registered_boot_id" && -n "$current_boot_id" && "$registered_boot_id" != "$current_boot_id" ]]; then
+		return 0
+	fi
 	if [[ -n "$registered_process_start" ]]; then
 		[[ "$registered_process_start" != "$current_process_start" ]]
 		return $?
@@ -1265,17 +1476,21 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
 	local owner_contract=""
 	local owner_pid=""
 	local registered_process_start=""
+	local registered_boot_id=""
 	local registered_created_at=""
 	owner_contract=$(_wt_owner_generation_contract_for_path "$wt_path") || return 0
-	IFS=$'\x1f' read -r owner_pid registered_process_start registered_created_at <<<"$owner_contract"
+	IFS=$'\x1f' read -r owner_pid registered_process_start registered_boot_id registered_created_at <<<"$owner_contract"
 
 	# No owner registered
 	[[ -z "$owner_pid" ]] && return 1
 
 	if [[ "$owner_pid" == "$my_pid" ]]; then
 		local current_process_start=""
+		local current_boot_id=""
 		current_process_start=$(_wt_process_start_token_for_pid "$my_pid") || return 0
-		if [[ -n "$registered_process_start" && "$registered_process_start" == "$current_process_start" ]]; then
+		current_boot_id=$(_wt_current_boot_id 2>/dev/null || true)
+		if [[ -n "$registered_process_start" && "$registered_process_start" == "$current_process_start" ]] &&
+			{ [[ -z "$registered_boot_id" ]] || [[ -z "$current_boot_id" ]] || [[ "$registered_boot_id" == "$current_boot_id" ]]; }; then
 			return 1
 		fi
 	fi
@@ -1287,7 +1502,7 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
 		_wt_mark_owner_dead_seen "$wt_path"
 		if _wt_owner_dead_cooldown_expired "$wt_path"; then
 			if _wt_unregister_owner_if_generation_matches "$wt_path" "$owner_pid" \
-				"$registered_process_start" "$registered_created_at"; then
+				"$registered_process_start" "$registered_boot_id" "$registered_created_at"; then
 				return 1
 			fi
 		fi
@@ -1300,7 +1515,7 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
 	if [[ -z "$registered_process_start" ]] &&
 		_wt_legacy_dispatch_precreate_systemd_owner_expired "$wt_path" "$owner_pid"; then
 		if _wt_unregister_owner_if_generation_matches "$wt_path" "$owner_pid" \
-			"$registered_process_start" "$registered_created_at"; then
+			"$registered_process_start" "$registered_boot_id" "$registered_created_at"; then
 			return 1
 		fi
 		return 0
@@ -1309,9 +1524,9 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
 	# Owner recovered or PID was reused while still registered; clear any stale
 	# marker so a later dead observation gets a fresh cooldown window.
 	if _wt_owner_live_pid_reused_or_untrusted "$owner_pid" "$registered_process_start" \
-		"$registered_created_at"; then
+		"$registered_boot_id" "$registered_created_at"; then
 		if _wt_unregister_owner_if_generation_matches "$wt_path" "$owner_pid" \
-			"$registered_process_start" "$registered_created_at"; then
+			"$registered_process_start" "$registered_boot_id" "$registered_created_at"; then
 			return 1
 		fi
 		return 0
@@ -1323,6 +1538,7 @@ _wt_is_worktree_owned_by_others_for_resolved_pid() {
         WHERE worktree_path = '$(_wt_sql_escape "$wt_path")'
           AND owner_pid = ${owner_pid}
           AND COALESCE(owner_process_start, '') = '$(_wt_sql_escape "$registered_process_start")'
+          AND COALESCE(owner_boot_id, '') = '$(_wt_sql_escape "$registered_boot_id")'
           AND COALESCE(created_at, '') = '$(_wt_sql_escape "$registered_created_at")'
           AND COALESCE(owner_dead_seen_at, '') != '';
     " 2>/dev/null || true
@@ -1423,9 +1639,40 @@ _wt_registry_entry_count() {
 	return 0
 }
 
-# Prune stale registry entries (dead PIDs, missing directories, corrupted paths)
+# Reconcile ownership rows whose worktree directories still exist. Missing
+# directories are handled by the batch path below; surviving worktrees need the
+# generation-aware owner checks so dead runtimes and recycled PIDs do not leave
+# permanent registry locks. This updates ownership metadata only and never
+# removes a worktree directory or bypasses downstream cleanup gates.
+_wt_registry_reconcile_existing_owners() {
+	local reconcile_limit="${WORKTREE_REGISTRY_RECONCILE_LIMIT:-500}"
+	[[ "$reconcile_limit" =~ ^[1-9][0-9]*$ ]] || reconcile_limit=500
+
+	local entries=""
+	entries=$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
+        SELECT worktree_path, owner_pid
+        FROM worktree_owners
+        ORDER BY CASE WHEN COALESCE(owner_dead_seen_at, '') = '' THEN 1 ELSE 0 END,
+                 owner_dead_seen_at, created_at
+        LIMIT ${reconcile_limit};
+    " 2>/dev/null || true)
+	[[ -z "$entries" ]] && return 0
+
+	local my_pid="$$"
+	local wt_path=""
+	local _owner_pid=""
+	while IFS='|' read -r wt_path _owner_pid; do
+		[[ -n "$wt_path" && -d "$wt_path" ]] || continue
+		_wt_is_worktree_owned_by_others_for_resolved_pid "$wt_path" "$my_pid" \
+			>/dev/null 2>&1 || true
+	done <<<"$entries"
+	return 0
+}
+
+# Prune stale registry entries and reconcile dead or recycled owners.
 # (t197) Enhanced to handle:
-#   - Dead PIDs with missing directories
+#   - Dead or recycled owner processes for surviving worktree directories
+#   - Missing worktree directories
 #   - Paths with ANSI escape codes (corrupted entries)
 #   - Test artifacts in /tmp or /var/folders
 prune_worktree_registry() {
@@ -1475,6 +1722,11 @@ prune_worktree_registry() {
 			[[ -n "${VERBOSE:-}" ]] && _wt_registry_print_pruned_entries "$stale_entries"
 		fi
 	fi
+
+	# Existing directories may still have abandoned ownership after runtime
+	# crashes. Reconcile those rows independently; deletion remains the normal
+	# guarded cleanup pipeline's responsibility.
+	_wt_registry_reconcile_existing_owners || return 1
 
 	[[ -n "${VERBOSE:-}" ]] && echo "Pruned $pruned_count entries total"
 	return 0

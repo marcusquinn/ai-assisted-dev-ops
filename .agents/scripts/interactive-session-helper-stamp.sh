@@ -91,6 +91,9 @@ _isc_write_stamp() {
 		_isc_warn "failed to write stamp: $stamp_file"
 		return 0
 	}
+	if [[ -n "$worktree_path" ]] && declare -F renew_worktree_ownership >/dev/null 2>&1; then
+		renew_worktree_ownership "$worktree_path" --owner-pid "$owner_pid" >/dev/null 2>&1 || true
+	fi
 	return 0
 }
 
@@ -101,6 +104,31 @@ _isc_delete_stamp() {
 	local stamp_file
 	stamp_file=$(_isc_stamp_path "$issue" "$slug")
 	rm -f "$stamp_file" 2>/dev/null || true
+	return 0
+}
+
+# Cross-host PIDs cannot be verified locally, so remote authority is bounded by
+# a renewable stamp age. Return 0 while fresh, 1 when conclusively expired, and
+# 2 when timestamp parsing is unavailable or malformed (callers fail closed).
+_isc_cross_host_claim_freshness() {
+	local claimed_at="$1"
+	local ttl_hours="${AIDEVOPS_CROSS_HOST_CLAIM_TTL_HOURS:-168}"
+	[[ "$ttl_hours" =~ ^[1-9][0-9]*$ ]] || ttl_hours=168
+	[[ -n "$claimed_at" ]] || return 2
+
+	local claimed_epoch=""
+	claimed_epoch=$(date -u -d "$claimed_at" '+%s' 2>/dev/null || true)
+	if [[ -z "$claimed_epoch" ]]; then
+		claimed_epoch=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$claimed_at" '+%s' 2>/dev/null || true)
+	fi
+	[[ "$claimed_epoch" =~ ^[0-9]+$ ]] || return 2
+
+	local now_epoch=""
+	now_epoch=$(date +%s 2>/dev/null || true)
+	[[ "$now_epoch" =~ ^[0-9]+$ ]] || return 2
+	if [[ $((now_epoch - claimed_epoch)) -gt $((ttl_hours * 3600)) ]]; then
+		return 1
+	fi
 	return 0
 }
 
@@ -305,19 +333,21 @@ _isc_branch_has_active_claim() {
 	[[ -f "$stamp_file" ]] || return 1
 
 	# Read stamp fields. Treat any jq error as "no claim" (fail-open).
-	local pid hostname stored_hash
+	local pid hostname stored_hash claimed_at
 	pid=$(jq -r '.pid // empty' "$stamp_file" 2>/dev/null || echo "")
 	hostname=$(jq -r '.hostname // empty' "$stamp_file" 2>/dev/null || echo "")
 	stored_hash=$(jq -r '.owner_argv_hash // empty' "$stamp_file" 2>/dev/null || echo "")
+	claimed_at=$(jq -r '.claimed_at // empty' "$stamp_file" 2>/dev/null || echo "")
 
-	# Cross-host stamps cannot have their PID verified. Other hosts are
-	# assumed to be the authority for their own claims — if a remote
-	# session is alive on a different machine, we still want to skip
-	# cleanup of its worktree; if it's dead, scan-stale on that host
-	# will reap it. Trust the stamp existence.
+	# Cross-host stamps cannot have their PID verified. Trust remote authority
+	# only within a bounded renewable lease. Malformed timestamps remain active
+	# (fail closed); only a conclusively expired timestamp releases this gate.
 	local local_host
 	local_host=$(_isc_hostname_or_fallback)
 	if [[ -n "$hostname" && "$hostname" != "$local_host" ]]; then
+		local freshness_rc=0
+		_isc_cross_host_claim_freshness "$claimed_at" || freshness_rc=$?
+		[[ "$freshness_rc" -eq 1 ]] && return 1
 		return 0
 	fi
 

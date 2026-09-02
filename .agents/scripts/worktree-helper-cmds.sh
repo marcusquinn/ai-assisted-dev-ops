@@ -581,18 +581,21 @@ cmd_registry() {
 			echo "No registry entries"
 			return 0
 		}
+		_init_registry_db || return 1
 		echo -e "${BOLD}Worktree Ownership Registry:${NC}"
 		echo ""
 		local entries
 		entries=$(sqlite3 -separator '|' "$WORKTREE_REGISTRY_DB" "
-                SELECT worktree_path, branch, owner_pid, owner_session, owner_batch, task_id, created_at
+				SELECT worktree_path, branch, owner_pid, owner_session, owner_batch, task_id,
+				       COALESCE(lease_kind, ''), COALESCE(heartbeat_at, ''),
+				       COALESCE(owner_boot_id, ''), created_at
                 FROM worktree_owners ORDER BY created_at DESC;
             " 2>/dev/null || echo "")
 		if [[ -z "$entries" ]]; then
 			echo "  (empty)"
 			return 0
 		fi
-		while IFS='|' read -r wt_path branch pid session batch task created; do
+		while IFS='|' read -r wt_path branch pid session batch task lease_kind heartbeat boot_id created; do
 			local alive_status="${RED}dead${NC}"
 			if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
 				alive_status="${GREEN}alive${NC}"
@@ -603,6 +606,9 @@ cmd_registry() {
 			[[ -n "$session" ]] && echo -e "    Session: $session"
 			[[ -n "$batch" ]] && echo -e "    Batch:   $batch"
 			[[ -n "$task" ]] && echo -e "    Task:    $task"
+			[[ -n "$lease_kind" ]] && echo -e "    Lease:   $lease_kind"
+			[[ -n "$heartbeat" ]] && echo -e "    Heartbeat: $heartbeat"
+			[[ -n "$boot_id" ]] && echo -e "    Boot:    $boot_id"
 			echo -e "    Created: $created"
 			echo ""
 		done <<<"$entries"
@@ -695,11 +701,12 @@ COMMANDS
                          Apply only exact candidates from a supported plan after
                          locked revalidation, staging, and receipt publication.
 
-  registry [list|prune]  View or prune the ownership registry (t189, t197)
-                         list: Show all registered worktrees with ownership info
-                         prune [-v|--verbose]: Clean dead/corrupted entries:
-                           - Dead PIDs with missing directories
-                           - Paths with ANSI escape codes
+	registry [list|prune]  View or prune the ownership registry (t189, t197)
+	                         list: Show all registered worktrees with ownership info
+	                         prune [-v|--verbose]: Clean dead/corrupted entries:
+	                           - Dead/recycled owners after a safety cooldown
+	                           - Missing worktree directories
+	                           - Paths with ANSI escape codes
                            - Test artifacts in /tmp or /var/folders
 
   help                   Show this help

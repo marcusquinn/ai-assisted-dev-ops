@@ -254,11 +254,13 @@ test_no_stamp
 test_cross_host_active() {
 	local issue=99004
 	local stamp="${CLAIM_DIR}/testowner-testrepo-${issue}.json"
-	jq -n '{
+	local claimed_at
+	claimed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	jq -n --arg claimed_at "$claimed_at" '{
 		issue: 99004,
 		slug: "testowner/testrepo",
 		worktree_path: "/tmp/wt-claim-99004",
-		claimed_at: "2026-04-29T00:00:00Z",
+		claimed_at: $claimed_at,
 		pid: 999998,
 		hostname: "different-host-machine-xyz",
 		user: "testuser"
@@ -274,6 +276,31 @@ test_cross_host_active() {
 	fi
 }
 test_cross_host_active
+
+test_cross_host_expired() {
+	local issue=99005
+	local stamp="${CLAIM_DIR}/testowner-testrepo-${issue}.json"
+	jq -n '{
+		issue: 99005,
+		slug: "testowner/testrepo",
+		worktree_path: "/tmp/wt-claim-99005",
+		claimed_at: "2020-01-01T00:00:00Z",
+		pid: 999997,
+		hostname: "different-host-machine-xyz",
+		user: "testuser"
+	}' >"$stamp"
+
+	AIDEVOPS_CROSS_HOST_CLAIM_TTL_HOURS=24 \
+		_isc_branch_has_active_claim "feature/gh-${issue}-test" --worktree "$FAKE_REPO" >/dev/null 2>&1
+	local rc=$?
+	rm -f "$stamp"
+	if [[ $rc -eq 1 ]]; then
+		print_result "expired cross-host stamp → no claim (exit 1)" 0
+	else
+		print_result "expired cross-host stamp → no claim (exit 1)" 1 "(rc=$rc)"
+	fi
+}
+test_cross_host_expired
 
 # =============================================================================
 # Test 6 — unparseable branch (no issue derivable) → no claim
