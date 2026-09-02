@@ -7,7 +7,7 @@
 import { existsSync } from "fs";
 import { execFileSync, execFile } from "child_process";
 import { join } from "path";
-import { recordToolCall } from "./observability.mjs";
+import { recordToolCall, toolCallSucceeded } from "./observability.mjs";
 import {
   consumeIntentRecord,
   peekIntentSource,
@@ -21,7 +21,15 @@ import {
   isReadTool,
   secretReadBlockReason,
 } from "./quality-hooks-secret-read.mjs";
-import { checkSecretReadWithApproval } from "./source-access-approval.mjs";
+import {
+  SOURCE_ACCESS_REASON,
+  checkSecretReadWithApproval,
+  createSourceAccessMutationProvenance,
+} from "./source-access-approval.mjs";
+import {
+  beginObservedSourceMutation,
+  finishObservedSourceAccess,
+} from "./source-access-request.mjs";
 import { checkResearchStagingAccess } from "./research-staging-guard.mjs";
 import {
   bindActiveScriptsDir,
@@ -268,20 +276,66 @@ function enforceDirectFileMutationSafety(ctx, input, output) {
   checkCanonicalWriteSafetyGate(filePath, ctx.scriptsDir, writeCwd, patchText);
 }
 
+function prepareToolIntent(log, input, output) {
+  const callID = input.callID || "";
+  if (!callID) return { callID, intent: "" };
+  const prepared = prepareIntent(callID, output.args, input.tool);
+  output.args = prepared.args;
+  const intent = prepared.intent || "";
+  if (intent) {
+    log("INFO", `Intent [${input.tool}] callID=${callID} source=${peekIntentSource(callID)}: ${intent}`);
+  }
+  return { callID, intent };
+}
+
+function enforceBashToolSafety(ctx, log, input, output, sessionId) {
+  if (!isBashTool(input.tool)) return;
+  const bashArgs = output.args ?? {};
+  const bashCwd = bashArgs.workdir || bashArgs.cwd || process.cwd();
+  bashArgs.command = checkCanonicalGitSafetyGate(
+    bashArgs.command || "",
+    ctx.scriptsDir,
+    bashCwd,
+    {
+      activeScriptsDir: ctx.activeScriptsDir,
+      activeScriptsDirBinding: ctx.activeScriptsDirBinding,
+    },
+  );
+  const signatureModel = ctx.resolveSessionModel(sessionId);
+  checkSignatureFooterGate(bashArgs.command || "", log, ctx.scriptsDir, output, {
+    model: signatureModel,
+    useProcessModelFallback: false,
+  });
+}
+
+function enforceReadAndFileQuality(ctx, log, input, output, sessionId) {
+  checkSecretReadWithApproval({
+    tool: input.tool,
+    args: output.args || {},
+    sessionId,
+    scriptsDir: ctx.scriptsDir,
+    repositoryDir: ctx.repositoryDir,
+    callId: input.callID || "",
+    provenance: ctx.sourceAccessProvenance,
+    isReadTool,
+    secretReadBlockReason,
+    checkSecretReadGate,
+    log,
+    verify: ctx.verifySourceAccessReceipt,
+    brokerMatches: ctx.sourceAccessBrokerMatches,
+    requestRun: ctx.sourceAccessRequestRun,
+  });
+  checkResearchStagingAccess(input.tool, output.args || {});
+  if (!isWriteOrEditTool(input.tool)) return;
+  const filePath = output.args?.filePath || output.args?.file_path || "";
+  if (filePath) runFileQualityGate(ctx, filePath, output.args);
+}
+
 function handleToolBefore(ctx, log, input, output) {
   ctx.continuationGuard?.beforeTool(input, output);
   enforceDirectFileMutationSafety(ctx, input, output);
 
-  const callID = input.callID || "";
-  let intent = "";
-  if (callID) {
-    const prepared = prepareIntent(callID, output.args, input.tool);
-    output.args = prepared.args;
-    intent = prepared.intent || "";
-    if (intent) {
-      log("INFO", `Intent [${input.tool}] callID=${callID} source=${peekIntentSource(callID)}: ${intent}`);
-    }
-  }
+  const { callID, intent } = prepareToolIntent(log, input, output);
 
   // t2184: pair with tool.execute.after to compute duration_ms for the
   // tool_calls INSERT. recordToolStart no-ops on empty callID.
@@ -300,46 +354,34 @@ function handleToolBefore(ctx, log, input, output) {
   }).catch(() => {});
 
   const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
-  if (isBashTool(input.tool)) {
-    const bashArgs = output.args ?? {};
-    const bashCwd = bashArgs.workdir || bashArgs.cwd || process.cwd();
-    bashArgs.command = checkCanonicalGitSafetyGate(
-      bashArgs.command || "",
-      ctx.scriptsDir,
-      bashCwd,
-      {
-        activeScriptsDir: ctx.activeScriptsDir,
-        activeScriptsDirBinding: ctx.activeScriptsDirBinding,
-      },
-    );
-    // t2685: pass scriptsDir + output so the hook can repair (mutate
-    // output.args.command) or block (throw) as appropriate.
-    const signatureModel = ctx.resolveSessionModel(sessionId);
-    checkSignatureFooterGate(bashArgs.command || "", log, ctx.scriptsDir, output, {
-      model: signatureModel,
-      useProcessModelFallback: false,
-    });
-  }
-
-  checkSecretReadWithApproval({
-    tool: input.tool,
-    args: output.args || {},
-    sessionId,
-    scriptsDir: ctx.scriptsDir,
+  beginObservedSourceMutation({
     repositoryDir: ctx.repositoryDir,
-    isReadTool,
-    secretReadBlockReason,
-    checkSecretReadGate,
-    log,
-  });
-  checkResearchStagingAccess(input.tool, output.args || {});
+    sessionId,
+    sourceAccessProvenance: ctx.sourceAccessProvenance,
+    sourceAccessReason: ctx.sourceAccessReason,
+  }, input, output);
+  enforceBashToolSafety(ctx, log, input, output, sessionId);
+  enforceReadAndFileQuality(ctx, log, input, output, sessionId);
+}
 
-  if (!isWriteOrEditTool(input.tool)) return;
+function scrubObservedToolOutput(log, toolName, output) {
+  const rawOutput = output.output;
+  if (rawOutput === undefined) return;
+  const { output: scrubbedOutput, redacted } = scrubToolOutput(rawOutput);
+  if (!redacted) return;
+  output.output = scrubbedOutput;
+  log("WARN", `[credential-scrub] redacted credential token(s) from ${toolName} output`);
+}
 
-  const filePath = output.args?.filePath || output.args?.file_path || "";
-  if (filePath) {
-    runFileQualityGate(ctx, filePath, output.args);
+function trackObservedToolEffects(ctx, log, toolName, input, output) {
+  const continuationResult = ctx.continuationGuard?.afterTool(input, output);
+  if (continuationResult?.replan) {
+    log("WARN", `[session-continuation] repeated ${toolName} failure requires replanning`);
   }
+  if (isBashTool(toolName)) trackBashOperation(ctx, output.title || "", output.output || "");
+  if (!isWriteOrEditTool(toolName)) return;
+  const filePath = output.metadata?.filePath || "";
+  if (filePath) log("INFO", `File modified: ${filePath} via ${toolName}`);
 }
 
 /**
@@ -352,35 +394,20 @@ function handleToolBefore(ctx, log, input, output) {
  */
 function handleToolAfter(ctx, log, scriptsDir, input, output) {
   const toolName = input.tool || "";
+  const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
+
+  finishObservedSourceAccess({
+    sessionId,
+    sourceAccessProvenance: ctx.sourceAccessProvenance,
+    sourceAccessReason: ctx.sourceAccessReason,
+  }, input, output, toolCallSucceeded);
 
   // GH#20207 (t2458 Layer 4): scrub credentials from tool output before
   // persisting to the SQLite transcript store or sending to the model.
   // Applies to all tools — credentials can arrive via user scripts, third-party
   // CLIs, or runtime error backtraces, not just framework helpers.
-  const rawOutput = output.output;
-  if (rawOutput !== undefined) {
-    const { output: scrubbedOutput, redacted } = scrubToolOutput(rawOutput);
-    if (redacted) {
-      output.output = scrubbedOutput;
-      log("WARN", `[credential-scrub] redacted credential token(s) from ${toolName} output`);
-    }
-  }
-
-  const continuationResult = ctx.continuationGuard?.afterTool(input, output);
-  if (continuationResult?.replan) {
-    log("WARN", `[session-continuation] repeated ${toolName} failure requires replanning`);
-  }
-
-  if (isBashTool(toolName)) {
-    trackBashOperation(ctx, output.title || "", output.output || "");
-  }
-
-  if (isWriteOrEditTool(toolName)) {
-    const filePath = output.metadata?.filePath || "";
-    if (filePath) {
-      log("INFO", `File modified: ${filePath} via ${toolName}`);
-    }
-  }
+  scrubObservedToolOutput(log, toolName, output);
+  trackObservedToolEffects(ctx, log, toolName, input, output);
 
   const intentRecord = consumeIntentRecord(input.callID || "");
   // t2184: consumeToolDuration returns null when the callID wasn't paired
@@ -398,6 +425,13 @@ export function createQualityHooks(deps) {
   const activeScriptsDir = deps.activeScriptsDir ?? scriptsDir;
   const activeScriptsDirBinding = bindActiveScriptsDir(activeScriptsDir, scriptsDir);
   const qualityLogPath = join(logsDir, "quality-hooks.log");
+  const sourceAccessProvenance = createSourceAccessMutationProvenance({
+    repositoryDir: deps.repositoryDir,
+    verify: deps.verifySourceAccessReceipt,
+    git: deps.git,
+    gitRun: deps.gitRun,
+    now: deps.now,
+  });
   // t2120: qualityDetailLog (in quality-logging.mjs) reads ctx.detailLogPath
   // and ctx.detailMaxBytes. Previously these were never populated here, so
   // every call to logQualityGateResult → qualityDetailLog threw
@@ -419,6 +453,11 @@ export function createQualityHooks(deps) {
     detailMaxBytes,
     repositoryDir: deps.repositoryDir,
     continuationGuard,
+    sourceAccessProvenance,
+    sourceAccessReason: SOURCE_ACCESS_REASON,
+    verifySourceAccessReceipt: deps.verifySourceAccessReceipt,
+    sourceAccessBrokerMatches: deps.sourceAccessBrokerMatches,
+    sourceAccessRequestRun: deps.sourceAccessRequestRun,
     resolveSessionModel: typeof deps.resolveSessionModel === "function"
       ? deps.resolveSessionModel
       : () => "",
