@@ -123,7 +123,13 @@ test("pre-tool bash handling tolerates a missing args payload", async () => {
 
 test("pre-tool handling replaces args when intent cannot be deleted in place", async () => {
   const tempDir = mkdtempSync(join(tmpdir(), "aidevops-immutable-tool-args-"));
-  const args = { todos: [] };
+  const todos = [];
+  const getTodos = () => todos;
+  const args = {};
+  Object.defineProperty(args, "todos", {
+    enumerable: true,
+    get: getTodos,
+  });
   Object.defineProperty(args, "agent__intent", {
     configurable: false,
     enumerable: true,
@@ -139,7 +145,8 @@ test("pre-tool handling replaces args when intent cannot be deleted in place", a
     );
 
     assert.notEqual(output.args, args);
-    assert.deepEqual(output.args, { todos: [] });
+    assert.equal(Object.getOwnPropertyDescriptor(output.args, "todos").get, getTodos);
+    assert.equal(output.args.todos, todos);
     assert.ok(!Object.prototype.hasOwnProperty.call(output.args, "agent__intent"));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

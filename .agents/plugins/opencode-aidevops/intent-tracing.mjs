@@ -70,9 +70,10 @@ function storeIntentRecord(callID, record) {
 function cloneArgsWithoutIntent(args) {
   const clone = {};
   const descriptors = Object.getOwnPropertyDescriptors(args);
-  for (const [key, descriptor] of Object.entries(descriptors)) {
-    if (key === INTENT_FIELD || !descriptor.enumerable || !("value" in descriptor)) continue;
-    clone[key] = descriptor.value;
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (key === INTENT_FIELD || !descriptor.enumerable) continue;
+    Object.defineProperty(clone, key, descriptor);
   }
   return clone;
 }
