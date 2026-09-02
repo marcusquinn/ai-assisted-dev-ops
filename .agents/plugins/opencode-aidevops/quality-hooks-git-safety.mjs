@@ -50,13 +50,19 @@ function normaliseToolName(tool) {
 }
 
 export function isDirectFileMutationTool(tool) {
-  return [
-    "write", "write_file", "edit", "edit_file", "apply_patch", "applypatch",
-  ].includes(normaliseToolName(tool));
+  return Boolean(directFileMutationKind(tool));
 }
 
 export function isApplyPatchMutationTool(tool) {
-  return ["apply_patch", "applypatch"].includes(normaliseToolName(tool));
+  return directFileMutationKind(tool) === "apply_patch";
+}
+
+export function directFileMutationKind(tool) {
+  const normalized = normaliseToolName(tool);
+  if (["write", "write_file"].includes(normalized)) return "write";
+  if (["edit", "edit_file"].includes(normalized)) return "edit";
+  if (["apply_patch", "applypatch"].includes(normalized)) return "apply_patch";
+  return "";
 }
 
 function parsePolicyPayload(raw) {

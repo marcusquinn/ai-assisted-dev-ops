@@ -219,6 +219,42 @@ function sourceDigestMatches(filePath, expectedDigest) {
   }
 }
 
+function trustedSourceSnapshot(filePath, git = "/usr/bin/git", run = execFileSync) {
+  let descriptor = -1;
+  try {
+    if (!isAbsolute(filePath) || hasSymlinkComponent(filePath)) return false;
+    const canonicalPath = realpathSync(filePath);
+    if (canonicalPath !== resolve(filePath)) return false;
+    descriptor = openSync(canonicalPath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.size > MAX_SOURCE_BYTES) return false;
+    const content = readFileSync(descriptor);
+    const current = lstatSync(canonicalPath);
+    if (
+      content.length > MAX_SOURCE_BYTES ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      current.nlink !== 1 ||
+      current.dev !== opened.dev ||
+      current.ino !== opened.ino
+    ) {
+      return false;
+    }
+    const identity = trackedFileIdentity(canonicalPath, git, run);
+    if (!identity) return false;
+    return {
+      canonicalPath,
+      content,
+      contentSha256: createHash("sha256").update(content).digest("hex"),
+      ...identity,
+    };
+  } catch {
+    return false;
+  } finally {
+    if (descriptor >= 0) closeSync(descriptor);
+  }
+}
+
 function requireValidReceipt(condition) {
   if (!condition) throw new Error("source-access receipt is invalid");
 }
@@ -237,6 +273,7 @@ function validatedSingleReceipt(options) {
     git = "/usr/bin/git",
     gitRun = execFileSync,
     run = execFileSync,
+    authorizedApprovalId = "",
   } = options;
   requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
   requireValidReceipt(reason === SOURCE_ACCESS_REASON);
@@ -245,8 +282,10 @@ function validatedSingleReceipt(options) {
   requireValidReceipt(!hasSymlinkComponent(filePath));
   const canonicalPath = realpathSync(filePath);
   requireValidReceipt(statSync(canonicalPath).isFile());
-  requireValidReceipt(isGitTrackedFile(canonicalPath, git, gitRun));
+  const identity = trackedFileIdentity(canonicalPath, git, gitRun);
+  requireValidReceipt(identity);
   const approvalId = approvalScopeId(sessionId, uid, canonicalPath, reason);
+  if (authorizedApprovalId) requireValidReceipt(authorizedApprovalId === approvalId);
   const receiptPath = join(stateDir, "approvals", String(uid), `${approvalId}.json`);
   requireValidReceipt(trustedDirectory(dirname(receiptPath), trustUid));
   requireValidReceipt(trustedDirectory(dirname(publicKeyPath), trustUid));
@@ -263,7 +302,9 @@ function validatedSingleReceipt(options) {
   requireValidReceipt(payload.path === canonicalPath);
   requireValidReceipt(payload.reason === reason);
   requireValidReceipt(/^[a-f0-9]{64}$/.test(payload.content_sha256 || ""));
-  requireValidReceipt(sourceDigestMatches(canonicalPath, payload.content_sha256));
+  if (!authorizedApprovalId) {
+    requireValidReceipt(sourceDigestMatches(canonicalPath, payload.content_sha256));
+  }
   const snapshotPath = join(stateDir, "snapshots", String(uid), `${approvalId}.source`);
   requireValidReceipt(payload.snapshot_path === snapshotPath);
   requireValidReceipt(trustedDirectory(dirname(snapshotPath), trustUid));
@@ -278,7 +319,20 @@ function validatedSingleReceipt(options) {
   requireValidReceipt(payload.expires_at - payload.issued_at <= MAX_TTL_SECONDS);
   requireValidReceipt(typeof receipt.signature === "string");
   requireValidReceipt(receipt.signature.includes("SSH SIGNATURE"));
-  return {payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen};
+  return {
+    approvalId,
+    canonicalPath,
+    contentSha256: payload.content_sha256,
+    expiresAt: payload.expires_at,
+    payload,
+    publicKeyPath,
+    receipt,
+    repoRoot: identity.repoRoot,
+    relativePath: identity.relativePath,
+    run,
+    snapshotPath,
+    sshKeygen,
+  };
 }
 
 function validatedReceipt(options) {
@@ -302,7 +356,8 @@ function validatedReceipt(options) {
   }
 }
 
-function verifyReceiptSignature({payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen}) {
+function verifyReceiptSignature(receiptData) {
+  const {payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen} = receiptData;
   const tempRoot = verificationTempRoot();
   mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   const tempDir = mkdtempSync(join(tempRoot, "source-access-verify-"));
@@ -338,7 +393,15 @@ function verifyReceiptSignature({payload, publicKeyPath, receipt, run, snapshotP
         timeout: 15000,
       },
     );
-    return { approvedPath: snapshotPath };
+    return {
+      approvalId: receiptData.approvalId,
+      approvedPath: snapshotPath,
+      canonicalPath: receiptData.canonicalPath,
+      contentSha256: receiptData.contentSha256,
+      expiresAt: receiptData.expiresAt,
+      repoRoot: receiptData.repoRoot,
+      relativePath: receiptData.relativePath,
+    };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -351,6 +414,232 @@ export function verifySourceAccessReceipt(options) {
   } catch {
     return false;
   }
+}
+
+function provenanceKey(sessionId, filePath) {
+  return `${sessionId}\0${resolve(filePath)}`;
+}
+
+function renderAuthorizedContent(content, args) {
+  const offset = Number.isInteger(args?.offset) && args.offset > 0 ? args.offset : 1;
+  const limit = Number.isInteger(args?.limit) && args.limit >= 0 ? args.limit : undefined;
+  const lines = content.toString("utf8").split("\n");
+  const selected = lines.slice(offset - 1, limit === undefined ? undefined : offset - 1 + limit);
+  return selected.join("\n");
+}
+
+function replaceExactOnce(content, oldString, newString) {
+  const first = content.indexOf(oldString);
+  if (first < 0 || content.indexOf(oldString, first + oldString.length) >= 0) return false;
+  return content.slice(0, first) + newString + content.slice(first + oldString.length);
+}
+
+function applyObservedPatch(content, patchText) {
+  let result = content;
+  const chunks = String(patchText).split(/^@@.*$/m).slice(1);
+  if (chunks.length === 0) return false;
+  for (const chunk of chunks) {
+    const lines = chunk.replace(/^\n/, "").split("\n");
+    while (lines.at(-1) === "" || lines.at(-1)?.startsWith("*** ")) lines.pop();
+    const oldLines = [];
+    const newLines = [];
+    for (const line of lines) {
+      if (line.startsWith(" ")) {
+        oldLines.push(line.slice(1));
+        newLines.push(line.slice(1));
+      } else if (line.startsWith("-")) {
+        oldLines.push(line.slice(1));
+      } else if (line.startsWith("+")) {
+        newLines.push(line.slice(1));
+      } else if (line !== "\\ No newline at end of file") {
+        return false;
+      }
+    }
+    const oldBlock = oldLines.join("\n");
+    if (!oldBlock) return false;
+    result = replaceExactOnce(result, oldBlock, newLines.join("\n"));
+    if (result === false) return false;
+  }
+  return result;
+}
+
+function expectedMutationContent(state, mutation) {
+  const content = state.content.toString("utf8");
+  if (mutation.kind === "write") {
+    return typeof mutation.content === "string" ? Buffer.from(mutation.content) : false;
+  }
+  if (mutation.kind === "edit") {
+    if (typeof mutation.oldString !== "string" || !mutation.oldString) return false;
+    if (typeof mutation.newString !== "string") return false;
+    if (!content.includes(mutation.oldString)) return false;
+    const updated = mutation.replaceAll
+      ? content.replaceAll(mutation.oldString, mutation.newString)
+      : replaceExactOnce(content, mutation.oldString, mutation.newString);
+    return updated === false ? false : Buffer.from(updated);
+  }
+  if (mutation.kind === "apply_patch") {
+    const updated = applyObservedPatch(content, mutation.patchText);
+    return updated === false ? false : Buffer.from(updated);
+  }
+  return false;
+}
+
+/** Keep verified post-mutation bytes and receipt authority inside one plugin instance. */
+export function createSourceAccessMutationProvenance({
+  repositoryDir = "",
+  verify = verifySourceAccessReceipt,
+  git = "/usr/bin/git",
+  gitRun = execFileSync,
+  now = () => Math.floor(Date.now() / 1000),
+} = {}) {
+  const approvals = new Map();
+  const pendingMutations = new Map();
+  const pendingReads = new Map();
+  const denialReasons = new Map();
+
+  function invalidate(key, reason) {
+    approvals.delete(key);
+    denialReasons.set(key, reason);
+  }
+
+  function revalidate(state, sessionId, filePath, reason) {
+    if (now() >= state.expiresAt) return { denial: "expired" };
+    const approval = verify({
+      sessionId,
+      filePath,
+      reason,
+      repositoryDir,
+      authorizedApprovalId: state.approvalId,
+    });
+    if (!approval || approval.repoRoot !== state.repoRoot || approval.relativePath !== state.relativePath) {
+      return { denial: "invalid" };
+    }
+    const snapshot = trustedSourceSnapshot(filePath, git, gitRun);
+    if (
+      !snapshot ||
+      snapshot.repoRoot !== state.repoRoot ||
+      snapshot.relativePath !== state.relativePath ||
+      snapshot.contentSha256 !== state.contentSha256
+    ) {
+      return { denial: "drift" };
+    }
+    return { approval, snapshot };
+  }
+
+  return {
+    rememberApproval({ sessionId, filePath, approval }) {
+      if (
+        !approval?.approvalId ||
+        !approval?.canonicalPath ||
+        !approval?.contentSha256 ||
+        !approval?.expiresAt ||
+        !approval?.repoRoot ||
+        !approval?.relativePath
+      ) {
+        return;
+      }
+      try {
+        const content = readFileSync(approval.approvedPath);
+        if (createHash("sha256").update(content).digest("hex") !== approval.contentSha256) return;
+        approvals.set(provenanceKey(sessionId, filePath), { ...approval, content });
+        denialReasons.delete(provenanceKey(sessionId, filePath));
+      } catch {
+        // The initial root-owned snapshot remains mandatory; never cache an unreadable path.
+      }
+    },
+
+    authorizeRead({ sessionId, callId, filePath, reason, args }) {
+      const key = provenanceKey(sessionId, filePath);
+      const state = approvals.get(key);
+      if (!state || !callId) return false;
+      const result = revalidate(state, sessionId, filePath, reason);
+      if (!result.approval) {
+        invalidate(key, result.denial);
+        return false;
+      }
+      pendingReads.set(callId, { args: { ...args }, content: Buffer.from(state.content) });
+      return { ...result.approval, approvedPath: state.approvedPath };
+    },
+
+    finishRead(callId, output) {
+      const pending = pendingReads.get(callId);
+      pendingReads.delete(callId);
+      if (!pending) return;
+      output.output = renderAuthorizedContent(pending.content, pending.args);
+      output.metadata = { ...(output.metadata || {}), sourceAccessContinuation: true };
+    },
+
+    beginMutation({ sessionId, callId, mutations, reason = SOURCE_ACCESS_REASON }) {
+      if (!callId || !Array.isArray(mutations)) return;
+      const entries = [];
+      for (const mutation of mutations) {
+        const { filePath } = mutation;
+        const key = provenanceKey(sessionId, filePath);
+        const state = approvals.get(key);
+        if (!state) continue;
+        const result = revalidate(state, sessionId, filePath, reason);
+        if (!result.approval) {
+          invalidate(key, result.denial);
+          continue;
+        }
+        const expectedContent = expectedMutationContent(state, mutation);
+        if (!expectedContent) {
+          invalidate(key, "drift");
+          continue;
+        }
+        entries.push({
+          expectedContent,
+          expectedSha256: createHash("sha256").update(expectedContent).digest("hex"),
+          filePath,
+          key,
+          state,
+        });
+      }
+      if (entries.length > 0) pendingMutations.set(callId, entries);
+    },
+
+    finishMutation({ sessionId, callId, succeeded, reason = SOURCE_ACCESS_REASON }) {
+      const entries = pendingMutations.get(callId) || [];
+      pendingMutations.delete(callId);
+      for (const { expectedContent, expectedSha256, filePath, key, state } of entries) {
+        if (!succeeded) {
+          invalidate(key, "drift");
+          continue;
+        }
+        const approval = verify({
+          sessionId,
+          filePath,
+          reason,
+          repositoryDir,
+          authorizedApprovalId: state.approvalId,
+        });
+        const snapshot = trustedSourceSnapshot(filePath, git, gitRun);
+        if (
+          !approval ||
+          !snapshot ||
+          approval.repoRoot !== state.repoRoot ||
+          approval.relativePath !== state.relativePath ||
+          snapshot.repoRoot !== state.repoRoot ||
+          snapshot.relativePath !== state.relativePath ||
+          snapshot.contentSha256 !== expectedSha256 ||
+          !snapshot.content.equals(expectedContent)
+        ) {
+          invalidate(key, "drift");
+          continue;
+        }
+        approvals.set(key, {
+          ...state,
+          content: Buffer.from(snapshot.content),
+          contentSha256: snapshot.contentSha256,
+        });
+        denialReasons.delete(key);
+      }
+    },
+
+    denialReason(sessionId, filePath) {
+      return denialReasons.get(provenanceKey(sessionId, filePath)) || "missing";
+    },
+  };
 }
 
 /**
@@ -370,6 +659,8 @@ export function checkSecretReadWithApproval({
   verify = verifySourceAccessReceipt,
   brokerMatches = sourceAccessBrokerMatches,
   requestRun = execFileSync,
+  callId = "",
+  provenance,
 }) {
   const filePath = readPath(args);
   // Fail closed before tool-name classification. OpenCode hook identities can
@@ -391,10 +682,16 @@ export function checkSecretReadWithApproval({
   }
 
   const brokerCurrent = brokerMatchesCurrentRelease(brokerMatches, scriptsDir);
-  const approval = brokerCurrent
-    ? verify({ sessionId, filePath, reason, repositoryDir })
+  const continuedApproval = brokerCurrent
+    ? provenance?.authorizeRead({ sessionId, callId, filePath, reason, args })
     : false;
-  if (applyApprovedRead(args, approval, filePath, log)) return;
+  const approval = continuedApproval || (brokerCurrent
+    ? verify({ sessionId, filePath, reason, repositoryDir })
+    : false);
+  if (applyApprovedRead(args, approval, filePath, log)) {
+    if (!continuedApproval) provenance?.rememberApproval({ sessionId, filePath, approval });
+    return;
+  }
 
   const requestId = requestApprovalId({ brokerCurrent, filePath, reason, requestRun, sessionId });
   checkGateWithApprovalInstructions({
@@ -404,6 +701,7 @@ export function checkSecretReadWithApproval({
     filePath,
     log,
     requestId,
+    denialReason: provenance?.denialReason(sessionId, filePath) || "missing",
     tool,
   });
 }

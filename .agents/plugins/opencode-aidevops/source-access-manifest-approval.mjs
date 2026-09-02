@@ -39,7 +39,9 @@ function normalizedEntries(payload, context) {
     context.requireValidReceipt(/^[a-f0-9]{64}$/.test(entry.content_sha256 || ""));
     totalBytes += statSync(path).size;
     context.requireValidReceipt(totalBytes <= MAX_SOURCE_BYTES);
-    context.requireValidReceipt(context.sourceDigestMatches(path, entry.content_sha256));
+    if (!context.authorizedApprovalId) {
+      context.requireValidReceipt(context.sourceDigestMatches(path, entry.content_sha256));
+    }
     return { entry, path, relativePath: identity.relativePath };
   });
 }
@@ -99,6 +101,9 @@ function validateManifestReceipt(receiptName, context) {
     context.reason,
     paths,
   );
+  if (context.authorizedApprovalId) {
+    context.requireValidReceipt(context.authorizedApprovalId === approvalId);
+  }
   context.requireValidReceipt(payload.approval_id === approvalId);
   context.requireValidReceipt(payload.request_id === approvalId);
   context.requireValidReceipt(receiptName === `${approvalId}.json`);
@@ -112,10 +117,18 @@ function validateManifestReceipt(receiptName, context) {
   context.requireValidReceipt(payload.expires_at - payload.issued_at <= MAX_TTL_SECONDS);
   context.requireValidReceipt(typeof receipt.signature === "string");
   context.requireValidReceipt(receipt.signature.includes("SSH SIGNATURE"));
+  const requestedEntry = entries.find(({ path }) => path === context.canonicalPath);
+  context.requireValidReceipt(requestedEntry);
   return {
+    approvalId,
+    canonicalPath: context.canonicalPath,
+    contentSha256: requestedEntry.entry.content_sha256,
+    expiresAt: payload.expires_at,
     payload,
     publicKeyPath: context.publicKeyPath,
     receipt,
+    repoRoot: context.requestedIdentity.repoRoot,
+    relativePath: context.requestedIdentity.relativePath,
     run: context.run,
     snapshotPath,
     sshKeygen: context.sshKeygen,
@@ -137,6 +150,7 @@ export function validatedManifestReceipt(options, dependencies) {
     git = "/usr/bin/git",
     gitRun = execFileSync,
     run = execFileSync,
+    authorizedApprovalId = "",
   } = options;
   const { requireValidReceipt } = dependencies;
   requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
@@ -155,6 +169,7 @@ export function validatedManifestReceipt(options, dependencies) {
   const context = {
     ...dependencies,
     approvalsDir,
+    authorizedApprovalId,
     canonicalPath,
     git,
     gitRun,

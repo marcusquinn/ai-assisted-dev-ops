@@ -51,6 +51,7 @@ export function checkGateWithApprovalInstructions({
   filePath,
   log,
   requestId,
+  denialReason = "missing",
   tool,
 }) {
   try {
@@ -64,8 +65,14 @@ export function checkGateWithApprovalInstructions({
       );
     }
     if (!requestId) throw error;
+    const explanation = {
+      drift: "The prior approval was invalidated by an unobserved content transition.",
+      expired: "The prior approval has expired.",
+      invalid: "The prior approval was revoked or its repository/worktree identity is no longer valid.",
+      missing: "No source-access approval exists for this exact path and session.",
+    }[denialReason] || "No valid source-access approval exists for this exact path and session.";
     throw new Error(
-      `${originalMessage}\n\nTo approve only this tracked source path for this session, run:\n` +
+      `${originalMessage}\n\n${explanation}\n\nTo approve only this tracked source path for this session, run:\n` +
         `sudo -k /usr/bin/python3 -I -B ${ROOT_BROKER} approve ${requestId} --ttl 12h\n\n` +
         "For one approval covering several exact tracked paths, create one request with " +
         "`aidevops source-access request --session <session> --reason 'secret-bearing basename' " +

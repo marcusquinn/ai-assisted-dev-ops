@@ -6,8 +6,8 @@
 
 import { existsSync } from "fs";
 import { execFileSync, execFile } from "child_process";
-import { join } from "path";
-import { recordToolCall } from "./observability.mjs";
+import { join, resolve } from "path";
+import { recordToolCall, toolCallSucceeded } from "./observability.mjs";
 import { extractAndStoreIntent, consumeIntent } from "./intent-tracing.mjs";
 import { recordToolStart, consumeToolDuration } from "./timing-tracing.mjs";
 import { qualityLog, runFileQualityGate } from "./quality-logging.mjs";
@@ -17,12 +17,17 @@ import {
   isReadTool,
   secretReadBlockReason,
 } from "./quality-hooks-secret-read.mjs";
-import { checkSecretReadWithApproval } from "./source-access-approval.mjs";
+import {
+  SOURCE_ACCESS_REASON,
+  checkSecretReadWithApproval,
+  createSourceAccessMutationProvenance,
+} from "./source-access-approval.mjs";
 import { checkResearchStagingAccess } from "./research-staging-guard.mjs";
 import {
   bindActiveScriptsDir,
   checkCanonicalGitSafetyGate,
   checkCanonicalWriteSafetyGate,
+  directFileMutationKind,
   isApplyPatchMutationTool,
   isDirectFileMutationTool,
 } from "./quality-hooks-git-safety.mjs";
@@ -264,6 +269,37 @@ function enforceDirectFileMutationSafety(ctx, input, output) {
   checkCanonicalWriteSafetyGate(filePath, ctx.scriptsDir, writeCwd, patchText);
 }
 
+function directMutations(ctx, input, output) {
+  const args = output.args || {};
+  const cwd = args.workdir || args.cwd || ctx.repositoryDir || process.cwd();
+  const kind = directFileMutationKind(input.tool);
+  if (kind !== "apply_patch") {
+    const filePath = args.filePath || args.file_path || args.path || "";
+    if (!filePath) return [];
+    return [{
+      filePath: resolve(cwd, filePath),
+      kind,
+      content: args.content,
+      oldString: args.oldString ?? args.old_string,
+      newString: args.newString ?? args.new_string,
+      replaceAll: args.replaceAll === true || args.replace_all === true,
+    }];
+  }
+  const patchText = typeof args.patchText === "string" ? args.patchText : args.patch_text || "";
+  const headers = [...patchText.matchAll(/^\*\*\* (Update|Delete) File: (.+)$/gm)];
+  return headers.map((match, index) => ({
+    filePath: resolve(cwd, match[2].trim()),
+    kind: match[1] === "Update" ? kind : "delete",
+    patchText: patchText.slice(match.index + match[0].length, headers[index + 1]?.index),
+  }));
+}
+
+function mutationSucceeded(output) {
+  if (!output || typeof output !== "object") return false;
+  const hasOutcome = typeof output.output === "string" || (output.metadata && typeof output.metadata === "object");
+  return hasOutcome && toolCallSucceeded(output);
+}
+
 function handleToolBefore(ctx, log, input, output) {
   ctx.continuationGuard?.beforeTool(input, output);
   enforceDirectFileMutationSafety(ctx, input, output);
@@ -294,6 +330,14 @@ function handleToolBefore(ctx, log, input, output) {
   }).catch(() => {});
 
   const sessionId = input.sessionID || input.sessionId || input.session?.id || "";
+  if (isDirectFileMutationTool(input.tool)) {
+    ctx.sourceAccessProvenance.beginMutation({
+      sessionId,
+      callId: input.callID || "",
+      mutations: directMutations(ctx, input, output),
+      reason: SOURCE_ACCESS_REASON,
+    });
+  }
   if (isBashTool(input.tool)) {
     const bashArgs = output.args ?? {};
     const bashCwd = bashArgs.workdir || bashArgs.cwd || process.cwd();
@@ -321,10 +365,15 @@ function handleToolBefore(ctx, log, input, output) {
     sessionId,
     scriptsDir: ctx.scriptsDir,
     repositoryDir: ctx.repositoryDir,
+    callId: input.callID || "",
+    provenance: ctx.sourceAccessProvenance,
     isReadTool,
     secretReadBlockReason,
     checkSecretReadGate,
     log,
+    verify: ctx.verifySourceAccessReceipt,
+    brokerMatches: ctx.sourceAccessBrokerMatches,
+    requestRun: ctx.sourceAccessRequestRun,
   });
   checkResearchStagingAccess(input.tool, output.args || {});
 
@@ -346,6 +395,16 @@ function handleToolBefore(ctx, log, input, output) {
  */
 function handleToolAfter(ctx, log, scriptsDir, input, output) {
   const toolName = input.tool || "";
+
+  ctx.sourceAccessProvenance.finishRead(input.callID || "", output);
+  if (isDirectFileMutationTool(toolName)) {
+    ctx.sourceAccessProvenance.finishMutation({
+      sessionId: input.sessionID || input.sessionId || input.session?.id || "",
+      callId: input.callID || "",
+      succeeded: mutationSucceeded(output),
+      reason: SOURCE_ACCESS_REASON,
+    });
+  }
 
   // GH#20207 (t2458 Layer 4): scrub credentials from tool output before
   // persisting to the SQLite transcript store or sending to the model.
@@ -392,6 +451,13 @@ export function createQualityHooks(deps) {
   const activeScriptsDir = deps.activeScriptsDir ?? scriptsDir;
   const activeScriptsDirBinding = bindActiveScriptsDir(activeScriptsDir, scriptsDir);
   const qualityLogPath = join(logsDir, "quality-hooks.log");
+  const sourceAccessProvenance = createSourceAccessMutationProvenance({
+    repositoryDir: deps.repositoryDir,
+    verify: deps.verifySourceAccessReceipt,
+    git: deps.git,
+    gitRun: deps.gitRun,
+    now: deps.now,
+  });
   // t2120: qualityDetailLog (in quality-logging.mjs) reads ctx.detailLogPath
   // and ctx.detailMaxBytes. Previously these were never populated here, so
   // every call to logQualityGateResult → qualityDetailLog threw
@@ -413,6 +479,10 @@ export function createQualityHooks(deps) {
     detailMaxBytes,
     repositoryDir: deps.repositoryDir,
     continuationGuard,
+    sourceAccessProvenance,
+    verifySourceAccessReceipt: deps.verifySourceAccessReceipt,
+    sourceAccessBrokerMatches: deps.sourceAccessBrokerMatches,
+    sourceAccessRequestRun: deps.sourceAccessRequestRun,
     resolveSessionModel: typeof deps.resolveSessionModel === "function"
       ? deps.resolveSessionModel
       : () => "",
