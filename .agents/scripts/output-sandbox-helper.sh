@@ -446,6 +446,37 @@ PY
 	return 0
 }
 
+present_run_result() {
+	local format="$1"
+	local mode="$2"
+	local output_id="$3"
+	local outcome="$4"
+	local exit_code="$5"
+	local process_exit="$6"
+	local byte_count="$7"
+	local line_count="$8"
+	local sensitive="$9"
+	local basis="${10}"
+	local raw_path="${11}"
+	local summary_file="${12}"
+	local diagnostic_file="${13}"
+	local duration_seconds="${14}"
+	local command_text="${15}"
+	if [[ "$outcome" == "succeeded" && "$mode" == "auto" && "$format" == "text" ]]; then
+		if is_verbose_success "$byte_count" "$line_count"; then
+			print_verbose_success_summary "$output_id" "$command_text" "$exit_code" "$duration_seconds" \
+				"$byte_count" "$line_count" "$sensitive" "$raw_path"
+		else
+			emit_native_capture "$raw_path.stdout" "$raw_path.stderr"
+		fi
+		return "$exit_code"
+	fi
+	[[ "$mode" == "auto" ]] && mode="receipt"
+	print_presentation "$format" "$mode" "$output_id" "$outcome" "$exit_code" "$process_exit" \
+		"$byte_count" "$line_count" "$sensitive" "$basis" "$raw_path" "$summary_file" "$diagnostic_file"
+	return "$exit_code"
+}
+
 cmd_store() {
 	local command_text="stdin"
 	local exit_code="0"
@@ -537,7 +568,7 @@ cmd_run() {
 		return $?
 	fi
 	local output_id raw_path stdout_path stderr_path summary_file diagnostic_file
-	local process_exit exit_code byte_count line_count sensitive outcome basis mode start_seconds duration_seconds
+	local process_exit exit_code byte_count line_count sensitive outcome="succeeded" basis mode="$success_mode" start_seconds duration_seconds
 	start_seconds=$SECONDS
 	output_id=$(make_output_id)
 	raw_path="${RAW_DIR}/${output_id}.txt"
@@ -578,26 +609,13 @@ cmd_run() {
 		emit_native_capture "$stdout_path" "$stderr_path"
 		return "$exit_code"
 	fi
-	outcome="succeeded"
-	mode="$success_mode"
 	if [[ "$exit_code" -ne 0 ]]; then
 		outcome="failed"
 		mode="$failure_mode"
 	fi
-	if [[ "$outcome" == "succeeded" && "$mode" == "auto" && "$format" == "text" ]]; then
-		if is_verbose_success "$byte_count" "$line_count"; then
-			print_verbose_success_summary "$output_id" "$command_text" "$exit_code" "$duration_seconds" \
-				"$byte_count" "$line_count" "$sensitive" "$raw_path"
-		else
-			emit_native_capture "$stdout_path" "$stderr_path"
-		fi
-		return "$exit_code"
-	fi
-	if [[ "$mode" == "auto" ]]; then
-		mode="receipt"
-	fi
-	print_presentation "$format" "$mode" "$output_id" "$outcome" "$exit_code" "$process_exit" \
-		"$byte_count" "$line_count" "$sensitive" "$basis" "$raw_path" "$summary_file" "$diagnostic_file"
+	present_run_result "$format" "$mode" "$output_id" "$outcome" "$exit_code" "$process_exit" \
+		"$byte_count" "$line_count" "$sensitive" "$basis" "$raw_path" "$summary_file" "$diagnostic_file" \
+		"$duration_seconds" "$command_text" || return $?
 	return "$exit_code"
 }
 
