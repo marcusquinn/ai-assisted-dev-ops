@@ -67,6 +67,15 @@ export function createSessionBoundaryAdvisory({
   const sessions = new Map();
   const emitted = new Set();
 
+  const maybeEmitAdvisory = async (event, sessionID) => {
+    if (event.type !== "session.idle" || emitted.has(sessionID) || hasCompetingToast(sessionID)) return;
+    const state = await resolveSessionState({ client, event, now, sessions, sessionID });
+    if (!state?.root || now() - state.createdAt < thresholdMs) return;
+
+    await client?.tui?.showToast?.({ body: advisoryBody() });
+    emitted.add(sessionID);
+  };
+
   return async function sessionBoundaryAdvisory(input) {
     if (isHeadless()) return;
     const event = eventFrom(input);
@@ -76,19 +85,11 @@ export function createSessionBoundaryAdvisory({
     if (event.type === "session.deleted") {
       sessions.delete(sessionID);
       emitted.delete(sessionID);
-      return;
-    }
-    if (["session.created", "session.updated"].includes(event.type)) {
+    } else if (["session.created", "session.updated"].includes(event.type)) {
       rememberSession(sessions, event.properties?.info, now);
-      return;
+    } else {
+      await maybeEmitAdvisory(event, sessionID);
     }
-    if (event.type !== "session.idle" || emitted.has(sessionID) || hasCompetingToast(sessionID)) return;
-
-    const state = await resolveSessionState({ client, event, now, sessions, sessionID });
-    if (!state?.root || now() - state.createdAt < thresholdMs) return;
-
-    await client?.tui?.showToast?.({ body: advisoryBody() });
-    emitted.add(sessionID);
   };
 }
 
