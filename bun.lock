@@ -43,14 +43,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@aidevops/gui-shared": "workspace:*",
-        "@fontsource/courier-prime": "5.2.8",
+        "@fontsource/courier-prime": "5.3.0",
         "@fontsource/dm-mono": "5.3.0",
         "@fontsource/dm-sans": "5.3.0",
         "@fontsource/fredoka": "5.2.10",
         "@fontsource/ibm-plex-mono": "5.2.7",
         "@fontsource/ibm-plex-sans": "5.3.0",
         "@fontsource/ibm-plex-serif": "5.3.0",
-        "@fontsource/inter": "5.2.8",
+        "@fontsource/inter": "5.3.0",
         "@fontsource/mohave": "5.3.0",
         "@fontsource/playpen-sans": "5.3.0",
         "@fontsource/poppins": "5.3.0",
@@ -58,7 +58,7 @@
         "@fontsource/source-serif-4": "5.3.0",
         "@fontsource/tilt-neon": "5.3.0",
         "@fontsource/ubuntu": "5.3.0",
-        "@fontsource/ubuntu-mono": "5.2.8",
+        "@fontsource/ubuntu-mono": "5.3.0",
         "@fontsource/zilla-slab": "5.3.0",
         "react": "19.2.8",
         "react-dom": "19.2.8",
@@ -92,7 +92,7 @@
 
     "@borewit/text-codec": ["@borewit/text-codec@0.1.1", "", {}, "sha512-5L/uBxmjaCIX5h8Z+uu+kA9BQLkc/Wl06UGR5ajNRxu+/XjonB5i8JpgFMrPj3LXTCPA0pv8yxUvbUi+QthGGA=="],
 
-    "@fontsource/courier-prime": ["@fontsource/courier-prime@5.2.8", "", {}, "sha512-M3xOCcXnGuFi9TcGCrz4hm5yeWg4Sn35MALRLPnqNoHhawTFvhyi2KSI2+5RyFtDNJrb58bPh8LLipgiI9KA0w=="],
+    "@fontsource/courier-prime": ["@fontsource/courier-prime@5.3.0", "", {}, "sha512-KIi1k4VG1Wv+/CGpb1AUpLkUuOAQA6zmvthqxOZGN0AV8BEgQgbK7qAtquv14zsBJAY1bb5BHIEbWVFLgENh0w=="],
 
     "@fontsource/dm-mono": ["@fontsource/dm-mono@5.3.0", "", {}, "sha512-OINjI8C1S/wpchhQxl7njZdMn4+hnDCpQ4YtvvOpKNARo+0J8O1x1IcrChxNjHOhfVv1by8C/FQoy3hXK+C1Ug=="],
 
@@ -106,7 +106,7 @@
 
     "@fontsource/ibm-plex-serif": ["@fontsource/ibm-plex-serif@5.3.0", "", {}, "sha512-zwPfHB7EJbS5B8qnitPigJYzNdnt6PUeaoOA1gAAt//1pjpTVZN5sOU14NIAZ+C1xypL6GWsUG2VMYJW9bhJqQ=="],
 
-    "@fontsource/inter": ["@fontsource/inter@5.2.8", "", {}, "sha512-P6r5WnJoKiNVV+zvW2xM13gNdFhAEpQ9dQJHt3naLvfg+LkF2ldgSLiF4T41lf1SQCM9QmkqPTn4TH568IRagg=="],
+    "@fontsource/inter": ["@fontsource/inter@5.3.0", "", {}, "sha512-RofMylZmjlJEfELXeNHFWBRcSs75rGU/6bV2S2jfnvv/3rPXPGe0LgUJTklcHZ9lM4OZmAVFhcJPnACfb91A3g=="],
 
     "@fontsource/mohave": ["@fontsource/mohave@5.3.0", "", {}, "sha512-DxFmpRJfk6Ga43UPHRzYi1/2xOifiCxGHlZhDx9aY9vusnDNLRfyWooqv11dlarVCeAtU+09PoZf0587oYZNAA=="],
 
@@ -122,7 +122,7 @@
 
     "@fontsource/ubuntu": ["@fontsource/ubuntu@5.3.0", "", {}, "sha512-LsjJXgE430QLs8LKfn1RIFbbdGAiZBU1gao8ASa4Z2kGNGh7lMb7Rzx09v3bLLuuK+3XA/JSLgPWTAbLD6r1fg=="],
 
-    "@fontsource/ubuntu-mono": ["@fontsource/ubuntu-mono@5.2.8", "", {}, "sha512-N4nT8+GYWWcDODVSBLU4f3PycZQH9YIF6SypDI0rti3HrLqcXFS9u6wMvAd9vx1FmjAQkYv7Ld9CZ8XYTEOD0A=="],
+    "@fontsource/ubuntu-mono": ["@fontsource/ubuntu-mono@5.3.0", "", {}, "sha512-hLwLkeAV9YvLSOWExn0heOXy+EB4wKnt648qS5FaqsiCZDS8X9kR/ueIBzzX/vNSXjFkhLRSTKqlOfFvHdD4Bw=="],
 
     "@fontsource/zilla-slab": ["@fontsource/zilla-slab@5.3.0", "", {}, "sha512-xbdDx5OESJDQqp3GIp4pjBgI+qpcg4AxnHLN15ekfJbG+ZYaOXg3uBjDpYlkuPQpey91afxHBNaqZgzluJ2FWA=="],
 

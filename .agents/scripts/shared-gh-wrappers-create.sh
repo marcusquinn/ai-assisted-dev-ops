@@ -1145,6 +1145,15 @@ _gh_recover_pr_if_exists() {
 # are not double-signed.
 gh_issue_comment() {
 	_gh_wrapper_enter_cleanup_scope
+	if ! _gh_wrapper_normalize_stdin_body_file "$@"; then
+		_gh_edit_audit_rejection "gh issue comment" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
+	if ! _gh_validate_edit_args "$@"; then
+		_gh_edit_audit_rejection "gh issue comment" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
 	local ephemeral_body_file="${AIDEVOPS_GH_EPHEMERAL_BODY_FILE:-}"
 	local gh_command="gh"
 	if [[ -n "$ephemeral_body_file" ]]; then
@@ -1182,6 +1191,15 @@ gh_issue_comment() {
 
 gh_pr_comment() {
 	_gh_wrapper_enter_cleanup_scope
+	if ! _gh_wrapper_normalize_stdin_body_file "$@"; then
+		_gh_edit_audit_rejection "gh pr comment" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
+	set -- "${_GH_WRAPPER_BODY_FILE_ARGS[@]}"
+	if ! _gh_validate_edit_args "$@"; then
+		_gh_edit_audit_rejection "gh pr comment" "$_GH_EDIT_REJECTION_REASON" "$@"
+		return 1
+	fi
 	gh_record_call graphql gh_pr_comment 2>/dev/null || true
 	_gh_wrapper_auto_sig "$@"
 	set -- "${_GH_WRAPPER_SIG_MODIFIED_ARGS[@]}"

@@ -1250,10 +1250,75 @@ test_automatic_maintenance_deadline_advances_cursor() {
 	local home_path="${TEST_DIR}/automatic-deadline-home"
 	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
 	local state_dir="${home_path}/maintenance-state"
-	local output=""
+	local bucket_path="" output=""
+	local started_epoch=0 elapsed_seconds=0
+	local index=0 remaining_buckets=0
 	local rc=0
 
 	mkdir -p "$recovery_root" || rc=1
+	while [[ "$index" -lt 300 ]]; do
+		printf -v bucket_path '%s/aidevops-worktree-cleanup-%03d' "$recovery_root" "$index"
+		mkdir "$bucket_path" || rc=1
+		index=$((index + 1))
+	done
+	started_epoch=$(date +%s) || rc=1
+	output=$(
+		uname() {
+			printf 'Linux\n'
+			return 0
+		}
+		aidevops_disk_capacity_snapshot() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			AIDEVOPS_DISK_CAPACITY_TOTAL_KB=100000
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB=1
+			AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT=0
+			return 0
+		}
+		_worktree_recovery_inventory_bucket_state() {
+			local ignored_bucket="$1"
+			local ignored_root="$2"
+			local deadline_epoch="$3"
+			: "$ignored_bucket" "$ignored_root"
+			_worktree_recovery_run_before_epoch "$deadline_epoch" sleep 5
+			return $?
+		}
+		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN=1 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS=1 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
+			worktree_recovery_maintenance_run
+	) || rc=1
+	elapsed_seconds=$(($(date +%s) - started_epoch)) || rc=1
+	for bucket_path in "$recovery_root"/aidevops-worktree-cleanup-*; do
+		[[ -d "$bucket_path" ]] && remaining_buckets=$((remaining_buckets + 1))
+	done
+	printf '%s\n' "$output" | jq -e '
+		.outcome == "no-candidates" and .policy.pressure_active == true and
+		.diagnostics.inventory_count == 300 and .diagnostics.scanned_count == 1 and
+		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 1 and
+		.diagnostics.deadline_seconds == 1 and .diagnostics.deadline_exhausted == true and
+		.diagnostics.reason_counts.unknown_archive == 1
+	' >/dev/null || rc=1
+	[[ "$elapsed_seconds" -le 6 && "$remaining_buckets" -eq 300 ]] || rc=1
+	print_result "automatic_maintenance_deadline_advances_cursor" "$rc" \
+		"Expected 300 delayed validations to stop within the deadline, advance one cursor entry, and preserve every bucket"
+	return 0
+}
+
+test_automatic_maintenance_bounds_classification_subprocesses() {
+	local home_path="${TEST_DIR}/automatic-classification-timeout-home"
+	local recovery_root="${home_path}/.aidevops/recovery/worktrees"
+	local state_dir="${home_path}/maintenance-state"
+	local bucket_path="${recovery_root}/aidevops-worktree-cleanup-timeout"
+	local output=""
+	local started_epoch=0
+	local elapsed_seconds=0
+	local rc=0
+
+	mkdir -p "$bucket_path" || rc=1
+	started_epoch=$(date +%s) || rc=1
 	output=$(
 		uname() {
 			printf 'Linux\n'
@@ -1271,13 +1336,21 @@ test_automatic_maintenance_deadline_advances_cursor() {
 			local output_path="$1"
 			local ignored_platform="$2"
 			: "$ignored_platform"
-			printf 'attributed\t%s/a\nattributed\t%s/b\nattributed\t%s/c\n' \
-				"$recovery_root" "$recovery_root" "$recovery_root" >"$output_path"
+			printf '%s\n' "$bucket_path" >"$output_path"
 			return $?
+		}
+		_worktree_recovery_inventory_bucket_state() {
+			local ignored_bucket="$1"
+			local ignored_root="$2"
+			local ignored_deadline="$3"
+			: "$ignored_bucket" "$ignored_root" "$ignored_deadline"
+			printf 'attributed\n'
+			return 0
 		}
 		_worktree_recovery_measure_path() {
 			local ignored_path="$1"
-			: "$ignored_path"
+			local ignored_timeout="$2"
+			: "$ignored_path" "$ignored_timeout"
 			printf '1024|exact|\n'
 			return 0
 		}
@@ -1286,26 +1359,27 @@ test_automatic_maintenance_deadline_advances_cursor() {
 			local ignored_path="$2"
 			local ignored_bytes="$3"
 			: "$ignored_role" "$ignored_path" "$ignored_bytes"
-			sleep 2
-			jq -cn --arg disposition "$WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED" \
-				'{disposition:$disposition,reasons:["source-removal-not-complete"]}'
-			return $?
+			sleep 5
+			return 1
 		}
 		HOME="$home_path" AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_STATE_DIR="$state_dir" \
-			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN=3 \
+			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN=1 \
 			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS=1 \
 			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_KB=10 \
 			AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT=0 \
 			worktree_recovery_maintenance_run
 	) || rc=1
+	elapsed_seconds=$(($(date +%s) - started_epoch)) || rc=1
 	printf '%s\n' "$output" | jq -e '
 		.outcome == "no-candidates" and .policy.pressure_active == true and
-		.diagnostics.inventory_count == 3 and .diagnostics.scanned_count == 1 and
-		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 1 and
-		.diagnostics.deadline_seconds == 1 and .diagnostics.deadline_exhausted == true
+		.diagnostics.inventory_count == 1 and .diagnostics.scanned_count == 1 and
+		.diagnostics.cursor_before == 0 and .diagnostics.cursor_after == 0 and
+		.diagnostics.deadline_exhausted == true and
+		.diagnostics.reason_counts.unknown_classification == 1
 	' >/dev/null || rc=1
-	print_result "automatic_maintenance_deadline_advances_cursor" "$rc" \
-		"Expected a bounded pass to stop at its deadline and advance the durable cursor"
+	[[ "$elapsed_seconds" -le 6 && -d "$bucket_path" ]] || rc=1
+	print_result "automatic_maintenance_bounds_classification_subprocesses" "$rc" \
+		"Expected classification and descendants to stop at the aggregate deadline without deleting the bucket"
 	return 0
 }
 
@@ -1390,9 +1464,20 @@ run_zero_candidate_cycle_fixture() {
 		local output_path="$1"
 		local ignored_platform="$2"
 		: "$ignored_platform"
-		printf 'legacy\t%s/unknown-a\nattributed\t%s/protected\nlegacy\t%s/unknown-b\n' \
+		printf '%s/unknown-a\n%s/protected\n%s/unknown-b\n' \
 			"$recovery_root" "$recovery_root" "$recovery_root" >"$output_path"
 		return $?
+	}
+	_worktree_recovery_inventory_bucket_state() {
+		local bucket_path="$1"
+		local ignored_root="$2"
+		local ignored_deadline="$3"
+		: "$ignored_root" "$ignored_deadline"
+		case "$bucket_path" in
+		*/protected) printf 'attributed\n' ;;
+		*) printf 'unknown\n' ;;
+		esac
+		return 0
 	}
 	_worktree_recovery_measure_path() {
 		local ignored_path="$1"
@@ -1669,6 +1754,7 @@ test_automatic_maintenance_is_bounded_and_policy_bound
 test_automatic_maintenance_checks_capacity_before_aggregate_size
 test_automatic_maintenance_enters_pressure_when_aggregate_size_times_out
 test_automatic_maintenance_deadline_advances_cursor
+test_automatic_maintenance_bounds_classification_subprocesses
 test_automatic_maintenance_preserves_bucket_when_exact_size_is_unavailable
 test_automatic_maintenance_escalates_completed_zero_candidate_cycle
 test_automatic_maintenance_resumes_interrupted_apply

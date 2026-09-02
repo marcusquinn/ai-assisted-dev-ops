@@ -116,6 +116,24 @@ closed without `--replace` or port-owner termination.
 5. On completion or cancellation, disconnect the Playwriter MCP. Never close
    user-owned pages, contexts, profiles, or browser windows.
 
+### Extension-page QA Preflight
+
+Classify an extension UI target before activating Playwriter or asking it to
+navigate. This prevents a browser-action attempt from implying support for a
+privileged or profile-bound page.
+
+1. `chrome://extensions` and arbitrary installed user-extension pages are not
+   supported Playwriter QA targets. Report this bounded limitation before
+   browser actions; do not activate Playwriter, enumerate tabs, or navigate.
+2. For a project-owned unpacked extension with an existing runner, use that
+   runner's headed Chromium persistent context and its stable build path. Get
+   the extension ID from its service worker, then navigate directly to the
+   expected `chrome-extension://<id>/...` page. The supported route is
+   documented in `tools/browser/extension-dev/testing.md`.
+3. When the project has no existing extension runner, use manual verification.
+   Do not create test infrastructure or launch a replacement browser/profile
+   merely to work around this limitation.
+
 ## Usage
 
 ### The `execute` Tool

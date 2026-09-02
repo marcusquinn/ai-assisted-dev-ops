@@ -25,7 +25,9 @@ extension development. See `reference/ci-gate-policy.md`.
 **Decision tree**:
 
 ```text
-E2E with extension loaded?   → Playwright (Chromium only)
+Project-owned unpacked extension with existing runner? → Playwright (Chromium only)
+chrome://extensions or arbitrary installed extension?  → Manual verification; not a Playwriter QA target
+No existing runner?                                  → Manual verification; do not create infrastructure for routine QA
 Debug service worker?        → chrome://extensions → Inspect service worker
 Debug content scripts?       → DevTools → Sources → Content scripts
 Cross-browser verification?  → Chrome + Firefox + Edge (manual or CI)
@@ -49,6 +51,13 @@ path.
 4. For existing-profile sessions, approve the intended tab with Playwriter and
    run its authenticated-tab preflight. A Playwright persistent context is a
    separate profile and must not be treated as the user's authenticated session.
+
+For extension UI QA, distinguish the project-owned unpacked build from browser
+manager and user-installed pages before browser actions. `chrome://extensions`
+and arbitrary installed extensions have no supported Playwriter route. Do not
+attempt to reach them through Playwriter or launch a replacement browser or
+profile. The headed persistent-context E2E route below is supported only when
+the project already has a runner and stable build path.
 
 When the linked worktree is intentionally disposable but Chrome must retain one
 stable unpacked-extension path, deploy the reviewed build to an allowlisted
