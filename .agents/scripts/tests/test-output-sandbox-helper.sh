@@ -60,7 +60,7 @@ file_mode() {
 }
 
 # shellcheck disable=SC2016 # Inner bash expands $i, not this test harness.
-run_output=$("$HELPER" run --summary-lines 4 -- bash -c 'for i in 1 2 3 4 5 6; do printf "line%s\n" "$i"; done')
+run_output=$("$HELPER" run --success-mode receipt --summary-lines 4 -- bash -c 'for i in 1 2 3 4 5 6; do printf "line%s\n" "$i"; done')
 assert_contains "run prints output id" "output_id: out_" "$run_output"
 assert_contains "successful run reports outcome" "outcome: succeeded" "$run_output"
 assert_not_contains "success receipt hides raw path" "raw_path:" "$run_output"
@@ -74,6 +74,20 @@ assert_contains "show respects limit" "3: line3" "$show_output"
 # shellcheck disable=SC2016 # Inner bash expands $i, not this test harness.
 summary_output=$("$HELPER" run --success-mode summary --summary-lines 4 -- bash -c 'for i in 1 2 3 4 5 6; do printf "line%s\n" "$i"; done')
 assert_contains "explicit success summary reports omission" "omitted" "$summary_output"
+
+short_output=$("$HELPER" run -- bash -c 'printf "short successful output\n"')
+[[ "$short_output" == "short successful output" ]] && \
+	pass "ordinary short successful output remains unchanged" || \
+	fail "ordinary short successful output remains unchanged" "got ${short_output}"
+
+# shellcheck disable=SC2016 # Inner bash expands $i, not this test harness.
+verbose_output=$("$HELPER" run -- bash -c 'for i in $(seq 1 100); do printf "asset %s\n" "$i"; done; printf "warning: fixture deprecation\n"; printf "Tests: 100 passed, 0 failed\n"')
+assert_contains "verbose success reports command identity" "command: bash" "$verbose_output"
+assert_contains "verbose success reports exit status" "exit_status: 0" "$verbose_output"
+assert_contains "verbose success preserves warning evidence" "warning: fixture deprecation" "$verbose_output"
+assert_contains "verbose success preserves test totals" "Tests: 100 passed, 0 failed" "$verbose_output"
+assert_contains "verbose success retains retrievable full log" "full_log: output-sandbox-helper.sh show out_" "$verbose_output"
+assert_not_contains "verbose success bounds raw asset listing" "asset 50" "$verbose_output"
 
 set +e
 failure_output=$("$HELPER" run --diagnostic-lines 4 -- bash -c 'printf "routine line\n"; printf "fatal: fixture failed\n" >&2; exit 7')

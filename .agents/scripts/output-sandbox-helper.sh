@@ -18,6 +18,8 @@ RAW_DIR="${AIDEVOPS_OUTPUT_SANDBOX_RAW_DIR:-${SANDBOX_ROOT}/raw}"
 DEFAULT_SUMMARY_LINES="${AIDEVOPS_OUTPUT_SANDBOX_SUMMARY_LINES:-20}"
 DEFAULT_DIAGNOSTIC_LINES="${AIDEVOPS_OUTPUT_SANDBOX_DIAGNOSTIC_LINES:-20}"
 DEFAULT_RETENTION_DAYS="${AIDEVOPS_OUTPUT_SANDBOX_RETENTION_DAYS:-14}"
+DEFAULT_COMPACT_BYTES="${AIDEVOPS_OUTPUT_SANDBOX_COMPACT_BYTES:-8192}"
+DEFAULT_COMPACT_LINES="${AIDEVOPS_OUTPUT_SANDBOX_COMPACT_LINES:-80}"
 
 usage() {
 	cat <<'EOF'
@@ -34,7 +36,7 @@ auditable pointer. Exact/verbatim/security-sensitive commands are bypassed.
 
 Run options:
   --tag TAG                    Evidence category (default: run)
-  --success-mode MODE          receipt|summary|full (default: receipt)
+  --success-mode MODE          auto|receipt|summary|full (default: auto)
   --failure-mode MODE          diagnostic|summary|full (default: diagnostic)
   --summary-lines N            Maximum summary lines (default: 20)
   --diagnostic-lines N         Maximum failure diagnostic lines (default: 20)
@@ -244,7 +246,7 @@ redact_capture_files() {
 validate_mode() {
 	local mode="$1"
 	case "$mode" in
-	receipt | summary | diagnostic | full) return 0 ;;
+	auto | receipt | summary | diagnostic | full) return 0 ;;
 	*) return 1 ;;
 	esac
 }
@@ -383,6 +385,67 @@ print_presentation() {
 	return 0
 }
 
+is_verbose_success() {
+	local byte_count="$1"
+	local line_count="$2"
+	[[ "$byte_count" -ge "$DEFAULT_COMPACT_BYTES" || "$line_count" -ge "$DEFAULT_COMPACT_LINES" ]]
+	return $?
+}
+
+print_verbose_success_summary() {
+	local output_id="$1"
+	local command_text="$2"
+	local exit_code="$3"
+	local duration_seconds="$4"
+	local byte_count="$5"
+	local line_count="$6"
+	local sensitive="$7"
+	local raw_path="$8"
+	if [[ "$sensitive" == "1" ]]; then
+		printf 'command: %s\n' "$command_text"
+		printf 'exit_status: %s\n' "$exit_code"
+		printf 'duration_seconds: %s\n' "$duration_seconds"
+		printf 'output: %s bytes across %s lines; sensitive content redacted\n' "$byte_count" "$line_count"
+		printf 'full_log: output-sandbox-helper.sh show %s\n' "$output_id"
+		return 0
+	fi
+	python3 - "$raw_path" "$command_text" "$exit_code" "$duration_seconds" "$byte_count" "$line_count" "$output_id" <<'PY'
+import re
+import sys
+
+path, command, exit_code, duration, byte_count, line_count, output_id = sys.argv[1:]
+with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    lines = handle.read().splitlines()
+warning_pattern = re.compile(r"(?i)(warning|deprecated|deprecation|lint|compiler)")
+warnings = [line for line in lines if warning_pattern.search(line)]
+test_patterns = (
+    re.compile(r"(?i)\btests?\s*[:=]\s*(.+)$"),
+    re.compile(r"(?i)\b(\d+)\s+(?:tests?\s+)?passed\b(?:.*?\b(\d+)\s+failed\b)?"),
+    re.compile(r"(?i)^#\s*(pass|fail)\s+(\d+)\b"),
+)
+test_lines = []
+for line in lines:
+    if any(pattern.search(line) for pattern in test_patterns):
+        test_lines.append(line.strip())
+
+print(f"command: {command}")
+print(f"exit_status: {exit_code}")
+print(f"duration_seconds: {duration}")
+print(f"output: {byte_count} bytes across {line_count} lines")
+print(f"warnings: {len(warnings)}")
+for line in warnings[:4]:
+    print(f"  warning: {line}")
+if len(warnings) > 4:
+    print(f"  ... {len(warnings) - 4} additional warning line(s) retained")
+if test_lines:
+    print("test_totals:")
+    for line in test_lines[:4]:
+        print(f"  {line}")
+print(f"full_log: output-sandbox-helper.sh show {output_id}")
+PY
+	return 0
+}
+
 cmd_store() {
 	local command_text="stdin"
 	local exit_code="0"
@@ -426,7 +489,7 @@ cmd_store() {
 
 cmd_run() {
 	local tag="run" summary_lines="$DEFAULT_SUMMARY_LINES" diagnostic_lines="$DEFAULT_DIAGNOSTIC_LINES"
-	local success_mode="receipt" failure_mode="diagnostic"
+	local success_mode="auto" failure_mode="diagnostic"
 	local expected_text="" format="text"
 	while [[ $# -gt 0 ]]; do
 		local opt="$1"
@@ -474,7 +537,8 @@ cmd_run() {
 		return $?
 	fi
 	local output_id raw_path stdout_path stderr_path summary_file diagnostic_file
-	local process_exit exit_code byte_count line_count sensitive outcome basis mode
+	local process_exit exit_code byte_count line_count sensitive outcome basis mode start_seconds duration_seconds
+	start_seconds=$SECONDS
 	output_id=$(make_output_id)
 	raw_path="${RAW_DIR}/${output_id}.txt"
 	stdout_path="${raw_path}.stdout"
@@ -506,6 +570,7 @@ cmd_run() {
 	fi
 	byte_count=$(wc -c <"$raw_path" | tr -d ' ')
 	line_count=$(wc -l <"$raw_path" | tr -d ' ')
+	duration_seconds=$((SECONDS - start_seconds))
 	if ! summarize_file "$raw_path" "$summary_lines" "$sensitive" >"$summary_file" || \
 		! diagnose_file "$raw_path" "$diagnostic_lines" "$sensitive" >"$diagnostic_file" || \
 		! record_output "$output_id" "$command_text" "$PWD" "$exit_code" "$tag" "$raw_path" "$byte_count" "$line_count" "$sensitive" "$summary_file"; then
@@ -518,6 +583,18 @@ cmd_run() {
 	if [[ "$exit_code" -ne 0 ]]; then
 		outcome="failed"
 		mode="$failure_mode"
+	fi
+	if [[ "$outcome" == "succeeded" && "$mode" == "auto" && "$format" == "text" ]]; then
+		if is_verbose_success "$byte_count" "$line_count"; then
+			print_verbose_success_summary "$output_id" "$command_text" "$exit_code" "$duration_seconds" \
+				"$byte_count" "$line_count" "$sensitive" "$raw_path"
+		else
+			emit_native_capture "$stdout_path" "$stderr_path"
+		fi
+		return "$exit_code"
+	fi
+	if [[ "$mode" == "auto" ]]; then
+		mode="receipt"
 	fi
 	print_presentation "$format" "$mode" "$output_id" "$outcome" "$exit_code" "$process_exit" \
 		"$byte_count" "$line_count" "$sensitive" "$basis" "$raw_path" "$summary_file" "$diagnostic_file"
