@@ -63,7 +63,7 @@
     "@vitejs/plugin-react": "6.0.5",
     "elysia": "1.4.29",
     "file-type": "21.3.4",
-    "hono": "4.13.0",
+    "hono": "4.13.5",
     "vite": "8.2.1"
   },
   "devDependencies": {

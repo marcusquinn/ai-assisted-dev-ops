@@ -18,30 +18,37 @@ function sessionIDFrom(event) {
 export function createRoutingFeedbackHandler({ client, isHeadless, getFeedback }) {
   const emitted = new Map();
 
-  return async function routingFeedbackHandler(input) {
+  const pendingToastFor = (sessionID) => {
+    const summary = getFeedback(sessionID);
+    const fingerprint = routingFeedbackFingerprint(summary);
+    const message = formatRoutingFeedbackToast(summary);
+    return fingerprint && emitted.get(sessionID) !== fingerprint && message ? { fingerprint, message } : null;
+  };
+  const hasPending = (sessionID) => Boolean(pendingToastFor(sessionID));
+
+  const routingFeedbackHandler = async (input) => {
     if (isHeadless()) return;
     const event = eventFrom(input);
     const sessionID = sessionIDFrom(event);
-    if (!sessionID) return;
-    if (event.type === "session.deleted") {
+    if (sessionID && event.type === "session.deleted") {
       emitted.delete(sessionID);
     }
     if (event.type !== "session.idle") return;
 
-    const summary = getFeedback(sessionID);
-    const fingerprint = routingFeedbackFingerprint(summary);
-    if (!fingerprint || emitted.get(sessionID) === fingerprint) return;
-    const message = formatRoutingFeedbackToast(summary);
-    if (!message) return;
+    const pending = sessionID ? pendingToastFor(sessionID) : null;
+    if (!pending) return;
 
     await client.tui.showToast({
       body: {
         title: "Routing feedback",
-        message,
+        message: pending.message,
         variant: "info",
         duration: 12000,
       },
     });
-    emitted.set(sessionID, fingerprint);
+    emitted.set(sessionID, pending.fingerprint);
   };
+
+  routingFeedbackHandler.hasPending = hasPending;
+  return routingFeedbackHandler;
 }

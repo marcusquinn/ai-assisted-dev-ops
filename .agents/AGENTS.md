@@ -57,7 +57,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 - Run checks in background. Workers hand pending post-PR CI/reviews to pulse; poll only bounded operational gates. Details: `reference/self-improvement.md`.
 - When UI/UX, branding, iconography, or visual preferences change during a session, update the repo `DESIGN.md` in the same PR or create a worker-ready follow-up if blocked.
 - During in-progress work, classify new user messages before acting: immediate correction/steerage changes the active plan; supplemental context is retained/applied when relevant; follow-up work becomes a todo after the current work reaches a safe pause or completion point.
-- Interactive sessions with active prior task context: if the user starts a clearly unrelated objective where clean context would materially help, briefly recommend `/new` or a new tab and ask whether to continue here. Details: `reference/session.md`.
+- Interactive sessions: only at safe pauses, preserve a continuation checkpoint before offering `/new` after a completed PR lifecycle, 3+ hours, or a clearly unrelated objective. Never interrupt active work or affect headless sessions. Details: `reference/session.md`.
 - Prioritise time-to-functional: run existing required gates, but add tests only when requested, required, or the cheapest way to resolve material uncertainty. Prefer product paths and existing tooling; get approval before new test infrastructure or test-only interfaces. Details: `reference/ci-gate-policy.md`.
 - Never present intent as completed work. Every claim needs proof: path, command result, PR/issue number, or metric.
 - Stuck: replan, inspect current state, and use `session-introspect-helper.sh patterns` when loops appear.

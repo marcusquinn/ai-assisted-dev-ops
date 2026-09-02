@@ -20,11 +20,15 @@ test("routing feedback handler emits changed idle summaries once", async () => {
     getFeedback: () => summarizeRoutingFeedback({ requests }),
   });
 
+  assert.equal(handler.hasPending("root"), true);
   await handler(event("message.updated"));
   await handler(event("session.idle"));
+  assert.equal(handler.hasPending("root"), false);
   await handler(event("session.idle"));
   requests = [...requests, { session_id: "child-b", parent_session_id: "root", routing_tier: "standard", tokens_total: 10 }];
+  assert.equal(handler.hasPending("root"), true);
   await handler(event("session.idle"));
+  assert.equal(handler.hasPending("root"), false);
 
   assert.equal(toasts.length, 2);
   assert.equal(toasts[0].body.title, "Routing feedback");

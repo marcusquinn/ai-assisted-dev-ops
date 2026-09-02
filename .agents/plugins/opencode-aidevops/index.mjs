@@ -56,9 +56,11 @@ import {
 import { loadModelRouting } from "./model-routing.mjs";
 import { createSessionContinuationGuard } from "./session-continuation-guard.mjs";
 import { createSessionRecoveryMarkerHandler } from "./session-recovery-marker.mjs";
+import { createSessionStallRecovery } from "./session-stall-recovery.mjs";
 import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
 import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
+import { createSessionBoundaryAdvisory } from "./session-boundary-advisory.mjs";
 import { createProviderErrorHandler } from "./provider-error-diagnostics.mjs";
 import {
   appendConversationSystemContext,
@@ -514,6 +516,11 @@ export async function AidevopsPlugin({ directory, client }) {
   });
   const sessionTitleStatusHandler = createSessionTitleStatusHandler({ isHeadless });
   const routingFeedbackHandler = createRoutingFeedbackHandler({ client, isHeadless, getFeedback: getRoutingFeedback });
+  const sessionBoundaryAdvisory = createSessionBoundaryAdvisory({
+    client,
+    isHeadless,
+    hasCompetingToast: (sessionID) => routingFeedbackHandler.hasPending(sessionID),
+  });
   const providerErrorHandler = createProviderErrorHandler({
     client,
     isHeadless,
@@ -528,6 +535,12 @@ export async function AidevopsPlugin({ directory, client }) {
     dataDir: process.env.XDG_DATA_HOME || "",
     workDir: process.env.AIDEVOPS_WORK_DIR || join(WORKSPACE_DIR, "work"),
   });
+  const sessionStallRecovery = createSessionStallRecovery({
+    client,
+    directory,
+    workDir: process.env.AIDEVOPS_WORK_DIR || join(WORKSPACE_DIR, "work"),
+    log: qualityLog,
+  });
 
   const debugEventError = (label, err) => {
     if (process.env.AIDEVOPS_PLUGIN_DEBUG) {
@@ -537,6 +550,7 @@ export async function AidevopsPlugin({ directory, client }) {
 
   recordPluginHealthStage("factory_initialized", {
     config_hook: true,
+    session_boundary_advisory: true,
     terminal_title_status: true,
   });
 
@@ -579,12 +593,14 @@ export async function AidevopsPlugin({ directory, client }) {
     // Quality hooks
     "tool.execute.before": async (input, output) => {
       enforceManagedMcpArtifactPath(input, output, mcpRuntime.workspaces);
+      sessionStallRecovery.beforeTool(input, output);
       permissionBroker.recordToolCall(input, output);
       cancellationReceipt.beforeTool(input, output);
       subagentEffortHooks.beforeTool(input, output);
       return toolExecuteBefore(input, output);
     },
     "tool.execute.after": async (input, output) => {
+      sessionStallRecovery.afterTool(input, output);
       await cancellationReceipt.afterTool(input, output);
       await subagentEffortHooks.afterTool(input, output);
       return toolExecuteAfter(input, output);
@@ -610,10 +626,12 @@ export async function AidevopsPlugin({ directory, client }) {
         permissionBroker.handleEvent(input).catch((err) => debugEventError("permission broker", err)),
         sessionTitleStatusHandler(input).catch((err) => debugEventError("title status handler", err)),
         routingFeedbackHandler(input).catch((err) => debugEventError("routing feedback handler", err)),
+        sessionBoundaryAdvisory(input).catch((err) => debugEventError("session boundary advisory", err)),
         providerErrorHandler(input).catch((err) => debugEventError("provider error handler", err)),
         sessionTitleSuffixHandler(input).catch((err) => debugEventError("title suffix handler", err)),
         sessionTitleFallbackHandler(input).catch((err) => debugEventError("title fallback handler", err)),
         sessionRecoveryMarkerHandler(input).catch((err) => debugEventError("session recovery marker", err)),
+        Promise.resolve(sessionStallRecovery.handleEvent(input)),
         greetingHandler(input).catch((err) => debugEventError("greeting handler", err)),
       ]);
     },

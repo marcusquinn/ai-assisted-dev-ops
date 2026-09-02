@@ -70,6 +70,7 @@ SESSION_COUNT_WARN="${SESSION_COUNT_WARN:-5}"
 readonly PROCESS_RUNTIME_OK="OK"
 readonly PROCESS_RUNTIME_MANAGED="MANAGED"
 readonly PROCESS_RUNTIME_OVER="OVER"
+readonly PROCESS_CGROUP_UNKNOWN='unknown'
 
 # Validate all numeric config to prevent command injection via arithmetic expansion
 CHILD_RSS_LIMIT_KB=$(_validate_int CHILD_RSS_LIMIT_KB "$CHILD_RSS_LIMIT_KB" 2097152 1)
@@ -121,6 +122,43 @@ _get_process_cwd() {
 }
 
 #######################################
+# Return the process's systemd or unified cgroup path when available.
+# Arguments:
+#   $1 - PID
+# Output: cgroup path or "unknown"
+#######################################
+_get_process_cgroup_path() {
+	local pid="$1"
+	local proc_root="${AIDEVOPS_PROCESS_GUARD_PROC_ROOT:-/proc}"
+	local cgroup_file="${proc_root%/}/${pid}/cgroup"
+	local cgroup_line=""
+	local cgroup_path=""
+	local fallback_path=""
+
+	if [[ -r "$cgroup_file" ]]; then
+		while IFS= read -r cgroup_line || [[ -n "$cgroup_line" ]]; do
+			cgroup_path="${cgroup_line#*:*:}"
+			if [[ -z "$fallback_path" && -n "$cgroup_path" ]]; then
+				fallback_path="$cgroup_path"
+			fi
+			case "$cgroup_line" in
+			0::* | *:name=systemd:*)
+				printf '%s' "$cgroup_path"
+				return 0
+				;;
+			esac
+		done <"$cgroup_file"
+	fi
+	if [[ -n "$fallback_path" ]]; then
+		printf '%s' "$fallback_path"
+		return 0
+	fi
+
+	printf '%s' "$PROCESS_CGROUP_UNKNOWN"
+	return 0
+}
+
+#######################################
 # Return whether a process belongs to a systemd-managed aidevops worker.
 # All descendants of a transient worker service share its cgroup, so this
 # verifies lifecycle ownership without relying on mutable command strings.
@@ -151,9 +189,50 @@ _is_managed_worker_process() {
 }
 
 #######################################
+# Return whether a process belongs to the OpenCode web server or its watchdog
+# service. The service manager owns both long-running lifecycles; applying the
+# generic two-hour process limit to either unit disrupts active web sessions.
+# Arguments:
+#   $1 - PID
+# Returns: 0 for managed OpenCode web-service lineage, 1 otherwise
+#######################################
+_is_managed_opencode_web_process() {
+	local pid="$1"
+	local cgroup_path=""
+	local service_regex='/opencode-web(-watchdog|@[^/]+)?\.service(/|$)'
+
+	[[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+	cgroup_path=$(_get_process_cgroup_path "$pid")
+	[[ "$cgroup_path" != "$PROCESS_CGROUP_UNKNOWN" ]] || return 1
+	if [[ "$cgroup_path" =~ $service_regex ]]; then
+		return 0
+	fi
+	return 1
+}
+
+#######################################
+# Describe the lifecycle owner that supersedes the generic runtime limit.
+# Arguments:
+#   $1 - PID
+# Output: owner label, or empty when unmanaged
+#######################################
+_runtime_management_owner() {
+	local pid="$1"
+	if _is_managed_worker_process "$pid"; then
+		printf '%s' "worker-service"
+		return 0
+	fi
+	if _is_managed_opencode_web_process "$pid"; then
+		printf '%s' "opencode-web-service"
+		return 0
+	fi
+	return 0
+}
+
+#######################################
 # Classify a process against the generic runtime limit.
-# Managed worker services delegate runtime decisions to their lifecycle-aware
-# watchdog/sandbox controls. RSS limits remain independently enforced.
+# Managed services delegate runtime decisions to their lifecycle-aware service,
+# watchdog, or sandbox controls. RSS limits remain independently enforced.
 # Arguments:
 #   $1 - PID
 #   $2 - process age in seconds
@@ -164,6 +243,7 @@ _classify_runtime_limit() {
 	local pid="$1"
 	local age_seconds="$2"
 	local runtime_limit="$3"
+	local management_owner=""
 
 	if [[ ! "$age_seconds" =~ ^[0-9]+$ || ! "$runtime_limit" =~ ^[0-9]+$ ]]; then
 		printf '%s' "$PROCESS_RUNTIME_OK"
@@ -173,7 +253,8 @@ _classify_runtime_limit() {
 		printf '%s' "$PROCESS_RUNTIME_OK"
 		return 0
 	fi
-	if _is_managed_worker_process "$pid"; then
+	management_owner=$(_runtime_management_owner "$pid")
+	if [[ -n "$management_owner" ]]; then
 		printf '%s' "$PROCESS_RUNTIME_MANAGED"
 		return 0
 	fi
@@ -372,7 +453,7 @@ cmd_scan() {
 			violations=$((violations + 1))
 		elif [[ "$runtime_status" == "$PROCESS_RUNTIME_MANAGED" ]]; then
 			status="MANAGED"
-			detail="runtime delegated to worker lifecycle controls"
+			detail="runtime delegated to $(_runtime_management_owner "$pid") lifecycle controls"
 		elif [[ "$cmd_base" == "shellcheck" ]]; then
 			[[ "$ppid" =~ ^[0-9]+$ ]] || ppid=0
 			if [[ "$ppid" -eq 1 ]] && [[ "$age_seconds" -gt 120 ]]; then
@@ -459,8 +540,8 @@ cmd_kill_runaways() {
 			violation="runtime ${age_seconds}s > ${runtime_limit}s"
 		fi
 
-		# Managed worker trees have dedicated activity, sandbox, service, and
-		# lease controls. Do not apply any generic age-based cleanup to them.
+		# Managed service trees have dedicated activity, health, sandbox, service,
+		# or lease controls. Do not apply generic age-based cleanup to them.
 		if [[ -z "$violation" && "$runtime_status" == "$PROCESS_RUNTIME_MANAGED" ]]; then
 			continue
 		fi
@@ -481,7 +562,7 @@ cmd_kill_runaways() {
 
 		if [[ -n "$violation" ]]; then
 			local rss_mb=$((rss / 1024))
-			local process_class killed_at
+			local process_class killed_at cgroup_path
 			process_class='other'
 			case "$cmd_base" in
 			shellcheck) process_class='lint' ;;
@@ -495,9 +576,10 @@ cmd_kill_runaways() {
 			opencode | opencode-ai | claude | claude-ai) process_class='ai-runtime' ;;
 			esac
 			killed_at=$(_process_guard_timestamp)
+			cgroup_path=$(_get_process_cgroup_path "$pid")
 			echo "Killing PID $pid ($cmd_base) — $violation"
-			printf '[process-guard] %s Killing PID %s class=%s cmd=%s rss_mb=%s age_seconds=%s — %s\n' \
-				"$killed_at" "$pid" "$process_class" "$cmd_base" "$rss_mb" "$age_seconds" "$violation" >>"$LOGFILE"
+			printf '[process-guard] %s action=kill pid=%s ppid=%s class=%s cmd=%s rss_mb=%s age_seconds=%s runtime_limit_seconds=%s cgroup=%s reason=%s\n' \
+				"$killed_at" "$pid" "$ppid" "$process_class" "$cmd_base" "$rss_mb" "$age_seconds" "$runtime_limit" "$cgroup_path" "$violation" >>"$LOGFILE"
 			kill "$pid" 2>/dev/null || true
 			sleep 1
 			if kill -0 "$pid" 2>/dev/null; then

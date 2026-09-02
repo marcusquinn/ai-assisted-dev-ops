@@ -601,11 +601,14 @@ _GH_EDIT_REJECTION_REASON=""
 _GH_WRAPPER_BODY_FILE_ARGS=()
 _gh_wrapper_normalize_stdin_body_file() {
 	_GH_WRAPPER_BODY_FILE_ARGS=("$@")
-	local i=0 needs_stdin=0
+	local i=0 needs_stdin=0 array_index_offset=0
+	# Bash arrays are zero-based while zsh arrays are one-based by default.
+	# Keep the loop zero-based and translate only array subscripts for zsh.
+	[[ -n "${ZSH_VERSION:-}" ]] && array_index_offset=1
 	while [[ $i -lt ${#_GH_WRAPPER_BODY_FILE_ARGS[@]} ]]; do
-		case "${_GH_WRAPPER_BODY_FILE_ARGS[i]}" in
+		case "${_GH_WRAPPER_BODY_FILE_ARGS[$((i + array_index_offset))]}" in
 		--body-file)
-			[[ "${_GH_WRAPPER_BODY_FILE_ARGS[i + 1]:-}" == "-" ]] && needs_stdin=1
+			[[ "${_GH_WRAPPER_BODY_FILE_ARGS[$((i + array_index_offset + 1))]:-}" == "-" ]] && needs_stdin=1
 			i=$((i + 1))
 			;;
 		--body-file=-) needs_stdin=1 ;;
@@ -639,19 +642,29 @@ _gh_wrapper_normalize_stdin_body_file() {
 		return 1
 	fi
 
+	local -a normalized_args=()
+	local current_arg
 	i=0
 	while [[ $i -lt ${#_GH_WRAPPER_BODY_FILE_ARGS[@]} ]]; do
-		case "${_GH_WRAPPER_BODY_FILE_ARGS[i]}" in
+		current_arg="${_GH_WRAPPER_BODY_FILE_ARGS[$((i + array_index_offset))]}"
+		case "$current_arg" in
 		--body-file)
-			if [[ "${_GH_WRAPPER_BODY_FILE_ARGS[i + 1]:-}" == "-" ]]; then
-				_GH_WRAPPER_BODY_FILE_ARGS[i + 1]="$stdin_body_file"
+			normalized_args+=("$current_arg")
+			if [[ $((i + 1)) -lt ${#_GH_WRAPPER_BODY_FILE_ARGS[@]} ]]; then
+				if [[ "${_GH_WRAPPER_BODY_FILE_ARGS[$((i + array_index_offset + 1))]}" == "-" ]]; then
+					normalized_args+=("$stdin_body_file")
+				else
+					normalized_args+=("${_GH_WRAPPER_BODY_FILE_ARGS[$((i + array_index_offset + 1))]}")
+				fi
+				i=$((i + 1))
 			fi
-			i=$((i + 1))
 			;;
-		--body-file=-) _GH_WRAPPER_BODY_FILE_ARGS[i]="--body-file=${stdin_body_file}" ;;
+		--body-file=-) normalized_args+=("--body-file=${stdin_body_file}") ;;
+		*) normalized_args+=("$current_arg") ;;
 		esac
 		i=$((i + 1))
 	done
+	_GH_WRAPPER_BODY_FILE_ARGS=("${normalized_args[@]}")
 	return 0
 }
 
