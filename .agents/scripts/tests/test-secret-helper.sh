@@ -267,6 +267,35 @@ test_set_rejects_command_literal_input() {
 	return 0
 }
 
+test_fallback_set_creates_credentials_store() {
+	setup
+	trap 'teardown' RETURN
+	cat >"$TEST_DIR/bin/gopass" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+	chmod +x "$TEST_DIR/bin/gopass"
+	local credentials_file="$TEST_DIR/home/.config/aidevops/credentials.sh"
+	local exit_code=0
+	local permissions=""
+
+	printf '%s\n' 'first-value' | HOME="$TEST_DIR/home" bash "$HELPER" set FIRST_KEY >/dev/null 2>&1 || exit_code=$?
+	if [[ -f "$credentials_file" ]]; then
+		permissions=$(stat -f '%Lp' "$credentials_file" 2>/dev/null || stat -c '%a' "$credentials_file" 2>/dev/null || true)
+	fi
+
+	if [[ "$exit_code" -eq 0 && "$permissions" == "600" ]] &&
+		[[ $(grep -c '^export FIRST_KEY=' "$credentials_file") -eq 1 ]] &&
+		grep -qx 'export FIRST_KEY="first-value"' "$credentials_file" &&
+		[[ ! -d "${credentials_file}.lock" ]]; then
+		print_result "fallback set creates credentials store" 0
+	else
+		print_result "fallback set creates credentials store" 1 "writer=$exit_code mode=$permissions"
+	fi
+
+	return 0
+}
+
 test_concurrent_fallback_sets_preserve_all_credentials() {
 	setup
 	trap 'teardown' RETURN
@@ -306,8 +335,8 @@ EOF
 		name=$(printf 'BASELINE_%02d' "$index")
 		expected_line=$(printf 'export %s="baseline-%02d"' "$name" "$index")
 		if [[ $(grep -c "^export ${name}=" "$credentials_file") -ne 1 ]] || ! grep -qx "$expected_line" "$credentials_file"; then
-		print_result "concurrent fallback sets preserve all credentials" 1 "Missing or duplicate baseline entry: $name"
-		return 0
+			print_result "concurrent fallback sets preserve all credentials" 1 "Missing or duplicate baseline entry: $name"
+			return 0
 		fi
 	done
 
@@ -315,15 +344,16 @@ EOF
 		name=$(printf 'NEW_KEY_%02d' "$index")
 		expected_line=$(printf 'export %s="value-%02d"' "$name" "$index")
 		if [[ $(grep -c "^export ${name}=" "$credentials_file") -ne 1 ]] || ! grep -qx "$expected_line" "$credentials_file"; then
-		print_result "concurrent fallback sets preserve all credentials" 1 "Missing or duplicate concurrent entry: $name"
-		return 0
+			print_result "concurrent fallback sets preserve all credentials" 1 "Missing or duplicate concurrent entry: $name"
+			return 0
 		fi
 	done
 
 	local permissions=""
 	permissions=$(stat -f '%Lp' "$credentials_file" 2>/dev/null || stat -c '%a' "$credentials_file" 2>/dev/null || true)
 	if [[ "$exit_code" -eq 0 && $(grep -c '^export UPDATED_KEY=' "$credentials_file") -eq 1 &&
-		$(grep -c '^export ' "$credentials_file") -eq 25 && "$permissions" == "600" ]]; then
+	$(grep -c '^export ' "$credentials_file") -eq 25 && "$permissions" == "600" ]] &&
+		grep -qx 'export UPDATED_KEY="after"' "$credentials_file"; then
 		print_result "concurrent fallback sets preserve all credentials" 0
 	else
 		print_result "concurrent fallback sets preserve all credentials" 1 "writers=$exit_code entries=$(grep -c '^export ' "$credentials_file") mode=$permissions"
@@ -382,6 +412,7 @@ main() {
 	test_set_uses_provided_stdin_value
 	test_credentials_read_unescapes_special_chars
 	test_set_rejects_command_literal_input
+	test_fallback_set_creates_credentials_store
 	test_concurrent_fallback_sets_preserve_all_credentials
 	test_run_redacts_sed_significant_literal_values
 	test_run_fails_closed_when_redactor_cannot_start

@@ -383,9 +383,17 @@ release_credentials_lock() {
 update_fallback_credential() {
 	local name="$1"
 	local escaped_value="$2"
+	local filter_status=0
 	local lock_dir=""
 	local tmp_file=""
 	local previous_umask=""
+
+	# The lock lives beside the credentials file, so its parent must exist before
+	# acquisition. File creation remains inside the lock to avoid truncation races.
+	if ! mkdir -p "$CONFIG_DIR" || ! chmod 700 "$CONFIG_DIR"; then
+		print_error "Unable to prepare credentials directory"
+		return 1
+	fi
 
 	if ! lock_dir=$(acquire_credentials_lock); then
 		return 1
@@ -406,7 +414,8 @@ update_fallback_credential() {
 	fi
 	umask "$previous_umask"
 
-	if ! grep -v "^export ${name}=" "$CREDENTIALS_FILE" >"$tmp_file" ||
+	grep -v "^export ${name}=" "$CREDENTIALS_FILE" >"$tmp_file" || filter_status=$?
+	if [[ "$filter_status" -gt 1 ]] ||
 		! printf 'export %s="%s"\n' "$name" "$escaped_value" >>"$tmp_file" ||
 		! chmod 600 "$tmp_file" ||
 		! mv -f "$tmp_file" "$CREDENTIALS_FILE"; then
