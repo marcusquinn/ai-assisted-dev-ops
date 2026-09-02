@@ -111,6 +111,12 @@ redacted_compact=$(python3 -c 'print("api_key=" + "x" * 10000)' | "$HELPER" comp
 assert_contains "redaction cannot downgrade compact output to raw" "full_log: output-sandbox-helper.sh show out_" "$redacted_compact"
 assert_not_contains "redaction does not expose raw secret marker" "api_key=" "$redacted_compact"
 
+named_secret=$(printf 'warning: NPM_TOKEN=supersecretvalue123\n' | "$HELPER" store --command fixture)
+named_secret_id=$(printf '%s\n' "$named_secret" | awk '/^output_id:/ {print $2; exit}')
+named_secret_show=$("$HELPER" show "$named_secret_id" 2>&1)
+assert_contains "named environment secret is redacted before storage" "NPM_TOKEN=[REDACTED]" "$named_secret_show"
+assert_not_contains "named environment secret value is not retained" "supersecretvalue123" "$named_secret_show"
+
 set +e
 failure_output=$("$HELPER" run --diagnostic-lines 4 -- bash -c 'printf "routine line\n"; printf "fatal: fixture failed\n" >&2; exit 7')
 failure_rc=$?

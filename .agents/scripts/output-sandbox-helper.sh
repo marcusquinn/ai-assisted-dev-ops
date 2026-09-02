@@ -111,7 +111,7 @@ PY
 
 looks_sensitive_file() {
 	local path="$1"
-	if grep -Eiq '(BEGIN ((RSA|DSA|EC|OPENSSH) )?PRIVATE KEY|aws_secret_access_key|api[_-]?key[=:][[:space:]]*[A-Za-z0-9_./+=-]{20,}|token[=:][[:space:]]*[A-Za-z0-9_./+=-]{24,}|password[=:][^[:space:]]{8,}|gh[pousr]_[A-Za-z0-9_]{20,})' "$path" 2>/dev/null; then
+	if grep -Eiq '(BEGIN ((RSA|DSA|EC|OPENSSH) )?PRIVATE KEY|aws_secret_access_key|[A-Za-z0-9_]*(api[_-]?key|token|password|authorization)[A-Za-z0-9_]*[=:][[:space:]]*[^[:space:]]{8,}|gh[pousr]_[A-Za-z0-9_]{20,})' "$path" 2>/dev/null; then
 		return 0
 	fi
 	return 1
@@ -127,7 +127,7 @@ data = open(src, 'r', encoding='utf-8', errors='replace').read()
 patterns = [
     r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----',
     r'(?i)(aws_secret_access_key\s*[=:]\s*)\S+',
-    r'(?i)((?:api[_-]?key|token|password)\s*[=:]\s*)\S+',
+    r'(?i)(\b[A-Za-z0-9_]*(?:api[_-]?key|token|password|authorization)[A-Za-z0-9_]*\s*[=:]\s*)\S+',
     r'gh[pousr]_[A-Za-z0-9_]{20,}',
 ]
 for pat in patterns:
