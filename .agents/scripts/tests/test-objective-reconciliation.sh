@@ -189,4 +189,22 @@ jq -e '.source == "objective_state" and .effective_outcome == "success" and
 	.suppress_retry == true and .suppress_failure_mining == true' \
 	"$disposition" >/dev/null || fail "legacy objective state remains readable"
 
+large_evidence_file="$TMP_DIR/large-evidence.jsonl"
+large_payload=$(printf '%0200000d' 0)
+for large_index in 1 2 3 4 5 6 7 8 9 10; do
+	printf '{"repo":"owner/repo","issue_number":%s,"event_type":"worker.failed","payload":"%s"}\n' \
+		"$large_index" "$large_payload" >>"$large_evidence_file"
+done
+AIDEVOPS_OBJECTIVE_EVIDENCE_FILE="$large_evidence_file" \
+	"$HELPER" record-outcome --repo owner/repo --issue 88 \
+	--attempt-id attempt-large --run-id run-large --raw-result recovered \
+	--outcome success --status recovered --classification stale_cleanup \
+	--next-action monitor_pr --timestamp 10400
+AIDEVOPS_OBJECTIVE_EVIDENCE_FILE="$large_evidence_file" \
+	"$HELPER" disposition --repo owner/repo --issue 88 --attempt-id attempt-large \
+	--state-file "$state_file" >"$disposition"
+jq -e '.source == "attempt_outcome" and .effective_outcome == "success" and
+	.raw_result == "recovered"' "$disposition" >/dev/null ||
+	fail "large evidence disposition must avoid argv limits"
+
 printf 'PASS objective-reconciliation\n'
