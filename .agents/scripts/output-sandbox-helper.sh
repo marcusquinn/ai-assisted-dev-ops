@@ -22,6 +22,7 @@ DEFAULT_COMPACT_BYTES="${AIDEVOPS_OUTPUT_SANDBOX_COMPACT_BYTES:-8192}"
 DEFAULT_COMPACT_LINES="${AIDEVOPS_OUTPUT_SANDBOX_COMPACT_LINES:-80}"
 OUTPUT_MODE_AUTO="auto"
 OUTCOME_SUCCEEDED="succeeded"
+OUTPUT_FORMAT_TEXT="text"
 
 usage() {
 	cat <<'EOF'
@@ -297,11 +298,60 @@ PY
 should_bypass_command() {
 	local command_text="$1"
 	case "$command_text" in
-	cat\ * | head\ * | tail\ * | less\ * | more\ * | git\ diff* | *" --json"* | *" security "* | *secret* | *credential*)
+	cat\ * | head\ * | tail\ * | less\ * | more\ * | sed\ * | rg\ * | jq\ * | git\ diff* | git\ show* | *" --json"* | *" security "* | *secret* | *credential* | *password* | *authorization* | *token*)
 		return 0
 		;;
 	esac
 	return 1
+}
+
+is_package_compaction_candidate() {
+	local command_text="$1"
+	local package_pattern='^(npm|pnpm|yarn|bun) (test|build|lint|check|typecheck|ci)( |$)'
+	local script_pattern='^(npm|pnpm|yarn|bun) run (test|build|lint|check|typecheck)([:_.-][[:alnum:]_.-]+)?( |$)'
+	[[ "$command_text" =~ $package_pattern || "$command_text" =~ $script_pattern ]]
+	return $?
+}
+
+is_toolchain_compaction_candidate() {
+	local command_text="$1"
+	local pattern='^((python3? -m )?pytest|go test|cargo (test|build|check|clippy)|make( (test|check|build|lint)([:_.-][[:alnum:]_.-]+)?)?|cmake --build|gradle (test|build|check|lint)|\./gradlew (test|build|check|lint)|mvn (test|verify|package|install|compile)|dotnet (test|build)|shellcheck)( |$)'
+	[[ "$command_text" =~ $pattern ]]
+	return $?
+}
+
+is_script_compaction_candidate() {
+	local command_text="$1"
+	local pattern='(^|/)(linters-local\.sh)( |$)|^bash [^[:space:]]*(test|lint)[^[:space:]]*\.sh( |$)'
+	[[ "$command_text" =~ $pattern ]]
+	return $?
+}
+
+is_compaction_candidate() {
+	local command_text="$1"
+	case "$command_text" in
+	*';'* | *'&&'* | *'||'* | *'|'* | *'`'* | *"\$("* | *'>'* | *'<'*)
+		return 1
+		;;
+	esac
+	if is_package_compaction_candidate "$command_text" || \
+		is_toolchain_compaction_candidate "$command_text" || \
+		is_script_compaction_candidate "$command_text"; then
+		return 0
+	fi
+	return 1
+}
+
+resolve_success_mode() {
+	local success_mode="$1"
+	local format="$2"
+	local command_shape="$3"
+	if [[ "$success_mode" == "$OUTPUT_MODE_AUTO" && "$format" == "$OUTPUT_FORMAT_TEXT" ]] && ! is_compaction_candidate "$command_shape"; then
+		printf 'native\n'
+	else
+		printf '%s\n' "$success_mode"
+	fi
+	return 0
 }
 
 print_receipt_text() {
@@ -528,7 +578,11 @@ present_run_result() {
 	local diagnostic_file="${13}"
 	local duration_seconds="${14}"
 	local command_text="${15}"
-	if [[ "$outcome" == "$OUTCOME_SUCCEEDED" && "$mode" == "$OUTPUT_MODE_AUTO" && "$format" == "text" ]]; then
+	if [[ "$outcome" == "$OUTCOME_SUCCEEDED" && "$mode" == "native" ]]; then
+		emit_native_capture "$raw_path.stdout" "$raw_path.stderr"
+		return "$exit_code"
+	fi
+	if [[ "$outcome" == "$OUTCOME_SUCCEEDED" && "$mode" == "$OUTPUT_MODE_AUTO" && "$format" == "$OUTPUT_FORMAT_TEXT" ]]; then
 		if is_verbose_success "$byte_count" "$line_count"; then
 			print_verbose_success_summary "$output_id" "$command_text" "$exit_code" "$duration_seconds" \
 				"$byte_count" "$line_count" "$sensitive" "$raw_path"
@@ -587,7 +641,7 @@ cmd_store() {
 cmd_run() {
 	local tag="run" summary_lines="$DEFAULT_SUMMARY_LINES" diagnostic_lines="$DEFAULT_DIAGNOSTIC_LINES"
 	local success_mode="$OUTPUT_MODE_AUTO" failure_mode="diagnostic"
-	local expected_text="" format="text"
+	local expected_text="" format="$OUTPUT_FORMAT_TEXT"
 	while [[ $# -gt 0 ]]; do
 		local opt="$1"
 		case "$opt" in
@@ -628,6 +682,7 @@ cmd_run() {
 		"$@"
 		return $?
 	fi
+	success_mode=$(resolve_success_mode "$success_mode" "$format" "$command_shape")
 	if ! init_db; then
 		printf 'output_sandbox: evidence store unavailable; running with native output\n' >&2
 		"$@"

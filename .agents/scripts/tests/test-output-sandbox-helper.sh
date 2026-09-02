@@ -80,14 +80,22 @@ short_output=$("$HELPER" run -- bash -c 'printf "short successful output\n"')
 	pass "ordinary short successful output remains unchanged" || \
 	fail "ordinary short successful output remains unchanged" "got ${short_output}"
 
-# shellcheck disable=SC2016 # Inner bash expands $i, not this test harness.
-verbose_output=$("$HELPER" run -- bash -c 'for i in $(seq 1 100); do printf "asset %s\n" "$i"; done; printf "warning: fixture deprecation\n"; printf "Tests: 100 passed, 0 failed\n"')
+verbose_fixture="${TMPDIR_TEST}/test-verbose-output.sh"
+# shellcheck disable=SC2016 # Fixture script expands its own loop variables.
+printf '%s\n' '#!/usr/bin/env bash' 'for i in $(seq 1 100); do printf "asset %s\n" "$i"; done' 'printf "warning: fixture deprecation\n"' 'printf "Tests: 100 passed, 0 failed\n"' >"$verbose_fixture"
+chmod 700 "$verbose_fixture"
+verbose_output=$("$HELPER" run -- bash "$verbose_fixture")
 assert_contains "verbose success reports command identity" "command: bash" "$verbose_output"
 assert_contains "verbose success reports exit status" "exit_status: 0" "$verbose_output"
 assert_contains "verbose success preserves warning evidence" "warning: fixture deprecation" "$verbose_output"
 assert_contains "verbose success preserves test totals" "Tests: 100 passed, 0 failed" "$verbose_output"
 assert_contains "verbose success retains retrievable full log" "full_log: output-sandbox-helper.sh show out_" "$verbose_output"
 assert_not_contains "verbose success bounds raw asset listing" "asset 50" "$verbose_output"
+
+# shellcheck disable=SC2016 # Inner bash expands its own loop variables.
+arbitrary_output=$("$HELPER" run -- bash -c 'for i in $(seq 1 100); do printf "exact %s\n" "$i"; done')
+assert_contains "unrecognized verbose success remains native" "exact 50" "$arbitrary_output"
+assert_not_contains "unrecognized verbose success has no compact receipt" "full_log:" "$arbitrary_output"
 
 huge_diagnostic=$(python3 -c 'print("warning: /Users/private/project " + "x" * 20000)')
 compact_output=$(printf '%s\n' "$huge_diagnostic" | "$HELPER" compact --command /private/example/bash --duration-ms 42)

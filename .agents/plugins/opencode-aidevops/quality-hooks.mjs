@@ -14,7 +14,11 @@ import {
   prepareIntent,
 } from "./intent-tracing.mjs";
 import { recordToolStart, consumeToolDuration } from "./timing-tracing.mjs";
-import { compactSuccessfulBashOutput, rememberBashOutputPolicy } from "./output-compaction.mjs";
+import {
+  compactSuccessfulBashOutput,
+  isVerboseBashOutput,
+  rememberBashOutputPolicy,
+} from "./output-compaction.mjs";
 import { qualityLog, runFileQualityGate } from "./quality-logging.mjs";
 import { enrichActiveSpan, detectTaskId, detectSessionOrigin } from "./otel-enrichment.mjs";
 import {
@@ -360,6 +364,7 @@ function handleToolAfter(ctx, log, scriptsDir, input, output) {
   // Applies to all tools — credentials can arrive via user scripts, third-party
   // CLIs, or runtime error backtraces, not just framework helpers.
   const rawOutput = output.output;
+  const bashOutputWasVerbose = isBashTool(toolName) && isVerboseBashOutput(rawOutput);
   if (rawOutput !== undefined) {
     const { output: scrubbedOutput, redacted } = scrubToolOutput(rawOutput);
     if (redacted) {
@@ -385,6 +390,7 @@ function handleToolAfter(ctx, log, scriptsDir, input, output) {
       output,
       scriptsDir,
       durationMs,
+      wasVerbose: bashOutputWasVerbose,
       log,
     });
   }
