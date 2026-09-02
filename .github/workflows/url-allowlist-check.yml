@@ -41,7 +41,7 @@ jobs:
       # Security: checkout the BASE branch only (never the PR head).
       # We need the allowlist file and extractor script from the trusted base branch.
       - name: Checkout base branch (trusted)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: |
