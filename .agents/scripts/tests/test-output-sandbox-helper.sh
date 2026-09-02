@@ -89,6 +89,16 @@ assert_contains "verbose success preserves test totals" "Tests: 100 passed, 0 fa
 assert_contains "verbose success retains retrievable full log" "full_log: output-sandbox-helper.sh show out_" "$verbose_output"
 assert_not_contains "verbose success bounds raw asset listing" "asset 50" "$verbose_output"
 
+huge_diagnostic=$(python3 -c 'print("warning: /Users/private/project " + "x" * 20000)')
+compact_output=$(printf '%s\n' "$huge_diagnostic" | "$HELPER" compact --command /private/example/bash --duration-ms 42)
+compact_bytes=$(printf '%s' "$compact_output" | wc -c | tr -d ' ')
+[[ "$compact_bytes" -le 4096 ]] && pass "compact presentation has a hard byte bound" || fail "compact presentation has a hard byte bound" "got ${compact_bytes}"
+assert_contains "compact presentation reports duration" "duration_ms: 42" "$compact_output"
+assert_contains "compact presentation retains opaque log id" "full_log: output-sandbox-helper.sh show out_" "$compact_output"
+assert_not_contains "compact presentation hides private command path" "/private/example" "$compact_output"
+assert_not_contains "compact presentation redacts private diagnostic paths" "/Users/private" "$compact_output"
+assert_contains "compact presentation marks truncated diagnostics" "[truncated]" "$compact_output"
+
 set +e
 failure_output=$("$HELPER" run --diagnostic-lines 4 -- bash -c 'printf "routine line\n"; printf "fatal: fixture failed\n" >&2; exit 7')
 failure_rc=$?

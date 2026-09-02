@@ -14,6 +14,7 @@ import {
   prepareIntent,
 } from "./intent-tracing.mjs";
 import { recordToolStart, consumeToolDuration } from "./timing-tracing.mjs";
+import { compactSuccessfulBashOutput, rememberBashOutputPolicy } from "./output-compaction.mjs";
 import { qualityLog, runFileQualityGate } from "./quality-logging.mjs";
 import { enrichActiveSpan, detectTaskId, detectSessionOrigin } from "./otel-enrichment.mjs";
 import {
@@ -333,6 +334,7 @@ function handleToolBefore(ctx, log, input, output) {
     log,
   });
   checkResearchStagingAccess(input.tool, output.args || {});
+  if (isBashTool(input.tool)) rememberBashOutputPolicy(callID, output.args);
 
   if (!isWriteOrEditTool(input.tool)) return;
 
@@ -375,6 +377,18 @@ function handleToolAfter(ctx, log, scriptsDir, input, output) {
     trackBashOperation(ctx, output.title || "", output.output || "");
   }
 
+  // Consume timing before output compaction so the receipt can report runtime.
+  const durationMs = consumeToolDuration(input.callID || "");
+  if (isBashTool(toolName)) {
+    compactSuccessfulBashOutput({
+      callID: input.callID || "",
+      output,
+      scriptsDir,
+      durationMs,
+      log,
+    });
+  }
+
   if (isWriteOrEditTool(toolName)) {
     const filePath = output.metadata?.filePath || "";
     if (filePath) {
@@ -383,9 +397,8 @@ function handleToolAfter(ctx, log, scriptsDir, input, output) {
   }
 
   const intentRecord = consumeIntentRecord(input.callID || "");
-  // t2184: consumeToolDuration returns null when the callID wasn't paired
-  // (e.g., hook race on plugin reload) — recordToolCall emits SQL NULL.
-  const durationMs = consumeToolDuration(input.callID || "");
+  // t2184: durationMs is null when the callID wasn't paired (for example,
+  // a hook race on plugin reload); recordToolCall emits SQL NULL.
   recordToolCall(input, output, intentRecord?.intent, durationMs, intentRecord?.source);
 
   if (toolName === "mcp_task" || toolName === "task") {
