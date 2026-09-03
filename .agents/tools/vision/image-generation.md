@@ -69,9 +69,10 @@ native raster format; the output path must use the matching `.jpg`/`.jpeg` or
 `.webp` extension. SVG and PDF belong to artifact/document workflows and are not
 GPT Image output formats.
 
-The tool defaults to the existing ChatGPT OAuth pool. Add an account through
-`opencode auth login` → **OpenAI Pool**. An optional OAuth `account` pins the
-request to that pool email; a pinned account never falls back to another login.
+The tool defaults to the existing ChatGPT OAuth pool. Add an account through the
+recommended device OAuth flow with `aidevops model-accounts-pool add openai`.
+An optional OAuth `account` pins the request to that pool email; a pinned account
+never falls back to another login.
 
 Platform API billing is always explicit and uses an account-specific secret:
 

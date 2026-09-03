@@ -44,4 +44,11 @@ describe("GPT image authentication", () => {
     assert.equal(auth.pinned, true);
     assert.equal(auth.mode, "oauth");
   });
+
+  test("points an empty OAuth pool to the supported account-add flow", async () => {
+    await assert.rejects(
+      resolveGptImageAuth({ auth: "oauth" }, { resolveOAuthAccount: async () => null }),
+      /aidevops model-accounts-pool add openai/,
+    );
+  });
 });

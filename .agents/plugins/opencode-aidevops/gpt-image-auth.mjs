@@ -62,7 +62,7 @@ async function resolveOAuthAuth(args, options) {
   if (!account?.access) {
     const qualifier = requestedAccount ? "requested" : "available";
     throw new Error(
-      `No ${qualifier} ChatGPT OAuth account can generate images. Add or inspect OpenAI Pool accounts with model-accounts-pool.`,
+      `No ${qualifier} ChatGPT OAuth account can generate images. Run \`aidevops model-accounts-pool add openai\`, or inspect OpenAI Pool accounts with model-accounts-pool.`,
     );
   }
   return {

@@ -24,6 +24,13 @@ export {
 // Pool tool action handlers
 // ---------------------------------------------------------------------------
 
+const POOL_PROVIDERS = new Set(["anthropic", "openai", "cursor", "google"]);
+
+export function poolAccountAddCommand(provider) {
+  const selected = POOL_PROVIDERS.has(provider) ? provider : "anthropic";
+  return `aidevops model-accounts-pool add ${selected}`;
+}
+
 export function poolActionList(provider, accounts, hint, now) {
   if (accounts.length === 0) return `No accounts in the ${provider} pool.\n\n${hint}`;
   const lines = accounts.map((a, i) => {
@@ -65,8 +72,7 @@ export function poolActionStatus(provider, accounts, hint, now) {
 
 export async function poolActionRotate(client, provider, accounts, resolveInjectFn) {
   if (accounts.length < 2) {
-    const pn = { anthropic: "Anthropic Pool", openai: "OpenAI Pool", cursor: "Cursor Pool", google: "Google Pool" };
-    return `Cannot rotate: only ${accounts.length} account(s). Add more via Ctrl+A -> ${pn[provider] || "Pool"}.`;
+    return `Cannot rotate: only ${accounts.length} account(s). Add more with \`${poolAccountAddCommand(provider)}\`.`;
   }
   const current = [...accounts].sort((a, b) => new Date(b.lastUsed || 0) - new Date(a.lastUsed || 0))[0];
   if (!(await resolveInjectFn(provider)(client, current?.email))) {

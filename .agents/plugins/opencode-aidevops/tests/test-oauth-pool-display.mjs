@@ -8,6 +8,7 @@ import {
   formatDuration, formatAgo, poolActionCheck,
   poolActionRemove, poolActionResetCooldowns,
   poolActionAssignPending, poolActionSetPriority,
+  poolAccountAddCommand, poolActionRotate,
 } from "../oauth-pool-display.mjs";
 import { poolActionCheck as healthCheckAction } from "../oauth-pool-health-check.mjs";
 import {
@@ -32,4 +33,13 @@ test("display module preserves account action exports", () => {
   assert.equal(poolActionResetCooldowns, accountResetCooldownsAction);
   assert.equal(poolActionAssignPending, accountAssignPendingAction);
   assert.equal(poolActionSetPriority, accountSetPriorityAction);
+});
+
+test("pool remediation uses the supported account-add command", async () => {
+  assert.equal(poolAccountAddCommand("openai"), "aidevops model-accounts-pool add openai");
+  assert.equal(poolAccountAddCommand("unknown"), "aidevops model-accounts-pool add anthropic");
+  assert.match(
+    await poolActionRotate({}, "openai", [], () => async () => true),
+    /aidevops model-accounts-pool add openai/,
+  );
 });

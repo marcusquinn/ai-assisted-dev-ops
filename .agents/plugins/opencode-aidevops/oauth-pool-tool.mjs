@@ -13,7 +13,7 @@ import { tool } from "./tools.mjs";
 import {
   poolActionList, poolActionRemove, poolActionStatus,
   poolActionResetCooldowns, poolActionRotate, poolActionAssignPending,
-  poolActionCheck, poolActionSetPriority,
+  poolActionCheck, poolActionSetPriority, poolAccountAddCommand,
 } from "./oauth-pool-display.mjs";
 
 const z = tool.schema;
@@ -36,13 +36,7 @@ export function createPoolTool(client) {
       const provider = args.provider || "anthropic";
       const accounts = getAccounts(provider);
       const now = Date.now();
-      const hints = {
-        anthropic: 'run `opencode auth login` -> "Anthropic Pool"',
-        openai: 'run `opencode auth login` -> "OpenAI Pool"',
-        cursor: 'run `opencode auth login` -> "Cursor Pool"',
-        google: 'run `opencode auth login` -> "Google Pool"',
-      };
-      const hint = `To add an account: ${hints[provider] || hints.anthropic}.`;
+      const hint = `To add an account, run \`${poolAccountAddCommand(provider)}\`.`;
       const actions = {
         "list": () => poolActionList(provider, accounts, hint, now),
         "remove": () => poolActionRemove(provider, args.email),
