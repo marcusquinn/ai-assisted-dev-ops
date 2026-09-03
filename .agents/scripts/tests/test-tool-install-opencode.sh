@@ -70,6 +70,7 @@ extract_functions() {
 		/^_setup_opencode_managed_shim_target\(\)/, /^}$/ { print; next }
 		/^_setup_ensure_opencode_stable_shim\(\)/, /^}$/ { print; next }
 		/^_setup_find_valid_opencode_binary\(\)/, /^}$/ { print; next }
+		/^_setup_find_post_install_opencode_binary\(\)/, /^}$/ { print; next }
 		/^_setup_record_valid_opencode_binary\(\)/, /^}$/ { print; next }
 		/^_setup_record_current_opencode_binary\(\)/, /^}$/ { print; next }
 		/^_setup_find_valid_opencode_alternative\(\)/, /^}$/ { print; next }
@@ -492,8 +493,61 @@ assert_eq "install failure rc" "rc=0" "$rc8"
 assert_eq "install failure has no sudo npm hint" "0" "$sudo_hint8"
 assert_eq "install failure uses npm hint" "1" "$npm_hint8"
 
-# --- Test 9: Homebrew-owned invalid binary gets brew remediation ------------
-echo "Test 9: setup_opencode_cli failure hint respects Homebrew ownership"
+# --- Test 9: first identity probes can time out after installation -----------
+echo "Test 9: setup retries transient post-install OpenCode validation"
+rm -f "$HOME/.aidevops/.opencode-bin-resolved" "$HOME/.local/bin/opencode" "$SANDBOX/bin/opencode" "$SANDBOX/transient-probes"
+(
+	source_extracted
+	_setup_opencode_binary_is_ephemeral() {
+		local bin="$1"
+		[[ "$bin" == "$SANDBOX/bin/"* ]] && return 1
+		return 0
+	}
+	npm_global_install() {
+		cat >"$SANDBOX/bin/opencode" <<'INNER_EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+	probe_file="$(dirname "$0")/../transient-probes"
+	probe_count=0
+	[[ -f "$probe_file" ]] && probe_count=$(cat "$probe_file")
+	probe_count=$((probe_count + 1))
+	printf '%s\n' "$probe_count" >"$probe_file"
+	if [[ "$probe_count" -le 2 ]]; then
+		sleep 5
+	fi
+	echo "1.14.25"
+fi
+[[ "${1:-}" == "--help" ]] && echo "opencode run [message..]     run opencode with a message"
+exit 0
+INNER_EOF
+		chmod +x "$SANDBOX/bin/opencode"
+		return 0
+	}
+	export -f npm_global_install 2>/dev/null || true
+	export PATH="$SANDBOX/bin:/usr/bin:/bin"
+	export AIDEVOPS_OPENCODE_VERSION_TIMEOUT=1
+	export AIDEVOPS_OPENCODE_POST_INSTALL_ATTEMPTS=2
+	export AIDEVOPS_OPENCODE_POST_INSTALL_RETRY_DELAY=0
+	rc=0
+	setup_opencode_cli || rc=$?
+	echo "rc=$rc"
+	cat "$HOME/.aidevops/.opencode-bin-resolved" 2>/dev/null || echo "MISSING"
+) >"$SANDBOX/out9" 2>&1
+rc9=$(grep '^rc=' "$SANDBOX/out9" | tail -1)
+resolved9=$(tail -1 "$SANDBOX/out9")
+install_count9=$(grep -c "OpenCode installed" "$SANDBOX/out9" || true)
+probe_count9=$(cat "$SANDBOX/transient-probes" 2>/dev/null || printf '0')
+assert_eq "transient post-install validation rc" "rc=0" "$rc9"
+assert_eq "transient post-install validation records stable shim" "$HOME/.local/bin/opencode" "$resolved9"
+assert_eq "transient post-install validation installs once" "1" "$install_count9"
+if [[ "$probe_count9" -ge 3 ]]; then
+	assert_eq "transient post-install validation retries" "retried" "retried"
+else
+	assert_eq "transient post-install validation retries" "retried" "probes=$probe_count9"
+fi
+
+# --- Test 10: Homebrew-owned invalid binary gets brew remediation -----------
+echo "Test 10: setup_opencode_cli failure hint respects Homebrew ownership"
 rm -f "$HOME/.aidevops/.opencode-bin-resolved" "$SANDBOX/bin/opencode"
 mkdir -p "$SANDBOX/homebrew/bin" "$SANDBOX/homebrew/Cellar/opencode/1.0.0/bin"
 cat >"$SANDBOX/homebrew/bin/opencode" <<'EOF'
@@ -539,7 +593,7 @@ assert_eq "homebrew remediation rc" "rc=0" "$rc9"
 assert_eq "homebrew remediation uses brew" "1" "$brew_hint9"
 assert_eq "homebrew remediation has no sudo npm hint" "0" "$sudo_hint9"
 
-# --- Test 10: shared installer policy uses npm first for OpenCode -----------
+# --- Test 11: shared installer policy uses npm first for OpenCode -----------
 echo "Test 10: npm_global_install prefers npm for opencode-ai when bun also exists"
 mkdir -p "$SANDBOX/install-policy/bin" "$SANDBOX/install-policy/prefix/lib"
 cat >"$SANDBOX/install-policy/bin/npm" <<EOF
