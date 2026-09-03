@@ -335,6 +335,7 @@ run_case "post-approval protection failure blocks final success" '
 	set -uo pipefail
 	# shellcheck disable=SC1090
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_ensure_lifecycle_labels() { return 0; }
 	approval_snapshot_v2_payload() { printf "%s" "{\"schema\":\"aidevops-approval/v2\"}"; return 0; }
 	_sign_approval_payload() { local payload="$1"; local actual_key="$2"; local sig_file="$3"; : "$payload" "$actual_key"; printf "mock-signature" >"$sig_file"; return 0; }
 	gh_issue_comment() { return 0; }
@@ -346,6 +347,23 @@ run_case "post-approval protection failure blocks final success" '
 assert_contains "post-approval failure suppresses final success" "$LAST_OUTPUT" "post-approval protection updates did not reach the required state"
 assert_not_contains "post-approval failure does not print success" "$LAST_OUTPUT" "Issue #123 approved and signed"
 assert_contains "post-approval failure queues bounded reconciliation" "$LAST_OUTPUT" "KICKED_RECONCILIATION"
+
+# Missing repository labels must fail before locking, signing, or commenting.
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "approval label provisioning failure is pre-signature" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_ensure_lifecycle_labels() { printf "PROVISION_ATTEMPT"; return 1; }
+	_approval_lock_issue() { printf "UNEXPECTED_LOCK"; return 0; }
+	_sign_approval_payload() { printf "UNEXPECTED_SIGN"; return 0; }
+	gh_issue_comment() { printf "UNEXPECTED_COMMENT"; return 0; }
+	_approve_target_after_confirmation issue 123 marcusquinn/aidevops mock-key
+' 1
+assert_contains "approval attempts lifecycle label provisioning" "$LAST_OUTPUT" "PROVISION_ATTEMPT"
+assert_not_contains "provisioning failure does not lock issue" "$LAST_OUTPUT" "UNEXPECTED_LOCK"
+assert_not_contains "provisioning failure does not sign" "$LAST_OUTPUT" "UNEXPECTED_SIGN"
+assert_not_contains "provisioning failure does not comment" "$LAST_OUTPUT" "UNEXPECTED_COMMENT"
 
 # GH#28717: target reconciliation accepts only the current authenticated actor's
 # signed comment when that actor has maintainer-equivalent authority.
