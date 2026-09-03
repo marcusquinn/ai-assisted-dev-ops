@@ -68,4 +68,23 @@ describe("GPT image provider requests", () => {
     assert.equal(JSON.parse(captured.init.body).model, "gpt-image-2");
     assert.equal(result.base64, IMAGE_RESULT);
   });
+
+  test("uses multipart GPT Image 2 edits when API references are present", async () => {
+    let captured;
+    const fetchImpl = async (url, init) => {
+      captured = { url, init };
+      return Response.json({ data: [{ b64_json: IMAGE_RESULT }] });
+    };
+    await requestApiImage(
+      { accessToken: "unit-test-credential-value" },
+      { prompt: "edit a test", quality: "high", size: "1024x1024" },
+      [{ buffer: Buffer.from("image"), mime: "image/png", name: "source.png" }],
+      fetchImpl,
+    );
+    assert.equal(captured.url, "https://api.openai.com/v1/images/edits");
+    assert.ok(captured.init.body instanceof FormData);
+    assert.equal(captured.init.body.get("model"), "gpt-image-2");
+    assert.equal(captured.init.body.getAll("image[]").length, 1);
+    assert.equal(new Headers(captured.init.headers).has("Content-Type"), false);
+  });
 });
