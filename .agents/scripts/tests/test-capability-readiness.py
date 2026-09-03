@@ -172,7 +172,7 @@ class CapabilityReadinessTests(unittest.TestCase):
                 )
             )
             environment = dict(os.environ)
-            environment["SERVICE_BUSINESS_TOKEN"] = "configured"
+            environment["SERVICE_BUSINESS_TOKEN"] = directory
             result = subprocess.run(
                 [
                     sys.executable,
