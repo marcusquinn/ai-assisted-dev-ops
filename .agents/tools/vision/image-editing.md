@@ -48,7 +48,9 @@ The OpenCode `gpt_image_generate` tool accepts up to 8 project-relative
 reference images through `images`. Describe each image's role in the prompt.
 ChatGPT OAuth is the default billing route; explicit `auth: "api"` uses the
 named `OPENAI_IMAGE_API_KEY_<ACCOUNT>` secret and OpenAI's Images edit endpoint.
-GPT Image 2 processes references at high fidelity automatically.
+GPT Image 2 processes references at high fidelity automatically. Edited output
+can be native PNG (default), JPEG, or WebP when `format` matches the output path
+extension; SVG and PDF remain artifact/document workflows.
 
 ```text
 Using refs/product.png as the product reference, place it on a clean marble counter in soft morning light. Save to assets/product-morning.png.

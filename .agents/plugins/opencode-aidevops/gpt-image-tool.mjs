@@ -7,23 +7,37 @@ import {
   resolveGptImageAuth,
   rotateOAuthImageAccount,
 } from "./gpt-image-auth.mjs";
-import { readReferenceImages, saveGeneratedPng, validateImageOutputPath } from "./gpt-image-io.mjs";
+import { readReferenceImages, saveGeneratedImage, validateImageOutputPath } from "./gpt-image-io.mjs";
 import { requestApiImage, requestOAuthImage } from "./gpt-image-request.mjs";
 
 const IMAGE_QUALITIES = new Set(["low", "medium", "high", "auto"]);
+const IMAGE_FORMATS = new Set(["png", "jpeg", "webp"]);
 
-function validateRawArgs(args) {
-  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Image tool arguments must be an object.");
+function validateOutputArgs(args) {
   if (typeof args.prompt !== "string" || typeof args.out !== "string") {
     throw new Error("Image prompt and output path must be strings.");
   }
   if (args.quality !== undefined && !IMAGE_QUALITIES.has(args.quality)) throw new Error("Unsupported image quality.");
+  if (args.format !== undefined && !IMAGE_FORMATS.has(args.format)) throw new Error("Unsupported image format.");
   if (args.size !== undefined && typeof args.size !== "string") throw new Error("Image size must be a string.");
+}
+
+function validateReferenceArgs(args) {
   if (args.images !== undefined && (!Array.isArray(args.images) || args.images.some((path) => typeof path !== "string"))) {
     throw new Error("Reference images must be an array of path strings.");
   }
+}
+
+function validateAuthArgs(args) {
   if (args.auth !== undefined && !["oauth", "api"].includes(args.auth)) throw new Error("Image auth must be oauth or api.");
   if (args.account !== undefined && typeof args.account !== "string") throw new Error("Image account must be a string.");
+}
+
+function validateRawArgs(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Image tool arguments must be an object.");
+  validateOutputArgs(args);
+  validateReferenceArgs(args);
+  validateAuthArgs(args);
 }
 
 function validatePrompt(value) {
@@ -80,9 +94,10 @@ async function executeImageGeneration(rawArgs, options) {
     prompt: validatePrompt(rawArgs.prompt),
     size: validateSize(rawArgs.size),
     quality: rawArgs.quality || "auto",
+    format: rawArgs.format || "png",
   };
+  await validateImageOutputPath(args.out, options.projectRoot, args.format);
   const images = await readReferenceImages(args.images, options.projectRoot);
-  await validateImageOutputPath(args.out, options.projectRoot);
   let auth = await resolveGptImageAuth(args, options);
   let result;
 
@@ -93,7 +108,7 @@ async function executeImageGeneration(rawArgs, options) {
   }
   if (!result.response.ok) throw result.error;
 
-  const saved = await saveGeneratedPng(args.out, options.projectRoot, result.base64, {
+  const saved = await saveGeneratedImage(args.out, options.projectRoot, result.base64, args.format, {
     scriptsDir: options.scriptsDir,
     spawnImpl: options.imageWriterSpawn,
   });
@@ -109,10 +124,11 @@ export function createGptImageTool(tool, z, options = {}) {
   const executionOptions = { ...options, fetchImpl, projectRoot: options.projectRoot || process.cwd() };
   return tool({
     description:
-      "Generate or reference-edit a PNG with GPT Image 2. Uses ChatGPT OAuth by default; API billing must be selected explicitly with auth=api and a named account alias. Writes only inside the OpenCode project and never overwrites an existing image.",
+      "Generate or reference-edit a PNG, JPEG, or WebP with GPT Image 2. Uses ChatGPT OAuth by default; API billing must be selected explicitly with auth=api and a named account alias. Writes only inside the OpenCode project and never overwrites an existing image.",
     args: {
       prompt: z.string().describe("Description of the image to generate or edit."),
-      out: z.string().describe("Project-relative .png output path."),
+      out: z.string().describe("Project-relative output path with an extension matching format."),
+      format: z.enum(["png", "jpeg", "webp"]).optional().describe("Native output format; defaults to png."),
       quality: z.enum(["low", "medium", "high", "auto"]).optional().describe("GPT Image 2 quality; defaults to auto."),
       size: z.string().optional().describe("auto or WIDTHxHEIGHT satisfying GPT Image 2 constraints."),
       images: z.array(z.string()).optional().describe("Optional project-relative PNG, JPEG, or WebP reference image paths."),

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-"""Publish a generated PNG through descriptor-relative filesystem operations."""
+"""Publish a generated raster image through descriptor-relative operations."""
 
 from __future__ import annotations
 
@@ -16,23 +16,26 @@ import sys
 
 MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 MAX_OUTPUT_VERSION = 999
+VALIDATOR_MODULES = {
+    "png": ("gpt_image_png.py", "validate_png", "PngValidationError"),
+    "jpeg": ("gpt_image_jpeg.py", "validate_jpeg", "JpegValidationError"),
+    "webp": ("gpt_image_webp.py", "validate_webp", "WebpValidationError"),
+}
 
 
 class SecureWriteError(Exception):
     """Represent a safe user-facing image publication failure."""
 
 
-def load_png_validator():
-    """Load the adjacent validator without enabling ambient Python imports."""
-    validator_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "gpt_image_png.py")
+def load_image_validator(image_format: str):
+    """Load one adjacent format validator without ambient Python imports."""
     try:
+        filename, function_name, error_name = VALIDATOR_MODULES[image_format]
+        validator_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), filename)
         module = run_path(validator_path)
-        return module["validate_png"], module["PngValidationError"]
+        return module[function_name], module[error_name]
     except (OSError, KeyError) as error:
-        raise SecureWriteError("secure PNG validation is unavailable") from error
-
-
-validate_png, PngValidationError = load_png_validator()
+        raise SecureWriteError("secure image validation is unavailable") from error
 
 
 def directory_flags() -> int:
@@ -42,27 +45,31 @@ def directory_flags() -> int:
     return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
-def parse_output_path(value: str) -> tuple[tuple[str, ...], str]:
-    """Validate and split one portable project-relative PNG path."""
+def parse_output_path(value: str) -> tuple[tuple[str, ...], str, str]:
+    """Validate and split one portable project-relative raster image path."""
     portable = value.replace("\\", "/")
     path = PurePosixPath(portable)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise SecureWriteError("image output must be a safe project-relative path")
-    if not path.parts or path.suffix.lower() != ".png":
-        raise SecureWriteError("image output must end in .png")
+    formats = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp"}
+    try:
+        image_format = formats[path.suffix.lower()]
+    except KeyError as error:
+        raise SecureWriteError("image output must end in .png, .jpg, .jpeg, or .webp") from error
     if any(part.casefold() == ".git" for part in path.parts):
         raise SecureWriteError("image output cannot be written inside .git")
-    return path.parts[:-1], path.parts[-1]
+    return path.parts[:-1], path.parts[-1], image_format
 
 
-def read_png() -> bytes:
-    """Read and structurally validate one bounded PNG from stdin."""
+def read_image(image_format: str) -> bytes:
+    """Read and structurally validate one bounded raster image from stdin."""
     payload = sys.stdin.buffer.read(MAX_OUTPUT_BYTES + 1)
     if len(payload) > MAX_OUTPUT_BYTES:
-        raise SecureWriteError("generated PNG exceeds the 64 MiB limit")
+        raise SecureWriteError("generated image exceeds the 64 MiB limit")
+    validate_image, image_validation_error = load_image_validator(image_format)
     try:
-        validate_png(payload)
-    except PngValidationError as error:
+        validate_image(payload)
+    except image_validation_error as error:
         raise SecureWriteError(str(error)) from error
     return payload
 
@@ -153,8 +160,8 @@ def cleanup_temporary(directory_fd: int, temporary: str, temp_fd: int) -> bool:
     return failed
 
 
-def publish_png(directory_fd: int, requested: str, payload: bytes) -> tuple[str, bool, bool]:
-    """Write and hard-link a private PNG without replacing existing output."""
+def publish_image(directory_fd: int, requested: str, payload: bytes) -> tuple[str, bool, bool]:
+    """Write and hard-link a private image without replacing existing output."""
     temporary = f".{requested}.aidevops-{secrets.token_hex(12)}.tmp"
     temp_fd = -1
     published = ""
@@ -208,8 +215,8 @@ def main() -> int:
     parser.add_argument("--root", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    directories, requested = parse_output_path(args.out)
-    payload = read_png()
+    directories, requested, image_format = parse_output_path(args.out)
+    payload = read_image(image_format)
     root_fd = os.open(args.root, directory_flags())
     directory_fd = -1
     candidate = ""
@@ -217,7 +224,7 @@ def main() -> int:
         if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
             raise SecureWriteError("OpenCode project root must be a regular directory")
         directory_fd = open_output_directory(root_fd, directories)
-        candidate, versioned, cleanup_warning = publish_png(directory_fd, requested, payload)
+        candidate, versioned, cleanup_warning = publish_image(directory_fd, requested, payload)
         if not directory_binding_matches(root_fd, directories, directory_fd):
             os.unlink(candidate, dir_fd=directory_fd)
             os.fsync(directory_fd)

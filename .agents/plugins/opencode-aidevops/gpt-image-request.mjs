@@ -29,7 +29,7 @@ async function withImageRequestTimeout(operation) {
 function imageToolArgs(args) {
   return {
     type: "image_generation",
-    output_format: "png",
+    output_format: args.format || "png",
     quality: args.quality || "auto",
     ...(args.size && args.size !== "auto" ? { size: args.size } : {}),
   };
@@ -164,7 +164,7 @@ function apiJsonBody(args) {
     prompt: args.prompt,
     quality: args.quality || "auto",
     size: args.size || "auto",
-    output_format: "png",
+    output_format: args.format || "png",
   };
 }
 
@@ -174,7 +174,7 @@ function apiMultipartBody(args, images) {
   body.append("prompt", args.prompt);
   body.append("quality", args.quality || "auto");
   body.append("size", args.size || "auto");
-  body.append("output_format", "png");
+  body.append("output_format", args.format || "png");
   for (const image of images) {
     body.append("image[]", new Blob([image.buffer], { type: image.mime }), image.name);
   }

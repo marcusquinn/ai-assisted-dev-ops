@@ -24,7 +24,7 @@ tools:
 - **OpenCode tool**: `gpt_image_generate`
 - **Default billing route**: ChatGPT subscription OAuth from the aidevops OpenAI account pool
 - **Platform billing route**: explicit `auth: "api"` plus a named account alias
-- **Model**: GPT Image 2 (`gpt-image-2`); output is a project-confined PNG
+- **Model**: GPT Image 2 (`gpt-image-2`); project-confined PNG, JPEG, or WebP output
 - **Reference images**: up to 8 project-relative PNG, JPEG, or WebP files
 - **Safety**: existing files are never overwritten; versioned paths use `-v2`, `-v3`, and so on
 
@@ -58,11 +58,16 @@ Budget-conscious?     → FLUX or SD locally (GPU cost only)
 ### GPT Image 2 (OpenAI)
 
 In OpenCode, ask naturally for an image and include the desired project-relative
-PNG path. The aidevops plugin exposes `gpt_image_generate` automatically.
+output path. The aidevops plugin exposes `gpt_image_generate` automatically.
 
 ```text
 Generate a low-quality 1024x1024 watercolor lighthouse draft and save it to assets/lighthouse.png.
 ```
+
+PNG is the default. Select `format: "jpeg"` or `format: "webp"` for another
+native raster format; the output path must use the matching `.jpg`/`.jpeg` or
+`.webp` extension. SVG and PDF belong to artifact/document workflows and are not
+GPT Image output formats.
 
 The tool defaults to the existing ChatGPT OAuth pool. Add an account through
 `opencode auth login` → **OpenAI Pool**. An optional OAuth `account` pins the
@@ -81,6 +86,7 @@ from a subscription to API credits. Never paste an API key into chat.
 
 | Parameter | Options | Notes |
 |-----------|---------|-------|
+| `format` | png, jpeg, webp | `png` is the default; output extension must match |
 | `quality` | low, medium, high, auto | `auto` is the default; use low for drafts |
 | `size` | auto or WIDTHxHEIGHT | Edges must be multiples of 16, max 3840px, ratio ≤3:1, total 655,360-8,294,400px |
 | `images` | 0-8 project-relative paths | Reference-guided generation/editing; PNG, JPEG, or WebP, 20 MiB each |
@@ -147,9 +153,9 @@ text, signature, oversaturated, underexposed, overexposed
 ```
 
 **Batch generation**: invoke `gpt_image_generate` once per distinct asset. Each
-call returns one PNG and preserves an existing output by choosing a versioned
-filename. Avoid unattended high-quality batches because API and subscription
-usage limits still apply.
+call returns one native raster image and preserves an existing output by choosing
+a versioned filename. Avoid unattended high-quality batches because API and
+subscription usage limits still apply.
 
 ## See Also
 

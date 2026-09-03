@@ -30,7 +30,7 @@ function parseWriterOutput(stdout) {
   };
 }
 
-export async function secureWriteGeneratedPng(buffer, out, projectRoot, options = {}) {
+export async function secureWriteGeneratedImage(buffer, out, projectRoot, options = {}) {
   const helper = options.scriptsDir ? join(options.scriptsDir, "gpt-image-secure-write.py") : DEFAULT_HELPER;
   const stdout = await runImageWriter(helper, buffer, out, projectRoot, options.spawnImpl);
   return parseWriterOutput(stdout);

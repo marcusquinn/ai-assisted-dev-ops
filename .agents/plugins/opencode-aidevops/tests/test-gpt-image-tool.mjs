@@ -14,6 +14,10 @@ const PNG_BYTES = Buffer.from(
   "base64",
 );
 const PNG_BASE64 = PNG_BYTES.toString("base64");
+const WEBP_BASE64 = Buffer.from([
+  0x52, 0x49, 0x46, 0x46, 0x12, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+  0x56, 0x50, 0x38, 0x4c, 0x05, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x00,
+]).toString("base64");
 const roots = [];
 const schemaNode = { _zod: {}, optional() { return this; }, describe() { return this; } };
 const z = {
@@ -28,10 +32,10 @@ async function projectRoot() {
   return root;
 }
 
-function oauthSuccess() {
+function oauthSuccess(base64 = PNG_BASE64) {
   const event = `data: ${JSON.stringify({
     type: "response.output_item.done",
-    item: { type: "image_generation_call", result: PNG_BASE64 },
+    item: { type: "image_generation_call", result: base64 },
   })}\n\n`;
   return new Response(event, { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
@@ -65,6 +69,39 @@ describe("GPT image OpenCode tool", () => {
     assert.match(output, /ChatGPT subscription OAuth/);
     assert.match(output, /generated\/test\.png/);
     assert.doesNotMatch(output, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  test("requests and writes a selected native WebP", async () => {
+    const root = await projectRoot();
+    let requestBody;
+    const tool = createTool({
+      projectRoot: root,
+      resolveOAuthAccount: async () => ({ email: "person@example.test", access: "oauth-test-token" }),
+      fetchImpl: async (_url, init) => {
+        requestBody = JSON.parse(init.body);
+        return oauthSuccess(WEBP_BASE64);
+      },
+    });
+    const output = await tool.execute({ prompt: "draw a test", out: "generated/test.webp", format: "webp" });
+    assert.equal(requestBody.tools[0].output_format, "webp");
+    assert.match(output, /generated\/test\.webp/);
+  });
+
+  test("rejects format and extension mismatches before network access", async () => {
+    const root = await projectRoot();
+    let calls = 0;
+    const tool = createTool({
+      projectRoot: root,
+      fetchImpl: async () => {
+        calls += 1;
+        return oauthSuccess();
+      },
+    });
+    await assert.rejects(
+      tool.execute({ prompt: "draw a test", out: "generated/test.png", format: "jpeg" }),
+      /extension must match jpeg/,
+    );
+    assert.equal(calls, 0);
   });
 
   test("rotates once after an unpinned OAuth 429", async () => {

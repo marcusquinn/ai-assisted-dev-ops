@@ -40,7 +40,7 @@ describe("GPT image provider requests", () => {
     };
     const result = await requestOAuthImage(
       { accessToken: "oauth-test-token", accountId: "account-test" },
-      { prompt: "draw a test", quality: "low", size: "1024x1024" },
+      { prompt: "draw a test", quality: "low", size: "1024x1024", format: "webp" },
       [{ dataUrl: "data:image/png;base64,dGVzdA==" }],
       fetchImpl,
     );
@@ -48,6 +48,7 @@ describe("GPT image provider requests", () => {
     assert.equal(captured.url, "https://chatgpt.com/backend-api/codex/responses");
     assert.equal(captured.init.headers.Authorization, "Bearer oauth-test-token");
     assert.equal(body.tools[0].type, "image_generation");
+    assert.equal(body.tools[0].output_format, "webp");
     assert.equal(body.input[0].content[1].type, "input_image");
     assert.equal(result.base64, IMAGE_RESULT);
   });
@@ -65,8 +66,25 @@ describe("GPT image provider requests", () => {
       fetchImpl,
     );
     assert.equal(captured.url, "https://api.openai.com/v1/images/generations");
-    assert.equal(JSON.parse(captured.init.body).model, "gpt-image-2");
+    const body = JSON.parse(captured.init.body);
+    assert.equal(body.model, "gpt-image-2");
+    assert.equal(body.output_format, "png");
     assert.equal(result.base64, IMAGE_RESULT);
+  });
+
+  test("selects JPEG output for API generation", async () => {
+    let captured;
+    const fetchImpl = async (url, init) => {
+      captured = { url, init };
+      return Response.json({ data: [{ b64_json: IMAGE_RESULT }] });
+    };
+    await requestApiImage(
+      { accessToken: "unit-test-credential-value" },
+      { prompt: "draw a test", quality: "auto", size: "auto", format: "jpeg" },
+      [],
+      fetchImpl,
+    );
+    assert.equal(JSON.parse(captured.init.body).output_format, "jpeg");
   });
 
   test("uses multipart GPT Image 2 edits when API references are present", async () => {
@@ -77,13 +95,14 @@ describe("GPT image provider requests", () => {
     };
     await requestApiImage(
       { accessToken: "unit-test-credential-value" },
-      { prompt: "edit a test", quality: "high", size: "1024x1024" },
+      { prompt: "edit a test", quality: "high", size: "1024x1024", format: "webp" },
       [{ buffer: Buffer.from("image"), mime: "image/png", name: "source.png" }],
       fetchImpl,
     );
     assert.equal(captured.url, "https://api.openai.com/v1/images/edits");
     assert.ok(captured.init.body instanceof FormData);
     assert.equal(captured.init.body.get("model"), "gpt-image-2");
+    assert.equal(captured.init.body.get("output_format"), "webp");
     assert.equal(captured.init.body.getAll("image[]").length, 1);
     assert.equal(new Headers(captured.init.headers).has("Content-Type"), false);
   });
