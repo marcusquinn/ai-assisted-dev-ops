@@ -43,6 +43,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_resolve_script_path)" || exit
 unset -f _resolve_script_path
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=repo-discovery.sh
+source "${SCRIPT_DIR}/repo-discovery.sh"
 
 init_log_file
 
@@ -676,14 +678,11 @@ cmd_check() {
 
 		log_info "Scanning: $parent_dir"
 
-		# Iterate over immediate subdirectories only (not recursive)
-		# Worktrees are excluded — only the main checkout matters
-		while IFS= read -r -d '' repo_dir; do
-			# Skip if not a git repo
-			[[ -d "$repo_dir/.git" ]] || continue
-
-			# Skip git worktrees (they have .git as a file, not a directory)
-			[[ -f "$repo_dir/.git" ]] && continue
+		# Discover only direct canonical clones and one owner directory level.
+		# The shared helper excludes reserved worktree/archive trees and linked
+		# worktrees, and never descends into a discovered repository.
+		while IFS= read -r repo_dir; do
+			[[ -n "$repo_dir" ]] || continue
 
 			if sync_repo "$repo_dir"; then
 				# Determine if it was pulled or skipped based on log
@@ -699,7 +698,7 @@ cmd_check() {
 			else
 				failed=$((failed + 1))
 			fi
-		done < <(find "$parent_dir" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
+		done < <(aidevops_discover_canonical_repos "$parent_dir")
 	done
 
 	log_info "Sync complete: ${synced} pulled, ${skipped} skipped, ${failed} failed"
@@ -1503,7 +1502,8 @@ SAFETY:
     - Skips repos not on their default branch (main/master)
     - Skips repos with no remote configured
     - Logs failures without stopping (other repos still sync)
-    - Worktrees are ignored — only main checkouts are synced
+    - Discovers direct clones plus one owner-directory level only
+    - Ignores linked worktrees and reserved _worktrees/_archive trees
 
 SCHEDULER BACKENDS:
     macOS:  launchd LaunchAgent (~/Library/LaunchAgents/sh.aidevops.repo-sync.plist)
@@ -1515,7 +1515,7 @@ SCHEDULER BACKENDS:
 HOW IT WORKS:
     1. Scheduler runs 'repo-sync-helper.sh check' daily
     2. Reads git_parent_dirs from ~/.config/aidevops/repos.json
-    3. Scans each parent directory for git repos (maxdepth 1)
+    3. Scans direct clones and one owner directory level; never traverses repos
     4. For each repo:
        a. Skips if no remote, detached HEAD, or not on default branch
        b. Skips if working tree is dirty

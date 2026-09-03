@@ -22,7 +22,7 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Separate working directories per branch — no branch-switching conflicts
-- **Core principle**: Main repo (`~/Git/{repo}/` or grouped parent) ALWAYS stays on `main`. Create durable linked worktrees under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}`, not runtime temp dirs. Group WordPress repos under `~/Git/wordpress/`, EspoCRM under `~/Git/espocrm/`, and MCP under `~/Git/mcp/` (details: `reference/repo-organization.md`). **Never `git checkout -b` in the main repo** — the next session inherits wrong state.
+- **Core principle**: Main repo (`~/Git/<repo>/` for personal repositories or `~/Git/<owner>/<repo>/` otherwise) ALWAYS stays on `main`. Create durable linked worktrees under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}`, not runtime temp dirs. Nested canonical repos receive owner-qualified worktree names; `_worktrees` and `_archive` are reserved and never scanned as canonical repos (details: `reference/repo-organization.md`). **Never `git checkout -b` in the main repo** — the next session inherits wrong state.
 - **Same-session default**: For the active objective, keep the current chat and target the linked path with file tools and Bash `workdir`; a new chat is only for explicit parallel work, unrelated context, or a verified ownership/permission block.
 - **Preferred tool**: [Worktrunk](https://worktrunk.dev) (`brew install max-sixty/worktrunk/wt`) — full docs: `tools/git/worktrunk.md`
 - **Fallback**: `~/.aidevops/agents/scripts/worktree-helper.sh`

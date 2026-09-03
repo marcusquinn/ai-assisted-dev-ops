@@ -3,38 +3,45 @@
 
 # Repository Organization
 
-Keep canonical clones and their linked worktrees grouped by product/ecosystem under `~/Git/`.
+Keep canonical clones under `~/Git/`: direct children for personal-account
+repositories and owner directories for organization or third-party repositories.
+Keep linked worktrees and archives in their reserved directories, never mixed
+with canonical clones.
 
 ## Default clone locations
 
-| Repo type | Default parent |
-|-----------|----------------|
-| WordPress plugins/themes/tools | `~/Git/wordpress/` |
-| EspoCRM extensions/addons/tools | `~/Git/espocrm/` |
-| MCP servers/clients/adapters | `~/Git/mcp/` |
-| Other standalone products/sites/tools | `~/Git/` |
+| Repository identity | Default path |
+|---------------------|--------------|
+| Personal account | `~/Git/<repo>/` |
+| Organization or third party | `~/Git/<owner>/<repo>/` |
+| Linked worktree | `~/Git/_worktrees/<owner>-<repo>-<branch-slug>/` for nested canonicals |
+| Archive | `~/Git/_archive/` |
 
 Examples:
 
 ```bash
-gh repo clone owner/wp-plugin ~/Git/wordpress/wp-plugin
-gh repo clone owner/espo-addon ~/Git/espocrm/espo-addon
-gh repo clone owner/example-mcp ~/Git/mcp/example-mcp
+gh repo clone personal-account/project ~/Git/project
+gh repo clone organization/project ~/Git/organization/project
 ```
 
 ## Worktrees
 
-Create worktrees under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}` with flat `<repo>-<branch-slug>` names. `worktree-helper.sh add <branch>` already derives this path; existing sibling worktrees from older versions remain valid until cleanup removes them safely.
+Create worktrees under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}`. Nested
+canonical repositories use owner-qualified `<owner>-<repo>-<branch-slug>` names
+to avoid collisions; direct personal repositories retain the compatible
+`<repo>-<branch-slug>` name. Existing worktrees remain valid until safe cleanup.
 
 Examples:
 
 | Canonical clone | Auto worktree parent |
 |-----------------|----------------------|
-| `~/Git/wordpress/wp-performance-action` | `~/Git/wordpress/` |
-| `~/Git/espocrm/example-extension` | `~/Git/espocrm/` |
-| `~/Git/mcp/example-server` | `~/Git/mcp/` |
+| `~/Git/project` | `~/Git/_worktrees/project-<branch>` |
+| `~/Git/organization/project` | `~/Git/_worktrees/organization-project-<branch>` |
 
-If a clone was accidentally created at `~/Git/{repo}` but belongs to a grouped ecosystem, move or recreate it under the grouped parent before adding new worktrees. Do not overwrite an existing grouped clone; fetch the required remotes/branches into the grouped canonical repo and recreate clean linked worktrees there.
+`repos.json` explicit paths are authoritative for existing, local-only, non-GitHub,
+and exceptional repositories. Setup and update never move canonical clones;
+migration is a separate lossless operation. Configure host-specific personal
+account aliases locally rather than assuming a fixed account name.
 
 ## Direct-write workspace boundary
 

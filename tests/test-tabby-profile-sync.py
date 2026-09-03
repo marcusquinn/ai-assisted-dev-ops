@@ -12,6 +12,7 @@ leakage (the string-heuristic failing on names with dots like
 import importlib.util
 import io
 import os
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ tabby_profile_sync = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tabby_profile_sync)
 
 # Re-import helpers directly so tests exercise the same module the script uses.
-from tabby_yaml_helpers import extract_existing_cwds  # noqa: E402
+from tabby_yaml_helpers import extract_existing_cwds, validate_yaml_document  # noqa: E402
 from tabby_shell_resolver import ShellResolutionError, resolve_login_shell  # noqa: E402
 
 
@@ -332,6 +333,97 @@ class TestGetProfileTargets(unittest.TestCase):
         )
 
         self.assertEqual([target["path"] for target in targets], [str(buzz_path)])
+
+
+class TestManagedProfileReconciliation(unittest.TestCase):
+    """Only remove aidevops-owned profiles with conclusive stale evidence."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.live = self.root / "live"
+        self.live.mkdir()
+        self.missing = self.root / "missing"
+
+    @staticmethod
+    def _managed(name, cwd):
+        return (
+            f"  - name: {name}\n"
+            "    options:\n"
+            "      command: /bin/bash\n"
+            "      args:\n"
+            "        - 'exec aidevops opencode --tabby-shell'\n"
+            f"      cwd: {cwd}\n"
+        )
+
+    @staticmethod
+    def _custom(name, cwd):
+        return f"  - name: {name}\n    options:\n      command: /bin/bash\n      cwd: {cwd}\n"
+
+    def test_removes_missing_unregistered_managed_profile(self):
+        text, result = tabby_profile_sync.reconcile_managed_profiles(
+            "profiles:\n" + self._managed("stale", self.missing), set()
+        )
+        self.assertNotIn("name: stale", text)
+        self.assertEqual(result, {"stale": 1, "duplicates": 0})
+
+    def test_retains_profiles_section_when_first_profile_is_removed(self):
+        text, _ = tabby_profile_sync.reconcile_managed_profiles(
+            "profiles:\n" + self._managed("stale", self.missing)
+            + self._managed("live", self.live),
+            set(),
+        )
+        self.assertIn("profiles:\n  - name: live", text)
+        validate_yaml_document(text)
+
+    def test_preserves_registered_missing_managed_profile(self):
+        registered = {os.path.normcase(os.path.realpath(self.missing))}
+        text, result = tabby_profile_sync.reconcile_managed_profiles(
+            "profiles:\n" + self._managed("registered", self.missing), registered
+        )
+        self.assertIn("name: registered", text)
+        self.assertEqual(result, {"stale": 0, "duplicates": 0})
+
+    def test_preserves_custom_same_cwd_and_deduplicates_managed(self):
+        config = "profiles:\n" + self._custom("custom", self.live)
+        config += self._managed("managed-one", self.live)
+        config += self._managed("managed-two", self.live)
+        text, result = tabby_profile_sync.reconcile_managed_profiles(config, set())
+        self.assertIn("name: custom", text)
+        self.assertIn("name: managed-one", text)
+        self.assertNotIn("name: managed-two", text)
+        self.assertEqual(result, {"stale": 0, "duplicates": 1})
+
+    def test_preserves_valid_unregistered_managed_orphan(self):
+        text, result = tabby_profile_sync.reconcile_managed_profiles(
+            "profiles:\n" + self._managed("orphan", self.live), set()
+        )
+        self.assertIn("name: orphan", text)
+        self.assertEqual(result, {"stale": 0, "duplicates": 0})
+
+    def test_sync_reconciles_then_is_idempotent(self):
+        repos_json = self.root / "repos.json"
+        repos_json.write_text(
+            '{{"initialized_repos": [{{"path": "{}"}}]}}'.format(self.live)
+        )
+        tabby_config = self.root / "config.yaml"
+        tabby_config.write_text("profiles:\n" + self._managed("stale", self.missing))
+        args = argparse.Namespace(
+            repos_json=str(repos_json), tabby_config=str(tabby_config)
+        )
+
+        with mock.patch.object(
+            tabby_profile_sync, "resolve_login_shell", return_value="/bin/bash"
+        ):
+            tabby_profile_sync.sync_profiles(args)
+            first_sync = tabby_config.read_text()
+            tabby_profile_sync.sync_profiles(args)
+            second_sync = tabby_config.read_text()
+
+        self.assertNotIn("name: stale", first_sync)
+        self.assertIn(f"cwd: {self.live}", first_sync)
+        self.assertEqual(first_sync, second_sync)
 
 
 class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):

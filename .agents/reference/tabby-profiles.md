@@ -9,6 +9,13 @@ profile rooted there so OpenCode opens the Buzz-scoped session namespace. The
 profile is omitted when Buzz has not created that workspace, and an existing
 profile with the same working directory remains user-owned and unchanged.
 
+Sync reconciles only aidevops-managed profiles. It removes an unregistered
+managed profile only when its working directory no longer exists, and removes
+extra managed entries for the same normalized directory. Explicit `repos.json`
+paths remain authoritative even while missing; custom profiles sharing a path
+and valid unregistered profiles are preserved. `tabby-helper.sh status` reports
+the pending reconciliation without changing the config.
+
 OpenCode profiles must not launch with `zsh -i -c opencode`. That shape runs an
 interactive zsh startup while executing a command string, which can make
 Powerlevel10k/gitstatus initialize before job control is available and emit

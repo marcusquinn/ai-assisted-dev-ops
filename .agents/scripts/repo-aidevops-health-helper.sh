@@ -59,6 +59,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_resolve_script_path)" || exit
 unset -f _resolve_script_path
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=repo-discovery.sh
+source "${SCRIPT_DIR}/repo-discovery.sh"
 # shellcheck source=/dev/null
 if [[ -f "${SCRIPT_DIR}/shared-gh-wrappers.sh" ]]; then
 	source "${SCRIPT_DIR}/shared-gh-wrappers.sh"
@@ -878,8 +880,9 @@ _check_no_init_repos() {
 	local parent_dir candidate
 	for parent_dir in "${parent_dirs[@]}"; do
 		[[ -d "$parent_dir" ]] || continue
-		# Newline-delimited is safe here: git repo dirs rarely contain newlines.
-		raw=$(find "$parent_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+		# Direct canonical clones plus one owner directory level only. The
+		# shared discovery helper excludes reserved and linked-worktree trees.
+		raw=$(aidevops_discover_canonical_repos "$parent_dir")
 		{
 			while IFS= read -r candidate; do
 				[[ -d "$candidate/.git" ]] || continue

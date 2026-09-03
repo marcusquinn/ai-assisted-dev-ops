@@ -5,7 +5,8 @@
 # Shared worktree path policy.
 # Default: keep canonical repos under ~/Git and create aidevops linked worktrees
 # in one flat, backup-excludable directory:
-#   ~/Git/_worktrees/<repo>-<branch-slug>
+#   ~/Git/_worktrees/<owner>-<repo>-<branch-slug> (nested canonical clone)
+#   ~/Git/_worktrees/<repo>-<branch-slug> (direct personal canonical clone)
 
 [[ -n "${_AIDEVOPS_WORKTREE_PATHS_LOADED:-}" ]] && return 0
 _AIDEVOPS_WORKTREE_PATHS_LOADED=1
@@ -74,8 +75,21 @@ aidevops_canonical_worktree_path() {
 aidevops_repo_worktree_name() {
 	local repo_path="${1:-.}"
 	local canonical=""
+	local remote_url="" slug="" owner="" repo_name="" parent_name=""
 	canonical=$(aidevops_canonical_worktree_path "$repo_path")
-	basename "$canonical"
+	repo_name=$(basename "$canonical")
+	remote_url=$(git -C "$canonical" remote get-url origin 2>/dev/null || true)
+	slug=$(printf '%s\n' "$remote_url" | sed -n 's#.*github\.com[:/]\([^/][^/]*/[^/][^/]*\)\.git$#\1#p')
+	[[ -z "$slug" ]] && slug=$(printf '%s\n' "$remote_url" | sed -n 's#.*github\.com[:/]\([^/][^/]*/[^/][^/]*\)$#\1#p')
+	if [[ "$slug" == */* ]]; then
+		owner="${slug%%/*}"
+		parent_name=$(basename "$(dirname "$canonical")")
+		if [[ "$(printf '%s' "$parent_name" | tr '[:upper:]' '[:lower:]')" == "$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')" ]]; then
+			printf '%s-%s\n' "$(printf '%s' "$owner" | tr '[:upper:]' '[:lower:]')" "$repo_name"
+			return 0
+		fi
+	fi
+	printf '%s\n' "$repo_name"
 	return 0
 }
 
