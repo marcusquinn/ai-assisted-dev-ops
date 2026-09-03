@@ -9,12 +9,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=./shared-constants.sh
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=./worktree-paths.sh
+source "${SCRIPT_DIR}/worktree-paths.sh"
 
 REPO_PATH="${PWD}"
 REMOTE_NAME="origin"
 APPLY=0
 INCLUDE_CLOSED_PR=0
 SKIP_FETCH=0
+DELETE_TRANSPORT_WORKTREE=""
+DELETE_FAILURES=0
 
 usage() {
 	cat <<'EOF'
@@ -164,7 +168,7 @@ gh_pr_branches() {
 	while [[ "$page" -le 2 ]]; do
 		page_json=$(AIDEVOPS_GH_ROUTE_DECISION="remote-branch-cleanup-pr-branches-rest" \
 			gh api "repos/${slug}/pulls?state=${api_state}&per_page=100&page=${page}" \
-				2>/dev/null) || return 0
+			2>/dev/null) || return 0
 		page_count=$(printf '%s' "$page_json" | jq -r 'if type == "array" then length else -1 end' 2>/dev/null) || return 0
 		[[ "$page_count" =~ ^[0-9]+$ ]] || return 0
 		printf '%s' "$page_json" | jq -r "$jq_filter" 2>/dev/null || return 0
@@ -211,13 +215,107 @@ print_candidate() {
 	return 0
 }
 
+cleanup_delete_transport() {
+	local worktree="$DELETE_TRANSPORT_WORKTREE"
+	[[ -n "$worktree" ]] || return 0
+	if repo_git worktree remove --force "$worktree" >/dev/null 2>&1; then
+		DELETE_TRANSPORT_WORKTREE=""
+		return 0
+	fi
+	print_warning "Unable to remove remote-branch cleanup transport worktree: $worktree"
+	return 1
+}
+
+prepare_delete_transport() {
+	local worktree=""
+	[[ -z "$DELETE_TRANSPORT_WORKTREE" ]] || return 0
+	worktree=$(aidevops_generate_worktree_path "$REPO_PATH" "remote-branch-cleanup-$$") || {
+		print_error "Unable to resolve the remote-branch cleanup transport path"
+		return 1
+	}
+	if [[ -e "$worktree" || -L "$worktree" ]]; then
+		print_error "Remote-branch cleanup transport path already exists: $worktree"
+		return 1
+	fi
+	DELETE_TRANSPORT_WORKTREE="$worktree"
+	if ! repo_git worktree add --detach "$worktree" HEAD >/dev/null 2>&1; then
+		DELETE_TRANSPORT_WORKTREE=""
+		print_error "Unable to create an isolated linked worktree for remote-ref deletion"
+		return 1
+	fi
+	return 0
+}
+
+delete_transport_git() {
+	local worktree="$DELETE_TRANSPORT_WORKTREE"
+	[[ -n "$worktree" ]] || return 1
+	git -C "$worktree" "$@"
+	return $?
+}
+
+record_delete_failure() {
+	local branch="$1"
+	local reason="$2"
+	DELETE_FAILURES=$((DELETE_FAILURES + 1))
+	print_candidate "failed" "$branch" "$reason"
+	return 0
+}
+
 delete_branch() {
 	local branch="$1"
-	if repo_git push "$REMOTE_NAME" --delete "$branch" >/dev/null 2>&1; then
-		print_candidate "deleted" "$branch" "remote branch removed"
-	else
-		print_candidate "failed" "$branch" "git push --delete failed"
+	local expected_sha=""
+	local remote_output=""
+	local remote_sha=""
+	local verify_rc=0
+
+	if ! repo_git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+		record_delete_failure "$branch" "invalid branch ref"
+		return 0
 	fi
+	expected_sha=$(repo_git rev-parse --verify "refs/remotes/${REMOTE_NAME}/${branch}" 2>/dev/null) || expected_sha=""
+	if [[ -z "$expected_sha" ]]; then
+		record_delete_failure "$branch" "unable to resolve audited remote-tracking ref"
+		return 0
+	fi
+	if ! prepare_delete_transport; then
+		record_delete_failure "$branch" "isolated deletion transport unavailable"
+		return 0
+	fi
+	if ! remote_output=$(delete_transport_git ls-remote --heads "$REMOTE_NAME" "refs/heads/${branch}" 2>/dev/null); then
+		record_delete_failure "$branch" "unable to verify remote ref before deletion"
+		return 0
+	fi
+	if [[ -z "$remote_output" ]]; then
+		print_candidate "deleted" "$branch" "remote absence verified"
+		return 0
+	fi
+	remote_sha="${remote_output%%[[:space:]]*}"
+	if [[ "$remote_sha" != "$expected_sha" ]]; then
+		record_delete_failure "$branch" "remote ref changed after safety scan"
+		return 0
+	fi
+	if ! delete_transport_git push \
+		"--force-with-lease=refs/heads/${branch}:${expected_sha}" \
+		"$REMOTE_NAME" ":refs/heads/${branch}" >/dev/null 2>&1; then
+		record_delete_failure "$branch" "lease-bound remote deletion failed"
+		return 0
+	fi
+	if remote_output=$(delete_transport_git ls-remote --exit-code --heads "$REMOTE_NAME" "refs/heads/${branch}" 2>/dev/null); then
+		verify_rc=0
+	else
+		verify_rc=$?
+	fi
+	case "$verify_rc" in
+	2)
+		print_candidate "deleted" "$branch" "remote absence verified"
+		;;
+	0)
+		record_delete_failure "$branch" "remote ref still present after deletion"
+		;;
+	*)
+		record_delete_failure "$branch" "remote absence verification failed"
+		;;
+	esac
 	return 0
 }
 
@@ -372,13 +470,21 @@ scan_branches() {
 		printf 'Dry-run only. Re-run with --apply to delete safe candidates.\n'
 	fi
 	sync_default_branch_after_cleanup "$default"
+	[[ "$DELETE_FAILURES" -eq 0 ]] || return 1
 	return 0
 }
 
 main() {
+	local scan_rc=0
+	local cleanup_rc=0
 	parse_args "$@"
-	scan_branches
-	return $?
+	trap 'cleanup_delete_transport >/dev/null 2>&1 || true' EXIT
+	scan_branches || scan_rc=$?
+	cleanup_delete_transport || cleanup_rc=$?
+	trap - EXIT
+	[[ "$scan_rc" -eq 0 ]] || return "$scan_rc"
+	[[ "$cleanup_rc" -eq 0 ]] || return "$cleanup_rc"
+	return 0
 }
 
 main "$@"

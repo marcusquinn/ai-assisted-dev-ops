@@ -7,6 +7,7 @@ set -euo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 SCRIPTS_DIR="$(cd "${TEST_DIR}/.." && pwd)" || exit 1
 HELPER="${SCRIPTS_DIR}/remote-branch-cleanup-helper.sh"
+GIT_SHIM="${SCRIPTS_DIR}/git"
 TEST_ROOT="${PWD}/.agents/tmp/test-remote-branch-cleanup.$$"
 
 fail() {
@@ -132,6 +133,21 @@ STUB
 	return 0
 }
 
+install_readback_failure_git_stub() {
+	local bin_dir="$1"
+	mkdir -p "$bin_dir"
+	cat >"${bin_dir}/git" <<STUB
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\$*" == *"ls-remote --exit-code --heads origin refs/heads/merged-readback"* ]]; then
+	exit 1
+fi
+exec "${GIT_SHIM}" "\$@"
+STUB
+	chmod +x "${bin_dir}/git"
+	return 0
+}
+
 setup_repo() {
 	mkdir -p "$TEST_ROOT"
 	git init -q --bare "$TEST_ROOT/origin.git"
@@ -195,13 +211,61 @@ run_dry_run_assertions() {
 run_apply_assertions() {
 	local repo="$1"
 	local gh_bin="$TEST_ROOT/bin"
-	PATH="$gh_bin:$PATH" bash "$HELPER" --repo "$repo" --skip-fetch --apply >/dev/null
+	local repos_file="$TEST_ROOT/repos.json"
+	local worktree_base="$TEST_ROOT/worktrees"
+	local direct_output=""
+	local direct_rc=0
+	printf '{"initialized_repos":[{"path":"%s"}]}\n' "$repo" >"$repos_file"
+	if direct_output=$(cd "$repo" && AIDEVOPS_REPOS_FILE="$repos_file" PATH="$SCRIPTS_DIR:$PATH" git push origin --delete merged-safe 2>&1); then
+		fail "direct canonical git push must remain blocked"
+	else
+		direct_rc=$?
+	fi
+	[[ "$direct_rc" -eq 42 ]] || fail "direct canonical git push returns guard exit 42 (rc=$direct_rc)"
+	assert_contains "$direct_output" "BLOCKED by canonical Git guard" "direct canonical git push remains blocked"
+	assert_ref_exists "$repo" merged-safe "blocked direct push preserves merged branch"
+
+	AIDEVOPS_REPOS_FILE="$repos_file" \
+		AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" \
+		PATH="$SCRIPTS_DIR:$gh_bin:$PATH" \
+		bash "$HELPER" --repo "$repo" --skip-fetch --apply >/dev/null
 
 	assert_ref_missing "$repo" merged-safe "apply deletes merged safe branch"
 	assert_ref_exists "$repo" unmerged "apply preserves unmerged branch"
 	assert_ref_exists "$repo" open-pr "apply preserves open PR branch"
 	assert_ref_exists "$repo" active-worktree "apply preserves active worktree branch"
 	assert_ref_exists "$repo" main "apply preserves default branch"
+	if git -C "$repo" worktree list --porcelain | grep -F "$worktree_base" >/dev/null 2>&1; then
+		fail "apply must remove its isolated deletion transport"
+	fi
+	pass "apply removes its isolated deletion transport"
+	return 0
+}
+
+run_readback_failure_assertions() {
+	local repo="$1"
+	local gh_bin="$TEST_ROOT/bin"
+	local git_bin="$TEST_ROOT/readback-bin"
+	local repos_file="$TEST_ROOT/repos.json"
+	local worktree_base="$TEST_ROOT/worktrees"
+	local output=""
+	local rc=0
+
+	make_branch "$repo" merged-readback merged-readback.txt merged-readback
+	merge_branch_to_main "$repo" merged-readback
+	git -C "$repo" fetch -q origin
+	install_readback_failure_git_stub "$git_bin"
+	if output=$(AIDEVOPS_REPOS_FILE="$repos_file" \
+		AIDEVOPS_WORKTREE_BASE_DIR="$worktree_base" \
+		PATH="$git_bin:$gh_bin:$PATH" \
+		bash "$HELPER" --repo "$repo" --skip-fetch --apply 2>&1); then
+		fail "apply must fail when remote absence read-back is indeterminate"
+	else
+		rc=$?
+	fi
+	[[ "$rc" -eq 1 ]] || fail "indeterminate read-back returns terminal failure (rc=$rc)"
+	assert_contains "$output" "remote absence verification failed" "apply reports indeterminate remote read-back"
+	assert_ref_missing "$repo" merged-readback "fixture confirms deletion occurred before read-back failure"
 	return 0
 }
 
@@ -258,6 +322,7 @@ main() {
 	setup_repo
 	run_dry_run_assertions "$TEST_ROOT/repo"
 	run_apply_assertions "$TEST_ROOT/repo"
+	run_readback_failure_assertions "$TEST_ROOT/repo"
 	run_sync_assertions
 	return 0
 }
