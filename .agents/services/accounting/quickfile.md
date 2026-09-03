@@ -70,10 +70,9 @@ Grant only the endpoint groups needed by the account. The REST API does not use
 legacy account-number, MD5, or Application ID authentication.
 
 ```bash
-mkdir -p ~/Git/mcp
-git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp
-npm install --prefix ~/Git/mcp/quickfile-mcp
-npm run build --prefix ~/Git/mcp/quickfile-mcp
+git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/quickfile-mcp
+npm install --prefix ~/Git/quickfile-mcp
+npm run build --prefix ~/Git/quickfile-mcp
 
 # Hidden-input secret storage; repeat with one alias per QuickFile entity.
 aidevops secret set QUICKFILE_BUSINESS_API_KEY
@@ -142,7 +141,7 @@ accept/decline/conversion endpoints; do not invent or call them.
 - `401`/`403`: verify the selected alias, token validity, and endpoint groups.
 - Unknown account: verify a matching `QUICKFILE_<ACCOUNT>_API_KEY` secret exists,
   then restart the MCP runtime.
-- MCP missing: build `~/Git/mcp/quickfile-mcp`, then restart the runtime.
+- MCP missing: build `~/Git/quickfile-mcp`, then restart the runtime.
 
 Status checks:
 

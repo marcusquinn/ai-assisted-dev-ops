@@ -22,7 +22,7 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Separate working directories per branch — no branch-switching conflicts
-- **Core principle**: Main repo (`~/Git/{repo}/` or grouped parent) ALWAYS stays on `main`. Create durable linked worktrees under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}`, not runtime temp dirs. Group WordPress repos under `~/Git/wordpress/`, EspoCRM under `~/Git/espocrm/`, and MCP under `~/Git/mcp/` (details: `reference/repo-organization.md`). **Never `git checkout -b` in the main repo** — the next session inherits wrong state.
+- **Core principle**: A canonical repo (`~/Git/<repo>` for a configured personal owner or `~/Git/<owner>/<repo>` otherwise) ALWAYS stays on `main`. Create durable linked worktrees under `${AIDEVOPS_WORKTREE_BASE_DIR:-~/Git/_worktrees}`, not runtime temp dirs (details: `reference/repo-organization.md`). **Never `git checkout -b` in the main repo** — the next session inherits wrong state.
 - **Same-session default**: For the active objective, keep the current chat and target the linked path with file tools and Bash `workdir`; a new chat is only for explicit parallel work, unrelated context, or a verified ownership/permission block.
 - **Preferred tool**: [Worktrunk](https://worktrunk.dev) (`brew install max-sixty/worktrunk/wt`) — full docs: `tools/git/worktrunk.md`
 - **Fallback**: `~/.aidevops/agents/scripts/worktree-helper.sh`
@@ -39,14 +39,14 @@ wt list                                # List worktrees with CI status
 wt merge                               # Squash/rebase/merge + cleanup
 wt remove                              # Remove current worktree
 wt switch -c hotfix/security-patch     # Hotfix without leaving feature work
-opencode ~/Git/_worktrees/myrepo-feature-auth/  # Multiple AI sessions on separate worktrees
+opencode ~/Git/_worktrees/owner-myrepo-feature-auth/  # Multiple AI sessions on separate worktrees
 ```
 
 **worktree-helper.sh** (fallback — no cd support):
 
 ```bash
-${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add feature/my-feature          # Auto-path: ~/Git/_worktrees/<repo>-feature-my-feature; cd into printed path
-${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add feature/my-feature "$HOME/Git/_worktrees/<repo>-feature-my-feature"  # Explicit central path
+${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add feature/my-feature          # Auto-path: ~/Git/_worktrees/[<owner>-]<repo>-feature-my-feature; cd into printed path
+${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add feature/my-feature "$HOME/Git/_worktrees/<owner>-<repo>-feature-my-feature"  # Explicit central path
 ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh list                            # List worktrees
 ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh status                          # Status overview
 ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh remove feature/auth             # Removes directory, NOT the branch

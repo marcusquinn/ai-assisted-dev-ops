@@ -132,9 +132,9 @@ Slugification: lowercase, hyphens for spaces, remove special chars, truncate ~50
 Parse issue URLs to extract platform, owner, repo, and issue number, then create a safe linked worktree:
 
 ```bash
-# Clone if not local. Use grouped parents for ecosystem repos:
-# WordPress -> ~/Git/wordpress/{repo}; EspoCRM -> ~/Git/espocrm/{repo}; MCP -> ~/Git/mcp/{repo}
-# Other repos -> ~/Git/{repo}. Details: reference/repo-organization.md
+# Clone if not local. Configured personal owner -> ~/Git/{repo};
+# organization or third party -> ~/Git/{owner}/{repo}.
+# Explicit repos.json paths remain authoritative. Details: reference/repo-organization.md
 ${AIDEVOPS_DIR:-$HOME/.aidevops}/agents/scripts/worktree-helper.sh add {type}/{issue_number}-{slug-from-title}
 # Then cd into the printed linked worktree path before editing.
 ```

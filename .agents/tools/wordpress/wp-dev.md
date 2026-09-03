@@ -26,8 +26,8 @@ tools:
 
 | Path | Purpose |
 |------|---------|
-| `~/Git/wordpress/{slug}` | Plugin/theme analysis; `{slug}-fix` for patches |
-| `~/Git/wordpress/mcp-adapter` | MCP Adapter repo |
+| `~/Git/<owner>/<slug>` | Third-party plugin/theme analysis; `{slug}-fix` for patches |
+| `~/Git/wordpress/mcp-adapter` | WordPress organization MCP Adapter repo |
 | `~/Local Sites/` | LocalWP sites |
 | `~/.config/aidevops/wordpress-sites.json` | Sites config |
 | `~/.aidevops/.agent-workspace/work/wordpress/` | Working dir |
@@ -85,13 +85,16 @@ Multisite: add `WP_ALLOW_MULTISITE`, `MULTISITE`, `SUBDOMAIN_INSTALL`, `DOMAIN_C
 
 ## Plugin & Theme Analysis Workflow
 
-All work under `~/Git/wordpress/`. Suffixes: `{slug}` (analysis/fork), `{slug}-addon` (companion for pro/closed), `{slug}-fix` (update-safe patches), `{slug}-child` (child theme).
+Use `~/Git/<owner>/<slug>` for third-party repositories and `~/Git/<slug>` for
+repositories owned by a configured personal account. Suffixes: `{slug}`
+(analysis/fork), `{slug}-addon` (companion for pro/closed), `{slug}-fix`
+(update-safe patches), `{slug}-child` (child theme).
 
 ```bash
-cd ~/Git/wordpress && git clone https://github.com/developer/plugin-slug.git
-# Pro: unzip ~/Downloads/plugin-name.zip -d ~/Git/wordpress/ && git init && git add . && git commit -m "Initial import v1.0.0"
+mkdir -p ~/Git/developer && git clone https://github.com/developer/plugin-slug.git ~/Git/developer/plugin-slug
+# Pro/local-only: import to an explicit registered path under ~/Git.
 rg "add_action|add_filter" --type php .
-ln -s ~/Git/wordpress/plugin-slug "~/Local Sites/test-site/app/public/wp-content/plugins/"
+ln -s ~/Git/developer/plugin-slug "~/Local Sites/test-site/app/public/wp-content/plugins/"
 ```
 
 **Patching pro/closed plugins** — create `{slug}-fix` companion that survives updates. Guard with `class_exists`/`function_exists`. Use priority > 10. Document issue URL and affected versions. Version-gate: `version_compare(ORIGINAL_PLUGIN_VERSION, '2.4.0', '<')`.
@@ -109,7 +112,7 @@ add_filter('original_filter', 'my_fixed_filter', 999);
 function my_fixed_filter($value) { return $modified_value; }
 ```
 
-**Sync to LocalWP**: `rsync -av --delete --exclude='.git' --exclude='node_modules' --exclude='vendor' ~/Git/wordpress/plugin-slug/ "~/Local Sites/site-name/app/public/wp-content/plugins/plugin-slug/"`
+**Sync to LocalWP**: `rsync -av --delete --exclude='.git' --exclude='node_modules' --exclude='vendor' ~/Git/developer/plugin-slug/ "~/Local Sites/site-name/app/public/wp-content/plugins/plugin-slug/"`
 
 ## Debugging
 

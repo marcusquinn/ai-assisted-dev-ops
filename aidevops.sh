@@ -209,6 +209,9 @@ unset _AIDEVOPS_CLI_ROOT _AIDEVOPS_CLI_MODULES_SUBDIR
 # shellcheck source=.agents/scripts/aidevops-cli/aidevops-repos-lib.sh
 # shellcheck disable=SC1091  # module path resolved at runtime via $INSTALL_DIR
 source "${AIDEVOPS_CLI_MODULES_DIR}/aidevops-repos-lib.sh"
+# shellcheck source=.agents/scripts/aidevops-cli/repo-discovery-lib.sh
+# shellcheck disable=SC1091
+source "${AIDEVOPS_CLI_MODULES_DIR}/repo-discovery-lib.sh"
 # shellcheck source=.agents/scripts/aidevops-cli/aidevops-init-lib.sh
 # shellcheck disable=SC1091
 source "${AIDEVOPS_CLI_MODULES_DIR}/aidevops-init-lib.sh"
@@ -928,9 +931,9 @@ cmd_detect() {
 	local to_register=()
 
 	if [[ -d "$HOME/Git" ]]; then
-		while IFS= read -r -d '' aidevops_json; do
-			local repo_dir
-			repo_dir=$(dirname "$aidevops_json")
+		while IFS= read -r -d '' repo_dir; do
+			local aidevops_json="$repo_dir/.aidevops.json"
+			[[ -f "$aidevops_json" ]] || continue
 
 			# Check if already registered
 			init_repos_file
@@ -940,7 +943,7 @@ cmd_detect() {
 					found=$((found + 1))
 				fi
 			fi
-		done < <(find "$HOME/Git" -maxdepth 3 -name ".aidevops.json" -print0 2>/dev/null)
+		done < <(aidevops_discover_canonical_repos "$HOME/Git")
 	fi
 
 	if [[ $found -eq 0 ]]; then

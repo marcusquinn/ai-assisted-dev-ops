@@ -10,7 +10,8 @@ Creates a profile for each registered repo and an optional Buzz workspace with:
 - Direct OpenCode launch that leaves a shell open after exit
 - Grouped under "Projects"
 
-Existing profiles (matched by cwd path) are never overwritten.
+Custom profiles are preserved. Confidently identified aidevops-managed profiles
+are reconciled when their cwd is stale or duplicated.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -48,7 +50,9 @@ from tabby_yaml_helpers import (
     save_yaml,
     extract_existing_cwds,
     extract_group_id,
+    extract_profile_blocks,
     insert_profiles_block,
+    remove_profile_blocks,
 )
 
 
@@ -57,6 +61,18 @@ class ProfileAppearance(NamedTuple):
 
     tab_colour: str
     scheme: dict
+
+
+class ProfileReconciliation(NamedTuple):
+    """A non-mutating managed-profile reconciliation plan."""
+
+    stale: list
+    duplicates: list
+
+    @property
+    def removals(self) -> list:
+        """Return all profile blocks selected for removal."""
+        return self.stale + self.duplicates
 
 
 def is_linked_worktree(repo_path: str) -> bool:
@@ -239,6 +255,94 @@ def get_repos(repos_json_path: str) -> list[dict]:
     return result
 
 
+def get_registered_paths(repos_json_path: str) -> set[str]:
+    """Return normalized paths registered in repos.json, including offline paths."""
+    with open(repos_json_path) as handle:
+        data = json.load(handle)
+    return {
+        normalize_cwd(repo["path"])
+        for repo in data.get("initialized_repos", [])
+        if repo.get("path")
+    }
+
+
+def normalize_cwd(path: str) -> str:
+    """Normalize a profile cwd for conservative equality checks."""
+    return os.path.normcase(os.path.realpath(os.path.expanduser(path)))
+
+
+def _has_managed_profile_id(profile: dict) -> bool:
+    """Return True only for IDs emitted by :func:`build_profile_yaml`."""
+    profile_id = profile.get("id")
+    if not isinstance(profile_id, str) or not profile_id.startswith("local:custom:"):
+        return False
+    try:
+        uuid.UUID(profile_id.rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return False
+    return True
+
+
+def _has_managed_launch(profile: dict) -> bool:
+    """Return True for current and historical aidevops OpenCode launch forms."""
+    options = profile.get("options")
+    if not isinstance(options, dict):
+        return False
+    args = options.get("args")
+    managed_args = (
+        ["-l", "-c", TABBY_OPENCODE_LAUNCH],
+        ["-l", "-c", "aidevops opencode; exec zsh"],
+        ["-l", "-c", LEGACY_TABBY_OPENCODE_LAUNCH],
+        ["-l", "-i", "-c", "opencode"],
+    )
+    if args in managed_args:
+        return True
+    command = options.get("command")
+    return command in (
+        TABBY_COMMAND_FIELD_OPENCODE,
+        LEGACY_TABBY_COMMAND_FIELD_OPENCODE,
+        "/bin/zsh -l -c 'aidevops opencode; exec zsh'",
+    )
+
+
+def is_aidevops_managed_profile(profile: dict, projects_group_id: str | None) -> bool:
+    """Identify a generated profile without claiming custom OpenCode profiles."""
+    options = profile.get("options")
+    return bool(
+        projects_group_id
+        and profile.get("group") == projects_group_id
+        and profile.get("type") == "local"
+        and isinstance(options, dict)
+        and isinstance(options.get("cwd"), str)
+        and _has_managed_profile_id(profile)
+        and _has_managed_launch(profile)
+    )
+
+
+def plan_profile_reconciliation(
+    config_text: str, registered_paths: set[str]
+) -> ProfileReconciliation:
+    """Plan safe stale and duplicate managed-profile removals."""
+    projects_group_id = extract_group_id(config_text)
+    seen_cwds: set[str] = set()
+    stale = []
+    duplicates = []
+    for block in extract_profile_blocks(config_text):
+        profile = block.data
+        if not is_aidevops_managed_profile(profile, projects_group_id):
+            continue
+        cwd = profile["options"]["cwd"]
+        normalized = normalize_cwd(cwd)
+        if not os.path.isdir(os.path.expanduser(cwd)) and normalized not in registered_paths:
+            stale.append(block)
+            continue
+        if normalized in seen_cwds:
+            duplicates.append(block)
+            continue
+        seen_cwds.add(normalized)
+    return ProfileReconciliation(stale, duplicates)
+
+
 def get_profile_targets(
     repos_json_path: str, home: Optional[str] = None
 ) -> list[dict]:
@@ -266,7 +370,9 @@ def get_profile_targets(
     return targets
 
 
-def show_status(repos: list[dict], existing_cwds: set[str]) -> None:
+def show_status(
+    repos: list[dict], existing_cwds: set[str], reconciliation: ProfileReconciliation
+) -> None:
     """Print status of profile targets vs existing Tabby profiles."""
     workspace_count = sum(
         repo["repo"].get("profile_kind") == "buzz-workspace" for repo in repos
@@ -284,8 +390,11 @@ def show_status(repos: list[dict], existing_cwds: set[str]) -> None:
             needs_profile += 1
             print(f"  [new]    {repo['name']} -> {repo['path']}")
     print(f"\nExisting: {has_profile}, New: {needs_profile}")
-    if needs_profile > 0:
-        print("Note: existing profiles are never modified — only new ones are created.")
+    print(
+        "Pending reconciliation: "
+        f"{len(reconciliation.stale)} stale managed, "
+        f"{len(reconciliation.duplicates)} duplicate managed"
+    )
 
 
 def ensure_group(config_text: str) -> tuple[str, str]:
@@ -335,13 +444,25 @@ def sync_profiles(args: argparse.Namespace) -> None:
     if report_profile_command_issues(config_text):
         raise SystemExit(2)
 
+    reconciliation = plan_profile_reconciliation(
+        config_text, get_registered_paths(args.repos_json)
+    )
+    config_text = remove_profile_blocks(config_text, reconciliation.removals)
+    existing_cwds = extract_existing_cwds(config_text)
     config_text, group_id = ensure_group(config_text)
     new_profiles = build_new_profiles(repos, existing_cwds, group_id, shell_path)
 
     if not new_profiles:
-        if repaired_count:
+        if repaired_count or reconciliation.removals:
             save_yaml(args.tabby_config, config_text)
-            print(f"Repaired {repaired_count} existing Tabby profile(s).")
+            if repaired_count:
+                print(f"Repaired {repaired_count} existing Tabby profile(s).")
+            if reconciliation.removals:
+                print(
+                    "Removed "
+                    f"{len(reconciliation.stale)} stale and "
+                    f"{len(reconciliation.duplicates)} duplicate managed profile(s)."
+                )
         else:
             print("All profile targets already have Tabby profiles. Nothing to do.")
         return
@@ -352,6 +473,12 @@ def sync_profiles(args: argparse.Namespace) -> None:
 
     if repaired_count:
         print(f"Repaired {repaired_count} existing Tabby profile(s).")
+    if reconciliation.removals:
+        print(
+            "Removed "
+            f"{len(reconciliation.stale)} stale and "
+            f"{len(reconciliation.duplicates)} duplicate managed profile(s)."
+        )
     print(f"Created {len(new_profiles)} new Tabby profile(s):")
     for repo, _, colour, scheme_name in new_profiles:
         print(f"  + {repo['name']} (colour: {colour}, scheme: {scheme_name})")
@@ -371,7 +498,10 @@ def main() -> None:
     existing_cwds = extract_existing_cwds(config_text)
 
     if args.status_only:
-        show_status(repos, existing_cwds)
+        reconciliation = plan_profile_reconciliation(
+            config_text, get_registered_paths(args.repos_json)
+        )
+        show_status(repos, existing_cwds, reconciliation)
         if report_profile_arg_type_issues(config_text) or report_profile_command_issues(
             config_text
         ):

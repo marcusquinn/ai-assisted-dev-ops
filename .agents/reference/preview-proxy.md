@@ -7,7 +7,7 @@ Design: GH#21560
 
 ## Problem
 
-Interactive AI sessions create worktrees for all code changes (`~/Git/_worktrees/<repo>-<branch>/` by default), keeping the canonical repo on the default branch. The user's local dev server is typically pinned to the canonical directory. Changes in a worktree are invisible until the PR merges or the user manually restarts the dev server from the worktree path.
+Interactive AI sessions create worktrees for all code changes (`~/Git/_worktrees/[<owner>-]<repo>-<branch>/` by default), keeping the canonical repo on the default branch. The user's local dev server is typically pinned to the canonical directory. Changes in a worktree are invisible until the PR merges or the user manually restarts the dev server from the worktree path.
 
 ## Solution
 

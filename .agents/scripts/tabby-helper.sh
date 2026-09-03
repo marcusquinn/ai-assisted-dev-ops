@@ -339,8 +339,8 @@ cmd_help() {
 	echo "tabby-helper.sh — Generate Tabby profiles from repos.json"
 	echo ""
 	echo "Usage:"
-	echo "  tabby-helper.sh sync       Sync profiles from repos.json (create new, skip existing)"
-	echo "  tabby-helper.sh status     Show profile status (which repos have profiles)"
+	echo "  tabby-helper.sh sync       Reconcile managed profiles and create missing targets"
+	echo "  tabby-helper.sh status     Show profile and pending reconciliation status"
 	echo "  tabby-helper.sh zshrc      Deprecated no-op (TABBY_AUTORUN is unused)"
 	echo "  tabby-helper.sh fix-shell  Ensure default local profile uses /bin/zsh (macOS)"
 	echo "  tabby-helper.sh help       Show this help"
@@ -351,7 +351,8 @@ cmd_help() {
 	echo "  - Direct OpenCode launch that leaves a shell open after exit"
 	echo "  - Grouped under 'Projects'"
 	echo ""
-	echo "Existing profiles (matched by cwd path) are never overwritten."
+	echo "Custom profiles and registered offline paths are preserved."
+	echo "Only provably stale or duplicate aidevops-managed profiles are removed."
 	return 0
 }
 

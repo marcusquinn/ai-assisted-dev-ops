@@ -43,6 +43,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_resolve_script_path)" || exit
 unset -f _resolve_script_path
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=aidevops-cli/repo-discovery-lib.sh
+source "${SCRIPT_DIR}/aidevops-cli/repo-discovery-lib.sh"
 
 init_log_file
 
@@ -676,15 +678,10 @@ cmd_check() {
 
 		log_info "Scanning: $parent_dir"
 
-		# Iterate over immediate subdirectories only (not recursive)
-		# Worktrees are excluded — only the main checkout matters
+		# Scan direct repos and one owner/repo level. The shared discovery
+		# helper excludes linked worktrees, submodules, nested repos, and
+		# reserved operational directories.
 		while IFS= read -r -d '' repo_dir; do
-			# Skip if not a git repo
-			[[ -d "$repo_dir/.git" ]] || continue
-
-			# Skip git worktrees (they have .git as a file, not a directory)
-			[[ -f "$repo_dir/.git" ]] && continue
-
 			if sync_repo "$repo_dir"; then
 				# Determine if it was pulled or skipped based on log
 				local last_log
@@ -699,7 +696,7 @@ cmd_check() {
 			else
 				failed=$((failed + 1))
 			fi
-		done < <(find "$parent_dir" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
+		done < <(aidevops_discover_canonical_repos "$parent_dir")
 	done
 
 	log_info "Sync complete: ${synced} pulled, ${skipped} skipped, ${failed} failed"
