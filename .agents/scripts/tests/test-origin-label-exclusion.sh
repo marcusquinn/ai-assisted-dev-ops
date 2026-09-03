@@ -237,13 +237,16 @@ _set_origin_label_rest() {
 	return 1
 }
 export GH_FAIL_ISSUE_EDIT=1 GH_FAIL_REST_LABEL_POST=1
-set_origin_label 801 "owner/repo" "worker" >/dev/null 2>&1
+origin_failure_output=""
+origin_failure_output=$(set_origin_label 801 "owner/repo" "worker" 2>&1)
 rc=$?
-if [[ "$rc" -ne 0 ]]; then
-	print_result "set_origin_label GraphQL exhaustion: REST failure returns non-zero" 0
+if [[ "$rc" -ne 0 ]] &&
+	[[ "$origin_failure_output" == *"GitHub API rate limited the label write"* ]] &&
+	[[ "$origin_failure_output" != *"user ID 99999"* ]]; then
+	print_result "set_origin_label GraphQL exhaustion: REST failure returns bounded reason" 0
 else
-	print_result "set_origin_label GraphQL exhaustion: REST failure returns non-zero" 1 \
-		"(expected non-zero, calls: $(tr '\n' ';' <"$GH_RECORD_FILE"))"
+	print_result "set_origin_label GraphQL exhaustion: REST failure returns bounded reason" 1 \
+		"(rc=$rc output=$origin_failure_output calls: $(tr '\n' ';' <"$GH_RECORD_FILE"))"
 fi
 unset GH_FAIL_ISSUE_EDIT GH_FAIL_REST_LABEL_POST
 

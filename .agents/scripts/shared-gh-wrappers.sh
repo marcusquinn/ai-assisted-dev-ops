@@ -958,6 +958,28 @@ _set_origin_label_rest() {
 	return 0
 }
 
+#######################################
+# Classify an origin-label write failure without exposing raw API output.
+# Args: $1=stderr file (optional) $2=write exit code
+# Output: bounded operator-safe failure reason
+#######################################
+_gh_origin_label_failure_kind() {
+	local error_file="$1"
+	local write_rc="$2"
+	if [[ -n "$error_file" ]] &&
+		grep -qiE 'permission|forbidden|Resource not accessible|HTTP 403' "$error_file" 2>/dev/null; then
+		printf '%s\n' "credential lacks origin-label permission"
+	elif [[ -n "$error_file" ]] &&
+		grep -qiE 'rate limit|rateLimitExceeded|HTTP 429' "$error_file" 2>/dev/null; then
+		printf '%s\n' "GitHub API rate limited the label write"
+	elif [[ "$write_rc" -eq 124 ]]; then
+		printf '%s\n' "GitHub label write timed out"
+	else
+		printf '%s\n' "GitHub label write failed"
+	fi
+	return 0
+}
+
 set_origin_label() {
 	local issue_num="$1"
 	local repo_slug="$2"
@@ -1041,6 +1063,9 @@ set_origin_label() {
 		rm -f "$_err_file"
 		return 0
 	fi
+	local _failure_kind=""
+	_failure_kind=$(_gh_origin_label_failure_kind "$_err_file" "$_gh_rc")
+	printf 'set_origin_label: %s\n' "$_failure_kind" >&2
 	rm -f "$_err_file"
 	return "$_gh_rc"
 }
