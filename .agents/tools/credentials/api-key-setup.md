@@ -83,6 +83,21 @@ bash ~/Git/aidevops/.agents/scripts/setup-local-api-keys.sh set <service-name> Y
 
 **Multi-account naming**: When you hold credentials for several accounts on the same provider at once (personal + work GitHub, multiple OpenAI projects, several Hetzner projects), suffix the bare name with `-<account>` / `_<ACCOUNT>` — e.g. `github-token-personal` and `github-token-work`, or `hcloud-token-project-a` and `hcloud-token-project-b`. The bare provider name remains the default for the single-account case. Full convention: `gopass.md` "Naming with multiple accounts".
 
+**GPT Image 2 accounts**: OpenCode image generation deliberately uses a more
+specific key namespace so Platform billing identities cannot be confused with
+ChatGPT OAuth pool identities:
+
+```bash
+aidevops secret set OPENAI_IMAGE_API_KEY_PERSONAL
+aidevops secret set OPENAI_IMAGE_API_KEY_WORK
+```
+
+Select the matching alias (`PERSONAL` or `WORK`) with `auth: "api"` in
+`gpt_image_generate`. Aliases contain only letters, numbers, and underscores.
+The non-secret `AIDEVOPS_OPENAI_IMAGE_ACCOUNT` setting may define a deliberate
+default alias, but API billing still requires explicit `auth: "api"`. The tool
+never falls back to `OPENAI_API_KEY` or silently chooses among named keys.
+
 **Provider token label + value pairs**: Secure backends (via `aidevops secret set <NAME>`, preferring `gopass` over plaintext) and the plaintext fallback both store only one value per name. If a provider has a non-sensitive local token label and a sensitive access token value, keep them separate: `<PROVIDER>_<ORG>_<PURPOSE>_TOKEN_NAME` for the label and `<PROVIDER>_<ORG>_<PURPOSE>_ACCESS_TOKEN` for the value. Add a developer or device discriminator, such as `_DEV_A` or `_LAPTOP_2`, before `TOKEN_NAME` / `ACCESS_TOKEN` when a shared store or workstation holds tokens for multiple developers or devices. Never document token values; token labels may be documented only when they are non-sensitive.
 
 ### 4. Verify

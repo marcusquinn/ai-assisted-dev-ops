@@ -22,7 +22,7 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Modify existing images — inpainting, outpainting, upscaling, style transfer, background removal, batch edits
-- **Cloud**: DALL-E 2 edit API, Google Imagen edit, Adobe Firefly
+- **Cloud**: GPT Image 2, Google Imagen edit, Adobe Firefly
 - **Local**: Stable Diffusion inpaint, FLUX fill, Real-ESRGAN (upscaling), ControlNet
 - **Workflow tool**: ComfyUI (node-based pipelines for complex edits)
 
@@ -32,7 +32,7 @@ tools:
 
 | Capability | Description | Best Tool |
 |------------|-------------|-----------|
-| **Inpainting** | Replace selected region with AI content | SD inpaint, DALL-E 2 edit |
+| **Inpainting** | Replace selected region with AI content | SD inpaint, GPT Image 2 |
 | **Outpainting** | Extend image beyond original boundaries | SD outpaint, FLUX fill |
 | **Upscaling** | Increase resolution with AI enhancement | Real-ESRGAN, Topaz |
 | **Background removal** | Remove or replace backgrounds | rembg, Segment Anything |
@@ -42,22 +42,20 @@ tools:
 
 ## Cloud APIs
 
-### DALL-E 2 Edit (OpenAI)
+### GPT Image 2 Reference Editing (OpenAI)
 
-DALL-E 2 only (not 3). Source + mask: square PNGs, same dimensions, <4MB. Transparent mask areas = edit region.
+The OpenCode `gpt_image_generate` tool accepts up to 8 project-relative
+reference images through `images`. Describe each image's role in the prompt.
+ChatGPT OAuth is the default billing route; explicit `auth: "api"` uses the
+named `OPENAI_IMAGE_API_KEY_<ACCOUNT>` secret and OpenAI's Images edit endpoint.
+GPT Image 2 processes references at high fidelity automatically.
 
-```bash
-# Inpainting: replace masked area
-curl https://api.openai.com/v1/images/edits \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -F image="@photo.png" -F mask="@mask.png" \
-  -F prompt="A red sports car" -F size="1024x1024" -F n=1
-
-# Variation: generate similar images
-curl https://api.openai.com/v1/images/variations \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -F image="@photo.png" -F size="1024x1024" -F n=3
+```text
+Using refs/product.png as the product reference, place it on a clean marble counter in soft morning light. Save to assets/product-morning.png.
 ```
+
+The current aidevops tool supports reference-guided edits, not mask inpainting.
+Use a dedicated local inpainting workflow when pixel-specific masks are needed.
 
 ### Google Imagen Edit (Vertex AI)
 
@@ -117,7 +115,7 @@ Structural guides for precise control. Used within ComfyUI or Automatic1111.
 
 ### Product Photo Enhancement
 
-`rembg` → Real-ESRGAN 2x (if needed) → SD inpaint / DALL-E (new background) → ImageMagick / Pillow (colour correct)
+`rembg` → Real-ESRGAN 2x (if needed) → SD inpaint / GPT Image 2 (new background) → ImageMagick / Pillow (colour correct)
 
 ### Batch Background Removal
 
