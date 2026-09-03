@@ -88,6 +88,30 @@ function takeNextSseBlock(pending) {
   return { block: pending.slice(0, delimiter.index), rest: pending.slice(end) };
 }
 
+async function cancelSseReader(reader) {
+  await reader.cancel().catch(() => {});
+}
+
+async function consumeSseBlocks(reader, pending) {
+  let next;
+  while ((next = takeNextSseBlock(pending))) {
+    pending = next.rest;
+    if (next.block.length > MAX_SSE_BUFFER_CHARS) {
+      await cancelSseReader(reader);
+      throw new Error("OAuth image event exceeded the safe event-stream limit.");
+    }
+    const result = parseSseBlock(next.block);
+    if (result) return { pending, result };
+  }
+  return { pending, result: "" };
+}
+
+async function enforceSseLimit(reader, exceeded, message) {
+  if (!exceeded) return;
+  await cancelSseReader(reader);
+  throw new Error(message);
+}
+
 export async function parseImageSse(stream) {
   if (!stream?.getReader) throw new Error("OAuth image response did not include an event stream.");
   const reader = stream.getReader();
@@ -97,28 +121,23 @@ export async function parseImageSse(stream) {
   while (true) {
     const { done, value } = await reader.read();
     totalBytes += value?.byteLength || 0;
-    if (totalBytes > MAX_SSE_TOTAL_BYTES) {
-      await reader.cancel().catch(() => {});
-      throw new Error("OAuth image response exceeded the safe event-stream limit.");
-    }
+    await enforceSseLimit(
+      reader,
+      totalBytes > MAX_SSE_TOTAL_BYTES,
+      "OAuth image response exceeded the safe event-stream limit.",
+    );
     pending += decoder.decode(value || new Uint8Array(), { stream: !done });
-    let next;
-    while ((next = takeNextSseBlock(pending))) {
-      pending = next.rest;
-      if (next.block.length > MAX_SSE_BUFFER_CHARS) {
-        await reader.cancel().catch(() => {});
-        throw new Error("OAuth image event exceeded the safe event-stream limit.");
-      }
-      const result = parseSseBlock(next.block);
-      if (result) {
-        await reader.cancel().catch(() => {});
-        return result;
-      }
+    const consumed = await consumeSseBlocks(reader, pending);
+    pending = consumed.pending;
+    if (consumed.result) {
+      await cancelSseReader(reader);
+      return consumed.result;
     }
-    if (pending.length > MAX_SSE_BUFFER_CHARS) {
-      await reader.cancel().catch(() => {});
-      throw new Error("OAuth image response exceeded the safe event-stream limit.");
-    }
+    await enforceSseLimit(
+      reader,
+      pending.length > MAX_SSE_BUFFER_CHARS,
+      "OAuth image response exceeded the safe event-stream limit.",
+    );
     if (done) break;
   }
   const finalResult = parseSseBlock(pending);

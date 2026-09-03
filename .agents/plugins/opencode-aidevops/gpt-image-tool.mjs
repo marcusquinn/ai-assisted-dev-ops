@@ -44,10 +44,10 @@ function validateSize(value) {
   const longEdge = Math.max(width, height);
   const shortEdge = Math.min(width, height);
   const pixels = width * height;
-  if (
-    width % 16 !== 0 || height % 16 !== 0 || longEdge > 3840
-    || longEdge / shortEdge > 3 || pixels < 655_360 || pixels > 8_294_400
-  ) {
+  const aligned = width % 16 === 0 && height % 16 === 0;
+  const boundedEdges = longEdge <= 3840 && longEdge / shortEdge <= 3;
+  const boundedPixels = pixels >= 655_360 && pixels <= 8_294_400;
+  if (!aligned || !boundedEdges || !boundedPixels) {
     throw new Error("Image size violates GPT Image 2 dimension constraints.");
   }
   return size;
