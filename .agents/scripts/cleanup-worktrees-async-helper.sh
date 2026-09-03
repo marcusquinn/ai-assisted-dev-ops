@@ -87,6 +87,10 @@ else
 	echo "[cleanup-worktrees-async] ERROR: pulse-cleanup.sh not found at ${SCRIPT_DIR}" >>"$LOGFILE"
 	exit 1
 fi
+if [[ -f "${SCRIPT_DIR}/audit-worktree-removal-helper.sh" ]]; then
+	# shellcheck source=audit-worktree-removal-helper.sh
+	source "${SCRIPT_DIR}/audit-worktree-removal-helper.sh"
+fi
 
 # ============================================================
 # LOCK MANAGEMENT (mkdir-based — POSIX atomic, macOS-safe)
@@ -232,6 +236,43 @@ _maintain_worktree_recovery() {
 	return 0
 }
 
+_prune_current_repo_missing_worktree_metadata() {
+	local repo_context=""
+	local field=""
+	local wt_path=""
+	local prunable_path=""
+
+	declare -F prune_missing_worktree_metadata >/dev/null 2>&1 || return 0
+	command -v git >/dev/null 2>&1 || return 0
+	repo_context=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+	[[ -n "$repo_context" && -d "$repo_context" ]] || return 0
+
+	while IFS= read -r -d '' field; do
+		case "$field" in
+		worktree\ *)
+			wt_path="${field#worktree }"
+			;;
+		prunable\ *)
+			if [[ -n "$wt_path" && ! -e "$wt_path" ]]; then
+				prunable_path="$wt_path"
+				break
+			fi
+			;;
+		"")
+			wt_path=""
+			;;
+		esac
+	done < <(git -C "$repo_context" worktree list --porcelain -z 2>/dev/null || true)
+
+	[[ -n "$prunable_path" ]] || return 0
+	if prune_missing_worktree_metadata "$repo_context" "$prunable_path"; then
+		echo "[cleanup-worktrees-async] pruned missing worktree metadata from current repo" >>"$LOGFILE"
+	else
+		echo "[cleanup-worktrees-async] missing worktree metadata prune failed closed; continuing" >>"$LOGFILE"
+	fi
+	return 0
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -262,6 +303,7 @@ main() {
 		outcome="safety-skip"
 		echo "[cleanup-worktrees-async] cleanup_worktrees skipped by safety gate — last-run NOT updated" >>"$LOGFILE"
 	elif [[ "$rc" -eq 0 ]]; then
+		_prune_current_repo_missing_worktree_metadata
 		_maintain_worktree_recovery
 		_update_last_run
 		echo "[cleanup-worktrees-async] Completed successfully at $(date -u '+%Y-%m-%dT%H:%M:%SZ'). last-run updated." >>"$LOGFILE"
