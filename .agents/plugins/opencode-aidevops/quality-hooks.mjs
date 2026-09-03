@@ -42,8 +42,8 @@ import {
   checkCanonicalWriteSafetyGate,
   isApplyPatchMutationTool,
   isDirectFileMutationTool,
-  validateBashWorkingDirectory,
 } from "./quality-hooks-git-safety.mjs";
+import { validateBashWorkingDirectory } from "./quality-hooks-workdir.mjs";
 
 // Re-export for consumers that import from this module
 export { scanForSecrets } from "./quality-logging.mjs";

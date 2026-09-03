@@ -23,8 +23,8 @@ import {
   checkCanonicalWriteSafetyGate,
   checkCommandSafetyGate,
   isDirectFileMutationTool,
-  validateBashWorkingDirectory,
 } from "../quality-hooks-git-safety.mjs";
+import { validateBashWorkingDirectory } from "../quality-hooks-workdir.mjs";
 import { createQualityHooks } from "../quality-hooks.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
