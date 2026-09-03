@@ -42,6 +42,7 @@ import {
   checkCanonicalWriteSafetyGate,
   isApplyPatchMutationTool,
   isDirectFileMutationTool,
+  validateBashWorkingDirectory,
 } from "./quality-hooks-git-safety.mjs";
 
 // Re-export for consumers that import from this module
@@ -296,7 +297,8 @@ function prepareToolIntent(log, input, output) {
 function enforceBashToolSafety(ctx, log, input, output, sessionId) {
   if (!isBashTool(input.tool)) return;
   const bashArgs = output.args ?? {};
-  const bashCwd = bashArgs.workdir || bashArgs.cwd || process.cwd();
+  const bashCwd = bashArgs.workdir ?? bashArgs.cwd ?? process.cwd();
+  validateBashWorkingDirectory(bashCwd);
   bashArgs.command = checkCanonicalGitSafetyGate(
     bashArgs.command || "",
     ctx.scriptsDir,

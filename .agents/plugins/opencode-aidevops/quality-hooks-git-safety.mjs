@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { classifyFullLoopCommitAndPr } from "./quality-hooks-full-loop-trust.mjs";
@@ -117,6 +117,42 @@ function parsePolicyPayload(raw) {
     throw new TypeError("policy returned a non-object payload");
   }
   return result;
+}
+
+export function validateBashWorkingDirectory(cwd) {
+  if (typeof cwd !== "string" || !cwd.trim()) {
+    throw new Error("BLOCKED: Bash workdir must be a non-empty path");
+  }
+
+  let lexicalState;
+  try {
+    lexicalState = lstatSync(cwd);
+  } catch (error) {
+    const reason = ["ENOENT", "ENOTDIR"].includes(error?.code)
+      ? "does not exist"
+      : "could not be verified";
+    throw new Error(`BLOCKED: Bash workdir ${reason}: ${cwd}`);
+  }
+
+  let resolvedCwd;
+  try {
+    resolvedCwd = realpathSync(cwd);
+  } catch (error) {
+    const reason = lexicalState.isSymbolicLink() && error?.code === "ENOENT"
+      ? "is a broken symlink"
+      : "could not be resolved";
+    throw new Error(`BLOCKED: Bash workdir ${reason}: ${cwd}`);
+  }
+
+  let resolvedState;
+  try {
+    resolvedState = statSync(resolvedCwd);
+  } catch {
+    throw new Error(`BLOCKED: Bash workdir could not be verified: ${cwd}`);
+  }
+  if (!resolvedState.isDirectory()) {
+    throw new Error(`BLOCKED: Bash workdir is not a directory: ${cwd}`);
+  }
 }
 
 export function checkCanonicalWriteSafetyGate(
