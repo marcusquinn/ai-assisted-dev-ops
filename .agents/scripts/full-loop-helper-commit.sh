@@ -1595,6 +1595,7 @@ _create_pr() {
 	local repo="$1" pr_title="$2" pr_body="$3" origin_label="$4"
 	shift 4
 	local -a extra_labels=("$@")
+	local recovered=0
 
 	print_info "Creating PR..."
 	local pr_url="" pr_error="" rc=0
@@ -1628,6 +1629,7 @@ _create_pr() {
 		if [[ -n "$recovered_url" ]]; then
 			print_info "PR creation command returned non-zero but PR exists — recovering (t2767): ${recovered_url}"
 			pr_url="$recovered_url"
+			recovered=1
 		else
 			print_error "PR creation failed: $(<"$pr_error")"
 			rm -f "$pr_error"
@@ -1658,9 +1660,72 @@ _create_pr() {
 		;;
 	esac
 	_reconcile_pr_origin_label "$pr_number" "$repo" "$origin_name" || return 1
+	if [[ "$recovered" -eq 1 ]]; then
+		_reconcile_recovered_pr_metadata "$pr_number" "$repo" "$pr_title" "$pr_body" || return 1
+	fi
 
 	print_success "PR #${pr_number} created: ${pr_url}"
 	printf '%s\n' "$pr_number"
+	return 0
+}
+
+# Restore generated metadata after partial PR creation recovered an existing PR.
+# A retry may compute title/body details from a newer review-repair head.
+# Arguments: PR number, repository slug, generated title, generated body.
+_reconcile_recovered_pr_metadata() {
+	local pr_number="$1"
+	local repo="$2"
+	local generated_title="$3"
+	local generated_body="$4"
+	local current_title=""
+	local current_body=""
+	local pr_endpoint="repos/${repo}/pulls"
+	pr_endpoint+="/${pr_number}"
+
+	current_title=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.title // empty' 2>/dev/null) || {
+		print_error "Could not read recovered PR #${pr_number} title for metadata reconciliation"
+		return 1
+	}
+	current_body=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.body // empty' 2>/dev/null) || {
+		print_error "Could not read recovered PR #${pr_number} body for metadata reconciliation"
+		return 1
+	}
+	if [[ "$current_title" == "$generated_title" && "$current_body" == "$generated_body" ]]; then
+		print_info "Recovered PR #${pr_number} metadata already matches the generated head"
+		return 0
+	fi
+
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local body_file=""
+	if ! mkdir -p "$temp_root" || ! body_file=$(mktemp "${temp_root}/aidevops-recovered-pr-body.XXXXXX"); then
+		print_error "Could not create recovered PR metadata body file"
+		return 1
+	fi
+	if ! printf '%s\n' "$generated_body" >"$body_file"; then
+		rm -f "$body_file"
+		print_error "Could not write recovered PR metadata body"
+		return 1
+	fi
+	if ! gh_pr_edit_safe "$pr_number" --repo "$repo" --title "$generated_title" --body-file "$body_file" >/dev/null; then
+		rm -f "$body_file"
+		print_error "Failed to update stale metadata on recovered PR #${pr_number}"
+		return 1
+	fi
+	rm -f "$body_file"
+
+	current_title=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.title // empty' 2>/dev/null) || {
+		print_error "Could not verify recovered PR #${pr_number} title reconciliation"
+		return 1
+	}
+	current_body=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.body // empty' 2>/dev/null) || {
+		print_error "Could not verify recovered PR #${pr_number} body reconciliation"
+		return 1
+	}
+	if [[ "$current_title" != "$generated_title" || "$current_body" != "$generated_body" ]]; then
+		print_error "Recovered PR #${pr_number} metadata reconciliation did not reach the generated title/body postcondition"
+		return 1
+	fi
+	print_success "Reconciled and verified recovered PR #${pr_number} metadata"
 	return 0
 }
 
@@ -1742,23 +1807,79 @@ _ensure_worker_pr_linkage() {
 
 # --- Merge Summary ---
 
+# Reconcile the single canonical merge summary comment without creating a
+# duplicate. The gh API shim signs the PATCH body before it reaches GitHub.
+# Arguments: PR number, repo, comments endpoint, marker, generated body.
+_reconcile_existing_merge_summary() {
+	local pr_number="$1"
+	local repo="$2"
+	local comments_endpoint="$3"
+	local merge_summary_marker="$4"
+	local merge_summary_body="$5"
+	local existing_summary=""
+	local summary_record_jq=".[] | select(.body | test(\"${merge_summary_marker}\")) | [.id, .body] | @tsv"
+
+	existing_summary=$(_gh_with_timeout read gh api "$comments_endpoint" \
+		--jq "$summary_record_jq" 2>/dev/null) || {
+		print_error "Could not read the canonical merge summary comment on PR #${pr_number}"
+		return 1
+	}
+	local summary_id="${existing_summary%%$'\t'*}"
+	local existing_body="${existing_summary#*$'\t'}"
+	if [[ -z "$summary_id" || "$summary_id" == "$existing_summary" ]]; then
+		print_error "Could not identify the canonical merge summary comment on PR #${pr_number}"
+		return 1
+	fi
+	if [[ "$existing_body" == "$merge_summary_body"* ]]; then
+		print_info "Merge summary comment already matches PR #${pr_number} — skipping duplicate (t2767)"
+		return 0
+	fi
+	if ! gh api "repos/${repo}/issues/comments/${summary_id}" \
+		--method PATCH --raw-field "body=${merge_summary_body}" >/dev/null; then
+		print_error "Failed to update stale canonical merge summary comment on PR #${pr_number}"
+		return 1
+	fi
+	existing_summary=$(_gh_with_timeout read gh api "$comments_endpoint" \
+		--jq "$summary_record_jq" 2>/dev/null) || {
+		print_error "Could not verify the updated canonical merge summary comment on PR #${pr_number}"
+		return 1
+	}
+	existing_body="${existing_summary#*$'\t'}"
+	if [[ "$existing_body" != "$merge_summary_body"* ]]; then
+		print_error "Canonical merge summary comment on PR #${pr_number} did not reach the generated metadata postcondition"
+		return 1
+	fi
+	print_success "Updated and verified stale canonical merge summary comment on PR #${pr_number}"
+	return 0
+}
+
 # Post the MERGE_SUMMARY comment on the PR (full-loop step 4.2.1).
 # Arguments: pr_number, repo, issue_number, summary_what, files_changed,
 #            summary_testing, summary_decisions
-# t2767: Idempotent — skips posting if the canonical MERGE_SUMMARY comment already exists.
-# This handles the partial-success recovery case where commit-and-pr was
-# interrupted after posting the comment but before returning the PR number.
+# t2767: Idempotent — preserves a matching canonical MERGE_SUMMARY comment,
+# while updating the one canonical comment if a retry generated newer metadata.
 _post_merge_summary() {
 	local pr_number="$1" repo="$2" issue_number="$3" summary_what="$4"
 	local files_changed="$5" summary_testing="$6" summary_decisions="$7"
+	local merge_summary_marker="<!-- MERGE_SUMMARY -->"
+	local comments_endpoint="repos/${repo}/issues/${pr_number}/comments"
+	local summary_count_jq="[.[] | select(.body | test(\"${merge_summary_marker}\"))] | length"
+	local merge_summary_body="${merge_summary_marker}
+## Completion Summary
+
+- **What**: ${summary_what:-Implementation for issue #${issue_number}}
+- **Issue**: #${issue_number}
+- **Files changed**: ${files_changed:-see diff}
+- **Testing**: ${summary_testing:-shellcheck clean, self-assessed}
+- **Key decisions**: ${summary_decisions:-none}"
 
 	# t2767/GH#26608: Check if the canonical MERGE_SUMMARY comment already exists before posting.
 	# Uses PR timeline comments endpoint (issues endpoint covers PR comments).
 	# Counter safety: validate result is a number before comparing (t2763).
 	local _existing_count=0
 	local _tmp_count=""
-	if ! _tmp_count=$(gh api "repos/${repo}/issues/${pr_number}/comments" \
-		--jq '[.[] | select(.body | test("<!-- MERGE_SUMMARY -->"))] | length'); then
+	if ! _tmp_count=$(gh api "$comments_endpoint" \
+		--jq "$summary_count_jq"); then
 		print_error "Could not verify existing merge summary comments on PR #${pr_number}; refusing a potentially duplicate post"
 		return 1
 	fi
@@ -1768,8 +1889,9 @@ _post_merge_summary() {
 	fi
 	_existing_count="$_tmp_count"
 	if [[ "$_existing_count" -eq 1 ]]; then
-		print_info "Merge summary comment already exists on PR #${pr_number} — skipping duplicate (t2767)"
-		return 0
+		_reconcile_existing_merge_summary "$pr_number" "$repo" "$comments_endpoint" \
+			"$merge_summary_marker" "$merge_summary_body"
+		return $?
 	fi
 	if [[ "$_existing_count" -gt 1 ]]; then
 		print_error "PR #${pr_number} has ${_existing_count} canonical merge summary comments; expected exactly one"
@@ -1786,14 +1908,7 @@ _post_merge_summary() {
 		print_error "Could not create merge summary body file in ${temp_root}"
 		return 1
 	fi
-	if ! printf '%s\n' "<!-- MERGE_SUMMARY -->
-## Completion Summary
-
-- **What**: ${summary_what:-Implementation for issue #${issue_number}}
-- **Issue**: #${issue_number}
-- **Files changed**: ${files_changed:-see diff}
-- **Testing**: ${summary_testing:-shellcheck clean, self-assessed}
-- **Key decisions**: ${summary_decisions:-none}" >"$merge_summary_file"; then
+	if ! printf '%s\n' "$merge_summary_body" >"$merge_summary_file"; then
 		print_error "Could not write merge summary body file for PR #${pr_number}"
 		rm -f "$merge_summary_file"
 		return 1
@@ -1808,8 +1923,8 @@ _post_merge_summary() {
 	fi
 	rm -f "$merge_summary_file"
 
-	_tmp_count=$(gh api "repos/${repo}/issues/${pr_number}/comments" \
-		--jq '[.[] | select(.body | test("<!-- MERGE_SUMMARY -->"))] | length') || {
+	_tmp_count=$(gh api "$comments_endpoint" \
+		--jq "$summary_count_jq") || {
 		print_error "Merge summary posted on PR #${pr_number}, but verification failed"
 		return 1
 	}

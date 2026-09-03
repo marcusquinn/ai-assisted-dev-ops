@@ -123,12 +123,18 @@ _SOURCING_FOR_TEST=1
 # shellcheck disable=SC2312
 eval "$(sed -n '/^_create_pr() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
 
+# shellcheck disable=SC2312
+eval "$(sed -n '/^_reconcile_recovered_pr_metadata() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
+
 # Extract origin reconciliation helpers used by _create_pr
 # shellcheck disable=SC2312
 eval "$(sed -n '/^_verify_pr_origin_label() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
 
 # shellcheck disable=SC2312
 eval "$(sed -n '/^_reconcile_pr_origin_label() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
+
+# shellcheck disable=SC2312
+eval "$(sed -n '/^_reconcile_existing_merge_summary() {/,/^}/p' "${SCRIPTS_DIR}/full-loop-helper-commit.sh")"
 
 # Extract _post_merge_summary
 # shellcheck disable=SC2312
@@ -233,6 +239,10 @@ export -f gh_create_pr
 
 # Control variable: PR URL to return from _gh_recover_pr_if_exists
 GH_RECOVER_PR_URL=""
+# Remote recovered-PR metadata. The edit stub replaces these values so the
+# partial-success test can prove a retry repairs stale title/body metadata.
+REMOTE_PR_TITLE="stale title"
+REMOTE_PR_BODY="stale body"
 
 # Stub: _gh_recover_pr_if_exists — honours GH_RECOVER_PR_URL
 # Returns the URL if set (simulating PR exists), empty string otherwise.
@@ -256,12 +266,33 @@ gh() {
 	printf 'gh %s\n' "$*" >>"$STUB_LOG"
 	# Handle: gh api repos/.../issues/.../comments --jq '...'
 	if [[ "${1:-}" == "api" ]]; then
+		if [[ "$*" == *"repos/owner/repo/pulls/999"* ]]; then
+			if [[ "$*" == *".title // empty"* ]]; then
+				printf '%s\n' "$REMOTE_PR_TITLE"
+			else
+				printf '%s\n' "$REMOTE_PR_BODY"
+			fi
+			return 0
+		fi
+		if [[ "$*" == *"repos/owner/repo/issues/comments/77"* && "$*" == *"--method PATCH"* ]]; then
+			local arg
+			for arg in "$@"; do
+				case "$arg" in
+				body=*) GH_EXISTING_MERGE_SUMMARY_BODY="${arg#body=}" ;;
+				esac
+			done
+			return 0
+		fi
 		if [[ "$*" == *'startswith("origin:")'* ]]; then
 			[[ "$ORIGIN_API_FAIL" -eq 0 ]] || return 1
 			printf '%s\n' "$ORIGIN_API_LABELS"
 			return 0
 		fi
 		if [[ "$*" == *'<!-- MERGE_SUMMARY -->'* ]]; then
+			if [[ "$*" == *'@tsv'* ]]; then
+				printf '77\t%s\n' "$GH_EXISTING_MERGE_SUMMARY_BODY"
+				return 0
+			fi
 			printf '%s\n' "$GH_EXISTING_MERGE_SUMMARY_COUNT"
 			return 0
 		fi
@@ -276,6 +307,31 @@ gh() {
 	return 0
 }
 export -f gh
+
+gh_pr_edit_safe() {
+	local title=""
+	local body_file=""
+	printf 'gh_pr_edit_safe %s\n' "$*" >>"$STUB_LOG"
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--title)
+			title="${2:-}"
+			shift 2 || return 1
+			;;
+		--body-file)
+			body_file="${2:-}"
+			shift 2 || return 1
+			;;
+		*) shift ;;
+		esac
+	done
+	[[ -n "$title" ]] && REMOTE_PR_TITLE="$title"
+	if [[ -n "$body_file" && -r "$body_file" ]]; then
+		REMOTE_PR_BODY=$(<"$body_file")
+	fi
+	return 0
+}
+export -f gh_pr_edit_safe
 
 _gh_with_timeout() {
 	local op_class="$1"
@@ -392,6 +448,8 @@ export -f _verify_pr_origin_label
 : >"$STUB_LOG"
 GH_CREATE_PR_FAIL=1
 GH_RECOVER_PR_URL="https://github.com/owner/repo/pull/999"
+REMOTE_PR_TITLE="stale title"
+REMOTE_PR_BODY="stale body"
 
 actual_pr_number=""
 actual_rc=0
@@ -423,6 +481,13 @@ if grep -q "set_origin_label num=999 repo=owner/repo origin=worker flags=--pr" "
 else
 	fail "partial-success recovery: origin label reconciled on recovered PR" \
 		"expected set_origin_label for PR 999; got: $(cat "$STUB_LOG" 2>/dev/null)"
+fi
+
+if grep -q "gh_pr_edit_safe 999 --repo owner/repo --title t2767: test --body-file" "$STUB_LOG" 2>/dev/null; then
+	pass "partial-success recovery: stale PR title/body reconciled to retry metadata"
+else
+	fail "partial-success recovery: stale PR title/body reconciled to retry metadata" \
+		"expected signed managed PR edit and in-child readback verification; stub log: $(cat "$STUB_LOG" 2>/dev/null)"
 fi
 
 # =============================================================================
@@ -674,6 +739,7 @@ TEST_REMOTE_HEAD="origin/main"
 : >"$STUB_LOG"
 GH_EXISTING_MERGE_SUMMARY_COUNT=1
 GH_MALFORMED_MERGE_SUMMARY_ONLY=0
+GH_EXISTING_MERGE_SUMMARY_BODY=$'<!-- MERGE_SUMMARY -->\n## Completion Summary\n\n- **What**: impl\n- **Issue**: #42\n- **Files changed**: file.sh\n- **Testing**: shellcheck\n- **Key decisions**: none'
 
 idem_rc=0
 _post_merge_summary "999" "owner/repo" "42" "impl" "file.sh" "shellcheck" "none" || idem_rc=$?
@@ -692,11 +758,33 @@ else
 		"gh_pr_comment was called; stub log: $(cat "$STUB_LOG" 2>/dev/null)"
 fi
 
-if grep -q "skipping duplicate (t2767)" "$STUB_LOG" 2>/dev/null; then
+if grep -q "already matches PR #999" "$STUB_LOG" 2>/dev/null; then
 	pass "idempotency: skip message logged"
 else
 	fail "idempotency: skip message logged" \
-		"expected 'skipping duplicate (t2767)' in log; got: $(cat "$STUB_LOG" 2>/dev/null)"
+		"expected matching skip message in log; got: $(cat "$STUB_LOG" 2>/dev/null)"
+fi
+
+# =============================================================================
+# Test 4b: _post_merge_summary updates a stale canonical comment in place.
+# Changed files, testing, and decisions represent a force-pushed review repair.
+# =============================================================================
+: >"$STUB_LOG"
+GH_EXISTING_MERGE_SUMMARY_COUNT=1
+GH_EXISTING_MERGE_SUMMARY_BODY=$'<!-- MERGE_SUMMARY -->\n## Completion Summary\n\n- **What**: impl\n- **Issue**: #42\n- **Files changed**: old-file.sh\n- **Testing**: old test\n- **Key decisions**: old decision'
+
+stale_update_rc=0
+_post_merge_summary "999" "owner/repo" "42" "impl" "new-file.sh" "new test" "new decision" || stale_update_rc=$?
+
+if [[ "$stale_update_rc" -eq 0 ]] &&
+	[[ "$GH_EXISTING_MERGE_SUMMARY_BODY" == *"new-file.sh"* ]] &&
+	[[ "$GH_EXISTING_MERGE_SUMMARY_BODY" == *"new test"* ]] &&
+	[[ "$GH_EXISTING_MERGE_SUMMARY_BODY" == *"new decision"* ]] &&
+	grep -q "issues/comments/77 --method PATCH" "$STUB_LOG" 2>/dev/null; then
+	pass "stale summary: canonical comment is updated in place with retry metadata"
+else
+	fail "stale summary: canonical comment is updated in place with retry metadata" \
+		"rc=${stale_update_rc}; body='${GH_EXISTING_MERGE_SUMMARY_BODY}'; stub log: $(cat "$STUB_LOG" 2>/dev/null)"
 fi
 
 # =============================================================================
