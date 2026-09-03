@@ -25,6 +25,7 @@ _MANAGED_APPROVAL_HOLD_LABEL_SPECS=(
 _MANAGED_APPROVAL_ISSUE_LABEL_SPECS=(
 	"${_MANAGED_APPROVAL_HOLD_LABEL_SPECS[@]}"
 	"auto-dispatch" "Eligible for autonomous worker dispatch" "0E8A16"
+	"no-auto-dispatch" "Opt-out: block all auto-dispatch on this issue" "EDEDED"
 )
 
 managed_label_snapshot_has() {
