@@ -413,6 +413,23 @@ class TestManagedProfileReconciliation(unittest.TestCase):
 
         self.assertEqual(plan.removals, [])
 
+    def test_stale_removal_preserves_comment_before_custom_profile(self):
+        missing = self.root / "missing"
+        custom = self._profile(
+            "custom",
+            self.existing,
+            profile_id="local:custom:user-created",
+            launch="custom-command",
+        )
+        config = self._config(
+            self._profile("stale", missing) + "  # custom profile\n" + custom
+        )
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+        result = tabby_profile_sync.remove_profile_blocks(config, plan.removals)
+
+        self.assertIn("  # custom profile\n  - name: custom", result)
+
     def test_preserves_existing_unregistered_managed_profile(self):
         config = self._config(self._profile("orphan", self.existing))
 

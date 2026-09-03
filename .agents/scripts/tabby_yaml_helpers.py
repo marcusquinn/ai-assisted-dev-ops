@@ -182,15 +182,21 @@ def extract_profile_blocks(config_text: str) -> list[ProfileBlock]:
     ]
     blocks: list[ProfileBlock] = []
     for position, start in enumerate(starts):
-        end = starts[position + 1] if position + 1 < len(starts) else profiles_end
-        document = yaml.safe_load("profiles:\n" + "".join(lines[start:end]))
+        parse_end = starts[position + 1] if position + 1 < len(starts) else profiles_end
+        document = yaml.safe_load("profiles:\n" + "".join(lines[start:parse_end]))
         profiles = document.get("profiles") if isinstance(document, dict) else None
         if (
             isinstance(profiles, list)
             and len(profiles) == 1
             and isinstance(profiles[0], dict)
         ):
-            blocks.append(ProfileBlock(start, end, profiles[0]))
+            removal_end = parse_end
+            while removal_end > start + 1:
+                trailing = lines[removal_end - 1].strip()
+                if trailing and not trailing.startswith("#"):
+                    break
+                removal_end -= 1
+            blocks.append(ProfileBlock(start, removal_end, profiles[0]))
     return blocks
 
 
