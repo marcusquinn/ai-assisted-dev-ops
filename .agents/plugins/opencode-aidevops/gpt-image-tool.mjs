@@ -45,6 +45,7 @@ async function requestWithOAuth(auth, args, images, options) {
   if (auth.pinned) return { auth, result };
   const rotated = await rotateOAuthImageAccount(auth, options);
   if (!rotated) return { auth, result };
+  await result.response.body?.cancel?.().catch(() => {});
   result = await requestOAuthImage(rotated, args, images, options.fetchImpl);
   if (result.response.status === 429) {
     (options.markOAuthRateLimit || markOAuthImageRateLimit)(rotated, result.response);

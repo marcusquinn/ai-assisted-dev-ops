@@ -10,6 +10,7 @@ const OPENAI_IMAGES_GENERATE_ENDPOINT = "https://api.openai.com/v1/images/genera
 const OPENAI_IMAGES_EDIT_ENDPOINT = "https://api.openai.com/v1/images/edits";
 const SUBSCRIPTION_ROUTER_MODEL = "gpt-5.5";
 const MAX_SSE_BUFFER_CHARS = 96 * 1024 * 1024;
+const MAX_API_RESPONSE_BYTES = 96 * 1024 * 1024;
 
 function imageToolArgs(args) {
   return {
@@ -153,6 +154,11 @@ export async function requestApiImage(auth, args, images, fetchImpl) {
   const request = apiRequest(auth, args, images);
   const response = await fetchImpl(request.endpoint, request.init);
   if (!response.ok) return { response, base64: "" };
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength > MAX_API_RESPONSE_BYTES) {
+    await response.body?.cancel?.().catch(() => {});
+    throw new Error("OpenAI Images API response exceeded the safe response limit.");
+  }
   const payload = await response.json();
   const base64 = payload?.data?.[0]?.b64_json;
   if (typeof base64 !== "string" || !base64) {

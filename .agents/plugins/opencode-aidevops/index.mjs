@@ -100,6 +100,10 @@ import { startClaudeProxy } from "./claude-proxy.mjs";
 import { isHeadless } from "./proxy-lifecycle.mjs";
 import { pluginHealthProbeRequested, recordPluginHealthStage } from "./plugin-health.mjs";
 
+// Preserve the runtime-native fetch before any plugin factory installs the
+// OpenAI OAuth rotation wrapper. API-key image requests need an isolated route.
+const IMAGE_FETCH = globalThis.fetch?.bind(globalThis);
+
 // ---------------------------------------------------------------------------
 // Directory constants
 // ---------------------------------------------------------------------------
@@ -364,13 +368,12 @@ export async function AidevopsPlugin({ directory, client }) {
   // that brought cursor + google onto the same lazy-start pattern.
 
   // Create tools
-  // Capture fetch before installOpenAIProviderFetchRotation wraps globalThis.fetch.
-  // API-key image requests must never be rewritten with OAuth pool credentials.
-  const imageFetch = globalThis.fetch?.bind(globalThis);
+  // Use the module-load capture so later plugin factories cannot inherit the
+  // global OAuth fetch wrapper from an earlier OpenCode workspace.
   const baseTools = createTools(SCRIPTS_DIR, run, {
     sessionOrigin: process.env.AIDEVOPS_SESSION_ORIGIN,
     poolToolFactory: () => createPoolTool(client),
-    imageFetch,
+    imageFetch: IMAGE_FETCH,
     imageOAuthAccountResolver: selectOpenAIRequestAccount,
     imageOAuthAccountRotator: (skipEmail) => rotateOpenAIPoolToken(client, skipEmail),
     projectRoot: directory,
