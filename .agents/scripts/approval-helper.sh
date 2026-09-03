@@ -1788,8 +1788,17 @@ cmd_reconcile() {
 	printf '%s' "$issue_json" | jq -e --arg label "$_APPROVAL_NMR_LABEL" \
 		'(.labels // []) | any(.name == $label)' >/dev/null 2>&1 || nmr_rc=$?
 	if [[ "$nmr_rc" -eq 1 ]]; then
-		printf 'NO_NMR\n'
-		return 3
+		# A failed pre-fix issue approval can have neither NMR nor auto-dispatch:
+		# status provisioning succeeded, then both lifecycle label writes failed.
+		# Recover that exact signed state instead of treating every absent NMR as
+		# an already completed handoff. PRs and dispatch-enabled issues stay no-op.
+		if [[ "$target_type" != "issue" ]] || printf '%s' "$issue_json" | jq -e \
+			--arg label "$_APPROVAL_AUTO_DISPATCH_LABEL" \
+			'(.labels // []) | any(.name == $label)' >/dev/null 2>&1; then
+			printf 'NO_NMR\n'
+			return 3
+		fi
+		nmr_rc=0
 	fi
 	if [[ "$nmr_rc" -ne 0 ]]; then
 		printf 'API_ERROR\n'
@@ -1807,6 +1816,12 @@ cmd_reconcile() {
 		return 6
 	fi
 
+	# #aidevops:trust-boundary — only provision labels after the existing signed
+	# approval and current maintainer authority have both been re-verified.
+	if ! _approval_ensure_lifecycle_labels "$target_type" "$slug" >/dev/null 2>&1; then
+		printf 'UPDATE_FAILED\n'
+		return 8
+	fi
 	if ! _post_issue_approval_updates "$target_type" "$target_number" "$slug" >/dev/null 2>&1; then
 		# A lifecycle writer may fail after partially clearing NMR (for example,
 		# issue label mutation succeeds but its advisory lock fails). Reassert the

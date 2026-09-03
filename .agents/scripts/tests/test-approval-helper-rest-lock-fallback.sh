@@ -461,6 +461,7 @@ run_case "reconcile re-verifies authority immediately before issue lifecycle res
 		printf "VERIFIED\n"
 		return 0
 	}
+	_approval_ensure_lifecycle_labels() { return 0; }
 	_post_issue_approval_updates() {
 		local target_type="${1:-}"
 		local target_number="${2:-}"
@@ -494,6 +495,7 @@ run_case "partial reconciliation failure reasserts NMR before returning" '
 		return 0
 	}
 	cmd_verify() { printf "VERIFIED\n"; return 0; }
+	_approval_ensure_lifecycle_labels() { return 0; }
 	_post_issue_approval_updates() { return 1; }
 	_approval_restore_nmr_hold() {
 		local target_type="${1:-}"
@@ -532,6 +534,33 @@ run_case "reconcile leaves an unchanged approved target as a no-op" '
 assert_contains "no-op reconciliation reports absent restored hold" "$LAST_OUTPUT" "NO_NMR"
 assert_not_contains "no-op reconciliation skips signature work" "$LAST_OUTPUT" "SHOULD_NOT_VERIFY"
 assert_not_contains "no-op reconciliation skips lifecycle mutation" "$LAST_OUTPUT" "SHOULD_NOT_APPLY"
+
+# A signed issue stranded by missing repository labels has no NMR and no
+# auto-dispatch. Reconciliation must provision labels and complete that handoff.
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "reconcile repairs signed issue missing both lifecycle labels" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	trace=$(mktemp)
+	_require_number_arg() { return 0; }
+	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
+	_approval_fetch_issue_json() {
+		printf "%s" "{\"state\":\"open\",\"locked\":true,\"labels\":[{\"name\":\"status:available\"}]}"
+		return 0
+	}
+	cmd_verify() { printf "VERIFIED\n"; return 0; }
+	_approval_ensure_lifecycle_labels() { printf "ENSURE_LABELS\n" >>"$trace"; return 0; }
+	_post_issue_approval_updates() { printf "APPLY_LIFECYCLE\n" >>"$trace"; return 0; }
+	rc=0
+	cmd_reconcile issue 123 marcusquinn/aidevops || rc=$?
+	cat "$trace"
+	rm -f "$trace"
+	exit "$rc"
+' 0
+assert_contains "stranded approval provisions lifecycle labels" "$LAST_OUTPUT" "ENSURE_LABELS"
+assert_contains "stranded approval completes lifecycle handoff" "$LAST_OUTPUT" "APPLY_LIFECYCLE"
+assert_contains "stranded approval reconciliation succeeds" "$LAST_OUTPUT" "RECONCILED"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "reconcile preserves NMR when authority verification fails" '
