@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+
+import {
+  markOAuthImageRateLimit,
+  markOAuthImageSuccess,
+  resolveGptImageAuth,
+  rotateOAuthImageAccount,
+} from "./gpt-image-auth.mjs";
+import { readReferenceImages, saveGeneratedPng, validateImageOutputPath } from "./gpt-image-io.mjs";
+import { imageRequestError, requestApiImage, requestOAuthImage } from "./gpt-image-request.mjs";
+
+function validatePrompt(value) {
+  const prompt = String(value || "").trim();
+  if (!prompt || prompt.length > 32_000) {
+    throw new Error("Image prompt must contain 1-32,000 characters.");
+  }
+  return prompt;
+}
+
+function validateSize(value) {
+  const size = value || "auto";
+  if (size === "auto") return size;
+  const match = /^(\d+)x(\d+)$/.exec(size);
+  if (!match) throw new Error("Image size must be auto or WIDTHxHEIGHT.");
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  const longEdge = Math.max(width, height);
+  const shortEdge = Math.min(width, height);
+  const pixels = width * height;
+  if (
+    width % 16 !== 0 || height % 16 !== 0 || longEdge > 3840
+    || longEdge / shortEdge > 3 || pixels < 655_360 || pixels > 8_294_400
+  ) {
+    throw new Error("Image size violates GPT Image 2 dimension constraints.");
+  }
+  return size;
+}
+
+async function requestWithOAuth(auth, args, images, options) {
+  let result = await requestOAuthImage(auth, args, images, options.fetchImpl);
+  if (result.response.status !== 429) return { auth, result };
+
+  (options.markOAuthRateLimit || markOAuthImageRateLimit)(auth, result.response);
+  if (auth.pinned) return { auth, result };
+  const rotated = await rotateOAuthImageAccount(auth, options);
+  if (!rotated) return { auth, result };
+  result = await requestOAuthImage(rotated, args, images, options.fetchImpl);
+  if (result.response.status === 429) {
+    (options.markOAuthRateLimit || markOAuthImageRateLimit)(rotated, result.response);
+  }
+  return { auth: rotated, result };
+}
+
+function billingLabel(mode) {
+  return mode === "oauth" ? "ChatGPT subscription OAuth" : "OpenAI Platform API";
+}
+
+async function executeImageGeneration(rawArgs, options) {
+  const args = {
+    ...rawArgs,
+    prompt: validatePrompt(rawArgs.prompt),
+    size: validateSize(rawArgs.size),
+    quality: rawArgs.quality || "auto",
+  };
+  const images = await readReferenceImages(args.images, options.projectRoot);
+  await validateImageOutputPath(args.out, options.projectRoot);
+  let auth = await resolveGptImageAuth(args, options);
+  let result;
+
+  if (auth.mode === "oauth") {
+    ({ auth, result } = await requestWithOAuth(auth, args, images, options));
+  } else {
+    result = await requestApiImage(auth, args, images, options.fetchImpl);
+  }
+  if (!result.response.ok) throw await imageRequestError(result.response, auth.mode);
+
+  const saved = await saveGeneratedPng(args.out, options.projectRoot, result.base64);
+  if (auth.mode === "oauth") (options.markOAuthSuccess || markOAuthImageSuccess)(auth);
+  const versionNote = saved.versioned ? " Existing output was preserved with a versioned filename." : "";
+  return `Generated image saved to ${saved.savedPath}. Billing route: ${billingLabel(auth.mode)}.${versionNote}`;
+}
+
+export function createGptImageTool(tool, z, options = {}) {
+  const fetchImpl = options.fetchImpl || globalThis.fetch?.bind(globalThis);
+  if (typeof fetchImpl !== "function") throw new Error("GPT image generation requires fetch support.");
+  const executionOptions = { ...options, fetchImpl, projectRoot: options.projectRoot || process.cwd() };
+  return tool({
+    description:
+      "Generate or reference-edit a PNG with GPT Image 2. Uses ChatGPT OAuth by default; API billing must be selected explicitly with auth=api and a named account alias. Writes only inside the OpenCode project and never overwrites an existing image.",
+    args: {
+      prompt: z.string().describe("Description of the image to generate or edit."),
+      out: z.string().describe("Project-relative .png output path."),
+      quality: z.enum(["low", "medium", "high", "auto"]).optional().describe("GPT Image 2 quality; defaults to auto."),
+      size: z.string().optional().describe("auto or WIDTHxHEIGHT satisfying GPT Image 2 constraints."),
+      images: z.array(z.string()).optional().describe("Optional project-relative PNG, JPEG, or WebP reference image paths."),
+      auth: z.enum(["oauth", "api"]).optional().describe("Billing route; defaults to ChatGPT OAuth. API must be explicit."),
+      account: z.string().optional().describe("OAuth pool email when auth=oauth, or named API-key alias when auth=api."),
+    },
+    async execute(args) {
+      return executeImageGeneration(args && typeof args === "object" ? args : {}, executionOptions);
+    },
+  });
+}

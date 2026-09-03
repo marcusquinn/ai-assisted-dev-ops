@@ -84,7 +84,14 @@ import {
   recordSubagentOutcome,
 } from "./observability.mjs";
 import { createSessionStartGreetingGate, createTtsrHooks } from "./ttsr.mjs";
-import { createPoolAuthHook, createPoolTool, initPoolAuth, getAccounts } from "./oauth-pool.mjs";
+import {
+  createPoolAuthHook,
+  createPoolTool,
+  getAccounts,
+  initPoolAuth,
+  rotateOpenAIPoolToken,
+  selectOpenAIRequestAccount,
+} from "./oauth-pool.mjs";
 import { createProviderAuthHook } from "./provider-auth.mjs";
 import { installOpenAIProviderFetchRotation } from "./openai-provider-auth.mjs";
 import { startCursorProxy, ensureCursorProxyServer } from "./cursor-proxy.mjs";
@@ -357,9 +364,16 @@ export async function AidevopsPlugin({ directory, client }) {
   // that brought cursor + google onto the same lazy-start pattern.
 
   // Create tools
+  // Capture fetch before installOpenAIProviderFetchRotation wraps globalThis.fetch.
+  // API-key image requests must never be rewritten with OAuth pool credentials.
+  const imageFetch = globalThis.fetch?.bind(globalThis);
   const baseTools = createTools(SCRIPTS_DIR, run, {
     sessionOrigin: process.env.AIDEVOPS_SESSION_ORIGIN,
     poolToolFactory: () => createPoolTool(client),
+    imageFetch,
+    imageOAuthAccountResolver: selectOpenAIRequestAccount,
+    imageOAuthAccountRotator: (skipEmail) => rotateOpenAIPoolToken(client, skipEmail),
+    projectRoot: directory,
     mcpClient: client.mcp,
     mcpDirectory: directory,
     managedMcpNames: getOnDemandMcpAgents().map((mcp) => mcp.name),
