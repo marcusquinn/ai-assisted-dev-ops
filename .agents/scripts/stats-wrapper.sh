@@ -222,16 +222,20 @@ _stats_wrapper_run_work() {
 		return 1
 	}
 
-	# The quality sweep can use the full scheduler ceiling while GitHub is slow.
 	# Refresh the health dashboard first so that an eventual timeout cannot leave
 	# the primary operator health surface stale for another scheduler interval.
-	_stats_wrapper_run_health_update || return $?
+	# A failed dashboard refresh must not starve the independent quality sweep:
+	# both remain bounded by this child's aggregate GitHub deadline and the outer
+	# process-tree timeout. Preserve the dashboard failure after the sweep so the
+	# existing EXIT trap keeps its operator-visible diagnostics.
+	local health_ec=0
+	_stats_wrapper_run_health_update || health_ec=$?
 
 	run_daily_quality_sweep || {
 		local sweep_ec=$?
 		echo "[stats-wrapper] QUALITY-SWEEP-FAIL exit=${sweep_ec} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$STATS_LOGFILE"
 	}
-	return 0
+	return "$health_ec"
 }
 
 _stats_wrapper_run_with_timeout() {
