@@ -1467,7 +1467,7 @@ MCP packages are installed globally via `bun install -g` for instant startup (no
 | [LocalWP](https://localwp.com/) | WordPress database access | Per-agent | No (local) |
 | [macOS Automator](https://github.com/steipete/macos-automator-mcp) | macOS automation | Per-agent | No |
 | [Playwriter](https://github.com/nicholasgriffintn/playwriter) | Browser with extensions | Per-agent | No |
-| [QuickFile](https://github.com/marcusquinn/quickfile-mcp) | Accounting API | Per-agent | Yes |
+| [QuickFile](https://github.com/marcusquinn/quickfile-mcp) | Guarded multi-account accounting API | On-demand per-agent | Yes |
 | [Repomix](https://github.com/yamadashy/repomix) | Codebase packing for AI context | Per-agent | No |
 | [Sentry](https://sentry.io/) | Error tracking | Per-agent | Yes |
 | [shadcn](https://ui.shadcn.com/) | UI component library | Per-agent | No |
@@ -1574,7 +1574,16 @@ These use direct API calls via curl, avoiding MCP server startup entirely:
 
 **Accounts & Finance:**
 
-- [QuickFile](https://github.com/marcusquinn/quickfile-mcp) - Accounting API integration (MCP)
+- **Provider-neutral accounting** - Bookkeeping, statement imports,
+  reconciliation, classifications, chart evolution, debtors/creditors,
+  management and investor reports, statutory-return workpapers, and cash-flow
+  forecasts with approval and read-back controls (`business/accounting.md`)
+- **Accounting software catalogue** - Truthful support states and export
+  fallbacks across QuickFile, Xero, QuickBooks, FreeAgent, Sage, Zoho Books,
+  FreshBooks, Wave, KashFlow, Clear Books, MYOB, Odoo, and others
+  (`business/accounting-software.md`)
+- [QuickFile](https://github.com/marcusquinn/quickfile-mcp) - First executable
+  reference adapter, activated on demand through `@quickfile`
 - [Amazon Order History](https://github.com/marcusquinn/amazon-order-history-csv-download-mcp) - Order data extraction (MCP)
 
 **Document Processing & OCR:**
@@ -2041,7 +2050,7 @@ Primary agents live at `.agents/<name>.md`. Each is a domain expert with its own
 | Build+ | `build-plus.md` | Code: features, bug fixes, refactors, CI, full-loop delivery (default) | thinking |
 | Automate | `automate.md` | Scheduling, dispatch, monitoring, background orchestration | standard |
 | Aidevops | `aidevops.md` | Framework development — meta-agent for improving aidevops itself | thinking |
-| Business | `business.md` | Company orchestration, financial ops, invoicing, strategy | standard |
+| Business | `business.md` | Company orchestration, provider-neutral accounting, finance, invoicing, strategy | standard |
 | Content | `content.md` | Content creation across blog, video, audio, image, social | thinking |
 | Health | `health.md` | Health and wellness content, fitness, nutrition | thinking |
 | Legal | `legal.md` | Legal compliance, terms, privacy, GDPR | thinking |

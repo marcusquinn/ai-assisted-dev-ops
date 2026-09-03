@@ -4,17 +4,20 @@
   "documentation": "https://github.com/marcusquinn/quickfile-mcp",
   "api_documentation": "https://api-beta.quickfile.co.uk/api-docs/",
   "prerequisites": {
-    "node_version": "18+",
+    "node_version": "Use the exact .nvmrc version; v4.0.0 declares >=24.0.0 <25.0.0",
+    "package_manager": "Use the packageManager version declared by quickfile-mcp",
     "install_commands": [
       "mkdir -p ~/Git/mcp && git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp",
-      "npm install --prefix ~/Git/mcp/quickfile-mcp && npm run build --prefix ~/Git/mcp/quickfile-mcp"
+      "cd ~/Git/mcp/quickfile-mcp && nvm install && nvm use && corepack enable && npm ci && npm run build"
     ],
     "credentials_backend": "aidevops secret",
     "credentials_pattern": "QUICKFILE_<ACCOUNT>_API_KEY",
     "credentials_setup": "aidevops secret set QUICKFILE_BUSINESS_API_KEY",
-    "launcher": "~/.aidevops/agents/scripts/quickfile-mcp-launcher.sh"
+    "launcher": "~/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
+    "legacy_install_path": "~/Git/quickfile-mcp remains discoverable; new installs use ~/Git/mcp/quickfile-mcp"
   },
-  "mcp_tools": [
+  "mcp_tool_coverage": "112 operations in v4.0.0: 37 curated tools listed below plus 75 generated quickfile_rest_* operations from the published REST v2 schema",
+  "curated_mcp_tools": [
     "quickfile_system_get_account",
     "quickfile_system_search_events",
     "quickfile_client_search",
@@ -77,13 +80,15 @@
     "credentials_not_found": "Store at least one QUICKFILE_<ACCOUNT>_API_KEY secret and restart the MCP runtime",
     "auth_failed": "Verify the selected alias, personal token validity, and granted endpoint groups",
     "unknown_account": "Use an alias derived from a configured token secret name",
-    "build_failed": "Ensure Node.js 18+ is installed, then run npm run build --prefix ~/Git/mcp/quickfile-mcp",
+    "build_failed": "Select the exact .nvmrc Node.js version and declared package manager, then run npm ci and npm run build in ~/Git/mcp/quickfile-mcp",
     "mcp_not_responding": "Run QUICKFILE_MCP_LAUNCHER_DRY_RUN=1 quickfile-mcp-launcher.sh, rebuild, and restart the runtime"
   },
   "notes": {
     "api_version": "QuickFile beta REST API",
     "auth_method": "Personal bearer token",
     "account_selection": "Every MCP tool requires account",
+    "mutation_confirmation": "MCP mutations require confirmed true; CLI mutations require --confirm",
+    "readback": "Verify consequential changes through a provider read after mutation",
     "vat_support": "Mutations require explicit per-line VAT unless account VAT posture is configured",
     "uk_only": "QuickFile is UK-focused accounting software"
   }

@@ -8,6 +8,10 @@ knowledge, campaign research, project requirements, case notes, performance
 context, or TODO/GitHub work. It is separate from `_inbox/` staging queues and
 from `_knowledge/` approved insights.
 
+Agents may use this plane opportunistically through the inherited ambient
+contract in `reference/self-improvement.md`. The planned CLI is an optional
+deterministic interface, not the trigger for observing or retaining feedback.
+
 For shared plane metadata, use `.agents/configs/data-planes.json` when a registry
 entry exists. This index owns the feedback-plane reading path; detailed capture,
 retention, mining, promotion, CLI, and routine contracts live in the chapters
@@ -56,10 +60,11 @@ Thresholds and dry-run issue rules live in
 `.agents/aidevops/feedback/mining-promotion.md` under "Reach Feedback
 Thresholds".
 
-## Implementation Boundary
+## CLI Implementation Boundary
 
-This is design-only. Do not wire `aidevops feedback` into
+The deterministic CLI is design-only. Do not wire `aidevops feedback` into
 `.agents/scripts/aidevops.sh` until the phase contracts in the chapters are
 stable. The first implementation task should create `.agents/scripts/feedback-helper.sh`
 and have `aidevops.sh` delegate to it, mirroring other plane helpers rather than
-growing the main CLI file.
+growing the main CLI file. This does not prevent authorized agents from using
+the documented folders directly when the plane is initialized.

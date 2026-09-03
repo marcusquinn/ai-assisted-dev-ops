@@ -4,6 +4,8 @@
     "browser-automation": {"deployed": "true", "enabled": "true", "runtime_compatible": "true", "tool_visible": "false", "reachable": "true"},
     "cloudflare-management": {"enabled": "true", "authenticated": "true", "authorized": "false", "reachable": "true", "runtime_compatible": "true", "tool_visible": "true"},
     "seo-data": {"configured": "true", "authenticated": "true", "authorized": "true", "reachable": "false", "tool_visible": "true"},
-    "code-development": {"deployed": "true", "runtime_compatible": "true", "tool_visible": "true"}
+    "code-development": {"deployed": "true", "runtime_compatible": "true", "tool_visible": "true"},
+    "accounting-operations": {"deployed": "true", "runtime_compatible": "true"},
+    "quickfile-accounting": {"deployed": "true", "installed": "true", "configured": "true", "authenticated": "true", "authorized": "true", "reachable": "true", "runtime_compatible": "true", "tool_visible": "true", "usable": "true"}
   }
 }

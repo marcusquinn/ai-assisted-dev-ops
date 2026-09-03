@@ -9,6 +9,10 @@ Dispatch issue-backed workers with `dispatch-single-issue-helper.sh dispatch NUM
 
 Capability cataloguing is not evidence of live usability. Before routing work that depends on an external tool or service, run `scripts/capability-readiness-helper.py route <capability> --runtime <opencode|claude-code>`. Mandatory dimensions that are false **or unknown** force the declared fallback; the structured response reports the reason and coverage impact. The canonical contract is `configs/capability-registry.json`; generated inventory: `reference/capability-registry.md`.
 
+Every selected agent inherits the ambient improvement contract in
+`reference/self-improvement.md`. Commands may expose controls, but routing must
+not depend on a user remembering to request learning or feedback capture.
+
 ## Routing order
 
 1. Read the task or issue description.
@@ -49,7 +53,7 @@ Full index: `subagent-index.toon`.
 | Marketing-Sales | ads, CRO, email campaign, CRM, copy, outreach, funnel | Email campaigns, FluentCRM, Meta Ads, CRO, direct response copy, CRM pipeline, proposals, outreach |
 | PR | PR, public relations, press, journalist, media list, pitch, newsjacking, coverage tracking, reactive comment | Earned media strategy, journalist research, media lists, newsworthiness, newsjacking, pitch critique, coverage tracking |
 | Product | product, PRD, roadmap, validation, onboarding, monetisation, growth, analytics, UX | Product management, requirements, validation, onboarding, monetisation, growth, UI/UX, analytics |
-| Business | company ops, finance, invoice, receipts, strategy, runners | Company operations, financial ops, invoicing, receipts, runner configs, strategy |
+| Business | company ops, accounting, bookkeeping, reconciliation, finance, invoice, receipts, cash flow, accounting software, runners | Company operations, provider-neutral accounting, financial ops, invoicing, receipts, provider selection, runner configs, strategy |
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | Compliance, terms of service, privacy policy |
 | Vault | vault, encrypted memory, protected data, lock, unlock, rekey, device trust, remote lock, remote unlock, secure sync | Vault setup/management, protected-data routing, encrypted sync/fleet trust, remote lock/unlock-request, secure-message policy |
 | Research | research, compare, market, competitor, technical analysis, external tool, repository evaluation, do we already do this, adoption fit | Tech research, competitive analysis, market research, and external tool/repository evaluation; use `reference/external-tool-evaluation.md` for source-level adoption decisions |

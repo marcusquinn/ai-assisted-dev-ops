@@ -20,9 +20,10 @@ mode: subagent
 - **Subagents**: `agent-review.md` (review), `agent-testing.md` (testing)
 - **Slash command**: `/build-agent {name} {kind} [category]` → `.agents/scripts/commands/build-agent.md` (interactive harness for creating new agents)
 - **Related**: `@code-standards`, `.agents/aidevops/architecture.md`, `tools/browser/browser-automation.md`
-- **After creating/promoting**: `~/.aidevops/agents/scripts/subagent-index-helper.sh generate`
+- **After creating/promoting**: in a source worktree run `AIDEVOPS_AGENTS_DIR="<worktree>/.agents" .agents/scripts/subagent-index-helper.sh generate`; without the override the helper targets the deployed agent tree
 - **Behavioural verification when material**: reuse an existing `agent-test-helper.sh` suite or a bounded live prompt; do not create a suite by default
 - **Workload tier**: Author `simple`, `standard`, or `thinking`; the preference-ordered runtime mapping in `tools/context/model-routing.md` selects concrete providers/models.
+- **Improvement contract**: All agents inherit `reference/self-improvement.md`; add only domain-specific evidence triggers, sensitivity boundaries, and promotion routes
 
 <!-- AI-CONTEXT-END -->
 
@@ -151,7 +152,8 @@ Linter order: (1) deterministic (ShellCheck, ESLint, Ruff/Pylint), (2) static an
 7. **Existing agent?** Call and improve vs duplicate — never create a copy
 8. **Sources verified?** Primary, cross-referenced
 9. **Markdown linting?** MD025/MD022/MD031/MD012. Run `bunx markdownlint-cli2 "path/to/file.md"`
-10. **Terse pass done?** See below
+10. **Ambient learning complete?** The inherited contract works without a command; document only domain-specific signals, scope/sensitivity, and verification
+11. **Terse pass done?** See below
 
 ## Post-Creation Semantic Terse Pass (MANDATORY)
 
@@ -167,7 +169,7 @@ Verify the target through its delivered runtime context, applicable existing che
 
 ## Self-Assessment Protocol
 
-**Triggers**: Observable failure, user correction, contradiction with Context7/codebase, staleness. **Process**: (1) Complete current task. (2) Identify root cause. (3) `rg "pattern" .agents/` — list ALL files needing coordinated updates. (4) Propose fix with evidence, ask user to confirm before applying.
+**Triggers**: Observable failure, user correction, contradiction with primary evidence/codebase, staleness, repeated friction, or a reusable success. **Process**: (1) Preserve the current outcome. (2) Identify and cite the evidence. (3) `rg "pattern" .agents/` — find coordinated surfaces and duplicates. (4) Apply and verify a safe, authorized, in-scope fix; otherwise capture the narrow learning or route a worker-ready task. Ask only at the escalation boundaries in `reference/self-improvement.md`.
 
 ## Tool Selection
 

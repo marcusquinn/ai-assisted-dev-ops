@@ -35,7 +35,7 @@ CAPABILITY_INDEX_FILE="${AGENTS_DIR}/agent-source-capabilities.toon"
 
 # Directories to scan for subagents (relative to AGENTS_DIR)
 # Covers all tiers: shared, custom, draft; plugins are appended separately
-SUBAGENT_DIRS="aidevops content public-relations seo tools services workflows memory custom draft"
+SUBAGENT_DIRS="aidevops business content public-relations seo tools services workflows memory custom draft"
 
 generate_plugin_agents_block() {
 	local agents_dir="$1"

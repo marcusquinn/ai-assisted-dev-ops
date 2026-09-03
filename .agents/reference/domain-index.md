@@ -10,6 +10,8 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | Domain | Trigger words | Entry point |
 |--------|---------------|-------------|
 | Business | company ops, strategy, finance, invoice, receipts, runners | `business.md`, `business/company-runners.md` |
+| Accounting | bookkeeping, bank statements, reconciliation, chart of accounts, debtors, creditors, management accounts, cash flow | `business/accounting.md` |
+| Accounting software | QuickFile, Xero, QuickBooks, FreeAgent, Sage, Zoho Books, accounting integration | `business/accounting-software.md` |
 | Planning | plan, define, roadmap, tasks, brief, decomposition, beads | `workflows/plans.md`, `scripts/commands/define.md`, `tools/task/beads.md` |
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | `legal.md`, `tools/legal/legal-research.md` |
 | Code quality | lint, review, smells, standards, simplify, audit | `tools/code-review/code-standards.md` |

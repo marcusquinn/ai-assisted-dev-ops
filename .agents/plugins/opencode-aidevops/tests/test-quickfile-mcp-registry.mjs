@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { registerMcpServers } from "../mcp-registry.mjs";
+import { getOnDemandMcpAgents, registerMcpServers } from "../mcp-registry.mjs";
 
 test("QuickFile MCP uses the least-privilege secret launcher", (t) => {
   const binDir = mkdtempSync(join(tmpdir(), "aidevops-quickfile-registry-"));
@@ -44,4 +44,20 @@ test("QuickFile MCP uses the least-privilege secret launcher", (t) => {
     enabled: false,
   });
   assert.equal(config.tools["quickfile_*"], false);
+});
+
+test("QuickFile MCP exposes a bounded on-demand activation agent", () => {
+  const quickfile = getOnDemandMcpAgents().find(
+    (entry) => entry.name === "quickfile",
+  );
+
+  assert.deepEqual(quickfile, {
+    name: "quickfile",
+    agentName: "quickfile",
+    agentSource: ["services", "accounting", "quickfile.md"],
+    toolPattern: "quickfile_*",
+    modelTier: "standard",
+    activationGuidance: [],
+    description: "Multi-account QuickFile UK accounting",
+  });
 });

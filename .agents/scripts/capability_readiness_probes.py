@@ -33,12 +33,30 @@ def _path_home(spec: dict[str, Any], _: Path) -> str:
     return "true" if (Path.home() / spec["path_home"]).exists() else "false"
 
 
+def _path_home_any(spec: dict[str, Any], _: Path) -> str:
+    return "true" if any((Path.home() / path).exists() for path in spec["path_home_any"]) else "false"
+
+
 def _env_any(spec: dict[str, Any], _: Path) -> str:
     return "true" if any(os.environ.get(name) for name in spec["env_any"]) else "false"
 
 
 def _env_all(spec: dict[str, Any], _: Path) -> str:
     return "true" if all(os.environ.get(name) for name in spec["env_all"]) else "false"
+
+
+def _env_pattern(spec: dict[str, Any], _: Path) -> str:
+    template = re.escape(spec["env_pattern"])
+    pattern = (
+        "^"
+        + re.sub(r"<[^>]+>", "[A-Z0-9_]+", template).replace(r"\*", ".*")
+        + "$"
+    )
+    return (
+        "true"
+        if any(value and re.match(pattern, name) for name, value in os.environ.items())
+        else "false"
+    )
 
 
 def _tool(spec: dict[str, Any], _: Path) -> str:
@@ -51,7 +69,8 @@ def _tool(spec: dict[str, Any], _: Path) -> str:
 
 PROBES: tuple[tuple[str, Callable[[dict[str, Any], Path], str]], ...] = (
     ("command", _command), ("command_check", _command_check), ("path", _path),
-    ("path_home", _path_home), ("env_any", _env_any), ("env_all", _env_all),
+    ("path_home", _path_home), ("path_home_any", _path_home_any),
+    ("env_any", _env_any), ("env_all", _env_all), ("env_pattern", _env_pattern),
     ("tool", _tool),
 )
 
