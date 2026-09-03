@@ -106,6 +106,7 @@ async function readReferenceImage(requested, root, remainingBytes) {
     throw new Error(`Reference image ${relativePath} is unavailable or unsafe.`);
   }
   let buffer;
+  let operationError;
   try {
     const openedStats = await handle.stat();
     if (!openedStats.isFile()) throw new Error(`Reference image ${relativePath} is not a regular file.`);
@@ -120,15 +121,18 @@ async function readReferenceImage(requested, root, remainingBytes) {
     }
     buffer = await readBoundedReference(handle, Math.min(MAX_REFERENCE_BYTES, remainingBytes));
   } catch (error) {
-    if (error?.code) throw new Error(`Reference image ${relativePath} is unavailable or unsafe.`);
-    throw error;
-  } finally {
-    try {
-      await handle.close();
-    } catch {
-      throw new Error(`Reference image ${relativePath} could not be closed safely.`);
-    }
+    operationError = error?.code
+      ? new Error(`Reference image ${relativePath} is unavailable or unsafe.`)
+      : error;
   }
+  let closeFailed = false;
+  try {
+    await handle.close();
+  } catch {
+    closeFailed = true;
+  }
+  if (operationError) throw operationError;
+  if (closeFailed) throw new Error(`Reference image ${relativePath} could not be closed safely.`);
   const mime = validateReferenceBuffer(buffer, relativePath);
   return { buffer, mime, name: basename(relativePath), dataUrl: `data:${mime};base64,${buffer.toString("base64")}` };
 }
