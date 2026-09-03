@@ -10,7 +10,21 @@ const OPENAI_IMAGES_GENERATE_ENDPOINT = "https://api.openai.com/v1/images/genera
 const OPENAI_IMAGES_EDIT_ENDPOINT = "https://api.openai.com/v1/images/edits";
 const SUBSCRIPTION_ROUTER_MODEL = "gpt-5.5";
 const MAX_SSE_BUFFER_CHARS = 96 * 1024 * 1024;
+const MAX_SSE_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_API_RESPONSE_BYTES = 96 * 1024 * 1024;
+const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
+const IMAGE_REQUEST_TIMEOUT_MS = 180_000;
+
+async function withImageRequestTimeout(operation) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_REQUEST_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    return await operation(controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function imageToolArgs(args) {
   return {
@@ -79,12 +93,22 @@ export async function parseImageSse(stream) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let pending = "";
+  let totalBytes = 0;
   while (true) {
     const { done, value } = await reader.read();
+    totalBytes += value?.byteLength || 0;
+    if (totalBytes > MAX_SSE_TOTAL_BYTES) {
+      await reader.cancel().catch(() => {});
+      throw new Error("OAuth image response exceeded the safe event-stream limit.");
+    }
     pending += decoder.decode(value || new Uint8Array(), { stream: !done });
     let next;
     while ((next = takeNextSseBlock(pending))) {
       pending = next.rest;
+      if (next.block.length > MAX_SSE_BUFFER_CHARS) {
+        await reader.cancel().catch(() => {});
+        throw new Error("OAuth image event exceeded the safe event-stream limit.");
+      }
       const result = parseSseBlock(next.block);
       if (result) {
         await reader.cancel().catch(() => {});
@@ -103,13 +127,16 @@ export async function parseImageSse(stream) {
 }
 
 export async function requestOAuthImage(auth, args, images, fetchImpl) {
-  const response = await fetchImpl(CODEX_RESPONSES_ENDPOINT, {
-    method: "POST",
-    headers: oauthHeaders(auth),
-    body: JSON.stringify(oauthRequestBody(args, images)),
+  return withImageRequestTimeout(async (signal) => {
+    const response = await fetchImpl(CODEX_RESPONSES_ENDPOINT, {
+      method: "POST",
+      headers: oauthHeaders(auth),
+      body: JSON.stringify(oauthRequestBody(args, images)),
+      signal,
+    });
+    if (!response.ok) return { response, base64: "", error: await imageRequestError(response, "oauth") };
+    return { response, base64: await parseImageSse(response.body) };
   });
-  if (!response.ok) return { response, base64: "" };
-  return { response, base64: await parseImageSse(response.body) };
 }
 
 function apiJsonBody(args) {
@@ -135,36 +162,54 @@ function apiMultipartBody(args, images) {
   return body;
 }
 
-function apiRequest(auth, args, images) {
+function apiRequest(auth, args, images, signal) {
   const headers = { Authorization: `Bearer ${auth.accessToken}` };
   if (images.length === 0) {
     headers["Content-Type"] = "application/json";
     return {
       endpoint: OPENAI_IMAGES_GENERATE_ENDPOINT,
-      init: { method: "POST", headers, body: JSON.stringify(apiJsonBody(args)) },
+      init: { method: "POST", headers, body: JSON.stringify(apiJsonBody(args)), signal },
     };
   }
   return {
     endpoint: OPENAI_IMAGES_EDIT_ENDPOINT,
-    init: { method: "POST", headers, body: apiMultipartBody(args, images) },
+    init: { method: "POST", headers, body: apiMultipartBody(args, images), signal },
   };
 }
 
+async function readBoundedJson(response, byteLimit, label) {
+  if (!response.body?.getReader) throw new Error(`${label} did not include a response body.`);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > byteLimit) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`${label} exceeded the safe response limit.`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return JSON.parse(Buffer.concat(chunks, totalBytes).toString("utf8"));
+}
+
 export async function requestApiImage(auth, args, images, fetchImpl) {
-  const request = apiRequest(auth, args, images);
-  const response = await fetchImpl(request.endpoint, request.init);
-  if (!response.ok) return { response, base64: "" };
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength > MAX_API_RESPONSE_BYTES) {
-    await response.body?.cancel?.().catch(() => {});
-    throw new Error("OpenAI Images API response exceeded the safe response limit.");
-  }
-  const payload = await response.json();
-  const base64 = payload?.data?.[0]?.b64_json;
-  if (typeof base64 !== "string" || !base64) {
-    throw new Error("OpenAI Images API response did not contain an image.");
-  }
-  return { response, base64 };
+  return withImageRequestTimeout(async (signal) => {
+    const request = apiRequest(auth, args, images, signal);
+    const response = await fetchImpl(request.endpoint, request.init);
+    if (!response.ok) return { response, base64: "", error: await imageRequestError(response, "api") };
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > MAX_API_RESPONSE_BYTES) {
+      await response.body?.cancel?.().catch(() => {});
+      throw new Error("OpenAI Images API response exceeded the safe response limit.");
+    }
+    const payload = await readBoundedJson(response, MAX_API_RESPONSE_BYTES, "OpenAI Images API response");
+    const base64 = payload?.data?.[0]?.b64_json;
+    if (typeof base64 !== "string" || !base64) throw new Error("OpenAI Images API response did not contain an image.");
+    return { response, base64 };
+  });
 }
 
 function redactProviderDetail(value) {
@@ -179,7 +224,7 @@ export async function imageRequestError(response, mode) {
   let code = "";
   let message = "";
   try {
-    const payload = await response.json();
+    const payload = await readBoundedJson(response, MAX_ERROR_RESPONSE_BYTES, "OpenAI image error response");
     code = payload?.error?.code || payload?.error?.type || "";
     message = payload?.error?.message || "";
   } catch {

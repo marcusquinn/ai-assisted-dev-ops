@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 
 import { createGptImageTool } from "../gpt-image-tool.mjs";
 
-const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 const PNG_BASE64 = PNG_BYTES.toString("base64");
 const roots = [];
 const schemaNode = { _zod: {}, optional() { return this; }, describe() { return this; } };
@@ -60,6 +63,8 @@ describe("GPT image OpenCode tool", () => {
     const output = await tool.execute({ prompt: "draw a test", out: "generated/test.png", quality: "low" });
     assert.equal(calls, 1);
     assert.match(output, /ChatGPT subscription OAuth/);
+    assert.match(output, /generated\/test\.png/);
+    assert.doesNotMatch(output, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
   test("rotates once after an unpinned OAuth 429", async () => {

@@ -9,7 +9,10 @@ import { tmpdir } from "node:os";
 
 import { readReferenceImages, saveGeneratedPng, validateImageOutputPath } from "../gpt-image-io.mjs";
 
-const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 const roots = [];
 
 async function projectRoot() {
@@ -29,9 +32,10 @@ describe("GPT image file safety", () => {
     const second = await saveGeneratedPng("assets/result.png", root, PNG_BYTES.toString("base64"));
     assert.equal(first.versioned, false);
     assert.equal(second.versioned, true);
-    assert.match(second.savedPath, /result-v2\.png$/);
-    assert.deepEqual(await readFile(first.savedPath), PNG_BYTES);
-    assert.equal((await lstat(first.savedPath)).mode & 0o777, 0o600);
+    assert.equal(first.projectPath, "assets/result.png");
+    assert.equal(second.projectPath, "assets/result-v2.png");
+    assert.deepEqual(await readFile(join(root, first.projectPath)), PNG_BYTES);
+    assert.equal((await lstat(join(root, first.projectPath))).mode & 0o777, 0o600);
   });
 
   test("rejects traversal and symbolic-link output parents", async () => {
@@ -40,6 +44,8 @@ describe("GPT image file safety", () => {
     await symlink(outside, join(root, "linked"), "dir");
     await assert.rejects(validateImageOutputPath("../escape.png", root), /parent traversal/);
     await assert.rejects(validateImageOutputPath("linked/escape.png", root), /symbolic links/);
+    await assert.rejects(validateImageOutputPath(".GIT/escape.png", root), /inside \.git/);
+    await assert.rejects(validateImageOutputPath("nested/.GiT/escape.png", root), /inside \.git/);
   });
 
   test("accepts only regular project-confined reference images with known magic bytes", async () => {
@@ -50,5 +56,15 @@ describe("GPT image file safety", () => {
     assert.equal(images[0].mime, "image/png");
     assert.match(images[0].dataUrl, /^data:image\/png;base64,/);
     await assert.rejects(readReferenceImages(["../source.png"], root), /parent traversal/);
+  });
+
+  test("rejects a generated PNG with a corrupted chunk checksum", async () => {
+    const root = await projectRoot();
+    const corrupted = Buffer.from(PNG_BYTES);
+    corrupted[45] ^= 0xff;
+    await assert.rejects(
+      saveGeneratedPng("assets/corrupt.png", root, corrupted.toString("base64")),
+      /invalid checksum/,
+    );
   });
 });

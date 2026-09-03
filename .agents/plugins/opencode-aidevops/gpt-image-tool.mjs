@@ -8,7 +8,23 @@ import {
   rotateOAuthImageAccount,
 } from "./gpt-image-auth.mjs";
 import { readReferenceImages, saveGeneratedPng, validateImageOutputPath } from "./gpt-image-io.mjs";
-import { imageRequestError, requestApiImage, requestOAuthImage } from "./gpt-image-request.mjs";
+import { requestApiImage, requestOAuthImage } from "./gpt-image-request.mjs";
+
+const IMAGE_QUALITIES = new Set(["low", "medium", "high", "auto"]);
+
+function validateRawArgs(args) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("Image tool arguments must be an object.");
+  if (typeof args.prompt !== "string" || typeof args.out !== "string") {
+    throw new Error("Image prompt and output path must be strings.");
+  }
+  if (args.quality !== undefined && !IMAGE_QUALITIES.has(args.quality)) throw new Error("Unsupported image quality.");
+  if (args.size !== undefined && typeof args.size !== "string") throw new Error("Image size must be a string.");
+  if (args.images !== undefined && (!Array.isArray(args.images) || args.images.some((path) => typeof path !== "string"))) {
+    throw new Error("Reference images must be an array of path strings.");
+  }
+  if (args.auth !== undefined && !["oauth", "api"].includes(args.auth)) throw new Error("Image auth must be oauth or api.");
+  if (args.account !== undefined && typeof args.account !== "string") throw new Error("Image account must be a string.");
+}
 
 function validatePrompt(value) {
   const prompt = String(value || "").trim();
@@ -58,6 +74,7 @@ function billingLabel(mode) {
 }
 
 async function executeImageGeneration(rawArgs, options) {
+  validateRawArgs(rawArgs);
   const args = {
     ...rawArgs,
     prompt: validatePrompt(rawArgs.prompt),
@@ -74,12 +91,16 @@ async function executeImageGeneration(rawArgs, options) {
   } else {
     result = await requestApiImage(auth, args, images, options.fetchImpl);
   }
-  if (!result.response.ok) throw await imageRequestError(result.response, auth.mode);
+  if (!result.response.ok) throw result.error;
 
-  const saved = await saveGeneratedPng(args.out, options.projectRoot, result.base64);
+  const saved = await saveGeneratedPng(args.out, options.projectRoot, result.base64, {
+    scriptsDir: options.scriptsDir,
+    spawnImpl: options.imageWriterSpawn,
+  });
   if (auth.mode === "oauth") (options.markOAuthSuccess || markOAuthImageSuccess)(auth);
   const versionNote = saved.versioned ? " Existing output was preserved with a versioned filename." : "";
-  return `Generated image saved to ${saved.savedPath}. Billing route: ${billingLabel(auth.mode)}.${versionNote}`;
+  const cleanupNote = saved.cleanupWarning ? " Temporary-file cleanup reported a filesystem warning." : "";
+  return `Generated image saved to ${saved.projectPath}. Billing route: ${billingLabel(auth.mode)}.${versionNote}${cleanupNote}`;
 }
 
 export function createGptImageTool(tool, z, options = {}) {

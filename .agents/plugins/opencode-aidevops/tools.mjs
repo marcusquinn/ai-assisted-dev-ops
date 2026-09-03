@@ -222,6 +222,7 @@ export function createTools(scriptsDir, run, options = {}) {
   const tools = {
     aidevops: createAidevopsTool(run),
     gpt_image_generate: createGptImageTool(tool, z, {
+      scriptsDir,
       env: options.env,
       execFile: options.imageExecFile,
       fetchImpl: options.imageFetch,
