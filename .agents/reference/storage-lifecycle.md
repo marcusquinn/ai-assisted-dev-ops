@@ -187,12 +187,9 @@ an exact ignored and untracked approved directory with no symlink component,
 tracked path, or hard-linked regular file. A bounded manifest records its
 device/inode identity and allocated bytes; uncertainty, deadline exhaustion,
 Git output beyond the fixed capture ceiling, or drift preserves the root.
-Ordinary recovery planning still short-circuits after proving the archive dirty.
-Automatic maintenance explicitly completes the downstream evidence for that
-state, and cache apply repeats the same complete snapshot before mutation. The
-terminal commit evidence must come from the exact merged pull request whose head
-OID matches the archive, not only a branch-name match. Approved-root sizing runs
-only after the archive satisfies this cache-retrofit eligibility predicate.
+Ordinary recovery planning short-circuits once dirty; automatic maintenance completes
+downstream evidence, and cache apply repeats the snapshot. Terminal commit evidence
+must match the exact merged PR head OID, not only its branch; root sizing waits until eligible.
 
 After reviewing a v2 plan, an operator may run:
 
