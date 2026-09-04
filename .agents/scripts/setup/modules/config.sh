@@ -245,74 +245,21 @@ update_codex_config() {
 
 	# Fix broken MCP_DOCKER entry (P0 — OrbStack/Colima don't support docker mcp)
 	if type _fix_codex_docker_mcp &>/dev/null; then
-		_fix_codex_docker_mcp
+		_fix_codex_docker_mcp || return 1
 	fi
 
 	# Deploy aidevops MCP servers to Codex config.toml
-	_deploy_codex_mcps
+	_deploy_codex_mcps || return 1
 
 	print_success "Codex configuration updated"
 	return 0
 }
 
-# Deploy standard aidevops MCP servers to ~/.codex/config.toml
-# Codex uses TOML format: [mcp_servers.NAME] sections
+# Reconcile known defaults and migrations while preserving custom TOML settings.
 _deploy_codex_mcps() {
-	local config="$HOME/.codex/config.toml"
-	mkdir -p "$HOME/.codex"
-
-	# Touch config if it doesn't exist
-	[[ -f "$config" ]] || touch "$config"
-
-	local mcp_count=0
-
-	# Helper: add a TOML MCP section if not already present
-	# Args: $1=name, $2=type (stdio|url), $3=command_or_url, $4=args (optional, comma-separated)
-	_add_codex_mcp() {
-		local name="$1"
-		local mcp_type="$2"
-		local cmd_or_url="$3"
-		local args="${4:-}"
-
-		if grep -q "\\[mcp_servers\\.${name}\\]" "$config" 2>/dev/null; then
-			echo -e "  ${BLUE:-}=${NC:-} $name (already configured)"
-			return 0
-		fi
-
-		{
-			echo ""
-			echo "[mcp_servers.${name}]"
-			if [[ "$mcp_type" == "stdio" ]]; then
-				echo "command = '${cmd_or_url}'"
-				if [[ -n "$args" ]]; then
-					echo "args = [${args}]"
-				fi
-			else
-				echo "type = 'url'"
-				echo "url = '${cmd_or_url}'"
-			fi
-		} >>"$config"
-		((++mcp_count))
-		echo -e "  ${GREEN:-}+${NC:-} $name"
-		return 0
-	}
-
-	# --- context7 (library docs) ---
-	_add_codex_mcp "context7" "stdio" "npx" "'-y', '@upstash/context7-mcp@latest'"
-
-	# --- Playwright MCP ---
-	_add_codex_mcp "playwright" "stdio" "npx" "'-y', '@playwright/mcp@0.0.79', '--headless', '--isolated'"
-
-	# --- shadcn UI ---
-	_add_codex_mcp "shadcn" "stdio" "npx" "'shadcn@latest', 'mcp'"
-
-	# --- OpenAPI Search (remote, zero install) ---
-	_add_codex_mcp "openapi-search" "url" "https://openapi-mcp.openapisearch.com/mcp"
-
-	# --- Cloudflare API (remote) ---
-	_add_codex_mcp "cloudflare-api" "url" "https://mcp.cloudflare.com/mcp"
-
-	echo -e "  ${GREEN:-}Done${NC:-} -- $mcp_count new MCP servers added to Codex config"
+	local helper_dir
+	helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || return 1
+	python3 "$helper_dir/codex-mcp-config.py" || return 1
 	return 0
 }
 

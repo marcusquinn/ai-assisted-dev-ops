@@ -2685,8 +2685,9 @@ _fix_codex_docker_mcp() {
 		return 0
 	fi
 
-	# Check if `docker mcp` subcommand is actually available
-	if docker mcp --help >/dev/null 2>&1; then
+	# Docker can return success for help on an unknown subcommand.
+	# The version command verifies that the MCP CLI plugin actually exists.
+	if docker mcp version >/dev/null 2>&1; then
 		return 0
 	fi
 
