@@ -176,6 +176,11 @@ git -C "$AGG_REPO" commit -q --allow-empty -m 'third authorized source merge'
 AGG_THIRD=$(git -C "$AGG_REPO" rev-parse HEAD)
 git -C "$AGG_REPO" commit -q --allow-empty -m 'fourth authorized source merge'
 AGG_FOURTH=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" branch unmerged-source
+git -C "$AGG_REPO" switch -q unmerged-source
+git -C "$AGG_REPO" commit -q --allow-empty -m 'merged source outside the released ancestry'
+NON_ANCESTOR_MERGE=$(git -C "$AGG_REPO" rev-parse HEAD)
+git -C "$AGG_REPO" switch -q main
 git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed automated synchronization'
 git -C "$AGG_REPO" commit -q --allow-empty -m "reviewed aggregate source
 
@@ -192,6 +197,7 @@ if [[ "\${1:-}" == "pr" ]]; then
 	43) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T01:00:00Z","baseRefName":"main","headRefOid":"second-head","mergeCommit":{"oid":"${AGG_SECOND}"}}' ;;
 	44) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T02:00:00Z","baseRefName":"main","headRefOid":"third-head","mergeCommit":{"oid":"${AGG_THIRD}"}}' ;;
 	45) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T03:00:00Z","baseRefName":"main","headRefOid":"fourth-head","mergeCommit":{"oid":"${AGG_FOURTH}"}}' ;;
+	101) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T04:00:00Z","baseRefName":"main","headRefOid":"outside-head","mergeCommit":{"oid":"${NON_ANCESTOR_MERGE}"}}' ;;
 	99) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-27T00:00:00Z","baseRefName":"main","headRefOid":"aggregate-head","mergeCommit":{"oid":"${AGGREGATE_MERGE}"}}' ;;
 	100) printf '{"state":"MERGED","mergedAt":"2026-07-28T00:00:00Z","baseRefName":"main","headRefOid":"complete-head","mergeCommit":{"oid":"%s"}}\n' "\${COMPLETE_AGGREGATE_MERGE:?}" ;;
 	*) exit 1 ;;
@@ -203,7 +209,11 @@ repos/test/aggregate/git/ref/tags/v2.0.0)
 	printf '{"object":{"type":"tag","sha":"%s"}}\n' "\$(git -C "${AGG_REPO}" rev-parse refs/tags/v2.0.0)"
 	;;
 repos/test/aggregate/git/tags/*)
-	printf '{"tag":"v2.0.0","object":{"type":"commit","sha":"%s"},"verification":{"verified":true}}\n' "\${AGG_TAG_COMMIT:-pending}"
+	if [[ "\${PROVENANCE_MODE:-valid}" == "unverified" ]]; then
+		printf '{"tag":"v2.0.0","object":{"type":"commit","sha":"%s"},"verification":{"verified":false}}\n' "\${AGG_TAG_COMMIT:-pending}"
+	else
+		printf '{"tag":"v2.0.0","object":{"type":"commit","sha":"%s"},"verification":{"verified":true}}\n' "\${AGG_TAG_COMMIT:-pending}"
+	fi
 	;;
 *) exit 1 ;;
 esac
@@ -321,6 +331,49 @@ jq -e --arg source_merge "$COMPLETE_AGGREGATE_MERGE" '
 	and (.aggregated_sources | map(.pr)) == [42,43,44,45]
 ' <<<"$tag_authorization_json" >/dev/null
 printf 'PASS immutable-tag authorization resolves exact source provenance and every trusted merge SHA\n'
+gap_expected_sources="42@${AGG_ORIGINAL},43@${AGG_SECOND},44@${AGG_THIRD}"
+gap_expected_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-expected-sources --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources "$gap_expected_sources"
+)
+jq -e --arg first "$AGG_ORIGINAL" --arg second "$AGG_SECOND" --arg third "$AGG_THIRD" '
+	.expected_sources == [
+		{pr:42,merge:$first}, {pr:43,merge:$second}, {pr:44,merge:$third}
+	]
+' <<<"$gap_expected_json" >/dev/null
+printf 'PASS authorization-gap source validation accepts a verified strict subset of the signed manifest\n'
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-expected-sources --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources 42@0000000000000000000000000000000000000000
+) >/dev/null 2>&1; then
+	printf 'FAIL authorization-gap source validation accepted an invalid merge SHA\n'
+	exit 1
+fi
+printf 'PASS authorization-gap source validation rejects invalid merge SHAs\n'
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-expected-sources --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources "101@${NON_ANCESTOR_MERGE}"
+) >/dev/null 2>&1; then
+	printf 'FAIL authorization-gap source validation accepted a non-ancestor merge\n'
+	exit 1
+fi
+printf 'PASS authorization-gap source validation rejects non-ancestor merges\n'
+if (
+	cd "$AGG_REPO" || exit 1
+	PROVENANCE_MODE=unverified PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-expected-sources --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources "$gap_expected_sources"
+) >/dev/null 2>&1; then
+	printf 'FAIL authorization-gap source validation accepted an unverified tag\n'
+	exit 1
+fi
+printf 'PASS authorization-gap source validation rejects unverified tags\n'
 if (
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \

@@ -171,14 +171,14 @@ printf 'PASS signed tag trailers reconstruct release provenance\n'
 		[[ "$repo" == "test/repo" && "$tag_name" == "v3.32.200" ]]
 		return $?
 	}
-	_full_loop_release_resolve_tag_expected_sources() {
+	_full_loop_release_validate_tag_expected_sources() {
 		local repo="$1"
 		local requested_pr="$2"
 		local tag_name="$3"
 		local expected_sources="$4"
 		[[ "$repo" == "test/repo" && "$requested_pr" == "29010" && "$tag_name" == "v3.32.200" ]] || return 1
-		[[ "$expected_sources" == "$gap_expected" ]] || return 1
-		printf '%s\n' "$gap_expected"
+		[[ "$expected_sources" == "$gap_expected" || "$expected_sources" == "$gap_observed" ]] || return 1
+		printf '%s\n' "$expected_sources"
 		return 0
 	}
 	_full_loop_release_observed_sources_for_expected() {
@@ -209,6 +209,12 @@ printf 'PASS signed tag trailers reconstruct release provenance\n'
 		and .terminal_cleanup_evidence == false
 	' "$gap_path" >/dev/null
 	cp "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
+	if _full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_observed" \
+		"matching source manifests are not an authorization gap" >/dev/null 2>&1; then
+		printf 'FAIL matching source manifests recorded authorization-gap evidence\n'
+		exit 1
+	fi
+	cmp -s "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
 	_full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_expected" "$gap_reason" >/dev/null
 	cmp -s "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
 	if _full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_expected" \

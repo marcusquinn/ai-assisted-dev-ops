@@ -415,14 +415,14 @@ _full_loop_release_source_json_from_tag() {
 	return $?
 }
 
-_full_loop_release_resolve_tag_expected_sources() {
+_full_loop_release_validate_tag_expected_sources() {
 	local repo="$1"
 	local requested_pr="$2"
 	local tag_name="$3"
 	local expected_sources="$4"
 	local resolver="${SCRIPT_DIR}/release-provenance-helper.sh"
 	local authorization_json=""
-	local resolver_args=(resolve-tag-authorization --tag "$tag_name" --source-pr "$requested_pr" --repo "$repo" --branch main)
+	local resolver_args=(resolve-tag-expected-sources --tag "$tag_name" --source-pr "$requested_pr" --repo "$repo" --branch main)
 	[[ -x "$resolver" ]] || return 1
 	[[ -n "$expected_sources" ]] && resolver_args+=(--expected-sources "$expected_sources")
 	_full_loop_release_prepare_tag_worktree "$tag_name" || return 1
@@ -458,7 +458,7 @@ _full_loop_release_record_authorization_gap() {
 	[[ -n "$expected_sources" && -n "$reason" ]] || return 1
 	git -C "$REPO_ROOT" fetch origin --tags --quiet || return 1
 	_full_loop_release_verify_tag_provenance "$repo" "$tag_name" || return 1
-	expected_sources=$(_full_loop_release_resolve_tag_expected_sources \
+	expected_sources=$(_full_loop_release_validate_tag_expected_sources \
 		"$repo" "$requested_pr" "$tag_name" "$expected_sources") || return 1
 	observed_sources=$(_full_loop_release_observed_sources_for_expected "$tag_name" "$expected_sources") || return 1
 	if release_authorization_compare "$expected_sources" "$observed_sources"; then
