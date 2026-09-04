@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "higgsfield": {
+      "command": "node",
+      "args": ["${HOME}/.aidevops/agents/scripts/higgsfield-mcp-proxy.mjs"]
+    }
+  }
+}

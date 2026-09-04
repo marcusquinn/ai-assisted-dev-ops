@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)" || exit
 TEMPLATE_DIR="${REPO_ROOT}/configs/mcp-templates"
+readonly HIGGSFIELD_MCP_NAME="higgsfield"
 
 # shellcheck source=./shared-constants.sh
 source "${SCRIPT_DIR}/shared-constants.sh"
@@ -42,6 +43,7 @@ get_mcp_command() {
 	"unstract") echo "docker:unstract/mcp-server" ;;
 	"context7") echo "npx -y @upstash/context7-mcp@latest" ;;
 	"shopify-dev-mcp") echo "npx -y @shopify/dev-mcp@latest" ;;
+	"$HIGGSFIELD_MCP_NAME") echo "node ${HOME}/.aidevops/agents/scripts/higgsfield-mcp-proxy.mjs" ;;
 	*) echo "" ;;
 	esac
 	return 0
@@ -65,6 +67,7 @@ MCP_LIST=(
 	"unstract"
 	"context7"
 	"shopify-dev-mcp"
+	"$HIGGSFIELD_MCP_NAME"
 )
 
 is_known_mcp() {
@@ -430,6 +433,30 @@ _install_shopify_dev_mcp() {
 	return 0
 }
 
+_install_higgsfield() {
+	local deployed_proxy="${HOME}/.aidevops/agents/scripts/higgsfield-mcp-proxy.mjs"
+	local source_proxy="${SCRIPT_DIR}/higgsfield-mcp-proxy.mjs"
+	local state_path="${HOME}/.config/aidevops/higgsfield-mcp-proxy/state.json"
+	local validation_proxy="$deployed_proxy"
+
+	if [[ ! -f "$validation_proxy" ]]; then
+		validation_proxy="$source_proxy"
+	fi
+	if [[ ! -f "$validation_proxy" ]]; then
+		print_error "Higgsfield MCP proxy source is not installed"
+		return 1
+	fi
+	node --check "$validation_proxy"
+	print_info "Higgsfield uses the tracked request-bound OAuth proxy."
+	print_info "OpenCode command: [\"node\", \"${deployed_proxy}\"]"
+	print_info "OAuth state: ${state_path}"
+	if [[ ! -f "$state_path" ]]; then
+		print_warning "OAuth state not found; complete the initial browser authorization before starting the proxy"
+	fi
+	print_info "Config template: configs/mcp-templates/higgsfield.json"
+	return 0
+}
+
 # Install specific MCP integration — thin dispatcher to per-integration helpers
 install_mcp() {
 	local mcp_name="$1"
@@ -462,6 +489,7 @@ install_mcp() {
 	"unstract") _install_unstract ;;
 	"context7") _install_context7 ;;
 	"shopify-dev-mcp") _install_shopify_dev_mcp ;;
+	"$HIGGSFIELD_MCP_NAME") _install_higgsfield ;;
 	*)
 		print_error "Unknown MCP integration: $mcp_name"
 		print_info "Available integrations: ${MCP_LIST[*]}"
@@ -505,6 +533,22 @@ _write_playwright_template() {
     "playwright": {
       "command": "npx",
       "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"]
+    }
+  }
+}
+EOF
+	return 0
+}
+
+# Write Higgsfield MCP config template
+_write_higgsfield_template() {
+	local config_dir="$1"
+	cat >"$config_dir/higgsfield.json" <<'EOF'
+{
+  "mcpServers": {
+    "higgsfield": {
+      "command": "node",
+      "args": ["${HOME}/.aidevops/agents/scripts/higgsfield-mcp-proxy.mjs"]
     }
   }
 }
@@ -607,6 +651,7 @@ create_config_templates() {
 
 	_write_chrome_devtools_template "$config_dir"
 	_write_playwright_template "$config_dir"
+	_write_higgsfield_template "$config_dir"
 	_write_stagehand_js_template "$config_dir"
 	_write_stagehand_python_template "$config_dir"
 	_write_stagehand_both_template "$config_dir"
