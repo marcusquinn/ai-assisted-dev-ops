@@ -394,6 +394,64 @@ _reopen_mark_if_completed() {
 	return 1
 }
 
+# Reconcile a mapped TODO row when the remote issue is already terminal. This
+# path deliberately performs no GitHub mutation: local state advances only from
+# verified completion evidence or an immutable not-planned closure timestamp.
+_reconcile_already_closed_task() {
+	local task_id="$1"
+	local issue_number="$2"
+	local todo_file="$3"
+	local repo="$4"
+	local task_line="$5"
+	local issue_json="$6"
+	local state_reason=""
+	local closed_at=""
+	local closed_date=""
+	local issue_labels=""
+
+	require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$issue_number" || return 1
+	state_reason=$(printf '%s' "$issue_json" | jq -r '.state_reason // .stateReason // ""' 2>/dev/null) || return 1
+	closed_at=$(printf '%s' "$issue_json" | jq -r '.closed_at // .closedAt // ""' 2>/dev/null) || return 1
+	issue_labels=$(printf '%s' "$issue_json" | jq -r \
+		'[.labels[]? | if type == "object" then (.name // "") else . end] | join(" ")' 2>/dev/null) || return 1
+
+	if _is_not_planned_state_reason "$state_reason"; then
+		[[ "$closed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+			print_warning "#$issue_number is closed as not planned but has no valid closure timestamp; TODO unchanged"
+			return 1
+		}
+		closed_date="${closed_at%%T*}"
+		if [[ "$DRY_RUN" == "true" ]]; then
+			print_info "[DRY-RUN] Would mark $task_id [-] (not_planned on #$issue_number)"
+			return 0
+		fi
+		_mark_todo_not_planned "$task_id" "$issue_number" "$todo_file" "$closed_date" || return 1
+		return 0
+	fi
+
+	case "$state_reason" in
+	COMPLETED | completed) ;;
+	*)
+		print_warning "#$issue_number is closed with ambiguous reason '${state_reason:-none}'; TODO unchanged"
+		return 1
+		;;
+	esac
+	if printf '%s\n' "$issue_labels" | grep -qw "parent-task"; then
+		print_warning "#$issue_number ($task_id) is a parent task; terminal PR linkage must reconcile it"
+		return 1
+	fi
+	if ! _is_cancelled_or_deferred "$task_line" &&
+		_has_unresolved_blocker "$task_line" "" "$task_line" "$repo" "$issue_number"; then
+		print_warning "#$issue_number ($task_id) still has an unresolved dependency; TODO unchanged"
+		return 1
+	fi
+	if _reopen_mark_if_completed "$repo" "$task_id" "$issue_number" "$todo_file"; then
+		return 0
+	fi
+	print_warning "#$issue_number is closed as completed without acceptable completion evidence; TODO unchanged"
+	return 1
+}
+
 _do_close() {
 	local task_id="$1" issue_number="$2" todo_file="$3" repo="$4"
 	require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$issue_number" || return 1
@@ -493,12 +551,22 @@ cmd_close() {
 			print_info "$target_task: no matching issue"
 			return 0
 		}
-		local st
-		st=$(gh issue view "$num" --repo "$repo" --json state --jq '.state' 2>/dev/null || echo "")
-		[[ "$st" == "CLOSED" || "$st" == "closed" ]] && {
-			log_verbose "#$num already closed"
-			return 0
+		local issue_json=""
+		local st=""
+		issue_json=$(gh api "repos/${repo}/issues/${num}" 2>/dev/null) || {
+			print_error "Could not verify #$num before close reconciliation"
+			return 1
 		}
+		st=$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null) || return 1
+		if [[ "$st" == "CLOSED" || "$st" == "closed" ]]; then
+			log_verbose "#$num already closed — reconciling TODO state"
+			_reconcile_already_closed_task "$target_task" "$num" "$todo_file" "$repo" "$task_line" "$issue_json"
+			return $?
+		fi
+		if [[ "$st" != "OPEN" && "$st" != "open" ]]; then
+			print_error "Could not determine whether #$num is open"
+			return 1
+		fi
 		_do_close "$target_task" "$num" "$todo_file" "$repo" || true
 		return 0
 	fi

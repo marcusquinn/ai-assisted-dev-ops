@@ -230,6 +230,10 @@ todo_file=$(mktemp)
 printf '%s\n' '- [ ] t9010 retry failed completion lookup ref:GH#125' >"$todo_file"
 todo_before=$(<"$todo_file")
 _reopen_find_merged_pr() {
+	if [[ "${TEST_COMPLETION_EVIDENCE:-0}" -eq 1 ]]; then
+		printf '%s\n' "42|https://github.com/owner/repo/pull/42"
+		return 0
+	fi
 	return 1
 }
 if _reopen_mark_if_completed "owner/repo" "t9010" "125" "$todo_file"; then
@@ -240,6 +244,81 @@ else
 	pass "failed completion lookup leaves reopened TODO content unchanged"
 fi
 rm -f "$todo_file"
+
+require_task_issue_mapping() {
+	return 0
+}
+RECONCILE_RESULT=""
+TEST_COMPLETION_EVIDENCE=0
+TEST_UNRESOLVED_BLOCKER=0
+DRY_RUN=false
+_mark_todo_not_planned() {
+	local task_id="$1"
+	local issue_number="$2"
+	local todo_path="$3"
+	local closed_date="$4"
+	: "$task_id" "$issue_number" "$todo_path" "$closed_date"
+	RECONCILE_RESULT="not-planned"
+	return 0
+}
+_mark_reopen_merged_pr_task() {
+	local repo="$1"
+	local todo_path="$2"
+	local issue_number="$3"
+	local pr_number="$4"
+	: "$repo" "$todo_path" "$issue_number" "$pr_number"
+	RECONCILE_RESULT="completed"
+	return 0
+}
+_has_unresolved_blocker() {
+	[[ "$TEST_UNRESOLVED_BLOCKER" -eq 1 ]]
+	return $?
+}
+
+terminal_task='- [ ] t9012 reconcile terminal state ref:GH#9012'
+terminal_json='{"state":"closed","state_reason":"completed","closed_at":"2026-09-04T12:00:00Z","labels":[]}'
+TEST_COMPLETION_EVIDENCE=1
+if _reconcile_already_closed_task "t9012" "9012" "/unused/TODO.md" "owner/repo" "$terminal_task" "$terminal_json" &&
+	[[ "$RECONCILE_RESULT" == "completed" ]]; then
+	pass "already-closed completed issue reconciles from verified evidence"
+else
+	fail "already-closed completed issue should reconcile from verified evidence"
+fi
+
+RECONCILE_RESULT=""
+TEST_COMPLETION_EVIDENCE=0
+not_planned_json='{"state":"closed","state_reason":"not_planned","closed_at":"2026-09-03T12:00:00Z","labels":[]}'
+if _reconcile_already_closed_task "t9012" "9012" "/unused/TODO.md" "owner/repo" "$terminal_task" "$not_planned_json" &&
+	[[ "$RECONCILE_RESULT" == "not-planned" ]]; then
+	pass "already-closed not-planned issue preserves cancellation semantics"
+else
+	fail "already-closed not-planned issue should preserve cancellation semantics"
+fi
+
+RECONCILE_RESULT=""
+ambiguous_json='{"state":"closed","state_reason":null,"closed_at":"2026-09-03T12:00:00Z","labels":[]}'
+if _reconcile_already_closed_task "t9012" "9012" "/unused/TODO.md" "owner/repo" "$terminal_task" "$ambiguous_json"; then
+	fail "ambiguous already-closed issue remains unchanged"
+elif [[ -z "$RECONCILE_RESULT" ]]; then
+	pass "ambiguous already-closed issue remains unchanged"
+else
+	fail "ambiguous already-closed issue changed local state"
+fi
+
+parent_json='{"state":"closed","state_reason":"completed","closed_at":"2026-09-03T12:00:00Z","labels":[{"name":"parent-task"}]}'
+TEST_COMPLETION_EVIDENCE=1
+if _reconcile_already_closed_task "t9012" "9012" "/unused/TODO.md" "owner/repo" "$terminal_task" "$parent_json"; then
+	fail "parent task guard blocks automatic terminal reconciliation"
+else
+	pass "parent task guard blocks automatic terminal reconciliation"
+fi
+
+TEST_UNRESOLVED_BLOCKER=1
+if _reconcile_already_closed_task "t9012" "9012" "/unused/TODO.md" "owner/repo" "$terminal_task" "$terminal_json"; then
+	fail "unresolved dependency blocks automatic terminal reconciliation"
+else
+	pass "unresolved dependency blocks automatic terminal reconciliation"
+fi
 
 if [[ "$FAIL" -eq 0 ]]; then
 	printf 'All %d tests passed\n' "$PASS"
