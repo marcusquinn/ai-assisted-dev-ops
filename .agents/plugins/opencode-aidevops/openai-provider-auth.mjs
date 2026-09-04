@@ -9,6 +9,7 @@
 import { getAccounts, patchAccount, rotateOpenAIPoolToken } from "./oauth-pool.mjs";
 import { handleOpenAITokenRefreshFailure, isOpenAITokenRefreshRequest, readOpenAITokenRefreshBody } from "./openai-auth-refresh-recovery.mjs";
 import { injectIntentSchemaProperty } from "./provider-auth-body.mjs";
+import { parseRetryAfterValue } from "./provider-auth-pool-recovery.mjs";
 
 export { isOpenAITokenRefreshRequest } from "./openai-auth-refresh-recovery.mjs";
 
@@ -28,17 +29,13 @@ let installed = false;
 
 function transformOpenAITool(tool) {
   if (tool?.type !== "function") return tool;
-  if (tool.function?.parameters) {
-    const parameters = injectIntentSchemaProperty(tool.function.parameters);
-    if (parameters === tool.function.parameters) return tool;
-    return { ...tool, function: { ...tool.function, parameters } };
-  }
-  if (tool.parameters) {
-    const parameters = injectIntentSchemaProperty(tool.parameters);
-    if (parameters === tool.parameters) return tool;
-    return { ...tool, parameters };
-  }
-  return tool;
+  const owner = tool.function?.parameters ? tool.function : (tool.parameters ? tool : null);
+  if (!owner) return tool;
+  const parameters = injectIntentSchemaProperty(owner.parameters);
+  if (parameters === owner.parameters) return tool;
+  return owner === tool
+    ? { ...tool, parameters }
+    : { ...tool, function: { ...tool.function, parameters } };
 }
 
 /** Inject intent into OpenAI Responses and Chat Completions function schemas. */
@@ -61,25 +58,14 @@ export function transformOpenAIRequestBody(body) {
 
 export function parseRetryAfterMs(response) {
   const raw = response.headers?.get?.("retry-after");
-  if (!raw) return DEFAULT_OPENAI_COOLDOWN_MS;
-  const seconds = parseInt(raw, 10);
-  if (Number.isFinite(seconds) && seconds > 0) return Math.max(seconds * 1000, DEFAULT_OPENAI_COOLDOWN_MS);
-  const date = Date.parse(raw);
-  if (Number.isFinite(date)) return Math.max(date - Date.now(), DEFAULT_OPENAI_COOLDOWN_MS);
-  return DEFAULT_OPENAI_COOLDOWN_MS;
-}
-
-function requestUrl(input) {
-  if (typeof input === "string") return input;
-  if (input instanceof URL) return input.toString();
-  return input?.url || "";
+  const parsed = raw ? parseRetryAfterValue(raw) : null;
+  return Math.max(parsed ?? DEFAULT_OPENAI_COOLDOWN_MS, DEFAULT_OPENAI_COOLDOWN_MS);
 }
 
 export function isOpenAIProviderRequest(input) {
-  try {
-    const url = new URL(requestUrl(input));
-    return url.hostname === OPENAI_API_HOST && url.pathname.startsWith(OPENAI_API_PREFIX);
-  } catch { return false; }
+  const rawUrl = typeof input === "string" || input instanceof URL ? input.toString() : input?.url;
+  const url = URL.parse(rawUrl);
+  return url?.hostname === OPENAI_API_HOST && url.pathname.startsWith(OPENAI_API_PREFIX);
 }
 
 async function readOpenAIErrorPayload(response) {
@@ -102,9 +88,8 @@ export async function isOpenAIUsageLimitResponse(response) {
 }
 
 function headersFrom(input, init) {
-  if (init?.headers) return new Headers(init.headers);
-  if (typeof Request !== "undefined" && input instanceof Request) return new Headers(input.headers);
-  return new Headers();
+  const requestHeaders = typeof Request !== "undefined" && input instanceof Request ? input.headers : undefined;
+  return new Headers(init?.headers ?? requestHeaders);
 }
 
 export function extractBearerToken(input, init) {
@@ -115,22 +100,19 @@ export function extractBearerToken(input, init) {
 
 export function resolveOpenAIAccount(accessToken) {
   const accounts = getAccounts("openai");
-  if (accessToken) {
-    const byAccess = accounts.find((account) => account.access === accessToken);
-    if (byAccess) return byAccess;
-  }
-  return [...accounts].sort((a, b) => new Date(b.lastUsed || 0) - new Date(a.lastUsed || 0))[0] || null;
+  const byAccess = accessToken ? accounts.find((account) => account.access === accessToken) : null;
+  return byAccess ?? [...accounts].sort((a, b) => new Date(b.lastUsed || 0) - new Date(a.lastUsed || 0))[0] ?? null;
 }
 
 function isUnavailableAccount(account) {
-  if (!account) return false;
-  if (account.status === "auth-error") return true;
-  return !!(account.cooldownUntil && account.cooldownUntil > Date.now());
+  return Boolean(account && (
+    account.status === "auth-error"
+    || (account.cooldownUntil && account.cooldownUntil > Date.now())
+  ));
 }
 
 function buildRetryRequest(input) {
-  if (typeof Request !== "undefined" && input instanceof Request) return input.clone();
-  return input;
+  return typeof Request !== "undefined" && input instanceof Request ? input.clone() : input;
 }
 
 function extendRequestInit(init, overrides) {
@@ -143,12 +125,9 @@ async function prepareOpenAIRequest(input, init) {
   if (initHasBody && typeof init.body !== "string") return { input, init };
   let body = initHasBody ? init.body : "";
   if (!initHasBody && typeof Request !== "undefined" && input instanceof Request) {
-    try {
-      body = await input.clone().text();
-    } catch {
-      return { input, init };
-    }
+    body = await input.clone().text().catch(() => null);
   }
+  if (body === null) return { input, init };
   const transformedBody = transformOpenAIRequestBody(body);
   if (!body || transformedBody === body) return { input, init };
   return { input, init: extendRequestInit(init, { body: transformedBody }) };

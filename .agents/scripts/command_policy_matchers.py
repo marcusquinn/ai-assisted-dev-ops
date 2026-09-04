@@ -32,37 +32,39 @@ __all__ = [
 
 
 def _matches_gh_command_path(argv: list[str], command_paths: list[list[str]]) -> bool:
-    if len(argv) < 3 or os.path.basename(argv[0]) != "gh":
-        return False
-    return argv[1:3] in command_paths
+    return (
+        len(argv) >= 3
+        and os.path.basename(argv[0]) == "gh"
+        and argv[1:3] in command_paths
+    )
+
+
+def _without_gh_repo_options(args: list[str]) -> list[str]:
+    """Remove global repository options while retaining command arguments."""
+    positional: list[str] = []
+    skip_value = False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+        elif arg in {"-R", "--repo"}:
+            skip_value = True
+        elif not (arg.startswith("--repo=") or arg.startswith("-R")):
+            positional.append(arg)
+    return positional
 
 
 def _gh_pr_merge_remainder(argv: list[str]) -> list[str] | None:
     if not argv or os.path.basename(argv[0]) != "gh":
         return None
-    args = argv[1:]
-    index = 0
-    for expected in ("pr", "merge"):
-        while index < len(args):
-            arg = args[index]
-            if arg in {"-R", "--repo"}:
-                if index + 1 >= len(args):
-                    return None
-                index += 2
-                continue
-            if arg.startswith("--repo=") or (arg.startswith("-R") and arg != "-R"):
-                index += 1
-                continue
-            break
-        if index >= len(args) or args[index] != expected:
-            return None
-        index += 1
-    return args[index:]
+    args = _without_gh_repo_options(argv[1:])
+    return args[2:] if args[:2] == ["pr", "merge"] else None
 
 
 def _matches_gh_pr_merge(argv: list[str]) -> bool:
     remainder = _gh_pr_merge_remainder(argv)
-    return remainder is not None and not any(arg in {"--help", "-h"} for arg in argv[1:])
+    return remainder is not None and not any(
+        arg in {"--help", "-h"} for arg in argv[1:]
+    )
 
 
 def _matches_gh_pr_disable_auto(argv: list[str]) -> bool:
@@ -72,15 +74,12 @@ def _matches_gh_pr_disable_auto(argv: list[str]) -> bool:
 
 
 def _rm_operands(args: list[str]) -> list[str]:
-    operands: list[str] = []
-    after_options = False
-    for arg in args:
-        if arg == "--":
-            after_options = True
-            continue
-        if after_options or not arg.startswith("-"):
-            operands.append(arg)
-    return operands
+    separator = next(
+        (index for index, arg in enumerate(args) if arg == "--"), len(args)
+    )
+    return [arg for arg in args[:separator] if not arg.startswith("-")] + args[
+        separator + 1 :
+    ]
 
 
 def _canonical_operand(path: str, cwd: str) -> str | None:
@@ -96,21 +95,23 @@ def _is_temp_operand(path: str, cwd: str) -> bool:
     canonical = _canonical_operand(path, cwd)
     if not canonical:
         return False
-    roots = ["/tmp", "/var/tmp"]  # nosec B108 -- classification roots only; no temporary file is created.
+    # Classification roots only; no temporary file is created.
+    roots = ["/tmp", "/var/tmp"]  # nosec B108
     tmpdir = os.environ.get("TMPDIR", "")
     if tmpdir:
         roots.append(tmpdir)
-    for root in roots:
-        canonical_root = os.path.realpath(os.path.normpath(root))
-        try:
-            if (
-                os.path.commonpath([canonical, canonical_root]) == canonical_root
-                and canonical != canonical_root
-            ):
-                return True
-        except ValueError:
-            continue
-    return False
+    return any(_is_path_below(canonical, root) for root in roots)
+
+
+def _is_path_below(path: str, root: str) -> bool:
+    canonical_root = os.path.realpath(os.path.normpath(root))
+    try:
+        return (
+            os.path.commonpath([path, canonical_root]) == canonical_root
+            and path != canonical_root
+        )
+    except ValueError:
+        return False
 
 
 def _is_root_or_home_operand(path: str, cwd: str) -> bool:
