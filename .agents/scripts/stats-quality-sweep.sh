@@ -672,7 +672,7 @@ _run_sweep_tools() {
 	fi
 
 	local codacy_section=""
-	codacy_section=$(_sweep_codacy "$repo_slug")
+	codacy_section=$(_sweep_codacy "$repo_slug" "$repo_path")
 	[[ -n "$codacy_section" ]] && tool_count=$((tool_count + 1))
 
 	local coderabbit_section=""

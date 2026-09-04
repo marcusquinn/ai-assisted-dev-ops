@@ -74,6 +74,28 @@ curl -s -H "api-token: $CODACY_API_TOKEN" -H "Content-Type: application/json" \
   -d '{"languages": ["Python"]}'
 ```
 
+## Quality-sweep health telemetry
+
+The daily quality sweep reads the repository summary and issue overview without
+changing Codacy settings. It renders grade, issue count, analysed LOC, complex
+files, analysed SHA, and one explicit state:
+
+| State | Meaning | Operator response |
+|-------|---------|-------------------|
+| `BASELINE_UNKNOWN` | A current analysis was recorded, but no trusted prior sample exists. | Wait for the next sweep before comparing LOC. |
+| `HEALTHY` | The analysed SHA matches the remote default head and LOC is at least 80% of the prior healthy sample. | Treat the telemetry as comparable. |
+| `STALE_ANALYSIS` | Codacy analysed a different commit from the remote default head. | Request/retry analysis; do not compare findings yet. |
+| `INDEX_DEGRADED` | Current analysed LOC is below 80% of the last healthy sample. | Investigate Codacy indexing; the healthy denominator is retained. |
+| `POLICY_DRIFT` | A documented-noise rule has a non-zero overview count. | Investigate coding-standard drift; do not change external settings from the sweep. |
+| `UNKNOWN` | An API, parse, remote-SHA, or state-write failure prevented a trustworthy classification. | Resolve telemetry failure and retain the previous baseline. |
+
+Healthy samples are stored atomically in `QUALITY_SWEEP_STATE_DIR` per repository.
+Stale, degraded, malformed, and API-failure samples never replace that baseline.
+The documented-noise rules are `Bandit_B404`, `ESLint8_es-x_no-modules`,
+`ESLint8_es-x_no-block-scoped-variables`, and
+`ESLint8_es-x_no-trailing-commas`; their counts are observational evidence, not
+permission to alter Codacy, Bandit, ESLint, or exclusions.
+
 **Updating quality gate via API:**
 
 ```bash

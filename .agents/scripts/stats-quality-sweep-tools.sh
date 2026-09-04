@@ -330,17 +330,117 @@ _sweep_sonarcloud_diagnostics() {
 	return 0
 }
 
+_codacy_telemetry_is_valid() {
+	local grade="$1"
+	local issue_count="$2"
+	local analysed_loc="$3"
+	local complex_files="$4"
+	local analysed_sha="$5"
+	local remote_sha="$6"
+
+	[[ -n "$grade" ]] && [[ "$issue_count" =~ ^[0-9]+$ ]] &&
+		[[ "$analysed_loc" =~ ^[1-9][0-9]*$ ]] && [[ "$complex_files" =~ ^[0-9]+$ ]] &&
+		[[ "$analysed_sha" =~ ^[0-9a-fA-F]{7,40}$ ]] && [[ "$remote_sha" =~ ^[0-9a-fA-F]{7,40}$ ]]
+}
+
+_codacy_read_healthy_state() {
+	local state_file="$1"
+	local previous_loc="" previous_sha=""
+
+	if [[ -f "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+		previous_loc=$(jq -r '.healthy_loc // empty' "$state_file" 2>/dev/null || echo "")
+		previous_sha=$(jq -r '.healthy_sha // empty' "$state_file" 2>/dev/null || echo "")
+		[[ "$previous_loc" =~ ^[1-9][0-9]*$ ]] || previous_loc=""
+		[[ "$previous_sha" =~ ^[0-9a-fA-F]{7,40}$ ]] || previous_sha=""
+	fi
+	printf '%s|%s' "$previous_loc" "$previous_sha"
+	return 0
+}
+
+_codacy_policy_drift() {
+	local issues_response="$1"
+	local json_number_type="number"
+	local drift_rules=("Bandit_B404" "ESLint8_es-x_no-modules" "ESLint8_es-x_no-block-scoped-variables" "ESLint8_es-x_no-trailing-commas")
+	local drift_output="" rule rule_count
+
+	for rule in "${drift_rules[@]}"; do
+		rule_count=$(jq -r --arg rule "$rule" --arg number_type "$json_number_type" '
+			if (.patternTotals[$rule]? | type) == $number_type then .patternTotals[$rule]
+			elif (.patterns[$rule]? | type) == $number_type then .patterns[$rule]
+			elif (.facets.patterns[$rule]? | type) == $number_type then .facets.patterns[$rule]
+			else [.data[]? | select((.patternId // .pattern // .ruleId // .rule // "") == $rule)] | length
+			end
+		' <<<"$issues_response" 2>/dev/null || echo "")
+		[[ "$rule_count" =~ ^[0-9]+$ ]] || rule_count=0
+		((rule_count > 0)) && drift_output="${drift_output}  - \`${rule}\`: ${rule_count}\n"
+	done
+	printf '%s' "$drift_output"
+	return 0
+}
+
+_codacy_classify_health() {
+	local telemetry_valid="$1"
+	local analysed_sha="$2"
+	local remote_sha="$3"
+	local previous_loc="$4"
+	local previous_sha="$5"
+	local analysed_loc="$6"
+	local drift_output="$7"
+	local health_unknown="$8"
+
+	if [[ "$telemetry_valid" != true ]]; then
+		printf '%s' "$health_unknown"
+	elif [[ "$analysed_sha" != "$remote_sha" ]]; then
+		printf '%s' "STALE_ANALYSIS"
+	elif [[ -z "$previous_loc" || -z "$previous_sha" ]]; then
+		printf '%s' "BASELINE_UNKNOWN"
+	elif ((analysed_loc * 100 < previous_loc * 80)); then
+		printf '%s' "INDEX_DEGRADED"
+	elif [[ -n "$drift_output" ]]; then
+		printf '%s' "POLICY_DRIFT"
+	else
+		printf '%s' "HEALTHY"
+	fi
+	return 0
+}
+
+_codacy_save_healthy_state() {
+	local state_file="$1"
+	local grade="$2"
+	local issue_count="$3"
+	local analysed_loc="$4"
+	local complex_files="$5"
+	local analysed_sha="$6"
+	local state_dir="${state_file%/*}"
+	local state_tmp=""
+
+	mkdir -p "$state_dir" || return 1
+	state_tmp=$(mktemp "${state_file%.json}.XXXXXX" 2>/dev/null || echo "")
+	if [[ -n "$state_tmp" ]] && jq -n \
+		--arg grade "$grade" --arg sha "$analysed_sha" \
+		--argjson issues "$issue_count" --argjson loc "$analysed_loc" --argjson complex "$complex_files" \
+		'{grade: $grade, issue_count: $issues, healthy_loc: $loc, complex_files: $complex, healthy_sha: $sha}' >"$state_tmp" &&
+		mv -f "$state_tmp" "$state_file"; then
+		return 0
+	fi
+	[[ -n "$state_tmp" ]] && rm -f "$state_tmp"
+	return 1
+}
+
 #######################################
 # Run Codacy API check for a repo.
 #
 # Arguments:
 #   $1 - repo slug
+#   $2 - local repository path (used to resolve the remote default SHA)
 # Output: codacy_section markdown to stdout (empty if unavailable)
 #######################################
 _sweep_codacy() {
 	local repo_slug="$1"
-
+	local repo_path="$2"
 	local codacy_token=""
+	local health_unknown="UNKNOWN"
+
 	if command -v gopass &>/dev/null; then
 		codacy_token=$(gopass show -o "aidevops/CODACY_API_TOKEN" 2>/dev/null || echo "")
 	fi
@@ -348,19 +448,42 @@ _sweep_codacy() {
 
 	local codacy_org="${repo_slug%%/*}"
 	local codacy_repo="${repo_slug##*/}"
-	local codacy_response
-	codacy_response=$(curl -s -H "api-token: ${codacy_token}" \
-		"https://app.codacy.com/api/v3/organizations/gh/${codacy_org}/repositories/${codacy_repo}/issues/search" \
-		-X POST -H "Content-Type: application/json" -d '{"limit":1}' 2>/dev/null || echo "")
+	local summary_response issues_response
+	summary_response=$(curl -sS --fail --connect-timeout 5 --max-time 20 -H "api-token: ${codacy_token}" \
+		"https://app.codacy.com/api/v3/analysis/organizations/gh/${codacy_org}/repositories/${codacy_repo}?branch=main" 2>/dev/null || echo "")
+	issues_response=$(curl -sS --fail --connect-timeout 5 --max-time 20 -H "api-token: ${codacy_token}" \
+		"https://app.codacy.com/api/v3/analysis/organizations/gh/${codacy_org}/repositories/${codacy_repo}/issues/search" \
+		-X POST -H "Content-Type: application/json" -d '{"limit":100}' 2>/dev/null || echo "")
 
-	if [[ -n "$codacy_response" ]] && echo "$codacy_response" | jq -e '.pagination' &>/dev/null; then
-		local codacy_total
-		codacy_total=$(echo "$codacy_response" | jq -r '.pagination.total // 0')
-		[[ "$codacy_total" =~ ^[0-9]+$ ]] || codacy_total=0
-		printf '### Codacy\n\n- **Open issues**: %s\n- **Dashboard**: https://app.codacy.com/gh/%s/%s/dashboard\n' \
-			"$codacy_total" "$codacy_org" "$codacy_repo"
+	local grade issue_count analysed_loc complex_files analysed_sha remote_sha
+	grade=$(jq -r '.grade // .quality.grade // .metrics.grade // empty' <<<"$summary_response" 2>/dev/null || echo "")
+	issue_count=$(jq -r '.pagination.total // .total // empty' <<<"$issues_response" 2>/dev/null || echo "")
+	analysed_loc=$(jq -r '.totalLinesOfCode // .analysedLinesOfCode // .analyzedLinesOfCode // .metrics.totalLinesOfCode // .metrics.loc // empty' <<<"$summary_response" 2>/dev/null || echo "")
+	complex_files=$(jq -r '.complexFiles // .complexFileCount // .metrics.complexFiles // empty' <<<"$summary_response" 2>/dev/null || echo "")
+	analysed_sha=$(jq -r '.lastAnalyzedCommit // .lastAnalysedCommit // .lastAnalysis.commit.uuid // .lastAnalysis.commit.hash // .commit.uuid // .commit.hash // empty' <<<"$summary_response" 2>/dev/null || echo "")
+	remote_sha=$(git -C "$repo_path" ls-remote origin HEAD 2>/dev/null | cut -f1)
+
+	local slug_safe="${repo_slug//\//-}"
+	local state_file="${QUALITY_SWEEP_STATE_DIR}/${slug_safe}.codacy-health.json"
+	local previous_state previous_loc previous_sha drift_output health_state
+	previous_state=$(_codacy_read_healthy_state "$state_file")
+	IFS='|' read -r previous_loc previous_sha <<<"$previous_state"
+	drift_output=$(_codacy_policy_drift "$issues_response")
+	if _codacy_telemetry_is_valid "$grade" "$issue_count" "$analysed_loc" "$complex_files" "$analysed_sha" "$remote_sha"; then
+		health_state=$(_codacy_classify_health true "$analysed_sha" "$remote_sha" "$previous_loc" "$previous_sha" "$analysed_loc" "$drift_output" "$health_unknown")
+	else
+		health_state="$health_unknown"
+	fi
+	if [[ "$health_state" == "BASELINE_UNKNOWN" || "$health_state" == "HEALTHY" ]] &&
+		! _codacy_save_healthy_state "$state_file" "$grade" "$issue_count" "$analysed_loc" "$complex_files" "$analysed_sha"; then
+		health_state="$health_unknown"
 	fi
 
+	printf '### Codacy\n\n- **Grade**: %s\n- **Open issues**: %s\n- **Analysed LOC**: %s\n- **Complex files**: %s\n- **Analysed SHA**: %s\n- **Analysis health**: %s\n' \
+		"${grade:-$health_unknown}" "${issue_count:-$health_unknown}" "${analysed_loc:-$health_unknown}" \
+		"${complex_files:-$health_unknown}" "${analysed_sha:-$health_unknown}" "$health_state"
+	[[ -n "$drift_output" ]] && printf '\n**Policy drift:**\n%b' "$drift_output"
+	printf -- '- **Dashboard**: https://app.codacy.com/gh/%s/%s/dashboard\n' "$codacy_org" "$codacy_repo"
 	return 0
 }
 

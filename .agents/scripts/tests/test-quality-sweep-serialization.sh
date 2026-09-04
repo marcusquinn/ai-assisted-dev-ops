@@ -287,12 +287,10 @@ test_grade_mapping "151 smells → F (lower bound)" 151 F
 test_grade_mapping "500 smells → F" 500 F
 test_grade_mapping "non-numeric → UNKNOWN" "not-a-number" UNKNOWN
 
-# 7. _quality_sweep_for_repo end-to-end smoke test: stub _ensure_quality_issue
-#    and gh so it doesn't hit the network, then verify the full pipeline reads
-#    every section back into a local variable. The gh wrapper writes the
-#    captured --body to a file because the real call site uses
-#    `comment_stderr=$(gh ... --body "$comment_body" ...)` which runs in a
-#    subshell — variable assignments inside it would not propagate back.
+# 7. _quality_sweep_for_repo end-to-end smoke test: stub the issue/comment
+#    helpers so it doesn't hit the network, then verify the full pipeline reads
+#    every section back into a local variable. The stub writes the captured body
+#    to a file because the real call site runs in a subshell.
 export CAPTURED_COMMENT_FILE="${TMP_HOME}/captured-comment"
 : >"$CAPTURED_COMMENT_FILE"
 
@@ -303,7 +301,7 @@ _ensure_quality_issue() {
 _update_quality_issue_body() {
 	return 0
 }
-gh() {
+gh_issue_comment() {
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		--body)
