@@ -187,6 +187,12 @@ an exact ignored and untracked approved directory with no symlink component,
 tracked path, or hard-linked regular file. A bounded manifest records its
 device/inode identity and allocated bytes; uncertainty, deadline exhaustion,
 Git output beyond the fixed capture ceiling, or drift preserves the root.
+Ordinary recovery planning still short-circuits after proving the archive dirty.
+Automatic maintenance explicitly completes the downstream evidence for that
+state, and cache apply repeats the same complete snapshot before mutation. The
+terminal commit evidence must come from the exact merged pull request whose head
+OID matches the archive, not only a branch-name match. Approved-root sizing runs
+only after the archive satisfies this cache-retrofit eligibility predicate.
 
 After reviewing a v2 plan, an operator may run:
 
@@ -252,9 +258,10 @@ then validates and classifies at most 50 rotating inventory entries inside a
 per-archive Git validation is limited to that cursor window and bounded by the
 same deadline. Both the initial size probe and its mandatory drift-detection
 remeasurement use the remaining pass budget rather than the shorter global
-reporting timeout. A persistent cursor advances after a deadline stop so large
-inventories cannot starve later entries. Operators may tune these soft limits
-with:
+reporting timeout. Final exact archive sizing is candidate-only; protected and
+unknown entries retain their existing inventory observation without that probe.
+A persistent cursor advances after a deadline stop so large inventories cannot
+starve later entries. Operators may tune these soft limits with:
 
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_RETENTION_DAYS`
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MAX_SCAN`

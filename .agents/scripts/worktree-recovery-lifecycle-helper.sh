@@ -773,13 +773,18 @@ _worktree_recovery_plan_partial_evidence_json() {
 
 _worktree_recovery_plan_evidence_json() {
 	local identity_json="$1"
+	local complete_dirty_evidence="${2:-false}"
 	local git_state="" worktree_state="" registry_state="" claim_state=""
 	local process_state="" external_json=""
 
+	[[ "$complete_dirty_evidence" == true || "$complete_dirty_evidence" == false ]] || return 1
 	git_state=$(_worktree_recovery_plan_git_state "$identity_json") || return 1
 	if [[ "$git_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
-		_worktree_recovery_plan_partial_evidence_json "$git_state"
-		return $?
+		if [[ "$git_state" != "$WORKTREE_RECOVERY_PLAN_STATE_DIRTY" ||
+			"$complete_dirty_evidence" != true ]]; then
+			_worktree_recovery_plan_partial_evidence_json "$git_state"
+			return $?
+		fi
 	fi
 	worktree_state=$(_worktree_recovery_plan_worktree_reference_state "$identity_json") || return 1
 	if [[ "$worktree_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
@@ -862,12 +867,14 @@ _worktree_recovery_plan_attributed_entry_json() {
 	local bucket_path="$2"
 	local expected_bytes="$3"
 	local measurement_timeout_tenths="${4:-}"
+	local complete_dirty_evidence="${5:-false}"
 	local identity_before="" identity_after="" evidence_json="" measured_after=""
 	local bytes_after="" confidence_after="" measure_error_after="" stable=false
 	local classification_json="" disposition="" sizing_reason="sizing-unavailable"
 
 	identity_before=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
-	evidence_json=$(_worktree_recovery_plan_evidence_json "$identity_before") || return 1
+	evidence_json=$(_worktree_recovery_plan_evidence_json \
+		"$identity_before" "$complete_dirty_evidence") || return 1
 	identity_after=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
 	if [[ "$identity_before" == "$identity_after" ]]; then
 		stable=true

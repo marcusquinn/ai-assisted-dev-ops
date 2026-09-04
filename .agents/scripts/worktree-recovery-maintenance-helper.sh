@@ -629,7 +629,7 @@ _worktree_recovery_maintenance_attributed_entry_before_epoch() {
 	[[ "$remaining_seconds" -gt 0 ]] || return 124
 	_worktree_recovery_maintenance_run_function_before_epoch "$deadline_epoch" \
 		_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" "$bytes" \
-		"$((remaining_seconds * 10))"
+		"$((remaining_seconds * 10))" true
 	return $?
 }
 
