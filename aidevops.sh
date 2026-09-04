@@ -772,25 +772,55 @@ _repos_list() {
 }
 
 _repos_add() {
+	local bootstrap_slug=""
+	local confirmation=""
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--slug)
+			bootstrap_slug="${2:-}"
+			shift 2
+			;;
+		--confirm)
+			confirmation="${2:-}"
+			shift 2
+			;;
+		*)
+			print_error "Usage: aidevops repos add [--slug OWNER/REPO --confirm REGISTER_CANONICAL_REPOSITORY]"
+			return 2
+			;;
+		esac
+	done
 	git rev-parse --is-inside-work-tree &>/dev/null || {
 		print_error "Not in a git repository"
 		return 1
 	}
 	local project_root
 	project_root=$(git rev-parse --show-toplevel)
-	[[ ! -f "$project_root/.aidevops.json" ]] && {
-		print_error "No .aidevops.json found - run 'aidevops init' first"
+	if [[ ! -f "$project_root/.aidevops.json" ]]; then
+		if [[ -z "$bootstrap_slug" || "$confirmation" != "REGISTER_CANONICAL_REPOSITORY" ]]; then
+			print_error "No .aidevops.json found - run 'aidevops init' or use the confirmed --slug bootstrap form"
+			return 1
+		fi
+		local recovery_helper="${AGENTS_DIR}/scripts/canonical-recovery-helper.sh"
+		[[ -x "$recovery_helper" ]] || {
+			print_error "Canonical bootstrap verifier is unavailable"
+			return 1
+		}
+		"$recovery_helper" verify-bootstrap-registration --repo "$project_root" \
+			--slug "$bootstrap_slug" --confirm "$confirmation" || return 1
+	elif [[ -n "$bootstrap_slug" || -n "$confirmation" ]]; then
+		print_error "The --slug bootstrap form is only valid when .aidevops.json is absent"
 		return 1
-	}
+	fi
 	local version features
-	if command -v jq &>/dev/null; then
+	if [[ -f "$project_root/.aidevops.json" ]] && command -v jq &>/dev/null; then
 		version=$(jq -r '.version' "$project_root/.aidevops.json" 2>/dev/null || echo "unknown")
 		features=$(jq -r '[.features | to_entries[] | select(.value == true) | .key] | join(",")' "$project_root/.aidevops.json" 2>/dev/null || echo "")
 	else
 		version="unknown"
 		features=""
 	fi
-	register_repo "$project_root" "$version" "$features"
+	register_repo "$project_root" "$version" "$features" "$bootstrap_slug"
 	print_success "Registered $(basename "$project_root")"
 	return 0
 }
@@ -873,7 +903,10 @@ cmd_repos() {
 	local action="${1:-list}"
 	case "$action" in
 	list | ls) _repos_list ;;
-	add) _repos_add ;;
+	add)
+		shift
+		_repos_add "$@"
+		;;
 	remove | rm) _repos_remove "${2:-}" ;;
 	clean) _repos_clean ;;
 	migrate-layout)
@@ -895,7 +928,7 @@ cmd_repos() {
 		echo ""
 		echo "Commands:"
 		echo "  list     List all registered projects (default)"
-		echo "  add      Register current project"
+		echo "  add      Register current project; confirmed --slug bootstraps config-free canonical repos"
 		echo "  remove   Remove project from registry"
 		echo "  clean    Remove entries for non-existent projects"
 		echo "  migrate-layout <plan|apply|rollback|status>"

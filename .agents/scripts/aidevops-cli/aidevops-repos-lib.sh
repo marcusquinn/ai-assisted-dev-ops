@@ -517,11 +517,12 @@ _repo_registration_update_existing() {
 }
 
 # Register a repo in repos.json
-# Usage: register_repo <path> <version> <features>
+# Usage: register_repo <path> <version> <features> [verified-slug]
 register_repo() {
 	local repo_path="$1"
 	local version="$2"
 	local features="$3"
+	local verified_slug="${4:-}"
 
 	init_repos_file
 
@@ -553,7 +554,9 @@ register_repo() {
 	# Auto-detect GitHub slug from git remote
 	local slug=""
 	local is_local_only="false"
-	if ! slug=$(get_repo_slug "$repo_path" 2>/dev/null); then
+	if [[ -n "$verified_slug" ]]; then
+		slug="$verified_slug"
+	elif ! slug=$(get_repo_slug "$repo_path" 2>/dev/null); then
 		slug=""
 		# No remote origin — mark as local_only
 		if ! git -C "$repo_path" remote get-url origin &>/dev/null; then

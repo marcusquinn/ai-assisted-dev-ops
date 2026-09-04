@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 FAST_FORWARD_CMD="fast-forward-current"
 SYNC_MIRROR_CMD="sync-mirror"
+VERIFY_BOOTSTRAP_CMD="verify-bootstrap-registration"
 CLEAR_STALE_REBASE_CMD="clear-stale-rebase"
 CLEAR_ABANDONED_REBASE_CMD="clear-abandoned-rebase"
 AIDEVOPS_UPDATE_REASON="aidevops-update"
@@ -550,6 +551,31 @@ fetch_aidevops_release_tag() {
 	return $?
 }
 
+audit_bootstrap_identity() {
+	local repo="$1"
+	local expected_slug="$2"
+	local canonical_remote="$3"
+	local audit_helper="${SCRIPT_DIR}/audit-log-helper.sh"
+	local recovery_audit_file="${HOME}/.aidevops/logs/canonical-recovery-audit.jsonl"
+
+	[[ -x "$audit_helper" ]] || {
+		printf 'BLOCKED: tamper-evident audit helper is unavailable\n' >&2
+		return 1
+	}
+	AUDIT_LOG_FILE="$recovery_audit_file" "$audit_helper" verify --quiet || {
+		printf 'BLOCKED: audit chain verification failed\n' >&2
+		return 1
+	}
+	AUDIT_LOG_FILE="$recovery_audit_file" AUDIT_QUIET=true "$audit_helper" log \
+		operation.verify "Canonical bootstrap registration identity verified" \
+		--detail "repo=${repo}" --detail "operation=${VERIFY_BOOTSTRAP_CMD}" \
+		--detail "remote=${canonical_remote}" --detail "expected_slug=${expected_slug}" >/dev/null || {
+		printf 'BLOCKED: bootstrap verification audit record could not be written\n' >&2
+		return 1
+	}
+	return 0
+}
+
 usage() {
 	printf '%s\n' \
 		'Usage:' \
@@ -559,7 +585,8 @@ usage() {
 		"  canonical-recovery-helper.sh ${FAST_FORWARD_CMD} --repo PATH --branch BRANCH --issue N --confirm FAST_FORWARD_CANONICAL_BRANCH" \
 		"  canonical-recovery-helper.sh ${FAST_FORWARD_CMD} --repo PATH --branch BRANCH --reason ${AIDEVOPS_UPDATE_REASON} --confirm FAST_FORWARD_CANONICAL_BRANCH" \
 		"  canonical-recovery-helper.sh ${SYNC_MIRROR_CMD} --repo PATH --issue N --confirm SYNCHRONIZE_CANONICAL_MIRROR" \
-		"  canonical-recovery-helper.sh ${SYNC_MIRROR_CMD} --repo PATH --reason ${AIDEVOPS_UPDATE_REASON} --confirm SYNCHRONIZE_CANONICAL_MIRROR"
+		"  canonical-recovery-helper.sh ${SYNC_MIRROR_CMD} --repo PATH --reason ${AIDEVOPS_UPDATE_REASON} --confirm SYNCHRONIZE_CANONICAL_MIRROR" \
+		"  canonical-recovery-helper.sh ${VERIFY_BOOTSTRAP_CMD} --repo PATH --slug OWNER/REPO --confirm REGISTER_CANONICAL_REPOSITORY"
 	return 0
 }
 
@@ -570,6 +597,7 @@ issue_number=""
 maintenance_reason=""
 confirmation=""
 expected_branch=""
+bootstrap_slug=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--repo)
@@ -590,6 +618,10 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--branch)
 		expected_branch="${2:-}"
+		shift 2
+		;;
+	--slug)
+		bootstrap_slug="${2:-}"
 		shift 2
 		;;
 	*)
@@ -635,16 +667,29 @@ restore-default)
 		exit 2
 	}
 	;;
+"$VERIFY_BOOTSTRAP_CMD")
+	expected_confirmation="REGISTER_CANONICAL_REPOSITORY"
+	[[ -z "$expected_branch" && "$bootstrap_slug" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] || {
+		usage
+		exit 2
+	}
+	;;
 *)
 	usage
 	exit 2
 	;;
 esac
+if [[ "$cmd" != "$VERIFY_BOOTSTRAP_CMD" && -n "$bootstrap_slug" ]]; then
+	usage
+	exit 2
+fi
 [[ -d "$repo_path" ]] || {
 	usage
 	exit 2
 }
-if [[ "$issue_number" =~ ^[0-9]+$ && -z "$maintenance_reason" ]]; then
+if [[ "$cmd" == "$VERIFY_BOOTSTRAP_CMD" && -z "$issue_number" && -z "$maintenance_reason" ]]; then
+	audit_reference="bootstrap registration"
+elif [[ "$issue_number" =~ ^[0-9]+$ && -z "$maintenance_reason" ]]; then
 	audit_reference="issue ${issue_number}"
 elif [[ -z "$issue_number" && ("$cmd" == "$FAST_FORWARD_CMD" || "$cmd" == "$SYNC_MIRROR_CMD") &&
 	"$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
@@ -666,16 +711,12 @@ common_dir=$("$REAL_GIT" -C "$repo_path" rev-parse --path-format=absolute --git-
 	printf 'BLOCKED: recovery target is not the canonical worktree\n' >&2
 	exit 1
 }
-if [[ "$cmd" != "$SYNC_MIRROR_CMD" ]] && [[ -n "$("$REAL_GIT" -C "$repo_path" status --porcelain)" ]]; then
+if [[ "$cmd" != "$SYNC_MIRROR_CMD" && "$cmd" != "$VERIFY_BOOTSTRAP_CMD" ]] &&
+	[[ -n "$("$REAL_GIT" -C "$repo_path" status --porcelain)" ]]; then
 	printf 'BLOCKED: canonical worktree is not clean\n' >&2
 	exit 1
 fi
 
-policy_helper="${SCRIPT_DIR}/canonical-write-policy-helper.py"
-[[ -f "$policy_helper" ]] || {
-	printf 'BLOCKED: canonical branch policy helper is unavailable\n' >&2
-	exit 1
-}
 registered_slug=""
 expected_slug=""
 allow_local_mirror=true
@@ -683,7 +724,10 @@ allow_equivalent_aliases=false
 #aidevops:trust-boundary
 # Only framework self-update has an identity pinned independently of repository
 # registration, so ordinary canonical recovery keeps rejecting multiple aliases.
-if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
+if [[ "$cmd" == "$VERIFY_BOOTSTRAP_CMD" ]]; then
+	expected_slug="$bootstrap_slug"
+	allow_local_mirror=false
+elif [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 	expected_slug="$AIDEVOPS_FRAMEWORK_GITHUB_SLUG"
 	allow_local_mirror=false
 	allow_equivalent_aliases=true
@@ -696,13 +740,25 @@ else
 fi
 if ! canonical_remote=$(resolve_github_remote \
 	"$repo_path" "$expected_slug" "$allow_local_mirror" "$allow_equivalent_aliases"); then
-	if [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
+	if [[ "$cmd" == "$VERIFY_BOOTSTRAP_CMD" ]]; then
+		printf 'BLOCKED: pinned bootstrap GitHub remote is missing, mismatched, or ambiguous\n' >&2
+	elif [[ "$maintenance_reason" == "$AIDEVOPS_UPDATE_REASON" ]]; then
 		printf 'BLOCKED: official aidevops GitHub remote is missing, mismatched, or ambiguous\n' >&2
 	else
 		printf 'BLOCKED: registered GitHub remote is missing, mismatched, or ambiguous\n' >&2
 	fi
 	exit 1
 fi
+if [[ "$cmd" == "$VERIFY_BOOTSTRAP_CMD" ]]; then
+	audit_bootstrap_identity "$repo_path" "$expected_slug" "$canonical_remote" || exit 1
+	printf 'VERIFIED: canonical bootstrap identity %s via remote %s\n' "$expected_slug" "$canonical_remote"
+	exit 0
+fi
+policy_helper="${SCRIPT_DIR}/canonical-write-policy-helper.py"
+[[ -f "$policy_helper" ]] || {
+	printf 'BLOCKED: canonical branch policy helper is unavailable\n' >&2
+	exit 1
+}
 target_branch=$(AIDEVOPS_CANONICAL_REMOTE="$canonical_remote" \
 	python3 "$policy_helper" resolve-branch --cwd "$repo_path" --field branch) || exit 1
 target_branch_source=$(AIDEVOPS_CANONICAL_REMOTE="$canonical_remote" \
