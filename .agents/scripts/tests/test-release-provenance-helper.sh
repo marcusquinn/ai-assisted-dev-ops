@@ -331,6 +331,30 @@ if (
 	exit 1
 fi
 printf 'PASS immutable-tag authorization rejects incomplete persisted source sets\n'
+gap_expected_json=$(
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-expected-sources --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources 42@"$AGG_ORIGINAL",43@"$AGG_SECOND",44@"$AGG_THIRD"
+)
+jq -e --arg original "$AGG_ORIGINAL" --arg second "$AGG_SECOND" --arg third "$AGG_THIRD" '
+	.expected_sources == [
+		{pr:42,merge:$original},
+		{pr:43,merge:$second},
+		{pr:44,merge:$third}
+	]
+' <<<"$gap_expected_json" >/dev/null
+printf 'PASS immutable-tag expected sources validate independently of the signed aggregate manifest\n'
+if (
+	cd "$AGG_REPO" || exit 1
+	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-tag-expected-sources --tag v2.0.0 --source-pr 42 --repo test/aggregate \
+		--expected-sources 42@0000000000000000000000000000000000000000
+) >/dev/null 2>&1; then
+	printf 'FAIL immutable-tag expected-source validation accepted a mismatched merge SHA\n'
+	exit 1
+fi
+printf 'PASS immutable-tag expected-source validation rejects a mismatched merge SHA\n'
 (
 	cd "$AGG_REPO" || exit 1
 	PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \

@@ -217,6 +217,13 @@ printf 'PASS signed tag trailers reconstruct release provenance\n'
 		exit 1
 	fi
 	cmp -s "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
+	gap_observed="$gap_expected"
+	if _full_loop_release_record_authorization_gap test/repo 29010 v3.32.200 "$gap_expected" \
+		'no authorization mismatch' >/dev/null 2>&1; then
+		printf 'FAIL matching authorization manifests wrote gap evidence\n'
+		exit 1
+	fi
+	cmp -s "$gap_path" "${TEST_ROOT}/gap-evidence-original.json"
 	[[ ! -f "${AIDEVOPS_FULL_LOOP_RECEIPT_DIR}/test_repo-29010.status" ]]
 )
 printf 'PASS historical authorization gaps use idempotent detached production evidence\n'

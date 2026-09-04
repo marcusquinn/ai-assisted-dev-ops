@@ -26,6 +26,7 @@ Usage:
   release-provenance-helper.sh verify-local-source --tag TAG --repo OWNER/REPO [--branch BRANCH]
   release-provenance-helper.sh resolve-authorization --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
   release-provenance-helper.sh resolve-tag-authorization --tag TAG --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR@SHA[,PR@SHA...]]
+  release-provenance-helper.sh resolve-tag-expected-sources --tag TAG --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR@SHA[,PR@SHA...]]
   release-provenance-helper.sh resolve-source --source-pr PR --repo OWNER/REPO [--branch BRANCH] [--expected-sources PR[,PR...]]
 
 Verifies that a release tag is signed, version-consistent, reachable from the
@@ -184,6 +185,29 @@ _release_provenance_resolve_tag_authorization() {
 		"$expected_sources_json" "$source_json") || return 1
 	_release_provenance_assert_expected_sources "$expected_sources_json" "$observed_sources_json" || return 1
 	jq -c --argjson expected "$expected_sources_json" '. + {expected_sources:$expected}' <<<"$source_json"
+	return $?
+}
+
+_release_provenance_resolve_tag_expected_sources() {
+	local tag_name="$1"
+	local requested_pr="$2"
+	local raw_sources="$3"
+	local repo_slug="$4"
+	local branch_name="$5"
+	local release_head=""
+	local tag_commit=""
+	local expected_sources_json=""
+
+	[[ "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$requested_pr" =~ ^[0-9]+$ ]] || return 1
+	[[ "$repo_slug" =~ ^[^/]+/[^/]+$ && "$branch_name" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+	release_head=$(git rev-parse HEAD 2>/dev/null) || return 1
+	tag_commit=$(git rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
+	[[ "$release_head" == "$tag_commit" ]] || return 1
+	_release_provenance_verify "$tag_name" "$repo_slug" "$branch_name" \
+		"$_RELEASE_PROVENANCE_SCOPE_LOCAL_SOURCE" >/dev/null || return 1
+	expected_sources_json=$(_release_provenance_expected_sources "$requested_pr" "$raw_sources" \
+		"$repo_slug" "$branch_name" "$tag_commit") || return 1
+	jq -cn --argjson expected "$expected_sources_json" '{expected_sources:$expected}'
 	return $?
 }
 
@@ -608,7 +632,7 @@ main() {
 	local expected_sources=""
 
 	case "$command" in
-	verify | verify-local-source | resolve-authorization | resolve-tag-authorization | resolve-source) ;;
+	verify | verify-local-source | resolve-authorization | resolve-tag-authorization | resolve-tag-expected-sources | resolve-source) ;;
 	help | --help | -h)
 		_release_provenance_usage
 		return 0
@@ -656,6 +680,11 @@ main() {
 	if [[ "$command" == "resolve-tag-authorization" ]]; then
 		[[ -n "$tag_name" && -n "$source_pr" ]] || return 1
 		_release_provenance_resolve_tag_authorization "$tag_name" "$source_pr" "$expected_sources" "$repo_slug" "$branch_name"
+		return $?
+	fi
+	if [[ "$command" == "resolve-tag-expected-sources" ]]; then
+		[[ -n "$tag_name" && -n "$source_pr" ]] || return 1
+		_release_provenance_resolve_tag_expected_sources "$tag_name" "$source_pr" "$expected_sources" "$repo_slug" "$branch_name"
 		return $?
 	fi
 	if [[ "$command" == "resolve-source" ]]; then
