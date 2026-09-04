@@ -1495,7 +1495,7 @@ _worktree_recovery_cache_validate_mutable_evidence() {
 	[[ "$current_identity" == "$expected_identity" ]] || return 1
 	current_evidence=$(AIDEVOPS_WORKTREE_RECOVERY_EVIDENCE_DEADLINE_EPOCH="$deadline_epoch" \
 		_worktree_recovery_apply_run_function_before_epoch "$deadline_epoch" \
-		_worktree_recovery_plan_evidence_json "$current_identity") || return 1
+		_worktree_recovery_plan_evidence_json "$current_identity" true) || return 1
 	current_evidence=$(printf '%s\n' "$current_evidence" | jq -cS '.') || return 1
 	[[ "$current_evidence" == "$expected_evidence" ]] || return 1
 	return 0
