@@ -45,6 +45,12 @@ source "${_FULL_LOOP_COMMIT_DIR}/planning-publisher.sh"
 # shellcheck disable=SC1091
 source "${_FULL_LOOP_COMMIT_DIR}/pulse-merge-required-checks.sh"
 
+# Project validator execution is isolated so this commit/PR orchestrator stays
+# below the large-file gate without changing its public source contract.
+# shellcheck source=./full-loop-helper-commit-validators.sh
+# shellcheck disable=SC1091  # sub-library resolved at runtime via the helper directory
+source "${_FULL_LOOP_COMMIT_DIR}/full-loop-helper-commit-validators.sh"
+
 # --- Pre-Merge Gate ---
 
 # Pre-merge gate (GH#17541) — deterministic enforcement of review-bot-gate
@@ -1107,162 +1113,6 @@ _detect_node_project() {
 	return 0
 }
 
-# Run auto-fix passes (format then lint). Continue past failures —
-# fix scripts may legitimately exit non-zero on un-auto-fixable issues.
-# If auto-fix produced changes, amend the HEAD commit.
-# Sets caller-scope `fix_changes` to 1 if amend happened, 0 otherwise.
-# Args: $1=pm (npm|pnpm|yarn) $2=timeout_secs $3=timeout_available (0|1)
-# Returns 0 on success, 1 if amend failed.
-_restore_validator_repo_root() {
-	local repo_root="$1"
-	local phase="$2"
-
-	if [[ -z "$repo_root" || ! -d "$repo_root" ]]; then
-		print_error "[validators] repository root disappeared during ${phase}: ${repo_root:-<unknown>}"
-		print_error "[validators] refusing to run git amend from a missing working directory"
-		return 1
-	fi
-	if ! cd "$repo_root" 2>/dev/null; then
-		print_error "[validators] failed to restore repository root after ${phase}: $repo_root"
-		return 1
-	fi
-	return 0
-}
-
-_run_node_auto_fix() {
-	local pm="$1"
-	local t="$2"
-	local timeout_available="${3:-0}"
-	local repo_root=""
-	repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P 2>/dev/null || echo "")
-	if [[ -z "$repo_root" ]]; then
-		print_error "[validators] cannot determine repository root before auto-fix"
-		return 1
-	fi
-	_restore_validator_repo_root "$repo_root" "startup" || return 1
-	# Build a timeout prefix array; empty when timeout(1) is not available.
-	local -a timeout_prefix=()
-	[[ "$timeout_available" == "1" ]] && timeout_prefix=("timeout" "$t")
-	fix_changes=0
-	local script_name
-	for script_name in format:fix format:write prettier:fix; do
-		if jq -e --arg s "$script_name" '.scripts[$s] // empty' package.json >/dev/null 2>&1; then
-			print_info "[validators] $pm run $script_name (auto-fix)"
-			"${timeout_prefix[@]}" "$pm" run "$script_name" >/dev/null 2>&1 || true
-			_restore_validator_repo_root "$repo_root" "$script_name" || return 1
-			break
-		fi
-	done
-	# Lint auto-fix loop pattern matches format for parallel extension.
-	# shellcheck disable=SC2043
-	for script_name in lint:fix; do
-		if jq -e --arg s "$script_name" '.scripts[$s] // empty' package.json >/dev/null 2>&1; then
-			print_info "[validators] $pm run $script_name (auto-fix)"
-			"${timeout_prefix[@]}" "$pm" run "$script_name" >/dev/null 2>&1 || true
-			_restore_validator_repo_root "$repo_root" "$script_name" || return 1
-			break
-		fi
-	done
-	_restore_validator_repo_root "$repo_root" "auto-fix" || return 1
-	if git diff --quiet 2>/dev/null; then
-		return 0
-	fi
-	print_info "[validators] auto-fix produced changes, amending commit"
-	# Use git add -u (tracked files only) to avoid staging untracked artifacts
-	# that format/lint runners may create (e.g. caches, generated files).
-	git add -u
-	# --no-verify on amend: avoid recursing into pre-commit territory.
-	if ! git commit --amend --no-edit --no-verify >/dev/null 2>&1; then
-		print_error "[validators] failed to amend commit with auto-fix changes"
-		git status -s 2>&1 | head -10 >&2
-		return 1
-	fi
-	fix_changes=1
-	return 0
-}
-
-# Run check-only typecheck. Picks first existing script in preference order.
-# Captures output for failure diagnosis. Mentor error on failure.
-# Args: $1=pm $2=timeout_secs $3=timeout_available (0|1)
-# Returns 0 on pass/no-script, 1 on failure.
-_run_node_typecheck() {
-	local pm="$1"
-	local t="$2"
-	local timeout_available="${3:-0}"
-	# Build a timeout prefix array; empty when timeout(1) is not available.
-	local -a timeout_prefix=()
-	[[ "$timeout_available" == "1" ]] && timeout_prefix=("timeout" "$t")
-	local typecheck_script
-	typecheck_script=""
-	local script_name
-	for script_name in typecheck check:types tsc; do
-		if jq -e --arg s "$script_name" '.scripts[$s] // empty' package.json >/dev/null 2>&1; then
-			typecheck_script="$script_name"
-			break
-		fi
-	done
-	if [[ -z "$typecheck_script" ]]; then
-		return 0
-	fi
-	print_info "[validators] $pm run $typecheck_script (check-only)"
-	# Separate declaration from mktemp assignment: local masks the exit code of
-	# command substitutions, so declare first then assign (Gemini review PR #20898).
-	# mktemp without -t: more portable (GNU and BSD mktemp differ on -t semantics).
-	local tc_log
-	tc_log="$(mktemp)"
-	local tc_rc=0
-	"${timeout_prefix[@]}" "$pm" run "$typecheck_script" >"$tc_log" 2>&1 || tc_rc=$?
-	if [[ "$tc_rc" -eq 0 ]]; then
-		rm -f "$tc_log"
-		return 0
-	fi
-	print_error "[validators] $typecheck_script FAILED — code has type errors"
-	print_error "  last 20 lines:"
-	tail -20 "$tc_log" >&2
-	rm -f "$tc_log"
-	print_error ""
-	print_error "  diagnose:    $pm run $typecheck_script"
-	print_error "  fix errors, commit, then re-run: full-loop-helper.sh commit-and-pr ..."
-	print_error "  bypass:      full-loop-helper.sh commit-and-pr ... --skip-hooks"
-	print_error "               (or AIDEVOPS_SKIP_PROJECT_VALIDATORS=1 env)"
-	return 1
-}
-
-# Orchestrator. Args: $1=skip_hooks (0|1). Returns 0 on pass/skip, 1 on fail.
-_run_project_validators() {
-	local skip_hooks="${1:-0}"
-	# _validators_should_run returns 0 when validators should run, 1 otherwise.
-	if ! _validators_should_run "$skip_hooks"; then
-		return 0
-	fi
-	if ! _commit_touches_node_files; then
-		print_info "[validators] no Node/TypeScript files changed, skipping node project validators"
-		return 0
-	fi
-	local pm=""
-	if ! _detect_node_project; then
-		# Silent skip when no project detected (non-node project = most aidevops paths).
-		return 0
-	fi
-	print_info "[validators] running node project validators ($pm)..."
-	local validator_timeout
-	validator_timeout="${AIDEVOPS_VALIDATOR_TIMEOUT:-300}"
-	# Detect timeout(1) availability once here; sub-functions receive a flag so
-	# they don't each re-check (portability: macOS may lack timeout without
-	# GNU coreutils; pattern mirrors _rebase_and_push:L941).
-	local timeout_available=0
-	command -v timeout >/dev/null 2>&1 && timeout_available=1
-	local fix_changes=0
-	_run_node_auto_fix "$pm" "$validator_timeout" "$timeout_available" || return 1
-	_run_node_typecheck "$pm" "$validator_timeout" "$timeout_available" || return 1
-	if [[ "$fix_changes" == "1" ]]; then
-		print_info "[validators] passed (auto-fix amended into commit)"
-	else
-		print_info "[validators] passed"
-	fi
-	return 0
-}
-
 # --- Rebase & Push ---
 
 # Detect a shallow git clone and optionally auto-unshallow.
@@ -1745,6 +1595,7 @@ _create_pr() {
 	local repo="$1" pr_title="$2" pr_body="$3" origin_label="$4"
 	shift 4
 	local -a extra_labels=("$@")
+	local recovered=0
 
 	print_info "Creating PR..."
 	local pr_url="" pr_error="" rc=0
@@ -1778,6 +1629,7 @@ _create_pr() {
 		if [[ -n "$recovered_url" ]]; then
 			print_info "PR creation command returned non-zero but PR exists — recovering (t2767): ${recovered_url}"
 			pr_url="$recovered_url"
+			recovered=1
 		else
 			print_error "PR creation failed: $(<"$pr_error")"
 			rm -f "$pr_error"
@@ -1808,9 +1660,72 @@ _create_pr() {
 		;;
 	esac
 	_reconcile_pr_origin_label "$pr_number" "$repo" "$origin_name" || return 1
+	if [[ "$recovered" -eq 1 ]]; then
+		_reconcile_recovered_pr_metadata "$pr_number" "$repo" "$pr_title" "$pr_body" || return 1
+	fi
 
 	print_success "PR #${pr_number} created: ${pr_url}"
 	printf '%s\n' "$pr_number"
+	return 0
+}
+
+# Restore generated metadata after partial PR creation recovered an existing PR.
+# A retry may compute title/body details from a newer review-repair head.
+# Arguments: PR number, repository slug, generated title, generated body.
+_reconcile_recovered_pr_metadata() {
+	local pr_number="$1"
+	local repo="$2"
+	local generated_title="$3"
+	local generated_body="$4"
+	local current_title=""
+	local current_body=""
+	local pr_endpoint="repos/${repo}/pulls"
+	pr_endpoint+="/${pr_number}"
+
+	current_title=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.title // empty' 2>/dev/null) || {
+		print_error "Could not read recovered PR #${pr_number} title for metadata reconciliation"
+		return 1
+	}
+	current_body=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.body // empty' 2>/dev/null) || {
+		print_error "Could not read recovered PR #${pr_number} body for metadata reconciliation"
+		return 1
+	}
+	if [[ "$current_title" == "$generated_title" && "$current_body" == "$generated_body" ]]; then
+		print_info "Recovered PR #${pr_number} metadata already matches the generated head"
+		return 0
+	fi
+
+	local temp_root="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
+	local body_file=""
+	if ! mkdir -p "$temp_root" || ! body_file=$(mktemp "${temp_root}/aidevops-recovered-pr-body.XXXXXX"); then
+		print_error "Could not create recovered PR metadata body file"
+		return 1
+	fi
+	if ! printf '%s\n' "$generated_body" >"$body_file"; then
+		rm -f "$body_file"
+		print_error "Could not write recovered PR metadata body"
+		return 1
+	fi
+	if ! gh_pr_edit_safe "$pr_number" --repo "$repo" --title "$generated_title" --body-file "$body_file" >/dev/null; then
+		rm -f "$body_file"
+		print_error "Failed to update stale metadata on recovered PR #${pr_number}"
+		return 1
+	fi
+	rm -f "$body_file"
+
+	current_title=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.title // empty' 2>/dev/null) || {
+		print_error "Could not verify recovered PR #${pr_number} title reconciliation"
+		return 1
+	}
+	current_body=$(_gh_with_timeout read gh api "$pr_endpoint" --jq '.body // empty' 2>/dev/null) || {
+		print_error "Could not verify recovered PR #${pr_number} body reconciliation"
+		return 1
+	}
+	if [[ "$current_title" != "$generated_title" || "$current_body" != "$generated_body" ]]; then
+		print_error "Recovered PR #${pr_number} metadata reconciliation did not reach the generated title/body postcondition"
+		return 1
+	fi
+	print_success "Reconciled and verified recovered PR #${pr_number} metadata"
 	return 0
 }
 
@@ -1892,23 +1807,90 @@ _ensure_worker_pr_linkage() {
 
 # --- Merge Summary ---
 
+# Reconcile the single canonical merge summary comment without creating a
+# duplicate. The gh API shim signs the PATCH body before it reaches GitHub.
+# Arguments: PR number, repo, comments endpoint, marker, generated body.
+_reconcile_existing_merge_summary() {
+	local pr_number="$1"
+	local repo="$2"
+	local comments_endpoint="$3"
+	local merge_summary_marker="$4"
+	local merge_summary_body="$5"
+	local existing_summary=""
+	local summary_id=""
+	local existing_body=""
+	local summary_id_jq="[.[] | select(.body | test(\$marker))] | first | .id"
+	local summary_body_jq="[.[] | select(.body | test(\$marker))] | first | .body"
+
+	existing_summary=$(_gh_with_timeout read gh api "$comments_endpoint" \
+		2>/dev/null) || {
+		print_error "Could not read the canonical merge summary comment on PR #${pr_number}"
+		return 1
+	}
+	if ! summary_id=$(printf '%s' "$existing_summary" |
+		jq -er --arg marker "$merge_summary_marker" "$summary_id_jq"); then
+		print_error "Could not identify the canonical merge summary comment on PR #${pr_number}"
+		return 1
+	fi
+	if ! existing_body=$(printf '%s' "$existing_summary" |
+		jq -er --arg marker "$merge_summary_marker" "$summary_body_jq"); then
+		print_error "Could not read the canonical merge summary comment body on PR #${pr_number}"
+		return 1
+	fi
+	if [[ "$existing_body" == "$merge_summary_body"* ]]; then
+		print_info "Merge summary comment already matches PR #${pr_number} — skipping duplicate (t2767)"
+		return 0
+	fi
+	if ! gh api "repos/${repo}/issues/comments/${summary_id}" \
+		--method PATCH --raw-field "body=${merge_summary_body}" >/dev/null; then
+		print_error "Failed to update stale canonical merge summary comment on PR #${pr_number}"
+		return 1
+	fi
+	existing_summary=$(_gh_with_timeout read gh api "$comments_endpoint" \
+		2>/dev/null) || {
+		print_error "Could not verify the updated canonical merge summary comment on PR #${pr_number}"
+		return 1
+	}
+	if ! existing_body=$(printf '%s' "$existing_summary" |
+		jq -er --arg marker "$merge_summary_marker" "$summary_body_jq"); then
+		print_error "Could not read the updated canonical merge summary comment body on PR #${pr_number}"
+		return 1
+	fi
+	if [[ "$existing_body" != "$merge_summary_body"* ]]; then
+		print_error "Canonical merge summary comment on PR #${pr_number} did not reach the generated metadata postcondition"
+		return 1
+	fi
+	print_success "Updated and verified stale canonical merge summary comment on PR #${pr_number}"
+	return 0
+}
+
 # Post the MERGE_SUMMARY comment on the PR (full-loop step 4.2.1).
 # Arguments: pr_number, repo, issue_number, summary_what, files_changed,
 #            summary_testing, summary_decisions
-# t2767: Idempotent — skips posting if the canonical MERGE_SUMMARY comment already exists.
-# This handles the partial-success recovery case where commit-and-pr was
-# interrupted after posting the comment but before returning the PR number.
+# t2767: Idempotent — preserves a matching canonical MERGE_SUMMARY comment,
+# while updating the one canonical comment if a retry generated newer metadata.
 _post_merge_summary() {
 	local pr_number="$1" repo="$2" issue_number="$3" summary_what="$4"
 	local files_changed="$5" summary_testing="$6" summary_decisions="$7"
+	local merge_summary_marker="<!-- MERGE_SUMMARY -->"
+	local comments_endpoint="repos/${repo}/issues/${pr_number}/comments"
+	local summary_count_jq="[.[] | select(.body | test(\"${merge_summary_marker}\"))] | length"
+	local merge_summary_body="${merge_summary_marker}
+## Completion Summary
+
+- **What**: ${summary_what:-Implementation for issue #${issue_number}}
+- **Issue**: #${issue_number}
+- **Files changed**: ${files_changed:-see diff}
+- **Testing**: ${summary_testing:-shellcheck clean, self-assessed}
+- **Key decisions**: ${summary_decisions:-none}"
 
 	# t2767/GH#26608: Check if the canonical MERGE_SUMMARY comment already exists before posting.
 	# Uses PR timeline comments endpoint (issues endpoint covers PR comments).
 	# Counter safety: validate result is a number before comparing (t2763).
 	local _existing_count=0
 	local _tmp_count=""
-	if ! _tmp_count=$(gh api "repos/${repo}/issues/${pr_number}/comments" \
-		--jq '[.[] | select(.body | test("<!-- MERGE_SUMMARY -->"))] | length'); then
+	if ! _tmp_count=$(gh api "$comments_endpoint" \
+		--jq "$summary_count_jq"); then
 		print_error "Could not verify existing merge summary comments on PR #${pr_number}; refusing a potentially duplicate post"
 		return 1
 	fi
@@ -1918,8 +1900,9 @@ _post_merge_summary() {
 	fi
 	_existing_count="$_tmp_count"
 	if [[ "$_existing_count" -eq 1 ]]; then
-		print_info "Merge summary comment already exists on PR #${pr_number} — skipping duplicate (t2767)"
-		return 0
+		_reconcile_existing_merge_summary "$pr_number" "$repo" "$comments_endpoint" \
+			"$merge_summary_marker" "$merge_summary_body"
+		return $?
 	fi
 	if [[ "$_existing_count" -gt 1 ]]; then
 		print_error "PR #${pr_number} has ${_existing_count} canonical merge summary comments; expected exactly one"
@@ -1936,14 +1919,7 @@ _post_merge_summary() {
 		print_error "Could not create merge summary body file in ${temp_root}"
 		return 1
 	fi
-	if ! printf '%s\n' "<!-- MERGE_SUMMARY -->
-## Completion Summary
-
-- **What**: ${summary_what:-Implementation for issue #${issue_number}}
-- **Issue**: #${issue_number}
-- **Files changed**: ${files_changed:-see diff}
-- **Testing**: ${summary_testing:-shellcheck clean, self-assessed}
-- **Key decisions**: ${summary_decisions:-none}" >"$merge_summary_file"; then
+	if ! printf '%s\n' "$merge_summary_body" >"$merge_summary_file"; then
 		print_error "Could not write merge summary body file for PR #${pr_number}"
 		rm -f "$merge_summary_file"
 		return 1
@@ -1958,8 +1934,8 @@ _post_merge_summary() {
 	fi
 	rm -f "$merge_summary_file"
 
-	_tmp_count=$(gh api "repos/${repo}/issues/${pr_number}/comments" \
-		--jq '[.[] | select(.body | test("<!-- MERGE_SUMMARY -->"))] | length') || {
+	_tmp_count=$(gh api "$comments_endpoint" \
+		--jq "$summary_count_jq") || {
 		print_error "Merge summary posted on PR #${pr_number}, but verification failed"
 		return 1
 	}

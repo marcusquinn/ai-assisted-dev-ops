@@ -12,6 +12,9 @@ subagents:
   - production-audio
   - production-characters
   - media-generation-providers
+  - gemini-image
+  - gemini-video
+  - gemini-music
   - video-higgsfield
   - video-kie
   - video-runway
@@ -159,7 +162,7 @@ content-fanout-helper.sh run <plan-file>    # Execute (also: channels, status, e
 | Domain | References |
 |--------|-----------|
 | Research | `tools/context/context7.md`, `tools/browser/crawl4ai.md`, `seo/google-search-console.md`, `seo/dataforseo.md` |
-| Video | `content/media-generation-providers.md`, `content/video-kie.md`, `content/video-higgsfield.md`, `tools/video/video-prompt-design.md` |
+| Video | `content/media-generation-providers.md`, `content/gemini-video.md`, `content/video-kie.md`, `content/video-higgsfield.md`, `tools/video/video-prompt-design.md` |
 | Voice | `tools/voice/speech-to-speech.md`, `voice-helper.sh` |
 | SEO/Blog | `seo/`, `content/seo-writer.md`, `content/editor.md`, `content/meta-creator.md`, `content/internal-linker.md` |
 | Social | `content/social-algorithms.md` (recommendation guidance), `content/social-xurl.md` (X), `content/social-linkedin.md`, `content/social-reddit.md` |

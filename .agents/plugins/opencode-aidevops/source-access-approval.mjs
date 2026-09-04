@@ -27,6 +27,7 @@ import {
   applyApprovedRead,
   brokerMatchesCurrentRelease,
   checkGateWithApprovalInstructions,
+  createMutationProvenance,
   requestApprovalId,
 } from "./source-access-request.mjs";
 
@@ -219,6 +220,43 @@ function sourceDigestMatches(filePath, expectedDigest) {
   }
 }
 
+function trustedSourceSnapshot(filePath, git = "/usr/bin/git", run = execFileSync) {
+  let descriptor = -1;
+  let result = false;
+  try {
+    requireValidReceipt(isAbsolute(filePath));
+    requireValidReceipt(!hasSymlinkComponent(filePath));
+    const canonicalPath = realpathSync(filePath);
+    requireValidReceipt(canonicalPath === resolve(filePath));
+    descriptor = openSync(canonicalPath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    const opened = fstatSync(descriptor);
+    requireValidReceipt(opened.isFile());
+    requireValidReceipt(opened.nlink === 1);
+    requireValidReceipt(opened.size <= MAX_SOURCE_BYTES);
+    const content = readFileSync(descriptor);
+    const current = lstatSync(canonicalPath);
+    requireValidReceipt(content.length <= MAX_SOURCE_BYTES);
+    requireValidReceipt(current.isFile());
+    requireValidReceipt(!current.isSymbolicLink());
+    requireValidReceipt(current.nlink === 1);
+    requireValidReceipt(current.dev === opened.dev);
+    requireValidReceipt(current.ino === opened.ino);
+    const identity = trackedFileIdentity(canonicalPath, git, run);
+    requireValidReceipt(identity);
+    result = {
+      canonicalPath,
+      content,
+      contentSha256: createHash("sha256").update(content).digest("hex"),
+      ...identity,
+    };
+  } catch {
+    result = false;
+  } finally {
+    if (descriptor >= 0) closeSync(descriptor);
+  }
+  return result;
+}
+
 function requireValidReceipt(condition) {
   if (!condition) throw new Error("source-access receipt is invalid");
 }
@@ -237,6 +275,7 @@ function validatedSingleReceipt(options) {
     git = "/usr/bin/git",
     gitRun = execFileSync,
     run = execFileSync,
+    authorizedApprovalId = "",
   } = options;
   requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
   requireValidReceipt(reason === SOURCE_ACCESS_REASON);
@@ -245,8 +284,10 @@ function validatedSingleReceipt(options) {
   requireValidReceipt(!hasSymlinkComponent(filePath));
   const canonicalPath = realpathSync(filePath);
   requireValidReceipt(statSync(canonicalPath).isFile());
-  requireValidReceipt(isGitTrackedFile(canonicalPath, git, gitRun));
+  const identity = trackedFileIdentity(canonicalPath, git, gitRun);
+  requireValidReceipt(identity);
   const approvalId = approvalScopeId(sessionId, uid, canonicalPath, reason);
+  if (authorizedApprovalId) requireValidReceipt(authorizedApprovalId === approvalId);
   const receiptPath = join(stateDir, "approvals", String(uid), `${approvalId}.json`);
   requireValidReceipt(trustedDirectory(dirname(receiptPath), trustUid));
   requireValidReceipt(trustedDirectory(dirname(publicKeyPath), trustUid));
@@ -263,7 +304,9 @@ function validatedSingleReceipt(options) {
   requireValidReceipt(payload.path === canonicalPath);
   requireValidReceipt(payload.reason === reason);
   requireValidReceipt(/^[a-f0-9]{64}$/.test(payload.content_sha256 || ""));
-  requireValidReceipt(sourceDigestMatches(canonicalPath, payload.content_sha256));
+  if (!authorizedApprovalId) {
+    requireValidReceipt(sourceDigestMatches(canonicalPath, payload.content_sha256));
+  }
   const snapshotPath = join(stateDir, "snapshots", String(uid), `${approvalId}.source`);
   requireValidReceipt(payload.snapshot_path === snapshotPath);
   requireValidReceipt(trustedDirectory(dirname(snapshotPath), trustUid));
@@ -278,7 +321,20 @@ function validatedSingleReceipt(options) {
   requireValidReceipt(payload.expires_at - payload.issued_at <= MAX_TTL_SECONDS);
   requireValidReceipt(typeof receipt.signature === "string");
   requireValidReceipt(receipt.signature.includes("SSH SIGNATURE"));
-  return {payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen};
+  return {
+    approvalId,
+    canonicalPath,
+    contentSha256: payload.content_sha256,
+    expiresAt: payload.expires_at,
+    payload,
+    publicKeyPath,
+    receipt,
+    repoRoot: identity.repoRoot,
+    relativePath: identity.relativePath,
+    run,
+    snapshotPath,
+    sshKeygen,
+  };
 }
 
 function validatedReceipt(options) {
@@ -302,7 +358,8 @@ function validatedReceipt(options) {
   }
 }
 
-function verifyReceiptSignature({payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen}) {
+function verifyReceiptSignature(receiptData) {
+  const {payload, publicKeyPath, receipt, run, snapshotPath, sshKeygen} = receiptData;
   const tempRoot = verificationTempRoot();
   mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   const tempDir = mkdtempSync(join(tempRoot, "source-access-verify-"));
@@ -338,7 +395,15 @@ function verifyReceiptSignature({payload, publicKeyPath, receipt, run, snapshotP
         timeout: 15000,
       },
     );
-    return { approvedPath: snapshotPath };
+    return {
+      approvalId: receiptData.approvalId,
+      approvedPath: snapshotPath,
+      canonicalPath: receiptData.canonicalPath,
+      contentSha256: receiptData.contentSha256,
+      expiresAt: receiptData.expiresAt,
+      repoRoot: receiptData.repoRoot,
+      relativePath: receiptData.relativePath,
+    };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -351,6 +416,24 @@ export function verifySourceAccessReceipt(options) {
   } catch {
     return false;
   }
+}
+
+export function createSourceAccessMutationProvenance({
+  repositoryDir = "",
+  verify = verifySourceAccessReceipt,
+  git = "/usr/bin/git",
+  gitRun = execFileSync,
+  now = () => Math.floor(Date.now() / 1000),
+} = {}) {
+  return createMutationProvenance({
+    git,
+    gitRun,
+    now,
+    reason: SOURCE_ACCESS_REASON,
+    repositoryDir,
+    snapshot: trustedSourceSnapshot,
+    verify,
+  });
 }
 
 /**
@@ -370,6 +453,8 @@ export function checkSecretReadWithApproval({
   verify = verifySourceAccessReceipt,
   brokerMatches = sourceAccessBrokerMatches,
   requestRun = execFileSync,
+  callId = "",
+  provenance,
 }) {
   const filePath = readPath(args);
   // Fail closed before tool-name classification. OpenCode hook identities can
@@ -391,10 +476,16 @@ export function checkSecretReadWithApproval({
   }
 
   const brokerCurrent = brokerMatchesCurrentRelease(brokerMatches, scriptsDir);
-  const approval = brokerCurrent
-    ? verify({ sessionId, filePath, reason, repositoryDir })
+  const continuedApproval = brokerCurrent
+    ? provenance?.authorizeRead({ sessionId, callId, filePath, reason, args })
     : false;
-  if (applyApprovedRead(args, approval, filePath, log)) return;
+  const approval = continuedApproval || (brokerCurrent
+    ? verify({ sessionId, filePath, reason, repositoryDir })
+    : false);
+  if (applyApprovedRead(args, approval, filePath, log)) {
+    if (!continuedApproval) provenance?.rememberApproval({ sessionId, filePath, approval });
+    return;
+  }
 
   const requestId = requestApprovalId({ brokerCurrent, filePath, reason, requestRun, sessionId });
   checkGateWithApprovalInstructions({
@@ -404,6 +495,7 @@ export function checkSecretReadWithApproval({
     filePath,
     log,
     requestId,
+    denialReason: provenance?.denialReason(sessionId, filePath) || "missing",
     tool,
   });
 }

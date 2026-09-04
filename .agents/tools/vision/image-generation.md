@@ -17,11 +17,24 @@ tools:
 
 # Image Generation
 
+<!-- AI-CONTEXT-START -->
+
+## Quick Reference
+
+- **OpenCode tool**: `gpt_image_generate`
+- **Default billing route**: ChatGPT subscription OAuth from the aidevops OpenAI account pool
+- **Platform billing route**: explicit `auth: "api"` plus a named account alias
+- **Model**: GPT Image 2 (`gpt-image-2`); project-confined PNG, JPEG, or WebP output
+- **Reference images**: up to 8 project-relative PNG, JPEG, or WebP files
+- **Safety**: existing files are never overwritten; versioned paths use `-v2`, `-v3`, and so on
+
+<!-- AI-CONTEXT-END -->
+
 ## Model Comparison
 
 | Model | Provider | Quality | Speed | Cost | Local | Best For |
 |-------|----------|---------|-------|------|-------|----------|
-| **DALL-E 3** | OpenAI | High | Fast | $0.04-0.12/img | No | General purpose, text rendering |
+| **GPT Image 2** | OpenAI | Very high | Medium | Subscription or API pricing | No | General purpose, text rendering, reference-guided edits |
 | **Midjourney v6** | Midjourney | Very high | Medium | $10-60/mo | No | Artistic, photorealistic |
 | **Imagen 3** | Google | High | Fast | API pricing | No | Photorealism, Google ecosystem |
 | **Ideogram 2.0** | Ideogram | High | Fast | Free tier + paid | No | Text in images, logos |
@@ -31,34 +44,74 @@ tools:
 | **SD 3.5** | Stability AI | High | Medium | Free (local) | Yes | Latest Stability model |
 
 ```text
-Text in images?       → DALL-E 3 or Ideogram
+Text in images?       → GPT Image 2 or Ideogram
 Photorealistic?       → Midjourney or Imagen 3
 Full local control?   → FLUX.1 [dev] or SD XL
 Fast local iteration? → FLUX.1 [schnell]
 ControlNet / img2img? → SD XL (most mature ecosystem)
-Simplest API?         → DALL-E 3
+Simplest OpenCode use? → gpt_image_generate with ChatGPT OAuth
 Budget-conscious?     → FLUX or SD locally (GPU cost only)
 ```
 
 ## Cloud APIs
 
-### DALL-E 3 (OpenAI)
+### GPT Image 2 (OpenAI)
+
+In OpenCode, ask naturally for an image and include the desired project-relative
+output path. The aidevops plugin exposes `gpt_image_generate` automatically.
+
+```text
+Generate a low-quality 1024x1024 watercolor lighthouse draft and save it to assets/lighthouse.png.
+```
+
+PNG is the default. Select `format: "jpeg"` or `format: "webp"` for another
+native raster format; the output path must use the matching `.jpg`/`.jpeg` or
+`.webp` extension. SVG and PDF belong to artifact/document workflows and are not
+GPT Image output formats.
+
+The tool defaults to the existing ChatGPT OAuth pool. Add an account through the
+recommended device OAuth flow with `aidevops model-accounts-pool add openai`.
+An optional OAuth `account` pins the request to that pool email; a pinned account
+never falls back to another login.
+
+Platform API billing is always explicit and uses an account-specific secret:
 
 ```bash
-aidevops secret set OPENAI_API_KEY
-
-curl https://api.openai.com/v1/images/generations \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "dall-e-3", "prompt": "...", "size": "1024x1024", "quality": "hd", "style": "natural"}'
+aidevops secret set OPENAI_IMAGE_API_KEY_WORK
 ```
+
+Then select `auth: "api"` and `account: "WORK"` in the tool call. To configure
+a deliberate local default alias, set `AIDEVOPS_OPENAI_IMAGE_ACCOUNT=WORK`;
+the tool still requires `auth: "api"`, so it cannot silently switch billing
+from a subscription to API credits. Never paste an API key into chat.
 
 | Parameter | Options | Notes |
 |-----------|---------|-------|
-| `size` | 1024x1024, 1024x1792, 1792x1024 | Square, portrait, landscape |
-| `quality` | standard, hd | Standard $0.04, HD $0.08/image |
-| `style` | natural, vivid | Natural = photorealistic, vivid = artistic |
-| `n` | 1 | DALL-E 3 supports 1/request; use v2 API for edits |
+| `format` | png, jpeg, webp | `png` is the default; output extension must match |
+| `quality` | low, medium, high, auto | `auto` is the default; use low for drafts |
+| `size` | auto or WIDTHxHEIGHT | Edges must be multiples of 16, max 3840px, ratio ≤3:1, total 655,360-8,294,400px; explicit requests fail before publication if native dimensions differ |
+| `workdir` | absolute linked-worktree path | Optional; must be registered to the current OpenCode session and belong to the startup repository |
+| `images` | 0-8 project-relative paths | Reference-guided generation/editing; PNG, JPEG, or WebP, 20 MiB each |
+| `auth` | oauth, api | OAuth is the default; API billing must be explicit |
+| `account` | OAuth email or API alias | Exact selection only; no silent account substitution |
+
+OAuth uses OpenCode's Codex channel and is therefore runtime-specific and
+experimental. The public API route calls `gpt-image-2` directly. OpenCode V2
+remains fail-closed until the aidevops V2 adapter implements equivalent tool,
+permission, credential, and session contracts.
+
+When OpenCode starts in a canonical checkout and aidevops creates a linked
+worktree, pass that worktree as `workdir`. Output and reference paths remain
+relative to the validated worktree; absolute image paths and parent traversal
+remain rejected. Every success receipt reports the native raster dimensions.
+
+The public Platform API documents `size` as the requested output geometry and
+supports constrained flexible dimensions for GPT Image 2 generation. The
+ChatGPT OAuth route uses a private hosted-tool endpoint without the same stable
+contract and may return different native geometry. The tool therefore decodes
+PNG, JPEG, and WebP dimensions before writing: an explicit-size mismatch fails
+without creating a file, while `auto` accepts the provider-selected size. Every
+successful result reports both the requested size and observed native dimensions.
 
 ### Midjourney
 
@@ -114,33 +167,10 @@ blurry, low quality, distorted, deformed, ugly, duplicate, watermark,
 text, signature, oversaturated, underexposed, overexposed
 ```
 
-**Batch generation (DALL-E 3)**:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-generate_batch() {
-  local prompt="$1"
-  local count="${2:-4}"
-  local output_dir="${3:-.}"
-  mkdir -p "$output_dir"
-
-  for i in $(seq 1 "$count"); do
-    local target="$output_dir/gen_$i.png"
-    curl -sf https://api.openai.com/v1/images/generations \
-      -H "Authorization: Bearer $OPENAI_API_KEY" \
-      -H "Content-Type: application/json" \
-      -d "$(jq -n --arg p "$prompt" '{model: "dall-e-3", prompt: $p, size: "1024x1024", quality: "hd"}')" \
-      | python3 -c "import json,sys,urllib.request; url=json.load(sys.stdin)['data'][0]['url']; urllib.request.urlretrieve(url, sys.argv[1])" "$target" \
-      || { echo "Error generating image $i" >&2; return 1; }
-    echo "Saved: $target"
-  done
-  return 0
-}
-
-generate_batch "$@"
-```
+**Batch generation**: invoke `gpt_image_generate` once per distinct asset. Each
+call returns one native raster image and preserves an existing output by choosing
+a versioned filename. Avoid unattended high-quality batches because API and
+subscription usage limits still apply.
 
 ## See Also
 

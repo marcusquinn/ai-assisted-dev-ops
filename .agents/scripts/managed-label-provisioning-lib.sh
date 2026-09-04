@@ -18,6 +18,16 @@ _MANAGED_ORIGIN_LABEL_SPECS=(
 	"origin:worker-takeover" "Worker took over from interactive session" "D4C5F9"
 )
 
+_MANAGED_APPROVAL_HOLD_LABEL_SPECS=(
+	"needs-maintainer-review" "Requires maintainer approval before automated dispatch" "FBCA04"
+)
+
+_MANAGED_APPROVAL_ISSUE_LABEL_SPECS=(
+	"${_MANAGED_APPROVAL_HOLD_LABEL_SPECS[@]}"
+	"auto-dispatch" "Eligible for autonomous worker dispatch" "0E8A16"
+	"no-auto-dispatch" "Opt-out: block all auto-dispatch on this issue" "EDEDED"
+)
+
 managed_label_snapshot_has() {
 	local snapshot="$1"
 	local expected_name="$2"
@@ -74,5 +84,23 @@ managed_labels_ensure_tracking_set() {
 	)
 	managed_labels_ensure_specs "$repo" "$inventory_runner" "$create_runner" \
 		"${tracking_specs[@]}"
+	return $?
+}
+
+managed_labels_ensure_approval_set() {
+	local repo="$1"
+	local target_type="$2"
+	local inventory_runner="$3"
+	local create_runner="$4"
+	local -a approval_specs=()
+
+	case "$target_type" in
+	issue) approval_specs=("${_MANAGED_APPROVAL_ISSUE_LABEL_SPECS[@]}") ;;
+	pr) approval_specs=("${_MANAGED_APPROVAL_HOLD_LABEL_SPECS[@]}") ;;
+	*) return 1 ;;
+	esac
+
+	managed_labels_ensure_specs "$repo" "$inventory_runner" "$create_runner" \
+		"${approval_specs[@]}"
 	return $?
 }

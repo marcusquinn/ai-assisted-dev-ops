@@ -8,6 +8,7 @@ subagents:
   - troubleshooting
   - routines-health
   - architecture
+  - buzz-team-interface
   - add-new-mcp-to-aidevops
   - mcp-integrations
   - mcp-troubleshooting
@@ -51,7 +52,7 @@ subagents:
 - **Repo**: `~/Git/aidevops/` | **Install**: `~/.aidevops/agents/`
 - **Setup**: `./setup.sh` | **Quality**: `.agents/scripts/linters-local.sh` | **Release**: `.agents/scripts/version-manager.sh release [major|minor|patch]`
 - **Scripts**: `.agents/scripts/[service]-helper.sh [command] [account] [target]`
-- **Subagents**: `aidevops/setup.md`, `aidevops/troubleshooting.md`, `aidevops/architecture.md`
+- **Subagents**: `aidevops/setup.md`, `aidevops/troubleshooting.md`, `aidevops/architecture.md`, `tools/ai-assistants/buzz-team-interface.md`
 - **Agent dev**: `tools/build-agent/` | **MCP dev**: `tools/build-mcp/`
 
 **Services**: Hostinger, Hetzner, Cloudflare, Closte (legacy operations), Cloudron, Coolify, Vercel, WordPress (MainWP/LocalWP), SonarCloud, Codacy, CodeRabbit, Snyk, Secretlint, GitHub/GitLab/Gitea, Spaceship, 101domains, Route53, Vaultwarden, Amazon SES, Crawl4AI

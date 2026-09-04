@@ -24,6 +24,7 @@ import {
   checkCommandSafetyGate,
   isDirectFileMutationTool,
 } from "../quality-hooks-git-safety.mjs";
+import { validateBashWorkingDirectory } from "../quality-hooks-workdir.mjs";
 import { createQualityHooks } from "../quality-hooks.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,79 @@ test("classifies built-in and namespaced direct file mutation tools", () => {
   }
   for (const tool of ["Bash", "read", "functions.read", "glob"]) {
     assert.equal(isDirectFileMutationTool(tool), false, tool);
+  }
+});
+
+test("validates Bash workdirs without rewriting valid external paths", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-bash-workdir-"));
+  const directory = join(root, "directory");
+  const directoryAlias = join(root, "directory-alias");
+  const regularFile = join(root, "regular-file");
+  const brokenAlias = join(root, "broken-alias");
+  const missing = join(root, "missing");
+  mkdirSync(directory);
+  symlinkSync(directory, directoryAlias, "dir");
+  writeFileSync(regularFile, "not a directory\n");
+  symlinkSync(missing, brokenAlias, "dir");
+  try {
+    assert.equal(validateBashWorkingDirectory(directory), undefined);
+    assert.equal(validateBashWorkingDirectory(directoryAlias), undefined);
+    assert.throws(() => validateBashWorkingDirectory(missing), /workdir does not exist/);
+    assert.throws(() => validateBashWorkingDirectory(brokenAlias), /workdir is a broken symlink/);
+    assert.throws(() => validateBashWorkingDirectory(regularFile), /workdir is not a directory/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("blocks an invalid Bash workdir before command policy execution", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-bash-workdir-order-"));
+  try {
+    const hooks = createQualityHooks({
+      scriptsDir: join(root, "missing-scripts"),
+      logsDir: root,
+      repositoryDir: root,
+    });
+    for (const args of [
+      { command: "pwd", workdir: join(root, "missing-workdir") },
+      { command: "pwd", cwd: join(root, "missing-cwd") },
+    ]) {
+      await assert.rejects(
+        () => hooks.toolExecuteBefore({ tool: "Bash" }, { args }),
+        /Bash workdir does not exist/,
+      );
+    }
+    for (const args of [
+      { command: "pwd", workdir: "" },
+      { command: "pwd", cwd: " " },
+    ]) {
+      await assert.rejects(
+        () => hooks.toolExecuteBefore({ tool: "Bash" }, { args }),
+        /Bash workdir must be a non-empty path/,
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("preserves valid Bash workdir inputs and the implicit fallback", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-bash-workdir-valid-"));
+  const directoryAlias = join(root, "directory-alias");
+  symlinkSync(root, directoryAlias, "dir");
+  try {
+    const hooks = createQualityHooks({ scriptsDir, logsDir: root, repositoryDir: root });
+    for (const args of [
+      { command: "pwd", workdir: root },
+      { command: "pwd", cwd: directoryAlias },
+      { command: "pwd" },
+    ]) {
+      const output = { args: { ...args } };
+      await assert.doesNotReject(() => hooks.toolExecuteBefore({ tool: "Bash" }, output));
+      assert.deepEqual(output.args, args);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

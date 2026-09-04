@@ -7,10 +7,12 @@ Detailed contract chapter for `.agents/aidevops/feedback.md`.
 
 ## Capture Contract
 
-`_feedback/captures/` is the raw-capture location for retained qualitative
-feedback. A capture is evidence, not interpretation: store enough normalized
-metadata to re-check provenance, consent, sensitivity, and context before any
-agent mines or promotes the signal.
+`_feedback/captures/` stores normalized metadata and privacy-safe summaries for
+retained qualitative feedback. Raw correspondence, exports, and personal data
+belong in gitignored `_feedback/raw/` or `_feedback/pii/` only when retention is
+authorized. A capture is evidence, not interpretation: store enough normalized
+metadata to re-check provenance, consent, sensitivity, and context before mining
+or promotion.
 
 Each capture SHOULD be a markdown file with YAML frontmatter plus the original
 quote or privacy-safe summary in the body. Repos may generate sidecar JSON later,
@@ -28,7 +30,7 @@ but the markdown contract is the human-readable baseline.
 | `channel` | Collection channel such as `client`, `support`, `survey`, `social`, `sales`, `product`, or `retrospective`. |
 | `raw_quote` / `summary` | Verbatim quote when retention and consent allow it; otherwise a faithful privacy-safe summary. |
 | `sentiment` | `positive`, `negative`, `neutral`, `mixed`, or `unknown`. |
-| `sensitivity` | `public`, `internal`, `confidential`, `restricted`, `client`, or `privileged` according to the local sensitivity policy. |
+| `sensitivity` | `public`, `internal`, `client-scoped`, `privileged`, `personal`, or `delete-after-review` according to the policy below. |
 | `consent` | Capture/mining permission such as `explicit`, `implied`, `internal-use`, `anonymized-only`, or `none`. |
 | `retention_hint` | Suggested retention action or horizon: `keep`, `review-by:<date>`, `delete-after:<date>`, `anonymize`, or `case-bound`. |
 | `provenance` | Pointer that lets an authorized reviewer find the source again: capture import ID, file path, issue/PR reference, case ID, message hash, or redacted excerpt hash. |

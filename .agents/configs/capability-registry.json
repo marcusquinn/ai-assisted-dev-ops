@@ -119,13 +119,36 @@
     {
       "name": "campaign-growth-orchestration",
       "aliases": ["campaign-grow", "growth-campaign"],
-      "owner": "Campaigns Plane",
+      "owner": "Aidevops",
       "description": "Evidence-backed cross-owner campaign growth planning, state, and recovery without provider mutation",
       "runtimes": ["opencode", "claude-code"],
       "entry_points": ["workflows/campaign-growth.md", "scripts/campaign-growth-helper.py"],
       "fallback": "evidence-only-manual-handoff",
       "required": ["deployed", "runtime_compatible", "tool_visible"],
       "probes": {"deployed": {"path": "scripts/campaign-growth-helper.py"}, "tool_visible": {"tool": "python3"}}
+    },
+    {
+      "name": "accounting-operations",
+      "aliases": ["accounting", "bookkeeping", "accounts"],
+      "owner": "Business",
+      "description": "Provider-neutral bookkeeping, reconciliation, reporting, controls, and accounting workpapers",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["business/accounting.md", "business/accounting-software.md"],
+      "fallback": "manual-accounting-workpaper",
+      "required": ["deployed", "runtime_compatible"],
+      "probes": {"deployed": {"path": "business/accounting.md"}}
+    },
+    {
+      "name": "quickfile-accounting",
+      "aliases": ["quickfile", "quickfile-mcp"],
+      "owner": "Business",
+      "description": "Guarded multi-account QuickFile operations through the beta REST MCP",
+      "runtimes": ["opencode", "claude-code"],
+      "entry_points": ["services/accounting/quickfile.md", "business/accounting.md"],
+      "mcp": "quickfile",
+      "fallback": "accounting-export-workpaper",
+      "required": ["deployed", "installed", "configured", "authenticated", "authorized", "reachable", "runtime_compatible", "tool_visible", "usable"],
+      "probes": {"deployed": {"path": "services/accounting/quickfile.md"}, "installed": {"path_home_any": ["Git/mcp/quickfile-mcp/dist/index.js", "Git/quickfile-mcp/dist/index.js"]}, "configured": {"live": "requires a disabled-on-start MCP entry and selected account token"}, "authenticated": {"live": "requires selected-token validation and account identity read"}, "authorized": {"live": "requires exact endpoint grants and mutation authority"}, "reachable": {"live": "requires on-demand MCP activation and handshake"}, "tool_visible": {"tool": "quickfile_*"}, "usable": {"live": "requires the selected entity and operation to support preview and read-back"}}
     },
     {
       "name": "vault-operations",

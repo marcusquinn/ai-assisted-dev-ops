@@ -28,6 +28,52 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 
 set -euo pipefail
 
+show_help() {
+	cat <<'EOF'
+Usage: generate-opencode-agents.sh [help|--help|-h]
+
+Generate the legacy OpenCode agent configuration. With no arguments, the
+generator updates the configured OpenCode files. Help and argument validation
+are observational and complete before any files are changed.
+EOF
+	return 0
+}
+
+parse_arguments() {
+	local argument_count="$#"
+	local first_argument="${1-}"
+	if [[ "$argument_count" -eq 0 ]]; then
+		return 1
+	fi
+	if [[ "$argument_count" -ne 1 ]]; then
+		printf 'Error: unsupported arguments\n' >&2
+		printf 'Run %s --help for usage.\n' "$(basename "$0")" >&2
+		return 2
+	fi
+	case "$first_argument" in
+	help | --help | -h)
+		show_help
+		return 0
+		;;
+	*)
+		printf 'Error: unsupported argument: %s\n' "$first_argument" >&2
+		printf 'Run %s --help for usage.\n' "$(basename "$0")" >&2
+		return 2
+		;;
+	esac
+}
+
+parse_status=0
+parse_arguments "$@" || parse_status=$?
+case "$parse_status" in
+0) exit 0 ;;
+2) exit 2 ;;
+esac
+
+if [[ "$parse_status" -ne 1 ]]; then
+	exit "$parse_status"
+fi
+
 AGENTS_DIR="$HOME/.aidevops/agents"
 OPENCODE_CONFIG_DIR="$HOME/.config/opencode"
 OPENCODE_AGENT_DIR="$OPENCODE_CONFIG_DIR/agent"

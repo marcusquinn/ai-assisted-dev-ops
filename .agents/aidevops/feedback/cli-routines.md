@@ -18,7 +18,7 @@ aidevops feedback capture --file path/to/note.md --source <uri-or-label> --chann
 
 # List retained captures and mined themes
 aidevops feedback list
-aidevops feedback list --state captured|mined|promoted|retired --sensitivity public|internal|client|privileged --since 2026-05-01
+aidevops feedback list --state captured|mined|promoted|retired --sensitivity public|internal|client-scoped|privileged|personal|delete-after-review --since 2026-05-01
 
 # Mine captures into candidate themes with evidence thresholds
 aidevops feedback mine

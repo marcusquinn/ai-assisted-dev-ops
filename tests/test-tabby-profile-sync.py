@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -51,6 +51,35 @@ profiles:
 """
 
         self.assertEqual(tabby_profile_sync.extract_group_id(config_text), "abc-123")
+
+    def test_retarget_profile_cwds_preserves_custom_fields(self):
+        original = """profiles:
+  - name: Custom title
+    color: '#AABBCC'
+    options:
+      cwd: '/workspace/OldRepo'
+      command: /bin/zsh
+  - name: Folded
+    options:
+      cwd: >-
+        /workspace/OldRepo
+groups: []
+"""
+
+        updated, changed = tabby_profile_sync.retarget_profile_cwds(
+            original, {"/workspace/OldRepo": "/workspace/acme/OldRepo"}
+        )
+
+        self.assertEqual(changed, 2)
+        self.assertIn("name: Custom title", updated)
+        self.assertIn("color: '#AABBCC'", updated)
+        self.assertIn("command: /bin/zsh", updated)
+        self.assertEqual(updated.count("/workspace/acme/OldRepo"), 2)
+        second, second_changed = tabby_profile_sync.retarget_profile_cwds(
+            updated, {"/workspace/OldRepo": "/workspace/acme/OldRepo"}
+        )
+        self.assertEqual(second, updated)
+        self.assertEqual(second_changed, 0)
 
 
 class TestExtractExistingCwds(unittest.TestCase):
@@ -332,6 +361,148 @@ class TestGetProfileTargets(unittest.TestCase):
         )
 
         self.assertEqual([target["path"] for target in targets], [str(buzz_path)])
+
+
+class TestManagedProfileReconciliation(unittest.TestCase):
+    """Only confidently managed stale or duplicate profiles are removed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.existing = self.root / "existing"
+        self.existing.mkdir()
+
+    def _profile(self, name, cwd, profile_id=None, launch=None):
+        profile_id = profile_id or (
+            f"local:custom:{name}:12345678-1234-5678-1234-567812345678"
+        )
+        launch = launch or "exec aidevops opencode --tabby-shell"
+        return f"""  - name: {name}
+    options:
+      command: /bin/zsh
+      args:
+        - '-l'
+        - '-c'
+        - '{launch}'
+      cwd: {cwd}
+    id: {profile_id}
+    group: projects-1
+    type: local
+"""
+
+    def _config(self, profiles):
+        return (
+            "groups:\n  - id: projects-1\n    name: Projects\nprofiles:\n" + profiles
+        )
+
+    def test_removes_missing_unregistered_managed_profile(self):
+        missing = self.root / "missing"
+        config = self._config(self._profile("stale", missing))
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+        result = tabby_profile_sync.remove_profile_blocks(config, plan.removals)
+
+        self.assertEqual(len(plan.stale), 1)
+        self.assertNotIn("name: stale", result)
+
+    def test_preserves_missing_registered_managed_profile(self):
+        missing = self.root / "offline"
+        config = self._config(self._profile("offline", missing))
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(
+            config, {tabby_profile_sync.normalize_cwd(str(missing))}
+        )
+
+        self.assertEqual(plan.removals, [])
+
+    def test_removes_only_later_managed_duplicate(self):
+        config = self._config(
+            self._profile("first", self.existing)
+            + self._profile("second", self.existing)
+        )
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+        result = tabby_profile_sync.remove_profile_blocks(config, plan.removals)
+
+        self.assertEqual(len(plan.duplicates), 1)
+        self.assertIn("name: first", result)
+        self.assertNotIn("name: second", result)
+
+    def test_preserves_custom_profile_with_same_cwd(self):
+        custom = self._profile(
+            "custom",
+            self.existing,
+            profile_id="local:custom:user-created",
+            launch="custom-command",
+        )
+        config = self._config(self._profile("managed", self.existing) + custom)
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+
+        self.assertEqual(plan.removals, [])
+
+    def test_stale_removal_preserves_comment_before_custom_profile(self):
+        missing = self.root / "missing"
+        custom = self._profile(
+            "custom",
+            self.existing,
+            profile_id="local:custom:user-created",
+            launch="custom-command",
+        )
+        config = self._config(
+            self._profile("stale", missing) + "  # custom profile\n" + custom
+        )
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+        result = tabby_profile_sync.remove_profile_blocks(config, plan.removals)
+
+        self.assertIn("  # custom profile\n  - name: custom", result)
+
+    def test_preserves_existing_unregistered_managed_profile(self):
+        config = self._config(self._profile("orphan", self.existing))
+
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+
+        self.assertEqual(plan.removals, [])
+
+    def test_status_reports_pending_reconciliation_without_mutation(self):
+        missing = self.root / "missing"
+        config = self._config(self._profile("stale", missing))
+        before = config
+        plan = tabby_profile_sync.plan_profile_reconciliation(config, set())
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            tabby_profile_sync.show_status([], set(), plan)
+
+        self.assertEqual(config, before)
+        self.assertIn("Pending reconciliation: 1 stale managed", output.getvalue())
+
+    def test_two_fixture_syncs_are_idempotent(self):
+        repos_json = self.root / "repos.json"
+        tabby_config = self.root / "config.yaml"
+        repos_json.write_text(
+            '{{"initialized_repos":[{{"path":"{}"}}]}}'.format(self.existing)
+        )
+        tabby_config.write_text(
+            "version: 1\nprofiles: []\ngroups:\n"
+            "  - id: projects-1\n    name: Projects\n"
+        )
+        args = tabby_profile_sync.argparse.Namespace(
+            repos_json=str(repos_json), tabby_config=str(tabby_config)
+        )
+        output = io.StringIO()
+
+        with mock.patch.object(
+            tabby_profile_sync, "resolve_login_shell", return_value="/bin/zsh"
+        ), redirect_stdout(output):
+            tabby_profile_sync.sync_profiles(args)
+            first_sync = tabby_config.read_text()
+            tabby_profile_sync.sync_profiles(args)
+
+        self.assertEqual(tabby_config.read_text(), first_sync)
+        self.assertIn("Nothing to do", output.getvalue())
 
 
 class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):

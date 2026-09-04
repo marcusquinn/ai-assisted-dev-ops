@@ -1423,14 +1423,46 @@ _wt_registry_entry_count() {
 	return 0
 }
 
-# Prune stale registry entries (dead PIDs, missing directories, corrupted paths)
+# Reconcile ownership rows whose worktree directories still exist. Missing
+# directories are handled by the batch path below; surviving worktrees need the
+# generation-aware owner checks so dead runtimes and recycled PIDs do not leave
+# permanent registry locks. This updates registry metadata only and never
+# removes a worktree directory or bypasses downstream cleanup gates.
+_wt_registry_reconcile_existing_owners() {
+	local reconcile_limit="${WORKTREE_REGISTRY_RECONCILE_LIMIT:-500}"
+	[[ "$reconcile_limit" =~ ^[1-9][0-9]*$ && "$reconcile_limit" -le 5000 ]] || reconcile_limit=500
+
+	local separator=$'\x1f'
+	local entries=""
+	entries=$(sqlite3 -separator "$separator" "$WORKTREE_REGISTRY_DB" "
+        SELECT worktree_path, owner_pid
+        FROM worktree_owners
+        ORDER BY CASE WHEN COALESCE(owner_dead_seen_at, '') = '' THEN 1 ELSE 0 END,
+                 owner_dead_seen_at, created_at
+        LIMIT ${reconcile_limit};
+    " 2>/dev/null) || return 1
+	[[ -z "$entries" ]] && return 0
+
+	local my_pid="$$"
+	local wt_path=""
+	local _owner_pid=""
+	while IFS="$separator" read -r wt_path _owner_pid; do
+		[[ -n "$wt_path" && -d "$wt_path" ]] || continue
+		_wt_is_worktree_owned_by_others_for_resolved_pid "$wt_path" "$my_pid" \
+			>/dev/null 2>&1 || true
+	done <<<"$entries"
+	return 0
+}
+
+# Prune stale registry entries and reconcile dead or recycled owners.
 # (t197) Enhanced to handle:
-#   - Dead PIDs with missing directories
+#   - Dead or recycled owner processes for surviving worktree directories
+#   - Missing worktree directories
 #   - Paths with ANSI escape codes (corrupted entries)
 #   - Test artifacts in /tmp or /var/folders
 prune_worktree_registry() {
 	[[ ! -f "$WORKTREE_REGISTRY_DB" ]] && return 0
-	_init_registry_db
+	_init_registry_db || return 1
 
 	local pruned_count=0
 
@@ -1475,6 +1507,11 @@ prune_worktree_registry() {
 			[[ -n "${VERBOSE:-}" ]] && _wt_registry_print_pruned_entries "$stale_entries"
 		fi
 	fi
+
+	# Existing directories may still have abandoned ownership after runtime
+	# crashes. Reconcile those rows independently; deletion remains the normal
+	# guarded cleanup pipeline's responsibility.
+	_wt_registry_reconcile_existing_owners || return 1
 
 	[[ -n "${VERBOSE:-}" ]] && echo "Pruned $pruned_count entries total"
 	return 0

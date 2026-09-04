@@ -353,6 +353,36 @@ fi
 echo -e "${BLUE}=== MCP Diagnosis: $MCP_NAME ===${NC}"
 echo ""
 
+# Collect runtime configurations before checking versions so a runtime's actual
+# command is diagnosed rather than a same-named PATH executable.
+MCP_CONFIG_SEPARATOR=:
+MCP_REMOTE_TYPE=remote
+_MCP_DIAG_CONFIGS=()
+if type rt_detect_configured &>/dev/null; then
+	while IFS= read -r _rt_id; do
+		_cfg=$(rt_config_path "$_rt_id") || continue
+		[[ -n "$_cfg" && -f "$_cfg" ]] && _MCP_DIAG_CONFIGS+=("${_rt_id}${MCP_CONFIG_SEPARATOR}${_cfg}")
+	done < <(rt_detect_configured)
+fi
+# Fallback if registry is unavailable — check platform-aware candidates.
+if [[ ${#_MCP_DIAG_CONFIGS[@]} -eq 0 ]]; then
+	declare -a _fallback_candidates
+	_fallback_candidates=(
+		"claude-code${MCP_CONFIG_SEPARATOR}$HOME/.claude.json"
+		"claude-code${MCP_CONFIG_SEPARATOR}$HOME/.config/Claude/Claude.json"
+		"claude-code${MCP_CONFIG_SEPARATOR}$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+		"opencode${MCP_CONFIG_SEPARATOR}$HOME/.config/opencode/opencode.json"
+	)
+	_fc=""
+	_fc_rt=""
+	_fc_path=""
+	for _fc in "${_fallback_candidates[@]}"; do
+		_fc_rt="${_fc%%"${MCP_CONFIG_SEPARATOR}"*}"
+		_fc_path="${_fc#*"${MCP_CONFIG_SEPARATOR}"}"
+		[[ -f "$_fc_path" ]] && _MCP_DIAG_CONFIGS+=("${_fc_rt}${MCP_CONFIG_SEPARATOR}${_fc_path}")
+	done
+fi
+
 # 0. Detect if this is a remote/SSE MCP by reading its type from config files.
 # Config-driven: reads the 'type' field from the MCP entry rather than hardcoding names.
 MCP_IS_REMOTE=false
@@ -379,15 +409,15 @@ PYEOF
 # takes precedence over a disabled local entry in another config).
 while IFS= read -r _diag_cfg; do
 	_mcp_type=$(_detect_mcp_type "$MCP_NAME" "$_diag_cfg" 2>/dev/null)
-	if [[ "$_mcp_type" == "remote" || "$_mcp_type" == "sse" ]]; then
+	if [[ "$_mcp_type" == "$MCP_REMOTE_TYPE" || "$_mcp_type" == "sse" ]]; then
 		MCP_CONFIGURED_TYPE="$_mcp_type"
 		break
 	elif [[ -n "$_mcp_type" && -z "$MCP_CONFIGURED_TYPE" ]]; then
 		MCP_CONFIGURED_TYPE="$_mcp_type"
 	fi
-done < <(_collect_all_configs)
+done < <(for _diag_entry in "${_MCP_DIAG_CONFIGS[@]}"; do printf '%s\n' "${_diag_entry#*"${MCP_CONFIG_SEPARATOR}"}"; done)
 
-if [[ "$MCP_CONFIGURED_TYPE" == "remote" || "$MCP_CONFIGURED_TYPE" == "sse" ]]; then
+if [[ "$MCP_CONFIGURED_TYPE" == "$MCP_REMOTE_TYPE" || "$MCP_CONFIGURED_TYPE" == "sse" ]]; then
 	MCP_IS_REMOTE=true
 fi
 
@@ -404,6 +434,104 @@ context7)
 	NPM_PKG="$MCP_NAME"
 	;;
 esac
+
+# Safely version-check a configured local command array. Shell strings and
+# shell runners are intentionally excluded: diagnostics must not evaluate
+# configuration content. Package runners are accepted only for their exact
+# configured MCP package shape.
+_configured_command_version() {
+	local config_file="$1"
+	local mcp_name="$2"
+
+	python3 - "$config_file" "$mcp_name" <<'PYEOF'
+import json
+import os
+import subprocess
+import sys
+
+config_file, mcp_name = sys.argv[1:]
+try:
+    with open(config_file) as stream:
+        config = json.load(stream)
+    entry = config.get('mcp', config.get('mcpServers', {})).get(mcp_name, {})
+    command = entry.get('command')
+    if (entry.get('enabled', True) is False or entry.get('type') in ('remote', 'sse')
+            or not isinstance(command, list) or not command
+            or len(command) > 8 or any(not isinstance(part, str) or not part or '\x00' in part for part in command)):
+        raise ValueError('no safe configured command array')
+
+    executable = command[0]
+    runner = os.path.basename(executable)
+    shell_runners = {'sh', 'bash', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh'}
+    if runner in shell_runners:
+        raise ValueError('shell runner is not safe for diagnostics')
+
+    if runner == 'npx':
+        package_args = command[1:]
+        if len(package_args) == 2 and package_args[0] in ('-y', '--yes'):
+            package_args = package_args[1:]
+        if len(package_args) != 1 or package_args[0] not in (mcp_name, f'{mcp_name}@latest') and not package_args[0].startswith(f'{mcp_name}@'):
+            raise ValueError('unsupported npx package invocation')
+        invocation = [executable, *command[1:], '--version']
+    elif runner == 'bun':
+        if len(command) != 3 or command[1] != 'x' or (command[2] != mcp_name and not command[2].startswith(f'{mcp_name}@')):
+            raise ValueError('unsupported bun package invocation')
+        invocation = [*command, '--version']
+    else:
+        invocation = [executable, '--version']
+
+    result = subprocess.run(
+        invocation,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=3,
+        check=False,
+    )
+    relay_port = '19988'
+    for index, part in enumerate(command):
+        if part == '--port' and index + 1 < len(command) and command[index + 1].isdigit():
+            relay_port = command[index + 1]
+        elif part.startswith('--port=') and part[7:].isdigit():
+            relay_port = part[7:]
+    if not 1 <= int(relay_port) <= 65535:
+        relay_port = '19988'
+
+    version = result.stdout.splitlines()[0].strip() if result.stdout else 'unknown'
+    version = version.replace('\t', ' ')[:160]
+    print(f'{executable}\t{version}\t{relay_port}')
+except Exception:
+    pass
+PYEOF
+	return 0
+}
+
+# Query only the configured localhost relay port; never follow URLs or print
+# its environment. The endpoint's JSON version is sufficient for mismatch
+# diagnosis and the one-second timeout bounds a stale relay.
+_playwriter_relay_version() {
+	local relay_port="$1"
+
+	python3 - "$relay_port" <<'PYEOF'
+import http.client
+import json
+import sys
+
+try:
+    connection = http.client.HTTPConnection('127.0.0.1', int(sys.argv[1]), timeout=1)
+    connection.request('GET', '/version')
+    response = connection.getresponse()
+    if 200 <= response.status < 300:
+        version = json.loads(response.read(1024).decode("utf-8")).get("version")
+        if isinstance(version, str):
+            print(version.replace('\t', ' ').replace('\n', ' ')[:160])
+    connection.close()
+except Exception:
+    pass
+PYEOF
+	return 0
+}
 
 if [[ "$MCP_IS_REMOTE" == "true" ]]; then
 	echo -e "   ${CYAN}[remote]${NC} $MCP_NAME is a remote/SSE MCP (type: ${MCP_CONFIGURED_TYPE}) — no local command required."
@@ -438,9 +566,55 @@ fi
 if command -v "$CLI_CMD" &>/dev/null; then
 	echo -e "   ${GREEN}✓ Command found: $(which "$CLI_CMD")${NC}"
 	INSTALLED_VERSION=$("$CLI_CMD" --version 2>/dev/null | head -1 || echo 'unknown')
-	echo "   Version: $INSTALLED_VERSION"
+	echo "   PATH version: $INSTALLED_VERSION"
 else
 	echo -e "   ${RED}✗ Command not found: $CLI_CMD${NC}"
+	INSTALLED_VERSION="unknown"
+fi
+
+# Check every enabled local runtime configuration before comparing versions.
+_configured_version_found=0
+_playwriter_relay_port=19988
+_playwriter_configured_version="unknown"
+for _diag_entry in "${_MCP_DIAG_CONFIGS[@]}"; do
+	_diag_rt="${_diag_entry%%"${MCP_CONFIG_SEPARATOR}"*}"
+	CONFIG_FILE="${_diag_entry#*"${MCP_CONFIG_SEPARATOR}"}"
+	_diag_name="$_diag_rt"
+	if type rt_display_name &>/dev/null; then
+		_diag_name=$(rt_display_name "$_diag_rt") || _diag_name="$_diag_rt"
+	fi
+	_configured_command_info=$(_configured_command_version "$CONFIG_FILE" "$MCP_NAME")
+	[[ -z "$_configured_command_info" ]] && continue
+	IFS=$'\t' read -r _configured_executable _configured_version _configured_relay_port <<<"$_configured_command_info"
+	[[ -z "$_configured_executable" ]] && continue
+	_configured_version_found=1
+	if [[ "$MCP_NAME" == "playwriter" && -n "$_configured_relay_port" ]]; then
+		_playwriter_relay_port="$_configured_relay_port"
+		_playwriter_configured_version="$_configured_version"
+	fi
+	echo -e "   ${GREEN}✓ Configured command in ${_diag_name}: ${_configured_executable}${NC}"
+	echo "   Configured version: $_configured_version"
+	if [[ "$INSTALLED_VERSION" != "unknown" && "$_configured_version" != "unknown" && "$INSTALLED_VERSION" != "$_configured_version" ]]; then
+		echo -e "   ${YELLOW}⚠️  VERSION MISMATCH - ${_diag_name} uses $_configured_version, PATH reports $INSTALLED_VERSION${NC}"
+	fi
+done
+
+if [[ "$MCP_NAME" == "playwriter" ]]; then
+	_relay_version=$(_playwriter_relay_version "$_playwriter_relay_port")
+	if [[ -n "$_relay_version" ]]; then
+		echo "   Live local relay version: $_relay_version"
+		if [[ "$INSTALLED_VERSION" != "unknown" && "$_relay_version" != "$INSTALLED_VERSION" ]]; then
+			echo -e "   ${YELLOW}⚠️  VERSION MISMATCH - live relay uses $_relay_version, PATH reports $INSTALLED_VERSION${NC}"
+		fi
+		if [[ "$_playwriter_configured_version" != "unknown" && "$_relay_version" != "$_playwriter_configured_version" ]]; then
+			echo -e "   ${YELLOW}⚠️  VERSION MISMATCH - live relay uses $_relay_version, configured command reports $_playwriter_configured_version${NC}"
+		fi
+	else
+		echo "   Live local relay version: unavailable"
+	fi
+fi
+
+if [[ "$INSTALLED_VERSION" == "unknown" && "$_configured_version_found" -eq 0 ]]; then
 	echo "   Try: npm install -g $NPM_PKG"
 	exit 1
 fi
@@ -449,7 +623,7 @@ fi
 echo ""
 echo "2. Checking for updates..."
 LATEST_VERSION=$(npm view "$NPM_PKG" version 2>/dev/null || echo "unknown")
-echo "   Installed: $INSTALLED_VERSION"
+echo "   PATH installed: $INSTALLED_VERSION"
 echo "   Latest:    $LATEST_VERSION"
 
 if [[ "$INSTALLED_VERSION" != *"$LATEST_VERSION"* ]] && [[ "$LATEST_VERSION" != "unknown" ]]; then
@@ -459,33 +633,6 @@ fi
 # 3. Check runtime configs for MCP (t1665.5 — registry-driven)
 echo ""
 echo "3. Checking runtime configurations..."
-
-# Build list of config files to check from registry, fallback to hardcoded
-_MCP_DIAG_CONFIGS=()
-if type rt_detect_configured &>/dev/null; then
-	while IFS= read -r _rt_id; do
-		_cfg=$(rt_config_path "$_rt_id") || continue
-		[[ -n "$_cfg" && -f "$_cfg" ]] && _MCP_DIAG_CONFIGS+=("$_rt_id:$_cfg")
-	done < <(rt_detect_configured)
-fi
-# Fallback if registry not loaded or no configs found — check platform-aware candidates
-if [[ ${#_MCP_DIAG_CONFIGS[@]} -eq 0 ]]; then
-	declare -a _fallback_candidates
-	_fallback_candidates=(
-		"claude-code:$HOME/.claude.json"
-		"claude-code:$HOME/.config/Claude/Claude.json"
-		"claude-code:$HOME/Library/Application Support/Claude/claude_desktop_config.json"
-		"opencode:$HOME/.config/opencode/opencode.json"
-	)
-	_fc=""
-	_fc_rt=""
-	_fc_path=""
-	for _fc in "${_fallback_candidates[@]}"; do
-		_fc_rt="${_fc%%:*}"
-		_fc_path="${_fc#*:}"
-		[[ -f "$_fc_path" ]] && _MCP_DIAG_CONFIGS+=("${_fc_rt}:${_fc_path}")
-	done
-fi
 
 _mcp_found_in_any=0
 for _diag_entry in "${_MCP_DIAG_CONFIGS[@]}"; do

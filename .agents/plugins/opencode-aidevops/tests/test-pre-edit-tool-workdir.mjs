@@ -156,6 +156,8 @@ test("slow loop-mode creation is reported exactly once beyond the former timeout
     git(repo, ["commit", "--no-gpg-sign", "-m", "init"]);
     writeFileSync(join(fixtureScripts, "pre-edit-check.sh"), `#!/usr/bin/env bash
 set -eu
+[[ "\${OPENCODE_SESSION_ID:-}" == "ses_pre_edit_fixture" ]] || exit 9
+[[ "\${OPENCODE_PID:-}" =~ ^[0-9]+$ ]] || exit 10
 linked=${JSON.stringify(linked)}
 if ! /usr/bin/git -C "$PWD" show-ref --verify --quiet refs/heads/bugfix/slow-fixture; then
   sleep 10.1
@@ -165,8 +167,9 @@ printf 'LOOP_DECISION=worktree_created\\nWORKTREE_PATH=%s\\nNEXT_STEP: cd to the
 `);
 
     const preEditTool = createTools(fixtureScripts, () => "").aidevops_pre_edit_check;
-    const firstResult = await preEditTool.execute({ workdir: repo, task: "fix slow fixture" });
-    const secondResult = await preEditTool.execute({ workdir: repo, task: "fix slow fixture" });
+    const context = { sessionID: "ses_pre_edit_fixture" };
+    const firstResult = await preEditTool.execute({ workdir: repo, task: "fix slow fixture" }, context);
+    const secondResult = await preEditTool.execute({ workdir: repo, task: "fix slow fixture" }, context);
 
     assert.match(firstResult, /Pre-edit check PASSED \(exit 0\)/);
     assert.match(firstResult, new RegExp(`WORKTREE_PATH=${linked.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));

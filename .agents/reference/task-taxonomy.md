@@ -18,7 +18,7 @@ Apply a domain tag only when the task clearly belongs to a specialist agent. Cod
 | SEO audit, keywords, GSC, schema markup, rankings | `#seo` | `seo` | SEO |
 | Blog posts, articles, newsletters, video scripts, social copy | `#content` | `content` | Content |
 | Email campaigns, FluentCRM, landing pages | `#marketing` | `marketing` | Marketing |
-| Invoicing, receipts, financial ops, bookkeeping | `#accounts` | `accounts` | Accounts |
+| Bookkeeping, reconciliation, accounting software, invoicing, receipts, AR/AP, financial reporting | `#accounts` | `accounts` | Accounts |
 | Compliance, terms of service, privacy policy, GDPR | `#legal` | `legal` | Legal |
 | Tech research, competitive analysis, market research, spikes | `#research` | `research` | Research |
 | CRM pipeline, proposals, outreach | `#sales` | `sales` | Sales |

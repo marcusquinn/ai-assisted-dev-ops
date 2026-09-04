@@ -836,11 +836,38 @@ setup_google_analytics_mcp() {
 	return 0
 }
 
+_setup_quickfile_mcp_runtime_ready() {
+	local quickfile_dir="$1"
+	local required_node=""
+	local current_node=""
+
+	if [[ ! -f "$quickfile_dir/.nvmrc" ]]; then
+		print_warning "QuickFile MCP runtime contract missing: $quickfile_dir/.nvmrc"
+		return 1
+	fi
+	required_node="$(<"$quickfile_dir/.nvmrc")"
+	required_node="${required_node#v}"
+	current_node="$(node --version)" || {
+		print_warning "Unable to determine the active Node.js version"
+		return 1
+	}
+	current_node="${current_node#v}"
+	if [[ "$current_node" != "$required_node" ]]; then
+		print_warning "QuickFile MCP requires Node.js $required_node; active version is $current_node"
+		print_info "Run: cd $quickfile_dir && nvm install && nvm use"
+		return 1
+	fi
+	return 0
+}
+
 _setup_quickfile_mcp_clone_and_build() {
 	# Clone and build the QuickFile MCP server. Returns 1 if user skips or build fails.
 	local quickfile_dir="$1"
+	local package_manager=""
+	local -a npm_command=()
 
 	if [[ -f "$quickfile_dir/dist/index.js" ]]; then
+		_setup_quickfile_mcp_runtime_ready "$quickfile_dir" || return 1
 		print_success "QuickFile MCP already installed at $quickfile_dir"
 		return 0
 	fi
@@ -864,12 +891,27 @@ _setup_quickfile_mcp_clone_and_build() {
 		print_success "Cloned quickfile-mcp"
 	fi
 
-	if ! run_with_spinner "Installing dependencies" npm install --prefix "$quickfile_dir"; then
-		print_warning "npm install failed - try manually: cd $quickfile_dir && npm install"
+	_setup_quickfile_mcp_runtime_ready "$quickfile_dir" || return 1
+	package_manager=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).packageManager || ""' "$quickfile_dir/package.json") || {
+		print_warning "Unable to read QuickFile MCP's packageManager contract"
+		return 1
+	}
+	if [[ "$package_manager" != npm@* ]]; then
+		print_warning "QuickFile MCP requires an explicit npm packageManager version"
+		return 1
+	fi
+	if ! command -v corepack >/dev/null 2>&1; then
+		print_warning "QuickFile MCP requires Corepack to select $package_manager"
+		print_info "Install or enable Corepack after selecting the declared Node.js version"
+		return 1
+	fi
+	npm_command=(corepack "$package_manager")
+	if ! run_with_spinner "Installing dependencies" "${npm_command[@]}" ci --prefix "$quickfile_dir"; then
+		print_warning "npm ci failed - try manually after selecting the versions declared by quickfile-mcp"
 		return 1
 	fi
 
-	if ! run_with_spinner "Building QuickFile MCP" npm run build --prefix "$quickfile_dir"; then
+	if ! run_with_spinner "Building QuickFile MCP" "${npm_command[@]}" run build --prefix "$quickfile_dir"; then
 		print_warning "Build failed - try manually: cd $quickfile_dir && npm run build"
 		return 1
 	fi
@@ -897,7 +939,7 @@ _setup_quickfile_mcp_check_tokens() {
 		print_success "QuickFile bearer tokens configured for ${token_count} account(s)"
 	else
 		print_info "No QuickFile REST bearer tokens found"
-		print_info "Create a personal token: Account Settings > Third Party Integration > API"
+		print_info "Create a personal token from the QuickFile Developer Dashboard in the account menu"
 		print_info "Store one alias at a time: aidevops secret set QUICKFILE_BUSINESS_API_KEY"
 	fi
 	return 0
@@ -932,12 +974,19 @@ _setup_quickfile_mcp_update_opencode() {
 }
 
 setup_quickfile_mcp() {
-	local quickfile_dir="$HOME/Git/mcp/quickfile-mcp"
+	local canonical_quickfile_dir="$HOME/Git/mcp/quickfile-mcp"
+	local legacy_quickfile_dir="$HOME/Git/quickfile-mcp"
+	local quickfile_dir="$canonical_quickfile_dir"
+
+	if [[ ! -e "$canonical_quickfile_dir" && -f "$legacy_quickfile_dir/package.json" ]]; then
+		quickfile_dir="$legacy_quickfile_dir"
+		print_info "Using the existing legacy QuickFile MCP path: $legacy_quickfile_dir"
+	fi
 
 	# Check prerequisites before announcing setup (GH#5240)
 	if ! command -v node &>/dev/null; then
-		print_skip "QuickFile MCP" "Node.js not installed" "Install Node.js 18+: brew install node (macOS) or nvm install 18"
-		setup_track_deferred "QuickFile MCP" "Install Node.js 18+"
+		print_skip "QuickFile MCP" "Node.js not installed" "Install nvm; setup enforces quickfile-mcp's exact .nvmrc version"
+		setup_track_deferred "QuickFile MCP" "Install the Node.js version declared by quickfile-mcp"
 		return 0
 	fi
 

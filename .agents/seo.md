@@ -30,6 +30,7 @@ subagents:
   - upscale
   - content-analyzer
   - seo-optimizer
+  - youtube-description-link-acquisition
   - keyword-mapper
   - geo-strategy
   - sro-grounding
@@ -61,6 +62,7 @@ subagents:
 - **Analytics**: `google-analytics` (GA4 reporting) | `analytics-tracking` (GA4 setup, events, UTM, attribution)
 - **Technical**: `site-crawler` (links, meta, redirects) | `screaming-frog` (SEO Spider CLI) | `contentking` (real-time monitoring) | `pagespeed`
 - **Content**: `content-analyzer` (readability, keywords, quality) | `seo-optimizer` (on-page audit) | `eeat-score` (7 criteria, 1-10) | `programmatic-seo` (pages at scale)
+- **Off-site experiments**: `youtube-description-link-acquisition` (contextual sponsored placements in already-ranking videos; controlled measurement and link-spam guardrails)
 - **AI search**: `geo-strategy` (criteria extraction, retrieval-first) | `sro-grounding` (snippet selection) | `ai-hallucination-defense` (claim-evidence audits) | `ai-agent-discovery` (discoverability) | `ai-search-readiness` (end-to-end orchestration)
 - **Media/debug**: `image-seo` (alt text, Moondream) | `upscale` | `moondream` | `rich-results` (browser automation) | `debug-opengraph` | `debug-favicon`
 - **Export**: `data-export` (GSC, Bing, Ahrefs, DataForSEO → TOON) | `gsc-sitemaps` (Playwright submission)
@@ -78,6 +80,8 @@ subagents:
 **AI search (GEO/SRO)**: intent evidence → baseline → fanout → GEO → SRO → hallucination defense → agent discovery. Focus: deterministic retrieval signals (clarity, structure, consistency, discoverability). Scorecard: `seo/ai-search-readiness.md`.
 
 **SERP/backlinks/technical**: SERP via DataForSEO (comprehensive) or Serper (quick) | Backlinks via DataForSEO or Ahrefs | PageSpeed/CWV: `tools/browser/pagespeed.md` | On-page: DataForSEO | Crawling: `seo/site-crawler.md` | Real-time monitoring: `seo/contentking.md`.
+
+**YouTube description-link acquisition**: When testing paid contextual links in existing videos that already rank for a target query, use `seo/youtube-description-link-acquisition.md`. Treat discovery, referral, rankings, and AI citations as separate outcomes; never buy unqualified ranking credit.
 
 **Site audit** (output: `~/Downloads/{domain}/{datestamp}/` CSV/XLSX):
 

@@ -10,6 +10,8 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | Domain | Trigger words | Entry point |
 |--------|---------------|-------------|
 | Business | company ops, strategy, finance, invoice, receipts, runners | `business.md`, `business/company-runners.md` |
+| Accounting | bookkeeping, bank statements, reconciliation, chart of accounts, debtors, creditors, management accounts, cash flow | `business/accounting.md` |
+| Accounting software | QuickFile, Xero, QuickBooks, FreeAgent, Sage, Zoho Books, accounting integration | `business/accounting-software.md` |
 | Planning | plan, define, roadmap, tasks, brief, decomposition, beads | `workflows/plans.md`, `scripts/commands/define.md`, `tools/task/beads.md` |
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | `legal.md`, `tools/legal/legal-research.md` |
 | Code quality | lint, review, smells, standards, simplify, audit | `tools/code-review/code-standards.md` |
@@ -28,6 +30,7 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | WordPress | WordPress, WP, plugin, theme, MainWP, LocalWP, wp-cli, production clone | `tools/wordpress.md`, `workflows/wordpress-local-clone.md` |
 | Shopify | Shopify, Liquid, Admin API, store, product catalog | `configs/mcp-templates/shopify-dev-mcp-config.json.txt` — set `platform:shopify` in repos.json to auto-enable Shopify Dev MCP. |
 | Communications | chat, Slack, Discord, Matrix, Telegram, WhatsApp, Signal | `services/communications/bitchat.md`, `services/communications/convos.md`, `services/communications/discord.md`, `services/communications/google-chat.md`, `services/communications/imessage.md`, `services/communications/matterbridge.md`, `services/communications/matrix-bot.md`, `services/communications/msteams.md`, `services/communications/nextcloud-talk.md`, `services/communications/nostr.md`, `services/communications/signal.md`, `services/communications/simplex.md`, `services/communications/slack.md`, `services/communications/telegram.md`, `services/communications/urbit.md`, `services/communications/whatsapp.md`, `services/communications/xmpp.md` |
+| Team interfaces | Buzz, virtual assistant server, shared AI team, agent identity, repository collaboration | `tools/ai-assistants/buzz-team-interface.md`, `reference/team-interface-buzz-provisioning.md`, `reference/team-interfaces.md` |
 | Email | email, mailbox, deliverability, SMTP, newsletter, Google Workspace | `tools/ui/react-email.md`, `services/email/email-agent.md`, `services/email/email-mailbox.md`, `services/email/email-actions.md`, `services/email/email-intelligence.md`, `services/email/email-providers.md`, `services/email/email-security.md`, `services/email/email-testing.md`, `services/email/email-composition.md`, `services/email/email-inbound-commands.md`, `services/email/google-workspace.md` |
 | Outreach | cold email, sales outreach, leads, Smartlead, Instantly, warmup | `services/outreach/cold-outreach.md`, `services/outreach/smartlead.md`, `services/outreach/instantly.md`, `services/outreach/manyreach.md` |
 | Payments | Stripe, RevenueCat, subscriptions, billing, procurement | `services/payments/revenuecat.md`, `services/payments/stripe.md`, `services/payments/procurement.md` |

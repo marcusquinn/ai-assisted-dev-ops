@@ -6,6 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
 QUICKFILE_HELPER="${SCRIPT_DIR}/../quickfile-helper.sh"
+QUICKFILE_LAUNCHER="${SCRIPT_DIR}/../quickfile-mcp-launcher.sh"
 OCR_HELPER="${SCRIPT_DIR}/../ocr-receipt-helper.sh"
 TEMP_PARENT="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 
@@ -140,6 +141,57 @@ if any("vat_rate" in item for item in data["line_items"]):
 ' || vat_status=$?
 assert_case "OCR QuickFile flow omits an unspecified VAT rate" \
 	"$([[ "$status" -eq 0 && "$vat_status" -eq 0 ]] && printf true || printf false)"
+
+launcher_project="${TEST_DIR}/Git/quickfile-mcp"
+mkdir -p "${launcher_project}/dist"
+printf '%s\n' '24.19.0' >"${launcher_project}/.nvmrc"
+: >"${launcher_project}/dist/index.js"
+cat >"${fake_bin}/node" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+	printf '%s\n' "${FAKE_NODE_VERSION:-v24.19.0}"
+	exit 0
+fi
+exit 1
+SCRIPT
+cat >"${fake_bin}/aidevops" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "secret" && "${2:-}" == "inventory" ]]; then
+	printf '%s\n' '{"secrets":[{"name":"QUICKFILE_TEST_API_KEY","status":"configured"}]}'
+	exit 0
+fi
+exit 1
+SCRIPT
+chmod +x "${fake_bin}/node" "${fake_bin}/aidevops"
+
+output=""
+status=0
+output="$(HOME="$TEST_DIR" FAKE_NODE_VERSION=v24.19.0 AIDEVOPS_BIN="${fake_bin}/aidevops" NODE_BIN="${fake_bin}/node" QUICKFILE_MCP_LAUNCHER_DRY_RUN=1 bash "$QUICKFILE_LAUNCHER" 2>&1)" || status=$?
+assert_case "QuickFile launcher accepts the exact .nvmrc runtime" \
+	"$([[ "$status" -eq 0 && "$output" == *"validated 1 account token"* ]] && printf true || printf false)"
+
+output=""
+status=0
+output="$(HOME="$TEST_DIR" FAKE_NODE_VERSION=v26.4.0 AIDEVOPS_BIN="${fake_bin}/aidevops" NODE_BIN="${fake_bin}/node" QUICKFILE_MCP_LAUNCHER_DRY_RUN=1 bash "$QUICKFILE_LAUNCHER" 2>&1)" || status=$?
+assert_case "QuickFile launcher rejects a runtime that differs from .nvmrc" \
+	"$([[ "$status" -ne 0 && "$output" == *"requires Node.js 24.19.0"* ]] && printf true || printf false)"
+
+nvm_node="${TEST_DIR}/.nvm/versions/node/v24.19.0/bin/node"
+mkdir -p "$(dirname "$nvm_node")"
+cat >"$nvm_node" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+	printf '%s\n' 'v24.19.0'
+	exit 0
+fi
+exit 1
+SCRIPT
+chmod +x "$nvm_node"
+output=""
+status=0
+output="$(HOME="$TEST_DIR" PATH="${fake_bin}:${PATH}" FAKE_NODE_VERSION=v26.4.0 NODE_BIN="" AIDEVOPS_BIN="${fake_bin}/aidevops" QUICKFILE_MCP_LAUNCHER_DRY_RUN=1 bash "$QUICKFILE_LAUNCHER" 2>&1)" || status=$?
+assert_case "QuickFile launcher finds a legacy install and its exact nvm runtime" \
+	"$([[ "$status" -eq 0 && "$output" == *"validated 1 account token"* ]] && printf true || printf false)"
 
 printf 'Tests run: %d, failed: %d\n' "$tests_run" "$tests_failed"
 [[ "$tests_failed" -eq 0 ]] || exit 1

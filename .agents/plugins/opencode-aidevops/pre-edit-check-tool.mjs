@@ -232,7 +232,7 @@ export function createPreEditCheckTool(tool, z, scriptsDir, timeoutMs = 120000) 
       workdir: z.string().optional().describe('Optional target Git worktree to validate'),
       targetPaths: z.array(z.string()).optional().describe('Optional intended write paths, resolved relative to workdir'),
     },
-    async execute(args) {
+    async execute(args, context) {
       const normalizedArgs = args && typeof args === "object" ? args : {};
       let invocation;
       try {
@@ -245,7 +245,7 @@ export function createPreEditCheckTool(tool, z, scriptsDir, timeoutMs = 120000) 
       const taskArgs = repositoryTarget
         ? [...(normalizedArgs.task ? ["--loop-mode"] : []), "--file", repositoryTarget]
         : (normalizedArgs.task ? ["--loop-mode", "--task", normalizedArgs.task] : []);
-      const result = await runPreEditCheck(script, taskArgs, targetWorkdir, timeoutMs);
+      const result = await runPreEditCheck(script, taskArgs, targetWorkdir, timeoutMs, context);
       return formatPreEditCheckResult(result, timeoutMs);
     },
   });
@@ -258,13 +258,24 @@ export function createPreEditCheckTool(tool, z, scriptsDir, timeoutMs = 120000) 
  * @param {string[]} args
  * @param {string} cwd
  * @param {number} timeoutMs
+ * @param {object} [context] - OpenCode tool context
  * @returns {Promise<{code: number|null, stdout: string, stderr: string, timedOut: boolean, error?: Error}>}
  */
-function runPreEditCheck(script, args, cwd, timeoutMs) {
+function runPreEditCheck(script, args, cwd, timeoutMs, context) {
   return new Promise((resolve) => {
+    const sessionID = String(context?.sessionID || "");
+    const sessionEnv = /^ses_[A-Za-z0-9_-]+$/.test(sessionID)
+      ? {
+          OPENCODE: "1",
+          OPENCODE_PID: String(process.pid),
+          OPENCODE_SESSION_ID: sessionID,
+          AIDEVOPS_OPENCODE_SESSION_ID: sessionID,
+        }
+      : {};
     const child = spawn("bash", [script, ...args], {
       cwd,
       detached: true,
+      env: { ...process.env, ...sessionEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

@@ -26,16 +26,17 @@ export function toolCallSucceeded(output) {
  * @param {0 | 1} args.isSuccess
  * @param {number | null | undefined} args.durationMs - Elapsed ms, or null/undefined to store SQL NULL
  * @param {object | null | undefined} args.metadata - Raw metadata object; summarized before persistence
+ * @param {"explicit" | "fallback" | undefined} args.intentSource - Intent provenance
  * @param {string | null | undefined} args.outcomeCategory - Bounded outcome classification
  * @returns {string} INSERT statement ready for sqliteExec
  */
 export function buildToolCallInsertSql({
-  sessionID, callID, toolName, intent, isSuccess, durationMs, metadata, outcomeCategory,
+  sessionID, callID, toolName, intent, isSuccess, durationMs, metadata, intentSource, outcomeCategory,
 }) {
   const durationSql = (durationMs !== null && durationMs !== undefined)
     ? String(durationMs)
     : "NULL";
-  const metadataSummary = summarizeToolMetadata(metadata);
+  const metadataSummary = summarizeToolMetadata(metadata, { intentSource });
   const metadataValue = metadataSummary === null ? null : JSON.stringify(metadataSummary);
 
   return `INSERT INTO tool_calls (

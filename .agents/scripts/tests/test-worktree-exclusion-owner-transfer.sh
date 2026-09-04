@@ -223,7 +223,7 @@ test_legacy_marker_allows_safe_owner_transfer() {
 	_hrw_claim_worker_worktree "issue-27164" "$FIXTURE_WORKTREE" >/dev/null || result=1
 	local status_output=""
 	status_output=$(git -C "$FIXTURE_WORKTREE" status --porcelain)
-	if [[ "$claim_calls" -ne 2 || "$transfer_calls" -ne 1 || "$unregister_calls" -ne 0 || -n "$status_output" ]]; then
+	if [[ "$claim_calls" -ne 1 || "$transfer_calls" -ne 1 || "$unregister_calls" -ne 0 || -n "$status_output" ]]; then
 		result=1
 	fi
 	unset -f claim_worktree_ownership check_worktree_owner_snapshot unregister_worktree \

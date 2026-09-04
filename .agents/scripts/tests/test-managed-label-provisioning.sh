@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
-# Regression coverage for existence-aware origin:* and solved:* provisioning.
+# Regression coverage for existence-aware managed-label provisioning.
 
 set -uo pipefail
 
@@ -92,6 +92,29 @@ managed_labels_ensure_tracking_set owner/repo \
 assert_count "tracking set provisions status label" 1 'gh label create status:in-review '
 assert_count "tracking set provisions bug label" 1 'gh label create bug '
 assert_count "tracking set reuses present origins" 0 'gh label create origin:'
+
+# Approval transitions provision every label before posting signed evidence.
+: >"$CALL_LOG"
+TEST_LABEL_SNAPSHOT='needs-maintainer-review'
+managed_labels_ensure_approval_set owner/repo issue \
+	_gh_managed_label_names_snapshot _gh_managed_label_create_runner
+assert_count "issue approval creates missing dispatch label" 1 'gh label create auto-dispatch '
+assert_count "issue approval creates missing dispatch mutex label" 1 'gh label create no-auto-dispatch '
+assert_count "issue approval reuses present review label" 0 'gh label create needs-maintainer-review '
+
+: >"$CALL_LOG"
+TEST_LABEL_SNAPSHOT=$'needs-maintainer-review\nauto-dispatch\nno-auto-dispatch'
+managed_labels_ensure_approval_set owner/repo issue \
+	_gh_managed_label_names_snapshot _gh_managed_label_create_runner
+assert_count "converged issue approval performs zero creates" 0 'write route=managed-label-create-rest gh label create'
+
+: >"$CALL_LOG"
+TEST_LABEL_SNAPSHOT=""
+managed_labels_ensure_approval_set owner/repo pr \
+	_gh_managed_label_names_snapshot _gh_managed_label_create_runner
+assert_count "PR approval creates only the review label" 1 'gh label create needs-maintainer-review '
+assert_count "PR approval does not create dispatch label" 0 'gh label create auto-dispatch '
+assert_count "PR approval does not create dispatch mutex label" 0 'gh label create no-auto-dispatch '
 
 # Failed inventory is fail-closed: do not fan out speculative writes or cache.
 : >"$CALL_LOG"

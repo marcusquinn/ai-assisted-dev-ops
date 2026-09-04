@@ -1,6 +1,6 @@
 ---
 name: business
-description: Company orchestration - AI agents managing company functions including financial operations, invoicing, receipts
+description: Company orchestration - accounting, finance, legal, marketing, operations, and sales agents
 mode: subagent
 tools:
   read: true
@@ -11,6 +11,8 @@ tools:
   grep: true
 subagents:
   - company-runners
+  - accounting
+  - accounting-software
   - accounts-receipt-ocr
   - accounts-subscription-audit
   - marketing-sales
@@ -26,10 +28,11 @@ subagents:
 
 ## Quick Reference
 
-- **Purpose**: Orchestrate AI agents across company functions (HR, Finance, Operations, Marketing)
+- **Purpose**: Orchestrate AI agents across company functions (HR, Accounting, Finance, Operations, Marketing)
 - **Pattern**: Named runners per function, coordinated via pulse supervisor (t109)
 - **Scripts**: `runner-helper.sh`, `mail-helper.sh`, `/pulse`, `/full-loop`
-- **Subagents**: `accounts-receipt-ocr.md`, `accounts-subscription-audit.md`, `marketing-sales.md`, `legal.md`
+- **Accounting**: `business/accounting.md`; provider catalogue: `business/accounting-software.md`
+- **Subagents**: `accounting.md`, `accounting-software.md`, `accounts-receipt-ocr.md`, `accounts-subscription-audit.md`, `marketing-sales.md`, `legal.md`
 - **Runner configs**: `business/company-runners.md`
 
 <!-- AI-CONTEXT-END -->
@@ -45,13 +48,13 @@ Pulse supervisor (every 2 min, stateless)
 
 Named Runners:
 ├── hiring-coordinator   — Recruitment pipeline
-├── finance-reviewer     — Expense/invoice review
+├── finance-reviewer     — Accounting, reconciliation, cash flow, and control review
 ├── ops-monitor          — Infrastructure monitoring
 ├── marketing-scheduler  — Campaign scheduling
 └── support-triage       — Customer issue classification
 ```
 
-**Flow**: Task arrives (issue/TODO/mailbox) → pulse dispatches to runner → worker executes → pulse observes outcomes → files improvement issues if patterns emerge.
+**Flow**: Task arrives (issue/TODO/mailbox) → pulse dispatches to specialist or runner → worker executes the provider-neutral domain workflow → pulse observes outcomes → files improvement issues if patterns emerge.
 
 ## Guardrails
 
@@ -62,7 +65,7 @@ Inherited from `/full-loop` and worktree isolation:
 - **Rollback**: Worktree isolation — each runner works in its own worktree
 - **Judgment**: `/full-loop` decides stop/retry/escalate
 
-Finance and legal runners require dedicated worktrees + PR review gates.
+Accounting, finance, and legal runners require dedicated worktrees + PR review gates. Accounting work follows `business/accounting.md`; select integrations through `business/accounting-software.md`, and never post entries, make payments, or file returns without the required approval and read-back verification.
 
 ## Setting Up Runners
 
@@ -72,7 +75,7 @@ Create via `runner-helper.sh`. Each runner gets a personality file at `~/.aidevo
 runner-helper.sh create hiring-coordinator \
   --description "Recruitment - job posts, screening, scheduling" --model sonnet
 runner-helper.sh create finance-reviewer \
-  --description "Expense review - OCR, approval, QuickFile sync" --model sonnet
+  --description "Accounting review - reconciliation, controls, reporting" --model sonnet
 runner-helper.sh create ops-monitor \
   --description "Infrastructure - uptime, deploys, incidents" --model haiku
 
@@ -102,3 +105,4 @@ Sequenced single-department work (e.g., monthly close) uses multiple issues with
 3. Budget and rate limits per function?
 4. Which operations require human approval?
 5. How are cross-function handoffs tracked and audited?
+6. For accounting work, which entity, period, currency, provider, account alias, and approval authority apply?

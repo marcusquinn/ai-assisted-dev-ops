@@ -90,6 +90,7 @@ readonly _APPROVAL_BATCH_FAILURE_AUTH="shared-auth-failure"
 
 _APPROVAL_GH_RATE_LIMIT_RESET=""
 _APPROVAL_GH_AUTH_FAILURE=""
+_APPROVAL_LABEL_SETS_ENSURED=""
 
 # shellcheck source=approval-snapshot-v2.sh
 source "${SCRIPT_DIR}/approval-snapshot-v2.sh"
@@ -855,6 +856,29 @@ _approval_apply_pr_lifecycle_updates() {
 	return 0
 }
 
+_approval_ensure_lifecycle_labels() {
+	local target_type="$1"
+	local slug="$2"
+	local cache_key="${slug}:${target_type}"
+
+	case ",${_APPROVAL_LABEL_SETS_ENSURED}," in
+	*",${cache_key},"*) return 0 ;;
+	esac
+	if ! command -v managed_labels_ensure_approval_set >/dev/null 2>&1 ||
+		! command -v _gh_managed_label_names_snapshot >/dev/null 2>&1 ||
+		! command -v _gh_managed_label_create_runner >/dev/null 2>&1; then
+		_print_error "Managed approval label provisioning is unavailable; approval was not posted"
+		return 1
+	fi
+	if ! managed_labels_ensure_approval_set "$slug" "$target_type" \
+		_gh_managed_label_names_snapshot _gh_managed_label_create_runner; then
+		_print_error "Could not provision approval lifecycle labels in ${slug}; approval was not posted"
+		return 1
+	fi
+	_APPROVAL_LABEL_SETS_ENSURED="${_APPROVAL_LABEL_SETS_ENSURED:+${_APPROVAL_LABEL_SETS_ENSURED},}${cache_key}"
+	return 0
+}
+
 _post_issue_approval_updates() {
 	local target_type="$1"
 	local target_number="$2"
@@ -996,6 +1020,10 @@ _approve_target_after_confirmation() {
 	local actual_key="$4"
 
 	local timestamp payload sig_file comment_body
+	# #aidevops:trust-boundary — provision every repository-level label needed by the post-signature
+	# transition before creating irreversible approval evidence. This keeps a
+	# newly managed repository from ending in a signed but undispatchable state.
+	_approval_ensure_lifecycle_labels "$target_type" "$slug" || return 1
 	# #aidevops:trust-boundary — issue continuity can only begin from an
 	# authoritative locked snapshot. PR approval semantics remain unchanged.
 	if [[ "$target_type" == "$APPROVAL_TARGET_ISSUE" ]]; then
@@ -1760,8 +1788,17 @@ cmd_reconcile() {
 	printf '%s' "$issue_json" | jq -e --arg label "$_APPROVAL_NMR_LABEL" \
 		'(.labels // []) | any(.name == $label)' >/dev/null 2>&1 || nmr_rc=$?
 	if [[ "$nmr_rc" -eq 1 ]]; then
-		printf 'NO_NMR\n'
-		return 3
+		# A failed pre-fix issue approval can have neither NMR nor auto-dispatch:
+		# status provisioning succeeded, then both lifecycle label writes failed.
+		# Recover that exact signed state instead of treating every absent NMR as
+		# an already completed handoff. PRs and dispatch-enabled issues stay no-op.
+		if [[ "$target_type" != "issue" ]] || printf '%s' "$issue_json" | jq -e \
+			--arg label "$_APPROVAL_AUTO_DISPATCH_LABEL" \
+			'(.labels // []) | any(.name == $label)' >/dev/null 2>&1; then
+			printf 'NO_NMR\n'
+			return 3
+		fi
+		nmr_rc=0
 	fi
 	if [[ "$nmr_rc" -ne 0 ]]; then
 		printf 'API_ERROR\n'
@@ -1779,6 +1816,12 @@ cmd_reconcile() {
 		return 6
 	fi
 
+	# #aidevops:trust-boundary — only provision labels after the existing signed
+	# approval and current maintainer authority have both been re-verified.
+	if ! _approval_ensure_lifecycle_labels "$target_type" "$slug" >/dev/null 2>&1; then
+		printf 'UPDATE_FAILED\n'
+		return 8
+	fi
 	if ! _post_issue_approval_updates "$target_type" "$target_number" "$slug" >/dev/null 2>&1; then
 		# A lifecycle writer may fail after partially clearing NMR (for example,
 		# issue label mutation succeeds but its advisory lock fails). Reassert the

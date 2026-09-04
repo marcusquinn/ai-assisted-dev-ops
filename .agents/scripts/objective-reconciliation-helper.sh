@@ -221,7 +221,8 @@ _objective_disposition() {
 		state_json=$(jq -c '.' "$state_file" 2>/dev/null) || state_json="$OBJECTIVE_EMPTY_STATE"
 	fi
 	jq -nc --arg repo "$repo" --argjson issue "$issue_number" --arg aid "$attempt_id" \
-		--argjson evidence "$evidence_json" --argjson state "$state_json" \
+		--slurpfile evidence_file <(printf '%s\n' "$evidence_json") \
+		--slurpfile state_file <(printf '%s\n' "$state_json") \
 		--arg record_type "$OBJECTIVE_RECORD_ATTEMPT_OUTCOME" \
 		--arg event_completed "$OBJECTIVE_EVENT_COMPLETED" --arg event_failed "$OBJECTIVE_EVENT_FAILED" --arg event_deferred "$OBJECTIVE_EVENT_DEFERRED" \
 		--arg outcome_success "$OBJECTIVE_OUTCOME_SUCCESS" --arg outcome_failed "$OBJECTIVE_OUTCOME_FAILED" --arg outcome_deferred "$OBJECTIVE_OUTCOME_DEFERRED" \
@@ -229,6 +230,8 @@ _objective_disposition() {
 		--arg source_lifecycle "$OBJECTIVE_SOURCE_LIFECYCLE" --arg source_state "$OBJECTIVE_SOURCE_STATE" --arg source_none "$OBJECTIVE_SOURCE_NONE" \
 		--arg state_completed "$OBJECTIVE_STATE_COMPLETED" --arg state_cancelled "$OBJECTIVE_STATE_CANCELLED" \
 		--arg state_impossible "$OBJECTIVE_STATE_IMPOSSIBLE" --arg state_review "$OBJECTIVE_STATE_REVIEW" '
+		($evidence_file[0] // []) as $evidence |
+		($state_file[0] // {objectives:[]}) as $state |
 		def timestamp: ((.evidence_timestamp // .timestamp // .ts // 0) | tonumber? // 0);
 		def epoch_key:
 			((.attempt_started_at // timestamp) | tostring) as $raw |
@@ -525,7 +528,7 @@ main() {
 		--next-action) [[ $# -gt 0 ]] || return 2; next_action="$1"; shift ;;
 		--timestamp) [[ $# -gt 0 ]] || return 2; outcome_timestamp="$1"; shift ;;
 		--attempt-started-at) [[ $# -gt 0 ]] || return 2; attempt_started_at="$1"; shift ;;
-		--help|-h) _objective_usage; return 0 ;;
+		--help | -h) _objective_usage; return 0 ;;
 		*) printf 'ERROR: unknown option: %s\n' "$arg" >&2; return 2 ;;
 		esac
 	done

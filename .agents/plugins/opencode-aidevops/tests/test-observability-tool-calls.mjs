@@ -290,6 +290,22 @@ describe("buildToolCallInsertSql — metadata rendering", () => {
     assert.equal(vals[6], "NULL");
   });
 
+  test("fallback intent provenance is retained without host metadata", () => {
+    const sql = buildToolCallInsertSql({
+      sessionID: "s1",
+      callID: "c1",
+      toolName: "Read",
+      intent: "Reading requested context",
+      intentSource: "fallback",
+      isSuccess: 1,
+      durationMs: 5,
+      metadata: null,
+    });
+    const vals = extractValues(sql);
+    const inner = vals[6].slice(1, -1).replace(/''/g, "'");
+    assert.equal(JSON.parse(inner).intent_source, "fallback");
+  });
+
   test("metadata=undefined renders as SQL NULL keyword", () => {
     const sql = buildToolCallInsertSql({
       sessionID: "s1",

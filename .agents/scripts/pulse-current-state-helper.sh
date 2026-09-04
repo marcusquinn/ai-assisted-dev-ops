@@ -23,9 +23,9 @@ EOF
 _seconds() {
 	local value="$1"
 	case "$value" in
-		*m) printf '%s\n' "$((${value%m} * 60))" ;;
-		*h) printf '%s\n' "$((${value%h} * 3600))" ;;
-		*) printf '%s\n' "$value" ;;
+	*m) printf '%s\n' "$((${value%m} * 60))" ;;
+	*h) printf '%s\n' "$((${value%h} * 3600))" ;;
+	*) printf '%s\n' "$value" ;;
 	esac
 	return 0
 }
@@ -51,7 +51,10 @@ _runtime_manifest_value() {
 	[[ -r "$manifest_file" ]] || return 1
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		case "$line" in
-		"${key}="*) printf '%s' "${line#*=}"; return 0 ;;
+		"${key}="*)
+			printf '%s' "${line#*=}"
+			return 0
+			;;
 		esac
 	done <"$manifest_file"
 	return 1
@@ -88,14 +91,38 @@ _runtime_deployment_relation() {
 	return 0
 }
 
+_runtime_deployed_sha() {
+	local manifest_file="$1"
+	local active_manifest_file="$2"
+	local stamp_file="$3"
+	local manifest_sha="" active_manifest_sha="" stamp_sha=""
+	manifest_sha=$(_runtime_manifest_value "$manifest_file" git_sha 2>/dev/null || true)
+	if [[ "$active_manifest_file" != "$manifest_file" ]]; then
+		active_manifest_sha=$(_runtime_manifest_value "$active_manifest_file" git_sha 2>/dev/null || true)
+	fi
+	if [[ -r "$stamp_file" ]]; then
+		IFS= read -r stamp_sha <"$stamp_file" || stamp_sha=""
+		stamp_sha="${stamp_sha//[[:space:]]/}"
+	fi
+	if [[ "$stamp_sha" =~ ^[0-9a-fA-F]{7,64}$ && "$active_manifest_sha" == "$stamp_sha" && "$manifest_sha" != "$stamp_sha" ]]; then
+		printf '%s' "$stamp_sha"
+	elif [[ "$manifest_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+		printf '%s' "$manifest_sha"
+	elif [[ "$stamp_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+		printf '%s' "$stamp_sha"
+	fi
+	return 0
+}
+
 _runtime_freshness_json() {
 	local repo_path="$1"
 	local agents_path="${AIDEVOPS_RUNTIME_AGENTS_PATH:-${AIDEVOPS_AGENTS_DIR:-${HOME}/.aidevops/agents}}"
 	local manifest_file="${AIDEVOPS_RUNTIME_MANIFEST_FILE:-${agents_path}/.bundle-manifest}"
+	local active_manifest_file="${AIDEVOPS_ACTIVE_RUNTIME_MANIFEST_FILE:-${HOME}/.aidevops/agents/.bundle-manifest}"
 	local stamp_file="${AIDEVOPS_DEPLOYED_SHA_FILE:-${HOME}/.aidevops/.deployed-sha}"
 	local update_state_file="${AIDEVOPS_AUTO_UPDATE_STATE_FILE:-${HOME}/.aidevops/cache/auto-update-state.json}"
 	local upstream_ref="${AIDEVOPS_RUNTIME_UPSTREAM_REF:-}"
-	local canonical_sha="" upstream_sha="" deployed_sha="" manifest_sha="" stamp_sha=""
+	local canonical_sha="" upstream_sha="" deployed_sha=""
 	local auto_update_status="$UNKNOWN_STATUS" auto_update_at="" deployment_relation=""
 	local status="$UNKNOWN_STATUS" action="Verify the canonical checkout and active runtime bundle"
 	local canonical_dirty=false canonical_on_main=false canonical_behind=false
@@ -110,16 +137,7 @@ _runtime_freshness_json() {
 	if [[ "$(git -C "$repo_path" symbolic-ref --quiet HEAD 2>/dev/null || true)" == "refs/heads/main" ]]; then
 		canonical_on_main=true
 	fi
-	manifest_sha=$(_runtime_manifest_value "$manifest_file" git_sha 2>/dev/null || true)
-	if [[ -r "$stamp_file" ]]; then
-		IFS= read -r stamp_sha <"$stamp_file" || stamp_sha=""
-		stamp_sha="${stamp_sha//[[:space:]]/}"
-	fi
-	if [[ "$manifest_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
-		deployed_sha="$manifest_sha"
-	elif [[ "$stamp_sha" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
-		deployed_sha="$stamp_sha"
-	fi
+	deployed_sha=$(_runtime_deployed_sha "$manifest_file" "$active_manifest_file" "$stamp_file")
 	if [[ -r "$update_state_file" ]]; then
 		auto_update_status=$(jq -r --arg unknown "$UNKNOWN_STATUS" '.last_status // $unknown' "$update_state_file" 2>/dev/null || printf '%s' "$UNKNOWN_STATUS")
 		auto_update_at=$(jq -r '.last_timestamp // ""' "$update_state_file" 2>/dev/null || true)
@@ -268,6 +286,66 @@ _active_claim_state_json() {
 	return 0
 }
 
+_runtime_record_state_overlay() {
+	local projection_status="$1"
+	local runtime_state_file="$2"
+	local overlay_json="$3"
+	local runtime_freshness="$4"
+	local runtime_tmp=""
+	if [[ "$projection_status" -ne 0 || ! -s "$runtime_state_file" ]] || ! command -v node >/dev/null 2>&1; then
+		return 0
+	fi
+	runtime_tmp=$(mktemp "${TMPDIR:-/tmp}/aidevops-pulse-runtime-overlay.XXXXXX") || runtime_tmp=""
+	if [[ -n "$runtime_tmp" ]] && jq --argjson overlay "$overlay_json" --argjson freshness "$runtime_freshness" '. + {
+		nmr_revalidation: $overlay.nmr_revalidation,
+		runtime_freshness: $freshness,
+		failure_family_remediation: {
+			recurrent_count: $overlay.failure_family_remediation.recurrent_count,
+			recovery_candidate_count: $overlay.failure_family_remediation.recovery_candidate_count
+		}
+	}' "$runtime_state_file" >"$runtime_tmp" 2>/dev/null; then
+		mv "$runtime_tmp" "$runtime_state_file"
+	else
+		rm -f "$runtime_tmp" 2>/dev/null || true
+	fi
+	node "${SCRIPT_DIR}/runtime-events.mjs" state auto "pulse:current" - <"$runtime_state_file" \
+		>/dev/null 2>&1 || true
+	return 0
+}
+
+_current_active_worker_processes() {
+	local active_worker_processes=""
+	if [[ -f "${SCRIPT_DIR}/worker-lifecycle-common.sh" ]]; then
+		# Keep worker process discovery in the shell lifecycle helper so Python
+		# static-analysis checks do not flag a subprocess bridge for this metric.
+		# shellcheck source=.agents/scripts/worker-lifecycle-common.sh
+		source "${SCRIPT_DIR}/worker-lifecycle-common.sh" >/dev/null 2>&1 || true
+		if declare -F count_active_workers >/dev/null 2>&1; then
+			active_worker_processes="$(count_active_workers 2>/dev/null || true)"
+		fi
+	fi
+	printf '%s' "$active_worker_processes"
+	return 0
+}
+
+_current_worker_worktree_count() {
+	local repo_path="$1"
+	if git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
+		git -C "$repo_path" worktree list 2>/dev/null |
+			grep -Ec 'feature/(auto-|gh-)' || true
+	else
+		printf '0\n'
+	fi
+	return 0
+}
+
+_current_graphql_budget_status() {
+	if [[ -x "${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh" ]]; then
+		"${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh" status --cached 2>/dev/null || true
+	fi
+	return 0
+}
+
 main() {
 	local window="15m"
 	local repo_path="${AIDEVOPS_REPO_PATH:-$HOME/Git/aidevops}"
@@ -284,33 +362,49 @@ main() {
 		local arg="$1"
 		shift
 		case "$arg" in
-			--window) [[ $# -gt 0 ]] || { printf 'ERROR: --window requires a value\n' >&2; return 2; }; local value="$1"; window="$value"; shift ;;
-			--repo-path) [[ $# -gt 0 ]] || { printf 'ERROR: --repo-path requires a value\n' >&2; return 2; }; local value="$1"; repo_path="$value"; shift ;;
-			--log-dir) [[ $# -gt 0 ]] || { printf 'ERROR: --log-dir requires a value\n' >&2; return 2; }; local value="$1"; log_dir="$value"; shift ;;
-			--json) as_json=1 ;;
-			--help|-h) _usage; return 0 ;;
-			*) printf 'ERROR: unknown option: %s\n' "$arg" >&2; return 2 ;;
+		--window)
+			[[ $# -gt 0 ]] || {
+				printf 'ERROR: --window requires a value\n' >&2
+				return 2
+			}
+			local value="$1"
+			window="$value"
+			shift
+			;;
+		--repo-path)
+			[[ $# -gt 0 ]] || {
+				printf 'ERROR: --repo-path requires a value\n' >&2
+				return 2
+			}
+			local value="$1"
+			repo_path="$value"
+			shift
+			;;
+		--log-dir)
+			[[ $# -gt 0 ]] || {
+				printf 'ERROR: --log-dir requires a value\n' >&2
+				return 2
+			}
+			local value="$1"
+			log_dir="$value"
+			shift
+			;;
+		--json) as_json=1 ;;
+		--help | -h)
+			_usage
+			return 0
+			;;
+		*)
+			printf 'ERROR: unknown option: %s\n' "$arg" >&2
+			return 2
+			;;
 		esac
 	done
 	local window_s
 	window_s="$(_seconds "$window")"
-	if [[ -f "${SCRIPT_DIR}/worker-lifecycle-common.sh" ]]; then
-		# Keep worker process discovery in the shell lifecycle helper so Python
-		# static-analysis checks do not flag a subprocess bridge for this metric.
-		# shellcheck source=.agents/scripts/worker-lifecycle-common.sh
-		source "${SCRIPT_DIR}/worker-lifecycle-common.sh" >/dev/null 2>&1 || true
-		if declare -F count_active_workers >/dev/null 2>&1; then
-			active_worker_processes="$(count_active_workers 2>/dev/null || true)"
-		fi
-	fi
-	if git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1; then
-		worker_worktree_count="$(git -C "$repo_path" worktree list 2>/dev/null \
-			| grep -Ec 'feature/(auto-|gh-)' || true)"
-	fi
-	if [[ -x "${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh" ]]; then
-		graphql_budget_status="$("${SCRIPT_DIR}/pulse-rate-limit-circuit-breaker.sh" \
-			status --cached 2>/dev/null || true)"
-	fi
+	active_worker_processes="$(_current_active_worker_processes)"
+	worker_worktree_count="$(_current_worker_worktree_count "$repo_path")"
+	graphql_budget_status="$(_current_graphql_budget_status)"
 	runtime_freshness=$(_runtime_freshness_json "$repo_path")
 	runtime_state_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-pulse-runtime-state.XXXXXX") || runtime_state_file=""
 	local projection_status=0
@@ -322,8 +416,8 @@ main() {
 			AIDEVOPS_OBJECTIVE_STATE_FILE="$objective_state_file" \
 			AIDEVOPS_RUNTIME_STATE_OUTPUT="$runtime_state_file" \
 			python3 "${SCRIPT_DIR}/pulse-current-state.py" \
-				"$log_dir" "$repo_path" "$window_s" "$as_json" "$SCRIPT_DIR" \
-				"$review_thread_state_dir"
+			"$log_dir" "$repo_path" "$window_s" "$as_json" "$SCRIPT_DIR" \
+			"$review_thread_state_dir"
 	) || projection_status=$?
 	local overlay_json="{}"
 	overlay_json=$(_observability_overlay_json)
@@ -348,24 +442,7 @@ main() {
 		projection_output+="Runtime freshness: $(printf '%s' "$runtime_freshness" | jq -c '.')"
 	fi
 	printf '%s\n' "$projection_output"
-	if [[ "$projection_status" -eq 0 && -s "$runtime_state_file" ]] && command -v node >/dev/null 2>&1; then
-		local runtime_tmp=""
-		runtime_tmp=$(mktemp "${TMPDIR:-/tmp}/aidevops-pulse-runtime-overlay.XXXXXX") || runtime_tmp=""
-		if [[ -n "$runtime_tmp" ]] && jq --argjson overlay "$overlay_json" --argjson freshness "$runtime_freshness" '. + {
-			nmr_revalidation: $overlay.nmr_revalidation,
-			runtime_freshness: $freshness,
-			failure_family_remediation: {
-				recurrent_count: $overlay.failure_family_remediation.recurrent_count,
-				recovery_candidate_count: $overlay.failure_family_remediation.recovery_candidate_count
-			}
-		}' "$runtime_state_file" >"$runtime_tmp" 2>/dev/null; then
-			mv "$runtime_tmp" "$runtime_state_file"
-		else
-			rm -f "$runtime_tmp" 2>/dev/null || true
-		fi
-		node "${SCRIPT_DIR}/runtime-events.mjs" state auto "pulse:current" - <"$runtime_state_file" \
-			>/dev/null 2>&1 || true
-	fi
+	_runtime_record_state_overlay "$projection_status" "$runtime_state_file" "$overlay_json" "$runtime_freshness"
 	rm -f "$runtime_state_file" 2>/dev/null || true
 	return "$projection_status"
 }

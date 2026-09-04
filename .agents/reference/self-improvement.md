@@ -5,6 +5,34 @@
 
 Every session should deliver verified value or leave an auditable signal. Fix the process, not the symptom, but promote only scoped, reusable, evidence-backed learning rather than preserving every observation.
 
+## Universal Ambient Contract
+
+Every primary agent, subagent, workflow, and review surface inherits this
+contract. Run it during ordinary work; slash commands and retrospectives are
+optional controls, not prerequisites for learning.
+
+1. **Observe** corrections, failed assumptions, repeated friction, stale
+   guidance, provider quirks, useful preferences, and reusable successes.
+2. **Acknowledge** an observation only when it affects the current outcome or
+   needs user action; do not narrate routine capture work.
+3. **Classify** evidence, confidence, sensitivity, and the narrowest valid scope:
+   session, account, client/case, project/repo, provider, domain, or framework.
+4. **Deduplicate and capture** only concrete, reusable signal. Prefer memory for
+   cross-session context, `_feedback/` for retained qualitative evidence when
+   that plane is initialized, a task for actionable larger work, and repository
+   docs/tests/hooks for verified durable rules.
+5. **Mitigate and verify** safe, authorized, in-scope defects now. Record the
+   observation as unresolved when verification fails; intent is not learning.
+6. **Route, promote, or revoke** the smallest useful summary. Promotion needs
+   evidence that the lesson generalizes; contradiction, staleness, or withdrawn
+   consent can narrow or retire it.
+
+Do not manufacture lessons to fill a log, retain secrets or unnecessary personal
+data, count duplicate observations as independent evidence, or silently promote
+private/account-specific evidence into global policy. Ask only for consequential
+authority, irreducible ambiguity, sensitive-retention consent, or a choice among
+competing high-impact interpretations.
+
 ## Human Attention and Responsibility
 
 Optimise for **verified value per unit of human attention**. Human time is a constrained, high-value input, not a routine approval mechanism.
@@ -69,7 +97,10 @@ trade-offs. Use the cheapest capable workload tier.
 
 - Repeated failure patterns, prompt misunderstandings, or missing automation.
 - Stale blocked tasks or **information gaps (t1416)** (missing tier/branch/diagnosis).
-- Run session miner pulse (`scripts/session-miner-pulse.sh`).
+- Verified reusable successes, corrected preferences, and provider or domain
+  constraints that should change the next decision.
+- Use session-miner pulse (`scripts/session-miner-pulse.sh`) as an optional batch
+  aid; never defer an obvious current-session capture merely because it was not run.
 
 ## Session Learning Capture
 

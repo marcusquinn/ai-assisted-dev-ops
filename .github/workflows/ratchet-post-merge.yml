@@ -2,7 +2,7 @@ name: Ratchet Post-Merge
 
 # qlty-action/install otherwise resolves its moving `latest` release.
 env:
-  QLTY_VERSION: "0.636.0"
+  QLTY_VERSION: "0.643.0"
 
 # GH#18775 (t2067): post-merge auto-ratchet for QLTY_SMELL_THRESHOLD.
 # When a PR merges to main and the total qlty smell count drops below

@@ -5,7 +5,8 @@
 # Shared worktree path policy.
 # Default: keep canonical repos under ~/Git and create aidevops linked worktrees
 # in one flat, backup-excludable directory:
-#   ~/Git/_worktrees/<repo>-<branch-slug>
+#   ~/Git/_worktrees/<owner>-<repo>-<branch-slug>
+# Root-level personal repositories retain <repo>-<branch-slug>.
 
 [[ -n "${_AIDEVOPS_WORKTREE_PATHS_LOADED:-}" ]] && return 0
 _AIDEVOPS_WORKTREE_PATHS_LOADED=1
@@ -74,8 +75,38 @@ aidevops_canonical_worktree_path() {
 aidevops_repo_worktree_name() {
 	local repo_path="${1:-.}"
 	local canonical=""
+	local parent_dir=""
+	local configured_parent=""
+	local relative=""
+	local candidate_name=""
+	local repos_json="${AIDEVOPS_REPOS_JSON:-${HOME:-}/.config/aidevops/repos.json}"
 	canonical=$(aidevops_canonical_worktree_path "$repo_path")
-	basename "$canonical"
+
+	if [[ -f "$repos_json" ]] && command -v jq >/dev/null 2>&1; then
+		while IFS= read -r configured_parent; do
+			[[ -n "$configured_parent" ]] || continue
+			parent_dir=$(aidevops_expand_home_path "$configured_parent")
+			case "$canonical" in
+			"$parent_dir"/*)
+				relative="${canonical#"$parent_dir"/}"
+				break
+				;;
+			esac
+		done < <(jq -r '.git_parent_dirs[]? // empty' "$repos_json" 2>/dev/null || true)
+	fi
+	if [[ -z "$relative" && -n "${HOME:-}" ]]; then
+		parent_dir="${HOME}/Git"
+		case "$canonical" in
+		"$parent_dir"/*) relative="${canonical#"$parent_dir"/}" ;;
+		esac
+	fi
+
+	if [[ "$relative" == */* && "${relative#*/}" != */* ]]; then
+		candidate_name="${relative//\//-}"
+	else
+		candidate_name=$(basename "$canonical")
+	fi
+	printf '%s\n' "$candidate_name" | tr '[:upper:]' '[:lower:]'
 	return 0
 }
 

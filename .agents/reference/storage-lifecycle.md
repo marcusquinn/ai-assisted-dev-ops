@@ -178,6 +178,16 @@ immediately before an entry is emitted, so concurrent drift downgrades only
 that entry. Age, size, and OpenCode or Claude session history never prove
 reclaimability. Plan files grant no deletion authority by themselves.
 
+Automatic maintenance may reclaim those same approved cache roots from an
+otherwise protected mixed archive without deleting the archive. This narrower
+path applies only when the archive is protected solely by a dirty Git state,
+source removal is complete, and commit, task, pull-request, worktree, registry,
+claim, and process evidence is terminal and clear. Each selected root must be
+an exact ignored and untracked approved directory with no symlink component,
+tracked path, or hard-linked regular file. A bounded manifest records its
+device/inode identity and allocated bytes; uncertainty, deadline exhaustion,
+Git output beyond the fixed capture ceiling, or drift preserves the root.
+
 After reviewing a v2 plan, an operator may run:
 
 ```bash
@@ -255,6 +265,8 @@ with:
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_MIN_FREE_PERCENT`
 - `AIDEVOPS_WORKTREE_RECOVERY_AGGREGATE_SIZE_TIMEOUT_TENTHS`
 - `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_DEADLINE_SECONDS`
+- `AIDEVOPS_WORKTREE_RECOVERY_CACHE_PRUNE_MAX_ROOTS`
+- `AIDEVOPS_WORKTREE_RECOVERY_CACHE_PRUNE_MAX_BYTES`
 
 Set `AIDEVOPS_WORKTREE_RECOVERY_MAINTENANCE_ENABLED=0` to disable the automatic
 pass. Invalid limits fall back to defaults. Maintenance uses a separate
@@ -271,6 +283,29 @@ evidence, live references, unfinished tasks, retention policy, and selection
 limits without exposing archive paths. A private state record accumulates those
 counts across bounded cursor windows and resets if the inventory or pressure
 state changes.
+
+When protected mixed archives contain approved cache roots, one pass selects at
+most 100 roots and 5 GiB by default inside the same scan and deadline budget.
+Cache pruning takes precedence over whole-bucket deletion for that pass and uses
+its own `aidevops.worktree-recovery-cache-prune-plan/v1` plan and
+`cache-automatic-sha256:` authority. Apply revalidates archive and root
+identities, ignored/untracked state, allocated bytes, symlink and hard-link
+safety, and all terminal claim, process, task, pull-request, and commit evidence
+both before the transaction and immediately before each rename. The initial
+apply receives the scan's absolute deadline rather than starting a new budget;
+an exhausted pass defers every selected cache root without mutation. A pending
+transaction receives one fresh bounded deadline only when a later maintenance
+pass resumes it. Apply stages only the exact root into an archive-local
+`.retention-trash` transaction. Its journal survives interruption before or
+after rename or bounded removal. A `removing` journal state permits a timed-out
+delete to continue only while the isolated root identity and remaining
+allocation stay within the original bound. Pending cache plans resume before
+new inventory. Receipts retain the expected allocation, an independent exact
+staged-root measurement, and a zero post-delete allocation observation before
+reporting those namespace bytes as reclaimed; they do not infer global
+filesystem free-space changes from concurrent `df` activity. Run outcomes report
+`cache-pruned` or `resumed-and-pruned`. User files and the protected archive
+remain untouched.
 
 When a stable inventory completes a full pressure-active scan cycle with zero
 candidates, the result retains `outcome:"no-candidates"` and sets

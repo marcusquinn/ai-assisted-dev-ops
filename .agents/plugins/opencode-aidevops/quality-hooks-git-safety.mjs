@@ -4,7 +4,7 @@
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { classifyFullLoopCommitAndPr } from "./quality-hooks-full-loop-trust.mjs";
 
 export { bindActiveScriptsDir } from "./quality-hooks-full-loop-trust.mjs";
@@ -50,13 +50,65 @@ function normaliseToolName(tool) {
 }
 
 export function isDirectFileMutationTool(tool) {
-  return [
-    "write", "write_file", "edit", "edit_file", "apply_patch", "applypatch",
-  ].includes(normaliseToolName(tool));
+  return Boolean(directFileMutationKind(tool));
 }
 
 export function isApplyPatchMutationTool(tool) {
-  return ["apply_patch", "applypatch"].includes(normaliseToolName(tool));
+  return directFileMutationKind(tool) === "apply_patch";
+}
+
+export function directFileMutationKind(tool) {
+  const normalized = normaliseToolName(tool);
+  if (["write", "write_file"].includes(normalized)) return "write";
+  if (["edit", "edit_file"].includes(normalized)) return "edit";
+  if (["apply_patch", "applypatch"].includes(normalized)) return "apply_patch";
+  return "";
+}
+
+export function directFileMutations(tool, args = {}, repositoryDir = "") {
+  const cwd = args.workdir || args.cwd || repositoryDir || process.cwd();
+  const kind = directFileMutationKind(tool);
+  if (kind !== "apply_patch") {
+    const filePath = args.filePath || args.file_path || args.path || "";
+    if (!filePath) return [];
+    return [{
+      filePath: resolve(cwd, filePath),
+      kind,
+      content: args.content,
+      oldString: args.oldString ?? args.old_string,
+      newString: args.newString ?? args.new_string,
+      replaceAll: args.replaceAll === true || args.replace_all === true,
+    }];
+  }
+  const patchText = typeof args.patchText === "string" ? args.patchText : args.patch_text || "";
+  const headers = [...patchText.matchAll(/^\*\*\* (Update|Delete) File: (.+)$/gm)];
+  return headers.map((match, index) => ({
+    filePath: resolve(cwd, match[2].trim()),
+    kind: match[1] === "Update" ? kind : "delete",
+    patchText: patchText.slice(match.index + match[0].length, headers[index + 1]?.index),
+  }));
+}
+
+function replaceExactOnce(content, oldString, newString) {
+  const first = content.indexOf(oldString);
+  if (first < 0 || content.indexOf(oldString, first + oldString.length) >= 0) return false;
+  return content.slice(0, first) + newString + content.slice(first + oldString.length);
+}
+
+export function expectedSimpleMutationContent(state, mutation) {
+  const content = state.content.toString("utf8");
+  let updated;
+  if (mutation.kind === "write") {
+    updated = typeof mutation.content === "string" ? mutation.content : false;
+  } else if (mutation.kind === "edit") {
+    const validEdit = typeof mutation.oldString === "string" && mutation.oldString &&
+      typeof mutation.newString === "string" && content.includes(mutation.oldString);
+    if (!validEdit) return false;
+    updated = mutation.replaceAll
+      ? content.replaceAll(mutation.oldString, mutation.newString)
+      : replaceExactOnce(content, mutation.oldString, mutation.newString);
+  }
+  return updated === undefined || updated === false ? updated : Buffer.from(updated);
 }
 
 function parsePolicyPayload(raw) {

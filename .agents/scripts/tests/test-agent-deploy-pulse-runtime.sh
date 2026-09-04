@@ -10,10 +10,26 @@ TEST_ROOT=""
 PULSE_PATTERN=""
 TESTS_RUN=0
 
-print_info() { local message="$1"; printf '%s\n' "$message"; return 0; }
-print_success() { local message="$1"; printf '%s\n' "$message"; return 0; }
-print_warning() { local message="$1"; printf 'WARN: %s\n' "$message" >&2; return 0; }
-print_error() { local message="$1"; printf 'ERROR: %s\n' "$message" >&2; return 0; }
+print_info() {
+	local message="$1"
+	printf '%s\n' "$message"
+	return 0
+}
+print_success() {
+	local message="$1"
+	printf '%s\n' "$message"
+	return 0
+}
+print_warning() {
+	local message="$1"
+	printf 'WARN: %s\n' "$message" >&2
+	return 0
+}
+print_error() {
+	local message="$1"
+	printf 'ERROR: %s\n' "$message" >&2
+	return 0
+}
 
 # shellcheck source=../setup/modules/agent-deploy.sh
 source "$REPO_ROOT/.agents/scripts/setup/modules/agent-deploy.sh"
@@ -110,7 +126,7 @@ SH
 	output=$(<"$output_file")
 	[[ "$output" == *"bundle-b"* ]] || fail "restart diagnostics omit the selected active bundle"
 	[[ "$output" != *"$TEST_ROOT"* ]] || fail "restart diagnostics expose a private local path"
-	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" || \
+	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" ||
 		fail "active bundle Pulse path was not launched"
 	if grep -qF "caller-worktree" "$PULSE_START_LOG"; then
 		fail "stale INSTALL_DIR Pulse path was launched"
@@ -242,7 +258,7 @@ SH
 		_restart_pulse_if_running "$active_root/agents" true "$active_link" >"$output_file"
 	)
 	grep -q '^kickstart -k gui/' "$launchctl_log" || fail "enabled launchd service did not receive the restart request"
-	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" || \
+	grep -qF "$active_root/agents/scripts/pulse-wrapper.sh" "$PULSE_START_LOG" ||
 		fail "launchd fixture did not start Pulse from the active bundle"
 	assert_only_active_bundle_runs \
 		"$active_root/agents/scripts/pulse-wrapper.sh" \
@@ -351,6 +367,22 @@ test_runtime_freshness_diagnostics() {
 	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")
 	assert_eq "current" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
 		"clean fast-forward and deployment report current runtime"
+
+	local active_manifest_file="$TEST_ROOT/active-runtime-manifest"
+	local deployed_sha_file="$TEST_ROOT/deployed-sha"
+	printf 'schema=1\nstatus=validated\ngit_sha=%s\n' "$base_sha" >"$manifest_file"
+	printf 'schema=1\nstatus=validated\ngit_sha=%s\n' "$upstream_sha" >"$active_manifest_file"
+	printf '%s\n' "$upstream_sha" >"$deployed_sha_file"
+	output=$(AIDEVOPS_RUNTIME_MANIFEST_FILE="$manifest_file" \
+		AIDEVOPS_ACTIVE_RUNTIME_MANIFEST_FILE="$active_manifest_file" \
+		AIDEVOPS_DEPLOYED_SHA_FILE="$deployed_sha_file" \
+		AIDEVOPS_AUTO_UPDATE_STATE_FILE="$update_state_file" \
+		"$REPO_ROOT/.agents/scripts/pulse-current-state-helper.sh" \
+		--repo-path "$canonical_repo" --log-dir "$log_dir" --json)
+	assert_eq "current" "$(printf '%s' "$output" | jq -r '.runtime_freshness.status')" \
+		"active runtime manifest plus deployed stamp overrides stale inherited manifest path"
+	assert_eq "$upstream_sha" "$(printf '%s' "$output" | jq -r '.runtime_freshness.deployed_sha')" \
+		"runtime freshness reports the activated deployment SHA"
 
 	printf 'dirty at upstream tip\n' >>"$canonical_repo/runtime.txt"
 	output=$(runtime_freshness_output "$manifest_file" "$update_state_file" "$canonical_repo" "$log_dir")

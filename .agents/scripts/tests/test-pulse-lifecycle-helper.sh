@@ -657,6 +657,55 @@ test_managed_replacement_requires_new_active_bundle_lease() {
 	return 0
 }
 
+test_managed_start_ignores_non_active_running_pids() {
+	local find_count_file="${TEST_ROOT}/managed-start-find-count"
+	local launch_count_file="${TEST_ROOT}/managed-start-launch-count"
+	local result=""
+	local rc=0
+	printf '0\n' >"$find_count_file"
+	printf '0\n' >"$launch_count_file"
+	result=$(
+		# shellcheck source=../pulse-lifecycle-helper.sh
+		source "$HELPER"
+		_is_running() {
+			return 0
+		}
+		_pulse_require_script() {
+			return 0
+		}
+		_pulse_launch_unmanaged() {
+			local launch_calls=""
+			IFS= read -r launch_calls <"$launch_count_file" || launch_calls=0
+			launch_calls=$((launch_calls + 1))
+			printf '%s\n' "$launch_calls" >"$launch_count_file"
+			return 0
+		}
+		_pulse_find_active_runtime_pid_since() {
+			local baseline_pids="$1"
+			local find_calls=""
+			: "$baseline_pids"
+			IFS= read -r find_calls <"$find_count_file" || find_calls=0
+			find_calls=$((find_calls + 1))
+			printf '%s\n' "$find_calls" >"$find_count_file"
+			if [[ "$find_calls" -lt 2 ]]; then
+				return 1
+			fi
+			printf '303\n'
+			return 0
+		}
+		_start_activated_runtime
+		local launch_calls=""
+		IFS= read -r launch_calls <"$launch_count_file" || launch_calls=0
+		printf 'launch-calls=%s\n' "$launch_calls"
+	) || rc=$?
+	if [[ "$rc" -eq 0 && "$result" == *"Pulse is running from the activated bundle (PID 303)"* && "$result" == *"launch-calls=1"* ]]; then
+		_print_result "managed start ignores non-active running PIDs" 1
+	else
+		_print_result "managed start failed to bypass non-active running PIDs (rc=$rc result=$result)" 0
+	fi
+	return 0
+}
+
 test_launchd_runtime_wait_accepts_prompt_start() {
 	local result=""
 	local rc=0
@@ -1331,6 +1380,7 @@ main() {
 	test_reconciliation_fails_closed_on_unkillable_snapshot
 	test_reconciliation_skips_reused_snapshot_pid
 	test_managed_replacement_requires_new_active_bundle_lease
+	test_managed_start_ignores_non_active_running_pids
 	test_launchd_runtime_wait_accepts_prompt_start
 	test_launchd_runtime_wait_accepts_delayed_start
 	test_launchd_runtime_wait_rejects_wrong_runtime

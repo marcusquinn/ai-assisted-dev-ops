@@ -60,7 +60,7 @@ The result: an AI operations platform that manages projects across every busines
 [![Copyright](https://img.shields.io/badge/Copyright-Marcus%20Quinn%202025--2026-blue.svg)](https://github.com/marcusquinn)
 
 <!-- Release & Version Info -->
-[![Version](https://img.shields.io/badge/Version-3.32.298-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
+[![Version](https://img.shields.io/badge/Version-3.32.306-blue.svg)](https://github.com/marcusquinn/aidevops/releases)
 [![npm version](https://img.shields.io/npm/v/aidevops)](https://www.npmjs.com/package/aidevops)
 [![Homebrew](https://img.shields.io/badge/homebrew-marcusquinn%2Ftap-orange)](https://github.com/marcusquinn/homebrew-tap)
 [![GitHub repository](https://img.shields.io/badge/github-repository-181717.svg?logo=github)](https://github.com/marcusquinn/aidevops)
@@ -153,6 +153,7 @@ Since the last README feature refresh, aidevops has added or expanded:
 - **Worker and PR observability**: worker diagnostic failure families, runtime observability signals, review-thread response scanning, required-check validation, orphan-recovery base handling, and safer automated GitHub write guards.
 - **Runtime-neutral safety and evidence contracts**: shared command decisions across supported runtimes, commit-pinned plugin provenance with explicit hook authorization, recognized-client network checks, causal worker lineage, and redacted state snapshots/deltas in the existing observability database.
 - **OpenCode runtime polish**: versioned session title suffixes, session archive retention, OAuth pool hardening, debug-error preservation, and reusable shell-env version lookup in the OpenCode plugin.
+- **Safer GPT image generation**: native raster dimensions are verified before publication, while canonical-root OpenCode sessions can route output and references into the current session-owned linked worktree without weakening path confinement (`.agents/tools/vision/image-generation.md`).
 
 <!-- AI-CONTEXT-END -->
 
@@ -341,7 +342,7 @@ open-design-helper.sh start --https-local open-design
 
 Imported Open Design skills are not copied verbatim. They are evaluated through aidevops build-agent methodology, deduplicated against existing agents, flattened into aidevops `*-skill.md` structure, attributed to upstream, and given verification commands. See `.agents/tools/design/open-design-ingestion.md` for the full skill-value matrix.
 
-**Project tracking:** When you run `aidevops init`, the project is automatically registered in `~/.config/aidevops/repos.json`. Running `aidevops update` checks all registered projects for version updates.
+**Project tracking:** When you run `aidevops init`, the project is automatically registered in `~/.config/aidevops/repos.json`. Running `aidevops update` checks all registered projects for version updates. Repository layout changes remain separate and user-invoked: `aidevops repos migrate-layout plan` creates a non-mutating, content-hashed plan, while confirmed apply, status, resume, and rollback operations preserve private receipts and fail closed on drift.
 
 ### **Use aidevops in Any Project**
 
@@ -1467,7 +1468,7 @@ MCP packages are installed globally via `bun install -g` for instant startup (no
 | [LocalWP](https://localwp.com/) | WordPress database access | Per-agent | No (local) |
 | [macOS Automator](https://github.com/steipete/macos-automator-mcp) | macOS automation | Per-agent | No |
 | [Playwriter](https://github.com/nicholasgriffintn/playwriter) | Browser with extensions | Per-agent | No |
-| [QuickFile](https://github.com/marcusquinn/quickfile-mcp) | Accounting API | Per-agent | Yes |
+| [QuickFile](https://github.com/marcusquinn/quickfile-mcp) | Guarded multi-account accounting API | On-demand per-agent | Yes |
 | [Repomix](https://github.com/yamadashy/repomix) | Codebase packing for AI context | Per-agent | No |
 | [Sentry](https://sentry.io/) | Error tracking | Per-agent | Yes |
 | [shadcn](https://ui.shadcn.com/) | UI component library | Per-agent | No |
@@ -1574,7 +1575,16 @@ These use direct API calls via curl, avoiding MCP server startup entirely:
 
 **Accounts & Finance:**
 
-- [QuickFile](https://github.com/marcusquinn/quickfile-mcp) - Accounting API integration (MCP)
+- **Provider-neutral accounting** - Bookkeeping, statement imports,
+  reconciliation, classifications, chart evolution, debtors/creditors,
+  management and investor reports, statutory-return workpapers, and cash-flow
+  forecasts with approval and read-back controls (`business/accounting.md`)
+- **Accounting software catalogue** - Truthful support states and export
+  fallbacks across QuickFile, Xero, QuickBooks, FreeAgent, Sage, Zoho Books,
+  FreshBooks, Wave, KashFlow, Clear Books, MYOB, Odoo, and others
+  (`business/accounting-software.md`)
+- [QuickFile](https://github.com/marcusquinn/quickfile-mcp) - First executable
+  reference adapter, activated on demand through `@quickfile`
 - [Amazon Order History](https://github.com/marcusquinn/amazon-order-history-csv-download-mcp) - Order data extraction (MCP)
 
 **Document Processing & OCR:**
@@ -2041,7 +2051,7 @@ Primary agents live at `.agents/<name>.md`. Each is a domain expert with its own
 | Build+ | `build-plus.md` | Code: features, bug fixes, refactors, CI, full-loop delivery (default) | thinking |
 | Automate | `automate.md` | Scheduling, dispatch, monitoring, background orchestration | standard |
 | Aidevops | `aidevops.md` | Framework development — meta-agent for improving aidevops itself | thinking |
-| Business | `business.md` | Company orchestration, financial ops, invoicing, strategy | standard |
+| Business | `business.md` | Company orchestration, provider-neutral accounting, finance, invoicing, strategy | standard |
 | Content | `content.md` | Content creation across blog, video, audio, image, social | thinking |
 | Health | `health.md` | Health and wellness content, fitness, nutrition | thinking |
 | Legal | `legal.md` | Legal compliance, terms, privacy, GDPR | thinking |

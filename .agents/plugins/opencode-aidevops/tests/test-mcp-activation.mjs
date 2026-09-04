@@ -31,12 +31,12 @@ const schemaNode = { describe() { return this; } };
 const z = { enum() { return schemaNode; } };
 const tool = (definition) => definition;
 
-test("registers only the explicit browser MCP activation profiles", () => {
+test("registers only the explicit MCP activation profiles", () => {
   const config = {};
   const count = registerOnDemandMcpAgents(config, AGENTS_DIR);
 
-  assert.equal(count, 2);
-  assert.deepEqual(Object.keys(config.agent), ["playwriter", "playwright"]);
+  assert.equal(count, 3);
+  assert.deepEqual(Object.keys(config.agent), ["playwriter", "playwright", "quickfile"]);
   assert.equal(config.tools.aidevops_mcp, false);
   assert.equal(config.agent.playwriter.mode, "subagent");
   assert.equal(config.agent.playwriter.tools.aidevops_mcp, true);
@@ -57,6 +57,15 @@ test("registers only the explicit browser MCP activation profiles", () => {
   assert.equal(config.agent.playwright.permission["playwright_*"], "allow");
   assert.match(config.agent.playwright.prompt, /connect.*playwright/);
   assert.match(config.agent.playwright.prompt, /# Playwright MCP/);
+  assert.equal(config.agent.quickfile.mode, "subagent");
+  assert.equal(config.agent.quickfile.tools.aidevops_mcp, true);
+  assert.equal(config.agent.quickfile.tools["quickfile_*"], true);
+  assert.equal(config.agent.quickfile.permission.aidevops_mcp, "allow");
+  assert.equal(config.agent.quickfile.permission["quickfile_*"], "allow");
+  assert.match(config.agent.quickfile.prompt, /connect.*quickfile/);
+  assert.match(config.agent.quickfile.prompt, /# QuickFile Agent/);
+  assert.match(config.agent.quickfile.prompt, /business\/accounting\.md/);
+  assert.doesNotMatch(config.agent.quickfile.prompt, /browser tab/i);
 });
 
 test("pins legacy Playwriter commands while preserving custom commands", () => {

@@ -84,6 +84,13 @@ aidevops repos maintenance off owner/repo
 aidevops repos maintenance on owner/repo
 ```
 
+Repository layout migration treats every explicit `initialized_repos[].path` as
+authoritative. `aidevops repos migrate-layout plan` reports such entries as
+excluded unless `--include-registered-paths` is supplied. That flag approves
+only exact old-to-new paths embedded in the hashed plan. Apply atomically updates
+those exact entries while preserving every unrelated field; rollback restores
+the receipt-owned before-state only when no later config drift is present.
+
 | Field | Type | Example | Description |
 |-------|------|---------|-------------|
 | `pulse_hours` | object or array | `{"start": 17, "end": 5}` or `[17, 5]` | Limits dispatch to window (24h local time). Overnight supported. Omit for 24/7. Array form is accepted for compatibility; object form is preferred for readability. |

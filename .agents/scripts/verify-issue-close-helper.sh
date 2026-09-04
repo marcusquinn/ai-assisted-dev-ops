@@ -44,6 +44,25 @@ readonly MIN_FILE_OVERLAP=1
 # =============================================================================
 
 #######################################
+# Remove generated provenance and URL metadata before path extraction.
+#
+# Args: $1 = issue body text
+# Outputs: issue content that may contain repository-relative references
+# Returns: 0 always
+#######################################
+_strip_non_repository_path_metadata() {
+	local text="$1"
+
+	# Remove metadata tokens rather than truncating at the marker: issue text is
+	# untrusted, so a signature-like comment must not hide later file references.
+	printf '%s' "$text" | sed -E \
+		-e '/^[[:space:]]*<!--[[:space:]]*aidevops:sig[[:space:]]*-->[[:space:]]*$/d' \
+		-e 's#\[[^]]*\]\(https?://[^)]*\)##g' \
+		-e 's#https?://[^[:space:])>]+##g'
+	return 0
+}
+
+#######################################
 # Extract file paths from an issue body.
 #
 # Looks for common file-path patterns in the issue text:
@@ -57,6 +76,7 @@ readonly MIN_FILE_OVERLAP=1
 #######################################
 extract_file_paths_from_text() {
 	local text="$1"
+	text=$(_strip_non_repository_path_metadata "$text")
 
 	# Extract paths that look like file references:
 	# - Must contain a dot (extension) or a slash (directory)
@@ -122,7 +142,7 @@ get_pr_changed_files() {
 	# native GraphQL `files` projection, which cannot report its exact cost.
 	pr_files=$(AIDEVOPS_GH_ROUTE_DECISION="verify-close-pr-files-rest" \
 		gh api --paginate "repos/${repo_slug}/pulls/${pr_number}/files?per_page=100" \
-			--jq '.[].filename' 2>/dev/null) || {
+		--jq '.[].filename' 2>/dev/null) || {
 		log_error "Failed to fetch PR #${pr_number} file list via REST"
 		return 1
 	}

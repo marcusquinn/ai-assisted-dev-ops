@@ -17,6 +17,9 @@ decision-ready, auditable, and safe to share.
 ## Domain Routing
 
 - Use `business.md` for company orchestration and runner patterns.
+- Use `business/accounting.md` for bookkeeping, reconciliation, AR/AP,
+  management accounts, statutory-return workpapers, and cash-flow forecasts.
+- Use `business/accounting-software.md` to select or assess provider adapters.
 - Use `business/accounts-receipt-ocr.md` for receipt evidence and OCR review.
 - Use `business/accounts-subscription-audit.md` for recurring cost reviews.
 - Use `business/company-runners.md` for runner status and operational handoffs.
@@ -25,7 +28,8 @@ decision-ready, auditable, and safe to share.
 
 ## Report Sections
 
-1. Scope: business function, period, entities, systems, and confidentiality.
+1. Scope: business function, period, entities, currency, accounting basis,
+   systems, reconciliation cut-off, and confidentiality.
 2. Executive summary: decision, financial or operational impact, next action.
 3. Method: source systems, exports, OCR steps, reconciliation rules, caveats.
 4. Findings: costs, anomalies, risks, blockers, opportunities, and owners.
@@ -39,6 +43,7 @@ decision-ready, auditable, and safe to share.
 - Cite source IDs for each material cost, operational state, or approval claim.
 - Mark OCR-derived values as observed, verified, inferred, or unsupported.
 - Separate financial facts from recommendations and assumptions.
+- Mark accounting adjustments as proposed, approved, posted, or verified.
 - Preserve an audit trail: source, capture date, command or export, and reviewer.
 
 ## Export Notes

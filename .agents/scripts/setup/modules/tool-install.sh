@@ -2326,6 +2326,36 @@ _setup_find_valid_opencode_binary() {
 	return 1
 }
 
+# A freshly installed Node CLI can briefly be present before its first process
+# is ready. Retry the full candidate lookup a small, bounded number of times so
+# setup does not reinstall an otherwise valid OpenCode binary on the next run.
+_setup_find_post_install_opencode_binary() {
+	local preferred_bin="${1:-}"
+	local retry_attempts="${AIDEVOPS_OPENCODE_POST_INSTALL_ATTEMPTS:-3}"
+	local retry_delay="${AIDEVOPS_OPENCODE_POST_INSTALL_RETRY_DELAY:-1}"
+	local attempt=1
+	local valid_bin=""
+
+	[[ "$retry_attempts" =~ ^[1-3]$ ]] || retry_attempts=3
+	[[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=1
+
+	while [[ "$attempt" -le "$retry_attempts" ]]; do
+		valid_bin=$(_setup_find_valid_opencode_binary "$preferred_bin" 2>/dev/null || printf '')
+		if [[ -n "$valid_bin" ]]; then
+			printf '%s\n' "$valid_bin"
+			return 0
+		fi
+
+		if [[ "$attempt" -lt "$retry_attempts" ]]; then
+			print_info "OpenCode post-install validation is not ready; retrying..." >&2
+			sleep "$retry_delay"
+		fi
+		attempt=$((attempt + 1))
+	done
+
+	return 1
+}
+
 _setup_record_valid_opencode_binary() {
 	local valid_bin="$1"
 	local valid_version=""
@@ -2531,7 +2561,7 @@ setup_opencode_cli() {
 
 			# Persist resolved path on first-time success too (t2891).
 			local new_bin
-			new_bin=$(_setup_find_valid_opencode_binary "$(command -v opencode 2>/dev/null || echo "")" 2>/dev/null || echo "")
+			new_bin=$(_setup_find_post_install_opencode_binary "$(command -v opencode 2>/dev/null || echo "")" 2>/dev/null || echo "")
 			if [[ -n "$new_bin" ]] && _setup_validate_opencode_binary "$new_bin"; then
 				local stable_bin
 				stable_bin=$(_setup_ensure_opencode_stable_shim "$new_bin") || {

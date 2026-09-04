@@ -22,7 +22,7 @@ tools:
 **Trigger**: Creating or reviewing an instruction surface, user correction, observable failure, session-end learning, or periodic maintenance.
 **Owns**: Semantic review of agents, prompts, workflow instructions, command bodies, and their generated/runtime adapters.
 **Excludes**: Source-code simplification belongs to `tools/code-review/code-simplifier.md`; behavioural validation belongs to `agent-testing.md`; automated optimisers may propose candidates but must satisfy this rubric before changing instruction semantics.
-**Self-Assessment**: Observe failure → complete task → cite evidence → search for `"pattern"` under `.agents/` with Grep → review the assembled context stack → propose the smallest evidenced fix.
+**Self-Assessment**: Observe evidence → preserve the current outcome → classify scope/sensitivity → search for `"pattern"` under `.agents/` with Grep → review the assembled context stack → apply and verify the smallest authorized fix or route it under `reference/self-improvement.md`.
 **Exact Search**: Use the Grep tool for content searches; when Bash is available, `rg "pattern" <path>` is an optional equivalent.
 **Write Restrictions (MANDATORY)**: Interactive sessions use a linked worktree for every edit, including planning files. Headless bookkeeping and explicitly planning-only workers may use only the narrow `main`/`master` exception enforced by `pre-edit-check.sh`; all other headless edits require a linked worktree. Follow `workflows/pre-edit.md` rather than copying its path allowlist here.
 
@@ -40,8 +40,9 @@ tools:
    - **Rationale** — failure history or explanation needed for maintenance; retain with traceable provenance, usually in a reference.
    - **Deterministic enforcement candidate** — syntax or policy mechanics suitable for a hook, validator, wrapper, or CI gate; keep the invariant until enforcement and delivery are verified.
 4. **Recover provenance and scan for conflicts.** Search task IDs, issue/PR context, recent file history, related surfaces, and current enforcement. Compare the assembled stack for contradictory requirements, stale paths or capabilities, shadowed canonical rules, and provider/model names used as abstract workload tiers. Record each conflict and resolution; do not silently rely on prompt order.
-5. **Choose the smallest safe treatment.** Keep, tighten, relocate, enforce, or remove. Incomplete provenance, delivery, or behavioural evidence defaults to preservation. Counts and line length identify review pressure, not a desired semantic result.
-6. **Verify the delivered behaviour.** Exercise the canonical source through every affected generated/runtime route and inspect the delivered context. Run applicable existing deterministic checks and existing relevant Agent Testing/comprehension scenarios. Add or expand scenarios only when requested, required by the target contract, or when they are the lowest-cost way to resolve material delivery uncertainty; never create a harness by default. A smaller file or unchanged aggregate score is not proof that a protected lesson still reaches its decision point.
+5. **Review ambient improvement.** Confirm the agent inherits the command-independent lifecycle in `reference/self-improvement.md`; add only domain-specific evidence signals, scope/sensitivity boundaries, promotion routes, and closure verification. Repeated logging, speculative lessons, or automatic global promotion are defects.
+6. **Choose the smallest safe treatment.** Keep, tighten, relocate, enforce, or remove. Incomplete provenance, delivery, or behavioural evidence defaults to preservation. Counts and line length identify review pressure, not a desired semantic result.
+7. **Verify the delivered behaviour.** Exercise the canonical source through every affected generated/runtime route and inspect the delivered context. Run applicable existing deterministic checks and existing relevant Agent Testing/comprehension scenarios. Add or expand scenarios only when requested, required by the target contract, or when they are the lowest-cost way to resolve material delivery uncertainty; never create a harness by default. A smaller file or unchanged aggregate score is not proof that a protected lesson still reaches its decision point.
 
 ## Review Checklist
 
@@ -56,7 +57,8 @@ tools:
 | 7 | **Code examples** (authoritative/working) | Keep only when authoritative; otherwise use Grep references for `"pattern"` under `.agents/scripts/` or stable section headings |
 | 8 | **AI-CONTEXT block** (standalone essentials) | Rewrite if an AI would get stuck with only this |
 | 9 | **Slash commands** | Keep as thin adapters under `scripts/commands/` or the owning domain subagent |
-| 10 | **Target-specific verification** | Exercise canonical semantics through every changed delivery route; use existing checks where applicable |
+| 10 | **Ambient improvement** | Verify command-independent signals, narrow scope/sensitivity, deduplication, routing, and evidence-backed closure |
+| 11 | **Target-specific verification** | Exercise canonical semantics through every changed delivery route; use existing checks where applicable |
 
 Before consolidating, relocating, or removing a directive, recover the protected failure/rationale from nearby task IDs, issue/PR context, and recent file history. Record its current enforcement or routing, and distinguish exact duplication from reinforcement at another decision boundary, runtime-specific variants, and similar-but-different hazards. Relocation must name the reliable trigger that delivers the lesson at its decision point. Removal requires evidence that the knowledge is obsolete or fully superseded and identifies any mechanism that preserves or enforces it.
 
@@ -75,6 +77,7 @@ Before consolidating, relocating, or removing a directive, recover the protected
 **Proposed Change**: [Specific before/after]
 **Boundary Analysis**: [Exact duplicate, reinforcement, runtime variant, or similar-but-different hazard]
 **Delivery/Preservation**: [Reliable relocation trigger or superseding enforcement mechanism]
+**Improvement Contract**: [Evidence signal, scope/sensitivity, capture or route, and closure proof]
 **Verification**: [How retained behaviour and routing were tested]
 **Impact**: [ ] No conflicts [ ] Instruction count (diagnostic): [+/- N] [ ] Tested
 ```

@@ -353,6 +353,82 @@ read_secret_input() {
 	return 0
 }
 
+# Acquire an exclusive directory lock for fallback credential mutations.
+# mkdir is atomic on local filesystems and portable across the supported shells.
+acquire_credentials_lock() {
+	local lock_dir="${CREDENTIALS_FILE}.lock"
+	local attempts=0
+
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		((++attempts))
+		if [[ "$attempts" -ge 300 ]]; then
+			print_error "Timed out waiting to update credentials.sh"
+			return 1
+		fi
+		sleep 0.1
+	done
+
+	printf '%s' "$lock_dir"
+	return 0
+}
+
+# Release a lock acquired by acquire_credentials_lock.
+release_credentials_lock() {
+	local lock_dir="$1"
+	rmdir "$lock_dir" 2>/dev/null || true
+	return 0
+}
+
+# Atomically replace one fallback credential while preserving every other entry.
+update_fallback_credential() {
+	local name="$1"
+	local escaped_value="$2"
+	local filter_status=0
+	local lock_dir=""
+	local tmp_file=""
+	local previous_umask=""
+
+	# The lock lives beside the credentials file, so its parent must exist before
+	# acquisition. File creation remains inside the lock to avoid truncation races.
+	if ! mkdir -p "$CONFIG_DIR" || ! chmod 700 "$CONFIG_DIR"; then
+		print_error "Unable to prepare credentials directory"
+		return 1
+	fi
+
+	if ! lock_dir=$(acquire_credentials_lock); then
+		return 1
+	fi
+
+	if ! ensure_credentials_file "$CREDENTIALS_FILE"; then
+		release_credentials_lock "$lock_dir"
+		return 1
+	fi
+
+	previous_umask=$(umask)
+	umask 077
+	if ! tmp_file=$(mktemp "${CREDENTIALS_FILE}.tmp.XXXXXX"); then
+		umask "$previous_umask"
+		release_credentials_lock "$lock_dir"
+		print_error "Unable to create temporary credentials file"
+		return 1
+	fi
+	umask "$previous_umask"
+
+	grep -v "^export ${name}=" "$CREDENTIALS_FILE" >"$tmp_file" || filter_status=$?
+	if [[ "$filter_status" -gt 1 ]] ||
+		! printf 'export %s="%s"\n' "$name" "$escaped_value" >>"$tmp_file" ||
+		! chmod 600 "$tmp_file" ||
+		! mv -f "$tmp_file" "$CREDENTIALS_FILE"; then
+		rm -f "$tmp_file" || true
+		release_credentials_lock "$lock_dir"
+		print_error "Unable to update credentials.sh"
+		return 1
+	fi
+
+	release_credentials_lock "$lock_dir"
+	return 0
+}
+
 # Initialize gopass store for aidevops
 cmd_init() {
 	if ! command -v gopass &>/dev/null; then
@@ -432,23 +508,17 @@ cmd_set() {
 	else
 		print_warning "gopass not available, falling back to credentials.sh"
 
-		ensure_credentials_file "$CREDENTIALS_FILE"
 		# Escape backslashes then double quotes so the value can be safely embedded
 		# in a double-quoted shell assignment.  get_secret_value() strips the
 		# surrounding double quotes, so this round-trips correctly.
 		local escaped_value="${value//\\/\\\\}"
 		escaped_value="${escaped_value//\"/\\\"}"
-		if [[ -f "$CREDENTIALS_FILE" ]] && grep -q "^export ${name}=" "$CREDENTIALS_FILE" 2>/dev/null; then
-			local tmp_file="${CREDENTIALS_FILE}.tmp"
-			grep -v "^export ${name}=" "$CREDENTIALS_FILE" >"$tmp_file"
-			printf 'export %s="%s"\n' "${name}" "${escaped_value}" >>"$tmp_file"
-			mv "$tmp_file" "$CREDENTIALS_FILE"
-		else
-			printf 'export %s="%s"\n' "${name}" "${escaped_value}" >>"$CREDENTIALS_FILE"
+		if ! update_fallback_credential "$name" "$escaped_value"; then
+			return 1
 		fi
-		chmod 600 "$CREDENTIALS_FILE"
 		print_success "Stored $name in credentials.sh"
 		print_info "Recommend: aidevops secret init (to enable encrypted storage)"
+		print_info "Do not run concurrent refreshes for the same rotating refresh token"
 	fi
 	print_info "Verify key name only: aidevops secret list"
 

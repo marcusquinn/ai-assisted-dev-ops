@@ -335,6 +335,7 @@ run_case "post-approval protection failure blocks final success" '
 	set -uo pipefail
 	# shellcheck disable=SC1090
 	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_ensure_lifecycle_labels() { return 0; }
 	approval_snapshot_v2_payload() { printf "%s" "{\"schema\":\"aidevops-approval/v2\"}"; return 0; }
 	_sign_approval_payload() { local payload="$1"; local actual_key="$2"; local sig_file="$3"; : "$payload" "$actual_key"; printf "mock-signature" >"$sig_file"; return 0; }
 	gh_issue_comment() { return 0; }
@@ -346,6 +347,23 @@ run_case "post-approval protection failure blocks final success" '
 assert_contains "post-approval failure suppresses final success" "$LAST_OUTPUT" "post-approval protection updates did not reach the required state"
 assert_not_contains "post-approval failure does not print success" "$LAST_OUTPUT" "Issue #123 approved and signed"
 assert_contains "post-approval failure queues bounded reconciliation" "$LAST_OUTPUT" "KICKED_RECONCILIATION"
+
+# Missing repository labels must fail before locking, signing, or commenting.
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "approval label provisioning failure is pre-signature" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	_approval_ensure_lifecycle_labels() { printf "PROVISION_ATTEMPT"; return 1; }
+	_approval_lock_issue() { printf "UNEXPECTED_LOCK"; return 0; }
+	_sign_approval_payload() { printf "UNEXPECTED_SIGN"; return 0; }
+	gh_issue_comment() { printf "UNEXPECTED_COMMENT"; return 0; }
+	_approve_target_after_confirmation issue 123 marcusquinn/aidevops mock-key
+' 1
+assert_contains "approval attempts lifecycle label provisioning" "$LAST_OUTPUT" "PROVISION_ATTEMPT"
+assert_not_contains "provisioning failure does not lock issue" "$LAST_OUTPUT" "UNEXPECTED_LOCK"
+assert_not_contains "provisioning failure does not sign" "$LAST_OUTPUT" "UNEXPECTED_SIGN"
+assert_not_contains "provisioning failure does not comment" "$LAST_OUTPUT" "UNEXPECTED_COMMENT"
 
 # GH#28717: target reconciliation accepts only the current authenticated actor's
 # signed comment when that actor has maintainer-equivalent authority.
@@ -443,6 +461,7 @@ run_case "reconcile re-verifies authority immediately before issue lifecycle res
 		printf "VERIFIED\n"
 		return 0
 	}
+	_approval_ensure_lifecycle_labels() { return 0; }
 	_post_issue_approval_updates() {
 		local target_type="${1:-}"
 		local target_number="${2:-}"
@@ -476,6 +495,7 @@ run_case "partial reconciliation failure reasserts NMR before returning" '
 		return 0
 	}
 	cmd_verify() { printf "VERIFIED\n"; return 0; }
+	_approval_ensure_lifecycle_labels() { return 0; }
 	_post_issue_approval_updates() { return 1; }
 	_approval_restore_nmr_hold() {
 		local target_type="${1:-}"
@@ -514,6 +534,33 @@ run_case "reconcile leaves an unchanged approved target as a no-op" '
 assert_contains "no-op reconciliation reports absent restored hold" "$LAST_OUTPUT" "NO_NMR"
 assert_not_contains "no-op reconciliation skips signature work" "$LAST_OUTPUT" "SHOULD_NOT_VERIFY"
 assert_not_contains "no-op reconciliation skips lifecycle mutation" "$LAST_OUTPUT" "SHOULD_NOT_APPLY"
+
+# A signed issue stranded by missing repository labels has no NMR and no
+# auto-dispatch. Reconciliation must provision labels and complete that handoff.
+# shellcheck disable=SC2016  # literal script is evaluated in the child bash.
+run_case "reconcile repairs signed issue missing both lifecycle labels" '
+	set -uo pipefail
+	# shellcheck disable=SC1090
+	source "$APPROVAL_HELPER_UNDER_TEST" >/dev/null 2>&1
+	trace=$(mktemp)
+	_require_number_arg() { return 0; }
+	_resolve_slug_or_fail() { local slug="${1:-}"; printf "%s" "$slug"; return 0; }
+	_approval_fetch_issue_json() {
+		printf "%s" "{\"state\":\"open\",\"locked\":true,\"labels\":[{\"name\":\"status:available\"}]}"
+		return 0
+	}
+	cmd_verify() { printf "VERIFIED\n"; return 0; }
+	_approval_ensure_lifecycle_labels() { printf "ENSURE_LABELS\n" >>"$trace"; return 0; }
+	_post_issue_approval_updates() { printf "APPLY_LIFECYCLE\n" >>"$trace"; return 0; }
+	rc=0
+	cmd_reconcile issue 123 marcusquinn/aidevops || rc=$?
+	cat "$trace"
+	rm -f "$trace"
+	exit "$rc"
+' 0
+assert_contains "stranded approval provisions lifecycle labels" "$LAST_OUTPUT" "ENSURE_LABELS"
+assert_contains "stranded approval completes lifecycle handoff" "$LAST_OUTPUT" "APPLY_LIFECYCLE"
+assert_contains "stranded approval reconciliation succeeds" "$LAST_OUTPUT" "RECONCILED"
 
 # shellcheck disable=SC2016  # literal script is evaluated in the child bash.
 run_case "reconcile preserves NMR when authority verification fails" '

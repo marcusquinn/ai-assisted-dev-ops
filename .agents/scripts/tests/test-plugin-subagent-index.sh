@@ -39,11 +39,13 @@ setup() {
 	local agents_dir="$TEST_HOME/.aidevops/agents"
 	local config_dir="$TEST_HOME/.config/aidevops"
 	mkdir -p "$agents_dir/scripts" "$agents_dir/example-plugin" \
-		"$agents_dir/public-relations" \
+		"$agents_dir/business" "$agents_dir/public-relations" \
 		"$agents_dir/tools/design/library/brands/example" "$config_dir"
 	cp "$REPO_ROOT/.agents/scripts/subagent-index-helper.sh" "$agents_dir/scripts/"
 	cp "$REPO_ROOT/.agents/scripts/plugin-loader-helper.sh" "$agents_dir/scripts/"
 	cp "$REPO_ROOT/.agents/scripts/plugin-source-trust-lib.sh" "$agents_dir/scripts/"
+	cp "$REPO_ROOT/.agents/scripts/managed-label-provisioning-lib.sh" "$agents_dir/scripts/"
+	cp "$REPO_ROOT/.agents/scripts/privacy-guard-helper.sh" "$agents_dir/scripts/"
 	cp "$REPO_ROOT/.agents/scripts/portable-stat.sh" "$agents_dir/scripts/"
 	cp "$REPO_ROOT"/.agents/scripts/shared-*.sh "$agents_dir/scripts/"
 	chmod +x "$agents_dir/scripts/subagent-index-helper.sh" "$agents_dir/scripts/plugin-loader-helper.sh"
@@ -60,6 +62,9 @@ mode: subagent
 EOF_AGENT
 	cat >"$agents_dir/public-relations/media-list-builder.md" <<'EOF_AGENT'
 # Media List Builder
+EOF_AGENT
+	cat >"$agents_dir/business/accounting.md" <<'EOF_AGENT'
+# Accounting
 EOF_AGENT
 	cat >"$agents_dir/tools/design/library/brands/example/DESIGN.md" <<'EOF_AGENT'
 # Example Design Catalogue
@@ -142,6 +147,7 @@ test_shared_routes_preserved_without_design_catalogue() {
 	status=$?
 
 	if [[ "$status" -eq 0 ]] &&
+		grep -q '^business/,business subagents,accounting$' "$index_file" &&
 		grep -q '^public-relations/,public-relations subagents,media-list-builder$' "$index_file" &&
 		! grep -q 'tools/design/library' "$index_file" &&
 		cmp -s "$first_index" "$index_file"; then

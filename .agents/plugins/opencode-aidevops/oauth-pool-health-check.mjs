@@ -104,6 +104,6 @@ export async function poolActionCheck(providerArg, now) {
     if (pending) results.push(`  PENDING: Unassigned token (added: ${pending.added})`);
   }
   return results.length === 0
-    ? `No accounts in any pool.\n\nTo add: run \`opencode auth login\` (Ctrl+A), select a pool provider, enter email, complete OAuth, then switch to the main provider.`
+    ? `No accounts in any pool.\n\nTo add an account, run \`aidevops model-accounts-pool add <provider>\` with anthropic, openai, cursor, or google.`
     : `OAuth Pool Health Check${results.join("\n")}`;
 }

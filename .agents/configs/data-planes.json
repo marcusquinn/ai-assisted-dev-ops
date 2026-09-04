@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "description": "Canonical aidevops registry for underscore-prefixed data planes and cross-plane routing surfaces.",
   "evidence_contract": {
     "version": 1,
@@ -111,18 +111,18 @@
     },
     "_feedback": {
       "purpose": "User feedback, survey responses, review extracts, pain points, and qualitative signals.",
-      "lifecycle_state": "captured -> classified -> clustered -> actioned -> archived",
+      "lifecycle_state": "captured -> classified -> mined -> promoted|retired",
       "helper": "agent-managed; no single helper yet",
       "versioning_policy": {
-        "versioned_paths": ["summaries/", "clusters/", "_config/"],
+        "versioned_paths": ["README.md", "captures/", "themes/", "_config/"],
         "gitignored_paths": ["raw/", "pii/", "index/"],
-        "large_blob_policy": "Raw feedback exports remain gitignored; redacted summaries may be versioned."
+        "large_blob_policy": "Raw feedback exports remain gitignored; normalized captures and reviewed themes may be versioned only after sensitivity and retention review."
       },
-      "sensitivity_default": "pii",
-      "ingress": ["_inbox routed feedback", "survey exports", "support review imports", "campaign feedback command"],
-      "egress": ["_campaigns active research", "_projects backlog inputs", "_knowledge insights"],
-      "index_retrieval_surface": ["feedback clusters", "redacted summaries", "future feedback indexes"],
-      "routing_notes": "Treat raw feedback as potentially personal data until redacted or classified."
+      "sensitivity_default": "unverified",
+      "ingress": ["_inbox routed feedback", "ambient agent observations", "survey exports", "support review imports", "campaign feedback command"],
+      "egress": ["_campaigns active research", "_projects requirements", "_knowledge insights", "_cases notes", "_performance annotations", "TODO/GitHub tasks"],
+      "index_retrieval_surface": ["normalized captures", "reviewed themes", "future feedback indexes"],
+      "routing_notes": "Treat raw feedback as potentially personal data until classified. Unverified is an intake state, not a retained sensitivity tier. Commands are optional; direct capture still requires the documented provenance, sensitivity, consent, retention, and promotion gates."
     }
   }
 }

@@ -3,7 +3,7 @@ name: Post-Merge Brief Verification
 # Keep post-merge acceptance checks on the same pinned Qlty CLI as required PR
 # quality gates. Brief verify blocks may call the repository Qlty helpers.
 env:
-  QLTY_VERSION: "0.636.0"
+  QLTY_VERSION: "0.643.0"
 
 # t2135: After a PR merges to main, extract the task ID from the PR title,
 # locate the corresponding brief file, parse verify: YAML blocks from its

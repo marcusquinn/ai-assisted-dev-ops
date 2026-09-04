@@ -1,6 +1,7 @@
 import { existsSync } from "fs";
 import { join } from "path";
 import { createHookStatusTool } from "./hook-status-tool.mjs";
+import { createGptImageTool } from "./gpt-image-tool.mjs";
 import { createMcpActivationTool } from "./mcp-activation-tool.mjs";
 import { createPreEditCheckTool } from "./pre-edit-check-tool.mjs";
 
@@ -188,12 +189,13 @@ function createMemoryTool(scriptsDir, run) {
 /**
  * Create all tool definitions for the plugin.
  *
- * Tools (6 total):
+ * Tools (7 total):
  *   - aidevops              — aidevops CLI runner
  *   - aidevops_memory       — unified recall/store (merged from former recall + store pair)
  *   - aidevops_pre_edit_check — git safety check before file edits
  *   - aidevops_hook_status — bounded Git hook marker inspection
  *   - aidevops_mcp        — registry-allowlisted on-demand MCP lifecycle
+ *   - gpt_image_generate  — OAuth-first GPT Image 2 generation and reference editing
  *   - model-accounts-pool   — OAuth account pool management (added in index.mjs)
  *
  * NOTE: aidevops_quality_check was removed. Quality checks run automatically
@@ -219,6 +221,18 @@ export function createTools(scriptsDir, run, options = {}) {
 
   const tools = {
     aidevops: createAidevopsTool(run),
+    gpt_image_generate: createGptImageTool(tool, z, {
+      scriptsDir,
+      env: options.env,
+      execFile: options.imageExecFile,
+      fetchImpl: options.imageFetch,
+      projectRoot: options.projectRoot,
+      markOAuthRateLimit: options.imageOAuthRateLimitMarker,
+      markOAuthSuccess: options.imageOAuthSuccessMarker,
+      readSecret: options.imageSecretReader,
+      resolveOAuthAccount: options.imageOAuthAccountResolver,
+      rotateOAuthAccount: options.imageOAuthAccountRotator,
+    }),
     aidevops_memory: createMemoryTool(scriptsDir, run),
     aidevops_pre_edit_check: createPreEditCheckTool(tool, z, scriptsDir, options.preEditTimeoutMs),
     aidevops_hook_status: createHookStatusTool(tool, z, { workerWorktree: options.workerWorktree }),

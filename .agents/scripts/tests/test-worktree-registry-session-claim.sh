@@ -8,6 +8,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 REGISTRY_LIB="${SCRIPT_DIR}/../shared-worktree-registry.sh"
+WORKTREE_HELPER="${SCRIPT_DIR}/../worktree-helper.sh"
 TEST_ROOT=$(mktemp -d)
 WORKTREE_REGISTRY_DIR="${TEST_ROOT}/registry"
 WORKTREE_REGISTRY_DB="${WORKTREE_REGISTRY_DIR}/worktree-registry.db"
@@ -82,6 +83,30 @@ create_linked_worktree_fixture() {
 	/usr/bin/git -C "$canonical_path" add README.md || return 1
 	/usr/bin/git -C "$canonical_path" commit -q -m seed || return 1
 	/usr/bin/git -C "$canonical_path" worktree add -q -b "$branch" "$linked_path" || return 1
+	return 0
+}
+
+test_registry_owner_verification_command() {
+	reset_registry
+	local canonical_path="${TEST_ROOT}/verify-canonical"
+	local linked_path="${TEST_ROOT}/verify-linked"
+	local session_id="ses_image_worktree"
+	create_linked_worktree_fixture "$canonical_path" "$linked_path" "feature/verify-linked" || {
+		print_result "registry command verifies exact live session owner" 1
+		return 0
+	}
+	register_worktree "$linked_path" "feature/verify-linked" --owner-pid "$OWNER_PID" --session "$session_id"
+
+	local rc=0 output=""
+	output=$("$WORKTREE_HELPER" registry verify-owner "$linked_path" "$session_id") || rc=1
+	[[ "$output" == "VERIFIED" ]] || rc=1
+	if "$WORKTREE_HELPER" registry verify-owner "$linked_path" "ses_other" >/dev/null 2>&1; then
+		rc=1
+	fi
+	if "$WORKTREE_HELPER" registry verify-owner "$canonical_path" "$session_id" >/dev/null 2>&1; then
+		rc=1
+	fi
+	print_result "registry command verifies exact live session owner" "$rc"
 	return 0
 }
 
@@ -483,6 +508,7 @@ test_owner_writers_fail_when_process_generation_is_unavailable() {
 
 main() {
 	start_live_pids
+	test_registry_owner_verification_command
 	test_same_opencode_session_rolls_owner_pid
 	test_parameterized_claim_preserves_metacharacters
 	test_legacy_equivalent_registry_path_resolves

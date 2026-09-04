@@ -1003,16 +1003,46 @@ _gh_create_pr_enforce_origin_postcondition() {
 	fi
 
 	local origin_name="${expected_origin#origin:}"
+	local origin_error_file=""
+	local origin_write_rc=127
 	if declare -F set_origin_label >/dev/null 2>&1; then
-		set_origin_label "$_GH_CREATE_PR_DURABLE_NUMBER" \
-			"$_GH_CREATE_PR_DURABLE_REPO" "$origin_name" --pr >/dev/null 2>&1 || true
+		local previous_umask=""
+		previous_umask=$(umask)
+		umask 077
+		origin_error_file=$(mktemp -t aidevops-pr-origin-error.XXXXXX 2>/dev/null) || origin_error_file=""
+		umask "$previous_umask"
+		if [[ -n "$origin_error_file" ]]; then
+			local cleanup_cmd=""
+			printf -v cleanup_cmd 'rm -f -- %q' "$origin_error_file"
+			push_cleanup "$cleanup_cmd"
+		fi
+		origin_write_rc=0
+		if [[ -n "$origin_error_file" ]]; then
+			set_origin_label "$_GH_CREATE_PR_DURABLE_NUMBER" \
+				"$_GH_CREATE_PR_DURABLE_REPO" "$origin_name" --pr \
+				>/dev/null 2>"$origin_error_file" || origin_write_rc=$?
+		else
+			set_origin_label "$_GH_CREATE_PR_DURABLE_NUMBER" \
+				"$_GH_CREATE_PR_DURABLE_REPO" "$origin_name" --pr \
+				>/dev/null 2>&1 || origin_write_rc=$?
+		fi
 	fi
 	# A transport can report failure after applying its mutation. Read back even
 	# when set_origin_label returned non-zero before classifying partial success.
 	if _gh_create_pr_origin_is_exact "$_GH_CREATE_PR_DURABLE_REPO" \
 		"$_GH_CREATE_PR_DURABLE_NUMBER" "$expected_origin"; then
+		[[ -z "$origin_error_file" ]] || rm -f "$origin_error_file"
 		return 0
 	fi
+	local origin_failure_kind="origin-label reconciler is unavailable"
+	if [[ "$origin_write_rc" -eq 0 ]]; then
+		origin_failure_kind="label write returned success but exact provenance readback failed"
+	elif [[ "$origin_write_rc" -ne 127 ]]; then
+		origin_failure_kind=$(_gh_origin_label_failure_kind "$origin_error_file" "$origin_write_rc")
+	fi
+	[[ -z "$origin_error_file" ]] || rm -f "$origin_error_file"
+	printf '[aidevops] gh_create_pr: origin label reconciliation failed: %s\n' \
+		"$origin_failure_kind" >&2
 	printf '[aidevops] gh_create_pr: durable PR #%s exists but exact %s provenance is unverified; not retrying creation\n' \
 		"$_GH_CREATE_PR_DURABLE_NUMBER" "$expected_origin" >&2
 	return "$_GH_PR_CREATE_PARTIAL_RC"

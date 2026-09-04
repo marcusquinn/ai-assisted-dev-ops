@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
+
+# Private source material and generated indexes are never versioned.
+raw/
+pii/
+index/

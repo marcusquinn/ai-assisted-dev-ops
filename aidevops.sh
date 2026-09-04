@@ -5,7 +5,7 @@
 # AI DevOps Framework CLI
 # Usage: aidevops <command> [options]
 #
-# Version: 3.32.298
+# Version: 3.32.306
 
 set -euo pipefail
 
@@ -209,6 +209,9 @@ unset _AIDEVOPS_CLI_ROOT _AIDEVOPS_CLI_MODULES_SUBDIR
 # shellcheck source=.agents/scripts/aidevops-cli/aidevops-repos-lib.sh
 # shellcheck disable=SC1091  # module path resolved at runtime via $INSTALL_DIR
 source "${AIDEVOPS_CLI_MODULES_DIR}/aidevops-repos-lib.sh"
+# shellcheck source=.agents/scripts/aidevops-cli/repo-discovery-lib.sh
+# shellcheck disable=SC1091
+source "${AIDEVOPS_CLI_MODULES_DIR}/repo-discovery-lib.sh"
 # shellcheck source=.agents/scripts/aidevops-cli/aidevops-init-lib.sh
 # shellcheck disable=SC1091
 source "${AIDEVOPS_CLI_MODULES_DIR}/aidevops-init-lib.sh"
@@ -873,6 +876,16 @@ cmd_repos() {
 	add) _repos_add ;;
 	remove | rm) _repos_remove "${2:-}" ;;
 	clean) _repos_clean ;;
+	migrate-layout)
+		shift
+		local migrate_helper="${AIDEVOPS_CLI_MODULES_DIR%/aidevops-cli}/repo-layout-migrate-helper.sh"
+		[[ -f "$migrate_helper" ]] || migrate_helper="${AGENTS_DIR}/scripts/repo-layout-migrate-helper.sh"
+		if [[ ! -x "$migrate_helper" ]]; then
+			print_error "Repository layout migration helper is unavailable"
+			return 1
+		fi
+		"$migrate_helper" "$@"
+		;;
 	maintenance | maintain)
 		shift
 		_repos_maintenance "$@"
@@ -885,6 +898,8 @@ cmd_repos() {
 		echo "  add      Register current project"
 		echo "  remove   Remove project from registry"
 		echo "  clean    Remove entries for non-existent projects"
+		echo "  migrate-layout <plan|apply|rollback|status>"
+		echo "           Guarded owner-layout migration with durable receipts"
 		echo "  maintenance <on|off> [repo]"
 		echo "           Include/exclude a registered repo from recurring automation"
 		;;
@@ -928,9 +943,9 @@ cmd_detect() {
 	local to_register=()
 
 	if [[ -d "$HOME/Git" ]]; then
-		while IFS= read -r -d '' aidevops_json; do
-			local repo_dir
-			repo_dir=$(dirname "$aidevops_json")
+		while IFS= read -r -d '' repo_dir; do
+			local aidevops_json="$repo_dir/.aidevops.json"
+			[[ -f "$aidevops_json" ]] || continue
 
 			# Check if already registered
 			init_repos_file
@@ -940,7 +955,7 @@ cmd_detect() {
 					found=$((found + 1))
 				fi
 			fi
-		done < <(find "$HOME/Git" -maxdepth 3 -name ".aidevops.json" -print0 2>/dev/null)
+		done < <(aidevops_discover_canonical_repos "$HOME/Git")
 	fi
 
 	if [[ $found -eq 0 ]]; then

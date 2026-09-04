@@ -114,6 +114,7 @@ function getPkgRunner() {
  *   - globallyEnabled: whether tools are enabled globally (true) or per-agent (false)
  *   - activationAgent: optional bounded agent that can connect the MCP on demand
  *   - agentSource: source path for an activation agent profile
+ *   - activationGuidance: optional domain-specific lifecycle guidance
  *   - requiresBinary: optional binary name that must exist for local MCPs
  *   - macOnly: optional flag for macOS-only MCPs
  *   - description: human-readable description for logging
@@ -135,6 +136,9 @@ function getMcpRegistry() {
       globallyEnabled: false,
       activationAgent: "playwriter",
       agentSource: ["tools", "browser", "playwriter.md"],
+      activationGuidance: [
+        "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
+      ],
       modelTier: "standard",
       description: "Browser automation via Chrome extension",
     },
@@ -318,6 +322,9 @@ function getMcpRegistry() {
       eager: false,
       toolPattern: "quickfile_*",
       globallyEnabled: false,
+      activationAgent: "quickfile",
+      agentSource: ["services", "accounting", "quickfile.md"],
+      modelTier: "standard",
       requiresBinary: "aidevops",
       alwaysOverwrite: true,
       description: "Multi-account QuickFile UK accounting",
@@ -372,6 +379,7 @@ export function getOnDemandMcpAgents() {
       agentSource: [...mcp.agentSource],
       toolPattern: mcp.toolPattern,
       modelTier: mcp.modelTier || "standard",
+      activationGuidance: [...(mcp.activationGuidance || [])],
       description: mcp.description,
     }));
 }

@@ -116,9 +116,42 @@ test_rebase_conflict_neutralizes_cleanly() {
 	return 0
 }
 
+write_fake_gh_api_handler() {
+	local fake_bin="$1"
+	mkdir -p "$fake_bin"
+	cat >"${fake_bin}/gh-api-handler" <<'GH'
+#!/usr/bin/env bash
+set -u
+
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/example/repo" ]]; then
+	printf 'false\n'
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == "/repos/example/repo/pulls?"* ]]; then
+	if [[ -f "${GH_STUB_PR_MARKER:?}" ]]; then
+		printf '[{"number":1,"html_url":"https://github.com/example/repo/pull/1"}]\n'
+	else
+		printf '[]\n'
+	fi
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == */repos/example/repo/issues/1 ]]; then
+	printf 'origin:worker\n'
+	exit 0
+fi
+
+exit 0
+GH
+	chmod +x "${fake_bin}/gh-api-handler"
+	return 0
+}
+
 write_fake_gh() {
 	local fake_bin="$1"
 	mkdir -p "$fake_bin"
+	write_fake_gh_api_handler "$fake_bin"
 	cat >"${fake_bin}/gh" <<'GH'
 #!/usr/bin/env bash
 set -u
@@ -138,9 +171,9 @@ if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
 	exit 0
 fi
 
-if [[ "${1:-}" == "api" && "${2:-}" == "repos/example/repo" ]]; then
-	printf 'false\n'
-	exit 0
+if [[ "${1:-}" == "api" ]]; then
+	"${GH_STUB_API_HANDLER:?}" "$@"
+	exit $?
 fi
 
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
@@ -334,6 +367,7 @@ run_issue_sync_helper() {
 			GH_STUB_HEAD="$head_file" \
 			GH_STUB_TITLE="$title_file" \
 			GH_STUB_BODY="${title_file}.body" \
+			GH_STUB_API_HANDLER="${fake_bin}/gh-api-handler" \
 			GH_STUB_REJECT_PR_TOKEN="$reject_pr_token" \
 			GIT_GUARD_LOG="${output_file}.git-guard" \
 			AIDEVOPS_PLANNING_GIT_BIN="$trusted_git" \
@@ -421,6 +455,8 @@ test_protected_branch_uses_one_rebased_pr() {
 		fail "issue-sync PR title preserves merge-loop prevention"
 	elif [[ "$(<"${title_file}.body")" != *"Ref #9001"* ]]; then
 		fail "issue-sync PR body preserves changed-task linkage"
+	elif [[ "$(<"$output_a")" == *"GH006: Protected branch update failed"* ]]; then
+		fail "typed protected-branch result survives captured provider output"
 	elif [[ "$(<"$output_a")" != *"repository-scoped CI privacy and write-policy inventory"* ]]; then
 		fail "GitHub Actions publication declares its scoped CI inventory"
 	elif ! jq -e '.initialized_repos == [{"slug":"example/repo","role":"maintainer"}]' \
@@ -429,10 +465,10 @@ test_protected_branch_uses_one_rebased_pr() {
 	elif [[ "$branch_message" == *"[skip ci]"* ]]; then
 		fail "issue-sync PR branch still runs required checks"
 	elif [[ "$(git -C "$work_a" status --short)" != *"TODO.md"* ||
-	"$(git -C "$work_b" status --short)" != *"TODO.md"* ]]; then
+		"$(git -C "$work_b" status --short)" != *"TODO.md"* ]]; then
 		fail "PR fallback preserves each caller's local TODO projection"
 	else
-		pass "GH006 converges through one rebased deterministic PR"
+		pass "typed protected-branch result routes through one rebased deterministic PR"
 	fi
 	return 0
 }

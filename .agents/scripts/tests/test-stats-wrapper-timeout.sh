@@ -42,33 +42,54 @@ STATS_PIDFILE="\$1/stats.pid"
 STATS_LOGFILE="\$1/stats.log"
 HARNESS_TEMP_DIR="\$1"
 case "$mode" in
-deadline | function-timeout) STATS_TIMEOUT=60 ;;
+deadline | function-timeout | work-health-failure | work-healthy) STATS_TIMEOUT=60 ;;
 *) STATS_TIMEOUT=1 ;;
 esac
-_stats_wrapper_run_work() {
-	case "$mode" in
-	timeout)
-		printf '%s\\n' "\$BASHPID" >"\$HARNESS_TEMP_DIR/child.pid"
-		sleep 30
-		;;
-	normal)
+if [[ "$mode" != "work-health-failure" && "$mode" != "work-healthy" ]]; then
+	_stats_wrapper_run_work() {
+		case "$mode" in
+		timeout)
+			printf '%s\\n' "\$BASHPID" >"\$HARNESS_TEMP_DIR/child.pid"
+			sleep 30
+			;;
+		normal)
+			return 0
+			;;
+		deadline)
+			printf '%s\n' "\${AIDEVOPS_GH_DEADLINE_EPOCH:-}" >"\$HARNESS_TEMP_DIR/gh-deadline"
+			return 0
+			;;
+		function-timeout)
+			AIDEVOPS_GH_WRITE_TIMEOUT=1 _gh_with_timeout write _stats_test_slow_function
+			return \$?
+			;;
+		esac
 		return 0
-		;;
-	deadline)
-		printf '%s\n' "\${AIDEVOPS_GH_DEADLINE_EPOCH:-}" >"\$HARNESS_TEMP_DIR/gh-deadline"
-		return 0
-		;;
-	function-timeout)
-		AIDEVOPS_GH_WRITE_TIMEOUT=1 _gh_with_timeout write _stats_test_slow_function
-		return \$?
-		;;
-	esac
-	return 0
-}
+	}
+fi
 _stats_test_slow_function() {
 	sleep 30
 	return 0
 }
+case "$mode" in
+work-health-failure | work-healthy)
+	STATS_TEST_HEALTH_RESULT="$mode"
+	cat >"\$HARNESS_TEMP_DIR/stats-functions.sh" <<'STATS_FUNCTIONS'
+update_health_issues() {
+	printf 'health\n' >>"\$HARNESS_TEMP_DIR/calls"
+	if [[ "\$STATS_TEST_HEALTH_RESULT" == "work-health-failure" ]]; then
+		return 124
+	fi
+	return 0
+}
+run_daily_quality_sweep() {
+	printf 'sweep\n' >>"\$HARNESS_TEMP_DIR/calls"
+	return 0
+}
+STATS_FUNCTIONS
+	SCRIPT_DIR="\$HARNESS_TEMP_DIR"
+	;;
+esac
 main
 HARNESS
 	chmod +x "$harness"
@@ -183,12 +204,54 @@ test_function_write_times_out_before_outer_ceiling() {
 	return 0
 }
 
+test_failed_health_update_still_runs_quality_sweep_once() {
+	local temp_dir="" rc="" calls=""
+	temp_dir=$(run_harness work-health-failure) || {
+		fail "failed health harness starts" "could not create harness"
+		return 0
+	}
+	rc=$(<"$temp_dir/rc")
+	calls=$(<"$temp_dir/calls")
+	if [[ "$rc" -ne 124 ]]; then
+		fail "failed health update preserves its exit status" "got rc=$rc"
+	elif [[ "$calls" != $'health\nsweep' ]]; then
+		fail "failed health update runs one quality sweep after health" "calls=$calls"
+	elif ! grep -q 'HEALTH-DASHBOARD-FAIL exit=124' "$temp_dir/stats.log"; then
+		fail "failed health update preserves dashboard diagnostics" "missing health failure log"
+	else
+		pass "failed health update runs one quality sweep after health"
+	fi
+	rm -rf "$temp_dir"
+	return 0
+}
+
+test_healthy_update_runs_health_then_quality_once() {
+	local temp_dir="" rc="" calls=""
+	temp_dir=$(run_harness work-healthy) || {
+		fail "healthy work harness starts" "could not create harness"
+		return 0
+	}
+	rc=$(<"$temp_dir/rc")
+	calls=$(<"$temp_dir/calls")
+	if [[ "$rc" -ne 0 ]]; then
+		fail "healthy work completes" "got rc=$rc"
+	elif [[ "$calls" != $'health\nsweep' ]]; then
+		fail "healthy work runs health then one quality sweep" "calls=$calls"
+	else
+		pass "healthy work runs health then one quality sweep"
+	fi
+	rm -rf "$temp_dir"
+	return 0
+}
+
 main_test() {
 	test_timeout_kills_work_and_cleans_pidfile
 	test_normal_completion_cleans_pidfile
 	test_cleanup_preserves_successor_pidfile
 	test_stats_child_receives_aggregate_gh_deadline
 	test_function_write_times_out_before_outer_ceiling
+	test_failed_health_update_still_runs_quality_sweep_once
+	test_healthy_update_runs_health_then_quality_once
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 }

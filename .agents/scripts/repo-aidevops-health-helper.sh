@@ -59,6 +59,8 @@ _resolve_script_path() {
 SCRIPT_DIR="$(_resolve_script_path)" || exit
 unset -f _resolve_script_path
 source "${SCRIPT_DIR}/shared-constants.sh"
+# shellcheck source=aidevops-cli/repo-discovery-lib.sh
+source "${SCRIPT_DIR}/aidevops-cli/repo-discovery-lib.sh"
 # shellcheck source=/dev/null
 if [[ -f "${SCRIPT_DIR}/shared-gh-wrappers.sh" ]]; then
 	source "${SCRIPT_DIR}/shared-gh-wrappers.sh"
@@ -878,18 +880,13 @@ _check_no_init_repos() {
 	local parent_dir candidate
 	for parent_dir in "${parent_dirs[@]}"; do
 		[[ -d "$parent_dir" ]] || continue
-		# Newline-delimited is safe here: git repo dirs rarely contain newlines.
-		raw=$(find "$parent_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
-		{
-			while IFS= read -r candidate; do
-				[[ -d "$candidate/.git" ]] || continue
-				_is_path_tracked "$candidate" "${known_paths[@]}" && continue
-				[[ -f "$candidate/.aidevops-skip" ]] && continue
-				[[ -f "$candidate/.aidevops.json" ]] && continue
-				log_warn "no-init: $candidate — git repo with no .aidevops.json and no .aidevops-skip marker. Will file issue in follow-up implementation."
-				_R914_NO_INIT=$((_R914_NO_INIT + 1))
-			done
-		} <<<"$raw"
+		while IFS= read -r -d '' candidate; do
+			_is_path_tracked "$candidate" "${known_paths[@]}" && continue
+			[[ -f "$candidate/.aidevops-skip" ]] && continue
+			[[ -f "$candidate/.aidevops.json" ]] && continue
+			log_warn "no-init: $candidate — git repo with no .aidevops.json and no .aidevops-skip marker. Will file issue in follow-up implementation."
+			_R914_NO_INIT=$((_R914_NO_INIT + 1))
+		done < <(aidevops_discover_canonical_repos "$parent_dir")
 	done
 	return 0
 }

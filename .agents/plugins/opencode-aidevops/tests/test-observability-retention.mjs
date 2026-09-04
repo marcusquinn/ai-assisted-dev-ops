@@ -30,6 +30,16 @@ describe("tool metadata retention", () => {
     assert.equal(summary.omitted_keys, 2);
     assert.doesNotMatch(encoded, /sensitive-value|private|project|raw/);
   });
+
+  test("stores only bounded intent provenance when host metadata is absent", () => {
+    assert.deepEqual(summarizeToolMetadata(undefined, { intentSource: "fallback" }), {
+      schema_version: 1,
+      original_bytes: 0,
+      omitted_keys: 0,
+      intent_source: "fallback",
+    });
+    assert.equal(summarizeToolMetadata(undefined, { intentSource: "untrusted" }), null);
+  });
 });
 
 describe("part-stream retention", () => {

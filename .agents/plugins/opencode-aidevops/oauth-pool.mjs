@@ -157,6 +157,20 @@ export async function selectOpenAIStartupAccount(skipEmail) {
   return selectPoolAccount("openai", skipEmail);
 }
 
+/**
+ * Select a valid OpenAI account for a discrete request. An explicit email is
+ * pinned: unavailable or invalid accounts fail instead of falling back.
+ */
+export async function selectOpenAIRequestAccount(email) {
+  const requestedEmail = String(email || "").trim();
+  if (!requestedEmail) return selectOpenAIStartupAccount();
+  const accounts = getAccounts("openai");
+  normalizeExpiredCooldowns("openai", accounts);
+  const account = accounts.find((candidate) => candidate.email === requestedEmail);
+  if (!account || !isAvailableAccount(account)) return null;
+  return await ensureValidToken("openai", account) ? account : null;
+}
+
 // ---------------------------------------------------------------------------
 // Token injection — inject selected account into provider auth
 // ---------------------------------------------------------------------------

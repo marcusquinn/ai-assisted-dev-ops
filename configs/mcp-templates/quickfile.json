@@ -2,7 +2,7 @@
   "_comment": "QuickFile MCP beta REST configuration using the aidevops least-privilege launcher",
   "_documentation": "https://github.com/marcusquinn/quickfile-mcp",
   "_api_documentation": "https://api-beta.quickfile.co.uk/api-docs/",
-  "_install": "mkdir -p ~/Git/mcp && git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp && npm install --prefix ~/Git/mcp/quickfile-mcp && npm run build --prefix ~/Git/mcp/quickfile-mcp",
+  "_install": "mkdir -p ~/Git/mcp && git clone https://github.com/marcusquinn/quickfile-mcp.git ~/Git/mcp/quickfile-mcp && cd ~/Git/mcp/quickfile-mcp && nvm install && nvm use && corepack enable && npm ci && npm run build",
   "_credentials": "Store each personal token with: aidevops secret set QUICKFILE_<ACCOUNT>_API_KEY",
   "_launcher": "~/.aidevops/agents/scripts/quickfile-mcp-launcher.sh",
 

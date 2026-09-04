@@ -14,6 +14,74 @@ const MAX_MANIFEST_ENTRIES = 32;
 const DEFAULT_STATE_DIR = "/var/run/aidevops/source-access";
 const DEFAULT_PUBLIC_KEY = "/etc/aidevops/source-access/source-access.pub";
 
+export function renderApprovedSourceContent(content, args, template) {
+  const offset = Number.isInteger(args?.offset) && args.offset > 0 ? args.offset : 1;
+  const limit = Number.isInteger(args?.limit) && args.limit >= 0 ? args.limit : 2000;
+  const text = content.toString("utf8");
+  const hasTrailingNewline = text.endsWith("\n");
+  const lines = text.split("\n");
+  if (hasTrailingNewline) lines.pop();
+  const selected = lines.slice(offset - 1, offset - 1 + limit);
+  const raw = selected.join("\n") + (hasTrailingNewline && offset - 1 + limit >= lines.length ? "\n" : "");
+  const templateLines = String(template || "").split("\n");
+  const numbered = templateLines
+    .map((line, index) => ({ index, match: line.match(/^(\s*)(\d+)(:\s|\|\s?)/) }))
+    .filter(({ match }) => match);
+  if (numbered.length === 0) return raw;
+  const first = numbered[0];
+  const last = numbered.at(-1);
+  const width = first.match[2].length;
+  const rendered = selected.map((line, index) =>
+    `${first.match[1]}${String(offset + index).padStart(width, "0")}${first.match[3]}${line}`,
+  );
+  return [
+    ...templateLines.slice(0, first.index),
+    ...rendered,
+    ...templateLines.slice(last.index + 1),
+  ].join("\n");
+}
+
+function replaceExactOnce(content, oldString, newString) {
+  const first = content.indexOf(oldString);
+  if (first < 0 || content.indexOf(oldString, first + oldString.length) >= 0) return false;
+  return content.slice(0, first) + newString + content.slice(first + oldString.length);
+}
+
+function applyObservedPatch(content, patchText) {
+  let result = content;
+  const chunks = String(patchText).split(/^@@.*$/m).slice(1);
+  if (chunks.length === 0) return false;
+  for (const chunk of chunks) {
+    const lines = chunk.replace(/^\n/, "").split("\n");
+    while (lines.at(-1) === "" || lines.at(-1)?.startsWith("*** ")) lines.pop();
+    const oldLines = [];
+    const newLines = [];
+    for (const line of lines) {
+      if (line.startsWith(" ")) {
+        oldLines.push(line.slice(1));
+        newLines.push(line.slice(1));
+      } else if (line.startsWith("-")) {
+        oldLines.push(line.slice(1));
+      } else if (line.startsWith("+")) {
+        newLines.push(line.slice(1));
+      } else if (line !== "\\ No newline at end of file") {
+        return false;
+      }
+    }
+    const oldBlock = oldLines.join("\n");
+    if (!oldBlock) return false;
+    result = replaceExactOnce(result, oldBlock, newLines.join("\n"));
+    if (result === false) return false;
+  }
+  return result;
+}
+
+export function applyApprovedMutationPatch(state, mutation) {
+  const content = state.content.toString("utf8");
+  const updated = applyObservedPatch(content, mutation.patchText);
+  return updated === false ? false : Buffer.from(updated);
+}
+
 function repositoryId(repoRoot) {
   return createHash("sha256").update(repoRoot, "utf8").digest("hex");
 }
@@ -39,7 +107,9 @@ function normalizedEntries(payload, context) {
     context.requireValidReceipt(/^[a-f0-9]{64}$/.test(entry.content_sha256 || ""));
     totalBytes += statSync(path).size;
     context.requireValidReceipt(totalBytes <= MAX_SOURCE_BYTES);
-    context.requireValidReceipt(context.sourceDigestMatches(path, entry.content_sha256));
+    if (!context.authorizedApprovalId) {
+      context.requireValidReceipt(context.sourceDigestMatches(path, entry.content_sha256));
+    }
     return { entry, path, relativePath: identity.relativePath };
   });
 }
@@ -99,6 +169,9 @@ function validateManifestReceipt(receiptName, context) {
     context.reason,
     paths,
   );
+  if (context.authorizedApprovalId) {
+    context.requireValidReceipt(context.authorizedApprovalId === approvalId);
+  }
   context.requireValidReceipt(payload.approval_id === approvalId);
   context.requireValidReceipt(payload.request_id === approvalId);
   context.requireValidReceipt(receiptName === `${approvalId}.json`);
@@ -112,10 +185,18 @@ function validateManifestReceipt(receiptName, context) {
   context.requireValidReceipt(payload.expires_at - payload.issued_at <= MAX_TTL_SECONDS);
   context.requireValidReceipt(typeof receipt.signature === "string");
   context.requireValidReceipt(receipt.signature.includes("SSH SIGNATURE"));
+  const requestedEntry = entries.find(({ path }) => path === context.canonicalPath);
+  context.requireValidReceipt(requestedEntry);
   return {
+    approvalId,
+    canonicalPath: context.canonicalPath,
+    contentSha256: requestedEntry.entry.content_sha256,
+    expiresAt: payload.expires_at,
     payload,
     publicKeyPath: context.publicKeyPath,
     receipt,
+    repoRoot: context.requestedIdentity.repoRoot,
+    relativePath: context.requestedIdentity.relativePath,
     run: context.run,
     snapshotPath,
     sshKeygen: context.sshKeygen,
@@ -137,6 +218,7 @@ export function validatedManifestReceipt(options, dependencies) {
     git = "/usr/bin/git",
     gitRun = execFileSync,
     run = execFileSync,
+    authorizedApprovalId = "",
   } = options;
   const { requireValidReceipt } = dependencies;
   requireValidReceipt(/^[A-Za-z0-9._:-]{6,256}$/.test(sessionId));
@@ -155,6 +237,7 @@ export function validatedManifestReceipt(options, dependencies) {
   const context = {
     ...dependencies,
     approvalsDir,
+    authorizedApprovalId,
     canonicalPath,
     git,
     gitRun,

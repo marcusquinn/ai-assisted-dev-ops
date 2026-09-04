@@ -246,13 +246,61 @@ test_worker_worktree_claim_reclaims_stale_live_same_task_owner() {
 		transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER AIDEVOPS_WORKER_WORKTREE_OWNER_RECLAIM_AGE_SECONDS _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
-	if [[ "$status" -eq 0 && "$claim_calls" -eq 2 && "$transfer_called" -eq 1 && "$unregister_called" -eq 0 ]]; then
+	if [[ "$status" -eq 0 && "$claim_calls" -eq 1 && "$transfer_called" -eq 1 && "$unregister_called" -eq 0 ]]; then
 		print_result "worker worktree claim reclaims stale live same-task owner" 0
 		return 0
 	fi
 
 	print_result "worker worktree claim reclaims stale live same-task owner" 1 \
 		"status=$status calls=$claim_calls transfer=$transfer_called unregister=$unregister_called"
+	return 0
+}
+
+test_worker_worktree_claim_claims_after_dead_owner_vacated() {
+	local worktree_dir="${TEST_ROOT}/claim-dead-owner-vacated"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	export WORKER_ISSUE_NUMBER="22438"
+	local claim_calls=0 unregister_called=0 status=0
+	local owner_pid="2147483647"
+
+	claim_worktree_ownership() {
+		local claim_path="$1"
+		local claim_branch="$2"
+		shift 2
+		claim_calls=$((claim_calls + 1))
+		[[ -n "$claim_path" && -n "$claim_branch" ]] || return 1
+		[[ "$claim_calls" -gt 1 ]]
+		return $?
+	}
+	check_worktree_owner_snapshot() {
+		local check_path="$1"
+		[[ -n "$check_path" ]] || return 1
+		printf '%s|%s|%s|%s|%s|%s\n' "$owner_pid" "dead-session" "" "22438" "2000-01-01T00:00:00Z" "process-start-1"
+		return 0
+	}
+	_wt_pid_is_definitely_absent() {
+		return 0
+	}
+	_wt_unregister_owner_if_generation_matches() {
+		unregister_called=$((unregister_called + 1))
+		return 0
+	}
+
+	_hrw_claim_worker_worktree "issue-22438" "$worktree_dir" >/dev/null || status=$?
+
+	unset -f claim_worktree_ownership check_worktree_owner_snapshot \
+		_wt_pid_is_definitely_absent _wt_unregister_owner_if_generation_matches 2>/dev/null || true
+	unset WORKER_ISSUE_NUMBER _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
+
+	if [[ "$status" -eq 0 && "$claim_calls" -eq 2 && "$unregister_called" -eq 1 &&
+		"$_HRW_WORKTREE_RECLAIM_OUTCOME" == "$_HRW_WORKTREE_RECLAIM_VACATED" ]]; then
+		print_result "worker worktree claim claims once after a dead owner is vacated" 0
+		return 0
+	fi
+
+	print_result "worker worktree claim claims once after a dead owner is vacated" 1 \
+		"status=$status claims=$claim_calls unregisters=$unregister_called outcome=${_HRW_WORKTREE_RECLAIM_OUTCOME:-<empty>}"
 	return 0
 }
 
@@ -301,7 +349,7 @@ test_worker_worktree_claim_reclaims_dispatch_precreate_owner() {
 		transfer_worktree_ownership_if_expected 2>/dev/null || true
 	unset WORKER_ISSUE_NUMBER AIDEVOPS_WORKER_WORKTREE_OWNER_RECLAIM_AGE_SECONDS _WORKER_PRELAUNCH_FAILURE_REASON 2>/dev/null || true
 
-	if [[ "$status" -eq 0 && "$claim_calls" -eq 2 && "$transfer_called" -eq 1 && "$unregister_called" -eq 0 ]]; then
+	if [[ "$status" -eq 0 && "$claim_calls" -eq 1 && "$transfer_called" -eq 1 && "$unregister_called" -eq 0 ]]; then
 		print_result "worker worktree claim reclaims dispatch precreate owner" 0
 		return 0
 	fi
@@ -382,7 +430,7 @@ test_worker_worktree_claim_transfers_dispatch_precreate_task_state() {
 			state_preserved=1
 		fi
 
-		if [[ "$status" -eq 0 && "$claim_calls" -eq 2 && "$transfer_calls" -eq 1 &&
+		if [[ "$status" -eq 0 && "$claim_calls" -eq 1 && "$transfer_calls" -eq 1 &&
 			"$unregister_calls" -eq 0 && "$state_preserved" -eq 1 &&
 			"$transfer_args" == *"--expected-session dispatch-precreate-22438"* &&
 			"$transfer_args" == *"--expected-batch batch-7"* &&

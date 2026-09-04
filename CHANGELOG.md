@@ -10,6 +10,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.306] - 2026-09-04
+
+### Added
+
+- Add shared Gemini media browser agents
+
+### Changed
+
+- Maintenance: aggregate v3.32.306 release sources
+- Documentation: Document Buzz organization project onboarding
+- Documentation: document ranked YouTube description-link SEO experiments
+
+### Fixed
+
+- Report requested and native GPT image dimensions
+
+## [3.32.305] - 2026-09-04
+
+### Changed
+
+- Documentation: define Buzz VA server architecture
+- Documentation: document npm v12 security controls
+
+### Fixed
+
+- diagnose configured MCP versions (#31098)
+- run quality sweep after health failure (#31089)
+
+## [3.32.304] - 2026-09-04
+
+### Fixed
+
+- retain origin label failure diagnostics
+- align OpenAI pool setup guidance
+- fix guarded remote branch cleanup
+
+## [3.32.303] - 2026-09-03
+
+### Added
+
+- add native GPT image output formats
+
+### Changed
+
+- Refactor: extract full-loop project validators (#31069)
+
+### Fixed
+
+- fix approval lifecycle label provisioning
+- reject invalid OpenCode Bash workdirs
+- refresh recovered PR metadata (#31071)
+- retry transient OpenCode validation (#31060)
+- Fix fast-uri high-severity audit failures
+
+## [3.32.302] - 2026-09-03
+
+### Fixed
+
+- retry transient OpenCode validation (#31060)
+- Fix fast-uri high-severity audit failures
+
+## [3.32.301] - 2026-09-03
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.32.300] - 2026-09-03
+
+### Changed
+
+- Maintenance: aggregate v3.32.300 release sources
+
+### Fixed
+
+- trust fast-uri Dependabot update (#31046)
+
+## [3.32.299] - 2026-09-02
+
+### Added
+
+- Add executable managed GitHub create subcommands
+
+### Changed
+
+- Maintenance: update IBM Plex Sans to 5.3.0
+- Maintenance: update Hono to 4.13.5
+- Maintenance: update compatible GitHub Actions dependencies
+- Documentation: clarify extension QA capability routing (#31007)
+- Maintenance: defer unsupported file-type major updates (#30992)
+
+### Fixed
+
+- ignore signature footer URLs in issue path extraction
+- preserve source approvals across verified edits (#31040)
+- bound verbose successful output (#31036)
+- avoid redundant worktree claim after owner transfer
+- serialize fallback credential updates
+- normalize stdin body-file arrays in zsh (#31020)
+- reclaim safe recovery caches within deadline
+- preserve managed OpenCode web sessions safely
+- trust Courier Prime Dependabot update (#31010)
+- trust courier prime Dependabot update (#31005)
+- trust Ubuntu Mono Dependabot update (#31001)
+- trust Inter Dependabot update (#31000)
+- trust Mohave Dependabot update (#30980)
+- trust Mohave Dependabot update (#30982)
+- trust Tilt Neon Dependabot update (#30978)
+
 ## [3.32.298] - 2026-09-01
 
 ### Fixed

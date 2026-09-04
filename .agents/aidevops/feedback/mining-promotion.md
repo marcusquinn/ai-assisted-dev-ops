@@ -82,10 +82,10 @@ unreviewed artifacts.
 Mining gates protect users from noisy automation and protect private feedback
 from leaking into durable public surfaces.
 
-- **Sensitivity gate:** confidential, restricted, client-identifying, privileged,
-  or personal feedback needs redaction and an approved target plane before
-  promotion. Public GitHub surfaces receive summaries only, never raw private
-  excerpts.
+- **Sensitivity gate:** client-scoped, privileged, personal, or
+  delete-after-review feedback needs its documented retention treatment and an
+  approved target plane before promotion. Public GitHub surfaces receive
+  summaries only, never raw private excerpts.
 - **Single-comment gate:** one low/normal-severity comment can enrich context but
   MUST NOT auto-create a TODO/GitHub task. It needs either repetition, explicit
   maintainer/client request, or high-severity escalation.
@@ -109,9 +109,9 @@ Promote only when all of these are true:
 
 - **Provenance is present:** source, capture timestamp, channel, actor or segment,
   capture method, and original wording or redacted quote are recorded.
-- **Sensitivity is classified:** public, internal, confidential, restricted,
-  privileged, client-specific, or another repo-defined tier is stamped before any
-  public or cross-plane write.
+- **Sensitivity is classified:** public, internal, client-scoped, privileged,
+  personal, delete-after-review, or another repo-defined tier is stamped before
+  any public or cross-plane write.
 - **Interpretation is separated from evidence:** the promoted summary states what
   was inferred and links to the evidence that supports it.
 - **Destination owner is clear:** the receiving plane has an obvious lifecycle for

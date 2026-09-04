@@ -14,9 +14,17 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import yaml
+
+
+class ProfileBlock(NamedTuple):
+    """One top-level Tabby profile and its line range."""
+
+    start: int
+    end: int
+    data: dict
 
 
 def load_yaml_simple(path: str) -> str:
@@ -148,6 +156,58 @@ def extract_existing_cwds(config_text: str) -> set[str]:
         i += 1
 
     return cwds
+
+
+def extract_profile_blocks(config_text: str) -> list[ProfileBlock]:
+    """Return parseable top-level profile blocks with zero-based line ranges."""
+    lines = config_text.splitlines(keepends=True)
+    profiles_start: Optional[int] = None
+    profiles_end = len(lines)
+    for index, line in enumerate(lines):
+        if profiles_start is None:
+            if re.match(r"^profiles:\s*(?:\[\])?\s*(?:#.*)?$", line.rstrip("\r\n")):
+                profiles_start = index + 1
+            continue
+        if line.strip() and not line[0].isspace():
+            profiles_end = index
+            break
+
+    if profiles_start is None:
+        return []
+
+    starts = [
+        index
+        for index in range(profiles_start, profiles_end)
+        if re.match(r"^  -(?:\s|$)", lines[index])
+    ]
+    blocks: list[ProfileBlock] = []
+    for position, start in enumerate(starts):
+        parse_end = starts[position + 1] if position + 1 < len(starts) else profiles_end
+        document = yaml.safe_load("profiles:\n" + "".join(lines[start:parse_end]))
+        profiles = document.get("profiles") if isinstance(document, dict) else None
+        if (
+            isinstance(profiles, list)
+            and len(profiles) == 1
+            and isinstance(profiles[0], dict)
+        ):
+            removal_end = parse_end
+            while removal_end > start + 1:
+                trailing = lines[removal_end - 1].strip()
+                if trailing and not trailing.startswith("#"):
+                    break
+                removal_end -= 1
+            blocks.append(ProfileBlock(start, removal_end, profiles[0]))
+    return blocks
+
+
+def remove_profile_blocks(config_text: str, blocks: list[ProfileBlock]) -> str:
+    """Remove selected profile blocks while preserving all unrelated text."""
+    if not blocks:
+        return config_text
+    lines = config_text.splitlines(keepends=True)
+    for block in sorted(blocks, key=lambda item: item.start, reverse=True):
+        del lines[block.start:block.end]
+    return "".join(lines)
 
 
 def extract_group_id(config_text: str) -> Optional[str]:

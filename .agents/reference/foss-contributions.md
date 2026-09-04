@@ -17,7 +17,7 @@
 
 ```json
 {
-  "path": "/Users/you/Git/wordpress/some-plugin",
+  "path": "/Users/you/Git/wpallstars/some-plugin",
   "slug": "wpallstars/some-plugin",
   "foss": true,
   "app_type": "wordpress-plugin",

@@ -15,14 +15,15 @@
 #   2. _isc_branch_has_active_claim — live PID + matching hostname → 0
 #   3. _isc_branch_has_active_claim — dead PID → 1
 #   4. _isc_branch_has_active_claim — no stamp → 1
-#   5. _isc_branch_has_active_claim — cross-host stamp → 0 (trust remote
-#      authority for own claims)
-#   6. _isc_branch_has_active_claim — unparseable branch (no issue) → 1
-#   7. should_skip_cleanup — active claim → skip (regression guard)
-#   8. should_skip_cleanup — dead-PID stamp → no skip from claim check
+#   5. _isc_branch_has_active_claim — recent cross-host stamp → 0
+#   6. _isc_branch_has_active_claim — expired/future cross-host stamp → 1
+#   7. _isc_branch_has_active_claim — malformed cross-host timestamp → 0
+#   8. _isc_branch_has_active_claim — unparseable branch (no issue) → 1
+#   9. should_skip_cleanup — active claim → skip (regression guard)
+#   10. should_skip_cleanup — dead-PID stamp → no skip from claim check
 #      (falls through to existing checks)
-#   9. should_skip_cleanup — no stamp → existing behaviour preserved
-#   10. CLI subcommand `branch-has-active-claim` round-trips correctly
+#   11. should_skip_cleanup — no stamp → existing behaviour preserved
+#   12. CLI subcommand `branch-has-active-claim` round-trips correctly
 #
 # All tests stub `gh` via PATH shim and write real stamp JSON files in a
 # sandboxed HOME so no network or real claim state is touched.
@@ -249,16 +250,18 @@ test_no_stamp() {
 test_no_stamp
 
 # =============================================================================
-# Test 5 — cross-host stamp → trust remote authority (active claim)
+# Test 5 — recent cross-host stamp → trust remote authority (active claim)
 # =============================================================================
 test_cross_host_active() {
 	local issue=99004
 	local stamp="${CLAIM_DIR}/testowner-testrepo-${issue}.json"
-	jq -n '{
+	local claimed_at
+	claimed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	jq -n --arg claimed_at "$claimed_at" '{
 		issue: 99004,
 		slug: "testowner/testrepo",
 		worktree_path: "/tmp/wt-claim-99004",
-		claimed_at: "2026-04-29T00:00:00Z",
+		claimed_at: $claimed_at,
 		pid: 999998,
 		hostname: "different-host-machine-xyz",
 		user: "testuser"
@@ -275,8 +278,82 @@ test_cross_host_active() {
 }
 test_cross_host_active
 
+test_cross_host_expired() {
+	local issue=99006
+	local stamp="${CLAIM_DIR}/testowner-testrepo-${issue}.json"
+	jq -n '{
+		issue: 99006,
+		slug: "testowner/testrepo",
+		worktree_path: "/tmp/wt-claim-99006",
+		claimed_at: "2020-01-01T00:00:00Z",
+		pid: 999997,
+		hostname: "different-host-machine-xyz",
+		user: "testuser"
+	}' >"$stamp"
+
+	AIDEVOPS_CROSS_HOST_CLAIM_TTL_HOURS=24 \
+		_isc_branch_has_active_claim "feature/gh-${issue}-test" --worktree "$FAKE_REPO" >/dev/null 2>&1
+	local rc=$?
+	rm -f "$stamp"
+	if [[ $rc -eq 1 ]]; then
+		print_result "expired cross-host stamp → no claim (exit 1)" 0
+	else
+		print_result "expired cross-host stamp → no claim (exit 1)" 1 "(rc=$rc)"
+	fi
+}
+test_cross_host_expired
+
+test_cross_host_future_dated() {
+	local issue=99007
+	local stamp="${CLAIM_DIR}/testowner-testrepo-${issue}.json"
+	jq -n '{
+		issue: 99007,
+		slug: "testowner/testrepo",
+		worktree_path: "/tmp/wt-claim-99007",
+		claimed_at: "2100-01-01T00:00:00Z",
+		pid: 999996,
+		hostname: "different-host-machine-xyz",
+		user: "testuser"
+	}' >"$stamp"
+
+	AIDEVOPS_CROSS_HOST_CLAIM_FUTURE_SKEW_SECONDS=300 \
+		_isc_branch_has_active_claim "feature/gh-${issue}-test" --worktree "$FAKE_REPO" >/dev/null 2>&1
+	local rc=$?
+	rm -f "$stamp"
+	if [[ $rc -eq 1 ]]; then
+		print_result "future-dated cross-host stamp → no claim (exit 1)" 0
+	else
+		print_result "future-dated cross-host stamp → no claim (exit 1)" 1 "(rc=$rc)"
+	fi
+}
+test_cross_host_future_dated
+
+test_cross_host_malformed_timestamp() {
+	local issue=99008
+	local stamp="${CLAIM_DIR}/testowner-testrepo-${issue}.json"
+	jq -n '{
+		issue: 99008,
+		slug: "testowner/testrepo",
+		worktree_path: "/tmp/wt-claim-99008",
+		claimed_at: "not-a-timestamp",
+		pid: 999995,
+		hostname: "different-host-machine-xyz",
+		user: "testuser"
+	}' >"$stamp"
+
+	_isc_branch_has_active_claim "feature/gh-${issue}-test" --worktree "$FAKE_REPO" >/dev/null 2>&1
+	local rc=$?
+	rm -f "$stamp"
+	if [[ $rc -eq 0 ]]; then
+		print_result "malformed cross-host timestamp stays fail-closed (exit 0)" 0
+	else
+		print_result "malformed cross-host timestamp stays fail-closed (exit 0)" 1 "(rc=$rc)"
+	fi
+}
+test_cross_host_malformed_timestamp
+
 # =============================================================================
-# Test 6 — unparseable branch (no issue derivable) → no claim
+# Test 8 — unparseable branch (no issue derivable) → no claim
 # =============================================================================
 test_unparseable_branch() {
 	# `t2916-foo` — t-NNN structural-only path returns no issue; treat as no claim

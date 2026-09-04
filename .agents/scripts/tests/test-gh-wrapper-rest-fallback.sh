@@ -377,7 +377,10 @@ set_origin_label() {
 	local repo_slug="$2"
 	local origin_name="$3"
 	printf 'set-origin %s %s %s\n' "$pr_number" "$repo_slug" "$origin_name" >>"$GH_CALLS"
-	[[ "${STUB_SET_ORIGIN_FAIL:-0}" != "1" ]] || return 1
+	if [[ "${STUB_SET_ORIGIN_FAIL:-0}" == "1" ]]; then
+		printf 'GraphQL: API rate limit exceeded for test identity\n' >&2
+		return 1
+	fi
 	STUB_CREATE_ORIGIN_FIXTURE=$(jq -cn --arg name "origin:${origin_name}" '{labels: [{name: $name}]}') || return 1
 	export STUB_CREATE_ORIGIN_FIXTURE
 	return 0
@@ -1045,10 +1048,13 @@ origin_partial_output=$(gh_create_pr \
 	--base "main" \
 	--body "origin partial body" 2>"$origin_partial_stderr") || origin_partial_rc=$?
 origin_partial_create_count=$(grep -cE '^pr create' "$GH_CALLS" 2>/dev/null || true)
-if [[ "$origin_partial_rc" -eq 78 \
-	&& "$origin_partial_output" == "https://github.com/owner/repo/pull/9100" \
-	&& "$origin_partial_create_count" -eq 1 ]] \
-	&& grep -q 'durable PR #9100 exists but exact origin:interactive provenance is unverified; not retrying creation' \
+if [[ "$origin_partial_rc" -eq 78 &&
+	"$origin_partial_output" == "https://github.com/owner/repo/pull/9100" &&
+	"$origin_partial_create_count" -eq 1 ]] &&
+	grep -q 'origin label reconciliation failed: GitHub API rate limited the label write' \
+		"$origin_partial_stderr" 2>/dev/null &&
+	! grep -q 'test identity' "$origin_partial_stderr" 2>/dev/null &&
+	grep -q 'durable PR #9100 exists but exact origin:interactive provenance is unverified; not retrying creation' \
 		"$origin_partial_stderr" 2>/dev/null; then
 	pass "gh_create_pr preserves URL and returns typed partial success"
 else

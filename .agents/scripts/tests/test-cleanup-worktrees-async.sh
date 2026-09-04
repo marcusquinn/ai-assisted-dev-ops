@@ -88,12 +88,16 @@ STUB
 	# Use literal return 0 / return 1 (not a variable) so the pre-commit
 	# return-statement ratchet doesn't flag the heredoc-embedded function.
 	local mock_ran_file="${TEST_DIR}/mock-ran"
+	local lifecycle_file="${TEST_DIR}/cleanup-lifecycle"
+	local registry_reconcile_file="${TEST_DIR}/registry-reconcile-ran"
 	local maintenance_ran_file="${TEST_DIR}/maintenance-ran"
+	local metadata_prune_ran_file="${TEST_DIR}/metadata-prune-ran"
 	local maintenance_result="${MOCK_MAINTENANCE_RESULT:-{\"schema\":\"test\",\"outcome\":\"no-candidates\"}}"
 	if [[ "${MOCK_CLEANUP_SKIPPED:-0}" -eq 1 ]]; then
 		cat >"${stub_dir}/pulse-cleanup.sh" <<STUB
 # stub pulse-cleanup.sh
 cleanup_worktrees() {
+	printf 'CLEANUP\n' >>"${lifecycle_file}"
 	printf 'MOCK_RAN\n' >>"${mock_ran_file}"
 	CLEANUP_WORKTREES_SKIPPED=1
 	return 0
@@ -103,6 +107,7 @@ STUB
 		cat >"${stub_dir}/pulse-cleanup.sh" <<STUB
 # stub pulse-cleanup.sh
 _mock_cleanup_worktrees() {
+	printf 'CLEANUP\n' >>"${lifecycle_file}"
 	printf 'MOCK_RAN\n' >>"${mock_ran_file}"
 	return 1
 }
@@ -113,6 +118,7 @@ STUB
 		cat >"${stub_dir}/pulse-cleanup.sh" <<STUB
 # stub pulse-cleanup.sh
 cleanup_worktrees() {
+	printf 'CLEANUP\n' >>"${lifecycle_file}"
 	printf 'MOCK_RAN\n' >>"${mock_ran_file}"
 	return 0
 }
@@ -123,6 +129,23 @@ CLEANUP_WORKTREES_REMOVED_COUNT="${MOCK_REMOVED_COUNT:-0}"
 CLEANUP_WORKTREES_ARCHIVED_COUNT="${MOCK_ARCHIVED_COUNT:-0}"
 CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT="${MOCK_ARCHIVE_FAILED_COUNT:-0}"
 STUB
+	if [[ "${MOCK_REGISTRY_RECONCILE_EXIT:-0}" -ne 0 ]]; then
+		cat >>"${stub_dir}/pulse-cleanup.sh" <<STUB
+prune_worktree_registry() {
+	printf 'REGISTRY_RECONCILE_RAN\n' >>"${registry_reconcile_file}"
+	printf 'REGISTRY_RECONCILE\n' >>"${lifecycle_file}"
+	return 1
+}
+STUB
+	else
+		cat >>"${stub_dir}/pulse-cleanup.sh" <<STUB
+prune_worktree_registry() {
+	printf 'REGISTRY_RECONCILE_RAN\n' >>"${registry_reconcile_file}"
+	printf 'REGISTRY_RECONCILE\n' >>"${lifecycle_file}"
+	return 0
+}
+STUB
+	fi
 
 	# Copy the helper into stub_dir so that when it runs, BASH_SOURCE[0] points
 	# to stub_dir and dirname "${BASH_SOURCE[0]}" resolves to stub_dir. This
@@ -137,14 +160,44 @@ printf 'MAINTENANCE_RAN\\n' >>"${maintenance_ran_file}"
 printf '%s\\n' '${maintenance_result}'
 STUB
 	chmod +x "${stub_dir}/worktree-recovery-maintenance-helper.sh"
+	cat >"${stub_dir}/audit-worktree-removal-helper.sh" <<STUB
+prune_missing_worktree_metadata() {
+	local repo_arg="\$1"
+	local target_arg="\$2"
+	printf 'METADATA_PRUNE_RAN %s %s\\n' "\$repo_arg" "\$target_arg" >>"${metadata_prune_ran_file}"
+	return 0
+}
+STUB
+	if [[ -n "${MOCK_PRUNABLE_TARGET:-}" ]]; then
+		cat >"${stub_dir}/git" <<STUB
+#!/usr/bin/env bash
+if [[ "\$*" == *"rev-parse --show-toplevel"* ]]; then
+	printf '%s\\n' "${TEST_DIR}/repo"
+	exit 0
+fi
+if [[ "\$*" == *"worktree list --porcelain -z"* ]]; then
+	printf 'worktree %s\\0prunable gitdir file points to non-existent location\\0\\0' "${MOCK_PRUNABLE_TARGET}"
+	exit 0
+fi
+exec /usr/bin/git "\$@"
+STUB
+		chmod +x "${stub_dir}/git"
+		mkdir -p "${TEST_DIR}/repo"
+	fi
+	local helper_path_prefix="${PATH}"
+	if [[ -n "${MOCK_PRUNABLE_TARGET:-}" ]]; then
+		helper_path_prefix="${stub_dir}:${PATH}"
+	fi
 
 	if [[ "${RUN_HELPER_UNSET_HOME:-0}" -eq 1 ]]; then
 		env -u HOME \
+			PATH="$helper_path_prefix" \
 			AIDEVOPS_LOG_DIR="${AIDEVOPS_LOG_DIR:-${TEST_DIR}/custom-logs}" \
 			CLEANUP_WORKTREES_ASYNC_CADENCE_MIN="${CLEANUP_WORKTREES_ASYNC_CADENCE_MIN:-10}" \
 			bash "${stub_dir}/cleanup-worktrees-async-helper.sh" 2>/dev/null || true
 	else
 		env HOME="$TEST_DIR" \
+			PATH="$helper_path_prefix" \
 			CLEANUP_WORKTREES_ASYNC_CADENCE_MIN="${CLEANUP_WORKTREES_ASYNC_CADENCE_MIN:-10}" \
 			bash "${stub_dir}/cleanup-worktrees-async-helper.sh" 2>/dev/null || true
 	fi
@@ -156,7 +209,9 @@ STUB
 # ============================================================
 test_cold_start() {
 	local mock_ran="${TEST_DIR}/mock-ran"
-	rm -f "$mock_ran"
+	local registry_reconcile_ran="${TEST_DIR}/registry-reconcile-ran"
+	local lifecycle_file="${TEST_DIR}/cleanup-lifecycle"
+	rm -f "$mock_ran" "$registry_reconcile_ran" "$lifecycle_file"
 
 	MOCK_CLEANUP_EXIT=0 run_helper_in_isolation || true
 
@@ -165,6 +220,32 @@ test_cold_start() {
 	else
 		print_result "cold-start: cleanup_worktrees runs on first invocation" 1 \
 			"mock-ran marker not created; cleanup_worktrees was not called"
+	fi
+	local lifecycle=""
+	lifecycle=$(tr '\n' ' ' <"$lifecycle_file" 2>/dev/null || true)
+	if [[ -f "$registry_reconcile_ran" ]] && grep -q "REGISTRY_RECONCILE_RAN" "$registry_reconcile_ran" &&
+		[[ "$lifecycle" == "REGISTRY_RECONCILE CLEANUP " ]]; then
+		print_result "cold-start: registry ownership reconciles before cleanup" 0
+	else
+		print_result "cold-start: registry ownership reconciles before cleanup" 1 \
+			"registry reconciliation order was '${lifecycle}'"
+	fi
+	return 0
+}
+
+test_registry_reconciliation_failure_is_isolated() {
+	local mock_ran="${TEST_DIR}/mock-ran"
+	local last_run_file="${TEST_DIR}/.aidevops/logs/cleanup_worktrees.last-run"
+	local cleanup_log="${TEST_DIR}/.aidevops/logs/cleanup_worktrees.log"
+	rm -f "$mock_ran" "$last_run_file" "$cleanup_log"
+
+	MOCK_REGISTRY_RECONCILE_EXIT=1 MOCK_CLEANUP_EXIT=0 run_helper_in_isolation || true
+	if [[ -f "$mock_ran" && -f "$last_run_file" ]] &&
+		grep -q "registry reconciliation failed closed; continuing guarded cleanup" "$cleanup_log" 2>/dev/null; then
+		print_result "registry-reconcile: failure is logged and guarded cleanup continues" 0
+	else
+		print_result "registry-reconcile: failure is logged and guarded cleanup continues" 1 \
+			"cleanup marker, last-run, or failure diagnostic missing"
 	fi
 	return 0
 }
@@ -499,6 +580,23 @@ test_archive_outcome_summary_is_logged() {
 	return 0
 }
 
+test_missing_metadata_prune_runs_after_success() {
+	local cleanup_log="${TEST_DIR}/.aidevops/logs/cleanup_worktrees.log"
+	local metadata_prune_ran="${TEST_DIR}/metadata-prune-ran"
+	local prunable_target="${TEST_DIR}/missing-worktree"
+	rm -f "$cleanup_log" "$metadata_prune_ran"
+
+	MOCK_CLEANUP_EXIT=0 MOCK_PRUNABLE_TARGET="$prunable_target" run_helper_in_isolation || true
+	if [[ -f "$metadata_prune_ran" ]] && grep -q "METADATA_PRUNE_RAN" "$metadata_prune_ran" 2>/dev/null &&
+		grep -q 'pruned missing worktree metadata from current repo' "$cleanup_log" 2>/dev/null; then
+		print_result "metadata-prune: async cleanup prunes stale gitdir entries after success" 0
+	else
+		print_result "metadata-prune: async cleanup prunes stale gitdir entries after success" 1 \
+			"metadata prune marker or log entry missing"
+	fi
+	return 0
+}
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -515,6 +613,11 @@ main() {
 	setup
 
 	test_cold_start
+	teardown
+	setup
+	test_registry_reconciliation_failure_is_isolated
+	teardown
+	setup
 	test_last_run_updated
 
 	# Must re-setup between tests that share state
@@ -565,6 +668,10 @@ main() {
 	teardown
 	setup
 	test_archive_outcome_summary_is_logged
+
+	teardown
+	setup
+	test_missing_metadata_prune_runs_after_success
 
 	echo ""
 	echo "Results: ${TESTS_PASSED}/${TESTS_RUN} passed, ${TESTS_FAILED} failed"

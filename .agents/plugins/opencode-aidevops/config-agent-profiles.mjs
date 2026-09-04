@@ -109,8 +109,8 @@ function createOnDemandMcpProfile(mcp, agentsDir) {
     prompt: [
       `Before the first ${mcp.name} operation, call ${MCP_ACTIVATION_TOOL} with action \"connect\" and name \"${mcp.name}\".`,
       `After it succeeds, continue on the next step with ${mcp.toolPattern} tools.`,
-      `When browser work is complete, call ${MCP_ACTIVATION_TOOL} with action \"disconnect\".`,
-      "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
+      `When the requested ${mcp.name} work is complete, call ${MCP_ACTIVATION_TOOL} with action \"disconnect\".`,
+      ...(mcp.activationGuidance || []),
       "",
       prompt,
     ].join("\n"),
