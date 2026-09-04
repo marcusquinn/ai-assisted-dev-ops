@@ -1817,17 +1817,24 @@ _reconcile_existing_merge_summary() {
 	local merge_summary_marker="$4"
 	local merge_summary_body="$5"
 	local existing_summary=""
-	local summary_record_jq=".[] | select(.body | test(\"${merge_summary_marker}\")) | [.id, .body] | @tsv"
+	local summary_id=""
+	local existing_body=""
+	local summary_id_jq="[.[] | select(.body | test(\$marker))] | first | .id"
+	local summary_body_jq="[.[] | select(.body | test(\$marker))] | first | .body"
 
 	existing_summary=$(_gh_with_timeout read gh api "$comments_endpoint" \
-		--jq "$summary_record_jq" 2>/dev/null) || {
+		2>/dev/null) || {
 		print_error "Could not read the canonical merge summary comment on PR #${pr_number}"
 		return 1
 	}
-	local summary_id="${existing_summary%%$'\t'*}"
-	local existing_body="${existing_summary#*$'\t'}"
-	if [[ -z "$summary_id" || "$summary_id" == "$existing_summary" ]]; then
+	if ! summary_id=$(printf '%s' "$existing_summary" |
+		jq -er --arg marker "$merge_summary_marker" "$summary_id_jq"); then
 		print_error "Could not identify the canonical merge summary comment on PR #${pr_number}"
+		return 1
+	fi
+	if ! existing_body=$(printf '%s' "$existing_summary" |
+		jq -er --arg marker "$merge_summary_marker" "$summary_body_jq"); then
+		print_error "Could not read the canonical merge summary comment body on PR #${pr_number}"
 		return 1
 	fi
 	if [[ "$existing_body" == "$merge_summary_body"* ]]; then
@@ -1840,11 +1847,15 @@ _reconcile_existing_merge_summary() {
 		return 1
 	fi
 	existing_summary=$(_gh_with_timeout read gh api "$comments_endpoint" \
-		--jq "$summary_record_jq" 2>/dev/null) || {
+		2>/dev/null) || {
 		print_error "Could not verify the updated canonical merge summary comment on PR #${pr_number}"
 		return 1
 	}
-	existing_body="${existing_summary#*$'\t'}"
+	if ! existing_body=$(printf '%s' "$existing_summary" |
+		jq -er --arg marker "$merge_summary_marker" "$summary_body_jq"); then
+		print_error "Could not read the updated canonical merge summary comment body on PR #${pr_number}"
+		return 1
+	fi
 	if [[ "$existing_body" != "$merge_summary_body"* ]]; then
 		print_error "Canonical merge summary comment on PR #${pr_number} did not reach the generated metadata postcondition"
 		return 1
