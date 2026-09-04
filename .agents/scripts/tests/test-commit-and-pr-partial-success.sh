@@ -257,6 +257,9 @@ export -f _gh_recover_pr_if_exists
 GH_EXISTING_MERGE_SUMMARY_COUNT=0
 # Control variable: set to 1 to simulate only malformed plain-text MERGE_SUMMARY existing
 GH_MALFORMED_MERGE_SUMMARY_ONLY=0
+# Control variable: emulate generated origin/signature metadata appended by the
+# GitHub write wrapper after a PATCH request.
+GH_APPEND_GENERATED_METADATA=0
 # Control variables for direct origin-label readback tests.
 ORIGIN_API_FAIL=0
 ORIGIN_API_LABELS='["origin:worker"]'
@@ -281,6 +284,13 @@ gh() {
 				body=*) GH_EXISTING_MERGE_SUMMARY_BODY="${arg#body=}" ;;
 				esac
 			done
+			if [[ "$GH_APPEND_GENERATED_METADATA" -eq 1 ]]; then
+				GH_EXISTING_MERGE_SUMMARY_BODY+=$'\n<!-- aidevops:origin:interactive -->\n<!-- aidevops:sig -->'
+			fi
+			return 0
+		fi
+		if [[ "$*" == *"repos/owner/repo/issues/999/comments"* && "$*" != *"--jq"* ]]; then
+			jq -cn --arg body "$GH_EXISTING_MERGE_SUMMARY_BODY" '[{id: 77, body: $body}]'
 			return 0
 		fi
 		if [[ "$*" == *'startswith("origin:")'* ]]; then
@@ -290,7 +300,8 @@ gh() {
 		fi
 		if [[ "$*" == *'<!-- MERGE_SUMMARY -->'* ]]; then
 			if [[ "$*" == *'@tsv'* ]]; then
-				printf '77\t%s\n' "$GH_EXISTING_MERGE_SUMMARY_BODY"
+				jq -cnr --arg body "$GH_EXISTING_MERGE_SUMMARY_BODY" \
+					'[{id: 77, body: $body}] | .[] | [.id, .body] | @tsv'
 				return 0
 			fi
 			printf '%s\n' "$GH_EXISTING_MERGE_SUMMARY_COUNT"
@@ -772,6 +783,7 @@ fi
 : >"$STUB_LOG"
 GH_EXISTING_MERGE_SUMMARY_COUNT=1
 GH_EXISTING_MERGE_SUMMARY_BODY=$'<!-- MERGE_SUMMARY -->\n## Completion Summary\n\n- **What**: impl\n- **Issue**: #42\n- **Files changed**: old-file.sh\n- **Testing**: old test\n- **Key decisions**: old decision'
+GH_APPEND_GENERATED_METADATA=1
 
 stale_update_rc=0
 _post_merge_summary "999" "owner/repo" "42" "impl" "new-file.sh" "new test" "new decision" || stale_update_rc=$?
@@ -786,6 +798,7 @@ else
 	fail "stale summary: canonical comment is updated in place with retry metadata" \
 		"rc=${stale_update_rc}; body='${GH_EXISTING_MERGE_SUMMARY_BODY}'; stub log: $(cat "$STUB_LOG" 2>/dev/null)"
 fi
+GH_APPEND_GENERATED_METADATA=0
 
 # =============================================================================
 # Test 4a: _post_merge_summary ignores malformed plain-text MERGE_SUMMARY comments
