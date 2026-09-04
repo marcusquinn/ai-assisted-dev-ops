@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-EXPECTED_VERSION="0.636.0"
+EXPECTED_VERSION="0.643.0"
 WORKFLOWS=(
 	".github/workflows/code-quality.yml"
 	".github/workflows/qlty-new-file-gate.yml"

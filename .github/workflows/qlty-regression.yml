@@ -3,7 +3,7 @@ name: Qlty Regression Gate
 # qlty-action/install inherits QLTY_VERSION; keep it aligned with the
 # QLTY_CLI_VERSION contract validated by the helper below.
 env:
-  QLTY_VERSION: "0.636.0"
+  QLTY_VERSION: "0.643.0"
 
 # t2065: block PRs that increase the total qlty smell count.
 #
@@ -105,7 +105,7 @@ jobs:
     name: Qlty Smell Regression
     runs-on: ubuntu-latest
     env:
-      QLTY_CLI_VERSION: "0.636.0"
+      QLTY_CLI_VERSION: "0.643.0"
     needs: detect-scope
     if: needs.detect-scope.outputs.should_scan == 'true'
     steps:

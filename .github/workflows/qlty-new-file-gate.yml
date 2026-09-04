@@ -2,7 +2,7 @@ name: Qlty New-File Gate
 
 # qlty-action/install otherwise resolves its moving `latest` release.
 env:
-  QLTY_VERSION: "0.636.0"
+  QLTY_VERSION: "0.643.0"
 
 # t2068: block PRs that add brand-new source files shipping with any
 # qlty smells.
