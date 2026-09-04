@@ -202,6 +202,20 @@ PY
 	return $?
 }
 
+_worktree_proc_entry_is_zombie() {
+	local proc_dir="$1"
+	local field=""
+	local state=""
+
+	[[ -r "$proc_dir/status" ]] || return 1
+	while IFS=$' \t' read -r field state _; do
+		[[ "$field" == "State:" ]] || continue
+		[[ "$state" == Z* ]]
+		return $?
+	done <"$proc_dir/status"
+	return 1
+}
+
 _worktree_proc_entry_is_known_non_worktree_daemon() {
 	local proc_dir="$1"
 	local proc_name=""
@@ -246,6 +260,7 @@ _capture_worktree_proc_cwds() {
 			# Unknown same-user processes still degrade visibility fail-closed.
 			[[ -L "$cwd_link" || -e "$cwd_link" ]] || continue
 			proc_dir="${cwd_link%/cwd}"
+			_worktree_proc_entry_is_zombie "$proc_dir" && continue
 			_worktree_proc_entry_is_provably_foreign_uid "$proc_dir" "$current_uid" && continue
 			_worktree_proc_entry_is_known_non_worktree_daemon "$proc_dir" && continue
 			visibility_degraded=1
