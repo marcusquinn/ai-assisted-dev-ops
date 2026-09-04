@@ -1631,12 +1631,12 @@ _main_check_version() {
 	cli_version=$(get_version)
 	[[ -f "$AGENTS_DIR/VERSION" ]] && agents_version=$(cat "$AGENTS_DIR/VERSION") || agents_version="not installed"
 	if [[ "$agents_version" == "not installed" ]]; then
-		echo -e "${YELLOW}[WARN]${NC} Agents not installed. Run: aidevops update"
-		echo ""
+		echo -e "${YELLOW}[WARN]${NC} Agents not installed. Run: aidevops update" >&2
+		echo "" >&2
 	elif [[ "$cli_version" != "$agents_version" ]]; then
-		echo -e "${YELLOW}[WARN]${NC} Version mismatch - CLI: $cli_version, Agents: $agents_version"
-		echo -e "       Run: aidevops update"
-		echo ""
+		echo -e "${YELLOW}[WARN]${NC} Version mismatch - CLI: $cli_version, Agents: $agents_version" >&2
+		echo -e "       Run: aidevops update" >&2
+		echo "" >&2
 	fi
 	return 0
 }
