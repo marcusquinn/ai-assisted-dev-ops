@@ -63,12 +63,28 @@ Examples:
 
 ## Migration safety
 
-Setup and update do not move canonical repositories. Treat layout migration as a
-separate, reviewed operation: inventory dirty state, branches, remotes, stashes,
-submodules, linked worktrees, and destination collisions; back up unique data;
-move one repository at a time; update explicit registrations; and verify Git
-state before deleting or archiving a source path. Owner names differing only by
-case can collide on case-insensitive filesystems and require a manual decision.
+Setup and update never move canonical repositories. Use a separate, reviewed
+transaction:
+
+```bash
+aidevops repos migrate-layout plan --workspace ~/Git --output plan.json
+aidevops repos migrate-layout apply --plan plan.json --confirm <plan-sha256>
+aidevops repos migrate-layout status --receipt <receipt-id>
+aidevops repos migrate-layout rollback --receipt <receipt-id> --confirm <receipt-sha256>
+```
+
+`plan` is non-mutating. It inventories dirty state, branches, stashes,
+submodules, linked worktrees, registrations, local consumers, and collisions.
+Explicit `initialized_repos[].path` entries remain excluded unless planning uses
+`--include-registered-paths`; that approval is recorded in the content-hashed
+plan. Apply rechecks the complete before-state, rejects cross-device moves and
+active-path ambiguity, moves one repository at a time, and writes owner-private
+append-only receipts. Replaying apply resumes verified steps. Rollback requires
+the latest receipt hash and stops rather than overwriting post-plan changes.
+
+Non-GitHub, local-only, unsupported, and already-conforming repositories are not
+moved. Case-only and destination-inside-source moves use private same-filesystem
+staging; destination collisions always fail closed.
 
 ## Direct-write workspace boundary
 

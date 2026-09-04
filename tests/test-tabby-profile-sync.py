@@ -52,6 +52,35 @@ profiles:
 
         self.assertEqual(tabby_profile_sync.extract_group_id(config_text), "abc-123")
 
+    def test_retarget_profile_cwds_preserves_custom_fields(self):
+        original = """profiles:
+  - name: Custom title
+    color: '#AABBCC'
+    options:
+      cwd: '/workspace/OldRepo'
+      command: /bin/zsh
+  - name: Folded
+    options:
+      cwd: >-
+        /workspace/OldRepo
+groups: []
+"""
+
+        updated, changed = tabby_profile_sync.retarget_profile_cwds(
+            original, {"/workspace/OldRepo": "/workspace/acme/OldRepo"}
+        )
+
+        self.assertEqual(changed, 2)
+        self.assertIn("name: Custom title", updated)
+        self.assertIn("color: '#AABBCC'", updated)
+        self.assertIn("command: /bin/zsh", updated)
+        self.assertEqual(updated.count("/workspace/acme/OldRepo"), 2)
+        second, second_changed = tabby_profile_sync.retarget_profile_cwds(
+            updated, {"/workspace/OldRepo": "/workspace/acme/OldRepo"}
+        )
+        self.assertEqual(second, updated)
+        self.assertEqual(second_changed, 0)
+
 
 class TestExtractExistingCwds(unittest.TestCase):
     """Regression tests for YAML scalar parsing (t2250 root cause A).

@@ -46,6 +46,7 @@ from tabby_profile_validation import (
 )
 from tabby_shell_resolver import ShellResolutionError, resolve_login_shell
 from tabby_yaml_helpers import (
+    _parse_block_scalar,
     load_yaml_simple,
     save_yaml,
     extract_existing_cwds,
@@ -53,6 +54,7 @@ from tabby_yaml_helpers import (
     extract_profile_blocks,
     insert_profiles_block,
     remove_profile_blocks,
+    validate_yaml_document,
 )
 
 
@@ -317,6 +319,63 @@ def is_aidevops_managed_profile(profile: dict, projects_group_id: str | None) ->
         and _has_managed_profile_id(profile)
         and _has_managed_launch(profile)
     )
+
+
+def retarget_profile_cwds(
+    config_text: str, path_mappings: dict[str, str]
+) -> tuple[str, int]:
+    """Retarget exact profile cwd scalars without changing unrelated bytes."""
+    validate_yaml_document(config_text)
+    lines = config_text.splitlines(keepends=True)
+    changed = 0
+    index = 0
+    cwd_pattern = re.compile(r"^(?P<indent>\s+)cwd:\s*(?P<value>.*?)(?P<newline>\r?\n)?$")
+    while index < len(lines):
+        match = cwd_pattern.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        raw_value = match.group("value").strip()
+        if raw_value and raw_value[0] in (">", "|"):
+            parent_indent = len(match.group("indent"))
+            value, next_index = _parse_block_scalar(
+                [line.rstrip("\r\n") for line in lines],
+                index + 1,
+                parent_indent,
+                raw_value[0],
+            )
+            replacement = path_mappings.get(value)
+            if replacement:
+                lines[index] = (
+                    f"{match.group('indent')}cwd: {replacement}"
+                    f"{match.group('newline') or ''}"
+                )
+                del lines[index + 1 : next_index]
+                changed += 1
+                index += 1
+                continue
+            index = next_index
+            continue
+        quote = (
+            raw_value[0]
+            if len(raw_value) >= 2
+            and raw_value[0] == raw_value[-1]
+            and raw_value[0] in ("'", '"')
+            else ""
+        )
+        value = raw_value[1:-1] if quote else raw_value
+        replacement = path_mappings.get(value)
+        if replacement:
+            rendered = f"{quote}{replacement}{quote}" if quote else replacement
+            lines[index] = (
+                f"{match.group('indent')}cwd: {rendered}"
+                f"{match.group('newline') or ''}"
+            )
+            changed += 1
+        index += 1
+    updated = "".join(lines)
+    validate_yaml_document(updated)
+    return updated, changed
 
 
 def plan_profile_reconciliation(

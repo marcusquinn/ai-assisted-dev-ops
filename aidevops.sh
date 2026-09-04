@@ -876,6 +876,16 @@ cmd_repos() {
 	add) _repos_add ;;
 	remove | rm) _repos_remove "${2:-}" ;;
 	clean) _repos_clean ;;
+	migrate-layout)
+		shift
+		local migrate_helper="${AIDEVOPS_CLI_MODULES_DIR%/aidevops-cli}/repo-layout-migrate-helper.sh"
+		[[ -f "$migrate_helper" ]] || migrate_helper="${AGENTS_DIR}/scripts/repo-layout-migrate-helper.sh"
+		if [[ ! -x "$migrate_helper" ]]; then
+			print_error "Repository layout migration helper is unavailable"
+			return 1
+		fi
+		"$migrate_helper" "$@"
+		;;
 	maintenance | maintain)
 		shift
 		_repos_maintenance "$@"
@@ -888,6 +898,8 @@ cmd_repos() {
 		echo "  add      Register current project"
 		echo "  remove   Remove project from registry"
 		echo "  clean    Remove entries for non-existent projects"
+		echo "  migrate-layout <plan|apply|rollback|status>"
+		echo "           Guarded owner-layout migration with durable receipts"
 		echo "  maintenance <on|off> [repo]"
 		echo "           Include/exclude a registered repo from recurring automation"
 		;;

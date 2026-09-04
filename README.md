@@ -341,7 +341,7 @@ open-design-helper.sh start --https-local open-design
 
 Imported Open Design skills are not copied verbatim. They are evaluated through aidevops build-agent methodology, deduplicated against existing agents, flattened into aidevops `*-skill.md` structure, attributed to upstream, and given verification commands. See `.agents/tools/design/open-design-ingestion.md` for the full skill-value matrix.
 
-**Project tracking:** When you run `aidevops init`, the project is automatically registered in `~/.config/aidevops/repos.json`. Running `aidevops update` checks all registered projects for version updates.
+**Project tracking:** When you run `aidevops init`, the project is automatically registered in `~/.config/aidevops/repos.json`. Running `aidevops update` checks all registered projects for version updates. Repository layout changes remain separate and user-invoked: `aidevops repos migrate-layout plan` creates a non-mutating, content-hashed plan, while confirmed apply, status, resume, and rollback operations preserve private receipts and fail closed on drift.
 
 ### **Use aidevops in Any Project**
 
