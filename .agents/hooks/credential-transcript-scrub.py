@@ -64,7 +64,7 @@ CREDENTIAL_PATTERN = re.compile(
 )
 
 NAMED_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
-    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_. -]{0,127}\"|'[A-Za-z_][A-Za-z0-9_. -]{0,127}'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]{0,127}))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential|redacted-private-key)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)",
+    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_. -]*\"|'[A-Za-z_][A-Za-z0-9_. -]*'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[[^\r\n\s,};&|<>]*\][^\r\n\s,}\)&;|<>]*|<[^>\r\n]*>[^\r\n\s,}\)&;|<>]*|\([^()\r\n]*\)|not[ \t]+set(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -107,7 +107,10 @@ def normalize_field_name(name: str) -> str:
 
 def is_sensitive_field_name(name: str) -> bool:
     """Return whether a field name is unambiguously credential-bearing."""
-    pattern = r"(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$"
+    pattern = (
+        r"(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|ACCESS_KEY|"
+        r"ENCRYPTION_KEY|SIGNING_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$"
+    )
     return bool(re.search(pattern, normalize_field_name(name)))
 
 
@@ -127,7 +130,12 @@ def redact_named_assignment(match: re.Match) -> str:
     if not is_sensitive_field_name(name) or is_placeholder_value(value):
         return match.group(0)
     quote = value[0] if value and value[0] in {'"', "'"} and value.endswith(value[0]) else ""
-    redacted = f"{quote}{REDACTION_TOKEN}{quote}" if quote else REDACTION_TOKEN
+    if quote:
+        redacted = f"{quote}{REDACTION_TOKEN}{quote}"
+    elif value.startswith("(") and value.endswith(")"):
+        redacted = f"({REDACTION_TOKEN})"
+    else:
+        redacted = REDACTION_TOKEN
     return f"{boundary}{name}{separator}{redacted}"
 
 

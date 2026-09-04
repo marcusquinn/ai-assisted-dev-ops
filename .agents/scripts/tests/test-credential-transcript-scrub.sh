@@ -203,12 +203,13 @@ else
 	fail "14. Nested dict tool_response scrubbed recursively — got: $output14"
 fi
 
-NAMED_TEXT_PAYLOAD='{"tool_response": "(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value TOKEN=opaque-value|next PASSWORD=opaque-value>file API KEY=opaque-value SECRET_KEY=not set"}'
+LONG_NAMED_KEY=$(python3 -c "print('A' * 129 + '_API_KEY')")
+NAMED_TEXT_PAYLOAD="{\"tool_response\": \"(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value TOKEN=opaque-value|next PASSWORD=opaque-value>file API KEY=opaque-value AWS_SECRET_ACCESS_KEY=opaque-value SIGNING_KEY=[redacted]opaque API_KEY=(opaque-value) (SECRET_KEY=not set) ${LONG_NAMED_KEY}=opaque-value\"}"
 output15=$(run_hook "$NAMED_TEXT_PAYLOAD")
 if echo "$output15" | python3 -c "
 import json, sys
 response = json.load(sys.stdin).get('tool_response', '')
-assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value TOKEN=[redacted-credential]|next PASSWORD=[redacted-credential]>file API KEY=[redacted-credential] SECRET_KEY=not set'
+assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value TOKEN=[redacted-credential]|next PASSWORD=[redacted-credential]>file API KEY=[redacted-credential] AWS_SECRET_ACCESS_KEY=[redacted-credential] SIGNING_KEY=[redacted-credential] API_KEY=([redacted-credential]) (SECRET_KEY=not set) ${LONG_NAMED_KEY}=[redacted-credential]'
 " 2>/dev/null; then
 	pass "15. Named secrets scrubbed without consuming delimiters"
 else

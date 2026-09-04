@@ -87,6 +87,8 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("userPassword=opaque-value", `userPassword=${REDACTION_TOKEN}`, 1);
     assertScrub("SECRET_KEY=opaque-value", `SECRET_KEY=${REDACTION_TOKEN}`, 1);
     assertScrub("SSH_PRIVATE_KEY=opaque-value", `SSH_PRIVATE_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("AWS_SECRET_ACCESS_KEY=opaque-value", `AWS_SECRET_ACCESS_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("ARTIFACT_SIGNING_KEY=opaque-value", `ARTIFACT_SIGNING_KEY=${REDACTION_TOKEN}`, 1);
   });
 
   test("preserves delimiters around unquoted sensitive assignments", () => {
@@ -94,6 +96,8 @@ describe("credential transcript scrub boundary", () => {
     assertScrub(`API_KEY=opaque-value&other=value`, `API_KEY=${REDACTION_TOKEN}&other=value`, 1);
     assertScrub(`TOKEN=opaque-value|other`, `TOKEN=${REDACTION_TOKEN}|other`, 1);
     assertScrub(`PASSWORD=opaque-value>file`, `PASSWORD=${REDACTION_TOKEN}>file`, 1);
+    assertScrub(`(API_KEY=not set)`, `(API_KEY=not set)`, 0);
+    assertScrub(`API_KEY=(opaque-value)`, `API_KEY=(${REDACTION_TOKEN})`, 1);
   });
 
   test("redacts quoted and unquoted sensitive names containing spaces", () => {
@@ -109,6 +113,8 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("CLIENT_SECRET=not set", "CLIENT_SECRET=not set", 0);
     assertScrub("CLIENT_SECRET=(not set)", "CLIENT_SECRET=(not set)", 0);
     assertScrub("PRIVATE_KEY=[redacted-private-key]", "PRIVATE_KEY=[redacted-private-key]", 0);
+    assertScrub("API_KEY=[redacted]opaque", `API_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("API_KEY=<redacted>opaque", `API_KEY=${REDACTION_TOKEN}`, 1);
   });
 
   test("does not redact non-sensitive field-name substrings", () => {
@@ -125,6 +131,11 @@ describe("credential transcript scrub boundary", () => {
     for (let run = 0; run < runs; run++) scrubCredentials(input);
     const averageMs = Number(process.hrtime.bigint() - start) / runs / 1_000_000;
     assert.ok(averageMs < 5, `named-field scan averaged ${averageMs.toFixed(3)}ms per 10KB`);
+  });
+
+  test("redacts sensitive field names longer than 128 characters", () => {
+    const name = `${"A".repeat(129)}_API_KEY`;
+    assertScrub(`${name}=opaque-value`, `${name}=${REDACTION_TOKEN}`, 1);
   });
 
   test("does not redact Google OAuth prefix embedded mid-word", () => {

@@ -6,7 +6,7 @@
 const CREDENTIAL_PATTERN =
   /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 const NAMED_CREDENTIAL_ASSIGNMENT_PATTERN =
-  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]{0,127}"|'[A-Za-z_][A-Za-z0-9_. -]{0,127}'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]{0,127}))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential|redacted-private-key)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
+  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]*"|'[A-Za-z_][A-Za-z0-9_. -]*'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[[^\r\n\s,};&|<>]*\][^\r\n\s,}\)&;|<>]*|<[^>\r\n]*>[^\r\n\s,}\)&;|<>]*|\([^()\r\n]*\)|not[ \t]+set(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
 const PLACEHOLDER_VALUES = new Set([
   "",
   "***",
@@ -39,7 +39,7 @@ function normalizeFieldName(name) {
 }
 
 function isSensitiveFieldName(name) {
-  return /(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/.test(
+  return /(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|ACCESS_KEY|ENCRYPTION_KEY|SIGNING_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/.test(
     normalizeFieldName(name),
   );
 }
@@ -58,6 +58,7 @@ function redactAssignedValue(value) {
   if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
     return `${quote}${REDACTION_TOKEN}${quote}`;
   }
+  if (quote === "(" && value.endsWith(")")) return `(${REDACTION_TOKEN})`;
   return REDACTION_TOKEN;
 }
 
