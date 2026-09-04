@@ -186,12 +186,43 @@ readonly -a RISK_PATTERNS=(
 	"chown|permission_change|high"
 )
 
+# Classify GitHub REST API deletion commands that need endpoint-aware handling.
+# Arguments: $1 — operation string
+# Output: "type|tier" when the operation is a GitHub API DELETE
+# Returns: 0 when classified, 1 when the operation is not a GitHub API DELETE
+_classify_github_api_delete() {
+	local operation="$1"
+
+	if ! printf '%s\n' "$operation" | grep -qiE '(^|[[:space:]])gh[[:space:]]+api([[:space:]]|$)'; then
+		return 1
+	fi
+
+	if ! printf '%s\n' "$operation" | grep -qiE '(^|[[:space:]])(--method|-X)[[:space:]]+DELETE([[:space:]]|$)'; then
+		return 1
+	fi
+
+	# Deleting an issue comment is irreversible; other DELETE endpoints remain
+	# high risk until their reversibility is explicitly understood and tested.
+	if printf '%s\n' "$operation" | grep -qE "(^|[[:space:]/\\\"'])issues/comments/[0-9]+([[:space:]\\\"']|$)"; then
+		echo "destructive_delete|critical"
+		return 0
+	fi
+
+	echo "github_api_delete|high"
+	return 0
+}
+
 # Classify an operation string into a risk tier.
 # Arguments: $1 — operation string
 # Output: "type|tier" on stdout (e.g., "git_force_push|critical")
 classify_operation() {
 	local operation="$1"
-	local entry pattern op_type tier
+	local entry pattern op_type tier github_api_classification
+
+	if github_api_classification=$(_classify_github_api_delete "$operation"); then
+		echo "$github_api_classification"
+		return 0
+	fi
 
 	for entry in "${RISK_PATTERNS[@]}"; do
 		pattern="${entry%%|*}"
