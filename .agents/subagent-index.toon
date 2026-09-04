@@ -152,7 +152,7 @@ workflows/,workflows subagents,browser-qa|budget-analysis|bug-fixing|campaign-gr
 
 <!--TOON:mcp_servers[13]{name,url,auth,subagent,purpose}:
 chrome-devtools,npx chrome-devtools-mcp@latest,none,tools/browser/chrome-devtools.md,Browser automation debugging and performance analysis
-playwright,npx playwright-mcp@latest,none,tools/browser/playwright.md,Cross-browser testing and automation
+playwright,npx -y @playwright/mcp@0.0.79 --headless --isolated,none,tools/browser/playwright.md,Cross-browser testing and automation
 cloudflare-api,https://mcp.cloudflare.com/mcp,oauth,tools/api/cloudflare-mcp.md,Workers D1 KV R2 Pages AI Gateway via OAuth
 openapi-search,https://openapi-mcp.openapisearch.com/mcp,none,tools/context/openapi-search.md,Search and explore any OpenAPI spec — semantic search across 3000+ public APIs
 context7,npx @upstash/context7-mcp@latest,none,tools/context/context7.md,Real-time library documentation for development

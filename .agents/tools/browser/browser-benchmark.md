@@ -46,7 +46,7 @@ Target: `https://the-internet.herokuapp.com`. 3 runs per tool, report median. Ne
 | agent-browser | Full | `agent-browser-helper.sh setup` (first run slower — discard or note) |
 | Crawl4AI | Navigate + extract only | `python3 -m venv ~/.aidevops/crawl4ai-venv && pip install crawl4ai` |
 | Stagehand | Full (AI-dependent latency) | `npm init -y && npm i @browserbasehq/stagehand` in `~/.aidevops/stagehand-bench/` — needs `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
-| Playwriter | Full | `npm i -g playwriter` — requires manual extension activation (localhost:19988); may skip in automated runs |
+| Playwriter (legacy, not recommended) | Full | Retained only for historical comparison; skip unless explicitly benchmarking an existing setup |
 
 ## Running Benchmarks
 

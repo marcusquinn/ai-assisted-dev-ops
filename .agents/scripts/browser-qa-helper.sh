@@ -395,7 +395,7 @@ Examples:
 Prerequisites:
   - Node.js and npm installed
   - Importable Playwright Node package (CLI presence alone is insufficient)
-  - Playwright browser binary: npx playwright install chromium
+  - Brave installed (preferred), or Playwright Chromium: npx playwright install chromium
 
 Integration:
   Used by milestone-validation.md (Phase 3: Browser QA) during mission orchestration.

@@ -22,7 +22,7 @@ tools:
 ## Quick Reference
 
 - **Helper**: `~/.aidevops/agents/scripts/site-crawler-helper.sh`
-- **Browser Tools**: `tools/browser/crawl4ai.md`, `tools/browser/playwriter.md`
+- **Browser Tools**: `tools/browser/crawl4ai.md`, `tools/browser/playwright.md`
 - **Output**: `~/Downloads/{domain}/{datestamp}/` with `_latest` symlink
 - **Formats**: CSV, XLSX, JSON, HTML reports
 - **Config**: `~/.config/aidevops/site-crawler.json`
@@ -93,7 +93,7 @@ site-crawler-helper.sh crawl https://example.com --verbose
 site-crawler-helper.sh crawl https://example.com --save-html
 ```
 
-See `tools/browser/playwriter.md` for browser automation details.
+See `tools/browser/playwright.md` for browser automation details.
 
 ## Output Structure
 
@@ -162,6 +162,6 @@ See `tools/browser/playwriter.md` for browser automation details.
 
 - `seo/eeat-score.md` — E-E-A-T content quality scoring
 - `tools/browser/crawl4ai.md` — AI-powered web crawling
-- `tools/browser/playwriter.md` — Browser automation
+- `tools/browser/playwright.md` — Browser automation
 - `tools/browser/pagespeed.md` — Performance auditing
 - `seo/google-search-console.md` — Search performance data

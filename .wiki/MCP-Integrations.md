@@ -70,8 +70,7 @@ Cross-browser testing and automation.
 **Installation**:
 
 ```bash
-npm install -g playwright-mcp
-playwright-mcp --install-browsers
+npx -y playwright@latest install
 ```
 
 **Configuration**:
@@ -81,7 +80,7 @@ playwright-mcp --install-browsers
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["playwright-mcp@latest"]
+      "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"]
     }
   }
 }
@@ -421,7 +420,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
     },
     "playwright": {
       "command": "npx",
-      "args": ["playwright-mcp@latest"]
+      "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"]
     },
     "ahrefs": {
       "command": "npx",
@@ -612,7 +611,7 @@ bash .agents/scripts/validate-mcp-integrations.sh
 npx chrome-devtools-mcp@latest --help
 
 # Test Playwright
-npx playwright-mcp@latest --version
+npx -y @playwright/mcp@0.0.79 --version
 
 # Test Context7
 npx context7-mcp@latest search "React useState"
@@ -761,7 +760,7 @@ npx chrome-devtools-mcp@latest --chromePath=/Applications/Google\ Chrome.app/Con
 
 ```bash
 # Install specific browsers
-playwright-mcp --install-browsers chromium firefox webkit
+npx -y playwright@latest install chromium firefox webkit
 
 # Configure custom browser paths
 export PLAYWRIGHT_BROWSERS_PATH=/custom/path

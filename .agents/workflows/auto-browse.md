@@ -79,9 +79,9 @@ Use the cheapest viable level first, escalating only when evidence shows the che
 | Fetch/API/static parse | Public/static pages, obvious JSON, no login | `webfetch`, shell fetches only for trusted URLs, parsers |
 | Authenticated API discovery | Dashboard data, hidden XHR, export endpoints | `curl-copy.md`, `sweet-cookie.md`, `chrome-devtools.md` |
 | Crawler/extractor | Many pages, sitemap/docs, structured content | `crawl4ai.md`, `watercrawl.md`, `seo/site-crawler.md` |
-| Deterministic browser | Known flow, forms, downloads, repeatable UI | `playwright.md`, `playwright-cli.md`, `agent-browser.md` |
+| Deterministic browser | Known flow, forms, downloads, repeatable UI; standalone Brave preferred | `playwright.md`, `playwright-cli.md`, `agent-browser.md` |
 | Persistent profile | Recurring logged-in workflows | `dev-browser.md`, `browser-profiles.md` |
-| Existing browser | User already has a live session and approves inspection | `chromium-debug-use.md`, `playwriter.md` |
+| Interactive existing browser | User is available, has a live session, and approves selected tabs or inspection | `playwright.md` extension mode, `chromium-debug-use.md` |
 | High-agency discovery | Dynamic/fuzzy/visual flows where selectors fail | `stagehand.md`, `browser-use.md` (CLI 3.0), `skyvern.md` |
 | Authorized stealth/profile stack | Legitimate profile/proxy/geo isolation need | `anti-detect-browser.md`, `proxy-integration.md` |
 

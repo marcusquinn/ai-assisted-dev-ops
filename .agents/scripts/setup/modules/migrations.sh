@@ -1054,7 +1054,7 @@ cleanup_deprecated_mcps() {
 
 # Disable MCPs globally that should only be enabled on-demand via subagents
 # This reduces session startup context by disabling rarely-used MCPs
-# - playwriter: ~3K tokens - enable via @playwriter subagent
+# - playwriter: legacy compatibility only - explicit @playwriter requests
 # - google-analytics-mcp: ~800 tokens - enable via @google-analytics subagent
 # - context7: ~800 tokens - enable via @context7 subagent (for library docs lookup)
 disable_ondemand_mcps() {

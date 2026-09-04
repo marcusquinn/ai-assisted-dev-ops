@@ -27,7 +27,7 @@ mcp:
 ## Quick Reference
 
 - **Purpose**: Debugging/inspection layer that connects to ANY running Chrome/Chromium instance
-- **Not a browser**: Pairs with dev-browser, Playwright, Playwriter, or standalone Chrome
+- **Not a browser**: Pairs with dev-browser, Playwright, or standalone Chrome
 - **Install**: `npx chrome-devtools-mcp@latest`
 - **Package**: `chrome-devtools-mcp` (v0.13.0+, maintained by Google)
 - **When to use**: Performance auditing, network debugging, SEO analysis, visual regression testing. Use alongside a browser tool, not instead of one.
@@ -59,7 +59,7 @@ mcp:
 - **playwright-cli + DevTools**: CLI automation + performance profiling (AI agents)
 - **dev-browser + DevTools**: Persistent profile + deep inspection
 - **Playwright + DevTools**: Speed + performance profiling
-- **Playwriter + DevTools**: Your browser + debugging your extensions
+- **Playwright Extension + DevTools**: Interactive, user-present access to approved existing tabs + debugging and inspection
 
 **Category toggles** (reduce MCP tool count):
 

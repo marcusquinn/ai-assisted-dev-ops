@@ -71,9 +71,16 @@ npx playwright install          # all browsers
 npx playwright install chromium # specific browser
 ```
 
-**Launch timeout:** `npx playwright-mcp@latest --timeout=60000 --no-sandbox`
+**Launch timeout:** `npx -y @playwright/mcp@0.0.79 --timeout-navigation 60000 --no-sandbox`
 
 **WebKit on Linux:** `npx playwright install-deps webkit`
+
+**"No clients are currently connected":** only for intentional interactive
+user-browser access, install Playwright Extension, save
+`PLAYWRIGHT_MCP_EXTENSION_TOKEN` with `aidevops secret`, set
+`PLAYWRIGHT_MCP_EXTENSION=1`, and ensure the MCP command includes `--extension`.
+Never place the token in MCP config or command arguments. See
+`tools/browser/playwright.md`.
 
 **Performance args:**
 
@@ -168,10 +175,10 @@ Helper: `~/.aidevops/agents/scripts/opencode-test-helper.sh test-mcp dataforseo 
 
 ```bash
 DEBUG=chrome-devtools-mcp npx chrome-devtools-mcp@latest
-DEBUG=pw:api npx playwright-mcp@latest
+DEBUG=pw:api npx -y @playwright/mcp@0.0.79
 ```
 
-**Log locations:** Chrome DevTools: `/tmp/chrome-mcp.log` | Playwright: `/tmp/playwright-mcp.log` | API MCPs: `~/.mcp/logs/`
+**Log locations:** Chrome DevTools: `/tmp/chrome-mcp.log` | Playwright MCP: runtime stderr (no default log file) | API MCPs: `~/.mcp/logs/`
 
 ## Recovery Procedures
 
@@ -194,7 +201,7 @@ npx playwright install --force
 
 ```bash
 npx chrome-devtools-mcp@latest --safe-mode
-npx playwright-mcp@latest --basic-mode
+npx -y @playwright/mcp@0.0.79 --headless --isolated
 ```
 
 ## Diagnostics & Support

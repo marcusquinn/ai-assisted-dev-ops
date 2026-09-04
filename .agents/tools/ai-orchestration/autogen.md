@@ -71,7 +71,7 @@ from autogen_agentchat.ui import Console
 
 async def main():
     client = OpenAIChatCompletionClient(model="gpt-4.1")
-    params = StdioServerParams(command="npx", args=["@playwright/mcp@latest", "--headless"])
+    params = StdioServerParams(command="npx", args=["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"])
     async with McpWorkbench(params) as mcp:
         agent = AssistantAgent("web_assistant", model_client=client,
                                workbench=mcp, model_client_stream=True, max_tool_iterations=10)

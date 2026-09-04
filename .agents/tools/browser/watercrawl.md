@@ -45,7 +45,7 @@ tools:
 |----------------|-----------------|
 | Self-hosted crawling with full control | CAPTCHA solving → Crawl4AI + CapSolver |
 | Web search integration for AI agents | Browser automation/interaction → Playwright |
-| Team dashboard + API key management | Own browser session → Playwriter |
+| Team dashboard + API key management | Interactive access to user's browser → Playwright Extension |
 | Sitemap discovery and LLM-ready markdown | |
 
 ## Quick Start — Self-Hosted (Recommended)

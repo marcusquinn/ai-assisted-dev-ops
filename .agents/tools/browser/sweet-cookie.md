@@ -133,4 +133,4 @@ CLI: `swift run SweetCookieCLI stores` | `swift run SweetCookieCLI export --doma
 - [sweet-cookie (TS)](https://github.com/steipete/sweet-cookie) | [SweetCookieKit (Swift)](https://github.com/steipete/SweetCookieKit) | [Docs](https://sweetcookie.dev)
 - Bird (X/Twitter CLI): auto-extracts cookies -> `tools/social-media/bird.md`
 - Crawl4AI: `crawl4ai https://app.example.com --cookies /path/to/cookies.json`
-- `tools/browser/agent-browser.md` (CLI browser automation) | `tools/browser/stagehand.md` (AI browser) | `tools/browser/playwriter.md` (Chrome extension MCP)
+- `tools/browser/agent-browser.md` (CLI browser automation) | `tools/browser/stagehand.md` (AI browser) | `tools/browser/playwright.md` (official existing-session extension)

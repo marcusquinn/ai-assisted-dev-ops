@@ -61,7 +61,7 @@ _generate_mcp_for_runtime() {
 
 	# Playwright MCP (correct package: @playwright/mcp, not @anthropic-ai/mcp-server-playwright)
 	register_mcp_for_runtime "$runtime_id" "playwright" \
-		'{"command":"npx","args":["-y","@playwright/mcp@latest"]}'
+		'{"command":"npx","args":["-y","@playwright/mcp@0.0.79","--headless","--isolated"]}'
 	mcp_count=$((mcp_count + 1))
 
 	# shadcn UI

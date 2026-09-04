@@ -43,7 +43,8 @@ tools:
 
 | MCP | Type | Global tools |
 |---|---|---|
-| `playwriter` | local | yes |
+| `playwright` | local | no |
+| `playwriter` (legacy) | local | no |
 | `context7` | remote | no |
 | `outscraper` | local | no |
 | `dataforseo` | local | no |

@@ -366,7 +366,7 @@ check_browser() {
 	fi
 
 	print_service "Chrome DevTools" "ready" "MCP (no auth needed)"
-	print_service "Playwriter" "optional" "browser extension"
+	print_service "Playwright Extension" "optional" "interactive user-browser access only"
 
 	echo ""
 	return 0

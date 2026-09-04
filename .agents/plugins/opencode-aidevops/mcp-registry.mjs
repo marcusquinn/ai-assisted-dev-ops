@@ -18,6 +18,45 @@ const PLAYWRITER_AUTHENTICATED_RELAY_LAUNCHER = fileURLToPath(
   new URL("../../scripts/playwriter-authenticated-relay.mjs", import.meta.url),
 );
 
+function envFlagEnabled(name) {
+  return ["1", "true", "yes"].includes((process.env[name] || "").toLowerCase());
+}
+
+function headlessPlaywrightRuntime() {
+  const headlessFlag = [
+    "FULL_LOOP_HEADLESS",
+    "AIDEVOPS_HEADLESS",
+    "OPENCODE_HEADLESS",
+    "CLAUDE_HEADLESS",
+    "Claude_HEADLESS",
+    "HEADLESS",
+    "GITHUB_ACTIONS",
+    "CI",
+  ].some(envFlagEnabled);
+  const workerOrigin = (process.env.AIDEVOPS_SESSION_ORIGIN || "").toLowerCase() === "worker";
+  return headlessFlag || workerOrigin || Boolean(process.env.AIDEVOPS_WORKER_ID);
+}
+
+function playwrightMcpCommand() {
+  const headlessRuntime = headlessPlaywrightRuntime();
+  const extensionRequested = envFlagEnabled("PLAYWRIGHT_MCP_EXTENSION") && !headlessRuntime;
+  const headedStandalone = envFlagEnabled("AIDEVOPS_PLAYWRIGHT_HEADED") && !headlessRuntime;
+  const standaloneExecutable = extensionRequested ? "" : preferredPlaywrightExecutable();
+  const modeArgs = extensionRequested
+    ? ["--extension"]
+    : [
+      ...(headedStandalone ? [] : ["--headless"]),
+      "--isolated",
+      ...(standaloneExecutable ? ["--executable-path", standaloneExecutable] : []),
+    ];
+  return [
+    "npx",
+    "-y",
+    PLAYWRIGHT_MCP_PACKAGE,
+    ...modeArgs,
+  ];
+}
+
 /**
  * Build unique per-plugin MCP workspace metadata without creating files.
  * The activation tool creates and owns the directory only when connected.
@@ -89,6 +128,37 @@ function findExecutable(name) {
 }
 
 /**
+ * Prefer a separate Brave process for standalone Playwright without touching
+ * the user's everyday browser profile. Bundled Chromium remains the fallback.
+ * @returns {string}
+ */
+function preferredPlaywrightExecutable() {
+  const explicit = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE?.trim();
+  // Preserve an invalid explicit path so Playwright fails closed instead of
+  // silently launching a different browser.
+  if (explicit) return findExecutable(explicit) || explicit;
+  if (process.env.AIDEVOPS_PLAYWRIGHT_BROWSER === "chromium") return "";
+
+  let candidates;
+  if (platform() === "darwin") {
+    candidates = ["/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"];
+  } else if (platform() === "win32") {
+    candidates = [
+      join(process.env.PROGRAMFILES || "C:\\Program Files", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+      join(process.env["PROGRAMFILES(X86)"] || "C:\\Program Files (x86)", "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    ];
+  } else {
+    candidates = ["brave-browser", "brave", "/snap/bin/brave"];
+  }
+
+  for (const candidate of candidates) {
+    const executable = findExecutable(candidate);
+    if (executable) return executable;
+  }
+  return "";
+}
+
+/**
  * Resolve the package runner command (bun x preferred, npx fallback).
  * Cached after first call.
  * @returns {string}
@@ -137,10 +207,11 @@ function getMcpRegistry() {
       activationAgent: "playwriter",
       agentSource: ["tools", "browser", "playwriter.md"],
       activationGuidance: [
+        "Use this legacy compatibility MCP only when the user explicitly requests Playwriter.",
         "If no browser tab is approved, relay the MCP consent diagnostic instead of claiming the tools are missing.",
       ],
       modelTier: "standard",
-      description: "Browser automation via Chrome extension",
+      description: "Legacy Playwriter compatibility for explicit requests",
     },
     {
       name: "context7",
@@ -269,7 +340,7 @@ function getMcpRegistry() {
       type: "local",
       // Pin the verified CLI contract: --output-dir support and explicit
       // relative output filenames remaining within that directory.
-      command: ["npx", "-y", PLAYWRIGHT_MCP_PACKAGE],
+      command: playwrightMcpCommand(),
       eager: false,
       toolPattern: "playwright_*",
       globallyEnabled: false,

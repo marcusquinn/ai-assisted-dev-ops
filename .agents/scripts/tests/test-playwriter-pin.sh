@@ -171,8 +171,8 @@ for requirement in required_playwriter_contract:
     assert requirement in playwriter_doc, requirement
 
 assert "EXTENSION UI QA?" in automation_doc
-assert "unsupported by Playwriter" in automation_doc
+assert "use manual verification" in automation_doc
 assert "Project-owned unpacked extension with existing runner" in extension_testing_doc
-assert "have no supported Playwriter route" in extension_testing_doc
+assert "have no supported automated bridge route" in extension_testing_doc
 print("PASS extension QA docs refuse unsupported pages and retain the existing-runner route")
 PY

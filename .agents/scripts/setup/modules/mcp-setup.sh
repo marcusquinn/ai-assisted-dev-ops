@@ -33,7 +33,6 @@ _install_mcp_packages_node() {
 	local -a node_mcps=(
 		"chrome-devtools-mcp"
 		"mcp-server-gsc"
-		"playwriter"
 		"@steipete/macos-automator-mcp"
 		"@steipete/claude-code-mcp"
 	)
@@ -50,7 +49,6 @@ _install_mcp_packages_node() {
 		_mcp_package_supported_on_platform "$pkg" || continue
 		local short_name="${pkg##*/}" # Strip @scope/ prefix for display
 		local package_spec="${pkg}@latest"
-		[[ "$pkg" == "playwriter" ]] && package_spec="playwriter@0.5.0"
 		if run_with_spinner "Installing $short_name" npm_global_install "$package_spec"; then
 			((++updated))
 		else
@@ -369,7 +367,7 @@ _setup_browser_tools_playwright() {
 	# Check if Playwright browsers are installed (--no-install prevents auto-download)
 	if npx --no-install playwright --version &>/dev/null 2>&1; then
 		print_success "Playwright already installed"
-		print_info "Playwright MCP runs via: npx playwright-mcp@latest"
+		print_info "Playwright MCP runs via: npx -y @playwright/mcp@0.0.79 --headless --isolated"
 		return 0
 	fi
 
@@ -392,7 +390,7 @@ _setup_browser_tools_playwright() {
 		print_info "Install later with: npx playwright install"
 	fi
 
-	print_info "Playwright MCP runs via: npx playwright-mcp@latest"
+	print_info "Playwright MCP runs via: npx -y @playwright/mcp@0.0.79 --headless --isolated"
 	return 0
 }
 
@@ -408,7 +406,7 @@ setup_browser_tools() {
 		print_success "Bun $(bun --version) found"
 	fi
 
-	# Check Node.js (for Playwriter / Playwright)
+	# Check Node.js (for Playwright)
 	if command -v node &>/dev/null; then
 		has_node=true
 	fi
@@ -422,19 +420,14 @@ setup_browser_tools() {
 	# Setup dev-browser if Bun is available
 	[[ "$has_bun" == "true" ]] && _setup_browser_tools_dev_browser
 
-	# Playwriter MCP (Node.js based, runs via npx)
-	if [[ "$has_node" == "true" ]]; then
-		print_success "Playwriter MCP available (runs via npx playwriter@0.5.0)"
-		print_info "Install Chrome extension: https://chromewebstore.google.com/detail/playwriter-mcp/jfeammnjpkecdekppnclgkkffahnhfhe"
-	else
-		print_warning "Node.js not found - Playwriter MCP unavailable"
-	fi
-
 	# Playwright MCP (cross-browser testing automation)
 	[[ "$has_node" == "true" ]] && _setup_browser_tools_playwright
 
 	if [[ "$has_node" == "true" ]]; then
-		print_info "Browser tools: dev-browser (stateful), Playwriter (extension), Playwright (testing), Stagehand (AI)"
+		print_info "Interactive-only existing tabs: https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm"
+		print_info "Store its profile token: aidevops secret set PLAYWRIGHT_MCP_EXTENSION_TOKEN"
+		print_info "Launch interactively: PLAYWRIGHT_MCP_EXTENSION=1 aidevops secret PLAYWRIGHT_MCP_EXTENSION_TOKEN -- opencode"
+		print_info "Browser tools: standalone Playwright (Brave preferred), dev-browser (stateful), Stagehand (AI)"
 	else
 		print_info "Browser tools: dev-browser (stateful), Stagehand (AI)"
 	fi

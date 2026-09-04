@@ -28,7 +28,7 @@ tools:
 | Category | Integration | Key Requirement |
 |----------|-------------|-----------------|
 | Browser & Web | Chrome DevTools MCP | `npx chrome-devtools-mcp@latest` |
-| | Playwright MCP | `npm install -g playwright-mcp` |
+| | Playwright MCP | `npx -y @playwright/mcp@0.0.79 --headless --isolated` |
 | | Cloudflare Browser Rendering | Server-side scraping (account ID + API token) |
 | SEO & Research | Ahrefs MCP | `AHREFS_API_KEY` (passed as `API_KEY` via wrapper) |
 | | Perplexity MCP | `PERPLEXITY_API_KEY` |
@@ -74,10 +74,19 @@ Full options (headless, viewport, logging):
 ### Playwright MCP
 
 ```bash
-npm install -g playwright-mcp
-playwright-mcp --install-browsers
-claude mcp add playwright npx playwright-mcp@latest
+npx -y playwright@latest install
+claude mcp add playwright -- npx -y @playwright/mcp@0.0.79 --headless --isolated
 ```
+
+The portable config above launches a separate isolated bundled browser because
+static cross-platform client configs cannot safely encode an OS-specific Brave
+path. Managed OpenCode and Browser QA automatically prefer installed Brave;
+other clients should append `--executable-path <brave-path>` for headed or
+headless work. Only during an interactive session with an available user, store
+`PLAYWRIGHT_MCP_EXTENSION_TOKEN` with `aidevops secret`, explicitly request
+extension mode, and add `--extension` to the MCP command.
+Never place the token in MCP config or command arguments. See
+`tools/browser/playwright.md`.
 
 ### iOS Simulator MCP
 

@@ -3,9 +3,10 @@
     "playwright": {
       "command": "npx",
       "args": [
-        "playwright-mcp@latest",
-        "--browser=chromium",
-        "--headless=true"
+        "-y",
+        "@playwright/mcp@0.0.79",
+        "--headless",
+        "--isolated"
       ]
     }
   }

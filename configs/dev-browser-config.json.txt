@@ -40,7 +40,7 @@
   ],
   
   "comparison": {
-    "vs_playwriter": "Playwriter uses existing browser sessions; dev-browser runs its own persistent server",
+    "vs_playwright_extension": "Playwright Extension is for interactive access to approved user-browser tabs; dev-browser runs its own persistent server",
     "vs_playwright_mcp": "Dev-browser is stateful and batches operations; Playwright MCP is stateless with round-trips",
     "vs_stagehand": "Stagehand uses natural language; dev-browser uses Playwright scripts"
   }

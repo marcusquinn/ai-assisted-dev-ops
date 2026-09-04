@@ -40,7 +40,7 @@ Security boundaries:
 
 - Bind to loopback only: `http://127.0.0.1:9222`, not a LAN IP.
 - Prefer a temporary `--user-data-dir` so investigation state is isolated and easy to discard.
-- For per-tab consent instead of profile-level, use `tools/browser/playwriter.md`.
+- For interactive selected-tab consent instead of profile-level debugging, use the official Playwright Extension route in `tools/browser/playwright.md` only while the user is available.
 
 ## Start a Debuggable Browser
 
@@ -69,7 +69,7 @@ curl http://127.0.0.1:9222/json/version
 
 Use loopback only. Never expose the debug port to untrusted networks.
 
-**Ungoogled Chromium**: if `/json/version` is not exposed, treat that build as unsupported and fall back to Chrome/Brave/Edge/Vivaldi/Chromium, `tools/browser/playwriter.md`, or `tools/browser/chrome-devtools.md` in headless mode.
+**Ungoogled Chromium**: if `/json/version` is not exposed, treat that build as unsupported and fall back to standalone Playwright with Brave preferred, another supported CDP browser, or—only for interactive user-owned tabs—the Playwright Extension in Chrome/Edge/Chromium.
 
 ## Use the Local Helper
 
@@ -156,13 +156,13 @@ Rule of thumb: inspect and gather facts with `chromium-debug-use`, then formaliz
 | Need | Prefer |
 |------|--------|
 | Reuse a whole live Chromium profile | Chromium Debug Use (this doc) |
-| Approve only selected tabs in your everyday browser | `tools/browser/playwriter.md` |
+| Interactively approve selected tabs in your everyday browser while you are available | `tools/browser/playwright.md` extension mode |
 | Inspection/perf analysis without reusing your active session | `tools/browser/chrome-devtools.md` |
 | Persistent local profile managed by aidevops | `tools/browser/dev-browser.md` |
-| Fast isolated automation / repeatable scripts / CI | `tools/browser/playwright.md` |
+| Fast isolated headed/headless automation / repeatable scripts / CI | `tools/browser/playwright.md` with Brave preferred |
 | Natural-language experimentation before locking in selectors | `tools/browser/stagehand.md` |
 
-Chrome/Brave/Edge/Vivaldi require relaunching with the debug flag (profile-level consent). Playwriter requires clicking the extension per tab (narrower consent). Both are local-only and user-approved.
+Chrome/Brave/Edge/Vivaldi require relaunching with the debug flag (profile-level consent). Microsoft's Playwright Extension instead uses connection approval and selected tab groups in Chrome/Edge/Chromium, but only belongs in an interactive user-present session. Both routes are local and user-approved; upstream does not document Brave extension support.
 
 ## Troubleshooting
 
@@ -172,8 +172,8 @@ Chrome/Brave/Edge/Vivaldi require relaunching with the debug flag (profile-level
 | No pages found | Open a tab manually or create one with `context.newPage()` |
 | Attach works but state is wrong | Wrong profile launched; verify `--user-data-dir` |
 | Browser closes unexpectedly | Another tool owns the session or profile lock; use a dedicated debug profile |
-| Browser policy blocks remote debugging | Use `tools/browser/playwriter.md` for tab-level consent or `tools/browser/chrome-devtools.md --headless` |
-| Don't want to relaunch browser | Use `tools/browser/playwriter.md` instead of profile-level CDP attach |
+| Browser policy blocks remote debugging | Use `tools/browser/playwright.md` extension mode or `tools/browser/chrome-devtools.md --headless` |
+| Don't want to relaunch browser | Use `tools/browser/playwright.md` extension mode instead of profile-level CDP attach |
 | Ungoogled Chromium never exposes `/json/version` | Treat that build as unsupported; switch to Chrome/Brave/Edge/Vivaldi/Chromium |
 | Need repeatable tests | Stop using live-session attach; launch a fresh Playwright context instead |
 

@@ -4,13 +4,63 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { accessSync, constants, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const MODULE_ENV = 'AIDEVOPS_PLAYWRIGHT_MODULE';
 const NPM_FALLBACK_ENV = 'AIDEVOPS_PLAYWRIGHT_NPX_FALLBACK';
+
+function findExecutable(candidate) {
+  if (!candidate) return null;
+  const hasPathSeparator = candidate.includes('/') || candidate.includes('\\');
+  const locations = hasPathSeparator
+    ? [candidate]
+    : (process.env.PATH || '').split(delimiter).filter(Boolean).map((entry) => join(entry, candidate));
+
+  for (const location of locations) {
+    try {
+      accessSync(location, constants.X_OK);
+      return location;
+    } catch {
+      // Keep searching.
+    }
+  }
+  return null;
+}
+
+function braveExecutableCandidates() {
+  if (process.platform === 'darwin') {
+    return ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', 'brave-browser', 'brave'];
+  }
+  if (process.platform === 'win32') {
+    return [
+      join(process.env.PROGRAMFILES || 'C:\\Program Files', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+      join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+      'brave.exe',
+    ];
+  }
+  return ['brave-browser', 'brave', '/snap/bin/brave'];
+}
+
+export function resolvePlaywrightBrowserExecutable(runtime) {
+  const configuredExecutable = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE?.trim();
+  if (configuredExecutable) return findExecutable(configuredExecutable) || configuredExecutable;
+
+  if (process.env.AIDEVOPS_PLAYWRIGHT_BROWSER !== 'chromium') {
+    for (const candidate of braveExecutableCandidates()) {
+      const executable = findExecutable(candidate);
+      if (executable) return executable;
+    }
+  }
+
+  try {
+    return runtime.chromium.executablePath() || null;
+  } catch {
+    return null;
+  }
+}
 
 function moduleUrl(value) {
   if (!value) return null;
@@ -117,18 +167,13 @@ export async function playwrightStatus() {
     };
   }
 
-  const configuredExecutable = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
-  let browserExecutable = configuredExecutable || null;
-  try {
-    browserExecutable ||= runtime.chromium.executablePath();
-  } catch {
-    browserExecutable = null;
-  }
+  const browserExecutable = resolvePlaywrightBrowserExecutable(runtime);
+  const verifiedExecutable = findExecutable(browserExecutable);
   return {
     packageImportable: true,
     module: resolved,
-    browserBinaryAvailable: Boolean(browserExecutable && existsSync(browserExecutable)),
-    browserExecutable: browserExecutable || null,
+    browserBinaryAvailable: Boolean(verifiedExecutable),
+    browserExecutable: verifiedExecutable || browserExecutable || null,
   };
 }
 
@@ -145,12 +190,12 @@ async function main() {
     process.stdout.write(`${JSON.stringify(status)}\n`);
     return 0;
   }
-  if (command === 'check') {
+  if (command === 'check' || command === 'browser-executable') {
     if (!status.packageImportable) throw new Error(status.error);
     if (!status.browserBinaryAvailable) {
-      throw new Error('Playwright Node package is importable, but its Chromium browser binary is unavailable. Run: npx playwright install chromium');
+      throw new Error('Playwright is importable, but no usable standalone browser was found. Install Brave or run: npx playwright install chromium');
     }
-    process.stdout.write(`${status.module}\n`);
+    process.stdout.write(`${command === 'check' ? status.module : status.browserExecutable}\n`);
     return 0;
   }
 

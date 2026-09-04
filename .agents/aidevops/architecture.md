@@ -135,7 +135,7 @@ Implements proven patterns from Lance Martin (LangChain), validated across Claud
 
 **Two-tier MCP strategy** (all MCPs use `eager: false` and start disabled):
 
-1. **Explicit activation agents** (`activationAgent`): a bounded profile can use `aidevops_mcp` to connect its registry-approved MCP. Playwriter and Playwright are the initial browser implementations.
+1. **Explicit activation agents** (`activationAgent`): a bounded profile can use `aidevops_mcp` to connect its registry-approved MCP. Playwright is the preferred browser implementation; Playwriter remains explicit legacy compatibility.
 2. **Per-agent permission only** (`globallyEnabled: false`): tool patterns stay hidden globally and are exposed only on the owning agent profile.
 
 **How it works:** OpenCode treats `enabled: false` as disconnected, not automatic lazy loading. An explicit activation agent calls the registry-allowlisted `aidevops_mcp` tool, which uses OpenCode's MCP connect API and waits for the asynchronous status to report `connected`. An observed `failed` or `error` status gets one bounded disconnect/reconnect reset; direct API errors, authentication requirements, timeouts, and a second failed status remain terminal. The MCP tools appear on the following model step and can be disconnected when work is complete. There are no idle MCP processes or tool-schema cost in unrelated sessions. The plugin registry is authoritative; do not edit generated `opencode.json` MCP entries directly.

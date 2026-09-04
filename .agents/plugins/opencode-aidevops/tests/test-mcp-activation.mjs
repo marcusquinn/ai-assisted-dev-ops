@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -49,7 +50,7 @@ test("registers only the explicit MCP activation profiles", () => {
   assert.match(config.agent.playwriter.prompt, /enumerate.*context\.pages\(\)/i);
   assert.match(config.agent.playwriter.prompt, /never silently substitute.*playwright/i);
   assert.match(config.agent.playwriter.prompt, /never close\s+user-owned[\s\S]*browser windows/i);
-  assert.match(config.agent.playwriter.prompt, /# Playwriter - Browser Extension MCP/);
+  assert.match(config.agent.playwriter.prompt, /# Playwriter - Legacy Browser Extension MCP/);
   assert.equal(config.agent.playwright.mode, "subagent");
   assert.equal(config.agent.playwright.tools.aidevops_mcp, true);
   assert.equal(config.agent.playwright.tools["playwright_*"], true);
@@ -243,8 +244,130 @@ test("migrates browser MCPs to disconnected and globally denied", () => {
   ));
   assert.match(config.mcp.playwright.command[2], /--output-dir/);
   assert.ok(config.mcp.playwright.command.includes("@playwright/mcp@0.0.79"));
+  assert.ok(config.mcp.playwright.command.includes("--headless"));
+  assert.ok(config.mcp.playwright.command.includes("--isolated"));
+  assert.ok(!config.mcp.playwright.command.includes("--extension"));
   assert.equal(config.tools["playwriter_*"], false);
   assert.equal(config.tools["playwright_*"], false);
+});
+
+test("uses Playwright extension mode only when explicitly requested interactively", () => {
+  const previousToken = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+  const previousMode = process.env.PLAYWRIGHT_MCP_EXTENSION;
+  const previousHeaded = process.env.AIDEVOPS_PLAYWRIGHT_HEADED;
+  const headlessKeys = [
+    "FULL_LOOP_HEADLESS", "AIDEVOPS_HEADLESS", "OPENCODE_HEADLESS",
+    "CLAUDE_HEADLESS", "Claude_HEADLESS", "HEADLESS", "GITHUB_ACTIONS", "CI",
+    "AIDEVOPS_WORKER_ID", "AIDEVOPS_SESSION_ORIGIN",
+  ];
+  const previousHeadless = Object.fromEntries(headlessKeys.map((key) => [key, process.env[key]]));
+  process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = "test-only-placeholder";
+  process.env.PLAYWRIGHT_MCP_EXTENSION = "1";
+  delete process.env.AIDEVOPS_PLAYWRIGHT_HEADED;
+  for (const key of headlessKeys) delete process.env[key];
+  process.env.AIDEVOPS_SESSION_ORIGIN = "interactive";
+
+  try {
+    const runtime = createMcpSessionRuntime("/managed/workspace", {
+      tempRoot: "/managed/tmp",
+      nonce: "extension-mode",
+      markerToken: "extension-mode-token",
+    });
+    const config = {};
+
+    registerMcpServers(config, { runtime });
+
+    assert.ok(config.mcp.playwright.command.includes("--extension"));
+    assert.ok(!config.mcp.playwright.command.includes("--headless"));
+    assert.ok(!config.mcp.playwright.command.includes("--isolated"));
+    assert.ok(!config.mcp.playwright.command.includes("test-only-placeholder"));
+
+    process.env.HEADLESS = "0";
+    const falseMarkerConfig = {};
+    registerMcpServers(falseMarkerConfig, { runtime });
+    assert.ok(falseMarkerConfig.mcp.playwright.command.includes("--extension"));
+
+    process.env.AIDEVOPS_SESSION_ORIGIN = "worker";
+    process.env.AIDEVOPS_PLAYWRIGHT_HEADED = "1";
+    const workerConfig = {};
+    registerMcpServers(workerConfig, { runtime });
+    assert.ok(!workerConfig.mcp.playwright.command.includes("--extension"));
+    assert.ok(workerConfig.mcp.playwright.command.includes("--headless"));
+    assert.ok(workerConfig.mcp.playwright.command.includes("--isolated"));
+  } finally {
+    if (previousToken === undefined) delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+    else process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = previousToken;
+    if (previousMode === undefined) delete process.env.PLAYWRIGHT_MCP_EXTENSION;
+    else process.env.PLAYWRIGHT_MCP_EXTENSION = previousMode;
+    if (previousHeaded === undefined) delete process.env.AIDEVOPS_PLAYWRIGHT_HEADED;
+    else process.env.AIDEVOPS_PLAYWRIGHT_HEADED = previousHeaded;
+    for (const [key, value] of Object.entries(previousHeadless)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("keeps token-only work standalone and supports a separate headed Brave process", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-playwright-brave-"));
+  const braveExecutable = join(root, "brave");
+  writeFileSync(braveExecutable, "#!/bin/sh\nexit 0\n");
+  chmodSync(braveExecutable, 0o755);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const previousToken = process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+  const previousMode = process.env.PLAYWRIGHT_MCP_EXTENSION;
+  const previousExecutable = process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+  const previousHeaded = process.env.AIDEVOPS_PLAYWRIGHT_HEADED;
+  const headlessKeys = [
+    "FULL_LOOP_HEADLESS", "AIDEVOPS_HEADLESS", "OPENCODE_HEADLESS",
+    "CLAUDE_HEADLESS", "Claude_HEADLESS", "HEADLESS", "GITHUB_ACTIONS", "CI",
+    "AIDEVOPS_WORKER_ID", "AIDEVOPS_SESSION_ORIGIN",
+  ];
+  const previousHeadless = Object.fromEntries(headlessKeys.map((key) => [key, process.env[key]]));
+  process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = "test-only-placeholder";
+  delete process.env.PLAYWRIGHT_MCP_EXTENSION;
+  process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE = braveExecutable;
+  process.env.AIDEVOPS_PLAYWRIGHT_HEADED = "1";
+  for (const key of headlessKeys) delete process.env[key];
+  process.env.AIDEVOPS_SESSION_ORIGIN = "interactive";
+
+  try {
+    const runtime = createMcpSessionRuntime("/managed/workspace", {
+      tempRoot: "/managed/tmp",
+      nonce: "standalone-brave",
+      markerToken: "standalone-brave-token",
+    });
+    const config = {};
+    registerMcpServers(config, { runtime });
+
+    assert.ok(!config.mcp.playwright.command.includes("--extension"));
+    assert.ok(!config.mcp.playwright.command.includes("--headless"));
+    assert.ok(config.mcp.playwright.command.includes("--isolated"));
+    assert.ok(config.mcp.playwright.command.includes("--executable-path"));
+    assert.ok(config.mcp.playwright.command.includes(braveExecutable));
+    assert.ok(!config.mcp.playwright.command.includes("test-only-placeholder"));
+
+    const invalidExecutable = join(root, "missing-brave");
+    process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE = invalidExecutable;
+    const invalidConfig = {};
+    registerMcpServers(invalidConfig, { runtime });
+    assert.ok(invalidConfig.mcp.playwright.command.includes("--executable-path"));
+    assert.ok(invalidConfig.mcp.playwright.command.includes(invalidExecutable));
+  } finally {
+    if (previousToken === undefined) delete process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN;
+    else process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN = previousToken;
+    if (previousMode === undefined) delete process.env.PLAYWRIGHT_MCP_EXTENSION;
+    else process.env.PLAYWRIGHT_MCP_EXTENSION = previousMode;
+    if (previousExecutable === undefined) delete process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
+    else process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE = previousExecutable;
+    if (previousHeaded === undefined) delete process.env.AIDEVOPS_PLAYWRIGHT_HEADED;
+    else process.env.AIDEVOPS_PLAYWRIGHT_HEADED = previousHeaded;
+    for (const [key, value] of Object.entries(previousHeadless)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("disables an inherited Playwright MCP when no safe runtime is available", () => {

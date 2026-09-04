@@ -19,6 +19,11 @@ source "${SCRIPT_DIR}/shared-constants.sh"
 
 set -euo pipefail
 
+PLAYWRIGHT_MCP_PACKAGE="@playwright/mcp"
+PLAYWRIGHT_MCP_NAME="playwright"
+PLAYWRIGHT_MCP_SPEC="${PLAYWRIGHT_MCP_PACKAGE}@0.0.79"
+PLAYWRIGHT_MCP_RUN="npx -y ${PLAYWRIGHT_MCP_SPEC}"
+
 show_usage() {
 	echo "Usage: mcp-diagnose.sh <mcp-name>"
 	echo "       mcp-diagnose.sh check-all"
@@ -424,10 +429,16 @@ fi
 # 1. Check if command exists
 echo "1. Checking command availability..."
 # Map MCP names to their CLI commands
+PINNED_NPM_SPEC=""
 case "$MCP_NAME" in
 context7)
 	CLI_CMD="context7"
 	NPM_PKG="@context7/mcp"
+	;;
+playwright)
+	CLI_CMD="playwright-mcp"
+	NPM_PKG="$PLAYWRIGHT_MCP_PACKAGE"
+	PINNED_NPM_SPEC="$PLAYWRIGHT_MCP_SPEC"
 	;;
 *)
 	CLI_CMD="$MCP_NAME"
@@ -442,42 +453,74 @@ esac
 _configured_command_version() {
 	local config_file="$1"
 	local mcp_name="$2"
+	local expected_package="$3"
+	local pinned_package_spec="$4"
 
-	python3 - "$config_file" "$mcp_name" <<'PYEOF'
+	python3 - "$config_file" "$mcp_name" "$expected_package" "$pinned_package_spec" <<'PYEOF'
 import json
 import os
+import re
 import subprocess
 import sys
 
-config_file, mcp_name = sys.argv[1:]
+config_file, mcp_name, expected_package, pinned_package_spec = sys.argv[1:]
+
+def allowed_package_spec(package_spec):
+    if package_spec == expected_package:
+        return True
+    prefix = f'{expected_package}@'
+    if not package_spec.startswith(prefix):
+        return False
+    selector = package_spec[len(prefix):]
+    return re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+-]*', selector) is not None
+
 try:
     with open(config_file) as stream:
         config = json.load(stream)
     entry = config.get('mcp', config.get('mcpServers', {})).get(mcp_name, {})
     command = entry.get('command')
-    if (entry.get('enabled', True) is False or entry.get('type') in ('remote', 'sse')
+    enabled = entry.get('enabled', True)
+    if (entry.get('type') in ('remote', 'sse')
             or not isinstance(command, list) or not command
-            or len(command) > 8 or any(not isinstance(part, str) or not part or '\x00' in part for part in command)):
+            or len(command) > 24 or any(not isinstance(part, str) or not part or '\x00' in part for part in command)):
         raise ValueError('no safe configured command array')
 
     executable = command[0]
     runner = os.path.basename(executable)
     shell_runners = {'sh', 'bash', 'zsh', 'fish', 'cmd', 'powershell', 'pwsh'}
     if runner in shell_runners:
-        raise ValueError('shell runner is not safe for diagnostics')
-
-    if runner == 'npx':
+        package_index = next((index for index, part in enumerate(command)
+            if allowed_package_spec(part)), None)
+        if (mcp_name != 'playwright' or package_index is None or package_index < 2
+                or command[package_index - 2] != 'npx'
+                or command[package_index - 1] not in ('-y', '--yes')
+                or command[package_index] != pinned_package_spec):
+            raise ValueError('shell runner is not safe for diagnostics')
+        invocation = ['npx', command[package_index - 1], command[package_index], '--version']
+    elif runner == 'npx':
         package_args = command[1:]
-        if len(package_args) == 2 and package_args[0] in ('-y', '--yes'):
+        runner_args = []
+        if package_args and package_args[0] in ('-y', '--yes'):
+            runner_args = [package_args[0]]
             package_args = package_args[1:]
-        if len(package_args) != 1 or package_args[0] not in (mcp_name, f'{mcp_name}@latest') and not package_args[0].startswith(f'{mcp_name}@'):
+        if not package_args:
             raise ValueError('unsupported npx package invocation')
-        invocation = [executable, *command[1:], '--version']
+        package_spec = package_args[0]
+        if (not allowed_package_spec(package_spec)
+                or pinned_package_spec and package_spec != pinned_package_spec
+                or enabled is False and not pinned_package_spec):
+            raise ValueError('unsupported npx package invocation')
+        invocation = [executable, *runner_args, package_spec, '--version']
     elif runner == 'bun':
-        if len(command) != 3 or command[1] != 'x' or (command[2] != mcp_name and not command[2].startswith(f'{mcp_name}@')):
+        package_spec = command[2] if len(command) >= 3 else ''
+        if (len(command) < 3 or command[1] != 'x' or not allowed_package_spec(package_spec)
+                or pinned_package_spec and package_spec != pinned_package_spec
+                or enabled is False and not pinned_package_spec):
             raise ValueError('unsupported bun package invocation')
-        invocation = [*command, '--version']
+        invocation = [*command[:3], '--version']
     else:
+        if enabled is False:
+            raise ValueError('disabled direct command is not safe for diagnostics')
         invocation = [executable, '--version']
 
     result = subprocess.run(
@@ -568,11 +611,15 @@ if command -v "$CLI_CMD" &>/dev/null; then
 	INSTALLED_VERSION=$("$CLI_CMD" --version 2>/dev/null | head -1 || echo 'unknown')
 	echo "   PATH version: $INSTALLED_VERSION"
 else
-	echo -e "   ${RED}✗ Command not found: $CLI_CMD${NC}"
+	if [[ "$MCP_NAME" == "$PLAYWRIGHT_MCP_NAME" ]]; then
+		echo -e "   ${CYAN}[npx]${NC} No global command found; checking configured package runners"
+	else
+		echo -e "   ${RED}✗ Command not found: $CLI_CMD${NC}"
+	fi
 	INSTALLED_VERSION="unknown"
 fi
 
-# Check every enabled local runtime configuration before comparing versions.
+# Check every local runtime configuration before comparing versions.
 _configured_version_found=0
 _playwriter_relay_port=19988
 _playwriter_configured_version="unknown"
@@ -583,7 +630,7 @@ for _diag_entry in "${_MCP_DIAG_CONFIGS[@]}"; do
 	if type rt_display_name &>/dev/null; then
 		_diag_name=$(rt_display_name "$_diag_rt") || _diag_name="$_diag_rt"
 	fi
-	_configured_command_info=$(_configured_command_version "$CONFIG_FILE" "$MCP_NAME")
+	_configured_command_info=$(_configured_command_version "$CONFIG_FILE" "$MCP_NAME" "$NPM_PKG" "$PINNED_NPM_SPEC")
 	[[ -z "$_configured_command_info" ]] && continue
 	IFS=$'\t' read -r _configured_executable _configured_version _configured_relay_port <<<"$_configured_command_info"
 	[[ -z "$_configured_executable" ]] && continue
@@ -615,7 +662,11 @@ if [[ "$MCP_NAME" == "playwriter" ]]; then
 fi
 
 if [[ "$INSTALLED_VERSION" == "unknown" && "$_configured_version_found" -eq 0 ]]; then
-	echo "   Try: npm install -g $NPM_PKG"
+	if [[ "$MCP_NAME" == "$PLAYWRIGHT_MCP_NAME" ]]; then
+		echo "   Try: $PLAYWRIGHT_MCP_RUN --version"
+	else
+		echo "   Try: npm install -g $NPM_PKG"
+	fi
 	exit 1
 fi
 
@@ -626,7 +677,7 @@ LATEST_VERSION=$(npm view "$NPM_PKG" version 2>/dev/null || echo "unknown")
 echo "   PATH installed: $INSTALLED_VERSION"
 echo "   Latest:    $LATEST_VERSION"
 
-if [[ "$INSTALLED_VERSION" != *"$LATEST_VERSION"* ]] && [[ "$LATEST_VERSION" != "unknown" ]]; then
+if [[ "$INSTALLED_VERSION" != "unknown" && "$INSTALLED_VERSION" != *"$LATEST_VERSION"* ]] && [[ "$LATEST_VERSION" != "unknown" ]]; then
 	echo -e "   ${YELLOW}⚠️  UPDATE AVAILABLE - run: npm update -g $NPM_PKG${NC}"
 fi
 
@@ -692,10 +743,12 @@ openapi-search)
 	echo "   - To disable: set \"enabled\": false in your MCP config"
 	;;
 playwright)
-	echo "   - Requires @anthropic-ai/mcp-server-playwright (npx -y)"
+	echo "   - Requires Microsoft's $PLAYWRIGHT_MCP_PACKAGE package (npx -y)"
 	echo "   - Needs Playwright browsers installed: npx playwright install"
-	echo "   - May fail if browsers not installed or npx cache is stale"
-	echo "   - To reinstall: npx -y @anthropic-ai/mcp-server-playwright@latest"
+	echo "   - Standalone headed/headless work prefers a separate Brave process"
+	echo "   - Existing-tab mode is interactive-only and requires Playwright Extension plus --extension"
+	echo "   - Aidevops requires PLAYWRIGHT_MCP_EXTENSION=1; a token alone does not switch modes"
+	echo "   - To verify the package: $PLAYWRIGHT_MCP_RUN --version"
 	;;
 *)
 	echo "   No known issues documented for this MCP"
@@ -716,8 +769,16 @@ esac
 # 6. Suggested fixes
 echo ""
 echo -e "${BLUE}=== Suggested Fixes ===${NC}"
-echo "1. Update tool: npm update -g $NPM_PKG"
+if [[ "$MCP_NAME" == "$PLAYWRIGHT_MCP_NAME" ]]; then
+	echo "1. Verify tool: $PLAYWRIGHT_MCP_RUN --version"
+else
+	echo "1. Update tool: npm update -g $NPM_PKG"
+fi
 echo "2. Check official docs for command changes"
-echo "3. Run: $CLI_CMD --help"
+if [[ "$MCP_NAME" == "$PLAYWRIGHT_MCP_NAME" ]]; then
+	echo "3. Run: $PLAYWRIGHT_MCP_RUN --help"
+else
+	echo "3. Run: $CLI_CMD --help"
+fi
 echo "4. Check ~/.aidevops/agents/tools/ for updated documentation"
 echo "5. Verify MCP status in your runtime's config after fixes"

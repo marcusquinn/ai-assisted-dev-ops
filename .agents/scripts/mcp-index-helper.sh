@@ -176,6 +176,7 @@ tool_categories = {
     # serper - REMOVED: Uses curl subagent (.agents/seo/serper.md)
     'gsc': ['query', 'sitemaps', 'inspect'],
     'shadcn': ['browse', 'search', 'install'],
+    'playwright': ['navigate', 'click', 'type', 'screenshot'],
     'playwriter': ['navigate', 'click', 'type', 'screenshot'],
     'macos-automator': ['run-applescript', 'run-jxa', 'list-apps'],
     'outscraper': ['google-maps', 'reviews', 'business-info'],
@@ -222,7 +223,7 @@ for mcp_name, mcp_config in mcp_servers.items():
                 category = 'seo'
             elif pattern == 'context7':
                 category = 'context'
-            elif pattern in ['shadcn', 'playwriter']:
+            elif pattern in ['shadcn', 'playwright', 'playwriter']:
                 category = 'browser'
             elif pattern == 'macos-automator':
                 category = 'automation'
@@ -584,8 +585,8 @@ Examples:
 
 The index enables on-demand MCP discovery:
   1. Agent searches for capability: "I need to take screenshots"
-  2. Index returns: playwriter MCP has screenshot tools
-  3. Agent enables playwriter MCP for this session
+  2. Index returns: playwright MCP has screenshot tools
+  3. Agent enables playwright MCP for this session
   4. Agent uses the tool
 
 This avoids loading all MCP tool definitions upfront, reducing context usage.

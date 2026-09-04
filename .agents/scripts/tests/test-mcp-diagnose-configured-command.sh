@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
-# Regression coverage for GH#31097: configured Playwriter commands and the
-# local relay must not be hidden by a newer same-named PATH executable.
+# Regression coverage for GH#31097: configured MCP commands and the local
+# Playwriter relay must not be hidden by a newer same-named PATH executable.
 
 set -euo pipefail
 
@@ -79,8 +79,11 @@ server.serve_forever()
 ' "${RELAY_PORT}" "${RELAY_READY}" >/dev/null 2>&1 &
 relay_pid=$!
 
-for _attempt in 1 2 3 4 5; do
+for _attempt in {1..50}; do
 	[[ -f "${RELAY_READY}" ]] && break
+	if ! kill -0 "$relay_pid" 2>/dev/null; then
+		break
+	fi
 	sleep 0.1
 done
 if [[ ! -f "${RELAY_READY}" ]]; then
@@ -109,3 +112,70 @@ if [[ "$output" != *"live relay uses 0.0.56, PATH reports 0.5.0"* ]]; then
 fi
 
 printf 'PASS configured Playwriter command and relay version mismatch are reported\n'
+
+cat >"${FAKE_BIN}/npx" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$NPX_CALL_LOG"
+printf '0.0.79\n'
+EOF
+chmod +x "${FAKE_BIN}/npx"
+
+python3 - "${CONFIG_HOME}/.config/opencode/opencode.json" <<'PYEOF'
+import json
+import sys
+
+with open(sys.argv[1], "w") as stream:
+    json.dump({"mcp": {"playwright": {
+        "type": "local",
+        "enabled": False,
+        "command": [
+            "/bin/bash", "-c", "validated launcher", "aidevops-playwright-mcp",
+            "/safe/workspace", "/safe/output", "marker-token",
+            "npx", "-y", "@playwright/mcp@0.0.79", "--headless", "--isolated",
+        ],
+    }}}, stream)
+PYEOF
+
+NPX_CALL_LOG="${TEST_ROOT}/npx-call.log"
+output=$(HOME="${CONFIG_HOME}" PATH="${FAKE_BIN}:${PATH}" NPX_CALL_LOG="$NPX_CALL_LOG" \
+	"${REPO_ROOT}/.agents/scripts/mcp-diagnose.sh" playwright 2>&1)
+
+if [[ "$output" != *"Configured version: 0.0.79"* ]]; then
+	printf 'FAIL configured @playwright/mcp version was not reported\n%s\n' "$output" >&2
+	exit 1
+fi
+
+if [[ "$(<"$NPX_CALL_LOG")" != "-y @playwright/mcp@0.0.79 --version" ]]; then
+	printf 'FAIL Playwright diagnostic executed runtime arguments instead of a bounded version check\n' >&2
+	exit 1
+fi
+
+printf 'PASS disabled managed @playwright/mcp command is safely version-checked\n'
+
+for unsafe_spec in "@playwright/mcp@latest" "@playwright/mcp@file:/untrusted-package"; do
+	python3 - "${CONFIG_HOME}/.config/opencode/opencode.json" "$unsafe_spec" <<'PYEOF'
+import json
+import sys
+
+with open(sys.argv[1], "w") as stream:
+    json.dump({"mcp": {"playwright": {
+        "type": "local",
+        "enabled": True,
+        "command": ["npx", "-y", sys.argv[2]],
+    }}}, stream)
+PYEOF
+
+	rm -f "$NPX_CALL_LOG"
+	if HOME="${CONFIG_HOME}" PATH="${FAKE_BIN}:${PATH}" NPX_CALL_LOG="$NPX_CALL_LOG" \
+		"${REPO_ROOT}/.agents/scripts/mcp-diagnose.sh" playwright >/dev/null 2>&1; then
+		printf 'FAIL unpinned Playwright package reference was accepted: %s\n' "$unsafe_spec" >&2
+		exit 1
+	fi
+
+	if [[ -e "$NPX_CALL_LOG" ]]; then
+		printf 'FAIL unpinned Playwright package reference was executed: %s\n' "$unsafe_spec" >&2
+		exit 1
+	fi
+done
+
+printf 'PASS unpinned Playwright package references are rejected without execution\n'

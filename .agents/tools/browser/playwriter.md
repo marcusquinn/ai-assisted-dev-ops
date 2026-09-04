@@ -1,5 +1,5 @@
 ---
-description: Playwriter MCP - browser automation via Chrome extension with full Playwright API
+description: Legacy Playwriter MCP compatibility for explicitly requested existing setups
 mode: subagent
 tools:
   read: true
@@ -17,11 +17,13 @@ mcp:
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-# Playwriter - Browser Extension MCP
+# Playwriter - Legacy Browser Extension MCP
 
 <!-- AI-CONTEXT-START -->
 
 ## Quick Reference
+
+> **Legacy compatibility only:** Do not recommend Playwriter for new setups or select it automatically. Use standalone Playwright with Brave preferred for normal headed/headless work; Microsoft's Playwright Extension is only for interactive user-browser access. Use `@playwriter` only when the user explicitly requests an existing Playwriter setup.
 
 - **Purpose**: Browser automation via Chrome extension — full Playwright API
 - **Extension**: [Chrome Web Store](https://chromewebstore.google.com/detail/playwriter-mcp/jfeammnjpkecdekppnclgkkffahnhfhe) (Chrome, Brave, Edge)
@@ -30,7 +32,7 @@ mcp:
 - **Icon**: Gray/Black = disconnected · Green = ready · Orange = connecting · Red = error
 - **Performance**: Navigate 2.95s, form fill 2.24s, reliability 1.96s avg. Always headed.
 
-**Why Playwriter**: 1 tool (vs 10-17), minimal context bloat, uses your existing browser with extensions/sessions/cookies, bypasses detection (disconnect → manual action → reconnect).
+**Legacy capability**: A single tool controls explicitly approved tabs in an existing browser with its extensions, sessions, cookies, and proxy.
 
 **When to use alternatives**: **Stagehand** for natural language / self-healing selectors. **Playwright MCP** for isolated automation. **Crawl4AI** for scraping. **playwright-cli** for headless.
 
@@ -89,7 +91,7 @@ mcp:
 }
 ```
 
-Use `@playwriter` for browser tasks. The agent connects Playwriter before its first operation, receives `playwriter_*` tools on the next step, and disconnects after the requested browser work. The activation tool accepts only MCP names declared by the plugin registry.
+Use `@playwriter` only for an explicit legacy compatibility request. The agent connects Playwriter before its first operation, receives `playwriter_*` tools on the next step, and disconnects after the requested browser work. The activation tool accepts only MCP names declared by the plugin registry.
 
 ### Authenticated Relay and Tab Preflight
 

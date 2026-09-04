@@ -1,10 +1,10 @@
 {
-  "claude_code_command": "claude mcp add-json playwright --scope user '{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"playwright-mcp@latest\"]}'",
+  "claude_code_command": "claude mcp add-json playwright --scope user '{\"type\":\"stdio\",\"command\":\"npx\",\"args\":[\"-y\",\"@playwright/mcp@0.0.79\",\"--headless\",\"--isolated\"]}'",
 
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["playwright-mcp@latest"]
+      "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"]
     }
   }
 }

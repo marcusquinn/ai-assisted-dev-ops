@@ -243,8 +243,11 @@ test_runtime_resolves_npx_cached_package() {
 	local fake_modules="${tmp_dir}/cache/node_modules"
 	local isolated_dir="${tmp_dir}/isolated"
 	local browser_path="${tmp_dir}/chromium"
+	local brave_path="${fake_bin}/brave"
+	local brave_windows_path="${fake_bin}/brave.exe"
 	mkdir -p "$fake_bin" "${fake_modules}/.bin" "${fake_modules}/playwright" "$isolated_dir"
-	touch "$browser_path"
+	touch "$browser_path" "$brave_path" "$brave_windows_path"
+	chmod +x "$brave_path" "$brave_windows_path"
 
 	cat >"${fake_modules}/playwright/package.json" <<'JSON'
 {"name":"playwright","type":"module","exports":"./index.mjs"}
@@ -280,11 +283,23 @@ SH
 			PATH="${fake_bin}:${node_path%/*}:/usr/bin:/bin" \
 			node "$PLAYWRIGHT_RUNTIME" check
 	) || true
+	local brave_status=""
+	brave_status=$(
+		AIDEVOPS_PLAYWRIGHT_MODULE="${fake_modules}/playwright/index.mjs" \
+			FAKE_PLAYWRIGHT_BROWSER="$browser_path" \
+			PATH="${fake_bin}:${node_path%/*}:/usr/bin:/bin" \
+			node "$PLAYWRIGHT_RUNTIME" status
+	) || true
+	local status_prefers_brave=0
+	if node -e 'const s=JSON.parse(process.argv[1]); process.exit(s.browserBinaryAvailable && s.browserExecutable !== process.argv[2] && /(?:Brave Browser|brave(?:-browser)?(?:\.exe)?)$/.test(s.browserExecutable) ? 0 : 1)' "$brave_status" "$browser_path"; then
+		status_prefers_brave=1
+	fi
 
 	rm -f "$browser_path"
 	local missing_browser_status=""
 	missing_browser_status=$(
 		AIDEVOPS_PLAYWRIGHT_MODULE="" \
+			AIDEVOPS_PLAYWRIGHT_BROWSER="chromium" \
 			FAKE_PLAYWRIGHT_BROWSER="$browser_path" \
 			FAKE_PLAYWRIGHT_MODULES="$fake_modules" \
 			PATH="${fake_bin}:${node_path%/*}:/usr/bin:/bin" \
@@ -295,10 +310,10 @@ SH
 		status_distinguishes_browser=1
 	fi
 
-	if [[ "$direct_exit" -ne 0 && "$resolved" == *"${fake_modules}/playwright/index.mjs" && "$status_distinguishes_browser" -eq 1 && ! -e "${isolated_dir}/package.json" && ! -d "${isolated_dir}/node_modules" ]]; then
-		print_result "runtime resolves npx cache when bare import fails" 0
+	if [[ "$direct_exit" -ne 0 && "$resolved" == *"${fake_modules}/playwright/index.mjs" && "$status_prefers_brave" -eq 1 && "$status_distinguishes_browser" -eq 1 && ! -e "${isolated_dir}/package.json" && ! -d "${isolated_dir}/node_modules" ]]; then
+		print_result "runtime resolves npx cache and prefers Brave" 0
 	else
-		print_result "runtime resolves npx cache when bare import fails" 1 "direct_exit=${direct_exit}, resolved=${resolved:-none}, browser_status=${missing_browser_status:-none}"
+		print_result "runtime resolves npx cache and prefers Brave" 1 "direct_exit=${direct_exit}, resolved=${resolved:-none}, brave_status=${brave_status:-none}, browser_status=${missing_browser_status:-none}"
 	fi
 
 	rm -rf "$tmp_dir"

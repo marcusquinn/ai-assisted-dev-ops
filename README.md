@@ -1452,7 +1452,7 @@ See `.agents/tools/ocr/glm-ocr.md` for batch processing, PDF workflows, and Peek
 
 ### **All Supported MCPs (20 available)**
 
-MCP packages are installed globally via `bun install -g` for instant startup (no `npx` registry lookups). Run `setup.sh` or `aidevops update-tools` to update to latest versions.
+MCP integrations use reviewed local package runners or remote HTTPS endpoints. Security-sensitive local integrations use exact package pins where required; setup may globally cache selected tools for faster startup. Run `setup.sh` or `aidevops update-tools` to refresh managed tooling.
 
 | MCP | Purpose | Tier | API Key Required |
 |-----|---------|------|------------------|
@@ -1467,7 +1467,7 @@ MCP packages are installed globally via `bun install -g` for instant startup (no
 | [Grep by Vercel](https://grep.app/) | GitHub code search | Per-agent | No |
 | [LocalWP](https://localwp.com/) | WordPress database access | Per-agent | No (local) |
 | [macOS Automator](https://github.com/steipete/macos-automator-mcp) | macOS automation | Per-agent | No |
-| [Playwriter](https://github.com/nicholasgriffintn/playwriter) | Browser with extensions | Per-agent | No |
+| [Playwright MCP](https://github.com/microsoft/playwright-mcp) | Isolated or extension-connected browser automation | Per-agent | No |
 | [QuickFile](https://github.com/marcusquinn/quickfile-mcp) | Guarded multi-account accounting API | On-demand per-agent | Yes |
 | [Repomix](https://github.com/yamadashy/repomix) | Codebase packing for AI context | Per-agent | No |
 | [Sentry](https://sentry.io/) | Error tracking | Per-agent | Yes |
@@ -1481,7 +1481,7 @@ MCP packages are installed globally via `bun install -g` for instant startup (no
 - **Global** - Tools always available (loaded into every session)
 - **Per-agent** - Tools disabled globally, enabled per-agent via config (zero context overhead when unused)
 
-**Performance optimization:** MCP packages are installed globally via `bun install -g` for instant startup (~0.1s vs 2-3s with `npx`). The framework uses a three-tier loading strategy: MCPs load eagerly at startup or on-demand when their subagent is invoked. This reduces OpenCode startup time significantly.
+**Performance optimization:** MCPs stay disabled globally and connect on demand when their subagent is invoked. Selected packages may be globally installed or cached, while integrations such as Playwright use an exact pinned package runner to preserve their reviewed CLI contract.
 
 ### **SEO Integrations (curl subagents - no MCP overhead)**
 
@@ -1513,13 +1513,13 @@ These use direct API calls via curl, avoiding MCP server startup entirely:
 **Browser Automation** (browser tool suite + anti-detect stack, [benchmarked](#browser-automation)):
 
 - **Auto-browse workflow** - `/auto-browse` orchestrates the tools below to learn messy browser tasks, choose the cheapest reliable path, preserve private profile/session state under `~/.aidevops/`, and graduate reusable private agents or sanitized `todo/` plans
-- [Playwright](https://playwright.dev/) - Fastest engine (0.9s form fill), parallel contexts, extensions, proxy (auto-installed)
+- [Playwright](https://playwright.dev/) - Fastest engine (0.9s form fill); standalone Brave is preferred for headed/headless work, while Microsoft's [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm) is reserved for interactive access to approved user-owned tabs
 - [playwright-cli](https://github.com/microsoft/playwright-cli) - Microsoft official CLI for AI agents, `--session` isolation, built-in tracing
 - [dev-browser](https://github.com/nicholasgriffintn/dev-browser) - Persistent profile, stays logged in, ARIA snapshots, pairs with DevTools
 - [agent-browser](https://github.com/vercel-labs/agent-browser) - CLI/CI/CD, `--session` parallel, ref-based element targeting, **iOS Simulator support** (macOS)
 - [Crawl4AI](https://github.com/unclecode/crawl4ai) - Bulk extraction, `arun_many` parallel (1.7x), LLM-ready markdown
 - [WaterCrawl](https://github.com/watercrawl/watercrawl) - Self-hosted crawling with web search, sitemap generation, JS rendering, proxy support
-- [Playwriter](https://github.com/nicholasgriffintn/playwriter) - Your browser's extensions/passwords/proxy, already unlocked
+- [Playwright Recorder](https://chromewebstore.google.com/detail/playwright-recorder/bapaclfmcgookbglclacfgeemaehkkme) - Optional third-party, low-sensitivity human-flow capture into draft test code; pair with written acceptance criteria and review/redact output
 - [Stagehand](https://github.com/browserbase/stagehand) - Natural language automation, self-healing selectors
 - [browser-use](https://github.com/browser-use/browser-use) - AI-native browser automation, CLI 3.0 Browser Harness, packaged agent skill, Browser Use Cloud, 100-task upstream benchmark
 - [Chrome DevTools MCP](https://github.com/nicholasgriffintn/chrome-devtools-mcp) - Companion: Lighthouse, network throttling, CSS coverage (pairs with any tool)
@@ -1644,41 +1644,42 @@ For repeatable browser operations and web data mining, use `/auto-browse`. It ru
 
 Tested on macOS ARM64, all headless, warm daemon:
 
-| Test | Playwright | playwright-cli | dev-browser | agent-browser | Crawl4AI | Playwriter | Stagehand | browser-use |
-|------|-----------|----------------|-------------|---------------|----------|------------|-----------|-------------|
-| **Navigate + Screenshot** | **1.43s** | ~1.9s | 1.39s | 1.90s | 2.78s | 2.95s | 7.72s | Agentic; not in local deterministic suite |
-| **Form Fill** (4 fields) | **0.90s** | ~1.4s | 1.34s | 1.37s | N/A | 2.24s | 2.58s | Agentic; use for fuzzy forms |
-| **Data Extraction** (5 items) | 1.33s | ~1.5s | **1.08s** | 1.53s | 2.53s | 2.68s | 3.48s | Agentic; compress to deterministic when stable |
-| **Multi-step** (click + nav) | **1.49s** | ~2.0s | 1.49s | 3.06s | N/A | 4.37s | 4.48s | Upstream BU Bench covers 100 real-world tasks |
-| **Parallel** (3 sessions) | **1.6s** | ~2.0s | N/A | 2.0s | 3.0s | N/A | Slow | Prefer Browser Use Cloud for scale |
+| Test | Playwright | playwright-cli | dev-browser | agent-browser | Crawl4AI | Stagehand | browser-use |
+|------|-----------|----------------|-------------|---------------|----------|-----------|-------------|
+| **Navigate + Screenshot** | **1.43s** | ~1.9s | 1.39s | 1.90s | 2.78s | 7.72s | Agentic; not in local deterministic suite |
+| **Form Fill** (4 fields) | **0.90s** | ~1.4s | 1.34s | 1.37s | N/A | 2.58s | Agentic; use for fuzzy forms |
+| **Data Extraction** (5 items) | 1.33s | ~1.5s | **1.08s** | 1.53s | 2.53s | 3.48s | Agentic; compress to deterministic when stable |
+| **Multi-step** (click + nav) | **1.49s** | ~2.0s | 1.49s | 3.06s | N/A | 4.48s | Upstream BU Bench covers 100 real-world tasks |
+| **Parallel** (3 sessions) | **1.6s** | ~2.0s | N/A | 2.0s | 3.0s | Slow | Prefer Browser Use Cloud for scale |
 
 ### Feature Matrix
 
-| Feature | Playwright | playwright-cli | dev-browser | agent-browser | Crawl4AI | Playwriter | Stagehand | browser-use |
-|---------|-----------|----------------|-------------|---------------|----------|------------|-----------|-------------|
-| **Headless** | Yes | Yes (default) | Yes | Yes (default) | Yes | No (your browser) | Yes | Yes |
-| **Proxy/VPN** | Full | No | Via args | No | Full | Your browser | Via args | Cloud/profiles |
-| **Extensions** | Yes (persistent) | No | Yes (profile) | No | No | Yes (yours) | Possible | Profile/browser dependent |
-| **Password managers** | Partial (needs unlock) | No | Partial | No | No | **Yes** (unlocked) | No | Profile/browser dependent |
-| **Device emulation** | **Full** (100+ devices) | No | No | No | No | No | Via Playwright | Profile/browser dependent |
-| **Parallel sessions** | 5 ctx/2.1s | --session | Shared | 3 sess/2.0s | arun_many 1.7x | Shared | Per-instance | Cloud for scale |
-| **Session persistence** | storageState | Profile dir | Profile dir | state save/load | user_data_dir | Your browser | Per-instance | BrowserProfile / Cloud |
-| **Tracing** | Full API | Built-in CLI | Via Playwright | Via Playwright | No | Via CDP | Via Playwright | History + Browser Harness CLI |
-| **Natural language** | No | No | No | No | LLM extraction | No | Yes | Yes |
-| **Self-healing** | No | No | No | No | No | No | Yes | Yes |
-| **Agent skill** | No | No | No | No | No | No | No | `browser-use skill` |
-| **iOS Simulator** | No | No | No | **Yes** (macOS) | No | No | No | No |
-| **Maintainer** | Microsoft | Microsoft | Community | Vercel | Community | Community | Browserbase | Browser Use |
+| Feature | Playwright | playwright-cli | dev-browser | agent-browser | Crawl4AI | Stagehand | browser-use |
+|---------|-----------|----------------|-------------|---------------|----------|-----------|-------------|
+| **Headless** | Yes; extension mode headed | Yes (default) | Yes | Yes (default) | Yes | Yes | Yes |
+| **Proxy/VPN** | Full or existing browser | No | Via args | No | Full | Via args | Cloud/profiles |
+| **Extensions** | Persistent context or interactive approved user tabs | No in normal mode | Yes (profile) | No | No | Possible | Profile/browser dependent |
+| **Password managers** | Interactive approved user tabs only | No | Partial | No | No | No | Profile/browser dependent |
+| **Device emulation** | **Full** (100+ devices) | No | No | No | No | Via Playwright | Profile/browser dependent |
+| **Parallel sessions** | 5 standalone contexts/2.1s; interactive extension tab groups only | --session | Shared | 3 sess/2.0s | arun_many 1.7x | Per-instance | Cloud for scale |
+| **Session persistence** | storageState/profile/existing browser | Profile dir | Profile dir | state save/load | user_data_dir | Per-instance | BrowserProfile / Cloud |
+| **Tracing** | Full API | Built-in CLI | Via Playwright | Via Playwright | No | Via Playwright | History + Browser Harness CLI |
+| **Natural language** | No | No | No | No | LLM extraction | Yes | Yes |
+| **Self-healing** | No | No | No | No | No | Yes | Yes |
+| **Agent skill** | No | No | No | No | No | No | `browser-use skill` |
+| **iOS Simulator** | No | No | No | **Yes** (macOS) | No | No | No |
+| **Maintainer** | Microsoft | Microsoft | Community | Vercel | Community | Browserbase | Browser Use |
 
 ### Tool Selection
 
 | Need | Tool | Why |
 |------|------|-----|
 | **Repeatable browser workflow** | `/auto-browse` | Learns, optimizes, preserves private profile state, and graduates reusable workflows |
-| **Fastest automation** | Playwright | 0.9s form fill, parallel contexts |
+| **Fastest automation** | Standalone Playwright with Brave preferred | 0.9s form fill, parallel isolated contexts without disturbing user activity |
 | **AI agent (CLI)** | playwright-cli | Microsoft official, `--session` isolation, built-in tracing |
 | **Stay logged in** | dev-browser | Profile persists across restarts |
-| **Your extensions/passwords** | Playwriter | Already unlocked in your browser |
+| **Interactive access to your browser** | Playwright Extension | User-present selected-tab access to an existing Chrome/Edge/Chromium session; never for workers/CI, and Brave extension support is unverified |
+| **Record expected human flow** | Playwright Recorder (optional) | Produces draft test code for low-sensitivity flows; pair with written acceptance criteria and review/redact output |
 | **Bulk extraction** | Crawl4AI | Purpose-built, parallel, LLM-ready output |
 | **Self-hosted crawling** | WaterCrawl | Docker deployment, web search, sitemap generation |
 | **CLI/CI/CD** | playwright-cli or agent-browser | No server needed, `--session` isolation |

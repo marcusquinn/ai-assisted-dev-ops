@@ -128,7 +128,7 @@ agent-browser -p ios screenshot mobile.png | close
 |------|-----------|-----------|---------|
 | **agent-browser** | CLI | Refs + CSS | CLI-first, multi-session, AI agents, cross-platform |
 | dev-browser | TypeScript API | CSS + ARIA | TypeScript projects, stateful pages |
-| Playwriter | MCP | Playwright API | Existing sessions, bypass detection |
+| Playwright Extension | MCP/CLI mode | Playwright tools | Interactive access to approved user-owned Chrome/Edge/Chromium tabs |
 | Stagehand | SDK | Natural language | Self-healing, natural language |
 | Crawl4AI | — | — | Scraping |
 

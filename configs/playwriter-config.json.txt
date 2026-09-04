@@ -1,5 +1,6 @@
 {
-  "_comment": "Playwriter MCP - Browser automation via Chrome extension",
+  "_comment": "Legacy Playwriter compatibility only - do not use for new setups",
+  "_preferred": "Use standalone Playwright with Brave preferred; use Microsoft Playwright Extension only for interactive user-browser access",
   "_docs": "https://github.com/remorses/playwriter",
   "_extension": "https://chromewebstore.google.com/detail/playwriter-mcp/jfeammnjpkecdekppnclgkkffahnhfhe",
   
@@ -32,12 +33,13 @@
   },
 
   "setup_steps": [
-    "1. Install Chrome extension from Web Store link above",
-    "2. Pin extension to Chrome toolbar",
-    "3. Add MCP config to your AI assistant",
-    "4. Restart AI assistant",
-    "5. Click extension icon on tabs you want to control (turns green)",
-    "6. Use the 'execute' tool with Playwright code"
+    "1. Continue only for an explicitly requested legacy Playwriter setup",
+    "2. Install Chrome extension from Web Store link above",
+    "3. Pin extension to Chrome toolbar",
+    "4. Add MCP config to your AI assistant",
+    "5. Restart AI assistant",
+    "6. Click extension icon on tabs you want to control (turns green)",
+    "7. Use the 'execute' tool with Playwright code"
   ],
 
   "usage_notes": [

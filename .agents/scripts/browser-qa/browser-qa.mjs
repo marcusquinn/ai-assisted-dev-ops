@@ -23,7 +23,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { loadPlaywright } from '../playwright-runtime.mjs';
+import { loadPlaywright, resolvePlaywrightBrowserExecutable } from '../playwright-runtime.mjs';
 
 // ============================================================================
 // CLI Argument Parsing
@@ -42,21 +42,8 @@ const DEFAULT_OPTIONS = {
   format: 'summary',
 };
 
-const BRAVE_EXECUTABLES = [
-  '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
-  '/usr/bin/brave-browser',
-  '/usr/bin/brave',
-  'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
-];
-
-function browserExecutablePath() {
-  if (process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE) return process.env.AIDEVOPS_PLAYWRIGHT_EXECUTABLE;
-  if (process.env.AIDEVOPS_PLAYWRIGHT_BROWSER === 'chromium') return undefined;
-  return BRAVE_EXECUTABLES.find((path) => existsSync(path));
-}
-
-function launchOptions() {
-  const executablePath = browserExecutablePath();
+function launchOptions(runtime) {
+  const executablePath = resolvePlaywrightBrowserExecutable(runtime);
   return {
     headless: true,
     ...(executablePath ? { executablePath } : {}),
@@ -323,7 +310,7 @@ async function main() {
   let browser;
   try {
     const { chromium } = await loadPlaywright();
-    browser = await chromium.launch(launchOptions());
+    browser = await chromium.launch(launchOptions({ chromium }));
     const context = await browser.newContext({ viewport: { width: options.viewportWidth, height: options.viewportHeight }, ignoreHTTPSErrors: true });
     const page = await context.newPage();
     const report = { baseUrl: options.baseUrl, timestamp: new Date().toISOString(), viewport: `${options.viewportWidth}x${options.viewportHeight}`, outputDir: options.outputDir, pages: [], passed: true };

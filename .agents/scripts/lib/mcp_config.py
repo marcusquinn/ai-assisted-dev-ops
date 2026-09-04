@@ -92,7 +92,7 @@ def remove_deprecated_mcps(config):
 
 
 def _register_playwriter(config, bun_path):
-    """Register playwriter MCP (browser automation)."""
+    """Retain the disabled Playwriter MCP for explicit legacy compatibility."""
     if 'playwriter' not in config['mcp']:
         if bun_path:
             config['mcp']['playwriter'] = {
@@ -106,7 +106,7 @@ def _register_playwriter(config, bun_path):
                 "command": ["npx", PLAYWRITER_MCP_PACKAGE],
                 "enabled": False
             }
-        print("  Added playwriter MCP (on demand - @playwriter only)")
+        print("  Added legacy Playwriter compatibility MCP (explicit @playwriter requests only)")
     elif isinstance(config['mcp']['playwriter'], dict):
         playwriter_config = config['mcp']['playwriter']
         command = playwriter_config.get('command')

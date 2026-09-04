@@ -26,7 +26,7 @@ get_mcp_command() {
 	local integration="$1"
 	case "$integration" in
 	"chrome-devtools") echo "npx chrome-devtools-mcp@latest" ;;
-	"playwright") echo "npx playwright-mcp@latest" ;;
+	"playwright") echo "npx -y @playwright/mcp@0.0.79 --headless --isolated" ;;
 	"cloudflare-browser") echo "npx cloudflare-browser-rendering-mcp@latest" ;;
 	"ahrefs") echo "npx -y @ahrefs/mcp@latest" ;;
 	"perplexity") echo "npx perplexity-mcp@latest" ;;
@@ -161,11 +161,10 @@ _install_chrome_devtools() {
 }
 
 _install_playwright() {
-	local mcp_command="$1"
 	print_info "Installing Playwright browsers..."
 	npx playwright install
 	if command -v claude &>/dev/null; then
-		claude mcp add playwright "$mcp_command"
+		claude mcp add playwright -- npx -y @playwright/mcp@0.0.79 --headless --isolated
 	fi
 	return 0
 }
@@ -447,7 +446,7 @@ install_mcp() {
 
 	case "$mcp_name" in
 	"chrome-devtools") _install_chrome_devtools "$mcp_command" ;;
-	"playwright") _install_playwright "$mcp_command" ;;
+	"playwright") _install_playwright ;;
 	"cloudflare-browser") _install_cloudflare_browser ;;
 	"ahrefs") _install_ahrefs ;;
 	"perplexity") _install_perplexity ;;
@@ -505,7 +504,7 @@ _write_playwright_template() {
   "mcpServers": {
     "playwright": {
       "command": "npx",
-      "args": ["playwright-mcp@latest"]
+      "args": ["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"]
     }
   }
 }

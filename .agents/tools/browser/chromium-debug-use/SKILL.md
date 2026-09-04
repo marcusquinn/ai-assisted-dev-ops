@@ -24,7 +24,7 @@ The user wants to inspect or lightly interact with something already open in a C
 5. Once the flow is understood, hand off to the best-fit longer-term tool:
    - `tools/browser/playwright.md` — repeatable isolated automation
    - `tools/browser/dev-browser.md` — aidevops-managed persistent profile
-   - `tools/browser/playwriter.md` — per-tab extension consent in the user's normal browser
+   - `tools/browser/playwright.md` — official extension mode for selected tabs in the user's normal browser
    - `tools/browser/chrome-devtools.md` — performance, network, and console inspection
 
 ## Safety

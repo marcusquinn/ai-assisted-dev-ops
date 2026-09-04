@@ -21,10 +21,10 @@ tools:
 
 ## Quick Reference
 
-- **Install**: `npm install -g @playwright/mcp@latest` (or `bun install -g`)
+- **Install**: `npm install -g @playwright/cli@latest` (or `bun install -g`)
 - **GitHub**: https://github.com/microsoft/playwright-cli
 - **Skill**: `/plugin marketplace add microsoft/playwright-cli` then `/plugin install playwright-cli`
-- **License**: Apache-2.0 — part of `@playwright/mcp`
+- **License**: Apache-2.0
 
 **Core Workflow** (optimal for AI):
 
@@ -38,13 +38,13 @@ playwright-cli screenshot
 playwright-cli close
 ```
 
-**Key Advantages**: Ref-based selection (deterministic `e1`/`e2`/`e3` targeting from snapshots), `--session` for parallel isolated instances, headless by default (`--headed` for debugging), persistent profiles (cookies/storage preserved), built-in tracing, Microsoft-maintained (`@playwright/mcp`).
+**Key Advantages**: Ref-based selection (deterministic `e1`/`e2`/`e3` targeting from snapshots), `--session` for parallel isolated instances, headless by default (`--headed` for debugging), persistent profiles (cookies/storage preserved), built-in tracing, Microsoft-maintained (`@playwright/cli`).
 
 **Performance**: Navigate+screenshot ~1.9s, form fill ~1.4s (~2s cold start).
 
 **vs agent-browser**: Simpler ref syntax (`e5` vs `@e5`), built-in tracing, Microsoft-maintained. agent-browser has more CLI commands but slower cold start (~3-5s).
 
-**vs Playwriter MCP**: playwright-cli runs headless with isolated sessions. Playwriter uses your existing browser (headed, with extensions/passwords).
+**Existing browser mode**: only in an interactive session with the user available, playwright-cli can use Microsoft's Playwright Extension for approved existing tabs; see `tools/browser/playwright.md`. Normal headed/headless work should use a separate browser, with Brave preferred through Playwright direct.
 
 **When to use**: AI agent automation (forms, clicks, navigation), CI/CD pipelines, parallel browser sessions, tasks that don't need existing browser state.
 
@@ -53,8 +53,8 @@ playwright-cli close
 ## Installation
 
 ```bash
-bun install -g @playwright/mcp@latest     # Bun (preferred, ~0.3s without global install: bunx @playwright/mcp playwright-cli)
-npm install -g @playwright/mcp@latest     # npm alternative (~2-3s without global install: npx @playwright/mcp playwright-cli)
+bun install -g @playwright/cli@latest     # Bun (preferred; without global install: bunx @playwright/cli)
+npm install -g @playwright/cli@latest     # npm alternative (without global install: npx -y @playwright/cli)
 playwright-cli --help                     # Verify
 ```
 
@@ -165,16 +165,16 @@ playwright-cli tracing-stop
 
 ## Comparison with Other Tools
 
-| Feature | playwright-cli | agent-browser | Playwriter | Stagehand |
-|---------|---------------|---------------|------------|-----------|
-| **Maintainer** | Microsoft | Vercel | Community | Browserbase |
-| **Interface** | CLI | CLI | MCP | SDK |
-| **Ref syntax** | `e5` | `@e5` | aria-ref | Natural language |
-| **Sessions** | `--session` | `--session` | Your browser | Per-instance |
-| **Tracing** | Built-in | Via Playwright | Via CDP | Via Playwright |
-| **Headless** | Default | Default | No (your browser) | Default |
-| **Extensions** | No | No | Yes (yours) | Possible |
-| **Cold start** | ~2s | ~3-5s (Rust) | ~1s (extension) | ~2s |
+| Feature | playwright-cli | agent-browser | Playwright Extension | Stagehand |
+|---------|---------------|---------------|----------------------|-----------|
+| **Maintainer** | Microsoft | Vercel | Microsoft | Browserbase |
+| **Interface** | CLI | CLI | MCP/CLI mode | SDK |
+| **Ref syntax** | `e5` | `@e5` | Playwright refs | Natural language |
+| **Sessions** | `--session` | `--session` | Selected existing tabs | Per-instance |
+| **Tracing** | Built-in | Via Playwright | Via Playwright | Via Playwright |
+| **Headless** | Default | Default | No (existing browser) | Default |
+| **Extensions** | No in normal mode | No | Existing browser's extensions | Possible |
+| **Cold start** | ~2s | ~3-5s (Rust) | Browser-dependent | ~2s |
 
 ## Integration with Other Tools
 

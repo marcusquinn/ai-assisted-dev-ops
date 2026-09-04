@@ -301,7 +301,7 @@ _deploy_codex_mcps() {
 	_add_codex_mcp "context7" "stdio" "npx" "'-y', '@upstash/context7-mcp@latest'"
 
 	# --- Playwright MCP ---
-	_add_codex_mcp "playwright" "stdio" "npx" "'-y', '@anthropic-ai/mcp-server-playwright@latest'"
+	_add_codex_mcp "playwright" "stdio" "npx" "'-y', '@playwright/mcp@0.0.79', '--headless', '--isolated'"
 
 	# --- shadcn UI ---
 	_add_codex_mcp "shadcn" "stdio" "npx" "'shadcn@latest', 'mcp'"
@@ -396,7 +396,7 @@ PYEOF
 	_add_cursor_mcp "context7" '{"command":"npx","args":["-y","@upstash/context7-mcp@latest"]}'
 
 	# --- Playwright MCP ---
-	_add_cursor_mcp "playwright" '{"command":"npx","args":["-y","@anthropic-ai/mcp-server-playwright@latest"]}'
+	_add_cursor_mcp "playwright" '{"command":"npx","args":["-y","@playwright/mcp@0.0.79","--headless","--isolated"]}'
 
 	# --- shadcn UI ---
 	_add_cursor_mcp "shadcn" '{"command":"npx","args":["shadcn@latest","mcp"]}'

@@ -96,7 +96,7 @@ test_chrome_devtools() {
 test_playwright() {
 	print_header "Testing Playwright MCP"
 
-	run_test "Playwright MCP package" "npm list -g playwright-mcp || npm info playwright-mcp"
+	run_test "Playwright MCP package" "npm info @playwright/mcp@0.0.79"
 	run_test "Playwright package" "npm list -g playwright || npm info playwright"
 
 	# Test browser installations

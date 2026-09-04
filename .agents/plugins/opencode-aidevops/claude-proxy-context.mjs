@@ -160,7 +160,7 @@ const MCP_DEFINITIONS = new Map([
     type: "stdio",
   }],
   ["shadcn", { command: "npx", args: ["shadcn@latest", "mcp"], type: "stdio" }],
-  ["playwright", { command: "npx", args: ["-y", "@playwright/mcp@latest"], type: "stdio" }],
+  ["playwright", { command: "npx", args: ["-y", "@playwright/mcp@0.0.79", "--headless", "--isolated"], type: "stdio" }],
 ]);
 
 const MCP_CONFIG_DIR = join(homedir(), ".aidevops", ".agent-workspace", "tmp");

@@ -262,12 +262,17 @@ check_playwright() {
 		return 1
 	fi
 
-	local resolved_module
+	local resolved_module resolved_executable
 	if ! resolved_module=$(node "$runtime_script" check); then
 		log_error "Browser QA requires both an importable Playwright Node package and an installed browser binary."
 		return 1
 	fi
+	if ! resolved_executable=$(node "$runtime_script" browser-executable); then
+		log_error "Browser QA could not resolve the verified standalone browser executable."
+		return 1
+	fi
 	export AIDEVOPS_PLAYWRIGHT_MODULE="$resolved_module"
+	export AIDEVOPS_PLAYWRIGHT_EXECUTABLE="$resolved_executable"
 	return 0
 }
 
