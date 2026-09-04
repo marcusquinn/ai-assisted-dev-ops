@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -71,8 +72,11 @@ def load_constants(use_cache: bool = True) -> dict:
 
     # Try live extraction
     try:
-        result = subprocess.run(
-            [str(Path.home() / ".aidevops" / "agents" / "scripts" / "cch-extract.sh")],
+        extractor = Path.home() / ".aidevops" / "agents" / "scripts" / "cch-extract.sh"
+        if not extractor.is_file() or extractor.is_symlink():
+            raise FileNotFoundError("trusted CCH extractor is unavailable")
+        result = subprocess.run(  # nosec B603 -- absolute, verified deployed helper and fixed argv.
+            [str(extractor)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -86,9 +90,18 @@ def load_constants(use_cache: bool = True) -> dict:
 
     # Try claude --version for at least the version
     version = DEFAULT_VERSION
+    claude = shutil.which("claude")
+    if claude is None:
+        return {
+            "version": version,
+            "salt": DEFAULT_SALT,
+            "char_indices": DEFAULT_CHAR_INDICES,
+            "entrypoint": DEFAULT_ENTRYPOINT,
+            "has_xxhash": False,
+        }
     try:
-        result = subprocess.run(
-            ["claude", "--version"],
+        result = subprocess.run(  # nosec B603 -- resolved Claude executable and fixed version argv.
+            [claude, "--version"],
             capture_output=True,
             text=True,
             timeout=5,

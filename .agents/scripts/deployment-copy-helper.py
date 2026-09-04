@@ -106,6 +106,22 @@ def require(condition: bool, message: str) -> None:
         raise DeploymentError(message)
 
 
+def trusted_git_bin() -> str:
+    """Resolve the configured Git executable and reject non-executable overrides."""
+    configured = os.environ.get("AIDEVOPS_REAL_GIT_BIN")
+    candidate = Path(configured) if configured else None
+    if candidate is None:
+        resolved = shutil.which("git")
+        require(resolved is not None, "Git executable is unavailable")
+        candidate = Path(resolved)
+    require(candidate.is_absolute(), "Git executable must be an absolute path")
+    require(
+        candidate.is_file() and not candidate.is_symlink() and os.access(candidate, os.X_OK),
+        "Git executable is unavailable or unsafe",
+    )
+    return str(candidate.resolve(strict=True))
+
+
 def run_git(git_bin: str, cwd: Path, *args: str) -> str:
     result = subprocess.run(  # nosec B603 -- argv array; Git data is validated separately
         [git_bin, "-C", str(cwd), *args],
@@ -816,7 +832,7 @@ def receipt_context(receipt: dict[str, Any], git_bin: str) -> dict[str, Any]:
 
 def prepare_deploy(args: argparse.Namespace) -> PreparedDeployment:
     state_root = secure_state_root()
-    git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
+    git_bin = trusted_git_bin()
     context = validate_source(args.source, args.expected_sha, git_bin)
     source_tree = scan_tree(context["source"])
     validate_tree_proof(context, source_tree, args.reviewed_tree_sha256, state_root)
@@ -1108,7 +1124,7 @@ def recover(args: argparse.Namespace) -> dict[str, Any]:
         raise DeploymentError("Exact recovery confirmation is required")
     state_root = secure_state_root()
     receipt_path, receipt = load_receipt(state_root, args.operation_id)
-    git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
+    git_bin = trusted_git_bin()
     destination, _ = validate_receipt_destination(receipt, args.allow_file, state_root, git_bin)
     rollback_path, displaced_path, stage_path = receipt_paths(receipt, destination)
     with DestinationLock(destination):
@@ -1147,7 +1163,7 @@ def rollback(args: argparse.Namespace) -> dict[str, Any]:
     receipt_path, receipt = load_receipt(state_root, args.operation_id)
     if receipt.get("status") != "success":
         raise DeploymentError("Only a verified successful deployment can be rolled back")
-    git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
+    git_bin = trusted_git_bin()
     destination, _ = validate_receipt_destination(receipt, args.allow_file, state_root, git_bin)
     rollback_path, displaced_path, _ = receipt_paths(receipt, destination)
     with DestinationLock(destination):
@@ -1279,7 +1295,7 @@ def main() -> int:
 
 def manifest(args: argparse.Namespace) -> dict[str, Any]:
     state_root = secure_state_root()
-    git_bin = os.environ.get("AIDEVOPS_REAL_GIT_BIN", "git")
+    git_bin = trusted_git_bin()
     context = validate_source(args.source, args.expected_sha, git_bin)
     return manifest_result(scan_tree(context["source"]))
 
