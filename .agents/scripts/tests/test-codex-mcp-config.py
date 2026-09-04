@@ -7,11 +7,13 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "codex-mcp-config.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("codex_mcp_config", SCRIPT)
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
@@ -37,15 +39,17 @@ print_info() { printf '%s\\n' "$*"; }
 docker() { [[ "$*" == "mcp --help" ]]; }
 _fix_codex_docker_mcp
 '''
-            subprocess.run(["bash", "-c", command, "test", str(module)],
-                           env={**os.environ, "HOME": directory}, check=True, capture_output=True)
+            subprocess.run(  # nosec B603 -- fixed shell, repository module, and local fixtures
+                ["/bin/bash", "-c", command, "test", str(module)],
+                env={**os.environ, "HOME": directory}, check=True, capture_output=True)
             parsed = migration.tomllib.loads(config.read_text())
             self.assertNotIn("MCP_DOCKER", parsed.get("mcp_servers", {}))
             self.assertEqual(parsed["other"], {"keep": True})
             config.write_text(original)
             command = command.replace('[[ "$*" == "mcp --help" ]]', 'return 0')
-            subprocess.run(["bash", "-c", command, "test", str(module)],
-                           env={**os.environ, "HOME": directory}, check=True, capture_output=True)
+            subprocess.run(  # nosec B603 -- fixed shell, repository module, and local fixtures
+                ["/bin/bash", "-c", command, "test", str(module)],
+                env={**os.environ, "HOME": directory}, check=True, capture_output=True)
             self.assertEqual(config.read_text(), original)
 
     def test_fresh_defaults_are_opt_in(self):

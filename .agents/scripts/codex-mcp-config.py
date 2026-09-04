@@ -5,21 +5,12 @@
 
 import argparse
 import copy
-import json
 import os
 from pathlib import Path
-import re
 import stat
 import tempfile
 
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        raise SystemExit("Codex MCP migration requires Python 3.11+ or tomli; config unchanged") from None
-
+from lib.codex_mcp_toml import render, tomllib
 
 DEFAULTS = {
     "context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp@latest"]},
@@ -45,6 +36,55 @@ def known_package(args, package):
     return any(arg == package or arg.startswith(package + "@") for arg in args)
 
 
+def migrate_npx(name, server, messages):
+    if Path(server.get("command", "")).name not in ("npx", "npx.cmd"):
+        return
+    args = server.get("args", [])
+    if name == "playwright" and known_package(args, "@anthropic-ai/mcp-server-playwright"):
+        args = [
+            "@playwright/mcp@0.0.79"
+            if arg.startswith("@anthropic-ai/mcp-server-playwright") else arg
+            for arg in args
+        ]
+        server["args"] = args
+        messages.append("playwright: replaced nonexistent legacy npm package")
+    if name not in NPX_PACKAGES or not known_package(args, NPX_PACKAGES[name]):
+        return
+    if "-y" not in args and "--yes" not in args:
+        server["args"] = ["-y", *args]
+    if "startup_timeout_sec" not in server and "startup_timeout_ms" not in server:
+        server["startup_timeout_sec"] = 60
+        messages.append(f"{name}: allow 60 seconds for npm cold start")
+
+
+def migrate_remote(name, server, messages):
+    if name not in DEFAULTS or "url" not in server:
+        return
+    if server["url"] != DEFAULTS[name].get("url"):
+        return
+    if server.get("type") == "url":
+        del server["type"]
+    # Old setup implicitly enabled OAuth without login. Preserve explicit choices.
+    if name == "cloudflare-api" and "enabled" not in server:
+        server["enabled"] = False
+        messages.append("cloudflare-api: disabled pending explicit OAuth setup")
+
+
+def migrate_unavailable(name, server, messages):
+    if not server.get("enabled", True):
+        return
+    command = server.get("command", "")
+    if name == "auggie-mcp" and Path(command).name == "auggie":
+        if server.get("args") == ["--mcp"]:
+            server["enabled"] = False
+            messages.append("auggie-mcp: disabled deprecated integration")
+    if name != "node_repl" or not command.startswith("/Applications/"):
+        return
+    if command.endswith("/cua_node/bin/node_repl") and not os.path.isfile(command):
+        server["enabled"] = False
+        messages.append("node_repl: disabled stale app executable; reinstall via the app")
+
+
 def reconcile(data):
     """Return desired config and human-readable changes, never credential values."""
     desired = copy.deepcopy(data)
@@ -55,100 +95,10 @@ def reconcile(data):
             servers[name] = dict(default, enabled=False)
             messages.append(f"{name}: added disabled; enable explicitly when needed")
     for name, server in servers.items():
-        command = server.get("command", "")
-        args = server.get("args", [])
-        is_npx = Path(command).name in ("npx", "npx.cmd")
-        if name == "playwright" and is_npx and known_package(
-            args, "@anthropic-ai/mcp-server-playwright"
-        ):
-            server["args"] = [
-                "@playwright/mcp@0.0.79"
-                if arg.startswith("@anthropic-ai/mcp-server-playwright") else arg
-                for arg in args
-            ]
-            args = server["args"]
-            messages.append("playwright: replaced nonexistent legacy npm package")
-        if is_npx and name in NPX_PACKAGES and known_package(args, NPX_PACKAGES[name]):
-            if "-y" not in args and "--yes" not in args:
-                server["args"] = ["-y", *args]
-            if "startup_timeout_sec" not in server and "startup_timeout_ms" not in server:
-                server["startup_timeout_sec"] = 60
-                messages.append(f"{name}: allow 60 seconds for npm cold start")
-        if name in DEFAULTS and "url" in server and server["url"] == DEFAULTS[name].get("url"):
-            if server.get("type") == "url":
-                del server["type"]
-            # Old setup implicitly enabled an OAuth service without a login step.
-            # Preserve explicit opt-in/opt-out decisions on subsequent updates.
-            if name == "cloudflare-api" and "enabled" not in server:
-                server["enabled"] = False
-                messages.append("cloudflare-api: disabled pending explicit OAuth setup")
-        if name == "auggie-mcp" and Path(command).name == "auggie" and args == ["--mcp"]:
-            if server.get("enabled", True):
-                server["enabled"] = False
-                messages.append("auggie-mcp: disabled deprecated integration")
-        if (name == "node_repl" and command.startswith("/Applications/")
-                and command.endswith("/cua_node/bin/node_repl")
-                and not os.path.isfile(command) and server.get("enabled", True)):
-            server["enabled"] = False
-            messages.append("node_repl: disabled stale app executable; reinstall via the app")
+        migrate_npx(name, server, messages)
+        migrate_remote(name, server, messages)
+        migrate_unavailable(name, server, messages)
     return desired, messages
-
-
-def section_span(text, name):
-    headers = list(re.finditer(r"(?m)^\s*\[[^\n]+\][ \t]*(?:#[^\n]*)?$", text))
-    for index, header in enumerate(headers):
-        try:
-            parsed = tomllib.loads(header.group() + "\n__probe__ = true\n")
-        except tomllib.TOMLDecodeError:
-            continue
-        if parsed == {"mcp_servers": {name: {"__probe__": True}}}:
-            end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
-            return header.end(), end
-    raise ValueError(f"Cannot safely locate MCP table {name}")
-
-
-def change_field(block, key, old, new, remove=False):
-    match = re.search(r"(?m)^[ \t]*" + re.escape(key) + r"[ \t]*=", block)
-    if match is None:
-        if old is not None:
-            raise ValueError(f"Cannot safely locate field {key}")
-        return "\n" + key + " = " + json.dumps(new) + "\n" + block.lstrip("\n")
-    # Parse progressively to include multiline arrays without swallowing the next key.
-    end = match.end()
-    while end < len(block):
-        newline = block.find("\n", end)
-        end = len(block) if newline < 0 else newline + 1
-        try:
-            value = tomllib.loads(block[match.start():end])
-        except tomllib.TOMLDecodeError:
-            continue
-        if value != {key: old}:
-            raise ValueError(f"Cannot safely replace field {key}")
-        replacement = "" if remove else key + " = " + json.dumps(new) + "\n"
-        return block[:match.start()] + replacement + block[end:]
-    raise ValueError(f"Cannot safely parse field {key}")
-
-
-def render(text, original, desired):
-    old_servers = original.get("mcp_servers", {})
-    for name, server in desired["mcp_servers"].items():
-        if name not in old_servers:
-            text += "\n[mcp_servers." + json.dumps(name) + "]\n"
-            text += "".join(key + " = " + json.dumps(value) + "\n" for key, value in server.items())
-            continue
-        previous = old_servers[name]
-        if previous == server:
-            continue
-        start, end = section_span(text, name)
-        block = text[start:end]
-        for key in previous.keys() | server.keys():
-            if previous.get(key) != server.get(key):
-                block = change_field(block, key, previous.get(key), server.get(key), key not in server)
-        text = text[:start] + block + text[end:]
-    # Fail closed for exotic TOML layouts: no semantic change outside the plan.
-    if tomllib.loads(text) != desired:
-        raise ValueError("MCP migration would alter unrelated configuration")
-    return text
 
 
 def main():
