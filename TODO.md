@@ -4858,4 +4858,4 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 - [ ] t18312 Restore deterministic Qlty smell threshold #auto-dispatch #bug #quality-debt ref:GH#30876
 
-- [ ] t18395 detect and recover stale GitHub runner broker sessions #auto-dispatch #bug #ci #github #infrastructure #monitoring #reliability #self-healing #shell ref:GH#31136
+- [x] t18395 detect and recover stale GitHub runner broker sessions #auto-dispatch #bug #ci #github #infrastructure #monitoring #reliability #self-healing #shell ref:GH#31136 pr:#31142 completed:2026-09-04
