@@ -154,13 +154,12 @@ def discover_repositories(workspace: Path, discovery_lib: Path) -> list[Path]:
 
 def recommended_path(
     workspace: Path,
-    host: str,
-    owner: str,
-    repository: str,
+    identity: tuple[str, str, str],
     repos_json: Path,
     discovery_lib: Path,
 ) -> Path:
     """Call the shared host-aware owner path policy."""
+    host, owner, repository = identity
     script = 'source "$1"; aidevops_recommended_repo_path "$2" "$3" "$4" "$5" "$6"'
     output = run(
         [
@@ -383,21 +382,13 @@ def validated_sql_target(table: str, column: str) -> tuple[str, str]:
 
 def sqlite_consumer(path: Path, mappings: dict[str, str]) -> dict[str, Any]:
     """Capture relevant exact-path SQLite rows and schema."""
-    if path.is_symlink() or not path.is_file() or path.stat().st_uid != os.getuid():
+    if any((path.is_symlink(), not path.is_file(), path.stat().st_uid != os.getuid())):
         raise MigrationError(f"Unsafe OpenCode database: {path}")
     uri = f"file:{path}?mode=ro"
     try:
         connection = sqlite3.connect(uri, uri=True, timeout=2)
         schema = sqlite_schema(connection)
-        rows: list[dict[str, str]] = []
-        for table, column in (("project", "worktree"), ("session", "directory")):
-            if table not in schema or "id" not in schema[table] or column not in schema[table]:
-                continue
-            parent_clause = " AND parent_id IS NULL" if table == "session" and "parent_id" in schema[table] else ""
-            for old_path in mappings:
-                query = f"SELECT id, {column} FROM {table} WHERE {column} = ?{parent_clause}"
-                for row_id, value in connection.execute(query, (old_path,)).fetchall():
-                    rows.append({"table": table, "column": column, "id": str(row_id), "value": str(value)})
+        rows = sqlite_consumer_rows(connection, schema, mappings)
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.Error as exc:
         raise MigrationError(f"Could not inspect OpenCode database: {path}") from exc
@@ -407,6 +398,35 @@ def sqlite_consumer(path: Path, mappings: dict[str, str]) -> dict[str, Any]:
     if not integrity or integrity[0] != "ok":
         raise MigrationError(f"SQLite integrity check failed: {path}")
     return {"path": str(path), "schema": schema, "rows": rows}
+
+
+def sqlite_consumer_rows(
+    connection: sqlite3.Connection,
+    schema: dict[str, list[str]],
+    mappings: dict[str, str],
+) -> list[dict[str, str]]:
+    """Read migration-relevant exact-path rows from a validated database."""
+    rows: list[dict[str, str]] = []
+    for table, column in (("project", "worktree"), ("session", "directory")):
+        if table not in schema or "id" not in schema[table] or column not in schema[table]:
+            continue
+        parent_clause = (
+            " AND parent_id IS NULL"
+            if table == "session" and "parent_id" in schema[table]
+            else ""
+        )
+        query = f"SELECT id, {column} FROM {table} WHERE {column} = ?{parent_clause}"
+        for old_path in mappings:
+            for row_id, value in connection.execute(query, (old_path,)).fetchall():
+                rows.append(
+                    {
+                        "table": table,
+                        "column": column,
+                        "id": str(row_id),
+                        "value": str(value),
+                    }
+                )
+    return rows
 
 
 def existing_optional_path(value: str | None, default: Path) -> Path | None:
@@ -446,59 +466,83 @@ def plan_consumers(args: argparse.Namespace, mappings: dict[str, str]) -> dict[s
         "databases": [],
         "markers": [],
     }
-    if repos_json.exists():
-        config = load_json(repos_json)
-        matches = []
-        for index, item in enumerate(config.get("initialized_repos", [])):
-            if isinstance(item, dict) and item.get("path") in mappings:
-                matches.append({"index": index, "path": item["path"]})
-        consumers["repos_json"] = {
-            "path": str(repos_json),
-            "sha256": file_sha256(repos_json),
-            "matches": matches,
-        }
-    if tabby:
-        tabby_text = tabby.read_text(encoding="utf-8")
-        try:
-            load_tabby_module(Path(__file__).with_name("tabby-profile-sync.py")).retarget_profile_cwds(
-                tabby_text, {}
-            )
-        except Exception as exc:  # Validation adapter normalizes parser failures.
-            raise MigrationError(f"Malformed Tabby config: {tabby}") from exc
-        consumers["tabby"] = {
-            "path": str(tabby),
-            "sha256": file_sha256(tabby),
-            "matched_paths": sorted(old for old in mappings if old in tabby_text),
-        }
-    database_paths: list[Path] = []
-    if opencode and opencode.is_file():
-        database_paths.append(opencode)
-    if isolated_root and isolated_root.is_dir():
-        database_paths.extend(sorted(isolated_root.glob("*/opencode/opencode.db")))
-    for database in dict.fromkeys(database_paths):
+    consumers["repos_json"] = repos_json_consumer(repos_json, mappings)
+    consumers["tabby"] = tabby_consumer(tabby, mappings)
+    for database in consumer_database_paths(opencode, isolated_root):
         consumers["databases"].append(sqlite_consumer(database, mappings))
-    if recovery_root and recovery_root.is_dir():
-        for marker in sorted(recovery_root.glob("*/recovery.json")):
-            if marker.is_symlink() or not marker.is_file():
-                raise MigrationError(f"Unsafe recovery marker: {marker}")
-            marker_details = marker.stat()
-            directory_details = marker.parent.stat()
-            if (
-                marker_details.st_uid != os.getuid()
-                or directory_details.st_uid != os.getuid()
-                or marker_details.st_mode & 0o077
-                or directory_details.st_mode & 0o077
-            ):
-                raise MigrationError(f"Recovery marker is not owner-private: {marker}")
-            payload = load_json(marker)
-            if payload.get("schema_version") == 1 and payload.get("directory") in mappings:
-                consumers["markers"].append(
-                    {
-                        "path": str(marker),
-                        "sha256": file_sha256(marker),
-                        "directory": payload["directory"],
-                    }
-                )
+    consumers["markers"] = recovery_marker_consumers(recovery_root, mappings)
+    return consumers
+
+
+def repos_json_consumer(path: Path, mappings: dict[str, str]) -> dict[str, Any] | None:
+    """Describe exact repository registration matches when config exists."""
+    if not path.exists():
+        return None
+    config = load_json(path)
+    matches = [
+        {"index": index, "path": item["path"]}
+        for index, item in enumerate(config.get("initialized_repos", []))
+        if isinstance(item, dict) and item.get("path") in mappings
+    ]
+    return {"path": str(path), "sha256": file_sha256(path), "matches": matches}
+
+
+def tabby_consumer(path: Path | None, mappings: dict[str, str]) -> dict[str, Any] | None:
+    """Validate and describe a Tabby configuration consumer when present."""
+    if path is None:
+        return None
+    text = path.read_text(encoding="utf-8")
+    try:
+        load_tabby_module(Path(__file__).with_name("tabby-profile-sync.py")).retarget_profile_cwds(
+            text, {}
+        )
+    except Exception as exc:  # Validation adapter normalizes parser failures.
+        raise MigrationError(f"Malformed Tabby config: {path}") from exc
+    return {
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "matched_paths": sorted(old for old in mappings if old in text),
+    }
+
+
+def consumer_database_paths(opencode: Path | None, isolated_root: Path | None) -> list[Path]:
+    """Return de-duplicated local runtime database consumers."""
+    paths = [opencode] if opencode and opencode.is_file() else []
+    if isolated_root and isolated_root.is_dir():
+        paths.extend(sorted(isolated_root.glob("*/opencode/opencode.db")))
+    return list(dict.fromkeys(paths))
+
+
+def recovery_marker_consumers(
+    recovery_root: Path | None, mappings: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Validate and describe matching private recovery markers."""
+    if recovery_root is None or not recovery_root.is_dir():
+        return []
+    consumers = []
+    for marker in sorted(recovery_root.glob("*/recovery.json")):
+        if marker.is_symlink() or not marker.is_file():
+            raise MigrationError(f"Unsafe recovery marker: {marker}")
+        marker_details = marker.stat()
+        directory_details = marker.parent.stat()
+        if any(
+            (
+                marker_details.st_uid != os.getuid(),
+                directory_details.st_uid != os.getuid(),
+                bool(marker_details.st_mode & 0o077),
+                bool(directory_details.st_mode & 0o077),
+            )
+        ):
+            raise MigrationError(f"Recovery marker is not owner-private: {marker}")
+        payload = load_json(marker)
+        if payload.get("schema_version") == 1 and payload.get("directory") in mappings:
+            consumers.append(
+                {
+                    "path": str(marker),
+                    "sha256": file_sha256(marker),
+                    "directory": payload["directory"],
+                }
+            )
     return consumers
 
 
@@ -511,68 +555,15 @@ def plan_command(args: argparse.Namespace) -> int:
         raise MigrationError("Workspace must be an existing non-symlink directory")
     workspace = workspace.resolve()
     repos_json = expand_path(args.repos_json) if args.repos_json else Path.home() / ".config/aidevops/repos.json"
-    registrations: list[dict[str, Any]] = []
-    if repos_json.exists():
-        payload = load_json(repos_json)
-        entries = payload.get("initialized_repos", [])
-        if not isinstance(entries, list):
-            raise MigrationError("repos.json initialized_repos must be an array")
-        registrations = [item for item in entries if isinstance(item, dict)]
-
+    registrations = load_registrations(repos_json)
     repositories: list[dict[str, Any]] = []
     exclusions: list[dict[str, str]] = []
     for source in discover_repositories(workspace, discovery_lib):
-        try:
-            remote = git(source, "remote", "get-url", "origin").strip()
-        except MigrationError:
-            exclusions.append({"path": str(source), "reason": "missing-origin"})
-            continue
-        identity = parse_remote(remote)
-        if not identity:
-            exclusions.append({"path": str(source), "reason": "unsupported-remote"})
-            continue
-        host, owner, repository = identity
-        if host != "github.com":
-            exclusions.append({"path": str(source), "reason": "non-github-remote"})
-            continue
-        destination = recommended_path(
-            workspace, host, owner, repository, repos_json, discovery_lib
-        )
-        if destination == source:
-            continue
-        if not path_is_inside(workspace, destination):
-            raise MigrationError("Recommended destination escaped the workspace")
-        registration_matches = [
-            item for item in registrations if expand_path(str(item.get("path", ""))) == source
-        ]
-        if any(item.get("local_only") is True for item in registration_matches):
-            exclusions.append({"path": str(source), "reason": "local-only-registration"})
-            continue
-        if registration_matches and not args.include_registered_paths:
-            exclusions.append({"path": str(source), "reason": "explicit-registration-not-approved"})
-            continue
-        destination_parent = safe_destination_parent(workspace, destination)
-        source_device = source.stat().st_dev
-        destination_device = destination_parent.stat().st_dev
-        worktrees = worktree_records(source)
-        stage = workspace / f".aidevops-layout-stage-{uuid.uuid4().hex[:12]}"
-        repositories.append(
-            {
-                "source": str(source),
-                "destination": str(destination),
-                "stage": str(stage),
-                "remote": {"host": host, "owner": owner, "repository": repository},
-                "fingerprint": repository_fingerprint(source),
-                "linked_pointers": linked_pointer_records(source, worktrees),
-                "registered": bool(registration_matches),
-                "registration_update_approved": bool(registration_matches),
-                "source_device": source_device,
-                "destination_device": destination_device,
-                "destination_collision": (
-                    destination.exists() and not same_existing_path(source, destination)
-                ),
-            }
-        )
+        repository, exclusion = plan_repository(source, workspace, repos_json, registrations, args)
+        if repository:
+            repositories.append(repository)
+        if exclusion:
+            exclusions.append(exclusion)
 
     mappings = migration_mappings(repositories)
     consumers = plan_consumers(args, mappings)
@@ -581,20 +572,7 @@ def plan_command(args: argparse.Namespace) -> int:
         if args.state_dir
         else Path.home() / ".aidevops/.agent-workspace/work/repo-layout-migrations"
     )
-    consumer_paths = []
-    for name in ("repos_json", "tabby"):
-        consumer = consumers.get(name)
-        if consumer:
-            consumer_paths.append(Path(consumer["path"]))
-    consumer_paths.extend(Path(item["path"]) for item in consumers["databases"])
-    consumer_paths.extend(Path(item["path"]) for item in consumers["markers"])
-    for item in repositories:
-        source = Path(item["source"])
-        protected_paths = [output, state_dir, *consumer_paths]
-        if any(path_is_inside(source, path) for path in protected_paths):
-            raise MigrationError(
-                "Plan, receipt, and consumer paths must remain outside moved repositories"
-            )
+    validate_protected_paths(repositories, consumers, output, state_dir)
     plan: dict[str, Any] = {
         "schema": PLAN_SCHEMA,
         "plan_id": uuid.uuid4().hex,
@@ -625,6 +603,98 @@ def plan_command(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def load_registrations(repos_json: Path) -> list[dict[str, Any]]:
+    """Load valid repository registration objects from optional config."""
+    if not repos_json.exists():
+        return []
+    entries = load_json(repos_json).get("initialized_repos", [])
+    if not isinstance(entries, list):
+        raise MigrationError("repos.json initialized_repos must be an array")
+    return [item for item in entries if isinstance(item, dict)]
+
+
+def plan_repository(
+    source: Path,
+    workspace: Path,
+    repos_json: Path,
+    registrations: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    """Plan one discovered repository or return its exclusion reason."""
+    try:
+        remote = git(source, "remote", "get-url", "origin").strip()
+    except MigrationError:
+        remote = ""
+        reason = "missing-origin"
+    else:
+        reason = ""
+    identity = parse_remote(remote) if remote else None
+    if not reason and identity is None:
+        reason = "unsupported-remote"
+    if reason:
+        return None, {"path": str(source), "reason": reason}
+    assert identity is not None
+    host, owner, repository = identity
+    if host != "github.com":
+        return None, {"path": str(source), "reason": "non-github-remote"}
+    destination = recommended_path(workspace, identity, repos_json, expand_path(args.discovery_lib))
+    if destination == source:
+        return None, None
+    if not path_is_inside(workspace, destination):
+        raise MigrationError("Recommended destination escaped the workspace")
+    matches = [
+        item for item in registrations if expand_path(str(item.get("path", ""))) == source
+    ]
+    exclusion_reason = ""
+    if any(item.get("local_only") is True for item in matches):
+        exclusion_reason = "local-only-registration"
+    elif matches and not args.include_registered_paths:
+        exclusion_reason = "explicit-registration-not-approved"
+    if exclusion_reason:
+        return None, {"path": str(source), "reason": exclusion_reason}
+    destination_parent = safe_destination_parent(workspace, destination)
+    worktrees = worktree_records(source)
+    return {
+        "source": str(source),
+        "destination": str(destination),
+        "stage": str(workspace / f".aidevops-layout-stage-{uuid.uuid4().hex[:12]}"),
+        "remote": {"host": host, "owner": owner, "repository": repository},
+        "fingerprint": repository_fingerprint(source),
+        "linked_pointers": linked_pointer_records(source, worktrees),
+        "registered": bool(matches),
+        "registration_update_approved": bool(matches),
+        "source_device": source.stat().st_dev,
+        "destination_device": destination_parent.stat().st_dev,
+        "destination_collision": destination.exists()
+        and not same_existing_path(source, destination),
+    }, None
+
+
+def validate_protected_paths(
+    repositories: list[dict[str, Any]],
+    consumers: dict[str, Any],
+    output: Path,
+    state_dir: Path,
+) -> None:
+    """Keep plans, receipts, and consumers outside repositories being moved."""
+    consumer_paths = [
+        Path(consumer["path"])
+        for name in ("repos_json", "tabby")
+        if (consumer := consumers.get(name))
+    ]
+    consumer_paths.extend(Path(item["path"]) for item in consumers["databases"])
+    consumer_paths.extend(Path(item["path"]) for item in consumers["markers"])
+    protected_paths = [output, state_dir, *consumer_paths]
+    if any(
+        path_is_inside(Path(item["source"]), path)
+        for item in repositories
+        for path in protected_paths
+    ):
+        raise MigrationError(
+            "Plan, receipt, and consumer paths must remain outside moved repositories"
+        )
 
 
 def validate_plan(plan: dict[str, Any], confirmation: str) -> None:
@@ -872,49 +942,75 @@ def validate_consumers(
     """Reject pre-apply config, marker, and database drift."""
     consumers = plan["consumers"]
     for name in ("repos_json", "tabby"):
-        consumer = consumers.get(name)
-        key = f"consumer:{name}"
-        if consumer and key not in completed:
-            path = Path(consumer["path"])
-            allowed = {consumer["sha256"]}
-            started = event_for_key(events, key)
-            if started:
-                allowed.add(started["details"]["after_sha256"])
-            if file_sha256(path) not in allowed:
-                raise MigrationError(f"Consumer drift detected: {name}")
+        validate_file_consumer(name, consumers.get(name), completed, events)
     for index, database in enumerate(consumers.get("databases", [])):
-        key = f"consumer:database:{index}"
-        if key not in completed:
-            started = event_for_key(events, key)
-            if started:
-                path = Path(database["path"])
-                with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as connection:
-                    schema = sqlite_schema(connection)
-                if (
-                    schema != database["schema"]
-                    or database_change_state(path, started["details"]["changes"])
-                    not in {"before", "after"}
-                ):
-                    raise MigrationError(
-                        f"Database schema or row drift detected: {database['path']}"
-                    )
-            else:
-                observed = sqlite_consumer(
-                    Path(database["path"]), migration_mappings(plan["repositories"])
-                )
-                if observed["schema"] != database["schema"] or observed["rows"] != database["rows"]:
-                    raise MigrationError(
-                        f"Database schema or row drift detected: {database['path']}"
-                    )
+        validate_database_consumer(plan, database, index, completed, events)
     for index, marker in enumerate(consumers.get("markers", [])):
-        key = f"consumer:marker:{index}"
-        if key not in completed:
-            allowed = {marker["sha256"]}
-            started = event_for_key(events, key)
-            if started:
-                allowed.add(started["details"]["after_sha256"])
-            if file_sha256(Path(marker["path"])) not in allowed:
-                raise MigrationError(f"Recovery marker drift detected: {marker['path']}")
+        validate_marker_consumer(marker, index, completed, events)
+
+
+def validate_file_consumer(
+    name: str,
+    consumer: dict[str, Any] | None,
+    completed: set[str],
+    events: list[dict[str, Any]],
+) -> None:
+    """Reject drift in a planned regular-file consumer."""
+    key = f"consumer:{name}"
+    if consumer is None or key in completed:
+        return
+    allowed = {consumer["sha256"]}
+    started = event_for_key(events, key)
+    if started:
+        allowed.add(started["details"]["after_sha256"])
+    if file_sha256(Path(consumer["path"])) not in allowed:
+        raise MigrationError(f"Consumer drift detected: {name}")
+
+
+def validate_database_consumer(
+    plan: dict[str, Any],
+    database: dict[str, Any],
+    index: int,
+    completed: set[str],
+    events: list[dict[str, Any]],
+) -> None:
+    """Reject schema or row drift in one planned database consumer."""
+    key = f"consumer:database:{index}"
+    if key in completed:
+        return
+    path = Path(database["path"])
+    started = event_for_key(events, key)
+    if started:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as connection:
+            schema = sqlite_schema(connection)
+        state = database_change_state(path, started["details"]["changes"])
+        matches = schema == database["schema"] and state in {"before", "after"}
+    else:
+        observed = sqlite_consumer(path, migration_mappings(plan["repositories"]))
+        matches = (
+            observed["schema"] == database["schema"]
+            and observed["rows"] == database["rows"]
+        )
+    if not matches:
+        raise MigrationError(f"Database schema or row drift detected: {database['path']}")
+
+
+def validate_marker_consumer(
+    marker: dict[str, Any],
+    index: int,
+    completed: set[str],
+    events: list[dict[str, Any]],
+) -> None:
+    """Reject drift in one planned recovery-marker consumer."""
+    key = f"consumer:marker:{index}"
+    if key in completed:
+        return
+    allowed = {marker["sha256"]}
+    started = event_for_key(events, key)
+    if started:
+        allowed.add(started["details"]["after_sha256"])
+    if file_sha256(Path(marker["path"])) not in allowed:
+        raise MigrationError(f"Recovery marker drift detected: {marker['path']}")
 
 
 def create_parent_directories(path: Path, workspace: Path) -> list[str]:
@@ -1063,13 +1159,14 @@ def ensure_file_backup(source: Path, backup: Path, before_sha256: str) -> bytes:
     """Create once and authenticate a pre-mutation regular-file backup."""
     if backup.exists():
         details = backup.lstat()
-        if (
-            backup.is_symlink()
-            or not backup.is_file()
-            or details.st_uid != os.getuid()
-            or details.st_mode & 0o077
-            or file_sha256(backup) != before_sha256
-        ):
+        unsafe = (
+            backup.is_symlink(),
+            not backup.is_file(),
+            details.st_uid != os.getuid(),
+            bool(details.st_mode & 0o077),
+            file_sha256(backup) != before_sha256,
+        )
+        if any(unsafe):
             raise MigrationError(f"Unsafe or mismatched receipt backup: {backup}")
     else:
         if file_sha256(source) != before_sha256:
@@ -1308,123 +1405,180 @@ def apply_command(args: argparse.Namespace) -> int:
     private_directory(receipt_dir)
     lock = acquire_lock(plan, receipt_id)
     try:
-        if journal.exists():
-            events = read_events(journal, repair_incomplete_tail=True)
-            if events:
-                _stored_plan, events = validate_receipt_bundle(
-                    receipt_id, receipt_dir, journal, expected_plan=plan
-                )
-            else:
-                stored_plan_path = receipt_dir / "plan.json"
-                assert_private_owned_path(stored_plan_path, directory=False)
-                stored_plan = load_json(stored_plan_path)
-                validate_plan(stored_plan, stored_plan.get("plan_sha256", ""))
-                if canonical_bytes(stored_plan) != canonical_bytes(plan):
-                    raise MigrationError("Empty receipt does not match its stored plan")
-        else:
-            events = []
+        events = load_apply_events(plan, receipt_id, receipt_dir, journal)
         completed = done_keys(events)
         if not events:
-            atomic_write(receipt_dir / "plan.json", canonical_bytes(plan))
-            created = {
-                "schema": RECEIPT_SCHEMA,
-                "event": "created",
-                "receipt_id": receipt_id,
-                "plan_sha256": plan["plan_sha256"],
-                "plan_path": str(plan_path),
-            }
-            append_event(journal, created)
-            events.append(created)
+            create_receipt(plan, plan_path, (receipt_id, receipt_dir, journal), events)
         if "migration:complete" in completed:
             print(json.dumps(receipt_status(receipt_id, receipt_dir, journal), sort_keys=True))
             return 0
         assert_no_active_path(plan)
-        workspace = Path(plan["workspace"])
-        for index, item in enumerate(plan["repositories"]):
-            key = f"repository:{index}"
-            started = event_for_key(events, key)
-            source = Path(item["source"])
-            destination = Path(item["destination"])
-            if started and key not in completed and not source.exists() and destination.exists():
-                repair_linked_pointers(item, destination)
-            validate_repository_plan(
-                item, key in completed, workspace, bool(started)
-            )
+        validate_apply_repositories(plan, completed, events)
         validate_consumers(plan, completed, events)
-        for index, item in enumerate(plan["repositories"]):
-            key = f"repository:{index}"
-            if key in completed:
-                continue
-            existing = event_for_key(events, key)
-            details = (
-                existing["details"]
-                if existing
-                else repository_step_details(item, workspace)
-            )
-            start_step(journal, events, key, details)
-            move_repository(item, workspace, details)
-            maybe_inject_post_mutation_failure(key)
-            complete_step(journal, events, completed, key, details)
-            maybe_inject_failure(key)
-
+        context = (journal, events, completed)
+        apply_repository_steps(plan, context)
         mappings = migration_mappings(plan["repositories"])
         backups = receipt_dir / "backups"
-        repos_consumer = plan["consumers"].get("repos_json")
-        if repos_consumer and "consumer:repos_json" not in completed:
-            key = "consumer:repos_json"
-            details, payload = prepare_repos_json(
-                repos_consumer, mappings, backups / "repos.json"
-            )
-            start_step(journal, events, key, details)
-            apply_prepared_file(
-                details, payload, mode=Path(details["path"]).stat().st_mode & 0o777
-            )
-            maybe_inject_post_mutation_failure(key)
-            complete_step(journal, events, completed, key, details)
-            maybe_inject_failure(key)
-        tabby_consumer = plan["consumers"].get("tabby")
-        if tabby_consumer and "consumer:tabby" not in completed:
-            key = "consumer:tabby"
-            tabby_script = Path(__file__).with_name("tabby-profile-sync.py")
-            details, payload = prepare_tabby(
-                tabby_consumer, mappings, backups / "tabby.yaml", tabby_script
-            )
-            start_step(journal, events, key, details)
-            apply_prepared_file(
-                details, payload, mode=Path(details["path"]).stat().st_mode & 0o777
-            )
-            maybe_inject_post_mutation_failure(key)
-            complete_step(journal, events, completed, key, details)
-            maybe_inject_failure(key)
-        for index, consumer in enumerate(plan["consumers"].get("databases", [])):
-            key = f"consumer:database:{index}"
-            if key in completed:
-                continue
-            details = prepare_database(
-                consumer, mappings, backups / f"opencode-{index}.db"
-            )
-            start_step(journal, events, key, details)
-            update_database(details)
-            maybe_inject_post_mutation_failure(key)
-            complete_step(journal, events, completed, key, details)
-            maybe_inject_failure(key)
-        for index, consumer in enumerate(plan["consumers"].get("markers", [])):
-            key = f"consumer:marker:{index}"
-            if key in completed:
-                continue
-            details, payload = prepare_marker(
-                consumer, mappings, backups / f"recovery-{index}.json"
-            )
-            start_step(journal, events, key, details)
-            apply_prepared_file(details, payload, mode=0o600)
-            maybe_inject_post_mutation_failure(key)
-            complete_step(journal, events, completed, key, details)
-            maybe_inject_failure(key)
+        apply_regular_consumers(plan, mappings, backups, context)
+        apply_database_consumers(plan, mappings, backups, context)
+        apply_marker_consumers(plan, mappings, backups, context)
         append_event(journal, {"event": "completed", "key": "migration:complete"})
         print(json.dumps(receipt_status(receipt_id, receipt_dir, journal), sort_keys=True))
         return 0
     finally:
         release_lock(lock)
+
+
+def load_apply_events(
+    plan: dict[str, Any], receipt_id: str, receipt_dir: Path, journal: Path
+) -> list[dict[str, Any]]:
+    """Load and authenticate an existing apply journal, including an empty one."""
+    if not journal.exists():
+        return []
+    events = read_events(journal, repair_incomplete_tail=True)
+    if events:
+        _stored_plan, events = validate_receipt_bundle(
+            receipt_id, receipt_dir, journal, expected_plan=plan
+        )
+        return events
+    stored_plan_path = receipt_dir / "plan.json"
+    assert_private_owned_path(stored_plan_path, directory=False)
+    stored_plan = load_json(stored_plan_path)
+    validate_plan(stored_plan, stored_plan.get("plan_sha256", ""))
+    if canonical_bytes(stored_plan) != canonical_bytes(plan):
+        raise MigrationError("Empty receipt does not match its stored plan")
+    return events
+
+
+def create_receipt(
+    plan: dict[str, Any],
+    plan_path: Path,
+    destination: tuple[str, Path, Path],
+    events: list[dict[str, Any]],
+) -> None:
+    """Persist a plan and append its first receipt event."""
+    receipt_id, receipt_dir, journal = destination
+    atomic_write(receipt_dir / "plan.json", canonical_bytes(plan))
+    created = {
+        "schema": RECEIPT_SCHEMA,
+        "event": "created",
+        "receipt_id": receipt_id,
+        "plan_sha256": plan["plan_sha256"],
+        "plan_path": str(plan_path),
+    }
+    append_event(journal, created)
+    events.append(created)
+
+
+def validate_apply_repositories(
+    plan: dict[str, Any], completed: set[str], events: list[dict[str, Any]]
+) -> None:
+    """Repair interrupted pointers and validate every planned repository."""
+    workspace = Path(plan["workspace"])
+    for index, item in enumerate(plan["repositories"]):
+        key = f"repository:{index}"
+        started = event_for_key(events, key)
+        source = Path(item["source"])
+        destination = Path(item["destination"])
+        interrupted = started and key not in completed and not source.exists()
+        if interrupted and destination.exists():
+            repair_linked_pointers(item, destination)
+        validate_repository_plan(item, key in completed, workspace, bool(started))
+
+
+def finish_apply_step(
+    context: tuple[Path, list[dict[str, Any]], set[str]],
+    key: str,
+    details: dict[str, Any],
+) -> None:
+    """Complete an applied step and run its deterministic failure boundary."""
+    journal, events, completed = context
+    maybe_inject_post_mutation_failure(key)
+    complete_step(journal, events, completed, key, details)
+    maybe_inject_failure(key)
+
+
+def apply_repository_steps(
+    plan: dict[str, Any], context: tuple[Path, list[dict[str, Any]], set[str]]
+) -> None:
+    """Apply every incomplete repository move."""
+    journal, events, completed = context
+    workspace = Path(plan["workspace"])
+    for index, item in enumerate(plan["repositories"]):
+        key = f"repository:{index}"
+        if key in completed:
+            continue
+        existing = event_for_key(events, key)
+        details = existing["details"] if existing else repository_step_details(item, workspace)
+        start_step(journal, events, key, details)
+        move_repository(item, workspace, details)
+        finish_apply_step(context, key, details)
+
+
+def apply_regular_consumers(
+    plan: dict[str, Any],
+    mappings: dict[str, str],
+    backups: Path,
+    context: tuple[Path, list[dict[str, Any]], set[str]],
+) -> None:
+    """Apply incomplete repos.json and Tabby file mutations."""
+    journal, events, completed = context
+    consumers = plan["consumers"]
+    repos_consumer = consumers.get("repos_json")
+    if repos_consumer and "consumer:repos_json" not in completed:
+        key = "consumer:repos_json"
+        details, payload = prepare_repos_json(repos_consumer, mappings, backups / "repos.json")
+        start_step(journal, events, key, details)
+        apply_prepared_file(details, payload, mode=Path(details["path"]).stat().st_mode & 0o777)
+        finish_apply_step(context, key, details)
+    tabby_consumer = consumers.get("tabby")
+    if tabby_consumer and "consumer:tabby" not in completed:
+        key = "consumer:tabby"
+        details, payload = prepare_tabby(
+            tabby_consumer,
+            mappings,
+            backups / "tabby.yaml",
+            Path(__file__).with_name("tabby-profile-sync.py"),
+        )
+        start_step(journal, events, key, details)
+        apply_prepared_file(details, payload, mode=Path(details["path"]).stat().st_mode & 0o777)
+        finish_apply_step(context, key, details)
+
+
+def apply_database_consumers(
+    plan: dict[str, Any],
+    mappings: dict[str, str],
+    backups: Path,
+    context: tuple[Path, list[dict[str, Any]], set[str]],
+) -> None:
+    """Apply every incomplete database mutation."""
+    journal, events, completed = context
+    for index, consumer in enumerate(plan["consumers"].get("databases", [])):
+        key = f"consumer:database:{index}"
+        if key in completed:
+            continue
+        details = prepare_database(consumer, mappings, backups / f"opencode-{index}.db")
+        start_step(journal, events, key, details)
+        update_database(details)
+        finish_apply_step(context, key, details)
+
+
+def apply_marker_consumers(
+    plan: dict[str, Any],
+    mappings: dict[str, str],
+    backups: Path,
+    context: tuple[Path, list[dict[str, Any]], set[str]],
+) -> None:
+    """Apply every incomplete recovery-marker mutation."""
+    journal, events, completed = context
+    for index, consumer in enumerate(plan["consumers"].get("markers", [])):
+        key = f"consumer:marker:{index}"
+        if key in completed:
+            continue
+        details, payload = prepare_marker(consumer, mappings, backups / f"recovery-{index}.json")
+        start_step(journal, events, key, details)
+        apply_prepared_file(details, payload, mode=0o600)
+        finish_apply_step(context, key, details)
 
 
 def restore_file(details: dict[str, Any]) -> None:
@@ -1493,6 +1647,27 @@ def rollback_repository(item: dict[str, Any], details: dict[str, Any]) -> None:
     destination = Path(item["destination"])
     stage = Path(item["stage"])
     self_nested = bool(details.get("self_nested"))
+    prepare_repository_rollback(source, destination, stage, self_nested, details)
+    if self_nested and stage.exists():
+        remove_created_directories(details, strict=True)
+        if source.exists():
+            raise MigrationError(f"Nested rollback source remains occupied: {source}")
+        os.rename(stage, source)
+    restore_linked_pointers(details)
+    if repository_fingerprint(source) != item["fingerprint"]:
+        raise MigrationError(f"Repository rollback verification failed: {source}")
+    if not self_nested:
+        remove_created_directories(details, strict=False)
+
+
+def prepare_repository_rollback(
+    source: Path,
+    destination: Path,
+    stage: Path,
+    self_nested: bool,
+    details: dict[str, Any],
+) -> None:
+    """Restore or stage the repository according to its durable move state."""
     case_only_same = (
         source != destination
         and str(source).lower() == str(destination).lower()
@@ -1508,41 +1683,35 @@ def rollback_repository(item: dict[str, Any], details: dict[str, Any]) -> None:
     ):
         if repository_fingerprint(destination) != details["post_fingerprint"]:
             raise MigrationError(f"Post-plan repository drift blocks rollback: {destination}")
-        for pointer in details["pointer_changes"]:
-            if Path(pointer["path"]).read_text(encoding="utf-8") != pointer["after"]:
-                raise MigrationError(
-                    f"Linked pointer drift blocks rollback: {pointer['path']}"
-                )
+        validate_rollback_pointers(details)
         if self_nested:
             os.rename(destination, stage)
         else:
             os.rename(destination, source)
     else:
         raise MigrationError(f"Repository rollback collision or missing destination: {source}")
-    if self_nested and stage.exists():
-        for directory_name in details.get("created_directories", []):
-            directory = Path(directory_name)
-            if not directory.exists():
-                continue
-            try:
-                directory.rmdir()
-            except OSError as exc:
+
+
+def validate_rollback_pointers(details: dict[str, Any]) -> None:
+    """Require every linked pointer to retain its receipt-owned after value."""
+    for pointer in details["pointer_changes"]:
+        if Path(pointer["path"]).read_text(encoding="utf-8") != pointer["after"]:
+            raise MigrationError(f"Linked pointer drift blocks rollback: {pointer['path']}")
+
+
+def remove_created_directories(details: dict[str, Any], *, strict: bool) -> None:
+    """Remove receipt-owned parents, optionally rejecting unexpected content."""
+    for directory_name in details.get("created_directories", []):
+        directory = Path(directory_name)
+        if strict and not directory.exists():
+            continue
+        try:
+            directory.rmdir()
+        except OSError as exc:
+            if strict:
                 raise MigrationError(
                     f"Unexpected content blocks nested rollback: {directory}"
                 ) from exc
-        if source.exists():
-            raise MigrationError(f"Nested rollback source remains occupied: {source}")
-        os.rename(stage, source)
-    restore_linked_pointers(details)
-    if repository_fingerprint(source) != item["fingerprint"]:
-        raise MigrationError(f"Repository rollback verification failed: {source}")
-    if not self_nested:
-        for directory_name in details.get("created_directories", []):
-            directory = Path(directory_name)
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
 
 
 def assert_private_owned_path(path: Path, *, directory: bool) -> None:
@@ -1565,10 +1734,33 @@ def validate_receipt_event_targets(
     plan: dict[str, Any], directory: Path, events: list[dict[str, Any]]
 ) -> None:
     """Bind every receipt event to exact paths and rows from its stored plan."""
+    expected = expected_receipt_targets(plan, directory)
+    for event in events[1:]:
+        if event.get("event") not in {"started", "completed"}:
+            raise MigrationError("Receipt contains an unsupported event")
+        key = str(event.get("key", ""))
+        base_key = key.removeprefix("rollback:")
+        if base_key in {"migration:complete", "migration:rolled-back"}:
+            continue
+        target = expected.get(base_key)
+        details = event.get("details")
+        if not target or not isinstance(details, dict):
+            raise MigrationError(f"Receipt contains an unsupported step: {key}")
+        if target["kind"] == "repository":
+            validate_repository_event_details(plan, target["item"], details, key)
+        else:
+            validate_consumer_event_details(target, details, key)
+
+
+def expected_receipt_targets(
+    plan: dict[str, Any], directory: Path
+) -> dict[str, dict[str, Any]]:
+    """Build the exact receipt target specification from a stored plan."""
     mappings = migration_mappings(plan["repositories"])
-    expected: dict[str, dict[str, Any]] = {}
-    for index, item in enumerate(plan["repositories"]):
-        expected[f"repository:{index}"] = {"kind": "repository", "item": item}
+    expected = {
+        f"repository:{index}": {"kind": "repository", "item": item}
+        for index, item in enumerate(plan["repositories"])
+    }
     consumers = plan["consumers"]
     if consumers.get("repos_json"):
         expected["consumer:repos_json"] = {
@@ -1597,58 +1789,81 @@ def validate_receipt_event_targets(
             "path": consumer["path"],
             "backup": str(directory / f"backups/recovery-{index}.json"),
         }
-    for event in events[1:]:
-        if event.get("event") not in {"started", "completed"}:
-            raise MigrationError("Receipt contains an unsupported event")
-        key = str(event.get("key", ""))
-        base_key = key.removeprefix("rollback:")
-        if base_key in {"migration:complete", "migration:rolled-back"}:
-            continue
-        target = expected.get(base_key)
-        details = event.get("details")
-        if not target or not isinstance(details, dict):
-            raise MigrationError(f"Receipt contains an unsupported step: {key}")
-        if target["kind"] == "repository":
-            item = target["item"]
-            if (
-                details.get("source") != item["source"]
-                or details.get("destination") != item["destination"]
-                or details.get("post_fingerprint") != item["fingerprint"]
-                or bool(details.get("self_nested"))
-                != (path_is_inside(Path(item["source"]), Path(item["destination"])) and item["source"] != item["destination"])
-            ):
-                raise MigrationError(f"Receipt repository target mismatch: {key}")
-            planned_pointers = {entry["path"]: entry["content"] for entry in item["linked_pointers"]}
-            for pointer in details.get("pointer_changes", []):
-                before = planned_pointers.get(pointer.get("path"))
-                expected_after = (
-                    before.replace(
-                        f"gitdir: {item['source']}/.git/",
-                        f"gitdir: {item['destination']}/.git/",
-                        1,
-                    )
-                    if before
-                    else None
-                )
-                if pointer.get("before") != before or pointer.get("after") != expected_after:
-                    raise MigrationError(f"Receipt linked pointer target mismatch: {key}")
-            if len(details.get("pointer_changes", [])) != len(planned_pointers):
-                raise MigrationError(f"Receipt linked pointer set mismatch: {key}")
-            workspace = Path(plan["workspace"])
-            destination_parent = Path(item["destination"]).parent
-            for created in details.get("created_directories", []):
-                created_path = Path(created)
-                if (
-                    created_path == workspace
-                    or not path_is_inside(workspace, created_path)
-                    or not path_is_inside(created_path, destination_parent)
-                ):
-                    raise MigrationError(f"Receipt directory target mismatch: {key}")
-        else:
-            if details.get("path") != target["path"] or details.get("backup") != target["backup"]:
-                raise MigrationError(f"Receipt consumer target mismatch: {key}")
-            if target["kind"] == "database" and details.get("changes") != target["changes"]:
-                raise MigrationError(f"Receipt database target mismatch: {key}")
+    return expected
+
+
+def validate_repository_event_details(
+    plan: dict[str, Any], item: dict[str, Any], details: dict[str, Any], key: str
+) -> None:
+    """Validate one repository receipt event against its planned identity."""
+    expected_nested = path_is_inside(Path(item["source"]), Path(item["destination"]))
+    expected_nested = expected_nested and item["source"] != item["destination"]
+    observed_identity = (
+        details.get("source"),
+        details.get("destination"),
+        details.get("post_fingerprint"),
+        bool(details.get("self_nested")),
+    )
+    expected_identity = (
+        item["source"],
+        item["destination"],
+        item["fingerprint"],
+        expected_nested,
+    )
+    if observed_identity != expected_identity:
+        raise MigrationError(f"Receipt repository target mismatch: {key}")
+    validate_pointer_event_details(item, details, key)
+    validate_created_directories(plan, item, details, key)
+
+
+def validate_pointer_event_details(
+    item: dict[str, Any], details: dict[str, Any], key: str
+) -> None:
+    """Validate linked-worktree pointer changes in one receipt event."""
+    planned = {entry["path"]: entry["content"] for entry in item["linked_pointers"]}
+    changes = details.get("pointer_changes", [])
+    for pointer in changes:
+        before = planned.get(pointer.get("path"))
+        expected_after = (
+            before.replace(
+                f"gitdir: {item['source']}/.git/",
+                f"gitdir: {item['destination']}/.git/",
+                1,
+            )
+            if before
+            else None
+        )
+        if (pointer.get("before"), pointer.get("after")) != (before, expected_after):
+            raise MigrationError(f"Receipt linked pointer target mismatch: {key}")
+    if len(changes) != len(planned):
+        raise MigrationError(f"Receipt linked pointer set mismatch: {key}")
+
+
+def validate_created_directories(
+    plan: dict[str, Any], item: dict[str, Any], details: dict[str, Any], key: str
+) -> None:
+    """Validate every receipt-owned destination parent."""
+    workspace = Path(plan["workspace"])
+    destination_parent = Path(item["destination"]).parent
+    for created in details.get("created_directories", []):
+        created_path = Path(created)
+        valid = created_path != workspace and path_is_inside(workspace, created_path)
+        valid = valid and path_is_inside(created_path, destination_parent)
+        if not valid:
+            raise MigrationError(f"Receipt directory target mismatch: {key}")
+
+
+def validate_consumer_event_details(
+    target: dict[str, Any], details: dict[str, Any], key: str
+) -> None:
+    """Validate one file or database receipt event target."""
+    if (details.get("path"), details.get("backup")) != (
+        target["path"],
+        target["backup"],
+    ):
+        raise MigrationError(f"Receipt consumer target mismatch: {key}")
+    if target["kind"] == "database" and details.get("changes") != target["changes"]:
+        raise MigrationError(f"Receipt database target mismatch: {key}")
 
 
 def validate_receipt_bundle(
@@ -1667,13 +1882,10 @@ def validate_receipt_bundle(
     plan = load_json(plan_path)
     validate_plan(plan, plan.get("plan_sha256", ""))
     expected_id, expected_directory, expected_journal = receipt_paths(plan)
-    if (
-        receipt_id != expected_id
-        or directory != expected_directory
-        or journal != expected_journal
-        or expand_path(plan["state_dir"]) != directory.parent
-        or (expected_plan is not None and canonical_bytes(expected_plan) != canonical_bytes(plan))
-    ):
+    observed_paths = (receipt_id, directory, journal, expand_path(plan["state_dir"]))
+    expected_paths = (expected_id, expected_directory, expected_journal, directory.parent)
+    plan_matches = expected_plan is None or canonical_bytes(expected_plan) == canonical_bytes(plan)
+    if observed_paths != expected_paths or not plan_matches:
         raise MigrationError("Receipt does not match its stored plan")
     events = read_events(journal, repair_incomplete_tail=repair_incomplete_tail)
     if not events:
@@ -1747,14 +1959,13 @@ def status_command(args: argparse.Namespace) -> int:
 
 
 def run_rollback_step(
-    journal: Path,
-    events: list[dict[str, Any]],
-    completed: set[str],
+    context: tuple[Path, list[dict[str, Any]], set[str]],
     key: str,
     details: dict[str, Any],
     operation: Any,
 ) -> None:
     """Persist, execute, and complete one idempotent rollback step."""
+    journal, events, completed = context
     rollback_key = f"rollback:{key}"
     if rollback_key in completed:
         return
@@ -1776,6 +1987,7 @@ def rollback_command(args: argparse.Namespace) -> int:
             receipt_id, directory, journal, repair_incomplete_tail=True
         )
         completed = done_keys(events)
+        context = (journal, events, completed)
         if "migration:rolled-back" in completed:
             print(json.dumps(receipt_status(receipt_id, directory, journal), sort_keys=True))
             return 0
@@ -1785,16 +1997,14 @@ def rollback_command(args: argparse.Namespace) -> int:
             event = event_for_key(events, key)
             if event:
                 run_rollback_step(
-                    journal, events, completed, key, event["details"], restore_file
+                    context, key, event["details"], restore_file
                 )
         for index in reversed(range(len(plan["consumers"].get("databases", [])))):
             key = f"consumer:database:{index}"
             event = event_for_key(events, key)
             if event:
                 run_rollback_step(
-                    journal,
-                    events,
-                    completed,
+                    context,
                     key,
                     event["details"],
                     rollback_database,
@@ -1803,16 +2013,14 @@ def rollback_command(args: argparse.Namespace) -> int:
             event = event_for_key(events, key)
             if event:
                 run_rollback_step(
-                    journal, events, completed, key, event["details"], restore_file
+                    context, key, event["details"], restore_file
                 )
         for index in reversed(range(len(plan["repositories"]))):
             key = f"repository:{index}"
             event = event_for_key(events, key)
             if event:
                 run_rollback_step(
-                    journal,
-                    events,
-                    completed,
+                    context,
                     key,
                     event["details"],
                     lambda details, item=plan["repositories"][index]: rollback_repository(
