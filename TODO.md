@@ -110,6 +110,9 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 <!--TOON:ready[0]{id,desc,owner,tags,est,logged}:
 -->
 
+- [ ] t18396 Detect Codacy index and configuration drift before remediation #bug #quality #codacy #reliability #auto-dispatch ~4h tier:standard ref:GH#31147 logged:2026-09-04 -> [todo/tasks/t18396-brief.md]
+- [ ] t18397 Make email facade exports explicit and clear Pylint unused-import noise #quality #codacy #python #refactor #auto-dispatch ~2.5h tier:standard ref:GH#31148 logged:2026-09-04 -> [todo/tasks/t18397-brief.md]
+- [ ] t18398 Harden high-signal Python subprocess boundaries reported by Codacy #bug #security #quality #codacy #python #auto-dispatch #priority:high ~5h tier:standard ref:GH#31150 logged:2026-09-04 -> [todo/tasks/t18398-brief.md]
 - [x] t18293 Reject malformed GitHub login output before approval lifecycle mutation #bug #security #framework #reliability #interactive #auto-dispatch ~2h tier:standard ref:GH#30338 logged:2026-08-17 -> [todo/tasks/t18293-brief.md] pr:#30342 completed:2026-08-17
 
 - [x] t18193 Define provider-neutral team-interface core contracts #mission:m-20260804-5d06b1 #enhancement #framework #auto-dispatch ~4h tier:standard ref:GH#29494 logged:2026-08-04 -> [todo/tasks/t18193-brief.md] pr:#29505 completed:2026-08-04
