@@ -89,23 +89,27 @@ test("retains the previous refresh token when rotation omits a replacement", asy
   assert.equal(stored.tokens.refresh_token, "fixture-refresh-old");
 });
 
-test("coalesces concurrent refreshes into one token request", async (t) => {
+test("serializes independent managers into one token request", async (t) => {
   const { statePath } = fixture(t);
   let refreshCalls = 0;
   let releaseRefresh;
+  let signalRefreshStarted;
   const refreshGate = new Promise((resolvePromise) => { releaseRefresh = resolvePromise; });
-  const manager = new HiggsfieldTokenManager({
-    statePath,
-    now: () => FIXED_NOW,
-    fetchImpl: async () => {
-      refreshCalls += 1;
-      await refreshGate;
-      return jsonResponse({ access_token: "fixture-access-new", expires_in: 3_600 });
-    },
-  });
+  const refreshStarted = new Promise((resolvePromise) => { signalRefreshStarted = resolvePromise; });
+  const fetchImpl = async () => {
+    refreshCalls += 1;
+    signalRefreshStarted();
+    await refreshGate;
+    return jsonResponse({ access_token: "fixture-access-new", expires_in: 3_600 });
+  };
+  const managerOptions = { statePath, now: () => FIXED_NOW, fetchImpl };
+  const firstManager = new HiggsfieldTokenManager(managerOptions);
+  const secondManager = new HiggsfieldTokenManager(managerOptions);
 
-  const first = manager.accessToken();
-  const second = manager.accessToken();
+  const first = firstManager.accessToken();
+  await refreshStarted;
+  const second = secondManager.accessToken();
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 75));
   releaseRefresh();
   assert.deepEqual(await Promise.all([first, second]), ["fixture-access-new", "fixture-access-new"]);
   assert.equal(refreshCalls, 1);

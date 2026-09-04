@@ -81,10 +81,15 @@ async function writeTemporaryState(temporaryPath, state) {
   }
 }
 
-export async function writeHiggsfieldStateAtomic(statePath, state) {
-  if (!isAbsolute(statePath)) throw oauthError("state path must be absolute");
+async function ensureStateDirectory(statePath) {
   const parent = dirname(statePath);
   await mkdir(parent, { recursive: true, mode: 0o700 });
+  await chmod(parent, 0o700);
+}
+
+export async function writeHiggsfieldStateAtomic(statePath, state) {
+  if (!isAbsolute(statePath)) throw oauthError("state path must be absolute");
+  await ensureStateDirectory(statePath);
   await assertReplaceableStatePath(statePath);
 
   const temporaryPath = `${statePath}.tmp.${process.pid}.${randomUUID()}`;
@@ -109,30 +114,49 @@ function processIsGone(pid) {
   }
 }
 
-async function readLockOwner(lockPath) {
+async function readLockText(lockPath) {
   const handle = await open(lockPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
-    return JSON.parse(await handle.readFile("utf8"));
+    return await handle.readFile("utf8");
   } finally {
     await handle.close();
   }
 }
 
-async function staleLockCanBeRemoved(lockPath, now) {
+function lockOwnerIsLive(rawOwner) {
+  try {
+    return !processIsGone(JSON.parse(rawOwner).pid);
+  } catch {
+    return false;
+  }
+}
+
+async function staleLockSnapshot(lockPath, now) {
   let stats;
   try {
     stats = await lstat(lockPath);
   } catch (error) {
-    if (error?.code === "ENOENT") return true;
+    if (error?.code === "ENOENT") return { missing: true };
     throw oauthError("could not inspect the refresh lock");
   }
   assertRegularFile(stats, "refresh lock path is not a regular file");
-  if (now() - stats.mtimeMs <= STALE_LOCK_MS) return false;
+  if (now() - stats.mtimeMs <= STALE_LOCK_MS) return null;
   try {
-    const owner = await readLockOwner(lockPath);
-    return processIsGone(owner.pid);
-  } catch {
-    return true;
+    const rawOwner = await readLockText(lockPath);
+    return lockOwnerIsLive(rawOwner) ? null : { rawOwner };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { missing: true };
+    throw oauthError("could not read the refresh lock owner");
+  }
+}
+
+async function removeStaleLock(lockPath, snapshot) {
+  if (snapshot.missing) return;
+  try {
+    const currentOwner = await readLockText(lockPath);
+    if (currentOwner === snapshot.rawOwner) await unlink(lockPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw oauthError("could not remove the stale refresh lock");
   }
 }
 
@@ -140,7 +164,12 @@ async function tryCreateLock(lockPath, ownerToken) {
   let handle;
   try {
     handle = await open(lockPath, "wx", 0o600);
-    await handle.writeFile(JSON.stringify({ pid: process.pid, token: ownerToken }), "utf8");
+    await handle.writeFile(JSON.stringify({
+      schema: "aidevops.oauth-lock/v1",
+      pid: process.pid,
+      token: ownerToken,
+      createdAt: Date.now(),
+    }), "utf8");
     return true;
   } catch (error) {
     if (error?.code === "EEXIST") return false;
@@ -152,8 +181,9 @@ async function tryCreateLock(lockPath, ownerToken) {
 }
 
 async function waitForExistingLock(lockPath, deadline, now, sleep) {
-  if (await staleLockCanBeRemoved(lockPath, now)) {
-    await unlink(lockPath).catch(() => {});
+  const snapshot = await staleLockSnapshot(lockPath, now);
+  if (snapshot) {
+    await removeStaleLock(lockPath, snapshot);
     return;
   }
   if (now() >= deadline) throw oauthError("timed out waiting for another token refresh");
@@ -168,8 +198,8 @@ async function acquireRefreshLock(lockPath, ownerToken, deadline, now, sleep) {
 
 async function releaseRefreshLock(lockPath, ownerToken) {
   try {
-    const owner = await readLockOwner(lockPath);
-    if (owner.token === ownerToken) await unlink(lockPath);
+    const owner = JSON.parse(await readLockText(lockPath));
+    if (owner.pid === process.pid && owner.token === ownerToken) await unlink(lockPath);
   } catch {
     // A missing or replaced lock is not ours to remove.
   }
@@ -182,7 +212,7 @@ export async function withRefreshLock(statePath, action, {
 } = {}) {
   const lockPath = `${statePath}.refresh.lock`;
   const ownerToken = randomUUID();
-  await mkdir(dirname(statePath), { recursive: true, mode: 0o700 });
+  await ensureStateDirectory(statePath);
   await acquireRefreshLock(lockPath, ownerToken, now() + timeoutMs, now, sleep);
   try {
     return await action();
