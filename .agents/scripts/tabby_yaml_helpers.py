@@ -74,16 +74,15 @@ def _parse_block_scalar(
     """Parse a folded or literal YAML block scalar."""
     continuation = list(
         takewhile(
-            lambda line: not line.strip()
-            or len(line) - len(line.lstrip(" \t")) > parent_indent,
+            lambda line: (
+                not line.strip() or len(line) - len(line.lstrip(" \t")) > parent_indent
+            ),
             lines[start_idx:],
         )
     )
     content = dropwhile(lambda line: not line.strip(), continuation)
     collected = [
-        line.lstrip(" \t").rstrip()
-        for line in content
-        if style == "|" or line.strip()
+        line.lstrip(" \t").rstrip() for line in content if style == "|" or line.strip()
     ]
     separator = " " if style == ">" else "\n"
     return separator.join(collected).strip(), start_idx + len(continuation)
@@ -104,11 +103,10 @@ def extract_existing_cwds(config_text: str) -> set[str]:
     sync because the dedup check fails to recognise the existing path.
     """
     document = yaml.safe_load(config_text) or {}
-    profiles = document.get("profiles", []) if isinstance(document, dict) else []
+    profiles_value = document.get("profiles", []) if isinstance(document, dict) else []
+    profiles = profiles_value if isinstance(profiles_value, list) else []
     options = (
-        profile.get("options", {})
-        for profile in profiles
-        if isinstance(profile, dict)
+        profile.get("options", {}) for profile in profiles if isinstance(profile, dict)
     )
     return {
         str(option["cwd"]).strip()
@@ -194,7 +192,7 @@ def remove_profile_blocks(config_text: str, blocks: list[ProfileBlock]) -> str:
         return config_text
     lines = config_text.splitlines(keepends=True)
     for block in sorted(blocks, key=lambda item: item.start, reverse=True):
-        del lines[block.start:block.end]
+        del lines[block.start : block.end]
     return "".join(lines)
 
 
