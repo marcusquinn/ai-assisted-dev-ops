@@ -6,7 +6,7 @@
 const CREDENTIAL_PATTERN =
   /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 const NAMED_CREDENTIAL_ASSIGNMENT_PATTERN =
-  /(^|[\s,{])((?:"[A-Za-z_][A-Za-z0-9_]*"|'[A-Za-z_][A-Za-z0-9_]*'|[A-Za-z_][A-Za-z0-9_]*))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential)\]|[^\s,}\]]+)/gm;
+  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_.-]*"|'[A-Za-z_][A-Za-z0-9_.-]*'|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;])|[^\s,}\])&;]+)/gim;
 const PLACEHOLDER_VALUES = new Set([
   "",
   "***",
@@ -37,11 +37,17 @@ function normalizeFieldName(name) {
 }
 
 function isSensitiveFieldName(name) {
-  return /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/.test(normalizeFieldName(name));
+  return /(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/.test(
+    normalizeFieldName(name),
+  );
 }
 
 function isPlaceholderValue(value) {
   return PLACEHOLDER_VALUES.has(unquote(value).toLowerCase());
+}
+
+function preservesSensitiveValue(value) {
+  return value == null || (typeof value === "string" && isPlaceholderValue(value));
 }
 
 function redactAssignedValue(value) {
@@ -91,7 +97,7 @@ function scrubValue(value) {
     let total = 0;
     const result = {};
     for (const [key, nestedValue] of Object.entries(value)) {
-      if (isSensitiveFieldName(key) && typeof nestedValue === "string" && !isPlaceholderValue(nestedValue)) {
+      if (isSensitiveFieldName(key) && !preservesSensitiveValue(nestedValue)) {
         result[key] = REDACTION_TOKEN;
         total++;
         continue;

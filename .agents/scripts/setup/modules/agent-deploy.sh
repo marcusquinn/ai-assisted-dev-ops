@@ -316,6 +316,7 @@ _verify_deployed_core_plugin_freshness() {
 		"hooks/git_safety_guard.py"
 		"plugins/opencode-aidevops/model-limits.mjs"
 		"plugins/opencode-aidevops/quality-hooks-git-safety.mjs"
+		"plugins/opencode-aidevops/quality-hooks-output-scrub.mjs"
 		"plugins/opencode-aidevops/quality-hooks.mjs"
 		"scripts/canonical_branch_policy.py"
 		"scripts/canonical-write-policy-helper.py"

@@ -64,8 +64,8 @@ CREDENTIAL_PATTERN = re.compile(
 )
 
 NAMED_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
-    r"(^|[\s,{])((?:\"[A-Za-z_][A-Za-z0-9_]*\"|'[A-Za-z_][A-Za-z0-9_]*'|[A-Za-z_][A-Za-z0-9_]*))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential)\]|[^\s,}\]]+)",
-    re.MULTILINE,
+    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_.-]*\"|'[A-Za-z_][A-Za-z0-9_.-]*'|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;])|[^\s,}\])&;]+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 PEM_PRIVATE_KEY_PATTERN = re.compile(
@@ -105,12 +105,18 @@ def normalize_field_name(name: str) -> str:
 
 def is_sensitive_field_name(name: str) -> bool:
     """Return whether a field name is unambiguously credential-bearing."""
-    return bool(re.search(r"(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD)$", normalize_field_name(name)))
+    pattern = r"(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$"
+    return bool(re.search(pattern, normalize_field_name(name)))
 
 
 def is_placeholder_value(value: str) -> bool:
     """Keep empty and already-redacted values unchanged."""
     return unquote(value).lower() in PLACEHOLDER_VALUES
+
+
+def preserves_sensitive_value(value) -> bool:
+    """Keep absence and explicit string placeholders under sensitive keys."""
+    return value is None or (isinstance(value, str) and is_placeholder_value(value))
 
 
 def redact_named_assignment(match: re.Match) -> str:
@@ -145,12 +151,13 @@ def scrub_value(value):
     if isinstance(value, str):
         return scrub_credentials(value)[0]
     if isinstance(value, dict):
-        return {
-            key: REDACTION_TOKEN
-            if is_sensitive_field_name(key) and isinstance(nested, str) and not is_placeholder_value(nested)
-            else scrub_value(nested)
-            for key, nested in value.items()
-        }
+        scrubbed = {}
+        for key, nested in value.items():
+            if is_sensitive_field_name(key) and not preserves_sensitive_value(nested):
+                scrubbed[key] = REDACTION_TOKEN
+            else:
+                scrubbed[key] = scrub_value(nested)
+        return scrubbed
     if isinstance(value, list):
         return [scrub_value(item) for item in value]
     return value

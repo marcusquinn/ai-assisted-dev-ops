@@ -203,32 +203,35 @@ else
 	fail "14. Nested dict tool_response scrubbed recursively — got: $output14"
 fi
 
-NAMED_TEXT_PAYLOAD='{"tool_response": "RESEND_API_KEY=synthetic_unknown_format_1234567890"}'
+NAMED_TEXT_PAYLOAD='{"tool_response": "(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value SECRET_KEY=not set"}'
 output15=$(run_hook "$NAMED_TEXT_PAYLOAD")
 if echo "$output15" | python3 -c "
 import json, sys
 response = json.load(sys.stdin).get('tool_response', '')
-assert response == 'RESEND_API_KEY=[redacted-credential]'
+assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value SECRET_KEY=not set'
 " 2>/dev/null; then
-	pass "15. Unknown-format named API key scrubbed in text"
+	pass "15. Named secrets scrubbed without consuming delimiters"
 else
-	fail "15. Unknown-format named API key scrubbed in text — got: $output15"
+	fail "15. Named secrets scrubbed without consuming delimiters — got: $output15"
 fi
 
-NAMED_OBJECT_PAYLOAD='{"tool_response": {"environment": {"RECRAFT_API_KEY": "synthetic_unknown_format_1234567890"}}}'
+NAMED_OBJECT_PAYLOAD='{"tool_response": {"environment": {"RECRAFT_API_KEY": "synthetic_unknown_format_1234567890", "TOKEN": 1234567890, "PRIVATE_KEY": {"material": "synthetic_unknown_format_1234567890"}, "SECRET_KEY": null}}}'
 output16=$(run_hook "$NAMED_OBJECT_PAYLOAD")
 if echo "$output16" | python3 -c "
 import json, sys
 response = json.load(sys.stdin).get('tool_response', {})
 assert response['environment']['RECRAFT_API_KEY'] == '[redacted-credential]'
+assert response['environment']['TOKEN'] == '[redacted-credential]'
+assert response['environment']['PRIVATE_KEY'] == '[redacted-credential]'
+assert response['environment']['SECRET_KEY'] is None
 " 2>/dev/null; then
-	pass "16. Unknown-format named API key scrubbed in nested output"
+	pass "16. Sensitive structured values scrubbed regardless of type"
 else
-	fail "16. Unknown-format named API key scrubbed in nested output — got: $output16"
+	fail "16. Sensitive structured values scrubbed regardless of type — got: $output16"
 fi
 
 assert_no_output "17. Sensitive placeholders remain unchanged" \
-	'{"tool_response": {"API_KEY": "[redacted]", "ACCESS_TOKEN": ""}}'
+	'{"tool_response": "API_KEY=[REDACTED] SECRET_KEY=not set ACCESS_TOKEN=null"}'
 
 assert_no_output "18. Sensitive-name substrings remain unchanged" \
 	'{"tool_response": "TOKEN_COUNT=3 PASSWORD_POLICY=strict MONKEY_TOKENIZER=enabled"}'

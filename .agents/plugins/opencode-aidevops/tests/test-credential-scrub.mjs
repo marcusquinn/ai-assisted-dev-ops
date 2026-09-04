@@ -85,12 +85,21 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("apiKey: opaque-value", `apiKey: ${REDACTION_TOKEN}`, 1);
     assertScrub("clientSecret='opaque-value'", `clientSecret='${REDACTION_TOKEN}'`, 1);
     assertScrub("userPassword=opaque-value", `userPassword=${REDACTION_TOKEN}`, 1);
+    assertScrub("SECRET_KEY=opaque-value", `SECRET_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("SSH_PRIVATE_KEY=opaque-value", `SSH_PRIVATE_KEY=${REDACTION_TOKEN}`, 1);
+  });
+
+  test("preserves delimiters around unquoted sensitive assignments", () => {
+    assertScrub(`(RESEND-API-KEY=opaque-value)`, `(RESEND-API-KEY=${REDACTION_TOKEN})`, 1);
+    assertScrub(`API_KEY=opaque-value&other=value`, `API_KEY=${REDACTION_TOKEN}&other=value`, 1);
   });
 
   test("preserves empty and explicit placeholder values", () => {
     assertScrub('API_KEY=""', 'API_KEY=""', 0);
     assertScrub("ACCESS_TOKEN=null", "ACCESS_TOKEN=null", 0);
     assertScrub("CLIENT_SECRET=[redacted]", "CLIENT_SECRET=[redacted]", 0);
+    assertScrub("CLIENT_SECRET=[REDACTED]", "CLIENT_SECRET=[REDACTED]", 0);
+    assertScrub("CLIENT_SECRET=not set", "CLIENT_SECRET=not set", 0);
   });
 
   test("does not redact non-sensitive field-name substrings", () => {
@@ -127,7 +136,14 @@ describe("credential transcript scrub boundary", () => {
   test("toolExecuteAfter scrubs named credential values in structured output", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "aidevops-named-credential-scrub-"));
     const output = {
-      output: { environment: { RESEND_API_KEY: "synthetic_unknown_format_1234567890" } },
+      output: {
+        environment: {
+          RESEND_API_KEY: "synthetic_unknown_format_1234567890",
+          TOKEN: 1234567890,
+          PRIVATE_KEY: { material: "synthetic_unknown_format_1234567890" },
+          SECRET_KEY: null,
+        },
+      },
       metadata: {},
     };
 
@@ -135,7 +151,12 @@ describe("credential transcript scrub boundary", () => {
       const hooks = createQualityHooks({ scriptsDir: tempDir, logsDir: tempDir });
       await hooks.toolExecuteAfter({ tool: "grep", callID: "" }, output);
       assert.deepEqual(output.output, {
-        environment: { RESEND_API_KEY: REDACTION_TOKEN },
+        environment: {
+          RESEND_API_KEY: REDACTION_TOKEN,
+          TOKEN: REDACTION_TOKEN,
+          PRIVATE_KEY: REDACTION_TOKEN,
+          SECRET_KEY: null,
+        },
       });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
