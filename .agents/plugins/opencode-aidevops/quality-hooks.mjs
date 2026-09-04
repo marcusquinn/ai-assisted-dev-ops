@@ -58,9 +58,23 @@ export { checkSecretReadGate, isReadTool } from "./quality-hooks-secret-read.mjs
 
 const CREDENTIAL_PATTERN =
   /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
+const NAMED_CREDENTIAL_ASSIGNMENT_PATTERN =
+  /(^|[\s,{])((?:"?[A-Za-z_][A-Za-z0-9_]*"?))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/gm;
 
 const REDACTION_TOKEN = "[redacted-credential]";
 const OPERATION_TITLE_MAX_LENGTH = 500;
+
+function isSensitiveFieldName(name) {
+  return /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(name.replaceAll('"', ""));
+}
+
+function redactAssignedValue(value) {
+  const quote = value.at(0);
+  if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+    return `${quote}${REDACTION_TOKEN}${quote}`;
+  }
+  return REDACTION_TOKEN;
+}
 
 /**
  * Scrub known credential token prefixes from a string value.
@@ -69,7 +83,15 @@ const OPERATION_TITLE_MAX_LENGTH = 500;
  */
 export function scrubCredentials(text) {
   let count = 0;
-  const scrubbed = text.replace(CREDENTIAL_PATTERN, (_match, boundary) => {
+  const namedScrubbed = text.replace(
+    NAMED_CREDENTIAL_ASSIGNMENT_PATTERN,
+    (match, boundary, name, separator, value) => {
+      if (!isSensitiveFieldName(name)) return match;
+      count++;
+      return `${boundary}${name}${separator}${redactAssignedValue(value)}`;
+    },
+  );
+  const scrubbed = namedScrubbed.replace(CREDENTIAL_PATTERN, (_match, boundary) => {
     count++;
     return `${boundary}${REDACTION_TOKEN}`;
   });
@@ -113,6 +135,11 @@ function scrubValue(value) {
     let total = 0;
     const result = {};
     for (const [k, v] of Object.entries(value)) {
+      if (isSensitiveFieldName(k) && typeof v === "string") {
+        result[k] = REDACTION_TOKEN;
+        total++;
+        continue;
+      }
       const { value: scrubbed, count } = scrubValue(v);
       result[k] = scrubbed;
       total += count;
