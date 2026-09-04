@@ -196,7 +196,7 @@ export function authFailureBackoffMs(failures) {
   return Math.min(AUTH_FAILURE_MAX_COOLDOWN_MS, AUTH_FAILURE_INITIAL_COOLDOWN_MS * (2 ** (count - 1)));
 }
 
-export function markAuthRefreshFailure(provider, account) {
+function markAuthFailure(provider, account, reason) {
   const now = Date.now();
   const failures = (Number(account.authRefreshFailures) || 0) + 1;
   const cooldownMs = authFailureBackoffMs(failures);
@@ -212,10 +212,18 @@ export function markAuthRefreshFailure(provider, account) {
   account.authRefreshFailures = failures;
   account.authRefreshLastFailureAt = now;
   console.error(
-    `[aidevops] OAuth pool: ${provider} token refresh failed for ${account.email}; ` +
+    `[aidevops] OAuth pool: ${provider} ${reason} for ${account.email}; ` +
     `retry in ${Math.ceil(cooldownMs / 1000)}s (failure ${failures})`,
   );
   return cooldownMs;
+}
+
+export function markAuthRefreshFailure(provider, account) {
+  return markAuthFailure(provider, account, "token refresh failed");
+}
+
+export function markRejectedTokenFailure(provider, account) {
+  return markAuthFailure(provider, account, "refreshed token was rejected");
 }
 
 // ---------------------------------------------------------------------------
@@ -228,18 +236,7 @@ const REFRESH_FN = {
   google: refreshGoogleAccessToken,
 };
 
-/**
- * Ensure an account has a valid (non-expired) access token.
- * Routes to the correct refresh function based on provider.
- *
- * @param {string} provider
- * @param {import("./oauth-pool-storage.mjs").PoolAccount} account
- * @returns {Promise<string|null>} access token or null on failure
- */
-export async function ensureValidToken(provider, account) {
-  if (account.access && account.expires > Date.now()) {
-    return account.access;
-  }
+async function refreshAndStoreToken(provider, account) {
   const tokens = await (REFRESH_FN[provider] || refreshAccessToken)(account);
   if (!tokens) {
     markAuthRefreshFailure(provider, account);
@@ -257,7 +254,31 @@ export async function ensureValidToken(provider, account) {
   account.access = tokens.access;
   account.refresh = tokens.refresh;
   account.expires = tokens.expires;
+  account.status = "active";
+  account.cooldownUntil = null;
+  account.authRefreshFailures = 0;
+  account.authRefreshLastFailureAt = null;
   return tokens.access;
+}
+
+/** Force-refresh an OpenAI account even when its local expiry is in the future. */
+export async function forceRefreshOpenAIToken(account) {
+  return refreshAndStoreToken("openai", account);
+}
+
+/**
+ * Ensure an account has a valid (non-expired) access token.
+ * Routes to the correct refresh function based on provider.
+ *
+ * @param {string} provider
+ * @param {import("./oauth-pool-storage.mjs").PoolAccount} account
+ * @returns {Promise<string|null>} access token or null on failure
+ */
+export async function ensureValidToken(provider, account) {
+  if (account.access && account.expires > Date.now()) {
+    return account.access;
+  }
+  return refreshAndStoreToken(provider, account);
 }
 
 // ---------------------------------------------------------------------------

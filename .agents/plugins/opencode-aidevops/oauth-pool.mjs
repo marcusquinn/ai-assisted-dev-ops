@@ -67,7 +67,8 @@ export {
 export {
   decodeCursorJWT, readCursorAuthJsonCredentials, readCursorStateDbCredentials,
   isCursorAgentAvailable, ensureValidToken, normalizeExpiredCooldowns,
-  authFailureBackoffMs, markAuthRefreshFailure,
+  authFailureBackoffMs, markAuthRefreshFailure, markRejectedTokenFailure,
+  forceRefreshOpenAIToken,
 } from "./oauth-pool-refresh.mjs";
 
 // Auth hooks & provider registration

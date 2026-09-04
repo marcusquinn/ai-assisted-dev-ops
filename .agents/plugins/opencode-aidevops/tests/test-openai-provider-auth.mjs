@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { interpretOpenAIValidityStatus } from "../oauth-pool-health-check.mjs";
+
 function loadModule() {
   return import(`../openai-provider-auth.mjs?test=${Date.now()}-${Math.random()}`);
 }
@@ -21,20 +23,42 @@ function runProviderScript(prefix, script) {
 test("detects OpenAI provider requests only", async () => {
   const { isOpenAIProviderRequest, isOpenAITokenRefreshRequest } = await loadModule();
   assert.equal(isOpenAIProviderRequest("https://api.openai.com/v1/chat/completions"), true);
+  assert.equal(isOpenAIProviderRequest("https://chatgpt.com/backend-api/codex/responses"), true);
   assert.equal(isOpenAIProviderRequest("https://api.openai.com/dashboard"), false);
+  assert.equal(isOpenAIProviderRequest("https://chatgpt.com/backend-api/accounts"), false);
   assert.equal(isOpenAIProviderRequest("https://example.com/v1/chat/completions"), false);
   assert.equal(isOpenAITokenRefreshRequest("https://auth.openai.com/oauth/token"), true);
   assert.equal(isOpenAITokenRefreshRequest("https://api.openai.com/v1/responses"), false);
 });
 
 test("detects OpenAI usage-limit responses", async () => {
-  const { isOpenAIUsageLimitResponse } = await loadModule();
+  const { isOpenAIAuthFailureResponse, isOpenAIUsageLimitResponse } = await loadModule();
   const quota = new Response(JSON.stringify({ error: { code: "insufficient_quota", message: "Usage limit reached" } }), {
     status: 403,
     headers: { "content-type": "application/json" },
   });
   assert.equal(await isOpenAIUsageLimitResponse(quota), true);
+  assert.equal(await isOpenAIAuthFailureResponse(quota), false);
+  assert.equal(await isOpenAIAuthFailureResponse(new Response("unauthorized", { status: 401 })), true);
+  assert.equal(await isOpenAIAuthFailureResponse(new Response(JSON.stringify({
+    error: { message: "Provided authentication token is expired. Please sign in again" },
+  }), {
+    status: 403,
+    headers: { "content-type": "application/json" },
+  })), true);
+  assert.equal(await isOpenAIAuthFailureResponse(new Response(JSON.stringify({
+    error: { message: "Access forbidden by workspace policy" },
+  }), {
+    status: 403,
+    headers: { "content-type": "application/json" },
+  })), false);
   assert.equal(await isOpenAIUsageLimitResponse(new Response("ok", { status: 200 })), false);
+});
+
+test("describes the Platform API probe accurately for ChatGPT OAuth", () => {
+  assert.equal(interpretOpenAIValidityStatus(200), "OK");
+  assert.match(interpretOpenAIValidityStatus(401), /force refresh/);
+  assert.match(interpretOpenAIValidityStatus(403), /does not validate ChatGPT OAuth/);
 });
 
 test("injects optional intent into OpenAI provider tool-schema variants", async () => {
@@ -69,13 +93,25 @@ test("injects optional intent into OpenAI provider tool-schema variants", async 
 test("installed fetch guard rotates on response failures and pre-request cooldowns", async () => {
   const script = String.raw`
     import assert from "node:assert/strict";
-    import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+    import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
     import { join } from "node:path";
 
     const home = process.env.HOME;
     const aidevopsDir = join(home, ".aidevops");
     mkdirSync(aidevopsDir, { recursive: true });
     const poolPath = join(aidevopsDir, "oauth-pool.json");
+    const binPath = join(home, "bin");
+    const curlPath = join(binPath, "curl");
+    mkdirSync(binPath, { recursive: true });
+    writeFileSync(curlPath, "#!/usr/bin/env node\nprocess.stdout.write(process.env.AIDEVOPS_TEST_CURL_RESPONSE || '')\n");
+    chmodSync(curlPath, 0o755);
+    process.env.PATH = binPath + ":" + process.env.PATH;
+
+    function setTokenEndpointResponse(status, payload) {
+      process.env.AIDEVOPS_TEST_CURL_RESPONSE =
+        "HTTP/1.1 " + status + " Test\r\ncontent-type: application/json\r\n\r\n" +
+        JSON.stringify(payload) + "\n" + status;
+    }
 
     async function withInstalledGuard(pool, fetchImpl, request) {
       writeFileSync(poolPath, JSON.stringify(pool));
@@ -240,6 +276,142 @@ test("installed fetch guard rotates on response failures and pre-request cooldow
 
     assert.equal(cooldownPreflight.response.status, 200);
     assert.deepEqual(cooldownPreflight.calls, ["Bearer fresh-token"]);
+
+    setTokenEndpointResponse(200, {
+      access_token: "refreshed-token",
+      refresh_token: "refreshed-refresh",
+      expires_in: 3600,
+    });
+    const rejectedFutureToken = await withInstalledGuard({
+      openai: [
+        { email: "future@example.com", access: "future-token", refresh: "future-refresh", expires: Date.now() + 9 * 86400_000, status: "active", cooldownUntil: 0 },
+      ],
+    }, async (input, init, calls) => {
+      calls.push({
+        authorization: new Headers(init?.headers).get("authorization"),
+        accountId: new Headers(init?.headers).get("chatgpt-account-id"),
+      });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({
+          error: { message: "Provided authentication token is expired. Please sign in again" },
+        }), { status: 403, headers: { "content-type": "application/json" } });
+      }
+      return new Response("ok", { status: 200 });
+    }, {
+      url: "https://chatgpt.com/backend-api/codex/responses",
+      init: {
+        method: "POST",
+        headers: { authorization: "Bearer future-token", "chatgpt-account-id": "acct_future" },
+        body: "{}",
+      },
+    });
+
+    assert.equal(rejectedFutureToken.response.status, 200);
+    assert.deepEqual(rejectedFutureToken.calls, [
+      { authorization: "Bearer future-token", accountId: "acct_future" },
+      { authorization: "Bearer refreshed-token", accountId: "acct_future" },
+    ]);
+    assert.equal(rejectedFutureToken.pool.openai[0].access, "refreshed-token");
+    assert.equal(rejectedFutureToken.pool.openai[0].refresh, "refreshed-refresh");
+    assert.equal(rejectedFutureToken.pool.openai[0].status, "active");
+    assert.equal(rejectedFutureToken.pool.openai[0].accountId, "acct_future");
+    assert.equal(rejectedFutureToken.authWrites.length, 1);
+
+    setTokenEndpointResponse(401, { error: "invalid_grant" });
+    const failedRefreshFallback = await withInstalledGuard({
+      openai: [
+        { email: "rejected@example.com", access: "rejected-token", refresh: "rejected-refresh", expires: Date.now() + 9 * 86400_000, status: "active", cooldownUntil: 0, accountId: "acct_rejected" },
+        { email: "fallback@example.com", access: "fallback-token", refresh: "fallback-refresh", expires: Date.now() + 3600_000, status: "idle", cooldownUntil: 0, accountId: "acct_fallback" },
+      ],
+    }, async (input, init, calls) => {
+      calls.push({
+        authorization: new Headers(init?.headers).get("authorization"),
+        accountId: new Headers(init?.headers).get("chatgpt-account-id"),
+      });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({ error: { code: "invalid_token" } }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    }, {
+      url: "https://chatgpt.com/backend-api/codex/responses",
+      init: {
+        method: "POST",
+        headers: { authorization: "Bearer rejected-token", "chatgpt-account-id": "acct_rejected" },
+        body: "{}",
+      },
+    });
+
+    assert.equal(failedRefreshFallback.response.status, 200);
+    assert.deepEqual(failedRefreshFallback.calls, [
+      { authorization: "Bearer rejected-token", accountId: "acct_rejected" },
+      { authorization: "Bearer fallback-token", accountId: "acct_fallback" },
+    ]);
+    assert.equal(failedRefreshFallback.pool.openai[0].status, "auth-error");
+    assert.equal(failedRefreshFallback.pool.openai[1].status, "active");
+
+    setTokenEndpointResponse(200, {
+      access_token: "once-refreshed-token",
+      refresh_token: "once-refreshed-refresh",
+      expires_in: 3600,
+    });
+    const boundedRetry = await withInstalledGuard({
+      openai: [
+        { email: "bounded@example.com", access: "bounded-token", refresh: "bounded-refresh", expires: Date.now() + 9 * 86400_000, status: "active", cooldownUntil: 0, accountId: "acct_bounded" },
+      ],
+    }, async (input, init, calls) => {
+      calls.push(new Headers(init?.headers).get("authorization"));
+      return new Response(JSON.stringify({ error: { message: "authentication token is expired" } }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }, {
+      url: "https://chatgpt.com/backend-api/codex/responses",
+      init: { method: "POST", headers: { authorization: "Bearer bounded-token" }, body: "{}" },
+    });
+
+    assert.equal(boundedRetry.response.status, 401);
+    assert.deepEqual(boundedRetry.calls, ["Bearer bounded-token", "Bearer once-refreshed-token"]);
+    assert.equal(boundedRetry.pool.openai[0].status, "auth-error");
+
+    const unrelatedApiKey = await withInstalledGuard({
+      openai: [
+        { email: "pool@example.com", access: "pool-token", refresh: "pool-refresh", expires: Date.now() + 3600_000, status: "idle", cooldownUntil: 0 },
+      ],
+    }, async (input, init, calls) => {
+      calls.push(new Headers(init?.headers).get("authorization"));
+      return new Response("unauthorized", { status: 401 });
+    }, {
+      url: "https://api.openai.com/v1/responses",
+      init: { method: "POST", headers: { authorization: "Bearer unrelated-api-key" }, body: "{}" },
+    });
+
+    assert.equal(unrelatedApiKey.response.status, 401);
+    assert.deepEqual(unrelatedApiKey.calls, ["Bearer unrelated-api-key"]);
+    assert.equal(unrelatedApiKey.authWrites.length, 0);
+    assert.equal(unrelatedApiKey.pool.openai[0].status, "idle");
+
+    const unrelatedLimitedApiKey = await withInstalledGuard({
+      openai: [
+        { email: "pool@example.com", access: "pool-token", refresh: "pool-refresh", expires: Date.now() + 3600_000, status: "idle", cooldownUntil: 0 },
+      ],
+    }, async (input, init, calls) => {
+      calls.push(new Headers(init?.headers).get("authorization"));
+      return new Response(JSON.stringify({ error: { code: "insufficient_quota" } }), {
+        status: 429,
+        headers: { "content-type": "application/json" },
+      });
+    }, {
+      url: "https://api.openai.com/v1/responses",
+      init: { method: "POST", headers: { authorization: "Bearer unrelated-api-key" }, body: "{}" },
+    });
+
+    assert.equal(unrelatedLimitedApiKey.response.status, 429);
+    assert.deepEqual(unrelatedLimitedApiKey.calls, ["Bearer unrelated-api-key"]);
+    assert.equal(unrelatedLimitedApiKey.authWrites.length, 0);
+    assert.equal(unrelatedLimitedApiKey.pool.openai[0].status, "idle");
 
     const genericServerFailure = await withInstalledGuard({
       openai: [
