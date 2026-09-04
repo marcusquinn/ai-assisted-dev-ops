@@ -215,6 +215,15 @@ test_context7() {
 	return 0
 }
 
+# Test the tracked Higgsfield MCP proxy without requiring private OAuth state
+test_higgsfield_proxy() {
+	print_header "Testing Higgsfield MCP Proxy"
+	run_test "Higgsfield proxy syntax" "node --check .agents/scripts/higgsfield-mcp-proxy.mjs"
+	run_test "Higgsfield OAuth syntax" "node --check .agents/scripts/higgsfield-mcp-oauth.mjs"
+	run_test "Higgsfield proxy tests" "node --test .agents/scripts/tests/test-higgsfield-mcp-proxy.mjs"
+	return 0
+}
+
 # Test network connectivity
 test_network() {
 	print_header "Testing Network Connectivity"
@@ -288,6 +297,8 @@ main() {
 	echo
 
 	test_context7
+	echo
+	test_higgsfield_proxy
 	echo
 
 	test_mcp_configurations

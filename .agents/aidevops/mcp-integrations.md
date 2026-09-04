@@ -42,6 +42,7 @@ tools:
 | | Cloudflare Code Mode MCP | OAuth via `mcp.cloudflare.com` |
 | | MCPorter | Discover, call, compose, generate CLIs for MCP servers |
 | | OpenAPI Search MCP | Remote Cloudflare Worker, no auth |
+| Media Generation | Higgsfield MCP | Browser OAuth state + request-bound refresh proxy |
 
 **Config Location**: `configs/mcp-templates/` beneath the aidevops repository or deployed `~/.aidevops/` root, independent of the caller's working directory.
 
@@ -148,6 +149,37 @@ Config for other runtimes (OpenCode uses `~/.config/opencode/opencode.json`; Cla
 **Tools**: `searchAPIs` (3000+ public APIs), `getAPIOverview`, `getOperationDetails`. Workflow: search -> overview -> details (minimal context usage).
 
 Per-agent enablement: `tools/context/openapi-search.md` (disabled globally, enabled on-demand).
+
+### Higgsfield MCP
+
+Higgsfield's hosted MCP endpoint uses OAuth with the `openid`, `email`, and
+`offline_access` scopes. The tracked local proxy preserves the existing schema
+compatibility fixes while refreshing an expired access token at the request
+boundary. It refreshes before known expiry, or once after an authentication
+rejection, and then retries the original MCP request once.
+
+```json
+{
+  "higgsfield": {
+    "type": "local",
+    "command": ["node", "/absolute/home/path/.aidevops/agents/scripts/higgsfield-mcp-proxy.mjs"],
+    "enabled": false
+  }
+}
+```
+
+The default OAuth state path is
+`~/.config/aidevops/higgsfield-mcp-proxy/state.json`. Set the absolute
+`HIGGSFIELD_MCP_STATE_PATH` only when migrating an existing connector state.
+Use the absolute proxy path printed by the setup command because MCP command
+arrays do not consistently expand `~` or `${HOME}` across clients.
+Complete initial browser authorization before starting the proxy. A missing,
+revoked, or invalid refresh token fails closed with reauthorization guidance;
+token values are never logged.
+
+Run `bash .agents/scripts/setup-mcp-integrations.sh higgsfield` for setup details
+and `node --test .agents/scripts/tests/test-higgsfield-mcp-proxy.mjs` for the
+credential-free lifecycle checks.
 
 ### Cloudflare Code Mode MCP
 
