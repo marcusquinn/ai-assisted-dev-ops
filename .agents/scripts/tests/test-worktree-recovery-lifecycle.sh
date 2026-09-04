@@ -627,6 +627,50 @@ test_dirty_recovery_short_circuits_expensive_probes() {
 	return 0
 }
 
+test_active_claim_short_circuits_later_probes() {
+	local bucket_path="${TEST_DIR}/active-claim-short-circuit"
+	local probe_path="${TEST_DIR}/active-claim-short-circuit-probe"
+	local entry=""
+	local rc=0
+
+	mkdir -p "$bucket_path" || rc=1
+	entry=$(
+		_worktree_recovery_plan_identity_json() {
+			local ignored_bucket="$1"
+			: "$ignored_bucket"
+			jq -cn --arg bucket "$bucket_path" \
+				'{bucket_path:$bucket,archive_path:($bucket + "/archive"),source_path:"/worktrees/source",
+				source_removal_outcome:"removed",branch:"refs/heads/feature/auto-20260830",head:"abc123"}'
+			return $?
+		}
+		_worktree_recovery_plan_git_state() { printf 'clear\n'; return 0; }
+		_worktree_recovery_plan_worktree_reference_state() { printf 'clear\n'; return 0; }
+		_worktree_recovery_plan_registry_state() { printf 'clear\n'; return 0; }
+		_worktree_recovery_plan_claim_state() { printf 'active\n'; return 0; }
+		_worktree_recovery_plan_process_state() {
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_plan_external_evidence_json() {
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_measure_path() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" 1024
+	) || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.disposition')" == "protected" ]] || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.reasons[0]')" == "active-session-claim" ]] || rc=1
+	[[ ! -e "$probe_path" ]] || rc=1
+	print_result "active_claim_short_circuits_later_probes" "$rc" \
+		"Expected an active claim to protect its archive without process, remote, or size probes"
+	return 0
+}
+
 test_plan_records_malformed_bucket_unknown() {
 	local home_path="${TEST_DIR}/malformed-home"
 	local recovery_root="${home_path}/recovery"
@@ -2364,6 +2408,7 @@ run_all_tests() {
 	test_recovery_issue_attribution_uses_archived_source_path
 	test_unlinked_merged_pr_is_terminal_task_evidence
 	test_dirty_recovery_short_circuits_expensive_probes
+	test_active_claim_short_circuits_later_probes
 	test_exact_plan_writes_candidate_without_mutation
 	test_plan_output_refuses_unsafe_targets
 	test_classification_fails_closed

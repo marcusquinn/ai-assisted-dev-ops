@@ -755,12 +755,18 @@ _worktree_recovery_plan_external_evidence_json() {
 	return $?
 }
 
-_worktree_recovery_plan_minimal_evidence_json() {
+_worktree_recovery_plan_partial_evidence_json() {
 	local git_state="$1"
+	local worktree_state="${2:-$WORKTREE_RECOVERY_UNAVAILABLE}"
+	local registry_state="${3:-$WORKTREE_RECOVERY_UNAVAILABLE}"
+	local claim_state="${4:-$WORKTREE_RECOVERY_UNAVAILABLE}"
+	local process_state="${5:-$WORKTREE_RECOVERY_UNAVAILABLE}"
 
-	jq -cn --arg git "$git_state" --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
-		'{git:$git,worktree:$unavailable,registry:$unavailable,claim:$unavailable,
-		process:$unavailable,external:{commit:$unavailable,open_pr:$unavailable,
+	jq -cn --arg git "$git_state" --arg worktree "$worktree_state" \
+		--arg registry "$registry_state" --arg claim "$claim_state" \
+		--arg process "$process_state" --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
+		'{git:$git,worktree:$worktree,registry:$registry,claim:$claim,
+		process:$process,external:{commit:$unavailable,open_pr:$unavailable,
 		task:$unavailable,issue_number:null,repo:null}}'
 	return $?
 }
@@ -771,14 +777,33 @@ _worktree_recovery_plan_evidence_json() {
 	local process_state="" external_json=""
 
 	git_state=$(_worktree_recovery_plan_git_state "$identity_json") || return 1
-	if [[ "$git_state" == "$WORKTREE_RECOVERY_PLAN_STATE_DIRTY" ]]; then
-		_worktree_recovery_plan_minimal_evidence_json "$git_state"
+	if [[ "$git_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
+		_worktree_recovery_plan_partial_evidence_json "$git_state"
 		return $?
 	fi
 	worktree_state=$(_worktree_recovery_plan_worktree_reference_state "$identity_json") || return 1
+	if [[ "$worktree_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
+		_worktree_recovery_plan_partial_evidence_json "$git_state" "$worktree_state"
+		return $?
+	fi
 	registry_state=$(_worktree_recovery_plan_registry_state "$identity_json") || return 1
+	if [[ "$registry_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
+		_worktree_recovery_plan_partial_evidence_json \
+			"$git_state" "$worktree_state" "$registry_state"
+		return $?
+	fi
 	claim_state=$(_worktree_recovery_plan_claim_state "$identity_json") || return 1
+	if [[ "$claim_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
+		_worktree_recovery_plan_partial_evidence_json \
+			"$git_state" "$worktree_state" "$registry_state" "$claim_state"
+		return $?
+	fi
 	process_state=$(_worktree_recovery_plan_process_state "$identity_json") || return 1
+	if [[ "$process_state" != "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" ]]; then
+		_worktree_recovery_plan_partial_evidence_json \
+			"$git_state" "$worktree_state" "$registry_state" "$claim_state" "$process_state"
+		return $?
+	fi
 	external_json=$(_worktree_recovery_plan_external_evidence_json "$identity_json") || return 1
 	printf '%s\n' "$external_json" | jq -e \
 		--arg clear "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" \
