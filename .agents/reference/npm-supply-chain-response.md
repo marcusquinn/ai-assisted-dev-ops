@@ -32,6 +32,49 @@ Use this playbook for npm compromises that execute during install or publish.
 - Monitor publishes for unexpected versions, size anomalies, new lifecycle hooks,
   git URL dependencies, and valid-provenance-but-unexpected workflow runs.
 
+## npm v12 install defaults
+
+npm v12 changes previously automatic install behaviour to deny-by-default. Do
+not weaken these defaults merely to make an install pass:
+
+- Dependency `preinstall`, `install`, and `postinstall` scripts, implicit
+  `node-gyp` builds, and `prepare` scripts from Git, file, and link dependencies
+  stay disabled until explicitly approved. In a trusted checkout, use npm
+  11.16.0 or later to inspect pending scripts with
+  `npm approve-scripts --allow-scripts-pending`; review the exact package,
+  version, source, and script before approving it, deny the rest, and commit the
+  resulting project `allowScripts` allowlist.
+- Keep `--allow-git=none` and `--allow-remote=none` unless a reviewed dependency
+  requires an exception. Scope any exception to the minimum source accepted by
+  the pinned npm version; never restore Git or remote URL resolution broadly.
+  Registry packages are not remote URL dependencies for this control.
+- Script-disabled lockfile regeneration remains the conservative first pass.
+  Run approved dependency scripts only after manifest and lockfile review,
+  malware and vulnerability scans, and isolation appropriate to the package.
+
+These defaults apply to npm v12. npm 11.16.0 and later can report the pending
+approvals before migration, but do not assume an older client enforces the v12
+defaults.
+
+## npm account and publishing authentication
+
+- npm granular access tokens configured to bypass 2FA cannot perform sensitive
+  account, package, organization, token, maintainer, or trusted-publisher
+  management. Perform those operations interactively with a 2FA challenge.
+- npm targets January 2027 for removing direct publication from bypass-2FA
+  granular access tokens. Move automation to OIDC Trusted Publishing or stage
+  the package for interactive 2FA approval; do not replace one long-lived
+  publish token with another.
+- After a Trusted Publisher succeeds, require 2FA and disallow traditional
+  tokens in the package publishing settings when compatibility permits. Prefer
+  stage-only publishers when a human approval step fits the release contract;
+  otherwise keep direct publication constrained to the exact trusted workflow,
+  environment, hosted runner, and protected release refs.
+- Trusted Publishing authenticates `npm publish` and `npm stage publish`, not
+  package installation, account management, or stage approval. If CI installs
+  private dependencies, use a separate read-only granular token only in the
+  install step and never expose it to the publication step.
+
 ## Dependency update protocol
 
 1. Require one committed lockfile and the matching exact package-manager version.
