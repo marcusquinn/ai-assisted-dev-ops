@@ -6,18 +6,15 @@
 import json
 import os
 from pathlib import Path, PurePosixPath
-import selectors
 import shutil
-import signal
 import stat
-import subprocess
 import sys
 import time
 from typing import Callable, Dict, List, NamedTuple, Optional, Set, Tuple
 
+from _worktree_recovery_git import git_output
+
 CACHE_MANIFEST_SCHEMA = "aidevops.worktree-recovery-cache-manifest/v1"
-GIT_OUTPUT_MAX_BYTES = 1024 * 1024
-GIT_OUTPUT_LIMIT_RC = 125
 
 
 class RootExpectation(NamedTuple):
@@ -127,127 +124,6 @@ def bounded_git_state(
     if status_rc != 0:
         return 2
     return status_bytes_have_user_data(raw_status, archive_root, git_bin, deadline_epoch)
-
-
-def stop_process(process: subprocess.Popen) -> None:
-    """Stop a Git process group after a resource limit is reached."""
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
-    try:
-        process.wait(timeout=0.2)
-        stopped = True
-    except subprocess.TimeoutExpired:
-        stopped = False
-    if not stopped:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
-        try:
-            process.wait(timeout=0.2)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def start_git_process(
-    git_bin: str, source_root: Path, arguments: List[str]
-) -> Optional[subprocess.Popen]:
-    """Start one structured, non-shell Git query."""
-    git_environment = os.environ.copy()
-    git_environment["GIT_OPTIONAL_LOCKS"] = "0"
-    try:
-        # The trusted caller resolves git_bin; structured argv disables shell parsing.
-        process = subprocess.Popen(
-            [git_bin, "-C", str(source_root), *arguments],
-            env=git_environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )  # nosec B603
-    except OSError:
-        return None
-    return process
-
-
-def stream_wait_seconds(deadline_epoch: Optional[int]) -> Optional[float]:
-    """Return a short stream wait or None once the shared deadline expires."""
-    if deadline_epoch is None:
-        return 0.1
-    remaining = deadline_epoch - time.time()
-    return min(0.1, remaining) if remaining > 0 else None
-
-
-def bounded_stream_output(
-    process: subprocess.Popen,
-    selector: selectors.BaseSelector,
-    deadline_epoch: Optional[int],
-) -> Tuple[Optional[int], bytearray]:
-    """Read bounded stdout, returning a terminal limit code or EOF marker."""
-    output = bytearray()
-    while True:
-        wait_seconds = stream_wait_seconds(deadline_epoch)
-        if wait_seconds is None:
-            return 124, bytearray()
-        events = selector.select(wait_seconds)
-        if not events:
-            continue
-        chunk = os.read(process.stdout.fileno(), 65536)
-        if not chunk:
-            return None, output
-        output.extend(chunk)
-        if len(output) > GIT_OUTPUT_MAX_BYTES:
-            return GIT_OUTPUT_LIMIT_RC, bytearray()
-
-
-def wait_for_process(
-    process: subprocess.Popen, deadline_epoch: Optional[int]
-) -> int:
-    """Wait for process completion without extending the shared deadline."""
-    wait_timeout = None
-    if deadline_epoch is not None:
-        wait_timeout = max(0.0, deadline_epoch - time.time())
-    try:
-        return process.wait(timeout=wait_timeout)
-    except subprocess.TimeoutExpired:
-        return 124
-
-
-def read_process_output(
-    process: subprocess.Popen, deadline_epoch: Optional[int]
-) -> Tuple[int, bytes]:
-    """Capture bounded process output until EOF or the shared deadline."""
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    try:
-        terminal_rc, output = bounded_stream_output(process, selector, deadline_epoch)
-        if terminal_rc is None:
-            terminal_rc = wait_for_process(process, deadline_epoch)
-        if terminal_rc in {124, GIT_OUTPUT_LIMIT_RC}:
-            stop_process(process)
-            output.clear()
-    finally:
-        selector.close()
-        process.stdout.close()
-    return terminal_rc, bytes(output)
-
-
-def git_output(
-    git_bin: str,
-    source_root: Path,
-    arguments: List[str],
-    deadline_epoch: Optional[int] = None,
-) -> Tuple[int, bytes]:
-    """Run one read-only Git query with bounded captured output."""
-    if deadline_epoch is not None and deadline_epoch <= time.time():
-        return 124, b""
-    process = start_git_process(git_bin, source_root, arguments)
-    if process is None or process.stdout is None:
-        if process is not None:
-            stop_process(process)
-        return 2, b""
-    return read_process_output(process, deadline_epoch)
 
 
 def allocated_entry(
@@ -495,6 +371,31 @@ def validate_removed_root(staged_path: Path, deadline_epoch: int) -> int:
     return 0 if not staged_path.exists() and not staged_path.is_symlink() else 2
 
 
+def prune_cache_root(
+    source_root: Path,
+    archive_root: Path,
+    root_parts: Tuple[str, ...],
+    git_bin: str,
+) -> int:
+    """Prune one recognised root, returning 2 only when safety is uncertain."""
+    relative_root = "/".join(root_parts)
+    tracked_rc, tracked = git_output(
+        git_bin, source_root, ["ls-files", "-z", "--", relative_root]
+    )
+    if tracked_rc != 0:
+        return 2
+    if tracked:
+        return 0
+    candidate = ordinary_directory(archive_root, root_parts)
+    if candidate is None:
+        return 0
+    try:
+        shutil.rmtree(candidate)
+    except OSError:
+        return 2
+    return 0
+
+
 def prune_caches(source_root: Path, archive_root: Path, git_bin: str) -> int:
     """Remove only ignored, untracked, recognised cache roots from an archive copy."""
     status_rc, raw_status = git_output(
@@ -509,20 +410,7 @@ def prune_caches(source_root: Path, archive_root: Path, git_bin: str) -> int:
         root_parts = safe_root(relative_path) if state == b"!!" else None
         if root_parts is None or root_parts in pruned:
             continue
-        relative_root = "/".join(root_parts)
-        tracked_rc, tracked = git_output(
-            git_bin, source_root, ["ls-files", "-z", "--", relative_root]
-        )
-        if tracked_rc != 0:
-            return 2
-        if tracked:
-            continue
-        candidate = ordinary_directory(archive_root, root_parts)
-        if candidate is None:
-            continue
-        try:
-            shutil.rmtree(candidate)
-        except OSError:
+        if prune_cache_root(source_root, archive_root, root_parts, git_bin) != 0:
             return 2
         pruned.add(root_parts)
     return 0
