@@ -20,7 +20,7 @@ import {
   fetchTokenEndpoint, fetchOpenAITokenEndpoint, fetchGoogleTokenEndpoint,
 } from "./oauth-pool-token-endpoint.mjs";
 import {
-  patchAccount, withPoolLock, loadPool, savePool,
+  patchAccount, withPoolLock, withPoolLockAsync, loadPool, savePool,
 } from "./oauth-pool-storage.mjs";
 
 // ---------------------------------------------------------------------------
@@ -200,22 +200,23 @@ function markAuthFailure(provider, account, reason) {
   const now = Date.now();
   const failures = (Number(account.authRefreshFailures) || 0) + 1;
   const cooldownMs = authFailureBackoffMs(failures);
-  const cooldownUntil = now + cooldownMs;
-  patchAccount(provider, account.email, {
+  const failureState = {
     status: "auth-error",
-    cooldownUntil,
+    cooldownUntil: now + cooldownMs,
     authRefreshFailures: failures,
     authRefreshLastFailureAt: now,
-  });
-  account.status = "auth-error";
-  account.cooldownUntil = cooldownUntil;
-  account.authRefreshFailures = failures;
-  account.authRefreshLastFailureAt = now;
+  };
+  patchAccount(provider, account.email, failureState);
+  Object.assign(account, failureState);
+  logAuthFailure(provider, account.email, reason, failures, cooldownMs);
+  return cooldownMs;
+}
+
+function logAuthFailure(provider, email, reason, failures, cooldownMs) {
   console.error(
-    `[aidevops] OAuth pool: ${provider} ${reason} for ${account.email}; ` +
+    `[aidevops] OAuth pool: ${provider} ${reason} for ${email}; ` +
     `retry in ${Math.ceil(cooldownMs / 1000)}s (failure ${failures})`,
   );
-  return cooldownMs;
 }
 
 export function markAuthRefreshFailure(provider, account) {
@@ -236,34 +237,87 @@ const REFRESH_FN = {
   google: refreshGoogleAccessToken,
 };
 
-async function refreshAndStoreToken(provider, account) {
-  const tokens = await (REFRESH_FN[provider] || refreshAccessToken)(account);
-  if (!tokens) {
-    markAuthRefreshFailure(provider, account);
-    return null;
-  }
-  patchAccount(provider, account.email, {
-    access: tokens.access,
-    refresh: tokens.refresh,
-    expires: tokens.expires,
-    status: "active",
-    cooldownUntil: null,
-    authRefreshFailures: 0,
-    authRefreshLastFailureAt: null,
+function tokenState(account) {
+  return {
+    access: account?.access || "",
+    refresh: account?.refresh || "",
+    expires: Number(account?.expires) || 0,
+  };
+}
+
+function sameTokenState(account, expected) {
+  const current = tokenState(account);
+  return current.access === expected.access &&
+    current.refresh === expected.refresh &&
+    current.expires === expected.expires;
+}
+
+function findStoredAccount(pool, provider, email) {
+  return (pool[provider] || []).find((candidate) => candidate.email === email) || null;
+}
+
+function syncCallerAccount(account, stored) {
+  if (stored) Object.assign(account, stored);
+  return stored?.access || null;
+}
+
+async function refreshAndStoreToken(provider, account, force = false) {
+  const requestedState = tokenState(account);
+  return withPoolLockAsync(async () => {
+    let pool = loadPool();
+    let stored = findStoredAccount(pool, provider, account.email);
+    if (!stored) return null;
+
+    if ((force && !sameTokenState(stored, requestedState)) ||
+        (!force && stored.access && stored.expires > Date.now())) {
+      return syncCallerAccount(account, stored);
+    }
+
+    const refreshState = tokenState(stored);
+    const tokens = await (REFRESH_FN[provider] || refreshAccessToken)(stored);
+
+    // Same-process synchronous writers are re-entrant while this async lock is
+    // held. Re-read and compare before publishing so a re-auth cannot be
+    // overwritten by an older in-flight refresh response.
+    pool = loadPool();
+    stored = findStoredAccount(pool, provider, account.email);
+    if (!stored || !sameTokenState(stored, refreshState)) {
+      return syncCallerAccount(account, stored);
+    }
+
+    if (!tokens) {
+      const now = Date.now();
+      const failures = (Number(stored.authRefreshFailures) || 0) + 1;
+      const cooldownMs = authFailureBackoffMs(failures);
+      Object.assign(stored, {
+        status: "auth-error",
+        cooldownUntil: now + cooldownMs,
+        authRefreshFailures: failures,
+        authRefreshLastFailureAt: now,
+      });
+      savePool(pool);
+      syncCallerAccount(account, stored);
+      logAuthFailure(provider, stored.email, "token refresh failed", failures, cooldownMs);
+      return null;
+    }
+
+    Object.assign(stored, {
+      access: tokens.access,
+      refresh: tokens.refresh || stored.refresh,
+      expires: tokens.expires,
+      status: "active",
+      cooldownUntil: null,
+      authRefreshFailures: 0,
+      authRefreshLastFailureAt: null,
+    });
+    savePool(pool);
+    return syncCallerAccount(account, stored);
   });
-  account.access = tokens.access;
-  account.refresh = tokens.refresh;
-  account.expires = tokens.expires;
-  account.status = "active";
-  account.cooldownUntil = null;
-  account.authRefreshFailures = 0;
-  account.authRefreshLastFailureAt = null;
-  return tokens.access;
 }
 
 /** Force-refresh an OpenAI account even when its local expiry is in the future. */
 export async function forceRefreshOpenAIToken(account) {
-  return refreshAndStoreToken("openai", account);
+  return refreshAndStoreToken("openai", account, true);
 }
 
 /**

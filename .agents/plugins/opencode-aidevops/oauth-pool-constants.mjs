@@ -23,7 +23,7 @@ const HOME = homedir();
 /** Pool credential file path */
 export const POOL_FILE = join(HOME, ".aidevops", "oauth-pool.json");
 
-/** Advisory lock file — shared with oauth-pool-helper.sh (flock-based) */
+/** Advisory lock identity shared with oauth-pool-helper.sh (`.lock.d` protocol) */
 export const POOL_LOCK_FILE = POOL_FILE + ".lock";
 
 // ---------------------------------------------------------------------------

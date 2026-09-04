@@ -27,6 +27,7 @@ tools:
 - **Docs**: `.agents/[service].md`
 - **Required functions**: `check_dependencies`, `load_config`, `get_account_config`, `api_request`, `list_accounts`, `show_help`, `main`
 - **Update on add**: `.gitignore`, `README.md`, `AGENTS.md`, `aidevops/recommendations.md`, `setup-wizard-helper.sh`
+- **Rotating OAuth state**: follow `reference/oauth-token-state.md`; do not persist mutable tokens as static shell credentials
 
 <!-- AI-CONTEXT-END -->
 

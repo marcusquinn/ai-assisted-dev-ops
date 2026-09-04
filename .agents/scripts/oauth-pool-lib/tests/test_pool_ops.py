@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -653,6 +654,34 @@ class RefreshTests(PoolOpsTestCase):
         self.assertEqual(_common.token_refresh_error_label(result), "auth_invalid_grant")
         self.assertNotIn("secret-refresh", json.dumps(result))
         self.assertNotIn("do not log this", json.dumps(result))
+
+    def test_shared_lock_uses_private_directory_protocol(self) -> None:
+        lock_path = self.tmp / "oauth-pool.json.lock"
+        lock_path.touch()
+        with lock_path.open("w") as lock_file:
+            _common.acquire_lock(lock_file, timeout=1)
+            lock_dir = Path(str(lock_path) + ".d")
+            owner_path = lock_dir / "owner"
+            owner = read_json(owner_path)
+
+            self.assertEqual(owner["schema"], "aidevops.oauth-lock/v1")
+            self.assertEqual(owner["pid"], os.getpid())
+            self.assertTrue(owner["token"])
+            self.assertEqual(stat.S_IMODE(lock_dir.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(owner_path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(lock_path.stat().st_mode), 0o600)
+
+            _common.release_lock(lock_file)
+            self.assertFalse(lock_dir.exists())
+
+    def test_atomic_write_enforces_private_parent_and_file_modes(self) -> None:
+        private_dir = self.tmp / "private"
+        target = private_dir / "state.json"
+        _common.atomic_write_json(str(target), {"status": "active"})
+
+        self.assertEqual(read_json(target), {"status": "active"})
+        self.assertEqual(stat.S_IMODE(private_dir.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
 
     def test_unauthorized_refresh_error_is_sanitized(self) -> None:
         error = urllib.error.HTTPError(

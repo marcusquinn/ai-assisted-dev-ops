@@ -9,8 +9,9 @@
 
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, rmdirSync, unlinkSync,
-  renameSync, chmodSync,
+  renameSync, chmodSync, statSync,
 } from "fs";
+import { randomUUID } from "crypto";
 import { dirname } from "path";
 import { POOL_FILE, POOL_LOCK_FILE } from "./oauth-pool-constants.mjs";
 
@@ -56,15 +57,21 @@ export function loadPool() {
  * @param {Object} data
  */
 export function savePool(data) {
+  const dir = dirname(POOL_FILE);
+  let tmp = "";
   try {
-    const dir = dirname(POOL_FILE);
-    mkdirSync(dir, { recursive: true });
-    const tmp = POOL_FILE + ".tmp." + process.pid;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    tmp = `${POOL_FILE}.tmp.${process.pid}.${randomUUID()}`;
     writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
     chmodSync(tmp, 0o600);
     renameSync(tmp, POOL_FILE);
   } catch (err) {
+    if (tmp) {
+      try { unlinkSync(tmp); } catch { /* absent or already renamed */ }
+    }
     console.error(`[aidevops] OAuth pool: failed to save pool file: ${err.message}`);
+    throw err;
   }
 }
 
@@ -74,33 +81,117 @@ export function savePool(data) {
 
 const LOCK_DIR = POOL_LOCK_FILE + ".d";
 const OWNER_FILE = LOCK_DIR + "/owner";
-const LOCK_STALE_MS = 10000; // 10 s — sufficient for any normal pool operation
+const LOCK_WAIT_MS = 30000;
+const OWNERLESS_LOCK_GRACE_MS = 30000;
+let activeAsyncLockToken = "";
+let asyncLockTail = Promise.resolve();
 
-/** Return true if the lock recorded in OWNER_FILE belongs to a dead or expired process. */
-function isLockStale() {
+function ensurePoolDirectory() {
+  const dir = dirname(POOL_FILE);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+}
+
+function processIsLive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
-    const { pid, ts } = JSON.parse(readFileSync(OWNER_FILE, "utf-8"));
-    const processGone = (() => { try { process.kill(pid, 0); return false; } catch { return true; } })();
-    return processGone || (Date.now() - ts > LOCK_STALE_MS);
-  } catch {
-    return false; // unreadable — wait and retry
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === "EPERM";
   }
 }
 
-/** Remove a stale lock directory, ignoring races with other cleaners. */
-function removeStalelock() {
+/** Return a stable snapshot only when the current lock can be reclaimed. */
+function staleLockSnapshot() {
+  try {
+    const raw = readFileSync(OWNER_FILE, "utf-8");
+    const owner = JSON.parse(raw);
+    return processIsLive(owner.pid) ? null : raw;
+  } catch {
+    try {
+      return Date.now() - statSync(LOCK_DIR).mtimeMs >= OWNERLESS_LOCK_GRACE_MS ? "" : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/** Remove only the unchanged stale lock observed by staleLockSnapshot. */
+function removeStaleLock(snapshot) {
+  try {
+    const current = readFileSync(OWNER_FILE, "utf-8");
+    if (current !== snapshot) return;
+  } catch {
+    if (snapshot !== "") return;
+  }
   try { unlinkSync(OWNER_FILE); } catch { /* race */ }
   try { rmdirSync(LOCK_DIR); } catch { /* race */ }
 }
 
-/** Release the lock only if we still own it, preventing removal of another process's lock. */
-function releaseLock() {
+function tryAcquireLock() {
+  const token = randomUUID();
   try {
-    const { pid } = JSON.parse(readFileSync(OWNER_FILE, "utf-8"));
-    if (pid !== process.pid) return;
+    mkdirSync(LOCK_DIR, { mode: 0o700 });
+  } catch (err) {
+    if (err?.code === "EEXIST") return "";
+    throw err;
+  }
+  try {
+    chmodSync(LOCK_DIR, 0o700);
+    writeFileSync(
+      OWNER_FILE,
+      JSON.stringify({ schema: "aidevops.oauth-lock/v1", pid: process.pid, token, createdAt: Date.now() }),
+      { flag: "wx", mode: 0o600 },
+    );
+    chmodSync(OWNER_FILE, 0o600);
+    return token;
+  } catch (err) {
+    try { unlinkSync(OWNER_FILE); } catch { /* absent */ }
+    try { rmdirSync(LOCK_DIR); } catch { /* retained for diagnosis */ }
+    throw err;
+  }
+}
+
+/** Release the lock only when its unguessable owner token still matches. */
+function releaseLock(token) {
+  try {
+    const owner = JSON.parse(readFileSync(OWNER_FILE, "utf-8"));
+    if (owner.pid !== process.pid || owner.token !== token) return;
     try { unlinkSync(OWNER_FILE); } catch { /* ignore */ }
     try { rmdirSync(LOCK_DIR); } catch { /* ignore */ }
   } catch { /* lock dir already gone — that's fine */ }
+}
+
+function waitForLockSync() {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
+  while (Date.now() < deadline) {
+    const token = tryAcquireLock();
+    if (token) return token;
+    const snapshot = staleLockSnapshot();
+    if (snapshot !== null) {
+      removeStaleLock(snapshot);
+      continue;
+    }
+    Atomics.wait(sleepBuf, 0, 0, 50);
+  }
+  throw new Error("[aidevops] OAuth pool: timed out waiting for pool lock");
+}
+
+async function waitForLockAsync() {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (Date.now() < deadline) {
+    const token = tryAcquireLock();
+    if (token) return token;
+    const snapshot = staleLockSnapshot();
+    if (snapshot !== null) {
+      removeStaleLock(snapshot);
+      continue;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("[aidevops] OAuth pool: timed out waiting for pool lock");
 }
 
 /**
@@ -115,26 +206,39 @@ function releaseLock() {
  * @returns {T}
  */
 export function withPoolLock(fn) {
-  mkdirSync(dirname(POOL_FILE), { recursive: true });
-
-  const deadline = Date.now() + 5000;
-  const sleepBuf = new Int32Array(new SharedArrayBuffer(4));
-
-  while (true) {
-    try {
-      mkdirSync(LOCK_DIR);
-      writeFileSync(OWNER_FILE, JSON.stringify({ pid: process.pid, ts: Date.now() }), { mode: 0o600 });
-      break;
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      if (Date.now() >= deadline) throw new Error("[aidevops] OAuth pool: timed out waiting for pool lock");
-      if (isLockStale()) { removeStalelock(); continue; }
-      Atomics.wait(sleepBuf, 0, 0, 50);
-    }
-  }
-
+  ensurePoolDirectory();
+  if (activeAsyncLockToken) return fn();
+  const token = waitForLockSync();
   try { return fn(); }
-  finally { releaseLock(); }
+  finally { releaseLock(token); }
+}
+
+/**
+ * Execute an async refresh transaction under the same cross-process lock.
+ * Synchronous same-process mutations remain re-entrant and complete before the
+ * awaiting refresh continuation resumes on the JavaScript event loop.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+export async function withPoolLockAsync(fn) {
+  ensurePoolDirectory();
+  const previous = asyncLockTail;
+  let advanceQueue = () => {};
+  asyncLockTail = new Promise((resolve) => { advanceQueue = resolve; });
+  await previous;
+
+  let token = "";
+  try {
+    token = await waitForLockAsync();
+    activeAsyncLockToken = token;
+    return await fn();
+  } finally {
+    activeAsyncLockToken = "";
+    if (token) releaseLock(token);
+    advanceQueue();
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any
 
 
@@ -47,53 +47,134 @@ _AUTH_ERROR_CODES = {
 
 
 # ---------------------------------------------------------------------------
-# Cross-platform exclusive file lock (stdlib only, no pip dependencies).
+# Cross-runtime exclusive lock (stdlib only, no pip dependencies).
 # ---------------------------------------------------------------------------
 
-def _acquire_lock_win(lock_fd) -> None:
-    import msvcrt
-    deadline = time.time() + 30
-    while True:
-        try:
-            lock_fd.seek(0)
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-            return
-        except OSError:
-            if time.time() >= deadline:
-                raise
-            time.sleep(0.1)
+_LOCK_WAIT_SECONDS = 30.0
+_OWNERLESS_LOCK_GRACE_SECONDS = 30.0
 
 
-def _release_lock_win(lock_fd) -> None:
-    import msvcrt
+def _process_is_live(pid: object) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
     try:
-        lock_fd.seek(0)
-        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _stale_lock_snapshot(lock_dir: str, owner_path: str) -> str | None:
+    try:
+        with open(owner_path, encoding="utf-8") as owner_file:
+            raw = owner_file.read()
+        owner = json.loads(raw)
+        return None if _process_is_live(owner.get("pid")) else raw
+    except (OSError, ValueError, TypeError, AttributeError):
+        try:
+            age = time.time() - os.stat(lock_dir).st_mtime
+        except OSError:
+            return None
+        return "" if age >= _OWNERLESS_LOCK_GRACE_SECONDS else None
+
+
+def _remove_stale_lock(lock_dir: str, owner_path: str, snapshot: str) -> None:
+    try:
+        with open(owner_path, encoding="utf-8") as owner_file:
+            current = owner_file.read()
+        if current != snapshot:
+            return
+    except OSError:
+        if snapshot != "":
+            return
+    try:
+        os.unlink(owner_path)
+    except OSError:
+        pass
+    try:
+        os.rmdir(lock_dir)
     except OSError:
         pass
 
 
-def acquire_lock(lock_fd) -> None:
-    """Acquire an exclusive lock on the given file descriptor."""
-    if sys.platform == "win32":
-        _acquire_lock_win(lock_fd)
-        return
-    import fcntl
-    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+def acquire_lock(lock_fd, timeout: float = _LOCK_WAIT_SECONDS) -> None:
+    """Acquire the mkdir lock shared with the OpenCode OAuth pool."""
+    lock_path = os.fspath(lock_fd.name)
+    lock_dir = lock_path + ".d"
+    owner_path = os.path.join(lock_dir, "owner")
+    token = str(uuid.uuid4())
+    deadline = time.monotonic() + timeout
+    os.chmod(lock_path, 0o600)
+
+    while time.monotonic() < deadline:
+        try:
+            os.mkdir(lock_dir, 0o700)
+        except FileExistsError:
+            snapshot = _stale_lock_snapshot(lock_dir, owner_path)
+            if snapshot is not None:
+                _remove_stale_lock(lock_dir, owner_path, snapshot)
+                continue
+            time.sleep(0.05)
+            continue
+
+        try:
+            owner_fd = os.open(owner_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(owner_fd, "w", encoding="utf-8") as owner_file:
+                json.dump(
+                    {
+                        "schema": "aidevops.oauth-lock/v1",
+                        "pid": os.getpid(),
+                        "token": token,
+                        "createdAt": int(time.time() * 1000),
+                    },
+                    owner_file,
+                )
+            os.chmod(lock_dir, 0o700)
+            os.chmod(owner_path, 0o600)
+            lock_fd._aidevops_lock = (lock_dir, owner_path, token)
+            return
+        except BaseException:
+            try:
+                os.unlink(owner_path)
+            except OSError:
+                pass
+            try:
+                os.rmdir(lock_dir)
+            except OSError:
+                pass
+            raise
+
+    raise TimeoutError("timed out waiting for OAuth pool lock")
 
 
 def release_lock(lock_fd) -> None:
-    """Release an exclusive lock on the given file descriptor."""
-    if sys.platform == "win32":
-        _release_lock_win(lock_fd)
+    """Release only the mkdir lock owned by this descriptor."""
+    ownership = getattr(lock_fd, "_aidevops_lock", None)
+    if not ownership:
         return
-    import fcntl
-    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    lock_dir, owner_path, token = ownership
+    try:
+        with open(owner_path, encoding="utf-8") as owner_file:
+            owner = json.load(owner_file)
+        if owner.get("pid") != os.getpid() or owner.get("token") != token:
+            return
+        os.unlink(owner_path)
+        os.rmdir(lock_dir)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    finally:
+        delattr(lock_fd, "_aidevops_lock")
 
 
 def atomic_write_json(path: str, data: Any) -> None:
     """Atomically write JSON data to a file (write-to-temp then rename)."""
-    d = os.path.dirname(path)
+    parent = os.path.dirname(path)
+    d = parent or "."
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if parent:
+        os.chmod(d, 0o700)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
