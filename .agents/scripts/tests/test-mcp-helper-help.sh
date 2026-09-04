@@ -106,6 +106,6 @@ assert_caller_empty "templates command"
 template_dir="${fixture_root}/configs/mcp-templates"
 [[ -d "$template_dir" ]] || fail "templates command did not use the fixture root"
 template_count=$(ls -1 "$template_dir"/*.json 2>/dev/null | wc -l | tr -d ' ')
-[[ "$template_count" -eq 5 ]] || fail "templates command created ${template_count} files instead of 5"
+[[ "$template_count" -eq 6 ]] || fail "templates command created ${template_count} files instead of 6"
 
 printf 'PASS MCP helper help and template dispatch are side-effect safe\n'
