@@ -15,6 +15,7 @@ WORKTREE_RECOVERY_PLAN_DISPOSITION_PROTECTED="protected"
 WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN="unknown"
 WORKTREE_RECOVERY_PLAN_STATE_ACTIVE="active"
 WORKTREE_RECOVERY_PLAN_STATE_CLEAR="clear"
+WORKTREE_RECOVERY_PLAN_STATE_DIRTY="dirty"
 WORKTREE_RECOVERY_PLAN_CONFIDENCE_EXACT="exact"
 WORKTREE_RECOVERY_PLAN_JSON_NULL="null"
 WORKTREE_RECOVERY_PRODUCER="worktree-helper"
@@ -658,14 +659,39 @@ _worktree_recovery_plan_repo_slug() {
 }
 
 _worktree_recovery_plan_issue_number() {
-	local branch="$1"
-	branch="${branch#refs/heads/}"
-	if [[ "$branch" =~ gh[-]?([0-9]+) ]]; then
-		printf '%s\n' "${BASH_REMATCH[1]}"
+	local reference="$1"
+	reference="${reference#refs/heads/}"
+	if [[ "$reference" =~ (^|[/_-])gh[-]?([0-9]+)([/_-]|$) ]]; then
+		printf '%s\n' "${BASH_REMATCH[2]}"
 		return 0
 	fi
-	if [[ "$branch" =~ (^|/)fix/([0-9]{3,})([-/]|$) ]]; then
+	if [[ "$reference" =~ (^|[/_-])pr[-]?([0-9]+)([/_-]|$) ]]; then
 		printf '%s\n' "${BASH_REMATCH[2]}"
+		return 0
+	fi
+	if [[ "$reference" =~ (^|/)fix/([0-9]{3,})([-/]|$) ]]; then
+		printf '%s\n' "${BASH_REMATCH[2]}"
+		return 0
+	fi
+	return 1
+}
+
+_worktree_recovery_plan_identity_issue_number() {
+	local branch="$1"
+	local source_path="$2"
+	local branch_issue="" source_issue=""
+
+	branch_issue=$(_worktree_recovery_plan_issue_number "$branch" 2>/dev/null || true)
+	source_issue=$(_worktree_recovery_plan_issue_number "${source_path##*/}" 2>/dev/null || true)
+	if [[ -n "$branch_issue" && -n "$source_issue" && "$branch_issue" != "$source_issue" ]]; then
+		return 2
+	fi
+	if [[ -n "$branch_issue" ]]; then
+		printf '%s\n' "$branch_issue"
+		return 0
+	fi
+	if [[ -n "$source_issue" ]]; then
+		printf '%s\n' "$source_issue"
 		return 0
 	fi
 	return 1
@@ -673,12 +699,13 @@ _worktree_recovery_plan_issue_number() {
 
 _worktree_recovery_plan_external_evidence_json() {
 	local identity_json="$1"
-	local archive_path="" branch_name="" head="" repo_slug=""
+	local archive_path="" source_path="" branch_name="" head="" repo_slug=""
 	local branch=""
 	local issue_number="" pr_json="" issue_state="" issue_state_normalized=""
-	local open_count="" merged_count=""
+	local open_count="" merged_count="" issue_number_status=0
 
 	archive_path=$(printf '%s\n' "$identity_json" | jq -r '.archive_path') || return 1
+	source_path=$(printf '%s\n' "$identity_json" | jq -r '.source_path') || return 1
 	branch=$(printf '%s\n' "$identity_json" | jq -r '.branch') || return 1
 	head=$(printf '%s\n' "$identity_json" | jq -r '.head') || return 1
 	branch_name="${branch#refs/heads/}"
@@ -687,7 +714,13 @@ _worktree_recovery_plan_external_evidence_json() {
 			'{commit:$unavailable,open_pr:$unavailable,task:$unavailable,issue_number:null,repo:null}'
 		return 0
 	}
-	issue_number=$(_worktree_recovery_plan_issue_number "$branch" 2>/dev/null || true)
+	issue_number=$(_worktree_recovery_plan_identity_issue_number \
+		"$branch" "$source_path" 2>/dev/null) || issue_number_status=$?
+	if [[ "$issue_number_status" -eq 2 ]]; then
+		jq -cn --arg repo "$repo_slug" --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
+			'{commit:$unavailable,open_pr:$unavailable,task:$unavailable,issue_number:null,repo:$repo}'
+		return 0
+	fi
 	if ! command -v gh >/dev/null 2>&1; then
 		jq -cn --arg repo "$repo_slug" --arg issue "$issue_number" \
 			--arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
@@ -708,6 +741,8 @@ _worktree_recovery_plan_external_evidence_json() {
 	if [[ -n "$issue_number" ]]; then
 		issue_state=$(gh issue view "$issue_number" --repo "$repo_slug" \
 			--json state --jq '.state // empty' 2>/dev/null) || issue_state="$WORKTREE_RECOVERY_UNAVAILABLE"
+	elif [[ "$merged_count" -gt 0 ]]; then
+		issue_state="closed"
 	else
 		issue_state="unlinked"
 	fi
@@ -720,12 +755,26 @@ _worktree_recovery_plan_external_evidence_json() {
 	return $?
 }
 
+_worktree_recovery_plan_minimal_evidence_json() {
+	local git_state="$1"
+
+	jq -cn --arg git "$git_state" --arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
+		'{git:$git,worktree:$unavailable,registry:$unavailable,claim:$unavailable,
+		process:$unavailable,external:{commit:$unavailable,open_pr:$unavailable,
+		task:$unavailable,issue_number:null,repo:null}}'
+	return $?
+}
+
 _worktree_recovery_plan_evidence_json() {
 	local identity_json="$1"
 	local git_state="" worktree_state="" registry_state="" claim_state=""
 	local process_state="" external_json=""
 
 	git_state=$(_worktree_recovery_plan_git_state "$identity_json") || return 1
+	if [[ "$git_state" == "$WORKTREE_RECOVERY_PLAN_STATE_DIRTY" ]]; then
+		_worktree_recovery_plan_minimal_evidence_json "$git_state"
+		return $?
+	fi
 	worktree_state=$(_worktree_recovery_plan_worktree_reference_state "$identity_json") || return 1
 	registry_state=$(_worktree_recovery_plan_registry_state "$identity_json") || return 1
 	claim_state=$(_worktree_recovery_plan_claim_state "$identity_json") || return 1
@@ -758,11 +807,12 @@ _worktree_recovery_plan_classification_json() {
 		--arg unknown "$WORKTREE_RECOVERY_PLAN_DISPOSITION_UNKNOWN" \
 		--arg active "$WORKTREE_RECOVERY_PLAN_STATE_ACTIVE" \
 		--arg clear "$WORKTREE_RECOVERY_PLAN_STATE_CLEAR" \
+		--arg dirty "$WORKTREE_RECOVERY_PLAN_STATE_DIRTY" \
 		--arg unavailable "$WORKTREE_RECOVERY_UNAVAILABLE" \
 		--argjson identity "$identity_json" --argjson evidence "$evidence_json" \
 		--argjson stable "$stable" '
 		if $stable != true then {disposition:$unknown,reasons:["identity-or-size-changed"]}
-		elif $evidence.git == "dirty" then {disposition:$protected,reasons:["archive-worktree-dirty"]}
+		elif $evidence.git == $dirty then {disposition:$protected,reasons:["archive-worktree-dirty"]}
 		elif $evidence.worktree == $active then {disposition:$protected,reasons:["active-git-worktree-reference"]}
 		elif $evidence.registry == $active then {disposition:$protected,reasons:["active-registry-owner"]}
 		elif $evidence.claim == $active then {disposition:$protected,reasons:["active-session-claim"]}
@@ -789,11 +839,24 @@ _worktree_recovery_plan_attributed_entry_json() {
 	local measurement_timeout_tenths="${4:-}"
 	local identity_before="" identity_after="" evidence_json="" measured_after=""
 	local bytes_after="" confidence_after="" measure_error_after="" stable=false
-	local classification_json="" sizing_reason="sizing-unavailable"
+	local classification_json="" disposition="" sizing_reason="sizing-unavailable"
 
 	identity_before=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
 	evidence_json=$(_worktree_recovery_plan_evidence_json "$identity_before") || return 1
 	identity_after=$(_worktree_recovery_plan_identity_json "$bucket_path") || return 1
+	if [[ "$identity_before" == "$identity_after" ]]; then
+		stable=true
+	fi
+	classification_json=$(_worktree_recovery_plan_classification_json \
+		"$identity_after" "$evidence_json" "$stable") || return 1
+	disposition=$(printf '%s\n' "$classification_json" | jq -r '.disposition') || return 1
+	if [[ "$disposition" != "$WORKTREE_RECOVERY_PLAN_DISPOSITION_CANDIDATE" ]]; then
+		jq -cn --arg role "$role" --argjson bytes "$expected_bytes" \
+			--argjson identity "$identity_after" --argjson evidence "$evidence_json" \
+			--argjson classification "$classification_json" \
+			'{role:$role,path:$identity.bucket_path,archive_path:$identity.archive_path,expected_allocated_bytes:$bytes,identity:$identity,evidence:$evidence,disposition:$classification.disposition,reasons:$classification.reasons}'
+		return $?
+	fi
 	if [[ -n "$measurement_timeout_tenths" ]]; then
 		measured_after=$(_worktree_recovery_measure_path \
 			"$bucket_path" "$measurement_timeout_tenths") || return 1
@@ -811,9 +874,7 @@ _worktree_recovery_plan_attributed_entry_json() {
 	if [[ "$expected_bytes" == "$WORKTREE_RECOVERY_PLAN_JSON_NULL" ]]; then
 		expected_bytes="$bytes_after"
 	fi
-	if [[ "$identity_before" == "$identity_after" && "$bytes_after" == "$expected_bytes" ]]; then
-		stable=true
-	fi
+	[[ "$identity_before" == "$identity_after" && "$bytes_after" == "$expected_bytes" ]] || stable=false
 	classification_json=$(_worktree_recovery_plan_classification_json \
 		"$identity_after" "$evidence_json" "$stable") || return 1
 	jq -cn --arg role "$role" --argjson bytes "$expected_bytes" \
@@ -926,7 +987,7 @@ _worktree_recovery_plan_entries_json() {
 					classified_count=$((classified_count + 1))
 					if [[ "$state" == "attributed" || "$state" == "attributed-legacy" ]]; then
 						if ! entry_json=$(_worktree_recovery_plan_attributed_entry_json \
-							"$role" "$bucket_path" "$WORKTREE_RECOVERY_PLAN_JSON_NULL"); then
+							"$role" "$bucket_path" "$bytes"); then
 							entry_json=$(_worktree_recovery_plan_unknown_entry_json \
 								"$role" "$bucket_path" "$bytes" "classification-unavailable") || result_status=1
 						fi
