@@ -19,6 +19,26 @@ edits Buzz identity/team stores, downloads or loads a model, or calls a relay.
 The earlier `aidevops-conversation-v1` runtime remains available as a read-only
 diagnostic profile. Team snapshots do not select it.
 
+## Recommended virtual-assistant topology
+
+Each VA server is one execution principal with its own local aidevops runtime,
+workspace, memory, mailbox, forge account, app API accounts, and AI-provider
+accounts. Its `role-host` members are specialist Buzz identities bound to that
+server. Authorized people may ask those agents to work, but their request cannot
+widen the permissions granted to the VA's server-local accounts or bypass normal
+aidevops gates. The current runtime stays owner-only by default; multi-user
+invocation requires a separate verified requester allowlist or policy broker,
+never channel membership alone.
+
+Buzz is the shared high-level interface, while private reasoning, tools,
+credentials, and control state stay inside the VA runtime. Provider actions are
+attributed to the VA account that performs them, with requester correlation kept
+in private audit evidence. The origin forge remains authoritative, Buzz
+repository records stay read-only, and implementation uses the VA's writable
+linked worktree plus origin APIs. Adding a repo to a Buzz community does not
+retarget the runtime's registered project root. Full operating guidance is in
+`tools/ai-assistants/buzz-team-interface.md`.
+
 ## Generate and inspect
 
 Generate a mode-0600 snapshot in the user-facing Downloads folder:

@@ -65,7 +65,7 @@ services/networking/,services/networking subagents,netbird|nostr-vpn|obscuravpn|
 services/outreach/,services/outreach subagents,cold-outreach|infraforge|instantly|leadsforge|manyreach|smartlead|warmforge
 services/payments/,services/payments subagents,procurement|revenuecat|stripe|superwall
 tools/accessibility/,tools/accessibility subagents,accessibility-audit|accessibility
-tools/ai-assistants/,tools/ai-assistants subagents,agno|capsolver|claude-code|compare-models|datasets|fallback-chains|headless-dispatch|models-composer2|models-flash|models-gemini-reviewer|models-gpt-reviewer|models-haiku|models-opus|models-pro|models-README|models-sonnet|openclaw|opencode-server|overview|research-only|response-scoring|runners-code-reviewer|runners-README|runners-seo-analyst
+tools/ai-assistants/,tools/ai-assistants subagents,agno|buzz-team-interface|capsolver|claude-code|compare-models|datasets|fallback-chains|headless-dispatch|models-composer2|models-flash|models-gemini-reviewer|models-gpt-reviewer|models-haiku|models-opus|models-pro|models-README|models-sonnet|openclaw|opencode-server|overview|research-only|response-scoring|runners-code-reviewer|runners-README|runners-seo-analyst
 tools/ai-generation/,tools/ai-generation subagents,comfy-cli
 tools/ai-orchestration/,tools/ai-orchestration subagents,autogen|crewai|langflow|openprose|overview|packaging
 tools/animation/,tools/animation subagents,animejs
