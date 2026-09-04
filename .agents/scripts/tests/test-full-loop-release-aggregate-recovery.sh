@@ -854,6 +854,7 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	verified_pr_merge="$failed_merge"
 	_FULL_LOOP_RESOLVED_REQUESTED_MERGE="$requested_merge"
 	_FULL_LOOP_RESOLVED_SOURCE_MERGE="$current_merge"
+	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$old_manifest"
 	_full_loop_release_evidence_path() {
 		printf '%s\n' "$failure_fixture_path"
 		return 0
@@ -928,6 +929,10 @@ printf 'PASS persisted replacement-tag recovery recreates its detached tag workt
 	}
 	write_failure_evidence "$requested_merge"
 	_full_loop_recovery_validate_failed_prepublication_intent test/repo 42 "$old_manifest" patch
+	[[ "$(_full_loop_recovery_normalize_failed_prepublication_sources 42)" == "42@${requested_merge}" ]]
+	if _full_loop_recovery_normalize_failed_prepublication_sources 44 >/dev/null 2>&1; then
+		exit 1
+	fi
 	[[ "$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_PR" == "99" &&
 		"$_FULL_LOOP_FAILED_PREPUBLICATION_SOURCE_MERGE" == "$failed_merge" &&
 		"$_FULL_LOOP_FAILED_PREPUBLICATION_TAG" == "v1.2.3" ]]
@@ -1038,7 +1043,7 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	prepublication_mode=aggregate
 	prepublication_expected="$expanded_manifest"
 	prepublication_marker=false
-	prepublication_failed_sources="$old_manifest"
+	prepublication_failed_sources="$legacy_lane_intent"
 	refresh_previous_sources="$legacy_lane_intent"
 	root_authorization_record=$(jq -cn --arg merge 2222222222222222222222222222222222222222 \
 		'{schema_version:1,repository:"test/repo",requested_pr:42,
@@ -1107,7 +1112,7 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 		local current_authorization="$3"
 		local release_type="$4"
 		[[ "$repo" == "test/repo" && "$source_pr" == "42" &&
-			"$current_authorization" == "$prepublication_failed_sources" &&
+			"$current_authorization" == "$old_manifest" &&
 			"$release_type" == "patch" ]] || return 1
 		printf 'verify-failure\n' >>"$RESERVED_LOG"
 		[[ "$failure_mode" == "match" ]] || return 1
@@ -1217,9 +1222,9 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	: >"$RESERVED_LOG"
 	authorization="$old_manifest"
 	lane_phase=reconcile-required
-	test_lane_sources="$old_manifest"
+	test_lane_sources="$legacy_lane_intent"
 	prepublication_marker=false
-	prepublication_failed_sources="$old_manifest"
+	prepublication_failed_sources="$legacy_lane_intent"
 	failure_mode=match
 	_full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null
 	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen fence expand-auth finish " ]]
@@ -1236,9 +1241,9 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	: >"$RESERVED_LOG"
 	authorization="$old_manifest"
 	lane_phase=reconcile-required
-	test_lane_sources="$old_manifest"
+	test_lane_sources="$legacy_lane_intent"
 	prepublication_marker=false
-	prepublication_failed_sources="$old_manifest"
+	prepublication_failed_sources="$legacy_lane_intent"
 	finish_mode=failure
 	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null 2>&1; then
 		exit 1
@@ -1282,9 +1287,9 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	: >"$RESERVED_LOG"
 	authorization="$old_manifest"
 	lane_phase=reserved
-	test_lane_sources="$old_manifest"
+	test_lane_sources="$legacy_lane_intent"
 	prepublication_marker=true
-	prepublication_failed_sources="$old_manifest"
+	prepublication_failed_sources="$legacy_lane_intent"
 	prepublication_mode=direct
 	prepublication_expected="$old_manifest"
 	_full_loop_recovery_expand_reserved_authorization test/repo 42 42 patch >/dev/null
@@ -1297,9 +1302,9 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	: >"$RESERVED_LOG"
 	authorization="$old_manifest"
 	lane_phase=reconcile-required
-	test_lane_sources="$old_manifest"
+	test_lane_sources="$legacy_lane_intent"
 	prepublication_marker=false
-	prepublication_failed_sources="$old_manifest"
+	prepublication_failed_sources="$legacy_lane_intent"
 	failure_mode=mismatch
 	if _full_loop_recovery_expand_reserved_authorization test/repo 42 42,43 >/dev/null 2>&1; then
 		exit 1

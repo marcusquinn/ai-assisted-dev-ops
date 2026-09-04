@@ -667,6 +667,19 @@ _full_loop_recovery_resolve_lane_authorization() {
 	return $?
 }
 
+_full_loop_recovery_normalize_failed_prepublication_sources() {
+	local legacy_sources="$1"
+	local normalized_sources=""
+	normalized_sources=$(_full_loop_recovery_resolve_lane_authorization "$legacy_sources" \
+		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED") || {
+		_full_loop_recovery_failed_prepublication_refused \
+			"legacy lane intent conflicts with the reviewed aggregate"
+		return 1
+	}
+	printf '%s\n' "$normalized_sources"
+	return 0
+}
+
 _full_loop_recovery_reserved_base_authorization() {
 	local repo="$1"
 	local source_pr="$2"
@@ -778,6 +791,8 @@ _full_loop_recovery_load_reserved_lane_state() {
 	local phase=""
 	local lane_sources=""
 	local failed_sources=""
+	local normalized_lane_sources=""
+	local normalized_failed_sources=""
 	_FULL_LOOP_RESERVED_RECOVERY_PHASE=""
 	_FULL_LOOP_RESERVED_RECOVERY_LANE_SOURCES=""
 	_FULL_LOOP_RESERVED_RECOVERY_FAILED_SOURCES=""
@@ -797,13 +812,17 @@ _full_loop_recovery_load_reserved_lane_state() {
 	"$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED")
 		lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 		if _full_loop_recovery_lane_has_prepublication_marker; then
-			[[ "$lane_sources" == "$current_authorization" ]] || {
+			normalized_lane_sources=$(_full_loop_recovery_normalize_failed_prepublication_sources \
+				"$lane_sources") || return 1
+			[[ "$normalized_lane_sources" == "$current_authorization" ]] || {
 				printf 'Failed pre-publication release recovery refused: lane and persisted authorization differ\n' >&2
 				return 1
 			}
 			failed_sources=$(_full_loop_recovery_lane_prepublication_sources) || return 1
+			normalized_failed_sources=$(_full_loop_recovery_normalize_failed_prepublication_sources \
+				"$failed_sources") || return 1
 			_full_loop_recovery_validate_failed_prepublication_intent "$repo" "$source_pr" \
-				"$failed_sources" "$release_type" || return 1
+				"$normalized_failed_sources" "$release_type" || return 1
 			_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="true"
 		fi
 		;;
@@ -814,20 +833,25 @@ _full_loop_recovery_load_reserved_lane_state() {
 		if _full_loop_recovery_lane_has_prepublication_marker; then
 			failed_sources=$(_full_loop_recovery_lane_prepublication_sources) || return 1
 			[[ "$lane_sources" == "$failed_sources" ]] || return 1
+			normalized_failed_sources=$(_full_loop_recovery_normalize_failed_prepublication_sources \
+				"$failed_sources") || return 1
 			_full_loop_recovery_validate_failed_prepublication_intent "$repo" "$source_pr" \
-				"$failed_sources" "$release_type" || return 1
+				"$normalized_failed_sources" "$release_type" || return 1
 			_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="true"
 		fi
 		;;
 	"$_FULL_LOOP_FAILED_PREPUBLICATION_PHASE")
 		lane_sources=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-		[[ "$lane_sources" == "$current_authorization" ]] || {
+		normalized_lane_sources=$(_full_loop_recovery_normalize_failed_prepublication_sources \
+			"$lane_sources") || return 1
+		[[ "$normalized_lane_sources" == "$current_authorization" ]] || {
 			printf 'Failed pre-publication release recovery refused: lane and persisted authorization differ\n' >&2
 			return 1
 		}
 		failed_sources="$lane_sources"
+		normalized_failed_sources="$normalized_lane_sources"
 		_full_loop_recovery_validate_failed_prepublication_intent "$repo" "$source_pr" \
-			"$failed_sources" "$release_type" || return 1
+			"$normalized_failed_sources" "$release_type" || return 1
 		_FULL_LOOP_RESERVED_RECOVERY_FAILED_PREPUBLICATION="true"
 		;;
 	*)

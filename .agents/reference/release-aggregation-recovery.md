@@ -101,6 +101,13 @@ authorization and remain an ancestor of the reviewed retry. The retry may remain
 direct when main is still at that exact source, or resolve through a newer
 reviewed exact-tip aggregate after intervening merges.
 
+For legacy lanes recorded before immutable manifests were universal, a PR-only
+`<PR>` intent is resolved against that reviewed aggregate before lane,
+authorization, and failure-marker comparisons. The original lane and marker
+strings remain byte-exact until the fenced refresh transaction completes, so a
+failed migration can restore the prior representation. An unknown PR, ambiguous
+match, or differing merge SHA remains a fail-closed authorization conflict.
+
 After those checks, a compare-and-swap lane write rotates the fencing token,
 records the failed source merge, and returns the lane to `reserved` with a durable
 `prepublication_recovery` marker. That marker binds the failed and current
