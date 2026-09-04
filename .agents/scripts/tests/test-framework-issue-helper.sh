@@ -436,6 +436,61 @@ else
 	fail "explicit caller body is preserved" "$explicit_text"
 fi
 
+multiline_source_dir="${TMP_DIR}/body files"
+mkdir -p "$multiline_source_dir"
+multiline_source="${multiline_source_dir}/worker-ready report.md"
+printf '%s\n' '## What' '' 'First line.' 'Second line.' >"$multiline_source"
+multiline_capture="${TMP_DIR}/multiline-capture.md"
+multiline_output="${TMP_DIR}/multiline.out"
+if TEST_DUPLICATE_VALUE="" \
+	TEST_CREATED_URL="https://github.com/marcusquinn/aidevops/issues/9108" \
+	TEST_GH_BODY_FILE="$multiline_capture" \
+	PATH="${generated_stub_dir}:$PATH" \
+	"$HELPER" log --title "fix: body file contract" --body-file "$multiline_source" >"$multiline_output" 2>&1; then
+	multiline_body=$(<"$multiline_capture")
+	assert_contains "$multiline_body" $'## What\n\nFirst line.\nSecond line.' "body-file preserves multiline Markdown and spaces in paths"
+else
+	multiline_text=$(<"$multiline_output")
+	fail "body-file preserves multiline Markdown and spaces in paths" "$multiline_text"
+fi
+
+equals_capture="${TMP_DIR}/equals-body-file-capture.md"
+if TEST_DUPLICATE_VALUE="" \
+	TEST_CREATED_URL="https://github.com/marcusquinn/aidevops/issues/9109" \
+	TEST_GH_BODY_FILE="$equals_capture" \
+	PATH="${generated_stub_dir}:$PATH" \
+	"$HELPER" log --title "fix: equals body file contract" --body-file="$multiline_source" >/dev/null 2>&1; then
+	assert_contains "$(<"$equals_capture")" "Second line." "body-file equals syntax is supported"
+else
+	fail "body-file equals syntax is supported" "helper rejected --body-file=PATH"
+fi
+
+for invalid_body_file in "${TMP_DIR}/missing.md" "$multiline_source_dir"; do
+	invalid_body_output="${TMP_DIR}/invalid-body-file-$(basename "$invalid_body_file").out"
+	if PATH="${generated_stub_dir}:$PATH" "$HELPER" log --title "fix: invalid body file" \
+		--body-file "$invalid_body_file" --dry-run >"$invalid_body_output" 2>&1; then
+		fail "invalid body-file input is rejected" "$invalid_body_file was accepted"
+	else
+		assert_contains "$(<"$invalid_body_output")" "readable regular file" "invalid body-file input is rejected"
+	fi
+done
+
+empty_body_file="${TMP_DIR}/empty-body.md"
+: >"$empty_body_file"
+if PATH="${generated_stub_dir}:$PATH" "$HELPER" log --title "fix: empty body file" \
+	--body-file "$empty_body_file" --dry-run >"${TMP_DIR}/empty-body-file.out" 2>&1; then
+	fail "empty body-file input is rejected" "empty file was accepted"
+else
+	assert_contains "$(<"${TMP_DIR}/empty-body-file.out")" "substantive issue body" "empty body-file input is rejected"
+fi
+
+if PATH="${generated_stub_dir}:$PATH" "$HELPER" log --title "fix: conflicting body inputs" \
+	--body "inline" --body-file "$multiline_source" --dry-run >"${TMP_DIR}/body-conflict.out" 2>&1; then
+	fail "body and body-file conflict is rejected" "conflicting inputs were accepted"
+else
+	assert_contains "$(<"${TMP_DIR}/body-conflict.out")" "mutually exclusive" "body and body-file conflict is rejected"
+fi
+
 unsafe_output="${TMP_DIR}/unsafe-explicit.out"
 unsafe_trace="${TMP_DIR}/unsafe-explicit.trace"
 set +e
@@ -463,6 +518,7 @@ assert_contains "$help_text" "--auto-dispatch" "usage documents auto-dispatch fl
 assert_contains "$help_text" "--tier TIER" "usage documents tier flag"
 assert_contains "$help_text" "--no-auto-dispatch" "usage documents durable manual hold flag"
 assert_contains "$help_text" "--hold-reason TEXT" "usage documents required hold reason"
+assert_contains "$help_text" "--body-file PATH" "usage documents body-file input"
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

@@ -10,7 +10,7 @@
 #
 # Usage:
 #   framework-issue-helper.sh detect "title or description text"
-#   framework-issue-helper.sh log --title "Title" --body "Body" [--label "bug"]
+#   framework-issue-helper.sh log --title "Title" (--body "Body" | --body-file PATH) [--label "bug"]
 #   framework-issue-helper.sh check-repo [--repo-path PATH]
 #
 # Commands:
@@ -23,6 +23,7 @@
 #                      Options:
 #                        --title TEXT      Issue title (required)
 #                        --body TEXT       Issue body (optional, auto-generated if omitted)
+#                        --body-file PATH  Read the issue body once from a regular file
 #                        --label LABEL     GitHub label (default: "bug")
 #                        --auto-dispatch   Explicitly retain the default automatic dispatch
 #                        --tier TIER       Add tier label (default: "standard")
@@ -615,15 +616,42 @@ _log_option_value() {
 	return 0
 }
 
+# Read a caller-supplied body before any network operation. The helper keeps the
+# resulting text on the existing signing, privacy, deduplication, and creation
+# path rather than passing an unchecked path to gh.
+_read_log_body_file() {
+	local body_file="$1"
+	local body_content=""
+	local trimmed_content=""
+
+	if [[ -z "$body_file" || ! -f "$body_file" || ! -r "$body_file" ]]; then
+		log_error "--body-file requires a readable regular file"
+		return 1
+	fi
+	body_content=$(<"$body_file") || {
+		log_error "Could not read --body-file: $body_file"
+		return 1
+	}
+	trimmed_content="${body_content#"${body_content%%[![:space:]]*}"}"
+	trimmed_content="${trimmed_content%"${trimmed_content##*[![:space:]]}"}"
+	if [[ -z "$trimmed_content" ]]; then
+		log_error "--body-file must contain a substantive issue body"
+		return 1
+	fi
+
+	printf '%s' "$body_content"
+	return 0
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _parse_log_command ARGS...
 # ─────────────────────────────────────────────────────────────────────────────
 _parse_log_command() {
-	local title="" body="" label="bug" dry_run="false" auto_dispatch="yes" tier="standard" hold_reason="" dispatch_flag=""
+	local title="" body="" body_file="" body_source="" label="bug" dry_run="false" auto_dispatch="yes" tier="standard" hold_reason="" dispatch_flag=""
 	while [[ $# -gt 0 ]]; do
 		local option="$1"
 		case "$option" in
-		--title | --title=* | --body | --body=* | --label | --label=* | --tier | --tier=* | --hold-reason | --hold-reason=*)
+		--title | --title=* | --body | --body=* | --body-file | --body-file=* | --label | --label=* | --tier | --tier=* | --hold-reason | --hold-reason=*)
 			local flag_name="${option%%=*}"
 			local option_value
 			option_value="$(_log_option_value "$flag_name" "$option" "$#" "${2-}")" || return 1
@@ -632,7 +660,20 @@ _parse_log_command() {
 				title="$option_value"
 				;;
 			--body)
+				if [[ "$body_source" == "file" ]]; then
+					log_error "--body and --body-file are mutually exclusive"
+					return 1
+				fi
 				body="$option_value"
+				body_source="argument"
+				;;
+			--body-file)
+				if [[ "$body_source" == "argument" ]]; then
+					log_error "--body and --body-file are mutually exclusive"
+					return 1
+				fi
+				body_file="$option_value"
+				body_source="file"
 				;;
 			--label)
 				label="$option_value"
@@ -692,6 +733,9 @@ _parse_log_command() {
 	if [[ -n "$hold_reason" && "$auto_dispatch" != "no" ]]; then
 		log_error "--hold-reason requires --no-auto-dispatch"
 		return 1
+	fi
+	if [[ "$body_source" == "file" ]]; then
+		body=$(_read_log_body_file "$body_file") || return 1
 	fi
 
 	log_framework_issue "$title" "$body" "$label" "$dry_run" "$auto_dispatch" "$tier" "$hold_reason"
