@@ -117,6 +117,16 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("MONKEY_TOKENIZER=enabled", "MONKEY_TOKENIZER=enabled", 0);
   });
 
+  test("scans adversarial 10KB named-field input within the performance budget", () => {
+    const input = "A ".repeat(5_000);
+    const runs = 100;
+    scrubCredentials(input);
+    const start = process.hrtime.bigint();
+    for (let run = 0; run < runs; run++) scrubCredentials(input);
+    const averageMs = Number(process.hrtime.bigint() - start) / runs / 1_000_000;
+    assert.ok(averageMs < 5, `named-field scan averaged ${averageMs.toFixed(3)}ms per 10KB`);
+  });
+
   test("does not redact Google OAuth prefix embedded mid-word", () => {
     const embedded = `vendor-GOCSPX-${"g".repeat(28)}`;
     assertScrub(embedded, embedded, 0);

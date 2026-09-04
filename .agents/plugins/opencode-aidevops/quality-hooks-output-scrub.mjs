@@ -6,7 +6,7 @@
 const CREDENTIAL_PATTERN =
   /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 const NAMED_CREDENTIAL_ASSIGNMENT_PATTERN =
-  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]*"|'[A-Za-z_][A-Za-z0-9_. -]*'|[A-Za-z_][A-Za-z0-9_.-]*(?:[ \t]+[A-Za-z_][A-Za-z0-9_.-]*)*?))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential|redacted-private-key)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
+  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]{0,127}"|'[A-Za-z_][A-Za-z0-9_. -]{0,127}'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]{0,127}))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential|redacted-private-key)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
 const PLACEHOLDER_VALUES = new Set([
   "",
   "***",

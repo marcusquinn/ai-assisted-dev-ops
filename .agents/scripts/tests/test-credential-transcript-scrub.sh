@@ -26,7 +26,7 @@
 #   15-18. Named-field positive and conservative negative cases
 #   19. Malformed JSON produces no output and exits 0 (fail-open)
 #   20-26. Word-boundary false-positive regression cases
-#   27. Performance: <5ms per 10KB tool result
+#   27-28. Known-prefix and named-field performance: <5ms per 10KB
 #
 # Usage: bash test-credential-transcript-scrub.sh
 
@@ -326,6 +326,29 @@ if python3 -c "import sys; sys.exit(0 if float('$BENCH_MS') < 5 else 1)" 2>/dev/
 	pass "27. Performance: ${BENCH_MS}ms per 10KB in-process (budget: <5ms)"
 else
 	fail "27. Performance: ${BENCH_MS}ms per 10KB in-process exceeds 5ms budget"
+fi
+
+NAMED_BENCH_MS=$(python3 -c "
+import runpy, time
+
+scrub_credentials = runpy.run_path('$HOOK_SCRIPT')['scrub_credentials']
+payload_str = 'A ' * 5000
+runs = 100
+scrub_credentials(payload_str)
+start = time.monotonic_ns()
+for _ in range(runs):
+    scrubbed, count = scrub_credentials(payload_str)
+end = time.monotonic_ns()
+assert scrubbed == payload_str and count == 0
+avg_ms = (end - start) / runs / 1_000_000
+print(round(avg_ms, 4))
+")
+
+printf '  In-process named scrub per 10KB (%d runs): %sms\n' 100 "$NAMED_BENCH_MS"
+if python3 -c "import sys; sys.exit(0 if float('$NAMED_BENCH_MS') < 5 else 1)" 2>/dev/null; then
+	pass "28. Named-field performance: ${NAMED_BENCH_MS}ms per 10KB (budget: <5ms)"
+else
+	fail "28. Named-field performance: ${NAMED_BENCH_MS}ms per 10KB exceeds 5ms budget"
 fi
 printf '  Note: subprocess launch adds ~50ms Python startup; in-process cost shown above.\n'
 
