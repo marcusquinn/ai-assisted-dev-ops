@@ -146,6 +146,22 @@ Expected healthy state:
 - `docker ps` shows one `github-runner-dind-N` container for each active service.
 - GitHub shows the self-hosted runners online for the target repository.
 
+These process checks are necessary but insufficient. A runner can remain
+`active`, keep its container `running`, and log `Listening for Jobs` while its
+GitHub broker session no longer accepts compatible work. Diagnose that state by
+correlating old compatible jobs that remain unassigned (`runner_id: 0` and no
+runner name), GitHub runner busy/online state, and local listener state:
+
+```bash
+BROKER_HEALTH_REPO=<OWNER>/<REPO> github-runner-broker-health-helper.sh diagnose
+```
+
+The helper distinguishes `HEALTHY`, `BUSY_CAPACITY`, `NO_MATCHING_RUNNER`,
+`STALE_BROKER_SUSPECTED`, and fail-closed `UNKNOWN_*` results. Reading runner
+inventory can require repository administration or fine-grained Actions runner
+permission. Permission, network, empty-result, or local-observability failures
+never authorize recovery. Repository values and API errors are not printed.
+
 Ephemeral runners can restart after completing a job, so a short-lived
 `activating auto-restart` state is not automatically a failure. Treat it as a
 failure only when the same instance keeps restarting without becoming online in
@@ -171,6 +187,32 @@ Restart one runner after a failed or stale job:
 ```bash
 sudo systemctl restart github-runner-dind@1.service
 ```
+
+For suspected stale broker sessions, prefer the broker helper's opt-in canary
+mode over a manual pool restart. Configure a root-owned executable adapter that
+accepts one validated runner name and maps it to the corresponding service;
+then run:
+
+```bash
+BROKER_HEALTH_REPO=<OWNER>/<REPO> \
+  BROKER_HEALTH_RESTART_ADAPTER=<APPROVED_LOCAL_ADAPTER> \
+  github-runner-broker-health-helper.sh repair
+```
+
+Recovery acquires a host-local lock, re-reads both evidence planes, rejects any
+ambiguous or busy candidate, and restarts at most one idle runner. It succeeds
+only when the runner has a fresh GitHub registration ID and the old unassigned
+queue shrinks. Cooldown, lock contention, permission loss, or failed canary
+verification stops the cycle; never continue with another runner. A new process
+or container PID alone is not proof of recovery.
+
+The default cooldown is 30 minutes and the default old-job threshold is 15
+minutes. Override them locally with `BROKER_HEALTH_COOLDOWN_SECONDS` and
+`BROKER_HEALTH_QUEUE_AGE_SECONDS`. Disable scheduled repair by removing its
+explicit adapter/configuration; diagnosis remains read-only. To reset local
+cooldown after operator review, remove
+`~/.aidevops/cache/github-runner-broker-health.json`. Reverting the helper does
+not alter existing runner services.
 
 Restart the whole pool:
 

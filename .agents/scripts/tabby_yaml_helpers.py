@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from itertools import dropwhile, takewhile
 from typing import NamedTuple, Optional
 
 import yaml
@@ -67,49 +68,24 @@ def validate_yaml_document(content: str) -> None:
             raise ValueError(f"Tabby config '{key}' must be a list")
 
 
-_CWD_LINE_RE = re.compile(r"^(?P<indent>\s+)cwd:\s*(?P<value>.*)$")
-
-
 def _parse_block_scalar(
     lines: list[str], start_idx: int, parent_indent: int, style: str
 ) -> tuple[str, int]:
-    """Parse a YAML block scalar (folded ``>`` or literal ``|``).
-
-    Starts at the line AFTER the ``cwd: >-`` (or ``|-``, ``>``, ``|``) header.
-    Consumes indented continuation lines until a line dedents back to or below
-    ``parent_indent``.
-
-    Returns ``(joined_value, next_line_idx)``.
-
-    - Folded (``>``): continuation lines are joined with single spaces.
-    - Literal (``|``): continuation lines are joined with newlines.
-
-    Chomping indicators (``-`` strip, ``+`` keep) affect trailing newlines,
-    but since we only use the value as a path we strip whitespace regardless.
-    """
-    collected: list[str] = []
-    i = start_idx
-    while i < len(lines):
-        line = lines[i]
-        # Blank lines are part of the block; preserve only for literal style.
-        if not line.strip():
-            if style == "|" and collected:
-                collected.append("")
-            i += 1
-            continue
-        # Measure the leading whitespace of this line.
-        stripped = line.lstrip(" \t")
-        line_indent = len(line) - len(stripped)
-        if line_indent <= parent_indent:
-            break
-        collected.append(stripped.rstrip())
-        i += 1
-
-    if style == ">":
-        value = " ".join(collected)
-    else:
-        value = "\n".join(collected)
-    return value.strip(), i
+    """Parse a folded or literal YAML block scalar."""
+    continuation = list(
+        takewhile(
+            lambda line: (
+                not line.strip() or len(line) - len(line.lstrip(" \t")) > parent_indent
+            ),
+            lines[start_idx:],
+        )
+    )
+    content = dropwhile(lambda line: not line.strip(), continuation)
+    collected = [
+        line.lstrip(" \t").rstrip() for line in content if style == "|" or line.strip()
+    ]
+    separator = " " if style == ">" else "\n"
+    return separator.join(collected).strip(), start_idx + len(continuation)
 
 
 def extract_existing_cwds(config_text: str) -> set[str]:
@@ -126,78 +102,88 @@ def extract_existing_cwds(config_text: str) -> set[str]:
     Missing any of (2) or (3) causes duplicate profile generation on every
     sync because the dedup check fails to recognise the existing path.
     """
-    cwds: set[str] = set()
-    lines = config_text.split("\n")
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        match = _CWD_LINE_RE.match(line)
-        if not match:
-            i += 1
-            continue
+    document = yaml.safe_load(config_text) or {}
+    profiles_value = document.get("profiles", []) if isinstance(document, dict) else []
+    profiles = profiles_value if isinstance(profiles_value, list) else []
+    options = (
+        profile.get("options", {}) for profile in profiles if isinstance(profile, dict)
+    )
+    return {
+        str(option["cwd"]).strip()
+        for option in options
+        if isinstance(option, dict) and option.get("cwd") is not None
+    }
 
-        parent_indent = len(match.group("indent"))
-        value = match.group("value").strip()
 
-        # Block scalar header? ``>``, ``>-``, ``>+``, ``|``, ``|-``, ``|+``.
-        if value and value[0] in (">", "|"):
-            style = value[0]
-            folded_value, next_i = _parse_block_scalar(
-                lines, i + 1, parent_indent, style
-            )
-            if folded_value:
-                cwds.add(folded_value)
-            i = next_i
-            continue
+def _profiles_section_bounds(lines: list[str]) -> Optional[tuple[int, int]]:
+    """Return the content bounds of the top-level profiles section."""
+    start = next(
+        (
+            index + 1
+            for index, line in enumerate(lines)
+            if re.match(r"^profiles:\s*(?:\[\])?\s*(?:#.*)?$", line.rstrip("\r\n"))
+        ),
+        None,
+    )
+    if start is None:
+        return None
+    end = next(
+        (
+            index
+            for index in range(start, len(lines))
+            if lines[index].strip() and not lines[index][0].isspace()
+        ),
+        len(lines),
+    )
+    return start, end
 
-        # Inline form (plain or quoted). Empty value means malformed — skip.
-        if value:
-            cwds.add(value.strip("'\""))
-        i += 1
 
-    return cwds
+def _profile_removal_end(lines: list[str], start: int, parse_end: int) -> int:
+    """Exclude trailing blank lines and comments from a profile block."""
+    removal_end = parse_end
+    while removal_end > start + 1:
+        trailing = lines[removal_end - 1].strip()
+        if trailing and not trailing.startswith("#"):
+            break
+        removal_end -= 1
+    return removal_end
+
+
+def _parse_profile_block(
+    lines: list[str], start: int, parse_end: int
+) -> Optional[ProfileBlock]:
+    """Parse one profile block while retaining its original line range."""
+    document = yaml.safe_load("profiles:\n" + "".join(lines[start:parse_end]))
+    profiles = document.get("profiles") if isinstance(document, dict) else None
+    if not (
+        isinstance(profiles, list)
+        and len(profiles) == 1
+        and isinstance(profiles[0], dict)
+    ):
+        return None
+    return ProfileBlock(
+        start, _profile_removal_end(lines, start, parse_end), profiles[0]
+    )
 
 
 def extract_profile_blocks(config_text: str) -> list[ProfileBlock]:
     """Return parseable top-level profile blocks with zero-based line ranges."""
     lines = config_text.splitlines(keepends=True)
-    profiles_start: Optional[int] = None
-    profiles_end = len(lines)
-    for index, line in enumerate(lines):
-        if profiles_start is None:
-            if re.match(r"^profiles:\s*(?:\[\])?\s*(?:#.*)?$", line.rstrip("\r\n")):
-                profiles_start = index + 1
-            continue
-        if line.strip() and not line[0].isspace():
-            profiles_end = index
-            break
-
-    if profiles_start is None:
+    bounds = _profiles_section_bounds(lines)
+    if bounds is None:
         return []
-
+    profiles_start, profiles_end = bounds
     starts = [
         index
         for index in range(profiles_start, profiles_end)
         if re.match(r"^  -(?:\s|$)", lines[index])
     ]
-    blocks: list[ProfileBlock] = []
-    for position, start in enumerate(starts):
-        parse_end = starts[position + 1] if position + 1 < len(starts) else profiles_end
-        document = yaml.safe_load("profiles:\n" + "".join(lines[start:parse_end]))
-        profiles = document.get("profiles") if isinstance(document, dict) else None
-        if (
-            isinstance(profiles, list)
-            and len(profiles) == 1
-            and isinstance(profiles[0], dict)
-        ):
-            removal_end = parse_end
-            while removal_end > start + 1:
-                trailing = lines[removal_end - 1].strip()
-                if trailing and not trailing.startswith("#"):
-                    break
-                removal_end -= 1
-            blocks.append(ProfileBlock(start, removal_end, profiles[0]))
-    return blocks
+    ends = starts[1:] + [profiles_end]
+    blocks = (
+        _parse_profile_block(lines, start, parse_end)
+        for start, parse_end in zip(starts, ends)
+    )
+    return [block for block in blocks if block is not None]
 
 
 def remove_profile_blocks(config_text: str, blocks: list[ProfileBlock]) -> str:
@@ -206,45 +192,24 @@ def remove_profile_blocks(config_text: str, blocks: list[ProfileBlock]) -> str:
         return config_text
     lines = config_text.splitlines(keepends=True)
     for block in sorted(blocks, key=lambda item: item.start, reverse=True):
-        del lines[block.start:block.end]
+        del lines[block.start : block.end]
     return "".join(lines)
 
 
 def extract_group_id(config_text: str) -> Optional[str]:
     """Find the 'Projects' group ID, or return None."""
-    # Look for groups section — capture all indented content after "groups:"
-    groups_match = re.search(
-        r"^groups:\s*\n((?:[ \t]+.*\n)*)", config_text, re.MULTILINE
+    document = yaml.safe_load(config_text) or {}
+    groups = document.get("groups", []) if isinstance(document, dict) else []
+    return next(
+        (
+            str(group["id"])
+            for group in groups
+            if isinstance(group, dict)
+            and group.get("name") == "Projects"
+            and group.get("id") is not None
+        ),
+        None,
     )
-    if not groups_match:
-        return None
-
-    # Parse group entries by accumulating blocks (each starts with "  - ")
-    group_block = groups_match.group(1)
-    blocks: list[dict[str, str]] = []
-    current: dict[str, str] = {}
-    for line in group_block.split("\n"):
-        if not line.strip():
-            continue
-        # New group entry starts with "  - " (list item)
-        if re.match(r"\s+-\s+", line):
-            if current:
-                blocks.append(current)
-            current = {}
-            # The first field may be on the same line as "-"
-            line = re.sub(r"^\s+-\s+", "  ", line)
-        # Extract key: value pairs
-        kv_match = re.match(r"\s+(\w+):\s+(.+)", line)
-        if kv_match:
-            current[kv_match.group(1)] = kv_match.group(2).strip().strip("'\"")
-    if current:
-        blocks.append(current)
-
-    # Find the "Projects" group
-    for block in blocks:
-        if block.get("name") == "Projects" and "id" in block:
-            return block["id"]
-    return None
 
 
 def find_profiles_insert_line(lines: list[str]) -> tuple[bool, Optional[int]]:

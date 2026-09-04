@@ -4857,3 +4857,5 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 - [x] t18307 Preflight all external PR approval authorities before prompting #auto-dispatch #bug ref:GH#30706 pr:#30760 completed:2026-08-26
 
 - [ ] t18312 Restore deterministic Qlty smell threshold #auto-dispatch #bug #quality-debt ref:GH#30876
+
+- [ ] t18395 detect and recover stale GitHub runner broker sessions #auto-dispatch #bug #ci #github #infrastructure #monitoring #reliability #self-healing #shell ref:GH#31136

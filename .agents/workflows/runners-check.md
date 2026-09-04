@@ -84,4 +84,30 @@ Concise dashboard, anomalies first:
 ## Arguments
 
 - No arguments: current system status
-- `--fix`: auto-fix simple issues (merge green PRs, clean stale worktrees)
+- `--fix`: auto-fix simple issues (merge green PRs, clean stale worktrees) and,
+  only when configured by the operator, invoke bounded broker recovery below.
+
+## GitHub Actions broker health
+
+Keep this separate from worker-dispatch health. Diagnose false-healthy
+self-hosted Actions runners with:
+
+```bash
+BROKER_HEALTH_REPO=<OWNER>/<REPO> github-runner-broker-health-helper.sh diagnose
+```
+
+Report its classification and action verbatim. `UNKNOWN_PERMISSION`,
+`UNKNOWN_NETWORK`, `UNKNOWN_LOCAL`, `NO_MATCHING_RUNNER`, and `BUSY_CAPACITY`
+are read-only outcomes and must never cause a restart. `active`, `running`, and
+`Listening for Jobs` are insufficient without compatible GitHub queue evidence.
+
+For `$ARGUMENTS == --fix`, run `repair` only when the operator has configured an
+executable `BROKER_HEALTH_RESTART_ADAPTER`. The helper re-checks evidence under
+a host lock, restarts at most one proven-idle candidate, enforces a cooldown,
+and requires both a fresh runner registration and queue movement:
+
+```bash
+BROKER_HEALTH_REPO=<OWNER>/<REPO> \
+  BROKER_HEALTH_RESTART_ADAPTER=<APPROVED_LOCAL_ADAPTER> \
+  github-runner-broker-health-helper.sh repair
+```
