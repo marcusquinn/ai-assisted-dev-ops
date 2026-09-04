@@ -203,12 +203,12 @@ else
 	fail "14. Nested dict tool_response scrubbed recursively — got: $output14"
 fi
 
-NAMED_TEXT_PAYLOAD='{"tool_response": "(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value SECRET_KEY=not set"}'
+NAMED_TEXT_PAYLOAD='{"tool_response": "(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value TOKEN=opaque-value|next PASSWORD=opaque-value>file API KEY=opaque-value SECRET_KEY=not set"}'
 output15=$(run_hook "$NAMED_TEXT_PAYLOAD")
 if echo "$output15" | python3 -c "
 import json, sys
 response = json.load(sys.stdin).get('tool_response', '')
-assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value SECRET_KEY=not set'
+assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value TOKEN=[redacted-credential]|next PASSWORD=[redacted-credential]>file API KEY=[redacted-credential] SECRET_KEY=not set'
 " 2>/dev/null; then
 	pass "15. Named secrets scrubbed without consuming delimiters"
 else
@@ -231,7 +231,7 @@ else
 fi
 
 assert_no_output "17. Sensitive placeholders remain unchanged" \
-	'{"tool_response": "API_KEY=[REDACTED] SECRET_KEY=not set ACCESS_TOKEN=null"}'
+	'{"tool_response": "API_KEY=[REDACTED] PRIVATE_KEY=[redacted-private-key] SECRET_KEY=(not set) ACCESS_TOKEN=null"}'
 
 assert_no_output "18. Sensitive-name substrings remain unchanged" \
 	'{"tool_response": "TOKEN_COUNT=3 PASSWORD_POLICY=strict MONKEY_TOKENIZER=enabled"}'

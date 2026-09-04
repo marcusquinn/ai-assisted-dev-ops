@@ -64,7 +64,7 @@ CREDENTIAL_PATTERN = re.compile(
 )
 
 NAMED_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
-    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_.-]*\"|'[A-Za-z_][A-Za-z0-9_.-]*'|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;])|[^\s,}\])&;]+)",
+    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_. -]*\"|'[A-Za-z_][A-Za-z0-9_. -]*'|[A-Za-z_][A-Za-z0-9_.-]*(?:[ \t]+[A-Za-z_][A-Za-z0-9_.-]*)*?))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential|redacted-private-key)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -80,6 +80,8 @@ PLACEHOLDER_VALUES = {
     "***",
     "[redacted]",
     "[redacted-credential]",
+    "[redacted-private-key]",
+    "(not set)",
     "<redacted>",
     "missing",
     "none",

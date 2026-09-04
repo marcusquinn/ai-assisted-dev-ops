@@ -92,6 +92,13 @@ describe("credential transcript scrub boundary", () => {
   test("preserves delimiters around unquoted sensitive assignments", () => {
     assertScrub(`(RESEND-API-KEY=opaque-value)`, `(RESEND-API-KEY=${REDACTION_TOKEN})`, 1);
     assertScrub(`API_KEY=opaque-value&other=value`, `API_KEY=${REDACTION_TOKEN}&other=value`, 1);
+    assertScrub(`TOKEN=opaque-value|other`, `TOKEN=${REDACTION_TOKEN}|other`, 1);
+    assertScrub(`PASSWORD=opaque-value>file`, `PASSWORD=${REDACTION_TOKEN}>file`, 1);
+  });
+
+  test("redacts quoted and unquoted sensitive names containing spaces", () => {
+    assertScrub(`API KEY=opaque-value`, `API KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub(`"PRIVATE KEY": opaque-value`, `"PRIVATE KEY": ${REDACTION_TOKEN}`, 1);
   });
 
   test("preserves empty and explicit placeholder values", () => {
@@ -100,6 +107,8 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("CLIENT_SECRET=[redacted]", "CLIENT_SECRET=[redacted]", 0);
     assertScrub("CLIENT_SECRET=[REDACTED]", "CLIENT_SECRET=[REDACTED]", 0);
     assertScrub("CLIENT_SECRET=not set", "CLIENT_SECRET=not set", 0);
+    assertScrub("CLIENT_SECRET=(not set)", "CLIENT_SECRET=(not set)", 0);
+    assertScrub("PRIVATE_KEY=[redacted-private-key]", "PRIVATE_KEY=[redacted-private-key]", 0);
   });
 
   test("does not redact non-sensitive field-name substrings", () => {

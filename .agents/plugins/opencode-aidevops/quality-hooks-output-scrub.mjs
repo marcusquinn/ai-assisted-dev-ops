@@ -6,12 +6,14 @@
 const CREDENTIAL_PATTERN =
   /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 const NAMED_CREDENTIAL_ASSIGNMENT_PATTERN =
-  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_.-]*"|'[A-Za-z_][A-Za-z0-9_.-]*'|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;])|[^\s,}\])&;]+)/gim;
+  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]*"|'[A-Za-z_][A-Za-z0-9_. -]*'|[A-Za-z_][A-Za-z0-9_.-]*(?:[ \t]+[A-Za-z_][A-Za-z0-9_.-]*)*?))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[(?:redacted|redacted-credential|redacted-private-key)\]|<redacted>|\(?not[ \t]+set\)?(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
 const PLACEHOLDER_VALUES = new Set([
   "",
   "***",
   "[redacted]",
   "[redacted-credential]",
+  "[redacted-private-key]",
+  "(not set)",
   "<redacted>",
   "missing",
   "none",
