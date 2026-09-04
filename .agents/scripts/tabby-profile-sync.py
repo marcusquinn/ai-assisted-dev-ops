@@ -99,7 +99,7 @@ def is_linked_worktree(repo_path: str) -> bool:
     """
     git_dir = _run_git(repo_path, "rev-parse", "--git-dir")
     common_dir = _run_git(repo_path, "rev-parse", "--git-common-dir")
-    if not git_dir or not common_dir:
+    if not all((git_dir, common_dir)):
         return False
 
     def _absolute(path: str) -> str:
@@ -124,9 +124,7 @@ def _run_git(cwd: str, *args: str) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+    return (result.stdout.strip(), "")[result.returncode != 0]
 
 
 def profile_name_from_path(repo_path: str) -> str:
@@ -135,14 +133,22 @@ def profile_name_from_path(repo_path: str) -> str:
     Uses the last path component, or last two if nested (e.g., cloudron/netbird-app).
     """
     parts = Path(repo_path).parts
-    if len(parts) >= 2:
+    try:
         parent = parts[-2]
         name = parts[-1]
-        # If parent is a grouping dir (not Git or home), include it
-        if parent.lower() not in ("git", "repos", "projects", "src", "code",
-                                   os.path.basename(os.path.expanduser("~"))):
-            return f"{parent}/{name}"
-    return Path(repo_path).name
+    except IndexError:
+        return Path(repo_path).name
+    grouping_dirs = {
+        "git",
+        "repos",
+        "projects",
+        "src",
+        "code",
+        os.path.basename(os.path.expanduser("~")),
+    }
+    if parent.lower() in grouping_dirs:
+        return name
+    return f"{parent}/{name}"
 
 
 def build_profile_yaml(
@@ -195,34 +201,48 @@ def build_group_yaml(group_id: str) -> str:
     name: Projects"""
 
 
+def _add_projects_to_existing_groups(config_text: str, group_id: str) -> str:
+    """Add Projects to an existing groups section when it is absent."""
+    if extract_group_id(config_text):
+        return config_text
+    group_entry = build_group_yaml(group_id)
+    return re.sub(
+        r"^(groups:\s*\n)",
+        f"\\1{group_entry}\n",
+        config_text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+
+def _add_groups_section(config_text: str, group_id: str) -> str:
+    """Insert a new groups section before the first conventional config key."""
+    group_section = f"groups:\n{build_group_yaml(group_id)}\n"
+    top_level_keys = ("configSync:", "hotkeys:", "terminal:", "ssh:", "clickableLinks:")
+    insertion_key = next((key for key in top_level_keys if key in config_text), None)
+    if insertion_key:
+        return config_text.replace(insertion_key, f"{group_section}{insertion_key}", 1)
+    return f"{config_text}\n{group_section}"
+
+
 def ensure_groups_section(config_text: str, group_id: str) -> str:
     """Ensure the groups section exists with a Projects group."""
     if re.search(r"^groups:", config_text, re.MULTILINE):
-        # Check if Projects group exists
-        existing_id = extract_group_id(config_text)
-        if existing_id:
-            return config_text  # Already has Projects group
-        # Add Projects group to existing groups section
-        group_entry = build_group_yaml(group_id)
-        config_text = re.sub(
-            r"^(groups:\s*\n)",
-            f"\\1{group_entry}\n",
-            config_text,
-            count=1,
-            flags=re.MULTILINE,
-        )
-    else:
-        # Add groups section before the first non-profile top-level key
-        # or at the end
-        group_section = f"groups:\n{build_group_yaml(group_id)}\n"
-        # Insert before configSync, hotkeys, terminal, ssh, etc.
-        for key in ("configSync:", "hotkeys:", "terminal:", "ssh:", "clickableLinks:"):
-            if key in config_text:
-                config_text = config_text.replace(key, f"{group_section}{key}", 1)
-                return config_text
-        # Fallback: append
-        config_text += f"\n{group_section}"
-    return config_text
+        return _add_projects_to_existing_groups(config_text, group_id)
+    return _add_groups_section(config_text, group_id)
+
+
+def _repo_profile_target(repo: dict) -> dict | None:
+    """Build a profile target for one available canonical repository."""
+    path = repo.get("path", "")
+    if not path:
+        return None
+    path = os.path.expanduser(path)
+    if not os.path.isdir(path):
+        return None
+    if is_linked_worktree(path):
+        return None
+    return {"path": path, "name": profile_name_from_path(path), "repo": repo}
 
 
 def get_repos(repos_json_path: str) -> list[dict]:
@@ -242,19 +262,8 @@ def get_repos(repos_json_path: str) -> list[dict]:
     with open(repos_json_path) as f:
         data = json.load(f)
 
-    repos = data.get("initialized_repos", [])
-    result = []
-    for repo in repos:
-        path = repo.get("path", "")
-        if not path:
-            continue
-        path = os.path.expanduser(path)
-        if not os.path.isdir(path):
-            continue
-        if is_linked_worktree(path):
-            continue
-        result.append({"path": path, "name": profile_name_from_path(path), "repo": repo})
-    return result
+    targets = map(_repo_profile_target, data.get("initialized_repos", []))
+    return [target for target in targets if target is not None]
 
 
 def get_registered_paths(repos_json_path: str) -> set[str]:
@@ -276,20 +285,17 @@ def normalize_cwd(path: str) -> str:
 def _has_managed_profile_id(profile: dict) -> bool:
     """Return True only for IDs emitted by :func:`build_profile_yaml`."""
     profile_id = profile.get("id")
-    if not isinstance(profile_id, str) or not profile_id.startswith("local:custom:"):
+    if not isinstance(profile_id, str):
         return False
     try:
         uuid.UUID(profile_id.rsplit(":", 1)[1])
     except (ValueError, IndexError):
         return False
-    return True
+    return profile_id.startswith("local:custom:")
 
 
-def _has_managed_launch(profile: dict) -> bool:
+def _has_managed_launch(options: dict) -> bool:
     """Return True for current and historical aidevops OpenCode launch forms."""
-    options = profile.get("options")
-    if not isinstance(options, dict):
-        return False
     args = options.get("args")
     managed_args = (
         ["-l", "-c", TABBY_OPENCODE_LAUNCH],
@@ -297,28 +303,95 @@ def _has_managed_launch(profile: dict) -> bool:
         ["-l", "-c", LEGACY_TABBY_OPENCODE_LAUNCH],
         ["-l", "-i", "-c", "opencode"],
     )
-    if args in managed_args:
-        return True
     command = options.get("command")
-    return command in (
+    managed_commands = (
         TABBY_COMMAND_FIELD_OPENCODE,
         LEGACY_TABBY_COMMAND_FIELD_OPENCODE,
         "/bin/zsh -l -c 'aidevops opencode; exec zsh'",
     )
+    return any((args in managed_args, command in managed_commands))
 
 
 def is_aidevops_managed_profile(profile: dict, projects_group_id: str | None) -> bool:
     """Identify a generated profile without claiming custom OpenCode profiles."""
     options = profile.get("options")
-    return bool(
-        projects_group_id
-        and profile.get("group") == projects_group_id
-        and profile.get("type") == "local"
-        and isinstance(options, dict)
-        and isinstance(options.get("cwd"), str)
-        and _has_managed_profile_id(profile)
-        and _has_managed_launch(profile)
+    if not isinstance(options, dict):
+        return False
+    return all(
+        (
+            projects_group_id,
+            profile.get("group") == projects_group_id,
+            profile.get("type") == "local",
+            isinstance(options.get("cwd"), str),
+            _has_managed_profile_id(profile),
+            _has_managed_launch(options),
+        )
     )
+
+
+def _retarget_block_cwd(
+    lines: list[str],
+    index: int,
+    match: re.Match[str],
+    raw_value: str,
+    path_mappings: dict[str, str],
+) -> tuple[int, bool]:
+    """Retarget one block-scalar cwd and return the next line index."""
+    parent_indent = len(match.group("indent"))
+    value, next_index = _parse_block_scalar(
+        [line.rstrip("\r\n") for line in lines],
+        index + 1,
+        parent_indent,
+        raw_value[0],
+    )
+    replacement = path_mappings.get(value)
+    if not replacement:
+        return next_index, False
+
+    lines[index] = (
+        f"{match.group('indent')}cwd: {replacement}"
+        f"{match.group('newline') or ''}"
+    )
+    del lines[index + 1 : next_index]
+    return index + 1, True
+
+
+def _retarget_inline_cwd(
+    match: re.Match[str], raw_value: str, path_mappings: dict[str, str]
+) -> str | None:
+    """Render a retargeted inline cwd line, preserving matching quotes."""
+    quoted_value = re.fullmatch(r"(?P<quote>['\"])(?P<value>.*)(?P=quote)", raw_value)
+    quote = quoted_value.group("quote") if quoted_value else ""
+    value = quoted_value.group("value") if quoted_value else raw_value
+    replacement = path_mappings.get(value)
+    if not replacement:
+        return None
+
+    rendered = f"{quote}{replacement}{quote}" if quote else replacement
+    return (
+        f"{match.group('indent')}cwd: {rendered}"
+        f"{match.group('newline') or ''}"
+    )
+
+
+def _retarget_cwd_line(
+    lines: list[str],
+    index: int,
+    cwd_pattern: re.Pattern[str],
+    path_mappings: dict[str, str],
+) -> tuple[int, bool]:
+    """Retarget the cwd at one line and return the next index and change flag."""
+    match = cwd_pattern.match(lines[index])
+    if not match:
+        return index + 1, False
+    raw_value = match.group("value").strip()
+    if raw_value.startswith((">", "|")):
+        return _retarget_block_cwd(lines, index, match, raw_value, path_mappings)
+    retargeted_line = _retarget_inline_cwd(match, raw_value, path_mappings)
+    if not retargeted_line:
+        return index + 1, False
+    lines[index] = retargeted_line
+    return index + 1, True
 
 
 def retarget_profile_cwds(
@@ -331,51 +404,34 @@ def retarget_profile_cwds(
     index = 0
     cwd_pattern = re.compile(r"^(?P<indent>\s+)cwd:\s*(?P<value>.*?)(?P<newline>\r?\n)?$")
     while index < len(lines):
-        match = cwd_pattern.match(lines[index])
-        if not match:
-            index += 1
-            continue
-        raw_value = match.group("value").strip()
-        if raw_value and raw_value[0] in (">", "|"):
-            parent_indent = len(match.group("indent"))
-            value, next_index = _parse_block_scalar(
-                [line.rstrip("\r\n") for line in lines],
-                index + 1,
-                parent_indent,
-                raw_value[0],
-            )
-            replacement = path_mappings.get(value)
-            if replacement:
-                lines[index] = (
-                    f"{match.group('indent')}cwd: {replacement}"
-                    f"{match.group('newline') or ''}"
-                )
-                del lines[index + 1 : next_index]
-                changed += 1
-                index += 1
-                continue
-            index = next_index
-            continue
-        quote = (
-            raw_value[0]
-            if len(raw_value) >= 2
-            and raw_value[0] == raw_value[-1]
-            and raw_value[0] in ("'", '"')
-            else ""
+        index, was_retargeted = _retarget_cwd_line(
+            lines, index, cwd_pattern, path_mappings
         )
-        value = raw_value[1:-1] if quote else raw_value
-        replacement = path_mappings.get(value)
-        if replacement:
-            rendered = f"{quote}{replacement}{quote}" if quote else replacement
-            lines[index] = (
-                f"{match.group('indent')}cwd: {rendered}"
-                f"{match.group('newline') or ''}"
-            )
-            changed += 1
-        index += 1
+        changed += was_retargeted
     updated = "".join(lines)
     validate_yaml_document(updated)
     return updated, changed
+
+
+def _reconciliation_category(
+    block, projects_group_id: str | None, registered_paths: set[str], seen_cwds: set[str]
+) -> str | None:
+    """Classify a managed profile block for conservative reconciliation."""
+    profile = block.data
+    if not is_aidevops_managed_profile(profile, projects_group_id):
+        return None
+
+    cwd = profile["options"]["cwd"]
+    normalized = normalize_cwd(cwd)
+    cwd_is_known = any(
+        (os.path.isdir(os.path.expanduser(cwd)), normalized in registered_paths)
+    )
+    if not cwd_is_known:
+        return "stale"
+    if normalized in seen_cwds:
+        return "duplicate"
+    seen_cwds.add(normalized)
+    return None
 
 
 def plan_profile_reconciliation(
@@ -386,19 +442,13 @@ def plan_profile_reconciliation(
     seen_cwds: set[str] = set()
     stale = []
     duplicates = []
+    categories = {"stale": stale, "duplicate": duplicates}
     for block in extract_profile_blocks(config_text):
-        profile = block.data
-        if not is_aidevops_managed_profile(profile, projects_group_id):
-            continue
-        cwd = profile["options"]["cwd"]
-        normalized = normalize_cwd(cwd)
-        if not os.path.isdir(os.path.expanduser(cwd)) and normalized not in registered_paths:
-            stale.append(block)
-            continue
-        if normalized in seen_cwds:
-            duplicates.append(block)
-            continue
-        seen_cwds.add(normalized)
+        category = _reconciliation_category(
+            block, projects_group_id, registered_paths, seen_cwds
+        )
+        if category:
+            categories[category].append(block)
     return ProfileReconciliation(stale, duplicates)
 
 
@@ -416,9 +466,13 @@ def get_profile_targets(
         os.path.expanduser(home) if home is not None else os.path.expanduser("~")
     )
     buzz_path = os.path.join(home_path, ".buzz")
-    if os.path.isdir(buzz_path) and all(
-        target["path"] != buzz_path for target in targets
-    ):
+    should_add_buzz = all(
+        (
+            os.path.isdir(buzz_path),
+            all(target["path"] != buzz_path for target in targets),
+        )
+    )
+    if should_add_buzz:
         targets.append(
             {
                 "path": buzz_path,
@@ -429,6 +483,11 @@ def get_profile_targets(
     return targets
 
 
+def _optional_line(value: object, line: str) -> str:
+    """Return a newline-terminated status line only when value is truthy."""
+    return ("", f"{line}\n")[bool(value)]
+
+
 def show_status(
     repos: list[dict], existing_cwds: set[str], reconciliation: ProfileReconciliation
 ) -> None:
@@ -437,17 +496,16 @@ def show_status(
         repo["repo"].get("profile_kind") == "buzz-workspace" for repo in repos
     )
     print(f"Repos in repos.json: {len(repos) - workspace_count}")
-    if workspace_count:
-        print(f"Detected workspaces: {workspace_count}")
-    has_profile = 0
-    needs_profile = 0
+    print(
+        _optional_line(workspace_count, f"Detected workspaces: {workspace_count}"),
+        end="",
+    )
+    has_profile = sum(repo["path"] in existing_cwds for repo in repos)
     for repo in repos:
-        if repo["path"] in existing_cwds:
-            has_profile += 1
-            print(f"  [exists] {repo['name']} -> {repo['path']}")
-        else:
-            needs_profile += 1
-            print(f"  [new]    {repo['name']} -> {repo['path']}")
+        labels = ("new]   ", "exists]")
+        label = labels[repo["path"] in existing_cwds]
+        print(f"  [{label} {repo['name']} -> {repo['path']}")
+    needs_profile = len(repos) - has_profile
     print(f"\nExisting: {has_profile}, New: {needs_profile}")
     print(
         "Pending reconciliation: "
@@ -471,19 +529,50 @@ def build_new_profiles(
     """Build profile entries for repos that don't yet have a Tabby profile."""
     new_profiles = []
     shell_path = shell_path or resolve_login_shell()
-    for repo in repos:
-        if repo["path"] not in existing_cwds:
-            tab_colour = generate_tab_colour(repo["path"])
-            scheme = find_closest_scheme(tab_colour)
-            profile_yaml = build_profile_yaml(
-                name=repo["name"],
-                cwd=repo["path"],
-                appearance=ProfileAppearance(tab_colour, scheme),
-                group_id=group_id,
-                shell_path=shell_path,
-            )
-            new_profiles.append((repo, profile_yaml, tab_colour, scheme["name"]))
+    missing_repos = (repo for repo in repos if repo["path"] not in existing_cwds)
+    for repo in missing_repos:
+        tab_colour = generate_tab_colour(repo["path"])
+        scheme = find_closest_scheme(tab_colour)
+        profile_yaml = build_profile_yaml(
+            name=repo["name"],
+            cwd=repo["path"],
+            appearance=ProfileAppearance(tab_colour, scheme),
+            group_id=group_id,
+            shell_path=shell_path,
+        )
+        new_profiles.append((repo, profile_yaml, tab_colour, scheme["name"]))
     return new_profiles
+
+
+def _report_reconciliation(
+    repaired_count: int, reconciliation: ProfileReconciliation
+) -> None:
+    """Report profile repairs and removals performed during a sync."""
+    repaired_line = f"Repaired {repaired_count} existing Tabby profile(s)."
+    removed_line = (
+        "Removed "
+        f"{len(reconciliation.stale)} stale and "
+        f"{len(reconciliation.duplicates)} duplicate managed profile(s)."
+    )
+    print(
+        _optional_line(repaired_count, repaired_line)
+        + _optional_line(reconciliation.removals, removed_line),
+        end="",
+    )
+
+
+def _save_reconciled_config(
+    config_path: str,
+    config_text: str,
+    repaired_count: int,
+    reconciliation: ProfileReconciliation,
+) -> bool:
+    """Save and report a reconciliation-only update when one exists."""
+    if not any((repaired_count, reconciliation.removals)):
+        return False
+    save_yaml(config_path, config_text)
+    _report_reconciliation(repaired_count, reconciliation)
+    return True
 
 
 def sync_profiles(args: argparse.Namespace) -> None:
@@ -512,17 +601,9 @@ def sync_profiles(args: argparse.Namespace) -> None:
     new_profiles = build_new_profiles(repos, existing_cwds, group_id, shell_path)
 
     if not new_profiles:
-        if repaired_count or reconciliation.removals:
-            save_yaml(args.tabby_config, config_text)
-            if repaired_count:
-                print(f"Repaired {repaired_count} existing Tabby profile(s).")
-            if reconciliation.removals:
-                print(
-                    "Removed "
-                    f"{len(reconciliation.stale)} stale and "
-                    f"{len(reconciliation.duplicates)} duplicate managed profile(s)."
-                )
-        else:
+        if not _save_reconciled_config(
+            args.tabby_config, config_text, repaired_count, reconciliation
+        ):
             print("All profile targets already have Tabby profiles. Nothing to do.")
         return
 
@@ -530,14 +611,7 @@ def sync_profiles(args: argparse.Namespace) -> None:
     config_text = insert_profiles_block(config_text, new_block)
     save_yaml(args.tabby_config, config_text)
 
-    if repaired_count:
-        print(f"Repaired {repaired_count} existing Tabby profile(s).")
-    if reconciliation.removals:
-        print(
-            "Removed "
-            f"{len(reconciliation.stale)} stale and "
-            f"{len(reconciliation.duplicates)} duplicate managed profile(s)."
-        )
+    _report_reconciliation(repaired_count, reconciliation)
     print(f"Created {len(new_profiles)} new Tabby profile(s):")
     for repo, _, colour, scheme_name in new_profiles:
         print(f"  + {repo['name']} (colour: {colour}, scheme: {scheme_name})")
@@ -561,9 +635,11 @@ def main() -> None:
             config_text, get_registered_paths(args.repos_json)
         )
         show_status(repos, existing_cwds, reconciliation)
-        if report_profile_arg_type_issues(config_text) or report_profile_command_issues(
-            config_text
-        ):
+        has_validation_issues = (
+            report_profile_arg_type_issues(config_text)
+            or report_profile_command_issues(config_text)
+        )
+        if has_validation_issues:
             raise SystemExit(2)
         return
 
