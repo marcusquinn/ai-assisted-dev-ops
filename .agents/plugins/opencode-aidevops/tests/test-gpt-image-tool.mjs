@@ -3,7 +3,8 @@
 
 import { afterEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -25,6 +26,26 @@ const z = {
   enum: () => schemaNode,
   string: () => schemaNode,
 };
+
+function git(cwd, args) {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+async function gitProject() {
+  const root = await projectRoot();
+  const canonical = join(root, "canonical");
+  const linked = join(root, "linked");
+  await mkdir(canonical);
+  git(canonical, ["init", "--initial-branch=main"]);
+  git(canonical, ["config", "user.email", "test@example.invalid"]);
+  git(canonical, ["config", "user.name", "Test"]);
+  git(canonical, ["config", "commit.gpgsign", "false"]);
+  await writeFile(join(canonical, "README.md"), "fixture\n");
+  git(canonical, ["add", "README.md"]);
+  git(canonical, ["commit", "--no-gpg-sign", "-m", "fixture"]);
+  git(canonical, ["worktree", "add", "-b", "feature/image-fixture", linked]);
+  return { canonical, linked };
+}
 
 async function projectRoot() {
   const root = await mkdtemp(join(process.env.AIDEVOPS_TEMP_DIR || tmpdir(), "aidevops-gpt-tool-"));
@@ -69,6 +90,99 @@ describe("GPT image OpenCode tool", () => {
     assert.match(output, /ChatGPT subscription OAuth/);
     assert.match(output, /generated\/test\.png/);
     assert.doesNotMatch(output, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(output, /Native dimensions: 1x1/);
+  });
+
+  test("routes outputs and references into a validated session-owned linked worktree", async () => {
+    const { canonical, linked } = await gitProject();
+    await mkdir(join(linked, "refs"));
+    await writeFile(join(linked, "refs", "source.png"), PNG_BYTES);
+    let ownershipChecks = 0;
+    let requestBody;
+    const tool = createTool({
+      projectRoot: canonical,
+      verifyWorktreeOwnership: async ({ root, sessionID }) => {
+        ownershipChecks += 1;
+        assert.equal(root, linked);
+        assert.equal(sessionID, "ses_image_fixture");
+      },
+      resolveOAuthAccount: async () => ({ email: "person@example.test", access: "oauth-test-token" }),
+      fetchImpl: async (_url, init) => {
+        requestBody = JSON.parse(init.body);
+        return oauthSuccess();
+      },
+    });
+    const args = {
+      prompt: "edit the reference",
+      out: "generated/test.png",
+      images: ["refs/source.png"],
+      workdir: linked,
+    };
+    const context = { sessionID: "ses_image_fixture" };
+    const first = await tool.execute(args, context);
+    const second = await tool.execute(args, context);
+
+    assert.equal(ownershipChecks, 2);
+    assert.match(first, /generated\/test\.png in the validated session-owned linked worktree/);
+    assert.match(second, /versioned filename/);
+    assert.equal(requestBody.input[0].content[1].type, "input_image");
+    assert.deepEqual(await readFile(join(linked, "generated", "test.png")), PNG_BYTES);
+    assert.deepEqual(await readFile(join(linked, "generated", "test-v2.png")), PNG_BYTES);
+    await assert.rejects(access(join(canonical, "generated", "test.png")), /ENOENT/);
+    assert.equal(git(canonical, ["status", "--porcelain"]), "");
+  });
+
+  test("rejects unsafe, unrelated, and incorrectly owned worktree roots", async () => {
+    const first = await gitProject();
+    const second = await gitProject();
+    const alias = join(first.canonical, "linked-alias");
+    await symlink(first.linked, alias, "dir");
+    let calls = 0;
+    const tool = createTool({
+      projectRoot: first.canonical,
+      verifyWorktreeOwnership: async ({ sessionID }) => {
+        if (sessionID !== "ses_image_fixture") throw new Error("wrong session");
+      },
+      fetchImpl: async () => {
+        calls += 1;
+        return oauthSuccess();
+      },
+    });
+    const args = { prompt: "draw", out: "generated/test.png" };
+    await assert.rejects(tool.execute({ ...args, workdir: first.linked }, { sessionID: "ses_other" }), /wrong session/);
+    await assert.rejects(tool.execute({ ...args, workdir: second.linked }, { sessionID: "ses_image_fixture" }), /unrelated Git repository/);
+    await assert.rejects(tool.execute({ ...args, workdir: alias }, { sessionID: "ses_image_fixture" }), /unavailable or unsafe/);
+    await assert.rejects(tool.execute({ ...args, workdir: first.linked }, {}), /current OpenCode session identity/);
+    await assert.rejects(
+      tool.execute({ ...args, out: "../escape.png", workdir: first.linked }, { sessionID: "ses_image_fixture" }),
+      /parent traversal/,
+    );
+    assert.equal(calls, 0);
+  });
+
+  test("surfaces OAuth and Platform API dimension mismatches without writing artifacts", async () => {
+    const root = await projectRoot();
+    const oauthTool = createTool({
+      projectRoot: root,
+      resolveOAuthAccount: async () => ({ email: "person@example.test", access: "oauth-test-token" }),
+      fetchImpl: async () => oauthSuccess(),
+    });
+    await assert.rejects(
+      oauthTool.execute({ prompt: "draw", out: "oauth.png", size: "1024x1024" }),
+      /returned 1x1 PNG for requested 1024x1024; no artifact was written/,
+    );
+
+    const apiTool = createTool({
+      projectRoot: root,
+      readSecret: () => "unit-test-credential-value",
+      fetchImpl: async () => Response.json({ data: [{ b64_json: PNG_BASE64 }] }),
+    });
+    await assert.rejects(
+      apiTool.execute({ prompt: "draw", out: "api.png", size: "1024x1024", auth: "api", account: "work" }),
+      /returned 1x1 PNG for requested 1024x1024; no artifact was written/,
+    );
+    await assert.rejects(access(join(root, "oauth.png")), /ENOENT/);
+    await assert.rejects(access(join(root, "api.png")), /ENOENT/);
   });
 
   test("requests and writes a selected native WebP", async () => {

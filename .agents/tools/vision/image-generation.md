@@ -89,7 +89,8 @@ from a subscription to API credits. Never paste an API key into chat.
 |-----------|---------|-------|
 | `format` | png, jpeg, webp | `png` is the default; output extension must match |
 | `quality` | low, medium, high, auto | `auto` is the default; use low for drafts |
-| `size` | auto or WIDTHxHEIGHT | Edges must be multiples of 16, max 3840px, ratio ≤3:1, total 655,360-8,294,400px |
+| `size` | auto or WIDTHxHEIGHT | Edges must be multiples of 16, max 3840px, ratio ≤3:1, total 655,360-8,294,400px; explicit requests fail before publication if native dimensions differ |
+| `workdir` | absolute linked-worktree path | Optional; must be registered to the current OpenCode session and belong to the startup repository |
 | `images` | 0-8 project-relative paths | Reference-guided generation/editing; PNG, JPEG, or WebP, 20 MiB each |
 | `auth` | oauth, api | OAuth is the default; API billing must be explicit |
 | `account` | OAuth email or API alias | Exact selection only; no silent account substitution |
@@ -98,6 +99,11 @@ OAuth uses OpenCode's Codex channel and is therefore runtime-specific and
 experimental. The public API route calls `gpt-image-2` directly. OpenCode V2
 remains fail-closed until the aidevops V2 adapter implements equivalent tool,
 permission, credential, and session contracts.
+
+When OpenCode starts in a canonical checkout and aidevops creates a linked
+worktree, pass that worktree as `workdir`. Output and reference paths remain
+relative to the validated worktree; absolute image paths and parent traversal
+remain rejected. Every success receipt reports the native raster dimensions.
 
 ### Midjourney
 

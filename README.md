@@ -153,6 +153,7 @@ Since the last README feature refresh, aidevops has added or expanded:
 - **Worker and PR observability**: worker diagnostic failure families, runtime observability signals, review-thread response scanning, required-check validation, orphan-recovery base handling, and safer automated GitHub write guards.
 - **Runtime-neutral safety and evidence contracts**: shared command decisions across supported runtimes, commit-pinned plugin provenance with explicit hook authorization, recognized-client network checks, causal worker lineage, and redacted state snapshots/deltas in the existing observability database.
 - **OpenCode runtime polish**: versioned session title suffixes, session archive retention, OAuth pool hardening, debug-error preservation, and reusable shell-env version lookup in the OpenCode plugin.
+- **Safer GPT image generation**: native raster dimensions are verified before publication, while canonical-root OpenCode sessions can route output and references into the current session-owned linked worktree without weakening path confinement (`.agents/tools/vision/image-generation.md`).
 
 <!-- AI-CONTEXT-END -->
 

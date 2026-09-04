@@ -7,7 +7,12 @@ import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { readReferenceImages, saveGeneratedImage, validateImageOutputPath } from "../gpt-image-io.mjs";
+import {
+  inspectGeneratedImageBase64,
+  readReferenceImages,
+  saveGeneratedImage,
+  validateImageOutputPath,
+} from "../gpt-image-io.mjs";
 
 const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -29,6 +34,30 @@ const OUTPUT_CASES = [
   { bytes: WEBP_BYTES, extension: "webp", format: "webp" },
 ];
 const roots = [];
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function rasterWithDimensions(bytes, format, width, height) {
+  const result = Buffer.from(bytes);
+  if (format === "png") {
+    result.writeUInt32BE(width, 16);
+    result.writeUInt32BE(height, 20);
+    result.writeUInt32BE(crc32(result.subarray(12, 29)), 29);
+  } else if (format === "jpeg") {
+    result.writeUInt16BE(height, 7);
+    result.writeUInt16BE(width, 9);
+  } else {
+    result.writeUInt32LE((width - 1) | ((height - 1) << 14), 21);
+  }
+  return result;
+}
 
 async function projectRoot() {
   const root = await mkdtemp(join(process.env.AIDEVOPS_TEMP_DIR || tmpdir(), "aidevops-gpt-image-"));
@@ -53,6 +82,35 @@ describe("GPT image file safety", () => {
       assert.equal(second.projectPath, `assets/result-v2.${extension}`);
       assert.deepEqual(await readFile(join(root, first.projectPath)), bytes);
       assert.equal((await lstat(join(root, first.projectPath))).mode & 0o777, 0o600);
+    }
+  });
+
+  test("inspects native dimensions and enforces explicit requests before publication", async () => {
+    const root = await projectRoot();
+    for (const { bytes, extension, format } of OUTPUT_CASES) {
+      const native = rasterWithDimensions(bytes, format, 1024, 1024);
+      const inspected = inspectGeneratedImageBase64(native.toString("base64"), format);
+      assert.deepEqual({ width: inspected.width, height: inspected.height }, { width: 1024, height: 1024 });
+      const saved = await saveGeneratedImage(
+        `assets/exact.${extension}`,
+        root,
+        native.toString("base64"),
+        format,
+        { requestedSize: "1024x1024" },
+      );
+      assert.equal(saved.width, 1024);
+      assert.equal(saved.height, 1024);
+      await assert.rejects(
+        saveGeneratedImage(
+          `assets/mismatch.${extension}`,
+          root,
+          bytes.toString("base64"),
+          format,
+          { requestedSize: "1024x1024" },
+        ),
+        new RegExp(`returned 1x1 ${format.toUpperCase()} for requested 1024x1024; no artifact was written`),
+      );
+      await assert.rejects(readFile(join(root, "assets", `mismatch.${extension}`)), /ENOENT/);
     }
   });
 
@@ -102,7 +160,7 @@ describe("GPT image file safety", () => {
     );
     await assert.rejects(
       saveGeneratedImage("assets/truncated.jpg", root, Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64"), "jpeg"),
-      /without a terminal marker|invalid terminal JPEG marker/,
+      /without dimensions|without a terminal marker|invalid terminal JPEG marker/,
     );
   });
 });

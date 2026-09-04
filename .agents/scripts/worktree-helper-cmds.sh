@@ -572,6 +572,27 @@ cmd_switch() {
 # --- cmd_registry ---
 
 # Manage the worktree ownership registry (list or prune stale entries).
+_registry_verify_owner() {
+	local wt_path="${1:-}"
+	local session_id="${2:-}"
+	[[ -n "$wt_path" && "$session_id" == ses_* ]] || return 1
+
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path") || return 1
+	_wt_path_is_canonical "$registry_path" && return 1
+
+	local snapshot="" owner_pid="" owner_session="" owner_process_start=""
+	local owner_batch="" owner_task="" owner_created="" current_process_start=""
+	snapshot=$(check_worktree_owner_snapshot "$registry_path" 2>/dev/null) || return 1
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created owner_process_start <<<"$snapshot"
+	[[ "$owner_session" == "$session_id" && "$owner_pid" =~ ^[0-9]+$ ]] || return 1
+	kill -0 "$owner_pid" 2>/dev/null || return 1
+	current_process_start=$(_wt_process_start_token_for_pid "$owner_pid") || return 1
+	[[ -n "$owner_process_start" && "$current_process_start" == "$owner_process_start" ]] || return 1
+	printf 'VERIFIED\n'
+	return 0
+}
+
 cmd_registry() {
 	local subcmd="${1:-list}"
 
@@ -635,8 +656,13 @@ cmd_registry() {
 
 		echo -e "${GREEN}Done: pruned $pruned of $before_count entries ($after_count remaining)${NC}"
 		;;
+	verify-owner)
+		shift
+		_registry_verify_owner "$@"
+		return $?
+		;;
 	*)
-		echo "Usage: worktree-helper.sh registry [list|prune]"
+		echo "Usage: worktree-helper.sh registry [list|prune|verify-owner <path> <session>]"
 		;;
 	esac
 	return 0

@@ -10,6 +10,7 @@ import {
   requireRelativePath,
 } from "./gpt-image-paths.mjs";
 import { secureWriteGeneratedImage } from "./gpt-image-secure-write.mjs";
+import { generatedImageDimensions } from "./gpt-image-dimensions.mjs";
 
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -80,6 +81,25 @@ function validateGeneratedImageBase64(base64, format) {
   return buffer;
 }
 
+export function inspectGeneratedImageBase64(base64, format) {
+  const selected = requireImageFormat(format);
+  const buffer = validateGeneratedImageBase64(base64, selected);
+  const dimensions = generatedImageDimensions(buffer, selected);
+  if (dimensions.width < 1 || dimensions.height < 1) {
+    throw new Error(`Image provider returned invalid ${selected} dimensions.`);
+  }
+  return { buffer, ...dimensions };
+}
+
+function enforceRequestedDimensions(dimensions, requestedSize, format) {
+  if (!requestedSize || requestedSize === "auto") return;
+  const observed = `${dimensions.width}x${dimensions.height}`;
+  if (observed === requestedSize) return;
+  throw new Error(
+    `Image provider returned ${observed} ${format.toUpperCase()} for requested ${requestedSize}; no artifact was written.`,
+  );
+}
+
 export async function validateImageOutputPath(out, projectRoot, format = "png") {
   const requested = requireRelativePath(out, "Image output");
   const selected = requireImageFormat(format);
@@ -98,8 +118,10 @@ export async function validateImageOutputPath(out, projectRoot, format = "png") 
 }
 
 export async function saveGeneratedImage(out, projectRoot, base64, format = "png", options = {}) {
-  const buffer = validateGeneratedImageBase64(base64, format);
+  const image = inspectGeneratedImageBase64(base64, format);
+  enforceRequestedDimensions(image, options.requestedSize, format);
   const requestedPath = await validateImageOutputPath(out, projectRoot, format);
   const root = await requireProjectRoot(projectRoot);
-  return secureWriteGeneratedImage(buffer, requestedPath, root, options);
+  const saved = await secureWriteGeneratedImage(image.buffer, requestedPath, root, options);
+  return { ...saved, width: image.width, height: image.height };
 }
