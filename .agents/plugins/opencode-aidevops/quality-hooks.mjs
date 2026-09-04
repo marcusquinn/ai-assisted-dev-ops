@@ -47,9 +47,9 @@ import { validateBashWorkingDirectory } from "./quality-hooks-workdir.mjs";
 import {
   scrubCredentials,
   scrubToolOutput,
-} from "./quality-hooks-credential-scrub.mjs";
+} from "./quality-hooks-output-scrub.mjs";
 
-export { scrubCredentials } from "./quality-hooks-credential-scrub.mjs";
+export { scrubCredentials } from "./quality-hooks-output-scrub.mjs";
 
 // Re-export for consumers that import from this module
 export { scanForSecrets } from "./quality-logging.mjs";

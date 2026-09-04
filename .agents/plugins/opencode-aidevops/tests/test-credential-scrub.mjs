@@ -80,6 +80,25 @@ describe("credential transcript scrub boundary", () => {
     );
   });
 
+  test("redacts exact and camel-case sensitive field names", () => {
+    assertScrub("TOKEN=opaque-value", `TOKEN=${REDACTION_TOKEN}`, 1);
+    assertScrub("apiKey: opaque-value", `apiKey: ${REDACTION_TOKEN}`, 1);
+    assertScrub("clientSecret='opaque-value'", `clientSecret='${REDACTION_TOKEN}'`, 1);
+    assertScrub("userPassword=opaque-value", `userPassword=${REDACTION_TOKEN}`, 1);
+  });
+
+  test("preserves empty and explicit placeholder values", () => {
+    assertScrub('API_KEY=""', 'API_KEY=""', 0);
+    assertScrub("ACCESS_TOKEN=null", "ACCESS_TOKEN=null", 0);
+    assertScrub("CLIENT_SECRET=[redacted]", "CLIENT_SECRET=[redacted]", 0);
+  });
+
+  test("does not redact non-sensitive field-name substrings", () => {
+    assertScrub("TOKEN_COUNT=3", "TOKEN_COUNT=3", 0);
+    assertScrub("PASSWORD_POLICY=strict", "PASSWORD_POLICY=strict", 0);
+    assertScrub("MONKEY_TOKENIZER=enabled", "MONKEY_TOKENIZER=enabled", 0);
+  });
+
   test("does not redact Google OAuth prefix embedded mid-word", () => {
     const embedded = `vendor-GOCSPX-${"g".repeat(28)}`;
     assertScrub(embedded, embedded, 0);
@@ -117,6 +136,24 @@ describe("credential transcript scrub boundary", () => {
       await hooks.toolExecuteAfter({ tool: "grep", callID: "" }, output);
       assert.deepEqual(output.output, {
         environment: { RESEND_API_KEY: REDACTION_TOKEN },
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("structured output preserves sensitive placeholders", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "aidevops-placeholder-scrub-"));
+    const output = {
+      output: { environment: { RESEND_API_KEY: "[redacted]", API_TOKEN: "" } },
+      metadata: {},
+    };
+
+    try {
+      const hooks = createQualityHooks({ scriptsDir: tempDir, logsDir: tempDir });
+      await hooks.toolExecuteAfter({ tool: "grep", callID: "" }, output);
+      assert.deepEqual(output.output, {
+        environment: { RESEND_API_KEY: "[redacted]", API_TOKEN: "" },
       });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
