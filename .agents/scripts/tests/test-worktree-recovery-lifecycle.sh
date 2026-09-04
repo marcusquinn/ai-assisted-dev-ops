@@ -529,6 +529,148 @@ test_classification_fails_closed() {
 	return 0
 }
 
+test_recovery_issue_attribution_uses_archived_source_path() {
+	local issue="" status=0
+	local rc=0
+
+	issue=$(_worktree_recovery_plan_identity_issue_number \
+		"refs/heads/feature/auto-20260830-155046" \
+		"/worktrees/project-pr2641-review-feature-auto-20260830-155046") || rc=1
+	[[ "$issue" == "2641" ]] || rc=1
+	issue=$(_worktree_recovery_plan_identity_issue_number \
+		"refs/heads/feature/auto-20260830-155046-gh2641" \
+		"/worktrees/project-pr2641-review") || rc=1
+	[[ "$issue" == "2641" ]] || rc=1
+	status=0
+	_worktree_recovery_plan_identity_issue_number \
+		"refs/heads/feature/auto-20260830-155046-gh2641" \
+		"/worktrees/project-pr2642-review" >/dev/null 2>&1 || status=$?
+	[[ "$status" -eq 2 ]] || rc=1
+	print_result "recovery_issue_attribution_uses_archived_source_path" "$rc" \
+		"Expected archived PR worktree names to supply missing task identity while conflicts fail closed"
+	return 0
+}
+
+test_unlinked_merged_pr_is_terminal_task_evidence() {
+	local identity="" evidence=""
+	local rc=0
+
+	identity=$(jq -cn \
+		'{archive_path:"/recovery/archive",source_path:"/worktrees/project-auto-20260830",
+		branch:"refs/heads/feature/auto-20260830",head:"abc123"}') || rc=1
+	evidence=$(
+		_worktree_recovery_plan_repo_slug() {
+			local ignored_archive="$1"
+			: "$ignored_archive"
+			printf '%s\n' "example/repo"
+			return 0
+		}
+		gh() {
+			local resource="$1"
+			if [[ "$resource" == "pr" ]]; then
+				printf '%s\n' '[{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"abc123"}]'
+				return 0
+			fi
+			return 1
+		}
+		_worktree_recovery_plan_external_evidence_json "$identity"
+	) || rc=1
+	printf '%s\n' "$evidence" | jq -e \
+		'.commit == "merged" and .open_pr == "clear" and .task == "closed" and .issue_number == null' \
+		>/dev/null || rc=1
+	print_result "unlinked_merged_pr_is_terminal_task_evidence" "$rc" \
+		"Expected an exact merged PR to provide terminal task evidence without a branch-encoded issue"
+	return 0
+}
+
+test_dirty_recovery_short_circuits_expensive_probes() {
+	local bucket_path="${TEST_DIR}/dirty-short-circuit"
+	local probe_path="${TEST_DIR}/dirty-short-circuit-probe"
+	local entry=""
+	local rc=0
+
+	mkdir -p "$bucket_path" || rc=1
+	entry=$(
+		_worktree_recovery_plan_identity_json() {
+			local ignored_bucket="$1"
+			: "$ignored_bucket"
+			jq -cn --arg bucket "$bucket_path" \
+				'{bucket_path:$bucket,archive_path:($bucket + "/archive"),source_path:"/worktrees/source",
+				source_removal_outcome:"removed",branch:"refs/heads/feature/auto-20260830",head:"abc123"}'
+			return $?
+		}
+		_worktree_recovery_plan_git_state() {
+			local ignored_identity="$1"
+			: "$ignored_identity"
+			printf '%s\n' "dirty"
+			return 0
+		}
+		_worktree_recovery_plan_worktree_reference_state() {
+			local ignored_identity="$1"
+			: "$ignored_identity"
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_measure_path() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" 1024
+	) || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.disposition')" == "protected" ]] || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.reasons[0]')" == "archive-worktree-dirty" ]] || rc=1
+	[[ ! -e "$probe_path" ]] || rc=1
+	print_result "dirty_recovery_short_circuits_expensive_probes" "$rc" \
+		"Expected dirty archives to remain protected without unrelated local, remote, or size probes"
+	return 0
+}
+
+test_active_claim_short_circuits_later_probes() {
+	local bucket_path="${TEST_DIR}/active-claim-short-circuit"
+	local probe_path="${TEST_DIR}/active-claim-short-circuit-probe"
+	local entry=""
+	local rc=0
+
+	mkdir -p "$bucket_path" || rc=1
+	entry=$(
+		_worktree_recovery_plan_identity_json() {
+			local ignored_bucket="$1"
+			: "$ignored_bucket"
+			jq -cn --arg bucket "$bucket_path" \
+				'{bucket_path:$bucket,archive_path:($bucket + "/archive"),source_path:"/worktrees/source",
+				source_removal_outcome:"removed",branch:"refs/heads/feature/auto-20260830",head:"abc123"}'
+			return $?
+		}
+		_worktree_recovery_plan_git_state() { printf 'clear\n'; return 0; }
+		_worktree_recovery_plan_worktree_reference_state() { printf 'clear\n'; return 0; }
+		_worktree_recovery_plan_registry_state() { printf 'clear\n'; return 0; }
+		_worktree_recovery_plan_claim_state() { printf 'active\n'; return 0; }
+		_worktree_recovery_plan_process_state() {
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_plan_external_evidence_json() {
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_measure_path() {
+			local ignored_path="$1"
+			: "$ignored_path"
+			printf 'called\n' >"$probe_path"
+			return 1
+		}
+		_worktree_recovery_plan_attributed_entry_json "current" "$bucket_path" 1024
+	) || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.disposition')" == "protected" ]] || rc=1
+	[[ "$(printf '%s\n' "$entry" | jq -r '.reasons[0]')" == "active-session-claim" ]] || rc=1
+	[[ ! -e "$probe_path" ]] || rc=1
+	print_result "active_claim_short_circuits_later_probes" "$rc" \
+		"Expected an active claim to protect its archive without process, remote, or size probes"
+	return 0
+}
+
 test_plan_records_malformed_bucket_unknown() {
 	local home_path="${TEST_DIR}/malformed-home"
 	local recovery_root="${home_path}/recovery"
@@ -2263,6 +2405,10 @@ run_all_tests() {
 	test_archive_prunes_only_regenerable_ignored_caches
 	test_archive_pruning_preserves_tracked_codegraph_root
 	test_claim_state_uses_archive_repository
+	test_recovery_issue_attribution_uses_archived_source_path
+	test_unlinked_merged_pr_is_terminal_task_evidence
+	test_dirty_recovery_short_circuits_expensive_probes
+	test_active_claim_short_circuits_later_probes
 	test_exact_plan_writes_candidate_without_mutation
 	test_plan_output_refuses_unsafe_targets
 	test_classification_fails_closed
