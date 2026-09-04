@@ -78,6 +78,8 @@ describe("GPT image file safety", () => {
       const second = await saveGeneratedImage(requested, root, bytes.toString("base64"), format);
       assert.equal(first.versioned, false);
       assert.equal(second.versioned, true);
+      assert.deepEqual({ width: first.width, height: first.height }, { width: 1, height: 1 });
+      assert.deepEqual({ width: second.width, height: second.height }, { width: 1, height: 1 });
       assert.equal(first.projectPath, requested);
       assert.equal(second.projectPath, `assets/result-v2.${extension}`);
       assert.deepEqual(await readFile(join(root, first.projectPath)), bytes);

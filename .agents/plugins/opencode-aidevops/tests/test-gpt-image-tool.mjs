@@ -89,8 +89,8 @@ describe("GPT image OpenCode tool", () => {
     assert.equal(calls, 1);
     assert.match(output, /ChatGPT subscription OAuth/);
     assert.match(output, /generated\/test\.png/);
+    assert.match(output, /Requested size: auto; native dimensions: 1x1/);
     assert.doesNotMatch(output, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(output, /Native dimensions: 1x1/);
   });
 
   test("routes outputs and references into a validated session-owned linked worktree", async () => {

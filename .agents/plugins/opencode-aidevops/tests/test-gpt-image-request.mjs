@@ -49,8 +49,27 @@ describe("GPT image provider requests", () => {
     assert.equal(captured.init.headers.Authorization, "Bearer oauth-test-token");
     assert.equal(body.tools[0].type, "image_generation");
     assert.equal(body.tools[0].output_format, "webp");
+    assert.equal(body.tools[0].size, "1024x1024");
     assert.equal(body.input[0].content[1].type, "input_image");
     assert.equal(result.base64, IMAGE_RESULT);
+  });
+
+  test("leaves OAuth hosted-tool size automatic when auto is requested", async () => {
+    let captured;
+    const event = `data: ${JSON.stringify({
+      type: "response.output_item.done",
+      item: { type: "image_generation_call", result: IMAGE_RESULT },
+    })}\n\n`;
+    await requestOAuthImage(
+      { accessToken: "oauth-test-token" },
+      { prompt: "draw a test", quality: "auto", size: "auto", format: "png" },
+      [],
+      async (_url, init) => {
+        captured = JSON.parse(init.body);
+        return new Response(event, { status: 200 });
+      },
+    );
+    assert.equal(Object.hasOwn(captured.tools[0], "size"), false);
   });
 
   test("uses the explicit GPT Image 2 generations endpoint for API auth", async () => {
@@ -80,11 +99,13 @@ describe("GPT image provider requests", () => {
     };
     await requestApiImage(
       { accessToken: "unit-test-credential-value" },
-      { prompt: "draw a test", quality: "auto", size: "auto", format: "jpeg" },
+      { prompt: "draw a test", quality: "auto", size: "1536x864", format: "jpeg" },
       [],
       fetchImpl,
     );
-    assert.equal(JSON.parse(captured.init.body).output_format, "jpeg");
+    const body = JSON.parse(captured.init.body);
+    assert.equal(body.output_format, "jpeg");
+    assert.equal(body.size, "1536x864");
   });
 
   test("uses multipart GPT Image 2 edits when API references are present", async () => {

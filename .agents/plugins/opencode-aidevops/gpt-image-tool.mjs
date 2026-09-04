@@ -120,7 +120,8 @@ async function executeImageGeneration(rawArgs, options, context) {
   const versionNote = saved.versioned ? " Existing output was preserved with a versioned filename." : "";
   const cleanupNote = saved.cleanupWarning ? " Temporary-file cleanup reported a filesystem warning." : "";
   const rootNote = project.linked ? " in the validated session-owned linked worktree" : "";
-  return `Generated image saved to ${saved.projectPath}${rootNote}. Native dimensions: ${saved.width}x${saved.height}. Billing route: ${billingLabel(auth.mode)}.${versionNote}${cleanupNote}`;
+  const dimensions = `${saved.width}x${saved.height}`;
+  return `Generated image saved to ${saved.projectPath}${rootNote}. Requested size: ${args.size}; native dimensions: ${dimensions}. Billing route: ${billingLabel(auth.mode)}.${versionNote}${cleanupNote}`;
 }
 
 export function createGptImageTool(tool, z, options = {}) {

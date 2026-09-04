@@ -105,6 +105,14 @@ worktree, pass that worktree as `workdir`. Output and reference paths remain
 relative to the validated worktree; absolute image paths and parent traversal
 remain rejected. Every success receipt reports the native raster dimensions.
 
+The public Platform API documents `size` as the requested output geometry and
+supports constrained flexible dimensions for GPT Image 2 generation. The
+ChatGPT OAuth route uses a private hosted-tool endpoint without the same stable
+contract and may return different native geometry. The tool therefore decodes
+PNG, JPEG, and WebP dimensions before writing: an explicit-size mismatch fails
+without creating a file, while `auto` accepts the provider-selected size. Every
+successful result reports both the requested size and observed native dimensions.
+
 ### Midjourney
 
 No REST API — use Discord `/imagine` or [midjourney.com](https://www.midjourney.com/).
