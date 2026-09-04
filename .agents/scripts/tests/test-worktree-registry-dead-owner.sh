@@ -479,6 +479,47 @@ test_legacy_registry_schema_migrates_on_owner_check() {
 	return 0
 }
 
+test_existing_owner_reconciliation_quarantines_then_unregisters() {
+	local wt_path
+	wt_path=$(make_worktree_dir "reconcile-existing-dead-owner")
+	register_dead_owner_fixture "$wt_path" "feature/reconcile-existing-dead-owner"
+
+	local rc=0
+	_wt_registry_reconcile_existing_owners || rc=1
+	assert_owner_exists "$wt_path" || rc=1
+	[[ -n "$(worktree_owner_dead_seen_at "$wt_path")" ]] || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+
+	local registry_path=""
+	registry_path=$(_wt_registry_lookup_path "$wt_path")
+	sqlite3 "$WORKTREE_REGISTRY_DB" "
+        UPDATE worktree_owners
+        SET owner_dead_seen_at = '2020-01-01T00:00:00Z'
+        WHERE worktree_path = '$(_wt_sql_escape "$registry_path")';
+    "
+	export WORKTREE_OWNER_DEAD_COOLDOWN_MINUTES=1
+	_wt_registry_reconcile_existing_owners || rc=1
+	assert_owner_missing "$wt_path" || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	print_result "existing-owner reconciliation quarantines then unregisters without deleting directory" "$rc"
+	return 0
+}
+
+test_existing_owner_reconciliation_preserves_live_generation() {
+	local wt_path
+	wt_path=$(make_worktree_dir "reconcile-existing-live-owner")
+	local owner_pid
+	owner_pid=$(live_other_pid)
+	register_worktree "$wt_path" "feature/reconcile-existing-live-owner" --owner-pid "$owner_pid"
+
+	local rc=0
+	_wt_registry_reconcile_existing_owners || rc=1
+	assert_owner_exists "$wt_path" || rc=1
+	[[ -d "$wt_path" ]] || rc=1
+	print_result "existing-owner reconciliation preserves live generation and directory" "$rc"
+	return 0
+}
+
 test_inconclusive_dead_pid_probe_fails_closed() {
 	local wt_path
 	wt_path=$(make_worktree_dir "inconclusive-dead-pid-probe")
@@ -561,6 +602,8 @@ main() {
 	test_explicit_cleanup_lease_identity
 	test_matching_pid_requires_matching_process_generation
 	test_legacy_registry_schema_migrates_on_owner_check
+	test_existing_owner_reconciliation_quarantines_then_unregisters
+	test_existing_owner_reconciliation_preserves_live_generation
 	test_inconclusive_dead_pid_probe_fails_closed
 	test_unavailable_process_generation_fails_closed
 	test_should_skip_cleanup_branch_merged_within_grace

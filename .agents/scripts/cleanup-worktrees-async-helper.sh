@@ -204,6 +204,18 @@ _update_last_run() {
 	return 0
 }
 
+_reconcile_worktree_registry() {
+	if ! declare -F prune_worktree_registry >/dev/null 2>&1; then
+		echo "[cleanup-worktrees-async] registry prune unavailable; skipping reconciliation" >>"$LOGFILE"
+		return 0
+	fi
+	if ! prune_worktree_registry >>"$LOGFILE" 2>&1; then
+		echo "[cleanup-worktrees-async] registry reconciliation failed closed; continuing guarded cleanup" >>"$LOGFILE"
+		return 0
+	fi
+	return 0
+}
+
 _prune_dirty_worktree_backups() {
 	local helper_path="${SCRIPT_DIR}/dirty-worktree-backup-helper.sh"
 	local retention_days="${DIRTY_WORKTREE_BACKUP_RETENTION_DAYS:-30}"
@@ -290,6 +302,7 @@ main() {
 	fi
 
 	echo "[cleanup-worktrees-async] Starting cleanup_worktrees (cadence OK)" >>"$LOGFILE"
+	_reconcile_worktree_registry
 
 	local rc=0
 	local outcome="success"
