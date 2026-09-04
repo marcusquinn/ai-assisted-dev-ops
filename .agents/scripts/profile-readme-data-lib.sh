@@ -225,7 +225,7 @@ _get_profile_session_times() {
 
 # --- Compute cost from token counts using _model_cost_rates ---
 # Takes JSON array with model/input_tokens/output_tokens/cache_read_tokens,
-# adds cost_total field computed from pricing table, sorts by cost desc.
+# adds cost_total field computed from pricing table, sorts by request count.
 _compute_costs_from_tokens() {
 	local raw_json="$1"
 	local result="[]"
@@ -250,7 +250,7 @@ _compute_costs_from_tokens() {
 			'. + [$row + {cost_total: $cost}]')
 	done < <(echo "$raw_json" | jq -c '.[]')
 
-	echo "$result" | jq -c 'sort_by(-.cost_total)'
+	echo "$result" | jq -c 'sort_by(-.requests)'
 	return 0
 }
 
@@ -280,7 +280,9 @@ _model_usage_undercuts_reference() {
 }
 
 # --- Gather model usage from OpenCode session DB (full history) ---
-# Returns JSON array with cost_total computed, or empty string if unavailable.
+# Returns JSON array with token, session, and generation-time totals, or empty
+# string if unavailable. Cost remains available for compatibility with older
+# consumers but is not rendered in the profile README.
 _get_model_usage_from_opencode() {
 	if ! command -v sqlite3 &>/dev/null || [[ ! -f "$OPENCODE_DB_FILE" ]]; then
 		echo ""
@@ -295,26 +297,36 @@ _get_model_usage_from_opencode() {
 	if [[ -f "$OPENCODE_ARCHIVE_DB_FILE" ]]; then
 		attach_clause="ATTACH DATABASE '${OPENCODE_ARCHIVE_DB_FILE}' AS archive;"
 		union_clause="UNION ALL
-			SELECT
-				json_extract(data, '\$.modelID') AS model,
-				COUNT(*) AS requests,
-				COALESCE(SUM(json_extract(data, '\$.tokens.input')), 0) AS input_tokens,
-				COALESCE(SUM(json_extract(data, '\$.tokens.output')), 0) AS output_tokens,
-				COALESCE(SUM(json_extract(data, '\$.tokens.cache.read')), 0) AS cache_read_tokens,
-				COALESCE(SUM(json_extract(data, '\$.tokens.cache.write')), 0) AS cache_write_tokens
-			FROM archive.message
-			WHERE json_extract(data, '\$.role') = 'assistant'
-			  AND json_extract(data, '\$.modelID') IS NOT NULL
-			  AND json_extract(data, '\$.modelID') != ''
-			GROUP BY model"
+			SELECT session_id, data FROM archive.message"
 	fi
 	raw_json=$(sqlite3 "$OPENCODE_DB_FILE" "
 		${attach_clause}
+		WITH all_messages AS (
+			SELECT session_id, data FROM message
+			${union_clause}
+		),
+		assistant_messages AS (
+			SELECT
+				session_id,
+				json_extract(data, '\$.modelID') AS model,
+				COALESCE(json_extract(data, '\$.tokens.input'), 0) AS input_tokens,
+				COALESCE(json_extract(data, '\$.tokens.output'), 0) AS output_tokens,
+				COALESCE(json_extract(data, '\$.tokens.cache.read'), 0) AS cache_read_tokens,
+				COALESCE(json_extract(data, '\$.tokens.cache.write'), 0) AS cache_write_tokens,
+				MAX(0, COALESCE(json_extract(data, '\$.time.completed'), 0) - COALESCE(json_extract(data, '\$.time.created'), 0)) AS duration_ms
+			FROM all_messages
+			WHERE json_extract(data, '\$.role') = 'assistant'
+			  AND json_extract(data, '\$.modelID') IS NOT NULL
+			  AND json_extract(data, '\$.modelID') != ''
+		)
 		SELECT COALESCE(
 			json_group_array(
 				json_object(
 					'model', model,
 					'requests', requests,
+					'session_count', session_count,
+					'total_session_count', total_session_count,
+					'session_hours', session_hours,
 					'input_tokens', input_tokens,
 					'output_tokens', output_tokens,
 					'cache_read_tokens', cache_read_tokens,
@@ -324,25 +336,19 @@ _get_model_usage_from_opencode() {
 			'[]'
 		)
 		FROM (
-			SELECT model, SUM(requests) AS requests,
-				SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
-				SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens
-			FROM (
-				SELECT
-					json_extract(data, '\$.modelID') AS model,
-					COUNT(*) AS requests,
-					COALESCE(SUM(json_extract(data, '\$.tokens.input')), 0) AS input_tokens,
-					COALESCE(SUM(json_extract(data, '\$.tokens.output')), 0) AS output_tokens,
-					COALESCE(SUM(json_extract(data, '\$.tokens.cache.read')), 0) AS cache_read_tokens,
-					COALESCE(SUM(json_extract(data, '\$.tokens.cache.write')), 0) AS cache_write_tokens
-				FROM message
-				WHERE json_extract(data, '\$.role') = 'assistant'
-				  AND json_extract(data, '\$.modelID') IS NOT NULL
-				  AND json_extract(data, '\$.modelID') != ''
-				GROUP BY model
-				${union_clause}
-			)
+			SELECT
+				model,
+				COUNT(*) AS requests,
+				COUNT(DISTINCT session_id) AS session_count,
+				(SELECT COUNT(DISTINCT session_id) FROM assistant_messages) AS total_session_count,
+				ROUND(COALESCE(SUM(duration_ms), 0) / 3600000.0, 3) AS session_hours,
+				COALESCE(SUM(input_tokens), 0) AS input_tokens,
+				COALESCE(SUM(output_tokens), 0) AS output_tokens,
+				COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+				COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens
+			FROM assistant_messages
 			GROUP BY model
+			ORDER BY requests DESC
 		);
 	" 2>/dev/null || true)
 
@@ -359,6 +365,9 @@ _get_model_usage_from_opencode() {
 		| map({
 			model: .[0].model,
 			requests: ([.[].requests] | add),
+			session_count: ([.[].session_count // 0] | add),
+			total_session_count: ([.[].total_session_count // 0] | max // 0),
+			session_hours: ([.[].session_hours // 0] | add),
 			input_tokens: ([.[].input_tokens] | add),
 			output_tokens: ([.[].output_tokens] | add),
 			cache_read_tokens: ([.[].cache_read_tokens] | add),
@@ -369,7 +378,7 @@ _get_model_usage_from_opencode() {
 	return 0
 }
 
-# --- Gather model usage from observability DB (accurate cost data) ---
+# --- Gather model usage from observability DB (accurate activity data) ---
 # date_filter: optional SQL WHERE clause fragment (e.g. "AND timestamp >= ...")
 # Returns JSON array or empty string if unavailable.
 _get_model_usage_from_obs_db() {
@@ -391,26 +400,36 @@ _get_model_usage_from_obs_db() {
 					'output_tokens', output_tokens,
 					'cache_read_tokens', cache_read_tokens,
 					'cache_write_tokens', cache_write_tokens,
+					'session_count', session_count,
+					'total_session_count', total_session_count,
+					'session_hours', session_hours,
 					'cost_total', ROUND(cost_total, 2)
 				)
 			),
 			'[]'
 		)
 		FROM (
+			WITH filtered_requests AS (
+				SELECT *
+				FROM llm_requests
+				WHERE model_id IS NOT NULL
+				  AND model_id != ''
+				  ${date_filter}
+			)
 			SELECT
 				model_id,
 				COUNT(*) AS requests,
+				COUNT(DISTINCT NULLIF(session_id, '')) AS session_count,
+				(SELECT COUNT(DISTINCT NULLIF(session_id, '')) FROM filtered_requests) AS total_session_count,
+				ROUND(COALESCE(SUM(duration_ms), 0) / 3600000.0, 3) AS session_hours,
 				COALESCE(SUM(tokens_input), 0) AS input_tokens,
 				COALESCE(SUM(tokens_output), 0) AS output_tokens,
 				COALESCE(SUM(tokens_cache_read), 0) AS cache_read_tokens,
 				COALESCE(SUM(tokens_cache_write), 0) AS cache_write_tokens,
 				COALESCE(SUM(cost), 0.0) AS cost_total
-			FROM llm_requests
-			WHERE model_id IS NOT NULL
-			  AND model_id != ''
-			  ${date_filter}
+			FROM filtered_requests
 			GROUP BY model_id
-			ORDER BY cost_total DESC
+			ORDER BY requests DESC
 		);
 	" 2>/dev/null || true)
 
@@ -435,18 +454,23 @@ _get_model_usage_from_jsonl() {
 		cutoff=$(date -v-30d +%Y-%m-%d 2>/dev/null || date -d '30 days ago' +%Y-%m-%d 2>/dev/null || echo "$PROFILE_EPOCH_DATE")
 	fi
 	jq -s --arg cutoff "$cutoff" --arg period "$period" '
-		(if $period == "all" then . else [.[] | select(.recorded_at >= $cutoff)] end)
+		(if $period == "all" then . else [.[] | select(.recorded_at >= $cutoff)] end) as $rows
+		| ($rows | [.[] | .session_id // empty | select(length > 0)] | unique | length) as $total_sessions
+		| $rows
 		| group_by(.model)
 		| map({
 			model: .[0].model,
 			requests: length,
+			session_count: ([.[] | .session_id // empty | select(length > 0)] | unique | length),
+			total_session_count: $total_sessions,
+			session_hours: (if any(.[]; .duration_ms != null) then ([.[].duration_ms // 0] | add) / 3600000 else null end),
 			input_tokens: ([.[].input_tokens // 0] | add),
 			output_tokens: ([.[].output_tokens // 0] | add),
 			cache_read_tokens: ([.[].cache_read_tokens // 0] | add),
 			cache_write_tokens: ([.[].cache_write_tokens // 0] | add),
 			cost_total: ([.[].cost_total // 0] | add | . * 100 | round / 100)
 		})
-		| sort_by(-.cost_total)
+		| sort_by(-.requests)
 	' "$METRICS_FILE" 2>/dev/null || echo "[]"
 	return 0
 }

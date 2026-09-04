@@ -451,6 +451,40 @@ test_internal_override_rejects_canonical_checkout() {
 	return 0
 }
 
+test_canonical_cleanliness_ignores_untracked_files() {
+	local test_name="profile publication ignores untracked canonical files but rejects tracked changes"
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="${TEST_DIR}/home"
+	local fixture_repo="${TEST_DIR}/profile-repo"
+	local fixture_remote="${TEST_DIR}/profile-remote.git"
+	mkdir -p "$fixture_home"
+	create_profile_repo_fixture "$fixture_home" "$fixture_repo" "$fixture_remote"
+
+	local result
+	result=$(
+		set -- help
+		# shellcheck source=../profile-readme-helper.sh
+		source "$SOURCE_HELPER" >/dev/null
+		printf '%s\n' harmless >"${fixture_repo}/.DS_Store"
+		if ! _profile_assert_canonical_clean "$fixture_repo"; then
+			printf '%s\n' untracked-rejected
+			return 0
+		fi
+		printf '%s\n' mutation >>"${fixture_repo}/README.md"
+		if _profile_assert_canonical_clean "$fixture_repo" 2>/dev/null; then
+			printf '%s\n' tracked-accepted
+			return 0
+		fi
+		printf '%s\n' ok
+	)
+	if [[ "$result" != "ok" ]]; then
+		print_result "$test_name" 1 "unexpected cleanliness result: ${result}"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
 test_update_migrates_generated_readme_with_commit_history_chart() {
 	local test_name="profile update adds commit-history chart to older generated README"
 
@@ -466,7 +500,17 @@ test_update_migrates_generated_readme_with_commit_history_chart() {
 	install_helper_with_libs "${helper_dir}"
 	write_stub_dependencies "${helper_dir}"
 	create_profile_repo_fixture "${fixture_home}" "${fixture_repo}" "${fixture_remote}"
-	printf '\n> Stats auto-updated by [aidevops](https://aidevops.sh).\n' >>"${fixture_repo}/README.md"
+	cat >>"${fixture_repo}/README.md" <<'EOF'
+
+> Stats auto-updated by [aidevops](https://aidevops.sh).
+
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://commit-history.com/embed/profile-repo?theme=dark" />
+    <img alt="profile-repo's commit history" src="https://commit-history.com/embed/profile-repo" />
+  </picture>
+</div>
+EOF
 	git -C "${fixture_repo}" add README.md
 	git -C "${fixture_repo}" commit -m "test: mark fixture as generated" >/dev/null
 	git -C "${fixture_repo}" push >/dev/null
@@ -488,8 +532,8 @@ test_update_migrates_generated_readme_with_commit_history_chart() {
 		print_result "${test_name}" 1 "migration did not add one username-specific chart"
 		return 0
 	fi
-	if grep -Fq '<a href="https://commit-history.com/' "$readme"; then
-		print_result "${test_name}" 1 "migrated chart contains an unnecessary provider backlink"
+	if [[ "$(grep -c '<a href="https://commit-history.com/profile-repo">' "$readme")" -ne 1 ]]; then
+		print_result "${test_name}" 1 "migrated chart is not linked to the username activity profile"
 		return 0
 	fi
 
@@ -766,14 +810,14 @@ EOF
 		return 0
 	fi
 
-	# Verify the final generated block is theme-aware and has no provider backlink.
+	# Verify the final generated block is theme-aware and links to the activity profile.
 	if ! grep -Fq 'srcset="https://commit-history.com/embed/profile-repo?theme=dark"' "$readme" ||
 		! grep -Fq 'src="https://commit-history.com/embed/profile-repo"' "$readme"; then
 		print_result "${test_name}" 1 "commit-history light/dark image URLs missing"
 		return 0
 	fi
-	if grep -Fq '<a href="https://commit-history.com/' "$readme"; then
-		print_result "${test_name}" 1 "commit-history chart contains an unnecessary provider backlink"
+	if ! grep -Fq '<a href="https://commit-history.com/profile-repo">' "$readme"; then
+		print_result "${test_name}" 1 "commit-history chart does not link to the username activity profile"
 		return 0
 	fi
 	if [[ "$(tail -n 1 "$readme")" != "</div>" ]]; then
@@ -1019,6 +1063,69 @@ test_work_with_ai_unavailable_is_not_zero() {
 	fi
 	if grep -qF 'unavailableh' "$output_file"; then
 		print_result "$test_name" 1 "unavailable status was formatted as a numeric hour value"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
+test_model_usage_renders_activity_metrics_without_costs() {
+	local test_name="model usage renders cache and session activity without cost or savings claims"
+	TEST_DIR=$(mktemp -d)
+	# shellcheck source=../profile-readme-data-lib.sh
+	source "$SOURCE_DATA_LIB"
+	# shellcheck source=../profile-readme-render-lib.sh
+	source "$SOURCE_RENDER_LIB"
+	local model_json token_totals output_file
+	model_json='[{"model":"model-a","requests":2,"input_tokens":100,"output_tokens":100,"cache_read_tokens":800,"cache_write_tokens":0,"session_count":2,"total_session_count":2,"session_hours":1.5,"cost_total":0}]'
+	token_totals='{"total_all":1000,"cache_hit_pct":80.0}'
+	output_file="${TEST_DIR}/model-usage.md"
+	_render_model_usage_table "AI Model Usage" "$model_json" "$token_totals" >"$output_file"
+
+	if ! grep -Fq '| Model | Requests | Input | Output | Cache read | Cache Hit-Rate % | Session Count | Session Hours |' "$output_file" ||
+		! grep -Fq '| model-a | 2 | 100 | 100 | 800 | 80.0% | 2 | 1.5h |' "$output_file" ||
+		! grep -Fq '| **Total** | **2** | **100** | **100** | **800** | **80.0%** | **2** | **1.5h** |' "$output_file"; then
+		print_result "$test_name" 1 "activity metric columns or values are missing"
+		return 0
+	fi
+	if grep -Eq 'API Cost|Cache savings|Model savings|total saved|all-Opus' "$output_file"; then
+		print_result "$test_name" 1 "obsolete cost or savings output remains"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
+test_observability_model_usage_calculates_sessions_and_hours() {
+	local test_name="observability model usage calculates distinct sessions and generation hours"
+	TEST_DIR=$(mktemp -d)
+	# shellcheck source=../profile-readme-data-lib.sh
+	source "$SOURCE_DATA_LIB"
+	OBS_DB_FILE="${TEST_DIR}/llm-requests.db"
+	sqlite3 "$OBS_DB_FILE" '
+		CREATE TABLE llm_requests (
+			timestamp TEXT, session_id TEXT, model_id TEXT, duration_ms INTEGER,
+			tokens_input INTEGER, tokens_output INTEGER, tokens_cache_read INTEGER,
+			tokens_cache_write INTEGER, cost REAL
+		);
+		INSERT INTO llm_requests VALUES
+			("2026-09-01T00:00:00Z", "session-1", "model-a", 3600000, 10, 1, 100, 0, 1.0),
+			("2026-09-01T01:00:00Z", "session-1", "model-a", 1800000, 20, 2, 200, 0, 1.0),
+			("2026-09-01T02:00:00Z", "session-2", "model-a", 1800000, 30, 3, 300, 0, 1.0),
+			("2026-09-01T03:00:00Z", "session-2", "model-b", 3600000, 40, 4, 400, 0, 1.0);'
+
+	local result
+	result=$(_get_model_usage_from_obs_db "")
+	if ! printf '%s' "$result" | jq -e '
+		(INDEX(.model)) as $models
+		| ($models["model-a"].requests == 3)
+		and ($models["model-a"].session_count == 2)
+		and ($models["model-a"].total_session_count == 2)
+		and ($models["model-a"].session_hours == 2)
+		and ($models["model-b"].session_count == 1)
+		and ($models["model-b"].session_hours == 1)
+	' >/dev/null; then
+		print_result "$test_name" 1 "unexpected observability aggregation: ${result}"
 		return 0
 	fi
 	print_result "$test_name" 0
@@ -1375,6 +1482,8 @@ main() {
 		teardown
 		test_internal_override_rejects_canonical_checkout
 		teardown
+		test_canonical_cleanliness_ignores_untracked_files
+		teardown
 		test_update_migrates_generated_readme_with_commit_history_chart
 		teardown
 		test_inject_markers_into_existing_readme
@@ -1391,6 +1500,10 @@ main() {
 	test_work_with_ai_worker_counts_above_thousand
 	teardown
 	test_work_with_ai_unavailable_is_not_zero
+	teardown
+	test_model_usage_renders_activity_metrics_without_costs
+	teardown
+	test_observability_model_usage_calculates_sessions_and_hours
 	teardown
 	test_screen_json_paths_are_optional_and_fail_visibly
 	teardown

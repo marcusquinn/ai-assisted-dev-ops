@@ -24,7 +24,7 @@ Arguments: $ARGUMENTS
 | One-liner | `/auto-reason "decide the best architecture for X"` | Build a temporary program and run now |
 | `--program <path>` | `/auto-reason --program todo/research/reason-product-strategy.md` | Run from a saved program |
 | `--incumbent <path>` | `/auto-reason --incumbent draft.md "improve this argument"` | Use existing answer as A |
-| `--judges <list>` | `/auto-reason --judges simple,standard,openai/gpt-5.5 "..."` | Override judge tiers/models |
+| `--judges <list>` | `/auto-reason --judges simple,standard,thinking "..."` | Override judge tiers/models |
 | Bare | `/auto-reason` | Interactive setup |
 
 ## Step 1: Resolve Invocation
@@ -73,7 +73,7 @@ Accept free-form model labels. Do not require Claude names.
 author:       standard
 critic:       simple
 synthesizer:  standard
-judges:       simple,standard,openai/gpt-5.5
+judges:       simple,standard,thinking
 ```
 
 Allowed forms include canonical workload tiers (`simple`, `standard`, `thinking`)
@@ -127,7 +127,7 @@ name: auto-reason-{slug}
 author: standard
 critic: simple
 synthesizer: standard
-judges: simple,standard,openai/gpt-5.5
+judges: simple,standard,thinking
 
 ## Budget
 
@@ -160,7 +160,7 @@ Return a concise summary to the user:
 ```text
 Decision: changed | unchanged
 Reason: A won after 2 rounds | AB won round 3 | budget reached
-Judges: simple, standard, openai/gpt-5.5
+Judges: simple, standard, thinking
 Artifacts: ~/.aidevops/.agent-workspace/work/auto-reason/{slug}/summary.md
 ```
 

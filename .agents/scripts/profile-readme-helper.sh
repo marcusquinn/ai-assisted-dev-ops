@@ -806,7 +806,7 @@ _build_readme_connect() {
 
 # --- Build the commit-history chart for a user ---
 # Usage: _build_commit_history_chart <gh_user>
-# Outputs a centered light/dark picture without a clickable provider backlink.
+# Outputs a centered light/dark picture linked to the user's activity profile.
 _build_commit_history_chart() {
 	local gh_user="$1"
 	gh_user="${gh_user//[^a-zA-Z0-9-]/}"
@@ -816,10 +816,12 @@ _build_commit_history_chart() {
 
 	cat <<EOF
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://commit-history.com/embed/${gh_user}?theme=dark" />
-    <img alt="${gh_user}'s commit history" src="https://commit-history.com/embed/${gh_user}" />
-  </picture>
+  <a href="https://commit-history.com/${gh_user}">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://commit-history.com/embed/${gh_user}?theme=dark" />
+      <img alt="${gh_user}'s commit history" src="https://commit-history.com/embed/${gh_user}" />
+    </picture>
+  </a>
 </div>
 EOF
 	return 0
@@ -834,6 +836,42 @@ _ensure_commit_history_chart() {
 		return 0
 	fi
 	if grep -Fq 'https://commit-history.com/embed/' "$readme_path" 2>/dev/null; then
+		if grep -Fq "<a href=\"https://commit-history.com/${gh_user}\">" "$readme_path" 2>/dev/null; then
+			return 0
+		fi
+		local migrate_tmp
+		migrate_tmp=$(mktemp)
+		if ! awk -v href="https://commit-history.com/${gh_user}" '
+			function emit_picture() {
+				if (picture_block ~ /commit-history[.]com\/embed\//) {
+					print "  <a href=\"" href "\">"
+					printf "%s", picture_block
+					print "  </a>"
+				} else {
+					printf "%s", picture_block
+				}
+				picture_block = ""
+			}
+			/^[[:space:]]*<picture>[[:space:]]*$/ {
+				in_picture = 1
+				picture_block = $0 ORS
+				next
+			}
+			in_picture {
+				picture_block = picture_block $0 ORS
+				if ($0 ~ /<\/picture>/) {
+					emit_picture()
+					in_picture = 0
+				}
+				next
+			}
+			{ print }
+			END { if (in_picture) printf "%s", picture_block }
+		' "$readme_path" >"$migrate_tmp"; then
+			rm -f "$migrate_tmp"
+			return 1
+		fi
+		mv "$migrate_tmp" "$readme_path" || return 1
 		return 0
 	fi
 
@@ -1348,7 +1386,10 @@ _cmd_update_in_repo() {
 	' "$readme_path" >"$tmp_file"
 	local gh_user
 	gh_user=$(_resolve_profile_user "$profile_repo")
-	_ensure_commit_history_chart "$tmp_file" "$gh_user"
+	if ! _ensure_commit_history_chart "$tmp_file" "$gh_user"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
 
 	# Check if content changed, ignoring UPDATED marker block
 	local old_normalized new_normalized
@@ -1774,12 +1815,12 @@ _cmd_update_contributions_in_repo() {
 _profile_assert_canonical_clean() {
 	local canonical_repo="$1"
 	local status_output=""
-	if ! status_output=$(git -C "$canonical_repo" status --porcelain --untracked-files=all); then
+	if ! status_output=$(git -C "$canonical_repo" status --porcelain --untracked-files=no); then
 		echo "Error: could not verify canonical profile checkout state" >&2
 		return 1
 	fi
 	if [[ -n "$status_output" ]]; then
-		echo "Error: canonical profile checkout is not clean; refusing automated publication" >&2
+		echo "Error: canonical profile checkout has tracked changes; refusing automated publication" >&2
 		return 1
 	fi
 	local default_branch=""

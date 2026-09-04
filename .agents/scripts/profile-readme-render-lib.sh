@@ -134,7 +134,7 @@ _get_top_apps() {
 
 # --- Render a model usage table ---
 # Usage: _render_model_usage_table <heading> <model_json> <token_totals_json>
-# Outputs a markdown table with model usage stats, savings calculations, and footer.
+# Outputs a markdown table with model usage, cache efficiency, and session totals.
 _render_model_usage_table() {
 	local heading="$1"
 	local model_json="$2"
@@ -142,72 +142,74 @@ _render_model_usage_table() {
 
 	# Skip entirely if no model data
 	local model_count
-	model_count=$(echo "$model_json" | jq -r 'if type == "array" then [.[] | select(.cost_total >= 0.05)] | length else 0 end' 2>/dev/null)
+	model_count=$(echo "$model_json" | jq -r 'if type == "array" then [.[] | select((.requests // 0) > 0)] | length else 0 end' 2>/dev/null)
 	if [[ "${model_count:-0}" == "0" ]]; then
 		return 0
 	fi
 
-	local total_requests=0 total_input=0 total_output=0 total_cache=0 total_cost=0
-	local total_cache_savings="0" total_model_savings="0"
+	local total_requests=0 total_input=0 total_output=0 total_cache=0
+	local total_session_hours="0" session_hours_complete=true total_sessions=0
 	local model_rows=""
+	total_sessions=$(echo "$model_json" | jq -r '[.[] | .total_session_count // 0] | max // 0' 2>/dev/null || printf '0\n')
+	if [[ "$total_sessions" -eq 0 ]]; then
+		total_sessions=$(echo "$model_json" | jq -r '[.[] | .session_count // 0] | add // 0' 2>/dev/null || printf '0\n')
+	fi
 
 	while IFS= read -r row; do
-		local model requests input output cache cost
+		local model requests input output cache cache_write session_count session_hours
 		model=$(echo "$row" | jq -r '.model')
-		requests=$(echo "$row" | jq -r '.requests')
-		input=$(echo "$row" | jq -r '.input_tokens')
-		output=$(echo "$row" | jq -r '.output_tokens')
-		cache=$(echo "$row" | jq -r '.cache_read_tokens')
-		cost=$(echo "$row" | jq -r '.cost_total')
+		requests=$(echo "$row" | jq -r '.requests // 0')
+		input=$(echo "$row" | jq -r '.input_tokens // 0')
+		output=$(echo "$row" | jq -r '.output_tokens // 0')
+		cache=$(echo "$row" | jq -r '.cache_read_tokens // 0')
+		cache_write=$(echo "$row" | jq -r '.cache_write_tokens // 0')
+		session_count=$(echo "$row" | jq -r '.session_count // 0')
+		session_hours=$(echo "$row" | jq -r '.session_hours // empty')
 
 		total_requests=$((total_requests + requests))
 		total_input=$((total_input + input))
 		total_output=$((total_output + output))
 		total_cache=$((total_cache + cache))
-		total_cost=$(echo "$total_cost + $cost" | bc)
+		if [[ "$session_hours" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+			total_session_hours=$(echo "$total_session_hours + $session_hours" | bc)
+		else
+			session_hours_complete=false
+		fi
 
-		# Compute per-row savings (cache + model routing vs all-Opus baseline)
-		local savings row_cache_savings row_model_savings
-		savings=$(_compute_model_row_savings "$model" "$input" "$output" "$cache")
-		row_cache_savings=$(echo "$savings" | cut -d'|' -f1)
-		row_model_savings=$(echo "$savings" | cut -d'|' -f2)
-		total_cache_savings=$(echo "$total_cache_savings + $row_cache_savings" | bc)
-		total_model_savings=$(echo "$total_model_savings + $row_model_savings" | bc)
-
-		local clean_model
+		local clean_model cache_hit_pct
 		clean_model=$(_clean_model_name "$model")
-		local f_requests f_input f_output f_cache
+		cache_hit_pct=$(echo "$row" | jq -r '
+			((.input_tokens // 0) + (.output_tokens // 0) + (.cache_read_tokens // 0) + (.cache_write_tokens // 0)) as $total
+			| if $total > 0 then (((.cache_read_tokens // 0) / $total * 1000 | round) / 10) else 0 end')
+		local f_requests f_input f_output f_cache f_cache_hit f_session_count f_session_hours
 		f_requests=$(_format_number "$requests")
 		f_input=$(_format_tokens "$input")
 		f_output=$(_format_tokens "$output")
 		f_cache=$(_format_tokens "$cache")
+		f_cache_hit=$(_format_hours "$cache_hit_pct")
+		f_session_count=$(_format_number "$session_count")
+		if [[ "$session_hours" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+			f_session_hours="$(_format_number "$(_format_hours "$session_hours")")h"
+		else
+			f_session_hours="—"
+		fi
 
-		# Format cost and both savings with commas and 2 decimal places
-		local f_cost f_csavings f_msavings
-		f_cost=$(_format_cost "$cost")
-		f_csavings=$(_format_cost "$row_cache_savings")
-		f_msavings=$(_format_cost "$row_model_savings")
-
-		model_rows="${model_rows}| ${clean_model} | ${f_requests} | ${f_input} | ${f_output} | ${f_cache} | \$${f_cost} | \$${f_csavings} | \$${f_msavings} |
+		model_rows="${model_rows}| ${clean_model} | ${f_requests} | ${f_input} | ${f_output} | ${f_cache} | ${f_cache_hit}% | ${f_session_count} | ${f_session_hours} |
 "
-	done < <(echo "$model_json" | jq -c '.[] | select(.cost_total >= 0.05)')
+	done < <(echo "$model_json" | jq -c 'sort_by(-(.requests // 0)) | .[] | select((.requests // 0) > 0)')
 
 	# Format totals
-	local f_total_req f_total_in f_total_out f_total_cache
-	local f_total_csavings f_total_msavings
+	local f_total_req f_total_in f_total_out f_total_cache f_total_sessions f_total_session_hours
 	f_total_req=$(_format_number "$total_requests")
 	f_total_in=$(_format_tokens "$total_input")
 	f_total_out=$(_format_tokens "$total_output")
 	f_total_cache=$(_format_tokens "$total_cache")
-	local f_total_cost
-	f_total_cost=$(_format_cost "$total_cost")
-	f_total_csavings=$(_format_cost "$total_cache_savings")
-	f_total_msavings=$(_format_cost "$total_model_savings")
-
-	# Combined savings for footer
-	local combined_savings f_combined_savings
-	combined_savings=$(echo "$total_cache_savings + $total_model_savings" | bc)
-	f_combined_savings=$(_format_cost "$combined_savings")
+	f_total_sessions=$(_format_number "$total_sessions")
+	if [[ "$session_hours_complete" == true ]]; then
+		f_total_session_hours="$(_format_number "$(_format_hours "$total_session_hours")")h"
+	else
+		f_total_session_hours="—"
+	fi
 
 	# Token totals for footer
 	local all_tokens cache_pct
@@ -220,15 +222,11 @@ _render_model_usage_table() {
 
 ## ${heading}
 
-| Model | Requests | Input | Output | Cache read | API Cost | Cache savings | Model savings |
+| Model | Requests | Input | Output | Cache read | Cache Hit-Rate % | Session Count | Session Hours |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-${model_rows}| **Total** | **${f_total_req}** | **${f_total_in}** | **${f_total_out}** | **${f_total_cache}** | **\$${f_total_cost}** | **\$${f_total_csavings}** | **\$${f_total_msavings}** |
+${model_rows}| **Total** | **${f_total_req}** | **${f_total_in}** | **${f_total_out}** | **${f_total_cache}** | **${cache_pct}%** | **${f_total_sessions}** | **${f_total_session_hours}** |
 
 _${f_all_tokens} total tokens processed. ${cache_pct}% cache hit rate._
-
-_\$${f_combined_savings} total saved (\$${f_total_csavings} caching + \$${f_total_msavings} model routing vs all-Opus)._
-
-_Model savings are modest because ~${cache_pct}% of tokens are cache reads, where price differences between models are small._
 EOF
 
 	return 0
