@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
+import { ok as assert } from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
@@ -54,13 +55,12 @@ function lifecycleRequest(name, options) {
 
 async function callLifecycle(action, name, options) {
   const method = options.client?.[action];
-  if (typeof method !== "function") {
-    throw new Error(`OpenCode does not expose MCP ${action} in this runtime.`);
-  }
+  assert(
+    typeof method === "function",
+    new Error(`OpenCode does not expose MCP ${action} in this runtime.`),
+  );
   const result = await method.call(options.client, lifecycleRequest(name, options));
-  if (result?.error) {
-    throw new Error(result.error.message || String(result.error));
-  }
+  assert(!result?.error, new Error(result?.error?.message || String(result?.error)));
 }
 
 async function waitForConnection(name, options, phase) {
@@ -75,16 +75,12 @@ async function waitForConnection(name, options, phase) {
   let status = "unknown";
   do {
     const result = await statusMethod.call(options.client, request);
-    if (result?.error) {
-      throw new Error(result.error.message || String(result.error));
-    }
+    assert(!result?.error, new Error(result?.error?.message || String(result?.error)));
     const payload = result?.data ?? result;
     const statusEntry = payload?.[name];
     status = MCP_STATUS_VALUES.has(statusEntry?.status) ? statusEntry.status : "unknown";
     if (status === "connected") return;
-    if (["error", "failed"].includes(status)) {
-      throw new McpFailedStatusError(status, phase);
-    }
+    assert(!["error", "failed"].includes(status), new McpFailedStatusError(status, phase));
     await pause(pollIntervalMs);
   } while (Date.now() < deadline);
 
@@ -92,11 +88,12 @@ async function waitForConnection(name, options, phase) {
 }
 
 async function recoverFailedConnection(name, options, statusError) {
-  if (typeof options.client?.disconnect !== "function") {
-    throw new Error(
+  assert(
+    typeof options.client?.disconnect === "function",
+    new Error(
       `${statusError.message}; bounded reset unavailable because OpenCode does not expose MCP disconnect in this runtime.`,
-    );
-  }
+    ),
+  );
 
   try {
     await callLifecycle("disconnect", name, options);
@@ -144,29 +141,32 @@ function pathIsWithin(parentPath, candidatePath) {
 function validateWorkspaceBoundary(workspace) {
   const physicalTempRoot = projectedPhysicalPath(workspace.tempRoot);
   const physicalWorkspace = projectedPhysicalPath(workspace.directory);
-  if (!pathIsWithin(physicalTempRoot, physicalWorkspace)) {
-    throw new Error("managed MCP workspace escapes its temporary root");
-  }
-  if (workspace.repositoryDir) {
-    const physicalRepository = projectedPhysicalPath(workspace.repositoryDir);
-    if (pathIsWithin(physicalRepository, physicalWorkspace)) {
-      throw new Error("managed MCP workspace resolves inside the repository");
-    }
-  }
+  assert(
+    pathIsWithin(physicalTempRoot, physicalWorkspace),
+    "managed MCP workspace escapes its temporary root",
+  );
+  assert(
+    !workspace.repositoryDir
+      || !pathIsWithin(projectedPhysicalPath(workspace.repositoryDir), physicalWorkspace),
+    "managed MCP workspace resolves inside the repository",
+  );
 }
 
 function validateOwnedWorkspace(workspace) {
   const stats = lstatSync(workspace.directory);
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new Error("managed MCP workspace is not a regular directory");
-  }
+  assert(
+    stats.isDirectory() && !stats.isSymbolicLink(),
+    "managed MCP workspace is not a regular directory",
+  );
   const markerStats = lstatSync(workspace.markerPath);
-  if (!markerStats.isFile() || markerStats.isSymbolicLink()) {
-    throw new Error("managed MCP workspace marker is not a regular file");
-  }
-  if (readFileSync(workspace.markerPath, "utf8") !== workspace.markerToken) {
-    throw new Error("managed MCP workspace ownership marker does not match");
-  }
+  assert(
+    markerStats.isFile() && !markerStats.isSymbolicLink(),
+    "managed MCP workspace marker is not a regular file",
+  );
+  assert(
+    readFileSync(workspace.markerPath, "utf8") === workspace.markerToken,
+    "managed MCP workspace ownership marker does not match",
+  );
 }
 
 function prepareManagedWorkspace(workspace) {
@@ -177,16 +177,18 @@ function prepareManagedWorkspace(workspace) {
     newlyOwned = true;
   } else {
     const stats = lstatSync(workspace.directory);
-    if (!stats.isDirectory() || stats.isSymbolicLink()) {
-      throw new Error("managed MCP workspace is not a regular directory");
-    }
+    assert(
+      stats.isDirectory() && !stats.isSymbolicLink(),
+      "managed MCP workspace is not a regular directory",
+    );
   }
   validateWorkspaceBoundary(workspace);
   chmodSync(workspace.directory, 0o700);
   if (!existsSync(workspace.markerPath)) {
-    if (readdirSync(workspace.directory).length > 0) {
-      throw new Error("managed MCP workspace is non-empty without an ownership marker");
-    }
+    assert(
+      readdirSync(workspace.directory).length === 0,
+      "managed MCP workspace is non-empty without an ownership marker",
+    );
     writeFileSync(workspace.markerPath, workspace.markerToken, { flag: "wx", mode: 0o600 });
     newlyOwned = true;
   }
@@ -200,14 +202,13 @@ function cleanupManagedWorkspace(workspace) {
   validateOwnedWorkspace(workspace);
   const physicalWorkspace = realpathSync(workspace.directory);
   const physicalTempRoot = projectedPhysicalPath(workspace.tempRoot);
-  if (!pathIsWithin(physicalTempRoot, physicalWorkspace)) {
-    throw new Error("managed MCP workspace physical path escapes its temporary root");
-  }
+  assert(
+    pathIsWithin(physicalTempRoot, physicalWorkspace),
+    "managed MCP workspace physical path escapes its temporary root",
+  );
   const cleanupSuffix = workspace.markerToken.replace(/[^a-zA-Z0-9._-]/g, "-");
   const quarantine = `${physicalWorkspace}.cleanup-${cleanupSuffix}`;
-  if (existsSync(quarantine)) {
-    throw new Error("managed MCP cleanup quarantine already exists");
-  }
+  assert(!existsSync(quarantine), "managed MCP cleanup quarantine already exists");
   renameSync(physicalWorkspace, quarantine);
   const quarantinedWorkspace = {
     ...workspace,
@@ -216,6 +217,72 @@ function cleanupManagedWorkspace(workspace) {
   };
   validateOwnedWorkspace(quarantinedWorkspace);
   rmSync(quarantine, { recursive: true, force: true });
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function waitForInitialConnection(name, options) {
+  try {
+    await waitForConnection(name, options, "initial activation");
+  } catch (error) {
+    if (!(error instanceof McpFailedStatusError)) throw error;
+    await recoverFailedConnection(name, options, error);
+  }
+}
+
+function cleanupAfterFailedConnect(workspace, cleanupOnFailure) {
+  if (!cleanupOnFailure) return "";
+  try {
+    cleanupManagedWorkspace(workspace);
+    return "";
+  } catch (error) {
+    return `; workspace cleanup failed: ${errorMessage(error)}`;
+  }
+}
+
+async function connectMcp(name, options, workspace) {
+  const cleanupOnFailure = workspace ? prepareManagedWorkspace(workspace) : false;
+  try {
+    await callLifecycle("connect", name, options);
+    await waitForInitialConnection(name, options);
+  } catch (error) {
+    const cleanupError = cleanupAfterFailedConnect(workspace, cleanupOnFailure);
+    throw new Error(`${errorMessage(error)}${cleanupError}`);
+  }
+}
+
+async function disconnectMcp(name, options, workspace) {
+  await callLifecycle("disconnect", name, options);
+  if (workspace) cleanupManagedWorkspace(workspace);
+}
+
+async function executeMcpActivation(args, allowed, options) {
+  const action = String(args.action || "");
+  const name = String(args.name || "");
+  if (!allowed.has(name) || !["connect", "disconnect"].includes(action)) {
+    return "Error: only registry-approved MCP activation requests are allowed.";
+  }
+
+  if (typeof options.client?.[action] !== "function") {
+    return `Error: OpenCode does not expose MCP ${action} in this runtime.`;
+  }
+
+  const workspace = managedWorkspace(name, options);
+  try {
+    if (action === "connect") {
+      await connectMcp(name, options, workspace);
+    } else {
+      await disconnectMcp(name, options, workspace);
+    }
+  } catch (error) {
+    return `Error: MCP ${action} failed for ${name}: ${errorMessage(error)}`;
+  }
+
+  return action === "connect"
+    ? `Connected MCP ${name}. Continue on the next step with its tools.`
+    : `Disconnected MCP ${name}.`;
 }
 
 /**
@@ -228,13 +295,15 @@ export function enforceManagedMcpArtifactPath(input, output, managedWorkspaces) 
   if (!managedWorkspaces?.playwright || !PLAYWRIGHT_OUTPUT_TOOLS.has(input?.tool)) return;
   const filename = output?.args?.filename;
   if (filename === undefined || filename === null || filename === "") return;
-  if (typeof filename !== "string") {
-    throw new Error("Playwright screenshot filename must be a relative path inside managed temporary storage.");
-  }
+  assert(
+    typeof filename === "string",
+    new Error("Playwright screenshot filename must be a relative path inside managed temporary storage."),
+  );
   const segments = filename.split(/[\\/]+/);
-  if (isAbsolute(filename) || win32.isAbsolute(filename) || segments.includes("..")) {
-    throw new Error("Playwright screenshot filename must not be absolute or contain '..' traversal.");
-  }
+  assert(
+    !isAbsolute(filename) && !win32.isAbsolute(filename) && !segments.includes(".."),
+    new Error("Playwright screenshot filename must not be absolute or contain '..' traversal."),
+  );
 }
 
 /**
@@ -257,49 +326,7 @@ export function createMcpActivationTool(tool, z, options) {
       name: z.enum(allowedNames).describe("Registry-approved MCP server name"),
     },
     async execute(args) {
-      const action = String(args.action || "");
-      const name = String(args.name || "");
-      if (!allowed.has(name) || !["connect", "disconnect"].includes(action)) {
-        return "Error: only registry-approved MCP activation requests are allowed.";
-      }
-
-      const method = options.client?.[action];
-      if (typeof method !== "function") {
-        return `Error: OpenCode does not expose MCP ${action} in this runtime.`;
-      }
-
-      const workspace = managedWorkspace(name, options);
-      let cleanupOnConnectFailure = false;
-      try {
-        if (action === "connect" && workspace) {
-          cleanupOnConnectFailure = prepareManagedWorkspace(workspace);
-        }
-        await callLifecycle(action, name, options);
-        if (action === "connect") {
-          try {
-            await waitForConnection(name, options, "initial activation");
-          } catch (error) {
-            if (!(error instanceof McpFailedStatusError)) throw error;
-            await recoverFailedConnection(name, options, error);
-          }
-        } else if (workspace) {
-          cleanupManagedWorkspace(workspace);
-        }
-      } catch (error) {
-        let cleanupError = "";
-        if (action === "connect" && cleanupOnConnectFailure) {
-          try {
-            cleanupManagedWorkspace(workspace);
-          } catch (cleanupFailure) {
-            cleanupError = `; workspace cleanup failed: ${cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)}`;
-          }
-        }
-        return `Error: MCP ${action} failed for ${name}: ${error instanceof Error ? error.message : String(error)}${cleanupError}`;
-      }
-
-      return action === "connect"
-        ? `Connected MCP ${name}. Continue on the next step with its tools.`
-        : `Disconnected MCP ${name}.`;
+      return executeMcpActivation(args, allowed, options);
     },
   });
 }
