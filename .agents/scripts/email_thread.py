@@ -18,12 +18,10 @@ Usage (CLI):
 
 import hashlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Optional
 
 

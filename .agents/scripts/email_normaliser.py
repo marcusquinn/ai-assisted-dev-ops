@@ -6,9 +6,18 @@ email_normaliser.py - Email section normalisation, thread reconstruction, and fr
 Part of the email-to-markdown pipeline. Imported by email_to_markdown.py.
 """
 
-import re
+__all__ = (
+    "parse_eml",
+    "parse_msg",
+    "extract_header_safe",
+    "parse_date_safe",
+    "normalise_email_sections",
+    "build_thread_map",
+    "reconstruct_thread",
+    "generate_thread_index",
+)
 
-from email_parser import (  # noqa: F401
+from email_parser import (
     parse_eml,
     parse_msg,
     extract_header_safe,
@@ -17,7 +26,7 @@ from email_parser import (  # noqa: F401
 
 # Re-export public surface from decomposed module for backwards compatibility.
 # Other scripts importing from email_normaliser continue to work unchanged.
-from email_normaliser_sections import (  # noqa: F401
+from email_normaliser_sections import (
     normalise_email_sections,
     build_thread_map,
     reconstruct_thread,

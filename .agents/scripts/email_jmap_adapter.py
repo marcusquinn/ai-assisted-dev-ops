@@ -33,16 +33,50 @@ Output: JSON to stdout. Errors to stderr.
 import argparse
 import sys
 
+__all__ = (
+    "INDEX_DIR",
+    "INDEX_DB",
+    "_init_index_db",
+    "_upsert_jmap_email",
+    "_first_or_empty",
+    "_get_auth",
+    "_make_auth_header",
+    "_jmap_request",
+    "_get_session",
+    "_get_primary_account",
+    "_session_context",
+    "_find_response",
+    "_resolve_mailbox_id",
+    "_build_mailbox_path",
+    "_format_email_header",
+    "_format_addresses",
+    "HEADER_PROPERTIES",
+    "BODY_PROPERTIES",
+    "KEYWORD_TAXONOMY",
+    "cmd_connect",
+    "cmd_fetch_headers",
+    "cmd_fetch_body",
+    "cmd_search",
+    "cmd_list_mailboxes",
+    "cmd_create_mailbox",
+    "cmd_move_email",
+    "cmd_set_keyword",
+    "cmd_clear_keyword",
+    "SyncContext",
+    "cmd_index_sync",
+    "cmd_push",
+)
+
 # Re-export public surface from decomposed modules for backwards compatibility.
 # Other scripts importing from email_jmap_adapter continue to work unchanged.
-from email_jmap_index import (  # noqa: F401
+from email_jmap_index import (
     INDEX_DIR,
     INDEX_DB,
     _init_index_db,
     _upsert_jmap_email,
     _first_or_empty,
 )
-from email_jmap_transport import (  # noqa: F401
+from email_jmap_transport import (
     _get_auth,
     _make_auth_header,
     _jmap_request,
@@ -50,14 +84,14 @@ from email_jmap_transport import (  # noqa: F401
     _get_primary_account,
     _session_context,
 )
-from email_jmap_helpers import (  # noqa: F401
+from email_jmap_helpers import (
     _find_response,
     _resolve_mailbox_id,
     _build_mailbox_path,
     _format_email_header,
     _format_addresses,
 )
-from email_jmap_commands import (  # noqa: F401
+from email_jmap_commands import (
     HEADER_PROPERTIES,
     BODY_PROPERTIES,
     KEYWORD_TAXONOMY,
@@ -71,9 +105,11 @@ from email_jmap_commands import (  # noqa: F401
     cmd_set_keyword,
     cmd_clear_keyword,
 )
-from email_jmap_sync import (  # noqa: F401
+from email_jmap_sync import (
     SyncContext,
     cmd_index_sync,
+)
+from email_jmap_push import (
     cmd_push,
 )
 

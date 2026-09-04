@@ -51,6 +51,32 @@ _parser_mod = _import_sibling('email_parser')
 _norm_mod = _import_sibling('email_normaliser')
 _summary_mod = _import_sibling('email_md_summary')
 
+__all__ = (
+    "parse_eml",
+    "parse_msg",
+    "get_email_body",
+    "extract_attachments",
+    "load_dedup_registry",
+    "save_dedup_registry",
+    "get_file_size",
+    "extract_header_safe",
+    "parse_date_safe",
+    "compute_content_hash",
+    "_parse_email_file",
+    "_extract_headers",
+    "_parse_received_date",
+    "normalise_email_sections",
+    "build_thread_map",
+    "reconstruct_thread",
+    "generate_thread_index",
+    "build_frontmatter",
+    "format_size",
+    "estimate_tokens",
+    "yaml_escape",
+    "generate_summary",
+    "strip_markdown",
+)
+
 # Re-export public API from submodules for callers that import from this file
 from email_parser import (  # noqa: E402
     parse_eml,
