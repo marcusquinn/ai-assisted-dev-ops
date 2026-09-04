@@ -9,6 +9,8 @@
 _SHARED_GH_COLLABORATOR_PERMISSION_LOADED=1
 
 _AIDEVOPS_GH_PERMISSION_UNKNOWN_VALUE="unknown"
+_AIDEVOPS_GH_COLLAB_APP_PREFERRED_ROUTE="app-preferred"
+_AIDEVOPS_GH_COLLAB_GH_FALLBACK_ROUTE="gh-fallback"
 
 #######################################
 # Decide whether an issue actor has maintainer-equivalent repository authority.
@@ -178,10 +180,40 @@ _gh_repository_owner_matches_actor() {
 }
 
 #######################################
+# Request collaborator permission with the requested authentication route.
+#
+# Args: $1=route, $2=permission endpoint path
+# Returns: status from the selected API call.
+#######################################
+_gh_collaborator_permission_request() {
+	local auth_route="$1"
+	local perm_url="$2"
+
+	if [[ "$auth_route" == "$_AIDEVOPS_GH_COLLAB_GH_FALLBACK_ROUTE" ]]; then
+		if declare -F _gh_with_timeout >/dev/null 2>&1; then
+			AIDEVOPS_GH_QUOTA_COST=1 \
+				AIDEVOPS_GH_ROUTE_DECISION="collaborator-permission-gh-fallback" \
+				_gh_with_timeout read gh api -i "$perm_url"
+			return $?
+		fi
+		AIDEVOPS_GH_QUOTA_COST=1 \
+			AIDEVOPS_GH_ROUTE_DECISION="collaborator-permission-gh-fallback" \
+			gh api -i "$perm_url"
+		return $?
+	fi
+
+	AIDEVOPS_GH_QUOTA_COST=1 \
+		AIDEVOPS_GH_ROUTE_DECISION="collaborator-permission-rest" \
+		_rest_api_call read gh api -i "$perm_url"
+	return $?
+}
+
+#######################################
 # Look up a repository collaborator permission through App-aware REST routing.
 #
-# Auth selection stays in _rest_api_call/github_app_api_call: GitHub App
-# installation auth is preferred when configured, with normal gh/PAT fallback.
+# GitHub App installation auth is preferred when configured. If that route
+# cannot produce a trustworthy verdict, retry once with the authenticated gh
+# credential; a confirmed 404 remains a final non-collaborator verdict.
 # Callers can inspect the status globals after a non-zero return to distinguish
 # transient lookup failures from confirmed non-collaborators.
 #
@@ -189,7 +221,8 @@ _gh_repository_owner_matches_actor() {
 #   AIDEVOPS_GH_COLLAB_PERMISSION_HTTP
 #   AIDEVOPS_GH_COLLAB_PERMISSION_REASON
 #
-# Args: $1=repo_slug owner/repo, $2=user login, $3=optional output variable
+# Args: $1=repo_slug owner/repo, $2=user login, $3=optional output variable,
+#       $4=internal auth route (app-preferred|gh-fallback)
 # Output: permission value (admin|maintain|write|triage|read|none) on lookup success.
 # Returns: 0=lookup succeeded (404 maps to none), 2=lookup/API/parse failure.
 #######################################
@@ -204,6 +237,7 @@ _gh_collaborator_permission_lookup() {
 	local line=""
 	local body=""
 	local in_body=0
+	local auth_route="${4:-$_AIDEVOPS_GH_COLLAB_APP_PREFERRED_ROUTE}"
 	# Keep the internal value distinct from caller-selected output names. Bash
 	# uses dynamic scope, so a local named permission_value would shadow the
 	# common caller output variable and silently return an empty permission.
@@ -219,9 +253,7 @@ _gh_collaborator_permission_lookup() {
 		return 2
 	fi
 
-	api_response=$(AIDEVOPS_GH_QUOTA_COST=1 \
-		AIDEVOPS_GH_ROUTE_DECISION="collaborator-permission-rest" \
-		_rest_api_call read gh api -i "$perm_url" 2>&1)
+	api_response=$(_gh_collaborator_permission_request "$auth_route" "$perm_url" 2>&1)
 	rc=$?
 	while IFS= read -r line; do
 		line="${line%$'\r'}"
@@ -260,15 +292,13 @@ _gh_collaborator_permission_lookup() {
 	fi
 
 	if [[ "$rc" -ne 0 ]]; then
-		AIDEVOPS_GH_COLLAB_PERMISSION_REASON="api-failure"
-		export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
-		return 2
+		_gh_collaborator_permission_resolve_failure "$auth_route" "$repo_slug" "$user" "$out_var" "api-failure"
+		return $?
 	fi
 
 	if [[ "$http_status" != "200" ]]; then
-		AIDEVOPS_GH_COLLAB_PERMISSION_REASON="unexpected-http"
-		export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
-		return 2
+		_gh_collaborator_permission_resolve_failure "$auth_route" "$repo_slug" "$user" "$out_var" "unexpected-http"
+		return $?
 	fi
 
 	resolved_permission=$(printf '%s' "$body" | jq -r '.permission // .role_name // ""' 2>/dev/null) || resolved_permission=""
@@ -277,7 +307,11 @@ _gh_collaborator_permission_lookup() {
 	fi
 	case "$resolved_permission" in
 	admin | maintain | write | triage | read | none)
-		AIDEVOPS_GH_COLLAB_PERMISSION_REASON="ok"
+		if [[ "$auth_route" == "$_AIDEVOPS_GH_COLLAB_GH_FALLBACK_ROUTE" ]]; then
+			AIDEVOPS_GH_COLLAB_PERMISSION_REASON="gh-fallback-ok"
+		else
+			AIDEVOPS_GH_COLLAB_PERMISSION_REASON="ok"
+		fi
 		export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
 		if [[ -n "$out_var" ]]; then
 			printf -v "$out_var" '%s' "$resolved_permission"
@@ -287,11 +321,62 @@ _gh_collaborator_permission_lookup() {
 		return 0
 		;;
 	*)
-		AIDEVOPS_GH_COLLAB_PERMISSION_REASON="malformed-response"
-		export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
-		return 2
+		_gh_collaborator_permission_resolve_failure "$auth_route" "$repo_slug" "$user" "$out_var" "malformed-response"
+		return $?
 		;;
 	esac
+}
+
+#######################################
+# Retry an uncertain App-routed permission read with authenticated gh auth.
+#
+# Args: $1=repo_slug, $2=user login, $3=output variable
+# Returns: 0=retry produced a verdict, 2=both routes were uncertain,
+#          3=GitHub App routing was not configured.
+#######################################
+_gh_collaborator_permission_retry_with_gh() {
+	local repo_slug="$1"
+	local user="$2"
+	local out_var="${3:-}"
+	local retry_rc=0
+
+	if ! declare -F github_app_is_configured >/dev/null 2>&1 || ! github_app_is_configured; then
+		return 3
+	fi
+
+	_gh_collaborator_permission_lookup "$repo_slug" "$user" "$out_var" "$_AIDEVOPS_GH_COLLAB_GH_FALLBACK_ROUTE" || retry_rc=$?
+	if [[ "$retry_rc" -eq 0 ]]; then
+		return 0
+	fi
+
+	AIDEVOPS_GH_COLLAB_PERMISSION_REASON="app-and-gh-${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-api-failure}"
+	export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
+	return 2
+}
+
+#######################################
+# Resolve an uncertain permission read without weakening the fail-closed guard.
+#
+# Args: $1=route, $2=repo_slug, $3=user, $4=output variable, $5=failure reason
+# Returns: 0=confirmed fallback verdict, 2=uncertain, 3=App route unavailable.
+#######################################
+_gh_collaborator_permission_resolve_failure() {
+	local auth_route="$1"
+	local repo_slug="$2"
+	local user="$3"
+	local out_var="$4"
+	local failure_reason="$5"
+	local retry_rc=3
+
+	if [[ "$auth_route" == "$_AIDEVOPS_GH_COLLAB_APP_PREFERRED_ROUTE" ]]; then
+		retry_rc=0
+		_gh_collaborator_permission_retry_with_gh "$repo_slug" "$user" "$out_var" || retry_rc=$?
+		[[ "$retry_rc" -eq 0 || "$retry_rc" -eq 2 ]] && return "$retry_rc"
+	fi
+
+	AIDEVOPS_GH_COLLAB_PERMISSION_REASON="$failure_reason"
+	export AIDEVOPS_GH_COLLAB_PERMISSION_REASON
+	return 2
 }
 
 #######################################

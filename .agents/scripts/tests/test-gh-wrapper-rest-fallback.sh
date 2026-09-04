@@ -148,6 +148,10 @@ _stub_jq_filter_arg() {
 }
 _stub_gh_api_collaborator_permission() {
 	local status="${STUB_COLLAB_STATUS:-200}"
+	if [[ "${STUB_COLLAB_APP_FAIL:-0}" == "1" && "${GH_TOKEN:-}" == "cached-app-token" ]]; then
+		printf 'HTTP/2.0 403 Forbidden\n\n{"message":"Forbidden"}\n'
+		return 1
+	fi
 	if [[ "${STUB_COLLAB_FAIL:-0}" == "1" ]]; then
 		printf 'HTTP/2.0 %s Forbidden\n\n{"message":"Forbidden"}\n' "$status"
 		return 1
@@ -2160,6 +2164,51 @@ else
 	fail "collaborator permission lookup uses GitHub App REST route when available" \
 		"perm=${collab_perm} GH_CALLS=$(cat "$GH_CALLS") | TOKENS=$(cat "$GH_APP_TOKEN_CALLS")"
 fi
+
+: >"$GH_CALLS"
+: >"$GH_APP_TOKEN_CALLS"
+export STUB_COLLAB_PERMISSION=admin
+export STUB_COLLAB_APP_FAIL=1
+collab_perm=""
+_gh_collaborator_permission_lookup "owner/repo" "testuser" collab_perm 2>/dev/null || true
+if [[ "$collab_perm" == "admin" && "${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-}" == "gh-fallback-ok" ]] &&
+	grep -q 'cached-app-token' "$GH_APP_TOKEN_CALLS" 2>/dev/null &&
+	[[ "$(grep -cE '^api -i /repos/owner/repo/collaborators/testuser/permission' "$GH_CALLS")" -eq 2 ]]; then
+	pass "collaborator permission retries with gh auth after GitHub App denial"
+else
+	fail "collaborator permission retries with gh auth after GitHub App denial" \
+		"perm=${collab_perm} reason=${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-unset} GH_CALLS=$(cat "$GH_CALLS") | TOKENS=$(cat "$GH_APP_TOKEN_CALLS")"
+fi
+unset STUB_COLLAB_APP_FAIL
+
+: >"$GH_CALLS"
+: >"$GH_APP_TOKEN_CALLS"
+export STUB_COLLAB_STATUS=404
+collab_perm=""
+_gh_collaborator_permission_lookup "owner/repo" "outsider" collab_perm 2>/dev/null || true
+if [[ "$collab_perm" == "none" && "${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-}" == "404" ]] &&
+	[[ "$(grep -cE '^api -i /repos/owner/repo/collaborators/outsider/permission' "$GH_CALLS")" -eq 1 ]]; then
+	pass "GitHub App 404 remains a confirmed non-collaborator verdict"
+else
+	fail "GitHub App 404 remains a confirmed non-collaborator verdict" \
+		"perm=${collab_perm} http=${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-unset} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_COLLAB_STATUS
+
+: >"$GH_CALLS"
+: >"$GH_APP_TOKEN_CALLS"
+export STUB_COLLAB_APP_FAIL=1
+export STUB_COLLAB_FAIL=1
+if ! _gh_collaborator_permission_lookup "owner/repo" "testuser" >/dev/null 2>&1 &&
+	[[ "${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-}" == "app-and-gh-api-failure" ]] &&
+	[[ "$(grep -cE '^api -i /repos/owner/repo/collaborators/testuser/permission' "$GH_CALLS")" -eq 2 ]]; then
+	pass "collaborator permission fails closed when App and gh auth both fail"
+else
+	fail "collaborator permission fails closed when App and gh auth both fail" \
+		"http=${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-unset} reason=${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-unset} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_COLLAB_APP_FAIL STUB_COLLAB_FAIL
+export STUB_COLLAB_PERMISSION=write
 
 unset AIDEVOPS_GITHUB_APP_ENABLED AIDEVOPS_GITHUB_APP_ID AIDEVOPS_GITHUB_APP_INSTALLATION_ID AIDEVOPS_GITHUB_APP_REST_FIRST
 
