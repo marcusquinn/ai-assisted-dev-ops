@@ -2,33 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
+import { isAbsolute } from "node:path";
 import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  unlink,
-} from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute } from "node:path";
+  HIGGSFIELD_REAUTHORIZATION_MESSAGE,
+  oauthError,
+  readHiggsfieldState,
+  terminalAuthorizationError,
+  withRefreshLock,
+  writeHiggsfieldStateAtomic,
+} from "./higgsfield-mcp-oauth-state.mjs";
 
 export const HIGGSFIELD_TOKEN_ENDPOINT = "https://clerk.higgsfield.ai/oauth/token";
-export const HIGGSFIELD_REAUTHORIZATION_MESSAGE =
-  "Higgsfield authorization must be renewed in a browser; remove and re-add the connector, then retry";
+export { HIGGSFIELD_REAUTHORIZATION_MESSAGE };
 
 const DEFAULT_REFRESH_SKEW_MS = 5 * 60 * 1_000;
-const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
-const STALE_LOCK_MS = 30_000;
-
-function fixedError(message) {
-  return new Error(`Higgsfield MCP OAuth: ${message}`);
-}
-
-function terminalAuthorizationError() {
-  return fixedError(HIGGSFIELD_REAUTHORIZATION_MESSAGE);
-}
 
 function tokenContainer(state) {
   if (!state?.tokens || typeof state.tokens !== "object" || Array.isArray(state.tokens)) {
@@ -38,15 +25,18 @@ function tokenContainer(state) {
 }
 
 function resolveClientId(state) {
+  const client = state.client && typeof state.client === "object" ? state.client : {};
+  const oauth = state.oauth && typeof state.oauth === "object" ? state.oauth : {};
+  const tokens = tokenContainer(state);
   const candidates = [
-    state?.client_id,
-    state?.clientId,
-    state?.client?.client_id,
-    state?.client?.clientId,
-    state?.oauth?.client_id,
-    state?.oauth?.clientId,
-    state?.tokens?.client_id,
-    state?.tokens?.clientId,
+    state.client_id,
+    state.clientId,
+    client.client_id,
+    client.clientId,
+    oauth.client_id,
+    oauth.clientId,
+    tokens.client_id,
+    tokens.clientId,
   ];
   return candidates.find((candidate) => typeof candidate === "string" && candidate.length > 0) || "";
 }
@@ -71,27 +61,24 @@ function jwtExpiry(accessToken) {
 
 export function tokenExpiry(state) {
   const tokens = tokenContainer(state);
-  const explicit = epochMilliseconds(
-    tokens.expires_at
-      ?? tokens.expiresAt
-      ?? state.expires_at
-      ?? state.expiresAt,
-  );
-  if (explicit) return explicit;
+  const explicitValues = [tokens.expires_at, tokens.expiresAt, state.expires_at, state.expiresAt];
+  const explicit = explicitValues.map(epochMilliseconds).find(Boolean);
+  if (explicit !== undefined) return explicit;
 
-  const issuedAt = epochMilliseconds(
-    tokens.obtained_at
-      ?? tokens.obtainedAt
-      ?? tokens.issued_at
-      ?? tokens.issuedAt
-      ?? state.obtained_at
-      ?? state.obtainedAt,
-  );
-  const expiresIn = Number(tokens.expires_in ?? tokens.expiresIn);
+  const issuedValues = [
+    tokens.obtained_at,
+    tokens.obtainedAt,
+    tokens.issued_at,
+    tokens.issuedAt,
+    state.obtained_at,
+    state.obtainedAt,
+  ];
+  const issuedAt = issuedValues.map(epochMilliseconds).find(Boolean);
+  const expiresIn = Number(tokens.expires_in === undefined ? tokens.expiresIn : tokens.expires_in);
   if (issuedAt && Number.isFinite(expiresIn) && expiresIn > 0) {
     return issuedAt + expiresIn * 1_000;
   }
-  return jwtExpiry(tokens.access_token ?? tokens.accessToken);
+  return jwtExpiry(tokens.access_token === undefined ? tokens.accessToken : tokens.access_token);
 }
 
 export function tokenNeedsRefresh(state, now = Date.now(), skewMs = DEFAULT_REFRESH_SKEW_MS) {
@@ -100,132 +87,6 @@ export function tokenNeedsRefresh(state, now = Date.now(), skewMs = DEFAULT_REFR
   if (typeof accessToken !== "string" || accessToken.length === 0) return true;
   const expiry = tokenExpiry(state);
   return expiry !== null && expiry <= now + skewMs;
-}
-
-export async function readHiggsfieldState(statePath) {
-  if (!isAbsolute(statePath)) throw fixedError("state path must be absolute");
-  let stats;
-  try {
-    stats = await lstat(statePath);
-  } catch (error) {
-    if (error?.code === "ENOENT") throw terminalAuthorizationError();
-    throw fixedError("could not inspect the OAuth state file");
-  }
-  if (!stats.isFile() || stats.isSymbolicLink()) {
-    throw fixedError("OAuth state path must be a regular file");
-  }
-  try {
-    return JSON.parse(await readFile(statePath, "utf8"));
-  } catch {
-    throw fixedError("OAuth state file is not valid JSON");
-  }
-}
-
-export async function writeHiggsfieldStateAtomic(statePath, state) {
-  if (!isAbsolute(statePath)) throw fixedError("state path must be absolute");
-  const parent = dirname(statePath);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-
-  try {
-    const current = await lstat(statePath);
-    if (!current.isFile() || current.isSymbolicLink()) {
-      throw fixedError("refusing to replace a non-regular OAuth state file");
-    }
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-
-  const temporaryPath = `${statePath}.tmp.${process.pid}.${randomUUID()}`;
-  let handle;
-  try {
-    handle = await open(temporaryPath, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = null;
-    await chmod(temporaryPath, 0o600);
-    await rename(temporaryPath, statePath);
-    await chmod(statePath, 0o600);
-  } catch (error) {
-    if (handle) await handle.close().catch(() => {});
-    await unlink(temporaryPath).catch(() => {});
-    throw fixedError(`could not persist refreshed OAuth state (${error?.code || "write failed"})`);
-  }
-}
-
-function processIsGone(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === "ESRCH";
-  }
-}
-
-async function staleLockCanBeRemoved(lockPath, now) {
-  let stats;
-  try {
-    stats = await lstat(lockPath);
-  } catch (error) {
-    if (error?.code === "ENOENT") return true;
-    throw fixedError("could not inspect the refresh lock");
-  }
-  if (!stats.isFile() || stats.isSymbolicLink()) {
-    throw fixedError("refresh lock path is not a regular file");
-  }
-  if (now() - stats.mtimeMs <= STALE_LOCK_MS) return false;
-  try {
-    const owner = JSON.parse(await readFile(lockPath, "utf8"));
-    return processIsGone(owner.pid);
-  } catch {
-    return true;
-  }
-}
-
-async function withRefreshLock(statePath, action, {
-  now = Date.now,
-  sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
-  timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
-} = {}) {
-  const lockPath = `${statePath}.refresh.lock`;
-  const ownerToken = randomUUID();
-  const deadline = now() + timeoutMs;
-  await mkdir(dirname(statePath), { recursive: true, mode: 0o700 });
-
-  while (true) {
-    let created = false;
-    try {
-      const handle = await open(lockPath, "wx", 0o600);
-      created = true;
-      try {
-        await handle.writeFile(JSON.stringify({ pid: process.pid, token: ownerToken }), "utf8");
-      } finally {
-        await handle.close();
-      }
-      break;
-    } catch (error) {
-      if (created) await unlink(lockPath).catch(() => {});
-      if (error?.code !== "EEXIST") throw fixedError("could not acquire the refresh lock");
-      if (await staleLockCanBeRemoved(lockPath, now)) {
-        await unlink(lockPath).catch(() => {});
-        continue;
-      }
-      if (now() >= deadline) throw fixedError("timed out waiting for another token refresh");
-      await sleep(50);
-    }
-  }
-
-  try {
-    return await action();
-  } finally {
-    try {
-      const owner = JSON.parse(await readFile(lockPath, "utf8"));
-      if (owner.token === ownerToken) await unlink(lockPath);
-    } catch {
-      // A missing or replaced lock is not ours to remove.
-    }
-  }
 }
 
 function refreshedState(currentState, responseTokens, now) {
@@ -263,7 +124,7 @@ export class HiggsfieldTokenManager {
     readStateImpl = readHiggsfieldState,
     writeStateImpl = writeHiggsfieldStateAtomic,
   }) {
-    if (!isAbsolute(statePath)) throw fixedError("state path must be absolute");
+    if (!isAbsolute(statePath)) throw oauthError("state path must be absolute");
     this.statePath = statePath;
     this.fetchImpl = fetchImpl;
     this.now = now;
@@ -288,71 +149,92 @@ export class HiggsfieldTokenManager {
   }
 
   async refresh({ rejectedToken }) {
-    if (!this.refreshPromise) {
-      this.refreshPromise = withRefreshLock(this.statePath, async () => {
-        const currentState = await this.readState(this.statePath);
-        const currentAccessToken = stateAccessToken(currentState);
-        if (rejectedToken && currentAccessToken && currentAccessToken !== rejectedToken) {
-          return currentAccessToken;
-        }
-        if (!rejectedToken && !tokenNeedsRefresh(currentState, this.now(), this.refreshSkewMs)) {
-          return currentAccessToken;
-        }
-
-        const tokens = tokenContainer(currentState);
-        const refreshToken = tokens.refresh_token ?? tokens.refreshToken;
-        const clientId = resolveClientId(currentState);
-        if (!refreshToken || !clientId) {
-          this.terminalAuthorizationFailure = true;
-          throw terminalAuthorizationError();
-        }
-
-        const response = await this.fetchImpl(this.tokenEndpoint, {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({
-            grant_type: "refresh_token",
-            refresh_token: refreshToken,
-            client_id: clientId,
-          }),
-          redirect: "error",
-          signal: AbortSignal.timeout(15_000),
-        });
-
-        let responseTokens = {};
-        try {
-          responseTokens = await response.json();
-        } catch {
-          throw fixedError("token endpoint returned an invalid response");
-        }
-        if (!response.ok || responseTokens.error) {
-          if (responseTokens.error === "invalid_grant") {
-            const terminalState = {
-              ...currentState,
-              tokens: { ...tokens, refresh_token: null },
-            };
-            delete terminalState.tokens.refreshToken;
-            this.terminalAuthorizationFailure = true;
-            await this.writeState(this.statePath, terminalState);
-            throw terminalAuthorizationError();
-          }
-          throw fixedError(`token refresh failed with HTTP ${response.status}`);
-        }
-        if (typeof responseTokens.access_token !== "string" || responseTokens.access_token.length === 0) {
-          throw fixedError("token endpoint response did not include an access token");
-        }
-
-        const acquiredAt = this.now();
-        const nextState = refreshedState(currentState, responseTokens, acquiredAt);
-        await this.writeState(this.statePath, nextState);
-        return nextState.tokens.access_token;
-      }).finally(() => {
-        this.refreshPromise = null;
-      });
-    }
+    if (!this.refreshPromise) this.refreshPromise = this.createRefreshPromise(rejectedToken);
     return this.refreshPromise;
+  }
+
+  createRefreshPromise(rejectedToken) {
+    return withRefreshLock(
+      this.statePath,
+      () => this.refreshWithinLock(rejectedToken),
+    ).finally(() => {
+      this.refreshPromise = null;
+    });
+  }
+
+  reusableAccessToken(state, rejectedToken) {
+    const currentAccessToken = stateAccessToken(state);
+    if (rejectedToken) {
+      return currentAccessToken && currentAccessToken !== rejectedToken ? currentAccessToken : "";
+    }
+    return tokenNeedsRefresh(state, this.now(), this.refreshSkewMs) ? "" : currentAccessToken;
+  }
+
+  refreshCredentials(state) {
+    const tokens = tokenContainer(state);
+    const refreshToken = tokens.refresh_token ?? tokens.refreshToken;
+    const clientId = resolveClientId(state);
+    if (refreshToken && clientId) return { clientId, refreshToken };
+    this.terminalAuthorizationFailure = true;
+    throw terminalAuthorizationError();
+  }
+
+  async requestRefresh({ clientId, refreshToken }) {
+    return this.fetchImpl(this.tokenEndpoint, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }),
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+  }
+
+  async parseRefreshResponse(response) {
+    try {
+      return await response.json();
+    } catch {
+      throw oauthError("token endpoint returned an invalid response");
+    }
+  }
+
+  async clearInvalidGrant(currentState) {
+    const terminalState = {
+      ...currentState,
+      tokens: { ...tokenContainer(currentState), refresh_token: null },
+    };
+    delete terminalState.tokens.refreshToken;
+    this.terminalAuthorizationFailure = true;
+    await this.writeState(this.statePath, terminalState);
+    throw terminalAuthorizationError();
+  }
+
+  async assertRefreshSucceeded(response, responseTokens, currentState) {
+    if (responseTokens.error === "invalid_grant") await this.clearInvalidGrant(currentState);
+    if (!response.ok || responseTokens.error) {
+      throw oauthError(`token refresh failed with HTTP ${response.status}`);
+    }
+    if (typeof responseTokens.access_token !== "string" || responseTokens.access_token.length === 0) {
+      throw oauthError("token endpoint response did not include an access token");
+    }
+  }
+
+  async refreshWithinLock(rejectedToken) {
+    const currentState = await this.readState(this.statePath);
+    const reusableToken = this.reusableAccessToken(currentState, rejectedToken);
+    if (reusableToken) return reusableToken;
+
+    const response = await this.requestRefresh(this.refreshCredentials(currentState));
+    const responseTokens = await this.parseRefreshResponse(response);
+    await this.assertRefreshSucceeded(response, responseTokens, currentState);
+    const nextState = refreshedState(currentState, responseTokens, this.now());
+    await this.writeState(this.statePath, nextState);
+    return nextState.tokens.access_token;
   }
 }

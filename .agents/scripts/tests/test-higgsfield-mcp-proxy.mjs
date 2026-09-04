@@ -2,22 +2,19 @@
 // SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import {
-  mkdtempSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import {
-  HIGGSFIELD_REAUTHORIZATION_MESSAGE,
-  HiggsfieldTokenManager,
-} from "../higgsfield-mcp-oauth.mjs";
+import { HiggsfieldTokenManager } from "../higgsfield-mcp-oauth.mjs";
 import {
   HiggsfieldMcpProxy,
   parseServerSentEvents,
@@ -148,7 +145,10 @@ test("refreshes and retries an authentication rejection only once", async (t) =>
     },
   });
 
-  await assert.rejects(proxy.forward({ jsonrpc: "2.0", id: 1, method: "tools/list" }), new RegExp(HIGGSFIELD_REAUTHORIZATION_MESSAGE));
+  await assert.rejects(
+    proxy.forward({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    /Higgsfield authorization must be renewed in a browser/,
+  );
   assert.equal(refreshCalls, 1);
   assert.equal(upstreamCalls, 2);
 });
@@ -259,8 +259,8 @@ test("invalid_grant fails closed and does not enter a refresh loop", async (t) =
     },
   });
 
-  await assert.rejects(manager.accessToken(), new RegExp(HIGGSFIELD_REAUTHORIZATION_MESSAGE));
-  await assert.rejects(manager.accessToken(), new RegExp(HIGGSFIELD_REAUTHORIZATION_MESSAGE));
+  await assert.rejects(manager.accessToken(), /Higgsfield authorization must be renewed in a browser/);
+  await assert.rejects(manager.accessToken(), /Higgsfield authorization must be renewed in a browser/);
   assert.equal(refreshCalls, 1);
   assert.equal(JSON.parse(readFileSync(statePath, "utf8")).tokens.refresh_token, null);
 });
@@ -274,7 +274,7 @@ test("missing refresh credentials fail closed without a network request", async 
     fetchImpl: async () => { refreshCalls += 1; },
   });
 
-  await assert.rejects(manager.accessToken(), new RegExp(HIGGSFIELD_REAUTHORIZATION_MESSAGE));
+  await assert.rejects(manager.accessToken(), /Higgsfield authorization must be renewed in a browser/);
   assert.equal(refreshCalls, 0);
 });
 
