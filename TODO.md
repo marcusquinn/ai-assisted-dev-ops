@@ -1324,7 +1324,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18316 Fix cross-host claim expiry and worktree registry reconciliation #auto-dispatch #bug ref:GH#31117 pr:#31118 completed:2026-09-04
 
-- [ ] t18400 Prefer standalone Brave for Playwright automation ref:GH#31168
+- [x] t18400 Prefer standalone Brave for Playwright automation ref:GH#31168 pr:#31169 completed:2026-09-04
 
 ## In Progress
 
