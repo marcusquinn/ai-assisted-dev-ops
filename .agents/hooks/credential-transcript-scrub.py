@@ -64,17 +64,15 @@ CREDENTIAL_PATTERN = re.compile(
 )
 
 NAMED_CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(
-    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_. -]*\"|'[A-Za-z_][A-Za-z0-9_. -]*'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\[[^\r\n\s,};&|<>]*\][^\r\n\s,}\)&;|<>]*|<[^>\r\n]*>[^\r\n\s,}\)&;|<>]*|\([^()\r\n]*\)|not[ \t]+set(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)",
+    r"(^|[^A-Za-z0-9_])((?:\"[A-Za-z_][A-Za-z0-9_. -]*\"|'[A-Za-z_][A-Za-z0-9_. -]*'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)(\"(?:\\.|[^\"\\])*\"[^\r\n\s,}\])&;|<>]*|'(?:\\.|[^'\\])*'[^\r\n\s,}\])&;|<>]*|\[[^\r\n\s,};&|<>]*\][^\r\n\s,}\])&;|<>]*|<[^>\r\n]*>[^\r\n\s,}\])&;|<>]*|\([^()\r\n]*\)[^\r\n\s,}\])&;|<>]*|not[ \t]+set(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)",
     re.IGNORECASE | re.MULTILINE,
-)
-
-PEM_PRIVATE_KEY_PATTERN = re.compile(
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
-    re.DOTALL,
 )
 
 REDACTION_TOKEN = "[redacted-credential]"
 PEM_REDACTION_TOKEN = "[redacted-private-key]"
+PEM_BEGIN_MARKER = "-----BEGIN "
+PEM_KEY_SUFFIX = "PRIVATE KEY-----"
+PEM_LABEL_PATTERN = re.compile(r"^[A-Z0-9 ]*$")
 PLACEHOLDER_VALUES = {
     "",
     "***",
@@ -108,7 +106,7 @@ def normalize_field_name(name: str) -> str:
 def is_sensitive_field_name(name: str) -> bool:
     """Return whether a field name is unambiguously credential-bearing."""
     pattern = (
-        r"(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|ACCESS_KEY|"
+        r"(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|ACCESS_KEY|ACCESS_KEY_ID|"
         r"ENCRYPTION_KEY|SIGNING_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$"
     )
     return bool(re.search(pattern, normalize_field_name(name)))
@@ -139,6 +137,40 @@ def redact_named_assignment(match: re.Match) -> str:
     return f"{boundary}{name}{separator}{redacted}"
 
 
+def scrub_private_keys(text: str) -> tuple[str, int]:
+    """Replace complete PEM private-key blocks using a linear marker scan."""
+    chunks = []
+    cursor = 0
+    count = 0
+    while cursor < len(text):
+        start = text.find(PEM_BEGIN_MARKER, cursor)
+        if start < 0:
+            break
+        label_start = start + len(PEM_BEGIN_MARKER)
+        suffix_start = text.find(PEM_KEY_SUFFIX, label_start)
+        if suffix_start < 0:
+            break
+        label = text[label_start:suffix_start]
+        header_end = suffix_start + len(PEM_KEY_SUFFIX)
+        if not PEM_LABEL_PATTERN.fullmatch(label):
+            chunks.append(text[cursor:label_start])
+            cursor = label_start
+            continue
+        end_marker = f"-----END {label}{PEM_KEY_SUFFIX}"
+        next_start = text.find(PEM_BEGIN_MARKER, header_end)
+        segment_end = len(text) if next_start < 0 else next_start
+        end = text.find(end_marker, header_end, segment_end)
+        if end < 0:
+            chunks.append(text[cursor:header_end])
+            cursor = header_end
+            continue
+        chunks.extend((text[cursor:start], PEM_REDACTION_TOKEN))
+        cursor = end + len(end_marker)
+        count += 1
+    chunks.append(text[cursor:])
+    return "".join(chunks), count
+
+
 def scrub_credentials(text: str) -> tuple[str, int]:
     """Replace credential tokens in text. Returns (scrubbed_text, match_count)."""
     named_count = 0
@@ -150,7 +182,7 @@ def scrub_credentials(text: str) -> tuple[str, int]:
             named_count += 1
         return redacted
 
-    result, pem_count = PEM_PRIVATE_KEY_PATTERN.subn(PEM_REDACTION_TOKEN, text)
+    result, pem_count = scrub_private_keys(text)
     result = NAMED_CREDENTIAL_ASSIGNMENT_PATTERN.sub(redact_and_count, result)
     result, token_count = CREDENTIAL_PATTERN.subn(REDACTION_TOKEN, result)
     return result, pem_count + named_count + token_count
@@ -188,7 +220,7 @@ def main() -> None:
     # Fast path: no known prefix, private key, or named assignment in the payload.
     if (
         not CREDENTIAL_PATTERN.search(raw)
-        and not PEM_PRIVATE_KEY_PATTERN.search(raw)
+        and PEM_BEGIN_MARKER not in raw
         and not NAMED_CREDENTIAL_ASSIGNMENT_PATTERN.search(raw)
     ):
         return

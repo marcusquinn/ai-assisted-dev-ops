@@ -6,7 +6,10 @@
 const CREDENTIAL_PATTERN =
   /(^|[^A-Za-z0-9_-])(sk-|GOCSPX-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-)[A-Za-z0-9_-]{10,}/g;
 const NAMED_CREDENTIAL_ASSIGNMENT_PATTERN =
-  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]*"|'[A-Za-z_][A-Za-z0-9_. -]*'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\[[^\r\n\s,};&|<>]*\][^\r\n\s,}\)&;|<>]*|<[^>\r\n]*>[^\r\n\s,}\)&;|<>]*|\([^()\r\n]*\)|not[ \t]+set(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
+  /(^|[^A-Za-z0-9_])((?:"[A-Za-z_][A-Za-z0-9_. -]*"|'[A-Za-z_][A-Za-z0-9_. -]*'|(?:API[ \t]+KEY|PRIVATE[ \t]+KEY|SECRET[ \t]+KEY|ACCESS[ \t]+TOKEN|AUTH[ \t]+TOKEN|CLIENT[ \t]+SECRET|USER[ \t]+PASSWORD)|[A-Za-z_][A-Za-z0-9_.-]*))(\s*(?:=|:)\s*)("(?:\\.|[^"\\])*"[^\r\n\s,}\])&;|<>]*|'(?:\\.|[^'\\])*'[^\r\n\s,}\])&;|<>]*|\[[^\r\n\s,};&|<>]*\][^\r\n\s,}\])&;|<>]*|<[^>\r\n]*>[^\r\n\s,}\])&;|<>]*|\([^()\r\n]*\)[^\r\n\s,}\])&;|<>]*|not[ \t]+set(?=$|[\s,}\])&;|<>])|[^\s,}\])&;|<>]+)/gim;
+const PEM_BEGIN_MARKER = "-----BEGIN ";
+const PEM_KEY_SUFFIX = "PRIVATE KEY-----";
+const PEM_LABEL_PATTERN = /^[A-Z0-9 ]*$/;
 const PLACEHOLDER_VALUES = new Set([
   "",
   "***",
@@ -23,6 +26,42 @@ const PLACEHOLDER_VALUES = new Set([
 ]);
 
 export const REDACTION_TOKEN = "[redacted-credential]";
+export const PEM_REDACTION_TOKEN = "[redacted-private-key]";
+
+function scrubPrivateKeys(text) {
+  const chunks = [];
+  let cursor = 0;
+  let count = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf(PEM_BEGIN_MARKER, cursor);
+    if (start < 0) break;
+    const labelStart = start + PEM_BEGIN_MARKER.length;
+    const suffixStart = text.indexOf(PEM_KEY_SUFFIX, labelStart);
+    if (suffixStart < 0) break;
+    const label = text.slice(labelStart, suffixStart);
+    const headerEnd = suffixStart + PEM_KEY_SUFFIX.length;
+    if (!PEM_LABEL_PATTERN.test(label)) {
+      chunks.push(text.slice(cursor, labelStart));
+      cursor = labelStart;
+      continue;
+    }
+    const endMarker = `-----END ${label}${PEM_KEY_SUFFIX}`;
+    const nextStart = text.indexOf(PEM_BEGIN_MARKER, headerEnd);
+    const segmentEnd = nextStart < 0 ? text.length : nextStart;
+    const relativeEnd = text.slice(headerEnd, segmentEnd).indexOf(endMarker);
+    if (relativeEnd < 0) {
+      chunks.push(text.slice(cursor, headerEnd));
+      cursor = headerEnd;
+      continue;
+    }
+    const end = headerEnd + relativeEnd;
+    chunks.push(text.slice(cursor, start), PEM_REDACTION_TOKEN);
+    cursor = end + endMarker.length;
+    count++;
+  }
+  chunks.push(text.slice(cursor));
+  return { scrubbed: chunks.join(""), count };
+}
 
 function unquote(value) {
   const trimmed = String(value).trim();
@@ -39,7 +78,7 @@ function normalizeFieldName(name) {
 }
 
 function isSensitiveFieldName(name) {
-  return /(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|ACCESS_KEY|ENCRYPTION_KEY|SIGNING_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/.test(
+  return /(?:^|_)(?:API_?KEY|PRIVATE_KEY|SECRET_KEY|ACCESS_KEY|ACCESS_KEY_ID|ENCRYPTION_KEY|SIGNING_KEY|TOKEN|SECRET|PASSWORD|PASSWD)$/.test(
     normalizeFieldName(name),
   );
 }
@@ -64,8 +103,9 @@ function redactAssignedValue(value) {
 
 /** Scrub known token prefixes and unknown-format values under sensitive names. */
 export function scrubCredentials(text) {
-  let count = 0;
-  const namedScrubbed = text.replace(
+  const { scrubbed: pemScrubbed, count: pemCount } = scrubPrivateKeys(text);
+  let count = pemCount;
+  const namedScrubbed = pemScrubbed.replace(
     NAMED_CREDENTIAL_ASSIGNMENT_PATTERN,
     (match, boundary, name, separator, value) => {
       if (!isSensitiveFieldName(name)) return match;

@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { createQualityHooks, scrubCredentials } from "../quality-hooks.mjs";
 
 const REDACTION_TOKEN = "[redacted-credential]";
+const PEM_REDACTION_TOKEN = "[redacted-private-key]";
 
 function assertScrub(input, expected, expectedCount) {
   const { scrubbed, count } = scrubCredentials(input);
@@ -88,6 +89,8 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("SECRET_KEY=opaque-value", `SECRET_KEY=${REDACTION_TOKEN}`, 1);
     assertScrub("SSH_PRIVATE_KEY=opaque-value", `SSH_PRIVATE_KEY=${REDACTION_TOKEN}`, 1);
     assertScrub("AWS_SECRET_ACCESS_KEY=opaque-value", `AWS_SECRET_ACCESS_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("AWS_ACCESS_KEY_ID=opaque-value", `AWS_ACCESS_KEY_ID=${REDACTION_TOKEN}`, 1);
+    assertScrub("AccessKeyId=opaque-value", `AccessKeyId=${REDACTION_TOKEN}`, 1);
     assertScrub("ARTIFACT_SIGNING_KEY=opaque-value", `ARTIFACT_SIGNING_KEY=${REDACTION_TOKEN}`, 1);
   });
 
@@ -115,6 +118,9 @@ describe("credential transcript scrub boundary", () => {
     assertScrub("PRIVATE_KEY=[redacted-private-key]", "PRIVATE_KEY=[redacted-private-key]", 0);
     assertScrub("API_KEY=[redacted]opaque", `API_KEY=${REDACTION_TOKEN}`, 1);
     assertScrub("API_KEY=<redacted>opaque", `API_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub('API_KEY=""opaque', `API_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("API_KEY=(not set)opaque", `API_KEY=${REDACTION_TOKEN}`, 1);
+    assertScrub("API_KEY=(redacted)opaque", `API_KEY=${REDACTION_TOKEN}`, 1);
   });
 
   test("does not redact non-sensitive field-name substrings", () => {
@@ -136,6 +142,25 @@ describe("credential transcript scrub boundary", () => {
   test("redacts sensitive field names longer than 128 characters", () => {
     const name = `${"A".repeat(129)}_API_KEY`;
     assertScrub(`${name}=opaque-value`, `${name}=${REDACTION_TOKEN}`, 1);
+  });
+
+  test("redacts standalone PEM private keys", () => {
+    const privateKey = [
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "synthetic-material",
+      "-----END OPENSSH PRIVATE KEY-----",
+    ].join("\n");
+    assertScrub(privateKey, PEM_REDACTION_TOKEN, 1);
+  });
+
+  test("scans unmatched PEM headers within the performance budget", () => {
+    const input = "-----BEGIN OPENSSH PRIVATE KEY-----\n".repeat(250);
+    const runs = 100;
+    scrubCredentials(input);
+    const start = process.hrtime.bigint();
+    for (let run = 0; run < runs; run++) scrubCredentials(input);
+    const averageMs = Number(process.hrtime.bigint() - start) / runs / 1_000_000;
+    assert.ok(averageMs < 5, `PEM scan averaged ${averageMs.toFixed(3)}ms per 10KB`);
   });
 
   test("does not redact Google OAuth prefix embedded mid-word", () => {

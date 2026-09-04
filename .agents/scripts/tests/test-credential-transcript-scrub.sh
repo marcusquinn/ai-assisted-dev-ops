@@ -24,9 +24,10 @@
 #   13. Multiple tokens in one payload all redacted
 #   14. Nested JSON object tool_response scrubbed recursively
 #   15-18. Named-field positive and conservative negative cases
+#   18b. Standalone PEM private-key redaction
 #   19. Malformed JSON produces no output and exits 0 (fail-open)
 #   20-26. Word-boundary false-positive regression cases
-#   27-28. Known-prefix and named-field performance: <5ms per 10KB
+#   27-29. Known-prefix, named-field, and unmatched-PEM performance
 #
 # Usage: bash test-credential-transcript-scrub.sh
 
@@ -204,12 +205,12 @@ else
 fi
 
 LONG_NAMED_KEY=$(python3 -c "print('A' * 129 + '_API_KEY')")
-NAMED_TEXT_PAYLOAD="{\"tool_response\": \"(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value TOKEN=opaque-value|next PASSWORD=opaque-value>file API KEY=opaque-value AWS_SECRET_ACCESS_KEY=opaque-value SIGNING_KEY=[redacted]opaque API_KEY=(opaque-value) (SECRET_KEY=not set) ${LONG_NAMED_KEY}=opaque-value\"}"
+NAMED_TEXT_PAYLOAD="{\"tool_response\": \"(RESEND-API-KEY=synthetic_unknown_format_1234567890) API_KEY=opaque-value&other=value TOKEN=opaque-value|next PASSWORD=opaque-value>file API KEY=opaque-value AWS_SECRET_ACCESS_KEY=opaque-value AWS_ACCESS_KEY_ID=opaque-value AccessKeyId=opaque-value SIGNING_KEY=[redacted]opaque API_KEY=(opaque-value) API_KEY=(not set)opaque (SECRET_KEY=not set) ${LONG_NAMED_KEY}=opaque-value\"}"
 output15=$(run_hook "$NAMED_TEXT_PAYLOAD")
 if echo "$output15" | python3 -c "
 import json, sys
 response = json.load(sys.stdin).get('tool_response', '')
-assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value TOKEN=[redacted-credential]|next PASSWORD=[redacted-credential]>file API KEY=[redacted-credential] AWS_SECRET_ACCESS_KEY=[redacted-credential] SIGNING_KEY=[redacted-credential] API_KEY=([redacted-credential]) (SECRET_KEY=not set) ${LONG_NAMED_KEY}=[redacted-credential]'
+assert response == '(RESEND-API-KEY=[redacted-credential]) API_KEY=[redacted-credential]&other=value TOKEN=[redacted-credential]|next PASSWORD=[redacted-credential]>file API KEY=[redacted-credential] AWS_SECRET_ACCESS_KEY=[redacted-credential] AWS_ACCESS_KEY_ID=[redacted-credential] AccessKeyId=[redacted-credential] SIGNING_KEY=[redacted-credential] API_KEY=([redacted-credential]) API_KEY=[redacted-credential] (SECRET_KEY=not set) ${LONG_NAMED_KEY}=[redacted-credential]'
 " 2>/dev/null; then
 	pass "15. Named secrets scrubbed without consuming delimiters"
 else
@@ -236,6 +237,17 @@ assert_no_output "17. Sensitive placeholders remain unchanged" \
 
 assert_no_output "18. Sensitive-name substrings remain unchanged" \
 	'{"tool_response": "TOKEN_COUNT=3 PASSWORD_POLICY=strict MONKEY_TOKENIZER=enabled"}'
+
+PEM_PAYLOAD='{"tool_response": "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-material\n-----END OPENSSH PRIVATE KEY-----"}'
+output_pem=$(run_hook "$PEM_PAYLOAD")
+if echo "$output_pem" | python3 -c "
+import json, sys
+assert json.load(sys.stdin).get('tool_response') == '[redacted-private-key]'
+" 2>/dev/null; then
+	pass "18b. Standalone PEM private key scrubbed"
+else
+	fail "18b. Standalone PEM private key scrubbed — got: $output_pem"
+fi
 
 # Test 19: malformed JSON exits 0
 assert_exit_zero "19. Malformed JSON exits 0 (fail-open)" \
@@ -350,6 +362,29 @@ if python3 -c "import sys; sys.exit(0 if float('$NAMED_BENCH_MS') < 5 else 1)" 2
 	pass "28. Named-field performance: ${NAMED_BENCH_MS}ms per 10KB (budget: <5ms)"
 else
 	fail "28. Named-field performance: ${NAMED_BENCH_MS}ms per 10KB exceeds 5ms budget"
+fi
+
+PEM_BENCH_MS=$(python3 -c "
+import runpy, time
+
+scrub_credentials = runpy.run_path('$HOOK_SCRIPT')['scrub_credentials']
+payload_str = '-----BEGIN OPENSSH PRIVATE KEY-----\n' * 250
+runs = 100
+scrub_credentials(payload_str)
+start = time.monotonic_ns()
+for _ in range(runs):
+    scrubbed, count = scrub_credentials(payload_str)
+end = time.monotonic_ns()
+assert scrubbed == payload_str and count == 0
+avg_ms = (end - start) / runs / 1_000_000
+print(round(avg_ms, 4))
+")
+
+printf '  In-process unmatched PEM scan per 10KB (%d runs): %sms\n' 100 "$PEM_BENCH_MS"
+if python3 -c "import sys; sys.exit(0 if float('$PEM_BENCH_MS') < 5 else 1)" 2>/dev/null; then
+	pass "29. Unmatched-PEM performance: ${PEM_BENCH_MS}ms per 10KB (budget: <5ms)"
+else
+	fail "29. Unmatched-PEM performance: ${PEM_BENCH_MS}ms per 10KB exceeds 5ms budget"
 fi
 printf '  Note: subprocess launch adds ~50ms Python startup; in-process cost shown above.\n'
 
