@@ -95,8 +95,8 @@ def _is_temp_operand(path: str, cwd: str) -> bool:
     canonical = _canonical_operand(path, cwd)
     if not canonical:
         return False
-    # nosec B108 -- classification roots only; no temporary file is created.
-    roots = ["/tmp", "/var/tmp"]
+    # Classification roots only; no temporary file is created.
+    roots = ["/tmp", "/var/tmp"]  # nosec B108
     tmpdir = os.environ.get("TMPDIR", "")
     if tmpdir:
         roots.append(tmpdir)
