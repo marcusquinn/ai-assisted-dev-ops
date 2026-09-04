@@ -274,6 +274,7 @@ memory-helper.sh store --type FAILED_APPROACH --namespace youtube-topics \
 ## Related
 
 - `seo/conversational-search-intent.md` — Query intent and trend evidence framing
+- `seo/youtube-description-link-acquisition.md` — Reuse ranked-video evidence for contextual sponsored-placement experiments; SEO owns qualification and measurement
 - `channel-intel.md` — Competitor data feeds into gap analysis
 - `script-writer.md` — Turn validated topics into scripts
 - `optimizer.md` — Optimize titles/tags for chosen keywords
