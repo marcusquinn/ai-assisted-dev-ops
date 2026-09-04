@@ -93,6 +93,51 @@ or silently fall back to a maintainer's personal account.
   from Buzz community context needs a separate validated router before one VA
   instance can execute safely across several local repositories.
 
+## Organization-aligned project onboarding
+
+Use one Buzz community per forge owner or organization as the default boundary.
+Within it, announce one Buzz repository per approved origin repository and create
+one same-slug Buzz project by default. Use a multi-repository project only when
+the product or operating boundary deliberately spans several origin repositories.
+
+Map local candidates with `reference/repo-organization.md`: repositories for a
+configured personal owner normally live at `~/Git/<repo>`, while organization
+and third-party repositories normally live at `~/Git/<owner>/<repo>`. Explicit
+`repos.json` paths and owner/repository slugs override the inferred layout.
+Resolve the target community from the verified forge host and owner, never from
+a directory or display name alone. Keep a reviewed, non-secret mapping of forge
+host, owner slug, Buzz community/relay settings reference, repository-access
+channel UUID, and visibility policy.
+
+The current Buzz CLI can add repositories and projects to an existing community
+context; community creation and joining remain separate owner-reviewed setup.
+Before a write, inspect `buzz --help`, verify the intended relay identity, and
+run `buzz channels list --member`, `buzz repos list`, and `buzz projects list`.
+Then use the installed CLI's equivalent of:
+
+```bash
+buzz repos create --id REPO_ID --name DISPLAY_NAME \
+  --clone CLONE_URL --web WEB_URL --channel CHANNEL_UUID
+buzz projects create PROJECT_SLUG --name DISPLAY_NAME \
+  --repo REPO_ID --channel CHANNEL_UUID
+```
+
+Derive repository identity and URLs from the registered canonical checkout and
+its verified origin; do not synthesize them from path text. Use the origin
+repository name as `REPO_ID` and `PROJECT_SLUG` when it satisfies the CLI grammar.
+The repository `--channel` is the Git ACL and must reference a channel observed
+on the same relay. Resolve CLI credentials only through approved server-local
+secret storage; never copy a private key or auth tag from a Buzz message.
+
+Treat `~/Git` discovery as a candidate inventory, not bulk-publication consent.
+Before announcing a repository, verify its owner, canonical status, origin,
+visibility, and approval for the target community. Public anonymous HTTPS clone
+URLs are suitable for read-only public repository context. Do not announce a
+private repository or third-party checkout until its disclosure and access model
+has explicit approval. Existing matching records are a no-op; conflicting owner,
+origin, channel, or visibility evidence is a blocker rather than permission to
+delete or recreate records.
+
 ## Repository collaboration through Buzz
 
 Adding a read-only repository to a Buzz community makes repository context
@@ -148,5 +193,6 @@ not imply that collaborators can observe it.
 - `reference/team-interface-buzz-provisioning.md` — provisioning and runtime boundary
 - `reference/team-interface-buzz.md` — read-only Buzz adapter
 - `reference/team-interfaces.md` — provider-neutral identity and event contracts
+- `reference/repo-organization.md` — canonical owner-based repository layout
 - `reference/secret-handling.md` — credential storage and disclosure rules
 - `workflows/git-workflow.md` — linked worktrees and origin-forge lifecycle

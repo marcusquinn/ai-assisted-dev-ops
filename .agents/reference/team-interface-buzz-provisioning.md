@@ -39,6 +39,14 @@ linked worktree plus origin APIs. Adding a repo to a Buzz community does not
 retarget the runtime's registered project root. Full operating guidance is in
 `tools/ai-assistants/buzz-team-interface.md`.
 
+For repository discovery, default to one Buzz community per verified forge owner
+or organization. Reconcile approved canonical repositories from the owner-based
+`~/Git` layout and explicit `repos.json` registrations before using the Buzz CLI
+to announce repositories and create projects. Discovery is never bulk-publication
+consent, and community creation remains an owner-reviewed operation. The mapping,
+CLI sequence, access-channel requirement, and disclosure checks are defined in
+`tools/ai-assistants/buzz-team-interface.md`.
+
 ## Generate and inspect
 
 Generate a mode-0600 snapshot in the user-facing Downloads folder:
