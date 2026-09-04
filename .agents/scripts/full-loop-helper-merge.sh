@@ -1138,11 +1138,11 @@ _merge_remove_body_snapshot() {
 }
 
 # Release provenance later reads merge commit trailers with `git
-# interpret-trailers --parse`. Reject an aggregation body whose raw trailers
+# interpret-trailers --parse`. Reject aggregation content whose raw trailers
 # would be hidden by a non-terminal signature divider before it reaches any
 # merge transport.
-_merge_validate_release_aggregation_body() {
-	local body_file="$1"
+_merge_validate_release_aggregation_content() {
+	local content="$1"
 	local expected_pr="${2:-}"
 	local raw_aggregator=""
 	local raw_aggregates=""
@@ -1150,11 +1150,11 @@ _merge_validate_release_aggregation_body() {
 	local parsed_aggregator=""
 	local parsed_aggregates=""
 
-	raw_aggregator=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' "$body_file") || return 1
-	raw_aggregates=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' "$body_file") || return 1
+	raw_aggregator=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$content") || return 1
+	raw_aggregates=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$content") || return 1
 	[[ -n "$raw_aggregator" || -n "$raw_aggregates" ]] || return 0
 
-	parsed_trailers=$(git interpret-trailers --parse <"$body_file") || return 1
+	parsed_trailers=$(git interpret-trailers --parse <<<"$content") || return 1
 	parsed_aggregator=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$parsed_trailers") || return 1
 	parsed_aggregates=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$parsed_trailers") || return 1
 	if ! awk '
@@ -1171,6 +1171,94 @@ _merge_validate_release_aggregation_body() {
 		! "$parsed_aggregator" =~ ^[0-9]+$ || -z "$parsed_aggregates" ||
 		(-n "$expected_pr" && "$parsed_aggregator" != "$expected_pr") ]]; then
 		print_error "Release-aggregation trailers must be a terminal parseable block; place any signature footer and --- before the Aidevops-Release trailers."
+		return 1
+	fi
+	return 0
+}
+
+_merge_validate_release_aggregation_body() {
+	local body_file="$1"
+	local expected_pr="${2:-}"
+	local content=""
+	content=$(<"$body_file") || return 1
+	_merge_validate_release_aggregation_content "$content" "$expected_pr"
+	return $?
+}
+
+_merge_release_aggregation_manifest() {
+	local content="$1"
+	awk '/^Aidevops-Release-Aggregator-PR: |^Aidevops-Release-Aggregates: / { print }' <<<"$content"
+	return 0
+}
+
+# Bind an aggregation merge body to the immutable manifest on the exact PR
+# head verified by the pre-merge gate. Reading the commit by SHA avoids trusting
+# a mutable local branch or a later branch-head lookup.
+_merge_validate_verified_head_aggregation_binding() {
+	local pr_number="$1"
+	local repo="$2"
+	local verified_head_sha="$3"
+	local merge_body_file="${4:-}"
+	local head_message=""
+	local head_manifest=""
+	local body_content=""
+	local body_manifest=""
+
+	head_message=$(_flm_gh_read gh api "repos/${repo}/git/commits/${verified_head_sha}" \
+		--jq '.message // empty' 2>/dev/null) || {
+		print_error "Merge blocked: unable to inspect the exact verified PR head commit for a release-aggregation manifest; refresh remote evidence and retry."
+		return 1
+	}
+	head_manifest=$(_merge_release_aggregation_manifest "$head_message") || return 1
+	[[ -n "$head_manifest" ]] || return 0
+
+	if ! _merge_validate_release_aggregation_content "$head_message" "$pr_number"; then
+		print_error "Merge blocked: the exact verified PR head contains an invalid release-aggregation manifest; repair the head manifest and refresh review evidence."
+		return 1
+	fi
+	if [[ -z "$merge_body_file" ]]; then
+		print_error "Merge blocked: the exact verified PR head contains a release-aggregation manifest, but no --body-file was supplied; provide the identical terminal manifest and retry."
+		return 1
+	fi
+	body_content=$(<"$merge_body_file") || {
+		print_error "Merge blocked: the immutable merge body snapshot became unreadable before manifest binding."
+		return 1
+	}
+	body_manifest=$(_merge_release_aggregation_manifest "$body_content") || return 1
+	if [[ "$head_manifest" != "$body_manifest" ]]; then
+		print_error "Merge blocked: the exact verified PR head and squash merge body release-aggregation manifests differ; regenerate --body-file from the verified head manifest and retry."
+		return 1
+	fi
+	return 0
+}
+
+_merge_prepare_verified_head_aggregation_body() {
+	local pr_number="$1"
+	local repo="$2"
+	local source_body_file="${3:-}"
+	local binding_head_sha=""
+	FULL_LOOP_MERGE_PREPARED_BODY_FILE=""
+	FULL_LOOP_MERGE_BODY_SNAPSHOT=""
+
+	if [[ -n "$source_body_file" ]]; then
+		FULL_LOOP_MERGE_BODY_SNAPSHOT=$(_merge_snapshot_body_file "$source_body_file") || return 1
+		FULL_LOOP_MERGE_PREPARED_BODY_FILE="$FULL_LOOP_MERGE_BODY_SNAPSHOT"
+		if ! _merge_validate_release_aggregation_body "$FULL_LOOP_MERGE_PREPARED_BODY_FILE" "$pr_number"; then
+			_merge_remove_body_snapshot "$FULL_LOOP_MERGE_BODY_SNAPSHOT"
+			return 1
+		fi
+	fi
+	if [[ -z "${FULL_LOOP_VERIFIED_PR_HEAD_SHA:-}" && -z "$FULL_LOOP_MERGE_PREPARED_BODY_FILE" ]]; then
+		return 0
+	fi
+	binding_head_sha=$(_merge_resolve_match_head "$pr_number" "$repo") || {
+		_merge_remove_body_snapshot "$FULL_LOOP_MERGE_BODY_SNAPSHOT"
+		print_error "Merge blocked: cannot bind the merge body to an exact remotely verified PR head."
+		return 1
+	}
+	if ! _merge_validate_verified_head_aggregation_binding \
+		"$pr_number" "$repo" "$binding_head_sha" "$FULL_LOOP_MERGE_PREPARED_BODY_FILE"; then
+		_merge_remove_body_snapshot "$FULL_LOOP_MERGE_BODY_SNAPSHOT"
 		return 1
 	fi
 	return 0
@@ -1880,15 +1968,9 @@ cmd_merge() {
 			_canonical_dir=$(_merge_current_canonical_dir_for_cleanup "$_cleanup_worktree" 2>/dev/null || true)
 		fi
 	fi
-	local _merge_body_snapshot=""
-	if [[ -n "$merge_body_file" ]]; then
-		_merge_body_snapshot=$(_merge_snapshot_body_file "$merge_body_file") || return 1
-		merge_body_file="$_merge_body_snapshot"
-		if ! _merge_validate_release_aggregation_body "$merge_body_file" "$pr_number"; then
-			_merge_remove_body_snapshot "$_merge_body_snapshot"
-			return 1
-		fi
-	fi
+	_merge_prepare_verified_head_aggregation_body "$pr_number" "$repo" "$merge_body_file" || return 1
+	local _merge_body_snapshot="$FULL_LOOP_MERGE_BODY_SNAPSHOT"
+	merge_body_file="$FULL_LOOP_MERGE_PREPARED_BODY_FILE"
 	# Retarget any open PRs stacked on this branch before the head branch is
 	# deleted post-merge. GitHub auto-closes stacked children when their base
 	# branch disappears; retargeting to the default branch prevents this.

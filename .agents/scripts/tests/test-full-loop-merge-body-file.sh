@@ -9,6 +9,8 @@ AGENTS_SCRIPTS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)" || exit 2
 TEST_ROOT=""
 TEST_MODE="normal"
 TEST_ORIGINAL_BODY_FILE=""
+TEST_HEAD_COMMIT_MESSAGE=""
+TEST_RESOLVE_HEAD_FAIL=0
 TESTS_RUN=0
 TESTS_FAILED=0
 
@@ -74,6 +76,10 @@ capture_rest_body_field() {
 gh() {
 	local command="${1:-}"
 	local subcommand="${2:-}"
+	if [[ "$command" == "api" && "$subcommand" == "repos/testorg/testrepo/git/commits/fixture-head-sha" ]]; then
+		printf '%s\n' "$TEST_HEAD_COMMIT_MESSAGE"
+		return 0
+	fi
 	if [[ "$command" == "pr" && "$subcommand" == "view" && "$*" == *"--json title,commits"* ]]; then
 		printf '%s\n' '{"title":"GH#29733: fix: preserve explicit merge bodies","commits":[{"messageHeadline":"fix: preserve explicit merge bodies"}]}'
 		return 0
@@ -131,7 +137,10 @@ setup_subject() {
 	source "${AGENTS_SCRIPTS_DIR}/shared-constants.sh"
 	# shellcheck source=../full-loop-helper-merge.sh
 	source "${AGENTS_SCRIPTS_DIR}/full-loop-helper-merge.sh"
+	FULL_LOOP_VERIFIED_PR_HEAD_SHA="fixture-head-sha"
+	set_matching_head_manifest
 	_merge_resolve_match_head() {
+		[[ "$TEST_RESOLVE_HEAD_FAIL" -eq 0 ]] || return 1
 		printf '%s\n' 'fixture-head-sha'
 		return 0
 	}
@@ -159,6 +168,7 @@ setup_subject() {
 		return 1
 	}
 	_retarget_stacked_children_interactive() {
+		: >"${TEST_ROOT}/retarget-called"
 		return 0
 	}
 	_merge_verify_completed_state() {
@@ -181,6 +191,35 @@ write_fixture_body() {
 		'' \
 		'Aidevops-Release-Aggregator-PR: 42' \
 		'Aidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f' >"$body_file"
+	return 0
+}
+
+set_matching_head_manifest() {
+	TEST_HEAD_COMMIT_MESSAGE=$'chore(release): aggregate reviewed sources\n\nAidevops-Release-Aggregator-PR: 42\nAidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f'
+	return 0
+}
+
+write_two_source_body() {
+	local body_file="$1"
+	local order="${2:-normal}"
+	printf '%s\n' \
+		'chore(release): aggregate reviewed sources' \
+		'' \
+		'Aidevops-Release-Aggregator-PR: 42' >"$body_file"
+	if [[ "$order" == "reversed" ]]; then
+		printf '%s\n' \
+			'Aidevops-Release-Aggregates: 29722@f2c7962f8b29922b44f44bd13406262569ddc374' \
+			'Aidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f' >>"$body_file"
+	else
+		printf '%s\n' \
+			'Aidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f' \
+			'Aidevops-Release-Aggregates: 29722@f2c7962f8b29922b44f44bd13406262569ddc374' >>"$body_file"
+	fi
+	return 0
+}
+
+set_two_source_head_manifest() {
+	TEST_HEAD_COMMIT_MESSAGE=$'chore(release): aggregate reviewed sources\n\nAidevops-Release-Aggregator-PR: 42\nAidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f\nAidevops-Release-Aggregates: 29722@f2c7962f8b29922b44f44bd13406262569ddc374'
 	return 0
 }
 
@@ -217,6 +256,7 @@ assert_transport_preserves_body() {
 	local rc=0
 	TEST_MODE="$mode"
 	TEST_ORIGINAL_BODY_FILE="$body_file"
+	set_matching_head_manifest
 	rm -f "${TEST_ROOT}/captured-body-"* "${TEST_ROOT}/capture-count" "${TEST_ROOT}/snapshot-paths"
 	write_fixture_body "$body_file"
 	cp "$body_file" "$expected_file"
@@ -247,6 +287,92 @@ assert_transport_preserves_body() {
 		print_result "$label preserves exact body bytes" 0
 	else
 		print_result "$label preserves exact body bytes" 1 "rc=${rc}; captures=${capture_count}; exact=${exact}; snapshots_removed=${snapshots_removed}"
+	fi
+	return 0
+}
+
+assert_head_body_mismatch_fails() {
+	local body_mode="$1"
+	local label="$2"
+	local body_file="${TEST_ROOT}/mismatched-aggregation-body"
+	local output=""
+	local rc=0
+	TEST_MODE="normal"
+	set_two_source_head_manifest
+	rm -f "${TEST_ROOT}/capture-count" "${TEST_ROOT}/snapshot-paths"
+	case "$body_mode" in
+	partial)
+		write_fixture_body "$body_file"
+		;;
+	reordered)
+		write_two_source_body "$body_file" reversed
+		;;
+	different)
+		printf '%s\n' \
+			'chore(release): aggregate reviewed sources' \
+			'' \
+			'Aidevops-Release-Aggregator-PR: 42' \
+			'Aidevops-Release-Aggregates: 29721@d53b458a6ee82e3dccd922c3791b9f9f088efa8f' \
+			'Aidevops-Release-Aggregates: 29723@62d328329b58fc214bfed3358ad079b1a2528289' >"$body_file"
+		;;
+	*)
+		return 1
+		;;
+	esac
+	output=$(cmd_merge 42 testorg/testrepo --squash --body-file "$body_file" 2>&1) || rc=$?
+	if [[ "$rc" -ne 0 && ! -e "${TEST_ROOT}/capture-count" &&
+		"$output" == *"manifests differ"* && "$output" == *"regenerate --body-file"* ]]; then
+		print_result "$label fails before merge write" 0
+	else
+		print_result "$label fails before merge write" 1 "rc=${rc}; output=${output}"
+	fi
+	return 0
+}
+
+test_aggregation_head_requires_body_file() {
+	local output=""
+	local rc=0
+	TEST_MODE="normal"
+	set_matching_head_manifest
+	rm -f "${TEST_ROOT}/capture-count" "${TEST_ROOT}/snapshot-paths"
+	output=$(cmd_merge 42 testorg/testrepo --squash 2>&1) || rc=$?
+	if [[ "$rc" -ne 0 && ! -e "${TEST_ROOT}/capture-count" &&
+		"$output" == *"no --body-file was supplied"* && "$output" == *"identical terminal manifest"* ]]; then
+		print_result "aggregation head without body file fails before merge write" 0
+	else
+		print_result "aggregation head without body file fails before merge write" 1 "rc=${rc}; output=${output}"
+	fi
+	return 0
+}
+
+test_non_aggregation_head_without_body_is_unchanged() {
+	local rc=0
+	TEST_MODE="normal"
+	TEST_HEAD_COMMIT_MESSAGE="fix: ordinary non-aggregation change"
+	rm -f "${TEST_ROOT}/capture-count" "${TEST_ROOT}/snapshot-paths"
+	cmd_merge 42 testorg/testrepo --squash >/dev/null 2>&1 || rc=$?
+	if [[ "$rc" -eq 0 && ! -e "${TEST_ROOT}/capture-count" ]]; then
+		print_result "non-aggregation head without body keeps normal merge behavior" 0
+	else
+		print_result "non-aggregation head without body keeps normal merge behavior" 1 "rc=${rc}"
+	fi
+	return 0
+}
+
+test_head_drift_fails_before_stacked_pr_mutation() {
+	local output=""
+	local rc=0
+	TEST_MODE="normal"
+	TEST_RESOLVE_HEAD_FAIL=1
+	set_matching_head_manifest
+	rm -f "${TEST_ROOT}/capture-count" "${TEST_ROOT}/retarget-called"
+	output=$(cmd_merge 42 testorg/testrepo --squash 2>&1) || rc=$?
+	TEST_RESOLVE_HEAD_FAIL=0
+	if [[ "$rc" -ne 0 && ! -e "${TEST_ROOT}/capture-count" && ! -e "${TEST_ROOT}/retarget-called" &&
+		"$output" == *"exact remotely verified PR head"* ]]; then
+		print_result "head drift fails before stacked PR or merge mutation" 0
+	else
+		print_result "head drift fails before stacked PR or merge mutation" 1 "rc=${rc}; output=${output}"
 	fi
 	return 0
 }
@@ -350,6 +476,12 @@ main() {
 	assert_transport_preserves_body auto-admin "interactive auto-to-admin fallback" 2 1
 	assert_transport_preserves_body stale-401 "stale-auth retry" 2
 	assert_transport_preserves_body rest "REST fallback" 1
+	test_aggregation_head_requires_body_file
+	assert_head_body_mismatch_fails partial "partial head/body manifest"
+	assert_head_body_mismatch_fails reordered "reordered head/body manifest"
+	assert_head_body_mismatch_fails different "different head/body manifest"
+	test_non_aggregation_head_without_body_is_unchanged
+	test_head_drift_fails_before_stacked_pr_mutation
 	test_invalid_body_files_fail_before_gate
 	test_hidden_aggregation_trailers_fail_before_merge_write
 	test_duplicate_aggregation_sources_fail_before_merge_write
