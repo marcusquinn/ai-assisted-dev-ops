@@ -1319,7 +1319,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [ ] t18314 Document npm v12 install controls and bypass-2FA token deprecation #auto-dispatch #feat #priority:medium #security ref:GH#31090
 
-- [ ] t18316 Fix cross-host claim expiry and worktree registry reconciliation #auto-dispatch #bug ref:GH#31117
+- [x] t18316 Fix cross-host claim expiry and worktree registry reconciliation #auto-dispatch #bug ref:GH#31117 pr:#31118 completed:2026-09-04
 
 ## In Progress
 
