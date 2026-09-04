@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +58,27 @@ CACHE_FILE = Path.home() / ".aidevops" / "cch-constants.json"
 # ---------------------------------------------------------------------------
 
 
+def installed_claude_version() -> str | None:
+    """Return the installed Claude version without changing the fallback path."""
+    claude = shutil.which("claude")
+    if claude is None:
+        return None
+    try:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603 -- resolved Claude executable and fixed version argv.
+            [claude, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.match(r"^(\d+\.\d+\.\d+)", result.stdout.strip())
+    return match.group(1) if match else None
+
+
 def load_constants(use_cache: bool = True) -> dict:
     """Load signing constants from cache, live extraction, or defaults."""
     # Try cache first
@@ -71,8 +93,12 @@ def load_constants(use_cache: bool = True) -> dict:
 
     # Try live extraction
     try:
-        result = subprocess.run(
-            [str(Path.home() / ".aidevops" / "agents" / "scripts" / "cch-extract.sh")],
+        extractor = Path.home() / ".aidevops" / "agents" / "scripts" / "cch-extract.sh"
+        if not extractor.is_file() or extractor.is_symlink():
+            raise FileNotFoundError("trusted CCH extractor is unavailable")
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603 -- absolute, verified deployed helper and fixed argv.
+            [str(extractor)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -85,20 +111,7 @@ def load_constants(use_cache: bool = True) -> dict:
         pass
 
     # Try claude --version for at least the version
-    version = DEFAULT_VERSION
-    try:
-        result = subprocess.run(
-            ["claude", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            m = re.match(r"^(\d+\.\d+\.\d+)", result.stdout.strip())
-            if m:
-                version = m.group(1)
-    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
-        pass
+    version = installed_claude_version() or DEFAULT_VERSION
 
     return {
         "version": version,

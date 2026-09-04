@@ -70,17 +70,25 @@ def is_managed(root: Path, slug: str) -> tuple[bool, str]:
 
 
 def run_json(command: list[str]) -> Any:
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    if not command or not Path(command[0]).is_absolute():
+        raise RuntimeError("managed-readme command requires a resolved executable")
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    completed = subprocess.run(  # nosec B603 -- resolved executable and fixed, validated argv.
+        command, check=True, capture_output=True, text=True
+    )
     return json.loads(completed.stdout)
 
 
 def verified_owner(slug: str) -> tuple[str, str]:
-    metadata = run_json(["gh", "repo", "view", slug, "--json", "nameWithOwner,viewerPermission"])
+    gh = shutil.which("gh")
+    if gh is None:
+        raise FileNotFoundError("gh is required to verify managed repository ownership")
+    metadata = run_json([gh, "repo", "view", slug, "--json", "nameWithOwner,viewerPermission"])
     if metadata.get("nameWithOwner") != slug:
         raise RuntimeError("GitHub repository identity did not match the requested slug")
     if metadata.get("viewerPermission") not in PERMISSIONS:
         raise RuntimeError("maintainer-equivalent GitHub access is required")
-    owner = run_json(["gh", "api", f"repos/{slug}"])
+    owner = run_json([gh, "api", f"repos/{slug}"])
     owner_url = owner.get("owner", {}).get("html_url") if isinstance(owner, dict) else None
     if not isinstance(owner_url, str) or not owner_url.startswith("https://github.com/"):
         raise RuntimeError("GitHub owner URL could not be verified")
@@ -128,12 +136,17 @@ def replace_block(readme: Path, block: str) -> bool:
 
 def generate_chart(chart: Path, slug: str, script_dir: Path) -> bool:
     before = chart.read_bytes() if chart.exists() else None
+    helper = script_dir / "star-history-helper.sh"
+    if not helper.is_file() or helper.is_symlink():
+        raise RuntimeError("managed-readme star-history helper is unavailable or unsafe")
+    helper = helper.resolve()
     base_command = [
-        "bash",
-        str(script_dir / "star-history-helper.sh"),
+        "/bin/bash",
+        str(helper),
     ]
     try:
-        subprocess.run(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603 -- fixed Bash and verified helper with validated repository slug.
             base_command + ["fetch", "--repo", slug, "--output", str(chart)],
             check=True,
         )
@@ -141,7 +154,8 @@ def generate_chart(chart: Path, slug: str, script_dir: Path) -> bool:
         if chart.exists():
             print("managed-readme: live Star History refresh failed; preserving existing chart", file=sys.stderr)
             return False
-        subprocess.run(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603 -- fixed Bash and verified helper with validated repository slug.
             base_command + ["seed", "--repo", slug, "--output", str(chart)],
             check=True,
         )

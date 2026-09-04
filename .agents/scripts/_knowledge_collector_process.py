@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -18,9 +19,13 @@ class CollectorInterrupted(Exception):
 
 
 def _descendant_pids(root_pid: int) -> list[int]:
+    ps = shutil.which("ps")
+    if ps is None:
+        return []
     try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,ppid="], check=True, capture_output=True, text=True, timeout=2
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603 -- resolved system process viewer and fixed argv.
+            [ps, "-axo", "pid=,ppid="], check=True, capture_output=True, text=True, timeout=2
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -107,6 +112,18 @@ def _restore_signals(
 def _run_bounded(
     command: list[str], working_directory: Path, environment: dict[str, str], timeout: int
 ) -> subprocess.CompletedProcess[str]:
+    if not command or not all(isinstance(argument, str) for argument in command):
+        raise ValueError("collector command must be a non-empty string argv vector")
+    executable = Path(command[0])
+    if not executable.is_absolute():
+        raise ValueError("collector command must begin with an absolute executable path")
+    executable = executable.resolve(strict=True)
+    if (
+        not executable.is_file()
+        or not os.access(executable, os.X_OK)
+    ):
+        raise ValueError("collector command must begin with an executable absolute path")
+    command = [str(executable), *command[1:]]
     interrupt_signals = (signal.SIGINT, signal.SIGTERM)
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, interrupt_signals)
     previous_handlers: dict[signal.Signals, Any] = {}
@@ -117,7 +134,8 @@ def _run_bounded(
     for interrupt_signal in interrupt_signals:
         previous_handlers[interrupt_signal] = signal.signal(interrupt_signal, interrupt)
     try:
-        process = subprocess.Popen(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        process = subprocess.Popen(  # nosec B603 -- validated absolute collector entrypoint and structured argv.
             command, cwd=working_directory, env=environment, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, start_new_session=True
         )

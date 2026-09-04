@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -757,11 +758,17 @@ def _collect_daily_usage(args: argparse.Namespace) -> list[DailyUsage]:
 
 def _open_path(path: Path) -> None:
     if sys.platform == "darwin":
-        subprocess.run(["open", str(path)], check=False)
+        opener = shutil.which("open")
     elif os.name == "nt":
         os.startfile(path)  # type: ignore[attr-defined]
+        return
     else:
-        subprocess.run(["xdg-open", str(path)], check=False)
+        opener = shutil.which("xdg-open")
+    if opener is not None:
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603 -- resolved platform opener; path is report data only.
+            [opener, str(path)], check=False
+        )
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:

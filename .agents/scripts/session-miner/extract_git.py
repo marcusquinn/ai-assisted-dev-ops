@@ -5,6 +5,7 @@
 
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -14,11 +15,20 @@ from typing import Optional
 from extract_shared import extraction_scope_params, repo_scope_clause, sanitize_path, time_scope_clause
 
 
+def _git_executable() -> str | None:
+    """Resolve Git once per invocation without retaining a stale path."""
+    return shutil.which("git")
+
+
 def _find_git_root(directory: str) -> Optional[str]:
     """Find the git root for a directory, or None if not a git repo."""
+    git_bin = _git_executable()
+    if git_bin is None:
+        return None
     try:
-        result = subprocess.run(
-            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603 -- resolved Git executable; directory is data-only argv.
+            [git_bin, "-C", directory, "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
@@ -48,8 +58,12 @@ def _parse_commit_lines(raw_output: str) -> list[dict]:
 
 def _resolve_diff_base(repo_path: str, oldest_commit: str) -> str:
     """Return the diff base ref for aggregate diff stats."""
-    parent_check = subprocess.run(
-        ["git", "-C", repo_path, "rev-parse", "--verify", "--quiet", f"{oldest_commit}^"],
+    git_bin = _git_executable()
+    if git_bin is None:
+        return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    parent_check = subprocess.run(  # nosec B603 -- resolved Git executable; commit came from Git output.
+        [git_bin, "-C", repo_path, "rev-parse", "--verify", "--quiet", f"{oldest_commit}^"],
         capture_output=True,
     )
     if parent_check.returncode == 0:
@@ -59,10 +73,14 @@ def _resolve_diff_base(repo_path: str, oldest_commit: str) -> str:
 
 def _attach_aggregate_diff_stats(repo_path: str, commits: list[dict]) -> None:
     """Compute aggregate diff stats for a commit range and attach to *commits[0]*."""
+    git_bin = _git_executable()
+    if git_bin is None:
+        return
     oldest_commit = commits[-1]["hash"]
     newest_commit = commits[0]["hash"]
-    stat_result = subprocess.run(
-        ["git", "-C", repo_path, "diff", "--shortstat", _resolve_diff_base(repo_path, oldest_commit), newest_commit],
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+    stat_result = subprocess.run(  # nosec B603 -- resolved Git executable; refs came from parsed Git output.
+        [git_bin, "-C", repo_path, "diff", "--shortstat", _resolve_diff_base(repo_path, oldest_commit), newest_commit],
         capture_output=True, text=True, timeout=15,
     )
     if stat_result.returncode != 0 or not stat_result.stdout.strip():
@@ -85,12 +103,16 @@ def _git_log_in_window(
     repo_path: str, start_epoch_ms: int, end_epoch_ms: int, buffer_minutes: int = 60,
 ) -> list[dict]:
     """Query git log for commits within a time window."""
+    git_bin = _git_executable()
+    if git_bin is None:
+        return []
     start_ts = datetime.fromtimestamp(start_epoch_ms / 1000).isoformat()
     end_ts = datetime.fromtimestamp(end_epoch_ms / 1000 + buffer_minutes * 60).isoformat()
     try:
-        result = subprocess.run(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603 -- resolved Git executable; time filters are data-only argv.
             [
-                "git", "-C", repo_path, "log",
+                git_bin, "-C", repo_path, "log",
                 f"--after={start_ts}", f"--before={end_ts}",
                 "--format=%H|%aI|%s",
             ],
