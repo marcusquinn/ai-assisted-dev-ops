@@ -22,6 +22,7 @@ ISSUE_SYNC_PR_MARKER="<!-- aidevops:issue-sync-todo-pr -->"
 ISSUE_SYNC_COMMIT_SUBJECT="chore: sync GitHub issue state to TODO.md"
 ISSUE_SYNC_DEFAULT_COMMIT_MESSAGE="${ISSUE_SYNC_COMMIT_SUBJECT} [skip ci]"
 ISSUE_SYNC_LAST_PUBLISH_OUTPUT=""
+ISSUE_SYNC_LAST_PUBLISH_RESULT=""
 ISSUE_SYNC_BASE_SHA=""
 ISSUE_SYNC_SOURCE_BASE_SHA=""
 ISSUE_SYNC_EXPECTED_TARGET_SHA=""
@@ -147,8 +148,10 @@ issue_sync_capture_planning_publish() {
 	local output_file="$6"
 	local rc=0
 	: >"$output_file" || return 1
+	ISSUE_SYNC_LAST_PUBLISH_RESULT=""
 	planning_publish "$repo_path" "$commit_msg" "$remote_name" "$branch_name" "$paths" >"$output_file" 2>&1 || rc=$?
 	ISSUE_SYNC_LAST_PUBLISH_OUTPUT=$(<"$output_file")
+	ISSUE_SYNC_LAST_PUBLISH_RESULT="$PLANNING_PUBLISH_RESULT"
 	if [[ -n "$ISSUE_SYNC_LAST_PUBLISH_OUTPUT" ]]; then
 		printf '%s\n' "$ISSUE_SYNC_LAST_PUBLISH_OUTPUT"
 	fi
@@ -621,7 +624,8 @@ issue_sync_publish_todo() {
 			rm -rf "$state_dir"
 			return 0
 		fi
-		if issue_sync_is_gh006 "$ISSUE_SYNC_LAST_PUBLISH_OUTPUT"; then
+		if [[ "$ISSUE_SYNC_LAST_PUBLISH_RESULT" == "protected_branch_publication_deferred" ]] ||
+			issue_sync_is_gh006 "$ISSUE_SYNC_LAST_PUBLISH_OUTPUT"; then
 			echo "::notice::Direct TODO.md publication is protected; routing through one deterministic PR"
 			rc=0
 			issue_sync_publish_via_pr "$repo_path" "$default_branch" "$attempts" "$commit_msg" "$source_file" "$state_dir" || rc=$?

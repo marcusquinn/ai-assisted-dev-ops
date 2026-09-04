@@ -143,6 +143,20 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/example/repo" ]]; then
 	exit 0
 fi
 
+if [[ "${1:-}" == "api" && "${2:-}" == "/repos/example/repo/pulls?"* ]]; then
+	if [[ -f "${GH_STUB_PR_MARKER:?}" ]]; then
+		printf '[{"number":1,"html_url":"https://github.com/example/repo/pull/1"}]\n'
+	else
+		printf '[]\n'
+	fi
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == */repos/example/repo/issues/1 ]]; then
+	printf 'origin:worker\n'
+	exit 0
+fi
+
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
 	if [[ -f "${GH_STUB_PR_MARKER:?}" ]]; then
 		printf 'https://github.com/example/repo/pull/1\n'
@@ -421,6 +435,8 @@ test_protected_branch_uses_one_rebased_pr() {
 		fail "issue-sync PR title preserves merge-loop prevention"
 	elif [[ "$(<"${title_file}.body")" != *"Ref #9001"* ]]; then
 		fail "issue-sync PR body preserves changed-task linkage"
+	elif [[ "$(<"$output_a")" == *"GH006: Protected branch update failed"* ]]; then
+		fail "typed protected-branch result survives captured provider output"
 	elif [[ "$(<"$output_a")" != *"repository-scoped CI privacy and write-policy inventory"* ]]; then
 		fail "GitHub Actions publication declares its scoped CI inventory"
 	elif ! jq -e '.initialized_repos == [{"slug":"example/repo","role":"maintainer"}]' \
@@ -429,10 +445,10 @@ test_protected_branch_uses_one_rebased_pr() {
 	elif [[ "$branch_message" == *"[skip ci]"* ]]; then
 		fail "issue-sync PR branch still runs required checks"
 	elif [[ "$(git -C "$work_a" status --short)" != *"TODO.md"* ||
-	"$(git -C "$work_b" status --short)" != *"TODO.md"* ]]; then
+		"$(git -C "$work_b" status --short)" != *"TODO.md"* ]]; then
 		fail "PR fallback preserves each caller's local TODO projection"
 	else
-		pass "GH006 converges through one rebased deterministic PR"
+		pass "typed protected-branch result routes through one rebased deterministic PR"
 	fi
 	return 0
 }
