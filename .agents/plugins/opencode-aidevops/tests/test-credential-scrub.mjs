@@ -64,6 +64,22 @@ describe("credential transcript scrub boundary", () => {
     assertScrub(`client_secret=${secret}`, `client_secret=${REDACTION_TOKEN}`, 1);
   });
 
+  test("redacts unknown-format values assigned to sensitive field names", () => {
+    assertScrub(
+      "RESEND_API_KEY=synthetic_unknown_format_1234567890",
+      `RESEND_API_KEY=${REDACTION_TOKEN}`,
+      1,
+    );
+  });
+
+  test("redacts quoted sensitive fields in colon-delimited output", () => {
+    assertScrub(
+      '"RECRAFT_API_KEY": "synthetic_unknown_format_1234567890"',
+      `"RECRAFT_API_KEY": "${REDACTION_TOKEN}"`,
+      1,
+    );
+  });
+
   test("does not redact Google OAuth prefix embedded mid-word", () => {
     const embedded = `vendor-GOCSPX-${"g".repeat(28)}`;
     assertScrub(embedded, embedded, 0);
@@ -83,6 +99,24 @@ describe("credential transcript scrub boundary", () => {
       assert.deepEqual(output.output, {
         stdout: `client_secret=${REDACTION_TOKEN}`,
         exitCode: 0,
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("toolExecuteAfter scrubs named credential values in structured output", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "aidevops-named-credential-scrub-"));
+    const output = {
+      output: { environment: { RESEND_API_KEY: "synthetic_unknown_format_1234567890" } },
+      metadata: {},
+    };
+
+    try {
+      const hooks = createQualityHooks({ scriptsDir: tempDir, logsDir: tempDir });
+      await hooks.toolExecuteAfter({ tool: "grep", callID: "" }, output);
+      assert.deepEqual(output.output, {
+        environment: { RESEND_API_KEY: REDACTION_TOKEN },
       });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
