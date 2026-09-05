@@ -343,17 +343,25 @@ _pmp_sort_prs_by_backlog_priority() {
 
 	local _tmp_lines=""
 	_tmp_lines=$(mktemp)
+	local dirty_keys=""
+	if declare -F _pulse_merge_queue_priority_keys >/dev/null 2>&1; then
+		dirty_keys=$(_pulse_merge_queue_priority_keys "$repo_slug")
+	fi
 	local i=0
 	while [[ "$i" -lt "$pr_count" ]]; do
-		local pr_obj="" category="" priority=""
+		local pr_obj="" category="" priority="" dirty_priority=1 pr_number=""
 		pr_obj=$(printf '%s' "$pr_json" | jq -c ".[$i]" 2>/dev/null)
 		category=$(_pmp_classify_pr_backlog_state "$pr_obj" "$repo_slug")
 		priority=$(_pmp_backlog_priority "$category")
-		printf '%03d\t%06d\t%s\n' "$priority" "$i" "$pr_obj" >>"$_tmp_lines"
+		if [[ -n "$dirty_keys" ]]; then
+			pr_number=$(printf '%s' "$pr_obj" | jq -r '.number // empty')
+			[[ "$pr_number" =~ ^[1-9][0-9]*$ && "$dirty_keys" == *"|${pr_number}|"* ]] && dirty_priority=0
+		fi
+		printf '%03d\t%d\t%06d\t%s\n' "$priority" "$dirty_priority" "$i" "$pr_obj" >>"$_tmp_lines"
 		i=$((i + 1))
 	done
 
-	LC_ALL=C sort "$_tmp_lines" | cut -f3- | jq -s '.'
+	LC_ALL=C sort "$_tmp_lines" | cut -f4- | jq -s '.'
 	rm -f "$_tmp_lines"
 	return 0
 }

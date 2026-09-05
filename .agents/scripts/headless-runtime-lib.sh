@@ -758,9 +758,19 @@ _normalize_headless_github_origin() {
 	return 0
 }
 
+_headless_git_auth_reject() {
+	# Reasons are fixed literals from local gates, never credential/metadata values.
+	local reason="$1"
+	_HEADLESS_GIT_AUTH_REJECTION="$reason"
+	printf 'worker_git_auth_rejected reason=%s\n' "$_HEADLESS_GIT_AUTH_REJECTION" >&2
+	return 1
+}
+
 prepare_headless_git_auth_sandbox_env() {
 	local role="${1:-worker}"
 	local token_file="${AIDEVOPS_GIT_AUTH_TOKEN_FILE:-}"
+	unset _AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED
+	_HEADLESS_GIT_AUTH_REJECTION=""
 	[[ "$role" == "worker" ]] || return 0
 	[[ -n "$token_file" ]] || return 0
 	local expected_origin="${AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN:-}"
@@ -769,19 +779,49 @@ prepare_headless_git_auth_sandbox_env() {
 	local expected_askpass="${SCRIPT_DIR}/github-auth-askpass.sh"
 	local token_helper="${SCRIPT_DIR}/worker-token-helper.sh"
 	local normalized_origin=""
-	[[ "$repo_slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
-	normalized_origin=$(_normalize_headless_github_origin "$expected_origin") || return 1
-	[[ "$normalized_origin" == "https://github.com/${repo_slug}" ]] || return 1
-	[[ "$askpass" == "$expected_askpass" && -x "$askpass" && -x "$token_helper" ]] || return 1
-	[[ "${GIT_TERMINAL_PROMPT:-}" == "0" ]] || return 1
-	[[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" ]] || return 1
-	[[ "${GIT_COMMITTER_NAME:-}" == "$GIT_AUTHOR_NAME" ]] || return 1
-	[[ "${GIT_COMMITTER_EMAIL:-}" == "$GIT_AUTHOR_EMAIL" ]] || return 1
-	[[ "$GIT_AUTHOR_NAME" != *$'\n'* && "$GIT_AUTHOR_EMAIL" != *$'\n'* ]] || return 1
+	[[ "$repo_slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
+		_headless_git_auth_reject repository_invalid
+		return 1
+	}
+	normalized_origin=$(_normalize_headless_github_origin "$expected_origin") || {
+		_headless_git_auth_reject origin_invalid
+		return 1
+	}
+	[[ "$normalized_origin" == "https://github.com/${repo_slug}" ]] || {
+		_headless_git_auth_reject repository_mismatch
+		return 1
+	}
+	# aidevops:trust-boundary — accept path aliases only for the very same trusted
+	# helper, then pin the sandbox value to the runtime's own path. Never execute
+	# the incoming path to establish its identity.
+	[[ -x "$askpass" && -x "$expected_askpass" && "$askpass" -ef "$expected_askpass" ]] || {
+		_headless_git_auth_reject askpass_mismatch
+		return 1
+	}
+	[[ -x "$token_helper" ]] || {
+		_headless_git_auth_reject validator_unavailable
+		return 1
+	}
+	[[ "${GIT_TERMINAL_PROMPT:-}" == "0" ]] || {
+		_headless_git_auth_reject terminal_prompt_enabled
+		return 1
+	}
+	[[ -n "${GIT_AUTHOR_NAME:-}" && -n "${GIT_AUTHOR_EMAIL:-}" &&
+		"${GIT_COMMITTER_NAME:-}" == "$GIT_AUTHOR_NAME" &&
+		"${GIT_COMMITTER_EMAIL:-}" == "$GIT_AUTHOR_EMAIL" &&
+		"$GIT_AUTHOR_NAME" != *$'\n'* && "$GIT_AUTHOR_EMAIL" != *$'\n'* &&
+		"$GIT_AUTHOR_NAME" != *$'\r'* && "$GIT_AUTHOR_EMAIL" != *$'\r'* ]] || {
+		_headless_git_auth_reject identity_invalid
+		return 1
+	}
 	# aidevops:trust-boundary — only a locally validated, repository-bound token
 	# contract may cross the clean worker sandbox.
 	"$token_helper" validate --token-file "$token_file" --repo "$repo_slug" --local-only \
-		>/dev/null 2>&1 || return 1
+		>/dev/null 2>&1 || {
+		_headless_git_auth_reject token_invalid
+		return 1
+	}
+	export GIT_ASKPASS="$expected_askpass"
 	export _AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED=1
 	return 0
 }

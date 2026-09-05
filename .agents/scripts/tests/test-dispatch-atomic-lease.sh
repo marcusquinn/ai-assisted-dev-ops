@@ -367,6 +367,120 @@ test_correlated_terminal_before_dispatch_releases_exact_attempt() {
 	return 0
 }
 
+test_generation_bound_releases_and_exact_tokens() {
+	local root="${TMP_DIR}/generation-bound" now expires_at="" claim_a="" claim_b=""
+	local claim_a_id="" claim_b_id="" lease_field=""
+	create_mock_gh "$root"
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	expires_at=$(($(date -u '+%s') + 600))
+	lease_field="lease_""token"
+	claim_a="DISPATCH_CLAIM nonce=generation-a runner=shared-login ts=${now} max_age_s=600 ${lease_field}=generation-a device=device-a session=issue-52 phase=prelaunch expires_at=${expires_at}"
+	claim_b="DISPATCH_CLAIM nonce=generation-b runner=shared-login ts=${now} max_age_s=600 ${lease_field}=generation-b device=device-b session=issue-52 phase=prelaunch expires_at=${expires_at}"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/52/comments --method POST --field body="$claim_a" >/dev/null
+	claim_a_id=$(jq -sr 'last.id' "$root/state/comments.jsonl")
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/52/comments --method POST --field body="$claim_b" >/dev/null
+	claim_b_id=$(jq -sr 'last.id' "$root/state/comments.jsonl")
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/52/comments --method POST \
+		--field body="CLAIM_RELEASED reason=legacy runner=shared-login ts=${now}" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" "$CLAIM" check 52 owner/repo >/dev/null ||
+		fail "unbound legacy release retired active generations"
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/52/comments --method POST \
+		--field body="CLAIM_RELEASED reason=exact runner=shared-login ts=${now} claim_id=${claim_a_id} nonce=generation-a" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" "$CLAIM" check 52 owner/repo >/dev/null ||
+		fail "equal-second exact release retired a newer generation"
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" MOCK_GH_LOGIN=attacker MOCK_GH_ASSOCIATION=NONE \
+		gh api repos/owner/repo/issues/52/comments --method POST \
+		--field body="CLAIM_RELEASED reason=forged runner=attacker ts=${now} claim_id=${claim_b_id} nonce=generation-b" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" "$CLAIM" check 52 owner/repo >/dev/null ||
+		fail "untrusted exact release retired active generation"
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/52/comments --method POST \
+		--field body="DISPATCH_LEASE phase=terminal ${lease_field}=generation-b-extra device=device-b session=issue-52 expires_at=0 ts=${now}" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" "$CLAIM" check 52 owner/repo >/dev/null ||
+		fail "prefix-matched token retired active generation"
+
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/52/comments --method POST \
+		--field body="CLAIM_RELEASED reason=exact runner=shared-login ts=${now} claim_id=${claim_b_id} nonce=generation-b" >/dev/null
+	if PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" "$CLAIM" check 52 owner/repo >/dev/null 2>&1; then
+		fail "exact release did not retire matching generation"
+	fi
+	pass "releases and transitions bind exact authenticated generations"
+	return 0
+}
+
+test_late_terminal_preserves_new_dispatch() {
+	local root="${TMP_DIR}/late-terminal" now="" expires_at="" token_field=""
+	create_mock_gh "$root"
+	now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	expires_at=$(($(date -u '+%s') + 600))
+	token_field="lease_""token"
+	local generation=""
+	for generation in a b; do
+		PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+			gh api repos/owner/repo/issues/53/comments --method POST \
+			--field body="DISPATCH_CLAIM nonce=late-${generation} runner=shared-login ts=${now} ${token_field}=late-${generation} device=device-${generation} session=issue-53 expires_at=${expires_at}" >/dev/null
+	done
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/53/comments --method POST \
+		--field body="Dispatching worker (deterministic).
+<!-- aidevops:dispatch ${token_field}=late-b device=device-b session=issue-53 attempt_id=attempt-b claim_id=2 -->" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/53/comments --method POST \
+		--field body="DISPATCH_LEASE phase=terminal ${token_field}=late-a device=device-a session=issue-53 expires_at=0 attempt_id=attempt-a" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 53 owner/repo shared-login >/dev/null ||
+		fail "late terminal lease A retired correlated dispatch B through legacy fallback"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/53/comments --method POST \
+		--field body="CLAIM_RELEASED reason=exact runner=shared-login claim_id=1 nonce=late-a" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 53 owner/repo shared-login >/dev/null ||
+		fail "late exact release A retired correlated dispatch B through prose fallback"
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/53/comments --method POST \
+		--field body="BLOCKED: old attempt A is complete; MERGE_SUMMARY" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 53 owner/repo shared-login >/dev/null ||
+		fail "unbound trusted prose retired correlated dispatch B"
+	# Exercise the production abort producer through the same public consumer.
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" HOME="$root/home" \
+		LOGFILE="$root/abort.log" bash -c '
+		source "$1/pulse-dispatch-core.sh"
+		AIDEVOPS_UNKNOWN_VERSION=unknown
+		_claim_comment_id=2
+		_claim_lease_token=""
+		if _release_dispatch_claim_on_abort 53 owner/repo shared-login fixture_abort; then
+			exit 1
+		fi
+		[[ "$_claim_comment_id" == 2 ]] || exit 1
+		_claim_lease_token=late-b
+		_release_dispatch_claim_on_abort 53 owner/repo shared-login fixture_abort
+		[[ -z "$_claim_comment_id" ]]
+	' _ "$SCRIPTS_DIR" || fail "abort producer did not preserve and release its exact generation"
+	if PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 53 owner/repo shared-login >/dev/null 2>&1; then
+		fail "exact claim-ID and nonce release did not retire correlated dispatch B"
+	fi
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" \
+		gh api repos/owner/repo/issues/53/comments --method POST \
+		--field body="Dispatching worker (deterministic).
+<!-- aidevops:dispatch malformed -->" >/dev/null
+	PATH="$root/bin:$PATH" MOCK_GH_STATE="$root/state" DISPATCH_COMMENT_MAX_AGE=600 \
+		"$DEDUP" has-dispatch-comment 53 owner/repo shared-login >/dev/null ||
+		fail "malformed correlated dispatch fell back to older terminal evidence"
+	pass "late terminals and prose cannot retire a different dispatch generation"
+	return 0
+}
+
 test_large_comment_history_avoids_argv_limits() {
 	local root="${TMP_DIR}/large-history" output="" exit_code=0 dispatch_ts=""
 	create_mock_gh "$root"
@@ -499,6 +613,8 @@ test_concurrent_same_login_devices
 test_launch_crash_ready_terminal_race
 test_untrusted_dispatch_identity_cannot_replace_active_lock
 test_correlated_terminal_before_dispatch_releases_exact_attempt
+test_generation_bound_releases_and_exact_tokens
+test_late_terminal_preserves_new_dispatch
 test_large_comment_history_avoids_argv_limits
 test_prelaunch_renewal_covers_slow_startup
 test_prelaunch_renewal_is_monotonic_and_coalesced

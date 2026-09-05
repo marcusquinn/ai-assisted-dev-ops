@@ -24,6 +24,9 @@
 # Include guard
 [[ -n "${_ISSUE_SYNC_HELPER_CLOSE_LOADED:-}" ]] && return 0
 _ISSUE_SYNC_HELPER_CLOSE_LOADED=1
+_ISSUE_SYNC_JSON_ARRAY_TYPE="array"
+_ISSUE_SYNC_JSON_OBJECT_TYPE="object"
+_ISSUE_SYNC_GH_CLOSED_STATE="closed"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -169,7 +172,7 @@ _reopen_ref_is_pull_request() {
 	else
 		issue_json=$(gh api "repos/${repo}/issues/${ref_num}" 2>/dev/null) || return 1
 	fi
-	printf '%s\n' "$issue_json" | jq -e 'select(type == "object") | has("pull_request")' >/dev/null 2>&1 && return 0
+	printf '%s\n' "$issue_json" | jq -e --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" 'select(type == $object_type) | has("pull_request")' >/dev/null 2>&1 && return 0
 	return 1
 }
 
@@ -177,7 +180,7 @@ _has_prior_reopen_comment() {
 	local repo="$1" ref_num="$2"
 	local comments_json found
 	comments_json=$(gh api "repos/${repo}/issues/${ref_num}/comments" 2>/dev/null || printf '[]')
-	found=$(printf '%s\n' "$comments_json" | jq -r 'if type == "array" then [.[] | select(.body? | strings | contains("Reopened: TODO.md still has this as"))] | length else 0 end' 2>/dev/null || printf '0')
+	found=$(printf '%s\n' "$comments_json" | jq -r --arg array_type "$_ISSUE_SYNC_JSON_ARRAY_TYPE" 'if type == $array_type then [.[] | select(.body? | strings | contains("Reopened: TODO.md still has this as"))] | length else 0 end' 2>/dev/null || printf '0')
 	[[ "$found" =~ ^[0-9]+$ ]] || found=0
 	if [[ "$found" -gt 0 ]]; then
 		return 0
@@ -262,11 +265,20 @@ _mark_todo_not_planned() {
 
 _closed_issue_worker_complete_date() {
 	local repo="$1" issue_number="$2"
-	local completed_at
+	local comments_json="" completed_at=""
 
-	completed_at=$(gh api "repos/${repo}/issues/${issue_number}/comments" \
-		--jq '[.[] | select((.body // "") | contains("CLAIM_RELEASED reason=worker_complete")) | .created_at][0] // ""' 2>/dev/null) || return 1
-	[[ "$completed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+	if ! comments_json=$(gh api --paginate --slurp \
+		"repos/${repo}/issues/${issue_number}/comments?per_page=100" 2>/dev/null); then
+		return 2
+	fi
+	if ! completed_at=$(printf '%s' "$comments_json" | jq -er --arg array_type "$_ISSUE_SYNC_JSON_ARRAY_TYPE" '
+		if type != $array_type or any(.[]; type != $array_type) then error("expected paginated comments")
+		else [.[][]? | select((.body // "") | contains("CLAIM_RELEASED reason=worker_complete")) | .created_at][0] // ""
+		end' 2>/dev/null); then
+		return 2
+	fi
+	[[ -n "$completed_at" ]] || return 1
+	[[ "$completed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 2
 	printf '%s\n' "${completed_at%%T*}"
 	return 0
 }
@@ -276,23 +288,44 @@ _closed_issue_aidevops_complete_date() {
 	local issue_json="" comments_json="" state_reason="" closed_at=""
 	local issue_body="" comment_evidence="" evidence=""
 
-	issue_json=$(AIDEVOPS_GH_ROUTE_DECISION="issue-sync-completion-issue-rest" \
-		gh api "repos/${repo}/issues/${issue_number}" 2>/dev/null) || return 1
-	comments_json=$(AIDEVOPS_GH_ROUTE_DECISION="issue-sync-completion-comments-rest" \
+	if ! issue_json=$(AIDEVOPS_GH_ROUTE_DECISION="issue-sync-completion-issue-rest" \
+		gh api "repos/${repo}/issues/${issue_number}" 2>/dev/null); then
+		return 2
+	fi
+	if ! comments_json=$(AIDEVOPS_GH_ROUTE_DECISION="issue-sync-completion-comments-rest" \
 		gh api --paginate --slurp \
-			"repos/${repo}/issues/${issue_number}/comments?per_page=100" 2>/dev/null) || return 1
-	state_reason=$(printf '%s' "$issue_json" | jq -r '.state_reason // .stateReason // ""' 2>/dev/null) || state_reason=""
-	closed_at=$(printf '%s' "$issue_json" | jq -r '.closed_at // .closedAt // ""' 2>/dev/null) || closed_at=""
-	issue_body=$(printf '%s' "$issue_json" | jq -r '.body // ""' 2>/dev/null) || return 1
-	comment_evidence=$(printf '%s' "$comments_json" | jq -r \
-		'[.[][]? | .body // ""] | join("\n---\n")' 2>/dev/null) || return 1
+			"repos/${repo}/issues/${issue_number}/comments?per_page=100" 2>/dev/null); then
+		return 2
+	fi
+	if ! state_reason=$(printf '%s' "$issue_json" | jq -er --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" --arg closed_state "$_ISSUE_SYNC_GH_CLOSED_STATE" '
+		select(type == $object_type and .state == $closed_state)
+		| (.state_reason // .stateReason // empty)
+		| select(type == "string")' 2>/dev/null); then
+		return 2
+	fi
+	if ! closed_at=$(printf '%s' "$issue_json" | jq -er --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" --arg closed_state "$_ISSUE_SYNC_GH_CLOSED_STATE" '
+		select(type == $object_type and .state == $closed_state)
+		| (.closed_at // .closedAt // empty)
+		| select(type == "string")' 2>/dev/null); then
+		return 2
+	fi
+	if ! issue_body=$(printf '%s' "$issue_json" | jq -er --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" '
+		select(type == $object_type) | (.body // "") | select(type == "string")' 2>/dev/null); then
+		return 2
+	fi
+	if ! comment_evidence=$(printf '%s' "$comments_json" | jq -er --arg array_type "$_ISSUE_SYNC_JSON_ARRAY_TYPE" '
+		if type != $array_type or any(.[]; type != $array_type) then error("expected paginated comments")
+		else [.[][]? | (.body // "") | select(type == "string")] | join("\n---\n")
+		end' 2>/dev/null); then
+		return 2
+	fi
 	evidence=$(printf '%s\n---\n%s' "$issue_body" "$comment_evidence")
 
 	case "$state_reason" in
 	COMPLETED | completed) ;;
 	*) return 1 ;;
 	esac
-	[[ "$closed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+	[[ "$closed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 2
 	if printf '%s' "$evidence" | grep -qE 'aidevops:sig|CLAIM_RELEASED reason=worker_complete|Task t[0-9]+(\.[0-9]+)* done in TODO\.md|Completed via (\[)?PR #[0-9]+'; then
 		printf '%s\n' "${closed_at%%T*}"
 		return 0
@@ -326,20 +359,22 @@ _mark_reopen_merged_pr_task() {
 _reopen_find_merged_pr() {
 	local repo="$1" tid="$2" ref_num="$3"
 	local owner="${repo%%/*}" name="${repo#*/}"
-	local pr_info="" result="" reported_cost=""
+	local pr_info="" result="" reported_cost="" title_lookup_status=1
 
-	pr_info=$(gh_find_merged_pr "$repo" "$tid" 2>/dev/null || true)
-	if [[ -n "$pr_info" ]]; then
+	if pr_info=$(_gh_find_merged_pr_evidence "$repo" "$tid" 2>/dev/null); then
 		printf '%s\n' "$pr_info"
 		return 0
+	else
+		title_lookup_status=$?
+		[[ "$title_lookup_status" -eq 1 || "$title_lookup_status" -eq 2 ]] || return 2
 	fi
 
 	# A full-loop PR may be titled with GH#NNN rather than the TODO task ID.
 	# Query GitHub's structural closing relationship so a merged implementation
 	# cannot be reopened merely because title-based discovery missed it.
-	[[ "$repo" == */* && -n "$owner" && -n "$name" && "$ref_num" =~ ^[0-9]+$ ]] || return 1
+	[[ "$repo" == */* && -n "$owner" && -n "$name" && "$ref_num" =~ ^[0-9]+$ ]] || return 2
 	# shellcheck disable=SC2016
-	result=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
+	if ! result=$(AIDEVOPS_GH_GRAPHQL_COST_FROM_RESPONSE=1 \
 		AIDEVOPS_GH_ROUTE_DECISION="issue-sync-reopen-closing-pr-exact-cost" \
 		gh api graphql -f query='
 query($owner:String!,$name:String!,$number:Int!) {
@@ -353,43 +388,60 @@ query($owner:String!,$name:String!,$number:Int!) {
     }
   }
 	rateLimit { cost }
-}' -F owner="$owner" -F name="$name" -F number="$ref_num" 2>/dev/null) || return 1
-	reported_cost=$(printf '%s' "$result" | jq -r '.data.rateLimit.cost // empty' 2>/dev/null) || reported_cost=""
-	[[ "$reported_cost" =~ ^[1-9][0-9]*$ ]] || return 1
-	printf '%s' "$result" | jq -er --arg repo "$repo" '
-      .data.repository
-      | select(.nameWithOwner == $repo)
-      | .issue.closedByPullRequestsReferences
-      | select(.pageInfo.hasNextPage == false)
-      | [.nodes[]
-          | select(.repository.nameWithOwner == $repo and .state == "MERGED" and (.mergedAt // "") != "")]
-      | first
-      | select(. != null)
-      | "\(.number)|\(.url)"' 2>/dev/null
-	return $?
+}' -F owner="$owner" -F name="$name" -F number="$ref_num" 2>/dev/null); then
+		return 2
+	fi
+	if ! reported_cost=$(printf '%s' "$result" | jq -er '.data.rateLimit.cost | select(type == "number" and . > 0)' 2>/dev/null); then
+		return 2
+	fi
+	if ! pr_info=$(printf '%s' "$result" | jq -er --arg repo "$repo" --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" --arg array_type "$_ISSUE_SYNC_JSON_ARRAY_TYPE" '
+		.data.repository
+		| select(.nameWithOwner == $repo)
+		| .issue.closedByPullRequestsReferences
+		| select(type == $object_type and (.nodes | type) == $array_type)
+		| select((.pageInfo.hasNextPage | type) == "boolean")
+		| if .pageInfo.hasNextPage then error("partial closing relationship")
+		  else [.nodes[]
+			| select(.repository.nameWithOwner == $repo and .state == "MERGED" and (.mergedAt // "") != "")]
+			| first
+			| if . == null then "" else "\(.number)|\(.url)" end
+		  end' 2>/dev/null); then
+		return 2
+	fi
+	if [[ -n "$pr_info" ]]; then
+		printf '%s\n' "$pr_info"
+		return 0
+	fi
+	[[ "$title_lookup_status" -eq 1 ]] || return 2
+	return 1
 }
 
 _reopen_mark_if_completed() {
 	local repo="$1" tid="$2" ref_num="$3" todo_file="$4"
-	local pr_info
-	pr_info=$(_reopen_find_merged_pr "$repo" "$tid" "$ref_num" 2>/dev/null || true)
-	if [[ -n "$pr_info" ]]; then
+	local pr_info="" completed_date="" evidence_status=1
+	if pr_info=$(_reopen_find_merged_pr "$repo" "$tid" "$ref_num" 2>/dev/null); then
 		local pr_num="${pr_info%%|*}"
 		_mark_reopen_merged_pr_task "$tid" "$todo_file" "$ref_num" "$pr_num" || return 1
 		return 0
+	else
+		evidence_status=$?
+		[[ "$evidence_status" -eq 1 ]] || return 2
 	fi
 
-	local completed_date
-	completed_date=$(_closed_issue_worker_complete_date "$repo" "$ref_num" || true)
-	if [[ -n "$completed_date" ]]; then
+	if completed_date=$(_closed_issue_worker_complete_date "$repo" "$ref_num"); then
 		_mark_reopen_completed_task "$tid" "$todo_file" "$ref_num" "$completed_date" "worker_complete evidence" || return 1
 		return 0
+	else
+		evidence_status=$?
+		[[ "$evidence_status" -eq 1 ]] || return 2
 	fi
 
-	completed_date=$(_closed_issue_aidevops_complete_date "$repo" "$ref_num" || true)
-	if [[ -n "$completed_date" ]]; then
+	if completed_date=$(_closed_issue_aidevops_complete_date "$repo" "$ref_num"); then
 		_mark_reopen_completed_task "$tid" "$todo_file" "$ref_num" "$completed_date" "aidevops close evidence" || return 1
 		return 0
+	else
+		evidence_status=$?
+		[[ "$evidence_status" -eq 1 ]] || return 2
 	fi
 	return 1
 }
@@ -412,8 +464,8 @@ _reconcile_already_closed_task() {
 	require_task_issue_mapping "$task_id" "$todo_file" "$repo" "$issue_number" || return 1
 	state_reason=$(printf '%s' "$issue_json" | jq -r '.state_reason // .stateReason // ""' 2>/dev/null) || return 1
 	closed_at=$(printf '%s' "$issue_json" | jq -r '.closed_at // .closedAt // ""' 2>/dev/null) || return 1
-	issue_labels=$(printf '%s' "$issue_json" | jq -r \
-		'[.labels[]? | if type == "object" then (.name // "") else . end] | join(" ")' 2>/dev/null) || return 1
+	issue_labels=$(printf '%s' "$issue_json" | jq -r --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" \
+		'[.labels[]? | if type == $object_type then (.name // "") else . end] | join(" ")' 2>/dev/null) || return 1
 
 	if _is_not_planned_state_reason "$state_reason"; then
 		[[ "$closed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
@@ -558,7 +610,7 @@ cmd_close() {
 			return 1
 		}
 		st=$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null) || return 1
-		if [[ "$st" == "CLOSED" || "$st" == "closed" ]]; then
+		if [[ "$st" == "CLOSED" || "$st" == "$_ISSUE_SYNC_GH_CLOSED_STATE" ]]; then
 			log_verbose "#$num already closed — reconciling TODO state"
 			_reconcile_already_closed_task "$target_task" "$num" "$todo_file" "$repo" "$task_line" "$issue_json"
 			return $?
@@ -619,8 +671,9 @@ cmd_close() {
 # =============================================================================
 
 # Reopen closed GitHub issues whose TODO entries are incomplete [ ]/[>].
-# TODO.md is the source of truth: if a task is [ ] or [>], the work is not done,
-# regardless of whether a commit message prematurely closed the issue.
+# TODO.md is reconciled only against fresh, complete closure evidence. An
+# incomplete TODO row cannot override an authoritative merged PR/closure or
+# force a reopen when remote lookup is unavailable.
 #
 # Decision tree per closed issue:
 #   NOT_PLANNED         -> mark the linked live TODO row [-] once
@@ -646,14 +699,22 @@ _reopen_incomplete_task_line() {
 		return 0
 	fi
 
-	issue_json=$(gh api "repos/${repo}/issues/${ref_num}" 2>/dev/null || printf '{}')
+	if ! issue_json=$(gh api "repos/${repo}/issues/${ref_num}" 2>/dev/null); then
+		return 11
+	fi
 	if _reopen_ref_is_pull_request "$repo" "$ref_num" "$issue_json"; then
 		log_verbose "#$ref_num is a pull request — skipping TODO reopen guard"
 		return 14
 	fi
 
 	tid=$(echo "$line" | grep -oE 't[0-9]+(\.[0-9]+)*' | head -1 || echo "")
-	issue_close_fields=$(printf '%s\n' "$issue_json" | jq -r 'select(type == "object") | [(.state_reason // .stateReason // ""), (.closed_at // .closedAt // "")] | @tsv' 2>/dev/null || printf '')
+	if ! issue_close_fields=$(printf '%s\n' "$issue_json" | jq -er --argjson number "$ref_num" --arg object_type "$_ISSUE_SYNC_JSON_OBJECT_TYPE" --arg closed_state "$_ISSUE_SYNC_GH_CLOSED_STATE" '
+		select(type == $object_type and .number == $number and .state == $closed_state)
+		| [(.state_reason // .stateReason // empty), (.closed_at // .closedAt // empty)]
+		| select(all(.[]; type == "string"))
+		| @tsv' 2>/dev/null); then
+		return 11
+	fi
 	reason=${issue_close_fields%%$'\t'*}
 	if _is_not_planned_state_reason "$reason"; then
 		closed_at=${issue_close_fields#*$'\t'}
@@ -666,8 +727,12 @@ _reopen_incomplete_task_line() {
 		fi
 		return 12
 	fi
+	local completion_status=1
 	if _reopen_mark_if_completed "$repo" "$tid" "$ref_num" "$todo_file"; then
 		return 13
+	else
+		completion_status=$?
+		[[ "$completion_status" -eq 1 ]] || return 11
 	fi
 	if [[ "$DRY_RUN" == "true" ]]; then
 		print_info "[DRY-RUN] Would reopen #$ref_num ($tid)"

@@ -10,6 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.315] - 2026-09-05
+
+### Changed
+
+- Documentation: Use familiar terminology in hero labels
+- Documentation: Refresh README counts and hero statistics
+
+### Fixed
+
+- preserve completed issue reconciliation (#31267)
+- declare narrow complexity stall sweep scope (#31260)
+
+## [3.32.314] - 2026-09-05
+
+### Added
+
+- add OAuth-backed FrontierHarness pilot and compaction results
+
+### Fixed
+
+- preserve peer observation uncertainty (#31247)
+- refill rejected dispatch reservations (#31246)
+- classify post-PR handoffs as non-failures (#31245)
+
 ## [3.32.313] - 2026-09-05
 
 ### Changed

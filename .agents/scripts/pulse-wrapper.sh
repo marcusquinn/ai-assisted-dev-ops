@@ -71,6 +71,9 @@ fi
 
 set -euo pipefail
 
+: "${AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_ENABLED:=1}"
+export AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_ENABLED
+
 _pulse_wrapper_deployed_scripts_dir() {
 	local agents_dir="${AIDEVOPS_AGENTS_DIR:-}"
 	local home_dir="${HOME:-}"

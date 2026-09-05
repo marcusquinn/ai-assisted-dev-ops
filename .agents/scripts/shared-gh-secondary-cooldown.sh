@@ -804,6 +804,9 @@ _gh_secondary_cooldown_header_expires_at() {
 
 _gh_secondary_cooldown_rest_reset_at() {
 	local endpoint_arg="${1:-}"
+	# The native transport boundary already owns response headers. Do not
+	# recursively query a projection while recording a stopped transport.
+	[[ "${AIDEVOPS_GH_COOLDOWN_NO_PROBE:-0}" != 1 ]] || return 1
 	local endpoint_family=""
 	local resource_key="core"
 	local reset_at=""

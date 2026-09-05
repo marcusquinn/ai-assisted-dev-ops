@@ -1202,10 +1202,18 @@ _dsi_launch_worker() {
 		cmd+=(--agent "$agent_name")
 	fi
 
+	# Validate the exact producer envelope synchronously in the same runtime
+	# entrypoint. A known local rejection must not create another detached child.
+	# The preflight flag is command-local, never inherited by the real launch.
+	mkdir -p "$_DSI_LOG_DIR"
+	if ! AIDEVOPS_GIT_AUTH_PREFLIGHT_ONLY=1 "${cmd[@]}" >>"$worker_log" 2>&1; then
+		_dsi_err "Worker Git authentication preflight rejected; evidence retained in launcher log"
+		return 1
+	fi
+
 	# Run in background, redirect stdout/stderr to worker_log so caller
 	# doesn't block. Capture launch PID (the env wrapper, which then
 	# exec's the helper).
-	mkdir -p "$_DSI_LOG_DIR"
 	nohup "${cmd[@]}" >>"$worker_log" 2>&1 &
 	local pid=$!
 	disown "$pid" 2>/dev/null || true

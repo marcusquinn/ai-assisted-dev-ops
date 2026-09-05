@@ -29,6 +29,29 @@ _rest_pr_list_requires_search() {
 	return 1
 }
 
+_rest_pr_list_prefers_native_filter() {
+	local state="open" arg=""
+	_rest_pr_list_requires_search "$@" && return 1
+	while [[ $# -gt 0 ]]; do
+		arg="$1"
+		shift
+		case "$arg" in
+		--state|-s) [[ $# -gt 0 ]] || return 1; state="$1"; shift ;;
+		--state=*) state="${arg#--state=}" ;;
+		--repo|-R|--json|--jq|-q|--head|-H|--base|-B|--limit|-L)
+			[[ $# -gt 0 ]] || return 1
+			shift
+			;;
+		esac
+	done
+	# REST /pulls?state=closed includes merged PRs. Filtering them locally can
+	# walk the entire merged history just to establish there are no unmerged PRs.
+	# Native GraphQL applies CLOSED server-side. Keep REST as a quota fallback,
+	# not the preferred healthy-budget route for this low-selectivity query.
+	[[ "$state" == closed ]] || return 1
+	return 0
+}
+
 _rest_resolve_actor_filter() {
 	local actor="$1"
 	if [[ "$actor" == "@me" ]]; then

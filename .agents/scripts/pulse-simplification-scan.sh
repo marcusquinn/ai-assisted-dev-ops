@@ -311,10 +311,15 @@ The simplification debt count has not decreased in the last $((${COMPLEXITY_LLM_
 
 ### Worker Guidance
 
-- Target files: \`.agents/scripts/pulse-simplification-scan.sh\`, \`.agents/scripts/complexity-scan-helper.sh\`, \`.agents/scripts/pulse-dispatch-engine.sh\`, and matching tests under \`.agents/scripts/tests/\`.
+- Only edit the files authorized in Files Scope below. Other helpers may be read for context; demonstrated defects outside this scope require a separate follow-up, not expanded edits.
 - Reference pattern: keep the inline sweep guard consistent with \`complexity-scan-helper.sh sweep-check\`, especially the recent-closure throughput check before filing a stall issue.
 - Do not close debt issues solely because they are old. Close only when current repo evidence shows the file is deleted, already simplified, or duplicated.
 - Verification: run \`.agents/scripts/tests/test-pulse-wrapper-complexity-scan.sh\` plus ShellCheck on changed shell scripts.
+
+### Files Scope
+
+- EDIT: \`.agents/scripts/pulse-simplification-scan.sh\`
+- EDIT: \`.agents/scripts/tests/test-pulse-wrapper-complexity-scan.sh\`
 
 ### Confidence: low
 

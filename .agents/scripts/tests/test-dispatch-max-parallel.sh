@@ -416,10 +416,9 @@ test_parallel_loop_respects_budget() {
 	s=$(_dispatch_max_count_outcomes "$outcomes_file" "success")
 	rm -f "$candidate_file" "$outcomes_file"
 
-	# We expect dispatched_count=4 (at most). It might process 5-8 before stopping
-	# because the budget check happens BEFORE launching, but successes counter
-	# updates only AFTER subshell completes. The contract: dispatched_count <= effective_slots+max_parallel.
-	if (( s >= 4 )) && (( s <= 8 )); then
+	# Pending ceremonies reserve capacity, so a successful four-slot wave launches
+	# exactly four workers rather than overshooting while outcomes are in flight.
+	if [[ "$s" == "4" ]]; then
 		print_result "parallel_loop: respects effective_slots=4 budget (got s=${s})" 0
 	else
 		print_result "parallel_loop: respects effective_slots=4 budget" 1 "got s=${s}"
@@ -432,6 +431,81 @@ test_parallel_loop_respects_budget() {
 	else
 		print_result "parallel_loop: result.dispatched matches outcomes file" 1 \
 			"result=${result_dispatched} outcomes=${s}"
+	fi
+	return 0
+}
+
+test_parallel_loop_refills_rejected_reservation() {
+	# The first success and slow rejection consume both reservations. The final
+	# candidate must be retried after the rejection frees its slot.
+	# shellcheck disable=SC2317  # called via name resolution from loop
+	_dispatch_process_candidate() {
+		local candidate_json="$1" issue_num
+		issue_num=$(printf '%s' "$candidate_json" | jq -r '.number // 0' 2>/dev/null)
+		if [[ "$issue_num" == "801" ]]; then
+			sleep 0.15
+			_PULSE_LAST_LAUNCH_FAILURE="no_worker_process"
+			return 1
+		fi
+		sleep 0.02
+		return 0
+	}
+
+	local candidate_file outcomes_file result successes failures
+	candidate_file=$(mktemp)
+	outcomes_file=$(mktemp)
+	cat >"$candidate_file" <<'EOF'
+{"number":800,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}
+{"number":801,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}
+{"number":802,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}
+EOF
+	: >"$outcomes_file"
+
+	rm -f "$STOP_FLAG"
+	result=$(_dispatch_max_loop "$candidate_file" 2 2 "test_user" 2 "$outcomes_file")
+	successes=$(_dispatch_max_count_outcomes "$outcomes_file" "success")
+	failures=$(_dispatch_max_count_outcomes "$outcomes_file" "fail")
+	rm -f "$candidate_file" "$outcomes_file"
+
+	if [[ "$result" == "2 3" && "$successes" == "2" && "$failures" == "1" ]]; then
+		print_result "parallel_loop: refills a rejected reservation in the same round" 0
+	else
+		print_result "parallel_loop: refills a rejected reservation in the same round" 1 \
+			"result=${result} successes=${successes} failures=${failures}"
+	fi
+	return 0
+}
+
+test_parallel_loop_all_rejections_finish() {
+	# Reconciliation must consume a finite queue of rejected ceremonies without
+	# spinning after each reservation is released.
+	# shellcheck disable=SC2317  # called via name resolution from loop
+	_dispatch_process_candidate() {
+		sleep 0.02
+		_PULSE_LAST_LAUNCH_FAILURE="no_worker_process"
+		return 1
+	}
+
+	local candidate_file outcomes_file result failures
+	candidate_file=$(mktemp)
+	outcomes_file=$(mktemp)
+	cat >"$candidate_file" <<'EOF'
+{"number":810,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}
+{"number":811,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}
+{"number":812,"repo_slug":"o/r","repo_path":"/t","url":"u","title":"t","labels":[]}
+EOF
+	: >"$outcomes_file"
+
+	rm -f "$STOP_FLAG"
+	result=$(_dispatch_max_loop "$candidate_file" 2 2 "test_user" 2 "$outcomes_file")
+	failures=$(_dispatch_max_count_outcomes "$outcomes_file" "fail")
+	rm -f "$candidate_file" "$outcomes_file"
+
+	if [[ "$result" == "0 3" && "$failures" == "3" ]]; then
+		print_result "parallel_loop: all rejected candidates finish without spinning" 0
+	else
+		print_result "parallel_loop: all rejected candidates finish without spinning" 1 \
+			"result=${result} failures=${failures}"
 	fi
 	return 0
 }
@@ -720,6 +794,8 @@ test_aggregate_outcomes_invalidates_canary_cache
 test_aggregate_outcomes_clears_throttle_on_success
 test_parallel_loop_end_to_end
 test_parallel_loop_respects_budget
+test_parallel_loop_refills_rejected_reservation
+test_parallel_loop_all_rejections_finish
 test_parallel_loop_stop_flag_aborts
 test_parallel_loop_graphql_budget_aborts
 test_parallel_loop_rest_budget_aborts

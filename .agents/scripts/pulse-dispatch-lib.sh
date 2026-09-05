@@ -388,29 +388,37 @@ _dispatch_candidate_benign_block_reason() {
 #   $1 - issue number
 #   $2 - repo slug
 # Returns:
-#   0 - recent unresolved dirty-worktree marker exists
-#   1 - no active marker, expired marker, disabled, or API unavailable
+#   0 - recent unresolved marker, or evidence unavailable (conservative hold)
+#   1 - verified no active marker, expired marker, or disabled
 #######################################
 _dispatch_recent_dirty_worktree_marker_active() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local hold_seconds="${DISPATCH_DIRTY_WORKTREE_HOLD_SECONDS:-900}"
-	_DISPATCH_DIRTY_MARKER_STATE="clear"
+	_DISPATCH_DIRTY_MARKER_STATE="unknown"
 
 	[[ "$hold_seconds" =~ ^[0-9]+$ ]] || hold_seconds="900"
-	[[ "$hold_seconds" -gt 0 ]] || return 1
+	if [[ "$hold_seconds" -eq 0 ]]; then
+		_DISPATCH_DIRTY_MARKER_STATE="clear"
+		return 1
+	fi
 
-	local comments_json=""
-	comments_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments?per_page=100" 2>/dev/null) || return 1
-	[[ -n "$comments_json" ]] || return 1
+	local comments_json="" since_iso="" now_epoch="${AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH:-}"
+	[[ -n "$now_epoch" ]] || now_epoch=$(date +%s) || return 0
+	since_iso=$(python3 "${_PULSE_DISPATCH_LIB_DIR}/pulse-dirty-worktree-marker.py" \
+		--since "$hold_seconds" "$now_epoch") || return 0
+	# Only comments updated within the hold window can contain an active marker
+	# or a later resolution. Still paginate: a busy thread can exceed one page.
+	comments_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments?per_page=100&since=${since_iso}" \
+		--paginate --slurp 2>/dev/null) || return 0
 
 	local marker_state=""
 	marker_state=$(printf '%s' "$comments_json" | \
 		python3 "${_PULSE_DISPATCH_LIB_DIR}/pulse-dirty-worktree-marker.py" \
-			"$hold_seconds" "${AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH:-}") || marker_state=""
-	_DISPATCH_DIRTY_MARKER_STATE="${marker_state:-clear}"
+			"$hold_seconds" "$now_epoch") || return 0
+	_DISPATCH_DIRTY_MARKER_STATE="$marker_state"
 
-	[[ "$marker_state" == block:* ]] || return 1
+	case "$marker_state" in clear|expired:*) return 1 ;; esac
 	return 0
 }
 
@@ -2181,9 +2189,19 @@ _dispatch_max_loop() {
 
 		local successes_so_far=0
 		successes_so_far=$(_dispatch_max_count_outcomes "$outcomes_file")
-		if _dispatch_max_should_stop "$processed_count" "$successes_so_far" "$effective_slots" "${#_pids[@]}"; then
+		if _dispatch_max_should_stop "$processed_count" "$successes_so_far" "$effective_slots"; then
 			break
 		fi
+		# Pending ceremonies reserve slots only until their outcomes are known.
+		# Wait and reconcile the current candidate rather than ending the round:
+		# a rejected ceremony frees its reservation for this unconsumed candidate.
+		while ((successes_so_far + ${#_pids[@]} >= effective_slots)); do
+			_dispatch_max_wait_for_reservation _pids
+			successes_so_far=$(_dispatch_max_count_outcomes "$outcomes_file")
+			if _dispatch_max_should_stop "$processed_count" "$successes_so_far" "$effective_slots"; then
+				break 2
+			fi
+		done
 
 		_dispatch_max_apply_inter_launch_delay "$successes_so_far" "${#_pids[@]}" "$processed_count" "$candidate_json" "$max_parallel"
 		_dispatch_max_spawn_candidate "$candidate_json" "$self_login" "$available_slots" "$outcomes_file" &
@@ -2198,6 +2216,23 @@ _dispatch_max_loop() {
 	local dispatched_count
 	dispatched_count=$(_dispatch_max_count_outcomes "$outcomes_file")
 	printf '%d %d\n' "$dispatched_count" "$processed_count"
+	return 0
+}
+
+#######################################
+# Wait for a pending admission reservation to finish, then remove completed
+# children so its terminal outcome can free capacity for the current candidate.
+#
+# Arguments:
+#   $1 - nameref-style array variable name
+#######################################
+_dispatch_max_wait_for_reservation() {
+	local target_array_name="$1"
+
+	if ! wait -n 2>/dev/null; then
+		echo "[pulse-wrapper] Dispatch_max: wait -n found no children while reconciling reservations" >>"$LOGFILE"
+	fi
+	_dispatch_max_refresh_pids "$target_array_name"
 	return 0
 }
 
@@ -2259,7 +2294,6 @@ _dispatch_max_wait_for_capacity() {
 #   $1 - processed count
 #   $2 - successes so far
 #   $3 - effective slot budget
-#   $4 - in-flight dispatch count
 # Returns:
 #   0 - stop the loop
 #   1 - continue dispatching
@@ -2268,10 +2302,9 @@ _dispatch_max_should_stop() {
 	local processed_count="$1"
 	local successes_so_far="$2"
 	local effective_slots="$3"
-	local in_flight_count="$4"
 
-	if ((successes_so_far + in_flight_count >= effective_slots)); then
-		echo "[pulse-wrapper] Dispatch_max: parallel iter=${processed_count} — stopping (successes=${successes_so_far} + in_flight=${in_flight_count} >= effective_slots=${effective_slots})" >>"$LOGFILE"
+	if ((successes_so_far >= effective_slots)); then
+		echo "[pulse-wrapper] Dispatch_max: parallel iter=${processed_count} — stopping (successes=${successes_so_far} >= effective_slots=${effective_slots})" >>"$LOGFILE"
 		return 0
 	fi
 	if [[ -f "${STOP_FLAG:-}" ]]; then

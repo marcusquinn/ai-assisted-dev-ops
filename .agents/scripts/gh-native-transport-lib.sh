@@ -86,12 +86,12 @@ _find_real_gh() {
 
 # _shim_classify_endpoint <sub1> [<sub2>]
 # Classify a gh invocation for instrumentation. Returns one of:
-#   graphql | rest | search-graphql | other
+#   graphql | rest | search-rest | other
 _shim_classify_endpoint() {
 	local sub1="${1:-}" sub2="${2:-}"
 	case "$sub1" in
 	search)
-		printf 'search-graphql'
+		printf 'search-rest'
 		return 0
 		;;
 	api)
@@ -407,6 +407,18 @@ _shim_run_single_transport() {
 	local path="$1"; shift
 	local caller="$1"; shift
 	local retry="$1"; shift
+	if declare -F _ghqa_command_is_local_only >/dev/null 2>&1 && _ghqa_command_is_local_only "$executable" "$@"; then
+		"$executable" "$@"
+		return $?
+	fi
+	if declare -F _gh_transport_preflight >/dev/null 2>&1; then
+		_gh_transport_preflight "$@" || return $?
+	fi
+	if declare -F _gh_transport_run_rest >/dev/null 2>&1; then
+		local governed_rc=0
+		_gh_transport_run_rest "$executable" "$path" "$caller" "$retry" "$@" || governed_rc=$?
+		[[ "${_GHGT_HANDLED:-0}" -eq 0 && "$governed_rc" -eq 125 ]] || return "$governed_rc"
+	fi
 	local page=1
 	local decision="${AIDEVOPS_GH_ROUTE_DECISION:-}"
 	local exact_success_cost=""

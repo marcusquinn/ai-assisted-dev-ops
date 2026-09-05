@@ -419,7 +419,7 @@ _gh_timeout_path_from_args() {
 	case "${command_name}:${subcommand}:${endpoint}" in
 	gh:api:graphql) printf 'graphql\n' ;;
 	gh:api:*) printf 'rest\n' ;;
-	gh:search:*) printf 'search-graphql\n' ;;
+	gh:search:*) printf 'search-rest\n' ;;
 	gh:*:*) printf 'graphql\n' ;;
 	*) printf 'other\n' ;;
 	esac
@@ -456,6 +456,18 @@ _gh_timeout_logical_id() {
 	return 0
 }
 
+_gh_timeout_cooldown_preflight() {
+	local op_class="$1" started="$2" caller="$3" path="$4"
+	local rc=0
+	if command -v _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
+		_gh_secondary_cooldown_preflight "$op_class" || rc=$?
+	fi
+	if [[ "$rc" -ne 0 ]]; then
+		_gh_record_timeout_if_needed "$rc" "$started" "$caller" "$path" "$op_class"
+	fi
+	return "$rc"
+}
+
 _gh_with_timeout() {
 	local op_class="${1:-read}"
 	shift
@@ -468,14 +480,9 @@ _gh_with_timeout() {
 		timeout_start_ms=$(_gh_now_ms) || timeout_start_ms=""
 	fi
 	_gh_cooldown_context_from_args "$op_class" "$@"
-	if command -v _gh_secondary_cooldown_preflight >/dev/null 2>&1; then
-		local preflight_rc=0
-		_gh_secondary_cooldown_preflight "$op_class" || preflight_rc=$?
-		if [[ "$preflight_rc" -ne 0 ]]; then
-			_gh_record_timeout_if_needed "$preflight_rc" "$timeout_start_ms" "$timeout_caller" "$timeout_path" "$op_class"
-			return "$preflight_rc"
-		fi
-	fi
+	_gh_timeout_cooldown_preflight "$op_class" "$timeout_start_ms" "$timeout_caller" "$timeout_path" || return $?
+	local AIDEVOPS_GH_WRAPPER_PREFLIGHT=1
+	export AIDEVOPS_GH_WRAPPER_PREFLIGHT
 	local secs
 	case "$op_class" in
 	read) secs="${AIDEVOPS_GH_READ_TIMEOUT:-15}" ;;

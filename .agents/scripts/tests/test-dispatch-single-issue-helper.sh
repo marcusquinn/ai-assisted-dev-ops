@@ -1158,6 +1158,10 @@ test_launch_worker_forwards_github_login() {
 }
 
 test_launch_worker_forwards_bounded_git_auth() {
+	# shellcheck source=./test-headless-runtime-contract-tests.sh
+	source "${BASH_SOURCE[0]%/*}/test-headless-runtime-contract-tests.sh"
+	test_repository_bound_git_auth_contract
+	test_detached_git_auth_envelope
 	local failed=1
 	if grep -Fq 'AIDEVOPS_GIT_AUTH_TOKEN_FILE="$_DSI_GIT_AUTH_TOKEN_FILE"' "$HELPER_PATH" &&
 		grep -Fq 'AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN="$_DSI_GIT_AUTH_EXPECTED_ORIGIN"' "$HELPER_PATH" &&
@@ -1167,6 +1171,99 @@ test_launch_worker_forwards_bounded_git_auth() {
 		failed=0
 	fi
 	print_result "worker launch forwards bounded Git auth without token argv" "$failed"
+	return 0
+}
+
+test_detached_git_auth_envelope() {
+	local root="" result=0
+	root=$(mktemp -d)
+	root=$(cd "$root" && pwd -P)
+	_test_git_auth_token_fixture "$root/home"
+	cat >"$root/token-helper" <<'FIXTURE'
+#!/usr/bin/env bash
+case "$1" in
+create) printf '%s' "$HOME/.aidevops/.agent-workspace/tokens/worker-fixture.token" ;;
+validate) exec "$FIXTURE_SCRIPTS/worker-token-helper.sh" "$@" --local-only ;;
+revoke) exec "$FIXTURE_SCRIPTS/worker-token-helper.sh" "$@" ;;
+*) exit 1 ;;
+esac
+FIXTURE
+	cat >"$root/runtime" <<'FIXTURE'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$FIXTURE_SCRIPTS"
+source "$SCRIPT_DIR/headless-runtime-lib.sh"
+source "$SCRIPT_DIR/headless-runtime-run.sh"
+source "$SCRIPT_DIR/headless-runtime-worker-prepare.sh"
+# Only unrelated worker setup is stubbed; authentication, detach, and cleanup
+# are production functions, executed in fresh processes with the real envelope.
+_hrff_capture_external_outcome_contract() { return 0; }
+_ensure_valid_launch_cwd() { return 0; }
+_validate_issue_worker_env_contract() { return 0; }
+_recover_deleted_cwd_before_launch() { return 0; }
+aidevops_init_temp_workspace() { return 0; }
+role=worker private_workload=0 detach=0
+session_key="$FIXTURE_SESSION" work_dir="$WORKER_WORKTREE_PATH" title=fixture prompt=fixture
+_cmd_run_stop=0
+for arg in "$@"; do [[ "$arg" != --detach ]] || detach=1; done
+shift
+_prepare_cmd_run_environment "$@" || exit 1
+[[ "$_cmd_run_stop" != 1 ]] || exit 0
+[[ -f "$AIDEVOPS_GIT_AUTH_TOKEN_FILE" ]] || exit 1
+_headless_git_auth_sandbox_env_is_normalized || exit 1
+printf '%s\n' ready >"$FIXTURE_ROOT/ready"
+cleanup_headless_git_auth
+printf '%s\n' cleaned >"$FIXTURE_ROOT/cleaned"
+FIXTURE
+	chmod 700 "$root/runtime" "$root/token-helper"
+	(
+		export HOME="$root/home" FIXTURE_ROOT="$root"
+		export FIXTURE_SCRIPTS="$_DSI_SCRIPT_DIR" FIXTURE_SESSION="git-auth-fixture-$$"
+		_DSI_HEADLESS="$root/runtime"
+		_DSI_TOKEN_HELPER="$root/token-helper"
+		_DSI_ASKPASS_HELPER="$_DSI_SCRIPT_DIR/../scripts/github-auth-askpass.sh"
+		_DSI_LOG_DIR="$root/logs"
+		mkdir -p "$root/repo"
+		command git -C "$root/repo" init -q
+		command git -C "$root/repo" remote add origin https://github.com/owner/repo.git
+		_dsi_prepare_worker_git_auth owner/repo "$root/repo" fixture || exit 1
+		[[ -n "$_DSI_GIT_AUTH_TOKEN_FILE" ]] || exit 1
+		# Exercise the real cmd_run/import path too, stopping before any model or
+		# worktree ownership side effects. Preflight must not revoke the token.
+		env AIDEVOPS_GIT_AUTH_PREFLIGHT_ONLY=1 WORKER_REPO_SLUG=owner/repo \
+			AIDEVOPS_GIT_AUTH_TOKEN_FILE="$_DSI_GIT_AUTH_TOKEN_FILE" \
+			AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN="$_DSI_GIT_AUTH_EXPECTED_ORIGIN" \
+			GIT_ASKPASS="$_DSI_ASKPASS_HELPER" GIT_TERMINAL_PROMPT=0 \
+			GIT_AUTHOR_NAME="$_DSI_GIT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$_DSI_GIT_AUTHOR_EMAIL" \
+			GIT_COMMITTER_NAME="$_DSI_GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$_DSI_GIT_AUTHOR_EMAIL" \
+			"$FIXTURE_SCRIPTS/headless-runtime-helper.sh" run --role worker \
+			--session-key "$FIXTURE_SESSION" --dir "$root/repo" --title fixture \
+			--prompt fixture --detach >"$root/preflight.log" 2>&1 || exit 1
+		[[ -f "$_DSI_GIT_AUTH_TOKEN_FILE" && ! -f "/tmp/worker-${FIXTURE_SESSION}.log" ]] || exit 1
+		local pid="" attempt=0
+		pid=$(_dsi_launch_worker "$FIXTURE_SESSION" "$root/repo" fixture fixture standard '' '' "$root/launch.log" 1 owner/repo fixture) || exit 1
+		[[ "$pid" =~ ^[0-9]+$ ]] || exit 1
+		for ((attempt = 0; attempt < 50; attempt++)); do
+			[[ ! -f "$root/cleaned" ]] || break
+			sleep 0.1
+		done
+		[[ -f "$root/ready" && -f "$root/cleaned" && ! -e "$_DSI_GIT_AUTH_TOKEN_FILE" ]] || exit 1
+		rm -f "$root/ready" "$root/cleaned" "/tmp/worker-${FIXTURE_SESSION}.log"
+		_test_git_auth_token_fixture "$HOME"
+		_dsi_prepare_worker_git_auth owner/repo "$root/repo" fixture || exit 1
+		_DSI_GIT_AUTH_EXPECTED_ORIGIN=https://github.com/owner/other
+		for attempt in 1 2; do
+			if _dsi_launch_worker "$FIXTURE_SESSION" "$root/repo" fixture fixture standard '' '' "$root/rejected.log" 1 owner/repo fixture; then exit 1; fi
+		done
+		[[ ! -f "$root/ready" && ! -f "/tmp/worker-${FIXTURE_SESSION}.log" ]] || exit 1
+		[[ -f "$_DSI_GIT_AUTH_TOKEN_FILE" ]] || exit 1
+		[[ "$(grep -c 'reason=repository_mismatch' "$root/rejected.log")" == 2 ]] || exit 1
+		! grep -q 'fixture-only-not-a-credential' "$root/launch.log" "$root/rejected.log" || exit 1
+		_dsi_revoke_worker_git_auth
+		[[ ! -f "$HOME/.aidevops/.agent-workspace/tokens/worker-fixture.token" && -f "$root/rejected.log" ]] || exit 1
+	) || result=1
+	rm -rf "$root"
+	print_result "producer envelope survives detached readiness; cleanup follows readiness and repeated local failures never detach" "$result"
 	return 0
 }
 

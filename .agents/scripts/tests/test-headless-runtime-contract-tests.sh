@@ -8,6 +8,71 @@
 [[ -n "${_TEST_HEADLESS_RUNTIME_CONTRACT_TESTS_LOADED:-}" ]] && return 0
 _TEST_HEADLESS_RUNTIME_CONTRACT_TESTS_LOADED=1
 
+# Shared synthetic fixture: no account credentials, API calls, or model sessions.
+_test_git_auth_token_fixture() {
+	local fixture_home="$1"
+	local token_dir="${fixture_home}/.aidevops/.agent-workspace/tokens"
+	mkdir -p "$token_dir"
+	chmod 700 "$token_dir"
+	printf '%s' 'fixture-only-not-a-credential' >"${token_dir}/worker-fixture.token"
+	printf '%s\n' '{"repo":"owner/repo","strategy":"delegated","expires_at":"2099-01-01T00:00:00Z"}' >"${token_dir}/worker-fixture.meta"
+	chmod 600 "${token_dir}/worker-fixture.token" "${token_dir}/worker-fixture.meta"
+	return 0
+}
+
+test_repository_bound_git_auth_contract() {
+	local root="" scripts="" result=0
+	root=$(mktemp -d)
+	root=$(cd "$root" && pwd -P)
+	scripts=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd -P)
+	_test_git_auth_token_fixture "$root"
+	(
+		export HOME="$root"
+		local SCRIPT_DIR="$scripts"
+		# shellcheck source=../headless-runtime-lib.sh
+		source "$scripts/headless-runtime-lib.sh"
+		export WORKER_REPO_SLUG=owner/repo
+		export AIDEVOPS_GIT_AUTH_TOKEN_FILE="$root/.aidevops/.agent-workspace/tokens/worker-fixture.token"
+		export AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN=https://github.com/owner/repo
+		export GIT_ASKPASS="$scripts/../scripts/github-auth-askpass.sh" GIT_TERMINAL_PROMPT=0
+		export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
+		export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+		prepare_headless_git_auth_sandbox_env worker || exit 1
+		[[ "$GIT_ASKPASS" == "$scripts/github-auth-askpass.sh" ]] || exit 1
+		_headless_git_auth_sandbox_env_is_normalized || exit 1
+		local reason="" output=""
+		for reason in repository_mismatch askpass_mismatch identity_invalid token_invalid; do
+			output=$(
+				exec 2>&1
+				# Parenthesized patterns keep Bash 3.2's command-substitution
+				# parser from treating the first pattern terminator as its end.
+				case "$reason" in
+				(repository_mismatch) export WORKER_REPO_SLUG=owner/other ;;
+				(askpass_mismatch) export GIT_ASKPASS=/bin/true ;;
+				(identity_invalid) export GIT_COMMITTER_NAME=other ;;
+				(token_invalid) chmod 644 "$AIDEVOPS_GIT_AUTH_TOKEN_FILE" ;;
+				esac
+				if prepare_headless_git_auth_sandbox_env worker; then exit 1; fi
+				[[ -z "${_AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED:-}" ]] || exit 1
+			) || exit 1
+			[[ "$output" == "worker_git_auth_rejected reason=$reason" ]] || exit 1
+		done
+		chmod 600 "$AIDEVOPS_GIT_AUTH_TOKEN_FILE"
+		cleanup_headless_git_auth
+		[[ ! -e "$root/.aidevops/.agent-workspace/tokens/worker-fixture.token" ]] || exit 1
+		export AIDEVOPS_GIT_AUTH_TOKEN_FILE="$root/.aidevops/.agent-workspace/tokens/worker-fixture.token"
+		export GIT_ASKPASS="$scripts/github-auth-askpass.sh" GIT_TERMINAL_PROMPT=0
+		export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid
+		export GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+		export AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN=https://github.com/owner/repo
+		if prepare_headless_git_auth_sandbox_env worker 2>"$root/rejection"; then exit 1; fi
+		[[ "$(<"$root/rejection")" == 'worker_git_auth_rejected reason=token_invalid' ]] || exit 1
+	) || result=1
+	rm -rf "$root"
+	print_result "repository-bound contract normalizes exact helper aliases and rejects invalid/revoked fixtures without secrets" "$result"
+	return 0
+}
+
 test_appends_escalation_contract() {
 	local prompt='/full-loop Implement issue #14964'
 	local output

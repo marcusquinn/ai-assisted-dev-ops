@@ -1,7 +1,7 @@
 {
   "schema": "aidevops.repo-metrics.v1",
   "schema_version": 1,
-  "generated_at": "2026-07-03T19:02:38Z",
+  "generated_at": "2026-09-05T04:13:50Z",
   "tool": {
     "name": "aidevops repo-metrics",
     "version": "1.0.0"
@@ -11,111 +11,111 @@
     "slug": "marcusquinn/aidevops"
   },
   "summary": {
-    "source_files": 5298,
-    "code": 1025070,
-    "comments": 148493,
-    "blanks": 209430,
-    "languages": 15,
-    "dependencies": 123
+    "source_files": 7186,
+    "code": 1493498,
+    "comments": 160857,
+    "blanks": 262512,
+    "languages": 16,
+    "dependencies": 125
   },
   "languages": [
     {
       "name": "Shell",
-      "files": 1722,
-      "code": 561171,
-      "comments": 135081,
-      "blanks": 100128,
-      "percentage": 54.74,
+      "files": 2318,
+      "code": 823273,
+      "comments": 144832,
+      "blanks": 121646,
+      "percentage": 55.12,
       "color": "#89e051"
     },
     {
       "name": "Markdown",
-      "files": 2923,
-      "code": 241678,
+      "files": 3163,
+      "code": 276146,
       "comments": 0,
-      "blanks": 80839,
-      "percentage": 23.58,
+      "blanks": 91029,
+      "percentage": 18.49,
       "color": "#083fa1"
+    },
+    {
+      "name": "Python",
+      "files": 799,
+      "code": 135028,
+      "comments": 3325,
+      "blanks": 22343,
+      "percentage": 9.04,
+      "color": "#3572A5"
     },
     {
       "name": "HTML",
       "files": 54,
-      "code": 126975,
+      "code": 126973,
       "comments": 0,
       "blanks": 14712,
-      "percentage": 12.39,
+      "percentage": 8.5,
       "color": "#e34c26"
     },
     {
-      "name": "Python",
-      "files": 151,
-      "code": 25472,
-      "comments": 1487,
-      "blanks": 5535,
-      "percentage": 2.48,
-      "color": "#3572A5"
-    },
-    {
       "name": "JavaScript",
-      "files": 131,
-      "code": 21312,
-      "comments": 7488,
-      "blanks": 3230,
-      "percentage": 2.08,
+      "files": 391,
+      "code": 65999,
+      "comments": 8241,
+      "blanks": 7221,
+      "percentage": 4.42,
       "color": "#f1e05a"
     },
     {
       "name": "JSON",
-      "files": 110,
-      "code": 14764,
+      "files": 213,
+      "code": 26031,
       "comments": 0,
-      "blanks": 203,
-      "percentage": 1.44,
+      "blanks": 205,
+      "percentage": 1.74,
       "color": "#292929"
     },
     {
       "name": "TypeScript",
-      "files": 82,
-      "code": 12227,
-      "comments": 1771,
-      "blanks": 1727,
-      "percentage": 1.19,
+      "files": 96,
+      "code": 14359,
+      "comments": 1708,
+      "blanks": 1947,
+      "percentage": 0.96,
       "color": "#3178c6"
     },
     {
       "name": "YAML",
-      "files": 83,
-      "code": 9580,
-      "comments": 2407,
-      "blanks": 1515,
-      "percentage": 0.93,
+      "files": 102,
+      "code": 12051,
+      "comments": 2489,
+      "blanks": 1664,
+      "percentage": 0.81,
       "color": "#cb171e"
     },
     {
       "name": "CSS",
       "files": 2,
-      "code": 6215,
+      "code": 6862,
       "comments": 11,
-      "blanks": 915,
-      "percentage": 0.61,
+      "blanks": 1020,
+      "percentage": 0.46,
       "color": "#563d7c"
     },
     {
       "name": "TSX",
-      "files": 33,
-      "code": 5198,
+      "files": 37,
+      "code": 5863,
       "comments": 169,
-      "blanks": 566,
-      "percentage": 0.51,
+      "blanks": 638,
+      "percentage": 0.39,
       "color": "#3178c6"
     },
     {
       "name": "AWK",
-      "files": 3,
-      "code": 262,
+      "files": 4,
+      "code": 613,
       "comments": 0,
-      "blanks": 14,
-      "percentage": 0.03,
+      "blanks": 38,
+      "percentage": 0.04,
       "color": "#c30e9b"
     },
     {
@@ -128,12 +128,21 @@
       "color": "#e38c00"
     },
     {
+      "name": "SVG",
+      "files": 3,
+      "code": 84,
+      "comments": 3,
+      "blanks": 3,
+      "percentage": 0.01,
+      "color": "#6e7781"
+    },
+    {
       "name": "TOML",
       "files": 1,
       "code": 61,
       "comments": 13,
       "blanks": 11,
-      "percentage": 0.01,
+      "percentage": 0.0,
       "color": "#9c4221"
     },
     {
@@ -156,19 +165,28 @@
     }
   ],
   "dependencies": {
-    "direct": 123,
-    "locked": 0,
-    "total": 123,
+    "direct": 125,
+    "locked": 51,
+    "total": 125,
     "ecosystems": [
       "npm",
       "python"
     ],
     "manifests": [
       {
+        "path": ".agents/package.json",
+        "ecosystem": "npm",
+        "direct": 1,
+        "locked": 5,
+        "dependencies": [
+          "ajv"
+        ]
+      },
+      {
         "path": ".agents/plugins/opencode-aidevops/package.json",
         "ecosystem": "npm",
         "direct": 3,
-        "locked": 0,
+        "locked": 46,
         "dependencies": [
           "@bufbuild/protobuf",
           "@opencode-ai/plugin",
@@ -233,7 +251,7 @@
       {
         "path": "package.json",
         "ecosystem": "npm",
-        "direct": 12,
+        "direct": 14,
         "locked": 0,
         "dependencies": [
           "@secretlint/secretlint-rule-preset-recommend",
@@ -241,7 +259,9 @@
           "@types/react",
           "@types/react-dom",
           "@vitejs/plugin-react",
+          "ajv",
           "elysia",
+          "file-type",
           "hono",
           "react",
           "react-dom",

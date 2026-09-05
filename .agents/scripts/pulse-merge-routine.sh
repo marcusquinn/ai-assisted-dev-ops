@@ -41,6 +41,9 @@
 
 set -euo pipefail
 
+: "${AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_ENABLED:=1}"
+export AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_ENABLED
+
 # PATH normalisation for launchd/cron environments where PATH is minimal.
 _aidevops_path_prefix="/opt/homebrew/bin:/usr/local/bin:/bin:/usr/bin"
 if [[ "$(uname -s 2>/dev/null || true)" != "Darwin" && -d "/home/linuxbrew/.linuxbrew/bin" ]]; then

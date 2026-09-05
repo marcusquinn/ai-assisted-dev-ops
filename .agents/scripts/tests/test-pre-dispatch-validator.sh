@@ -147,6 +147,28 @@ GHEOF
 	return 0
 }
 
+# Create a `gh` stub for generated implementation-brief scope preflight tests.
+create_gh_stub_generated_brief_body() {
+	local body="$1"
+	local body_file="${TEST_ROOT}/issue_body.txt"
+	printf '%s\n' "$body" >"$body_file"
+
+	cat >"${TEST_ROOT}/bin/gh" <<GHEOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "api" ]] && printf '%s' "\${2:-}" | grep -qE '/issues/[0-9]+\$'; then
+	cat "${body_file}"
+	exit 0
+fi
+
+printf 'unexpected gh invocation: %s\n' "\$*" >&2
+exit 1
+GHEOF
+	chmod +x "${TEST_ROOT}/bin/gh"
+	return 0
+}
+
 create_gh_stub_zero_progress_body() {
 	local permission_value="${1:-write}"
 	local body_file="${TEST_ROOT}/issue_body.txt"
@@ -505,7 +527,8 @@ GHEOF
 create_gh_stub_function_complexity_duplicate() {
 	local body_file="${TEST_ROOT}/issue_body.txt"
 	local actions_file="${TEST_ROOT}/gh-actions.log"
-	printf '<!-- aidevops:generator=function-complexity-sweep cited_file=packages/gui-web/src/InventorySurfaces.tsx smell_count=3 -->\n## Qlty Maintainability\n' >"$body_file"
+	# shellcheck disable=SC2016 # literal generated issue body
+	printf '<!-- aidevops:generator=function-complexity-sweep cited_file=packages/gui-web/src/InventorySurfaces.tsx smell_count=3 -->\n## Qlty Maintainability\n\n### Files Scope\n\n- EDIT: `packages/gui-web/src/InventorySurfaces.tsx`\n' >"$body_file"
 	: >"$actions_file"
 
 	cat >"${TEST_ROOT}/bin/gh" <<GHEOF
@@ -657,6 +680,67 @@ test_bypass_env_var() {
 		print_result "bypass_env_var exits 0" 0
 	else
 		print_result "bypass_env_var exits 0" 1 "Expected exit 0, got ${rc}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_generated_implementation_brief_without_scope_blocks_dispatch() {
+	setup_test_env
+	# shellcheck disable=SC2016 # literal generated issue body
+	create_gh_stub_generated_brief_body '<!-- aidevops:generator=example-gate cited_file=.agents/scripts/example.sh -->
+## What
+Implement the generated repair.'
+
+	local rc=0 output=""
+	output=$("$HELPER_SCRIPT" validate "31238" "marcusquinn/aidevops" 2>&1) || rc=$?
+
+	if [[ "$rc" -eq 30 ]] && [[ "$output" == *"brief-defect"* ]] && [[ "$output" == *"Files Scope"* ]]; then
+		print_result "generated implementation brief without scope blocks before dispatch" 0
+	else
+		print_result "generated implementation brief without scope blocks before dispatch" 1 "Expected typed exit 30, got ${rc}: ${output}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_generated_implementation_brief_with_scope_allows_dispatch() {
+	setup_test_env
+	# shellcheck disable=SC2016 # literal generated issue body
+	create_gh_stub_generated_brief_body '<!-- aidevops:generator=example-gate cited_file=.agents/scripts/example.sh -->
+### Files Scope
+
+- EDIT: `.agents/scripts/example.sh`'
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "31238" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "generated implementation brief with scope remains dispatchable" 0
+	else
+		print_result "generated implementation brief with scope remains dispatchable" 1 "Expected exit 0, got ${rc}"
+	fi
+
+	teardown_test_env
+	return 0
+}
+
+test_planning_only_generated_brief_without_scope_allows_dispatch() {
+	setup_test_env
+	# shellcheck disable=SC2016 # literal generated issue body
+	create_gh_stub_generated_brief_body '<!-- aidevops:generator=example-gate cited_file=.agents/scripts/example.sh -->
+## Plan
+Planning-only: document options; no code changes.'
+
+	local rc=0
+	"$HELPER_SCRIPT" validate "31238" "marcusquinn/aidevops" >/dev/null 2>&1 || rc=$?
+
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "planning-only generated brief is not treated as implementation" 0
+	else
+		print_result "planning-only generated brief is not treated as implementation" 1 "Expected exit 0, got ${rc}"
 	fi
 
 	teardown_test_env
@@ -1047,6 +1131,9 @@ main() {
 	test_unregistered_generator
 	test_validator_error
 	test_bypass_env_var
+	test_generated_implementation_brief_without_scope_blocks_dispatch
+	test_generated_implementation_brief_with_scope_allows_dispatch
+	test_planning_only_generated_brief_without_scope_allows_dispatch
 	test_zero_progress_meta_recovered_blocks_dispatch
 	test_zero_progress_meta_recovered_readonly_allows_dispatch_without_write
 	test_zero_progress_meta_active_allows_dispatch

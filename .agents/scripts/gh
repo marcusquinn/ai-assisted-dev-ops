@@ -102,6 +102,11 @@ source "${_SHIM_DIR}/managed-label-provisioning-lib.sh"
 # shellcheck disable=SC1091  # sibling library resolved at runtime via $_SHIM_DIR
 source "${_SHIM_DIR}/gh-write-policy-lib.sh"
 
+if [[ -f "${_SHIM_DIR}/gh-transport-controls.sh" ]]; then
+	# shellcheck source=./gh-transport-controls.sh
+	source "${_SHIM_DIR}/gh-transport-controls.sh"
+fi
+
 # Reject recursive entry rather than forwarding to another shim generation.
 # The resolver below prevents normal cross-generation selection; this sentinel
 # bounds any unexpected re-entry caused by a child process or stale shim.
@@ -321,7 +326,7 @@ gh() {
 	local path=""
 	local caller=""
 	path=$(_shim_classify_endpoint "${1:-}" "${2:-}")
-	caller=$(_shim_caller_label "${1:-}" "${2:-}")
+	caller=$(_shim_transport_caller_label "${1:-}" "${2:-}")
 	_shim_run_transport "$REAL_GH" "$path" "$caller" "${AIDEVOPS_GH_RETRY_INDEX:-0}" "$@"
 	return $?
 }
@@ -467,7 +472,11 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		# Prefer REST in pulse/workflow REST-first mode; otherwise use the legacy
 		# low-GraphQL-budget fallback. This shares native GitHub quota pools instead
 		# of imposing a synthetic lower GraphQL budget.
-		_rest_read_first_enabled || _rest_should_fallback || return 1
+		if [[ "$_SHIM_READ_REWRITE" == pr:list ]] && _rest_pr_list_prefers_native_filter "${@:3}"; then
+			_rest_should_fallback || return 1
+		else
+			_rest_read_first_enabled || _rest_should_fallback || return 1
+		fi
 		[[ "$_GH_REQUEST_ATTEMPT_STATE_READY" -eq 1 ]] || return 1
 
 		# Extract repo and build stripped args.
@@ -503,6 +512,10 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		exit 0
 	else
 		_rest_rc=$?
+		# A local admission/cooldown stop is not a failed JSON projection and
+		# must not be retried against a different API resource.
+		[[ "$_rest_rc" -ne 75 ]] || exit 75
+		[[ "$_rest_rc" -ne 125 ]] || exit 125
 		if [[ "$_SHIM_REST_REWRITE_ATTEMPTED" -eq 1 ]] && _shim_rest_rewrite_has_http_failure; then
 			exit "$_rest_rc"
 		fi

@@ -448,8 +448,8 @@ _is_assigned_check_hold_for_review() {
 # comment containing the marker:
 #   <!-- dispatch-cooldown-until:<ISO8601-UTC> reason=no_worker_process runner=<login> -->
 #
-# This check fetches the issue's comments, finds the latest unexpired
-# cooldown marker, and short-circuits dispatch with `DISPATCH_COOLDOWN_ACTIVE`.
+# This check fetches the issue's comments, authenticates an exact cooldown
+# marker, and short-circuits dispatch with `DISPATCH_COOLDOWN_ACTIVE`.
 # Closes the rapid-retry loop where a broken runtime burns ~5 worker
 # spawns over 3-4 hours per issue with 95-99s lifespans each, repeating
 # across many issues simultaneously when one runner is unhealthy.
@@ -463,6 +463,12 @@ _is_assigned_check_hold_for_review() {
 # Gating:
 #   - Skipped entirely when DISPATCH_COOLDOWN_AFTER_LAUNCH_FAILURE_SECONDS=0
 #     (saves one gh API call per dispatch decision when the feature is off).
+#   - A marker is accepted only from an OWNER, MEMBER, or COLLABORATOR comment
+#     whose nonempty authenticated `user.login` exactly matches `runner=`.
+#   - The GitHub server `created_at` bounds marker lifetime: it cannot be in
+#     the future, older than the configured cooldown, or claim an `until`
+#     later than `created_at + cooldown`. This prevents a forged or stale
+#     future timestamp from permanently poisoning dispatch.
 #   - Fail-open on gh API or jq error — cooldown is an optimization, not a
 #     security gate, so a flaky API call should not permanently block
 #     dispatch the way GUARD_UNCERTAIN does for label/assignee checks.
@@ -480,43 +486,65 @@ _is_assigned_check_dispatch_cooldown() {
 	[[ "$cooldown_s" =~ ^[0-9]+$ ]] || cooldown_s=1800
 	[[ "$cooldown_s" -gt 0 ]] || return 1
 
-	# Fetch comments across every page. GitHub's issue comments endpoint returns
-	# oldest-first and ignores sort/direction parameters, so select the last
-	# matching marker after pagination to use the newest cooldown. Fail-open on API
-	# error — cooldown is an optimisation, not a guarantee.
+	# Fetch comments across every page. Marker selection below explicitly orders
+	# numeric GitHub comment IDs, rather than relying on endpoint page ordering.
+	# Fail-open on API error — cooldown is an optimisation, not a guarantee.
 	local comments_endpoint
 	comments_endpoint=$(printf 'repos/%s/issues/%s/comments?per_page=100' "$repo_slug" "$issue_number")
 	local comments_json
 	comments_json=$(gh api --paginate --slurp "$comments_endpoint" 2>/dev/null) || return 1
 	[[ -n "$comments_json" ]] || return 1
 
-	# Extract the latest cooldown marker timestamp.
-	# `(.body // "")` guards against null bodies; `match` with "g" emits zero
-	# results on no-match (no error), so empty bodies and unrelated comments
-	# fall through cleanly. Fail-open on jq error.
+	local now_epoch
+	now_epoch=$(date -u +%s 2>/dev/null) || return 1
+	[[ "$now_epoch" =~ ^[0-9]+$ ]] || return 1
+
+	# Only exact marker lines from authenticated repository participants qualify.
+	# Select candidates by numeric ID so equal-second server timestamps still have
+	# deterministic newest-first precedence across paginated API responses.
 	local _jq_rc=0
-	local marker_iso
-	marker_iso=$(printf '%s' "$comments_json" |
-		jq -r '[.[][] | (.body // "") | match("<!-- dispatch-cooldown-until:([^ ]+) reason=no_worker_process"; "g") | .captures[0].string] | last // ""') || _jq_rc=$?
+	local marker_rows
+	marker_rows=$(printf '%s' "$comments_json" |
+		jq -r '
+			[.[][]
+			| select((.id | type) == "number")
+			#aidevops:trust-boundary
+			| select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
+			| . as $comment
+			| (($comment.body // "") | capture("(?:^|\\n)<!-- dispatch-cooldown-until:(?<until>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) reason=no_worker_process runner=(?<runner>[A-Za-z0-9][A-Za-z0-9-]{0,38}) -->(?:\\r?\\n|$)")?) as $marker
+			| select($marker != null)
+			| select(($comment.user.login? // "") | type == "string" and length > 0)
+			| select($comment.user.login == $marker.runner)
+			| select(($comment.created_at? // "") | type == "string" and length > 0)
+			| {id: .id, until: $marker.until, created_at: $comment.created_at}
+			]
+			| sort_by(.id) | reverse[] | [.until, .created_at] | @tsv
+		') || _jq_rc=$?
 	if [[ "$_jq_rc" -ne 0 ]]; then
 		return 1
 	fi
-	[[ -n "$marker_iso" ]] || return 1
+	[[ -n "$marker_rows" ]] || return 1
 
-	# Parse ISO8601 → epoch. GNU date first, BSD date fallback for macOS dev.
-	local until_epoch=""
-	until_epoch=$(date -u -d "$marker_iso" +%s 2>/dev/null) ||
-		until_epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$marker_iso" +%s 2>/dev/null) ||
-		return 1
-	[[ "$until_epoch" =~ ^[0-9]+$ ]] || return 1
+	local marker_iso="" created_at="" until_epoch="" created_epoch="" max_until_epoch=""
+	while IFS=$'\t' read -r marker_iso created_at; do
+		# Parse the exact UTC format enforced above. GNU date first, BSD fallback.
+		until_epoch=$(date -u -d "$marker_iso" +%s 2>/dev/null) ||
+			until_epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$marker_iso" +%s 2>/dev/null) ||
+			continue
+		created_epoch=$(date -u -d "$created_at" +%s 2>/dev/null) ||
+			created_epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$created_at" +%s 2>/dev/null) ||
+			continue
+		[[ "$until_epoch" =~ ^[0-9]+$ && "$created_epoch" =~ ^[0-9]+$ ]] || continue
 
-	local now_epoch
-	now_epoch=$(date -u +%s 2>/dev/null) || return 1
+		# A server-dated marker has at most one configured cooldown interval.
+		[[ "$created_epoch" -le "$now_epoch" ]] || continue
+		[[ $((now_epoch - created_epoch)) -le "$cooldown_s" ]] || continue
+		max_until_epoch=$((created_epoch + cooldown_s))
+		[[ "$until_epoch" -le "$max_until_epoch" && "$until_epoch" -gt "$now_epoch" ]] || continue
 
-	if [[ "$until_epoch" -gt "$now_epoch" ]]; then
 		printf 'DISPATCH_COOLDOWN_ACTIVE (until=%s reason=no_worker_process)\n' "$marker_iso"
 		return 0
-	fi
+	done <<<"$marker_rows"
 	return 1
 }
 
