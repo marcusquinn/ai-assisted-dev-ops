@@ -3,7 +3,8 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 # shellcheck disable=SC2218 # Test phases intentionally replace sourced helpers with state-specific stubs.
 
-set -euo pipefail
+set -Eeuo pipefail
+trap 'printf "FAIL unexpected test error at %s:%s (exit %s)\n" "${BASH_SOURCE[0]##*/}" "$LINENO" "$?" >&2' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 TEST_ROOT=$(mktemp -d)
@@ -1045,6 +1046,7 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	prepublication_marker=false
 	prepublication_failed_sources="$legacy_lane_intent"
 	refresh_previous_sources="$legacy_lane_intent"
+	refresh_expected_sources="$expanded_manifest"
 	root_authorization_record=$(jq -cn --arg merge 2222222222222222222222222222222222222222 \
 		'{schema_version:1,repository:"test/repo",requested_pr:42,
 		  expected_sources:[{pr:42,merge:$merge}],recorded_at:"2026-08-09T00:00:00Z"}')
@@ -1081,7 +1083,7 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	release_lane_read() {
 		if [[ "$lane_phase" == "reserved-authorization-refresh" ]]; then
 			_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn --arg previous "$refresh_previous_sources" \
-				--arg expected "$expanded_manifest" \
+				--arg expected "$refresh_expected_sources" \
 				'{schema_version:1,active:true,source_pr:42,phase:"reserved-authorization-refresh",
 				  tag:null,expected_sources:$expected,operation_token:"lane-refresh",terminal_receipt:null,
 				  reserved_authorization_refresh:{previous_expected_sources:$previous,
@@ -1111,8 +1113,10 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 		local source_pr="$2"
 		local current_authorization="$3"
 		local release_type="$4"
+		local failed_authorization=""
+		failed_authorization=$(_full_loop_recovery_resolve_lane_authorization "$prepublication_failed_sources" "$expanded_manifest") || return 1
 		[[ "$repo" == "test/repo" && "$source_pr" == "42" &&
-			"$current_authorization" == "$old_manifest" &&
+			"$current_authorization" == "$failed_authorization" &&
 			"$release_type" == "patch" ]] || return 1
 		printf 'verify-failure\n' >>"$RESERVED_LOG"
 		[[ "$failure_mode" == "match" ]] || return 1
@@ -1130,16 +1134,23 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	_full_loop_expand_release_authorization_for_aggregate() {
 		[[ "$lane_phase" == "reserved-authorization-refresh" ]] || return 1
 		printf 'expand-auth\n' >>"$RESERVED_LOG"
-		authorization="$expanded_manifest"
+		authorization="$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED"
 		return 0
 	}
 	release_lane_expand_reserved_authorization() {
-		[[ "$3" == "$legacy_lane_intent" || "$3" == "$old_manifest" ]] || return 1
+		local repo="$1" source_pr="$2" previous="$3" expected="$4"
+		: "$repo" "$source_pr"
+		if [[ "$lane_phase" == reserved-authorization-refresh ]]; then
+			[[ "$previous" == "$refresh_previous_sources" && "$expected" == "$refresh_expected_sources" ]] || return 1
+		else
+			[[ "$previous" == "$test_lane_sources" ]] || return 1
+		fi
 		_AIDEVOPS_RELEASE_LANE_RECOVERY_SNAPSHOT='{"schema_version":1,"phase":"reserved"}'
 		printf 'fence\n' >>"$RESERVED_LOG"
-		refresh_previous_sources="$3"
+		refresh_previous_sources="$previous"
+		refresh_expected_sources="$expected"
 		lane_phase=reserved-authorization-refresh
-		test_lane_sources="$expanded_manifest"
+		test_lane_sources="$expected"
 		return 0
 	}
 	release_lane_reopen_failed_prepublication() {
@@ -1165,11 +1176,11 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 		return 0
 	}
 	release_lane_finish_reserved_authorization() {
-		[[ "$authorization" == "$expanded_manifest" && "$lane_phase" == "reserved-authorization-refresh" ]] || return 1
+		[[ "$authorization" == "$refresh_expected_sources" && "$lane_phase" == "reserved-authorization-refresh" ]] || return 1
 		printf 'finish\n' >>"$RESERVED_LOG"
 		[[ "$finish_mode" == "success" ]] || return 1
 		lane_phase=reserved
-		test_lane_sources="$expanded_manifest"
+		test_lane_sources="$refresh_expected_sources"
 		return 0
 	}
 	release_lane_restore_reserved_authorization() {
@@ -1293,7 +1304,7 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 	prepublication_mode=direct
 	prepublication_expected="$old_manifest"
 	_full_loop_recovery_expand_reserved_authorization test/repo 42 42 patch >/dev/null
-	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen " ]]
+	[[ "$(tr '\n' ' ' <"$RESERVED_LOG")" == "prepare-prepublication validate verify-failure acquire reopen fence finish " ]]
 	[[ "$authorization" == "$old_manifest" && "$lane_phase" == "reserved" && "$prepublication_marker" == "true" ]]
 	prepublication_mode=aggregate
 	prepublication_expected="$expanded_manifest"
@@ -1350,10 +1361,19 @@ Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
 	manifest=$(_full_loop_successor_manifest_from_body 99 "$stale_body")
 	[[ "$manifest" == '42@2222222222222222222222222222222222222222' ]]
 	if _full_loop_successor_manifest_from_body 100 "$stale_body" >/dev/null 2>&1; then
+			exit 1
+	fi
+	signed_body=$'Release audit\n\n<!-- aidevops:sig -->\n---\nFixture audit metadata\n\n'"$stale_body"
+	[[ "$(_full_loop_successor_manifest_from_body 99 "$signed_body")" == "$manifest" ]]
+	if _full_loop_successor_manifest_from_body 99 "${signed_body}"$'\n\nTrailing prose' >/dev/null 2>&1; then
 		exit 1
 	fi
 	gh() {
 		local endpoint="$2"
+		if [[ "$endpoint" == repos/test/repo/pulls/99 ]]; then
+			jq -nc --arg body "$signed_body" '{number:99,state:"open",base:{ref:"main"},head:{sha:"1111111111111111111111111111111111111111"},body:$body}'
+			return 0
+		fi
 		if [[ "$endpoint" == *'/compare/'* ]]; then
 			printf '%s\n' 3333333333333333333333333333333333333333
 			return 0
@@ -1367,7 +1387,43 @@ Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
 	complete=$(_full_loop_successor_complete_manifest test/repo \
 		1111111111111111111111111111111111111111 "$manifest" "$manifest")
 	[[ "$complete" == '42@2222222222222222222222222222222222222222,43@3333333333333333333333333333333333333333' ]]
+	git() {
+		local first="${1:-}"
+		[[ "$first" != -C ]] || shift 2
+		local command_name="${1:-}"
+		shift
+		case "$command_name" in
+		fetch) return 0 ;;
+		rev-parse) printf '%s\n' 3333333333333333333333333333333333333333 ;;
+		interpret-trailers) "$real_git" interpret-trailers "$@" ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	lane_intent=42
+	release_lane_read() {
+		_AIDEVOPS_RELEASE_LANE_JSON=$(jq -nc --arg intent "$lane_intent" \
+			'{active:true,source_pr:42,phase:"reserved",tag:null,expected_sources:$intent}')
+		return 0
+	}
+	release_lane_begin_aggregate_successor() {
+		local repo="$1" stale="$2" base="$3" expected="$4"
+		: "$repo" "$stale" "$base"
+		printf '%s\n' "$expected" >"$TEST_ROOT/successor-mutation-boundary"
+		return 1 # Stop before any real lane/branch/PR mutation.
+	}
+	for lane_intent in 42 "$manifest"; do
+		rm -f "$TEST_ROOT/successor-mutation-boundary"
+		_full_loop_release_refresh_aggregate test/repo 99 >/dev/null 2>&1 || true
+		[[ -f "$TEST_ROOT/successor-mutation-boundary" && "$(<"$TEST_ROOT/successor-mutation-boundary")" == "$complete" ]]
+	done
+	for lane_intent in 44 42,42 42@9999999999999999999999999999999999999999; do
+		rm -f "$TEST_ROOT/successor-mutation-boundary"
+		if _full_loop_release_refresh_aggregate test/repo 99 >/dev/null 2>&1; then exit 1; fi
+		[[ ! -f "$TEST_ROOT/successor-mutation-boundary" ]]
+	done
 )
 printf 'PASS successor manifest preserves stale sources and adds uniquely mapped main merges\n'
+printf 'PASS successor resolves PR-only reserved intent and Markdown footers before mutation, rejecting unknown, duplicate, and conflicting intent\n'
 
 exit 0

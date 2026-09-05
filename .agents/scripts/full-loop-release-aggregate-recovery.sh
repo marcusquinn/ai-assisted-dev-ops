@@ -1267,11 +1267,16 @@ _full_loop_successor_manifest_from_body() {
 	local manifest=""
 	raw_identity=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$body") || return 1
 	raw_sources=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$body") || return 1
-	parsed=$(git -C "$REPO_ROOT" interpret-trailers --parse <<<"$body") || return 1
+	# This is Markdown PR text, not a mailed patch: its normal signature divider
+	# must not hide the final immutable trailer block.
+	parsed=$(git -C "$REPO_ROOT" interpret-trailers --parse --no-divider <<<"$body") || return 1
 	parsed_identity=$(awk '/^Aidevops-Release-Aggregator-PR: / { print substr($0, 33) }' <<<"$parsed") || return 1
 	parsed_sources=$(awk '/^Aidevops-Release-Aggregates: / { print substr($0, 30) }' <<<"$parsed") || return 1
 	[[ "$raw_identity" == "$stale_pr" && "$parsed_identity" == "$stale_pr" &&
-		"$raw_sources" == "$parsed_sources" && -n "$raw_sources" ]] || return 1
+		"$raw_sources" == "$parsed_sources" && -n "$raw_sources" ]] || {
+		printf 'Successor aggregation refused: PR #%s needs one final immutable source manifest\n' "$stale_pr" >&2
+		return 1
+	}
 	manifest=$(awk 'BEGIN { first=1 }
 		/^[0-9]+@[0-9a-f]{40}$/ { if (!first) printf ","; printf "%s", $0; first=0; next }
 		{ exit 2 }
@@ -1420,7 +1425,10 @@ _full_loop_release_refresh_aggregate() {
 	stale_manifest=$(_full_loop_successor_manifest_from_body "$stale_pr" "$stale_body") || return 1
 	release_lane_read "$repo" || return 1
 	lane_manifest=$(jq -er '.expected_sources' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	lane_manifest=$(release_authorization_manifest_string "$lane_manifest") || return 1
+	lane_manifest=$(_full_loop_recovery_resolve_lane_authorization "$lane_manifest" "$stale_manifest") || {
+		printf 'Successor aggregation refused: reserved lane intent does not match the reviewed source manifest\n' >&2
+		return 1
+	}
 	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED=$(_full_loop_successor_complete_manifest \
 		"$repo" "$stale_head" "$stale_manifest" "$lane_manifest") || return 1
 	release_authorization_subset "$lane_manifest" "$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" || return 1
