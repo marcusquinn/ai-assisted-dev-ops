@@ -53,6 +53,7 @@ async function main() {
     task_instruction_sha256: createHash("sha256").update(instruction).digest("hex"),
     task_config_sha256: createHash("sha256").update(taskConfig).digest("hex"),
     max_requests: 64, concurrency: 1, retries: 0, install_only: values["install-only"],
+    agent_setup_timeout_multiplier: 2,
     started_at: new Date().toISOString(),
   };
   const save = () => writeFileSync(join(values.out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -99,6 +100,7 @@ async function main() {
       "-p", values.task, "-a", "frontier_harness_agent:FrontierOpenCode",
       "-m", `openai/${values.model}`, "--ak", `profile=${values.profile}`,
       "--ak", `version=${values["opencode-version"]}`, "-n", "1", "-r", "0",
+      "--agent-setup-timeout-multiplier", "2",
       "--jobs-dir", join(values.out, "jobs"), "--job-name", "pilot"];
     if (values["install-only"]) args.push("--install-only");
     child = spawn("uv", args, { cwd: repo, env, stdio: ["ignore", log, log] });

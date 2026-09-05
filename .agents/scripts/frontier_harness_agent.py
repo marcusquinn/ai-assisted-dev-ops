@@ -84,7 +84,8 @@ class FrontierOpenCode(OpenCode):
             "mkdir -p \"$HOME/.aidevops\"; "
             "ln -s /opt/frontier/framework/.agents \"$HOME/.aidevops/agents\"; "
             "[ ! -f \"$HOME/.nvm/nvm.sh\" ] || . \"$HOME/.nvm/nvm.sh\"; "
-            "npm ci --ignore-scripts --prefix /opt/frontier/framework/.agents/plugins/opencode-aidevops"
+            "npm ci --ignore-scripts --omit=peer --omit=optional --no-audit --no-fund "
+            "--prefix /opt/frontier/framework/.agents/plugins/opencode-aidevops"
         ))
         # Retain the verifier's exact /app path, but make it a real linked
         # worktree in BOTH arms. Refuse arbitrary task paths and existing Git
