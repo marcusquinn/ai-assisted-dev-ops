@@ -164,6 +164,8 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 #   issue-15         — false runtime_error_type sentinel; jq // treats false as
 #                      missing, but historical != null and != "" semantics
 #                      counted false as a non-empty runtime error marker.
+#   issue-19         — verified post-PR handoff; a non-failure runtime handoff
+#                      with delivery status intentionally still unknown.
 {
 	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-a","session_key":"issue-1","result":"success","exit_code":0,"duration_ms":1000,"load_1min":2.0,"load_per_cpu":0.25}\n' "$T_5MIN_AGO"
 	printf '{"ts":%d,"role":"worker","session_key":"issue-2","result":"success","exit_code":0}\n' "$T_2H_AGO"
@@ -192,6 +194,7 @@ OWNER_PROCESS_START=$(_test_process_start_token "$$")
 	# remain distinct from a scoped event with the same session key.
 	printf '{"ts":%d,"role":"worker","session_key":"issue-18","issue_number":18,"model":"openai/gpt-5.5","result":"success","exit_code":0}\n' "$T_2H_AGO"
 	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-c","session_key":"issue-18","result":"provider_error","exit_code":2}\n' "$((T_2H_AGO + 1))"
+	printf '{"ts":%d,"role":"worker","repo_slug":"example/repo-a","session_key":"issue-19","model":"openai/gpt-5.5","provider":"openai","result":"post_pr_handoff","exit_code":0}\n' "$T_5MIN_AGO"
 	# Non-worker runtime roles remain available in canonical metrics but must not
 	# affect worker activity, provider, or failure summaries.
 	printf '{"ts":%d,"role":"triage","session_key":"triage-1","model":"openai/gpt-5.5","provider":"openai","result":"provider_error","failure_reason":"local_error","exit_code":126}\n' "$T_5MIN_AGO"
@@ -332,13 +335,13 @@ fi
 # continuation-only sessions are reported separately and omitted from outcomes.
 # issue-8 (watchdog_stall_continue with exit_code=124) tests the t3215
 # regression case — must count as wc, not of, despite non-zero exit.
-assert_eq "2c: raw event total remains backward compatible" "18" "$(printf '%s' "$JSON" | jq -r '.metrics.total')"
+assert_eq "2c: raw event total retains post-PR handoff evidence" "19" "$(printf '%s' "$JSON" | jq -r '.metrics.total')"
 assert_eq "2c1: reporting window is observation-only" "historical_observation_only" \
 	"$(printf '%s' "$JSON" | jq -r '.window.semantics')"
-assert_eq "2c2: terminal session outcomes = 13" "13" "$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
-assert_eq "2c2b: event_total aliases raw total" "18" "$(printf '%s' "$JSON" | jq -r '.metrics.event_total')"
+assert_eq "2c2: terminal session outcomes = 14" "14" "$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
+assert_eq "2c2b: event_total aliases raw total" "19" "$(printf '%s' "$JSON" | jq -r '.metrics.event_total')"
 assert_eq "2c3: continuation events = 4" "4" "$(printf '%s' "$JSON" | jq -r '.metrics.continuation_events')"
-assert_eq "2d: runtime handoffs = 5" "5" "$(printf '%s' "$JSON" | jq -r '.metrics.runtime_handoffs')"
+assert_eq "2d: runtime handoffs include post-PR handoffs" "6" "$(printf '%s' "$JSON" | jq -r '.metrics.runtime_handoffs')"
 assert_eq "2d2: delivered success is unknown when GitHub check is skipped" "null" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.succeeded')"
 assert_eq "2e: watchdog_killed = 1" "1" "$(printf '%s' "$JSON" | jq -r '.metrics.watchdog_killed')"
@@ -351,9 +354,11 @@ assert_eq "2h: other_failure = 6 (heartbeat excluded, scoped failures counted)" 
 	"$(printf '%s' "$JSON" | jq -r '.metrics.other_failure')"
 assert_eq "2h2: terminal result_counts includes success bucket" "5" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.result_counts.success')"
+assert_eq "2h2a: terminal result_counts retain post-PR handoff evidence" "1" \
+	"$(printf '%s' "$JSON" | jq -r '.metrics.result_counts.post_pr_handoff')"
 assert_eq "2h2b: raw result counts retain continuation evidence" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.event_result_counts.signal_killed_continue')"
-assert_eq "2h3: timing summary includes terminal samples" "13" \
+assert_eq "2h3: timing summary includes terminal samples" "14" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.timing_ms.samples')"
 assert_eq "2h4: recent example carries load context" "2.0" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.recent_examples[] | select(.session_key == "issue-1") | .load_1min')"
@@ -373,6 +378,10 @@ assert_eq "2h10b: failure groups expose classification pattern" "server_error|5x
 	"$(printf '%s' "$JSON" | jq -r '.metrics.failure_groups[] | select(.session_key == "issue-6") | .classification_pattern')"
 assert_eq "2h11: continuation-only session omitted from terminal failure groups" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.session_key == "issue-11")] | length')"
+assert_eq "2h11a: post-PR handoff omitted from terminal failure groups" "0" \
+	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.session_key == "issue-19")] | length')"
+assert_eq "2h11b: post-PR handoff omitted from failure families" "0" \
+	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_families[] | select(.results.post_pr_handoff != null)] | length')"
 assert_eq "2h12: diagnostic focus counts stall-killed sessions" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.diagnostic_focus.stall_hard_killed')"
 assert_eq "2h13: diagnostic focus counts terminal local runtime errors" "1" \
@@ -436,9 +445,9 @@ assert_eq "2x: legacy PID-only ownership remains unverified" "1" \
 JSON=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 24h --repo example/repo-a --no-pr-check --json 2>&1)
 assert_eq "2y: scoped metrics declare repository scope" "repository" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.scope')"
-assert_eq "2z: scoped raw total contains only repo-a events" "3" \
+assert_eq "2z: scoped raw total contains only repo-a events" "4" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.total')"
-assert_eq "2z1: scoped terminal total contains only repo-a outcomes" "3" \
+assert_eq "2z1: scoped terminal total contains only repo-a outcomes" "4" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
 assert_eq "2z2: scoped examples contain only repo-a" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.metrics.recent_examples[] | select(.repo_slug != "example/repo-a")] | length')"
@@ -468,9 +477,9 @@ echo "--- Section 3: 1h window ---"
 JSON=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 1h --no-pr-check --json 2>&1)
 # 1h window: issue-1 and resumed issue-16 are terminal successes; issue-4 is
 # continuation-only and therefore excluded from the outcome denominator.
-assert_eq "3a: 1h raw total = 4" "4" "$(printf '%s' "$JSON" | jq -r '.metrics.total')"
-assert_eq "3a2: 1h terminal total = 2" "2" "$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
-assert_eq "3b: 1h runtime handoffs = 2" "2" "$(printf '%s' "$JSON" | jq -r '.metrics.runtime_handoffs')"
+assert_eq "3a: 1h raw total = 5" "5" "$(printf '%s' "$JSON" | jq -r '.metrics.total')"
+assert_eq "3a2: 1h terminal total = 3" "3" "$(printf '%s' "$JSON" | jq -r '.metrics.terminal_session_total')"
+assert_eq "3b: 1h runtime handoffs = 3" "3" "$(printf '%s' "$JSON" | jq -r '.metrics.runtime_handoffs')"
 assert_eq "3c: 1h watchdog_continued = 1" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.watchdog_continued')"
 assert_eq "3d: 1h watchdog_killed = 0" "0" \
@@ -535,7 +544,7 @@ OUT=$(env "${RUN_ENV[@]}" "$HELPER" summary --since 24h --no-pr-check 2>&1)
 assert_contains "5a: human output names canonical jsonl source" \
 	"headless-runtime-metrics.jsonl" "$OUT"
 assert_contains "5b: human output names pulse-stats" "pulse-stats.json" "$OUT"
-assert_contains "5c: human output shows runtime handoff count" "Runtime handoffs:            5" "$OUT"
+assert_contains "5c: human output shows runtime handoff count" "Runtime handoffs:            6" "$OUT"
 assert_contains "5d: human output shows watchdog continued is heartbeat" \
 	"heartbeat" "$OUT"
 assert_contains "5d2: human output shows service interruption resumes" \
@@ -570,7 +579,7 @@ assert_eq "6c: openai capacity_slots uses redacted multiplier" "48" \
 	"$(printf '%s' "$JSON" | jq -r '.provider_diagnostics.account_pool[] | select(.provider == "openai") | .capacity_slots')"
 assert_eq "6c2: provider diagnostics retain raw duplicate/attempt evidence" "7" \
 	"$(printf '%s' "$JSON" | jq -r '.provider_diagnostics.provider_model_usage[] | select(.provider == "openai" and .model == "openai/gpt-5.5") | .other_failure')"
-assert_eq "6c2b: provider diagnostics name runtime handoffs without calling them success" "0" \
+assert_eq "6c2b: provider diagnostics include post-PR runtime handoffs without calling them success" "1" \
 	"$(printf '%s' "$JSON" | jq -r '.provider_diagnostics.provider_model_usage[] | select(.provider == "openai" and .model == "openai/gpt-5.5") | .runtime_handoffs')"
 
 JSONC_DEFAULTS="$FIXTURE_DIR/aidevops.defaults.jsonc"
@@ -583,6 +592,7 @@ JSON=$(env \
 	"WAH_PULSE_STATS_FILE=$STATS" \
 	"WAH_PR_CACHE_FILE=$PR_CACHE" \
 	"WAH_OAUTH_POOL_FILE=$OAUTH_POOL" \
+	"WAH_OBJECTIVE_EVIDENCE_FILE=$OBJECTIVE_EVIDENCE" \
 	"JSONC_DEFAULTS=$JSONC_DEFAULTS" \
 	"JSONC_USER=$JSONC_USER" \
 	"$HELPER" providers --since 24h --json 2>&1)
@@ -661,13 +671,14 @@ echo "--- Section 8: objective outcome reconciliation ---"
 
 RECON_METRICS="$FIXTURE_DIR/reconciled-metrics.jsonl"
 cat >"$RECON_METRICS" <<EOF
-{"ts":$T_5MIN_AGO,"role":"worker","session_key":"issue-601","issue_number":601,"repo_slug":"owner/repo","attempt_id":"attempt-success","run_id":"run-a","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
+{"ts":$((T_5MIN_AGO + 1)),"role":"worker","session_key":"issue-601","issue_number":601,"repo_slug":"owner/repo","attempt_id":"attempt-success","run_id":"run-a","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
 {"ts":$T_5MIN_AGO,"role":"worker","session_key":"issue-602","issue_number":602,"repo_slug":"owner/repo","attempt_id":"attempt-failed","run_id":"run-b","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
 {"ts":$T_5MIN_AGO,"role":"worker","session_key":"issue-603","issue_number":603,"repo_slug":"owner/repo","attempt_id":"attempt-unknown","run_id":"run-c","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
 {"ts":$T_5MIN_AGO,"role":"worker","session_key":"issue-604","issue_number":604,"repo_slug":"owner/repo","attempt_id":"attempt-latest-failed","run_id":"run-d","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
 {"ts":$T_5MIN_AGO,"role":"worker","session_key":"issue-605","issue_number":605,"repo_slug":"owner/repo","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
 {"ts":$((T_5MIN_AGO - 20)),"role":"worker","session_key":"issue-606","issue_number":606,"repo_slug":"","attempt_id":"attempt-unscoped","run_id":"run-e","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
 {"ts":$((T_5MIN_AGO - 20)),"role":"worker","session_key":"issue-607","issue_number":607,"repo_slug":"owner/repo","attempt_id":"","run_id":"run-f","result":"premature_exit","failure_reason":"premature_exit","exit_code":77}
+{"ts":$T_5MIN_AGO,"role":"worker","session_key":"issue-608","issue_number":608,"repo_slug":"owner/repo","result":"post_pr_handoff","exit_code":1}
 EOF
 cat >"$OBJECTIVE_EVIDENCE" <<EOF
 {"record_type":"attempt_outcome","repo":"owner/repo","issue_number":601,"attempt_id":"attempt-success","run_id":"run-a","effective_outcome":"success","evidence_timestamp":$T_5MIN_AGO}
@@ -685,7 +696,7 @@ assert_eq "8a: raw events remain queryable" "7" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.event_result_counts.premature_exit')"
 assert_eq "8b: reconciled success becomes an effective runtime handoff" "2" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.runtime_handoffs')"
-assert_eq "8c: validated failures and raw fallbacks remain in failure totals" "5" \
+assert_eq "8c: validated failures and raw fallbacks remain in failure totals" "6" \
 	"$(printf '%s' "$JSON" | jq -r '.metrics.other_failure')"
 assert_eq "8d: successful attempt is absent from failure groups" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.issue_number == 601)] | length')"
@@ -703,6 +714,8 @@ assert_eq "8j: empty repo slug remains an unscoped attempt match" "0" \
 	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.issue_number == 606)] | length')"
 assert_eq "8k: empty attempt identities never reconcile with each other" "1" \
 	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.issue_number == 607)] | length')"
+assert_eq "8l: nonzero post-PR handoff remains a failure" "1" \
+	"$(printf '%s' "$JSON" | jq -r '[.metrics.failure_groups[] | select(.issue_number == 608)] | length')"
 
 # ---------------------------------------------------------------------------
 # Summary.

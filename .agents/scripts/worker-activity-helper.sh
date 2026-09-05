@@ -86,10 +86,13 @@ WAH_SESSION_OUTCOME_JQ='
 			. + {raw_result:(.result // "unknown"), effective_outcome:$effective, outcome_source:"attempt_outcome"}
 			| if .effective_outcome == "success" then .result = "success" | .exit_code = 0 else . end
 		end;
+	def _wah_runtime_handoff:
+		(.result == "success" or .result == "post_pr_handoff")
+		and (.exit_code // 1) == 0;
 	def _wah_effective_failure:
 		(.effective_outcome // "") as $effective
 		| if ($effective | _wah_known_effective_outcome) then $effective == $outcome_failed
-		else ((.result // "") != "success" or (.exit_code // 1) != 0) end;
+		else (_wah_runtime_handoff | not) end;
 	def _wah_session_outcomes:
 		map(_wah_reconcile_outcome) as $all
 		| $all
@@ -181,7 +184,7 @@ WAH_METRIC_DETAILS_JQ=$WAH_SESSION_OUTCOME_JQ$WAH_FAILURE_FAMILY_JQ'
 				examples: (sort_by(.ts // 0) | reverse | .[0:3] | map({ts, session_id, work_dir, output_file, exit_code, duration_ms, provider_error_type, provider_status, runtime_error_type, classification_source, classification_pattern, launch_failure_cause, kill_reason, next_action}))
 			})
 			| sort_by(.count) | reverse | .[0:10]),
-		failure_families: ($failures | _wah_failure_family_summary)
+		failure_families: ($w | _wah_failure_family_summary)
 	}'
 
 #######################################
@@ -268,7 +271,7 @@ _wah_aggregate_metrics() {
 		| ($events | _wah_session_outcomes) as $w | {
 			total:  ($events | length),
 			terminal: ($w | length),
-			succ:   ([$w[] | select(.result == "success" and .exit_code == 0)] | length),
+			succ:   ([$w[] | select(_wah_runtime_handoff)] | length),
 			wk:     ([$w[] | select(.result == $watchdog_killed_result and _wah_effective_failure)] | length),
 			wc:     ([$events[] | select(.result == "watchdog_stall_continue")] | length),
 			sic:    ([$events[] | select(.result == $service_result)] | length),
@@ -443,7 +446,7 @@ _wah_provider_usage_json() {
 	((account_multiplier < 1)) && account_multiplier=1
 
 	if [[ -f "$pool" ]]; then
-		jq -rn --slurpfile pool "$pool" --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson account_multiplier "$account_multiplier" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg worker_role "$WAH_RUNTIME_ROLE" --arg status_empty '' --arg status_auth_error 'auth-error' --arg status_rate_limited 'rate-limited' --arg status_active 'active' --arg status_idle 'idle' '
+		jq -rn --slurpfile pool "$pool" --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$(_wah_objective_outcomes_json)" --arg outcome_failed "$WAH_DELIVERY_FAILED" --argjson account_multiplier "$account_multiplier" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg worker_role "$WAH_RUNTIME_ROLE" --arg status_empty '' --arg status_auth_error 'auth-error' --arg status_rate_limited 'rate-limited' --arg status_active 'active' --arg status_idle 'idle' "$WAH_SESSION_OUTCOME_JQ"'
 			def account_status: .status // $status_empty;
 			def available_account:
 				(account_status) as $status
@@ -453,7 +456,8 @@ _wah_provider_usage_json() {
 				(.status // $status_idle) as $status
 				| $status == $status_active or $status == $status_idle;
 			($pool[0] // {}) as $pool_data
-			| [inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $w
+			| [inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $raw
+			| ($raw | map(_wah_reconcile_outcome)) as $w
 			| {
 				provider_model_usage: (
 					$w
@@ -462,9 +466,9 @@ _wah_provider_usage_json() {
 						provider: (.[0].provider // "unknown"),
 						model: (.[0].model // "unknown"),
 						count: length,
-						runtime_handoffs: (map(select(.result == "success" and (.exit_code // 1) == 0)) | length),
-						rate_limited: (map(select(.result == $rate_limit_result or .provider_error_type == $rate_limit_result or .provider_status == "429")) | length),
-						other_failure: (map(select((.result != "success" or (.exit_code // 1) != 0) and .result != $rate_limit_result and .provider_error_type != $rate_limit_result and .provider_status != "429")) | length),
+						runtime_handoffs: (map(select(_wah_runtime_handoff)) | length),
+						rate_limited: (map(select(_wah_effective_failure and (.result == $rate_limit_result or .provider_error_type == $rate_limit_result or .provider_status == "429"))) | length),
+						other_failure: (map(select(_wah_effective_failure and .result != $rate_limit_result and .provider_error_type != $rate_limit_result and .provider_status != "429")) | length),
 						latest_ts: (map(.ts // 0) | max)
 					})
 					| sort_by(.count, .latest_ts) | reverse | .[0:12]
@@ -491,10 +495,11 @@ _wah_provider_usage_json() {
 				)
 			}' <"$input_file" 2>/dev/null || printf '{"provider_model_usage":[],"recent_events":[],"account_pool":[]}'
 	else
-		jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg worker_role "$WAH_RUNTIME_ROLE" '
-			[inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $w
+		jq -rn --argjson cutoff "$cutoff_epoch" --argjson now "$now_epoch" --argjson objective_outcomes "$(_wah_objective_outcomes_json)" --arg outcome_failed "$WAH_DELIVERY_FAILED" --arg rate_limit_result "$WAH_RESULT_RATE_LIMIT" --arg worker_role "$WAH_RUNTIME_ROLE" "$WAH_SESSION_OUTCOME_JQ"'
+			[inputs | select(.role == $worker_role and (.ts // 0) >= $cutoff and (.ts // 0) <= $now)] as $raw
+			| ($raw | map(_wah_reconcile_outcome)) as $w
 			| {
-				provider_model_usage: ($w | group_by([.provider // "unknown", .model // "unknown"]) | map({provider: (.[0].provider // "unknown"), model: (.[0].model // "unknown"), count: length, runtime_handoffs: (map(select(.result == "success" and (.exit_code // 1) == 0)) | length), rate_limited: (map(select(.result == $rate_limit_result or .provider_error_type == $rate_limit_result or .provider_status == "429")) | length), other_failure: (map(select((.result != "success" or (.exit_code // 1) != 0) and .result != $rate_limit_result and .provider_error_type != $rate_limit_result and .provider_status != "429")) | length), latest_ts: (map(.ts // 0) | max)}) | sort_by(.count, .latest_ts) | reverse | .[0:12]),
+				provider_model_usage: ($w | group_by([.provider // "unknown", .model // "unknown"]) | map({provider: (.[0].provider // "unknown"), model: (.[0].model // "unknown"), count: length, runtime_handoffs: (map(select(_wah_runtime_handoff)) | length), rate_limited: (map(select(_wah_effective_failure and (.result == $rate_limit_result or .provider_error_type == $rate_limit_result or .provider_status == "429"))) | length), other_failure: (map(select(_wah_effective_failure and .result != $rate_limit_result and .provider_error_type != $rate_limit_result and .provider_status != "429")) | length), latest_ts: (map(.ts // 0) | max)}) | sort_by(.count, .latest_ts) | reverse | .[0:12]),
 				recent_events: ($w | sort_by(.ts // 0) | reverse | .[0:10] | map({ts, provider, model, result, exit_code, issue_number, session_key})),
 				account_pool: []
 			}' <"$input_file" 2>/dev/null || printf '{"provider_model_usage":[],"recent_events":[],"account_pool":[]}'

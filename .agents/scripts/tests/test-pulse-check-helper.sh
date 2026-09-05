@@ -140,6 +140,12 @@ if [[ "$cmd" == "providers" ]]; then
 JSON
   exit 0
 fi
+if [[ "${PULSE_CHECK_HANDOFF_FAILURE_FIXTURE:-}" == "yes" ]]; then
+  cat <<'JSON'
+{"window":{"since":"24h"},"metrics":{"total":20,"terminal_session_total":20,"runtime_handoffs":17,"succeeded":null,"result_counts":{"success":5,"post_pr_handoff":12,"blocked":3},"diagnostic_focus":{},"timing_ms":{"samples":20,"avg":1000,"max":2000},"recent_examples":[],"failure_groups":[],"failure_families":[{"fingerprint":"ff-v1:launch-failure","family":"launch-failure","count":12,"distinct_sessions":12,"first_ts":1,"last_ts":2,"confidence":"high","recovery_outcome":"recurring","results":{"post_pr_handoff":12},"examples":[{"result":"post_pr_handoff","exit_code":0}]}]},"pulse_stats":{},"delivery_stages":{"pr_opened":null,"pr_merged":null,"issue_solved":null,"delivered_successes":null,"check_state":"skipped"}}
+JSON
+  exit 0
+fi
 if [[ "${PULSE_CHECK_BLOCKER_FIXTURE:-}" == "retained" ]]; then
   cat <<'JSON'
 {"window":{"since":"7d"},"metrics":{"total":0,"terminal_session_total":0,"runtime_handoffs":0,"succeeded":null,"result_counts":{},"diagnostic_focus":{},"timing_ms":{"samples":0,"avg":0,"max":0},"recent_examples":[],"failure_groups":[],"failure_families":[]},"pulse_stats":{},"progress_blockers":{"scope":"global","event_total":13,"active_total":0,"retained_unverified_total":13,"retained_supervisor_permission_total":12,"active_blockers":[],"retained_unverified":[{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse","repo_slug":"private/repo-one","detail":"/private/path"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"supervisor-pulse-retry","repo_slug":"private/repo-two","detail":"private title"},{"reason":"permission_required","source":"opencode-permission-broker","session_key":"manual-cli","repo_slug":"private/repo-three"}]},"delivery_stages":{"pr_opened":null,"pr_merged":null,"issue_solved":null,"delivered_successes":null,"check_state":"skipped"}}
@@ -381,6 +387,11 @@ HANDOFF_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_runtime_hand
 assert_eq "json runtime handoff rate uses terminal session denominator" "90" "$HANDOFF_RATE"
 SUCCESS_RATE=$(printf '%s' "$JSON_OUT" | jq -r '.summary.historical_success_rate')
 assert_eq "json delivered success rate is unknown without GitHub delivery check" "null" "$SUCCESS_RATE"
+HANDOFF_FAMILY_JSON=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_HANDOFF_FAILURE_FIXTURE=yes" "$HELPER" json 2>&1)
+assert_eq "post-PR handoff family is absent from remediation candidates" "0" \
+	"$(printf '%s' "$HANDOFF_FAMILY_JSON" | jq -r '.failure_family_remediation | length')"
+assert_eq "post-PR handoff family triggers no failure finding" "0" \
+	"$(printf '%s' "$HANDOFF_FAMILY_JSON" | jq -r '[.findings[] | select(.id == "worker-failure-family-launch-failure")] | length')"
 assert_eq "json reports canonical reconciliation refusal aggregate" "2" "$(printf '%s' "$JSON_OUT" | jq -r '.current_state.canonical_reconciliation.refusal_count')"
 assert_eq "json reports canonical reconciliation classification" "dirty_or_uncommitted" "$(printf '%s' "$JSON_OUT" | jq -r '.current_state.canonical_reconciliation.classification')"
 assert_eq "zero-worker active claim is actionable" "true" "$(printf '%s' "$JSON_OUT" | jq -r '.summary.zero_worker_active_claim_actionable')"

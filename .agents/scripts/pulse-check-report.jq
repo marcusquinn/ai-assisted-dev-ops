@@ -9,6 +9,14 @@ def finding($id; $severity; $title; $evidence; $recommendation; $autofile): {
   autofile: $autofile
 };
 
+def non_failure_handoff_family:
+  (.results // {}) as $results
+  | ($results | keys_unsorted) as $result_names
+  | ($result_names | length) == 1
+  and $result_names[0] == "post_pr_handoff"
+  and ((.examples // []) | length) > 0
+  and all(.examples[]?; .result == "post_pr_handoff" and (.exit_code // 1) == 0);
+
 (if ($current.active_worker_processes // $current.pulse_health.workers_active // null) == null then null else ($current.active_worker_processes // $current.pulse_health.workers_active | number_or_zero) end) as $active_worker_processes |
 ($current.pulse_gauges.dispatch_capacity_final_max_workers // $current.pulse_health.workers_max // null) as $raw_max_workers |
 ($current.current_state_guardrails.available_slots_last // $current.pulse_gauges.pulse_dispatch_guardrail_available_slots // (if ($current.pulse_health.workers_max // null) == null or $active_worker_processes == null then null else ([($current.pulse_health.workers_max | number_or_zero) - $active_worker_processes, 0] | max) end)) as $raw_available_slots |
@@ -44,8 +52,8 @@ end) as $max_workers |
 ($summary.metrics.runtime_handoffs // $summary.metrics.succeeded // 0 | number_or_zero) as $hist_handoffs |
 ($summary.delivery_stages // {}) as $hist_delivery |
 (if $hist_delivery.delivered_successes == null then null else ($hist_delivery.delivered_successes | number_or_zero) end) as $hist_delivered |
-($summary.metrics.failure_families // []) as $failure_families |
-($recent_summary.metrics.failure_families // []) as $recent_failure_families |
+($summary.metrics.failure_families // [] | map(select(non_failure_handoff_family | not))) as $failure_families |
+($recent_summary.metrics.failure_families // [] | map(select(non_failure_handoff_family | not))) as $recent_failure_families |
 ($summary.progress_blockers // {}) as $progress_blockers |
 ($current.canonical_reconciliation.refusal_count // 0 | number_or_zero) as $canonical_reconciliation_refusal_count |
 ($current.canonical_reconciliation.classification // "none") as $canonical_reconciliation_classification |

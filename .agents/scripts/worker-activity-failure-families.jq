@@ -19,7 +19,8 @@ def _wah_failure_family:
     or ((.result // "") | test("launch")) then "launch-failure"
   else "other-failure" end;
 def _wah_failure_family_summary:
-  map(. + {failure_family: _wah_failure_family})
+  map(select(_wah_effective_failure))
+  | map(. + {failure_family: _wah_failure_family})
   | group_by(.failure_family)
   | map({
     fingerprint: ("ff-v1:" + .[0].failure_family),
