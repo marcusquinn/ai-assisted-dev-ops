@@ -856,6 +856,106 @@ test_sourcing_idempotency() {
 }
 
 #######################################
+# Test 10: apply_peak_hours_cap honours its configured timezone rather than
+# the host timezone, falling back to UTC for invalid configuration.
+#######################################
+test_apply_peak_hours_cap_timezone() {
+	LOGFILE="${TEST_ROOT}/peak-hours.log"
+	: >"$LOGFILE"
+	local caller_tz_was_set="${TZ+x}"
+	local caller_tz="${TZ:-}"
+
+	# shellcheck disable=SC2317
+	date() {
+		if [[ "${1:-}" == "+%H" ]]; then
+			if [[ -n "${MOCK_PEAK_HOUR:-}" ]]; then
+				printf '%s\n' "$MOCK_PEAK_HOUR"
+				return 0
+			fi
+			case "${TZ:-}" in
+			America/Los_Angeles) printf '06\n' ;;
+			UTC | Etc/UTC) printf '06\n' ;;
+			*) command date "$@" ;;
+			esac
+			return 0
+		fi
+		command date "$@"
+		return $?
+	}
+
+	export AIDEVOPS_PEAK_HOURS_ENABLED=true
+	export AIDEVOPS_PEAK_HOURS_START=5
+	export AIDEVOPS_PEAK_HOURS_END=7
+	export AIDEVOPS_PEAK_HOURS_WORKER_FRACTION=0.2
+
+	export AIDEVOPS_PEAK_HOURS_TZ=America/Los_Angeles
+	export TZ=Pacific/Honolulu
+	assert_equals "apply_peak_hours_cap ignores first caller timezone" \
+		"2" "$(apply_peak_hours_cap 10)"
+
+	export TZ=Europe/Berlin
+	assert_equals "apply_peak_hours_cap ignores second caller timezone" \
+		"2" "$(apply_peak_hours_cap 10)"
+
+	export AIDEVOPS_PEAK_HOURS_TZ=UTC
+	assert_equals "apply_peak_hours_cap accepts UTC" "2" "$(apply_peak_hours_cap 10)"
+
+	export AIDEVOPS_PEAK_HOURS_TZ=Etc/UTC
+	assert_equals "apply_peak_hours_cap accepts Etc/UTC" "2" "$(apply_peak_hours_cap 10)"
+
+	export AIDEVOPS_PEAK_HOURS_TZ=Invalid/Timezone
+	assert_equals "apply_peak_hours_cap invalid timezone falls back to UTC" \
+		"2" "$(apply_peak_hours_cap 10)"
+	if grep -q "Invalid or unavailable peak-hours timezone 'Invalid/Timezone' — falling back to UTC" "$LOGFILE"; then
+		print_result "apply_peak_hours_cap logs invalid timezone fallback" 0
+	else
+		print_result "apply_peak_hours_cap logs invalid timezone fallback" 1 "missing UTC fallback log"
+	fi
+
+	export AIDEVOPS_PEAK_HOURS_TZ=America/../localtime
+	assert_equals "apply_peak_hours_cap rejects timezone traversal" \
+		"2" "$(apply_peak_hours_cap 10)"
+	if grep -q "Invalid or unavailable peak-hours timezone 'America/../localtime' — falling back to UTC" "$LOGFILE"; then
+		print_result "apply_peak_hours_cap logs traversal fallback" 0
+	else
+		print_result "apply_peak_hours_cap logs traversal fallback" 1 "missing UTC traversal fallback log"
+	fi
+
+	export AIDEVOPS_PEAK_HOURS_ENABLED=false
+	assert_equals "apply_peak_hours_cap disabled preserves capacity" \
+		"10" "$(apply_peak_hours_cap 10)"
+
+	export AIDEVOPS_PEAK_HOURS_ENABLED=true
+	export AIDEVOPS_PEAK_HOURS_TZ=America/Los_Angeles
+	export AIDEVOPS_PEAK_HOURS_START=22
+	export AIDEVOPS_PEAK_HOURS_END=6
+	MOCK_PEAK_HOUR=23
+	assert_equals "apply_peak_hours_cap applies overnight window" \
+		"2" "$(apply_peak_hours_cap 10)"
+	MOCK_PEAK_HOUR=7
+	assert_equals "apply_peak_hours_cap excludes after overnight window" \
+		"10" "$(apply_peak_hours_cap 10)"
+
+	export AIDEVOPS_PEAK_HOURS_START=5
+	export AIDEVOPS_PEAK_HOURS_END=7
+	export AIDEVOPS_PEAK_HOURS_WORKER_FRACTION=2
+	MOCK_PEAK_HOUR=6
+	assert_equals "apply_peak_hours_cap never increases capacity" \
+		"10" "$(apply_peak_hours_cap 10)"
+
+	unset AIDEVOPS_PEAK_HOURS_ENABLED AIDEVOPS_PEAK_HOURS_START
+	unset AIDEVOPS_PEAK_HOURS_END AIDEVOPS_PEAK_HOURS_TZ
+	unset AIDEVOPS_PEAK_HOURS_WORKER_FRACTION MOCK_PEAK_HOUR
+	if [[ "$caller_tz_was_set" == "x" ]]; then
+		export TZ="$caller_tz"
+	else
+		unset TZ
+	fi
+	unset -f date
+	return 0
+}
+
+#######################################
 # Test 9: deterministic merge guard honours the standalone routine lock.
 # GH#24962: the in-cycle merge pass must skip when pulse-merge-routine.sh owns
 # its PID lock, and its timestamp fallback must use the routine timeout window
@@ -920,6 +1020,7 @@ main() {
 	test_triage_content_hash
 	test_triage_awaiting_contributor_reply_trust_boundary
 	test_sourcing_idempotency
+	test_apply_peak_hours_cap_timezone
 	test_deterministic_merge_guard_uses_routine_lock
 	test_pulse_is_sourced_guard
 

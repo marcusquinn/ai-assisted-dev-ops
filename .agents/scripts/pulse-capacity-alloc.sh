@@ -268,9 +268,10 @@ apply_peak_hours_cap() {
 		return 0
 	fi
 
-	local ph_start="" ph_end="" ph_fraction=""
+	local ph_start="" ph_end="" ph_tz="" ph_fraction=""
 	ph_start=$("$settings_helper" get supervisor.peak_hours_start 2>/dev/null || echo "5")
 	ph_end=$("$settings_helper" get supervisor.peak_hours_end 2>/dev/null || echo "11")
+	ph_tz=$("$settings_helper" get supervisor.peak_hours_tz 2>/dev/null || echo "America/Los_Angeles")
 	ph_fraction=$("$settings_helper" get supervisor.peak_hours_worker_fraction 2>/dev/null || echo "0.2")
 
 	# Validate hour values
@@ -279,9 +280,23 @@ apply_peak_hours_cap() {
 	[[ "$ph_start" -gt 23 ]] && ph_start=5
 	[[ "$ph_end" -gt 23 ]] && ph_end=11
 
-	# Get current local hour (strip leading zero to avoid octal interpretation)
+	# IANA zoneinfo names prevent host-local time from changing this window.
+	# Reject host-derived aliases and path traversal before resolving the zone file.
+	if [[ ! "$ph_tz" =~ ^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ ]] ||
+		[[ "$ph_tz" =~ (^|/)(\.|\.\.|localtime|posixrules)(/|$) ]] ||
+		[[ ! -f "/usr/share/zoneinfo/${ph_tz}" ]]; then
+		echo "[pulse-wrapper] Invalid or unavailable peak-hours timezone '${ph_tz:-<empty>}' — falling back to UTC" >>"$LOGFILE"
+		ph_tz="UTC"
+	fi
+
+	# Get the configured timezone's current hour (strip leading zero to avoid octal interpretation).
 	local current_hour
-	current_hour=$(date +%H)
+	current_hour=$(TZ="$ph_tz" date +%H 2>/dev/null) || current_hour=""
+	if [[ ! "$current_hour" =~ ^[0-9]{2}$ ]]; then
+		echo "[pulse-wrapper] Could not read peak-hours timezone '${ph_tz}' — safely preserving MAX_WORKERS ${off_peak_max}" >>"$LOGFILE"
+		echo "$off_peak_max"
+		return 0
+	fi
 	local cur=0 ph_s=0 ph_e=0
 	cur=$((10#${current_hour}))
 	ph_s=$((10#${ph_start}))
@@ -315,8 +330,9 @@ apply_peak_hours_cap() {
 		2>/dev/null || echo "1")
 	[[ "$peak_max" =~ ^[0-9]+$ ]] || peak_max=1
 	[[ "$peak_max" -lt 1 ]] && peak_max=1
+	[[ "$peak_max" -gt "$off_peak_max" ]] && peak_max="$off_peak_max"
 
-	echo "[pulse-wrapper] Peak hours active (window ${ph_s}→${ph_e}, current hour ${cur}): capping MAX_WORKERS ${off_peak_max}→${peak_max} (fraction=${ph_fraction})" >>"$LOGFILE"
+	echo "[pulse-wrapper] Peak hours active (${ph_tz}, window ${ph_s}→${ph_e}, current hour ${cur}): capping MAX_WORKERS ${off_peak_max}→${peak_max} (fraction=${ph_fraction})" >>"$LOGFILE"
 	echo "$peak_max"
 	return 0
 }
