@@ -848,17 +848,101 @@ migrate_agent_to_agents_folder() {
 	return 0
 }
 
-# Remove deprecated MCP and tool entries from a config file.
+# Remove legacy Auggie MCP entries from an app config file.
+# Supports OpenCode's .mcp, mcpServers-based apps, and VS Code's .servers.
+# Args: $1 = path to tmp config file to modify in-place
+# Sets _cleanup_count to number of entries removed.
+_remove_legacy_auggie_mcp_entries() {
+	local tmp_config="$1"
+	local legacy_auggie_mcps=(
+		"auggie-mcp"
+		"augment-context-engine"
+		"Augment-Context-Engine"
+		"augmentcode"
+		"augment-code"
+	)
+	_cleanup_count=0
+
+	local mcp=""
+	for mcp in "${legacy_auggie_mcps[@]}"; do
+		if jq -e --arg mcp "$mcp" '
+			def object_has($name): ((objects | has($name)) // false);
+			((.mcp // {}) | object_has($mcp)) or
+			((.mcpServers // {}) | object_has($mcp) or (type == "array" and any(.[]?; .name == $mcp))) or
+			((.servers // {}) | object_has($mcp))' "$tmp_config" >/dev/null 2>&1; then
+			jq --arg mcp "$mcp" '
+				delpaths([["mcp", $mcp], ["servers", $mcp]]) |
+				if (.mcpServers | type) == "array" then .mcpServers |= map(select(.name != $mcp)) else del(.mcpServers[$mcp]) end' \
+				"$tmp_config" >"${tmp_config}.new" && mv "${tmp_config}.new" "$tmp_config"
+			((++_cleanup_count))
+		fi
+	done
+
+	return 0
+}
+
+# Remove Auggie MCP sections generated for Codex's TOML config.
+_remove_legacy_auggie_codex_entries() {
+	local codex_config="$HOME/.codex/config.toml"
+	[[ -f "$codex_config" ]] || return 0
+	if ! grep -Eq '^\[mcp_servers\.(auggie-mcp|augment-context-engine|Augment-Context-Engine|augmentcode|augment-code)(\.|\])' "$codex_config"; then
+		return 0
+	fi
+
+	local tmp_config
+	tmp_config=$(mktemp)
+	if ! awk '
+		/^\[mcp_servers\.(auggie-mcp|augment-context-engine|Augment-Context-Engine|augmentcode|augment-code)(\.|\])/ { skip = 1; next }
+		/^\[/ { skip = 0 }
+		!skip { print }
+	' "$codex_config" >"$tmp_config"; then
+		rm -f "$tmp_config"
+		return 1
+	fi
+
+	create_backup_with_rotation "$codex_config" "codex-config"
+	mv "$tmp_config" "$codex_config"
+	print_info "Removed deprecated Auggie MCP entries from $codex_config"
+	return 0
+}
+
+# Remove Auggie MCP blocks generated for Aider's YAML config.
+_remove_legacy_auggie_aider_entries() {
+	local aider_config="$HOME/.aider.conf.yml"
+	[[ -f "$aider_config" ]] || return 0
+	if ! grep -Eq '^  (auggie-mcp|augment-context-engine|Augment-Context-Engine|augmentcode|augment-code):' "$aider_config"; then
+		return 0
+	fi
+
+	local tmp_config
+	tmp_config=$(mktemp)
+	if ! awk '
+		/^mcpServers:[[:space:]]*$/ { in_mcp_servers = 1; print; next }
+		in_mcp_servers && /^  (auggie-mcp|augment-context-engine|Augment-Context-Engine|augmentcode|augment-code):/ { skip = 1; next }
+		skip && (/^[^[:space:]]/ || /^  [^[:space:]#][^:]*:/) { skip = 0 }
+		in_mcp_servers && /^[^[:space:]#]/ { in_mcp_servers = 0 }
+		!skip { print }
+	' "$aider_config" >"$tmp_config"; then
+		rm -f "$tmp_config"
+		return 1
+	fi
+
+	create_backup_with_rotation "$aider_config" "aider-config"
+	mv "$tmp_config" "$aider_config"
+	print_info "Removed deprecated Auggie MCP entries from $aider_config"
+	return 0
+}
+
+# Remove deprecated MCP and tool entries from an OpenCode config file.
 # Args: $1 = path to tmp config file to modify in-place
 # Sets _cleanup_count to number of entries removed.
 _remove_deprecated_mcp_entries() {
 	local tmp_config="$1"
-	_cleanup_count=0
+	_remove_legacy_auggie_mcp_entries "$tmp_config"
+	local removed_count="$_cleanup_count"
 
 	# MCPs replaced by curl subagents in v2.79.0
 	local deprecated_mcps=(
-		"auggie-mcp"
-		"augment-context-engine"
 		"hetzner-webapp"
 		"hetzner-brandlight"
 		"hetzner-marcusquinn"
@@ -889,10 +973,11 @@ _remove_deprecated_mcp_entries() {
 		"$gh_grep_tool"
 	)
 
+	local mcp=""
 	for mcp in "${deprecated_mcps[@]}"; do
-		if jq -e --arg mcp "$mcp" '.mcp[$mcp]' "$tmp_config" >/dev/null 2>&1; then
+		if jq -e --arg mcp "$mcp" '(.mcp // {})[$mcp] != null' "$tmp_config" >/dev/null 2>&1; then
 			jq --arg mcp "$mcp" 'del(.mcp[$mcp])' "$tmp_config" >"${tmp_config}.new" && mv "${tmp_config}.new" "$tmp_config"
-			((++_cleanup_count))
+			((++removed_count))
 		fi
 	done
 
@@ -900,7 +985,7 @@ _remove_deprecated_mcp_entries() {
 		if jq -e ".tools[\"$tool\"]" "$tmp_config" >/dev/null 2>&1; then
 			jq "del(.tools[\"$tool\"])" "$tmp_config" >"${tmp_config}.new" &&
 				mv "${tmp_config}.new" "$tmp_config" &&
-				((++_cleanup_count))
+				((++removed_count))
 		fi
 	done
 
@@ -911,7 +996,7 @@ _remove_deprecated_mcp_entries() {
 		jq --arg ahrefs_tool "$ahrefs_tool" 'del(.agent.SEO.tools["dataforseo_*"]) | del(.agent.SEO.tools["serper_*"]) | del(.agent.SEO.tools[$ahrefs_tool])' \
 			"$tmp_config" >"${tmp_config}.new" &&
 			mv "${tmp_config}.new" "$tmp_config" &&
-			((++_cleanup_count))
+			((++removed_count))
 	fi
 
 	if jq -e --arg auggie_tool "$auggie_tool" --arg augment_tool "$augment_tool" '(.agent // {}) | to_entries[]? | (.value.tools // {}) | keys[]? | select(. == $auggie_tool or . == $augment_tool)' \
@@ -919,9 +1004,10 @@ _remove_deprecated_mcp_entries() {
 		jq --arg auggie_tool "$auggie_tool" --arg augment_tool "$augment_tool" '(.agent // {}) as $agents | reduce ($agents | keys[]) as $name (. ; del(.agent[$name].tools[$auggie_tool]) | del(.agent[$name].tools[$augment_tool]))' \
 			"$tmp_config" >"${tmp_config}.new" &&
 			mv "${tmp_config}.new" "$tmp_config" &&
-			((++_cleanup_count))
+			((++removed_count))
 	fi
 
+	_cleanup_count="$removed_count"
 	return 0
 }
 
@@ -994,7 +1080,7 @@ _migrate_mcp_npx_to_binary() {
 	return 0
 }
 
-# Remove deprecated MCP entries from opencode.json
+# Remove deprecated MCP entries from supported app configs.
 # These MCPs have been replaced by curl-based subagents (zero context cost)
 #
 # The one-time cleanup (remove deprecated entries + migrate npx→binary) is
@@ -1003,43 +1089,75 @@ _migrate_mcp_npx_to_binary() {
 # The recurring update_mcp_paths_in_opencode call is NOT guarded — it resolves
 # stale binary paths on every run (paths can change after package upgrades).
 cleanup_deprecated_mcps() {
-	local opencode_config
-	opencode_config=$(find_opencode_config) || return 0
-
-	if [[ ! -f "$opencode_config" ]]; then
-		return 0
-	fi
-
 	if ! command -v jq &>/dev/null; then
 		return 0
 	fi
 
+	local opencode_config=""
+	opencode_config=$(find_opencode_config) || true
+
 	# One-time cleanup: remove deprecated MCPs and migrate npx→binary paths.
 	# Sentinel version must be bumped whenever new deprecated MCPs are added.
-	local _sentinel="${HOME}/.aidevops/.migrations/cleanup-deprecated-mcps-v2"
+	local _sentinel="${HOME}/.aidevops/.migrations/cleanup-deprecated-mcps-v4"
 	if [[ ! -f "$_sentinel" ]]; then
-		local cleaned=0
-		local tmp_config
-		tmp_config=$(mktemp)
-		trap 'rm -f "${tmp_config:-}"' RETURN
+		if [[ -n "$opencode_config" && -f "$opencode_config" ]]; then
+			local cleaned=0
+			local tmp_config
+			tmp_config=$(mktemp)
+			trap 'rm -f "${tmp_config:-}"' RETURN
 
-		cp "$opencode_config" "$tmp_config"
+			cp "$opencode_config" "$tmp_config"
 
-		# Remove deprecated MCP and tool entries
-		_remove_deprecated_mcp_entries "$tmp_config"
-		cleaned=$((cleaned + _cleanup_count))
+			# Remove deprecated MCP and tool entries
+			_remove_deprecated_mcp_entries "$tmp_config"
+			cleaned=$((cleaned + _cleanup_count))
 
-		# Migrate npx/pipx commands to full binary paths (faster startup, PATH-independent)
-		_migrate_mcp_npx_to_binary "$tmp_config"
-		cleaned=$((cleaned + _cleanup_count))
+			# Migrate npx/pipx commands to full binary paths (faster startup, PATH-independent)
+			_migrate_mcp_npx_to_binary "$tmp_config"
+			cleaned=$((cleaned + _cleanup_count))
 
-		if [[ $cleaned -gt 0 ]]; then
-			create_backup_with_rotation "$opencode_config" "opencode"
-			mv "$tmp_config" "$opencode_config"
-			print_info "Updated $cleaned MCP entry/entries in opencode.json (using full binary paths)"
-		else
-			rm -f "$tmp_config"
+			if [[ $cleaned -gt 0 ]]; then
+				create_backup_with_rotation "$opencode_config" "opencode"
+				mv "$tmp_config" "$opencode_config"
+				print_info "Updated $cleaned MCP entry/entries in opencode.json (using full binary paths)"
+			else
+				rm -f "$tmp_config"
+			fi
 		fi
+
+		local app_config=""
+		local app_config_entry=""
+		local app_tmp_config=""
+		local backup_name=""
+		local app_configs=(
+			"$HOME/.claude.json:claude-config"
+			"$HOME/.cursor/mcp.json:cursor-mcp"
+			"$HOME/.codeium/windsurf/mcp_config.json:windsurf-mcp"
+			"$HOME/.gemini/settings.json:gemini-config"
+			"$HOME/.kilo/mcp.json:kilo-mcp"
+			"$HOME/.kiro/settings/mcp.json:kiro-mcp"
+			"$HOME/.amp/settings.json:amp-config"
+			"$HOME/.continue/config.json:continue-config"
+		)
+		for app_config_entry in "${app_configs[@]}"; do
+			app_config="${app_config_entry%:*}"
+			backup_name="${app_config_entry##*:}"
+			[[ -f "$app_config" ]] || continue
+
+			app_tmp_config=$(mktemp)
+			cp "$app_config" "$app_tmp_config"
+			_remove_legacy_auggie_mcp_entries "$app_tmp_config"
+			if [[ $_cleanup_count -gt 0 ]]; then
+				create_backup_with_rotation "$app_config" "$backup_name"
+				mv "$app_tmp_config" "$app_config"
+				print_info "Removed $_cleanup_count deprecated MCP entry/entries from $app_config"
+			else
+				rm -f "$app_tmp_config"
+			fi
+		done
+
+		_remove_legacy_auggie_codex_entries
+		_remove_legacy_auggie_aider_entries
 
 		# Write sentinel
 		mkdir -p "$(dirname "$_sentinel")"
@@ -1047,7 +1165,9 @@ cleanup_deprecated_mcps() {
 	fi
 
 	# Always resolve bare binary names to full paths (fixes PATH-dependent startup)
-	update_mcp_paths_in_opencode
+	if [[ -n "$opencode_config" && -f "$opencode_config" ]]; then
+		update_mcp_paths_in_opencode
+	fi
 
 	return 0
 }

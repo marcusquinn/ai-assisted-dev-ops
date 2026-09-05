@@ -1365,7 +1365,6 @@ The setup script offers to install these tools automatically.
 
 ### **AI Prompt Optimization**
 
-- **[Augment Context Engine](https://docs.augmentcode.com/context-services/mcp/overview)**: Semantic codebase retrieval with deep code understanding
 - **[Repomix](https://repomix.com/)**: Pack codebases into AI-friendly context (80% token reduction with compress mode)
 - **[DSPy](https://dspy.ai/)**: Framework for programming with language models
 - **[DSPyGround](https://dspyground.com/)**: Interactive playground for prompt optimization
@@ -1450,13 +1449,12 @@ See `.agents/tools/ocr/glm-ocr.md` for batch processing, PDF workflows, and Peek
 
 **Model Context Protocol servers for real-time AI assistant integration.** The framework configures these MCPs for **[OpenCode](https://opencode.ai/)** (TUI, Desktop, and Extension for Zed/VSCode).
 
-### **All Supported MCPs (20 available)**
+### **All Supported MCPs (19 available)**
 
 MCP integrations use reviewed local package runners or remote HTTPS endpoints. Security-sensitive local integrations use exact package pins where required; setup may globally cache selected tools for faster startup. Run `setup.sh` or `aidevops update-tools` to refresh managed tooling.
 
 | MCP | Purpose | Tier | API Key Required |
 |-----|---------|------|------------------|
-| [Augment Context Engine](https://docs.augmentcode.com/context-services/mcp/overview) | Semantic codebase retrieval | Global | Yes (Augment account) |
 | [Claude Code MCP](https://github.com/steipete/claude-code-mcp) | Claude as sub-agent | Global | No |
 | [Amazon Order History](https://github.com/marcusquinn/amazon-order-history-csv-download-mcp) | Order data extraction | Per-agent | No |
 | [Chrome DevTools](https://chromedevtools.github.io/devtools-protocol/) | Browser debugging & automation | Per-agent | No |
@@ -1503,7 +1501,6 @@ These use direct API calls via curl, avoiding MCP server startup entirely:
 
 **Context & Codebase:**
 
-- [Augment Context Engine](https://docs.augmentcode.com/context-services/mcp/overview) - Semantic codebase retrieval with deep code understanding
 - [llm-tldr](https://github.com/parcadei/llm-tldr) - Semantic code analysis with 95% token savings ([details below](#llm-tldr---semantic-code-analysis))
 - [Context7](https://context7.com/) - Real-time documentation access for thousands of libraries
 - [Repomix](https://github.com/yamadashy/repomix) - Pack codebases into AI-friendly context
@@ -1847,84 +1844,6 @@ Repomix runs as an MCP server for direct AI assistant integration:
 > Install globally first: `bun install -g repomix` (done automatically by `setup.sh`)
 
 See `.agents/tools/context/context-builder.md` for complete documentation.
-
-## **Augment Context Engine - Semantic Codebase Search**
-
-[Augment Context Engine](https://docs.augmentcode.com/context-services/mcp/overview) provides semantic codebase retrieval - understanding your code at a deeper level than simple text search. It's the recommended tool for real-time interactive coding sessions.
-
-### Why Augment Context Engine?
-
-| Feature | grep/glob | Augment Context Engine |
-|---------|-----------|------------------------|
-| Text matching | Exact patterns | Semantic understanding |
-| Cross-file context | Manual | Automatic |
-| Code relationships | None | Understands dependencies |
-| Natural language | No | Yes |
-
-Use it to:
-
-- Find related code across your entire codebase
-- Understand project architecture quickly
-- Discover patterns and implementations
-- Get context-aware code suggestions
-
-### Quick Setup
-
-```bash
-# 1. Install Auggie CLI (requires Node.js 22+)
-npm install -g @augmentcode/auggie@prerelease
-
-# 2. Authenticate (opens browser)
-auggie login
-
-# 3. Verify installation
-auggie token print
-```
-
-### MCP Integration
-
-Add to your AI assistant's MCP configuration:
-
-**OpenCode** (`~/.config/opencode/opencode.json`):
-
-```json
-{
-  "mcp": {
-    "augment-context-engine": {
-      "type": "local",
-      "command": ["auggie", "--mcp"],
-      "enabled": true
-    }
-  }
-}
-```
-
-**claude-code CLI**:
-
-```bash
-claude mcp add-json auggie-mcp --scope user '{"type":"stdio","command":"auggie","args":["--mcp"]}'
-```
-
-### Verification
-
-Test with this prompt:
-
-```text
-What is this project? Please use codebase retrieval tool to get the answer.
-```
-
-The AI should provide a semantic understanding of your project architecture.
-
-### Repomix vs Augment Context Engine
-
-| Use Case | Tool | When to Use |
-|----------|------|-------------|
-| **Interactive coding** | Augment Context Engine | Real-time semantic search during development |
-| **Share with external AI** | Repomix | Self-contained snapshot for ChatGPT, Claude web, etc. |
-| **Architecture review** | Repomix (compress) | 80% token reduction, structure only |
-| **CI/CD integration** | Repomix GitHub Action | Automated context in releases |
-
-See `.agents/tools/context/augment-context-engine.md` for complete documentation.
 
 ### llm-tldr - Semantic Code Analysis
 

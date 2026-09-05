@@ -92,9 +92,6 @@ _status_recommended_tools() {
 _status_ai_tools() {
 	print_header "AI Tools & MCPs"
 	check_cmd opencode && print_success "OpenCode CLI" || print_warning "OpenCode CLI - not installed"
-	if check_cmd auggie; then
-		check_file "$HOME/.augment/session.json" && print_success "Augment Context Engine (authenticated)" || print_warning "Augment Context Engine (not authenticated)"
-	else print_warning "Augment Context Engine - not installed"; fi
 	check_cmd bd && print_success "Beads CLI (task graph)" || print_warning "Beads CLI (bd) - not installed"
 	echo ""
 	return 0

@@ -38,7 +38,6 @@ const MCP_SERVERS: Array<{ name: string; command: string; port?: number; healthC
   { name: 'crawl4ai', command: 'npx crawl4ai-mcp-server@latest', port: 11235, healthCheck: 'http://localhost:11235/health' },
   { name: 'context7', command: 'npx @context7/mcp-server', port: 3007 },
   { name: 'repomix', command: 'npx repomix --mcp', port: 3008 },
-  { name: 'augment', command: 'augment-mcp-server', port: 3009 },
   { name: 'github', command: 'gh mcp-server', port: 3010 },
   { name: 'filesystem', command: 'npx @anthropic/mcp-server-filesystem', port: 3011 },
   { name: 'memory', command: 'npx @anthropic/mcp-server-memory', port: 3012 },

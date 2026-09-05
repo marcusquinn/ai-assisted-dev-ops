@@ -22,7 +22,6 @@
 #   mcp-register-claude.sh                    # Register all templates
 #   mcp-register-claude.sh --dry-run          # Preview all commands
 #   mcp-register-claude.sh --list             # Show status
-#   mcp-register-claude.sh augment             # Register specific templates
 #   mcp-register-claude.sh --skip quickfile   # Skip templates with placeholders
 
 set -euo pipefail
