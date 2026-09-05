@@ -371,7 +371,8 @@ _ptsw_move_to_recoverable_trash() {
 _ptsw_remove_stale_workspace() {
 	local workspace_root="$1"
 	local identity="$2"
-	local mode="${PULSE_TODO_SYNC_STALE_CLEANUP_MODE:-delete}"
+	# Interrupted TODO-sync clones remain recoverable unless direct deletion is explicit.
+	local mode="${PULSE_TODO_SYNC_STALE_CLEANUP_MODE:-trash}"
 	case "$mode" in
 	delete | direct)
 		_ptsw_validate_workspace_path "$workspace_root" 1 || return 1
@@ -631,6 +632,11 @@ _ptsw_remove_dead_owner_workspace() {
 		remove_mode="${_PTSW_REMOVE_MODE:-unknown}"
 		_ptsw_log_sweep_outcome "removed" "dead-owner" "$identity" "age=${age_secs}s owner_pid=${owner_pid} mode=${remove_mode}"
 		return 0
+	fi
+	if [[ "${PULSE_TODO_SYNC_STALE_CLEANUP_MODE:-trash}" == "trash" ||
+		"${PULSE_TODO_SYNC_STALE_CLEANUP_MODE:-trash}" == "recoverable" ]]; then
+		_ptsw_log_sweep_outcome "failure" "trash-move-failed" "$identity" "$owner_detail"
+		return 1
 	fi
 	_ptsw_log_sweep_outcome "failure" "stale-remove-failed" "$identity" "$owner_detail"
 	return 1
