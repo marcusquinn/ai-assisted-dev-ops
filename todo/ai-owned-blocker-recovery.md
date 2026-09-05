@@ -16,6 +16,8 @@ Source evidence: `pulse-dispatch-worker-prompt.sh` tells workers to stop on unde
 
 Read #31265's 2026-09-05 worker terminal report and draft PR #31269. Actual result: `BLOCKED: guarded claim integration is outside Files Scope`; the subsequent partial PR still lists shared claim integration as requiring a revised scope. Compare `.agents/scripts/pulse-dispatch-worker-prompt.sh`'s undeclared-path stop with `.agents/scripts/headless-runtime-run.sh`'s bounded missing-context recovery. Causal status: the stop instruction and observed worker scope blocker are verified; the new coordinated recovery contract requires implementation and mocked end-to-end verification.
 
+Further observed evidence: at 18:19 UTC, while this primary interactive session was repairing terminal Qlty failures on the same PR, the deterministic merge pass closed #31269, unassigned #31265 and changed its provenance to worker CI feedback. Its comment states "Closed by deterministic merge pass (pulse-merge.sh)." This session had acquired an interactive claim; the reused PR retained its original worker label. Reopening the same PR, normalising its provenance to interactive and renewing the guarded implementing claim restored continuity. This is an observed ownership-displacement failure, not a pending-CI failure or permission request.
+
 ## How
 
 - Define Files Scope as an initial implementation map unless explicitly marked as a hard boundary. For a hard boundary, delegate a bounded revision decision to an authorised AI brief owner; the worker must not approve its own authority expansion.
@@ -26,6 +28,7 @@ Read #31265's 2026-09-05 worker terminal report and draft PR #31269. Actual resu
 - An authorised coordinator assesses the request, checks concurrent work, records the minimal corrected brief and resumes the exact checkpoint using #31265's contract when applicable. Do not create replacement PRs or retry an unchanged rejected brief.
 - One bounded recovery per unchanged evidence set; exhaustion routes to an AI coordinator for re-planning, not a silent terminal state or an automatic human prompt. Genuine human escalation must name the specific unanswered decision, why delegated AI cannot decide it, and the smallest required input.
 - Preserve worker target isolation, authenticated dispatch/lease fencing, scope-guard enforcement, sensitive-scope holds and immutable audit provenance. Update the matching local brief when one exists; do not bypass the pre-push scope guard.
+- CI-repair routing must respect a current interactive owner even when the preserved PR originally came from a worker. Normalise takeover metadata at the guarded interactive entrypoint and recheck ownership before closing a PR, unassigning its issue or rewriting dispatch provenance. Terminal failed checks justify repair, not displacement of an active repair owner.
 
 ## Initial files and reference patterns
 
@@ -36,6 +39,10 @@ Paths below are an initial discovery map, not a prohibition on necessary adjacen
 - `.agents/scripts/headless-runtime-model.sh`
 - `.agents/scripts/headless-runtime-result.sh`
 - `.agents/scripts/headless-runtime-run.sh`
+- `.agents/scripts/pulse-merge-process.sh`
+- `.agents/scripts/pulse-merge-feedback.sh`
+- `.agents/scripts/interactive-start-helper.sh`
+- `.agents/scripts/interactive-session-helper.sh`
 - `.agents/reference/worker-discipline.md`
 - `.agents/reference/safety-stop-recovery.md`
 - `.agents/templates/brief-template.md`

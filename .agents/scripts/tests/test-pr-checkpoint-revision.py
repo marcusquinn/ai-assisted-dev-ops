@@ -10,13 +10,19 @@ import importlib.util
 import json
 import os
 import pathlib
-import subprocess
+import shutil
+import subprocess  # nosec B404 — executes fixed offline fixture programs only
 import sys
 import tempfile
 import unittest
 
 SCRIPTS = pathlib.Path(__file__).resolve().parents[1]
+BASH = shutil.which("bash")
+if not BASH or not pathlib.Path(BASH).is_absolute():
+    raise RuntimeError("An absolute path to the installed Bash runtime is required")
 sys.path.insert(0, str(SCRIPTS))
+from checkpoint_github_fixture import comment
+from pr_checkpoint_events import EVENTS
 
 
 def load(name, filename):
@@ -28,11 +34,6 @@ def load(name, filename):
 
 revision = load("revision", "pr-checkpoint-revision.py")
 queue = load("queue", "pulse-check-queue-scan.py")
-
-
-def comment(number, body, author="worker", association="COLLABORATOR"):
-    return {"id": number, "body": body, "user": {"login": author},
-            "author_association": association, "created_at": "2026-09-05T12:00:00Z"}
 
 
 def fixture():
@@ -100,7 +101,7 @@ class RevisionTests(unittest.TestCase):
         data = fixture()
         data["issue"]["assignees"] = []
         self.assertEqual(revision.validate(data)["approval_id"], 3)
-        for event in revision.EVENTS:
+        for event in EVENTS:
             with self.subTest(event=event), self.assertRaises(ValueError):
                 revision.validate({**data, "comments": data["comments"] + [comment(4, event + "new-owner")]})
 
@@ -129,7 +130,8 @@ class RevisionTests(unittest.TestCase):
                    'printf "%s" "${TEST_PERMISSION:-write}"; }; '
                    '_pr_checkpoint_revised_target "$2" "$3" "$4" "$5" worker')
         def run(candidate):
-            return subprocess.run(["bash", "-c", command, "test", str(SCRIPTS), candidate["repo"],
+            # Fixed Bash source and locally constructed JSON are positional data, never shell source.
+            return subprocess.run([BASH, "-c", command, "test", str(SCRIPTS), candidate["repo"],  # nosec B603
                                    json.dumps(candidate["pr"]), json.dumps(candidate["issue"]),
                                    json.dumps(candidate["comments"])], capture_output=True, check=False).returncode
         self.assertEqual(run(data), 0)
@@ -157,7 +159,7 @@ class RevisionTests(unittest.TestCase):
                 gh.write_text('#!/usr/bin/env bash\nexec python3 "$CHECKPOINT_TEST_FILE" --gh "$@"\n')
                 gh.chmod(0o700)
                 env = {**os.environ, "PATH": root + os.pathsep + os.environ["PATH"], "HOME": root,
-                       "CHECKPOINT_TEST_FILE": str(pathlib.Path(__file__).resolve()), "CHECKPOINT_TEST_STATE": str(state),
+                       "CHECKPOINT_TEST_FILE": str(pathlib.Path(__file__).with_name("checkpoint_github_fixture.py")), "CHECKPOINT_TEST_STATE": str(state),
                        "AIDEVOPS_TEST_MODE": "1", "AIDEVOPS_REPO_STATE_GUARD_TEST_BYPASS": "1",
                        "DISPATCH_CLAIM_WINDOW": "0", "AIDEVOPS_DEVICE_ID": "test-device"}
                 command = r'''
@@ -184,7 +186,8 @@ _hrw_verify_dispatch_ownership 123 owner/repo
 _pcc_restore_transferred_ownership owner/repo 42
 if "$1/dispatch-claim-helper.sh" claim-pr-checkpoint 123 owner/repo 42 "$PCC_HEAD_OID" "$PCC_HEAD_REF" next-worker "$AIDEVOPS_PR_CHECKPOINT_SESSION"; then exit 99; fi
 '''
-                result = subprocess.run(["bash", "-c", command, "test", str(SCRIPTS)], env=env,
+                # The shell program is a fixed test literal, with only the trusted scripts directory as data.
+                result = subprocess.run([BASH, "-c", command, "test", str(SCRIPTS)], env=env,  # nosec B603
                                         capture_output=True, text=True, timeout=60, check=False)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 restored = json.loads(state.read_text())["issue"]
@@ -209,50 +212,5 @@ class ProgressTests(unittest.TestCase):
         self.assertIsNone(queue._durable_progress_age("owner/repo", issue, now))
 
 
-def mock_github(args):
-    """Transport-only mock. Unknown commands fail closed, never use real GitHub."""
-    state = pathlib.Path(os.environ["CHECKPOINT_TEST_STATE"])
-    data = json.loads(state.read_text())
-    if args[0] == "--set-issue":
-        data["issue"]["labels"] = [label for label in data["issue"]["labels"] if not label["name"].startswith("status:")]
-        data["issue"]["labels"].append({"name": "status:" + args[3]})
-        owners = {a["login"] for a in data["issue"]["assignees"]}
-        for index, arg in enumerate(args):
-            if arg == "--add-assignee":
-                owners.add(args[index + 1])
-            elif arg == "--remove-assignee":
-                owners.discard(args[index + 1])
-        data["issue"]["assignees"] = [{"login": owner} for owner in sorted(owners)]
-        state.write_text(json.dumps(data))
-        return
-    if args[:2] == ["api", "user"]:
-        print("next-worker" if "--jq" in args else json.dumps({"login": "next-worker"}))
-    elif args[:2] == ["api", "repos/owner/repo/collaborators/maintainer/permission"]:
-        print("write")
-    elif args[:2] == ["pr", "view"]:
-        print(json.dumps(data["pr"]))
-    elif args[:2] == ["issue", "view"]:
-        print(json.dumps({**data["issue"], "state": "OPEN"}))
-    elif args[0] == "api" and "/comments" in args[1]:
-        if "POST" in args:
-            body = next(a[5:] for a in args if a.startswith("body="))
-            number = max(c["id"] for c in data["comments"]) + 1
-            c = comment(number, body, "next-worker")
-            c["created_at"] = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            data["comments"].append(c)
-            state.write_text(json.dumps(data))
-            print(number)
-        else:
-            print(json.dumps([data["comments"]] if "--slurp" in args else data["comments"]))
-    elif args[0] == "api" and args[1] == "repos/owner/repo/issues/123":
-        print(json.dumps(data["issue"]))
-    else:
-        print("Unexpected mocked GitHub call: " + repr(args), file=sys.stderr)
-        sys.exit(90)
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] in {"--gh", "--set-issue"}:
-        mock_github(sys.argv[2:] if sys.argv[1] == "--gh" else sys.argv[1:])
-    else:
-        unittest.main()
+    unittest.main()

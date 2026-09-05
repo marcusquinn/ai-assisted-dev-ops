@@ -13,7 +13,6 @@ import hashlib
 import json
 import sys
 
-from pr_checkpoint_events import EVENTS as EVENTS
 from pr_checkpoint_events import release_for, successors_valid, timestamp, trusted
 
 PREFIX = "CHECKPOINT_CONTINUATION_APPROVED "
@@ -34,12 +33,19 @@ def approval_matches(data, approval, comment, now):
                 isinstance(attempt, str) and attempt.startswith("attempt:")))
 
 
-def candidate(data, comments, comment, now):
+def approved_comment(data, comment, now):
     lines = [line for line in comment["body"].splitlines() if line.startswith(PREFIX)]
     if not trusted(comment) or len(lines) != 1:
         return None
     approval = json.loads(lines[0][len(PREFIX):])
     if not approval_matches(data, approval, comment, now):
+        return None
+    return approval
+
+
+def candidate(data, comments, comment, now):
+    approval = approved_comment(data, comment, now)
+    if approval is None:
         return None
     release = release_for(comments, approval, comment)
     if release is None or not successors_valid(data, comments, release["id"], comment["id"], now):

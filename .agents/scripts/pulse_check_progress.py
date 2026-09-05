@@ -36,6 +36,14 @@ def linked_prs(slug, timeline):
     return linked if len(linked) <= 5 else None
 
 
+def pr_progress_times(pr):
+    times = [pr.get("createdAt", "")]
+    times.extend(c.get("committedDate", "") for c in pr.get("commits", []))
+    times.extend(c.get("completedAt", "") for c in pr.get("statusCheckRollup", [])
+                 if c.get("status") == "COMPLETED")
+    return times
+
+
 def pr_progress_age(slug, number, now, run_gh):
     if not isinstance(number, int) or number <= 0:
         return None
@@ -43,11 +51,7 @@ def pr_progress_age(slug, number, now, run_gh):
                  "--json", "createdAt,commits,statusCheckRollup"])
     if not isinstance(pr, dict):
         return None
-    times = [pr.get("createdAt", "")]
-    times.extend(c.get("committedDate", "") for c in pr.get("commits", []))
-    times.extend(c.get("completedAt", "") for c in pr.get("statusCheckRollup", [])
-                 if c.get("status") == "COMPLETED")
-    ages = [age for value in times if (age := age_at(value, now)) is not None]
+    ages = [age for value in pr_progress_times(pr) if (age := age_at(value, now)) is not None]
     return min(ages) if ages else None
 
 
@@ -77,6 +81,29 @@ def owned_dependency_wait(issue, labels, diagnostic):
     return diagnostic(probe)
 
 
+def wait_classification(issue, labels, total_age, context):
+    explicit_wait = labels & {"no-auto-dispatch", "hold-for-review", "needs-maintainer-review",
+                              "needs-maintainer-permissions", "blocked", "status:blocked", "infrastructure"}
+    if explicit_wait or issue.get("dependency_inconsistent"):
+        return "external_wait_excluded"
+    if total_age >= 60 and labels & {"status:in-review", "status:in-progress", "status:queued"}:
+        waiting, unknown = owned_dependency_wait(issue, labels, context.diagnostic)
+        if unknown:
+            return "durable_progress_unknown"
+        if waiting:
+            return "external_wait_excluded"
+    return ""
+
+
+def record_progress_age(aggregate, total_age, progress_age):
+    if progress_age is None:
+        aggregate["durable_progress_unknown"] += 1
+    else:
+        aggregate["oldest_durable_progress_age_min"] = max(
+            aggregate["oldest_durable_progress_age_min"], progress_age)
+        aggregate["no_durable_progress_hour"] += int(total_age >= 60 and progress_age >= 60)
+
+
 def count_progress(aggregate, issue, now, context):
     labels = {label.get("name", "") for label in issue.get("labels", []) if isinstance(label, dict)}
     if labels & context.persistent_labels or "parent-task" in labels:
@@ -85,18 +112,8 @@ def count_progress(aggregate, issue, now, context):
     if total_age is None:
         return
     aggregate["oldest_issue_age_min"] = max(aggregate["oldest_issue_age_min"], total_age)
-    explicit_wait = labels & {"no-auto-dispatch", "hold-for-review", "needs-maintainer-review",
-                              "needs-maintainer-permissions", "blocked", "status:blocked", "infrastructure"}
-    waiting, unknown = bool(explicit_wait or issue.get("dependency_inconsistent")), False
-    if not waiting and total_age >= 60 and labels & {"status:in-review", "status:in-progress", "status:queued"}:
-        waiting, unknown = owned_dependency_wait(issue, labels, context.diagnostic)
-    if waiting or unknown:
-        aggregate["durable_progress_unknown" if unknown else "external_wait_excluded"] += 1
+    wait_kind = wait_classification(issue, labels, total_age, context)
+    if wait_kind:
+        aggregate[wait_kind] += 1
         return
-    progress_age = durable_progress_age(context.slug, issue, now, context.run_gh)
-    if progress_age is None:
-        aggregate["durable_progress_unknown"] += 1
-    else:
-        aggregate["oldest_durable_progress_age_min"] = max(
-            aggregate["oldest_durable_progress_age_min"], progress_age)
-        aggregate["no_durable_progress_hour"] += int(total_age >= 60 and progress_age >= 60)
+    record_progress_age(aggregate, total_age, durable_progress_age(context.slug, issue, now, context.run_gh))

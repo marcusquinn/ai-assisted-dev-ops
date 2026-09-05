@@ -36,7 +36,7 @@ def events(comments, start, end):
                 yield comment, line, fields(line)
 
 
-def original_lease(comments, approval, release, released):
+def ready_leases(comments, approval, release):
     ready = []
     for comment, line, f in events(comments, -1, release["id"]):
         if not trusted(comment) or comment["user"]["login"] != approval["runner"]:
@@ -44,35 +44,52 @@ def original_lease(comments, approval, release, released):
         if (line.startswith("DISPATCH_LEASE ") and f.get("attempt_id") == approval["attempt"]
                 and f.get("phase") == "ready"):
             ready.append((comment["id"], f))
+    return ready
+
+
+def original_lease(comments, approval, release, released):
+    ready = ready_leases(comments, approval, release)
     tokens = {f.get("lease_token") for _, f in ready}
     if len(tokens) != 1 or not next(iter(tokens)):
         return False
     token = next(iter(tokens))
     if released.get("lease_token", token) != token:
         return False
+    between = events(comments, ready[-1][0], release["id"])
+    return intervening_events_valid(between, approval["runner"], token)
+
+
+def intervening_events_valid(between, runner, token):
     # Even a legacy release cannot terminate another attempt that intervened
     # after the approved attempt's ready lease.
-    for comment, line, f in events(comments, ready[-1][0], release["id"]):
+    for comment, line, f in between:
         if line.startswith("Dispatching worker"):
             f = fields(comment["body"])
-        if (not trusted(comment) or comment["user"]["login"] != approval["runner"]
+        if (not trusted(comment) or comment["user"]["login"] != runner
                 or f.get("lease_token") != token or line.startswith("DISPATCH_CLAIM ")):
             return False
     return True
 
 
-def release_for(comments, approval, approval_comment):
-    matches = [c for c in comments if c["id"] == approval.get("release_id")]
-    if len(matches) != 1 or not trusted(matches[0]):
-        return None
-    release = matches[0]
-    if release["user"]["login"] != approval["runner"] or release["id"] >= approval_comment["id"]:
-        return None
+def blocked_release_fields(release, runner):
     lines = [line for line in release["body"].splitlines() if line.startswith("CLAIM_RELEASED ")]
     if len(lines) != 1:
         return None
     released = fields(lines[0])
-    if released.get("reason") != "blocked" or released.get("runner") != approval["runner"]:
+    if released.get("reason") != "blocked" or released.get("runner") != runner:
+        return None
+    return released
+
+
+def release_for(comments, approval, approval_comment):
+    matches = [c for c in comments if c["id"] == approval.get("release_id")]
+    if len(matches) != 1:
+        return None
+    release = matches[0]
+    identity_valid = all((trusted(release), release["user"]["login"] == approval["runner"],
+                          release["id"] < approval_comment["id"]))
+    released = blocked_release_fields(release, approval["runner"])
+    if not identity_valid or released is None:
         return None
     return release if original_lease(comments, approval, release, released) else None
 
@@ -108,4 +125,3 @@ def successors_valid(data, comments, release_id, approval_id, now):
         else:
             return False
     return not data.get("lease") or bool(claim and int(claim.get("expires_at", 0)) > now)
-
