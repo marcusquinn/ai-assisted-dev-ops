@@ -598,6 +598,23 @@ EOF
 }
 test_rewrite_drops_authenticated_self_entry
 
+test_observation_failure_preserves_state() {
+	printf '{"alice":{"current_action":"honour"}}\n' >"$STATE_FILE"
+	printf 'DISPATCH_OVERRIDE_ALICE="honour"\n' >"$OVERRIDE_CONF"
+	cp "$STATE_FILE" "$TEST_DIR/peer-state-before"
+	cp "$OVERRIDE_CONF" "$TEST_DIR/peer-config-before"
+	_self_login() { printf 'self-runner'; return 0; }
+	discover_and_observe() { return 1; }
+	cmd_observe
+	if cmp -s "$STATE_FILE" "$TEST_DIR/peer-state-before" && cmp -s "$OVERRIDE_CONF" "$TEST_DIR/peer-config-before"; then
+		pass "incomplete cycle preserves state and dispatch overrides byte-for-byte"
+	else
+		fail "incomplete cycle changed peer state or dispatch overrides"
+	fi
+	return 0
+}
+test_observation_failure_preserves_state
+
 # ============================================================================
 section "Observe cycle removes stale self state"
 # ============================================================================

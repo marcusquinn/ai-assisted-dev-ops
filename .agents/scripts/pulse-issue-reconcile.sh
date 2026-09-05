@@ -127,7 +127,7 @@ _read_cache_issues_for_slug() {
 	fi
 	now_epoch=$(date +%s)
 	age_secs=$((now_epoch - last_epoch))
-	[[ "$age_secs" -lt 600 ]] || return 1  # Stale if > 10 minutes
+	[[ "$age_secs" -ge 0 && "$age_secs" -lt 600 ]] || return 1  # Future-dated or stale snapshots miss.
 
 	# Read issues array for this slug
 	local issues
@@ -187,11 +187,11 @@ _gh_pr_list_merged() {
 # This collapses what was previously two gh API calls per issue (search +
 # pr view --json body) into the single per-repo prefetch.
 #
-# Limit 200 most-recent closed PRs per repo, then filter to mergedAt locally.
-# GH#22802: REST fallback cannot represent gh's synthetic --state merged; it
-# can return closed-but-unmerged/open-adjacent data. Requiring mergedAt in the
-# jq filter fails closed and prevents the reconciler from closing issues while
-# their linked PR is still open or merely closed-unmerged.
+# Limit 200 merged PRs per repo. Both native gh and the current REST adapter
+# distinguish merged from closed-but-unmerged. Asking for closed here makes
+# the REST adapter scan until it finds 200 UNMERGED PRs, only to discard every
+# result below. Keep the mergedAt guard too: incomplete/malformed data must
+# never authorise closing an issue whose PR is open or closed-unmerged.
 #
 # Args:    $1 = slug (owner/repo)
 # Returns: prints lookup string on stdout (may be empty); exit 0 always.
@@ -204,7 +204,7 @@ _build_oimp_lookup_for_slug() {
 	# --json body costs more bytes per call but the trip count goes from
 	# ~200/cycle to 8/cycle — net ~30x reduction in API round-trips.
 	local merged_prs_json
-	merged_prs_json=$(_gh_pr_list_merged --repo "$slug" --state closed \
+	merged_prs_json=$(_gh_pr_list_merged --repo "$slug" --state merged \
 		--json number,body,mergedAt --limit 200 2>/dev/null) || merged_prs_json="[]"
 	[[ -n "$merged_prs_json" && "$merged_prs_json" != "null" ]] || return 0
 

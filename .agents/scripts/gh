@@ -472,7 +472,11 @@ if [[ -n "$_SHIM_READ_REWRITE" ]]; then
 		# Prefer REST in pulse/workflow REST-first mode; otherwise use the legacy
 		# low-GraphQL-budget fallback. This shares native GitHub quota pools instead
 		# of imposing a synthetic lower GraphQL budget.
-		_rest_read_first_enabled || _rest_should_fallback || return 1
+		if [[ "$_SHIM_READ_REWRITE" == pr:list ]] && _rest_pr_list_prefers_native_filter "${@:3}"; then
+			_rest_should_fallback || return 1
+		else
+			_rest_read_first_enabled || _rest_should_fallback || return 1
+		fi
 		[[ "$_GH_REQUEST_ATTEMPT_STATE_READY" -eq 1 ]] || return 1
 
 		# Extract repo and build stripped args.

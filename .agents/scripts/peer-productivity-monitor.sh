@@ -305,7 +305,7 @@ _aggregate_peer_observations() {
 					}
 				) | to_entries | sort_by(.key) | .[0:100] | from_entries)
 			}
-		)'
+		)' || return 1
 	return 0
 }
 
@@ -332,9 +332,9 @@ discover_and_observe() {
 		}
 	fi
 	# Compute since timestamp
+	[[ "$WINDOW_HOURS" =~ ^[1-9][0-9]*$ ]] || return 1
 	since_iso=$(date -u -v "-${WINDOW_HOURS}H" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
-		date -u -d "${WINDOW_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null ||
-		echo "1970-01-01T00:00:00Z")
+		date -u -d "${WINDOW_HOURS} hours ago" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null) || return 1
 
 	log_msg INFO "discover_and_observe: self=$self_login window_since=$since_iso"
 
@@ -408,7 +408,7 @@ discover_and_observe() {
 		return 0
 	fi
 
-	printf '%s\n' "${observations[@]}" | _aggregate_peer_observations
+	printf '%s\n' "${observations[@]}" | _aggregate_peer_observations || return 1
 	return 0
 }
 
@@ -625,7 +625,10 @@ cmd_observe() {
 	}
 
 	local observations
-	observations=$(discover_and_observe "$self_login")
+	observations=$(discover_and_observe "$self_login") || {
+		log_msg WARN "peer observation incomplete — preserving peer state and override config"
+		return 0
+	}
 	local count
 	count=$(printf '%s' "$observations" | jq 'length' 2>/dev/null || echo 0)
 

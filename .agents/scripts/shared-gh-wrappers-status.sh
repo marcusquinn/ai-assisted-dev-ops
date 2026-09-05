@@ -993,9 +993,11 @@ gh_issue_view() {
 #######################################
 gh_pr_list() {
 	local _rest_capable=0
+	local _prefer_native_filter=0
 	local _uses_search=0
 	local _pool="rest-core"
 	_rest_pr_list_can_preserve_args "$@" && _rest_capable=1
+	_rest_pr_list_prefers_native_filter "$@" && _prefer_native_filter=1
 	if _rest_pr_list_requires_search "$@"; then
 		_uses_search=1
 		_pool="rest-search"
@@ -1007,7 +1009,7 @@ gh_pr_list() {
 		return 0
 	fi
 	local _out="" _rc=0
-	if [[ $_rest_capable -eq 1 ]] && _rest_read_first_enabled; then
+	if [[ $_rest_capable -eq 1 && $_prefer_native_filter -eq 0 ]] && _rest_read_first_enabled; then
 		if [[ $_uses_search -eq 1 ]]; then
 			print_info "[INFO] gh-wrapper: REST-first read mode, routing search-filtered pr list to /search/issues"
 		else
@@ -1021,7 +1023,7 @@ gh_pr_list() {
 		fi
 		return $_rc
 	fi
-	if [[ $_rest_capable -eq 1 ]] && { { command -v github_app_should_route_rest >/dev/null 2>&1 && github_app_should_route_rest "$_pool" gh_pr_list; } || _rest_should_fallback; }; then
+	if [[ $_rest_capable -eq 1 ]] && { { [[ $_prefer_native_filter -eq 0 ]] && command -v github_app_should_route_rest >/dev/null 2>&1 && github_app_should_route_rest "$_pool" gh_pr_list; } || _rest_should_fallback; }; then
 		if [[ $_uses_search -eq 1 ]]; then
 			print_info "[INFO] gh-wrapper: GraphQL budget low, routing search-filtered pr list to /search/issues"
 		else

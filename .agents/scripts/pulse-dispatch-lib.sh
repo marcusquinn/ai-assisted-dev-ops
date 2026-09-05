@@ -388,29 +388,37 @@ _dispatch_candidate_benign_block_reason() {
 #   $1 - issue number
 #   $2 - repo slug
 # Returns:
-#   0 - recent unresolved dirty-worktree marker exists
-#   1 - no active marker, expired marker, disabled, or API unavailable
+#   0 - recent unresolved marker, or evidence unavailable (conservative hold)
+#   1 - verified no active marker, expired marker, or disabled
 #######################################
 _dispatch_recent_dirty_worktree_marker_active() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local hold_seconds="${DISPATCH_DIRTY_WORKTREE_HOLD_SECONDS:-900}"
-	_DISPATCH_DIRTY_MARKER_STATE="clear"
+	_DISPATCH_DIRTY_MARKER_STATE="unknown"
 
 	[[ "$hold_seconds" =~ ^[0-9]+$ ]] || hold_seconds="900"
-	[[ "$hold_seconds" -gt 0 ]] || return 1
+	if [[ "$hold_seconds" -eq 0 ]]; then
+		_DISPATCH_DIRTY_MARKER_STATE="clear"
+		return 1
+	fi
 
-	local comments_json=""
-	comments_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments?per_page=100" 2>/dev/null) || return 1
-	[[ -n "$comments_json" ]] || return 1
+	local comments_json="" since_iso="" now_epoch="${AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH:-}"
+	[[ -n "$now_epoch" ]] || now_epoch=$(date +%s) || return 0
+	since_iso=$(python3 "${_PULSE_DISPATCH_LIB_DIR}/pulse-dirty-worktree-marker.py" \
+		--since "$hold_seconds" "$now_epoch") || return 0
+	# Only comments updated within the hold window can contain an active marker
+	# or a later resolution. Still paginate: a busy thread can exceed one page.
+	comments_json=$(gh api "repos/${repo_slug}/issues/${issue_number}/comments?per_page=100&since=${since_iso}" \
+		--paginate --slurp 2>/dev/null) || return 0
 
 	local marker_state=""
 	marker_state=$(printf '%s' "$comments_json" | \
 		python3 "${_PULSE_DISPATCH_LIB_DIR}/pulse-dirty-worktree-marker.py" \
-			"$hold_seconds" "${AIDEVOPS_DIRTY_WORKTREE_NOW_EPOCH:-}") || marker_state=""
-	_DISPATCH_DIRTY_MARKER_STATE="${marker_state:-clear}"
+			"$hold_seconds" "$now_epoch") || return 0
+	_DISPATCH_DIRTY_MARKER_STATE="$marker_state"
 
-	[[ "$marker_state" == block:* ]] || return 1
+	case "$marker_state" in clear|expired:*) return 1 ;; esac
 	return 0
 }
 
