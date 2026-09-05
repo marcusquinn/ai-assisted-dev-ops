@@ -117,6 +117,16 @@ if [ "${QLTY_STUB_MODE:-parity}" = "never-stable" ]; then
 	printf '{"runs":[{"results":[{"ruleId":"qlty:unstable","locations":[{"physicalLocation":{"artifactLocation":{"uri":"attempt-%s.sh"}}}]}]}]}\n' "$run_count"
 	exit 0
 fi
+if [ "${QLTY_STUB_MODE:-parity}" = "diff-unstable-unrelated" ]; then
+	run_count=0
+	if [ -f "$XDG_CACHE_HOME/run-count" ]; then
+		run_count=$(cat "$XDG_CACHE_HOME/run-count")
+	fi
+	run_count=$((run_count + 1))
+	printf '%s\n' "$run_count" >"$XDG_CACHE_HOME/run-count"
+	printf '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"unrelated-%s.py"}}}]}]}]}\n' "$run_count"
+	exit 0
+fi
 if [ "${QLTY_STUB_MODE:-parity}" = "topology-sensitive" ]; then
 	if [ "$(basename "$PWD")" = "repo" ]; then
 		printf '%s\n' '{"runs":[{"results":[{"ruleId":"qlty:similar-code","locations":[{"physicalLocation":{"artifactLocation":{"uri":"direct-only.sh"}}}]}]}]}'
@@ -198,6 +208,13 @@ metadata_output=$(cd "$REPO" && "$HELPER" --base HEAD^ --head HEAD 2>&1)
 metadata_rc=$?
 assert_rc "metadata-only commit diff-scopes unchanged source findings" "0" "$metadata_rc"
 assert_contains "metadata-only scan reports zero delta" "base: 0  head: 0  delta: 0" "$metadata_output"
+
+QLTY_STUB_MODE=diff-unstable-unrelated
+export QLTY_STUB_MODE
+diff_unstable_output=$(cd "$REPO" && "$HELPER" --base HEAD^ --head HEAD 2>&1)
+diff_unstable_rc=$?
+assert_rc "unrelated duplicate-code noise is scoped before consensus" "0" "$diff_unstable_rc"
+assert_contains "unrelated duplicate-code noise stabilizes after scoping" "identities stabilized after 2 scans" "$diff_unstable_output"
 
 QLTY_STUB_MODE=unchanged-file-regression
 export QLTY_STUB_MODE

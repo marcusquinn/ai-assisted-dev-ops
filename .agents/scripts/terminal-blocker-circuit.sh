@@ -10,6 +10,8 @@ _TERMINAL_BLOCKER_CIRCUIT_LOADED=1
 _TBC_OBSERVATION_MARKER='aidevops:terminal-blocker-observation'
 _TBC_CIRCUIT_MARKER='aidevops:terminal-blocker-circuit'
 _TBC_RETRY_MARKER='terminal-blocker-circuit:retry'
+_TBC_MISSING_SCOPE='missing_files_scope'
+_TBC_UNKNOWN='unknown'
 
 _terminal_blocker_hash() {
 	local value="$1"
@@ -24,12 +26,27 @@ _terminal_blocker_hash() {
 	return 0
 }
 
-# Capture the final model-owned BLOCKED dossier before the ephemeral output is
-# removed. Volatile runner/session/attempt identities and timestamps are
-# normalized so equivalent blockers converge across workers and hosts.
+# Versioned, allowlisted classes are the only public identities. Never hash prose
+# into a durable hold. Models may interpret a dossier with an exact standalone
+# TERMINAL_BLOCKER_REASON=<class> line; unclassified evidence remains retryable.
+_terminal_blocker_reason() {
+	local fingerprint="$1"
+	local reason=""
+	for reason in missing_files_scope target_code_blocker unknown; do
+		if [[ "$fingerprint" == "$(_terminal_blocker_hash "v2:${reason}")" ]]; then
+			printf '%s\n' "$reason"
+			return 0
+		fi
+	done
+	printf 'unknown\n'
+	return 0
+}
+
+# Capture only final assistant text, not tool output. A missing canonical scope
+# can also be established from the current brief, without interpreting prose.
 terminal_blocker_capture_output() {
 	local output_file="$1"
-	local normalized="" fingerprint=""
+	local normalized="" fingerprint="" issue_json=""
 	AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT=""
 	[[ -f "$output_file" ]] || return 1
 	normalized=$(
@@ -58,27 +75,31 @@ for raw_line in raw.splitlines():
         parts.append(text)
 
 marker = re.compile(r"(^|\n)\s*BLOCKED(?:\s*:|\s*$)", re.IGNORECASE)
-candidates = [part for part in parts if marker.search(part)]
-candidate = candidates[-1] if candidates else raw
+candidate = parts[-1] if parts else (raw if not raw.lstrip().startswith('{') else '')
 if not marker.search(candidate):
     raise SystemExit(1)
 
-candidate = re.sub(r"\b\d{4}-\d{2}-\d{2}[T ][0-9:.+-]+Z?\b", "<timestamp>", candidate)
-candidate = re.sub(r"\b[0-9]{10,16}\b", "<timestamp>", candidate)
-candidate = re.sub(
-    r"\b(runner|session|attempt(?:_id)?|device|claim(?:_id)?)\s*[=:]\s*\S+",
-    lambda match: f"{match.group(1).lower()}=<volatile>",
-    candidate,
-    flags=re.IGNORECASE,
-)
-candidate = re.sub(r"\s+", " ", candidate).strip().lower()
-if not candidate:
-    raise SystemExit(1)
-print(candidate[-2000:])
+reasons = re.findall(r"^TERMINAL_BLOCKER_REASON=(.*)$", candidate, re.M)
+allowed = {'missing_files_scope', 'target_code_blocker'}
+print(reasons[0] if len(reasons) == 1 and reasons[0] in allowed else 'unknown')
 PY
 	) || normalized=""
 	[[ -n "$normalized" ]] || return 1
-	fingerprint=$(_terminal_blocker_hash "$normalized") || return 1
+	# Do not infer a missing heading from words such as "Files Scope excludes".
+	# Verify the structural condition independently against the issue itself.
+	if [[ "${WORKER_ISSUE_NUMBER:-}" =~ ^[0-9]+$ &&
+		"${DISPATCH_REPO_SLUG:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+		issue_json=$(gh api "repos/${DISPATCH_REPO_SLUG}/issues/${WORKER_ISSUE_NUMBER}" 2>/dev/null) || issue_json=""
+		if printf '%s' "$issue_json" | jq -e '.body | type == "string"' >/dev/null 2>&1 &&
+			! printf '%s' "$issue_json" | jq -e '.body | test("(?m)^#{2,3} Files Scope[ \\t]*\\r?$")' >/dev/null 2>&1; then
+			normalized="$_TBC_MISSING_SCOPE"
+		elif [[ "$normalized" == "$_TBC_MISSING_SCOPE" ]]; then
+			normalized="$_TBC_UNKNOWN"
+		fi
+	elif [[ "$normalized" == "$_TBC_MISSING_SCOPE" ]]; then
+		normalized="$_TBC_UNKNOWN"
+	fi
+	fingerprint=$(_terminal_blocker_hash "v2:${normalized}") || return 1
 	AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT="$fingerprint"
 	return 0
 }
@@ -128,8 +149,14 @@ terminal_blocker_task_revision() {
 	local repo_slug="$2"
 	local issue_number="$3"
 	local repo_path="$4"
+	local reason="${5:-}"
 	local task_json="" dependency_signature="" target_revision="" canonical=""
+	[[ -n "$reason" ]] || reason=$(_terminal_blocker_reason "${AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT:-}")
 	task_json=$(printf '%s' "$issue_json" | jq -c '{title: (.title // ""), body: (.body // "")}' 2>/dev/null) || return 1
+	if [[ "$reason" == "$_TBC_MISSING_SCOPE" ]]; then
+		_terminal_blocker_hash "v2:missing_files_scope:${task_json}"
+		return $?
+	fi
 	dependency_signature=$(_terminal_blocker_dependency_signature "$repo_slug" "$issue_number") || return 1
 	target_revision=$(_terminal_blocker_target_revision "$repo_path") || return 1
 	canonical=$(jq -nc --argjson task "$task_json" --argjson dependencies "$dependency_signature" \
@@ -186,6 +213,16 @@ terminal_blocker_release_mode() {
 	observation=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_OBSERVATION_MARKER revision=${task_revision} blocker=${blocker_fingerprint}") || observation=""
 	circuit_at=$(printf '%s' "$circuit" | jq -r '.created_at // ""' 2>/dev/null) || circuit_at=""
 	observation_at=$(printf '%s' "$observation" | jq -r '.created_at // ""' 2>/dev/null) || observation_at=""
+	# Unknown dossiers can have one safe observation, never a durable circuit.
+	# Preserve each new CLAIM_RELEASED audit event, but omit repeated explanations.
+	if [[ "$(_terminal_blocker_reason "$blocker_fingerprint")" == "$_TBC_UNKNOWN" ]]; then
+		if [[ -n "$observation_at" && (-z "$retry_at" || "$observation_at" > "$retry_at") ]]; then
+			printf 'normal\n'
+		else
+			printf 'first\n'
+		fi
+		return 0
+	fi
 	if [[ -n "$circuit_at" && (-z "$retry_at" || "$circuit_at" > "$retry_at") ]]; then
 		printf 'open\n'
 	elif [[ -n "$observation_at" && (-z "$retry_at" || "$observation_at" > "$retry_at") ]]; then
@@ -199,8 +236,35 @@ terminal_blocker_release_mode() {
 terminal_blocker_observation_fragment() {
 	local task_revision="$1"
 	local blocker_fingerprint="$2"
-	printf '\n<!-- %s revision=%s blocker=%s -->\n\nTerminal blocker identity: %s. Detailed evidence remains in protected worker telemetry.\n' \
-		"$_TBC_OBSERVATION_MARKER" "$task_revision" "$blocker_fingerprint" "$blocker_fingerprint"
+	printf '\n<!-- %s revision=%s blocker=%s -->\n\n' \
+		"$_TBC_OBSERVATION_MARKER" "$task_revision" "$blocker_fingerprint"
+	_terminal_blocker_recovery "$blocker_fingerprint"
+	return 0
+}
+
+_terminal_blocker_recovery() {
+	local fingerprint="$1"
+	local reason="" owner="" action="" attempt="" issue="${WORKER_ISSUE_NUMBER:-unknown}"
+	reason=$(_terminal_blocker_reason "$fingerprint")
+	case "$reason" in
+	missing_files_scope)
+		owner="brief-author"
+		action='Add a canonical ### Files Scope (or legacy ## Files Scope) section listing the permitted paths in the issue body.'
+		;;
+	target_code_blocker)
+		owner="target-maintainer"
+		action='Review the protected blocker dossier and correct the target code or task dependencies before retrying.'
+		;;
+	*)
+		owner="worker-triage"
+		action='Interpret the protected dossier and record a known blocker class or repair the brief. No global dispatch hold is imposed.'
+		;;
+	esac
+	[[ "$issue" =~ ^[0-9]+$ ]] || issue="$_TBC_UNKNOWN"
+	# Correlate attempts without publishing runner names or arbitrary env text.
+	attempt=$(_terminal_blocker_hash "${AIDEVOPS_ATTEMPT_ID:-${WORKER_SESSION_KEY:-unknown}}") || attempt="$_TBC_UNKNOWN"
+	printf 'Terminal blocker: reason=%s owner=%s task=%s attempt=%s.\nNext action: %s\nRaw evidence remains in protected worker telemetry.\n' \
+		"$reason" "$owner" "$issue" "$attempt" "$action"
 	return 0
 }
 
@@ -208,7 +272,8 @@ terminal_blocker_circuit_comment() {
 	local machine_readable_release="$1"
 	local task_revision="$2"
 	local blocker_fingerprint="$3"
-	printf '<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\n%s\n<!-- %s revision=%s blocker=%s -->\nTERMINAL_BLOCKER_CIRCUIT active=true observations=2 task_revision=%s blocker=%s\n\nAutomatic redispatch is held because two workers returned the same terminal blocker against unchanged task, dependency, and target revisions. Detailed evidence remains in protected worker telemetry.\n\nA maintainer can retry without deleting history by posting %s. A task, dependency, or target revision change also re-arms dispatch.\n<!-- ops:end -->\n' \
+	[[ "$(_terminal_blocker_reason "$blocker_fingerprint")" != "$_TBC_UNKNOWN" ]] || return 1
+	printf '<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\n%s\n<!-- %s revision=%s blocker=%s -->\nTERMINAL_BLOCKER_CIRCUIT active=true observations=2 task_revision=%s blocker=%s\n\nAutomatic redispatch is held for the repeated known blocker. See the preceding recovery observation.\n\nA maintainer can retry without deleting history by posting %s. A relevant revision change also re-arms dispatch; brief-only blockers ignore target commits and dependencies.\n<!-- ops:end -->\n' \
 		"$machine_readable_release" "$_TBC_CIRCUIT_MARKER" "$task_revision" \
 		"$blocker_fingerprint" "$task_revision" "$blocker_fingerprint" \
 		"$_TBC_RETRY_MARKER"
@@ -221,11 +286,14 @@ terminal_blocker_circuit_active() {
 	local repo_slug="$3"
 	local issue_number="$4"
 	local repo_path="$5"
-	local circuit="" circuit_at="" retry_at="" current_revision=""
+	local circuit="" circuit_at="" retry_at="" current_revision="" fingerprint="" reason=""
 	circuit=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_CIRCUIT_MARKER revision=") || circuit=""
 	[[ -n "$circuit" ]] || return 1
-	current_revision=$(terminal_blocker_task_revision "$issue_json" "$repo_slug" "$issue_number" "$repo_path") || return 1
-	circuit=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_CIRCUIT_MARKER revision=${current_revision} blocker=") || circuit=""
+	fingerprint=$(printf '%s' "$circuit" | jq -r '.body | capture("<!-- aidevops:terminal-blocker-circuit revision=[a-f0-9]{24} blocker=(?<id>[a-f0-9]{24}) -->").id' 2>/dev/null) || return 1
+	reason=$(_terminal_blocker_reason "$fingerprint")
+	[[ "$reason" != "$_TBC_UNKNOWN" ]] || return 1
+	current_revision=$(terminal_blocker_task_revision "$issue_json" "$repo_slug" "$issue_number" "$repo_path" "$reason") || return 1
+	circuit=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_CIRCUIT_MARKER revision=${current_revision} blocker=${fingerprint}") || circuit=""
 	[[ -n "$circuit" ]] || return 1
 	circuit_at=$(printf '%s' "$circuit" | jq -r '.created_at // ""' 2>/dev/null) || return 1
 	retry_at=$(_terminal_blocker_latest_retry_at "$comments_json") || retry_at=""

@@ -1005,6 +1005,23 @@ Mandatory behavior:
 8. Attempt the merge path once. If it merges, finish the required closing comments. If the exact-head non-draft PR has no terminal check failure and only asynchronous CI, review-bot, human approval, or native auto-merge remains, emit POST_PR_HANDOFF on its own line and exit normally. Pulse/webhook automation owns subsequent monitoring. Do not sleep, wait, or poll for those gates, and never bypass, disable, or weaken branch protection, approval, review-bot, CI, or security gates.
 9. Model escalation before BLOCKED (GH#14964): BLOCKED is only valid after exhausting all autonomous solution paths. If the only remaining blocker is the current model's inability to reason through the task safely, emit `BLOCKED: capability limit - <evidence>`; runtime routing will retry at the next configured capability tier. Never use that marker for permission, authentication, provider, rate-limit, secret, policy, trust-boundary, or locality failures. Review-policy metadata and nominal GitHub states are NOT valid blockers. Genuine blockers require evidence: a failing check that cannot be repaired, missing permission, unresolved conflict, or explicit policy gate.
 
+Terminal blocker reason protocol (GH#31239):
+When genuinely blocked, put BLOCKED: <evidence> and exactly one standalone
+reason line in the SAME final assistant text message (not a tool result):
+TERMINAL_BLOCKER_REASON=missing_files_scope
+Use that reason only when the canonical ## Files Scope or ### Files Scope
+heading is absent; the runtime independently verifies the current issue body.
+For an evidenced target-code defect or conflict that cannot be repaired within
+the authorized scope, use this alternative reason line:
+TERMINAL_BLOCKER_REASON=target_code_blocker
+Target-code blockers may re-arm when the brief, dependencies, or target revision
+changes. Never use that class for permissions, credentials, provider failures,
+capability limits, missing scope, or ambiguous evidence. If neither class is
+established, omit the reason line: unknown evidence stays retryable, not held.
+Do not invent classes or emit both lines. Keep raw stderr, private paths, secrets,
+and sensitive evidence in protected telemetry; public recovery messages are
+runtime-generated from allowlisted reason/action text, never copied model prose.
+
 Activity watchdog constraint -- CRITICAL:
 A continuous watchdog monitors your output. If you produce no tool calls or text
 output for 300 seconds, you will be killed. Therefore:

@@ -31,6 +31,11 @@ tools:
 
 **Platform docs**: `fly-io.md` | `daytona.md` | `coolify.md` | `cloudron-app-packaging.md` | `vercel.md`
 
+**OS/image selection**: Apply [contextual OS recommendations](../../reference/os-selection.md)
+before provisioning. Prefer compatible Hetzner ARM workloads and supported Rocky
+Coolify hosts; Cloudron instead requires its documented Ubuntu x64 host. Verify
+the exact provider image, architecture, vendor release, and operating burden.
+
 **Scope**: This guide compares application platforms, not conventional WordPress
 hosting providers. For WordPress hosting, use `aidevops/recommendations.md`:
 Hostinger is the managed starting point, Hetzner is the self-managed option, and

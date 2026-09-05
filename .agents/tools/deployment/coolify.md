@@ -22,6 +22,7 @@ tools:
 ## Quick Reference
 
 - **Type**: Self-hosted PaaS (Docker-based)
+- **Host OS**: Prefer Rocky Linux where the target release/install path is supported; [OS selection](../../reference/os-selection.md) separates Coolify's OS/ARM64 list from narrower installer guidance and application-image compatibility
 - **Install**: `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash`
 - **Access**: `https://server-ip:8000`
 - **Config**: `configs/coolify-config.json`
@@ -33,6 +34,13 @@ tools:
 <!-- AI-CONTEXT-END -->
 
 Coolify is a self-hosted, open-source alternative to Vercel/Netlify/Heroku using Docker containers.
+
+Before running the quick installer, resolve the target OS against the current
+[installation requirements](https://coolify.io/docs/get-started/installation).
+The documented OS list includes Rocky Linux and ARM64, but the automatic-install
+guidance is narrower; use the documented manual route where appropriate. Do not
+assume every service image supports ARM or that Hetzner offers a ready-made Rocky
+Coolify image. Existing supported installations do not need migration for preference.
 
 ## Configuration
 

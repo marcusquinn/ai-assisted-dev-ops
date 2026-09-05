@@ -97,6 +97,38 @@ _release_provenance_verify_pr_record() {
 	return 0
 }
 
+# Fence new publication only: historical signed tags must remain readable for
+# authorization-gap evidence and later legitimate-release reconciliation.
+_release_provenance_verify_aggregate_base() {
+	local repo_slug="$1"
+	local aggregate_pr="$2"
+	local merge_sha="$3"
+	local pr_json=""
+	local reviewed_head=""
+	local merge_parent=""
+	local comparison=""
+
+	pr_json=$(_release_provenance_pr_json "$repo_slug" "$aggregate_pr") || return 1
+	reviewed_head=$(jq -er '.headRefOid | select(test("^[0-9a-f]{40}$"))' <<<"$pr_json") || return 1
+	merge_parent=$(git rev-parse "${merge_sha}^1" 2>/dev/null) || return 1
+	# Use immutable SHA endpoints rather than fetching a mutable PR branch into
+	# shared refs. The merge parent must already belong to the reviewed ancestry;
+	# matching trees alone misses empty/metadata-only source PRs.
+	comparison=$(gh api "repos/${repo_slug}/compare/${reviewed_head}...${merge_parent}" 2>/dev/null) || {
+		_release_provenance_error "cannot verify reviewed base of aggregation PR #${aggregate_pr}"
+		return 1
+	}
+	#aidevops:trust-boundary
+	if ! jq -e --arg head "$reviewed_head" --arg parent "$merge_parent" '
+		.base_commit.sha == $head and .merge_base_commit.sha == $parent
+		and .ahead_by == 0 and (.status == "behind" or .status == "identical")
+	' <<<"$comparison" >/dev/null; then
+		_release_provenance_error "aggregation PR #${aggregate_pr} inherited unreviewed default-branch commits; prepare a fresh exact-tip aggregation with the complete source set"
+		return 1
+	fi
+	return 0
+}
+
 _release_provenance_expected_sources() {
 	local requested_pr="$1"
 	local raw_sources="$2"
@@ -271,6 +303,7 @@ _release_provenance_resolve_source() {
 		return 1
 	}
 	_release_provenance_verify_pr_record "$repo_slug" "$branch_name" "$aggregate_pr" "$release_head" "$release_head" || return 1
+	_release_provenance_verify_aggregate_base "$repo_slug" "$aggregate_pr" "$release_head" || return 1
 	if [[ "$requested_pr" == "$aggregate_pr" && "$requested_merge" == "$release_head" ]]; then
 		found_requested=true
 	fi

@@ -22,10 +22,12 @@ tools:
 ## Quick Reference
 
 - **Purpose**: Self-hosted WireGuard mesh VPN — SSO, MFA, granular ACLs, REST API, Terraform provider
-- **vs Tailscale**: Fully self-hosted control plane (AGPL), no vendor lock-in, API-first
+- **Control**: Self-hostable control plane and API automation; assess licence/feature gates and migration costs rather than promising zero lock-in
 - **Install client**: `curl -fsSL https://pkgs.netbird.io/install.sh | sh`
 - **CLI**: `netbird` | **Admin UI**: `https://netbird.example.com` | **API**: `https://netbird.example.com/api`
-- **Docs**: https://docs.netbird.io | **License**: BSD-3 (client), AGPL-3.0 (server)
+- **Docs**: https://docs.netbird.io | **Licences**: BSD-3-Clause generally; management, signal, and relay directories AGPLv3; check the selected release and commercial features
+- **Optional GitHub ingress**: [Webhook onboarding](../../reference/github-webhook-onboarding.md) — mesh access alone is private; public webhook delivery needs separate ingress and preserved GitHub HMAC. Polling remains the default
+- **Host selection**: [OS recommendations](../../reference/os-selection.md) — verify Docker/client support and architecture before preferring ARM, Rocky, or Alpine; Cloudron's Ubuntu x64 requirement is separate
 
 **Key concepts**: Management Server (state/ACLs) · Signal Server (WebRTC ICE) · Relay Server (TURN fallback) · Setup Key (bulk provisioning) · Peer Group (ACL target) · Network Route (subnet advertisement) · Private DNS (mesh name resolution)
 
@@ -39,14 +41,10 @@ tools:
 
 Min: 1 vCPU / 2 GB RAM. Ports: TCP 80, 443 + **UDP 3478** (direct, not proxyable).
 
-```bash
-export NETBIRD_DOMAIN=netbird.example.com
-NETBIRD_VERSION="v0.35.0"  # pin — check github.com/netbirdio/netbird/releases
-curl -fsSL "https://github.com/netbirdio/netbird/releases/download/${NETBIRD_VERSION}/getting-started.sh" \
-  -o /tmp/netbird-setup.sh
-# Verify checksum from release page before running
-bash /tmp/netbird-setup.sh
-```
+Follow the current [self-hosted quickstart](https://docs.netbird.io/selfhosted/selfhosted-quickstart)
+and select a compatible stable [release](https://github.com/netbirdio/netbird/releases).
+Review downloaded setup assets before execution and pin the chosen versions;
+do not reuse an old `v0.35.0` example for today's reverse-proxy features.
 
 **DB**: SQLite (default, <50 peers, no HA) or PostgreSQL (production, HA). **IdP**: Embedded Dex (quickstart); production: any OIDC — Keycloak, Zitadel, Authentik, PocketID, Google Workspace, Entra ID, Okta, Auth0. Cloudron: built-in OIDC works directly. **JWT Group Sync**: Settings > Groups > JWT group sync → claim name (usually `groups`).
 
@@ -77,7 +75,10 @@ docker compose pull netbird-server dashboard && docker compose up -d --force-rec
 
 ### Coolify / Dokploy (Traefik-based PaaS)
 
-Full feature parity with standalone. Generate config with `[1] Existing Traefik`, adapt compose: remove Traefik service, add labels to dashboard, expose `3478:3478/udp`.
+Use the current [external reverse-proxy guide](https://docs.netbird.io/selfhosted/external-reverse-proxy).
+Choose its existing-Traefik path and adapt the release's Compose routing and UDP
+exposure. Feature parity depends on the actual proxy, versions, configuration,
+and licence; a running dashboard alone does not prove native ingress works.
 
 ```yaml
 # netbird-server: ports: ["3478:3478/udp"]
@@ -97,7 +98,11 @@ Dokploy: identical, use `../files/` prefix for bind mount persistence.
 
 Package: https://github.com/marcusquinn/cloudron-netbird-app. Add-ons: `postgresql`, `localstorage`, `oidc`, `turn`.
 
-**Reverse proxy not supported** — requires Traefik TLS passthrough; Cloudron uses nginx (architectural constraint). Core mesh VPN unaffected.
+**Native Reverse Proxy not supported by this package** — its documented Traefik
+TLS-passthrough integration is incompatible with Cloudron's nginx TLS termination.
+Core mesh VPN is unaffected. An ordinary proxy on a **separate public VPS** can
+still forward to a mesh peer; see [webhook onboarding](../../reference/github-webhook-onboarding.md).
+Do not replace Cloudron's managed nginx or install an unmanaged competing proxy.
 
 ### Feature Comparison
 
@@ -106,7 +111,7 @@ Package: https://github.com/marcusquinn/cloudron-netbird-app. Add-ons: `postgres
 | Mesh VPN + Dashboard + API | Yes | Yes | Yes |
 | SSO (OIDC) | Cloudron SSO | Any IdP | Any IdP |
 | PostgreSQL | Add-on | Manual | PaaS DB |
-| **Reverse proxy** | **No** | Yes | **Yes** |
+| **Native Reverse Proxy (beta)** | **No (package constraint)** | Compatible proxy deployment required | Compatible Traefik configuration required |
 
 ## Client Installation
 
@@ -119,8 +124,9 @@ curl -fsSL https://pkgs.netbird.io/install.sh | sh
 sudo systemctl enable --now netbird && sudo netbird up --setup-key <KEY>
 
 # Docker
+# Replace the placeholder with a verified compatible stable release tag
 docker run -d --name netbird --cap-add NET_ADMIN --cap-add SYS_ADMIN \
-  -v netbird-client:/etc/netbird netbirdio/netbird:v0.35.0 \
+  -v netbird-client:/etc/netbird "netbirdio/netbird:<VERIFIED_RELEASE_TAG>" \
   up --setup-key <SETUP_KEY> --management-url https://netbird.example.com
 
 # Synology (SSH)
@@ -175,11 +181,27 @@ curl -s .../api/peers -H "Authorization: Token <TOKEN>" | jq '.[] | {name,ip,con
 
 Provider: `netbirdio/netbird` (registry.terraform.io). Resources: `netbird_group`, `netbird_setup_key`, `netbird_policy`, `netbird_route`, `netbird_dns`. Configure with `server_url` + `token`.
 
-## Reverse Proxy Feature (v0.65+, beta)
+## Native Reverse Proxy Feature (beta)
 
 Exposes internal mesh services publicly with automatic TLS and optional SSO/password/PIN auth. Maps public domain → internal peer + port → HTTPS terminated at proxy, forwarded through mesh.
 
-**Requires**: `netbirdio/netbird-proxy` + Traefik (TLS passthrough) + DNS for proxy domain. **Features**: Path routing, custom domains, HA, ACME or static TLS, hot reload. **Limitations**: Traefik only (no nginx/Cloudron), no Rosenpass, beta.
+For self-hosting, follow [Enable Reverse Proxy](https://docs.netbird.io/selfhosted/migration/enable-reverse-proxy)
+for the `netbirdio/reverse-proxy` component, token, DNS, and ACME configuration.
+The supported external front-proxy integration is currently Traefik; this is not
+a ban on an ordinary Caddy/nginx gateway using mesh transport independently.
+
+Creating services requires **Services** permission (Network Admin or higher).
+Public HTTP services can deliberately disable additional proxy authentication
+and rely on the application's own authentication. For GitHub, preserve
+`X-Hub-Signature-256`; static Header Auth is not compatible with GitHub's dynamic
+HMAC signature and strips its matched header. Browser SSO/password/PIN and
+NetBird-Only Access are not GitHub webhook delivery paths. Use the step-by-step
+[optional webhook guide](../../reference/github-webhook-onboarding.md).
+
+Some self-hosted enterprise features, including SCIM, require a commercial licence;
+check [self-hosted versus cloud](https://docs.netbird.io/about-netbird/self-hosted-vs-cloud)
+and current plan terms. Do not claim that every self-hosted feature is free or
+that native Reverse Proxy has a paid gate without evidence for that deployment.
 
 ## vs Tailscale
 
@@ -189,7 +211,7 @@ Exposes internal mesh services publicly with automatic TLS and optional SSO/pass
 | SSO | Any OIDC (multiple simultaneous) | Google/Microsoft/GitHub |
 | Reverse proxy | Yes (beta, Traefik) | Tailscale Funnel |
 | Quantum resistance | Rosenpass | No |
-| Vendor lock-in | None | High |
+| Exit considerations | Self-hosted control; maintain identity/config/data migration plans | Hosted control-plane dependency; evaluate export and migration paths |
 
 **Use Tailscale**: Zero setup, vendor dependency acceptable, free tier (100 devices, 3 users) sufficient.
 **Use NetBird**: Full control, API automation, team scaling, or proprietary control plane unacceptable.

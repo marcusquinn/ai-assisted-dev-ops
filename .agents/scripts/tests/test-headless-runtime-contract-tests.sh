@@ -157,6 +157,98 @@ test_parse_initial_model_does_not_set_explicit_override() {
 	return 0
 }
 
+test_initial_model_selection_contract() {
+	local scenario="" evidence="" expected=""
+	for scenario in healthy backoff missing-auth cooling invalid outside-tier excluded exhausted pin replay adaptive vault; do
+		evidence=$(
+			local role="worker" session_key="selection-fixture" title="fixture" prompt="fixture"
+			local model_override="" initial_model="anthropic/preferred" tier_override="thinking" selected_model=""
+			local status=0 outcome="" finished="" checked_model="" command_model="" arg="" previous=""
+			local expected_model="anthropic/preferred"
+			get_configured_models() {
+				printf '%s\n' openai/fallback openai/cheaper
+				[[ "$scenario" == excluded ]] || printf '%s\n' anthropic/preferred
+				return 0
+			}
+			model_tier_candidate_index() {
+				[[ "$1" == thinking && ("$2" == anthropic/preferred || "$2" == openai/fallback) ]]
+			}
+			provider_auth_available() { [[ "$scenario" != missing-auth || "$1" != anthropic ]]; }
+			provider_oauth_pool_available() { [[ "$scenario" != cooling || "$1" != anthropic ]]; }
+			model_backoff_active() {
+				[[ "$scenario" == exhausted && "$1" != openai/cheaper ]] ||
+					[[ ("$scenario" == backoff || "$scenario" == pin || "$scenario" == replay) && "$1" == anthropic/preferred ]]
+			}
+			set_last_provider() { return 0; }
+			_choose_model_tier_downgrade() { printf '%s' openai/cheaper; }
+			model_tier_for_model() { printf '%s' simple; }
+			_hrff_write_external_outcome() {
+				outcome="$2:$4"
+				return 0
+			}
+			_cmd_run_finish() {
+				finished="$2"
+				return 0
+			}
+			vault_data_policy_check() {
+				checked_model="$1"
+				[[ "$scenario" != vault ]]
+			}
+			_detect_opencode_server() { return 1; }
+			case "$scenario" in
+			(invalid)
+				initial_model="invalid"
+				expected_model="openai/fallback"
+				;;
+			(outside-tier)
+				initial_model="openai/cheaper"
+				expected_model="openai/fallback"
+				;;
+			(backoff | missing-auth | cooling | excluded) expected_model="openai/fallback" ;;
+			(exhausted | pin) expected_model="" ;;
+			(adaptive)
+				initial_model=""
+				expected_model="openai/cheaper"
+				;;
+			esac
+			if [[ "$scenario" == pin || "$scenario" == replay ]]; then
+				model_override="anthropic/preferred"
+				initial_model="openai/fallback"
+			fi
+			[[ "$scenario" != replay ]] || role="$HEADLESS_ROLE_MODEL_REPLAY"
+			_select_cmd_run_model || status=$?
+			[[ "$selected_model" == "$expected_model" ]] || exit 1
+			if [[ "$scenario" == exhausted || "$scenario" == pin ]]; then
+				[[ "$status" -eq 75 && "$outcome" == "model_selection_failed:$_HRFF_RETRY_CLASS_INFRASTRUCTURE" &&
+					"$finished" == "$_HRW_STATUS_FAIL" && -z "$checked_model" ]] || exit 2
+			elif [[ "$scenario" == vault ]]; then
+				[[ "$status" -eq 64 && "$outcome" == "protected_data_policy_blocked:$_HRFF_RETRY_CLASS_MAINTAINER_GATE" &&
+					"$finished" == "$_HRW_STATUS_FAIL" && "$checked_model" == "$expected_model" ]] || exit 3
+			else
+				[[ "$status" -eq 0 && -z "$outcome$finished" && "$checked_model" == "$expected_model" ]] || exit 4
+				while IFS= read -r -d '' arg; do
+					[[ "$previous" != -m ]] || command_model="$arg"
+					previous="$arg"
+				done < <(_build_run_cmd "$selected_model" "$TEST_ROOT" "$prompt" "$title" "" "" "")
+				[[ "$command_model" == "$expected_model" ]] || exit 5
+			fi
+			if [[ "$scenario" == adaptive ]]; then
+				[[ "$tier_override" == simple ]] || exit 6
+			else
+				[[ "$tier_override" == thinking ]] || exit 7
+			fi
+			printf '%s' verified
+		) || true
+		expected="verified"
+		if [[ "$evidence" == "$expected" ]]; then
+			print_result "initial-model selection contract: $scenario" 0
+		else
+			print_result "initial-model selection contract: $scenario" 1 "evidence=$evidence"
+		fi
+	done
+	return 0
+}
+
 test_launch_helpers_tolerate_unset_state_under_nounset() {
 	local status=0
 	(

@@ -34,6 +34,7 @@ Hand-fix: `"tools": {}` (not `[]`), `"type": "local"|"remote"`, `"tool_name": tr
 5. **Guide service-by-service setup**: purpose → credential source → setup command → verification
 6. **Per-repo platform setup**: after `gh auth login` succeeds, mention `/setup-git` for per-repo secrets (SYNC_PAT for issue-sync, etc.) — see "Scope" note below.
 7. **Optional Buzz team**: after a supported Buzz Desktop build is installed, generate and import the canonical **AI DevOps** team through the owner-review flow below.
+8. **Optional GitHub webhooks**: for users interested in event latency or further API optimisation, offer [webhook onboarding](../reference/github-webhook-onboarding.md). Outbound-only polling is the default; no domain, public ingress, VPN, or webhook secret is required. Explain Cloudflare Tunnel, NetBird native ingress, and the separate-gateway route for Cloudron before seeking live setup approval. The webhook secret belongs in Settings → Webhooks, not Actions secrets.
 
 ## Outcome Examples
 

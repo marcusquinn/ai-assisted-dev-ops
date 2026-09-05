@@ -118,10 +118,14 @@ in. Before the queue is present, ordinary polling creates no queue state.
 Dry-run processing does not claim or acknowledge hints. The private directory
 can be isolated with `AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_DIR`.
 
-**Do not slow the polling backstop without verified webhook coverage.** A
-configured listener is not proof that GitHub, the tunnel, all needed events and
-the receiver are working. Missing secret/configuration retains polling;
-configure secrets with `aidevops secret set GITHUB_WEBHOOK_SECRET`, never in chat.
+**Webhooks are optional; outbound-only polling is the default.** Follow
+[optional webhook onboarding](github-webhook-onboarding.md) for Cloudflare Tunnel,
+NetBird, or a public gateway with Cloudron-hosted mesh management. Missing webhook
+secrets/configuration do not make the core installation incomplete. Keep polling
+and its cadence unchanged during and after onboarding. A configured listener is
+not proof of GitHub delivery, event coverage, or API savings; further tuning needs
+separate verified evidence and scope. Configure secrets with
+`aidevops secret set GITHUB_WEBHOOK_SECRET`, never in chat.
 
 ## Focused verification
 

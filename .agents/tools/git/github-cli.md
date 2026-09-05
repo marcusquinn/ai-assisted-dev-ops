@@ -23,6 +23,11 @@ tools:
 
 ## Auth
 
+For rate-limit/efficiency work, read [transport and freshness](../../reference/github-api-transport.md).
+[Optional webhook onboarding](../../reference/github-webhook-onboarding.md) covers
+Cloudflare Tunnel and NetBird/public gateways. Ordinary polling requires no public
+ingress; repository Webhooks secrets are separate from Actions secrets and CLI auth.
+
 ```bash
 gh auth login -s workflow   # Always include workflow scope
 gh auth refresh -s workflow # Add scope to existing token

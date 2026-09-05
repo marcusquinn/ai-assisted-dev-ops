@@ -232,7 +232,8 @@ _choose_model_explicit() {
 _first_healthy_configured_model() {
 	local tier_name="${1:-standard}"
 	local selection_mode="${2:-adaptive}"
-	local current_model="" current_provider="" configured_count=0
+	local preferred_model="${3:-}"
+	local current_model="" current_provider="" configured_count=0 fallback_model=""
 	while IFS= read -r current_model; do
 		[[ -n "$current_model" ]] || continue
 		if [[ "$selection_mode" == "exact-tier" ]] &&
@@ -245,9 +246,18 @@ _first_healthy_configured_model() {
 		provider_auth_available "$current_provider" || continue
 		provider_oauth_pool_available "$current_provider" || continue
 		model_backoff_active "$current_model" && continue
-		printf '%s' "$current_model"
-		return 0
+		if [[ -z "$preferred_model" || "$current_model" == "$preferred_model" ]]; then
+			printf '%s' "$current_model"
+			return 0
+		fi
+		# Search the filtered configured list for the preference, retaining the
+		# first healthy fallback. Preferences cannot bypass provider allowlists.
+		[[ -n "$fallback_model" ]] || fallback_model="$current_model"
 	done < <(get_configured_models "$tier_name")
+	if [[ -n "$fallback_model" ]]; then
+		printf '%s' "$fallback_model"
+		return 0
+	fi
 	[[ "$configured_count" -gt 0 ]] && return 75
 	return 1
 }
@@ -293,8 +303,9 @@ _choose_model_auto() {
 	local role="$1"
 	local tier_name="${2:-standard}"
 	local selection_mode="${3:-adaptive}"
+	local preferred_model="${4:-}"
 	local current_model="" select_status=0
-	current_model=$(_first_healthy_configured_model "$tier_name" "$selection_mode") || select_status=$?
+	current_model=$(_first_healthy_configured_model "$tier_name" "$selection_mode" "$preferred_model") || select_status=$?
 	if [[ "$select_status" -eq 1 ]]; then
 		print_error "No direct provider models configured for headless runtime"
 		return 1
@@ -330,13 +341,20 @@ choose_model() {
 	local explicit_model="${2:-}"
 	local tier_name="${3:-standard}"
 	local selection_mode="${4:-adaptive}"
+	local initial_model="${5:-}"
 
 	if [[ -n "$explicit_model" ]]; then
 		_choose_model_explicit "$explicit_model" "$role"
 		return $?
 	fi
 
-	_choose_model_auto "$role" "$tier_name" "$selection_mode"
+	if [[ -n "$initial_model" ]]; then
+		# A stale/unavailable dispatcher preference is not an explicit pin. Keep
+		# fallback inside the requested tier, without adaptive tier downgrades.
+		selection_mode="exact-tier"
+	fi
+
+	_choose_model_auto "$role" "$tier_name" "$selection_mode" "$initial_model"
 	return $?
 }
 
