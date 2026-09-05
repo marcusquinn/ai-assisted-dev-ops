@@ -1780,6 +1780,32 @@ _full_loop_record_merged_pr() {
 	return $?
 }
 
+_full_loop_status_receipt_projection() {
+	local cleanup_receipt="$1"
+	local repo="$2"
+	local pr_number="$3"
+
+	[[ -f "$cleanup_receipt" && ! -L "$cleanup_receipt" ]] || return 1
+	jq -er --arg repo "$repo" --argjson pr "$pr_number" \
+		--arg complete "$_FULL_LOOP_EXECUTOR_COMPLETE" \
+		--arg finalization_pending "$_FULL_LOOP_EXECUTOR_FINALIZATION_PENDING" \
+		--arg deferred "$_FULL_LOOP_CLEANUP_DEFERRED" \
+		--arg leased "$_FULL_LOOP_CLEANUP_LEASED" \
+		--arg cleaned "$_FULL_LOOP_CLEANUP_CLEANED" '
+		select(
+			.schema_version == 1
+			and .repository == $repo
+			and .pr_number == $pr
+			and (.worktree | type == "string" and length > 0)
+			and (.executor_completion_state == $complete or .executor_completion_state == $finalization_pending)
+			and (.resource_cleanup_state == $deferred or .resource_cleanup_state == $leased or .resource_cleanup_state == $cleaned)
+		)
+		| [.executor_completion_state, .resource_cleanup_state, .worktree]
+		| @tsv
+	' "$cleanup_receipt" 2>/dev/null
+	return $?
+}
+
 cmd_status() {
 	is_loop_active || {
 		if [[ "${1:-}" == "--json" ]]; then
@@ -1795,6 +1821,10 @@ cmd_status() {
 	local resource_cleanup_state="$_FULL_LOOP_RESOURCE_NONE"
 	local cleanup_worktree=""
 	local cleanup_receipt=""
+	local status_next_action="$NEXT_ACTION"
+	local phase_is_historical=false
+	local status_repo=""
+	local receipt_projection=""
 	if [[ "$observed_status" == "$_FULL_LOOP_PHASE_RUNNING" ]]; then
 		local observed_command=""
 		local heartbeat_file="${STATE_DIR}/full-loop.heartbeat"
@@ -1812,31 +1842,41 @@ cmd_status() {
 		fi
 	fi
 	if [[ "${PR_NUMBER:-}" =~ ^[0-9]+$ ]]; then
-		local status_repo=""
 		status_repo=$(_full_loop_resolve_repo "${AIDEVOPS_FULL_LOOP_REPO:-}" 2>/dev/null || true)
 		if [[ -n "$status_repo" ]] && declare -F _full_loop_cleanup_receipt_path >/dev/null 2>&1; then
 			cleanup_receipt=$(_full_loop_cleanup_receipt_path "$status_repo" "$PR_NUMBER" 2>/dev/null || true)
 		fi
 	fi
-	if [[ -n "$cleanup_receipt" && -f "$cleanup_receipt" ]]; then
-		executor_completion_state=$(jq -r --arg fallback "$_FULL_LOOP_EXECUTOR_IN_PROGRESS" '.executor_completion_state // $fallback' "$cleanup_receipt" 2>/dev/null || printf '%s' "$_FULL_LOOP_EXECUTOR_IN_PROGRESS")
-		resource_cleanup_state=$(jq -r --arg fallback "$_FULL_LOOP_RESOURCE_NONE" '.resource_cleanup_state // $fallback' "$cleanup_receipt" 2>/dev/null || printf '%s' "$_FULL_LOOP_RESOURCE_NONE")
-		cleanup_worktree=$(jq -r '.worktree // empty' "$cleanup_receipt" 2>/dev/null || true)
+	if [[ -n "$cleanup_receipt" && -n "$status_repo" ]] &&
+		receipt_projection=$(_full_loop_status_receipt_projection "$cleanup_receipt" "$status_repo" "$PR_NUMBER"); then
+		IFS=$'\t' read -r executor_completion_state resource_cleanup_state cleanup_worktree <<<"$receipt_projection"
+		if [[ "$executor_completion_state" == "$_FULL_LOOP_EXECUTOR_COMPLETE" ]]; then
+			observed_status="complete"
+			phase_is_historical=true
+			case "$resource_cleanup_state" in
+			"$_FULL_LOOP_CLEANUP_CLEANED") status_next_action="none" ;;
+			*) status_next_action="await-resource-cleanup" ;;
+			esac
+		fi
 	fi
 	if [[ "${1:-}" == "--json" ]]; then
 		jq -cn --arg run_id "$RUN_ID" --arg phase "$CURRENT_PHASE" --arg phase_status "$PHASE_STATUS" \
-			--arg executor_status "$observed_status" --arg next_action "$NEXT_ACTION" --arg pr_number "${PR_NUMBER:-}" \
+			--arg executor_status "$observed_status" --arg next_action "$status_next_action" --arg pr_number "${PR_NUMBER:-}" \
 			--arg executor_completion_state "$executor_completion_state" --arg resource_cleanup_state "$resource_cleanup_state" \
 			--arg cleanup_worktree "$cleanup_worktree" \
 			--arg heartbeat_at "${heartbeat_timestamp:-${HEARTBEAT_AT:-}}" \
+			--argjson phase_is_historical "$phase_is_historical" \
 			--argjson revision "$STATE_REVISION" --argjson attempts "$PHASE_ATTEMPT" --argjson manual_resumes "$MANUAL_RESUME_COUNT" \
-			'{run_id:$run_id,phase:$phase,phase_status:$phase_status,executor_status:$executor_status,executor_completion_state:$executor_completion_state,resource_cleanup_state:$resource_cleanup_state,cleanup_worktree:$cleanup_worktree,heartbeat_at:$heartbeat_at,next_action:$next_action,pr_number:$pr_number,state_revision:$revision,phase_attempts:$attempts,manual_resumes:$manual_resumes}'
+			'{run_id:$run_id,phase:$phase,phase_status:$phase_status,phase_is_historical:$phase_is_historical,executor_status:$executor_status,executor_completion_state:$executor_completion_state,resource_cleanup_state:$resource_cleanup_state,cleanup_worktree:$cleanup_worktree,heartbeat_at:$heartbeat_at,next_action:$next_action,pr_number:$pr_number,state_revision:$revision,phase_attempts:$attempts,manual_resumes:$manual_resumes}'
 		return 0
 	fi
-	printf "\n${BOLD}Full Loop Status${NC}\nPhase: ${CYAN}%s${NC} | Started: %s | PR: %s | Headless: %s\nPrompt: %s\n\n" \
+	local phase_label="Phase"
+	[[ "$phase_is_historical" == true ]] && phase_label="Recorded phase"
+	printf "\n${BOLD}Full Loop Status${NC}\n%s: ${CYAN}%s${NC} | Started: %s | PR: %s | Headless: %s\nPrompt: %s\n\n" \
+		"$phase_label" \
 		"$CURRENT_PHASE" "$STARTED_AT" "${PR_NUMBER:-none}" "$HEADLESS" "$(echo "$SAVED_PROMPT" | head -3)"
 	printf 'Executor: %s (%s) | Resource cleanup: %s | Phase status: %s | Attempts: %s | Next: %s\n' \
-		"$observed_status" "$executor_completion_state" "$resource_cleanup_state" "$PHASE_STATUS" "$PHASE_ATTEMPT" "$NEXT_ACTION"
+		"$observed_status" "$executor_completion_state" "$resource_cleanup_state" "$PHASE_STATUS" "$PHASE_ATTEMPT" "$status_next_action"
 	return 0
 }
 

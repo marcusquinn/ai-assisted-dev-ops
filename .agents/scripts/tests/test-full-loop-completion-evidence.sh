@@ -834,10 +834,58 @@ handoff_output=$(AIDEVOPS_FULL_LOOP_REPO=testorg/repo AIDEVOPS_FULL_LOOP_CLEANUP
 printf '%s\n' "$handoff_output" | grep -q '<promise>FULL_LOOP_CLEANUP_DEFERRED</promise>'
 handoff_json="${handoff_output##*$'\n'}"
 printf '%s' "$handoff_json" | jq -e \
-	'.executor_completion_state == "COMPLETE" and .resource_cleanup_state == "CLEANUP_DEFERRED"' >/dev/null
+	'.executor_completion_state == "COMPLETE"
+	and .executor_status == "complete"
+	and .resource_cleanup_state == "CLEANUP_DEFERRED"
+	and .next_action == "await-resource-cleanup"
+	and .phase_is_historical == true' >/dev/null
 jq -e '.executor_completion_state == "COMPLETE" and .release_status == "not-requested"' \
 	"${cleanup_receipt_dir}/testorg_repo-43.json" >/dev/null
 printf 'PASS interactive completion emits durable executor handoff and machine-readable cleanup state\n'
+
+status_runner="${ROOT}/status-runner.sh"
+cat >"$status_runner" <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR='${SCRIPTS_DIR}'
+STATE_DIR='${ROOT}/handoff-state'
+STATE_FILE='${ROOT}/handoff-state/full-loop.state'
+DEFAULT_MAX_TASK_ITERATIONS=50
+DEFAULT_MAX_PREFLIGHT_ITERATIONS=5
+DEFAULT_MAX_PR_ITERATIONS=20
+HEADLESS=false
+source '${SCRIPTS_DIR}/shared-constants.sh'
+source '${SCRIPTS_DIR}/full-loop-helper-state.sh'
+cmd_status --json
+RUNNER
+chmod +x "$status_runner"
+handoff_receipt="${cleanup_receipt_dir}/testorg_repo-43.json"
+cp "$handoff_receipt" "${ROOT}/handoff-receipt-valid.json"
+cp "${ROOT}/handoff-state/full-loop.state" "${ROOT}/handoff-state-valid"
+status_repeat_one=$(AIDEVOPS_FULL_LOOP_REPO=testorg/repo AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" bash "$status_runner")
+status_repeat_two=$(AIDEVOPS_FULL_LOOP_REPO=testorg/repo AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" bash "$status_runner")
+printf '%s' "$status_repeat_one" | jq -e '.next_action == "await-resource-cleanup" and .phase_is_historical == true' >/dev/null
+[[ "$status_repeat_one" == "$status_repeat_two" ]]
+cmp -s "$handoff_receipt" "${ROOT}/handoff-receipt-valid.json"
+cmp -s "${ROOT}/handoff-state/full-loop.state" "${ROOT}/handoff-state-valid"
+printf 'PASS repeated terminal status reads are stable and side-effect free\n'
+
+printf '{invalid\n' >"$handoff_receipt"
+malformed_status=$(AIDEVOPS_FULL_LOOP_REPO=testorg/repo AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" bash "$status_runner")
+printf '%s' "$malformed_status" | jq -e \
+	'.executor_completion_state == "in-progress" and .resource_cleanup_state == "none"
+	and .next_action != "await-resource-cleanup" and .next_action != "none"
+	and .phase_is_historical == false' >/dev/null
+cp "${ROOT}/handoff-receipt-valid.json" "$handoff_receipt"
+jq '.repository = "wrong/repo"' "$handoff_receipt" >"${handoff_receipt}.tmp"
+mv "${handoff_receipt}.tmp" "$handoff_receipt"
+mismatched_status=$(AIDEVOPS_FULL_LOOP_REPO=testorg/repo AIDEVOPS_FULL_LOOP_CLEANUP_DIR="$cleanup_receipt_dir" bash "$status_runner")
+printf '%s' "$mismatched_status" | jq -e \
+	'.executor_completion_state == "in-progress" and .resource_cleanup_state == "none"
+	and .next_action != "await-resource-cleanup" and .next_action != "none"
+	and .phase_is_historical == false' >/dev/null
+cp "${ROOT}/handoff-receipt-valid.json" "$handoff_receipt"
+printf 'PASS malformed and identity-mismatched receipts cannot establish completion\n'
 
 printf '%s\n' published >"${receipt_dir}/marcusquinn_aidevops-44.status"
 published_handoff_output=$(AIDEVOPS_FULL_LOOP_REPO=marcusquinn/aidevops \
