@@ -283,6 +283,8 @@ _model_usage_undercuts_reference() {
 # Returns JSON array with token, session, and generation-time totals, or empty
 # string if unavailable. Cost remains available for compatibility with older
 # consumers but is not rendered in the profile README.
+# GH#17549: query both the active and archive DBs because sessions older than
+# 30 days move to the archive.
 _get_model_usage_from_opencode() {
 	if ! command -v sqlite3 &>/dev/null || [[ ! -f "$OPENCODE_DB_FILE" ]]; then
 		echo ""
@@ -290,8 +292,6 @@ _get_model_usage_from_opencode() {
 	fi
 
 	local raw_json
-	# GH#17549: Query both active and archive DBs for all-time stats.
-	# The archive DB contains sessions >30 days old, moved by opencode-db-archive.sh.
 	local attach_clause=""
 	local union_clause=""
 	if [[ -f "$OPENCODE_ARCHIVE_DB_FILE" ]]; then
@@ -305,7 +305,7 @@ _get_model_usage_from_opencode() {
 			SELECT session_id, data FROM message
 			${union_clause}
 		),
-		assistant_messages AS (
+		assistant_messages_raw AS (
 			SELECT
 				session_id,
 				json_extract(data, '\$.modelID') AS model,
@@ -313,11 +313,34 @@ _get_model_usage_from_opencode() {
 				COALESCE(json_extract(data, '\$.tokens.output'), 0) AS output_tokens,
 				COALESCE(json_extract(data, '\$.tokens.cache.read'), 0) AS cache_read_tokens,
 				COALESCE(json_extract(data, '\$.tokens.cache.write'), 0) AS cache_write_tokens,
-				MAX(0, COALESCE(json_extract(data, '\$.time.completed'), 0) - COALESCE(json_extract(data, '\$.time.created'), 0)) AS duration_ms
+				CASE
+					WHEN json_extract(data, '\$.time.created') IS NOT NULL
+					  AND json_extract(data, '\$.time.completed') IS NOT NULL
+					  AND json_extract(data, '\$.time.completed') >= json_extract(data, '\$.time.created')
+					THEN json_extract(data, '\$.time.completed') - json_extract(data, '\$.time.created')
+					ELSE NULL
+				END AS duration_ms
 			FROM all_messages
 			WHERE json_extract(data, '\$.role') = 'assistant'
 			  AND json_extract(data, '\$.modelID') IS NOT NULL
 			  AND json_extract(data, '\$.modelID') != ''
+		),
+		assistant_messages AS (
+			SELECT
+				session_id,
+				CASE
+					WHEN LENGTH(model) > 9
+					  AND SUBSTR(model, -9, 1) = '-'
+					  AND SUBSTR(model, -8) NOT GLOB '*[^0-9]*'
+					THEN SUBSTR(model, 1, LENGTH(model) - 9)
+					ELSE model
+				END AS model,
+				input_tokens,
+				output_tokens,
+				cache_read_tokens,
+				cache_write_tokens,
+				duration_ms
+			FROM assistant_messages_raw
 		)
 		SELECT COALESCE(
 			json_group_array(
@@ -341,7 +364,10 @@ _get_model_usage_from_opencode() {
 				COUNT(*) AS requests,
 				COUNT(DISTINCT session_id) AS session_count,
 				(SELECT COUNT(DISTINCT session_id) FROM assistant_messages) AS total_session_count,
-				ROUND(COALESCE(SUM(duration_ms), 0) / 3600000.0, 3) AS session_hours,
+				CASE WHEN COUNT(duration_ms) = COUNT(*)
+					THEN ROUND(SUM(duration_ms) / 3600000.0, 3)
+					ELSE NULL
+				END AS session_hours,
 				COALESCE(SUM(input_tokens), 0) AS input_tokens,
 				COALESCE(SUM(output_tokens), 0) AS output_tokens,
 				COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
@@ -357,24 +383,7 @@ _get_model_usage_from_opencode() {
 		return 0
 	fi
 
-	# Merge model variants (e.g., claude-opus-4-5-20251101 -> claude-opus-4-5)
-	local merged_json
-	merged_json=$(echo "$raw_json" | jq -c '
-		[.[] | .model = (.model | gsub("-[0-9]{8}$"; ""))]
-		| group_by(.model)
-		| map({
-			model: .[0].model,
-			requests: ([.[].requests] | add),
-			session_count: ([.[].session_count // 0] | add),
-			total_session_count: ([.[].total_session_count // 0] | max // 0),
-			session_hours: ([.[].session_hours // 0] | add),
-			input_tokens: ([.[].input_tokens] | add),
-			output_tokens: ([.[].output_tokens] | add),
-			cache_read_tokens: ([.[].cache_read_tokens] | add),
-			cache_write_tokens: ([.[].cache_write_tokens] | add)
-		})
-	')
-	_compute_costs_from_tokens "$merged_json"
+	_compute_costs_from_tokens "$raw_json"
 	return 0
 }
 
@@ -421,7 +430,10 @@ _get_model_usage_from_obs_db() {
 				COUNT(*) AS requests,
 				COUNT(DISTINCT NULLIF(session_id, '')) AS session_count,
 				(SELECT COUNT(DISTINCT NULLIF(session_id, '')) FROM filtered_requests) AS total_session_count,
-				ROUND(COALESCE(SUM(duration_ms), 0) / 3600000.0, 3) AS session_hours,
+				CASE WHEN COUNT(duration_ms) = COUNT(*) AND MIN(duration_ms) >= 0
+					THEN ROUND(SUM(duration_ms) / 3600000.0, 3)
+					ELSE NULL
+				END AS session_hours,
 				COALESCE(SUM(tokens_input), 0) AS input_tokens,
 				COALESCE(SUM(tokens_output), 0) AS output_tokens,
 				COALESCE(SUM(tokens_cache_read), 0) AS cache_read_tokens,
@@ -556,7 +568,7 @@ _get_profile_model_usage_bundle() {
 # --- Token totals: shared jq expression for computing total_all and cache_hit_pct ---
 _token_totals_jq_expr() {
 	echo '. + {total_all: (.total_input + .total_output + .total_cache_read + .total_cache_write)}
-		| . + {cache_hit_pct: (if .total_all > 0 then ((.total_cache_read / .total_all * 1000 | round) / 10) else 0 end)}'
+		| . + {cache_hit_pct: (if (.total_cache_read + .total_input) > 0 then ((.total_cache_read / (.total_cache_read + .total_input) * 1000 | round) / 10) else 0 end)}'
 	return 0
 }
 

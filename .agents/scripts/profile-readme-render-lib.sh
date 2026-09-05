@@ -179,7 +179,7 @@ _render_model_usage_table() {
 		local clean_model cache_hit_pct
 		clean_model=$(_clean_model_name "$model")
 		cache_hit_pct=$(echo "$row" | jq -r '
-			((.input_tokens // 0) + (.output_tokens // 0) + (.cache_read_tokens // 0) + (.cache_write_tokens // 0)) as $total
+			((.input_tokens // 0) + (.cache_read_tokens // 0)) as $total
 			| if $total > 0 then (((.cache_read_tokens // 0) / $total * 1000 | round) / 10) else 0 end')
 		local f_requests f_input f_output f_cache f_cache_hit f_session_count f_session_hours
 		f_requests=$(_format_number "$requests")

@@ -1077,14 +1077,14 @@ test_model_usage_renders_activity_metrics_without_costs() {
 	# shellcheck source=../profile-readme-render-lib.sh
 	source "$SOURCE_RENDER_LIB"
 	local model_json token_totals output_file
-	model_json='[{"model":"model-a","requests":2,"input_tokens":100,"output_tokens":100,"cache_read_tokens":800,"cache_write_tokens":0,"session_count":2,"total_session_count":2,"session_hours":1.5,"cost_total":0}]'
-	token_totals='{"total_all":1000,"cache_hit_pct":80.0}'
+	model_json='[{"model":"model-a","requests":2,"input_tokens":100,"output_tokens":900,"cache_read_tokens":900,"cache_write_tokens":100,"session_count":2,"total_session_count":2,"session_hours":1.5,"cost_total":0}]'
+	token_totals=$(_token_totals_from_model_usage "$model_json")
 	output_file="${TEST_DIR}/model-usage.md"
 	_render_model_usage_table "AI Model Usage" "$model_json" "$token_totals" >"$output_file"
 
 	if ! grep -Fq '| Model | Requests | Input | Output | Cache read | Cache Hit-Rate % | Session Count | Session Hours |' "$output_file" ||
-		! grep -Fq '| model-a | 2 | 100 | 100 | 800 | 80.0% | 2 | 1.5h |' "$output_file" ||
-		! grep -Fq '| **Total** | **2** | **100** | **100** | **800** | **80.0%** | **2** | **1.5h** |' "$output_file"; then
+		! grep -Fq '| model-a | 2 | 100 | 900 | 900 | 90.0% | 2 | 1.5h |' "$output_file" ||
+		! grep -Fq '| **Total** | **2** | **100** | **900** | **900** | **90%** | **2** | **1.5h** |' "$output_file"; then
 		print_result "$test_name" 1 "activity metric columns or values are missing"
 		return 0
 	fi
@@ -1126,6 +1126,37 @@ test_observability_model_usage_calculates_sessions_and_hours() {
 		and ($models["model-b"].session_hours == 1)
 	' >/dev/null; then
 		print_result "$test_name" 1 "unexpected observability aggregation: ${result}"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
+test_opencode_model_usage_deduplicates_variants_and_rejects_partial_duration() {
+	local test_name="OpenCode model usage deduplicates normalized sessions and leaves incomplete duration unavailable"
+	TEST_DIR=$(mktemp -d)
+	# shellcheck source=../profile-readme-data-lib.sh
+	source "$SOURCE_DATA_LIB"
+	OPENCODE_DB_FILE="${TEST_DIR}/opencode.db"
+	OPENCODE_ARCHIVE_DB_FILE="${TEST_DIR}/missing-archive.db"
+	sqlite3 "$OPENCODE_DB_FILE" "
+		CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+		INSERT INTO message VALUES
+			('message-1', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-a-20260101', 'tokens', json_object('input', 10, 'output', 1, 'cache', json_object('read', 100, 'write', 0)), 'time', json_object('created', 0, 'completed', 3600000))),
+			('message-2', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-a-20260202', 'tokens', json_object('input', 20, 'output', 2, 'cache', json_object('read', 200, 'write', 0)), 'time', json_object('created', 3600000, 'completed', 7200000))),
+			('message-3', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-b', 'tokens', json_object('input', 30, 'output', 3, 'cache', json_object('read', 300, 'write', 0)), 'time', json_object('created', 7200000)));"
+
+	local result
+	result=$(_get_model_usage_from_opencode)
+	if ! printf '%s' "$result" | jq -e '
+		(INDEX(.model)) as $models
+		| ($models["model-a"].requests == 2)
+		and ($models["model-a"].session_count == 1)
+		and ($models["model-a"].total_session_count == 1)
+		and ($models["model-a"].session_hours == 2)
+		and ($models["model-b"].session_hours == null)
+	' >/dev/null; then
+		print_result "$test_name" 1 "unexpected OpenCode aggregation: ${result}"
 		return 0
 	fi
 	print_result "$test_name" 0
@@ -1504,6 +1535,8 @@ main() {
 	test_model_usage_renders_activity_metrics_without_costs
 	teardown
 	test_observability_model_usage_calculates_sessions_and_hours
+	teardown
+	test_opencode_model_usage_deduplicates_variants_and_rejects_partial_duration
 	teardown
 	test_screen_json_paths_are_optional_and_fail_visibly
 	teardown
