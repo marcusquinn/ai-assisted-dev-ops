@@ -106,13 +106,16 @@ EOF
 test_inventory_is_names_only_deterministic_json() {
 	setup
 	trap 'teardown' RETURN
+	local inventory_tmp="$TEST_DIR/inventory-tmp"
+	mkdir -p "$inventory_tmp"
 	local output=""
-	output=$(HOME="$TEST_DIR/home" bash "$HELPER" inventory)
+	output=$(TMPDIR="$inventory_tmp" HOME="$TEST_DIR/home" bash "$HELPER" inventory)
 
-	if [[ "$output" == '{"version":1,"backends":{"gopass":"available","credentials":"missing"},"secrets":[{"name":"ALPHA_KEY","status":"configured"},{"name":"ZETA_KEY","status":"configured"}]}' && "$output" != *"actual-secret-value"* ]]; then
+	if [[ "$output" == '{"version":1,"backends":{"gopass":"available","credentials":"missing"},"secrets":[{"name":"ALPHA_KEY","status":"configured"},{"name":"ZETA_KEY","status":"configured"}]}' &&
+		"$output" != *"actual-secret-value"* ]] && rmdir "$inventory_tmp"; then
 		print_result "inventory emits deterministic names-only JSON" 0
 	else
-		print_result "inventory emits deterministic names-only JSON" 1 "$output"
+		print_result "inventory emits deterministic names-only JSON" 1 "Output or temporary-file cleanup mismatch: $output"
 	fi
 	return 0
 }
@@ -122,16 +125,51 @@ test_inventory_rejects_malformed_gopass_name() {
 	trap 'teardown' RETURN
 	cat >"$TEST_DIR/bin/gopass" <<'EOF'
 #!/usr/bin/env bash
-if [[ "${1:-}" == "ls" ]]; then printf '%s\n' 'aidevops/../ESCAPE'; exit 0; fi
+printf '%s\n' "${1:-}" >>"${AIDEVOPS_TEST_DIR}/gopass_calls"
+case "${1:-}" in
+	ls) printf '%s\n' 'aidevops/../ESCAPE'; exit 0 ;;
+	show) printf '%s' 'actual-secret-value'; exit 0 ;;
+	*) exit 1 ;;
+esac
+EOF
+	chmod +x "$TEST_DIR/bin/gopass"
+	local inventory_tmp="$TEST_DIR/inventory-tmp"
+	mkdir -p "$inventory_tmp"
+	local output_file="$TEST_DIR/inventory-error.log"
+	local exit_code=0
+	TMPDIR="$inventory_tmp" HOME="$TEST_DIR/home" bash "$HELPER" inventory >"$output_file" 2>&1 || exit_code=$?
+	local output=""
+	output=$(<"$output_file")
+	if [[ "$exit_code" -ne 0 && "$output" == *"Invalid secret inventory name"* &&
+		"$output" != *"unbound variable"* && "$output" != *"actual-secret-value"* ]] &&
+		! grep -q '^show$' "$TEST_DIR/gopass_calls" && rmdir "$inventory_tmp"; then
+		print_result "inventory rejects malformed gopass names" 0
+	else
+		print_result "inventory rejects malformed gopass names" 1 \
+			"Expected deterministic validation failure without value reads, secondary nounset errors, or leaked temporary files"
+	fi
+	return 0
+}
+
+test_inventory_cleans_up_after_gopass_listing_failure() {
+	setup
+	trap 'teardown' RETURN
+	cat >"$TEST_DIR/bin/gopass" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "ls" ]]; then exit 23; fi
 exit 1
 EOF
 	chmod +x "$TEST_DIR/bin/gopass"
-	local exit_code=0
-	HOME="$TEST_DIR/home" bash "$HELPER" inventory >/dev/null 2>&1 || exit_code=$?
-	if [[ "$exit_code" -ne 0 ]]; then
-		print_result "inventory rejects malformed gopass names" 0
+	local inventory_tmp="$TEST_DIR/inventory-tmp"
+	mkdir -p "$inventory_tmp"
+	local output=""
+	output=$(TMPDIR="$inventory_tmp" HOME="$TEST_DIR/home" bash "$HELPER" inventory)
+	if [[ "$output" == '{"version":1,"backends":{"gopass":"error","credentials":"missing"},"secrets":[]}' ]] &&
+		rmdir "$inventory_tmp"; then
+		print_result "inventory cleans temporary files after gopass listing failure" 0
 	else
-		print_result "inventory rejects malformed gopass names" 1 "Expected failure"
+		print_result "inventory cleans temporary files after gopass listing failure" 1 \
+			"Output or temporary-file cleanup mismatch: $output"
 	fi
 	return 0
 }
@@ -419,6 +457,7 @@ main() {
 	test_multiline_gopass_injection_preserves_embedded_newlines
 	test_inventory_is_names_only_deterministic_json
 	test_inventory_rejects_malformed_gopass_name
+	test_inventory_cleans_up_after_gopass_listing_failure
 	test_inventory_requires_owner_only_credentials
 
 	echo ""

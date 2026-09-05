@@ -594,14 +594,17 @@ cmd_list() {
 }
 
 # Emit validated secret-name metadata without invoking any value-reading command.
-cmd_inventory() {
+# A subshell keeps the EXIT trap and its local paths scoped to this command.
+cmd_inventory() (
 	local gopass_status="missing"
 	local credentials_status="missing"
 	local names_file=""
+	local sorted_file=""
 	local count=0
 
-	names_file=$(mktemp)
-	trap 'rm -f "$names_file"' EXIT
+	names_file=$(mktemp) || return 1
+	sorted_file="${names_file}.sorted"
+	trap 'rm -f "${names_file:-}" "${sorted_file:-}"' EXIT
 
 	if command -v gopass &>/dev/null; then
 		gopass_status="error"
@@ -613,7 +616,10 @@ cmd_inventory() {
 				[[ -z "$secret_path" ]] && continue
 				case "$secret_path" in
 				"${GOPASS_PREFIX}/"*) inventory_add_name "${secret_path#"${GOPASS_PREFIX}/"}" "$names_file" || return 1 ;;
-				*) print_error "Invalid gopass inventory path" >&2; return 1 ;;
+				*)
+					print_error "Invalid gopass inventory path" >&2
+					return 1
+					;;
 				esac
 			done <<<"$listing"
 		fi
@@ -642,7 +648,6 @@ cmd_inventory() {
 		done <"$credential_file"
 	done < <(resolve_credential_files)
 
-	local sorted_file="${names_file}.sorted"
 	sort -u "$names_file" >"$sorted_file"
 	mv "$sorted_file" "$names_file"
 	count=$(wc -l <"$names_file" | tr -d ' ')
@@ -661,10 +666,8 @@ cmd_inventory() {
 	done <"$names_file"
 	printf ']}\n'
 
-	rm -f "$names_file"
-	trap - EXIT
 	return 0
-}
+)
 
 inventory_add_name() {
 	local name="$1"
