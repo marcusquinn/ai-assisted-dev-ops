@@ -26,6 +26,7 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | Content/Video/Voice | blog, article, video, script, social, X/Twitter, xurl, newsletter, voice | `content.md`, `content/social-xurl.md`, `tools/video/video-prompt-design.md`, `tools/voice/speech-to-speech.md`, `tools/voice/transcription.md` |
 | Public Relations | PR, public relations, press, journalist, media list, pitch, newsjacking, coverage tracking, reactive comment, newsworthiness | `pr.md`, `public-relations/getting-started.md` |
 | Design | UI, UX, brand, visual, inspiration, design system | `tools/design/design-md.md`, `tools/design/ui-ux-inspiration.md`, `tools/design/ui-ux-catalogue.toon`, `tools/design/brand-identity.md` |
+| Blender/3D | Blender, Blender Lab MCP, blender-mcp, blend file, Geometry Nodes, 3D scene analysis | `tools/design/blender.md` |
 | SEO | SEO, GEO, AI search, ranking, keyword, search intent, conversational query, autocomplete, query fan-out, GSC, schema, sitemap, backlinks, search trends | `seo.md`, `seo/conversational-search-intent.md`, `seo/keyword-research.md`, `seo/google-search-console.md` |
 | Paid Ads/CRO | ads, Meta Ads, CRO, landing page, copy, funnel | `marketing-sales/meta-ads.md`, `marketing-sales/ad-creative.md`, `marketing-sales/direct-response-copy.md`, `marketing-sales/cro.md` |
 | WordPress | WordPress, WP, plugin, theme, MainWP, LocalWP, wp-cli, production clone | `tools/wordpress.md`, `workflows/wordpress-local-clone.md` |

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "blender-lab": {
+      "command": "/ABSOLUTE/PATH/TO/blender-lab-venv/bin/blender-mcp",
+      "args": ["--transport", "stdio"],
+      "env": {
+        "BLENDER_MCP_HOST": "127.0.0.1",
+        "BLENDER_MCP_PORT": "9876"
+      }
+    }
+  }
+}

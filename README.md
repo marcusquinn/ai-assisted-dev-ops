@@ -319,6 +319,10 @@ aidevops update-tools     # Check and update installed tools
 aidevops uninstall        # Remove aidevops
 ```
 
+### Optional Blender Lab MCP
+
+[Blender MCP guidance](.agents/tools/design/blender.md) covers source-specific setup, scene analysis, Python API lookup, and the distinction between Blender's Lab project and the independent community `blender-mcp` package. Includes opt-in [OpenCode](configs/blender-lab-opencode-config.json.txt) and [MCP client](configs/blender-lab-mcp-config.json.txt) templates. Nothing is installed or activated automatically: Blender executes generated Python without protective guards, so use an isolated system and disposable scene copies.
+
 ### Optional Design Artifact Studio
 
 aidevops now treats design as a self-contained stack with optional peripherals:
