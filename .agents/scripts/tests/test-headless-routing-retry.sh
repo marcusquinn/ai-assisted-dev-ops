@@ -202,6 +202,44 @@ trap 'rm -rf "$fixture_dir"' EXIT
 	[[ "$(model_tier_candidate_index "$_capability_escalation_tier" "$_capability_escalation_model")" == "0" ]]
 )
 
+# Exercise the real result handler, preserving the session and model while
+# increasing reasoning only on the structured capability signal.
+(
+	role="worker"
+	model_override=""
+	tier_override="thinking"
+	selected_model="openai/gpt-6-astra"
+	variant_override="low"
+	session_key="reasoning-escalation"
+	work_dir="/work"
+	completion_state="blocked"
+	_HRW_STATUS_FAIL="fail"
+	attempt_exit=83
+	_run_result_label="blocked"
+	_run_classification_source="model_blocked_signal"
+	_run_classification_pattern="capability_limit"
+	_cmd_run_finish() { return 0; }
+	_handle_cmd_run_terminal_attempt
+	[[ "$_cmd_run_disposition" == "continue" && "$variant_override" == "medium" ]]
+	[[ "$selected_model" == "openai/gpt-6-astra" && "$tier_override" == "thinking" ]]
+	_handle_cmd_run_terminal_attempt
+	[[ "$_cmd_run_disposition" == "continue" && "$variant_override" == "high" ]]
+	_handle_cmd_run_terminal_attempt
+	[[ "$_cmd_run_disposition" == "return" && "$variant_override" == "high" ]]
+	variant_override="low"
+	_run_classification_pattern="permission_required"
+	_handle_cmd_run_terminal_attempt
+	[[ "$_cmd_run_disposition" == "return" && "$variant_override" == "low" ]]
+	_run_classification_pattern="capability_limit"
+	model_override="$selected_model"
+	_handle_cmd_run_terminal_attempt
+	[[ "$_cmd_run_disposition" == "return" && "$variant_override" == "low" ]]
+	if model_tier_next_variant thinking openai/gpt-6-astra xhigh ||
+		model_tier_next_variant thinking anthropic/claude-opus-4-6 low; then
+		exit 1
+	fi
+)
+
 routing_capture="${fixture_dir}/adaptive-routing.txt"
 (
 	role="worker"

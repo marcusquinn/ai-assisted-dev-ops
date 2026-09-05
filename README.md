@@ -9,7 +9,7 @@
 
 Most AI tools still leave you doing the hard coordination yourself: finding the right context, choosing a model, protecting secrets, managing branches, watching CI, spotting stuck work, and remembering what went wrong last time. aidevops puts structure around that work so agents can share context, work safely in parallel, spend model budget where it matters, and leave the system better than they found it.
 
-> **Recommended setup:** [OpenCode](https://opencode.ai/) + OpenAI GPT-5.6 models. aidevops routes Luna to bounded work, Terra to general implementation, and Sol to consequential reasoning and synthesis. Claude models (Anthropic) remain fully supported fallbacks, and other model providers are evaluated as their quality, latency, and cost profiles change.
+> **Recommended setup:** [OpenCode](https://opencode.ai/) + OpenAI GPT-5.6 Luna / Terra and GPT-6 Astra. aidevops routes Luna to bounded work, Terra to general implementation, and Astra at low reasoning to consequential reasoning and synthesis. Claude models (Anthropic) remain fully supported fallbacks, and other model providers are evaluated as their quality, latency, and cost profiles change.
 
 *"Scope a mission to redesign the landing pages — break it into milestones, dispatch workers in parallel, validate each milestone, and track budget across the whole project."*
 
@@ -92,7 +92,7 @@ the required notices and preferred credit text.
 
 - **Purpose**: AI-assisted DevOps automation framework
 - **Install**: `npm install -g aidevops && aidevops update`
-- **Recommended runtime/models**: OpenCode + OpenAI GPT-5.6 Luna / Terra / Sol
+- **Recommended runtime/models**: OpenCode + OpenAI GPT-5.6 Luna / Terra / GPT-6 Astra
 - **Entry**: `aidevops` CLI, `~/.aidevops/agents/AGENTS.md`
 - **Stack**: Bash scripts, TypeScript (Bun), MCP servers
 - **Recent focus**: evidence-based model routing, indexed worker worktrees, audited deployment copies, release provenance, and OpenCode control-plane safety
@@ -287,7 +287,7 @@ git clone https://github.com/marcusquinn/aidevops.git ~/Git/aidevops
 - Ensure all PATH and alias changes work in both bash, zsh, and fish
 - When Claude Code is installed, add a `claude` alias that runs `claude --dangerously-skip-permissions` (skips per-tool permission prompts). Re-running setup updates the alias automatically. To grant permissions per-session instead, press **Shift-Tab** inside Claude Code to cycle through permission modes (default → skip permissions → auto-approve).
 
-**New users: Start [OpenCode](https://opencode.ai/) and type `/onboarding`** to configure your services interactively. OpenCode is the recommended tool for aidevops; the default routing uses OpenAI GPT-5.6 Luna, Terra, and Sol across the simple, standard, and thinking tiers. The onboarding wizard will:
+**New users: Start [OpenCode](https://opencode.ai/) and type `/onboarding`** to configure your services interactively. OpenCode is the recommended tool for aidevops; the default routing uses OpenAI GPT-5.6 Luna, Terra, and GPT-6 Astra across the simple, standard, and thinking tiers. The onboarding wizard will:
 - Explain what **[aidevops](https://aidevops.sh)** can do
 - Ask about your work to give personalized recommendations
 - Show which services are configured vs need setup
@@ -446,7 +446,7 @@ See `.agents/tools/task-management/beads.md` for complete documentation and inst
 
 ### OpenAI Models in OpenCode (Recommended)
 
-OpenCode with OpenAI is the current recommended aidevops setup. Delegation defaults are GPT-5.6 Luna **medium** for bounded low-consequence work, Terra **high** for established-pattern implementation, and Sol **medium** for consequential decisions, architecture, and synthesis-heavy work. GPT-6 Astra **medium** is an optional interactive daily driver; selecting it does not replace the cheaper child tiers.
+OpenCode with OpenAI is the current recommended aidevops setup. Delegation defaults are GPT-5.6 Luna **medium** for bounded low-consequence work, Terra **high** for established-pattern implementation, and GPT-6 Astra **low** for consequential decisions, architecture, and synthesis-heavy work. Headless thinking workers escalate Astra reasoning **low → medium → high** only on an evidence-bearing capability-limit signal; operational failures never trigger that escalation. Interactive children retain their parent's reasoning ceiling. See [model routing](.agents/tools/context/model-routing.md) for overrides and escalation boundaries.
 
 Optimise through ordinary verified work, retries and parent repair rather than a prerequisite benchmark project. API prices are directional resource-cost estimates, not ChatGPT subscription allowance percentages. See [practical model and effort selection](.agents/tools/context/model-routing.md#practical-model-and-effort-selection) for the strategy, estimate scope and safe escalation rules.
 
@@ -460,7 +460,7 @@ aidevops model-accounts-pool add openai
 **Why this is the default:**
 
 - **Pragmatic defaults** — reversible choices improved through actual completion and repair evidence, not a claim of benchmark superiority
-- **Tiered cost/latency split** — Luna for bounded work, Terra for general implementation, and Sol where deeper judgement is worth the extra budget
+- **Tiered cost/latency split** — Luna for bounded work, Terra for general implementation, and Astra where deeper judgement is worth the extra budget
 - **Provider isolation** — OpenAI accounts rotate independently from Anthropic, Google, Cursor, and local providers
 - **Fallback-friendly** — Claude, Gemini, Cursor, and local models remain available when a task or rate-limit profile calls for them
 
@@ -578,7 +578,7 @@ The secure workflow is included at `.github/workflows/opencode-agent.yml`.
 
 See `.agents/tools/git/opencode-github-security.md` for the full security documentation.
 
-**Supported AI tool:** [OpenCode](https://opencode.ai/) is the recommended and tested AI coding tool for aidevops. All features, agents, and workflows are designed and tested for OpenCode first. The default OpenAI routing maps GPT-5.6 Luna, Terra, and Sol to the simple, standard, and thinking tiers. [Claude](https://claude.ai/) models (Anthropic) remain fully supported fallbacks, and other providers are tested as their capabilities change.
+**Supported AI tool:** [OpenCode](https://opencode.ai/) is the recommended and tested AI coding tool for aidevops. All features, agents, and workflows are designed and tested for OpenCode first. The default OpenAI routing maps GPT-5.6 Luna, Terra, and GPT-6 Astra to the simple, standard, and thinking tiers. [Claude](https://claude.ai/) models (Anthropic) remain fully supported fallbacks, and other providers are tested as their capabilities change.
 
 The native `ai_research` tool uses OpenCode's configured providers and canonical `simple`, `standard`, and `thinking` workload tiers; it does not require a specific provider credential.
 
@@ -586,7 +586,7 @@ The native `ai_research` tool uses OpenCode's configured providers and canonical
 
 - **[OpenCode](https://opencode.ai/)** - The recommended AI coding agent. Powerful agentic TUI/CLI with native MCP support, Tab-based agent switching, LSP integration, plugin ecosystem, and excellent DX. All aidevops features are designed and tested for OpenCode first.
 - **[OpenCode Zen](https://opencode.ai/)** - Free tier of OpenCode with included models. Start working with AI straight away at no cost -- no API keys or subscriptions required.
-- **OpenAI GPT-5.6 Luna / Terra / Sol** - Recommended tier family for aidevops today: Luna for bounded work, Terra for routine implementation, and Sol for consequential reasoning and high-impact decisions.
+- **OpenAI GPT-5.6 Luna / Terra / GPT-6 Astra** - Recommended tier mapping for aidevops today: Luna for bounded work, Terra for routine implementation, and Astra for consequential reasoning and high-impact decisions.
 - **[Claude](https://claude.ai/)** (Anthropic) - Fully supported alternative provider. Claude models remain useful for fallback, cross-provider verification, and users with Claude Pro/Max OAuth access.
 - **[Tabby](https://tabby.sh/)** - Recommended terminal. Colour-coded Profiles per project/repo, **auto-syncs tab titles with git/session context and marks OpenCode turns from the first submitted message as ⚪, 🔴, 🟡, or 🟢.**
 - **[Zed](https://zed.dev/)** - Recommended editor. High-performance with AI integration (use with the OpenCode Agent Extension).
@@ -873,7 +873,7 @@ Supervisor (pulse loop)
 │   ├── task_assignment → worker inbox
 │   ├── status_report → coordinator outbox
 │   └── broadcast → all agents
-└── Model Routing (tier-based: GPT-5.6 Luna / Terra / Sol / provider fallbacks)
+└── Model Routing (tier-based: GPT-5.6 Luna / Terra / GPT-6 Astra / provider fallbacks)
 ```
 
 **Key components:**

@@ -204,7 +204,7 @@ model_tier_candidates() {
 	case "$tier" in
 	simple) printf '%s\n' "openai/gpt-5.6-luna" "anthropic/claude-haiku-4-5" ;;
 	standard) printf '%s\n' "openai/gpt-5.6-terra" "zai-coding-plan/glm-5.2" "anthropic/claude-sonnet-4-6" ;;
-	thinking) printf '%s\n' "openai/gpt-5.6-sol" "anthropic/claude-opus-4-6" ;;
+	thinking) printf '%s\n' "openai/gpt-6-astra" "anthropic/claude-opus-4-6" ;;
 	*) return 1 ;;
 	esac
 	return 0
@@ -286,6 +286,39 @@ model_tier_variant() {
 		if [[ "$variant_result" == "found"$'\t'* ]]; then
 			variant="${variant_result#*$'\t'}"
 			[[ -z "$variant" ]] || printf '%s\n' "$variant"
+			return 0
+		fi
+	done
+	return 1
+}
+
+#######################################
+# Print the next explicitly configured reasoning level for this exact model.
+# Invalid, duplicate, descending, exhausted or unknown ladders fail closed.
+#######################################
+model_tier_next_variant() {
+	local requested_tier="$1"
+	local model="$2"
+	local current="$3"
+	local tier="" table="" routing_table="" framework_table="" previous_table=""
+	tier=$(normalize_model_tier_name "$requested_tier")
+	routing_table=$(model_routing_table_path 2>/dev/null) || routing_table=""
+	framework_table=$(model_routing_framework_table_path 2>/dev/null) || framework_table=""
+	command -v jq >/dev/null 2>&1 || return 1
+	for table in "$routing_table" "$framework_table"; do
+		[[ -n "$table" && -r "$table" && "$table" != "$previous_table" ]] || continue
+		previous_table="$table"
+		if jq -e --arg tier "$tier" --arg model "$model" \
+			'.tiers[$tier].reasoning_escalation | type == "object" and has($model)' "$table" >/dev/null 2>&1; then
+			jq -er --arg tier "$tier" --arg model "$model" --arg current "$current" '
+				["low", "medium", "high"] as $levels
+				| .tiers[$tier].reasoning_escalation[$model] as $ladder
+				| select(($ladder | type) == "array")
+				| [$ladder[] | . as $level | $levels | index($level)] as $ranks
+				| select(($ranks | all(. != null)) and ($ranks == ($ranks | sort | unique)))
+				| ($ladder | index($current)) as $index
+				| select($index != null) | $ladder[$index + 1] // empty
+			' "$table" 2>/dev/null || return 1
 			return 0
 		fi
 	done

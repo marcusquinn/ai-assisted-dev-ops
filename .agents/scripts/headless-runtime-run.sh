@@ -231,11 +231,20 @@ _prepare_cmd_run_dispatch() {
 _resolve_capability_escalation() {
 	local role="$1"
 	local current_tier="$2"
+	local current_model="${3:-}"
+	local current_variant="${4:-}"
 	_capability_escalation_model=""
 	_capability_escalation_variant=""
 	_capability_escalation_label=""
 	_capability_escalation_tier=""
 	[[ "$role" == "worker" ]] || return 1
+	if [[ -n "$current_model" && -n "$current_variant" ]] &&
+		_capability_escalation_variant=$(model_tier_next_variant "$current_tier" "$current_model" "$current_variant"); then
+		_capability_escalation_tier="$current_tier"
+		_capability_escalation_model="$current_model"
+		_capability_escalation_label="${current_tier} capability limit — increasing ${current_model} reasoning from ${current_variant} to ${_capability_escalation_variant}"
+		return 0
+	fi
 	_capability_escalation_tier=$(model_tier_next "$current_tier" 2>/dev/null) || return 1
 	_capability_escalation_model=$(choose_model "$role" "" "$_capability_escalation_tier" "exact-tier") || return 1
 	_capability_escalation_variant=$(resolve_headless_variant "$role" "$_capability_escalation_tier" "$_capability_escalation_model")
@@ -301,7 +310,7 @@ _handle_cmd_run_terminal_attempt() {
 			capability_blocked=1
 		fi
 		if [[ "$capability_blocked" -eq 1 && -z "$model_override" ]] &&
-			_resolve_capability_escalation "$role" "$tier_override"; then
+			_resolve_capability_escalation "$role" "$tier_override" "$selected_model" "$variant_override"; then
 			tier_override="$_capability_escalation_tier"
 			selected_model="$_capability_escalation_model"
 			variant_override="$_capability_escalation_variant"
@@ -309,7 +318,7 @@ _handle_cmd_run_terminal_attempt() {
 			routing_escalated=1
 			attempt=1
 			max_attempts=$(_headless_route_attempt_budget "$tier_override")
-			prompt="The previous attempt reported a model capability limit after working on the task. Resume the existing session and worktree at the next authorized capability tier (${tier_override}: ${selected_model}${variant_override:+ ${variant_override}}), challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Do not request broader permissions or bypass policy, authentication, trust, or secret-handling boundaries. If model capability remains the only blocker, emit the exact marker BLOCKED: capability limit - <evidence> so runtime routing can evaluate the next configured tier. Use generic BLOCKED only for concrete terminal non-capability blockers. Stop at FULL_LOOP_COMPLETE or a supported BLOCKED outcome."
+			prompt="The previous attempt reported a model capability limit after working on the task. Resume the existing session and worktree at the next authorized capability tier or reasoning level (${tier_override}: ${selected_model}${variant_override:+ ${variant_override}}), challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Do not request broader permissions or bypass policy, authentication, trust, or secret-handling boundaries. If model capability remains the only blocker, emit the exact marker BLOCKED: capability limit - <evidence> so runtime routing can evaluate the next configured tier or reasoning level. Use generic BLOCKED only for concrete terminal non-capability blockers. Stop at FULL_LOOP_COMPLETE or a supported BLOCKED outcome."
 			print_warning "$_capability_escalation_label"
 			_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
 		else

@@ -14,8 +14,9 @@
       "reasoning": { "openai/gpt-5.6-terra": "high" }
     },
     "thinking": {
-      "models": ["openai/gpt-5.6-sol", "anthropic/claude-opus-4-6"],
-      "reasoning": { "openai/gpt-5.6-sol": "medium" }
+      "models": ["openai/gpt-6-astra", "anthropic/claude-opus-4-6"],
+      "reasoning": { "openai/gpt-6-astra": "low" },
+      "reasoning_escalation": { "openai/gpt-6-astra": ["low", "medium", "high"] }
     }
   },
 
