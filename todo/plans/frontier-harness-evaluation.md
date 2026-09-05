@@ -8,8 +8,9 @@
 Implement a reusable comparison of stock OpenCode and OpenCode with aidevops,
 including the effects of context constraints and custom compaction guidance.
 Interactive full-loop implementation and PR/merge are authorized. Release,
-public benchmark claims, and an unbounded paid benchmark run are not authorized.
-No benchmark has run and no performance improvement has been established.
+external leaderboard submission and paid API/cloud spending are not authorized.
+The user selected existing ChatGPT Pro OAuth and local infrastructure for the
+pilot. Six qualifying pilot cells have run; no general superiority is established.
 
 ## Source evidence (2026-09-05)
 
@@ -21,8 +22,9 @@ No benchmark has run and no performance improvement has been established.
   GitHub API lookup of `datacurve-ai/deep-swe` ref `v1.1` returned 404; tags
   exposed only `v1.0.0`. Resolve the correct benchmark corpus with evidence,
   rather than substituting a different dataset or claiming comparability.
-- Runta, Harbor and Pier are not installed in the development environment.
-  OpenCode reports 1.18.29. The published OpenCode baseline is 1.18.19.
+- Harbor 0.22.0 is available via `uv tool run`; local Docker is operational.
+  Runta and Pier are not used in this pilot. OpenCode is pinned to 1.18.29;
+  the published OpenCode baseline is 1.18.19.
 - The upstream Terminal-Bench template uses `-r 2` exception retries. Audit the
   installed runner semantics and preserve every attempted run and its spend;
   do not describe this as an unconditional single-attempt runner.
@@ -31,9 +33,10 @@ No benchmark has run and no performance improvement has been established.
 
 ## Experiments
 
-1. Primary matched comparison: stock OpenCode versus aidevops, identical pinned
-   runtime, Kimi K3, provider, task set, budgets, hardware and checkpoint policy.
-   Preserve normal aidevops behavior within the declared offline environment.
+1. Primary matched comparison: stock OpenCode versus the aidevops plugin and
+   framework guide, identical pinned runtime, GPT-6 Astra through ChatGPT OAuth,
+   task, budgets and local Docker preparation. This is not K3 leaderboard-equivalent
+   or a claim to reproduce every installed Build+ service/workflow.
 2. Compaction ablation: same aidevops configuration with only its custom
    compaction-context injection removed. Keep native automatic compaction and
    continuation behavior unchanged. Label this a context-injection ablation,
@@ -51,23 +54,24 @@ experiment, not evidence of a current production K3 optimization.
 
 ## Implementation units (primary session owns the critical path)
 
-- [ ] Resolve pinned Harbor/Pier agent interfaces and corpus availability.
-- [ ] Add an evaluation workflow under `.agents/tools/ai-assistants/`, with a
+- [x] Resolve and exercise the pinned Harbor 0.22.0 interface.
+- [ ] Resolve Pier and the unavailable DeepSWE ref before extending beyond the pilot.
+- [x] Add an evaluation workflow under `.agents/tools/ai-assistants/`, with a
   discoverability link and explicit spend, privacy and comparability gates.
-- [ ] Implement the smallest adapter compatible with both pinned runners.
-  Upstream Harbor's current OpenCode adapter accepts a config overlay, but its
-  current API must not be assumed to match 0.22.0 or Pier 0.3.1.
-- [ ] Ensure aidevops is installed inside task execution environments, not just
+- [x] Implement a local Harbor adapter for non-repository `/app` tasks.
+- [ ] Extend to existing-repository layouts and Pier with verified interfaces.
+- [x] Ensure aidevops is installed inside task execution environments, not just
   the outer runtime; verify plugin/instruction loading from runtime evidence.
-- [ ] Preserve linked-worktree safety and ensure the verifier receives edits
+- [x] Preserve linked-worktree safety and ensure the verifier receives edits
   at its expected task path. Do not disable guards to manufacture a pass.
-- [ ] Add symmetric, content-free context/compaction telemetry to both arms.
-- [ ] Add an analysis helper reusing upstream trial records, not a new scorer.
-- [ ] Run existing scoped checks and a focused contract check where necessary.
-- [ ] Obtain provider/runtime access and a finite paid pilot cap, then smoke-test
-  one Terminal-Bench and one DeepSWE task per arm from fresh restores.
-- [ ] Forecast full-run cost from measured all-attempt usage and infrastructure.
-- [ ] Review exact diff, commit, PR, remote checks, merge; no release requested.
+- [x] Add symmetric, content-free context/compaction telemetry to both arms.
+- [x] Add an analysis helper reusing upstream trial records, not a new scorer.
+- [x] Run scoped checks, focused contract tests and real OAuth-backed Docker trials.
+- [x] Run normal, infeasible-pressure and calibrated-pressure matched pilot pairs.
+- [ ] Establish repeated, representative-task results before forecasting a full sweep.
+
+PR/review/merge state is tracked by the interactive full-loop lifecycle, not by a
+premature completion checkbox in this plan. No release is requested.
 
 ## Measurement contract
 
@@ -91,8 +95,12 @@ best retry. Preserve immutable attempts rather than overwriting upstream run IDs
 
 ## Current checkpoint
 
-Discovery and safe worktree setup are complete; implementation remains open.
-No adapter, telemetry or report helper has been implemented. No live trials,
-model calls by benchmark contestants or Runta provisioning have been performed.
-Next: settle paid pilot authorization/provider access and resolve the unavailable
-corpus ref, then implement against the verified pinned runner interfaces.
+The pilot implementation and real local verification are complete. See
+`.agents/tools/ai-assistants/frontier-harness-eval.md` for methods and conclusions,
+and `frontier-harness-pilot.json` beside it for measurements and evidence digests.
+Both normal arms passed, with higher overhead for aidevops on this short task.
+Both calibrated-pressure arms passed after two compactions; resource results were
+mixed. Both deliberately overconstrained 16k runs timed out and remain recorded.
+Earlier runs with missing plugin telemetry are diagnostic, not qualifying cells.
+No paid API fallback, Runta provisioning, release or leaderboard submission occurred.
+Remaining broader-suite work is explicitly unchecked above.

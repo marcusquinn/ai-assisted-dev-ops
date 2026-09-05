@@ -82,7 +82,8 @@ export function summarizeRun(root) {
     throw new Error("Missing or mismatched plugin-loading evidence");
   }
   if (manifest.experimental_context_limit != null
-    && !telemetry.observed_context_limits.every((limit) => limit === manifest.experimental_context_limit)) {
+    && (!telemetry.observed_context_limits.length
+      || !telemetry.observed_context_limits.every((limit) => limit === manifest.experimental_context_limit))) {
     throw new Error("Experiment context limit was overridden");
   }
   const usage = manifest.relay?.upstream_usage || [];
@@ -109,6 +110,9 @@ export function summarizeRun(root) {
     agent_seconds: duration(trial.agent_execution), setup_seconds: duration(trial.agent_setup),
     relay_requests: manifest.relay?.requests ?? null,
     upstream_completed_responses: usage.length,
+    upstream_usage_scope: "completed responses only",
+    upstream_usage_complete: usage.length === manifest.relay?.requests
+      && manifest.relay?.stream_failures === 0,
     upstream_input_tokens_including_cache: total("input_tokens"),
     upstream_output_tokens: total("output_tokens"), upstream_cached_tokens: total("cached_tokens"),
     telemetry,

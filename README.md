@@ -143,6 +143,7 @@ the required notices and preferred credit text.
 
 Since the last README feature refresh, aidevops has added or expanded:
 
+- **Local harness evaluation pilot**: compare OpenCode with the aidevops plugin through ChatGPT OAuth and local Docker, with verifier results and context/compaction telemetry. See the [FrontierHarness pilot and measured limitations](.agents/tools/ai-assistants/frontier-harness-eval.md); this is not a leaderboard-superiority claim.
 - **Evidence-based model routing**: sealed historical replay evaluates model tiers and reasoning effort against deterministic hidden checks, with isolated macOS and Linux sandboxes and an explicit trusted-local posture that cannot automatically change routing (`.agents/workflows/optimize-tiers.md`).
 - **Indexed worker worktrees**: dispatched linked worktrees can initialize branch-local CodeGraph indexes asynchronously, with bounded queues, disk-capacity checks, and failure isolation from worker launch (`.agents/scripts/codegraph-worktree-init-helper.sh`).
 - **Audited non-Git deployment copies**: reviewed worktree content can converge into allowlisted stable runtime directories through dry-run manifests, private receipts, verified activation, recovery, and rollback (`.agents/reference/dirty-worktree-preservation.md`).
