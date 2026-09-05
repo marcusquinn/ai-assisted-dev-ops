@@ -1357,7 +1357,7 @@ The setup script offers to install these tools automatically.
 - **[Vaultwarden](https://github.com/dani-garcia/vaultwarden)**: Password and secrets management
 - **[SonarCloud](https://sonarcloud.io/)**: Security and quality analysis (A-grade ratings)
 - **[CodeFactor](https://www.codefactor.io/)**: Code quality metrics (A+ score)
-- **[Codacy](https://www.codacy.com/)**: Multi-tool analysis (0 findings)
+- **[Codacy](https://www.codacy.com/)**: Multi-tool analysis with a live quality badge and daily A-grade monitoring
 - **[CodeRabbit](https://coderabbit.ai/)**: AI-powered code reviews
 - **[Snyk](https://snyk.io/)**: Security vulnerability scanning
 - **[Socket](https://socket.dev/)**: Dependency security and supply chain protection

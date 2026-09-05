@@ -10,6 +10,7 @@
 # below the 1500-line gate.
 #
 # Usage: source "${SCRIPT_DIR}/stats-quality-sweep-tools.sh"
+# Read-only Codacy report: bash stats-quality-sweep-tools.sh codacy OWNER/REPO REPO_PATH
 #
 # Dependencies:
 #   - shared-constants.sh (print_error, print_info, _sanitize_markdown, etc.)
@@ -330,6 +331,8 @@ _sweep_sonarcloud_diagnostics() {
 	return 0
 }
 
+_CODACY_HEALTHY_STATE="HEALTHY"
+
 _codacy_telemetry_is_valid() {
 	local grade="$1"
 	local issue_count="$2"
@@ -338,9 +341,26 @@ _codacy_telemetry_is_valid() {
 	local analysed_sha="$5"
 	local remote_sha="$6"
 
-	[[ -n "$grade" ]] && [[ "$issue_count" =~ ^[0-9]+$ ]] &&
+	[[ "$grade" =~ ^[A-F]$ ]] && [[ "$issue_count" =~ ^[0-9]+$ ]] &&
 		[[ "$analysed_loc" =~ ^[1-9][0-9]*$ ]] && [[ "$complex_files" =~ ^[0-9]+$ ]] &&
-		[[ "$analysed_sha" =~ ^[0-9a-fA-F]{7,40}$ ]] && [[ "$remote_sha" =~ ^[0-9a-fA-F]{7,40}$ ]]
+		[[ "$analysed_sha" =~ ^[0-9a-f]{40}$ ]] && [[ "$remote_sha" =~ ^[0-9a-f]{40}$ ]]
+}
+
+_codacy_summary_fields() {
+	local summary_response="$1"
+
+	# API v3.1.0: the repository summary is wrapped in data, not top-level.
+	jq -er '
+		def count: type == "number" and . >= 0 and . == floor;
+		def text: type == "string";
+		.data | select(type == "object") |
+		select(.gradeLetter | text and test("^[A-F]$")) |
+		select(.issuesCount | count) | select(.loc | count and . > 0) |
+		select(.complexFilesCount | count) |
+		select(.lastAnalysedCommit.sha | text and test("^[0-9a-f]{40}$")) |
+		select(.branch.name | text and length > 0) |
+		[.gradeLetter, .issuesCount, .loc, .complexFilesCount, .lastAnalysedCommit.sha] | @tsv
+	' <<<"$summary_response" 2>/dev/null
 }
 
 _codacy_read_healthy_state() {
@@ -359,22 +379,20 @@ _codacy_read_healthy_state() {
 
 _codacy_policy_drift() {
 	local issues_response="$1"
-	local json_number_type="number"
-	local drift_rules=("Bandit_B404" "ESLint8_es-x_no-modules" "ESLint8_es-x_no-block-scoped-variables" "ESLint8_es-x_no-trailing-commas")
-	local drift_output="" rule rule_count
 
-	for rule in "${drift_rules[@]}"; do
-		rule_count=$(jq -r --arg rule "$rule" --arg number_type "$json_number_type" '
-			if (.patternTotals[$rule]? | type) == $number_type then .patternTotals[$rule]
-			elif (.patterns[$rule]? | type) == $number_type then .patterns[$rule]
-			elif (.facets.patterns[$rule]? | type) == $number_type then .facets.patterns[$rule]
-			else [.data[]? | select((.patternId // .pattern // .ruleId // .rule // "") == $rule)] | length
-			end
-		' <<<"$issues_response" 2>/dev/null || echo "")
-		[[ "$rule_count" =~ ^[0-9]+$ ]] || rule_count=0
-		((rule_count > 0)) && drift_output="${drift_output}  - \`${rule}\`: ${rule_count}\n"
-	done
-	printf '%s' "$drift_output"
+	# Only an aggregate overview can establish absence. An issue-search page
+	# (even one with pagination.total) cannot prove a policy rule is absent.
+	jq -e '
+		.data.counts.patterns | type == "array" and all(.[];
+			(.id | type == "string") and
+			(.total | type == "number" and . >= 0 and . == floor))
+	' <<<"$issues_response" >/dev/null 2>&1 || return 1
+	jq -r '
+		["Bandit_B404", "ESLint8_es-x_no-modules",
+		 "ESLint8_es-x_no-block-scoped-variables", "ESLint8_es-x_no-trailing-commas"] as $rules |
+		.data.counts.patterns[] | select(.id as $id | $rules | index($id)) |
+		select(.total > 0) | "  - `\(.id)`: \(.total)"
+	' <<<"$issues_response"
 	return 0
 }
 
@@ -392,14 +410,14 @@ _codacy_classify_health() {
 		printf '%s' "$health_unknown"
 	elif [[ "$analysed_sha" != "$remote_sha" ]]; then
 		printf '%s' "STALE_ANALYSIS"
-	elif [[ -z "$previous_loc" || -z "$previous_sha" ]]; then
-		printf '%s' "BASELINE_UNKNOWN"
-	elif ((analysed_loc * 100 < previous_loc * 80)); then
+	elif [[ -n "$previous_loc" && -n "$previous_sha" ]] && ((analysed_loc * 100 < previous_loc * 80)); then
 		printf '%s' "INDEX_DEGRADED"
 	elif [[ -n "$drift_output" ]]; then
 		printf '%s' "POLICY_DRIFT"
+	elif [[ -z "$previous_loc" || -z "$previous_sha" ]]; then
+		printf '%s' "BASELINE_UNKNOWN"
 	else
-		printf '%s' "HEALTHY"
+		printf '%s' "$_CODACY_HEALTHY_STATE"
 	fi
 	return 0
 }
@@ -427,13 +445,32 @@ _codacy_save_healthy_state() {
 	return 1
 }
 
+_codacy_grade_target() {
+	local grade="$1"
+	local health_state="$2"
+
+	case "$health_state" in
+	UNKNOWN | STALE_ANALYSIS) printf '%s' "UNVERIFIED" ;;
+	*)
+		if [[ "$grade" != "A" ]]; then
+			printf '%s' "BELOW_TARGET"
+		elif [[ "$health_state" == "$_CODACY_HEALTHY_STATE" ]]; then
+			printf '%s' "AT_TARGET"
+		else
+			printf '%s' "UNVERIFIED"
+		fi
+		;;
+	esac
+	return 0
+}
+
 #######################################
 # Run Codacy API check for a repo.
 #
 # Arguments:
 #   $1 - repo slug
 #   $2 - local repository path (used to resolve the remote default SHA)
-# Output: codacy_section markdown to stdout (empty if unavailable)
+# Output: codacy_section markdown to stdout (UNKNOWN if unavailable)
 #######################################
 _sweep_codacy() {
 	local repo_slug="$1"
@@ -444,45 +481,50 @@ _sweep_codacy() {
 	if command -v gopass &>/dev/null; then
 		codacy_token=$(gopass show -o "aidevops/CODACY_API_TOKEN" 2>/dev/null || echo "")
 	fi
-	[[ -z "$codacy_token" ]] && return 0
+	if [[ -z "$codacy_token" ]]; then
+		printf '### Codacy\n\n- **Analysis health**: UNKNOWN\n- **Grade target**: A / UNVERIFIED\n- Codacy API credentials unavailable; no analysis verified.\n'
+		return 0
+	fi
 
 	local codacy_org="${repo_slug%%/*}"
 	local codacy_repo="${repo_slug##*/}"
-	local summary_response issues_response
+	local summary_response issues_response summary_fields overview_body
 	summary_response=$(curl -sS --fail --connect-timeout 5 --max-time 20 -H "api-token: ${codacy_token}" \
-		"https://app.codacy.com/api/v3/analysis/organizations/gh/${codacy_org}/repositories/${codacy_repo}?branch=main" 2>/dev/null || echo "")
+		"https://app.codacy.com/api/v3/analysis/organizations/gh/${codacy_org}/repositories/${codacy_repo}" 2>/dev/null || echo "")
+	local grade="" issue_count="" analysed_loc="" complex_files="" analysed_sha="" remote_sha
+	if summary_fields=$(_codacy_summary_fields "$summary_response"); then
+		IFS=$'\t' read -r grade issue_count analysed_loc complex_files analysed_sha <<<"$summary_fields"
+	fi
+	overview_body=$(jq -c '{branchName: .data.branch.name}' <<<"$summary_response" 2>/dev/null || echo '{}')
 	issues_response=$(curl -sS --fail --connect-timeout 5 --max-time 20 -H "api-token: ${codacy_token}" \
-		"https://app.codacy.com/api/v3/analysis/organizations/gh/${codacy_org}/repositories/${codacy_repo}/issues/search" \
-		-X POST -H "Content-Type: application/json" -d '{"limit":100}' 2>/dev/null || echo "")
-
-	local grade issue_count analysed_loc complex_files analysed_sha remote_sha
-	grade=$(jq -r '.grade // .quality.grade // .metrics.grade // empty' <<<"$summary_response" 2>/dev/null || echo "")
-	issue_count=$(jq -r '.pagination.total // .total // empty' <<<"$issues_response" 2>/dev/null || echo "")
-	analysed_loc=$(jq -r '.totalLinesOfCode // .analysedLinesOfCode // .analyzedLinesOfCode // .metrics.totalLinesOfCode // .metrics.loc // empty' <<<"$summary_response" 2>/dev/null || echo "")
-	complex_files=$(jq -r '.complexFiles // .complexFileCount // .metrics.complexFiles // empty' <<<"$summary_response" 2>/dev/null || echo "")
-	analysed_sha=$(jq -r '.lastAnalyzedCommit // .lastAnalysedCommit // .lastAnalysis.commit.uuid // .lastAnalysis.commit.hash // .commit.uuid // .commit.hash // empty' <<<"$summary_response" 2>/dev/null || echo "")
-	remote_sha=$(git -C "$repo_path" ls-remote origin HEAD 2>/dev/null | cut -f1)
+		"https://app.codacy.com/api/v3/analysis/organizations/gh/${codacy_org}/repositories/${codacy_repo}/issues/overview" \
+		-X POST -H "Content-Type: application/json" -d "$overview_body" 2>/dev/null || echo "")
+	remote_sha=$(git -C "$repo_path" ls-remote origin HEAD 2>/dev/null | cut -f1) || remote_sha=""
 
 	local slug_safe="${repo_slug//\//-}"
 	local state_file="${QUALITY_SWEEP_STATE_DIR}/${slug_safe}.codacy-health.json"
 	local previous_state previous_loc previous_sha drift_output health_state
 	previous_state=$(_codacy_read_healthy_state "$state_file")
 	IFS='|' read -r previous_loc previous_sha <<<"$previous_state"
-	drift_output=$(_codacy_policy_drift "$issues_response")
-	if _codacy_telemetry_is_valid "$grade" "$issue_count" "$analysed_loc" "$complex_files" "$analysed_sha" "$remote_sha"; then
+	if drift_output=$(_codacy_policy_drift "$issues_response") &&
+		_codacy_telemetry_is_valid "$grade" "$issue_count" "$analysed_loc" "$complex_files" "$analysed_sha" "$remote_sha"; then
 		health_state=$(_codacy_classify_health true "$analysed_sha" "$remote_sha" "$previous_loc" "$previous_sha" "$analysed_loc" "$drift_output" "$health_unknown")
 	else
 		health_state="$health_unknown"
 	fi
-	if [[ "$health_state" == "BASELINE_UNKNOWN" || "$health_state" == "HEALTHY" ]] &&
-		! _codacy_save_healthy_state "$state_file" "$grade" "$issue_count" "$analysed_loc" "$complex_files" "$analysed_sha"; then
-		health_state="$health_unknown"
+	if [[ "$health_state" == "BASELINE_UNKNOWN" || "$health_state" == "$_CODACY_HEALTHY_STATE" ]]; then
+		# Repeated small drops must not ratchet a healthy denominator downward.
+		# Retain the whole prior sample, not old LOC/SHA with new issue metrics.
+		if [[ -z "$previous_loc" || -z "$previous_sha" ]] || ((analysed_loc >= previous_loc)); then
+			_codacy_save_healthy_state "$state_file" "$grade" "$issue_count" "$analysed_loc" "$complex_files" "$analysed_sha" || health_state="$health_unknown"
+		fi
 	fi
 
 	printf '### Codacy\n\n- **Grade**: %s\n- **Open issues**: %s\n- **Analysed LOC**: %s\n- **Complex files**: %s\n- **Analysed SHA**: %s\n- **Analysis health**: %s\n' \
 		"${grade:-$health_unknown}" "${issue_count:-$health_unknown}" "${analysed_loc:-$health_unknown}" \
 		"${complex_files:-$health_unknown}" "${analysed_sha:-$health_unknown}" "$health_state"
-	[[ -n "$drift_output" ]] && printf '\n**Policy drift:**\n%b' "$drift_output"
+	printf -- '- **Grade target**: A / %s\n' "$(_codacy_grade_target "$grade" "$health_state")"
+	[[ -n "$drift_output" ]] && printf '\n**Policy drift:**\n%s\n' "$drift_output"
 	printf -- '- **Dashboard**: https://app.codacy.com/gh/%s/%s/dashboard\n' "$codacy_org" "$codacy_repo"
 	return 0
 }
@@ -702,3 +744,16 @@ _Auto-generated by stats-wrapper.sh daily quality sweep. The supervisor will rev
 COMMENT
 	return 0
 }
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+	if [[ "${1:-}" != "codacy" || "$#" -ne 3 ]]; then
+		printf 'Usage: bash stats-quality-sweep-tools.sh codacy OWNER/REPO REPO_PATH\n' >&2
+		exit 2
+	fi
+	if [[ ! "$2" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ || ! -d "$3" ]]; then
+		printf 'A repository slug and existing local repository directory are required\n' >&2
+		exit 2
+	fi
+	QUALITY_SWEEP_STATE_DIR="${QUALITY_SWEEP_STATE_DIR:-${HOME}/.aidevops/logs/quality-sweep-state}"
+	_sweep_codacy "$2" "$3"
+fi
