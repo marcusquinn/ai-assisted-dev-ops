@@ -110,6 +110,18 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 <!--TOON:ready[0]{id,desc,owner,tags,est,logged}:
 -->
 
+- [ ] t18402 Compounding-value architecture and portable organisational knowledge #parent-task #enhancement #architecture #framework #interactive #priority:high tier:thinking ref:GH#31280 logged:2026-09-05 -> [todo/tasks/t18402-brief.md]
+  - [ ] t18403 Establish compounding-value purpose in README and architectural guidance #docs #framework #interactive #auto-dispatch #priority:high tier:standard parent:t18402 ref:GH#31285 logged:2026-09-05 -> [todo/tasks/t18403-brief.md]
+  - [ ] t18404 Prove repo-native plans and progress survive loss of a forge #enhancement #architecture #portability #interactive #auto-dispatch #priority:high tier:thinking parent:t18402 blocked-by:t18403 ref:GH#31286 logged:2026-09-05 -> [todo/tasks/t18404-brief.md]
+  - [ ] t18405 Verify primary-agent knowledge delivery across runtime entry points #enhancement #architecture #context #interactive #auto-dispatch #priority:high tier:thinking parent:t18402 blocked-by:t18403 ref:GH#31287 logged:2026-09-05 -> [todo/tasks/t18405-brief.md]
+  - [ ] t18406 Deduplicate Claude proxy framework context without losing provenance #bug #context #performance #interactive #auto-dispatch tier:standard parent:t18402 blocked-by:t18405 ref:GH#31291 logged:2026-09-05 -> [todo/tasks/t18406-brief.md]
+  - [ ] t18407 Make domain discovery and dependent views structurally consistent #bug #architecture #context #interactive #auto-dispatch tier:standard parent:t18402 blocked-by:t18403 ref:GH#31292 logged:2026-09-05 -> [todo/tasks/t18407-brief.md]
+  - [ ] t18408 Support focused domain-primary and lighter delegated profiles #enhancement #architecture #agents #interactive #auto-dispatch tier:thinking parent:t18402 blocked-by:t18405,t18407 ref:GH#31293 logged:2026-09-05 -> [todo/tasks/t18408-brief.md]
+  - [ ] t18409 Scope detailed guidance to decisions while preserving universal DevOps #enhancement #architecture #context #interactive #auto-dispatch tier:thinking parent:t18402 blocked-by:t18405,t18407 ref:GH#31294 logged:2026-09-05 -> [todo/tasks/t18409-brief.md]
+  - [ ] t18410 Reduce operation-output and helper-discovery round trips #enhancement #performance #framework #interactive #auto-dispatch tier:standard parent:t18402 blocked-by:t18403 ref:GH#31296 logged:2026-09-05 -> [todo/tasks/t18410-brief.md]
+  - [ ] t18411 Calibrate usable context and preserve faithful compaction handoffs #enhancement #context #reliability #interactive #auto-dispatch tier:thinking parent:t18402 blocked-by:t18405 ref:GH#31297 logged:2026-09-05 -> [todo/tasks/t18411-brief.md]
+  - [ ] t18412 Evaluate user time and economic leverage across representative workflows #enhancement #evaluation #architecture #interactive #auto-dispatch tier:thinking parent:t18402 blocked-by:t18404,t18408,t18409,t18410,t18411 ref:GH#31298 logged:2026-09-05 -> [todo/tasks/t18412-brief.md]
+
 - [ ] t18396 Detect Codacy index and configuration drift before remediation #bug #quality #codacy #reliability #auto-dispatch ~4h tier:standard ref:GH#31147 logged:2026-09-04 -> [todo/tasks/t18396-brief.md]
 - [x] t18397 Make email facade exports explicit and clear Pylint unused-import noise #quality #codacy #python #refactor #auto-dispatch ~2.5h tier:standard ref:GH#31148 logged:2026-09-04 -> [todo/tasks/t18397-brief.md] pr:#31160 completed:2026-09-04
 - [ ] t18398 Harden high-signal Python subprocess boundaries reported by Codacy #bug #security #quality #codacy #python #auto-dispatch #priority:high ~5h tier:standard ref:GH#31150 logged:2026-09-04 -> [todo/tasks/t18398-brief.md]
