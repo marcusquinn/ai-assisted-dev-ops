@@ -2035,6 +2035,11 @@ _prrts_repair_linked_issue() {
 	return 0
 }
 
+_prrts_checkpoint_author() {
+	# Ordinary review repair has no checkpoint author contract.
+	return 0
+}
+
 _prrts_worker_login() {
 	local pr_number="$1"
 	local worker_login=""
@@ -2575,6 +2580,11 @@ _prrts_dispatch_worker() {
 		[[ -n "$PRRTS_WORKTREE_FAILURE_REASON" ]] || PRRTS_WORKTREE_FAILURE_REASON="pr_target_eligibility_changed_before_launch"
 		return 1
 	fi
+	# The checkpoint fence may transfer the issue to this runner. Do not export
+	# the pre-transfer login captured before worktree preparation.
+	worker_login=$(_prrts_worker_login "$pr_number") || return 1
+	local checkpoint_author=""
+	checkpoint_author=$(_prrts_checkpoint_author) || return 1
 	worker_task=$(_prrts_worker_task_id "$pr_number") || worker_task=""
 	repair_linked_issue=$(_prrts_repair_linked_issue "$pr_number") || repair_linked_issue=""
 	[[ -n "$worker_task" ]] || return 1
@@ -2598,6 +2608,7 @@ _prrts_dispatch_worker() {
 		"HEADLESS=1"
 		"WORKER_ISSUE_NUMBER=${worker_task}"
 		"WORKER_REPO_SLUG=${repo_slug}"
+		"DISPATCH_REPO_SLUG=${repo_slug}"
 		"WORKER_GITHUB_LOGIN=${worker_login}"
 		"WORKER_WORKTREE_PATH=${worker_worktree_path}"
 		"GITHUB_REPOSITORY=${repo_slug}"
@@ -2612,6 +2623,7 @@ _prrts_dispatch_worker() {
 		"AIDEVOPS_PR_REPAIR_NUMBER=${pr_number}"
 		"AIDEVOPS_PR_REPAIR_LINKED_ISSUE=${repair_linked_issue}"
 		"AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE=${worker_login}"
+		"AIDEVOPS_PR_CHECKPOINT_AUTHOR=${checkpoint_author}"
 		"AIDEVOPS_PR_REPAIR_HEAD_SHA=${head_oid}"
 		"AIDEVOPS_PR_REPAIR_HEAD_REF=${head_ref}"
 		"AIDEVOPS_HEADLESS_OUTCOME_FILE=${outcome_file}"

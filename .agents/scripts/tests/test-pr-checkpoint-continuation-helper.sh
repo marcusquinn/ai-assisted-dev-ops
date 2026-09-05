@@ -331,6 +331,69 @@ else
 	print_result "continuation prompt preserves exact-target ownership contract" 1
 fi
 
+# Exercise the actual producer, transfer fence and worker preparation together.
+# Only worktree/process mechanics are stubbed; GitHub remains the fixture above.
+export CHECKPOINT_PREPARE_LIB="${TEST_SCRIPT_DIR}/../headless-runtime-worker-prepare.sh"
+export HEADLESS_RUNTIME_OWNERSHIP_HELPER="${TEST_SCRIPT_DIR}/../dispatch-claim-helper.sh"
+HEADLESS_RUNTIME_HELPER="${TEST_ROOT}/bin/checkpoint-worker"
+cat >"$HEADLESS_RUNTIME_HELPER" <<'WORKER_STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$CHECKPOINT_PREPARE_LIB"
+print_info() { printf '%s\n' "$*"; return 0; }
+print_warning() { printf '%s\n' "$*"; return 0; }
+print_error() { printf '%s\n' "$*"; return 0; }
+_hrw_verify_dispatch_ownership
+WORKER_STUB
+chmod +x "$HEADLESS_RUNTIME_HELPER"
+
+_prrts_prepare_thread_batch() {
+	printf -v "$5" '%s' "$4"
+	printf -v "$6" '%s' "$3"
+	return 0
+}
+_prrts_prepare_worker_worktree() {
+	printf -v "$6" '%s' "${TEST_ROOT}/repo"
+	return 0
+}
+_prrts_initialize_attempt_state() {
+	printf -v "$5" '%s' "${TEST_ROOT}/attempt.json"
+	return 0
+}
+_prrts_write_state() { return 0; }
+_prrts_activate_global_capacity() {
+	[[ "$LAUNCH_VERIFIED" == 1 ]] || return 1
+	return 0
+}
+_prrts_release_global_capacity() { return 0; }
+_prrts_launch_detached_worker() {
+	printf -v "$3" '%s' ""
+	printf -v "$4" '%s' "fixture"
+	shift 4
+	LAUNCH_VERIFIED=0
+	if "$@"; then
+		LAUNCH_VERIFIED=1
+	fi
+	return 0
+}
+
+STUB_PR_JSON="$(valid_pr_json 'Resolves #123' '' '' 'stale-runner')"
+STUB_ISSUE_JSON="$(valid_issue_json '' 'stale-runner')"
+PCC_LINKED_ISSUE=123
+PCC_ISSUE_ASSIGNEE=stale-runner
+PCC_EXPECTED_ASSIGNEE=stale-runner
+PCC_AUTHENTICATED_LOGIN=current-runner
+PCC_CHECKPOINT_ASSIGNEE=stale-runner
+PCC_OWNERSHIP_TRANSFERRED=0
+LAUNCH_VERIFIED=0
+if _prrts_dispatch_worker owner/repo "${TEST_ROOT}/repo" 42 checkpoint 0 fixture preview \
+	"$PCC_HEAD_REF" "$PCC_HEAD_OID" attempt-fixture 1 1 false 0 fixture &&
+	[[ "$LAUNCH_VERIFIED" == 1 && "$PCC_ISSUE_ASSIGNEE" == current-runner ]]; then
+	print_result "producer-to-worker preparation preserves transferred owner and original author" 0
+else
+	print_result "producer-to-worker preparation preserves transferred owner and original author" 1
+fi
+
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
 	printf 'All %d tests passed\n' "$TESTS_RUN"
 	exit 0
