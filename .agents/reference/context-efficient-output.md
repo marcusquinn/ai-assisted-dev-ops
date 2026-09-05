@@ -49,6 +49,35 @@ once; PR-head changes and API loss remain explicit. Exit `8` means checks are
 still pending at timeout, `1` means terminal failure, and `2` means indeterminate
 API failure. These states must not be collapsed into a generic failure.
 
+## Bounded interactive operations
+
+OpenCode exposes `aidevops_bounded_operation` for a command expected to outlast
+the next useful progress update. Start it with argv arrays rather than shell
+text, retain the opaque `operation_id`, and poll `status` no later than the
+configured progress interval. The start action returns after the owned process
+spawns, so the primary session remains available for progress reports and
+scoped cancellation.
+
+The receipt distinguishes running, failed, timed-out, cancelled, and
+restoration-failed states. `AIDEVOPS_PROGRESS: ...` lines count as explicit
+meaningful progress; ordinary output is not a heartbeat substitute and is not
+copied into status receipts. An optional restoration argv runs after every
+terminal command path, and its exit remains independently visible. Raw output
+is represented only by an opaque output ID when terminal evidence storage is
+available.
+
+Cancellation is restricted to the runtime session that started the operation
+and signals only the retained detached process group. The implementation is an
+OpenCode process-lifetime adapter, not a durable scheduler: restarting or
+forcibly terminating OpenCode expires the in-memory operation generation.
+Commands must remain in the supervisor-owned process group; self-daemonizing or
+new-session (`setsid`) commands are unsupported and belong in a purpose-built
+service or the headless scheduler rather than this interactive adapter.
+Deleting the owning session cancels primary work. A restoration explicitly
+authorized at start still runs to its separate bound—even if primary work has
+not closed yet—then the adapter expires the unreachable operation record.
+Continue to use `deferred-job-helper.sh` for explicitly headless/scheduled work.
+
 ## Session output-efficiency evidence
 
 Session review gathers aggregate transcript evidence automatically when a current

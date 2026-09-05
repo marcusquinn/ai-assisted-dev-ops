@@ -4,6 +4,11 @@ import { createHookStatusTool } from "./hook-status-tool.mjs";
 import { createGptImageTool } from "./gpt-image-tool.mjs";
 import { createMcpActivationTool } from "./mcp-activation-tool.mjs";
 import { createPreEditCheckTool } from "./pre-edit-check-tool.mjs";
+import {
+  BoundedInteractiveOperationManager,
+  createBoundedInteractiveOperationTool,
+  createOutputSandboxRecorder,
+} from "./bounded-interactive-operation.mjs";
 
 const FALLBACK_SCHEMA_NODE = {
   _zod: {},
@@ -189,11 +194,12 @@ function createMemoryTool(scriptsDir, run) {
 /**
  * Create all tool definitions for the plugin.
  *
- * Tools (7 total):
+ * Tools (8 total):
  *   - aidevops              — aidevops CLI runner
  *   - aidevops_memory       — unified recall/store (merged from former recall + store pair)
  *   - aidevops_pre_edit_check — git safety check before file edits
  *   - aidevops_hook_status — bounded Git hook marker inspection
+ *   - aidevops_bounded_operation — primary-owned bounded interactive process lifecycle
  *   - aidevops_mcp        — registry-allowlisted on-demand MCP lifecycle
  *   - gpt_image_generate  — OAuth-first GPT Image 2 generation and reference editing
  *   - model-accounts-pool   — OAuth account pool management (added in index.mjs)
@@ -213,11 +219,15 @@ function createMemoryTool(scriptsDir, run) {
  *
  * @param {string} scriptsDir - Path to scripts directory
  * @param {function} run - Shell command runner
- * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function, mcpClient?: object, mcpDirectory?: string, managedMcpNames?: string[], managedMcpWorkspaces?: object}} [options] - Tool-specific test/runtime overrides
+ * @param {{preEditTimeoutMs?: number, workerWorktree?: string, sessionOrigin?: string, poolToolFactory?: function, mcpClient?: object, mcpDirectory?: string, managedMcpNames?: string[], managedMcpWorkspaces?: object, boundedOperationManager?: object}} [options] - Tool-specific test/runtime overrides
  * @returns {Record<string, object>}
  */
 export function createTools(scriptsDir, run, options = {}) {
   if (options.sessionOrigin === "triage") return {};
+  const boundedOperationManager = options.boundedOperationManager || new BoundedInteractiveOperationManager({
+    projectRoot: options.projectRoot || process.cwd(),
+    recordOutput: createOutputSandboxRecorder(join(scriptsDir, "output-sandbox-helper.sh")),
+  });
 
   const tools = {
     aidevops: createAidevopsTool(run),
@@ -236,6 +246,7 @@ export function createTools(scriptsDir, run, options = {}) {
     aidevops_memory: createMemoryTool(scriptsDir, run),
     aidevops_pre_edit_check: createPreEditCheckTool(tool, z, scriptsDir, options.preEditTimeoutMs),
     aidevops_hook_status: createHookStatusTool(tool, z, { workerWorktree: options.workerWorktree }),
+    aidevops_bounded_operation: createBoundedInteractiveOperationTool(tool, z, boundedOperationManager),
   };
   if (typeof options.poolToolFactory === "function") {
     tools["model-accounts-pool"] = options.poolToolFactory();
