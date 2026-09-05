@@ -41,13 +41,14 @@ class FrontierOpenCode(OpenCode):
             "share": "disabled",
             "enabled_providers": ["openai"],
             "provider": {"openai": {"options": {"baseURL": relay, "apiKey": capability}}},
-            "plugin": [[f"file://{root}/scripts/frontier-harness-observer.mjs", {
+            "plugin": [[f"file://{root}/plugins/frontier-harness/index.mjs", {
                 "profile": profile, "events": "/logs/agent/frontier-events.jsonl",
             }]],
         }
         if profile != "stock":
             config["instructions"] = [f"{root}/AGENTS.md"]
         super().__init__(*args, opencode_config=config, **kwargs)
+        self._opencode_config["small_model"] = self.model_name
 
     @staticmethod
     def name():
@@ -112,3 +113,10 @@ class FrontierOpenCode(OpenCode):
             "test ! -e /logs/agent/frontier-events.jsonl"
         ))
         await super().run(instruction, environment, context)
+        # A task pass without a functioning measurement/plugin path is not a
+        # valid comparison. This catches silently skipped external plugins.
+        await self.exec_as_agent(environment, command=(
+            "test -s /logs/agent/frontier-events.jsonl && "
+            "node -e 'const fs=require(\"fs\"); const rows=fs.readFileSync(\"/logs/agent/frontier-events.jsonl\",\"utf8\").trim().split(\"\\n\").map(JSON.parse); "
+            "if(!rows.some(r=>r.type===\"config.applied\") || !rows.some(r=>r.type===\"completion\")) process.exit(1)'"
+        ))

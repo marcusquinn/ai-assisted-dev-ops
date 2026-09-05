@@ -4,10 +4,10 @@
 // Opt-in OpenCode plugin for isolated benchmark contestants, never global config.
 // Load this INSTEAD of the aidevops plugin; it composes that plugin when requested.
 import { createHash } from "node:crypto";
-import { openSync, writeSync } from "node:fs";
+import { closeSync, openSync, writeSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
-export default async function FrontierObserver(input, options = {}) {
+async function FrontierObserver(input, options = {}) {
   const profile = options.profile;
   if (!["stock", "aidevops", "aidevops-native-compaction"].includes(profile)) {
     throw new Error("An explicit benchmark profile is required");
@@ -18,8 +18,10 @@ export default async function FrontierObserver(input, options = {}) {
   // Exclusive creation refuses existing files/symlinks and prevents accidental
   // reuse of a prior trial. Only numeric measurements and opaque IDs are logged.
   const fd = openSync(options.events, "wx", 0o600);
+  let closed = false;
   let sequence = 0;
   const emit = (data) => {
+    if (closed) return;
     if (++sequence > 100000) throw new Error("Benchmark telemetry limit reached");
     writeSync(fd, `${JSON.stringify({ schema: 1, sequence, time_ms: Date.now(), profile, ...data })}\n`);
   };
@@ -27,13 +29,22 @@ export default async function FrontierObserver(input, options = {}) {
   const number = (value) => Number.isFinite(value) && value >= 0 ? value : null;
   let hooks = {};
   if (profile !== "stock") {
-    const { AidevopsPlugin } = await import("../plugins/opencode-aidevops/index.mjs");
+    const { AidevopsPlugin } = await import("../opencode-aidevops/index.mjs");
     hooks = await AidevopsPlugin(input);
   }
-  emit({ type: "observer.started", framework_loaded: profile !== "stock" });
+  emit({ type: "observer.started", framework_loaded: profile !== "stock",
+    framework_tool_count: Object.keys(hooks.tool || {}).length });
   const seen = new Set();
   return {
     ...hooks,
+    config: async (config) => {
+      await hooks.config?.(config);
+      emit({ type: "config.applied" });
+    },
+    dispose: async () => {
+      await hooks.dispose?.();
+      if (!closed) { closed = true; closeSync(fd); }
+    },
     "chat.params": async (event, output) => {
       await hooks["chat.params"]?.(event, output);
       emit({
@@ -74,3 +85,5 @@ export default async function FrontierObserver(input, options = {}) {
     },
   };
 }
+
+export default { id: "aidevops-frontier-eval", server: FrontierObserver };

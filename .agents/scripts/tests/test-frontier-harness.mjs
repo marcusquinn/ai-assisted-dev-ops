@@ -7,8 +7,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRelay } from "../frontier-harness-oauth-relay.mjs";
-import observer from "../frontier-harness-observer.mjs";
+import observerPlugin from "../../plugins/frontier-harness/index.mjs";
 import { summarize } from "../frontier-harness-report.mjs";
+
+const observer = observerPlugin.server;
 
 test("relay confines credentials, model, endpoint, usage and request budget", async () => {
   let calls = 0;
@@ -78,5 +80,6 @@ test("observer deduplicates completed messages without recording content", async
     assert.equal(report.verifier_success, null);
     assert.throws(() => summarize([...records, records[1]]));
     await assert.rejects(observer({}, { profile: "stock", events }));
+    await hooks.dispose();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
