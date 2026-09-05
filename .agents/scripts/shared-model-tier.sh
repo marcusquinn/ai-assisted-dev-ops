@@ -550,7 +550,8 @@ get_model_pricing() {
 	ms="${ms%%-202*}"
 	case "$ms" in
 	*gpt-5.6-sol-pro*) echo "$fallback_default_pricing" ;;
-	*gpt-5.6-sol*) echo "5.0|30.0|0.50|6.25" ;;
+	*gpt-6-astra*) echo "10.0|50.0|1.0|12.50" ;;
+	*gpt-5.6-sol*) echo "4.0|20.0|0.40|5.0" ;;
 	*gpt-5.6-terra*) echo "2.0|12.0|0.20|2.50" ;;
 	*gpt-5.6-luna*) echo "0.20|1.20|0.02|0.25" ;;
 	*opus-4* | *claude-opus*) echo "15.0|75.0|1.50|18.75" ;;

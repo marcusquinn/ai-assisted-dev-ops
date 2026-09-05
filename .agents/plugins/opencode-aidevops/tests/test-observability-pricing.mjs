@@ -7,9 +7,12 @@ import { test } from "node:test";
 import { getPricing } from "../observability.mjs";
 import { PRICING_VERSION } from "../observability-pricing.mjs";
 
-test("GPT-5.6 pricing uses published API rates", () => {
+test("GPT-6 Astra and GPT-5.6 pricing use published Standard short-context API rates", () => {
+  assert.deepEqual(getPricing("openai/gpt-6-astra"), {
+    input: 10.0, output: 50.0, cacheRead: 1.0, cacheWrite: 12.50,
+  });
   assert.deepEqual(getPricing("gpt-5.6-sol"), {
-    input: 5.0, output: 30.0, cacheRead: 0.50, cacheWrite: 6.25,
+    input: 4.0, output: 20.0, cacheRead: 0.40, cacheWrite: 5.0,
   });
   assert.deepEqual(getPricing("gpt-5.6-terra"), {
     input: 2.0, output: 12.0, cacheRead: 0.20, cacheWrite: 2.50,
@@ -17,7 +20,7 @@ test("GPT-5.6 pricing uses published API rates", () => {
   assert.deepEqual(getPricing("gpt-5.6-luna"), {
     input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25,
   });
-  assert.equal(PRICING_VERSION, "2026-08-21.1");
+  assert.equal(PRICING_VERSION, "2026-09-05.1");
 });
 
 test("Sol Pro does not inherit unpublished standard Sol pricing", () => {

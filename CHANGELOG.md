@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.310] - 2026-09-05
+
+### Changed
+
+- Performance: Optimise delegation effort and refresh Astra pricing
+- Documentation: split storage lifecycle architecture reference
+- Maintenance: apply compatible GitHub Actions updates
+
+### Fixed
+
+- remove remaining Auggie MCP integrations
+- fall back to gh auth for collaborator permissions (#31198)
+- classify GitHub API deletions (#31193)
+- preserve authorization-gap evidence (#31185)
+
 ## [3.32.309] - 2026-09-04
 
 ### Changed

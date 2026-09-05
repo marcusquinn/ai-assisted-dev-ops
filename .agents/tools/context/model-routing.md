@@ -86,7 +86,7 @@ is always denied because secrets must flow through secret tooling, not prompts.
 - **Workers**: Follow configured candidate order within canonical `simple`, `standard`, or `thinking` routes after allowlist filtering and auth checks.
 - **Local switch**: Set `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST=openai` to force both pulse and workers onto the default OpenAI fallbacks. If you want OpenAI primary but Anthropic fallback, reorder `custom/configs/model-routing-table.json` and omit the allowlist.
 - **Current default mapping**: The active routing table maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Terra then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
-- **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `max`, Terra `high`, and Sol `medium`. Other providers use their provider/runtime defaults unless configured explicitly.
+- **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `medium`, Terra `high`, and Sol `medium`. Other providers use their provider/runtime defaults unless configured explicitly.
 - **Capability escalation**: The exact structured marker `BLOCKED: capability limit - <evidence>` advances through `escalation_order` and resolves that tier's current first healthy candidate without pattern-driven downgrade. Headless dispatch starts another bounded route attempt. Interactive OpenCode re-prompts the same child session only when the child identity is known and it has attempted no side effects. Generic `BLOCKED` outcomes and the terminal configured tier remain terminal. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, locality, and billing failures retain dedicated fail-closed handling and never escalate capability to bypass controls.
 - **OpenAI tier rationale**: The automatic ladder prioritizes verified completion and measured cost: Luna handles bounded work, Terra handles general implementation, and Sol handles synthesis-heavy work. Routing telemetry supports evidence-based reordering without hardcoding provider assumptions.
 - **OpenAI pro caveat**: `openai/gpt-5.6-sol-pro` passed a live OpenCode ChatGPT OAuth smoke test on 2026-07-10, but OpenAI publishes neither an API price nor comparative Sol Pro benchmarks. It remains excluded from automatic workers pending repository-specific completion-rate evidence. Historical `gpt-5.5-pro` and older `*-pro`/`o3-pro` IDs remain excluded.
@@ -94,6 +94,34 @@ is always denied because secrets must flow through secret tooling, not prompts.
 - **Tier-aware effort**: `AIDEVOPS_HEADLESS_VARIANT_SIMPLE`, `AIDEVOPS_HEADLESS_VARIANT_STANDARD`, and `AIDEVOPS_HEADLESS_VARIANT_THINKING` can temporarily override routing-table reasoning.
 - **Fallback**: If routed resolution fails entirely, the framework uses the active table's ordered candidates and then its shipped deterministic table. An explicit provider allowlist fails closed when no listed candidate is usable.
 - **Deprecated**: `PULSE_MODEL` and `AIDEVOPS_HEADLESS_MODELS` env vars are respected as overrides for one release cycle with deprecation warnings. Remove from `credentials.sh`.
+
+### Practical model and effort selection
+
+The September 2026 defaults are an educated, reversible operating choice, not a
+benchmark superiority claim: Luna medium avoids blanket maximum reasoning for
+bounded work; Terra high retains headroom for normal judgment and recovery; Sol
+medium keeps synthesis cheaper than routinely duplicating a flagship parent.
+Use ordinary completion, verification, retries and parent repair to improve these
+choices, following `reference/agent-routing.md` "Improve efficiency during ordinary
+work". Historical replay remains opt-in for material unresolved comparisons, not
+a prerequisite for building with the framework.
+
+GPT-6 Astra medium is a reasonable explicitly selected interactive daily driver
+when its judgment saves human intervention. It does not replace the shared worker
+ladder or change other models' reasoning. Reserve Astra or higher effort for a
+specific difficult decision rather than routine second opinions. Same-model
+OpenCode children cannot exceed their parent's known reasoning setting; use an
+explicit parent effort change when genuinely needed, not a bypass of that cap.
+
+Pricing source: [OpenAI Standard pricing](https://developers.openai.com/api/docs/pricing?latest-pricing=standard),
+checked 2026-09-05. Per million short-context input/cached-input/output tokens:
+Luna $0.20/$0.02/$1.20; Terra $2/$0.20/$12; Sol $4/$0.40/$20; Astra $10/$1/$50.
+Sol's promotional rates are available at least through 2026-11-21. The shared flat
+pricing table provides API-equivalent estimates: it does not model long-context
+rates, Fast mode or regional uplifts. With ChatGPT OAuth, use API prices only as
+directional resource-cost signals, never an exact subscription allowance percentage
+or cash charge. Preserve recorded pricing versions when comparing outcomes; this
+refresh does not reprice already-versioned historical requests.
 
 ### Per-user override that survives auto-update
 
