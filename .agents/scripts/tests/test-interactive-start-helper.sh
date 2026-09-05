@@ -66,6 +66,9 @@ fi
 cat >"${stub_dir}/interactive-session-helper.sh" <<'STUB'
 #!/usr/bin/env bash
 printf 'claim cwd=%s marker=%s args=%s\n' "$(pwd -P)" "${AIDEVOPS_INTERACTIVE_ISSUE_IMPLEMENTATION:-0}" "$*" >>"$CALL_LOG"
+if [[ "${STUB_CLAIM_FAILS:-0}" == "1" && "$1" == "claim" ]]; then
+	exit 1
+fi
 exit 0
 STUB
 
@@ -148,6 +151,15 @@ assert_log_line "full-loop cwd=${linked_worktree} marker=1 args=start GH#42 loca
 assert_log_line "claim cwd=${linked_worktree} marker=1 args=claim 43 owner/repo --implementing --defer-comment"
 assert_log_line "claim cwd=${linked_worktree} marker=1 args=claim 43 owner/repo --implementing --worktree ${linked_worktree}"
 assert_log_line "full-loop cwd=${linked_worktree} marker=1 args=start GH#43 queued fix --background"
+
+: >"$call_log"
+if STUB_CLAIM_FAILS=1 PATH="${stub_dir}:$PATH" \
+	"$helper" --issue 31317 --repo owner/repo --task "failed claim" </dev/null >/dev/null 2>&1; then
+	fail "failed initial claim reached success"
+fi
+if grep -q '^pre-edit \|^full-loop ' "$call_log"; then
+	fail "failed initial claim reached pre-edit or full-loop startup"
+fi
 
 for invalid_mode in missing malformed unsafe-canonical unregistered duplicate failure; do
 	: >"$call_log"

@@ -347,6 +347,21 @@ else
 	print_result "claim writes stamp file" 1 "(rc=$claim_rc, stamp=$STAMP_FILE exists=$([[ -f "$STAMP_FILE" ]] && echo yes || echo no))"
 fi
 
+# A failed mutation must propagate through `_isc_cmd_claim`, including when
+# invoked in a conditional command substitution where `set -e` cannot do so.
+FAILED_CLAIM_STAMP="$HOME/.aidevops/.agent-workspace/interactive-claims/testowner-testrepo-31317.json"
+rm -f "$FAILED_CLAIM_STAMP"
+failed_claim_out=$(STUB_GH_EDIT_FAILS=1 \
+	_isc_cmd_claim 31317 testowner/testrepo --worktree /tmp/wt-failed 2>&1)
+failed_claim_rc=$?
+if [[ $failed_claim_rc -ne 0 && ! -f "$FAILED_CLAIM_STAMP" ]] &&
+	printf '%s' "$failed_claim_out" | grep -q 'ownership transition failed.*no stamp written'; then
+	print_result "GH#31317: failed new claim propagates from conditional caller without a stamp" 0
+else
+	print_result "GH#31317: failed new claim propagates from conditional caller without a stamp" 1 \
+		"(rc=$failed_claim_rc, stamp=$([[ -f "$FAILED_CLAIM_STAMP" ]] && echo yes || echo no), out=${failed_claim_out:0:300})"
+fi
+
 # Validate stamp schema
 if [[ -f "$STAMP_FILE" ]]; then
 	stamp_issue=$(jq -r '.issue' "$STAMP_FILE" 2>/dev/null)

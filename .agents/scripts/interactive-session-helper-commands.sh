@@ -376,7 +376,7 @@ _isc_cmd_claim() {
 	# Transition to in-review with atomic self-assign. The helper preserves the
 	# deferred-comment contract for canonical-rooted issue starts.
 	_isc_apply_new_claim "$issue" "$slug" "$worktree_path" "$user" "$defer_comment"
-	return 0
+	return $?
 }
 
 # -----------------------------------------------------------------------------
