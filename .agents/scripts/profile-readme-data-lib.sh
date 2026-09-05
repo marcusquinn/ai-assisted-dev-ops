@@ -314,8 +314,8 @@ _get_model_usage_from_opencode() {
 				COALESCE(json_extract(data, '\$.tokens.cache.read'), 0) AS cache_read_tokens,
 				COALESCE(json_extract(data, '\$.tokens.cache.write'), 0) AS cache_write_tokens,
 				CASE
-					WHEN json_extract(data, '\$.time.created') IS NOT NULL
-					  AND json_extract(data, '\$.time.completed') IS NOT NULL
+					WHEN json_type(data, '\$.time.created') IN ('integer', 'real')
+					  AND json_type(data, '\$.time.completed') IN ('integer', 'real')
 					  AND json_extract(data, '\$.time.completed') >= json_extract(data, '\$.time.created')
 					THEN json_extract(data, '\$.time.completed') - json_extract(data, '\$.time.created')
 					ELSE NULL
@@ -430,7 +430,8 @@ _get_model_usage_from_obs_db() {
 				COUNT(*) AS requests,
 				COUNT(DISTINCT NULLIF(session_id, '')) AS session_count,
 				(SELECT COUNT(DISTINCT NULLIF(session_id, '')) FROM filtered_requests) AS total_session_count,
-				CASE WHEN COUNT(duration_ms) = COUNT(*) AND MIN(duration_ms) >= 0
+				CASE WHEN COUNT(duration_ms) = COUNT(*)
+					  AND SUM(CASE WHEN TYPEOF(duration_ms) IN ('integer', 'real') AND duration_ms >= 0 THEN 0 ELSE 1 END) = 0
 					THEN ROUND(SUM(duration_ms) / 3600000.0, 3)
 					ELSE NULL
 				END AS session_hours,
@@ -475,7 +476,7 @@ _get_model_usage_from_jsonl() {
 			requests: length,
 			session_count: ([.[] | .session_id // empty | select(length > 0)] | unique | length),
 			total_session_count: $total_sessions,
-			session_hours: (if any(.[]; .duration_ms != null) then ([.[].duration_ms // 0] | add) / 3600000 else null end),
+			session_hours: (if all(.[]; ((.duration_ms | type) == "number") and .duration_ms >= 0) then ([.[].duration_ms] | add) / 3600000 else null end),
 			input_tokens: ([.[].input_tokens // 0] | add),
 			output_tokens: ([.[].output_tokens // 0] | add),
 			cache_read_tokens: ([.[].cache_read_tokens // 0] | add),

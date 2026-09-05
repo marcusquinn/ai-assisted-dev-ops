@@ -88,7 +88,7 @@ shellcheck .agents/scripts/profile-readme-data-lib.sh .agents/scripts/profile-re
 
 ### Recoverability Checkpoint
 
-- [x] Focused functional verification passes: `.agents/scripts/tests/test-profile-readme-boundary.sh` — 25/25 passed.
+- [x] Focused functional verification passes: `.agents/scripts/tests/test-profile-readme-boundary.sh` — 26/26 passed.
 - [x] WIP commit created before broad gates: `c603e83f5 fix: restore profile activity reporting`.
 
 ## Acceptance Criteria

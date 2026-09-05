@@ -1112,7 +1112,8 @@ test_observability_model_usage_calculates_sessions_and_hours() {
 			("2026-09-01T00:00:00Z", "session-1", "model-a", 3600000, 10, 1, 100, 0, 1.0),
 			("2026-09-01T01:00:00Z", "session-1", "model-a", 1800000, 20, 2, 200, 0, 1.0),
 			("2026-09-01T02:00:00Z", "session-2", "model-a", 1800000, 30, 3, 300, 0, 1.0),
-			("2026-09-01T03:00:00Z", "session-2", "model-b", 3600000, 40, 4, 400, 0, 1.0);'
+			("2026-09-01T03:00:00Z", "session-2", "model-b", 3600000, 40, 4, 400, 0, 1.0),
+			("2026-09-01T04:00:00Z", "session-2", "model-c", "corrupt", 50, 5, 500, 0, 1.0);'
 
 	local result
 	result=$(_get_model_usage_from_obs_db "")
@@ -1124,6 +1125,7 @@ test_observability_model_usage_calculates_sessions_and_hours() {
 		and ($models["model-a"].session_hours == 2)
 		and ($models["model-b"].session_count == 1)
 		and ($models["model-b"].session_hours == 1)
+		and ($models["model-c"].session_hours == null)
 	' >/dev/null; then
 		print_result "$test_name" 1 "unexpected observability aggregation: ${result}"
 		return 0
@@ -1144,7 +1146,8 @@ test_opencode_model_usage_deduplicates_variants_and_rejects_partial_duration() {
 		INSERT INTO message VALUES
 			('message-1', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-a-20260101', 'tokens', json_object('input', 10, 'output', 1, 'cache', json_object('read', 100, 'write', 0)), 'time', json_object('created', 0, 'completed', 3600000))),
 			('message-2', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-a-20260202', 'tokens', json_object('input', 20, 'output', 2, 'cache', json_object('read', 200, 'write', 0)), 'time', json_object('created', 3600000, 'completed', 7200000))),
-			('message-3', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-b', 'tokens', json_object('input', 30, 'output', 3, 'cache', json_object('read', 300, 'write', 0)), 'time', json_object('created', 7200000)));"
+			('message-3', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-b', 'tokens', json_object('input', 30, 'output', 3, 'cache', json_object('read', 300, 'write', 0)), 'time', json_object('created', 7200000))),
+			('message-4', 'session-1', 0, 0, json_object('role', 'assistant', 'modelID', 'model-c', 'tokens', json_object('input', 40, 'output', 4, 'cache', json_object('read', 400, 'write', 0)), 'time', json_object('created', 'corrupt', 'completed', 'corrupt')));"
 
 	local result
 	result=$(_get_model_usage_from_opencode)
@@ -1155,8 +1158,30 @@ test_opencode_model_usage_deduplicates_variants_and_rejects_partial_duration() {
 		and ($models["model-a"].total_session_count == 1)
 		and ($models["model-a"].session_hours == 2)
 		and ($models["model-b"].session_hours == null)
+		and ($models["model-c"].session_hours == null)
 	' >/dev/null; then
 		print_result "$test_name" 1 "unexpected OpenCode aggregation: ${result}"
+		return 0
+	fi
+	print_result "$test_name" 0
+	return 0
+}
+
+test_jsonl_model_usage_rejects_partial_duration() {
+	local test_name="JSONL model usage leaves partial duration unavailable"
+	TEST_DIR=$(mktemp -d)
+	# shellcheck source=../profile-readme-data-lib.sh
+	source "$SOURCE_DATA_LIB"
+	METRICS_FILE="${TEST_DIR}/metrics.jsonl"
+	cat >"$METRICS_FILE" <<'EOF'
+{"model":"model-a","session_id":"session-1","duration_ms":3600000,"input_tokens":10,"output_tokens":1,"cache_read_tokens":100,"cache_write_tokens":0,"cost_total":1,"recorded_at":"2026-09-01T00:00:00Z"}
+{"model":"model-a","session_id":"session-2","input_tokens":20,"output_tokens":2,"cache_read_tokens":200,"cache_write_tokens":0,"cost_total":1,"recorded_at":"2026-09-01T01:00:00Z"}
+EOF
+
+	local result
+	result=$(_get_model_usage_from_jsonl all)
+	if ! printf '%s' "$result" | jq -e '.[0].session_count == 2 and .[0].total_session_count == 2 and .[0].session_hours == null' >/dev/null; then
+		print_result "$test_name" 1 "unexpected JSONL aggregation: ${result}"
 		return 0
 	fi
 	print_result "$test_name" 0
@@ -1537,6 +1562,8 @@ main() {
 	test_observability_model_usage_calculates_sessions_and_hours
 	teardown
 	test_opencode_model_usage_deduplicates_variants_and_rejects_partial_duration
+	teardown
+	test_jsonl_model_usage_rejects_partial_duration
 	teardown
 	test_screen_json_paths_are_optional_and_fail_visibly
 	teardown
