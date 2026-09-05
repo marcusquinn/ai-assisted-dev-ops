@@ -8,6 +8,7 @@ capability is not an OpenAI API key and no ChatGPT credential enters the task.
 
 import hashlib
 import os
+import shlex
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -69,8 +70,11 @@ class FrontierOpenCode(OpenCode):
             "sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources; "
             "apt-get -o Acquire::Retries=0 -o Acquire::https::Timeout=15 update; fi"
         ))
-        await super().install(environment)
-        await self.ensure_system_dependencies(environment, ("git", "tar"))
+        if not self._version:
+            raise ValueError("An exact OpenCode version is required")
+        await self.ensure_system_dependencies(environment, ("curl", "bash", "coreutils", "nodejs", "npm", "git", "tar"))
+        package = shlex.quote(f"opencode-ai@{self._version}")
+        await self.exec_as_agent(environment, command=f"npm i -g {package} && opencode --version")
         await environment.upload_file(self.archive, "/opt/frontier-framework.tar")
         # No setup.sh: its machine-wide setup/scheduling belongs outside trials.
         # The clean archive contains only pinned Git-tracked framework files.
