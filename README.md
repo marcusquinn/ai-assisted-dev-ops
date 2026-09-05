@@ -319,6 +319,10 @@ aidevops update-tools     # Check and update installed tools
 aidevops uninstall        # Remove aidevops
 ```
 
+### Optional Blender Lab MCP
+
+[Blender MCP guidance](.agents/tools/design/blender.md) covers source-specific setup, scene analysis, Python API lookup, and the distinction between Blender's Lab project and the independent community `blender-mcp` package. Includes opt-in [OpenCode](configs/blender-lab-opencode-config.json.txt) and [MCP client](configs/blender-lab-mcp-config.json.txt) templates. Nothing is installed or activated automatically: Blender executes generated Python without protective guards, so use an isolated system and disposable scene copies.
+
 ### Optional Design Artifact Studio
 
 aidevops now treats design as a self-contained stack with optional peripherals:
@@ -1338,6 +1342,7 @@ The setup script offers to install these tools automatically.
 
 ### **Video Creation**
 
+- **[Video-use](https://github.com/browser-use/video-use)**: Conversational footage editing through the [video-editor runtime adapter](.agents/tools/video/video-use-runtime.md), with a reviewed executable pin, explicit installation, whole-repository update checks and a no-upload synthetic render smoke test. Run `python3 ~/.aidevops/agents/scripts/video-use-helper.py status` to check readiness.
 - **[Remotion](https://remotion.dev/)**: Programmatic video creation with React - animations, compositions, media handling, captions
 - **[Video Prompt Design](https://github.com/snubroot/Veo-3-Meta-Framework)**: AI video prompt engineering using the 7-component meta prompt framework for Veo 3 and similar models
 - **[Kie.ai](https://kie.ai/)**: Unified asynchronous Market API and `kie-helper.sh` workflow for image, video, audio, uploads, callbacks, and credit checks with model-specific JSON pass-through

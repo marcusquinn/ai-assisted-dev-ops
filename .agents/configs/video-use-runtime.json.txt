@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/browser-use/video-use",
+  "github_repository": "browser-use/video-use",
+  "reviewed_commit": "9575612f066aa517354790a645fd90f9f95a743b",
+  "python": "3.12",
+  "required_files": [
+    "SKILL.md",
+    "install.md",
+    "LICENSE",
+    "pyproject.toml",
+    "helpers/transcribe.py",
+    "helpers/transcribe_batch.py",
+    "helpers/pack_transcripts.py",
+    "helpers/timeline_view.py",
+    "helpers/render.py",
+    "helpers/grade.py",
+    "skills/manim-video/SKILL.md"
+  ]
+}

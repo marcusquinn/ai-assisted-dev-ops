@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "blender-lab": {
+      "type": "local",
+      "command": [
+        "/ABSOLUTE/PATH/TO/blender-lab-venv/bin/blender-mcp",
+        "--transport",
+        "stdio"
+      ],
+      "enabled": false,
+      "environment": {
+        "BLENDER_MCP_HOST": "127.0.0.1",
+        "BLENDER_MCP_PORT": "9876"
+      }
+    }
+  },
+  "permission": {
+    "blender-lab_*": "ask"
+  }
+}
