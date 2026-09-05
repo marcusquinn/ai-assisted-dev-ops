@@ -193,8 +193,6 @@ test_release_integration_bounds_comments() {
 	_release_dispatch_claim "issue-42" "blocked"
 	_release_dispatch_claim "issue-42" "blocked"
 	_release_dispatch_claim "issue-42" "blocked"
-	unset DISPATCH_REPO_SLUG WORKER_ISSUE_NUMBER AIDEVOPS_TERMINAL_BLOCKER_REPO_PATH \
-		AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
 
 	local status=1
 	if [[ "$posted_count" -eq 2 && "$first_body" == *"aidevops:terminal-blocker-observation"* &&
@@ -203,6 +201,22 @@ test_release_integration_bounds_comments() {
 		status=0
 	fi
 	print_result "release path posts one observation and one circuit comment across repeated blockers" "$status"
+	test_comments='[]'
+	posted_count=0
+	cleanup_count=0
+	AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT=$(_terminal_blocker_hash 'v2:unknown')
+	_release_dispatch_claim "issue-42" "blocked"
+	_release_dispatch_claim "issue-42" "blocked"
+	_release_dispatch_claim "issue-42" "blocked"
+	status=1
+	if [[ "$posted_count" -eq 3 && "$cleanup_count" -eq 6 &&
+		"$first_body" == *'reason=unknown owner=worker-triage'* &&
+		"$second_body" == *'CLAIM_RELEASED reason=blocked'* && "$second_body" != *'Next action:'* ]]; then
+		status=0
+	fi
+	print_result "unknown repeat releases each claim without repeating recovery prose or holding dispatch" "$status"
+	unset DISPATCH_REPO_SLUG WORKER_ISSUE_NUMBER AIDEVOPS_TERMINAL_BLOCKER_REPO_PATH \
+		AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
 	return 0
 }
 
@@ -238,7 +252,7 @@ test_unknown_and_redaction() {
 	[[ "$fragment" == *'reason=unknown owner=worker-triage'* && "$fragment" == *'Next action:'* &&
 		"$fragment" != *'private-token'* && "$fragment" != *'/private/'* ]] || status=1
 	comments=$(jq -nc --arg body "$fragment" '[{body:$body,created_at:"2026-08-31T10:00:00Z"}]')
-	[[ "$(terminal_blocker_release_mode "$comments" 111111111111111111111111 "$fingerprint")" == open ]] || status=1
+	[[ "$(terminal_blocker_release_mode "$comments" 111111111111111111111111 "$fingerprint")" == normal ]] || status=1
 	terminal_blocker_circuit_comment release 111111111111111111111111 "$fingerprint" >/dev/null && status=1
 	terminal_blocker_circuit_active "$comments" '{}' owner/repo 42 "$TEST_ROOT" >/dev/null && status=1
 	printf '%s\n' '{"type":"tool","text":"BLOCKED: fake tool result"}' >"$output"

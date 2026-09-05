@@ -215,10 +215,10 @@ terminal_blocker_release_mode() {
 	circuit_at=$(printf '%s' "$circuit" | jq -r '.created_at // ""' 2>/dev/null) || circuit_at=""
 	observation_at=$(printf '%s' "$observation" | jq -r '.created_at // ""' 2>/dev/null) || observation_at=""
 	# Unknown dossiers can have one safe observation, never a durable circuit.
-	# "open" here suppresses repeated release comments only, not dispatch.
+	# Preserve each new CLAIM_RELEASED audit event, but omit repeated explanations.
 	if [[ "$(_terminal_blocker_reason "$blocker_fingerprint")" == "$_TBC_UNKNOWN" ]]; then
 		if [[ -n "$observation_at" && (-z "$retry_at" || "$observation_at" > "$retry_at") ]]; then
-			printf 'open\n'
+			printf 'normal\n'
 		else
 			printf 'first\n'
 		fi
@@ -263,7 +263,7 @@ _terminal_blocker_recovery() {
 	esac
 	[[ "$issue" =~ ^[0-9]+$ ]] || issue="$_TBC_UNKNOWN"
 	# Correlate attempts without publishing runner names or arbitrary env text.
-	attempt=$(_terminal_blocker_hash "${WORKER_SESSION_KEY:-unknown}:${WORKER_ATTEMPT_ID:-${AIDEVOPS_SESSION_KEY:-unknown}}") || attempt="$_TBC_UNKNOWN"
+	attempt=$(_terminal_blocker_hash "${AIDEVOPS_ATTEMPT_ID:-${WORKER_SESSION_KEY:-unknown}}") || attempt="$_TBC_UNKNOWN"
 	printf 'Terminal blocker: reason=%s owner=%s task=%s attempt=%s.\nNext action: %s\nRaw evidence remains in protected worker telemetry.\n' \
 		"$reason" "$owner" "$issue" "$attempt" "$action"
 	return 0

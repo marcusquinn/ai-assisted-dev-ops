@@ -469,6 +469,34 @@ else
 	print_result "Fix D: posts dispatch comment before stagger sleep" 1 "log: $(cat "$GH_COMMENT_LOG")"
 fi
 
+# GH#31239: public blocker observations preserve lifecycle attempt correlation,
+# while public text never copies raw attempt metadata or a protected dossier.
+# shellcheck source=../terminal-blocker-circuit.sh
+source "${SCRIPTS_DIR}/terminal-blocker-circuit.sh"
+blocker_fingerprint=$(_terminal_blocker_hash 'v2:missing_files_scope')
+AIDEVOPS_ATTEMPT_ID='attempt:fixture-one'
+first_observation=$(terminal_blocker_observation_fragment 111111111111111111111111 "$blocker_fingerprint")
+AIDEVOPS_ATTEMPT_ID='attempt:fixture-two'
+second_observation=$(terminal_blocker_observation_fragment 111111111111111111111111 "$blocker_fingerprint")
+if [[ "$first_observation" != "$second_observation" &&
+	"$first_observation" == *'reason=missing_files_scope owner=brief-author'* &&
+	"$first_observation" == *'Add a canonical ### Files Scope'* &&
+	"$second_observation" != *'attempt:fixture-two'* ]]; then
+	print_result "blocker recovery uses real lifecycle attempt identity and allowlisted actions" 0
+else
+	print_result "blocker recovery uses real lifecycle attempt identity and allowlisted actions" 1
+fi
+
+reset_gh_state
+printf '%s' '[[{"body":"terminal-blocker-circuit:retry","created_at":"2026-09-01T11:00:00Z","author_association":"NONE"}],[{"body":"trusted observation","created_at":"2026-09-01T10:00:00Z","author_association":"MEMBER"}]]' >"$GH_API_COMMENTS_RESPONSE"
+trusted_comments=$(terminal_blocker_fetch_trusted_comments 12345 owner/repo)
+if [[ "$(printf '%s' "$trusted_comments" | jq length)" -eq 1 &&
+	-z "$(_terminal_blocker_latest_retry_at "$trusted_comments")" ]]; then
+	print_result "paginated blocker comments reject an untrusted retry" 0
+else
+	print_result "paginated blocker comments reject an untrusted retry" 1
+fi
+
 # Cleanup
 rm -rf "$TMP_HOME"
 
