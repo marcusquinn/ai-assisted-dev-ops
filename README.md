@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-![AI DevOps social graph preview](docs/assets/og-image.png)
+![AI DevOps — 15 primary agents, 2,250+ supporting guides, 2,140+ shell scripts, and 100+ slash commands](docs/assets/og-image.png)
 
 # AI DevOps Framework
 
@@ -126,10 +126,12 @@ the required notices and preferred credit text.
 
 ### Agent Structure
 
-- 14 primary agents (Build+, Automate, Product, SEO, Marketing-Sales, etc.) with specialist @subagents on demand
-- 2,350+ agent and subagent markdown files organized by domain
-- 1,960+ helper scripts in `.agents/scripts/`
-- 210+ slash commands and workflow guides for common operations
+- 15 primary agents (Build+, Automate, Product, SEO, Marketing-Sales, etc.) with specialist @subagents on demand
+- 2,250+ supporting Markdown guides: subagents, skills, references, templates, commands, and workflows organized by domain
+- 2,140+ scripts in `.agents/scripts/` (shell helpers and tests)
+- 100+ slash commands and 100+ workflow guides for common operations
+
+Counts checked on 5 September 2026: 15 root agent files (excluding `AGENTS.md`), 2,268 regular Markdown files in `.agents/` subdirectories (excluding symlink aliases), 2,146 shell scripts, 106 slash-command entry points, and 104 workflow guides. Command and workflow source guides are included in the supporting-guide total, not additional agents. See [hero count maintenance](DESIGN.md#readme-hero-counts) for sources and refresh instructions.
 
 ### What You Can Ask aidevops To Do
 
@@ -839,9 +841,9 @@ aidevops implements proven agent design patterns identified by [Lance Martin (La
 
 | Pattern | Description | aidevops Implementation |
 |---------|-------------|------------------------|
-| **Give Agents a Computer** | Filesystem + shell for persistent context | `~/.aidevops/.agent-workspace/`, 1,960+ helper scripts |
+| **Give Agents a Computer** | Filesystem + shell for persistent context | `~/.aidevops/.agent-workspace/`, 2,140+ scripts (shell helpers and tests) |
 | **Multi-Layer Action Space** | Few tools, push actions to computer | Per-agent MCP filtering (~12-20 tools each) |
-| **Knowledge Graph Routing** | Indexed, cross-referenced agents instead of isolated skills | `subagent-index.toon` maps 2,350+ agents by domain, purpose, and dependency — agents discover related context through the graph, not just their own file |
+| **Knowledge Graph Routing** | Indexed, cross-referenced agents instead of isolated skills | `subagent-index.toon` routes agent context within a library of 2,250+ supporting guides — agents discover related context through the graph, not just their own file |
 | **Progressive Disclosure** | Load context on-demand | Subagent routing with content summaries, YAML frontmatter, read-on-demand |
 | **Offload Context** | Write results to filesystem | `.agent-workspace/work/[project]/` for persistence |
 | **Cache Context** | Prompt caching for cost | Stable instruction prefixes |
@@ -1901,7 +1903,7 @@ aidevops is registered as a **Claude Code plugin marketplace**. Install with two
 /plugin install aidevops@aidevops
 ```
 
-This installs the complete framework: 14 primary agents, 2,350+ subagents, and 1,960+ helper scripts.
+This installs the complete framework: 15 primary agents, 2,250+ supporting guides, and 2,140+ scripts (shell helpers and tests).
 
 ### Importing External Skills
 
@@ -2054,7 +2056,7 @@ The long-term direction is to make slash commands and `@mentions` unnecessary al
 
 ### **Example Subagents with MCP Integration**
 
-These are examples of subagents that have supporting MCPs enabled. See `.agents/` for the full list of 2,350+ subagents organized by domain.
+These are examples of subagents that have supporting MCPs enabled. See `.agents/` for the library of 2,250+ supporting guides organized by domain.
 
 | Agent | Purpose | MCPs Enabled |
 |-------|---------|--------------|
@@ -2761,8 +2763,8 @@ aidevops/
 ├── AGENTS.md                      # AI agent guidance (dev)
 ├── .agents/                        # Agents and documentation
 │   ├── AGENTS.md                  # User guide (deployed to ~/.aidevops/agents/)
-│   ├── *.md                       # 12 primary agents
-│   ├── scripts/                   # 1,480+ helper scripts
+│   ├── *.md                       # 15 primary agents
+│   ├── scripts/                   # 2,140+ shell scripts (helpers and tests)
 │   ├── tools/                     # Cross-domain utilities (video, browser, git, etc.)
 │   ├── services/                  # External service integrations
 │   └── workflows/                 # Development process guides
@@ -2886,7 +2888,7 @@ See `.agents/tools/credentials/multi-tenant.md` for complete documentation.
 - Autonomous supervisor — pulse runs every 2 minutes, merging PRs, dispatching workers, killing stuck processes, advancing missions
 - Operational intelligence — struggle-ratio detection, orphaned PR recovery, circuit breaker, dynamic concurrency
 - Cost-aware routing — provider-aware model selection across OpenAI, Anthropic, Gemini, Cursor, Grok, and local models with budget tracking
-- Progressive context — 2,350+ subagents loaded on demand, project bundles auto-configuring quality gates and model tiers
+- Progressive context — 2,250+ supporting guides available on demand, project bundles auto-configuring quality gates and model tiers
 - Self-improving — session mining extracts learnings, quality findings auto-create tasks, patterns feed back into agent prompts
 
 **Get Started:**
