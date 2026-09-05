@@ -899,50 +899,66 @@ _dd_has_matching_terminal_lease() {
 		try capture("aidevops:dispatch lease_token=(?<lease_token>[^ ]+) device=(?<device>[^ ]+) session=(?<session>[^ ]+) attempt_id=(?<attempt_id>[^ ]+) claim_id=(?<claim_id>[0-9]+)")
 		catch empty
 	' 2>/dev/null) || marker_json=""
-	if [[ -n "$marker_json" ]] && printf '%s' "$parsed_claims" | jq -e \
-		--argjson marker "$marker_json" --arg dispatch_author "$dispatch_author" '
-		any(.[];
-			.lease_phase == "terminal" and
-			.claim_author == $dispatch_author and
-			.lease_token == $marker.lease_token and
-			.device == $marker.device and
-			.session == $marker.session and
-			.lease_terminal_attempt_id == $marker.attempt_id and
-			((.id // 0) | tostring) == $marker.claim_id
-		)' >/dev/null 2>&1; then
-		return 0
+	# aidevops:trust-boundary — an explicit generation never falls back to
+	# timestamp-only or prose evidence, including when its marker is malformed.
+	if [[ "$dispatch_body" == *"aidevops:dispatch"* ]]; then
+		[[ -n "$marker_json" ]] || return 1
+		if printf '%s' "$parsed_claims" | jq -e \
+			--argjson marker "$marker_json" --arg dispatch_author "$dispatch_author" '
+			any(.[];
+				.lease_phase == "terminal" and
+				.claim_author == $dispatch_author and
+				.lease_token == $marker.lease_token and
+				.device == $marker.device and
+				.session == $marker.session and
+				(.lease_terminal_attempt_id == $marker.attempt_id or .lease_terminal_attempt_id == "release") and
+				((.id // 0) | tostring) == $marker.claim_id
+			)' >/dev/null 2>&1; then
+			return 0
+		fi
+		return 1
 	fi
 
 	if printf '%s' "$parsed_claims" | jq -e \
 		--arg dispatch_ts "$dispatch_created_at" --argjson dispatch_id "$dispatch_id" \
 		--arg dispatch_author "$dispatch_author" '
-		any(.[];
-			.lease_phase == "terminal" and
+		map(select(
 			.claim_author == $dispatch_author and
-			[.created_at, ((.id // 0) | tonumber? // 0)] <= [$dispatch_ts, $dispatch_id] and
+			[.created_at, ((.id // 0) | tonumber? // 0)] <= [$dispatch_ts, $dispatch_id]))
+		| sort_by([.created_at, ((.id // 0) | tonumber? // 0)]) | last
+		| .lease_phase == "terminal" and
 			[.lease_terminal_at, (.lease_terminal_id // 0)] > [$dispatch_ts, $dispatch_id]
-		)' >/dev/null 2>&1; then
+		' >/dev/null 2>&1; then
 		return 0
 	fi
 	return 1
 }
 
 #######################################
-# Check for trusted completion evidence ordered after a dispatch comment.
+# Preserve historical prose completion only for streams without claim identity.
 #
-# Args: comments JSON, dispatch timestamp, dispatch comment ID
+# Args: comments JSON, dispatch timestamp, dispatch ID, author, body
 # Returns: 0 when trusted completion evidence supersedes dispatch; 1 otherwise
 #######################################
 _dd_has_trusted_completion_after_dispatch() {
 	local comments_json="$1"
 	local dispatch_created_at="$2"
 	local dispatch_id="$3"
+	local dispatch_author="${4:-}"
+	local dispatch_body="${5:-}"
 
-	[[ -n "$dispatch_created_at" ]] || return 1
+	[[ -n "$dispatch_created_at" && -n "$dispatch_author" ]] || return 1
+	[[ "$dispatch_body" != *"aidevops:dispatch"* ]] || return 1
 	[[ "$dispatch_id" =~ ^[0-9]+$ ]] || dispatch_id=0
+	# aidevops:trust-boundary — once a stream has claim generations, unbound
+	# completion prose cannot retire one of them, even from the same login.
 	if printf '%s' "$comments_json" | jq -e \
-		--arg dispatch_ts "$dispatch_created_at" --argjson dispatch_id "$dispatch_id" '
+		--arg dispatch_ts "$dispatch_created_at" --argjson dispatch_id "$dispatch_id" \
+		--arg author "$dispatch_author" '
+		(any(.[]; (.body // "") | test("(^|[[:space:]])DISPATCH_CLAIM[[:space:]]+nonce="; "i")) | not) and
 		any(.[];
+			.author == $author and
+			(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") and
 			[.created_at, ((.id // 0) | tonumber? // 0)] > [$dispatch_ts, $dispatch_id] and (
 				(.body_start | test("TASK_COMPLETE"; "i")) or
 				(.body_start | test("FULL_LOOP_COMPLETE"; "i")) or
@@ -1032,7 +1048,7 @@ has_dispatch_comment() {
 
 	# GH#17503: trusted completion/failure evidence posted after dispatch retires
 	# the lock early; untrusted issue comments cannot mutate coordination state.
-	if _dd_has_trusted_completion_after_dispatch "$comments_json" "$dispatch_created_at" "$dispatch_id"; then
+	if _dd_has_trusted_completion_after_dispatch "$comments_json" "$dispatch_created_at" "$dispatch_id" "$dispatch_author" "$dispatch_body"; then
 		# Worker completed or failed — dispatch comment superseded, safe to re-dispatch
 		return 1
 	fi
