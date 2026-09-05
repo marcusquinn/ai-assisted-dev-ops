@@ -25,7 +25,7 @@ The selected agent changes the system prompt and domain knowledge loaded for the
 
 ## Interactive subagent progress
 
-- Use subagents only for independent advisory work; never delegate the active critical path.
+- Use subagents for independent advisory work, not the implementation critical path. The sole default execution exception is the post-merge local standard-tier release handoff in `workflows/release.md`; it preserves primary ownership and publication authority, not general worker dispatch.
 - Dispatch at most two children in one batch and do not launch another batch until they return.
 - Prefix every delegated prompt with `[effort:simple]`, `[effort:standard]`, or `[effort:thinking]`; use the lowest tier that can reliably complete the task.
 - Use `simple` only for bounded, low-consequence advisory work with objective parent-verifiable evidence. The parent must validate the result; fluent output alone is not successful completion.
