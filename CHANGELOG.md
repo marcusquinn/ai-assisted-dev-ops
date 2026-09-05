@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Default thinking to GPT-6 Astra low, with bounded headless reasoning escalation to medium and high (#31222).
+
+### Fixed
+
+- Allow bounded parent-directory verification without widening filesystem access (#31220).
+- Recover squash-integrated release deployment (#31216).
+- Preserve TODO-sync trash recovery (#31217).
+- Fix worktree fixture leaks and PR archive attribution (#31212).
+
 ## [3.32.310] - 2026-09-05
 
 ### Changed
