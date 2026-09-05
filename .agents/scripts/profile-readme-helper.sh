@@ -833,6 +833,9 @@ EOF
 _ensure_commit_history_chart() {
 	local readme_path="$1"
 	local gh_user="$2"
+	if grep -Fq '<!-- TOTAL-CONTRIBUTIONS-START -->' "$readme_path"; then
+		return 0
+	fi
 	if ! grep -Fq '> Stats auto-updated by [aidevops]' "$readme_path" 2>/dev/null; then
 		return 0
 	fi
@@ -1318,8 +1321,14 @@ _update_push_with_recovery() {
 	local commit_msg="$2"
 
 	git -C "$profile_repo" add README.md || return 1
-	if ! git -C "$profile_repo" commit -m "$commit_msg" --no-verify 2>/dev/null; then
-		if git -C "$profile_repo" diff --cached --quiet -- README.md; then
+	local chart_file=""
+	for chart_file in total-light.svg total-dark.svg total.json; do
+		if [[ -f "$profile_repo/assets/contributions/$chart_file" ]]; then
+			git -C "$profile_repo" add -- "assets/contributions/$chart_file" || return 1
+		fi
+	done
+	if ! git -C "$profile_repo" commit -m "$commit_msg" 2>/dev/null; then
+		if git -C "$profile_repo" diff --cached --quiet; then
 			echo "No changes to commit after profile README update"
 			return 0
 		fi
@@ -1394,7 +1403,7 @@ _cmd_update_in_repo() {
 
 	# Replace content between markers
 	local tmp_file
-	tmp_file=$(mktemp)
+	tmp_file=$(mktemp "${profile_repo}/.profile-readme.XXXXXX") || return 1
 	NEW_STATS="$new_stats" awk '
 		/<!-- STATS-START -->/ {
 			print "<!-- STATS-START -->"
@@ -1411,6 +1420,12 @@ _cmd_update_in_repo() {
 	' "$readme_path" >"$tmp_file"
 	local gh_user
 	gh_user=$(_resolve_profile_user "$profile_repo")
+	local chart_args=(--repo "$profile_repo" --readme "$tmp_file" --user "$gh_user")
+	[[ "$dry_run" != true ]] || chart_args+=(--dry-run)
+	if ! python3 "${SCRIPT_DIR}/profile-contribution-chart.py" "${chart_args[@]}"; then
+		rm -f "$tmp_file"
+		return 1
+	fi
 	if ! _ensure_commit_history_chart "$tmp_file" "$gh_user"; then
 		rm -f "$tmp_file"
 		return 1
@@ -1421,7 +1436,12 @@ _cmd_update_in_repo() {
 	old_normalized=$(_normalize_readme_for_compare "$readme_path")
 	new_normalized=$(_normalize_readme_for_compare "$tmp_file")
 	local readme_dirty=false
-	if ! git -C "$profile_repo" diff --quiet -- README.md; then
+	local publication_status=""
+	if ! publication_status=$(git -C "$profile_repo" status --porcelain --untracked-files=all -- README.md assets/contributions/total-light.svg assets/contributions/total-dark.svg assets/contributions/total.json); then
+		rm -f "$tmp_file"
+		return 1
+	fi
+	if [[ -n "$publication_status" ]]; then
 		readme_dirty=true
 	fi
 	if [[ "$old_normalized" == "$new_normalized" && "$readme_dirty" == false ]]; then

@@ -81,6 +81,7 @@ install_helper_with_libs() {
 	chmod +x "${helper_path}"
 	cp "${SOURCE_DATA_LIB}" "${helper_dir}/profile-readme-data-lib.sh"
 	cp "${SOURCE_RENDER_LIB}" "${helper_dir}/profile-readme-render-lib.sh"
+	cp "${SOURCE_HELPER%/*}/profile-contribution-chart.py" "${helper_dir}/profile-contribution-chart.py"
 	_test_copy_shared_deps "${SOURCE_HELPER%/*}" "${helper_dir}" || return 1
 	cp "${SOURCE_HELPER%/*}/audit-worktree-removal-helper.sh" \
 		"${SOURCE_HELPER%/*}/shared-sqlite-backup.sh" \
@@ -222,6 +223,69 @@ strip_dynamic_sections() {
 		/<!-- UPDATED-END -->/ { skip_updated = 0; print; next }
 		!skip_stats && !skip_updated { print }
 	' "$file_path"
+	return 0
+}
+
+test_chart_assets_publish_and_chart_only_changes_are_not_skipped() {
+	local test_name="daily chart assets publish together and chart-only repairs commit without refetch"
+	TEST_DIR=$(mktemp -d)
+	local fixture_home="$TEST_DIR/home" fixture_repo="$TEST_DIR/profile-repo"
+	local fixture_remote="$TEST_DIR/profile-remote.git" helper_dir="$TEST_DIR/helper"
+	local stub_bin="$TEST_DIR/bin" output="$TEST_DIR/output" calls="$TEST_DIR/graphql-calls"
+	mkdir -p "$helper_dir" "$fixture_home" "$stub_bin"
+	install_helper_with_libs "$helper_dir"
+	write_stub_dependencies "$helper_dir"
+	create_profile_repo_fixture "$fixture_home" "$fixture_repo" "$fixture_remote"
+	cat >"$stub_bin/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, re, sys
+if sys.argv[1:3] != ["api", "graphql"]:
+    sys.exit(1)
+request = json.load(sys.stdin)
+with open(os.environ["PROFILE_TEST_GRAPHQL_CALLS"], "a") as out:
+    out.write("query\n")
+user = {"login": request["variables"]["login"]}
+if "createdAt" in request["query"]:
+    user["createdAt"] = "2020-01-17T00:00:00Z"
+else:
+    user.update({key: {"contributionCalendar": {"totalContributions": 21}}
+                 for key in re.findall(r"(m\d+):contributionsCollection", request["query"])})
+print(json.dumps({"data": {"user": user}}))
+PY
+	chmod +x "$stub_bin/gh"
+	local phase="" first_calls=0 before_head=""
+	for phase in initial chart-only; do
+		if [[ "$phase" == chart-only ]]; then
+			git -C "$fixture_repo" fetch origin >/dev/null 2>&1
+			git -C "$fixture_repo" reset --hard origin/main >/dev/null
+			printf 'outdated chart\n' >"$fixture_repo/assets/contributions/total-light.svg"
+			git -C "$fixture_repo" add assets/contributions/total-light.svg
+			git -C "$fixture_repo" commit -m 'test: simulate stale image' >/dev/null
+			git -C "$fixture_repo" push origin main >/dev/null 2>&1
+		fi
+		before_head=$(git --git-dir="$fixture_remote" rev-parse main)
+		if ! HOME="$fixture_home" PATH="$stub_bin:${SOURCE_HELPER%/*}:$PATH" \
+			PROFILE_TEST_GRAPHQL_CALLS="$calls" \
+			AIDEVOPS_REPOS_FILE="$fixture_home/.config/aidevops/repos.json" \
+			AIDEVOPS_WORKTREE_BASE_DIR="$TEST_DIR/worktrees" \
+			bash "$helper_dir/profile-readme-helper.sh" update >"$output" 2>&1; then
+			print_helper_failure "$test_name" "$phase update failed" "$output"
+			return 0
+		fi
+		if [[ "$(git --git-dir="$fixture_remote" rev-list --count "$before_head..main")" != 1 ]] ||
+			! git --git-dir="$fixture_remote" show main:assets/contributions/total-light.svg | grep -q '<svg' ||
+			! git --git-dir="$fixture_remote" show main:README.md | grep -q 'TOTAL-CONTRIBUTIONS-START'; then
+			print_result "$test_name" 1 "$phase publication missing chart or commit"
+			return 0
+		fi
+		if [[ "$phase" == initial ]]; then
+			first_calls=$(wc -l <"$calls" | tr -d ' ')
+		elif [[ "$(wc -l <"$calls" | tr -d ' ')" != "$first_calls" ]]; then
+			print_result "$test_name" 1 "same-day asset repair unexpectedly queried GitHub"
+			return 0
+		fi
+	done
+	print_result "$test_name" 0
 	return 0
 }
 
@@ -1537,6 +1601,8 @@ main() {
 	fi
 
 	if [[ "$mode" != "--unit-only" ]]; then
+		test_chart_assets_publish_and_chart_only_changes_are_not_skipped
+		teardown
 		test_update_preserves_manual_sections
 		teardown
 		test_update_recovers_dirty_profile_publication_worktree

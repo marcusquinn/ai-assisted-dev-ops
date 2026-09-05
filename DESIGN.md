@@ -316,6 +316,15 @@ Don't:
 - Introduce decorative gradients, glassmorphism, or heavy shadows into operational tooling.
 - Use skeleton placeholder brand values in UI or generated guidelines.
 
+## Profile contribution chart
+
+- Use repository-hosted, first-party SVGs for cumulative **Total Contributions**, not a third-party embed with a narrower metric.
+- Match GitHub's light and dark README surfaces. Use a green cumulative line, a subtle area fill, system typography, and an accessible title/description; no external fonts or executable SVG content.
+- Show the exact total, source, UTC data cutoff, and last successful update date. Publish aggregate monthly counts only, never private repository names or events.
+- Keep the chart linked to the user's `commit-history.com` Total view, with a visible verification link and raw aggregate chart data alongside it.
+- Request a new tab with `target="_blank" rel="noopener noreferrer"` on compatible renderers. GitHub strips those attributes: disclose Ctrl/Cmd-click rather than claim a forced new tab.
+- Refresh once per UTC day through the existing profile updater. Retain the last successful chart on data failure and publish light/dark assets and README together.
+
 ## Responsive Behaviour
 
 - Dashboard grids should use auto-fit/auto-fill patterns and collapse to one column below the card minimum width.
