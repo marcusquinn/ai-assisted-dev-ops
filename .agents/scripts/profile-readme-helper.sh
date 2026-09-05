@@ -842,7 +842,7 @@ _ensure_commit_history_chart() {
 			return 0
 		fi
 		local migrate_tmp
-		migrate_tmp=$(mktemp)
+		migrate_tmp=$(mktemp "${readme_path}.commit-history.XXXXXX") || return 1
 		local legacy_href="https://commit-history.com/${gh_user}"
 		if grep -Fq "<a href=\"${legacy_href}\">" "$readme_path" 2>/dev/null; then
 			if ! awk -v old="href=\"${legacy_href}\"" -v new="href=\"${chart_href}\"" '
@@ -893,7 +893,10 @@ _ensure_commit_history_chart() {
 			rm -f "$migrate_tmp"
 			return 1
 		fi
-		mv "$migrate_tmp" "$readme_path" || return 1
+		mv "$migrate_tmp" "$readme_path" || {
+			rm -f "$migrate_tmp"
+			return 1
+		}
 		return 0
 	fi
 
