@@ -2440,6 +2440,7 @@ _dispatch_priority_phase_candidates() {
 		select(any($attempted[]; . == [$candidate.repo_slug, ($candidate.number | tostring)]) | not) |
 		select(if $phase == "urgent" then urgent
 			elif $phase == $product then .repo_priority == $product and (urgent | not)
+			elif $phase == "ordinary" then .repo_priority != $product and (urgent | not)
 			else true end)
 	' "$candidates"
 	return $?
@@ -2462,6 +2463,42 @@ _dispatch_priority_product_outcomes() {
 	return $?
 }
 
+# Start disjoint reserved/unreserved pools together, sharing one ceremony cap.
+# Join before any borrowing: slow product probes cannot idle unreserved slots.
+# Args: candidates, accumulated outcomes, capacity, reserved, login, parallelism,
+#       caller-owned phase directory
+_dispatch_priority_reserved_pools() {
+	local candidates="$1" outcomes="$2" budget="$3" reserved="$4" login="$5" parallel="$6" phase_dir="$7"
+	local ordinary=0 product_parallel=1 ordinary_parallel=1 product_pid="" ordinary_pid="" result=0
+	((reserved <= budget)) || reserved="$budget"
+	ordinary=$((budget - reserved))
+	_dispatch_priority_phase_candidates "$candidates" "$outcomes" product >"$phase_dir/product.candidates" || return 1
+	_dispatch_priority_phase_candidates "$candidates" "$outcomes" ordinary >"$phase_dir/ordinary.candidates" || return 1
+	: >"$phase_dir/product.outcomes"
+	: >"$phase_dir/ordinary.outcomes"
+	if ((parallel > 1 && reserved > 0 && ordinary > 0)) &&
+		[[ -s "$phase_dir/product.candidates" && -s "$phase_dir/ordinary.candidates" ]]; then
+		product_parallel=$(((parallel * reserved + budget - 1) / budget))
+		((product_parallel < parallel)) || product_parallel=$((parallel - 1))
+		ordinary_parallel=$((parallel - product_parallel))
+		_dispatch_run_priority_phase "$phase_dir/product.candidates" "$reserved" "$login" "$product_parallel" \
+			"$phase_dir/product.outcomes" >"$phase_dir/product.result" &
+		product_pid=$!
+		_dispatch_run_priority_phase "$phase_dir/ordinary.candidates" "$ordinary" "$login" "$ordinary_parallel" \
+			"$phase_dir/ordinary.outcomes" >"$phase_dir/ordinary.result" &
+		ordinary_pid=$!
+		wait "$product_pid" || result=1
+		wait "$ordinary_pid" || result=1
+	else
+		_dispatch_run_priority_phase "$phase_dir/product.candidates" "$reserved" "$login" "$parallel" \
+			"$phase_dir/product.outcomes" >"$phase_dir/product.result" || result=1
+		_dispatch_run_priority_phase "$phase_dir/ordinary.candidates" "$ordinary" "$login" "$parallel" \
+			"$phase_dir/ordinary.outcomes" >"$phase_dir/ordinary.result" || result=1
+	fi
+	cat "$phase_dir/product.outcomes" "$phase_dir/ordinary.outcomes" >>"$outcomes" || return 1
+	return "$result"
+}
+
 # Fulfil product reservations using verified launches, then lend only proven slack.
 # Urgent work is exempt. Every phase retains the existing bounded concurrency and
 # API/resource/ownership gates; no candidate is attempted twice in a round.
@@ -2473,18 +2510,27 @@ _dispatch_priority_loop() {
 	local phase_dir="" phase="" phase_budget=0 launched=0 processed=0 result=""
 	local phase_launched=0 phase_processed=0 product_launched=0 product_unknown=0 held=0
 	phase_dir=$(mktemp -d) || return 1
-	for phase in urgent product remainder; do
+	for phase in urgent pools remainder; do
 		phase_budget=$((budget - launched))
 		((phase_budget > 0)) || break
-		_dispatch_priority_phase_candidates "$candidates" "$outcomes" "$phase" >"$phase_dir/candidates" || {
-			rm -rf "$phase_dir"; return 1;
-		}
 		read -r product_launched product_unknown < <(_dispatch_priority_product_outcomes "$outcomes")
 		held=$((reserved - product_launched))
 		((held >= 0)) || held=0
-		if [[ "$phase" == product ]]; then
-			((phase_budget <= held)) || phase_budget="$held"
-		elif [[ "$phase" == remainder && "$held" -gt 0 ]]; then
+		if [[ "$phase" == pools ]]; then
+			if [[ "$complete" == true && "$product_unknown" -eq 0 ]] &&
+				! jq -se --arg product "$_DISPATCH_PRIORITY_PRODUCT" 'any(.[]; .repo_priority == $product)' "$candidates" >/dev/null; then
+				held=0
+			fi
+			_dispatch_priority_reserved_pools "$candidates" "$outcomes" "$phase_budget" "$held" "$login" "$parallel" "$phase_dir" || {
+				rm -rf "$phase_dir"; return 1;
+			}
+			launched=$(_dispatch_max_count_outcomes "$outcomes")
+			continue
+		fi
+		_dispatch_priority_phase_candidates "$candidates" "$outcomes" "$phase" >"$phase_dir/candidates" || {
+			rm -rf "$phase_dir"; return 1;
+		}
+		if [[ "$phase" == remainder && "$held" -gt 0 ]]; then
 			if [[ "$complete" == true && "$product_unknown" -eq 0 ]] &&
 				! jq -se --arg product "$_DISPATCH_PRIORITY_PRODUCT" 'any(.[]; .repo_priority == $product)' "$phase_dir/candidates" >/dev/null; then
 				held=0

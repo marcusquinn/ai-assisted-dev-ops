@@ -120,6 +120,19 @@ _pulse_campaign_plan_shadow() {
 	return 0
 }
 
+# Completeness covers downstream filtering too, not just the upstream API read.
+_pulse_campaign_filter_candidates() {
+	local repo_slug="$1" candidates="$2" completeness_file="${3:-}" filtered=""
+	if ! filtered=$(_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates") ||
+		! jq -e 'type == "array"' <<<"$filtered" >/dev/null 2>&1; then
+		[[ -z "$completeness_file" ]] || printf '0\n' >"$completeness_file"
+		printf '[]\n'
+		return 1
+	fi
+	printf '%s\n' "$filtered"
+	return 0
+}
+
 pulse_campaign_shadow_candidates_json() {
 	local repo_slug="$1"
 	local repo_path="$2"
@@ -130,8 +143,8 @@ pulse_campaign_shadow_candidates_json() {
 
 	if ! _pulse_campaign_shadow_enabled; then
 		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "" "" "$dependency_normalization_mode" "$completeness_file") || candidates_json='[]'
-		_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json"
-		return 0
+		_pulse_campaign_filter_candidates "$repo_slug" "$candidates_json" "$completeness_file"
+		return $?
 	fi
 
 	local raw_snapshot_file="" ready_file="" plan_file="" snapshot_status_file=""
@@ -143,12 +156,16 @@ pulse_campaign_shadow_candidates_json() {
 		rm -f "$raw_snapshot_file" "$ready_file" "$plan_file" "$snapshot_status_file"
 		_pulse_campaign_log "temporary workspace unavailable repo=${repo_slug}; legacy candidates retained"
 		candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "" "" "$dependency_normalization_mode" "$completeness_file") || candidates_json='[]'
-		_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json"
-		return 0
+		_pulse_campaign_filter_candidates "$repo_slug" "$candidates_json" "$completeness_file"
+		return $?
 	fi
 
 	candidates_json=$(list_dispatchable_issue_candidates_json "$repo_slug" "$source_limit" "$raw_snapshot_file" "$snapshot_status_file" "$dependency_normalization_mode" "$completeness_file") || candidates_json='[]'
-	candidates_json=$(_dispatch_filter_repo_pr_backlog_candidates "$repo_slug" "$candidates_json")
+	candidates_json=$(_pulse_campaign_filter_candidates "$repo_slug" "$candidates_json" "$completeness_file") || {
+		printf '[]\n'
+		rm -f "$raw_snapshot_file" "$ready_file" "$plan_file" "$snapshot_status_file"
+		return 1
+	}
 	(
 		umask 077
 		printf '%s\n' "$candidates_json" >"$ready_file"

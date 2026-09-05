@@ -138,16 +138,21 @@ gh_issue_list() {
 _dispatch_filter_repo_pr_backlog_candidates() {
 	local repo_slug="$1" candidates_json="$2"
 	: "$repo_slug"
+	[[ "$SNAPSHOT_MODE" != filter_failed ]] || return 1
 	printf '%s\n' "$candidates_json"
 	return 0
 }
 for shadow_enabled in 0 1; do
 	AIDEVOPS_PULSE_CAMPAIGN_SHADOW_ENABLED="$shadow_enabled"
-	for SNAPSHOT_MODE in empty failed malformed truncated; do
-		pulse_campaign_shadow_candidates_json "example/repository" "$TEST_ROOT" 1 skip "$TEST_ROOT/complete" >/dev/null
+	for SNAPSHOT_MODE in empty failed malformed truncated filter_failed; do
+		filter_status=0
+		pulse_campaign_shadow_candidates_json "example/repository" "$TEST_ROOT" 1 skip "$TEST_ROOT/complete" >/dev/null || filter_status=$?
 		expected_complete=0
 		[[ "$SNAPSHOT_MODE" != empty ]] || expected_complete=1
 		assert_equal "$expected_complete" "$(<"$TEST_ROOT/complete")" "real ${SNAPSHOT_MODE} discovery, shadow=${shadow_enabled}"
+		if [[ "$SNAPSHOT_MODE" == filter_failed ]]; then
+			assert_equal "1" "$filter_status" "failed downstream filter propagates failure"
+		fi
 	done
 done
 
@@ -170,16 +175,36 @@ gh_issue_list() {
 	fi
 	return 0
 }
+_dispatch_filter_repo_pr_backlog_candidates() {
+	local repo_slug="$1" candidates_json="$2"
+	if [[ "$repo_slug" == o/product && "$SNAPSHOT_MODE" == filter_failed ]]; then
+		return 1
+	fi
+	printf '%s\n' "$candidates_json"
+	return 0
+}
 jq -nc --arg path "$TEST_ROOT" '{initialized_repos:[
 	{slug:"o/product",path:$path,pulse:true,priority:"product"},
 	{slug:"o/tooling",path:$path,pulse:true,priority:"tooling"}]}' >"$REPOS_JSON"
 AIDEVOPS_PULSE_CAMPAIGN_SHADOW_ENABLED=0
-for SNAPSHOT_MODE in empty failed; do
+for SNAPSHOT_MODE in empty failed filter_failed; do
 	ranked=$(build_ranked_dispatch_candidates_json 100 skip)
 	expected_complete=true
-	[[ "$SNAPSHOT_MODE" != failed ]] || expected_complete=false
+	[[ "$SNAPSHOT_MODE" == empty ]] || expected_complete=false
 	assert_equal "1" "$(jq length <<<"$ranked")" "ranking retains tooling candidate on ${SNAPSHOT_MODE} product read"
 	assert_equal "$expected_complete" "$(jq -r '.[0].product_discovery_complete' <<<"$ranked")" "ranked snapshot retains ${SNAPSHOT_MODE} product evidence"
 done
+
+# A failed wrapper cannot resurrect stale successful side-channel evidence.
+pulse_campaign_shadow_candidates_json() {
+	local repo_slug="$1" repo_path="$2" limit="$3" mode="$4" completeness_file="$5"
+	: "$repo_path" "$limit" "$mode"
+	printf '1\n' >"$completeness_file"
+	[[ "$repo_slug" != o/product ]] || return 1
+	printf '%s\n' '[{"number":1,"labels":[],"assignees":[]}]'
+	return 0
+}
+ranked=$(build_ranked_dispatch_candidates_json 100 skip)
+assert_equal "false" "$(jq -r '.[0].product_discovery_complete' <<<"$ranked")" "wrapper failure invalidates earlier successful completeness marker"
 
 printf 'PASS: pulse campaign shadow compatibility\n'

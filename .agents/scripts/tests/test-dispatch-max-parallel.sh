@@ -780,6 +780,10 @@ test_serial_loop_allows_unset_stop_flag() {
 test_priority_reservations() {
 	local mode="$1" parallel="$2" expected_product="$3" expected_total="$4"
 	local candidate_file="" outcomes="" result="" products=0 total=0 complete=true
+	local TOOLING_STARTED="${TEST_ROOT}/tooling-${mode}-${parallel}.ready"
+	local ACTIVITY="${TEST_ROOT}/priority-${mode}-${parallel}.activity"
+	rm -f "$TOOLING_STARTED"
+	: >"$ACTIVITY"
 	candidate_file=$(mktemp)
 	outcomes=$(mktemp)
 	jq -nc --arg mode "$mode" '
@@ -792,10 +796,22 @@ test_priority_reservations() {
 	' >"$candidate_file"
 	# shellcheck disable=SC2317 # called through the real phase/dispatch loops
 	_dispatch_process_candidate() {
-		local candidate_json="$1" outcome=""
+		local candidate_json="$1" outcome="" priority="" waits=0
 		_DISPATCH_THROTTLE_CLEARED=0
+		printf 'start\n' >>"$ACTIVITY"
 		outcome=$(jq -r '.simulated_outcome' <<<"$candidate_json")
+		priority=$(jq -r '.repo_priority' <<<"$candidate_json")
+		if [[ "$mode" == concurrent && "$priority" == product ]]; then
+			while [[ ! -f "$TOOLING_STARTED" && "$waits" -lt 300 ]]; do
+				sleep 0.01
+				waits=$((waits + 1))
+			done
+			[[ -f "$TOOLING_STARTED" ]] || outcome=unknown
+		elif [[ "$priority" == tooling ]]; then
+			: >"$TOOLING_STARTED"
+		fi
 		_DISPATCH_CANDIDATE_ELIGIBILITY="$outcome"
+		printf 'end\n' >>"$ACTIVITY"
 		[[ "$outcome" == success ]] && return 0
 		return 1
 	}
@@ -815,6 +831,10 @@ test_priority_reservations() {
 	else
 		print_result "priority_loop: ${mode} duplicate attempts" 1 "duplicates=${duplicate}"
 	fi
+	local peak=0
+	peak=$(awk '$0=="start" { n++; if(n>peak) peak=n } $0=="end" { n-- } END { print peak+0 }' "$ACTIVITY")
+	((peak <= parallel)) && print_result "priority_loop: ${mode} combined concurrency is bounded" 0 ||
+		print_result "priority_loop: ${mode} exceeded shared parallelism" 1 "peak=${peak} cap=${parallel}"
 	rm -f "$candidate_file" "$outcomes"
 	return 0
 }
@@ -878,6 +898,7 @@ test_serial_loop_budget_cap
 test_serial_loop_allows_unset_stop_flag
 test_priority_reservations normal 1 2 4
 test_priority_reservations normal 3 2 4
+test_priority_reservations concurrent 3 2 4
 test_priority_reservations mixed 3 2 4
 test_priority_reservations ineligible 3 0 4
 test_priority_reservations unknown 3 0 2

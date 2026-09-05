@@ -40,6 +40,8 @@ setup_test_env() {
 	TEST_ROOT=$(mktemp -d)
 	PS_FIXTURE_FILE="${TEST_ROOT}/ps-fixture.txt"
 	export HOME="${TEST_ROOT}/home"
+	export AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp"
+	mkdir -p "$AIDEVOPS_TEMP_DIR"
 	mkdir -p "${HOME}/.aidevops/agents/configs" "${HOME}/.aidevops/logs"
 	cat >"${HOME}/.aidevops/agents/configs/aidevops.defaults.jsonc" <<'JSON'
 {}
@@ -1071,38 +1073,53 @@ JSON
 	return 0
 }
 
+_test_capacity_model_for_labels() {
+	local labels="$1"
+	case ",${labels}," in
+	*,tier:thinking,*) printf '%s\n' "anthropic/claude-opus-4-6" ;;
+	*,tier:standard,*) printf '%s\n' "anthropic/claude-sonnet-4-6" ;;
+	*,tier:simple,*) printf '%s\n' "anthropic/claude-haiku-4-5" ;;
+	*) printf '\n' ;;
+	esac
+	return 0
+}
+
+_test_capacity_candidates() {
+	local mode="$1"
+	printf '%s\n' '[
+	  {"number":9101,"repo_slug":"marcusquinn/aidevops","repo_path":"/tmp/aidevops","url":"https://github.com/marcusquinn/aidevops/issues/9101","title":"candidate one","labels":["bug"],"updatedAt":"2026-03-31T00:00:00Z","score":8000},
+	  {"number":9102,"repo_slug":"marcusquinn/aidevops","repo_path":"/tmp/aidevops","url":"https://github.com/marcusquinn/aidevops/issues/9102","title":"candidate two","labels":["file-size-debt","tier:simple"],"updatedAt":"2026-03-31T00:01:00Z","score":4000},
+	  {"number":9103,"repo_slug":"marcusquinn/aidevops","repo_path":"/tmp/aidevops","url":"https://github.com/marcusquinn/aidevops/issues/9103","title":"candidate three","labels":["function-complexity-debt"],"updatedAt":"2026-03-31T00:02:00Z","score":4000}
+	]' | jq -c --arg mode "$mode" 'map(
+		if $mode == "product" and .number == 9102 then
+			.repo_slug="o/product" | .repo_path="/tmp/product" | .url="" | .repo_priority="product"
+		else .repo_priority="tooling" end | .product_discovery_complete=true)'
+	return $?
+}
+
 test_dispatch_max_dispatches_up_to_capacity() {
+	local reservation_mode="${1:-tooling}"
+	local REPOS_JSON="${TEST_ROOT}/reservation-integration.json"
+	local PRODUCT_RESERVATION_PCT=50
+	local original_rest_gate=""
+	original_rest_gate=$(capture_function_definitions _dispatch_rest_core_progress_allows_next)
+	_dispatch_rest_core_progress_allows_next() { return 0; }
+	jq -nc --arg mode "$reservation_mode" '{initialized_repos:
+		(if $mode == "product" then [{slug:"o/product",path:"/tmp/product",pulse:true,priority:"product"}] else [] end)}' >"$REPOS_JSON"
 	local dispatch_log="${TEST_ROOT}/deterministic-dispatch.log"
 	local original_function_definitions
 	original_function_definitions=$(capture_function_definitions gh resolve_dispatch_model_for_labels build_ranked_dispatch_candidates_json _dispatch_compute_capacity _dispatch_ranked_candidates_json _dispatch_run_prepasses _dispatch_order_idle_borrowing_candidates _dispatch_max_compute_parallel _dispatch_graphql_budget_allows_next _dispatch_should_skip_candidate _dispatch_check_model_concurrency_cap _pulse_refresh_repo _dispatch_with_timeout count_runnable_candidates count_queued_without_worker dispatch_with_dedup check_worker_launch _dispatch_maybe_engage_throttle)
 	: >"$dispatch_log"
 
 	resolve_dispatch_model_for_labels() {
-		# Tier label resolution uses canonical workload tiers.
-		case ",${1}," in
-		*,tier:thinking,*)
-			echo "anthropic/claude-opus-4-6"
-			return 0
-			;;
-		*,tier:standard,*)
-			echo "anthropic/claude-sonnet-4-6"
-			return 0
-			;;
-		*,tier:simple,*)
-			echo "anthropic/claude-haiku-4-5"
-			return 0
-			;;
-		esac
-		echo ""
-		return 0
+		local labels="${1:-}"
+		_test_capacity_model_for_labels "$labels"
+		return $?
 	}
 
 	build_ranked_dispatch_candidates_json() {
-		printf '%s\n' '[
-		  {"number":9101,"repo_slug":"marcusquinn/aidevops","repo_path":"/tmp/aidevops","url":"https://github.com/marcusquinn/aidevops/issues/9101","title":"candidate one","labels":["bug"],"updatedAt":"2026-03-31T00:00:00Z","score":8000},
-		  {"number":9102,"repo_slug":"marcusquinn/aidevops","repo_path":"/tmp/aidevops","url":"https://github.com/marcusquinn/aidevops/issues/9102","title":"candidate two","labels":["file-size-debt","tier:simple"],"updatedAt":"2026-03-31T00:01:00Z","score":4000},
-		  {"number":9103,"repo_slug":"marcusquinn/aidevops","repo_path":"/tmp/aidevops","url":"https://github.com/marcusquinn/aidevops/issues/9103","title":"candidate three","labels":["function-complexity-debt"],"updatedAt":"2026-03-31T00:02:00Z","score":4000}
-		]'
+		_test_capacity_candidates "$reservation_mode"
+		return $?
 	}
 	_dispatch_compute_capacity() {
 		printf '2 0 2\n'
@@ -1160,11 +1177,14 @@ test_dispatch_max_dispatches_up_to_capacity() {
 	local dispatch_count dispatched_numbers
 	dispatch_count=$(dispatch_max)
 	dispatched_numbers=$(tr '\n' ',' <"$dispatch_log" | sed 's/,$//')
+	restore_function_definitions "$original_rest_gate" _dispatch_rest_core_progress_allows_next
 
 	restore_function_definitions "$original_function_definitions" gh resolve_dispatch_model_for_labels build_ranked_dispatch_candidates_json _dispatch_compute_capacity _dispatch_ranked_candidates_json _dispatch_run_prepasses _dispatch_order_idle_borrowing_candidates _dispatch_max_compute_parallel _dispatch_graphql_budget_allows_next _dispatch_should_skip_candidate _dispatch_check_model_concurrency_cap _pulse_refresh_repo _dispatch_with_timeout count_runnable_candidates count_queued_without_worker dispatch_with_dedup check_worker_launch _dispatch_maybe_engage_throttle
 
-	if [[ "$dispatch_count" == "2" && "$dispatched_numbers" == "9101|,9102|anthropic/claude-haiku-4-5" ]]; then
-		print_result "dispatch_max dispatches ranked candidates up to capacity and honors simple-tier override" 0
+	local expected_numbers="9101|,9102|anthropic/claude-haiku-4-5"
+	[[ "$reservation_mode" != product ]] || expected_numbers="9102|anthropic/claude-haiku-4-5,9101|"
+	if [[ "$dispatch_count" == "2" && "$dispatched_numbers" == "$expected_numbers" ]]; then
+		print_result "dispatch_max enforces ${reservation_mode} policy, capacity, and simple-tier override" 0
 		return 0
 	fi
 
@@ -1309,6 +1329,9 @@ test_dispatch_max_honors_stop_flag() {
 }
 
 test_dispatch_max_skips_broad_prelaunch_counts() {
+	local original_rest_gate=""
+	original_rest_gate=$(capture_function_definitions _dispatch_rest_core_progress_allows_next)
+	_dispatch_rest_core_progress_allows_next() { return 0; }
 	local dispatch_log="${TEST_ROOT}/deterministic-no-broad-counts.log"
 	local count_call_log="${TEST_ROOT}/deterministic-broad-count-calls.log"
 	local login_call_log="${TEST_ROOT}/deterministic-login-calls.log"
@@ -1389,6 +1412,7 @@ test_dispatch_max_skips_broad_prelaunch_counts() {
 	dispatched_numbers=$(tr '\n' ',' <"$dispatch_log" | sed 's/,$//')
 	count_call_count=$(wc -l <"$count_call_log" | tr -d ' ')
 	login_call_count=$(wc -l <"$login_call_log" | tr -d ' ')
+	restore_function_definitions "$original_rest_gate" _dispatch_rest_core_progress_allows_next
 
 	restore_function_definitions "$original_function_definitions" gh build_ranked_dispatch_candidates_json _dispatch_compute_capacity _dispatch_ranked_candidates_json _dispatch_run_prepasses _dispatch_order_idle_borrowing_candidates _dispatch_max_compute_parallel _dispatch_graphql_budget_allows_next _dispatch_should_skip_candidate _dispatch_check_model_concurrency_cap _pulse_refresh_repo _dispatch_with_timeout count_runnable_candidates count_queued_without_worker dispatch_with_dedup check_worker_launch _dispatch_maybe_engage_throttle
 
@@ -1575,6 +1599,7 @@ main() {
 	test_build_ranked_dispatch_candidates_json_respects_schedule_gate
 	test_build_ranked_dispatch_candidates_json_accepts_array_pulse_hours
 	test_dispatch_max_dispatches_up_to_capacity
+	test_dispatch_max_dispatches_up_to_capacity product
 	test_dispatch_max_honors_stop_flag
 	test_dispatch_max_skips_broad_prelaunch_counts
 	test_active_pulse_refill_skips_without_idle_or_stall_signal

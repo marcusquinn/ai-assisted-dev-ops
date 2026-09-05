@@ -407,7 +407,10 @@ build_ranked_dispatch_candidates_json() {
 		update_repo_pulse_timestamp "$repo_slug"
 		local repo_candidates_json
 		printf '0\n' >"$completeness_file"
-		repo_candidates_json=$(pulse_campaign_shadow_candidates_json "$repo_slug" "$repo_path" "$per_repo_limit" "$dependency_normalization_mode" "$completeness_file") || repo_candidates_json='[]'
+		repo_candidates_json=$(pulse_campaign_shadow_candidates_json "$repo_slug" "$repo_path" "$per_repo_limit" "$dependency_normalization_mode" "$completeness_file") || {
+			repo_candidates_json='[]'
+			[[ "$repo_priority" != product ]] || product_complete=false
+		}
 		if [[ "$repo_priority" == product && "$(<"$completeness_file")" != 1 ]]; then
 			product_complete=false
 		fi
