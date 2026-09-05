@@ -5,7 +5,6 @@
 import argparse
 import contextlib
 import io
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,16 +12,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from readme_inventory import KEYS, display_counts, inventory
-from readme_inventory_cli import (
+from readme_inventory_cli import process_documents
+from readme_inventory_documents import (
     hero_description,
     hero_title,
     inventory_summary,
-    process_documents,
     update_readme,
     update_svg,
     validate_readme,
     validate_svg,
 )
+from repo_metrics_git import run_command
 
 PROFILE = "---\ndescription: Example specialist\nmode: subagent\n---\nInstructions.\n"
 COUNTS = dict(zip(KEYS, (14, 630, 468, 106)))
@@ -36,12 +36,10 @@ class InventoryTests(unittest.TestCase):
         self.git("init", "-q")
 
     def git(self, *args):
-        return subprocess.run(
-            ["git", "-C", str(self.root), *args],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        result = run_command(["git", *args], self.root)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.returncode, 0)
+        return result
 
     def write(self, path, text=PROFILE):
         target = self.root / path
@@ -188,6 +186,20 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             update_svg(duplicate, COUNTS)
         self.assertTrue(validate_svg(self.svg().replace("600+", "2,250+"), COUNTS))
+
+    def test_svg_rejects_declarations_and_oversized_input(self):
+        invalid = (
+            '<!DOCTYPE svg [<!ENTITY x "expanded">]>' + self.svg(),
+            '<!DOCTYPE svg SYSTEM "never-fetch.dtd">' + self.svg(),
+            " " * 65537 + self.svg(),
+            "<broken>",
+        )
+        for text in invalid:
+            with self.subTest(text=text[:60]):
+                with self.assertRaises(ValueError):
+                    validate_svg(text, COUNTS)
+                with self.assertRaises(ValueError):
+                    update_svg(text, COUNTS)
 
     def test_svg_quotes_and_prefixes_roundtrip(self):
         prefixed = self.svg().replace("xmlns=", "xmlns:s=")
