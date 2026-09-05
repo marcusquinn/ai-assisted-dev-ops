@@ -69,6 +69,12 @@ test("registers only the explicit MCP activation profiles", () => {
   assert.doesNotMatch(config.agent.quickfile.prompt, /browser tab/i);
 });
 
+test("keeps Playwriter reachable from the Build+ routing profile", () => {
+  const buildPlus = readFileSync(join(AGENTS_DIR, "build-plus.md"), "utf8");
+
+  assert.match(buildPlus, /^\s+- playwriter$/m);
+});
+
 test("pins legacy Playwriter commands while preserving custom commands", () => {
   const legacyCommands = [
     ["npx", "playwriter@latest"],
@@ -476,7 +482,7 @@ printf 'named screenshot' >"$output_dir/review-home-desktop.png"
 
   assert.match(
     await activation.execute({ action: "connect", name: "playwright" }),
-    /Connected MCP playwright/,
+    /Connected MCP playwright.*does not grant its tools.*dedicated playwright agent/,
   );
   const managedDir = runtime.workspaces.playwright.directory;
   assert.deepEqual(readdirSync(canonical), []);

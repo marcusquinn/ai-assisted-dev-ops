@@ -31,6 +31,7 @@ subagents:
   - toon
   # Browser/testing
   - playwright
+  - playwriter
   - stagehand
   - pagespeed
   # Git platforms

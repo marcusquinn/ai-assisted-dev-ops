@@ -281,7 +281,7 @@ async function executeMcpActivation(args, allowed, options) {
   }
 
   return action === "connect"
-    ? `Connected MCP ${name}. Continue on the next step with its tools.`
+    ? `Connected MCP ${name}. Lifecycle readiness does not grant its tools to the current agent; continue in the dedicated ${name} agent, where its tool permissions are scoped.`
     : `Disconnected MCP ${name}.`;
 }
 
