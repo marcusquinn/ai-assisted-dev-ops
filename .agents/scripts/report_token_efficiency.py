@@ -110,12 +110,13 @@ def ledger_rows(db: Path, since: str, parents: dict[str, set[str]]):
         required = {"session_id", "model_id", "timestamp", *TOKEN_FIELDS}
         if not required.issubset(columns):
             raise ValueError("request ledger lacks required token/model columns")
-        selected = [*sorted(required), *(field if field in columns else f"NULL AS {field}" for field in OPTIONAL_FIELDS)]
+        selected = required.union(OPTIONAL_FIELDS)
         if "parent_session_id" in columns:
             for row in conn.execute("SELECT DISTINCT session_id, parent_session_id FROM llm_requests WHERE parent_session_id IS NOT NULL AND parent_session_id != ''"):
                 parents[row[0]].add(row[1])
-        for raw in conn.execute(f"SELECT {', '.join(selected)} FROM llm_requests WHERE timestamp >= ?", (since,)):
-            yield dict(raw)
+        # Static SQL supports older schemas; only allowlisted fields leave this reader.
+        for raw in conn.execute("SELECT * FROM llm_requests WHERE timestamp >= ?", (since,)):
+            yield {field: raw[field] if field in columns else None for field in selected}
 
 
 def model_rows(groups: dict) -> list[dict[str, Any]]:
