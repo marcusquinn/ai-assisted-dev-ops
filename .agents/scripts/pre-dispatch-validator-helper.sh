@@ -197,6 +197,21 @@ _validate_implementation_brief_scope() {
 	return 30
 }
 
+_load_validated_issue_context() {
+	local issue_number="$1"
+	local slug="$2"
+
+	_PDV_ISSUE_API_PATH="repos/${slug}/issues/${issue_number}"
+	_PDV_ISSUE_BODY=$(gh api "$_PDV_ISSUE_API_PATH" --jq '.body // ""' 2>/dev/null) || {
+		_log "WARN" "Failed to fetch issue body for #${issue_number} — proceeding (validator error)"
+		return 20
+	}
+
+	local scope_rc=0
+	_validate_implementation_brief_scope "$issue_number" "$_PDV_ISSUE_BODY" || scope_rc=$?
+	return "$scope_rc"
+}
+
 # ---------------------------------------------------------------------------
 # Merge-stuck zero-progress meta-issue validator (GH#24729)
 # ---------------------------------------------------------------------------
@@ -1924,19 +1939,9 @@ cmd_validate() {
 		return 20
 	fi
 
-	# Fetch issue body
-	local issue_body
-	local issue_api_path="repos/${slug}/issues/${issue_number}"
-	issue_body=$(gh api "$issue_api_path" --jq '.body // ""' 2>/dev/null) || {
-		_log "WARN" "Failed to fetch issue body for #${issue_number} — proceeding (validator error)"
-		return 20
-	}
-
-	local scope_rc=0
-	_validate_implementation_brief_scope "$issue_number" "$issue_body" || scope_rc=$?
-	if [[ "$scope_rc" -ne 0 ]]; then
-		return "$scope_rc"
-	fi
+	_load_validated_issue_context "$issue_number" "$slug" || return $?
+	local issue_body="$_PDV_ISSUE_BODY"
+	local issue_api_path="$_PDV_ISSUE_API_PATH"
 
 	local pre_generator_rc=0
 	_run_pre_generator_validators "$issue_number" "$slug" "$issue_body" "$issue_api_path" || pre_generator_rc=$?
