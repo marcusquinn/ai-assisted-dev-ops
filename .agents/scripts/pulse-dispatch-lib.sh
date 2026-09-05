@@ -71,6 +71,11 @@ _DISPATCH_DEPENDENCY_NORMALIZATION_SKIP="skip"
 # _effective_slots to the unthrottled available_slots value.
 _DISPATCH_THROTTLE_CLEARED=0
 _DISPATCH_TRIAGE_OUTCOME_SCHEMA="aidevops.pulse-triage-outcome/v1"
+_DISPATCH_OUTCOME_SUCCESS="success"
+_DISPATCH_OUTCOME_FAILED="fail"
+_DISPATCH_PRIORITY_PRODUCT="product"
+_DISPATCH_ELIGIBILITY_INELIGIBLE="ineligible"
+_DISPATCH_ELIGIBILITY_UNKNOWN="unknown"
 
 _dispatch_cycle_cache_path() {
 	local kind="$1"
@@ -1296,6 +1301,7 @@ _dispatch_skip_for_benign_block() {
 
 	local benign_block_reason=""
 	if benign_block_reason=$(_dispatch_benign_blocked_candidate_reason "$issue_number" "$repo_slug"); then
+		_DISPATCH_CANDIDATE_ELIGIBILITY="$_DISPATCH_ELIGIBILITY_INELIGIBLE"
 		echo "[pulse-wrapper] Dispatch_max: skipping #${issue_number} (${repo_slug}) — skip:already_assigned blocked:${benign_block_reason} from current pulse cycle" >>"$LOGFILE"
 		_dispatch_stats_increment "dispatch_candidate_blocked_${benign_block_reason}"
 		return 0
@@ -1315,6 +1321,7 @@ _dispatch_skip_for_footprint_defer() {
 	local candidate_json="$3"
 	declare -F _footprint_defer_should_suppress >/dev/null 2>&1 || return 1
 	_footprint_defer_should_suppress "$issue_number" "$repo_slug" "$candidate_json" || return 1
+	_DISPATCH_CANDIDATE_ELIGIBILITY="$_DISPATCH_ELIGIBILITY_INELIGIBLE"
 	_dispatch_stats_increment "dispatch_candidate_footprint_defer_suppressed"
 	return 0
 }
@@ -1644,7 +1651,7 @@ _dispatch_with_timeout() {
 			pulse_stats_increment "dispatch_per_candidate_timeout" 2>/dev/null || true
 		fi
 	elif [[ "$dispatch_rc" -eq 0 ]]; then
-		outcome="success"
+		outcome="$_DISPATCH_OUTCOME_SUCCESS"
 	elif [[ "$dispatch_rc" -eq 2 ]]; then
 		outcome="noop"
 	else
@@ -1882,6 +1889,7 @@ _dispatch_record_nonzero_dispatch_result() {
 	local failure_reason
 	failure_reason=$(_dispatch_candidate_failure_reason "$issue_number" "$repo_slug" "$dispatch_rc")
 	if _dispatch_candidate_benign_block_reason "$failure_reason"; then
+		_DISPATCH_CANDIDATE_ELIGIBILITY="$_DISPATCH_ELIGIBILITY_INELIGIBLE"
 		_dispatch_mark_benign_blocked_candidate "$issue_number" "$repo_slug" "$failure_reason"
 		echo "[pulse-wrapper] Dispatch_max: #${issue_number} (${repo_slug}) blocked:${failure_reason} benign dispatch block" >>"$LOGFILE"
 		_dispatch_stats_increment "dispatch_candidate_blocked_${failure_reason}"
@@ -1920,6 +1928,7 @@ _dispatch_process_candidate() {
 	local self_login="$2"
 	local available_slots="$3"
 	_DISPATCH_THROTTLE_CLEARED=0
+	_DISPATCH_CANDIDATE_ELIGIBILITY="$_DISPATCH_ELIGIBILITY_UNKNOWN"
 
 	local issue_number="" repo_slug="" repo_path="" issue_url="" issue_title="" dispatch_title="" prompt="" labels_csv="" model_override=""
 	issue_number=$(printf '%s' "$candidate_json" | jq -r '.number // empty' 2>/dev/null)
@@ -1966,6 +1975,7 @@ _dispatch_process_candidate() {
 	local _concurrency_cap_rc=0
 	_dispatch_check_model_concurrency_cap "$issue_number" "$repo_slug" "$model_override" >>"$LOGFILE" 2>&1 || _concurrency_cap_rc=$?
 	if [[ "$_concurrency_cap_rc" -ne 0 ]]; then
+		_DISPATCH_CANDIDATE_ELIGIBILITY="$_DISPATCH_ELIGIBILITY_INELIGIBLE"
 		return 1
 	fi
 
@@ -1999,6 +2009,7 @@ _dispatch_process_candidate() {
 		return 1
 	fi
 	_dispatch_stats_increment "dispatch_worker_spawned"
+	_DISPATCH_CANDIDATE_ELIGIBILITY="eligible"
 
 	# Launch confirmed. Reset consecutive streak and clear throttle if active.
 	_DISPATCH_CONSECUTIVE_NO_WORKER=0
@@ -2105,6 +2116,7 @@ _dispatch_floor_loop() {
 	local effective_slots="$2"
 	local available_slots="$3"
 	local self_login="$4"
+	local outcomes_file="${5:-}"
 
 	local dispatched_count=0 processed_count=0 candidate_json
 	while IFS= read -r candidate_json; do
@@ -2129,6 +2141,9 @@ _dispatch_floor_loop() {
 		fi
 		local _dispatch_proc_rc=0
 		_dispatch_process_candidate "$candidate_json" "$self_login" "$available_slots" >>"$LOGFILE" 2>&1 || _dispatch_proc_rc=$?
+		if [[ -n "$outcomes_file" ]]; then
+			_dispatch_record_candidate_outcome "$candidate_json" "$_dispatch_proc_rc" "$outcomes_file" || return 1
+		fi
 		echo "[pulse-wrapper] Dispatch_max: loop iter=${processed_count} — _dispatch_process_candidate rc=${_dispatch_proc_rc}" >>"$LOGFILE"
 		if [[ "$_dispatch_proc_rc" -eq 0 ]]; then
 			dispatched_count=$((dispatched_count + 1))
@@ -2371,13 +2386,170 @@ _dispatch_max_spawn_candidate() {
 	local _rc=0
 
 	_dispatch_process_candidate "$candidate_json" "$self_login" "$available_slots" >>"$LOGFILE" 2>&1 || _rc=$?
-	local issue_num
-	issue_num=$(printf '%s' "$candidate_json" | jq -r '.number // 0' 2>/dev/null)
-	if [[ "$_rc" -eq 0 ]]; then
-		printf 'success|%s\n' "$issue_num" >>"$outcomes_file"
+	_dispatch_record_candidate_outcome "$candidate_json" "$_rc" "$outcomes_file"
+	return $?
+}
+
+# Preserve repository/class identity and proven ineligibility across subshells.
+# Args: candidate JSON, return code, existing outcomes file
+_dispatch_record_candidate_outcome() {
+	local candidate_json="$1" result_code="$2" outcomes_file="$3"
+	local issue_num="" repo_slug="" priority="" fields="" eligibility="${_DISPATCH_CANDIDATE_ELIGIBILITY:-unknown}"
+	fields=$(jq -r --arg unknown "$_DISPATCH_ELIGIBILITY_UNKNOWN" '[(.number // 0), (.repo_slug // $unknown), (.repo_priority // "tooling")] | @tsv' <<<"$candidate_json") || return 1
+	IFS=$'\t' read -r issue_num repo_slug priority <<<"$fields"
+	[[ "$repo_slug" =~ ^[A-Za-z0-9._/-]+$ ]] || repo_slug=unknown
+	[[ "$priority" == product ]] || priority=tooling
+	[[ "$eligibility" == ineligible ]] || eligibility=unknown
+	if [[ "$result_code" -eq 0 ]]; then
+		printf 'success|%s|repo=%s|priority=%s\n' "$issue_num" "$repo_slug" "$priority" >>"$outcomes_file" || return 1
 	else
-		printf 'fail|%s|rc=%d|reason=%s\n' "$issue_num" "$_rc" "${_PULSE_LAST_LAUNCH_FAILURE:-none}" >>"$outcomes_file"
+		printf 'fail|%s|rc=%d|reason=%s|repo=%s|priority=%s|eligibility=%s\n' \
+			"$issue_num" "$result_code" "${_PULSE_LAST_LAUNCH_FAILURE:-none}" "$repo_slug" "$priority" "$eligibility" >>"$outcomes_file" || return 1
 	fi
+	return 0
+}
+
+# Run one bounded phase using the existing safety-checked serial/parallel loops.
+# Args: candidate file, phase budget, login, parallelism, phase outcomes
+_dispatch_run_priority_phase() {
+	local candidates="$1" budget="$2" login="$3" parallel="$4" outcomes="$5"
+	if ((budget <= 0)) || [[ ! -s "$candidates" ]]; then
+		printf '0 0\n'
+		return 0
+	fi
+	((parallel <= budget)) || parallel="$budget"
+	if ((parallel <= 1)); then
+		_dispatch_floor_loop "$candidates" "$budget" "$budget" "$login" "$outcomes"
+	else
+		_dispatch_max_loop "$candidates" "$budget" "$budget" "$login" "$parallel" "$outcomes"
+	fi
+	return $?
+}
+
+# Emit unattempted candidates in a selected phase, retaining ranking within it.
+# Args: original candidates JSONL, accumulated outcomes, phase
+_dispatch_priority_phase_candidates() {
+	local candidates="$1" outcomes="$2" phase="$3"
+	jq -sc --rawfile outcomes "$outcomes" --arg phase "$phase" --arg product "$_DISPATCH_PRIORITY_PRODUCT" \
+		--arg success "$_DISPATCH_OUTCOME_SUCCESS" --arg failed "$_DISPATCH_OUTCOME_FAILED" '
+		def urgent: ((.labels // []) | map(.name? // .)) | any(. == "priority:critical" or . == "priority:high");
+		($outcomes | split("\n") | map(split("|")) |
+		 map(select(.[0] == $success or .[0] == $failed) |
+			.[1] as $number | .[] | select(startswith("repo=")) | [ltrimstr("repo="), $number])) as $attempted |
+		.[] | . as $candidate |
+		select(any($attempted[]; . == [$candidate.repo_slug, ($candidate.number | tostring)]) | not) |
+		select(if $phase == "urgent" then urgent
+			elif $phase == $product then .repo_priority == $product and (urgent | not)
+			else true end)
+	' "$candidates"
+	return $?
+}
+
+# Product outcomes distinguish exhausted ineligible work from infrastructure failure.
+_dispatch_priority_product_outcomes() {
+	local outcomes="$1"
+	awk -F'|' -v succeeded="$_DISPATCH_OUTCOME_SUCCESS" -v failed="$_DISPATCH_OUTCOME_FAILED" '
+		{ product=0; ineligible=0
+		  for (i=3; i<=NF; i++) {
+			if ($i == "priority=product") product=1
+			if ($i == "eligibility=ineligible") ineligible=1
+		  }
+		  if (product && $1 == succeeded) success++
+		  if (product && $1 == failed && !ineligible) unknown++
+		}
+		END { print success+0, unknown+0 }
+	' "$outcomes"
+	return $?
+}
+
+# Fulfil product reservations using verified launches, then lend only proven slack.
+# Urgent work is exempt. Every phase retains the existing bounded concurrency and
+# API/resource/ownership gates; no candidate is attempted twice in a round.
+# Args: candidates, budget, login, parallelism, outcomes, reserved product slots,
+#       complete product discovery (true/false)
+_dispatch_priority_loop() {
+	local candidates="$1" budget="$2" login="$3" parallel="$4" outcomes="$5"
+	local reserved="$6" complete="$7"
+	local phase_dir="" phase="" phase_budget=0 launched=0 processed=0 result=""
+	local phase_launched=0 phase_processed=0 product_launched=0 product_unknown=0 held=0
+	phase_dir=$(mktemp -d) || return 1
+	for phase in urgent product remainder; do
+		phase_budget=$((budget - launched))
+		((phase_budget > 0)) || break
+		_dispatch_priority_phase_candidates "$candidates" "$outcomes" "$phase" >"$phase_dir/candidates" || {
+			rm -rf "$phase_dir"; return 1;
+		}
+		read -r product_launched product_unknown < <(_dispatch_priority_product_outcomes "$outcomes")
+		held=$((reserved - product_launched))
+		((held >= 0)) || held=0
+		if [[ "$phase" == product ]]; then
+			((phase_budget <= held)) || phase_budget="$held"
+		elif [[ "$phase" == remainder && "$held" -gt 0 ]]; then
+			if [[ "$complete" == true && "$product_unknown" -eq 0 ]] &&
+				! jq -se --arg product "$_DISPATCH_PRIORITY_PRODUCT" 'any(.[]; .repo_priority == $product)' "$phase_dir/candidates" >/dev/null; then
+				held=0
+			fi
+			phase_budget=$((phase_budget - held))
+		fi
+		: >"$phase_dir/outcomes"
+		result=$(_dispatch_run_priority_phase "$phase_dir/candidates" "$phase_budget" "$login" "$parallel" "$phase_dir/outcomes") || {
+			rm -rf "$phase_dir"; return 1;
+		}
+		read -r phase_launched phase_processed <<<"$result"
+		launched=$((launched + phase_launched))
+		processed=$((processed + phase_processed))
+		cat "$phase_dir/outcomes" >>"$outcomes" || { rm -rf "$phase_dir"; return 1; }
+	done
+	read -r product_launched product_unknown < <(_dispatch_priority_product_outcomes "$outcomes")
+	processed=$(awk -F'|' -v succeeded="$_DISPATCH_OUTCOME_SUCCESS" -v failed="$_DISPATCH_OUTCOME_FAILED" \
+		'$1 == succeeded || $1 == failed { n++ } END { print n+0 }' "$outcomes")
+	((held <= budget - launched)) || held=$((budget - launched))
+	echo "[pulse-wrapper] PRIORITY_RESERVATION requested=${reserved} product_launched=${product_launched} held=${held} discovery_complete=${complete} launched=${launched}" >>"$LOGFILE"
+	rm -rf "$phase_dir"
+	printf '%s %s\n' "$launched" "$processed"
+	return 0
+}
+
+# Compute the existing operator policy against local, verified active occupancy.
+# Missing/unclassifiable workers never falsely satisfy the product minimum.
+# Args: total worker capacity, active worker count, available slots
+_dispatch_product_reservation_slots() {
+	local max_workers="$1" active_workers="$2" available_slots="$3"
+	local pct="${PRODUCT_RESERVATION_PCT:-60}" product_active=0 target=0 required=0
+	local repos_file="${REPOS_JSON:-}" ledger="${AIDEVOPS_DISPATCH_LEDGER_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}/dispatch-ledger.jsonl"
+	if [[ ! -f "$repos_file" ]] || ! jq -e --arg product "$_DISPATCH_PRIORITY_PRODUCT" 'any(.initialized_repos[]?;
+		.pulse == true and .maintenance != false and .priority == $product and
+		(.local_only // false) == false and (.slug // "") != "")' "$repos_file" >/dev/null 2>&1; then
+		printf '0\n'
+		return 0
+	fi
+	[[ "$pct" =~ ^[0-9]+$ ]] || pct=60
+	((pct <= 100)) || pct=100
+	if ((active_workers > 0)) && [[ -f "$ledger" ]] && declare -F _process_start_token >/dev/null; then
+		local pid="" recorded_start="" live_start="" active_rows=""
+		active_rows=$(jq -sr --slurpfile repos "$repos_file" --argjson now "$(date +%s)" --arg priority "$_DISPATCH_PRIORITY_PRODUCT" '
+			[$repos[0].initialized_repos[]? | select(.priority == $priority) | .slug] as $product |
+			group_by(.session_key) | map(last) | map(
+				select(.status == "in-flight" and .lease_phase == "ready" and (.lease_expires_at // 0) >= $now) |
+				select(.repo_slug as $repo | $product | index($repo)) |
+				select((.owner_process_start // "") != "")) |
+			unique_by([.pid, .owner_process_start]) | .[] | [.pid, .owner_process_start] | @tsv
+		' "$ledger" 2>/dev/null) || active_rows=""
+		while IFS=$'\t' read -r pid recorded_start; do
+			[[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+			kill -0 "$pid" 2>/dev/null || continue
+			live_start=$(_process_start_token "$pid" 2>/dev/null) || continue
+			[[ "$live_start" == "$recorded_start" ]] || continue
+			product_active=$((product_active + 1))
+		done <<<"$active_rows"
+	fi
+	((product_active <= active_workers)) || product_active="$active_workers"
+	target=$(((max_workers * pct + 99) / 100))
+	required=$((target - product_active))
+	((required >= 0)) || required=0
+	((required <= available_slots)) || required="$available_slots"
+	echo "[pulse-wrapper] PRIORITY_CAPACITY product_target=${target} product_active_verified=${product_active} reserved_new=${required}" >>"$LOGFILE"
+	printf '%s\n' "$required"
 	return 0
 }
 
@@ -2462,11 +2634,11 @@ _dispatch_max_reap_pids() {
 _dispatch_max_aggregate_outcomes() {
 	local outcomes_file="$1"
 	local successes="" fails="" no_worker_failures=""
-	successes=$(_dispatch_max_count_outcomes "$outcomes_file" "success")
-	fails=$(_dispatch_max_count_outcomes "$outcomes_file" "fail")
+	successes=$(_dispatch_max_count_outcomes "$outcomes_file" "$_DISPATCH_OUTCOME_SUCCESS")
+	fails=$(_dispatch_max_count_outcomes "$outcomes_file" "$_DISPATCH_OUTCOME_FAILED")
 	# no_worker_process is identified via the reason field embedded in the
 	# fail line — match the substring rather than adding another field.
-	no_worker_failures=$(awk -F'|' -v t="fail" '$1==t && /no_worker_process/{c++} END{print c+0}' "$outcomes_file" 2>/dev/null)
+	no_worker_failures=$(awk -F'|' -v t="$_DISPATCH_OUTCOME_FAILED" '$1==t && /no_worker_process/{c++} END{print c+0}' "$outcomes_file" 2>/dev/null)
 	[[ "$no_worker_failures" =~ ^[0-9]+$ ]] || no_worker_failures=0
 
 	_DISPATCH_ROUND_DISPATCHED=$((successes + fails))

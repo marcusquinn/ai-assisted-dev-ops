@@ -269,7 +269,9 @@ list_dispatchable_issue_candidates_json() {
 	local raw_snapshot_file="${3:-}"
 	local snapshot_status_file="${4:-}"
 	local dependency_normalization_mode="${5:-normalize}"
+	local completeness_file="${6:-}"
 	local snapshot_succeeded=1
+	[[ -z "$completeness_file" ]] || printf '0\n' >"$completeness_file"
 
 	if [[ -z "$repo_slug" ]]; then
 		printf '[]\n'
@@ -307,7 +309,7 @@ list_dispatchable_issue_candidates_json() {
 	fi
 
 	local candidates_json=""
-	candidates_json=$(_filter_dispatchable_issue_candidates_json "$issue_json")
+	candidates_json=$(_filter_dispatchable_issue_candidates_json "$issue_json") || snapshot_succeeded=0
 
 	# Dependency-blocked children are filtered before ranking, so they cannot
 	# reach the dispatch-time readiness guard. Normalize once per bounded TTL
@@ -325,7 +327,7 @@ list_dispatchable_issue_candidates_json() {
 		else
 			issue_json="$refreshed_issue_json"
 		fi
-		candidates_json=$(_filter_dispatchable_issue_candidates_json "$issue_json")
+		candidates_json=$(_filter_dispatchable_issue_candidates_json "$issue_json") || snapshot_succeeded=0
 	fi
 
 	if [[ -n "$raw_snapshot_file" ]]; then
@@ -343,6 +345,12 @@ list_dispatchable_issue_candidates_json() {
 			printf '%s\n' "$snapshot_succeeded" >"$snapshot_status_file"
 		) || true
 	fi
+	# A successful bounded read is not necessarily complete. Never lend a
+	# reserved class's slots based on a failed, malformed or truncated snapshot.
+	if [[ -n "$completeness_file" && "$snapshot_succeeded" == 1 ]] &&
+		jq -e --argjson limit "$limit" 'length < $limit' <<<"$issue_json" >/dev/null 2>&1; then
+		printf '1\n' >"$completeness_file"
+	fi
 
 	printf '%s\n' "$candidates_json"
 	return 0
@@ -353,7 +361,7 @@ _filter_dispatchable_issue_candidates_json() {
 	local infrastructure_advisory_jq="" jq_program=""
 	infrastructure_advisory_jq=$(infrastructure_advisory_jq_definition) || {
 		printf '[]\n'
-		return 0
+		return 1
 	}
 	# shellcheck disable=SC2016  # jq variables are literal program syntax
 	jq_program="${infrastructure_advisory_jq}"$'\n''
@@ -400,7 +408,7 @@ _filter_dispatchable_issue_candidates_json() {
 		]
 	'
 	printf '%s' "$issue_json" | jq -c --arg auto_dispatch_label 'auto-dispatch' \
-		"$jq_program" 2>/dev/null || printf '[]\n'
+		"$jq_program" 2>/dev/null || { printf '[]\n'; return 1; }
 	return 0
 }
 

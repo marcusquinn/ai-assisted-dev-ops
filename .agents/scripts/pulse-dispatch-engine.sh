@@ -388,8 +388,9 @@ build_ranked_dispatch_candidates_json() {
 		return 0
 	fi
 
-	local tmp_candidates
-	tmp_candidates=$(mktemp 2>/dev/null || echo "/tmp/aidevops-pulse-candidates.$$")
+	local tmp_candidates completeness_file product_complete=true
+	tmp_candidates=$(mktemp) || return 1
+	completeness_file=$(mktemp) || { rm -f "$tmp_candidates"; return 1; }
 	: >"$tmp_candidates"
 
 	while IFS='|' read -r repo_slug repo_path repo_priority ph_start ph_end expires repo_interval; do
@@ -399,12 +400,17 @@ build_ranked_dispatch_candidates_json() {
 		fi
 		# Per-repo interval throttle (GH#20660): skip if polled too recently
 		if ! check_repo_pulse_interval "$repo_slug" "$repo_interval"; then
+			[[ "$repo_priority" != product ]] || product_complete=false
 			continue
 		fi
 		# Record that we are polling this repo now (atomic write, non-fatal)
 		update_repo_pulse_timestamp "$repo_slug"
 		local repo_candidates_json
-		repo_candidates_json=$(pulse_campaign_shadow_candidates_json "$repo_slug" "$repo_path" "$per_repo_limit" "$dependency_normalization_mode") || repo_candidates_json='[]'
+		printf '0\n' >"$completeness_file"
+		repo_candidates_json=$(pulse_campaign_shadow_candidates_json "$repo_slug" "$repo_path" "$per_repo_limit" "$dependency_normalization_mode" "$completeness_file") || repo_candidates_json='[]'
+		if [[ "$repo_priority" == product && "$(<"$completeness_file")" != 1 ]]; then
+			product_complete=false
+		fi
 		if [[ -z "$repo_candidates_json" || "$repo_candidates_json" == "[]" ]]; then
 			continue
 		fi
@@ -434,19 +440,19 @@ build_ranked_dispatch_candidates_json() {
 	' "$REPOS_JSON" 2>/dev/null)
 
 	if [[ ! -s "$tmp_candidates" ]]; then
-		rm -f "$tmp_candidates"
+		rm -f "$tmp_candidates" "$completeness_file"
 		printf '[]\n'
 		return 0
 	fi
 
-	jq -cs 'sort_by([
+	jq -cs --argjson product_complete "$product_complete" 'map(. + {product_discovery_complete:$product_complete}) | sort_by([
 		-.score,
 		(if (.createdAt // "") == "" then "9999-12-31T23:59:59Z" else .createdAt end),
 		(if (.updatedAt // "") == "" then "9999-12-31T23:59:59Z" else .updatedAt end),
 		(.repo_slug // ""),
 		(.number // 0)
 	])' "$tmp_candidates" 2>/dev/null || printf '[]\n'
-	rm -f "$tmp_candidates"
+	rm -f "$tmp_candidates" "$completeness_file"
 	return 0
 }
 
@@ -687,7 +693,16 @@ dispatch_max() {
 	# OR DISPATCH_MAX_PARALLEL=1 set explicitly as a regression escape hatch).
 	local dispatched_count=0 processed_count=0 loop_output=""
 	local _dispatch_outcomes_file=""
-	if ((_dispatch_max_parallel <= 1)); then
+	local product_reserved=0 product_complete=false
+	product_reserved=$(_dispatch_product_reservation_slots "$max_workers" "$active_workers" "$_effective_slots")
+	product_complete=$(jq -r 'all(.[]; .product_discovery_complete == true)' <<<"$candidates_json")
+	if ((product_reserved > 0)); then
+		_dispatch_outcomes_file=$(mktemp) || return 1
+		loop_output=$(_dispatch_priority_loop "$_dispatch_candidate_file" "$_effective_slots" "$self_login" \
+			"$_dispatch_max_parallel" "$_dispatch_outcomes_file" "$product_reserved" "$product_complete") || loop_output=""
+		_dispatch_max_aggregate_outcomes "$_dispatch_outcomes_file"
+		rm -f "$_dispatch_outcomes_file"
+	elif ((_dispatch_max_parallel <= 1)); then
 		loop_output=$(_dispatch_floor_loop "$_dispatch_candidate_file" "$_effective_slots" "$available_slots" "$self_login")
 	else
 		_dispatch_outcomes_file=$(mktemp 2>/dev/null || echo "/tmp/aidevops-dispatch-outcomes.$$")

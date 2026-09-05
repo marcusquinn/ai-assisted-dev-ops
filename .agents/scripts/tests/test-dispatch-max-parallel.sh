@@ -776,6 +776,78 @@ test_serial_loop_allows_unset_stop_flag() {
 	return 0
 }
 
+# Exercise reservation admission through the real serial and parallel loops.
+test_priority_reservations() {
+	local mode="$1" parallel="$2" expected_product="$3" expected_total="$4"
+	local candidate_file="" outcomes="" result="" products=0 total=0 complete=true
+	candidate_file=$(mktemp)
+	outcomes=$(mktemp)
+	jq -nc --arg mode "$mode" '
+		[range(1;5) | {number:., repo_slug:"o/tooling", repo_priority:"tooling", labels:
+			(if $mode == "urgent" then ["priority:high"] else [] end), simulated_outcome:"success"}] +
+		(if $mode == "empty" or $mode == "incomplete" then [] else
+		 [range(1;5) | {number:., repo_slug:"o/product", repo_priority:"product", labels:[], simulated_outcome:
+			(if $mode == "ineligible" or $mode == "unknown" then $mode
+			 elif $mode == "mixed" and . == 1 then "ineligible" else "success" end)}] end) | .[]
+	' >"$candidate_file"
+	# shellcheck disable=SC2317 # called through the real phase/dispatch loops
+	_dispatch_process_candidate() {
+		local candidate_json="$1" outcome=""
+		_DISPATCH_THROTTLE_CLEARED=0
+		outcome=$(jq -r '.simulated_outcome' <<<"$candidate_json")
+		_DISPATCH_CANDIDATE_ELIGIBILITY="$outcome"
+		[[ "$outcome" == success ]] && return 0
+		return 1
+	}
+	[[ "$mode" != incomplete ]] || complete=false
+	result=$(_dispatch_priority_loop "$candidate_file" 4 test_user "$parallel" "$outcomes" 2 "$complete")
+	read -r products _ < <(_dispatch_priority_product_outcomes "$outcomes")
+	total=$(_dispatch_max_count_outcomes "$outcomes")
+	if [[ "$products" == "$expected_product" && "$total" == "$expected_total" && "${result%% *}" == "$total" ]]; then
+		print_result "priority_loop: ${mode} parallel=${parallel} product=${products} total=${total}" 0
+	else
+		print_result "priority_loop: ${mode} parallel=${parallel}" 1 "result=${result} product=${products} total=${total}"
+	fi
+	local duplicate=0
+	duplicate=$(awk -F'|' '{ repo=""; for(i=3;i<=NF;i++) if($i ~ /^repo=/) repo=$i; if(seen[repo "|" $2]++) n++ } END { print n+0 }' "$outcomes")
+	if [[ "$duplicate" == 0 ]]; then
+		print_result "priority_loop: ${mode} preserves repository identity without duplicate attempts" 0
+	else
+		print_result "priority_loop: ${mode} duplicate attempts" 1 "duplicates=${duplicate}"
+	fi
+	rm -f "$candidate_file" "$outcomes"
+	return 0
+}
+
+test_priority_verified_occupancy() {
+	local REPOS_JSON="${TEST_ROOT}/priority-repos.json"
+	local AIDEVOPS_DISPATCH_LEDGER_DIR="${TEST_ROOT}/priority-ledger"
+	local PRODUCT_RESERVATION_PCT=60
+	mkdir -p "$AIDEVOPS_DISPATCH_LEDGER_DIR"
+	printf '%s\n' '{"initialized_repos":[{"slug":"o/product","pulse":true,"priority":"product"}]}' >"$REPOS_JSON"
+	jq -nc --argjson pid "$$" --argjson expires "$(($(date +%s) + 600))" '
+		{session_key:"active",pid:$pid,owner_process_start:"fixture-start",status:"in-flight",lease_phase:"ready",lease_expires_at:$expires,repo_slug:"o/product"} as $row |
+		$row, ($row + {session_key:"duplicate-pid"}), ($row + {session_key:"reused-pid",owner_process_start:"wrong"}),
+		($row + {session_key:"dead",pid:99999999}), ($row + {session_key:"finished",status:"completed"})
+	' >"$AIDEVOPS_DISPATCH_LEDGER_DIR/dispatch-ledger.jsonl"
+	_process_start_token() { local pid="$1"; : "$pid"; printf 'fixture-start\n'; return 0; }
+	local slots=""
+	slots=$(_dispatch_product_reservation_slots 10 3 7)
+	if [[ "$slots" == 5 ]]; then
+		print_result "priority_capacity: subtracts verified distinct live product workers only" 0
+	else
+		print_result "priority_capacity: verified occupancy" 1 "slots=${slots} expected=5"
+	fi
+	slots=$(_dispatch_product_reservation_slots 10 0 4)
+	[[ "$slots" == 4 ]] && print_result "priority_capacity: clamps reservations to available capacity" 0 ||
+		print_result "priority_capacity: available clamp" 1 "slots=${slots}"
+	PRODUCT_RESERVATION_PCT=0
+	slots=$(_dispatch_product_reservation_slots 10 3 7)
+	[[ "$slots" == 0 ]] && print_result "priority_capacity: honours disabled reservation" 0 ||
+		print_result "priority_capacity: zero percent" 1 "slots=${slots}"
+	return 0
+}
+
 # =============================================================================
 # Run all tests
 # =============================================================================
@@ -804,6 +876,15 @@ test_serial_loop_basic
 test_serial_loop_isolates_candidate_stdout
 test_serial_loop_budget_cap
 test_serial_loop_allows_unset_stop_flag
+test_priority_reservations normal 1 2 4
+test_priority_reservations normal 3 2 4
+test_priority_reservations mixed 3 2 4
+test_priority_reservations ineligible 3 0 4
+test_priority_reservations unknown 3 0 2
+test_priority_reservations empty 3 0 4
+test_priority_reservations incomplete 3 0 2
+test_priority_reservations urgent 3 0 4
+test_priority_verified_occupancy
 
 # Final summary
 echo ""
