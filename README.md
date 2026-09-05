@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-![AI DevOps — 15 main agents, 2,250+ sub agents, 2,140+ helper scripts, and 100+ slash commands](docs/assets/og-image.png)
+![AI DevOps — 14 main agents, 600+ sub agents, 460+ helper scripts, and 100+ slash commands](docs/assets/og-image.png)
 
 # AI DevOps Framework
 
@@ -126,12 +126,16 @@ the required notices and preferred credit text.
 
 ### Agent Structure
 
-- 15 primary agents (Build+, Automate, Product, SEO, Marketing-Sales, etc.) with specialist @subagents on demand
-- 2,250+ supporting Markdown guides: subagents, skills, references, templates, commands, and workflows organized by domain
-- 2,140+ scripts in `.agents/scripts/` (shell helpers and tests)
-- 100+ slash commands and 100+ workflow guides for common operations
+- 14 main agents (Build+, Automate, Product, SEO, Marketing-Sales, etc.) with specialist @subagents on demand
+- 600+ sub agents with explicit source profiles, separate from the broader skills and documentation library
+- 460+ helper scripts: named helper entry points, excluding tests and implementation modules
+- 100+ slash commands for common operations
 
-Counts checked on 5 September 2026: 15 root agent files (excluding `AGENTS.md`), 2,268 regular Markdown files in `.agents/` subdirectories (excluding symlink aliases), 2,146 shell scripts, 106 slash-command entry points, and 104 workflow guides. Command and workflow source guides are included in the supporting-guide total, not additional agents. See [hero count maintenance](DESIGN.md#readme-hero-counts) for sources and refresh instructions.
+<!-- aidevops:inventory:start -->
+Exact source inventory: **14 main agents**, **612 sub agents**, **468 helper scripts**, **106 slash commands**.
+<!-- aidevops:inventory:end -->
+
+These are tracked source definitions and entry points, not counts of running agents or every file in the framework. Main agents follow the runtime's discovery exclusions. Sub agents require explicit `mode: subagent` metadata in agent-source directories; ordinary documentation, workflows, imported skill fragments, tests, and aliases are excluded. Helper scripts are production `*-helper` entry points across supported script languages, not their supporting modules or tests. Slash commands include valid shipped command aliases. Audit every included path with `bash .agents/scripts/readme-helper.sh counts --inventory`; see [counting rules and hero maintenance](DESIGN.md#readme-hero-counts).
 
 ### What You Can Ask aidevops To Do
 
@@ -842,9 +846,9 @@ aidevops implements proven agent design patterns identified by [Lance Martin (La
 
 | Pattern | Description | aidevops Implementation |
 |---------|-------------|------------------------|
-| **Give Agents a Computer** | Filesystem + shell for persistent context | `~/.aidevops/.agent-workspace/`, 2,140+ scripts (shell helpers and tests) |
+| **Give Agents a Computer** | Filesystem + shell for persistent context | `~/.aidevops/.agent-workspace/`, 460+ helper scripts |
 | **Multi-Layer Action Space** | Few tools, push actions to computer | Per-agent MCP filtering (~12-20 tools each) |
-| **Knowledge Graph Routing** | Indexed, cross-referenced agents instead of isolated skills | `subagent-index.toon` routes agent context within a library of 2,250+ supporting guides — agents discover related context through the graph, not just their own file |
+| **Knowledge Graph Routing** | Indexed, cross-referenced agents instead of isolated skills | `subagent-index.toon` routes context across subagent profiles and the wider skills/documentation library — agents discover related context through the graph, not just their own file |
 | **Progressive Disclosure** | Load context on-demand | Subagent routing with content summaries, YAML frontmatter, read-on-demand |
 | **Offload Context** | Write results to filesystem | `.agent-workspace/work/[project]/` for persistence |
 | **Cache Context** | Prompt caching for cost | Stable instruction prefixes |
@@ -1904,7 +1908,7 @@ aidevops is registered as a **Claude Code plugin marketplace**. Install with two
 /plugin install aidevops@aidevops
 ```
 
-This installs the complete framework: 15 primary agents, 2,250+ supporting guides, and 2,140+ scripts (shell helpers and tests).
+This installs the complete framework: 14 main agents, 600+ sub agents, and 460+ helper scripts, plus their supporting skills, documentation, and implementation modules.
 
 ### Importing External Skills
 
@@ -2057,7 +2061,7 @@ The long-term direction is to make slash commands and `@mentions` unnecessary al
 
 ### **Example Subagents with MCP Integration**
 
-These are examples of subagents that have supporting MCPs enabled. See `.agents/` for the library of 2,250+ supporting guides organized by domain.
+These are examples of subagents that have supporting MCPs enabled. See `.agents/` for 600+ sub agents and their supporting guides organized by domain.
 
 | Agent | Purpose | MCPs Enabled |
 |-------|---------|--------------|
@@ -2764,8 +2768,8 @@ aidevops/
 ├── AGENTS.md                      # AI agent guidance (dev)
 ├── .agents/                        # Agents and documentation
 │   ├── AGENTS.md                  # User guide (deployed to ~/.aidevops/agents/)
-│   ├── *.md                       # 15 primary agents
-│   ├── scripts/                   # 2,140+ shell scripts (helpers and tests)
+│   ├── *.md                       # 14 main agents, plus excluded root guides
+│   ├── scripts/                   # 460+ helper scripts, plus modules and tests
 │   ├── tools/                     # Cross-domain utilities (video, browser, git, etc.)
 │   ├── services/                  # External service integrations
 │   └── workflows/                 # Development process guides
@@ -2889,7 +2893,7 @@ See `.agents/tools/credentials/multi-tenant.md` for complete documentation.
 - Autonomous supervisor — pulse runs every 2 minutes, merging PRs, dispatching workers, killing stuck processes, advancing missions
 - Operational intelligence — struggle-ratio detection, orphaned PR recovery, circuit breaker, dynamic concurrency
 - Cost-aware routing — provider-aware model selection across OpenAI, Anthropic, Gemini, Cursor, Grok, and local models with budget tracking
-- Progressive context — 2,250+ supporting guides available on demand, project bundles auto-configuring quality gates and model tiers
+- Progressive context — 600+ sub agents with supporting guides available on demand, project bundles auto-configuring quality gates and model tiers
 - Self-improving — session mining extracts learnings, quality findings auto-create tasks, patterns feed back into agent prompts
 
 **Get Started:**
