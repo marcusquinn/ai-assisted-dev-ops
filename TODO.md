@@ -4736,9 +4736,9 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 - [ ] t18109 Trigger dependency-chain unblocking when blockers close #bug ref:GH#27338
 
-- [ ] t18111 Resolve SonarCloud weak-hash finding in session ID fallback #auto-dispatch #bug ref:GH#27349
+- [x] t18111 Resolve SonarCloud weak-hash finding in session ID fallback #auto-dispatch #bug ref:GH#27349 pr:#27415 completed:2026-07-12
 
-- [ ] t18110 Fail postflight when SonarCloud quality gate reports ERROR #auto-dispatch #bug ref:GH#27348
+- [x] t18110 Fail postflight when SonarCloud quality gate reports ERROR #auto-dispatch #bug ref:GH#27348 pr:#27352 completed:2026-07-12
 
 - [ ] t18112 Repair token-refresh LaunchAgent setup failure #auto-dispatch #bug ref:GH#27350
 
@@ -4746,7 +4746,7 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 - [ ] t18114 Fix CI repair infrastructure classification and dead lease recovery #bug ref:GH#27487
 
-- [ ] t18115 Add evidence-backed session analysis and compaction continuity #bug ref:GH#27498
+- [x] t18115 Add evidence-backed session analysis and compaction continuity #bug ref:GH#27498 pr:#27499 completed:2026-07-13
 
 - [ ] t18116 Fix quality-debt dispatch recovery state and pre-runtime telemetry #bug ref:GH#27503
 
@@ -4756,7 +4756,7 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 - [ ] t18119 Allow OpenCode access to generated global commands #bug ref:GH#27564
 
-- [ ] t18120 Fix exact current-session output-efficiency analysis #bug #framework ref:GH#27574
+- [x] t18120 Fix exact current-session output-efficiency analysis #bug #framework ref:GH#27574 pr:#27619 completed:2026-07-14
 
 - [ ] t18122 Add cryptographically scoped worker permission grants #bug ref:GH#27688
 
