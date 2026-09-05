@@ -32,8 +32,7 @@ def inventory(root):
     entries = tracked_sources(root)
     files = {key: [] for key in KEYS}
     for name, mode in sorted(entries.items()):
-        category = classify_source(root, name, mode, entries)
-        if category:
+        for category in classify_source(root, name, mode, entries):
             files[category].append(name)
     return {
         "counts": {key: len(files[key]) for key in KEYS},

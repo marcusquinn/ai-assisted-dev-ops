@@ -1,14 +1,14 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
-  <title id="title">14 main agents, 600+ sub agents, 460+ helper scripts, 100+ slash commands</title>
-  <desc id="description">AI DevOps source inventory: 14 main agents, 612 sub agents, 468 helper scripts, 106 slash commands. See DESIGN.md for counting rules.</desc>
+  <title id="title">14 main agents, 2,200+ sub agents, 2,010+ helper scripts, 100+ slash commands</title>
+  <desc id="description">AI DevOps source inventory: 14 main agents, 2,236 sub agents, 2,017 helper scripts, 106 slash commands. See DESIGN.md for counting rules.</desc>
   <!-- Opaque card covers the previous numbers; all other pixels stay unchanged. -->
   <rect x="82" y="386" width="1036" height="102" rx="26" fill="#050b0d" stroke="#153d43"/>
   <g fill="#8ce8ff" font-family="sans-serif" font-size="34" font-weight="700" text-anchor="middle">
     <text x="211" y="431" data-count="main_agents">14</text>
-    <text x="470" y="431" data-count="subagents">600+</text>
-    <text x="729" y="431" data-count="scripts">460+</text>
+    <text x="470" y="431" data-count="subagents">2,200+</text>
+    <text x="729" y="431" data-count="scripts">2,010+</text>
     <text x="988" y="431" data-count="slash_commands">100+</text>
   </g>
   <g fill="#c9d1d9" font-family="sans-serif" font-size="19" font-weight="700" text-anchor="middle">

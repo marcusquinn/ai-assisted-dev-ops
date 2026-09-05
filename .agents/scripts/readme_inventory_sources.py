@@ -2,32 +2,14 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 """Auditable, tracked-source inventory for the README's four public categories."""
 
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from agent_config import SKIP_FILES
-from discovery_utils import parse_frontmatter
 
 KEYS = ("main_agents", "subagents", "scripts", "slash_commands")
 LABELS = ("main agents", "sub agents", "helper scripts", "slash commands")
-AGENT_DIRS = {
-    "aidevops",
-    "business",
-    "content",
-    "health",
-    "legal",
-    "marketing-sales",
-    "product",
-    "public-relations",
-    "reports",
-    "research",
-    "seo",
-    "services",
-    "tools",
-    "vault",
-}
 EXCLUDED_PARTS = {
     "tests",
     "test",
@@ -39,24 +21,39 @@ EXCLUDED_PARTS = {
     "draft",
     "loop-state",
     "__pycache__",
+    "generated",
+    "dist",
+    ".cache",
+    "coverage",
+    "testdata",
+    "__snapshots__",
 }
-PROFILE_EXCLUSIONS = {
-    "references",
-    "reference",
-    "templates",
-    "skills",
-    "workflows",
-    "docs",
-    "documentation",
+SCRIPT_SUFFIXES = {
+    ".sh",
+    ".bash",
+    ".py",
+    ".mjs",
+    ".cjs",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".rb",
+    ".pl",
+    ".ps1",
+    ".awk",
+    ".jq",
 }
-HELPER_NAME = re.compile(r".+-helper\.(?:sh|bash|py|mjs|js|ts|rb|pl|ps1)$")
 DEFINITIONS = {
     "main_agents": "Root agent profiles eligible under agent_config.SKIP_FILES.",
-    "subagents": "Explicit mode: subagent profiles in agent-source directories, "
-    "plus demoted root profiles; excludes skills, documentation-only directories, "
-    "tests, templates, and symlink aliases.",
-    "scripts": "Named *-helper entry points in .agents/scripts across supported "
-    "script languages; excludes tests, fixtures, aliases, and implementation modules.",
+    "subagents": "Individually path-addressable Markdown modules, including skills, "
+    "workflows and references, plus demoted root profiles. Uses generator filename "
+    "rules (not mode metadata); excludes README.md, AGENTS.md, *-skill.md wrappers, "
+    "tests, generated/vendor/runtime files and symlink aliases. Not a count of "
+    "unique flattened runtime names. Regular command sources also count here.",
+    "scripts": "Production script/source files in .agents/scripts across scripting "
+    "languages, including supporting modules and executable extensionless scripts; "
+    "excludes tests, fixtures, generated/vendor files, declarations and aliases. "
+    "Not restricted to *-helper filenames or standalone CLI entry points.",
     "slash_commands": "Markdown entry points directly in scripts/commands; "
     "symlinks must resolve to tracked regular files inside .agents.",
 }
@@ -71,37 +68,19 @@ def source_path(root, name):
     return path
 
 
-def is_profile_location(path):
-    parts = path.parts
-    if len(parts) < 3 or parts[1] not in AGENT_DIRS:
-        return False
-    if PROFILE_EXCLUSIONS.intersection(parts):
-        return False
-    if any(part.endswith("-skill") for part in parts):
-        return False
-    return not path.as_posix().startswith(".agents/tools/design/library/")
-
-
 def is_profile_file(path):
+    """Match generate_subagent_stub and its find selection, without a mode filter."""
     return (
         path.suffix == ".md"
-        and path.name not in {"AGENTS.md", "README.md", "SKILL.md"}
+        and path.name not in {"AGENTS.md", "README.md"}
         and not path.name.endswith("-skill.md")
     )
 
 
-def profile_category(root, name):
-    path = Path(name)
-    if not is_profile_file(path):
-        return None
-    if len(path.parts) == 2 and path.name not in SKIP_FILES:
+def profile_category(path):
+    if len(path.parts) == 2 and path.suffix == ".md" and path.name not in SKIP_FILES:
         return "main_agents"
-    if len(path.parts) != 2 and not is_profile_location(path):
-        return None
-    metadata = parse_frontmatter(source_path(root, name))
-    if metadata.get("mode") == "subagent":
-        return "subagents"
-    return None
+    return "subagents" if is_profile_file(path) else None
 
 
 def command_target(root, name, entries):
@@ -129,24 +108,37 @@ def validate_regular_source(root, name):
         raise ValueError(f"Tracked regular source changed type: {name}")
 
 
-def helper_category(path):
-    if HELPER_NAME.fullmatch(path.name) and not path.name.startswith(
-        ("test-", "test_")
-    ):
+def is_test_script(name):
+    return name.startswith(("test-", "test_")) or any(
+        marker in name for marker in (".test.", ".spec.", "_test.", "_spec.")
+    )
+
+
+def helper_category(root, path, mode):
+    if is_test_script(path.name) or path.name.endswith(".d.ts"):
+        return None
+    if path.suffix.lower() in SCRIPT_SUFFIXES:
         return "scripts"
+    if not path.suffix and mode == "100755":
+        with source_path(root, path.as_posix()).open("rb") as source:
+            if source.read(2) == b"#!":
+                return "scripts"
     return None
 
 
 def classify_source(root, name, mode, entries):
     path = Path(name)
     if EXCLUDED_PARTS.intersection(path.parts):
-        return None
-    if is_command(path):
+        return ()
+    command = is_command(path)
+    if command:
         command_target(root, name, entries)
-        return "slash_commands"
     if mode not in {"100644", "100755"}:
-        return None
+        return ("slash_commands",) if command else ()
     validate_regular_source(root, name)
+    categories = [profile_category(path)]
     if path.parts[:2] == (".agents", "scripts"):
-        return helper_category(path)
-    return profile_category(root, name)
+        categories.append(helper_category(root, path, mode))
+    if command:
+        categories.append("slash_commands")
+    return tuple(filter(None, categories))

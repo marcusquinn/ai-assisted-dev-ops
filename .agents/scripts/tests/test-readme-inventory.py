@@ -50,9 +50,15 @@ class InventoryTests(unittest.TestCase):
     def test_source_categories_and_exclusions(self):
         included = {
             "main_agents": [".agents/build-plus.md"],
-            "subagents": [".agents/aidevops.md", ".agents/tools/browser/example.md"],
+            "subagents": [
+                ".agents/aidevops.md",
+                ".agents/scripts/commands/example.md",
+                ".agents/tools/browser/example.md",
+            ],
             "scripts": [
                 ".agents/scripts/example-helper.py",
+                ".agents/scripts/generate-opencode-agents.sh",
+                ".agents/scripts/implementation.py",
                 ".agents/scripts/readme-helper.sh",
             ],
             "slash_commands": [".agents/scripts/commands/example.md"],
@@ -63,8 +69,31 @@ class InventoryTests(unittest.TestCase):
         excluded = [
             ".agents/AGENTS.md",
             ".agents/tools/README.md",
-            ".agents/tools/SKILL.md",
             ".agents/tools/example-skill.md",
+            ".agents/scripts/tests/example-helper.sh",
+            ".agents/scripts/fixtures/fake-helper.py",
+            ".agents/scripts/test-fake-helper.sh",
+            ".agents/scripts/runner.test.ts",
+            ".agents/scripts/types.d.ts",
+            ".agents/scripts/generated/fake.py",
+            ".agents/tools/generated/fake.md",
+            ".agents/tools/vendor/fake.md",
+            ".agents/custom/example.md",
+            ".agents/draft/example.md",
+            ".agents/tools/tests/example.md",
+            ".agents/scripts/commands/README.md",
+        ]
+        for name in excluded:
+            self.write(name)
+        self.git("add", ".agents")
+        self.write(".agents/tools/untracked.md")
+        data = inventory(self.root)
+        self.assertEqual(data["files"], included)
+        self.assertEqual(data["counts"], dict(zip(KEYS, (1, 3, 4, 1))))
+
+    def test_callable_markdown_modules_do_not_require_mode_metadata(self):
+        modules = [
+            ".agents/tools/SKILL.md",
             ".agents/tools/example-skill/part.md",
             ".agents/tools/design/library/example/DESIGN.md",
             ".agents/reference/example.md",
@@ -74,25 +103,41 @@ class InventoryTests(unittest.TestCase):
             ".agents/tools/documentation/example.md",
             ".agents/tools/references/example.md",
             ".agents/templates/example.md",
-            ".agents/scripts/tests/example-helper.sh",
-            ".agents/scripts/fixtures/fake-helper.py",
-            ".agents/scripts/example-helper-lib.sh",
-            ".agents/scripts/implementation.py",
-            ".agents/scripts/test-fake-helper.sh",
-            ".agents/custom/example.md",
-            ".agents/draft/example.md",
-            ".agents/tools/tests/example.md",
-            ".agents/scripts/commands/README.md",
+            ".agents/marketing-sales/example.md",
         ]
-        for name in excluded:
-            self.write(name)
-        self.write(".agents/tools/plain-guide.md", "A guide, not an agent profile.\n")
-        self.write(".agents/tools/body-example.md", "# Guide\n" + PROFILE)
+        for name in modules:
+            self.write(
+                name, "# Independently callable instructions\nFollow this procedure.\n"
+            )
         self.git("add", ".agents")
-        self.write(".agents/tools/untracked.md")
         data = inventory(self.root)
-        self.assertEqual(data["files"], included)
-        self.assertEqual(data["counts"], dict(zip(KEYS, (1, 2, 2, 1))))
+        self.assertEqual(data["files"]["subagents"], sorted(modules))
+        self.assertEqual(data["counts"]["subagents"], len(modules))
+
+    def test_production_script_languages_and_extensionless_entrypoint(self):
+        names = [
+            f".agents/scripts/module{suffix}"
+            for suffix in (
+                ".sh",
+                ".py",
+                ".js",
+                ".mjs",
+                ".cjs",
+                ".ts",
+                ".tsx",
+                ".awk",
+                ".jq",
+            )
+        ]
+        for name in names:
+            self.write(name, "# Production helper module\n")
+        self.write(".agents/scripts/gh", "#!/usr/bin/env bash\ntrue\n").chmod(0o755)
+        self.write(".agents/scripts/NOTES", "Not an executable script.\n")
+        self.git("add", ".agents")
+        self.assertEqual(
+            inventory(self.root)["files"]["scripts"],
+            sorted([*names, ".agents/scripts/gh"]),
+        )
 
     def test_aliases_count_only_as_command_entry_points(self):
         self.write(".agents/tools/example.md")
@@ -103,7 +148,7 @@ class InventoryTests(unittest.TestCase):
         (self.root / ".agents/tools/alias.md").symlink_to("example.md")
         self.git("add", ".agents")
         data = inventory(self.root)
-        self.assertEqual(data["counts"], dict(zip(KEYS, (0, 1, 0, 1))))
+        self.assertEqual(data["counts"], dict(zip(KEYS, (0, 2, 0, 1))))
 
     def test_external_and_missing_command_targets_fail(self):
         self.write("outside.md")
