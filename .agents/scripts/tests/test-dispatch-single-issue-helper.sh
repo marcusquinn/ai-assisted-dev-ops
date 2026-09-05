@@ -1228,6 +1228,18 @@ FIXTURE
 		command git -C "$root/repo" remote add origin https://github.com/owner/repo.git
 		_dsi_prepare_worker_git_auth owner/repo "$root/repo" fixture || exit 1
 		[[ -n "$_DSI_GIT_AUTH_TOKEN_FILE" ]] || exit 1
+		# Exercise the real cmd_run/import path too, stopping before any model or
+		# worktree ownership side effects. Preflight must not revoke the token.
+		env AIDEVOPS_GIT_AUTH_PREFLIGHT_ONLY=1 WORKER_REPO_SLUG=owner/repo \
+			AIDEVOPS_GIT_AUTH_TOKEN_FILE="$_DSI_GIT_AUTH_TOKEN_FILE" \
+			AIDEVOPS_GIT_AUTH_EXPECTED_ORIGIN="$_DSI_GIT_AUTH_EXPECTED_ORIGIN" \
+			GIT_ASKPASS="$_DSI_ASKPASS_HELPER" GIT_TERMINAL_PROMPT=0 \
+			GIT_AUTHOR_NAME="$_DSI_GIT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$_DSI_GIT_AUTHOR_EMAIL" \
+			GIT_COMMITTER_NAME="$_DSI_GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$_DSI_GIT_AUTHOR_EMAIL" \
+			"$FIXTURE_SCRIPTS/headless-runtime-helper.sh" run --role worker \
+			--session-key "$FIXTURE_SESSION" --dir "$root/repo" --title fixture \
+			--prompt fixture --detach >"$root/preflight.log" 2>&1 || exit 1
+		[[ -f "$_DSI_GIT_AUTH_TOKEN_FILE" && ! -f "/tmp/worker-${FIXTURE_SESSION}.log" ]] || exit 1
 		local pid="" attempt=0
 		pid=$(_dsi_launch_worker "$FIXTURE_SESSION" "$root/repo" fixture fixture standard '' '' "$root/launch.log" 1 owner/repo fixture) || exit 1
 		[[ "$pid" =~ ^[0-9]+$ ]] || exit 1
