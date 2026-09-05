@@ -17,6 +17,7 @@
 #   0  — dispatch proceeds (premise holds, or no validator registered)
 #   10 — premise falsified; caller closes the issue with a rationale comment
 #   20 — validator error; dispatch proceeds with a warning log
+#   30 — malformed implementation brief; dispatch is blocked for repair
 #
 # Usage:
 #   pre-dispatch-validator-helper.sh validate <issue-number> <slug>
@@ -146,6 +147,54 @@ _register_validators() {
 	_VALIDATOR_REGISTRY["upstream-watch"]="_validator_upstream_watch"
 	_VALIDATOR_REGISTRY["runtime-audit"]="_validator_runtime_audit"
 	return 0
+}
+
+# Generated implementation work with a cited repository file must declare a
+# non-empty canonical Files Scope before a worker/model attempt. The worker
+# scope guard remains authoritative at edit time; this check prevents a known
+# malformed brief from consuming a dispatch only to fail there. Explicit
+# planning-only briefs remain outside this implementation-only preflight.
+_brief_requires_files_scope() {
+	local issue_body="$1"
+
+	if printf '%s' "$issue_body" | grep -Eqi 'planning-only|pure planning|brief-only|no code changes'; then
+		return 1
+	fi
+
+	printf '%s' "$issue_body" | grep -qE '<!-- aidevops:generator=[a-z0-9_-]+[^>]* cited_file=[^ >]+'
+	return $?
+}
+
+_brief_files_scope_has_path() {
+	local issue_body="$1"
+	local scope_section=""
+
+	scope_section=$(printf '%s' "$issue_body" |
+		awk '
+			/^## Files Scope[[:space:]]*$/ { found=1; level=2; next }
+			/^### Files Scope[[:space:]]*$/ { found=1; level=3; next }
+			found && level == 2 && /^## / { found=0 }
+			found && level == 3 && (/^# / || /^## / || /^### /) { found=0 }
+			found { print }
+		')
+
+	[[ -n "$scope_section" ]] || return 1
+	# shellcheck disable=SC2016 # literal regular expression anchors
+	printf '%s\n' "$scope_section" |
+		grep -qE '^[[:space:]]*-[[:space:]]*(EDIT|NEW):[[:space:]]*`?[^`[:space:]][^`]*`?[[:space:]]*$'
+}
+
+_validate_implementation_brief_scope() {
+	local issue_number="$1"
+	local issue_body="$2"
+
+	_brief_requires_files_scope "$issue_body" || return 0
+	if _brief_files_scope_has_path "$issue_body"; then
+		return 0
+	fi
+
+	_log "ERROR" "brief-defect: #${issue_number} generated implementation brief lacks a non-empty canonical Files Scope; add '### Files Scope' with '- EDIT: \`repo-relative/path\`' before dispatch"
+	return 30
 }
 
 # ---------------------------------------------------------------------------
@@ -1882,6 +1931,12 @@ cmd_validate() {
 		_log "WARN" "Failed to fetch issue body for #${issue_number} — proceeding (validator error)"
 		return 20
 	}
+
+	local scope_rc=0
+	_validate_implementation_brief_scope "$issue_number" "$issue_body" || scope_rc=$?
+	if [[ "$scope_rc" -ne 0 ]]; then
+		return "$scope_rc"
+	fi
 
 	local pre_generator_rc=0
 	_run_pre_generator_validators "$issue_number" "$slug" "$issue_body" "$issue_api_path" || pre_generator_rc=$?
