@@ -386,12 +386,46 @@ PCC_AUTHENTICATED_LOGIN=current-runner
 PCC_CHECKPOINT_ASSIGNEE=stale-runner
 PCC_OWNERSHIP_TRANSFERRED=0
 LAUNCH_VERIFIED=0
+export DISPATCH_REPO_SLUG=unrelated/repository
 if _prrts_dispatch_worker owner/repo "${TEST_ROOT}/repo" 42 checkpoint 0 fixture preview \
 	"$PCC_HEAD_REF" "$PCC_HEAD_OID" attempt-fixture 1 1 false 0 fixture &&
 	[[ "$LAUNCH_VERIFIED" == 1 && "$PCC_ISSUE_ASSIGNEE" == current-runner ]]; then
 	print_result "producer-to-worker preparation preserves transferred owner and original author" 0
 else
 	print_result "producer-to-worker preparation preserves transferred owner and original author" 1
+fi
+
+run_checkpoint_preparation() {
+	local original_author="$1"
+	env WORKER_ISSUE_NUMBER=123 DISPATCH_REPO_SLUG=owner/repo \
+		WORKER_GITHUB_LOGIN=current-runner AIDEVOPS_PR_REPAIR_NUMBER=42 \
+		AIDEVOPS_PR_REPAIR_LINKED_ISSUE=123 AIDEVOPS_PR_REPAIR_OWNERSHIP_MODE= \
+		AIDEVOPS_PR_REPAIR_ISSUE_ASSIGNEE=current-runner \
+		"AIDEVOPS_PR_CHECKPOINT_AUTHOR=${original_author}" \
+		"AIDEVOPS_PR_REPAIR_HEAD_SHA=${PCC_HEAD_OID}" \
+		"AIDEVOPS_PR_REPAIR_HEAD_REF=${PCC_HEAD_REF}" "$HEADLESS_RUNTIME_HELPER"
+	return $?
+}
+
+for rejected_author in foreign-runner current-runner ''; do
+	if ! run_checkpoint_preparation "$rejected_author"; then
+		print_result "worker preparation rejects wrong original author ${rejected_author:-missing}" 0
+	else
+		print_result "worker preparation rejects wrong original author ${rejected_author:-missing}" 1
+	fi
+done
+STUB_ISSUE_JSON="$(valid_issue_json '' 'newer-owner')"
+if ! run_checkpoint_preparation stale-runner; then
+	print_result "worker preparation rejects newer owner after producer fence" 0
+else
+	print_result "worker preparation rejects newer owner after producer fence" 1
+fi
+STUB_ISSUE_JSON="$(valid_issue_json '' 'current-runner')"
+STUB_PR_JSON="$(valid_pr_json 'Resolves #123' '' '' 'current-runner')"
+if run_checkpoint_preparation ''; then
+	print_result "worker preparation retains legacy same-runner author fallback" 0
+else
+	print_result "worker preparation retains legacy same-runner author fallback" 1
 fi
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then

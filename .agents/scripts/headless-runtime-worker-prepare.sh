@@ -116,10 +116,13 @@ _hrw_verify_dispatch_ownership() {
 			fi
 			# Preserve legacy same-runner dispatches while binding transferred
 			# checkpoints to their original PR author, not the replacement owner.
-			local checkpoint_author="${AIDEVOPS_PR_CHECKPOINT_AUTHOR:-$expected_assignee}"
+			local -a checkpoint_args=("$repair_pr_number" "$repo_slug" "$expected_head_sha"
+				"$expected_head_ref" "$repair_linked_issue" "$expected_assignee")
+			if [[ -n "${AIDEVOPS_PR_CHECKPOINT_AUTHOR:-}" ]]; then
+				checkpoint_args+=("$AIDEVOPS_PR_CHECKPOINT_AUTHOR")
+			fi
 			target_output=$("$ownership_helper" verify-pr-checkpoint-target \
-				"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" \
-				"$repair_linked_issue" "$expected_assignee" "$checkpoint_author" 2>&1) || target_rc=$?
+				"${checkpoint_args[@]}" 2>&1) || target_rc=$?
 			if [[ "$target_rc" -ne 0 ]]; then
 				_hrw_ownership_log warning "PR checkpoint target unavailable pr=${repair_pr_number} issue=${repair_linked_issue} repo=${repo_slug} rc=${target_rc}: ${target_output}"
 				return 1
