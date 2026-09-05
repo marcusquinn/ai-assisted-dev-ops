@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-![AI DevOps — 15 primary agents, 2,250+ supporting guides, 2,140+ shell scripts, and 100+ slash commands](docs/assets/og-image.png)
+![AI DevOps — 15 main agents, 2,250+ sub agents, 2,140+ helper scripts, and 100+ slash commands](docs/assets/og-image.png)
 
 # AI DevOps Framework
 

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
-  <title id="title">15 primary agents, 2,250+ supporting guides, 2,140+ shell scripts, 100+ slash commands</title>
+  <title id="title">15 main agents, 2,250+ sub agents, 2,140+ helper scripts, 100+ slash commands</title>
   <desc id="description">AI DevOps inventory checked on 5 September 2026: 15 primary agents, 2,268 supporting Markdown guides excluding symlink aliases, 2,146 shell scripts including tests, and 106 slash-command entry points. Command and workflow source guides are included in the guide count.</desc>
   <!-- Opaque card covers the previous numbers; all other pixels stay unchanged. -->
   <rect x="82" y="386" width="1036" height="102" rx="26" fill="#050b0d" stroke="#153d43"/>
@@ -12,9 +12,9 @@
     <text x="988" y="431">100+</text>
   </g>
   <g fill="#c9d1d9" font-family="sans-serif" font-size="19" font-weight="700" text-anchor="middle">
-    <text x="211" y="463">primary agents</text>
-    <text x="470" y="463">supporting guides</text>
-    <text x="729" y="463">shell scripts</text>
+    <text x="211" y="463">main agents</text>
+    <text x="470" y="463">sub agents</text>
+    <text x="729" y="463">helper scripts</text>
     <text x="988" y="463">slash commands</text>
   </g>
 </svg>
