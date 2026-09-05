@@ -119,6 +119,14 @@ _prepare_cmd_run_environment() {
 		print_error "Repository-bound worker Git authentication failed prelaunch validation"
 		return 1
 	fi
+	# Manual dispatch runs this identical consumer gate before spawning. Return
+	# before detach, model selection, ownership transfer, or credential cleanup:
+	# the dispatcher retains the token until readiness transfers it to the worker.
+	if [[ "${AIDEVOPS_GIT_AUTH_PREFLIGHT_ONLY:-0}" == "1" ]]; then
+		_cmd_run_stop=1
+		_cmd_run_return_status=0
+		return 0
+	fi
 	_ensure_valid_launch_cwd "$work_dir" || return 1
 	_validate_issue_worker_env_contract "$role" "$session_key" "$work_dir" "$title" "$prompt" || return 1
 	_recover_deleted_cwd_before_launch "$work_dir" "cmd_run" || return 1

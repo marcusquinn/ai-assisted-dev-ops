@@ -421,7 +421,10 @@ create_token_file() {
 
 _file_uid() {
 	local path="$1"
-	stat -f '%u' "$path" 2>/dev/null || stat -c '%u' "$path" 2>/dev/null
+	# GNU stat -f can emit filesystem data before failing on the BSD format
+	# argument. Dispatch by the already-detected platform, never concatenate a
+	# failed probe's stdout with the actual UID. %u is shared by GNU and BSD.
+	_stat_batch '%u' "$path"
 	return $?
 }
 
