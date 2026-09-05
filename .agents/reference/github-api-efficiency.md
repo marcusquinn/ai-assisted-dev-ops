@@ -12,6 +12,11 @@ The benchmark never reads raw API telemetry and never changes runtime defaults.
 An inconclusive result preserves every rollback control and keeps the rollout
 task open.
 
+For further optimisation, first inspect [transport and freshness](github-api-transport.md).
+Offer [optional webhook onboarding](github-webhook-onboarding.md) only when the
+user accepts ingress operation; polling remains the default and keeps its cadence.
+Webhook setup alone does not establish request savings.
+
 ## Command
 
 ```bash
