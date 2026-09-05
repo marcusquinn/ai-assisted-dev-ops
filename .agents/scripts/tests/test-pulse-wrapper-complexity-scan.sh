@@ -377,6 +377,16 @@ test_llm_sweep_meta_review_is_not_measured_debt() {
 		print_result "_complexity_run_llm_sweep: meta review stays outside measured debt" 1 \
 			"list=${list_args}; create=${create_args}"
 	fi
+	local scope expected_scope
+	scope="${create_args#*$'### Files Scope\n'}"
+	scope="${scope%%$'\n### '*}"
+	expected_scope=$'\n- EDIT: `.agents/scripts/pulse-simplification-scan.sh`\n- EDIT: `.agents/scripts/tests/test-pulse-wrapper-complexity-scan.sh`\n'
+	if [[ "$create_args" == *$'\n### Files Scope\n'* && "$scope" == "$expected_scope" ]]; then
+		print_result "_complexity_run_llm_sweep: canonical scope authorizes only generator and regression test" 0
+	else
+		print_result "_complexity_run_llm_sweep: canonical scope authorizes only generator and regression test" 1 \
+			"expected exact two-file scope, got: ${scope}"
+	fi
 	unset GH_ISSUE_LIST_JSON _COMPLEXITY_SCAN_SKIP_REVIEW_GATE
 	return 0
 }
