@@ -177,6 +177,10 @@ AGG_THIRD=$(git -C "$AGG_REPO" rev-parse HEAD)
 git -C "$AGG_REPO" commit -q --allow-empty -m 'fourth authorized source merge'
 AGG_FOURTH=$(git -C "$AGG_REPO" rev-parse HEAD)
 git -C "$AGG_REPO" commit -q --allow-empty -m 'unreviewed automated synchronization'
+AGG_BASE=$(git -C "$AGG_REPO" rev-parse HEAD)
+AGG_TREE=$(git -C "$AGG_REPO" rev-parse 'HEAD^{tree}')
+AGG_REVIEWED_HEAD=$(git -C "$AGG_REPO" commit-tree "$AGG_TREE" -p "$AGG_BASE" -m 'reviewed aggregate branch')
+AGG_STALE_HEAD=$(git -C "$AGG_REPO" commit-tree "$AGG_TREE" -p "$AGG_THIRD" -m 'aggregate prepared before late source')
 git -C "$AGG_REPO" commit -q --allow-empty -m "reviewed aggregate source
 
 Aidevops-Release-Aggregator-PR: 99
@@ -192,13 +196,26 @@ if [[ "\${1:-}" == "pr" ]]; then
 	43) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T01:00:00Z","baseRefName":"main","headRefOid":"second-head","mergeCommit":{"oid":"${AGG_SECOND}"}}' ;;
 	44) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T02:00:00Z","baseRefName":"main","headRefOid":"third-head","mergeCommit":{"oid":"${AGG_THIRD}"}}' ;;
 	45) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-26T03:00:00Z","baseRefName":"main","headRefOid":"fourth-head","mergeCommit":{"oid":"${AGG_FOURTH}"}}' ;;
-	99) printf '%s\n' '{"state":"MERGED","mergedAt":"2026-07-27T00:00:00Z","baseRefName":"main","headRefOid":"aggregate-head","mergeCommit":{"oid":"${AGGREGATE_MERGE}"}}' ;;
-	100) printf '{"state":"MERGED","mergedAt":"2026-07-28T00:00:00Z","baseRefName":"main","headRefOid":"complete-head","mergeCommit":{"oid":"%s"}}\n' "\${COMPLETE_AGGREGATE_MERGE:?}" ;;
+	99) printf '{"state":"MERGED","mergedAt":"2026-07-27T00:00:00Z","baseRefName":"main","headRefOid":"%s","mergeCommit":{"oid":"${AGGREGATE_MERGE}"}}\n' "\${AGG_TEST_REVIEWED_HEAD:-${AGG_REVIEWED_HEAD}}" ;;
+	100) printf '{"state":"MERGED","mergedAt":"2026-07-28T00:00:00Z","baseRefName":"main","headRefOid":"${AGGREGATE_MERGE}","mergeCommit":{"oid":"%s"}}\n' "\${COMPLETE_AGGREGATE_MERGE:?}" ;;
 	*) exit 1 ;;
 	esac
 	exit 0
 fi
 case "\${2:-}" in
+repos/test/aggregate/compare/*)
+	[[ "\${AGG_TEST_COMPARE_FAILURE:-false}" != true ]] || exit 1
+	comparison="\${2##*/}"
+	base="\${comparison%%...*}"
+	parent="\${comparison#*...}"
+	merge_base=\$(git -C "${AGG_REPO}" merge-base "\$base" "\$parent") || exit 1
+	ahead=\$(git -C "${AGG_REPO}" rev-list --count "\$base..\$parent") || exit 1
+	status=behind
+	[[ "\$ahead" == 0 ]] || status=ahead
+	[[ "\$merge_base" == "\$base" || "\$merge_base" == "\$parent" ]] || status=diverged
+	[[ "\$base" != "\$parent" ]] || status=identical
+	printf '{"base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"},"ahead_by":%s,"status":"%s"}\n' "\$base" "\$merge_base" "\$ahead" "\$status"
+	;;
 repos/test/aggregate/git/ref/tags/v2.0.0)
 	printf '{"object":{"type":"tag","sha":"%s"}}\n' "\$(git -C "${AGG_REPO}" rev-parse refs/tags/v2.0.0)"
 	;;
@@ -220,6 +237,31 @@ jq -e --arg merge "$AGGREGATE_MERGE" --arg original "$AGG_ORIGINAL" '
 	and .aggregated_sources == [{pr:42,merge:$original}]
 ' <<<"$aggregate_json" >/dev/null
 printf 'PASS reviewed aggregation manifest recovers an authorized historical source\n'
+
+# The prepared source list and trusted caller input can both be stale. A later
+# empty reviewed PR changes ancestry without changing the tree, so a tree-only
+# check or comparison of those two identical source lists cannot catch the gap.
+for requested_pr in 42 99; do
+	if (
+		cd "$AGG_REPO" || exit 1
+		AGG_TEST_REVIEWED_HEAD="$AGG_STALE_HEAD" PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+			bash "$HELPER" resolve-source --source-pr "$requested_pr" --repo test/aggregate
+	) >"${TEST_ROOT}/stale-aggregate-error" 2>&1; then
+		printf 'FAIL stale reviewed aggregate accepted for source %s\n' "$requested_pr"
+		exit 1
+	fi
+	grep -q 'inherited unreviewed default-branch commits' "${TEST_ROOT}/stale-aggregate-error"
+done
+printf 'PASS late merged sources block both historical-source and aggregate-self publication\n'
+if (
+	cd "$AGG_REPO" || exit 1
+	AGG_TEST_COMPARE_FAILURE=true PATH="${AGG_BIN}:/opt/homebrew/bin:/usr/bin:/bin" \
+		bash "$HELPER" resolve-source --source-pr 42 --repo test/aggregate
+) >/dev/null 2>&1; then
+	printf 'FAIL unavailable aggregate ancestry evidence was accepted\n'
+	exit 1
+fi
+printf 'PASS unavailable aggregate ancestry evidence fails closed\n'
 
 if (
 	cd "$AGG_REPO" || exit 1
