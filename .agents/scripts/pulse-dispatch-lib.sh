@@ -2181,9 +2181,19 @@ _dispatch_max_loop() {
 
 		local successes_so_far=0
 		successes_so_far=$(_dispatch_max_count_outcomes "$outcomes_file")
-		if _dispatch_max_should_stop "$processed_count" "$successes_so_far" "$effective_slots" "${#_pids[@]}"; then
+		if _dispatch_max_should_stop "$processed_count" "$successes_so_far" "$effective_slots"; then
 			break
 		fi
+		# Pending ceremonies reserve slots only until their outcomes are known.
+		# Wait and reconcile the current candidate rather than ending the round:
+		# a rejected ceremony frees its reservation for this unconsumed candidate.
+		while ((successes_so_far + ${#_pids[@]} >= effective_slots)); do
+			_dispatch_max_wait_for_reservation _pids
+			successes_so_far=$(_dispatch_max_count_outcomes "$outcomes_file")
+			if _dispatch_max_should_stop "$processed_count" "$successes_so_far" "$effective_slots"; then
+				break 2
+			fi
+		done
 
 		_dispatch_max_apply_inter_launch_delay "$successes_so_far" "${#_pids[@]}" "$processed_count" "$candidate_json" "$max_parallel"
 		_dispatch_max_spawn_candidate "$candidate_json" "$self_login" "$available_slots" "$outcomes_file" &
@@ -2198,6 +2208,23 @@ _dispatch_max_loop() {
 	local dispatched_count
 	dispatched_count=$(_dispatch_max_count_outcomes "$outcomes_file")
 	printf '%d %d\n' "$dispatched_count" "$processed_count"
+	return 0
+}
+
+#######################################
+# Wait for a pending admission reservation to finish, then remove completed
+# children so its terminal outcome can free capacity for the current candidate.
+#
+# Arguments:
+#   $1 - nameref-style array variable name
+#######################################
+_dispatch_max_wait_for_reservation() {
+	local target_array_name="$1"
+
+	if ! wait -n 2>/dev/null; then
+		echo "[pulse-wrapper] Dispatch_max: wait -n found no children while reconciling reservations" >>"$LOGFILE"
+	fi
+	_dispatch_max_refresh_pids "$target_array_name"
 	return 0
 }
 
@@ -2259,7 +2286,6 @@ _dispatch_max_wait_for_capacity() {
 #   $1 - processed count
 #   $2 - successes so far
 #   $3 - effective slot budget
-#   $4 - in-flight dispatch count
 # Returns:
 #   0 - stop the loop
 #   1 - continue dispatching
@@ -2268,10 +2294,9 @@ _dispatch_max_should_stop() {
 	local processed_count="$1"
 	local successes_so_far="$2"
 	local effective_slots="$3"
-	local in_flight_count="$4"
 
-	if ((successes_so_far + in_flight_count >= effective_slots)); then
-		echo "[pulse-wrapper] Dispatch_max: parallel iter=${processed_count} — stopping (successes=${successes_so_far} + in_flight=${in_flight_count} >= effective_slots=${effective_slots})" >>"$LOGFILE"
+	if ((successes_so_far >= effective_slots)); then
+		echo "[pulse-wrapper] Dispatch_max: parallel iter=${processed_count} — stopping (successes=${successes_so_far} >= effective_slots=${effective_slots})" >>"$LOGFILE"
 		return 0
 	fi
 	if [[ -f "${STOP_FLAG:-}" ]]; then
