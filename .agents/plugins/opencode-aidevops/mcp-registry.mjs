@@ -401,6 +401,27 @@ function getMcpRegistry() {
       description: "Multi-account QuickFile UK accounting",
     },
     {
+      name: "blender-lab",
+      type: "local",
+      command: [
+        "python3",
+        "-I",
+        join(homedir(), ".aidevops", "agents", "scripts", "blender-lab-mcp-launcher.py"),
+      ],
+      eager: false,
+      toolPattern: "blender-lab_*",
+      globallyEnabled: false,
+      activationAgent: "blender",
+      agentSource: ["tools", "design", "blender.md"],
+      activationGuidance: [
+        "Before connecting, require explicit operator approval and an already isolated Blender environment; never set the launcher consent flags yourself.",
+        "On first use, have the operator run blender-lab-mcp-launcher.py prepare inside that environment before connecting to avoid installation timeouts.",
+        "If prerequisites or consent are missing, report the launcher diagnostic; never fall back to uvx blender-mcp or launch Blender automatically.",
+      ],
+      modelTier: "standard",
+      description: "Official Blender Lab MCP with opt-in isolated provisioning",
+    },
+    {
       name: "amazon-order-history",
       type: "local",
       command: [

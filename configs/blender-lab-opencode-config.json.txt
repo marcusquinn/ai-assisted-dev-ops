@@ -4,9 +4,9 @@
     "blender-lab": {
       "type": "local",
       "command": [
-        "/ABSOLUTE/PATH/TO/blender-lab-venv/bin/blender-mcp",
-        "--transport",
-        "stdio"
+        "python3",
+        "-I",
+        "/ABSOLUTE/PATH/TO/.aidevops/agents/scripts/blender-lab-mcp-launcher.py"
       ],
       "enabled": false,
       "environment": {
