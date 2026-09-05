@@ -703,6 +703,7 @@ test("conversation plugin exposes only the minimal restricted hook surface", () 
       "chat.params",
       "config",
       "experimental.chat.system.transform",
+      "tool.definition",
       "tool.execute.before",
     ]);
     assert.deepEqual(evidence.config.plugin, [pluginUrl]);
