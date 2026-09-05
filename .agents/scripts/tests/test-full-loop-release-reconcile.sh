@@ -801,9 +801,11 @@ STUB
 cat >"${TEST_ROOT}/runtime/version-manager.sh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'cwd=%s\naction=%s\nsync_root=%s\ndeploy_helper=%s\n' \
+printf 'cwd=%s\naction=%s\nsync_root=%s\ndeploy_helper=%s\nsquash_recovery=%s\nlane_pr=%s\nlane_tag=%s\n' \
 	"$PWD" "$*" "${AIDEVOPS_SYNC_REPO_ROOT:-}" \
-	"${AIDEVOPS_SYNC_DEPLOY_SCRIPT:-}" >"${FAKE_POST_RELEASE_LOG:?}"
+	"${AIDEVOPS_SYNC_DEPLOY_SCRIPT:-}" "${AIDEVOPS_RELEASE_SQUASH_RECOVERY:-}" \
+	"${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}" "${AIDEVOPS_RELEASE_LANE_TAG:-}" \
+	>"${FAKE_POST_RELEASE_LOG:?}"
 STUB
 cat >"${TEST_ROOT}/tag-checkout/.agents/scripts/version-manager.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -886,6 +888,9 @@ if ! _full_loop_release_finalize_reconciliation test/repo 90 v1.2.3 ||
 	! grep -qx "sync_root=${TEST_ROOT}/tag-checkout" "$FAKE_POST_RELEASE_LOG" ||
 	! grep -qx "deploy_helper=${TEST_ROOT}/runtime/deploy-agents-on-merge.sh" \
 		"$FAKE_POST_RELEASE_LOG" ||
+	! grep -qx 'squash_recovery=1' "$FAKE_POST_RELEASE_LOG" ||
+	! grep -qx 'lane_pr=90' "$FAKE_POST_RELEASE_LOG" ||
+	! grep -qx 'lane_tag=v1.2.3' "$FAKE_POST_RELEASE_LOG" ||
 	[[ -e "$FAKE_OLD_RUNTIME_LOG" || ! -s "$FAKE_PERSIST_LOG" ]]; then
 	printf 'FAIL reconciliation did not finalize with current hardened runtime against the tag checkout\n'
 	exit 1
