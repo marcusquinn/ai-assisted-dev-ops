@@ -102,6 +102,8 @@ end) as $max_workers |
     auto_dispatch_scan_errors: $gh_errors,
     auto_dispatch_scan_state: (if $queue_error == "" then "scanned" else $queue_error end),
     graphql_budget_status: ($current.graphql_budget_status // "unknown"),
+    rest_admission: ($api.rest_admission // {state:"unknown"}),
+    eligibility_basis: "labels_and_dependencies_not_launch_admission",
     secondary_cooldown_state: $secondary_cooldown_state,
     secondary_cooldown_active: $secondary_cooldown_active,
     runner_health: ($runner.finding // "unknown"),
@@ -172,6 +174,16 @@ end) as $max_workers |
     cadence_api_risk: ($api.cadence_api_risk // "unknown")
   },
   findings: ([
+    if (["reserve", "cooldown"] | index($api.rest_admission.state // "unknown")) != null then
+      finding(
+        "github-rest-admission-held";
+        "high";
+        "Local REST admission is holding work independently of GraphQL";
+        [(($api.rest_admission // {}) | tojson)];
+        "Use the bounded serialized REST revalidation path; preserve real exhaustion and secondary cooldown. A healthy GraphQL or /rate_limit response alone does not clear REST admission. Do not reset the budget database or increase worker concurrency to bypass this hold.";
+        false
+      )
+    else empty end,
     if $secondary_cooldown_active then
       finding(
         "github-secondary-cooldown-active";

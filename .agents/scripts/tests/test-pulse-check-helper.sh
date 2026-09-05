@@ -350,13 +350,14 @@ COMMON_ENV=(
 	"PULSE_CHECK_GH_WRAPPERS=${TEST_ROOT}/wrappers.sh"
 	"PULSE_CHECK_CAPTURE=${TEST_ROOT}/capture.txt"
 	"PULSE_CHECK_PULSE_HEALTH_FILE=${TEST_ROOT}/missing-pulse-health.json"
+	"AIDEVOPS_GH_TRANSPORT_STATE_DIR=${TEST_ROOT}/transport-state"
 )
 
 printf '%s=== pulse-check-helper.sh tests ===%s\n' "$TEST_BLUE" "$TEST_NC"
 
 OUT=$(env "${COMMON_ENV[@]}" "$HELPER" report 2>&1)
 assert_contains "text report shows empty active capacity" "Active workers: 0 / 6" "$OUT"
-assert_contains "text report distinguishes eligible work" "Auto-dispatch queue: 5 available (4 eligible) / 6 open" "$OUT"
+assert_contains "text report distinguishes eligible work" "Auto-dispatch queue: 5 available (4 label-eligible; launch admission not verified) / 6 open" "$OUT"
 assert_contains "underfilled finding appears" "pulse-underfilled-auto-dispatch-queue" "$OUT"
 assert_contains "launch accounting finding appears" "pulse-launch-accounting-gap" "$OUT"
 assert_contains "canonical reconciliation finding appears" "pulse-canonical-reconciliation-stops" "$OUT"

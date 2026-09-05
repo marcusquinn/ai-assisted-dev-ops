@@ -32,7 +32,7 @@ _terminal_blocker_hash() {
 _terminal_blocker_reason() {
 	local fingerprint="$1"
 	local reason=""
-	for reason in missing_files_scope target_code_blocker unknown; do
+	for reason in missing_files_scope files_scope_excluded target_code_blocker unknown; do
 		if [[ "$fingerprint" == "$(_terminal_blocker_hash "v2:${reason}")" ]]; then
 			printf '%s\n' "$reason"
 			return 0
@@ -80,7 +80,7 @@ if not marker.search(candidate):
     raise SystemExit(1)
 
 reasons = re.findall(r"^TERMINAL_BLOCKER_REASON=(.*)$", candidate, re.M)
-allowed = {'missing_files_scope', 'target_code_blocker'}
+allowed = {'missing_files_scope', 'files_scope_excluded', 'target_code_blocker'}
 print(reasons[0] if len(reasons) == 1 and reasons[0] in allowed else 'unknown')
 PY
 	) || normalized=""
@@ -153,8 +153,8 @@ terminal_blocker_task_revision() {
 	local task_json="" dependency_signature="" target_revision="" canonical=""
 	[[ -n "$reason" ]] || reason=$(_terminal_blocker_reason "${AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT:-}")
 	task_json=$(printf '%s' "$issue_json" | jq -c '{title: (.title // ""), body: (.body // "")}' 2>/dev/null) || return 1
-	if [[ "$reason" == "$_TBC_MISSING_SCOPE" ]]; then
-		_terminal_blocker_hash "v2:missing_files_scope:${task_json}"
+	if [[ "$reason" == "$_TBC_MISSING_SCOPE" || "$reason" == "files_scope_excluded" ]]; then
+		_terminal_blocker_hash "v2:${reason}:${task_json}"
 		return $?
 	fi
 	dependency_signature=$(_terminal_blocker_dependency_signature "$repo_slug" "$issue_number") || return 1
@@ -250,6 +250,10 @@ _terminal_blocker_recovery() {
 	missing_files_scope)
 		owner="brief-author"
 		action='Add a canonical ### Files Scope (or legacy ## Files Scope) section listing the permitted paths in the issue body.'
+		;;
+	files_scope_excluded)
+		owner="brief-author"
+		action='The AI brief owner must review the protected integration dossier, check concurrent ownership and correct the permitted paths before resuming the existing checkpoint. Preserve explicit hard boundaries and security guarantees; do not retry an unchanged brief.'
 		;;
 	target_code_blocker)
 		owner="target-maintainer"

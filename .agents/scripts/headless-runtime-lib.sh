@@ -1011,14 +1011,19 @@ reason line in the SAME final assistant text message (not a tool result):
 TERMINAL_BLOCKER_REASON=missing_files_scope
 Use that reason only when the canonical ## Files Scope or ### Files Scope
 heading is absent; the runtime independently verifies the current issue body.
+When the heading exists but a directly necessary integration file is excluded:
+TERMINAL_BLOCKER_REASON=files_scope_excluded
+Scope exclusion re-arms only on a corrected brief or an authorized explicit retry,
+never on unrelated base commits. Identify the missing path and required verification
+in the protected dossier; the AI brief owner must resolve the scope decision.
 For an evidenced target-code defect or conflict that cannot be repaired within
 the authorized scope, use this alternative reason line:
 TERMINAL_BLOCKER_REASON=target_code_blocker
 Target-code blockers may re-arm when the brief, dependencies, or target revision
 changes. Never use that class for permissions, credentials, provider failures,
-capability limits, missing scope, or ambiguous evidence. If neither class is
+capability limits, missing/excluded scope, or ambiguous evidence. If no class is
 established, omit the reason line: unknown evidence stays retryable, not held.
-Do not invent classes or emit both lines. Keep raw stderr, private paths, secrets,
+Do not invent classes or emit multiple reason lines. Keep raw stderr, private paths, secrets,
 and sensitive evidence in protected telemetry; public recovery messages are
 runtime-generated from allowlisted reason/action text, never copied model prose.
 

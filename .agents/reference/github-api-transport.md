@@ -65,6 +65,15 @@ child environment; credentials are never exported to a long-lived parent.
   new allowance. Unknown execution remains debt until a later response from
   the same credential covers it. Out-of-order responses cannot restore spent
   quota inside a live reset window.
+- A positive core reserve can revalidate through one accounted GET after 60
+  seconds without a newer observation/probe. No active request, real cooldown,
+  exhaustion or last uncertain point may be bypassed. The exact probe reservation
+  can repair a stale balance only with causally newer resource-owned headers and
+  a single bound credential; ambiguous/shared scopes stay conservative. This is
+  bounded recovery, not an alternative transport or a status-endpoint grant.
+- `python3 gh_transport_budget.py status` reads local admission evidence without
+  HTTP, credential values or database mutation. Pulse Check reports this separately
+  from GraphQL. Label-eligible queue counts are not proof of launch admission.
 - PID birth identity protects recovery. A credential changing owner
   configuration cannot obtain an independent second budget: live scope state
   and reservations are merged conservatively.

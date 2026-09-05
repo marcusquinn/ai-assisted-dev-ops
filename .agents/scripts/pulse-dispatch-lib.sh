@@ -138,6 +138,8 @@ _dispatch_ranked_candidates_json() {
 	local per_repo_limit="${1:-${PULSE_RUNNABLE_ISSUE_LIMIT:-1000}}"
 	local dependency_normalization_mode="${2:-normalize}"
 	local snapshot_file="" snapshot_tmp="" candidates_json="[]"
+	local now_epoch="" snapshot_ttl=120
+	now_epoch=$(date +%s) || return 1
 	[[ "$per_repo_limit" =~ ^[0-9]+$ ]] || per_repo_limit=1000
 	[[ "$dependency_normalization_mode" == "$_DISPATCH_DEPENDENCY_NORMALIZATION_SKIP" ]] || dependency_normalization_mode="normalize"
 	if [[ "${PULSE_DISPATCH_CANDIDATE_SNAPSHOT_ENABLED:-1}" == "0" ]]; then
@@ -148,8 +150,11 @@ _dispatch_ranked_candidates_json() {
 		build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode"
 		return $?
 	}
-	if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]] && jq -e 'type == "array"' "$snapshot_file" >/dev/null 2>&1; then
-		printf '%s\n' "$(<"$snapshot_file")"
+	if [[ -f "$snapshot_file" && ! -L "$snapshot_file" ]] && jq -e \
+		--argjson now "$now_epoch" --argjson ttl "$snapshot_ttl" \
+		'type == "object" and (.captured_at | type == "number") and .captured_at <= $now and .captured_at > ($now - $ttl) and (.candidates | type == "array")' \
+		"$snapshot_file" >/dev/null 2>&1; then
+		jq -c '.candidates' "$snapshot_file"
 		_dispatch_stats_increment "dispatch_candidate_snapshot_hit"
 		return 0
 	fi
@@ -159,12 +164,13 @@ _dispatch_ranked_candidates_json() {
 			return $?
 		}
 	fi
-	candidates_json=$(build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode") || candidates_json='[]'
+	candidates_json=$(build_ranked_dispatch_candidates_json "$per_repo_limit" "$dependency_normalization_mode") || return 1
 	if ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$candidates_json"; then
-		candidates_json='[]'
+		return 1
 	fi
 	snapshot_tmp=$(mktemp "${snapshot_file}.tmp.XXXXXX" 2>/dev/null || true)
-	if [[ -n "$snapshot_tmp" ]] && (umask 077 && printf '%s\n' "$candidates_json" >"$snapshot_tmp") 2>/dev/null; then
+	if [[ -n "$snapshot_tmp" ]] && (umask 077 && jq -nc --argjson captured_at "$now_epoch" \
+		--argjson candidates "$candidates_json" '{captured_at:$captured_at,candidates:$candidates}' >"$snapshot_tmp") 2>/dev/null; then
 		mv "$snapshot_tmp" "$snapshot_file" 2>/dev/null || rm -f "$snapshot_tmp" 2>/dev/null || true
 	elif [[ -n "$snapshot_tmp" ]]; then
 		rm -f "$snapshot_tmp" 2>/dev/null || true

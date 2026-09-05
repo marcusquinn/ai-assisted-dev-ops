@@ -85,6 +85,48 @@ class AdmissionTests(unittest.TestCase):
         self.seed(10, resource="search")
         self.budget.acquire("search", now=1002)
 
+    def test_reserve_revalidation_is_bounded_and_serialized(self):
+        self.seed(100)
+        with self.assertRaises(Deferred):
+            self.budget.acquire("core", now=1060)
+        probe = self.budget.acquire("core", now=1061)
+        with self.assertRaises(Deferred):
+            self.budget.acquire("core", now=1061)
+        self.budget.finish(probe, "core", headers(99), started=1061, now=1062)
+        with self.assertRaises(Deferred):
+            self.budget.acquire("core", now=1121)
+        self.budget.acquire("core", now=1122)
+
+    def test_serialized_reserve_probe_repairs_same_credential_stale_balance(self):
+        self.seed(100)
+        probe = self.budget.acquire("core", now=1061)
+        self.budget.finish(probe, "core", headers(4999), started=1061, now=1062)
+        self.assertEqual(self.budget.db.execute("SELECT remaining FROM quota").fetchone()[0], 4999)
+        self.budget.acquire("core", now=1063)
+
+    def test_reserve_probe_does_not_mix_unresolved_credential_balances(self):
+        self.seed(100)
+        other = Budget(self.directory, "owner-one", "different-credential")
+        try:
+            probe = other.acquire("core", now=1061)
+            other.finish(probe, "core", headers(4999), started=1061, now=1062)
+            self.assertEqual(other.db.execute("SELECT remaining FROM quota").fetchone()[0], 100)
+        finally:
+            other.close()
+
+    def test_reserve_probe_never_spends_exhaustion_or_uncertain_last_point(self):
+        self.seed(1)
+        with self.assertRaises(Deferred):
+            self.budget.acquire("core", now=1061)
+
+    def test_failed_probe_keeps_debt_and_recovery_cadence(self):
+        self.seed(100)
+        probe = self.budget.acquire("core", now=1061)
+        self.budget.finish(probe, "core", {}, started=1061, now=1062)
+        with self.assertRaises(Deferred):
+            self.budget.acquire("core", now=1120)
+        self.assertEqual(self.budget.db.execute("SELECT COUNT(*) FROM reservation").fetchone()[0], 1)
+
     def test_scope_and_resource_isolation(self):
         self.seed(0)
         other = Budget(self.directory, "owner-two")
@@ -93,6 +135,43 @@ class AdmissionTests(unittest.TestCase):
             self.budget.acquire("search", now=1002)
         finally:
             other.close()
+
+    def test_alias_merge_preserves_probe_cadence_and_shared_owner_uncertainty(self):
+        self.seed(100)
+        other = Budget(self.directory, "owner-two", "credential-two")
+        token = other.acquire("core", now=1000)
+        other.finish(token, "core", headers(100), started=1000, now=1001)
+        probe = other.acquire("core", now=1061)
+        other.finish(probe, "core", {}, started=1061, now=1062)
+        merged = Budget(self.directory, "owner-two", "owner-one")
+        try:
+            with self.assertRaises(Deferred):
+                merged.acquire("core", now=1063)
+            probe = merged.acquire("core", now=1121)
+            merged.finish(probe, "core", headers(4999), started=1121, now=1122)
+            self.assertEqual(merged.db.execute("SELECT remaining FROM quota").fetchone()[0], 100)
+        finally:
+            other.close()
+            merged.close()
+
+    def test_non_probe_with_matching_timestamp_cannot_restore_balance(self):
+        self.seed(100)
+        probe = self.budget.acquire("core", now=1061)
+        self.budget.db.execute("UPDATE revalidation SET reservation_id='different-reservation'")
+        self.budget.finish(probe, "core", headers(4999), started=1061, now=1062)
+        self.assertEqual(self.budget.db.execute("SELECT remaining FROM quota").fetchone()[0], 100)
+
+    def test_status_is_read_only_and_omits_identity(self):
+        from gh_transport_budget import admission_status
+        with patch("gh_transport_budget.time.time", return_value=1002):
+            self.seed(100)
+            before = self.budget.db.total_changes
+            status = admission_status(self.directory, "owner-one")
+            self.assertEqual(status["state"], "reserve")
+            self.assertEqual(status["remaining"], 100)
+            self.assertEqual(before, self.budget.db.total_changes)
+            self.assertNotIn("owner-one", str(status))
+            self.assertEqual(admission_status(self.directory / "absent", "owner-one"), {"state": "unknown"})
 
     def test_token_rotation_does_not_invent_a_quota_owner(self):
         with patch.dict(os.environ, {"GH_TOKEN": "fixture-one"}):

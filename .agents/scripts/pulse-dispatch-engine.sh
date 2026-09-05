@@ -587,7 +587,12 @@ dispatch_max() {
 	# GH#29255: ranked candidates are the launch-path backlog source. Do not run
 	# the broad all-repository issue+PR diagnostic counters before this snapshot.
 	local candidates_json candidate_count
-	candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_DISPATCH_CANDIDATE_SCAN_LIMIT" "$dependency_normalization_mode") || candidates_json='[]'
+	if ! candidates_json=$(_dispatch_ranked_candidates_json "$PULSE_DISPATCH_CANDIDATE_SCAN_LIMIT" "$dependency_normalization_mode"); then
+		echo "[pulse-wrapper] Dispatch_max deferred: candidate enumeration unavailable (available=${available_slots}); not an empty queue" >>"$LOGFILE"
+		_dispatch_stats_increment "dispatch_candidate_enumeration_unavailable"
+		echo 0
+		return 1
+	fi
 	candidate_count=$(printf '%s' "$candidates_json" | jq 'length' 2>/dev/null) || candidate_count=0
 	[[ "$candidate_count" =~ ^[0-9]+$ ]] || candidate_count=0
 	if [[ "$candidate_count" -eq 0 ]]; then

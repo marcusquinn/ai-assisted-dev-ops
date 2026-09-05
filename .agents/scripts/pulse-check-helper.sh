@@ -156,6 +156,9 @@ _collect_report_json() {
 	providers=$(_run_json_helper '{}' "$WORKER_ACTIVITY_HELPER" providers --since "$RECENT_SINCE" --json)
 	runner_health=$(_run_json_helper '{}' "$RUNNER_HEALTH_HELPER" diagnose --json)
 	api_budget=$(_run_json_helper '{}' "$PULSE_DIAGNOSE_HELPER" api-budget --json)
+	local rest_admission="{}"
+	rest_admission=$(_run_json_helper '{}' python3 "${SCRIPT_DIR}/gh_transport_budget.py" status)
+	api_budget=$(printf '%s' "$api_budget" | jq -c --argjson rest "$rest_admission" '. + {rest_admission: $rest}')
 	local skip_queue_scan="0"
 	if printf '%s' "$api_budget" | jq -e '((.secondary_cooldown_state // "") | contains("active=yes"))' >/dev/null 2>&1; then
 		skip_queue_scan="1"
@@ -197,11 +200,13 @@ _render_text_report() {
 		"",
 		"## Current utilisation",
 		"- Active workers: " + (.summary.active_workers | tostring) + " / " + (.summary.max_workers | tostring) + " (available slots: " + (.summary.available_slots | tostring) + ")",
-		"- Auto-dispatch queue: " + (.summary.auto_dispatch_available_unassigned | tostring) + " available (" + (.summary.auto_dispatch_eligible_available_unassigned | tostring) + " eligible) / " + (.summary.auto_dispatch_open | tostring) + " open across " + (.queue.repos | tostring) + " pulse repos",
+		"- Auto-dispatch queue: " + (.summary.auto_dispatch_available_unassigned | tostring) + " available (" + (.summary.auto_dispatch_eligible_available_unassigned | tostring) + " label-eligible; launch admission not verified) / " + (.summary.auto_dispatch_open | tostring) + " open across " + (.queue.repos | tostring) + " pulse repos",
 		"- Queue scan state: " + (.summary.auto_dispatch_scan_state // "scanned"),
 		"- Current window launches: " + (.summary.worker_launches_in_window | tostring) + "; terminal worker events: " + (.summary.worker_terminal_events_in_window | tostring),
 		"- Recent worker metric events: " + (.summary.recent_worker_events | tostring) + "; " + .inputs.historical_window + " runtime handoff rate: " + (.summary.historical_runtime_handoff_rate | percent_text) + "; delivered success rate: " + (.summary.historical_delivery_success_rate | percent_text),
-		"- GraphQL/API: " + (.summary.graphql_budget_status // unknown),
+		"- GraphQL: " + (.summary.graphql_budget_status // unknown),
+		"- REST transport admission: " + ((.summary.rest_admission // {state:"unknown"}) | tojson),
+		"- Current launch blockers: " + ((.current_state.top_pre_launch_blockers // []) | tojson),
 		"- Secondary cooldown: " + (.summary.secondary_cooldown_state // unknown),
 		"- Runtime freshness: " + (.summary.runtime_freshness_status // unknown),
 		"- Runner health: " + (.summary.runner_health // unknown),

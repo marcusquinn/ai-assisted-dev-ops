@@ -93,6 +93,26 @@ fifth=$(_dispatch_ranked_candidates_json 50)
 
 # A small runnable-count diagnostic sample must not limit dispatch scanning.
 # Three benignly blocked candidates must not hide a later eligible candidate.
+unset PULSE_DISPATCH_CANDIDATE_SNAPSHOT_ENABLED
+_PULSE_CYCLE_ID="test-cycle-stale-candidate-snapshot"
+fresh=$(_dispatch_ranked_candidates_json 50)
+snapshot=$(_dispatch_candidate_snapshot_path 50)
+jq '.captured_at = 0' "$snapshot" >"${snapshot}.test"
+mv "${snapshot}.test" "$snapshot"
+refreshed=$(_dispatch_ranked_candidates_json 50)
+[[ "$fresh" != "$refreshed" ]] || { printf 'FAIL expired snapshot hides new work\n' >&2; exit 1; }
+jq '.captured_at = 9999999999' "$snapshot" >"${snapshot}.test"
+mv "${snapshot}.test" "$snapshot"
+future_refreshed=$(_dispatch_ranked_candidates_json 50)
+[[ "$refreshed" != "$future_refreshed" ]] || { printf 'FAIL future snapshot accepted\n' >&2; exit 1; }
+_dispatch_invalidate_candidate_snapshot "test_failure" 50
+build_ranked_dispatch_candidates_json() { return 1; }
+if _dispatch_ranked_candidates_json 50; then
+	printf 'FAIL failed enumeration became successful empty queue\n' >&2
+	exit 1
+fi
+[[ ! -f "$snapshot" ]] || { printf 'FAIL failed enumeration cached\n' >&2; exit 1; }
+
 dispatch_log="${TEST_ROOT}/dispatch-scan.log"
 : >"$dispatch_log"
 _dispatch_compute_capacity() { printf '2 0 2\n'; return 0; }
@@ -129,5 +149,17 @@ grep -q '"number":9104' "$dispatch_log" && [[ "$dispatch_count" == "1" && "$scan
 	printf 'FAIL dispatch did not scan past benign head blocks: count=%s scan_limit=%s log=%s\n' "$dispatch_count" "$scan_limit" "$(tr '\n' ',' <"$dispatch_log")" >&2
 	exit 1
 }
+
+_dispatch_ranked_candidates_json() { return 1; }
+LOGFILE="${TEST_ROOT}/enumeration-failure.log"
+if dispatch_max; then
+	printf 'FAIL dispatch_max swallowed enumeration failure\n' >&2
+	exit 1
+fi
+grep -q 'candidate enumeration unavailable' "$LOGFILE" || exit 1
+if grep -q 'skipped: no ranked candidates' "$LOGFILE"; then
+	printf 'FAIL unavailable queue was reported empty\n' >&2
+	exit 1
+fi
 
 printf 'PASS dispatch candidate snapshots reuse enumeration, preserve modes, and invalidate on state mutation\n'

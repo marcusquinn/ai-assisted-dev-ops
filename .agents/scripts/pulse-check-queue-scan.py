@@ -37,6 +37,8 @@ BLOCKING_LABELS = frozenset({
     "blocked",
     "status:blocked",
     "status:in-review",
+    "consolidated",
+    "duplicate",
 })
 PERSISTENT_DASHBOARD_LABELS = frozenset({"persistent", "quality-review"})
 
@@ -236,6 +238,7 @@ def _count_issue(
         and not assigned
         and not blocked
         and not dependency_inconsistent
+        and not labels & {"status:in-progress", "status:claimed", "status:queued"}
     )
     excluded_persistent_dashboard = bool(labels & PERSISTENT_DASHBOARD_LABELS)
     aggregate["excluded_persistent_dashboard"] += int(

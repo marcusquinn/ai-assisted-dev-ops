@@ -10,9 +10,11 @@ This database coordinates local processes, not independently configured hosts.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -104,6 +106,10 @@ class Budget:
                 uncertain INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS binding (credential TEXT PRIMARY KEY, scope TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS alias (scope TEXT PRIMARY KEY, target TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS revalidation (
+                scope TEXT NOT NULL, resource TEXT NOT NULL, started REAL NOT NULL,
+                reservation_id TEXT NOT NULL,
+                PRIMARY KEY(scope, resource));
         """)
         with self.transaction():
             self._bind_scope()
@@ -141,6 +147,13 @@ class Budget:
                                 (previous, row[0], *values))
             self.db.execute("DELETE FROM quota WHERE scope=?", (self.scope,))
             self.db.execute("UPDATE reservation SET scope=? WHERE scope=?", (previous, self.scope))
+            self.db.execute(
+                "INSERT INTO revalidation SELECT ?,resource,started,reservation_id "
+                "FROM revalidation WHERE scope=? ON CONFLICT(scope,resource) DO UPDATE SET "
+                "started=excluded.started,reservation_id=excluded.reservation_id "
+                "WHERE excluded.started > revalidation.started", (previous, self.scope),
+            )
+            self.db.execute("DELETE FROM revalidation WHERE scope=?", (self.scope,))
             self.db.execute("INSERT OR REPLACE INTO alias VALUES(?,?)", (self.scope, previous))
             self.scope = previous
         self.db.execute("INSERT OR REPLACE INTO binding VALUES(?,?)", (self.credential, self.scope))
@@ -158,6 +171,7 @@ class Budget:
 
     def acquire(self, resource: str, *, now: float | None = None) -> str:
         now = time.time() if now is None else now
+        reservation = uuid.uuid4().hex
         with self.transaction():
             # A dead executor is uncertain spend, not free quota. Converting it
             # to debt permits a later serialized observation to recover safely.
@@ -188,7 +202,21 @@ class Budget:
                 raise Deferred("resource cooldown is active")
             floor = min(100, max(1, row[4] // 10)) if row and resource == "core" else 1
             if row and row[1] > now and row[0] - total <= floor:
-                raise Deferred("REST resource reserve is protected")
+                # Revalidate stale reserve evidence with ONE real, accounted GET.
+                # Never probe exhaustion/cooldown, borrow unknown spend, or let
+                # parallel callers turn recovery into an unbounded reserve bypass.
+                probe = self.db.execute(
+                    "SELECT started FROM revalidation WHERE scope=? AND resource=?",
+                    (self.scope, resource),
+                ).fetchone()
+                if (resource != "core" or active or row[0] - total <= 1
+                        or now - max(row[2], probe[0] if probe else row[2]) < 60):
+                    raise Deferred(
+                        f"REST resource reserve is protected (remaining={row[0]}, "
+                        f"reserved={total}, floor={floor}, reset={int(row[1])})"
+                    )
+                self.db.execute("INSERT OR REPLACE INTO revalidation VALUES(?,?,?,?)",
+                                (self.scope, resource, now, reservation))
             # Expired/missing observations are not a new 5,000-point grant.
             # Permit one serialized real request to obtain fresh headers.
             fresh = row and 0 <= now - row[2] <= 20 and row[1] > now
@@ -197,7 +225,6 @@ class Budget:
             # A small local concurrency ceiling also applies with ample quota.
             if active >= 4:
                 raise Deferred("local REST transport concurrency is occupied", retryable=True)
-            reservation = uuid.uuid4().hex
             self.db.execute(
                 "INSERT INTO reservation(id,scope,resource,started,pid,birth,credential) VALUES(?,?,?,?,?,?,?)",
                 (reservation, self.scope, resource, now, os.getpid(), self.birth, self.credential),
@@ -222,7 +249,23 @@ class Budget:
                 ).fetchone()
                 available, reset_at = int(remaining), int(reset)
                 blocked_until = 0.0
-                if row and row[1] > now:
+                probe = self.db.execute(
+                    "SELECT reservation_id FROM revalidation WHERE scope=? AND resource=?",
+                    (self.scope, resource),
+                ).fetchone()
+                own = self.db.execute(
+                    "SELECT started,credential FROM reservation WHERE id=? AND scope=? AND resource=?",
+                    (reservation, self.scope, resource),
+                ).fetchone()
+                owners = sum(self._root(binding[0]) == self.scope for binding in
+                             self.db.execute("SELECT scope FROM binding").fetchall())
+                # A serialized reserve probe may repair stale evidence only for
+                # one bound credential. Shared/ambiguous owners and late replies
+                # retain conservative accounting. /rate_limit is never a grant.
+                recovered = (row and probe and own and owners == 1
+                             and own[1] == self.credential and reservation == probe[0]
+                             and own[0] >= row[2] and reset_at >= row[1])
+                if row and row[1] > now and not recovered:
                     # Late responses and unresolved owners with different reset
                     # epochs cannot restore quota observed to have been spent.
                     available = min(available, row[0])
@@ -255,3 +298,53 @@ class Budget:
 
     def close(self) -> None:
         self.db.close()
+
+
+def admission_status(directory: Path, scope: str) -> dict:
+    """Read local core admission evidence without credentials, HTTP or mutations."""
+    path = directory / "admission.sqlite3"
+    if not path.is_file() or path.is_symlink():
+        return {"state": "unknown"}
+    db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
+    try:
+        for _ in range(256):
+            alias = db.execute("SELECT target FROM alias WHERE scope=?", (scope,)).fetchone()
+            if not alias:
+                break
+            scope = alias[0]
+        else:
+            return {"state": "unknown"}
+        row = db.execute(
+            "SELECT remaining,reset,observed,blocked_until,quota_limit FROM quota "
+            "WHERE scope=? AND resource='core'", (scope,),
+        ).fetchone()
+        if not row:
+            return {"state": "unknown"}
+        reserved = db.execute(
+            "SELECT COUNT(*) FROM reservation WHERE scope=? AND resource='core'", (scope,),
+        ).fetchone()[0]
+        now = time.time()
+        floor = min(100, max(1, row[4] // 10))
+        state = "available"
+        if row[3] > now:
+            state = "cooldown"
+        elif row[1] <= now or row[2] > now:
+            state = "unknown"
+        elif row[0] - reserved <= floor:
+            state = "reserve"
+        return {"state": state, "source": "local_response_headers", "remaining": row[0],
+                "limit": row[4], "reserved": reserved, "floor": floor,
+                "reset": int(row[1]), "observation_age_seconds": max(0, int(now - row[2]))}
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["status"]:
+        raise SystemExit(2)
+    try:
+        print(json.dumps(admission_status(Path(os.environ.get(
+            "AIDEVOPS_GH_TRANSPORT_STATE_DIR", str(Path.home() / ".aidevops/state/gh-transport"),
+        )).absolute(), scope_key("github.com"))))
+    except (OSError, ValueError, sqlite3.Error):
+        print('{"state":"unknown"}')

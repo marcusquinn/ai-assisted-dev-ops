@@ -295,6 +295,28 @@ test_unknown_and_redaction() {
 	return 0
 }
 
+test_excluded_scope_revision() {
+	local issue='{"title":"Fix integration","body":"### Files Scope\n- helper.sh"}'
+	local output="${TEST_ROOT}/scope.ndjson" first="" changed="" fragment="" status=0
+	printf '%s\n' '{"type":"text","part":{"text":"BLOCKED: necessary adjacent integration excluded\nTERMINAL_BLOCKER_REASON=files_scope_excluded"}}' >"$output"
+	terminal_blocker_capture_output "$output" || status=1
+	[[ "$(_terminal_blocker_reason "$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT")" == files_scope_excluded ]] || status=1
+	first=$(terminal_blocker_task_revision "$issue" owner/repo 42 "$TEST_ROOT" files_scope_excluded)
+	TEST_TARGET_REVISION='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+	TEST_DEPENDENCIES='unavailable'
+	changed=$(terminal_blocker_task_revision "$issue" owner/repo 42 "$TEST_ROOT" files_scope_excluded)
+	[[ "$first" == "$changed" ]] || status=1
+	changed=$(terminal_blocker_task_revision '{"title":"Fix integration","body":"### Files Scope\n- helper.sh\n- adjacent.sh"}' owner/repo 42 "$TEST_ROOT" files_scope_excluded)
+	[[ "$first" != "$changed" ]] || status=1
+	fragment=$(_terminal_blocker_recovery "$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT")
+	[[ "$fragment" == *'AI brief owner'* && "$fragment" == *'do not retry an unchanged brief'* ]] || status=1
+	TEST_TARGET_REVISION='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+	TEST_DEPENDENCIES='{"nodes":[],"truncated":false}'
+	unset AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
+	print_result "excluded integration scope re-arms on brief correction, not unrelated code or API reads" "$status"
+	return 0
+}
+
 test_final_dossier_and_structural_precedence() {
 	local output="${TEST_ROOT}/final.ndjson" status=0
 	printf '%s\n' '{"type":"text","text":"BLOCKED: defect\nTERMINAL_BLOCKER_REASON=target_code_blocker"}' \
@@ -322,6 +344,7 @@ main() {
 	test_release_modes_and_retry
 	test_dispatch_hold_revalidates_revision
 	test_brief_only_revision
+	test_excluded_scope_revision
 	test_unknown_and_redaction
 	test_final_dossier_and_structural_precedence
 	test_release_integration_bounds_comments
