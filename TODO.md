@@ -1326,7 +1326,7 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 
 - [x] t18400 Prefer standalone Brave for Playwright automation ref:GH#31168 pr:#31169 completed:2026-09-04
 
-- [ ] t18401 Restore profile activity reporting #bug #framework #interactive ref:GH#31199 -> [todo/tasks/t18401-brief.md]
+- [x] t18401 Restore profile activity reporting #bug #framework #interactive ref:GH#31199 -> [todo/tasks/t18401-brief.md] pr:#31200 completed:2026-09-05
 
 ## In Progress
 
