@@ -282,7 +282,7 @@ write_stale_worker_mock_terminal_responses() {
 						{id: 11, body_start: $terminal_body, body: $terminal_body, created_at: $terminal_ts},
 						{id: 999, body_start: $new_body, body: $new_body, created_at: $claim_ts}
 					]
-			] | map(. + {user:{login:"mockrunner"}, author_association:"MEMBER"})'
+			] | map(map(. + {user:{login:"mockrunner"}, author_association:"MEMBER"}))'
 			exit 0
 		fi
 		jq -n \
@@ -1923,6 +1923,7 @@ test_claim_marks_paginated_stale_worker_takeover() {
 # Test: terminal worker comments suppress stale takeover annotation (GH#22356)
 #######################################
 test_claim_skips_takeover_reason_after_terminal() {
+	local paginated_comments="${1:-false}"
 	local tmp_dir
 	tmp_dir="$(mktemp -d)"
 	local mock_path
@@ -1944,6 +1945,7 @@ CLAIM_RELEASED reason=worker_complete
 CLAIM_RELEASED reason=worker_complete
 <!-- ops:end -->" \
 		MOCK_CLAIM_CREATED_AT="$claim_created_at" \
+		MOCK_PAGINATED_COMMENTS="$paginated_comments" \
 		DISPATCH_CLAIM_WINDOW=0 \
 		DISPATCH_CLAIM_MAX_AGE=300 \
 		DISPATCH_ACTIVE_WORKER_MAX_AGE=60 \
@@ -2058,6 +2060,7 @@ main() {
 	test_claim_marks_paginated_stale_worker_takeover
 	test_claim_marks_stale_worker_takeover_for_ops_wrapped_dispatch_comment
 	test_claim_skips_takeover_reason_after_terminal
+	test_claim_skips_takeover_reason_after_terminal true
 	test_claim_skips_takeover_reason_after_lowercase_terminal
 
 	echo ""
