@@ -73,6 +73,39 @@ test_normalized_blocker_fingerprint() {
 	return 0
 }
 
+test_worker_contract_reason_protocol() {
+	# Load the real producer in a subshell so its sourced libraries cannot alter
+	# the release-path fixture overrides used by the remaining tests.
+	local contract="" reason="" output="${TEST_ROOT}/contract.ndjson" status=0
+	contract=$(
+		# shellcheck source=../headless-runtime-lib.sh
+		source "${SCRIPT_DIR}/headless-runtime-lib.sh"
+		append_worker_headless_contract '/full-loop Fix the scoped helper'
+	) || status=1
+	reason=$(printf '%s\n' "$contract" | rg '^TERMINAL_BLOCKER_REASON=target_code_blocker$') || status=1
+	[[ "$contract" == *'TERMINAL_BLOCKER_REASON=missing_files_scope'* &&
+		"$contract" == *'SAME final assistant text message'* &&
+		"$contract" == *'unknown evidence stays retryable'* ]] || status=1
+	jq -nc --arg text "BLOCKED: target defect cannot be repaired in scope
+${reason}" '{type:"text",part:{text:$text}}' >"$output"
+	terminal_blocker_capture_output "$output" || status=1
+	[[ "$(_terminal_blocker_reason "$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT")" == target_code_blocker ]] || status=1
+	local issue='{"title":"Fix helper","body":"### Files Scope\n- helper.sh"}'
+	local revision="" changed="" comments=""
+	revision=$(terminal_blocker_task_revision "$issue" owner/repo 42 "$TEST_ROOT")
+	comments=$(jq -nc --arg body "<!-- aidevops:terminal-blocker-circuit revision=${revision} blocker=${AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT} -->" \
+		'[{body:$body,created_at:"2026-08-31T10:00:00Z",author_association:"MEMBER"}]')
+	terminal_blocker_circuit_active "$comments" "$issue" owner/repo 42 "$TEST_ROOT" >/dev/null || status=1
+	TEST_TARGET_REVISION='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+	changed=$(terminal_blocker_task_revision "$issue" owner/repo 42 "$TEST_ROOT")
+	[[ "$changed" != "$revision" ]] || status=1
+	terminal_blocker_circuit_active "$comments" "$issue" owner/repo 42 "$TEST_ROOT" >/dev/null && status=1
+	TEST_TARGET_REVISION='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+	unset AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
+	print_result "injected contract reason reaches capture and code-sensitive hold re-arms on target change" "$status"
+	return 0
+}
+
 test_task_revision_inputs() {
 	local issue_json='{"title":"Fix scope","body":"Files Scope: a.sh"}'
 	local first="" same="" changed_body="" changed_dependency="" changed_target=""
@@ -264,6 +297,7 @@ test_unknown_and_redaction() {
 
 main() {
 	test_normalized_blocker_fingerprint
+	test_worker_contract_reason_protocol
 	test_task_revision_inputs
 	test_release_modes_and_retry
 	test_dispatch_hold_revalidates_revision
