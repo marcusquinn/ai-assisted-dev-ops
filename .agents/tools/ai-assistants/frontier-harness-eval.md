@@ -23,7 +23,8 @@ claim to reproduce every installed Build+ workflow, service, or MCP integration.
 
 - Local Docker, Docker Compose, Node, Git, `uv`, and a pinned aidevops Git checkout.
 - Existing active OpenAI OAuth pool account with at least 31 minutes of token
-  validity. No credentials in chat, command arguments, or task containers.
+  validity. No real OAuth tokens or paid API keys enter chat, command arguments,
+  or task containers; the task receives only a short-lived local relay capability.
 - A local Harbor task with `/app` as its working directory and no existing Git
   repository. The adapter makes `/app` a linked worktree in both arms so the
   verifier sees the actual edits without bypassing aidevops Git safeguards.
@@ -65,7 +66,7 @@ node .agents/scripts/frontier-harness-report.mjs \
 
 Install-only uses an inert placeholder, never a live inference capability. Real
 runs pin one OAuth account and one model, allow one concurrent upstream request,
-and stop at 64 accepted relay requests or 30 minutes. Per-request time and response
+and stop at 64 authenticated attempts or 30 minutes. Per-request time and response
 byte ceilings also apply. The relay never refreshes/rotates credentials or falls
 back to a paid API. Native client retries may still occur; Harbor trial retries
 are disabled. The manifest records host-observed upstream usage, including title

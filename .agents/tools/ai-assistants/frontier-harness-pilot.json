@@ -25,6 +25,7 @@
       "upstream_completed_responses": 5,
       "compactions_completed": 0,
       "source_result_sha256": "1aae950d60a8c10f1ee359f5ef3b3be405f11397e995ecad68fd9b822636e19d",
+      "source_events_sha256": "5bf828f37d60d62a37693c5d54c03aa921ec2ce47dad6037b6f2eddf8d53e53b",
       "source_manifest_sha256": "0f7f5ff53b3d915ad95655b27eb499690bd95b9fbc0a4ed0f8604ce6a44b858d"
     },
     {
@@ -40,6 +41,7 @@
       "upstream_completed_responses": 9,
       "compactions_completed": 0,
       "source_result_sha256": "f7819599108fd3038b08c974724732da96d47f1d49e5917db7f3c80e332bebe3",
+      "source_events_sha256": "334da1e358dafe0b9817eb834c87c0aec012bc10501613d6b2240f7c90b675a1",
       "source_manifest_sha256": "1ffc4b72a553ac480c5e70d3e5ef191628f6728f3be132ceedfdfea49b20211c"
     },
     {
@@ -56,6 +58,7 @@
       "compactions_completed": 2,
       "summary_output_tokens": 2142,
       "source_result_sha256": "cece0aded18c20cc3f4a90a279c77f93337307bcfaa280465596e19c8d3aa690",
+      "source_events_sha256": "6c4d7eab017d54bdfa4975b55553780756aaf59cb3d7212cc050267f533d63a3",
       "source_manifest_sha256": "71f837f4df0f5d52a82fd2bae30475d78c0c03f9c4a9e7ab37a64eba6ef4ab2d"
     },
     {
@@ -72,6 +75,7 @@
       "compactions_completed": 2,
       "summary_output_tokens": 1666,
       "source_result_sha256": "617f4c13e7a066e9e08d6776bc227ef3a9f4794aaaa7c346b46ea6be055328f3",
+      "source_events_sha256": "c15dffafbc09483252f9eb5dfe506b0a74125d0159ff6e64af74952c97d13271",
       "source_manifest_sha256": "ff2e3ce7fa32f71a12c8d51c3e49730deb040d922b9a2957e54965526b714329"
     },
     {
@@ -89,6 +93,7 @@
       "upstream_completed_responses": 38,
       "compactions_completed": 18,
       "source_result_sha256": "b58858ae51c8c86f3b4f35962e159bbc7954cc6dc1885467806a1d823b0354f1",
+      "source_events_sha256": "8d574637ec08c22e31a33fc9b7b1b8a849015013868c6c44108697f60a68d82a",
       "source_manifest_sha256": "219c47d9b5b4c1059b209c02b9e7106f64ffa55334569dc61b637197fb7f7d2a"
     },
     {
@@ -106,6 +111,7 @@
       "upstream_completed_responses": 46,
       "compactions_completed": 22,
       "source_result_sha256": "efb6a1c623ad5a78b0a0ea6524c6f8b1c79e30cc6472235be62482c0ea3bddfc",
+      "source_events_sha256": "a8bfd411d98ef2148124a0e2b1370eba4f684cba9fdb902ad7021062cda5e557",
       "source_manifest_sha256": "6cdc4928217f84c001d8aaefa80a445383963a103006d50f370af6f759b44514"
     }
   ]
