@@ -519,6 +519,14 @@ EOF
 		print_helper_failure "${test_name}" "first helper update command failed" "$update_output"
 		return 0
 	fi
+	git -C "${fixture_repo}" fetch origin >/dev/null
+	git -C "${fixture_repo}" reset --hard origin/main >/dev/null
+	local legacy_link_tmp="${TEST_DIR}/legacy-link-readme"
+	awk '{ sub(/\?metric=total/, ""); print }' "${fixture_repo}/README.md" >"$legacy_link_tmp"
+	mv "$legacy_link_tmp" "${fixture_repo}/README.md"
+	git -C "${fixture_repo}" add README.md
+	git -C "${fixture_repo}" commit -m "test: restore legacy chart link" >/dev/null
+	git -C "${fixture_repo}" push >/dev/null
 	if ! HOME="${fixture_home}" bash "${helper_path}" update >"$update_output" 2>&1; then
 		print_helper_failure "${test_name}" "second helper update command failed" "$update_output"
 		return 0
@@ -532,7 +540,8 @@ EOF
 		print_result "${test_name}" 1 "migration did not add one username-specific chart"
 		return 0
 	fi
-	if [[ "$(grep -c '<a href="https://commit-history.com/profile-repo">' "$readme")" -ne 1 ]]; then
+	if [[ "$(grep -c '<a href="https://commit-history.com/profile-repo?metric=total">' "$readme")" -ne 1 ]] ||
+		grep -Fq '<a href="https://commit-history.com/profile-repo">' "$readme"; then
 		print_result "${test_name}" 1 "migrated chart is not linked to the username activity profile"
 		return 0
 	fi
@@ -816,7 +825,7 @@ EOF
 		print_result "${test_name}" 1 "commit-history light/dark image URLs missing"
 		return 0
 	fi
-	if ! grep -Fq '<a href="https://commit-history.com/profile-repo">' "$readme"; then
+	if ! grep -Fq '<a href="https://commit-history.com/profile-repo?metric=total">' "$readme"; then
 		print_result "${test_name}" 1 "commit-history chart does not link to the username activity profile"
 		return 0
 	fi

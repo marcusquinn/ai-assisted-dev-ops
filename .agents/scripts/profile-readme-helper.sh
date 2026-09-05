@@ -813,10 +813,11 @@ _build_commit_history_chart() {
 	if [[ -z "$gh_user" ]]; then
 		return 0
 	fi
+	local chart_href="https://commit-history.com/${gh_user}?metric=total"
 
 	cat <<EOF
 <div align="center">
-  <a href="https://commit-history.com/${gh_user}">
+  <a href="${chart_href}">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://commit-history.com/embed/${gh_user}?theme=dark" />
       <img alt="${gh_user}'s commit history" src="https://commit-history.com/embed/${gh_user}" />
@@ -835,13 +836,31 @@ _ensure_commit_history_chart() {
 	if ! grep -Fq '> Stats auto-updated by [aidevops]' "$readme_path" 2>/dev/null; then
 		return 0
 	fi
+	local chart_href="https://commit-history.com/${gh_user}?metric=total"
 	if grep -Fq 'https://commit-history.com/embed/' "$readme_path" 2>/dev/null; then
-		if grep -Fq "<a href=\"https://commit-history.com/${gh_user}\">" "$readme_path" 2>/dev/null; then
+		if grep -Fq "<a href=\"${chart_href}\">" "$readme_path" 2>/dev/null; then
 			return 0
 		fi
 		local migrate_tmp
 		migrate_tmp=$(mktemp)
-		if ! awk -v href="https://commit-history.com/${gh_user}" '
+		local legacy_href="https://commit-history.com/${gh_user}"
+		if grep -Fq "<a href=\"${legacy_href}\">" "$readme_path" 2>/dev/null; then
+			if ! awk -v old="href=\"${legacy_href}\"" -v new="href=\"${chart_href}\"" '
+				{
+					start = index($0, old)
+					if (start > 0) {
+						$0 = substr($0, 1, start - 1) new substr($0, start + length(old))
+					}
+					print
+				}
+			' "$readme_path" >"$migrate_tmp"; then
+				rm -f "$migrate_tmp"
+				return 1
+			fi
+			mv "$migrate_tmp" "$readme_path"
+			return 0
+		fi
+		if ! awk -v href="${chart_href}" '
 			function emit_picture() {
 				if (picture_block ~ /commit-history[.]com\/embed\//) {
 					print "  <a href=\"" href "\">"
