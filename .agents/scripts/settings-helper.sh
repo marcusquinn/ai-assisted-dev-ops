@@ -531,11 +531,11 @@ SETTINGS KEYS (dot-notation):
     supervisor.stale_threshold_seconds   Stale worker threshold (default: 1800)
     supervisor.circuit_breaker_max_failures  Max failures before pause (default: 3)
     supervisor.strategic_review_hours    Hours between strategic reviews (default: 4)
-    supervisor.peak_hours_enabled        Cap workers during peak hours (default: false)
-    supervisor.peak_hours_start          Peak window start hour 0-23 (default: 5)
-    supervisor.peak_hours_end            Peak window end hour 0-23 (default: 11)
-    supervisor.peak_hours_tz             Timezone for peak window (default: America/Los_Angeles)
-    supervisor.peak_hours_worker_fraction  Fraction of off-peak MAX_WORKERS during peak (default: 0.2)
+    supervisor.peak_hours_enabled        DEPRECATED: ignored; global clock-based cap retired
+    supervisor.peak_hours_start          DEPRECATED: ignored
+    supervisor.peak_hours_end            DEPRECATED: ignored
+    supervisor.peak_hours_tz             DEPRECATED: ignored
+    supervisor.peak_hours_worker_fraction  DEPRECATED: ignored
     repo_sync.enabled                    Daily repo sync on/off (default: true)
     repo_sync.schedule                   Sync schedule (default: daily)
     quality.shellcheck_enabled           ShellCheck on/off (default: true)

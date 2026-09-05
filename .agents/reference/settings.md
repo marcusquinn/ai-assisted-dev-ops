@@ -35,11 +35,11 @@
 | `supervisor.stale_threshold_seconds` | number | `1800` | -- | Seconds before a worker is considered stuck. |
 | `supervisor.circuit_breaker_max_failures` | number | `3` | -- | Consecutive failures before dispatch pauses. |
 | `supervisor.strategic_review_hours` | number | `4` | -- | Hours between thinking-tier queue health reviews. |
-| `supervisor.peak_hours_enabled` | boolean | `false` | `AIDEVOPS_PEAK_HOURS_ENABLED` | Cap workers during peak window. **Disabled by default.** |
-| `supervisor.peak_hours_start` | number | `5` | `AIDEVOPS_PEAK_HOURS_START` | Peak window start hour (0–23, local time). Overnight: set start > end. |
-| `supervisor.peak_hours_end` | number | `11` | `AIDEVOPS_PEAK_HOURS_END` | Peak window end hour (0–23, exclusive). |
-| `supervisor.peak_hours_tz` | string | `"America/Los_Angeles"` | `AIDEVOPS_PEAK_HOURS_TZ` | Documentation label — pulse uses system `date +%H`. |
-| `supervisor.peak_hours_worker_fraction` | number | `0.2` | `AIDEVOPS_PEAK_HOURS_WORKER_FRACTION` | Fraction of off-peak workers allowed during peak (min 1, rounded up). `calculate_max_workers()` applies this after the RAM-based clamp — cap can only reduce, never increase. |
+| `supervisor.peak_hours_enabled` | boolean | `false` | `AIDEVOPS_PEAK_HOURS_ENABLED` | Deprecated, ignored. The legacy global cap is retired. |
+| `supervisor.peak_hours_start` | number | `5` | `AIDEVOPS_PEAK_HOURS_START` | Deprecated, ignored. |
+| `supervisor.peak_hours_end` | number | `11` | `AIDEVOPS_PEAK_HOURS_END` | Deprecated, ignored. |
+| `supervisor.peak_hours_tz` | string | `"America/Los_Angeles"` | `AIDEVOPS_PEAK_HOURS_TZ` | Deprecated, ignored. |
+| `supervisor.peak_hours_worker_fraction` | number | `0.2` | `AIDEVOPS_PEAK_HOURS_WORKER_FRACTION` | Deprecated, ignored. |
 
 ### repo_sync
 
@@ -106,13 +106,10 @@ Edit directly: `${EDITOR:-vi} ~/.config/aidevops/settings.json`
 
 Env vars continue to work as overrides — no migration required. To consolidate, remove `AIDEVOPS_*` exports from your shell config and set values in `settings.json` instead. The `Env Var` column in each table above shows the mapping.
 
-## Peak Hours Configuration
+## Retired Peak Hours Policy
 
-Enable to cap workers during Anthropic's session-limit window (weekday 5–11 AM PT):
-
-```bash
-settings-helper.sh set supervisor.peak_hours_enabled true
-settings-helper.sh set supervisor.peak_hours_start 5
-settings-helper.sh set supervisor.peak_hours_end 11
-settings-helper.sh set supervisor.peak_hours_worker_fraction 0.2
-```
+The global clock-based cap originated with Anthropic peak-window assumptions,
+not an OpenAI capacity contract. All `supervisor.peak_hours_*` settings and their
+environment overrides are now inert, including previously enabled configurations.
+Existing files need no migration. Resource limits, provider availability, actual
+rate-limit signals, and explicit per-repository scheduling remain in force.

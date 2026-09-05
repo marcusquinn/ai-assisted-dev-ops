@@ -856,8 +856,7 @@ test_sourcing_idempotency() {
 }
 
 #######################################
-# Test 10: apply_peak_hours_cap honours its configured timezone rather than
-# the host timezone, falling back to UTC for invalid configuration.
+# Test 10: retired peak settings cannot constrain capacity, even when enabled.
 #######################################
 test_apply_peak_hours_cap_timezone() {
 	LOGFILE="${TEST_ROOT}/peak-hours.log"
@@ -891,35 +890,25 @@ test_apply_peak_hours_cap_timezone() {
 	export AIDEVOPS_PEAK_HOURS_TZ=America/Los_Angeles
 	export TZ=Pacific/Honolulu
 	assert_equals "apply_peak_hours_cap ignores first caller timezone" \
-		"2" "$(apply_peak_hours_cap 10)"
+		"10" "$(apply_peak_hours_cap 10)"
 
 	export TZ=Europe/Berlin
 	assert_equals "apply_peak_hours_cap ignores second caller timezone" \
-		"2" "$(apply_peak_hours_cap 10)"
+		"10" "$(apply_peak_hours_cap 10)"
 
 	export AIDEVOPS_PEAK_HOURS_TZ=UTC
-	assert_equals "apply_peak_hours_cap accepts UTC" "2" "$(apply_peak_hours_cap 10)"
+	assert_equals "apply_peak_hours_cap ignores UTC setting" "10" "$(apply_peak_hours_cap 10)"
 
 	export AIDEVOPS_PEAK_HOURS_TZ=Etc/UTC
-	assert_equals "apply_peak_hours_cap accepts Etc/UTC" "2" "$(apply_peak_hours_cap 10)"
+	assert_equals "apply_peak_hours_cap ignores Etc/UTC setting" "10" "$(apply_peak_hours_cap 10)"
 
 	export AIDEVOPS_PEAK_HOURS_TZ=Invalid/Timezone
-	assert_equals "apply_peak_hours_cap invalid timezone falls back to UTC" \
-		"2" "$(apply_peak_hours_cap 10)"
-	if grep -q "Invalid or unavailable peak-hours timezone 'Invalid/Timezone' — falling back to UTC" "$LOGFILE"; then
-		print_result "apply_peak_hours_cap logs invalid timezone fallback" 0
-	else
-		print_result "apply_peak_hours_cap logs invalid timezone fallback" 1 "missing UTC fallback log"
-	fi
+	assert_equals "apply_peak_hours_cap ignores invalid timezone" \
+		"10" "$(apply_peak_hours_cap 10)"
 
 	export AIDEVOPS_PEAK_HOURS_TZ=America/../localtime
-	assert_equals "apply_peak_hours_cap rejects timezone traversal" \
-		"2" "$(apply_peak_hours_cap 10)"
-	if grep -q "Invalid or unavailable peak-hours timezone 'America/../localtime' — falling back to UTC" "$LOGFILE"; then
-		print_result "apply_peak_hours_cap logs traversal fallback" 0
-	else
-		print_result "apply_peak_hours_cap logs traversal fallback" 1 "missing UTC traversal fallback log"
-	fi
+	assert_equals "apply_peak_hours_cap does not resolve timezone paths" \
+		"10" "$(apply_peak_hours_cap 10)"
 
 	export AIDEVOPS_PEAK_HOURS_ENABLED=false
 	assert_equals "apply_peak_hours_cap disabled preserves capacity" \
@@ -930,8 +919,8 @@ test_apply_peak_hours_cap_timezone() {
 	export AIDEVOPS_PEAK_HOURS_START=22
 	export AIDEVOPS_PEAK_HOURS_END=6
 	MOCK_PEAK_HOUR=23
-	assert_equals "apply_peak_hours_cap applies overnight window" \
-		"2" "$(apply_peak_hours_cap 10)"
+	assert_equals "apply_peak_hours_cap ignores overnight window" \
+		"10" "$(apply_peak_hours_cap 10)"
 	MOCK_PEAK_HOUR=7
 	assert_equals "apply_peak_hours_cap excludes after overnight window" \
 		"10" "$(apply_peak_hours_cap 10)"
