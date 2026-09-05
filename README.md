@@ -1984,6 +1984,23 @@ Primary agents live at `.agents/<name>.md`. Each is a domain expert with its own
 
 #### How to invoke a main agent
 
+Launch terminal clients directly with Build+ selected by default, or name a main agent:
+
+```bash
+aidevops codex
+aidevops codex automate
+aidevops claude seo
+aidevops opencode research
+```
+
+These shortcuts apply each CLI's supported full-access options for the session.
+They also support Cursor Agent, Gemini, Continue, Kilo, Kiro CLI, Aider, Amp, Kimi,
+Qwen and Droid (which retains its configured interactive autonomy). Use
+`aidevops codex --list-agents` to list main agents, `--dry-run` to preview a launch,
+and `--native` for native subcommands without injected defaults. See
+[interactive runtime launchers](.agents/tools/ai-assistants/runtime-launchers.md)
+for aliases, argument forwarding and runtime limitations.
+
 | Client | Invocation |
 |---|---|
 | **OpenCode** | Tab through the agent picker in the UI — Build+ is the default. Main agents are registered as top-level agents in OpenCode's config. |

@@ -1123,7 +1123,10 @@ _help_commands() {
 	echo "  gpt56-context <cmd> Manage the 300K GPT-5.6 OpenCode context cap (enable/disable/status)"
 	echo "  client-format      Client request format alignment (extract/check/canary/monitor)"
 	echo "  opencode-db <cmd>  OpenCode SQLite maintenance/session lookup (check/report/sessions/maintain/window/status/install)"
-	echo "  opencode [args]    Launch OpenCode with aidevops per-session DB isolation"
+	echo "  opencode [agent] [args]    Launch OpenCode with Build+ and per-session DB isolation"
+	echo "  codex|claude [agent] [args]  Launch with full permissions (default agent: build-plus)"
+	echo "  <runtime> [agent] [args]     Also cursor, droid, gemini, continue, kilo, kiro, aider, amp, kimi, qwen"
+	echo "                              Use <runtime> --help or --list-agents for launch options"
 	echo "  opencode-desktop   Launch/install OpenCode Desktop with aidevops DB isolation"
 	echo "  opencode-sandbox   Test OpenCode versions in isolation (install/run/check/clean)"
 	echo "  approve <cmd>      Cryptographic issue/PR approval (setup/issue/pr/verify/status)"
@@ -1975,7 +1978,8 @@ main() {
 	client-format) _cmd_client_format "$@" ;;
 	github-app-auth | github-app | gh-auth) _dispatch_helper "github-app-auth-helper.sh" "github-app-auth-helper.sh" "$@" ;;
 	opencode-db | oc-db) _dispatch_helper "opencode-db-maintenance-helper.sh" "opencode-db-maintenance-helper.sh" "$@" ;;
-	opencode | oc) _dispatch_helper "opencode-launcher-helper.sh" "opencode-launcher-helper.sh" "$@" ;;
+	opencode | oc | codex | claude | claude-code | cursor | cursor-agent | droid | gemini | gemini-cli | continue | cn | kilo | kiro | kiro-cli | aider | amp | kimi | qwen | windsurf)
+		_dispatch_helper "runtime-launcher-helper.sh" "runtime-launcher-helper.sh" "$command" "$@" ;;
 	opencode-desktop | oc-desktop) _dispatch_helper "opencode-launcher-helper.sh" "opencode-launcher-helper.sh" desktop "$@" ;;
 	opencode-sandbox | oc-sandbox) _dispatch_helper "opencode-sandbox-helper.sh" "opencode-sandbox-helper.sh" "$@" ;;
 	review-gate | review_gate) _dispatch_helper "review-gate-config-helper.sh" "review-gate-config-helper.sh" "$@" ;;
