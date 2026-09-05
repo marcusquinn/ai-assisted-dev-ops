@@ -616,6 +616,7 @@ _ghqa_command_is_local_only() {
 	shift
 	local subcommand="${1:-}"
 	: "$executable"
+	[[ "$subcommand" != auth || "${2:-}" != token ]] || return 0
 	case "$subcommand" in
 	--help | --version | help | version | completion | config | alias) return 0 ;;
 	esac

@@ -240,6 +240,13 @@ check_dispatch_dedup() {
 	return 1
 }
 
+_read_issue_conversation_lock() {
+	local issue_num="$1"
+	local slug="$2"
+	gh api "repos/${slug}/issues/${issue_num}" --jq '.locked' 2>/dev/null || return 1
+	return 0
+}
+
 #######################################
 # Verify an issue conversation lock after GitHub accepts the lock mutation.
 # The issue REST read can briefly lag the mutation, so retry boundedly while
@@ -266,7 +273,7 @@ _verify_issue_conversation_lock() {
 
 	while [[ "$attempt" -le "$attempts" ]]; do
 		# Retry observed propagation lag, never an unknown transport outcome.
-		locked_state=$(gh api "repos/${slug}/issues/${issue_num}" --jq '.locked' 2>/dev/null) || return 1
+		locked_state=$(_read_issue_conversation_lock "$issue_num" "$slug") || return 1
 		if [[ "$locked_state" == "true" ]]; then
 			return 0
 		fi
@@ -298,7 +305,7 @@ lock_issue_for_worker() {
 	# REST read, not a marker or a cached discovery snapshot, to avoid repeated
 	# rejected mutations without weakening the launch-time trust boundary.
 	local locked_state=""
-	locked_state=$(gh api "repos/${slug}/issues/${issue_num}" --jq '.locked' 2>/dev/null) || return 1
+	locked_state=$(_read_issue_conversation_lock "$issue_num" "$slug") || return 1
 	case "$locked_state" in
 	true)
 		_record_auto_dispatch_lock "$issue_num" "$slug" || return 1

@@ -476,6 +476,8 @@ _gh_with_timeout() {
 			return "$preflight_rc"
 		fi
 	fi
+	local AIDEVOPS_GH_WRAPPER_PREFLIGHT=1
+	export AIDEVOPS_GH_WRAPPER_PREFLIGHT
 	local secs
 	case "$op_class" in
 	read) secs="${AIDEVOPS_GH_READ_TIMEOUT:-15}" ;;
