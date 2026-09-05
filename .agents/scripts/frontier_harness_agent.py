@@ -52,6 +52,13 @@ class FrontierOpenCode(OpenCode):
         return "frontier-opencode"
 
     async def install(self, environment):
+        # Local networks may block cleartext package mirrors. Keep TLS
+        # verification enabled and make this identical preparation in both arms.
+        await self.exec_as_agent(environment, command=(
+            "set -eu; if test -f /etc/apt/sources.list.d/ubuntu.sources; then "
+            "sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources; "
+            "apt-get -o Acquire::Retries=0 -o Acquire::https::Timeout=15 update; fi"
+        ))
         await super().install(environment)
         await self.ensure_system_dependencies(environment, ("git", "tar"))
         await environment.upload_file(self.archive, "/opt/frontier-framework.tar")
