@@ -34,7 +34,7 @@ input as $comments |
            device: (if $device == "" then "legacy" else $device end),
            session: $session,
             claim_author: ($comment | author_login),
-           claim_association: ($comment.author_association // ""),
+            claim_association: ($comment.author_association // ""),
            lease_expires_at: ($expires | tonumber? // 0),
            created_at: ($comment.created_at // ""),
            created_epoch: ($comment.created_at | fromdateiso8601? // 0)
@@ -85,9 +85,9 @@ input as $comments |
            attempt_id:"release"}
       ]
     | sort_by([.epoch, .id])) as $events
- | (reduce $events[] as $event
-      ({phase:"prelaunch", expires:$claim.lease_expires_at, terminal_at:"", terminal_id:0, terminal_attempt_id:""};
-       if .phase == "terminal" or .expires < $event.epoch then .
+  | (reduce $events[] as $event
+       ({phase:"prelaunch", expires:$claim.lease_expires_at, terminal_at:"", terminal_id:0, terminal_attempt_id:""};
+        if .phase == "terminal" or (.expires > 0 and .expires < $event.epoch) then .
        elif $event.phase == "prelaunch" and .phase == "prelaunch" and $event.expires >= $event.epoch
          then .phase="prelaunch" | .expires=$event.expires
        elif $event.phase == "ready" and .phase == "prelaunch" and $event.expires >= $event.epoch

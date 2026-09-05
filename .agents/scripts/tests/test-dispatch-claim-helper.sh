@@ -1498,6 +1498,24 @@ test_lease_parser_binds_authenticated_generations() {
 	else
 		print_result "bound release retires its exact new generation" 1 "parsed=${parsed:-none}"
 	fi
+
+	local legacy_claim='[{"id":10,"body":"DISPATCH_CLAIM nonce=legacy runner=runner-a ts=2026-09-05T00:00:00Z","created_at":"2026-09-05T00:00:00Z","user":{"login":"runner-a"},"author_association":"MEMBER"}]'
+	local legacy_release='[{"id":11,"body":"CLAIM_RELEASED runner=runner-a claim_id=10 nonce=legacy","created_at":"2026-09-05T00:00:00Z","user":{"login":"runner-a"},"author_association":"MEMBER"}]'
+	parsed=$(parse_lease_claims "$legacy_claim" "$legacy_release" 1788566460) || parsed=""
+	if [[ "$parsed" == "[]" ]]; then
+		print_result "exact legacy release works without a lease expiry field" 0
+	else
+		print_result "exact legacy release works without a lease expiry field" 1 "parsed=${parsed:-none}"
+	fi
+
+	local invalid_claims=""
+	invalid_claims=$(printf '%s' "$legacy_claim" | jq '[.[0] | .author_association="NONE"], [.[0] | del(.author_association)], [.[0] | .user.login="other-runner"]' | jq -sc 'add')
+	parsed=$(parse_lease_claims "$invalid_claims" '[]' 1788566460) || parsed=""
+	if [[ "$parsed" == "[]" ]]; then
+		print_result "untrusted missing-association and mismatched claims are rejected" 0
+	else
+		print_result "untrusted missing-association and mismatched claims are rejected" 1 "parsed=${parsed:-none}"
+	fi
 	return 0
 }
 
