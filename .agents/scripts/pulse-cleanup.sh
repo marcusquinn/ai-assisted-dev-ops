@@ -674,6 +674,20 @@ recover_failed_launch_state() {
 		"$ledger_helper" "${fail_args[@]}" >/dev/null 2>&1 || true
 	fi
 
+	_record_released_launch_failure "$issue_number" "$repo_slug" "$self_login" "$failure_reason" "$crash_type"
+	return 0
+}
+
+# Record recovery side effects only after ownership release has been verified
+# and the exact ledger attempt has been marked failed.
+# Args: issue number, repo slug, self login, failure reason, crash type
+_record_released_launch_failure() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local self_login="$3"
+	local failure_reason="$4"
+	local crash_type="$5"
+
 	# t2394: Invalidate stale cross-runner claims immediately (see helper below).
 	_post_launch_recovery_claim_released "$issue_number" "$repo_slug" "$self_login" "$failure_reason"
 	# t3197: Write a per-issue dispatch cooldown marker so other runners
