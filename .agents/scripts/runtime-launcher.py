@@ -136,8 +136,8 @@ def execute(command, prompt_input=None):
                 shutil.copyfileobj(sys.stdin.buffer, stream)
             stream.seek(0)
             os.dup2(stream.fileno(), 0)
-            os.execvp(command[0], command)
-    os.execvp(command[0], command)
+            os.execvp(command[0], command)  # nosec B606 -- fixed adapter executable, user-authorized argv, no shell.
+    os.execvp(command[0], command)  # nosec B606 -- fixed adapter executable, user-authorized argv, no shell.
 
 
 def native_launch(runtime, args):

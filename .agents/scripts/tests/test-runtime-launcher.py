@@ -39,7 +39,8 @@ class RuntimeLauncherTest(unittest.TestCase):
                 script.chmod(0o755)
 
     def run_launcher(self, *args, input_text=""):
-        return subprocess.run(["/bin/bash", str(SCRIPTS / "runtime-launcher-helper.sh"), *args],
+        return subprocess.run(  # nosec B603 -- fixed local launcher, test-owned argv and environment.
+            ["/bin/bash", str(SCRIPTS / "runtime-launcher-helper.sh"), *args],
                               env=self.env, cwd=self.root, input=input_text, text=True,
                               capture_output=True, timeout=20)
 
@@ -117,7 +118,8 @@ class RuntimeLauncherTest(unittest.TestCase):
 
     def test_registry_coverage(self):
         script = 'source "$1"; printf "%s\\n" "${_RT_IDS[@]}"'
-        result = subprocess.run(["/bin/bash", "-c", script, "bash", str(SCRIPTS / "runtime-registry.sh")],
+        result = subprocess.run(  # nosec B603 -- constant shell program, repository-owned registry.
+            ["/bin/bash", "-c", script, "bash", str(SCRIPTS / "runtime-registry.sh")],
                                 capture_output=True, text=True, check=True)
         self.assertEqual(set(result.stdout.splitlines()), set(LAUNCHER.RUNTIMES))
 
