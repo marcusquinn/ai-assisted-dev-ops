@@ -34,62 +34,65 @@ VALUE_FLAGS = {
 BOOL_FLAGS = {"--include", "-i", "--silent"}
 
 
-def request_shape(args: list[str]) -> tuple[str, str, bool, bool] | None:
-    if not args or args[0] != "api" or os.environ.get("GH_DEBUG"):
-        return None
+def _value_option(option: str, value: str) -> tuple[str, str]:
+    # Streamed input and inherited descriptors must retain native execution.
+    if option == "--input" or any(part in value for part in ("/dev/fd/", "/proc/self/fd/")):
+        raise ValueError("unsupported input")
+    # Caller-supplied authorization is a different identity; caching is opaque.
+    if option in {"-H", "--header"}:
+        if value.split(":", 1)[0].strip().lower() in {"authorization", "x-gh-cache-ttl"}:
+            raise ValueError("unsupported header")
+    aliases = {"-X": "--method", "-F": "--field", "-f": "--field", "--raw-field": "--field"}
+    return aliases.get(option, option), value
+
+
+def _request_options(args: list[str]) -> tuple[str, dict[str, str]]:
     endpoint = ""
-    host = os.environ.get("GH_HOST", "github.com").lower()
-    include = silent = False
-    method, explicit_method, fields = "GET", False, False
-    index = 1
-    while index < len(args):
-        arg = args[index]
-        option, _, value = arg.partition("=")
+    options: dict[str, str] = {}
+    remaining = iter(args)
+    for arg in remaining:
+        option, separator, value = arg.partition("=")
         if option in VALUE_FLAGS:
-            if "=" not in arg:
-                index += 1
-                if index >= len(args):
-                    return None
-                value = args[index]
-            if option == "--hostname":
-                host = value.lower()
-            if option in {"-X", "--method"}:
-                method, explicit_method = value.upper(), True
-            if option in {"-F", "--field", "-f", "--raw-field"}:
-                fields = True
-            # Do not change mutation, streamed-input or inherited descriptor
-            # semantics. Those requests retain native execution plus cooldown.
-            if option == "--input" or "/dev/fd/" in value or "/proc/self/fd/" in value:
-                return None
-            # A caller-supplied Authorization header is a different identity.
-            if option in {"-H", "--header"} and value.split(":", 1)[0].strip().lower() in {
-                "authorization", "x-gh-cache-ttl",
-            }:
-                return None
+            if not separator:
+                value = next(remaining)
+            option, value = _value_option(option, value)
+            options[option] = value
         elif arg in BOOL_FLAGS:
-            include |= arg in {"--include", "-i"}
-            silent |= arg == "--silent"
-        elif arg.startswith("-"):
-            # Conservative: joined short options, cache, pagination, debug,
-            # GraphQL and future CLI options retain their native transport.
-            return None
-        elif endpoint:
-            return None
+            options[arg] = ""
+        elif endpoint or arg.startswith(("-", "//")):
+            # Unknown options and multiple endpoints retain native transport.
+            raise ValueError("unsupported argument")
         else:
-            if arg.startswith("//"):
-                return None
             endpoint = arg.lstrip("/")
-        index += 1
+    return endpoint, options
+
+
+def _request_resource(host: str, endpoint: str, options: dict[str, str]) -> str:
     path = endpoint.split("?", 1)[0]
-    if (host != "github.com" or not path or ":" in path or "#" in endpoint
-            or method != "GET" or (fields and not explicit_method)):
-        return None
-    if path in {"graphql", "rate_limit"}:
-        return None
-    resource = "code_search" if path == "search/code" else (
-        "search" if path.startswith("search/") else "core"
+    unsupported = (
+        host != "github.com", not path, ":" in path, "#" in endpoint,
+        options.get("--method", "GET").upper() != "GET",
+        {"--field", "--method"}.intersection(options) == {"--field"},
+        path in {"graphql", "rate_limit"},
     )
-    return host, resource, include, silent
+    if any(unsupported):
+        raise ValueError("unsupported request")
+    if path == "search/code":
+        return "code_search"
+    return "search" if path.startswith("search/") else "core"
+
+
+def request_shape(args: list[str]) -> tuple[str, str, bool, bool] | None:
+    if args[:1] != ["api"] or os.environ.get("GH_DEBUG"):
+        return None
+    try:
+        endpoint, options = _request_options(args[1:])
+        host = options.get("--hostname", os.environ.get("GH_HOST", "github.com")).lower()
+        resource = _request_resource(host, endpoint, options)
+        include = not {"--include", "-i"}.isdisjoint(options)
+        return host, resource, include, "--silent" in options
+    except (ValueError, StopIteration):
+        return None
 
 
 def included_headers(stream) -> tuple[int, dict[str, str], int]:
@@ -134,6 +137,66 @@ def execute(executable: str, args: list[str], output, environment: dict[str, str
                 child.wait()
 
 
+def _acquire(budget: Budget, resource: str) -> str:
+    # Queue briefly for local admission, never retry HTTP or a mutation.
+    for admission_try in range(21):
+        try:
+            return budget.acquire(resource)
+        except Deferred as pause:
+            if not pause.retryable or admission_try == 20:
+                raise
+            time.sleep(0.1)
+
+
+def _copy_response(output, include: bool, silent: bool, status: int, body_offset: int) -> int:
+    if include:
+        output.seek(0)
+        shutil.copyfileobj(output, sys.stdout.buffer)
+    elif not status:
+        # Unknown framing must not leak injected headers or report success.
+        print("[gh-transport] unrecognized native response framing", file=sys.stderr)
+        return 1
+    elif not silent:
+        output.seek(body_offset)
+        shutil.copyfileobj(output, sys.stdout.buffer)
+    return 0
+
+
+def _response_metadata(status: int, headers: dict[str, str], authenticated: bool) -> dict:
+    # Persist numeric metadata only, never endpoint, query, body or auth.
+    resource = headers.get("x-ratelimit-resource", "")
+    known_resource = resource in {"core", "search", "code_search"}
+    cost = None
+    if known_resource and 200 <= status < 400:
+        cost = 1
+        if status == 304:
+            cost = 0 if authenticated else None
+    result = {
+        "attempted": True, "status": status or None,
+        "resource": resource if known_resource else None, "cost": cost,
+    }
+    for name, header in (("remaining", "x-ratelimit-remaining"),
+                         ("reset", "x-ratelimit-reset"), ("retry_after", "retry-after")):
+        value = headers.get(header, "")
+        result[name] = int(value) if value.isdecimal() else None
+    return result
+
+
+def _exit_status(rc: int) -> int:
+    return rc if rc >= 0 else 128 - rc
+
+
+def _finish_budget(budget, reservation: str, resource: str, headers: dict[str, str], started: float) -> None:
+    if budget is None:
+        return
+    if reservation:
+        try:
+            budget.finish(reservation, resource, headers, started=started)
+        except (OSError, ValueError, sqlite3.Error):
+            print("[gh-transport] quota observation remains uncertain", file=sys.stderr)
+    budget.close()
+
+
 def run(metadata: Path, executable: str, args: list[str]) -> int:
     shape = request_shape(args)
     if shape is None or sys.stdout.isatty():
@@ -160,51 +223,17 @@ def run(metadata: Path, executable: str, args: list[str]) -> int:
             # trust an identity which could change before native execution.
             return 125
         budget = Budget(directory, scope_key(host), credential)
-        # Queue briefly for another local request, not for a GitHub reset.
-        # These retries never execute HTTP or retry a mutation.
-        for admission_try in range(21):
-            try:
-                reservation = budget.acquire(resource)
-                break
-            except Deferred as pause:
-                if not pause.retryable or admission_try == 20:
-                    raise
-                time.sleep(0.1)
+        reservation = _acquire(budget, resource)
         with tempfile.TemporaryFile(dir=temp_dir) as output:
             native_args = args if include else [*args, "--include"]
             metadata.write_text('{"attempted":true}', encoding="utf-8")
             rc = execute(executable, native_args, output, environment)
             status, headers, body_offset = included_headers(output)
-            if include:
-                output.seek(0)
-                shutil.copyfileobj(output, sys.stdout.buffer)
-            elif not status:
-                # A changed native framing contract must not turn injected
-                # headers into application data or silently report success.
-                print("[gh-transport] unrecognized native response framing", file=sys.stderr)
-                rc = rc or 1
-            elif not silent:
-                output.seek(body_offset)
-                shutil.copyfileobj(output, sys.stdout.buffer)
-            # Persist numeric metadata only, never endpoint, query, body or auth.
-            actual_resource = headers.get("x-ratelimit-resource", "")
-            known_resource = actual_resource in {"core", "search", "code_search"}
-            result = {
-                "attempted": True,
-                "status": status or None,
-                "resource": actual_resource if known_resource else None,
-                "remaining": int(headers["x-ratelimit-remaining"])
-                if headers.get("x-ratelimit-remaining", "").isdecimal() else None,
-                "reset": int(headers["x-ratelimit-reset"])
-                if headers.get("x-ratelimit-reset", "").isdecimal() else None,
-                "retry_after": int(headers["retry-after"])
-                if headers.get("retry-after", "").isdecimal() else None,
-                "cost": (0 if status == 304 else 1)
-                if known_resource and 200 <= status < 400
-                and (status != 304 or authenticated) else None,
-            }
+            framing_rc = _copy_response(output, include, silent, status, body_offset)
+            rc = rc or framing_rc
+            result = _response_metadata(status, headers, authenticated)
             metadata.write_text(json.dumps(result), encoding="utf-8")
-            return rc if rc >= 0 else 128 - rc
+            return _exit_status(rc)
     except Deferred as exc:
         print(f"[gh-transport] deferred: {exc}", file=sys.stderr)
         return 75
@@ -212,15 +241,9 @@ def run(metadata: Path, executable: str, args: list[str]) -> int:
         # Metadata failure after execution is not permission to retry a
         # successful mutation. Keep the observed native status when available.
         print("[gh-transport] safe REST transport state unavailable", file=sys.stderr)
-        return (rc if rc >= 0 else 128 - rc) if rc is not None else 75
+        return _exit_status(rc) if rc is not None else 75
     finally:
-        if budget is not None:
-            if reservation:
-                try:
-                    budget.finish(reservation, resource, headers, started=started)
-                except (OSError, ValueError, sqlite3.Error):
-                    print("[gh-transport] quota observation remains uncertain", file=sys.stderr)
-            budget.close()
+        _finish_budget(budget, reservation, resource, headers, started)
 
 
 if __name__ == "__main__":
