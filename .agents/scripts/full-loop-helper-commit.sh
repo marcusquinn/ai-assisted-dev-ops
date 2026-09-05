@@ -870,10 +870,12 @@ _validate_commit_and_pr_inputs() {
 _stage_product_changes() {
 	local path=""
 	local -a runtime_paths=(".agents/loop-state" ".agents/.full-loop-cleanup-deferred")
-	local -a protected_paths=() stage_paths=(":(top)**")
+	local -a protected_paths=() stage_paths=(":/")
 	for path in "${runtime_paths[@]}"; do
 		protected_paths+=(":(top,literal)${path}")
-		stage_paths+=(":(top,exclude,literal)${path}")
+		# A singleton glob matches the exact dot while preventing Git from
+		# rejecting an ignored literal exclusion as an explicitly added path.
+		stage_paths+=(":(top,exclude)[.]${path#.}" ":(top,exclude)[.]${path#.}/**")
 	done
 	if ! git diff --cached --quiet -- "${protected_paths[@]}"; then
 		print_error "Runtime state is staged, or its index check failed; unstage runtime paths before retrying."
