@@ -3,6 +3,11 @@
 
 # Platform Support
 
+This page describes aidevops runtime compatibility. For opinionated desktop,
+server, development, and security OS recommendations, see
+[OS selection](os-selection.md). Those preferences do not add supported platforms
+here or imply that every derivative, architecture, or provider image was tested.
+
 ## Supported Platforms
 
 | Platform | Status | Scheduler | Notes |

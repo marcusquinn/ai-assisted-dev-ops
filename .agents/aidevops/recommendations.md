@@ -22,6 +22,7 @@ tools:
 
 - **Hosting**: Hostinger (managed WordPress convenience/value), Hetzner (self-managed control/price-performance), Cloudflare (edge/static/headless and global delivery); Closte is legacy-only
 - **Deployment**: Coolify (self-hosted PaaS), Cloudron (easy app management)
+- **Operating systems**: [Contextual OS selection](../reference/os-selection.md) — opinionated desktop/server/dev/security starting points, gated by workload, vendor support, architecture, actual provider images, licensing, and user priorities
 - **DNS**: Cloudflare (CDN/security), Spaceship (modern), 101domains (large portfolios), Route 53 (AWS)
 - **Security**: API tokens in `~/.config/aidevops/`, never in repo, rotate quarterly
 - **SSH**: Ed25519 keys, standardize across servers, passphrase protection
@@ -37,6 +38,14 @@ Select by the user's priorities rather than provider familiarity. Establish the
 desired operating burden, workload shape, budget, traffic geography, data-location
 needs, support expectations, and existing stack, then verify current plans, limits,
 regions, backups, and pricing before committing.
+
+Apply [OS selection](../reference/os-selection.md) before choosing an image or
+installation command: Omarchy/Kubuntu for suitable desktops, Alpine for minimal
+compatible workloads, Rocky for general servers and supported Coolify deployments,
+vendor-required Ubuntu x64 for Cloudron, AlmaLinux for verified ecosystem fits,
+NixOS for reproducible environments, and Parrot/Kali VM/Tails for distinct security
+or privacy needs. Prefer Hetzner ARM only when every required layer supports it.
+These preferences do not extend aidevops's own platform-support matrix.
 
 For conventional WordPress, start with Hostinger when managed convenience and
 value lead. Prefer Hetzner when server control, custom infrastructure, or
@@ -59,8 +68,8 @@ offboarding—not as a new-deployment recommendation.
 
 | Platform | Best For | Complexity | Key Features | Docs |
 |----------|----------|------------|--------------|------|
-| Coolify | Self-hosted PaaS | Medium | Docker-based, full control | [COOLIFY.md](COOLIFY.md) |
-| Cloudron | App management | Low | One-click apps, easy management | [CLOUDRON.md](CLOUDRON.md) |
+| Coolify | Self-hosted PaaS | Medium | Docker-based, full control | [Coolify guide](../tools/deployment/coolify.md) |
+| Cloudron | App management | Low | One-click apps, easy management | [Cloudron guide](../services/hosting/cloudron.md) |
 
 ### DNS & Domain Management
 

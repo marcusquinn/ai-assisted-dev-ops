@@ -21,12 +21,13 @@ tools:
 
 - **Recommendation**: Prefer when server control, custom infrastructure, workload density, or price-performance justify self-managing hardening, updates, backups, and monitoring
 - **WordPress selection**: Hostinger is the lower-ops starting point; use `aidevops/recommendations.md` to compare priorities before provisioning
+- **OS/architecture**: [OS selection](../../reference/os-selection.md) — prefer CAX ARM for compatible price-sensitive workloads; verify location/capacity and the exact image architecture. Manual installability is not a ready-made image. Cloudron requires x64
 - **Type**: Cloud VPS, dedicated servers, storage
 - **API**: REST at `https://api.hetzner.cloud/v1`
 - **Auth**: Bearer token per project (stored in `~/.config/aidevops/credentials.sh`)
 - **Token format**: `HCLOUD_TOKEN_{PROJECT}` (e.g. `HCLOUD_TOKEN_MYPROJECT`)
 - **Locations**: Germany (fsn1, nbg1), Finland (hel1), USA (ash, hil)
-- **Server types**: CX (shared), CPX (dedicated vCPU), CCX (dedicated CPU)
+- **Server types**: CX/CPX (shared x86), CAX (shared ARM), CCX (dedicated vCPU); verify current catalogue before provisioning
 - **Docs**: https://docs.hetzner.cloud/
 
 **No MCP required** - uses curl directly. Zero context cost until invoked.
