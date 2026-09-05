@@ -92,7 +92,7 @@ test("completed child responses join queued routing decisions to parent feedback
     assert.equal(summary.tokensTotal, 17);
     assert.equal(summary.models[0], "openai/gpt-5.6-luna");
     assert.deepEqual(summary.aidevopsVersions, ["3.32.240"]);
-    assert.deepEqual(summary.pricingVersions, ["2026-08-21.1"]);
+    assert.deepEqual(summary.pricingVersions, ["2026-09-05.1"]);
     assert.deepEqual(summary.populationsUsed, ["interactive_child"]);
 
     observability.recordSubagentOutcome({
@@ -118,7 +118,7 @@ test("completed child responses join queued routing decisions to parent feedback
 SELECT routing_population || '|' || aidevops_version || '|' || pricing_version
 FROM llm_requests WHERE message_id = 'message-1';
     `);
-    assert.equal(persisted, "interactive_child|3.32.240|2026-08-21.1");
+    assert.equal(persisted, "interactive_child|3.32.240|2026-09-05.1");
 
     const outcomePayload = JSON.parse(sqlite.sqliteExecSync(`
 SELECT payload_json FROM runtime_events WHERE event_type = 'subagent.host.outcome' LIMIT 1;

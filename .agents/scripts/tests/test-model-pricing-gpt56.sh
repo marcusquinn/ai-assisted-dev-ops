@@ -20,7 +20,8 @@ assert_equals() {
 	return 0
 }
 
-assert_equals "5.0|30.0|0.50|6.25" "$(get_model_pricing openai/gpt-5.6-sol)" "Sol JSON pricing"
+assert_equals "10.0|50.0|1.0|12.50" "$(get_model_pricing openai/gpt-6-astra)" "Astra JSON pricing"
+assert_equals "4.0|20.0|0.40|5.0" "$(get_model_pricing openai/gpt-5.6-sol)" "Sol JSON pricing"
 assert_equals "2.0|12.0|0.20|2.50" "$(get_model_pricing openai/gpt-5.6-terra)" "Terra JSON pricing"
 assert_equals "0.20|1.20|0.02|0.25" "$(get_model_pricing openai/gpt-5.6-luna)" "Luna JSON pricing"
 assert_equals "3.0|15.0|0.30|3.75" "$(get_model_pricing openai/gpt-5.6-sol-pro)" "Sol Pro uses unknown-model default"
@@ -28,7 +29,8 @@ assert_equals "3.0|15.0|0.30|3.75" "$(get_model_pricing openai/gpt-5.6-sol-pro)"
 _MODEL_PRICING_JSON_LOADED=1
 _MODEL_PRICING_JSON=""
 
-assert_equals "5.0|30.0|0.50|6.25" "$(get_model_pricing openai/gpt-5.6-sol)" "Sol hardcoded fallback pricing"
+assert_equals "10.0|50.0|1.0|12.50" "$(get_model_pricing openai/gpt-6-astra)" "Astra hardcoded fallback pricing"
+assert_equals "4.0|20.0|0.40|5.0" "$(get_model_pricing openai/gpt-5.6-sol)" "Sol hardcoded fallback pricing"
 assert_equals "2.0|12.0|0.20|2.50" "$(get_model_pricing openai/gpt-5.6-terra)" "Terra hardcoded fallback pricing"
 assert_equals "0.20|1.20|0.02|0.25" "$(get_model_pricing openai/gpt-5.6-luna)" "Luna hardcoded fallback pricing"
 assert_equals "3.0|15.0|0.30|3.75" "$(get_model_pricing openai/gpt-5.6-sol-pro)" "Sol Pro hardcoded unknown-model default"

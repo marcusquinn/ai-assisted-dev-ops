@@ -290,7 +290,7 @@ routing_capture="${fixture_dir}/adaptive-routing.txt"
 	variant_override=$(resolve_headless_variant "$role" "$tier_override" "$selected_model")
 	_cmd_run_attempt_loop
 )
-[[ "$(<"$routing_capture")" == "simple|0|max|openai/gpt-5.6-luna|max" ]]
+[[ "$(<"$routing_capture")" == "simple|0|medium|openai/gpt-5.6-luna|medium" ]]
 
 (
 	attempt_exit=81

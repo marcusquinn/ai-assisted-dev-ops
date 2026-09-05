@@ -32,12 +32,26 @@ The selected agent changes the system prompt and domain knowledge loaded for the
 - A thinking-tier parent does not require thinking-tier children. When reliable, offload bounded, independent, output-heavy discovery, analysis, and tool work to simple or standard children; keep small low-output calls direct when delegation overhead outweighs context savings.
 - Batch independent children in one parallel call. Require final-only summaries with the decision, evidence (paths/lines or commands), uncertainty, and next action; raw logs stay in child context and the parent owns synthesis.
 - Keep the parent progressing on non-overlapping work. Do not finalize with children pending; use their returned evidence or complete the work locally and disregard late results.
-- Subagents must not dispatch further subagents. OpenCode maps the requested effort to the provider and clamps it so child reasoning never exceeds the parent session.
+- Subagents must not dispatch further subagents. OpenCode clamps configured child reasoning to the parent's known effort only for the exact same model. Different models retain their tier's reasoning: effort names are not comparable compute budgets across models. A medium parent does not globally cap children at medium.
 - In interactive OpenCode sessions, an eligible child can end with the exact marker `BLOCKED: capability limit - <evidence>`. The plugin re-prompts that same child session at the next configured tier so prior evidence is retained. Generic blockers, headless dispatch, terminal tiers, and children that attempted side effects never take this automatic path.
 - For full-loop work, persist stable unit IDs, dependencies, explicit file/question ownership, effort tier, and a reuse key before dispatch. Parallel-ready units must have disjoint file ownership; overlap is serialized even when capacity is available.
 - Effective concurrency is the minimum of the plan cap, mode cap, and available global slots. Interactive batches remain capped at two; headless uses its configured per-task cap.
 - Persist completed-unit evidence and reuse it after retries or runtime interruption. The primary repeats delegated exploration only when its evidence is absent, stale, or contradictory.
 - Consolidate adversarial review into bounded correctness/concurrency, security/trust, compatibility/quality, and test-adequacy units, followed by one synthesis and one repair pass.
+
+### Improve efficiency during ordinary work
+
+Optimise verified completion per allowance window and human attention, not minimum
+tokens per call. Choose pragmatic, reversible routes using the task, current
+pricing and available outcomes; a separate benchmark project is not a prerequisite.
+Keep workload tier, concrete model and reasoning effort distinct; current defaults
+and estimate limitations live in `tools/context/model-routing.md`.
+
+- Delegate when a child can discard substantial irrelevant material or investigate an independent question. Use tools directly for deterministic answers or small results already needed by the parent; do not buy a second opinion merely for reassurance.
+- Supply the question, narrow source scope, acceptance evidence and stop condition rather than the whole parent transcript. Request a few hundred words when sufficient; summary length and advisory output limits do not cap hidden reasoning or total work.
+- Count child context, tools, reasoning, parent integration and repair in the outcome. Validate the evidence without repeating the investigation. Missing context calls for better context; repeated capability failure calls for a stronger route, not a tour through every effort level.
+- Reuse existing routing feedback, checks and concrete repair evidence. Distinguish host completion from verified acceptance. Repeated repair justifies raising that task class's route; repeated easy verified success supports a lower-effort choice. Record reusable lessons through the existing self-improvement workflow, not a new dashboard or per-task ceremony.
+- Preserve permission, trust, locality, billing and side-effect boundaries. Safe task-level choices remain autonomous; persistent shared defaults use the normal reviewed change/release path. Interrupt the user only for authority or a consequential trade-off, and keep delivery moving.
 
 ## Primary agents
 

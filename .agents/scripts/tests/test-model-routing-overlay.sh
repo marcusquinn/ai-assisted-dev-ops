@@ -27,7 +27,7 @@ source "${SCRIPTS_DIR}/shared-constants.sh"
 
 [[ "$(model_tier_candidates standard)" == "custom/standard" ]]
 [[ "$(model_tier_candidates simple | sed -n '1p')" == "openai/gpt-5.6-luna" ]]
-[[ "$(model_tier_variant simple openai/gpt-5.6-luna)" == "max" ]]
+[[ "$(model_tier_variant simple openai/gpt-5.6-luna)" == "medium" ]]
 [[ "$(model_tier_next simple)" == "standard" ]]
 
 cat >"$custom_table" <<'JSON'
