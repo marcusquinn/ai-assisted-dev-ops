@@ -172,8 +172,11 @@ set_successful_dispatch_helpers_fixture() {
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
-claim) exit 0 ;;
-*) exit 1 ;;
+	claim)
+		printf 'CLAIMED comment_id=9001 lease_token=fixture-lease-token device=fixture-device\n'
+		exit 0
+		;;
+	*) exit 1 ;;
 esac
 FIXTURE
 	cat >"${TEST_ROOT}/dispatch-ledger-helper.sh" <<'FIXTURE'
@@ -189,22 +192,42 @@ FIXTURE
 }
 
 set_successful_dispatch_function_stubs() {
+	FIXTURE_ISSUE_LOCKED=false
 	gh_issue_view() {
-		printf '{"number":1,"state":"OPEN","title":"fixture dispatch","labels":[{"name":"tier:simple"}],"assignees":[],"body":"## Worker Guidance","author":{"login":"testuser"}}\n'
+		local issue_number="$1"
+		printf '{"number":%s,"state":"OPEN","title":"Issue #%s: fixture dispatch","labels":[{"name":"tier:simple"}],"assignees":[],"body":"## Worker Guidance","author":{"login":"testuser"}}\n' \
+			"${issue_number}" "${issue_number}"
 		return 0
 	}
 	export -f gh_issue_view
 	gh() {
+		if [[ "${1:-}" == "issue" && "${2:-}" == "view" ]]; then
+			printf 'OPEN\n'
+			return 0
+		fi
+		if [[ "${1:-}" == "issue" && "${2:-}" == "lock" ]]; then
+			FIXTURE_ISSUE_LOCKED=true
+			return 0
+		fi
 		if [[ "${1:-}" == "api" && "${2:-}" == *"/events?per_page=100" ]]; then
 			printf '[[]]\n'
 			return 0
 		fi
 		if [[ "${1:-}" == "api" && "${2:-}" == repos/*/issues/* ]]; then
 			if [[ " $* " == *" --jq "* ]]; then
-				printf 'OWNER|User|testuser\n'
+				if [[ " $* " == *".locked"* ]]; then
+					printf '%s\n' "${FIXTURE_ISSUE_LOCKED}"
+					return 0
+				fi
+				printf 'OWNER|User|testuser|false\n'
 				return 0
 			fi
-			printf '{}\n'
+			if [[ "${2##*/}" =~ ^[0-9]+$ ]]; then
+				printf '{"number":%s,"state":"open","locked":%s,"author_association":"OWNER","user":{"type":"User","login":"testuser"},"labels":[{"name":"tier:simple"}]}\n' \
+					"${2##*/}" "${FIXTURE_ISSUE_LOCKED}"
+			else
+				printf '{}\n'
+			fi
 			return 0
 		fi
 		return 0
@@ -219,6 +242,10 @@ set_successful_dispatch_function_stubs() {
 		_DLW_WORKTREE_BRANCH="feature/test-gh${issue_number}"
 		_DLW_WORKTREE_REUSED=0
 		mkdir -p "$_DLW_WORKTREE_PATH"
+		return 0
+	}
+	_dispatch_registered_worktree_count() {
+		printf '0\n'
 		return 0
 	}
 	return 0
@@ -682,7 +709,7 @@ test_dispatch_with_dedup_fails_closed_when_issue_metadata_missing() {
 test_dispatch_with_dedup_proceeds_when_no_duplicate() {
 	local original_script_dir="$SCRIPT_DIR"
 	local original_function_definitions
-	original_function_definitions=$(capture_function_definitions gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree)
+	original_function_definitions=$(capture_function_definitions gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree _dispatch_registered_worktree_count)
 	SCRIPT_DIR="$TEST_ROOT"
 
 	set_ps_fixture ""
@@ -709,7 +736,7 @@ STUB
 	# Restore
 	HEADLESS_RUNTIME_HELPER="$original_helper"
 	SCRIPT_DIR="$original_script_dir"
-	restore_function_definitions "$original_function_definitions" gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree
+	restore_function_definitions "$original_function_definitions" gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree _dispatch_registered_worktree_count
 
 	if [[ "$dispatch_rc" -eq 0 ]]; then
 		print_result "dispatch_with_dedup proceeds when no duplicate detected (GH#12436)" 0
@@ -725,7 +752,7 @@ test_dispatch_with_dedup_detaches_worker_stdio() {
 	local original_script_dir="$SCRIPT_DIR"
 	local original_helper="$HEADLESS_RUNTIME_HELPER"
 	local original_function_definitions
-	original_function_definitions=$(capture_function_definitions gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree)
+	original_function_definitions=$(capture_function_definitions gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree _dispatch_registered_worktree_count)
 	local stdin_capture="${TEST_ROOT}/worker-stdin.txt"
 	local issue_log="" fallback_log=""
 	issue_log=$(aidevops_pulse_worker_log_path "marcusquinn/aidevops" "8890")
@@ -764,7 +791,7 @@ EOF
 
 	HEADLESS_RUNTIME_HELPER="$original_helper"
 	SCRIPT_DIR="$original_script_dir"
-	restore_function_definitions "$original_function_definitions" gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree
+	restore_function_definitions "$original_function_definitions" gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree _dispatch_registered_worktree_count
 	rm -f "$issue_log" "$fallback_log"
 
 	if [[ "$dispatch_rc" -eq 0 && -z "$stdin_contents" && "$issue_log_contents" == *"stub worker output"* ]]; then
@@ -781,7 +808,7 @@ test_dispatch_with_dedup_passes_explicit_model_override() {
 	local original_script_dir="$SCRIPT_DIR"
 	local original_helper="$HEADLESS_RUNTIME_HELPER"
 	local original_function_definitions
-	original_function_definitions=$(capture_function_definitions gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree)
+	original_function_definitions=$(capture_function_definitions gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree _dispatch_registered_worktree_count)
 	local args_log="${TEST_ROOT}/worker-args.log"
 	SCRIPT_DIR="$TEST_ROOT"
 
@@ -812,7 +839,7 @@ EOF
 
 	HEADLESS_RUNTIME_HELPER="$original_helper"
 	SCRIPT_DIR="$original_script_dir"
-	restore_function_definitions "$original_function_definitions" gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree
+	restore_function_definitions "$original_function_definitions" gh gh_issue_view is_blocked_by_unresolved _check_nmr_approval_gate set_issue_status _dlw_precreate_worktree _dispatch_registered_worktree_count
 
 	if [[ "$dispatch_rc" -eq 0 && "$args_contents" == *"--initial-model anthropic/claude-haiku-4-5"* ]]; then
 		print_result "dispatch_with_dedup forwards explicit model override to worker launch" 0
