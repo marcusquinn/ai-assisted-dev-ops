@@ -163,7 +163,7 @@ _select_cmd_run_model() {
 	tier_override=$(_normalize_headless_tier "${tier_override:-standard}")
 	print_info "[lifecycle] pre_model_select session=$session_key role=$role tier=${tier_override:-auto} pid=$$"
 	local choose_exit=0
-	selected_model=$(choose_model "$role" "${model_override:-$initial_model}" "$tier_override") || {
+	selected_model=$(choose_model "$role" "$model_override" "$tier_override" "adaptive" "$initial_model") || {
 		choose_exit=$?
 		_hrff_write_external_outcome "$session_key" "model_selection_failed" "0" "$_HRFF_RETRY_CLASS_INFRASTRUCTURE" || true
 		_cmd_run_finish "$session_key" "$_HRW_STATUS_FAIL"
