@@ -62,6 +62,19 @@ _hrw_ownership_log() {
 	return 0
 }
 
+_hrw_verify_checkpoint_target() {
+	local ownership_helper="$1"
+	shift
+	local -a checkpoint_args=("$@")
+	# Keep legacy calls unchanged; transferred checkpoints carry the original
+	# author separately from the replacement issue owner.
+	if [[ -n "${AIDEVOPS_PR_CHECKPOINT_AUTHOR:-}" ]]; then
+		checkpoint_args+=("$AIDEVOPS_PR_CHECKPOINT_AUTHOR")
+	fi
+	"$ownership_helper" verify-pr-checkpoint-target "${checkpoint_args[@]}"
+	return $?
+}
+
 #######################################
 # Verify that a worker still owns its exact dispatch target. Issue workers use
 # their live assignment, direct PR workers use the exact open head, and draft
@@ -114,15 +127,9 @@ _hrw_verify_dispatch_ownership() {
 				_hrw_ownership_log error "incomplete PR checkpoint assignee contract issue=${issue_number} expected=${expected_assignee:-missing} worker=${WORKER_GITHUB_LOGIN:-missing}"
 				return 1
 			fi
-			# Preserve legacy same-runner dispatches while binding transferred
-			# checkpoints to their original PR author, not the replacement owner.
-			local -a checkpoint_args=("$repair_pr_number" "$repo_slug" "$expected_head_sha"
-				"$expected_head_ref" "$repair_linked_issue" "$expected_assignee")
-			if [[ -n "${AIDEVOPS_PR_CHECKPOINT_AUTHOR:-}" ]]; then
-				checkpoint_args+=("$AIDEVOPS_PR_CHECKPOINT_AUTHOR")
-			fi
-			target_output=$("$ownership_helper" verify-pr-checkpoint-target \
-				"${checkpoint_args[@]}" 2>&1) || target_rc=$?
+			target_output=$(_hrw_verify_checkpoint_target "$ownership_helper" \
+				"$repair_pr_number" "$repo_slug" "$expected_head_sha" "$expected_head_ref" \
+				"$repair_linked_issue" "$expected_assignee" 2>&1) || target_rc=$?
 			if [[ "$target_rc" -ne 0 ]]; then
 				_hrw_ownership_log warning "PR checkpoint target unavailable pr=${repair_pr_number} issue=${repair_linked_issue} repo=${repo_slug} rc=${target_rc}: ${target_output}"
 				return 1
