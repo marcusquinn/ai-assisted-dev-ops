@@ -181,35 +181,48 @@ _pc_branch_archive_pr_state_clear() {
 }
 
 #######################################
-# Return terminal PR state for a branch head, if GitHub verifies one.
+# Return terminal PR state and identity for a branch head, if GitHub verifies one.
 #
 # Args:
 #   $1 - repo slug (owner/repo)
 #   $2 - branch name
-# Outputs: terminal PR state (CLOSED|MERGED)
+# Outputs: tab-separated terminal PR state (CLOSED|MERGED) and PR number
 # Returns: 0 when terminal PR found, 1 otherwise
 #######################################
-_pc_terminal_pr_state_for_branch() {
+_pc_terminal_pr_for_branch() {
 	local repo_slug="$1"
 	local branch_name="$2"
 	local pr_state=""
+	local pr_number=""
+	local pr_record=""
+	local open_pr=""
 
 	[[ -n "$repo_slug" && -n "$branch_name" ]] || return 1
-	pr_state=$(gh_pr_list --repo "$repo_slug" --head "$branch_name" --state all --limit 1 --json state --jq '.[0].state // empty' 2>/dev/null) || return 1
+	# A branch can have multiple historical PRs: no terminal result may hide a
+	# still-open handoff. Query that veto independently of terminal pagination.
+	open_pr=$(gh_pr_list --repo "$repo_slug" --head "$branch_name" --state open --limit 1 \
+		--json number --jq '.[0].number // empty' 2>/dev/null) || return 1
+	[[ -z "$open_pr" ]] || return 1
+	pr_record=$(gh_pr_list --repo "$repo_slug" --head "$branch_name" --state all --limit 1 --json state,number \
+		--jq '.[0] | select(. != null) | [.state, .number] | @tsv' 2>/dev/null) || return 1
+	IFS=$'\t' read -r pr_state pr_number <<<"$pr_record"
 	case "$pr_state" in
 	CLOSED | MERGED)
-		printf '%s\n' "$pr_state"
+		[[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || return 1
+		printf '%s\t%s\n' "$pr_state" "$pr_number"
 		return 0
 		;;
 	esac
 	# A directly associated OPEN PR outranks any numeric token embedded in the
 	# branch name. Only fall back when the local-only branch has no head PR.
-	[[ -z "$pr_state" ]] || return 1
+	[[ -z "$pr_record" ]] || return 1
 
+	pr_number=$(_pc_pr_from_branch "$branch_name" 2>/dev/null) || return 1
+	[[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || return 1
 	pr_state=$(_pc_pr_state_for_branch_reference "$repo_slug" "$branch_name" 2>/dev/null) || return 1
 	case "$pr_state" in
 	CLOSED | MERGED)
-		printf '%s\n' "$pr_state"
+		printf '%s\t%s\n' "$pr_state" "$pr_number"
 		return 0
 		;;
 	esac
@@ -430,6 +443,7 @@ _pc_recent_worker_metric_exists() {
 #   $2 - issue or PR number
 #   $3 - repository slug
 #   $4 - target type: issue or pr
+#   $5 - optional branch issue whose retention policy must also pass for a PR
 # Outputs: a short skip reason when blocked
 # Returns: 0 when archival may proceed, 1 otherwise
 #######################################
@@ -438,6 +452,7 @@ _pc_compact_archive_policy_clear() {
 	local target_number="$2"
 	local repo_slug="$3"
 	local target_type="$4"
+	local branch_issue="${5:-}"
 	local labels=""
 	local label=""
 	local normalized_label=""
@@ -486,6 +501,9 @@ _pc_compact_archive_policy_clear() {
 		return 1
 	fi
 
+	if [[ "$target_type" == "pr" && "$branch_issue" =~ ^[1-9][0-9]*$ ]]; then
+		_pc_compact_archive_policy_clear "$wt_path" "$branch_issue" "$repo_slug" "issue" || return 1
+	fi
 	return 0
 }
 

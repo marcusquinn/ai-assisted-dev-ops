@@ -50,6 +50,23 @@ metrics, security or forensics markers/labels, repeated zero-session failures,
 unclear repository/task attribution, remote policy lookup failures, and archive
 creation or verification failures.
 
+Terminal branch PR cleanup carries the PR number from the verified lookup;
+timestamp-only branch names do not need an embedded issue number. Any open PR
+for the same head vetoes terminal cleanup. PR retention labels and any parsed
+branch issue's retention labels must both permit archival.
+
+## Abandoned central test fixtures
+
+The API-free cleanup pass also recognises legacy `tmp.<random>-feature-auto-*`
+fixtures in the configured central worktree base, independently of `repos.json`.
+It requires the exact bounded fixture file shape, a missing OS-temporary
+canonical repo, a minimum 30-minute age, and clear ownership/process checks.
+Symlinks, extra files, forensics markers, live roots, and uncertain inspection
+preserve the directory. Eligible fixtures go to recoverable trash only, never a
+permanent-delete fallback. The `central-fixtures` log row reports eligible count,
+candidate bytes, moved count, and skipped count. Test producers must set their
+own `AIDEVOPS_WORKTREE_BASE_DIR` and remove it in teardown.
+
 ## Manual Cleanup (interactive sessions)
 
 ```bash

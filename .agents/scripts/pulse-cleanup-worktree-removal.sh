@@ -210,12 +210,14 @@ _pc_archive_and_remove_worktree_preserving_branch() {
 	local target_type="${8:-$_PC_ARCHIVE_TARGET_ISSUE}"
 	local archive_dir=""
 	local policy_reason=""
+	local branch_issue=""
 	local archived_context=""
 	local removal_reason="archived-${archive_reason}"
 	[[ -n "$rp_age" && -n "$wt_path_age" ]] || return 1
 
+	branch_issue=$(_pc_issue_from_branch "$wt_branch_age" 2>/dev/null || true)
 	if ! policy_reason=$(_pc_compact_archive_policy_clear "$wt_path_age" "$target_number" \
-		"$repo_slug_age" "$target_type"); then
+		"$repo_slug_age" "$target_type" "$branch_issue"); then
 		[[ -n "$policy_reason" ]] || policy_reason="archive-policy-unverified"
 		echo "[pulse-wrapper] Orphan cleanup: skipping ${wt_branch_age:-detached} — ${policy_reason}" >>"$LOGFILE"
 		log_worktree_removal_event "$_WTAR_SKIPPED" "$_WTAR_PC_CALLER" "$wt_path_age" \
@@ -484,8 +486,7 @@ _pc_handle_terminal_worktree_archive() {
 	local audit_context
 	local terminal_pr_state=""
 	local terminal_pr_number=""
-	local archive_target_number=""
-	local archive_target_type="$_PC_ARCHIVE_TARGET_ISSUE"
+	local terminal_pr_record=""
 	local terminal_recovery_path="branch-preserved-terminal-pr"
 	local guard_ok
 	guard_ok=$(printf 'cle%s' 'ar')
@@ -499,21 +500,15 @@ _pc_handle_terminal_worktree_archive() {
 		return $?
 	fi
 
-	if terminal_pr_state=$(_pc_terminal_pr_state_for_branch "$repo_slug_age" "$wt_branch_age"); then
-		terminal_pr_number=$(_pc_pr_from_branch "$wt_branch_age" 2>/dev/null || true)
-		archive_target_number="$orphan_issue_num"
-		archive_target_type="$_PC_ARCHIVE_TARGET_ISSUE"
-		if [[ ! "$archive_target_number" =~ ^[1-9][0-9]*$ ]]; then
-			archive_target_number="$terminal_pr_number"
-			archive_target_type="pr"
-		fi
+	if terminal_pr_record=$(_pc_terminal_pr_for_branch "$repo_slug_age" "$wt_branch_age"); then
+		IFS=$'\t' read -r terminal_pr_state terminal_pr_number <<<"$terminal_pr_record"
 		if [[ -n "$terminal_pr_number" ]]; then
 			terminal_recovery_path="branch-preserved-terminal-pr-${terminal_pr_number}"
 		fi
 		audit_context=$(_pc_worktree_audit_context "$wt_branch_age" "$orphan_issue_num" "$commits_ahead" "$dirty_count" "$wt_age_secs" "pr-${terminal_pr_state}" "$guard_ok" "$guard_ok" "$guard_ok" "$terminal_recovery_path")
 		echo "[pulse-wrapper] Orphan cleanup ($repo_name_age): archiving ${wt_branch_age:-detached} — branch PR ${terminal_pr_number:+#${terminal_pr_number} }is ${terminal_pr_state}" >>"$LOGFILE"
 		_pc_archive_and_remove_worktree_preserving_branch "$rp_age" "$wt_path_age" "$wt_branch_age" \
-			"$audit_context" "$archive_target_number" "$repo_slug_age" "$_PC_ARCHIVE_REASON_POST_PR" "$archive_target_type"
+			"$audit_context" "$terminal_pr_number" "$repo_slug_age" "$_PC_ARCHIVE_REASON_POST_PR" "pr"
 		return $?
 	fi
 	return 1
@@ -1220,11 +1215,7 @@ _pc_relocate_registered_worktrees() {
 #
 # See also: GH#18346 (silent-skip logging fix preserved in helpers above)
 #######################################
-cleanup_worktrees() {
-	CLEANUP_WORKTREES_SKIPPED=0
-	CLEANUP_WORKTREES_REMOVED_COUNT=0
-	CLEANUP_WORKTREES_ARCHIVED_COUNT=0
-	CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT=0
+_pc_cleanup_fixture_passes() {
 	local total_removed=0
 	# Fast, API-free pass for detached regression-helper fixtures. Run before
 	# the GraphQL gate and merged-PR scan so a stale long-running cleanup cannot
@@ -1235,6 +1226,24 @@ cleanup_worktrees() {
 		[[ "$temp_removed" =~ ^[0-9]+$ ]] || temp_removed=0
 		total_removed=$((total_removed + temp_removed))
 	fi
+	if declare -F _pc_cleanup_central_fixture_orphans >/dev/null 2>&1; then
+		local fixtures_moved=0
+		fixtures_moved=$(_pc_cleanup_central_fixture_orphans "$(date +%s)") || fixtures_moved=0
+		[[ "$fixtures_moved" =~ ^[0-9]+$ ]] || fixtures_moved=0
+		total_removed=$((total_removed + fixtures_moved))
+	fi
+	printf '%s\n' "$total_removed"
+	return 0
+}
+
+cleanup_worktrees() {
+	CLEANUP_WORKTREES_SKIPPED=0
+	CLEANUP_WORKTREES_REMOVED_COUNT=0
+	CLEANUP_WORKTREES_ARCHIVED_COUNT=0
+	CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT=0
+	local total_removed=0
+	total_removed=$(_pc_cleanup_fixture_passes)
+	CLEANUP_WORKTREES_REMOVED_COUNT="$total_removed"
 	# GH#18979: Skip cleanup when API rate limit is low — both passes call
 	# `gh pr list` per repo/worktree, and blocking rate-limit waits cause
 	# the cleanup stage to hang for 10+ minutes, stalling the entire pulse

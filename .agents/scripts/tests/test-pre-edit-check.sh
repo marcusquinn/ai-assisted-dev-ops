@@ -78,7 +78,8 @@ run_helper() {
 	shift
 	(
 		cd "$target_dir" || exit 1
-		WORKTREE_REGISTRY_DIR="$TEST_REGISTRY_DIR" \
+		AIDEVOPS_WORKTREE_BASE_DIR="$TEST_WORKTREE_BASE" \
+			WORKTREE_REGISTRY_DIR="$TEST_REGISTRY_DIR" \
 			WORKTREE_REGISTRY_DB="$TEST_REGISTRY_DB" \
 			"$HELPER" "$@"
 	)
@@ -395,6 +396,10 @@ test_headless_planning_path_requires_worktree() {
 	local exit_code=0
 	output=$(FULL_LOOP_HEADLESS=true run_helper "$TEST_ROOT" --loop-mode --file "README.md" 2>&1) || exit_code=$?
 
+	if [[ "$output" == *"LOOP_DECISION=worktree_created"* && "$output" != *"WORKTREE_PATH=${TEST_WORKTREE_BASE}/"* ]]; then
+		print_result "headless planning worktree stays inside fixture base" 1 "$output"
+		return 0
+	fi
 	if [[ "$exit_code" -ne 0 || "$output" == *"LOOP_DECISION=worktree"* || "$output" == *"LOOP_DECISION=worktree_created"* ]]; then
 		print_result "headless planning path requires a linked worktree" 0
 		return 0

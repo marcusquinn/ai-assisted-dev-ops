@@ -100,6 +100,10 @@ if [[ -n "$_PULSE_CLEANUP_SCRIPT_DIR" && -f "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-cl
 	# shellcheck source=pulse-cleanup-worktree-removal.sh
 	source "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-cleanup-worktree-removal.sh"
 fi
+if [[ -n "$_PULSE_CLEANUP_SCRIPT_DIR" && -f "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-cleanup-fixture-orphans.sh" ]]; then
+	# shellcheck source=pulse-cleanup-fixture-orphans.sh
+	source "$_PULSE_CLEANUP_SCRIPT_DIR/pulse-cleanup-fixture-orphans.sh"
+fi
 
 #######################################
 # Clean up safe-to-drop stashes across ALL managed repos (t1417)

@@ -266,7 +266,7 @@ test_open_head_pr_outranks_embedded_terminal_reference() {
 	}
 
 	local terminal_state=""
-	terminal_state=$(_pc_terminal_pr_state_for_branch "testowner/testrepo" "repair/pr-23085-followup" 2>/dev/null)
+	terminal_state=$(_pc_terminal_pr_for_branch "testowner/testrepo" "repair/pr-23085-followup" 2>/dev/null)
 	local lookup_rc=$?
 	local rc=0
 	[[ "$lookup_rc" -eq 1 ]] || rc=1
@@ -279,10 +279,16 @@ test_open_head_pr_outranks_embedded_terminal_reference() {
 test_merged_branch_pr_removes_before_age_threshold() {
 	local repo_dir="${TEST_ROOT}/repo-merged-branch-pr"
 	local wt_path="${TEST_ROOT}/worker-wt-merged-branch-pr"
-	local branch_name="feature/auto-20260507-190806-gh23080"
+	local branch_name="feature/auto-20260507-190806"
 	setup_repo_with_worker_worktree "$repo_dir" "$wt_path" "$branch_name" || return 1
 	source_pulse_cleanup_with_stubs || return 1
 	gh_pr_list() {
+		local args="$*"
+		[[ "$args" == *"--state open"* ]] && return 0
+		if [[ "$args" == *"--json state,number"* ]]; then
+			printf 'MERGED\t23080\n'
+			return 0
+		fi
 		printf '%s\n' 'MERGED'
 		return 0
 	}
@@ -986,6 +992,56 @@ test_branch_pr_lookup_treats_null_pr_number_as_no_pr() {
 	return 0
 }
 
+test_terminal_pr_identity_and_policy_guards() {
+	source_pulse_cleanup_with_stubs || return 1
+	gh_pr_list() {
+		local args="$*"
+		[[ "$args" == *"--state open"* ]] && return 0
+		printf 'MERGED\t23080\n'
+		return 0
+	}
+	local record="" reason="" rc=0
+	record=$(_pc_terminal_pr_for_branch "testowner/testrepo" "feature/auto-gh23081") || rc=1
+	[[ "$record" == $'MERGED\t23080' ]] || rc=1
+	print_result "head PR identity outranks embedded issue number" "$rc"
+	gh_pr_list() {
+		local args="$*"
+		[[ "$args" == *"--state open"* ]] && return 0
+		printf 'MERGED\tnull\n'
+		return 0
+	}
+	rc=0
+	if _pc_terminal_pr_for_branch "testowner/testrepo" "repair/pr-23085-followup" >/dev/null; then rc=1; fi
+	print_result "malformed head PR identity cannot fall back to branch token" "$rc"
+	gh_pr_list() {
+		local args="$*"
+		if [[ "$args" == *"--state open"* ]]; then printf '23090\n'; else printf 'MERGED\t23080\n'; fi
+		return 0
+	}
+	rc=0
+	if _pc_terminal_pr_for_branch "testowner/testrepo" "feature/auto-gh23081" >/dev/null; then rc=1; fi
+	print_result "open head PR vetoes another merged PR for the same branch" "$rc"
+	gh() {
+		local target_type="${1:-}"
+		if [[ "$target_type" == "pr" ]]; then printf 'security\n'; fi
+		return 0
+	}
+	rc=0
+	if reason=$(_pc_compact_archive_policy_clear "$TEST_ROOT" 23080 "testowner/testrepo" pr 23081); then rc=1; fi
+	[[ "$reason" == "protected-security" ]] || rc=1
+	print_result "PR security label protects issue-numbered branch" "$rc"
+	gh() {
+		local target_type="${1:-}"
+		if [[ "$target_type" == "issue" ]]; then printf 'preserve-forensics\n'; fi
+		return 0
+	}
+	rc=0
+	if reason=$(_pc_compact_archive_policy_clear "$TEST_ROOT" 23080 "testowner/testrepo" pr 23081); then rc=1; fi
+	[[ "$reason" == "protected-preserve-forensics" ]] || rc=1
+	print_result "branch issue retention also protects PR archive" "$rc"
+	return 0
+}
+
 TEST_ROOT=$(mktemp -d)
 trap teardown EXIT
 export HOME="${TEST_ROOT}/home"
@@ -1020,6 +1076,7 @@ test_no_newline_pr_output_blocks_local_commit_cleanup
 test_no_newline_open_pr_output_blocks_clean_fastpath
 test_branch_pr_lookup_uses_null_safe_jq_filter
 test_branch_pr_lookup_treats_null_pr_number_as_no_pr
+test_terminal_pr_identity_and_policy_guards
 
 echo ""
 echo "Results: $((TESTS_RUN - TESTS_FAILED))/${TESTS_RUN} passed, ${TESTS_FAILED} failed."
