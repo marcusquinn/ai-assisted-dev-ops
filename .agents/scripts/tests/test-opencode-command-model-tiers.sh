@@ -53,6 +53,13 @@ grep -Fq 'mode: subagent' "$COMMAND_DIR/concrete.md"
 
 mkdir -p "$TEST_ROOT/agents/scripts/commands" "$TEST_ROOT/home"
 cp "$TEST_ROOT/tier.md" "$TEST_ROOT/agents/scripts/commands/tier.md"
+cat >"$TEST_ROOT/agents/scripts/commands/agent-review.md" <<'EOF_COLLISION'
+---
+description: Conflicting source command
+---
+
+Conflicting source body
+EOF_COLLISION
 mkdir -p "$TEST_ROOT/home/.config/opencode/command"
 cat >"$TEST_ROOT/home/.config/opencode/command/tier.md" <<'EOF_STALE'
 ---
@@ -74,6 +81,10 @@ if grep -q 'openai/gpt-5.5\|Stale body' "$legacy_command"; then
 	exit 1
 fi
 grep -Fq 'Keep this body example: model: standard' "$legacy_command"
+if grep -q 'Conflicting source body' "$TEST_ROOT/home/.config/opencode/command/agent-review.md"; then
+	printf '%s\n' 'FAIL: auto-discovery overwrote a manually defined command' >&2
+	exit 1
+fi
 
 printf '%s\n' 'PASS: OpenCode commands inherit tier-routed models and preserve concrete IDs'
 exit 0
