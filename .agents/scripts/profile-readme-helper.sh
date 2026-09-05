@@ -857,7 +857,10 @@ _ensure_commit_history_chart() {
 				rm -f "$migrate_tmp"
 				return 1
 			fi
-			mv "$migrate_tmp" "$readme_path"
+			mv "$migrate_tmp" "$readme_path" || {
+				rm -f "$migrate_tmp"
+				return 1
+			}
 			return 0
 		fi
 		if ! awk -v href="${chart_href}" '
