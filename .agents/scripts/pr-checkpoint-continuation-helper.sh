@@ -27,6 +27,50 @@ PCC_AUTHENTICATED_LOGIN=""
 PCC_CHECKPOINT_ASSIGNEE=""
 PCC_ORIGINAL_STATUS=""
 PCC_OWNERSHIP_TRANSFERRED=0
+PCC_REVISION_APPROVAL=0
+PCC_PREVIOUS_ASSIGNEE=""
+
+_prrts_checkpoint_lease() {
+	if [[ "$PCC_REVISION_APPROVAL" != 0 ]]; then
+		printf '%s' "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}"
+	fi
+	return 0
+}
+
+_prrts_checkpoint_session() {
+	if [[ "$PCC_REVISION_APPROVAL" != 0 ]]; then
+		printf '%s' "${AIDEVOPS_PR_CHECKPOINT_SESSION:-}"
+	fi
+	return 0
+}
+
+_pcc_claim_revised_checkpoint() {
+	local repo="$1" pr="$2" ref="$3" head="$4"
+	local claim="" session="" helper="${SCRIPT_DIR}/dispatch-claim-helper.sh"
+	session=$(_pcc_session_key "$repo" "$pr") || return 1
+	claim=$("$helper" claim-pr-checkpoint "$PCC_LINKED_ISSUE" "$repo" "$pr" "$head" "$ref" \
+		"$PCC_AUTHENTICATED_LOGIN" "$session") || return 1
+	[[ "$(jq -r '.approval_id' <<<"$claim")" == "$PCC_REVISION_APPROVAL" ]] || return 1
+	AIDEVOPS_DISPATCH_LEASE_TOKEN=$(jq -er '.lease' <<<"$claim") || return 1
+	AIDEVOPS_PR_CHECKPOINT_SESSION="$session"
+	export AIDEVOPS_DISPATCH_LEASE_TOKEN AIDEVOPS_PR_CHECKPOINT_SESSION
+	PCC_PREVIOUS_ASSIGNEE=$(jq -r '.previous_assignee' <<<"$claim") || return 1
+	PCC_ORIGINAL_STATUS=$(jq -r '.previous_status' <<<"$claim") || return 1
+	# The distributed claim is acquired before modifying assignment. The generic
+	# assignment guard is unchanged and no synthetic release marker is posted.
+	local -a owner_args=(--add-assignee "$PCC_AUTHENTICATED_LOGIN")
+	if [[ "$PCC_EXPECTED_ASSIGNEE" != "$PCC_AUTHENTICATED_LOGIN" ]]; then
+		owner_args+=(--remove-assignee "$PCC_EXPECTED_ASSIGNEE")
+	fi
+	PCC_OWNERSHIP_TRANSFERRED=1
+	set_issue_status "$PCC_LINKED_ISSUE" "$repo" in-review "${owner_args[@]}" >/dev/null || return 1
+	PCC_ISSUE_ASSIGNEE="$PCC_AUTHENTICATED_LOGIN"
+	"$helper" verify-pr-checkpoint-target "$pr" "$repo" "$head" "$ref" \
+		"$PCC_LINKED_ISSUE" "$PCC_ISSUE_ASSIGNEE" "$PCC_CHECKPOINT_ASSIGNEE" >/dev/null || return 1
+	# Worker startup renews prelaunch before transitioning ready. Pre-transitioning
+	# here makes its required renewal fail before the model can start.
+	return 0
+}
 
 _prrts_worker_task_id() {
 	local pr_number="$1"
@@ -69,6 +113,7 @@ _prrts_prelaunch_target_fence() {
 	local author=""
 	local live_issue_status=""
 	local live_issue_assignee=""
+	local approval_id=""
 	local expected_assignee="${PCC_EXPECTED_ASSIGNEE:-$PCC_ISSUE_ASSIGNEE}"
 	local authenticated_login="${PCC_AUTHENTICATED_LOGIN:-$PCC_ISSUE_ASSIGNEE}"
 
@@ -77,7 +122,7 @@ _prrts_prelaunch_target_fence() {
 		PRRTS_WORKTREE_FAILURE_REASON="pr_checkpoint_eligibility_changed_before_launch"
 		return 1
 	}
-	IFS=$'\t' read -r title live_head_ref live_head_oid author live_issue_status live_issue_assignee <<<"$target_row"
+	IFS=$'\t' read -r title live_head_ref live_head_oid author live_issue_status live_issue_assignee approval_id <<<"$target_row"
 	: "$title" "$author" "$live_issue_status"
 	if [[ "$live_head_ref" != "$head_ref" || "$live_head_oid" != "$head_oid" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="pr_checkpoint_head_changed_before_launch"
@@ -86,6 +131,11 @@ _prrts_prelaunch_target_fence() {
 	if [[ "$live_issue_assignee" != "$expected_assignee" ]]; then
 		PRRTS_WORKTREE_FAILURE_REASON="pr_checkpoint_assignee_changed_before_launch"
 		return 1
+	fi
+	if [[ "${approval_id:-0}" != 0 ]]; then
+		[[ "$approval_id" == "$PCC_REVISION_APPROVAL" ]] || return 1
+		_pcc_claim_revised_checkpoint "$repo_slug" "$pr_number" "$head_ref" "$head_oid"
+		return $?
 	fi
 	if [[ "$expected_assignee" != "$authenticated_login" ]]; then
 		_pcc_transfer_issue_ownership "$PCC_LINKED_ISSUE" "$repo_slug" \
@@ -100,7 +150,7 @@ _prrts_prelaunch_target_fence() {
 			PRRTS_WORKTREE_FAILURE_REASON="pr_checkpoint_post_transfer_eligibility_changed"
 			return 1
 		}
-		IFS=$'\t' read -r title live_head_ref live_head_oid author _ live_issue_assignee <<<"$target_row"
+		IFS=$'\t' read -r title live_head_ref live_head_oid author _ live_issue_assignee approval_id <<<"$target_row"
 		if [[ "$live_head_ref" != "$head_ref" || "$live_head_oid" != "$head_oid" ||
 			"$live_issue_assignee" != "$authenticated_login" ]]; then
 			_pcc_restore_transferred_ownership "$repo_slug" "$pr_number" || true
@@ -220,13 +270,8 @@ _pcc_issue_metadata_is_eligible() {
 	local checkpoint_assignee="$5"
 	local comments_json="[]"
 
-	if printf '%s' "$issue_json" | jq -e '
-		[.labels[]?.name]
-		| index("origin:interactive") != null
-	' >/dev/null 2>&1; then
-		comments_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" \
-			--paginate --slurp 2>/dev/null) || return 1
-	fi
+	comments_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" \
+		--paginate --slurp 2>/dev/null) || return 1
 	_pr_checkpoint_issue_metadata_is_eligible "$issue_json" "$linked_issue" \
 		"$expected_assignee" "$comments_json" "$checkpoint_assignee"
 	return $?
@@ -243,15 +288,22 @@ _pcc_target_row() {
 	local target_row=""
 	local issue_assignee=""
 	local issue_status=""
+	local approval="" approval_id=0 comments="[]"
 	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json number,state,title,isDraft,isCrossRepository,labels,headRefName,headRefOid,author,closingIssuesReferences 2>/dev/null) || return 1
+		--json number,state,title,body,isDraft,isCrossRepository,labels,headRefName,headRefOid,author,closingIssuesReferences 2>/dev/null) || return 1
 	issue_json=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null) || return 1
-	_pr_checkpoint_pr_metadata_is_eligible "$pr_json" "$repo_slug" "$pr_number" \
-		"$linked_issue" "" "" "$checkpoint_assignee" || return 1
-	_pcc_issue_metadata_is_eligible "$repo_slug" "$issue_json" "$linked_issue" \
-		"$expected_assignee" "$checkpoint_assignee" || return 1
+	if ! { _pr_checkpoint_pr_metadata_is_eligible "$pr_json" "$repo_slug" "$pr_number" \
+		"$linked_issue" "" "" "$checkpoint_assignee" &&
+		_pcc_issue_metadata_is_eligible "$repo_slug" "$issue_json" "$linked_issue" \
+			"$expected_assignee" "$checkpoint_assignee"; }; then
+		comments=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" --paginate --slurp) || return 1
+		approval=$(_pr_checkpoint_revised_target "$repo_slug" "$pr_json" "$issue_json" "$comments" "$expected_assignee") || return 1
+		jq -e --argjson issue "$linked_issue" --argjson pr "$pr_number" --arg runner "$checkpoint_assignee" \
+			'.issue == $issue and .pr == $pr and .runner == $runner' <<<"$approval" >/dev/null || return 1
+		approval_id=$(jq -r '.approval_id' <<<"$approval") || return 1
+	fi
 	issue_assignee=$(printf '%s' "$issue_json" | jq -er \
-		'.assignees[0].login | select(type == "string" and length > 0)' 2>/dev/null) || return 1
+		--arg fallback "$expected_assignee" '.assignees[0].login // $fallback | select(type == "string" and length > 0)' 2>/dev/null) || return 1
 	issue_status=$(printf '%s' "$issue_json" | jq -er '
 		[.labels[]? | if type == "string" then . else (.name // empty) end |
 		select(startswith("status:"))] | .[0] | sub("^status:"; "")
@@ -261,7 +313,7 @@ _pcc_target_row() {
 		[.title // "", .headRefName, .headRefOid, .author.login // ""] | @tsv
 	' <<<"$pr_json" 2>/dev/null || true)
 	[[ -n "$target_row" ]] || return 1
-	printf '%s\t%s\t%s\n' "$target_row" "$issue_status" "$issue_assignee"
+	printf '%s\t%s\t%s\t%s\n' "$target_row" "$issue_status" "$issue_assignee" "$approval_id"
 	return 0
 }
 
@@ -305,6 +357,23 @@ _pcc_restore_transferred_ownership() {
 	local repo_slug="$1"
 	local pr_number="$2"
 	[[ "$PCC_OWNERSHIP_TRANSFERRED" -eq 1 ]] || return 0
+	if [[ "$PCC_REVISION_APPROVAL" != 0 ]]; then
+		local helper="${SCRIPT_DIR}/dispatch-claim-helper.sh"
+		# Compensate only while the exact approval and our live lease still own
+		# the target. A changed head, human claim or replacement owner stops writes.
+		"$helper" verify-pr-checkpoint-target "$pr_number" "$repo_slug" "$PCC_HEAD_OID" "$PCC_HEAD_REF" \
+			"$PCC_LINKED_ISSUE" "$PCC_AUTHENTICATED_LOGIN" "$PCC_CHECKPOINT_ASSIGNEE" >/dev/null || return 1
+		local -a restore_args=()
+		[[ -z "$PCC_PREVIOUS_ASSIGNEE" ]] || restore_args+=(--add-assignee "$PCC_PREVIOUS_ASSIGNEE")
+		if [[ "$PCC_PREVIOUS_ASSIGNEE" != "$PCC_AUTHENTICATED_LOGIN" ]]; then
+			restore_args+=(--remove-assignee "$PCC_AUTHENTICATED_LOGIN")
+		fi
+		set_issue_status "$PCC_LINKED_ISSUE" "$repo_slug" "$PCC_ORIGINAL_STATUS" "${restore_args[@]}" >/dev/null || return 1
+		"$helper" transition terminal "$PCC_LINKED_ISSUE" "$repo_slug" "$AIDEVOPS_DISPATCH_LEASE_TOKEN" \
+			"$AIDEVOPS_PR_CHECKPOINT_SESSION" >/dev/null || return 1
+		PCC_OWNERSHIP_TRANSFERRED=0
+		return 0
+	fi
 	if _pcc_restore_issue_ownership "$PCC_LINKED_ISSUE" "$repo_slug" \
 		"$PCC_EXPECTED_ASSIGNEE" "$PCC_AUTHENTICATED_LOGIN" "$PCC_ORIGINAL_STATUS"; then
 		PCC_OWNERSHIP_TRANSFERRED=0
@@ -346,14 +415,15 @@ _pcc_dispatch() {
 			"$pr_number" "$repo_slug" "$linked_issue"
 		return 1
 	}
-	IFS=$'\t' read -r title PCC_HEAD_REF PCC_HEAD_OID author issue_status PCC_ISSUE_ASSIGNEE <<<"$target_row"
+	IFS=$'\t' read -r title PCC_HEAD_REF PCC_HEAD_OID author issue_status PCC_ISSUE_ASSIGNEE PCC_REVISION_APPROVAL <<<"$target_row"
+	PCC_REVISION_APPROVAL="${PCC_REVISION_APPROVAL:-0}"
 	PCC_LINKED_ISSUE="$linked_issue"
 	PCC_ORIGINAL_STATUS="$issue_status"
 	PCC_OWNERSHIP_TRANSFERRED=0
 	[[ -n "$PCC_HEAD_REF" && "$PCC_HEAD_OID" =~ ^[0-9a-fA-F]{40,64}$ &&
 		"$PCC_ISSUE_ASSIGNEE" == "$expected_assignee" ]] || return 1
 	now_epoch=$(date +%s)
-	fingerprint="draft-checkpoint:${PCC_HEAD_OID}:contract-3"
+	fingerprint="draft-checkpoint:${PCC_HEAD_OID}:contract-4:${PCC_REVISION_APPROVAL}"
 	_prrts_dispatch_guarded "$repo_slug" "$repo_path" "$pr_number" "$title" "0" \
 		"$fingerprint" "stale worker draft continuation" "$now_epoch" "$PRRTS_BOOL_FALSE" \
 		"continue-pr" "$PCC_HEAD_REF" "$PCC_HEAD_OID" "$author" || dispatch_rc=$?
@@ -378,11 +448,49 @@ _pcc_dispatch() {
 	return 0
 }
 
+_pcc_dispatch_approved() {
+	local repo="$1" path="$2" issue="$3" login="$4" candidate="" pr="" runner=""
+	[[ "$issue" =~ ^[1-9][0-9]*$ ]] || return 1
+	# Discovery is not authorization: _pcc_dispatch freshly verifies the complete
+	# envelope and the claim helper rereads it again across distributed consensus.
+	candidate=$(gh api "repos/${repo}/issues/${issue}/comments?per_page=100" --paginate --slurp |
+		jq -er --arg repo "$repo" --argjson issue "$issue" '
+		[.[][] | select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR") |
+		.body | split("\n")[] | select(startswith("CHECKPOINT_CONTINUATION_APPROVED ")) |
+		ltrimstr("CHECKPOINT_CONTINUATION_APPROVED ") | fromjson? |
+		select(.repo == $repo and .issue == $issue) | {pr,runner}] | unique |
+		select(length == 1) | .[0] | [.pr,.runner] | @tsv') || return 1
+	IFS=$'\t' read -r pr runner <<<"$candidate"
+	_pcc_dispatch "$repo" "$path" "$pr" "$issue" "$runner" "$login"
+	return $?
+}
+
+_pcc_approval_template() {
+	local repo="$1" pr="$2" issue="$3" release_id="$4" attempt="$5" pr_json="" issue_json=""
+	[[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ && "$pr" =~ ^[1-9][0-9]*$ &&
+		"$issue" =~ ^[1-9][0-9]*$ && "$release_id" =~ ^[1-9][0-9]*$ && "$attempt" == attempt:* ]] || return 2
+	pr_json=$(gh pr view "$pr" --repo "$repo" --json number,headRefOid,headRefName,author) || return 1
+	issue_json=$(gh api "repos/${repo}/issues/${issue}") || return 1
+	jq -n --arg repo "$repo" --argjson pr "$pr_json" --argjson issue "$issue_json" \
+		--argjson release_id "$release_id" --arg attempt "$attempt" \
+		'{repo:$repo,pr:$pr,issue:$issue,release_id:$release_id,attempt:$attempt}' |
+		python3 "$_PR_CHECKPOINT_REVISION_VALIDATOR" template
+	return $?
+}
+
 main() {
 	local command="${1:-}"
 	case "$command" in
 	dispatch)
 		_pcc_dispatch "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}"
+		return $?
+		;;
+	dispatch-approved)
+		_pcc_dispatch_approved "${2:-}" "${3:-}" "${4:-}" "${5:-}"
+		return $?
+		;;
+	approval-template)
+		_pcc_approval_template "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}"
 		return $?
 		;;
 	-h | --help | help)

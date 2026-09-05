@@ -82,7 +82,7 @@ STUB_ISSUE_JSON="$(valid_issue_json)"
 STUB_COMMENTS_JSON='[]'
 export STUB_PR_JSON STUB_ISSUE_JSON STUB_COMMENTS_JSON
 if row=$(_pcc_target_row "owner/repo" "42" "123") && \
-	[[ "$row" == $'Continue existing work\tworker/issue-123\t1111111111111111111111111111111111111111\tworker-bot\tin-review\tworker-bot' ]]; then
+	[[ "$row" == $'Continue existing work\tworker/issue-123\t1111111111111111111111111111111111111111\tworker-bot\tin-review\tworker-bot\t0' ]]; then
 	print_result "accepts exact open worker draft linked to issue" 0
 else
 	print_result "accepts exact open worker draft linked to issue" 1 "row=${row:-missing}"
@@ -235,7 +235,7 @@ else
 	output="$(<"$output_file")"
 fi
 if [[ "$output" == *PR_CHECKPOINT_CONTINUATION_DISPATCHED* ]] && \
-	[[ "$DISPATCH_ARGS" == *"draft-checkpoint:1111111111111111111111111111111111111111:contract-3"* ]] && \
+	[[ "$DISPATCH_ARGS" == *"draft-checkpoint:1111111111111111111111111111111111111111:contract-4:0"* ]] && \
 	[[ "$DISPATCH_ARGS" == *"continue-pr worker/issue-123 1111111111111111111111111111111111111111 worker-bot"* ]]; then
 	print_result "dispatch binds continuation to exact PR branch and head" 0
 else
@@ -426,6 +426,12 @@ if run_checkpoint_preparation ''; then
 	print_result "worker preparation retains legacy same-runner author fallback" 0
 else
 	print_result "worker preparation retains legacy same-runner author fallback" 1
+fi
+
+if python3 "${TEST_SCRIPT_DIR}/test-pr-checkpoint-revision.py"; then
+	print_result "revised checkpoint claims, worker lease lifecycle and durable progress" 0
+else
+	print_result "revised checkpoint claims, worker lease lifecycle and durable progress" 1
 fi
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then

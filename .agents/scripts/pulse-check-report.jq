@@ -285,6 +285,21 @@ end) as $max_workers |
         false
       )
     else empty end,
+    if ($queue_scan_complete and ($queue.aggregate.no_durable_progress_hour // 0) > 0) then
+      finding(
+        "pulse-no-durable-progress-hour";
+        "high";
+        "Issues need owned progress assessment after at least one hour";
+        [
+          ("issues=" + ($queue.aggregate.no_durable_progress_hour | tostring)),
+          ("oldest_issue_age_minutes=" + ($queue.aggregate.oldest_issue_age_min | tostring)),
+          ("oldest_durable_progress_age_minutes=" + ($queue.aggregate.oldest_durable_progress_age_min | tostring)),
+          "clock=creation_linked_pr_commits_terminal_checks_not_comments"
+        ];
+        "Freshly inspect the affected registered queue and choose one evidence-backed recovery per unchanged target: continue its live owner, route a released approved draft through dispatch-approved, or send a bounded scope-revision request to the authorised brief owner. Preserve ownership and external waits. Do not create replacement PRs, redispatch unchanged blockers, or post repeated age/status comments; retain the action in the existing recovery receipt.";
+        true
+      )
+    else empty end,
     if ($queue_scan_complete and $nmr_inactive > 0) then
       finding(
         "pulse-inactive-nmr-holds";

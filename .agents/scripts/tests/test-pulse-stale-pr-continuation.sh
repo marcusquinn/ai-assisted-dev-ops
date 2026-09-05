@@ -73,6 +73,9 @@ ROUTE_ARGS_FILE="${TEST_ROOT}/route-args"
 mkdir -p "${TEST_ROOT}/repo"
 cat >"${SCRIPT_DIR}/pr-checkpoint-continuation-helper.sh" <<ROUTE_STUB
 #!/usr/bin/env bash
+if [[ "\$1" == dispatch-approved && "\${STUB_APPROVED_RESULT:-1}" != 0 ]]; then
+	exit 1
+fi
 printf '%s\n' "\$*" >"${ROUTE_ARGS_FILE}"
 exit 0
 ROUTE_STUB

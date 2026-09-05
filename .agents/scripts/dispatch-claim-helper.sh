@@ -39,6 +39,8 @@ _DCH_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$_DCH_SCRIPT_DIR" == "${BASH_SOURCE[0]}" ]] && _DCH_SCRIPT_DIR="."
 # shellcheck source=pr-checkpoint-target-lib.sh
 source "${_DCH_SCRIPT_DIR}/pr-checkpoint-target-lib.sh"
+# shellcheck source=dispatch-claim-checkpoint.sh
+source "${_DCH_SCRIPT_DIR}/dispatch-claim-checkpoint.sh"
 unset _DCH_SCRIPT_DIR
 
 # Consensus window — how long to wait after posting a claim before checking
@@ -306,6 +308,7 @@ _post_claim() {
 	local nonce="$4"
 	local ts="$5"
 	local reason_fields="${6:-}"
+	local claim_session="${7:-issue-${issue_number}}"
 
 	if declare -F aidevops_can_manage_repo_issue_state >/dev/null 2>&1; then
 		if ! aidevops_can_manage_repo_issue_state "$repo_slug" "$runner"; then
@@ -327,7 +330,7 @@ _post_claim() {
 	device_id=$(_resolve_device_id)
 	now_epoch=$(_now_epoch)
 	expires_at="$((now_epoch + DISPATCH_CLAIM_ORPHAN_GRACE))"
-	local machine_readable_part="${CLAIM_MARKER} nonce=${nonce} runner=${runner} ts=${ts} max_age_s=${DISPATCH_CLAIM_MAX_AGE} version=${version} opencode_version=${opencode_version} lease_token=${nonce} device=${device_id} session=issue-${issue_number} phase=prelaunch expires_at=${expires_at}"
+	local machine_readable_part="${CLAIM_MARKER} nonce=${nonce} runner=${runner} ts=${ts} max_age_s=${DISPATCH_CLAIM_MAX_AGE} version=${version} opencode_version=${opencode_version} lease_token=${nonce} device=${device_id} session=${claim_session} phase=prelaunch expires_at=${expires_at}"
 	if [[ -n "$reason_fields" ]]; then
 		machine_readable_part+=" ${reason_fields}"
 	fi
@@ -1438,7 +1441,7 @@ cmd_verify_pr_checkpoint_target() {
 		return 2
 	fi
 	pr_json=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json number,state,isDraft,isCrossRepository,labels,headRefName,headRefOid,author,closingIssuesReferences 2>/dev/null) || {
+		--json number,state,body,isDraft,isCrossRepository,labels,headRefName,headRefOid,author,closingIssuesReferences 2>/dev/null) || {
 		printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=pr_metadata_unavailable\n' \
 			"$pr_number" "$repo_slug" "$linked_issue"
 		return 2
@@ -1454,17 +1457,25 @@ cmd_verify_pr_checkpoint_target() {
 			"$pr_number" "$repo_slug" "$linked_issue"
 		return 2
 	fi
-	if printf '%s' "$issue_json" | jq -e '
-		[.labels[]? | if type == "string" then . else (.name // empty) end]
-		| index("origin:interactive") != null
-	' >/dev/null 2>&1; then
-		checkpoint_comments=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" \
-			--paginate --slurp 2>/dev/null) || {
-			printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=checkpoint_evidence_unavailable\n' \
-				"$pr_number" "$repo_slug" "$linked_issue"
-			return 2
-		}
+	if [[ -n "${AIDEVOPS_PR_CHECKPOINT_SESSION:-}" ]]; then
+		[[ -n "${AIDEVOPS_DISPATCH_LEASE_TOKEN:-}" ]] || return 1
+		checkpoint_comments=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" --paginate --slurp) || return 2
+		local revision_approval=""
+		revision_approval=$(_pr_checkpoint_revised_target "$repo_slug" "$pr_json" "$issue_json" \
+			"$checkpoint_comments" "$expected_assignee" "$AIDEVOPS_DISPATCH_LEASE_TOKEN" "$AIDEVOPS_PR_CHECKPOINT_SESSION") || return 1
+		jq -e --argjson pr "$pr_number" --argjson issue "$linked_issue" --arg head "$expected_head_sha" \
+			--arg ref "$expected_head_ref" --arg runner "$checkpoint_author" \
+			'.pr == $pr and .issue == $issue and .head == $head and .ref == $ref and .runner == $runner' \
+			<<<"$revision_approval" >/dev/null || return 1
+		printf 'PR_CHECKPOINT_TARGET_VALID: revised_checkpoint pr=#%s issue=#%s\n' "$pr_number" "$linked_issue"
+		return 0
 	fi
+	checkpoint_comments=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" \
+		--paginate --slurp 2>/dev/null) || {
+		printf 'PR_CHECKPOINT_TARGET_UNKNOWN: pr=#%s repo=%s issue=#%s reason=checkpoint_evidence_unavailable\n' \
+			"$pr_number" "$repo_slug" "$linked_issue"
+		return 2
+	}
 	if _pr_checkpoint_pr_metadata_is_eligible "$pr_json" "$repo_slug" "$pr_number" "$linked_issue" \
 		"$expected_head_sha" "$expected_head_ref" "$checkpoint_author" &&
 		_pr_checkpoint_issue_metadata_is_eligible "$issue_json" "$linked_issue" \
@@ -1734,6 +1745,9 @@ main() {
 		;;
 	verify-pr-checkpoint-target)
 		cmd_verify_pr_checkpoint_target "$@"
+		;;
+	claim-pr-checkpoint)
+		cmd_claim_pr_checkpoint "$@"
 		;;
 	transition)
 		cmd_transition "$@"

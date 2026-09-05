@@ -220,6 +220,11 @@ _dedup_layer4_pr_evidence() {
 			return 0
 		fi
 		if [[ "$dedup_helper_rc" -eq 0 ]]; then
+			# Recover an exact approved draft before treating existing PR evidence
+			# as terminal. Failure still blocks replacement implementation workers.
+			if _dispatch_revised_checkpoint "$issue_number" "$repo_slug" "${self_login:-}"; then
+				return 0
+			fi
 			if [[ -n "$dedup_helper_output" ]]; then
 				echo "[pulse-wrapper] Dedup: ${dedup_helper_output}" >>"$LOGFILE"
 			else
@@ -320,6 +325,20 @@ _dispatch_stale_pr_checkpoint_continuation() {
 # Args: issue number, repo slug, issue title, authenticated login, issue JSON
 # Exit: 0=routed/deduplicated, 1=not a machine checkpoint, 2=verified candidate blocked
 #######################################
+_dispatch_revised_checkpoint() {
+	local issue="$1" repo="$2" login="$3" path=""
+	[[ -n "$login" ]] || return 1
+	if declare -F has_worker_for_repo_issue >/dev/null 2>&1 && has_worker_for_repo_issue "$issue" "$repo"; then
+		return 1
+	fi
+	declare -F _pulse_merge_repo_path_for_slug >/dev/null 2>&1 || return 1
+	path=$(_pulse_merge_repo_path_for_slug "$repo" 2>/dev/null) || return 1
+	[[ -d "$path" ]] || return 1
+	"${SCRIPT_DIR}/pr-checkpoint-continuation-helper.sh" dispatch-approved \
+		"$repo" "$path" "$issue" "$login" >>"$LOGFILE" 2>&1
+	return $?
+}
+
 _dispatch_interactive_worker_checkpoint_continuation() {
 	local issue_number="$1"
 	local repo_slug="$2"
@@ -332,6 +351,9 @@ _dispatch_interactive_worker_checkpoint_continuation() {
 	local pr_number=""
 	local continuation_signal=""
 
+	if _dispatch_revised_checkpoint "$issue_number" "$repo_slug" "$self_login"; then
+		return 0
+	fi
 	printf '%s' "$issue_meta_json" | jq -e '
 		([.labels[]?.name]) as $labels |
 		((.state // "") | ascii_upcase) == "OPEN" and
