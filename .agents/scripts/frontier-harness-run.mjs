@@ -4,7 +4,7 @@
 
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -77,6 +77,14 @@ async function main() {
     }
     const home = join(values.out, "runner-home");
     mkdirSync(home, { mode: 0o700 });
+    const pluginDir = join(home, ".docker/cli-plugins");
+    mkdirSync(pluginDir, { recursive: true, mode: 0o700 });
+    const plugins = JSON.parse(execFileSync("docker", ["info", "--format", "{{json .ClientInfo.Plugins}}"], { encoding: "utf8" }));
+    for (const plugin of plugins) {
+      if (["compose", "buildx"].includes(plugin.Name) && isAbsolute(plugin.Path)) {
+        symlinkSync(plugin.Path, join(pluginDir, `docker-${plugin.Name}`));
+      }
+    }
     const dockerHost = execFileSync("docker", ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"], { encoding: "utf8" }).trim();
     if (!dockerHost.startsWith("unix://")) throw new Error("Only local Docker sockets are supported");
     Object.assign(env, {
@@ -99,10 +107,14 @@ async function main() {
       child.once("exit", (status) => resolvePromise(status ?? 1));
     });
     manifest.runner_exit_code = code;
-    manifest.status = code === 0 ? "runner_finished" : "runner_failed";
+    const result = JSON.parse(readFileSync(join(values.out, "jobs/pilot/result.json"), "utf8"));
+    manifest.completed_trials = result.stats?.n_completed_trials ?? null;
+    manifest.errored_trials = result.stats?.n_errored_trials ?? null;
+    const valid = code === 0 && manifest.completed_trials === 1 && manifest.errored_trials === 0;
+    manifest.status = valid ? "runner_finished" : "runner_failed";
     console.log(JSON.stringify({ runner_exit_code: code, requests: relay.stats().requests,
       profile: values.profile, note: "Read the verifier result; runner exit zero is not a task pass" }));
-    process.exitCode = code;
+    process.exitCode = valid ? 0 : 1;
   } catch {
     manifest.status = "infrastructure_error";
     process.exitCode = 1;
