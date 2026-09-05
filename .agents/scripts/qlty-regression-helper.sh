@@ -118,7 +118,7 @@ run_qlty_sarif() {
 	# --all: scan all files; --sarif: JSON output;
 	# --no-snippets: compact; --quiet: suppress progress.
 	# qlty exits non-zero when smells exist — SARIF still written to stdout.
-	# Qlty 0.619.0-0.636.0 can emit intermittent similar-code findings while
+	# Qlty 0.619.0-0.643.0 can emit intermittent similar-code findings while
 	# warming an empty cache. Accept the first matching identity set from up to
 	# three scans so one transient pass cannot create or hide a regression.
 	(cd "$_dir" && XDG_CACHE_HOME="$_cache_dir" "$QLTY_BIN" smells --all --sarif --no-snippets --quiet) \
@@ -135,6 +135,11 @@ run_qlty_sarif() {
 			"1:rc=$_first_rc,count=$(scan_result_count "$_first");2:rc=$_second_rc,count=$(scan_result_count "$_second")"
 		return 1
 	fi
+	# Exclude only unrelated duplicate-code clusters before testing scan
+	# consensus. Qlty 0.643.0 can reshuffle those clusters on every scan;
+	# changed-file clusters remain in the comparison and still block a PR.
+	scope_current_scan_similar_code "$_first" || return 1
+	scope_current_scan_similar_code "$_second" || return 1
 	if cmp -s <(normalized_identities "$_first") <(normalized_identities "$_second"); then
 		mv "$_second" "$_out"
 		log "qlty identities stabilized after 2 scans for $_dir"
@@ -147,6 +152,7 @@ run_qlty_sarif() {
 			"1:rc=$_first_rc,count=$(scan_result_count "$_first");2:rc=$_second_rc,count=$(scan_result_count "$_second");3:rc=$_third_rc,count=$(scan_result_count "$_third")"
 		return 1
 	fi
+	scope_current_scan_similar_code "$_third" || return 1
 	if cmp -s <(normalized_identities "$_first") <(normalized_identities "$_third") ||
 		cmp -s <(normalized_identities "$_second") <(normalized_identities "$_third"); then
 		mv "$_third" "$_out"
@@ -254,6 +260,18 @@ scope_similar_code_to_changed_files() {
 	_after=$(count_smells "$_sarif")
 	log "diff-scoped similar-code findings for $(basename "$_sarif"): before=$_before after=$_after"
 	return 0
+}
+
+# Scope duplicate-code findings before scan consensus when comparing different
+# trees. Same-tree scans retain every identity so the parity guard stays strict.
+scope_current_scan_similar_code() {
+	local _sarif="$1"
+	if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ] ||
+		[ "${BASE_TREE:-}" = "${HEAD_TREE:-}" ]; then
+		return 0
+	fi
+	scope_similar_code_to_changed_files "$BASE_SHA" "$HEAD_SHA" "$_sarif"
+	return $?
 }
 
 emit_scan_metadata() {
