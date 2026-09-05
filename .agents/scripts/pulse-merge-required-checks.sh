@@ -288,7 +288,7 @@ _required_contexts_for_default_branch_uncached() {
 	local default_branch="" default_branch_rc=0
 	default_branch=$(_pmrc_gh_read gh api "repos/${repo_slug}" --jq '.default_branch' 2>/dev/null) || default_branch_rc=$?
 	if [[ "$default_branch_rc" -ne 0 || -z "$default_branch" ]]; then
-		aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: failed to resolve default branch for ${repo_slug} — caller will fail closed (t2922)"
+		aidevops_log_line "[pulse-merge] _required_contexts_for_default_branch: failed to resolve default branch for ${repo_slug} (read_exit=${default_branch_rc}, output_bytes=${#default_branch}) — caller will fail closed (t2922)"
 		return 1
 	fi
 

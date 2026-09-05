@@ -25,6 +25,7 @@
 _FULL_LOOP_COMMIT_LIB_LOADED=1
 _FULL_LOOP_CHECK_PENDING="pending"
 _FULL_LOOP_CHECK_INDETERMINATE="indeterminate"
+_FULL_LOOP_CHECK_DEFERRED="api-deferred"
 _FULL_LOOP_TRUE="true"
 FULL_LOOP_COMPLETION_BOOKKEEPING_AUDIT=""
 FULL_LOOP_COMPLETION_BOOKKEEPING_FILES=""
@@ -134,6 +135,11 @@ _full_loop_query_required_checks() {
 		else
 			FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="GitHub API cooldown is active"
 		fi
+	elif [[ "$required_checks_stderr" == *"error_kind=github-api-read-deferred"* ]]; then
+		FULL_LOOP_PRE_MERGE_BLOCKER_KIND="github-api-read-deferred"
+		FULL_LOOP_PRE_MERGE_BLOCKER_DETAIL="retry-when-capacity-returns"
+		FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE="github-api-read-deferred"
+		FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL="GitHub API read capacity is deferred; preserve the PR and retry when capacity returns"
 	fi
 
 	if [[ "$required_rc" -eq 1 && -z "$required_checks" && -n "$pr_head_ref" && "$required_checks_stderr" == "$expected_no_required_checks" ]]; then
@@ -243,6 +249,24 @@ _full_loop_reconcile_stale_coderabbit_review() {
 	return 0
 }
 
+# Keep transport backpressure distinct from CI or malformed-evidence failures.
+_full_loop_record_check_read_failure() {
+	local pr_number="$1"
+	local verified_head="$2"
+	FULL_LOOP_PR_CHECK_STATUS="$_FULL_LOOP_CHECK_INDETERMINATE"
+	case "$FULL_LOOP_PRE_MERGE_BLOCKER_KIND" in
+	github-api-cooldown | github-api-read-deferred) FULL_LOOP_PR_CHECK_STATUS="$_FULL_LOOP_CHECK_DEFERRED" ;;
+	esac
+	export FULL_LOOP_PR_CHECK_STATUS
+	_full_loop_persist_pr_check_evidence "$FULL_LOOP_PR_CHECK_STATUS" "$verified_head" "$FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE" || true
+	if [[ "$FULL_LOOP_PR_CHECK_STATUS" == "$_FULL_LOOP_CHECK_DEFERRED" ]]; then
+		print_info "PR #${pr_number} verification deferred (${FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL}); no CI failure, repair or duplicate implementation is established"
+	else
+		print_error "PR #${pr_number} required-check evidence is indeterminate (${FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL})"
+	fi
+	return 0
+}
+
 _full_loop_verify_pr_readiness() {
 	local pr_number="$1"
 	local repo="$2"
@@ -277,10 +301,7 @@ _full_loop_verify_pr_readiness() {
 
 	local required_checks=""
 	_full_loop_query_required_checks "$pr_number" "$repo" "$pr_head_ref" || {
-		FULL_LOOP_PR_CHECK_STATUS="$_FULL_LOOP_CHECK_INDETERMINATE"
-		export FULL_LOOP_PR_CHECK_STATUS
-		_full_loop_persist_pr_check_evidence "$FULL_LOOP_PR_CHECK_STATUS" "$verified_head" "$FULL_LOOP_REQUIRED_CHECKS_ERROR_EVIDENCE" || true
-		print_error "PR #${pr_number} required-check evidence is indeterminate (${FULL_LOOP_REQUIRED_CHECKS_ERROR_DETAIL})"
+		_full_loop_record_check_read_failure "$pr_number" "$verified_head"
 		return 1
 	}
 	required_checks="$FULL_LOOP_REQUIRED_CHECKS_JSON"

@@ -124,7 +124,7 @@ run_gate() {
 set -euo pipefail
 SCRIPT_DIR='${ROOT}/helpers'
 print_error() { printf 'ERROR %s\n' "\$*"; return 0; }
-print_info() { return 0; }
+print_info() { printf 'INFO %s\n' "\$*"; return 0; }
 print_warning() { return 0; }
 print_success() { return 0; }
 source '${SCRIPTS_DIR}/full-loop-helper-commit.sh'
@@ -159,6 +159,10 @@ gh_pr_checks_exact_json() {
 			printf '%s\n' 'gh_pr_checks_exact_json: error_kind=github-api-cooldown expires_at=1893456000 operation=pull-request-identity-read' >&2
 			return 2
 			;;
+		read-deferred)
+			printf '%s\n' 'gh_pr_checks_exact_json: error_kind=github-api-read-deferred operation=pull-request-identity-read' >&2
+			return 2
+			;;
 		changed-wording)
 			printf "%s\n" "no required checks configured for the 'remote-branch' branch" >&2
 			return 1
@@ -177,7 +181,10 @@ gh_pr_checks_exact_json() {
 			;;
 	esac
 }
-cmd_pre_merge_gate 42 testorg/testrepo
+gate_rc=0
+cmd_pre_merge_gate 42 testorg/testrepo || gate_rc=\$?
+printf 'CHECK_STATUS=%s\n' "\${FULL_LOOP_PR_CHECK_STATUS:-unset}"
+exit "\$gate_rc"
 RUNNER
 	chmod +x "$runner"
 	if [[ "$output_mode" == "visible" ]]; then
@@ -234,6 +241,17 @@ if [[ "$cooldown_rc" -ne 0 && "$cooldown_output" == *"GitHub API cooldown is act
 	printf 'PASS cooldown evidence remains truthful through the readiness gate\n'
 else
 	printf 'FAIL cooldown evidence was collapsed: rc=%s output=%s\n' "$cooldown_rc" "$cooldown_output"
+	exit 1
+fi
+
+deferred_rc=0
+deferred_output=$(run_gate read-deferred visible 2>&1) || deferred_rc=$?
+if [[ "$deferred_rc" -ne 0 && "$deferred_output" == *"CHECK_STATUS=api-deferred"* &&
+	"$deferred_output" == *"GitHub API read capacity is deferred"* &&
+	"$deferred_output" != *"required-check evidence is indeterminate"* ]]; then
+	printf 'PASS local read admission deferral stays distinct from CI failure and malformed evidence\n'
+else
+	printf 'FAIL read admission deferral lost its classification: rc=%s output=%s\n' "$deferred_rc" "$deferred_output"
 	exit 1
 fi
 
