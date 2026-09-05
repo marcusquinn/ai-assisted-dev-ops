@@ -53,11 +53,24 @@ grep -Fq 'mode: subagent' "$COMMAND_DIR/concrete.md"
 
 mkdir -p "$TEST_ROOT/agents/scripts/commands" "$TEST_ROOT/home"
 cp "$TEST_ROOT/tier.md" "$TEST_ROOT/agents/scripts/commands/tier.md"
+mkdir -p "$TEST_ROOT/home/.config/opencode/command"
+cat >"$TEST_ROOT/home/.config/opencode/command/tier.md" <<'EOF_STALE'
+---
+description: Stale generated command
+model: openai/gpt-5.5
+---
+
+Stale body
+EOF_STALE
 HOME="$TEST_ROOT/home" AIDEVOPS_DIR="$TEST_ROOT" \
 	bash "$REPO_ROOT/.agents/scripts/generate-opencode-commands.sh" >/dev/null
 legacy_command="$TEST_ROOT/home/.config/opencode/command/tier.md"
 if grep -q '^model: standard$' "$legacy_command"; then
 	printf '%s\n' 'FAIL: workload tier leaked through legacy OpenCode command generator' >&2
+	exit 1
+fi
+if grep -q 'openai/gpt-5.5\|Stale body' "$legacy_command"; then
+	printf '%s\n' 'FAIL: legacy OpenCode command generator preserved stale output' >&2
 	exit 1
 fi
 grep -Fq 'Keep this body example: model: standard' "$legacy_command"
