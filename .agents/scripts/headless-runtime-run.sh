@@ -311,13 +311,19 @@ _handle_cmd_run_terminal_attempt() {
 		fi
 		if [[ "$capability_blocked" -eq 1 && -z "$model_override" ]] &&
 			_resolve_capability_escalation "$role" "$tier_override" "$selected_model" "$variant_override"; then
+			# Same-tier reasoning consumes the existing route budget: availability
+			# fallback may revisit a model at its default effort, never reset retries.
+			if [[ "$tier_override" == "$_capability_escalation_tier" ]]; then
+				attempt=$((attempt + 1))
+			else
+				attempt=1
+				max_attempts=$(_headless_route_attempt_budget "$_capability_escalation_tier")
+			fi
 			tier_override="$_capability_escalation_tier"
 			selected_model="$_capability_escalation_model"
 			variant_override="$_capability_escalation_variant"
 			routing_reason="capability_escalation"
 			routing_escalated=1
-			attempt=1
-			max_attempts=$(_headless_route_attempt_budget "$tier_override")
 			prompt="The previous attempt reported a model capability limit after working on the task. Resume the existing session and worktree at the next authorized capability tier or reasoning level (${tier_override}: ${selected_model}${variant_override:+ ${variant_override}}), challenge the blocker using the accumulated evidence, and continue autonomously through implementation and verification. Do not request broader permissions or bypass policy, authentication, trust, or secret-handling boundaries. If model capability remains the only blocker, emit the exact marker BLOCKED: capability limit - <evidence> so runtime routing can evaluate the next configured tier or reasoning level. Use generic BLOCKED only for concrete terminal non-capability blockers. Stop at FULL_LOOP_COMPLETE or a supported BLOCKED outcome."
 			print_warning "$_capability_escalation_label"
 			_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"

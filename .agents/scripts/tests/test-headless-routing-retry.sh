@@ -215,15 +215,19 @@ trap 'rm -rf "$fixture_dir"' EXIT
 	completion_state="blocked"
 	_HRW_STATUS_FAIL="fail"
 	attempt_exit=83
+	attempt=1
+	max_attempts=4
 	_run_result_label="blocked"
 	_run_classification_source="model_blocked_signal"
 	_run_classification_pattern="capability_limit"
 	_cmd_run_finish() { return 0; }
 	_handle_cmd_run_terminal_attempt
 	[[ "$_cmd_run_disposition" == "continue" && "$variant_override" == "medium" ]]
+	[[ "$attempt" -eq 2 && "$max_attempts" -eq 4 ]]
 	[[ "$selected_model" == "openai/gpt-6-astra" && "$tier_override" == "thinking" ]]
 	_handle_cmd_run_terminal_attempt
 	[[ "$_cmd_run_disposition" == "continue" && "$variant_override" == "high" ]]
+	[[ "$attempt" -eq 3 && "$max_attempts" -eq 4 ]]
 	_handle_cmd_run_terminal_attempt
 	[[ "$_cmd_run_disposition" == "return" && "$variant_override" == "high" ]]
 	variant_override="low"
@@ -234,6 +238,11 @@ trap 'rm -rf "$fixture_dir"' EXIT
 	model_override="$selected_model"
 	_handle_cmd_run_terminal_attempt
 	[[ "$_cmd_run_disposition" == "return" && "$variant_override" == "low" ]]
+	# Revisited default effort after availability fallback cannot renew budget.
+	model_override=""
+	attempt=4
+	_handle_cmd_run_terminal_attempt
+	[[ "$attempt" -eq 5 && "$max_attempts" -eq 4 ]]
 	if model_tier_next_variant thinking openai/gpt-6-astra xhigh ||
 		model_tier_next_variant thinking anthropic/claude-opus-4-6 low; then
 		exit 1
