@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import pulse_check_dependencies as dependency_scan
+import pulse_check_progress as progress_scan
 
 AGGREGATE_KEY = "aggregate"
 ERROR_KEY = "error"
@@ -111,83 +112,16 @@ def _issue_age_minutes(issue: dict[str, Any], now: dt.datetime) -> int:
     return int((now - updated).total_seconds() // 60)
 
 
-def _age_at(value: str, now: dt.datetime) -> Optional[int]:
-    try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return max(0, int((now - parsed).total_seconds() // 60))
-    except (ValueError, TypeError):
-        return None
-
-
 def _durable_progress_age(slug: str, issue: dict[str, Any], now: dt.datetime) -> Optional[int]:
-    """Use creation, linked PR commits and terminal checks, never updatedAt/comments.
-
-    Bounded reads fail unknown rather than inventing inactivity. Timeline comment,
-    assignment, lease and label churn cannot refresh this clock.
-    """
-    created_age = _age_at(str(issue.get("createdAt") or ""), now)
-    if created_age is None or created_age < 60:
-        return created_age
-    timeline = _run_gh_json(["gh", "api",
-                            f"repos/{slug}/issues/{issue['number']}/timeline?per_page=100"])
-    if not isinstance(timeline, list) or len(timeline) >= 100:
-        return None
-    ages = [created_age]
-    linked = set()
-    for event in timeline:
-        source = event.get("source", {}).get("issue", {})
-        # REST repository_url is GitHub metadata, not a body-provided endpoint.
-        if (event.get("event") == "cross-referenced" and source.get("pull_request")
-                and str(source.get("repository_url", "")).endswith(f"/repos/{slug}")):
-            linked.add(source.get("number"))
-    if len(linked) > 5:
-        return None
-    for number in linked:
-        if not isinstance(number, int) or number <= 0:
-            return None
-        pr = _run_gh_json(["gh", "pr", "view", str(number), "--repo", slug,
-                           "--json", "createdAt,commits,statusCheckRollup"])
-        if not isinstance(pr, dict):
-            return None
-        times = [pr.get("createdAt", "")]
-        times.extend(c.get("committedDate", "") for c in pr.get("commits", []))
-        times.extend(c.get("completedAt", "") for c in pr.get("statusCheckRollup", [])
-                     if c.get("status") == "COMPLETED")
-        ages.extend(age for value in times if (age := _age_at(value, now)) is not None)
-    return min(ages)
+    return progress_scan.durable_progress_age(slug, issue, now, _run_gh_json)
 
 
 def _count_durable_progress(aggregate: dict[str, int], slug: str,
                             issue: dict[str, Any], now: dt.datetime) -> None:
-    labels = _issue_labels(issue)
-    if labels & PERSISTENT_DASHBOARD_LABELS or "parent-task" in labels:
-        return
-    total_age = _age_at(str(issue.get("createdAt") or ""), now)
-    if total_age is None:
-        return
-    aggregate["oldest_issue_age_min"] = max(aggregate["oldest_issue_age_min"], total_age)
-    explicit_wait = labels & {"no-auto-dispatch", "hold-for-review", "needs-maintainer-review",
-                              "needs-maintainer-permissions", "blocked", "status:blocked", "infrastructure"}
-    if explicit_wait or issue.get("dependency_inconsistent"):
-        aggregate["external_wait_excluded"] += 1
-        return
-    if total_age >= 60 and labels & {"status:in-review", "status:in-progress", "status:queued"}:
-        # Reuse dependency evidence for owned work without changing its actual
-        # lifecycle or miscounting it as available. Age is an assessment signal,
-        # never permission to redispatch or displace a live owner.
-        probe = {**issue, "labels": [{"name": label} for label in labels if not label.startswith("status:")]
-                 + [{"name": "status:available"}]}
-        waiting, unknown = _dependency_diagnostic(slug, probe)
-        if waiting or unknown:
-            aggregate["durable_progress_unknown" if unknown else "external_wait_excluded"] += 1
-            return
-    progress_age = _durable_progress_age(slug, issue, now)
-    if progress_age is None:
-        aggregate["durable_progress_unknown"] += 1
-        return
-    aggregate["oldest_durable_progress_age_min"] = max(
-        aggregate["oldest_durable_progress_age_min"], progress_age)
-    aggregate["no_durable_progress_hour"] += int(total_age >= 60 and progress_age >= 60)
+    context = progress_scan.ProgressContext(slug, _run_gh_json,
+                                            lambda probe: _dependency_diagnostic(slug, probe),
+                                            PERSISTENT_DASHBOARD_LABELS)
+    progress_scan.count_progress(aggregate, issue, now, context)
 
 
 def _load_repos(repos_json: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
