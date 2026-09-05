@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add opt-in Blender Lab MCP guidance and a pinned video-use runtime with render verification.
+
 ### Changed
 
 - Enforce product-worker reservations with concurrent reserved and unreserved pools, verified active occupancy, and conservative borrowing when discovery is incomplete.
