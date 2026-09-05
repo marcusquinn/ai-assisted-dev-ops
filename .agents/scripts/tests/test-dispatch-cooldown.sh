@@ -5,10 +5,11 @@
 # test-dispatch-cooldown.sh — t3197 regression guard.
 #
 # Asserts that `dispatch-dedup-helper.sh is-assigned` short-circuits with
-# DISPATCH_COOLDOWN_ACTIVE for any issue carrying an unexpired
-# `<!-- dispatch-cooldown-until:<ISO> reason=no_worker_process ... -->`
-# audit-comment marker, and does NOT block when the marker is expired or
-# absent.
+# DISPATCH_COOLDOWN_ACTIVE for a recent, authenticated maintainer/collaborator
+# comment carrying an unexpired exact
+# `<!-- dispatch-cooldown-until:<ISO> reason=no_worker_process runner=<login> -->`
+# marker. It does NOT block for expired, malformed, untrusted, mismatched, or
+# overlong markers.
 #
 # Failure mode this guards against: a runner with broken runtime (CLI
 # changes, missing binary, network flake) burns ~5 worker spawns over
@@ -127,9 +128,11 @@ iso_offset() {
 # Part 1 — Active cooldown blocks dispatch
 # =============================================================================
 
-# Case A: marker timestamp 60 minutes in the future → must block.
-FUTURE_ISO=$(iso_offset 3600)
-COMMENTS_FUTURE='[{"body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO}"' reason=no_worker_process runner=alex-solovyev -->\nDispatch cooldown active until '"${FUTURE_ISO}"'."}]'
+# Case A: a trusted, recent marker inside the configured 30-minute lifetime
+# blocks dispatch.
+NOW_ISO=$(iso_offset 0)
+FUTURE_ISO=$(iso_offset 600)
+COMMENTS_FUTURE='[{"id":100,"user":{"login":"alex-solovyev"},"author_association":"OWNER","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO}"' reason=no_worker_process runner=alex-solovyev -->\nDispatch cooldown active until '"${FUTURE_ISO}"'."}]'
 write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_FUTURE"
 run_is_assigned 99887 "owner/repo"
 if [[ "$rc" -eq 0 && "$output" == *"DISPATCH_COOLDOWN_ACTIVE"* && "$output" == *"$FUTURE_ISO"* ]]; then
@@ -139,12 +142,10 @@ else
 		"(rc=$rc output='$output')"
 fi
 
-# Case B: latest of multiple markers wins. GitHub comments are fetched
-# oldest-first, so a fresh marker after an expired marker should block (jq
-# `last` semantics).
+# Case B: a later trusted marker overrides an earlier expired marker.
 PAST_ISO=$(iso_offset -3600)
-FUTURE_ISO_2=$(iso_offset 1800)
-COMMENTS_LATEST_WINS='[{"body":"<!-- dispatch-cooldown-until:'"${PAST_ISO}"' reason=no_worker_process runner=runner-a -->"},{"body":"intervening human comment"},{"body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO_2}"' reason=no_worker_process runner=runner-b -->"}]'
+FUTURE_ISO_2=$(iso_offset 900)
+COMMENTS_LATEST_WINS='[{"id":101,"user":{"login":"runner-a"},"author_association":"MEMBER","created_at":"'"${PAST_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${PAST_ISO}"' reason=no_worker_process runner=runner-a -->"},{"id":102,"user":{"login":"maintainer"},"author_association":"OWNER","created_at":"'"${NOW_ISO}"'","body":"intervening human comment"},{"id":103,"user":{"login":"runner-b"},"author_association":"COLLABORATOR","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO_2}"' reason=no_worker_process runner=runner-b -->"}]'
 write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_LATEST_WINS"
 run_is_assigned 99886 "owner/repo"
 if [[ "$rc" -eq 0 && "$output" == *"DISPATCH_COOLDOWN_ACTIVE"* && "$output" == *"$FUTURE_ISO_2"* ]]; then
@@ -159,7 +160,7 @@ fi
 # =============================================================================
 
 # Case C: marker timestamp 60 minutes in the PAST → expired, must not block.
-COMMENTS_EXPIRED='[{"body":"<!-- dispatch-cooldown-until:'"${PAST_ISO}"' reason=no_worker_process runner=alex-solovyev -->"}]'
+COMMENTS_EXPIRED='[{"id":104,"user":{"login":"alex-solovyev"},"author_association":"OWNER","created_at":"'"${PAST_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${PAST_ISO}"' reason=no_worker_process runner=alex-solovyev -->"}]'
 write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_EXPIRED"
 run_is_assigned 99885 "owner/repo"
 if [[ "$output" != *"DISPATCH_COOLDOWN_ACTIVE"* ]]; then
@@ -190,14 +191,86 @@ else
 		"(rc=$rc output='$output')"
 fi
 
+# Case F: a CONTRIBUTOR marker must not consume cooldown, even when the body
+# claims a runner name and timestamp that would otherwise be valid.
+COMMENTS_UNTRUSTED='[{"id":105,"user":{"login":"external-runner"},"author_association":"CONTRIBUTOR","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO}"' reason=no_worker_process runner=external-runner -->"}]'
+write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_UNTRUSTED"
+run_is_assigned 99881 "owner/repo"
+if [[ "$output" != *"DISPATCH_COOLDOWN_ACTIVE"* ]]; then
+	print_result "is-assigned ignores untrusted cooldown marker offline" 0
+else
+	print_result "is-assigned ignores untrusted cooldown marker offline" 1 \
+		"(rc=$rc output='$output')"
+fi
+
+# Case G: marker runner must match the nonempty authenticated comment login.
+COMMENTS_MISMATCH='[{"id":106,"user":{"login":"runner-a"},"author_association":"MEMBER","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO}"' reason=no_worker_process runner=runner-b -->"}]'
+write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_MISMATCH"
+run_is_assigned 99880 "owner/repo"
+if [[ "$output" != *"DISPATCH_COOLDOWN_ACTIVE"* ]]; then
+	print_result "is-assigned ignores runner/login mismatch offline" 0
+else
+	print_result "is-assigned ignores runner/login mismatch offline" 1 \
+		"(rc=$rc output='$output')"
+fi
+
+# Case H: a trusted marker cannot extend past one cooldown interval from the
+# GitHub server's created_at timestamp.
+OVERLONG_ISO=$(iso_offset 3600)
+COMMENTS_OVERLONG='[{"id":107,"user":{"login":"runner-a"},"author_association":"MEMBER","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${OVERLONG_ISO}"' reason=no_worker_process runner=runner-a -->"}]'
+write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_OVERLONG"
+run_is_assigned 99879 "owner/repo"
+if [[ "$output" != *"DISPATCH_COOLDOWN_ACTIVE"* ]]; then
+	print_result "is-assigned ignores overlong cooldown marker offline" 0
+else
+	print_result "is-assigned ignores overlong cooldown marker offline" 1 \
+		"(rc=$rc output='$output')"
+fi
+
+# Case I: a marker with a future server created_at must not consume cooldown.
+FUTURE_CREATED_ISO=$(iso_offset 60)
+COMMENTS_FUTURE_CREATED='[{"id":108,"user":{"login":"runner-a"},"author_association":"MEMBER","created_at":"'"${FUTURE_CREATED_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO}"' reason=no_worker_process runner=runner-a -->"}]'
+write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_FUTURE_CREATED"
+run_is_assigned 99878 "owner/repo"
+if [[ "$output" != *"DISPATCH_COOLDOWN_ACTIVE"* ]]; then
+	print_result "is-assigned ignores future server-created cooldown marker" 0
+else
+	print_result "is-assigned ignores future server-created cooldown marker" 1 \
+		"(rc=$rc output='$output')"
+fi
+
+# Case J: exact marker parsing rejects extra attributes and malformed markers.
+COMMENTS_MALFORMED='[{"id":109,"user":{"login":"runner-a"},"author_association":"MEMBER","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO}"' reason=no_worker_process runner=runner-a forged=true -->"}]'
+write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_MALFORMED"
+run_is_assigned 99877 "owner/repo"
+if [[ "$output" != *"DISPATCH_COOLDOWN_ACTIVE"* ]]; then
+	print_result "is-assigned ignores malformed cooldown marker" 0
+else
+	print_result "is-assigned ignores malformed cooldown marker" 1 \
+		"(rc=$rc output='$output')"
+fi
+
+# Case K: GitHub returns each page independently. Equal created_at values must
+# resolve by numeric comment ID, not page or timestamp ordering.
+FUTURE_ISO_3=$(iso_offset 300)
+FUTURE_ISO_4=$(iso_offset 600)
+COMMENTS_PAGINATED_EQUAL_SECONDS='[{"id":110,"user":{"login":"runner-a"},"author_association":"OWNER","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO_3}"' reason=no_worker_process runner=runner-a -->"}],[{"id":111,"user":{"login":"runner-b"},"author_association":"COLLABORATOR","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO_4}"' reason=no_worker_process runner=runner-b -->"}]'
+write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_PAGINATED_EQUAL_SECONDS"
+run_is_assigned 99876 "owner/repo"
+if [[ "$rc" -eq 0 && "$output" == *"DISPATCH_COOLDOWN_ACTIVE"* && "$output" == *"$FUTURE_ISO_4"* ]]; then
+	print_result "is-assigned orders paginated equal-second markers by numeric ID" 0
+else
+	print_result "is-assigned orders paginated equal-second markers by numeric ID" 1 \
+		"(rc=$rc output='$output')"
+fi
+
 # =============================================================================
 # Part 3 — Feature gate (DISPATCH_COOLDOWN_AFTER_LAUNCH_FAILURE_SECONDS=0)
 # =============================================================================
 
-# Case F: feature disabled — even an unexpired marker must not block.
+# Case L: feature disabled — even an unexpired marker must not block.
 # Skips the gh API call entirely (which is the optimisation goal of the gate).
-FUTURE_ISO_3=$(iso_offset 3600)
-COMMENTS_FUTURE_3='[{"body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO_3}"' reason=no_worker_process runner=alex-solovyev -->"}]'
+COMMENTS_FUTURE_3='[{"id":112,"user":{"login":"alex-solovyev"},"author_association":"OWNER","created_at":"'"${NOW_ISO}"'","body":"<!-- dispatch-cooldown-until:'"${FUTURE_ISO_3}"' reason=no_worker_process runner=alex-solovyev -->"}]'
 write_stub_gh "$PASSTHROUGH_ISSUE" "$COMMENTS_FUTURE_3"
 output=$(DISPATCH_COOLDOWN_AFTER_LAUNCH_FAILURE_SECONDS=0 \
 	"${TEST_SCRIPTS_DIR}/dispatch-dedup-helper.sh" is-assigned 99882 "owner/repo" 2>/dev/null)

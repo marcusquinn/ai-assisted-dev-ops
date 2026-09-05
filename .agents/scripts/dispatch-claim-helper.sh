@@ -544,9 +544,9 @@ _fetch_claims() {
 	local now_epoch
 	now_epoch=$(_now_epoch)
 
-	# Fetch claim/release markers from every issue-comment page.
-	# A CLAIM_RELEASED comment posted after the most recent DISPATCH_CLAIM
-	# invalidates all prior claims (the worker died or completed).
+	# Fetch claim/release markers from every issue-comment page. Releases are
+	# resolved by dispatch-lease-claims.jq against their exact claim ID and nonce;
+	# a generic later CLAIM_RELEASED must not retire another generation.
 	local comments_json
 	comments_json=$(_fetch_claim_marker_comments "$issue_number" "$repo_slug") || return 1
 
@@ -555,24 +555,10 @@ _fetch_claims() {
 		return 0
 	fi
 
-	# Find the most recent CLAIM_RELEASED timestamp. Any DISPATCH_CLAIM older
-	# than this is invalidated (the worker died or completed). Only claims
-	# posted AFTER the latest release are considered active.
-	local latest_release_ts
-	latest_release_ts=$(printf '%s' "$comments_json" | jq -r '
-		[.[] | select(.body | ascii_downcase | contains("claim_released")) | .created_at] |
-		sort | last // ""
-	' 2>/dev/null) || latest_release_ts=""
-
-	# Filter to DISPATCH_CLAIM comments posted after the latest release
 	local claims_only
-	if [[ -n "$latest_release_ts" ]]; then
-		claims_only=$(printf '%s' "$comments_json" | jq -c --arg marker "${CLAIM_MARKER}" --arg release_ts "$latest_release_ts" '
-			[.[] | select((.body | ascii_downcase | contains(($marker | ascii_downcase) + " nonce=")) and (.created_at > $release_ts))]
-		' 2>/dev/null) || claims_only="[]"
-	else
-		claims_only=$(printf '%s' "$comments_json" | jq -c --arg marker "${CLAIM_MARKER}" '[.[] | select(.body | ascii_downcase | contains(($marker | ascii_downcase) + " nonce="))]' 2>/dev/null) || claims_only="[]"
-	fi
+	claims_only=$(printf '%s' "$comments_json" | jq -c --arg marker "${CLAIM_MARKER}" '
+		[.[] | select(.body | ascii_downcase | contains(($marker | ascii_downcase) + " nonce="))]
+	' 2>/dev/null) || claims_only="[]"
 
 	if [[ "$claims_only" == "[]" ]]; then
 		printf '[]'
@@ -631,18 +617,24 @@ _filter_orphan_prelaunch_claims() {
 		printf '%s' "$parsed_claims"
 		return 0
 	}
-	[[ "$assignee_count" =~ ^[0-9]+$ ]] || assignee_count=0
+	# Metadata uncertainty must not convert an otherwise active claim into an
+	# orphan. The claim expiry path remains available on the next successful read.
+	[[ "$assignee_count" =~ ^[0-9]+$ ]] || { printf '%s' "$parsed_claims"; return 0; }
 	if [[ "$assignee_count" -gt 0 ]]; then
 		printf '%s' "$parsed_claims"
 		return 0
 	fi
 
-	local filtered_claims removed_count remaining_count
+	local filtered_claims orphaned_claims removed_count remaining_count
 	filtered_claims=$(_filter_claims_with_launch_evidence "$parsed_claims" "$comments_json")
+	orphaned_claims=$(printf '%s\n%s\n' "$parsed_claims" "$filtered_claims" | jq -nc '
+		input as $before | input as $after |
+		[$before[] | select(.id as $id | [$after[].id] | index($id) | not)]
+	' 2>/dev/null) || orphaned_claims="[]"
 	removed_count=$(printf '%s\n%s\n' "$parsed_claims" "$filtered_claims" | jq -nr 'input as $before | input as $after | $before | length - ($after | length)' 2>/dev/null) || removed_count=0
 	remaining_count=$(printf '%s' "$filtered_claims" | jq 'length' 2>/dev/null) || remaining_count=0
 	if [[ "$removed_count" -gt 0 && "$remaining_count" -eq 0 ]]; then
-		_post_orphan_claim_release "$issue_number" "$repo_slug" "$self_runner" "$removed_count" || true
+		_post_orphan_claim_release "$issue_number" "$repo_slug" "$self_runner" "$orphaned_claims" || true
 	fi
 	printf '%s' "$filtered_claims"
 	return 0
@@ -658,40 +650,53 @@ _filter_claims_with_launch_evidence() {
 	local comments_json="$2"
 
 	printf '%s\n%s\n' "$parsed_claims" "$comments_json" | jq -nc \
-		--argjson orphan_grace "$DISPATCH_CLAIM_ORPHAN_GRACE" '
+		--arg empty "" --argjson orphan_grace "$DISPATCH_CLAIM_ORPHAN_GRACE" --argjson now "$(_now_epoch)" '
+		def field($body; $name):
+			((try ($body | capture("(^|[[:space:]])" + $name + "=(?<value>[^[:space:]]+)").value) catch $empty) // $empty);
 		input as $claims |
 		input as $comments |
 		[$claims[]
 		| . as $claim
 		| ([ $comments[]
-			| select((.created_at // "") > ($claim.created_at // ""))
-			| select((.body // "" | ascii_downcase) | contains("dispatching worker"))
+			| select([(.created_at | fromdateiso8601? // 0), (.id | tonumber? // 0)] >
+				 [($claim.created_epoch // 0), ($claim.id | tonumber? // 0)])
+			# aidevops:trust-boundary
+			| select((.author_association // $empty) == "OWNER" or (.author_association // $empty) == "MEMBER" or (.author_association // $empty) == "COLLABORATOR")
+			| select((.author // $empty) != $empty and (.author // $empty) == ($claim.claim_author // $empty))
+			| (.body // $empty) as $body
+			| select($body | test("(^|\\n)Dispatching worker"; "i"))
+			| select(($claim.lease_token // $empty) != $empty and ($claim.device // $empty) != $empty and ($claim.session // $empty) != $empty)
+			| select(field($body; "lease_token") == $claim.lease_token)
+			| select(field($body; "device") == $claim.device)
+			| select(field($body; "session") == $claim.session)
+			| select(field($body; "claim_id") == ($claim.id | tostring))
 		  ] | length) as $launch_count
-		| select(.lease_phase == "ready" or (.age_seconds // 0) <= $orphan_grace or $launch_count > 0)
-		]
-		| sort_by([.created_at, .nonce])
+		| select(.lease_phase == "ready" or (.lease_expires_at // 0) >= $now or (.age_seconds // 0) <= $orphan_grace or $launch_count > 0)
+		] | sort_by([.created_at, .nonce])
 	' 2>/dev/null || printf '%s' "$parsed_claims"
 	return 0
 }
 
 #######################################
 # Post a terminal release marker for claim-only pre-launch orphans.
-# Args: issue number, repo slug, optional runner, removed count
+# Args: issue number, repo slug, optional runner, orphan-claim JSON snapshot
 #######################################
 _post_orphan_claim_release() {
 	local issue_number="$1"
 	local repo_slug="$2"
 	local runner="${3:-}"
-	local removed_count="$4"
+	local orphaned_claims="$4"
 	[[ -n "$runner" ]] || runner=$(_resolve_runner "")
 
-	local body
-	body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
-CLAIM_RELEASED reason=claim_only_no_worker runner=${runner} ts=$(_now_utc) removed_claims=${removed_count}
+	local claim_id nonce claim_author body
+	while IFS=$'\t' read -r claim_id nonce claim_author; do
+		[[ "$claim_id" =~ ^[0-9]+$ && -n "$nonce" && "$claim_author" == "$runner" ]] || continue
+		body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
+CLAIM_RELEASED reason=claim_only_no_worker runner=${runner} ts=$(_now_utc) claim_id=${claim_id} nonce=${nonce}
 <!-- ops:end -->"
-	gh api "$(_issue_comments_endpoint "$repo_slug" "$issue_number")" \
-		--method POST \
-		--field body="$body" >/dev/null 2>&1 || return 1
+		gh api "$(_issue_comments_endpoint "$repo_slug" "$issue_number")" \
+			--method POST --field body="$body" >/dev/null 2>&1 || return 1
+	done < <(printf '%s' "$orphaned_claims" | jq -r '.[] | [.id, .nonce, .claim_author] | @tsv' 2>/dev/null)
 	return 0
 }
 
