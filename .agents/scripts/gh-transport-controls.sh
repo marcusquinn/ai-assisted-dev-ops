@@ -57,21 +57,25 @@ _gh_transport_capture_errors() {
 	return "$rc"
 }
 
-# Return 125 only before transport for an unsupported shape. A supported REST
-# invocation records its response-owned metadata here, not a second attempt in
-# gh_run_transport_attempt. The Python adapter never caches response data.
+# _GHGT_HANDLED distinguishes unsupported-before-execution from native exit125.
+# Supported REST records metadata here, not a second attempt in the ordinary
+# recorder. Exact capture retains its existing multi-response-frame owner.
 _gh_transport_run_rest() {
 	local executable="$1" path="$2" caller="$3" retry="$4"
 	shift 4
 	_GHGT_HANDLED=0
 	[[ "${1:-}" == api && "${AIDEVOPS_GH_TRANSPORT_GOVERNOR_DISABLE:-0}" != 1 ]] || return 125
+	[[ "${AIDEVOPS_GH_EXACT_QUOTA_CAPTURE:-0}" != 1 ]] || return 125
 	command -v python3 >/dev/null 2>&1 || return 125
 	local temp_dir="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 	local metadata="" error_file="" start_ms="" end_ms="" elapsed="" rc=0
 	local status="" resource="" remaining="" reset="" retry_after="" cost="" attempted="" pool="" response="" outcome=success
 	mkdir -p "$temp_dir" || return 75
 	metadata=$(mktemp "${temp_dir}/gh-transport-meta.XXXXXX") || return 75
-	error_file=$(mktemp "${temp_dir}/gh-transport-error.XXXXXX") || { rm -f "$metadata"; return 75; }
+	error_file=$(mktemp "${temp_dir}/gh-transport-error.XXXXXX") || {
+		rm -f "$metadata"
+		return 75
+	}
 	start_ms=$(_gh_now_ms)
 	python3 "${_GHGT_DIR}/gh-transport-governor.py" "$metadata" "$executable" "$@" 2>"$error_file" || rc=$?
 	end_ms=$(_gh_now_ms)
@@ -102,7 +106,11 @@ _gh_transport_run_rest() {
 	else
 		gh_record_call other "$caller" "" other transport-deferred 2>/dev/null || true
 	fi
-	_gh_transport_record_error "$rc" "$error_file" "$response"
+	# Healthy responses do not need the multi-step error classifier. Local
+	# admission stops have no server response to classify at all.
+	if [[ "$attempted" == true && ("$rc" -ne 0 || "$remaining" == 0 || "$retry_after" != x || "$status" =~ ^[45]) ]]; then
+		_gh_transport_record_error "$rc" "$error_file" "$response"
+	fi
 	rm -f -- "$metadata" "$error_file"
 	return "$rc"
 }

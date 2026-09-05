@@ -78,6 +78,7 @@ MARKER_END="# END auto-managed by peer-productivity-monitor"
 WINDOW_HOURS="${AIDEVOPS_PEER_MONITOR_WINDOW_H:-24}"
 HYSTERESIS="${AIDEVOPS_PEER_MONITOR_HYSTERESIS:-3}"
 DRY_RUN="${AIDEVOPS_PEER_MONITOR_DRY_RUN:-0}"
+_PEER_JSON_ARRAY_TYPE="array"
 
 # Vote / action constants — keep in sync with _sanitize_action.
 readonly ACTION_HONOUR="honour"
@@ -356,7 +357,7 @@ discover_and_observe() {
 		local assigned_known=1
 		assigned_json=$(gh issue list --repo "$repo" --state open \
 			--limit 200 --json number,assignees,labels,updatedAt 2>/dev/null) || assigned_known=0
-		if ! printf '%s' "$assigned_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+		if ! printf '%s' "$assigned_json" | jq -e --arg array_type "$_PEER_JSON_ARRAY_TYPE" 'type == $array_type' >/dev/null 2>&1; then
 			assigned_known=0
 			assigned_json='[]'
 		fi
@@ -373,7 +374,7 @@ discover_and_observe() {
 		local pr_known=1
 		pr_json=$(gh pr list --repo "$repo" --state merged --limit 50 \
 			--json author,mergedAt,labels 2>/dev/null) || pr_known=0
-		if ! printf '%s' "$pr_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+		if ! printf '%s' "$pr_json" | jq -e --arg array_type "$_PEER_JSON_ARRAY_TYPE" 'type == $array_type' >/dev/null 2>&1; then
 			pr_known=0
 			pr_json='[]'
 		fi

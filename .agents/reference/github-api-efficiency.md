@@ -71,38 +71,10 @@ aggregate: `pulse-wrapper-cycle-gates.sh` owns the exact completed cutoff.
 
 ### Native transport boundary
 
-The PATH shim applies the shared cooldown before native requests, including raw
-agent commands. A wrapper-admitted boot/recovery read is not charged twice, but
-cooldown is rechecked immediately before transport. Local-only commands remain
-usable without fabricated HTTP attempts. Execution failures, including those
-without a complete HTTP response, do not authorise an alternate transport.
-
-Supported non-interactive, single-request `gh api` REST shapes use
-`gh-transport-governor.py` and `gh_transport_budget.py`. They inspect included
-response headers without enabling `GH_DEBUG`, preserve native body bytes/status,
-and never cache a response body. Existing explicit pagination admits each page
-separately. Authenticated conditional `304` responses own zero primary cost;
-failed/unknown costs remain unknown. A changed native framing contract fails
-closed rather than returning injected headers as successful application data.
-
-The private local SQLite state reserves in-flight REST work atomically. Only
-resource-owned response headers establish remaining quota; `/rate_limit` JSON
-is not an admission balance. Missing/stale observations allow one serialized
-observation, not an assumed new allowance. Unknown spend remains debt; a later
-response from another credential cannot erase it. Out-of-order responses cannot
-increase remaining quota within a live reset window. PID birth identity guards
-recovery, and scope aliases prevent an existing credential acquiring a second
-budget when its owner configuration changes.
-
-`AIDEVOPS_GH_QUOTA_OWNER` may name a trusted user/installation quota owner;
-multiple PATs for that owner share an allowance. Unresolved callers deliberately
-share a conservative host scope. Cache visibility must still be credential-scoped.
-This is local coordination, **not** a claim of distributed fleet admission.
-Native opaque fan-out, GraphQL, interactive terminal and unsupported CLI shapes
-retain native semantics and the common cooldown; do not infer exact request
-costs or per-HTTP admission for those paths. Explicit quota capture is still
-needed for their benchmark evidence. `AIDEVOPS_GH_TRANSPORT_GOVERNOR_DISABLE=1`
-rolls back the REST adapter without disabling the shared cooldown.
+Read [GitHub API transport and freshness](github-api-transport.md) for the shared
+cooldown, bounded authenticated REST-read admission, native compatibility limits,
+query-shape optimisations, and generation-fenced event queue. These controls do
+not relax this benchmark's completeness or correctness requirements.
 
 ### Quota-cost attribution
 

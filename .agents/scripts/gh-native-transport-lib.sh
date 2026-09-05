@@ -86,12 +86,12 @@ _find_real_gh() {
 
 # _shim_classify_endpoint <sub1> [<sub2>]
 # Classify a gh invocation for instrumentation. Returns one of:
-#   graphql | rest | search-graphql | other
+#   graphql | rest | search-rest | other
 _shim_classify_endpoint() {
 	local sub1="${1:-}" sub2="${2:-}"
 	case "$sub1" in
 	search)
-		printf 'search-graphql'
+		printf 'search-rest'
 		return 0
 		;;
 	api)

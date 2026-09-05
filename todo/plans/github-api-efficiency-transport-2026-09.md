@@ -67,3 +67,37 @@ Retain rollback controls and polling wherever coverage cannot be proven.
 Verify functional request reductions with deterministic call counts, then use
 matched non-overlapping production windows for performance claims. A release
 is not a claim that a multi-day efficiency soak has passed.
+
+## Evidence-driven implementation refinements (GH#31221)
+
+- Reconciliation's actual query was incompatible with its consumer: it requested
+  closed-unmerged PRs, then required merged evidence. The real REST adapter
+  could scan a large merged history to collect the wrong population. Correcting
+  the selector and preferring server-side CLOSED filtering removes this waste
+  without a new historical-content cache. A real-adapter fixture verifies the
+  intended merged lookup in two pages; canned list mocks had hidden the defect.
+- An initial count-only peer query was implemented and measured at one GraphQL
+  point. During implementation, upstream #31247 independently removed peer
+  request fan-out and corrected dispatch-ownership/freshness semantics. Rebase
+  preserved that newer per-repository implementation rather than shipping an
+  obsolete origin-label-based counter. Additional failure/time guards remain.
+- Dirty-marker checks use a fresh server-side hold-window filter and complete
+  pagination instead of caching a negative result or inspecting only the first
+  hundred comments. Unknown evidence holds; timestamps, not response order,
+  establish resolution. No content-cache TTL was increased.
+- Normal authenticated GET admission is scoped and atomic locally. Other CLI
+  shapes, mutations and exact-capture mode retain their native paths and common
+  cooldown. This is not an unproven distributed quota broker or a claim of
+  complete normal-mode wire accounting. See
+  `.agents/reference/github-api-transport.md` for boundaries and rollback.
+- Verified PR wakes use bounded durable hints, shared logical leases and
+  generation-fenced acknowledgement. Dirty candidates refresh metadata and
+  only break ties inside readiness categories. A failed invalidation stays
+  latched across the entire delivery. Existing polling cadence remains intact.
+- Receiver configuration could not resolve its webhook secret in the observed
+  runtime. Activation/coverage is not assumed, and polling is not slowed.
+- Completed-cycle evidence has one publisher. Ad-hoc live diagnostics do not
+  overwrite its report/sidecar pair. Production percentage claims still require
+  complete, matched evidence; functional tests are not a substitute for a soak.
+
+Issue #31221 and its exact-head PR/release receipts own delivery status.

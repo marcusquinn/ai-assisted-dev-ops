@@ -22,6 +22,10 @@ from pathlib import Path
 class Deferred(Exception):
     """No safe admission is currently available."""
 
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
 
 def private_directory(path: Path) -> None:
     if not path.is_absolute() or path.is_symlink():
@@ -39,7 +43,7 @@ def scope_key(host: str) -> str:
     return hashlib.sha256(f"{host}\0{owner}".encode()).hexdigest()
 
 
-def credential_identity(executable: str, host: str) -> tuple[str, bool]:
+def credential_identity(executable: str, host: str) -> tuple[str, bool, dict[str, str]]:
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
         try:
@@ -50,7 +54,12 @@ def credential_identity(executable: str, host: str) -> tuple[str, bool]:
         except (OSError, ValueError, subprocess.SubprocessError):
             token = "anonymous"
     authenticated = bool(token and token != "anonymous")
-    return hashlib.sha256(f"{host}\0{token}".encode()).hexdigest(), authenticated
+    environment = os.environ.copy()
+    if authenticated:
+        # Pin only the native child, not a long-lived wrapper or worker parent.
+        # The hashed identity and the request must use exactly the same token.
+        environment["GH_TOKEN"] = token
+    return hashlib.sha256(f"{host}\0{token}".encode()).hexdigest(), authenticated, environment
 
 
 def process_birth(pid: int) -> str:
@@ -184,10 +193,10 @@ class Budget:
             # Permit one serialized real request to obtain fresh headers.
             fresh = row and 0 <= now - row[2] <= 20 and row[1] > now
             if not fresh and active:
-                raise Deferred("waiting for an authoritative quota observation")
+                raise Deferred("waiting for an authoritative quota observation", retryable=True)
             # A small local concurrency ceiling also applies with ample quota.
             if active >= 4:
-                raise Deferred("local REST transport concurrency is occupied")
+                raise Deferred("local REST transport concurrency is occupied", retryable=True)
             reservation = uuid.uuid4().hex
             self.db.execute(
                 "INSERT INTO reservation(id,scope,resource,started,pid,birth,credential) VALUES(?,?,?,?,?,?,?)",

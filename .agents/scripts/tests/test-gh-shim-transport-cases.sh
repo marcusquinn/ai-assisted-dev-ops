@@ -92,4 +92,25 @@ else
 	_fail "authoritative exhaustion suppresses the next raw request locally"
 fi
 
+# Exact capture owns multi-frame native attempts. The normal final-response
+# adapter must never take that route away from an explicitly metered window.
+# shellcheck source=/dev/null
+source "${TMP}/scripts/gh-transport-controls.sh"
+_governor_rc=0
+AIDEVOPS_GH_EXACT_QUOTA_CAPTURE=1 _gh_transport_run_rest \
+	"${TMP}/bin/gh" rest gh_api_rest 0 api user >/dev/null 2>/dev/null || _governor_rc=$?
+if [[ "$_governor_rc" -eq 125 && "$_GHGT_HANDLED" -eq 0 ]]; then
+	_pass "exact multi-response capture retains transport ownership"
+else
+	_fail "normal REST adapter intercepted exact transport capture"
+fi
+
+# shellcheck source=/dev/null
+source "${TMP}/scripts/gh-native-transport-lib.sh"
+if [[ "$(_shim_classify_endpoint search issues)" == search-rest && "$(_shim_classify_endpoint api graphql)" == graphql ]]; then
+	_pass "native search uses the REST search resource, not the GraphQL pool"
+else
+	_fail "native search quota family is misclassified"
+fi
+
 return 0

@@ -137,8 +137,31 @@ class AdmissionTests(unittest.TestCase):
                      ["api", "user", "--paginate"],
                      ["api", "user", "-H", "X-Gh-Cache-Ttl: 1h"],
                      ["api", "user", "-H", "Authorization: fixture"],
+                     ["api", "user", "-X", "POST"],
+                     ["api", "user", "-f", "value=one"],
+                     ["api", "user", "--input", "/dev/fd/9"],
+                     ["api", "user", "-X", "GET", "-F", "q=@/dev/fd/9"],
+                     ["api", "//foreign.invalid/user"],
                      ["pr", "checks", "--watch"]):
             self.assertIsNone(governor.request_shape(args))
+
+    def test_read_parameters_do_not_change_method_or_authority(self):
+        with patch.dict(os.environ, {"GH_HOST": "github.com", "GH_DEBUG": ""}):
+            self.assertIsNotNone(governor.request_shape(
+                ["api", "repos/owner/repo/issues?since=2026-09-04T00:00:00Z"]
+            ))
+            self.assertIsNotNone(governor.request_shape(
+                ["api", "user", "--method", "GET", "-f", "value=one"]
+            ))
+
+    def test_native_child_uses_the_hashed_credential_without_parent_export(self):
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "gh_transport_budget.subprocess.check_output", return_value=b"fixture-credential\n"
+        ):
+            fingerprint, authenticated, environment = governor.credential_identity("fixture-gh", "github.com")
+            self.assertTrue(authenticated and len(fingerprint) == 64)
+            self.assertTrue(environment.get("GH_TOKEN") == "fixture-credential")
+            self.assertNotIn("GH_TOKEN", os.environ)
 
     def test_header_split_preserves_binary_body(self):
         body = b"\x00body\r\nHTTP/1.1 body text\n"

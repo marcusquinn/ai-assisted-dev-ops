@@ -3,8 +3,9 @@
 # SPDX-FileCopyrightText: 2026 Marcus Quinn
 """Observe one supported native REST request without GH_DEBUG or payload logs.
 
-Return 125 only before execution, so callers may retain native handling for
-unsupported CLI shapes. Explicit pagination invokes this once per actual page.
+Return 125 with attempted=false for unsupported shapes; an executed native125
+is distinguished by attempted=true. Never decide fallback from exit code alone.
+Explicit pagination invokes this once per page.
 No response is cached, and no automatic transport retry is performed.
 """
 
@@ -34,11 +35,12 @@ BOOL_FLAGS = {"--include", "-i", "--silent"}
 
 
 def request_shape(args: list[str]) -> tuple[str, str, bool, bool] | None:
-    if not args or args[0] != "api":
+    if not args or args[0] != "api" or os.environ.get("GH_DEBUG"):
         return None
     endpoint = ""
     host = os.environ.get("GH_HOST", "github.com").lower()
     include = silent = False
+    method, explicit_method, fields = "GET", False, False
     index = 1
     while index < len(args):
         arg = args[index]
@@ -51,6 +53,14 @@ def request_shape(args: list[str]) -> tuple[str, str, bool, bool] | None:
                 value = args[index]
             if option == "--hostname":
                 host = value.lower()
+            if option in {"-X", "--method"}:
+                method, explicit_method = value.upper(), True
+            if option in {"-F", "--field", "-f", "--raw-field"}:
+                fields = True
+            # Do not change mutation, streamed-input or inherited descriptor
+            # semantics. Those requests retain native execution plus cooldown.
+            if option == "--input" or "/dev/fd/" in value or "/proc/self/fd/" in value:
+                return None
             # A caller-supplied Authorization header is a different identity.
             if option in {"-H", "--header"} and value.split(":", 1)[0].strip().lower() in {
                 "authorization", "x-gh-cache-ttl",
@@ -66,11 +76,14 @@ def request_shape(args: list[str]) -> tuple[str, str, bool, bool] | None:
         elif endpoint:
             return None
         else:
+            if arg.startswith("//"):
+                return None
             endpoint = arg.lstrip("/")
         index += 1
-    if host != "github.com" or not endpoint or ":" in endpoint or "#" in endpoint:
-        return None
     path = endpoint.split("?", 1)[0]
+    if (host != "github.com" or not path or ":" in path or "#" in endpoint
+            or method != "GET" or (fields and not explicit_method)):
+        return None
     if path in {"graphql", "rate_limit"}:
         return None
     resource = "code_search" if path == "search/code" else (
@@ -104,8 +117,8 @@ def included_headers(stream) -> tuple[int, dict[str, str], int]:
     return 0, {}, 0
 
 
-def execute(executable: str, args: list[str], output) -> int:
-    child = subprocess.Popen([executable, *args], stdout=output)
+def execute(executable: str, args: list[str], output, environment: dict[str, str]) -> int:
+    child = subprocess.Popen([executable, *args], stdout=output, env=environment)
     try:
         return child.wait(timeout=90)
     except subprocess.TimeoutExpired:
@@ -141,13 +154,26 @@ def run(metadata: Path, executable: str, args: list[str]) -> int:
     try:
         metadata.write_text('{"attempted":false}', encoding="utf-8")
         private_directory(temp_dir)
-        credential, authenticated = credential_identity(executable, host)
+        credential, authenticated, environment = credential_identity(executable, host)
+        if not authenticated:
+            # Do not mix anonymous-IP and authenticated-user allowances or
+            # trust an identity which could change before native execution.
+            return 125
         budget = Budget(directory, scope_key(host), credential)
-        reservation = budget.acquire(resource)
+        # Queue briefly for another local request, not for a GitHub reset.
+        # These retries never execute HTTP or retry a mutation.
+        for admission_try in range(21):
+            try:
+                reservation = budget.acquire(resource)
+                break
+            except Deferred as pause:
+                if not pause.retryable or admission_try == 20:
+                    raise
+                time.sleep(0.1)
         with tempfile.TemporaryFile(dir=temp_dir) as output:
             native_args = args if include else [*args, "--include"]
             metadata.write_text('{"attempted":true}', encoding="utf-8")
-            rc = execute(executable, native_args, output)
+            rc = execute(executable, native_args, output, environment)
             status, headers, body_offset = included_headers(output)
             if include:
                 output.seek(0)
