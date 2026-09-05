@@ -18,7 +18,7 @@ from harbor.agents.installed.opencode import OpenCode
 class FrontierOpenCode(OpenCode):
     """Matched profiles using identical setup and the stock runner/scorer."""
 
-    def __init__(self, *args, profile="stock", **kwargs):
+    def __init__(self, *args, profile="stock", context_limit=None, output_limit=None, **kwargs):
         if profile not in ("stock", "aidevops", "aidevops-native-compaction"):
             raise ValueError("Invalid FrontierHarness profile")
         self.profile = profile
@@ -49,6 +49,14 @@ class FrontierOpenCode(OpenCode):
             config["instructions"] = [f"{root}/AGENTS.md"]
         super().__init__(*args, opencode_config=config, **kwargs)
         self._opencode_config["small_model"] = self.model_name
+        if context_limit is not None or output_limit is not None:
+            if not (isinstance(context_limit, int) and isinstance(output_limit, int)
+                    and 4096 <= context_limit <= 1000000 and 1024 <= output_limit < context_limit):
+                raise ValueError("Invalid experimental context/output limits")
+            model_id = self.model_name.split("/", 1)[1]
+            self._opencode_config["provider"]["openai"]["models"] = {model_id: {"limit": {
+                "context": context_limit, "input": context_limit - output_limit, "output": output_limit,
+            }}}
 
     @staticmethod
     def name():

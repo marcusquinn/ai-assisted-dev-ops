@@ -21,6 +21,7 @@ async function main() {
     profile: { type: "string", default: "stock" },
     "opencode-version": { type: "string", default: "1.18.29" },
     "install-only": { type: "boolean", default: false },
+    "context-limit": { type: "string" }, "output-limit": { type: "string" },
   } });
   if (!["stock", "aidevops", "aidevops-native-compaction"].includes(values.profile)) {
     throw new Error("Unknown profile");
@@ -29,6 +30,11 @@ async function main() {
     throw new Error("--task and --out must be absolute paths; --out must not exist");
   }
   if (!/^\d+\.\d+\.\d+$/.test(values["opencode-version"])) throw new Error("Pin an exact OpenCode release");
+  const contextLimit = values["context-limit"] === undefined ? null : Number(values["context-limit"]);
+  const outputLimit = values["output-limit"] === undefined ? null : Number(values["output-limit"]);
+  if ((contextLimit !== null || outputLimit !== null) && (!Number.isInteger(contextLimit)
+    || !Number.isInteger(outputLimit) || contextLimit < 4096 || contextLimit > 1000000
+    || outputLimit < 1024 || outputLimit >= contextLimit)) throw new Error("Provide valid paired context/output limits");
   const instruction = readFileSync(join(values.task, "instruction.md"));
   const taskConfig = readFileSync(join(values.task, "task.toml"));
   if (!statSync(dirname(values.out)).isDirectory()) throw new Error("Output parent must exist");
@@ -54,6 +60,7 @@ async function main() {
     task_config_sha256: createHash("sha256").update(taskConfig).digest("hex"),
     max_requests: 64, concurrency: 1, retries: 0, install_only: values["install-only"],
     agent_setup_timeout_multiplier: 2,
+    experimental_context_limit: contextLimit, experimental_output_reserve: outputLimit,
     started_at: new Date().toISOString(),
   };
   const save = () => writeFileSync(join(values.out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -103,6 +110,7 @@ async function main() {
       "--agent-setup-timeout-multiplier", "2",
       "--jobs-dir", join(values.out, "jobs"), "--job-name", "pilot"];
     if (values["install-only"]) args.push("--install-only");
+    if (contextLimit !== null) args.push("--ak", `context_limit=${contextLimit}`, "--ak", `output_limit=${outputLimit}`);
     child = spawn("uv", args, { cwd: repo, env, stdio: ["ignore", log, log] });
     const code = await new Promise((resolvePromise, reject) => {
       child.once("error", reject);
