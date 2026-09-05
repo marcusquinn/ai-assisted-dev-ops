@@ -31,6 +31,7 @@ import { execSync } from "child_process";
 
 // Extracted modules
 import { createConfigHook } from "./config-hook.mjs";
+import { adaptToolDefinition } from "./tool-definition.mjs";
 import { createMcpSessionRuntime, getOnDemandMcpAgents } from "./mcp-registry.mjs";
 import { enforceManagedMcpArtifactPath } from "./mcp-activation-tool.mjs";
 import { createQualityHooks } from "./quality-hooks.mjs";
@@ -231,6 +232,7 @@ function createConversationHooks({client, conversation, directory}) {
   ]);
   return {
     config: configHook,
+    "tool.definition": adaptToolDefinition,
     "chat.message": async () => 0,
     "chat.params": async (input, output) => applyConversationRootVariant(
       input,
@@ -588,6 +590,7 @@ export async function AidevopsPlugin({ directory, client }) {
 
     // Custom tools + pool management
     tool: baseTools,
+    "tool.definition": adaptToolDefinition,
 
     // Record routed request identity and select parent-safe child effort.
     "chat.message": subagentEffortHooks.chatMessage,
