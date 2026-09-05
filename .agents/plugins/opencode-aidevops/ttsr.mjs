@@ -1,5 +1,6 @@
 import { existsSync } from "fs";
 import { join } from "path";
+import { compactSystemContext } from "./context-catalogue.mjs";
 import {
   BUILTIN_TTSR_RULES,
   loadTtsrRules,
@@ -273,15 +274,19 @@ export function createSessionStartGreetingGate(client, isHeadless = () => false)
  */
 async function ttsrSystemTransform(input, output, context) {
   const { state, intentField, shouldInjectGreeting, agentsDir, readIfExists, greetingOptions } = context;
+  output.system = compactSystemContext(output.system);
   if (input.model?.providerID === "anthropic") {
     const prefix = "You are Claude Code, Anthropic's official CLI for Claude.";
     output.system.unshift(prefix);
     if (output.system[1]) output.system[1] = prefix + "\n\n" + output.system[1];
   }
 
-  if (await shouldInjectGreeting(input)) {
-    output.system.unshift(buildSessionStartGreetingInstruction(agentsDir, readIfExists, greetingOptions));
-  }
+  const greeting = await shouldInjectGreeting(input)
+    ? buildSessionStartGreetingInstruction(agentsDir, readIfExists, greetingOptions)
+    : null;
+  // Preserve the Anthropic compatibility prefix contract. Other providers keep
+  // all durable guidance ahead of the one-shot greeting for stable prefix reuse.
+  if (greeting && input.model?.providerID === "anthropic") output.system.unshift(greeting);
 
   const rules = loadTtsrRules(state);
   const ruleLines = rules.filter((r) => r.systemPrompt).map((r) => `- ${r.systemPrompt}`);
@@ -294,13 +299,12 @@ async function ttsrSystemTransform(input, output, context) {
   ].join("\n");
 
   output.system.push(intentInstruction);
-  if (ruleLines.length === 0) return;
-
-  output.system.push([
+  if (ruleLines.length > 0) output.system.push([
     "## aidevops Quality Rules (enforced)",
     "The following rules are actively enforced. Violations will be flagged.",
     ...ruleLines,
   ].join("\n"));
+  if (greeting && input.model?.providerID !== "anthropic") output.system.push(greeting);
 }
 
 /**

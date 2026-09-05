@@ -52,7 +52,7 @@ function advisoryMessages(output) {
 }
 
 describe("token cost advisory threshold", () => {
-  test("prepends session greeting order to system prompt", async () => {
+  test("appends session greeting after durable system guidance", async () => {
     const { hooks } = createHooks({
       readIfExists: (path) => path.endsWith("VERSION") ? "3.14.23\n" : "",
       readGreetingCache: () => ({
@@ -67,11 +67,12 @@ describe("token cost advisory threshold", () => {
 
     await hooks.systemTransformHook({ model: { providerID: "openai" } }, output);
 
-    assert.match(output.system[0], /Session-start greeting order/);
-    assert.match(output.system[0], /authoritative greeting instruction/);
-    assert.match(output.system[0], /do not read the greeting cache or VERSION/);
-    assert.match(output.system[0], /this exact aidevops greeting/);
-    assert.match(output.system[0], /We're running aidevops v3\.14\.23 in OpenCode v1\.14\.33\./);
+    assert.equal(output.system[0], "base system prompt");
+    assert.match(output.system.at(-1), /Session-start greeting order/);
+    assert.match(output.system.at(-1), /authoritative greeting instruction/);
+    assert.match(output.system.at(-1), /do not read the greeting cache or VERSION/);
+    assert.match(output.system.at(-1), /this exact aidevops greeting/);
+    assert.match(output.system.at(-1), /We're running aidevops v3\.14\.23 in OpenCode v1\.14\.33\./);
     assert.equal(output.system.filter((entry) => entry.includes("Session-start greeting order")).length, 1);
   });
 
@@ -83,7 +84,7 @@ describe("token cost advisory threshold", () => {
 
     await hooks.systemTransformHook({ model: { providerID: "openai" } }, output);
 
-    assert.match(output.system[0], /We're running aidevops v3\.14\.23\./);
+    assert.match(output.system.at(-1), /We're running aidevops v3\.14\.23\./);
   });
 
   test("trims fallback aidevops version whitespace", async () => {
@@ -94,8 +95,8 @@ describe("token cost advisory threshold", () => {
 
     await hooks.systemTransformHook({ model: { providerID: "openai" } }, output);
 
-    assert.match(output.system[0], /We're running aidevops v3\.14\.23\./);
-    assert.doesNotMatch(output.system[0], /v3\.14\.23\r/);
+    assert.match(output.system.at(-1), /We're running aidevops v3\.14\.23\./);
+    assert.doesNotMatch(output.system.at(-1), /v3\.14\.23\r/);
   });
 
   test("keeps startup advisory messages out of chat instructions", async () => {
@@ -113,11 +114,11 @@ describe("token cost advisory threshold", () => {
 
     await hooks.systemTransformHook({ model: { providerID: "openai" } }, output);
 
-    assert.match(output.system[0], /Do not include startup status or advisory messages in chat/);
-    assert.doesNotMatch(output.system[0], /cache lines/);
-    assert.doesNotMatch(output.system[0], /\[SECURITY ADVISORY\] Rotate test credentials/);
-    assert.doesNotMatch(output.system[0], /\[WARN\] Pulse stalled for 12 minutes/);
-    assert.doesNotMatch(output.system[0], /Security: all protections active/);
+    assert.match(output.system.at(-1), /Do not include startup status or advisory messages in chat/);
+    assert.doesNotMatch(output.system.at(-1), /cache lines/);
+    assert.doesNotMatch(output.system.at(-1), /\[SECURITY ADVISORY\] Rotate test credentials/);
+    assert.doesNotMatch(output.system.at(-1), /\[WARN\] Pulse stalled for 12 minutes/);
+    assert.doesNotMatch(output.system.at(-1), /Security: all protections active/);
   });
 
   test("avoids duplicate greeting after salutation-only launch input", async () => {
@@ -133,8 +134,8 @@ describe("token cost advisory threshold", () => {
 
     await hooks.systemTransformHook({ model: { providerID: "openai" } }, output);
 
-    assert.match(output.system[0], /do not add any additional salutations, greetings, introductory questions, or equivalent help prompts/);
-    assert.doesNotMatch(output.system[0], /How can I help you\?/);
+    assert.match(output.system.at(-1), /do not add any additional salutations, greetings, introductory questions, or equivalent help prompts/);
+    assert.doesNotMatch(output.system.at(-1), /How can I help you\?/);
   });
 
   test("does not inject session greeting order in headless sessions", async () => {
@@ -156,7 +157,8 @@ describe("token cost advisory threshold", () => {
     await hooks.systemTransformHook({ sessionID: "root-session", model: { providerID: "openai" } }, first);
     await hooks.systemTransformHook({ sessionID: "root-session", model: { providerID: "openai" } }, later);
 
-    assert.match(first.system[0], /Session-start greeting order/);
+    assert.match(first.system.at(-1), /Session-start greeting order/);
+    assert.deepEqual(first.system.slice(0, -1), later.system);
     assert.equal(later.system[0], "base system prompt");
   });
 
