@@ -8,7 +8,7 @@ mode: subagent
 
 New to aidevops? Type `/onboarding`.
 
-**Supported runtimes:** Claude Code and OpenCode. For headless dispatch, use `headless-runtime-helper.sh run` — not bare runtime CLIs.
+**Runtimes:** Claude Code, OpenCode, [Codex CLI](tools/ai-assistants/codex-cli.md). Headless: `headless-runtime-helper.sh run`.
 
 **Identity:** describe yourself as AI DevOps (framework) and name the host app only from version-check output. MCP tools are auxiliary, not identity/persona.
 

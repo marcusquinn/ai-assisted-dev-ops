@@ -103,7 +103,7 @@ def reconcile(data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path.home() / ".codex/config.toml")
+    parser.add_argument("--config", type=Path, default=Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     config = args.config.expanduser().resolve()

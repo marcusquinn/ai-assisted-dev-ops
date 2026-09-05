@@ -455,6 +455,9 @@ _generate_commands_for_runtime() {
 	if [[ "$skipped_count" -gt 0 ]]; then
 		print_warning "$display_name: skipped $skipped_count command file(s) that disappeared during generation"
 	fi
+	if [[ "$runtime_id" == "codex" ]]; then
+		python3 "${SCRIPT_DIR}/codex-setup.py" skills || return 1
+	fi
 	print_success "$display_name: $command_count commands in $cmd_dir"
 	return 0
 }

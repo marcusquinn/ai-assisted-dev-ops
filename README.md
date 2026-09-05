@@ -2073,6 +2073,12 @@ Primary agents live at `.agents/<name>.md`. Each is a domain expert with its own
 
 The `aidevops-` prefix differentiates framework commands from each client's native slash commands and groups them alphabetically in the command picker. It applies to **every** aidevops slash command — not just main agents — so `/aidevops-preflight`, `/aidevops-release`, `/aidevops-commit` etc. all sort together in your `/` menu.
 
+Codex setup/update also installs global `AGENTS.md` guidance, native workflow
+skills and compatible lifecycle hooks. Build+ loads by default; use `/skills`
+for workflows and `/hooks` to review/trust new hooks. Existing personal settings
+are preserved. For full-access launch flags and runtime differences, see
+[Codex CLI integration](.agents/tools/ai-assistants/codex-cli.md).
+
 #### Supported AI clients (14)
 
 The framework installs itself across these clients. Slash commands, agent definitions, and (optionally) session-memory mining are wired up per-client by `setup.sh`, gated on per-client feature flags in `.agents/scripts/runtime-registry.sh`.
@@ -2081,7 +2087,7 @@ The framework installs itself across these clients. Slash commands, agent defini
 |---|---|---|---|---|
 | OpenCode | ✅ `~/.config/opencode/command/` | config-based | ✅ default | Native tab-through primary agents |
 | Claude Code | ✅ `~/.claude/commands/` | ✅ `~/.claude/agents/` | ✅ default | Full feature parity |
-| Codex CLI | ✅ `~/.codex/prompts/` | — | ✅ default | Invoked as `/prompts:aidevops-<name>` |
+| Codex CLI | ✅ native skills + legacy `~/.codex/prompts/` | Workflow skills | ✅ default | `$aidevops-<name>`; legacy `/prompts:aidevops-<name>` |
 | Cursor | ✅ `~/.cursor/commands/` (≥1.6) | ✅ `~/.cursor/agents/` | ✅ default | Frontmatter stripped (not supported) |
 | Droid (Factory) | ✅ `~/.factory/commands/` | — | opt-in | — |
 | Gemini CLI | ✅ `~/.gemini/commands/` | — | opt-in | Converted to TOML (`prompt = """..."""`) |

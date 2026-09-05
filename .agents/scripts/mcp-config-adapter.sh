@@ -242,7 +242,7 @@ else
 			echo "claude-code"
 		fi
 		# Codex
-		if [[ -d "$HOME/.codex" ]] || command -v codex >/dev/null 2>&1; then
+		if [[ -d "${CODEX_HOME:-$HOME/.codex}" ]] || command -v codex >/dev/null 2>&1; then
 			echo "codex"
 		fi
 		# Cursor
@@ -453,9 +453,9 @@ _register_mcp_claude() {
 _register_mcp_codex() {
 	local mcp_name="$1"
 	local mcp_json="$2"
-	local codex_config="$HOME/.codex/config.toml"
+	local codex_config="${CODEX_HOME:-$HOME/.codex}/config.toml"
 
-	mkdir -p "$HOME/.codex"
+	mkdir -p "${CODEX_HOME:-$HOME/.codex}"
 
 	if ! command -v jq >/dev/null 2>&1; then
 		print_warning "jq not found — cannot configure Codex"

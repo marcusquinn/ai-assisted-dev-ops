@@ -2677,7 +2677,7 @@ setup_codex_cli() {
 # Docker Desktop 4.40+ with MCP Toolkit extension is required for `docker mcp`.
 # OrbStack, Colima, Rancher Desktop do not support it.
 _fix_codex_docker_mcp() {
-	local config="$HOME/.codex/config.toml"
+	local config="${CODEX_HOME:-$HOME/.codex}/config.toml"
 	[[ -f "$config" ]] || return 0
 
 	# Check if MCP_DOCKER section exists

@@ -413,6 +413,8 @@ runtime_config_changes_detected() {
 			.agents/scripts/generate-opencode-*.sh | \
 			.agents/scripts/generate-claude-*.sh | \
 			.agents/scripts/runtime-registry.sh | \
+			.agents/scripts/codex-setup.py | \
+			.agents/scripts/codex-mcp-config.py | \
 			.agents/scripts/mcp-config-adapter.sh | \
 			.agents/scripts/prompt-injection-adapter.sh | \
 			.agents/scripts/lib/agent_config.py) return 0 ;;

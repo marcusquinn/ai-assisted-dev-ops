@@ -49,6 +49,12 @@ _generate_mcp_for_runtime() {
 		fi
 	fi
 
+	# Codex has a preserving TOML reconciler; keep generic generation on it.
+	if [[ "$runtime_id" == "codex" ]]; then
+		python3 "${SCRIPT_DIR}/codex-mcp-config.py" || return 1
+		return 0
+	fi
+
 	local mcp_count=0
 
 	# Shared MCP definitions -- defined once, registered for each runtime

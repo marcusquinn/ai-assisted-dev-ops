@@ -204,6 +204,7 @@ update_runtime_configs() {
 		print_info "Unified generator not found — falling back to per-runtime updates"
 		update_opencode_config
 		update_claude_config
+		update_codex_config || return $?
 		return 0
 	fi
 
@@ -232,12 +233,16 @@ update_runtime_configs() {
 			all --runtime "$runtime" || return $?
 	done
 
+	# The incremental ai-session update uses this path too.
+	update_codex_config || return $?
 	return 0
 }
 
 update_codex_config() {
+	local helper_dir
+	helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || return 1
 	# Only run if Codex is installed or config dir exists
-	if [[ ! -d "$HOME/.codex" ]] && ! command -v codex >/dev/null 2>&1; then
+	if [[ ! -d "${CODEX_HOME:-$HOME/.codex}" ]] && ! command -v codex >/dev/null 2>&1; then
 		return 0
 	fi
 
@@ -250,6 +255,7 @@ update_codex_config() {
 
 	# Deploy aidevops MCP servers to Codex config.toml
 	_deploy_codex_mcps || return 1
+	python3 "$helper_dir/codex-setup.py" all || return 1
 
 	print_success "Codex configuration updated"
 	return 0

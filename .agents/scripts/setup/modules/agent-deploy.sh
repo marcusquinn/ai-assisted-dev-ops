@@ -1584,7 +1584,7 @@ _inject_agents_reference_legacy() {
 		fi
 	fi
 
-	# Deploy Codex instructions.md (Codex reads ~/.codex/instructions.md as system prompt)
+	# Deploy Codex global AGENTS.md guidance
 	_deploy_codex_instructions
 
 	# Deploy Cursor AGENTS.md (Cursor reads ~/.cursor/rules/*.md as context)
@@ -1596,39 +1596,15 @@ _inject_agents_reference_legacy() {
 	return 0
 }
 
-# Deploy instructions.md to Codex config directory.
-# Codex reads ~/.codex/instructions.md as its system-level instructions.
+# Share Codex's native guidance installer with setup/update and the adapter.
 _deploy_codex_instructions() {
-	local codex_dir="$HOME/.codex"
-	local instructions_file="$codex_dir/instructions.md"
-
-	# Only deploy if Codex is installed or config dir exists
+	local codex_dir="${CODEX_HOME:-$HOME/.codex}"
 	if [[ ! -d "$codex_dir" ]] && ! command -v codex >/dev/null 2>&1; then
 		return 0
 	fi
-
-	mkdir -p "$codex_dir"
-
-	local reference_content="$_AIDEVOPS_REFERENCE_LINE"
-
-	if [[ -f "$instructions_file" ]]; then
-		# shellcheck disable=SC2088  # Tilde is a literal grep pattern, not a path
-		if grep -q '~/.aidevops/agents/AGENTS.md' "$instructions_file" 2>/dev/null; then
-			print_info "Codex instructions.md already has aidevops reference"
-			return 0
-		fi
-		# Prepend reference to existing instructions
-		local temp_file
-		temp_file=$(mktemp)
-		echo "$reference_content" >"$temp_file"
-		echo "" >>"$temp_file"
-		cat "$instructions_file" >>"$temp_file"
-		mv "$temp_file" "$instructions_file"
-		print_success "Added aidevops reference to $instructions_file"
-	else
-		echo "$reference_content" >"$instructions_file"
-		print_success "Created $instructions_file with aidevops reference"
-	fi
+	local helper_dir
+	helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || return 1
+	python3 "$helper_dir/codex-setup.py" guidance || return 1
 	return 0
 }
 

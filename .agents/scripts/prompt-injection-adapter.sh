@@ -21,7 +21,7 @@
 # Supported runtimes and their prompt mechanisms:
 #   opencode   — json-instructions     (opencode.json "instructions" field)
 #   claude     — agents-md-autodiscovery (~/.config/Claude/AGENTS.md, ~/.claude/AGENTS.md)
-#   codex      — codex-instructions-md  (~/.codex/instructions.md)
+#   codex      — codex-agents-md  (~/.codex/AGENTS.md)
 #   cursor     — cursorrules-plus-agents (~/.cursor/rules/ + AGENTS.md)
 #   droid      — factory-skills         (~/.factory/skills/)
 #   gemini     — gemini-agents-md       (~/.gemini/AGENTS.md)
@@ -90,7 +90,7 @@ if declare -f rt_detect_installed >/dev/null 2>&1; then
 		}
 		case "$runtime_id" in
 		opencode) echo "json-instructions" ;;
-		codex) echo "codex-instructions-md" ;;
+		codex) echo "codex-agents-md" ;;
 		cursor) echo "cursorrules-plus-agents" ;;
 		droid) echo "factory-skills" ;;
 		gemini-cli) echo "gemini-agents-md" ;;
@@ -147,7 +147,7 @@ else
 	_PIA_PROMPT_MECHANISMS=(
 		"json-instructions"
 		"agents-md-autodiscovery"
-		"codex-instructions-md"
+		"codex-agents-md"
 		"cursorrules-plus-agents"
 		"factory-skills"
 		"gemini-agents-md"
@@ -485,18 +485,13 @@ _deploy_prompt_agents_md() {
 	return 0
 }
 
-# Codex: create ~/.codex/instructions.md with framework pointer
+# Codex: use the native global AGENTS.md discovery contract.
 _deploy_prompt_codex_instructions() {
-	local instructions_file="${HOME}/.codex/instructions.md"
-	local ref_line='Read ~/.aidevops/agents/AGENTS.md for AI DevOps framework capabilities and rules.'
-
-	# Only deploy if codex is installed or ~/.codex exists
-	if ! command -v codex &>/dev/null && [[ ! -d "${HOME}/.codex" ]]; then
-		_pia_log "info" "Codex not installed — skipping"
+	local codex_dir="${CODEX_HOME:-$HOME/.codex}"
+	if ! command -v codex &>/dev/null && [[ ! -d "$codex_dir" ]]; then
 		return 0
 	fi
-
-	_pia_ensure_reference_in_file "$instructions_file" "$ref_line" "aidevops"
+	python3 "${_PIA_DIR}/codex-setup.py" guidance || return 1
 	return 0
 }
 
@@ -713,7 +708,7 @@ deploy_prompts_for_runtime() {
 	agents-md-autodiscovery)
 		_deploy_prompt_agents_md "$runtime_id"
 		;;
-	codex-instructions-md)
+	codex-agents-md)
 		_deploy_prompt_codex_instructions
 		;;
 	cursorrules-plus-agents)
@@ -814,8 +809,8 @@ show_prompt_deployment_status() {
 				;;
 			esac
 			;;
-		codex-instructions-md)
-			if grep -q "aidevops" "${HOME}/.codex/instructions.md" 2>/dev/null; then
+		codex-agents-md)
+			if grep -q "aidevops" "${CODEX_HOME:-$HOME/.codex}/AGENTS.md" 2>/dev/null; then
 				deployed="yes"
 			fi
 			;;

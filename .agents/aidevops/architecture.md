@@ -31,7 +31,7 @@ tools:
 
 ## Supported Runtime Integrations
 
-Claude Code and OpenCode are supported runtimes. Canonical agents, workflows, and
+Claude Code, OpenCode and [Codex CLI](../tools/ai-assistants/codex-cli.md) support interactive workflows. Canonical agents, workflows, and
 workload tiers remain provider-agnostic; generated adapters and runtime
 configuration supply runtime-specific commands, tools, and concrete model mappings.
 

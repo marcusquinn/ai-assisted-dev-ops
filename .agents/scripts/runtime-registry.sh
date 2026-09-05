@@ -132,7 +132,7 @@ _RT_DISPLAY_NAME=(
 _RT_CONFIG_PATH=(
 	"\$HOME/.config/opencode/opencode.json"            # opencode
 	"\$HOME/.config/Claude/claude_desktop_config.json" # claude-code
-	"\$HOME/.codex/config.json"                        # codex
+	"\$CODEX_HOME/config.toml"                         # codex
 	"\$HOME/.cursor/mcp.json"                          # cursor
 	"\$HOME/.config/droid/mcp.json"                    # droid
 	"\$HOME/.gemini/settings.json"                     # gemini-cli
@@ -150,7 +150,7 @@ _RT_CONFIG_PATH=(
 _RT_CONFIG_FORMAT=(
 	"json" # opencode
 	"json" # claude-code
-	"json" # codex
+	"toml" # codex
 	"json" # cursor
 	"json" # droid
 	"json" # gemini-cli
@@ -166,20 +166,20 @@ _RT_CONFIG_FORMAT=(
 
 # --- MCP root key (the JSON key under which MCP servers are defined) ---
 _RT_MCP_ROOT_KEY=(
-	"mcp"        # opencode — inside opencode.json
-	"mcpServers" # claude-code
-	"mcpServers" # codex
-	"mcpServers" # cursor
-	"mcpServers" # droid
-	"mcpServers" # gemini-cli
-	"mcpServers" # windsurf
-	"mcpServers" # continue
-	"mcpServers" # kilo
-	"mcpServers" # kiro
-	""           # aider
-	"mcpServers" # amp
-	"mcpServers" # kimi
-	"mcpServers" # qwen
+	"mcp"         # opencode — inside opencode.json
+	"mcpServers"  # claude-code
+	"mcp_servers" # codex
+	"mcpServers"  # cursor
+	"mcpServers"  # droid
+	"mcpServers"  # gemini-cli
+	"mcpServers"  # windsurf
+	"mcpServers"  # continue
+	"mcpServers"  # kilo
+	"mcpServers"  # kiro
+	""            # aider
+	"mcpServers"  # amp
+	"mcpServers"  # kimi
+	"mcpServers"  # qwen
 )
 
 # --- Slash command / prompt / skill directories ---
@@ -189,7 +189,7 @@ _RT_MCP_ROOT_KEY=(
 _RT_COMMAND_DIR=(
 	"\$HOME/.config/opencode/command" # opencode
 	"\$HOME/.claude/commands"         # claude-code
-	"\$HOME/.codex/prompts"           # codex (invoked as /prompts:name)
+	"\$CODEX_HOME/prompts"            # codex (invoked as /prompts:name)
 	"\$HOME/.cursor/commands"         # cursor (Cursor 1.6+)
 	"\$HOME/.factory/commands"        # droid (Factory CLI)
 	"\$HOME/.gemini/commands"         # gemini-cli (TOML format)
@@ -209,7 +209,7 @@ _RT_COMMAND_DIR=(
 _RT_PROMPT_MECHANISM=(
 	"AGENTS.md"     # opencode
 	"AGENTS.md"     # claude-code
-	"system-prompt" # codex
+	"AGENTS.md"     # codex
 	"config"        # cursor (.cursorrules)
 	"AGENTS.md"     # droid
 	"system-prompt" # gemini-cli
@@ -229,7 +229,7 @@ _RT_PROMPT_MECHANISM=(
 _RT_SESSION_DB=(
 	"\$HOME/.local/share/opencode/opencode.db"                                            # opencode (SQLite)
 	"\$HOME/.claude/projects"                                                             # claude-code (JSONL dir)
-	"\$HOME/.codex/sessions"                                                              # codex (JSONL, date-partitioned)
+	"\$CODEX_HOME/sessions"                                                               # codex (JSONL, date-partitioned)
 	"\$HOME/Library/Application Support/Cursor/User/workspaceStorage"                     # cursor (SQLite state.vscdb per workspace)
 	"\$HOME/.factory/sessions"                                                            # droid (JSONL per session)
 	"\$HOME/.gemini/tmp"                                                                  # gemini-cli (JSON per session, per project hash)
@@ -274,8 +274,8 @@ _RT_VAULT_MODE_UNMANAGED="unmanaged"
 #   external    runtime stores history outside local aidevops control.
 #   none        no known local history path.
 _RT_VAULT_SESSION_HISTORY_MODE=(
-	"managed"   # opencode (SQLite path can be relocated to Vault-managed root)
-	"managed"   # claude-code (JSONL project dir can be relocated to Vault-managed root)
+	"managed"                   # opencode (SQLite path can be relocated to Vault-managed root)
+	"managed"                   # claude-code (JSONL project dir can be relocated to Vault-managed root)
 	"$_RT_VAULT_MODE_UNMANAGED" # codex
 	"$_RT_VAULT_MODE_UNMANAGED" # cursor
 	"$_RT_VAULT_MODE_UNMANAGED" # droid
@@ -284,8 +284,8 @@ _RT_VAULT_SESSION_HISTORY_MODE=(
 	"$_RT_VAULT_MODE_UNMANAGED" # continue
 	"$_RT_VAULT_MODE_UNMANAGED" # kilo
 	"$_RT_VAULT_MODE_UNMANAGED" # kiro
-	"none"      # per-repo markdown, not centrally managed
-	"external"  # amp (server-side)
+	"none"                      # per-repo markdown, not centrally managed
+	"external"                  # amp (server-side)
 	"$_RT_VAULT_MODE_UNMANAGED" # kimi
 	"$_RT_VAULT_MODE_UNMANAGED" # qwen
 )
@@ -372,7 +372,7 @@ _RT_HEADLESS_SUPPORT=(
 _RT_HEADLESS_CMDLINE_PATTERN=(
 	"\\.opencode run "         # opencode — headless via "run" subcommand
 	"claude (-p|--print|run) " # claude-code — headless via -p, --print, or run
-	"codex "                   # codex — all CLI invocations are headless
+	"codex exec "              # codex — only exec is headless
 	""                         # cursor — no headless mode
 	"droid run "               # droid — headless via "run" subcommand
 	"gemini "                  # gemini-cli — all CLI invocations are headless
@@ -547,6 +547,8 @@ _rt_index() {
 # Handles the "\$HOME" literal stored in arrays (to avoid premature expansion).
 _rt_expand_path() {
 	local path="$1"
+	local codex_home="${CODEX_HOME:-$HOME/.codex}"
+	path="${path//\$CODEX_HOME/$codex_home}"
 	# Replace literal $HOME or \$HOME with actual HOME value
 	path="${path//\\\$HOME/$HOME}"
 	path="${path//\$HOME/$HOME}"
