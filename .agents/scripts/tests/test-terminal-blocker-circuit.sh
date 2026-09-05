@@ -295,6 +295,26 @@ test_unknown_and_redaction() {
 	return 0
 }
 
+test_final_dossier_and_structural_precedence() {
+	local output="${TEST_ROOT}/final.ndjson" status=0
+	printf '%s\n' '{"type":"text","text":"BLOCKED: defect\nTERMINAL_BLOCKER_REASON=target_code_blocker"}' \
+		'{"type":"text","text":"The earlier blocker is resolved."}' >"$output"
+	terminal_blocker_capture_output "$output" && status=1
+	[[ -z "$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT" ]] || status=1
+	printf '%s\n' '{"type":"text","text":"BLOCKED: uncertain\nTERMINAL_BLOCKER_REASON=target_code_blocker\nTERMINAL_BLOCKER_REASON=unsupported"}' >"$output"
+	terminal_blocker_capture_output "$output" || status=1
+	[[ "$(_terminal_blocker_reason "$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT")" == unknown ]] || status=1
+	gh() { printf '%s\n' '{"body":"## How\nFix helper"}'; return 0; }
+	export WORKER_ISSUE_NUMBER=42 DISPATCH_REPO_SLUG="owner/repo"
+	printf '%s\n' '{"type":"text","text":"BLOCKED: defect\nTERMINAL_BLOCKER_REASON=target_code_blocker"}' >"$output"
+	terminal_blocker_capture_output "$output" || status=1
+	[[ "$(_terminal_blocker_reason "$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT")" == missing_files_scope ]] || status=1
+	unset -f gh
+	unset WORKER_ISSUE_NUMBER DISPATCH_REPO_SLUG AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
+	print_result "resolved dossiers and mixed reasons cannot hold; verified missing scope takes precedence" "$status"
+	return 0
+}
+
 main() {
 	test_normalized_blocker_fingerprint
 	test_worker_contract_reason_protocol
@@ -303,6 +323,7 @@ main() {
 	test_dispatch_hold_revalidates_revision
 	test_brief_only_revision
 	test_unknown_and_redaction
+	test_final_dossier_and_structural_precedence
 	test_release_integration_bounds_comments
 	printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]

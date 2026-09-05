@@ -75,20 +75,19 @@ for raw_line in raw.splitlines():
         parts.append(text)
 
 marker = re.compile(r"(^|\n)\s*BLOCKED(?:\s*:|\s*$)", re.IGNORECASE)
-candidates = [part for part in parts if marker.search(part)]
-candidate = candidates[-1] if candidates else (raw if not raw.lstrip().startswith('{') else '')
+candidate = parts[-1] if parts else (raw if not raw.lstrip().startswith('{') else '')
 if not marker.search(candidate):
     raise SystemExit(1)
 
-reasons = re.findall(r"^TERMINAL_BLOCKER_REASON=(missing_files_scope|target_code_blocker)$", candidate, re.M)
-print(reasons[0] if len(reasons) == 1 else 'unknown')
+reasons = re.findall(r"^TERMINAL_BLOCKER_REASON=(.*)$", candidate, re.M)
+allowed = {'missing_files_scope', 'target_code_blocker'}
+print(reasons[0] if len(reasons) == 1 and reasons[0] in allowed else 'unknown')
 PY
 	) || normalized=""
 	[[ -n "$normalized" ]] || return 1
 	# Do not infer a missing heading from words such as "Files Scope excludes".
 	# Verify the structural condition independently against the issue itself.
-	if [[ "$normalized" != "target_code_blocker" &&
-		"${WORKER_ISSUE_NUMBER:-}" =~ ^[0-9]+$ &&
+	if [[ "${WORKER_ISSUE_NUMBER:-}" =~ ^[0-9]+$ &&
 		"${DISPATCH_REPO_SLUG:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
 		issue_json=$(gh api "repos/${DISPATCH_REPO_SLUG}/issues/${WORKER_ISSUE_NUMBER}" 2>/dev/null) || issue_json=""
 		if printf '%s' "$issue_json" | jq -e '.body | type == "string"' >/dev/null 2>&1 &&
