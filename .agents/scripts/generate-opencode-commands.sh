@@ -40,6 +40,7 @@ echo -e "${BLUE}Generating OpenCode commands...${NC}"
 mkdir -p "$OPENCODE_COMMAND_DIR"
 
 command_count=0
+manual_command_names=" "
 
 # Agent name constants (single source of truth for agent renames)
 readonly AGENT_BUILD="Build+"
@@ -88,6 +89,7 @@ create_command() {
 		cat <<<"$body"
 	} >"${OPENCODE_COMMAND_DIR}/${name}.md"
 
+	manual_command_names+="${name} "
 	((++command_count))
 	echo -e "  ${GREEN}✓${NC} Created /${name} command"
 	return 0
@@ -168,8 +170,11 @@ discover_commands() {
 		# Skip SKILL.md (not a command)
 		[[ "$cmd_name" == "SKILL" ]] && continue
 
-		# Skip if already manually defined (avoid duplicates)
-		[[ -f "$OPENCODE_COMMAND_DIR/$cmd_name.md" ]] && continue
+		# Preserve commands defined explicitly during this run, but refresh
+		# previously auto-discovered files so stale routing metadata cannot survive.
+		case "$manual_command_names" in
+		*" $cmd_name "*) continue ;;
+		esac
 
 		# Preserve OpenCode frontmatter while removing provider-neutral tiers.
 		if copy_discovered_command "$cmd_file" "$OPENCODE_COMMAND_DIR/$cmd_name.md"; then
