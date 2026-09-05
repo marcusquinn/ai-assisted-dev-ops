@@ -756,7 +756,6 @@ _approval_apply_issue_lifecycle_updates() {
 	local slug="$2"
 	local gh_user=""
 	local edit_err=""
-	local lock_err=""
 	local status_err=""
 	local restore_err=""
 	local _ah_labels_json=""
@@ -800,17 +799,10 @@ _approval_apply_issue_lifecycle_updates() {
 	_print_info "Lifecycle updated: status:available, removed needs-maintainer-review, added auto-dispatch"
 	_print_info "Assigned to $gh_user"
 
-	lock_err=$(_approval_lock_issue "$target_number" "$slug" 2>&1 >/dev/null) || {
-		_print_error "Approval advisory lock failure: issue #$target_number could not be locked after approval state updates"
-		[[ -n "$lock_err" ]] && _print_error "$lock_err"
-		restore_err=$(_approval_restore_nmr_hold issue "$target_number" "$slug" 2>&1 >/dev/null) || {
-			_print_error "Failed to restore needs-maintainer-review after lock uncertainty on issue #$target_number"
-			[[ -n "$restore_err" ]] && _print_error "$restore_err"
-		}
-		return 1
-	}
-	_print_info "Issue #$target_number locked (scope finalized, unlocks after worker completion)"
-
+	# The issue was locked before its signed snapshot was built. Do not mutate
+	# it a second time here: the fresh final-state read below must still verify
+	# locked=true. If another actor unlocked it, restore the hold rather than
+	# relocking and hiding a break in signed-snapshot continuity.
 	if ! _approval_verify_issue_state "$target_number" "$slug" "$gh_user"; then
 		restore_err=$(_approval_restore_nmr_hold issue "$target_number" "$slug" 2>&1 >/dev/null) || {
 			_print_error "Failed to restore needs-maintainer-review after final-state uncertainty on issue #$target_number"
@@ -818,6 +810,7 @@ _approval_apply_issue_lifecycle_updates() {
 		}
 		return 1
 	fi
+	_print_info "Issue #$target_number lock verified (scope finalized, unlocks after worker completion)"
 
 	# t2057: remove only the local claim stamp after the complete remote state is
 	# verified. Invoking `release` here would perform a second remote status write
