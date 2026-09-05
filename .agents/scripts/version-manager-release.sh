@@ -650,6 +650,51 @@ validate_release_deployment_readiness() {
 _AIDEVOPS_RELEASE_ACTIVE_PRESERVATION_SHA=""
 _AIDEVOPS_RELEASE_SQUASH_RECOVERY_SHA=""
 _AIDEVOPS_RELEASE_INITIAL_ACTIVE_SHA=""
+_AIDEVOPS_RELEASE_TRANSITION_LOCK_DIR=""
+
+_acquire_release_runtime_transition_lock() {
+	local lock_dir="${AIDEVOPS_RUNTIME_TRANSITION_LOCK_DIR:-${HOME}/.aidevops/locks/runtime-transition.lock.d}"
+	local waited=0
+	local owner_pid=""
+
+	mkdir -p "${lock_dir%/*}" || return 1
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		owner_pid=""
+		if [[ -r "$lock_dir/pid" ]]; then
+			IFS= read -r owner_pid <"$lock_dir/pid" || owner_pid=""
+		fi
+		if [[ "$owner_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
+			rm -f "$lock_dir/pid"
+			rmdir "$lock_dir" 2>/dev/null || true
+			continue
+		fi
+		[[ "$waited" -lt 30 ]] || return 1
+		sleep 1
+		waited=$((waited + 1))
+	done
+	printf '%s\n' "$$" >"$lock_dir/pid" || {
+		rmdir "$lock_dir" 2>/dev/null || true
+		return 1
+	}
+	_AIDEVOPS_RELEASE_TRANSITION_LOCK_DIR="$lock_dir"
+	return 0
+}
+
+_release_runtime_transition_lock() {
+	local lock_dir="$_AIDEVOPS_RELEASE_TRANSITION_LOCK_DIR"
+	local owner_pid=""
+
+	[[ -n "$lock_dir" ]] || return 0
+	if [[ -r "$lock_dir/pid" ]]; then
+		IFS= read -r owner_pid <"$lock_dir/pid" || owner_pid=""
+	fi
+	if [[ "$owner_pid" == "$$" ]]; then
+		rm -f "$lock_dir/pid"
+		rmdir "$lock_dir" 2>/dev/null || true
+	fi
+	_AIDEVOPS_RELEASE_TRANSITION_LOCK_DIR=""
+	return 0
+}
 
 _verify_squash_integrated_active_source() {
 	local sync_repo_root="$1"
@@ -659,25 +704,42 @@ _verify_squash_integrated_active_source() {
 	local tag_name="${AIDEVOPS_RELEASE_LANE_TAG:-}"
 	local tag_sha=""
 	local merge_base=""
-	local changed_paths=""
+	local repo_slug=""
+	local path_list=""
 	local changed_path=""
+	local paths_match=1
+	local verify_base="${AIDEVOPS_TEMP_DIR:-${HOME}/.aidevops/.agent-workspace/tmp}"
 
 	[[ "${AIDEVOPS_RELEASE_SQUASH_RECOVERY:-0}" == "1" ]] || return 1
 	[[ "$source_pr" =~ ^[0-9]+$ && "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+	repo_slug=$(_version_manager_repo_slug) || return 1
+	declare -F release_lane_setup_guard >/dev/null 2>&1 || return 1
+	release_lane_setup_guard "$repo_slug" || return 1
+	jq -e --argjson source_pr "$source_pr" --arg tag_name "$tag_name" '
+		.active == true and .source_pr == $source_pr and .tag == $tag_name
+		and .phase == "exact-tag-deployment" and ((.terminal_receipt // null) == null)
+	' <<<"${_AIDEVOPS_RELEASE_LANE_JSON:-}" >/dev/null || return 1
 	tag_sha=$(git -C "$sync_repo_root" rev-parse "refs/tags/${tag_name}^{commit}" 2>/dev/null) || return 1
 	[[ "$tag_sha" == "$release_sha" ]] || return 1
 	merge_base=$(git -C "$sync_repo_root" merge-base "$active_sha" "$release_sha" 2>/dev/null) || return 1
 	[[ "$merge_base" != "$active_sha" && "$merge_base" != "$release_sha" ]] || return 1
-	changed_paths=$(git -C "$sync_repo_root" -c core.quotePath=false diff --name-only --no-renames \
-		"$merge_base" "$active_sha" 2>/dev/null) || return 1
-	[[ -n "$changed_paths" ]] || return 1
-	while IFS= read -r changed_path; do
+	mkdir -p "$verify_base" || return 1
+	path_list=$(mktemp "$verify_base/release-squash-paths.XXXXXX") || return 1
+	if ! git -C "$sync_repo_root" diff --name-only -z --no-renames \
+		"$merge_base" "$active_sha" >"$path_list" 2>/dev/null || [[ ! -s "$path_list" ]]; then
+		rm -f "$path_list"
+		return 1
+	fi
+	while IFS= read -r -d '' changed_path; do
 		[[ -n "$changed_path" ]] || continue
 		if ! git -C "$sync_repo_root" diff --quiet "$active_sha" "$release_sha" -- "$changed_path"; then
 			print_error "Post-release squash recovery rejected active source ${active_sha:0:12}: changed path is not identical in release: $changed_path"
-			return 1
+			paths_match=0
+			break
 		fi
-	done <<<"$changed_paths"
+	done <"$path_list"
+	rm -f "$path_list" || return 1
+	[[ "$paths_match" -eq 1 ]] || return 1
 	_AIDEVOPS_RELEASE_SQUASH_RECOVERY_SHA="$active_sha"
 	return 0
 }
@@ -804,6 +866,9 @@ run_post_release_agent_sync() {
 	local remote_url
 	local release_sha=""
 	local active_preservation_exit=0
+	local transition_locked=0
+	local inner_transition_lock=""
+	local -a deploy_env=(env -u AIDEVOPS_AGENTS_DIR -u AGENTS_DIR)
 	remote_url=$(git -C "$sync_repo_root" remote get-url origin 2>/dev/null || echo "")
 
 	if [[ "$remote_url" != *"marcusquinn/aidevops"* ]]; then
@@ -843,8 +908,18 @@ run_post_release_agent_sync() {
 		print_error "Post-release deployment gate could not verify the active runtime before deployment"
 		return 1
 	fi
+	if [[ -n "$_AIDEVOPS_RELEASE_SQUASH_RECOVERY_SHA" ]]; then
+		if ! _acquire_release_runtime_transition_lock; then
+			print_error "Post-release squash recovery could not acquire the runtime activation lock"
+			return 1
+		fi
+		transition_locked=1
+		inner_transition_lock="${_AIDEVOPS_RELEASE_TRANSITION_LOCK_DIR}.release-inner.$$"
+		deploy_env+=("AIDEVOPS_RUNTIME_TRANSITION_LOCK_DIR=$inner_transition_lock")
+	fi
 	if ! _verify_release_deployment_source_unchanged \
 		"$sync_repo_root" "$release_sha" "$HOME/.aidevops/agents"; then
+		[[ "$transition_locked" -eq 0 ]] || _release_runtime_transition_lock
 		print_error "Post-release deployment gate rejected a dirty, changed, or concurrently replaced exact-tag source"
 		return 1
 	fi
@@ -856,9 +931,10 @@ run_post_release_agent_sync() {
 	print_info "Running post-release aidevops agent sync..."
 	local sync_output=""
 	local sync_exit=0
-	sync_output=$(env -u AIDEVOPS_AGENTS_DIR -u AGENTS_DIR \
+	sync_output=$("${deploy_env[@]}" \
 		AIDEVOPS_DEPLOY_TARGET="$HOME/.aidevops/agents" \
 		bash "$deploy_script" "${deploy_args[@]}" 2>&1) || sync_exit=$?
+	[[ "$transition_locked" -eq 0 ]] || _release_runtime_transition_lock
 
 	if [[ "$sync_exit" -ne 0 && "$sync_exit" -ne 2 ]]; then
 		print_error "Post-release aidevops deployment or CLI convergence failed: $sync_output"

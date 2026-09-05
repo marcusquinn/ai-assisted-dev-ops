@@ -44,6 +44,10 @@ set -euo pipefail
 printf 'AIDEVOPS_AGENTS_DIR=%s\n' "${AIDEVOPS_AGENTS_DIR-unset}" >>"${SYNC_ENV_LOG_PATH:?SYNC_ENV_LOG_PATH must be set}"
 printf 'AGENTS_DIR=%s\n' "${AGENTS_DIR-unset}" >>"$SYNC_ENV_LOG_PATH"
 printf '%s\n' "$*" >>"${SYNC_LOG_PATH:?SYNC_LOG_PATH must be set}"
+if [[ "${MOCK_REQUIRE_OUTER_LOCK:-0}" == "1" &&
+	! -d "$HOME/.aidevops/locks/runtime-transition.lock.d" ]]; then
+	exit 91
+fi
 if [[ "${MOCK_DEPLOY_EXIT_CODE:-0}" -ne 0 ]]; then
 	exit "$MOCK_DEPLOY_EXIT_CODE"
 fi
@@ -244,6 +248,8 @@ invoke_github_sync() {
 invoke_release_sync() {
 	local repo_root="$1"
 	local deployment_scope="${2:-incremental}"
+	local mock_lane_source_pr="${MOCK_RELEASE_LANE_SOURCE_PR:-${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}}"
+	local mock_lane_tag="${MOCK_RELEASE_LANE_TAG:-${AIDEVOPS_RELEASE_LANE_TAG:-}}"
 	AIDEVOPS_SYNC_REPO_ROOT="$repo_root" \
 		AIDEVOPS_RELEASE_DEPLOY_SCOPE="$deployment_scope" \
 		AIDEVOPS_SYNC_DEPLOY_SCRIPT="$TEST_DIR/repo/.agents/scripts/deploy-agents-on-merge.sh" \
@@ -255,7 +261,21 @@ invoke_release_sync() {
 		AIDEVOPS_RELEASE_SQUASH_RECOVERY="${AIDEVOPS_RELEASE_SQUASH_RECOVERY:-0}" \
 		AIDEVOPS_RELEASE_LANE_SOURCE_PR="${AIDEVOPS_RELEASE_LANE_SOURCE_PR:-}" \
 		AIDEVOPS_RELEASE_LANE_TAG="${AIDEVOPS_RELEASE_LANE_TAG:-}" \
-		bash -c 'source "$1" && run_post_release_agent_sync' _ "$VERSION_HELPER"
+		MOCK_RELEASE_LANE_SOURCE_PR="$mock_lane_source_pr" \
+		MOCK_RELEASE_LANE_TAG="$mock_lane_tag" \
+		bash -c '
+			source "$1"
+			release_lane_setup_guard() {
+				local repo_slug="$1"
+				[[ -n "$repo_slug" ]] || return 1
+				_AIDEVOPS_RELEASE_LANE_JSON=$(jq -cn \
+					--argjson source_pr "${MOCK_RELEASE_LANE_SOURCE_PR:-0}" \
+					--arg tag "${MOCK_RELEASE_LANE_TAG:-}" \
+					"{active:true,source_pr:\$source_pr,tag:\$tag,phase:\"exact-tag-deployment\",terminal_receipt:null}") || return 1
+				return 0
+			}
+			run_post_release_agent_sync
+		' _ "$VERSION_HELPER"
 	return $?
 }
 
@@ -265,20 +285,28 @@ prepare_squash_integrated_release() {
 	local base_sha=""
 	local active_sha=""
 	local release_sha=""
+	local special_path=$'active\nspecial.txt'
 
 	base_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD) || return 1
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout -qb active-branch
 	printf 'active one\n' >"$repo_path/active-one.txt"
 	printf 'active two\n' >"$repo_path/active-two.txt"
-	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add active-one.txt active-two.txt
+	if [[ "$mode" == "newline-changed" ]]; then
+		printf 'active special\n' >"$repo_path/$special_path"
+	fi
+	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" add -A
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" commit -qm "active branch changes"
 	active_sha=$(PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" rev-parse HEAD) || return 1
 	invoke_release_sync "$repo_path" >/dev/null 2>&1 || return 1
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout -q --detach "$base_sha"
 	PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout active-branch -- active-one.txt active-two.txt
+	if [[ "$mode" == "newline-changed" ]]; then
+		PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin git -C "$repo_path" checkout active-branch -- "$special_path"
+	fi
 	case "$mode" in
 	omitted) rm -f "$repo_path/active-two.txt" ;;
 	changed) printf 'different release value\n' >"$repo_path/active-two.txt" ;;
+	newline-changed) printf 'different special value\n' >"$repo_path/$special_path" ;;
 	complete) ;;
 	*) return 1 ;;
 	esac
@@ -778,6 +806,7 @@ test_release_sync_recovers_verified_squash_integration() {
 	release_sha="${evidence#*|}"
 	: >"$TEST_DIR/sync.log"
 	if output=$(AIDEVOPS_RELEASE_SQUASH_RECOVERY=1 AIDEVOPS_RELEASE_LANE_SOURCE_PR=90 \
+		MOCK_REQUIRE_OUTER_LOCK=1 \
 		AIDEVOPS_RELEASE_LANE_TAG=v9.9.10 invoke_release_sync "$repo_path" 2>&1); then
 		IFS= read -r deployed_sha <"$TEST_HOME/.aidevops/.deployed-sha" || deployed_sha=""
 	fi
@@ -794,7 +823,7 @@ test_release_sync_rejects_incomplete_squash_evidence() {
 	local mode=""
 	local repo_path=""
 	local output=""
-	for mode in omitted changed; do
+	for mode in omitted changed newline-changed; do
 		repo_path=$(create_fake_repo "release-squash-$mode" "https://github.com/marcusquinn/aidevops.git")
 		prepare_squash_integrated_release "$repo_path" "$mode" >/dev/null || {
 			print_result "release sync rejects $mode squash integration" 1 "Could not prepare squash topology"
@@ -826,6 +855,16 @@ test_release_sync_requires_matching_squash_lane() {
 		print_result "release sync requires matching squash-recovery lane tag" 0
 	else
 		print_result "release sync requires matching squash-recovery lane tag" 1 "$output"
+	fi
+	: >"$TEST_DIR/sync.log"
+	if output=$(AIDEVOPS_RELEASE_SQUASH_RECOVERY=1 AIDEVOPS_RELEASE_LANE_SOURCE_PR=91 \
+		AIDEVOPS_RELEASE_LANE_TAG=v9.9.10 MOCK_RELEASE_LANE_SOURCE_PR=90 \
+		invoke_release_sync "$repo_path" 2>&1); then
+		print_result "release sync requires matching squash-recovery lane owner" 1 "Mismatched lane owner was accepted"
+	elif [[ "$output" == *"lane-authorized squash-integrated source"* && ! -s "$TEST_DIR/sync.log" ]]; then
+		print_result "release sync requires matching squash-recovery lane owner" 0
+	else
+		print_result "release sync requires matching squash-recovery lane owner" 1 "$output"
 	fi
 	return 0
 }
