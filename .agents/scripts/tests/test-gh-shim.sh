@@ -71,6 +71,11 @@ mkdir -p "$TMP/bin"
 cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 # Stub gh that logs argv
+if [[ "${1:-}" == api && -n "${STUB_TRANSPORT_RESPONSE_FILE:-}" ]]; then
+	printf '%s\n' "$*" >>"$STUB_GH_CALL_LOG"
+	cat "$STUB_TRANSPORT_RESPONSE_FILE"
+	exit "${STUB_TRANSPORT_RC:-0}"
+fi
 if [[ "$1" == "api" && "$2" == "user" ]]; then
 	printf '%s\n' "${STUB_GH_USER:-managed}"
 	exit 0
@@ -408,6 +413,9 @@ source "${SCRIPT_DIR}/test-gh-shim-quota-cases.sh"
 # shellcheck source=./test-gh-shim-policy-cases.sh
 # shellcheck disable=SC1091  # sub-library resolved at runtime via $SCRIPT_DIR
 source "${SCRIPT_DIR}/test-gh-shim-policy-cases.sh"
+
+# shellcheck source=./test-gh-shim-transport-cases.sh
+source "${SCRIPT_DIR}/test-gh-shim-transport-cases.sh"
 
 # =============================================================================
 # Summary

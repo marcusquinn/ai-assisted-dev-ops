@@ -1102,12 +1102,9 @@ _cmd_refresh() {
 
 	_log "refresh complete: search_calls=${_OWNER_SEARCH_CALLS} cache_writes=${_OWNER_CACHE_WRITES} errors=${_OWNER_ERRORS} tickle_fresh=${_PULSE_EVENTS_TICKLE_FRESH} tickle_stale=${_PULSE_EVENTS_TICKLE_STALE} conditional_304=${_OWNER_CONDITIONAL_304} conditional_refreshes=${_OWNER_CONDITIONAL_REFRESHES} conditional_misses=${_OWNER_CONDITIONAL_MISSES}"
 
-	# t2902: aggregate gh API call records to JSON report at the end of each
-	# refresh cycle. Fail-open: if gh-api-instrument.sh isn't sourced, the
-	# 2>/dev/null || true silences the unbound function and the host script
-	# keeps working. trim keeps the append-only log under MAX_LINES.
-	gh_aggregate_calls 2>/dev/null || true
-	gh_trim_log 2>/dev/null || true
+	# The completed Pulse cycle owns report/sidecar publication and retention.
+	# A partial prefetch must not overwrite its bounded coverage with a later
+	# cutoff. Standalone diagnostics use gh-api-instrument.sh report instead.
 
 	# Record tickle counters to pulse-stats.json (one timestamp entry per
 	# fresh/stale owner). Fail-open: pulse_stats_increment is sourced from

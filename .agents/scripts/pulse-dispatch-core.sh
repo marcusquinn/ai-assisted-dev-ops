@@ -240,6 +240,13 @@ check_dispatch_dedup() {
 	return 1
 }
 
+_read_issue_conversation_lock() {
+	local issue_num="$1"
+	local slug="$2"
+	gh api "repos/${slug}/issues/${issue_num}" --jq '.locked' 2>/dev/null || return 1
+	return 0
+}
+
 #######################################
 # Verify an issue conversation lock after GitHub accepts the lock mutation.
 # The issue REST read can briefly lag the mutation, so retry boundedly while
@@ -265,10 +272,12 @@ _verify_issue_conversation_lock() {
 	[[ "$retry_delay" -le 5 ]] || retry_delay=2
 
 	while [[ "$attempt" -le "$attempts" ]]; do
-		locked_state=$(gh api "repos/${slug}/issues/${issue_num}" --jq '.locked == true' 2>/dev/null) || locked_state=""
+		# Retry observed propagation lag, never an unknown transport outcome.
+		locked_state=$(_read_issue_conversation_lock "$issue_num" "$slug") || return 1
 		if [[ "$locked_state" == "true" ]]; then
 			return 0
 		fi
+		[[ "$locked_state" == "false" ]] || return 1
 		if [[ "$attempt" -lt "$attempts" ]]; then
 			sleep "$retry_delay"
 		fi
@@ -291,6 +300,21 @@ lock_issue_for_worker() {
 	local reason="${3:-resolved}"
 
 	[[ -n "$issue_num" && -n "$slug" ]] || return 1
+
+	# Reconciliation frequently revisits an already-locked issue. Use a fresh
+	# REST read, not a marker or a cached discovery snapshot, to avoid repeated
+	# rejected mutations without weakening the launch-time trust boundary.
+	local locked_state=""
+	locked_state=$(_read_issue_conversation_lock "$issue_num" "$slug") || return 1
+	case "$locked_state" in
+	true)
+		_record_auto_dispatch_lock "$issue_num" "$slug" || return 1
+		echo "[pulse-wrapper] Reused existing verified conversation lock for #${issue_num} in ${slug} (GH#30180)" >>"$LOGFILE"
+		return 0
+		;;
+	false) ;;
+	*) return 1 ;;
+	esac
 
 	# aidevops:trust-boundary — never launch a worker when the mutable public
 	# instruction surface could not be frozen and independently re-read.

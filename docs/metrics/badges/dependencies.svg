@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="182" height="20" role="img" aria-label="dependencies: 123 direct">
-  <title>dependencies: 123 direct</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="182" height="20" role="img" aria-label="dependencies: 125 direct">
+  <title>dependencies: 125 direct</title>
   <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
   <clipPath id="r"><rect width="182" height="20" rx="3" fill="#fff"/></clipPath>
   <g clip-path="url(#r)"><rect width="98" height="20" fill="#555"/><rect x="98" width="84" height="20" fill="#4c1"/><rect width="182" height="20" fill="url(#s)"/></g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
     <text x="49.0" y="15" fill="#010101" fill-opacity=".3">dependencies</text><text x="49.0" y="14">dependencies</text>
-    <text x="140.0" y="15" fill="#010101" fill-opacity=".3">123 direct</text><text x="140.0" y="14">123 direct</text>
+    <text x="140.0" y="15" fill="#010101" fill-opacity=".3">125 direct</text><text x="140.0" y="14">125 direct</text>
   </g>
 </svg>

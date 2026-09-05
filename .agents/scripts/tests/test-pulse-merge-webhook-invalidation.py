@@ -550,7 +550,7 @@ class WebhookInvalidationTests(unittest.TestCase):
         self.assertEqual([], self.records)
 
     def _dispatch_receiver_records(
-        self, records: list[str], *, fail_collection: bool = False
+        self, records: list[str], *, fail_collection: bool = False, use_queue: bool = False
     ) -> list[str]:
         actions = self.root / "actions.txt"
         actions.write_text("\n".join(records) + "\n", encoding="utf-8")
@@ -558,6 +558,9 @@ class WebhookInvalidationTests(unittest.TestCase):
         evidence_log = self.root / "dispatch-evidence.log"
         script = r'''
 source "$RECEIVER_PATH"
+if [[ "$USE_QUEUE" == 1 ]]; then
+    source "$QUEUE_LIB"
+fi
 gh_record_efficiency_evidence() {
     local name="$1"
     local value="$2"
@@ -595,6 +598,9 @@ wait
                 "CALL_LOG": str(call_log),
                 "EVIDENCE_LOG": str(evidence_log),
                 "FAIL_COLLECTION": "1" if fail_collection else "0",
+                "USE_QUEUE": "1" if use_queue else "0",
+                "QUEUE_LIB": str(SCRIPTS_DIR / "pulse-merge-dirty-queue.sh"),
+                "AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_DIR": str(self.root / "queue"),
                 "HOME": str(self.root / "home"),
                 "RECEIVER_PATH": str(RECEIVER_PATH),
                 "WEBHOOK_CONF": str(SCRIPTS_DIR.parent / "configs" / "webhook-receiver.conf"),
@@ -662,6 +668,24 @@ wait
         )
         self.assertIn("webhook.missed_recoveries|1", self.dispatch_evidence)
         self.assertNotIn("webhook.invalidations|1", self.dispatch_evidence)
+
+    def test_successful_later_invalidation_cannot_clear_delivery_failure(self) -> None:
+        calls = self._dispatch_receiver_records(
+            [
+                f"DELIVERY v1 received-ms {int(time.time() * 1000)}",
+                "INVALIDATE v1 collection prs owner/repo",
+                f"INVALIDATE v1 checks owner/repo {'c' * 40}",
+                "PROCESS_PR owner/repo 12",
+            ],
+            fail_collection=True,
+        )
+        self.assertEqual(["collection|prs|owner/repo", f"checks|owner/repo|{'c' * 40}"], calls)
+
+    def test_receiver_coalesces_repeated_pr_wakes(self) -> None:
+        calls = self._dispatch_receiver_records(
+            ["PROCESS_PR owner/repo 12"] * 3, use_queue=True
+        )
+        self.assertEqual(["process|owner/repo|12"], calls)
 
     def test_receiver_rejects_unknown_protocol_before_process_pr(self) -> None:
         calls = self._dispatch_receiver_records(

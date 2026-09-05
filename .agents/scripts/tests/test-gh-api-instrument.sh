@@ -800,6 +800,22 @@ custom_report_message=$("${PARENT_DIR}/gh-api-instrument.sh" report "$custom_rep
 assert_file_exists "CLI custom report is created" "$custom_report"
 assert_eq "CLI reports the custom output path" "Wrote $custom_report" "$custom_report_message"
 
+# Ad-hoc diagnostics must not replace the completed-cycle proof pair.
+# This test owns a sentinel sidecar; sidecar validity has separate coverage.
+printf '{"fixture":"completed-cycle-sidecar"}\n' >"$AIDEVOPS_GH_API_EVIDENCE"
+cp "$AIDEVOPS_GH_API_REPORT" "$TMPDIR/completed-report.json"
+cp "$AIDEVOPS_GH_API_EVIDENCE" "$TMPDIR/completed-evidence.json"
+live_report="${AIDEVOPS_GH_API_REPORT%.json}-live.json"
+live_message=$("${PARENT_DIR}/gh-api-instrument.sh" report 2>&1 >/dev/null)
+assert_file_exists "CLI default creates a separate live report" "$live_report"
+assert_eq "CLI reports its live destination" "Wrote $live_report" "$live_message"
+preservation_status=0
+cmp -s "$TMPDIR/completed-report.json" "$AIDEVOPS_GH_API_REPORT" || preservation_status=1
+cmp -s "$TMPDIR/completed-evidence.json" "$AIDEVOPS_GH_API_EVIDENCE" || preservation_status=1
+assert_eq "live diagnostics preserve completed-cycle report and sidecar bytes" "0" "$preservation_status"
+assert_eq "batch prefetch does not publish partial-cycle proof" "0" \
+	"$(grep -c '^[[:space:]]*gh_aggregate_calls' "${PARENT_DIR}/pulse-batch-prefetch-helper.sh" || true)"
+
 # --- Test 13: time/line/byte retention is atomic and bounded -------------
 export AIDEVOPS_GH_API_LOG_MAX_LINES=3
 export AIDEVOPS_GH_API_LOG_MAX_BYTES=10000
@@ -1054,8 +1070,8 @@ assert_path_absent "all auth control commands bypass API telemetry" "$AIDEVOPS_G
 rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"
 PATH="$NATIVE_FIXTURE:/usr/bin:/bin" \
 	"$SHIM_FIXTURE/gh" config get git_protocol >/dev/null
-assert_file_exists "non-auth command retains API telemetry" "$AIDEVOPS_GH_API_LOG"
-assert_eq "non-auth command retains one transport attempt" "1" \
+assert_file_exists "local config command retains logical telemetry" "$AIDEVOPS_GH_API_LOG"
+assert_eq "local config command makes no synthetic transport attempt" "0" \
 	"$(awk -F'\t' '$9 == "attempt" { count++ } END { print count + 0 }' "$AIDEVOPS_GH_API_LOG")"
 
 rm -f "$AIDEVOPS_GH_API_LOG" "$NATIVE_ATTEMPT_LOG"

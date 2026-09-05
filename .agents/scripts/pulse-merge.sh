@@ -94,6 +94,11 @@ PULSE_REVIEW_GATE_MODE_CI_REPAIR_ONLY="ci-repair-only"
 : "${PULSE_MERGE_BATCH_LIMIT:=50}"
 : "${PULSE_MERGE_CLOSE_CONFLICTING:=true}"
 
+if [[ -f "${BASH_SOURCE[0]%/*}/pulse-merge-dirty-queue.sh" ]]; then
+	# shellcheck source=./pulse-merge-dirty-queue.sh
+	source "${BASH_SOURCE[0]%/*}/pulse-merge-dirty-queue.sh"
+fi
+
 # Comma-delimited label pattern constant — avoids matching "origin:worker-takeover"
 # when checking for "origin:worker" in comma-joined label strings. (t2449)
 _OW_LABEL_PAT=",origin:worker,"
@@ -1740,6 +1745,14 @@ _pmp_stage_finalize_merge() {
 
 _process_single_ready_pr() {
 	local repo_slug="$1" pr_obj="$2" timing_prefix="${3:-}" stage_rc=0
+	local queue_parent_context="${_PULSE_MERGE_QUEUE_CONTEXT:-}"
+	local _PULSE_MERGE_QUEUE_CONTEXT="" _PULSE_MERGE_QUEUE_OWNED=0 _PULSE_MERGE_QUEUE_DIRTY=0
+	if declare -F _pulse_merge_queue_begin_object >/dev/null 2>&1; then
+		_pulse_merge_queue_begin_object "$repo_slug" "$pr_obj" "$queue_parent_context" || return 4
+		if [[ "$_PULSE_MERGE_QUEUE_DIRTY" -eq 1 && "${4:-0}" != 1 ]]; then
+			_pulse_merge_queue_refresh_object "$repo_slug" pr_obj || { _pulse_merge_queue_finish 1; return 1; }
+		fi
+	fi
 	local pr_number="" pr_state="" pr_mergeable="" pr_review="" pr_author="" pr_title="" pr_updated_at=""
 	local pr_head_ref_oid="" pr_head_ref_name="" pr_base_ref_name="" pr_labels="" pr_is_draft="false"
 	local _mergeability_start="" _branch_protection_start="" _ruleset_start=""
@@ -1753,10 +1766,15 @@ _process_single_ready_pr() {
 		_pmp_stage_admin_merge _pmp_stage_ruleset_fallback; do
 		stage_rc=0
 		"$stage" || stage_rc=$?
-		[[ "$stage_rc" -eq 10 ]] || return "$stage_rc"
+		if [[ "$stage_rc" -ne 10 ]]; then
+			declare -F _pulse_merge_queue_finish >/dev/null 2>&1 && _pulse_merge_queue_finish "$stage_rc"
+			return "$stage_rc"
+		fi
 	done
-	_pmp_stage_finalize_merge
-	return $?
+	stage_rc=0
+	_pmp_stage_finalize_merge || stage_rc=$?
+	declare -F _pulse_merge_queue_finish >/dev/null 2>&1 && _pulse_merge_queue_finish "$stage_rc"
+	return "$stage_rc"
 }
 
 #######################################
@@ -1794,16 +1812,23 @@ process_pr() {
 		return 1
 	fi
 
+	local queue_parent_context="${_PULSE_MERGE_QUEUE_CONTEXT:-}"
+	local _PULSE_MERGE_QUEUE_CONTEXT="" _PULSE_MERGE_QUEUE_OWNED=0 _PULSE_MERGE_QUEUE_DIRTY=0
+	if declare -F _pulse_merge_queue_begin >/dev/null 2>&1; then
+		_pulse_merge_queue_begin "$repo_slug" "$pr_number" event "$queue_parent_context" || return 4
+	fi
+
 	# Fetch the PR JSON in the same shape _merge_ready_prs_for_repo uses and
 	# synthesize a single-PR object. _process_single_ready_pr expects a compact
 	# JSON object with metadata used by draft, label, stale, and repair-routing
 	# gates.
 	local pr_obj
-	pr_obj=$(AIDEVOPS_GH_REST_FIRST_READS=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
+	pr_obj=$(AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1 AIDEVOPS_GH_REST_FIRST_READS=1 gh_pr_view "$pr_number" --repo "$repo_slug" \
 		--json "$(_pulse_merge_ready_pr_json_fields)" 2>/dev/null) || pr_obj=""
 
 	if [[ -z "$pr_obj" || "$pr_obj" == "null" ]]; then
 		echo "[pulse-merge] process_pr: gh pr view failed for ${repo_slug}#${pr_number}" >>"$LOGFILE"
+		declare -F _pulse_merge_queue_finish >/dev/null 2>&1 && _pulse_merge_queue_finish 1
 		return 1
 	fi
 
@@ -1813,12 +1838,17 @@ process_pr() {
 	_pmp_normalize_pr_lifecycle_state_into pr_state "$pr_state"
 	if [[ "$pr_state" != "OPEN" ]]; then
 		echo "[pulse-merge] process_pr: PR ${repo_slug}#${pr_number} is not OPEN (state=${pr_state}) — skipping" >>"$LOGFILE"
+		local queue_result=1
+		case "$pr_state" in CLOSED|MERGED) queue_result=2 ;; esac
+		declare -F _pulse_merge_queue_finish >/dev/null 2>&1 && _pulse_merge_queue_finish "$queue_result"
 		return 1
 	fi
 
 	echo "[pulse-merge] process_pr: webhook-triggered merge attempt for ${repo_slug}#${pr_number} (t3038)" >>"$LOGFILE"
-	_process_single_ready_pr "$repo_slug" "$pr_obj"
-	return $?
+	local process_result=0
+	_process_single_ready_pr "$repo_slug" "$pr_obj" "" 1 || process_result=$?
+	declare -F _pulse_merge_queue_finish >/dev/null 2>&1 && _pulse_merge_queue_finish "$process_result"
+	return "$process_result"
 }
 
 #######################################

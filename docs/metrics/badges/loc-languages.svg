@@ -3,21 +3,21 @@
   <rect width="520" height="96" fill="#ffffff"/>
   <rect x="20" y="10" width="480" height="14" rx="3" fill="#eaecef"/>
   <rect x="20" y="10" width="271" height="14" fill="#89e051"/>
-  <rect x="291" y="10" width="117" height="14" fill="#083fa1"/>
-  <rect x="408" y="10" width="61" height="14" fill="#e34c26"/>
-  <rect x="469" y="10" width="12" height="14" fill="#3572A5"/>
-  <rect x="481" y="10" width="10" height="14" fill="#f1e05a"/>
-  <rect x="491" y="10" width="9" height="14" fill="#292929"/>
+  <rect x="291" y="10" width="91" height="14" fill="#083fa1"/>
+  <rect x="382" y="10" width="44" height="14" fill="#3572A5"/>
+  <rect x="426" y="10" width="41" height="14" fill="#e34c26"/>
+  <rect x="467" y="10" width="21" height="14" fill="#f1e05a"/>
+  <rect x="488" y="10" width="12" height="14" fill="#292929"/>
   <rect x="20" y="34" width="10" height="10" rx="2" fill="#89e051"/>
-  <text x="34" y="44" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">Shell <tspan fill="#57606a">54.7%</tspan></text>
+  <text x="34" y="44" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">Shell <tspan fill="#57606a">55.1%</tspan></text>
   <rect x="270" y="34" width="10" height="10" rx="2" fill="#083fa1"/>
-  <text x="284" y="44" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">Markdown <tspan fill="#57606a">23.6%</tspan></text>
-  <rect x="20" y="50" width="10" height="10" rx="2" fill="#e34c26"/>
-  <text x="34" y="60" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">HTML <tspan fill="#57606a">12.4%</tspan></text>
-  <rect x="270" y="50" width="10" height="10" rx="2" fill="#3572A5"/>
-  <text x="284" y="60" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">Python <tspan fill="#57606a">2.5%</tspan></text>
+  <text x="284" y="44" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">Markdown <tspan fill="#57606a">18.5%</tspan></text>
+  <rect x="20" y="50" width="10" height="10" rx="2" fill="#3572A5"/>
+  <text x="34" y="60" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">Python <tspan fill="#57606a">9.0%</tspan></text>
+  <rect x="270" y="50" width="10" height="10" rx="2" fill="#e34c26"/>
+  <text x="284" y="60" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">HTML <tspan fill="#57606a">8.5%</tspan></text>
   <rect x="20" y="66" width="10" height="10" rx="2" fill="#f1e05a"/>
-  <text x="34" y="76" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">JavaScript <tspan fill="#57606a">2.1%</tspan></text>
+  <text x="34" y="76" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">JavaScript <tspan fill="#57606a">4.4%</tspan></text>
   <rect x="270" y="66" width="10" height="10" rx="2" fill="#292929"/>
-  <text x="284" y="76" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">JSON <tspan fill="#57606a">1.4%</tspan></text>
+  <text x="284" y="76" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11" fill="#24292f">JSON <tspan fill="#57606a">1.7%</tspan></text>
 </svg>

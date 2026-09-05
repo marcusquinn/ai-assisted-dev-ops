@@ -483,12 +483,20 @@ gh_request_attempt_state_cleanup() {
 _gh_request_attempt_state_record() {
 	local logical_id="$1"
 	local http_status="$2"
+	local outcome="${3:-}"
 	local state_file="${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_FILE:-}"
 	[[ -n "${_GH_API_REQUEST_LOGICAL_ID:-}" &&
 		"$logical_id" == "$_GH_API_REQUEST_LOGICAL_ID" ]] || return 0
 	[[ "${_GH_API_REQUEST_ATTEMPT_COUNT:-}" =~ ^[0-9]+$ ]] || _GH_API_REQUEST_ATTEMPT_COUNT=0
 	_GH_API_REQUEST_ATTEMPT_COUNT=$((_GH_API_REQUEST_ATTEMPT_COUNT + 1))
-	if [[ "$http_status" =~ ^[45][0-9][0-9]$ ]]; then
+	# Keep the private two-column wire compatible. Non-HTTP execution errors
+	# stop alternate transports too; public telemetry retains the actual status.
+	# A successful HTTP response can still fail gh's local --jq projection;
+	# preserve the existing equivalent-read fallback for that distinct case.
+	if [[ "$outcome" == error && ! "$http_status" =~ ^[1-5][0-9][0-9]$ ]]; then
+		http_status=transport-error
+	fi
+	if [[ "$http_status" =~ ^[45][0-9][0-9]$ || "$http_status" == transport-error ]]; then
 		_GH_API_REQUEST_HTTP_FAILURE=1
 	fi
 	if _gh_request_attempt_state_file_valid "$state_file"; then
@@ -526,7 +534,7 @@ gh_request_has_http_failure() {
 	if [[ "$logical_id" == "${AIDEVOPS_GH_REQUEST_ATTEMPT_STATE_LOGICAL_ID:-}" ]] &&
 		_gh_request_attempt_state_file_valid "$state_file"; then
 		while IFS=$'\t' read -r recorded_logical_id http_status; do
-			if [[ "$recorded_logical_id" == "$logical_id" && "$http_status" =~ ^[45][0-9][0-9]$ ]]; then
+			if [[ "$recorded_logical_id" == "$logical_id" && ( "$http_status" =~ ^[45][0-9][0-9]$ || "$http_status" == transport-error ) ]]; then
 				return 0
 			fi
 		done <"$state_file"
@@ -710,7 +718,9 @@ gh_record_attempt() {
 	[[ -n "$api_pool" ]] || api_pool=$(_gh_default_pool "$path")
 	[[ -n "$auth_mode" ]] || auth_mode="${AIDEVOPS_GH_AUTH_MODE:-$(_gh_default_auth "$api_pool")}"
 	[[ -n "$route_decision" ]] || route_decision="${AIDEVOPS_GH_ROUTE_DECISION:-${api_pool}-selected}"
-	_gh_request_attempt_state_record "$logical_id" "$http_status" || true
+	# Only the native boundary can attest a transport execution error. Legacy
+	# logical adapters may fail a local projection after a successful request.
+	_gh_request_attempt_state_record "$logical_id" "$http_status" "${AIDEVOPS_GH_NATIVE_EXECUTION_OUTCOME:-}" || true
 	[[ "${AIDEVOPS_GH_API_INSTRUMENT_DISABLE:-0}" == "1" ]] && return 0
 	_gh_append_v2 attempt "$caller" "$path" "$auth_mode" "$api_pool" "$route_decision" \
 		"$budget_remaining" "$logical_id" "$attempt_id" "$page" "$retry" "$outcome" \
@@ -782,7 +792,11 @@ gh_run_transport_attempt() {
 		fi
 	fi
 	start_ms=$(_gh_now_ms) || start_ms=""
-	if "$@"; then
+	local -a transport_command=("$@")
+	if declare -F _gh_transport_capture_errors >/dev/null 2>&1; then
+		transport_command=(_gh_transport_capture_errors "$@")
+	fi
+	if "${transport_command[@]}"; then
 		rc=0
 		if [[ -z "$quota_cost" && -n "$success_quota_cost" ]]; then
 			quota_cost="$success_quota_cost"
@@ -988,8 +1002,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 		gh_record_efficiency_evidence "$@"
 		;;
 	report | aggregate)
+		# An ad-hoc report is not a completed-cycle publication. Keep it away
+		# from the canonical report/sidecar pair unless a target is explicit.
+		if [[ $# -eq 0 ]]; then
+			set -- "${AIDEVOPS_GH_API_LIVE_REPORT:-${GH_API_REPORT%.json}-live.json}"
+		fi
 		gh_aggregate_calls "$@"
-		printf 'Wrote %s\n' "${1:-$GH_API_REPORT}" >&2
+		printf 'Wrote %s\n' "$1" >&2
 		;;
 	trim)
 		gh_trim_log

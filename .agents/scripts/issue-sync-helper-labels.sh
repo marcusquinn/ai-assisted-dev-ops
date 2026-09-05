@@ -306,10 +306,34 @@ gh_find_issue_by_title() {
 		--json number,title --jq "[.[] | select(.title | startswith(\"${prefix}\"))][0].number // empty" 2>/dev/null || echo ""
 }
 
-gh_find_merged_pr() {
+_gh_find_merged_pr_evidence() {
 	local repo="$1" task_id="$2"
-	gh pr list --repo "$repo" --state merged --search "$task_id in:title" \
-		--limit 1 --json number,url 2>/dev/null | jq -r '.[0] | select(. != null) | "\(.number)|\(.url)"' || true
+	local results="" pr_info=""
+
+	if ! results=$(gh pr list --repo "$repo" --state merged --search "$task_id in:title" \
+		--limit 1 --json number,url 2>/dev/null); then
+		return 2
+	fi
+	if ! pr_info=$(printf '%s' "$results" | jq -er '
+		if type != "array" then error("expected PR array")
+		elif length == 0 then ""
+		else .[0]
+			| select((.number | type) == "number" and (.url | type) == "string" and (.url | length) > 0)
+			| "\(.number)|\(.url)"
+		end' 2>/dev/null); then
+		return 2
+	fi
+	[[ -n "$pr_info" ]] || return 1
+	printf '%s\n' "$pr_info"
+	return 0
+}
+
+gh_find_merged_pr() {
+	local repo="$1" task_id="$2" pr_info=""
+	if pr_info=$(_gh_find_merged_pr_evidence "$repo" "$task_id"); then
+		printf '%s\n' "$pr_info"
+	fi
+	return 0
 }
 
 ensure_labels_exist() {

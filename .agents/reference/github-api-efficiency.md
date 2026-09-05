@@ -61,6 +61,21 @@ The benchmark validates:
 Any unknown quota cost or unclassified transport attempt prevents `PASS`.
 Never derive a benchmark by reading the raw JSONL/log source directly.
 
+### Live diagnostics versus completed-cycle proof
+
+`gh-api-instrument.sh report` now writes `gh-api-calls-by-stage-live.json` by
+default (override `AIDEVOPS_GH_API_LIVE_REPORT`). It does not replace the canonical
+completed-cycle report or its digest-bound evidence sidecar. Explicit output
+paths remain supported. Batch prefetch no longer publishes a partial-cycle
+aggregate: `pulse-wrapper-cycle-gates.sh` owns the exact completed cutoff.
+
+### Native transport boundary
+
+Read [GitHub API transport and freshness](github-api-transport.md) for the shared
+cooldown, bounded authenticated REST-read admission, native compatibility limits,
+query-shape optimisations, and generation-fenced event queue. These controls do
+not relax this benchmark's completeness or correctness requirements.
+
 ### Quota-cost attribution
 
 Quota cost is known only when the operation owns authoritative per-request

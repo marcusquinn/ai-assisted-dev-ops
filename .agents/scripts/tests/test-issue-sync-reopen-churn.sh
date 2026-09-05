@@ -22,11 +22,15 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/201" ]]; then
 	exit 0
 fi
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/208" ]]; then
-	printf '{"number":208,"title":"declined issue","state_reason":"NOT_PLANNED","closed_at":"2026-08-20T14:15:16Z"}\n'
+	printf '{"number":208,"title":"declined issue","state":"closed","state_reason":"NOT_PLANNED","closed_at":"2026-08-20T14:15:16Z"}\n'
 	exit 0
 fi
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/209" ]]; then
-	printf '{"number":209,"title":"declined issue without closure time","state_reason":"NOT_PLANNED"}\n'
+	printf '{"number":209,"title":"declined issue without closure time","state":"closed","state_reason":"NOT_PLANNED"}\n'
+	exit 0
+fi
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/212" ]]; then
+	printf '{"number":212,"title":"completed issue with unavailable comments","state":"closed","state_reason":"COMPLETED","closed_at":"2026-08-22T14:15:16Z"}\n'
 	exit 0
 fi
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/202/comments" ]]; then
@@ -54,6 +58,10 @@ if [[ "${1:-}" == "api" && "${2:-}" == "graphql" ]]; then
 		;;
 	*"number=207"*)
 		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}'
+		exit 0
+		;;
+	*"number=212"*)
+		printf '%s\n' '{"data":{"repository":{"nameWithOwner":"owner/repo","issue":{"closedByPullRequestsReferences":{"nodes":[],"pageInfo":{"hasNextPage":false}}}},"rateLimit":{"cost":1}}}'
 		exit 0
 		;;
 	esac
@@ -148,6 +156,7 @@ cat >"$todo_file" <<'EOF'
 - [>] t210 claimed declined row ref:GH#210 logged:2026-08-02
 - [x] t211 completed row ref:GH#211 completed:2026-08-03
 - [ ] t209 incomplete closure evidence ref:GH#209 logged:2026-08-04
+- [ ] t212 completed issue with unavailable evidence ref:GH#212 logged:2026-08-05
 EOF
 
 export DRY_RUN=false
@@ -185,10 +194,12 @@ check_output "NOT_PLANNED without deterministic closure evidence fails closed" "
 check_success "failed closure evidence leaves the live row unchanged" \
 	grep -Fqx -- '- [ ] t209 incomplete closure evidence ref:GH#209 logged:2026-08-04' "$todo_file"
 
-gh_find_merged_pr() {
+_gh_find_merged_pr_evidence() {
 	local repo="$1"
 	local task_id="$2"
-	[[ "$repo" == "owner/repo" && "$task_id" == "t-title-match" ]] || return 1
+	[[ "$repo" == "owner/repo" ]] || return 1
+	[[ "$task_id" == "t-title-unavailable" ]] && return 2
+	[[ "$task_id" == "t-title-match" ]] || return 1
 	printf '%s\n' '42|https://github.com/owner/repo/pull/42'
 	return 0
 }
@@ -199,9 +210,23 @@ check_output "task-title merged PR remains the first reopen proof" \
 check_output "structural closing PR prevents false reopen when title omits task ID" \
 	"27347|https://github.com/owner/repo/pull/27347" \
 	_reopen_find_merged_pr "owner/repo" "t18109" "205"
+check_output "structural closing PR remains positive evidence after title lookup failure" \
+	"27347|https://github.com/owner/repo/pull/27347" \
+	_reopen_find_merged_pr "owner/repo" "t-title-unavailable" "205"
 check_failure "truncated structural closing relationships fail closed" _reopen_find_merged_pr "owner/repo" "t18109" "206"
 check_failure "unmetered structural closing relationships fail closed" _reopen_find_merged_pr "owner/repo" "t18109" "207"
 check_failure "invalid issue coordinates fail closed" _reopen_find_merged_pr "owner/repo" "t18109" "not-a-number"
+
+unavailable_evidence_rc=0
+if _reopen_incomplete_task_line "owner/repo" "$todo_file" "" \
+	'- [ ] t212 completed issue with unavailable evidence ref:GH#212 logged:2026-08-05'; then
+	unavailable_evidence_rc=0
+else
+	unavailable_evidence_rc=$?
+fi
+check_output "unavailable completion lookup never reopens a completed issue" "11" printf '%s' "$unavailable_evidence_rc"
+check_success "unavailable completion lookup leaves stale TODO state unchanged" \
+	grep -Fqx -- '- [ ] t212 completed issue with unavailable evidence ref:GH#212 logged:2026-08-05' "$todo_file"
 
 printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
 if [[ "$FAIL" -gt 0 ]]; then

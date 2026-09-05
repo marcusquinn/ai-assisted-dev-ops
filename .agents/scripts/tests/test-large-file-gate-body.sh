@@ -236,6 +236,17 @@ assert_contains \
 	"$sh_body_section" \
 	"Complexity Bump Justification"
 
+# Test 3.6: generated shell brief has an editable canonical scope
+assert_contains \
+	"sh-complexity: canonical Files Scope heading" \
+	"$sh_body_section" \
+	"### Files Scope"
+# shellcheck disable=SC2016 # literal generator template expression
+assert_contains \
+	"sh-complexity: cited file is editable" \
+	"$sh_body_section" \
+	'- EDIT: \`${file_path}\`'
+
 ######################################################################
 # Part 4: MD agent doc body (pulse-simplification.sh)
 #
@@ -269,6 +280,17 @@ assert_contains \
 	"md-simplification: complexity-bump-ok label mention" \
 	"$md_body_section" \
 	"complexity-bump-ok"
+
+# Test 4.5: generated Markdown brief has an editable canonical scope
+assert_contains \
+	"md-simplification: canonical Files Scope heading" \
+	"$md_body_section" \
+	"### Files Scope"
+# shellcheck disable=SC2016 # literal generator template expression
+assert_contains \
+	"md-simplification: cited file is editable" \
+	"$md_body_section" \
+	'- EDIT: \`${file_path}\`'
 
 ######################################################################
 # Part 5: Requeue body (pulse-simplification-state.sh)

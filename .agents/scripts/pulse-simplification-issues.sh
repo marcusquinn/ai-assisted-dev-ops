@@ -206,6 +206,10 @@ _complexity_scan_build_md_issue_body() {
 **Detected topic:** ${topic_label:-Unknown}
 **Current size:** ${line_count} lines
 
+### Files Scope
+
+- EDIT: \`${file_path}\`
+
 ### Classify before acting
 
 **First, determine the file type** — the correct action depends on whether this is an instruction doc or a reference corpus:
@@ -535,6 +539,10 @@ _complexity_scan_sh_build_issue_body_with_sig() {
 
 **File:** \`${file_path}\`
 **Violations:** ${violation_count} functions exceed ${COMPLEXITY_FUNC_LINE_THRESHOLD} lines
+
+### Files Scope
+
+- EDIT: \`${file_path}\`
 
 ### Functions exceeding threshold
 

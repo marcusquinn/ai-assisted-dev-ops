@@ -56,6 +56,9 @@ fi
 AIDEVOPS_AGENTS_DIR="${SCRIPT_DIR%/scripts}"
 AGENTS_DIR="$AIDEVOPS_AGENTS_DIR"
 export AIDEVOPS_AGENTS_DIR AGENTS_DIR
+export PATH="${SCRIPT_DIR}:${PATH}"
+: "${AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_ENABLED:=1}"
+export AIDEVOPS_PULSE_MERGE_DIRTY_QUEUE_ENABLED
 
 # =============================================================================
 # Config + secret loading
@@ -237,6 +240,35 @@ _webhook_wait_for_dispatch_slot() {
 	return 0
 }
 
+_webhook_schedule_pr() {
+	local slug="$1" pr_number="$2" queue_action="legacy"
+	if declare -F _pulse_merge_queue_enqueue >/dev/null 2>&1; then
+		queue_action=$(_pulse_merge_queue_enqueue "$slug" "$pr_number" 2>>"$WEBHOOK_LOG_FILE") || {
+			_webhook_record_missed_recovery
+			_whlog WARN "Could not persist PR wake; retaining polling recovery"
+			return 0
+		}
+	fi
+	case "$queue_action" in
+	coalesced) return 0 ;;
+	wake|legacy) ;;
+	*)
+		_webhook_record_missed_recovery
+		_whlog WARN "Unrecognized queue receipt; retaining polling recovery"
+		return 0
+		;;
+	esac
+	_whlog INFO "Dispatching process_pr ${slug}#${pr_number}"
+	(
+		set +e
+		[[ "$queue_action" != wake ]] || sleep 2
+		process_pr "$slug" "$pr_number"
+		_whlog INFO "process_pr ${slug}#${pr_number} returned ${?}"
+	) &
+	_webhook_wait_for_dispatch_slot
+	return 0
+}
+
 _dispatch_webhook_action_line() {
 	local line="$1"
 	local verb="" version="" scope="" first="" second="" extra=""
@@ -266,7 +298,7 @@ _dispatch_webhook_action_line() {
 		return 0
 		;;
 	"INVALIDATE v1 collection")
-		_WEBHOOK_INVALIDATION_FAILED=0
+		# A later success must not erase an earlier failure in this delivery.
 		if [[ -n "$extra" ]]; then
 			_WEBHOOK_INVALIDATION_FAILED=1
 			_whlog ERROR "Rejected malformed collection invalidation record"
@@ -280,7 +312,7 @@ _dispatch_webhook_action_line() {
 		return 0
 		;;
 	"INVALIDATE v1 checks")
-		_WEBHOOK_INVALIDATION_FAILED=0
+		# Reset only at the accepted-delivery boundary, never between records.
 		if [[ -n "$extra" ]]; then
 			_WEBHOOK_INVALIDATION_FAILED=1
 			_whlog ERROR "Rejected malformed check invalidation record"
@@ -307,13 +339,7 @@ _dispatch_webhook_action_line() {
 			_whlog WARN "Skipped process_pr because canonical invalidation failed; polling remains active"
 			return 0
 		fi
-		_whlog INFO "Dispatching process_pr ${slug}#${pr_number}"
-		(
-			set +e
-			process_pr "$slug" "$pr_number"
-			_whlog INFO "process_pr ${slug}#${pr_number} returned ${?}"
-		) &
-		_webhook_wait_for_dispatch_slot
+		_webhook_schedule_pr "$slug" "$pr_number"
 		return 0
 	fi
 	if [[ "$verb" == "INVALIDATE" || "$verb" == "DELIVERY" ]]; then

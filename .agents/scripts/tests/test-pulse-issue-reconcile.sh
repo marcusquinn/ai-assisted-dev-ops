@@ -917,6 +917,42 @@ test_gh22802_oimp_lookup_requires_merged_at() {
 	return 0
 }
 
+# Exercise the real REST adapter: a canned mixed list hid the incompatible
+# closed/merged selector and its scan-until-unmerged pagination cost.
+test_oimp_uses_merged_adapter_population() {
+	local helper_def="" tmp_dir="" result=""
+	helper_def=$(sed -n '/^_build_oimp_lookup_for_slug()/,/^}$/p' "${RECONCILE_SH}")
+	tmp_dir=$(mktemp -d)
+	result=$(HOME="$tmp_dir" AIDEVOPS_GH_API_INSTRUMENT_DISABLE=1 bash -c '
+		source "$1/shared-gh-wrappers.sh"
+		eval "$2"
+		calls="$3/calls"
+		: >"$calls"
+		gh_record_call() { return 0; }
+		_rest_api_call() {
+			local endpoint="$4"
+			local page="${endpoint##*page=}"
+			printf "request\n" >>"$calls"
+			if [[ "$page" -gt 3 ]]; then
+				printf "[]\n"
+				return 0
+			fi
+			jq -cn --argjson page "$page" "[range((\$page-1)*100+1;\$page*100+1) | {number:.,merged_at:\"2026-09-04T00:00:00Z\",body:(if . == 1 then \"Resolves #42\" else \"\" end)}]" || return 1
+			return 0
+		}
+		_gh_pr_list_merged() { _rest_pr_list "$@"; return $?; }
+		lookup=$(_build_oimp_lookup_for_slug owner/repo)
+		printf "lookup=%s\ncalls=%s\n" "$lookup" "$(wc -l <"$calls" | tr -d " ")"
+	' _ "${SCRIPT_DIR}/.." "$helper_def" "$tmp_dir" 2>/dev/null)
+	rm -rf "$tmp_dir"
+	if [[ "$result" == $'lookup=|42=1|\ncalls=2' ]]; then
+		_pass "merged reconciliation uses two relevant REST pages, not a discarded unmerged-history scan"
+	else
+		_fail "merged reconciliation adapter population/call budget mismatch: $result"
+	fi
+	return 0
+}
+
 # ---------------------------------------------------------------------------
 # Test 14 (t2985): grep-based lookup avoids prefix-substring false matches
 # ---------------------------------------------------------------------------
@@ -1355,6 +1391,7 @@ test_t2984_time_budget_present
 test_t2984_budget_env_validation
 test_t2985_oimp_lookup_builder
 test_gh22802_oimp_lookup_requires_merged_at
+test_oimp_uses_merged_adapter_population
 test_t2985_oimp_lookup_no_prefix_collision
 test_t2985_action_oimp_single_signature
 test_gh25896_oimp_closes_consolidated_successor

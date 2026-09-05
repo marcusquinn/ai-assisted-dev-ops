@@ -80,9 +80,10 @@ export -f gh gh_pr_list
 source "${SCRIPTS_DIR}/pulse-dispatch-core.sh"
 
 reset_gh_calls
+GH_LOCKED=false,true
 if lock_issue_for_worker 41 owner/repo &&
 	grep -q -- 'issue lock 41 --repo owner/repo --reason resolved' "$GH_CALLS" &&
-	grep -q -- 'api repos/owner/repo/issues/41 --jq .locked == true' "$GH_CALLS" &&
+	[[ "$(grep -c -- 'api repos/owner/repo/issues/41 --jq .locked' "$GH_CALLS")" -eq 2 ]] &&
 	[[ -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-41" ]]; then
 	pass "strict lock succeeds only after independent verification"
 else
@@ -90,9 +91,9 @@ else
 fi
 
 reset_gh_calls
-GH_LOCKED=false,false,false
+GH_LOCKED=false
 if ! lock_issue_for_worker 42 owner/repo &&
-	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]] &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 4 ]] &&
 	grep -q -- 'dispatch remains blocked' "$LOGFILE"; then
 	pass "unverified issue lock fails closed"
 else
@@ -100,9 +101,9 @@ else
 fi
 
 reset_gh_calls
-GH_LOCKED=false,true
+GH_LOCKED=false,false,true
 if lock_issue_for_worker 43 owner/repo &&
-	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 2 ]] &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]] &&
 	[[ -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-43" ]]; then
 	pass "stale lock read retries and then succeeds"
 else
@@ -113,8 +114,8 @@ reset_gh_calls
 GH_LOCK_RC=1
 GH_LOCKED=true
 if lock_issue_for_worker 46 owner/repo &&
-	grep -q -- 'issue lock 46 --repo owner/repo --reason resolved' "$GH_CALLS" &&
-	grep -q -- 'api repos/owner/repo/issues/46 --jq .locked == true' "$GH_CALLS" &&
+	! grep -q -- '^issue lock ' "$GH_CALLS" &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 1 ]] &&
 	grep -q -- 'Reused existing verified conversation lock' "$LOGFILE" &&
 	[[ -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-46" ]]; then
 	pass "already locked issue is accepted after independent verification"
@@ -127,19 +128,21 @@ reset_gh_calls
 GH_LOCKED=false
 GH_API_RC=1
 if ! lock_issue_for_worker 44 owner/repo &&
-	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]] &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 1 ]] &&
+	! grep -q -- '^issue lock ' "$GH_CALLS" &&
 	[[ ! -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-44" ]]; then
-	pass "lock verification API errors exhaust retries and fail closed"
+	pass "unknown lock state stops without mutation or transport retries"
 else
-	fail "lock verification API errors exhaust retries and fail closed"
+	fail "unknown lock state stops without mutation or transport retries"
 fi
 
 reset_gh_calls
-GH_LOCKED=false,false,false
+GH_API_RC=0
+GH_LOCKED=false
 AIDEVOPS_CONVERSATION_LOCK_VERIFY_ATTEMPTS=999
 AIDEVOPS_CONVERSATION_LOCK_VERIFY_DELAY=999
 if ! lock_issue_for_worker 45 owner/repo &&
-	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 3 ]]; then
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 4 ]]; then
 	pass "oversized verification controls remain capped"
 else
 	fail "oversized verification controls remain capped"
@@ -160,8 +163,8 @@ mkdir -p "$AIDEVOPS_AUTO_DISPATCH_LOCK_DIR"
 : >"${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-53"
 : >"${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-55"
 if reconcile_auto_dispatch_issue_locks owner/repo "$snapshot" &&
-	grep -q -- 'issue lock 51 --repo owner/repo' "$GH_CALLS" &&
-	grep -q -- 'issue lock 52 --repo owner/repo' "$GH_CALLS" &&
+	! grep -q -- '^issue lock ' "$GH_CALLS" &&
+	[[ "$(grep -c -- '^api ' "$GH_CALLS")" -eq 2 ]] &&
 	grep -q -- 'issue unlock 53 --repo owner/repo' "$GH_CALLS" &&
 	[[ ! -f "${AIDEVOPS_AUTO_DISPATCH_LOCK_DIR}/owner--repo-53" ]] &&
 	! grep -q -- 'issue unlock 55 --repo owner/repo' "$GH_CALLS"; then

@@ -133,6 +133,13 @@ sorted_numbers=$(_pmp_sort_prs_by_backlog_priority "$unsorted_json" | jq -r '[.[
 assert_eq "2: backlog sort processes merge-ready then fix-needed before lower-value buckets" \
 	"1,3,2,4,5" "$sorted_numbers"
 
+second_ready=$(printf '%s' "$merge_ready_pr" | jq -c '.number = 6')
+_pulse_merge_queue_priority_keys() { printf '|6|5|'; return 0; }
+sorted_numbers=$(_pmp_sort_prs_by_backlog_priority "[$human_pr,$dirty_pr,$checks_in_progress_pr,$small_fix_pr,$merge_ready_pr,$second_ready]" owner/repo | jq -r '[.[].number] | join(",")')
+assert_eq "2b: dirty hints break ties without overriding readiness priorities" \
+	"6,1,3,2,4,5" "$sorted_numbers"
+unset -f _pulse_merge_queue_priority_keys
+
 : >"$LOGFILE"
 _pmp_log_pr_backlog_counts "owner/repo" "$unsorted_json"
 log_line=$(grep 'PR backlog owner/repo:' "$LOGFILE" 2>/dev/null || true)
