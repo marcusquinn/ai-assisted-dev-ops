@@ -865,17 +865,35 @@ _validate_commit_and_pr_inputs() {
 
 # --- Staging & Commit ---
 
-# Stage all changes and commit with the given message.
+# Stage product changes without relying on repository-specific ignore rules.
+# Refuse pre-staged runtime changes rather than silently altering the index.
+_stage_product_changes() {
+	local path=""
+	local -a runtime_paths=(".agents/loop-state" ".agents/.full-loop-cleanup-deferred")
+	local -a protected_paths=() stage_paths=(":(top)**")
+	for path in "${runtime_paths[@]}"; do
+		protected_paths+=(":(top,literal)${path}")
+		stage_paths+=(":(top,exclude,literal)${path}")
+	done
+	if ! git diff --cached --quiet -- "${protected_paths[@]}"; then
+		print_error "Runtime state is staged, or its index check failed; unstage runtime paths before retrying."
+		return 1
+	fi
+	if ! git add -A -- "${stage_paths[@]}"; then
+		print_error "git add failed while excluding runtime state"
+		return 1
+	fi
+	return 0
+}
+
+# Stage product changes and commit with the given message.
 # Skips commit if nothing staged but commits exist ahead of the remote default branch.
 # Returns 1 on failure.
 _stage_and_commit() {
 	local commit_message="$1"
 
 	print_info "Staging and committing changes..."
-	if ! git add -A; then
-		print_error "git add failed"
-		return 1
-	fi
+	_stage_product_changes || return 1
 
 	if git diff --cached --quiet 2>/dev/null; then
 		local base_branch="" base_ref="" ahead=""

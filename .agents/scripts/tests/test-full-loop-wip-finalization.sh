@@ -295,6 +295,60 @@ test_orchestrator_finalizes_before_validation() {
 	return 0
 }
 
+test_runtime_state_is_not_committed() {
+	local repo_dir="${TEST_ROOT}/runtime-exclusion"
+	make_repo "$repo_dir" || return 1
+	(
+		set -e
+		cd "$repo_dir" || exit 1
+		mkdir -p .agents/loop-state/nested .agents/product subdir
+		printf 'runtime\n' >.agents/loop-state/full-loop.local.state
+		printf 'nested runtime\n' >.agents/loop-state/nested/state
+		printf 'cleanup\n' >.agents/.full-loop-cleanup-deferred
+		printf 'legitimate\n' >.agents/product/config.md
+		printf 'product\n' >>tracked.txt
+		printf 'already staged\n' >staged.txt
+		git add staged.txt
+		cd subdir || exit 1
+		_stage_and_commit 'fix: product only'
+		cd .. || exit 1
+		[[ "$(git show HEAD:tracked.txt)" == $'base\nproduct' ]]
+		[[ "$(git show HEAD:staged.txt)" == 'already staged' ]]
+		[[ "$(git show HEAD:.agents/product/config.md)" == 'legitimate' ]]
+		[[ -z "$(git ls-files .agents/loop-state .agents/.full-loop-cleanup-deferred)" ]]
+		[[ -f .agents/loop-state/full-loop.local.state ]]
+		[[ -f .agents/.full-loop-cleanup-deferred ]]
+	) >/dev/null 2>&1
+	print_result 'subdirectory staging commits product files but preserves untracked runtime state' "$?"
+	return 0
+}
+
+test_prestaged_runtime_fails_closed() {
+	local repo_dir="${TEST_ROOT}/prestaged-runtime"
+	make_repo "$repo_dir" || return 1
+	(
+		set -e
+		cd "$repo_dir" || exit 1
+		mkdir -p .agents/loop-state
+		printf 'runtime\n' >.agents/loop-state/full-loop.local.state
+		printf 'product\n' >staged.txt
+		git add .agents/loop-state staged.txt
+		local original_head="" original_index=""
+		original_head=$(git rev-parse HEAD)
+		original_index=$(git write-tree)
+		if _stage_and_commit 'fix: must reject runtime' >failure.log 2>&1; then
+			exit 1
+		fi
+		grep -q 'Runtime state is staged' failure.log
+		[[ "$(git rev-parse HEAD)" == "$original_head" ]]
+		[[ "$(git write-tree)" == "$original_index" ]]
+	) >/dev/null 2>&1
+	print_result 'pre-staged runtime fails visibly without changing HEAD or index' "$?"
+	return 0
+}
+
+test_runtime_state_is_not_committed
+test_prestaged_runtime_fails_closed
 test_single_wip_is_finalized
 test_buried_wip_squashes_branch_range
 test_no_wip_preserves_history
@@ -305,8 +359,8 @@ test_base_drift_fails_closed_without_reverting_upstream
 test_orchestrator_finalizes_before_validation
 
 printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
-if [[ "$TESTS_RUN" -ne 8 ]]; then
-	printf '%sFAIL%s expected 8 tests to execute\n' "$TEST_RED" "$TEST_RESET"
+if [[ "$TESTS_RUN" -ne 10 ]]; then
+	printf '%sFAIL%s expected 10 tests to execute\n' "$TEST_RED" "$TEST_RESET"
 	exit 1
 fi
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1
