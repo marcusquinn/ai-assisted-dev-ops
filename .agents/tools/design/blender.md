@@ -65,7 +65,7 @@ These flags are operator attestations, **not sandbox verification**. Never set t
 
 `prepare` prewarms the official package and Python 3.11 environment without requiring a running bridge; it may download Python, source and dependencies. It runs only the package's help command and never starts the MCP server. First-time downloads can exceed MCP startup timeouts, so prepare before connecting. This is package isolation, not OS isolation. The launcher clears inherited uv/Python source overrides and ignores uv config files; it never falls back to the community package.
 
-Open a disposable scene in Blender, enable the **official** add-on, leave auto-start off and start its bridge on `127.0.0.1:9876`. Only literal loopback (`127.0.0.1` or `::1`) is accepted by the launcher. An alternative port must match `BLENDER_MCP_PORT` in the client's inherited environment. Then run:
+Open a disposable scene in Blender, enable the **official** add-on, leave auto-start off and start its bridge on `127.0.0.1:9876`. Only literal IPv4 loopback (`127.0.0.1`) is accepted: the pinned upstream bridge client uses `AF_INET`, not IPv6. An alternative port must match `BLENDER_MCP_PORT` in the client's inherited environment. Then run:
 
 ```bash
 python3 -I ~/.aidevops/agents/scripts/blender-lab-mcp-launcher.py check

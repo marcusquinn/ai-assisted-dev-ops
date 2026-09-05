@@ -38,9 +38,9 @@ def require_consent():
 
 def connection_settings():
     host = os.environ.get("BLENDER_MCP_HOST", "127.0.0.1")
-    # Use literal loopback only: do not trust localhost DNS or arbitrary hosts.
-    if host not in ("127.0.0.1", "::1"):
-        raise ValueError("BLENDER_MCP_HOST must be literal loopback (127.0.0.1 or ::1)")
+    # Upstream uses AF_INET; reject IPv6 as well as DNS/arbitrary hosts.
+    if host != "127.0.0.1":
+        raise ValueError("BLENDER_MCP_HOST must be literal IPv4 loopback (127.0.0.1)")
     port = int(os.environ.get("BLENDER_MCP_PORT", "9876"))
     if not 1 <= port <= 65535:
         raise ValueError("BLENDER_MCP_PORT must be between 1 and 65535")

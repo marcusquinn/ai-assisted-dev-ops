@@ -68,6 +68,7 @@ if '--help' not in sys.argv:
 
     def test_non_loopback_and_invalid_ports_fail_without_provisioning(self):
         for host, port in (("localhost", "9876"), ("0.0.0.0", "9876"),
+                           ("::1", "9876"),
                            ("example.invalid", "9876"), ("127.0.0.1", "0"),
                            ("127.0.0.1", "65536"), ("127.0.0.1", "abc")):
             with self.subTest(host=host, port=port):
