@@ -54,8 +54,8 @@ def guidance(home, agents):
         print("Codex: AGENTS.override.md takes precedence; include the aidevops AGENTS.md reference there if wanted")
 
 
-def skills(home, agents):
-    """Generate bounded pointer skills from the same command sources as OpenCode."""
+def command_sources(agents):
+    """Collect canonical command paths, collapsing prefixed aliases."""
     sources = {}
     for directory in (agents / "commands", agents / "scripts/commands"):
         for source in sorted(directory.glob("*.md")):
@@ -64,9 +64,24 @@ def skills(home, agents):
                 if not name.startswith("aidevops-"):
                     name = "aidevops-" + name
                 sources[name] = source
-    # Main-agent links may not exist on a minimal install yet.
     sources.setdefault("aidevops-build-plus", agents / "build-plus.md")
-    for name, source in sources.items():
+    return sources
+
+
+def skill_text(name, source, agents):
+    """Render a native skill without copying runtime-specific prompt bodies."""
+    description = f"Run the aidevops {name.removeprefix('aidevops-')} workflow when explicitly requested."
+    return (f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\n{START}\n"
+            f"Read {source} and follow that workflow for the user's request.\n"
+            f"Read {agents / 'AGENTS.md'} first if it is not already loaded.\n"
+            "Treat $ARGUMENTS in the source as the user's accompanying request, not a shell variable.\n"
+            "Use the current runtime's tools; OpenCode agent names and tool permissions are routing guidance.\n"
+            f"{END}\n")
+
+
+def skills(home, agents):
+    """Generate bounded pointer skills from the same command sources as OpenCode."""
+    for name, source in command_sources(agents).items():
         if not source.is_file() or not re.fullmatch(r"[a-z0-9-]+", name):
             continue
         directory = home / name
@@ -74,14 +89,7 @@ def skills(home, agents):
         if target.exists() and START not in target.read_text():
             print(f"Codex: preserved personal skill {name}")
             continue
-        description = f"Run the aidevops {name.removeprefix('aidevops-')} workflow when explicitly requested."
-        text = (f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\n{START}\n"
-                f"Read {source} and follow that workflow for the user's request.\n"
-                f"Read {agents / 'AGENTS.md'} first if it is not already loaded.\n"
-                "Treat $ARGUMENTS in the source as the user's accompanying request, not a shell variable.\n"
-                "Use the current runtime's tools; OpenCode agent names and tool permissions are routing guidance.\n"
-                f"{END}\n")
-        write_changed(target, text)
+        write_changed(target, skill_text(name, source, agents))
         # Workflow commands, especially release/deploy, require explicit selection.
         metadata = directory / "agents/openai.yaml"
         if not metadata.exists():
