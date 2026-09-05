@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Enforce product-worker reservations with concurrent reserved and unreserved pools, verified active occupancy, and conservative borrowing when discovery is incomplete.
+- Retire the legacy global peak-hours worker cap and refresh callable-module inventory, webhook guidance, and architecture documentation.
+
+### Fixed
+
+- Resume corrected blocked draft checkpoints with fenced ownership and retain meaningful progress evidence instead of restarting preserved work.
+- Distinguish GitHub API read-capacity deferrals from failed CI or malformed verification evidence without bypassing merge or quota safeguards.
+- Bind blocker recovery to allowlisted reasons and relevant brief or code revisions, including the actual injected worker-contract producer.
+- Reject release aggregations that inherit unreviewed default-branch commits after their reviewed snapshot.
+- Preserve initial-model fallback behavior, stabilize Qlty scan consensus, and align worker-launch fixtures with current preflight contracts.
+
 ## [3.32.316] - 2026-09-05
 
 ### Fixed
