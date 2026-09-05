@@ -262,6 +262,87 @@ test_repository_observation_state_attachment() {
 test_repository_observation_state_attachment
 
 # ============================================================================
+section "Dispatch ownership and unknown observations"
+# ============================================================================
+
+test_observe_uses_current_dispatch_ownership() {
+	local issues observation vote
+	issues='[
+		{"number":101,"assignees":[{"login":"alice"}],"labels":[{"name":"origin:interactive"},{"name":"status:queued"}],"updatedAt":"2026-09-05T05:30:00Z","dispatchLease":{"device":"laptop"}},
+		{"number":102,"assignees":[{"login":"alice"}],"labels":[{"name":"origin:worker"},{"name":"status:in-review"}],"updatedAt":"2026-09-05T05:30:00Z"},
+		{"number":103,"assignees":[{"login":"alice"}],"labels":[{"name":"origin:worker"},{"name":"status:in-progress"}],"updatedAt":"2026-09-03T00:00:00Z","dispatchLease":{"device":"desktop"}},
+		{"number":104,"assignees":[{"login":"alice"},{"login":"bob"}],"labels":[{"name":"status:queued"}],"updatedAt":"2026-09-05T05:30:00Z"},
+		{"number":105,"assignees":[{"login":"alice"}],"labels":[{"name":"origin:worker"},{"name":"status:in-progress"},{"name":"no-auto-dispatch"}],"updatedAt":"2026-09-03T00:00:00Z"}
+	]'
+	observation=$(_observe_peer "alice" "example/repo" "2026-09-04T00:00:00Z" "$issues" 1 '[]' 1)
+	vote=$(_vote_for_peer 2 0 1 known)
+	if printf '%s' "$observation" | jq -e '
+		(.active_claims == 2) and
+		(.stale_claims == 1) and
+		(.observation_state == "known") and
+		(.active_devices.laptop == "2026-09-05T05:30:00Z") and
+		(.active_devices.desktop == "2026-09-03T00:00:00Z")
+	' >/dev/null && [[ "$vote" == "keep" ]]; then
+		pass "queued/in-progress ownership ignores origin while live devices stay keep"
+	else
+		fail "dispatch ownership or live-device freshness was lost" "observation=$observation vote=$vote"
+	fi
+	return 0
+}
+test_observe_uses_current_dispatch_ownership
+
+test_unknown_observation_cannot_ignore_peer() {
+	local issues observation vote
+	issues='[
+		{"number":201,"assignees":[{"login":"alice"}],"labels":[{"name":"status:queued"}],"updatedAt":"2026-09-03T00:00:00Z"},
+		{"number":202,"assignees":[{"login":"alice"}],"labels":[{"name":"status:in-progress"}],"updatedAt":"2026-09-03T00:00:00Z"}
+	]'
+	observation=$(_observe_peer "alice" "example/repo" "2026-09-04T00:00:00Z" "$issues" 1 '[]' 0)
+	vote=$(_vote_for_peer 2 0 2 "$(printf '%s' "$observation" | jq -r '.observation_state')")
+	if printf '%s' "$observation" | jq -e '
+		(.active_claims == 2) and (.stale_claims == 2) and (.observation_state == "unknown")
+	' >/dev/null && [[ "$vote" == "keep" ]]; then
+		pass "partial API observation cannot turn stale claims into ignore"
+	else
+		fail "partial API observation was treated as zero productivity" "observation=$observation vote=$vote"
+	fi
+	return 0
+}
+test_unknown_observation_cannot_ignore_peer
+
+test_dry_run_observation_writes_nothing() {
+	STATE_FILE="$HOME/.aidevops/state/observation-only-state.json"
+	OVERRIDE_CONF="$HOME/.config/aidevops/observation-only.conf"
+	DRY_RUN=1
+	_self_login() {
+		printf 'self-runner'
+		return 0
+	}
+	discover_and_observe() {
+		printf '%s\n' '[{"login":"alice","active_claims":1,"stale_claims":0,"worker_prs":0,"interactive_prs":0,"observation_state":"known","repositories":{}}]'
+		return 0
+	}
+	cmd_observe >/dev/null
+	DRY_RUN=0
+	_self_login() {
+		local login=""
+		login=$(gh api user --jq '.login // ""' 2>/dev/null) || return 1
+		if [[ ! "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+			return 1
+		fi
+		printf '%s' "$login"
+		return 0
+	}
+	if [[ ! -e "$STATE_FILE" && ! -e "$OVERRIDE_CONF" ]]; then
+		pass "dry-run observation writes neither state nor override config"
+	else
+		fail "dry-run observation wrote state or override config"
+	fi
+	return 0
+}
+test_dry_run_observation_writes_nothing
+
+# ============================================================================
 section "Hysteresis (_apply_hysteresis)"
 # ============================================================================
 

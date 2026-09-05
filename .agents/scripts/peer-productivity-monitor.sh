@@ -166,52 +166,89 @@ _sanitize_action() {
 # Observation
 # ============================================================================
 
-# For a given peer, count active claims and worker PRs in window.
-# Outputs JSON: {"login": ..., "active_claims": N, "worker_prs": N, "interactive_prs": N}
+# Count a peer's current dispatch-owned claims and labelled worker PRs from one
+# repository snapshot. Creation origin is provenance, not current ownership:
+# dispatch ownership is status:queued/status:in-progress plus one assignee.
+# Failed or malformed reads remain explicitly unknown, never false zeroes.
 _observe_peer() {
 	local login="$1"
 	local repo="$2"
 	local since_iso="$3"
+	local issues_json="${4:-[]}"
+	local issues_known="${5:-0}"
+	local prs_json="${6:-[]}"
+	local prs_known="${7:-0}"
 
 	local active_claims=0
+	local stale_claims=0
 	local worker_prs=0
 	local interactive_prs=0
+	local active_devices='{}'
+	local freshness_known=1
 
-	# Active worker claims: open issues with origin:worker label assigned to peer.
-	# Filtering by label ensures interactive work never counts as a broken-pulse
-	# signal — only automated worker claims matter for productivity assessment.
-	local claims_json
-	claims_json=$(gh issue list --repo "$repo" --assignee "$login" --state open \
-		--label origin:worker \
-		--limit 100 --json number 2>/dev/null || echo '[]')
-	active_claims=$(printf '%s' "$claims_json" | jq 'length' 2>/dev/null || echo 0)
+	if [[ "$issues_known" == "1" ]]; then
+		local claims_summary
+		claims_summary=$(printf '%s' "$issues_json" | jq -c --arg login "$login" --arg since "$since_iso" '
+			[.[] | select(
+				([.labels[]?.name] as $labels |
+					(($labels | index("status:queued")) != null or
+					 ($labels | index("status:in-progress")) != null) and
+					(($labels | index("status:in-review")) == null) and
+					(($labels | index("no-auto-dispatch")) == null)) and
+				((.assignees | length) == 1) and .assignees[0].login == $login
+			)] as $claims |
+			{
+				active_claims: ($claims | length),
+				stale_claims: ([$claims[] | select((.updatedAt // "") <= $since)] | length),
+				freshness_known: (all($claims[]; (.updatedAt // "") != "")),
+				active_devices: (reduce $claims[] as $claim ({};
+					($claim.dispatchLease.device // $claim.device // ("issue-" + ($claim.number | tostring))) as $device |
+					.[$device] = (if (.[$device] // "") > ($claim.updatedAt // "") then .[$device] else ($claim.updatedAt // "") end)))
+			}' 2>/dev/null) || issues_known=0
+		if [[ "$issues_known" == "1" ]]; then
+			active_claims=$(printf '%s' "$claims_summary" | jq -r '.active_claims')
+			stale_claims=$(printf '%s' "$claims_summary" | jq -r '.stale_claims')
+			freshness_known=$(printf '%s' "$claims_summary" | jq -r 'if .freshness_known then 1 else 0 end')
+			active_devices=$(printf '%s' "$claims_summary" | jq -c '.active_devices')
+		fi
+	fi
 
-	# Worker PRs merged in window (peer is author + origin:worker label).
-	local worker_json
-	worker_json=$(gh pr list --repo "$repo" --author "$login" --state merged \
-		--label origin:worker --limit 50 \
-		--json number,mergedAt 2>/dev/null || echo '[]')
-	worker_prs=$(printf '%s' "$worker_json" | jq --arg since "$since_iso" \
-		'[.[] | select(.mergedAt > $since)] | length' 2>/dev/null || echo 0)
+	# PR provenance is useful for delivered work, but unreadable PR data cannot
+	# become zero productivity.
+	if [[ "$prs_known" == "1" ]]; then
+		local pr_summary
+		pr_summary=$(printf '%s' "$prs_json" | jq -c --arg login "$login" --arg since "$since_iso" '
+			{
+				worker_prs: [.[] | select(.author.login == $login and .mergedAt > $since and any(.labels[]?.name; . == "origin:worker"))] | length,
+				interactive_prs: [.[] | select(.author.login == $login and .mergedAt > $since and any(.labels[]?.name; . == "origin:interactive"))] | length
+			}' 2>/dev/null) || prs_known=0
+		if [[ "$prs_known" == "1" ]]; then
+			worker_prs=$(printf '%s' "$pr_summary" | jq -r '.worker_prs')
+			interactive_prs=$(printf '%s' "$pr_summary" | jq -r '.interactive_prs')
+		fi
+	fi
 
-	# Interactive PRs (informational only — never triggers ignore).
-	local interactive_json
-	interactive_json=$(gh pr list --repo "$repo" --author "$login" --state merged \
-		--label origin:interactive --limit 50 \
-		--json number,mergedAt 2>/dev/null || echo '[]')
-	interactive_prs=$(printf '%s' "$interactive_json" | jq --arg since "$since_iso" \
-		'[.[] | select(.mergedAt > $since)] | length' 2>/dev/null || echo 0)
+	local observation_state="known"
+	if [[ "$issues_known" != "1" || "$prs_known" != "1" || "$freshness_known" != "1" ]]; then
+		observation_state="unknown"
+	fi
 
 	jq -nc \
 		--arg login "$login" \
 		--arg repo "$repo" \
 		--argjson active_claims "$active_claims" \
+		--argjson stale_claims "$stale_claims" \
 		--argjson worker_prs "$worker_prs" \
 		--argjson interactive_prs "$interactive_prs" \
+		--argjson active_devices "$active_devices" \
+		--arg observation_state "$observation_state" \
 		'{login: $login, repo: $repo,
 		  active_claims: $active_claims,
+		  stale_claims: $stale_claims,
 		  worker_prs: $worker_prs,
-		  interactive_prs: $interactive_prs}'
+		  interactive_prs: $interactive_prs,
+		  active_devices: $active_devices,
+		  observation_state: $observation_state}'
 	return 0
 }
 
@@ -239,9 +276,11 @@ _repository_fitness() {
 # a bounded repository map for campaign fitness. Reads JSONL from stdin.
 _aggregate_peer_observations() {
 	jq -s '
+		def known: (.observation_state // "known") == "known";
 		def fitness:
-			if .worker_prs > 0 then ([100, (60 + (.worker_prs * 10))] | min)
-			elif .active_claims >= 2 then 15
+			if known | not then 50
+			elif .worker_prs > 0 then ([100, (60 + (.worker_prs * 10))] | min)
+			elif (.stale_claims // .active_claims) >= 2 then 15
 			else 50
 			end;
 		group_by(.login) | map(
@@ -249,14 +288,19 @@ _aggregate_peer_observations() {
 			{
 				login: .[0].login,
 				active_claims: (map(.active_claims) | add),
+				stale_claims: (map(.stale_claims // .active_claims) | add),
 				worker_prs: (map(.worker_prs) | add),
 				interactive_prs: (map(.interactive_prs) | add),
+				observation_state: (if all(.[]; known) then "known" else "unknown" end),
 				repos: (map(.repo) | unique | sort),
 				repositories: (reduce $observations[] as $observation ({};
 					.[$observation.repo] = {
 						active_claims: $observation.active_claims,
+						stale_claims: ($observation.stale_claims // $observation.active_claims),
 						worker_prs: $observation.worker_prs,
 						interactive_prs: $observation.interactive_prs,
+						active_devices: ($observation.active_devices // {}),
+						observation_state: ($observation.observation_state // "known"),
 						fitness: ($observation | fitness)
 					}
 				) | to_entries | sort_by(.key) | .[0:100] | from_entries)
@@ -308,9 +352,14 @@ discover_and_observe() {
 		local peer_logins=()
 
 		# From assignees on open issues
-		local assigned_json
+		local assigned_json='[]'
+		local assigned_known=1
 		assigned_json=$(gh issue list --repo "$repo" --state open \
-			--limit 200 --json assignees 2>/dev/null || echo '[]')
+			--limit 200 --json number,assignees,labels,updatedAt 2>/dev/null) || assigned_known=0
+		if ! printf '%s' "$assigned_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+			assigned_known=0
+			assigned_json='[]'
+		fi
 		while IFS= read -r login; do
 			[[ -z "$login" ]] && continue
 			[[ "$login" == "$self_login" ]] && continue
@@ -320,9 +369,14 @@ discover_and_observe() {
 			jq -r '.[].assignees[].login' 2>/dev/null | sort -u)
 
 		# From recent merged PR authors
-		local pr_json
+		local pr_json='[]'
+		local pr_known=1
 		pr_json=$(gh pr list --repo "$repo" --state merged --limit 50 \
-			--json author,mergedAt 2>/dev/null || echo '[]')
+			--json author,mergedAt,labels 2>/dev/null) || pr_known=0
+		if ! printf '%s' "$pr_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+			pr_known=0
+			pr_json='[]'
+		fi
 		while IFS= read -r login; do
 			[[ -z "$login" ]] && continue
 			[[ "$login" == "$self_login" ]] && continue
@@ -343,7 +397,7 @@ discover_and_observe() {
 		for peer in "${unique_peers[@]:-}"; do
 			[[ -z "$peer" ]] && continue
 			local obs
-			obs=$(_observe_peer "$peer" "$repo" "$since_iso")
+			obs=$(_observe_peer "$peer" "$repo" "$since_iso" "$assigned_json" "$assigned_known" "$pr_json" "$pr_known")
 			observations+=("$obs")
 		done
 	done < <(_list_pulse_repos)
@@ -366,15 +420,19 @@ discover_and_observe() {
 #
 # Ratio-based decision:
 #   - merges >= 1                        → honour  (peer is productive)
-#   - merges == 0 && claims >= 2         → ignore  (peer is broken: claims but never delivers)
-#   - merges == 0 && claims 0–1          → keep    (insufficient data; 1 in-flight task is normal)
+#   - merges == 0 && stale claims >= 2   → ignore  (peer is broken: no progress)
+#   - fresh or unknown claims             → keep    (live/unknown work is not broken)
 _vote_for_peer() {
 	local active_claims="$1"
 	local worker_prs="$2"
+	local stale_claims="${3:-$active_claims}"
+	local observation_state="${4:-known}"
 
 	if [[ "$worker_prs" -ge 1 ]]; then
 		printf '%s' "$ACTION_HONOUR"
-	elif [[ "$active_claims" -ge 2 ]]; then
+	elif [[ "$observation_state" != "known" ]]; then
+		printf '%s' "$ACTION_KEEP"
+	elif [[ "$stale_claims" -ge 2 ]]; then
 		printf '%s' "$ACTION_IGNORE"
 	else
 		printf '%s' "$ACTION_KEEP"
@@ -588,16 +646,18 @@ cmd_observe() {
 	updated_state=$(printf '%s' "$state_json" | jq --arg self "$self_login" 'del(.[$self])') || return 1
 	while IFS= read -r obs; do
 		[[ -z "$obs" ]] && continue
-		local login active_claims worker_prs interactive_prs repositories
+		local login active_claims stale_claims worker_prs interactive_prs observation_state repositories
 		login=$(printf '%s' "$obs" | jq -r '.login')
 		active_claims=$(printf '%s' "$obs" | jq -r '.active_claims')
+		stale_claims=$(printf '%s' "$obs" | jq -r '.stale_claims')
 		worker_prs=$(printf '%s' "$obs" | jq -r '.worker_prs')
 		interactive_prs=$(printf '%s' "$obs" | jq -r '.interactive_prs')
+		observation_state=$(printf '%s' "$obs" | jq -r '.observation_state // "unknown"')
 		repositories=$(printf '%s' "$obs" | jq -c '.repositories // {}')
 
 		local vote
-		vote=$(_vote_for_peer "$active_claims" "$worker_prs")
-		log_msg INFO "peer=$login active_claims=$active_claims worker_prs=$worker_prs interactive_prs=$interactive_prs vote=$vote"
+		vote=$(_vote_for_peer "$active_claims" "$worker_prs" "$stale_claims" "$observation_state")
+		log_msg INFO "peer=$login active_claims=$active_claims stale_claims=$stale_claims worker_prs=$worker_prs interactive_prs=$interactive_prs observation=$observation_state vote=$vote"
 
 		local peer_state
 		peer_state=$(_apply_hysteresis "$updated_state" "$login" "$vote")
