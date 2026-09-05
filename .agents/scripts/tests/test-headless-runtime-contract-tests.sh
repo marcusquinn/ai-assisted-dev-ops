@@ -44,11 +44,13 @@ test_repository_bound_git_auth_contract() {
 		for reason in repository_mismatch askpass_mismatch identity_invalid token_invalid; do
 			output=$(
 				exec 2>&1
+				# Parenthesized patterns keep Bash 3.2's command-substitution
+				# parser from treating the first pattern terminator as its end.
 				case "$reason" in
-				repository_mismatch) export WORKER_REPO_SLUG=owner/other ;;
-				askpass_mismatch) export GIT_ASKPASS=/bin/true ;;
-				identity_invalid) export GIT_COMMITTER_NAME=other ;;
-				token_invalid) chmod 644 "$AIDEVOPS_GIT_AUTH_TOKEN_FILE" ;;
+				(repository_mismatch) export WORKER_REPO_SLUG=owner/other ;;
+				(askpass_mismatch) export GIT_ASKPASS=/bin/true ;;
+				(identity_invalid) export GIT_COMMITTER_NAME=other ;;
+				(token_invalid) chmod 644 "$AIDEVOPS_GIT_AUTH_TOKEN_FILE" ;;
 				esac
 				if prepare_headless_git_auth_sandbox_env worker; then exit 1; fi
 				[[ -z "${_AIDEVOPS_HEADLESS_GIT_AUTH_ENV_CONFIGURED:-}" ]] || exit 1
