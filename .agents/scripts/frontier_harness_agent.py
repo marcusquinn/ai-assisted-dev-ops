@@ -6,6 +6,7 @@ Use frontier-harness-run.mjs, which owns the bounded OAuth relay. The relay
 capability is not an OpenAI API key and no ChatGPT credential enters the task.
 """
 
+import hashlib
 import os
 from pathlib import Path
 from urllib.parse import urlparse
@@ -52,6 +53,15 @@ class FrontierOpenCode(OpenCode):
         return "frontier-opencode"
 
     async def install(self, environment):
+        # Public trust anchors only: minimal task images may have no CA bundle.
+        # Bootstrap from the host's existing trust store, never disable TLS.
+        ca = next((path for path in (Path("/etc/ssl/cert.pem"),
+                   Path("/etc/ssl/certs/ca-certificates.crt")) if path.is_file()), None)
+        if ca is None:
+            raise ValueError("No public host CA bundle available")
+        (self.logs_dir / "ca-bundle.sha256").write_text(hashlib.sha256(ca.read_bytes()).hexdigest())
+        await self.exec_as_root(environment, command="mkdir -p /etc/ssl/certs")
+        await environment.upload_file(ca, "/etc/ssl/certs/ca-certificates.crt")
         # Local networks may block cleartext package mirrors. Keep TLS
         # verification enabled and make this identical preparation in both arms.
         await self.exec_as_agent(environment, command=(
