@@ -156,7 +156,7 @@ printf 'PASS lane uncertainty blocks authorization expansion before mutation\n'
 	old_authorization='42@2222222222222222222222222222222222222222'
 	expanded_authorization="${old_authorization},43@3333333333333333333333333333333333333333"
 	authorization="$old_authorization"
-	lane_phase=remote-publication
+	lane_phase="remote-publication"
 	auth_write_mode=success
 	: >"$transaction_log"
 	_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED="$expanded_authorization"
@@ -204,7 +204,7 @@ printf 'PASS lane uncertainty blocks authorization expansion before mutation\n'
 	}
 	release_lane_restore_aggregate_recovery() {
 		printf 'restore-lane\n' >>"$transaction_log"
-		lane_phase=remote-publication
+		lane_phase="remote-publication"
 		return 0
 	}
 	_full_loop_recovery_begin_state_transaction test/repo 42 v1.2.3
@@ -212,7 +212,7 @@ printf 'PASS lane uncertainty blocks authorization expansion before mutation\n'
 	[[ "$authorization" == "$expanded_authorization" && "$lane_phase" == "aggregation-recovery" ]]
 
 	authorization="$old_authorization"
-	lane_phase=remote-publication
+	lane_phase="remote-publication"
 	auth_write_mode=failure
 	: >"$transaction_log"
 	if _full_loop_recovery_begin_state_transaction test/repo 42 v1.2.3; then
@@ -1350,6 +1350,7 @@ printf 'PASS failed pre-publication preparation admits only reviewed direct or a
 (
 	real_git=$(type -P git)
 	source "${SCRIPT_DIR}/release-authorization-manifest-helper.sh"
+	source "${SCRIPT_DIR}/release-lane-helper.sh"
 	git() {
 		"$real_git" "$@"
 		return $?
@@ -1361,7 +1362,7 @@ Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
 	manifest=$(_full_loop_successor_manifest_from_body 99 "$stale_body")
 	[[ "$manifest" == '42@2222222222222222222222222222222222222222' ]]
 	if _full_loop_successor_manifest_from_body 100 "$stale_body" >/dev/null 2>&1; then
-			exit 1
+		exit 1
 	fi
 	signed_body=$'Release audit\n\n<!-- aidevops:sig -->\n---\nFixture audit metadata\n\n'"$stale_body"
 	[[ "$(_full_loop_successor_manifest_from_body 99 "$signed_body")" == "$manifest" ]]
@@ -1369,7 +1370,31 @@ Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
 		exit 1
 	fi
 	gh() {
-		local endpoint="$2"
+		local endpoint="" arg="" status=""
+		for arg in "$@"; do
+			[[ "$arg" != repos/* ]] || endpoint="$arg"
+		done
+		if [[ "$endpoint" == repos/test/repo/git/ref/heads/release/* ]]; then
+			case "${REF_MODE:-missing}" in
+			existing) printf '%s\n' 4444444444444444444444444444444444444444; return 0 ;;
+			malformed) printf '{"message":"bad metadata"}\n'; return 0 ;;
+			empty) return 0 ;;
+			missing) status=404 ;;
+			unauthorized) status=401 ;;
+			forbidden) status=403 ;;
+			*) status=503 ;;
+			esac
+			if [[ " $* " == *" --include "* ]]; then
+				printf 'HTTP/2.0 %s response\n\n' "$status"
+			else
+				printf '{"message":"Not Found","status":"%s"}\n' "$status"
+			fi
+			return 1
+		fi
+		if [[ "$endpoint" == repos/test/repo/git/refs ]]; then
+			printf 'branch-created\n' >>"$TEST_ROOT/successor-order"
+			return 0
+		fi
 		if [[ "$endpoint" == repos/test/repo/pulls/99 ]]; then
 			jq -nc --arg body "$signed_body" '{number:99,state:"open",base:{ref:"main"},head:{sha:"1111111111111111111111111111111111111111"},body:$body}'
 			return 0
@@ -1393,7 +1418,14 @@ Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
 		local command_name="${1:-}"
 		shift
 		case "$command_name" in
-		fetch) return 0 ;;
+		fetch)
+			local remote="${1:-}" ref="${2:-}"
+			: "$remote"
+			if [[ "$ref" != main ]]; then
+				printf 'branch-fetch\n' >>"$TEST_ROOT/successor-order"
+				return 1 # Stop after proving branch-create/fetch ordering.
+			fi
+			return 0 ;;
 		rev-parse) printf '%s\n' 3333333333333333333333333333333333333333 ;;
 		interpret-trailers) "$real_git" interpret-trailers "$@" ;;
 		*) return 1 ;;
@@ -1422,8 +1454,27 @@ Aidevops-Release-Aggregates: 42@2222222222222222222222222222222222222222'
 		if _full_loop_release_refresh_aggregate test/repo 99 >/dev/null 2>&1; then exit 1; fi
 		[[ ! -f "$TEST_ROOT/successor-mutation-boundary" ]]
 	done
+	lane_intent=42
+	release_lane_begin_aggregate_successor() { return 0; }
+	_full_loop_successor_create_commit() {
+		printf 'commit-created\n' >>"$TEST_ROOT/successor-order"
+		printf '%s\n' 4444444444444444444444444444444444444444
+		return 0
+	}
+	for REF_MODE in missing existing unavailable unauthorized forbidden malformed empty; do
+		: >"$TEST_ROOT/successor-order"
+		_full_loop_release_refresh_aggregate test/repo 99 >/dev/null 2>&1 || true
+		order=$(tr '\n' ' ' <"$TEST_ROOT/successor-order")
+		case "$REF_MODE" in
+		missing) [[ "$order" == 'commit-created branch-created branch-fetch ' ]] ;;
+		existing) [[ "$order" == 'branch-fetch ' ]] ;;
+		*) [[ -z "$order" ]] ;;
+		esac
+		[[ "$_AIDEVOPS_RELEASE_LANE_BRANCH" == aidevops/release-lane ]]
+	done
 )
 printf 'PASS successor manifest preserves stale sources and adds uniquely mapped main merges\n'
 printf 'PASS successor resolves PR-only reserved intent and Markdown footers before mutation, rejecting unknown, duplicate, and conflicting intent\n'
+printf 'PASS successor ref reads distinguish verified absence, existing identity, and uncertainty before branch mutation\n'
 
 exit 0

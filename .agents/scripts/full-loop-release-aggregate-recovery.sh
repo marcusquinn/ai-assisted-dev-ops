@@ -1340,6 +1340,25 @@ _full_loop_successor_complete_manifest() {
 	return 0
 }
 
+# Return a verified successor SHA, 2 for an explicit 404, or 1 for uncertainty.
+# The branch override is local to this read; later CAS still targets the lane.
+_full_loop_successor_branch_head() {
+	local repo="$1"
+	local branch_name="$2"
+	local _AIDEVOPS_RELEASE_LANE_BRANCH="$branch_name"
+	local head="" read_rc=0
+	head=$(_release_lane_remote_head "$repo") || read_rc=$?
+	if [[ "$read_rc" -eq 2 ]]; then
+		return 2
+	fi
+	if [[ "$read_rc" -ne 0 || ! "$head" =~ $_FULL_LOOP_AGGREGATE_RECOVERY_SHA40_REGEX ]]; then
+		printf 'Successor aggregation refused: branch identity is unavailable or malformed\n' >&2
+		return 1
+	fi
+	printf '%s\n' "$head"
+	return 0
+}
+
 _full_loop_successor_create_commit() {
 	local repo="$1"
 	local parent="$2"
@@ -1403,6 +1422,7 @@ _full_loop_release_refresh_aggregate() {
 	local branch_name=""
 	local owner="${repo%%/*}"
 	local branch_head=""
+	local branch_head_rc=0
 	local initial_commit=""
 	local successor_json=""
 	local successor_pr=""
@@ -1435,8 +1455,9 @@ _full_loop_release_refresh_aggregate() {
 	branch_name="release/aggregate-successor-${stale_pr}-${base_sha:0:12}"
 	release_lane_begin_aggregate_successor "$repo" "$stale_pr" "$base_sha" \
 		"$_FULL_LOOP_AGGREGATE_RECOVERY_EXPECTED" "$branch_name" || return 1
-	branch_head=$(gh api "repos/${repo}/git/ref/heads/${branch_name}" --jq '.object.sha // empty' 2>/dev/null || true)
-	if [[ -z "$branch_head" ]]; then
+	branch_head=$(_full_loop_successor_branch_head "$repo" "$branch_name") || branch_head_rc=$?
+	[[ "$branch_head_rc" -eq 0 || "$branch_head_rc" -eq 2 ]] || return 1
+	if [[ "$branch_head_rc" -eq 2 ]]; then
 		initial_commit=$(_full_loop_successor_create_commit "$repo" "$base_sha" \
 			"chore(release): open successor aggregation for #${stale_pr}") || return 1
 		payload=$(jq -cn --arg ref "refs/heads/${branch_name}" --arg sha "$initial_commit" '{ref:$ref,sha:$sha}') || return 1
