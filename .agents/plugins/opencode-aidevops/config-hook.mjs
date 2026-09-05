@@ -28,6 +28,8 @@ import {
   registerManagedDirectoryPermissions,
 } from "./config-safety-guards.mjs";
 import {
+  ASTRA_COMPACTION_TARGET,
+  ASTRA_OUTPUT_DEFAULT,
   CLAUDE_MODEL_LIMITS,
   GPT56_CONTEXT_DEFAULT,
   GPT56_INPUT_DEFAULT,
@@ -154,12 +156,16 @@ function registerAnthropicModels(config) {
  * @returns {boolean}
  */
 export function gpt56ContextCapEnabled() {
+  return contextCapEnabled("gpt56_context_cap");
+}
+
+function contextCapEnabled(key) {
   const settingsPath = process.env.AIDEVOPS_SETTINGS_FILE ||
     join(homedir(), ".config", "aidevops", "settings.json");
   try {
     if (!existsSync(settingsPath)) return true;
     const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    return settings?.runtime?.opencode?.gpt56_context_cap !== false;
+    return settings?.runtime?.opencode?.[key] !== false;
   } catch {
     return true;
   }
@@ -191,6 +197,24 @@ export function registerGpt56ContextLimits(config) {
     };
   }
   return GPT56_MODEL_IDS.length;
+}
+
+/** Keep Astra at ~400K usable input without changing other models or global reserve. */
+export function registerAstraContextLimits(config) {
+  if (!contextCapEnabled("astra_context_cap")) return 0;
+  config.provider ??= {};
+  config.provider.openai ??= {};
+  config.provider.openai.models ??= {};
+  const models = config.provider.openai.models;
+  const existing = models["gpt-6-astra"] || {};
+  const output = existing.limit?.output ?? ASTRA_OUTPUT_DEFAULT;
+  const reserve = config.compaction?.reserved ?? Math.min(20000, output);
+  const input = ASTRA_COMPACTION_TARGET + reserve;
+  models["gpt-6-astra"] = {
+    ...existing,
+    limit: { ...existing.limit, context: input + output, input, output },
+  };
+  return 1;
 }
 
 /**
@@ -360,7 +384,7 @@ export function createConfigHook(deps) {
     );
     const poolCleaned = registerPoolProvider(config);
     const anthropic = registerAnthropicModels(config);
-    const openai = registerGpt56ContextLimits(config);
+    const openai = registerGpt56ContextLimits(config) + registerAstraContextLimits(config);
     // Discover and register proxy provider models only when a proxy listener is
     // already active. The normal startup path intentionally leaves these ports
     // null until first use, so unconditional imports/discovery here made config

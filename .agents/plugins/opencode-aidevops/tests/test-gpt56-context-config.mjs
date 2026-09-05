@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 
 import {
   gpt56ContextCapEnabled,
+  registerAstraContextLimits,
   registerGpt56ContextLimits,
 } from "../config-hook.mjs";
 
@@ -75,4 +76,36 @@ test("malformed settings fail open to the cost-aware default", () => {
   const file = settingsFile({});
   writeFileSync(file, "not-json");
   assert.equal(gpt56ContextCapEnabled(), true);
+});
+
+test("Astra compacts at 400K with the default and an explicit reserve", () => {
+  settingsFile(undefined);
+  for (const reserve of [undefined, 0, 35000]) {
+    const config = { compaction: reserve === undefined ? {} : { reserved: reserve } };
+    assert.equal(registerAstraContextLimits(config), 1);
+    const limits = config.provider.openai.models["gpt-6-astra"].limit;
+    assert.equal(limits.input - (reserve ?? 20000), 400000);
+    assert.equal(limits.context, limits.input + limits.output);
+    assert.equal(limits.output, 128000);
+    assert.equal(config.compaction.reserved, reserve);
+  }
+});
+
+test("Astra retains model fields and explicit output limits, independently of GPT-5.6", () => {
+  settingsFile({ runtime: { opencode: { gpt56_context_cap: false } } });
+  const config = { provider: { openai: { models: {
+    "gpt-6-astra": { name: "Astra", limit: { context: 1000000, output: 4000 } },
+    "gpt-5.6-sol": { name: "untouched" },
+  } } } };
+  registerAstraContextLimits(config);
+  assert.equal(config.provider.openai.models["gpt-6-astra"].name, "Astra");
+  assert.equal(config.provider.openai.models["gpt-6-astra"].limit.input - 4000, 400000);
+  assert.deepEqual(config.provider.openai.models["gpt-5.6-sol"], { name: "untouched" });
+});
+
+test("Astra opt-out leaves metadata untouched", () => {
+  settingsFile({ runtime: { opencode: { astra_context_cap: false } } });
+  const config = {};
+  assert.equal(registerAstraContextLimits(config), 0);
+  assert.deepEqual(config, {});
 });

@@ -22,6 +22,11 @@ cmd_data() {
 	return 0
 }
 
+cmd_efficiency() {
+	python3 "${SCRIPT_DIR}/report_token_efficiency.py" "$@"
+	return 0
+}
+
 cmd_help() {
 	cat <<'EOF'
 report-token-use-helper.sh — local token-use reporting for AI sessions
@@ -29,6 +34,7 @@ report-token-use-helper.sh — local token-use reporting for AI sessions
 USAGE:
   report-token-use-helper.sh report [--limit N] [--session ID] [--since 7d] [--runtime auto|opencode|claude] [--json] [--open]
   report-token-use-helper.sh data --json [--limit N] [--session ID] [--since 7d] [--runtime auto|opencode|claude]
+  report-token-use-helper.sh efficiency [--since 30d] [--limit N] [--json]
   report-token-use-helper.sh help
 
 OUTPUT:
@@ -51,6 +57,7 @@ main() {
 	case "$cmd" in
 	report) cmd_report "$@" ;;
 	data) cmd_data "$@" ;;
+	efficiency) cmd_efficiency "$@" ;;
 	help | -h | --help) cmd_help ;;
 	*)
 		print_error "unknown command: ${cmd}"

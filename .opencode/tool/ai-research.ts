@@ -24,7 +24,7 @@ import {
 export default tool({
   description:
     "Spawn a focused provider-neutral research query through OpenCode without burning your context. " +
-    "Accepts agent files as system context for domain expertise. " +
+    "Inference-only: cannot browse or inspect the repository itself. Supply narrow source excerpts via files and domain guidance via agents; paths mentioned only in the prompt are not loaded. " +
     "Rate limit: 10 calls per session. Default workload tier: simple.",
   args: {
     prompt: tool.schema
@@ -49,7 +49,7 @@ export default tool({
       .string()
       .optional()
       .describe(
-        "Comma-separated file paths with optional line ranges " +
+        "Source files to load into the child context, comma-separated with optional line ranges " +
           "(e.g. 'src/index.ts:10-50,README.md')"
       ),
     model: tool.schema

@@ -41,6 +41,10 @@ export const GPT56_INPUT_DEFAULT = 260000;
 /** Maximum GPT-5.6 response size advertised by OpenCode's model registry. */
 export const GPT56_OUTPUT_DEFAULT = 128000;
 
+/** Managed Astra compaction target, not a claim about provider capacity. */
+export const ASTRA_COMPACTION_TARGET = 400000;
+export const ASTRA_OUTPUT_DEFAULT = 128000;
+
 /** GPT-5.6 model IDs currently exposed by the OpenAI provider. */
 export const GPT56_MODEL_IDS = [
   "gpt-5.6-sol",

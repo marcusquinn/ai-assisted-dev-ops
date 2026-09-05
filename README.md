@@ -119,6 +119,7 @@ the required notices and preferred credit text.
 - `/auto-browse` - Learn, optimize, and graduate repeatable browser operations and web data-mining workflows
 - `/report-render` - Render report-ready Markdown or JSON to HTML with sticky TOC, print CSS, evidence badges, and source cards for PDF export
 - `/report-token-use` - Generate a local per-session token, model, compaction, and MCP-use report
+- `/report-token-use efficiency --since 7d` - Compare model/effort, reasoning, prompt sizes, cache tokens, and consistently repriced API-equivalent costs without changing the ledger
 - `/optimize-tiers` - Optionally investigate unresolved model comparisons with production telemetry and sealed historical replay
 - `/pulse` - Run the autonomous supervisor loop for dispatch, merge, diagnostics, and stuck-work recovery
 - `/serve-sim` / `serve-sim-helper.sh` - Exercise mobile web flows in simulator-backed local previews
