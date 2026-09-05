@@ -51,6 +51,12 @@ _prrts_worker_login() {
 	return 0
 }
 
+_prrts_checkpoint_author() {
+	_pcc_login_is_safe "$PCC_CHECKPOINT_ASSIGNEE" || return 1
+	printf '%s' "$PCC_CHECKPOINT_ASSIGNEE"
+	return 0
+}
+
 _prrts_prelaunch_target_fence() {
 	local repo_slug="$1"
 	local pr_number="$2"
