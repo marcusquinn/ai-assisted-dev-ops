@@ -49,6 +49,15 @@ aidevops secret HOSTINGER_SSH_PASSWORD_ACCOUNT_1 -- \
 
 Only request another SSH credential when API inventory, the hosting panel, or a failed authenticated probe shows a genuinely different account/server.
 
+### WordPress multisite cron and update readiness
+
+During a WordPress multisite migration, setup, or health check, audit cron coverage
+and automatic-update readiness before relying on traffic-triggered cron. Shared
+plugin files and network-wide updates do not make child-site queues shared; confirm
+each active child has scheduler coverage and preserve the existing update policy.
+For the audit, safe rollout, verification, and targeted recovery procedure, read
+[WordPress multisite cron and automatic-update readiness](hostinger-wordpress-cron.md).
+
 ### Legacy Hostinger helper
 
 Copy template and edit with server details:
