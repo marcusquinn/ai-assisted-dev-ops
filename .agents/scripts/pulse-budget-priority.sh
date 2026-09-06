@@ -263,6 +263,12 @@ _pulse_defer_budget_priority_stage() {
 	priority=$(_pulse_stage_priority_class "$stage")
 	local graphql_mode="${AIDEVOPS_PULSE_GRAPHQL_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
 	local rest_mode="${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS:-$_PULSE_BUDGET_MODE_UNKNOWN}"
+	# Optional housekeeping deferral is not a blocked objective. Progress-stage
+	# deferral is: preserve its cause even when statistics are unavailable.
+	# Keep the identity stable as remaining quota changes within the same mode.
+	if [[ "$priority" == "progress" ]] && declare -F _pulse_cycle_state_note_blocker >/dev/null 2>&1; then
+		_pulse_cycle_state_note_blocker rest-core-quota pulse-budget "$rest_mode" || true
+	fi
 	echo "[pulse-wrapper] budget-priority: deferred ${priority} stage '${stage}' (graphql=${graphql_mode}:${AIDEVOPS_PULSE_GRAPHQL_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_GRAPHQL_BUDGET_LIMIT:-?}@${AIDEVOPS_PULSE_GRAPHQL_BUDGET_THRESHOLD:-?}, rest=${rest_mode}:${AIDEVOPS_PULSE_REST_CORE_BUDGET_REMAINING:-?}/${AIDEVOPS_PULSE_REST_CORE_BUDGET_LIMIT:-?}@${AIDEVOPS_PULSE_REST_CORE_BUDGET_ADAPTIVE_THRESHOLD:-?}, hard_floor=${AIDEVOPS_PULSE_REST_CORE_BUDGET_HARD_FLOOR:-?}, progress_start_floor=${AIDEVOPS_PULSE_REST_CORE_BUDGET_PROGRESS_START_FLOOR:-?})" >>"$LOGFILE"
 	if ! declare -F pulse_stats_increment >/dev/null 2>&1; then
 		return 0

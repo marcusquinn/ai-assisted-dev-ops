@@ -62,7 +62,7 @@ _pulse_cycle_state_blocker_is_valid() {
 	"$PULSE_CYCLE_STATE_BLOCKER_NONE" | session-gate | dedup | preflight-failed | stop-requested | \
 		dispatch-no-work-rate | runner-health | merge-authority | review-gate | \
 		review-bot-threads | required-review-threads | checks-active | \
-		checks-failed | quiet-period | snapshot-unavailable | head-changed | interrupted)
+		checks-failed | quiet-period | snapshot-unavailable | head-changed | interrupted | rest-core-quota)
 		return 0
 		;;
 	esac

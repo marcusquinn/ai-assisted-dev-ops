@@ -216,6 +216,30 @@ else
 	fail "production consumer accepts the real producer output"
 fi
 
+# Exercise the real budget producer through terminal publication and the reader.
+# Statistics are intentionally absent: lifecycle evidence must not depend on them.
+# shellcheck source=../pulse-budget-priority.sh
+source "${SOURCE_DIR}/pulse-budget-priority.sh"
+_PULSE_HEALTH_PRS_MERGED=0
+_pulse_cycle_state_start
+write_pulse_health_file
+AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS=emergency
+_pulse_defer_budget_priority_stage dispatch_max
+_pulse_record_cycle_outcome 1
+_pulse_cycle_state_write_terminal_if_current
+assert_health "quota-deferred progress is blocked rather than idle" '
+	.cycle_state.outcome == "blocked"
+	and .cycle_state.blocker.kind == "rest-core-quota"
+'
+python3 "${SOURCE_DIR}/pulse-current-state.py" \
+	"${HOME}/.aidevops/logs" "$PWD" 900 1 "$SOURCE_DIR" "${TMP_DIR}/review-state" \
+	>"$consumer_output"
+if jq -e '.cycle_state.availability == "available" and .cycle_state.blocker.kind == "rest-core-quota"' "$consumer_output" >/dev/null; then
+	pass "production consumer accepts quota blocker"
+else
+	fail "production consumer accepts quota blocker"
+fi
+
 if [[ ! -e "${HOME}/.aidevops/logs/pulse-cycle-state.json" ]]; then
 	pass "lifecycle state does not create a parallel runtime artifact"
 else

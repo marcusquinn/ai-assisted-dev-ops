@@ -23,7 +23,7 @@ CYCLE_STATE_BLOCKER_KINDS = {
     'dispatch-no-work-rate', 'runner-health', 'merge-authority', 'review-gate',
     'review-bot-threads', 'required-review-threads', 'checks-active',
     'checks-failed', 'quiet-period', 'snapshot-unavailable', 'head-changed',
-    'interrupted',
+    'interrupted', 'rest-core-quota',
 }
 
 
