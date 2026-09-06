@@ -4,13 +4,15 @@
 // Agent index registration and fail-closed research-only profile construction.
 
 import { existsSync, readFileSync, realpathSync } from "fs";
-import { createHash } from "node:crypto";
 import { homedir } from "os";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { loadAgentIndex } from "./agent-loader.mjs";
 import { getOnDemandMcpAgents } from "./mcp-registry.mjs";
 import { DEFAULT_ESCALATION_ORDER, normalizeRoutingTier } from "./model-routing.mjs";
 import { recordPluginHealthStage } from "./plugin-health.mjs";
+import { primaryDeliveryEvidence } from "./primary-delivery-evidence.mjs";
+
+export { primaryDeliveryEvidence } from "./primary-delivery-evidence.mjs";
 
 const ROUTING_TIER_METADATA = "aidevops_model_tier";
 
@@ -176,43 +178,6 @@ export function registerOnDemandMcpAgents(config, agentsDir, routing, state) {
     }
   });
   return injected;
-}
-
-// Report only observed config delivery, never model comprehension or enforcement.
-// OpenCode expands {file:...} before the config hook. An unresolved reference is
-// deliberately not counted as delivered; user prompt overrides remain untouched.
-export function primaryDeliveryEvidence(config, agentsDir) {
-  const sources = [];
-  const version = readIfExists(join(agentsDir, "VERSION"));
-  const core = readIfExists(join(agentsDir, "AGENTS.md"));
-  const instructions = Array.isArray(config.instructions) ? config.instructions : [];
-  const coreCount = instructions.filter((source) => source === join(agentsDir, "AGENTS.md")
-    || source === "~/.aidevops/agents/AGENTS.md").length;
-  for (const profile of Object.values(config.agent || {})) {
-    if (profile.mode !== "primary") continue;
-    const match = profile.description?.match(/^Read ~\/\.aidevops\/agents\/([a-z0-9-]+\.md)$/);
-    if (!match) continue;
-    const source = readIfExists(join(agentsDir, match[1]));
-    sources.push({
-      source: match[1],
-      sha256: source ? createHash("sha256").update(source).digest("hex") : null,
-      delivery: !source ? "missing" : String(profile.prompt || "").trim() === source
-        ? "delivered" : "shadowed_or_unresolved",
-      profileSha256: createHash("sha256").update(JSON.stringify({
-        tools: profile.tools || {}, permission: profile.permission || {},
-      })).digest("hex"),
-    });
-  }
-  return {
-    stage: "config", enforcement: "not_observed",
-    versionSha256: version ? createHash("sha256").update(version).digest("hex") : null,
-    core: {
-      source: "AGENTS.md", configuredCount: coreCount,
-      sha256: core ? createHash("sha256").update(core).digest("hex") : null,
-      delivery: "not_observed_at_config_stage",
-    },
-    sources,
-  };
 }
 
 export function registerAgents(config, agentsDir, routing, state) {

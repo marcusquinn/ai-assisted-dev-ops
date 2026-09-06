@@ -637,6 +637,7 @@ update_health_issues() {
 		echo "[stats] update_health_issues: dry-run, skipping" >>"$LOGFILE"
 		return 0
 	fi
+	# _health_routine_repo_entries applies `.maintenance != false` before work.
 	local _HEALTH_WORK_DEADLINE _HEALTH_SCHEDULE_RUNNER=""
 	_HEALTH_WORK_DEADLINE=$(_stats_work_deadline)
 	_HEALTH_WORK_DEADLINE=$((_HEALTH_WORK_DEADLINE - $(_stats_seconds "${STATS_OPTIONAL_WORK_RESERVE_SECONDS:-120}" 120)))
