@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const MANIFEST_RECEIPT_SCHEMA = "aidevops-source-access-receipt/v2";
 const MANIFEST_PAYLOAD_SCHEMA = "aidevops-source-access-approval/v2";
@@ -84,6 +84,22 @@ export function applyApprovedMutationPatch(state, mutation) {
 
 function repositoryId(repoRoot) {
   return createHash("sha256").update(repoRoot, "utf8").digest("hex");
+}
+
+function repositoryContextMatches(repositoryDir, requestedRoot, git, gitRun) {
+  const contextRoot = realpathSync(repositoryDir);
+  if (contextRoot === requestedRoot) return true;
+  const options = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15000 };
+  const commonDir = (root) => realpathSync(resolve(root, String(
+    gitRun(git, ["-C", root, "rev-parse", "--git-common-dir"], options),
+  ).trim()));
+  if (commonDir(contextRoot) !== commonDir(requestedRoot)) return false;
+  // The ambient app may remain in the canonical checkout. Require an actual
+  // registered worktree in that same repository, not an arbitrary directory.
+  // This proves context only: the signed payload still binds the exact root,
+  // paths, session, user, bytes and snapshots below. No grant is transferred.
+  const worktrees = String(gitRun(git, ["-C", contextRoot, "worktree", "list", "--porcelain", "-z"], options));
+  return worktrees.split("\0").includes(`worktree ${requestedRoot}`);
 }
 
 function manifestScopeId(sessionId, uid, repoRoot, reason, paths) {
@@ -229,7 +245,7 @@ export function validatedManifestReceipt(options, dependencies) {
   const canonicalPath = realpathSync(filePath);
   const requestedIdentity = dependencies.trackedFileIdentity(canonicalPath, git, gitRun);
   requireValidReceipt(requestedIdentity);
-  if (repositoryDir) requireValidReceipt(realpathSync(repositoryDir) === requestedIdentity.repoRoot);
+  if (repositoryDir) requireValidReceipt(repositoryContextMatches(repositoryDir, requestedIdentity.repoRoot, git, gitRun));
   const approvalsDir = join(stateDir, "approvals", String(uid));
   requireValidReceipt(dependencies.trustedDirectory(approvalsDir, trustUid));
   requireValidReceipt(dependencies.trustedDirectory(dirname(publicKeyPath), trustUid));

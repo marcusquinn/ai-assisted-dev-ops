@@ -456,11 +456,12 @@ test("the loaded verifier accepts only the exact signed receipt", () => {
   }
 });
 
-test("one signed manifest authorizes only three exact repository-bound paths", () => {
+async function checkSignedManifest(inLinkedWorktree) {
   const tempParent = join(homedir(), ".aidevops", ".agent-workspace", "tmp");
   mkdirSync(tempParent, { recursive: true });
   const root = mkdtempSync(join(tempParent, "source-access-manifest-node-test-"));
   const repo = join(root, "repo");
+  const canonicalRepo = inLinkedWorktree ? join(root, "canonical") : repo;
   const otherRepo = join(root, "other-repo");
   const key = join(root, "source-access-key");
   const stateDir = join(root, "state");
@@ -469,9 +470,16 @@ test("one signed manifest authorizes only three exact repository-bound paths", (
   const now = 1_800_000_000;
 
   try {
-    mkdirSync(repo);
+    mkdirSync(canonicalRepo);
     mkdirSync(otherRepo);
-    execFileSync("git", ["-C", repo, "init", "--quiet"]);
+    execFileSync("/usr/bin/git", ["-C", canonicalRepo, "init", "--quiet"]);
+    if (inLinkedWorktree) {
+      execFileSync("/usr/bin/git", [
+        "-C", canonicalRepo, "-c", "commit.gpgsign=false", "-c", "user.name=Fixture",
+        "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture",
+      ]);
+      execFileSync("/usr/bin/git", ["-C", canonicalRepo, "worktree", "add", "--detach", "--quiet", repo]);
+    }
     execFileSync("git", ["-C", otherRepo, "init", "--quiet"]);
     const relativePaths = ["secret-helper.sh", "secret-other.sh", "secret-third.sh"];
     const paths = relativePaths.map((name, index) => {
@@ -537,18 +545,56 @@ test("one signed manifest authorizes only three exact repository-bound paths", (
     const baseArgs = {
       sessionId,
       reason: SOURCE_ACCESS_REASON,
-      repositoryDir: repo,
+      repositoryDir: canonicalRepo,
       now: now + 1,
       uid,
       trustUid: uid,
       stateDir,
       publicKeyPath: `${key}.pub`,
     };
+    const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "scripts");
+    const logsDir = join(root, "logs");
+    mkdirSync(logsDir);
+    const hooks = createQualityHooks({
+      scriptsDir,
+      logsDir,
+      repositoryDir: canonicalRepo,
+      verifySourceAccessReceipt: (options) => verifySourceAccessReceipt({ ...baseArgs, ...options }),
+      sourceAccessBrokerMatches: () => true,
+      sourceAccessRequestRun: () => {
+        throw new Error("an exact signed manifest must not generate a per-path request");
+      },
+    });
     for (const filePath of paths) {
       const approval = verifySourceAccessReceipt({ ...baseArgs, filePath });
       assert.ok(approval);
       assert.equal(readFileSync(approval.approvedPath, "utf8"), readFileSync(filePath, "utf8"));
+      const output = { args: { filePath } };
+      await hooks.toolExecuteBefore({ tool: "read", sessionID: sessionId, callID: filePath }, output);
+      assert.equal(output.args.filePath, approval.approvedPath);
     }
+    if (inLinkedWorktree) {
+      const sibling = join(root, "unapproved-sibling");
+      execFileSync("/usr/bin/git", ["-C", canonicalRepo, "worktree", "add", "--detach", "--quiet", sibling]);
+      const siblingPath = join(sibling, relativePaths[0]);
+      writeFileSync(siblingPath, "source-0\n");
+      execFileSync("/usr/bin/git", ["-C", sibling, "add", relativePaths[0]]);
+      assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: siblingPath }), false);
+      assert.equal(verifySourceAccessReceipt({
+        ...baseArgs,
+        filePath: paths[0],
+        gitRun: () => { throw new Error("Git identity unavailable"); },
+      }), false);
+      assert.equal(verifySourceAccessReceipt({
+        ...baseArgs,
+        filePath: paths[0],
+        gitRun: (git, args, options) => args.includes("--porcelain")
+          ? `worktree ${canonicalRepo}\0\0`
+          : execFileSync(git, args, options),
+      }), false);
+    }
+    assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0], repositoryDir: otherRepo }), false);
+    assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: paths[0], sessionId: "ses_other_123456" }), false);
     assert.equal(verifySourceAccessReceipt({ ...baseArgs, filePath: extraPath }), false);
     assert.equal(
       verifySourceAccessReceipt({ ...baseArgs, filePath: foreignPath, repositoryDir: otherRepo }),
@@ -566,7 +612,10 @@ test("one signed manifest authorizes only three exact repository-bound paths", (
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}
+
+test("one signed manifest authorizes only three exact repository-bound paths", () => checkSignedManifest(false));
+test("a canonical app context consumes its exact linked-worktree manifest without per-path requests", () => checkSignedManifest(true));
 
 test("one approval survives verified Write, Edit, and apply_patch cycles", () => {
   const fixture = mutationFixture();
