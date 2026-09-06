@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Parse worker token expiry in UTC during validation, status and cleanup, preventing local timezone offsets from rejecting fresh workers or extending expired credentials.
+
 ## [3.32.318] - 2026-09-06
 
 ### Changed

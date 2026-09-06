@@ -599,8 +599,9 @@ cmd_validate() {
 	log_token "INFO" "Token: strategy=${strategy}, repo=${repo}, expires=${expires_at}"
 
 	local expires_epoch now_epoch
-	expires_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
-		date -d "$expires_at" +%s 2>/dev/null || echo "0")
+	# The literal Z in the BSD format does not select UTC; pin both parsers.
+	expires_epoch=$(date -ujf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
+		date -u -d "$expires_at" +%s 2>/dev/null || echo "0")
 	now_epoch=$(date +%s)
 
 	if [[ "$expires_epoch" -le 0 || "$now_epoch" -gt "$expires_epoch" ]]; then
@@ -735,8 +736,8 @@ cmd_cleanup() {
 
 		if [[ -n "$expires_at" ]]; then
 			local expires_epoch now_epoch
-			expires_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
-				date -d "$expires_at" +%s 2>/dev/null || echo "0")
+			expires_epoch=$(date -ujf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
+				date -u -d "$expires_at" +%s 2>/dev/null || echo "0")
 			now_epoch=$(date +%s)
 
 			if [[ "$expires_epoch" -gt 0 ]] && [[ "$now_epoch" -gt "$expires_epoch" ]]; then
@@ -804,8 +805,8 @@ cmd_status() {
 
 			local now_epoch expires_epoch
 			now_epoch=$(date +%s)
-			expires_epoch=$(date -jf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
-				date -d "$expires_at" +%s 2>/dev/null || echo "0")
+			expires_epoch=$(date -ujf "%Y-%m-%dT%H:%M:%SZ" "$expires_at" +%s 2>/dev/null ||
+				date -u -d "$expires_at" +%s 2>/dev/null || echo "0")
 
 			if [[ "$expires_epoch" -gt 0 ]] && [[ "$now_epoch" -gt "$expires_epoch" ]]; then
 				((++expired_count))

@@ -40,6 +40,22 @@ test_repository_bound_git_auth_contract() {
 		prepare_headless_git_auth_sandbox_env worker || exit 1
 		[[ "$GIT_ASKPASS" == "$scripts/github-auth-askpass.sh" ]] || exit 1
 		_headless_git_auth_sandbox_env_is_normalized || exit 1
+		# Real BSD/GNU parsers must honor UTC expiry, not the runner timezone.
+		local zone="" expiry="" offset="" token_meta="${AIDEVOPS_GIT_AUTH_TOKEN_FILE%.token}.meta"
+		for zone in Europe/London Asia/Tokyo America/Los_Angeles UTC; do
+			for offset in 1200 -1200; do
+				expiry=$(python3 -c 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$offset")
+				jq --arg expiry "$expiry" '.expires_at=$expiry' "$token_meta" >"${token_meta}.new"
+				mv "${token_meta}.new" "$token_meta"
+				chmod 600 "$token_meta"
+				if [[ "$offset" -gt 0 ]]; then
+					TZ="$zone" prepare_headless_git_auth_sandbox_env worker || exit 1
+				elif TZ="$zone" prepare_headless_git_auth_sandbox_env worker 2>/dev/null; then
+					exit 1
+				fi
+			done
+		done
+		_test_git_auth_token_fixture "$root"
 		local reason="" output=""
 		for reason in repository_mismatch askpass_mismatch identity_invalid token_invalid; do
 			output=$(
