@@ -213,6 +213,7 @@ fi
 GHEOF
 	_append_gh_auth_mock_routes
 	_append_gh_mock_routes
+	_append_gh_ownership_mock_routes
 	chmod +x "${TEST_ROOT}/bin/gh"
 	return 0
 }
@@ -271,6 +272,9 @@ _append_gh_mock_routes() {
 
 if [[ "${1:-} ${2:-}" == "issue view" ]]; then
 	if [[ "$*" == *"--json assignees"* ]]; then
+		if [[ "${TEST_CLAIM_ON_ASSIGNEE_READ:-0}" == 1 ]]; then
+			jq -nc '[{user:{login:"stale-owner"},author_association:"OWNER",created_at:(now|todateiso8601),body:"Interactive session claimed by @stale-owner"}]' >"${TEST_ROOT}/owner-claim.json"
+		fi
 		cat "${TEST_ROOT}/issue-assignees.txt"
 		exit 0
 	fi
@@ -320,13 +324,31 @@ if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/pulls/100" ]]; then
 		"$(<"${TEST_ROOT}/pr-labels.txt")"
 	exit 0
 fi
+GHEOF
+	return 0
+}
 
+_append_gh_ownership_mock_routes() {
+	cat >>"${TEST_ROOT}/bin/gh" <<'GHEOF'
 if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/42" ]]; then
 	if [[ "$*" == *".body"* ]]; then
 		cat "${TEST_ROOT}/issue-body.txt"
+	elif [[ "$*" != *"--jq"* ]]; then
+		jq -nc --arg labels "$(<"${TEST_ROOT}/issue-labels.txt")" \
+			--arg assignee "$(<"${TEST_ROOT}/issue-assignees.txt")" \
+			'{state:"open",labels:($labels|split(",")|map({name:.})),assignees:([$assignee|select(length>0)]|map({login:.}))}'
 	else
 		printf '%s\t%s\n' "$(<"${TEST_ROOT}/issue-labels.txt")" \
 			"$(<"${TEST_ROOT}/issue-assignees.txt")"
+	fi
+	exit 0
+fi
+
+if [[ "${1:-}" == "api" && "${2:-}" == "repos/owner/repo/issues/42/comments?per_page=100" ]]; then
+	if [[ -f "${TEST_ROOT}/owner-claim.json" ]]; then
+		cat "${TEST_ROOT}/owner-claim.json"
+	else
+		printf '[]\n'
 	fi
 	exit 0
 fi
@@ -577,9 +599,17 @@ EOF
 		# shellcheck disable=SC1090
 		eval "$fn_src"
 	done
+	_load_feedback_finalizer
+	return 0
+}
+
+_load_feedback_finalizer() {
 	unset _PULSE_MERGE_FEEDBACK_FINALIZER_LOADED
 	# shellcheck disable=SC1090
 	source "$FINALIZER_SCRIPT"
+	# Local ownership is covered by test-integration-recovery.sh; this fixture
+	# exercises real remote owner checks against the mock GitHub issue/comments.
+	_interactive_claim_fence_blocks_dispatch() { return 1; }
 	return 0
 }
 
@@ -1332,6 +1362,31 @@ test_ci_feedback_skips_github_api_rate_limit_failure() {
 	return 0
 }
 
+test_ci_feedback_owner_arrives_during_routing() {
+	setup_test_env
+	define_feedback_helpers || return 1
+	export TEST_CLAIM_ON_ASSIGNEE_READ=1
+	local rc=0
+	_transition_issue_for_redispatch 42 owner/repo source:ci-feedback || rc=$?
+	if [[ "$rc" == 75 ]] && ! grep -q 'gh issue edit\|gh pr close' "$GH_LOG"; then
+		print_result "interactive claim arriving during assignee read prevents destructive routing" 0
+	else
+		print_result "interactive claim arriving during assignee read prevents destructive routing" 1 "rc=$rc"
+	fi
+	unset TEST_CLAIM_ON_ASSIGNEE_READ
+	# A guarded takeover can also change PR ownership after the issue snapshot.
+	printf 'origin:interactive\n' >"${TEST_ROOT}/pr-labels.txt"
+	rc=0
+	_feedback_route_close_and_finish ci 100 owner/repo 42 "$TEST_PR_HEAD_SHA" ci-feedback-routed completion fixture comment OPEN start || rc=$?
+	if [[ "$rc" == 75 ]] && ! grep -q 'gh pr close' "$GH_LOG"; then
+		print_result "fresh interactive PR metadata prevents stale worker-origin close" 0
+	else
+		print_result "fresh interactive PR metadata prevents stale worker-origin close" 1 "rc=$rc"
+	fi
+	teardown_test_env
+	return 0
+}
+
 test_ci_repair_preserves_pr_until_launch_retries_exhausted() {
 	setup_test_env
 	export TEST_WORKTREE_ADD_FAIL="1"
@@ -1523,6 +1578,7 @@ main() {
 	test_ci_feedback_skips_registry_rate_limit_failure
 	test_ci_feedback_skips_dockerhub_pull_rate_limit_failure
 	test_ci_feedback_skips_github_api_rate_limit_failure
+	test_ci_feedback_owner_arrives_during_routing
 	test_ci_repair_preserves_pr_until_launch_retries_exhausted
 	test_ci_repair_recovers_one_stale_lease_then_exhausts
 	test_ci_repair_consumes_abandoned_append_only_claim

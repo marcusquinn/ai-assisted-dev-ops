@@ -8,7 +8,7 @@ _IR_SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 integration_recovery_capture() {
 	local output_file="$1" worktree="$2"
 	local issue="${WORKER_ISSUE_NUMBER:-}" repo="${DISPATCH_REPO_SLUG:-${WORKER_REPO_SLUG:-}}"
-	local request="" brief="" prs="" branch="" head="" pr=0 payload=""
+	local request="" brief="" prs="" branch="" head="" pr=0 pr_head="" payload=""
 	[[ "$issue" =~ ^[1-9][0-9]*$ && "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
 	request=$(python3 "${_IR_SCRIPT_DIR}/integration_recovery.py" extract --output "$output_file") || return 1
 	#aidevops:trust-boundary — capture is called by the runtime after final output,
@@ -24,16 +24,20 @@ integration_recovery_capture() {
 	branch=$(git -C "$worktree" symbolic-ref --short HEAD) || return 1
 	head=$(git -C "$worktree" rev-parse HEAD) || return 1
 	prs=$(gh pr list --repo "$repo" --head "$branch" --state open \
-		--json number,isCrossRepository,closingIssuesReferences 2>/dev/null) || return 1
+		--json number,headRefOid,isCrossRepository,closingIssuesReferences 2>/dev/null) || return 1
 	pr=$(jq -er --argjson issue "$issue" '
 		if length == 0 then 0 else select(length == 1) | .[0] |
 		select(.isCrossRepository == false and ([.closingIssuesReferences[].number] == [$issue])) | .number end
 	' <<<"$prs") || return 1
+	if [[ "$pr" != 0 ]]; then
+		pr_head=$(jq -er '.[0].headRefOid' <<<"$prs") || return 1
+		[[ "$pr_head" =~ ^[a-f0-9]{40,64}$ ]] || return 1
+	fi
 	payload=$(jq -nc --argjson request "$request" --argjson brief "$brief" \
 		--arg repo "$repo" --argjson issue "$issue" --argjson pr "$pr" \
 		--arg attempt "$AIDEVOPS_ATTEMPT_ID" --arg session "$WORKER_SESSION_KEY" \
-		--arg branch "$branch" --arg head "$head" \
-		'{request:$request,envelope:{repo:$repo,issue:$issue,pr:$pr,attempt:$attempt,session:$session,branch:$branch,head:$head,brief:$brief}}') || return 1
+		--arg branch "$branch" --arg head "$head" --arg pr_head "$pr_head" \
+		'{request:$request,envelope:{repo:$repo,issue:$issue,pr:$pr,attempt:$attempt,session:$session,branch:$branch,head:$head,pr_head:$pr_head,brief:$brief}}') || return 1
 	_IR_CAPTURE_RESULT=$(python3 "${_IR_SCRIPT_DIR}/integration_recovery.py" capture <<<"$payload") || return 1
 	return 0
 }

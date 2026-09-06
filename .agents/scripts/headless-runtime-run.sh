@@ -356,6 +356,16 @@ _handle_cmd_run_terminal_attempt() {
 # Handle service, premature-exit, and brief-recovery continuation budgets.
 _handle_cmd_run_continuation_attempt() {
 	if [[ "$attempt_exit" -eq 88 ]]; then
+		if [[ "${integration_recovery_count:-0}" -ge 1 ]]; then
+			_run_result_label="$_RUN_RESULT_BLOCKED"
+			_run_failure_reason="$_run_result_label"
+			_run_classification_pattern="integration_recovery_exhausted"
+			_cmd_run_finish "$session_key" "$completion_state" "$work_dir"
+			_cmd_run_disposition="$_CMD_RUN_DISPOSITION_RETURN"
+			_cmd_run_return_status=0
+			return 0
+		fi
+		integration_recovery_count=1
 		routing_reason="integration_recovery_retry"
 		prompt="Resume the existing owned session/worktree and PR. The runtime has durably queued the integration request with Pulse and permits one local recovery attempt for this unchanged brief/evidence. Apply reference/worker-discipline.md Integration scope recovery: independently verify trusted outcome, explicit exclusions, unchanged brief and live claim; inspect the actual caller and check collisions; correct only the minimal canonical Files Scope and matching local brief before editing, then re-read and verify the persisted revision. This continuation grants no authority to revise an explicit hard boundary, secrets, permissions, spending, destructive/external actions, trust exceptions or security guarantees. If local recovery is unsafe, emit the structured INTEGRATION_RECOVERY_REQUEST in the final BLOCKED message for the AI brief owner, preserving exact PR identity and proposed verification. Do not repeat an unchanged request or ask a human to perform ordinary analysis. Otherwise continue through local verification, push, ready PR, MERGE_SUMMARY and the guarded merge attempt; no release is authorized by recovery."
 		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
@@ -477,6 +487,7 @@ _cmd_run_attempt_loop() {
 	local max_watchdog_continue_retries="${HEADLESS_WATCHDOG_CONTINUE_MAX_RETRIES:-2}" watchdog_continue_count=0
 	local max_service_interruption_continue_retries="${HEADLESS_SERVICE_INTERRUPTION_CONTINUE_MAX_RETRIES:-2}" service_interruption_continue_count=0
 	local max_brief_recovery_retries="${HEADLESS_BRIEF_RECOVERY_MAX_RETRIES:-1}" brief_recovery_count=0
+	local integration_recovery_count=0
 	if _headless_run_is_ephemeral "$role"; then
 		max_continuation_retries=0 max_watchdog_continue_retries=0
 		max_service_interruption_continue_retries=0 max_brief_recovery_retries=0

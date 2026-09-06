@@ -43,7 +43,7 @@ mkdir -p "$HOME"
 export WORKER_ISSUE_NUMBER=31265 WORKER_SESSION_KEY=issue-31265
 export DISPATCH_REPO_SLUG=owner/repo AIDEVOPS_ATTEMPT_ID=fixture-attempt
 mock_metadata='{"number":31265,"state":"open","author_association":"OWNER","title":"Checkpoint integration","body":"## Files Scope\n- src/caller.sh","assignees":[],"labels":[]}'
-mock_prs='[{"number":31269,"isCrossRepository":false,"closingIssuesReferences":[{"number":31265}]}]'
+mock_prs='[{"number":31269,"headRefOid":"2222222222222222222222222222222222222222","isCrossRepository":false,"closingIssuesReferences":[{"number":31265}]}]'
 ownership_rc=0
 gh() {
 	case "$*" in
@@ -92,7 +92,7 @@ result_rc=0
 _handle_run_result_success_output || result_rc=$?
 [[ "$result_rc" == 83 ]]
 records=$(python3 "${SCRIPT_DIR}/integration_recovery.py" pending)
-jq -e 'length == 1 and .[0].owner == "pulse" and .[0].pr == 31269' <<<"$records" >/dev/null
+jq -e 'length == 1 and .[0].owner == "pulse" and .[0].pr == 31269 and .[0].head != .[0].pr_head' <<<"$records" >/dev/null
 write_request
 ownership_rc=1
 if integration_recovery_capture "$output_file" "$work_dir"; then
@@ -112,4 +112,45 @@ _CMD_RUN_DISPOSITION_CONTINUE="continue"
 _cmd_run_disposition="" prompt=""
 _handle_cmd_run_continuation_attempt
 [[ "$_cmd_run_disposition" == continue && "$prompt" == *"grants no authority"* ]]
+finish_calls=0
+_cmd_run_finish() { finish_calls=$((finish_calls + 1)); return 0; }
+_CMD_RUN_DISPOSITION_RETURN="return"
+completion_state="complete"
+_handle_cmd_run_continuation_attempt
+[[ "$_cmd_run_disposition" == return && "$finish_calls" == 1 ]]
 printf 'PASS: runtime producer resumes once, queues before release and rejects foreign ownership/authority\n'
+
+(
+	# shellcheck source=../interactive-session-helper.sh
+	source "${SCRIPT_DIR}/interactive-session-helper.sh"
+	fixture_origin="" fixture_claim='{"state":"OPEN","assignees":[{"login":"owner"}],"labels":[{"name":"status:in-review"}]}'
+	writes=0
+	git() {
+		case "$*" in
+		*"remote get-url"*) printf '%s\n' "$fixture_origin" ;;
+		*) printf 'worker/issue-31265\n' ;;
+		esac
+		return 0
+	}
+	_isc_can_manage_issue_state() { return 0; }
+	_isc_read_claim_metadata() { printf '%s\n' "$fixture_claim"; return 0; }
+	gh() {
+		case "$*" in
+		"pr list "*) printf '%s\n' "$mock_prs" ;;
+		"pr edit "*) writes=$((writes + 1)) ;;
+		*) return 1 ;;
+		esac
+		return 0
+	}
+	for fixture_origin in https://github.com/owner/repo.git git@github.com:owner/repo.git ssh://git@github.com/owner/repo.git ssh://git@github.com:22/owner/repo.git; do
+		_isc_normalize_owned_pr 31265 owner/repo "$TEST_ROOT" owner
+	done
+	[[ "$writes" == 4 ]]
+	fixture_origin=https://github.com/foreign/repo.git
+	if _isc_cmd_claim 31265 owner/repo --implementing --worktree "$TEST_ROOT"; then
+		printf 'FAIL: wrong-origin claim passed pre-mutation validation\n' >&2
+		exit 1
+	fi
+	[[ "$writes" == 4 ]]
+)
+printf 'PASS: HTTPS and SSH takeover normalization; wrong origin fails before claim writes\n'

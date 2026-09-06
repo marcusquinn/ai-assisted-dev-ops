@@ -129,7 +129,7 @@ For each actionable request:
 
 The queue lives under the existing private agent workspace on the producing
 runner. Pulse on that runner owns its intake; public terminal-blocker observations
-remain the cross-runner suppression/audit surface. A unavailable forge observation
+remain the cross-runner suppression/audit surface. An unavailable forge observation
 does not discard a request, clear a hold or authorize another executor.
 
 ## PR auto-approval defense-in-depth (GH#17671, t2933)

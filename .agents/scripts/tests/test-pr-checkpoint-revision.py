@@ -23,6 +23,7 @@ if not BASH or not pathlib.Path(BASH).is_absolute():
 sys.path.insert(0, str(SCRIPTS))
 from checkpoint_github_fixture import comment
 from pr_checkpoint_events import EVENTS
+import integration_recovery as recovery
 
 
 def load(name, filename):
@@ -148,6 +149,35 @@ class RevisionTests(unittest.TestCase):
         for unassigned in (False, True):
             with self.subTest(unassigned=unassigned), tempfile.TemporaryDirectory() as root:
                 data = fixture()
+                # GH#31305 producer -> coordinator -> existing fenced worker
+                # continuation. The request itself is never checkpoint approval.
+                data["issue"]["title"] = "Preserve checkpoint integration"
+                blocked = copy.deepcopy(data)
+                blocked["issue"]["body"] = "Hard boundary: do not modify src/claim.sh"
+                request = {"schema": 1, "issue": 123, "pr": 42, "reason": "hard_boundary",
+                           "files": ["src/claim.sh"], "evidence": "shared claim integration needed",
+                           "verification": ["bash test-pr-checkpoint-continuation-helper.sh"]}
+                output = json.dumps({"type": "text", "text": "BLOCKED: integration boundary\n" +
+                                     recovery.MARKER + json.dumps(request)})
+                envelope = {"repo": data["repo"], "issue": 123, "pr": 42,
+                            "head": data["pr"]["headRefOid"], "branch": data["pr"]["headRefName"],
+                            "attempt": "attempt:original", "session": "issue-123", "brief": blocked["issue"]}
+                with recovery.connect(pathlib.Path(root) / "recovery") as db:
+                    produced = recovery.capture(db, envelope, recovery.final_request(output))
+                    self.assertEqual(produced["action"], "coordinator")
+                    observed = {"issue": blocked["issue"], "comments": [], "dependencies": []}
+                    recovery.observe(db, produced["id"], observed)
+                    recovery.decide(db, produced["id"], {"wake": "brief_revision", "actor": "maintainer",
+                                    "next_action": "authorized brief owner corrects scope and signs exact checkpoint revision",
+                                    "evidence": "retain PR 42, do not approve worker authority expansion"})
+                    with self.assertRaises(ValueError):
+                        revision.validate(blocked)
+                    # Existing fixture supplies the separate trusted revision
+                    # approval only after the canonical brief is corrected.
+                    observed["issue"] = data["issue"]
+                    resumed = recovery.observe(db, produced["id"], observed)
+                    self.assertEqual((resumed["pr"], resumed["branch"]), (42, "worker/123"))
+                    self.assertEqual(revision.validate(data)["approval_id"], 3)
                 if unassigned:
                     data["issue"]["assignees"] = []
                     data["issue"]["labels"][1] = {"name": "status:available"}

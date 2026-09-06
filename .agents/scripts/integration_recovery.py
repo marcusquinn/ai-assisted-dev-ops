@@ -88,9 +88,28 @@ def connect(root):
     finally:
         os.umask(old_mask)
     os.chmod(path, 0o600)
-    db.execute("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, record TEXT NOT NULL, decision TEXT, observed TEXT, status TEXT NOT NULL DEFAULT 'active')")
+    db.execute("CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, record TEXT NOT NULL, decision TEXT, observed TEXT, status TEXT NOT NULL DEFAULT 'active', checked_at INTEGER NOT NULL DEFAULT 0)")
     db.execute("CREATE TABLE IF NOT EXISTS decisions (request_id TEXT, observation TEXT, decision TEXT NOT NULL, PRIMARY KEY(request_id, observation))")
+    db.execute("CREATE TABLE IF NOT EXISTS local_attempts (repo TEXT, issue INTEGER, revision TEXT, PRIMARY KEY(repo, issue, revision))")
+    # Preserve queues written by an earlier runtime bundle. Serialize inspection
+    # and additive migration so concurrent intake processes cannot race ALTER.
+    with db:
+        db.execute("BEGIN IMMEDIATE")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(requests)")}
+        for name, definition in (("observed", "TEXT"), ("status", "TEXT NOT NULL DEFAULT 'active'"),
+                                 ("checked_at", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE requests ADD COLUMN {name} {definition}")
     return db
+
+
+def has_explicit_boundary(body):
+    # Conservative denial only, never an authority parser. Unrecognised language
+    # still receives the independent semantic boundary check in the continuation.
+    body = re.sub(r"(?im)^.*hard boundaries:\*?\*?\s*none[^\n]*$", "", body)
+    return bool(re.search(r"hard boundar|only (?:these|the following|listed) files|"
+                          r"(?:do not|must not|never) (?:modify|edit|change)|"
+                          r"(?:file.count cap|explicit exclusions?:)", body, re.I))
 
 
 def capture(db, envelope, request):
@@ -109,7 +128,11 @@ def capture(db, envelope, request):
     with db:
         inserted = db.execute("INSERT OR IGNORE INTO requests(id,record) VALUES (?,?)",
                               (request_id, json.dumps(record))).rowcount == 1
-    return {"id": request_id, "action": "continue" if inserted and request["reason"] == "adjacent_integration" else "coordinator"}
+        budget = db.execute("INSERT OR IGNORE INTO local_attempts VALUES (?,?,?)",
+                            (envelope["repo"], envelope["issue"], revision)).rowcount == 1
+    may_reassess = inserted and budget and request["reason"] == "adjacent_integration"
+    may_reassess = may_reassess and not has_explicit_boundary(envelope["brief"]["body"])
+    return {"id": request_id, "action": "continue" if may_reassess else "coordinator"}
 
 
 def show(db, request_id):
@@ -159,6 +182,16 @@ def decide(db, request_id, decision):
     return {"id": request_id, "owner": "pulse", "wake": decision["wake"]}
 
 
+def pending(db):
+    # Rotate bounded intake even when old holds or unavailable APIs persist.
+    # A stuck request must not starve the twenty-first executable objective.
+    with db:
+        rows = db.execute("SELECT id FROM requests WHERE status='active' ORDER BY checked_at,rowid LIMIT 20").fetchall()
+        for row in rows:
+            db.execute("UPDATE requests SET checked_at=? WHERE id=?", (time.time_ns(), row[0]))
+    return [show(db, row[0]) for row in rows]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("extract", "capture", "pending", "decision", "show", "observe"))
@@ -174,8 +207,7 @@ def main():
             payload = json.load(sys.stdin)
             print(json.dumps(capture(db, payload["envelope"], payload["request"])))
         elif args.action == "pending":
-            rows = db.execute("SELECT id FROM requests WHERE status='active' ORDER BY rowid LIMIT 20").fetchall()
-            print(json.dumps([show(db, row[0]) for row in rows]))
+            print(json.dumps(pending(db)))
         elif args.action == "show":
             print(json.dumps(show(db, args.id)))
         elif args.action == "observe":

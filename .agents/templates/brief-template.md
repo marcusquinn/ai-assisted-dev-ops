@@ -454,10 +454,12 @@ Initial implementation map. Directly necessary adjacent integration follows
 the minimal corrected scope before editing. Explicit exclusions/hard boundaries
 remain binding and require a separate authorized brief-owner decision.
 
-- **Hard boundaries:** {explicit restrictions, or `none beyond framework safety guarantees`}
-- **AI brief owner:** {authorized coordinator; cannot be inferred from worker output}
-- **Recovery:** preserve the current PR and use the structured runtime request
-  and Pulse intake in `reference/worker-discipline.md` when local recovery is unsafe.
+**Hard boundaries:** {explicit restrictions, or `none beyond framework safety guarantees`}
+
+**AI brief owner:** {authorized coordinator; cannot be inferred from worker output}
+
+**Recovery:** preserve the current PR and use the structured runtime request
+and Pulse intake in `reference/worker-discipline.md` when local recovery is unsafe.
 
 <!-- Declares the file paths this task is allowed to modify.
      The scope-guard pre-push hook (scope-guard-pre-push.sh) reads this list

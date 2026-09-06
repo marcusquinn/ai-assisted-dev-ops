@@ -78,6 +78,15 @@ class RecoveryTests(unittest.TestCase):
         # Re-labelling the same event cannot manufacture a fresh local grant.
         self.assertEqual(recovery.capture(self.db, self.envelope, self.request)["action"], "coordinator")
 
+    def test_worker_reason_cannot_override_canonical_boundary(self):
+        self.envelope["brief"]["body"] += "\nHard boundary: do not modify src/claim.sh"
+        self.assertEqual(recovery.capture(self.db, self.envelope, self.request)["action"], "coordinator")
+
+    def test_changing_file_sets_cannot_reset_local_budget(self):
+        recovery.capture(self.db, self.envelope, self.request)
+        changed = dict(self.request, files=["src/another.sh"])
+        self.assertEqual(recovery.capture(self.db, self.envelope, changed)["action"], "coordinator")
+
     def test_corrected_brief_rearms_same_checkpoint(self):
         old = recovery.capture(self.db, self.envelope, self.request)
         self.envelope["brief"]["body"] += "\n- `src/claim.sh`"
@@ -121,6 +130,24 @@ class RecoveryTests(unittest.TestCase):
         state["issue"]["state"] = "closed"
         self.assertIsNone(recovery.observe(self.db, result["id"], state))
         self.assertEqual(self.db.execute("SELECT status FROM requests").fetchone()[0], "resolved")
+
+    def test_prior_queue_schema_migrates_without_losing_request(self):
+        root = Path(self.tmp.name) / "older"
+        root.mkdir(mode=0o700)
+        with sqlite3.connect(root / "requests.sqlite3") as old:
+            old.execute("CREATE TABLE requests (id TEXT PRIMARY KEY,record TEXT NOT NULL,decision TEXT)")
+            old.execute("INSERT INTO requests VALUES ('preserved',?,NULL)", (json.dumps({"pr": 31269}),))
+        with recovery.connect(root) as migrated:
+            self.assertEqual(recovery.pending(migrated)[0]["pr"], 31269)
+
+    def test_bounded_intake_rotates_past_old_holds(self):
+        for number in range(25):
+            envelope = dict(self.envelope, issue=100 + number)
+            request = dict(self.request, issue=100 + number)
+            recovery.capture(self.db, envelope, request)
+        first = {record["id"] for record in recovery.pending(self.db)}
+        second = {record["id"] for record in recovery.pending(self.db)}
+        self.assertEqual(len(first | second), 25)
 
 
 if __name__ == "__main__":

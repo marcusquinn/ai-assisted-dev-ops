@@ -646,6 +646,9 @@ _transition_issue_for_redispatch() {
 		_redispatch_flags+=(--remove-label "hold-for-review")
 	fi
 
+	# Recheck after collecting assignees/flags, immediately before the write. A
+	# claim arriving during that read must not be removed by stale routing state.
+	_feedback_route_owner_allows "$linked_issue" "$repo_slug" || return "${PULSE_FEEDBACK_ROUTE_DEFERRED_RC:-75}"
 	if declare -F set_issue_status >/dev/null 2>&1; then
 		if ! set_issue_status "$linked_issue" "$repo_slug" "available" \
 			--add-label "$source_label" "${_redispatch_flags[@]}" >/dev/null 2>&1; then

@@ -16,9 +16,17 @@ PULSE_FEEDBACK_ROUTE_OPEN_STATE="OPEN"
 PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL="status:available"
 PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE="array"
 PULSE_FEEDBACK_ROUTE_WORKER_TAKEOVER_LABEL="origin:worker-takeover"
+PULSE_FEEDBACK_ROUTE_TRUSTED_ASSOCIATIONS='["OWNER","MEMBER","COLLABORATOR"]'
+PULSE_FEEDBACK_ROUTE_REVIEW_STATUS="status:in-review"
 
 _PULSE_FEEDBACK_ROUTE_CONTEXT_KIND=""
 _PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD=""
+
+_feedback_route_comments_endpoint() {
+	local linked_issue="$1" repo_slug="$2"
+	printf '%s/comments?per_page=100' "$(_feedback_route_issue_endpoint "$repo_slug" "$linked_issue")"
+	return 0
+}
 
 # Re-read ownership at each destructive boundary, independently of the PR's
 # original worker provenance. A preserved worker PR can have a live interactive
@@ -26,7 +34,7 @@ _PULSE_FEEDBACK_ROUTE_CONTEXT_HEAD=""
 _feedback_route_owner_allows() {
 	local linked_issue="$1"
 	local repo_slug="$2"
-	local metadata="" comments=""
+	local metadata="" comments="" endpoint=""
 	if ! declare -F _interactive_claim_fence_blocks_dispatch >/dev/null 2>&1; then
 		# shellcheck source=interactive-claim-fence.sh
 		source "${BASH_SOURCE[0]%/*}/interactive-claim-fence.sh"
@@ -35,18 +43,21 @@ _feedback_route_owner_allows() {
 		return 1
 	fi
 	metadata=$(gh api "repos/${repo_slug}/issues/${linked_issue}" 2>/dev/null) || return 1
-	comments=$(gh api "repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100" --paginate --slurp 2>/dev/null) || return 1
+	endpoint=$(_feedback_route_comments_endpoint "$linked_issue" "$repo_slug") || return 1
+	comments=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	#aidevops:trust-boundary — a forged claim comment cannot fence another owner.
 	# Match trusted comment authors to current assignees, not text attribution.
-	jq -en --argjson issue "$metadata" --argjson pages "$comments" '
+	jq -en --argjson issue "$metadata" --argjson pages "$comments" \
+		--argjson trusted "$PULSE_FEEDBACK_ROUTE_TRUSTED_ASSOCIATIONS" \
+		--arg review_status "$PULSE_FEEDBACK_ROUTE_REVIEW_STATUS" '
 		($issue.assignees | map(.login)) as $owners |
 		($pages | if (.[0]? | type) == "array" then add else . end) as $comments |
 		($issue.state == "open") and
 		([$comments[]?
-		 | select(.author_association as $a | ["OWNER","MEMBER","COLLABORATOR"] | index($a))
+		 | select(.author_association as $a | $trusted | index($a))
 		 | select(.user.login as $u | $owners | index($u))
 		 | select(.user.login as $u | (.body // "") | contains("Interactive session claimed by @" + $u))
-		 | select(($issue.labels | map(.name) | index("status:in-review")) != null)
+		 | select(($issue.labels | map(.name) | index($review_status)) != null)
 		 | select((.created_at | fromdateiso8601) as $at | now - $at >= 0 and now - $at < 7200)
 		] | length == 0)
 	' >/dev/null 2>&1
@@ -150,7 +161,8 @@ _feedback_route_release_comments() {
 	local linked_issue="$1"
 	local repo_slug="$2"
 	local marker="$3"
-	local endpoint="repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100"
+	local endpoint=""
+	endpoint=$(_feedback_route_comments_endpoint "$linked_issue" "$repo_slug") || return 1
 	local comments_json=""
 	# #aidevops:trust-boundary — only trusted automation comments can satisfy or
 	# win release-marker convergence; copied markers from untrusted users do not.
@@ -158,7 +170,7 @@ _feedback_route_release_comments() {
 	local filter='[
 		(if type == $array_type and ((.[0]? | type) == $array_type) then .[] else . end)[]?
 		| select((.author_association // "") as $association
-			| ["OWNER", "MEMBER", "COLLABORATOR"] | index($association))
+			| $trusted | index($association))
 		| select((.body // "") | startswith("CLAIM_RELEASED reason=feedback_route_") and contains($marker))
 		| {id, created_at}
 	] | sort_by([.created_at, .id])'
@@ -169,6 +181,7 @@ _feedback_route_release_comments() {
 		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	fi
 	printf '%s' "$comments_json" | jq -c --arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" \
+		--argjson trusted "$PULSE_FEEDBACK_ROUTE_TRUSTED_ASSOCIATIONS" \
 		--arg marker "$marker" "$filter" 2>/dev/null
 	return $?
 }
@@ -303,7 +316,8 @@ _feedback_route_automation_hold_comments() {
 	local marker_prefix="$3"
 	local marker_suffix="${4:-}"
 	local automation_actor="${5:-}"
-	local endpoint="repos/${repo_slug}/issues/${linked_issue}/comments?per_page=100"
+	local endpoint=""
+	endpoint=$(_feedback_route_comments_endpoint "$linked_issue" "$repo_slug") || return 1
 	local comments_json=""
 	# #aidevops:trust-boundary — copied hold markers from untrusted comments do
 	# not authorize automated removal of a maintainer-created hold.
@@ -311,7 +325,7 @@ _feedback_route_automation_hold_comments() {
 	local filter='[
 		(if type == $array_type and ((.[0]? | type) == $array_type) then .[] else . end)[]?
 		| select((.author_association // "") as $association
-			| ["OWNER", "MEMBER", "COLLABORATOR"] | index($association))
+			| $trusted | index($association))
 		| select((.user.login // "") == $automation_actor)
 		| select((.body // "") | contains($marker_prefix) and contains($marker_suffix))
 		| {id, created_at}
@@ -323,6 +337,7 @@ _feedback_route_automation_hold_comments() {
 		comments_json=$(gh api "$endpoint" --paginate --slurp 2>/dev/null) || return 1
 	fi
 	printf '%s' "$comments_json" | jq -c --arg array_type "$PULSE_FEEDBACK_ROUTE_JSON_ARRAY_TYPE" \
+		--argjson trusted "$PULSE_FEEDBACK_ROUTE_TRUSTED_ASSOCIATIONS" \
 		--arg marker_prefix "$marker_prefix" \
 		--arg marker_suffix "$marker_suffix" --arg automation_actor "$automation_actor" "$filter" 2>/dev/null
 	return $?
@@ -550,7 +565,7 @@ _feedback_route_hold_for_maintainer() {
 			--add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || issue_hold_rc=$?
 	else
 		_feedback_route_gh_write issue edit "$linked_issue" --repo "$repo_slug" \
-			--add-label "status:in-review" --add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
+			--add-label "$PULSE_FEEDBACK_ROUTE_REVIEW_STATUS" --add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
 			--remove-label "$PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL" >/dev/null 2>&1 || issue_hold_rc=$?
 	fi
 	_feedback_route_gh_write pr edit "$pr_number" --repo "$repo_slug" \
@@ -597,7 +612,7 @@ _feedback_route_restore_unverified_hold() {
 			--add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" >/dev/null 2>&1 || issue_rc=$?
 	else
 		_feedback_route_gh_write issue edit "$linked_issue" --repo "$repo_slug" \
-			--add-label "status:in-review" --add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
+			--add-label "$PULSE_FEEDBACK_ROUTE_REVIEW_STATUS" --add-label "$PULSE_FEEDBACK_ROUTE_HOLD_LABEL" \
 			--remove-label "$PULSE_FEEDBACK_ROUTE_AVAILABLE_LABEL" >/dev/null 2>&1 || issue_rc=$?
 	fi
 	_feedback_route_gh_write pr edit "$pr_number" --repo "$repo_slug" \
@@ -928,6 +943,12 @@ _feedback_route_close_and_finish() {
 				return $?
 			fi
 		fi
+		# Guarded interactive takeover normalizes the preserved PR itself. Do not
+		# rely on a label snapshot taken before repair ownership changed.
+		snapshot=$(_feedback_route_pr_snapshot "$pr_number" "$repo_slug") || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
+		IFS=$'\t' read -r pr_state current_head labels <<<"$snapshot"
+		[[ "$pr_state" == "$PULSE_FEEDBACK_ROUTE_OPEN_STATE" && "$current_head" == "$expected_head" ]] || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
+		_feedback_route_labels_allow_worker_route "$labels" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 		_feedback_route_owner_allows "$linked_issue" "$repo_slug" || return "$PULSE_FEEDBACK_ROUTE_DEFERRED_RC"
 		_feedback_route_gh_write pr close "$pr_number" --repo "$repo_slug" \
 			--comment "${close_comment}
