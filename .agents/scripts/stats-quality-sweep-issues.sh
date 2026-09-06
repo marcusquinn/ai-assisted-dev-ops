@@ -544,9 +544,13 @@ This file contributes to a verified repository-wide threshold deficit on the cur
 ### Suggested approach
 
 1. Read the cited file and inspect the listed Qlty rules and locations
-2. Apply the smallest behavior-preserving refactor that removes those findings
+2. Apply the smallest behavior-preserving refactor to the safely removable cited findings
 3. Verify with \`qlty smells ${file_path}\` after each change
 4. No behavior changes — pure structural refactoring
+
+**Public-contract conflicts:** A finding alone does not authorize changing an existing public calling contract. Retain an incompatible baseline finding rather than change that API merely to satisfy the scanner. Record its rule, location, affected callers and rationale alongside the safely completed subset; report the actual remaining count, never a false clean result or a scanner suppression. Newly appearing or unrelated findings do not expand this task's scope.
+
+**Unresolved acceptance:** If completion requires a public API migration or another decision not authorized by this issue, preserve the exact draft/checkpoint and put this issue on \`hold-for-review\` with the concrete decision and retained-finding evidence. Do not mark incomplete work done, merge an incomplete draft, retry the unchanged conflict, or generate an automatic successor around an explicit manual hold. Safe internal refactoring remains autonomous; a metric alone is not a reason to redesign working code.
 
 **Reference pattern:** \`.agents/reference/large-file-split.md\` (playbook for file splits — sections 2-3 cover the canonical split pattern and identity-key preservation; section 5 covers pre-commit hook gotchas).
 

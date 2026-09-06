@@ -260,7 +260,8 @@ _dispatch_issue_consolidation() {
 	# Re-check immediately before any visible consolidation mutation. This
 	# closes the classification-to-dispatch race when an interactive session
 	# claims the issue between pulse stages; ambiguity must defer safely too.
-	if _consolidation_dispatch_defers_for_interactive_claim "$issue_number" "$repo_slug"; then
+	if _consolidation_dispatch_defers_for_manual_hold "$issue_number" "$repo_slug" ||
+		_consolidation_dispatch_defers_for_interactive_claim "$issue_number" "$repo_slug"; then
 		return 0
 	fi
 
@@ -320,6 +321,14 @@ _dispatch_issue_consolidation() {
 		"$issue_number" "$repo_slug" "$parent_title" "$parent_body" \
 		"$substantive_json" "$authors_csv" "$parent_labels")
 
+	# A hold may arrive while metadata/comments are being assembled. Release
+	# only our consolidation lock; never turn the held parent into fresh work.
+	if _consolidation_dispatch_defers_for_manual_hold "$issue_number" "$repo_slug" ||
+		_consolidation_dispatch_defers_for_interactive_claim "$issue_number" "$repo_slug"; then
+		_consolidation_lock_release "$issue_number" "$repo_slug" "$self_login"
+		return 0
+	fi
+
 	# File the child issue via a temp body file.
 	local child_num
 	child_num=$(_create_consolidation_child_issue "$repo_slug" "$issue_number" "$child_body")
@@ -335,6 +344,17 @@ _dispatch_issue_consolidation() {
 		return 1
 	fi
 
+	_consolidation_finish_dispatch "$issue_number" "$repo_slug" "$child_num" "$authors_csv" "$self_login"
+	return $?
+}
+
+# Publish a verified child handoff and release our lock as one completion step.
+_consolidation_finish_dispatch() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local child_num="$3"
+	local authors_csv="$4"
+	local self_login="$5"
 	# Flag parent and post the idempotent pointer comment.
 	_post_consolidation_dispatch_comment "$issue_number" "$repo_slug" "$child_num" "$authors_csv"
 	# t2749: Signal to apply_dispatch_max that a consolidation child

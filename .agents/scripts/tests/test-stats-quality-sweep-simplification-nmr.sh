@@ -161,6 +161,17 @@ else
 	fail "simplification-no-caller-qlty-section-mutation" "caller qlty_section mutated to: ${qlty_section:-<unset>}"
 fi
 
+if grep -Fq 'Retain an incompatible baseline finding' "$CREATE_CALLS" &&
+	grep -Fq 'report the actual remaining count' "$CREATE_CALLS" &&
+	grep -Fq 'No public API changes' "$CREATE_CALLS" &&
+	grep -Fq 'hold-for-review' "$CREATE_CALLS" &&
+	grep -Fq 'preserve the exact draft/checkpoint' "$CREATE_CALLS" &&
+	grep -Fq 'Do not mark incomplete work done' "$CREATE_CALLS"; then
+	pass "generated-contract-preserves-public-api-and-reports-retained-findings"
+else
+	fail "generated-contract-preserves-public-api-and-reports-retained-findings"
+fi
+
 printf '\n[a.1] incomplete SARIF locations are ignored\n'
 smell_files=$(_smell_files_from_sarif "$(make_partially_unlocated_sarif)")
 if [[ "$smell_files" == $'1\tsrc/foo.py' ]]; then

@@ -99,6 +99,7 @@ issue-view)
 	body) printf '%s\n' "${GH_ISSUE_VIEW_BODY:-Parent body}" ;;
 	labels) printf '%s\n' "${GH_ISSUE_VIEW_LABELS:-bug,tier:standard}" ;;
 	state,labels,assignees)
+		[[ "${GH_ISSUE_META_FAIL:-0}" == "1" ]] && exit 1
 		if [[ -n "${GH_ISSUE_META_JSON:-}" ]]; then
 			printf '%s\n' "$GH_ISSUE_META_JSON"
 		else
@@ -227,6 +228,7 @@ teardown_gh_stub() {
 	unset GH_ISSUE_VIEW_TITLE GH_ISSUE_VIEW_BODY GH_ISSUE_VIEW_LABELS GH_ISSUE_VIEW_STATE_JSON GH_ISSUE_VIEW_STATE_FAIL GH_ISSUE_META_JSON
 	unset GH_API_COMMENTS_JSON GH_ISSUE_LIST_CHILD_JSON GH_ISSUE_LIST_CHILD_CLOSED_JSON GH_ISSUE_CREATE_URL
 	unset GH_ISSUE_LIST_FAIL
+	unset GH_ISSUE_META_FAIL
 	unset GH_PR_LIST_RESOLVING_JSON
 	unset CONSOLIDATION_RECENT_CLOSE_GRACE_MIN
 	return 0
@@ -1229,6 +1231,83 @@ test_live_interactive_claim_appearing_after_classification_blocks_dispatch() {
 	return 0
 }
 
+test_manual_hold_blocks_direct_consolidation() {
+	local label=""
+	for label in no-auto-dispatch hold-for-review no-takeover 'on hold'; do
+		setup_gh_stub
+		GH_ISSUE_META_JSON=$(jq -nc --arg label "$label" '{state:"OPEN",labels:[{name:$label}]}')
+		export GH_ISSUE_META_JSON
+		_route_terminal_breaker_to_consolidation 31359 owner/repo test held || true
+		if grep -qE 'issue (create|edit|comment)|label create' "$GH_LOG"; then
+			print_result "manual $label blocks direct breaker consolidation without mutation" 1
+		else
+			print_result "manual $label blocks direct breaker consolidation without mutation" 0
+		fi
+		teardown_gh_stub
+	done
+	return 0
+}
+
+test_consolidation_hold_reads_fail_closed() {
+	local metadata=""
+	for metadata in null '{"state":"OPEN","labels":null}' '{"state":"CLOSED","labels":[]}'; do
+		setup_gh_stub
+		export GH_ISSUE_META_JSON="$metadata"
+		_dispatch_issue_consolidation 31359 owner/repo '' || true
+		if grep -qE 'issue (create|edit|comment)|label create' "$GH_LOG"; then
+			print_result "invalid or closed parent fails closed: $metadata" 1
+		else
+			print_result "invalid or closed parent fails closed: $metadata" 0
+		fi
+		teardown_gh_stub
+	done
+	setup_gh_stub
+	export GH_ISSUE_META_FAIL=1
+	_dispatch_issue_consolidation 31359 owner/repo '' || true
+	if grep -qE 'issue (create|edit|comment)|label create' "$GH_LOG"; then
+		print_result "parent API failure blocks consolidation without mutation" 1
+	else
+		print_result "parent API failure blocks consolidation without mutation" 0
+	fi
+	teardown_gh_stub
+	return 0
+}
+
+test_hold_after_lock_prevents_successor() {
+	local mode=""
+	for mode in manual interactive; do
+		setup_gh_stub
+		(
+			_consolidation_lock_acquire() {
+				if [[ "$mode" == manual ]]; then
+					export GH_ISSUE_META_JSON='{"state":"OPEN","labels":[{"name":"hold-for-review"}]}'
+				else
+					export GH_ISSUE_META_JSON='{"state":"OPEN","labels":[{"name":"status:in-review"}],"assignees":[{"login":"interactive-owner"}]}'
+					GH_API_COMMENTS_JSON=$(fixture_live_interactive_claim)
+					export GH_API_COMMENTS_JSON
+				fi
+				return 0
+			}
+			_consolidation_lock_self_login() {
+				printf 'fixture\n'
+				return 0
+			}
+			_consolidation_lock_release() {
+				printf 'lock-released\n' >>"$GH_LOG"
+				return 0
+			}
+			_dispatch_issue_consolidation 31359 owner/repo ''
+		)
+		if ! grep -q 'issue create' "$GH_LOG" && grep -q 'lock-released' "$GH_LOG"; then
+			print_result "$mode hold arriving after lock blocks child and releases own lock" 0
+		else
+			print_result "$mode hold arriving after lock blocks child and releases own lock" 1
+		fi
+		teardown_gh_stub
+	done
+	return 0
+}
+
 main() {
 	test_dispatch_creates_child_issue
 	test_child_body_contains_parent_content_and_authors
@@ -1266,6 +1345,9 @@ main() {
 	test_dispatch_skips_with_inflight_resolving_pr
 	test_live_interactive_claim_blocks_classification_and_clears_stale_label
 	test_live_interactive_claim_appearing_after_classification_blocks_dispatch
+	test_manual_hold_blocks_direct_consolidation
+	test_consolidation_hold_reads_fail_closed
+	test_hold_after_lock_prevents_successor
 
 	echo
 	echo "============================================"

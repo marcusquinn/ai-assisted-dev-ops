@@ -38,6 +38,7 @@
 [[ -n "${_PULSE_TRIAGE_EVALUATION_LIB_LOADED:-}" ]] && return 0
 _PULSE_TRIAGE_EVALUATION_LIB_LOADED=1
 _PTE_JSON_ARRAY_TYPE="array"
+_PTE_ISSUE_OPEN_STATE="OPEN"
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -123,6 +124,34 @@ _consolidation_live_interactive_claim() {
 		([.labels[]?.name] | index("status:in-review") != null) and
 		([.assignees[]?.login] | index($claimant) != null)
 	' >/dev/null 2>&1; then
+		return 0
+	fi
+	return 1
+}
+
+# Manual holds are independent of live session claims. Re-read at mutation
+# boundaries, including direct terminal-breaker routes that bypass dispatch.
+_consolidation_dispatch_defers_for_manual_hold() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local metadata=""
+	metadata=$(gh issue view "$issue_number" --repo "$repo_slug" \
+		--json state,labels,assignees 2>/dev/null) || metadata=""
+	if ! printf '%s' "$metadata" | jq -e --arg array_type "$_PTE_JSON_ARRAY_TYPE" '
+		def nonempty_string: type == "string" and length > 0;
+		type == "object" and (.state | nonempty_string) and
+		(.labels | type == $array_type) and
+		all(.labels[]; .name | nonempty_string)
+	' >/dev/null 2>&1; then
+		echo "[pulse-wrapper] Consolidation: unreadable parent hold state for #${issue_number} in ${repo_slug}; deferring dispatch" >>"$LOGFILE"
+		return 0
+	fi
+	if printf '%s' "$metadata" | jq -e --arg open_state "$_PTE_ISSUE_OPEN_STATE" '
+		((.state | ascii_upcase) != $open_state) or
+		([.labels[].name] | any(. == "no-auto-dispatch" or
+			. == "hold-for-review" or . == "no-takeover" or . == "on hold"))
+	' >/dev/null 2>&1; then
+		echo "[pulse-wrapper] Consolidation: manual hold or non-open parent #${issue_number} in ${repo_slug}; deferring dispatch" >>"$LOGFILE"
 		return 0
 	fi
 	return 1
@@ -317,7 +346,7 @@ _reevaluate_stale_continuations() {
 			break # Unresolvable → conservative
 		fi
 
-		cont_state=$(printf '%s' "$cont_info" | jq -r '.state // "OPEN"' 2>/dev/null)
+		cont_state=$(printf '%s' "$cont_info" | jq -r --arg open_state "$_PTE_ISSUE_OPEN_STATE" '.state // $open_state' 2>/dev/null)
 		cont_state_upper=$(printf '%s' "$cont_state" | tr '[:lower:]' '[:upper:]')
 		if [[ "$cont_state_upper" != "CLOSED" ]]; then
 			all_stale=0
@@ -598,7 +627,7 @@ _consolidation_dispatch_comment_owns_parent() {
 	local child_json=""
 	child_json=$(gh issue view "$marker_child" --repo "$repo_slug" \
 		--json state,closedAt 2>/dev/null) || return 0
-	if printf '%s' "$child_json" | jq -e '.state == "OPEN"' >/dev/null 2>&1; then
+	if printf '%s' "$child_json" | jq -e --arg open_state "$_PTE_ISSUE_OPEN_STATE" '.state == $open_state' >/dev/null 2>&1; then
 		return 0
 	fi
 	printf '%s' "$child_json" | jq -e '.state == "CLOSED" and (.closedAt | type == "string")' >/dev/null 2>&1 || return 0
