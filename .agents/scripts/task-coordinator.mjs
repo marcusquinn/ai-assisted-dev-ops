@@ -494,6 +494,11 @@ DROP TABLE adoption_decision; DROP TABLE adoption_identity; COMMIT;`);
   }
   return durableAdoptionResult(path, operationId, payloadHash);
 }
+function publicationTaskIdentity(taskId, repositoryId, path) {
+  if (!LEGACY_TASK_ID.test(taskId)) return taskId;
+  if (!repositoryId) throw new Error("legacy publication requires verified repository context");
+  return resolveIssue({ taskId, repositoryId }, path).coordinatorTaskId;
+}
 function publication({ operationId, taskId, repositoryId, repositoryPath, remoteName = "origin", branchName = "main", coalesceKey = "planning", maxAttempts = 5, payload = {} }, path = initialise()) {
   validId(operationId, "operation_id");
   if (!TASK_ID.test(taskId)) throw new TypeError("task_id is not canonical");
@@ -507,10 +512,7 @@ function publication({ operationId, taskId, repositoryId, repositoryPath, remote
   const payloadHash = hashText(payloadText);
   const prior = operationResult(path, operationId, payloadHash);
   if (prior) return prior;
-  if (LEGACY_TASK_ID.test(taskId)) {
-    if (!repositoryId) throw new Error("legacy publication requires verified repository context");
-    taskId = resolveIssue({ taskId, repositoryId }, path).coordinatorTaskId;
-  }
+  taskId = publicationTaskIdentity(taskId, repositoryId, path);
   const intentId = randomUUID();
   const timestamp = now();
   const result = { intentId, operationId, status: "retryable", taskId };
