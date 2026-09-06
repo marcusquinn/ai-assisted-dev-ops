@@ -93,6 +93,7 @@ reset_case() {
 	: >"$CALL_LOG"
 	: >"$ERR_LOG"
 	rm -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE"
+	rm -f "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search"
 	rm -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE"
 	rm -f "$AIDEVOPS_GH_READ_RAMP_STATE_FILE"
 	unset GH_SECONDARY_FAIL GH_REST_CORE_403_FAIL GH_CORE_RATE_LIMIT_RESET GH_SEARCH_RATE_LIMIT_RESET GH_HEADER_LIMIT_FAIL GH_GENERIC_403_FAIL GH_ABUSE_403_FAIL GH_PRIMARY_REMAINING_ZERO_FAIL GH_PRIMARY_REMAINING_ZERO_SUCCESS GH_LARGE_SUCCESS AIDEVOPS_GH_SECONDARY_COOLDOWN_OVERRIDE AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_LINES AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_BYTES AIDEVOPS_GH_READ_RAMP_BUDGET AIDEVOPS_GH_READ_RAMP_BOOT_SECS AIDEVOPS_GH_READ_RAMP_RECOVERY_SECS AIDEVOPS_GH_READ_RAMP_OVERRIDE AIDEVOPS_GH_AUTH_MODE AIDEVOPS_GH_AUTH_PRINCIPAL AIDEVOPS_GH_COOLDOWN_OPERATION AIDEVOPS_GH_COOLDOWN_WRAPPER AIDEVOPS_GH_COOLDOWN_STAGE AIDEVOPS_GH_API_POOL AIDEVOPS_GH_ROUTE_DECISION 2>/dev/null || true
@@ -479,6 +480,46 @@ test_read_ramp_does_not_defer_writes() {
 	return 1
 }
 
+test_primary_search_isolation() {
+	local now="" response="" status="" rc=0
+	# Exercise both transport boundaries with the same persisted resource hold.
+	# shellcheck source=../gh-transport-controls.sh
+	source "${SCRIPT_DIR}/gh-transport-controls.sh"
+	for status in 200 403; do
+		reset_case
+		now=$(_gh_secondary_cooldown_now)
+		response=$(printf 'HTTP/2 %s\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Resource: search\r\nX-RateLimit-Reset: %s\r\n\r\n{}\n' "$status" "$((now + 30))")
+		_gh_secondary_cooldown_record_if_needed 0 "$response" GET /search/issues
+		[[ ! -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" ]] || return 1
+		[[ -f "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search" ]] || return 1
+		_gh_transport_preflight api repos/owner/repo || return 1
+		_gh_transport_preflight api graphql || return 1
+		rc=0
+		_gh_transport_preflight search issues fixture >/dev/null 2>&1 || rc=$?
+		[[ "$rc" -eq 75 ]] || return 1
+		rc=0
+		_rest_api_call read gh api /search/issues >/dev/null 2>&1 || rc=$?
+		[[ "$rc" -eq 75 && ! -s "$CALL_LOG" ]] || return 1
+	done
+	printf 'PASS primary Search 200/403 holds only search at both transport boundaries without HTTP\n'
+	return 0
+}
+
+test_search_expiry_and_secondary_precedence() {
+	local now="" response=""
+	reset_case
+	now=$(_gh_secondary_cooldown_now)
+	response=$(printf 'HTTP/2 200\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Resource: search\r\nX-RateLimit-Reset: %s\r\n\r\n{}\n' "$((now - 1))")
+	_gh_secondary_cooldown_record_if_needed 0 "$response" GET /search/issues
+	[[ ! -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" && ! -f "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search" ]] || return 1
+	response=$(printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Resource: search\r\nX-RateLimit-Reset: %s\r\nRetry-After: 30\r\n\r\n{"message":"secondary rate limit"}\n' "$((now + 30))")
+	_gh_secondary_cooldown_record_if_needed 1 "$response" GET /search/issues
+	[[ -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" ]] || return 1
+	if _gh_transport_preflight api repos/owner/repo >/dev/null 2>&1; then return 1; fi
+	printf 'PASS expired Search primary evidence cannot create global hold; genuine secondary remains global\n'
+	return 0
+}
+
 test_secondary_response_writes_cooldown
 test_header_response_writes_retry_after_cooldown
 test_generic_403_diagnostic_distinguishes_forbidden
@@ -498,3 +539,5 @@ test_event_trim_enforces_bytes_below_line_cap
 test_boot_ramp_defers_after_per_minute_budget
 test_cooldown_recovery_ramp_defers_after_budget
 test_read_ramp_does_not_defer_writes
+test_primary_search_isolation
+test_search_expiry_and_secondary_precedence

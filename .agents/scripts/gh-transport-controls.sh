@@ -22,6 +22,7 @@ _gh_transport_preflight() {
 	# the actual cooldown at dispatch; skip only a duplicate ramp reservation.
 	local AIDEVOPS_GH_READ_RAMP_OVERRIDE="${AIDEVOPS_GH_READ_RAMP_OVERRIDE:-0}"
 	[[ "${AIDEVOPS_GH_WRAPPER_PREFLIGHT:-0}" != 1 ]] || AIDEVOPS_GH_READ_RAMP_OVERRIDE=1
+	_gh_search_cooldown_preflight "$@" || return $?
 	_gh_secondary_cooldown_preflight "$op_class"
 	return $?
 }
@@ -100,6 +101,7 @@ _gh_transport_run_rest() {
 			"$(_shim_transport_page "$@")" "$retry" "$outcome" "$status" "$elapsed" "$cost" \
 			"${AIDEVOPS_GH_AUTH_MODE:-}" "$pool" "${AIDEVOPS_GH_ROUTE_DECISION:-rest-response-owned}" "$remaining"
 		[[ "$status" == x ]] || response="HTTP/1.1 ${status}"$'\n'
+		[[ "$resource" == x ]] || response="${response}x-ratelimit-resource: ${resource}"$'\n'
 		[[ "$remaining" == x ]] || response="${response}x-ratelimit-remaining: ${remaining}"$'\n'
 		[[ "$reset" == x ]] || response="${response}x-ratelimit-reset: ${reset}"$'\n'
 		[[ "$retry_after" == x ]] || response="${response}retry-after: ${retry_after}"$'\n'

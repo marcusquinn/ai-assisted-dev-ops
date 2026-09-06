@@ -41,6 +41,13 @@ charged twice, but cooldown is rechecked immediately before dispatch. Local-only
 commands remain usable without fabricated HTTP attempts. `gh search` is a REST
 search operation, not a GraphQL query.
 
+Unambiguous primary Search exhaustion (HTTP 200/403, `remaining=0`, resource
+`search`, a valid reset, no Retry-After or secondary/abuse message) holds only
+Search. Its `.primary-search` cooldown uses the server reset and is checked before
+raw shim and REST-wrapper search requests. Expired primary headers cannot create
+a new global delay. Existing global cooldowns are never cleared by this path;
+429, Retry-After, secondary/abuse and ambiguous evidence retain global protection.
+
 Native execution errors without a usable HTTP response stop alternate
 transports. A successful HTTP response which cannot reproduce a requested local
 projection retains the existing semantically equivalent read fallback. Native

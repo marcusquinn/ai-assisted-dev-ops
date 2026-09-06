@@ -198,6 +198,9 @@ _rest_pr_view_cache_emit_if_fresh() {
 #######################################
 _rest_api_call() {
 	local _class="$1"; shift
+	if declare -F _gh_search_cooldown_preflight >/dev/null 2>&1; then
+		_gh_search_cooldown_preflight "$@" || return $?
+	fi
 	local _pool="rest-core"
 	local _arg
 	for _arg in "$@"; do

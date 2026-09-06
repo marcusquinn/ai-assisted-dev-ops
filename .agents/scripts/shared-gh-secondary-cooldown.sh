@@ -827,6 +827,43 @@ _gh_secondary_cooldown_rest_reset_at() {
 	return 1
 }
 
+_gh_search_cooldown_preflight() {
+	local arg="" search_request=0
+	for arg in "$@"; do
+		case "$arg" in search | search/* | /search/*) search_request=1 ;; esac
+	done
+	[[ "$search_request" -eq 1 ]] || return 0
+	local AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search"
+	if _gh_secondary_cooldown_active; then
+		printf '[gh-cooldown] primary-search active=true; unrelated API resources remain available\n' >&2
+		return 75
+	fi
+	return 0
+}
+
+_gh_search_primary_response() {
+	local response="$1"
+	shift
+	local status="" remaining="" resource="" reset="" now=""
+	status=$(_gh_secondary_cooldown_status "$response")
+	case "$status" in 200 | 403) ;; *) return 1 ;; esac
+	remaining=$(_gh_secondary_cooldown_header_value "$response" "x-ratelimit-remaining")
+	resource=$(_gh_secondary_cooldown_header_value "$response" "x-ratelimit-resource")
+	[[ "$remaining" == "0" && "$resource" == "search" ]] || return 1
+	[[ -z "$(_gh_secondary_cooldown_header_value "$response" "retry-after")" ]] || return 1
+	_gh_secondary_cooldown_detect "$response" && return 1
+	reset=$(_gh_secondary_cooldown_header_value "$response" "x-ratelimit-reset")
+	now=$(_gh_secondary_cooldown_now)
+	[[ "$reset" =~ ^[0-9]{1,10}$ && "$reset" -le $((now + 3600)) ]] || return 1
+	# A successful last search request is primary-resource evidence, not abuse.
+	# Already-reset headers do not authorize a fabricated five-minute global hold.
+	[[ "$reset" -gt "$now" ]] || return 0
+	local AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search"
+	_gh_secondary_cooldown_write_until "github-search-primary-exhausted" "$response" "$reset" \
+		"primary-search" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$@"
+	return $?
+}
+
 _gh_secondary_cooldown_record_response_if_needed() {
 	local rc="$1"
 	local response_text="${2:-}"
@@ -842,6 +879,9 @@ _gh_secondary_cooldown_record_response_if_needed() {
 	local body_classification=""
 	local expires_at=""
 
+	if _gh_search_primary_response "$response_text" "$method_arg" "$endpoint_arg" "$query_shape_arg" "$operation_arg" "$wrapper_arg" "$pulse_stage_arg"; then
+		return 0
+	fi
 	status="$(_gh_secondary_cooldown_status "$response_text")"
 	remaining="$(_gh_secondary_cooldown_header_value "$response_text" "x-ratelimit-remaining")"
 	retry_after="$(_gh_secondary_cooldown_header_value "$response_text" "retry-after")"
