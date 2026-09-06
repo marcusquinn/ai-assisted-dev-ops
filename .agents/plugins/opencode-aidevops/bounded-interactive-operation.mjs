@@ -6,115 +6,24 @@ import { realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const RECEIPT_SCHEMA = "aidevops.interactive-operation/v1";
-const MAX_CAPTURE_BYTES = 1024 * 1024;
+import {
+  boundedInteger,
+  canTerminate,
+  commandError,
+  scalar,
+  withinRoot,
+} from "./bounded-operation-values.mjs";
+import {
+  appendCapture,
+  disposeOperations,
+  observeProgress,
+  operationReceipt,
+  signalSupervisor,
+  trimTerminalOperations,
+} from "./bounded-operation-runtime.mjs";
+
 const MAX_OPERATIONS = 24;
-const MAX_PROGRESS_REMAINDER_BYTES = 4096;
 const SUPERVISOR_PATH = fileURLToPath(new URL("./bounded-operation-supervisor.mjs", import.meta.url));
-
-function scalar(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function withinRoot(path, root) {
-  return path === root || path.startsWith(`${root}/`);
-}
-
-function commandError(command) {
-  if (!Array.isArray(command) || command.length === 0) return "command must be a non-empty string array";
-  if (command.some((part) => typeof part !== "string" || !part || part.includes("\0"))) {
-    return "command entries must be non-empty strings without NUL bytes";
-  }
-  if (Buffer.byteLength(JSON.stringify(command)) > 64 * 1024) return "encoded command exceeds 64 KiB";
-  return "";
-}
-
-function boundedInteger(value, fallback, minimum, maximum) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(minimum, Math.min(maximum, Math.floor(parsed)));
-}
-
-function appendCapture(operation, chunk) {
-  const value = Buffer.from(chunk);
-  const remaining = MAX_CAPTURE_BYTES - operation.outputBytes;
-  if (remaining <= 0) {
-    operation.outputTruncated = true;
-    return;
-  }
-  operation.output.push(value.subarray(0, remaining));
-  operation.outputBytes += Math.min(value.length, remaining);
-  if (value.length > remaining) operation.outputTruncated = true;
-}
-
-function observeProgress(operation, chunk, now) {
-  const text = `${operation.progressRemainder}${String(chunk)}`;
-  const lines = text.split(/\r?\n/);
-  operation.progressRemainder = lines.pop() || "";
-  if (Buffer.byteLength(operation.progressRemainder) > MAX_PROGRESS_REMAINDER_BYTES) {
-    operation.progressRemainder = operation.progressRemainder.slice(-MAX_PROGRESS_REMAINDER_BYTES);
-  }
-  for (const line of lines) {
-    if (/^AIDEVOPS_PROGRESS:\s*\S/.test(line)) {
-      operation.lastMeaningfulProgressAt = now();
-      operation.progressEvents += 1;
-    }
-  }
-}
-
-function signalSupervisor(child) {
-  if (!child?.connected || child.exitCode !== null || child.signalCode !== null) return false;
-  try {
-    child.send({ action: "terminate" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function responseError(message) {
-  return JSON.stringify({ schema: RECEIPT_SCHEMA, error: message });
-}
-
-export function createOutputSandboxRecorder(helperPath, spawnImpl = spawn, timeoutMs = 5000) {
-  const activeChildren = new Set();
-  const recorder = (content, evidence = {}) => new Promise((resolve) => {
-    const exitCode = Number.isInteger(evidence.exitCode) ? evidence.exitCode : 1;
-    const child = spawnImpl("bash", [
-      helperPath, "store", "--command", "bounded-interactive-operation",
-      "--exit-code", String(exitCode), "--tag", "interactive-operation",
-    ], { stdio: ["pipe", "pipe", "ignore"] });
-    activeChildren.add(child);
-    let stdout = "";
-    let settled = false;
-    const finish = (outputID = "") => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      activeChildren.delete(child);
-      resolve(outputID);
-    };
-    const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      finish();
-    }, timeoutMs);
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => { stdout += chunk; });
-    child.once("error", () => finish());
-    child.once("close", (code) => {
-      const match = code === 0 ? stdout.match(/^output_id:\s*(\S+)/m) : null;
-      finish(match?.[1] || "");
-    });
-    child.stdin?.end(content);
-  });
-  recorder.dispose = () => {
-    for (const child of activeChildren) {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    }
-    activeChildren.clear();
-  };
-  return recorder;
-}
 
 export class BoundedInteractiveOperationManager {
   constructor(options = {}) {
@@ -137,12 +46,7 @@ export class BoundedInteractiveOperationManager {
   }
 
   trimTerminalOperations() {
-    if (this.operations.size < MAX_OPERATIONS) return;
-    for (const [id, operation] of this.operations) {
-      if (!operation.child && !operation.restorationChild) this.operations.delete(id);
-      if (this.operations.size < MAX_OPERATIONS) return;
-    }
-    throw new Error("too many active bounded operations");
+    trimTerminalOperations(this.operations, MAX_OPERATIONS);
   }
 
   attachOutput(operation, child) {
@@ -239,9 +143,7 @@ export class BoundedInteractiveOperationManager {
   }
 
   requestTermination(operation, disposition) {
-    if (!operation.child || operation.childExited
-      || operation.child.exitCode !== null || operation.child.signalCode !== null
-      || !["running", "starting"].includes(operation.state)) return false;
+    if (!canTerminate(operation)) return false;
     operation.disposition = disposition;
     operation.state = disposition === "cancelled" ? "cancelling" : "timing_out";
     operation.processSignal = "SIGTERM";
@@ -345,92 +247,11 @@ export class BoundedInteractiveOperationManager {
   }
 
   receipt(operation) {
-    const now = this.now();
-    const elapsedMs = Math.max(0, now - operation.startedAt);
-    const lastProgressAgeMs = operation.lastMeaningfulProgressAt === null
-      ? null
-      : Math.max(0, now - operation.lastMeaningfulProgressAt);
-    return {
-      schema: RECEIPT_SCHEMA,
-      operation_id: operation.id,
-      containment: "owned_process_group",
-      state: operation.state,
-      elapsed_ms: elapsedMs,
-      budget_ms: operation.budgetMs,
-      remaining_ms: Math.max(0, operation.budgetMs - elapsedMs),
-      progress_interval_ms: operation.progressIntervalMs,
-      progress_events: operation.progressEvents,
-      last_meaningful_progress_age_ms: lastProgressAgeMs,
-      progress_overdue: elapsedMs >= operation.progressIntervalMs
-        && (lastProgressAgeMs === null || lastProgressAgeMs >= operation.progressIntervalMs),
-      process_exit: operation.processExit,
-      process_signal: operation.processSignal || null,
-      restoration_state: operation.restorationState,
-      restoration_exit: operation.restorationExit,
-      output_id: operation.outputID || null,
-      evidence_state: operation.state === "finalizing" ? "pending" : (operation.outputID ? "recorded" : "unavailable"),
-      output_truncated: operation.outputTruncated,
-    };
+    return operationReceipt(operation, this.now());
   }
 
   dispose() {
-    for (const operation of this.operations.values()) {
-      if (operation.child && !operation.childExited
-        && operation.child.exitCode === null && operation.child.signalCode === null) {
-        this.kill(operation.child, "SIGTERM");
-      }
-      if (operation.restorationChild && !operation.restorationChildExited
-        && operation.restorationChild.exitCode === null && operation.restorationChild.signalCode === null) {
-        this.kill(operation.restorationChild, "SIGTERM");
-      }
-      if (operation.budgetTimer) this.clearTimer(operation.budgetTimer);
-      if (operation.killTimer) this.clearTimer(operation.killTimer);
-      if (operation.restorationTimer) this.clearTimer(operation.restorationTimer);
-    }
+    disposeOperations(this.operations, this.kill, this.clearTimer);
     this.recordOutput.dispose?.();
   }
-}
-
-export function createBoundedInteractiveOperationTool(tool, z, manager) {
-  return tool({
-    description:
-      "Start, inspect, or cancel a bounded long-running command without blocking the interactive session. " +
-      "Use start for operations expected to exceed the progress interval, then call status periodically. " +
-      "Commands are argv arrays, remain confined to the active project root, and must not daemonize or create a new process session. " +
-      "Cancellation is session-owned and restoration evidence remains explicit.",
-    args: {
-      action: z.enum(["start", "status", "cancel"]),
-      operation_id: z.string().optional(),
-      command: z.array(z.string()).optional(),
-      cwd: z.string().optional(),
-      budget_seconds: z.number().optional(),
-      progress_interval_seconds: z.number().optional(),
-      restoration_budget_seconds: z.number().optional(),
-      restoration_command: z.array(z.string()).optional(),
-    },
-    async execute(args, context) {
-      try {
-        let receipt;
-        if (args.action === "start") {
-          receipt = await manager.start({
-            command: args.command,
-            cwd: args.cwd,
-            budgetMs: Number(args.budget_seconds || 900) * 1000,
-            progressIntervalMs: Number(args.progress_interval_seconds || 900) * 1000,
-            restorationBudgetMs: Number(args.restoration_budget_seconds || 60) * 1000,
-            restorationCommand: args.restoration_command,
-          }, context);
-        } else if (args.action === "status") {
-          receipt = manager.status(args.operation_id, context);
-        } else if (args.action === "cancel") {
-          receipt = manager.cancel(args.operation_id, context);
-        } else {
-          return responseError("unknown action");
-        }
-        return JSON.stringify(receipt);
-      } catch (error) {
-        return responseError(error?.message || "bounded operation failed");
-      }
-    },
-  });
 }

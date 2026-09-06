@@ -4,11 +4,9 @@ import { createHookStatusTool } from "./hook-status-tool.mjs";
 import { createGptImageTool } from "./gpt-image-tool.mjs";
 import { createMcpActivationTool } from "./mcp-activation-tool.mjs";
 import { createPreEditCheckTool } from "./pre-edit-check-tool.mjs";
-import {
-  BoundedInteractiveOperationManager,
-  createBoundedInteractiveOperationTool,
-  createOutputSandboxRecorder,
-} from "./bounded-interactive-operation.mjs";
+import { BoundedInteractiveOperationManager } from "./bounded-interactive-operation.mjs";
+import { createOutputSandboxRecorder } from "./bounded-operation-output.mjs";
+import { createBoundedInteractiveOperationTool } from "./bounded-operation-tool.mjs";
 
 const FALLBACK_SCHEMA_NODE = {
   _zod: {},

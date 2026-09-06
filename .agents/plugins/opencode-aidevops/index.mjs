@@ -62,8 +62,8 @@ import { createPermissionBroker } from "./permission-broker.mjs";
 import { createSubagentCancellationReceipt } from "./subagent-cancellation-receipt.mjs";
 import {
   BoundedInteractiveOperationManager,
-  createOutputSandboxRecorder,
 } from "./bounded-interactive-operation.mjs";
+import { createOutputSandboxRecorder } from "./bounded-operation-output.mjs";
 import { createRoutingFeedbackHandler } from "./routing-feedback-handler.mjs";
 import { createSessionBoundaryAdvisory } from "./session-boundary-advisory.mjs";
 import { createProviderErrorHandler } from "./provider-error-diagnostics.mjs";
@@ -289,6 +289,13 @@ function prepareLocalProviderProxies(client) {
 // ---------------------------------------------------------------------------
 // Main Plugin Export
 // ---------------------------------------------------------------------------
+
+function applyBoundedOperationPermission(config) {
+  if (!config.permission || typeof config.permission !== "object") config.permission = {};
+  if (config.permission["*"] !== "deny" && config.permission.aidevops_bounded_operation === undefined) {
+    config.permission.aidevops_bounded_operation = "ask";
+  }
+}
 
 /**
  * aidevops OpenCode Plugin
@@ -591,10 +598,7 @@ export async function AidevopsPlugin({ directory, client }) {
       // the config hook can complete and the session becomes responsive.
       initPoolAuth(client).catch(() => {});
       const result = await configHook(config);
-      if (!config.permission || typeof config.permission !== "object") config.permission = {};
-      if (config.permission["*"] !== "deny" && config.permission.aidevops_bounded_operation === undefined) {
-        config.permission.aidevops_bounded_operation = "ask";
-      }
+      applyBoundedOperationPermission(config);
       recordPluginHealthStage("config_applied", {
         gpt56_limits: config.provider?.openai?.models?.["gpt-5.6-sol"]?.limit || null,
         terminal_title_status: true,
