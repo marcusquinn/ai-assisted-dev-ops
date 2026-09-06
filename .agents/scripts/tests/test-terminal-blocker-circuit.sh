@@ -136,7 +136,10 @@ test_release_modes_and_retry() {
 	local empty='[]'
 	local observed="[{\"body\":\"${observation}\",\"created_at\":\"2026-08-31T10:00:00Z\"}]"
 	local opened="[{\"body\":\"${observation}\",\"created_at\":\"2026-08-31T10:00:00Z\"},{\"body\":\"${circuit}\",\"created_at\":\"2026-08-31T10:05:00Z\"}]"
-	local retried="[{\"body\":\"${observation}\",\"created_at\":\"2026-08-31T10:00:00Z\"},{\"body\":\"${circuit}\",\"created_at\":\"2026-08-31T10:05:00Z\"},{\"body\":\"terminal-blocker-circuit:retry\",\"created_at\":\"2026-08-31T10:10:00Z\"}]"
+	local retried="[{\"body\":\"${observation}\",\"created_at\":\"2026-08-31T10:00:00Z\"},{\"body\":\"${circuit}\",\"created_at\":\"2026-08-31T10:05:00Z\"},{\"body\":\"terminal-blocker-circuit:retry\",\"created_at\":\"2026-08-31T10:10:00Z\",\"author_association\":\"OWNER\"}]"
+	observed=$(printf '%s' "$observed" | jq -c 'map(.author_association="OWNER")')
+	opened=$(printf '%s' "$opened" | jq -c 'map(.author_association="OWNER")')
+	retried=$(printf '%s' "$retried" | jq -c 'map(.author_association="OWNER")')
 	local status=1
 	if [[ "$(terminal_blocker_release_mode "$empty" "$revision" "$blocker")" == "first" &&
 	"$(terminal_blocker_release_mode "$observed" "$revision" "$blocker")" == "circuit" &&
@@ -154,7 +157,7 @@ test_dispatch_hold_revalidates_revision() {
 	revision=$(terminal_blocker_task_revision "$issue_json" "owner/repo" 42 "$TEST_ROOT")
 	local blocker=""
 	blocker=$(_terminal_blocker_hash 'v2:target_code_blocker')
-	local comments="[{\"body\":\"<!-- aidevops:terminal-blocker-circuit revision=${revision} blocker=${blocker} -->\",\"created_at\":\"2026-08-31T10:05:00Z\"}]"
+	local comments="[{\"body\":\"<!-- aidevops:terminal-blocker-circuit revision=${revision} blocker=${blocker} -->\",\"created_at\":\"2026-08-31T10:05:00Z\",\"author_association\":\"MEMBER\"}]"
 	local same_status=0 changed_status=0 ambiguous_status=0
 	terminal_blocker_circuit_active "$comments" "$issue_json" "owner/repo" 42 "$TEST_ROOT" >/dev/null || same_status=$?
 	terminal_blocker_circuit_active "$comments" '{"title":"Fix scope","body":"Files Scope: b.sh"}' \
@@ -284,7 +287,7 @@ test_unknown_and_redaction() {
 	fragment=$(WORKER_SESSION_KEY='/private/runner/private-token' terminal_blocker_observation_fragment 111111111111111111111111 "$fingerprint")
 	[[ "$fragment" == *'reason=unknown owner=worker-triage'* && "$fragment" == *'Next action:'* &&
 		"$fragment" != *'private-token'* && "$fragment" != *'/private/'* ]] || status=1
-	comments=$(jq -nc --arg body "$fragment" '[{body:$body,created_at:"2026-08-31T10:00:00Z"}]')
+	comments=$(jq -nc --arg body "$fragment" '[{body:$body,created_at:"2026-08-31T10:00:00Z",author_association:"MEMBER"}]')
 	[[ "$(terminal_blocker_release_mode "$comments" 111111111111111111111111 "$fingerprint")" == normal ]] || status=1
 	terminal_blocker_circuit_comment release 111111111111111111111111 "$fingerprint" >/dev/null && status=1
 	terminal_blocker_circuit_active "$comments" '{}' owner/repo 42 "$TEST_ROOT" >/dev/null && status=1
@@ -337,6 +340,102 @@ test_final_dossier_and_structural_precedence() {
 	return 0
 }
 
+test_legacy_blocked_backoff() {
+	local comments="" changed="" result="" status=0
+	# No local metrics, fingerprints or task revision: reproduce legacy releases
+	# by two runners, as seen on GH#31378. Exercise the actual dispatch gate.
+	comments=$(jq -nc '[range(2) | {id:(. + 1), body:("<!-- ops:start -->\nCLAIM_RELEASED reason=blocked runner=runner-" + tostring + " ts=ignored\n<!-- ops:end -->"), author:("runner-" + tostring), author_association:"MEMBER", created_at:"2026-09-06T12:00:00Z"}]')
+	result=$(TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_circuit_active "$comments" '{}' owner/repo 42 '') || status=1
+	[[ "$result" == 'TERMINAL_BLOCKER_BACKOFF failures=2 retry_after=1788696900' ]] || status=1
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696900 terminal_blocker_backoff_active "$comments" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c '.[0:1]')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [{body:"terminal-blocker-circuit:retry",author_association:"OWNER",created_at:"2026-09-06T12:00:01Z"}]')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696002 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	changed=$(jq -nc '[range(400) | {body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",author:"runner",author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]')
+	result=$(TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed") || status=1
+	[[ "$result" == 'TERMINAL_BLOCKER_BACKOFF failures=400 retry_after=1788782400' ]] || status=1
+	TERMINAL_BLOCKER_NOW_EPOCH=1788782400 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	print_result "legacy blocked releases impose cross-runner exponential backoff with expiry, cap and trusted retry" "$status"
+	return 0
+}
+
+test_blocked_backoff_trust() {
+	local comments="" changed="" association="" status=0
+	comments=$(jq -nc '[range(2) | {body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",author:"runner",author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]')
+	for association in COLLABORATOR CONTRIBUTOR NONE; do
+		changed=$(printf '%s' "$comments" | jq -c --arg association "$association" 'map(.author_association=$association)')
+		TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	done
+	changed=$(printf '%s' "$comments" | jq -c 'map(.author="impostor")')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c 'map(.body="> " + .body)')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	TERMINAL_BLOCKER_NOW_EPOCH=1788695999 terminal_blocker_backoff_active "$comments" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c 'map(.created_at="invalid")')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [{body:"terminal-blocker-circuit:retry",author_association:"COLLABORATOR",created_at:"2026-09-06T12:00:01Z"}]')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696002 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [{body:"A maintainer can post terminal-blocker-circuit:retry",author_association:"OWNER",created_at:"2026-09-06T12:00:01Z"}]')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696002 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
+	print_result "backoff rejects untrusted, forged, quoted, invalid and future evidence; recovery prose cannot reset it" "$status"
+	return 0
+}
+
+test_permission_blocker_continuation() {
+	local output="${TEST_ROOT}/permission.ndjson" status=0 fingerprint="" revision="" changed="" comments="" contract=""
+	contract=$(
+		# shellcheck source=../headless-runtime-lib.sh
+		source "${SCRIPT_DIR}/headless-runtime-lib.sh"
+		append_worker_headless_contract '/full-loop Resume after source denial'
+	) || status=1
+	[[ "$contract" == *'TERMINAL_BLOCKER_REASON=permission_required'* ]] || status=1
+	printf '%s\n' '{"type":"text","part":{"text":"BLOCKED: prior protected-source denial has no changed exact-context grant\nTERMINAL_BLOCKER_REASON=permission_required"}}' >"$output"
+	terminal_blocker_capture_output "$output" || status=1
+	fingerprint="$AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT"
+	[[ "$(_terminal_blocker_reason "$fingerprint")" == permission_required ]] || status=1
+	revision=$(terminal_blocker_task_revision '{}' owner/repo 42 '') || status=1
+	TEST_DEPENDENCIES=unavailable
+	TEST_TARGET_REVISION=unavailable
+	changed=$(terminal_blocker_task_revision '{"body":"changed brief"}' owner/repo 42 '') || status=1
+	[[ "$revision" == "$changed" ]] || status=1
+	comments=$(jq -nc --arg body "<!-- aidevops:terminal-blocker-circuit revision=${revision} blocker=${fingerprint} -->" '[{body:$body,created_at:"2026-09-06T12:00:00Z",author_association:"OWNER"}]')
+	terminal_blocker_circuit_active "$comments" '{}' owner/repo 42 '' >/dev/null || status=1
+	terminal_blocker_circuit_active "$comments" '{}' owner/repo 43 '' >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c 'map(.author_association="COLLABORATOR")')
+	terminal_blocker_circuit_active "$changed" '{}' owner/repo 42 '' >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [.[0] | .author_association="COLLABORATOR" | .created_at="2026-09-06T12:00:30Z" | .body |= sub("revision=[a-f0-9]+"; "revision=aaaaaaaaaaaaaaaaaaaaaaaa")]')
+	terminal_blocker_circuit_active "$changed" '{}' owner/repo 42 '' >/dev/null || status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [{body:"terminal-blocker-circuit:retry",created_at:"2026-09-06T12:01:00Z",author_association:"COLLABORATOR"}]')
+	terminal_blocker_circuit_active "$changed" '{}' owner/repo 42 '' >/dev/null || status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [{body:"Please post terminal-blocker-circuit:retry",created_at:"2026-09-06T12:01:00Z",author_association:"OWNER"}]')
+	terminal_blocker_circuit_active "$changed" '{}' owner/repo 42 '' >/dev/null || status=1
+	comments=$(printf '%s' "$comments" | jq -c '. + [{body:"terminal-blocker-circuit:retry",created_at:"2026-09-06T12:01:00Z",author_association:"OWNER"}]')
+	terminal_blocker_circuit_active "$comments" '{}' owner/repo 42 '' >/dev/null && status=1
+	[[ "$(_terminal_blocker_recovery "$fingerprint")" == *'Retry is scheduling consent only'* ]] || status=1
+	TEST_DEPENDENCIES='{"nodes":[],"truncated":false}'
+	TEST_TARGET_REVISION='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+	unset AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
+	print_result "continued permission denial has a stable class; edits and API outages do not re-arm; retry grants nothing" "$status"
+	return 0
+}
+
+test_blocked_backoff_cli() {
+	local result="" status=0
+	result=$(
+		gh() {
+			[[ "$1" == api && "$2" == 'repos/owner/repo/issues/42/comments?per_page=100' ]] || return 1
+			jq -nc '[[range(2) | {id:(. + 1),body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",user:{login:"runner"},author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]]'
+			return 0
+		}
+		export -f gh
+		TERMINAL_BLOCKER_NOW_EPOCH=1788696001 bash "${SCRIPT_DIR}/dispatch-dedup-helper.sh" has-dispatch-comment 42 owner/repo runner
+	) || status=1
+	[[ "$result" == 'TERMINAL_BLOCKER_BACKOFF failures=2 retry_after=1788696900' ]] || status=1
+	print_result "production dispatch CLI preserves paginated API authors and blocks legacy repeated releases" "$status"
+	return 0
+}
+
 main() {
 	test_normalized_blocker_fingerprint
 	test_worker_contract_reason_protocol
@@ -348,6 +447,10 @@ main() {
 	test_unknown_and_redaction
 	test_final_dossier_and_structural_precedence
 	test_release_integration_bounds_comments
+	test_legacy_blocked_backoff
+	test_blocked_backoff_trust
+	test_permission_blocker_continuation
+	test_blocked_backoff_cli
 	printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 }

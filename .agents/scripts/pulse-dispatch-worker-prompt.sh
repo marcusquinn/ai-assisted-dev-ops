@@ -479,11 +479,8 @@ _dlw_hold_repeated_zero_output() {
 
 	local hold_threshold="${ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD:-4}"
 	[[ "$hold_threshold" =~ ^[0-9]+$ ]] || hold_threshold=4
-	if [[ "$zero_attempt_count" -lt "$hold_threshold" ]] &&
-		_dlw_comment_bloat_requires_clean_room "$issue_number" "$repo_slug" "$comment_metrics"; then
-		echo "[dispatch_with_dedup] #${issue_number} in ${repo_slug}: bypassing repeated zero-output brief-rewrite hold for clean-room brief mode" >>"$LOGFILE"
-		return 1
-	fi
+	# Clean-room mode changes prompt content, never the retry budget. Otherwise
+	# failures create enough comments to disable the very fuse bounding them.
 
 	local zero_count=""
 	zero_count=$(_dlw_zero_output_evidence_count "$issue_number" "$repo_slug" "$precomputed_zero_count")

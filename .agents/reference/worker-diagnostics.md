@@ -68,7 +68,35 @@ claim loops:
 | `Dispatching worker ...` with no later terminal marker | Active worker ownership. It blocks re-dispatch for the normal dispatch TTL, then for the extended non-terminal worker window (`DISPATCH_ACTIVE_WORKER_MAX_AGE`, default 7200s). | Worker log growth, PR creation, `MERGE_SUMMARY`, `CLAIM_RELEASED`, `Worker failed`, or watchdog output. |
 | Draft/open PR or recent issue/PR timeline event after dispatch | Natural liveness signal. Prefer these durable events over synthetic heartbeat comments. | Continue from the referenced branch/PR if the worker later goes silent. Stale recovery uses the latest visible issue activity and targeted open-PR activity before reclaiming. |
 | `DISPATCH_CLAIM ... reason=stale_worker_takeover prior_dispatch_age_s=<n> no_terminal=true` | A later runner is deliberately taking over after the extended non-terminal worker window expired. This is not a bare duplicate claim. | A fresh `Dispatching worker` comment or a deterministic skip/failure reason. |
-| `CLAIM_RELEASED ...` / `MERGE_SUMMARY` / `Worker failed` / `Worker Watchdog Kill` / `BLOCKED` | Terminal ownership marker. Prior dispatch comments no longer block. | Re-dispatch is safe if the issue remains open and eligible. |
+| `CLAIM_RELEASED ...` / `MERGE_SUMMARY` / `Worker failed` / `Worker Watchdog Kill` / `BLOCKED` | Terminal ownership marker. Prior dispatch ownership ends, not the underlying blocker. | Re-dispatch requires eligibility plus the terminal-blocker circuit/backoff checks. |
+
+### Blocked-release storms (GH#31378)
+
+The incident produced 66 launches and 65 blocked releases across three runners;
+each attempt added claim, lease, launch and release comments without a PR. The
+worker correctly preserved a protected-source denial, but continuations emitted
+generic `BLOCKED` without a new permission event. Unknown blockers had no durable
+circuit, and comment-bloat clean-room mode bypassed the zero-output hold.
+
+`terminal-blocker-circuit.sh` now throttles authenticated bare blocked-release
+history independently of local counters and task revisions: two failures cause
+a 15-minute delay, further failures double it up to 24 hours. The read-only gate
+adds no comments or labels. Only OWNER/MEMBER releases with matching API author
+and runner count; malformed, future and ambiguous collaborator evidence does not.
+Expiry or a standalone trusted `terminal-blocker-circuit:retry` directive permits
+another attempt. Unknown causes remain retryable, not permanent global holds.
+
+An evidenced unresolved permission boundary uses the explicit final-message
+`TERMINAL_BLOCKER_REASON=permission_required` contract, including continuations
+without a new denied tool call. Its known-blocker circuit is bound to the issue,
+not unrelated code/brief edits or dependency API availability. Resolve the
+human-owned prerequisite before explicitly retrying; scheduling consent never
+grants source access, and the original guard must verify the exact context.
+
+Clean-room mode changes prompt content only; it cannot bypass the zero-output
+retry budget. Verify with `test-terminal-blocker-circuit.sh`,
+`test-pulse-dispatch-worker-launch-comment-metrics.sh`, and
+`test-zero-output-url-fallback.sh` under `scripts/tests/`.
 
 Headless workers should emit the smallest append-only GitHub-visible signal that
 helps watchdogs and recovery. Do not post routine "still working" comments when
