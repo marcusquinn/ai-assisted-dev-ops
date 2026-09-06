@@ -317,6 +317,10 @@ Source commands:
 
 ${recommendation}
 
+## Files Scope
+
+$(_framework_write_surface_paths | sed 's/^/- /')
+
 ## Implementation context
 
 - Primary files: \`.agents/scripts/pulse-check-queue-scan.py\`, \`.agents/scripts/pulse-check-report.jq\`, \`.agents/scripts/pulse-check-helper.sh\`, and \`.agents/scripts/tests/test-pulse-check-helper.sh\`; follow related diagnostics into current-state or worker helpers only when evidence requires it.
@@ -328,6 +332,12 @@ ${recommendation}
 - \`.agents/scripts/tests/test-pulse-check-helper.sh\`
 - \`.agents/scripts/pulse-check-helper.sh --json\` shows the finding cleared or downgraded with current evidence.
 - Relevant focused tests for any touched pulse/worker helper.
+
+## Acceptance Criteria
+
+- [ ] The evidence-backed repair passes the focused tests above.
+- [ ] Current evidence verifies recovery or records the exact remaining blocker and owner; issue creation and worker exits alone do not establish recovery.
+- [ ] Existing ownership, permission boundaries and external waits remain protected.
 
 Privacy note: this issue intentionally uses aggregate counts only; do not add private repo names, private basenames, local paths, or issue titles.
 EOF

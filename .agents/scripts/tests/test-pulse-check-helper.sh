@@ -669,6 +669,13 @@ assert_contains "apply body carries marker" "aidevops:generator=pulse-check find
 assert_contains "apply body carries verification" ".agents/scripts/tests/test-pulse-check-helper.sh" "$BODY"
 assert_not_contains "apply body omits private slug" "private/repo-one" "$BODY"
 assert_not_contains "apply body omits issue title" "secret one" "$BODY"
+scope_rc=0
+bash "${SCRIPT_DIR}/brief-readiness-helper.sh" scope-check "$BODY" || scope_rc=$?
+assert_eq "generated finding has executable canonical scope" "0" "$scope_rc"
+format_rc=0
+AIDEVOPS_BODY_FORMAT_STRICT=1 bash "${SCRIPT_DIR}/issue-body-format-helper.sh" check "$BODY" || format_rc=$?
+assert_eq "generated finding passes strict execution body contract" "0" "$format_rc"
+assert_contains "generated recovery requires outcome evidence" "worker exits alone do not establish recovery" "$BODY"
 
 rm -f "${TEST_ROOT}/capture.txt" "${TEST_ROOT}/capture.txt.body"
 READ_APPLY_OUT=$(env "${COMMON_ENV[@]}" "PULSE_CHECK_PERMISSION_FIXTURE=read" "$HELPER" apply --repo owner/aidevops 2>&1)
