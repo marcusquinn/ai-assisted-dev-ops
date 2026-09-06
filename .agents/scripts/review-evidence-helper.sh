@@ -156,7 +156,9 @@ _review_git_diff() {
 	local repo_root="$1" range="$2"
 	shift 2
 	if [[ "$range" == commit:* ]]; then
-		git -C "$repo_root" show --format= --root "${range#commit:}" "$@"
+		# One first-parent policy binds sensitive-path inventory, binary metadata
+		# and text patches to the same tree comparison, including merge commits.
+		git -C "$repo_root" show --format= --root --diff-merges=first-parent "${range#commit:}" "$@"
 	else
 		git -C "$repo_root" diff "$range" "$@"
 	fi
@@ -357,7 +359,7 @@ _review_write_commit() {
 		return 1
 	}
 	_review_validate_ref "$commit_ref" || return 1
-	git -C "$repo_root" diff-tree --root --no-commit-id --name-only -z -r "$commit_ref" >"$paths_file"
+	_review_git_diff "$repo_root" "commit:${commit_ref}" --name-only --no-renames -z >"$paths_file" || return 1
 	_review_check_paths "$paths_file" || return 1
 	_review_collect_diff_binaries "$repo_root" "commit:${commit_ref}" "$commit_ref" "${commit_ref}^" || return 1
 	{

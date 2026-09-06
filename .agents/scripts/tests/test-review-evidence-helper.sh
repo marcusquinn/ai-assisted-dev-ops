@@ -180,4 +180,34 @@ for leftover in "${TEST_ROOT}/tmp"/review-evidence-binary-*; do
 	[[ ! -e "$leftover" ]] || fail 'binary evidence temporary file leaked'
 done
 
+# A conflict-resolution merge must not hide sensitive paths from the inventory
+# while emitting them in its patch. All three commit stages use first-parent.
+MERGE_REPO="${TEST_ROOT}/merge-repo"
+mkdir -p "${MERGE_REPO}/config"
+MERGE_SENSITIVE_PATH="${MERGE_REPO}/config/.env"
+fixture_git() {
+	git -C "$MERGE_REPO" -c user.name='Review Test' -c user.email='review@example.invalid' "$@"
+	return $?
+}
+fixture_git init -q -b main
+printf 'base-fixture\n' >"$MERGE_SENSITIVE_PATH"
+fixture_git add -A
+fixture_git commit -qm base
+fixture_git checkout -qb side
+printf 'side-fixture\n' >"$MERGE_SENSITIVE_PATH"
+fixture_git add -A
+fixture_git commit -qm side
+fixture_git checkout -q main
+printf 'main-fixture\n' >"$MERGE_SENSITIVE_PATH"
+fixture_git add -A
+fixture_git commit -qm main
+fixture_git merge side --no-commit >/dev/null 2>&1 || true
+printf 'merged-fixture-only\n' >"$MERGE_SENSITIVE_PATH"
+fixture_git add -A
+fixture_git commit -qm merge
+[[ "$(fixture_git rev-list --parents -n 1 HEAD | wc -w | tr -d ' ')" == 3 ]] || fail 'fixture is not a merge commit'
+if (cd "$MERGE_REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle commit --commit HEAD >/dev/null 2>&1); then
+	fail 'merge commit sensitive path was bundled'
+fi
+
 printf 'PASS review evidence helper builds bounded target bundles\n'
