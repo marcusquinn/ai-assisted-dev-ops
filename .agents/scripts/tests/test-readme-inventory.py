@@ -47,6 +47,10 @@ class InventoryTests(unittest.TestCase):
         target.write_text(text, encoding="utf-8")
         return target
 
+    def write_all(self, paths, text=PROFILE):
+        for path in paths:
+            self.write(path, text)
+
     def test_source_categories_and_exclusions(self):
         included = {
             "main_agents": [".agents/build-plus.md"],
@@ -83,8 +87,7 @@ class InventoryTests(unittest.TestCase):
             ".agents/tools/tests/example.md",
             ".agents/scripts/commands/README.md",
         ]
-        for name in excluded:
-            self.write(name)
+        self.write_all(excluded)
         self.git("add", ".agents")
         self.write(".agents/tools/untracked.md")
         data = inventory(self.root)
@@ -105,10 +108,9 @@ class InventoryTests(unittest.TestCase):
             ".agents/templates/example.md",
             ".agents/marketing-sales/example.md",
         ]
-        for name in modules:
-            self.write(
-                name, "# Independently callable instructions\nFollow this procedure.\n"
-            )
+        self.write_all(
+            modules, "# Independently callable instructions\nFollow this procedure.\n"
+        )
         self.git("add", ".agents")
         data = inventory(self.root)
         self.assertEqual(data["files"]["subagents"], sorted(modules))
@@ -129,8 +131,7 @@ class InventoryTests(unittest.TestCase):
                 ".jq",
             )
         ]
-        for name in names:
-            self.write(name, "# Production helper module\n")
+        self.write_all(names, "# Production helper module\n")
         self.write(".agents/scripts/gh", "#!/usr/bin/env bash\ntrue\n").chmod(0o755)
         self.write(".agents/scripts/NOTES", "Not an executable script.\n")
         self.git("add", ".agents")
