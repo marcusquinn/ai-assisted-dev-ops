@@ -107,6 +107,98 @@ assert_contains \
 	"portable execution conversations, not the sole record" \
 	"$self_improvement"
 
+# Capture generated delivery without credentials, models, or real user mirrors.
+python3 - "$repo_root" <<'PY'
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+repo = Path(sys.argv[1])
+scripts = repo / '.agents/scripts'
+
+def load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, scripts / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+with tempfile.TemporaryDirectory(prefix='primary-delivery-') as temporary:
+    home = Path(temporary)
+    agents = home / '.aidevops/agents'
+    agents.mkdir(parents=True)
+    for name in ('AGENTS.md', 'build-plus.md', 'seo.md', 'content.md'):
+        shutil.copyfile(repo / '.agents' / name, agents / name)
+    shutil.copyfile(repo / 'VERSION', agents / 'VERSION')
+    config_path = home / '.config/opencode/opencode.json'
+    config_path.parent.mkdir(parents=True)
+    custom = {'description': 'user-owned', 'prompt': 'user workflow', 'mode': 'primary'}
+    initial = {'instructions': ['personal.md'], 'agent': {'Personal': custom}, 'username': 'fixture'}
+    env = {**os.environ, 'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config')}
+    for route, args in (
+        ('unified', ['agent-discovery.py', 'opencode', 'opencode-json']),
+        ('compatibility', ['opencode-agent-discovery.py']),
+    ):
+        config_path.write_text(json.dumps(initial))
+        for _ in range(2):
+            result = subprocess.run([sys.executable, str(scripts / args[0]), *args[1:]],
+                                    env=env, capture_output=True, text=True, timeout=30)
+            assert result.returncode == 0, f'{route} discovery failed'
+        config = json.loads(config_path.read_text())
+        assert config['instructions'] == ['personal.md', str(agents / 'AGENTS.md')]
+        assert config['agent']['Personal'] == custom
+        assert config['username'] == 'fixture'
+        for profile, name in [('Build+', 'build-plus'), ('SEO', 'seo'), ('Content', 'content')]:
+            source = agents / f'{name}.md'
+            prompt = config['agent'][profile]['prompt']
+            assert prompt == f'{{file:~/.aidevops/agents/{name}.md}}'
+            assert source.read_text().strip(), 'canonical source must not be a placeholder'
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            print(f'PASS: {route} profile={profile} source={name}.md sha256={digest} hooks=unavailable')
+        # Missing deployed sources must not silently erase the existing core fallback.
+        core = agents / 'AGENTS.md'
+        core.rename(agents / 'core.saved')
+        result = subprocess.run([sys.executable, str(scripts / args[0]), *args[1:]],
+                                env=env, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0
+        assert str(core) in json.loads(config_path.read_text())['instructions']
+        (agents / 'core.saved').rename(core)
+
+    # Native Codex preload must preserve explicit user override precedence.
+    codex = load('delivery_codex', 'codex-setup.py')
+    codex_home = home / '.codex'
+    codex_home.mkdir()
+    (codex_home / 'AGENTS.md').write_text('Personal instructions\n')
+    override = codex_home / 'AGENTS.override.md'
+    override.write_text('Explicit user override\n')
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        codex.guidance(codex_home, agents)
+        codex.guidance(codex_home, agents)
+    assert 'takes precedence' in output.getvalue()
+    assert override.read_text() == 'Explicit user override\n'
+    text = (codex_home / 'AGENTS.md').read_text()
+    assert text.count(codex.START) == 1 and 'Personal instructions' in text
+
+    launcher = load('delivery_launcher', 'runtime-launcher.py')
+    launcher.ROOT = agents
+    for name in ('build-plus', 'seo', 'content'):
+        source = agents / f'{name}.md'
+        prompt = launcher.guidance(name, source)
+        assert str(agents / 'AGENTS.md') in prompt and str(source) in prompt
+        for runtime in ('codex', 'claude-code'):
+            args = launcher.agent_args(runtime, name, source, prompt, True)
+            assert prompt in args or any(json.dumps(prompt) in value for value in args)
+    print('PASS: native Codex shadow warning, repeat setup and launcher required-load contracts')
+PY
+
 if [[ "$failures" -ne 0 ]]; then
 	printf '\n%d context-engineering guidance check(s) failed\n' "$failures" >&2
 	exit 1
