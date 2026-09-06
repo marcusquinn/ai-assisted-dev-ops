@@ -97,7 +97,7 @@ class SourceAccessHelperTests(unittest.TestCase):
     def test_request_records_are_bounded_objects(self) -> None:
         request_id = self._request()
         path = self.config.request_root / f"{request_id}.json"
-        for content in (b"[]", b"null", b"1", b"\xff", b"{"):
+        for content in (b"[]", b"null", b"1", b"\xff", b"{", b"[" * 2000 + b"]" * 2000):
             with self.subTest(content=content):
                 path.write_bytes(content)
                 with self.assertRaises(HELPER.SourceAccessError):
@@ -140,14 +140,14 @@ class SourceAccessHelperTests(unittest.TestCase):
         def replaced_fstat(descriptor: int) -> os.stat_result:
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if calls == 2:
                 replacement = path.with_suffix(".replacement")
                 replacement.write_bytes(original)
                 replacement.replace(path)
             return real_fstat(descriptor)
 
         with mock.patch.object(HELPER._SOURCE_CORE.os, "fstat", side_effect=replaced_fstat):
-            with self.assertRaisesRegex(HELPER.SourceAccessError, "changed while reading|unsafe"):
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "changed while reading"):
                 HELPER._load_request(self.config, self.home, request_id, self.uid)
 
     def _request(self, path: Path | None = None) -> str:

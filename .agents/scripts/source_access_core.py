@@ -535,15 +535,17 @@ def _read_request_record(request_path: Path, expected_uid: int) -> dict[str, Any
         _require_source(len(content) <= MAX_REQUEST_BYTES, "source-access request is too large")
         current = request_path.lstat()
         final = os.fstat(descriptor)
-        identity_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid",
-                           "st_size", "st_mtime_ns", "st_ctime_ns")
+        identity_fields = (
+            "st_dev", "st_ino", "st_mode", "st_nlink", "st_uid",
+            "st_size", "st_mtime_ns", "st_ctime_ns",
+        )
         _require_source(
             (current.st_dev, current.st_ino) == (metadata.st_dev, metadata.st_ino)
             and all(getattr(final, field) == getattr(metadata, field) for field in identity_fields),
             "source-access request changed while reading",
         )
-        request = json.loads(content)
-    except (OSError, ValueError) as exc:
+        request = json.loads(content.decode("utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
         raise SourceAccessError("source-access request was not found or is malformed") from exc
     finally:
         os.close(descriptor)
