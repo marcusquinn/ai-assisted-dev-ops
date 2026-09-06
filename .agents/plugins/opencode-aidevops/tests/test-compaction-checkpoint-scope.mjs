@@ -91,9 +91,17 @@ test("compaction injects only the active repository checkpoint", async () => {
       "UNRELATED_SIBLING_CHECKPOINT_STATE\n",
       "utf8",
     );
+    const protectedHandoff = [
+      "TARGET_REPO_CHECKPOINT_STATE",
+      "Aim: calibrate usable context without changing production defaults.",
+      "Decision: retain static fallback until route restoration is proven.",
+      "Accepted correction, not applied: preserve interrupted usage as unknown.",
+      "Progress: fixture checks passed; evidence: receipt-fixture.json.",
+      "Next action: verify the corrected report, then continue the open objective.",
+    ].join("\n");
     writeFileSync(
       scopedCheckpointPath(workspaceDir, targetRepo),
-      "TARGET_REPO_CHECKPOINT_STATE\n",
+      `${protectedHandoff}\n`,
       "utf8",
     );
     const targetCampaign = campaignCheckpointPath(workspaceDir, targetRepo);
@@ -131,11 +139,12 @@ test("compaction injects only the active repository checkpoint", async () => {
       "the non-instructional boundary must precede injected checkpoint data",
     );
     assert.match(payload, /TARGET_REPO_CHECKPOINT_STATE/);
+    assert.ok(payload.includes(protectedHandoff), "all protected fixture fields survive handoff injection verbatim");
     assert.match(payload, /Repository-scoped point-in-time data/);
     assert.doesNotMatch(payload, /Restore this operational state/);
     assert.match(
       payload,
-      /TARGET_REPO_CHECKPOINT_STATE\n\n## Repository Campaign Checkpoint/,
+      /continue the open objective\.\n\n## Repository Campaign Checkpoint/,
       "operational state sections must have a blank line between them",
     );
     assert.doesNotMatch(payload, /UNRELATED_LEGACY_CHECKPOINT_STATE/);

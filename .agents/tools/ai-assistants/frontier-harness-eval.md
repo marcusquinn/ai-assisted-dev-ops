@@ -103,6 +103,54 @@ context 18,432. The first is below this pilot's initial aidevops request size an
 causes immediate repeated compaction. Do not run a full sweep at an infeasible
 budget or interpret that pathology as proof about summary quality.
 
+### Calibration contract v1
+
+Verified source: `anomalyco/opencode` v1.18.29,
+`16747470f976aca3d362ad730bcd3fe82ecc2c9a`, `session/overflow.ts` and
+`provider/transform.ts` under `packages/opencode/src`. For this adapter's explicit
+positive input/output limits and isolated environment (default output-token maximum
+32,000):
+
+```text
+effective_output = min(model.limit.output, 32000)
+reserved = config.compaction.reserved ?? min(20000, effective_output)
+usable_input = max(0, model.limit.input - reserved)
+```
+
+The native overflow decision compares **previous completed total occupancy**
+(including output) with `usable_input`, using `>=`. The pilot stop is narrower:
+at the first compaction it retrieves the earliest assistant response in that
+session and stops before summary generation only when its reported **input plus
+cache reads/writes alone** reaches that threshold. Output-only pressure is not
+called an infeasible initial input. This is an experimentally unusable initial
+budget, not a claim that the provider cannot accept the request. Missing/error
+usage or unavailable session history is unknown, never guessed from text size.
+Out-of-order event delivery is corroborated with session history before stopping.
+
+The adapter verifies the installed version; the observer records applied model
+limits, reserve source, initial reported input (including core/tools), system UTF-8
+bytes and framework tool count. Bytes/counts are footprint diagnostics, **not token
+estimates or a separately measured core/tool token breakdown**. Unknown runtime
+versions or unsupported limit shapes have null capacity and cannot qualify as a
+calibrated experimental comparison. No production model defaults change.
+
+Reports retain schema-1 compatibility and source digests. Known completion
+subtotals, missing per-field usage, host responses without final usage, and summary
+input/cache/output overhead are separate. An infeasibility stop never rewrites a
+verifier verdict or historical timeout; `comparison_valid` also requires successful
+host runner lifecycle evidence. `initial_input_fits` is not a task pass or a
+guarantee that later turns fit.
+
+Regression verification covers feasible/infeasible/equality/missing-usage cases,
+unknown versions, explicit reserves, delayed events, report joins and interrupted
+attempts. The protected handoff fixture retains aims, decisions, unapplied
+corrections, progress/evidence and next actions within the existing historical-data
+boundary; sibling/legacy checkpoints and stale campaign state stay excluded.
+These are hook/receipt tests, not proof that an LLM summary is lossless. Static
+summary policy remains unchanged: no route-specific restoration evidence here
+justifies removing its fallback. The live pilot observations below remain the
+original immutable attempts, not newly rerun or relabelled measurements.
+
 Telemetry records content-free request sizes, resolved limits, completed usage,
 summary usage, compaction requests/completions and post-compaction completions.
 It is contestant-writable diagnostic evidence, not tamper-proof proof; corroborate

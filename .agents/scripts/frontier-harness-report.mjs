@@ -113,6 +113,15 @@ export function summarizeRun(root) {
   };
   const reward = trial.verifier_result?.rewards?.reward;
   const stopped = telemetry.calibration.stopped.length > 0;
+  const initial = [...new Map(telemetry.calibration.initial.map((row) => [row.session, row])).values()];
+  const calibrated = manifest.opencode_version === "1.18.29" && initial.length > 0
+    && initial.every((row) => row.status === "initial_input_fits" && row.capacity?.usable_input > 0)
+    && telemetry.calibration.applied.length > 0
+    && telemetry.calibration.applied.every((row) => row.capacity?.formula === "opencode-1.18.29-explicit-input-v1"
+      && Number.isFinite(row.capacity.reserve) && row.capacity.reserve >= 0
+      && row.capacity.usable_input === Math.max(0, row.input - row.capacity.reserve));
+  const runnerFinished = manifest.status === "runner_finished" && manifest.runner_exit_code === 0
+    && manifest.completed_trials === 1 && manifest.errored_trials === 0 && !manifest.interrupted;
   const usageFieldsComplete = usage.length > 0 && usage.every((row) =>
     ["input_tokens", "output_tokens", "cached_tokens"].every((key) => Number.isFinite(row[key]) && row[key] >= 0));
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -125,10 +134,12 @@ export function summarizeRun(root) {
     billing: manifest.inference_route, leaderboard_comparable: false,
     experimental_context_limit: manifest.experimental_context_limit ?? null,
     calibration_status: stopped ? "infeasible_configuration"
-      : telemetry.calibration.initial.length ? "observed" : "unobserved",
+      : calibrated ? "initial_input_fits" : "unknown",
     verifier_reward: Number.isFinite(reward) ? reward : null,
     task_passed: reward === 1 && !trial.exception_info,
-    comparison_valid: reward === 1 && !trial.exception_info && !stopped,
+    comparison_valid: reward === 1 && !trial.exception_info && !stopped && runnerFinished
+      && (manifest.experimental_context_limit == null || calibrated),
+    runner_finished: runnerFinished,
     trial_exception: /^[A-Za-z][A-Za-z0-9_]*$/.test(trial.exception_info?.exception_type || "")
       ? trial.exception_info.exception_type : null,
     agent_seconds: duration(trial.agent_execution), setup_seconds: duration(trial.agent_setup),

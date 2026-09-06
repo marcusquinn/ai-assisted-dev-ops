@@ -92,10 +92,17 @@ test("calibration stops measured infeasible input before summary, not feasible o
     { context: 16384, input: null, stop: false, usable: 12288 },
     { context: 16384, input: 13000, version: "1.18.22", stop: false, usable: null },
     { context: 16384, input: 13000, reserved: 0, stop: false, usable: 14336 },
+    { context: 16384, input: 13000, unavailable: true, stop: false, usable: 12288 },
   ]) {
     const dir = mkdtempSync(join(tmpdir(), "frontier-calibration-"));
     const events = join(dir, "events.jsonl");
-    const hooks = await observer({}, { profile: "stock", events,
+    const info = { id: "fixture-response", sessionID: "fixture-session", role: "assistant",
+      time: { created: 1, completed: 2 },
+      tokens: { input: scenario.input, output: 2048, cache: { read: 0, write: 0 } } };
+    const hooks = await observer({ client: { session: { messages: async () => {
+      if (scenario.unavailable) throw new Error("fixture unavailable");
+      return { data: [{ info }] };
+    } } } }, { profile: "stock", events,
       experimental: true, runtimeVersion: scenario.version ?? "1.18.29" });
     try {
       await hooks.config({ compaction: { reserved: scenario.reserved } });
@@ -104,11 +111,7 @@ test("calibration stops measured infeasible input before summary, not feasible o
       } } };
       await hooks["chat.params"](params, {});
       await hooks["experimental.chat.system.transform"](params, { system: ["private core"] });
-      await hooks.event({ event: { type: "message.updated", properties: { info: {
-        id: "fixture-response", sessionID: params.sessionID, role: "assistant",
-        time: { created: 1, completed: 2 },
-        tokens: { input: scenario.input, output: 2048, cache: { read: 0, write: 0 } },
-      } } } });
+      await hooks.event({ event: { type: "message.updated", properties: { info } } });
       const compact = () => hooks["experimental.session.compacting"](params, { context: [] });
       if (scenario.stop) await assert.rejects(compact(), /FrontierCalibrationInfeasible/);
       else await compact();
@@ -153,6 +156,9 @@ test("delayed bus usage is recovered from the first completed response in the sa
     await hooks["chat.params"]({ sessionID: "target", model: {
       limit: { context: 16384, input: 14336, output: 2048 },
     } }, {});
+    await hooks.event({ event: { type: "message.updated", properties: {
+      info: { ...message("target", 10, 1).info, id: "later-delivered-first" },
+    } } });
     await assert.rejects(hooks["experimental.session.compacting"]({ sessionID: "target" }, { context: [] }),
       /FrontierCalibrationInfeasible/);
   } finally { await hooks.dispose(); rmSync(dir, { recursive: true, force: true }); }
@@ -164,12 +170,14 @@ test("run report joins verifier evidence, detects overridden output and preserve
   mkdirSync(join(trialDir, "agent"), { recursive: true });
   const json = (path, data) => writeFileSync(path, JSON.stringify(data));
   const manifest = { profile: "stock", experimental_context_limit: 18432, experimental_output_reserve: 2048,
+    opencode_version: "1.18.29", status: "runner_finished", runner_exit_code: 0, completed_trials: 1, errored_trials: 0,
     relay: { requests: 2, stream_failures: 0, upstream_usage: [{ input_tokens: 13000, output_tokens: 2, cached_tokens: null }] } };
   const result = { verifier_result: { rewards: { reward: 1 } } };
   const rows = [{ type: "observer.started" }, { type: "config.applied" },
     { type: "request", session: "fixture", context_limit: 18432, input_limit: 16384, output_limit: 2048,
-      capacity: { usable_input: 14336, reserve: 2048 } },
-    { type: "calibration.initial", status: "initial_input_fits", input_tokens_including_cache: 13000 },
+      capacity: { formula: "opencode-1.18.29-explicit-input-v1", usable_input: 14336, reserve: 2048 } },
+    { type: "calibration.initial", status: "initial_input_fits", input_tokens_including_cache: 13000,
+      capacity: { usable_input: 14336 } },
     { type: "completion", input_tokens: 13000, output_tokens: 2 },
     { type: "completion", summary: true, input_tokens: 13000, output_tokens: 3 }];
   const saveEvents = () => writeFileSync(join(trialDir, "agent/frontier-events.jsonl"), rows.map((row, i) =>
@@ -185,6 +193,16 @@ test("run report joins verifier evidence, detects overridden output and preserve
     assert.equal(report.upstream_usage_complete, false);
     assert.equal(report.upstream_responses_without_usage, 1);
     assert.equal(report.source_result_sha256.length, 64);
+    manifest.interrupted = true;
+    json(join(root, "manifest.json"), manifest);
+    assert.equal(summarizeRun(root).comparison_valid, false);
+    manifest.interrupted = false;
+    manifest.opencode_version = "1.18.22";
+    json(join(root, "manifest.json"), manifest);
+    assert.equal(summarizeRun(root).comparison_valid, false);
+    assert.equal(summarizeRun(root).calibration_status, "unknown");
+    manifest.opencode_version = "1.18.29";
+    json(join(root, "manifest.json"), manifest);
     rows[2].output_limit = 4096;
     saveEvents();
     assert.throws(() => summarizeRun(root), /model limits/);

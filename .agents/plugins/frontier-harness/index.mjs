@@ -41,11 +41,14 @@ async function FrontierObserver(input, options = {}) {
       || !(limit?.input > 0) || !(limit?.output > 0)) return null;
     const reserve = reserved ?? Math.min(20000, limit.output, 32000);
     return { formula: "opencode-1.18.29-explicit-input-v1", reserve,
+      reserve_source: reserved === undefined ? "runtime-default" : "compaction.reserved",
       usable_input: Math.max(0, limit.input - reserve) };
   };
   const initialUsage = (message) => {
     const state = stateFor(message.sessionID);
-    if (state.initial || message.summary || !message.time?.completed) return;
+    if (state.confirmed || message.summary || !message.time?.completed
+      || (state.initial && state.created <= message.time.created)) return;
+    state.created = message.time.created;
     const fields = [message.tokens?.input, message.tokens?.cache?.read, message.tokens?.cache?.write];
     const inputTokens = !message.error && fields.every((value) => number(value) !== null)
       ? fields.reduce((a, b) => a + b, 0) : null;
@@ -97,15 +100,19 @@ async function FrontierObserver(input, options = {}) {
       const state = stateFor(event.sessionID);
       // Bus delivery can lag the next turn. Read the completed first response
       // from this session only, never a global or previous-trial measurement.
-      if (options.experimental && state.capacity && !state.initial && input.client?.session?.messages) {
+      if (options.experimental && state.capacity && !state.confirmed && input.client?.session?.messages) {
         const result = await input.client.session.messages({ path: { id: event.sessionID } })
           .catch(() => ({ data: [] }));
         const first = result.data?.filter((row) => row.info?.role === "assistant"
-          && row.info.sessionID === event.sessionID && !row.info.summary && row.info.time?.completed)
+          && row.info.sessionID === event.sessionID && !row.info.summary)
           .sort((a, b) => a.info.time.created - b.info.time.created)[0];
-        if (first?.info.sessionID === event.sessionID) initialUsage(first.info);
+        if (first?.info.time?.completed) {
+          state.initial = null;
+          initialUsage(first.info);
+          state.confirmed = true;
+        }
       }
-      if (options.experimental && state.capacity && state.initial?.input_tokens_including_cache != null
+      if (options.experimental && state.confirmed && state.capacity && state.initial?.input_tokens_including_cache != null
         && state.initial.input_tokens_including_cache >= state.capacity.usable_input) {
         emit({ type: "calibration.stopped", session: opaque(event.sessionID),
           reason: "initial_input_exceeds_usable", capacity: state.capacity, ...state.initial });
