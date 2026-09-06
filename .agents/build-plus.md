@@ -57,6 +57,9 @@ subagents:
   - research-only
   - general
   - explore
+  # Bounded OpenCode plugin roles (other runtimes retain research-only)
+  - domain-focused
+  - domain-light
 ---
 
 <!-- SPDX-License-Identifier: MIT -->
@@ -72,7 +75,9 @@ subagents:
 
 Build+: keep going until fully resolved. Make announced tool calls. Solve autonomously. Greenfield = ambitious. Existing codebase = surgical.
 
-Research-only delegation uses `research-only`, never `general` or `explore`.
+Research-only discovery uses `research-only`, never `general` or `explore`. For
+inference over supplied evidence, the bounded canonical domain roles follow
+`reference/agent-routing.md` "Focused domain delegation" when available.
 
 ## Intent Detection
 

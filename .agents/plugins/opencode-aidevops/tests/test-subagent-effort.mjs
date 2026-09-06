@@ -39,14 +39,17 @@ function domainFixture(t, variant = "low") {
   const state = { tiers: new Map(), pinned: new Set() };
   assert.equal(registerDelegatedDomainProfiles(config, root, state), 2);
   const outcomes = [];
+  const retries = [];
   const client = { session: {
     get: async ({ path }) => ({ data: path.id === "parent"
       ? { model: { providerID: "openai", modelID: "parent" }, variant }
       : { id: path.id, parentID: "parent" } }),
     messages: async () => ({ data: [] }),
+    prompt: async (request) => { retries.push(request); return { data: {} }; },
   } };
   const hooks = createSubagentEffortHooks(client, {
     agentRoutingState: state, onSubagentOutcome: (value) => outcomes.push(value),
+    modelRouting: { tiers: {} }, isHeadless: () => false,
   });
   const envelope = {
     task: "campaign-analysis", objective: "Compare supplied conversion rates", scope: "Advisory arithmetic only",
@@ -58,7 +61,7 @@ function domainFixture(t, variant = "low") {
     message: { sessionID: "child", agent: name },
     parts: [{ type: "text", text: JSON.stringify({ ...envelope, ...changes }) }],
   });
-  return { root, config, state, hooks, output, outcomes };
+  return { root, config, state, hooks, output, outcomes, retries };
 }
 
 test("focused and light domain captures deliver canonical knowledge with parent ceilings", async (t) => {
@@ -127,6 +130,35 @@ test("cancelled domain children retain host ownership and never report acceptanc
   assert.equal(outcome.parentSessionID, "parent");
   assert.equal(outcome.success, false);
   assert.equal(outcome.status, "cancelled");
+});
+
+test("domain policies enforce ceilings without agent metadata and never escalate", async (t) => {
+  const fixture = domainFixture(t, "high");
+  const output = fixture.output();
+  await fixture.hooks.chatMessage({}, output);
+  const params = { options: { reasoningEffort: "max" } };
+  await fixture.hooks.chatParams({ message: { sessionID: "child" }, model: output.message.model }, params);
+  assert.equal(params.options.reasoningEffort, "medium");
+  await assert.rejects(fixture.hooks.chatParams({ message: output.message,
+    model: { providerID: "other", modelID: "larger" } }, params), /model changed/);
+  fixture.hooks.beforeTool({ tool: "task", callID: "call", sessionID: "parent" }, {});
+  await fixture.hooks.afterTool({ tool: "task", callID: "call", sessionID: "parent" }, {
+    metadata: { sessionId: "child" }, output: "BLOCKED: capability limit - insufficient reasoning",
+  });
+  assert.equal(fixture.retries.length, 0);
+});
+
+test("missing light section and shadowed primary prompts are unavailable", async (t) => {
+  const fixture = domainFixture(t);
+  const primary = fixture.config.agent["Marketing-Sales"];
+  const source = "---\nmode: primary\n---\nCanonical source without a light section";
+  writeFileSync(join(fixture.root, "marketing-sales.md"), source);
+  primary.prompt = source;
+  registerDelegatedDomainProfiles(fixture.config, fixture.root, fixture.state);
+  await assert.rejects(fixture.hooks.chatMessage({}, fixture.output("domain-light")), /knowledge unavailable/);
+  primary.prompt = "user override";
+  registerDelegatedDomainProfiles(fixture.config, fixture.root, fixture.state);
+  await assert.rejects(fixture.hooks.chatMessage({}, fixture.output()), /unverified/);
 });
 
 test("aggregate Task session metadata falls back without coercing child identity", () => {

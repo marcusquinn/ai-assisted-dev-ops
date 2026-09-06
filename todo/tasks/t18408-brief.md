@@ -40,6 +40,7 @@ Do not solve this by registering every leaf or making every primary globally cal
 
 ### Files to Modify
 
+- `EDIT: .agents/build-plus.md` — integration clarification (2026-09-06): the canonical main-agent frontmatter in Complete Write Surface must allow the two generated Task roles. `agent_config.py` derives a deny-by-default Task allowlist from this source, so otherwise Build+ cannot invoke either profile. Recognize the plugin-provided names in the already-scoped `subagent_validation.py`. The issue author is an admin, the assigned runner owns this work, and targeted prework discovery found no competing implementation. Verify with existing effort/MCP suites, native context-engineering/generator checks, progressive-load and changed-file lint. Other adapters retain their existing fallback; no tools or external authority are added.
 - `EDIT: .agents/plugins/opencode-aidevops/config-agent-profiles.mjs`, `EDIT: .agents/plugins/opencode-aidevops/agent-loader.mjs` — bounded profile derivation/registration from canonical sources.
 - `EDIT: .agents/plugins/opencode-aidevops/subagent-effort.mjs`, `EDIT: .agents/plugins/opencode-aidevops/subagent-effort-handlers.mjs`, `EDIT: .agents/scripts/lib/subagent_validation.py` — preserve parent envelope, cancellation and effort bounds as required.
 - `EDIT: .agents/reference/agent-routing.md`, `EDIT: .agents/tools/build-agent/build-agent.md`; runtime generation changes must reuse t18405's contract and enumerate affected launch adapters first.
