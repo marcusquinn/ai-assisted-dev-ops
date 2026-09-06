@@ -152,4 +152,25 @@ _pc_cleanup_resumable 10 || concurrency_rc=1
 : >"${TEST_ROOT}/holder-release"
 wait "$holder" || concurrency_rc=1
 [[ "$concurrency_rc" == 0 && ! -d "${AIDEVOPS_LOG_DIR}/cleanup_worktrees.lock" ]]
+
+# Owner-write failure rolls back both newly acquired and reclaimed directories.
+(
+	# shellcheck source=../cleanup-worktrees-lock.sh
+	source "${SCRIPT_DIR}/cleanup-worktrees-lock.sh"
+	LOCK_DIR="${TEST_ROOT}/owner-write.lock"
+	PID_FILE="${LOCK_DIR}/pid"
+	_lock_record_owner() { : >"$PID_FILE"; return 1; }
+	if _lock_acquire; then exit 1; fi
+	[[ ! -d "$LOCK_DIR" ]]
+	mkdir "$LOCK_DIR"
+	printf '99999999\n' >"$PID_FILE"
+	_is_pid_alive() { return 1; }
+	if _lock_acquire; then exit 1; fi
+	[[ ! -d "$LOCK_DIR" ]]
+	# Restore the real owner writer and show that the next invocation succeeds.
+	source "${SCRIPT_DIR}/cleanup-worktrees-lock.sh"
+	_lock_acquire
+	[[ -s "$PID_FILE" ]]
+)
+[[ ! -d "${TEST_ROOT}/owner-write.lock" ]]
 printf 'PASS bounded cleanup fairness, timeout continuation, cursor validation, fail-closed persistence and guard refusal\n'

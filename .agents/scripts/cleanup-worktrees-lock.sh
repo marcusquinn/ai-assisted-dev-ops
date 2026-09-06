@@ -53,9 +53,20 @@ _lock_record_owner() {
 	return 0
 }
 
+_lock_finish_acquire() {
+	if _lock_record_owner; then
+		return 0
+	fi
+	# This process just created the directory. Never strand an ownerless lock
+	# when a PID write fails (for example, during the disk-pressure incident).
+	rm -f "$PID_FILE" 2>/dev/null || true
+	rmdir "$LOCK_DIR" 2>/dev/null || true
+	return 1
+}
+
 _lock_acquire() {
 	if mkdir "$LOCK_DIR" 2>/dev/null; then
-		_lock_record_owner
+		_lock_finish_acquire
 		return $?
 	fi
 	if [[ -f "$PID_FILE" ]]; then
@@ -65,7 +76,7 @@ _lock_acquire() {
 			echo "[cleanup-worktrees] Reclaiming stale lock (PID ${lock_pid} no longer alive)" >>"$LOGFILE"
 			rm -rf "$LOCK_DIR" 2>/dev/null || true
 			if mkdir "$LOCK_DIR" 2>/dev/null; then
-				_lock_record_owner
+				_lock_finish_acquire
 				return $?
 			fi
 		fi
