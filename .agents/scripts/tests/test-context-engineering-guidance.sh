@@ -127,8 +127,9 @@ scripts = repo / '.agents/scripts'
 # t18409: structural preservation, not a claim of model comprehension. Keep the
 # protected rules in the core even when no optional hook/reference is delivered.
 core_rules = (
-    'Every domain retains DevOps purpose, safety and verification',
-    'repository knowledge owns durable work, not only the forge',
+    'Maximise DevOps ROI in all domains',
+    'Repo owns durable work',
+    'leverage, efficiency, self-healing, gap awareness, verified outcomes, traceable Git',
     'Full-loop and merge consent do not authorize publication',
     'Never present intent as completed work',
     'Never expose or accept secrets in conversation',
