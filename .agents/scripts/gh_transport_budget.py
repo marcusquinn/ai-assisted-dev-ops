@@ -20,6 +20,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from gh_transport_recovery import admission_status, mark_dead_reservations, probe_recovers, reserve_probe_allowed
+
 
 class Deferred(Exception):
     """No safe admission is currently available."""
@@ -173,22 +175,7 @@ class Budget:
         now = time.time() if now is None else now
         reservation = uuid.uuid4().hex
         with self.transaction():
-            # A dead executor is uncertain spend, not free quota. Converting it
-            # to debt permits a later serialized observation to recover safely.
-            for identity, pid, birth in self.db.execute(
-                "SELECT id,pid,birth FROM reservation WHERE scope=? AND uncertain=0",
-                (self.scope,),
-            ).fetchall():
-                try:
-                    os.kill(pid, 0)
-                    current_birth = self.birth if pid == os.getpid() else process_birth(pid)
-                    if birth and current_birth and birth != current_birth:
-                        raise ProcessLookupError
-                except ProcessLookupError:
-                    self.db.execute(
-                        "UPDATE reservation SET uncertain=1,started=? WHERE id=?",
-                        (now, identity),
-                    )
+            mark_dead_reservations(self, now, process_birth)
             row = self.db.execute(
                 "SELECT remaining,reset,observed,blocked_until,quota_limit FROM quota "
                 "WHERE scope=? AND resource=?", (self.scope, resource)
@@ -209,8 +196,7 @@ class Budget:
                     "SELECT started FROM revalidation WHERE scope=? AND resource=?",
                     (self.scope, resource),
                 ).fetchone()
-                if (resource != "core" or active or row[0] - total <= 1
-                        or now - max(row[2], probe[0] if probe else row[2]) < 60):
+                if resource != "core" or not reserve_probe_allowed(row, active, total, probe, now):
                     raise Deferred(
                         f"REST resource reserve is protected (remaining={row[0]}, "
                         f"reserved={total}, floor={floor}, reset={int(row[1])})"
@@ -249,22 +235,10 @@ class Budget:
                 ).fetchone()
                 available, reset_at = int(remaining), int(reset)
                 blocked_until = 0.0
-                probe = self.db.execute(
-                    "SELECT reservation_id FROM revalidation WHERE scope=? AND resource=?",
-                    (self.scope, resource),
-                ).fetchone()
-                own = self.db.execute(
-                    "SELECT started,credential FROM reservation WHERE id=? AND scope=? AND resource=?",
-                    (reservation, self.scope, resource),
-                ).fetchone()
-                owners = sum(self._root(binding[0]) == self.scope for binding in
-                             self.db.execute("SELECT scope FROM binding").fetchall())
                 # A serialized reserve probe may repair stale evidence only for
                 # one bound credential. Shared/ambiguous owners and late replies
                 # retain conservative accounting. /rate_limit is never a grant.
-                recovered = (row and probe and own and owners == 1
-                             and own[1] == self.credential and reservation == probe[0]
-                             and own[0] >= row[2] and reset_at >= row[1])
+                recovered = probe_recovers(self, reservation, resource, row, reset_at)
                 if row and row[1] > now and not recovered:
                     # Late responses and unresolved owners with different reset
                     # epochs cannot restore quota observed to have been spent.
@@ -298,45 +272,6 @@ class Budget:
 
     def close(self) -> None:
         self.db.close()
-
-
-def admission_status(directory: Path, scope: str) -> dict:
-    """Read local core admission evidence without credentials, HTTP or mutations."""
-    path = directory / "admission.sqlite3"
-    if not path.is_file() or path.is_symlink():
-        return {"state": "unknown"}
-    db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
-    try:
-        for _ in range(256):
-            alias = db.execute("SELECT target FROM alias WHERE scope=?", (scope,)).fetchone()
-            if not alias:
-                break
-            scope = alias[0]
-        else:
-            return {"state": "unknown"}
-        row = db.execute(
-            "SELECT remaining,reset,observed,blocked_until,quota_limit FROM quota "
-            "WHERE scope=? AND resource='core'", (scope,),
-        ).fetchone()
-        if not row:
-            return {"state": "unknown"}
-        reserved = db.execute(
-            "SELECT COUNT(*) FROM reservation WHERE scope=? AND resource='core'", (scope,),
-        ).fetchone()[0]
-        now = time.time()
-        floor = min(100, max(1, row[4] // 10))
-        state = "available"
-        if row[3] > now:
-            state = "cooldown"
-        elif row[1] <= now or row[2] > now:
-            state = "unknown"
-        elif row[0] - reserved <= floor:
-            state = "reserve"
-        return {"state": state, "source": "local_response_headers", "remaining": row[0],
-                "limit": row[4], "reserved": reserved, "floor": floor,
-                "reset": int(row[1]), "observation_age_seconds": max(0, int(now - row[2]))}
-    finally:
-        db.close()
 
 
 if __name__ == "__main__":

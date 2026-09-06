@@ -4,7 +4,7 @@
 # Sourced by the existing hermetic gh shim harness after legacy-path coverage.
 
 printf '\nTest 27: shared raw transport controls and response-owned quota\n'
-for library in gh-transport-controls.sh gh-transport-governor.py gh_transport_budget.py shared-gh-secondary-cooldown.sh; do
+for library in gh-transport-controls.sh gh-transport-governor.py gh_transport_budget.py gh_transport_recovery.py shared-gh-secondary-cooldown.sh; do
 	cp "${REPO_DIR}/.agents/scripts/${library}" "${TMP}/scripts/${library}"
 done
 mkdir -p "${TMP}/governor/tmp"

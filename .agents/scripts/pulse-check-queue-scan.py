@@ -238,8 +238,9 @@ def _count_issue(
         and not assigned
         and not blocked
         and not dependency_inconsistent
-        and not labels & {"status:in-progress", "status:claimed", "status:queued"}
     )
+    lifecycle_active = bool(labels & {"status:in-progress", "status:claimed", "status:queued"})
+    available_candidate = available_candidate and not lifecycle_active
     excluded_persistent_dashboard = bool(labels & PERSISTENT_DASHBOARD_LABELS)
     aggregate["excluded_persistent_dashboard"] += int(
         available_candidate and excluded_persistent_dashboard

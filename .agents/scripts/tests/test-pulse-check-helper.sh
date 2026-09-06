@@ -351,6 +351,9 @@ COMMON_ENV=(
 	"PULSE_CHECK_CAPTURE=${TEST_ROOT}/capture.txt"
 	"PULSE_CHECK_PULSE_HEALTH_FILE=${TEST_ROOT}/missing-pulse-health.json"
 	"AIDEVOPS_GH_TRANSPORT_STATE_DIR=${TEST_ROOT}/transport-state"
+	"AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE=${TEST_ROOT}/secondary-cooldown.json"
+	"AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE=${TEST_ROOT}/secondary-events.jsonl"
+	"AIDEVOPS_GH_READ_RAMP_STATE_FILE=${TEST_ROOT}/read-ramp.state"
 )
 
 printf '%s=== pulse-check-helper.sh tests ===%s\n' "$TEST_BLUE" "$TEST_NC"
