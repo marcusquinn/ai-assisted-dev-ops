@@ -159,7 +159,7 @@ _isc_claim_ownership_class() {
 	now_epoch=$(date +%s)
 	printf '%s' "$metadata" | jq -r --arg user "$user" --argjson now "$now_epoch" '
 		(.state // "" | ascii_downcase) as $state |
-		([.labels[]?.name] | index("status:in-review") != null) as $in_review |
+		([.labels[]?.name] | any(. == "status:claimed" or . == "status:in-progress" or . == "status:in-review")) as $active |
 		[.assignees[]?.login] as $assignees |
 		[.comments[]?
 			| select((.body // "") | contains("Interactive session claimed by @"))
@@ -170,7 +170,7 @@ _isc_claim_ownership_class() {
 				| $created != null and ($now - $created) >= 0 and ($now - $created) < 7200)
 		] | sort_by(.createdAt) | reverse | first as $live_claim |
 		if $state != "open" then "invalid-state"
-		elif ($in_review | not) then "unclaimed"
+		elif ($active | not) then "unclaimed"
 		elif ($assignees | length) == 1 and $assignees[0] == $user then "own"
 		elif $live_claim != null then "foreign-interactive:" + $live_claim.author.login
 		else "foreign-worker" end
@@ -186,7 +186,7 @@ _isc_verified_caller_owns_claim() {
 	metadata=$(_isc_read_claim_metadata "$issue" "$slug") || return 1
 	printf '%s' "$metadata" | jq -e --arg user "$user" '
 		(.state | ascii_downcase) == "open" and
-		([.labels[]?.name] | index("status:in-review") != null) and
+		([.labels[]?.name] | index("status:claimed") != null) and
 		([.assignees[]?.login] == [$user])
 	' >/dev/null 2>&1
 	return $?
@@ -200,7 +200,7 @@ _isc_apply_new_claim() {
 	local defer_comment="$5"
 	shift 5
 	local -a transition_args=(--add-assignee "$user" "$@")
-	if ! set_issue_status "$issue" "$slug" "in-review" "${transition_args[@]}" >/dev/null 2>&1; then
+	if ! set_issue_status "$issue" "$slug" "claimed" "${transition_args[@]}" >/dev/null 2>&1; then
 		_isc_err "claim: ownership transition failed on #$issue; no stamp written"
 		return 1
 	fi
@@ -208,7 +208,7 @@ _isc_apply_new_claim() {
 		_isc_err "claim: ownership transition on #$issue could not be verified; no stamp written"
 		return 1
 	fi
-	_isc_info "claim: #$issue in $slug → status:in-review + sole assignee $user"
+	_isc_info "claim: #$issue in $slug → status:claimed + sole assignee $user"
 	_isc_write_stamp "$issue" "$slug" "$worktree_path" "$user"
 	if [[ "$defer_comment" -eq 0 || -n "$worktree_path" ]]; then
 		_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
@@ -629,7 +629,7 @@ _isc_unassign_released_issue() {
 # -----------------------------------------------------------------------------
 # Subcommand: release
 # -----------------------------------------------------------------------------
-# Transition status:in-review -> status:available and delete the stamp.
+# Transition an interactive status:claimed ownership record to status:available.
 #
 # Arguments:
 #   $1 = issue number
@@ -638,8 +638,7 @@ _isc_unassign_released_issue() {
 #
 # Behaviour:
 #   - Idempotent: when the label is not set, only a requested unassignment runs.
-#   - Offline gh: warn and exit 0. The stamp is still deleted so local state
-#     matches the caller's intent.
+#   - Offline or unreadable gh: warn and preserve the stamp and remote state.
 #
 # Exit: 0 always.
 _isc_cmd_release() {
@@ -679,33 +678,32 @@ _isc_cmd_release() {
 		return 2
 	fi
 
-	# Always delete the stamp so local state reflects caller intent
-	_isc_delete_stamp "$issue" "$slug"
-
 	local user
 	if ! user=$(_isc_resolve_manageable_user "release" "$issue" "$slug" \
 		"gh offline — stamp deleted locally, label unchanged on #$issue"); then
 		return 0
 	fi
 
-	# Idempotency: skip only label work if not in-review. `_isc_has_in_review`
+	# Idempotency: release only an interactive status:claimed record. `_isc_has_claimed`
 	# has three return states (0 = present, 1 = absent, 2 = lookup failed),
 	# so we need the actual rc — but a bare call under `set -e` propagates
 	# non-zero returns before `rc=$?` can capture them. Use `|| rc=$?` which
 	# is a tested condition that `set -e` does not propagate. Default to 0
 	# so the "present" branch (rc=0) falls through to the transition below.
 	local has_rc=0
-	_isc_has_in_review "$issue" "$slug" || has_rc=$?
+	_isc_has_claimed "$issue" "$slug" || has_rc=$?
 	if [[ $has_rc -eq 1 ]]; then
 		if [[ $unassign -eq 0 ]]; then
-			_isc_info "release: #$issue not in status:in-review — no-op"
+			_isc_info "release: #$issue not in status:claimed — no-op"
+			_isc_delete_stamp "$issue" "$slug"
 			return 0
 		fi
 		_isc_unassign_released_issue "$issue" "$slug" "$user"
+		_isc_delete_stamp "$issue" "$slug"
 		return 0
 	fi
 	if [[ $has_rc -eq 2 ]]; then
-		_isc_warn "release: could not read labels for #$issue — skipping label transition"
+		_isc_warn "release: could not read labels for #$issue — preserving ownership state"
 		return 0
 	fi
 
@@ -730,6 +728,7 @@ _isc_cmd_release() {
 		${extra_flags[@]+"${extra_flags[@]}"} 2>&1 >/dev/null)
 	local _set_status_rc=$?
 	if [[ $_set_status_rc -eq 0 ]]; then
+		_isc_delete_stamp "$issue" "$slug"
 		_isc_info "release: #$issue → status:$_target_status"
 		return 0
 	fi

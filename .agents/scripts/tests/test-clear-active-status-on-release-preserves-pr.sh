@@ -66,13 +66,25 @@ write_stub_gh() {
 	: >"$GH_CALLS_FILE"
 	: >"$GH_VIEW_LABELS"
 	: >"$GH_PR_LIST_JSON"
-	cat >"${STUB_DIR}/gh" <<'STUBEOF'
+cat >"${STUB_DIR}/gh" <<'STUBEOF'
 #!/usr/bin/env bash
+if [[ "$1" == "api" && "$2" == /repos/*/labels\?per_page=100 ]]; then
+	printf '%s\t%s\t%s\n' \
+		"status:available" "0e8a16" "Task is available for claiming" \
+		"status:queued" "fbca04" "Worker dispatched, not yet started" \
+		"status:claimed" "f9d0c4" "Interactive implementation is actively claimed" \
+		"status:in-progress" "1d76db" "Worker actively running" \
+		"status:in-review" "5319e7" "Non-draft PR ready for review/merge" \
+		"status:done" "6f42c1" "Task is complete" \
+		"status:blocked" "d93f0b" "Partial work blocked; inspect reason and next action"
+	exit 0
+fi
 if [[ "$1" == "issue" && "$2" == "view" ]]; then
 	cat "${GH_VIEW_LABELS}" 2>/dev/null || true
 	exit 0
 fi
 if [[ "$1" == "pr" && "$2" == "list" ]]; then
+	[[ "${GH_PR_LIST_FAIL:-0}" == "1" ]] && exit 1
 	cat "${GH_PR_LIST_JSON}" 2>/dev/null || true
 	exit 0
 fi
@@ -122,22 +134,39 @@ assert_not_grep() {
 # Case 1: Resolves #N in body → preserve assignee + in-review
 # -------------------------------------------------------------------
 reset_stub
-printf '[{"number":20188,"state":"OPEN","body":"Some description.\\n\\nResolves #20156"}]' >"$GH_PR_LIST_JSON"
+	printf '[{"number":20188,"state":"OPEN","isDraft":false,"body":"Some description.\\n\\nResolves #20156"}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20156 owner/repo alice
 assert_grep "remove-label status:queued" "removes queued when PR open"
 assert_grep "remove-label status:claimed" "removes claimed when PR open"
 assert_grep "remove-label status:in-progress" "removes in-progress when PR open"
 assert_grep "remove-label status:available" "removes available when PR open"
 assert_grep "add-label status:in-review" "ensures issue in-review when PR open"
-assert_grep "issue edit 20188 --repo owner/repo" "normalizes linked PR status when PR open"
+assert_not_grep "issue edit 20188 --repo owner/repo" "does not label an already-ready PR"
 assert_not_grep "remove-label status:in-review" "preserves in-review when PR open (Resolves)"
 assert_not_grep "remove-assignee" "preserves assignee when PR open (Resolves)"
+
+# -------------------------------------------------------------------
+# Case 1b: open draft checkpoint is blocked, released, and never review-ready
+# -------------------------------------------------------------------
+reset_stub
+printf '[{"number":20189,"state":"OPEN","isDraft":true,"body":"Resolves #20156"}]' >"$GH_PR_LIST_JSON"
+clear_active_status_on_release 20156 owner/repo alice
+assert_grep "add-label status:blocked" "projects open draft as blocked partial work"
+assert_grep "remove-assignee alice" "releases draft checkpoint owner"
+assert_not_grep "add-label status:in-review" "draft checkpoint is never review-ready"
+
+# -------------------------------------------------------------------
+# Case 1c: unavailable PR metadata preserves the prior projection
+# -------------------------------------------------------------------
+reset_stub
+GH_PR_LIST_FAIL=1 clear_active_status_on_release 20156 owner/repo alice
+assert_not_grep "issue edit" "unreadable PR metadata performs no lifecycle write"
 
 # -------------------------------------------------------------------
 # Case 2: Fixes #N in body → preserve assignee + in-review
 # -------------------------------------------------------------------
 reset_stub
-printf '[{"number":99,"state":"OPEN","body":"Fixes #20156 and adds coverage."}]' >"$GH_PR_LIST_JSON"
+	printf '[{"number":99,"state":"OPEN","isDraft":false,"body":"Fixes #20156 and adds coverage."}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20156 owner/repo alice
 assert_not_grep "remove-label status:in-review" "preserves in-review when PR open (Fixes)"
 assert_not_grep "remove-assignee" "preserves assignee when PR open (Fixes)"
@@ -146,7 +175,7 @@ assert_not_grep "remove-assignee" "preserves assignee when PR open (Fixes)"
 # Case 3: Closes #N in body → preserve assignee + in-review
 # -------------------------------------------------------------------
 reset_stub
-printf '[{"number":42,"state":"OPEN","body":"closes #20156"}]' >"$GH_PR_LIST_JSON"
+	printf '[{"number":42,"state":"OPEN","isDraft":false,"body":"closes #20156"}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20156 owner/repo alice
 assert_not_grep "remove-label status:in-review" "preserves in-review when PR open (closes, lowercase)"
 assert_not_grep "remove-assignee" "preserves assignee when PR open (closes, lowercase)"
@@ -155,7 +184,7 @@ assert_not_grep "remove-assignee" "preserves assignee when PR open (closes, lowe
 # Case 4: Case-insensitive keyword matching (RESOLVES, FIXES, CLOSES)
 # -------------------------------------------------------------------
 reset_stub
-printf '[{"number":7,"state":"OPEN","body":"RESOLVES #20156"}]' >"$GH_PR_LIST_JSON"
+	printf '[{"number":7,"state":"OPEN","isDraft":false,"body":"RESOLVES #20156"}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20156 owner/repo alice
 assert_not_grep "remove-assignee" "case-insensitive RESOLVES preserves assignee"
 
@@ -164,7 +193,7 @@ assert_not_grep "remove-assignee" "case-insensitive RESOLVES preserves assignee"
 #         still preserves in-review
 # -------------------------------------------------------------------
 reset_stub
-printf '[{"number":7,"state":"OPEN","body":"Resolves #20156"}]' >"$GH_PR_LIST_JSON"
+	printf '[{"number":7,"state":"OPEN","isDraft":false,"body":"Resolves #20156"}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20156 owner/repo ""
 assert_not_grep "remove-assignee" "no assignee call when worker_login empty"
 assert_not_grep "remove-label status:in-review" "preserves in-review with empty worker_login"

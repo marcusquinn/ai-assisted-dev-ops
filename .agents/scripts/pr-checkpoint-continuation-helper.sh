@@ -63,7 +63,7 @@ _pcc_claim_revised_checkpoint() {
 		owner_args+=(--remove-assignee "$PCC_EXPECTED_ASSIGNEE")
 	fi
 	PCC_OWNERSHIP_TRANSFERRED=1
-	set_issue_status "$PCC_LINKED_ISSUE" "$repo" in-review "${owner_args[@]}" >/dev/null || return 1
+	set_issue_status "$PCC_LINKED_ISSUE" "$repo" in-progress "${owner_args[@]}" >/dev/null || return 1
 	PCC_ISSUE_ASSIGNEE="$PCC_AUTHENTICATED_LOGIN"
 	"$helper" verify-pr-checkpoint-target "$pr" "$repo" "$head" "$ref" \
 		"$PCC_LINKED_ISSUE" "$PCC_ISSUE_ASSIGNEE" "$PCC_CHECKPOINT_ASSIGNEE" >/dev/null || return 1
@@ -325,7 +325,7 @@ _pcc_transfer_issue_ownership() {
 	[[ "$linked_issue" =~ ^[1-9][0-9]*$ && "$repo_slug" == */* ]] || return 1
 	[[ -n "$previous_assignee" && -n "$replacement_assignee" ]] || return 1
 	[[ "$previous_assignee" != "$replacement_assignee" ]] || return 0
-	set_issue_status "$linked_issue" "$repo_slug" "in-review" \
+	set_issue_status "$linked_issue" "$repo_slug" "in-progress" \
 		--add-assignee "$replacement_assignee" \
 		--remove-assignee "$previous_assignee" >/dev/null 2>&1 || return 1
 	return 0

@@ -83,7 +83,7 @@ When an issue carries `origin:interactive` AND has any human assignee, the pulse
 
 This closes the race where an interactive session claimed a task via `claim-task-id.sh` (applying `status:claimed` + owner assignment) and the pulse dispatched a duplicate worker before the session could open its PR.
 
-Full active lifecycle recognised: `status:queued`, `status:in-progress`, `status:in-review`, and `status:claimed` all keep owner/maintainer assignees in the blocking set.
+Full active lifecycle recognised: `status:queued`, `status:in-progress`, `status:in-review`, and `status:claimed` all keep owner/maintainer assignees in the blocking set. `status:claimed` identifies interactive implementation; `status:in-review` identifies an open non-draft PR ready for review.
 
 ## Issue-Sync TODO Auto-Completion (t2029 → t2166)
 
@@ -131,7 +131,7 @@ The task's brief `## How` section or `### Files Scope` references any file in th
 ### Decision tree (post-t2920)
 
 1. Brief references a dispatch-path file → use `#auto-dispatch` as normal. The t2819 detector replaces lower tier labels with `tier:thinking` before dispatch. The advisory tooling below emits non-blocking informational messages.
-2. Author implements the issue interactively → keep `#auto-dispatch` and start through `interactive-start-helper.sh ... --auto-dispatch`. The temporary `status:in-review` + assignee claim blocks concurrent dispatch; release and unassign restore automatic continuation.
+2. Author implements the issue interactively → keep `#auto-dispatch` and start through `interactive-start-helper.sh ... --auto-dispatch`. The temporary `status:claimed` + assignee claim blocks concurrent dispatch; release and unassign restore automatic continuation.
 3. A durable manual stop is explicitly required → use `#no-auto-dispatch` (or `interactive-session-helper.sh lockdown` when all pulse mutation must stop) and record the unresolved human decision or safety reason.
 4. No dispatch-path files in brief → normal dispatch rules apply.
 

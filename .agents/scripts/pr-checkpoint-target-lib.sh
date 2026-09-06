@@ -43,14 +43,13 @@ _pr_checkpoint_revised_target() {
 			.closingIssuesReferences = [{number:$issue,repository:{name:$parts[1],owner:{login:$parts[0]}}}]
 		' <<<"$pr_json") || return 1
 	fi
-	normalized_issue=$(jq --arg assignee "$assignee" --argjson claiming "$claiming" --arg interactive_label "$_PCTL_INTERACTIVE_LABEL" '
-		.labels |= map(select(.name != $interactive_label)) |
-		if $claiming or (.assignees | length) == 0 then .assignees = [{login:$assignee}] else . end |
-		.labels |= map(if .name == "status:available" then {name:"status:in-review"} else . end)
-	' <<<"$issue_json") || return 1
+	normalized_issue=$(jq --arg interactive_label "$_PCTL_INTERACTIVE_LABEL" \
+		'.labels |= map(select(.name != $interactive_label))' <<<"$issue_json") || return 1
 	_pr_checkpoint_pr_metadata_is_eligible "$normalized_pr" "$repo_slug" "$pr_number" \
 		"$linked_issue" "" "" "$(jq -r '.runner' <<<"$approval")" || return 1
-	_pr_checkpoint_issue_metadata_is_eligible "$normalized_issue" "$linked_issue" "$assignee" || return 1
+	# The revision validator above authorizes the original owner or an unassigned
+	# issue before this claim transfers ownership to the successor.
+	_pr_checkpoint_issue_metadata_is_eligible "$normalized_issue" "$linked_issue" "" "[]" "" "true" || return 1
 	printf '%s\n' "$approval"
 	return 0
 }
@@ -132,6 +131,7 @@ _pr_checkpoint_issue_metadata_is_eligible() {
 	local comments_json="${4:-[]}"
 	local checkpoint_runner="${5:-$expected_assignee}"
 	local interactive_checkpoint="false"
+	local allow_released="${6:-false}"
 
 	[[ "$linked_issue" =~ ^[1-9][0-9]*$ ]] || return 1
 	# A blocked release requires the revised envelope regardless of provenance.
@@ -150,7 +150,8 @@ _pr_checkpoint_issue_metadata_is_eligible() {
 	fi
 	printf '%s' "$issue_json" | jq -e --argjson issue "$linked_issue" \
 		--arg expected_assignee "$expected_assignee" \
-		--arg interactive_checkpoint "$interactive_checkpoint" --arg interactive_label "$_PCTL_INTERACTIVE_LABEL" '
+		--arg interactive_checkpoint "$interactive_checkpoint" --arg interactive_label "$_PCTL_INTERACTIVE_LABEL" \
+		--argjson allow_released "$allow_released" '
 		def names: [.labels[]? | if type == "string" then . else (.name // empty) end];
 		def lifecycle_statuses: [names[] | select(startswith("status:"))];
 		def runnable_status:
@@ -158,7 +159,8 @@ _pr_checkpoint_issue_metadata_is_eligible() {
 			(($statuses | length) == 1) and
 			($statuses[0] == "status:queued" or
 				$statuses[0] == "status:in-progress" or
-				$statuses[0] == "status:in-review");
+				$statuses[0] == "status:in-review" or
+				($allow_released and $statuses[0] == "status:available" and ((.assignees // []) | length) == 0));
 		def protected: names | any(
 			. == "needs-maintainer-review" or . == "needs-maintainer-permissions" or
 			. == "no-auto-dispatch" or . == "hold-for-review" or . == "persistent" or
@@ -168,9 +170,11 @@ _pr_checkpoint_issue_metadata_is_eligible() {
 		);
 		(.number == $issue) and (((.state // "") | ascii_downcase) == "open") and
 		((.pull_request // null) == null) and runnable_status and (protected | not) and
-		((.assignees // []) | length == 1) and
-		(((.assignees[0].login // "") | length) > 0) and
-		(($expected_assignee | length) == 0 or .assignees[0].login == $expected_assignee)
+		(((.assignees // []) | length) == 1 or
+			($allow_released and ((.assignees // []) | length) == 0)) and
+		(($allow_released and ((.assignees // []) | length) == 0) or
+			(((.assignees[0].login // "") | length) > 0 and
+			(($expected_assignee | length) == 0 or .assignees[0].login == $expected_assignee)))
 	' >/dev/null 2>&1 || return 1
 	return 0
 }

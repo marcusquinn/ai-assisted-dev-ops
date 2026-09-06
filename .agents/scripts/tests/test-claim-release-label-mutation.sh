@@ -8,8 +8,7 @@
 #
 #   1. Removes the 4 active-lifecycle status labels (queued, claimed,
 #      in-progress, in-review) in a single gh issue edit call
-#   2. Preserves terminal states — NEVER emits --remove-label for
-#      status:done, status:blocked, or status:available
+#   2. Converges every core status to the fresh release projection
 #   3. Adds status:available when no linked PR owns the issue
 #   4. Removes the worker_login as assignee when provided
 #   5. Skips assignee mutation when worker_login is empty
@@ -67,13 +66,28 @@ export GH_VIEW_LABELS="${TEST_ROOT}/gh_view_labels.txt"
 write_stub_gh() {
 	: >"$GH_CALLS_FILE"
 	: >"$GH_VIEW_LABELS"
-	cat >"${STUB_DIR}/gh" <<'STUBEOF'
+cat >"${STUB_DIR}/gh" <<'STUBEOF'
 #!/usr/bin/env bash
 # Stub gh — serves `gh issue view --json labels` from GH_VIEW_LABELS,
 # and records all other calls to GH_CALLS_FILE.
+if [[ "$1" == "api" && "$2" == /repos/*/labels\?per_page=100 ]]; then
+	printf '%s\t%s\t%s\n' \
+		"status:available" "0e8a16" "Task is available for claiming" \
+		"status:queued" "fbca04" "Worker dispatched, not yet started" \
+		"status:claimed" "f9d0c4" "Interactive implementation is actively claimed" \
+		"status:in-progress" "1d76db" "Worker actively running" \
+		"status:in-review" "5319e7" "Non-draft PR ready for review/merge" \
+		"status:done" "6f42c1" "Task is complete" \
+		"status:blocked" "d93f0b" "Partial work blocked; inspect reason and next action"
+	exit 0
+fi
 if [[ "$1" == "issue" && "$2" == "view" ]]; then
 	# Emit whatever the test put in GH_VIEW_LABELS (jq output string form)
 	cat "${GH_VIEW_LABELS}" 2>/dev/null || true
+	exit 0
+fi
+if [[ "$1" == "pr" && "$2" == "list" ]]; then
+	printf '%s\n' '[]'
 	exit 0
 fi
 printf '%s\n' "$*" >>"${GH_CALLS_FILE}"
@@ -137,8 +151,8 @@ assert_grep "remove-label status:claimed" "removes status:claimed"
 assert_grep "remove-label status:in-progress" "removes status:in-progress"
 assert_grep "remove-label status:in-review" "removes status:in-review"
 assert_grep "add-label status:available" "adds status:available when no linked PR"
-assert_not_grep "remove-label status:done" "preserves status:done"
-assert_not_grep "remove-label status:blocked" "preserves status:blocked"
+assert_grep "remove-label status:done" "clears stale status:done"
+assert_grep "remove-label status:blocked" "clears stale status:blocked"
 assert_not_grep "remove-label status:available" "preserves status:available"
 
 # -------------------------------------------------------------------

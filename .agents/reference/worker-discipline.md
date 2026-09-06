@@ -64,8 +64,14 @@ already-authorized outcome, the assigned AI executor owns brief correction:
    revision; concurrent changes or failed writes stop this expansion path. Keep
    the pre-push scope guard active; no broad globs or guard exceptions.
 4. Continue in the existing session/worktree through verification and delivery.
-   Perform at most one correction for unchanged evidence, not repeated identical
-   implementation attempts.
+    Perform at most one correction for unchanged evidence, not repeated identical
+    implementation attempts.
+
+Lifecycle integration must retain the canonical projection: `status:claimed` or
+`status:in-progress` means active implementation, `status:blocked` needs a
+structured reason/action, `status:available` is an executable continuation, and
+`status:in-review` requires a current open non-draft PR. Never use this scope
+recovery to weaken trust, hold, exact-head, or assignment-plus-active-state gates.
 
 An explicit hard boundary, another live owner, or genuinely new authority goes to
 the authorized AI brief owner/coordinator with exact issue/PR/checkpoint, brief

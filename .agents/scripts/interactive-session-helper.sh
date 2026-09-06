@@ -6,7 +6,7 @@
 # Purpose: provide a mandatory, AI-driven acquire/release primitive for
 # interactive GitHub issue ownership. When an interactive session engages
 # with an issue in a maintainer-managed repo, this helper applies
-# `status:in-review` + self-assignment so the pulse's dispatch-dedup guard
+# `status:claimed` + self-assignment so the pulse's dispatch-dedup guard
 # (`dispatch-dedup-helper.sh is-assigned`) will not dispatch a parallel worker.
 # External non-maintainer repos skip these state/comment routines entirely.
 #
@@ -19,17 +19,17 @@
 #   a pulse bug), use `lockdown` instead — it applies `no-auto-dispatch` +
 #   `status:in-review` + self-assignment + conversation lock + audit comment.
 #
-# Why reuse status:in-review rather than a new label:
+# Why use status:claimed rather than a new label:
 #   - `_has_active_claim` in dispatch-dedup-helper.sh already treats it as an
 #     active claim that blocks dispatch.
 #   - `_normalize_stale_should_skip_reset` in pulse-issue-reconcile.sh already
 #     skips it during stale-recovery (only queued/in-progress get reset).
-#   - `ISSUE_STATUS_LABEL_PRECEDENCE` in shared-constants.sh already ranks it
-#     second after `done` for label-invariant reconciliation.
+#   - `ISSUE_STATUS_LABEL_PRECEDENCE` in shared-constants.sh already includes
+#     it in label-invariant reconciliation.
 #   - `.github/workflows/issue-sync.yml` already clears it on PR-close cleanup.
 # All the gating infrastructure is in place. The only gap this helper closes
-# is timing: today the label lands at PR open (via `full-loop-helper.sh
-# commit-and-pr`); we need it to land at interactive session engage.
+# is timing: the claim must land at interactive session engage without making
+# active implementation indistinguishable from a review-ready PR.
 #
 # AI-driven contract:
 #   The primary enforcement layer is an `AGENTS.md` rule telling the
@@ -248,12 +248,12 @@ _isc_normalize_owned_pr() {
 
 # Compatibility label probe used by release paths and focused regression tests.
 # Claim acquisition intentionally uses the richer ownership metadata above.
-_isc_has_in_review() {
+_isc_has_claimed() {
 	local issue="$1"
 	local slug="$2"
 	local json=""
 	json=$(gh issue view "$issue" --repo "$slug" --json labels 2>/dev/null) || return 2
-	printf '%s' "$json" | jq -e '(.labels // []) | any(.name == "status:in-review")' >/dev/null 2>&1
+	printf '%s' "$json" | jq -e '(.labels // []) | any(.name == "status:claimed")' >/dev/null 2>&1
 	return $?
 }
 
