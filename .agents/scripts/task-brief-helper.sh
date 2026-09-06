@@ -637,8 +637,8 @@ _try_worker_ready_stub_brief() {
 	local _readiness_output=""
 	_readiness_output=$("$_readiness_helper" check --body "$_body" 2>/dev/null) || true
 	if printf '%s\n' "$_readiness_output" | grep -q 'WORKER_READY=true'; then
-		log_info "$task_id: linked issue #${_issue_ref} body is worker-ready — writing stub brief"
-		"$_readiness_helper" stub "$task_id" "$_issue_ref" "$_slug" "$project_root" 2>/dev/null || true
+		log_info "$task_id: linked issue #${_issue_ref} body is worker-ready — capturing full brief"
+		"$_readiness_helper" stub "$task_id" "$_issue_ref" "$_slug" "$project_root" || return 2
 		return 0
 	fi
 
@@ -707,10 +707,14 @@ generate_brief() {
 	mkdir -p "$project_root/todo/tasks"
 
 	# Step 0 (t2417): If linked issue body is already worker-ready, write a
-	# stub brief and return. See _try_worker_ready_stub_brief / GH#20015.
+	# captured brief and return. Do not replace a failed capture with a template.
+	local capture_rc=0
 	if _try_worker_ready_stub_brief "$task_id" "$project_root"; then
 		return 0
+	else
+		capture_rc=$?
 	fi
+	[[ "$capture_rc" -eq 2 ]] && return 1
 
 	# Step 1: Resolve commit
 	local commit="" commit_date="" commit_author="" commit_msg="" commit_epoch=""

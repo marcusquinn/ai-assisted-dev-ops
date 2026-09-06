@@ -40,6 +40,21 @@ captured: define durable acknowledgement and observable ingestion lag.
 
 ## How (Approach)
 
+### Files Scope
+
+Retain the original paths below. Integration recovery additionally covers
+`.agents/scripts/brief-readiness-helper.sh`, `.agents/scripts/task-brief-helper.sh`,
+`.agents/scripts/tests/test-brief-readiness.sh`,
+`.agents/scripts/tests/test-forge-portability.sh`, and this brief. The stub writer
+fetches only a title and stores a forge-only pointer; its caller suppresses write
+failure. Capture the full body locally, preserve existing briefs, and propagate
+capture failures. Verify with `bash .agents/scripts/tests/test-forge-portability.sh`,
+`bash .agents/scripts/tests/test-brief-readiness.sh`, the sync contract suite,
+scoped ShellCheck, changed-file lint and `git diff --check`. The owner-authored
+issue is assigned to this worker account; dependency #31285 is closed and merged
+in HEAD. No open brief-readiness PR or pushed issue branch was found. This is an
+additive, bounded repair, not provider parity or automatic event ingestion.
+
 ### Files to Modify
 
 - `NEW: .agents/reference/forge-portability.md` — ownership, durable acknowledgement, export/recovery matrix and limits.
