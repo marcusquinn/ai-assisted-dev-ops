@@ -78,6 +78,7 @@ run_helper_in_isolation() {
 
 	local stub_dir="${TEST_DIR}/scripts"
 	mkdir -p "$stub_dir"
+	cp "${SCRIPT_DIR}/../cleanup-worktrees-lock.sh" "${stub_dir}/cleanup-worktrees-lock.sh"
 
 	# Stub shared-constants.sh — defines nothing, just marks it was sourced
 	cat >"${stub_dir}/shared-constants.sh" <<'STUB'
@@ -428,6 +429,7 @@ test_term_exits_and_releases_lock() {
 	local helper_pid=""
 	local attempts=0
 	mkdir -p "$stub_dir"
+	cp "${SCRIPT_DIR}/../cleanup-worktrees-lock.sh" "${stub_dir}/cleanup-worktrees-lock.sh"
 	rm -rf "$lock_dir"
 	rm -f "$mock_ran"
 
@@ -497,6 +499,13 @@ test_async_lock_helpers_install_terminating_traps() {
 		cleanup-remote-branches-async-helper.sh \
 		opencode-db-archive-async-helper.sh; do
 		helper_path="${scripts_dir}/${helper_name}"
+		if [[ "$helper_name" == cleanup-worktrees-async-helper.sh ]]; then
+			# shellcheck disable=SC2016 # Verify the literal shared-library source contract.
+			if ! grep -Fq 'source "${SCRIPT_DIR}/cleanup-worktrees-lock.sh"' "$helper_path"; then
+				invalid_helpers="${invalid_helpers}${invalid_helpers:+, }${helper_name}"
+			fi
+			helper_path="${scripts_dir}/cleanup-worktrees-lock.sh"
+		fi
 		if ! grep -Fq "trap '_lock_signal_exit 130' INT" "$helper_path" ||
 			! grep -Fq "trap '_lock_signal_exit 143' TERM" "$helper_path"; then
 			invalid_helpers="${invalid_helpers}${invalid_helpers:+, }${helper_name}"

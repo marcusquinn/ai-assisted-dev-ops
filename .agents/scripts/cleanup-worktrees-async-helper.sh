@@ -96,79 +96,8 @@ fi
 # LOCK MANAGEMENT (mkdir-based — POSIX atomic, macOS-safe)
 # ============================================================
 
-_lock_release() {
-	rm -rf "$LOCK_DIR" 2>/dev/null || true
-	return 0
-}
-
-_lock_signal_exit() {
-	local exit_code="$1"
-	trap - EXIT INT TERM
-	_lock_release
-	exit "$exit_code"
-	return 1
-}
-
-_lock_install_traps() {
-	trap '_lock_release' EXIT
-	trap '_lock_signal_exit 130' INT
-	trap '_lock_signal_exit 143' TERM
-	return 0
-}
-
-# Check whether the PID that holds the lock is still alive.
-# Uses kill -0 (existence) + ps comm= (command-aware, guards against PID reuse).
-# Returns 0 if alive, 1 if dead or indeterminate.
-_is_pid_alive() {
-	local pid="$1"
-	[[ -z "$pid" ]] && return 1
-	[[ "$pid" =~ ^[0-9]+$ ]] || return 1
-
-	# kill -0: fails immediately if process does not exist
-	if ! kill -0 "$pid" 2>/dev/null; then
-		return 1
-	fi
-
-	# Command sanity check (t2421 pattern): ensure the process is actually
-	# a shell or script process, not a recycled PID running something unrelated.
-	local comm
-	comm=$(ps -p "$pid" -o comm= 2>/dev/null || true)
-	if [[ -z "$comm" ]]; then
-		# ps failed — treat as dead to unblock cleanup
-		return 1
-	fi
-
-	return 0
-}
-
-# Attempt to acquire the lock directory. On success, writes PID file and
-# registers a trap. Returns 1 (skip this run) if another live instance holds
-# the lock. Reclaims the lock if the holder PID is dead (crash recovery).
-_lock_acquire() {
-	if mkdir "$LOCK_DIR" 2>/dev/null; then
-		printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null || true
-		_lock_install_traps
-		return 0
-	fi
-
-	# Lock exists — check for stale (dead) PID
-	if [[ -f "$PID_FILE" ]]; then
-		local lock_pid
-		lock_pid=$(cat "$PID_FILE" 2>/dev/null || echo "")
-		if [[ -n "$lock_pid" ]] && ! _is_pid_alive "$lock_pid"; then
-			echo "[cleanup-worktrees-async] Reclaiming stale lock (PID ${lock_pid} no longer alive)" >>"$LOGFILE"
-			rm -rf "$LOCK_DIR" 2>/dev/null || true
-			if mkdir "$LOCK_DIR" 2>/dev/null; then
-				printf '%s\n' "$$" >"$PID_FILE" 2>/dev/null || true
-				_lock_install_traps
-				return 0
-			fi
-		fi
-	fi
-
-	# Another live instance is running — skip this invocation
-	return 1
-}
+# shellcheck source=cleanup-worktrees-lock.sh
+source "${SCRIPT_DIR}/cleanup-worktrees-lock.sh"
 
 # ============================================================
 # CADENCE GATE

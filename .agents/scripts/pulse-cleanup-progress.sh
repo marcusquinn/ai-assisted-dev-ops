@@ -78,7 +78,34 @@ _pc_progress_run_job() {
 	return 0
 }
 
+_pc_progress_locked() (
+	local budget="$1"
+	local log_dir="${AIDEVOPS_LOG_DIR:-${HOME}/.aidevops/logs}"
+	local LOCK_DIR="${log_dir}/cleanup_worktrees.lock"
+	local PID_FILE="${LOCK_DIR}/pid"
+	# Scoped process traps must not replace the caller's exit/signal handlers.
+	# shellcheck source=./cleanup-worktrees-lock.sh
+	source "${BASH_SOURCE[0]%/*}/cleanup-worktrees-lock.sh" || exit 1
+	mkdir -p "$log_dir" || exit 1
+	if ! _lock_acquire; then
+		printf '0 0 0 1\n'
+		exit 0
+	fi
+	_pc_cleanup_resumable_unlocked "$budget" >>"${LOGFILE:-/dev/null}" || exit $?
+	printf '%s %s %s %s\n' "$CLEANUP_WORKTREES_REMOVED_COUNT" "$CLEANUP_WORKTREES_ARCHIVED_COUNT" \
+		"$CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT" "$CLEANUP_WORKTREES_SKIPPED"
+)
+
 _pc_cleanup_resumable() {
+	local result=""
+	assert_git_available || return 1
+	result=$(_pc_progress_locked "$1") || return $?
+	read -r CLEANUP_WORKTREES_REMOVED_COUNT CLEANUP_WORKTREES_ARCHIVED_COUNT \
+		CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT CLEANUP_WORKTREES_SKIPPED <<<"$result"
+	return $?
+}
+
+_pc_cleanup_resumable_unlocked() {
 	local budget="$1" deadline=0 cursor="" saved="" manifest="" job=""
 	local repos_json="${HOME}/.config/aidevops/repos.json"
 	local state_dir="${PULSE_STATE_DIR:-${HOME}/.aidevops/.agent-workspace/pulse}"

@@ -8,6 +8,7 @@ TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 export HOME="${TEST_ROOT}/home"
 export PULSE_STATE_DIR="${TEST_ROOT}/state"
+export AIDEVOPS_LOG_DIR="${TEST_ROOT}/logs"
 export LOGFILE="${TEST_ROOT}/pulse.log"
 mkdir -p "${HOME}/.config/aidevops" "$PULSE_STATE_DIR"
 printf '{"initialized_repos":[]}\n' >"${HOME}/.config/aidevops/repos.json"
@@ -117,4 +118,36 @@ gh() { printf '99\n'; return 0; }
 printf '100\n' >"$CLOCK"
 _pc_cleanup_resumable 5
 [[ "$CLEANUP_WORKTREES_REMOVED_COUNT" == 1 && "$CLEANUP_WORKTREES_SKIPPED" == 1 ]]
+
+# Real overlapping processes share the asynchronous runner's lock namespace.
+gh() { printf '1000\n'; return 0; }
+_pc_cleanup_fixture_passes() { printf '0\n'; return 0; }
+_pc_progress_jobs() { printf '["merged","one"]\n["merged","two"]\n'; return 0; }
+_pc_progress_run_job() {
+	printf '%s\n' "$1" >>"${TEST_ROOT}/concurrent-calls"
+	: >"${TEST_ROOT}/holder-ready"
+	while [[ ! -e "${TEST_ROOT}/holder-release" ]]; do sleep 0.05; done
+	return 0
+}
+_pc_cleanup_resumable 10 &
+holder=$!
+for ((attempt = 0; attempt < 100; attempt++)); do
+	[[ ! -e "${TEST_ROOT}/holder-ready" ]] || break
+	sleep 0.05
+done
+if [[ ! -e "${TEST_ROOT}/holder-ready" ]]; then
+	: >"${TEST_ROOT}/holder-release"
+	wait "$holder" || true
+	printf 'FAIL cleanup holder did not start\n' >&2
+	exit 1
+fi
+before_cursor=$(<"${PULSE_STATE_DIR}/worktree-cleanup-next.json")
+concurrency_rc=0
+_pc_cleanup_resumable 10 || concurrency_rc=1
+[[ "$CLEANUP_WORKTREES_SKIPPED" == 1 ]] || concurrency_rc=1
+[[ "$(<"${PULSE_STATE_DIR}/worktree-cleanup-next.json")" == "$before_cursor" ]] || concurrency_rc=1
+[[ "$(wc -l <"${TEST_ROOT}/concurrent-calls" | tr -d ' ')" == 1 ]] || concurrency_rc=1
+: >"${TEST_ROOT}/holder-release"
+wait "$holder" || concurrency_rc=1
+[[ "$concurrency_rc" == 0 && ! -d "${AIDEVOPS_LOG_DIR}/cleanup_worktrees.lock" ]]
 printf 'PASS bounded cleanup fairness, timeout continuation, cursor validation, fail-closed persistence and guard refusal\n'
