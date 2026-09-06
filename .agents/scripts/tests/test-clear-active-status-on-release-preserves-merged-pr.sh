@@ -72,8 +72,19 @@ write_stub_gh() {
 	: >"$GH_CALLS_FILE"
 	: >"$GH_VIEW_LABELS"
 	: >"$GH_PR_LIST_JSON"
-	cat >"${STUB_DIR}/gh" <<'STUBEOF'
+cat >"${STUB_DIR}/gh" <<'STUBEOF'
 #!/usr/bin/env bash
+if [[ "$1" == "api" && "$2" == /repos/*/labels\?per_page=100 ]]; then
+	printf '%s\t%s\t%s\n' \
+		"status:available" "0e8a16" "Task is available for claiming" \
+		"status:queued" "fbca04" "Worker dispatched, not yet started" \
+		"status:claimed" "f9d0c4" "Interactive implementation is actively claimed" \
+		"status:in-progress" "1d76db" "Worker actively running" \
+		"status:in-review" "5319e7" "Non-draft PR ready for review/merge" \
+		"status:done" "6f42c1" "Task is complete" \
+		"status:blocked" "d93f0b" "Partial work blocked; inspect reason and next action"
+	exit 0
+fi
 if [[ "$1" == "issue" && "$2" == "view" ]]; then
 	cat "${GH_VIEW_LABELS}" 2>/dev/null || true
 	exit 0
@@ -133,7 +144,7 @@ clear_active_status_on_release 20520 owner/repo alice
 assert_grep "remove-label status:queued" "removes queued when PR merged"
 assert_grep "remove-label status:claimed" "removes claimed when PR merged"
 assert_grep "remove-label status:in-progress" "removes in-progress when PR merged"
-assert_not_grep "remove-label status:in-review" "preserves in-review when PR merged (Resolves)"
+assert_grep "add-label status:done" "projects merged PR as done (Resolves)"
 assert_not_grep "remove-assignee" "preserves assignee when PR merged (Resolves)"
 
 # -------------------------------------------------------------------
@@ -142,7 +153,7 @@ assert_not_grep "remove-assignee" "preserves assignee when PR merged (Resolves)"
 reset_stub
 printf '[{"number":99,"state":"MERGED","body":"Fixes #20520 end-to-end."}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20520 owner/repo alice
-assert_not_grep "remove-label status:in-review" "preserves in-review when PR merged (Fixes)"
+assert_grep "add-label status:done" "projects merged PR as done (Fixes)"
 assert_not_grep "remove-assignee" "preserves assignee when PR merged (Fixes)"
 
 # -------------------------------------------------------------------
@@ -212,7 +223,7 @@ reset_stub
 printf '[{"number":7,"state":"MERGED","body":"Resolves #20520"}]' >"$GH_PR_LIST_JSON"
 clear_active_status_on_release 20520 owner/repo ""
 assert_not_grep "remove-assignee" "no assignee call when worker_login empty (merged PR)"
-assert_not_grep "remove-label status:in-review" "preserves in-review with empty worker_login (merged PR)"
+assert_grep "add-label status:done" "projects merged PR as done with empty worker_login"
 assert_grep "remove-label status:queued" "still removes queued with empty worker_login (merged PR)"
 
 # -------------------------------------------------------------------

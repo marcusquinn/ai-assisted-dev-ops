@@ -404,7 +404,7 @@ _isc_post_claim_comment() {
 <!-- ${ISC_CLAIM_AUDIT_SCHEMA} -->
 <!-- ops:start -->
 > Interactive session claimed by @${user}${worktree_note} on ${hostname}.
-> Pulse dispatch blocked via \`status:in-review\` + self-assignment.
+> Pulse dispatch blocked via \`status:claimed\` + self-assignment.
 <!-- ops:end -->
 EOF
 	)

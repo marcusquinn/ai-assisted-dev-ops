@@ -654,6 +654,9 @@ _release_dispatch_claim() {
 		[[ "$terminal_blocker_rc" -eq 11 ]] && return 1
 		terminal_blocker_fragment="${_HRFF_TERMINAL_BLOCKER_FRAGMENT:-}"
 	fi
+	if [[ "$reason" == "${_HRW_REASON_DRAFT_CHECKPOINT:-worker_draft_checkpoint}" ]]; then
+		terminal_blocker_fragment=$'\nDraft checkpoint: partial work is blocked. Next action: verify the exact head and current brief before resuming.\n'
+	fi
 	comment_body="<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->
 ${machine_readable_part}${terminal_blocker_fragment}
 <!-- ops:end -->"
@@ -668,7 +671,12 @@ ${machine_readable_part}${terminal_blocker_fragment}
 		return 0
 	fi
 	if [[ "$reason" == "${_HRW_REASON_DRAFT_CHECKPOINT:-worker_draft_checkpoint}" ]]; then
-		print_info "Preserving issue ownership and review state for draft checkpoint #${issue_number}"
+		if declare -F clear_active_status_on_release >/dev/null 2>&1; then
+			clear_active_status_on_release "$issue_number" "$repo_slug" "$runner_name" \
+				|| print_warning "Failed to project draft checkpoint state on #${issue_number} (non-fatal)"
+		fi
+		_unlock_issue_after_dispatch_release "$issue_number" "$repo_slug"
+		print_info "Projected draft checkpoint #${issue_number} as blocked partial work"
 		return 0
 	fi
 

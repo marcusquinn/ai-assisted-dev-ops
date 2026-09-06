@@ -154,7 +154,7 @@ routine uncertainty into `#no-auto-dispatch`.
 - **Dispatch-path advisory (t2821, t2832, t2920)**: When a task's `### Files Scope` or `## How` section references a file in `.agents/configs/self-hosting-files.conf`, use `#auto-dispatch` as normal. The t2819 detector auto-elevates these workers to `tier:thinking`; runtime routing chooses the concrete model and reasoning level. Worker isolation, CI gates, watchdog kills, and the t2690 circuit breaker replace the historical `no-auto-dispatch` default. Interactive implementation keeps `#auto-dispatch`; its active claim is the temporary deduplication gate. **Durable opt-out (rare):** use `#no-auto-dispatch` only for explicit manual intent or a recorded unresolved safety/authority decision, never merely because the creating session will not implement the issue itself. Full decision tree: `reference/auto-dispatch.md` "Dispatch-Path Default (t2821 / t2920)".
 - **Quality gate**: Same readiness definition as `#auto-dispatch` above; do not maintain a second criteria list.
 - **Dispatch-label mutual exclusion**: `#auto-dispatch` and `#no-auto-dispatch` must never coexist. Managed issue-create/edit paths normalize conflicts without suppressing publication: an explicit manual hold wins a same-command conflict, and adding either label removes its opposite.
-- **Interactive workflow**: Keep worker-ready issues tagged `#auto-dispatch`; claim with `status:in-review` + assignment while working, then release with unassignment so unfinished work resumes automatically.
+- **Interactive workflow**: Keep worker-ready issues tagged `#auto-dispatch`; claim with `status:claimed` + assignment while working, then release with unassignment so unfinished work resumes automatically. Reserve `status:in-review` for an open non-draft PR that is actually ready for review.
 - **Server-side safety net (t2798)**: `.github/workflows/apply-status-available-default.yml` applies `status:available` to issues that carry `auto-dispatch` but have no `status:*` label — catches bypass-path creations (bare `gh issue create`, web UI) that skip `claim-task-id.sh`.
 
 **Session origin labels are provenance only**: Issues and PRs are automatically tagged with `origin:worker` (headless/pulse dispatch) or `origin:interactive` (user session). Applied by `claim-task-id.sh`, `issue-sync-helper.sh`, and `pulse-wrapper.sh`. In TODO.md, use `#worker` or `#interactive` tags to set origin explicitly; these map to the corresponding labels on push. Do not treat `origin:*` labels as workflow permission: `auto-dispatch` controls worker pickup on issues, and PR merge throughput is controlled by draft/hold state plus explicit merge-throughput preferences.
@@ -172,6 +172,19 @@ routine uncertainty into `#no-auto-dispatch`.
 **Admin merge authority:** Interactive sessions run as the repo admin/owner. For maintainer-owned or maintainer-approved work (`OWNER`/`MEMBER` PR author, maintainer-authored linked issue, trusted issue author, or valid crypto approval), `REVIEW_REQUIRED`, stale branch-protection state, or a self-blocking framework gate is not a user-action blocker once non-gate CI is green and no human `CHANGES_REQUESTED` review exists. Use `full-loop-helper.sh merge <N> <slug> --admin --squash` when needed; it records merge and cleanup evidence. Direct `gh pr merge` is blocked because it bypasses exact-head, review, receipt, and cleanup gates. Only keep the merge gated when the issue/PR originates from a non-maintainer and lacks cryptographic maintainer approval.
 
 **`origin:interactive` also skips pulse dispatch (GH#18352)**: When an issue carries `origin:interactive` AND has any human assignee, the pulse's deterministic dedup guard (`dispatch-dedup-helper.sh is-assigned`) treats the assignee as blocking — even if that assignee is the repo owner or maintainer, and regardless of the current `status:*` label. This closes the race where an interactive session claimed a task via `claim-task-id.sh` (applying `status:claimed` + owner assignment) and the pulse dispatched a duplicate worker before the session could open its PR. The full active lifecycle is now recognised: `status:queued`, `status:in-progress`, `status:in-review`, and `status:claimed` all keep owner/maintainer assignees in the blocking set.
+
+### Issue-List State Projection
+
+| Current evidence | Issue label | Reader action |
+|---|---|---|
+| Interactive owner working | `status:claimed` | Preserve the claim; do not dispatch. |
+| Worker actively running | `status:in-progress` | Preserve the claim; do not dispatch. |
+| Exact draft checkpoint stopped on evidence | `status:blocked` | Read the structured blocker reason and next action. |
+| Trusted correction validated for the exact checkpoint | `status:available` | Dispatch the existing exact-head continuation. |
+| Open, non-draft linked PR | `status:in-review` | Review or merge the PR. |
+| Linked PR merged | `status:done` | No implementation action. |
+
+These projections require a fresh authoritative issue/PR read. Unknown or ambiguous reads preserve the prior state; labels and stale prose never authorize continuation, clear a hold, or replace #31265's exact-head evidence contract.
 
 **Implementing a `#auto-dispatch` task interactively (MANDATORY):** Start with `interactive-start-helper.sh --issue N --repo owner/repo --task "description" --auto-dispatch`. Add `--background` only when the user explicitly requested it. All issue-started implementations claim with `--implementing`, export the local-only implementation marker, run the pre-edit loop check, and start full-loop before any code is written. External repositories skip managed issue mutations but still continue local implementation and the normal contribution PR flow.
 

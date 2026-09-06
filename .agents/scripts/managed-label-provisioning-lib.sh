@@ -79,7 +79,7 @@ managed_labels_ensure_tracking_set() {
 	local create_runner="$3"
 	local -a tracking_specs=(
 		"${_MANAGED_ORIGIN_LABEL_SPECS[@]}"
-		"status:in-review" "PR open, awaiting review/merge" "5319E7"
+		"status:in-review" "Non-draft PR ready for review/merge" "5319E7"
 		"bug" "Something isn't working" "D73A4A"
 	)
 	managed_labels_ensure_specs "$repo" "$inventory_runner" "$create_runner" \

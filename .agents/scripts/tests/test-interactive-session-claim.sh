@@ -114,11 +114,11 @@ auth)
 			printf '%s\t%s\t%s\n' \
 				"status:available" "0e8a16" "Task is available for claiming" \
 				"status:queued" "fbca04" "Worker dispatched, not yet started" \
-				"status:claimed" "f9d0c4" "Interactive session claimed this task" \
+				"status:claimed" "f9d0c4" "Interactive implementation is actively claimed" \
 				"status:in-progress" "1d76db" "Worker actively running" \
-				"status:in-review" "5319e7" "PR open, awaiting review/merge" \
+				"status:in-review" "5319e7" "Non-draft PR ready for review/merge" \
 				"status:done" "6f42c1" "Task is complete" \
-				"status:blocked" "d93f0b" "Waiting on blocker task"
+				"status:blocked" "d93f0b" "Partial work blocked; inspect reason and next action"
 			exit 0
 		fi
 		if [[ "$2" == /repos/*/issues/* ]]; then
@@ -129,9 +129,12 @@ auth)
 				exit 0
 			fi
 			labels_arr=""
-			if [[ "${STUB_ISSUE_HAS_IN_REVIEW:-0}" == "1" ]]; then
-				labels_arr='{"name":"status:in-review"}'
-			fi
+		if [[ "${STUB_ISSUE_HAS_IN_REVIEW:-0}" == "1" ]]; then
+			labels_arr='{"name":"status:in-review"}'
+		fi
+		if [[ "${STUB_ISSUE_HAS_CLAIMED:-0}" == "1" ]]; then
+			labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"status:claimed\"}"
+		fi
 			if [[ "${STUB_ISSUE_HAS_AUTO_DISPATCH:-0}" == "1" ]]; then
 				labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"auto-dispatch\"}"
 			fi
@@ -192,6 +195,9 @@ issue)
 		labels_arr=""
 		if [[ "${STUB_ISSUE_HAS_IN_REVIEW:-0}" == "1" ]]; then
 			labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"status:in-review\"}"
+		fi
+		if [[ "${STUB_ISSUE_HAS_CLAIMED:-0}" == "1" ]]; then
+			labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"status:claimed\"}"
 		fi
 		if [[ "${STUB_ISSUE_HAS_AUTO_DISPATCH:-0}" == "1" ]]; then
 			labels_arr="${labels_arr:+$labels_arr,}{\"name\":\"auto-dispatch\"}"
@@ -687,10 +693,10 @@ fi
 # Verify the label-apply branch actually ran (gh issue edit was called with
 # the add-label flag). This closes the test gap where Test 1 only checks the
 # stamp, not whether the label transition API call happened.
-if grep -q 'issue edit 56001' "$STUB_LOG" && grep -q 'add-label status:in-review' "$STUB_LOG"; then
-	print_result "GH#18786: claim applies status:in-review when absent" 0
+if grep -q 'issue edit 56001' "$STUB_LOG" && grep -q 'add-label status:claimed' "$STUB_LOG"; then
+	print_result "GH#18786: claim applies status:claimed when absent" 0
 else
-	print_result "GH#18786: claim applies status:in-review when absent" 1 \
+	print_result "GH#18786: claim applies status:claimed when absent" 1 \
 		"(stub log: $(tr '\n' '|' <"$STUB_LOG"))"
 fi
 
@@ -698,7 +704,7 @@ fi
 rm -f "${claim_dir}"/*.json 2>/dev/null || true
 : >"$STUB_LOG"
 
-idempotent_out=$(STUB_ISSUE_HAS_IN_REVIEW=1 STUB_GH_MODE=online \
+idempotent_out=$(STUB_ISSUE_HAS_CLAIMED=1 STUB_GH_MODE=online \
 	"$HELPER_PATH" claim 56001 regress/test --worktree /tmp/regress-wt \
 	2>&1)
 idempotent_rc=$?
@@ -791,22 +797,22 @@ else
 		"(rc=$release_sub_rc, stamp exists=$([[ -f "$release_stamp" ]] && echo yes || echo no))"
 fi
 
-# --- Case (f): _isc_has_in_review jq query is not broken (dead-code gate) ---
+# --- Case (f): _isc_has_claimed jq query is not broken (dead-code gate) ---
 # The previous `any(.name; ...)` form raised "Cannot index array with string".
 # Assert the repaired query correctly distinguishes present from absent and
 # from lookup-failure by driving _isc_has_in_review directly with stub modes.
-export STUB_ISSUE_HAS_IN_REVIEW=1
-_isc_has_in_review 56003 regress/test
+export STUB_ISSUE_HAS_CLAIMED=1
+_isc_has_claimed 56003 regress/test
 jq_present_rc=$?
 
-export STUB_ISSUE_HAS_IN_REVIEW=0
-_isc_has_in_review 56003 regress/test
+export STUB_ISSUE_HAS_CLAIMED=0
+_isc_has_claimed 56003 regress/test
 jq_absent_rc=$?
 
 if [[ $jq_present_rc -eq 0 && $jq_absent_rc -eq 1 ]]; then
-	print_result "GH#18786: _isc_has_in_review jq query returns 0/1 correctly" 0
+	print_result "GH#18786: _isc_has_claimed jq query returns 0/1 correctly" 0
 else
-	print_result "GH#18786: _isc_has_in_review jq query returns 0/1 correctly" 1 \
+	print_result "GH#18786: _isc_has_claimed jq query returns 0/1 correctly" 1 \
 		"(present_rc=$jq_present_rc, absent_rc=$jq_absent_rc, expected 0/1)"
 fi
 
@@ -943,7 +949,7 @@ ad_impl_stamp="${claim_dir}/carveout-test-60002.json"
 
 if [[ $ad_impl_rc -eq 0 && -f "$ad_impl_stamp" ]] &&
 	grep -q 'issue edit 60002' "$STUB_LOG" &&
-	grep -q 'add-label status:in-review' "$STUB_LOG"; then
+	grep -q 'add-label status:claimed' "$STUB_LOG"; then
 	print_result "GH#20946: auto-dispatch claim WITH --implementing proceeds" 0
 else
 	print_result "GH#20946: auto-dispatch claim WITH --implementing proceeds" 1 \
@@ -970,7 +976,7 @@ ad_pt_stamp="${claim_dir}/carveout-test-60003.json"
 
 if [[ $ad_pt_rc -eq 0 && -f "$ad_pt_stamp" ]] &&
 	grep -q 'issue edit 60003' "$STUB_LOG" &&
-	grep -q 'add-label status:in-review' "$STUB_LOG"; then
+	grep -q 'add-label status:claimed' "$STUB_LOG"; then
 	print_result "GH#20946: auto-dispatch + parent-task claim proceeds (no flag)" 0
 else
 	print_result "GH#20946: auto-dispatch + parent-task claim proceeds (no flag)" 1 \
@@ -1149,7 +1155,7 @@ export STUB_PERMISSION=admin
 export STUB_GH_MODE=online
 _isc_cmd_claim 70001 testowner/testrepo --worktree /tmp/wt-fake >/dev/null 2>&1
 : >"$STUB_LOG"
-export STUB_ISSUE_HAS_IN_REVIEW=1
+export STUB_ISSUE_HAS_CLAIMED=1
 export STUB_ISSUE_STATE=OPEN
 _isc_cmd_release 70001 testowner/testrepo >/dev/null 2>&1
 release_open_rc=$?
@@ -1169,7 +1175,7 @@ fi
 # =============================================================================
 _isc_cmd_claim 70002 testowner/testrepo --worktree /tmp/wt-fake >/dev/null 2>&1
 : >"$STUB_LOG"
-export STUB_ISSUE_HAS_IN_REVIEW=1
+export STUB_ISSUE_HAS_CLAIMED=1
 export STUB_ISSUE_STATE=CLOSED
 _isc_cmd_release 70002 testowner/testrepo >/dev/null 2>&1
 release_closed_rc=$?
@@ -1188,7 +1194,7 @@ fi
 # same closed-issue invariant when that path supplies `closed` (GH#27869).
 _isc_cmd_claim 70004 testowner/testrepo --worktree /tmp/wt-fake >/dev/null 2>&1
 : >"$STUB_LOG"
-export STUB_ISSUE_HAS_IN_REVIEW=1
+export STUB_ISSUE_HAS_CLAIMED=1
 export STUB_ISSUE_STATE=closed
 _isc_cmd_release 70004 testowner/testrepo >/dev/null 2>&1
 release_rest_closed_rc=$?
@@ -1203,7 +1209,7 @@ else
 fi
 
 # Reset stub state
-export STUB_ISSUE_HAS_IN_REVIEW=0
+export STUB_ISSUE_HAS_CLAIMED=0
 
 # =============================================================================
 # Test 25 — GH#27834: release --unassign remains actionable after another
