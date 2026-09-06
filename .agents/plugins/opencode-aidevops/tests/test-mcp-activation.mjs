@@ -48,6 +48,11 @@ test("registers only the explicit MCP activation profiles", () => {
   assert.match(config.agent.playwriter.prompt, /no browser tab is approved/i);
   assert.match(config.agent.playwriter.prompt, /before requesting authentication/i);
   assert.match(config.agent.playwriter.prompt, /enumerate.*context\.pages\(\)/i);
+  assert.match(config.agent.playwriter.prompt, /exactly one `about:blank` bootstrap page/i);
+  assert.match(config.agent.playwriter.prompt, /already approved the exact HTTPS destination/i);
+  assert.match(config.agent.playwriter.prompt, /unmatched non-blank or multiple pages/i);
+  assert.match(config.agent.playwriter.prompt, /prior attachment was invalidated/i);
+  assert.match(config.agent.playwriter.prompt, /not consent to inspect another page/i);
   assert.match(config.agent.playwriter.prompt, /never silently substitute.*playwright/i);
   assert.match(config.agent.playwriter.prompt, /never close\s+user-owned[\s\S]*browser windows/i);
   assert.match(config.agent.playwriter.prompt, /# Playwriter - Legacy Browser Extension MCP/);

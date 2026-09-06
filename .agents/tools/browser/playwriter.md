@@ -108,14 +108,26 @@ only a relay process it started. A conflicting or unverifiable relay fails
 closed without `--replace` or port-owner termination.
 
 1. Connect Playwriter and enumerate the accessible pages with `context.pages()`.
-2. Match only the intended target by its expected URL and title. Confirm that the
-   controlled tab and expected Chrome profile/session are visible; do not expose
-   unrelated approved-tab details.
-3. If the bridge, approved tab, or target profile is absent or ambiguous, fail
-   closed and relay the consent/target diagnostic. Do not ask the user to log in.
-4. Never silently substitute isolated-profile Playwright. Explain the storage
+   Inspect only the URL and title needed to classify the intended target; do not
+   expose unrelated approved-tab details.
+2. Match the intended target by its exact approved HTTPS URL and expected title.
+   Confirm that the controlled tab and expected Chrome profile/session are
+   visible before authenticated work.
+3. Classify a result with no exact match as one of: no controlled pages; exactly
+   one `about:blank` bootstrap page; unmatched non-blank or multiple pages; or a
+   target lost after MCP reconnection. Do not collapse these states into a generic
+   request to reactivate the extension.
+4. For exactly one `about:blank` bootstrap page, navigate that page only when the
+   user already approved the exact HTTPS destination. Revalidate the resulting
+   URL and expected profile/session before continuing. This bounded bootstrap is
+   not consent to inspect another page or navigate to a broader origin.
+5. For no pages, unmatched non-blank or multiple pages, or any target/profile
+   ambiguity, fail closed with the classified diagnostic. After reconnection,
+   repeat the preflight and report when the prior attachment was invalidated. Do
+   not ask the user to log in.
+6. Never silently substitute isolated-profile Playwright. Explain the storage
    boundary and obtain explicit user consent before any fallback.
-5. On completion or cancellation, disconnect the Playwriter MCP. Never close
+7. On completion or cancellation, disconnect the Playwriter MCP. Never close
    user-owned pages, contexts, profiles, or browser windows.
 
 ### Extension-page QA Preflight
@@ -226,6 +238,7 @@ approved-tab, privacy, and mutation boundaries.
 - **Extension not connecting**: Installed and pinned? Click icon on tab (should turn green). Red badge = error. Reload tab.
 - **MCP not finding tabs**: Green icon? Restart MCP client. Verify WebSocket on port 19988.
 - **No approved tab**: Click the Playwriter extension on the intended tab and wait for the icon to turn green; this consent requirement is distinct from missing MCP tools.
+- **Blank bootstrap only**: If the sole accessible page is `about:blank`, use the bounded exact-HTTPS bootstrap above instead of repeatedly requesting extension reactivation.
 - **Terminal OpenCode activation failure**: After the one bounded reset, treat Playwriter as unavailable for the session and use the documented secure CLI diagnostic path only to isolate the cause. Do not retry through another child or treat direct CLI initialization as successful OpenCode activation.
 - **Automation detection**: Disconnect (click icon → gray) → complete manual action (login, captcha) → reconnect (click → green) → resume.
 
