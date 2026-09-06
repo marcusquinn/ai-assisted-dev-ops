@@ -27,9 +27,10 @@ Usage:
   review-evidence-helper.sh bundle issue NUMBER [--repo OWNER/REPO] [--output FILE]
   review-evidence-helper.sh bundle pr NUMBER [--repo OWNER/REPO] [--output FILE]
 
-The emitted Markdown bundle uses schema aidevops.review-evidence/v1. It contains
-the selected metadata and complete patch, a prompt-injection scan status, and a
-SHA-256 digest. It never fetches, changes refs, or invokes a reviewer.
+The emitted Markdown bundle uses schema aidevops.review-evidence/v1. Git targets
+contain complete text patches and SHA-256-bound metadata for binary changes, plus
+a prompt-injection scan status and bundle digest. It never fetches, changes refs,
+or invokes a reviewer.
 EOF
 	return 0
 }
@@ -147,26 +148,145 @@ _review_scan_status() {
 	return 0
 }
 
+_review_is_binary_diff() {
+	local repo_root="$1"
+	local range="$2"
+	local path="$3"
+	local numstat=""
+	numstat=$(git -C "$repo_root" diff --numstat --no-renames "$range" -- "$path") || return 1
+	[[ "$numstat" == $'-\t-\t'* ]]
+}
+
+_review_is_binary_untracked() {
+	local repo_root="$1"
+	local path="$2"
+	local numstat=""
+	numstat=$(git -C "$repo_root" diff --no-index --numstat -- /dev/null "$repo_root/$path" 2>/dev/null || true)
+	[[ "$numstat" == $'-\t-\t'* ]]
+}
+
+_review_diff_status() {
+	local repo_root="$1"
+	local range="$2"
+	local path="$3"
+	git -C "$repo_root" diff --name-status --no-renames "$range" -- "$path" | cut -f1
+	return 0
+}
+
+_review_binary_metadata() {
+	local repo_root="$1"
+	local path="$2"
+	local status="$3"
+	local current_file="$4"
+	local preferred_ref="$5"
+	local fallback_ref="$6"
+	local artifact_file="$current_file"
+	local ref=""
+	local byte_size=""
+	local mime_type=""
+	local digest=""
+	if [[ ! -f "$artifact_file" ]]; then
+		for ref in "$preferred_ref" "$fallback_ref"; do
+			[[ -n "$ref" ]] || continue
+			if git -C "$repo_root" cat-file -e "${ref}:${path}" 2>/dev/null; then
+				[[ -n "$REVIEW_AUX_FILE" ]] || REVIEW_AUX_FILE=$(mktemp "${TEMP_ROOT}/review-evidence-binary.XXXXXX")
+				git -C "$repo_root" show "${ref}:${path}" >"$REVIEW_AUX_FILE" || return 1
+				artifact_file="$REVIEW_AUX_FILE"
+				break
+			fi
+		done
+	fi
+	[[ -f "$artifact_file" ]] || {
+		_review_die "cannot materialize binary artifact for review: ${path}"
+		return 1
+	}
+	byte_size=$(wc -c <"$artifact_file" | tr -d '[:space:]') || return 1
+	mime_type=$(file --brief --mime-type -- "$artifact_file") || return 1
+	digest=$(_review_sha256 "$artifact_file") || return 1
+	printf '%s\t%s\t%s\t%s\t%s\n' "$status" "$path" "$byte_size" "$mime_type" "$digest"
+	return 0
+}
+
+_review_collect_diff_binaries() {
+	local repo_root="$1"
+	local range="$2"
+	local preferred_ref="$3"
+	local fallback_ref="$4"
+	local path=""
+	local status=""
+	while IFS= read -r path; do
+		[[ -z "$path" ]] && continue
+		if _review_is_binary_diff "$repo_root" "$range" "$path"; then
+			status=$(_review_diff_status "$repo_root" "$range" "$path") || return 1
+			printf '%s\n' "$path" >>"$REVIEW_BINARY_PATHS_FILE"
+			_review_binary_metadata "$repo_root" "$path" "$status" "$repo_root/$path" "$preferred_ref" "$fallback_ref" >>"$REVIEW_BINARY_METADATA_FILE" || return 1
+		fi
+	done < <(git -C "$repo_root" diff --name-only --no-renames "$range")
+	return 0
+}
+
+_review_collect_untracked_binaries() {
+	local repo_root="$1"
+	local path=""
+	while IFS= read -r path; do
+		[[ -z "$path" ]] && continue
+		if _review_is_binary_untracked "$repo_root" "$path"; then
+			printf '%s\n' "$path" >>"$REVIEW_BINARY_PATHS_FILE"
+			_review_binary_metadata "$repo_root" "$path" 'A' "$repo_root/$path" '' '' >>"$REVIEW_BINARY_METADATA_FILE" || return 1
+		fi
+	done < <(git -C "$repo_root" ls-files --others --exclude-standard)
+	return 0
+}
+
+_review_write_text_diff() {
+	local repo_root="$1"
+	local range="$2"
+	local -a diff_args=(--no-ext-diff "$range" -- .)
+	local path=""
+	while IFS= read -r path; do
+		[[ -z "$path" ]] && continue
+		diff_args+=(":(exclude)$path")
+	done <"$REVIEW_BINARY_PATHS_FILE"
+	git -C "$repo_root" diff "${diff_args[@]}"
+	return 0
+}
+
+_review_write_binary_metadata() {
+	[[ -s "$REVIEW_BINARY_METADATA_FILE" ]] || return 0
+	printf '\n## Binary artifacts\n\nThe following binary changes are represented by status, repository-relative path, byte size, MIME type, and SHA-256.\n\n```text\n'
+	printf 'status\tpath\tbytes\tmime_type\tsha256\n'
+	cat "$REVIEW_BINARY_METADATA_FILE"
+	printf '```\n'
+	return 0
+}
+
 _review_write_local() {
 	local body_file="$1"
 	local paths_file="$2"
 	local repo_root=""
 	repo_root=$(_review_repo_root) || return 1
+	_review_require file || return 1
 	git -C "$repo_root" diff --name-only HEAD >"$paths_file"
 	git -C "$repo_root" ls-files --others --exclude-standard >>"$paths_file"
 	_review_check_paths "$paths_file" || return 1
+	_review_collect_diff_binaries "$repo_root" 'HEAD' 'HEAD' 'HEAD' || return 1
+	_review_collect_untracked_binaries "$repo_root" || return 1
 	{
 		printf 'target: local\n'
 		printf 'head: %s\n' "$(git -C "$repo_root" rev-parse HEAD)"
 		printf '\n## Changed files\n\n```text\n'
 		git -C "$repo_root" status --short
 		printf '%s\n\n## Patch\n\n%s\n' '```' '```diff'
-		git -C "$repo_root" diff --binary --no-ext-diff HEAD
+		_review_write_text_diff "$repo_root" 'HEAD'
 		local untracked_file=""
-		while IFS= read -r -d '' untracked_file; do
-			git -C "$repo_root" diff --no-index --binary -- /dev/null "$untracked_file" || true
-		done < <(git -C "$repo_root" ls-files --others --exclude-standard -z)
+		while IFS= read -r untracked_file; do
+			[[ -z "$untracked_file" ]] && continue
+			if ! grep -Fqx -- "$untracked_file" "$REVIEW_BINARY_PATHS_FILE"; then
+				git -C "$repo_root" diff --no-index --no-ext-diff -- /dev/null "$repo_root/$untracked_file" || true
+			fi
+		done < <(git -C "$repo_root" ls-files --others --exclude-standard)
 		printf '```\n'
+		_review_write_binary_metadata
 	} >"$body_file"
 	return 0
 }
@@ -177,10 +297,12 @@ _review_write_branch() {
 	local base="$3"
 	local repo_root=""
 	repo_root=$(_review_repo_root) || return 1
+	_review_require file || return 1
 	[[ -n "$base" ]] || base=$(_review_default_base) || return 1
 	_review_validate_ref "$base" || return 1
 	git -C "$repo_root" diff --name-only "${base}...HEAD" >"$paths_file"
 	_review_check_paths "$paths_file" || return 1
+	_review_collect_diff_binaries "$repo_root" "${base}...HEAD" 'HEAD' "$base" || return 1
 	{
 		printf 'target: branch\n'
 		printf 'base: %s\n' "$base"
@@ -188,8 +310,9 @@ _review_write_branch() {
 		printf '\n## Changed files\n\n```text\n'
 		git -C "$repo_root" diff --name-status "${base}...HEAD"
 		printf '%s\n\n## Patch\n\n%s\n' '```' '```diff'
-		git -C "$repo_root" diff --binary --no-ext-diff "${base}...HEAD"
+		_review_write_text_diff "$repo_root" "${base}...HEAD"
 		printf '```\n'
+		_review_write_binary_metadata
 	} >"$body_file"
 	return 0
 }
@@ -200,6 +323,7 @@ _review_write_commit() {
 	local commit_ref="$3"
 	local repo_root=""
 	repo_root=$(_review_repo_root) || return 1
+	_review_require file || return 1
 	[[ -n "$commit_ref" ]] || {
 		_review_die "commit target requires --commit REF"
 		return 1
@@ -207,12 +331,16 @@ _review_write_commit() {
 	_review_validate_ref "$commit_ref" || return 1
 	git -C "$repo_root" diff-tree --root --no-commit-id --name-only -r "$commit_ref" >"$paths_file"
 	_review_check_paths "$paths_file" || return 1
+	_review_collect_diff_binaries "$repo_root" "${commit_ref}^!" "$commit_ref" "${commit_ref}^" || return 1
 	{
 		printf 'target: commit\n'
 		printf 'commit: %s\n' "$(git -C "$repo_root" rev-parse "$commit_ref")"
-		printf '\n## Commit metadata and patch\n\n```diff\n'
-		git -C "$repo_root" show --format=fuller --binary --no-ext-diff "$commit_ref"
+		printf '\n## Commit metadata and patch\n\n```text\n'
+		git -C "$repo_root" show --format=fuller --no-patch "$commit_ref"
+		printf '%s\n\n%s\n' '```' '```diff'
+		_review_write_text_diff "$repo_root" "${commit_ref}^!"
 		printf '```\n'
+		_review_write_binary_metadata
 	} >"$body_file"
 	return 0
 }
@@ -357,6 +485,8 @@ main() {
 	mkdir -p "$TEMP_ROOT"
 	REVIEW_BODY_FILE=$(mktemp "${TEMP_ROOT}/review-evidence-body.XXXXXX")
 	REVIEW_PATHS_FILE=$(mktemp "${TEMP_ROOT}/review-evidence-paths.XXXXXX")
+	REVIEW_BINARY_PATHS_FILE=$(mktemp "${TEMP_ROOT}/review-evidence-binary-paths.XXXXXX")
+	REVIEW_BINARY_METADATA_FILE=$(mktemp "${TEMP_ROOT}/review-evidence-binary-metadata.XXXXXX")
 	trap _review_cleanup EXIT
 	case "$target" in
 	local) _review_write_local "$REVIEW_BODY_FILE" "$REVIEW_PATHS_FILE" ;;

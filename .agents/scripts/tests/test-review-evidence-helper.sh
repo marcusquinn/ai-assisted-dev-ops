@@ -38,37 +38,68 @@ assert_contains() {
 	return 0
 }
 
+assert_not_contains() {
+	local file="$1"
+	local unexpected="$2"
+	local label="$3"
+	if grep -Fq -- "$unexpected" "$file"; then
+		fail "${label}: unexpectedly contained ${unexpected}"
+	fi
+	return 0
+}
+
 REPO="${TEST_ROOT}/repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q
 printf 'one\n' >"${REPO}/tracked.txt"
+printf '\000initial\n' >"${REPO}/tracked.bin"
 git -C "$REPO" add tracked.txt
+git -C "$REPO" add tracked.bin
 git -C "$REPO" -c user.name='Review Test' -c user.email='review@example.invalid' commit -qm 'initial'
 INITIAL_SHA=$(git -C "$REPO" rev-parse HEAD)
 
 printf 'one\ntwo\n' >"${REPO}/tracked.txt"
 printf 'new\n' >"${REPO}/untracked.txt"
+printf '\000changed\n' >"${REPO}/tracked.bin"
+printf '\000untracked\n' >"${REPO}/untracked.bin"
 LOCAL_BUNDLE="${TEST_ROOT}/local.md"
 (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle local --output "$LOCAL_BUNDLE" >/dev/null)
 assert_contains "$LOCAL_BUNDLE" 'schema: aidevops.review-evidence/v1' 'local schema'
 assert_contains "$LOCAL_BUNDLE" 'target: local' 'local target'
 assert_contains "$LOCAL_BUNDLE" '+two' 'tracked patch'
 assert_contains "$LOCAL_BUNDLE" 'untracked.txt' 'untracked patch'
+assert_contains "$LOCAL_BUNDLE" '## Binary artifacts' 'local binary metadata heading'
+assert_contains "$LOCAL_BUNDLE" $'M\ttracked.bin\t' 'tracked binary metadata'
+assert_contains "$LOCAL_BUNDLE" $'A\tuntracked.bin\t' 'untracked binary metadata'
+assert_not_contains "$LOCAL_BUNDLE" 'GIT binary patch' 'local binary payload'
+LOCAL_DIGEST=$(grep '^bundle_sha256:' "$LOCAL_BUNDLE" | cut -d' ' -f2)
+printf '\000changed-again\n' >"${REPO}/tracked.bin"
+LOCAL_CHANGED_BUNDLE="${TEST_ROOT}/local-changed.md"
+(cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle local --output "$LOCAL_CHANGED_BUNDLE" >/dev/null)
+LOCAL_CHANGED_DIGEST=$(grep '^bundle_sha256:' "$LOCAL_CHANGED_BUNDLE" | cut -d' ' -f2)
+if [[ "$LOCAL_DIGEST" == "$LOCAL_CHANGED_DIGEST" ]]; then
+	fail 'binary content did not change local bundle digest'
+fi
 if grep -Fq "$TEST_ROOT" "$LOCAL_BUNDLE"; then
 	fail 'bundle exposed host test path'
 fi
 
 git -C "$REPO" add tracked.txt untracked.txt
+git -C "$REPO" add tracked.bin untracked.bin
 git -C "$REPO" -c user.name='Review Test' -c user.email='review@example.invalid' commit -qm 'change'
 BRANCH_BUNDLE="${TEST_ROOT}/branch.md"
 (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle branch --base "$INITIAL_SHA" --output "$BRANCH_BUNDLE" >/dev/null)
 assert_contains "$BRANCH_BUNDLE" 'target: branch' 'branch target'
 assert_contains "$BRANCH_BUNDLE" 'A' 'branch name-status'
+assert_contains "$BRANCH_BUNDLE" '## Binary artifacts' 'branch binary metadata heading'
+assert_not_contains "$BRANCH_BUNDLE" 'GIT binary patch' 'branch binary payload'
 
 COMMIT_BUNDLE="${TEST_ROOT}/commit.md"
 (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle commit --commit HEAD --output "$COMMIT_BUNDLE" >/dev/null)
 assert_contains "$COMMIT_BUNDLE" 'target: commit' 'commit target'
 assert_contains "$COMMIT_BUNDLE" 'Commit:' 'commit metadata'
+assert_contains "$COMMIT_BUNDLE" '## Binary artifacts' 'commit binary metadata heading'
+assert_not_contains "$COMMIT_BUNDLE" 'GIT binary patch' 'commit binary payload'
 
 gh() {
 	local resource="$1"
