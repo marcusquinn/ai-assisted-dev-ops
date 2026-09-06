@@ -14,7 +14,7 @@
 #   6. Normalize: blank lines inserted before fences that lack one.
 #   7. Normalize: fences with preceding blank lines are unchanged.
 #   8. Body with acceptance checklist but no ## Acceptance heading passes.
-#   9. EDIT:/NEW: patterns count as file scope.
+#   9. Bare EDIT:/NEW: references are not executable scope.
 #  10. help / unknown command exits with expected codes.
 
 set -u
@@ -79,6 +79,10 @@ Users need it.
 ### Files to modify
 
 - EDIT: .agents/scripts/foo.sh:10-20 — add bar function
+
+## Files Scope
+
+- .agents/scripts/foo.sh
 
 ### Reference pattern
 
@@ -287,16 +291,23 @@ else
 	fail "8. normalize does not introduce double blank lines" "output: $(printf '%s\n' "$normalized")"
 fi
 
-# 9. EDIT: pattern counts as file scope (body passes with it)
+# 9. Bare EDIT references cannot substitute for canonical executable scope.
 rc=0
 stderr=$(AIDEVOPS_BODY_FORMAT_STRICT=1 "$HELPER" check "$BODY_EDIT_PATTERN" 2>&1) || rc=$?
-if printf '%s' "$stderr" | grep -qi "file scope\|EDIT\|NEW"; then
-	# If it warns about file scope, it means the EDIT: pattern wasn't detected — fail
-	fail "9. EDIT: pattern counts as file scope" "got file-scope warning: $stderr"
-elif [[ $rc -ne 0 ]] && printf '%s' "$stderr" | grep -qi "non-dispatchable"; then
-	fail "9. EDIT: pattern counts as file scope" "got non-dispatchable for EDIT body (exit $rc)"
+if [[ $rc -eq 1 && "$stderr" == *"lacks valid canonical Files Scope"* ]]; then
+	pass "9. bare EDIT reference is rejected as missing scope"
 else
-	pass "9. EDIT: pattern counts as file scope"
+	fail "9. bare EDIT reference is rejected as missing scope" "exit $rc; stderr: $stderr"
+fi
+
+# Producer normalization must turn explicit declarations into exact scope.
+rc=0
+normalized=$("$HELPER" normalize "$BODY_CHECKLIST_ONLY" 2>/dev/null) || rc=$?
+stderr=$(AIDEVOPS_BODY_FORMAT_STRICT=1 "$HELPER" check "$normalized" 2>&1) || rc=$?
+if [[ $rc -eq 0 && "$normalized" == *'## Files Scope'* && "$normalized" == *"- \`foo.sh\`"* ]]; then
+	pass "9b. normalized explicit declaration passes strict consumer"
+else
+	fail "9b. normalized explicit declaration passes strict consumer" "exit $rc; stderr: $stderr"
 fi
 
 # 10. Acceptance checklist (- [ ]) without ## Acceptance heading passes acceptance check
