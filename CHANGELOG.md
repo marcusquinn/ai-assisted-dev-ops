@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Recover stale GitHub REST admission with bounded, accounted revalidation while preserving genuine quota exhaustion and secondary cooldowns.
+- Keep primary Search quota exhaustion from freezing unrelated REST and GraphQL work.
+- Refresh aged dispatch candidate snapshots, retain enumeration failures as unavailable evidence, and distinguish label eligibility from launch admission.
+- Prevent unrelated base commits from re-arming excluded-scope retries; support documented AI-owned adjacent integration recovery within existing authority.
+- Reconcile terminal full-loop status and route Playwriter through its scoped agent.
+
+### Changed
+
+- Simplify REST recovery without weakening its admission guarantees or increasing Qlty debt.
+- Add the bounded interactive operation lifecycle with progress and restoration evidence.
+
 ## [3.32.317] - 2026-09-05
 
 ### Added
