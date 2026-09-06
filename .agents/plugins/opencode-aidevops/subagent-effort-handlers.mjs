@@ -93,6 +93,13 @@ async function applyConnectedRoutingModel(context, route, message, policy) {
   policy.candidateIndex = routingCandidateIndex(context.modelRouting, route.effort, routedModel);
 }
 
+function applySpecialistPolicy(context, agentName, text, policy) {
+  if (agentName !== SPECIALIST_ADVISOR || !context.agentRoutingState?.specialistAdvisor) return;
+  validateSpecialistRequest(text);
+  policy.effort = "thinking";
+  policy.reason = "specialist_advice";
+}
+
 async function routeChatMessage(context, output) {
   const message = output?.message || {};
   const sessionID = message.sessionID;
@@ -112,8 +119,6 @@ async function routeChatMessage(context, output) {
 
   const text = context.messageText(output.parts);
   const agentName = String(message.agent ?? message.mode ?? "");
-  const specialist = agentName === SPECIALIST_ADVISOR && context.agentRoutingState?.specialistAdvisor;
-  if (specialist) validateSpecialistRequest(text);
   const domainRegistry = context.agentRoutingState?.domainDelegation;
   if (domainRegistry?.profiles?.has(agentName)) {
     await routeDomainMessage(context, output, domainRegistry, agentName);
@@ -121,13 +126,14 @@ async function routeChatMessage(context, output) {
   }
   const route = context.routedPolicy(context.agentRoutingState, agentName, text);
   const policy = {
-    effort: specialist ? "thinking" : route.effort,
-    reason: specialist ? "specialist_advice" : route.pinned ? "explicit_model" : route.reason,
+    effort: route.effort,
+    reason: route.pinned ? "explicit_model" : route.reason,
     attempt: 1,
     escalated: false,
     pinned: route.pinned,
     createdAt: now,
   };
+  applySpecialistPolicy(context, agentName, text, policy);
   context.policies.set(sessionID, policy);
 
   if (!context.modelRouting || route.pinned) return;
