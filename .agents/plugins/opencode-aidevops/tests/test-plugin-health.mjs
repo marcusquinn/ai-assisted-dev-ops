@@ -50,11 +50,15 @@ test("primary delivery evidence distinguishes expanded, missing and shadowed sou
       };
     }
     writeFileSync(join(root, "VERSION"), "test-version");
-    const config = { agent };
+    writeFileSync(join(root, "AGENTS.md"), "Canonical core knowledge");
+    const config = { agent, instructions: [join(root, "AGENTS.md"), "~/.aidevops/agents/AGENTS.md"] };
     const original = JSON.stringify(config);
     const evidence = primaryDeliveryEvidence(config, root);
     assert.deepEqual(evidence.sources.map((item) => item.delivery), Array(3).fill("delivered"));
     assert.equal(evidence.enforcement, "not_observed");
+    assert.equal(evidence.core.configuredCount, 2, "duplicate core references must be observable");
+    assert.equal(evidence.core.delivery, "not_observed_at_config_stage");
+    assert.match(evidence.core.sha256, /^[a-f0-9]{64}$/);
     assert.match(evidence.versionSha256, /^[a-f0-9]{64}$/);
     assert.ok(evidence.sources.every((item) => /^[a-f0-9]{64}$/.test(item.sha256)));
     assert.equal(JSON.stringify(config), original, "diagnostics must not alter overrides or permissions");
@@ -63,7 +67,11 @@ test("primary delivery evidence distinguishes expanded, missing and shadowed sou
     agent.seo.prompt = "operator-owned override";
     agent.content.prompt = "{file:~/.aidevops/agents/content.md}";
     rmSync(join(root, "build-plus.md"));
+    rmSync(join(root, "AGENTS.md"));
+    rmSync(join(root, "VERSION"));
     const degraded = primaryDeliveryEvidence(config, root);
+    assert.equal(degraded.core.sha256, null);
+    assert.equal(degraded.versionSha256, null);
     assert.deepEqual(degraded.sources.map((item) => item.delivery), [
       "missing", "shadowed_or_unresolved", "shadowed_or_unresolved",
     ]);
