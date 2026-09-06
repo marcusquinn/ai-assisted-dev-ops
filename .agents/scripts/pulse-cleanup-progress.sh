@@ -18,8 +18,10 @@ _pc_progress_repo_jobs() {
 		branch: (map(select(startswith("branch refs/heads/")) | ltrimstr("branch refs/heads/"))[0] // "")
 		}) | map(select(.path != "" and (.path | test("[\\r\\n]") | not)))') || return 1
 	jq -cn --arg repo "$repo" '["merged",$repo]'
+	# Git lists the main worktree first. Exclude it even when repos.json uses
+	# an alias or a linked path rather than the canonical inventory spelling.
 	jq -c --arg repo "$repo" --arg slug "$slug" --arg main "$main_branch" '
-		.[] | select(.path != $repo) | ["orphan",$repo,$slug,.path,.branch,$main]' <<<"$inventory"
+		.[1:][] | select(.path != $repo) | ["orphan",$repo,$slug,.path,.branch,$main]' <<<"$inventory"
 	return $?
 }
 
