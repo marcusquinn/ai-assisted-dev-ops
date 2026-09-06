@@ -12,6 +12,7 @@ _TBC_CIRCUIT_MARKER='aidevops:terminal-blocker-circuit'
 _TBC_RETRY_MARKER='terminal-blocker-circuit:retry'
 _TBC_MISSING_SCOPE='missing_files_scope'
 _TBC_UNKNOWN='unknown'
+_TBC_AUTHORITATIVE_ASSOCIATIONS='["OWNER","MEMBER"]'
 
 _terminal_blocker_hash() {
 	local value="$1"
@@ -32,7 +33,7 @@ _terminal_blocker_hash() {
 _terminal_blocker_reason() {
 	local fingerprint="$1"
 	local reason=""
-	for reason in missing_files_scope files_scope_excluded target_code_blocker unknown; do
+	for reason in missing_files_scope files_scope_excluded target_code_blocker permission_required unknown; do
 		if [[ "$fingerprint" == "$(_terminal_blocker_hash "v2:${reason}")" ]]; then
 			printf '%s\n' "$reason"
 			return 0
@@ -80,14 +81,14 @@ if not marker.search(candidate):
     raise SystemExit(1)
 
 reasons = re.findall(r"^TERMINAL_BLOCKER_REASON=(.*)$", candidate, re.M)
-allowed = {'missing_files_scope', 'files_scope_excluded', 'target_code_blocker'}
+allowed = {'missing_files_scope', 'files_scope_excluded', 'target_code_blocker', 'permission_required'}
 print(reasons[0] if len(reasons) == 1 and reasons[0] in allowed else 'unknown')
 PY
 	) || normalized=""
 	[[ -n "$normalized" ]] || return 1
 	# Do not infer a missing heading from words such as "Files Scope excludes".
 	# Verify the structural condition independently against the issue itself.
-	if [[ "${WORKER_ISSUE_NUMBER:-}" =~ ^[0-9]+$ &&
+	if [[ "$normalized" != "permission_required" && "${WORKER_ISSUE_NUMBER:-}" =~ ^[0-9]+$ &&
 		"${DISPATCH_REPO_SLUG:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
 		issue_json=$(gh api "repos/${DISPATCH_REPO_SLUG}/issues/${WORKER_ISSUE_NUMBER}" 2>/dev/null) || issue_json=""
 		if printf '%s' "$issue_json" | jq -e '.body | type == "string"' >/dev/null 2>&1 &&
@@ -152,6 +153,13 @@ terminal_blocker_task_revision() {
 	local reason="${5:-}"
 	local task_json="" dependency_signature="" target_revision="" canonical=""
 	[[ -n "$reason" ]] || reason=$(_terminal_blocker_reason "${AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT:-}")
+	# A brief edit, unrelated merge or GraphQL outage cannot satisfy a permission
+	# prerequisite. Explicit retry only schedules a new check; it grants nothing.
+	if [[ "$reason" == "permission_required" ]]; then
+		[[ "$repo_slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$issue_number" =~ ^[0-9]+$ ]] || return 1
+		_terminal_blocker_hash "v2:${reason}:${repo_slug}:${issue_number}"
+		return $?
+	fi
 	task_json=$(printf '%s' "$issue_json" | jq -c '{title: (.title // ""), body: (.body // "")}' 2>/dev/null) || return 1
 	if [[ "$reason" == "$_TBC_MISSING_SCOPE" || "$reason" == "files_scope_excluded" ]]; then
 		_terminal_blocker_hash "v2:${reason}:${task_json}"
@@ -174,7 +182,7 @@ terminal_blocker_fetch_trusted_comments() {
 	printf '%s' "$raw" | jq -c '
 		def trusted: . == "OWNER" or . == "MEMBER" or . == "COLLABORATOR";
 		[(if type == "array" and ((.[0]? | type) == "array") then .[] else . end)[]
-		| {body: (.body // ""), created_at: .created_at,
+		| {id: .id, author: (.user.login // ""), body: (.body // ""), created_at: .created_at,
 		   author_association: (.author_association // "")}
 		| select(.author_association | trusted)]
 	' 2>/dev/null || return 1
@@ -184,8 +192,12 @@ terminal_blocker_fetch_trusted_comments() {
 _terminal_blocker_latest_marker() {
 	local comments_json="$1"
 	local marker="$2"
-	printf '%s' "$comments_json" | jq -c --arg marker "$marker" '
-		[.[] | select((.body // "") | contains($marker))]
+	# aidevops:trust-boundary — a deterministic marker is not a signature.
+	# The same authoritative actors must own both opening and clearing a hold.
+	printf '%s' "$comments_json" | jq -c --arg marker "$marker" \
+		--argjson authoritative "$_TBC_AUTHORITATIVE_ASSOCIATIONS" '
+		[.[] | select(.author_association as $a | $authoritative | index($a) != null)
+		| select((.body // "") | contains($marker))]
 		| sort_by(.created_at) | last // empty
 	' 2>/dev/null
 	return $?
@@ -193,10 +205,14 @@ _terminal_blocker_latest_marker() {
 
 _terminal_blocker_latest_retry_at() {
 	local comments_json="$1"
+	# aidevops:trust-boundary — retry affects scheduling, not source authority;
+	# ambiguous collaborators and quoted recovery prose cannot authorize it.
 	printf '%s' "$comments_json" | jq -r --arg marker "$_TBC_RETRY_MARKER" \
+		--argjson authoritative "$_TBC_AUTHORITATIVE_ASSOCIATIONS" \
 		--arg circuit_marker "$_TBC_CIRCUIT_MARKER" '
-		[.[] | select((.body // "") as $body
-		| ($body | contains($marker)) and (($body | contains($circuit_marker)) | not))
+		[.[] | select(.author_association as $a | $authoritative | index($a) != null)
+		| select((.body // "") as $body
+		| ($body | test("(?m)^" + $marker + "[ \\t]*\\r?$")) and (($body | contains($circuit_marker)) | not))
 		| .created_at]
 		| sort | last // ""
 	' 2>/dev/null
@@ -259,6 +275,10 @@ _terminal_blocker_recovery() {
 		owner="target-maintainer"
 		action='Review the protected blocker dossier and correct the target code or task dependencies before retrying.'
 		;;
+	permission_required)
+		owner="permission-maintainer"
+		action='Resolve the evidenced permission prerequisite through the human-owned approval flow, then post the explicit retry directive. Retry is scheduling consent only: the original permission guard must independently verify the exact context. Do not regenerate requests or bypass the guard.'
+		;;
 	*)
 		owner="worker-triage"
 		action='Interpret the protected dossier and record a known blocker class or repair the brief. No global dispatch hold is imposed.'
@@ -277,10 +297,50 @@ terminal_blocker_circuit_comment() {
 	local task_revision="$2"
 	local blocker_fingerprint="$3"
 	[[ "$(_terminal_blocker_reason "$blocker_fingerprint")" != "$_TBC_UNKNOWN" ]] || return 1
-	printf '<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\n%s\n<!-- %s revision=%s blocker=%s -->\nTERMINAL_BLOCKER_CIRCUIT active=true observations=2 task_revision=%s blocker=%s\n\nAutomatic redispatch is held for the repeated known blocker. See the preceding recovery observation.\n\nA maintainer can retry without deleting history by posting %s. A relevant revision change also re-arms dispatch; brief-only blockers ignore target commits and dependencies.\n<!-- ops:end -->\n' \
+	printf '<!-- ops:start — workers: skip this comment, it is audit trail not implementation context -->\n%s\n<!-- %s revision=%s blocker=%s -->\nTERMINAL_BLOCKER_CIRCUIT active=true observations=2 task_revision=%s blocker=%s\n\nAutomatic redispatch is held for the repeated known blocker. See the preceding recovery observation.\n\nAn OWNER/MEMBER can retry without deleting history by posting %s as a standalone line. Relevant revisions re-arm code/brief blockers, but never permission blockers. Retry schedules verification only and grants no access.\n<!-- ops:end -->\n' \
 		"$machine_readable_release" "$_TBC_CIRCUIT_MARKER" "$task_revision" \
 		"$blocker_fingerprint" "$task_revision" "$blocker_fingerprint" \
 		"$_TBC_RETRY_MARKER"
+	return 0
+}
+
+# Unknown/legacy BLOCKED results remain retryable, but not on every pulse. Use
+# shared GitHub evidence, independent of local counters, model prose, target
+# revisions and comment-bloat mode. Expiry or an explicit trusted retry re-arms
+# dispatch; no labels or comments are written by this gate.
+terminal_blocker_backoff_active() {
+	local comments_json="$1"
+	local now_epoch="${TERMINAL_BLOCKER_NOW_EPOCH:-}"
+	local evidence="" count=0 last_epoch=0 delay=900 steps=0
+	[[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch=$(date -u '+%s')
+	# aidevops:trust-boundary — bare COLLABORATOR is not proof of write access.
+	# Accept only OWNER/MEMBER releases whose runner matches the API author.
+	# A retry must be a standalone directive, not quoted recovery instructions.
+	evidence=$(printf '%s' "$comments_json" | jq -r --argjson now "$now_epoch" \
+		--argjson associations "$_TBC_AUTHORITATIVE_ASSOCIATIONS" '
+		def authoritative: .author_association as $a | $associations | index($a) != null;
+		def epoch: try (.created_at | fromdateiso8601) catch 0;
+		[.[] | select(authoritative) | select(epoch > 0 and epoch <= $now)] as $trusted
+		| ([$trusted[] | select((.body // "") | test("(?m)^terminal-blocker-circuit:retry[ \\t]*\\r?$")) | epoch] | max // 0) as $retry
+		| [$trusted[] | select(epoch > $retry)
+			| . as $comment
+			| ((.body // "") | try capture("(?m)^CLAIM_RELEASED reason=blocked runner=(?<runner>[A-Za-z0-9-]+) ") catch null) as $release
+			| select($release != null and $release.runner == ($comment.author // $comment.user.login // ""))
+			| epoch] | [length, (max // 0)] | @tsv
+	' 2>/dev/null) || return 1
+	IFS=$'\t' read -r count last_epoch <<<"$evidence"
+	[[ "$count" =~ ^[0-9]+$ && "$last_epoch" =~ ^[0-9]+$ && "$count" -ge 2 ]] || return 1
+	# Two failures: 15 minutes; each further failure doubles the delay, capped
+	# at 24 hours. Cap before arithmetic so even very long histories stay safe.
+	steps=$((count - 2))
+	[[ "$steps" -le 7 ]] || steps=7
+	while [[ "$steps" -gt 0 ]]; do
+		delay=$((delay * 2))
+		steps=$((steps - 1))
+	done
+	[[ "$delay" -le 86400 ]] || delay=86400
+	[[ "$((now_epoch - last_epoch))" -lt "$delay" ]] || return 1
+	printf 'TERMINAL_BLOCKER_BACKOFF failures=%s retry_after=%s\n' "$count" "$((last_epoch + delay))"
 	return 0
 }
 
@@ -291,6 +351,9 @@ terminal_blocker_circuit_active() {
 	local issue_number="$4"
 	local repo_path="$5"
 	local circuit="" circuit_at="" retry_at="" current_revision="" fingerprint="" reason=""
+	if terminal_blocker_backoff_active "$comments_json"; then
+		return 0
+	fi
 	circuit=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_CIRCUIT_MARKER revision=") || circuit=""
 	[[ -n "$circuit" ]] || return 1
 	fingerprint=$(printf '%s' "$circuit" | jq -r '.body | capture("<!-- aidevops:terminal-blocker-circuit revision=[a-f0-9]{24} blocker=(?<id>[a-f0-9]{24}) -->").id' 2>/dev/null) || return 1

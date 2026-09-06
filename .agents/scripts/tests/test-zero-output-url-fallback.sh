@@ -38,8 +38,15 @@ gh() {
 	if [[ "$command_name" == "api" ]]; then
 		printf '%s\n' "$command_name $*" >>"${TMP}/gh-api-calls.log"
 	fi
-	if [[ "$command_name" == "api" && -n "${GH_COMMENT_METRICS:-}" ]]; then
-		printf '%s\n' "$GH_COMMENT_METRICS"
+	if [[ "$command_name" == "api" && "$*" == *"--slurp"* ]]; then
+		# The real API returns comment pages, not precomputed TSV metrics.
+		local comments=0 ops=0 zero=0 chars=0
+		IFS=$'\t' read -r comments ops zero chars <<<"${GH_COMMENT_METRICS:-$'0\t0\t0\t0'}"
+		jq -nc --argjson comments "$comments" --argjson ops "$ops" --argjson zero "$zero" '
+			[[range([$comments, $ops, $zero] | max) | . as $index |
+			{body: ((if $index < $ops then "<!-- ops:start --> " else "" end) +
+			(if $index < $zero then "worker_noop_zero_output" else "status" end)),
+			author_association:"OWNER", user:{login:"runner"}}]]'
 		return 0
 	fi
 	if [[ "$command_name" == "api" && "${GH_COMMENT_ZERO_COUNT:-0}" =~ ^[0-9]+$ ]]; then
@@ -233,11 +240,12 @@ GH_COMMENT_METRICS=$'275\t260\t87\t81500'
 _dlw_hold_repeated_zero_output 123 owner/repo
 clean_room_hold_rc=$?
 clean_room_gh_calls=$(tr '\n' ' ' <"${TMP}/gh-calls.log" 2>/dev/null || true)
-if [[ "$clean_room_hold_rc" -eq 1 ]] \
+if [[ "$clean_room_hold_rc" -eq 0 ]] \
+	&& printf '%s' "$clean_room_gh_calls" | grep -q 'set_issue_status 123 owner/repo blocked' \
 	&& ! printf '%s' "$clean_room_gh_calls" | grep -q 'needs-brief-rewrite'; then
-	pass "comment-bloated issues bypass repeated zero-output hold"
+	pass "comment-bloated issues retain the repeated zero-output hold"
 else
-	fail "comment-bloated issues bypass repeated zero-output hold" \
+	fail "comment-bloated issues retain the repeated zero-output hold" \
 		"rc=${clean_room_hold_rc}; gh_calls=${clean_room_gh_calls}"
 fi
 

@@ -1021,8 +1021,16 @@ the authorized scope, use this alternative reason line:
 TERMINAL_BLOCKER_REASON=target_code_blocker
 Target-code blockers may re-arm when the brief, dependencies, or target revision
 changes. Never use that class for permissions, credentials, provider failures,
-capability limits, missing/excluded scope, or ambiguous evidence. If no class is
-established, omit the reason line: unknown evidence stays retryable, not held.
+capability limits, missing/excluded scope, or ambiguous evidence.
+For an evidenced unresolved permission boundary, including a continued session
+whose prior protected-source denial has no changed exact-context grant, use:
+TERMINAL_BLOCKER_REASON=permission_required
+Preserve the protected blocker dossier and human-owned recovery action. Do not
+retry the denied read or regenerate a request to produce another permission event.
+Brief edits and unrelated merges cannot resolve this class; an explicit trusted
+retry only schedules verification and never grants source or secret access.
+If no class is established, omit the reason line: unknown evidence stays retryable
+with bounded cross-runner backoff, not a permanent hold.
 Do not invent classes or emit multiple reason lines. Keep raw stderr, private paths, secrets,
 and sensitive evidence in protected telemetry; public recovery messages are
 runtime-generated from allowlisted reason/action text, never copied model prose.

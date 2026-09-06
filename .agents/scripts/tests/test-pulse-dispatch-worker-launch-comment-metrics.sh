@@ -106,11 +106,17 @@ if ! LOGFILE="${TEST_TMP}/pulse.log" \
 	_dlw_hold_repeated_zero_output "123" "owner/repo" $'12\t12\t4\t60000\t4'; then
 	fail "clean-room comment bloat bypassed a threshold of zero-attempt infrastructure failures"
 fi
-if LOGFILE="${TEST_TMP}/pulse.log" \
+if ! LOGFILE="${TEST_TMP}/pulse.log" \
 	CLEAN_ROOM_COMMENT_THRESHOLD=1 \
 	ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD=4 \
 	_dlw_hold_repeated_zero_output "123" "owner/repo" $'12\t12\t4\t60000\t0'; then
-	fail "clean-room mode stopped bypassing a generic zero-output brief rewrite"
+	fail "clean-room mode bypassed the generic zero-output retry budget"
+fi
+if LOGFILE="${TEST_TMP}/pulse.log" \
+	CLEAN_ROOM_COMMENT_THRESHOLD=1 \
+	ZERO_OUTPUT_BRIEF_REWRITE_HOLD_THRESHOLD=4 \
+	_dlw_hold_repeated_zero_output "123" "owner/repo" $'400\t400\t3\t60000\t0'; then
+	fail "comment bloat alone consumed the remaining clean-room recovery attempt"
 fi
 
 cat >"$GH_COMMENTS_FIXTURE" <<'EOF'
@@ -170,9 +176,10 @@ fi
 completion_contract=$(_dlw_first_pass_completion_contract)
 # shellcheck disable=SC2016 # Markdown backticks are intentional literals.
 if [[ "$completion_contract" != *'terminal failing check caused by your current changes'* ]] \
-	|| [[ "$completion_contract" != *'canonical `### Files Scope` section'* ]] \
+	|| [[ "$completion_contract" != *'authorized outcome and explicit exclusions are binding'* ]] \
 	|| [[ "$completion_contract" != *'blocker dossier'* ]] \
-	|| [[ "$completion_contract" != *'revised brief or follow-up issue'* ]]; then
+	|| [[ "$completion_contract" != *'minimal corrected canonical issue/local brief'* ]] \
+	|| [[ "$completion_contract" != *'Never widen an explicit hard boundary'* ]]; then
 	fail "first-pass contract does not bound CI remediation to canonical files scope"
 fi
 completion_contract_call_sites=$(grep -cE '^[[:space:]]+_dlw_first_pass_completion_contract$' \
