@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  getAstraContextHealth,
   gpt56ContextCapEnabled,
   registerAstraContextLimits,
   registerGpt56ContextLimits,
@@ -108,4 +109,52 @@ test("Astra opt-out leaves metadata untouched", () => {
   const config = {};
   assert.equal(registerAstraContextLimits(config), 0);
   assert.deepEqual(config, {});
+});
+
+test("Astra lower budget honours reserves/output and preserves all other models", () => {
+  settingsFile({ runtime: { opencode: { astra_compaction_target: 240000 } } });
+  for (const reserved of [undefined, 0, 35000]) {
+    for (const output of [128000, 4000]) {
+      const config = { compaction: { reserved }, provider: { openai: { models: {
+        "gpt-6-astra": { name: "custom", limit: { context: 1000000, output } },
+        "gpt-5.6-sol": { name: "Sol" }, "unrelated": { limit: { input: 123 } },
+      } } } };
+      registerGpt56ContextLimits(config);
+      const before = structuredClone(config);
+      registerAstraContextLimits(config);
+      const reserve = reserved ?? Math.min(20000, output);
+      const limits = config.provider.openai.models["gpt-6-astra"].limit;
+      assert.equal(limits.input - reserve, 240000);
+      assert.equal(limits.context, limits.input + output);
+      assert.equal(config.provider.openai.models["gpt-6-astra"].name, "custom");
+      assert.deepEqual(getAstraContextHealth(config), { managed: true, target: 240000, auto: true, reserve, limits });
+      delete before.provider.openai.models["gpt-6-astra"];
+      delete config.provider.openai.models["gpt-6-astra"];
+      assert.deepEqual(config, before);
+    }
+  }
+});
+
+test("Astra invalid selections fall back to 400K without changing GPT-5.6", () => {
+  for (const target of [undefined, null, "240000", 0, -1, 300000, {}, true]) {
+    settingsFile({ runtime: { opencode: { astra_compaction_target: target } } });
+    const config = {};
+    registerAstraContextLimits(config);
+    assert.equal(getAstraContextHealth(config).target, 400000);
+  }
+  const file = settingsFile({});
+  writeFileSync(file, "not-json");
+  const config = {};
+  registerAstraContextLimits(config);
+  assert.equal(getAstraContextHealth(config).target, 400000);
+});
+
+test("Astra opt-out overrides a saved low target; receipts reflect the consumed settings", () => {
+  const file = settingsFile({ runtime: { opencode: { astra_context_cap: false, astra_compaction_target: 240000 } } });
+  const config = { compaction: { auto: false } };
+  assert.equal(getAstraContextHealth(config), null);
+  assert.equal(registerAstraContextLimits(config), 0);
+  writeFileSync(file, "{}");
+  assert.deepEqual(config, { compaction: { auto: false } });
+  assert.deepEqual(getAstraContextHealth(config), { managed: false, target: 240000, auto: false });
 });

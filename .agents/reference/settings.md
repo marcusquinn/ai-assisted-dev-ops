@@ -64,6 +64,21 @@
 | `model_routing.budget_tracking_enabled` | boolean | `true` | -- | Track per-provider API spend. |
 | `model_routing.prefer_subscription` | boolean | `true` | -- | Prefer subscription over API billing when both available. |
 
+### runtime.opencode
+
+| Key | Type | Default | Env Var | Description |
+|-----|------|---------|---------|-------------|
+| `runtime.opencode.astra_context_cap` | boolean | `true` | -- | Manage Astra limits; `false` leaves provider/user metadata untouched. |
+| `runtime.opencode.astra_compaction_target` | number | `400000` | -- | Usable input target: `240000` opts into lower-budget compaction; other values fall back to `400000`. |
+
+Use `aidevops astra-context enable` to select 240K and enable the managed cap.
+`disable` restores the 400K target without clearing an existing native-metadata
+opt-out. `status` distinguishes the saved selection from fresh-process config
+evidence. Restart OpenCode after changes. These are file-only preferences, read
+at startup and retained by normal updates; no environment override is defined.
+The CLI/plugin support `AIDEVOPS_SETTINGS_FILE` for isolated probes and tests.
+Earlier compaction is not a guarantee of subscription savings.
+
 ### onboarding
 
 Tracks onboarding state. Written by `/onboarding`, readable by scripts.

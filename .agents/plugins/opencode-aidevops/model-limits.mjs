@@ -43,6 +43,7 @@ export const GPT56_OUTPUT_DEFAULT = 128000;
 
 /** Managed Astra compaction target, not a claim about provider capacity. */
 export const ASTRA_COMPACTION_TARGET = 400000;
+export const ASTRA_COMPACTION_BUDGET_TARGET = 240000;
 export const ASTRA_OUTPUT_DEFAULT = 128000;
 
 /** GPT-5.6 model IDs currently exposed by the OpenAI provider. */

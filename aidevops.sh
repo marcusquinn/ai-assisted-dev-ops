@@ -1121,6 +1121,7 @@ _help_commands() {
 	echo "  cleanup <cmd>      Cleanup helpers (remote branch audit/delete)"
 	echo "  model-accounts-pool OAuth account pool (list/check/diagnose/add/rotate/reset-cooldowns)"
 	echo "  gpt56-context <cmd> Manage the 300K GPT-5.6 OpenCode context cap (enable/disable/status)"
+	echo "  astra-context <cmd> Opt into ~240K Astra compaction (enable/disable/status; default 400K)"
 	echo "  client-format      Client request format alignment (extract/check/canary/monitor)"
 	echo "  opencode-db <cmd>  OpenCode SQLite maintenance/session lookup (check/report/sessions/maintain/window/status/install)"
 	echo "  opencode [agent] [args]    Launch OpenCode with Build+ and per-session DB isolation"
@@ -1949,6 +1950,7 @@ main() {
 	ip-check | ip_check) _dispatch_helper "ip-reputation-helper.sh" "ip-reputation-helper.sh" "$@" ;;
 	model-accounts-pool | map) _dispatch_helper "oauth-pool-helper.sh" "oauth-pool-helper.sh" "$@" ;;
 	gpt56-context | gpt56_context) _dispatch_helper "gpt56-context-helper.sh" "gpt56-context-helper.sh" "$@" ;;
+	astra-context | astra_context) _dispatch_helper "astra-context-helper.sh" "astra-context-helper.sh" "$@" ;;
 	cleanup)
 		local _cleanup_sub="${1:-help}"
 		case "$_cleanup_sub" in

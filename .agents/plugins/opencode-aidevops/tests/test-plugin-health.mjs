@@ -79,6 +79,7 @@ test("probe-only plugin factory registers config and terminal-title health", () 
       env: {
         ...process.env,
         AIDEVOPS_TEMP_DIR: root,
+        AIDEVOPS_SETTINGS_FILE: join(root, "absent-settings.json"),
         AIDEVOPS_PLUGIN_HEALTH_PROBE_FILE: receipt,
         AIDEVOPS_PLUGIN_HEALTH_PROBE_NONCE: nonce,
         AIDEVOPS_PLUGIN_HEALTH_PROBE_ONLY: "1",
@@ -93,6 +94,10 @@ test("probe-only plugin factory registers config and terminal-title health", () 
     output: 128000,
     context: 300000,
     input: 260000,
+  });
+  assert.deepEqual(result.details.config_applied.astra_context, {
+    managed: true, target: 400000, auto: true, reserve: 20000,
+    limits: { context: 548000, input: 420000, output: 128000 },
   });
   rmSync(root, { recursive: true, force: true });
 });

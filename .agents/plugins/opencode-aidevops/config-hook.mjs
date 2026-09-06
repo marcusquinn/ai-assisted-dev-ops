@@ -28,6 +28,7 @@ import {
   registerManagedDirectoryPermissions,
 } from "./config-safety-guards.mjs";
 import {
+  ASTRA_COMPACTION_BUDGET_TARGET,
   ASTRA_COMPACTION_TARGET,
   ASTRA_OUTPUT_DEFAULT,
   CLAUDE_MODEL_LIMITS,
@@ -160,14 +161,18 @@ export function gpt56ContextCapEnabled() {
 }
 
 function contextCapEnabled(key) {
+  return readContextSettings()?.[key] !== false;
+}
+
+function readContextSettings() {
   const settingsPath = process.env.AIDEVOPS_SETTINGS_FILE ||
     join(homedir(), ".config", "aidevops", "settings.json");
   try {
-    if (!existsSync(settingsPath)) return true;
+    if (!existsSync(settingsPath)) return {};
     const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    return settings?.runtime?.opencode?.[key] !== false;
+    return settings?.runtime?.opencode ?? {};
   } catch {
-    return true;
+    return {};
   }
 }
 
@@ -199,9 +204,22 @@ export function registerGpt56ContextLimits(config) {
   return GPT56_MODEL_IDS.length;
 }
 
-/** Keep Astra at ~400K usable input without changing other models or global reserve. */
+// Receipts describe the settings actually consumed, not a later settings read.
+const astraContextHealth = new WeakMap();
+
+export function getAstraContextHealth(config) {
+  return astraContextHealth.get(config) ?? null;
+}
+
+/** Keep Astra at the selected usable input target without changing global reserve. */
 export function registerAstraContextLimits(config) {
-  if (!contextCapEnabled("astra_context_cap")) return 0;
+  const settings = readContextSettings();
+  const target = settings.astra_compaction_target === ASTRA_COMPACTION_BUDGET_TARGET
+    ? ASTRA_COMPACTION_BUDGET_TARGET : ASTRA_COMPACTION_TARGET;
+  const managed = settings.astra_context_cap !== false;
+  const health = { managed, target, auto: config.compaction?.auto !== false };
+  astraContextHealth.set(config, health);
+  if (!managed) return 0;
   config.provider ??= {};
   config.provider.openai ??= {};
   config.provider.openai.models ??= {};
@@ -209,11 +227,12 @@ export function registerAstraContextLimits(config) {
   const existing = models["gpt-6-astra"] || {};
   const output = existing.limit?.output ?? ASTRA_OUTPUT_DEFAULT;
   const reserve = config.compaction?.reserved ?? Math.min(20000, output);
-  const input = ASTRA_COMPACTION_TARGET + reserve;
+  const input = target + reserve;
   models["gpt-6-astra"] = {
     ...existing,
     limit: { ...existing.limit, context: input + output, input, output },
   };
+  Object.assign(health, { reserve, limits: { ...models["gpt-6-astra"].limit } });
   return 1;
 }
 

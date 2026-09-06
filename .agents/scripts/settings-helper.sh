@@ -86,6 +86,12 @@ _generate_defaults() {
     "budget_tracking_enabled": true,
     "prefer_subscription": true
   },
+  "runtime": {
+    "opencode": {
+      "astra_context_cap": true,
+      "astra_compaction_target": 400000
+    }
+  },
   "onboarding": {
     "completed": false,
     "work_type": "",
@@ -192,7 +198,7 @@ cmd_get() {
 		local jq_path
 		jq_path=$(_jq_path "$key")
 		local value
-		value=$(jq -r "$jq_path // empty" "$SETTINGS_FILE" 2>/dev/null || echo "")
+		value=$(jq -r "$jq_path | if . == null then empty else . end" "$SETTINGS_FILE" 2>/dev/null || echo "")
 		if [[ -n "$value" ]]; then
 			echo "$value"
 			return 0
@@ -201,7 +207,7 @@ cmd_get() {
 
 	# Precedence 3: Built-in default
 	local default_value
-	default_value=$(_generate_defaults | jq -r "$(_jq_path "$key") // empty" 2>/dev/null || echo "")
+	default_value=$(_generate_defaults | jq -r "$(_jq_path "$key") | if . == null then empty else . end" 2>/dev/null || echo "")
 	if [[ -n "$default_value" ]]; then
 		echo "$default_value"
 		return 0
@@ -238,7 +244,7 @@ cmd_set() {
 
 	# Validate the key exists in defaults (use getpath with key as data, not code)
 	local default_check
-	default_check=$(_generate_defaults | jq -r --arg k "$key" 'getpath($k | split(".")) // "__MISSING__"' 2>/dev/null || echo "__MISSING__")
+	default_check=$(_generate_defaults | jq -r --arg k "$key" 'getpath($k | split(".")) | if . == null then "__MISSING__" else . end' 2>/dev/null || echo "__MISSING__")
 	if [[ "$default_check" == "__MISSING__" ]]; then
 		print_error "Unknown setting: $key"
 		print_info "Run 'settings-helper.sh list' to see available settings"

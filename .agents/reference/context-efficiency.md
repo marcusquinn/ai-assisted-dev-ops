@@ -33,14 +33,25 @@ when their trigger applies; never remove them merely to meet a token target.
 
 ## Astra compaction
 
-`registerAstraContextLimits` targets 400,000 usable input tokens. With OpenCode's
-default 20,000-token reserve it advertises input 420,000; the managed context
-budget also accommodates output. An explicit `compaction.reserved` is honoured
-without changing the global setting. GPT-5.6 retains its separate ~240K target.
-These are operational budgets, not statements about provider maximum capacity.
+`registerAstraContextLimits` defaults to 400,000 usable input tokens. To opt into
+a lower budget, run `aidevops astra-context enable`: it persists a 240,000 target
+and enables the managed Astra cap. `aidevops astra-context disable` restores the
+400,000 target, preserving an existing native-metadata opt-out. `status` reports
+the selection and nonce-bound fresh-process plugin/config evidence; unavailable,
+old or failed probes are not reported as applied. If automatic compaction is
+disabled in OpenCode, status reports that separately.
+
+With OpenCode's default 20,000-token reserve, 240K advertises input 260,000;
+400K advertises input 420,000. Managed context also accommodates output.
+An explicit `compaction.reserved` (including zero) is honoured without changing
+the global setting. GPT-5.6 retains its separate ~240K target. These are operational
+budgets, not provider capacity claims or measured subscription savings. Earlier
+compaction may add summary overhead and lose information; judge total outcomes.
 
 Set `runtime.opencode.astra_context_cap` to `false` in aidevops settings to leave
-Astra metadata untouched. Restart OpenCode after deploying config-time changes.
+Astra metadata untouched; `enable` explicitly clears that opt-out. The target is
+stored separately as `runtime.opencode.astra_compaction_target` and survives normal
+updates. Restart OpenCode after changing the selection or deploying plugin changes.
 The running process retains its original loaded plugin/config. Custom upstream
 output-token ceilings can affect the default reserve; an explicit reserve makes
 the arithmetic unambiguous. Compaction can occur slightly beyond the target due
