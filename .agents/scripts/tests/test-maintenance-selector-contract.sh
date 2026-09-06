@@ -78,7 +78,7 @@ required_functions = {
         "_compute_worker_success_rates",
         "_refresh_person_stats_cache",
     ],
-    ".agents/scripts/stats-health-dashboard.sh": ["update_health_issues"],
+    ".agents/scripts/stats-health-dashboard.sh": ["_health_routine_repo_entries"],
     ".agents/scripts/stats-quality-sweep.sh": ["run_daily_quality_sweep"],
     ".agents/scripts/repo-aidevops-health-helper.sh": ["_check_version_bumps"],
 }
