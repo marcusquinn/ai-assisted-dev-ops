@@ -3,6 +3,8 @@
 
 # Sol routing release manifest
 
+Aggregation PR: #31439. Source release operation: #31437.
+
 The user explicitly authorizes full-loop publication of the Sol-first routing
 change. Release source #31437 stopped before version mutation when `main` advanced.
 This metadata-only aggregation records the complete reviewed source set for the
