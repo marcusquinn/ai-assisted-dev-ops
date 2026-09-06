@@ -14,6 +14,25 @@ TESTS_FAILED=0
 # shellcheck source=../lint-file-discovery.sh
 source "$DISCOVERY_HELPER"
 
+# shellcheck source=../linters-local-validators.sh
+source "${TEST_SCRIPT_DIR}/../linters-local-validators.sh"
+print_warning() {
+	printf '%s\n' "$*"
+	return 0
+}
+print_success() {
+	printf '%s\n' "$*"
+	return 0
+}
+print_error() {
+	printf '%s\n' "$*"
+	return 0
+}
+_linters_local_base_ref() {
+	git rev-parse HEAD
+	return $?
+}
+
 print_result() {
 	local test_name="$1"
 	local passed="$2"
@@ -119,12 +138,49 @@ test_full_shell_inventory_has_no_setup_module_duplicates() {
 	return 0
 }
 
+test_untracked_whitespace() {
+	local original_dir="$PWD" output="" rc=0
+	local unusual_name=$'space and\nnewline.md'
+	cd "$TEST_ROOT" || return 1
+	printf 'bad   \n' >"$unusual_name"
+	output=$(BLUE='' NC='' check_git_diff_whitespace 2>&1) || rc=$?
+	if [[ "$rc" -ne 0 && "$output" == *"trailing whitespace"* ]]; then
+		print_result "production whitespace gate rejects untracked text with unusual filename" 0
+	else
+		print_result "production whitespace gate rejects untracked text with unusual filename" 1 "$output"
+	fi
+	printf 'clean\n' >"$unusual_name"
+	printf 'ignored   \n' >ignored/whitespace.md
+	printf '\000binary   \n' >binary.dat
+	ln -s ignored/whitespace.md linked.md
+	output=$(BLUE='' NC='' check_git_diff_whitespace 2>&1) && rc=0 || rc=$?
+	print_result "clean text, binary, ignored files and symlinks pass" "$rc" "$output"
+	# Git config remains authoritative (intentional Markdown-style trailing spaces).
+	printf 'allowed   \n' >"$unusual_name"
+	git config core.whitespace -blank-at-eol
+	output=$(BLUE='' NC='' check_git_diff_whitespace 2>&1) && rc=0 || rc=$?
+	print_result "untracked check honors repository whitespace configuration" "$rc" "$output"
+	git config --unset core.whitespace
+	printf 'clean\n' >"$unusual_name"
+	# Sparse fixture avoids generating large content merely to exercise the bound.
+	python3 -c 'with open("large.md", "wb") as f: f.truncate(1048577)'
+	output=$(BLUE='' NC='' check_git_diff_whitespace 2>&1) && rc=0 || rc=$?
+	if [[ "$rc" -eq 0 && "$output" == *"skipped large.md"* ]]; then
+		print_result "oversized untracked file is explicitly reported as skipped" 0
+	else
+		print_result "oversized untracked file is explicitly reported as skipped" 1 "$output"
+	fi
+	cd "$original_dir" || return 1
+	return 0
+}
+
 main() {
 	setup_fixture
 	trap teardown_fixture EXIT
 	test_changed_inventory_coverage
 	test_untracked_content_changes_fingerprint
 	test_full_shell_inventory_has_no_setup_module_duplicates
+	test_untracked_whitespace
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 }

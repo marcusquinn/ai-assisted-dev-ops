@@ -47,6 +47,40 @@ fi
 
 # --- Functions ---
 
+# Git's normal diff inventory omits untracked files until they are staged.
+# Keep this read-only and bounded; Git owns whitespace rules and binary detection.
+_linters_check_untracked_whitespace() {
+	local inventory="" file="" size="" quoted=""
+	local exit_code=0
+	local diff_rc=0
+	local max_bytes=1048576
+	inventory=$(mktemp) || return 1
+	if ! git ls-files --others --exclude-standard -z >"$inventory"; then
+		rm -f "$inventory"
+		return 1
+	fi
+	while IFS= read -r -d '' file; do
+		[[ -f "$file" && ! -L "$file" ]] || continue
+		printf -v quoted '%q' "$file"
+		if ! size=$(wc -c <"$file"); then
+			print_error "Untracked whitespace check: cannot read $quoted"
+			exit_code=1
+			continue
+		fi
+		if [[ "$size" -gt "$max_bytes" ]]; then
+			print_warning "Untracked whitespace check: skipped $quoted (over ${max_bytes} bytes); stage it for Git's cached check"
+			continue
+		fi
+		# --no-index implies --exit-code: 1 is an ordinary addition (including
+		# binary files), while --check reports whitespace errors with bit 2.
+		diff_rc=0
+		git diff --no-index --no-ext-diff --no-textconv --check -- /dev/null "$file" || diff_rc=$?
+		[[ "$diff_rc" -le 1 ]] || exit_code=1
+	done <"$inventory"
+	rm -f "$inventory"
+	return "$exit_code"
+}
+
 check_git_diff_whitespace() {
 	echo -e "${BLUE}Checking Git Diff Whitespace...${NC}"
 
@@ -64,9 +98,10 @@ check_git_diff_whitespace() {
 	fi
 	git diff --check || exit_code=1
 	git diff --cached --check || exit_code=1
+	_linters_check_untracked_whitespace || exit_code=1
 
 	if [[ "$exit_code" -eq 0 ]]; then
-		print_success "git diff --check: no whitespace errors"
+		print_success "git diff --check: no whitespace errors in checked files"
 		return 0
 	fi
 
