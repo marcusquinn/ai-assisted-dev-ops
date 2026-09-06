@@ -48,6 +48,19 @@ assert_not_contains() {
 	return 0
 }
 
+sha256() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 | cut -d' ' -f1
+		return 0
+	fi
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum | cut -d' ' -f1
+		return 0
+	fi
+	fail 'neither shasum nor sha256sum is available'
+	return 1
+}
+
 REPO="${TEST_ROOT}/repo"
 mkdir -p "$REPO"
 git -C "$REPO" init -q
@@ -106,7 +119,8 @@ printf '\000dirty-not-selected\n' >"${REPO}/tracked.bin"
 printf 'dirty-text-not-selected\n' >"${REPO}/tracked.txt"
 ROOT_BUNDLE="${TEST_ROOT}/root.md"
 (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle commit --commit "$INITIAL_SHA" --output "$ROOT_BUNDLE" >/dev/null)
-ROOT_DIGEST=$(git -C "$REPO" show "${INITIAL_SHA}:tracked.bin" | shasum -a 256 | cut -d' ' -f1)
+ROOT_DIGEST=$(git -C "$REPO" show "${INITIAL_SHA}:tracked.bin" | sha256)
+[[ -n "$ROOT_DIGEST" ]] || fail 'historical root digest was empty'
 assert_contains "$ROOT_BUNDLE" "$ROOT_DIGEST" 'historical root binary digest'
 assert_contains "$ROOT_BUNDLE" '+one' 'root addition patch'
 assert_not_contains "$ROOT_BUNDLE" '+two' 'later checkout absent from root patch'
@@ -131,7 +145,8 @@ ODD_BUNDLE="${TEST_ROOT}/odd-paths.md"
 (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle local --output "$ODD_BUNDLE" >/dev/null)
 assert_contains "$ODD_BUNDLE" '+literal-neighbor-text' 'literal binary exclusion'
 [[ "$(grep -c '^+unusual-file-content' "$ODD_BUNDLE")" == 3 ]] || fail 'unusual text paths omitted'
-ODD_DIGEST=$(printf '\000odd-binary\n' | shasum -a 256 | cut -d' ' -f1)
+ODD_DIGEST=$(printf '\000odd-binary\n' | sha256)
+[[ -n "$ODD_DIGEST" ]] || fail 'unusual binary digest was empty'
 awk -F '\t' -v digest="$ODD_DIGEST" '$1 == "A" && $5 == digest { found=1 } END { exit !found }' "$ODD_BUNDLE" || fail 'unusual binary path has noncanonical digest'
 assert_not_contains "$ODD_BUNDLE" 'GIT binary patch' 'unusual binary payload bounded'
 
