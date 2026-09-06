@@ -183,6 +183,45 @@ _release_lane_reclaim_same_source() {
 	return 0
 }
 
+#aidevops:trust-boundary
+# Check already-admitted host work before reserving a new lane. This snapshot
+# does not atomically fence GitHub; publication must still verify the exact tree.
+_release_lane_queue_preflight() {
+	local repo="$1"
+	local coordinated_repo="${AIDEVOPS_RELEASE_LANE_COORDINATED_REPO:-marcusquinn/aidevops}"
+	local pages=""
+	# shellcheck disable=SC2016 # GraphQL variables, not shell interpolation.
+	local query='query($owner:String!,$name:String!,$endCursor:String) {
+		repository(owner:$owner,name:$name) {
+			pullRequests(first:100,after:$endCursor,states:OPEN,baseRefName:"main") {
+				nodes { number autoMergeRequest { enabledAt } mergeQueueEntry { id } }
+				pageInfo { hasNextPage endCursor }
+			}
+		}
+	}'
+	[[ "$repo" == "$coordinated_repo" ]] || return 0
+	pages=$(gh api graphql --paginate --slurp -f query="$query" \
+		-f owner="${repo%%/*}" -f name="${repo#*/}" 2>/dev/null) || {
+		printf 'Cannot verify admitted GitHub merge work; release reservation deferred\n' >&2
+		return 75
+	}
+	if ! jq -e '
+		type == "array" and length > 0
+		and all(.[]; (.errors // [] | length) == 0
+			and (.data.repository.pullRequests.nodes | type) == "array"
+			and (.data.repository.pullRequests.pageInfo.hasNextPage | type) == "boolean"
+			and all(.data.repository.pullRequests.nodes[];
+				(.number | type) == "number" and has("autoMergeRequest") and has("mergeQueueEntry")))
+		and .[-1].data.repository.pullRequests.pageInfo.hasNextPage == false
+		and all(.[] | .data.repository.pullRequests.nodes[];
+			.autoMergeRequest == null and .mergeQueueEntry == null)
+	' <<<"$pages" >/dev/null; then
+		printf 'Queued or unverifiable GitHub merge work; release reservation deferred (no queue mutation)\n' >&2
+		return 75
+	fi
+	return 0
+}
+
 release_lane_acquire() {
 	local repo="$1"
 	local source_pr="$2"
@@ -219,6 +258,7 @@ release_lane_acquire() {
 	2) _AIDEVOPS_RELEASE_LANE_HEAD="" ;;
 	*) return 1 ;;
 	esac
+	_release_lane_queue_preflight "$repo" || return $?
 	now=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
 	operation_token="${_AIDEVOPS_RELEASE_LANE_TOKEN_PREFIX}$(date +%s)-$$-${RANDOM:-0}"
 	state_json=$(jq -cn --arg repo "$repo" --argjson source_pr "$source_pr" --arg expected_sources "$expected_sources" \
