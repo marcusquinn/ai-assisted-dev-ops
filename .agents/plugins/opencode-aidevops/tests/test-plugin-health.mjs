@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { primaryDeliveryEvidence } from "../config-agent-profiles.mjs";
 
 import {
   PLUGIN_HEALTH_SCHEMA,
@@ -34,6 +35,44 @@ test("plugin health stages are nonce-bound and atomically accumulated", () => {
   assert.deepEqual(result.stages, ["imported", "config_applied"]);
   assert.equal(result.details.config_applied.gpt56_limits.context, 300000);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("primary delivery evidence distinguishes expanded, missing and shadowed sources", () => {
+  const root = mkdtempSync(join(tmpdir(), "aidevops-primary-delivery-"));
+  try {
+    const agent = {};
+    for (const source of ["build-plus", "seo", "content"]) {
+      const prompt = `# ${source}\nCanonical domain knowledge\n`;
+      writeFileSync(join(root, `${source}.md`), prompt);
+      agent[source] = {
+        mode: "primary", description: `Read ~/.aidevops/agents/${source}.md`,
+        prompt, tools: { read: true, bash: false }, permission: { edit: "deny" },
+      };
+    }
+    writeFileSync(join(root, "VERSION"), "test-version");
+    const config = { agent };
+    const original = JSON.stringify(config);
+    const evidence = primaryDeliveryEvidence(config, root);
+    assert.deepEqual(evidence.sources.map((item) => item.delivery), Array(3).fill("delivered"));
+    assert.equal(evidence.enforcement, "not_observed");
+    assert.match(evidence.versionSha256, /^[a-f0-9]{64}$/);
+    assert.ok(evidence.sources.every((item) => /^[a-f0-9]{64}$/.test(item.sha256)));
+    assert.equal(JSON.stringify(config), original, "diagnostics must not alter overrides or permissions");
+    assert.ok(!JSON.stringify(evidence).includes("Canonical domain knowledge"));
+
+    agent.seo.prompt = "operator-owned override";
+    agent.content.prompt = "{file:~/.aidevops/agents/content.md}";
+    rmSync(join(root, "build-plus.md"));
+    const degraded = primaryDeliveryEvidence(config, root);
+    assert.deepEqual(degraded.sources.map((item) => item.delivery), [
+      "missing", "shadowed_or_unresolved", "shadowed_or_unresolved",
+    ]);
+    assert.equal(degraded.sources[0].sha256, null);
+    assert.equal(recordPluginHealthStage("primary_delivery", degraded, {}), false,
+      "no available probe must not claim a recorded protection receipt");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("plugin health rejects nonce mismatch, loose modes, and symlinks", () => {
@@ -87,7 +126,8 @@ test("probe-only plugin factory registers config and terminal-title health", () 
   );
   assert.equal(child.status, 0, child.stderr);
   const result = JSON.parse(readFileSync(receipt, "utf8"));
-  assert.deepEqual(result.stages, ["imported", "factory_initialized", "config_applied"]);
+  assert.deepEqual(result.stages, ["imported", "factory_initialized", "primary_delivery", "config_applied"]);
+  assert.equal(result.details.primary_delivery.enforcement, "not_observed");
   assert.equal(result.details.factory_initialized.terminal_title_status, true);
   assert.deepEqual(result.details.config_applied.gpt56_limits, {
     output: 128000,
