@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
@@ -263,6 +263,27 @@ class AdmissionTests(unittest.TestCase):
         self.seed(1)
         self.budget.db.execute("INSERT INTO pacing VALUES(?,?,?,?,?)", ("owner-one", "core", 2000, 1900, 2))
         self.budget.acquire("core", now=1002)
+
+    def test_normal_read_queues_for_pacing_longer_than_two_seconds(self):
+        budget = Mock()
+        budget.acquire.side_effect = [Deferred("paced", retryable=True, retry_at=1004), "permit"]
+        with patch.dict(os.environ, {"AIDEVOPS_GH_READ_TIMEOUT": "15"}), \
+                patch.object(governor.time, "time", return_value=1000), \
+                patch.object(governor.time, "sleep") as sleep:
+            self.assertEqual(governor._acquire(budget, "core"), "permit")
+            sleep.assert_called_once_with(4)
+        self.assertEqual(budget.acquire.call_count, 2)
+
+    def test_pacing_outside_read_deadline_defers_without_sleep_or_http(self):
+        budget = Mock()
+        budget.acquire.side_effect = Deferred("paced", retryable=True, retry_at=1060)
+        with patch.dict(os.environ, {"AIDEVOPS_GH_READ_TIMEOUT": "15"}), \
+                patch.object(governor.time, "time", return_value=1000), \
+                patch.object(governor.time, "sleep") as sleep:
+            with self.assertRaises(Deferred):
+                governor._acquire(budget, "core")
+            sleep.assert_not_called()
+        self.assertEqual(budget.acquire.call_count, 1)
 
     def test_secondary_point_window_is_shared_but_primary_demand_is_not(self):
         self.seed(4999)

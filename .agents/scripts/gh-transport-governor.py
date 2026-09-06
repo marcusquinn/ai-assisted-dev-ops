@@ -138,18 +138,19 @@ def execute(executable: str, args: list[str], output, environment: dict[str, str
 
 
 def _acquire(budget: Budget, resource: str) -> str:
-    # Queue briefly for local admission, never retry HTTP or a mutation.
-    for admission_try in range(21):
+    # Admission waits are not failed HTTP attempts. Fit pacing inside the normal
+    # read timeout while leaving five seconds for transport and response handling.
+    timeout = os.environ.get("AIDEVOPS_GH_READ_TIMEOUT", "15")
+    timeout = int(timeout) if timeout.isdecimal() else 15
+    deadline = time.monotonic() + min(10, max(0, timeout - 5))
+    while True:
         try:
             return budget.acquire(resource)
         except Deferred as pause:
-            if not pause.retryable or admission_try == 20:
+            wait = max(0.1, pause.retry_at - time.time()) if pause.retry_at else 0.1
+            if not pause.retryable or wait > deadline - time.monotonic():
                 raise
-            # Long capacity waits belong to the caller's scheduler, not 20
-            # futile local polls. No HTTP attempt is made during admission waits.
-            if pause.retry_at and pause.retry_at - time.time() > 2:
-                raise
-            time.sleep(0.1)
+            time.sleep(wait)
 
 
 def _copy_response(output, include: bool, silent: bool, status: int, body_offset: int) -> int:
