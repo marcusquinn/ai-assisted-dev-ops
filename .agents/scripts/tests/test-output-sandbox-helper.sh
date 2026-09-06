@@ -66,6 +66,11 @@ assert_contains "successful run reports outcome" "outcome: succeeded" "$run_outp
 assert_not_contains "success receipt hides raw path" "raw_path:" "$run_output"
 assert_not_contains "success receipt hides command output" "line1" "$run_output"
 
+run_help=$("$HELPER" run --help)
+assert_contains "operation help is discoverable without execution" "output-sandbox-helper.sh run" "$run_help"
+show_help=$("$HELPER" show --help)
+assert_contains "show help does not require an output id" "output-sandbox-helper.sh show" "$show_help"
+
 output_id=$(printf '%s\n' "$run_output" | awk '/^output_id:/ {print $2; exit}')
 show_output=$("$HELPER" show "$output_id" --offset 2 --limit 2)
 assert_contains "show returns exact numbered slice" "2: line2" "$show_output"

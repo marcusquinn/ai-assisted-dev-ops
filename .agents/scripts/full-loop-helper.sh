@@ -317,6 +317,26 @@ Phases: task -> preflight -> pr-create -> pr-review -> postflight -> deploy
 EOF
 }
 
+is_known_command() {
+	local command="${1:-}"
+	case "$command" in
+	start | resume | status | cancel | logs | _run_foreground | commit-and-pr | create-pr | pre-merge-gate | wait-checks | merge | record-no-release | record-published-release | adopt-merged-receipt | finalize-receipt | migrate-repository-receipt | complete | complete-after-cleanup)
+		return 0
+		;;
+	*) return 1 ;;
+	esac
+}
+
+has_help_option() {
+	local option=""
+	for option in "$@"; do
+		case "$option" in
+		--help | -h) return 0 ;;
+		esac
+	done
+	return 1
+}
+
 _run_foreground() {
 	local prompt="$1"
 	# Use a global for the trap — local variables are out of scope when the
@@ -331,6 +351,11 @@ _run_foreground() {
 main() {
 	local command="${1:-help}"
 	shift || true
+	if [[ "$command" == "help" || "$command" == "--help" || "$command" == "-h" ]] ||
+		{ is_known_command "$command" && has_help_option "$@"; }; then
+		show_help
+		return 0
+	fi
 	case "$command" in
 	start) cmd_start "$@" ;; resume) cmd_resume ;; status) cmd_status "$@" ;;
 	cancel) cmd_cancel ;; logs) cmd_logs "$@" ;; _run_foreground) _run_foreground "$@" ;;
@@ -345,7 +370,6 @@ main() {
 	migrate-repository-receipt) cmd_migrate_repository_receipt "$@" ;;
 	complete) cmd_complete "$@" ;;
 	complete-after-cleanup) cmd_complete_after_cleanup "$@" ;;
-	help | --help | -h) show_help ;;
 	*)
 		print_error "Unknown command: $command"
 		show_help

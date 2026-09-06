@@ -179,6 +179,13 @@ caused repeated discovery, omitted causal evidence, or weakened requirement and
 verification coverage. Compare similar tasks when evidence exists; do not impose
 arbitrary global thresholds. Preserve unexpected outliers for model judgment.
 
+## Read-only helper discovery
+
+Use `help`, `--help`, or `-h` before probing a helper's operation form. Supported
+helpers return usage without running that operation; an unknown subcommand still
+returns its diagnostic and non-zero exit status. Help output is interface evidence,
+not proof that a lifecycle, cleanup, or network operation completed.
+
 ## Always bypass RTK
 
 - File reads and source inspection.

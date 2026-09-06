@@ -827,6 +827,14 @@ main() {
 	local command="${1:-help}"
 	shift || true
 	case "$command" in
+	init | run | store | compact | show | cleanup | stats)
+		if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+			usage
+			return 0
+		fi
+		;;
+	esac
+	case "$command" in
 	init) init_db ;;
 	run) cmd_run "$@" ;;
 	store) cmd_store "$@" ;;
