@@ -239,11 +239,21 @@ _terminal_blocker_latest_retry_comment() {
 		--argjson authoritative "$_TBC_AUTHORITATIVE_ASSOCIATIONS" \
 		--arg circuit_marker "$_TBC_CIRCUIT_MARKER" "${_TBC_ORDER_JQ}"'
 		[.[] | select(.author_association as $a | $authoritative | index($a) != null)
+		| select(valid_time)
 		| select((.body // "") as $body
 		| ($body | test("(?m)^" + $marker + "[ \\t]*\\r?$")) and (($body | contains($circuit_marker)) | not))
 		]
 		| sort_by(.created_at, (comment_id // 0), .body) | last // empty
 	' 2>/dev/null
+	return $?
+}
+
+# Compatibility for timestamp-only callers; scheduling uses the full comment.
+_terminal_blocker_latest_retry_at() {
+	local comments_json="$1"
+	local retry=""
+	retry=$(_terminal_blocker_latest_retry_comment "$comments_json") || return 1
+	printf '%s' "${retry:-null}" | jq -r '.created_at // ""'
 	return $?
 }
 

@@ -419,6 +419,11 @@ test_permission_blocker_continuation() {
 	variant=$(printf '%s' "$tied" | jq -c '.[0].id=12')
 	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
 	[[ "$(terminal_blocker_release_mode "$variant" "$revision" "$fingerprint")" == open ]] || status=1
+	variant=$(printf '%s' "$tied" | jq -c '. + [.[0] | .id=12] | reverse')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+	variant=$(printf '%s' "$tied" | jq -c '. + [.[1] | .id=9] | reverse')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null && status=1
+	[[ "$(_terminal_blocker_latest_retry_at "$variant")" == '2026-09-06T12:00:00Z' ]] || status=1
 	# Missing, malformed and equal IDs cannot prove that a tied retry is later.
 	for id in null '"11"' -1 11.5 9007199254740992 10; do
 		variant=$(printf '%s' "$tied" | jq -c --argjson id "$id" '.[1].id=$id')
@@ -462,6 +467,8 @@ test_same_second_release_ordering() {
 	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
 	changed=$(printf '%s' "$comments" | jq -c 'map(del(.id))')
 	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
+	changed=$(printf '%s' "$comments" | jq -c '.[2].body += "\naidevops:terminal-blocker-circuit"')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
 	print_result "same-second observations and post-retry releases survive reordered evidence; legacy ties retain bounded backoff" "$status"
 	return 0
 }
@@ -471,10 +478,18 @@ test_blocked_backoff_cli() {
 	result=$(
 		gh() {
 			[[ "$1" == api && "$2" == 'repos/owner/repo/issues/42/comments?per_page=100' ]] || return 1
-			jq -nc '[[range(2) | {id:(. + 1),body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",user:{login:"runner"},author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]]'
+			# Deliberately reverse pages: the retry is older by ID, not timestamp.
+			jq -nc '[[range(13;15) | {id:.,body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",user:{login:"runner"},author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}], [{id:12,body:"terminal-blocker-circuit:retry",author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]]'
 			return 0
 		}
 		export -f gh
+		local fetched=""
+		# Restore the real fetcher after the earlier release integration stub.
+		unset _TERMINAL_BLOCKER_CIRCUIT_LOADED
+		# shellcheck source=../terminal-blocker-circuit.sh
+		source "${SCRIPT_DIR}/terminal-blocker-circuit.sh"
+		fetched=$(terminal_blocker_fetch_trusted_comments 42 owner/repo) || exit 1
+		[[ "$(printf '%s' "$fetched" | jq -c 'map(.id)')" == '[13,14,12]' ]] || exit 1
 		TERMINAL_BLOCKER_NOW_EPOCH=1788696001 bash "${SCRIPT_DIR}/dispatch-dedup-helper.sh" has-dispatch-comment 42 owner/repo runner
 	) || status=1
 	[[ "$result" == 'TERMINAL_BLOCKER_BACKOFF failures=2 retry_after=1788696900' ]] || status=1
