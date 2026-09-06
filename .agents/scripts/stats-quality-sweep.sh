@@ -68,6 +68,159 @@ fi
 # --- Orchestrator functions ---
 
 #######################################
+# Rotate repository entries to resume after the last attempted repository.
+# Arguments:
+#   $1 - newline-delimited slug|path entries
+#   $2 - last attempted repository slug
+# Output: entries after the cursor, then entries through the cursor
+#######################################
+_quality_sweep_resume_entries() {
+	local repo_entries="$1"
+	local cursor_slug="$2"
+
+	if [[ -z "$cursor_slug" ]]; then
+		printf '%s\n' "$repo_entries"
+		return 0
+	fi
+	printf '%s\n' "$repo_entries" | awk -F'|' -v cursor="$cursor_slug" '
+		{
+			entries[NR] = $0
+			separator = index($0, "|")
+			entry_slug = separator ? substr($0, 1, separator - 1) : $0
+			if (entry_slug == cursor) cursor_line = NR
+		}
+		END {
+			if (!cursor_line) {
+				for (i = 1; i <= NR; i++) print entries[i]
+				exit
+			}
+			for (i = cursor_line + 1; i <= NR; i++) print entries[i]
+			for (i = 1; i <= cursor_line; i++) print entries[i]
+		}'
+	return 0
+}
+
+#######################################
+# Return success when a persisted cursor slug still exists in the current set.
+# Arguments:
+#   $1 - newline-delimited slug|path entries
+#   $2 - cursor repository slug
+#######################################
+_quality_sweep_cursor_exists() {
+	local repo_entries="$1"
+	local cursor_slug="$2"
+	local slug="" path=""
+
+	while IFS='|' read -r slug path; do
+		[[ "$slug" == "$cursor_slug" ]] && return 0
+	done <<<"$repo_entries"
+	return 1
+}
+
+#######################################
+# Return the safe wall-clock budget for one repository sweep. The aggregate
+# GitHub deadline reserves cleanup time for the parent stats wrapper.
+# Output: seconds available, or 0 when the batch should stop
+#######################################
+_quality_sweep_repo_budget_seconds() {
+	local repo_timeout="${STATS_QUALITY_SWEEP_REPO_TIMEOUT:-120}"
+	local cleanup_reserve="${STATS_QUALITY_SWEEP_CLEANUP_RESERVE_SECONDS:-30}"
+	local deadline_epoch="${AIDEVOPS_GH_DEADLINE_EPOCH:-}"
+	local now_epoch="" available_seconds=""
+
+	[[ "$repo_timeout" =~ ^[0-9]+$ && "$repo_timeout" -gt 0 ]] || repo_timeout="120"
+	[[ "$cleanup_reserve" =~ ^[0-9]+$ ]] || cleanup_reserve="30"
+	if [[ ! "$deadline_epoch" =~ ^[0-9]+$ ]]; then
+		printf '%s\n' "$repo_timeout"
+		return 0
+	fi
+	now_epoch=$(date +%s)
+	available_seconds=$((deadline_epoch - now_epoch - cleanup_reserve))
+	if [[ "$available_seconds" -le 0 ]]; then
+		printf '0\n'
+		return 0
+	fi
+	[[ "$available_seconds" -lt "$repo_timeout" ]] && repo_timeout="$available_seconds"
+	printf '%s\n' "$repo_timeout"
+	return 0
+}
+
+#######################################
+# Run a resumable, bounded batch of quality sweeps.
+# Arguments:
+#   $1 - newline-delimited slug|path entries
+#   $2 - authenticated GitHub user
+# Sets: _QUALITY_SWEEP_BATCH_SWEPT, _QUALITY_SWEEP_BATCH_REMAINING
+#######################################
+_run_quality_sweep_repo_batch() {
+	local repo_entries="$1"
+	local routine_runner_user="$2"
+	local cursor_file="${QUALITY_SWEEP_STATE_DIR}/.quality-sweep-cursor"
+	local cursor_slug="" cursor_total="" remaining="" total_entries="" ordered_entries=""
+	local slug="" path="" repo_budget="0" repo_ec=0 repo_attempted=0 cursor_invalid=0
+
+	mkdir -p "$QUALITY_SWEEP_STATE_DIR"
+	total_entries=$(printf '%s\n' "$repo_entries" | awk -F'|' '$1 != "" { count++ } END { print count + 0 }')
+	remaining="$total_entries"
+	if [[ -f "$cursor_file" ]]; then
+		IFS='|' read -r cursor_slug remaining cursor_total <"$cursor_file" 2>/dev/null || {
+			cursor_slug=""
+			remaining="$total_entries"
+			cursor_total=""
+		}
+	fi
+	if [[ ! "$remaining" =~ ^[0-9]+$ || "$remaining" -le 0 || "$remaining" -gt "$total_entries" ||
+		"$cursor_total" != "$total_entries" ]]; then
+		cursor_invalid=1
+	elif [[ -n "$cursor_slug" ]] && ! _quality_sweep_cursor_exists "$repo_entries" "$cursor_slug"; then
+		cursor_invalid=1
+	fi
+	if [[ "$cursor_invalid" -eq 1 ]]; then
+		cursor_slug=""
+		remaining="$total_entries"
+	fi
+	ordered_entries=$(_quality_sweep_resume_entries "$repo_entries" "$cursor_slug")
+
+	_QUALITY_SWEEP_BATCH_SWEPT=0
+	_QUALITY_SWEEP_BATCH_REMAINING="$remaining"
+	while IFS='|' read -r slug path; do
+		[[ -z "$slug" || "$_QUALITY_SWEEP_BATCH_REMAINING" -le 0 ]] && break
+		repo_budget=$(_quality_sweep_repo_budget_seconds)
+		if [[ "$repo_budget" -le 0 ]]; then
+			echo "[stats] Quality sweep batch deferred before ${slug}: preserving wrapper cleanup budget" >>"$LOGFILE"
+			break
+		fi
+
+		repo_ec=0
+		repo_attempted=0
+		if [[ ! -d "$path" ]]; then
+			:
+		elif ! aidevops_can_run_repo_routines "$slug" "$routine_runner_user"; then
+			echo "[stats] Quality sweep skipped for ${slug}: ${routine_runner_user} is not maintainer-equivalent" >>"$LOGFILE"
+		elif declare -F _gh_run_bounded_function >/dev/null 2>&1; then
+			repo_attempted=1
+			_gh_run_bounded_function "$repo_budget" _quality_sweep_for_repo "$slug" "$path" || repo_ec=$?
+		else
+			repo_attempted=1
+			_quality_sweep_for_repo "$slug" "$path" || repo_ec=$?
+		fi
+		if [[ "$repo_attempted" -eq 0 ]]; then
+			:
+		elif [[ "$repo_ec" -eq 124 ]]; then
+			echo "[stats] Quality sweep timed out for ${slug} after ${repo_budget}s; continuing next cycle" >>"$LOGFILE"
+		elif [[ "$repo_ec" -ne 0 ]]; then
+			echo "[stats] Quality sweep failed for ${slug} (rc=${repo_ec}); continuing next cycle" >>"$LOGFILE"
+		else
+			_QUALITY_SWEEP_BATCH_SWEPT=$((_QUALITY_SWEEP_BATCH_SWEPT + 1))
+		fi
+
+		_QUALITY_SWEEP_BATCH_REMAINING=$((_QUALITY_SWEEP_BATCH_REMAINING - 1))
+		printf '%s|%s|%s\n' "$slug" "$_QUALITY_SWEEP_BATCH_REMAINING" "$total_entries" >"$cursor_file"
+	done <<<"$ordered_entries"
+	return 0
+}
+
+#######################################
 # Daily Code Quality Sweep
 #
 # Runs once per 24h (guarded by timestamp file). For each pulse-enabled
@@ -160,19 +313,16 @@ run_daily_quality_sweep() {
 
 	echo "[stats] Starting daily code quality sweep..." >>"$LOGFILE"
 
-	local swept=0
-	while IFS='|' read -r slug path; do
-		[[ -z "$slug" ]] && continue
-		[[ ! -d "$path" ]] && continue
-		if ! aidevops_can_run_repo_routines "$slug" "$routine_runner_user"; then
-			echo "[stats] Quality sweep skipped for ${slug}: ${routine_runner_user} is not maintainer-equivalent" >>"$LOGFILE"
-			continue
-		fi
-		_quality_sweep_for_repo "$slug" "$path" || true
-		swept=$((swept + 1))
-	done <<<"$repo_entries"
+	_run_quality_sweep_repo_batch "$repo_entries" "$routine_runner_user"
+	local swept="${_QUALITY_SWEEP_BATCH_SWEPT:-0}"
+	local remaining="${_QUALITY_SWEEP_BATCH_REMAINING:-0}"
+	if [[ "$remaining" -gt 0 ]]; then
+		echo "[stats] Quality sweep batch incomplete: $swept repo(s) swept, $remaining repo(s) remain" >>"$LOGFILE"
+		return 0
+	fi
 
 	# Update timestamp
+	rm -f "${QUALITY_SWEEP_STATE_DIR}/.quality-sweep-cursor"
 	date +%s >"$QUALITY_SWEEP_LAST_RUN"
 
 	echo "[stats] Quality sweep complete: $swept repo(s) swept" >>"$LOGFILE"
