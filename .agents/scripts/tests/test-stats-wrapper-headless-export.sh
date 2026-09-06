@@ -242,7 +242,7 @@ test_priority_dashboard_precedes_optional_cross_repo_work() {
 	local dashboard_script priority_line cache_line
 	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
 	priority_line=$(grep -nE "^[[:space:]]*(if[[:space:]]+)?priority_slug=[\$]\(_refresh_priority_health_issue \"[\$]repo_entries\"\)" "$dashboard_script" | head -1 | cut -d: -f1)
-	cache_line=$(grep -nE '^[[:space:]]*_refresh_person_stats_cache \|\| true' "$dashboard_script" | head -1 | cut -d: -f1)
+	cache_line=$(grep -nE '^[[:space:]]*_stats_run_bounded .* _refresh_person_stats_cache' "$dashboard_script" | head -1 | cut -d: -f1) || cache_line=""
 	if [[ -n "$priority_line" && -n "$cache_line" && "$priority_line" -lt "$cache_line" ]]; then
 		print_result "priority dashboard refresh precedes optional cross-repo work" 0
 		return 0
@@ -329,7 +329,8 @@ test_dashboard_update_failure_not_swallowed() {
 			"stats-wrapper.sh still swallows update_health_issues failures with '|| true'"
 		return 0
 	fi
-	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*\|\|[[:space:]]*return[[:space:]]+\$\?[[:space:]]*$'; then
+	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*\|\|[[:space:]]*health_ec=\$\?' &&
+		printf '%s' "$production_snippet" | grep -qF "return \"\$health_ec\""; then
 		print_result "dashboard update failures propagate to stats-wrapper trap" 0
 		return 0
 	fi

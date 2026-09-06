@@ -67,6 +67,94 @@ fi
 
 # --- Orchestrator functions ---
 
+# Atomic progress under the wrapper's existing single-writer PID ownership.
+# Store visited slug|path identities, not a remaining count alone: additions,
+# removals, moves and permission changes must not silently lose repositories.
+_quality_sweep_save_cursor() {
+	local cursor="$1" state="$2" temporary
+	temporary=$(mktemp "${cursor}.XXXXXX") || return 1
+	if ! printf '%s\n' "$state" >"$temporary" || ! mv -f "$temporary" "$cursor"; then
+		rm -f "$temporary"
+		return 1
+	fi
+	return 0
+}
+
+_quality_sweep_attempt() {
+	local cursor="$1" state="$2"
+	shift 2
+	_quality_sweep_save_cursor "$cursor" "$state" || return 1
+	_quality_sweep_for_repo "$@"
+	return $?
+}
+
+_quality_sweep_batch() {
+	local entries="$1" runner="$2" deadline="$3"
+	local cursor="${QUALITY_SWEEP_STATE_DIR}/cursor.json" state pending entry slug path
+	local result=0 attempted=0 remaining=0 repo_timeout next_state observed
+	mkdir -p "$QUALITY_SWEEP_STATE_DIR" || return 1
+	state=$(jq -ce --arg runner "$runner" '
+		select(.version == 1 and .runner == $runner and .complete == false) |
+		select(.visited | type == "array") |
+		select(all(.visited[]; type == "string"))' "$cursor" 2>/dev/null) || {
+		[[ ! -f "$cursor" ]] || echo "[stats] Quality sweep cursor reset: completed, changed operator, or invalid state" >>"$LOGFILE"
+		state=$(jq -cn --arg runner "$runner" '{version:1,runner:$runner,visited:[],complete:false,remaining:0}')
+	}
+	pending=$(jq -Rn --argjson state "$state" '[inputs | select(length > 0)] | unique |
+		map(select(. as $entry | $state.visited | index($entry) | not)) | .[]' <<<"$entries" | jq -sr 'join("\n")') || return 1
+	remaining=$(jq -Rn '[inputs | select(length > 0)] | length' <<<"$pending")
+	state=$(jq -c --argjson remaining "$remaining" '.remaining=$remaining' <<<"$state")
+	_quality_sweep_save_cursor "$cursor" "$state" || return 1
+	repo_timeout=$(_stats_seconds "${QUALITY_SWEEP_REPO_TIMEOUT:-120}" 120)
+	[[ "$repo_timeout" -gt 0 ]] || repo_timeout=120
+	while IFS= read -r entry; do
+		[[ -n "$entry" ]] || continue
+		if [[ "$(date +%s)" -ge "$((deadline - 2))" ]]; then
+			echo "[stats] Quality sweep partial: attempted=$attempted remaining=$remaining; cleanup budget reserved" >>"$LOGFILE"
+			return 0
+		fi
+		IFS='|' read -r slug path <<<"$entry"
+		# Persist admission before execution so an outer kill cannot pin every
+		# later scheduler invocation behind the same hanging first repository.
+		next_state=$(jq -c --arg entry "$entry" --argjson remaining "$((remaining - 1))" \
+			'.visited += [$entry] | .last_attempt=$entry | .remaining=$remaining' <<<"$state")
+		result=0
+		_stats_run_bounded "$repo_timeout" "$deadline" _quality_sweep_attempt "$cursor" "$next_state" "$slug" "$path" || result=$?
+		observed=$(jq -c . "$cursor") || return 1
+		if [[ "$observed" != "$next_state" ]]; then
+			echo "[stats] Quality sweep partial: repository not admitted (rc=${result}); cursor unchanged" >>"$LOGFILE"
+			[[ "$result" -eq 124 ]] && return 0
+			return 1
+		fi
+		state="$next_state"
+		remaining=$((remaining - 1))
+		attempted=$((attempted + 1))
+		if [[ "$result" -ne 0 ]]; then
+			echo "[stats] Quality sweep attempt deferred/failed for ${slug} (rc=${result}); advancing cursor" >>"$LOGFILE"
+		fi
+	done <<<"$pending"
+	# Mark closed before the timestamp: interruption can repeat work, never
+	# reuse a completed visited set to skip tomorrow's sweep entirely.
+	state=$(jq -c '.complete=true' <<<"$state")
+	_quality_sweep_save_cursor "$cursor" "$state" || return 1
+	date +%s >"$QUALITY_SWEEP_LAST_RUN" || return 1
+	echo "[stats] Quality sweep complete: $attempted repo(s) attempted this batch; all eligible repositories visited" >>"$LOGFILE"
+	return 0
+}
+
+_quality_sweep_eligible_entries() {
+	local entries="$1" runner="$2" slug path
+	while IFS='|' read -r slug path; do
+		[[ -n "$slug" && -d "$path" ]] || continue
+		if aidevops_can_run_repo_routines "$slug" "$runner"; then
+			printf '%s|%s\n' "$slug" "$path"
+		else
+			echo "[stats] Quality sweep skipped for ${slug}: ${runner} is not maintainer-equivalent" >>"$LOGFILE"
+		fi
+	done <<<"$entries"
+	return 0
+}
+
 #######################################
 # Daily Code Quality Sweep
 #
@@ -94,6 +182,9 @@ run_daily_quality_sweep() {
 		echo "[stats] run_daily_quality_sweep: dry-run, skipping" >>"$LOGFILE"
 		return 0
 	fi
+	local sweep_deadline
+	sweep_deadline=$(_stats_work_deadline)
+	sweep_deadline=$((sweep_deadline - $(_stats_seconds "${QUALITY_SWEEP_CLEANUP_RESERVE_SECONDS:-5}" 5)))
 	# Time-of-day gate — only run during Anthropic's 2x usage boost hours.
 	# Claude doubles usage allowance outside peak: for UK/GMT that's 18:00-11:59
 	# (standard 1x is only 12:00-17:59). Weekends are 2x all day, all timezones.
@@ -137,7 +228,7 @@ run_daily_quality_sweep() {
 	fi
 
 	command -v gh &>/dev/null || return 0
-	gh auth status &>/dev/null 2>&1 || return 0
+	_stats_run_bounded 15 "$sweep_deadline" gh auth status &>/dev/null || return 0
 
 	local repos_json="$REPOS_JSON"
 	if [[ ! -f "$repos_json" ]]; then
@@ -152,7 +243,7 @@ run_daily_quality_sweep() {
 	fi
 
 	local routine_runner_user
-	routine_runner_user=$(aidevops_repo_state_current_user)
+	routine_runner_user=$(_stats_run_bounded 15 "$sweep_deadline" aidevops_repo_state_current_user) || routine_runner_user=""
 	if [[ -z "$routine_runner_user" ]]; then
 		echo "[stats] Quality sweep skipped: could not resolve authenticated GitHub user" >>"$LOGFILE"
 		return 0
@@ -160,23 +251,14 @@ run_daily_quality_sweep() {
 
 	echo "[stats] Starting daily code quality sweep..." >>"$LOGFILE"
 
-	local swept=0
-	while IFS='|' read -r slug path; do
-		[[ -z "$slug" ]] && continue
-		[[ ! -d "$path" ]] && continue
-		if ! aidevops_can_run_repo_routines "$slug" "$routine_runner_user"; then
-			echo "[stats] Quality sweep skipped for ${slug}: ${routine_runner_user} is not maintainer-equivalent" >>"$LOGFILE"
-			continue
-		fi
-		_quality_sweep_for_repo "$slug" "$path" || true
-		swept=$((swept + 1))
-	done <<<"$repo_entries"
+	local eligible_entries=""
+	eligible_entries=$(_stats_run_bounded 60 "$sweep_deadline" _quality_sweep_eligible_entries "$repo_entries" "$routine_runner_user") || {
+		echo "[stats] Quality sweep permission preflight deferred/failed; cursor unchanged" >>"$LOGFILE"
+		return 0
+	}
 
-	# Update timestamp
-	date +%s >"$QUALITY_SWEEP_LAST_RUN"
-
-	echo "[stats] Quality sweep complete: $swept repo(s) swept" >>"$LOGFILE"
-	return 0
+	_quality_sweep_batch "$eligible_entries" "$routine_runner_user" "$sweep_deadline"
+	return $?
 }
 
 #######################################

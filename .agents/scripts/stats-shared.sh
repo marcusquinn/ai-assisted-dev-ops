@@ -22,6 +22,76 @@
 [[ -n "${_STATS_SHARED_LOADED:-}" ]] && return 0
 _STATS_SHARED_LOADED=1
 
+# Bounded decimal configuration: reject overflow and normalize leading zeroes.
+_stats_seconds() {
+	local value="$1" fallback="$2"
+	[[ "$value" =~ ^[0-9]{1,9}$ ]] || value="$fallback"
+	printf '%s\n' "$((10#$value))"
+	return 0
+}
+
+# The wrapper already reserves 30s for its own cleanup. Standalone callers get
+# the same finite ceiling; phases must resolve it once, not per repository.
+_stats_work_deadline() {
+	local now deadline seconds
+	now=$(date +%s)
+	seconds=$(_stats_seconds "${STATS_TIMEOUT:-600}" 600)
+	deadline=$((now + seconds - 30))
+	if [[ "${AIDEVOPS_GH_DEADLINE_EPOCH:-}" =~ ^[0-9]{1,11}$ ]]; then
+		[[ "$((10#$AIDEVOPS_GH_DEADLINE_EPOCH))" -lt "$deadline" ]] && deadline="$((10#$AIDEVOPS_GH_DEADLINE_EPOCH))"
+	fi
+	printf '%s\n' "$deadline"
+	return 0
+}
+
+# Bound an entire shell function, not only its GitHub calls. Functions retain
+# the caller's loaded libraries/configuration in the child, but variable changes
+# do not return to the parent. Disk state/stdout are the explicit output channel.
+# Nested gh timeout process groups must also die, rather than escaping a kill
+# directed only at the immediate group. Freeze parents before discovering their
+# children so they cannot spawn replacements during cleanup.
+# Args: maximum seconds, absolute deadline, command and arguments. 124=deferred.
+_stats_run_bounded() {
+	local seconds="$1" deadline="$2"
+	shift 2
+	local now end_epoch child_pid result=0 child_result=0 scratch
+	now=$(date +%s)
+	[[ "$deadline" -gt "$((now + 2))" && "$seconds" -gt 0 ]] || return 124
+	end_epoch=$((now + seconds))
+	[[ "$end_epoch" -lt "$((deadline - 2))" ]] || end_epoch=$((deadline - 2))
+	scratch=$(mktemp -d "${TMPDIR:-/tmp}/stats-batch.XXXXXX") || return 1
+	(
+		trap - EXIT
+		export TMPDIR="$scratch"
+		export AIDEVOPS_GH_DEADLINE_EPOCH="$end_epoch"
+		"$@"
+	) &
+	child_pid=$!
+	while kill -0 "$child_pid" 2>/dev/null; do
+		now=$(date +%s)
+		if [[ "$now" -ge "$end_epoch" ]]; then
+			_stats_kill_bounded_tree "$child_pid"
+			result=124
+			break
+		fi
+		sleep 0.2
+	done
+	wait "$child_pid" 2>/dev/null || child_result=$?
+	[[ "$result" -eq 124 ]] || result="$child_result"
+	rm -rf "$scratch"
+	return "$result"
+}
+
+_stats_kill_bounded_tree() {
+	local pid="$1" child
+	kill -STOP "$pid" 2>/dev/null || return 0
+	while IFS= read -r child; do
+		[[ -z "$child" ]] || _stats_kill_bounded_tree "$child"
+	done < <(pgrep -P "$pid" 2>/dev/null || true)
+	kill -KILL "$pid" 2>/dev/null || true
+	return 0
+}
+
 #######################################
 # Validate a repo slug matches the expected owner/repo format.
 # Rejects path traversal, quotes, and other injection vectors.

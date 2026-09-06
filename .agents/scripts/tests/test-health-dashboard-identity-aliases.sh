@@ -448,6 +448,41 @@ else
 	fail "health dashboard supports an explicit priority repository override" "entries=${priority_entries}"
 fi
 
+# GH#31356: persisted canonical refresh/attempt ordering, without forged freshness.
+schedule_entries=$'owner/new|/repo/new\nowner/old|/repo/old\nowner/missing|/repo/missing'
+new_cache=$(_health_schedule_cache_file owner/new github-user)
+old_cache=$(_health_schedule_cache_file owner/old github-user)
+printf 'active|200\n' >"${new_cache}.refresh-state"
+printf 'idle|100\n' >"${old_cache}.refresh-state"
+ordered=$(_order_health_repo_entries "$schedule_entries" github-user)
+if [[ "$ordered" == $'owner/missing|/repo/missing\nowner/old|/repo/old\nowner/new|/repo/new' ]]; then
+	pass "missing then oldest canonical refresh states run first"
+else
+	fail "missing then oldest canonical refresh states run first" "$ordered"
+fi
+missing_cache=$(_health_schedule_cache_file owner/missing github-user)
+printf '300\n' >"${missing_cache}.attempt"
+ordered=$(_order_health_repo_entries "$schedule_entries" github-user)
+if [[ "$ordered" == $'owner/old|/repo/old\nowner/new|/repo/new\nowner/missing|/repo/missing' && ! -e "${missing_cache}.refresh-state" ]]; then
+	pass "failed or skipped attempt yields to other stale dashboards without claiming freshness"
+else
+	fail "failed or skipped attempt yields to other stale dashboards" "$ordered"
+fi
+printf 'invalid|not-an-epoch\n' >"${new_cache}.refresh-state"
+ordered=$(_order_health_repo_entries "$schedule_entries" github-user)
+if [[ "$ordered" == $'owner/new|/repo/new\nowner/old|/repo/old\nowner/missing|/repo/missing' ]]; then
+	pass "invalid refresh timestamp is treated as missing"
+else
+	fail "invalid refresh timestamp is treated as missing" "$ordered"
+fi
+_HEALTH_WORK_DEADLINE=$(date +%s)
+if _health_dashboard_optional_work_has_budget "$(date +%s)"; then
+	fail "optional admission uses aggregate deadline not a restarted phase clock"
+else
+	pass "optional admission uses aggregate deadline not a restarted phase clock"
+fi
+unset _HEALTH_WORK_DEADLINE
+
 : >"$GH_CALLS"
 export HEALTH_FIXTURE=label_hygiene
 gh() {

@@ -244,6 +244,99 @@ test_healthy_update_runs_health_then_quality_once() {
 	return 0
 }
 
+test_resumable_quality_batches() {
+	local batch_home
+	batch_home=$(mktemp -d "${TMPDIR:-/tmp}/stats-resume.XXXXXX") || return 1
+	if (
+		export HOME="$batch_home" LOGFILE="$batch_home/stats.log"
+		export QUALITY_SWEEP_STATE_DIR="$batch_home/state" QUALITY_SWEEP_LAST_RUN="$batch_home/last-run"
+		export QUALITY_SWEEP_REPO_TIMEOUT=3
+		local scripts="${SCRIPT_DIR}/.."
+		local SCRIPT_DIR="$scripts"
+		# shellcheck source=../shared-constants.sh
+		source "$scripts/shared-constants.sh"
+		# shellcheck source=../worker-lifecycle-common.sh
+		source "$scripts/worker-lifecycle-common.sh"
+		# shellcheck source=../stats-functions.sh
+		source "$scripts/stats-functions.sh"
+		_quality_sweep_for_repo() {
+			printf '%s\n' "$1" >>"$HOME/attempts"
+			if [[ "$1" == owner/a ]]; then
+				printf '%s\n' "$TMPDIR" >"$HOME/scratch"
+				sleep 30 &
+				printf '%s\n' "$!" >"$HOME/descendant"
+				wait "$!"
+			fi
+			return 0
+		}
+		local entries=$'owner/a|/a\nowner/b|/b\nowner/c|/c' now descendant scratch
+		now=$(date +%s)
+		_quality_sweep_batch "$entries" tester "$((now + 5))" || exit 1
+		[[ ! -f "$QUALITY_SWEEP_LAST_RUN" ]] || exit 2
+		jq -e '.remaining == 2 and .complete == false and .visited == ["owner/a|/a"]' "$QUALITY_SWEEP_STATE_DIR/cursor.json" || {
+			jq . "$QUALITY_SWEEP_STATE_DIR/cursor.json"
+			exit 3
+		}
+		descendant=$(<"$HOME/descendant")
+		if kill -0 "$descendant" 2>/dev/null; then
+			# Some hosts briefly retain reparented zombies; they cannot run work.
+			[[ "$(ps -p "$descendant" -o stat=)" == *Z* ]] || exit 4
+		fi
+		scratch=$(<"$HOME/scratch")
+		[[ ! -d "$scratch" ]] || exit 5
+		grep -q 'rc=124' "$LOGFILE" || exit 6
+		# Config changes: retain progress, remove c, and add d without losing it.
+		now=$(date +%s)
+		_quality_sweep_batch $'owner/a|/a\nowner/b|/b\nowner/d|/d' tester "$((now + 10))" || exit 7
+		[[ "$(<"$HOME/attempts")" == $'owner/a\nowner/b\nowner/d' ]] || exit 8
+		[[ -s "$QUALITY_SWEEP_LAST_RUN" ]] || exit 9
+		jq -e '.complete == true and .remaining == 0' "$QUALITY_SWEEP_STATE_DIR/cursor.json" || exit 10
+		# A completed cycle must not skip the next day; corrupt state also resets.
+		_quality_sweep_batch 'owner/b|/b' tester "$((now + 10))" || exit 11
+		printf 'corrupt\n' >"$QUALITY_SWEEP_STATE_DIR/cursor.json"
+		_quality_sweep_batch 'owner/d|/d' tester "$((now + 10))" || exit 12
+		[[ "$(<"$HOME/attempts")" == $'owner/a\nowner/b\nowner/d\nowner/b\nowner/d' ]] || exit 13
+		_batch_failure() { return 75; }
+		local failure=0
+		_stats_run_bounded 1 "$((now + 10))" _batch_failure || failure=$?
+		[[ "$failure" -eq 75 ]] || exit 14
+		# Expired admission must not invoke work or advance the cursor.
+		_quality_sweep_batch 'owner/e|/e' tester "$now" || exit 15
+		jq -e '.visited == [] and .remaining == 1' "$QUALITY_SWEEP_STATE_DIR/cursor.json" || exit 16
+		_test_stats_preflight_deadlines || exit 17
+	); then
+		pass "quality batches resume, reconcile configuration, bound descendants and retain diagnostics"
+	else
+		fail "quality batches resume, reconcile configuration, bound descendants and retain diagnostics" "fixture exit=$?"
+	fi
+	rm -rf "$batch_home"
+	return 0
+}
+
+_test_stats_preflight_deadlines() {
+	local REPOS_JSON="$HOME/repos.json" start elapsed
+	local STATS_OPTIONAL_WORK_RESERVE_SECONDS=0 QUALITY_SWEEP_CLEANUP_RESERVE_SECONDS=0
+	local QUALITY_SWEEP_OFFPEAK=0 QUALITY_SWEEP_INTERVAL=0 AIDEVOPS_GH_DEADLINE_EPOCH
+	# Both public paths must bound raw permission lookups, not just tool runs.
+	jq -n --arg path "$HOME" '{initialized_repos:[{slug:"owner/slow",path:$path,pulse:true}]}' >"$REPOS_JSON"
+	gh() { return 0; }
+	aidevops_repo_state_current_user() { printf 'tester\n'; return 0; }
+	aidevops_can_run_repo_routines() { sleep 30; return 0; }
+	start=$(date +%s)
+	AIDEVOPS_GH_DEADLINE_EPOCH=$((start + 5))
+	update_health_issues || return 1
+	elapsed=$(($(date +%s) - start))
+	[[ "$elapsed" -lt 6 ]] || return 2
+	grep -q 'Health dashboard permission preflight deferred/failed' "$LOGFILE" || return 3
+	start=$(date +%s)
+	AIDEVOPS_GH_DEADLINE_EPOCH=$((start + 5))
+	run_daily_quality_sweep || return 4
+	elapsed=$(($(date +%s) - start))
+	[[ "$elapsed" -lt 6 ]] || return 5
+	grep -q 'Quality sweep permission preflight deferred/failed' "$LOGFILE" || return 6
+	return 0
+}
+
 main_test() {
 	test_timeout_kills_work_and_cleans_pidfile
 	test_normal_completion_cleans_pidfile
@@ -252,6 +345,7 @@ main_test() {
 	test_function_write_times_out_before_outer_ceiling
 	test_failed_health_update_still_runs_quality_sweep_once
 	test_healthy_update_runs_health_then_quality_once
+	test_resumable_quality_batches
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 }
