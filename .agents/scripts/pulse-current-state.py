@@ -458,7 +458,10 @@ if canonical_reconciliation_refusal_count:
         else 'upstream_or_default_branch_mismatch'
     )
 
-metric_class_counts = Counter(classify_metric(item) for item in metrics)
+# The runtime ledger also contains triage, research and supervisor events.
+# Keep their resource context, but never credit them as implementation workers.
+worker_metrics = [item for item in metrics if item.get('role') == 'worker']
+metric_class_counts = Counter(classify_metric(item) for item in worker_metrics)
 stage_counts = Counter(record['stage'] for record in stage_records)
 stage_timing = defaultdict(lambda: {'count': 0, 'sum_ms': 0, 'max_ms': 0})
 for record in stage_records:
@@ -623,7 +626,8 @@ result = {
     'dispatch_stage_events': len(stage_records),
     'dispatch_stage_counts': dict(stage_counts),
     'dispatch_stage_timing_ms': stage_timing_summary,
-    'worker_terminal_events': len(metrics),
+    'worker_terminal_events': len(worker_metrics),
+    'non_worker_terminal_events': len(metrics) - len(worker_metrics),
     'worker_result_counts': dict(metric_class_counts),
     'worker_successes': metric_class_counts.get('success', 0),
     'worker_failures_or_stalls': sum(count for key, count in metric_class_counts.items() if key != 'success'),
