@@ -3,12 +3,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRelay } from "../frontier-harness-oauth-relay.mjs";
 import observerPlugin from "../../plugins/frontier-harness/index.mjs";
-import { summarize } from "../frontier-harness-report.mjs";
+import { summarize, summarizeRun } from "../frontier-harness-report.mjs";
 
 const observer = observerPlugin.server;
 
@@ -82,4 +82,120 @@ test("observer deduplicates completed messages without recording content", async
     await assert.rejects(observer({}, { profile: "stock", events }));
     await hooks.dispose();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("calibration stops measured infeasible input before summary, not feasible or unknown input", async () => {
+  for (const scenario of [
+    { context: 16384, input: 13000, stop: true, usable: 12288 },
+    { context: 18432, input: 13000, stop: false, usable: 14336 },
+    { context: 16384, input: 12288, stop: true, usable: 12288 },
+    { context: 16384, input: null, stop: false, usable: 12288 },
+    { context: 16384, input: 13000, version: "1.18.22", stop: false, usable: null },
+    { context: 16384, input: 13000, reserved: 0, stop: false, usable: 14336 },
+  ]) {
+    const dir = mkdtempSync(join(tmpdir(), "frontier-calibration-"));
+    const events = join(dir, "events.jsonl");
+    const hooks = await observer({}, { profile: "stock", events,
+      experimental: true, runtimeVersion: scenario.version ?? "1.18.29" });
+    try {
+      await hooks.config({ compaction: { reserved: scenario.reserved } });
+      const params = { sessionID: "fixture-session", model: { limit: {
+        context: scenario.context, input: scenario.context - 2048, output: 2048,
+      } } };
+      await hooks["chat.params"](params, {});
+      await hooks["experimental.chat.system.transform"](params, { system: ["private core"] });
+      await hooks.event({ event: { type: "message.updated", properties: { info: {
+        id: "fixture-response", sessionID: params.sessionID, role: "assistant",
+        time: { created: 1, completed: 2 },
+        tokens: { input: scenario.input, output: 2048, cache: { read: 0, write: 0 } },
+      } } } });
+      const compact = () => hooks["experimental.session.compacting"](params, { context: [] });
+      if (scenario.stop) await assert.rejects(compact(), /FrontierCalibrationInfeasible/);
+      else await compact();
+      // A shortfall in one trial/session never stops an unrelated session.
+      await hooks["experimental.session.compacting"]({ sessionID: "other-session" }, { context: [] });
+      const text = readFileSync(events, "utf8");
+      assert.equal(text.includes("private core"), false);
+      const report = summarize(text.trim().split("\n").map(JSON.parse));
+      assert.equal(report.calibration.applied[0].capacity?.usable_input ?? null, scenario.usable);
+      assert.equal(report.calibration.stopped.length, scenario.stop ? 1 : 0);
+      assert.equal(report.summary_completions, 0);
+      assert.equal(report.calibration.footprints[0].system_bytes, 12);
+    } finally { await hooks.dispose(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("partial usage keeps known subtotals separate from unknown totals and summary overhead", () => {
+  const rows = [
+    { type: "observer.started" },
+    { type: "completion", input_tokens: 10, output_tokens: 2 },
+    { type: "completion", summary: true, input_tokens: null, output_tokens: 3 },
+  ].map((row, i) => ({ schema: 1, profile: "stock", sequence: i + 1, ...row }));
+  const report = summarize(rows);
+  assert.equal(report.input_tokens, null);
+  assert.deepEqual(report.usage_coverage.input_tokens, {
+    measured_completions: 1, missing_completions: 1, completed_subtotal: 10,
+  });
+  assert.equal(report.summary_input_tokens, null);
+  assert.equal(report.summary_output_tokens, 3);
+  assert.deepEqual(report.calibration.initial, []);
+});
+
+test("delayed bus usage is recovered from the first completed response in the same session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "frontier-delayed-"));
+  const message = (sessionID, created, input) => ({ info: { sessionID, role: "assistant",
+    time: { created, completed: created + 1 }, tokens: { input, cache: { read: 0, write: 0 } } } });
+  const hooks = await observer({ client: { session: { messages: async ({ path }) => {
+    assert.equal(path.id, "target");
+    return { data: [message("target", 10, 1), message("other", 1, 1), message("target", 2, 13000)] };
+  } } } }, { profile: "stock", events: join(dir, "events.jsonl"), experimental: true, runtimeVersion: "1.18.29" });
+  try {
+    await hooks["chat.params"]({ sessionID: "target", model: {
+      limit: { context: 16384, input: 14336, output: 2048 },
+    } }, {});
+    await assert.rejects(hooks["experimental.session.compacting"]({ sessionID: "target" }, { context: [] }),
+      /FrontierCalibrationInfeasible/);
+  } finally { await hooks.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("run report joins verifier evidence, detects overridden output and preserves failed attempts", () => {
+  const root = mkdtempSync(join(tmpdir(), "frontier-report-"));
+  const trialDir = join(root, "jobs/pilot/trial");
+  mkdirSync(join(trialDir, "agent"), { recursive: true });
+  const json = (path, data) => writeFileSync(path, JSON.stringify(data));
+  const manifest = { profile: "stock", experimental_context_limit: 18432, experimental_output_reserve: 2048,
+    relay: { requests: 2, stream_failures: 0, upstream_usage: [{ input_tokens: 13000, output_tokens: 2, cached_tokens: null }] } };
+  const result = { verifier_result: { rewards: { reward: 1 } } };
+  const rows = [{ type: "observer.started" }, { type: "config.applied" },
+    { type: "request", session: "fixture", context_limit: 18432, input_limit: 16384, output_limit: 2048,
+      capacity: { usable_input: 14336, reserve: 2048 } },
+    { type: "calibration.initial", status: "initial_input_fits", input_tokens_including_cache: 13000 },
+    { type: "completion", input_tokens: 13000, output_tokens: 2 },
+    { type: "completion", summary: true, input_tokens: 13000, output_tokens: 3 }];
+  const saveEvents = () => writeFileSync(join(trialDir, "agent/frontier-events.jsonl"), rows.map((row, i) =>
+    JSON.stringify({ schema: 1, sequence: i + 1, profile: "stock", ...row })).join("\n"));
+  try {
+    json(join(root, "manifest.json"), manifest);
+    json(join(trialDir, "result.json"), result);
+    saveEvents();
+    const report = summarizeRun(root);
+    assert.equal(report.comparison_valid, true);
+    assert.equal(report.telemetry.summary_output_tokens, 3);
+    assert.equal(report.telemetry.calibration.applied[0].capacity.usable_input, 14336);
+    assert.equal(report.upstream_usage_complete, false);
+    assert.equal(report.upstream_responses_without_usage, 1);
+    assert.equal(report.source_result_sha256.length, 64);
+    rows[2].output_limit = 4096;
+    saveEvents();
+    assert.throws(() => summarizeRun(root), /model limits/);
+    rows[2].output_limit = 2048;
+    rows.push({ type: "calibration.stopped", reason: "initial_input_exceeds_usable" });
+    saveEvents();
+    assert.equal(summarizeRun(root).comparison_valid, false);
+    assert.equal(summarizeRun(root).verifier_reward, 1, "never rewrite the verifier verdict");
+    result.exception_info = { exception_type: "AgentTimeoutError" };
+    json(join(trialDir, "result.json"), result);
+    assert.equal(summarizeRun(root).task_passed, false);
+    assert.equal(summarizeRun(root).trial_exception, "AgentTimeoutError");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

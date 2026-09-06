@@ -61,6 +61,10 @@ async function main() {
     max_requests: 64, concurrency: 1, retries: 0, install_only: values["install-only"],
     agent_setup_timeout_multiplier: 2,
     experimental_context_limit: contextLimit, experimental_output_reserve: outputLimit,
+    calibration_contract: values["opencode-version"] === "1.18.29"
+      ? "opencode-1.18.29-explicit-input-v1" : "unsupported-runtime",
+    requested_model_limits: contextLimit === null ? null
+      : { context: contextLimit, input: contextLimit - outputLimit, output: outputLimit },
     started_at: new Date().toISOString(),
   };
   const save = () => writeFileSync(join(values.out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });

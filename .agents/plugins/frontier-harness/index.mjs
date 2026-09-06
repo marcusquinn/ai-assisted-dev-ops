@@ -45,9 +45,9 @@ async function FrontierObserver(input, options = {}) {
   };
   const initialUsage = (message) => {
     const state = stateFor(message.sessionID);
-    if (state.initial || message.summary || message.error || !message.time?.completed) return;
+    if (state.initial || message.summary || !message.time?.completed) return;
     const fields = [message.tokens?.input, message.tokens?.cache?.read, message.tokens?.cache?.write];
-    const inputTokens = fields.every((value) => number(value) !== null)
+    const inputTokens = !message.error && fields.every((value) => number(value) !== null)
       ? fields.reduce((a, b) => a + b, 0) : null;
     state.initial = { input_tokens_including_cache: inputTokens };
     emit({ type: "calibration.initial", session: opaque(message.sessionID),
@@ -97,10 +97,12 @@ async function FrontierObserver(input, options = {}) {
       const state = stateFor(event.sessionID);
       // Bus delivery can lag the next turn. Read the completed first response
       // from this session only, never a global or previous-trial measurement.
-      if (!state.initial && input.client?.session?.messages) {
-        const result = await input.client.session.messages({ path: { id: event.sessionID } });
-        const first = result.data?.find((row) => row.info?.role === "assistant"
-          && !row.info.summary && row.info.time?.completed);
+      if (options.experimental && state.capacity && !state.initial && input.client?.session?.messages) {
+        const result = await input.client.session.messages({ path: { id: event.sessionID } })
+          .catch(() => ({ data: [] }));
+        const first = result.data?.filter((row) => row.info?.role === "assistant"
+          && row.info.sessionID === event.sessionID && !row.info.summary && row.info.time?.completed)
+          .sort((a, b) => a.info.time.created - b.info.time.created)[0];
         if (first?.info.sessionID === event.sessionID) initialUsage(first.info);
       }
       if (options.experimental && state.capacity && state.initial?.input_tokens_including_cache != null

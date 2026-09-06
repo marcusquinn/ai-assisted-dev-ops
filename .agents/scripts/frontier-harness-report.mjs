@@ -26,8 +26,13 @@ export function summarize(records) {
   const sum = (rows, field) => rows.length && rows.every((r) => Number.isFinite(r[field]) && r[field] >= 0)
     ? rows.reduce((total, r) => total + r[field], 0) : null;
   const tokens = {};
+  const usageCoverage = {};
   for (const field of ["input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens"]) {
     tokens[field] = sum(completions, field);
+    const measured = completions.filter((r) => Number.isFinite(r[field]) && r[field] >= 0);
+    usageCoverage[field] = { measured_completions: measured.length,
+      missing_completions: completions.length - measured.length,
+      completed_subtotal: sum(measured, field) };
   }
   // Input + cache reads + cache writes is an occupancy PROXY, not a tokenizer
   // measurement of the actual live context. Never add cumulative session usage.
@@ -44,11 +49,22 @@ export function summarize(records) {
     requests: requests.length, completions: completions.length,
     errors: completions.filter((r) => r.error).length,
     ...tokens,
+    usage_coverage: usageCoverage,
+    calibration: {
+      initial: records.filter((r) => r.type === "calibration.initial"),
+      stopped: records.filter((r) => r.type === "calibration.stopped"),
+      applied: requests.map((r) => ({ session: r.session, context: r.context_limit,
+        input: r.input_limit, output: r.output_limit, capacity: r.capacity ?? null })),
+      footprints: records.filter((r) => r.type === "request.footprint"),
+    },
     peak_prompt_tokens_proxy: promptSizes.length && promptSizes.every((v) => v !== null)
       ? Math.max(...promptSizes) : null,
     observed_context_limits: [...new Set(requests.map((r) => r.context_limit).filter(Number.isFinite))],
     compactions_requested: requested.length, compactions_completed: completed.length,
     summary_completions: summaries.length,
+    summary_input_tokens: sum(summaries, "input_tokens"),
+    summary_cache_read_tokens: sum(summaries, "cache_read_tokens"),
+    summary_cache_write_tokens: sum(summaries, "cache_write_tokens"),
     summary_output_tokens: sum(summaries, "output_tokens"),
     completions_after_compaction: afterCompaction.length,
     errors_after_compaction: afterCompaction.filter((r) => r.error).length,
@@ -83,8 +99,10 @@ export function summarizeRun(root) {
   }
   if (manifest.experimental_context_limit != null
     && (!telemetry.observed_context_limits.length
-      || !telemetry.observed_context_limits.every((limit) => limit === manifest.experimental_context_limit))) {
-    throw new Error("Experiment context limit was overridden");
+      || !telemetry.calibration.applied.every((limit) => limit.context === manifest.experimental_context_limit
+        && limit.input === manifest.experimental_context_limit - manifest.experimental_output_reserve
+        && limit.output === manifest.experimental_output_reserve))) {
+    throw new Error("Experiment model limits were overridden or unobserved");
   }
   const usage = manifest.relay?.upstream_usage || [];
   const total = (key) => usage.length && usage.every((r) => Number.isFinite(r[key]) && r[key] >= 0)
@@ -94,6 +112,9 @@ export function summarizeRun(root) {
     return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) / 1000 : null;
   };
   const reward = trial.verifier_result?.rewards?.reward;
+  const stopped = telemetry.calibration.stopped.length > 0;
+  const usageFieldsComplete = usage.length > 0 && usage.every((row) =>
+    ["input_tokens", "output_tokens", "cached_tokens"].every((key) => Number.isFinite(row[key]) && row[key] >= 0));
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
   return {
     profile: manifest.profile, model: manifest.model,
@@ -103,15 +124,20 @@ export function summarizeRun(root) {
     source_manifest_sha256: digest(join(root, "manifest.json")),
     billing: manifest.inference_route, leaderboard_comparable: false,
     experimental_context_limit: manifest.experimental_context_limit ?? null,
+    calibration_status: stopped ? "infeasible_configuration"
+      : telemetry.calibration.initial.length ? "observed" : "unobserved",
     verifier_reward: Number.isFinite(reward) ? reward : null,
     task_passed: reward === 1 && !trial.exception_info,
+    comparison_valid: reward === 1 && !trial.exception_info && !stopped,
     trial_exception: /^[A-Za-z][A-Za-z0-9_]*$/.test(trial.exception_info?.exception_type || "")
       ? trial.exception_info.exception_type : null,
     agent_seconds: duration(trial.agent_execution), setup_seconds: duration(trial.agent_setup),
     relay_requests: manifest.relay?.requests ?? null,
     upstream_completed_responses: usage.length,
     upstream_usage_scope: "completed responses only",
-    upstream_usage_complete: usage.length === manifest.relay?.requests
+    upstream_responses_without_usage: Number.isInteger(manifest.relay?.requests)
+      ? Math.max(0, manifest.relay.requests - usage.length) : null,
+    upstream_usage_complete: usageFieldsComplete && usage.length === manifest.relay?.requests
       && manifest.relay?.stream_failures === 0,
     upstream_input_tokens_including_cache: total("input_tokens"),
     upstream_output_tokens: total("output_tokens"), upstream_cached_tokens: total("cached_tokens"),
