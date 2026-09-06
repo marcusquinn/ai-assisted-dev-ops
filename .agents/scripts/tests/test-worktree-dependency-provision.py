@@ -8,11 +8,17 @@ import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
+import subprocess  # nosec B404 -- fixed offline fixture programs only.
+import sys
 import tempfile
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+GIT = shutil.which("git")
+BASH = shutil.which("bash")
+if not GIT or not BASH:
+    raise RuntimeError("Git and Bash are required for fixture verification")
 SPEC = importlib.util.spec_from_file_location("provision", SCRIPTS / "worktree-dependency-provision.py")
 provision = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(provision)
@@ -45,7 +51,8 @@ class ProvisionTests(unittest.TestCase):
 
     @staticmethod
     def git(path, *args):
-        return subprocess.check_output(["git", "-C", str(path), *args], stderr=subprocess.DEVNULL, text=True).strip()
+        return subprocess.check_output(  # nosec B603 -- resolved Git and fixture-owned argv, no shell.
+            [GIT, "-C", str(path), *args], stderr=subprocess.DEVNULL, text=True).strip()
 
     @staticmethod
     def write(path, value):
@@ -74,7 +81,10 @@ _dlw_restore_worktree_deps "$2" "$3"
                "WORKTREE_NODE_MODULES_RESTORE_ROOT_ENABLED": root,
                "WORKTREE_NODE_MODULES_RESTORE_ENABLED": "1",
                "WORKTREE_NODE_MODULES_RESTORE_MAX_BYTES": budget}
-        subprocess.run(["bash", "-c", script, "fixture", str(SCRIPTS), str(self.wt), str(self.repo)],
+        # Fixed shell program above; all parameters are isolated fixture paths.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        subprocess.run(  # nosec B603 -- resolved Bash, fixed fixture program and fixture-only argv.
+            [BASH, "-c", script, "fixture", str(SCRIPTS), str(self.wt), str(self.repo)],
                        env=env, check=True, capture_output=True, text=True, timeout=20)
 
     def test_bounded_read_and_repeat_preserve_checkpoint(self):
@@ -233,7 +243,9 @@ _dlw_restore_worktree_deps "$2" "$3"
     def test_malformed_lock_is_redacted(self):
         for parent in (self.repo, self.wt):
             self.write(parent / "package-lock.json", [])
-        result = subprocess.run(["python3", str(SCRIPTS / "worktree-dependency-provision.py"),
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603 -- current interpreter, fixed helper and fixture-owned arguments.
+            [sys.executable, str(SCRIPTS / "worktree-dependency-provision.py"),
                                  str(self.repo), str(self.wt), "."], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr, "dependency-provision-rejected\n")
