@@ -536,14 +536,14 @@ run_secretlint_scan() {
 		return 1
 	fi
 
+	# Scanning must not initialize configuration or select an installing runner.
+	if [[ ! -f "${SECRETLINT_CONFIG_FILE}" ]]; then
+		print_error "No configuration found. Run: $0 init"
+		return 2
+	fi
+
 	local cmd
 	cmd=$(get_secretlint_cmd)
-
-	# Check if configuration exists
-	if [[ ! -f "${SECRETLINT_CONFIG_FILE}" ]]; then
-		print_warning "No configuration found. Initializing..."
-		init_secretlint_config
-	fi
 
 	# Validate that required rules are installed
 	local rules_check=0
