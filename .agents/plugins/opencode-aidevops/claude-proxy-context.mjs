@@ -326,6 +326,31 @@ export function resolveEffortLevel(incoming) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Combine proxy-owned and incoming system guidance without repeating the
+ * canonical deployed framework document. Only an exact body from the exact
+ * deployed source is compacted: unknown wrappers and distinct authorities are
+ * retained so the proxy never turns untrusted text into framework policy.
+ */
+export function assembleClaudeSystemPrompt(frameworkPrompt, agentPrompt, systemPrompt, frameworkPath) {
+  const canonicalDocument = frameworkPrompt && frameworkPath
+    ? `Instructions from: ${frameworkPath}\n${frameworkPrompt}`
+    : "";
+  const frameworkReference = frameworkPath
+    ? `Instructions from: ${frameworkPath}\nThe complete framework body is already supplied by the Claude proxy.`
+    : "";
+  const incomingPrompt = typeof systemPrompt === "string" ? systemPrompt : "";
+  const escapedDocument = canonicalDocument.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const compactedIncoming = canonicalDocument
+    ? incomingPrompt.replace(
+      new RegExp(`(^|\\n\\n)${escapedDocument}(?=\\n\\nInstructions from:|$)`, "g"),
+      `$1${frameworkReference}`,
+    )
+    : incomingPrompt;
+
+  return [frameworkPrompt, agentPrompt, compactedIncoming].filter(Boolean).join("\n\n");
+}
+
+/**
  * Build the argv list to pass to `claude` for a given request body.
  * The body must contain `model`, `agentName`, `prompt`, optional `effortLevel`.
  */
@@ -352,11 +377,16 @@ export function buildClaudeArgs(body, systemPrompt, streaming) {
     args.push("--mcp-config", mcpConfig);
   }
 
-  // Combine: framework base (build.txt + AGENTS.md) + agent prompt + request system prompt.
-  // Framework and agent go first (static), OpenCode's context-specific prompt last.
+  // Combine proxy-owned guidance with context-specific input. The exact canonical
+  // framework document may already be in OpenCode's system context.
   const frameworkPrompt = getFrameworkPrompt();
   const agentPrompt = getAgentPrompt(agentName);
-  const combinedPrompt = [frameworkPrompt, agentPrompt, systemPrompt].filter(Boolean).join("\n\n");
+  const combinedPrompt = assembleClaudeSystemPrompt(
+    frameworkPrompt,
+    agentPrompt,
+    systemPrompt,
+    join(agentsDir, "AGENTS.md"),
+  );
   if (combinedPrompt) {
     args.push("--append-system-prompt", combinedPrompt);
   }
