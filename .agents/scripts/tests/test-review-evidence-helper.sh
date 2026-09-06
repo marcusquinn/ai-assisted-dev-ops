@@ -101,6 +101,40 @@ assert_contains "$COMMIT_BUNDLE" 'Commit:' 'commit metadata'
 assert_contains "$COMMIT_BUNDLE" '## Binary artifacts' 'commit binary metadata heading'
 assert_not_contains "$COMMIT_BUNDLE" 'GIT binary patch' 'commit binary payload'
 
+# A historical root commit must not read later or dirty working-tree content.
+printf '\000dirty-not-selected\n' >"${REPO}/tracked.bin"
+printf 'dirty-text-not-selected\n' >"${REPO}/tracked.txt"
+ROOT_BUNDLE="${TEST_ROOT}/root.md"
+(cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle commit --commit "$INITIAL_SHA" --output "$ROOT_BUNDLE" >/dev/null)
+ROOT_DIGEST=$(git -C "$REPO" show "${INITIAL_SHA}:tracked.bin" | shasum -a 256 | cut -d' ' -f1)
+assert_contains "$ROOT_BUNDLE" "$ROOT_DIGEST" 'historical root binary digest'
+assert_contains "$ROOT_BUNDLE" '+one' 'root addition patch'
+assert_not_contains "$ROOT_BUNDLE" '+two' 'later checkout absent from root patch'
+assert_not_contains "$ROOT_BUNDLE" 'dirty-text-not-selected' 'dirty text absent from root patch'
+DIRTY_BRANCH_BUNDLE="${TEST_ROOT}/dirty-branch.md"
+(cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle branch --base "$INITIAL_SHA" --output "$DIRTY_BRANCH_BUNDLE" >/dev/null)
+[[ "$(grep '^bundle_sha256:' "$BRANCH_BUNDLE")" == "$(grep '^bundle_sha256:' "$DIRTY_BRANCH_BUNDLE")" ]] || fail 'dirty checkout changed selected branch evidence'
+
+# Literal exclusions must not drop neighboring text that matches a glob-shaped
+# binary filename; newline/tab/backslash filenames remain complete evidence.
+printf '\000before\n' >"${REPO}/wild[ab].bin"
+printf 'before-text\n' >"${REPO}/wilda.bin"
+git -C "$REPO" add -- ':(literal)wild[ab].bin' wilda.bin
+git -C "$REPO" -c user.name='Review Test' -c user.email='review@example.invalid' commit -qm 'path fixtures'
+printf '\000after\n' >"${REPO}/wild[ab].bin"
+printf 'literal-neighbor-text\n' >"${REPO}/wilda.bin"
+for filename in $'line\nbreak.txt' $'tab\tname.txt' 'slash\name.txt'; do
+	printf 'unusual-file-content\n' >"${REPO}/${filename}"
+done
+printf '\000odd-binary\n' >"${REPO}/"$'binary\nname.bin'
+ODD_BUNDLE="${TEST_ROOT}/odd-paths.md"
+(cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle local --output "$ODD_BUNDLE" >/dev/null)
+assert_contains "$ODD_BUNDLE" '+literal-neighbor-text' 'literal binary exclusion'
+[[ "$(grep -c '^+unusual-file-content' "$ODD_BUNDLE")" == 3 ]] || fail 'unusual text paths omitted'
+ODD_DIGEST=$(printf '\000odd-binary\n' | shasum -a 256 | cut -d' ' -f1)
+assert_contains "$ODD_BUNDLE" "$ODD_DIGEST" 'unusual binary path digest'
+assert_not_contains "$ODD_BUNDLE" 'GIT binary patch' 'unusual binary payload bounded'
+
 gh() {
 	local resource="$1"
 	local action="$2"
@@ -136,5 +170,14 @@ printf 'unsafe\n' >"${REPO}/config/.env"
 if (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle local >/dev/null 2>&1); then
 	fail 'security-sensitive untracked path was bundled'
 fi
+rm -f "${REPO}/config/.env"
+mkdir -p "${REPO}/"$'odd\ndirectory'
+printf 'fixture-only\n' >"${REPO}/"$'odd\ndirectory/.env'
+if (cd "$REPO" && AIDEVOPS_TEMP_DIR="${TEST_ROOT}/tmp" "$HELPER" bundle local >/dev/null 2>&1); then
+	fail 'newline-bearing sensitive path bypassed the guard'
+fi
+for leftover in "${TEST_ROOT}/tmp"/review-evidence-binary-*; do
+	[[ ! -e "$leftover" ]] || fail 'binary evidence temporary file leaked'
+done
 
 printf 'PASS review evidence helper builds bounded target bundles\n'
