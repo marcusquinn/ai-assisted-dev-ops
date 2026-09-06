@@ -920,11 +920,20 @@ for declaration in 'EDIT:' 'EDIT: src/*.sh' 'EDIT: ../escape.sh' 'EDIT: /absolut
 	'EDIT: src/a.sh src/b.sh' 'EDIT: `src/a.sh`/extra' 'EDIT: src/a.sh — read-only' \
 	'EDIT: src/a.sh — leave unchanged; reference context only' \
 	'EDIT: src/a.sh — must remain untouched' \
+	'EDIT: src/a.sh — preserve this file unchanged' \
+	'EDIT: src/a.sh — keep unchanged' 'EDIT: src/a.sh — do not touch' \
 	'EDIT: src/a.sh, NEW:' 'EDIT: {path}' 'READ: src/a.sh'; do
 	if "$HELPER" scope-normalize $'### Files to Modify\n- '"$declaration" >/dev/null 2>&1; then
 		fail "scope: rejects ambiguous declaration $declaration"
 	else
 		pass "scope: rejects ambiguous declaration $declaration"
+	fi
+done
+for heading in '## files scope' '# Files Scope' '## Files Scope <!-- note -->'; do
+	if "$HELPER" scope-normalize "$scope_legacy"$'\n'"$heading"$'\n- src/existing.sh' >/dev/null 2>&1; then
+		fail "scope: malformed existing heading is not replaced: $heading"
+	else
+		pass "scope: malformed existing heading is not replaced: $heading"
 	fi
 done
 if "$HELPER" scope-normalize $'<!-- aidevops-signed-approval -->\n'"$scope_legacy" >/dev/null 2>&1; then
