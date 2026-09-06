@@ -7,12 +7,18 @@ Read subagents on-demand when trigger words clearly match. Full index: `subagent
 
 This index describes what is catalogued, not what is usable now. Query `scripts/capability-readiness-helper.py query [capability] --runtime <runtime>` and gate routing with its `route` command. Canonical machine-readable definitions and generated counts are in `configs/capability-registry.json` and `reference/capability-registry.md`.
 
+## View boundaries
+
+- `subagent-index.toon` owns primary-agent registration. Its broad triggers choose a coordinator; they do not establish a user-intent route or service readiness.
+- This file owns user-intent entry points. Keep one row per domain, retain compatible aliases in a single row, and use the most specific domain before its primary-agent coordinator.
+- `configs/capability-registry.json` owns executable readiness. `reference/capability-registry.md` is generated from it; catalogued or installed metadata never authorizes a provider action.
+
 | Domain | Trigger words | Entry point |
 |--------|---------------|-------------|
-| Business | company ops, strategy, finance, invoice, receipts, runners | `business.md`, `business/company-runners.md` |
-| Accounting | bookkeeping, bank statements, reconciliation, chart of accounts, debtors, creditors, management accounts, cash flow | `business/accounting.md` |
+| Business | company ops, strategy, provider selection, runners | `business.md`, `business/company-runners.md` |
+| Accounting | bookkeeping, invoices, receipts, bank statements, reconciliation, chart of accounts, debtors, creditors, management accounts, cash flow, financial controls | `business/accounting.md` |
 | Accounting software | QuickFile, Xero, QuickBooks, FreeAgent, Sage, Zoho Books, accounting integration | `business/accounting-software.md` |
-| Planning | plan, define, roadmap, tasks, brief, decomposition, beads | `workflows/plans.md`, `scripts/commands/define.md`, `tools/task/beads.md` |
+| Planning | plan, define, roadmap, tasks, brief, decomposition, beads | `workflows/plans.md`, `scripts/commands/define.md`, `tools/task-management/beads.md` |
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | `legal.md`, `tools/legal/legal-research.md` |
 | Code quality | lint, review, smells, standards, simplify, audit | `tools/code-review/code-standards.md` |
 | Git/PRs/Releases | git, PR, branch, merge, release, changelog, version | `workflows/git-workflow.md`, `tools/git/github-cli.md`, `workflows/release.md` |
@@ -30,8 +36,8 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | SEO | SEO, GEO, AI search, ranking, keyword, search intent, conversational query, autocomplete, query fan-out, GSC, schema, sitemap, backlinks, search trends | `seo.md`, `seo/conversational-search-intent.md`, `seo/keyword-research.md`, `seo/google-search-console.md` |
 | Paid Ads/CRO | ads, Meta Ads, CRO, landing page, copy, funnel | `marketing-sales/meta-ads.md`, `marketing-sales/ad-creative.md`, `marketing-sales/direct-response-copy.md`, `marketing-sales/cro.md` |
 | WordPress | WordPress, WP, plugin, theme, MainWP, LocalWP, wp-cli, production clone | `tools/wordpress.md`, `workflows/wordpress-local-clone.md` |
-| Shopify | Shopify, Liquid, Admin API, store, product catalog | `configs/mcp-templates/shopify-dev-mcp-config.json.txt` — set `platform:shopify` in repos.json to auto-enable Shopify Dev MCP. |
-| Communications | chat, Slack, Discord, Matrix, Telegram, WhatsApp, Signal | `services/communications/bitchat.md`, `services/communications/convos.md`, `services/communications/discord.md`, `services/communications/google-chat.md`, `services/communications/imessage.md`, `services/communications/matterbridge.md`, `services/communications/matrix-bot.md`, `services/communications/msteams.md`, `services/communications/nextcloud-talk.md`, `services/communications/nostr.md`, `services/communications/signal.md`, `services/communications/simplex.md`, `services/communications/slack.md`, `services/communications/telegram.md`, `services/communications/urbit.md`, `services/communications/whatsapp.md`, `services/communications/xmpp.md` |
+| Shopify | Shopify, Liquid, Admin API, store, product catalog | `services/ecommerce/shopify.md` — set the `platform` field to `shopify` in repos.json to auto-enable Shopify Dev MCP. |
+| Communications | chat, Slack, Discord, Matrix, Telegram, WhatsApp, Signal | `services/communications/bitchat.md`, `services/communications/convos.md`, `services/communications/discord.md`, `services/communications/google-chat.md`, `services/communications/imessage.md`, `services/communications/matterbridge.md`, `services/communications/matrix-bot.md`, `services/communications/msteams.md`, `services/communications/nextcloud-talk.md`, `services/communications/nostr.md`, `services/communications/signal.md`, `services/communications/simplex.md`, `services/communications/slack.md`, `services/communications/telegram.md`, `services/communications/urbit.md`, `services/communications/whatsapp.md` |
 | Team interfaces | Buzz, virtual assistant server, shared AI team, agent identity, repository collaboration | `tools/ai-assistants/buzz-team-interface.md`, `reference/team-interface-buzz-provisioning.md`, `reference/team-interfaces.md` |
 | Email | email, mailbox, deliverability, SMTP, newsletter, Google Workspace | `tools/ui/react-email.md`, `services/email/email-agent.md`, `services/email/email-mailbox.md`, `services/email/email-actions.md`, `services/email/email-intelligence.md`, `services/email/email-providers.md`, `services/email/email-security.md`, `services/email/email-testing.md`, `services/email/email-composition.md`, `services/email/email-inbound-commands.md`, `services/email/google-workspace.md` |
 | Outreach | cold email, sales outreach, leads, Smartlead, Instantly, warmup | `services/outreach/cold-outreach.md`, `services/outreach/smartlead.md`, `services/outreach/instantly.md`, `services/outreach/manyreach.md` |
@@ -45,9 +51,8 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | Operating-system selection | distro choice, Linux desktop, server OS, Omarchy, Kubuntu, Alpine, Rocky Linux, AlmaLinux, NixOS, Parrot OS, Kali VM, Tails, Hetzner ARM, ARM64 image | `reference/os-selection.md`, `aidevops/recommendations.md`, `reference/platform-support.md` |
 | Node server administration | Node.js server, Node runtime, Node LTS/EOL, npm/pnpm/Yarn/Bun drift, PM2, systemd Node, next start, SSR server, event-loop lag, heap OOM, memory leak, CPU/RAM spike | `tools/runtime/node-server-admin.md` |
 | Hosting/Deployment | deploy, hosting, WordPress hosting, managed hosting, VPS, Fly, Coolify, Vercel, Daytona, cloud | `aidevops/recommendations.md`, `services/hosting/hostinger.md`, `services/hosting/hetzner.md`, `services/hosting/cloudflare.md`, `tools/deployment/hosting-comparison.md`, `tools/deployment/fly-io.md`, `tools/deployment/coolify.md`, `tools/deployment/vercel.md`, `tools/deployment/uncloud.md`, `tools/deployment/daytona.md` |
-| Networking/VPN | VPN, mesh, NetBird, Tailscale, Nostr VPN, FIPS, remote compute network | `services/networking/netbird.md`, `services/networking/tailscale.md`, `services/networking/nostr-vpn.md` |
+| Networking/VPN | VPN, mesh, WireGuard, NetBird, Tailscale, Nostr VPN, Obscura, MPR, multi-party relay, Mullvad, QUIC obfuscation, FIPS, remote compute network | `services/networking/netbird.md`, `services/networking/tailscale.md`, `services/networking/nostr-vpn.md`, `services/networking/obscuravpn.md` |
 | Infrastructure | GPU, containers, OrbStack, remote dispatch, servers | `tools/infrastructure/cloud-gpu.md`, `tools/containers/orbstack.md`, `tools/containers/remote-dispatch.md` |
-| Networking/VPN | VPN, mesh, WireGuard, Tailscale, NetBird, Obscura, MPR, multi-party relay, Mullvad, QUIC obfuscation | `services/networking/tailscale.md`, `services/networking/netbird.md`, `services/networking/obscuravpn.md` |
 | Accessibility | accessibility, WCAG, a11y, contrast, screen reader | `tools/accessibility/accessibility-audit.md` |
 | OpenAPI exploration | OpenAPI, API spec, endpoint search, schema discovery | `tools/context/openapi-search.md` |
 | Local models | local model, llama.cpp, GGUF, Hugging Face, offline | `tools/local-models/local-models.md`, `tools/local-models/huggingface.md`, `scripts/local-model-helper.sh` |
@@ -55,7 +60,7 @@ This index describes what is catalogued, not what is usable now. Query `scripts/
 | Agent routing | agent, specialist, route, dispatch, primary agent | `reference/agent-routing.md` |
 | Model routing | model, tier, Haiku, Sonnet, Opus, fallback, budget | `tools/context/model-routing.md`, `reference/orchestration.md` |
 | Orchestration | pulse, workers, dashboard, headless, dispatch, supervisor | `reference/orchestration.md`, `tools/ai-assistants/headless-dispatch.md`, `scripts/commands/pulse.md`, `scripts/commands/dashboard.md` |
-| Upstream watch | upstream, dependency watch, release monitor, source tracking | `scripts/upstream-watch-helper.sh`, `.agents/configs/upstream-watch.json` |
+| Upstream watch | upstream, dependency watch, release monitor, source tracking | `scripts/upstream-watch-helper.sh`, `configs/upstream-watch.json` |
 | Testing infrastructure | testing setup, install test framework, new harness, fixtures, coverage setup | `scripts/commands/testing-setup.md`, `tools/testing-setup.md`, `scripts/testing-setup-helper.sh` |
 | Agent/MCP dev | build agent, create agent, MCP server, mcporter, plugin | `tools/build-agent/build-agent.md`, `tools/build-mcp/build-mcp.md`, `tools/mcp-toolkit/mcporter.md` |
 | Self-Improvement | self-improve, learning, autoagent, framework issue, pattern | `reference/self-improvement.md`, `tools/autoagent/autoagent.md`, `scripts/commands/autoagent.md` |

@@ -44,13 +44,33 @@ def _mcp_errors(capability: dict[str, Any], mcp_source: str) -> list[str]:
     return [] if known else [f"unknown MCP: {mcp} ({capability.get('name', '')})"]
 
 
+def _view_errors(registry: dict[str, Any], agents_dir: Path) -> list[str]:
+    names: set[str] = set()
+    errors: list[str] = []
+    for view in registry.get("views", []):
+        name = view.get("name", "")
+        if not name:
+            errors.append("view has no name")
+        elif name in names:
+            errors.append(f"duplicate view: {name}")
+        names.add(name)
+        for field in ("owner", "source"):
+            if not view.get(field):
+                errors.append(f"view has no {field}: {name}")
+        for field in ("source", "derived"):
+            path = view.get(field)
+            if path and not (agents_dir / path).is_file():
+                errors.append(f"invalid {field} view path: {path} ({name})")
+    return errors
+
+
 def validate(registry: dict[str, Any], agents_dir: Path) -> list[str]:
     agent_index = (agents_dir / "subagent-index.toon").read_text(encoding="utf-8")
     mcp_source = (agents_dir / "plugins" / "opencode-aidevops" / "mcp-registry.mjs").read_text(encoding="utf-8")
     dimensions = set(registry.get("dimensions", []))
     names: set[str] = set()
     aliases: set[str] = set()
-    errors: list[str] = []
+    errors = _view_errors(registry, agents_dir)
     for capability in registry.get("capabilities", []):
         errors.extend(_identity_errors(capability, names, aliases))
         errors.extend(_reference_errors(capability, agents_dir, agent_index))

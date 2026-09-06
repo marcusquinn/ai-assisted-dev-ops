@@ -2,6 +2,24 @@
   "$schema": "../schemas/capability-registry.schema.json",
   "schema_version": 1,
   "dimensions": ["catalogued", "deployed", "installed", "configured", "enabled", "authenticated", "authorized", "reachable", "runtime_compatible", "tool_visible", "usable"],
+  "views": [
+    {
+      "name": "primary-registration",
+      "owner": "subagent-index.toon",
+      "source": "subagent-index.toon"
+    },
+    {
+      "name": "domain-entry",
+      "owner": "reference/domain-index.md",
+      "source": "reference/domain-index.md"
+    },
+    {
+      "name": "capability-readiness",
+      "owner": "configs/capability-registry.json",
+      "source": "configs/capability-registry.json",
+      "derived": "reference/capability-registry.md"
+    }
+  ],
   "capabilities": [
     {
       "name": "code-development",

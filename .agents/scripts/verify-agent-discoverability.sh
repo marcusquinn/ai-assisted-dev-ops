@@ -147,6 +147,48 @@ check_frontmatter_description_quoting() {
 	return 0
 }
 
+check_domain_index_view() {
+	local domain_index="${AGENTS_DIR}/reference/domain-index.md"
+	local duplicates
+	local path
+	local checked_paths=0
+
+	duplicates=$(awk -F'|' -v domain_column=2 '
+		/^\|/ && $domain_column !~ /^[[:space:]]*(Domain|-+)/ {
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", $domain_column)
+			if (++seen[$domain_column] == 2) print $domain_column
+		}' "$domain_index")
+	if [[ -n "$duplicates" ]]; then
+		log_fail "Domain index: duplicate domain rows: ${duplicates//$'\n'/, }"
+	else
+		log_ok "Domain index: domain rows are unique"
+	fi
+
+	while IFS= read -r path; do
+		[[ "$path" == *"*"* ]] && continue
+		[[ "$path" != */* && "$path" != *.* ]] && continue
+		checked_paths=$((checked_paths + 1))
+		if [[ -f "${AGENTS_DIR}/${path}" ]]; then
+			log_ok "Domain index: entry point exists: ${path}"
+		else
+			log_fail "Domain index: stale entry point: ${path}"
+		fi
+	done < <(awk -F'`' '/^\|/ { for (field = 2; field <= NF; field += 2) print $field }' "$domain_index")
+	if [[ "$checked_paths" -eq 0 ]]; then
+		log_fail "Domain index: no declared entry points found"
+	fi
+	return 0
+}
+
+check_declared_view_contract() {
+	if python3 "${AGENTS_DIR}/scripts/capability-readiness-helper.py" check >/dev/null; then
+		log_ok "Capability registry: declared views have unique existing paths"
+	else
+		log_fail "Capability registry: stale or duplicate declared view"
+	fi
+	return 0
+}
+
 # ─── Test 1: Extracted reference files exist and are non-empty ───────────────
 echo ""
 echo "=== 1. Extracted Reference Files ==="
@@ -211,6 +253,8 @@ else
 	fi
 	check_file_nonempty "reference/domain-index.md" 2000 "Domain index: substantial content"
 	check_string_in_file "reference/domain-index.md" "Trigger words" "Domain index: trigger-word column present"
+	check_domain_index_view
+	check_declared_view_contract
 fi
 
 # ─── Test 4b: Node server admin specialist is routed and indexed ─────────────

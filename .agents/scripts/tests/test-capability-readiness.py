@@ -37,6 +37,36 @@ class CapabilityReadinessTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertTrue(json.loads(result.stdout)["valid"])
 
+    def test_registry_rejects_duplicate_declared_views(self) -> None:
+        registry = json.loads((HELPER.parents[1] / "configs" / "capability-registry.json").read_text())
+        registry["views"].append(dict(registry["views"][0]))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text(json.dumps(registry))
+            result = subprocess.run(
+                [sys.executable, str(HELPER), "--registry", str(path), "check"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )  # nosec B603
+        self.assertEqual(1, result.returncode)
+        self.assertIn("duplicate view: primary-registration", result.stdout)
+
+    def test_registry_rejects_stale_declared_view_path(self) -> None:
+        registry = json.loads((HELPER.parents[1] / "configs" / "capability-registry.json").read_text())
+        registry["views"][0]["source"] = "missing-primary-registration.toon"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "registry.json"
+            path.write_text(json.dumps(registry))
+            result = subprocess.run(
+                [sys.executable, str(HELPER), "--registry", str(path), "check"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )  # nosec B603
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid source view path", result.stdout)
+
     def test_healthy_capability_routes(self) -> None:
         output = self.run_helper("route", "code", "--runtime", "opencode")
         self.assertEqual("route", output["decision"])

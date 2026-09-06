@@ -9,6 +9,12 @@ Dispatch issue-backed workers with `dispatch-single-issue-helper.sh dispatch NUM
 
 Capability cataloguing is not evidence of live usability. Before routing work that depends on an external tool or service, run `scripts/capability-readiness-helper.py route <capability> --runtime <opencode|claude-code>`. Mandatory dimensions that are false **or unknown** force the declared fallback; the structured response reports the reason and coverage impact. The canonical contract is `configs/capability-registry.json`; generated inventory: `reference/capability-registry.md`.
 
+## View ownership
+
+- `subagent-index.toon` is the primary-registration view: it maps broad triggers to a coordinator and is not a readiness claim.
+- `reference/domain-index.md` is the user-intent view: it selects the narrowest entry point, including Accounting for bookkeeping, invoices, receipts, and reconciliation. Business remains the company-operations coordinator.
+- `configs/capability-registry.json` is the executable-readiness view: its generated inventory is `reference/capability-registry.md`, and it gates provider actions only. Registration and intent matching never imply installed, authenticated, or authorized access.
+
 Every selected agent inherits the ambient improvement contract in
 `reference/self-improvement.md`. Commands may expose controls, but routing must
 not depend on a user remembering to request learning or feedback capture.
@@ -17,7 +23,7 @@ not depend on a user remembering to request learning or feedback capture.
 
 1. Read the task or issue description.
 2. If it is clearly code work (`implement`, `fix`, `refactor`, `CI`), use Build+ or omit `--agent`.
-3. If trigger words clearly match another domain, resolve its capability readiness. Route to the owner only when every mandatory dimension is true; otherwise use the reported fallback.
+3. Resolve a narrow user-intent match through `reference/domain-index.md` before using a broad primary-agent trigger. If it depends on an external tool or service, resolve its capability readiness. Route to the owner only when every mandatory dimension is true; otherwise use the reported fallback.
 4. If uncertain, default to Build+; it can load narrower docs on demand.
 5. **Bundle-aware routing (t1364.6):** project bundles can define `agent_routing` overrides. Check with `bundle-helper.sh get agent_routing <repo-path>`. An explicit `--agent` flag wins.
 
@@ -68,7 +74,7 @@ Full index: `subagent-index.toon`.
 | Marketing-Sales | ads, CRO, email campaign, CRM, copy, outreach, funnel | Email campaigns, FluentCRM, Meta Ads, CRO, direct response copy, CRM pipeline, proposals, outreach |
 | PR | PR, public relations, press, journalist, media list, pitch, newsjacking, coverage tracking, reactive comment | Earned media strategy, journalist research, media lists, newsworthiness, newsjacking, pitch critique, coverage tracking |
 | Product | product, PRD, roadmap, validation, onboarding, monetisation, growth, analytics, UX | Product management, requirements, validation, onboarding, monetisation, growth, UI/UX, analytics |
-| Business | company ops, accounting, bookkeeping, reconciliation, finance, invoice, receipts, cash flow, accounting software, runners | Company operations, provider-neutral accounting, financial ops, invoicing, receipts, provider selection, runner configs, strategy |
+| Business | company ops, strategy, provider selection, runners | Company operations coordination, provider selection, runner configs, and strategy; route substantive bookkeeping, invoices, receipts, reconciliation, and accounting software through the Accounting domain entry |
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | Compliance, terms of service, privacy policy |
 | Vault | vault, encrypted memory, protected data, lock, unlock, rekey, device trust, remote lock, remote unlock, secure sync | Vault setup/management, protected-data routing, encrypted sync/fleet trust, remote lock/unlock-request, secure-message policy |
 | Research | research, compare, market, competitor, technical analysis, external tool, repository evaluation, do we already do this, adoption fit | Tech research, competitive analysis, market research, and external tool/repository evaluation; use `reference/external-tool-evaluation.md` for source-level adoption decisions |

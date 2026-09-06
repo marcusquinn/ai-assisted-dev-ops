@@ -6,6 +6,20 @@
   "properties": {
     "schema_version": {"const": 1},
     "dimensions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "owner", "source"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+          "owner": {"type": "string"},
+          "source": {"type": "string"},
+          "derived": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
     "capabilities": {
       "type": "array",
       "items": {

@@ -20,3 +20,11 @@ Catalogued capabilities: **14**
 | `accounting-operations` | Business | opencode, claude-code | deployed, runtime_compatible | `manual-accounting-workpaper` |
 | `quickfile-accounting` | Business | opencode, claude-code | deployed, installed, configured, authenticated, authorized, reachable, runtime_compatible, tool_visible, usable | `accounting-export-workpaper` |
 | `vault-operations` | Vault | opencode, claude-code | deployed, configured, enabled, authenticated, authorized, usable | `redacted-manual-handoff` |
+
+## View Ownership
+
+| View | Canonical owner | Derived view |
+|---|---|---|
+| `primary-registration` | `subagent-index.toon` | `—` |
+| `domain-entry` | `reference/domain-index.md` | `—` |
+| `capability-readiness` | `configs/capability-registry.json` | `reference/capability-registry.md` |
