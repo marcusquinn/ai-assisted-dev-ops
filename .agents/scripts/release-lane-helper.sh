@@ -894,7 +894,6 @@ release_lane_merge_guard() {
 	local phase=""
 	local source_pr=""
 	local tag_name=""
-	local terminal_receipt=""
 
 	[[ "$repo" == "$coordinated_repo" && "$base_ref" == "main" ]] || return 0
 	[[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
@@ -909,14 +908,21 @@ release_lane_merge_guard() {
 	esac
 	active=$(jq -r '.active' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	phase=$(jq -r '.phase' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	terminal_receipt=$(jq -r 'if .terminal_receipt == null then "" elif (.terminal_receipt | type) == "string" then .terminal_receipt else .terminal_receipt.status // "" end' \
-		<<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
-	if [[ "$active" == "false" || "$phase" == "terminal" || "$terminal_receipt" == "published" || "$terminal_receipt" == "superseded" || "$terminal_receipt" == "recovered" ]]; then
+	#aidevops:trust-boundary
+	# Ownership, not a stale receipt or phase label, releases the merge fence.
+	# Fence from reservation onwards, including preparation and reconciliation.
+	# This is an admission check, not a host-side lock: pre-existing native queues
+	# still require exact-tree publication checks and authorized aggregation recovery.
+	# See reference/release-lane-coordination.md for the bounded recovery contract.
+	if [[ "$active" == "false" ]]; then
 		return 0
 	fi
 	case "$phase" in
-	remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING") ;;
-	*) return 0 ;;
+	reserved | preparing | reconcile-required | remote-publication | exact-tag-deployment | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_RECOVERY" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATION_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_AGGREGATE_COMMIT" | "$_AIDEVOPS_RELEASE_LANE_PHASE_RESERVED_REFRESH" | "$_AIDEVOPS_RELEASE_LANE_PHASE_SUCCESSOR_PREPARING") ;;
+	*)
+		printf 'Cannot authorize merge for active release lane phase=%s\n' "$phase" >&2
+		return 75
+		;;
 	esac
 	source_pr=$(jq -r '.source_pr' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
 	tag_name=$(jq -r '.tag // ""' <<<"$_AIDEVOPS_RELEASE_LANE_JSON") || return 1
