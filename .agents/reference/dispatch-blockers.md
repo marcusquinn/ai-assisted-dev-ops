@@ -46,14 +46,20 @@ package directories per restore. `WORKTREE_NODE_MODULES_RESTORE_MAX_BYTES` can
 lower (not raise) the byte ceiling. Missing dependencies, unsupported install
 metadata, stale package/lock identities, foreign owners, writable shared sources,
 credential-bearing paths and escaping links cause a skip, never an installation
-or external-directory grant. Canonical npm hidden-lock and pnpm installed-lock
-metadata are required; Bun/Yarn-only trees remain unprovisioned.
+or external-directory grant. Canonical npm hidden-lock and pnpm v9 installed-lock
+metadata are required, with complete matching package inventories (including
+physical resolution roots, not just manifests). Unsupported YAML serializations,
+partial/platform-filtered installations and Bun/Yarn-only trees remain
+unprovisioned rather than receiving a weaker identity check.
 
 The path reuses the restore controller, registry and lock machinery. Security
 review ruled out whole-directory `fast_cp`: a changing source could exceed its
 preflight size during copying. The bounded copier pins source directories with
 no-follow descriptors, enforces limits during copying, and validates a private
-staged snapshot before promotion. This trades CoW speed for a hard resource bound.
+staged snapshot before atomic no-replace promotion. Source and output directories
+are descriptor-pinned. Promotion requires Linux `renameat2` or macOS
+`renameatx_np`; other platforms skip safely. This trades CoW speed for a hard
+resource bound and performs multiple bounded reads to verify snapshot identity.
 
 For an already denied dependency read, `worker-permission-helper.sh` adds an
 owned-recovery instruction to the existing request-specific, deduplicated

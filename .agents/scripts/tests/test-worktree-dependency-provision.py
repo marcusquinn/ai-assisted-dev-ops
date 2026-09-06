@@ -78,7 +78,7 @@ _dlw_restore_worktree_deps "$2" "$3"
                        env=env, check=True, capture_output=True, text=True, timeout=20)
 
     def test_bounded_read_and_repeat_preserve_checkpoint(self):
-        self.assertEqual(self.validate(), self.modules)
+        self.assertEqual(self.validate()[0], self.modules)
         head = self.git(self.wt, "rev-parse", "HEAD")
         (self.wt / "checkpoint.txt").write_text("PR fixture #42; pending request perm-fixture")
         self.run_restore()
@@ -179,20 +179,75 @@ _dlw_restore_worktree_deps "$2" "$3"
         self.run_restore()
         self.assertFalse((self.wt / "node_modules").exists())
 
-    def test_pnpm_contained_links(self):
+    def make_pnpm(self):
+        lock_text = "lockfileVersion: '9.0'\npackages:\n  example@1.0.0:\n    resolution: {integrity: fixture}\n"
         for parent in (self.repo, self.wt):
             (parent / "package-lock.json").unlink()
-            (parent / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n")
+            (parent / "pnpm-lock.yaml").write_text(lock_text)
         (self.modules / ".package-lock.json").unlink()
         store = self.modules / ".pnpm" / "example@1.0.0" / "node_modules"
         store.mkdir(parents=True)
         (self.modules / "example").rename(store / "example")
         (self.modules / "example").symlink_to(".pnpm/example@1.0.0/node_modules/example")
-        (self.modules / ".pnpm" / "lock.yaml").write_text("lockfileVersion: '9.0'\n")
+        (self.modules / ".pnpm" / "lock.yaml").write_text(lock_text)
+
+    def test_pnpm_contained_links(self):
+        self.make_pnpm()
         self.run_restore()
         copied = self.wt / "node_modules" / "example" / "index.js"
         self.assertTrue(copied.resolve().is_relative_to(self.wt))
         self.assertEqual(copied.read_text(), "export const fixture = 1;\n")
+
+    def test_extra_unrecorded_package(self):
+        self.write(self.modules / "extra" / "package.json", {"name": "extra", "version": "1.0.0"})
+        self.run_restore()
+        self.assertFalse((self.wt / "node_modules").exists())
+
+    def test_manifestless_package_roots_and_files(self):
+        for manager in ("npm", "pnpm"):
+            if manager == "pnpm":
+                self.make_pnpm()
+            for extra in ("extra/index.js", "extra.js", "@extra.js", ".extra.js"):
+                with self.subTest(manager=manager, extra=extra):
+                    payload = self.modules / extra
+                    payload.parent.mkdir(parents=True, exist_ok=True)
+                    payload.write_text("fixture only")
+                    self.run_restore()
+                    self.assertFalse((self.wt / "node_modules").exists())
+                    payload.unlink()
+                    if payload.parent != self.modules:
+                        payload.parent.rmdir()
+
+    def test_missing_expected_installed_package(self):
+        self.lock["packages"]["node_modules/missing"] = {"version": "1.0.0"}
+        for parent in (self.repo, self.wt):
+            self.write(parent / "package-lock.json", self.lock)
+        with self.assertRaises(provision.Rejected):
+            self.validate()
+
+    def test_shared_worktree_root_rejected(self):
+        self.wt.chmod(0o777)
+        with self.assertRaises(provision.Rejected):
+            self.validate()
+
+    def test_malformed_lock_is_redacted(self):
+        for parent in (self.repo, self.wt):
+            self.write(parent / "package-lock.json", [])
+        result = subprocess.run(["python3", str(SCRIPTS / "worktree-dependency-provision.py"),
+                                 str(self.repo), str(self.wt), "."], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "dependency-provision-rejected\n")
+
+    def test_atomic_promotion_does_not_replace_existing_directory(self):
+        stage = self.wt / ".aidevops-deps-fixture" / "node_modules"
+        stage.mkdir(parents=True, mode=0o700)
+        stage.parent.chmod(0o700)
+        destination = self.wt / "node_modules"
+        destination.mkdir()
+        with self.assertRaises(provision.Rejected):
+            provision.publish(stage, self.wt, Path("."))
+        self.assertTrue(stage.is_dir())
+        self.assertTrue(destination.is_dir())
 
 
 if __name__ == "__main__":

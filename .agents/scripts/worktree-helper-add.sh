@@ -410,11 +410,7 @@ _provision_worktree_node_modules() (
 	[[ "$(check_worktree_owner_snapshot "$wt_path")" == "$owner" ]] || return 1
 	worktree_has_exact_owner_contract "$wt_path" "$$" "$owner_session" "$owner_task" || return 1
 	[[ ! -e "$destination" && ! -L "$destination" ]] || return 1
-	mv -T "${stage}/node_modules" "$destination" 2>/dev/null || {
-		# BSD mv has no -T; the destination must still be absent.
-		[[ ! -e "$destination" && ! -L "$destination" ]] || return 1
-		mv "${stage}/node_modules" "$destination" || return 1
-	}
+	python3 "$validator" "$repo_root" "$wt_path" "$relative" --publish "${stage}/node_modules" --max-bytes "$max_bytes" >/dev/null || return 1
 	printf 'Dependency snapshot provisioned (sha256 bytes entries): %s\n' "$after"
 	return 0
 )
