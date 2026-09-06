@@ -242,10 +242,10 @@ test_bot_with_null_labels_fails_closed() {
 		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
 			print_result "bot with null labels defers without NMR" 0
 		else
-			print_result "bot with null labels fails closed and applies NMR" 1 "NMR label was not applied"
+			print_result "bot with null labels defers without NMR" 1 "Unexpected label mutation"
 		fi
 	else
-		print_result "bot with null labels fails closed and applies NMR" 1 "Expected gate to block"
+		print_result "bot with null labels defers without NMR" 1 "Expected gate to block"
 	fi
 	cleanup_case
 	return 0
@@ -257,10 +257,10 @@ test_bot_with_missing_labels_fails_closed() {
 		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
 			print_result "bot with missing labels defers without NMR" 0
 		else
-			print_result "bot with missing labels fails closed and applies NMR" 1 "NMR label was not applied"
+			print_result "bot with missing labels defers without NMR" 1 "Unexpected label mutation"
 		fi
 	else
-		print_result "bot with missing labels fails closed and applies NMR" 1 "Expected gate to block"
+		print_result "bot with missing labels defers without NMR" 1 "Expected gate to block"
 	fi
 	cleanup_case
 	return 0
@@ -272,10 +272,10 @@ test_bot_with_empty_label_name_fails_closed() {
 		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
 			print_result "bot with empty label name defers without NMR" 0
 		else
-			print_result "bot with empty label name fails closed and applies NMR" 1 "NMR label was not applied"
+			print_result "bot with empty label name defers without NMR" 1 "Unexpected label mutation"
 		fi
 	else
-		print_result "bot with empty label name fails closed and applies NMR" 1 "Expected gate to block"
+		print_result "bot with empty label name defers without NMR" 1 "Expected gate to block"
 	fi
 	cleanup_case
 	return 0
@@ -319,11 +319,62 @@ test_author_lookup_failure_fails_closed() {
 			cleanup_case
 			return 0
 		fi
-		print_result "author lookup failure fails closed with NMR" 1 "NMR label was not applied"
+		print_result "author lookup failure defers without NMR" 1 "Unexpected label mutation"
 		cleanup_case
 		return 0
 	fi
-	print_result "author lookup failure fails closed with NMR" 1 "Expected gate to block on lookup failure"
+	print_result "author lookup failure defers without NMR" 1 "Expected gate to block on lookup failure"
+	cleanup_case
+	return 0
+}
+
+test_dedup_author_gate_integration() {
+	local caller_src
+	caller_src=$(awk '/^_dispatch_dedup_check_layers\(\) \{/,/^}$/ { print }' "$CORE_SCRIPT")
+	eval "$caller_src"
+	# Isolate unrelated pre-dispatch dependencies; exercise the actual caller,
+	# author gate, JSON validation and GitHub mock together without network I/O.
+	_ds_now_ns() { printf '0\n'; }
+	_ds_record() { return 0; }
+	_dispatch_interactive_hold_gate() { return 1; }
+	aidevops_worktree_capacity_check() { return 0; }
+	_dispatch_worktree_capacity_gate() { return 0; }
+	_has_publication_pending_label() { return 1; }
+	_has_consolidated_label() { return 1; }
+	_check_nmr_approval_gate() { return 1; }
+	is_blocked_by_unresolved() { return 1; }
+	_issue_needs_consolidation() { return 1; }
+	_issue_targets_large_files() { return 1; }
+	_footprint_check_overlap() { return 0; }
+	check_dispatch_dedup() { return "$mock_dedup_rc"; }
+	local mock_dedup_rc=0 rc=0
+	local meta='{"state":"OPEN","title":"Fixture","labels":[],"body":""}'
+	setup_case "CONTRIBUTOR" "User" ""
+	_dispatch_dedup_check_layers 31404 owner/repo Fixture Fixture runner "$TEST_ROOT" "$meta" || rc=$?
+	if [[ "$rc" -eq 1 && ! -s "$GH_CALLS_FILE" ]]; then
+		print_result "active claim skips author metadata lookup and mutation" 0
+	else
+		print_result "active claim skips author metadata lookup and mutation" 1 "rc=$rc"
+	fi
+	# A successful API with empty output must defer, not allow dispatch.
+	mock_dedup_rc=1
+	: >"${TEST_ROOT}/issue-meta.json"
+	rc=0
+	_dispatch_dedup_check_layers 31404 owner/repo Fixture Fixture runner "$TEST_ROOT" "$meta" || rc=$?
+	if [[ "$rc" -eq 1 ]] && ! grep -q -- '--add-label' "$GH_CALLS_FILE" && grep -q 'metadata fetch failed' "$LOGFILE"; then
+		print_result "empty metadata skips dispatch without labels and logs retry" 0
+	else
+		print_result "empty metadata skips dispatch without labels and logs retry" 1 "rc=$rc"
+	fi
+	cleanup_case
+	setup_case "NONE" "Bot" "" 0
+	rc=0
+	_dispatch_dedup_check_layers 31404 owner/repo Fixture Fixture runner "$TEST_ROOT" "$meta" || rc=$?
+	if [[ "$rc" -eq 0 ]] && ! grep -q -- '--add-label' "$GH_CALLS_FILE"; then
+		print_result "trusted bot dispatch resumes when metadata recovers" 0
+	else
+		print_result "trusted bot dispatch resumes when metadata recovers" 1 "rc=$rc"
+	fi
 	cleanup_case
 	return 0
 }
@@ -346,6 +397,7 @@ main() {
 	test_external_author_with_crypto_approval_allows_dispatch
 	test_external_author_with_unverifiable_approval_blocks_without_reapplying_nmr
 	test_author_lookup_failure_fails_closed
+	test_dedup_author_gate_integration
 
 	printf '\nRan %s tests, %s failed.\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then
