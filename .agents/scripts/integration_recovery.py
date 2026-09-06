@@ -21,57 +21,75 @@ import time
 MARKER = "INTEGRATION_RECOVERY_REQUEST="
 REASONS = {"adjacent_integration", "hard_boundary", "concurrent_owner", "missing_context", "human_decision"}
 WAKES = {"brief_revision", "owner_change", "dependency_change", "human_decision"}
+REQUEST_FIELDS = {"schema", "issue", "pr", "reason", "files", "evidence", "verification"}
+NOT_TEXT = object()
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
 
 
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def event_text(line):
+    try:
+        event = json.loads(line)
+        if event.get("type") != "text":
+            return NOT_TEXT
+        part = event.get("part", {})
+        text = event.get("text") or part.get("text")
+    except (AttributeError, ValueError):
+        return NOT_TEXT
+    return text if isinstance(text, str) else NOT_TEXT
+
+
+def bounded_string(value, minimum, maximum, message):
+    require(isinstance(value, str), message)
+    require(len(value) in range(minimum, maximum + 1), message)
+
+
+def validate_path(path):
+    bounded_string(path, 1, 500, "invalid path")
+    parts = PurePosixPath(path)
+    require(not parts.is_absolute(), "paths must be exact repository-relative paths")
+    require(".." not in parts.parts, "paths must be exact repository-relative paths")
+    require(not re.search(r"[\s*?\[\]\\]", path), "paths must be exact repository-relative paths")
+
+
+def validate_request(request):
+    require(isinstance(request, dict), "invalid recovery schema")
+    require(set(request) == REQUEST_FIELDS, "invalid recovery schema")
+    require(request["schema"] == 1, "invalid recovery schema")
+    require(request["reason"] in REASONS, "invalid reason")
+    for key, minimum in (("issue", 1), ("pr", 0)):
+        require(type(request[key]) is int, "invalid target")
+        require(request[key] >= minimum, "invalid target")
+    files = request["files"]
+    require(isinstance(files, list), "invalid proposed paths")
+    require(len(files) <= 20, "invalid proposed paths")
+    for path in files:
+        validate_path(path)
+    bounded_string(request["evidence"], 1, 8000, "missing bounded evidence")
+    verification = request["verification"]
+    require(isinstance(verification, list), "missing verification")
+    require(len(verification) in range(1, 21), "missing verification")
+    for item in verification:
+        bounded_string(item, 1, 1000, "invalid verification")
+
+
 def final_request(raw):
     """Accept only a final normalized assistant text event, never tool text."""
-    texts = []
-    for line in raw.splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "text":
-            continue
-        part = event.get("part", {})
-        text = event.get("text") or (part.get("text") if isinstance(part, dict) else None)
-        if isinstance(text, str):
-            texts.append(text)
-    if not texts or not re.search(r"^BLOCKED:", texts[-1], re.M):
-        raise ValueError("no final assistant recovery request")
-    matches = [line[len(MARKER):] for line in texts[-1].splitlines() if line.startswith(MARKER)]
-    if len(matches) != 1:
-        raise ValueError("expected exactly one final request")
+    texts = [text for line in raw.splitlines() if (text := event_text(line)) is not NOT_TEXT]
+    require(texts, "no final assistant recovery request")
+    require(re.search(r"^BLOCKED:", texts[-1], re.M), "no final assistant recovery request")
+    matches = [line.removeprefix(MARKER) for line in texts[-1].splitlines() if line.startswith(MARKER)]
+    require(len(matches) == 1, "expected exactly one final request")
     request = json.loads(matches[0])
-    expected = {"schema", "issue", "pr", "reason", "files", "evidence", "verification"}
-    if not isinstance(request, dict) or set(request) != expected or request["schema"] != 1:
-        raise ValueError("invalid recovery schema")
-    if request["reason"] not in REASONS:
-        raise ValueError("invalid reason")
-    for key in ("issue", "pr"):
-        if type(request[key]) is not int or request[key] < (1 if key == "issue" else 0):
-            raise ValueError("invalid target")
-    files = request["files"]
-    if not isinstance(files, list) or len(files) > 20:
-        raise ValueError("invalid proposed paths")
-    for path in files:
-        if not isinstance(path, str) or not path or len(path) > 500:
-            raise ValueError("invalid path")
-        if PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts or re.search(r"[\s*?\[\]\\]", path):
-            raise ValueError("paths must be exact repository-relative paths")
-    evidence = request["evidence"]
-    verification = request["verification"]
-    if not isinstance(evidence, str) or not 1 <= len(evidence) <= 8000:
-        raise ValueError("missing bounded evidence")
-    if not isinstance(verification, list) or not 1 <= len(verification) <= 20:
-        raise ValueError("missing verification")
-    if any(not isinstance(item, str) or not 1 <= len(item) <= 1000 for item in verification):
-        raise ValueError("invalid verification")
-    request["files"] = sorted(set(files))
+    validate_request(request)
+    request["files"] = sorted(set(request["files"]))
     return request
 
 
