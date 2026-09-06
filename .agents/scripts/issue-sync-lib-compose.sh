@@ -546,8 +546,8 @@ _compose_issue_sections() {
 	fi
 
 	body=$(_compose_issue_related_files "$body" "$task_id" "$project_root") || return 1
-	body=$(_compose_issue_worker_guidance "$body" "$project_root/todo/tasks/${task_id}-brief.md")
-	body=$(_compose_issue_brief "$body" "$project_root/todo/tasks/${task_id}-brief.md")
+	body=$(_compose_issue_worker_guidance "$body" "$project_root/todo/tasks/${task_id}-brief.md") || return 1
+	body=$(_compose_issue_brief "$body" "$project_root/todo/tasks/${task_id}-brief.md") || return 1
 	body=$(_compose_issue_brief_workflow_reference "$body")
 
 	echo "$body"
@@ -595,6 +595,7 @@ _compose_issue_worker_guidance() {
 		local readiness_helper="$SCRIPT_DIR/brief-readiness-helper.sh"
 		local brief_body=""
 		brief_body=$(<"$brief_file")
+		brief_body=$(bash "$readiness_helper" scope-normalize "$brief_body") || return 1
 		if [[ -f "$readiness_helper" ]] && bash "$readiness_helper" check --body "$brief_body" >/dev/null 2>&1; then
 			promote=1
 		fi
@@ -652,6 +653,12 @@ _compose_issue_brief() {
 
 	if [[ -n "$brief_content" && ${#brief_content} -gt 10 ]]; then
 		body="$body"$'\n\n'"$ISSUE_SYNC_DETAILS_OPEN"$'\n'"<summary>Full task brief and audit context</summary>"$'\n\n'"## Task Brief"$'\n\n'"$brief_content"$'\n\n'"$ISSUE_SYNC_DETAILS_CLOSE"
+	fi
+
+	# Keep composition pure: the author persists the same transformation with
+	# prepare-scope before publication. Never rewrite a mirror during body sync.
+	if printf '%s\n' "$body" | grep -qiE '^#{2,3} Files (to Modify|Scope)[[:space:]]*$'; then
+		body=$(bash "$SCRIPT_DIR/brief-readiness-helper.sh" scope-normalize "$body") || return 1
 	fi
 
 	echo "$body"

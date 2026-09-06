@@ -507,8 +507,8 @@ _compose_issue_body() {
 
 		# Inline Worker Guidance (How section) and full Task Brief.
 		# These helpers are sourced from issue-sync-lib.sh at the top of this script.
-		body=$(_compose_issue_worker_guidance "$body" "$brief_file")
-		body=$(_compose_issue_brief "$body" "$brief_file")
+		body=$(_compose_issue_worker_guidance "$body" "$brief_file") || return 1
+		body=$(_compose_issue_brief "$body" "$brief_file") || return 1
 		if declare -F _compose_issue_brief_workflow_reference >/dev/null 2>&1; then
 			body=$(_compose_issue_brief_workflow_reference "$body")
 		fi

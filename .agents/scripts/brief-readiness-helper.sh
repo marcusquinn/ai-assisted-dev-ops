@@ -326,8 +326,12 @@ for line in section(starts[0]):
             continue
         # Explanations are retained, not mined for more permissions. Ambiguous
         # additional declarations and explicit negative qualifiers fail closed.
+        if re.match(r"^[\s,;]+`?[\w.-]+(?:/|\.[A-Za-z])", rest):
+            fail()
         if (rest and not re.match(r"^(?:\s|[—–,:;])", rest)) or re.search(
-                r"EDIT:|NEW:|read.only|exclude|do not (?:edit|modify)|must not (?:edit|modify)", rest, re.I):
+                r"EDIT:|NEW:|read.only|exclude|do not (?:edit|modify)|must not (?:edit|modify)|"
+                r"leave .*unchanged|remain .*untouched|reference .*only|inspect .*only|"
+                r"no (?:edits|changes|modifications)|never (?:edit|modify)", rest, re.I):
             fail()
         break
 if not paths:
