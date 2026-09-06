@@ -31,6 +31,16 @@ _pc_progress_run_job() {
 	return 0
 }
 
+# Missing Git fails before fixture cleanup, inventory, or cursor persistence.
+rc=0
+guard_output=$(
+	_pc_cleanup_fixture_passes() { exit 99; }
+	_pc_progress_checkpoint() { exit 99; }
+	PATH="${TEST_ROOT}/missing-bin" _pc_cleanup_resumable 5 2>&1
+) || rc=$?
+[[ "$rc" == 1 && "$guard_output" == *"git not available in PATH"* ]]
+[[ ! -e "${PULSE_STATE_DIR}/worktree-cleanup-next.json" && ! -e "$CALLS" ]]
+
 # A slow first repository consumes the budget. Next invocation starts at its
 # orphan phase, reaches the later repo, and only then rotates back to slow work.
 _pc_cleanup_resumable 5

@@ -4,6 +4,9 @@
 # Sourced by pulse-cleanup-worktree-removal.sh for watchdog-bounded invocations.
 # Cursor data controls ordering only; every job invokes existing removal guards.
 
+# shellcheck source=./canonical-guard-helper.sh
+source "${BASH_SOURCE[0]%/*}/canonical-guard-helper.sh" || return 1
+
 _pc_progress_repo_jobs() {
 	local repo="$1" slug="" main_branch="" inventory=""
 	git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || return 0
@@ -84,6 +87,7 @@ _pc_cleanup_resumable() {
 	CLEANUP_WORKTREES_REMOVED_COUNT=0
 	CLEANUP_WORKTREES_ARCHIVED_COUNT=0
 	CLEANUP_WORKTREES_ARCHIVE_FAILED_COUNT=0
+	assert_git_available || return 1
 	[[ "$budget" =~ ^[0-9]+$ && "$budget" -ge 1 ]] || return 1
 	deadline=$(($(date +%s) + budget))
 	command -v jq >/dev/null 2>&1 || return 1
