@@ -118,6 +118,56 @@ and estimate limitations live in `tools/context/model-routing.md`.
 - Reuse existing routing feedback, checks and concrete repair evidence. Distinguish host completion from verified acceptance. Repeated repair justifies raising that task class's route; repeated easy verified success supports a lower-effort choice. Record reusable lessons through the existing self-improvement workflow, not a new dashboard or per-task ceremony.
 - Preserve permission, trust, locality, billing and side-effect boundaries. Safe task-level choices remain autonomous; persistent shared defaults use the normal reviewed change/release path. Interrupt the user only for authority or a consequential trade-off, and keep delivery moving.
 
+### Specialist advice without promoting the parent
+
+Start with the cheapest credible model and reasoning level, not the largest model
+associated with a domain label. The OpenAI daily driver and thinking route use Sol
+medium; simple and standard children use Luna low and Terra low. Pulse and worker
+parents can use the same advisory pattern as interactive parents without allowing
+children to recurse or expanding the worker's dispatched scope.
+
+Use `specialist-advisor` (OpenCode native Task) only for a concrete capability gap,
+a genuinely difficult specialist decision, or an explicit request for escalation.
+Candidates include original UI/UX design, deep domain synthesis, non-obvious
+security/concurrency/performance analysis, and complex 3D geometry. These are
+judgment triggers, not automatic promotions: routine CSS, scanner output, measured
+hotspot collection, and established modelling operations stay on cheaper routes.
+
+The separately configured `specialist_advisor` route defaults to Astra low. It is
+not a fourth tier, not an availability fallback, and not an automatic continuation
+of a Sol session. `domain-focused` and `domain-light` still inherit the exact parent
+model and cannot be used to request Astra from Sol. `ai-research` accepts canonical
+tiers only, so `thinking` means Sol, not this specialist route.
+
+Pass a JSON prompt (optionally prefixed `[effort:thinking]`):
+
+```json
+{
+  "objective": "Resolve the remaining concurrency risk",
+  "scope": "Advisory analysis of this transaction only; no execution or delegation",
+  "evidence": "Supply relevant code, observed failure, attempted fix, domain and safety constraints here",
+  "escalation_reason": "The cheaper analysis failed the supplied interleaving check; isolate the unresolved ordering decision",
+  "output": "Return a proposed invariant, cited evidence, uncertainties and a parent-verifiable check in 500 words"
+}
+```
+
+Collect evidence cheaply first. Supply essential excerpts, domain guidance and
+acceptance criteria—not the entire session or paths alone. The tool-free child
+cannot inspect a UI, browse, run an audit, create a 3D artifact or verify its own
+proposal. The parent performs those operations using the actual domain tools.
+Validate once against the acceptance criteria and integrate the answer; do not
+automatically purchase another review. A tool error, missing source, authentication,
+rate limit, permission or privacy restriction requires repair of that cause, not
+a larger model. No automatic reasoning ladder is shipped for Sol or Astra.
+Raise specialist reasoning only when explicitly requested or evidenced necessary;
+otherwise repair context or stop after a bounded unsuccessful advisory attempt.
+
+The profile is available to OpenCode interactive and headless parents after
+restart; unsupported runtimes must not pretend it exists. Honour local-only,
+provider and billing constraints before delegating. A missing/disabled profile is
+unavailable; never silently switch providers or start an external worker instead.
+Existing user model/variant pins and custom routing remain explicit overrides.
+
 ## Primary agents
 
 Full index: `subagent-index.toon`.

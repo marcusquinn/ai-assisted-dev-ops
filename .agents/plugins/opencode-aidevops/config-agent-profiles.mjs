@@ -11,6 +11,7 @@ import { getOnDemandMcpAgents } from "./mcp-registry.mjs";
 import { DEFAULT_ESCALATION_ORDER, normalizeRoutingTier } from "./model-routing.mjs";
 import { recordPluginHealthStage } from "./plugin-health.mjs";
 import { primaryDeliveryEvidence } from "./primary-delivery-evidence.mjs";
+import { registerSpecialistAdvisor, applyDailyDriverDefaults } from "./specialist-advisor.mjs";
 
 export { primaryDeliveryEvidence } from "./primary-delivery-evidence.mjs";
 export { registerDelegatedDomainProfiles } from "./agent-loader.mjs";
@@ -199,7 +200,9 @@ export function registerAgents(config, agentsDir, routing, state) {
     }
     registerAgentRoutingIntent(state, agent.name, config.agent[agent.name], agent.modelTier, routing);
   });
+  applyDailyDriverDefaults(config, routing);
   return injected
+    + registerSpecialistAdvisor(config, agentsDir, routing, state)
     + registerDelegatedDomainProfiles(config, agentsDir, state)
     + registerOnDemandMcpAgents(config, agentsDir, routing, state)
     + registerBuiltInRoutedAgents(config, routing, state);

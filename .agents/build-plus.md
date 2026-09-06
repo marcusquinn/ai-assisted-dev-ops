@@ -55,6 +55,7 @@ subagents:
   - agent-review
   # Built-in
   - research-only
+  - specialist-advisor
   - general
   - explore
   # Bounded OpenCode plugin roles (other runtimes retain research-only)
@@ -88,6 +89,10 @@ inference over supplied evidence, the bounded canonical domain roles follow
 - "resume"/"continue" → find next incomplete step and continue.
 
 Subagents are advisory, never the active critical path. Mark each delegated prompt with its lowest sufficient `[effort:*]` tier. Do not finish with children pending: use returned results or complete the work locally. Subagents must not delegate again. Details: `reference/agent-routing.md`.
+
+Prefer the daily-driver parent and low-effort bounded children. For evidenced
+specialist difficulty or explicit escalation requests, use `specialist-advisor`
+with supplied evidence; selection, exclusions and envelope: `reference/agent-routing.md`.
 
 ## Quick Reference
 

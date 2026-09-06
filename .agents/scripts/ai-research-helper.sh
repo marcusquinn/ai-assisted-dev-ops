@@ -42,10 +42,8 @@ resolve_model_id() {
 resolve_opencode_model_id() {
 	local name="${1:-simple}"
 	case "$name" in
-	simple) echo "openai/gpt-5.6-luna" ;;
+	simple | standard | thinking) model_tier_candidate_for_provider "$name" openai || return 1 ;;
 	local) echo "openai/gpt-5.4-mini" ;;
-	standard) echo "openai/gpt-5.6-sol" ;;
-	thinking) echo "openai/gpt-5.6-sol" ;;
 	openai/* | anthropic/* | google/*) echo "$name" ;;
 	*) echo "$name" ;;
 	esac
@@ -54,10 +52,10 @@ resolve_opencode_model_id() {
 
 resolve_opencode_variant() {
 	local name="${1:-simple}"
+	local model="${2:-}"
+	[[ -n "$model" ]] || model=$(resolve_opencode_model_id "$name") || return 1
 	case "$name" in
-	simple) echo "max" ;;
-	standard) echo "high" ;;
-	thinking) echo "max" ;;
+	simple | standard | thinking) model_tier_variant "$name" "$model" || true ;;
 	*) echo "" ;;
 	esac
 	return 0
@@ -335,9 +333,9 @@ call_opencode() {
 	local run_dir="${AIDEVOPS_AI_RESEARCH_OPENCODE_DIR:-/tmp/opencode}"
 	model_id="${AIDEVOPS_AI_RESEARCH_OPENCODE_MODEL:-}"
 	if [[ -z "$model_id" ]]; then
-		model_id=$(resolve_opencode_model_id "$model_name")
+		model_id=$(resolve_opencode_model_id "$model_name") || return 2
 	fi
-	variant_id=$(resolve_opencode_variant "$model_name")
+	variant_id=$(resolve_opencode_variant "$model_name" "$model_id")
 	if [[ -n "$variant_id" ]]; then
 		variant_args=(--variant "$variant_id")
 	fi

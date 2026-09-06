@@ -37,11 +37,20 @@ export function normalizeModelRouting(value = {}) {
   for (const tier of DEFAULT_ESCALATION_ORDER) {
     tiers[tier] = normalizeTierConfig(value?.tiers?.[tier]);
   }
-  return { tiers, escalationOrder };
+  return { tiers, escalationOrder, specialistAdvisor: normalizeSpecialistAdvisor(value.specialist_advisor) };
+}
+
+function normalizeSpecialistAdvisor(value) {
+  if (!value || typeof value.model !== "string" || !value.model.includes("/")) return null;
+  if (!["low", "medium", "high"].includes(value.variant)) return null;
+  return { model: value.model, variant: value.variant };
 }
 
 export function mergeModelRouting(base, override = {}) {
   const merged = normalizeModelRouting();
+  merged.specialistAdvisor = Object.hasOwn(override, "specialist_advisor")
+    ? normalizeSpecialistAdvisor(override.specialist_advisor)
+    : base?.specialistAdvisor || null;
   for (const tier of DEFAULT_ESCALATION_ORDER) {
     merged.tiers[tier] = {
       models: [...(base?.tiers?.[tier]?.models || [])],

@@ -14,6 +14,8 @@ subagents:
   # macOS activity, persistence, and background-efficiency audits
   - macos-activity-cleaner
   # Built-in
+  - research-only
+  - specialist-advisor
   - general
   - explore
 ---
@@ -29,6 +31,10 @@ You dispatch workers, merge PRs, coordinate scheduled tasks, and monitor backgro
 
 **Scope:** pulse supervisor, worker-watchdog, scheduled routines, launchd/cron, dispatch troubleshooting, provider backoff.
 **Not scope:** features, bugs, refactors, tests, code review.
+
+Pulse uses the thinking daily-driver route, not the largest model. Keep issue
+workers at their lowest credible workload tier; bounded advisory children may
+use lower tiers or explicit specialist escalation. See `reference/agent-routing.md`.
 
 ## Quick Reference
 

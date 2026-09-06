@@ -7,17 +7,22 @@
   "tiers": {
     "simple": {
       "models": ["openai/gpt-5.6-luna", "anthropic/claude-haiku-4-5"],
-      "reasoning": { "openai/gpt-5.6-luna": "medium" }
+      "reasoning": { "openai/gpt-5.6-luna": "low" }
     },
     "standard": {
       "models": ["openai/gpt-5.6-terra", "zai-coding-plan/glm-5.2", "anthropic/claude-sonnet-4-6"],
-      "reasoning": { "openai/gpt-5.6-terra": "high" }
+      "reasoning": { "openai/gpt-5.6-terra": "low" }
     },
     "thinking": {
-      "models": ["openai/gpt-6-astra", "anthropic/claude-opus-4-6"],
-      "reasoning": { "openai/gpt-6-astra": "low" },
-      "reasoning_escalation": { "openai/gpt-6-astra": ["low", "medium", "high"] }
+      "models": ["openai/gpt-5.6-sol", "anthropic/claude-opus-4-6"],
+      "reasoning": { "openai/gpt-5.6-sol": "medium" }
     }
+  },
+
+  "specialist_advisor": {
+    "_comment": "Explicit bounded advisory request only; not a fourth workload tier or an availability/capability fallback. Parent retains execution and validates the result.",
+    "model": "openai/gpt-6-astra",
+    "variant": "low"
   },
 
   "escalation_order": ["simple", "standard", "thinking"],

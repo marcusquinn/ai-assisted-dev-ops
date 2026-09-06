@@ -198,13 +198,19 @@ trap 'rm -rf "$fixture_dir"' EXIT
 	_resolve_capability_escalation worker simple
 	[[ "$_capability_escalation_tier" == "standard" ]]
 	[[ "$_capability_escalation_model" == "openai/gpt-5.6-terra" ]]
-	[[ "$_capability_escalation_variant" == "high" ]]
+	[[ "$_capability_escalation_variant" == "low" ]]
 	[[ "$(model_tier_candidate_index "$_capability_escalation_tier" "$_capability_escalation_model")" == "0" ]]
 )
 
 # Exercise the real result handler, preserving the session and model while
-# increasing reasoning only on the structured capability signal.
+# increasing reasoning only on the structured capability signal with an opt-in
+# custom ladder. Shared defaults stop at Sol medium; Astra is advisory-only.
 (
+	if model_tier_next_variant thinking openai/gpt-5.6-sol medium; then
+		exit 1
+	fi
+	export AIDEVOPS_MODEL_ROUTING_TABLE="${fixture_dir}/reasoning-ladder.json"
+	printf '%s\n' '{"tiers":{"thinking":{"models":["openai/gpt-6-astra"],"reasoning_escalation":{"openai/gpt-6-astra":["low","medium","high"]}}}}' >"$AIDEVOPS_MODEL_ROUTING_TABLE"
 	role="worker"
 	model_override=""
 	tier_override="thinking"
@@ -337,7 +343,7 @@ routing_capture="${fixture_dir}/adaptive-routing.txt"
 	variant_override=$(resolve_headless_variant "$role" "$tier_override" "$selected_model")
 	_cmd_run_attempt_loop
 )
-[[ "$(<"$routing_capture")" == "simple|0|medium|openai/gpt-5.6-luna|medium" ]]
+[[ "$(<"$routing_capture")" == "simple|0|low|openai/gpt-5.6-luna|low" ]]
 
 (
 	attempt_exit=81

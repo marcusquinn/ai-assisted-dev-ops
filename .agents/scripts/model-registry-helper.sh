@@ -1307,15 +1307,15 @@ _route_lookup_models() {
 
 	case "$tier" in
 	simple)
-		primary_model="${primary_model:-openai/gpt-5.6-terra}"
+		primary_model="${primary_model:-openai/gpt-5.6-luna}"
 		fallback_model="${fallback_model:-anthropic/claude-haiku-4-5}"
 		;;
 	standard)
-		primary_model="${primary_model:-openai/gpt-5.6-luna}"
+		primary_model="${primary_model:-openai/gpt-5.6-terra}"
 		fallback_model="${fallback_model:-anthropic/claude-sonnet-4-6}"
 		;;
 	thinking)
-		primary_model="${primary_model:-openai/gpt-6-astra}"
+		primary_model="${primary_model:-openai/gpt-5.6-sol}"
 		fallback_model="${fallback_model:-anthropic/claude-opus-4-6}"
 		;;
 	esac

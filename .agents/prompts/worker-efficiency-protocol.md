@@ -41,10 +41,17 @@ gh pr create --draft --title 'GH#123: description' --body-file '/path/to/pr-body
 
 ## 2. Spend tokens where they change outcomes
 
-- Files over 200 lines you will not edit: use `ai_research` (~100 tokens vs ~5000). Do not offload files you need to edit.
+- Keep the lowest credible parent tier; thinking uses the daily driver, not the
+  largest model. Bounded independent work may use simple/standard children. For an
+  evidenced specialist gap, use `specialist-advisor` when available, with the JSON
+  evidence contract in `reference/agent-routing.md`. Retain implementation and
+  acceptance ownership; children never recurse. No automatic Astra promotion.
+- Delegate output-heavy independent analysis only when it saves total work. Supply
+  actual excerpts through `files`/`agents` to inference-only `ai_research`; paths
+  mentioned only in its prompt are not loaded. Do not offload files you need to edit.
 
 ```text
-ai_research(prompt: "Find all functions that dispatch workers in pulse-wrapper.sh. Return: function name, line number, key variables.", domain: "orchestration")
+ai_research(prompt: "Review the supplied dispatch function. Return: decision, evidence, uncertainty and next check.", files: "path/to/relevant-source.sh:100-180", domain: "orchestration", model: "simple")
 ```
 
 - Rate limit: 10 per session. Default workload tier: `simple`; OpenCode selects

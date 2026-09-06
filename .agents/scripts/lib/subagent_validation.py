@@ -18,7 +18,7 @@ from discovery_utils import parse_frontmatter
 BUILTIN_SUBAGENTS = {"general", "explore"}
 # Bounded roles supplied by the OpenCode plugin, not standalone prompt copies.
 # Other runtimes retain their existing research-only fallback.
-PLUGIN_SUBAGENTS = {"domain-focused", "domain-light"}
+PLUGIN_SUBAGENTS = {"domain-focused", "domain-light", "specialist-advisor"}
 
 # Files to skip during subagent scanning
 _SKIP_SUBAGENT_FILES = {"AGENTS.md", "README.md"}

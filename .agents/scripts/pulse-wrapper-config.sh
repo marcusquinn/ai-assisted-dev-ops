@@ -145,10 +145,11 @@ MODEL_AVAILABILITY_HELPER="${MODEL_AVAILABILITY_HELPER:-${SCRIPT_DIR}/model-avai
 _pulse_warn_if_legacy_model_var_from_credentials "PULSE_MODEL" "${PULSE_MODEL:-}"
 _pulse_warn_if_legacy_model_var_from_credentials "AIDEVOPS_HEADLESS_MODELS" "${AIDEVOPS_HEADLESS_MODELS:-}"
 if [[ -z "${PULSE_MODEL:-}" ]] && [[ -x "$MODEL_AVAILABILITY_HELPER" ]]; then
-	PULSE_MODEL=$("$MODEL_AVAILABILITY_HELPER" resolve standard --quiet 2>/dev/null || true)
+	PULSE_MODEL=$("$MODEL_AVAILABILITY_HELPER" resolve thinking --quiet 2>/dev/null || true)
 fi
-# Absolute fallback if routing resolution fails entirely.
-PULSE_MODEL="${PULSE_MODEL:-anthropic/claude-sonnet-4-6}"
+# If pre-resolution fails, let the headless thinking route apply availability
+# and provider policy; never turn failure into an unrelated hardcoded model pin.
+PULSE_MODEL="${PULSE_MODEL:-}"
 PULSE_BACKFILL_MAX_ATTEMPTS="${PULSE_BACKFILL_MAX_ATTEMPTS:-3}"                                            # Additional pulse passes when below utilization target (t1453)
 PULSE_LAUNCH_GRACE_SECONDS="${PULSE_LAUNCH_GRACE_SECONDS:-35}"                                             # Max grace window for worker process to appear after dispatch (t1453) — raised from 20s to 35s: sandbox-exec + opencode cold-start takes ~25-30s
 PULSE_LAUNCH_SETTLE_BATCH_MAX="${PULSE_LAUNCH_SETTLE_BATCH_MAX:-5}"                                        # Dispatch count at which the full PULSE_LAUNCH_GRACE_SECONDS wait applies (t1887)

@@ -33,7 +33,7 @@ model: simple
 |------|-------|----------|
 | `simple` | openai/gpt-5.6-luna → anthropic/claude-haiku-4-5 | Complete low-consequence execution contracts |
 | `standard` | openai/gpt-5.6-terra → zai-coding-plan/glm-5.2 → anthropic/claude-sonnet-4-6 | Established-pattern implementation with normal judgment and recovery |
-| `thinking` | openai/gpt-6-astra → anthropic/claude-opus-4-6 | Consequential unresolved decisions, novel design, and synthesis-heavy work |
+| `thinking` | openai/gpt-5.6-sol → anthropic/claude-opus-4-6 | Daily-driver coordination, consequential decisions and synthesis-heavy work |
 
 **Model IDs**: Always fully-qualified (`claude-sonnet-4-6`, not `claude-sonnet-4`). Short-form → `ProviderModelNotFoundError`. CLI prefix: `anthropic/`, `google/`, `openai/`.
 
@@ -82,13 +82,13 @@ task title/prompt metadata. Remote providers are denied for `local-only` and
 is always denied because secrets must flow through secret tooling, not prompts.
 
 - **Shared default**: The framework routing table lists smoke-tested OpenAI models first so workers can continue during Anthropic cooldowns. Anthropic remains the fallback, and local custom routing can still reorder or replace these defaults.
-- **Pulse**: Resolves `standard` through `model-availability-helper.sh resolve standard`, so it follows routing-table order, health checks, local routing-table overrides, and `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST`.
+- **Pulse**: Resolves `thinking` through `model-availability-helper.sh resolve thinking`, so it follows routing-table order, health checks, local routing-table overrides, and `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST`.
 - **Workers**: Follow configured candidate order within canonical `simple`, `standard`, or `thinking` routes after allowlist filtering and auth checks.
 - **Local switch**: Set `AIDEVOPS_HEADLESS_PROVIDER_ALLOWLIST=openai` to force both pulse and workers onto the default OpenAI fallbacks. If you want OpenAI primary but Anthropic fallback, reorder `custom/configs/model-routing-table.json` and omit the allowlist.
-- **Current default mapping**: The active routing table maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Terra then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Astra then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
-- **Reasoning mapping**: The routing table maps OpenAI `simple`, `standard`, and `thinking` to Luna `medium`, Terra `high`, and Astra `low`. Other providers use their provider/runtime defaults unless configured explicitly.
-- **Capability escalation**: The exact structured marker `BLOCKED: capability limit - <evidence>` advances headless workers through the exact model's configured `reasoning_escalation` ladder before `escalation_order`. Astra uses `low → medium → high`, preserving the session and worktree; high is terminal in thinking. Unknown variants and models never receive guessed reasoning settings. Explicit model pins remain pinned. Interactive OpenCode escalates tiers only when the child identity is known and it has attempted no side effects; it does not automatically increase reasoning within thinking. Generic `BLOCKED` remains terminal. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, locality, and billing failures retain dedicated fail-closed handling and never escalate capability to bypass controls.
-- **OpenAI tier rationale**: The automatic ladder prioritizes verified completion and measured cost: Luna handles bounded work, Terra handles general implementation, and Astra handles synthesis-heavy work. Routing telemetry supports evidence-based reordering without hardcoding provider assumptions.
+- **Current default mapping**: The active routing table maps `simple` to OpenAI Luna then Anthropic Haiku, `standard` to OpenAI Terra then Z.AI GLM then Anthropic Sonnet, and `thinking` to OpenAI Sol then Anthropic Opus. Availability and provider policy decide the exact model at execution time.
+- **Reasoning mapping**: Luna `low`, Terra `low`, Sol `medium`. Other providers use their provider/runtime defaults unless configured explicitly. OpenCode supplies the thinking model as its default only when no explicit user model exists, and fills missing matching primary-agent effort; existing model/variant pins are preserved.
+- **Capability escalation**: The exact structured marker `BLOCKED: capability limit - <evidence>` advances headless workers through an explicitly configured `reasoning_escalation` ladder before `escalation_order`. No reasoning ladder is shipped by default: thinking stops at Sol medium. Use bounded specialist advice before abandoning a genuinely difficult task, not automatic whole-session Astra promotion. Unknown variants and models never receive guessed reasoning settings. Explicit model pins remain pinned. Interactive OpenCode escalates tiers only when child identity is known and it has attempted no side effects. Generic `BLOCKED` remains terminal. Permission, authentication, provider, rate-limit, secret, policy, trust-boundary, locality, and billing failures never escalate capability to bypass controls.
+- **OpenAI tier rationale**: Luna handles bounded work, Terra established-pattern implementation, and Sol parent coordination and synthesis. The separate `specialist_advisor` route selects Astra low only for explicit bounded advisory requests; it is neither a tier nor an automatic fallback. Request contract and feedback policy: `reference/agent-routing.md` "Specialist advice without promoting the parent".
 - **OpenAI pro caveat**: `openai/gpt-5.6-sol-pro` passed a live OpenCode ChatGPT OAuth smoke test on 2026-07-10, but OpenAI publishes neither an API price nor comparative Sol Pro benchmarks. It remains excluded from automatic workers pending repository-specific completion-rate evidence. Historical `gpt-5.5-pro` and older `*-pro`/`o3-pro` IDs remain excluded.
 - **GLM-5.2 option**: Standard routing may use `zai-coding-plan/glm-5.2` when that OpenCode provider is authenticated. Direct `zai/glm-5.2` is intentionally excluded.
 - **Tier-aware effort**: `AIDEVOPS_HEADLESS_VARIANT_SIMPLE`, `AIDEVOPS_HEADLESS_VARIANT_STANDARD`, and `AIDEVOPS_HEADLESS_VARIANT_THINKING` can temporarily override routing-table reasoning.
@@ -98,9 +98,11 @@ is always denied because secrets must flow through secret tooling, not prompts.
 ### Practical model and effort selection
 
 The September 2026 defaults are an educated, reversible operating choice, not a
-benchmark superiority claim: Luna medium avoids blanket maximum reasoning for
-bounded work; Terra high retains headroom for normal judgment and recovery; Astra
-low trials observed token efficiency for thinking work without blanket high effort.
+benchmark superiority claim. User feedback on September 6 reports Astra consuming
+allowance roughly 5–10× faster than Sol over two days; workload-controlled evidence
+and exact OAuth allowance conversion are unavailable. This reverses the September 5
+Astra-low default trial: Luna low and Terra low under-spec bounded work, Sol medium
+owns daily chat and thinking workers, and Astra low supplies narrow specialist advice.
 Use ordinary completion, verification, retries and parent repair to improve these
 choices, following `reference/agent-routing.md` "Improve efficiency during ordinary
 work". Historical replay remains opt-in for material unresolved comparisons, not
@@ -124,6 +126,32 @@ directional resource-cost signals, never an exact subscription allowance percent
 or cash charge. Preserve recorded pricing versions when comparing outcomes; this
 refresh does not reprice already-versioned historical requests.
 
+#### OpenAI capability review and operating roles
+
+Official model positioning is not a task-specific benchmark or a disclosed
+parameter count. The model names below describe product capabilities, not known
+physical model sizes. Source review: September 6, 2026; official
+[catalog](https://developers.openai.com/api/docs/models/all.md),
+[comparison](https://developers.openai.com/api/docs/models/compare.md) and
+[GPT-5.6 guidance](https://developers.openai.com/api/docs/guides/latest-model/gpt-5.6.md).
+
+| Model | Documented positioning | Operating recommendation (not a guaranteed capability boundary) |
+|-------|------------------------|---------------------------------------------|
+| Luna | Cost-sensitive, high-volume work | Extraction, classification, single-artifact summaries, objective checks; low effort and parent validation |
+| Terra | Intelligence/cost balance | Established-pattern code, ordinary research, bounded analysis; low effort initially |
+| Sol | Complex professional work | Main session, pulse coordination, cross-file reasoning, thinking workers; medium effort |
+| Astra | Hard end-to-end reasoning and coding | Narrow expert critique or proposal for evidenced difficult design, security/performance reasoning, domain synthesis or geometry; low effort initially |
+| Pro mode / legacy Pro IDs | GPT-5.6 guidance describes Pro as execution mode with additional work/tokens, not a separate model slug | Not an automatic route; an OAuth smoke-tested historical ID is not comparative quality or cost evidence |
+
+All four catalog entries advertise 1.05M context and 128K maximum output. These
+are provider maxima, not this runtime's configured working budget or a reason to
+send full transcripts. Astra's listed API token rates are 2.5× Sol's, whereas the
+reported 5–10× ratio concerns observed subscription allowance burn. Neither ratio
+alone establishes per-task economics. Track verified outcomes, total parent/child
+work, repair and time; use existing routing feedback rather than a new benchmark
+gate. Under-spec model/effort when safe, escalate only for material evidence or an
+explicit request, and keep all security and verification requirements unchanged.
+
 ### Per-user override that survives auto-update
 
 Auto-update overwrites `~/.aidevops/agents/configs/*.json` and `~/.aidevops/agents/scripts/*`, so user-specific routing must live outside those paths.
@@ -138,7 +166,7 @@ Example custom override for OpenAI-capable headless routing:
 {
   "tiers": {
     "standard": { "models": ["openai/gpt-5.6-terra", "anthropic/claude-sonnet-4-6"] },
-    "thinking": { "models": ["openai/gpt-6-astra", "anthropic/claude-opus-4-6"] }
+    "thinking": { "models": ["openai/gpt-5.6-sol", "anthropic/claude-opus-4-6"] }
   }
 }
 ```

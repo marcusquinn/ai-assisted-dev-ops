@@ -60,7 +60,11 @@ assert_equals "high" "$actual" "pulse standard routing keeps configured variant"
 
 with_clean_variant_env
 actual=$(resolve_headless_variant "worker" "simple" "openai/gpt-5.6-luna")
-assert_equals "medium" "$actual" "GPT-5.6 Luna simple worker uses medium routed effort" || true
+assert_equals "low" "$actual" "GPT-5.6 Luna simple worker uses low routed effort" || true
+
+with_clean_variant_env
+actual=$(resolve_headless_variant "worker" "standard" "openai/gpt-5.6-terra")
+assert_equals "low" "$actual" "GPT-5.6 Terra standard worker uses low routed effort" || true
 
 with_clean_variant_env
 actual=$(resolve_headless_variant "worker" "thinking" "openai/gpt-5.6-sol")

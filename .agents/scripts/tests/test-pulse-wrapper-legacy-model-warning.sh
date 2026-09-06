@@ -40,12 +40,13 @@ run_config_source() {
 	local stderr_file="$2"
 	local headless_models="${3:-}"
 	local pulse_model="${4:-}"
+	local availability_helper="${5:-${test_home}/missing-model-availability-helper.sh}"
 
 	(
 		set -euo pipefail
 		export HOME="$test_home"
 		export SCRIPT_DIR="$PULSE_SCRIPTS_DIR"
-		export MODEL_AVAILABILITY_HELPER="${test_home}/missing-model-availability-helper.sh"
+		export MODEL_AVAILABILITY_HELPER="$availability_helper"
 		if [[ -n "$headless_models" ]]; then
 			export AIDEVOPS_HEADLESS_MODELS="$headless_models"
 		else
@@ -81,6 +82,7 @@ run_config_source() {
 
 		# shellcheck source=/dev/null
 		source "${PULSE_SCRIPTS_DIR}/pulse-wrapper-config.sh" >/dev/null
+		printf '%s' "$PULSE_MODEL" >"${test_home}/resolved-model"
 	) 2>"$stderr_file"
 	return $?
 }
@@ -142,10 +144,37 @@ test_active_pulse_model_assignment_warns_with_file() {
 	return 0
 }
 
+test_pulse_thinking_resolution_and_failure() {
+	local test_home
+	test_home="$(mktemp -d)"
+	local helper="${test_home}/availability.sh"
+	cat >"$helper" <<'STUB'
+#!/usr/bin/env bash
+[[ "$*" == "resolve thinking --quiet" ]] || exit 1
+printf '%s' 'openai/gpt-5.6-sol'
+STUB
+	chmod +x "$helper"
+	run_config_source "$test_home" "${test_home}/stderr.log" "" "" "$helper"
+	if [[ "$(<"${test_home}/resolved-model")" == "openai/gpt-5.6-sol" ]]; then
+		print_result "pulse resolves the thinking daily driver" 0
+	else
+		print_result "pulse resolves the thinking daily driver" 1
+	fi
+	run_config_source "$test_home" "${test_home}/stderr.log"
+	if [[ ! -s "${test_home}/resolved-model" ]]; then
+		print_result "failed pre-resolution leaves fallback to headless policy" 0
+	else
+		print_result "failed pre-resolution leaves fallback to headless policy" 1
+	fi
+	rm -rf "$test_home"
+	return 0
+}
+
 main() {
 	test_inherited_headless_models_without_credentials_export_is_quiet
 	test_active_headless_models_credentials_export_warns_with_file
 	test_active_pulse_model_assignment_warns_with_file
+	test_pulse_thinking_resolution_and_failure
 
 	printf '\nRan %s tests, %s failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -ne 0 ]]; then

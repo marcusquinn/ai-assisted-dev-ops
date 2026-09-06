@@ -10,6 +10,7 @@ import {
   selectConnectedRoutingCandidate,
 } from "./model-routing.mjs";
 import { loadDelegatedDomainKnowledge } from "./agent-loader.mjs";
+import { SPECIALIST_ADVISOR, validateSpecialistRequest } from "./specialist-advisor.mjs";
 
 const DOMAIN_KNOWLEDGE_MARKER = "\n\n[AIDEvOps canonical domain knowledge]";
 const DOMAIN_REQUIRED_FIELDS = ["task", "objective", "scope", "source", "decisions", "evidence", "output"];
@@ -111,6 +112,8 @@ async function routeChatMessage(context, output) {
 
   const text = context.messageText(output.parts);
   const agentName = String(message.agent ?? message.mode ?? "");
+  const specialist = agentName === SPECIALIST_ADVISOR && context.agentRoutingState?.specialistAdvisor;
+  if (specialist) validateSpecialistRequest(text);
   const domainRegistry = context.agentRoutingState?.domainDelegation;
   if (domainRegistry?.profiles?.has(agentName)) {
     await routeDomainMessage(context, output, domainRegistry, agentName);
@@ -118,8 +121,8 @@ async function routeChatMessage(context, output) {
   }
   const route = context.routedPolicy(context.agentRoutingState, agentName, text);
   const policy = {
-    effort: route.effort,
-    reason: route.pinned ? "explicit_model" : route.reason,
+    effort: specialist ? "thinking" : route.effort,
+    reason: specialist ? "specialist_advice" : route.pinned ? "explicit_model" : route.reason,
     attempt: 1,
     escalated: false,
     pinned: route.pinned,
@@ -248,12 +251,14 @@ async function routeChatParams(context, input, output) {
     const policy = context.policies.get(sessionID);
     const desiredEffort = policy?.effort
       ?? context.inferSubagentEffort(input.message.agent ?? childSession.agent);
-    const requestedVariant = context.resolveTierReasoning(
-      desiredEffort,
-      input?.provider?.id,
-      input?.model?.id,
-      context.tierReasoning,
-    );
+    const requestedVariant = policy?.reason === "specialist_advice"
+      ? context.agentRoutingState.specialistAdvisor.variant
+      : context.resolveTierReasoning(
+        desiredEffort,
+        input?.provider?.id,
+        input?.model?.id,
+        context.tierReasoning,
+      );
     const effectiveVariant = await effectiveChildVariant(
       context,
       childSession,
