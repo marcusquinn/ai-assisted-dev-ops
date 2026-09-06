@@ -19,6 +19,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { compactExactInstructionDocument } from "./context-catalogue.mjs";
 
 // ---------------------------------------------------------------------------
 // Framework system prompt cache
@@ -352,11 +353,16 @@ export function buildClaudeArgs(body, systemPrompt, streaming) {
     args.push("--mcp-config", mcpConfig);
   }
 
-  // Combine: framework base (build.txt + AGENTS.md) + agent prompt + request system prompt.
-  // Framework and agent go first (static), OpenCode's context-specific prompt last.
+  // Combine proxy-owned guidance with context-specific input. The exact canonical
+  // framework document may already be in OpenCode's system context.
   const frameworkPrompt = getFrameworkPrompt();
   const agentPrompt = getAgentPrompt(agentName);
-  const combinedPrompt = [frameworkPrompt, agentPrompt, systemPrompt].filter(Boolean).join("\n\n");
+  const incomingPrompt = compactExactInstructionDocument(
+    frameworkPrompt,
+    join(agentsDir, "AGENTS.md"),
+    systemPrompt,
+  );
+  const combinedPrompt = [frameworkPrompt, agentPrompt, incomingPrompt].filter(Boolean).join("\n\n");
   if (combinedPrompt) {
     args.push("--append-system-prompt", combinedPrompt);
   }

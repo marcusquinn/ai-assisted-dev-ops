@@ -37,3 +37,17 @@ export function compactSystemContext(system) {
     return compactSkillCatalogue(text);
   });
 }
+
+/** Replace only a byte-identical canonical instruction document with its source. */
+export function compactExactInstructionDocument(body, source, text) {
+  const incoming = typeof text === "string" ? text : "";
+  if (!body || !source) return incoming;
+
+  const document = `Instructions from: ${source}\n${body}`;
+  const reference = `Instructions from: ${source}\nThe complete instruction body is already supplied by the Claude proxy.`;
+  const escapedDocument = document.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return incoming.replace(
+    new RegExp(`(^|\\n\\n)${escapedDocument}(?=\\n\\nInstructions from:|$)`, "g"),
+    `$1${reference}`,
+  );
+}

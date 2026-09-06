@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Marcus Quinn
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compactSkillCatalogue, compactSystemContext } from "../context-catalogue.mjs";
+import { compactExactInstructionDocument, compactSkillCatalogue, compactSystemContext } from "../context-catalogue.mjs";
+import { buildClaudeArgs } from "../claude-proxy-context.mjs";
 
 function wrapper(name, description = `Run the aidevops ${name} workflow when explicitly requested.`) {
   return `<skill>\n<name>aidevops-${name}</name>\n<description>${description}</description>\n<location>/skills/aidevops-${name}/SKILL.md</location>\n</skill>`;
@@ -41,4 +42,34 @@ test("deduplication preserves differing scope guidance and does not mutate sourc
   assert.match(result[1], /Apply those instructions here too/);
   assert.equal(result[2], source[2]);
   assert.equal(source[1], `Instructions from: /repo/AGENTS.md\n${body}`);
+});
+
+test("Claude proxy context compacts only its exact framework document", () => {
+  const framework = "Keep safeguards intact.\nNever omit verification.";
+  const agent = "Selected domain knowledge remains available.";
+  const source = "/framework/agents/AGENTS.md";
+  const document = `Instructions from: ${source}\n${framework}`;
+  const exact = `${document}\n\nInstructions from: /repo/AGENTS.md\nRequest context.`;
+  const result = [framework, agent, compactExactInstructionDocument(framework, source, exact)].join("\n\n");
+
+  assert.equal(result.split(framework).length - 1, 1);
+  assert.match(result, /already supplied by the Claude proxy/);
+  assert.match(result, /Selected domain knowledge remains available/);
+  assert.match(result, /Request context/);
+  assert.equal(
+    compactExactInstructionDocument(framework, source, exact),
+    compactExactInstructionDocument(framework, source, exact),
+  );
+  for (const incoming of ["Request context.", `<framework>${framework}</framework>`,
+    `${document}\nAn additional instruction.`, `Instructions from: /repo/AGENTS.md\n${framework}`]) {
+    assert.equal(compactExactInstructionDocument(framework, source, incoming), incoming);
+  }
+});
+
+test("Claude proxy builder retains the expected Claude argv shape", () => {
+  const args = buildClaudeArgs({ model: "claude-sonnet-4-6", agentName: "legal", prompt: "Continue." }, "", false);
+
+  assert.deepEqual(args.slice(0, 3), ["-p", "--model", "claude-sonnet-4-6"]);
+  assert.ok(args.includes("--permission-mode"));
+  assert.deepEqual(args.slice(-3), ["--output-format", "json", "Continue."]);
 });
