@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -93,6 +94,104 @@ class SourceAccessHelperTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def _proposal_spec(self) -> object:
+        self._fixture_commit(self.repo)
+        worktree = self.root / "implementation"
+        subprocess.run(
+            ["/usr/bin/git", "-C", str(self.repo), "worktree", "add", "--quiet",
+             "--detach", str(worktree), "HEAD"], check=True,
+        )
+        return HELPER.ManifestRequestSpec(
+            session_id=self.session, uid=self.uid, home=self.home,
+            paths=(str(worktree / self.source.name), str(worktree / self.other_source.name)),
+            reason=HELPER.OVERRIDABLE_REASON, now=self.now,
+        )
+
+    def _fixture_commit(self, repo: Path) -> None:
+        subprocess.run(
+            ["/usr/bin/git", "-C", str(repo), "-c", "user.name=Source Fixture",
+             "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+             "commit", "--quiet", "-m", "fixture"], check=True,
+        )
+
+    def test_proposals_remain_powerless_after_delayed_attendance(self) -> None:
+        core = HELPER._SOURCE_CORE
+        spec = self._proposal_spec()
+        issue_digest = "a" * 64
+        proposal_id = core.create_source_proposal(self.config, spec, issue_snapshot_sha256=issue_digest)
+        original = core.load_source_proposal(self.config, self.home, proposal_id, self.uid)
+        for days in (1, 7):
+            delayed = replace(spec, now=self.now + days * 86400)
+            self.assertEqual(original, core.revalidate_source_proposal_metadata(
+                self.config, delayed, proposal_id, issue_snapshot_sha256=issue_digest,
+            ))
+        self.assertFalse(self.config.state_dir.exists())
+        self.assertNotIn("synthetic", json.dumps(original))
+        record = core.proposal_directory(self.config, self.home) / f"{proposal_id}.json"
+        legacy_path = self.config.request_root / f"{proposal_id}.json"
+        legacy_path.write_bytes(record.read_bytes())
+        with self.assertRaises(HELPER.SourceAccessError):
+            HELPER._load_request(self.config, self.home, proposal_id, self.uid)
+
+    def test_proposal_identity_and_context_cannot_be_rebound(self) -> None:
+        core = HELPER._SOURCE_CORE
+        spec = self._proposal_spec()
+        proposal_id = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+        for altered in (replace(spec, session_id="ses_other_123456"),
+                        replace(spec, now=self.now - 1),
+                        replace(spec, paths=spec.paths[:1])):
+            with self.subTest(spec=altered):
+                with self.assertRaises(HELPER.SourceAccessError):
+                    core.revalidate_source_proposal_metadata(
+                        self.config, altered, proposal_id, issue_snapshot_sha256="a" * 64,
+                    )
+        with self.assertRaises(HELPER.SourceAccessError):
+            core.revalidate_source_proposal_metadata(
+                self.config, spec, proposal_id, issue_snapshot_sha256="b" * 64,
+            )
+        record_path = core.proposal_directory(self.config, self.home) / f"{proposal_id}.json"
+        record = json.loads(record_path.read_text())
+        record["body"]["session_id"] = "ses_other_123456"
+        record_path.write_text(json.dumps(record))
+        with self.assertRaises(HELPER.SourceAccessError):
+            core.load_source_proposal(self.config, self.home, proposal_id, self.uid)
+
+    def test_proposal_detects_byte_and_inode_substitution(self) -> None:
+        core = HELPER._SOURCE_CORE
+        spec = self._proposal_spec()
+        proposal_id = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+        path = Path(spec.paths[0])
+        original = path.read_bytes()
+        path.write_bytes(original + b"# changed\n")
+        with self.assertRaises(HELPER.SourceAccessError):
+            core.revalidate_source_proposal_metadata(
+                self.config, spec, proposal_id, issue_snapshot_sha256="a" * 64,
+            )
+        replacement = path.with_suffix(".replacement")
+        replacement.write_bytes(original)
+        replacement.replace(path)
+        with self.assertRaises(HELPER.SourceAccessError):
+            core.revalidate_source_proposal_metadata(
+                self.config, spec, proposal_id, issue_snapshot_sha256="a" * 64,
+            )
+
+    def test_proposal_quota_and_explicit_withdrawal(self) -> None:
+        core = HELPER._SOURCE_CORE
+        spec = self._proposal_spec()
+        with mock.patch.object(core, "MAX_PENDING_PROPOSALS", 2):
+            first = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+            second = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+            self.assertNotEqual(first, second)
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "store is full"):
+                core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+            core.withdraw_source_proposal(self.config, self.home, first, self.uid)
+            with self.assertRaises(HELPER.SourceAccessError):
+                core.load_source_proposal(self.config, self.home, first, self.uid)
+            third = core.create_source_proposal(self.config, spec, issue_snapshot_sha256="a" * 64)
+            self.assertNotEqual(first, third)
+            self.assertEqual(2, len(list(core.proposal_directory(self.config, self.home).glob("*.json"))))
+            core.load_source_proposal(self.config, self.home, second, self.uid)
 
     def test_request_records_are_bounded_objects(self) -> None:
         request_id = self._request()

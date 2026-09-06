@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -13,13 +14,15 @@ import stat
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from operator import itemgetter
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 SCHEMA_REQUEST = "aidevops-source-access-request/v1"
 SCHEMA_MANIFEST_REQUEST = "aidevops-source-access-request/v2"
+SCHEMA_PROPOSAL = "aidevops-source-access-proposal/v1"
 SCHEMA_RECEIPT = "aidevops-source-access-receipt/v1"
 SCHEMA_MANIFEST_RECEIPT = "aidevops-source-access-receipt/v2"
 SCHEMA_PAYLOAD = "aidevops-source-access-approval/v1"
@@ -34,6 +37,7 @@ REQUEST_REUSE_SECONDS = 60 * 60
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_MANIFEST_ENTRIES = 32
 MAX_REQUEST_BYTES = 256 * 1024
+MAX_PENDING_PROPOSALS = 128
 ID_PATTERN = re.compile(r"^[a-f0-9]{32,64}$")
 SESSION_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{6,256}$")
 ALLOWED_SUFFIXES = frozenset(
@@ -411,6 +415,181 @@ def create_manifest_request(config: Config, spec: ManifestRequestSpec) -> str:
 def _manifest_entry(identity: tuple[str, str, str]) -> dict[str, str]:
     path, _repo_root, relative_path = identity
     return {"path": path, "relative_path": relative_path}
+
+
+def proposal_directory(config: Config, home: Path) -> Path:
+    return request_directory(config, home) / "proposals"
+
+
+@contextmanager
+def _proposal_store(config: Config, home: Path, uid: int) -> Iterator[Path]:
+    """Serialize user-space proposal metadata; never run this writer as sudo."""
+    _require_source(type(uid) is int and uid > 0 and os.geteuid() == uid,
+                    "prepare or withdraw proposals as their non-root owning user")
+    directory = proposal_directory(config, home)
+    _require_source(not _has_symlink_component(directory), "unsafe proposal directory")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _require_source(_trusted_private_directory(directory, uid), "unsafe proposal directory")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(directory / ".lock", flags, 0o600)
+    except OSError as exc:
+        raise SourceAccessError("unsafe or unavailable proposal lock") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        _require_source(
+            stat.S_ISREG(metadata.st_mode) and metadata.st_uid == uid
+            and metadata.st_nlink == 1 and metadata.st_mode & 0o077 == 0,
+            "unsafe proposal lock",
+        )
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield directory
+    except OSError as exc:
+        raise SourceAccessError("proposal store unavailable or busy; no authority was changed") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _proposal_file_identity(path: Path) -> dict[str, int]:
+    metadata = path.lstat()
+    return {"device": metadata.st_dev, "inode": metadata.st_ino}
+
+
+def _proposal_repository_identity(repo_root: str) -> dict[str, Any]:
+    root = Path(repo_root)
+    values = []
+    for option in ("--absolute-git-dir", "--git-common-dir", "HEAD"):
+        result = _run([GIT, "-C", repo_root, "rev-parse", option])
+        _require_source(result.returncode == 0, "proposal requires an existing committed worktree")
+        values.append(result.stdout.decode("utf-8").strip())
+    git_dir = (root / values[0]).resolve(strict=True)
+    common_dir = (root / values[1]).resolve(strict=True)
+    _require_source(git_dir != common_dir, "proposal requires a linked implementation worktree")
+    listing = _run([GIT, "-C", repo_root, "worktree", "list", "--porcelain", "-z"])
+    _require_source(
+        listing.returncode == 0 and b"worktree " + os.fsencode(root) in listing.stdout.split(b"\0"),
+        "proposal worktree is no longer registered",
+    )
+    return {
+        "root": repo_root, "head": values[2], "git_dir": str(git_dir),
+        "common_dir": str(common_dir), "root_identity": _proposal_file_identity(root),
+        "git_identity": _proposal_file_identity(git_dir),
+        "common_identity": _proposal_file_identity(common_dir),
+    }
+
+
+def _proposal_source_snapshot(spec: ManifestRequestSpec) -> dict[str, Any]:
+    _require_source(1 <= len(spec.paths) <= MAX_MANIFEST_ENTRIES, "invalid proposal entry count")
+    identities = [tracked_source_identity(path) for path in spec.paths]
+    roots = {identity[1] for identity in identities}
+    paths = [identity[0] for identity in identities]
+    _require_source(len(roots) == 1, "proposal paths must share one worktree")
+    _require_source(len(set(paths)) == len(paths), "proposal paths must be unique")
+    repository = _proposal_repository_identity(roots.pop())
+    entries = []
+    total_bytes = 0
+    for path, _root, relative in sorted(identities):
+        before = _proposal_file_identity(Path(path))
+        content, digest = secure_source_content(path)
+        _require_source(before == _proposal_file_identity(Path(path)), "proposal source was replaced")
+        total_bytes += len(content)
+        _require_source(total_bytes <= MAX_SOURCE_BYTES, "proposal exceeds the total source size limit")
+        entries.append({"path": path, "relative_path": relative, "content_sha256": digest,
+                        "size": len(content), "identity": before})
+    _require_source(
+        repository == _proposal_repository_identity(repository["root"]),
+        "proposal repository changed while collecting metadata",
+    )
+    return {"repository": repository, "entries": entries}
+
+
+def _proposal_records(directory: Path) -> list[Path]:
+    records = []
+    with os.scandir(directory) as iterator:
+        for entry in iterator:
+            if entry.name.endswith(".json"):
+                records.append(Path(entry.path))
+                _require_source(len(records) <= MAX_PENDING_PROPOSALS, "proposal store is over capacity")
+    return sorted(records)
+
+
+def create_source_proposal(
+    config: Config, spec: ManifestRequestSpec, *, issue_snapshot_sha256: str
+) -> str:
+    """Persist candidate identities, not approval, ownership or liveness evidence."""
+    _require_source(type(spec.uid) is int and spec.uid > 0 and os.geteuid() == spec.uid,
+                    "prepare proposals as their non-root owning user")
+    _require_source(type(spec.now) is int and spec.now >= 0, "invalid proposal timestamp")
+    _require_source(
+        isinstance(issue_snapshot_sha256, str)
+        and re.fullmatch(r"[a-f0-9]{64}", issue_snapshot_sha256) is not None,
+        "proposal requires an exact issue snapshot digest",
+    )
+    body = {
+        "session_id": _validate_session_id(spec.session_id), "uid": spec.uid,
+        "reason": _validate_reason(spec.reason), "created_at": spec.now,
+        "nonce": secrets.token_hex(16), "issue_snapshot_sha256": issue_snapshot_sha256,
+        **_proposal_source_snapshot(spec),
+    }
+    proposal_id = hashlib.sha256(canonical_json(body)).hexdigest()
+    record = {"schema": SCHEMA_PROPOSAL, "proposal_id": proposal_id, "state": "pending", "body": body}
+    content = canonical_json(record) + b"\n"
+    _require_source(len(content) <= MAX_REQUEST_BYTES, "proposal metadata exceeds the storage limit")
+    with _proposal_store(config, spec.home, spec.uid) as directory:
+        _require_source(
+            len(_proposal_records(directory)) < MAX_PENDING_PROPOSALS,
+            "proposal store is full; explicitly withdraw an unused proposal",
+        )
+        _require_source(not os.path.lexists(directory / f"{proposal_id}.json"), "proposal already exists")
+        atomic_write(directory / f"{proposal_id}.json", content, 0o600)
+    return proposal_id
+
+
+def load_source_proposal(config: Config, home: Path, proposal_id: str, uid: int) -> dict[str, Any]:
+    """Load a content-bound, powerless proposal; elapsed age is not authority."""
+    _require_source(re.fullmatch(r"[a-f0-9]{64}", proposal_id) is not None, "invalid proposal identifier")
+    directory = proposal_directory(config, home)
+    _require_source(
+        not _has_symlink_component(directory) and _trusted_private_directory(directory, uid),
+        "proposal was withdrawn, removed or is unavailable",
+    )
+    record = _read_request_record(directory / f"{proposal_id}.json", uid)
+    body = record.get("body")
+    _require_source(
+        record.get("schema") == SCHEMA_PROPOSAL and record.get("proposal_id") == proposal_id
+        and record.get("state") == "pending" and isinstance(body, dict)
+        and body.get("uid") == uid and hashlib.sha256(canonical_json(body)).hexdigest() == proposal_id,
+        "proposal identity is invalid or was changed",
+    )
+    return body
+
+
+def revalidate_source_proposal_metadata(
+    config: Config, spec: ManifestRequestSpec, proposal_id: str, *, issue_snapshot_sha256: str
+) -> dict[str, Any]:
+    """Check candidate metadata only. This MUST NOT be used as approval admission."""
+    body = load_source_proposal(config, spec.home, proposal_id, spec.uid)
+    _require_source(
+        body.get("session_id") == _validate_session_id(spec.session_id)
+        and body.get("reason") == _validate_reason(spec.reason)
+        and body.get("issue_snapshot_sha256") == issue_snapshot_sha256,
+        "proposal context changed; new explicit context consent is required",
+    )
+    created_at = body.get("created_at")
+    _require_source(type(created_at) is int and spec.now >= created_at, "proposal clock moved backwards")
+    snapshot = _proposal_source_snapshot(spec)
+    _require_source(
+        all(body.get(key) == value for key, value in snapshot.items()),
+        "proposal source or worktree changed; do not silently refresh it",
+    )
+    return body
+
+
+def withdraw_source_proposal(config: Config, home: Path, proposal_id: str, uid: int) -> None:
+    """Remove pending metadata, freeing capacity; never revoke a signed capability."""
+    with _proposal_store(config, home, uid) as directory:
+        load_source_proposal(config, home, proposal_id, uid)
+        (directory / f"{proposal_id}.json").unlink()
 
 
 def parse_ttl(value: str) -> int:
