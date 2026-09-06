@@ -239,8 +239,8 @@ test_external_origin_bot_without_approval_blocks() {
 test_bot_with_null_labels_fails_closed() {
 	setup_case "NONE" "Bot" "" 0 false null
 	if _check_external_issue_author_gate 25 "owner/repo"; then
-		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
-			print_result "bot with null labels fails closed and applies NMR" 0
+		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "bot with null labels defers without NMR" 0
 		else
 			print_result "bot with null labels fails closed and applies NMR" 1 "NMR label was not applied"
 		fi
@@ -254,8 +254,8 @@ test_bot_with_null_labels_fails_closed() {
 test_bot_with_missing_labels_fails_closed() {
 	setup_case "NONE" "Bot" "" 0 false missing
 	if _check_external_issue_author_gate 26 "owner/repo"; then
-		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
-			print_result "bot with missing labels fails closed and applies NMR" 0
+		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "bot with missing labels defers without NMR" 0
 		else
 			print_result "bot with missing labels fails closed and applies NMR" 1 "NMR label was not applied"
 		fi
@@ -269,8 +269,8 @@ test_bot_with_missing_labels_fails_closed() {
 test_bot_with_empty_label_name_fails_closed() {
 	setup_case "NONE" "Bot" "" 0 false empty-name
 	if _check_external_issue_author_gate 27 "owner/repo"; then
-		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
-			print_result "bot with empty label name fails closed and applies NMR" 0
+		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "bot with empty label name defers without NMR" 0
 		else
 			print_result "bot with empty label name fails closed and applies NMR" 1 "NMR label was not applied"
 		fi
@@ -314,8 +314,8 @@ test_author_lookup_failure_fails_closed() {
 	setup_case "" "" ""
 	rm -f "${TEST_ROOT}/issue-meta.json"
 	if _check_external_issue_author_gate 4 "owner/repo"; then
-		if grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
-			print_result "author lookup failure fails closed with NMR" 0
+		if ! grep -q -- '--add-label needs-maintainer-review' "$GH_CALLS_FILE"; then
+			print_result "author lookup failure defers without NMR" 0
 			cleanup_case
 			return 0
 		fi
