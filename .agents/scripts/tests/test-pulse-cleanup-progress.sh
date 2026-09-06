@@ -63,6 +63,7 @@ rc=0
 ) || rc=$?
 [[ "$rc" == 124 ]]
 [[ "$(<"${PULSE_STATE_DIR}/worktree-cleanup-next.json")" == '["orphan","slow"]' ]]
+[[ ! -d "${AIDEVOPS_LOG_DIR}/cleanup_worktrees.lock" ]]
 
 # Malformed/stale progress cannot introduce an operation outside fresh inventory.
 printf '["invented","untrusted"]\n' >"${PULSE_STATE_DIR}/worktree-cleanup-next.json"
@@ -80,6 +81,7 @@ rc=0
 ) || rc=$?
 [[ "$rc" == 1 ]]
 [[ "$(wc -l <"$CALLS" | tr -d ' ')" == "$before" ]]
+[[ ! -d "${AIDEVOPS_LOG_DIR}/cleanup_worktrees.lock" ]]
 
 # Restore production executor and prove orphan refusal is not counted as removal.
 source "${SCRIPT_DIR}/pulse-cleanup-progress.sh"

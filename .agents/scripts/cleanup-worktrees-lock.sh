@@ -7,11 +7,11 @@
 
 _lock_release() {
 	local recorded_pid=""
-	[[ -f "$PID_FILE" ]] || return 0
-	recorded_pid=$(<"$PID_FILE")
+	[[ -f "${_CLEANUP_LOCK_PID_FILE:-}" ]] || return 0
+	recorded_pid=$(<"$_CLEANUP_LOCK_PID_FILE")
 	[[ "$recorded_pid" == "${_CLEANUP_LOCK_OWNER_PID:-}" ]] || return 0
-	rm -f "$PID_FILE" 2>/dev/null || true
-	rmdir "$LOCK_DIR" 2>/dev/null || true
+	rm -f "$_CLEANUP_LOCK_PID_FILE" 2>/dev/null || true
+	rmdir "$_CLEANUP_LOCK_PATH" 2>/dev/null || true
 	return 0
 }
 
@@ -46,6 +46,9 @@ _lock_record_owner() {
 	fi
 	[[ "$_CLEANUP_LOCK_OWNER_PID" =~ ^[1-9][0-9]*$ ]] || return 1
 	printf '%s\n' "$_CLEANUP_LOCK_OWNER_PID" >"$PID_FILE" || return 1
+	# Bash 3.2 unwinds function locals before EXIT on explicit exit paths.
+	_CLEANUP_LOCK_PID_FILE="$PID_FILE"
+	_CLEANUP_LOCK_PATH="$LOCK_DIR"
 	_lock_install_traps
 	return 0
 }
