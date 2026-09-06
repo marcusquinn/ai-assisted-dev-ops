@@ -24,6 +24,7 @@ import {
 
 const MAX_OPERATIONS = 24;
 const SUPERVISOR_PATH = fileURLToPath(new URL("./bounded-operation-supervisor.mjs", import.meta.url));
+const SUPERVISOR_RUNTIME = "node";
 
 export class BoundedInteractiveOperationManager {
   constructor(options = {}) {
@@ -36,6 +37,7 @@ export class BoundedInteractiveOperationManager {
     this.killGraceMs = options.killGraceMs ?? 500;
     this.setTimer = options.setTimer || setTimeout;
     this.clearTimer = options.clearTimer || clearTimeout;
+    this.supervisorRuntime = options.supervisorRuntime || SUPERVISOR_RUNTIME;
     this.operations = new Map();
   }
 
@@ -58,13 +60,23 @@ export class BoundedInteractiveOperationManager {
     }
   }
 
-  spawnOwned(operation, command) {
+  spawnOwned(operation, command, stage) {
     const childBudgetMs = command === operation.command ? operation.budgetMs : operation.restorationBudgetMs;
-    const child = this.spawn(process.execPath, [SUPERVISOR_PATH], {
+    const child = this.spawn(this.supervisorRuntime, [SUPERVISOR_PATH], {
       cwd: operation.cwd,
       detached: true,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe", "ipc"],
+    });
+    child.on("message", (message) => {
+      if (message?.type !== "aidevops.operation" || message.event !== "command_started"
+        || message.operationID !== operation.id) return;
+      if (stage === "main") {
+        operation.commandStarted = true;
+        operation.supervisorRuntime = scalar(message.runtime);
+      } else {
+        operation.restorationCommandStarted = true;
+      }
     });
     child.stdin.end(JSON.stringify({
       budgetMs: childBudgetMs,
@@ -98,8 +110,11 @@ export class BoundedInteractiveOperationManager {
       disposition: "running",
       processExit: null,
       processSignal: "",
+      commandStarted: false,
+      supervisorRuntime: "",
       restorationState: args.restorationCommand ? "pending" : "not_required",
       restorationExit: null,
+      restorationCommandStarted: false,
       lastMeaningfulProgressAt: null,
       progressEvents: 0,
       progressRemainder: "",
@@ -119,7 +134,7 @@ export class BoundedInteractiveOperationManager {
     this.operations.set(operation.id, operation);
 
     await new Promise((resolve) => {
-      const child = this.spawnOwned(operation, operation.command);
+      const child = this.spawnOwned(operation, operation.command, "main");
       operation.child = child;
       child.once("exit", () => { operation.childExited = true; });
       child.once("spawn", () => {
@@ -157,7 +172,9 @@ export class BoundedInteractiveOperationManager {
     operation.child = null;
     operation.processExit = Number.isInteger(code) ? code : null;
     operation.processSignal = scalar(signal);
-    if (operation.disposition === "running") operation.disposition = code === 0 ? "succeeded" : "failed";
+    if (operation.disposition === "running") {
+      operation.disposition = code === 0 && operation.commandStarted ? "succeeded" : "failed";
+    }
     if (operation.restorationCommand) await this.runRestoration(operation);
     await this.finalize(operation);
   }
@@ -176,7 +193,7 @@ export class BoundedInteractiveOperationManager {
         operation.restorationState = state;
         resolve();
       };
-      const child = this.spawnOwned(operation, operation.restorationCommand);
+      const child = this.spawnOwned(operation, operation.restorationCommand, "restoration");
       operation.restorationChild = child;
       operation.restorationChildExited = false;
       child.once("exit", () => { operation.restorationChildExited = true; });
@@ -189,7 +206,7 @@ export class BoundedInteractiveOperationManager {
       child.once("error", () => finish("failed"));
       child.once("close", (code, signal) => {
         const timedOut = operation.restorationState === "timing_out";
-        finish(timedOut ? "timed_out" : (code === 0 ? "succeeded" : "failed"), code);
+        finish(timedOut ? "timed_out" : (code === 0 && operation.restorationCommandStarted ? "succeeded" : "failed"), code);
       });
     });
   }

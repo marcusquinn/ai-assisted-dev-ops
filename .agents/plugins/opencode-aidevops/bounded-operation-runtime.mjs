@@ -71,6 +71,10 @@ export function operationReceipt(operation, now) {
       && (lastProgressAgeMs === null || lastProgressAgeMs >= operation.progressIntervalMs),
     process_exit: operation.processExit,
     process_signal: operation.processSignal || null,
+    command_execution: operation.state === "starting" || operation.state === "running"
+      ? "pending"
+      : (operation.commandStarted ? "observed" : "missing"),
+    supervisor_runtime: operation.supervisorRuntime || null,
     restoration_state: operation.restorationState,
     restoration_exit: operation.restorationExit,
     output_id: operation.outputID || null,

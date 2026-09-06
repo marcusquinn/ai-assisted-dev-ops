@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Marcus Quinn
 
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,34 @@ function manager(options = {}) {
   });
   managers.push(instance);
   return instance;
+}
+
+function launcher({ started = false } = {}) {
+  return (runtime) => {
+    const child = new EventEmitter();
+    child.stdin = { end() {} };
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.connected = false;
+    child.exitCode = null;
+    child.signalCode = null;
+    queueMicrotask(() => {
+      child.emit("spawn");
+      if (started) {
+        child.emit("message", {
+          type: "aidevops.operation",
+          event: "command_started",
+          operationID: "op_fixture",
+          runtime: "node v22.23.1",
+        });
+      }
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+    });
+    assert.equal(runtime, "node");
+    return child;
+  };
 }
 
 async function terminal(instance, operationID, context = owner, timeoutMs = 2000) {
@@ -64,6 +93,8 @@ describe("bounded interactive operations", () => {
     assert.equal(result.output_id, "out_fixture_1");
     assert.equal(result.evidence_state, "recorded");
     assert.equal(result.restoration_state, "not_required");
+    assert.equal(result.command_execution, "observed");
+    assert.match(result.supervisor_runtime, /^node v\d+\./);
     assert.equal(JSON.stringify(result).includes("phase-one"), false);
   });
 
@@ -111,6 +142,34 @@ describe("bounded interactive operations", () => {
     const spawnFailureResult = await terminal(instance, spawnFailure.operation_id);
     assert.equal(spawnFailureResult.state, "failed");
     assert.equal(spawnFailureResult.restoration_state, "succeeded");
+  });
+
+  test("a launcher cannot report success without supervisor command evidence", async () => {
+    const missingEvidence = manager({
+      makeID: () => "op_fixture",
+      spawn: launcher(),
+    });
+    const missingStarted = await missingEvidence.start({
+      command: ["git", "--version"],
+      budgetMs: 1000,
+    }, owner);
+    const missingResult = await terminal(missingEvidence, missingStarted.operation_id);
+    assert.equal(missingResult.state, "failed");
+    assert.equal(missingResult.process_exit, 0);
+    assert.equal(missingResult.command_execution, "missing");
+
+    const verifiedEvidence = manager({
+      makeID: () => "op_fixture",
+      spawn: launcher({ started: true }),
+    });
+    const verifiedStarted = await verifiedEvidence.start({
+      command: ["git", "--version"],
+      budgetMs: 1000,
+    }, owner);
+    const verifiedResult = await terminal(verifiedEvidence, verifiedStarted.operation_id);
+    assert.equal(verifiedResult.state, "succeeded");
+    assert.equal(verifiedResult.command_execution, "observed");
+    assert.equal(verifiedResult.supervisor_runtime, "node v22.23.1");
   });
 
   test("restoration runs after success and remains visible when it fails", async () => {

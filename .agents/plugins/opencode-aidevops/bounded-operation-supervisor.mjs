@@ -39,6 +39,23 @@ function groupMemberCount(groupID) {
   return count;
 }
 
+function reportCommandStarted(operationID) {
+  if (typeof process.send !== "function") return Promise.resolve();
+  return new Promise((resolve) => {
+    try {
+      process.send({
+        type: "aidevops.operation",
+        event: "command_started",
+        operationID: String(operationID || ""),
+        runtime: `node ${process.version}`,
+      }, resolve);
+    } catch {
+      // The parent closes IPC during cancellation or an abnormal launcher exit.
+      resolve();
+    }
+  });
+}
+
 export async function runSupervisor() {
   const config = await readPrivateConfig();
   const command = config?.command;
@@ -50,6 +67,7 @@ export async function runSupervisor() {
   let terminating = false;
   let childFinished = false;
   let childExit = 1;
+  let commandStarted = Promise.resolve();
 
   const terminateOwnedGroup = () => {
     if (terminating) return;
@@ -81,6 +99,7 @@ export async function runSupervisor() {
     stdio: ["ignore", "inherit", "inherit"],
   });
 
+  child.once("spawn", () => { commandStarted = reportCommandStarted(config.operationID); });
   child.once("error", () => {
     childFinished = true;
     childExit = 127;
@@ -97,7 +116,7 @@ export async function runSupervisor() {
       if (members !== 1) return;
       clearInterval(drainTimer);
       clearTimeout(budgetTimer);
-      resolve(childExit);
+      commandStarted.finally(() => resolve(childExit));
     }, 25);
   });
 }
