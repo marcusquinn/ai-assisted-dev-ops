@@ -183,6 +183,11 @@ export function registerOnDemandMcpAgents(config, agentsDir, routing, state) {
 // deliberately not counted as delivered; user prompt overrides remain untouched.
 export function primaryDeliveryEvidence(config, agentsDir) {
   const sources = [];
+  const version = readIfExists(join(agentsDir, "VERSION"));
+  const core = readIfExists(join(agentsDir, "AGENTS.md"));
+  const instructions = Array.isArray(config.instructions) ? config.instructions : [];
+  const coreCount = instructions.filter((source) => source === join(agentsDir, "AGENTS.md")
+    || source === "~/.aidevops/agents/AGENTS.md").length;
   for (const profile of Object.values(config.agent || {})) {
     if (profile.mode !== "primary") continue;
     const match = profile.description?.match(/^Read ~\/\.aidevops\/agents\/([a-z0-9-]+\.md)$/);
@@ -200,13 +205,20 @@ export function primaryDeliveryEvidence(config, agentsDir) {
   }
   return {
     stage: "config", enforcement: "not_observed",
-    versionSha256: createHash("sha256").update(readIfExists(join(agentsDir, "VERSION"))).digest("hex"),
+    versionSha256: version ? createHash("sha256").update(version).digest("hex") : null,
+    core: {
+      source: "AGENTS.md", configuredCount: coreCount,
+      sha256: core ? createHash("sha256").update(core).digest("hex") : null,
+      delivery: "not_observed_at_config_stage",
+    },
     sources,
   };
 }
 
 export function registerAgents(config, agentsDir, routing, state) {
-  recordPluginHealthStage("primary_delivery", primaryDeliveryEvidence(config, agentsDir));
+  if (process.env.AIDEVOPS_PLUGIN_HEALTH_PROBE_FILE) {
+    recordPluginHealthStage("primary_delivery", primaryDeliveryEvidence(config, agentsDir));
+  }
   registerConfiguredRoutingIntents(config, routing, state);
   const indexAgents = loadAgentIndex(agentsDir, readIfExists);
   let injected = 0;

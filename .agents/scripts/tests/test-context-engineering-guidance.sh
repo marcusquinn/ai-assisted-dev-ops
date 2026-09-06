@@ -171,6 +171,35 @@ with tempfile.TemporaryDirectory(prefix='primary-delivery-') as temporary:
         assert str(core) in json.loads(config_path.read_text())['instructions']
         (agents / 'core.saved').rename(core)
 
+    # Probe the installed native loader, without plugins, providers, inherited
+    # config overrides or credentials. This is not a model invocation.
+    binary = shutil.which('opencode')
+    if binary:
+        native_env = {'PATH': os.environ['PATH'], 'HOME': str(home),
+                      'OPENCODE_PURE': '1', 'OPENCODE_DISABLE_DEFAULT_PLUGINS': '1',
+                      'OPENCODE_DISABLE_EXTERNAL_SKILLS': '1'}
+        for key, directory in [('CONFIG', '.config'), ('CACHE', '.cache'),
+                               ('DATA', '.local/share'), ('STATE', '.local/state')]:
+            native_env[f'XDG_{key}_HOME'] = str(home / directory)
+        samples = [('Build+', 'build-plus'), ('SEO', 'seo'), ('Content', 'content')]
+        minimal = {'agent': {key: config['agent'][key] for key, _ in samples},
+                   'instructions': [str(agents / 'AGENTS.md')], 'plugin': [], 'mcp': {}}
+        config_path.write_text(json.dumps(minimal))
+        for profile, name in samples:
+            result = subprocess.run([binary, 'debug', 'agent', profile], cwd=home,
+                                    env=native_env, capture_output=True, text=True, timeout=90)
+            assert result.returncode == 0, f'native loader failed: {profile}'
+            delivered = json.loads(result.stdout)['prompt'].strip()
+            assert delivered == (agents / f'{name}.md').read_text().strip()
+            print(f'PASS: native loader expanded {profile} canonical source without plugin hooks')
+        (agents / 'seo.md').unlink()
+        missing = subprocess.run([binary, 'debug', 'agent', 'SEO'], cwd=home,
+                                 env=native_env, capture_output=True, text=True, timeout=90)
+        assert missing.returncode != 0, 'missing selected source must fail rather than silently omit knowledge'
+        shutil.copyfile(repo / '.agents/seo.md', agents / 'seo.md')
+    else:
+        print('SKIP: native OpenCode capture (binary unavailable); generator contracts tested')
+
     # Native Codex preload must preserve explicit user override precedence.
     codex = load('delivery_codex', 'codex-setup.py')
     codex_home = home / '.codex'
