@@ -513,7 +513,21 @@ _resolve_runtime_testing_level() {
 	return 0
 }
 
+# Resolve branch ownership before comparing pending work. The remote tip may
+# contain incoming changes that are not part of this PR. Reject missing or
+# ambiguous ancestry rather than selecting an arbitrary merge base.
+_pending_runtime_comparison_base() {
+	local base_ref="$1"
+	local comparison_base=""
+	git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1 || return 1
+	comparison_base=$(git merge-base --all "$base_ref" HEAD) || return 1
+	[[ -n "$comparison_base" && "$comparison_base" != *$'\n'* ]] || return 1
+	printf '%s\n' "$comparison_base"
+	return 0
+}
+
 # Collect the complete prospective PR file list without staging pending files.
+# Callers supply the resolved branch-owned comparison base, not the remote tip.
 _pending_runtime_files_changed() {
 	local base_ref="$1"
 	local files_changed=""
@@ -536,11 +550,12 @@ _validate_pending_runtime_metadata() {
 	local summary_testing="${3:-}"
 	local summary_what="${4:-}"
 	local base_ref="$5"
-	local files_changed="" runtime_risk=""
+	local files_changed="" runtime_risk="" comparison_base=""
 
-	files_changed=$(_pending_runtime_files_changed "$base_ref") || return 1
+	comparison_base=$(_pending_runtime_comparison_base "$base_ref") || return 1
+	files_changed=$(_pending_runtime_files_changed "$comparison_base") || return 1
 	runtime_risk=$(_derive_runtime_risk "$requested_risk" "$files_changed" \
-		"$summary_what" "$base_ref" "$_full_loop_pending_diff_target") || return 1
+		"$summary_what" "$comparison_base" "$_full_loop_pending_diff_target") || return 1
 	_resolve_runtime_testing_level "$runtime_risk" "$requested_testing_level" \
 		"$summary_testing" >/dev/null || return 1
 	return 0

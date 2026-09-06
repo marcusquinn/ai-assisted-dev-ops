@@ -352,6 +352,81 @@ else
 fi
 TESTS_RUN=$((TESTS_RUN + 1))
 
+# GH#31300: incoming sensitive code must not become a local deletion or hunk.
+BEHIND_REPO="${TEST_ROOT}/behind-repo"
+mkdir -p "${BEHIND_REPO}/src"
+/usr/bin/git -C "$BEHIND_REPO" init -q -b main
+/usr/bin/git -C "$BEHIND_REPO" config user.name "Runtime Risk Test"
+/usr/bin/git -C "$BEHIND_REPO" config user.email "runtime-risk@example.invalid"
+printf 'export const value = 1;\n' >"${BEHIND_REPO}/src/helper.js"
+printf 'Initial guide.\n' >"${BEHIND_REPO}/README.md"
+/usr/bin/git -C "$BEHIND_REPO" add .
+/usr/bin/git -C "$BEHIND_REPO" -c commit.gpgSign=false commit -qm "fixture: shared base"
+behind_base=$(/usr/bin/git -C "$BEHIND_REPO" rev-parse HEAD)
+printf 'export const credential = rotateCredential();\n' >"${BEHIND_REPO}/src/helper.js"
+printf 'export const session = createSession();\n' >"${BEHIND_REPO}/src/auth.js"
+/usr/bin/git -C "$BEHIND_REPO" add .
+/usr/bin/git -C "$BEHIND_REPO" -c commit.gpgSign=false commit -qm "fixture: upstream sensitive code"
+/usr/bin/git -C "$BEHIND_REPO" switch -q -c feature/behind "$behind_base"
+printf 'Updated guide.\n' >"${BEHIND_REPO}/README.md"
+behind_result=$(cd "$BEHIND_REPO" &&
+	_validate_pending_runtime_metadata Low self-assessed "diff reviewed" "Update guide" main &&
+	printf 'accepted')
+assert_contains "behind-base docs remain Low/self-assessed" "$behind_result" "accepted"
+behind_files=$(cd "$BEHIND_REPO" &&
+	_pending_runtime_files_changed "$(_pending_runtime_comparison_base main)")
+assert_contains "pending file list excludes upstream-only paths" "<$behind_files>" "<README.md>"
+
+# Same path changed on both sides: keyword context must use the ownership base,
+# not include removal of upstream credentials in a harmless local code change.
+printf 'export const value = 2;\n' >"${BEHIND_REPO}/src/helper.js"
+behind_result=$(cd "$BEHIND_REPO" &&
+	_validate_pending_runtime_metadata Medium self-assessed "diff reviewed" "Adjust helper" main &&
+	printf 'accepted')
+assert_contains "file list and keyword context share branch ownership" "$behind_result" "accepted"
+
+# Both index and working-tree changes are part of the prospective final tree.
+printf 'export const credential = rotateCredential();\n' >"${BEHIND_REPO}/src/helper.js"
+pending_in_behind_repo() {
+	(cd "$BEHIND_REPO" && _validate_pending_runtime_metadata "$@")
+	return $?
+}
+assert_rejected "unstaged sensitive code requires runtime evidence" \
+	pending_in_behind_repo Low self-assessed "diff reviewed" "Adjust helper" main
+/usr/bin/git -C "$BEHIND_REPO" add src/helper.js
+assert_rejected "staged sensitive code requires runtime evidence" \
+	pending_in_behind_repo Low self-assessed "diff reviewed" "Adjust helper" main
+/usr/bin/git -C "$BEHIND_REPO" -c commit.gpgSign=false commit -qm "fixture: local sensitive commit"
+assert_rejected "local sensitive commit cannot hide behind upstream identical content" \
+	pending_in_behind_repo Low self-assessed "diff reviewed" "Adjust helper" main
+behind_result=$(pending_in_behind_repo Low runtime-verified \
+	"runtime-verified with credential rotation fixture" "Adjust helper" main && printf 'accepted')
+assert_contains "substantive runtime evidence accepts local sensitive code" "$behind_result" "accepted"
+
+# Restore harmless tracked code with a local commit, then exercise untracked risk.
+printf 'export const value = 1;\n' >"${BEHIND_REPO}/src/helper.js"
+/usr/bin/git -C "$BEHIND_REPO" add src/helper.js
+/usr/bin/git -C "$BEHIND_REPO" -c commit.gpgSign=false commit -qm "fixture: restore harmless code"
+printf 'export const session = createSession();\n' >"${BEHIND_REPO}/src/session.js"
+behind_status_before=$(/usr/bin/git -C "$BEHIND_REPO" status --porcelain=v1)
+behind_head_before=$(/usr/bin/git -C "$BEHIND_REPO" rev-parse HEAD)
+assert_rejected "untracked sensitive code requires runtime evidence behind base" \
+	pending_in_behind_repo Low self-assessed "diff reviewed" "Adjust helper" main
+assert_contains "rejected prevalidation preserves index and working tree" \
+	"<$(/usr/bin/git -C "$BEHIND_REPO" status --porcelain=v1)>" "<$behind_status_before>"
+assert_contains "rejected prevalidation preserves HEAD" \
+	"<$(/usr/bin/git -C "$BEHIND_REPO" rev-parse HEAD)>" "<$behind_head_before>"
+assert_rejected "missing comparison ref fails closed for pending work" \
+	pending_in_behind_repo Low self-assessed "diff reviewed" "Update guide" missing-base
+unrelated_tree=$(/usr/bin/git -C "$BEHIND_REPO" rev-parse 'main^{tree}')
+unrelated_base=$(printf 'unrelated root\n' | /usr/bin/git -C "$BEHIND_REPO" -c commit.gpgSign=false commit-tree "$unrelated_tree")
+assert_rejected "unrelated comparison history fails closed" \
+	pending_in_behind_repo Low self-assessed "diff reviewed" "Update guide" "$unrelated_base"
+
+# Final validation retains direct final-diff semantics, not pending ancestry.
+final_result=$(cd "$BEHIND_REPO" && _derive_runtime_risk Low src/helper.js "Adjust helper" main HEAD)
+assert_contains "final committed diff retains upstream-sensitive hunks" "$final_result" "Critical"
+
 printf '\n%d tests run, %d failed\n' "$TESTS_RUN" "$TESTS_FAILED"
 [[ "$TESTS_FAILED" -eq 0 ]] || exit 1
 exit 0
