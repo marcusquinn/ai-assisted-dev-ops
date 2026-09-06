@@ -49,6 +49,9 @@ class FrontierOpenCode(OpenCode):
             config["instructions"] = [f"{root}/AGENTS.md"]
         super().__init__(*args, opencode_config=config, **kwargs)
         self._opencode_config["small_model"] = self.model_name
+        observer_options = self._opencode_config["plugin"][0][1]
+        observer_options["runtimeVersion"] = self._version
+        observer_options["experimental"] = context_limit is not None
         if context_limit is not None or output_limit is not None:
             if not (isinstance(context_limit, int) and isinstance(output_limit, int)
                     and 4096 <= context_limit <= 1000000 and 1024 <= output_limit < context_limit):
@@ -83,7 +86,10 @@ class FrontierOpenCode(OpenCode):
             raise ValueError("An exact OpenCode version is required")
         await self.ensure_system_dependencies(environment, ("curl", "bash", "coreutils", "nodejs", "npm", "git", "tar"))
         package = shlex.quote(f"opencode-ai@{self._version}")
-        await self.exec_as_agent(environment, command=f"npm i -g {package} && opencode --version")
+        version = shlex.quote(self._version)
+        await self.exec_as_agent(environment, command=(
+            f'npm i -g {package} && test "$(opencode --version)" = {version}'
+        ))
         await environment.upload_file(self.archive, "/opt/frontier-framework.tar")
         # No setup.sh: its machine-wide setup/scheduling belongs outside trials.
         # The clean archive contains only pinned Git-tracked framework files.

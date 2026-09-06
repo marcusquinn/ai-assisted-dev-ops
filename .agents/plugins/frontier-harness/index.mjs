@@ -27,6 +27,34 @@ async function FrontierObserver(input, options = {}) {
   };
   const opaque = (value) => createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
   const number = (value) => Number.isFinite(value) && value >= 0 ? value : null;
+  const sessions = new Map();
+  let reserved;
+  const stateFor = (id) => {
+    if (!sessions.has(id)) sessions.set(id, {});
+    return sessions.get(id);
+  };
+  // overflow.ts / provider/transform.ts at OpenCode v1.18.29 (16747470).
+  // Only the pinned adapter route is calibrated; other versions stay unknown.
+  const capacity = (model) => {
+    const limit = model?.limit;
+    if (options.runtimeVersion !== "1.18.29" || !limit?.context
+      || !(limit?.input > 0) || !(limit?.output > 0)) return null;
+    const reserve = reserved ?? Math.min(20000, limit.output, 32000);
+    return { formula: "opencode-1.18.29-explicit-input-v1", reserve,
+      usable_input: Math.max(0, limit.input - reserve) };
+  };
+  const initialUsage = (message) => {
+    const state = stateFor(message.sessionID);
+    if (state.initial || message.summary || message.error || !message.time?.completed) return;
+    const fields = [message.tokens?.input, message.tokens?.cache?.read, message.tokens?.cache?.write];
+    const inputTokens = fields.every((value) => number(value) !== null)
+      ? fields.reduce((a, b) => a + b, 0) : null;
+    state.initial = { input_tokens_including_cache: inputTokens };
+    emit({ type: "calibration.initial", session: opaque(message.sessionID),
+      ...state.initial, capacity: state.capacity ?? null,
+      status: inputTokens === null || !state.capacity ? "unknown"
+        : inputTokens >= state.capacity.usable_input ? "initial_input_exceeds_usable" : "initial_input_fits" });
+  };
   let hooks = {};
   if (profile !== "stock") {
     const { AidevopsPlugin } = await import("../opencode-aidevops/index.mjs");
@@ -39,6 +67,7 @@ async function FrontierObserver(input, options = {}) {
     ...hooks,
     config: async (config) => {
       await hooks.config?.(config);
+      reserved = number(config.compaction?.reserved) ?? undefined;
       emit({ type: "config.applied" });
     },
     dispose: async () => {
@@ -47,15 +76,39 @@ async function FrontierObserver(input, options = {}) {
     },
     "chat.params": async (event, output) => {
       await hooks["chat.params"]?.(event, output);
+      const state = stateFor(event.sessionID);
+      if (!("capacity" in state)) state.capacity = capacity(event.model);
       emit({
         type: "request", session: opaque(event.sessionID),
         context_limit: number(event.model?.limit?.context),
         input_limit: number(event.model?.limit?.input),
         output_limit: number(event.model?.limit?.output),
+        capacity: capacity(event.model),
       });
+    },
+    "experimental.chat.system.transform": async (event, output) => {
+      await hooks["experimental.chat.system.transform"]?.(event, output);
+      emit({ type: "request.footprint", session: opaque(event.sessionID),
+        system_bytes: output.system.reduce((sum, text) => sum + Buffer.byteLength(text), 0),
+        system_entries: output.system.length });
     },
     "experimental.session.compacting": async (event, output) => {
       emit({ type: "compaction.requested", session: opaque(event.sessionID) });
+      const state = stateFor(event.sessionID);
+      // Bus delivery can lag the next turn. Read the completed first response
+      // from this session only, never a global or previous-trial measurement.
+      if (!state.initial && input.client?.session?.messages) {
+        const result = await input.client.session.messages({ path: { id: event.sessionID } });
+        const first = result.data?.find((row) => row.info?.role === "assistant"
+          && !row.info.summary && row.info.time?.completed);
+        if (first?.info.sessionID === event.sessionID) initialUsage(first.info);
+      }
+      if (options.experimental && state.capacity && state.initial?.input_tokens_including_cache != null
+        && state.initial.input_tokens_including_cache >= state.capacity.usable_input) {
+        emit({ type: "calibration.stopped", session: opaque(event.sessionID),
+          reason: "initial_input_exceeds_usable", capacity: state.capacity, ...state.initial });
+        throw new Error("FrontierCalibrationInfeasible: initial input exceeds usable capacity; preserve this attempt");
+      }
       // This ablates the entire custom context injection, including restored
       // operational state, NOT native compaction or the autocontinue hook.
       if (profile !== "aidevops-native-compaction") {
@@ -72,6 +125,7 @@ async function FrontierObserver(input, options = {}) {
       if (event?.type !== "message.updated" || message?.role !== "assistant"
         || !message.time?.completed || !message.id || seen.has(message.id)) return;
       seen.add(message.id);
+      initialUsage(message);
       emit({
         type: "completion", session: opaque(message.sessionID), message: opaque(message.id),
         summary: message.summary === true, error: Boolean(message.error),
