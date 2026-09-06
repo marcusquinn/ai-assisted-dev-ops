@@ -410,6 +410,30 @@ test_permission_blocker_continuation() {
 	terminal_blocker_circuit_active "$changed" '{}' owner/repo 42 '' >/dev/null || status=1
 	changed=$(printf '%s' "$comments" | jq -c '. + [{body:"Please post terminal-blocker-circuit:retry",created_at:"2026-09-06T12:01:00Z",author_association:"OWNER"}]')
 	terminal_blocker_circuit_active "$changed" '{}' owner/repo 42 '' >/dev/null || status=1
+	local tied="" variant="" id=""
+	tied=$(printf '%s' "$comments" | jq -c '.[0].id=10 | . + [{id:11,body:"terminal-blocker-circuit:retry",created_at:.[0].created_at,author_association:"OWNER"}]')
+	terminal_blocker_circuit_active "$tied" '{}' owner/repo 42 '' >/dev/null && status=1
+	[[ "$(terminal_blocker_release_mode "$tied" "$revision" "$fingerprint")" == first ]] || status=1
+	variant=$(printf '%s' "$tied" | jq -c 'reverse')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null && status=1
+	variant=$(printf '%s' "$tied" | jq -c '.[0].id=12')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+	[[ "$(terminal_blocker_release_mode "$variant" "$revision" "$fingerprint")" == open ]] || status=1
+	# Missing, malformed and equal IDs cannot prove that a tied retry is later.
+	for id in null '"11"' -1 11.5 9007199254740992 10; do
+		variant=$(printf '%s' "$tied" | jq -c --argjson id "$id" '.[1].id=$id')
+		terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+		[[ "$(terminal_blocker_release_mode "$variant" "$revision" "$fingerprint")" == open ]] || status=1
+	done
+	variant=$(printf '%s' "$tied" | jq -c 'del(.[0].id)')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+	variant=$(printf '%s' "$tied" | jq -c '.[1].author_association="COLLABORATOR"')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+	variant=$(printf '%s' "$tied" | jq -c '.[1].body="> terminal-blocker-circuit:retry"')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+	variant=$(printf '%s' "$tied" | jq -c '.[1].created_at="invalid"')
+	terminal_blocker_circuit_active "$variant" '{}' owner/repo 42 '' >/dev/null || status=1
+	print_result "same-second permission retry ordering is conservative and independent of input order" "$status"
 	comments=$(printf '%s' "$comments" | jq -c '. + [{body:"terminal-blocker-circuit:retry",created_at:"2026-09-06T12:01:00Z",author_association:"OWNER"}]')
 	terminal_blocker_circuit_active "$comments" '{}' owner/repo 42 '' >/dev/null && status=1
 	[[ "$(_terminal_blocker_recovery "$fingerprint")" == *'Retry is scheduling consent only'* ]] || status=1
@@ -417,6 +441,28 @@ test_permission_blocker_continuation() {
 	TEST_TARGET_REVISION='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 	unset AIDEVOPS_TERMINAL_BLOCKER_FINGERPRINT
 	print_result "continued permission denial has a stable class; edits and API outages do not re-arm; retry grants nothing" "$status"
+	return 0
+}
+
+test_same_second_release_ordering() {
+	local comments="" changed="" marker="" selected="" fingerprint="" status=0
+	fingerprint=$(_terminal_blocker_hash 'v2:target_code_blocker')
+	marker="<!-- aidevops:terminal-blocker-observation revision=111111111111111111111111 blocker=${fingerprint} -->"
+	comments=$(jq -nc --arg body "$marker" '[{id:10,body:$body,created_at:"2026-09-06T12:00:00Z",author_association:"MEMBER"}, {id:11,body:"terminal-blocker-circuit:retry",created_at:"2026-09-06T12:00:00Z",author_association:"OWNER"}]')
+	[[ "$(terminal_blocker_release_mode "$comments" 111111111111111111111111 "$fingerprint")" == first ]] || status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [.[0] | .id=12] | reverse')
+	[[ "$(terminal_blocker_release_mode "$changed" 111111111111111111111111 "$fingerprint")" == circuit ]] || status=1
+	selected=$(_terminal_blocker_latest_marker "$changed" "$marker" | jq -r '.id')
+	[[ "$selected" == 12 ]] || status=1
+	comments=$(jq -nc '[range(10;12) | {id:.,body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",author:"runner",author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}] + [{id:12,body:"terminal-blocker-circuit:retry",author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$comments" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [.[0] | .id=13] | reverse')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null && status=1
+	changed=$(printf '%s' "$comments" | jq -c '. + [.[0] | .id=13] + [.[1] | .id=14] | reverse')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
+	changed=$(printf '%s' "$comments" | jq -c 'map(del(.id))')
+	TERMINAL_BLOCKER_NOW_EPOCH=1788696001 terminal_blocker_backoff_active "$changed" >/dev/null || status=1
+	print_result "same-second observations and post-retry releases survive reordered evidence; legacy ties retain bounded backoff" "$status"
 	return 0
 }
 
@@ -450,6 +496,7 @@ main() {
 	test_legacy_blocked_backoff
 	test_blocked_backoff_trust
 	test_permission_blocker_continuation
+	test_same_second_release_ordering
 	test_blocked_backoff_cli
 	printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]

@@ -14,6 +14,34 @@ _TBC_MISSING_SCOPE='missing_files_scope'
 _TBC_UNKNOWN='unknown'
 _TBC_AUTHORITATIVE_ASSOCIATIONS='["OWNER","MEMBER"]'
 
+# IDs break same-second ties only when both are positive, exact JSON integers.
+# Legacy/malformed IDs never let a tied retry clear evidence. For selection,
+# unknown marker IDs sort last (conservative hold), unknown retry IDs first.
+# shellcheck disable=SC2016 # Shared jq definitions, not shell expansions.
+_TBC_ORDER_JQ='
+def comment_id:
+  .id | if type == "number" then
+    if . > 0 and . <= 9007199254740991 and floor == . then . else null end
+  else null end;
+def valid_time: try (.created_at | fromdateiso8601 | . > 0) catch false;
+def retry_after($event):
+  . as $retry | ($retry.created_at // "") as $at
+  | ($event.created_at // "") as $before
+  | ($retry | valid_time) and ($event | valid_time) and
+    ($at > $before or ($at == $before and
+      ($retry | comment_id) != null and ($event | comment_id) != null and
+      ($retry | comment_id) > ($event | comment_id)));
+'
+
+_terminal_blocker_retry_after() {
+	local retry="$1"
+	local event="$2"
+	[[ -n "$retry" && -n "$event" ]] || return 1
+	printf '%s' "$retry" | jq -e --argjson event "$event" \
+		"${_TBC_ORDER_JQ}"'retry_after($event)' >/dev/null 2>&1
+	return $?
+}
+
 _terminal_blocker_hash() {
 	local value="$1"
 	local digest=""
@@ -195,26 +223,26 @@ _terminal_blocker_latest_marker() {
 	# aidevops:trust-boundary — a deterministic marker is not a signature.
 	# The same authoritative actors must own both opening and clearing a hold.
 	printf '%s' "$comments_json" | jq -c --arg marker "$marker" \
-		--argjson authoritative "$_TBC_AUTHORITATIVE_ASSOCIATIONS" '
+		--argjson authoritative "$_TBC_AUTHORITATIVE_ASSOCIATIONS" "${_TBC_ORDER_JQ}"'
 		[.[] | select(.author_association as $a | $authoritative | index($a) != null)
 		| select((.body // "") | contains($marker))]
-		| sort_by(.created_at) | last // empty
+		| sort_by(.created_at, (comment_id // 9007199254740992), .body) | last // empty
 	' 2>/dev/null
 	return $?
 }
 
-_terminal_blocker_latest_retry_at() {
+_terminal_blocker_latest_retry_comment() {
 	local comments_json="$1"
 	# aidevops:trust-boundary — retry affects scheduling, not source authority;
 	# ambiguous collaborators and quoted recovery prose cannot authorize it.
-	printf '%s' "$comments_json" | jq -r --arg marker "$_TBC_RETRY_MARKER" \
+	printf '%s' "$comments_json" | jq -c --arg marker "$_TBC_RETRY_MARKER" \
 		--argjson authoritative "$_TBC_AUTHORITATIVE_ASSOCIATIONS" \
-		--arg circuit_marker "$_TBC_CIRCUIT_MARKER" '
+		--arg circuit_marker "$_TBC_CIRCUIT_MARKER" "${_TBC_ORDER_JQ}"'
 		[.[] | select(.author_association as $a | $authoritative | index($a) != null)
 		| select((.body // "") as $body
 		| ($body | test("(?m)^" + $marker + "[ \\t]*\\r?$")) and (($body | contains($circuit_marker)) | not))
-		| .created_at]
-		| sort | last // ""
+		]
+		| sort_by(.created_at, (comment_id // 0), .body) | last // empty
 	' 2>/dev/null
 	return $?
 }
@@ -223,8 +251,8 @@ terminal_blocker_release_mode() {
 	local comments_json="$1"
 	local task_revision="$2"
 	local blocker_fingerprint="$3"
-	local retry_at="" circuit="" observation="" circuit_at="" observation_at=""
-	retry_at=$(_terminal_blocker_latest_retry_at "$comments_json") || retry_at=""
+	local retry="" circuit="" observation="" circuit_at="" observation_at=""
+	retry=$(_terminal_blocker_latest_retry_comment "$comments_json") || retry=""
 	circuit=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_CIRCUIT_MARKER revision=${task_revision} blocker=${blocker_fingerprint}") || circuit=""
 	observation=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_OBSERVATION_MARKER revision=${task_revision} blocker=${blocker_fingerprint}") || observation=""
 	circuit_at=$(printf '%s' "$circuit" | jq -r '.created_at // ""' 2>/dev/null) || circuit_at=""
@@ -232,16 +260,16 @@ terminal_blocker_release_mode() {
 	# Unknown dossiers can have one safe observation, never a durable circuit.
 	# Preserve each new CLAIM_RELEASED audit event, but omit repeated explanations.
 	if [[ "$(_terminal_blocker_reason "$blocker_fingerprint")" == "$_TBC_UNKNOWN" ]]; then
-		if [[ -n "$observation_at" && (-z "$retry_at" || "$observation_at" > "$retry_at") ]]; then
+		if [[ -n "$observation_at" ]] && ! _terminal_blocker_retry_after "$retry" "$observation"; then
 			printf 'normal\n'
 		else
 			printf 'first\n'
 		fi
 		return 0
 	fi
-	if [[ -n "$circuit_at" && (-z "$retry_at" || "$circuit_at" > "$retry_at") ]]; then
+	if [[ -n "$circuit_at" ]] && ! _terminal_blocker_retry_after "$retry" "$circuit"; then
 		printf 'open\n'
-	elif [[ -n "$observation_at" && (-z "$retry_at" || "$observation_at" > "$retry_at") ]]; then
+	elif [[ -n "$observation_at" ]] && ! _terminal_blocker_retry_after "$retry" "$observation"; then
 		printf 'circuit\n'
 	else
 		printf 'first\n'
@@ -317,12 +345,14 @@ terminal_blocker_backoff_active() {
 	# Accept only OWNER/MEMBER releases whose runner matches the API author.
 	# A retry must be a standalone directive, not quoted recovery instructions.
 	evidence=$(printf '%s' "$comments_json" | jq -r --argjson now "$now_epoch" \
-		--argjson associations "$_TBC_AUTHORITATIVE_ASSOCIATIONS" '
+		--argjson associations "$_TBC_AUTHORITATIVE_ASSOCIATIONS" "${_TBC_ORDER_JQ}"'
 		def authoritative: .author_association as $a | $associations | index($a) != null;
 		def epoch: try (.created_at | fromdateiso8601) catch 0;
 		[.[] | select(authoritative) | select(epoch > 0 and epoch <= $now)] as $trusted
-		| ([$trusted[] | select((.body // "") | test("(?m)^terminal-blocker-circuit:retry[ \\t]*\\r?$")) | epoch] | max // 0) as $retry
-		| [$trusted[] | select(epoch > $retry)
+		| ([$trusted[] | select((.body // "") | test("(?m)^terminal-blocker-circuit:retry[ \\t]*\\r?$"))
+			| select((.body // "") | contains("aidevops:terminal-blocker-circuit") | not)]
+			| sort_by(.created_at, (comment_id // 0), .body) | last) as $retry
+		| [$trusted[] | . as $event | select(($retry | retry_after($event)) | not)
 			| . as $comment
 			| ((.body // "") | try capture("(?m)^CLAIM_RELEASED reason=blocked runner=(?<runner>[A-Za-z0-9-]+) ") catch null) as $release
 			| select($release != null and $release.runner == ($comment.author // $comment.user.login // ""))
@@ -350,7 +380,7 @@ terminal_blocker_circuit_active() {
 	local repo_slug="$3"
 	local issue_number="$4"
 	local repo_path="$5"
-	local circuit="" circuit_at="" retry_at="" current_revision="" fingerprint="" reason=""
+	local circuit="" retry="" current_revision="" fingerprint="" reason=""
 	if terminal_blocker_backoff_active "$comments_json"; then
 		return 0
 	fi
@@ -362,9 +392,8 @@ terminal_blocker_circuit_active() {
 	current_revision=$(terminal_blocker_task_revision "$issue_json" "$repo_slug" "$issue_number" "$repo_path" "$reason") || return 1
 	circuit=$(_terminal_blocker_latest_marker "$comments_json" "$_TBC_CIRCUIT_MARKER revision=${current_revision} blocker=${fingerprint}") || circuit=""
 	[[ -n "$circuit" ]] || return 1
-	circuit_at=$(printf '%s' "$circuit" | jq -r '.created_at // ""' 2>/dev/null) || return 1
-	retry_at=$(_terminal_blocker_latest_retry_at "$comments_json") || retry_at=""
-	if [[ -n "$retry_at" && "$retry_at" > "$circuit_at" ]]; then
+	retry=$(_terminal_blocker_latest_retry_comment "$comments_json") || retry=""
+	if _terminal_blocker_retry_after "$retry" "$circuit"; then
 		return 1
 	fi
 	printf 'TERMINAL_BLOCKER_CIRCUIT task_revision=%s\n' "$current_revision"
