@@ -14,7 +14,7 @@
 
 **File Structure**: `TODO.md` (tasks), `todo/` (plans, PRDs), `.agents/` (agents, tools, services, workflows, scripts).
 
-**Before extending**: Read `.agents/aidevops/architecture.md` (design patterns, conventions, extension guide).
+**Before extending**: Read `.agents/aidevops/architecture.md` (design patterns, conventions, extension guide) and `.agents/aidevops/purpose.md` (value, ownership, and decision criteria).
 
 <!-- AI-CONTEXT-END -->
 

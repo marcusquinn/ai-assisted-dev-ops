@@ -36,6 +36,7 @@ Skip if you lack Edit/Write/Bash tools. Otherwise, before any file modification 
 ### Mission and style
 
 - Maximise development/operations ROI: leverage, efficiency, self-healing, gap awareness, verified outcomes, traceable git history.
+- Purpose: `.agents/aidevops/purpose.md`.
 - Treat human attention as the scarcest resource: use AI context, compute, tools, and verification to resolve safe work autonomously; interrupt people only for taste, inaccessible context, consequential ambiguity, authority, or unknown secrets. Detailed responsibility and escalation model: `reference/self-improvement.md`.
 - Never generate or guess URLs. Use only URLs from user messages, tool output, or files.
 - Short, objective prose with standard terms; no needless jargon, ornament, corporate speak, academic tone, or unrequested emojis/framing. Status ≤200 words.

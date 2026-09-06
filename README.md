@@ -7,6 +7,14 @@
 
 **[aidevops.sh](https://aidevops.sh)** is an [OpenCode](https://opencode.ai/) plugin and AI DevOps framework for people who want AI to do useful work across code, infrastructure, business, marketing, content, and creative projects without turning every job into another long, fragile chat.
 
+It layers value and automation onto information flows: work in every covered
+domain can be codified, systemised, and improved with DevOps principles and tool
+leverage. Durable repository knowledge holds tasks, plans, decisions, evidence,
+and progress; forge issues and PRs are portable execution conversations, not the
+only record of the work. The aim of helping people become 100x more capable at
+value generation is an ambition to substantiate, not a guaranteed or measured
+result.
+
 Most AI tools still leave you doing the hard coordination yourself: finding the right context, choosing a model, protecting secrets, managing branches, watching CI, spotting stuck work, and remembering what went wrong last time. aidevops puts structure around that work so agents can share context, work safely in parallel, spend model budget where it matters, and leave the system better than they found it.
 
 > **Recommended setup:** [OpenCode](https://opencode.ai/) + OpenAI GPT-5.6 Luna / Terra and GPT-6 Astra. aidevops routes Luna to bounded work, Terra to general implementation, and Astra at low reasoning to consequential reasoning and synthesis. Claude models (Anthropic) remain fully supported fallbacks, and other model providers are evaluated as their quality, latency, and cost profiles change.
@@ -28,8 +36,12 @@ Founded by [Marcus Quinn](https://github.com/marcusquinn) on 9th November 2025 t
 - Notice when the system is struggling. Stuck workers, orphaned PRs, stale assignments, CI failures, review-bot traps, and repeated mistakes should become visible signals.
 - Improve the framework from real use. Imported skills, session learnings, quality findings, and better patterns should become better agents, hooks, scripts, and docs.
 - Optimise for profitable outcomes: useful work shipped, lower supervision cost, safer operations, and decisions that make sense beyond the next prompt.
+- Make ownership structural: explicit sources of truth, generated views, consistency checks, and verified fallback behaviour prevent knowledge and progress from drifting between tools.
 
 The result: an AI operations platform that manages projects across every business domain — absorbing everything automatable so you can focus on what matters.
+
+The canonical purpose and architectural decision criteria are in
+[`.agents/aidevops/purpose.md`](.agents/aidevops/purpose.md).
 
 **Built on proven patterns**: aidevops implements [industry-standard agent design patterns](#agent-design-patterns) - including multi-layer action spaces, context isolation, and iterative execution loops.
 

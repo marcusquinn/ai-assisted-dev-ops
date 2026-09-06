@@ -19,11 +19,12 @@ mode: subagent
 - **Code refs**: `rg "pattern"` search patterns, not `file:line` (line numbers drift)
 - **Subagents**: `agent-review.md` (review), `agent-testing.md` (testing)
 - **Slash command**: `/build-agent {name} {kind} [category]` → `.agents/scripts/commands/build-agent.md` (interactive harness for creating new agents)
-- **Related**: `@code-standards`, `.agents/aidevops/architecture.md`, `tools/browser/browser-automation.md`
+- **Related**: `@code-standards`, `.agents/aidevops/architecture.md`, `.agents/aidevops/purpose.md`, `tools/browser/browser-automation.md`
 - **After creating/promoting**: in a source worktree run `AIDEVOPS_AGENTS_DIR="<worktree>/.agents" .agents/scripts/subagent-index-helper.sh generate`; without the override the helper targets the deployed agent tree
 - **Behavioural verification when material**: reuse an existing `agent-test-helper.sh` suite or a bounded live prompt; do not create a suite by default
 - **Workload tier**: Author `simple`, `standard`, or `thinking`; the preference-ordered runtime mapping in `tools/context/model-routing.md` selects concrete providers/models.
 - **Improvement contract**: All agents inherit `reference/self-improvement.md`; add only domain-specific evidence triggers, sensitivity boundaries, and promotion routes
+- **Purpose and ownership**: Read `.agents/aidevops/purpose.md` before changing value, repository/forge ownership, or cross-domain delegation semantics; preserve its decisions through the delivered route.
 
 <!-- AI-CONTEXT-END -->
 

@@ -60,6 +60,16 @@ the selected runtime does not expose them.
 
 ## Judgment and Deterministic Enforcement
 
+## Purpose and knowledge ownership
+
+`.agents/aidevops/purpose.md` owns the framework's compounding-value purpose,
+economic measures, cross-domain delegation, and repository/forge ownership
+contract. Apply it when changing architecture, task authority, or instruction
+delivery: repository knowledge owns tasks, plans, decisions, evidence, and
+progress, while forge issues and PRs remain linked execution conversations.
+Do not duplicate that policy here or claim that forge-loss recovery is already
+proven; `t18404` owns validation of that contract and implementation gaps.
+
 Use model judgment for open-ended decisions; use deterministic automation for
 mechanics whose correct outcome can be specified and tested.
 

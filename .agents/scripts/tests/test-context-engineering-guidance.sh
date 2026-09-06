@@ -6,6 +6,7 @@ set -euo pipefail
 
 repo_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
 architecture="$repo_root/.agents/aidevops/architecture.md"
+self_purpose="$repo_root/.agents/aidevops/purpose.md"
 self_improvement="$repo_root/.agents/reference/self-improvement.md"
 failures=0
 
@@ -65,6 +66,15 @@ assert_absent \
 	"$architecture"
 
 assert_contains \
+	"canonical purpose defines the 100x target as an ambition" \
+	"guaranteed or measured result" \
+	"$self_purpose"
+assert_contains \
+	"architecture inherits the canonical purpose" \
+	".agents/aidevops/purpose.md" \
+	"$architecture"
+
+assert_contains \
 	"self-improvement work stays within established authority" \
 	"within the established objective, authority" \
 	"$self_improvement"
@@ -91,6 +101,10 @@ assert_absent \
 assert_absent \
 	"self-improvement no longer rejects deterministic alternatives" \
 	"no deterministic alternative" \
+	"$self_improvement"
+assert_contains \
+	"self-improvement keeps repository knowledge distinct from forge conversations" \
+	"portable execution conversations, not the sole record" \
 	"$self_improvement"
 
 if [[ "$failures" -ne 0 ]]; then

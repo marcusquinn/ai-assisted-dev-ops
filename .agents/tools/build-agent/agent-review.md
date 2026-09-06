@@ -22,6 +22,7 @@ tools:
 **Trigger**: Creating or reviewing an instruction surface, user correction, observable failure, session-end learning, or periodic maintenance.
 **Owns**: Semantic review of agents, prompts, workflow instructions, command bodies, and their generated/runtime adapters.
 **Excludes**: Source-code simplification belongs to `tools/code-review/code-simplifier.md`; behavioural validation belongs to `agent-testing.md`; automated optimisers may propose candidates but must satisfy this rubric before changing instruction semantics.
+**Purpose and ownership changes**: Read `.agents/aidevops/purpose.md`; preserve its value, repo/forge ownership, and cross-domain delegation decisions rather than creating a competing summary.
 **Self-Assessment**: Observe evidence → preserve the current outcome → classify scope/sensitivity → search for `"pattern"` under `.agents/` with Grep → review the assembled context stack → apply and verify the smallest authorized fix or route it under `reference/self-improvement.md`.
 **Exact Search**: Use the Grep tool for content searches; when Bash is available, `rg "pattern" <path>` is an optional equivalent.
 **Write Restrictions (MANDATORY)**: Interactive sessions use a linked worktree for every edit, including planning files. Headless bookkeeping and explicitly planning-only workers may use only the narrow `main`/`master` exception enforced by `pre-edit-check.sh`; all other headless edits require a linked worktree. Follow `workflows/pre-edit.md` rather than copying its path allowlist here.

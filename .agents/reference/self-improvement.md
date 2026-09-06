@@ -49,7 +49,12 @@ Optimise for **verified value per unit of human attention**. Human time is a con
 
 ## Core Workflow
 
-**State observation.** `TODO.md`, `todo/PLANS.md`, and GitHub issues/PRs are canonical state. Never duplicate into separate files/logs.
+**State ownership.** Repository-native `TODO.md`, `todo/`, material decisions,
+evidence, and progress are the durable record. GitHub issues and PRs are linked,
+portable execution conversations, not the sole record of the work. See
+`.agents/aidevops/purpose.md` for the ownership contract; `t18404` owns
+validation of forge-loss recovery and any implementation gaps. Never create a
+second unowned state log.
 
 **Signals** (check via `gh` CLI): PR open 6h+ with no progress; PR closed without merge (worker failure); repeated CI failures or duplicate PRs.
 
