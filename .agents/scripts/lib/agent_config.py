@@ -144,11 +144,11 @@ AGENT_TEMPS = {
     "Research": 0.3,
 }
 
-# Custom system prompts
-# ALL primary agents use the custom prompt by default to ensure consistent identity
+# Legacy compatibility path retained for callers; primary prompts now load their
+# selected canonical source, with core delivered independently by instructions.
 DEFAULT_PROMPT = "~/.aidevops/agents/prompts/build.txt"
 
-# Agents that should NOT use the custom prompt (empty by default - all agents use it)
+# Agents that should NOT receive a canonical source prompt (empty by default).
 SKIP_CUSTOM_PROMPT = set()
 
 # Workload tiers are routing intent, not concrete runtime model IDs.
