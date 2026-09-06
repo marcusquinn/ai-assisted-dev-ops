@@ -211,7 +211,7 @@ _preflight_cleanup_and_ledger() {
 			"${HOME}/.aidevops/logs/cleanup_worktrees.log" "worktrees"
 	else
 		# Fallback: synchronous with short timeout (old GH#18979 behaviour)
-		run_stage_with_timeout "cleanup_worktrees" 60 cleanup_worktrees || true
+		run_stage_with_timeout "cleanup_worktrees" 60 cleanup_worktrees 60 || true
 	fi
 	# GH#21997/GH#29292: Stash cleanup uses the same isolated async launcher so
 	# slow auditing cannot stall preflight or share the parent pulse lifetime.

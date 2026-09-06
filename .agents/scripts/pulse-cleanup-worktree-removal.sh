@@ -1237,6 +1237,14 @@ _pc_cleanup_fixture_passes() {
 }
 
 cleanup_worktrees() {
+	# The caller still owns the hard watchdog. Bounded invocations persist fair
+	# progress before each guarded operation so interruption cannot pin the queue.
+	if [[ -n "${1:-}" ]]; then
+		# shellcheck source=./pulse-cleanup-progress.sh
+		source "${_PULSE_CLEANUP_SCRIPT_DIR}/pulse-cleanup-progress.sh"
+		_pc_cleanup_resumable "$1"
+		return $?
+	fi
 	CLEANUP_WORKTREES_SKIPPED=0
 	CLEANUP_WORKTREES_REMOVED_COUNT=0
 	CLEANUP_WORKTREES_ARCHIVED_COUNT=0

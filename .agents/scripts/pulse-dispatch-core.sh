@@ -1447,7 +1447,7 @@ _dispatch_worktree_capacity_gate() {
 }
 
 _dispatch_run_guarded_disk_cleanup() {
-	cleanup_worktrees
+	cleanup_worktrees "${1:-60}"
 	return $?
 }
 
@@ -1483,7 +1483,7 @@ _dispatch_cleanup_disk_pressure() {
 
 	echo "[dispatch_with_dedup] Disk pressure for #${issue_number} in ${repo_slug}: reason=${before_reason}, available=${before_kb}KB/${before_percent}%; attempting guarded all-repository cleanup once this Pulse cycle (timeout ${cleanup_timeout}s)" >>"$LOGFILE"
 	run_stage_with_timeout "dispatch_disk_pressure_cleanup" "$cleanup_timeout" \
-		_dispatch_run_guarded_disk_cleanup || cleanup_rc=$?
+		_dispatch_run_guarded_disk_cleanup "$cleanup_timeout" || cleanup_rc=$?
 	aidevops_worktree_capacity_check "$target_path" || after_rc=$?
 	if [[ "$after_rc" -eq 0 ]]; then
 		echo "[dispatch_with_dedup] Guarded disk-pressure cleanup recovered dispatch capacity for #${issue_number} in ${repo_slug}: ${before_kb}KB/${before_percent}% -> ${AIDEVOPS_DISK_CAPACITY_AVAILABLE_KB}KB/${AIDEVOPS_DISK_CAPACITY_AVAILABLE_PERCENT}% (cleanup_rc=${cleanup_rc})" >>"$LOGFILE"

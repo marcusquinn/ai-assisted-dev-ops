@@ -629,6 +629,24 @@ _pc_count_verified_worktree_removals() {
 	return 0
 }
 
+_pc_cleanup_merged_repo() {
+	local helper="$1" repo_path="$2"
+	local clean_result="" count=0 wt_count=0
+	git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1 || { printf '0\n'; return 0; }
+	wt_count=$(git -C "$repo_path" worktree list | wc -l | tr -d ' ')
+	if [[ "${wt_count:-0}" -le 1 ]]; then
+		printf '0\n'
+		return 0
+	fi
+	clean_result=$(cd "$repo_path" && bash "$helper" clean --auto --force-merged 2>&1) || true
+	count=$(_pc_count_verified_worktree_removals "$clean_result")
+	if [[ "$count" -gt 0 ]]; then
+		echo "[pulse-wrapper] Worktree cleanup ($(basename "$repo_path")): $count worktree(s) removed" >>"$LOGFILE"
+	fi
+	printf '%s\n' "$count"
+	return 0
+}
+
 _cleanup_merged_prs_for_all_repos() {
 	# t2559 Layer 3: fail-loud when git is missing from PATH. This runs before
 	# we invoke worktree-helper.sh clean across every repo — if git isn't
@@ -674,25 +692,9 @@ _cleanup_merged_prs_for_all_repos() {
 				continue
 			fi
 
-			local wt_count
-			wt_count=$(git -C "$repo_path" worktree list | wc -l | tr -d ' ')
-			# Skip repos with only 1 worktree (the main one) — nothing to clean
-			if [[ "${wt_count:-0}" -le 1 ]]; then
-				continue
-			fi
-
-			# Run helper in a subshell cd'd to the repo (it uses git rev-parse --show-toplevel)
-			local clean_result
-			clean_result=$(cd "$repo_path" && bash "$helper" clean --auto --force-merged 2>&1) || true
-
 			local count
-			count=$(_pc_count_verified_worktree_removals "$clean_result")
-			if [[ "$count" -gt 0 ]]; then
-				local repo_name
-				repo_name=$(basename "$repo_path")
-				echo "[pulse-wrapper] Worktree cleanup ($repo_name): $count worktree(s) removed" >>"$LOGFILE"
-				total_removed=$((total_removed + count))
-			fi
+			count=$(_pc_cleanup_merged_repo "$helper" "$repo_path")
+			total_removed=$((total_removed + count))
 		done <<<"$repo_records"
 	else
 		# Fallback: just clean the current repo (legacy behaviour)
