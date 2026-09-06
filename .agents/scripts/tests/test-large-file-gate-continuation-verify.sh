@@ -404,9 +404,67 @@ assert_eq \
 	"#55555 (existing)" \
 	"$out"
 
+# ---- Target freshness uses real Git objects without requiring mirror sync ----
+fixture_repo="${TMP}/objects.git"
+command git init --bare --quiet "$fixture_repo" || exit 1
+cp "$UNDER_FILE" "${TMP}/target.sh"
+fixture_blob=$(command git -C "$fixture_repo" hash-object -w "${TMP}/target.sh") || exit 1
+fixture_tree=$(printf '100644 blob %s\ttarget.sh\n' "$fixture_blob" | command git -C "$fixture_repo" mktree) || exit 1
+fixture_remote=$(printf 'target freshness fixture\n' | env \
+	GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.invalid \
+	GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.invalid \
+	git -C "$fixture_repo" commit-tree "$fixture_tree") || exit 1
+fixture_local=1111111111111111111111111111111111111111
+fixture_branch=main
+git() {
+	shift 2 # production calls supply -C repo_path
+	case "$1" in
+	symbolic-ref)
+		if [[ "$*" == *refs/remotes/origin/HEAD* ]]; then
+			printf 'origin/main\n'
+		else
+			printf '%s\n' "$fixture_branch"
+		fi
+		;;
+	rev-parse) printf '%s\n' "$fixture_local" ;;
+	ls-remote) printf '%s\trefs/heads/main\n' "$fixture_remote" ;;
+	*) command git -C "$fixture_repo" "$@" ;;
+	esac
+}
+rc=0
+_large_file_gate_repo_matches_remote_default "$TMP" "target.sh:1-3000" || rc=$?
+assert_eq "lagging mirror with exact target bytes is usable" "0" "$rc"
+rc=0
+_large_file_gate_repo_matches_remote_default "$TMP" $'target.sh\nmissing.sh' || rc=$?
+assert_eq "all targets must verify, including missing targets" "1" "$rc"
+printf 'changed target\n' >>"${TMP}/target.sh"
+rc=0
+_large_file_gate_repo_matches_remote_default "$TMP" "target.sh" || rc=$?
+assert_eq "changed target bytes still defer" "1" "$rc"
+cp "$UNDER_FILE" "${TMP}/target.sh"
+saved_remote="$fixture_remote"
+fixture_remote=2222222222222222222222222222222222222222
+rc=0
+_large_file_gate_repo_matches_remote_default "$TMP" "target.sh" || rc=$?
+assert_eq "unavailable pinned remote object still defers" "1" "$rc"
+fixture_remote="$saved_remote"
+fixture_branch=feature
+rc=0
+_large_file_gate_repo_matches_remote_default "$TMP" "target.sh" || rc=$?
+assert_eq "non-default checkout still defers" "1" "$rc"
+fixture_branch=main
+fixture_local="$fixture_remote"
+rc=0
+_large_file_gate_repo_matches_remote_default "$TMP" || rc=$?
+assert_eq "exact default commit preserves legacy admission" "0" "$rc"
+unset -f git
+
 # ---- Test 9 — stale pulse checkout → defer before local measurement ----
 _pulse_refresh_repo() { return 0; }
-_large_file_gate_repo_matches_remote_default() { return 1; }
+_large_file_gate_repo_matches_remote_default() {
+	assert_eq "gate passes extracted target paths for freshness proof" "over.sh" "${2:-}"
+	return 1
+}
 GH_OPEN_RESPONSE=""
 GH_CLOSED_RESPONSE="18706"
 GH_REMOTE_CONTENT_RESPONSE=$(_remote_content_json "$UNDER_FILE")

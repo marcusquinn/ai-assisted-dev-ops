@@ -344,14 +344,45 @@ _large_file_gate_remote_default_line_count() {
 }
 
 #######################################
-# Verify that a local repository is currently at the remote default-branch
-# commit. Large-file measurements are unsafe when this check fails because a
-# just-merged split may not exist in the runner's canonical checkout yet.
-# Arguments: repo_path
-# Returns: 0 when exact, 1 when stale or unverifiable
+# Prove that measurements from a lagging mirror use the exact target bytes
+# from the pinned remote commit. This reads existing objects only: it neither
+# fetches per candidate nor modifies a checkout to recover dispatch capacity.
+#######################################
+_large_file_gate_targets_match_remote_default() {
+	local repo_path="$1"
+	local remote_sha="$2"
+	local targets="$3"
+	local target="" full_path="" relative_path="" entry=""
+	local mode="" object_type="" object_sha="" entry_path="" working_sha=""
+	[[ -n "$targets" ]] || return 1
+	git -C "$repo_path" cat-file -e "${remote_sha}^{commit}" 2>/dev/null || return 1
+	while IFS= read -r target; do
+		[[ -n "$target" ]] || continue
+		if [[ "$target" =~ ^(.+):([0-9]+(-[0-9]+)?)$ ]]; then
+			target="${BASH_REMATCH[1]}"
+		fi
+		full_path=$(_large_file_gate_resolve_full_path "$target" "$repo_path") || return 1
+		relative_path="${full_path#"${repo_path}/"}"
+		entry=$(git -C "$repo_path" --literal-pathspecs ls-tree "$remote_sha" -- "$relative_path" 2>/dev/null) || return 1
+		[[ -n "$entry" && "$entry" != *$'\n'* ]] || return 1
+		read -r mode object_type object_sha entry_path <<<"$entry"
+		[[ "$mode" == "100644" || "$mode" == "100755" ]] || return 1
+		[[ "$object_type" == "blob" && -n "$object_sha" ]] || return 1
+		working_sha=$(git -C "$repo_path" hash-object --no-filters -- "$full_path" 2>/dev/null) || return 1
+		[[ "$working_sha" == "$object_sha" ]] || return 1
+	done <<<"$targets"
+	return 0
+}
+
+#######################################
+# Verify the remote default commit or, for a lagging mirror, every target's
+# exact bytes. Unrelated merged files must not strand otherwise eligible work.
+# Arguments: repo_path, optional newline-separated targets
+# Returns: 0 when measurements are current, 1 when stale or unverifiable
 #######################################
 _large_file_gate_repo_matches_remote_default() {
 	local repo_path="$1"
+	local targets="${2:-}"
 	local default_branch=""
 	local current_branch=""
 	local local_sha=""
@@ -368,7 +399,9 @@ _large_file_gate_repo_matches_remote_default() {
 	remote_line=$(git -C "$repo_path" ls-remote --heads origin "refs/heads/${default_branch}" 2>/dev/null) || return 1
 	[[ -n "$remote_line" && "$remote_line" != *$'\n'* ]] || return 1
 	remote_sha="${remote_line%%[[:space:]]*}"
-	[[ "$remote_sha" =~ ^[0-9a-fA-F]{40}$ && "$local_sha" == "$remote_sha" ]]
+	[[ "$remote_sha" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+	[[ "$local_sha" == "$remote_sha" ]] && return 0
+	_large_file_gate_targets_match_remote_default "$repo_path" "$remote_sha" "$targets"
 	return $?
 }
 
@@ -1125,11 +1158,11 @@ _issue_targets_large_files() {
 
 	# `_pulse_refresh_repo` is best-effort and canonical recovery may be delayed
 	# or unavailable on a contributor runner. When the pulse orchestration is
-	# loaded, require exact remote-default freshness before any local wc -l.
-	# A stale/unverifiable checkout blocks this candidate for one cycle without
-	# mutating issue labels or reopening debt issues.
+	# loaded, require remote-default target freshness before any local wc -l.
+	# A lagging mirror is sufficient only when the target bytes provably match.
+	# Unverifiable measurements defer without labels or debt-issue mutations.
 	if declare -F _pulse_refresh_repo >/dev/null 2>&1 \
-		&& ! _large_file_gate_repo_matches_remote_default "$repo_path"; then
+		&& ! _large_file_gate_repo_matches_remote_default "$repo_path" "$all_paths"; then
 		echo "[pulse-wrapper] Large-file gate: deferring #${issue_number} (${repo_slug}); ${repo_path} is not at the verified remote default-branch commit" >>"$LOGFILE"
 		return 0
 	fi
