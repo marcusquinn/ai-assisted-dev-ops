@@ -12,19 +12,85 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import sys
 import time
 
-from integration_recovery_request import MARKER as MARKER, final_request
-
+MARKER = "INTEGRATION_RECOVERY_REQUEST="
+REASONS = {"adjacent_integration", "hard_boundary", "concurrent_owner", "missing_context", "human_decision"}
 WAKES = {"brief_revision", "owner_change", "dependency_change", "human_decision"}
+REQUEST_FIELDS = {"schema", "issue", "pr", "reason", "files", "evidence", "verification"}
+NOT_TEXT = object()
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def event_text(line):
+    try:
+        event = json.loads(line)
+        if event.get("type") != "text":
+            return NOT_TEXT
+        part = event.get("part", {})
+        text = event.get("text") or part.get("text")
+    except (AttributeError, ValueError):
+        return NOT_TEXT
+    return text if isinstance(text, str) else NOT_TEXT
+
+
+def bounded_string(value, minimum, maximum, message):
+    require(isinstance(value, str), message)
+    require(len(value) in range(minimum, maximum + 1), message)
+
+
+def validate_path(path):
+    bounded_string(path, 1, 500, "invalid path")
+    parts = PurePosixPath(path)
+    require(not parts.is_absolute(), "paths must be exact repository-relative paths")
+    require(".." not in parts.parts, "paths must be exact repository-relative paths")
+    require(not re.search(r"[\s*?\[\]\\]", path), "paths must be exact repository-relative paths")
+
+
+def validate_request(request):
+    require(isinstance(request, dict), "invalid recovery schema")
+    require(set(request) == REQUEST_FIELDS, "invalid recovery schema")
+    require(request["schema"] == 1, "invalid recovery schema")
+    require(request["reason"] in REASONS, "invalid reason")
+    for key, minimum in (("issue", 1), ("pr", 0)):
+        require(type(request[key]) is int, "invalid target")
+        require(request[key] >= minimum, "invalid target")
+    files = request["files"]
+    require(isinstance(files, list), "invalid proposed paths")
+    require(len(files) <= 20, "invalid proposed paths")
+    for path in files:
+        validate_path(path)
+    bounded_string(request["evidence"], 1, 8000, "missing bounded evidence")
+    verification = request["verification"]
+    require(isinstance(verification, list), "missing verification")
+    require(len(verification) in range(1, 21), "missing verification")
+    for item in verification:
+        bounded_string(item, 1, 1000, "invalid verification")
+
+
+def final_request(raw):
+    """Accept only a final normalized assistant text event, never tool text."""
+    texts = [text for line in raw.splitlines() if (text := event_text(line)) is not NOT_TEXT]
+    require(texts, "no final assistant recovery request")
+    require(re.search(r"^BLOCKED:", texts[-1], re.M), "no final assistant recovery request")
+    matches = [line.removeprefix(MARKER) for line in texts[-1].splitlines() if line.startswith(MARKER)]
+    require(len(matches) == 1, "expected exactly one final request")
+    request = json.loads(matches[0])
+    validate_request(request)
+    request["files"] = sorted(set(request["files"]))
+    return request
 
 
 def connect(root):
