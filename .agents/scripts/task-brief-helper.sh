@@ -607,9 +607,9 @@ _enrich_context() {
 }
 
 # Check if the task's linked issue body is already worker-ready (t2417) and
-# write a stub brief linking to the issue instead of duplicating its content.
+# capture that body rather than authoring a competing brief.
 # Arguments: task_id project_root
-# Returns: 0 if stub was written (caller should return early); 1 otherwise.
+# Returns: 0 captured/preserved; 1 not applicable; 2 capture failed (must stop).
 _try_worker_ready_stub_brief() {
 	local task_id="$1"
 	local project_root="$2"
@@ -908,14 +908,14 @@ main() {
 			local tid=""
 			tid=$(task_identity_extract_first "$line" 2>/dev/null || true)
 			if [[ -n "$tid" && ! -f "$project_root/todo/tasks/${tid}-brief.md" ]]; then
-				generate_brief "$tid" "$project_root" || true
+				generate_brief "$tid" "$project_root" || return 1
 				count=$((count + 1))
 			fi
 		done < <(grep -E '^[[:space:]]*- \[ \] t' "$project_root/TODO.md")
 		log_info "Generated $count briefs"
 	else
 		validate_task_id "$task_id" || exit 1
-		generate_brief "$task_id" "$project_root"
+		generate_brief "$task_id" "$project_root" || return 1
 	fi
 
 	return 0

@@ -52,9 +52,11 @@ Optimise for **verified value per unit of human attention**. Human time is a con
 **State ownership.** Repository-native `TODO.md`, `todo/`, material decisions,
 evidence, and progress are the durable record. GitHub issues and PRs are linked,
 portable execution conversations, not the sole record of the work. See
-`.agents/aidevops/purpose.md` for the ownership contract; `t18404` owns
-validation of forge-loss recovery and any implementation gaps. Never create a
-second unowned state log.
+`.agents/aidevops/purpose.md` for ownership and `reference/forge-portability.md`
+for captured-state recovery coverage and acknowledgement limits. Persist generated
+decisions/progress and necessary evidence before publishing them; capture incoming
+material decisions before acknowledging them as durable. Recovery preserves data,
+not permission to replay historical actions. Never create a second unowned state log.
 
 **Signals** (check via `gh` CLI): PR open 6h+ with no progress; PR closed without merge (worker failure); repeated CI failures or duplicate PRs.
 

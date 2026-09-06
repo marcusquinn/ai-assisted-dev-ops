@@ -570,7 +570,7 @@ brief-readiness-helper.sh — Detect worker-ready issue bodies (t2417)
 Usage:
   check <issue-number> <slug>           Score an issue body for worker-readiness
   check --body <body-text>              Score inline body text
-  stub  <task-id> <issue> <slug> [path] Write a stub brief linking to the issue
+  stub  <task-id> <issue> <slug> [path] Capture full body/provenance, create-only
   similarity <brief-path> --body <text> Compare brief vs issue body overlap (%)
   help                                  Show this help
 

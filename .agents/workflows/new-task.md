@@ -7,7 +7,7 @@ mode: subagent
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
 
-Allocate a new task ID using `claim-task-id.sh` (distributed lock via GitHub/GitLab issue creation) and add it to TODO.md. For unclear requirements, use `/define` first.
+Allocate a new task ID using `claim-task-id.sh` (Git compare-and-swap counter allocation) and add it to TODO.md. Forge issue IDs are mappings, not task identity. For unclear requirements, use `/define` first.
 
 <user_input>
 $ARGUMENTS
@@ -74,10 +74,13 @@ fi
 
 **Worker-ready issue body detection (t2417):** Before writing a full brief, check if the linked issue already has a worker-ready body (contains 4+ of: `## Task`, `## Why`, `## How`, `## Acceptance`, `## What`, `## Session Origin`, `## Files to modify`). Use `brief-readiness-helper.sh check <issue-number> <slug>` to detect. If the body is worker-ready:
 
-- **Headless mode:** skip the full brief and write a stub linking to the issue (`brief-readiness-helper.sh stub <task-id> <issue> <slug>`). Default behaviour.
-- **Interactive mode:** offer the user a choice: (1) skip brief, point to issue (recommended), (2) stub brief linking to issue, (3) full brief anyway.
+- **Both modes:** reuse the body with `brief-readiness-helper.sh stub <task-id> <issue> <slug> [repo-path]`. The legacy command name now writes a complete captured brief with observation provenance, not a forge-only pointer. A capture failure must not be reported as success.
+- Existing briefs remain untouched. Reconcile changes explicitly rather than overwriting local decisions; old pointer stubs require a reviewed backfill.
 
-This prevents redundant brief files when the issue body already carries all the context a worker needs.
+This avoids separately authored competing briefs without losing the only copy when
+the forge disappears. Commit the brief, dependencies, progress and evidence before
+publication/acknowledgement. See `reference/forge-portability.md` for coverage and
+lag semantics; body capture does not archive comments or establish fresh authority.
 
 Every task MUST have a brief at `todo/tasks/{task_id}-brief.md`. Use `~/.aidevops/agents/templates/brief-template.md`, formatted per `workflows/brief.md`. Required sections:
 

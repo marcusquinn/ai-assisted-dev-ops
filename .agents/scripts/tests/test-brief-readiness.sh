@@ -615,12 +615,11 @@ else
 	fail "T7b: capture contains full body and provenance"
 fi
 
-# Check stub does not duplicate full template (should be ≤20 lines)
-line_count=$(wc -l <"$brief_file" 2>/dev/null || echo 999)
-if [[ $line_count -le 25 ]]; then
-	pass "T7c: stub brief is ≤25 lines ($line_count)"
+# Capture coverage must not imply a full event export or executable authority.
+if grep -q '"coverage": "issue-body-only"' "$brief_file" && grep -q '"authority": "revalidate"' "$brief_file"; then
+	pass "T7c: capture declares its coverage and authority limits"
 else
-	fail "T7c: stub brief is ≤25 lines" "got $line_count lines"
+	fail "T7c: capture declares its coverage and authority limits"
 fi
 
 # --- Test 8: Stub skips if brief already exists ---
