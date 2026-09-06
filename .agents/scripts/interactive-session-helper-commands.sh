@@ -148,6 +148,7 @@ _isc_refresh_existing_claim() {
 	if [[ "$defer_comment" -eq 0 && -n "$worktree_path" && -z "$existing_worktree_path" ]]; then
 		_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
 	fi
+	_isc_normalize_owned_pr "$issue" "$slug" "$refreshed_worktree_path" "$user" || return 1
 	return 0
 }
 
@@ -212,6 +213,7 @@ _isc_apply_new_claim() {
 	if [[ "$defer_comment" -eq 0 || -n "$worktree_path" ]]; then
 		_isc_post_claim_comment "$issue" "$slug" "$user" "$worktree_path"
 	fi
+	_isc_normalize_owned_pr "$issue" "$slug" "$worktree_path" "$user" || return 1
 	return 0
 }
 

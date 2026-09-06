@@ -355,6 +355,12 @@ _handle_cmd_run_terminal_attempt() {
 
 # Handle service, premature-exit, and brief-recovery continuation budgets.
 _handle_cmd_run_continuation_attempt() {
+	if [[ "$attempt_exit" -eq 88 ]]; then
+		routing_reason="integration_recovery_retry"
+		prompt="Resume the existing owned session/worktree and PR. The runtime has durably queued the integration request with Pulse and permits one local recovery attempt for this unchanged brief/evidence. Apply reference/worker-discipline.md Integration scope recovery: independently verify trusted outcome, explicit exclusions, unchanged brief and live claim; inspect the actual caller and check collisions; correct only the minimal canonical Files Scope and matching local brief before editing, then re-read and verify the persisted revision. This continuation grants no authority to revise an explicit hard boundary, secrets, permissions, spending, destructive/external actions, trust exceptions or security guarantees. If local recovery is unsafe, emit the structured INTEGRATION_RECOVERY_REQUEST in the final BLOCKED message for the AI brief owner, preserving exact PR identity and proposed verification. Do not repeat an unchanged request or ask a human to perform ordinary analysis. Otherwise continue through local verification, push, ready PR, MERGE_SUMMARY and the guarded merge attempt; no release is authorized by recovery."
+		_cmd_run_disposition="$_CMD_RUN_DISPOSITION_CONTINUE"
+		return 0
+	fi
 	if [[ "$attempt_exit" -eq 81 ]]; then
 		if [[ "$service_interruption_continue_count" -lt "$max_service_interruption_continue_retries" ]]; then
 			service_interruption_continue_count=$((service_interruption_continue_count + 1))

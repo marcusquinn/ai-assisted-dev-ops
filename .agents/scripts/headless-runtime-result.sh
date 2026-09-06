@@ -130,6 +130,19 @@ _handle_run_result_success_output() {
 			rm -f "$output_file"
 			return 0
 		fi
+		if output_has_blocked_signal "$output_file"; then
+			# shellcheck source=integration-recovery-helper.sh
+			source "${SCRIPT_DIR}/integration-recovery-helper.sh"
+			if integration_recovery_capture "$output_file" "$work_dir" 2>/dev/null; then
+				if [[ "$(jq -r '.action' <<<"$_IR_CAPTURE_RESULT")" == "continue" ]]; then
+					_run_result_label="integration_recovery"
+					_run_failure_reason="adjacent_integration"
+					rm -f "$output_file"
+					return 88
+				fi
+				print_info "Integration recovery is durably owned by Pulse; existing checkpoint and safety gates remain in force"
+			fi
+		fi
 		if output_has_missing_context_blocked_signal "$output_file"; then
 			_run_result_label="brief_recovery"
 			_run_failure_reason="missing_implementation_context"

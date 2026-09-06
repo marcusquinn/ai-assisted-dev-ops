@@ -35,3 +35,81 @@ _feedback_route_owner_allows 31265 owner/repo
 mock_comments=$(jq '.[0].author_association = "OWNER" | .[0].user.login = "foreign"' <<<"$mock_comments")
 _feedback_route_owner_allows 31265 owner/repo
 printf 'PASS: local and remote owners fenced; foreign claims do not manufacture ownership\n'
+
+TEST_ROOT=$(mktemp -d)
+trap 'rm -rf "$TEST_ROOT"' EXIT
+export HOME="${TEST_ROOT}/home"
+mkdir -p "$HOME"
+export WORKER_ISSUE_NUMBER=31265 WORKER_SESSION_KEY=issue-31265
+export DISPATCH_REPO_SLUG=owner/repo AIDEVOPS_ATTEMPT_ID=fixture-attempt
+mock_metadata='{"number":31265,"state":"open","author_association":"OWNER","title":"Checkpoint integration","body":"## Files Scope\n- src/caller.sh","assignees":[],"labels":[]}'
+mock_prs='[{"number":31269,"isCrossRepository":false,"closingIssuesReferences":[{"number":31265}]}]'
+ownership_rc=0
+gh() {
+	case "$*" in
+	"pr list "*) printf '%s\n' "$mock_prs" ;;
+	*) printf '%s\n' "$mock_metadata" ;;
+	esac
+	return 0
+}
+git() {
+	case "$*" in
+	*symbolic-ref*) printf 'worker/issue-31265\n' ;;
+	*) printf '%040d\n' 1 ;;
+	esac
+	return 0
+}
+_hrw_verify_dispatch_ownership() { return "$ownership_rc"; }
+print_info() { return 0; }
+print_warning() { return 0; }
+_headless_private_workload_enabled() { return 1; }
+output_has_completion_signal() { return 0; }
+output_has_blocked_signal() { return 0; }
+output_has_post_pr_handoff_signal() { return 1; }
+output_has_missing_context_blocked_signal() { return 1; }
+output_has_capability_blocked_signal() { return 1; }
+# shellcheck source=../headless-runtime-result.sh
+source "${SCRIPT_DIR}/headless-runtime-result.sh"
+# These are dynamic caller-scoped inputs to the runtime result classifier.
+# shellcheck disable=SC2034
+role=worker session_key=issue-31265 discovered_session="" selected_model=fixture work_dir="$TEST_ROOT"
+output_file="${TEST_ROOT}/output.jsonl"
+write_request() {
+	local reason="${1:-adjacent_integration}"
+	jq -nc --arg reason "$reason" '
+		{schema:1,issue:31265,pr:31269,reason:$reason,files:["src/claim.sh"],
+		evidence:"actual caller requires shared claim integration",verification:["bash existing-checkpoint-fixture.sh"]} |
+		{type:"text",part:{text:("BLOCKED: integration needs correction\nINTEGRATION_RECOVERY_REQUEST=" + tojson)}}
+	' >"$output_file"
+	return 0
+}
+write_request
+result_rc=0
+_handle_run_result_success_output || result_rc=$?
+[[ "$result_rc" == 88 && ! -f "$output_file" ]]
+write_request
+result_rc=0
+_handle_run_result_success_output || result_rc=$?
+[[ "$result_rc" == 83 ]]
+records=$(python3 "${SCRIPT_DIR}/integration_recovery.py" pending)
+jq -e 'length == 1 and .[0].owner == "pulse" and .[0].pr == 31269' <<<"$records" >/dev/null
+write_request
+ownership_rc=1
+if integration_recovery_capture "$output_file" "$work_dir"; then
+	printf 'FAIL: foreign ownership was accepted\n' >&2
+	exit 1
+fi
+ownership_rc=0
+mock_metadata=$(jq '.author_association="NONE"' <<<"$mock_metadata")
+if integration_recovery_capture "$output_file" "$work_dir"; then
+	printf 'FAIL: foreign actor manufactured recovery delegation\n' >&2
+	exit 1
+fi
+# shellcheck source=../headless-runtime-run.sh
+source "${SCRIPT_DIR}/headless-runtime-run.sh"
+attempt_exit=88
+_CMD_RUN_DISPOSITION_CONTINUE="continue"
+_cmd_run_disposition="" prompt=""
+_handle_cmd_run_continuation_attempt
+[[ "$_cmd_run_disposition" == continue && "$prompt" == *"grants no authority"* ]]
+printf 'PASS: runtime producer resumes once, queues before release and rejects foreign ownership/authority\n'
