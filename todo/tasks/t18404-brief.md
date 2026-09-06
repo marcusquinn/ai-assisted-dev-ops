@@ -40,6 +40,35 @@ captured: define durable acknowledgement and observable ingestion lag.
 
 ## How (Approach)
 
+### Files Scope
+
+- `.agents/reference/forge-portability.md`
+- `.agents/reference/task-lifecycle.md`
+- `.agents/reference/self-improvement.md`
+- `.agents/scripts/commands/new-task.md`
+- `.agents/workflows/new-task.md`
+- `.agents/tools/task-management/beads.md`
+- `.agents/scripts/brief-readiness-helper.sh`
+- `.agents/scripts/task-brief-helper.sh`
+- `.agents/scripts/tests/test-brief-readiness.sh`
+- `.agents/scripts/tests/test-forge-portability.sh`
+- `todo/tasks/t18404-brief.md`
+
+Retain the original paths below. Integration recovery additionally covers
+`.agents/scripts/brief-readiness-helper.sh`, `.agents/scripts/task-brief-helper.sh`,
+`.agents/scripts/tests/test-brief-readiness.sh`,
+`.agents/scripts/tests/test-forge-portability.sh`, and this brief. The stub writer
+fetches only a title and stores a forge-only pointer; its caller suppresses write
+failure. Capture the full body locally, preserve existing briefs, and propagate
+capture failures. Verify with `bash .agents/scripts/tests/test-forge-portability.sh`,
+`bash .agents/scripts/tests/test-brief-readiness.sh`, the sync contract suite,
+scoped ShellCheck, changed-file lint and `git diff --check`. The owner-authored
+issue is assigned to this worker account; dependency #31285 is closed and merged
+in HEAD. No open brief-readiness PR or pushed issue branch was found. This is an
+additive, bounded repair, not provider parity or automatic event ingestion.
+The command `new-task.md` is a tracked symlink; `.agents/workflows/new-task.md`
+is its actual editable invocation-guidance surface, not a separate work package.
+
 ### Files to Modify
 
 - `NEW: .agents/reference/forge-portability.md` — ownership, durable acknowledgement, export/recovery matrix and limits.

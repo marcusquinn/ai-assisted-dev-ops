@@ -589,6 +589,8 @@ if [[ "${1:-}" == "issue" && "${2:-}" == "view" ]]; then
 		echo "Test Issue Title"
 	elif [[ "${*}" == *"--jq '.body'"* ]] || [[ "${*}" == *"--jq .body"* ]]; then
 		echo "Test body"
+	else
+		printf '%s\n' '{"body":"Test body","title":"Test Issue Title","url":"https://github.com/owner/repo/issues/12345","updatedAt":"2026-09-06T00:00:00Z","id":"I_fixture"}'
 	fi
 fi
 exit 0
@@ -606,19 +608,18 @@ else
 	fail "T7: stub brief created successfully" "exit=$stub_rc, exists=$(test -f "$brief_file" && echo yes || echo no)"
 fi
 
-# Check stub content contains canonical link
-if grep -q "canonical brief" "$brief_file" 2>/dev/null; then
-	pass "T7b: stub contains canonical brief reference"
+# Check legacy stub invocation now retains body and provenance
+if grep -q "Test body" "$brief_file" && grep -q 'aidevops:forge-capture-v1' "$brief_file"; then
+	pass "T7b: capture contains full body and provenance"
 else
-	fail "T7b: stub contains canonical brief reference" "content: $(cat "$brief_file" 2>/dev/null || echo 'empty')"
+	fail "T7b: capture contains full body and provenance"
 fi
 
-# Check stub does not duplicate full template (should be ≤20 lines)
-line_count=$(wc -l <"$brief_file" 2>/dev/null || echo 999)
-if [[ $line_count -le 25 ]]; then
-	pass "T7c: stub brief is ≤25 lines ($line_count)"
+# Capture coverage must not imply a full event export or executable authority.
+if grep -q '"coverage": "issue-body-only"' "$brief_file" && grep -q '"authority": "revalidate"' "$brief_file"; then
+	pass "T7c: capture declares its coverage and authority limits"
 else
-	fail "T7c: stub brief is ≤25 lines" "got $line_count lines"
+	fail "T7c: capture declares its coverage and authority limits"
 fi
 
 # --- Test 8: Stub skips if brief already exists ---

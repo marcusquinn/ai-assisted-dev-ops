@@ -13,6 +13,12 @@ Task dependency tracking and graph visualization for TODO.md and PLANS.md.
 
 **Key principle**: aidevops markdown files are the source of truth. Beads syncs from them.
 
+Keep plans, material progress and evidence in committed `TODO.md`/`todo/` records.
+The ignored Beads database/JSONL is not a forge-loss backup. Preserve and reconcile
+Beads-only fields before rebuilding; `sync --force` is not a recovery procedure.
+See `reference/forge-portability.md` for adapter coverage, offline proof and
+acknowledgement limits. Restored task state does not restore execution authority.
+
 ## Architecture
 
 ```text

@@ -170,6 +170,16 @@ export GH_REST_CORE_RESET="$(($(date +%s) + 3600))"
 export GH_REST_CORE_REMAINING=100
 rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
 _pulse_set_rest_core_budget_priority
+_pulse_cycle_state_set_blocker none
+_pulse_run_budget_priority_stage dashboard_freshness_check false
+[[ "$_PULSE_CYCLE_BLOCKER_KIND" == "none" ]]
+_pulse_run_budget_priority_stage dispatch_max false
+[[ "$_PULSE_BUDGET_STAGE_DEFERRED" == "1" ]]
+[[ "$_PULSE_CYCLE_BLOCKER_KIND" == "rest-core-quota" ]]
+quota_fingerprint="$_PULSE_CYCLE_BLOCKER_FINGERPRINT"
+_pulse_cycle_state_set_blocker none
+_pulse_run_budget_priority_stage deterministic_merge_pass false
+[[ "$_PULSE_CYCLE_BLOCKER_FINGERPRINT" == "$quota_fingerprint" ]]
 [[ "${AIDEVOPS_PULSE_REST_CORE_BUDGET_CLASS}" == "emergency" ]]
 _pulse_should_defer_budget_priority_stage "deterministic_merge_pass"
 _pulse_should_defer_budget_priority_stage "approval_merge_trigger"
@@ -193,6 +203,10 @@ fi
 unset GH_REST_CORE_UNKNOWN
 export GH_REST_CORE_REMAINING=5000
 rm -f "${HOME}/.aidevops/cache/pulse-rest-core.json"
+_pulse_cycle_state_set_blocker none
+_pulse_run_budget_priority_stage dispatch_max true
+[[ "$_PULSE_BUDGET_STAGE_DEFERRED" == "0" ]]
+[[ "$_PULSE_CYCLE_BLOCKER_KIND" == "none" ]]
 
 unset -f _cb_rate_limit_json
 TIMEOUT_CALL_LOG="${TMP_DIR}/timeout-calls.log"

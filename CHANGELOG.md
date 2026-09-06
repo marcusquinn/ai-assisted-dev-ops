@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.320] - 2026-09-06
+
+### Changed
+
+- Documentation: establish compounding-value purpose (#31360)
+
+### Fixed
+
+- Bound and resume multi-repository stats work
+
 ## [3.32.319] - 2026-09-06
 
 ### Fixed

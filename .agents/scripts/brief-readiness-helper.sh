@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2025-2026 Marcus Quinn
 #
 # brief-readiness-helper.sh — Detect worker-ready issue bodies and generate
-# stub briefs linking to the canonical issue (t2417, GH#20015).
+# repo-native captures of worker-ready issues (t18404; legacy `stub` interface).
 #
 # Historical issue bodies retain heading-based readiness. Bodies carrying the
 # brief schema-v2 marker must also contain substantive write-surface, hazard,
@@ -12,8 +12,8 @@
 # This helper provides:
 #   1. A readiness detector (`check`) that scores an issue body against
 #      known heading sets and returns a pass/fail verdict.
-#   2. A stub-brief writer (`stub`) that creates a minimal brief linking
-#      to the canonical issue instead of duplicating its content.
+#   2. A capture writer (`stub`, retained for compatibility) that preserves
+#      the complete observed issue body without overwriting local knowledge.
 #   3. A similarity check (`similarity`) that compares an existing brief
 #      file against an issue body and reports overlap percentage.
 #
@@ -40,6 +40,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 1
 if [[ -f "$SCRIPT_DIR/shared-constants.sh" ]]; then
 	source "$SCRIPT_DIR/shared-constants.sh"
 fi
+# shellcheck source=./task-identity-lib.sh
+source "$SCRIPT_DIR/task-identity-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Logging (inline fallbacks if shared-constants not sourced)
@@ -426,10 +428,10 @@ cmd_check() {
 }
 
 # ---------------------------------------------------------------------------
-# cmd_stub: write a minimal stub brief that links to the canonical issue.
+# cmd_stub: capture the observed issue body, retaining the legacy command name.
 #
 # Args: <task-id> <issue-number> <slug> [repo-path]
-# Creates: todo/tasks/{task_id}-brief.md (stub form)
+# Creates: todo/tasks/{task_id}-brief.md (full body plus provenance)
 # Exit: 0 on success
 # ---------------------------------------------------------------------------
 cmd_stub() {
@@ -439,54 +441,55 @@ cmd_stub() {
 	local slug="${_stub_args[2]:-}"
 	local repo_path="${_stub_args[3]:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 
-	if [[ -z "$task_id" || -z "$issue_number" || -z "$slug" ]]; then
+	if ! task_identity_validate "$task_id" || [[ ! "$issue_number" =~ ^[1-9][0-9]*$ ||
+		! "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! -d "$repo_path" ]]; then
 		log_error "Usage: brief-readiness-helper.sh stub <task-id> <issue-number> <slug> [repo-path]"
 		return 2
 	fi
 
 	local brief_dir="$repo_path/todo/tasks"
 	local brief_path="$brief_dir/${task_id}-brief.md"
-	local today
-	today=$(date +%Y-%m-%d)
+	mkdir -p "$brief_dir" || return 1
 
-	mkdir -p "$brief_dir"
-
-	if [[ -f "$brief_path" ]]; then
-		log_warn "Brief already exists: $brief_path — skipping stub creation"
+	if [[ -e "$brief_path" || -L "$brief_path" ]]; then
+		[[ -f "$brief_path" && ! -L "$brief_path" ]] || return 1
+		log_warn "Brief already exists: $brief_path — preserved; not refreshed or backfilled"
 		return 0
 	fi
 
-	# Fetch issue title for the heading
-	local issue_title=""
-	issue_title=$(gh_issue_view "$issue_number" --repo "$slug" --json title --jq '.title' 2>/dev/null) || true
-	issue_title="${issue_title:-${task_id}}"
-
-	cat >"$brief_path" <<EOF
-# ${task_id}: ${issue_title}
-
-## Origin
-
-- **Created:** ${today}
-- **Session:** auto-detected worker-ready issue body
-- **Created by:** brief-readiness-helper (stub — canonical brief lives in issue)
-
-## Canonical Brief
-
-**The authoritative brief for this task is the GitHub issue body:**
-
-https://github.com/${slug}/issues/${issue_number}
-
-The issue body contains all required sections (Task/What, Why, How,
-Acceptance, Files to modify) and is the single source of truth.
-This stub exists only to satisfy the brief-file-exists gate.
-
-## Session-Specific Context
-
-<!-- Add any session-specific context not captured in the issue body. -->
-<!-- If empty, this section can be removed. -->
-EOF
-
-	log_info "Stub brief written to $brief_path (canonical: issue #${issue_number})"
+	# One observation binds body and revision; this is not a comments/PR export.
+	local observed="" captured_at="" temporary=""
+	observed=$(gh_issue_view "$issue_number" --repo "$slug" \
+		--json body,title,url,updatedAt,id) || return 1
+	if ! printf '%s' "$observed" | jq -e '
+		type == "object" and (.body | type == "string" and length > 0) and
+		all(.title, .url, .updatedAt, .id; type == "string" and length > 0)
+	' >/dev/null; then
+		log_error "Incomplete issue capture; no brief written"
+		return 1
+	fi
+	captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	temporary=$(mktemp "$brief_dir/.forge-capture.XXXXXX") || return 1
+	if ! {
+		printf '%s' "$observed" | jq -j '.body' &&
+			printf '\n\n## Capture provenance\n\nObserved data, not executable authority. Comments and later events are not captured.\n\n```json\n' &&
+			printf '%s' "$observed" | jq --arg task "$task_id" --arg repo "$slug" \
+				--arg captured "$captured_at" --arg issue "$issue_number" \
+				'del(.body) + {format:"aidevops:forge-capture-v1", task_id:$task,
+				provider:"github", repository:$repo, issue:$issue, captured_at:$captured,
+				coverage:"issue-body-only", authority:"revalidate"}' &&
+			printf '```\n'
+	} >"$temporary"; then
+		rm -f "$temporary"
+		return 1
+	fi
+	# Atomic create-only publication: concurrent/local records always win intact.
+	if ! ln "$temporary" "$brief_path" || [[ ! "$temporary" -ef "$brief_path" || -L "$brief_path" ]]; then
+		rm -f "$temporary"
+		return 1
+	fi
+	rm -f "$temporary"
+	log_info "Issue body captured at $brief_path; commit before acknowledging durable recovery"
 	return 0
 }
 
@@ -570,7 +573,7 @@ brief-readiness-helper.sh — Detect worker-ready issue bodies (t2417)
 Usage:
   check <issue-number> <slug>           Score an issue body for worker-readiness
   check --body <body-text>              Score inline body text
-  stub  <task-id> <issue> <slug> [path] Write a stub brief linking to the issue
+  stub  <task-id> <issue> <slug> [path] Capture full body/provenance, create-only
   similarity <brief-path> --body <text> Compare brief vs issue body overlap (%)
   help                                  Show this help
 
