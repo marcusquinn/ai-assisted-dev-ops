@@ -17,7 +17,9 @@ _SHARED_GH_SECONDARY_COOLDOWN_LOADED=1
 : "${AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_LINES:=100}"
 : "${AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_BYTES:=262144}"
 : "${AIDEVOPS_GH_READ_RAMP_ENABLED:=1}"
-: "${AIDEVOPS_GH_READ_RAMP_BOOT_SECS:=180}"
+# Healthy boots do not imply GitHub pressure. Recovery after real throttling
+# retains its bounded ramp; callers may explicitly request a boot ramp.
+: "${AIDEVOPS_GH_READ_RAMP_BOOT_SECS:=0}"
 : "${AIDEVOPS_GH_READ_RAMP_RECOVERY_SECS:=300}"
 : "${AIDEVOPS_GH_READ_RAMP_BUDGET:=60}"
 : "${AIDEVOPS_GH_READ_RAMP_STATE_FILE:=${AIDEVOPS_GH_SECONDARY_COOLDOWN_HOME}/.aidevops/cache/gh-read-ramp-state.tsv}"
@@ -28,6 +30,9 @@ _GH_SECONDARY_READ_OP="read"
 _GH_SECONDARY_COOLDOWN_ACTION_CREATED="created"
 _GH_SECONDARY_COOLDOWN_UNKNOWN="unknown"
 _GH_SECONDARY_COOLDOWN_GRAPHQL="graphql"
+
+# shellcheck source=./shared-gh-primary-cooldown.sh
+source "${BASH_SOURCE[0]%/*}/shared-gh-primary-cooldown.sh"
 
 _gh_secondary_cooldown_now() {
 	date +%s
@@ -751,7 +756,9 @@ _gh_secondary_cooldown_write_until() {
 		_gh_secondary_cooldown_write_state_fallback "$file" || return 1
 	fi
 	mv "${file}.tmp" "$file" || return 1
-	printf '[gh-cooldown] secondary-rate-limit active=true expires_at=%s reason=%s\n' "$expires" "$reason" >&2
+	local limit_kind="secondary-rate-limit"
+	[[ "$decision_branch" != primary-* ]] || limit_kind="$decision_branch"
+	printf '[gh-cooldown] %s active=true expires_at=%s reason=%s\n' "$limit_kind" "$expires" "$reason" >&2
 	return 0
 }
 
@@ -828,39 +835,13 @@ _gh_secondary_cooldown_rest_reset_at() {
 }
 
 _gh_search_cooldown_preflight() {
-	local arg="" search_request=0
-	for arg in "$@"; do
-		case "$arg" in search | search/* | /search/*) search_request=1 ;; esac
-	done
-	[[ "$search_request" -eq 1 ]] || return 0
-	local AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search"
-	if _gh_secondary_cooldown_active; then
-		printf '[gh-cooldown] primary-search active=true; unrelated API resources remain available\n' >&2
-		return 75
-	fi
-	return 0
+	# Compatibility entrypoint used by native and REST-wrapper boundaries.
+	_gh_primary_cooldown_preflight "$@"
+	return $?
 }
 
 _gh_search_primary_response() {
-	local response="$1"
-	shift
-	local status="" remaining="" resource="" reset="" now=""
-	status=$(_gh_secondary_cooldown_status "$response")
-	case "$status" in 200 | 403) ;; *) return 1 ;; esac
-	remaining=$(_gh_secondary_cooldown_header_value "$response" "x-ratelimit-remaining")
-	resource=$(_gh_secondary_cooldown_header_value "$response" "x-ratelimit-resource")
-	[[ "$remaining" == "0" && "$resource" == "search" ]] || return 1
-	[[ -z "$(_gh_secondary_cooldown_header_value "$response" "retry-after")" ]] || return 1
-	_gh_secondary_cooldown_detect "$response" && return 1
-	reset=$(_gh_secondary_cooldown_header_value "$response" "x-ratelimit-reset")
-	now=$(_gh_secondary_cooldown_now)
-	[[ "$reset" =~ ^[0-9]{1,10}$ && "$reset" -le $((now + 3600)) ]] || return 1
-	# A successful last search request is primary-resource evidence, not abuse.
-	# Already-reset headers do not authorize a fabricated five-minute global hold.
-	[[ "$reset" -gt "$now" ]] || return 0
-	local AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE="${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search"
-	_gh_secondary_cooldown_write_until "github-search-primary-exhausted" "$response" "$reset" \
-		"primary-search" "$_GH_SECONDARY_COOLDOWN_ACTION_CREATED" "$@"
+	_gh_primary_cooldown_response "$@"
 	return $?
 }
 

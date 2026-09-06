@@ -3,8 +3,9 @@
 
 # GitHub API transport and freshness
 
-These controls reduce unnecessary work while preserving fresh action-boundary
-checks. They do not establish a production savings percentage; use the matched
+These controls maximise useful work within GitHub's available capacity while
+preserving fresh action-boundary checks. Fewer calls are not an end in themselves.
+They do not establish a production savings percentage; use the matched
 windows and completeness gates in [the efficiency benchmark](github-api-efficiency.md).
 
 ## Correct queries before more caching
@@ -41,12 +42,20 @@ charged twice, but cooldown is rechecked immediately before dispatch. Local-only
 commands remain usable without fabricated HTTP attempts. `gh search` is a REST
 search operation, not a GraphQL query.
 
-Unambiguous primary Search exhaustion (HTTP 200/403, `remaining=0`, resource
-`search`, a valid reset, no Retry-After or secondary/abuse message) holds only
-Search. Its `.primary-search` cooldown uses the server reset and is checked before
-raw shim and REST-wrapper search requests. Expired primary headers cannot create
-a new global delay. Existing global cooldowns are never cleared by this path;
-429, Retry-After, secondary/abuse and ambiguous evidence retain global protection.
+Unambiguous primary exhaustion (successful response or HTTP 403/429,
+`remaining=0`, a known resource, valid reset, no Retry-After or secondary/abuse
+message) holds only that resource: `core`, `search`, `code_search`, or `graphql`.
+The `.primary-<resource>` cooldown uses the server reset and is checked before
+direct API requests at the raw shim and REST-wrapper boundaries. Quota-status
+reads and unrelated pools remain usable; high-level opaque CLI commands retain
+native execution. Expired primary headers cannot create a new global delay.
+Existing global cooldowns are never cleared by this path; Retry-After,
+secondary/abuse and ambiguous evidence retain global protection. Primary and
+secondary holds are labelled separately in diagnostics.
+
+Healthy system boots no longer start a 60-reads/minute ramp by default.
+The bounded recovery ramp after actual global throttling remains; explicit
+`AIDEVOPS_GH_READ_RAMP_BOOT_SECS` overrides still opt into a boot ramp.
 
 Native execution errors without a usable HTTP response stop alternate
 transports. A successful HTTP response which cannot reproduce a requested local
@@ -65,16 +74,28 @@ child environment; credentials are never exported to a long-lived parent.
 
 - Resource-owned response headers establish remaining quota. `/rate_limit`
   JSON is not treated as an admission balance.
-- In-flight reservations are atomic, with a bounded local concurrency ceiling
-  and protected reserve. Brief local contention waits without sending HTTP;
-  quota/reset stops do not spin or retry against another transport.
+- In-flight reservations are atomic. All available primary points, including
+  the final point, are usable; there is no 100-point core or one-point search
+  reserve and no four-request concurrency cap.
+- `gh_transport_capacity.py` measures recent admitted demand. Once at least ten
+  seconds of observations predict exhaustion before reset, requests are paced
+  using remaining capacity and time to reset, not an arbitrary fixed allowance.
+  Healthy demand and initial bursts remain unhindered by that pacing rule.
+  The local supported-GET envelope also respects GitHub's 100-concurrent and
+  900-REST-points/minute secondary ceilings across resource pools. This is not
+  complete secondary-limit accounting: opaque native commands, endpoint-specific
+  costs, CPU limits and other machines still require server-directed backoff.
+- Brief local contention waits without sending HTTP. Longer waits return 75
+  with `attempted=false`, a local admission reason and `retry_at`; callers can
+  reschedule without treating a local deferral as a GitHub rejection. No alternate
+  transport retry or cached application response is substituted.
 - Missing/stale observations permit one serialized observation, not an assumed
   new allowance. Unknown execution remains debt until a later response from
   the same credential covers it. Out-of-order responses cannot restore spent
   quota inside a live reset window.
-- A positive core reserve can revalidate through one accounted GET after 60
+- A stale positive balance can revalidate through one accounted GET after 60
   seconds without a newer observation/probe. No active request, real cooldown,
-  exhaustion or last uncertain point may be bypassed. The exact probe reservation
+  exhaustion or uncertain spend may be bypassed. The exact probe reservation
   can repair a stale balance only with causally newer resource-owned headers and
   a single bound credential; ambiguous/shared scopes stay conservative. This is
   bounded recovery, not an alternative transport or a status-endpoint grant.
@@ -104,6 +125,25 @@ evidence before tuning defaults or claiming an integrated benchmark pass.
 
 Rollback: `AIDEVOPS_GH_TRANSPORT_GOVERNOR_DISABLE=1` disables the read adapter,
 not shared cooldown. It does not authorize bypassing signatures or safety gates.
+
+## Pulse scheduling versus request admission
+
+Pulse scheduling hints do not reserve quota a second time. REST progress work
+may use all remaining capacity by default: the hard floor and guessed in-flight
+allowance are both zero. Explicit nonzero operator overrides remain supported
+and intentionally withhold capacity. Optional REST work still yields under
+pressure using the soft cap, which decays to zero as reset approaches.
+
+GraphQL optional-stage and dispatch thresholds now use the same reset-aware
+window rule rather than permanently withholding 1,250 or 250 points. Missing
+reset evidence retains the configured cap; crossing a reset is not a new quota
+grant. Actual exhaustion remains blocked and supported REST fallback can keep
+work moving when GraphQL is depleted.
+
+Evaluate changes by completed work, latency, terminal throttles, and useful work
+deferred while quota expires unused. Do not claim throughput improvement from
+unit tests or fewer requests alone. Existing freshness/trust checks and optional
+benchmark comparability rules remain unchanged.
 
 ## Durable PR wake hints
 

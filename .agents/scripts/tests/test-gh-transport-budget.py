@@ -42,8 +42,8 @@ class AdmissionTests(unittest.TestCase):
         token = self.budget.acquire(resource, now=1000)
         self.budget.finish(token, resource, headers(remaining, reset, resource), started=1000, now=1001)
 
-    def test_atomic_reservations_protect_the_floor(self):
-        self.seed()
+    def test_atomic_reservations_allow_final_point_but_not_overspend(self):
+        self.seed(2)
         self.budget.acquire("core", now=1002)
         other = Budget(self.directory, "owner-one")
         try:
@@ -85,17 +85,13 @@ class AdmissionTests(unittest.TestCase):
         self.seed(10, resource="search")
         self.budget.acquire("search", now=1002)
 
-    def test_reserve_revalidation_is_bounded_and_serialized(self):
+    def test_positive_stale_balance_is_usable_with_serialized_observation(self):
         self.seed(100)
-        with self.assertRaises(Deferred):
-            self.budget.acquire("core", now=1060)
         probe = self.budget.acquire("core", now=1061)
         with self.assertRaises(Deferred):
             self.budget.acquire("core", now=1061)
         self.budget.finish(probe, "core", headers(99), started=1061, now=1062)
-        with self.assertRaises(Deferred):
-            self.budget.acquire("core", now=1121)
-        self.budget.acquire("core", now=1122)
+        self.budget.acquire("core", now=1063)
 
     def test_serialized_reserve_probe_repairs_same_credential_stale_balance(self):
         self.seed(100)
@@ -116,16 +112,19 @@ class AdmissionTests(unittest.TestCase):
 
     def test_reserve_probe_never_spends_exhaustion_or_uncertain_last_point(self):
         self.seed(1)
+        final = self.budget.acquire("core", now=1061)
+        self.budget.finish(final, "core", {}, started=1061, now=1062)
         with self.assertRaises(Deferred):
-            self.budget.acquire("core", now=1061)
+            self.budget.acquire("core", now=1063)
 
     def test_failed_probe_keeps_debt_and_recovery_cadence(self):
         self.seed(100)
         probe = self.budget.acquire("core", now=1061)
         self.budget.finish(probe, "core", {}, started=1061, now=1062)
-        with self.assertRaises(Deferred):
-            self.budget.acquire("core", now=1120)
         self.assertEqual(self.budget.db.execute("SELECT COUNT(*) FROM reservation").fetchone()[0], 1)
+        request = self.budget.acquire("core", now=1120)
+        self.budget.finish(request, "core", headers(4999), started=1120, now=1121)
+        self.assertEqual(self.budget.db.execute("SELECT remaining FROM quota").fetchone()[0], 100)
 
     def test_scope_and_resource_isolation(self):
         self.seed(0)
@@ -145,8 +144,6 @@ class AdmissionTests(unittest.TestCase):
         other.finish(probe, "core", {}, started=1061, now=1062)
         merged = Budget(self.directory, "owner-two", "owner-one")
         try:
-            with self.assertRaises(Deferred):
-                merged.acquire("core", now=1063)
             probe = merged.acquire("core", now=1121)
             merged.finish(probe, "core", headers(4999), started=1121, now=1122)
             self.assertEqual(merged.db.execute("SELECT remaining FROM quota").fetchone()[0], 100)
@@ -167,8 +164,9 @@ class AdmissionTests(unittest.TestCase):
             self.seed(100)
             before = self.budget.db.total_changes
             status = admission_status(self.directory, "owner-one")
-            self.assertEqual(status["state"], "reserve")
+            self.assertEqual(status["state"], "available")
             self.assertEqual(status["remaining"], 100)
+            self.assertEqual(status["floor"], 0)
             self.assertEqual(before, self.budget.db.total_changes)
             self.assertNotIn("owner-one", str(status))
             self.assertEqual(admission_status(self.directory / "absent", "owner-one"), {"state": "unknown"})
@@ -203,12 +201,93 @@ class AdmissionTests(unittest.TestCase):
             other.close()
 
     def test_uncertain_execution_keeps_debt(self):
-        self.seed()
+        self.seed(2)
         token = self.budget.acquire("core", now=1002)
         self.budget.finish(token, "core", {}, started=1002, now=1003)
         self.budget.acquire("core", now=1004)
         with self.assertRaises(Deferred):
             self.budget.acquire("core", now=1004)
+
+    def test_healthy_concurrency_is_not_artificially_limited_to_four(self):
+        self.seed(4999)
+        for _ in range(100):
+            self.budget.acquire("core", now=1002)
+        with self.assertRaisesRegex(Deferred, "secondary ceiling"):
+            self.budget.acquire("core", now=1002)
+        with self.assertRaisesRegex(Deferred, "secondary ceiling"):
+            self.budget.acquire("search", now=1002)
+
+    def test_primary_pacing_uses_demand_and_releases_capacity_towards_reset(self):
+        self.seed(100, reset=2000)
+        self.budget.db.executemany("INSERT INTO admission_history VALUES(?,?,?)", [
+            ("owner-one", "core", 1001 + i) for i in range(11)
+        ])
+        with self.assertRaisesRegex(Deferred, "observed demand") as result:
+            self.budget.acquire("core", now=1012)
+        self.assertGreater(result.exception.retry_at, 1012)
+        # The same available quota is sufficient when reset is imminent.
+        self.budget.db.execute("UPDATE quota SET reset=1013")
+        self.budget.acquire("core", now=1012)
+
+    def test_healthy_demand_does_not_force_sustainable_rate_when_unneeded(self):
+        self.seed(4999)
+        self.budget.db.executemany("INSERT INTO admission_history VALUES(?,?,?)", [
+            ("owner-one", "core", 1001 + i) for i in range(11)
+        ])
+        self.budget.acquire("core", now=1012)
+
+    def test_long_pacing_deadline_survives_history_expiry_and_process_reopen(self):
+        self.seed(3)
+        self.budget.db.executemany("INSERT INTO admission_history VALUES(?,?,?)", [
+            ("owner-one", "core", 1001 + i) for i in range(11)
+        ])
+        with self.assertRaises(Deferred) as first:
+            self.budget.acquire("core", now=1012)
+        retry_at = first.exception.retry_at
+        other = Budget(self.directory, "owner-one")
+        try:
+            with self.assertRaises(Deferred) as later:
+                other.acquire("core", now=1100)
+            self.assertEqual(later.exception.retry_at, retry_at)
+            request = other.acquire("core", now=retry_at)
+            other.finish(request, "core", headers(2), started=retry_at, now=retry_at + 0.1)
+            with self.assertRaises(Deferred):
+                other.acquire("core", now=retry_at + 1)
+            # An actual increase in authoritative quota clears stale pacing.
+            other.db.execute("UPDATE quota SET remaining=4999")
+            other.acquire("core", now=retry_at + 2)
+        finally:
+            other.close()
+
+    def test_pacing_cannot_withhold_the_last_primary_point(self):
+        self.seed(1)
+        self.budget.db.execute("INSERT INTO pacing VALUES(?,?,?,?,?)", ("owner-one", "core", 2000, 1900, 2))
+        self.budget.acquire("core", now=1002)
+
+    def test_secondary_point_window_is_shared_but_primary_demand_is_not(self):
+        self.seed(4999)
+        self.budget.db.executemany("INSERT INTO admission_history VALUES(?,?,?)", [
+            ("owner-one", "core", 1001) for _ in range(900)
+        ])
+        with self.assertRaisesRegex(Deferred, "secondary ceiling"):
+            self.budget.acquire("search", now=1002)
+        self.budget.acquire("search", now=1062)
+
+    def test_retry_after_remains_binding_with_available_primary_quota(self):
+        self.seed(4999)
+        request = self.budget.acquire("core", now=1002)
+        self.budget.finish(request, "core", {**headers(4998), "retry-after": "42"},
+                           started=1002, now=1003)
+        with self.assertRaisesRegex(Deferred, "server resource cooldown") as result:
+            self.budget.acquire("core", now=1044)
+        self.assertEqual(result.exception.retry_at, 1045)
+        self.budget.acquire("core", now=1045)
+
+    def test_search_final_point_is_not_a_permanent_reserve(self):
+        self.seed(1, resource="search")
+        self.budget.acquire("search", now=1002)
+        with self.assertRaises(Deferred):
+            self.budget.acquire("search", now=1002)
 
     def test_unsupported_cached_and_opaque_shapes_remain_native(self):
         for args in (["api", "graphql"], ["api", "rate_limit"],

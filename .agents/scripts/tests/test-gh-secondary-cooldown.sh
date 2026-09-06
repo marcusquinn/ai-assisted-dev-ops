@@ -94,6 +94,7 @@ reset_case() {
 	: >"$ERR_LOG"
 	rm -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE"
 	rm -f "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-search"
+	rm -f "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-core" "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-graphql" "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-code_search"
 	rm -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_FILE"
 	rm -f "$AIDEVOPS_GH_READ_RAMP_STATE_FILE"
 	unset GH_SECONDARY_FAIL GH_REST_CORE_403_FAIL GH_CORE_RATE_LIMIT_RESET GH_SEARCH_RATE_LIMIT_RESET GH_HEADER_LIMIT_FAIL GH_GENERIC_403_FAIL GH_ABUSE_403_FAIL GH_PRIMARY_REMAINING_ZERO_FAIL GH_PRIMARY_REMAINING_ZERO_SUCCESS GH_LARGE_SUCCESS AIDEVOPS_GH_SECONDARY_COOLDOWN_OVERRIDE AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_LINES AIDEVOPS_GH_SECONDARY_COOLDOWN_EVENTS_MAX_BYTES AIDEVOPS_GH_READ_RAMP_BUDGET AIDEVOPS_GH_READ_RAMP_BOOT_SECS AIDEVOPS_GH_READ_RAMP_RECOVERY_SECS AIDEVOPS_GH_READ_RAMP_OVERRIDE AIDEVOPS_GH_AUTH_MODE AIDEVOPS_GH_AUTH_PRINCIPAL AIDEVOPS_GH_COOLDOWN_OPERATION AIDEVOPS_GH_COOLDOWN_WRAPPER AIDEVOPS_GH_COOLDOWN_STAGE AIDEVOPS_GH_API_POOL AIDEVOPS_GH_ROUTE_DECISION 2>/dev/null || true
@@ -520,6 +521,29 @@ test_search_expiry_and_secondary_precedence() {
 	return 0
 }
 
+test_all_primary_resources_remain_isolated() {
+	local resource="" now="" response="" rc=0
+	for resource in core graphql code_search; do
+		reset_case
+		now=$(_gh_secondary_cooldown_now)
+		response=$(printf 'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\nX-RateLimit-Resource: %s\r\nX-RateLimit-Reset: %s\r\n\r\n{}\n' "$resource" "$((now + 60))")
+		_gh_secondary_cooldown_record_if_needed 1 "$response" GET unknown
+		[[ ! -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" ]] || return 1
+		[[ -f "${AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE}.primary-${resource}" ]] || return 1
+		_gh_transport_preflight api rate_limit || return 1
+		_gh_transport_preflight api /search/issues || return 1
+		rc=0
+		case "$resource" in
+		core) _gh_transport_preflight api -X GET user -q .login >/dev/null 2>&1 || rc=$? ;;
+		graphql) _gh_transport_preflight api graphql -f query=fixture >/dev/null 2>&1 || rc=$? ;;
+		code_search) _gh_transport_preflight search code fixture >/dev/null 2>&1 || rc=$? ;;
+		esac
+		[[ "$rc" == 75 ]] || return 1
+	done
+	printf 'PASS core, GraphQL and code-search primary limits leave other pools and recovery diagnostics usable\n'
+	return 0
+}
+
 test_secondary_response_writes_cooldown
 test_header_response_writes_retry_after_cooldown
 test_generic_403_diagnostic_distinguishes_forbidden
@@ -541,3 +565,4 @@ test_cooldown_recovery_ramp_defers_after_budget
 test_read_ramp_does_not_defer_writes
 test_primary_search_isolation
 test_search_expiry_and_secondary_precedence
+test_all_primary_resources_remain_isolated

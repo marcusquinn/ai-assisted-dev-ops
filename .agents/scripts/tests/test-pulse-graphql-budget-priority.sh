@@ -230,4 +230,31 @@ if ! grep -q '_gh_with_timeout read gh api rate_limit' "$TIMEOUT_CALL_LOG"; then
 	exit 1
 fi
 
+# Equal remaining quota should yield different scheduling decisions depending on
+# reset, with no unused final point and no fabricated allowance after exhaustion.
+[[ "$(gh_budget_window_threshold 1250 4600 1000)" == 1250 ]]
+[[ "$(gh_budget_window_threshold 1250 2800 1000)" == 625 ]]
+[[ "$(gh_budget_window_threshold 1250 1001 1000)" == 0 ]]
+[[ "$(gh_budget_window_threshold 1250 unknown 1000)" == 1250 ]]
+_cb_rate_limit_json() {
+	printf '{"resources":{"graphql":{"remaining":%s,"limit":5000,"reset":%s}}}\n' \
+		"$GH_GRAPHQL_REMAINING" "$GH_GRAPHQL_RESET"
+	return 0
+}
+export GH_GRAPHQL_REMAINING=100
+export GH_GRAPHQL_RESET="$(($(date +%s) + 3600))"
+[[ "$(_pulse_graphql_budget_priority_decision)" == reserve* ]]
+export GH_GRAPHQL_RESET="$(($(date +%s) + 60))"
+[[ "$(_pulse_graphql_budget_priority_decision)" == normal* ]]
+export GH_GRAPHQL_REMAINING=0
+[[ "$(_pulse_graphql_budget_priority_decision)" == reserve* ]]
+export AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR=0
+export AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE=0
+_cb_rest_core_priority_decision_allows progress 'reserve 1 5000 500 500 0 9999999999'
+if _cb_rest_core_priority_decision_allows progress 'emergency 0 5000 500 500 0 9999999999'; then
+	printf 'FAIL: exhausted REST capacity admitted progress\n' >&2
+	exit 1
+fi
+[[ "$(_cb_rest_core_thresholds 1001 1000)" == '0 500 0' ]]
+
 printf 'PASS pulse-graphql-budget-priority\n'

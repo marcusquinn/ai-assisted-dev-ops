@@ -20,15 +20,17 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from gh_transport_capacity import capacity_wait
 from gh_transport_recovery import admission_status, mark_dead_reservations, probe_recovers, reserve_probe_allowed
 
 
 class Deferred(Exception):
     """No safe admission is currently available."""
 
-    def __init__(self, message: str, *, retryable: bool = False):
+    def __init__(self, message: str, *, retryable: bool = False, retry_at: float | None = None):
         super().__init__(message)
         self.retryable = retryable
+        self.retry_at = retry_at
 
 
 def private_directory(path: Path) -> None:
@@ -112,6 +114,13 @@ class Budget:
                 scope TEXT NOT NULL, resource TEXT NOT NULL, started REAL NOT NULL,
                 reservation_id TEXT NOT NULL,
                 PRIMARY KEY(scope, resource));
+            CREATE TABLE IF NOT EXISTS admission_history (
+                scope TEXT NOT NULL, resource TEXT NOT NULL, started REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS admission_history_scope ON admission_history(scope, resource, started);
+            CREATE TABLE IF NOT EXISTS pacing (
+                scope TEXT NOT NULL, resource TEXT NOT NULL, reset REAL NOT NULL,
+                retry_at REAL NOT NULL, remaining INTEGER NOT NULL,
+                PRIMARY KEY(scope, resource));
         """)
         with self.transaction():
             self._bind_scope()
@@ -149,6 +158,14 @@ class Budget:
                                 (previous, row[0], *values))
             self.db.execute("DELETE FROM quota WHERE scope=?", (self.scope,))
             self.db.execute("UPDATE reservation SET scope=? WHERE scope=?", (previous, self.scope))
+            self.db.execute("UPDATE admission_history SET scope=? WHERE scope=?", (previous, self.scope))
+            self.db.execute(
+                "INSERT INTO pacing SELECT ?,resource,reset,retry_at,remaining FROM pacing WHERE scope=? "
+                "ON CONFLICT(scope,resource) DO UPDATE SET reset=MAX(reset,excluded.reset), "
+                "retry_at=MAX(retry_at,excluded.retry_at), remaining=MIN(remaining,excluded.remaining)",
+                (previous, self.scope),
+            )
+            self.db.execute("DELETE FROM pacing WHERE scope=?", (self.scope,))
             self.db.execute(
                 "INSERT INTO revalidation SELECT ?,resource,started,reservation_id "
                 "FROM revalidation WHERE scope=? ON CONFLICT(scope,resource) DO UPDATE SET "
@@ -167,6 +184,11 @@ class Budget:
             self.scope = self._root(self.scope)
             yield
             self.db.execute("COMMIT")
+        except Deferred:
+            # Admission defers before creating a reservation. Persist only its
+            # pacing deadline and dead-executor accounting, never an HTTP grant.
+            self.db.execute("COMMIT")
+            raise
         except BaseException:
             self.db.execute("ROLLBACK")
             raise
@@ -186,35 +208,35 @@ class Budget:
                 (self.scope, resource),
             ).fetchone()
             if row and row[3] > now:
-                raise Deferred("resource cooldown is active")
-            floor = min(100, max(1, row[4] // 10)) if row and resource == "core" else 1
-            if row and row[1] > now and row[0] - total <= floor:
-                # Revalidate stale reserve evidence with ONE real, accounted GET.
-                # Never probe exhaustion/cooldown, borrow unknown spend, or let
-                # parallel callers turn recovery into an unbounded reserve bypass.
-                probe = self.db.execute(
-                    "SELECT started FROM revalidation WHERE scope=? AND resource=?",
-                    (self.scope, resource),
-                ).fetchone()
-                if resource != "core" or not reserve_probe_allowed(row, active, total, probe, now):
-                    raise Deferred(
-                        f"REST resource reserve is protected (remaining={row[0]}, "
-                        f"reserved={total}, floor={floor}, reset={int(row[1])})"
-                    )
-                self.db.execute("INSERT OR REPLACE INTO revalidation VALUES(?,?,?,?)",
-                                (self.scope, resource, now, reservation))
+                raise Deferred("server resource cooldown is active", retry_at=row[3])
+            if row and row[1] > now and row[0] - total < 1:
+                raise Deferred(
+                    f"local primary capacity exhausted (remaining={row[0]}, reserved={total}, "
+                    f"reset={int(row[1])})", retry_at=row[1],
+                )
             # Expired/missing observations are not a new 5,000-point grant.
             # Permit one serialized real request to obtain fresh headers.
             fresh = row and 0 <= now - row[2] <= 20 and row[1] > now
             if not fresh and active:
                 raise Deferred("waiting for an authoritative quota observation", retryable=True)
-            # A small local concurrency ceiling also applies with ample quota.
-            if active >= 4:
-                raise Deferred("local REST transport concurrency is occupied", retryable=True)
+            reason, retry_at = capacity_wait(self, resource, row, total, now)
+            if reason:
+                raise Deferred(reason, retryable=True, retry_at=retry_at)
+            if row and row[1] > now:
+                # A stale positive balance may be refreshed by one causally newer
+                # request. This is ordinary admitted work, never a reserve bypass.
+                probe = self.db.execute(
+                    "SELECT started FROM revalidation WHERE scope=? AND resource=?",
+                    (self.scope, resource),
+                ).fetchone()
+                if reserve_probe_allowed(row, active, total, probe, now):
+                    self.db.execute("INSERT OR REPLACE INTO revalidation VALUES(?,?,?,?)",
+                                    (self.scope, resource, now, reservation))
             self.db.execute(
                 "INSERT INTO reservation(id,scope,resource,started,pid,birth,credential) VALUES(?,?,?,?,?,?,?)",
                 (reservation, self.scope, resource, now, os.getpid(), self.birth, self.credential),
             )
+            self.db.execute("INSERT INTO admission_history VALUES(?,?,?)", (self.scope, resource, now))
             return reservation
 
     def finish(self, reservation: str, resource: str, headers: dict[str, str],

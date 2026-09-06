@@ -8,6 +8,9 @@
 [[ -n "${_PULSE_BUDGET_PRIORITY_LOADED:-}" ]] && return 0
 _PULSE_BUDGET_PRIORITY_LOADED=1
 
+# shellcheck source=./shared-gh-budget-policy.sh
+source "${BASH_SOURCE[0]%/*}/shared-gh-budget-policy.sh"
+
 _PULSE_BUDGET_MODE_UNKNOWN="unknown"
 _PULSE_BUDGET_MODE_RESERVE="reserve"
 _PULSE_BUDGET_PRIORITY_DEFERRABLE="deferrable"
@@ -63,7 +66,10 @@ _pulse_graphql_budget_priority_decision() {
 		printf 'unknown ? ? %s\n' "$threshold"
 		return 0
 	fi
-	if [[ "$remaining" -lt "$threshold" ]]; then
+	local reset=""
+	reset=$(printf '%s' "$rate_json" | jq -r '.resources.graphql.reset // ""') || reset=""
+	threshold=$(gh_budget_window_threshold "$threshold" "$reset") || return 1
+	if [[ "$remaining" -eq 0 || "$remaining" -lt "$threshold" ]]; then
 		printf 'reserve %s %s %s\n' "$remaining" "$limit" "$threshold"
 		return 0
 	fi

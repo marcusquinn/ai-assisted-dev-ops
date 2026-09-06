@@ -25,7 +25,7 @@ def mark_dead_reservations(budget, now, process_birth):
 
 
 def reserve_probe_allowed(row, active, total, previous, now):
-    if active or row[0] - total <= 1:
+    if active or row[0] - total < 1:
         return False
     last_probe = previous[0] if previous else row[2]
     return now - max(row[2], last_probe) >= 60
@@ -78,14 +78,14 @@ def admission_status(directory: Path, scope: str) -> dict:
             "SELECT COUNT(*) FROM reservation WHERE scope=? AND resource='core'", (scope,),
         ).fetchone()[0]
         now = time.time()
-        floor = min(100, max(1, row[4] // 10))
+        floor = 0
         state = "available"
         if row[3] > now:
             state = "cooldown"
         elif row[1] <= now or row[2] > now:
             state = "unknown"
         elif row[0] - reserved <= floor:
-            state = "reserve"
+            state = "exhausted"
         return {"state": state, "source": "local_response_headers", "remaining": row[0],
                 "limit": row[4], "reserved": reserved, "floor": floor,
                 "reset": int(row[1]), "observation_age_seconds": max(0, int(now - row[2]))}

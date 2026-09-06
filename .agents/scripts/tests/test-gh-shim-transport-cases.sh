@@ -4,7 +4,7 @@
 # Sourced by the existing hermetic gh shim harness after legacy-path coverage.
 
 printf '\nTest 27: shared raw transport controls and response-owned quota\n'
-for library in gh-transport-controls.sh gh-transport-governor.py gh_transport_budget.py gh_transport_recovery.py shared-gh-secondary-cooldown.sh; do
+for library in gh-transport-controls.sh gh-transport-governor.py gh_transport_budget.py gh_transport_recovery.py gh_transport_capacity.py shared-gh-secondary-cooldown.sh shared-gh-primary-cooldown.sh; do
 	cp "${REPO_DIR}/.agents/scripts/${library}" "${TMP}/scripts/${library}"
 done
 mkdir -p "${TMP}/governor/tmp"
@@ -90,6 +90,19 @@ if [[ "$_governor_rc" -eq 75 && ! -s "$STUB_GH_CALL_LOG" ]]; then
 	_pass "authoritative exhaustion suppresses the next raw request locally"
 else
 	_fail "authoritative exhaustion suppresses the next raw request locally"
+fi
+
+_reset_log
+printf 'HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: search\r\nX-Ratelimit-Limit: 30\r\nX-Ratelimit-Remaining: 29\r\nX-Ratelimit-Reset: %s\r\n\r\n{"items":[]}\n' "$_governor_reset" >"$STUB_TRANSPORT_RESPONSE_FILE"
+if "$SHIM_RUN" api 'search/issues?q=fixture' >/dev/null && [[ -s "$STUB_GH_CALL_LOG" && ! -f "$AIDEVOPS_GH_SECONDARY_COOLDOWN_FILE" ]]; then
+	_pass "core exhaustion leaves available search quota usable through the real shim"
+else
+	_fail "core exhaustion incorrectly blocks unrelated search capacity"
+fi
+if "$SHIM_RUN" api rate_limit >/dev/null; then
+	_pass "primary exhaustion does not suppress quota-status recovery"
+else
+	_fail "primary exhaustion suppresses quota-status recovery"
 fi
 
 # Exact capture owns multi-frame native attempts. The normal final-response

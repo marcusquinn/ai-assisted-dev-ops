@@ -57,6 +57,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 
+# shellcheck source=./shared-gh-budget-policy.sh
+source "${SCRIPT_DIR}/shared-gh-budget-policy.sh"
+
 # shellcheck source=./shared-gh-request-state.sh
 if [[ -f "${SCRIPT_DIR}/shared-gh-request-state.sh" ]]; then
 	# shellcheck disable=SC1091
@@ -205,10 +208,10 @@ _cb_rest_core_header() {
 #######################################
 _cb_rest_core_bounds() {
 	local soft_cap="${AIDEVOPS_PULSE_REST_CORE_RESERVE:-${AIDEVOPS_PULSE_REST_DISPATCH_MIN_CORE_REMAINING:-500}}"
-	local hard_floor="${AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR:-100}"
+	local hard_floor="${AIDEVOPS_PULSE_REST_CORE_HARD_FLOOR:-0}"
 	local window_seconds="${AIDEVOPS_PULSE_REST_CORE_ADAPTIVE_WINDOW_SECONDS:-3600}"
 	[[ "$soft_cap" =~ ^[0-9]+$ ]] || soft_cap=500
-	[[ "$hard_floor" =~ ^[0-9]+$ ]] || hard_floor=100
+	[[ "$hard_floor" =~ ^[0-9]+$ ]] || hard_floor=0
 	[[ "$window_seconds" =~ ^[1-9][0-9]*$ ]] || window_seconds=3600
 	if [[ "$soft_cap" -eq 0 ]]; then
 		hard_floor=0
@@ -223,8 +226,8 @@ _cb_rest_core_bounds() {
 # Return normalized headroom reserved for already-admitted REST work.
 #######################################
 _cb_rest_core_in_flight_allowance() {
-	local allowance="${AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE:-250}"
-	[[ "$allowance" =~ ^[0-9]+$ ]] || allowance=250
+	local allowance="${AIDEVOPS_PULSE_REST_CORE_IN_FLIGHT_ALLOWANCE:-0}"
+	[[ "$allowance" =~ ^[0-9]+$ ]] || allowance=0
 	printf '%s\n' "$allowance"
 	return 0
 }
@@ -288,7 +291,9 @@ _cb_rest_core_thresholds() {
 	[[ "$seconds_until_reset" -le "$window_seconds" ]] || seconds_until_reset="$window_seconds"
 
 	local reserve_span=$((soft_cap - hard_floor))
-	local adaptive_threshold=$((hard_floor + (reserve_span * seconds_until_reset + window_seconds - 1) / window_seconds))
+	local adaptive_threshold
+	adaptive_threshold=$(gh_budget_window_threshold "$reserve_span" "$reset_epoch" "$now_epoch" "$window_seconds") || return 1
+	adaptive_threshold=$((hard_floor + adaptive_threshold))
 	[[ "$adaptive_threshold" -ge "$hard_floor" ]] || adaptive_threshold="$hard_floor"
 	[[ "$adaptive_threshold" -le "$soft_cap" ]] || adaptive_threshold="$soft_cap"
 	printf '%s %s %s\n' "$adaptive_threshold" "$soft_cap" "$hard_floor"
@@ -744,6 +749,9 @@ is_graphql_budget_sufficient() {
 	# Compute threshold as integer: threshold_count = ceil(threshold * limit).
 	local threshold_count
 	threshold_count=$(_compute_threshold_count "$threshold" "$limit") || threshold_count=0
+	local reset_epoch=""
+	reset_epoch=$(printf '%s' "$rate_json" | jq -r '.resources.graphql.reset // ""') || reset_epoch=""
+	threshold_count=$(gh_budget_window_threshold "$threshold_count" "$reset_epoch") || return 1
 
 	if [[ "$remaining" -le "$threshold_count" ]]; then
 		if _cb_allow_dispatch_with_rest_fallback "$rate_json" "$remaining" "$limit" "$threshold_count" "$threshold"; then
@@ -751,7 +759,7 @@ is_graphql_budget_sufficient() {
 		fi
 
 		# Breaker trips.
-		echo "${_CB_RL_LOG_PREFIX} GraphQL budget EXHAUSTED: remaining=${remaining}/${limit} (threshold=${threshold_count}, configured=${threshold}) — deferring dispatch until next cycle" >>"$LOGFILE"
+		echo "${_CB_RL_LOG_PREFIX} Local GraphQL scheduling deferred: remaining=${remaining}/${limit} (adaptive_threshold=${threshold_count}, configured_cap=${threshold}, reset=${reset_epoch}) — no usable REST fallback; not a server secondary-limit rejection" >>"$LOGFILE"
 
 		# Record state for status reporting.
 		printf '%s %s %s %s\n' "$(date +%s)" "$remaining" "$limit" "$threshold" >"$_CIRCUIT_BREAKER_STATE_FILE" 2>/dev/null || true
@@ -860,6 +868,7 @@ _circuit_breaker_status() {
 	local threshold_count="$_CB_RL_UNKNOWN"
 	if [[ "$limit" =~ ^[0-9]+$ ]] && [[ "$limit" -gt 0 ]]; then
 		threshold_count=$(_compute_threshold_count "$threshold" "$limit") || threshold_count="$_CB_RL_UNKNOWN"
+		threshold_count=$(gh_budget_window_threshold "$threshold_count" "$reset_epoch") || threshold_count="$_CB_RL_UNKNOWN"
 	fi
 
 	# Report 24h trip count if stats helper is available.

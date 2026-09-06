@@ -145,6 +145,10 @@ def _acquire(budget: Budget, resource: str) -> str:
         except Deferred as pause:
             if not pause.retryable or admission_try == 20:
                 raise
+            # Long capacity waits belong to the caller's scheduler, not 20
+            # futile local polls. No HTTP attempt is made during admission waits.
+            if pause.retry_at and pause.retry_at - time.time() > 2:
+                raise
             time.sleep(0.1)
 
 
@@ -235,7 +239,10 @@ def run(metadata: Path, executable: str, args: list[str]) -> int:
             metadata.write_text(json.dumps(result), encoding="utf-8")
             return _exit_status(rc)
     except Deferred as exc:
-        print(f"[gh-transport] deferred: {exc}", file=sys.stderr)
+        metadata.write_text(json.dumps({"attempted": False, "deferred_by": "local_admission",
+                                       "reason": str(exc), "retry_at": exc.retry_at}), encoding="utf-8")
+        retry = f" retry_at={exc.retry_at:.3f}" if exc.retry_at else ""
+        print(f"[gh-transport] deferred: {exc}{retry}", file=sys.stderr)
         return 75
     except (OSError, ValueError, sqlite3.Error):
         # Metadata failure after execution is not permission to retry a

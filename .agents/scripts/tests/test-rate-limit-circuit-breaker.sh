@@ -232,8 +232,11 @@ test_breaker_trips_below_threshold() {
 test_breaker_trips_at_threshold() {
 	reset_test_state
 	STUB_GH_REMAINING=250
+	# Keep this early-window boundary deterministic across wall-clock seconds.
+	STUB_GH_RESET=$(($(date +%s) + 3660))
 	local rc=0
 	is_graphql_budget_sufficient || rc=$?
+	unset STUB_GH_RESET
 	if [[ "$rc" -eq 1 ]]; then
 		pass "breaker trips when remaining=250 (at threshold=250)"
 	else
@@ -512,10 +515,10 @@ test_log_message_on_trip() {
 	reset_test_state
 	STUB_GH_REMAINING=4
 	is_graphql_budget_sufficient || true
-	if grep -q "GraphQL budget EXHAUSTED" "$LOGFILE" 2>/dev/null; then
+	if grep -q "Local GraphQL scheduling deferred" "$LOGFILE" 2>/dev/null; then
 		pass "log message emitted on trip"
 	else
-		fail "should emit 'GraphQL budget EXHAUSTED' log message on trip"
+		fail "should distinguish local GraphQL scheduling from server exhaustion"
 	fi
 	return 0
 }
@@ -613,7 +616,7 @@ test_rest_core_adaptive_threshold_math() {
 	early=$(_cb_rest_core_thresholds "$((now + 3600))" "$now")
 	mid=$(_cb_rest_core_thresholds "$((now + 1800))" "$now")
 	near=$(_cb_rest_core_thresholds "$((now + 1))" "$now")
-	if [[ "$early" == "500 500 100" && "$mid" == "300 500 100" && "$near" == "101 500 100" ]]; then
+	if [[ "$early" == "500 500 100" && "$mid" == "300 500 100" && "$near" == "100 500 100" ]]; then
 		pass "REST adaptive threshold decays from soft cap toward hard floor"
 	else
 		fail "REST adaptive threshold should be monotonic and clamped" "early=${early} mid=${mid} near=${near}"
