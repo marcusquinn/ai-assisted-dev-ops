@@ -87,12 +87,14 @@ gh() {
 	return 1
 }
 
+# shellcheck source=../issue-sync-lib-parse.sh
+source "${SCRIPT_DIR}/issue-sync-lib-parse.sh"
 # shellcheck source=../issue-sync-lib-ref.sh
 source "${SCRIPT_DIR}/issue-sync-lib-ref.sh"
 
 : >"$JQ_CALL_LOG"
 [[ "$(resolve_task_gh_number t101 "$TODO_FILE" owner/one)" == "42" ]]
-if [[ "$(wc -l <"$JQ_CALL_LOG" | tr -d ' ')" != "3" ]]; then
+if [[ "$(wc -l <"$JQ_CALL_LOG" | tr -d ' ')" != "4" ]]; then
 	printf 'FAIL repository identity and issue backfill did not use bounded jq parsing\n' >&2
 	exit 1
 fi
@@ -147,5 +149,15 @@ if AIDEVOPS_TASK_COORDINATOR_DB="${TEST_ROOT}/conflict.db" resolve_task_gh_numbe
 	printf 'FAIL unresolved issue projection was accepted\n' >&2
 	exit 1
 fi
+
+# A child that exits successfully without persisting anything cannot validate a
+# backfill, even when GitHub returned a valid existing issue. No creation occurs.
+printf '%s\n' '- [ ] t101 first repository task ref:GH#42' >"$TODO_FILE"
+node() { return 0; }
+if resolve_task_gh_number t101 "$TODO_FILE" owner/one >/dev/null 2>&1; then
+	printf 'FAIL empty-success coordinator validated an unpersisted mapping\n' >&2
+	exit 1
+fi
+unset -f node
 
 printf 'PASS repository-scoped issue mapping isolation and fail-closed backfill\n'

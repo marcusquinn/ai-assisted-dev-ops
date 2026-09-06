@@ -11,6 +11,18 @@ TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 export AIDEVOPS_TASK_COORDINATOR_DB="${TEST_ROOT}/coordinator.db"
 
+# Direct and symlink CLI entry execute; importing never runs the CLI.
+ln -s "$COORDINATOR" "${TEST_ROOT}/coordinator link.mjs"
+node "$COORDINATOR" --help >"${TEST_ROOT}/direct-help"
+node "${TEST_ROOT}/coordinator link.mjs" --help >"${TEST_ROOT}/linked-help"
+[[ -s "${TEST_ROOT}/direct-help" ]]
+cmp "${TEST_ROOT}/direct-help" "${TEST_ROOT}/linked-help"
+COORDINATOR_PATH="$COORDINATOR" node --input-type=module \
+	-e 'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.env.COORDINATOR_PATH))' \
+	>"${TEST_ROOT}/import-output"
+[[ ! -s "${TEST_ROOT}/import-output" ]]
+[[ ! -e "$AIDEVOPS_TASK_COORDINATOR_DB" ]]
+
 # Multiprocess WAL allocation and offline uniqueness.
 for i in $(seq 1 24); do
 	node "$COORDINATOR" allocate --operation-id "parallel-${i}" --payload "{\"worker\":${i}}" >"${TEST_ROOT}/parallel-${i}.json" &
@@ -97,19 +109,61 @@ if node "$COORDINATOR" adopt-legacy-task --operation-id adopt-28465 --task-id t2
 	printf 'FAIL changed legacy adoption reused an operation ID\n' >&2
 	exit 1
 fi
-if node "$COORDINATOR" adopt-legacy-task --operation-id adopt-cross-repo --task-id t28465 --repository-id R_other \
-	--repository-slug owner/other --issue-id I_other --display-number 28465 >/dev/null 2>&1; then
-	printf 'FAIL legacy task adoption crossed repository identities\n' >&2
-	exit 1
-fi
+other_adoption=$(node "$COORDINATOR" adopt-legacy-task --operation-id adopt-cross-repo --task-id t28465 --repository-id R_other \
+	--repository-slug owner/other --issue-id I_other --display-number 28465)
+other_identity=$(jq -r '.coordinatorTaskId' <<<"$other_adoption")
+[[ "$other_identity" == to* ]]
+[[ "$(node "$COORDINATOR" resolve-issue --task-id t28465 --repository-id R_other | jq -r '.issueId')" == "I_other" ]]
+[[ "$(node "$COORDINATOR" resolve-issue --task-id t28465 --repository-id R_adopt | jq -r '.issueId')" == "I_adopt" ]]
+for i in $(seq 1 8); do
+	node "$COORDINATOR" adopt-legacy-task --operation-id adopt-cross-repo --task-id t28465 --repository-id R_other \
+		--repository-slug owner/other --issue-id I_other --display-number 28465 >"${TEST_ROOT}/adopt-${i}.json" &
+done
+wait
+for i in $(seq 1 8); do
+	[[ "$(jq -r '.coordinatorTaskId' "${TEST_ROOT}/adopt-${i}.json")" == "$other_identity" ]]
+done
 if node "$COORDINATOR" adopt-legacy-task --operation-id adopt-issue-conflict --task-id t28465 --repository-id R_adopt \
 	--repository-slug owner/adopt --issue-id I_other --display-number 28466 >/dev/null 2>&1; then
 	printf 'FAIL legacy task adoption replaced immutable issue identity\n' >&2
 	exit 1
 fi
 [[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT COUNT(*) FROM tasks WHERE task_id='t28465';")" == "1" ]]
-[[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT status FROM operations WHERE operation_id='adopt-cross-repo';")" == "conflict" ]]
+[[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT status FROM operations WHERE operation_id='adopt-cross-repo';")" == "terminal" ]]
 [[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT status FROM operations WHERE operation_id='adopt-issue-conflict';")" == "conflict" ]]
+[[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT COUNT(DISTINCT task_id) FROM repository_task_aliases WHERE local_task_id='t28465';")" == "2" ]]
+node "$COORDINATOR" verify | jq -e '.ok' >/dev/null
+
+# Simultaneous first adoption allocates one internal identity in the third repo.
+for i in $(seq 1 8); do
+	node "$COORDINATOR" adopt-legacy-task --operation-id "third-${i}" --task-id t28465 --repository-id R_third \
+		--repository-slug owner/third --issue-id I_third --display-number 9 >"${TEST_ROOT}/third-${i}.json" &
+done
+wait
+[[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT COUNT(DISTINCT task_id) FROM operations WHERE operation_id GLOB 'third-*';")" == "1" ]]
+[[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT COUNT(*) FROM tasks WHERE created_operation_id GLOB 'third-*';")" == "1" ]]
+if node "$COORDINATOR" bind-issue --task-id t28465 --repository-id R_impl_ambiguous --repository-slug owner/ambiguous \
+	--role implementation --issue-id I_ambiguous --display-number 1 >/dev/null 2>&1; then
+	printf 'FAIL ambiguous legacy non-home binding accepted\n' >&2
+	exit 1
+fi
+
+# New publications use repository-scoped internal identity, not the global token.
+node "$COORDINATOR" publication-intent --operation-id scoped-publication --task-id t28465 \
+	--repository-id R_other --repository-path "$TEST_ROOT" >/dev/null
+[[ "$(sqlite3 "$AIDEVOPS_TASK_COORDINATOR_DB" "SELECT task_id FROM publication_intents WHERE operation_id='scoped-publication';")" == "$other_identity" ]]
+
+# A v7 fixture migrates aliases without rewriting historical operation evidence.
+v7_db="${TEST_ROOT}/v7.db"
+AIDEVOPS_TASK_COORDINATOR_DB="$v7_db" node "$COORDINATOR" adopt-legacy-task --operation-id historical --task-id t100 \
+	--repository-id R_old --repository-slug owner/old --issue-id I_old --display-number 1 >/dev/null
+sqlite3 "$v7_db" "DROP TABLE repository_task_aliases; UPDATE coordinator_meta SET value='7' WHERE key='schema_version'; DELETE FROM migration_history; INSERT INTO migration_history VALUES(7,'2026-01-01',NULL,'ok'); UPDATE operations SET result_json=json_remove(result_json,'$.coordinatorTaskId');"
+historical_result=$(sqlite3 "$v7_db" "SELECT result_json FROM operations WHERE operation_id='historical';")
+AIDEVOPS_TASK_COORDINATOR_DB="$v7_db" node "$COORDINATOR" verify | jq -e '.ok and .schemaVersion == 8' >/dev/null
+[[ "$(sqlite3 "$v7_db" "SELECT result_json FROM operations WHERE operation_id='historical';")" == "$historical_result" ]]
+[[ "$(sqlite3 "$v7_db" "SELECT task_id FROM repository_task_aliases WHERE local_task_id='t100';")" == "t100" ]]
+AIDEVOPS_TASK_COORDINATOR_DB="$v7_db" node "$COORDINATOR" bind-issue --task-id t100 \
+	--repository-id R_old --repository-slug owner/old --issue-id I_old --display-number 1 >/dev/null
 
 # Independent reinstall/clone state creates a new CSPRNG origin at the same sequence.
 origin_one=$(node "$COORDINATOR" status | jq -r '.origin_id')
@@ -151,7 +205,7 @@ migration_db="${TEST_ROOT}/migration.db"
 AIDEVOPS_TASK_COORDINATOR_DB="$migration_db" node "$COORDINATOR" status >/dev/null
 sqlite3 "$migration_db" "DROP TABLE legacy_task_adoptions; DROP TABLE issue_mappings; DROP TABLE forge_event_cursors; ALTER TABLE restore_controls DROP COLUMN backup_high_water; UPDATE coordinator_meta SET value='1' WHERE key='schema_version'; DELETE FROM migration_history; INSERT INTO migration_history VALUES(1,'2026-01-01T00:00:00Z',NULL,'ok');"
 AIDEVOPS_TASK_COORDINATOR_DB="$migration_db" node "$COORDINATOR" status >/dev/null
-[[ "$(sqlite3 "$migration_db" "SELECT value FROM coordinator_meta WHERE key='schema_version';")" == "7" ]]
+[[ "$(sqlite3 "$migration_db" "SELECT value FROM coordinator_meta WHERE key='schema_version';")" == "8" ]]
 [[ "$(sqlite3 "$migration_db" "SELECT COUNT(*) FROM pragma_table_info('operations') WHERE name='result_hash';")" == "0" ]]
 [[ -n "$(ls "${TEST_ROOT}"/migration.db-backup-*-pre-migrate-v2.db)" ]]
 [[ -n "$(ls "${TEST_ROOT}"/migration.db-backup-*-pre-migrate-v3.db)" ]]
@@ -163,7 +217,7 @@ sqlite3 "$v2_db" "DROP TABLE legacy_task_adoptions; DROP TABLE issue_mappings; D
 AIDEVOPS_TASK_COORDINATOR_DB="$v2_db" node "$COORDINATOR" status >/dev/null
 v2_backup=$(ls "${TEST_ROOT}"/v2.db-backup-*-pre-migrate-v3.db)
 [[ "$(sqlite3 "$v2_backup" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='issue_mappings';")" == "0" ]]
-[[ "$(sqlite3 "$v2_db" "SELECT value FROM coordinator_meta WHERE key='schema_version';")" == "7" ]]
+[[ "$(sqlite3 "$v2_db" "SELECT value FROM coordinator_meta WHERE key='schema_version';")" == "8" ]]
 
 # Immutable task/repository identities isolate equal display numbers and allow
 # one task to retain home, implementation, and upstream issue projections.

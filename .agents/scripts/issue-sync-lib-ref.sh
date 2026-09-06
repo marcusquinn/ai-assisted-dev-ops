@@ -317,6 +317,21 @@ resolve_repository_node_id() {
 	return 1
 }
 
+# A successful child exit is not evidence that the coordinator persisted a bind.
+# Re-read and compare every immutable field before exposing an issue write target.
+_verify_persisted_issue_mapping() {
+	local coordinator="$1" task_id="$2" repository_id="$3" repo="$4"
+	local role="$5" issue_id="$6" issue_number="$7" mapping=""
+	mapping=$(node "$coordinator" resolve-issue --task-id "$task_id" --forge github \
+		--repository-id "$repository_id" 2>/dev/null) || return 1
+	jq -e --arg task "$task_id" --arg repository "$repository_id" --arg repo "$repo" \
+		--arg role "$role" --arg issue "$issue_id" --arg number "$issue_number" \
+		'.taskId == $task and .forge == "github" and .repositoryId == $repository
+		and .repositorySlug == $repo and .role == $role and .issueId == $issue
+		and (.displayNumber | tostring) == $number' <<<"$mapping" >/dev/null || return 1
+	return 0
+}
+
 # Resolve a task ID to a repository-validated GitHub issue mapping. The
 # coordinator is authoritative; ref:GH remains a migration projection that is
 # backfilled only after both repository and issue node identities are fetched.
@@ -352,6 +367,8 @@ resolve_task_gh_number() {
 					--repository-id "$repository_id" --repository-slug "$repo" --role "$mapped_role" \
 					--issue-id "$mapped_issue_id" --display-number "$mapped_number" \
 					"${refresh_args[@]}" --sync-metadata "$mapped_metadata" >/dev/null 2>&1 || return 1
+				_verify_persisted_issue_mapping "$coordinator" "$task_id" "$repository_id" "$repo" \
+					"$mapped_role" "$mapped_issue_id" "$mapped_number" || return 1
 			fi
 			_cache_issue_sync_node_id "$mapped_number" "$mapped_issue_id"
 			printf '%s\n' "$mapped_number"
@@ -381,6 +398,8 @@ resolve_task_gh_number() {
 			--issue-id "$issue_id" --display-number "$issue_number" \
 			"${bind_args[@]}" \
 			--sync-metadata "$(jq -cn --arg state "$issue_state" --arg source ref-gh-backfill '{state:$state,source:$source}')" >/dev/null 2>&1 || return 1
+		_verify_persisted_issue_mapping "$coordinator" "$task_id" "$repository_id" "$repo" \
+			home "$issue_id" "$issue_number" || return 1
 	fi
 	_cache_issue_sync_node_id "$issue_number" "$issue_id"
 	printf '%s\n' "$issue_number"

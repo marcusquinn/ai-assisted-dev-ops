@@ -4,12 +4,13 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { canonicalizeSqliteDbPath, sqlEscape } from "./sqlite-process.mjs";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const PAYLOAD_MAX_BYTES = 64 * 1024;
 const EVIDENCE_MAX_BYTES = 64 * 1024;
 const CROCKFORD = "0123456789abcdefghjkmnpqrstvwxyz";
@@ -97,6 +98,11 @@ CREATE TABLE IF NOT EXISTS issue_mappings (
 CREATE TABLE IF NOT EXISTS legacy_task_adoptions (
   task_id TEXT PRIMARY KEY REFERENCES tasks(task_id), repository_id TEXT NOT NULL,
   adopted_operation_id TEXT NOT NULL REFERENCES operations(operation_id), adopted_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS repository_task_aliases (
+  local_task_id TEXT NOT NULL, forge TEXT NOT NULL, repository_id TEXT NOT NULL, task_id TEXT NOT NULL,
+  PRIMARY KEY(local_task_id,forge,repository_id), UNIQUE(task_id,forge,repository_id),
+  FOREIGN KEY(task_id,forge,repository_id) REFERENCES issue_mappings(task_id,forge,repository_id)
 );
 CREATE TABLE IF NOT EXISTS forge_event_cursors (
   forge TEXT NOT NULL, repository_id TEXT NOT NULL, subject_kind TEXT NOT NULL, subject_id TEXT NOT NULL,
@@ -237,6 +243,17 @@ INSERT INTO migration_history(version,applied_at,backup_path,integrity_result) V
 COMMIT;`);
   if (sqlite(path, "PRAGMA integrity_check;\n") !== "ok") throw new Error("migration integrity verification failed");
 }
+function migrateV7ToV8(path) {
+  const copy = backup(path, "pre-migrate-v8");
+  sqlite(path, `PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;
+${SCHEMA}
+INSERT OR IGNORE INTO repository_task_aliases(local_task_id,forge,repository_id,task_id)
+SELECT task_id,forge,repository_id,task_id FROM issue_mappings WHERE task_id GLOB 't[0-9]*';
+UPDATE coordinator_meta SET value='8' WHERE key='schema_version';
+INSERT INTO migration_history(version,applied_at,backup_path,integrity_result) VALUES (8,${sqlEscape(now())},${sqlEscape(copy)},'ok');
+COMMIT;`);
+  if (sqlite(path, "PRAGMA integrity_check;\n") !== "ok" || rows(path, "PRAGMA foreign_key_check;").length) throw new Error("migration integrity verification failed");
+}
 function migrate(path, version) {
   if (version === 1) {
     migrateV1ToV2(path);
@@ -264,7 +281,8 @@ function migrate(path, version) {
     migrateV5ToV6(path);
     migrateV6ToV7(path);
   } else if (version === 6) migrateV6ToV7(path);
-  else if (version !== SCHEMA_VERSION) throw new Error(`unsupported coordinator schema ${version}`);
+  else if (version !== 7 && version !== SCHEMA_VERSION) throw new Error(`unsupported coordinator schema ${version}`);
+  if (version < 8) migrateV7ToV8(path);
 }
 function bootstrap(path) {
   const origin = originId();
@@ -431,31 +449,44 @@ function adoptLegacyTask(input = {}, path = initialise()) {
   const timestamp = now();
   try {
     sqlite(path, `PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;
+CREATE TEMP TABLE adoption_identity(task_id TEXT NOT NULL);
+INSERT INTO adoption_identity SELECT COALESCE(
+  (SELECT task_id FROM repository_task_aliases WHERE local_task_id=${sqlEscape(taskId)} AND forge=${sqlEscape(value.forge)} AND repository_id=${sqlEscape(value.repositoryId)}),
+  CASE WHEN EXISTS (SELECT 1 FROM legacy_task_adoptions WHERE task_id=${sqlEscape(taskId)} AND repository_id<>${sqlEscape(value.repositoryId)})
+    OR EXISTS (SELECT 1 FROM issue_mappings WHERE task_id=${sqlEscape(taskId)} AND role='home' AND repository_id<>${sqlEscape(value.repositoryId)})
+  THEN (SELECT 't'||origin_id||'-'||(sequence+1) FROM origins WHERE state='active' ORDER BY created_at DESC LIMIT 1)
+  ELSE ${sqlEscape(taskId)} END);
 CREATE TEMP TABLE adoption_decision(status TEXT NOT NULL CHECK(status IN ('accepted','conflict')));
 INSERT INTO adoption_decision SELECT CASE
-  WHEN EXISTS (SELECT 1 FROM legacy_task_adoptions WHERE task_id=${sqlEscape(taskId)} AND repository_id<>${sqlEscape(value.repositoryId)}) THEN 'conflict'
-  WHEN EXISTS (SELECT 1 FROM issue_mappings WHERE task_id=${sqlEscape(taskId)} AND role='home'
+  WHEN EXISTS (SELECT 1 FROM legacy_task_adoptions WHERE task_id=(SELECT task_id FROM adoption_identity) AND repository_id<>${sqlEscape(value.repositoryId)}) THEN 'conflict'
+  WHEN EXISTS (SELECT 1 FROM issue_mappings WHERE task_id=(SELECT task_id FROM adoption_identity) AND role='home'
     AND (forge<>${sqlEscape(value.forge)} OR repository_id<>${sqlEscape(value.repositoryId)} OR issue_id<>${sqlEscape(value.issueId)} OR display_number<>${value.displayNumber})) THEN 'conflict'
+  WHEN EXISTS (SELECT 1 FROM issue_mappings WHERE task_id=(SELECT task_id FROM adoption_identity) AND forge=${sqlEscape(value.forge)} AND repository_id=${sqlEscape(value.repositoryId)}
+    AND (role<>'home' OR issue_id<>${sqlEscape(value.issueId)} OR display_number<>${value.displayNumber})) THEN 'conflict'
   WHEN EXISTS (SELECT 1 FROM issue_mappings WHERE forge=${sqlEscape(value.forge)} AND repository_id=${sqlEscape(value.repositoryId)}
-    AND (issue_id=${sqlEscape(value.issueId)} OR display_number=${value.displayNumber}) AND task_id<>${sqlEscape(taskId)}) THEN 'conflict'
+    AND (issue_id=${sqlEscape(value.issueId)} OR display_number=${value.displayNumber}) AND task_id<>(SELECT task_id FROM adoption_identity)) THEN 'conflict'
   ELSE 'accepted' END;
 INSERT INTO operations(operation_id,kind,task_id,payload_hash,payload_json,status,result_json,created_at,updated_at)
-SELECT ${sqlEscape(operationId)},'task.adopt',${sqlEscape(taskId)},${sqlEscape(payloadHash)},${sqlEscape(payloadText)},CASE WHEN status='accepted' THEN 'terminal' ELSE 'conflict' END,'null',${sqlEscape(timestamp)},${sqlEscape(timestamp)} FROM adoption_decision;
+SELECT ${sqlEscape(operationId)},'task.adopt',(SELECT task_id FROM adoption_identity),${sqlEscape(payloadHash)},${sqlEscape(payloadText)},CASE WHEN status='accepted' THEN 'terminal' ELSE 'conflict' END,'null',${sqlEscape(timestamp)},${sqlEscape(timestamp)} FROM adoption_decision;
 UPDATE origins SET sequence=sequence+1 WHERE origin_id=(SELECT origin_id FROM origins WHERE state='active' ORDER BY created_at DESC LIMIT 1)
-AND NOT EXISTS (SELECT 1 FROM tasks WHERE task_id=${sqlEscape(taskId)}) AND (SELECT status FROM adoption_decision)='accepted';
+AND NOT EXISTS (SELECT 1 FROM tasks WHERE task_id=(SELECT task_id FROM adoption_identity)) AND (SELECT status FROM adoption_decision)='accepted';
 INSERT INTO tasks(task_id,origin_id,sequence,parent_task_id,created_operation_id,payload_hash,payload_json,created_at)
-SELECT ${sqlEscape(taskId)},origin_id,sequence,NULL,${sqlEscape(operationId)},${sqlEscape(payloadHash)},${sqlEscape(payloadText)},${sqlEscape(timestamp)}
-FROM origins WHERE state='active' AND NOT EXISTS (SELECT 1 FROM tasks WHERE task_id=${sqlEscape(taskId)})
+SELECT (SELECT task_id FROM adoption_identity),origin_id,sequence,NULL,${sqlEscape(operationId)},${sqlEscape(payloadHash)},${sqlEscape(payloadText)},${sqlEscape(timestamp)}
+FROM origins WHERE state='active' AND NOT EXISTS (SELECT 1 FROM tasks WHERE task_id=(SELECT task_id FROM adoption_identity))
 AND (SELECT status FROM adoption_decision)='accepted' ORDER BY created_at DESC LIMIT 1;
 INSERT INTO legacy_task_adoptions(task_id,repository_id,adopted_operation_id,adopted_at)
-SELECT ${sqlEscape(taskId)},${sqlEscape(value.repositoryId)},${sqlEscape(operationId)},${sqlEscape(timestamp)} FROM adoption_decision WHERE status='accepted' ON CONFLICT(task_id) DO NOTHING;
+SELECT (SELECT task_id FROM adoption_identity),${sqlEscape(value.repositoryId)},${sqlEscape(operationId)},${sqlEscape(timestamp)} FROM adoption_decision WHERE status='accepted' ON CONFLICT(task_id) DO NOTHING;
 INSERT INTO issue_mappings(task_id,forge,repository_id,repository_slug,role,issue_id,project_id,display_number,state_cursor,sync_metadata_json,created_at,updated_at)
-SELECT ${sqlEscape(taskId)},${sqlEscape(value.forge)},${sqlEscape(value.repositoryId)},${sqlEscape(value.repositorySlug)},'home',${sqlEscape(value.issueId)},${sqlEscape(value.projectId)},${value.displayNumber},${sqlEscape(value.stateCursor)},${sqlEscape(value.syncMetadataText)},${sqlEscape(timestamp)},${sqlEscape(timestamp)}
+SELECT (SELECT task_id FROM adoption_identity),${sqlEscape(value.forge)},${sqlEscape(value.repositoryId)},${sqlEscape(value.repositorySlug)},'home',${sqlEscape(value.issueId)},${sqlEscape(value.projectId)},${value.displayNumber},${sqlEscape(value.stateCursor)},${sqlEscape(value.syncMetadataText)},${sqlEscape(timestamp)},${sqlEscape(timestamp)}
 FROM adoption_decision WHERE status='accepted' ON CONFLICT(task_id,forge,repository_id) DO NOTHING;
-UPDATE operations SET result_json=(SELECT json_object('adopted',status='accepted','operationId',${sqlEscape(operationId)},'repositoryId',${sqlEscape(value.repositoryId)},'status',status,'taskId',${sqlEscape(taskId)}) FROM adoption_decision) WHERE operation_id=${sqlEscape(operationId)};
+INSERT INTO repository_task_aliases(local_task_id,forge,repository_id,task_id)
+SELECT ${sqlEscape(taskId)},${sqlEscape(value.forge)},${sqlEscape(value.repositoryId)},(SELECT task_id FROM adoption_identity) FROM adoption_decision WHERE status='accepted'
+ON CONFLICT(local_task_id,forge,repository_id) DO NOTHING;
+UPDATE coordinator_meta SET value='1' WHERE key='namespaced_emitted' AND (SELECT task_id FROM adoption_identity) LIKE 'to%' AND (SELECT status FROM adoption_decision)='accepted';
+UPDATE operations SET result_json=(SELECT json_object('adopted',status='accepted','operationId',${sqlEscape(operationId)},'repositoryId',${sqlEscape(value.repositoryId)},'status',status,'taskId',${sqlEscape(taskId)},'coordinatorTaskId',(SELECT task_id FROM adoption_identity)) FROM adoption_decision) WHERE operation_id=${sqlEscape(operationId)};
 INSERT INTO terminal_evidence(operation_id,result_state,evidence_json,occurred_at)
 SELECT ${sqlEscape(operationId)},CASE WHEN status='accepted' THEN 'terminal' ELSE 'conflict' END,json_object('adoption',status,'issueId',${sqlEscape(value.issueId)},'repositoryId',${sqlEscape(value.repositoryId)}),${sqlEscape(timestamp)} FROM adoption_decision;
-DROP TABLE adoption_decision; COMMIT;`);
+DROP TABLE adoption_decision; DROP TABLE adoption_identity; COMMIT;`);
   } catch (error) {
     const raced = durableAdoptionResult(path, operationId, payloadHash);
     if (!raced) throw new Error("legacy task adoption conflict", { cause: error });
@@ -476,6 +507,10 @@ function publication({ operationId, taskId, repositoryId, repositoryPath, remote
   const payloadHash = hashText(payloadText);
   const prior = operationResult(path, operationId, payloadHash);
   if (prior) return prior;
+  if (LEGACY_TASK_ID.test(taskId)) {
+    if (!repositoryId) throw new Error("legacy publication requires verified repository context");
+    taskId = resolveIssue({ taskId, repositoryId }, path).coordinatorTaskId;
+  }
   const intentId = randomUUID();
   const timestamp = now();
   const result = { intentId, operationId, status: "retryable", taskId };
@@ -619,6 +654,14 @@ function issueMappingInput(input) {
 }
 function bindIssue(input, path = initialise()) {
   const value = issueMappingInput(input);
+  if (LEGACY_TASK_ID.test(value.taskId) && value.role === "home") {
+    const adopted = adoptLegacyTask(input, path);
+    if (!adopted.ok) throw new Error("legacy home mapping conflict");
+    value.taskId = adopted.coordinatorTaskId || adopted.taskId;
+  } else if (LEGACY_TASK_ID.test(value.taskId)) {
+    const identities = rows(path, `SELECT DISTINCT task_id FROM repository_task_aliases WHERE local_task_id=${sqlEscape(value.taskId)};`);
+    if (identities.some((identity) => identity.task_id !== value.taskId)) throw new Error("ambiguous legacy non-home mapping; use an internal task identity");
+  }
   const timestamp = now();
   try {
     sqlite(path, `BEGIN IMMEDIATE;
@@ -645,14 +688,14 @@ COMMIT;`);
 function resolveIssue({ taskId, forge = "github", repositoryId }, path = initialise()) {
   if (!TASK_ID.test(taskId)) throw new TypeError("task_id is not canonical");
   validId(repositoryId, "repository_id");
-  const matches = rows(path, `SELECT task_id AS taskId,forge,repository_id AS repositoryId,repository_slug AS repositorySlug,role,issue_id AS issueId,project_id AS projectId,display_number AS displayNumber,state_cursor AS stateCursor,sync_metadata_json AS syncMetadataJson FROM issue_mappings WHERE task_id=${sqlEscape(taskId)} AND forge=${sqlEscape(forge)} AND repository_id=${sqlEscape(repositoryId)};`);
+  const matches = rows(path, `SELECT COALESCE(a.local_task_id,m.task_id) AS taskId,m.task_id AS coordinatorTaskId,m.forge,m.repository_id AS repositoryId,m.repository_slug AS repositorySlug,m.role,m.issue_id AS issueId,m.project_id AS projectId,m.display_number AS displayNumber,m.state_cursor AS stateCursor,m.sync_metadata_json AS syncMetadataJson FROM issue_mappings m LEFT JOIN repository_task_aliases a USING(task_id,forge,repository_id) WHERE (m.task_id=${sqlEscape(taskId)} OR a.local_task_id=${sqlEscape(taskId)}) AND m.forge=${sqlEscape(forge)} AND m.repository_id=${sqlEscape(repositoryId)};`);
   if (matches.length !== 1) throw new Error("issue mapping not found");
   return { ...matches[0], syncMetadata: JSON.parse(matches[0].syncMetadataJson) };
 }
 function reconciliationTargets({ repositoryId, limit = 100 }, path = initialise()) {
   validId(repositoryId, "repository_id");
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new TypeError("limit must be 1..500");
-  const targets = rows(path, `SELECT m.task_id AS taskId,m.issue_id AS subjectId,m.display_number AS displayNumber,m.state_cursor AS stateCursor FROM issue_mappings m JOIN tasks t ON t.task_id=m.task_id WHERE m.forge='github' AND m.repository_id=${sqlEscape(repositoryId)} ORDER BY COALESCE(m.state_cursor,'') ASC,m.display_number ASC LIMIT ${limit};`);
+  const targets = rows(path, `SELECT COALESCE(a.local_task_id,m.task_id) AS taskId,m.task_id AS coordinatorTaskId,m.issue_id AS subjectId,m.display_number AS displayNumber,m.state_cursor AS stateCursor FROM issue_mappings m JOIN tasks t ON t.task_id=m.task_id LEFT JOIN repository_task_aliases a USING(task_id,forge,repository_id) WHERE m.forge='github' AND m.repository_id=${sqlEscape(repositoryId)} ORDER BY COALESCE(m.state_cursor,'') ASC,m.display_number ASC LIMIT ${limit};`);
   return { bounded: true, repositoryId, targets };
 }
 function forgeEventInput(input) {
@@ -690,8 +733,10 @@ function transitionForEvent(eventKind, action) {
 }
 function forgeEventMapping(path, value) {
   if (value.eventKind === "push") return null;
-  const selector = value.taskId ? `m.task_id=${sqlEscape(value.taskId)}` : `m.issue_id=${sqlEscape(value.subjectId)}`;
-  return rows(path, `SELECT m.task_id AS taskId FROM issue_mappings m JOIN tasks t ON t.task_id=m.task_id WHERE m.forge='github' AND m.repository_id=${sqlEscape(value.repositoryId)} AND ${selector};`)[0];
+  const selector = value.taskId ? `(m.task_id=${sqlEscape(value.taskId)} OR a.local_task_id=${sqlEscape(value.taskId)})` : `m.issue_id=${sqlEscape(value.subjectId)}`;
+  const matches = rows(path, `SELECT m.task_id AS taskId,COALESCE(a.local_task_id,m.task_id) AS localTaskId FROM issue_mappings m JOIN tasks t ON t.task_id=m.task_id LEFT JOIN repository_task_aliases a USING(task_id,forge,repository_id) WHERE m.forge='github' AND m.repository_id=${sqlEscape(value.repositoryId)} AND ${selector};`);
+  if (matches.length > 1) throw new Error("ambiguous event task mapping");
+  return matches[0];
 }
 function forgeEventCursor(path, value) {
   return rows(path, `SELECT cursor_timestamp AS cursorTimestamp,cursor_tiebreaker AS cursorTiebreaker,payload_hash AS payloadHash FROM forge_event_cursors WHERE forge='github' AND repository_id=${sqlEscape(value.repositoryId)} AND subject_kind=${sqlEscape(value.eventKind)} AND subject_id=${sqlEscape(value.subjectId)};`)[0];
@@ -709,7 +754,7 @@ function prepareForgeEvent(value, path, transitionKind, payloadText, payloadHash
   const intentId = shouldPublish ? randomUUID() : null;
   const result = { action: value.action, deliveryId: value.deliveryId, eventKind: value.eventKind, mappingMode: repositoryOnly ? "trusted-repository" : value.taskId ? "explicit-task" : "immutable-subject", operationId: value.operationId, repositoryId: value.repositoryId, status, taskId: mapping?.taskId || null, transitionKind };
   const resultText = JSON.stringify(result);
-  const projection = shouldPublish ? jsonText({ branchName: "main", coalesceKey: "forge-event", maxAttempts: 5, payload: { paths: ["TODO.md"], projection: "forge-event", transition: { kind: transitionKind, taskId: mapping.taskId } }, remoteName: "origin", repositoryId: value.repositoryId, repositoryPath: value.repositoryPath, taskId: mapping.taskId }, "projection") : null;
+  const projection = shouldPublish ? jsonText({ branchName: "main", coalesceKey: "forge-event", maxAttempts: 5, payload: { paths: ["TODO.md"], projection: "forge-event", transition: { kind: transitionKind, taskId: mapping.localTaskId } }, remoteName: "origin", repositoryId: value.repositoryId, repositoryPath: value.repositoryPath, taskId: mapping.taskId }, "projection") : null;
   return { conflict, intentId, mapping, payloadHash, payloadText, projection, result, resultText, shouldPublish, status, timestamp, transitionKind, value };
 }
 function forgeEventTransactionSql(event) {
@@ -827,7 +872,7 @@ export function run(args = process.argv.slice(2)) {
   return result.ok === false ? 1 : 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
   try { process.exitCode = run(); } catch (error) { process.stderr.write(`task-coordinator: ${error.message}\n`); process.exitCode = 1; }
 }
 
