@@ -104,6 +104,21 @@ for mode in t1234 --all; do
 done
 printf 'PASS: caller captures full content; single and batch failures do not generate fallback briefs\n'
 
+# Reuse the canonical validator, including portable namespaced/offline IDs.
+namespaced_id=to01arz3ndektsv4rrffq69g5fav-1.2
+bash "$SCRIPT_DIR/brief-readiness-helper.sh" stub "$namespaced_id" 12345 owner/repo "$ROOT/caller"
+[[ -f "$ROOT/caller/todo/tasks/${namespaced_id}-brief.md" ]]
+if bash "$SCRIPT_DIR/brief-readiness-helper.sh" stub '../escape' 12345 owner/repo "$ROOT/caller"; then
+	printf 'FAIL: unsafe task identity accepted\n' >&2
+	exit 1
+fi
+mkdir "$ROOT/caller/todo/tasks/t9998-brief.md"
+if bash "$SCRIPT_DIR/brief-readiness-helper.sh" stub t9998 12345 owner/repo "$ROOT/caller"; then
+	printf 'FAIL: directory acknowledged as a captured brief\n' >&2
+	exit 1
+fi
+printf 'PASS: namespaced identity retained; unsafe IDs and non-file targets rejected\n'
+
 # Preserve a reachable Git snapshot before losing the observation and runtime.
 git -C "$ROOT/source" init -q
 git -C "$ROOT/source" add TODO.md todo/

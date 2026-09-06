@@ -40,6 +40,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 1
 if [[ -f "$SCRIPT_DIR/shared-constants.sh" ]]; then
 	source "$SCRIPT_DIR/shared-constants.sh"
 fi
+# shellcheck source=./task-identity-lib.sh
+source "$SCRIPT_DIR/task-identity-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Logging (inline fallbacks if shared-constants not sourced)
@@ -439,7 +441,7 @@ cmd_stub() {
 	local slug="${_stub_args[2]:-}"
 	local repo_path="${_stub_args[3]:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 
-	if [[ ! "$task_id" =~ ^t[0-9]+(\.[0-9]+)*$ || ! "$issue_number" =~ ^[1-9][0-9]*$ ||
+	if ! task_identity_validate "$task_id" || [[ ! "$issue_number" =~ ^[1-9][0-9]*$ ||
 		! "$slug" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! -d "$repo_path" ]]; then
 		log_error "Usage: brief-readiness-helper.sh stub <task-id> <issue-number> <slug> [repo-path]"
 		return 2
@@ -450,6 +452,7 @@ cmd_stub() {
 	mkdir -p "$brief_dir" || return 1
 
 	if [[ -e "$brief_path" || -L "$brief_path" ]]; then
+		[[ -f "$brief_path" && ! -L "$brief_path" ]] || return 1
 		log_warn "Brief already exists: $brief_path — preserved; not refreshed or backfilled"
 		return 0
 	fi
@@ -481,7 +484,7 @@ cmd_stub() {
 		return 1
 	fi
 	# Atomic create-only publication: concurrent/local records always win intact.
-	if ! ln "$temporary" "$brief_path"; then
+	if ! ln "$temporary" "$brief_path" || [[ ! "$temporary" -ef "$brief_path" || -L "$brief_path" ]]; then
 		rm -f "$temporary"
 		return 1
 	fi
