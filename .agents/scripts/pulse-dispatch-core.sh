@@ -866,6 +866,14 @@ _check_external_issue_author_gate() {
 	fi
 	[[ -n "$author_association" ]] || author_association="NONE"
 
+	# aidevops:trust-boundary — unavailable metadata is not evidence of an
+	# external author. Defer this candidate without creating a persistent hold.
+	# This predicate returns 0 to block; its caller returns 1 to skip dispatch.
+	if [[ "$metadata_valid" -eq 0 ]]; then
+		echo "[dispatch_with_dedup] GH#31404: metadata fetch failed for #${issue_number} in ${repo_slug}; skipping dispatch without changing labels (transient)" >>"$LOGFILE"
+		return 0
+	fi
+
 	if [[ "$metadata_valid" -eq 1 && "$author_type" == "Bot" && "$external_source" != "true" ]]; then
 		return 1
 	fi
@@ -1599,16 +1607,6 @@ _dispatch_dedup_check_layers() {
 	fi
 	_ds_record "$issue_number" "$repo_slug" "dedup.label_checks" "$_dss_t0"
 
-	# GH#22399: fail closed for external/unknown issue authors before the
-	# historical ever-NMR gate. The ever-NMR gate allows never-labeled issues;
-	# this gate closes the race where GitHub Actions has not applied NMR yet.
-	_dss_t0=$(_ds_now_ns)
-	if _check_external_issue_author_gate "$issue_number" "$repo_slug"; then
-		_ds_record "$issue_number" "$repo_slug" "dedup.external_author_gate" "$_dss_t0"
-		return 1
-	fi
-	_ds_record "$issue_number" "$repo_slug" "dedup.external_author_gate" "$_dss_t0"
-
 	# t1894/GH#18648: Cryptographic approval gate (ever-NMR) with
 	# review-followup exemption for bot-generated cleanup issues.
 	_dss_t0=$(_ds_now_ns)
@@ -1719,6 +1717,15 @@ _dispatch_dedup_check_layers() {
 		return 1
 	fi
 	_ds_record "$issue_number" "$repo_slug" "dedup.7_layers" "$_dss_t0"
+
+	# GH#22399/GH#31404: fail closed before launch, but only after dedup
+	# confirms eligibility. Never mutate author-gate labels on an active PR.
+	_dss_t0=$(_ds_now_ns)
+	if _check_external_issue_author_gate "$issue_number" "$repo_slug"; then
+		_ds_record "$issue_number" "$repo_slug" "dedup.external_author_gate" "$_dss_t0"
+		return 1
+	fi
+	_ds_record "$issue_number" "$repo_slug" "dedup.external_author_gate" "$_dss_t0"
 
 	return 0
 }
