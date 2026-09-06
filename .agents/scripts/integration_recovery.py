@@ -12,67 +12,19 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import sqlite3
 import sys
 import time
 
-MARKER = "INTEGRATION_RECOVERY_REQUEST="
-REASONS = {"adjacent_integration", "hard_boundary", "concurrent_owner", "missing_context", "human_decision"}
+from integration_recovery_request import MARKER as MARKER, final_request
+
 WAKES = {"brief_revision", "owner_change", "dependency_change", "human_decision"}
 
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
-
-
-def final_request(raw):
-    """Accept only a final normalized assistant text event, never tool text."""
-    texts = []
-    for line in raw.splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "text":
-            continue
-        part = event.get("part", {})
-        text = event.get("text") or (part.get("text") if isinstance(part, dict) else None)
-        if isinstance(text, str):
-            texts.append(text)
-    if not texts or not re.search(r"^BLOCKED:", texts[-1], re.M):
-        raise ValueError("no final assistant recovery request")
-    matches = [line[len(MARKER):] for line in texts[-1].splitlines() if line.startswith(MARKER)]
-    if len(matches) != 1:
-        raise ValueError("expected exactly one final request")
-    request = json.loads(matches[0])
-    expected = {"schema", "issue", "pr", "reason", "files", "evidence", "verification"}
-    if not isinstance(request, dict) or set(request) != expected or request["schema"] != 1:
-        raise ValueError("invalid recovery schema")
-    if request["reason"] not in REASONS:
-        raise ValueError("invalid reason")
-    for key in ("issue", "pr"):
-        if type(request[key]) is not int or request[key] < (1 if key == "issue" else 0):
-            raise ValueError("invalid target")
-    files = request["files"]
-    if not isinstance(files, list) or len(files) > 20:
-        raise ValueError("invalid proposed paths")
-    for path in files:
-        if not isinstance(path, str) or not path or len(path) > 500:
-            raise ValueError("invalid path")
-        if PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts or re.search(r"[\s*?\[\]\\]", path):
-            raise ValueError("paths must be exact repository-relative paths")
-    evidence = request["evidence"]
-    verification = request["verification"]
-    if not isinstance(evidence, str) or not 1 <= len(evidence) <= 8000:
-        raise ValueError("missing bounded evidence")
-    if not isinstance(verification, list) or not 1 <= len(verification) <= 20:
-        raise ValueError("missing verification")
-    if any(not isinstance(item, str) or not 1 <= len(item) <= 1000 for item in verification):
-        raise ValueError("invalid verification")
-    request["files"] = sorted(set(files))
-    return request
 
 
 def connect(root):
