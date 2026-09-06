@@ -200,11 +200,11 @@ def get_agent_config(display_name, filename, subagents=None, model_tier=None):
         "tools": tools
     }
 
-    # Add custom system prompt for ALL primary agents (ensures consistent identity)
+    # Deliver the selected canonical source in the system prompt, not merely in
+    # description metadata. The shared build.txt is a compatibility placeholder;
+    # core guidance is independently delivered by the runtime instructions list.
     if display_name not in SKIP_CUSTOM_PROMPT:
-        prompt_file = os.path.expanduser(DEFAULT_PROMPT)
-        if os.path.exists(prompt_file):
-            config["prompt"] = "{file:" + DEFAULT_PROMPT + "}"
+        config["prompt"] = "{file:~/.aidevops/agents/" + filename + "}"
 
     # Canonical workload tiers inherit the runtime-selected model. Preserve only
     # explicit full provider/model IDs; those are operator overrides, not tiers.
