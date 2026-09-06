@@ -8,6 +8,8 @@ provenance bookkeeping, not evidence that useful worker concurrency recovered.
 
 ## Verified source manifest
 
+Aggregation PR: #31427.
+
 - PR #31394: `63067df4455cb286ed7e482d691fe6a6ec594bc4` — canonical scope
   production and executable Pulse self-improvement findings.
 - PR #31424: `3124acdfdb262045fda899653a7d833696f1a233` — bounded,
