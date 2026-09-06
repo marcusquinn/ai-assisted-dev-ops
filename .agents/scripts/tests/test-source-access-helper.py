@@ -139,6 +139,64 @@ class SourceAccessHelperTests(unittest.TestCase):
         self.assertEqual(snapshot_path.read_bytes(), self.source.read_bytes())
         self.assertEqual(snapshot_path.stat().st_mode & 0o777, 0o444)
 
+    def _confirmation_request(self, manifest: bool) -> str:
+        if not manifest:
+            return self._request()
+        return HELPER.create_manifest_request(
+            self.config,
+            HELPER.ManifestRequestSpec(
+                self.session, self.uid, self.home,
+                (str(self.source), str(self.other_source)),
+                HELPER.OVERRIDABLE_REASON, self.now,
+            ),
+        )
+
+    def test_grant_lifetime_starts_at_human_confirmation(self) -> None:
+        for manifest in (False, True):
+            with self.subTest(manifest=manifest):
+                request_id = self._confirmation_request(manifest)
+                confirmed_at = self.now + 7 * 24 * 60 * 60
+                with mock.patch.object(HELPER.time, "time", return_value=self.now) as clock:
+                    def confirm(_request: dict[str, object]) -> bool:
+                        clock.return_value = confirmed_at
+                        return True
+
+                    payload = HELPER.approve_request(
+                        self.config,
+                        HELPER.ApprovalSpec(
+                            request_id, self.home, self.uid, HELPER.MAX_TTL_SECONDS,
+                            confirm=confirm,
+                        ),
+                    )
+                self.assertEqual(payload["issued_at"], confirmed_at)
+                self.assertEqual(payload["expires_at"], confirmed_at + HELPER.MAX_TTL_SECONDS)
+                self.assertTrue(self._verify(now=confirmed_at + 1))
+                self.assertFalse(self._verify(now=confirmed_at + HELPER.MAX_TTL_SECONDS))
+
+    def test_confirmation_cancellation_and_clock_rollback_do_not_sign(self) -> None:
+        for manifest in (False, True):
+            for accepted in (False, True):
+                with self.subTest(manifest=manifest, accepted=accepted):
+                    request_id = self._confirmation_request(manifest)
+                    with mock.patch.object(HELPER.time, "time", return_value=self.now) as clock:
+                        def confirm(_request: dict[str, object]) -> bool:
+                            clock.return_value = self.now - 1
+                            return accepted
+
+                        message = "clock moved backwards" if accepted else "approval cancelled"
+                        with mock.patch.object(HELPER, "_sign_payload") as sign:
+                            with self.assertRaisesRegex(HELPER.SourceAccessError, message):
+                                HELPER.approve_request(
+                                    self.config,
+                                    HELPER.ApprovalSpec(
+                                        request_id, self.home, self.uid, HELPER.MAX_TTL_SECONDS,
+                                        confirm=confirm,
+                                    ),
+                                )
+                            sign.assert_not_called()
+                    self.assertFalse(self._verify())
+                    self.assertFalse((self.config.state_dir / "snapshots").exists())
+
     def test_one_manifest_approves_three_exact_paths_with_one_confirmation(self) -> None:
         request_id = HELPER.create_manifest_request(
             self.config,

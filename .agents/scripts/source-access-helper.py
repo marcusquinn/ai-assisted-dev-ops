@@ -190,6 +190,13 @@ def _sign_payload(config: Config, payload: dict[str, Any]) -> str:
         return signature_path.read_text(encoding="utf-8")
 
 
+def _confirmed_timestamp(spec: ApprovalSpec, prepared_at: int) -> int:
+    confirmed_at = int(time.time() if spec.now is None else spec.now)
+    if confirmed_at < prepared_at:
+        raise SourceAccessError("source-access clock moved backwards during confirmation")
+    return confirmed_at
+
+
 def approve_request(config: Config, spec: ApprovalSpec) -> dict[str, Any]:
     issued_at = int(time.time() if spec.now is None else spec.now)
     request = _load_request(config, spec.home, spec.request_id, spec.expected_uid)
@@ -212,6 +219,7 @@ def approve_request(config: Config, spec: ApprovalSpec) -> dict[str, Any]:
     confirmation_scope = {**request, "ttl_seconds": spec.ttl_seconds}
     if spec.confirm is not None and not spec.confirm(confirmation_scope):
         raise SourceAccessError("source-access approval cancelled")
+    issued_at = _confirmed_timestamp(spec, issued_at)
 
     approval_id = scope_id(session_id, spec.expected_uid, path, reason)
     snapshot_path = (
@@ -326,6 +334,7 @@ def _approve_manifest_request(
     }
     if spec.confirm is not None and not spec.confirm(confirmation_scope):
         raise SourceAccessError("source-access approval cancelled")
+    issued_at = _confirmed_timestamp(spec, issued_at)
     payload = {
         "schema": SCHEMA_MANIFEST_PAYLOAD,
         "approval_id": approval_id,
