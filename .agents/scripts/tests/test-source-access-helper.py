@@ -94,6 +94,62 @@ class SourceAccessHelperTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_request_records_are_bounded_objects(self) -> None:
+        request_id = self._request()
+        path = self.config.request_root / f"{request_id}.json"
+        for content in (b"[]", b"null", b"1", b"\xff", b"{"):
+            with self.subTest(content=content):
+                path.write_bytes(content)
+                with self.assertRaises(HELPER.SourceAccessError):
+                    HELPER._load_request(self.config, self.home, request_id, self.uid)
+        path.write_bytes(b" " * (HELPER._SOURCE_CORE.MAX_REQUEST_BYTES + 1))
+        with self.assertRaisesRegex(HELPER.SourceAccessError, "too large"):
+            HELPER._load_request(self.config, self.home, request_id, self.uid)
+
+    def test_request_descriptor_rejects_unsafe_identity(self) -> None:
+        request_id = self._request()
+        path = self.config.request_root / f"{request_id}.json"
+        reader = HELPER._SOURCE_CORE._read_request_record
+        with self.assertRaises(HELPER.SourceAccessError):
+            reader(path, self.uid + 1)
+        hard_link = path.with_suffix(".hardlink")
+        os.link(path, hard_link)
+        with self.assertRaises(HELPER.SourceAccessError):
+            reader(path, self.uid)
+        hard_link.unlink()
+        path.chmod(0o666)
+        with self.assertRaises(HELPER.SourceAccessError):
+            reader(path, self.uid)
+        path.chmod(0o600)
+        link = path.with_suffix(".symlink")
+        link.symlink_to(path)
+        with self.assertRaises(HELPER.SourceAccessError):
+            reader(link, self.uid)
+        fifo = path.with_suffix(".fifo")
+        os.mkfifo(fifo)
+        with self.assertRaises(HELPER.SourceAccessError):
+            reader(fifo, self.uid)
+
+    def test_request_replacement_during_read_fails_closed(self) -> None:
+        request_id = self._request()
+        path = self.config.request_root / f"{request_id}.json"
+        original = path.read_bytes()
+        real_fstat = os.fstat
+        calls = 0
+
+        def replaced_fstat(descriptor: int) -> os.stat_result:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                replacement = path.with_suffix(".replacement")
+                replacement.write_bytes(original)
+                replacement.replace(path)
+            return real_fstat(descriptor)
+
+        with mock.patch.object(HELPER._SOURCE_CORE.os, "fstat", side_effect=replaced_fstat):
+            with self.assertRaisesRegex(HELPER.SourceAccessError, "changed while reading|unsafe"):
+                HELPER._load_request(self.config, self.home, request_id, self.uid)
+
     def _request(self, path: Path | None = None) -> str:
         return HELPER.create_request(
             self.config,

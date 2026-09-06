@@ -33,6 +33,7 @@ MAX_TTL_SECONDS = 12 * 60 * 60
 REQUEST_REUSE_SECONDS = 60 * 60
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_MANIFEST_ENTRIES = 32
+MAX_REQUEST_BYTES = 256 * 1024
 ID_PATTERN = re.compile(r"^[a-f0-9]{32,64}$")
 SESSION_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{6,256}$")
 ALLOWED_SUFFIXES = frozenset(
@@ -511,6 +512,45 @@ def validate_key_material(config: Config) -> None:
     _require_source(trust_marker == _trust_marker_content(derived_public_key), trust_error)
 
 
+def _read_request_record(request_path: Path, expected_uid: int) -> dict[str, Any]:
+    """Read bounded untrusted metadata through the descriptor we validate."""
+    trust_error = "source-access request ownership or permissions are unsafe"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(request_path, flags)
+    except OSError as exc:
+        raise SourceAccessError(trust_error) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        _require_source(
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_nlink == 1
+            and metadata.st_uid == expected_uid
+            and metadata.st_mode & 0o022 == 0,
+            trust_error,
+        )
+        _require_source(metadata.st_size <= MAX_REQUEST_BYTES, "source-access request is too large")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            content = handle.read(MAX_REQUEST_BYTES + 1)
+        _require_source(len(content) <= MAX_REQUEST_BYTES, "source-access request is too large")
+        current = request_path.lstat()
+        final = os.fstat(descriptor)
+        identity_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid",
+                           "st_size", "st_mtime_ns", "st_ctime_ns")
+        _require_source(
+            (current.st_dev, current.st_ino) == (metadata.st_dev, metadata.st_ino)
+            and all(getattr(final, field) == getattr(metadata, field) for field in identity_fields),
+            "source-access request changed while reading",
+        )
+        request = json.loads(content)
+    except (OSError, ValueError) as exc:
+        raise SourceAccessError("source-access request was not found or is malformed") from exc
+    finally:
+        os.close(descriptor)
+    _require_source(isinstance(request, dict), "source-access request must be an object")
+    return request
+
+
 def _load_request(
     config: Config, home: Path, request_id: str, expected_uid: int
 ) -> dict[str, Any]:
@@ -519,10 +559,7 @@ def _load_request(
     trust_error = "source-access request ownership or permissions are unsafe"
     _require_source(_trusted_directory(request_path.parent, expected_uid), trust_error)
     _require_source(_trusted_file(request_path, expected_uid), trust_error)
-    try:
-        request = json.loads(request_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SourceAccessError("source-access request was not found or is malformed") from exc
+    request = _read_request_record(request_path, expected_uid)
     schema_error = "source-access request schema or identifier is invalid"
     _require_source(
         request.get("schema") in (SCHEMA_REQUEST, SCHEMA_MANIFEST_REQUEST), schema_error
