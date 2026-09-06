@@ -14,9 +14,16 @@ For tasks following established patterns with normal implementation judgment and
 - {Non-goal or compatibility boundary}
 - {Material assumption and evidence}
 
+## Files Scope
+
+- `path/to/file.ts`
+- `path/to/new-file.ts`
+
+## How
+
 ### Files to Modify
 
-- `EDIT: path/to/file.ts:45-60` — {what to change and why}
+- `EDIT: path/to/file.ts` — {what to change and why; reference lines 45-60}
 - `NEW: path/to/new-file.ts` — {purpose, model on `path/to/reference.ts`}
 
 ### Implementation Steps
@@ -45,8 +52,17 @@ export function handleAuth(req: Request): Response {
 
 - **Resolved skeletons, not false precision**: Provide function signatures and structure after boundaries are known; leave genuine design choices explicit
 - **Reference patterns**: Point to existing code that demonstrates the pattern
-- **Line ranges**: Use `file:line-line` format for clarity
+- **Line ranges**: Keep line ranges in explanations, never in scope path bullets
 - **Normal judgment**: Worker adapts established patterns and handles known errors/edge cases within the stated boundaries
+
+Before publication, run `brief-readiness-helper.sh prepare-scope todo/tasks/{task_id}-brief.md`
+in the authoring linked worktree, then commit the prepared local brief. This writes
+the canonical contract from explicit `EDIT:`/`NEW:` declarations only; composition
+and sync remain read-only. Existing canonical scope is preserved unchanged.
+Keep scope entries as plain exact path bullets, with explanations in Files to
+Modify. References, read-only files, fenced examples and exclusions confer no write
+permission. Ambiguous declarations require AI-owned author-side repair; never guess
+paths, broaden globs, or reuse a signed approval to authorize a scope change.
 
 ## Recovery paths (mandatory)
 
@@ -63,6 +79,6 @@ For each implementation step:
 For each file reference:
 
 ```markdown
-- EDIT: `.agents/scripts/memory-pressure-monitor.sh:877-888`
+- EDIT: `.agents/scripts/memory-pressure-monitor.sh` — reference lines 877-888
   - Fallback: `grep -n 'cmd_daemon' .agents/scripts/memory-pressure-monitor.sh`
 ```

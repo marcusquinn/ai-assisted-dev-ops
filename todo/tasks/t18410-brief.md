@@ -36,6 +36,13 @@ decision sufficiency and human time, not output bytes indiscriminately.
 
 **Selected tier:** `tier:standard` — measured adoption of existing interface/receipt contracts while preserving truthful lifecycle evidence.
 
+## Files Scope
+
+- `.agents/reference/context-efficient-output.md`
+- `.agents/scripts/output-sandbox-helper.sh`
+- `.agents/scripts/session-review-helper.sh`
+- `.agents/scripts/full-loop-helper.sh`
+
 ## How (Approach)
 
 ### Files to Modify

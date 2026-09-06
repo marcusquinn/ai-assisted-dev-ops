@@ -280,6 +280,8 @@ fi
 
 # Test A6: composed related-file HTML remains schema-v2 worker-ready
 mkdir -p "$TMP/todo/tasks"
+prepared_fixture=$("$READINESS_HELPER" scope-normalize "$(<"$TMP/brief-schema-v2.md")")
+printf '%s\n' "$prepared_fixture" >"$TMP/brief-schema-v2.md"
 printf '%s\n' 'Related architecture context remains available to the worker.' >"$TMP/todo/tasks/related-plan.md"
 composed_body=$(
 	(

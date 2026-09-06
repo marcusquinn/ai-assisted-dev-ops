@@ -43,15 +43,11 @@ fi
 # Each returns 0 (found) or 1 (not found).
 # ---------------------------------------------------------------------------
 
-# _ibfh_has_file_scope: body contains file-scope markers.
-# Accepts: ## Files to modify, ### Files Scope, EDIT:, NEW:, Files to modify:
+# Only the execution-consumable canonical contract counts as ready.
 _ibfh_has_file_scope() {
 	local body="$1"
-	if printf '%s\n' "$body" | grep -qiE \
-		'(^##+ Files( to modify| Scope)?|^EDIT:|^NEW:|Files to modify:)' 2>/dev/null; then
-		return 0
-	fi
-	return 1
+	bash "$SCRIPT_DIR/brief-readiness-helper.sh" scope-check "$body" >/dev/null 2>&1
+	return $?
 }
 
 # _ibfh_has_acceptance: body contains acceptance-criteria section or checklist.
@@ -170,6 +166,11 @@ cmd_normalize() {
 		body=$(_ibfh_decode_escaped_markdown_newlines "$body")
 	fi
 
+	# This is a pure transformation. Persist local briefs through prepare-scope.
+	if printf '%s\n' "$body" | grep -qiE '^#{2,3} Files (to Modify|Scope)[[:space:]]*$'; then
+		body=$(bash "$SCRIPT_DIR/brief-readiness-helper.sh" scope-normalize "$body") || return 1
+	fi
+
 	local prev="" out="" line
 	while IFS= read -r line; do
 		if [[ "$line" =~ ^'```' ]] && [[ -n "$prev" ]]; then
@@ -211,8 +212,8 @@ cmd_check() {
 	fi
 
 	# Non-dispatchable checks
-	if ! _ibfh_has_file_scope "$body" && ! _ibfh_has_how_section "$body"; then
-		log_warn "issue-body-format: body lacks both file scope (EDIT:/NEW:/## Files) and ## How section — worker has no implementation target"
+	if ! _ibfh_has_file_scope "$body"; then
+		log_warn "issue-body-format: body lacks valid canonical Files Scope — normalize explicit declarations before publication"
 		non_dispatchable=1
 	fi
 	if ! _ibfh_has_acceptance "$body"; then

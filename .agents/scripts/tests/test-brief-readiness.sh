@@ -299,6 +299,12 @@ bash tests/test-formatter.sh
 - [ ] Invalid input never changes the existing default output.
 '
 
+# Exercise the producer, not a hand-crafted GitHub-only heading repair.
+BODY_V2_LEGACY="$BODY_V2_COMPLETE"
+BODY_V2_COMPLETE=$("$HELPER" scope-normalize "$BODY_V2_COMPLETE")
+BODY_V2_DOC_ONLY=$("$HELPER" scope-normalize "$BODY_V2_DOC_ONLY")
+BODY_V2_NEW_FILE_ONLY=$("$HELPER" scope-normalize "$BODY_V2_NEW_FILE_ONLY")
+
 # shellcheck disable=SC2016
 BODY_V2_NO_FILES=$(printf '%s\n' "$BODY_V2_COMPLETE" | grep -vE '^### Files to Modify$|^- EDIT: `src/state\.sh`$')
 BODY_V2_NO_STEPS=$(printf '%s\n' "$BODY_V2_COMPLETE" | grep -vE '^### Implementation Steps$|^1\. Make the state replacement')
@@ -427,6 +433,8 @@ const record = { path: configPath, command: runCommand };
 # Generated GitHub wrappers are prose structure, not unfinished placeholders.
 # Their inner text must remain available to normal readiness checks.
 BODY_V2_WITH_GENERATED_HTML="${BODY_V2_COMPLETE}
+
+## Related Context
 
 <details open class=\"generated-context\"><summary data-kind=\"related-file\"><code dir=\"ltr\">src/related.sh</code></summary>
 Generated architecture context remains part of the composed issue body.
@@ -873,6 +881,111 @@ if [[ $rc -eq 0 && "$output" == *"WORKER_READY=true"* && "$output" == *"VALIDATI
 	pass "T33: Done when remains schema-v2 ready"
 else
 	fail "T33: Done when readiness alias" "got exit $rc, output: $output"
+fi
+
+# Producer/consumer scope contract (GH#31390).
+if ! "$HELPER" check --body "$BODY_V2_LEGACY" >/dev/null 2>&1 &&
+	"$HELPER" scope-check "$BODY_V2_COMPLETE" &&
+	[[ "$("$HELPER" scope-normalize "$BODY_V2_COMPLETE")" == "$BODY_V2_COMPLETE" ]]; then
+	pass "scope: legacy requires preparation; prepared canonical contract is idempotent"
+else
+	fail "scope: readiness and idempotency"
+fi
+
+# shellcheck disable=SC2016
+scope_legacy='### Files to Modify
+- `EDIT: src/one.sh`, `NEW: src/two.sh` — bounded changes
+- READ: src/readonly.sh
+- Inspect `src/reference.sh` before editing.
+```markdown
+- EDIT: src/fenced.sh
+```
+<!-- - EDIT: src/comment.sh -->
+### Exclusions
+- EDIT: src/excluded.sh
+## Callers
+- EDIT: src/caller.sh'
+scope_prepared=$("$HELPER" scope-normalize "$scope_legacy")
+# shellcheck disable=SC2016
+scope_expected=$'## Files Scope\n\n- `src/one.sh`\n- `src/two.sh`'
+if [[ "$scope_prepared" == *"$scope_expected" ]] &&
+	[[ "$scope_prepared" == "$scope_legacy"* ]]; then
+	pass "scope: only explicit declarations survive, explanations retained"
+else
+	fail "scope: declaration extraction"
+fi
+
+# shellcheck disable=SC2016 # Literal declaration syntax under test.
+for declaration in 'EDIT:' 'EDIT: src/*.sh' 'EDIT: ../escape.sh' 'EDIT: /absolute.sh' \
+	'EDIT: src/a.sh src/b.sh' 'EDIT: `src/a.sh`/extra' 'EDIT: src/a.sh — read-only' \
+	'EDIT: src/a.sh — leave unchanged; reference context only' \
+	'EDIT: src/a.sh — must remain untouched' \
+	'EDIT: src/a.sh, NEW:' 'EDIT: {path}' 'READ: src/a.sh'; do
+	if "$HELPER" scope-normalize $'### Files to Modify\n- '"$declaration" >/dev/null 2>&1; then
+		fail "scope: rejects ambiguous declaration $declaration"
+	else
+		pass "scope: rejects ambiguous declaration $declaration"
+	fi
+done
+if "$HELPER" scope-normalize $'<!-- aidevops-signed-approval -->\n'"$scope_legacy" >/dev/null 2>&1; then
+	fail "scope: signed content cannot gain permissions"
+else
+	pass "scope: signed content cannot gain permissions"
+fi
+
+# Exercise the unchanged pre-push consumer against an actual prepared local
+# brief in a disposable linked worktree. No live root or GitHub writes.
+test_scope_local_roundtrip() (
+	local fixture="" base="" work="" before="" head="" denied=""
+	local hook="$SCRIPT_DIR/../../hooks/scope-guard-pre-push.sh"
+	fixture=$(mktemp -d) || return 1
+	fixture=$(cd "$fixture" && pwd -P) || return 1
+	trap 'rm -rf "$fixture"' EXIT
+	mkdir -p "$fixture/base/todo/tasks" "$fixture/base/src" || return 1
+	base="$fixture/base"
+	work="$fixture/work"
+	git -C "$base" init -q || return 1
+	printf '%s\n' "$scope_legacy" >"$base/todo/tasks/t9999-brief.md"
+	printf 'initial\n' >"$base/src/one.sh"
+	git -C "$base" add . || return 1
+	git -C "$base" -c user.name=Fixture -c user.email=fixture@example.invalid \
+		-c core.hooksPath=/dev/null -c commit.gpgsign=false commit -qm initial || return 1
+	if "$HELPER" prepare-scope "$base/todo/tasks/t9999-brief.md" >/dev/null 2>&1; then
+		return 1
+	fi
+	git -C "$base" worktree add -qb feature/t9999-scope "$work" || return 1
+	"$HELPER" prepare-scope "$work/todo/tasks/t9999-brief.md" || return 1
+	before=$(<"$work/todo/tasks/t9999-brief.md")
+	[[ "$before" == "$scope_prepared" ]] || return 1
+	"$HELPER" prepare-scope "$work/todo/tasks/t9999-brief.md" || return 1
+	[[ "$(<"$work/todo/tasks/t9999-brief.md")" == "$before" ]] || return 1
+	git -C "$work" add todo/tasks/t9999-brief.md || return 1
+	git -C "$work" -c user.name=Fixture -c user.email=fixture@example.invalid \
+		-c core.hooksPath=/dev/null -c commit.gpgsign=false commit -qm prepared || return 1
+	base=$(git -C "$work" rev-parse HEAD)
+	printf 'changed\n' >"$work/src/one.sh"
+	printf 'new\n' >"$work/src/two.sh"
+	git -C "$work" add src/one.sh src/two.sh || return 1
+	git -C "$work" -c user.name=Fixture -c user.email=fixture@example.invalid \
+		-c core.hooksPath=/dev/null -c commit.gpgsign=false commit -qm allowed || return 1
+	head=$(git -C "$work" rev-parse HEAD)
+	(cd "$work" && printf 'refs/heads/feature/t9999-scope %s refs/heads/feature/t9999-scope %s\n' "$head" "$base" | SCOPE_GUARD_DISABLE=0 bash "$hook") || return 1
+	for denied in readonly reference fenced comment excluded caller unrelated; do
+		printf 'denied\n' >"$work/src/$denied.sh"
+	done
+	git -C "$work" add src || return 1
+	git -C "$work" -c user.name=Fixture -c user.email=fixture@example.invalid \
+		-c core.hooksPath=/dev/null -c commit.gpgsign=false commit -qm denied || return 1
+	head=$(git -C "$work" rev-parse HEAD)
+	if (cd "$work" && printf 'refs/heads/feature/t9999-scope %s refs/heads/feature/t9999-scope %s\n' "$head" "$base" | SCOPE_GUARD_DISABLE=0 bash "$hook") >/dev/null 2>&1; then
+		return 1
+	fi
+	return 0
+)
+if test_scope_local_roundtrip; then
+	pass "scope: local author preparation and unchanged pre-push guard enforce exact paths"
+else
+	fail "scope: local producer-to-consumer round trip"
 fi
 
 # ---------------------------------------------------------------------------
