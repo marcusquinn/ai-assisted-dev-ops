@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync, realpathSync } from "fs";
+import { readFileSync, realpathSync } from "fs";
 import { createHash } from "node:crypto";
 import { join } from "path";
+import { primaryDeliveryEvidence } from "./primary-delivery-evidence.mjs";
 
 // Re-export MCP tool permissions (extracted to reduce file complexity)
 export { applyToolPatternsToAgent, applyAgentMcpTools } from "./agent-mcp-tools.mjs";
@@ -60,89 +61,6 @@ export function parseToonSubagentBlock(blockText) {
 }
 
 /**
- * Try to register a .md file entry as a discovered agent.
- * @param {object} entry - Dirent object
- * @param {string} folderDesc - Description fallback
- * @param {Array} agents - Mutable agents array
- * @param {Set} seen - Dedup set
- */
-function tryRegisterMdAgent(entry, folderDesc, agents, seen) {
-  if (!entry.isFile() || !entry.name.endsWith(".md")) return;
-  const name = entry.name.replace(/\.md$/, "");
-  if (SKIP_NAMES.has(name) || name.endsWith("-skill")) return;
-  if (seen.has(name)) return;
-  seen.add(name);
-  agents.push({ name, description: `aidevops subagent: ${folderDesc}` });
-}
-
-/**
- * Recursively collect .md filenames from a directory tree.
- * Only calls readdirSync (directory listing) — never reads file contents.
- * @param {string} dirPath
- * @param {string} folderDesc - used as description fallback
- * @param {Array} agents
- * @param {Set} seen - dedup set
- */
-function scanDirNames(dirPath, folderDesc, agents, seen) {
-  let entries;
-  try {
-    entries = readdirSync(dirPath, { withFileTypes: true });
-  } catch {
-    return;
-  }
-
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (SKIP_NAMES.has(entry.name)) continue;
-      scanDirNames(join(dirPath, entry.name), folderDesc, agents, seen);
-    } else {
-      tryRegisterMdAgent(entry, folderDesc, agents, seen);
-    }
-  }
-}
-
-/**
- * Fallback: discover agents from directory names only (no file reads).
- * Lists .md filenames in known subdirectories — O(n) readdirSync calls
- * where n = number of subdirectories (~11), NOT number of files.
- * Each readdirSync returns filenames without reading file contents.
- * @param {string} agentsDir
- * @returns {Array<{name: string, description: string}>}
- */
-function loadAgentsFallback(agentsDir) {
-  if (!existsSync(agentsDir)) return [];
-
-  const subdirs = [
-    "aidevops",
-    "content",
-    "seo",
-    "tools",
-    "services",
-    "workflows",
-    "memory",
-    "custom",
-    "draft",
-  ];
-
-  const agents = [];
-  const seen = new Set();
-
-  for (const subdir of subdirs) {
-    scanDirNames(join(agentsDir, subdir), subdir, agents, seen);
-  }
-
-  return agents;
-}
-
-/**
- * Parse subagent-index.toon and return leaf agent names with descriptions.
- * Reads ONE file instead of 500+. Returns entries like:
- *   { name: "dataforseo", description: "Search optimization - keywords..." }
- * @param {string} agentsDir
- * @param {(filepath: string) => string} readIfExists
- * @returns {Array<{name: string, description: string}>}
- */
-/**
  * Parse top-level agents from a TOON block and append to agents array.
  * Format: name,file,purpose,model_tier — one per line
  * @param {string} blockText
@@ -168,7 +86,7 @@ function parseTopLevelAgents(blockText, agents) {
 export function loadAgentIndex(agentsDir, readIfExists) {
   const indexPath = join(agentsDir, "subagent-index.toon");
   const content = readIfExists(indexPath);
-  if (!content) return loadAgentsFallback(agentsDir);
+  if (!content) return [];
 
   // Only register top-level agents (agent picker entries), not leaf
   // subagents. OpenCode 1.4.8 evaluates permissions per-agent at startup;
@@ -184,16 +102,46 @@ export function loadAgentIndex(agentsDir, readIfExists) {
     parseTopLevelAgents(topLevelMatch[1], agents);
   }
 
-  // If no top-level block found, fall back to minimal subagent set
-  if (agents.length === 0) {
-    const subagentMatch = content.match(
-      /<!--TOON:subagents\[\d+\]\{[^}]+\}:\n([\s\S]*?)-->/,
-    );
-    if (!subagentMatch) return loadAgentsFallback(agentsDir);
-    return parseToonSubagentBlock(subagentMatch[1]);
-  }
-
+  // Missing/legacy indexes never widen registration to every leaf. Native
+  // primary profiles and the explicit built-in/MCP fallback remain available.
   return agents;
+}
+
+/** Two inference-only execution roles, not another domain/leaf registry. */
+export function registerDelegatedDomainProfiles(config, agentsDir, state) {
+  if (!state) return 0;
+  config.agent ||= {};
+  const previous = state.domainDelegation?.profiles || new Map();
+  const profiles = new Map();
+  const sources = new Map(primaryDeliveryEvidence(config, agentsDir).sources
+    .filter((entry) => entry.delivery === "delivered")
+    .map((entry) => [entry.source, entry.sha256]));
+  let injected = 0;
+  for (const name of ["domain-focused", "domain-light"]) {
+    if (config.agent[name] && config.agent[name] !== previous.get(name)) continue;
+    if (!config.agent[name]) injected++;
+    const profile = {
+      description: `${name}: canonical domain advisory inference; requires a JSON child envelope (reference/agent-routing.md)`,
+      mode: "subagent",
+      prompt: [
+        "Use only the supplied canonical domain knowledge and task evidence for independent advisory work.",
+        "The child envelope bounds the objective, scope, essential decisions, evidence contract and effort.",
+        "Domain instructions describe expertise, not grants of tools, authority, spending or recursion.",
+        "Never invoke tools, delegate, publish, or claim to have read sources not supplied by the parent.",
+        "Return task identity, findings, supplied evidence citations, uncertainty, exclusions and next action.",
+        "Missing knowledge or capabilities means unavailable; cancellation means cancelled, never success.",
+        "The parent owns synthesis, verification, cancellation and all external resource cleanup.",
+      ].join("\n"),
+      tools: { "*": false },
+      permission: { "*": "deny" },
+    };
+    config.agent[name] = profile;
+    profiles.set(name, profile);
+    state.tiers?.delete(name);
+    state.pinned?.delete(name);
+  }
+  state.domainDelegation = { agentsDir, sources, profiles };
+  return injected;
 }
 
 /** Load one verified primary, never follow leaf pointers or repository paths. */

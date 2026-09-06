@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerDelegatedDomainProfiles } from "../config-agent-profiles.mjs";
-import { loadDelegatedDomainKnowledge } from "../agent-loader.mjs";
+import { loadAgentIndex, loadDelegatedDomainKnowledge } from "../agent-loader.mjs";
 
 import {
   clampReasoningVariant,
@@ -27,6 +27,15 @@ const TIER_REASONING = {
   standard: { openai: "max" },
   thinking: { openai: "xhigh" },
 };
+
+test("missing and legacy indexes cannot recursively register leaf profiles", () => {
+  assert.deepEqual(loadAgentIndex(".agents", () => ""), []);
+  assert.deepEqual(loadAgentIndex(".agents", () =>
+    "<!--TOON:subagents[1]{folder,purpose,key_files}:\ntools,tools,unexpected-leaf\n-->"), []);
+  assert.deepEqual(loadAgentIndex(".agents", () =>
+    "<!--TOON:agents[1]{name,file,purpose,model_tier}:\nSEO,seo.md,Search,standard\n-->"),
+  [{ name: "SEO", description: "Search", modelTier: "standard" }]);
+});
 
 function domainFixture(t, variant = "low") {
   const root = mkdtempSync(join(process.env.AIDEVOPS_TEMP_DIR || tmpdir(), "domain-profile-"));

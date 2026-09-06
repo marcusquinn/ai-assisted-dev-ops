@@ -14,6 +14,18 @@ import { loadDelegatedDomainKnowledge } from "./agent-loader.mjs";
 const DOMAIN_KNOWLEDGE_MARKER = "\n\n[AIDEvOps canonical domain knowledge]";
 const DOMAIN_REQUIRED_FIELDS = ["task", "objective", "scope", "source", "decisions", "evidence", "output"];
 
+function validDomainEnvelope(envelope) {
+  if (!envelope) return false;
+  const hasText = (key) => typeof envelope[key] === "string" && Boolean(envelope[key].trim());
+  const checks = [
+    DOMAIN_REQUIRED_FIELDS.every(hasText),
+    ["simple", "standard"].includes(envelope.effort),
+    envelope.authority === "inference-only",
+    Array.isArray(envelope.tools) && envelope.tools.length === 0,
+  ];
+  return checks.every(Boolean);
+}
+
 function domainEnvelope(text) {
   let envelope;
   try {
@@ -22,10 +34,7 @@ function domainEnvelope(text) {
   } catch {
     throw new Error("[aidevops] Domain delegation requires a JSON child envelope");
   }
-  if (!envelope || DOMAIN_REQUIRED_FIELDS.some((key) => typeof envelope[key] !== "string" || !envelope[key].trim())
-    || !["simple", "standard"].includes(envelope.effort)
-    || envelope.authority !== "inference-only"
-    || !Array.isArray(envelope.tools) || envelope.tools.length !== 0) {
+  if (!validDomainEnvelope(envelope)) {
     throw new Error("[aidevops] Invalid domain envelope: bounded evidence, effort and inference-only authority required");
   }
   return envelope;
