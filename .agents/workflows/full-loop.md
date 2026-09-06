@@ -19,6 +19,19 @@ Fatal modes: **GH#5317** (exits without PR), **GH#5096** (exits after PR). Do NO
 
 **Interactive continuity (MANDATORY):** A user's full-loop instruction assigns the executor lifecycle to the primary conversation that received it. Keep the critical path in that session through either observed `FULL_LOOP_COMPLETE` or a durable `CLEANUP_DEFERRED` handoff; do not launch a background worker or delegate implementation, verification, review, or merge unless the user explicitly requests background execution. `CLEANUP_DEFERRED` is terminal for the interactive executor only: a guarded cleanup supervisor owns the remaining resource transition and `FULL_LOOP_COMPLETE` remains reserved for observed `CLEANED`. Continue autonomously from the current stage and do not stop after setup, implementation, PR creation, merge, or release merely to report progress. Pause only for a material blocker requiring user input. Progress reports must name the last verified stage and current action.
 
+**Truthful execution state (MANDATORY):** Before pausing, distinguish only
+`delivered` (all acceptance criteria have verified evidence), `externally blocked`
+(a named dependency has one durable human action, owner, unblock result, and
+verification), or `active` (a named live executor or verified checkpoint has a next
+executable action and resume condition). A plan, draft, suggested next step, or
+expired command is not an active executor. While authorized safe work remains,
+execute it rather than requesting approval for the same plan or describing an
+incomplete loop as complete. A safety or permission gate pauses only its unsafe
+path; continue independent safe work without bypassing the gate. Before an
+unavoidable pause, persist and verify the goal, directions, identity, evidence,
+unmet criteria, blockers, next action, and resume condition. Checkpointing preserves
+continuation; it never completes unfinished delivery.
+
 **Release-only exception:** After verified merge and explicit trusted publication intent, default to the local standard-tier handoff in `workflows/release.md` "Standard-tier release handoff" for release/postflight/deploy. The primary retains lifecycle ownership, validates terminal evidence once, and resumes exception handling or finalization. This does not delegate implementation, PR verification/review, merge, or cleanup and does not authorize remote/headless workers.
 
 **User-facing completion (MANDATORY):** A valid routine-owned `CLEANUP_DEFERRED` handoff is silent operational bookkeeping. Do not copy lifecycle promise tokens, cleanup-marker details, worktree-retention explanations, or expected owner-exit limitations into the final response. Summarize delivered changes, verification, and PR/issue/release outcomes. Mention cleanup only when human action is required or unpublished delivery is at risk; put that evidence and required action last.

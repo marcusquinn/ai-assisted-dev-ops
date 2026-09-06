@@ -17,6 +17,44 @@ Full PTY access: run any CLI (`vim`, `psql`, `ssh`, `htop`, dev servers). Long-r
 - Leave linked-worktree removal to the guarded post-exit routine. Do not attempt or report normal deferred cleanup; mention only failures requiring user action or putting unpublished work at risk.
 - Full docs: `workflows/session-manager.md`.
 
+## Execution Ownership and Truthful Stops
+
+State exactly one outcome before ending a response or session:
+
+1. **Delivered:** every promised acceptance criterion has verified evidence.
+2. **Externally blocked:** name the dependency, its durable action, its owner, what it unblocks, and the verification that will establish delivery.
+3. **Active:** identify an actually live executor or a verified durable checkpoint with its next executable action and resume condition. A plan, suggested next step, draft, or expired command is not an active executor.
+
+While authorized safe work remains, perform the next safe action instead of restating
+the plan, requesting approval for an already-authorized action, or calling the work
+complete. A safety or permission gate pauses only its unsafe path; continue
+independent safe work. Respect an explicit user stop and never bypass permissions.
+
+For a human-only gate, leave one durable handoff that states the exact action, where
+to take it, what it unblocks, and how delivery will be verified. Say that no user
+action is required only when a named live executor owns continuation; never imply
+background progress without that executor. Do not repeat short-lived approval or
+recovery commands after they expire.
+
+Before an unavoidable pause, save and verify a checkpoint containing the session
+aim, preserved directions, issue/PR/worktree identity, completed evidence, unmet
+criteria, blockers, next executable action, and resume conditions. A checkpoint
+preserves continuation; it does not make incomplete delivery complete.
+
+### Behavioral Examples
+
+| Situation | Required owner and truthful state |
+| --- | --- |
+| Authorized work remains and a safe edit or check is available | Execute it; the task is active, not complete or a plan handed back to the user. |
+| A permission must be granted by a human | Externally blocked; leave one durable action, what it unlocks, and its verification. |
+| A recoverable API call fails | Try a distinct safe recovery route; if pausing, checkpoint the next route rather than claim delivery. |
+| A human may not return soon | Preserve the durable handoff and resume condition; do not promise immediate attendance or repeat expired commands. |
+| Every accepted criterion has evidence | Delivered; summarize outcome and evidence without inventing remaining work. |
+| The user explicitly stops work | Stop execution, preserve the requested state, and do not represent the unfinished objective as delivered. |
+
+Review these examples against the task's actual evidence; literal policy checks do
+not prove a future model run complies with the contract.
+
 ## New Topic Hygiene
 
 Use only in interactive sessions; headless workers stay on their assigned task.
