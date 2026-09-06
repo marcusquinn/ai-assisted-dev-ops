@@ -7,6 +7,60 @@ import { createHash } from "node:crypto";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
+const opaque = (value) => createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
+const number = (value) => Number.isFinite(value) && value >= 0 ? value : null;
+
+// overflow.ts / provider/transform.ts at OpenCode v1.18.29 (16747470).
+// Only the pinned adapter route is calibrated; other versions stay unknown.
+function capacityFor(model, runtimeVersion, reserved) {
+  const limit = model?.limit;
+  if (runtimeVersion !== "1.18.29" || !limit?.context
+    || !(limit?.input > 0) || !(limit?.output > 0)) return null;
+  const reserve = reserved ?? Math.min(20000, limit.output, 32000);
+  return { formula: "opencode-1.18.29-explicit-input-v1", reserve,
+    reserve_source: reserved === undefined ? "runtime-default" : "compaction.reserved",
+    usable_input: Math.max(0, limit.input - reserve) };
+}
+
+function recordInitialUsage(state, message, emit) {
+  if (state.confirmed || message.summary) return;
+  const earlier = state.initial && state.created <= message.time?.created;
+  if (!message.time?.completed || earlier) return;
+  state.created = message.time.created;
+  const fields = [message.tokens?.input, message.tokens?.cache?.read, message.tokens?.cache?.write];
+  const inputTokens = !message.error && fields.every((value) => number(value) !== null)
+    ? fields.reduce((a, b) => a + b, 0) : null;
+  state.initial = { input_tokens_including_cache: inputTokens };
+  emit({ type: "calibration.initial", session: opaque(message.sessionID),
+    ...state.initial, capacity: state.capacity ?? null,
+    status: inputTokens === null || !state.capacity ? "unknown"
+      : inputTokens >= state.capacity.usable_input ? "initial_input_exceeds_usable" : "initial_input_fits" });
+}
+
+async function checkInitialBudget(state, { client, sessionID, emit }) {
+  // Bus delivery can lag the next turn. Read the completed first response
+  // from this session only, never a global or previous-trial measurement.
+  if (state.capacity && !state.confirmed && client?.session?.messages) {
+    const result = await client.session.messages({ path: { id: sessionID } })
+      .catch(() => ({ data: [] }));
+    const first = result.data?.filter((row) => row.info?.role === "assistant"
+      && row.info.sessionID === sessionID && !row.info.summary)
+      .sort((a, b) => a.info.time.created - b.info.time.created)[0];
+    if (first?.info.time?.completed) {
+      state.initial = null;
+      recordInitialUsage(state, first.info, emit);
+      state.confirmed = true;
+    }
+  }
+  const inputTokens = state.initial?.input_tokens_including_cache;
+  const exceedsCapacity = state.capacity && inputTokens != null && inputTokens >= state.capacity.usable_input;
+  if (state.confirmed && exceedsCapacity) {
+    emit({ type: "calibration.stopped", session: opaque(sessionID),
+      reason: "initial_input_exceeds_usable", capacity: state.capacity, ...state.initial });
+    throw new Error("FrontierCalibrationInfeasible: initial input exceeds usable capacity; preserve this attempt");
+  }
+}
+
 async function FrontierObserver(input, options = {}) {
   const profile = options.profile;
   if (!["stock", "aidevops", "aidevops-native-compaction"].includes(profile)) {
@@ -25,39 +79,14 @@ async function FrontierObserver(input, options = {}) {
     if (++sequence > 100000) throw new Error("Benchmark telemetry limit reached");
     writeSync(fd, `${JSON.stringify({ schema: 1, sequence, time_ms: Date.now(), profile, ...data })}\n`);
   };
-  const opaque = (value) => createHash("sha256").update(String(value)).digest("hex").slice(0, 24);
-  const number = (value) => Number.isFinite(value) && value >= 0 ? value : null;
   const sessions = new Map();
   let reserved;
   const stateFor = (id) => {
     if (!sessions.has(id)) sessions.set(id, {});
     return sessions.get(id);
   };
-  // overflow.ts / provider/transform.ts at OpenCode v1.18.29 (16747470).
-  // Only the pinned adapter route is calibrated; other versions stay unknown.
-  const capacity = (model) => {
-    const limit = model?.limit;
-    if (options.runtimeVersion !== "1.18.29" || !limit?.context
-      || !(limit?.input > 0) || !(limit?.output > 0)) return null;
-    const reserve = reserved ?? Math.min(20000, limit.output, 32000);
-    return { formula: "opencode-1.18.29-explicit-input-v1", reserve,
-      reserve_source: reserved === undefined ? "runtime-default" : "compaction.reserved",
-      usable_input: Math.max(0, limit.input - reserve) };
-  };
-  const initialUsage = (message) => {
-    const state = stateFor(message.sessionID);
-    if (state.confirmed || message.summary || !message.time?.completed
-      || (state.initial && state.created <= message.time.created)) return;
-    state.created = message.time.created;
-    const fields = [message.tokens?.input, message.tokens?.cache?.read, message.tokens?.cache?.write];
-    const inputTokens = !message.error && fields.every((value) => number(value) !== null)
-      ? fields.reduce((a, b) => a + b, 0) : null;
-    state.initial = { input_tokens_including_cache: inputTokens };
-    emit({ type: "calibration.initial", session: opaque(message.sessionID),
-      ...state.initial, capacity: state.capacity ?? null,
-      status: inputTokens === null || !state.capacity ? "unknown"
-        : inputTokens >= state.capacity.usable_input ? "initial_input_exceeds_usable" : "initial_input_fits" });
-  };
+  const capacity = (model) => capacityFor(model, options.runtimeVersion, reserved);
+  const initialUsage = (message) => recordInitialUsage(stateFor(message.sessionID), message, emit);
   let hooks = {};
   if (profile !== "stock") {
     const { AidevopsPlugin } = await import("../opencode-aidevops/index.mjs");
@@ -97,26 +126,8 @@ async function FrontierObserver(input, options = {}) {
     },
     "experimental.session.compacting": async (event, output) => {
       emit({ type: "compaction.requested", session: opaque(event.sessionID) });
-      const state = stateFor(event.sessionID);
-      // Bus delivery can lag the next turn. Read the completed first response
-      // from this session only, never a global or previous-trial measurement.
-      if (options.experimental && state.capacity && !state.confirmed && input.client?.session?.messages) {
-        const result = await input.client.session.messages({ path: { id: event.sessionID } })
-          .catch(() => ({ data: [] }));
-        const first = result.data?.filter((row) => row.info?.role === "assistant"
-          && row.info.sessionID === event.sessionID && !row.info.summary)
-          .sort((a, b) => a.info.time.created - b.info.time.created)[0];
-        if (first?.info.time?.completed) {
-          state.initial = null;
-          initialUsage(first.info);
-          state.confirmed = true;
-        }
-      }
-      if (options.experimental && state.confirmed && state.capacity && state.initial?.input_tokens_including_cache != null
-        && state.initial.input_tokens_including_cache >= state.capacity.usable_input) {
-        emit({ type: "calibration.stopped", session: opaque(event.sessionID),
-          reason: "initial_input_exceeds_usable", capacity: state.capacity, ...state.initial });
-        throw new Error("FrontierCalibrationInfeasible: initial input exceeds usable capacity; preserve this attempt");
+      if (options.experimental) {
+        await checkInitialBudget(stateFor(event.sessionID), { client: input.client, sessionID: event.sessionID, emit });
       }
       // This ablates the entire custom context injection, including restored
       // operational state, NOT native compaction or the autocontinue hook.
@@ -131,8 +142,8 @@ async function FrontierObserver(input, options = {}) {
       if (event?.type === "session.compacted") {
         emit({ type: "compaction.completed", session: opaque(event.properties.sessionID) });
       }
-      if (event?.type !== "message.updated" || message?.role !== "assistant"
-        || !message.time?.completed || !message.id || seen.has(message.id)) return;
+      if (event?.type !== "message.updated" || message?.role !== "assistant") return;
+      if (!message.time?.completed || !message.id || seen.has(message.id)) return;
       seen.add(message.id);
       initialUsage(message);
       emit({

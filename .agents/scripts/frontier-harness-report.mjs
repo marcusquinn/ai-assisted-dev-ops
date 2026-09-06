@@ -80,6 +80,70 @@ export function summarize(records) {
   };
 }
 
+function validateRunEvidence(manifest, records, telemetry) {
+  if (telemetry.profile !== manifest.profile || !records.some((r) => r.type === "config.applied")
+    || (manifest.profile !== "stock" && !(records[0].framework_tool_count > 0))) {
+    throw new Error("Missing or mismatched plugin-loading evidence");
+  }
+  const limitsMatch = telemetry.calibration.applied.every((limit) => limit.context === manifest.experimental_context_limit
+    && limit.input === manifest.experimental_context_limit - manifest.experimental_output_reserve
+    && limit.output === manifest.experimental_output_reserve);
+  const limitsObserved = telemetry.observed_context_limits.length > 0;
+  if (manifest.experimental_context_limit != null && (!limitsObserved || !limitsMatch)) {
+    throw new Error("Experiment model limits were overridden or unobserved");
+  }
+}
+
+function transportUsage(manifest) {
+  const usage = manifest.relay?.upstream_usage || [];
+  const total = (key) => usage.length && usage.every((r) => Number.isFinite(r[key]) && r[key] >= 0)
+    ? usage.reduce((sum, r) => sum + r[key], 0) : null;
+  const usageFieldsComplete = usage.length > 0 && usage.every((row) =>
+    ["input_tokens", "output_tokens", "cached_tokens"].every((key) => Number.isFinite(row[key]) && row[key] >= 0));
+  return {
+    relay_requests: manifest.relay?.requests ?? null,
+    upstream_completed_responses: usage.length,
+    upstream_usage_scope: "completed responses only",
+    upstream_responses_without_usage: Number.isInteger(manifest.relay?.requests)
+      ? Math.max(0, manifest.relay.requests - usage.length) : null,
+    upstream_usage_complete: usageFieldsComplete && usage.length === manifest.relay?.requests
+      && manifest.relay?.stream_failures === 0,
+    upstream_input_tokens_including_cache: total("input_tokens"),
+    upstream_output_tokens: total("output_tokens"), upstream_cached_tokens: total("cached_tokens"),
+  };
+}
+
+function calibrationStatus(manifest, telemetry) {
+  if (telemetry.calibration.stopped.length > 0) return "infeasible_configuration";
+  const initial = [...new Map(telemetry.calibration.initial.map((row) => [row.session, row])).values()];
+  const initialFits = initial.every((row) => row.status === "initial_input_fits" && row.capacity?.usable_input > 0);
+  const capacityKnown = telemetry.calibration.applied.every((row) => {
+    const validReserve = Number.isFinite(row.capacity?.reserve) && row.capacity.reserve >= 0;
+    return validReserve && row.capacity?.formula === "opencode-1.18.29-explicit-input-v1"
+      && row.capacity.usable_input === Math.max(0, row.input - row.capacity.reserve);
+  });
+  const observed = initial.length > 0 && telemetry.calibration.applied.length > 0;
+  const calibrated = manifest.opencode_version === "1.18.29" && observed && initialFits && capacityKnown;
+  return calibrated ? "initial_input_fits" : "unknown";
+}
+
+function runVerdict(manifest, trial, status) {
+  const reward = trial.verifier_result?.rewards?.reward;
+  const successfulExit = manifest.status === "runner_finished" && manifest.runner_exit_code === 0 && !manifest.interrupted;
+  const runnerFinished = successfulExit && manifest.completed_trials === 1 && manifest.errored_trials === 0;
+  const taskPassed = reward === 1 && !trial.exception_info;
+  return {
+    calibration_status: status,
+    verifier_reward: Number.isFinite(reward) ? reward : null,
+    task_passed: taskPassed,
+    comparison_valid: taskPassed && status !== "infeasible_configuration" && runnerFinished
+      && (manifest.experimental_context_limit == null || status === "initial_input_fits"),
+    runner_finished: runnerFinished,
+    trial_exception: /^[A-Za-z][A-Za-z0-9_]*$/.test(trial.exception_info?.exception_type || "")
+      ? trial.exception_info.exception_type : null,
+  };
+}
+
 /** Join host-owned transport accounting with the runner's explicit verdict. */
 export function summarizeRun(root) {
   const json = (path) => JSON.parse(readFileSync(path, "utf8"));
@@ -93,37 +157,11 @@ export function summarizeRun(root) {
   const eventsPath = join(trialDir, "agent/frontier-events.jsonl");
   const records = readFileSync(eventsPath, "utf8").trim().split("\n").map(JSON.parse);
   const telemetry = summarize(records);
-  if (telemetry.profile !== manifest.profile || !records.some((r) => r.type === "config.applied")
-    || (manifest.profile !== "stock" && !(records[0].framework_tool_count > 0))) {
-    throw new Error("Missing or mismatched plugin-loading evidence");
-  }
-  if (manifest.experimental_context_limit != null
-    && (!telemetry.observed_context_limits.length
-      || !telemetry.calibration.applied.every((limit) => limit.context === manifest.experimental_context_limit
-        && limit.input === manifest.experimental_context_limit - manifest.experimental_output_reserve
-        && limit.output === manifest.experimental_output_reserve))) {
-    throw new Error("Experiment model limits were overridden or unobserved");
-  }
-  const usage = manifest.relay?.upstream_usage || [];
-  const total = (key) => usage.length && usage.every((r) => Number.isFinite(r[key]) && r[key] >= 0)
-    ? usage.reduce((sum, r) => sum + r[key], 0) : null;
+  validateRunEvidence(manifest, records, telemetry);
   const duration = (range) => {
     const ms = Date.parse(range?.finished_at) - Date.parse(range?.started_at);
     return Number.isFinite(ms) && ms >= 0 ? Math.round(ms) / 1000 : null;
   };
-  const reward = trial.verifier_result?.rewards?.reward;
-  const stopped = telemetry.calibration.stopped.length > 0;
-  const initial = [...new Map(telemetry.calibration.initial.map((row) => [row.session, row])).values()];
-  const calibrated = manifest.opencode_version === "1.18.29" && initial.length > 0
-    && initial.every((row) => row.status === "initial_input_fits" && row.capacity?.usable_input > 0)
-    && telemetry.calibration.applied.length > 0
-    && telemetry.calibration.applied.every((row) => row.capacity?.formula === "opencode-1.18.29-explicit-input-v1"
-      && Number.isFinite(row.capacity.reserve) && row.capacity.reserve >= 0
-      && row.capacity.usable_input === Math.max(0, row.input - row.capacity.reserve));
-  const runnerFinished = manifest.status === "runner_finished" && manifest.runner_exit_code === 0
-    && manifest.completed_trials === 1 && manifest.errored_trials === 0 && !manifest.interrupted;
-  const usageFieldsComplete = usage.length > 0 && usage.every((row) =>
-    ["input_tokens", "output_tokens", "cached_tokens"].every((key) => Number.isFinite(row[key]) && row[key] >= 0));
   const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
   return {
     profile: manifest.profile, model: manifest.model,
@@ -133,25 +171,9 @@ export function summarizeRun(root) {
     source_manifest_sha256: digest(join(root, "manifest.json")),
     billing: manifest.inference_route, leaderboard_comparable: false,
     experimental_context_limit: manifest.experimental_context_limit ?? null,
-    calibration_status: stopped ? "infeasible_configuration"
-      : calibrated ? "initial_input_fits" : "unknown",
-    verifier_reward: Number.isFinite(reward) ? reward : null,
-    task_passed: reward === 1 && !trial.exception_info,
-    comparison_valid: reward === 1 && !trial.exception_info && !stopped && runnerFinished
-      && (manifest.experimental_context_limit == null || calibrated),
-    runner_finished: runnerFinished,
-    trial_exception: /^[A-Za-z][A-Za-z0-9_]*$/.test(trial.exception_info?.exception_type || "")
-      ? trial.exception_info.exception_type : null,
+    ...runVerdict(manifest, trial, calibrationStatus(manifest, telemetry)),
     agent_seconds: duration(trial.agent_execution), setup_seconds: duration(trial.agent_setup),
-    relay_requests: manifest.relay?.requests ?? null,
-    upstream_completed_responses: usage.length,
-    upstream_usage_scope: "completed responses only",
-    upstream_responses_without_usage: Number.isInteger(manifest.relay?.requests)
-      ? Math.max(0, manifest.relay.requests - usage.length) : null,
-    upstream_usage_complete: usageFieldsComplete && usage.length === manifest.relay?.requests
-      && manifest.relay?.stream_failures === 0,
-    upstream_input_tokens_including_cache: total("input_tokens"),
-    upstream_output_tokens: total("output_tokens"), upstream_cached_tokens: total("cached_tokens"),
+    ...transportUsage(manifest),
     telemetry,
   };
 }
