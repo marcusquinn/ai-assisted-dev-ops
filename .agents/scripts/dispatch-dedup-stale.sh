@@ -874,7 +874,8 @@ _stale_assignment_has_live_interactive_claim() {
 
 	printf '%s' "$issue_meta_json" | jq -e --arg claimant "$claim_author" '
 		(.state | ascii_downcase) == "open" and
-		([.labels[]?.name] | index("status:in-review") != null) and
+		([.labels[]?.name] | any(. == "status:claimed" or
+			. == "status:in-progress" or . == "status:in-review")) and
 		([.assignees[]?.login] | index($claimant) != null)
 	' >/dev/null 2>&1 || return 1
 	return 0
