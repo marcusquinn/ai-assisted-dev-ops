@@ -343,6 +343,12 @@ _try_issue_sync_delegation() {
 		return 1
 	fi
 
+	# Author-owned creation prepares the durable brief before read-only sync.
+	local brief_file="$repo_path/todo/tasks/${task_id}-brief.md"
+	if [[ -f "$brief_file" ]]; then
+		bash "$SCRIPT_DIR/brief-readiness-helper.sh" prepare-scope "$brief_file" || return 1
+	fi
+
 	local push_output
 	push_output=$("$issue_sync_helper" push "$task_id" 2>&1 || echo "")
 
@@ -469,7 +475,7 @@ _compose_issue_body() {
 	local fmt_helper="${SCRIPT_DIR}/issue-body-format-helper.sh"
 	if [[ -n "$description" && -x "$fmt_helper" ]]; then
 		local normalized_description=""
-		normalized_description=$("$fmt_helper" normalize "$description" 2>/dev/null) || normalized_description="$description"
+		normalized_description=$("$fmt_helper" normalize "$description" 2>/dev/null) || return 1
 		description="$normalized_description"
 	fi
 

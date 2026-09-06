@@ -38,6 +38,13 @@ decision sufficiency and human time, not output bytes indiscriminately.
 
 ## How (Approach)
 
+### Files Scope
+
+- `.agents/reference/context-efficient-output.md`
+- `.agents/scripts/output-sandbox-helper.sh`
+- `.agents/scripts/session-review-helper.sh`
+- `.agents/scripts/full-loop-helper.sh`
+
 ### Files to Modify
 
 - `EDIT: .agents/reference/context-efficient-output.md`, `EDIT: .agents/scripts/output-sandbox-helper.sh`, `EDIT: .agents/scripts/session-review-helper.sh` only for proven receipt/adoption gaps.
