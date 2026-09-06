@@ -420,6 +420,22 @@ test_permission_blocker_continuation() {
 	return 0
 }
 
+test_blocked_backoff_cli() {
+	local result="" status=0
+	result=$(
+		gh() {
+			[[ "$1" == api && "$2" == 'repos/owner/repo/issues/42/comments?per_page=100' ]] || return 1
+			jq -nc '[[range(2) | {id:(. + 1),body:"CLAIM_RELEASED reason=blocked runner=runner ts=ignored",user:{login:"runner"},author_association:"OWNER",created_at:"2026-09-06T12:00:00Z"}]]'
+			return 0
+		}
+		export -f gh
+		TERMINAL_BLOCKER_NOW_EPOCH=1788696001 bash "${SCRIPT_DIR}/dispatch-dedup-helper.sh" has-dispatch-comment 42 owner/repo runner
+	) || status=1
+	[[ "$result" == 'TERMINAL_BLOCKER_BACKOFF failures=2 retry_after=1788696900' ]] || status=1
+	print_result "production dispatch CLI preserves paginated API authors and blocks legacy repeated releases" "$status"
+	return 0
+}
+
 main() {
 	test_normalized_blocker_fingerprint
 	test_worker_contract_reason_protocol
@@ -434,6 +450,7 @@ main() {
 	test_legacy_blocked_backoff
 	test_blocked_backoff_trust
 	test_permission_blocker_continuation
+	test_blocked_backoff_cli
 	printf '\nTests run: %s failed: %s\n' "$TESTS_RUN" "$TESTS_FAILED"
 	[[ "$TESTS_FAILED" -eq 0 ]]
 }
