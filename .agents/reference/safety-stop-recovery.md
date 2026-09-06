@@ -34,7 +34,11 @@ When a fuse trips:
 3. **Keep the objective open.** Use `recovering` or `blocked`, not `done`,
    `completed`, `skipped`, or `cancelled`.
 4. **Create the next safe action immediately.** Add it to the active todo list
-   and to the durable task/mission record before yielding the session.
+   and to the durable task/mission record before yielding the session. If a
+   human-only gate remains, name the owner, exact durable action, what it
+   unblocks, and the verification that will prove recovery; otherwise identify
+   the actual executor that owns the next action. A plan or expired command is
+   not an executor.
 5. **Change the conditions.** Select the first viable route in the recovery
    ladder below.
 6. **Resume and verify.** A recovery checkpoint is not completion evidence.
@@ -55,11 +59,16 @@ Record all fields; use `not yet known` rather than omitting one:
 - **Next safe route:** ...
 - **Resume condition:** ...
 - **Owner and status:** ... (`recovering` or `blocked`)
+- **Handoff action and verification:** ... (required for a human-only gate)
 ```
 
 Never place credentials, private paths, private repository identities, or raw
 sensitive diagnostics in a public checkpoint. Store private details only in the
 target-local private brief and publish aliases plus aggregate evidence.
+
+Do not claim that work continues in the background unless a named, live executor
+exists. When no executor exists, the durable record must instead say that the task
+is blocked or resumable and give its next executable action.
 
 ## Recovery Ladder
 
