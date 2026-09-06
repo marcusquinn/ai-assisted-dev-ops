@@ -221,6 +221,10 @@ permission_render_capabilities() {
 		+ "\n  - Reason: " + (if .intent == "" then "No additional model rationale was available." else (.intent | safe) end)
 		+ "\n  - Risk: **" + .risk.level + "** — " + (.risk.reason | safe)
 		+ (if avoidable_tool_bin_read then "\n  - Recovery: Routine tool discovery should use `command -v TOOL`, `TOOL --version`, or a repository wrapper instead of reading the install directory." else "" end)
+		+ (if .permission == "external_directory" and .tool == "read"
+			and (.patterns | length > 0) and all(.patterns[]; contains("/node_modules/"))
+			then "\n  - Owned recovery: The AI controller should evaluate bounded in-worktree dependency provisioning (`reference/dispatch-blockers.md`). This is a candidate, not permission to read or copy the requested external path. Preserve this request, branch, PR and session; prove the original process terminal or transfer ownership before provisioning. The current signed permission-history contract has no unsigned supersession path: retain the hold and route this exact checkpoint to the existing AI brief owner/coordinator. Never retry the denied tool, clear the hold, or launch a replacement worker under an implied grant."
+			else "" end)
 		+ (if .risk.grantable then "" else "\n  - **Not grantable:** sensitive scope requires an alternative approach." end)' \
 		"$envelope_file"
 	return $?

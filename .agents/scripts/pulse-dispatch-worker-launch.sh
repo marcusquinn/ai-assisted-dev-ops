@@ -537,7 +537,17 @@ _dlw_restore_worktree_deps() {
 	local _pkg_dir=""
 	local _restored=0
 	local _max_dirs="${WORKTREE_NODE_MODULES_RESTORE_MAX_DIRS:-2}"
-	local _restore_root="${WORKTREE_NODE_MODULES_RESTORE_ROOT_ENABLED:-0}"
+	local _restore_root="${WORKTREE_NODE_MODULES_RESTORE_ROOT_ENABLED:-auto}"
+	# Share the controller's bounded, identity-checked copy implementation.
+	if ! declare -F _provision_worktree_node_modules >/dev/null 2>&1; then
+		local SCRIPT_DIR=""
+		SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
+		# shellcheck source=worktree-helper-add.sh
+		if ! source "${SCRIPT_DIR}/worktree-helper-add.sh"; then
+			_dlw_node_modules_restore_release_lock "$_lock_dir"
+			return 0
+		fi
+	fi
 	[[ "$_max_dirs" =~ ^[0-9]+$ ]] || _max_dirs=2
 	while IFS= read -r _pkg_dir; do
 		if ((_restored >= _max_dirs)); then
@@ -548,7 +558,7 @@ _dlw_restore_worktree_deps() {
 		local _rel_dir=""
 		_rel_dir="${_dir#"$worktree_path"}" || continue
 		# _rel_dir is now e.g. "/.opencode" or "" (for root package.json)
-		if [[ -z "$_rel_dir" && "$_restore_root" != "1" ]]; then
+		if [[ -z "$_rel_dir" && "$_restore_root" != "1" && "$_restore_root" != "auto" ]]; then
 			_dlw_remove_generated_root_node_tool_link "$worktree_path" "$repo_path"
 			echo "[dispatch_with_dedup] Skipping root node_modules restore for ${worktree_path} (set WORKTREE_NODE_MODULES_RESTORE_ROOT_ENABLED=1 to enable)" >>"$LOGFILE"
 			continue
@@ -556,11 +566,11 @@ _dlw_restore_worktree_deps() {
 		local _src_nm="${repo_path}${_rel_dir}/node_modules"
 		local _dst_nm="${worktree_path}${_rel_dir}/node_modules"
 		if [[ -d "$_src_nm" && ! -d "$_dst_nm" ]]; then
-			# t2889: fast_cp uses APFS clonefile / btrfs reflink CoW
-			# where available — sub-second copy, near-zero disk delta.
-			fast_cp "$_src_nm" "$_dst_nm" 2>/dev/null || true
-			_restored=$((_restored + 1))
-			echo "[dispatch_with_dedup] Restored node_modules: ${_rel_dir:-/} ($(du -sh "$_dst_nm" 2>/dev/null | cut -f1))" >>"$LOGFILE"
+			if _provision_worktree_node_modules "$worktree_path" "$repo_path" "${_rel_dir#/}" >>"$LOGFILE" 2>&1; then
+				_restored=$((_restored + 1))
+			else
+				echo "[dispatch_with_dedup] Dependency provisioning unavailable; no external permission granted" >>"$LOGFILE"
+			fi
 		fi
 	done < <(find "$worktree_path" -maxdepth 3 -name "package.json" -not -path "*/node_modules/*" 2>/dev/null)
 	_dlw_node_modules_restore_release_lock "$_lock_dir"

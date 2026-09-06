@@ -36,6 +36,41 @@ transitions to `~/.aidevops/logs/worker-progress-blockers.jsonl`. Diagnose the
 label and its exact local reason with `pulse-diagnose-helper.sh issue <N> --repo
 <owner/repo>`; removing the label does not alter or bypass grant verification.
 
+### Bounded dependency-read remediation (GH#31372)
+
+Before worker launch, the existing restore controller may provision npm/pnpm
+dependency sources into its registered linked worktree. Root restore defaults to
+`auto`; `WORKTREE_NODE_MODULES_RESTORE_ROOT_ENABLED=0` still disables it. Each
+snapshot is limited to 64 MiB and 20,000 entries, with at most two successful
+package directories per restore. `WORKTREE_NODE_MODULES_RESTORE_MAX_BYTES` can
+lower (not raise) the byte ceiling. Missing dependencies, unsupported install
+metadata, stale package/lock identities, foreign owners, writable shared sources,
+credential-bearing paths and escaping links cause a skip, never an installation
+or external-directory grant. Canonical npm hidden-lock and pnpm installed-lock
+metadata are required; Bun/Yarn-only trees remain unprovisioned.
+
+The path reuses the restore controller, registry and lock machinery. Security
+review ruled out whole-directory `fast_cp`: a changing source could exceed its
+preflight size during copying. The bounded copier pins source directories with
+no-follow descriptors, enforces limits during copying, and validates a private
+staged snapshot before promotion. This trades CoW speed for a hard resource bound.
+
+For an already denied dependency read, `worker-permission-helper.sh` adds an
+owned-recovery instruction to the existing request-specific, deduplicated
+permission dossier. The pattern is only a candidate for investigation, never a
+trusted source path or authority. Broad external `bash`, credentials and mixed
+requests remain held. Preserve the original request and audit evidence, commits,
+branch, checkpoint PR and runtime session. Provisioning may not displace a live
+or foreign owner, including a dead owner without an explicit ownership transfer.
+
+**Current limitation:** both the dispatch label gate and historical signed-grant
+gate require request-specific approval. There is no unsigned supersession path.
+The AI brief owner/coordinator owns assessment of the in-boundary alternative and
+any authorized exact-checkpoint continuation; a copy alone does not clear either
+gate. Repeated unchanged evidence uses the same permission request rather than
+new comments, grants or replacement workers. Verify with dependency fixtures,
+permission broker/helper tests and dispatch permission/history fixtures.
+
 ### Conditional Dispatch Blocks (require active claim state)
 
 These labels DO NOT block dispatch on their own. They become blockers only when combined with an active claim signal — see "Claim-State Blockers" below.

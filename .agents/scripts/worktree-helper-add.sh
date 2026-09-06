@@ -377,6 +377,48 @@ _restore_worktree_node_modules_release_lock() {
 	return 0
 }
 
+# Controller-only copy into a newly owned worktree. No resume or permission
+# mutation: a continuation owned by another process (even dead) is left intact.
+_provision_worktree_node_modules() (
+	local wt_path="$1"
+	local repo_root="$2"
+	local relative="${3:-.}"
+	local owner="" validator="" before="" after="" stage=""
+	local owner_pid="" owner_session="" owner_batch="" owner_task="" owner_created="" owner_start=""
+	local destination="${wt_path}/${relative}/node_modules"
+	local max_bytes="${WORKTREE_NODE_MODULES_RESTORE_MAX_BYTES:-67108864}"
+	# aidevops:trust-boundary -- only the registered current controller may write;
+	# a live/foreign/continuation owner requires the existing ownership handoff.
+	declare -F check_worktree_owner_snapshot >/dev/null 2>&1 || return 1
+	declare -F worktree_has_exact_owner_contract >/dev/null 2>&1 || return 1
+	owner=$(check_worktree_owner_snapshot "$wt_path") || return 1
+	IFS='|' read -r owner_pid owner_session owner_batch owner_task owner_created owner_start <<<"$owner"
+	[[ "$owner_pid" == "$$" && -n "$owner_start" && -n "$owner_created" ]] || return 1
+	worktree_has_exact_owner_contract "$wt_path" "$$" "$owner_session" "$owner_task" || return 1
+	[[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+	validator="$(dirname "${BASH_SOURCE[0]}")/worktree-dependency-provision.py"
+	before=$(python3 "$validator" "$repo_root" "$wt_path" "$relative" --max-bytes "$max_bytes") || return 1
+	stage=$(mktemp -d "${wt_path}/.aidevops-deps-XXXXXXXX") || return 1
+	trap 'rm -rf -- "$stage"' EXIT
+	mkdir -m 700 "${stage}/node_modules" || return 1
+	# Keep the existing restore lifecycle/locks, but enforce limits during copying:
+	# whole-directory fast_cp can exceed the budget if the source changes mid-copy.
+	after=$(python3 "$validator" "$repo_root" "$wt_path" "$relative" --copy-to "${stage}/node_modules" --max-bytes "$max_bytes") || return 1
+	[[ "$before" == "$after" ]] || return 1
+	after=$(python3 "$validator" "$repo_root" "$wt_path" "$relative" --snapshot "${stage}/node_modules" --max-bytes "$max_bytes") || return 1
+	[[ "$before" == "$after" ]] || return 1
+	[[ "$(check_worktree_owner_snapshot "$wt_path")" == "$owner" ]] || return 1
+	worktree_has_exact_owner_contract "$wt_path" "$$" "$owner_session" "$owner_task" || return 1
+	[[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+	mv -T "${stage}/node_modules" "$destination" 2>/dev/null || {
+		# BSD mv has no -T; the destination must still be absent.
+		[[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+		mv "${stage}/node_modules" "$destination" || return 1
+	}
+	printf 'Dependency snapshot provisioned (sha256 bytes entries): %s\n' "$after"
+	return 0
+)
+
 _restore_worktree_node_modules() {
 	local wt_path="$1"
 	local repo_root="$2"
@@ -405,10 +447,9 @@ _restore_worktree_node_modules() {
 		local _src="${repo_root}${_rel}/node_modules"
 		local _dst="${wt_path}${_rel}/node_modules"
 		if [[ -d "$_src" && ! -d "$_dst" ]]; then
-			# t2889: fast_cp uses APFS clonefile / btrfs reflink CoW where
-			# available — sub-second copy on macOS, near-zero disk delta.
-			fast_cp "$_src" "$_dst" 2>/dev/null || true
-			_restored=$((_restored + 1))
+			if _provision_worktree_node_modules "$wt_path" "$repo_root" "${_rel#/}"; then
+				_restored=$((_restored + 1))
+			fi
 		fi
 	done < <(find "$wt_path" -maxdepth 3 -name "package.json" -not -path "*/node_modules/*" 2>/dev/null)
 	_restore_worktree_node_modules_release_lock "$_lock_dir"

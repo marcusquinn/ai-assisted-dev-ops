@@ -87,6 +87,23 @@ if [[ "$rendered_capabilities" != *'Routine tool discovery should use `command -
 	printf 'known tool-bin read omitted command-based recovery guidance\n' >&2
 	exit 1
 fi
+if [[ "$rendered_capabilities" != *'no unsigned supersession path'* ]]; then
+	printf 'dependency read omitted owned recovery and signed-hold limitation\n' >&2
+	exit 1
+fi
+executing_envelope="${test_root}/executing-envelope.json"
+jq '.capabilities |= map(.tool = "bash" | .patterns = ["~/**"])' "$envelope_file" >"$executing_envelope"
+if [[ "$(permission_render_capabilities "$executing_envelope")" == *'Owned recovery:'* ]]; then
+	printf 'broad external bash was misclassified as a dependency read\n' >&2
+	exit 1
+fi
+# Existing request IDs own unchanged recovery; do not create another comment.
+(
+	gh_issue_view() { printf '{"labels":[]}\n'; return 0; }
+	permission_request_already_posted() { return 0; }
+	gh_issue_comment() { printf 'duplicate request comment\n' >&2; return 1; }
+	permission_post_request "$single_capture" 123 owner/repo issue-123 "$PWD" >/dev/null
+)
 printf '{invalid-json\n' >"${test_root}/invalid-envelope.json"
 if permission_render_capabilities "${test_root}/invalid-envelope.json" >/dev/null 2>&1; then
 	printf 'permission capability rendering hid a jq failure\n' >&2

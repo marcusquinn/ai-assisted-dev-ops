@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 Marcus Quinn
-"""Validate bounded dependency snapshots for the controller's fast_cp path.
+"""Validate and copy bounded dependency snapshots for the controller restore path.
 
 No installation, permissions, registry ownership transfer, or worker resume occurs
 here. Callers must hold their existing restore lock and own the destination.
@@ -15,16 +15,40 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
+from contextlib import contextmanager
 
 
 class Rejected(ValueError):
     """A dependency snapshot cannot safely be provisioned."""
 
 
+@contextmanager
+def open_directory(path):
+    """Pin every directory component without following a racing symlink."""
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in Path(os.path.abspath(path)).parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def trusted(info):
+    if info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise Rejected("foreign-or-shared-source")
+
+
 def regular_bytes(path, limit=8 * 1024 * 1024):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    path = Path(path)
+    with open_directory(path.parent) as parent:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
+        trusted(info)
         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             raise Rejected("invalid-or-oversized-file")
         data = source.read(limit + 1)
@@ -57,8 +81,10 @@ def identity(repo, worktree, relative):
         raise Rejected("not-repository-root")
     common = [git(p, "rev-parse", "--path-format=absolute", "--git-common-dir")
               for p in (repo, worktree)]
-    if common[0] != common[1] or not (worktree / ".git").is_file():
+    if (common[0] != common[1] or not (worktree / ".git").is_file()
+            or not (repo / ".git").is_dir()):
         raise Rejected("foreign-repository")
+    trusted(repo.stat())
     if relative.is_absolute() or ".." in relative.parts:
         raise Rejected("invalid-package-path")
     source, dest = [contained_path(p / relative) for p in (repo, worktree)]
@@ -99,40 +125,73 @@ def identity(repo, worktree, relative):
     return modules
 
 
-def snapshot(root, max_bytes, max_entries):
+def snapshot(root, max_bytes, max_entries, copy_to=None):
     root = contained_path(root)
-    digest = hashlib.sha256()
     total = 0
     count = 0
-    for directory, dirs, files in os.walk(root, followlinks=False):
-        for name in sorted(dirs + files):
-            count += 1
-            if count > max_entries:
-                raise Rejected("entry-budget-exceeded")
-            lower = name.lower()
-            if (lower in {".git", ".ssh", ".aws", ".npmrc", ".netrc", ".pypirc", "credentials.json"}
-                    or lower.startswith(".env") or lower.endswith((".pem", ".key", ".p12", ".pfx"))):
-                raise Rejected("credential-bearing-path")
-            path = Path(directory) / name
-            info = path.lstat()
-            digest.update(str(path.relative_to(root)).encode() + b"\0")
-            if stat.S_ISLNK(info.st_mode):
-                target = os.readlink(path)
-                if os.path.isabs(target) or not path.resolve(strict=True).is_relative_to(root):
-                    raise Rejected("escaping-dependency-link")
-                digest.update(b"link\0" + target.encode())
-            elif stat.S_ISDIR(info.st_mode):
-                digest.update(b"dir\0")
-            elif stat.S_ISREG(info.st_mode):
-                if info.st_size > max_bytes - total:
-                    raise Rejected("byte-budget-exceeded")
-                data = regular_bytes(path, max_bytes - total)
-                total += len(data)
-                digest.update(b"file\0" + hashlib.sha256(data).digest())
-            else:
-                raise Rejected("special-file")
-    if not root.is_dir() or count == 0:
+    records = {}
+
+    def walk(fd, relative, output, depth=0):
+        nonlocal total, count
+        trusted(os.fstat(fd))
+        if depth > 64:
+            raise Rejected("depth-budget-exceeded")
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                count += 1
+                if count > max_entries:
+                    raise Rejected("entry-budget-exceeded")
+                name = entry.name
+                lower = name.lower()
+                if (lower in {".git", ".ssh", ".aws", ".npmrc", ".netrc", ".pypirc", "credentials.json"}
+                        or lower.startswith(".env") or lower.endswith((".pem", ".key", ".p12", ".pfx"))):
+                    raise Rejected("credential-bearing-path")
+                rel = relative / name
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    target = os.readlink(name, dir_fd=fd)
+                    if os.path.isabs(target) or not (root / rel).resolve(strict=True).is_relative_to(root):
+                        raise Rejected("escaping-dependency-link")
+                    records[str(rel)] = b"link\0" + target.encode()
+                    if output is not None:
+                        os.symlink(target, output / name)
+                elif stat.S_ISDIR(info.st_mode):
+                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                    try:
+                        target_dir = output / name if output is not None else None
+                        if target_dir is not None:
+                            target_dir.mkdir(mode=0o755)
+                        records[str(rel)] = b"dir\0"
+                        walk(child, rel, target_dir, depth + 1)
+                    finally:
+                        os.close(child)
+                elif stat.S_ISREG(info.st_mode):
+                    source_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+                    with os.fdopen(source_fd, "rb") as source:
+                        before = os.fstat(source_fd)
+                        trusted(before)
+                        if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes - total:
+                            raise Rejected("byte-budget-exceeded")
+                        data = source.read(max_bytes - total + 1)
+                        total += len(data)
+                        after = os.fstat(source_fd)
+                        if total > max_bytes or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                            raise Rejected("changed-or-oversized-source")
+                    records[str(rel)] = b"file\0" + hashlib.sha256(data).digest()
+                    if output is not None:
+                        with (output / name).open("xb") as destination:
+                            destination.write(data)
+                        (output / name).chmod(before.st_mode & 0o755)
+                else:
+                    raise Rejected("special-file")
+
+    with open_directory(root) as fd:
+        walk(fd, Path(), copy_to)
+    if count == 0:
         raise Rejected("missing-dependencies")
+    digest = hashlib.sha256()
+    for name, value in sorted(records.items()):
+        digest.update(name.encode() + b"\0" + value)
     return f"{digest.hexdigest()} {total} {count}"
 
 
@@ -142,6 +201,7 @@ def main():
     parser.add_argument("worktree")
     parser.add_argument("relative")
     parser.add_argument("--snapshot", help="Validate a private staged copy instead of the source")
+    parser.add_argument("--copy-to", help="Copy with enforced byte/entry limits into an empty private staging directory")
     parser.add_argument("--max-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--max-entries", type=int, default=20000)
     args = parser.parse_args()
@@ -152,11 +212,17 @@ def main():
         root = contained_path(args.snapshot) if args.snapshot else modules
         if args.snapshot and not root.is_relative_to(contained_path(args.worktree)):
             raise Rejected("foreign-staging-directory")
-        print(snapshot(root, args.max_bytes, args.max_entries))
+        output = contained_path(args.copy_to) if args.copy_to else None
+        if output is not None:
+            if (not output.is_relative_to(contained_path(args.worktree))
+                    or output.stat().st_mode & 0o077 or any(output.iterdir())):
+                raise Rejected("invalid-private-staging")
+            trusted(output.stat())
+        print(snapshot(root, args.max_bytes, args.max_entries, output))
         return 0
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         # Never copy raw paths, package contents or subprocess stderr into logs.
-        print("dependency-provision-rejected", file=__import__("sys").stderr)
+        print("dependency-provision-rejected", file=sys.stderr)
         return 1
 
 
