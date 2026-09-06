@@ -132,7 +132,7 @@ ODD_BUNDLE="${TEST_ROOT}/odd-paths.md"
 assert_contains "$ODD_BUNDLE" '+literal-neighbor-text' 'literal binary exclusion'
 [[ "$(grep -c '^+unusual-file-content' "$ODD_BUNDLE")" == 3 ]] || fail 'unusual text paths omitted'
 ODD_DIGEST=$(printf '\000odd-binary\n' | shasum -a 256 | cut -d' ' -f1)
-assert_contains "$ODD_BUNDLE" "$ODD_DIGEST" 'unusual binary path digest'
+awk -F '\t' -v digest="$ODD_DIGEST" '$1 == "A" && $5 == digest { found=1 } END { exit !found }' "$ODD_BUNDLE" || fail 'unusual binary path has noncanonical digest'
 assert_not_contains "$ODD_BUNDLE" 'GIT binary patch' 'unusual binary payload bounded'
 
 gh() {

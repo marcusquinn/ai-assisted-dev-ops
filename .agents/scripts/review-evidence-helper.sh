@@ -125,11 +125,11 @@ _review_check_paths() {
 _review_sha256() {
 	local file="$1"
 	if command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "$file" | cut -d' ' -f1
+		shasum -a 256 <"$file" | cut -d' ' -f1
 		return 0
 	fi
 	if command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "$file" | cut -d' ' -f1
+		sha256sum <"$file" | cut -d' ' -f1
 		return 0
 	fi
 	_review_die "neither shasum nor sha256sum is available"
