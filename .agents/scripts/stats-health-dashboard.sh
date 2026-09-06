@@ -609,9 +609,7 @@ _health_summaries_json() {
 }
 
 _health_routine_repo_entries() {
-	local runner="$1" entries
-	[[ -f "$REPOS_JSON" ]] || return 0
-	entries=$(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$REPOS_JSON" 2>/dev/null) || return 1
+	local runner="$1" entries="$2"
 	[[ -n "$entries" ]] || return 0
 	entries=$(_stats_run_bounded 60 "$_HEALTH_WORK_DEADLINE" _filter_routine_eligible_repo_entries "$entries" "$runner") || {
 		echo "[stats] Health dashboard permission preflight deferred/failed" >>"$LOGFILE"
@@ -651,7 +649,8 @@ update_health_issues() {
 	fi
 
 	local repo_entries
-	repo_entries=$(_health_routine_repo_entries "$routine_runner_user") || return 0
+	repo_entries=$(jq -r '.initialized_repos[] | select(.maintenance != false and .pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$REPOS_JSON" 2>/dev/null) || return 0
+	repo_entries=$(_health_routine_repo_entries "$routine_runner_user" "$repo_entries") || return 0
 	[[ -n "$repo_entries" ]] || return 0
 	_HEALTH_SCHEDULE_RUNNER="$routine_runner_user"
 
