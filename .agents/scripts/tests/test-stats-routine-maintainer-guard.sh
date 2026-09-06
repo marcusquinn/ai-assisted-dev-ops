@@ -83,6 +83,14 @@ _quality_sweep_for_repo() {
 	return 0
 }
 
+_gh_run_bounded_function() {
+	local timeout_seconds="$1"
+	shift
+	[[ "$timeout_seconds" -gt 0 ]] || return 124
+	"$@"
+	return $?
+}
+
 run_daily_quality_sweep
 
 if [[ ! -f "$called_file" ]]; then
@@ -100,4 +108,10 @@ if ! grep -q '^other/maintain|' "$called_file"; then
 	exit 1
 fi
 
-printf 'PASS stats routines require maintainer-equivalent access\n'
+resume_entries=$(_quality_sweep_resume_entries $'owner/one|/one\nowner/two|/two\nowner/three|/three' "owner/two")
+if [[ "$resume_entries" != $'owner/three|/three\nowner/one|/one\nowner/two|/two' ]]; then
+	printf 'FAIL quality sweep cursor does not resume after the last attempted repo\n'
+	exit 1
+fi
+
+printf 'PASS stats routines require maintainer-equivalent access and resume bounded batches\n'

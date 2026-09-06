@@ -294,6 +294,28 @@ test_slow_priority_dashboard_skips_optional_cross_repo_work() {
 	return 0
 }
 
+test_repository_loop_preserves_cleanup_budget() {
+	local production_snippet loop_snippet
+	production_snippet=$(awk '
+		/^update_health_issues\(\) \{/ { in_production=1 }
+		in_production { print }
+		in_production && /^}$/ { exit }
+	' "$HEALTH_DASHBOARD_SCRIPT")
+	loop_snippet=$(printf '%s\n' "$production_snippet" | awk '
+		/^[[:space:]]*while IFS=.*slug path/ { in_loop=1 }
+		in_loop { print }
+		in_loop && /^[[:space:]]*done <<<.*repo_entries/ { exit }
+	')
+	if printf '%s\n' "$loop_snippet" | grep -qE '^[[:space:]]*if ! _health_dashboard_optional_work_has_budget "[$]refresh_start_epoch"; then' &&
+		printf '%s\n' "$loop_snippet" | grep -qE '^[[:space:]]*break[[:space:]]*$'; then
+		print_result "dashboard repository loop preserves wrapper cleanup budget" 0
+		return 0
+	fi
+	print_result "dashboard repository loop preserves wrapper cleanup budget" 1 \
+		"Expected the repository loop to stop before exhausting the aggregate deadline"
+	return 0
+}
+
 test_dashboard_freshness_precedes_maintenance() {
 	local dashboard_script production_snippet update_line maintenance_line
 	dashboard_script="${SCRIPT_DIR}/../stats-health-dashboard.sh"
@@ -329,7 +351,8 @@ test_dashboard_update_failure_not_swallowed() {
 			"stats-wrapper.sh still swallows update_health_issues failures with '|| true'"
 		return 0
 	fi
-	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*\|\|[[:space:]]*return[[:space:]]+\$\?[[:space:]]*$'; then
+	if printf '%s' "$production_snippet" | grep -qE '^[[:space:]]*_stats_wrapper_run_health_update[[:space:]]*\|\|[[:space:]]*health_ec=\$\?[[:space:]]*$' &&
+		printf '%s' "$production_snippet" | grep -qE "^[[:space:]]*return \"\\\$health_ec\"[[:space:]]*$"; then
 		print_result "dashboard update failures propagate to stats-wrapper trap" 0
 		return 0
 	fi
@@ -384,6 +407,7 @@ main_test() {
 	test_priority_dashboard_precedes_optional_cross_repo_work
 	test_priority_failure_continues_remaining_repos
 	test_slow_priority_dashboard_skips_optional_cross_repo_work
+	test_repository_loop_preserves_cleanup_budget
 	test_dashboard_freshness_precedes_maintenance
 	test_dashboard_update_failure_not_swallowed
 	test_transient_dashboard_tempfail_is_deferred

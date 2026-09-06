@@ -458,6 +458,44 @@ _prioritize_health_repo_entries() {
 }
 
 #######################################
+# Order dashboards from least-recently refreshed to most-recently refreshed.
+# Missing refresh state sorts first. This prevents repositories near the end of
+# repos.json from starving when a bounded stats cycle cannot refresh every
+# eligible dashboard. The explicit priority repository is applied afterwards.
+# Arguments:
+#   $1 - newline-delimited slug|path entries
+#   $2 - authenticated GitHub user
+# Output: entries ordered oldest-first, preserving input order for equal ages
+#######################################
+_order_health_repo_entries_by_refresh_age() {
+	local repo_entries="$1"
+	local runner_user="$2"
+	local identity_lines="" canonical_identity="" canonical_identity_cache_safe=""
+	local slug="" path="" slug_safe="" refresh_state_file="" refresh_state="" refresh_epoch="0"
+	local position=0
+
+	identity_lines=$(_dashboard_identity_aliases "$runner_user")
+	canonical_identity=$(printf '%s\n' "$identity_lines" | sed -n '1p')
+	[[ -n "$canonical_identity" ]] || canonical_identity="$runner_user"
+	canonical_identity_cache_safe=$(_sanitize_runner_identity_for_cache "$canonical_identity")
+
+	while IFS='|' read -r slug path; do
+		[[ -z "$slug" ]] && continue
+		slug_safe="${slug//\//-}"
+		refresh_state_file="${HOME}/.aidevops/logs/health-issue-${canonical_identity_cache_safe}-${slug_safe}.refresh-state"
+		refresh_state=""
+		refresh_epoch="0"
+		if [[ -f "$refresh_state_file" ]]; then
+			IFS='|' read -r refresh_state refresh_epoch <"$refresh_state_file" 2>/dev/null || refresh_epoch="0"
+		fi
+		[[ "$refresh_epoch" =~ ^[0-9]+$ ]] || refresh_epoch="0"
+		printf '%020d\t%08d\t%s|%s\n' "$refresh_epoch" "$position" "$slug" "$path"
+		position=$((position + 1))
+	done <<<"$repo_entries" | sort -n -k1,1 -k2,2 | cut -f3-
+	return 0
+}
+
+#######################################
 # Refresh the first priority dashboard before optional aggregate work.
 # Arguments:
 #   $1 - priority-ordered newline-delimited slug|path entries
@@ -588,6 +626,7 @@ update_health_issues() {
 	if [[ -z "$repo_entries" ]]; then
 		return 0
 	fi
+	repo_entries=$(_order_health_repo_entries_by_refresh_age "$repo_entries" "$routine_runner_user")
 	repo_entries=$(_prioritize_health_repo_entries "$repo_entries")
 
 	local refresh_start_epoch
@@ -623,6 +662,11 @@ update_health_issues() {
 	while IFS='|' read -r slug path; do
 		[[ -z "$slug" ]] && continue
 		[[ "$slug" == "${priority_slug:-}" ]] && continue
+		if ! _health_dashboard_optional_work_has_budget "$refresh_start_epoch"; then
+			echo "[stats] Health dashboard repository pass stopped before ${slug}: preserving wrapper cleanup budget" >>"$LOGFILE"
+			deferred=$((deferred + 1))
+			break
+		fi
 		update_ec=0
 		_update_health_issue_for_repo "$slug" "$path" "$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md" || update_ec=$?
 		if [[ "$update_ec" -eq 75 || "$update_ec" -eq 124 ]]; then

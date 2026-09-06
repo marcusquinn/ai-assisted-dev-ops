@@ -448,6 +448,16 @@ else
 	fail "health dashboard supports an explicit priority repository override" "entries=${priority_entries}"
 fi
 
+printf '%s\n' 'active|300' >"${HOME}/.aidevops/logs/health-issue-canonical-operator-owner-new.refresh-state"
+printf '%s\n' 'idle|100' >"${HOME}/.aidevops/logs/health-issue-canonical-operator-owner-old.refresh-state"
+age_ordered_entries=$(_order_health_repo_entries_by_refresh_age \
+	$'owner/new|/repo/new\nowner/missing|/repo/missing\nowner/old|/repo/old' "github-user")
+if [[ "$age_ordered_entries" == $'owner/missing|/repo/missing\nowner/old|/repo/old\nowner/new|/repo/new' ]]; then
+	pass "health dashboard orders least-recently refreshed repositories first"
+else
+	fail "health dashboard orders least-recently refreshed repositories first" "entries=${age_ordered_entries}"
+fi
+
 : >"$GH_CALLS"
 export HEALTH_FIXTURE=label_hygiene
 gh() {
