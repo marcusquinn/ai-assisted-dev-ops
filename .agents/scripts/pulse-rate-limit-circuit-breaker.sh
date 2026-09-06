@@ -60,6 +60,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=./shared-gh-budget-policy.sh
 source "${SCRIPT_DIR}/shared-gh-budget-policy.sh"
 
+# shellcheck source=./pulse-rest-observation.sh
+source "${SCRIPT_DIR}/pulse-rest-observation.sh"
+
 # shellcheck source=./shared-gh-request-state.sh
 if [[ -f "${SCRIPT_DIR}/shared-gh-request-state.sh" ]]; then
 	# shellcheck disable=SC1091
@@ -313,6 +316,12 @@ _cb_rest_core_observation() {
 	[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=20
 	now=$(date +%s 2>/dev/null) || now=0
 	[[ "$now" =~ ^[0-9]+$ ]] || now=0
+
+	# Avoid spending a paced REST request just to rediscover recent headers.
+	# Request admission remains atomic in the transport; this is observation only.
+	if _cb_rest_core_local_observation "$ttl" "$now"; then
+		return 0
+	fi
 
 	if [[ -f "$_CB_REST_CORE_CACHE_FILE" ]]; then
 		read -r observed remaining limit reset resource < <(jq -r --arg unknown "$_CB_REST_CORE_UNKNOWN" '[.observed // 0, .remaining // $unknown, .limit // $unknown, .reset // 0, .resource // $unknown] | @tsv' "$_CB_REST_CORE_CACHE_FILE" 2>/dev/null) || true

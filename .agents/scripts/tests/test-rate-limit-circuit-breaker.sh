@@ -196,7 +196,9 @@ reset_test_state() {
 	STUB_GH_LIMIT=5000
 	export STUB_GH_CORE_REMAINING=5000
 	export STUB_GH_CORE_LIMIT=5000
-	export STUB_GH_CORE_RESET="$(($(date +%s) + 3600))"
+	# Keep full-window boundary assertions inside the clamped window even when
+	# subprocess work crosses a second. Decay tests set their own reset epochs.
+	export STUB_GH_CORE_RESET="$(($(date +%s) + 7200))"
 	export AIDEVOPS_PULSE_CIRCUIT_BREAKER_THRESHOLD="0.05"
 	export AIDEVOPS_PULSE_DISPATCH_REST_FALLBACK=0
 	export AIDEVOPS_PULSE_REST_CORE_RESERVE=500

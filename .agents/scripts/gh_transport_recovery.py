@@ -88,6 +88,7 @@ def admission_status(directory: Path, scope: str) -> dict:
             state = "exhausted"
         return {"state": state, "source": "local_response_headers", "remaining": row[0],
                 "limit": row[4], "reserved": reserved, "floor": floor,
+                "blocked_until": row[3],
                 "reset": int(row[1]), "observation_age_seconds": max(0, int(now - row[2]))}
     finally:
         db.close()
